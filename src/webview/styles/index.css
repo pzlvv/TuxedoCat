@@ -1,0 +1,661 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* 为亮色和暗色主题提供全局 CSS 变量，
+   确保 Ant Design 和其他第三方组件能响应主题切换 */
+.light {
+  color-scheme: light;
+}
+.dark {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+}
+
+/* Electron 桌面应用：强制深色背景，避免依赖 BrowserWindow 背景导致的白闪 */
+.electron-app {
+  background: #1a1a1f;
+  color: #c1c1c6;
+}
+.electron-app body {
+  background: #1a1a1f;
+  color: #c1c1c6;
+}
+
+/* Global scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-color, #6a6a75) transparent;
+}
+
+/*
+ * Auto-scroll strategy: combine CSS overflow-anchor (native anchor) with
+ * JS ResizeObserver (fallback). The browser anchors the scroller at the
+ * bottom by default; JS only intervenes when the user scrolls away or
+ * when multiple concurrent updates might confuse the anchor node selection.
+ *
+ * We disable anchor on immediate children (segments) to prevent the
+ * browser from picking a mid-container element as the anchor node.
+ */
+.messages-container {
+  overflow-anchor: auto;
+}
+.messages-container > div {
+  overflow-anchor: none;
+}
+
+/* Webkit scrollbar for all elements */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-color, #6a6a75);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-hover-color, #7a7a85);
+}
+
+/* Textarea specific scrollbar */
+textarea::-webkit-scrollbar {
+  width: 4px;
+}
+
+textarea::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-color, #6a6a75);
+  border-radius: 2px;
+}
+
+textarea::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-hover-color, #7a7a85);
+}
+
+/* Transparent background for markdown */
+.markdown-body {
+  background: transparent !important;
+  color: inherit !important;
+}
+
+/* Override all hardcoded colors in github-markdown-css */
+.markdown-body p,
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6,
+.markdown-body strong,
+.markdown-body em,
+.markdown-body code,
+.markdown-body pre,
+.markdown-body blockquote,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body li,
+.markdown-body table,
+.markdown-body th,
+.markdown-body td,
+.markdown-body a {
+  background: transparent !important;
+  color: inherit !important;
+  border-color: inherit !important;
+}
+
+/* Code blocks */
+.markdown-body code {
+  background: rgba(128, 90, 213, 0.1) !important;
+}
+
+.markdown-body pre {
+  background: rgba(128, 90, 213, 0.05) !important;
+}
+
+.markdown-body pre code {
+  background: transparent !important;
+}
+
+/* Table styling - use very specific selectors to override github-markdown-css */
+.markdown-body .highlight,
+.markdown-body table {
+  background: transparent !important;
+}
+
+.markdown-body table table {
+  background: transparent;
+}
+
+.markdown-body table tr {
+  background: transparent !important;
+  border: 0 !important;
+}
+
+.markdown-body table th,
+.markdown-body table td {
+  background: transparent !important;
+  border: 1px solid var(--border-color) !important;
+  color: inherit !important;
+}
+
+.markdown-body table thead {
+  background: transparent !important;
+}
+
+.markdown-body table thead tr {
+  background: rgba(128, 90, 213, 0.1) !important;
+}
+
+.markdown-body table thead th {
+  background: rgba(128, 90, 213, 0.1) !important;
+  border: 1px solid var(--border-color) !important;
+  color: inherit !important;
+}
+
+/* Also target the raw table from remark-gfm */
+.markdown-body > table {
+  background: transparent !important;
+}
+
+.markdown-body > table > * {
+  background: transparent !important;
+}
+
+.markdown-body > table > thead > tr > th,
+.markdown-body > table > tbody > tr > td {
+  background: transparent !important;
+}
+
+/* Blockquote */
+.markdown-body blockquote {
+  border-left: 3px solid var(--border-color) !important;
+  color: var(--text-secondary) !important;
+}
+
+/* Links */
+.markdown-body a {
+  color: #818cf8 !important;
+}
+
+/* Light theme markdown overrides */
+.light .markdown-body h1,
+.light .markdown-body h2,
+.light .markdown-body h3,
+.light .markdown-body h4,
+.light .markdown-body h5,
+.light .markdown-body h6 {
+  color: #18181b !important;
+}
+
+.light .markdown-body p,
+.light .markdown-body li {
+  color: #18181b !important;
+}
+
+.light .markdown-body code {
+  color: #18181b !important;
+}
+
+.light .markdown-body a {
+  color: #4f46e5 !important;
+}
+
+/* Timeline item spacing - compact layout with minimum height */
+.ant-timeline .ant-timeline-item {
+  min-height: 36px !important;
+  padding-bottom: 12px !important;
+  margin-bottom: 0 !important;
+}
+
+.ant-timeline .ant-timeline-item-content {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+}
+
+/* Timeline last item - no bottom padding */
+.ant-timeline .ant-timeline-item:last-child {
+  padding-bottom: 0 !important;
+}
+
+/* 当 thinking animation 隐藏时，隐藏内容但保留高度避免布局抖动 */
+.ant-timeline .ant-timeline-item:last-child:has(.thinking-animation-wrapper[data-hidden]) {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  /* 保留正常 padding 和高度，防止 scrollHeight 变化导致布局抖动 */
+  height: auto !important;
+  min-height: 36px !important;
+  padding-bottom: 12px !important;
+}
+
+/* 当 animation 隐藏后，前一项的 rail 也隐藏，避免出现孤立的连接线
+   thinking-hidden 类由 SegmentTimeline 在 showThinkingAnimation=false 时添加到 Timeline 外层容器 */
+.thinking-hidden .ant-timeline .ant-timeline-item:nth-last-child(2) .ant-timeline-item-rail {
+  display: none !important;
+}
+
+/* ── Timeline 状态点与竖线水平对齐校正 ──
+   强制状态点（8px 圆点）中心与竖线（1px）中心重合，
+   避免不同 antd 版本/环境下自定义 dot 偏离竖线（偏到线右侧）的问题。
+   数值与 SegmentTimeline 主题中的 dotSize: 8 / tailWidth: 1 保持一致。 */
+.ant-timeline .ant-timeline-item-icon {
+  width: 8px !important;
+  height: 8px !important;
+  margin-inline-start: 0 !important;
+}
+.ant-timeline .ant-timeline-item-rail {
+  inset-inline-start: 4px !important;
+  margin-inline-start: calc(var(--ant-cmp-steps-rail-size, 1px) / -2) !important;
+}
+
+/* UserChoiceOverlay entry animation */
+.user-choice-overlay {
+  animation: user-choice-slide-up 0.15s ease-out forwards;
+}
+
+.user-choice-button-stagger {
+  opacity: 0;
+  animation: user-choice-btn-enter 0.12s ease-out forwards;
+  animation-delay: calc(var(--stagger-index) * 20ms);
+}
+
+@keyframes user-choice-slide-up {
+  0% {
+    transform: translateY(16px);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes user-choice-btn-enter {
+  0% {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* ─── Animations from App.tsx ─── */
+
+@keyframes breathingGradient {
+  0%, 100% {
+    filter: hue-rotate(0deg) brightness(1);
+  }
+  50% {
+    filter: hue-rotate(30deg) brightness(1.3);
+  }
+}
+
+@keyframes rippleEffect {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(2.5);
+    opacity: 0;
+  }
+}
+
+@keyframes runningBarFlow {
+  0% {
+    background-position: 0% 0%;
+  }
+  100% {
+    background-position: 0% 100%;
+  }
+}
+
+/* Bash 流式输出末尾的闪烁光标 */
+@keyframes bashCursorBlink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ─── Thinking cursor / ripple classes ─── */
+
+.thinking-cursor-wrapper {
+  position: relative;
+  display: inline-block;
+  white-space: nowrap;
+  /* 注意：monospace 必须放在中文字体之后，否则中文会回退到系统默认等宽字体（Windows 上即宋体 SimSun） */
+  font-family: 'Consolas', 'Courier New', 'Microsoft YaHei', '微软雅黑', monospace, sans-serif;
+  font-size: 13px;
+  line-height: 1.2;
+  font-weight: 600;
+}
+
+/* thinking animation 隐藏时保持占位高度，避免布局抖动 */
+.thinking-animation-wrapper[data-hidden] {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ripple dot 隐藏时同样保持占位高度 */
+.ripple-dot-container[data-hidden] {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.thinking-cursor-block {
+  display: inline-block;
+  width: 0.6em;
+  height: 1.2em;
+  vertical-align: text-bottom;
+  opacity: 1;
+}
+
+.thinking-timeline-dot {
+  animation: breathingGradient 2s ease-in-out infinite;
+}
+
+.conversation-modal-wrapper .ant-modal-content {
+  border: 1px solid var(--border-color) !important;
+}
+
+/* 历史对话下拉菜单宽度约束 */
+.conversation-dropdown {
+  max-width: calc(100vw - 70px) !important;
+}
+
+.ripple-dot-container {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ripple-center {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  z-index: 1;
+}
+
+.ripple-ring {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid;
+  animation: rippleEffect 2s ease-out infinite;
+  z-index: 0;
+}
+
+.ripple-ring:nth-child(2) {
+  animation-delay: 0s;
+}
+
+.ripple-ring:nth-child(3) {
+  animation-delay: 0.66s;
+}
+
+.ripple-ring:nth-child(4) {
+  animation-delay: 1.33s;
+}
+
+/* 强制设置代码预览字号 */
+.code-preview,
+.code-preview pre,
+.code-preview code {
+  font-size: 12px !important;
+}
+
+/* KaTeX 公式样式 - 确保在暗色和亮色主题下均正常显示 */
+.katex {
+  font-size: 1.1em !important;
+}
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.5em 0;
+}
+.katex-display > .katex {
+  font-size: 1.6em !important;
+}
+/* KaTeX 公式中的颜色适配暗色主题 */
+.dark .katex .mathnormal,
+.dark .katex .mathit,
+.dark .katex .mathrm,
+.dark .katex .mathsf,
+.dark .katex .boldsymbol {
+  color: #e0e0e0 !important;
+}
+
+/* 代码块背景色 - 使用 VS Code 变量 */
+.code-preview .shiki {
+  background-color: var(--vscode-textCodeBlock-background, transparent) !important;
+}
+.code-preview .shiki code {
+  background-color: transparent !important;
+}
+
+/* 用户选择按钮 hover 效果 */
+.user-choice-button:hover {
+  background-color: rgba(99, 102, 241, 0.3) !important;
+}
+
+/* 模式选择下拉菜单 */
+.agent-mode-menu {
+  background-color: var(--primary-frame) !important;
+}
+.agent-mode-menu .ant-dropdown-menu-item {
+  font-size: 12px !important;
+  color: var(--text-secondary) !important;
+}
+.agent-mode-menu .ant-dropdown-menu-item-selected {
+  color: var(--harness) !important;
+  background-color: transparent !important;
+}
+.agent-mode-menu .ant-dropdown-menu-item:hover {
+  background-color: rgba(99, 102, 241, 0.12) !important;
+}
+.agent-mode-menu .ant-dropdown-menu-item-disabled,
+.agent-mode-menu .ant-dropdown-menu-item-disabled:hover,
+.agent-mode-menu .ant-dropdown-menu-item-disabled:active {
+  background-color: transparent !important;
+  cursor: default !important;
+  opacity: 1 !important;
+  padding: 0 !important;
+  height: auto !important;
+  line-height: normal !important;
+}
+.agent-mode-menu .ant-dropdown-menu-item-active {
+  background-color: rgba(99, 102, 241, 0.2) !important;
+}
+
+/* 子菜单展开箭头 — 与文字颜色一致 */
+.agent-mode-menu .ant-dropdown-menu-submenu-title .ant-dropdown-menu-submenu-arrow-icon {
+  color: var(--text-secondary) !important;
+}
+
+/* ─── Dropdown 弹出动画：纯淡入淡出，避免缩放导致的抖动 ───
+   antd 默认用 scale 类动画（slide-down 的 scaleY / zoom-big 的 scale），
+   在 webview 内缩放文字渲染会明显抖动。统一改成只做透明度渐变：
+   - .ant-dropdown          → 主菜单弹出层（top/bottom 位移类动画）
+   - .ant-dropdown-menu-submenu-popup → 下拉菜单里的子菜单（zoom-big 动画） */
+@keyframes agent-dropdown-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes agent-dropdown-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+/* 进入动画：去掉位移/缩放，只保留淡入 */
+.ant-dropdown.ant-slide-up-enter,
+.ant-dropdown.ant-slide-up-appear,
+.ant-dropdown.ant-slide-down-enter,
+.ant-dropdown.ant-slide-down-appear,
+.ant-dropdown.ant-slide-left-enter,
+.ant-dropdown.ant-slide-left-appear,
+.ant-dropdown.ant-slide-right-enter,
+.ant-dropdown.ant-slide-right-appear,
+.ant-dropdown-menu-submenu-popup.ant-zoom-big-enter,
+.ant-dropdown-menu-submenu-popup.ant-zoom-big-appear {
+  transform: none !important;
+  opacity: 0 !important;
+  animation: agent-dropdown-fade-in 0.12s ease-out both !important;
+}
+
+.ant-dropdown.ant-slide-up-enter-active,
+.ant-dropdown.ant-slide-up-appear-active,
+.ant-dropdown.ant-slide-down-enter-active,
+.ant-dropdown.ant-slide-down-appear-active,
+.ant-dropdown.ant-slide-left-enter-active,
+.ant-dropdown.ant-slide-left-appear-active,
+.ant-dropdown.ant-slide-right-enter-active,
+.ant-dropdown.ant-slide-right-appear-active,
+.ant-dropdown-menu-submenu-popup.ant-zoom-big-enter-active,
+.ant-dropdown-menu-submenu-popup.ant-zoom-big-appear-active {
+  transform: none !important;
+  animation: agent-dropdown-fade-in 0.12s ease-out both !important;
+}
+
+/* 退出动画：淡出 */
+.ant-dropdown.ant-slide-up-leave,
+.ant-dropdown.ant-slide-down-leave,
+.ant-dropdown.ant-slide-left-leave,
+.ant-dropdown.ant-slide-right-leave,
+.ant-dropdown-menu-submenu-popup.ant-zoom-big-leave {
+  animation: agent-dropdown-fade-out 0.1s ease-in both !important;
+}
+
+.ant-dropdown.ant-slide-up-leave-active,
+.ant-dropdown.ant-slide-down-leave-active,
+.ant-dropdown.ant-slide-left-leave-active,
+.ant-dropdown.ant-slide-right-leave-active,
+.ant-dropdown-menu-submenu-popup.ant-zoom-big-leave-active {
+  animation: agent-dropdown-fade-out 0.1s ease-in both !important;
+  pointer-events: none !important;
+}
+
+/* 对话列表 running 状态-左边流水灯条 */
+.running-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  height: 100%;
+  border-radius: 0 1px 1px 0;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(99, 102, 241, 0.5) 30%,
+    rgba(99, 102, 241, 0.7) 50%,
+    rgba(99, 102, 241, 0.5) 70%,
+    transparent 100%
+  );
+  background-size: 100% 200%;
+  animation: runningBarFlow 1.5s linear infinite;
+}
+
+/* 等待用户输入（ask user 提问 / 权限确认）时的黄色流水灯 */
+.running-bar--waiting {
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(250, 204, 21, 0.5) 30%,
+    rgba(250, 204, 21, 0.8) 50%,
+    rgba(250, 204, 21, 0.5) 70%,
+    transparent 100%
+  );
+}
+
+/* ─── (removed: memory-dots animation was unused) ─── */
+
+/* ─── Conversation loading (Electron app mode) ─── */
+
+@keyframes conversationLoadingRipple {
+  0% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+
+@keyframes conversationLoadingBounce {
+  0%, 80%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  40% {
+    transform: translateY(-6px);
+    opacity: 1;
+  }
+}
+
+.conversation-loading-ripple {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.conversation-loading-ring {
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1.5px solid;
+  animation: conversationLoadingRipple 2s ease-out infinite;
+}
+
+.conversation-loading-ring:nth-child(2) {
+  animation-delay: 1s;
+}
+
+.conversation-loading-logo {
+  width: 56px;
+  height: auto;
+  border-radius: 10px;
+}
+
+.conversation-loading-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  animation: conversationLoadingBounce 1.2s ease-in-out infinite;
+}
+
+.conversation-loading-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.conversation-loading-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}

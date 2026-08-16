@@ -1,0 +1,140 @@
+{
+  "name": "tuxedo-cat",
+  "displayName": "Tuxedo Cat",
+  "publisher": "tuxedo-cat",
+  "author": "tuxedo-cat",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pzlvv/TuxedoCat.git"
+  },
+  "license": "MIT",
+  "description": "AI Assistant",
+  "version": "0.0.1",
+  "icon": "assets/logo.png",
+  "engines": {
+    "vscode": "^1.88.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tuxedo-cat.open",
+        "title": "Open Assistant"
+      }
+    ],
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "tuxedo-cat-sidebar",
+          "title": "Tuxedo Cat",
+          "icon": "assets/logo.svg"
+        }
+      ]
+    },
+    "views": {
+      "tuxedo-cat-sidebar": [
+        {
+          "type": "webview",
+          "id": "tuxedo-cat-assistant",
+          "name": "AI Assistant",
+          "icon": "assets/logo.svg"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run check-types && npm run lint && node esbuild.js --production && npm run build:webview && npm run copy-assets",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:esbuild watch:tsc watch:webview watch:monaco watch:sidebar watch:electron",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "watch:monaco": "vite build --config vite.monaco.config.ts --watch",
+    "watch:sidebar": "vite build --config vite.sidebar.config.ts --watch",
+    "watch:app": "node scripts/watch-app.js",
+    "watch:ext": "node scripts/watch-ext.js",
+    "package": "npm run package:ext && npm run package:app",
+    "package:ext": "npm run vscode:prepublish && node -e \"require('fs').mkdirSync('release', { recursive: true })\" && vsce package --out release && python scripts/fix_vsix_permissions.py",
+    "compile-tests": "tsc -p tsconfig.test.json",
+    "watch-tests": "tsc -p tsconfig.test.json -w",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "check-types:electron": "tsc --noEmit -p electron/tsconfig.json",
+    "lint": "eslint src",
+    "test": "vscode-test",
+    "build:webview": "vite build && vite build --config vite.monaco.config.ts && vite build --config vite.sidebar.config.ts",
+    "build:monaco": "vite build --config vite.monaco.config.ts",
+    "build:sidebar": "vite build --config vite.sidebar.config.ts",
+    "watch:webview": "vite build --watch",
+    "build": "npm run check-types && npm run lint && node esbuild.js && npm run build:webview && npm run copy-assets",
+    "copy-assets": "node -e \"require('fs').cpSync('assets', 'dist/assets', {recursive: true}); require('fs').cpSync('resources', 'dist/resources', {recursive: true})\"",
+    "build:electron": "node electron/esbuild.js",
+    "build:electron:prod": "node electron/esbuild.js --production",
+    "watch:electron": "node electron/esbuild.js --watch",
+    "build:all": "npm run build && npm run build:electron",
+    "electron": "node scripts/electron-launch.js",
+    "electron:debug": "node scripts/electron-launch.js --inspect=9229",
+    "dev:electron": "npm run build:webview && npm run copy-assets && npm run build:electron && node scripts/electron-launch.js",
+    "package:app": "npm run build:webview && npm run copy-assets && npm run build:electron:prod && electron-builder --config electron-builder.config.js",
+    "package:electron": "npm run package:app",
+    "demo": "tsc -p tsconfig.test.json && node out/test/vscode-diff-demo.js"
+  },
+  "devDependencies": {
+    "@types/diff": "^7.0.2",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.19.17",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "@types/vscode": "^1.88.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.9.2",
+    "autoprefixer": "^10.4.20",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.27.3",
+    "eslint": "^9.39.3",
+    "npm-run-all": "^4.1.5",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.56.1",
+    "vite": "^6.2.0"
+  },
+  "dependencies": {
+    "@honcho-ai/sdk": "^2.2.0",
+    "@monaco-editor/react": "^4.7.0",
+    "@radix-ui/react-slot": "^1.2.4",
+    "antd": "^6.3.6",
+    "diff": "^5.2.2",
+    "github-markdown-css": "^5.9.0",
+    "iconv-lite": "^0.7.2",
+    "isbinaryfile": "^6.0.0",
+    "katex": "^0.17.0",
+    "lucide-react": "^1.8.0",
+    "monaco-editor": "^0.55.1",
+    "prismjs": "^1.30.0",
+    "react": "^18.3.1",
+    "react-diff-viewer-continued": "^4.2.0",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "react-textarea-autosize": "^8.5.9",
+    "rehype-katex": "^7.0.1",
+    "rehype-raw": "^7.0.0",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
+    "shiki": "^4.0.2",
+    "vscode-diff": "^3.0.1",
+    "xlsx": "^0.18.5",
+    "zod": "^4.3.6"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "^4.62.2"
+  }
+}

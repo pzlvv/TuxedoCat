@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "resolveJsonModule": true
+  },
+  "include": [
+    "./**/*.ts",
+    "../src/config/**/*.ts",
+    "../src/host/**/*.ts",
+    "../src/core/**/*.ts",
+    "../src/VSCodeUI/toolHandler.ts",
+    "../src/VSCodeUI/userChoice.ts",
+    "../src/VSCodeUI/webviewMessageHandler.ts",
+    "../src/VSCodeUI/types.ts"
+  ]
+}

@@ -1,0 +1,78 @@
+import React from 'react';
+import { ToolCallProps } from './Types';
+import { ToolHeader } from './ToolHeader';
+import { t } from '../i18n';
+
+/**
+ * WebSearch 工具卡片（Responses API 内置 web_search）
+ * 模型自动联网搜索，UI 以工具卡片形式展示搜索内容：
+ * - search 动作：显示搜索关键词
+ * - open_page 动作：显示打开的网页 URL
+ *
+ * 搜索进行中（status === 'running'）时不额外显示 loading，
+ * 复用 timeline 上 toolcall 运行时的旋转小点即可；完成后显示"完成"。
+ */
+export const WebSearch: React.FC<ToolCallProps> = ({ args, colors, status, output }) => {
+  const action = args?.action || 'search';
+  const queries: string[] = Array.isArray(args?.queries) ? args.queries : [];
+  const url: string = args?.url || '';
+  const isFailed = status === 'fail';
+  const failText = output || t('webSearch.failed');
+
+  // 剥离服务商附加的内部追踪参数（#ws_call_id=xxx），仅影响展示
+  const cleanUrl = url.replace(/[#&?]ws_call_id=[^#&?]*/g, '').replace(/[?#]$/, '');
+
+  // open_page：显示打开的网页 URL
+  if (action === 'open_page') {
+    const displayUrl = cleanUrl.length > 60 ? cleanUrl.substring(0, 60) + '…' : cleanUrl;
+    return (
+      <ToolHeader icon="ExternalLink" name="WebSearch" colors={colors}>
+        <span
+          style={{ color: isFailed ? colors.timelineStatusFail : colors.textPrimary }}
+          title={cleanUrl}
+        >
+          {isFailed ? failText : cleanUrl ? displayUrl : t('webSearch.openingPage')}
+        </span>
+        {status === 'success' && (
+          <span style={{ marginLeft: '8px', color: colors.textSystem }}>
+            {t('webSearch.pageLoaded')}
+          </span>
+        )}
+      </ToolHeader>
+    );
+  }
+
+  // search：显示搜索关键词
+  const displayQueries = queries
+    .filter((q) => !q.startsWith('ws_call_id='))
+    .slice(0, 2)
+    .map((q) => (q.length > 30 ? q.substring(0, 30) + '…' : q));
+  const queryText = displayQueries.length
+    ? `"${displayQueries.join('" / "')}"`
+    : '';
+  const isDone = status === 'success';
+
+  return (
+    <ToolHeader icon="Search" name="WebSearch" colors={colors}>
+      <span
+        style={{ color: isFailed ? colors.timelineStatusFail : colors.textPrimary }}
+        title={queries.join('\n')}
+      >
+        {isFailed
+          ? failText
+          : queryText
+            ? t('webSearch.searching', { query: queryText })
+            : // 已完成但没有关键词（服务商未返回 queries 的瞬时搜索项）：
+              // 直接显示"完成"，避免"正在联网搜索… + 完成"的矛盾展示
+              isDone
+              ? t('webSearch.searchDone')
+              : t('webSearch.searchingDefault')}
+      </span>
+      {isDone && queryText && (
+        <span style={{ marginLeft: '8px', color: colors.textSystem }}>
+          {t('webSearch.searchDone')}
+        </span>
+      )}
+    </ToolHeader>
+  );
+};

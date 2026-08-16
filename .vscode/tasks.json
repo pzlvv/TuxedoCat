@@ -1,0 +1,89 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build:webview",
+      "type": "npm",
+      "script": "build:webview",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "copy-assets",
+      "type": "npm",
+      "script": "copy-assets",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "build:electron",
+      "type": "npm",
+      "script": "build:electron",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "build:ext",
+      "type": "npm",
+      "script": "build",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "build:app",
+      "dependsOn": ["build:webview", "copy-assets", "build:electron"],
+      "dependsOrder": "sequence",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "watch:ext",
+      "type": "npm",
+      "script": "watch:ext",
+      "isBackground": true,
+      "group": "build",
+      "problemMatcher": {
+        "owner": "tuxedo-cat-watch-ext",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "watch:ext: start",
+          "endsPattern": "watch:ext: ready"
+        }
+      }
+    },
+    {
+      "label": "watch:app",
+      "type": "npm",
+      "script": "watch:app",
+      "isBackground": true,
+      "group": "build",
+      "problemMatcher": {
+        "owner": "tuxedo-cat-watch",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "watch:app: start",
+          "endsPattern": "watch:app: ready"
+        }
+      }
+    },
+    {
+      "label": "launch:app:debug",
+      "dependsOn": ["build:app"],
+      "dependsOrder": "sequence",
+      "type": "npm",
+      "script": "electron:debug",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "electron",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".*",
+          "endsPattern": "Debugger listening on ws://.*"
+        }
+      }
+    }
+  ]
+}

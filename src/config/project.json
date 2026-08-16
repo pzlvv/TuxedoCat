@@ -1,0 +1,41 @@
+{
+  "productName": "Tuxedo Cat",
+  "extensionName": "tuxedo-cat",
+  "publisher": "tuxedo-cat",
+  "author": "tuxedo-cat",
+  "repositoryUrl": "https://github.com/pzlvv/TuxedoCat.git",
+  "appId": "com.tuxedocat.desktop",
+  "configDir": ".tuxedo-cat",
+  "commandPrefix": "tuxedo-cat",
+  "viewContainerId": "tuxedo-cat-sidebar",
+  "viewId": "tuxedo-cat-assistant",
+  "outputChannelName": "Tuxedo Cat",
+  "envPrefix": "TUXEDO_CAT",
+  "envMaxOutputTokens": "TUXEDO_CAT_MAX_OUTPUT_TOKENS",
+  "logFileName": "tuxedo-cat.log",
+  "tmpTaskDirName": "tuxedo-cat-tasks",
+  "settingsFileName": "settings.json",
+  "taskOwner": "tuxedo-cat-watch",
+  "schemes": {
+    "preview": "tuxedo-cat-preview",
+    "diffBefore": "tuxedo-cat-diff-before",
+    "diffAfter": "tuxedo-cat-diff-after"
+  },
+  "panelIds": {
+    "mermaidPreview": "tuxedo-cat-mermaid-preview",
+    "spinDesign": "tuxedo-cat-spin-design"
+  },
+  "build": {
+    "dist": "dist",
+    "distElectron": "dist-electron",
+    "extensionOut": "dist/extension.js",
+    "webviewOut": "dist/webview",
+    "monacoOut": "dist/monaco",
+    "sidebarOut": "dist/sidebar",
+    "electronMainOut": "dist-electron/main.cjs",
+    "electronPreloadOut": "dist-electron/preload.cjs",
+    "electronSpinPreloadOut": "dist-electron/spinPreload.cjs",
+    "electronMonacoPreloadOut": "dist-electron/monacoPreload.cjs",
+    "electronSidebarPreloadOut": "dist-electron/sidebarPreload.cjs"
+  }
+}
