@@ -6,7 +6,7 @@
  * 完成后通过 Reply 工具报告结果。
  */
 
-import { QueryEngine } from '../QueryEngine.js';
+import { QueryEngine, getSessionEngine } from '../QueryEngine.js';
 import { getAllTools } from '../tools/index.js';
 import { getToolsForRole } from '../tools/RoleTools.js';
 import { getGlobalUI } from '../AssistantUI.js';
@@ -71,6 +71,10 @@ The JSON format must be:
 
   const subTitle = `[Spin] Node ${node.id}: ${node.task}`;
 
+  // 继承父会话（query engine）实际生效的模型配置，避免子代理 fallback 到其他模型
+  const parentEngine = getSessionEngine(parentSessionId);
+  const modelConfig = parentEngine?.getEffectiveModelConfig();
+
   // 创建子引擎
   const subEngine = new QueryEngine(subSessionID, {
     cwd: process.cwd(), // 子 Agent 的 cwd；由 VSCodeUI 确保子进程被调用时在工作区
@@ -82,6 +86,7 @@ The JSON format must be:
     abortController: abortController as any,
     initialMessages: [taskMessage],
     maxTurns: 1000,
+    modelConfig,
     staticSystemPrompt: subAgentSystemPrompt,
     title: subTitle,
     parentSessionId,
@@ -96,8 +101,8 @@ The JSON format must be:
   // 对话树中正确关联到主对话，进入子会话后能显示"返回主对话"按钮。
   try {
     const { createConversationMetadataSync } = await import('../history/Conversation.js');
-    createConversationMetadataSync(subSessionID, subTitle, parentSessionId, role, undefined);
-    logger.info('SpinRunner', `Pre-created conversation metadata for sub-agent ${subSessionID} (parent=${parentSessionId}, role=${role})`);
+    createConversationMetadataSync(subSessionID, subTitle, parentSessionId, role, modelConfig?.model);
+    logger.info('SpinRunner', `Pre-created conversation metadata for sub-agent ${subSessionID} (parent=${parentSessionId}, role=${role}, model=${modelConfig?.model ?? 'inherit'})`);
   } catch (err) {
     logger.warn('SpinRunner', `Failed to pre-create conversation metadata for sub-agent ${subSessionID}: ${err}`);
   }

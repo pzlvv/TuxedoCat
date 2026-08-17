@@ -198,7 +198,7 @@ export const AgentTool = buildTool({
     }
 
     // 验证 agentRole 必须为合法角色
-    const { isValidRole, getModelConfigForRole } = await import('../RoleTools.js');
+    const { isValidRole } = await import('../RoleTools.js');
     if (!agentRole || !isValidRole(agentRole)) {
       throw new Error(`agentRole is required and must be: Master. Got: ${agentRole}`);
     }
@@ -266,7 +266,7 @@ export const AgentTool = buildTool({
 
     // ========== 3. 创建 QueryEngine  ==========
 
-    const { QueryEngine } = await import('../../QueryEngine.js');
+    const { QueryEngine, getSessionEngine } = await import('../../QueryEngine.js');
 
     // 创建新的 AbortController（链接到父 abortController）
     const parentSignal = (context.abortController as any)?.signal as AbortSignal | undefined;
@@ -314,9 +314,10 @@ Important guidelines:
     logger.info('[SystemPromptDump]', subAgentSystemPrompt);
     logger.info('[SystemPromptDump]', `=== SUBAGENT SYSTEM PROMPT END (role=${agentRole}, session=${subSessionID}) ===`);
 
-    // 根据角色选择对应的模型配置
-    const modelConfig = await getModelConfigForRole(agentRole);
-    logger.info('AgentTool', `Model config for role=${agentRole}: model=${modelConfig.model}`);
+    // 继承父会话（query engine）实际生效的模型配置，避免子代理重新读取全局配置而 fallback 到其他模型
+    const parentEngine = getSessionEngine(creatorSessionId);
+    const modelConfig = parentEngine?.getEffectiveModelConfig();
+    logger.info('AgentTool', `Model config for role=${agentRole}: ${modelConfig ? `model=${modelConfig.model}` : 'inherited from parent (no explicit model config, will use same fallback as parent)'}`);
 
     // 创建子代理的 QueryEngine
     const subEngine = new QueryEngine(subSessionID, {
@@ -349,8 +350,8 @@ Important guidelines:
     // 现有 meta.json 并保留这些字段，仅递增 messageCount 和更新标题。
     try {
       const { createConversationMetadataSync } = await import('../../history/Conversation.js');
-      createConversationMetadataSync(subSessionID, subTitle, creatorSessionId, agentRole, modelConfig.model);
-      logger.info('AgentTool', `Pre-created conversation metadata for sub-agent ${subSessionID} (parent=${creatorSessionId}, role=${agentRole}, model=${modelConfig.model})`);
+      createConversationMetadataSync(subSessionID, subTitle, creatorSessionId, agentRole, modelConfig?.model);
+      logger.info('AgentTool', `Pre-created conversation metadata for sub-agent ${subSessionID} (parent=${creatorSessionId}, role=${agentRole}, model=${modelConfig?.model ?? 'inherit'})`);
     } catch (err) {
       logger.warn('AgentTool', `Failed to pre-create conversation metadata for sub-agent ${subSessionID}: ${err}`);
     }

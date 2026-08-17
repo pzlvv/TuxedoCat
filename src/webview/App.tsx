@@ -109,8 +109,9 @@ const App = () => {
   const [llmConfigApiKey, setLlmConfigApiKey] = useState('');
   const [llmConfigProviders, setLlmConfigProviders] = useState<ProviderConfig[]>([]);
   const [llmConfigActiveProvider, setLlmConfigActiveProvider] = useState('');
-  // 服务商配置是否已完成（activeProvider 存在且 apiKey 非空）；未完成时禁用输入框并引导打开设置
-  const [providerConfigured, setProviderConfigured] = useState(false);
+  // 服务商配置是否已完成（activeProvider 存在且 apiKey 非空）；未完成时禁用输入框并引导打开设置。
+  // 初始为 null（尚未探测到配置），避免启动时因探测延迟而误显示"请配置模型服务"。
+  const [providerConfigured, setProviderConfigured] = useState<boolean | null>(null);
 
   // Skills for slash-command autocomplete
   const [skills, setSkills] = useState<Array<{ name: string; description: string; isBuiltin?: boolean }>>([]);
@@ -268,6 +269,9 @@ const App = () => {
   const mainInputRef = useRef<HTMLTextAreaElement>(null);
   const choiceInputRef = useRef<HTMLTextAreaElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  // 用户是否已主动滚离底部（由 MessagesView 的滚轮监听维护，
+  // useMessageHandler 的预滚动逻辑也需要读取它，避免新节点与用户上滚抢位置）
+  const userScrolledAwayRef = useRef(false);
   // 加载对话列表
   const listLoadedOnceRef = useRef(false);
 
@@ -300,7 +304,7 @@ const App = () => {
     messages,
     currentSessionIdRef, sessionStatesRef, userChoiceRequestRef, userChoiceInputRef,
     savedMainInputRef, queuedMessageRef, cursorPositionRef, choiceCursorPositionRef,
-    mainInputRef, choiceInputRef, messagesContainerRef,
+    mainInputRef, choiceInputRef, messagesContainerRef, userScrolledAwayRef,
     streamRafRef, toolStatusRafRef, pendingStreamRef, pendingToolStatusRef,
     bufferedToolStatusRef, conversationLoadingRef, isDeletingRef, listLoadedOnceRef,
     toolProgressRafRef, pendingToolProgressRef,
@@ -879,6 +883,7 @@ const App = () => {
         <MessagesView
           messages={messages}
           containerRef={messagesContainerRef}
+          userScrolledAwayRef={userScrolledAwayRef}
           isLoadingConversation={isLoadingConversation}
           showThinkingAnimation={showThinkingAnimation}
           animationMode={animationMode}

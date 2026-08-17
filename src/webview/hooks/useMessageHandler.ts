@@ -60,8 +60,8 @@ export interface UseMessageHandlerProps {
   setLlmConfigApiKey: (v: string) => void;
   setLlmConfigProviders: (v: ProviderConfig[]) => void;
   setLlmConfigActiveProvider: (v: string) => void;
-  /** 服务商配置完成状态：未完成时输入框禁用并引导打开设置 */
-  setProviderConfigured: (v: boolean) => void;
+  /** 服务商配置完成状态：未完成时输入框禁用并引导打开设置；null 表示尚未探测到配置 */
+  setProviderConfigured: (v: boolean | null) => void;
   /** 当前会话的消息列表（用于判断是否为未发送消息的新对话） */
   messages: Message[];
   /** 界面语言变化时递增，App 通过 key 重挂载内容区刷新所有文案 */
@@ -93,6 +93,8 @@ export interface UseMessageHandlerProps {
   mainInputRef: React.RefObject<HTMLTextAreaElement | null>;
   choiceInputRef: React.RefObject<HTMLTextAreaElement | null>;
   messagesContainerRef: React.RefObject<HTMLDivElement | null>;
+  /** 用户是否已主动滚离底部；为 true 时预滚动逻辑必须立刻停止，避免与用户上滚冲突 */
+  userScrolledAwayRef: React.MutableRefObject<boolean>;
   streamRafRef: React.MutableRefObject<number | null>;
   toolStatusRafRef: React.MutableRefObject<number | null>;
   pendingStreamRef: React.MutableRefObject<Map<string, { role: string; accumulated: string; streamId?: string }>>;
@@ -154,6 +156,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
     const scrollToBottomBeforeRender = () => {
       const container = props.messagesContainerRef.current;
       if (!container) return;
+      // 用户已通过滚轮/触摸/键盘主动滚离底部时，任何渲染前预滚动都必须停止，
+      // 否则新节点出现时会把用户刚上滚的位置强行拉回底部。
+      if (props.userScrolledAwayRef.current) return;
       const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
       if (distanceFromBottom <= 50) {
         container.scrollTop = container.scrollHeight;

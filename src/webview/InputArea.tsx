@@ -67,7 +67,7 @@ interface InputAreaProps {
   /** 打开设置（LLM 配置）页面 */
   onOpenSettings?: () => void;
   /** 服务商配置是否已完成；未完成时禁用输入框并引导点击打开设置 */
-  isProviderConfigured: boolean;
+  isProviderConfigured: boolean | null;
 }
 
 const ContextProgressBar = React.memo(({ totalContextTokens, isDark, maxContextTokens, onClick, colors }: { totalContextTokens: number; isDark: boolean; maxContextTokens?: number | null; onClick?: () => void; colors: Colors }) => {
@@ -721,7 +721,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     clear: () => { setInput(''); setHistoryIndex(-1); setSavedInput(''); },
   }), [input, historyIndex, savedInput]);
 
-  const isInputDisabled = !isProviderConfigured;
+  const isInputDisabled = isProviderConfigured === false;
 
   // Filter skills based on query after "/"
   // 优先按命令名匹配，其次才按描述匹配，保证命令名匹配项排在前面

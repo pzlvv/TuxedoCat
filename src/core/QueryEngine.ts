@@ -201,13 +201,14 @@ export class QueryEngine {
   }
 
   /**
-   * 计算实际生效的 modelConfig：
+   * 获取当前实际生效的 modelConfig：
    * - 极简模式不使用联网搜索：无论 settings.json / 会话覆盖如何，都强制关闭
    * - 已有 modelConfig 时，将会话关联的 webSearch 覆盖值合并进去
    * - 没有 modelConfig（如 createEngine 预创建）但设置了 webSearchOverride 时，
    *   返回仅含 webSearch 的部分配置，由 callRealLLM 与 settings.json 全量配置合并
+   * - 该值与每次 query() 发给 LLM 的配置保持一致，供 AgentTool/SpinRunner 创建子代理时继承。
    */
-  private getEffectiveModelConfig(): LLMConfig | undefined {
+  getEffectiveModelConfig(): LLMConfig | undefined {
     if (this.getActivePromptPresetId() === 'minimal') {
       if (this.config.modelConfig) {
         return { ...this.config.modelConfig, webSearch: false };

@@ -759,9 +759,10 @@ const MessageItem = memo(function MessageItem({
  * 1. CSS overflow-anchor: auto on the container keeps the scroller pinned
  *    at the bottom by default — the browser handles anchoring natively.
  *
- * 2. JS scroll listener with **distance threshold** (not direction) detects
- *    intentional user scroll-away. A 2 px fudge helps avoid false positives
- *    from layout jitter or momentum scroll rounding.
+ * 2. Wheel 事件一旦出现（向上滚动，或当前已不在底部）就立刻标记
+ *    userScrolledAway，不等 scroll 事件越过阈值；JS scroll listener 仍用
+ *    **distance threshold** 作为辅助，检测其他输入（触摸/键盘/滚动条）造成的
+ *    scroll-away。2 px fudge 帮助避免布局抖动或 momentum 滚动舍入造成的误判。
  *
  * 3. ResizeObserver on container children provides a **fallback** for cases
  *    where CSS overflow-anchor alone is insufficient (e.g. multi-frame
@@ -784,6 +785,7 @@ function useAutoScroll(
   isStreaming: boolean,
   hasRunningTools: boolean,
   forceScrollKey?: number,
+  externalUserScrolledAwayRef?: React.MutableRefObject<boolean>,
 ) {
   const isAtBottomRef = useRef(true);
   /**
@@ -791,7 +793,8 @@ function useAutoScroll(
    * Once set to true, auto-scroll is suppressed during streaming
    * until the user scrolls back near the bottom (< threshold) or sends a new message.
    */
-  const userScrolledAwayRef = useRef(false);
+  const internalUserScrolledAwayRef = useRef(false);
+  const userScrolledAwayRef = externalUserScrolledAwayRef ?? internalUserScrolledAwayRef;
 
   /** Force-scroll to bottom. Called by ResizeObserver and useLayoutEffect. */
   /** Ref to prevent duplicate rAF scroll-sync when called multiple times per frame */
@@ -860,9 +863,24 @@ function useAutoScroll(
   }, []);
 
   // 记录用户滚动输入时间，供 force-scroll 轮询判断是否真的需要停止跟随。
+  // 滚轮事件除了记录时间外，还会立刻标记 userScrolledAway，不等 scroll 事件
+  // 越过阈值，避免新节点/流式更新与用户刚开始上滚时互相拉扯。
   useEffect(() => {
     const markUserScrollInput = () => {
       lastUserScrollInputRef.current = performance.now();
+    };
+    const handleWheel = (event: WheelEvent) => {
+      markUserScrollInput();
+      const container = containerRef.current;
+      if (!container) return;
+      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      // 用户向上滚动（且容器确实可以向上滚动），或当前已经不在底部时，
+      // 滚轮输入一律立即停止自动滚动。仍在底部且继续向下滚动时不打断自动跟随。
+      const canScrollUp = container.scrollTop > 0;
+      if ((event.deltaY < 0 && canScrollUp) || distanceFromBottom > 2) {
+        userScrolledAwayRef.current = true;
+        profileLog(`[AutoScroll] wheel STOP userScrolledAway=true deltaY=${event.deltaY} distance=${distanceFromBottom.toFixed(1)}`);
+      }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (
@@ -876,17 +894,17 @@ function useAutoScroll(
         markUserScrollInput();
       }
     };
-    window.addEventListener('wheel', markUserScrollInput, { passive: true });
+    window.addEventListener('wheel', handleWheel, { passive: true });
     window.addEventListener('touchstart', markUserScrollInput, { passive: true });
     window.addEventListener('keydown', handleKeyDown, { passive: true });
     window.addEventListener('pointerdown', markUserScrollInput, { passive: true });
     return () => {
-      window.removeEventListener('wheel', markUserScrollInput);
+      window.removeEventListener('wheel', handleWheel);
       window.removeEventListener('touchstart', markUserScrollInput);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('pointerdown', markUserScrollInput);
     };
-  }, []);
+  }, [containerRef, userScrolledAwayRef]);
 
   // ── Scroll listener: distance-threshold based ──────────────────────
   useEffect(() => {
@@ -1083,6 +1101,8 @@ interface MessagesViewProps {
   messages: Array<Message>;
   /** 外部滚动容器 ref（用于在消息渲染前预滚动等场景） */
   containerRef?: React.RefObject<HTMLDivElement | null>;
+  /** 外部共享的用户滚离状态；由 App 传给 useMessageHandler，使渲染前预滚动也遵守该状态 */
+  userScrolledAwayRef?: React.MutableRefObject<boolean>;
   /** App 模式（Electron）下正在加载对话：空状态显示 loading 动画替代静态 Logo */
   isLoadingConversation?: boolean;
   showThinkingAnimation: boolean;
@@ -1273,6 +1293,7 @@ const SegmentTimeline = memo(function SegmentTimeline({
 const MessagesView = memo(({
   messages,
   containerRef: containerRefProp,
+  userScrolledAwayRef: userScrolledAwayRefProp,
   isLoadingConversation,
   showThinkingAnimation,
   animationMode,
@@ -1302,7 +1323,7 @@ const MessagesView = memo(({
     [messages],
   );
 
-  const { userScrolledAwayRef, scrollToBottom } = useAutoScroll(containerRef, isStreaming, hasRunningTools, forceScrollKey);
+  const { userScrolledAwayRef, scrollToBottom } = useAutoScroll(containerRef, isStreaming, hasRunningTools, forceScrollKey, userScrolledAwayRefProp);
 
   // 用户展开 thinking / Edit diff / Write 预览 / 用户长消息时，
   // 先暂停自动滚动，避免 ResizeObserver 在展开后立刻把视口拉回底部，
@@ -1315,11 +1336,13 @@ const MessagesView = memo(({
   const handleBeforePreviewRender = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
+    // 用户已滚离底部时，工具 preview 渲染前也不能预滚，避免与用户上滚冲突。
+    if (userScrolledAwayRef.current) return;
     const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
     if (distanceFromBottom <= 50) {
       container.scrollTop = container.scrollHeight;
     }
-  }, [containerRef]);
+  }, [containerRef, userScrolledAwayRef]);
 
   const handleContentToggle = useCallback((isOpen: boolean) => {
     const container = containerRef.current;

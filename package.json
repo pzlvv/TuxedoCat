@@ -108,9 +108,6 @@
     "vite": "^6.2.0"
   },
   "dependencies": {
-    "@honcho-ai/sdk": "^2.2.0",
-    "@monaco-editor/react": "^4.7.0",
-    "@radix-ui/react-slot": "^1.2.4",
     "antd": "^6.3.6",
     "diff": "^5.2.2",
     "github-markdown-css": "^5.9.0",
@@ -119,9 +116,7 @@
     "katex": "^0.17.0",
     "lucide-react": "^1.8.0",
     "monaco-editor": "^0.55.1",
-    "prismjs": "^1.30.0",
     "react": "^18.3.1",
-    "react-diff-viewer-continued": "^4.2.0",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
     "react-textarea-autosize": "^8.5.9",
