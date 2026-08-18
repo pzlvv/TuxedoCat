@@ -9,7 +9,7 @@
 
 import React, { memo, useState, useRef, useCallback, useEffect } from 'react';
 import type { Colors } from './types';
-import { postMessage, navigateToConversation } from './webviewEnv';
+import { postMessage } from './webviewEnv';
 import { t, resolveTitle } from './i18n';
 
 /* ------------------------------------------------------------------ */
@@ -314,8 +314,7 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
               getSessionWaitingState={getSessionWaitingState}
               onToggle={() => onToggleSub(child.sessionId)}
               onSelect={() => {
-                // VS Code：当前 webview 重新加载对话；Electron App：新起 webview 加载对话
-                navigateToConversation(child.sessionId);
+                // 由上层 onChildSelect 统一处理加载状态与导航
                 onChildSelect?.(child.sessionId);
               }}
               onDelete={() => {

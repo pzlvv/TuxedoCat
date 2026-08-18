@@ -18,11 +18,13 @@ import type { WebviewMessage, ValidationRule } from './core/webviewTypes.js';
 import type { UIHost } from './host/UIHost.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from './host/mermaidHtml.js';
 import { tt, getSystemLocale } from './core/i18n.js';
+import { readUiLanguageSync } from './core/history/Config.js';
 import { MERMAID_PANEL_ID, SPIN_DESIGN_PANEL_ID } from './config/project.js';
 import { replayMessagesToUI } from './core/utils/replayMessages.js';
 import type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent } from './VSCodeUI/types.js';
 import { UserChoiceManager } from './VSCodeUI/userChoice.js';
 import { DocumentManager } from './VSCodeUI/documentManager.js';
+import { buildDiffUris } from './VSCodeUI/diffUris.js';
 import { ToolHandler } from './VSCodeUI/toolHandler.js';
 import { WebviewMessageHandler } from './VSCodeUI/webviewMessageHandler.js';
 
@@ -51,6 +53,7 @@ export class VSCodeUI implements AssistantUI {
       closePreview: () => this.closePreview(),
       getActiveSessionIdInternal: () => this.getActiveSessionIdInternal(),
       onShowDiffInVirtualDocumentCallback: undefined, // 稍后设置
+      buildDiffUris: (title) => buildDiffUris(title),
       showPasswordInput: async (prompt, plainText) => {
         const result = await vscode.window.showInputBox({
           prompt,
@@ -223,7 +226,7 @@ export class VSCodeUI implements AssistantUI {
 
     const { getSpinDesignHtml } = await import('./VSCodeUI/spinDesignHtml.js');
     const isDark = this.buildHost().isDarkTheme();
-    panel.webview.html = getSpinDesignHtml(existingData, isDark, this.buildHost().getLocale(), getSystemLocale());
+    panel.webview.html = getSpinDesignHtml(existingData, isDark, this.buildHost().getLocale(), getSystemLocale(), readUiLanguageSync());
 
     // 监听来自 spin design webview 的消息
     panel.webview.onDidReceiveMessage(async (msg: any) => {
@@ -404,7 +407,7 @@ export class VSCodeUI implements AssistantUI {
     // 将 userChoiceManager 中记录的 diff 标识同步到 documentManager，
     // 确保 documentManager.closePreview() 能正确关闭通过 user choice 打开的 diff 标签
     if (this.userChoiceManager.currentPreviewUris.length > 0) {
-      this.documentManager.currentPreviewUris.push(...(this.userChoiceManager.currentPreviewUris as any));
+      this.documentManager.currentPreviewUris.push(...this.userChoiceManager.currentPreviewUris);
     }
     this.documentManager.closePreview();
     this.userChoiceManager.resetPreviewState();

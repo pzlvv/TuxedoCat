@@ -331,7 +331,7 @@ Important guidelines:
       ui: ui as any,
       abortController: abortController as any,
       initialMessages: [taskMessage as any],
-      maxTurns: 100,
+      maxTurns: Number.MAX_SAFE_INTEGER,
       modelConfig,
       staticSystemPrompt: subAgentSystemPrompt,
       title: subTitle,

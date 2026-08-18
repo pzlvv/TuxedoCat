@@ -374,6 +374,9 @@ const App = () => {
   }, [hasCompactArchive, isCompactExpanded]);
 
   const handleNavigateToConversation = useCallback((sessionId: string) => {
+    // 插件模式与 Electron 模式统一：导航前清空消息并显示加载动画
+    setIsLoadingConversation(true);
+    setMessages([]);
     navigateToConversation(sessionId);
   }, []);
 
@@ -503,7 +506,7 @@ const App = () => {
 
   if (!themeInitialized) {
     return (
-      <div className="h-screen w-screen flex items-center justify-center" style={{ backgroundColor: 'transparent' }}>
+      <div className="h-screen w-screen flex items-center justify-center" style={{ backgroundColor: 'transparent', overflow: 'clip' }}>
         <div className="text-[13px]" style={{ color: '#9f9fa9' }}>{t('app.loading')}</div>
       </div>
     );
@@ -541,6 +544,7 @@ const App = () => {
         style={{
           backgroundColor: 'transparent',
           position: 'relative',
+          overflow: 'clip',
         }}
       >
         <img
@@ -582,11 +586,14 @@ const App = () => {
       `}</style>
       <div
         key={`locale-${localeVersion}`}
-        className={`h-screen w-screen flex flex-col ${theme}`}
+        className={`h-screen w-screen flex flex-col overflow-hidden ${theme}`}
         style={{
           backgroundColor: 'transparent',
           color: colors.textPrimary,
           position: 'relative',
+          // 根容器不允许任何形式的滚动（包括 focus/scrollIntoView 引发的隐藏滚动），
+          // 否则加载长对话时整个页面（含标题栏/输入框）会被文档滚动带偏。
+          overflow: 'clip',
           '--border-color': colors.border,
           '--text-secondary': colors.textSystem,
           '--bg-secondary': colors.bgSecondary,
@@ -724,6 +731,9 @@ const App = () => {
                                 totalContextTokens: contextLength,
                               });
                             }
+                            // 插件模式与 Electron 模式统一：导航前清空消息并显示加载动画
+                            setIsLoadingConversation(true);
+                            setMessages([]);
                             navigateToConversation(item.sessionId);
                             setConversationDropdownOpen(false);
                             profileLog(`[Profile] onSelect(发送loadConversation) | session=${item.sessionId.substring(0, 20)} | save+postMsg耗时=${(performance.now() - _t0_save).toFixed(2)}ms`);
@@ -742,7 +752,11 @@ const App = () => {
                           expandedSubSessions={expandedSubSessions}
                           onToggleSub={_toggleSubSession}
                           depth={1}
-                          onChildSelect={(_sessionId) => {
+                          onChildSelect={(sessionId) => {
+                            // 插件模式与 Electron 模式统一：导航前清空消息并显示加载动画
+                            setIsLoadingConversation(true);
+                            setMessages([]);
+                            navigateToConversation(sessionId);
                             setConversationDropdownOpen(false);
                           }}
                           onChildDelete={(sessionId, title) => {
@@ -952,6 +966,7 @@ const App = () => {
               totalInputTokens={sessionStatesRef.current.get(currentSessionIdRef.current ?? '')?.totalInputTokens}
               onOpenSettings={handleOpenSettings}
               isProviderConfigured={providerConfigured}
+              isSubAgent={!!parentSessionId}
             />
           )}
         </div>

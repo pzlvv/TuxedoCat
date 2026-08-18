@@ -1651,6 +1651,12 @@ export class WebviewMessageHandler {
         }
       });
 
+      // 同步更新 core 层界面语言，使 Spin 等核心流程文案跟随设置
+      try {
+        const { setCoreUiLanguage } = await import('../core/i18n.js');
+        setCoreUiLanguage(language === 'zh' || language === 'en' || language === 'auto' ? language : 'auto');
+      } catch {}
+
       this.log(`[VSCodeUI] LLM config saved successfully`);
 
       // 清除 config.ts 中的缓存，下次 getConfig 能读到新配置

@@ -2,11 +2,12 @@
  * VSCodeUI/userChoice.ts - UserChoiceQueue 逻辑
  * 维护全局 FIFO 队列 + per-session 状态，支持自动跳转
  */
+import type { Uri } from 'vscode';
 import type { LogChannel } from '../host/UIHost.js';
 import { userChoiceQueue } from '../core/UserChoiceQueue.js';
 import type { ShowDiffInVirtualDocumentEvent } from './types.js';
 import type { ValidationRule } from '../core/webviewTypes.js';
-import { DIFF_AFTER_SCHEME, DIFF_BEFORE_SCHEME } from '../config/project.js';
+import type { DiffUris } from './diffUris.js';
 
 /**
  * UserChoiceManager - 管理 UserChoice 展示、diff 预览、用户选择处理等
@@ -19,8 +20,8 @@ export class UserChoiceManager {
   private showPasswordInput: ((prompt: string, plainText?: boolean) => Promise<string | null>) | undefined;
   private hasWebview: () => boolean;
 
-  /** 当前打开的预览文档标识 */
-  public currentPreviewUris: string[] = [];
+  /** 当前打开的预览文档标识（统一使用 vscode.Uri 规范化对象） */
+  public currentPreviewUris: Uri[] = [];
   /** 当前请求的上下文（前） */
   public currentContextBefore: string[] = [];
   /** 当前请求的上下文（后） */
@@ -41,6 +42,8 @@ export class UserChoiceManager {
   public pendingPasswordRequests: Map<string, { resolve: (value: string | null) => void }> = new Map();
   /** diff 回调 */
   private onShowDiffInVirtualDocumentCallback?: (event: ShowDiffInVirtualDocumentEvent) => void | Promise<void>;
+  /** 构建 diff URI（宿主相关；Electron 宿主不需要传） */
+  private buildDiffUris?: (title: string) => DiffUris;
   /** 用户选择框弹出后的回调（宿主侧用于刷新侧栏流水灯为黄色） */
   private onChoiceShown?: (sessionId: string) => void;
 
@@ -50,6 +53,7 @@ export class UserChoiceManager {
     closePreview: () => void;
     getActiveSessionIdInternal: () => string | undefined;
     onShowDiffInVirtualDocumentCallback?: (event: ShowDiffInVirtualDocumentEvent) => void | Promise<void>;
+    buildDiffUris?: (title: string) => DiffUris;
     showPasswordInput?: (prompt: string, plainText?: boolean) => Promise<string | null>;
     hasWebview?: () => boolean;
     onChoiceShown?: (sessionId: string) => void;
@@ -59,6 +63,7 @@ export class UserChoiceManager {
     this.closePreview = deps.closePreview;
     this.getActiveSessionIdInternal = deps.getActiveSessionIdInternal;
     this.onShowDiffInVirtualDocumentCallback = deps.onShowDiffInVirtualDocumentCallback;
+    this.buildDiffUris = deps.buildDiffUris;
     this.showPasswordInput = deps.showPasswordInput;
     this.hasWebview = deps.hasWebview ?? (() => true);
     this.onChoiceShown = deps.onChoiceShown;
@@ -182,10 +187,10 @@ export class UserChoiceManager {
           }
 
           const displayTitle = options.diffTitle || '';
-          this.currentPreviewUris.push(
-            `${DIFF_BEFORE_SCHEME}:${encodeURIComponent(displayTitle)}`,
-            `${DIFF_AFTER_SCHEME}:${encodeURIComponent(displayTitle)}`
-          );
+          const diffUris = this.buildDiffUris?.(displayTitle);
+          if (diffUris) {
+            this.currentPreviewUris.push(diffUris.beforeUri, diffUris.afterUri);
+          }
         } catch (err) {
           this.log(`[VSCodeUI] Error in diff callback: ${err}`);
         }

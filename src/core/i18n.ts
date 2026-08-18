@@ -15,8 +15,18 @@
 import { execSync } from 'child_process';
 
 let coreLocale: 'zh' | 'en' = 'en';
+let coreLocaleSource: string = '';
 
 export type CoreLocale = 'zh' | 'en';
+
+function refreshCoreLocale(): void {
+  const systemLocale = getSystemLocale();
+  coreLocale =
+    (typeof coreLocaleSource === 'string' && coreLocaleSource.toLowerCase().startsWith('zh')) ||
+    (systemLocale !== '' && systemLocale.toLowerCase().startsWith('zh'))
+      ? 'zh'
+      : 'en';
+}
 
 /**
  * Set the active core locale. Any string starting with "zh" is treated as
@@ -25,12 +35,25 @@ export type CoreLocale = 'zh' | 'en';
  * Chinese is used.
  */
 export function setCoreLocale(locale: string | undefined | null): void {
-  const systemLocale = getSystemLocale();
-  coreLocale =
-    (typeof locale === 'string' && locale.toLowerCase().startsWith('zh')) ||
-    (systemLocale !== '' && systemLocale.toLowerCase().startsWith('zh'))
-      ? 'zh'
-      : 'en';
+  coreLocaleSource = locale || '';
+  refreshCoreLocale();
+}
+
+/**
+ * Set the active core locale from the user's UI language setting.
+ * `'zh'` / `'en'` override auto-detection; `'auto'` falls back to the
+ * locale passed to `setCoreLocale()` plus the OS system language.
+ */
+export function setCoreUiLanguage(lang: 'auto' | 'zh' | 'en'): void {
+  if (lang === 'zh') {
+    coreLocale = 'zh';
+    return;
+  }
+  if (lang === 'en') {
+    coreLocale = 'en';
+    return;
+  }
+  refreshCoreLocale();
 }
 
 /** Get the active core locale. */

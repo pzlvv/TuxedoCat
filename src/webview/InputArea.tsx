@@ -68,6 +68,8 @@ interface InputAreaProps {
   onOpenSettings?: () => void;
   /** 服务商配置是否已完成；未完成时禁用输入框并引导点击打开设置 */
   isProviderConfigured: boolean | null;
+  /** 当前对话是否为 sub-agent（子代理） */
+  isSubAgent?: boolean;
 }
 
 const ContextProgressBar = React.memo(({ totalContextTokens, isDark, maxContextTokens, onClick, colors }: { totalContextTokens: number; isDark: boolean; maxContextTokens?: number | null; onClick?: () => void; colors: Colors }) => {
@@ -697,6 +699,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   totalInputTokens,
   onOpenSettings,
   isProviderConfigured,
+  isSubAgent,
 }, ref) {
   const [input, setInput] = useState('');
 
@@ -942,7 +945,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
       className="max-w-[680px] mx-auto rounded-lg border-2 transition-colors"
       style={{
         backgroundColor: 'transparent',
-        borderColor: inputFocused ? colors.borderFocus : colors.border,
+        borderColor: isSubAgent ? '#ef4444' : inputFocused ? colors.borderFocus : colors.border,
         position: 'relative',
       }}
     >
@@ -952,6 +955,24 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           opacity: 1;
         }
       `}</style>
+      {/* Sub-agent Warning Banner */}
+      {isSubAgent && (
+        <div
+          className="px-3 py-1.5 flex items-center gap-2 text-[12px] border-b"
+          style={{
+            backgroundColor: 'rgba(239, 68, 68, 0.12)',
+            borderColor: 'rgba(239, 68, 68, 0.3)',
+            color: '#ef4444',
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+            <circle cx="8" cy="8" r="7" stroke="#ef4444" strokeWidth="1.5"/>
+            <line x1="8" y1="4.5" x2="8" y2="9.5" stroke="#ef4444" strokeWidth="1.5" strokeLinecap="round"/>
+            <circle cx="8" cy="11.5" r="0.8" fill="#ef4444"/>
+          </svg>
+          <span className="truncate flex-1 leading-relaxed">{t('inputArea.subAgentWarning')}</span>
+        </div>
+      )}
       {/* Queued Message Banner */}
       {queuedMessage && (
         <div

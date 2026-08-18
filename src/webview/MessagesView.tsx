@@ -779,6 +779,15 @@ const SCROLL_AWAY_THRESHOLD = 50; // px — distance from bottom to consider "aw
  */
 const SEGMENT_CONTENT_VISIBILITY_MIN = 40;
 const SEGMENT_CONTENT_VISIBILITY_ESTIMATE = 'auto 220px';
+/** 包含嵌套纵向滚动容器或动态图标的工具，禁用 content-visibility 以避免滚动/位置跳动 */
+const SEGMENT_NESTED_SCROLL_TOOLS = new Set(['Bash', 'EditFile', 'WriteFile']);
+
+function segmentHasLiveOrNestedScroll(segment: { nonUserMsgs: Message[] }): boolean {
+  return segment.nonUserMsgs.some((m) =>
+    m.role === 'thinking' ||
+    (m.role === 'toolcall' && typeof m.toolName === 'string' && SEGMENT_NESTED_SCROLL_TOOLS.has(m.toolName))
+  );
+}
 
 function useAutoScroll(
   containerRef: React.RefObject<HTMLDivElement | null>,
@@ -1159,11 +1168,11 @@ const SegmentTimeline = memo(function SegmentTimeline({
     },
     components: {
       Timeline: {
-        tailWidth: 1,
-        dotSize: 8,
+        tailWidth: 2,
+        dotSize: 10,
       },
       Steps: {
-        dotCurrentSize: 8,
+        dotCurrentSize: 10,
       },
     },
   }), [colors.timelineLine, colors.textPrimary]);
@@ -1246,18 +1255,17 @@ const SegmentTimeline = memo(function SegmentTimeline({
         color: statusColor,
         dot: message.role === 'toolcall' && message.status === 'running' ? (
           <div
-            className="animate-spin"
+            className="timeline-running-fan"
             style={{
-              width: 8,
-              height: 8,
+              backgroundColor: colors.timelineStatusRunning,
+              width: 10,
+              height: 10,
               borderRadius: '50%',
-              border: '2px solid transparent',
-              borderTopColor: colors.timelineStatusRunning,
-              borderRightColor: colors.timelineStatusRunning,
-            }}
+              '--timeline-running-color': colors.timelineStatusRunning,
+            } as React.CSSProperties}
           />
         ) : (
-          <div style={{ backgroundColor: statusColor, width: 8, height: 8, borderRadius: '50%' }} />
+          <div style={{ backgroundColor: statusColor, width: 10, height: 10, borderRadius: '50%' }} />
         ),
         children: <MessageItem message={message} colors={colors} isDark={isDark} onNavigate={onNavigate} onThinkingToggle={onThinkingToggle} onExpandToggle={onExpandToggle} onBeforePreviewRender={onBeforePreviewRender} />,
       };
@@ -1281,9 +1289,17 @@ const SegmentTimeline = memo(function SegmentTimeline({
 
   const hasThinkingItem = isLastSegment;
 
+  const wrapperClassName = [
+    !isLastSegment ? 'segment-timeline-continues' : '',
+    hasThinkingItem && !showThinkingAnimation ? 'thinking-hidden' : '',
+  ].filter(Boolean).join(' ') || undefined;
+
   return (
     <ConfigProvider theme={theme}>
-      <div className={hasThinkingItem && !showThinkingAnimation ? 'thinking-hidden' : undefined}>
+      <div
+        className={wrapperClassName}
+        style={{ '--timeline-rail-color': colors.timelineLine } as React.CSSProperties}
+      >
         <Timeline items={allItems ?? []} style={{ marginTop: '8px' }} />
       </div>
     </ConfigProvider>
@@ -1308,6 +1324,107 @@ const MessagesView = memo(({
 }: MessagesViewProps) => {
   const fallbackContainerRef = useRef<HTMLDivElement>(null);
   const containerRef = containerRefProp ?? fallbackContainerRef;
+
+  // 对话加载遮罩的本地淡出状态。
+  // conversationLoaded 会一次性把 messages 设为新内容并关闭 isLoadingConversation，
+  // 如果直接卸载 Loading 组件，长对话首次渲染/自动滚动造成的布局抖动会暴露出来。
+  // 这里在 loading 结束后继续保留遮罩，轮询 scrollHeight 直到异步内容
+  // （EditFile diff meta、Shiki 高亮、图片等）基本稳定后再淡出。
+  const [loadingVisible, setLoadingVisible] = useState(!!isLoadingConversation);
+  const [loadingFading, setLoadingFading] = useState(false);
+  const loadingSettleRafRef = useRef<number | null>(null);
+  const loadingFadeTimerRef = useRef<number | null>(null);
+
+  // 会话加载后可能仍有实时流/运行中工具（例如切换到一个正在 AI 回复的对话）。
+  // 这类对话内容本来就会持续增长，不能一直等 scrollHeight 完全稳定，
+  // 否则遮罩会挡住新内容太久；实时场景使用更短的等待上限。
+  const hasLiveActivity = showThinkingAnimation
+    || messages.some(m => m.isStreaming)
+    || messages.some(m => m.role === 'toolcall' && m.status === 'running');
+
+  useEffect(() => {
+    const cancelLoadingTimers = () => {
+      if (loadingSettleRafRef.current !== null) {
+        cancelAnimationFrame(loadingSettleRafRef.current);
+        loadingSettleRafRef.current = null;
+      }
+      if (loadingFadeTimerRef.current !== null) {
+        window.clearTimeout(loadingFadeTimerRef.current);
+        loadingFadeTimerRef.current = null;
+      }
+    };
+
+    if (isLoadingConversation) {
+      setLoadingVisible(true);
+      setLoadingFading(false);
+      cancelLoadingTimers();
+      return;
+    }
+
+    if (!loadingVisible) return;
+
+    const startFade = () => {
+      cancelLoadingTimers();
+      setLoadingFading(true);
+      loadingFadeTimerRef.current = window.setTimeout(() => {
+        loadingFadeTimerRef.current = null;
+        setLoadingVisible(false);
+        setLoadingFading(false);
+      }, 220);
+    };
+
+    const container = containerRef.current;
+    // 空会话没有异步内容会撑高，短暂保持后直接淡出。
+    // 非空会话即使当前还没有滚动溢出，也可能因为 EditFile diff meta、图片等
+    // 异步渲染而变高，因此统一进入 scrollHeight 稳定轮询。
+    if (!container || messages.length === 0) {
+      loadingFadeTimerRef.current = window.setTimeout(startFade, 80);
+      return cancelLoadingTimers;
+    }
+
+    // 内容可滚动：轮询 scrollHeight，等待异步渲染（EditFile diff meta、
+    // Shiki 高亮、图片等）把高度稳定下来再淡出，避免“滚动条先撑满再慢慢加载”的跳动。
+    // 实时会话（流式/运行中工具）不能等太久，给一个较短上限。
+    const MIN_HOLD_MS = hasLiveActivity ? 300 : 600;
+    const SETTLE_MS = hasLiveActivity ? 150 : 200;
+    const MAX_WAIT_MS = hasLiveActivity ? 1500 : 4000;
+    const startedAt = performance.now();
+    let prevScrollHeight = container.scrollHeight;
+    let lastChange = startedAt;
+    let stopped = false;
+
+    const check = () => {
+      loadingSettleRafRef.current = null;
+      if (stopped) return;
+      const c = containerRef.current;
+      if (!c) {
+        startFade();
+        return;
+      }
+      const now = performance.now();
+      const sh = c.scrollHeight;
+      if (sh !== prevScrollHeight) {
+        profileLog(`[LoadingOverlay] settle scrollHeight ${prevScrollHeight}->${sh}`);
+        prevScrollHeight = sh;
+        lastChange = now;
+      }
+      const stableMs = now - lastChange;
+      const elapsedMs = now - startedAt;
+      if ((elapsedMs >= MIN_HOLD_MS && stableMs >= SETTLE_MS) || elapsedMs >= MAX_WAIT_MS) {
+        startFade();
+        return;
+      }
+      loadingSettleRafRef.current = requestAnimationFrame(check);
+    };
+    loadingSettleRafRef.current = requestAnimationFrame(check);
+
+    return () => {
+      stopped = true;
+      cancelLoadingTimers();
+    };
+  }, [isLoadingConversation, loadingVisible, containerRef, hasLiveActivity, messages.length]);
+
+  const showLoadingOverlay = isLoadingConversation || loadingVisible;
 
   // Derive streaming state: true if any message is currently streaming.
   const isStreaming = useMemo(
@@ -1587,23 +1704,23 @@ const MessagesView = memo(({
   }, [messages.length]);
 
   return (
-    <div
-      ref={containerRef}
-      className={`flex-1 overflow-y-scroll px-4 py-4 ${isEmpty ? 'messages-container-empty' : 'messages-container'}`}
-      style={isEmpty ? undefined : { display: 'flex', flexDirection: 'column' }}
-    >
+    <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
+      {/* 滚动容器始终使用 overflow-y-scroll，不随 loading 遮罩切换 overflow。
+          这样 scrollbar-gutter: stable 在整个加载过程中始终按同一滚动盒计算，
+          遮罩淡出时不会因为 overflow: hidden -> scroll 的切换产生宽度/高度重排。 */}
+      <div
+        ref={containerRef}
+        className={`flex-1 min-h-0 px-4 py-4 overflow-y-scroll ${isEmpty ? 'messages-container-empty' : 'messages-container'}${showLoadingOverlay ? ' loading-scrollbar-hidden' : ''}`}
+        style={isEmpty ? undefined : { display: 'flex', flexDirection: 'column' }}
+      >
       {isEmpty ? (
-        isLoadingConversation ? (
-          <ConversationLoading colors={colors} isDark={isDark} />
-        ) : (
-          <div className="flex flex-col items-center justify-center h-full gap-3">
-            <img
-              src={getLogoUri()}
-              alt="logo"
-              className={LOGO_CLASS_NAME}
-            />
-          </div>
-        )
+        <div className="flex flex-col items-center justify-center h-full gap-3">
+          <img
+            src={getLogoUri()}
+            alt="logo"
+            className={LOGO_CLASS_NAME}
+          />
+        </div>
       ) : (
         <>
           {/* beforeFirstUser always at top */}
@@ -1659,7 +1776,9 @@ const MessagesView = memo(({
 
             // 长对话兜底优化：离屏的历史 segment 用 content-visibility 跳过布局/绘制。
             // 最后一条始终完整渲染（流式输出/自动滚动依赖其真实高度）。
-            const segmentCvStyle = useSegmentContentVisibility && !isLastSegment
+            // 含 thinking 动画或 Bash/EditFile/WriteFile 嵌套滚动容器的 segment 不启用，
+            // 避免滚动到历史消息时内层滚动条/图标被 content-visibility 跳过渲染而飞出原位。
+            const segmentCvStyle = useSegmentContentVisibility && !isLastSegment && !segmentHasLiveOrNestedScroll(segment)
               ? ({ contentVisibility: 'auto', containIntrinsicSize: SEGMENT_CONTENT_VISIBILITY_ESTIMATE } as React.CSSProperties)
               : undefined;
 
@@ -1694,6 +1813,15 @@ const MessagesView = memo(({
             );
           })}
         </>
+      )}
+      </div>
+      {showLoadingOverlay && (
+        <div
+          className={`conversation-loading-overlay${loadingFading ? ' conversation-loading-overlay-fading' : ''}`}
+          aria-hidden={loadingFading || undefined}
+        >
+          <ConversationLoading colors={colors} isDark={isDark} />
+        </div>
       )}
     </div>
   );

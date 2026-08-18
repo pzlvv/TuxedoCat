@@ -85,7 +85,7 @@ The JSON format must be:
     ui: ui as any,
     abortController: abortController as any,
     initialMessages: [taskMessage],
-    maxTurns: 1000,
+    maxTurns: Number.MAX_SAFE_INTEGER,
     modelConfig,
     staticSystemPrompt: subAgentSystemPrompt,
     title: subTitle,

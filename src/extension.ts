@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { VSCodeUI } from './VSCodeUI.js';
+import { buildDiffUris } from './VSCodeUI/diffUris.js';
 import { setLogCallback } from './core/Logger.js';
 import { initializeHistory } from './core/Integration.js';
 import {
@@ -12,7 +13,7 @@ import {
 import { ensureConfigDirs } from './core/history/index.js';
 import { getContextWindow } from './core/utils/modelConfig.js';
 import { getLLMConfigPanelPayload, hasActiveProviderSetting } from './core/llm/config.js';
-import { getSystemLocale, setCoreLocale } from './core/i18n.js';
+import { getSystemLocale, setCoreLocale, setCoreUiLanguage } from './core/i18n.js';
 import { setGlobalUI } from './core/AssistantUI.js';
 import {
   COMMAND_PREFIX,
@@ -45,6 +46,7 @@ class VirtualDocumentProvider implements vscode.TextDocumentContentProvider {
 
 export function activate(context: vscode.ExtensionContext) {
   setCoreLocale(vscode.env.language);
+  setCoreUiLanguage(readUiLanguageSync());
   setExtensionPathProvider(() => context.extensionPath);
 
   const outputChannel = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
@@ -103,8 +105,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   ui.setShowDiffInVirtualDocumentCallback(async ({ beforeContent, afterContent, title }) => {
     try {
-      const beforeUri = vscode.Uri.parse(`${DIFF_BEFORE_SCHEME}:${encodeURIComponent(title)}`);
-      const afterUri = vscode.Uri.parse(`${DIFF_AFTER_SCHEME}:${encodeURIComponent(title)}`);
+      const { beforeUri, afterUri } = buildDiffUris(title);
       virtualDocumentProvider.setContent(beforeUri, beforeContent);
       virtualDocumentProvider.setContent(afterUri, afterContent);
 

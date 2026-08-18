@@ -1,8 +1,9 @@
 /**
  * Spin Design webview HTML
  *
- * 自包含的流程图编辑器（支持中/英国际化，语言取自 VS Code UI language
- * 与操作系统系统语言，两者任一为中文即显示中文）
+ * 自包含的流程图编辑器（支持中/英国际化，语言优先取 settings.json 的
+ * uiLanguage；auto 时再取 VS Code UI language 与操作系统系统语言，
+ * 两者任一为中文即显示中文）
  */
 
 // ── Spin Design UI 字符串（zh/en）───────────────────────────────
@@ -50,11 +51,16 @@ const spinEnDict: Record<string, string> = {
   'toast.unknownError': 'Unknown error',
 };
 
-export function getSpinDesignHtml(existingData: any, isDark: boolean, locale: string, systemLocale?: string): string {
-  // 与主 webview 一致：VS Code UI 语言与操作系统系统语言任一为中文即使用中文
+export function getSpinDesignHtml(existingData: any, isDark: boolean, locale: string, systemLocale?: string, uiLanguage?: 'auto' | 'zh' | 'en'): string {
+  // 与主 webview 一致：settings.json 的 uiLanguage 优先；auto 时再按
+  // VS Code UI 语言与操作系统系统语言任一为中文即使用中文
   const isZh =
-    (typeof locale === 'string' && locale.toLowerCase().startsWith('zh')) ||
-    (typeof systemLocale === 'string' && systemLocale.toLowerCase().startsWith('zh'));
+    uiLanguage === 'zh'
+      ? true
+      : uiLanguage === 'en'
+        ? false
+        : (typeof locale === 'string' && locale.toLowerCase().startsWith('zh')) ||
+          (typeof systemLocale === 'string' && systemLocale.toLowerCase().startsWith('zh'));
   const dict = isZh ? spinZhDict : spinEnDict;
   const t = (key: string, params?: Record<string, string | number>): string => {
     let value = dict[key] ?? spinEnDict[key] ?? key;

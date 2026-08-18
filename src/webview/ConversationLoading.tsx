@@ -9,11 +9,12 @@ interface ConversationLoadingProps {
 }
 
 /**
- * Electron App 模式下加载对话时的 Loading 动画。
+ * 切换对话时显示的 Loading 动画（Electron App / VS Code 插件通用）。
  *
- * 场景：侧栏点击对话 → 新建 WebContentsView → webview 上报 loadConversation →
+ * 场景：侧栏点击对话 → webview 上报 loadConversation →
  * 主进程返回 conversationLoaded。在 conversationLoaded 到达（消息渲染完成）前，
- * 消息区为空，此时显示本组件代替默认的静态 Logo。
+ * 消息区为空，此时显示本组件代替默认的静态 Logo；
+ * 加载完成后由 MessagesView 以遮罩形式保留并淡出，避免新内容首帧布局跳动暴露给用户。
  */
 export const ConversationLoading: React.FC<ConversationLoadingProps> = ({ colors, isDark }) => {
   const accent = isDark ? 'rgba(167, 139, 250, 0.9)' : 'rgba(99, 102, 241, 0.8)';

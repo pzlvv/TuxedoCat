@@ -244,7 +244,7 @@ function getUI(): AssistantUI {
 }
 
 /**
- * 请求用户选择 - 供 RunTools 调用
+ * 请求用户选择 - 供 RunTools 权限确认和 AskUserQuestion 工具调用
  * onPreToolCall 已经计算了权限结果，这里只处理用户确认对话框
  *
  * 该函数会将用户选择请求加入全局队列，而不是直接弹出对话框。
@@ -278,6 +278,13 @@ export async function requestUserChoice(
     contextBefore: permResult.contextBefore as string[] | undefined,
     contextAfter: permResult.contextAfter as string[] | undefined,
   };
+
+  // 未初始化 UserChoiceQueue 时（如 CLI 单次执行模式），退化为直接调用 UI，
+  // 避免入队后没有回调消费队列导致 Promise 永远不会 resolve。
+  if (!userChoiceQueue.isInitialized()) {
+    const ui = getUI();
+    return ui.requestUserChoice(sessionID, options);
+  }
 
   // 将请求加入全局队列，返回的 Promise 会在用户做出选择后 resolve
   const userChoice = await userChoiceQueue.enqueue(sessionID, options);

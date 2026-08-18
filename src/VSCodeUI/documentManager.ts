@@ -4,7 +4,8 @@
  */
 import * as vscode from 'vscode';
 import type { ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent } from './types.js';
-import { DIFF_AFTER_SCHEME, DIFF_BEFORE_SCHEME, PRODUCT_NAME } from '../config/project.js';
+import { PRODUCT_NAME } from '../config/project.js';
+import { buildDiffUris } from './diffUris.js';
 
 /**
  * DocumentManager - 管理虚拟文档和 diff 预览的打开/关闭
@@ -143,10 +144,8 @@ export class DocumentManager {
           await result;
         }
 
-        this.currentPreviewUris.push(
-          vscode.Uri.parse(`${DIFF_BEFORE_SCHEME}:${encodeURIComponent(displayTitle)}`),
-          vscode.Uri.parse(`${DIFF_AFTER_SCHEME}:${encodeURIComponent(displayTitle)}`)
-        );
+        const { beforeUri, afterUri } = buildDiffUris(displayTitle);
+        this.currentPreviewUris.push(beforeUri, afterUri);
       }
     } else {
       this.log('[VSCodeUI] Warning: No callback registered for ShowDiffInVirtualDocument');

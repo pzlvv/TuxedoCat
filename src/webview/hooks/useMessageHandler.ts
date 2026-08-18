@@ -387,8 +387,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 重置压缩状态（conversationLoaded 会覆盖为正确值）
           props.setHasCompactArchive(false);
           props.setIsCompactExpanded(false);
-          // 切换到目标会话：在 conversationLoaded 返回前显示加载动画（App 模式）
+          // 切换到目标会话：在 conversationLoaded 返回前显示加载动画（插件/App 模式统一）
           props.setIsLoadingConversation(true);
+          props.setMessages([]);
           // 然后向扩展发送 loadConversation 请求，切换到目标 session
           postMessage({
             type: 'loadConversation',

@@ -149,6 +149,7 @@ export const zhDict: Record<string, string> = {
   'inputArea.webSearch': '联网搜索',
   'inputArea.webSearchHint': '联网搜索（当前会话生效；配置文件 llm.webSearch 为新对话默认值）',
   'inputArea.webSearchMinimalHint': '极简模式下不可用',
+  'inputArea.subAgentWarning': '当前对话为 sub-agent，请确认后发送',
 
   /* ── tools/Bash.tsx ──────────────────────────────────────── */
   'tool.bash.clickFullOutput': '点击查看完整输出',

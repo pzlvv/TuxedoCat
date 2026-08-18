@@ -7,6 +7,14 @@ import { ToolHeader } from './ToolHeader';
 import { postMessage, getWindowSessionId } from '../webviewEnv';
 import { t } from '../i18n';
 
+/** 在 Shiki 高亮结果可用前，先转义原始文件内容，避免把文件里的 <style>/<link> 等当作真实 HTML 注入页面。 */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDark, toolCallId, onExpandToggle }) => {
   const filePath = args?.file_path || args?.path;
   const contentPreview = args?.contentPreview;
@@ -215,7 +223,7 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
             }}
-            dangerouslySetInnerHTML={{ __html: highlightedCode || contentPreview }}
+            dangerouslySetInnerHTML={{ __html: highlightedCode || escapeHtml(String(contentPreview ?? '')) }}
           />
         </div>
       )}

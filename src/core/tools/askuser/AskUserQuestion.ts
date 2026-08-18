@@ -2,7 +2,8 @@
  * AskUserQuestion 工具
  *
  * 允许 LLM 在执行过程中向用户提问，等待用户回答后再继续。
- * 通过 ui.requestUserChoice 弹出选择/输入对话框，阻塞等待用户响应。
+ * 通过 Integration.requestUserChoice 弹出选择/输入对话框，阻塞等待用户响应。
+ * 与权限确认共用 UserChoiceQueue，保证切换对话再切回后能恢复显示选择框。
  */
 
 import { buildTool } from '../Tool.js';
@@ -50,7 +51,7 @@ export const AskUserQuestionTool = buildTool({
 
   async checkPermissions(_input, _context) {
     // 直接放行，因为 AskUserQuestion 获取用户输入的方式是在 call() 中
-    // 通过 ui.requestUserChoice 弹出提问对话框，不需要双重确认。
+    // 通过 Integration.requestUserChoice 弹出提问对话框，不需要双重确认。
     return { behavior: 'allow' };
   },
 
@@ -61,20 +62,21 @@ export const AskUserQuestionTool = buildTool({
     _onProgress?,
   ): Promise<import('../Tool.js').ToolResult<AskUserQuestionOutput>> {
     const sessionId = context.sessionId || '';
-    const ui = await getUI();
 
     logger.info('AskUserQuestion', `Asking user: ${question} (choices: ${choices?.length ?? 0})`);
 
-	    // 通过 UI 的 requestUserChoice 弹出选择框
-	    // 没有 choices 时不传选项数组，UI 只显示输入框
-	    const userChoice = await ui.requestUserChoice(sessionId, {
-	      toolName: 'AskUserQuestion',
-	      message: question,
-	      choices: choices?.map((c: { label: string; description?: string }) => ({
-	        label: c.label,
-	        description: c.description || undefined,
-	      })),
-	    });
+    // 与权限确认走同一个 Integration.requestUserChoice（内部使用 UserChoiceQueue），
+    // 这样切换对话再切回时，扩展端能通过 onSessionLoaded 恢复该提问框。
+    // 没有 choices 时传入空数组，避免 Integration 默认补成“允许/拒绝”。
+    const { requestUserChoice } = await import('../../Integration.js');
+    const userChoice = await requestUserChoice(sessionId, 'AskUserQuestion', {
+      behavior: 'ask',
+      message: question,
+      choices: choices?.map((c: { label: string; description?: string }) => ({
+        label: c.label,
+        description: c.description || undefined,
+      })) || [],
+    });
 
     const replyText = userChoice.reply?.trim() || '';
 
@@ -113,13 +115,3 @@ export const AskUserQuestionTool = buildTool({
     };
   },
 });
-
-/**
- * 获取 UI 实例
- */
-async function getUI(): Promise<import('../../AssistantUI.js').AssistantUI> {
-  const { getGlobalUI } = await import('../../AssistantUI.js');
-  const ui = getGlobalUI();
-  if (!ui) throw new Error('UI not initialized');
-  return ui;
-}
