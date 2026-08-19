@@ -132,6 +132,15 @@ export function resetConversationCache(): void {
 }
 
 /**
+ * 从内存缓存中移除指定对话
+ * 用于关闭对话（仅销毁视图、不删除磁盘数据）时释放缓存中的大对象；
+ * 下次重新打开该会话时会从磁盘重新加载，避免长期持有已关闭对话的消息。
+ */
+export function removeConversationFromCache(sessionId: string): void {
+  conversationCache.delete(sessionId);
+}
+
+/**
  * 将 metadataPath 的写操作加入队列，保证同一文件串行执行
  */
 async function enqueueMetadataWrite(metadataPath: string, fn: () => Promise<void>): Promise<void> {

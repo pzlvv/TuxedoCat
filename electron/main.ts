@@ -570,7 +570,10 @@ function setupIpc(): void {
 
     // 关闭按钮：销毁来源 webview（释放渲染进程资源），并刷新侧栏（已加载状态/空对话）
     if (message.type === 'closeWebview') {
-      chatViews?.closeViewByWebContents(event.sender);
+      const closedSessionId = chatViews?.closeViewByWebContents(event.sender);
+      if (closedSessionId) {
+        clearConversationFromCache(closedSessionId);
+      }
       refreshSidebar();
       return;
     }
@@ -635,6 +638,7 @@ function setupIpc(): void {
   ipcMain.on('sidebar:close-conversation', (_event, sessionId: string) => {
     if (typeof sessionId === 'string' && sessionId) {
       chatViews?.closeView(sessionId);
+      clearConversationFromCache(sessionId);
       refreshSidebar();
     }
   });
@@ -773,6 +777,16 @@ function refreshSidebar(): void {
       console.error('[main] refreshSidebar error:', err);
     }
   })();
+}
+
+/** 关闭对话时从内存缓存中移除指定会话（不删除磁盘数据） */
+function clearConversationFromCache(sessionId: string): void {
+  try {
+    const { removeConversationFromCache } = require('../src/core/history/Conversation.js') as typeof import('../src/core/history/Conversation.js');
+    removeConversationFromCache(sessionId);
+  } catch (err) {
+    console.error('[main] removeConversationFromCache error:', err);
+  }
 }
 
 function sendTheme(): void {
