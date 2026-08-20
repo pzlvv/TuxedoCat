@@ -184,6 +184,59 @@ export class VSCodeUI implements AssistantUI {
     }
   }
 
+  /** 读取 Spin 设计数据（spin.json + 工作区路径），带重试保护 */
+  private async readSpinDesignData(): Promise<{
+    existingData: any;
+    spinJsonExists: boolean;
+    spinJsonPath: string | null;
+    workspacePath: string;
+    hasWorkspace: boolean;
+  }> {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    const hasWorkspace = !!(workspaceFolders && workspaceFolders.length > 0);
+    const workspacePath = hasWorkspace
+      ? workspaceFolders![0].uri.fsPath
+      : process.cwd();
+
+    if (!hasWorkspace) {
+      return {
+        existingData: null,
+        spinJsonExists: false,
+        spinJsonPath: null,
+        workspacePath,
+        hasWorkspace: false,
+      };
+    }
+
+    const { getProjectConversationDir } = await import('./core/history/Config.js');
+    const path = require('path') as typeof import('path');
+    const projectDir = getProjectConversationDir(workspacePath);
+    const spinJsonPath = path.join(projectDir, 'spin.json');
+    const fs = require('fs');
+    let existingData: any = null;
+    let spinJsonExists = false;
+
+    // 使用重试读取：即使写入方已改为原子写，仍可能在极端情况下遇到文件占用/瞬时不可读，
+    // 避免因一次读取失败就回退到空画布，导致节点内容看起来被清空。
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (fs.existsSync(spinJsonPath)) {
+          spinJsonExists = true;
+          const content = fs.readFileSync(spinJsonPath, 'utf-8');
+          existingData = JSON.parse(content);
+        }
+        break;
+      } catch {
+        existingData = null;
+        if (attempt < 2) {
+          await new Promise(resolve => setTimeout(resolve, 100 * (attempt + 1)));
+        }
+      }
+    }
+
+    return { existingData, spinJsonExists, spinJsonPath, workspacePath, hasWorkspace };
+  }
+
   /** 创建或复用 Spin 设计面板 */
   private async openSpinDesignPanel(): Promise<void> {
     const panelId = SPIN_DESIGN_PANEL_ID;
@@ -198,6 +251,17 @@ export class VSCodeUI implements AssistantUI {
       return;
     }
 
+    // 读取已存在的 spin.json（从 ~/<CONFIG_DIR_NAME>/conversations/<encoded-workspace>/）
+    const { existingData, spinJsonExists, spinJsonPath, workspacePath, hasWorkspace } =
+      await this.readSpinDesignData();
+
+    // 文件存在但连续重试仍无法解析时，不能打开空编辑器，
+    // 否则后续保存可能用空数据覆盖真实 spin.json。
+    if (spinJsonExists && !existingData) {
+      vscode.window.showErrorMessage(`Failed to read spin.json: ${spinJsonPath}`);
+      return;
+    }
+
     panel = vscode.window.createWebviewPanel(
       panelId,
       tt('Spin 设计', 'Spin Design'),
@@ -205,35 +269,27 @@ export class VSCodeUI implements AssistantUI {
       { enableScripts: true }
     );
 
-    // 读取已存在的 spin.json（从 ~/<CONFIG_DIR_NAME>/conversations/<encoded-workspace>/）
-    let existingData: any = null;
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (workspaceFolders && workspaceFolders.length > 0) {
-      const { getProjectConversationDir } = await import('./core/history/Config.js');
-      const path = require('path') as typeof import('path');
-      const projectDir = getProjectConversationDir(workspaceFolders[0].uri.fsPath);
-      const spinJsonPath = path.join(projectDir, 'spin.json');
-      const fs = require('fs');
-      try {
-        if (fs.existsSync(spinJsonPath)) {
-          const content = fs.readFileSync(spinJsonPath, 'utf-8');
-          existingData = JSON.parse(content);
-        }
-      } catch {
-        // 文件不存在或解析失败，忽略
-      }
-    }
-
     const { getSpinDesignHtml } = await import('./VSCodeUI/spinDesignHtml.js');
+    const { getAllSkills } = await import('./core/skills/loadSkillsDir.js');
     const isDark = this.buildHost().isDarkTheme();
-    panel.webview.html = getSpinDesignHtml(existingData, isDark, this.buildHost().getLocale(), getSystemLocale(), readUiLanguageSync());
+    const availableSkills = (await getAllSkills(workspacePath))
+      .filter(s => !s.isHidden && s.userInvocable)
+      .map(s => ({ name: s.name, description: s.description }));
+    panel.webview.html = getSpinDesignHtml(
+      existingData,
+      isDark,
+      this.buildHost().getLocale(),
+      getSystemLocale(),
+      readUiLanguageSync(),
+      availableSkills,
+    );
 
     // 监听来自 spin design webview 的消息
     panel.webview.onDidReceiveMessage(async (msg: any) => {
       if (msg.type === 'saveSpinDesign' && msg.data) {
-        if (workspaceFolders && workspaceFolders.length > 0) {
+        if (hasWorkspace) {
           const { getProjectConversationDir } = await import('./core/history/Config.js');
-          const projectDir = getProjectConversationDir(workspaceFolders[0].uri.fsPath);
+          const projectDir = getProjectConversationDir(workspacePath);
           const data = { ...msg.data, meta: msg.data.meta || {} };
           // 确保目录存在
           const fs = require('fs');
@@ -244,7 +300,7 @@ export class VSCodeUI implements AssistantUI {
             // 串行写入 spin.json，避免与 SpinLoop 的 updateNodeMeta 并发
             // "读-改-写"导致清除结果被回写（保存不生效）
             const { writeSpinJsonQueued } = await import('./core/spin/Engine.js');
-            await writeSpinJsonQueued(workspaceFolders[0].uri.fsPath, data);
+            await writeSpinJsonQueued(workspacePath, data);
             panel?.webview.postMessage({ type: 'spinSaveResult', success: true });
           } catch (err) {
             VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] spin.json save failed: ${err}`);
@@ -253,6 +309,25 @@ export class VSCodeUI implements AssistantUI {
         } else {
           panel?.webview.postMessage({ type: 'spinSaveResult', success: false, error: tt('没有打开的工作目录', 'No workspace folder is open') });
         }
+      } else if (msg.type === 'refreshSpinDesign') {
+        const refreshed = await this.readSpinDesignData();
+        if (refreshed.spinJsonExists && !refreshed.existingData) {
+          panel?.webview.postMessage({
+            type: 'spinSaveResult',
+            success: false,
+            error: `Failed to read spin.json: ${refreshed.spinJsonPath}`,
+          } as any);
+          return;
+        }
+        const { getAllSkills } = await import('./core/skills/loadSkillsDir.js');
+        const availableSkills = (await getAllSkills(refreshed.workspacePath))
+          .filter(s => !s.isHidden && s.userInvocable)
+          .map(s => ({ name: s.name, description: s.description }));
+        panel?.webview.postMessage({
+          type: 'spinDesignData',
+          data: refreshed.existingData,
+          skills: availableSkills,
+        } as any);
       }
     });
   }

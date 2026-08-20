@@ -311,10 +311,10 @@ const App = () => {
     _appMountTime, model, contextLength,
     inputAreaRef,
     // 当前会话实时状态（切换会话保存快照时使用）
-    userChoiceRequest, showThinkingAnimation, hasActiveQuery, agentMode, thinkingMode,
+    userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode,
     promptMode, setPromptMode,
     currentFile, selectedLines, stats,
-  }), [model, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, hasActiveQuery, agentMode, thinkingMode, promptMode, currentFile, selectedLines, stats, messages]);
+  }), [model, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, promptMode, currentFile, selectedLines, stats, messages]);
   useMessageHandler(handlerProps);
 
   const appHandlerProps = useMemo(() => ({
@@ -637,6 +637,11 @@ const App = () => {
                   return;
                 }
                 setConversationDropdownOpen(open);
+                // 在 Dropdown 真正打开时再刷新列表，避免按钮 onClick 与
+                // Dropdown 自身的开合逻辑竞争，高负载下导致菜单刚打开就关闭。
+                if (open) {
+                  loadConversations();
+                }
               }}
               trigger={deleteConfirm ? [] : ['click']}
               placement="bottomRight"
@@ -715,6 +720,7 @@ const App = () => {
                                 userChoiceRequest,
                                 userChoiceInput: userChoiceInputRef.current,
                                 showThinkingAnimation,
+                                animationMode,
                                 hasActiveQuery,
                                 agentMode,
                                 promptMode,
@@ -785,7 +791,6 @@ const App = () => {
               )}
             >
               <button
-                onClick={() => loadConversations()}
                 className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
                 style={{ backgroundColor: colors.bgTertiary }}
                 title={t('app.conversationHistory')}
@@ -808,6 +813,7 @@ const App = () => {
                     userChoiceRequest,
                     userChoiceInput: userChoiceInputRef.current,
                     showThinkingAnimation,
+                    animationMode,
                     hasActiveQuery,
                     agentMode,
                     promptMode,
@@ -856,6 +862,7 @@ const App = () => {
                   userChoiceRequest: null,
                   userChoiceInput: '',
                   showThinkingAnimation: false,
+                  animationMode: 'thinking',
                   hasActiveQuery: false,
                   agentMode: settingsDefaults.agentMode,
                   promptMode: settingsDefaults.promptMode,

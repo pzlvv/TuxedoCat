@@ -75,6 +75,8 @@ export interface SessionState {
   userChoiceRequest: UserChoiceRequest | null;
   userChoiceInput: string;
   showThinkingAnimation: boolean;
+  /** 当前动画类型：thinking 或 compacting */
+  animationMode?: 'thinking' | 'compacting';
   hasActiveQuery: boolean;
   agentMode: AgentMode;
   /** 会话关联的提示词模式（普通/极简/混合），持久化到 meta.json */

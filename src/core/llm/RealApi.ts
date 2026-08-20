@@ -342,6 +342,12 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
 
       // 附加会话 ID 到请求头，供 LLM 服务端追踪会话上下文
       requestHeaders['x-session-id'] = sessionId;
+
+      // 重试时不要复用之前的连接（可能已经损坏），强制新建连接
+      if (retryCount > 0) {
+        requestHeaders['Connection'] = 'close';
+      }
+
       logger.debug('RealAPI', `Request headers: ${JSON.stringify(requestHeaders)}`);
       logger.debug('RealAPI', `Request URL: ${baseURL}/v1/messages`);
 
@@ -371,6 +377,8 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       // 502/503 重试逻辑：遇到服务端瞬时错误（502/503），等待 1s 后重试
       if (isRetryableStatus(response.status) && retryCount < MAX_RETRIES) {
         logger.warn('RealAPI', `API request got ${response.status}, retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
+        // 释放未消费的响应体，避免连接被占用
+        response.body?.cancel().catch(() => { });
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
         checkAborted(signal);
         yield* executeRequest(retryCount + 1);
@@ -378,7 +386,14 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       }
 
       if (!response.ok) {
-        const errorText = await response.text();
+        let errorText: string;
+        try {
+          errorText = await response.text();
+        } catch (error) {
+          // 读取错误响应体失败（如 abort）时也释放 body，避免连接泄漏
+          response.body?.cancel().catch(() => { });
+          throw error;
+        }
         logger.error('RealAPI', `API request failed: ${response.status} ${errorText}`);
 
         await dumpFailedRequest({
@@ -414,6 +429,15 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       // 不依赖 message_start 中的 id 字段（部分模型不返回）
       const streamMessageId = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
+      // 流式读取期间必须确保 reader 被释放：abort、读取异常或消费者提前退出时，
+      // 通过 finally 取消底层流，避免连接/内存泄漏。
+      let streamEnded = false;
+      const closeReader = (): void => {
+        if (streamEnded) return;
+        streamEnded = true;
+        reader.cancel?.().catch(() => { });
+      };
+      try {
       while (true) {
         let readResult;
         try {
@@ -423,7 +447,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
           if (retryCount < MAX_RETRIES && readError instanceof TypeError && readError.message === 'terminated') {
             logger.warn('RealAPI', `Stream terminated (TypeError: terminated), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
             // 释放之前的 reader
-            reader.cancel?.().catch(() => { });
+            closeReader();
             await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
             checkAborted(signal);
             yield* executeRequest(retryCount + 1);
@@ -434,6 +458,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
 
         const { done, value } = readResult;
         if (done) {
+          streamEnded = true;
           break;
         }
 
@@ -605,6 +630,9 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
           }
         }
 
+      }
+      } finally {
+        closeReader();
       }
 
       // 流结束，解析 buffer 中剩余的所有数据（无法解析的残余丢弃）

@@ -9,6 +9,8 @@ import { logger } from '../Logger.js';
 import { tt } from '../i18n.js';
 import type { QueryEngine } from '../QueryEngine.js';
 import type { AssistantUI, MessageData } from '../AssistantUI.js';
+import { getAllSkills } from '../skills/loadSkillsDir.js';
+import { substituteBuiltinVariables } from '../skills/variableResolver.js';
 import {
   readSpinJson,
   getNextNode,
@@ -62,6 +64,48 @@ async function waitForAgentReply(
     }
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
   }
+}
+
+/**
+ * 按顺序加载节点勾选的 Skill，并拼接为 Prompt 片段
+ */
+async function loadNodeSkillsPrompt(
+  skillNames: string[] | undefined,
+  cwd: string,
+  sessionId: string,
+): Promise<string> {
+  if (!skillNames || skillNames.length === 0) return '';
+
+  const skills = await getAllSkills(cwd);
+  const parts: string[] = [];
+
+  for (const name of skillNames) {
+    const skill = skills.find(
+      s => s.name === name || s.aliases?.includes(name),
+    );
+    if (!skill) {
+      logger.warn('SpinLoop', `Skill '${name}' not found, skipping`);
+      continue;
+    }
+
+    try {
+      const blocks = await skill.getPromptForCommand('');
+      const text = blocks
+        .filter(b => b.type === 'text')
+        .map(b => b.text as string)
+        .join('\n');
+      const finalContent = substituteBuiltinVariables(
+        text,
+        skill.skillRoot,
+        sessionId,
+      );
+      parts.push(`### ${name}\n${finalContent}`);
+    } catch (err) {
+      logger.warn('SpinLoop', `Failed to load skill '${name}': ${err}`);
+    }
+  }
+
+  return parts.join('\n\n');
 }
 
 /**
@@ -135,7 +179,9 @@ export async function spinLoop(
 
     // 获取之前的 note（如果有）
     const prevNote = config.meta?.[String(next.id)]?.note || undefined;
-    const nodePrompt = buildRunPrompt(next, prevNote);
+    // 依次加载该节点勾选的 Skill
+    const skillsPrompt = await loadNodeSkillsPrompt(next.skills, cwd, sessionId);
+    const nodePrompt = buildRunPrompt(next, prevNote, skillsPrompt);
 
     logger.info('SpinLoop', `Executing Task ${currentSeq} - ${next.task}${retrySuffix}`);
     const startMsgContent = tt(

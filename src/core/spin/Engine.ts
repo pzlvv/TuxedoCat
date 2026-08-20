@@ -39,12 +39,24 @@ export async function readSpinJson(cwd: string): Promise<SpinDesign | null> {
 
 /**
  * 写入 spin.json
+ *
+ * 使用“先写临时文件，再原子 rename”的方式，避免读取方在写入过程中
+ * 读到空文件或半截 JSON，导致 Spin Design 打开时节点内容被误判为空。
  */
 export async function writeSpinJson(cwd: string, config: SpinDesign): Promise<void> {
   // 确保项目对话目录存在，并写入 settings.json（记录 workspacePath）
   await ensureProjectConversationDir(cwd);
   const content = JSON.stringify(config, null, 2);
-  await fs.writeFile(getSpinJsonPath(cwd), content, { encoding: 'utf-8', mode: 0o600 });
+  const spinPath = getSpinJsonPath(cwd);
+  const tmpPath = `${spinPath}.${process.pid}.tmp`;
+  try {
+    await fs.writeFile(tmpPath, content, { encoding: 'utf-8', mode: 0o600 });
+    await fs.rename(tmpPath, spinPath);
+  } catch (err) {
+    // 清理可能残留的临时文件，避免下次读取/写入混淆
+    await fs.rm(tmpPath, { force: true }).catch(() => { });
+    throw err;
+  }
 }
 
 /**
@@ -101,7 +113,7 @@ export function getNextNode(config: SpinDesign): SpinNode | null {
 /**
  * 构建 sub-agent prompt
  */
-export function buildRunPrompt(node: SpinNode, note?: string): string {
+export function buildRunPrompt(node: SpinNode, note?: string, skillsPrompt?: string): string {
   const acList = (node.criteria || [])
     .map(ac => `- [ ] ${ac}`)
     .join('\n');
@@ -111,10 +123,16 @@ export function buildRunPrompt(node: SpinNode, note?: string): string {
     previousNoteSection = `\n### 上一轮反馈\n${note}\n`;
   }
 
+  let skillsSection = '';
+  if (skillsPrompt && skillsPrompt.trim()) {
+    skillsSection = `\n### 已加载的 Skills\n${skillsPrompt}\n`;
+  }
+
   return `## 子任务: ${node.task}
 
 ### 验收条件
 ${acList}
+${skillsSection}
 ${previousNoteSection}
 ### 你的工作方式
 

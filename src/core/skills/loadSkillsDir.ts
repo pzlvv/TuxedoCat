@@ -16,6 +16,7 @@
 import { readdir, readFile, realpath } from 'fs/promises';
 import { join } from 'path';
 import type { SkillCommand, SkillSource, LoadedFrom, ContentBlock } from './Types.js';
+import { getBundledSkills } from './bundledSkills.js';
 import { parseFrontmatter, parseSkillFrontmatterFields, parseSkillPaths } from './frontmatterParser.js';
 import { substituteArguments, substituteBuiltinVariables } from './variableResolver.js';
 import { logger } from '../Logger.js';
@@ -80,6 +81,17 @@ export async function getSkillDirCommands(cwd: string): Promise<SkillCommand[]> 
   }
 
   return deduplicated;
+}
+
+/**
+ * 获取全部可用 Skill（内置 + 文件系统）
+ */
+export async function getAllSkills(cwd: string): Promise<SkillCommand[]> {
+  const [bundled, fileSkills] = await Promise.all([
+    Promise.resolve(getBundledSkills()),
+    getSkillDirCommands(cwd),
+  ]);
+  return [...bundled, ...fileSkills];
 }
 
 /**

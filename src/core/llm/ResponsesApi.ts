@@ -420,6 +420,12 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       // 跨轮累积会让 input_tokens 虚高（详见 serverSession.ts），检测到污染后
       // 在下一轮自动轮换，避免上下文被搜索结果撑爆。
       requestHeaders['x-session-id'] = getServerSessionId(sessionId);
+
+      // 重试时不要复用之前的连接（可能已经损坏），强制新建连接
+      if (retryCount > 0) {
+        requestHeaders['Connection'] = 'close';
+      }
+
       const responsesUrl = buildResponsesUrl(baseURL);
       logger.debug('ResponsesAPI', `Request URL: ${responsesUrl}`);
       logger.debug('ResponsesAPI', `Request headers: ${JSON.stringify(requestHeaders)}`);
@@ -450,6 +456,8 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       // 502/503 重试逻辑：遇到服务端瞬时错误（502/503），等待 1s 后重试
       if (isRetryableStatus(response.status) && retryCount < MAX_RETRIES) {
         logger.warn('ResponsesAPI', `API request got ${response.status}, retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
+        // 释放未消费的响应体，避免连接被占用
+        response.body?.cancel().catch(() => { });
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
         checkAborted(signal);
         yield* executeRequest(retryCount + 1);
@@ -457,7 +465,14 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       }
 
       if (!response.ok) {
-        const errorText = await response.text();
+        let errorText: string;
+        try {
+          errorText = await response.text();
+        } catch (error) {
+          // 读取错误响应体失败（如 abort）时也释放 body，避免连接泄漏
+          response.body?.cancel().catch(() => { });
+          throw error;
+        }
         logger.error('ResponsesAPI', `API request failed: ${response.status} ${errorText}`);
 
         await dumpFailedRequest({
@@ -645,6 +660,15 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
         } as StreamEvent;
       };
 
+      // 流式读取期间必须确保 reader 被释放：abort、读取异常或消费者提前退出时，
+      // 通过 finally 取消底层流，避免连接/内存泄漏。
+      let streamEnded = false;
+      const closeReader = (): void => {
+        if (streamEnded) return;
+        streamEnded = true;
+        reader.cancel?.().catch(() => { });
+      };
+      try {
       while (true) {
         let readResult;
         try {
@@ -654,7 +678,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
           if (retryCount < MAX_RETRIES && readError instanceof TypeError && readError.message === 'terminated') {
             logger.warn('ResponsesAPI', `Stream terminated (TypeError: terminated), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
             // 释放之前的 reader
-            reader.cancel?.().catch(() => { });
+            closeReader();
             await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
             checkAborted(signal);
             yield* executeRequest(retryCount + 1);
@@ -665,6 +689,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
 
         const { done, value } = readResult;
         if (done) {
+          streamEnded = true;
           break;
         }
 
@@ -955,6 +980,9 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
           }
           // 其他事件（response.created / response.in_progress / response.content_part.done 等）忽略
         }
+      }
+      } finally {
+        closeReader();
       }
 
       // 流结束，解析 buffer 中剩余的所有数据（无法解析的残余丢弃）

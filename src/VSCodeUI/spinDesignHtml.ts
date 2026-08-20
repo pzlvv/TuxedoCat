@@ -11,6 +11,7 @@ const spinZhDict: Record<string, string> = {
   'app.title': 'Spin 设计',
   'toolbar.addNode': '+ 添加节点',
   'toolbar.clearResults': '清除结果',
+  'toolbar.refresh': '刷新',
   'toolbar.save': '保存',
   'editor.placeholder': '输入任务描述...',
   'toast.noResults': '没有结果需要清除',
@@ -25,6 +26,11 @@ const spinZhDict: Record<string, string> = {
   'node.addCriteria': '+ 添加验收标准',
   'node.criteriaPlaceholder': '验收标准 {n}...',
   'node.connectTitle': '拖拽创建连线',
+  'node.skillsLabel': '所需技能',
+  'node.addSkills': '+ 选择技能',
+  'node.skillsPlaceholder': '未选择技能',
+  'node.skillSelectorTitle': '选择该节点需要加载的 Skill',
+  'node.skillSelectorClose': '关闭',
   'toast.saveFailed': '保存失败: ',
   'toast.unknownError': '未知错误',
 };
@@ -33,6 +39,7 @@ const spinEnDict: Record<string, string> = {
   'app.title': 'Spin Design',
   'toolbar.addNode': '+ Add Node',
   'toolbar.clearResults': 'Clear Results',
+  'toolbar.refresh': 'Refresh',
   'toolbar.save': 'Save',
   'editor.placeholder': 'Enter task description...',
   'toast.noResults': 'No results to clear',
@@ -47,11 +54,23 @@ const spinEnDict: Record<string, string> = {
   'node.addCriteria': '+ Add Acceptance Criteria',
   'node.criteriaPlaceholder': 'Acceptance Criteria {n}...',
   'node.connectTitle': 'Drag to create connection',
+  'node.skillsLabel': 'Skills',
+  'node.addSkills': '+ Select Skills',
+  'node.skillsPlaceholder': 'No skills selected',
+  'node.skillSelectorTitle': 'Select skills to load for this node',
+  'node.skillSelectorClose': 'Close',
   'toast.saveFailed': 'Save failed: ',
   'toast.unknownError': 'Unknown error',
 };
 
-export function getSpinDesignHtml(existingData: any, isDark: boolean, locale: string, systemLocale?: string, uiLanguage?: 'auto' | 'zh' | 'en'): string {
+export function getSpinDesignHtml(
+  existingData: any,
+  isDark: boolean,
+  locale: string,
+  systemLocale?: string,
+  uiLanguage?: 'auto' | 'zh' | 'en',
+  availableSkills?: Array<{ name: string; description?: string }>,
+): string {
   // 与主 webview 一致：settings.json 的 uiLanguage 优先；auto 时再按
   // VS Code UI 语言与操作系统系统语言任一为中文即使用中文
   const isZh =
@@ -72,6 +91,7 @@ export function getSpinDesignHtml(existingData: any, isDark: boolean, locale: st
     return value;
   };
   const initialData = existingData ? JSON.stringify(existingData) : 'null';
+  const availableSkillsJson = JSON.stringify(availableSkills || []);
 
   // Theme colors
   const c = isDark ? {
@@ -244,6 +264,31 @@ export function getSpinDesignHtml(existingData: any, isDark: boolean, locale: st
     resize: none; outline: none; line-height: 1.6; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
   }
   #task-editor-box textarea:focus { border-color: #818cf8; }
+  #skill-selector-overlay { position: fixed; z-index: 9998; display: none; }
+  #skill-selector-overlay.show { display: block; }
+  #skill-selector-box {
+    background: ${c.toolBg}; border: 1px solid ${c.btnBdr}; border-radius: 8px;
+    padding: 10px; max-height: 320px; overflow-y: auto;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+  }
+  .skill-selector-item {
+    display: flex; align-items: flex-start; gap: 6px;
+    padding: 4px 6px; border-radius: 4px; cursor: pointer;
+    font-size: 12px; color: ${c.fg};
+  }
+  .skill-selector-item:hover { background: ${c.btnHvr}; }
+  .skill-selector-item input { margin-top: 2px; }
+  .skill-selector-item .skill-desc { color: ${c.mute}; font-size: 11px; }
+  .skill-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 6px; margin: 2px 4px 2px 0; border-radius: 4px;
+    background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.35);
+    color: ${c.fg}; font-size: 11px;
+  }
+  .skill-tag .remove {
+    cursor: pointer; color: ${c.mute}; font-weight: 600; padding: 0 2px;
+  }
+  .skill-tag .remove:hover { color: #ef4444; }
   #toast {
     position: fixed; bottom: 60px; left: 50%;
     transform: translateX(-50%) translateY(20px);
@@ -261,6 +306,7 @@ export function getSpinDesignHtml(existingData: any, isDark: boolean, locale: st
     <span class="title">${t('app.title')}</span>
     <button class="btn" id="btnAddNode">${t('toolbar.addNode')}</button>
     <button class="btn" id="btnClearResults">${t('toolbar.clearResults')}</button>
+    <button class="btn" id="btnRefresh">${t('toolbar.refresh')}</button>
     <button class="btn primary" id="btnSave">${t('toolbar.save')}</button>
   </div>
   <div id="main">
@@ -282,6 +328,9 @@ export function getSpinDesignHtml(existingData: any, isDark: boolean, locale: st
     <div id="task-editor-box">
       <textarea id="te-textarea" placeholder="${t('editor.placeholder')}"></textarea>
     </div>
+  </div>
+  <div id="skill-selector-overlay">
+    <div id="skill-selector-box"></div>
   </div>
 
 <script>
@@ -314,6 +363,7 @@ function __spinT(key, params) {
   var _isDark = ${isDark};
 
   const initialData = ${initialData};
+  var __spinAvailableSkills = ${availableSkillsJson};
 
   // 数据源优先级：磁盘 spin.json（initialData）为权威数据源。
   // SpinLoop 执行时会直接更新磁盘上的 meta（已完成状态），而 webview 缓存
@@ -322,7 +372,7 @@ function __spinT(key, params) {
   // 因此当磁盘有数据时优先从磁盘加载；仅在没有 spin.json 时回退到 webview 缓存。
   var savedState = vscode.getState();
   if (initialData && initialData.nodes) {
-    nodes = initialData.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: n.role || 'Master' }; });
+    nodes = initialData.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: n.role || 'Master', skills: n.skills || [] }; });
     edges = initialData.edges || [];
     meta = initialData.meta || {};
     nextNodeId = nodes.reduce(function(m, n) { return Math.max(m, n.id); }, 0) + 1;
@@ -333,7 +383,7 @@ function __spinT(key, params) {
     persistState();
     renderAll();
   } else if (savedState && savedState.nodes) {
-    nodes = savedState.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: n.role || 'Master' }; });
+    nodes = savedState.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: n.role || 'Master', skills: n.skills || [] }; });
     edges = savedState.edges || [];
     meta = savedState.meta || {};
     nextNodeId = savedState.nextNodeId || (nodes.reduce(function(m, n) { return Math.max(m, n.id); }, 0) + 1);
@@ -342,6 +392,7 @@ function __spinT(key, params) {
 
   document.getElementById('btnAddNode').addEventListener('click', function() { addNode(); });
   document.getElementById('btnClearResults').addEventListener('click', function() { clearResults(); });
+  document.getElementById('btnRefresh').addEventListener('click', function() { refreshDesign(); });
   document.getElementById('btnSave').addEventListener('click', function() { saveDesign(); });
 
   function clearResults() {
@@ -359,12 +410,18 @@ function __spinT(key, params) {
     if (!hadResults) { showToast(__spinT('toast.noResults'), 'info'); }
   }
 
+  function refreshDesign() {
+    // 请求扩展端重新读取 spin.json 与 Skill 列表，并回传最新数据
+    vscode.postMessage({ type: 'refreshSpinDesign' });
+  }
+
   var canvasArea = document.getElementById('canvas-area');
 
   // Floating editor
   var teOverlay = document.getElementById('task-editor-overlay');
   var teTextarea = document.getElementById('te-textarea');
   var teContext = null;
+  var skillSelectorNodeId = null;
 
   // 根据鼠标点击坐标计算目标元素内的字符偏移量（用于打开悬浮框后定位光标）。
   // 返回 -1 表示无法计算（点击在空白/元素外部），此时退回到文本末尾。
@@ -448,8 +505,105 @@ function __spinT(key, params) {
     teContext = null;
   }
 
+  var skillSelectorOverlay = document.getElementById('skill-selector-overlay');
+  var skillSelectorBox = document.getElementById('skill-selector-box');
+
+  function openSkillSelector(nodeId, anchorEl) {
+    var node = getNode(nodeId);
+    if (!node) return;
+    skillSelectorNodeId = nodeId;
+    renderSkillSelector();
+    var r = anchorEl.getBoundingClientRect();
+    skillSelectorOverlay.style.position = 'fixed';
+    skillSelectorOverlay.style.top = Math.min(window.innerHeight - 340, Math.max(8, r.bottom + 4)) + 'px';
+    skillSelectorOverlay.style.left = Math.min(window.innerWidth - 320, Math.max(8, r.left)) + 'px';
+    skillSelectorOverlay.style.width = '300px';
+    skillSelectorOverlay.className = 'show';
+  }
+
+  function closeSkillSelector() {
+    skillSelectorOverlay.className = '';
+    skillSelectorNodeId = null;
+  }
+
+  function renderSkillSelector() {
+    var node = getNode(skillSelectorNodeId);
+    if (!node) return;
+    skillSelectorBox.innerHTML = '';
+    var title = document.createElement('div');
+    title.style.cssText = 'font-size:13px;font-weight:600;margin-bottom:6px;color:' + (_isDark ? '#c1c1c6' : '#18181b') + ';';
+    title.textContent = __spinT('node.skillSelectorTitle');
+    skillSelectorBox.appendChild(title);
+
+    if (__spinAvailableSkills.length === 0) {
+      var empty = document.createElement('div');
+      empty.style.cssText = 'font-size:12px;color:' + (_isDark ? '#9f9fa9' : '#71717a') + ';padding:4px 0;';
+      empty.textContent = __spinT('node.skillsPlaceholder');
+      skillSelectorBox.appendChild(empty);
+    } else {
+      __spinAvailableSkills.forEach(function(skill) {
+        var label = document.createElement('label');
+        label.className = 'skill-selector-item';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = node.skills.indexOf(skill.name) !== -1;
+        cb.addEventListener('change', function() {
+          toggleNodeSkill(node.id, skill.name, cb.checked);
+        });
+        var textWrap = document.createElement('div');
+        textWrap.style.cssText = 'display:flex;flex-direction:column;gap:1px;min-width:0;';
+        var nameEl = document.createElement('span');
+        nameEl.textContent = skill.name;
+        nameEl.style.fontWeight = '500';
+        textWrap.appendChild(nameEl);
+        if (skill.description) {
+          var descEl = document.createElement('span');
+          descEl.className = 'skill-desc';
+          descEl.textContent = skill.description;
+          textWrap.appendChild(descEl);
+        }
+        label.appendChild(cb);
+        label.appendChild(textWrap);
+        skillSelectorBox.appendChild(label);
+      });
+    }
+
+    var closeBtn = document.createElement('button');
+    closeBtn.textContent = __spinT('node.skillSelectorClose');
+    closeBtn.style.cssText = 'margin-top:8px;padding:4px 10px;border-radius:4px;border:1px solid ' + (_isDark ? '#3a3a42' : '#d4d4d8') + ';background:transparent;color:' + (_isDark ? '#c1c1c6' : '#18181b') + ';cursor:pointer;font-size:12px;';
+    closeBtn.addEventListener('click', closeSkillSelector);
+    skillSelectorBox.appendChild(closeBtn);
+  }
+
+  function toggleNodeSkill(nodeId, skillName, checked) {
+    var node = getNode(nodeId);
+    if (!node) return;
+    if (checked) {
+      if (node.skills.indexOf(skillName) === -1) node.skills.push(skillName);
+    } else {
+      node.skills = node.skills.filter(function(s) { return s !== skillName; });
+    }
+    // 修改节点配置，清除该节点的执行结果
+    delete meta[String(nodeId)];
+    renderNode(nodeId);
+    renderSkillSelector();
+    persistState();
+    saveDesign();
+  }
+
+  function removeNodeSkill(nodeId, skillName) {
+    var node = getNode(nodeId);
+    if (!node) return;
+    node.skills = node.skills.filter(function(s) { return s !== skillName; });
+    delete meta[String(nodeId)];
+    renderNode(nodeId);
+    persistState();
+    saveDesign();
+  }
+
   document.addEventListener('mousedown', function(e) {
     if (teOverlay.className === 'show' && !teOverlay.contains(e.target)) closeFloatingEditor();
+    if (skillSelectorOverlay.className === 'show' && !skillSelectorOverlay.contains(e.target)) closeSkillSelector();
   });
 
   teTextarea.addEventListener('input', function() {
@@ -535,7 +689,7 @@ function __spinT(key, params) {
   function persistState() {
     vscode.setState({
       nodes: nodes.map(function(n) {
-        return { id: n.id, x: n.x, y: n.y, task: n.task, criteria: n.criteria.filter(function(c) { return c.trim() !== ''; }), role: n.role || 'Master' };
+        return { id: n.id, x: n.x, y: n.y, task: n.task, criteria: n.criteria.filter(function(c) { return c.trim() !== ''; }), role: n.role || 'Master', skills: n.skills || [] };
       }),
       edges: edges,
       meta: meta,
@@ -550,7 +704,7 @@ function __spinT(key, params) {
     var area = document.getElementById('canvas-area');
     var x = Math.max(0, area.scrollLeft + area.clientWidth / 2 - 130);
     var y = Math.max(0, area.scrollTop + area.clientHeight / 2 - 100);
-    nodes.push({ id: id, x: x, y: y, task: '', criteria: [], role: 'Master' });
+    nodes.push({ id: id, x: x, y: y, task: '', criteria: [], role: 'Master', skills: [] });
     selectedNodeId = id;
     renderAll();
     persistState();
@@ -757,6 +911,52 @@ function __spinT(key, params) {
 
     acSection.appendChild(acList);
     body.appendChild(acSection);
+
+    // Skills section
+    var skillSection = document.createElement('div');
+    skillSection.className = 'ac-section';
+    var skillHeader = document.createElement('div');
+    skillHeader.className = 'ac-header';
+    var skillLabel = document.createElement('label');
+    skillLabel.textContent = __spinT('node.skillsLabel');
+    skillHeader.appendChild(skillLabel);
+    skillSection.appendChild(skillHeader);
+
+    var skillList = document.createElement('div');
+    (node.skills || []).forEach(function(skillName) {
+      var tag = document.createElement('span');
+      tag.className = 'skill-tag';
+      var nameSpan = document.createElement('span');
+      nameSpan.textContent = skillName;
+      var remove = document.createElement('span');
+      remove.className = 'remove';
+      remove.textContent = '\u00D7';
+      remove.addEventListener('click', function(e) {
+        e.stopPropagation();
+        removeNodeSkill(node.id, skillName);
+      });
+      tag.appendChild(nameSpan);
+      tag.appendChild(remove);
+      skillList.appendChild(tag);
+    });
+    if (!node.skills || node.skills.length === 0) {
+      var emptySkills = document.createElement('div');
+      emptySkills.style.cssText = 'font-size:12px;color:' + (_isDark ? '#6a6a75' : '#a1a1aa') + ';font-style:italic;padding:2px 0;';
+      emptySkills.textContent = __spinT('node.skillsPlaceholder');
+      skillList.appendChild(emptySkills);
+    }
+    skillSection.appendChild(skillList);
+
+    var addSkillBtn = document.createElement('div');
+    addSkillBtn.style.cssText = 'margin-top:6px;padding:4px 8px;border-radius:4px;border:1px dashed ' + (_isDark ? '#3a3a42' : '#d4d4d8') + ';background:' + (_isDark ? '#16161c' : '#ffffff') + ';color:' + (_isDark ? '#6a6a75' : '#a1a1aa') + ';font-size:12px;font-style:italic;cursor:pointer;text-align:center;';
+    addSkillBtn.textContent = __spinT('node.addSkills');
+    addSkillBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      openSkillSelector(node.id, addSkillBtn);
+    });
+    skillSection.appendChild(addSkillBtn);
+
+    body.appendChild(skillSection);
     div.appendChild(body);
 
     // Connect anchors
@@ -1040,7 +1240,7 @@ function __spinT(key, params) {
 
     var data = {
       nodes: sortedNodes.map(function(n) {
-        return { id: n.id, x: n.x, y: n.y, task: n.task, criteria: n.criteria.filter(function(c) { return c.trim() !== ''; }), role: n.role || 'Master' };
+        return { id: n.id, x: n.x, y: n.y, task: n.task, criteria: n.criteria.filter(function(c) { return c.trim() !== ''; }), role: n.role || 'Master', skills: n.skills || [] };
       }),
       edges: edges.map(function(e) { return { from: e.from, to: e.to, fromSide: e.fromSide, toSide: e.toSide }; }),
       meta: meta,
@@ -1053,6 +1253,25 @@ function __spinT(key, params) {
     var msg = event.data;
     if (msg.type === 'spinSaveResult') {
       if (!msg.success) showToast(__spinT('toast.saveFailed') + (msg.error || __spinT('toast.unknownError')), 'error');
+    } else if (msg.type === 'spinDesignData') {
+      if (Array.isArray(msg.skills)) {
+        __spinAvailableSkills = msg.skills;
+      }
+      if (msg.data && Array.isArray(msg.data.nodes)) {
+        nodes = msg.data.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: n.role || 'Master', skills: n.skills || [] }; });
+        edges = msg.data.edges || [];
+        meta = msg.data.meta || {};
+        nextNodeId = nodes.reduce(function(m, n) { return Math.max(m, n.id); }, 0) + 1;
+        if (savedState && typeof savedState.nextNodeId === 'number' && savedState.nextNodeId > nextNodeId) {
+          nextNodeId = savedState.nextNodeId;
+        }
+        closeSkillSelector();
+        persistState();
+        renderAll();
+      } else if (skillSelectorNodeId !== null) {
+        // 即使没有可用的 spin.json，也刷新技能选择器列表
+        renderSkillSelector();
+      }
     }
   });
 

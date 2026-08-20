@@ -717,11 +717,13 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   const [showSlash, setShowSlash] = useState(false);
   const [slashQuery, setSlashQuery] = useState('');
   const [slashIndex, setSlashIndex] = useState(0);
+  // 标记当前是否已处于 "/" 输入状态，避免每次按键都重复刷新 Skill
+  const slashActiveRef = useRef(false);
 
   useImperativeHandle(ref, () => ({
     getValue: () => input,
     setValue: (value: string) => setInput(value),
-    clear: () => { setInput(''); setHistoryIndex(-1); setSavedInput(''); },
+    clear: () => { setInput(''); setHistoryIndex(-1); setSavedInput(''); slashActiveRef.current = false; },
   }), [input, historyIndex, savedInput]);
 
   const isInputDisabled = isProviderConfigured === false;
@@ -752,6 +754,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     setInput(`/${skillName} `);
     setShowSlash(false);
     setSlashQuery('');
+    slashActiveRef.current = false;
     // Focus the textarea and move cursor to end
     setTimeout(() => {
       mainInputRef.current?.focus();
@@ -773,6 +776,12 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
 
     // Detect slash-command mode
     if (value.startsWith('/')) {
+      // 用户刚进入 "/" 输入状态时刷新一次 Skill 列表，确保斜杠菜单是最新的
+      if (!slashActiveRef.current) {
+        slashActiveRef.current = true;
+        postMessage({ type: 'requestSkills' });
+      }
+
       // Extract the query after / (before first space)
       const spaceIdx = value.indexOf(' ');
       if (spaceIdx === -1) {
@@ -788,6 +797,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     }
 
     // Close slash popup if not starting with /
+    slashActiveRef.current = false;
     setShowSlash(false);
     setSlashQuery('');
   }, []);

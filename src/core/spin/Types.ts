@@ -14,6 +14,8 @@ export interface SpinNode {
   task: string
   criteria: string[]
   role?: string
+  /** 该节点执行前需要依次加载的 Skill 名称列表 */
+  skills?: string[]
 }
 
 /** 节点间的连线 */

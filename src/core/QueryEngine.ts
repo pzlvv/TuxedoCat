@@ -1000,20 +1000,6 @@ export class QueryEngine {
             }
           }
 
-          if (stopReason === 'end_turn' && await this.isIdle()) {
-            const todos = (this.internalAppState as any)?.todos?.[this.sesssionID];
-            if (Array.isArray(todos)) {
-              const incompleteTodos = todos.filter(
-                (t: any) => t.status === 'pending' || t.status === 'in_progress'
-              );
-              if (incompleteTodos.length > 0) {
-                const todoItems = incompleteTodos
-                  .map((t: any, i: number) => `${i + 1}. [${t.status}] ${t.content}`)
-                  .join('\n');
-                this.pendingReminder = `<reminder>There are still incomplete tasks in your todo list:\n\n${todoItems}\n\nPlease continue working on these tasks before ending the conversation.</reminder>`;
-              }
-            }
-          }
         }
       }
     }

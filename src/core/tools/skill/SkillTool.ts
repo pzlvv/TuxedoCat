@@ -10,24 +10,12 @@
 import type { ToolResult, ValidationResult, PermissionResult } from '../Tool.js';
 import { buildTool } from '../Tool.js';
 import type { SkillCommand } from '../../skills/Types.js';
-import { getBundledSkills } from '../../skills/bundledSkills.js';
-import { getSkillDirCommands } from '../../skills/loadSkillsDir.js';
+import { getAllSkills } from '../../skills/loadSkillsDir.js';
 import { TOOL_NAME, getPrompt } from './Prompt.js';
 import type { SkillToolOutput } from './Types.js';
 import { inputSchema, outputSchema } from './Types.js';
 import { logger } from '../../Logger.js';
 import type { Message } from '../../types.js';
-
-/**
- * 获取所有 Skill（bundled + 文件系统）
- */
-async function getAllSkills(cwd: string): Promise<SkillCommand[]> {
-  const [bundled, fileSkills] = await Promise.all([
-    Promise.resolve(getBundledSkills()),
-    getSkillDirCommands(cwd),
-  ]);
-  return [...bundled, ...fileSkills];
-}
 
 /**
  * 按名称查找 Skill
