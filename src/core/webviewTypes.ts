@@ -85,6 +85,8 @@ export type WebviewMessage = {
   contextAfter?: string[];
   beforeContent?: string;
   afterContent?: string;
+  /** Edit 紧凑 diff 数据（只含 diff 相关行） */
+  diffHunks?: unknown[];
   startLine?: number;
   endLine?: number;
   /** 通用参数更新：合并进现有 toolArgs（如 WebSearch 的 action/queries/url） */
@@ -141,8 +143,14 @@ export type WebviewMessage = {
   parentSessionId?: string;
   /** 当前会话的 agent mode（运行时内存值，不持久化到文件） */
   agentMode?: 'manual' | 'risk' | 'auto';
+  /** 引擎是否正在消费消息（查询进行中） */
+  hasActiveQuery?: boolean;
+  /** 当前会话活动阶段：thinking / text / tool / idle，用于恢复 thinking 动画 */
+  activityPhase?: 'idle' | 'thinking' | 'text' | 'tool';
   /** 是否存在压缩归档（用于 webview 显示展开按钮） */
   hasCompactArchive?: boolean;
+  /** 裁剪掉的 _meta 大字段索引：toolUseId -> 紧凑 diff 或 before/after 内容 */
+  toolMetaMap?: Record<string, unknown>;
   /** 压缩前原始消息数量（展开后加载用） */
   /** 由 core 侧 TimeStats 统一计算的耗时分布统计 */
   timeStats?: {

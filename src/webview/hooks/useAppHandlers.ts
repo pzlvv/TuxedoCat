@@ -300,7 +300,6 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       agentMode: props.agentMode,
       thinkingMode: props.thinkingMode,
       webSearch: props.webSearch,
-      model: props.model,
       promptMode: props.promptMode,
     };
 

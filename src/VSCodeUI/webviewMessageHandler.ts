@@ -6,6 +6,7 @@ import type { UIHost } from '../host/UIHost.js';
 import { logger } from '../core/Logger.js';
 import { getPendingToolUseIds } from '../core/tools/index.js';
 import { providerKeyFromBaseURL } from '../core/utils/providerKey.js';
+import { buildEditDiffHunks } from '../core/utils/editDiff.js';
 import { MODEL_CONFIGS } from '../core/utils/modelConfig.js';
 import { userChoiceQueue } from '../core/UserChoiceQueue.js';
 import type { WebviewMessage } from '../core/webviewTypes.js';
@@ -230,115 +231,139 @@ export class WebviewMessageHandler {
   }
 
   private async handleQueueMessage(message: any): Promise<void> {
-    // 排队消息直接入队到后端 QueryEngine，而不是等整个对话停止后再重新投递：
-    // - 如果 consumer 正在运行，消息会进入 pendingUserMessage，由 queryLoop 阶段 0.5
-    //   （flushQueuedMessagesIntoContext）在"下一次 LLM 请求"时立刻带上——即使当前 query
-    //   正处于多轮工具调用循环中，也会在下一轮 callLLM 前插入上下文，对话不会中断。
-    // - 如果 consumer 已退出，submitMessage 会等待 idle 后启动新的 consumer 处理。
-    // - 消息立即通过 ui.onMessage 显示到对话中（webview 收到 addMessage 后清除排队提示）。
+    // 统一消息入口：sendMessage 与 queueMessage 都汇聚到这里。
+    // - engine 不存在时走 Integration.sendMessage 完整路径（创建引擎、命令分发、Skill 注入等）。
+    // - engine 已存在且为普通消息时直接入队到 QueryEngine，使消息在"下一次 LLM 请求"时立刻
+    //   被带上，即使当前 query 正处于多轮工具调用循环中也不会中断。
+    // - 命令类消息仍交给 sendMessage 处理，保留内置命令 / Skill 命令的原有行为。
     const { sessionId, content } = message;
-    logger.info('VSCodeUI', `User message queued for session ${sessionId} (already processing)`);
+    if (!sessionId || typeof content !== 'string' || !content.trim()) {
+      return;
+    }
+    logger.info('VSCodeUI', `User message received for session ${sessionId} (unified queue path)`);
 
     try {
       const { getSessionEngine } = await import('../core/QueryEngine.js');
       const engine = getSessionEngine(sessionId);
-      if (engine) {
-        // 排队消息绕过 Integration.sendMessage，不会像 sendMessage 那样通过 fileInfo
-        // 设置 thinkingModeOverride。这里根据 webview 传入的当前 thinking 模式显式设置，
-        // 未传入时回退到引擎当前的 thinking effort（当前对话正在使用的值）。
-        const thinkingEffort = message.thinkingMode || engine.thinkingModeOverride;
-        engine.thinkingModeOverride = thinkingEffort;
 
-        // 应用会话关联的 Web Search 开关（与 sendMessage 路径一致）
-        if (typeof message.webSearch === 'boolean') {
-          engine.updateWebSearch(message.webSearch);
-        }
+      if (message.agentMode) {
+        this.sessionAgentModes.set(sessionId, message.agentMode);
+      }
 
-        // 应用会话关联的模型（与 sendMessage 路径一致）
-        if (message.model) {
-          const { setSessionModel } = await import('../core/Integration.js');
-          setSessionModel(sessionId, message.model);
-          try {
-            const { updateConversationContext } = await import('../core/history/Conversation.js');
-            await updateConversationContext(sessionId, { model: message.model });
-          } catch (err: any) {
-            this.log(`[VSCodeUI] Failed to save queued message model to session meta.json: ${err.message}`);
-          }
-        }
-
-        // 应用会话关联的提示词预设（仅内存；与 sendMessage 路径一致）
+      // engine 不存在：走正常 sendMessage 路径（会创建 engine、处理命令等）
+      if (!engine) {
+        logger.warn('VSCodeUI', `No engine for message session ${sessionId}, falling back to sendMessage`);
+        const { sendMessage } = await import('../core/Integration.js');
         const { isPromptPresetId } = await import('../core/prompt/PromptPreset.js');
-        if (isPromptPresetId(message.promptMode)) {
-          engine.setPromptPreset(message.promptMode);
+        for await (const _ of sendMessage(content, sessionId, {
+          filePath: message.filePath,
+          selectedLines: message.selectedLines || message.fileSelectedLines,
+          fileHidden: !!message.fileHidden,
+          thinkingMode: message.thinkingMode,
+          webSearch: message.webSearch,
+          promptPreset: isPromptPresetId(message.promptMode) ? message.promptMode : undefined,
+        })) {
+          void _;
         }
-
-        // 等待之前的持久化完成，确保新消息在消息链中按顺序持久化
-        await engine.flush().catch((e: any) => {
-          logger.error('VSCodeUI', `Queued message flush failed: ${e}`);
-        });
-
-        // 构造用户消息对象（暂存，不立即 push 到 mutableMessages）。
-        // 由 flushQueuedMessagesIntoContext 在处理 pendingUserMessage 时用该对象现场追加，
-        // 确保消息在"下一次 LLM 请求"时立刻进入上下文（UI 仍立即显示），
-        // 同时保留 filePath / fileSelectedLines 等元数据。
-        const { getGlobalUI } = await import('../core/AssistantUI.js');
-        const ui = getGlobalUI();
-        const userMsg: Message = {
-          type: 'user',
-          message: { role: 'user', content },
-          uuid: `user_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
-          timestamp: Date.now(),
-          ...(message.filePath && { filePath: message.filePath }),
-          ...(message.fileSelectedLines && { fileSelectedLines: message.fileSelectedLines }),
-          ...(message.fileHidden && { fileHidden: true }),
-        };
-
-        // 显示用户消息到 UI（文件信息逻辑与 sendMessage 一致）
-        const uiMeta: Record<string, unknown> = {};
-        if (message.filePath && !message.fileHidden) {
-          uiMeta.filePath = message.filePath;
-          uiMeta.param = `${message.filePath.split(/[/\\]/).pop()}${message.fileSelectedLines ? `:${message.fileSelectedLines.start}${message.fileSelectedLines.start !== message.fileSelectedLines.end ? `~${message.fileSelectedLines.end}` : ''}` : ''}`;
-        }
-        ui?.onMessage(sessionId, {
-          role: 'user',
-          content,
-          filePath: message.fileHidden ? undefined : message.filePath,
-          fileSelectedLines: message.fileHidden ? undefined : message.fileSelectedLines,
-          meta: Object.keys(uiMeta).length > 0 ? uiMeta : undefined,
-        });
-
-        // 提交到引擎队列：设置 pendingUserMessage，使消息在下次 LLM 请求时被带上。
-        // 若 consumer 正在运行，submitMessage 会等待其退出（消息已被现有 consumer
-        // 在 while 循环中消费）；若已退出，则启动新的 consumer 处理该消息。
-        // manageQueryUI=true：排队消息绕过 Integration.sendMessage，若该调用启动了
-        // 自己的 consumer，需要自行管理 onQueryBegin/onQueryEnd（与 enqueueAgentMessage 一致）。
-        void (async () => {
-          try {
-            for await (const _ of engine.submitMessage(content, 'user', undefined, {
-              manageQueryUI: true,
-              // 排队路径：消息未 push 到 mutableMessages，consumer 处理时用此对象现场追加
-              userMsgData: userMsg,
-            })) {
-              // 排队消息的回复由现有/新 consumer 通过正常路径推送，无需在此转发
-              void _;
-            }
-          } catch (e) {
-            logger.error('VSCodeUI', `Error processing queued message: ${e}`);
-          }
-        })();
         return;
       }
 
-      // engine 不存在：走正常 sendMessage 路径
-      logger.warn('VSCodeUI', `No engine for queued message session ${sessionId}, falling back to sendMessage`);
-      const { sendMessage } = await import('../core/Integration.js');
-      const { isPromptPresetId } = await import('../core/prompt/PromptPreset.js');
-      for await (const _ of sendMessage(content, sessionId, {
-        model: message.model,
-        promptPreset: isPromptPresetId(message.promptMode) ? message.promptMode : undefined,
-      })) {
-        void _;
+      // 命令类消息继续交给 sendMessage，由 CommandDispatcher 处理内置命令 / Skill 注入
+      if (content.trim().startsWith('/')) {
+        const { sendMessage } = await import('../core/Integration.js');
+        const { isPromptPresetId } = await import('../core/prompt/PromptPreset.js');
+        for await (const _ of sendMessage(content, sessionId, {
+          filePath: message.filePath,
+          selectedLines: message.selectedLines || message.fileSelectedLines,
+          fileHidden: !!message.fileHidden,
+          thinkingMode: message.thinkingMode || engine.thinkingModeOverride,
+          webSearch: message.webSearch,
+          promptPreset: isPromptPresetId(message.promptMode) ? message.promptMode : undefined,
+        })) {
+          void _;
+        }
+        return;
       }
+
+      // 普通消息：入队到 QueryEngine
+      // 这里根据 webview 传入的当前 thinking 模式显式设置，
+      // 未传入时回退到引擎当前的 thinking effort（当前对话正在使用的值）。
+      const thinkingEffort = message.thinkingMode || engine.thinkingModeOverride;
+      engine.thinkingModeOverride = thinkingEffort;
+
+      // 应用会话关联的 Web Search 开关（与 sendMessage 路径一致）
+      if (typeof message.webSearch === 'boolean') {
+        engine.updateWebSearch(message.webSearch);
+      }
+
+      // 应用会话关联的提示词预设（仅内存；与 sendMessage 路径一致）
+      const { isPromptPresetId } = await import('../core/prompt/PromptPreset.js');
+      if (isPromptPresetId(message.promptMode)) {
+        engine.setPromptPreset(message.promptMode);
+      }
+
+      // 等待之前的持久化完成，确保新消息在消息链中按顺序持久化
+      await engine.flush().catch((e: any) => {
+        logger.error('VSCodeUI', `Queued message flush failed: ${e}`);
+      });
+
+      const selectedLines = message.selectedLines || message.fileSelectedLines;
+
+      // 构造用户消息对象（暂存，不立即 push 到 mutableMessages）。
+      // 由 flushQueuedMessagesIntoContext 在处理 pendingUserMessage 时用该对象现场追加，
+      // 确保消息在"下一次 LLM 请求"时立刻进入上下文（UI 仍立即显示），
+      // 同时保留 filePath / fileSelectedLines 等元数据。
+      const { getGlobalUI } = await import('../core/AssistantUI.js');
+      const ui = getGlobalUI();
+      const userMsg: Message = {
+        type: 'user',
+        message: { role: 'user', content },
+        uuid: `user_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+        timestamp: Date.now(),
+        ...(message.filePath && { filePath: message.filePath }),
+        ...(selectedLines && { fileSelectedLines: selectedLines }),
+        ...(message.fileHidden && { fileHidden: true }),
+      };
+
+      // 显示用户消息到 UI（文件信息逻辑与 sendMessage 一致）
+      const uiMeta: Record<string, unknown> = {};
+      if (message.filePath && !message.fileHidden) {
+        uiMeta.filePath = message.filePath;
+        uiMeta.param = `${message.filePath.split(/[/\\]/).pop()}${selectedLines ? `:${selectedLines.start}${selectedLines.start !== selectedLines.end ? `~${selectedLines.end}` : ''}` : ''}`;
+      }
+      ui?.onMessage(sessionId, {
+        role: 'user',
+        content,
+        filePath: message.fileHidden ? undefined : message.filePath,
+        fileSelectedLines: message.fileHidden ? undefined : selectedLines,
+        meta: Object.keys(uiMeta).length > 0 ? uiMeta : undefined,
+      });
+
+      // 与 Integration.sendMessage 路径保持一致，记录到提示词历史
+      try {
+        const { addToHistory } = await import('../core/history/index.js');
+        addToHistory(content);
+      } catch { /* 历史记录失败不阻塞消息发送 */ }
+
+      // 提交到引擎队列：设置 pendingUserMessage，使消息在下次 LLM 请求时被带上。
+      // 若 consumer 正在运行，submitMessage 会等待其退出（消息已被现有 consumer
+      // 在 while 循环中消费）；若已退出，则启动新的 consumer 处理该消息。
+      // manageQueryUI=true：排队消息绕过 Integration.sendMessage，若该调用启动了
+      // 自己的 consumer，需要自行管理 onQueryBegin/onQueryEnd（与 enqueueAgentMessage 一致）。
+      void (async () => {
+        try {
+          for await (const _ of engine.submitMessage(content, 'user', undefined, {
+            manageQueryUI: true,
+            // 排队路径：消息未 push 到 mutableMessages，consumer 处理时用此对象现场追加
+            userMsgData: userMsg,
+          })) {
+            // 排队消息的回复由现有/新 consumer 通过正常路径推送，无需在此转发
+            void _;
+          }
+        } catch (e) {
+          logger.error('VSCodeUI', `Error processing queued message: ${e}`);
+        }
+      })();
     } catch (err) {
       this.log(`[VSCodeUI] Failed to enqueue queued message: ${err}`);
       // 入队失败时通知 webview 显示排队状态，由 webview 在 queryEnd 后重新投递
@@ -351,42 +376,8 @@ export class WebviewMessageHandler {
   }
 
   private async handleSendMessage(message: any): Promise<void> {
-    // 确保 engine 已创建
-    const { getSessionEngine } = await import('../core/QueryEngine.js');
-    const { createEngine } = await import('../core/Integration.js');
-    if (!getSessionEngine(message.sessionId)) {
-      createEngine(message.sessionId, defaultTitle());
-      if (message.content) {
-        this.setTitle(message.sessionId, message.content.substring(0, 50));
-      }
-      this.log(`[VSCodeUI] Auto-created engine for session ${message.sessionId} on sendMessage`);
-    }
-
-    const { sendMessage } = await import('../core/Integration.js');
-
-    this.log(`[VSCodeUI] sendMessage with filePath: ${message.filePath}, selectedLines: ${JSON.stringify(message.selectedLines)}, fileHidden: ${message.fileHidden}`);
-
-    if (message.agentMode) {
-      this.sessionAgentModes.set(message.sessionId, message.agentMode);
-    }
-
-    // webview 未传入 thinkingMode 时回退到引擎当前的 thinking effort（当前对话正在使用的值）
-    const thinkingEffort = message.thinkingMode || getSessionEngine(message.sessionId)?.thinkingModeOverride;
-
-    const finalContent = message.content;
-
-    for await (const _msg of sendMessage(finalContent, message.sessionId, {
-      filePath: message.filePath,
-      selectedLines: message.selectedLines,
-      fileHidden: !!message.fileHidden,
-      thinkingMode: thinkingEffort,
-      webSearch: message.webSearch,
-      model: message.model,
-      promptPreset: message.promptMode,
-    })) {
-      // 由 integration 层调用 notifyMessage
-      void _msg;
-    }
+    // 与 queueMessage 共用同一套入队/处理逻辑，避免两套行为分叉
+    await this.handleQueueMessage(message);
   }
 
   private async handleOpenFile(message: any): Promise<void> {
@@ -415,9 +406,23 @@ export class WebviewMessageHandler {
         for (const msg of conversation.messages) {
           if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
             for (const block of msg.message.content) {
-              const b = block as { type: string; id?: string;[key: string]: unknown };
+              const b = block as { type: string; id?: string; name?: string; input?: any;[key: string]: unknown };
               if (b.type === 'tool_use' && toolUseIds.includes(b.id) && b._meta) {
-                result[b.id!] = b._meta as Record<string, unknown>;
+                const meta = b._meta as Record<string, unknown>;
+                if (b.name === 'Edit' && typeof meta.beforeContent === 'string' && typeof meta.afterContent === 'string') {
+                  // 按需加载也返回紧凑 diff，避免把完整文件内容发给 webview
+                  result[b.id!] = {
+                    diffHunks: buildEditDiffHunks({
+                      beforeContent: meta.beforeContent,
+                      afterContent: meta.afterContent,
+                      startLine: meta.startLine as number | undefined,
+                      endLine: meta.endLine as number | undefined,
+                      replaceAll: Boolean(b.input?.replace_all),
+                    }),
+                  };
+                } else {
+                  result[b.id!] = meta;
+                }
               }
             }
           }

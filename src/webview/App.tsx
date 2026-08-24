@@ -52,6 +52,9 @@ const App = () => {
   // 对话历史状态
   const [conversations, setConversations] = useState<Array<any>>([]);
   const [conversationsLoading, setConversationsLoading] = useState(true);
+  // 插件模式（webview 渲染对话列表）下，历史对话分页展示：默认 50 条，滚动到底再加载 50 条
+  const [visibleConversationCount, setVisibleConversationCount] = useState(50);
+  const CONVERSATION_PAGE_SIZE = 50;
   // App 模式（Electron）下：正在加载对话（conversationLoaded 尚未到达）的 loading 状态
   const [isLoadingConversation, setIsLoadingConversation] = useState(false);
   // 子对话展开状态（sessionId -> boolean）
@@ -285,10 +288,18 @@ const App = () => {
     return !!(s?.hasActiveQuery && s?.userChoiceRequest);
   }, []);
 
+  // 插件模式对话下拉滚动到底时，动态追加一页历史对话
+  const handleConversationScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 20) {
+      setVisibleConversationCount(prev => Math.min(prev + CONVERSATION_PAGE_SIZE, conversationTree.roots.length));
+    }
+  }, [conversationTree.roots.length]);
+
   const handlerProps = useMemo(() => ({
     setMessages, setShowThinkingAnimation, setAnimationMode, setHasActiveQuery,
     setHasCompactArchive, setIsCompactExpanded, setConversations, setConversationsLoading,
-    setIsLoadingConversation,
+    setVisibleConversationCount, setIsLoadingConversation,
     setTheme, setThemeInitialized, setCurrentFile, setSelectedLines, setStats,
     setConversationTitle, setMaxContextTokens, setSkills, setConversationDropdownOpen,
     setCurrentSessionId, setParentSessionId, setAgentMode, setThinkingMode,
@@ -649,6 +660,7 @@ const App = () => {
               dropdownRender={() => (
                 <div
                   className="conversation-dropdown"
+                  onScroll={handleConversationScroll}
                   style={{
                     width: '400px',
                     maxWidth: 'calc(100vw - 70px)',
@@ -693,7 +705,7 @@ const App = () => {
                         {t('app.noConversationHistory')}
                       </div>
                     ) : (
-                      conversationTree.roots.map((item: any) => (
+                      conversationTree.roots.slice(0, visibleConversationCount).map((item: any) => (
                         <ConversationTreeItem
                           key={item.sessionId + '-' + (item.title || '')}
                           item={item}
@@ -722,6 +734,7 @@ const App = () => {
                                 showThinkingAnimation,
                                 animationMode,
                                 hasActiveQuery,
+                                preCompressHasActiveQuery: sessionStatesRef.current.get(sid)?.preCompressHasActiveQuery,
                                 agentMode,
                                 promptMode,
                                 thinkingMode,

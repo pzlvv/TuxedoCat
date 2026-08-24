@@ -720,18 +720,12 @@ async function updateMetadataForNewMessage(
       } catch { /* ignore */ }
     }
 
-    // 如果传入了 totalContextTokens，更新到 metadata 的 context 字段
-    // 注意：必须与已有值取 max，保证只增不减，不能直接覆盖。
-    // appendMessage 的持久化是异步的（QueryEngine.startPersist fire-and-forget），
-    // 多条消息的 metadata 写操作可能乱序完成（或与其它实例并发写同一目录）。
-    // 若直接覆盖，较早消息（token 数较小）的写入可能晚于较新消息完成，
-    // 把已持久化的较大值回退成旧值，导致重新从磁盘加载对话时
-    // context 显示比上次会话更小。
+    // 如果传入了 totalContextTokens，直接按服务端返回的数值覆盖，
+    // 不再取 max，避免压缩后 meta.json 中仍保留压缩前的大值。
     if (totalContextTokens !== undefined && totalContextTokens > 0) {
-      const prevTotalTokens = metadata.context?.totalContextTokens;
       metadata.context = {
         ...(metadata.context ?? {}),
-        totalContextTokens: Math.max(prevTotalTokens ?? 0, totalContextTokens),
+        totalContextTokens,
       };
     }
 
@@ -1244,27 +1238,23 @@ export async function updateConversationContext(
       // 之前是整体赋值 metadata.context = context，导致用户在 VSCode 中切换文件时
       // 触发 persistCurrentFileContext -> updateConversationContext({ currentFile, selectedLines })
       // 会清掉之前 appendMessage 写入的 totalContextTokens
-      // totalContextTokens 累加处理：在先 spread 之前保存旧值，
-      // API 返回的 input_tokens 可能因缓存而偏小，用 max 确保只增不减
+      // totalContextTokens 单独处理：直接采用服务端/meta 返回的最新值，不再取 max，
+      // 这样压缩后写入的较小 token 数不会被旧的大值覆盖。
       // 合并 context，但使用 Object.assign 手动处理以避免显式 undefined 覆盖
       // totalContextTokens 不能放进通用合并循环：
-      // 显式 0（清空对话）会被当成"新值"合并进去，然后下面的 > 0 max 判断
-      // 因 0>0 为 false 不会恢复旧值，导致已有值被意外清零。单独处理：
+      // 显式 0（清空对话）会被当成"新值"合并进去。单独处理：
       // - 显式传 0 → 重置为 0（clear 场景）
-      // - 传 > 0 → 与已有值取 max，确保只增不减（appendMessage/流式更新可能乱序）
-      const prevTotalTokens = metadata.context?.totalContextTokens;
+      // - 传 > 0 → 直接覆盖为服务端返回的最新值
       const mergedContext = { ...(metadata.context ?? {}) };
       for (const [key, value] of Object.entries(context)) {
-        if (key === 'totalContextTokens') continue; // 单独 max 处理
+        if (key === 'totalContextTokens') continue; // 单独处理
         if (value !== undefined) {
           (mergedContext as Record<string, unknown>)[key] = value;
         }
       }
       metadata.context = mergedContext as ConversationContext;
-      if (context.totalContextTokens === 0) {
-        metadata.context.totalContextTokens = 0;
-      } else if (context.totalContextTokens !== undefined && context.totalContextTokens > 0) {
-        metadata.context.totalContextTokens = Math.max(prevTotalTokens ?? 0, context.totalContextTokens);
+      if (context.totalContextTokens !== undefined && context.totalContextTokens >= 0) {
+        metadata.context.totalContextTokens = context.totalContextTokens;
       }
       // model 字段同时写入 metadata 顶层（便于快速读取）和 context.model
       if (context.model !== undefined) {
@@ -1277,19 +1267,16 @@ export async function updateConversationContext(
       // 同步更新内存缓存中的 context（如果已加载过该对话）
       const cached = conversationCache.get(sessionId);
       if (cached) {
-        const prevCacheTokens = cached.metadata.context?.totalContextTokens;
         const mergedCache = { ...(cached.metadata.context ?? {}) };
         for (const [key, value] of Object.entries(context)) {
-          if (key === 'totalContextTokens') continue; // 单独 max 处理
+          if (key === 'totalContextTokens') continue; // 单独处理
           if (value !== undefined) {
             (mergedCache as Record<string, unknown>)[key] = value;
           }
         }
         cached.metadata.context = mergedCache as ConversationContext;
-        if (context.totalContextTokens === 0) {
-          cached.metadata.context.totalContextTokens = 0;
-        } else if (context.totalContextTokens !== undefined && context.totalContextTokens > 0) {
-          cached.metadata.context.totalContextTokens = Math.max(prevCacheTokens ?? 0, context.totalContextTokens);
+        if (context.totalContextTokens !== undefined && context.totalContextTokens >= 0) {
+          cached.metadata.context.totalContextTokens = context.totalContextTokens;
         }
         if (context.model !== undefined) {
           cached.metadata.model = context.model;

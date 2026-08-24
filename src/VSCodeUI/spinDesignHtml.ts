@@ -459,16 +459,15 @@ function __spinT(key, params) {
     var r = displayEl.getBoundingClientRect();
     var w = Math.round(r.width * 1.5);
     teOverlay.style.position = 'fixed';
-    teOverlay.style.top = Math.max(8, r.top - 40) + 'px';
     teOverlay.style.left = (r.left + r.width / 2 - w / 2) + 'px';
     teOverlay.style.width = w + 'px';
     teOverlay.className = 'show';
     // 先设 auto 让 scrollHeight 反映真实内容高度
     teTextarea.style.height = 'auto';
     teTextarea.style.overflowY = 'hidden';
-    teTextarea.style.minHeight = '80px';
-    teMaxHeight = 400;
-    teTextarea.style.minHeight = '80px';
+    // 悬浮框至少覆盖原显示框的高度，避免原框过高时底部露在外面
+    teTextarea.style.minHeight = Math.max(80, r.height) + 'px';
+    teMaxHeight = Math.max(400, r.height);
     var h = teTextarea.scrollHeight;
     if (h > teMaxHeight) {
       teTextarea.style.height = teMaxHeight + 'px';
@@ -476,6 +475,8 @@ function __spinT(key, params) {
     } else {
       teTextarea.style.height = h + 'px';
     }
+    // 与原框顶部对齐；若高度超出视口则向上收拢，但仍覆盖整个原框
+    teOverlay.style.top = Math.max(0, Math.min(r.top, window.innerHeight - teTextarea.offsetHeight - 8)) + 'px';
     setTimeout(function() {
       teTextarea.focus();
       var pos = (typeof caretOffset === 'number' && caretOffset >= 0) ? caretOffset : teTextarea.value.length;

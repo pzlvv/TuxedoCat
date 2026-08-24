@@ -26,6 +26,7 @@ import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidH
 import { tt, getSystemLocale } from '../src/core/i18n.js';
 import { UserChoiceManager } from '../src/VSCodeUI/userChoice.js';
 import { ToolHandler } from '../src/VSCodeUI/toolHandler.js';
+import { buildEditDiffHunks } from '../src/core/utils/editDiff.js';
 import { WebviewMessageHandler } from '../src/VSCodeUI/webviewMessageHandler.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
 
@@ -775,13 +776,29 @@ export class ElectronUI implements AssistantUI {
             } else if (b.type === 'tool_use') {
               const toolUseId = b.id || '';
               const result = toolResultMap.get(toolUseId);
+              const toolArgs: Record<string, unknown> = b.input ? { ...b.input } : {};
+              const blockMeta = b._meta as Record<string, unknown> | undefined;
+              if (b.name === 'Edit' && typeof blockMeta?.beforeContent === 'string' && typeof blockMeta?.afterContent === 'string') {
+                // Edit 只发送 diff 相关行
+                toolArgs.diffHunks = buildEditDiffHunks({
+                  beforeContent: blockMeta.beforeContent,
+                  afterContent: blockMeta.afterContent,
+                  startLine: blockMeta.startLine as number | undefined,
+                  endLine: blockMeta.endLine as number | undefined,
+                  replaceAll: Boolean(b.input?.replace_all),
+                });
+              } else if (blockMeta?.beforeContent !== undefined || blockMeta?.afterContent !== undefined) {
+                // Write 等工具保留原有 before/after 字段
+                toolArgs.beforeContent = blockMeta.beforeContent;
+                toolArgs.afterContent = blockMeta.afterContent;
+              }
               this.postToWebview(sessionID, {
                 type: 'addMessage',
                 role: 'toolcall',
                 content: result?.content || '',
                 param: `⚙️ ${b.name || 'tool'}`,
                 toolName: b.name,
-                toolArgs: b.input as Record<string, unknown>,
+                toolArgs,
                 toolCallId: toolUseId,
                 status: result ? (result.exitCode !== 0 ? 'fail' : 'success') : 'running',
               });
@@ -861,9 +878,25 @@ export class ElectronUI implements AssistantUI {
             if (block.type === 'tool_use' && block._meta) {
               block._metaTrimmed = true;
               block._toolUseId = block.id;
-              const { beforeContent, afterContent, ...smallFields } = block._meta;
+              const rawMeta = block._meta as Record<string, unknown>;
+              const { beforeContent, afterContent, ...smallFields } = rawMeta;
               block._meta = smallFields;
-              toolMetaMap[block.id!] = { beforeContent, afterContent };
+
+              if (block.name === 'Edit' && typeof beforeContent === 'string' && typeof afterContent === 'string') {
+                // Edit 只发送 diff 相关行，避免把整个文件内容发给 webview
+                toolMetaMap[block.id!] = {
+                  diffHunks: buildEditDiffHunks({
+                    beforeContent,
+                    afterContent,
+                    startLine: rawMeta.startLine as number | undefined,
+                    endLine: rawMeta.endLine as number | undefined,
+                    replaceAll: Boolean((block.input as any)?.replace_all),
+                  }),
+                };
+              } else {
+                // Write 等工具仍保留原有 beforeContent/afterContent 字段
+                toolMetaMap[block.id!] = { beforeContent, afterContent };
+              }
             }
           }
         }

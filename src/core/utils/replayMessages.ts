@@ -1,5 +1,6 @@
 import type { AssistantUI } from '../AssistantUI.js';
 import type { Message } from '../types.js';
+import { buildEditDiffHunks } from './editDiff.js';
 
 type ToolResultInfo = { content: string; exitCode: number };
 
@@ -54,7 +55,7 @@ export function replayMessagesToUI(ui: AssistantUI, sessionId: string, messages:
 
     if (msg.type === 'assistant' && Array.isArray(msg.message.content)) {
       for (const block of msg.message.content) {
-        const b = block as { type?: string; text?: string; thinking?: string; name?: string; id?: string; input?: Record<string, unknown> };
+        const b = block as { type?: string; text?: string; thinking?: string; name?: string; id?: string; input?: Record<string, unknown>; _meta?: Record<string, unknown> };
         if (b.type === 'thinking') {
           ui.onMessage(sessionId, { role: 'thinking', content: b.thinking || '' });
         } else if (b.type === 'text') {
@@ -62,12 +63,30 @@ export function replayMessagesToUI(ui: AssistantUI, sessionId: string, messages:
         } else if (b.type === 'tool_use') {
           const toolUseId = b.id || '';
           const result = toolResultMap.get(toolUseId);
+          const toolArgs: Record<string, unknown> = b.input ? { ...b.input } : {};
+          const blockMeta = b._meta;
+
+          if (b.name === 'Edit' && typeof blockMeta?.beforeContent === 'string' && typeof blockMeta?.afterContent === 'string') {
+            // Edit 只发送 diff 相关行
+            toolArgs.diffHunks = buildEditDiffHunks({
+              beforeContent: blockMeta.beforeContent,
+              afterContent: blockMeta.afterContent,
+              startLine: blockMeta.startLine as number | undefined,
+              endLine: blockMeta.endLine as number | undefined,
+              replaceAll: Boolean(b.input?.replace_all),
+            });
+          } else if (blockMeta?.beforeContent !== undefined || blockMeta?.afterContent !== undefined) {
+            // Write 等工具保留原有 before/after 字段
+            toolArgs.beforeContent = blockMeta.beforeContent;
+            toolArgs.afterContent = blockMeta.afterContent;
+          }
+
           ui.onMessage(sessionId, {
             role: 'toolcall',
             content: result?.content || '',
             param: `⚙️ ${b.name || 'tool'}`,
             toolName: b.name,
-            toolArgs: b.input,
+            toolArgs,
             toolCallId: toolUseId,
             status: result ? (result.exitCode !== 0 ? 'fail' : 'success') : 'running',
           });

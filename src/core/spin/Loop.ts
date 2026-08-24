@@ -21,7 +21,7 @@ import {
 import { SpinJudger } from './SpinJudger.js';
 import type { Message } from '../types.js';
 
-const MAX_RETRIES = 10;
+const MAX_ATTEMPTS = 100;
 
 async function waitForAgentReply(
   engine: QueryEngine,
@@ -118,7 +118,7 @@ export async function spinLoop(
   sessionId: string,
 ): Promise<void> {
   let currentNodeId: number | undefined;
-  let retries = 0;
+  let attempts = 0;
 
   logger.info('SpinLoop', `Starting spin design loop`);
 
@@ -144,38 +144,37 @@ export async function spinLoop(
     const order = topologicalSort(config.nodes, config.edges);
     const currentSeq = order.indexOf(next.id) + 1;
 
-    // 2. 重置或递增重试计数
+    // 2. 重置或递增尝试计数
     if (currentNodeId !== next.id) {
       currentNodeId = next.id;
-      retries = 0;
+      attempts = 0;
     }
 
-    if (retries >= MAX_RETRIES) {
-      logger.info('SpinLoop', `Task ${currentSeq} failed after ${MAX_RETRIES} retries, skipping`);
-      const skipMsgContent = tt(
-        `正在跳过任务 ${currentSeq}（连续失败 ${MAX_RETRIES} 次）`,
-        `Skipping Task ${currentSeq} (failed after ${MAX_RETRIES} retries)`
+    if (attempts >= MAX_ATTEMPTS) {
+      logger.info('SpinLoop', `Task ${currentSeq} failed after ${MAX_ATTEMPTS} attempts, stopping spin mode`);
+      const stopMsgContent = tt(
+        `任务 ${currentSeq} 连续失败 ${MAX_ATTEMPTS} 次，已停止整个 Spin 模式执行`,
+        `Task ${currentSeq} failed after ${MAX_ATTEMPTS} attempts, stopping the entire Spin mode`
       );
       ui.onMessage(sessionId, {
         role: 'user',
-        content: skipMsgContent,
+        content: stopMsgContent,
       } as MessageData);
       {
-        const skipMsg: Message = {
+        const stopMsg: Message = {
           type: 'user',
-          message: { role: 'user', content: skipMsgContent },
-          uuid: `spin_skip_${Date.now()}`,
+          message: { role: 'user', content: stopMsgContent },
+          uuid: `spin_stop_${Date.now()}`,
           timestamp: Date.now(),
         };
-        (engine as any).mutableMessages.push(skipMsg);
+        (engine as any).mutableMessages.push(stopMsg);
       }
-      await updateNodeMeta(cwd, next.id, false, `failed after ${MAX_RETRIES} retries`);
-      currentNodeId = undefined;
-      continue;
+      await updateNodeMeta(cwd, next.id, false, `failed after ${MAX_ATTEMPTS} attempts`);
+      break;
     }
 
-    retries++;
-    const retrySuffix = retries > 1 ? ` (retry ${retries - 1}/${MAX_RETRIES - 1})` : '';
+    attempts++;
+    const attemptSuffix = ` (${attempts}/${MAX_ATTEMPTS})`;
 
     // 获取之前的 note（如果有）
     const prevNote = config.meta?.[String(next.id)]?.note || undefined;
@@ -183,10 +182,10 @@ export async function spinLoop(
     const skillsPrompt = await loadNodeSkillsPrompt(next.skills, cwd, sessionId);
     const nodePrompt = buildRunPrompt(next, prevNote, skillsPrompt);
 
-    logger.info('SpinLoop', `Executing Task ${currentSeq} - ${next.task}${retrySuffix}`);
+    logger.info('SpinLoop', `Executing Task ${currentSeq} - ${next.task}${attemptSuffix}`);
     const startMsgContent = tt(
-      `开始: 任务 ${currentSeq} - ${next.task}${retrySuffix}`,
-      `Starting: Task ${currentSeq} - ${next.task}${retrySuffix}`
+      `开始: 任务 ${currentSeq} - ${next.task}（第 ${attempts} / ${MAX_ATTEMPTS}）`,
+      `Starting: Task ${currentSeq} - ${next.task} (attempt ${attempts}/${MAX_ATTEMPTS})`
     );
     ui.onMessage(sessionId, {
       role: 'user',
@@ -230,8 +229,8 @@ export async function spinLoop(
     await updateNodeMeta(cwd, next.id, accept, reply);
 
     const resultMsgContent = tt(
-      `${accept ? '通过' : '失败'}: 任务 ${currentSeq} - ${next.task}${retrySuffix}`,
-      `${accept ? 'Passed' : 'Failed'}: Task ${currentSeq} - ${next.task}${retrySuffix}`
+      `${accept ? '通过' : '失败'}: 任务 ${currentSeq} - ${next.task}（第 ${attempts} / ${MAX_ATTEMPTS}）`,
+      `${accept ? 'Passed' : 'Failed'}: Task ${currentSeq} - ${next.task} (attempt ${attempts}/${MAX_ATTEMPTS})`
     );
     ui.onMessage(sessionId, {
       role: 'user',
@@ -257,7 +256,7 @@ export async function spinLoop(
       continue; // 重试当前节点
     }
 
-    retries = 0;
+    attempts = 0;
   }
 
   logger.info('SpinLoop', 'Spin design loop finished');

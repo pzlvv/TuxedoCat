@@ -21,6 +21,7 @@ import { tt, getSystemLocale } from './core/i18n.js';
 import { readUiLanguageSync } from './core/history/Config.js';
 import { MERMAID_PANEL_ID, SPIN_DESIGN_PANEL_ID } from './config/project.js';
 import { replayMessagesToUI } from './core/utils/replayMessages.js';
+import { buildEditDiffHunks } from './core/utils/editDiff.js';
 import type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent } from './VSCodeUI/types.js';
 import { UserChoiceManager } from './VSCodeUI/userChoice.js';
 import { DocumentManager } from './VSCodeUI/documentManager.js';
@@ -36,6 +37,17 @@ export class VSCodeUI implements AssistantUI {
   private webviewView: vscode.WebviewView | undefined;
   /** 按 session 保存的 agent mode */
   private sessionAgentModes: Map<string, 'manual' | 'risk' | 'auto'> = new Map();
+  /**
+   * 按 session 保存当前活动阶段。
+   * 用于在切换对话时正确恢复 thinking 动画，而不是简单用 hasActiveQuery 推断：
+   * - idle: 无活动
+   * - thinking: 正在 LLM thinking / 等待 LLM 开始
+   * - text: 正在流式输出 assistant 文本（此时应显示文本而不是 thinking 动画）
+   * - tool: 正在执行/等待工具（此时应显示工具卡片而不是 thinking 动画）
+   */
+  private sessionActivityPhases: Map<string, 'idle' | 'thinking' | 'text' | 'tool'> = new Map();
+  /** 每个 session 当前处于 tool 阶段的工具数量，用于并发工具结束后正确恢复 idle */
+  private sessionActiveToolCounts: Map<string, number> = new Map();
   private _windowStateRegistered: boolean = false;
 
   // 子模块
@@ -448,9 +460,25 @@ export class VSCodeUI implements AssistantUI {
             if (block.type === 'tool_use' && block._meta) {
               block._metaTrimmed = true;
               block._toolUseId = block.id;
-              const { beforeContent, afterContent, ...smallFields } = block._meta;
+              const rawMeta = block._meta as Record<string, unknown>;
+              const { beforeContent, afterContent, ...smallFields } = rawMeta;
               block._meta = smallFields;
-              toolMetaMap[block.id!] = { beforeContent, afterContent };
+
+              if (block.name === 'Edit' && typeof beforeContent === 'string' && typeof afterContent === 'string') {
+                // Edit 只发送 diff 相关行，避免把整个文件内容发给 webview
+                toolMetaMap[block.id!] = {
+                  diffHunks: buildEditDiffHunks({
+                    beforeContent,
+                    afterContent,
+                    startLine: rawMeta.startLine as number | undefined,
+                    endLine: rawMeta.endLine as number | undefined,
+                    replaceAll: Boolean((block.input as any)?.replace_all),
+                  }),
+                };
+              } else {
+                // Write 等工具仍保留原有 beforeContent/afterContent 字段
+                toolMetaMap[block.id!] = { beforeContent, afterContent };
+              }
             }
           }
         }
@@ -465,6 +493,7 @@ export class VSCodeUI implements AssistantUI {
       parentSessionId: extra.parentSessionId,
       agentMode: extra.agentMode,
       hasActiveQuery: extra.hasActiveQuery,
+      activityPhase: this.getActivityPhase(sessionId),
       sessionId,
       hasCompactArchive: extra.hasCompactArchive === true,
       toolMetaMap: Object.keys(toolMetaMap).length > 0 ? toolMetaMap : undefined,
@@ -509,6 +538,8 @@ export class VSCodeUI implements AssistantUI {
     args: Record<string, any>,
     tool: unknown,
   ): Promise<import('./core/tools/Tool.js').PermissionResult> {
+    // 进入工具阶段（包括等待用户授权/权限检查），thinking 动画应让位于工具卡片
+    this.setActivityPhase(sessionID, 'tool');
     return this.toolHandler.onPreToolCall(sessionID, toolUseId, toolName, args, tool);
   }
 
@@ -516,6 +547,7 @@ export class VSCodeUI implements AssistantUI {
    * 工具调用开始
    */
   onToolCall(sessionID: string, toolUseId: string, toolName: string): void {
+    this.sessionActivityPhases.set(sessionID, 'tool');
     this.toolHandler.onToolCall(sessionID, toolUseId, toolName);
   }
 
@@ -523,6 +555,7 @@ export class VSCodeUI implements AssistantUI {
    * 工具调用结果
    */
   onToolResult(sessionID: string, toolUseId: string, toolName: string, output: string, status: 'success' | 'error'): void {
+    this.finishToolPhase(sessionID);
     this.toolHandler.onToolResult(sessionID, toolUseId, toolName, output, status);
   }
 
@@ -587,6 +620,8 @@ export class VSCodeUI implements AssistantUI {
     if (data.role === 'assistant' && data.accumulated && !data.accumulated.trim()) {
       return;
     }
+    // 流式阶段决定当前是 thinking 还是 assistant 文本输出
+    this.sessionActivityPhases.set(sessionID, data.role === 'assistant' ? 'text' : 'thinking');
     this.postToWebview(sessionID, {
       type: 'streamMessage',
       role: data.role,
@@ -678,9 +713,41 @@ export class VSCodeUI implements AssistantUI {
   }
 
   /**
+   * 更新某个 session 的活动阶段
+   */
+  private setActivityPhase(sessionID: string, phase: 'idle' | 'thinking' | 'text' | 'tool'): void {
+    if (phase === 'tool') {
+      const count = (this.sessionActiveToolCounts.get(sessionID) ?? 0) + 1;
+      this.sessionActiveToolCounts.set(sessionID, count);
+    }
+    this.sessionActivityPhases.set(sessionID, phase);
+  }
+
+  /**
+   * 工具结束：递减并发计数，全部结束后回到 idle
+   */
+  private finishToolPhase(sessionID: string): void {
+    const count = Math.max(0, (this.sessionActiveToolCounts.get(sessionID) ?? 0) - 1);
+    if (count === 0) {
+      this.sessionActiveToolCounts.delete(sessionID);
+      this.sessionActivityPhases.set(sessionID, 'idle');
+    } else {
+      this.sessionActiveToolCounts.set(sessionID, count);
+    }
+  }
+
+  /**
+   * 获取某个 session 当前活动阶段（供 conversationLoaded 恢复 thinking 动画使用）
+   */
+  getActivityPhase(sessionID: string): 'idle' | 'thinking' | 'text' | 'tool' {
+    return this.sessionActivityPhases.get(sessionID) ?? 'idle';
+  }
+
+  /**
    * AI 开始处理
    */
   onAIBegin(sessionID: string): void {
+    this.sessionActivityPhases.set(sessionID, 'thinking');
     this.setThinkingAnimation(sessionID, true);
     this.postToWebview(sessionID, {
       type: 'aiBegin',
@@ -691,6 +758,7 @@ export class VSCodeUI implements AssistantUI {
    * AI 处理结束（每轮 LLM 调用后触发）
    */
   onAIEnd(sessionID: string): void {
+    this.sessionActivityPhases.set(sessionID, 'idle');
     this.setThinkingAnimation(sessionID, false);
     this.postToWebview(sessionID, {
       type: 'aiEnd',
@@ -715,6 +783,7 @@ export class VSCodeUI implements AssistantUI {
     if (count > 1) return;
     this.setEnableAbort(true);
     // 查询开始时立即显示 thinking 动画，覆盖前置耗时
+    this.sessionActivityPhases.set(sessionID, 'thinking');
     this.setThinkingAnimation(sessionID, true);
     this.postToWebview(sessionID, {
       type: 'queryBegin',
@@ -733,6 +802,10 @@ export class VSCodeUI implements AssistantUI {
       return;
     }
     this.queryActiveCounts.delete(sessionID);
+    this.sessionActivityPhases.set(sessionID, 'idle');
+    // 查询结束必须关闭 thinking 动画：中断（尤其子代理中断）可能没有 onAIEnd，
+    // 若只发 queryEnd 会让 webview 的 thinking 动画残留。
+    this.setThinkingAnimation(sessionID, false);
     this.setEnableAbort(false);
     this.postToWebview(sessionID, {
       type: 'queryEnd',

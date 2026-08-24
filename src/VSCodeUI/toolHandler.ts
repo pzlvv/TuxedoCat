@@ -5,6 +5,7 @@
 import type { LogChannel } from '../host/UIHost.js';
 import { expandPath } from '../core/utils/path.js';
 import { logger } from '../core/Logger.js';
+import { buildEditDiffHunks } from '../core/utils/editDiff.js';
 import type { PermissionResult } from '../core/tools/Tool.js';
 import type { UserChoiceManager } from './userChoice.js';
 
@@ -155,12 +156,20 @@ export class ToolHandler {
         // permResult 中没有 beforeContent/afterContent，此时不应使用
         // userChoiceManager 中上一次请求遗留的 diff，否则 webview 会显示错误 diff。
         if (hasPermDiff) {
+          const beforeContent = this.userChoiceManager.currentBeforeContent || '';
+          const afterContent = this.userChoiceManager.currentAfterContent || '';
           displayArgs = {
             ...displayArgs,
             contextBefore: this.userChoiceManager.currentContextBefore || [],
             contextAfter: this.userChoiceManager.currentContextAfter || [],
-            beforeContent: this.userChoiceManager.currentBeforeContent || '',
-            afterContent: this.userChoiceManager.currentAfterContent || '',
+            // Edit 只发送 diff 相关行，避免把整个文件内容发给 webview
+            diffHunks: buildEditDiffHunks({
+              beforeContent,
+              afterContent,
+              startLine: this.userChoiceManager.currentStartLine,
+              endLine: this.userChoiceManager.currentEndLine,
+              replaceAll,
+            }),
             startLine: this.userChoiceManager.currentStartLine,
             endLine: this.userChoiceManager.currentEndLine,
           };
@@ -185,7 +194,10 @@ export class ToolHandler {
       toolCallId,
     });
 
-    this.log(`[VSCodeUI] addMessage: ${toolName} file=${(displayArgs as any).file_path || '-'} beforeLen=${(displayArgs as any).beforeContent?.length || 0} afterLen=${(displayArgs as any).afterContent?.length || 0}`);
+    const diffLineCount = Array.isArray((displayArgs as any).diffHunks)
+      ? (displayArgs as any).diffHunks.reduce((s: number, h: any) => s + (h.lines?.length || 0), 0)
+      : 0;
+    this.log(`[VSCodeUI] addMessage: ${toolName} file=${(displayArgs as any).file_path || '-'} diffLines=${diffLineCount} beforeLen=${(displayArgs as any).beforeContent?.length || 0} afterLen=${(displayArgs as any).afterContent?.length || 0}`);
 
     // 异步写入 block 顶层 _meta
     if (permResult && typeof permResult === 'object' && !('updatedInput' in permResult)) {
@@ -238,6 +250,7 @@ export class ToolHandler {
           toolCallId,
           beforeContent: '',
           afterContent: '',
+          diffHunks: [],
           contextBefore: [],
           contextAfter: [],
         });

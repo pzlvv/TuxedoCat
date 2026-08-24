@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import type { WebviewMessage } from '../../core/webviewTypes';
+import type { DiffHunk } from '../../core/utils/editDiff';
 import type { Message, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, ProviderConfig } from '../types';
 import { postMessage } from '../webviewEnv';
 import { profileLog } from '../debug';
@@ -17,6 +18,8 @@ export interface UseMessageHandlerProps {
   setIsCompactExpanded: (v: boolean) => void;
   setConversations: React.Dispatch<React.SetStateAction<any[]>>;
   setConversationsLoading: (v: boolean) => void;
+  /** 插件模式对话列表当前可见条数（滚动到底时追加一页） */
+  setVisibleConversationCount: (v: number | ((prev: number) => number)) => void;
   /** App 模式加载对话的 loading 状态（conversationLoaded 到达后关闭） */
   setIsLoadingConversation: (v: boolean) => void;
   setTheme: (v: Theme) => void;
@@ -265,8 +268,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             const cacheCreationTokens = (msg as any).cacheCreationInputTokens || 0;
             profileLog(`[TokenDebug] addMessage: role=${msg.role} contextLength=${(msg as any).contextLength} outputTokens=${(msg as any).outputTokens} totalTokens=${totalTokens} cacheRead=${cacheReadTokens} cacheCreation=${cacheCreationTokens}`);
             if (totalTokens > 0) {
-              // 与 streamEnd 保持一致：取 max 只增不减，避免缓存命中等 input 偏小的情况回退显示值
-              props.setContextLength(prev => Math.max(prev, totalTokens));
+              // 直接使用服务端返回的 input+output，不取 max；压缩后服务端会返回更小的数值，
+              // 如果继续 max 会导致压缩后的 context 显示仍然停留在压缩前的旧值。
+              props.setContextLength(totalTokens);
               // 同时保存到当前 session 的 state 中
               if (props.currentSessionIdRef.current) {
                 const state = props.sessionStatesRef.current.get(props.currentSessionIdRef.current);
@@ -361,6 +365,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               showThinkingAnimation: props.showThinkingAnimation,
               animationMode: props.animationMode,
               hasActiveQuery: props.hasActiveQuery,
+              preCompressHasActiveQuery: existingState?.preCompressHasActiveQuery,
               agentMode: props.agentMode,
               promptMode: props.promptMode,
               thinkingMode: props.thinkingMode,
@@ -538,6 +543,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             const targetState = props.sessionStatesRef.current.get(endedSessionId);
             if (targetState) {
               targetState.hasActiveQuery = false;
+              // 查询结束（含中断）时同步关闭 thinking 动画，避免残留
+              targetState.showThinkingAnimation = false;
+              targetState.animationMode = 'thinking';
             }
             // 递增版本号强制对话列表重渲染，使流水灯即时消失
             props.setSessionRunningVersion(v => v + 1);
@@ -564,6 +572,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             break;
           }
           props.setHasActiveQuery(false);
+          // 查询结束（含中断）时同步关闭 thinking 动画，避免残留
+          props.setShowThinkingAnimation(false);
+          props.setAnimationMode('thinking');
           break;
         }
         case 'setEnableAbort':
@@ -591,6 +602,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                   contextAfter: msg.contextAfter || [],
                   beforeContent: msg.beforeContent !== undefined ? msg.beforeContent : existingArgs.beforeContent || '',
                   afterContent: msg.afterContent !== undefined ? msg.afterContent : existingArgs.afterContent || '',
+                  diffHunks: msg.diffHunks !== undefined ? msg.diffHunks : existingArgs.diffHunks,
                   startLine: msg.startLine,
                   endLine: msg.endLine,
                 };
@@ -787,6 +799,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           const convs = msg.conversations || [];
           props.setConversations(convs);
           props.setConversationsLoading(false);
+          // 新列表到达时回到默认分页大小，避免旧会话的滚动位置/可见数量串到新列表
+          props.setVisibleConversationCount(50);
           props.listLoadedOnceRef.current = true;
           // 如果修改的对话是当前对话，同步更新顶部标题
           const sid = props.currentSessionIdRef.current;
@@ -854,19 +868,21 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               // 恢复用户选择输入到 ref（组件内部使用自己的本地状态）
               props.userChoiceInputRef.current = savedState.userChoiceInput || '';
               // showThinkingAnimation 和 hasActiveQuery 是运行时状态，不依赖 session state 快照。
-              // conversationLoaded 消息中扩展端已根据引擎实时状态提供 hasActiveQuery。
-              // 当目标对话有活跃查询时（AI 正在处理），showThinkingAnimation 应设为 true，
-              // 避免切换对话后 thinking 动画丢失，要等到下一次消息才恢复。
-              props.setShowThinkingAnimation((msg as any).hasActiveQuery === true);
-              props.setHasActiveQuery((msg as any).hasActiveQuery === true);
-              // 恢复该会话自己的动画类型，避免把其他会话的 compacting 动画带过来
-              props.setAnimationMode(
-                savedState.animationMode === 'compacting' && (msg as any).hasActiveQuery
-                  ? 'compacting'
-                  : 'thinking'
+              // conversationLoaded 消息中扩展端已根据引擎实时状态提供 hasActiveQuery 和 activityPhase。
+              // activityPhase 精确表示当前是 thinking / text / tool / idle，不能仅凭 hasActiveQuery 推断。
+              // 压缩是独立于 QueryEngine 的异步任务，hasActiveQuery 可能为 false，
+              // 因此压缩中必须优先使用 savedState 的 compacting 状态来恢复动画和流水灯。
+              const activityPhase = (msg as any).activityPhase as string | undefined;
+              const isCompacting = savedState.animationMode === 'compacting' && savedState.showThinkingAnimation === true;
+              const showThinking = isCompacting || (
+                (msg as any).hasActiveQuery === true && activityPhase !== 'tool' && activityPhase !== 'text'
               );
+              props.setShowThinkingAnimation(showThinking);
+              props.setHasActiveQuery(isCompacting || (msg as any).hasActiveQuery === true);
+              // 恢复该会话自己的动画类型，避免把其他会话的 compacting 动画带过来
+              props.setAnimationMode(isCompacting ? 'compacting' : 'thinking');
               // 同步到 session 状态，确保对话列表的流水灯与引擎实时状态一致
-              savedState.hasActiveQuery = (msg as any).hasActiveQuery === true;
+              savedState.hasActiveQuery = isCompacting || (msg as any).hasActiveQuery === true;
               // 优先使用消息中的 agentMode（扩展侧运行时内存值），没有则默认 manual
               props.setAgentMode((msg as any).agentMode || 'manual');
               // 提示词模式：优先使用 meta.json 中保存的 savedContext.promptMode，为空回退到普通模式
@@ -891,10 +907,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               // - subagent 在后台运行时，message_delta 已更新 meta.json 但 webview 的 savedState 未同步
               // - savedState 可能保存了切换时的旧值，而 meta.json 中有更新的 token 计数
               const savedCtxToken = (msg as any).savedContext?.totalContextTokens as number | undefined;
-              const restoredContextLength = Math.max(
-                savedCtxToken ?? 0,
-                savedState.contextLength ?? 0,
-              );
+              // 优先使用服务端/meta.json 持久化的最新值，避免本地旧快照把压缩后的值重新抬回 max 旧值
+              const restoredContextLength = savedCtxToken ?? savedState.contextLength ?? 0;
               profileLog(`[TokenDebug] conversationLoaded(savedState): restoredContextLength=${restoredContextLength} savedCtxToken=${savedCtxToken} savedState.contextLength=${savedState.contextLength}`);
               props.setContextLength(restoredContextLength);
               // 恢复 stats 快照 - 优先使用 conversationLoaded 顶层 timeStats（扩展侧统一计算的最新值），
@@ -929,9 +943,11 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               props.userChoiceInputRef.current = '';
               props.savedMainInputRef.current = '';
               // showThinkingAnimation 和 hasActiveQuery 由扩展端根据引擎实时状态提供
-              // 当目标对话有活跃查询时（AI 正在处理），showThinkingAnimation 应设为 true，
-              // 避免切换对话后 thinking 动画丢失，要等到下一次消息才恢复。
-              props.setShowThinkingAnimation((msg as any).hasActiveQuery === true);
+              // activityPhase 精确表示当前是 thinking / text / tool / idle，不能仅凭 hasActiveQuery 推断。
+              const activityPhase = (msg as any).activityPhase as string | undefined;
+              props.setShowThinkingAnimation(
+                (msg as any).hasActiveQuery === true && activityPhase !== 'tool' && activityPhase !== 'text'
+              );
               props.setHasActiveQuery((msg as any).hasActiveQuery === true);
               props.setAnimationMode('thinking');
               // 优先使用消息中的 agentMode（扩展侧运行时内存值），没有则默认 manual
@@ -967,7 +983,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                   choiceCursorPosition: 0,
                   userChoiceRequest: null,
                   userChoiceInput: '',
-                  showThinkingAnimation: (msg as any).hasActiveQuery === true,
+                  showThinkingAnimation: (msg as any).hasActiveQuery === true
+                    && (msg as any).activityPhase !== 'tool'
+                    && (msg as any).activityPhase !== 'text',
                   animationMode: 'thinking',
                   hasActiveQuery: (msg as any).hasActiveQuery === true,
                   agentMode: (msg as any).agentMode || 'manual',
@@ -1171,7 +1189,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                       const metaTrimmed = (toolUse as any)._metaTrimmed === true;
                       // 从 conversationLoaded 附带的 toolMetaMap 中查找裁剪掉的 _meta 大字段
                       const preloadedMeta = (msg as any).toolMetaMap?.[toolUseId as string] as
-                        { beforeContent?: string; afterContent?: string } | undefined;
+                        { beforeContent?: string; afterContent?: string; diffHunks?: DiffHunk[] } | undefined;
                       const toolArgs = (toolUse.input || {}) as Record<string, unknown>;
 
                       // Write 工具：补充 webview 展示所需的 contentPreview / totalLines / isTruncated
@@ -1193,18 +1211,40 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                         if (metaTrimmed) {
                           // 优先使用 preloadedMeta（扩展端随 conversationLoaded 一次性发送），
                           // 避免每个 EditFile/UpdateWiki 组件单独触发 requestToolMeta
-                          const bc = preloadedMeta?.beforeContent || (blockMeta as any)?.beforeContent || '';
-                          const ac = preloadedMeta?.afterContent || (blockMeta as any)?.afterContent || '';
-                          (toolArgs as any).beforeContent = bc;
-                          (toolArgs as any).afterContent = ac;
                           (toolArgs as any).contextBefore = (blockMeta as any)?.contextBefore || [];
                           (toolArgs as any).contextAfter = (blockMeta as any)?.contextAfter || [];
                           (toolArgs as any).startLine = (blockMeta as any)?.startLine;
                           (toolArgs as any).endLine = (blockMeta as any)?.endLine;
-                          // 仅当 preloadedMeta 和 _meta 中都没有数据时才标记需要按需请求
-                          if (!preloadedMeta && !bc && !ac) {
-                            (toolArgs as any)._needsMeta = true;
-                            (toolArgs as any)._toolUseId = (toolUse as any)._toolUseId || toolUseId;
+
+                          if (toolUse.name === 'Edit') {
+                            // Edit 使用紧凑 diff：只包含 diff 相关行
+                            const diffHunks = preloadedMeta?.diffHunks || (blockMeta as any)?.diffHunks || [];
+                            (toolArgs as any).diffHunks = diffHunks;
+
+                            // 旧数据兜底：还没有紧凑 diff，但 _meta 里是全量 before/after 时，
+                            // 保留旧字段让 EditFile 自行计算。
+                            if (diffHunks.length === 0) {
+                              const bc = (blockMeta as any)?.beforeContent || '';
+                              const ac = (blockMeta as any)?.afterContent || '';
+                              if (bc || ac) {
+                                (toolArgs as any).beforeContent = bc;
+                                (toolArgs as any).afterContent = ac;
+                              } else if (!preloadedMeta) {
+                                // 仅当 preloadedMeta 和 _meta 中都没有数据时才标记需要按需请求
+                                (toolArgs as any)._needsMeta = true;
+                                (toolArgs as any)._toolUseId = (toolUse as any)._toolUseId || toolUseId;
+                              }
+                            }
+                          } else {
+                            // Write 等工具继续使用 beforeContent/afterContent
+                            const bc = preloadedMeta?.beforeContent || (blockMeta as any)?.beforeContent || '';
+                            const ac = preloadedMeta?.afterContent || (blockMeta as any)?.afterContent || '';
+                            (toolArgs as any).beforeContent = bc;
+                            (toolArgs as any).afterContent = ac;
+                            if (!preloadedMeta && !bc && !ac) {
+                              (toolArgs as any)._needsMeta = true;
+                              (toolArgs as any)._toolUseId = (toolUse as any)._toolUseId || toolUseId;
+                            }
                           }
                         } else {
                           // 完整 _meta（旧数据，兼容）
@@ -1267,6 +1307,38 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                     }
                   }
                 }
+                // 根据扩展端实时维护的 activityPhase 修正 thinking 动画状态；
+                // 旧版本消息没有 activityPhase 时，退化为从恢复的消息内容推断当前阶段。
+                // 不能用 hasActiveQuery 直接推断 thinking：查询进行中可能正处于
+                // 工具执行/文本流式输出阶段，此时应显示工具卡片或文本而不是 thinking 动画。
+                const activityPhase = (msg as any).activityPhase as string | undefined;
+                const hasRunningTool = restoredMessages.some(m =>
+                  m.role === 'toolcall' && m.status === 'running'
+                );
+                const hasStreamingAssistant = restoredMessages.some(m =>
+                  m.role === 'assistant' && m.isStreaming === true
+                );
+                const loadedState = props.sessionStatesRef.current.get(_convLoadedSessionId);
+                // 压缩任务不经过 QueryEngine，hasActiveQuery 可能为 false；
+                // 因此压缩中要直接沿用 savedState 的 compacting 状态，而不是被 hasActiveQuery 关掉。
+                const isCompacting = loadedState?.animationMode === 'compacting' && loadedState?.showThinkingAnimation === true;
+                const shouldShowThinking =
+                  isCompacting ||
+                  ((msg as any).hasActiveQuery === true &&
+                    (activityPhase
+                      ? activityPhase !== 'tool' && activityPhase !== 'text'
+                      : !hasRunningTool && !hasStreamingAssistant));
+                const shouldCompact = isCompacting;
+                props.setShowThinkingAnimation(shouldShowThinking);
+                props.setAnimationMode(shouldCompact ? 'compacting' : 'thinking');
+                if (loadedState) {
+                  loadedState.showThinkingAnimation = shouldShowThinking;
+                  loadedState.animationMode = shouldCompact ? 'compacting' : 'thinking';
+                  if (shouldCompact) {
+                    loadedState.hasActiveQuery = true;
+                  }
+                }
+
                 // 然后再设置新消息
                 const _t_setMsgStart = performance.now();
                 // 历史消息渲染前预滚动，避免大量代码/diff 先渲染再滚动
@@ -1311,18 +1383,28 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // Handle compress progress notifications
           const targetSessionId = msg.sessionId || props.currentSessionIdRef.current;
           const isCurrentTarget = !msg.sessionId || msg.sessionId === props.currentSessionIdRef.current;
+          let restoredActiveQuery: boolean | undefined;
 
           // 始终更新目标会话的动画状态，切换会话后可以恢复正确的动画类型
           if (targetSessionId) {
             const targetState = props.sessionStatesRef.current.get(targetSessionId);
             if (targetState) {
               if (msg.status === 'start') {
+                // 记录压缩前是否有活跃查询：自动压缩发生在大查询中时，
+                // 压缩结束后仍应保持 hasActiveQuery=true；手动压缩则恢复为 false。
+                targetState.preCompressHasActiveQuery = targetState.hasActiveQuery;
+                targetState.hasActiveQuery = true;
                 targetState.showThinkingAnimation = true;
                 targetState.animationMode = 'compacting';
               } else if (msg.status === 'complete' || msg.status === 'error') {
+                restoredActiveQuery = targetState.preCompressHasActiveQuery ?? false;
+                targetState.hasActiveQuery = restoredActiveQuery;
+                targetState.preCompressHasActiveQuery = undefined;
                 targetState.showThinkingAnimation = false;
                 targetState.animationMode = 'thinking';
               }
+              // 强制对话列表重渲染，使压缩期间的流水灯即时出现/消失
+              props.setSessionRunningVersion(v => v + 1);
             }
           }
 
@@ -1332,9 +1414,12 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           if (msg.status === 'start') {
             props.setAnimationMode('compacting');
             props.setShowThinkingAnimation(true);
+            props.setHasActiveQuery(true);
           } else if (msg.status === 'complete' || msg.status === 'error') {
             props.setShowThinkingAnimation(false);
             props.setAnimationMode('thinking');
+            // 恢复压缩前的查询状态（自动压缩仍在查询中时保持 true，手动压缩恢复 false）
+            props.setHasActiveQuery(restoredActiveQuery ?? false);
             // 压缩完成后，设置 hasCompactArchive 以便显示展开按钮
             props.setHasCompactArchive(true);
             // 刷新 token 使用量显示为压缩后的值
@@ -1543,18 +1628,10 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             const cacheCreationTokens = usage.cache_creation_input_tokens || 0;
             profileLog(`[TokenDebug] streamEnd: role=${role} updating contextLength prev=${contextLengthRef.current} inputTokens=${inputTokens} outputTokens=${outputTokens} totalTokens=${totalTokens} cacheRead=${cacheReadTokens} cacheCreation=${cacheCreationTokens}`);
             if (totalTokens > 0) {
-              props.setContextLength(prev => {
-                // 必须与"持久化到 meta.json 的定义"一致：input_tokens + output_tokens
-                //（本轮请求的真实上下文大小），并且只增不减。
-                // 不能用 Math.max(prev, inputTokens) + outputTokens：prev 已包含上轮
-                // output，当 input 不再增长（接近上下文上限/缓存命中）时，会把后续每轮
-                // output 累加进去，显示值远超真实上下文（实测可虚增 10 万+ token）。
-                // 这会导致重新从磁盘加载后（恢复的是真实的 input+output）显示"变小"，
-                // 且追加消息后也回不到虚增值，被误判为"上下文丢失"。
-                const newVal = Math.max(prev, totalTokens);
-                profileLog(`[TokenDebug] streamEnd: setContextLength ${prev} -> ${newVal}`);
-                return newVal;
-              });
+              // 直接使用服务端返回的 input+output，不取 max；压缩后服务端会返回更小的数值，
+              // 如果继续 max 会导致压缩后的 context 显示仍然停留在压缩前的旧值。
+              props.setContextLength(totalTokens);
+              profileLog(`[TokenDebug] streamEnd: setContextLength ${contextLengthRef.current} -> ${totalTokens}`);
               // 同步更新到当前 session 的 state 中，确保切换会话后能正确恢复
               const currentSid = props.currentSessionIdRef.current;
               if (currentSid) {

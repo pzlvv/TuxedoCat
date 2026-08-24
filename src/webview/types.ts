@@ -78,6 +78,8 @@ export interface SessionState {
   /** 当前动画类型：thinking 或 compacting */
   animationMode?: 'thinking' | 'compacting';
   hasActiveQuery: boolean;
+  /** 压缩开始前是否已有活跃查询，用于压缩结束后恢复运行状态 */
+  preCompressHasActiveQuery?: boolean;
   agentMode: AgentMode;
   /** 会话关联的提示词模式（普通/极简/混合），持久化到 meta.json */
   promptMode?: PromptMode;

@@ -1,42 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ChevronRight, ChevronDown, RotateCcw } from 'lucide-react';
 import { ToolCallProps } from './Types';
-import { DefaultLinesDiffComputer } from 'vscode-diff';
 import { type Highlighter } from 'shiki';
 import { getHighlighter, getHighlighterSync } from './highlighter';
 import { ToolHeader } from './ToolHeader';
 import { postMessage, getWindowSessionId } from '../webviewEnv';
 import { t } from '../i18n';
 import { profileLog } from '../debug';
-
-interface DiffLine {
-  lineNumber: number;
-  content: string;
-  type: 'unchanged' | 'removed' | 'added';
-  wordDiff?: Array<{
-    text: string;
-    type: 'unchanged' | 'removed' | 'added';
-  }>;
-}
-
-interface DiffHunk {
-  lines: DiffLine[];
-}
-
-interface DiffInnerChange {
-  originalRange: {
-    startLineNumber: number;
-    endLineNumber: number;
-    startColumn: number;
-    endColumn: number;
-  };
-  modifiedRange: {
-    startLineNumber: number;
-    endLineNumber: number;
-    startColumn: number;
-    endColumn: number;
-  };
-}
+import { buildEditDiffHunks, type DiffHunk, type DiffLine } from '../../core/utils/editDiff';
 
 // VS Code 扩展模式下由 vscode 注入 --vscode-diffEditor-* CSS 变量；
 // Electron App 模式下这些变量不存在，背景色会解析为空（透明），
@@ -57,10 +28,14 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCa
   const needsMeta = args?._needsMeta === true;
   const toolUseId = args?._toolUseId as string | undefined;
 
-  // 按需加载 _meta（beforeContent/afterContent 等大字段）
+  // 按需加载 _meta（Edit 现在是紧凑 diffHunks；旧数据仍可能是 beforeContent/afterContent）
   // 如果 args 已经带有 diff 数据，初始渲染就直接生成 diff，避免 passive effect
   // 二次渲染导致“先渲染再滚动”。
-  const [metaLoaded, setMetaLoaded] = useState(() => !needsMeta || !!(args?.beforeContent || args?.afterContent));
+  const [loadedDiffHunks, setLoadedDiffHunks] = useState<DiffHunk[]>(() =>
+    Array.isArray(args?.diffHunks) ? (args.diffHunks as DiffHunk[]) : []
+  );
+  const hasInitialDiffData = loadedDiffHunks.length > 0 || !!args?.beforeContent || !!args?.afterContent;
+  const [metaLoaded, setMetaLoaded] = useState(() => !needsMeta || hasInitialDiffData);
   const [beforeContent, setBeforeContent] = useState(() =>
     typeof args?.beforeContent === 'string' ? normalizeLineEndings(args.beforeContent) : ''
   );
@@ -86,8 +61,15 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCa
         const meta = msg.toolMeta[toolUseId];
         // 先让外层把滚动容器预滚到底部，再渲染 diff，避免 diff 先出现再滚动
         onBeforePreviewRender?.();
-        setBeforeContent(normalizeLineEndings(meta.beforeContent || ''));
-        setAfterContent(normalizeLineEndings(meta.afterContent || ''));
+        if (Array.isArray(meta.diffHunks)) {
+          setLoadedDiffHunks(meta.diffHunks as DiffHunk[]);
+          setBeforeContent('');
+          setAfterContent('');
+        } else {
+          setLoadedDiffHunks([]);
+          setBeforeContent(normalizeLineEndings(meta.beforeContent || ''));
+          setAfterContent(normalizeLineEndings(meta.afterContent || ''));
+        }
         setMetaLoaded(true);
       }
     };
@@ -97,21 +79,24 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCa
 
   // 非按需场景：直接从 args 中读取（已由 conversationLoaded 恢复逻辑填充的新对话，或没有 _meta 的老数据）。
   // 注意：不能只在 !metaLoaded 时读取一次——Edit 执行失败时扩展端会通过 updateToolArgs
-  // 把 beforeContent/afterContent 清空，组件必须同步 args 的后续变化，否则 diff 会残留在 UI 上。
+  // 把 beforeContent/afterContent/diffHunks 清空，组件必须同步 args 的后续变化，否则 diff 会残留在 UI 上。
   useEffect(() => {
     if (!needsMeta) {
+      const hunks = Array.isArray(args?.diffHunks) ? (args.diffHunks as DiffHunk[]) : [];
       const bc = normalizeLineEndings(args?.beforeContent || '');
       const ac = normalizeLineEndings(args?.afterContent || '');
       // args 后续补上 diff 数据时，先预滚动再渲染
       onBeforePreviewRender?.();
-      profileLog(`[EditFile] args data loaded | beforeContent.len=${bc.length} | afterContent.len=${ac.length}`);
+      const hunkLineCount = hunks.reduce((s, h) => s + (h.lines?.length || 0), 0);
+      profileLog(`[EditFile] args data loaded | diffLines=${hunkLineCount} beforeContent.len=${bc.length} | afterContent.len=${ac.length}`);
+      setLoadedDiffHunks(hunks);
       setBeforeContent(bc);
       setAfterContent(ac);
       if (!metaLoaded) {
         setMetaLoaded(true);
       }
     }
-  }, [needsMeta, metaLoaded, args?.beforeContent, args?.afterContent, onBeforePreviewRender]);
+  }, [needsMeta, metaLoaded, args?.diffHunks, args?.beforeContent, args?.afterContent, onBeforePreviewRender]);
 
   const [isExpanded, setIsExpanded] = useState(true);
   // 共享单例 highlighter 用 state 持有：加载完成后触发一次重渲染，
@@ -171,279 +156,25 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCa
     setShowRollbackConfirm(false);
   };
 
-  // 计算差异
+  // 计算差异：优先使用扩展端预计算的紧凑 diffHunks（只含 diff 相关行），
+  // 旧数据仍保留完整 before/after 时在这里兼容计算。
   const diffHunks = useMemo(() => {
+    if (loadedDiffHunks.length > 0) return loadedDiffHunks;
     if (!beforeContent || !afterContent) return [];
 
-    const originalLines = beforeContent.split('\n');
-    const modifiedLines = afterContent.split('\n');
-
-    const computer = new DefaultLinesDiffComputer();
-    const contextLines = 2;
-    // diff 计算窗口在编辑区域外额外保留的行数。
-    // 窗口只用于限制 computeDiff 的输入规模，渲染时仍会展示 contextLines 行上下文。
-    const windowPaddingLines = 20;
-
-    const editStartLine = args?.startLine;
-    const editEndLine = args?.endLine;
-    // replaceAll 时 startLine/endLine 只覆盖第一处匹配，窗口 diff 会漏掉后续替换，
-    // 因此 replaceAll 先回退到全量 diff，保证结果完整。
-    const replaceAll = Boolean(args?.replace_all);
-    const hasEditRange =
-      !replaceAll &&
-      typeof editStartLine === 'number' &&
-      typeof editEndLine === 'number' &&
-      editStartLine > 0 &&
-      editEndLine >= editStartLine;
-
-    let diffResult;
-    let originalOffset = 0;
-    let modifiedOffset = 0;
-
-    if (hasEditRange) {
-      // 只截取编辑区域前后各 windowPaddingLines 行的窗口做 diff，
-      // 大文件编辑时避免对全量行数组做 computeDiff。
-      const originalWindowStart = Math.max(1, editStartLine - windowPaddingLines);
-      const originalWindowEnd = Math.min(originalLines.length, editEndLine + windowPaddingLines);
-      const modifiedWindowStart = originalWindowStart;
-      // 编辑前后总行数差会整体平移修改侧的行号
-      const modifiedEditEndLine = editEndLine + (modifiedLines.length - originalLines.length);
-      const modifiedWindowEnd = Math.min(
-        modifiedLines.length,
-        modifiedEditEndLine + windowPaddingLines,
-      );
-
-      const originalWindow = originalLines.slice(originalWindowStart - 1, originalWindowEnd);
-      const modifiedWindow = modifiedLines.slice(modifiedWindowStart - 1, modifiedWindowEnd);
-
-      originalOffset = originalWindowStart - 1;
-      modifiedOffset = modifiedWindowStart - 1;
-
-      diffResult = computer.computeDiff(originalWindow, modifiedWindow, {
-        ignoreTrimWhitespace: false,
-        computeMoves: false,
-        maxComputationTimeMs: 0,
-      });
-    } else {
-      diffResult = computer.computeDiff(originalLines, modifiedLines, {
-        ignoreTrimWhitespace: false,
-        computeMoves: false,
-        maxComputationTimeMs: 0,
-      });
-    }
-
-    const hunks: DiffHunk[] = [];
-
-    for (const change of diffResult.changes) {
-      const originalStart = change.original.startLineNumber + originalOffset;
-      const originalEnd = change.original.endLineNumberExclusive + originalOffset;
-      const modifiedStart = change.modified.startLineNumber + modifiedOffset;
-      const modifiedEnd = change.modified.endLineNumberExclusive + modifiedOffset;
-
-      const lines: DiffLine[] = [];
-
-      // 按 original 行号分组 innerChanges
-      const innerChangesByOriginalLine = new Map<number, DiffInnerChange[]>();
-      const innerChangesByModifiedLine = new Map<number, DiffInnerChange[]>();
-
-      if (change.innerChanges) {
-        for (const rawInner of change.innerChanges) {
-          // 窗口 diff 的 innerChanges 行号也需要映射回完整文件行号
-          const inner: DiffInnerChange = {
-            originalRange: {
-              startLineNumber: rawInner.originalRange.startLineNumber + originalOffset,
-              endLineNumber: rawInner.originalRange.endLineNumber + originalOffset,
-              startColumn: rawInner.originalRange.startColumn,
-              endColumn: rawInner.originalRange.endColumn,
-            },
-            modifiedRange: {
-              startLineNumber: rawInner.modifiedRange.startLineNumber + modifiedOffset,
-              endLineNumber: rawInner.modifiedRange.endLineNumber + modifiedOffset,
-              startColumn: rawInner.modifiedRange.startColumn,
-              endColumn: rawInner.modifiedRange.endColumn,
-            },
-          };
-
-          const origStartLine = inner.originalRange.startLineNumber;
-          const origEndLine = inner.originalRange.endLineNumber;
-
-          for (let lineNum = origStartLine; lineNum <= origEndLine; lineNum++) {
-            if (!innerChangesByOriginalLine.has(lineNum)) {
-              innerChangesByOriginalLine.set(lineNum, []);
-            }
-            innerChangesByOriginalLine.get(lineNum)!.push(inner);
-          }
-
-          const modStartLine = inner.modifiedRange.startLineNumber;
-          const modEndLine = inner.modifiedRange.endLineNumber;
-
-          for (let lineNum = modStartLine; lineNum <= modEndLine; lineNum++) {
-            if (!innerChangesByModifiedLine.has(lineNum)) {
-              innerChangesByModifiedLine.set(lineNum, []);
-            }
-            innerChangesByModifiedLine.get(lineNum)!.push(inner);
-          }
-        }
-      }
-
-      const contextStart = Math.max(1, Math.min(originalStart, modifiedStart) - contextLines);
-      const contextEndOriginal = Math.min(originalLines.length + 1, originalEnd + contextLines);
-      const contextEndModified = Math.min(modifiedLines.length + 1, modifiedEnd + contextLines);
-
-      // 添加上下文行（上方）
-      for (let i = contextStart; i < Math.min(originalStart, modifiedStart); i++) {
-        lines.push({
-          lineNumber: i,
-          content: originalLines[i - 1] || modifiedLines[i - 1],
-          type: 'unchanged',
-        });
-      }
-
-      // 添加删除的行（带单词级差异）
-      for (let i = originalStart; i < originalEnd; i++) {
-        const content = originalLines[i - 1];
-        const innerChanges = innerChangesByOriginalLine.get(i);
-        const wordDiff = computeWordDiffFromInnerChanges(content, innerChanges, false, i);
-        lines.push({
-          lineNumber: i,
-          content,
-          type: 'removed',
-          wordDiff,
-        });
-      }
-
-      // 添加添加的行（带单词级差异）
-      for (let i = modifiedStart; i < modifiedEnd; i++) {
-        const content = modifiedLines[i - 1];
-        const innerChanges = innerChangesByModifiedLine.get(i);
-        const wordDiff = computeWordDiffFromInnerChanges(content, innerChanges, true, i);
-        lines.push({
-          lineNumber: i,
-          content,
-          type: 'added',
-          wordDiff,
-        });
-      }
-
-      // 添加上下文行（下方）
-      for (let i = modifiedEnd; i < Math.max(contextEndOriginal, contextEndModified); i++) {
-        const content = i <= modifiedLines.length ? modifiedLines[i - 1] : originalLines[i - 1];
-        lines.push({
-          lineNumber: i,
-          content,
-          type: 'unchanged',
-        });
-      }
-
-      hunks.push({ lines });
-    }
-
-    return hunks;
-  }, [beforeContent, afterContent, args?.startLine, args?.endLine, args?.replace_all]);
-
-  /**
-   * 使用 vscode-diff 的 innerChanges 构建单词级差异。
-   *
-   * innerChanges 可能跨越多行（例如 modifiedRange 从第 8 行第 32 列到
-   * 第 9 行第 30 列），此时列范围跨越了行边界。本函数需要根据当前行号
-   * (lineNumber) 将跨行 innerChange 拆分为仅覆盖当前行的列范围，从而
-   * 正确提取单词级差异文本。
-   */
-  function computeWordDiffFromInnerChanges(
-    lineContent: string,
-    innerChanges: DiffInnerChange[] | undefined,
-    isModifiedLine: boolean = false,
-    lineNumber?: number // 当前行号，用于拆分跨行 innerChanges
-  ): Array<{ text: string; type: 'unchanged' | 'removed' | 'added' }> {
-    if (!innerChanges || innerChanges.length === 0) {
-      return [{ text: lineContent, type: 'unchanged' }];
-    }
-
-    const result: Array<{ text: string; type: 'unchanged' | 'removed' | 'added' }> = [];
-    let lastPos = 1;
-
-    const getRange = (change: typeof innerChanges[0]) => {
-      return isModifiedLine ? change.modifiedRange : change.originalRange;
-    };
-
-    // 将每个 innerChange 的列范围适配到当前行。
-    // 如果是单行 innerChange 且就是当前行 → 直接用
-    // 如果是跨行 innerChange 且当前行在范围内 → 提取当前行部分
-    // 如果当前行不在范围内 → 跳过
-    const effectiveChanges: Array<{ startColumn: number; endColumn: number }> = [];
-
-    for (const change of innerChanges) {
-      const range = getRange(change);
-      const { startLineNumber, endLineNumber, startColumn, endColumn } = range;
-      const currentLine = lineNumber ?? startLineNumber; // 如果没有传 lineNumber，使用 innerChange 的行号
-
-      if (startLineNumber === endLineNumber) {
-        // 单行 innerChange
-        if (startLineNumber === currentLine) {
-          effectiveChanges.push({ startColumn, endColumn });
-        }
-      } else {
-        // 跨行 innerChange：提取当前行的部分
-        if (currentLine < startLineNumber || currentLine > endLineNumber) {
-          continue; // 当前行不在范围内
-        }
-        if (currentLine === startLineNumber) {
-          // 第一行：从 startColumn 到行末
-          effectiveChanges.push({
-            startColumn,
-            endColumn: lineContent.length + 1, // +1 因为 endColumn 是 exclusive
-          });
-        } else if (currentLine === endLineNumber) {
-          // 最后一行：从行首到 endColumn
-          effectiveChanges.push({
-            startColumn: 1,
-            endColumn,
-          });
-        } else {
-          // 中间行：整行
-          effectiveChanges.push({
-            startColumn: 1,
-            endColumn: lineContent.length + 1,
-          });
-        }
-      }
-    }
-
-    // 按起始列排序
-    effectiveChanges.sort((a, b) => a.startColumn - b.startColumn);
-
-    for (const { startColumn: start, endColumn: end } of effectiveChanges) {
-      if (lastPos < start) {
-        const unchangedText = lineContent.substring(lastPos - 1, start - 1);
-        if (unchangedText) {
-          result.push({ text: unchangedText, type: 'unchanged' });
-        }
-      }
-
-      if (start < end) {
-        const changedText = lineContent.substring(start - 1, end - 1);
-        if (changedText) {
-          result.push({ text: changedText, type: isModifiedLine ? 'added' : 'removed' });
-        }
-      }
-
-      lastPos = end;
-    }
-
-    if (lastPos <= lineContent.length) {
-      const unchangedText = lineContent.substring(lastPos - 1);
-      if (unchangedText) {
-        result.push({ text: unchangedText, type: 'unchanged' });
-      }
-    }
-
-    return result.length > 0 ? result : [{ text: lineContent, type: 'unchanged' }];
-  }
+    return buildEditDiffHunks({
+      beforeContent,
+      afterContent,
+      startLine: args?.startLine,
+      endLine: args?.endLine,
+      replaceAll: Boolean(args?.replace_all),
+    });
+  }, [loadedDiffHunks, beforeContent, afterContent, args?.startLine, args?.endLine, args?.replace_all]);
 
   if (!filePath) {
     return (
       <ToolHeader icon="FileText" name="Edit" colors={colors}
-        rightExtra={metaLoaded && beforeContent && effectiveToolCallId ? (
+        rightExtra={metaLoaded && (diffHunks.length > 0 || beforeContent) && effectiveToolCallId ? (
           <button
             onClick={() => setShowRollbackConfirm(true)}
             className="cursor-pointer"
@@ -631,7 +362,7 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCa
   return (
     <div className="w-full">
       <ToolHeader icon="FileText" name="Edit" colors={colors}
-        rightExtra={metaLoaded && beforeContent && effectiveToolCallId ? (
+        rightExtra={metaLoaded && (diffHunks.length > 0 || beforeContent) && effectiveToolCallId ? (
           <button
             onClick={() => setShowRollbackConfirm(true)}
             className="cursor-pointer"
@@ -668,7 +399,7 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCa
         >
           {filePath}
         </button>
-        {(beforeContent || afterContent) && (
+        {(diffHunks.length > 0 || beforeContent || afterContent) && (
           <button
             onClick={handleToggleExpand}
             className="hover:underline cursor-pointer"
