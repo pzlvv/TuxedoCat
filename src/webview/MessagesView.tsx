@@ -773,22 +773,6 @@ const MessageItem = memo(function MessageItem({
  */
 const SCROLL_AWAY_THRESHOLD = 50; // px — distance from bottom to consider "away"
 
-/**
- * 长对话 CSS 兜底：segment 数量超过该阈值后，非最后一条的离屏 segment
- * 使用 content-visibility: auto 跳过渲染，降低大量历史消息的布局/绘制成本。
- */
-const SEGMENT_CONTENT_VISIBILITY_MIN = 40;
-const SEGMENT_CONTENT_VISIBILITY_ESTIMATE = 'auto 220px';
-/** 包含嵌套纵向滚动容器或动态图标的工具，禁用 content-visibility 以避免滚动/位置跳动 */
-const SEGMENT_NESTED_SCROLL_TOOLS = new Set(['Bash', 'EditFile', 'WriteFile']);
-
-function segmentHasLiveOrNestedScroll(segment: { nonUserMsgs: Message[] }): boolean {
-  return segment.nonUserMsgs.some((m) =>
-    m.role === 'thinking' ||
-    (m.role === 'toolcall' && typeof m.toolName === 'string' && SEGMENT_NESTED_SCROLL_TOOLS.has(m.toolName))
-  );
-}
-
 function useAutoScroll(
   containerRef: React.RefObject<HTMLDivElement | null>,
   isStreaming: boolean,
@@ -1262,6 +1246,7 @@ const SegmentTimeline = memo(function SegmentTimeline({
               height: 10,
               borderRadius: '50%',
               '--timeline-running-color': colors.timelineStatusRunning,
+              '--timeline-running-shade': isDark ? '#a16207' : '#fde68a',
             } as React.CSSProperties}
           />
         ) : (
@@ -1665,7 +1650,8 @@ const MessagesView = memo(({
   const { beforeFirstUser, segments } = messageGroups;
   const hasBeforeFirstUser = beforeFirstUser.length > 0;
   const isEmpty = messages.length === 0;
-  const useSegmentContentVisibility = segments.length > SEGMENT_CONTENT_VISIBILITY_MIN;
+  // 已禁用 content-visibility 离屏布局优化：它在滚动/渲染过程中会导致布局跳动，
+  // 对长对话的稳定性影响大于性能收益。
 
   // 单次 commit 耗时监测：大消息量时输出超过阈值的渲染耗时（仅调试模式）。
   // 组件 body 末尾打点 → passive effect 里差值 ≈ render + commit 耗时，
@@ -1774,19 +1760,10 @@ const MessagesView = memo(({
               }
             }
 
-            // 长对话兜底优化：离屏的历史 segment 用 content-visibility 跳过布局/绘制。
-            // 最后一条始终完整渲染（流式输出/自动滚动依赖其真实高度）。
-            // 含 thinking 动画或 Bash/EditFile/WriteFile 嵌套滚动容器的 segment 不启用，
-            // 避免滚动到历史消息时内层滚动条/图标被 content-visibility 跳过渲染而飞出原位。
-            const segmentCvStyle = useSegmentContentVisibility && !isLastSegment && !segmentHasLiveOrNestedScroll(segment)
-              ? ({ contentVisibility: 'auto', containIntrinsicSize: SEGMENT_CONTENT_VISIBILITY_ESTIMATE } as React.CSSProperties)
-              : undefined;
-
             return (
               <div
                 key={`segment-${index}`}
                 className="mb-4"
-                style={segmentCvStyle}
               >
                 {segment.userMsg && (
                   <div>

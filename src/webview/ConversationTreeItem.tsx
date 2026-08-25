@@ -169,8 +169,10 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
             ) : (
               <div className="w-4 shrink-0" />
             )}
-            {/* 操作按钮组（hover 时显示） — 绝对定位在右上角，不占文档流，避免撑高行高；2 行 2 列排列 */}
-            <div className="hidden group-hover:grid grid-cols-2 shrink-0 absolute right-2 top-1/2 -translate-y-1/2 z-10 gap-0.5">
+            {/* 操作按钮组（hover 时显示） — 绝对定位在右上角，不占文档流，避免撑高行高；2 行 2 列排列。
+                子代理（subagent）会话不提供重命名/智能命名/删除等操作，hover 也不显示。 */}
+            {isRoot && (
+              <div className="hidden group-hover:grid grid-cols-2 shrink-0 absolute right-2 top-1/2 -translate-y-1/2 z-10 gap-0.5">
                 <button
                   onClick={handleStartRename}
                   className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 transition-colors"
@@ -230,6 +232,7 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
                   </svg>
                 </button>
               </div>
+            )}
             <div className="flex-1 min-w-0">
               <div className="flex items-start gap-2">
                 <div className="flex-1 min-w-0">
@@ -287,7 +290,7 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
                     </div>
                   </div>
                 </div>
-                <div className="flex flex-col items-end shrink-0 gap-0.5 text-[11px] group-hover:invisible" style={{ color: colors.textSystem }}>
+                <div className={`flex flex-col items-end shrink-0 gap-0.5 text-[11px] ${isRoot ? 'group-hover:invisible' : ''}`} style={{ color: colors.textSystem }}>
                   <span>{formatRelativeTime(item.createdAt)}</span>
                   <span>{t('conversationTree.messageCount', { count: item.messageCount })}</span>
                 </div>

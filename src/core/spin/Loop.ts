@@ -23,44 +23,112 @@ import type { Message } from '../types.js';
 
 const MAX_ATTEMPTS = 100;
 
+/**
+ * 获取当前 spin 子代理 ID。
+ *
+ * AgentTool 在创建子代理后会立即将其注册到 subAgentRegistry（不会延迟），
+ * spinLoop 顺序执行，因此该 creator 最近注册的子代理就是当前节点刚启动的子代理。
+ */
+async function getCurrentSpinAgentId(sessionId: string): Promise<string | undefined> {
+  try {
+    const { subAgentRegistry } = await import('../tools/agent/SubAgentRegistry.js');
+    const ids = subAgentRegistry.listForCreator(sessionId);
+    return ids.length > 0 ? ids[ids.length - 1] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function waitForAgentReply(
   engine: QueryEngine,
   pollIntervalMs: number = 1000,
+  expectedAgentId?: string,
 ): Promise<string> {
   const queue = (engine as any).agentMessageQueue;
-
-  // Step 1: 先在 mutableMessages 中查找从磁盘恢复的 agent reply
-  // 恢复场景：spin 模式重启后，agentMessageQueue 为空，但已持久化的消息中
-  // 可能包含子 agent 的回复（agent_reply_* 或 silent=fromSubAgent 的 user 消息）
   const messages = engine.getMessages();
+
+  /**
+   * 只取当前子代理的回复，并清空整个队列。
+   * 清空整列可以避免上一轮/同一子代理多余的 Reply 残留在队列中，
+   * 干扰后续节点的 waitForAgentReply。
+   */
+  const takeCurrentQueueReply = (): string | null => {
+    if (!queue || queue.length === 0) return null;
+    const items = queue.filter((item: any) => !expectedAgentId || item.agentId === expectedAgentId);
+    queue.length = 0;
+    if (items.length === 0) return null;
+    // spin 模式下只接受该子代理最后一次 Reply（通常是最终结果），
+    // 之前若有多余的进度/重复回复直接丢弃。
+    const content = items[items.length - 1].content as string;
+    logger.info('SpinLoop', `Found sub-agent Reply (agent=${expectedAgentId ?? 'any'}): "${content.substring(0, 100)}..."`);
+    return content;
+  };
+
+  // Step 1: 先在 mutableMessages 中查找从磁盘恢复的 agent reply。
+  // 恢复场景：spin 模式重启后，agentMessageQueue 为空，但已持久化的消息中
+  // 可能包含子 agent 的回复（agent_reply_* 或 silent=fromSubAgent 的 user 消息）。
+  // 必须按 expectedAgentId 过滤，避免上一轮子代理的旧回复被当成当前节点结果。
+  let persistedReply: string | null = null;
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i] as any;
     // 查找 fromSubAgent 且 silent 的 user 消息（spin 模式下 agent reply 的标记）
     if (msg.type === 'user' && msg.fromSubAgent === true && msg.silent === true && typeof msg.message?.content === 'string') {
-      const content = msg.message.content as string;
-      logger.info('SpinLoop', `Found persisted agent reply in mutableMessages: "${content.substring(0, 100)}..."`);
-      return content;
+      if (expectedAgentId && msg.agentId !== expectedAgentId) continue;
+      persistedReply = msg.message.content as string;
+      logger.info('SpinLoop', `Found persisted agent reply in mutableMessages (agent=${expectedAgentId ?? 'any'}): "${persistedReply.substring(0, 100)}..."`);
+      break;
     }
   }
 
-  // Step 2: 检查是否已有 agent 消息在队列中
-  if (queue && queue.length > 0) {
-    const contents = queue.map((item: any) => item.content);
-    queue.length = 0;
-    const combined = contents.join('\n\n----\n\n');
-    logger.info('SpinLoop', `Found existing agent reply: "${combined}"`);
-    return combined;
+  // Step 2: 检查是否已有当前子代理的消息在队列中
+  const existingReply = takeCurrentQueueReply();
+  if (existingReply) return existingReply;
+
+  // 没有 expectedAgentId（恢复/兜底场景）时，直接使用已持久化的回复。
+  if (!expectedAgentId && persistedReply !== null) return persistedReply;
+
+  // 有 expectedAgentId 且子代理已经结束（或不在注册表中）时，
+  // 已持久化的回复就是最终回复，无需再等一轮轮询。
+  if (expectedAgentId && persistedReply !== null) {
+    try {
+      const { subAgentRegistry } = await import('../tools/agent/SubAgentRegistry.js');
+      const record = subAgentRegistry.get(expectedAgentId);
+      if (!record || !record.engine.isConsumerRunning) {
+        return persistedReply;
+      }
+    } catch {
+      return persistedReply;
+    }
   }
 
-  logger.info('SpinLoop', `Waiting for sub-agent Reply (no timeout)`);
+  logger.info('SpinLoop', `Waiting for sub-agent Reply (no timeout, agent=${expectedAgentId ?? 'any'})`);
 
   while (true) {
-    if (queue && queue.length > 0) {
-      const contents = queue.map((item: any) => item.content);
-      queue.length = 0;
-      const combined = contents.join('\n\n----\n\n');
-      logger.info('SpinLoop', `Found sub-agent Reply: "${combined}"`);
-      return combined;
+    if (expectedAgentId) {
+      // 等待子代理完全结束（consumer idle）后再取最终 Reply。
+      // 这确保子代理若先发送进度/中间反馈、随后才发送最终结果时，
+      // 不会把中间反馈误当成节点结论，也不会把多余 Reply 留给下一个节点。
+      try {
+        const { subAgentRegistry } = await import('../tools/agent/SubAgentRegistry.js');
+        const record = subAgentRegistry.get(expectedAgentId);
+        const agentFinished = !record || !record.engine.isConsumerRunning;
+        if (agentFinished) {
+          const reply = takeCurrentQueueReply();
+          if (reply) return reply;
+          if (persistedReply !== null) return persistedReply;
+          // 子代理已结束但仍无 Reply 时，继续等待（与旧行为一致：无超时，
+          // 避免把“缺失 Reply”误判为成功）。
+        }
+      } catch {
+        // registry 不可用时退化为直接读队列
+        const reply = takeCurrentQueueReply();
+        if (reply) return reply;
+        if (persistedReply !== null) return persistedReply;
+      }
+    } else {
+      const reply = takeCurrentQueueReply();
+      if (reply) return reply;
+      if (persistedReply !== null) return persistedReply;
     }
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
   }
@@ -202,6 +270,8 @@ export async function spinLoop(
     }
 
     // 3. 执行 Agent 工具
+    // 先丢弃上一轮子代理遗留的未消费回复，避免旧 Reply 被当前节点误读。
+    (engine as any).agentMessageQueue.length = 0;
     await engine.submitToolUse({
       name: 'Agent',
       input: {
@@ -212,7 +282,8 @@ export async function spinLoop(
     });
 
     // 4. 等待子 agent 的 Reply
-    const reply = await waitForAgentReply(engine);
+    const currentAgentId = await getCurrentSpinAgentId(sessionId);
+    const reply = await waitForAgentReply(engine, 1000, currentAgentId);
 
     // 5. 将 sub-agent 的 note 写入 meta（暂标记为未通过，等 LLM 判断）
     await updateNodeMeta(cwd, next.id, false, reply);

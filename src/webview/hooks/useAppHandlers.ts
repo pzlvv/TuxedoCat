@@ -303,6 +303,25 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       promptMode: props.promptMode,
     };
 
+    // 新会话发送第一条消息时立即在本地对话列表中加入占位项，
+    // 避免必须等用户打开历史菜单触发 getConversations 后才看到新对话。
+    // 后端返回 conversationsData 后会用权威数据替换该占位项。
+    props.setConversations(prev => {
+      if (prev.some(c => c.sessionId === sessionId)) {
+        return prev;
+      }
+      const now = Date.now();
+      return [{
+        sessionId,
+        project: '',
+        title: messageContent.substring(0, 50),
+        createdAt: now,
+        updatedAt: now,
+        messageCount: 1,
+        ...(props.parentSessionId ? { parentSessionId: props.parentSessionId } : {}),
+      }, ...prev];
+    });
+
     if (props.hasActiveQuery) {
       // 当前有查询在进行，消息排队（按会话绑定，切换会话后仍归属正确会话）
       props.queuedMessageRef.current.set(sessionId, messageContent);

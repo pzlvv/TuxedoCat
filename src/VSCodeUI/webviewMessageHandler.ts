@@ -798,11 +798,10 @@ export class WebviewMessageHandler {
           sessionId: newSessionId,
         } as WebviewMessage);
 
-        this.host.sendToWebview({
-          type: 'startNewConversation',
-          sessionId: newSessionId,
-        });
-        this.setTitle(newSessionId, defaultTitle());
+        // 与手动新建对话走同一套初始化逻辑：
+        // 设置标题、查询余额、下发 settings.json 默认 model/thinking/agentMode/promptMode/webSearch，
+        // 并在缺少 provider 配置时弹出配置引导。
+        await this.handleStartNewConversation({ sessionId: newSessionId });
       }
 
       const conversations = await loadConversationList();

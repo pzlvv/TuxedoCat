@@ -372,22 +372,36 @@ function __spinT(key, params) {
   // 因此当磁盘有数据时优先从磁盘加载；仅在没有 spin.json 时回退到 webview 缓存。
   var savedState = vscode.getState();
   if (initialData && initialData.nodes) {
-    nodes = initialData.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: n.role || 'Master', skills: n.skills || [] }; });
-    edges = initialData.edges || [];
-    meta = initialData.meta || {};
-    nextNodeId = nodes.reduce(function(m, n) { return Math.max(m, n.id); }, 0) + 1;
-    // 若缓存中的 nextNodeId 更大（曾删除最大 id 的节点等场景），沿用缓存值避免 id 复用
-    if (savedState && typeof savedState.nextNodeId === 'number' && savedState.nextNodeId > nextNodeId) {
-      nextNodeId = savedState.nextNodeId;
+    var initialNodeError = getNodeListError(initialData.nodes);
+    if (initialNodeError) {
+      // 磁盘数据损坏时不要静默 fallback 成空画布，直接提示错误并禁用保存，
+      // 避免用户误操作把空数据覆盖回 spin.json。
+      showToast('spin.json 数据错误: ' + initialNodeError, 'error');
+      updateSaveButton(false);
+    } else {
+      nodes = initialData.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: n.role || 'Master', skills: n.skills || [] }; });
+      edges = initialData.edges || [];
+      meta = initialData.meta || {};
+      nextNodeId = nodes.reduce(function(m, n) { return Math.max(m, n.id); }, 0) + 1;
+      // 若缓存中的 nextNodeId 更大（曾删除最大 id 的节点等场景），沿用缓存值避免 id 复用
+      if (savedState && typeof savedState.nextNodeId === 'number' && savedState.nextNodeId > nextNodeId) {
+        nextNodeId = savedState.nextNodeId;
+      }
+      persistState();
+      renderAll();
     }
-    persistState();
-    renderAll();
   } else if (savedState && savedState.nodes) {
-    nodes = savedState.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: n.role || 'Master', skills: n.skills || [] }; });
-    edges = savedState.edges || [];
-    meta = savedState.meta || {};
-    nextNodeId = savedState.nextNodeId || (nodes.reduce(function(m, n) { return Math.max(m, n.id); }, 0) + 1);
-    renderAll();
+    var savedNodeError = getNodeListError(savedState.nodes);
+    if (savedNodeError) {
+      showToast('本地缓存数据错误: ' + savedNodeError, 'error');
+      updateSaveButton(false);
+    } else {
+      nodes = savedState.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: n.role || 'Master', skills: n.skills || [] }; });
+      edges = savedState.edges || [];
+      meta = savedState.meta || {};
+      nextNodeId = savedState.nextNodeId || (nodes.reduce(function(m, n) { return Math.max(m, n.id); }, 0) + 1);
+      renderAll();
+    }
   }
 
   document.getElementById('btnAddNode').addEventListener('click', function() { addNode(); });
@@ -701,7 +715,6 @@ function __spinT(key, params) {
   // Node operations
   function addNode() {
     var id = nextNodeId++;
-    var id = nextNodeId++;
     var area = document.getElementById('canvas-area');
     var x = Math.max(0, area.scrollLeft + area.clientWidth / 2 - 130);
     var y = Math.max(0, area.scrollTop + area.clientHeight / 2 - 100);
@@ -709,7 +722,8 @@ function __spinT(key, params) {
     selectedNodeId = id;
     renderAll();
     persistState();
-    saveDesign();
+    // 新增节点暂时不自动写盘：避免在 spin.json 中留下 task/criteria 均为空的节点。
+    // 用户编辑任务内容（或后续其他有意修改）时再触发 saveDesign 持久化。
     setTimeout(function() {
       var el = document.getElementById('node-' + id);
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
@@ -758,6 +772,19 @@ function __spinT(key, params) {
   }
 
   function getNode(id) { return nodes.find(function(n) { return n.id === id; }); }
+
+  // 严格校验节点列表，避免把损坏数据静默 fallback 成空列表/空节点。
+  // 返回 null 表示通过；返回字符串表示具体的错误信息。
+  function getNodeListError(list) {
+    if (!Array.isArray(list)) return 'nodes 不是数组';
+    for (var i = 0; i < list.length; i++) {
+      var n = list[i];
+      if (!n || typeof n.id !== 'number' || !isFinite(n.id)) {
+        return '第 ' + (i + 1) + ' 个节点缺少有效 id';
+      }
+    }
+    return null;
+  }
 
   // Render
   function renderAll() {
@@ -1134,8 +1161,23 @@ function __spinT(key, params) {
 
   // 校验设计是否合法（无环路、连通）
   function revalidateDesign() {
+    // 先校验节点本身，避免 nodes 中出现 null/缺 id 时下方 map 直接抛错。
+    for (var vi = 0; vi < nodes.length; vi++) {
+      if (!nodes[vi] || typeof nodes[vi].id !== 'number' || !isFinite(nodes[vi].id)) {
+        updateSaveButton(false);
+        return false;
+      }
+      // 不允许保存 task 为空的节点：空节点没有可执行任务，写进 spin.json
+      // 会导致 SpinLoop 执行一个空任务，也容易让原文件被“空节点”污染。
+      if ((nodes[vi].task || '').trim() === '') {
+        updateSaveButton(false);
+        return false;
+      }
+    }
+
     var nodeIds = nodes.map(function(n) { return n.id; });
     if (nodeIds.length === 0) { updateSaveButton(true); return true; }
+
     var idSet = {};
     nodeIds.forEach(function(id) { idSet[id] = true; });
 
@@ -1203,15 +1245,38 @@ function __spinT(key, params) {
   function saveDesign(force) {
     if (!force && !revalidateDesign()) return; // 不符合规则，不保存也不报错
 
-    var nodeIds = nodes.map(function(n) { return n.id; });
+    // 严格校验，不静默过滤/丢弃问题节点。
+    // 宁可报错中止，也不能把空节点或损坏数据 fallback 成空值写回 spin.json。
+    for (var ni = 0; ni < nodes.length; ni++) {
+      var n = nodes[ni];
+      if (!n || typeof n.id !== 'number' || !isFinite(n.id)) {
+        showToast('保存失败: 存在无效节点数据', 'error');
+        return;
+      }
+      if ((n.task || '').trim() === '') {
+        showToast('保存失败: 存在空任务节点，请先填写任务描述', 'error');
+        return;
+      }
+    }
+
+    var saveNodes = nodes.slice();
+    var nodeIds = saveNodes.map(function(n) { return n.id; });
     var idSet = {};
     nodeIds.forEach(function(id) { idSet[id] = true; });
+
+    // 连线引用不存在的节点时同样报错，而不是静默丢弃连线。
+    for (var ei = 0; ei < edges.length; ei++) {
+      var e = edges[ei];
+      if (!idSet[e.from] || !idSet[e.to]) {
+        showToast('保存失败: 存在指向缺失节点的连线', 'error');
+        return;
+      }
+    }
 
     var adj = {};
     var inDeg = {};
     nodeIds.forEach(function(id) { adj[id] = []; inDeg[id] = 0; });
     edges.forEach(function(e) {
-      if (!idSet[e.from] || !idSet[e.to]) return;
       adj[e.from].push(e.to);
       inDeg[e.to] = (inDeg[e.to] || 0) + 1;
     });
@@ -1231,12 +1296,17 @@ function __spinT(key, params) {
 
     // Sort nodes array by topological order
     var sortedNodes = sorted.map(function(id) {
-      return nodes.find(function(n) { return n.id === id; });
+      return saveNodes.find(function(n) { return n.id === id; });
     }).filter(function(n) { return n; });
 
-    // 拓扑排序不完整（存在环等）时回退原始顺序，避免保存时丢失节点
-    if (sortedNodes.length !== nodes.length) {
-      sortedNodes = nodes.slice();
+    // 非 force 保存不应走到这里（revalidateDesign 已拦截）；
+    // force 保存（如清除结果）遇到拓扑不完整时保留原始顺序，但不丢弃节点。
+    if (sortedNodes.length !== saveNodes.length) {
+      if (!force) {
+        showToast('保存失败: 拓扑排序不完整', 'error');
+        return;
+      }
+      sortedNodes = saveNodes.slice();
     }
 
     var data = {
@@ -1259,16 +1329,22 @@ function __spinT(key, params) {
         __spinAvailableSkills = msg.skills;
       }
       if (msg.data && Array.isArray(msg.data.nodes)) {
-        nodes = msg.data.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: n.role || 'Master', skills: n.skills || [] }; });
-        edges = msg.data.edges || [];
-        meta = msg.data.meta || {};
-        nextNodeId = nodes.reduce(function(m, n) { return Math.max(m, n.id); }, 0) + 1;
-        if (savedState && typeof savedState.nextNodeId === 'number' && savedState.nextNodeId > nextNodeId) {
-          nextNodeId = savedState.nextNodeId;
+        var refreshNodeError = getNodeListError(msg.data.nodes);
+        if (refreshNodeError) {
+          // 刷新到损坏数据时不覆盖当前画布，直接报错，避免静默变成空列表。
+          showToast('刷新数据错误: ' + refreshNodeError, 'error');
+        } else {
+          nodes = msg.data.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: n.role || 'Master', skills: n.skills || [] }; });
+          edges = msg.data.edges || [];
+          meta = msg.data.meta || {};
+          nextNodeId = nodes.reduce(function(m, n) { return Math.max(m, n.id); }, 0) + 1;
+          if (savedState && typeof savedState.nextNodeId === 'number' && savedState.nextNodeId > nextNodeId) {
+            nextNodeId = savedState.nextNodeId;
+          }
+          closeSkillSelector();
+          persistState();
+          renderAll();
         }
-        closeSkillSelector();
-        persistState();
-        renderAll();
       } else if (skillSelectorNodeId !== null) {
         // 即使没有可用的 spin.json，也刷新技能选择器列表
         renderSkillSelector();

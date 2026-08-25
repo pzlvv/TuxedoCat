@@ -493,11 +493,11 @@ textarea::-webkit-scrollbar-thumb:hover {
 .timeline-running-fan {
   background: conic-gradient(
     var(--timeline-running-color, #eab308) 0deg 60deg,
-    #a16207 60deg 120deg,
+    var(--timeline-running-shade, #a16207) 60deg 120deg,
     var(--timeline-running-color, #eab308) 120deg 180deg,
-    #a16207 180deg 240deg,
+    var(--timeline-running-shade, #a16207) 180deg 240deg,
     var(--timeline-running-color, #eab308) 240deg 300deg,
-    #a16207 300deg 360deg
+    var(--timeline-running-shade, #a16207) 300deg 360deg
   );
   animation: timelineRunningSpin 1s linear infinite;
 }
