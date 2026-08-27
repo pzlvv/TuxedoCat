@@ -22,6 +22,8 @@ import { getMaxOutputTokens, getModelConfig, getContextWindow } from '../utils/m
 import { parseSSELines, buildAssistantMessageFromBlocks, dumpFailedRequest } from './RealApi.js';
 import { persistLargeOutput, buildLargeToolResultMessage } from '../tools/toolResultStorage.js';
 import { getServerSessionId, markServerSessionRotate } from './serverSession.js';
+import { fetch as undiciFetch, type Response as UndiciResponse } from 'undici';
+import { getLLMDispatcher } from './httpDispatcher.js';
 import type { StreamEvent, StreamOptions } from './RealApi.js';
 
 // RedisStats module removed; local no-op stub
@@ -421,23 +423,19 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       // 在下一轮自动轮换，避免上下文被搜索结果撑爆。
       requestHeaders['x-session-id'] = getServerSessionId(sessionId);
 
-      // 重试时不要复用之前的连接（可能已经损坏），强制新建连接
-      if (retryCount > 0) {
-        requestHeaders['Connection'] = 'close';
-      }
-
       const responsesUrl = buildResponsesUrl(baseURL);
       logger.debug('ResponsesAPI', `Request URL: ${responsesUrl}`);
       logger.debug('ResponsesAPI', `Request headers: ${JSON.stringify(requestHeaders)}`);
 
       // 发送请求。网络层错误（如 TypeError: fetch failed）通常是服务器/网络瞬时问题，重试数次
-      let response: Response;
+      let response: UndiciResponse;
       try {
-        response = await fetch(responsesUrl, {
+        response = await undiciFetch(responsesUrl, {
           method: 'POST',
           headers: requestHeaders,
           signal: signal || undefined,
           body: JSON.stringify(requestBody),
+          dispatcher: getLLMDispatcher(),
         });
       } catch (fetchError) {
         // 对网络层错误（fetch failed / ECONNRESET 等）重试数次

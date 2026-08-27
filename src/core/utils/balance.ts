@@ -3,7 +3,9 @@
  * 调用 https://api.deepseek.com/user/balance API 获取账户余额
  */
 
+import { fetch as undiciFetch } from 'undici';
 import { getConfig } from '../llm/config.js';
+import { getLLMDispatcher } from '../llm/httpDispatcher.js';
 import { logger } from '../Logger.js';
 
 export interface BalanceInfo {
@@ -29,12 +31,13 @@ export async function fetchBalance(sessionId?: string): Promise<BalanceInfo | nu
       return null;
     }
 
-    const response = await fetch('https://api.deepseek.com/user/balance', {
+    const response = await undiciFetch('https://api.deepseek.com/user/balance', {
       method: 'GET',
       headers: {
         'Accept': 'application/json',
         'Authorization': `Bearer ${config.apiKey}`,
       },
+      dispatcher: getLLMDispatcher(),
     });
 
     if (!response.ok) {

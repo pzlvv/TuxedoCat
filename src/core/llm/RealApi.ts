@@ -12,6 +12,8 @@ import { getConfig, getEnableUsageStats } from './config.js';
 import type { LLMConfig } from './config.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
 import { getMaxOutputTokens, getContextWindow, getModelConfig } from '../utils/modelConfig.js';
+import { fetch as undiciFetch, type Response as UndiciResponse } from 'undici';
+import { getLLMDispatcher } from './httpDispatcher.js';
 
 // RedisStats module removed; local no-op stub
 async function recordLLMUsage(_inputTokens: number, _outputTokens: number): Promise<void> {}
@@ -343,22 +345,18 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       // 附加会话 ID 到请求头，供 LLM 服务端追踪会话上下文
       requestHeaders['x-session-id'] = sessionId;
 
-      // 重试时不要复用之前的连接（可能已经损坏），强制新建连接
-      if (retryCount > 0) {
-        requestHeaders['Connection'] = 'close';
-      }
-
       logger.debug('RealAPI', `Request headers: ${JSON.stringify(requestHeaders)}`);
       logger.debug('RealAPI', `Request URL: ${baseURL}/v1/messages`);
 
       // 发送请求。网络层错误（如 TypeError: fetch failed）通常是服务器/网络瞬时问题，重试数次
-      let response: Response;
+      let response: UndiciResponse;
       try {
-        response = await fetch(`${baseURL}/v1/messages`, {
+        response = await undiciFetch(`${baseURL}/v1/messages`, {
           method: 'POST',
           headers: requestHeaders,
           signal: signal || undefined,
           body: JSON.stringify(requestBody),
+          dispatcher: getLLMDispatcher(),
         });
       } catch (fetchError) {
         // 对网络层错误（fetch failed / ECONNRESET 等）重试数次

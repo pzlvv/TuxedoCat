@@ -3,7 +3,9 @@
  * 接收和处理来自 webview 的所有消息
  */
 import type { UIHost } from '../host/UIHost.js';
+import { fetch as undiciFetch } from 'undici';
 import { logger } from '../core/Logger.js';
+import { getLLMDispatcher } from '../core/llm/httpDispatcher.js';
 import { getPendingToolUseIds } from '../core/tools/index.js';
 import { providerKeyFromBaseURL } from '../core/utils/providerKey.js';
 import { buildEditDiffHunks } from '../core/utils/editDiff.js';
@@ -1029,7 +1031,7 @@ export class WebviewMessageHandler {
     ];
     for (const url of candidateUrls) {
       try {
-        const response = await fetch(url, { headers });
+        const response = await undiciFetch(url, { headers, dispatcher: getLLMDispatcher() });
         if (!response.ok) continue;
         const data = await response.json() as any;
         const rawList: unknown[] = Array.isArray(data?.data) ? data.data
