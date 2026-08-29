@@ -553,6 +553,7 @@ export class QueryEngine {
 
       flushedCount += this.consumeAgentMessages(true);
       if (userMsg) {
+        this.notifyUserMessageToUI(userMsg);
         this.mutableMessages.push(userMsg);
         flushedCount++;
       }
@@ -564,6 +565,7 @@ export class QueryEngine {
         const userMsg = this.pendingUserMsgData ?? this.buildPendingUserMessage();
         this.pendingUserMsgData = null;
         if (userMsg) {
+          this.notifyUserMessageToUI(userMsg);
           this.mutableMessages.push(userMsg);
           flushedCount++;
         }
@@ -591,6 +593,47 @@ export class QueryEngine {
       uuid: `user_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
       timestamp: Date.now(),
     };
+  }
+
+  /**
+   * 通知 UI 显示一条“排队后真正进入 LLM 上下文”的用户消息。
+   *
+   * 排队路径（webview 在 hasActiveQuery 时发 queueMessage）不再立即回显到
+   * MessagesView，而是先显示在输入框上方的 queue 中；只有 flushQueuedMessagesIntoContext
+   * / messageConsumer 真正把该消息追加到 mutableMessages（下一次 LLM 请求）时，
+   * 才通过这里补发 addMessage，让消息在“发送给 LLM”的时机出现在对话流中。
+   * 普通 sendMessage 路径已经由 Integration 立即通知过 UI，不会设置 _needsUINotification。
+   */
+  private notifyUserMessageToUI(userMsg: Message): void {
+    const record = userMsg as any;
+    if (!record._needsUINotification) return;
+    delete record._needsUINotification;
+
+    const fileMsg = userMsg as any;
+    const sendFilePath = fileMsg.fileHidden ? undefined : fileMsg.filePath;
+    const sendSelectedLines = fileMsg.fileHidden ? undefined : fileMsg.fileSelectedLines;
+    const param = sendFilePath
+      ? `${sendFilePath.split(/[/\\]/).pop()}${sendSelectedLines ? `:${sendSelectedLines.start}${sendSelectedLines.start !== sendSelectedLines.end ? `~${sendSelectedLines.end}` : ''}` : ''}`
+      : undefined;
+
+    const uiMeta: Record<string, unknown> = {};
+    if (sendFilePath) {
+      uiMeta.filePath = sendFilePath;
+      uiMeta.param = param;
+    }
+    if (sendSelectedLines) {
+      uiMeta.fileSelectedLines = sendSelectedLines;
+    }
+
+    const userContent = (userMsg as any).message?.content;
+    this.config.ui?.onMessage(this.sesssionID, {
+      role: 'user',
+      content: typeof userContent === 'string' ? userContent : String(userContent ?? ''),
+      param,
+      filePath: sendFilePath,
+      fileSelectedLines: sendSelectedLines,
+      meta: Object.keys(uiMeta).length > 0 ? uiMeta : undefined,
+    });
   }
 
   constructor(sessionID: string, config: QueryEngineConfig) {
@@ -905,6 +948,7 @@ export class QueryEngine {
 
         this.consumeAgentMessages(true);
         if (userMsg) {
+          this.notifyUserMessageToUI(userMsg);
           this.mutableMessages.push(userMsg);
         }
         this.pendingUserMessage = null;
@@ -915,6 +959,7 @@ export class QueryEngine {
           const userMsg = this.pendingUserMsgData ?? this.buildPendingUserMessage();
           this.pendingUserMsgData = null;
           if (userMsg) {
+            this.notifyUserMessageToUI(userMsg);
             this.mutableMessages.push(userMsg);
           }
         } else {

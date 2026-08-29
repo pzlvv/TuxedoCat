@@ -147,6 +147,31 @@ export class VSCodeUI implements AssistantUI {
           VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] Failed to open external URL: ${err}`);
         }
       },
+      saveTextFile: async (content, options) => {
+        const path = require('path') as typeof import('path');
+        const os = require('os') as typeof import('os');
+        const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir();
+        const filters: { [name: string]: string[] } = {};
+        for (const filter of options?.filters ?? []) {
+          filters[filter.name] = filter.extensions;
+        }
+        try {
+          const uri = await vscode.window.showSaveDialog({
+            title: options?.title,
+            defaultUri: vscode.Uri.file(path.join(baseDir, options?.defaultFileName ?? 'untitled.txt')),
+            filters,
+          });
+          if (!uri) {
+            return { success: false, canceled: true };
+          }
+          const fs = require('fs') as typeof import('fs');
+          await fs.promises.writeFile(uri.fsPath, content, 'utf-8');
+          return { success: true, filePath: uri.fsPath };
+        } catch (err) {
+          VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] saveTextFile failed: ${err}`);
+          return { success: false, error: String(err) };
+        }
+      },
       isDarkTheme: () => {
         const kind = vscode.window.activeColorTheme.kind;
         return kind === vscode.ColorThemeKind.Dark || kind === vscode.ColorThemeKind.HighContrast;
@@ -320,6 +345,19 @@ export class VSCodeUI implements AssistantUI {
           }
         } else {
           panel?.webview.postMessage({ type: 'spinSaveResult', success: false, error: tt('没有打开的工作目录', 'No workspace folder is open') });
+        }
+      } else if (msg.type === 'exportSpinDesign' && msg.data) {
+        try {
+          const { exportSpinDesignJson } = await import('./host/spinDesignExport.js');
+          const result = await exportSpinDesignJson(
+            this.buildHost(),
+            msg.data,
+            tt('导出 Spin 设计', 'Export Spin Design'),
+          );
+          panel?.webview.postMessage({ type: 'spinExportResult', ...result } as any);
+        } catch (err) {
+          VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] spin.json export failed: ${err}`);
+          panel?.webview.postMessage({ type: 'spinExportResult', success: false, error: String(err) } as any);
         }
       } else if (msg.type === 'refreshSpinDesign') {
         const refreshed = await this.readSpinDesignData();

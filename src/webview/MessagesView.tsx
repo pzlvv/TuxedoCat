@@ -9,6 +9,7 @@ import { Timeline, ConfigProvider } from 'antd';
 import { ThinkingAnimation } from './ThinkingAnimation';
 import { ConversationLoading } from './ConversationLoading';
 import InlineCode from './components/InlineCode';
+import { AnsiText, hasAnsi } from './ansi';
 import { PersistedOutputBox, isPersistedOutput } from './tools/persistedOutput';
 import * as ToolComponents from './tools';
 import type { Message, Colors } from './types';
@@ -54,6 +55,27 @@ function shallowEqualRecord(a: Record<string, any> | undefined, b: Record<string
     if (a[key] !== b[key]) return false;
   }
   return true;
+}
+
+/**
+ * 智能转义数字区间中的波浪号（1~100、0xFFFF~0xFF、50%~80% 等）。
+ * 只要波浪号前后任意一侧是数字（含十进制、十六进制、百分数）就转义，
+ * 避免被 Markdown/GFM 误解析为删除线。只处理普通文本段，
+ * 跳过 fenced code block 和 inline code，避免代码里出现多余的 \。
+ */
+function escapeNumericTildeInMarkdown(text: string): string {
+  if (!text.includes('~')) return text;
+  return text
+    .split(/(```[\s\S]*?```|`[^`\n]*`)/g)
+    .map((part, index) => {
+      // 奇数段是代码（split 捕获组），保持原样
+      if (index % 2 === 1) return part;
+      return part.replace(
+        /((?:0[xX][0-9A-Fa-f]+|\d+(?:\.\d+)?|[0-9A-Fa-f]{2,})%?)~|~((?:0[xX][0-9A-Fa-f]+|\d+(?:\.\d+)?|[0-9A-Fa-f]{2,})%?)/g,
+        (match, left, right) => `${left ?? ''}\\~${right ?? ''}`
+      );
+    })
+    .join('');
 }
 
 /**
@@ -263,14 +285,18 @@ const UserMessage = memo(function UserMessage({
         <InlineCode colors={colors}>{children}</InlineCode>
       ) : (
         <div className="my-2 rounded-md overflow-hidden" style={{ border: `1px solid ${colors.border}`, backgroundColor: colors.bgSecondary }}>
-          <pre className="p-3 overflow-x-auto text-[12.5px] leading-relaxed" style={{ margin: 0, backgroundColor: 'transparent' }}><code>{children}</code></pre>
+          <pre className="p-3 overflow-x-auto text-[12.5px] leading-relaxed" style={{ margin: 0, backgroundColor: 'transparent' }}>
+            <code>{typeof children === 'string' && hasAnsi(children) ? <AnsiText text={children} /> : children}</code>
+          </pre>
         </div>
       );
     },
   }), [colors]);
 
-  // Check if content exceeds max lines after render
-  useEffect(() => {
+  // Check if content exceeds max lines after render.
+  // 使用 useLayoutEffect 在浏览器绘制前完成测量并折叠，避免长消息先显示完整高度、
+  // 再在 effect 中折叠的“发送后再折叠”闪烁。
+  useLayoutEffect(() => {
     if (contentRef.current) {
       const lineHeight = parseFloat(getComputedStyle(contentRef.current).lineHeight || '20');
       const height = contentRef.current.scrollHeight;
@@ -288,7 +314,7 @@ const UserMessage = memo(function UserMessage({
         rehypePlugins={[rehypeKatex]}
         components={userMarkdownComponents}
       >
-        {message.content}
+        {escapeNumericTildeInMarkdown(message.content)}
       </ReactMarkdown>
     );
   }, [message.content, message.isFromAgent, userMarkdownComponents]);
@@ -601,7 +627,9 @@ const CodeBlock = memo(function CodeBlock({
         </button>
       </div>
       <pre className="p-3 overflow-x-auto text-[12px] leading-tight" style={{ margin: 0, backgroundColor: 'transparent' }}>
-        <code className={className} style={{ backgroundColor: 'transparent' }}>{children}</code>
+        <code className={className} style={{ backgroundColor: 'transparent' }}>
+          {hasAnsi(codeText) ? <AnsiText text={codeText} /> : children}
+        </code>
       </pre>
     </div>
   );
@@ -678,7 +706,7 @@ const AssistantMessage = memo(function AssistantMessage({
       rehypePlugins={[rehypeRaw, rehypeKatex]}
       components={markdownComponents}
     >
-      {message.content}
+      {escapeNumericTildeInMarkdown(message.content)}
     </ReactMarkdown>
   ), [message.content, markdownComponents]);
 

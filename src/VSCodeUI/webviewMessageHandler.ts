@@ -310,10 +310,15 @@ export class WebviewMessageHandler {
       });
 
       const selectedLines = message.selectedLines || message.fileSelectedLines;
+      // 区分“排队消息”与“空闲会话的普通发送”：
+      // - queueMessage / 引擎仍在消费：先只显示在输入框上方的 queue 中，
+      //   等下一次 LLM 请求真正消费该消息时再由 QueryEngine 补发到 MessagesView。
+      // - sendMessage 且引擎空闲：保持原有行为，立即回显到 MessagesView。
+      const isQueueMessage = message.type === 'queueMessage' || engine.isConsumerRunning;
 
       // 构造用户消息对象（暂存，不立即 push 到 mutableMessages）。
       // 由 flushQueuedMessagesIntoContext 在处理 pendingUserMessage 时用该对象现场追加，
-      // 确保消息在"下一次 LLM 请求"时立刻进入上下文（UI 仍立即显示），
+      // 确保消息在"下一次 LLM 请求"时立刻进入上下文，
       // 同时保留 filePath / fileSelectedLines 等元数据。
       const { getGlobalUI } = await import('../core/AssistantUI.js');
       const ui = getGlobalUI();
@@ -327,19 +332,26 @@ export class WebviewMessageHandler {
         ...(message.fileHidden && { fileHidden: true }),
       };
 
-      // 显示用户消息到 UI（文件信息逻辑与 sendMessage 一致）
-      const uiMeta: Record<string, unknown> = {};
-      if (message.filePath && !message.fileHidden) {
-        uiMeta.filePath = message.filePath;
-        uiMeta.param = `${message.filePath.split(/[/\\]/).pop()}${selectedLines ? `:${selectedLines.start}${selectedLines.start !== selectedLines.end ? `~${selectedLines.end}` : ''}` : ''}`;
+      if (isQueueMessage) {
+        // 排队消息不立即回显到 MessagesView，只在输入框上方显示队列状态。
+        // QueryEngine 真正把它追加进 LLM 上下文时，会通过 _needsUINotification 补发 addMessage。
+        (userMsg as any)._needsUINotification = true;
+        ui?.onQueuedMessage?.(sessionId, content);
+      } else {
+        // 显示用户消息到 UI（文件信息逻辑与 sendMessage 一致）
+        const uiMeta: Record<string, unknown> = {};
+        if (message.filePath && !message.fileHidden) {
+          uiMeta.filePath = message.filePath;
+          uiMeta.param = `${message.filePath.split(/[/\\]/).pop()}${selectedLines ? `:${selectedLines.start}${selectedLines.start !== selectedLines.end ? `~${selectedLines.end}` : ''}` : ''}`;
+        }
+        ui?.onMessage(sessionId, {
+          role: 'user',
+          content,
+          filePath: message.fileHidden ? undefined : message.filePath,
+          fileSelectedLines: message.fileHidden ? undefined : selectedLines,
+          meta: Object.keys(uiMeta).length > 0 ? uiMeta : undefined,
+        });
       }
-      ui?.onMessage(sessionId, {
-        role: 'user',
-        content,
-        filePath: message.fileHidden ? undefined : message.filePath,
-        fileSelectedLines: message.fileHidden ? undefined : selectedLines,
-        meta: Object.keys(uiMeta).length > 0 ? uiMeta : undefined,
-      });
 
       // 与 Integration.sendMessage 路径保持一致，记录到提示词历史
       try {

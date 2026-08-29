@@ -4,6 +4,7 @@ import { ToolCallProps } from './Types';
 import { ToolHeader } from './ToolHeader';
 import { postMessage } from '../webviewEnv';
 import { t } from '../i18n';
+import { AnsiText } from '../ansi';
 
 /**
  * 解析持久化输出标签
@@ -199,7 +200,7 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
         )}
         {visibleLines.map((line, idx) => (
           <div key={hiddenLines + idx} style={lineStyle}>
-            {line || '\u00A0'}
+            {line ? <AnsiText text={line} /> : '\u00A0'}
             {/* 光标内联在最后一行末尾，不额外占一行，保证高度与完成态一致 */}
             {withCursor && idx === visibleLines.length - 1 && <span style={cursorStyle} />}
           </div>
@@ -294,7 +295,7 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
                       key={idx}
                       style={lineStyle}
                     >
-                      {line}
+                      <AnsiText text={line} />
                     </div>
                   ))}
                   {showTruncated && (

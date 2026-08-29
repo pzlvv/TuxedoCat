@@ -2,6 +2,7 @@ import React from 'react';
 import { File } from 'lucide-react';
 import { postMessage } from '../webviewEnv';
 import { t } from '../i18n';
+import { AnsiText } from '../ansi';
 
 /**
  * 解析持久化输出标签
@@ -163,7 +164,7 @@ export const PersistedOutputBox: React.FC<{
               lineHeight: '1.6',
             }}
           >
-            {line}
+            <AnsiText text={line} />
           </div>
         ))}
         {showTruncated && (

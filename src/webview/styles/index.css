@@ -427,7 +427,7 @@ textarea::-webkit-scrollbar-thumb:hover {
     opacity: 1;
   }
   100% {
-    transform: scale(2.5);
+    transform: scale(3);
     opacity: 0;
   }
 }
@@ -513,18 +513,18 @@ textarea::-webkit-scrollbar-thumb:hover {
 
 .ripple-dot-container {
   position: relative;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
 }
 
 .ripple-center {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 4px;
-  height: 4px;
-  margin-left: -2px;
-  margin-top: -2px;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  margin-top: -5px;
   border-radius: 50%;
   z-index: 1;
 }
@@ -533,10 +533,10 @@ textarea::-webkit-scrollbar-thumb:hover {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 12px;
-  height: 12px;
-  margin-left: -6px;
-  margin-top: -6px;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  margin-top: -5px;
   border-radius: 50%;
   border: 2px solid;
   animation: rippleEffect 2s ease-out infinite;

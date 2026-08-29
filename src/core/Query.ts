@@ -184,7 +184,32 @@ async function* queryLoop(
           // 处理 content 类型
           let formattedContent: string | unknown[];
           if (typeof content === 'string') {
-            formattedContent = content;
+            let text = content;
+
+            // 在构造 rawApiMessages 时就把文件/行号元数据格式化进文本，
+            // 而不是后续按 apiMessages 索引回填（索引在合并连续同角色消息后会错位）。
+            const fileMsg = msg as any;
+            if (
+              msg.type === 'user'
+              && fileMsg.filePath
+              && !fileMsg.fileHidden
+              && !text.startsWith('[Current File:')
+            ) {
+              let fileInfoText = `[Current File: ${fileMsg.filePath}`;
+              const sel = fileMsg.fileSelectedLines;
+              if (sel && sel.start > 0 && sel.end > 0) {
+                if (sel.start === sel.end) {
+                  fileInfoText += ` (line ${sel.start})]`;
+                } else {
+                  fileInfoText += ` (lines ${sel.start}-${sel.end})]`;
+                }
+              } else {
+                fileInfoText += ']';
+              }
+              text = fileInfoText + '\n\n' + text;
+            }
+
+            formattedContent = text;
           } else if (Array.isArray(content)) {
             // content 是数组，需要格式化
             formattedContent = content.map((block: unknown) => {
@@ -265,36 +290,6 @@ async function* queryLoop(
         ? allTools.filter(t => availableTools.includes(t.name))
         : allTools;
       const tools = await convertToolsToLlmFormat(filteredTools as unknown as typeof allTools & Tool[]);
-
-      {
-
-        let apiUserIdx = 0;
-        for (const msg of messages) {
-          if (msg.type !== 'user') continue;
-
-          const fileMsg = msg as any;
-          const apiMsg = apiMessages.filter((m: any) => m.role === 'user')[apiUserIdx];
-          apiUserIdx++;
-
-          if (!fileMsg.filePath || fileMsg.fileHidden || !apiMsg) continue;
-          if (typeof apiMsg.content !== 'string' || apiMsg.content.startsWith('[Current File:')) continue;
-
-          let fileInfoText = `[Current File: ${fileMsg.filePath}`;
-
-          const sel = fileMsg.fileSelectedLines;
-          if (sel && sel.start > 0 && sel.end > 0) {
-            if (sel.start === sel.end) {
-              fileInfoText += ` (line ${sel.start})]`;
-            } else {
-              fileInfoText += ` (lines ${sel.start}-${sel.end})]`;
-            }
-          } else {
-            fileInfoText += ']';
-          }
-
-          apiMsg.content = fileInfoText + '\n\n' + apiMsg.content;
-        }
-      }
 
       const { getSessionThinkingMode } = await import('./Integration.js');
       const thinkingEffort = getSessionThinkingMode(params.sessionID);

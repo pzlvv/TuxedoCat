@@ -11,7 +11,7 @@
  */
 
 import type { BrowserWindow, WebContentsView } from 'electron';
-import { app, nativeTheme, BrowserWindow as BrowserWindowCtor } from 'electron';
+import { app, nativeTheme, dialog, BrowserWindow as BrowserWindowCtor } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { ChatViewManager } from './ChatViewManager.js';
@@ -243,6 +243,29 @@ export class ElectronUI implements AssistantUI {
         }
       },
 
+      saveTextFile: async (content, options) => {
+        const baseDir = this.getWorkspacePath() ?? app.getPath('home');
+        const dialogOptions = {
+          title: options?.title,
+          defaultPath: path.join(baseDir, options?.defaultFileName ?? 'untitled.txt'),
+          filters: options?.filters,
+        };
+        const win = BrowserWindowCtor.getFocusedWindow();
+        const result = win
+          ? await dialog.showSaveDialog(win, dialogOptions)
+          : await dialog.showSaveDialog(dialogOptions);
+        if (result.canceled || !result.filePath) {
+          return { success: false, canceled: true };
+        }
+        try {
+          await fs.promises.writeFile(result.filePath, content, 'utf-8');
+          return { success: true, filePath: result.filePath };
+        } catch (err) {
+          this.log(`[ElectronUI] saveTextFile failed: ${err}`);
+          return { success: false, error: String(err) };
+        }
+      },
+
       isDarkTheme: () => nativeTheme.shouldUseDarkColors,
       getLocale: () => app.getLocale().startsWith('zh') ? 'zh' : 'en',
       log: (...args) => this.log(...args),
@@ -426,6 +449,19 @@ export class ElectronUI implements AssistantUI {
     const listener = (_e: any, msg: any) => {
       if (msg?.type === 'saveSpinDesign' && msg.data) {
         saveSpin(msg.data);
+      } else if (msg?.type === 'exportSpinDesign' && msg.data) {
+        import('../src/host/spinDesignExport.js').then(({ exportSpinDesignJson }) =>
+          exportSpinDesignJson(this.buildHost(), msg.data, tt('导出 Spin 设计', 'Export Spin Design'))
+        ).then((result) => {
+          if (!win.isDestroyed()) {
+            win.webContents.send('spin-design-message', { type: 'spinExportResult', ...result });
+          }
+        }).catch((err) => {
+          this.log(`[ElectronUI] spin.json export failed: ${err}`);
+          if (!win.isDestroyed()) {
+            win.webContents.send('spin-design-message', { type: 'spinExportResult', success: false, error: String(err) });
+          }
+        });
       }
     };
     ipcMain.on('spin-design-message', listener);

@@ -20,6 +20,11 @@ type LineEndingType = 'CRLF' | 'LF';
  * 检测字符串的换行符类型
  */
 function detectLineEndings(content: string): LineEndingType {
+  // 最常见的 LF 文件可以直接短路，避免对大文件做一次全量字符循环。
+  if (!content.includes('\r\n')) {
+    return 'LF';
+  }
+
   let crlfCount = 0;
   let lfCount = 0;
 
@@ -40,6 +45,10 @@ function detectLineEndings(content: string): LineEndingType {
  * 将换行符统一为 LF
  */
 function normalizeLineEndings(content: string): string {
+  // 没有 CRLF 时直接返回原字符串，避免 replaceAll 产生一次全量新字符串。
+  if (!content.includes('\r\n')) {
+    return content;
+  }
   return content.replaceAll('\r\n', '\n');
 }
 
@@ -73,6 +82,36 @@ interface SearchWindow {
 }
 
 /**
+ * 统计字符串行数（不生成行数组，避免大文件 split 的内存开销）
+ */
+function countLines(content: string): number {
+  if (content.length === 0) return 1;
+  let count = 1;
+  for (let i = 0; i < content.length; i++) {
+    if (content.charCodeAt(i) === 10) {
+      count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * 统计子串出现次数（不生成数组，避免大文件 split 的内存开销）
+ */
+function countOccurrences(haystack: string, needle: string): number {
+  if (needle === '') return 0;
+  let count = 0;
+  let pos = 0;
+  while (true) {
+    const idx = haystack.indexOf(needle, pos);
+    if (idx === -1) break;
+    count++;
+    pos = idx + needle.length;
+  }
+  return count;
+}
+
+/**
  * 根据 offset/limit 计算搜索窗口。
  * offset 为 1-based 起始行，limit 为行数。
  * 返回的 slice 为窗口内连续行的文本（包含窗口内每行原有的行尾换行符）。
@@ -82,7 +121,13 @@ function getSearchWindow(
   offset?: number,
   limit?: number,
 ): SearchWindow {
-  const lineCount = content.length === 0 ? 1 : content.split('\n').length;
+  // 最常见场景：未指定 offset/limit 时直接使用整个文件，
+  // 避免对大文件执行 split('\n') 生成全量行数组。
+  if (offset === undefined && limit === undefined) {
+    return { slice: content, startIndex: 0, endIndex: content.length };
+  }
+
+  const lineCount = countLines(content);
   const startLine = offset !== undefined ? offset - 1 : 0;
   const endLine = Math.min(
     limit !== undefined ? startLine + limit : lineCount,
@@ -251,7 +296,7 @@ async function editFileContent(
   // 非 replaceAll 时，old_string 在搜索窗口内必须唯一匹配；存在多处匹配时直接报错而不是替换第一处，
   // 避免模型误以为已经精确修改了目标位置。
   if (!replaceAll) {
-    const occurrenceCount = searchContent.split(normalizedOldString).length - 1;
+    const occurrenceCount = countOccurrences(searchContent, normalizedOldString);
     if (occurrenceCount > 1) {
       throw new Error(
         `The old_string matches ${occurrenceCount} locations within the search range. When replace_all is false, old_string must match exactly once. Please include more surrounding context to make old_string unique, or set replace_all to true.`,
@@ -327,7 +372,7 @@ async function editFileContent(
   return {
     type: 'update',
     replacementsMade,
-    lineCount: newContent.split('\n').length,
+    lineCount: countLines(newContent),
     additions,
     deletions,
     patch,
@@ -339,21 +384,30 @@ async function editFileContent(
 }
 
 function getLineRangeFromIndex(content: string, startIndex: number, length: number): { startLine: number; endLine: number } {
-  // startLine: 1-based line number where old_string starts
+  // startLine: 1-based line number where old_string starts。
+  // 使用 indexOf 按行跳跃，避免大文件场景下对前缀逐字符循环。
   let startLine = 1;
-  for (let i = 0; i < startIndex; i++) {
-    if (content.charCodeAt(i) === 10) {
-      startLine++;
+  let pos = 0;
+  while (pos < startIndex) {
+    const newlineIndex = content.indexOf('\n', pos);
+    if (newlineIndex === -1 || newlineIndex >= startIndex) {
+      break;
     }
+    startLine++;
+    pos = newlineIndex + 1;
   }
 
   // endLine: 1-based line number where old_string ends
   const end = Math.min(startIndex + length, content.length);
   let oldLines = 1;
-  for (let i = startIndex; i < end; i++) {
-    if (content.charCodeAt(i) === 10) {
-      oldLines++;
+  pos = startIndex;
+  while (pos < end) {
+    const newlineIndex = content.indexOf('\n', pos);
+    if (newlineIndex === -1 || newlineIndex >= end) {
+      break;
     }
+    oldLines++;
+    pos = newlineIndex + 1;
   }
   const endLine = startLine + oldLines - 1;
 
@@ -586,7 +640,7 @@ export const EditTool = buildTool({
     // 非 replaceAll 时，old_string 在搜索窗口内必须唯一匹配；存在多处匹配时拒绝而不是替换第一处
     const replaceAll = resolveReplaceAll(input.replace_all);
     if (!replaceAll) {
-      const occurrenceCount = searchContent.split(normalizedOldString).length - 1;
+      const occurrenceCount = countOccurrences(searchContent, normalizedOldString);
       if (occurrenceCount > 1) {
         return {
           behavior: 'deny',

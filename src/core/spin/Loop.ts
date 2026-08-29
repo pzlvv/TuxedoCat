@@ -16,9 +16,11 @@ import {
   getNextNode,
   topologicalSort,
   buildRunPrompt,
+  substituteSpinVariables,
   updateNodeMeta,
 } from './Engine.js';
 import { SpinJudger } from './SpinJudger.js';
+import type { SpinNode } from './Types.js';
 import type { Message } from '../types.js';
 
 const MAX_ATTEMPTS = 100;
@@ -248,12 +250,17 @@ export async function spinLoop(
     const prevNote = config.meta?.[String(next.id)]?.note || undefined;
     // 依次加载该节点勾选的 Skill
     const skillsPrompt = await loadNodeSkillsPrompt(next.skills, cwd, sessionId);
-    const nodePrompt = buildRunPrompt(next, prevNote, skillsPrompt);
+    // 解析用户定义的变量（$KEY -> value，$$ -> 字面量 $）
+    const spinVariables = config.variables || {};
+    const resolvedTask = substituteSpinVariables(next.task, spinVariables);
+    const resolvedCriteria = (next.criteria || []).map(ac => substituteSpinVariables(ac, spinVariables));
+    const resolvedNode: SpinNode = { ...next, task: resolvedTask, criteria: resolvedCriteria };
+    const nodePrompt = buildRunPrompt(resolvedNode, prevNote, skillsPrompt);
 
-    logger.info('SpinLoop', `Executing Task ${currentSeq} - ${next.task}${attemptSuffix}`);
+    logger.info('SpinLoop', `Executing Task ${currentSeq} - ${resolvedTask}${attemptSuffix}`);
     const startMsgContent = tt(
-      `开始: 任务 ${currentSeq} - ${next.task}（第 ${attempts} / ${MAX_ATTEMPTS}）`,
-      `Starting: Task ${currentSeq} - ${next.task} (attempt ${attempts}/${MAX_ATTEMPTS})`
+      `[${attempts}/${MAX_ATTEMPTS}] 开始: 任务 ${currentSeq} - ${resolvedTask}`,
+      `[${attempts}/${MAX_ATTEMPTS}] Starting: Task ${currentSeq} - ${resolvedTask}`
     );
     ui.onMessage(sessionId, {
       role: 'user',
@@ -277,7 +284,7 @@ export async function spinLoop(
       input: {
         prompt: nodePrompt,
         agentRole: next.role || 'Master',
-        description: `Task ${currentSeq} - ${next.task}`,
+        description: `Task ${currentSeq} - ${resolvedTask}`,
       },
     });
 
@@ -290,8 +297,8 @@ export async function spinLoop(
 
     // 6. 使用 SpinJudger 判断是否通过
     const { accept } = await SpinJudger.judge(
-      next.task,
-      next.criteria,
+      resolvedTask,
+      resolvedCriteria,
       reply,
     );
     logger.info('SpinLoop', `Task ${currentSeq} accept judgment: ${accept}`);
@@ -300,8 +307,8 @@ export async function spinLoop(
     await updateNodeMeta(cwd, next.id, accept, reply);
 
     const resultMsgContent = tt(
-      `${accept ? '通过' : '失败'}: 任务 ${currentSeq} - ${next.task}（第 ${attempts} / ${MAX_ATTEMPTS}）`,
-      `${accept ? 'Passed' : 'Failed'}: Task ${currentSeq} - ${next.task} (attempt ${attempts}/${MAX_ATTEMPTS})`
+      `[${attempts}/${MAX_ATTEMPTS}] ${accept ? '通过' : '失败'}: 任务 ${currentSeq} - ${resolvedTask}`,
+      `[${attempts}/${MAX_ATTEMPTS}] ${accept ? 'Passed' : 'Failed'}: Task ${currentSeq} - ${resolvedTask}`
     );
     ui.onMessage(sessionId, {
       role: 'user',

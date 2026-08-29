@@ -95,6 +95,35 @@ export function topologicalSort(nodes: SpinNode[], edges: SpinEdge[]): number[] 
 }
 
 /**
+ * 转义正则表达式特殊字符
+ */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 替换 Spin 变量引用
+ * - $KEY -> variables[KEY]（KEY 为字母/数字/下划线组成的变量名）
+ * - $$ -> 字面量 $（转义，且不会被当作变量前缀）
+ * - 未匹配的 $ 保持原样
+ */
+export function substituteSpinVariables(text: string, variables?: Record<string, string>): string {
+  if (!text) return text;
+  const placeholder = '\u0000';
+  let result = text.replace(/\$\$/g, placeholder);
+  if (variables) {
+    const keys = Object.keys(variables).sort((a, b) => b.length - a.length);
+    for (const key of keys) {
+      if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+      result = result.replace(new RegExp(`\\$${escapeRegExp(key)}\\b`, 'g'), () => variables[key] ?? '');
+    }
+  }
+  // 还原 $$ 转义，并保留未匹配的 $
+  result = result.replace(/\$/g, placeholder).split(placeholder).join('$');
+  return result;
+}
+
+/**
  * 获取下一个未完成的节点（拓扑序中第一个未完成/未通过的）
  */
 export function getNextNode(config: SpinDesign): SpinNode | null {

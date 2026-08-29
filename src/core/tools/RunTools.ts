@@ -317,6 +317,7 @@ async function* authorizeOne(
 
   const updatedInput = (permission as any).updatedInput as Record<string, unknown> | undefined;
   if (updatedInput) {
+    const inputChanged = JSON.stringify((toolUse as any).input) !== JSON.stringify(updatedInput);
     (toolUse as any).input = updatedInput;
     // updatedInput 可能由 UI/权限层修改（例如把 replace_all 从字符串规范化为布尔值），
     // 必须重新解析，确保后续 call 使用的 parsedInput 与 checkPermissions/preview 一致。
@@ -326,8 +327,11 @@ async function* authorizeOne(
     } else {
       logger.warn('runTools', `Updated input for ${toolUse.name} failed schema validation: ${reParsedInput.error.message}`);
     }
-    const { updateToolUseInput } = await import('../history/index.js');
-    await updateToolUseInput(sessionID, toolUse.id, updatedInput);
+    // 只有 input 真的变化时才追加更新记录；没变化时跳过，避免无意义的 JSONL 增长。
+    if (inputChanged) {
+      const { updateToolUseInput } = await import('../history/index.js');
+      await updateToolUseInput(sessionID, toolUse.id, updatedInput);
+    }
   }
 
   // 处理 ask / deny

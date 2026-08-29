@@ -16,6 +16,8 @@ export interface SpinNode {
   role?: string
   /** 该节点执行前需要依次加载的 Skill 名称列表 */
   skills?: string[]
+  /** 节点标题（可选，仅用于 Spin Design 画布展示，不参与执行） */
+  title?: string
 }
 
 /** 节点间的连线 */
@@ -37,6 +39,10 @@ export interface SpinDesign {
   nodes: SpinNode[]
   edges: SpinEdge[]
   meta: Record<string, SpinNodeMeta>  // nodeId -> execution state
+  /** 用户定义的变量（key -> value），可在节点描述/验收标准中以 $KEY 引用 */
+  variables?: Record<string, string>
+  /** 变量说明/注释（key -> description），仅用于 Spin Design 展示，不参与执行 */
+  variableComments?: Record<string, string>
 }
 
 /** spinCommand 消息载荷 */

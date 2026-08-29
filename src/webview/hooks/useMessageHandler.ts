@@ -177,7 +177,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
       switch (msg.type) {
         case 'addMessage':
           profileLog(`[Webview] addMessage: role=${msg.role} toolName=${msg.toolName || '-'} sessionMatch=${msg.sessionId === sessionId} isFromAgent=${!!msg.isFromAgent} isCompactSummary=${!!msg.isCompactSummary} contentStart=${(msg.content || '').substring(0, 50)}`);
-          // 排队消息被后端接收并显示后，清除该会话的排队状态：
+          // 排队消息被后端真正消费并显示后，清除该会话的排队状态：
           // 入队消息已进入引擎队列，会在下次 LLM 请求时被带上，
           // 不再需要等待 queryEnd 重新投递（避免重复发送）。
           // 放在 session 过滤之前，即使消息属于非当前会话也清除对应排队项。

@@ -4,6 +4,7 @@ import { ToolCallProps } from './Types';
 import { ToolHeader } from './ToolHeader';
 import { postMessage } from '../webviewEnv';
 import { t } from '../i18n';
+import { AnsiText } from '../ansi';
 
 /**
  * 解析持久化输出标签
@@ -206,7 +207,7 @@ export const RemoteBash: React.FC<ToolCallProps> = ({ args, output, colors, tool
                         lineHeight: '1.6',
                       }}
                     >
-                      {line}
+                      <AnsiText text={line} />
                     </div>
                   ))}
                   {showTruncated && (
@@ -255,7 +256,7 @@ export const RemoteBash: React.FC<ToolCallProps> = ({ args, output, colors, tool
               lineHeight: '1.6',
             }}
           >
-            {line}
+            <AnsiText text={line} />
           </div>
         ))}
         {showTruncated && (

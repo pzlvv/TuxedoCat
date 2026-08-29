@@ -40,7 +40,7 @@ const metadataWriteQueue = new Map<string, Promise<void>>();
 
 /**
  * 对话文件写队列，串行化对同一 JSONL 文件的所有写操作（appendFile / writeFile），
- * 避免 updateToolUseMeta（读-改-写）与 appendMessage（追加）并发导致的文件损坏。
+ * 避免 updateToolUseMeta / updateToolUseInput（追加更新记录）与 appendMessage（追加）并发导致的文件损坏。
  * key = 对话文件路径
  */
 const conversationWriteQueue = new Map<string, Promise<void>>();
@@ -232,6 +232,19 @@ interface StoredMessage {
 }
 
 /**
+ * JSONL 中追加的 tool_use 更新记录。
+ * 用于避免 updateToolUseMeta / updateToolUseInput 整文件读改写：
+ * 修改已写入的 tool_use block 时，追加一条轻量更新记录，加载时按顺序回放。
+ */
+interface ToolUseUpdateRecord {
+  type: 'tool_use_update';
+  toolUseId: string;
+  input?: Record<string, unknown>;
+  meta?: Record<string, unknown>;
+  timestamp: number;
+}
+
+/**
  * 对话会话数据
  */
 export interface Conversation {
@@ -323,6 +336,94 @@ async function ensureToolResults(messages: Message[], _sessionId: string): Promi
 }
 
 /**
+ * 将 tool_use 更新应用到一组消息上（内存缓存 / mutableMessages 共用）
+ */
+function applyToolUseUpdateToMessages(
+  messages: Message[],
+  toolUseId: string,
+  update: { input?: Record<string, unknown>; meta?: Record<string, unknown> },
+): number {
+  let updatedCount = 0;
+  for (const msg of messages) {
+    if (msg.type !== 'assistant' || !Array.isArray((msg.message as any)?.content)) continue;
+    for (const block of (msg.message as any).content) {
+      if (typeof block === 'object' && block !== null && (block as any).type === 'tool_use' && (block as any).id === toolUseId) {
+        if (update.input) {
+          (block as any).input = update.input;
+        }
+        if (update.meta) {
+          if (!(block as any)._meta || typeof (block as any)._meta !== 'object') {
+            (block as any)._meta = {};
+          }
+          Object.assign((block as any)._meta as Record<string, unknown>, update.meta);
+        }
+        updatedCount++;
+      }
+    }
+  }
+  return updatedCount;
+}
+
+/**
+ * 追加一条 tool_use 更新记录到会话 JSONL，并同步内存缓存 / mutableMessages。
+ * 利用 JSONL 追加写的特性，避免 updateToolUseInput / updateToolUseMeta
+ * 对已写入的 tool_use 行做整文件读改写。
+ */
+async function appendToolUseUpdate(
+  sessionId: string,
+  toolUseId: string,
+  update: { input?: Record<string, unknown>; meta?: Record<string, unknown> },
+  logLabel: string,
+): Promise<void> {
+  const startTs = Date.now();
+  const projectPath = getProjectRoot();
+  if (!projectPath) return;
+
+  const conversationPath = getConversationPath(sessionId, projectPath);
+  const record: ToolUseUpdateRecord = {
+    type: 'tool_use_update',
+    toolUseId,
+    ...update,
+    timestamp: Date.now(),
+  };
+
+  try {
+    await enqueueConversationWrite(conversationPath, () =>
+      appendFile(conversationPath, safeJsonStringify(record) + '\n', { encoding: 'utf8', mode: 0o600 })
+    );
+  } catch (e) {
+    logger.error('Conversation', `${logLabel}: 追加更新记录失败: ${e}`);
+    return;
+  }
+
+  const keys = update.input ? ['input'] : Object.keys(update.meta ?? {});
+  logger.info('Conversation', `${logLabel} APPENDED | toolUseId=${toolUseId} | session=${sessionId.substring(0,20)} | key=${keys.join(',')} | time=${Date.now()-startTs}ms`);
+
+  // 更新内存缓存
+  const cached = conversationCache.get(sessionId);
+  if (cached) {
+    applyToolUseUpdateToMessages(cached.messages, toolUseId, update);
+  }
+
+  // 同步更新 QueryEngine 的 mutableMessages（异步导入避免循环依赖）
+  try {
+    const { getSessionEngine } = await import('../QueryEngine.js');
+    const engine = getSessionEngine(sessionId);
+    if (engine) {
+      const mutableMessages = engine.getMessages();
+      const updatedCount = applyToolUseUpdateToMessages(mutableMessages, toolUseId, update);
+      if (updatedCount === 0) {
+        logger.warn('Conversation', `${logLabel} mutableMessages NOT FOUND for toolUseId=${toolUseId} | session=${sessionId.substring(0,20)} | mutableMsgsLen=${mutableMessages.length}`);
+      }
+    } else {
+      logger.info('Conversation', `${logLabel} No engine found for session=${sessionId.substring(0,20)}`);
+    }
+  } catch (err) {
+    logger.warn('Conversation', `${logLabel} Failed to sync mutableMessages: ${err}`);
+  }
+}
+
+/**
  * 更新已存在的 tool_use 消息的 input 内容
  * 用于在 checkPermissions 获取到额外数据（如 beforeContent/afterContent）后，
  * 更新历史记录中的 tool_use.input，确保会话切换后恢复时数据不丢失
@@ -336,82 +437,7 @@ export async function updateToolUseInput(
   toolUseId: string,
   input: Record<string, unknown>,
 ): Promise<void> {
-  const projectPath = getProjectRoot();
-  if (!projectPath) return;
-
-  const conversationPath = getConversationPath(sessionId, projectPath);
-  let updated = false;
-
-  try {
-    await enqueueConversationWrite(conversationPath, async () => {
-      const content = await readFile(conversationPath, 'utf-8');
-      const lines = content.split('\n').filter(Boolean);
-      let localUpdated = false;
-      const newLines = lines.map((line) => {
-        try {
-          const stored = JSON.parse(line);
-          const msg = stored.message;
-          if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
-            for (const block of msg.message.content) {
-              if (typeof block === 'object' && block !== null && (block as any).type === 'tool_use' && (block as any).id === toolUseId) {
-	                (block as any).input = input;
-	                localUpdated = true;
-	                return safeJsonStringify(stored);
-              }
-            }
-          }
-        } catch {
-          logger.error('Conversation', `toolUseInput: 解析行失败: ${line.substring(0, 80)}`);
-        }
-        return line;
-      });
-
-      if (localUpdated) {
-        updated = true;
-        await writeFile(conversationPath, newLines.join('\n') + '\n', 'utf-8');
-      }
-    });
-  } catch (e) {
-    logger.error('Conversation', `toolUseInput: 文件读写失败: ${e}`);
-    return;
-  }
-
-  // 文件写入成功后，更新内存缓存和 mutableMessages（无文件操作，无需加锁）
-  if (updated) {
-    // 更新内存缓存
-    const cached = conversationCache.get(sessionId);
-    if (cached) {
-      for (const msg of cached.messages) {
-        if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
-          for (const block of msg.message.content) {
-            if (typeof block === 'object' && block !== null && (block as any).type === 'tool_use' && (block as any).id === toolUseId) {
-              (block as any).input = input;
-            }
-          }
-        }
-      }
-    }
-
-    // 同步更新 QueryEngine 的 mutableMessages
-    try {
-      const { getSessionEngine } = await import('../QueryEngine.js');
-      const engine = getSessionEngine(sessionId);
-      if (engine) {
-        const mutableMessages = engine.getMessages();
-        for (const msg of mutableMessages) {
-          if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
-            for (const block of msg.message.content) {
-              if (typeof block === 'object' && block !== null && (block as any).type === 'tool_use' && (block as any).id === toolUseId) {
-                (block as any).input = input;
-              }
-            }
-          }
-        }
-      }
-    } catch (err) {
-      logger.warn('updateToolUseInput', `Failed to sync mutableMessages: ${err}`);
-    }
-  }
+  await appendToolUseUpdate(sessionId, toolUseId, { input }, 'updateToolUseInput');
 }
 
 /**
@@ -427,104 +453,7 @@ export async function updateToolUseMeta(
   toolUseId: string,
   meta: Record<string, unknown>,
 ): Promise<void> {
-  const startTs = Date.now();
-  const projectPath = getProjectRoot();
-  if (!projectPath) return;
-
-  const conversationPath = getConversationPath(sessionId, projectPath);
-  let updated = false;
-
-  try {
-    // 串行化读-改-写：防止与 appendMessage 或其他 updateToolUseMeta 并发导致数据丢失/损坏
-    await enqueueConversationWrite(conversationPath, async () => {
-      const content = await readFile(conversationPath, 'utf-8');
-      const lines = content.split('\n').filter(Boolean);
-      let localUpdated = false;
-      const newLines = lines.map((line) => {
-        try {
-          const stored = JSON.parse(line);
-          const msg = stored.message;
-          if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
-            for (const block of msg.message.content) {
-              if (typeof block === 'object' && block !== null && (block as any).type === 'tool_use' && (block as any).id === toolUseId) {
-                // _meta 在 block 顶层（方案一直构后不再在 input 内部）
-                if (!(block as any)._meta || typeof (block as any)._meta !== 'object') {
-                  (block as any)._meta = {};
-                }
-                Object.assign((block as any)._meta as Record<string, unknown>, meta);
-                localUpdated = true;
-                return safeJsonStringify(stored);
-              }
-            }
-          }
-        } catch {
-          logger.error('Conversation', `updateToolUseMeta: 解析行失败: ${line.substring(0, 80)}`);
-        }
-        return line;
-      });
-
-      if (localUpdated) {
-        updated = true;
-        logger.info('updateToolUseMeta', `UPDATED | toolUseId=${toolUseId} | session=${sessionId.substring(0,20)} | key=${Object.keys(meta).join(',')} | time=${Date.now()-startTs}ms`);
-        await writeFile(conversationPath, newLines.join('\n') + '\n', 'utf-8');
-      }
-    });
-  } catch (e) {
-    logger.error('Conversation', `updateToolUseMeta: 文件读写失败: ${e}`);
-  }
-
-  // 文件写入成功后，更新内存缓存和 mutableMessages（无文件操作，无需加锁）
-  if (updated) {
-    // 更新内存缓存
-    const cached = conversationCache.get(sessionId);
-    if (cached) {
-      for (const msg of cached.messages) {
-        if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
-          for (const block of msg.message.content) {
-            if (typeof block === 'object' && block !== null && (block as any).type === 'tool_use' && (block as any).id === toolUseId) {
-              if (!(block as any)._meta || typeof (block as any)._meta !== 'object') {
-                (block as any)._meta = {};
-              }
-              Object.assign((block as any)._meta as Record<string, unknown>, meta);
-            }
-          }
-        }
-      }
-    }
-
-    // 同步更新 QueryEngine 的 mutableMessages（异步导入避免循环依赖）
-    try {
-      const { getSessionEngine } = await import('../QueryEngine.js');
-      const engine = getSessionEngine(sessionId);
-      if (engine) {
-        const mutableMessages = engine.getMessages();
-        let mutableUpdatedCount = 0;
-        for (const msg of mutableMessages) {
-          if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
-            for (const block of msg.message.content) {
-              if (typeof block === 'object' && block !== null && (block as any).type === 'tool_use' && (block as any).id === toolUseId) {
-                const beforeMeta = JSON.stringify((block as any)._meta);
-                if (!(block as any)._meta || typeof (block as any)._meta !== 'object') {
-                  (block as any)._meta = {};
-                }
-                Object.assign((block as any)._meta as Record<string, unknown>, meta);
-                const afterMeta = JSON.stringify((block as any)._meta);
-                mutableUpdatedCount++;
-                logger.info('updateToolUseMeta', `mutableMessages synced | toolUseId=${toolUseId} | session=${sessionId.substring(0,20)} | key=${Object.keys(meta).join(',')} | before="${beforeMeta}" | after="${afterMeta}"`);
-              }
-            }
-          }
-        }
-        if (mutableUpdatedCount === 0) {
-          logger.warn('updateToolUseMeta', `mutableMessages NOT FOUND for toolUseId=${toolUseId} | session=${sessionId.substring(0,20)} | mutableMsgsLen=${mutableMessages.length}`);
-        }
-      } else {
-        logger.info('updateToolUseMeta', `No engine found for session=${sessionId.substring(0,20)}`);
-      }
-    } catch (err) {
-      logger.warn('updateToolUseMeta', `Failed to sync mutableMessages: ${err}`);
-    }
-  }
+  await appendToolUseUpdate(sessionId, toolUseId, { meta }, 'updateToolUseMeta');
 }
 
 /**
@@ -894,6 +823,8 @@ export async function loadConversation(sessionId: string): Promise<Conversation>
 
       // 构建消息链（O(n) 算法）
       const messageMap = new Map<string, StoredMessage>();
+      // 追加式 tool_use 更新记录，按文件顺序回放到对应 tool_use block
+      const updates: ToolUseUpdateRecord[] = [];
 
       // 第一遍：解析所有消息
       // 容错：单条损坏（异常退出产生的半行、NUL 空字节行等）只跳过该行，
@@ -903,7 +834,12 @@ export async function loadConversation(sessionId: string): Promise<Conversation>
       // 链完整性由第二遍的“父节点缺失时退化为根节点”兜底保证。
       for (const line of lines) {
         try {
-          const stored: StoredMessage = JSON.parse(line);
+          const parsed = JSON.parse(line);
+          if (parsed?.type === 'tool_use_update') {
+            updates.push(parsed as ToolUseUpdateRecord);
+            continue;
+          }
+          const stored = parsed as StoredMessage;
           if (!stored || typeof stored.uuid !== 'string') continue;
           messageMap.set(stored.uuid, stored);
         } catch {
@@ -998,6 +934,14 @@ export async function loadConversation(sessionId: string): Promise<Conversation>
             }
           }
         }
+      }
+
+      // 回放追加式 tool_use 更新记录（保持文件顺序，后写覆盖先写）
+      for (const upd of updates) {
+        applyToolUseUpdateToMessages(messages, upd.toolUseId, {
+          input: upd.input,
+          meta: upd.meta,
+        });
       }
 
       // 从磁盘加载的消息天然是"已持久化"状态：统一打上 _persisted 标记。

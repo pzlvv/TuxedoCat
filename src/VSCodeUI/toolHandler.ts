@@ -47,6 +47,26 @@ export class ToolHandler {
     const toolCallId = toolUseId;
     logger.info('VSCodeUI', `onPreToolCall: ${toolName} (toolCallId: ${toolCallId})`);
 
+    // 自动模式跳过确认
+    const effectiveAgentMode = this.sessionAgentModes.get(sessionID) ?? 'manual';
+
+    // Auto 模式下 Edit/Write 的 checkPermissions 可能要读取大文件/计算 diff，
+    // 先立即上架一张 running 工具卡片，避免出现“既没有 thinking 也没有 running”的空窗期。
+    let prePostedToolCard = false;
+    if (effectiveAgentMode === 'auto' && (toolName === 'Edit' || toolName === 'Write')) {
+      prePostedToolCard = true;
+      this.postToWebview(sessionID, {
+        type: 'addMessage',
+        role: 'toolcall',
+        content: '',
+        param: `⚙️ ${toolName}`,
+        toolName,
+        toolArgs: { ...args },
+        status: 'running',
+        toolCallId,
+      });
+    }
+
     // 调用 checkPermissions 获取权限结果
     let permResult: PermissionResult = { behavior: 'allow' };
     if (tool && typeof tool === 'object' && 'checkPermissions' in tool && typeof tool.checkPermissions === 'function') {
@@ -80,9 +100,6 @@ export class ToolHandler {
       this.userChoiceManager.currentStartLine = (permResult as any).startLine;
       this.userChoiceManager.currentEndLine = (permResult as any).endLine;
     }
-
-    // 自动模式跳过确认
-    const effectiveAgentMode = this.sessionAgentModes.get(sessionID) ?? 'manual';
 
     // Auto 模式下 AskUserQuestion 不可用：不弹出提问框，直接返回不可用结果
     if (toolName === 'AskUserQuestion' && effectiveAgentMode === 'auto') {
@@ -182,28 +199,37 @@ export class ToolHandler {
       displayArgs = { ...displayArgs, _preview: String(permResult.previewContent) };
     }
 
-    // 发送到 webview
-    this.postToWebview(sessionID, {
-      type: 'addMessage',
-      role: 'toolcall',
-      content: '',
-      param: `⚙️ ${toolName}`,
-      toolName,
-      toolArgs: displayArgs,
-      status: 'normal',
-      toolCallId,
-    });
+    // 发送到 webview：Auto 模式 Edit/Write 已在上方预发了 running 卡片，这里改为补全参数；
+    // 其他工具仍走原来的 addMessage（normal 状态，等待授权/执行）。
+    if (prePostedToolCard) {
+      this.postToWebview(sessionID, {
+        type: 'updateToolArgs',
+        toolCallId,
+        toolArgs: displayArgs,
+      });
+    } else {
+      this.postToWebview(sessionID, {
+        type: 'addMessage',
+        role: 'toolcall',
+        content: '',
+        param: `⚙️ ${toolName}`,
+        toolName,
+        toolArgs: displayArgs,
+        status: 'normal',
+        toolCallId,
+      });
+    }
 
     const diffLineCount = Array.isArray((displayArgs as any).diffHunks)
       ? (displayArgs as any).diffHunks.reduce((s: number, h: any) => s + (h.lines?.length || 0), 0)
       : 0;
-    this.log(`[VSCodeUI] addMessage: ${toolName} file=${(displayArgs as any).file_path || '-'} diffLines=${diffLineCount} beforeLen=${(displayArgs as any).beforeContent?.length || 0} afterLen=${(displayArgs as any).afterContent?.length || 0}`);
+    this.log(`[VSCodeUI] ${prePostedToolCard ? 'updateToolArgs' : 'addMessage'}: ${toolName} file=${(displayArgs as any).file_path || '-'} diffLines=${diffLineCount} beforeLen=${(displayArgs as any).beforeContent?.length || 0} afterLen=${(displayArgs as any).afterContent?.length || 0}`);
 
-    // 异步写入 block 顶层 _meta
+    // 异步追加写入 block 顶层 _meta（append-only，避免整文件读改写）。
+    // 不设置 updatedInput，避免 RunTools 再触发一次无意义的 updateToolUseInput。
     if (permResult && typeof permResult === 'object' && !('updatedInput' in permResult)) {
       const hasExtraFields = Object.keys(displayArgs).some(k => !(k in args));
       if (hasExtraFields) {
-        (permResult as any).updatedInput = { ...args };
         const { updateToolUseMeta } = require('../core/history/index.js');
         updateToolUseMeta(sessionID, toolUseId, {
           beforeContent: this.userChoiceManager.currentBeforeContent !== undefined ? this.userChoiceManager.currentBeforeContent : '',

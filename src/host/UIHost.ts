@@ -22,6 +22,27 @@ export interface ShowDiffOptions {
   afterContent?: string;
 }
 
+/** 另存为对话框选项 */
+export interface SaveFileOptions {
+  /** 默认文件名（宿主会拼接到默认目录） */
+  defaultFileName?: string;
+  /** 对话框标题 */
+  title?: string;
+  /** 文件过滤器 */
+  filters?: Array<{ name: string; extensions: string[] }>;
+}
+
+/** 另存为结果 */
+export interface SaveFileResult {
+  success: boolean;
+  /** 用户取消时置为 true */
+  canceled?: boolean;
+  /** 保存成功的完整路径 */
+  filePath?: string;
+  /** 失败原因 */
+  error?: string;
+}
+
 export interface UIHost {
   /** 推送消息到 webview（消息体由调用方组装，含 sessionId 等字段） */
   sendToWebview(message: Record<string, unknown>): void;
@@ -43,6 +64,12 @@ export interface UIHost {
 
   /** 用系统默认浏览器打开外部链接（VS Code: vscode.env.openExternal；Electron: shell.openExternal） */
   openExternalUrl(url: string): Promise<void>;
+
+  /**
+   * 弹出“另存为”对话框并写入文本文件
+   * 用于 Spin Design 导出 spin.json 等场景，宿主差异（VS Code showSaveDialog / Electron dialog）在此收敛
+   */
+  saveTextFile(content: string, options?: SaveFileOptions): Promise<SaveFileResult>;
 
   /** 当前是否为深色主题 */
   isDarkTheme(): boolean;

@@ -1,5 +1,61 @@
 import { DefaultLinesDiffComputer } from 'vscode-diff';
 
+/**
+ * 统计字符串行数（不生成行数组，避免大文件 split 的内存/耗时）
+ */
+function countLines(text: string): number {
+  if (text.length === 0) return 1;
+  let count = 1;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) {
+      count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * 截取指定 1-based 行范围并拆分成行数组。
+ * 只扫描范围内的换行符，避免对大文件先 split 全量行数组。
+ */
+function sliceLinesByLineRange(
+  text: string,
+  startLine: number,
+  endLine: number,
+): string[] {
+  const safeStart = Math.max(1, Math.floor(startLine));
+  const safeEnd = Math.max(safeStart, Math.floor(endLine));
+
+  if (text.length === 0) {
+    return [''];
+  }
+
+  let lineStart = 0;
+  let line = 1;
+  while (line < safeStart) {
+    const newlineIndex = text.indexOf('\n', lineStart);
+    if (newlineIndex === -1) {
+      return [''];
+    }
+    lineStart = newlineIndex + 1;
+    line++;
+  }
+
+  let lineEnd = lineStart;
+  let currentLine = safeStart;
+  while (currentLine <= safeEnd) {
+    const newlineIndex = text.indexOf('\n', lineEnd);
+    if (newlineIndex === -1) {
+      lineEnd = text.length;
+      break;
+    }
+    lineEnd = newlineIndex + 1;
+    currentLine++;
+  }
+
+  return text.substring(lineStart, lineEnd).split('\n');
+}
+
 export interface DiffLine {
   lineNumber: number;
   content: string;
@@ -144,11 +200,12 @@ export function buildEditDiffHunks(input: {
   const rawAfterContent = input.afterContent;
   if (!rawBeforeContent || !rawAfterContent) return [];
 
-  const beforeContent = rawBeforeContent.replace(/\r\n/g, '\n');
-  const afterContent = rawAfterContent.replace(/\r\n/g, '\n');
-
-  const originalLines = beforeContent.split('\n');
-  const modifiedLines = afterContent.split('\n');
+  const beforeContent = rawBeforeContent.includes('\r\n')
+    ? rawBeforeContent.replace(/\r\n/g, '\n')
+    : rawBeforeContent;
+  const afterContent = rawAfterContent.includes('\r\n')
+    ? rawAfterContent.replace(/\r\n/g, '\n')
+    : rawAfterContent;
 
   const computer = new DefaultLinesDiffComputer();
   const contextLines = input.contextLines ?? 2;
@@ -168,23 +225,29 @@ export function buildEditDiffHunks(input: {
     editStartLine > 0 &&
     editEndLine >= editStartLine;
 
+  const originalLineCount = countLines(beforeContent);
+  const modifiedLineCount = countLines(afterContent);
+
   let diffResult;
+  let originalWindow: string[];
+  let modifiedWindow: string[];
   let originalOffset = 0;
   let modifiedOffset = 0;
 
   if (hasEditRange) {
     const originalWindowStart = Math.max(1, editStartLine - windowPaddingLines);
-    const originalWindowEnd = Math.min(originalLines.length, editEndLine + windowPaddingLines);
+    const originalWindowEnd = Math.min(originalLineCount, editEndLine + windowPaddingLines);
     const modifiedWindowStart = originalWindowStart;
     // 编辑前后总行数差会整体平移修改侧的行号
-    const modifiedEditEndLine = editEndLine + (modifiedLines.length - originalLines.length);
+    const modifiedEditEndLine = editEndLine + (modifiedLineCount - originalLineCount);
     const modifiedWindowEnd = Math.min(
-      modifiedLines.length,
+      modifiedLineCount,
       modifiedEditEndLine + windowPaddingLines,
     );
 
-    const originalWindow = originalLines.slice(originalWindowStart - 1, originalWindowEnd);
-    const modifiedWindow = modifiedLines.slice(modifiedWindowStart - 1, modifiedWindowEnd);
+    // 只截取编辑窗口附近的行，避免对大文件先 split 全量行数组
+    originalWindow = sliceLinesByLineRange(beforeContent, originalWindowStart, originalWindowEnd);
+    modifiedWindow = sliceLinesByLineRange(afterContent, modifiedWindowStart, modifiedWindowEnd);
 
     originalOffset = originalWindowStart - 1;
     modifiedOffset = modifiedWindowStart - 1;
@@ -195,12 +258,19 @@ export function buildEditDiffHunks(input: {
       maxComputationTimeMs: 0,
     });
   } else {
-    diffResult = computer.computeDiff(originalLines, modifiedLines, {
+    originalWindow = beforeContent.split('\n');
+    modifiedWindow = afterContent.split('\n');
+    diffResult = computer.computeDiff(originalWindow, modifiedWindow, {
       ignoreTrimWhitespace: false,
       computeMoves: false,
       maxComputationTimeMs: 0,
     });
   }
+
+  const getOriginalLine = (lineNumber: number): string =>
+    originalWindow[lineNumber - 1 - originalOffset] ?? '';
+  const getModifiedLine = (lineNumber: number): string =>
+    modifiedWindow[lineNumber - 1 - modifiedOffset] ?? '';
 
   const hunks: DiffHunk[] = [];
 
@@ -257,21 +327,21 @@ export function buildEditDiffHunks(input: {
     }
 
     const contextStart = Math.max(1, Math.min(originalStart, modifiedStart) - contextLines);
-    const contextEndOriginal = Math.min(originalLines.length + 1, originalEnd + contextLines);
-    const contextEndModified = Math.min(modifiedLines.length + 1, modifiedEnd + contextLines);
+    const contextEndOriginal = Math.min(originalLineCount + 1, originalEnd + contextLines);
+    const contextEndModified = Math.min(modifiedLineCount + 1, modifiedEnd + contextLines);
 
     // 添加上下文行（上方）
     for (let i = contextStart; i < Math.min(originalStart, modifiedStart); i++) {
       lines.push({
         lineNumber: i,
-        content: originalLines[i - 1] || modifiedLines[i - 1],
+        content: getOriginalLine(i) || getModifiedLine(i),
         type: 'unchanged',
       });
     }
 
     // 添加删除的行（带单词级差异）
     for (let i = originalStart; i < originalEnd; i++) {
-      const content = originalLines[i - 1];
+      const content = getOriginalLine(i);
       const innerChanges = innerChangesByOriginalLine.get(i);
       const wordDiff = computeWordDiffFromInnerChanges(content, innerChanges, false, i);
       lines.push({
@@ -284,7 +354,7 @@ export function buildEditDiffHunks(input: {
 
     // 添加添加的行（带单词级差异）
     for (let i = modifiedStart; i < modifiedEnd; i++) {
-      const content = modifiedLines[i - 1];
+      const content = getModifiedLine(i);
       const innerChanges = innerChangesByModifiedLine.get(i);
       const wordDiff = computeWordDiffFromInnerChanges(content, innerChanges, true, i);
       lines.push({
@@ -297,7 +367,7 @@ export function buildEditDiffHunks(input: {
 
     // 添加上下文行（下方）
     for (let i = modifiedEnd; i < Math.max(contextEndOriginal, contextEndModified); i++) {
-      const content = i <= modifiedLines.length ? modifiedLines[i - 1] : originalLines[i - 1];
+      const content = i <= modifiedLineCount ? getModifiedLine(i) : getOriginalLine(i);
       lines.push({
         lineNumber: i,
         content,

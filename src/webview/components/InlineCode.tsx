@@ -1,5 +1,6 @@
 import React, { useRef, useState, useLayoutEffect, memo } from 'react';
 import type { Colors } from '../types';
+import { AnsiText, hasAnsi } from '../ansi';
 
 interface InlineCodeProps {
   children: React.ReactNode;
@@ -47,7 +48,7 @@ const InlineCode = memo(function InlineCode({ children, colors }: InlineCodeProp
           : { padding: '1px 4px', borderRadius: '3px' }),
       }}
     >
-      {children}
+      {typeof children === 'string' && hasAnsi(children) ? <AnsiText text={children} /> : children}
     </code>
   );
 });
