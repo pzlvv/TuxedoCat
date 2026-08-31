@@ -16,6 +16,7 @@ const spinZhDict: Record<string, string> = {
   'toolbar.variables': '变量列表',
   'toolbar.save': '保存',
   'toolbar.saveNotDag': '未构成无环有向图（DAG）',
+  'toolbar.saveEmptyNode': '存在空节点（缺少任务描述）',
   'editor.placeholder': '输入任务描述...',
   'toast.noResults': '没有结果需要清除',
   'toast.edgeExists': '该连线已存在',
@@ -71,6 +72,7 @@ const spinEnDict: Record<string, string> = {
   'toolbar.variables': 'Variable List',
   'toolbar.save': 'Save',
   'toolbar.saveNotDag': 'Not a directed acyclic graph (DAG)',
+  'toolbar.saveEmptyNode': 'Contains empty nodes (missing task description)',
   'editor.placeholder': 'Enter task description...',
   'toast.noResults': 'No results to clear',
   'toast.edgeExists': 'Connection already exists',
@@ -1654,6 +1656,7 @@ function __spinT(key, params) {
     var el = document.getElementById('node-' + nodeId);
     if (el) el.replaceWith(createNodeElement(node));
     renderEdges();
+    revalidateDesign();
   }
 
   function updateNodePos(node) {
@@ -2038,8 +2041,8 @@ function __spinT(key, params) {
 
   // 更新保存按钮状态：
   // - 节点数据损坏时禁用保存；
-  // - 图不是 DAG 时仍允许保存，但按钮显示为黄色并提示“未构成无环有向图”。
-  function updateSaveButton(valid, notDag) {
+  // - 图不是 DAG 或存在空节点时仍允许保存，但按钮显示为黄色并给出对应提示。
+  function updateSaveButton(valid, notDag, hasEmptyNode) {
     var btn = document.getElementById('btnSave');
     var exportBtn = document.getElementById('btnExport');
     if (!valid) {
@@ -2061,11 +2064,14 @@ function __spinT(key, params) {
     exportBtn.disabled = false;
     exportBtn.style.opacity = '1';
     exportBtn.style.cursor = 'pointer';
-    if (notDag) {
+    if (notDag || hasEmptyNode) {
       btn.style.background = '#eab308';
       btn.style.borderColor = '#eab308';
       btn.style.color = '#1a1a1f';
-      btn.title = __spinT('toolbar.saveNotDag');
+      var tips = [];
+      if (hasEmptyNode) tips.push(__spinT('toolbar.saveEmptyNode'));
+      if (notDag) tips.push(__spinT('toolbar.saveNotDag'));
+      btn.title = tips.join('；');
     } else {
       btn.style.background = '';
       btn.style.borderColor = '';
@@ -2074,7 +2080,7 @@ function __spinT(key, params) {
     }
   }
 
-  // 只根据“是否为 DAG”刷新保存按钮外观；空节点、非连通等不再阻止保存。
+  // 根据“是否为 DAG”和“是否存在空节点”刷新保存按钮外观；空节点、非连通等不再阻止保存。
   function revalidateDesign() {
     // 仍然防御节点数据损坏，避免后续 map/find 抛错。
     for (var vi = 0; vi < nodes.length; vi++) {
@@ -2084,8 +2090,12 @@ function __spinT(key, params) {
       }
     }
 
+    var hasEmptyNode = nodes.some(function(n) {
+      return typeof n.task !== 'string' || n.task.trim() === '';
+    });
+
     var nodeIds = nodes.map(function(n) { return n.id; });
-    if (nodeIds.length === 0) { updateSaveButton(true, false); return true; }
+    if (nodeIds.length === 0) { updateSaveButton(true, false, false); return true; }
 
     var idSet = {};
     nodeIds.forEach(function(id) { idSet[id] = true; });
@@ -2113,7 +2123,7 @@ function __spinT(key, params) {
     }
 
     var isDag = sorted.length === nodeIds.length;
-    updateSaveButton(true, !isDag);
+    updateSaveButton(true, !isDag, hasEmptyNode);
     return isDag;
   }
 

@@ -11,6 +11,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getProjectConversationDir, ensureProjectConversationDir } from '../history/Config.js';
+import { tt } from '../i18n.js';
+import { logger } from '../Logger.js';
 import type { SpinDesign, SpinNode, SpinEdge } from './Types.js';
 
 const SPIN_FILE = 'spin.json';
@@ -35,6 +37,84 @@ export async function readSpinJson(cwd: string): Promise<SpinDesign | null> {
   } catch {
     return null;
   }
+}
+
+/** spin.json 结构问题分类 */
+export type SpinDesignIssue = 'invalid' | 'empty-node' | 'not-dag';
+
+/**
+ * 获取 spin.json 的结构问题类型。
+ * - invalid: JSON/节点数据非法
+ * - empty-node: 存在空节点（无任务描述）
+ * - not-dag: 不是有效的无环有向图（DAG）
+ */
+function getSpinDesignIssue(config: unknown): SpinDesignIssue | null {
+  if (!config || typeof config !== 'object') return 'invalid';
+
+  const spin = config as Partial<SpinDesign>;
+  if (!Array.isArray(spin.nodes) || spin.nodes.length === 0) return 'empty-node';
+
+  for (const node of spin.nodes) {
+    if (!node || typeof node !== 'object' || typeof (node as Partial<SpinNode>).id !== 'number') {
+      return 'invalid';
+    }
+    const task = (node as Partial<SpinNode>).task;
+    if (typeof task !== 'string' || task.trim() === '') {
+      return 'empty-node';
+    }
+  }
+
+  if (spin.edges !== undefined && !Array.isArray(spin.edges)) return 'invalid';
+
+  const order = topologicalSort(spin.nodes, Array.isArray(spin.edges) ? spin.edges : []);
+  if (order.length !== spin.nodes.length) return 'not-dag';
+
+  return null;
+}
+
+/**
+ * 校验 spin.json 是否可执行。
+ * @returns 错误信息；合法时返回 null
+ */
+export function validateSpinDesign(config: unknown): string | null {
+  if (!config || typeof config !== 'object') {
+    return tt('spin.json 不是有效的对象。', 'spin.json is not a valid object.');
+  }
+
+  const spin = config as Partial<SpinDesign>;
+  if (!Array.isArray(spin.nodes)) {
+    return tt('spin.json 缺少 nodes 数组。', 'spin.json is missing the nodes array.');
+  }
+  if (spin.nodes.length === 0) {
+    return tt('spin.json 中没有可执行的节点。', 'spin.json has no executable nodes.');
+  }
+
+  for (const node of spin.nodes) {
+    if (!node || typeof node !== 'object' || typeof (node as Partial<SpinNode>).id !== 'number') {
+      return tt('spin.json 中存在无效节点。', 'spin.json contains an invalid node.');
+    }
+    const task = (node as Partial<SpinNode>).task;
+    if (typeof task !== 'string' || task.trim() === '') {
+      return tt(
+        `节点 ${(node as SpinNode).id} 缺少任务描述。`,
+        `Node ${(node as SpinNode).id} is missing a task description.`,
+      );
+    }
+  }
+
+  if (spin.edges !== undefined && !Array.isArray(spin.edges)) {
+    return tt('spin.json 缺少 edges 数组。', 'spin.json is missing the edges array.');
+  }
+
+  const order = topologicalSort(spin.nodes, Array.isArray(spin.edges) ? spin.edges : []);
+  if (order.length !== spin.nodes.length) {
+    return tt(
+      '流程图不是有效的无环有向图（DAG），请检查连线后重试。',
+      'The flow is not a valid directed acyclic graph (DAG), please check the edges and retry.'
+    );
+  }
+
+  return null;
 }
 
 /**
@@ -233,7 +313,26 @@ export function updateNodeMeta(
 
 /**
  * 自动检测项目状态
+ * - init: 不存在 spin.json
+ * - ready: spin.json 存在且结构可执行
+ * - invalid: JSON 非法或节点数据非法
+ * - empty-node: 存在空节点（无任务描述）
+ * - not-dag: 不是有效的无环有向图（DAG）
  */
-export function detectProjectState(cwd: string): Promise<'init' | 'ready'> {
-  return readSpinJson(cwd).then(config => config ? 'ready' : 'init');
+export type SpinProjectState = 'init' | 'ready' | SpinDesignIssue;
+
+export async function detectProjectState(cwd: string): Promise<SpinProjectState> {
+  const spinPath = getSpinJsonPath(cwd);
+  try {
+    const content = await fs.readFile(spinPath, 'utf-8');
+    const config = JSON.parse(content);
+    const issue = getSpinDesignIssue(config);
+    const state: SpinProjectState = issue ? issue : 'ready';
+    logger.info('SpinEngine', `detectProjectState path=${spinPath} state=${state}`);
+    return state;
+  } catch (err) {
+    const state: SpinProjectState = (err as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'init' : 'invalid';
+    logger.info('SpinEngine', `detectProjectState path=${spinPath} state=${state} err=${(err as Error)?.message ?? err}`);
+    return state;
+  }
 }

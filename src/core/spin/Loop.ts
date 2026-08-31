@@ -13,6 +13,7 @@ import { getAllSkills } from '../skills/loadSkillsDir.js';
 import { substituteBuiltinVariables } from '../skills/variableResolver.js';
 import {
   readSpinJson,
+  validateSpinDesign,
   getNextNode,
   topologicalSort,
   buildRunPrompt,
@@ -196,7 +197,43 @@ export async function spinLoop(
     // 1. 读取 spin.json，获取下一个未完成的节点
     const config = await readSpinJson(cwd);
     if (!config) {
-      logger.info('SpinLoop', 'spin.json disappeared, stopping');
+      const errorMsg = tt(
+        '无法读取 spin.json，文件不存在或 JSON 格式不正确。',
+        'Cannot read spin.json: file is missing or invalid JSON.'
+      );
+      logger.warn('SpinLoop', errorMsg);
+      ui.onMessage(sessionId, {
+        role: 'user',
+        content: errorMsg,
+      } as MessageData);
+      {
+        const errorMsgObj: Message = {
+          type: 'user',
+          message: { role: 'user', content: errorMsg },
+          uuid: `spin_error_${Date.now()}`,
+          timestamp: Date.now(),
+        };
+        (engine as any).mutableMessages.push(errorMsgObj);
+      }
+      break;
+    }
+
+    const validationError = validateSpinDesign(config);
+    if (validationError) {
+      logger.warn('SpinLoop', `spin.json validation failed: ${validationError}`);
+      ui.onMessage(sessionId, {
+        role: 'user',
+        content: validationError,
+      } as MessageData);
+      {
+        const errorMsgObj: Message = {
+          type: 'user',
+          message: { role: 'user', content: validationError },
+          uuid: `spin_error_${Date.now()}`,
+          timestamp: Date.now(),
+        };
+        (engine as any).mutableMessages.push(errorMsgObj);
+      }
       break;
     }
 
@@ -253,7 +290,9 @@ export async function spinLoop(
     // 解析用户定义的变量（$KEY -> value，$$ -> 字面量 $）
     const spinVariables = config.variables || {};
     const resolvedTask = substituteSpinVariables(next.task, spinVariables);
-    const resolvedCriteria = (next.criteria || []).map(ac => substituteSpinVariables(ac, spinVariables));
+    const resolvedCriteria = (next.criteria || [])
+      .map(ac => substituteSpinVariables(ac, spinVariables))
+      .filter(ac => ac.trim() !== '');
     const resolvedNode: SpinNode = { ...next, task: resolvedTask, criteria: resolvedCriteria };
     const nodePrompt = buildRunPrompt(resolvedNode, prevNote, skillsPrompt);
 
@@ -292,15 +331,21 @@ export async function spinLoop(
     const currentAgentId = await getCurrentSpinAgentId(sessionId);
     const reply = await waitForAgentReply(engine, 1000, currentAgentId);
 
-    // 5. 将 sub-agent 的 note 写入 meta（暂标记为未通过，等 LLM 判断）
-    await updateNodeMeta(cwd, next.id, false, reply);
-
-    // 6. 使用 SpinJudger 判断是否通过
-    const { accept } = await SpinJudger.judge(
-      resolvedTask,
-      resolvedCriteria,
-      reply,
-    );
+    // 5. 判断是否通过；没有验收标准时直接通过，不调用 LLM 评审
+    let accept: boolean;
+    if (resolvedCriteria.length === 0) {
+      logger.info('SpinLoop', `Task ${currentSeq} has no acceptance criteria, marking as passed`);
+      accept = true;
+    } else {
+      // 先将 sub-agent 的 note 写入 meta（暂标记为未通过，等 LLM 判断）
+      await updateNodeMeta(cwd, next.id, false, reply);
+      const judgeResult = await SpinJudger.judge(
+        resolvedTask,
+        resolvedCriteria,
+        reply,
+      );
+      accept = judgeResult.accept;
+    }
     logger.info('SpinLoop', `Task ${currentSeq} accept judgment: ${accept}`);
 
     // 更新最终结果到 meta

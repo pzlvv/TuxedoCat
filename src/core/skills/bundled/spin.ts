@@ -28,22 +28,41 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
       const { detectProjectState } = await import('../../spin/Engine.js');
       const state = await detectProjectState(cwd);
 
-      if (state === 'init') {
-        // 没有 spin.json，打开 Spin Design 编辑器
-        const { sendMessage } = await import('../../Integration.js');
-        const prompt = tt(
-          '请打开 Spin Design 流程图编辑器，创建一个新的流程图并保存为 spin.json。',
-          'Please open the Spin Design flow editor, create a new flow, and save it as spin.json.'
-        );
-        for await (const _msg of sendMessage(prompt, sessionId, {
-          filePath: undefined,
-          selectedLines: undefined,
-          fileHidden: undefined,
-          thinkingMode: 'off',
-        })) {
-          void _msg;
-          // 等待处理完成
+      if (state === 'invalid' || state === 'empty-node' || state === 'not-dag') {
+        let errorMsg: string;
+        if (state === 'empty-node') {
+          errorMsg = tt(
+            '存在空节点（缺少任务描述），请完善节点后重试。',
+            'There are empty nodes (missing task descriptions), please complete them and retry.'
+          );
+        } else if (state === 'not-dag') {
+          errorMsg = tt(
+            '流程图不是有效的无环有向图（DAG），请检查连线后重试。',
+            'The flow is not a valid directed acyclic graph (DAG), please check the edges and retry.'
+          );
+        } else {
+          errorMsg = tt(
+            'spin.json 格式不合法，请检查文件内容。',
+            'spin.json is invalid, please check the file content.'
+          );
         }
+        ui.onMessage(sessionId, {
+          role: 'user',
+          content: errorMsg,
+        });
+        return '';
+      }
+
+      if (state === 'init') {
+        // 没有 spin.json：直接提示用户创建设计文件
+        const errorMsg = tt(
+          '未找到 spin.json 设计文件，请先创建并保存 Spin 设计。',
+          'spin.json design file not found, please create and save a Spin design first.'
+        );
+        ui.onMessage(sessionId, {
+          role: 'user',
+          content: errorMsg,
+        });
         return '';
       }
 
@@ -54,7 +73,12 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
 
       const currentCfg = await readSpinJson(cwd);
       if (!currentCfg) {
-        return tt('无法读取 spin.json。', 'Cannot read spin.json.');
+        const errorMsg = tt('无法读取 spin.json。', 'Cannot read spin.json.');
+        ui.onMessage(sessionId, {
+          role: 'user',
+          content: errorMsg,
+        });
+        return '';
       }
 
       const spinTitle = tt('Spin 设计', 'Spin Design');
