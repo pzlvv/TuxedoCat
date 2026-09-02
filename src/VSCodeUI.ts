@@ -539,6 +539,9 @@ export class VSCodeUI implements AssistantUI {
         (trimmed.metadata?.context?.model) ||
         undefined,
     } as WebviewMessage);
+
+    // 同步 abort 状态：切换到含活跃子代理的会话后，父会话的 abort 按钮仍应可用
+    this.syncAbortState();
   }
 
   /**
@@ -695,11 +698,42 @@ export class VSCodeUI implements AssistantUI {
   /**
    * 设置中止按钮状态
    */
-  setEnableAbort(enable: boolean): void {
+  private setEnableAbort(enable: boolean): void {
     this.webviewView?.webview.postMessage({
       type: 'setEnableAbort',
       enable,
     });
+  }
+
+  /**
+   * 当前 abort scope 是否有活跃查询。
+   * abort scope = 当前会话自身 + 其递归子代理；
+   * 子代理在后台运行时，父会话的 abort 按钮仍应可用（中断父会话会连带中断子代理）。
+   */
+  private hasActiveQueryInScope(sessionId: string): boolean {
+    if ((this.queryActiveCounts.get(sessionId) ?? 0) > 0) {
+      return true;
+    }
+    try {
+      const { subAgentRegistry } = require('./core/tools/agent/SubAgentRegistry.js') as typeof import('./core/tools/agent/SubAgentRegistry.js');
+      for (const childId of subAgentRegistry.listForCreator(sessionId)) {
+        if (this.hasActiveQueryInScope(childId)) {
+          return true;
+        }
+      }
+    } catch {
+      // 子代理注册表不可用时只按当前会话自身判断
+    }
+    return false;
+  }
+
+  /**
+   * 根据当前会话（及其子代理）的活跃状态同步 abort 按钮。
+   * 在 queryBegin/queryEnd 或切换会话后调用。
+   */
+  private syncAbortState(): void {
+    const activeSessionId = this.getActiveSessionIdInternal();
+    this.setEnableAbort(activeSessionId ? this.hasActiveQueryInScope(activeSessionId) : false);
   }
 
   /**
@@ -819,10 +853,10 @@ export class VSCodeUI implements AssistantUI {
     const count = (this.queryActiveCounts.get(sessionID) ?? 0) + 1;
     this.queryActiveCounts.set(sessionID, count);
     if (count > 1) return;
-    this.setEnableAbort(true);
     // 查询开始时立即显示 thinking 动画，覆盖前置耗时
     this.sessionActivityPhases.set(sessionID, 'thinking');
     this.setThinkingAnimation(sessionID, true);
+    this.syncAbortState();
     this.postToWebview(sessionID, {
       type: 'queryBegin',
     });
@@ -844,11 +878,12 @@ export class VSCodeUI implements AssistantUI {
     // 查询结束必须关闭 thinking 动画：中断（尤其子代理中断）可能没有 onAIEnd，
     // 若只发 queryEnd 会让 webview 的 thinking 动画残留。
     this.setThinkingAnimation(sessionID, false);
-    this.setEnableAbort(false);
+    // 先同步 abort 状态再发 queryEnd：若当前会话仍有其他查询/子代理在运行，
+    // 这里会保持 abort 按钮可用，而不是被其他会话的 queryEnd 置灰。
+    this.syncAbortState();
     this.postToWebview(sessionID, {
       type: 'queryEnd',
     });
-
   }
 
   /**

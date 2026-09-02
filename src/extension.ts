@@ -281,7 +281,14 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
     if (!this.webviewView) { return; }
 
     const editor = vscode.window.activeTextEditor;
-    if (!editor) { return; }
+    // 仅把真实文件系统文件当作“当前文件”；Output、Terminal、虚拟文档等非文件窗口一律屏蔽
+    if (!editor || editor.document.uri.scheme !== 'file') {
+      this.webviewView.webview.postMessage({
+        type: 'setCurrentFile',
+        filePath: '',
+      });
+      return;
+    }
 
     const filePath = editor.document.uri.fsPath;
     const selection = editor.selection;

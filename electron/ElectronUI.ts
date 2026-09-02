@@ -577,8 +577,49 @@ export class ElectronUI implements AssistantUI {
     this.postToWebview(sessionID, { type: 'showThinkingAnimation', show });
   }
 
-  setEnableAbort(enable: boolean): void {
-    this.sendToRenderer({ type: 'setEnableAbort', enable });
+  /**
+   * 为指定会话的聊天视图设置 abort 按钮状态（只发给该会话自己的视图，避免跨会话覆盖）
+   */
+  private setEnableAbortForSession(sessionId: string, enable: boolean): void {
+    this.chatViews?.sendTo(sessionId, {
+      type: 'setEnableAbort',
+      sessionId,
+      enable,
+    } as WebviewMessage);
+  }
+
+  /**
+   * 判断 abort scope 内是否有活跃查询。
+   * abort scope = 会话自身 + 其递归子代理；父会话 abort 会连带中断子代理，
+   * 因此子代理后台运行时父会话的 abort 按钮也应保持可用。
+   */
+  private hasActiveQueryInScope(sessionId: string): boolean {
+    if ((this.queryActiveCounts.get(sessionId) ?? 0) > 0) {
+      return true;
+    }
+    try {
+      const { subAgentRegistry } = require('../src/core/tools/agent/SubAgentRegistry.js') as typeof import('../src/core/tools/agent/SubAgentRegistry.js');
+      for (const childId of subAgentRegistry.listForCreator(sessionId)) {
+        if (this.hasActiveQueryInScope(childId)) {
+          return true;
+        }
+      }
+    } catch {
+      // 子代理注册表不可用时只按当前会话自身判断
+    }
+    return false;
+  }
+
+  /**
+   * 同步所有已打开聊天视图的 abort 状态。
+   * 多会话并发时，某个会话结束只应关闭它自己（及其子代理）的 abort，
+   * 不能把其他仍在流式输出的会话 abort 置灰。
+   */
+  private syncAbortState(): void {
+    if (!this.chatViews) return;
+    for (const sessionId of this.chatViews.getLoadedSessionIds()) {
+      this.setEnableAbortForSession(sessionId, this.hasActiveQueryInScope(sessionId));
+    }
   }
 
   onAbort(_sessionID: string): void {
@@ -630,7 +671,7 @@ export class ElectronUI implements AssistantUI {
       this.log(`Ignoring nested queryBegin for session: ${sessionID} (count=${count})`);
       return;
     }
-    this.setEnableAbort(true);
+    this.syncAbortState();
     this.setThinkingAnimation(sessionID, true);
     this.postToWebview(sessionID, { type: 'queryBegin' });
     // 会话进入运行状态：刷新侧栏（非 idle 对话显示流水灯）
@@ -652,7 +693,7 @@ export class ElectronUI implements AssistantUI {
       return;
     }
     this.queryActiveCounts.delete(sessionID);
-    this.setEnableAbort(false);
+    this.syncAbortState();
     this.postToWebview(sessionID, { type: 'queryEnd' });
     // 查询结束：用户消息已持久化（appendMessage 已完成），刷新侧栏使新对话出现在列表中
     this.refreshSidebarThrottled();
@@ -954,5 +995,8 @@ export class ElectronUI implements AssistantUI {
         (trimmed.metadata?.context?.model) ||
         undefined,
     } as WebviewMessage);
+
+    // 同步 abort 状态：打开/切换到含活跃子代理的会话后，abort 按钮应立即可用
+    this.syncAbortState();
   }
 }

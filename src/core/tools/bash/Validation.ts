@@ -160,14 +160,6 @@ export const DESTRUCTIVE_COMMANDS = new Set([
 ]);
 
 /**
- * 禁止在本工具中使用、应使用 sub-agent 执行的命令
- */
-export const FORBIDDEN_SUB_AGENT_COMMANDS = new Set([
-  'ssh',
-  'sshpass',
-]);
-
-/**
  * 检查是否为只读命令
  * 支持复合命令（按 ; && || | 分割），所有子命令均为只读时才返回 true
  */
@@ -383,23 +375,6 @@ export async function validateInput(input: BashToolInput): Promise<ValidationRes
   // TODO: 添加更多验证
   // - 检测危险的管道命令
   // - 验证路径是否存在
-
-  // 检查是否包含禁止的命令（ssh/sshpass），提示使用 sub-agent
-  //
-  // 注意：这里仍然只检查第一个命令（保持向后兼容），
-  // 但如果复合命令中某个中间段是 ssh，也应当检测。
-  // 增强：扫描所有子命令段
-  const segments = _splitBySeparators(input.command);
-  for (const segment of segments) {
-    const cmd = segment.split(/\s+/)[0];
-    if (FORBIDDEN_SUB_AGENT_COMMANDS.has(cmd)) {
-      return {
-        result: false,
-        message: `'${cmd}' is not allowed in Bash tool. Please use the Agent tool.`,
-        errorCode: 400,
-      };
-    }
-  }
 
   return { result: true };
 }
