@@ -476,8 +476,40 @@ export const ReadTool = buildTool({
     const { isBinaryFile: checkBinary } = await import('isbinaryfile');
     const isBinary = await checkBinary(fullPath);
     if (isBinary) {
+      const ext = path.extname(fullPath).toLowerCase();
+      const imageMediaTypes: Record<string, string> = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp',
+        '.bmp': 'image/bmp',
+      };
+      const mediaType = imageMediaTypes[ext];
+      if (mediaType) {
+        // 图片文件直接以 base64 形式返回，由上层构造成 image content block 发给 LLM
+        const imageStat = statSync(fullPath);
+        if (imageStat.size > 15 * 1024 * 1024) {
+          throw new Error(`Image file too large to read: ${filePath} (${imageStat.size} bytes, max 15MB)`);
+        }
+        const imageBuffer = await fs.readFile(fullPath);
+        return {
+          data: {
+            content: '',
+            lineCount: 0,
+            startLine: 0,
+            totalLines: 1,
+            filePath: filePath,
+            truncatedByBytes: false,
+            image: {
+              mediaType,
+              data: imageBuffer.toString('base64'),
+            },
+          },
+        };
+      }
       throw new Error(
-        `Cannot read binary file: ${filePath}. This tool only supports text files.`,
+        `Cannot read binary file: ${filePath}. This tool only supports text and common image files.`,
       );
     }
 
@@ -505,6 +537,22 @@ export const ReadTool = buildTool({
     data: ReadOutput,
     toolUseID: string,
   ) {
+    // 图片文件直接以 image content block 返回，使 LLM 能“看到”图片而不是收到文本
+    if (data.image) {
+      return {
+        tool_use_id: toolUseID,
+        type: 'tool_result',
+        content: [{
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: data.image.mediaType,
+            data: data.image.data,
+          },
+        }],
+      };
+    }
+
     // 格式化输出，添加行号，使用 | 分隔
     const lines = data.content.split('\n');
     const numberedContent = lines

@@ -133,30 +133,56 @@ function convertMessagesToResponsesInput(messages: Array<{ role: string; content
           content: [{ type: 'input_text', text: msg.content }],
         });
       } else if (Array.isArray(msg.content)) {
-        // 将 user 消息拆分为 function_call_output（顶层项）和 text（role: user）
+        // 将 user 消息拆分为 function_call_output（顶层项）和 text/image（role: user）
         const toolOutputs: unknown[] = [];
-        const texts: string[] = [];
+        const userParts: unknown[] = [];
+        const toImagePart = (block: any): unknown => {
+          if (!block?.source) return null;
+          const mediaType = block.source.media_type || 'image/png';
+          const data = block.source.data || '';
+          return {
+            type: 'input_image',
+            image_url: `data:${mediaType};base64,${data}`,
+            detail: 'auto',
+          };
+        };
+        const toToolOutputPart = (block: any): unknown => {
+          if (block.type === 'text' && typeof block.text === 'string') {
+            return { type: 'input_text', text: block.text };
+          }
+          if (block.type === 'image') {
+            return toImagePart(block);
+          }
+          return { type: 'input_text', text: typeof block === 'string' ? block : JSON.stringify(block ?? '') };
+        };
         for (const block of msg.content as any[]) {
           if (!block) continue;
           if (block.type === 'tool_result') {
             const callId = block.tool_use_id || block.tool_call_id;
+            const rawOutput = block.content;
+            const output = Array.isArray(rawOutput)
+              ? rawOutput.map(toToolOutputPart)
+              : (typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput ?? ''));
             toolOutputs.push({
               type: 'function_call_output',
               call_id: callId,
-              output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? ''),
+              output,
             });
           } else if (block.type === 'text' && typeof block.text === 'string') {
-            texts.push(block.text);
+            userParts.push({ type: 'input_text', text: block.text });
           } else if (block.type === 'input_text' && typeof block.text === 'string') {
-            texts.push(block.text);
+            userParts.push({ type: 'input_text', text: block.text });
+          } else if (block.type === 'image') {
+            const imagePart = toImagePart(block);
+            if (imagePart) userParts.push(imagePart);
           }
         }
-        // 先输出 function_call_output（紧跟 assistant 的 function_call），再输出 user 文本
+        // 先输出 function_call_output（紧跟 assistant 的 function_call），再输出 user 文本/图片
         items.push(...toolOutputs);
-        if (texts.length > 0) {
+        if (userParts.length > 0) {
           items.push({
             role: 'user',
-            content: texts.map((text) => ({ type: 'input_text', text })),
+            content: userParts,
           });
         }
       }

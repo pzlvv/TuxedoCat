@@ -49,6 +49,9 @@ Reads the contents of a file from the local filesystem.
 **Word / PowerPoint Documents (.doc / .docx / .ppt / .pptx) Support:**
 - Automatically converts to Markdown for reading
 
+**Image Files (.png / .jpg / .jpeg / .gif / .webp / .bmp) Support:**
+- Reads the image and returns it as an image content block, so the model can see the actual image directly.
+
 **Important:**
 - Always read a file before attempting to edit it
 - Use offset/limit for large files; the same output caps still apply

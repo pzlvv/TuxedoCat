@@ -1,5 +1,6 @@
 import type { AssistantUI } from '../AssistantUI.js';
 import type { Message } from '../types.js';
+import { extractUserContent } from './contentBlocks.js';
 import { buildEditDiffHunks } from './editDiff.js';
 
 type ToolResultInfo = { content: string; exitCode: number };
@@ -9,10 +10,10 @@ export function buildToolResultMap(messages: readonly Message[]): Map<string, To
   for (const msg of messages) {
     if (msg.type !== 'user' || !Array.isArray(msg.message.content)) continue;
     for (const block of msg.message.content) {
-      const result = block as { type?: string; tool_use_id?: string; is_canceled?: boolean; content?: string; exit_code?: number };
+      const result = block as { type?: string; tool_use_id?: string; is_canceled?: boolean; content?: string | unknown[]; exit_code?: number };
       if (result.type === 'tool_result' && result.tool_use_id && result.is_canceled !== true) {
         map.set(result.tool_use_id, {
-          content: result.content || '',
+          content: Array.isArray(result.content) ? '[Image]' : (result.content || ''),
           exitCode: result.exit_code ?? 0,
         });
       }
@@ -39,11 +40,12 @@ export function replayMessagesToUI(ui: AssistantUI, sessionId: string, messages:
     }
 
     if (msg.type === 'user') {
-      const content = typeof msg.message.content === 'string' ? msg.message.content : undefined;
-      if (content === undefined) continue;
+      const { text, images } = extractUserContent(msg.message.content);
+      if (!text && images.length === 0) continue;
       ui.onMessage(sessionId, {
         role: 'user',
-        content,
+        content: text,
+        images: images.length > 0 ? images : undefined,
         filePath: meta.filePath,
         fileSelectedLines: meta.fileSelectedLines,
         isCompactSummary: meta.isCompactSummary === true,

@@ -1,7 +1,7 @@
 import { useCallback, useRef } from 'react';
 import { hasVscodeApi, postMessage } from '../webviewEnv';
 import { profileLog } from '../debug';
-import type { Message, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults } from '../types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults } from '../types';
 import { t } from '../i18n';
 
 const profileTag = '[Profile]';
@@ -31,7 +31,7 @@ export interface UseAppHandlersProps {
   settingsDefaults: SettingsDefaults;
   hasCompactArchive: boolean;
   isCompactExpanded: boolean;
-  queuedMessage: string | null;
+  queuedMessage: QueuedMessagePayload | null;
   serverLoadWarning: string | null;
   stats: any;
   deleteConfirm: { sessionId: string; title: string } | null;
@@ -60,7 +60,7 @@ export interface UseAppHandlersProps {
   setModel: (v: string) => void;
   setHasCompactArchive: (v: boolean) => void;
   setIsCompactExpanded: (v: boolean) => void;
-  setQueuedMessage: (v: string | null) => void;
+  setQueuedMessage: (v: QueuedMessagePayload | null) => void;
   setServerLoadWarning: (v: string | null) => void;
   setStats: (v: any) => void;
   setDeleteConfirm: (v: { sessionId: string; title: string } | null) => void;
@@ -78,7 +78,7 @@ export interface UseAppHandlersProps {
   userChoiceRequestRef: React.MutableRefObject<UserChoiceRequest | null>;
   userChoiceInputRef: React.MutableRefObject<string>;
   savedMainInputRef: React.MutableRefObject<string>;
-  queuedMessageRef: React.MutableRefObject<Map<string, string>>;
+  queuedMessageRef: React.MutableRefObject<Map<string, QueuedMessagePayload>>;
   mainInputRef: React.RefObject<HTMLTextAreaElement | null>;
   choiceInputRef: React.RefObject<HTMLTextAreaElement | null>;
   isDeletingRef: React.MutableRefObject<boolean>;
@@ -153,6 +153,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     props.setMessages([]);
     props.inputAreaRef.current?.setValue('');
+    props.inputAreaRef.current?.setPastedImages?.([]);
     props.setUserChoiceRequest(null);
     props.userChoiceInputRef.current = '';
     props.savedMainInputRef.current = '';
@@ -195,7 +196,9 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
 
   const handleSend = async () => {
     const inputValue = props.inputAreaRef.current?.getValue() ?? '';
-    if (!inputValue.trim()) return;
+    const pastedImages: Array<{ dataUrl: string; mediaType?: string }> =
+      props.inputAreaRef.current?.getPastedImages?.() ?? [];
+    if (!inputValue.trim() && pastedImages.length === 0) return;
 
     // ─── 服务器负载检查 ───────────────────────────────────────────
     // 如果已显示警告，阻止发送
@@ -294,6 +297,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       type: props.hasActiveQuery ? 'queueMessage' as const : 'sendMessage' as const,
       sessionId,
       content: messageContent,
+      images: pastedImages.length > 0 ? pastedImages : undefined,
       filePath: props.currentFile,
       fileHidden: props.fileHidden,
       selectedLines: props.selectedLines,
@@ -324,8 +328,12 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
 
     if (props.hasActiveQuery) {
       // 当前有查询在进行，消息排队（按会话绑定，切换会话后仍归属正确会话）
-      props.queuedMessageRef.current.set(sessionId, messageContent);
-      props.setQueuedMessage(messageContent);
+      const queuedPayload: QueuedMessagePayload = {
+        content: messageContent,
+        images: pastedImages.length > 0 ? pastedImages : undefined,
+      };
+      props.queuedMessageRef.current.set(sessionId, queuedPayload);
+      props.setQueuedMessage(queuedPayload);
     }
 
     // Save to per-session command history

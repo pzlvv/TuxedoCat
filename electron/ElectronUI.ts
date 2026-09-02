@@ -723,9 +723,9 @@ export class ElectronUI implements AssistantUI {
     this.postToWebview(sessionID, { type: 'clearMessages' });
   }
 
-  onQueuedMessage(sessionID: string, content: string | null): void {
+  onQueuedMessage(sessionID: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string }>): void {
     if (content) {
-      this.postToWebview(sessionID, { type: 'queuedMessage', sessionId: sessionID, content });
+      this.postToWebview(sessionID, { type: 'queuedMessage', sessionId: sessionID, content, images });
     } else {
       this.postToWebview(sessionID, { type: 'clearQueuedMessage', sessionId: sessionID });
     }

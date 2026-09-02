@@ -78,7 +78,7 @@ type AuthorizeOutcome =
  */
 function buildToolResultMessage(
   toolUseId: string,
-  content: string,
+  content: string | unknown[],
   exitCode: number,
   isCanceled: boolean,
   permission?: any,
@@ -606,7 +606,7 @@ async function* formatAndEmitResult(
   const toolUse = item.toolUse;
   const tool = item.tool;
 
-  let output = '';
+  let output: string | unknown[] = '';
   let exitCode = 0;
   let interrupted = false;
   let formattedResult: any = undefined;
@@ -626,7 +626,8 @@ async function* formatAndEmitResult(
       formattedResult = tool.mapToolResultToToolResultBlockParam(toolResult.data, toolUse.id);
       const formattedContent = formattedResult.content;
       const dataExitCode = data.exitCode ?? 0;
-      if (typeof formattedContent !== 'string' || (formattedContent === '' && dataExitCode !== 0)) {
+      const isArrayContent = Array.isArray(formattedContent);
+      if ((!isArrayContent && typeof formattedContent !== 'string') || (formattedContent === '' && dataExitCode !== 0)) {
         throw new Error(`Tool ${toolUse.name} returned empty content`);
       }
 
@@ -634,9 +635,10 @@ async function* formatAndEmitResult(
       // 检查输出是否超过工具定义的 maxResultSizeChars，
       // 且该工具尚未自行处理持久化（通过 persistedOutputPath 标记）。
       // 如果满足条件，RunTools 自动将结果持久化到磁盘并替换为带 preview 的消息。
+      // 多模态 content block 数组（如图片）不参与文本持久化。
       const alreadyPersistedByTool = (data as any)?.persistedOutputPath !== undefined;
       let finalOutputContent = formattedContent;
-      if (!alreadyPersistedByTool && formattedContent.length > (tool.maxResultSizeChars ?? Infinity)) {
+      if (!alreadyPersistedByTool && typeof formattedContent === 'string' && formattedContent.length > (tool.maxResultSizeChars ?? Infinity)) {
         try {
           const persistTaskId = `tool-${toolUse.name}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
           const persisted = await persistLargeOutput(formattedContent, persistTaskId);
@@ -662,7 +664,7 @@ async function* formatAndEmitResult(
       interrupted = data.interrupted ?? false;
       if (interrupted) {
         const autoBackgrounded = (toolResult as any).data?.assistantAutoBackgrounded === true;
-        if (!autoBackgrounded) {
+        if (!autoBackgrounded && typeof output === 'string') {
           output += '\nCommand was interrupted';
         }
       }
@@ -695,21 +697,22 @@ async function* formatAndEmitResult(
 
   const assistantAutoBackgrounded = (toolResult as any).data?.assistantAutoBackgrounded === true;
   const status = (exitCode !== 0 || interrupted) && !assistantAutoBackgrounded ? 'error' : 'success';
+  const outputForUI = typeof output === 'string' ? output : '[Image]';
 
   // [ReplyToolDebug] 打印最终状态
   if (toolUse.name === 'Reply') {
-    logger.info('[ReplyToolDebug]', `formatAndEmitResult final: sessionID=${sessionID}, toolUseId=${toolUse.id}, output.length=${output.length}, exitCode=${exitCode}, status=${status}, onToolResult=${typeof ui?.onToolResult}`);
+    logger.info('[ReplyToolDebug]', `formatAndEmitResult final: sessionID=${sessionID}, toolUseId=${toolUse.id}, output.length=${Array.isArray(output) ? output.length : output.length}, exitCode=${exitCode}, status=${status}, onToolResult=${typeof ui?.onToolResult}`);
   }
 
   logger.info('runTools', '=== Tool Execution ===');
   logger.info('runTools', `Tool: ${toolUse.name}`);
   logger.info('runTools', `Input: ${JSON.stringify(toolUse.input, null, 2)}`);
-  logger.info('runTools', `Output (${output.length} chars): ${output}`);
+  logger.info('runTools', `Output (${Array.isArray(output) ? output.length + ' blocks' : output.length + ' chars'}): ${typeof output === 'string' ? output : '[Image content blocks]'}`);
   logger.info('runTools', `ExitCode: ${exitCode}`);
   logger.info('runTools', `Status: ${status}`);
   logger.info('runTools', '=====================');
 
-  ui?.onToolResult(sessionID, toolUse.id, toolUse.name, output, status);
+  ui?.onToolResult(sessionID, toolUse.id, toolUse.name, outputForUI, status);
 
   const toolResultMessage: any = {
     type: 'tool_result',

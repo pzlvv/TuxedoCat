@@ -9,6 +9,7 @@ import { getLLMDispatcher } from '../core/llm/httpDispatcher.js';
 import { getPendingToolUseIds } from '../core/tools/index.js';
 import { providerKeyFromBaseURL } from '../core/utils/providerKey.js';
 import { buildEditDiffHunks } from '../core/utils/editDiff.js';
+import { buildUserContent, extractUserContent } from '../core/utils/contentBlocks.js';
 import { MODEL_CONFIGS } from '../core/utils/modelConfig.js';
 import { userChoiceQueue } from '../core/UserChoiceQueue.js';
 import type { WebviewMessage } from '../core/webviewTypes.js';
@@ -239,7 +240,10 @@ export class WebviewMessageHandler {
     //   被带上，即使当前 query 正处于多轮工具调用循环中也不会中断。
     // - 命令类消息仍交给 sendMessage 处理，保留内置命令 / Skill 命令的原有行为。
     const { sessionId, content } = message;
-    if (!sessionId || typeof content !== 'string' || !content.trim()) {
+    const images: Array<{ dataUrl: string; mediaType?: string }> | undefined = Array.isArray((message as any).images)
+      ? (message as any).images
+      : undefined;
+    if (!sessionId || typeof content !== 'string' || (!content.trim() && (!images || images.length === 0))) {
       return;
     }
     logger.info('VSCodeUI', `User message received for session ${sessionId} (unified queue path)`);
@@ -264,6 +268,7 @@ export class WebviewMessageHandler {
           thinkingMode: message.thinkingMode,
           webSearch: message.webSearch,
           promptPreset: isPromptPresetId(message.promptMode) ? message.promptMode : undefined,
+          images,
         })) {
           void _;
         }
@@ -281,6 +286,7 @@ export class WebviewMessageHandler {
           thinkingMode: message.thinkingMode || engine.thinkingModeOverride,
           webSearch: message.webSearch,
           promptPreset: isPromptPresetId(message.promptMode) ? message.promptMode : undefined,
+          images,
         })) {
           void _;
         }
@@ -322,9 +328,11 @@ export class WebviewMessageHandler {
       // 同时保留 filePath / fileSelectedLines 等元数据。
       const { getGlobalUI } = await import('../core/AssistantUI.js');
       const ui = getGlobalUI();
+      const userContent = buildUserContent(content, images);
+      const { text: uiText, images: uiImages } = extractUserContent(userContent);
       const userMsg: Message = {
         type: 'user',
-        message: { role: 'user', content },
+        message: { role: 'user', content: userContent },
         uuid: `user_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
         timestamp: Date.now(),
         ...(message.filePath && { filePath: message.filePath }),
@@ -336,7 +344,7 @@ export class WebviewMessageHandler {
         // 排队消息不立即回显到 MessagesView，只在输入框上方显示队列状态。
         // QueryEngine 真正把它追加进 LLM 上下文时，会通过 _needsUINotification 补发 addMessage。
         (userMsg as any)._needsUINotification = true;
-        ui?.onQueuedMessage?.(sessionId, content);
+        ui?.onQueuedMessage?.(sessionId, content, uiImages);
       } else {
         // 显示用户消息到 UI（文件信息逻辑与 sendMessage 一致）
         const uiMeta: Record<string, unknown> = {};
@@ -346,7 +354,8 @@ export class WebviewMessageHandler {
         }
         ui?.onMessage(sessionId, {
           role: 'user',
-          content,
+          content: uiText,
+          images: uiImages.length > 0 ? uiImages : undefined,
           filePath: message.fileHidden ? undefined : message.filePath,
           fileSelectedLines: message.fileHidden ? undefined : selectedLines,
           meta: Object.keys(uiMeta).length > 0 ? uiMeta : undefined,
@@ -356,7 +365,9 @@ export class WebviewMessageHandler {
       // 与 Integration.sendMessage 路径保持一致，记录到提示词历史
       try {
         const { addToHistory } = await import('../core/history/index.js');
-        addToHistory(content);
+        if (content.trim()) {
+          addToHistory(content);
+        }
       } catch { /* 历史记录失败不阻塞消息发送 */ }
 
       // 提交到引擎队列：设置 pendingUserMessage，使消息在下次 LLM 请求时被带上。
@@ -385,6 +396,7 @@ export class WebviewMessageHandler {
         type: 'queuedMessage',
         sessionId,
         content,
+        images,
       } as WebviewMessage);
     }
   }

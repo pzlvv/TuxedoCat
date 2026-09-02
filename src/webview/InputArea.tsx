@@ -2,14 +2,21 @@ import React, { useState, useCallback, memo, forwardRef, useImperativeHandle, us
 import { Send, Square, File, EyeOff, Clock, Menu } from 'lucide-react';
 import TextareaAutosize from 'react-textarea-autosize';
 import { ConfigProvider, Dropdown } from 'antd';
-import type { Colors, ThinkingMode, PromptMode } from './types';
+import type { Colors, QueuedMessagePayload, ThinkingMode, PromptMode } from './types';
 import { postMessage, getWindowSessionId } from './webviewEnv';
 import { t } from './i18n';
+
+export interface PastedImage {
+  dataUrl: string;
+  mediaType?: string;
+}
 
 export interface InputAreaRef {
   getValue: () => string;
   setValue: (value: string) => void;
   clear: () => void;
+  getPastedImages: () => PastedImage[];
+  setPastedImages: (images: PastedImage[]) => void;
 }
 
 export interface SkillItem {
@@ -47,7 +54,7 @@ interface InputAreaProps {
   mainInputRef: React.RefObject<HTMLTextAreaElement | null>;
   colors: Colors;
   isDark: boolean;
-  queuedMessage: string | null;
+  queuedMessage: QueuedMessagePayload | null;
   skills: SkillItem[];
   commandHistory: string[];
   serverLoadWarning?: string | null;
@@ -702,6 +709,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   isSubAgent,
 }, ref) {
   const [input, setInput] = useState('');
+  const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
 
   // Command history navigation state
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -723,8 +731,10 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   useImperativeHandle(ref, () => ({
     getValue: () => input,
     setValue: (value: string) => setInput(value),
-    clear: () => { setInput(''); setHistoryIndex(-1); setSavedInput(''); slashActiveRef.current = false; },
-  }), [input, historyIndex, savedInput]);
+    setPastedImages: (images: PastedImage[]) => setPastedImages(images),
+    getPastedImages: () => pastedImages,
+    clear: () => { setInput(''); setPastedImages([]); setHistoryIndex(-1); setSavedInput(''); slashActiveRef.current = false; },
+  }), [input, pastedImages, historyIndex, savedInput]);
 
   const isInputDisabled = isProviderConfigured === false;
 
@@ -924,6 +934,43 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     }, 150);
   }, [setInputFocused, mainInputRef]);
 
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const clipboardItems = Array.from(e.clipboardData?.items ?? []);
+    const imageFiles = clipboardItems
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => !!file);
+
+    if (imageFiles.length === 0) return;
+
+    e.preventDefault();
+
+    // 保留剪贴板中的文本，并插入到光标处
+    const target = e.currentTarget;
+    const start = target.selectionStart ?? input.length;
+    const end = target.selectionEnd ?? input.length;
+    const pastedText = e.clipboardData.getData('text');
+    if (pastedText) {
+      const nextValue = input.slice(0, start) + pastedText + input.slice(end);
+      setInput(nextValue);
+      requestAnimationFrame(() => {
+        const pos = start + pastedText.length;
+        target.setSelectionRange(pos, pos);
+      });
+    }
+
+    for (const file of imageFiles) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result !== 'string') return;
+        const dataUrl = reader.result;
+        const mediaType = file.type || (dataUrl.match(/^data:([^;,]+)/)?.[1]) || 'image/png';
+        setPastedImages((prev) => [...prev, { dataUrl, mediaType }]);
+      };
+      reader.readAsDataURL(file);
+    }
+  }, [input]);
+
   const handleModeChange = useCallback((mode: 'manual' | 'risk' | 'auto') => {
     setAgentMode(mode);
   }, [setAgentMode]);
@@ -948,7 +995,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     setModel(newModel);
   }, [setModel]);
 
-  const hasContent = input.trim().length > 0;
+  const hasContent = input.trim().length > 0 || pastedImages.length > 0;
 
   return (
     <div
@@ -996,7 +1043,10 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           <Clock size={14} style={{ flexShrink: 0, color: colors.harness }} />
           <span className="truncate flex-1">
             <span style={{ color: colors.harness, fontWeight: 600 }}>{t('inputArea.waiting')}</span>
-            {queuedMessage}
+            {queuedMessage.content}
+            {queuedMessage.images && queuedMessage.images.length > 0 && (
+              <span style={{ opacity: 0.7 }}>{t('inputArea.waitingImages', { count: queuedMessage.images.length })}</span>
+            )}
           </span>
           <span className="text-[11px] whitespace-nowrap" style={{ color: colors.placeholder }}>
             {t('inputArea.resubmitToEdit')}
@@ -1030,8 +1080,31 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           </button>
         </div>
       )}
-      {/* Row 1: Textarea with slash popup */}
+      {/* Row 1: Pasted images + Textarea with slash popup */}
       <div className="px-3 pt-2 pb-0.5 relative">
+        {pastedImages.length > 0 && (
+          <div className="flex flex-wrap gap-2 pb-1.5">
+            {pastedImages.map((img, idx) => (
+              <div key={idx} className="relative group">
+                <img
+                  src={img.dataUrl}
+                  alt="pasted image"
+                  className="rounded-md border max-w-[120px] max-h-[90px] object-contain"
+                  style={{ borderColor: colors.border, backgroundColor: colors.bgSecondary }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setPastedImages((prev) => prev.filter((_, i) => i !== idx))}
+                  className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center text-[10px] leading-none opacity-0 group-hover:opacity-100 transition-opacity"
+                  style={{ backgroundColor: '#ef4444', color: '#fff' }}
+                  title={t('inputArea.removeImage')}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         {showSlash && (
           <SlashPopup
             filtered={filteredSkills}
@@ -1045,6 +1118,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           ref={mainInputRef as React.Ref<HTMLTextAreaElement>}
           value={input}
           onChange={handleInputChange}
+          onPaste={handlePaste}
           onKeyDown={handleKeyDown}
           onFocus={handleFocus}
           onBlur={handleBlur}

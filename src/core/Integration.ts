@@ -16,6 +16,7 @@ import { getProjectRoot } from './history/Config.js';
 import { sessionQueue } from './SessionQueue.js';
 import { userChoiceQueue } from './UserChoiceQueue.js';
 import { replayMessagesToUI } from './utils/replayMessages.js';
+import { buildUserContent, extractUserContent } from './utils/contentBlocks.js';
 
 /**
  * 初始化会话队列回调
@@ -428,12 +429,13 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
 export async function* sendMessage(
   prompt: string,
   sessionId: string,
-  fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean; thinkingMode?: 'off' | 'low' | 'high' | 'max'; webSearch?: boolean; model?: string; reminder?: string; upstreamSessionId?: string; upstreamHostname?: string; upstreamWorkspace?: string; promptPreset?: PromptPresetId },
+  fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean; thinkingMode?: 'off' | 'low' | 'high' | 'max'; webSearch?: boolean; model?: string; reminder?: string; upstreamSessionId?: string; upstreamHostname?: string; upstreamWorkspace?: string; promptPreset?: PromptPresetId; images?: Array<{ dataUrl: string; mediaType?: string }> },
 ): AsyncGenerator<Message, void, unknown> {
   const ui = getUI();
 
   // 创建用户消息（需要在创建 QueryEngine 之前，因为需要传入初始消息）
   const fullPrompt = fileInfo?.reminder ? prompt + '\n\n' + fileInfo.reminder : prompt;
+  const userContent = buildUserContent(fullPrompt, fileInfo?.images);
 
   // 构建 _meta：将文件信息、参数等元数据统一存放
   const meta: Record<string, unknown> = {};
@@ -447,7 +449,7 @@ export async function* sendMessage(
 
   const userMsg: Message = {
     type: 'user',
-    message: { role: 'user', content: fullPrompt },
+    message: { role: 'user', content: userContent },
     uuid: `user_${Date.now()}`,
     timestamp: Date.now(),
     ...(fileInfo?.filePath && { filePath: fileInfo.filePath }),
@@ -580,7 +582,9 @@ export async function* sendMessage(
   ui.onQueryBegin(sessionId);
 
   // 添加到历史记录
-  addToHistory(prompt);
+  if (prompt.trim()) {
+    addToHistory(prompt);
+  }
 
   // 如果是新对话，设置标题（使用消息内容的前 50 个字符）
   if (isNewSession) {
@@ -606,9 +610,11 @@ export async function* sendMessage(
     uiMeta.fileSelectedLines = sendSelectedLines;
   }
 
+  const { text: uiText, images: uiImages } = extractUserContent(userContent);
   ui.onMessage(sessionId, {
     role: 'user',
-    content: prompt,
+    content: uiText,
+    images: uiImages.length > 0 ? uiImages : undefined,
     param,
     filePath: sendFilePath,
     fileSelectedLines: sendSelectedLines,

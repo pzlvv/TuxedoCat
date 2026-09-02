@@ -31,6 +31,10 @@ export const outputSchema = z.object({
   sheetName: z.string().optional().describe('The name of the sheet that was read'),
   sheets: z.array(z.string()).optional().describe('List of all sheet names in the file (only for xlsx files)'),
   truncatedByBytes: z.boolean().optional().describe('Whether the output was truncated because it exceeded the maximum byte limit'),
+  image: z.object({
+    mediaType: z.string(),
+    data: z.string(),
+  }).optional().describe('Base64 image content when the file is a supported image'),
 });
 
 export type ReadOutput = z.infer<typeof outputSchema>;

@@ -921,9 +921,9 @@ export class VSCodeUI implements AssistantUI {
   /**
    * 通知 UI 显示或清除排队消息状态
    */
-  onQueuedMessage(sessionID: string, content: string | null): void {
+  onQueuedMessage(sessionID: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string }>): void {
     this.postToWebview(sessionID, content
-      ? { type: 'queuedMessage', sessionId: sessionID, content }
+      ? { type: 'queuedMessage', sessionId: sessionID, content, images }
       : { type: 'clearQueuedMessage', sessionId: sessionID });
   }
 

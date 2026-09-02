@@ -55,10 +55,18 @@ export interface Message {
   toolStartTimestamp?: number;
   /** 消息元信息，如文件引用、agent来源等 */
   meta?: Record<string, unknown>;
+  /** 用户消息携带的图片（dataUrl，用于渲染缩略图） */
+  images?: Array<{ dataUrl: string; mediaType?: string }>;
   /** 缓存读取 token 数 */
   cacheReadInputTokens?: number;
   /** 缓存创建 token 数 */
   cacheCreationInputTokens?: number;
+}
+
+/** 排队消息完整载荷（文本 + 图片），保证图片在排队/重发时不丢失 */
+export interface QueuedMessagePayload {
+  content: string;
+  images?: Array<{ dataUrl: string; mediaType?: string }>;
 }
 
 export interface UserChoiceRequest {
@@ -70,6 +78,8 @@ export interface UserChoiceRequest {
 
 export interface SessionState {
   input: string;
+  /** 输入框中尚未发送的图片（草稿） */
+  pastedImages?: Array<{ dataUrl: string; mediaType?: string }>;
   inputCursorPosition: number;
   choiceCursorPosition: number;
   userChoiceRequest: UserChoiceRequest | null;
@@ -87,7 +97,7 @@ export interface SessionState {
   /** 会话关联的 Web Search 开关（未设置时使用 settings.json 默认值） */
   webSearch?: boolean;
   contextLength: number;
-  queuedMessage: string | null;
+  queuedMessage: QueuedMessagePayload | null;
   model?: string;
   /** 累计缓存读取 token 数 */
   totalCacheReadInputTokens?: number;

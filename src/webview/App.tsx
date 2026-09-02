@@ -5,7 +5,7 @@ import { Dropdown } from 'antd';
 import InputArea, { InputAreaRef } from './InputArea';
 import MessagesView from './MessagesView';
 import 'antd/dist/reset.css';
-import type { Message, UserChoiceRequest, SessionState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, ProviderConfig } from './types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, ProviderConfig } from './types';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
@@ -92,8 +92,8 @@ const App = () => {
   // queuedMessage 仅用于展示"当前会话"的排队横幅；
   // queuedMessageRef 按 sessionId 存储排队消息，保证排队消息与会话绑定，
   // 切换会话后排队消息仍归属原会话，不会被误投递到其他会话。
-  const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
-  const queuedMessageRef = useRef<Map<string, string>>(new Map());
+  const [queuedMessage, setQueuedMessage] = useState<QueuedMessagePayload | null>(null);
+  const queuedMessageRef = useRef<Map<string, QueuedMessagePayload>>(new Map());
 
   // 服务器负载警告
   const [serverLoadWarning, setServerLoadWarning] = useState<string | null>(null);
@@ -727,6 +727,7 @@ const App = () => {
                               const sid = currentSessionIdRef.current;
                               sessionStatesRef.current.set(sid, {
                                 input: inputAreaRef.current?.getValue() ?? '',
+                                pastedImages: inputAreaRef.current?.getPastedImages?.() ?? [],
                                 inputCursorPosition: mainInputRef.current?.selectionStart ?? 0,
                                 choiceCursorPosition: choiceInputRef.current?.selectionStart ?? 0,
                                 userChoiceRequest,
@@ -821,6 +822,7 @@ const App = () => {
                   const currentSessionId = currentSessionIdRef.current;
                   sessionStatesRef.current.set(currentSessionId, {
                     input: inputAreaRef.current?.getValue() ?? '',
+                    pastedImages: inputAreaRef.current?.getPastedImages?.() ?? [],
                     inputCursorPosition: mainInputRef.current?.selectionStart ?? 0,
                     choiceCursorPosition: choiceInputRef.current?.selectionStart ?? 0,
                     userChoiceRequest,
@@ -850,6 +852,7 @@ const App = () => {
                 const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
                 setMessages([]);
                 inputAreaRef.current?.setValue('');
+                inputAreaRef.current?.setPastedImages?.([]);
                 setUserChoiceRequest(null);
                 userChoiceInputRef.current = '';
                 savedMainInputRef.current = '';

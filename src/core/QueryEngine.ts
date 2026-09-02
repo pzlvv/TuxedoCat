@@ -3,6 +3,7 @@
  */
 
 import type { Message } from './types.js';
+import { extractUserContent } from './utils/contentBlocks.js';
 import { query } from './Query.js';
 import type { AbortControllerLike } from './tools/Tool.js';
 import type { AssistantUI } from './AssistantUI.js';
@@ -626,9 +627,11 @@ export class QueryEngine {
     }
 
     const userContent = (userMsg as any).message?.content;
+    const { text: uiText, images: uiImages } = extractUserContent(userContent);
     this.config.ui?.onMessage(this.sesssionID, {
       role: 'user',
-      content: typeof userContent === 'string' ? userContent : String(userContent ?? ''),
+      content: uiText,
+      images: uiImages.length > 0 ? uiImages : undefined,
       param,
       filePath: sendFilePath,
       fileSelectedLines: sendSelectedLines,

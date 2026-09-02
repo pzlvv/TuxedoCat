@@ -1,7 +1,8 @@
 import React, { useEffect, useRef } from 'react';
 import type { WebviewMessage } from '../../core/webviewTypes';
+import { extractUserContent } from '../../core/utils/contentBlocks';
 import type { DiffHunk } from '../../core/utils/editDiff';
-import type { Message, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, ProviderConfig } from '../types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, ProviderConfig } from '../types';
 import { postMessage } from '../webviewEnv';
 import { profileLog } from '../debug';
 import { t, resolveTitle, setUiLanguage, type UiLanguage } from '../i18n';
@@ -39,7 +40,7 @@ export interface UseMessageHandlerProps {
   setWebSearch: (v: boolean) => void;
   setModel: (v: string) => void;
   setContextLength: (v: number | ((prev: number) => number)) => void;
-  setQueuedMessage: (v: string | null) => void;
+  setQueuedMessage: (v: QueuedMessagePayload | null) => void;
   setUserChoiceRequest: (v: UserChoiceRequest | null) => void;
   setNamingSessions: React.Dispatch<React.SetStateAction<Set<string>>>;
   setStreamingVersion: (v: number | ((prev: number) => number)) => void;
@@ -91,7 +92,7 @@ export interface UseMessageHandlerProps {
   userChoiceRequestRef: React.MutableRefObject<UserChoiceRequest | null>;
   userChoiceInputRef: React.MutableRefObject<string>;
   savedMainInputRef: React.MutableRefObject<string>;
-  queuedMessageRef: React.MutableRefObject<Map<string, string>>;
+  queuedMessageRef: React.MutableRefObject<Map<string, QueuedMessagePayload>>;
   cursorPositionRef: React.MutableRefObject<number | null>;
   choiceCursorPositionRef: React.MutableRefObject<number | null>;
   mainInputRef: React.RefObject<HTMLTextAreaElement | null>;
@@ -183,7 +184,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 放在 session 过滤之前，即使消息属于非当前会话也清除对应排队项。
           if (msg.role === 'user' && msg.sessionId) {
             const queued = props.queuedMessageRef.current.get(msg.sessionId);
-            if (queued !== undefined && queued === msg.content) {
+            if (queued !== undefined && queued.content === msg.content) {
               props.queuedMessageRef.current.delete(msg.sessionId);
               if (msg.sessionId === sessionId) {
                 props.setQueuedMessage(null);
@@ -208,6 +209,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             isCompactSummary: msg.isCompactSummary,
             hasBorder: msg.hasBorder,
             isFromAgent: msg.isFromAgent,
+            images: msg.images,
             meta: msg.meta as Record<string, unknown> | undefined,
             timestamp: Date.now(),
             cacheReadInputTokens: (msg as any).cacheReadInputTokens,
@@ -415,6 +417,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             // 重置所有会话状态
             props.setMessages([]);
             props.inputAreaRef.current?.setValue('');
+            props.inputAreaRef.current?.setPastedImages?.([]);
             props.setUserChoiceRequest(null);
             props.userChoiceInputRef.current = '';
             props.savedMainInputRef.current = '';
@@ -562,7 +565,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               postMessage({
                 type: 'sendMessage',
                 sessionId: endedSessionId,
-                content: queued,
+                content: queued.content,
+                images: queued.images,
               });
             }
           }
@@ -853,6 +857,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             const savedState = props.sessionStatesRef.current.get(loadedSessionId);
             if (savedState) {
               props.inputAreaRef.current?.setValue(savedState.input);
+              props.inputAreaRef.current?.setPastedImages?.(savedState.pastedImages ?? []);
               // 使用特殊值标记：恢复状态，不要在 onChange 中移动光标
               // 在 setTimeout 中会正确恢复光标位置
               props.cursorPositionRef.current = -1; // -1 表示恢复状态，不移动光标
@@ -937,6 +942,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               }, 0);
             } else {
               props.inputAreaRef.current?.setValue('');
+              props.inputAreaRef.current?.setPastedImages?.([]);
               props.cursorPositionRef.current = null;
               props.choiceCursorPositionRef.current = null;
               props.setUserChoiceRequest(null);
@@ -1042,7 +1048,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                       continue;
                     }
                     toolResultMap.set(result.tool_use_id, {
-                      content: result.content || '',
+                      content: Array.isArray(result.content) ? '[Image]' : (result.content || ''),
                       exitCode: result.exit_code ?? 0,
                       timestamp: typeof (convMsg as any).timestamp === 'number' ? (convMsg as any).timestamp : undefined,
                     });
@@ -1110,9 +1116,11 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                   }
                   const msgParam = isFromAgent ? (msgMeta?.param as string | undefined) : undefined;
 
+                  const { text: userText, images: userImages } = extractUserContent(content as string | unknown[]);
                   restoredMessages.push({
                     role: 'user' as const,
-                    content: typeof content === 'string' ? content : '',
+                    content: userText,
+                    images: userImages.length > 0 ? userImages : undefined,
                     param: msgParam,
                     filePath: undefined,
                     fileSelectedLines: undefined,
@@ -1442,9 +1450,13 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
         case 'queuedMessage':
           // 按会话存储排队消息（绑定 sessionId），切换会话后仍能正确归属
           if (msg.sessionId) {
-            props.queuedMessageRef.current.set(msg.sessionId, msg.content);
+            const payload: QueuedMessagePayload = {
+              content: msg.content,
+              images: msg.images,
+            };
+            props.queuedMessageRef.current.set(msg.sessionId, payload);
             if (msg.sessionId === sessionId) {
-              props.setQueuedMessage(msg.content);
+              props.setQueuedMessage(payload);
               // 排队消息出现时触发自动滚动，让用户看到排队提示
               props.setForceScrollKey((prev) => prev + 1);
             }

@@ -35,9 +35,21 @@ function formatContentBlocks(content: unknown[]): string {
   return content
     .map((block) => {
       if (typeof block === 'object' && block !== null) {
-        const b = block as { type: string; text?: string; source?: { type: string; file_path?: string }; content?: string };
+        const b = block as { type: string; text?: string; source?: { type: string; file_path?: string }; content?: string | unknown[] };
         if (b.type === 'text') return b.text || '';
-        if (b.type === 'tool_result') return `[Tool Result]: ${b.content || ''}`;
+        if (b.type === 'tool_result') {
+          const resultContent = Array.isArray(b.content)
+            ? b.content.map((part) => {
+              if (typeof part === 'object' && part !== null) {
+                const p = part as { type?: string; text?: string };
+                if (p.type === 'text') return p.text || '';
+                if (p.type === 'image') return '[Image]';
+              }
+              return String(part);
+            }).filter(Boolean).join('\n')
+            : (b.content || '');
+          return `[Tool Result]: ${resultContent}`;
+        }
         if (b.type === 'image') return '[Image]';
         if (b.source) {
           return b.source.file_path ? `[File: ${b.source.file_path}]` : '[Source]';

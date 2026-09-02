@@ -427,7 +427,24 @@ const UserMessage = memo(function UserMessage({
             {userMarkdownElement}
           </div>
         ) : (
-          <p className="whitespace-pre-wrap text-[13px] leading-relaxed" style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}>{message.content}</p>
+          <>
+            {message.images && message.images.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-1.5">
+                {message.images.map((img, idx) => (
+                  <img
+                    key={idx}
+                    src={img.dataUrl}
+                    alt="pasted image"
+                    className="rounded-md border max-w-[260px] max-h-[200px] object-contain"
+                    style={{ borderColor: colors.border, backgroundColor: colors.bgSecondary }}
+                  />
+                ))}
+              </div>
+            )}
+            {message.content && (
+              <p className="whitespace-pre-wrap text-[13px] leading-relaxed" style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}>{message.content}</p>
+            )}
+          </>
         )}
       </div>
       {/* 折叠遮罩 — 仅当未展开且被截断时显示 */}
