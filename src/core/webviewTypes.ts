@@ -48,7 +48,7 @@ export type WebviewMessage = {
   /** 标记为压缩折叠区域的消息（加载时从 boundary 开始） */
   isCompactCollapsed?: boolean;
   /** 用户消息携带的图片（仅用于 UI 展示，LLM 请求使用 content blocks） */
-  images?: Array<{ dataUrl: string; mediaType?: string }>;
+  images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
 } | {
   type: 'showThinkingAnimation';
   sessionId: string;
@@ -246,7 +246,7 @@ export type WebviewMessage = {
   /** 排队的消息内容 */
   content: string;
   /** 排队的消息携带的图片 */
-  images?: Array<{ dataUrl: string; mediaType?: string }>;
+  images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
 } | {
   type: 'clearQueuedMessage';
   sessionId: string;

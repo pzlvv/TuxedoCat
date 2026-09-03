@@ -2,6 +2,8 @@ import { useCallback, useRef } from 'react';
 import { hasVscodeApi, postMessage } from '../webviewEnv';
 import { profileLog } from '../debug';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults } from '../types';
+import { ensureImageSize } from '../imageSize';
+import { buildConversationTitle } from '../../core/utils/contentBlocks';
 import { t } from '../i18n';
 
 const profileTag = '[Profile]';
@@ -196,8 +198,10 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
 
   const handleSend = async () => {
     const inputValue = props.inputAreaRef.current?.getValue() ?? '';
-    const pastedImages: Array<{ dataUrl: string; mediaType?: string }> =
+    const rawPastedImages: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }> =
       props.inputAreaRef.current?.getPastedImages?.() ?? [];
+    // 发送前补齐图片宽高，供 core 层生成 Image[<width>*<height>] 标题
+    const pastedImages = await Promise.all(rawPastedImages.map((img) => ensureImageSize(img)));
     if (!inputValue.trim() && pastedImages.length === 0) return;
 
     // ─── 服务器负载检查 ───────────────────────────────────────────
@@ -318,7 +322,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       return [{
         sessionId,
         project: '',
-        title: messageContent.substring(0, 50),
+        title: buildConversationTitle(messageContent, pastedImages),
         createdAt: now,
         updatedAt: now,
         messageCount: 1,

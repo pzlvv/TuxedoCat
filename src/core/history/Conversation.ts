@@ -9,6 +9,7 @@ import { join } from 'path';
 import { getProjectConversationDir, getProjectRoot, getConversationDir, ensureProjectConversationDir, ensureProjectConversationDirSync } from './Config.js';
 import type { Message } from '../types.js';
 import type { PromptPresetId } from '../prompt/PromptPreset.js';
+import { buildConversationTitle, extractUserContent } from '../utils/contentBlocks.js';
 import { logger } from '../Logger.js';
 
 /**
@@ -205,10 +206,12 @@ export interface ConversationContext {
 export interface ConversationMetadata {
   sessionId: string;
   project: string;
-  title: string; // 第一条用户消息的前50个字符
+  title: string; // 第一条用户消息的文本前50字符，或 Image[<width>*<height>]
   createdAt: number;
   updatedAt: number;
   messageCount: number;
+  /** /clear 后标记：内容已清空但会话/标题保留 */
+  clearedAt?: number;
   /** 当前对话的上下文（文件、模式等），用于加载时恢复 */
   context?: ConversationContext;
   /** 父会话 ID（子对话专属），用于构建树形结构 */
@@ -545,6 +548,30 @@ export async function appendMessage(message: Message, sessionId: string, parentU
 }
 
 /**
+ * 从用户消息中提取对话标题。
+ * 文本优先；仅图片时优先使用随消息保存的宽高生成 `Image[<width>*<height>]`。
+ */
+function titleFromUserMessage(message: Message): string {
+  if (message.type !== 'user' || !('message' in message)) return '';
+
+  const content = message.message.content;
+  if (typeof content === 'string') {
+    return buildConversationTitle(content);
+  }
+
+  const imageSizes = (message as any).imageSizes as Array<{ width?: number; height?: number }> | undefined;
+  const { text, images } = extractUserContent(content);
+
+  // 将持久化在 userMsg 顶层的宽高合并回 UI 图片对象，供标题生成使用
+  const sizedImages = images.map((img, index) => ({
+    ...img,
+    ...(imageSizes?.[index] ?? {}),
+  }));
+
+  return buildConversationTitle(text, sizedImages.length > 0 ? sizedImages : undefined);
+}
+
+/**
  * 更新对话元数据
  * @param totalContextTokens 可选：当前对话的上下文总 token 数（input_tokens + output_tokens），
  *   写入 metadata.context.totalContextTokens
@@ -574,27 +601,23 @@ async function updateMetadataForNewMessage(
       const prevMessageCount = metadata.messageCount;
       metadata.messageCount += 1;
 
+      // /clear 只清空内容，不清空标题：后续再发新消息不得覆盖原标题
+      const isCleared = metadata.clearedAt !== undefined;
+
       // 如果当前还没有用户消息（新对话或从历史恢复但无消息），
-      // 用首条用户消息的前 50 字符作为标题
-      if (prevMessageCount === 0 && message.type === 'user' && 'message' in message) {
-        const content = message.message.content;
-        if (typeof content === 'string') {
-          metadata.title = content.substring(0, 50);
+      // 用首条用户消息生成标题；但 /clear 后的会话必须保留原标题
+      if (!isCleared && prevMessageCount === 0 && message.type === 'user' && 'message' in message) {
+        const title = titleFromUserMessage(message);
+        if (title) {
+          metadata.title = title;
           titleUpdated = true;
         }
       }
     } catch (error: any) {
       if (error?.code === 'ENOENT') {
         // 文件不存在，创建新元数据
-        let title = 'New Conversation';
-
-        // 尝试从用户消息提取标题
-        if (message.type === 'user' && 'message' in message) {
-          const content = message.message.content;
-          if (typeof content === 'string') {
-            title = content.substring(0, 50);
-          }
-        }
+        // 文本优先；仅图片时使用 Image[<width>*<height>]
+        const title = titleFromUserMessage(message) || 'New Conversation';
 
         // 兜底：如果该会话由 QueryEngine 管理且配置了父会话/角色/模型，
         // 将关联信息写入新元数据。用于子代理会话，确保 parentSessionId
@@ -760,8 +783,9 @@ export async function loadConversationList(): Promise<ConversationMetadata[]> {
         const content = await readFile(filePath, 'utf8');
 
         const metadata: ConversationMetadata = JSON.parse(content);
-        // 跳过未发送过消息的空对话（messageCount === 0）
-        if (metadata.messageCount === 0) {
+        // 跳过未发送过消息的空对话（messageCount === 0）；
+        // 但 /clear 清空过的会话保留在列表中（标题和条目不随内容清空而消失）
+        if (metadata.messageCount === 0 && !metadata.clearedAt) {
           continue;
         }
         conversations.push(metadata);
@@ -1023,9 +1047,15 @@ export async function replaceConversationMessages(sessionId: string, messages: M
       const metadata: ConversationMetadata = JSON.parse(existing) as ConversationMetadata;
       metadata.updatedAt = Date.now();
       metadata.messageCount = messages.length;
+      // /clear（空列表替换）只清内容：标记 clearedAt，后续新消息不得覆盖原标题
+      if (messages.length === 0) {
+        metadata.clearedAt = Date.now();
+      }
       await writeFile(metadataPath, JSON.stringify(metadata, null, 2), { encoding: 'utf8', mode: 0o600 });
     } catch {
-      // 元数据不存在则创建
+      // 元数据不存在则创建。
+      // 注意：空列表替换（/clear）发生在已有会话上时，上面的 try 分支已写入 clearedAt；
+      // 若连 meta.json 都不存在则说明没有可保留的原标题，不应标记为 cleared 空会话。
       const metadata: ConversationMetadata = {
         sessionId: effectiveSessionId,
         project: projectPath,
@@ -1044,6 +1074,9 @@ export async function replaceConversationMessages(sessionId: string, messages: M
     cached.messages = messages;
     cached.metadata.messageCount = messages.length;
     cached.metadata.updatedAt = Date.now();
+    if (messages.length === 0) {
+      cached.metadata.clearedAt = Date.now();
+    }
   }
 
   // 增量更新对话列表缓存
@@ -1053,6 +1086,9 @@ export async function replaceConversationMessages(sessionId: string, messages: M
     if (existing) {
       existing.messageCount = messages.length;
       existing.updatedAt = Date.now();
+      if (messages.length === 0) {
+        existing.clearedAt = Date.now();
+      }
     }
   }
 }

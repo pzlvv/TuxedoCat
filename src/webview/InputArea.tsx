@@ -9,6 +9,10 @@ import { t } from './i18n';
 export interface PastedImage {
   dataUrl: string;
   mediaType?: string;
+  /** 图片实际像素宽度（用于图片消息标题） */
+  width?: number;
+  /** 图片实际像素高度（用于图片消息标题） */
+  height?: number;
 }
 
 export interface InputAreaRef {

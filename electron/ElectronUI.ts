@@ -723,7 +723,7 @@ export class ElectronUI implements AssistantUI {
     this.postToWebview(sessionID, { type: 'clearMessages' });
   }
 
-  onQueuedMessage(sessionID: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string }>): void {
+  onQueuedMessage(sessionID: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>): void {
     if (content) {
       this.postToWebview(sessionID, { type: 'queuedMessage', sessionId: sessionID, content, images });
     } else {
@@ -748,6 +748,8 @@ export class ElectronUI implements AssistantUI {
             msgs.length = 0;
             engine.lastPersistedMessageUuid = null;
           }
+          // /clear 后同步侧栏列表 messageCount（清空后仍保留会话，显示 0 条）
+          this.refreshSidebarThrottled();
         } catch (err) {
           this.log(`Error clearing conversation: ${err}`);
         }

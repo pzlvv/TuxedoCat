@@ -16,7 +16,7 @@ import { getProjectRoot } from './history/Config.js';
 import { sessionQueue } from './SessionQueue.js';
 import { userChoiceQueue } from './UserChoiceQueue.js';
 import { replayMessagesToUI } from './utils/replayMessages.js';
-import { buildUserContent, extractUserContent } from './utils/contentBlocks.js';
+import { buildConversationTitle, buildUserContent, extractUserContent } from './utils/contentBlocks.js';
 
 /**
  * 初始化会话队列回调
@@ -429,7 +429,7 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
 export async function* sendMessage(
   prompt: string,
   sessionId: string,
-  fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean; thinkingMode?: 'off' | 'low' | 'high' | 'max'; webSearch?: boolean; model?: string; reminder?: string; upstreamSessionId?: string; upstreamHostname?: string; upstreamWorkspace?: string; promptPreset?: PromptPresetId; images?: Array<{ dataUrl: string; mediaType?: string }> },
+  fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean; thinkingMode?: 'off' | 'low' | 'high' | 'max'; webSearch?: boolean; model?: string; reminder?: string; upstreamSessionId?: string; upstreamHostname?: string; upstreamWorkspace?: string; promptPreset?: PromptPresetId; images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }> },
 ): AsyncGenerator<Message, void, unknown> {
   const ui = getUI();
 
@@ -458,6 +458,15 @@ export async function* sendMessage(
     ...(fileInfo?.reminder && { reminder: fileInfo.reminder }),
     ...(Object.keys(meta).length > 0 && { _meta: meta }),
   };
+
+  // 将图片宽高随消息一起持久化，供 meta.json 标题生成使用（不进入 LLM content）
+  const imageSizes = (fileInfo?.images ?? []).map((img) => ({
+    width: img.width,
+    height: img.height,
+  }));
+  if (imageSizes.some((s) => s.width && s.height)) {
+    (userMsg as any).imageSizes = imageSizes;
+  }
 
   // 在创建/获取 engine 之前，先通过 CommandDispatcher 检查命令类型
   const { dispatch } = await import('./CommandDispatcher.js');
@@ -586,9 +595,9 @@ export async function* sendMessage(
     addToHistory(prompt);
   }
 
-  // 如果是新对话，设置标题（使用消息内容的前 50 个字符）
+  // 如果是新对话，设置标题（文本优先；仅图片时使用 Image[<width>*<height>]）
   if (isNewSession) {
-    const title = prompt.substring(0, 50);
+    const title = buildConversationTitle(prompt, fileInfo?.images);
     ui.setTitle(sessionId, title);
   }
 

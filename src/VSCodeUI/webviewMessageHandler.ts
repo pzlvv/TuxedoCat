@@ -240,7 +240,7 @@ export class WebviewMessageHandler {
     //   被带上，即使当前 query 正处于多轮工具调用循环中也不会中断。
     // - 命令类消息仍交给 sendMessage 处理，保留内置命令 / Skill 命令的原有行为。
     const { sessionId, content } = message;
-    const images: Array<{ dataUrl: string; mediaType?: string }> | undefined = Array.isArray((message as any).images)
+    const images: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }> | undefined = Array.isArray((message as any).images)
       ? (message as any).images
       : undefined;
     if (!sessionId || typeof content !== 'string' || (!content.trim() && (!images || images.length === 0))) {
@@ -339,6 +339,15 @@ export class WebviewMessageHandler {
         ...(selectedLines && { fileSelectedLines: selectedLines }),
         ...(message.fileHidden && { fileHidden: true }),
       };
+
+      // 将图片宽高随消息一起持久化，供 meta.json 标题生成使用（不进入 LLM content）
+      const imageSizes = (images ?? []).map((img) => ({
+        width: img.width,
+        height: img.height,
+      }));
+      if (imageSizes.some((s) => s.width && s.height)) {
+        (userMsg as any).imageSizes = imageSizes;
+      }
 
       if (isQueueMessage) {
         // 排队消息不立即回显到 MessagesView，只在输入框上方显示队列状态。
@@ -855,6 +864,9 @@ export class WebviewMessageHandler {
           engine.lastPersistedMessageUuid = null;
         }
         this.log(`[VSCodeUI] Conversation cleared: ${message.sessionId}`);
+        const { loadConversationList } = await import('../core/history/index.js');
+        const conversations = await loadConversationList();
+        this.host.sendToWebview({ type: 'conversationsData', conversations } as any);
       } catch (err) {
         this.log(`[VSCodeUI] Error clearing conversation: ${err}`);
       }

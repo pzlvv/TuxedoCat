@@ -56,7 +56,7 @@ export interface Message {
   /** 消息元信息，如文件引用、agent来源等 */
   meta?: Record<string, unknown>;
   /** 用户消息携带的图片（dataUrl，用于渲染缩略图） */
-  images?: Array<{ dataUrl: string; mediaType?: string }>;
+  images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
   /** 缓存读取 token 数 */
   cacheReadInputTokens?: number;
   /** 缓存创建 token 数 */
@@ -66,7 +66,7 @@ export interface Message {
 /** 排队消息完整载荷（文本 + 图片），保证图片在排队/重发时不丢失 */
 export interface QueuedMessagePayload {
   content: string;
-  images?: Array<{ dataUrl: string; mediaType?: string }>;
+  images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
 }
 
 export interface UserChoiceRequest {
@@ -79,7 +79,7 @@ export interface UserChoiceRequest {
 export interface SessionState {
   input: string;
   /** 输入框中尚未发送的图片（草稿） */
-  pastedImages?: Array<{ dataUrl: string; mediaType?: string }>;
+  pastedImages?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
   inputCursorPosition: number;
   choiceCursorPosition: number;
   userChoiceRequest: UserChoiceRequest | null;

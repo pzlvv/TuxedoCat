@@ -172,7 +172,7 @@ export interface AssistantUI {
    * @param content 排队的消息内容，null 表示清除排队状态
    * @param images 排队的消息携带的图片
    */
-  onQueuedMessage?(sessionId: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string }>): void;
+  onQueuedMessage?(sessionId: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>): void;
 
   /**
    * 命令发送回调
@@ -257,7 +257,7 @@ export interface MessageData {
   /** 是否来自代理消息 */
   isFromAgent?: boolean;
   /** 用户消息携带的图片（仅用于 UI 展示，LLM 请求使用 content blocks） */
-  images?: Array<{ dataUrl: string; mediaType?: string }>;
+  images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
   /** 消息元信息，如文件引用、agent来源等 */
   meta?: Record<string, unknown>;
 }

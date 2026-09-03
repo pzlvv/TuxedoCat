@@ -14,6 +14,10 @@ export interface UiImage {
   dataUrl: string;
   /** media type，可从 dataUrl 解析；缺省时使用 image/png */
   mediaType?: string;
+  /** 图片实际像素宽度（用于图片消息标题等） */
+  width?: number;
+  /** 图片实际像素高度（用于图片消息标题等） */
+  height?: number;
 }
 
 export interface ImageContentBlock {
@@ -118,4 +122,30 @@ export function hasUserVisibleImages(content: unknown): boolean {
     const b = block as { type?: string };
     return b.type === 'image';
   });
+}
+
+/**
+ * 从用户输入文本和图片信息中生成对话标题。
+ * - 图片 + 文本：使用文本作为标题（与纯文本规则一致）。
+ * - 仅图片：优先使用第一张图片的实际宽高生成 `Image[<width>*<height>]`；
+ *   宽高缺失时退化为 `Image`。
+ */
+export function buildConversationTitle(text: string, images?: UiImage[]): string {
+  const trimmedText = (text || '').trim();
+  if (trimmedText) {
+    return trimmedText.substring(0, 50);
+  }
+
+  const firstImage = (images ?? []).find(
+    (img) => img && img.dataUrl && img.width && img.height,
+  );
+  if (firstImage?.width && firstImage?.height) {
+    return `Image[${firstImage.width}*${firstImage.height}]`;
+  }
+
+  if ((images ?? []).some((img) => img && img.dataUrl)) {
+    return 'Image';
+  }
+
+  return '';
 }

@@ -48,6 +48,8 @@ export class VSCodeUI implements AssistantUI {
   private sessionActivityPhases: Map<string, 'idle' | 'thinking' | 'text' | 'tool'> = new Map();
   /** 每个 session 当前处于 tool 阶段的工具数量，用于并发工具结束后正确恢复 idle */
   private sessionActiveToolCounts: Map<string, number> = new Map();
+  /** 对话列表刷新 debounce timer：消息落盘是异步的，延迟刷新可拿到最新 messageCount */
+  private conversationListRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private _windowStateRegistered: boolean = false;
 
   // 子模块
@@ -652,6 +654,10 @@ export class VSCodeUI implements AssistantUI {
       type: 'addMessage',
       ...data,
     });
+    // 用户消息已进入持久化流程：刷新对话列表，使打开中的历史列表同步 messageCount
+    if (data.role === 'user') {
+      this.scheduleConversationListRefresh();
+    }
   }
 
   /**
@@ -764,6 +770,18 @@ export class VSCodeUI implements AssistantUI {
     this.postToWebview(sessionID, {
       type: 'initSessionState',
     });
+  }
+
+  /**
+   * 节流刷新对话列表：用户消息持久化在 appendMessage 中异步完成，
+   * 延迟 500ms 拉取可保证拿到包含最新 messageCount 的列表。
+   */
+  private scheduleConversationListRefresh(): void {
+    if (this.conversationListRefreshTimer) clearTimeout(this.conversationListRefreshTimer);
+    this.conversationListRefreshTimer = setTimeout(() => {
+      this.conversationListRefreshTimer = null;
+      void this.refreshConversationList();
+    }, 500);
   }
 
   /**
@@ -884,6 +902,8 @@ export class VSCodeUI implements AssistantUI {
     this.postToWebview(sessionID, {
       type: 'queryEnd',
     });
+    // 查询结束代表消息已持久化完成：推送最新对话列表，历史列表打开时条数实时更新
+    void this.refreshConversationList();
   }
 
   /**
@@ -921,7 +941,7 @@ export class VSCodeUI implements AssistantUI {
   /**
    * 通知 UI 显示或清除排队消息状态
    */
-  onQueuedMessage(sessionID: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string }>): void {
+  onQueuedMessage(sessionID: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>): void {
     this.postToWebview(sessionID, content
       ? { type: 'queuedMessage', sessionId: sessionID, content, images }
       : { type: 'clearQueuedMessage', sessionId: sessionID });
@@ -949,6 +969,8 @@ export class VSCodeUI implements AssistantUI {
             msgs.length = 0;
             engine.lastPersistedMessageUuid = null;
           }
+          // /clear 后同步列表 messageCount（清空后仍保留会话，显示 0 条）
+          await this.refreshConversationList();
         } catch (err) {
           VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] Error clearing conversation: ${err}`);
         }
