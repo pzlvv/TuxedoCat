@@ -567,6 +567,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 sessionId: endedSessionId,
                 content: queued.content,
                 images: queued.images,
+                filePath: queued.filePath,
+                selectedLines: queued.selectedLines,
+                fileHidden: queued.fileHidden,
               });
             }
           }
@@ -1095,7 +1098,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                     }
                   }
 
-                  // 从 _meta 读取元信息
+                  // 从 _meta 与消息顶层读取元信息。部分发送路径（如引擎已存在时的普通消息）
+                  // 只持久化了顶层 filePath/fileSelectedLines，未写 _meta，因此这里两者都要兼容。
                   const msgMeta = (convMsg as any)._meta as Record<string, unknown> | undefined;
                   const isFromAgent = (convMsg as any).fromSubAgent === true;
                   // 跳过 silent 消息（仅 LLM 可见，UI 不可见）
@@ -1103,16 +1107,32 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                     continue;
                   }
 
-                  // 历史消息不再展示文件标签：
-                  // 当前文件是实时上下文（随编辑器/打开的 Monaco 视图变化），恢复历史时
-                  // 展示陈旧的文件路径/行号会造成困惑；且发送时 fileHidden 的消息 _meta
-                  // 也会持久化 filePath，导致"发送时不显示、加载后反而显示"的不一致。
-                  // 子代理（from/to）消息的 param 用于跳转/来源展示，需要保留。
+                  // 恢复用户消息上的文件标签。
+                  // 旧逻辑刻意不展示历史文件信息，但用户消息本身携带的上下文仍应可见。
+                  // 需要保留 fileHidden 语义：发送时用户主动隐藏的消息，加载后仍不显示。
+                  const rawFilePath = (convMsg as any).filePath || (msgMeta?.filePath as string | undefined) || undefined;
+                  const rawFileSelectedLines = (convMsg as any).fileSelectedLines
+                    || (msgMeta?.fileSelectedLines as { start: number; end: number } | undefined)
+                    || undefined;
+                  const wasFileHidden = (convMsg as any).fileHidden === true;
+                  const showFileInfo = !wasFileHidden && !!rawFilePath;
+
                   const msgMetaClean = msgMeta ? { ...msgMeta } : undefined;
-                  if (msgMetaClean && msgMetaClean.filePath) {
-                    delete msgMetaClean.filePath;
-                    delete msgMetaClean.fileSelectedLines;
-                    delete msgMetaClean.param;
+                  if (msgMetaClean) {
+                    if (showFileInfo) {
+                      // 保证 meta 与顶层字段一致，UserMessage 无论读哪个来源都能拿到
+                      msgMetaClean.filePath = rawFilePath;
+                      if (rawFileSelectedLines) {
+                        msgMetaClean.fileSelectedLines = rawFileSelectedLines;
+                      }
+                    } else {
+                      delete msgMetaClean.filePath;
+                      delete msgMetaClean.fileSelectedLines;
+                      // 非子代理的 param 只是文件展示文本；子代理 from/to 的 param 用于跳转/来源展示
+                      if (!isFromAgent) {
+                        delete msgMetaClean.param;
+                      }
+                    }
                   }
                   const msgParam = isFromAgent ? (msgMeta?.param as string | undefined) : undefined;
 
@@ -1122,8 +1142,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                     content: userText,
                     images: userImages.length > 0 ? userImages : undefined,
                     param: msgParam,
-                    filePath: undefined,
-                    fileSelectedLines: undefined,
+                    filePath: showFileInfo ? rawFilePath : undefined,
+                    fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
                     isCompactSummary: (convMsg as any).isCompactSummary === true,
                     isFromAgent,
                     meta: msgMetaClean,
@@ -1453,6 +1473,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             const payload: QueuedMessagePayload = {
               content: msg.content,
               images: msg.images,
+              filePath: (msg as any).filePath,
+              selectedLines: (msg as any).selectedLines || (msg as any).fileSelectedLines,
+              fileHidden: (msg as any).fileHidden,
             };
             props.queuedMessageRef.current.set(msg.sessionId, payload);
             if (msg.sessionId === sessionId) {

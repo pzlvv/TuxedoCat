@@ -147,6 +147,12 @@ export interface AssistantUI {
   refreshConversationList?(): void | Promise<void>;
 
   /**
+   * 节流/防抖刷新对话列表
+   * 用于消息追加等高频场景；UI 层应合并短时间内的多次调用，避免频繁读盘
+   */
+  scheduleConversationListRefresh(): void;
+
+  /**
    * 压缩进度通知
    * @param sessionId 会话 ID
    * @param status 压缩状态
@@ -171,8 +177,9 @@ export interface AssistantUI {
    * @param sessionId 会话 ID
    * @param content 排队的消息内容，null 表示清除排队状态
    * @param images 排队的消息携带的图片
+   * @param fileInfo 排队消息的文件上下文（供 queryEnd 重新投递时保留）
    */
-  onQueuedMessage?(sessionId: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>): void;
+  onQueuedMessage?(sessionId: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>, fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean }): void;
 
   /**
    * 命令发送回调

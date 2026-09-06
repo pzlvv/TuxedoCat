@@ -332,9 +332,13 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
 
     if (props.hasActiveQuery) {
       // 当前有查询在进行，消息排队（按会话绑定，切换会话后仍归属正确会话）
+      // 同时保存文件上下文，避免 queryEnd 重新投递时丢失 filePath/selectedLines
       const queuedPayload: QueuedMessagePayload = {
         content: messageContent,
         images: pastedImages.length > 0 ? pastedImages : undefined,
+        filePath: props.currentFile || undefined,
+        selectedLines: props.selectedLines || undefined,
+        fileHidden: props.fileHidden,
       };
       props.queuedMessageRef.current.set(sessionId, queuedPayload);
       props.setQueuedMessage(queuedPayload);

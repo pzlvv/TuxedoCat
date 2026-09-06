@@ -544,6 +544,13 @@ export async function appendMessage(message: Message, sessionId: string, parentU
     }
   }
 
+  // 通知 UI 防抖刷新对话列表，让侧栏消息数在对话进行中实时更新。
+  // UI 层会合并短时间内的多次调度，避免每条消息都触发一次读盘。
+  try {
+    const { getGlobalUI } = await import('../AssistantUI.js');
+    getGlobalUI()?.scheduleConversationListRefresh();
+  } catch { /* UI 未初始化或不可用时忽略 */ }
+
   return { uuid, newTitle: newTitle ?? undefined };
 }
 
@@ -1091,6 +1098,12 @@ export async function replaceConversationMessages(sessionId: string, messages: M
       }
     }
   }
+
+  // 压缩 / 清空会整体改写消息数，同样通知 UI 刷新列表
+  try {
+    const { getGlobalUI } = await import('../AssistantUI.js');
+    getGlobalUI()?.scheduleConversationListRefresh();
+  } catch { /* UI 未初始化或不可用时忽略 */ }
 }
 
 // ========== Compact Archive Functions ==========

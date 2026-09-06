@@ -30,7 +30,7 @@ export function replayMessagesToUI(ui: AssistantUI, sessionId: string, messages:
   const toolResultMap = buildToolResultMap(messages);
 
   for (const msg of messages) {
-    const meta = msg as Message & { isMeta?: boolean; silent?: boolean; subtype?: string; filePath?: string; fileSelectedLines?: { start: number; end: number }; isCompactSummary?: boolean; fromSubAgent?: boolean; _meta?: Record<string, unknown> };
+    const meta = msg as Message & { isMeta?: boolean; silent?: boolean; subtype?: string; filePath?: string; fileSelectedLines?: { start: number; end: number }; fileHidden?: boolean; isCompactSummary?: boolean; fromSubAgent?: boolean; _meta?: Record<string, unknown> };
     if (meta.isMeta || meta.silent) continue;
 
     if (msg.type === 'system') {
@@ -42,15 +42,40 @@ export function replayMessagesToUI(ui: AssistantUI, sessionId: string, messages:
     if (msg.type === 'user') {
       const { text, images } = extractUserContent(msg.message.content);
       if (!text && images.length === 0) continue;
+
+      // 与历史加载逻辑一致：发送时用户主动隐藏的文件标签，重放时也不能显示。
+      // 文件信息可能落在顶层 filePath/fileSelectedLines，也可能在 _meta 中，统一兼容。
+      const rawFilePath = meta.filePath || (meta._meta?.filePath as string | undefined);
+      const rawFileSelectedLines = meta.fileSelectedLines || (meta._meta?.fileSelectedLines as { start: number; end: number } | undefined);
+      const wasFileHidden = meta.fileHidden === true;
+      const showFileInfo = !wasFileHidden && !!rawFilePath;
+
+      const replayMeta = meta._meta ? { ...meta._meta } : undefined;
+      if (replayMeta) {
+        if (showFileInfo) {
+          replayMeta.filePath = rawFilePath;
+          if (rawFileSelectedLines) {
+            replayMeta.fileSelectedLines = rawFileSelectedLines;
+          }
+        } else {
+          delete replayMeta.filePath;
+          delete replayMeta.fileSelectedLines;
+          // 子代理 from/to 的 param 仍用于跳转/来源展示
+          if (!meta.fromSubAgent) {
+            delete replayMeta.param;
+          }
+        }
+      }
+
       ui.onMessage(sessionId, {
         role: 'user',
         content: text,
         images: images.length > 0 ? images : undefined,
-        filePath: meta.filePath,
-        fileSelectedLines: meta.fileSelectedLines,
+        filePath: showFileInfo ? rawFilePath : undefined,
+        fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
         isCompactSummary: meta.isCompactSummary === true,
         isFromAgent: meta.fromSubAgent === true,
-        meta: meta._meta,
+        meta: replayMeta,
       });
       continue;
     }

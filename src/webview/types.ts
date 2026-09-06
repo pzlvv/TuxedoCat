@@ -63,10 +63,16 @@ export interface Message {
   cacheCreationInputTokens?: number;
 }
 
-/** 排队消息完整载荷（文本 + 图片），保证图片在排队/重发时不丢失 */
+/** 排队消息完整载荷（文本 + 图片 + 文件上下文），保证图片/文件信息在排队/重发时不丢失 */
 export interface QueuedMessagePayload {
   content: string;
   images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
+  /** 排队时选中的文件路径 */
+  filePath?: string;
+  /** 排队时选中的文件行号 */
+  selectedLines?: { start: number; end: number };
+  /** 排队时文件信息是否被用户隐藏 */
+  fileHidden?: boolean;
 }
 
 export interface UserChoiceRequest {

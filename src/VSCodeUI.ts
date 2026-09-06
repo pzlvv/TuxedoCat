@@ -773,10 +773,10 @@ export class VSCodeUI implements AssistantUI {
   }
 
   /**
-   * 节流刷新对话列表：用户消息持久化在 appendMessage 中异步完成，
+   * 节流刷新对话列表：消息持久化在 appendMessage 中异步完成，
    * 延迟 500ms 拉取可保证拿到包含最新 messageCount 的列表。
    */
-  private scheduleConversationListRefresh(): void {
+  scheduleConversationListRefresh(): void {
     if (this.conversationListRefreshTimer) clearTimeout(this.conversationListRefreshTimer);
     this.conversationListRefreshTimer = setTimeout(() => {
       this.conversationListRefreshTimer = null;
@@ -941,9 +941,17 @@ export class VSCodeUI implements AssistantUI {
   /**
    * 通知 UI 显示或清除排队消息状态
    */
-  onQueuedMessage(sessionID: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>): void {
+  onQueuedMessage(sessionID: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>, fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean }): void {
     this.postToWebview(sessionID, content
-      ? { type: 'queuedMessage', sessionId: sessionID, content, images }
+      ? {
+        type: 'queuedMessage',
+        sessionId: sessionID,
+        content,
+        images,
+        filePath: fileInfo?.filePath,
+        selectedLines: fileInfo?.selectedLines,
+        fileHidden: fileInfo?.fileHidden,
+      }
       : { type: 'clearQueuedMessage', sessionId: sessionID });
   }
 

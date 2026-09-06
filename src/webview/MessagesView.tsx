@@ -101,6 +101,12 @@ function areEqual(prevProps: any, nextProps: any): boolean {
   if (prev.isStreaming !== next.isStreaming) return false;
   if (prev.param !== next.param) return false;
   if (prev.filePath !== next.filePath) return false;
+  if (prev.fileSelectedLines !== next.fileSelectedLines) {
+    const prevSel = prev.fileSelectedLines;
+    const nextSel = next.fileSelectedLines;
+    if ((prevSel?.start ?? null) !== (nextSel?.start ?? null)) return false;
+    if ((prevSel?.end ?? null) !== (nextSel?.end ?? null)) return false;
+  }
   if (prev.toolName !== next.toolName) return false;
   if (!shallowEqualRecord(prev.toolArgs, next.toolArgs)) return false;
   if (!shallowEqualRecord(prev.meta, next.meta)) return false;
@@ -223,11 +229,11 @@ const UserMessage = memo(function UserMessage({
   const contentRef = useRef<HTMLDivElement>(null);
   const [isTruncated, setIsTruncated] = useState(false);
 
-  // 从 meta 读取元信息
+  // 从 meta 读取元信息；部分来源（如历史/回放消息）只带顶层 filePath/fileSelectedLines，这里做兼容
   const meta = message.meta;
   const metaParam = meta?.param as string | undefined;
-  const metaFilePath = meta?.filePath as string | undefined;
-  const metaFileSelectedLines = meta?.fileSelectedLines as { start: number; end: number } | undefined;
+  const metaFilePath = (meta?.filePath as string | undefined) || message.filePath || undefined;
+  const metaFileSelectedLines = (meta?.fileSelectedLines as { start: number; end: number } | undefined) || message.fileSelectedLines || undefined;
 
   // 判断消息类型
   const isAgentMessage = message.isFromAgent && !!metaParam;

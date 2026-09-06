@@ -247,6 +247,12 @@ export type WebviewMessage = {
   content: string;
   /** 排队的消息携带的图片 */
   images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
+  /** 排队时选中的文件路径 */
+  filePath?: string;
+  /** 排队时选中的文件行号 */
+  selectedLines?: { start: number; end: number };
+  /** 排队时文件信息是否被用户隐藏 */
+  fileHidden?: boolean;
 } | {
   type: 'clearQueuedMessage';
   sessionId: string;

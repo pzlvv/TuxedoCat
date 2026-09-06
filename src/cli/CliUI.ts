@@ -133,6 +133,10 @@ export class CLIUI implements AssistantUI {
     // 不输出（onStreamEnd 已负责结尾换行）
   }
 
+  scheduleConversationListRefresh(): void {
+    // CLI 没有侧栏对话列表，无需刷新
+  }
+
   async getUIDynamicInfo(_sessionID: string): Promise<UIDynamicInfo> {
     return { cwd: process.cwd() };
   }

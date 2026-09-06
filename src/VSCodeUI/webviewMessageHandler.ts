@@ -330,6 +330,17 @@ export class WebviewMessageHandler {
       const ui = getGlobalUI();
       const userContent = buildUserContent(content, images);
       const { text: uiText, images: uiImages } = extractUserContent(userContent);
+      // 与 Integration.sendMessage 的落盘格式保持一致：文件信息同时写入 _meta，
+      // 避免“引擎已存在时的后续消息”只带顶层字段，导致历史加载/压缩展开时无法还原文件标签。
+      const persistMeta: Record<string, unknown> = {};
+      if (message.filePath) {
+        persistMeta.filePath = message.filePath;
+        persistMeta.param = `${message.filePath.split(/[/\\]/).pop()}${selectedLines ? `:${selectedLines.start}${selectedLines.start !== selectedLines.end ? `~${selectedLines.end}` : ''}` : ''}`;
+      }
+      if (selectedLines) {
+        persistMeta.fileSelectedLines = selectedLines;
+      }
+
       const userMsg: Message = {
         type: 'user',
         message: { role: 'user', content: userContent },
@@ -339,6 +350,9 @@ export class WebviewMessageHandler {
         ...(selectedLines && { fileSelectedLines: selectedLines }),
         ...(message.fileHidden && { fileHidden: true }),
       };
+      if (Object.keys(persistMeta).length > 0) {
+        (userMsg as any)._meta = persistMeta;
+      }
 
       // 将图片宽高随消息一起持久化，供 meta.json 标题生成使用（不进入 LLM content）
       const imageSizes = (images ?? []).map((img) => ({
@@ -353,7 +367,11 @@ export class WebviewMessageHandler {
         // 排队消息不立即回显到 MessagesView，只在输入框上方显示队列状态。
         // QueryEngine 真正把它追加进 LLM 上下文时，会通过 _needsUINotification 补发 addMessage。
         (userMsg as any)._needsUINotification = true;
-        ui?.onQueuedMessage?.(sessionId, content, uiImages);
+        ui?.onQueuedMessage?.(sessionId, content, uiImages, {
+          filePath: message.filePath,
+          selectedLines: selectedLines || undefined,
+          fileHidden: !!message.fileHidden,
+        });
       } else {
         // 显示用户消息到 UI（文件信息逻辑与 sendMessage 一致）
         const uiMeta: Record<string, unknown> = {};

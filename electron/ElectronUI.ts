@@ -42,6 +42,8 @@ export class ElectronUI implements AssistantUI {
   /** 侧栏刷新 debounce timer：消息落盘是异步的（appendMessage 在 onMessage 之后执行），
    *  延迟再拉取可保证拿到包含新对话的最新列表 */
   private sidebarRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 对话列表刷新 debounce timer：消息追加时实时刷新侧栏 + webview 对话列表 */
+  private conversationListRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   // 子模块
   private userChoiceManager: UserChoiceManager;
@@ -156,6 +158,18 @@ export class ElectronUI implements AssistantUI {
           this.log(`Failed to refresh sidebar: ${err}`);
         }
       })();
+    }, 500);
+  }
+
+  /**
+   * 防抖刷新完整对话列表（原生侧栏 + webview conversationsData）。
+   * 由 core 层在消息追加/替换后调用，保证对话进行中消息数实时更新。
+   */
+  scheduleConversationListRefresh(): void {
+    if (this.conversationListRefreshTimer) clearTimeout(this.conversationListRefreshTimer);
+    this.conversationListRefreshTimer = setTimeout(() => {
+      this.conversationListRefreshTimer = null;
+      void this.refreshConversationList();
     }, 500);
   }
 
@@ -723,9 +737,17 @@ export class ElectronUI implements AssistantUI {
     this.postToWebview(sessionID, { type: 'clearMessages' });
   }
 
-  onQueuedMessage(sessionID: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>): void {
+  onQueuedMessage(sessionID: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>, fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean }): void {
     if (content) {
-      this.postToWebview(sessionID, { type: 'queuedMessage', sessionId: sessionID, content, images });
+      this.postToWebview(sessionID, {
+        type: 'queuedMessage',
+        sessionId: sessionID,
+        content,
+        images,
+        filePath: fileInfo?.filePath,
+        selectedLines: fileInfo?.selectedLines,
+        fileHidden: fileInfo?.fileHidden,
+      });
     } else {
       this.postToWebview(sessionID, { type: 'clearQueuedMessage', sessionId: sessionID });
     }
@@ -834,15 +856,29 @@ export class ElectronUI implements AssistantUI {
         } else if (m.type === 'user') {
           const content = typeof m.message?.content === 'string' ? m.message.content : undefined;
           if (content !== undefined) {
+            const rawFilePath = m.filePath || m._meta?.filePath;
+            const rawFileSelectedLines = m.fileSelectedLines || m._meta?.fileSelectedLines;
+            const showFileInfo = !m.fileHidden && !!rawFilePath;
+            const replayMeta = m._meta ? { ...m._meta } : undefined;
+            if (replayMeta) {
+              if (showFileInfo) {
+                replayMeta.filePath = rawFilePath;
+                if (rawFileSelectedLines) replayMeta.fileSelectedLines = rawFileSelectedLines;
+              } else {
+                delete replayMeta.filePath;
+                delete replayMeta.fileSelectedLines;
+                if (!m.fromSubAgent) delete replayMeta.param;
+              }
+            }
             this.postToWebview(sessionID, {
               type: 'addMessage',
               role: 'user',
               content,
-              filePath: m.filePath,
-              fileSelectedLines: m.fileSelectedLines,
+              filePath: showFileInfo ? rawFilePath : undefined,
+              fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
               isCompactSummary: m.isCompactSummary === true,
               isFromAgent: m.fromSubAgent === true,
-              meta: m._meta,
+              meta: replayMeta,
             });
           }
         } else if (m.type === 'assistant' && Array.isArray(m.message?.content)) {
