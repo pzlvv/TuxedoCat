@@ -40,6 +40,8 @@ interface InputAreaProps {
   maxContextTokens?: number | null;
   hasActiveQuery: boolean;
   agentMode: 'manual' | 'risk' | 'auto';
+  /** 是否已收到当前会话/默认的 agentMode；false 时仅显示 loading，不显示具体选项 */
+  agentModeReady: boolean;
   setAgentMode: (mode: 'manual' | 'risk' | 'auto') => void;
   /** 会话关联的提示词模式（普通/极简/混合，持久化到 meta.json） */
   promptMode: PromptMode;
@@ -136,75 +138,122 @@ const ContextProgressBar = React.memo(({ totalContextTokens, isDark, maxContextT
 
 const AgentModeSelector = memo(({
   agentMode,
+  agentModeReady,
   onModeChange,
   colors,
   isDark,
 }: {
   agentMode: 'manual' | 'risk' | 'auto';
+  agentModeReady: boolean;
   onModeChange: (mode: 'manual' | 'risk' | 'auto') => void;
   colors: Colors;
   isDark: boolean;
-}) => (
-  <ConfigProvider
-    theme={{
-      components: {
-        Dropdown: {
-          colorBgElevated: colors.primaryFrame,
-          colorText: colors.textSystem,
-          controlItemBgHover: isDark ? 'rgba(99, 102, 241, 0.12)' : 'rgba(99, 102, 241, 0.06)',
-          controlItemBgActive: isDark ? 'rgba(99, 102, 241, 0.2)' : 'rgba(99, 102, 241, 0.12)',
-          fontSize: 12,
+}) => {
+  const modeText =
+    agentMode === 'auto' ? t('inputArea.agentModeAuto') :
+    agentMode === 'risk' ? t('inputArea.agentModeRisk') :
+    t('inputArea.agentModeManual');
+  const modeTitle =
+    agentMode === 'auto' ? t('inputArea.agentModeAutoTitle') :
+    agentMode === 'risk' ? t('inputArea.agentModeRiskTitle') :
+    t('inputArea.agentModeManualTitle');
+
+  const menuItems = [
+    {
+      key: 'manual',
+      label: <span style={{ fontSize: '12px' }}>{t('inputArea.agentModeManual')}</span>,
+      onClick: () => onModeChange('manual'),
+    },
+    {
+      key: 'risk',
+      label: <span style={{ fontSize: '12px' }}>{t('inputArea.agentModeRisk')}</span>,
+      onClick: () => onModeChange('risk'),
+    },
+    {
+      key: 'auto',
+      label: <span style={{ fontSize: '12px' }}>{t('inputArea.agentModeAuto')}</span>,
+      onClick: () => onModeChange('auto'),
+    },
+  ];
+
+  const buttonStyle: React.CSSProperties = {
+    backgroundColor: 'transparent',
+    color: colors.textSystem,
+    border: `1px solid ${colors.border}`,
+    fontSize: '12px',
+    padding: '4px 8px',
+    whiteSpace: 'nowrap',
+    minWidth: '54px',
+    position: 'relative',
+    overflow: 'hidden',
+    cursor: agentModeReady ? 'pointer' : 'not-allowed',
+    opacity: agentModeReady ? 1 : 0.75,
+  };
+
+  return (
+    <ConfigProvider
+      theme={{
+        components: {
+          Dropdown: {
+            colorBgElevated: colors.primaryFrame,
+            colorText: colors.textSystem,
+            controlItemBgHover: isDark ? 'rgba(99, 102, 241, 0.12)' : 'rgba(99, 102, 241, 0.06)',
+            controlItemBgActive: isDark ? 'rgba(99, 102, 241, 0.2)' : 'rgba(99, 102, 241, 0.12)',
+            fontSize: 12,
+          },
         },
-      },
-    }}
-  >
-  <Dropdown
-    menu={{
-      items: [
-        {
-          key: 'manual',
-          label: <span style={{ fontSize: '12px' }}>{t('inputArea.agentModeManual')}</span>,
-          onClick: () => onModeChange('manual'),
-        },
-        {
-          key: 'risk',
-          label: <span style={{ fontSize: '12px' }}>{t('inputArea.agentModeRisk')}</span>,
-          onClick: () => onModeChange('risk'),
-        },
-        {
-          key: 'auto',
-          label: <span style={{ fontSize: '12px' }}>{t('inputArea.agentModeAuto')}</span>,
-          onClick: () => onModeChange('auto'),
-        },
-      ],
-      selectedKeys: [agentMode],
-      className: 'agent-mode-menu',
-    }}
-    trigger={['click']}
-    placement="topRight"
-  >
-    <button
-      className="px-2 h-7 rounded-md flex items-center justify-center hover:brightness-110"
-      style={{
-        backgroundColor: 'transparent',
-        color: colors.textSystem,
-        border: `1px solid ${colors.border}`,
-        fontSize: '12px',
-        padding: '4px 8px',
-        whiteSpace: 'nowrap',
-        minWidth: '54px',
       }}
-      title={
-        agentMode === 'auto' ? t('inputArea.agentModeAutoTitle') :
-        agentMode === 'risk' ? t('inputArea.agentModeRiskTitle') :
-        t('inputArea.agentModeManualTitle')
-      }
     >
-      {agentMode === 'auto' ? t('inputArea.agentModeAuto') : agentMode === 'risk' ? t('inputArea.agentModeRisk') : t('inputArea.agentModeManual')}
-    </button>
-  </Dropdown>
-  </ConfigProvider>
-));
+      {agentModeReady ? (
+        <Dropdown
+          menu={{
+            items: menuItems,
+            selectedKeys: [agentMode],
+            className: 'agent-mode-menu',
+          }}
+          trigger={['click']}
+          placement="topRight"
+        >
+          <button
+            className="px-2 h-7 rounded-md flex items-center justify-center hover:brightness-110"
+            style={buttonStyle}
+            title={modeTitle}
+          >
+            {modeText}
+          </button>
+        </Dropdown>
+      ) : (
+        <button
+          className="px-2 h-7 rounded-md flex items-center justify-center"
+          style={buttonStyle}
+          title={t('inputArea.agentModeLoading')}
+          disabled
+        >
+          {/* 用隐藏的真实模式文案占位，确保 loading 时不会撑宽 agentMode 框 */}
+          <span style={{ visibility: 'hidden' }}>{modeText}</span>
+          <span
+            style={{
+              position: 'absolute',
+              left: 8,
+              right: 8,
+              top: 0,
+              bottom: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              overflow: 'hidden',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+              {t('inputArea.agentModeLoading')}
+            </span>
+          </span>
+        </button>
+      )}
+    </ConfigProvider>
+  );
+});
 
 const ThinkingSegmentControl = ({
   value,
@@ -319,6 +368,7 @@ const PromptModeSegmentControl = ({
 };
 
 const ToggleMenu = memo(({
+  agentModeReady,
   model,
   onModelChange,
   models,
@@ -332,6 +382,7 @@ const ToggleMenu = memo(({
   colors,
   isDark,
 }: {
+  agentModeReady: boolean;
   model: string;
   onModelChange: (model: string) => void;
   models: string[];
@@ -434,7 +485,30 @@ const ToggleMenu = memo(({
     disabled: true,
   };
 
-  const menuItems = [
+  const loadingMenuItem = {
+    key: 'menuLoading',
+    disabled: true,
+    label: (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 12px', color: colors.textSystem }}>
+        <span
+          className="animate-spin"
+          style={{
+            width: 10,
+            height: 10,
+            borderRadius: '50%',
+            border: '2px solid transparent',
+            borderTopColor: colors.harness,
+            borderRightColor: colors.harness,
+            display: 'inline-block',
+            flexShrink: 0,
+          }}
+        />
+        <span style={{ fontSize: '12px' }}>{t('inputArea.agentModeLoading')}</span>
+      </div>
+    ),
+  };
+
+  const menuItems = agentModeReady ? [
     settingsItem,
     makeDivider('divider-1'),
     {
@@ -531,7 +605,7 @@ const ToggleMenu = memo(({
       ),
       disabled: true,
     },
-  ];
+  ] : [loadingMenuItem];
 
   return (
     <ConfigProvider
@@ -681,6 +755,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   maxContextTokens,
   hasActiveQuery,
   agentMode,
+  agentModeReady,
   setAgentMode,
   promptMode,
   setPromptMode,
@@ -1210,6 +1285,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
 
         <div className="flex items-center gap-2 flex-shrink-0">
           <ToggleMenu
+            agentModeReady={agentModeReady}
             model={model}
             onModelChange={handleModelChange}
             models={models}
@@ -1225,6 +1301,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           />
           <AgentModeSelector
             agentMode={agentMode}
+            agentModeReady={agentModeReady}
             onModeChange={handleModeChange}
             colors={colors}
             isDark={isDark}

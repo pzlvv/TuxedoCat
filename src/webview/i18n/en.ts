@@ -115,6 +115,7 @@ export const enDict: Record<string, string> = {
   'inputArea.waitingImages': ' (with {count} image(s))',
   'inputArea.resubmitToEdit': 'Resubmit to modify',
   'inputArea.dismiss': 'Dismiss',
+  'inputArea.agentModeLoading': 'Loading...',
   'inputArea.agentModeManual': 'Manual Mode',
   'inputArea.agentModeRisk': 'Risk Report',
   'inputArea.agentModeAuto': 'Auto Mode',

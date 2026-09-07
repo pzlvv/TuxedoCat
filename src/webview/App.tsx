@@ -67,6 +67,9 @@ const App = () => {
   const [contextLength, setContextLength] = useState<number>(0);
   const [maxContextTokens, setMaxContextTokens] = useState<number | null>(null);
   const [agentMode, setAgentMode] = useState<AgentMode>('manual');
+  /** agentMode 是否已收到会话/默认值；未收到前 UI 显示 loading，不展示具体模式 */
+  const [agentModeReady, setAgentModeReady] = useState(false);
+  const agentModeReadyRef = useRef(false);
   /** 会话关联的提示词模式（普通/极简/混合），持久化到 meta.json */
   const [promptMode, setPromptMode] = useState<PromptMode>('normal');
   const [thinkingMode, setThinkingMode] = useState<ThinkingMode>('off');
@@ -302,7 +305,7 @@ const App = () => {
     setVisibleConversationCount, setIsLoadingConversation,
     setTheme, setThemeInitialized, setCurrentFile, setSelectedLines, setStats,
     setConversationTitle, setMaxContextTokens, setSkills, setConversationDropdownOpen,
-    setCurrentSessionId, setParentSessionId, setAgentMode, setThinkingMode,
+    setCurrentSessionId, setParentSessionId, setAgentMode, setAgentModeReady, setThinkingMode,
     setModel, setWebSearch, setContextLength, setQueuedMessage,
     setUserChoiceRequest, setNamingSessions, setStreamingVersion, setForceScrollKey,
     setSessionRunningVersion,
@@ -314,7 +317,7 @@ const App = () => {
     setProviderConfigured,
     messages,
     currentSessionIdRef, sessionStatesRef, userChoiceRequestRef, userChoiceInputRef,
-    savedMainInputRef, queuedMessageRef, cursorPositionRef, choiceCursorPositionRef,
+    agentModeReadyRef, savedMainInputRef, queuedMessageRef, cursorPositionRef, choiceCursorPositionRef,
     mainInputRef, choiceInputRef, messagesContainerRef, userScrolledAwayRef,
     streamRafRef, toolStatusRafRef, pendingStreamRef, pendingToolStatusRef,
     bufferedToolStatusRef, conversationLoadingRef, isDeletingRef, listLoadedOnceRef,
@@ -388,6 +391,8 @@ const App = () => {
     // 插件模式与 Electron 模式统一：导航前清空消息并显示加载动画
     setIsLoadingConversation(true);
     setMessages([]);
+    // 立即清空当前展示的排队横幅，避免加载期间把上一会话的 queue 带到新会话
+    setQueuedMessage(null);
     navigateToConversation(sessionId);
   }, []);
 
@@ -509,6 +514,13 @@ const App = () => {
 
   // 使用 useMemo 缓存 colors 对象，避免每次 App 重渲染都新建
   const colors = useMemo(() => getColors(isDark), [isDark]);
+
+  // 排队消息横幅必须与会话绑定：若全局 queuedMessage 仍停留在上一个会话
+  // （例如切换会话后的短暂加载期），不把它传给输入区，避免“串会”显示。
+  const activeQueuedMessage =
+    queuedMessage && currentSessionId && queuedMessage.sessionId === currentSessionId
+      ? queuedMessage
+      : null;
 
 
 
@@ -740,7 +752,7 @@ const App = () => {
                                 promptMode,
                                 thinkingMode,
                                 contextLength,
-                                queuedMessage,
+                                queuedMessage: queuedMessageRef.current.get(sid) ?? null,
                                 model,
                               });
                               postMessage({
@@ -754,6 +766,7 @@ const App = () => {
                             // 插件模式与 Electron 模式统一：导航前清空消息并显示加载动画
                             setIsLoadingConversation(true);
                             setMessages([]);
+                            setQueuedMessage(null);
                             navigateToConversation(item.sessionId);
                             setConversationDropdownOpen(false);
                             profileLog(`[Profile] onSelect(发送loadConversation) | session=${item.sessionId.substring(0, 20)} | save+postMsg耗时=${(performance.now() - _t0_save).toFixed(2)}ms`);
@@ -776,6 +789,7 @@ const App = () => {
                             // 插件模式与 Electron 模式统一：导航前清空消息并显示加载动画
                             setIsLoadingConversation(true);
                             setMessages([]);
+                            setQueuedMessage(null);
                             navigateToConversation(sessionId);
                             setConversationDropdownOpen(false);
                           }}
@@ -834,7 +848,7 @@ const App = () => {
                     promptMode,
                     thinkingMode,
                     contextLength,
-                    queuedMessage,
+                    queuedMessage: queuedMessageRef.current.get(currentSessionId) ?? null,
                     model,
                   });
                   // 立即持久化当前上下文到 meta.json（不等待防抖）
@@ -858,6 +872,7 @@ const App = () => {
                 savedMainInputRef.current = '';
                 setShowThinkingAnimation(false);
                 setHasActiveQuery(false);
+                setQueuedMessage(null);
                 setContextLength(0);
                 // 重置压缩状态（新对话没有压缩）
                 setHasCompactArchive(false);
@@ -960,6 +975,7 @@ const App = () => {
               maxContextTokens={maxContextTokens}
               hasActiveQuery={hasActiveQuery}
               agentMode={agentMode}
+              agentModeReady={agentModeReady}
               setAgentMode={setAgentMode}
               promptMode={promptMode}
               setPromptMode={setPromptMode}
@@ -976,7 +992,7 @@ const App = () => {
               mainInputRef={mainInputRef as React.RefObject<HTMLTextAreaElement | null>}
               colors={colors}
               isDark={isDark}
-              queuedMessage={queuedMessage}
+              queuedMessage={activeQueuedMessage}
               serverLoadWarning={serverLoadWarning}
               onDismissServerLoad={() => setServerLoadWarning(null)}
               skills={skills}

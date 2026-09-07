@@ -1752,11 +1752,20 @@ const MessagesView = memo(({
       >
       {isEmpty ? (
         <div className="flex flex-col items-center justify-center h-full gap-3">
-          <img
-            src={getLogoUri()}
-            alt="logo"
-            className={LOGO_CLASS_NAME}
-          />
+          {showThinkingAnimation ? (
+            <div
+              className="thinking-animation-wrapper"
+              style={{ color: colors.textSystem, fontSize: '13px' }}
+            >
+              <ThinkingAnimation isVisible={showThinkingAnimation} isDark={isDark} mode={animationMode} />
+            </div>
+          ) : (
+            <img
+              src={getLogoUri()}
+              alt="logo"
+              className={LOGO_CLASS_NAME}
+            />
+          )}
         </div>
       ) : (
         <>

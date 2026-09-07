@@ -65,6 +65,8 @@ export interface Message {
 
 /** 排队消息完整载荷（文本 + 图片 + 文件上下文），保证图片/文件信息在排队/重发时不丢失 */
 export interface QueuedMessagePayload {
+  /** 该排队消息归属的会话 ID，防止切换对话后串会 */
+  sessionId: string;
   content: string;
   images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
   /** 排队时选中的文件路径 */

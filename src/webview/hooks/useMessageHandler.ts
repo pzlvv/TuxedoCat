@@ -35,6 +35,8 @@ export interface UseMessageHandlerProps {
   setCurrentSessionId: (v: string | null) => void;
   setParentSessionId: (v: string | null) => void;
   setAgentMode: (v: AgentMode) => void;
+  /** agentMode 是否已收到具体值；false 时 UI 只显示 loading 菜单项 */
+  setAgentModeReady: (v: boolean) => void;
   setPromptMode: (v: PromptMode) => void;
   setThinkingMode: (v: ThinkingMode) => void;
   setWebSearch: (v: boolean) => void;
@@ -88,6 +90,7 @@ export interface UseMessageHandlerProps {
   selectedLines: { start: number; end: number } | null;
   stats: any;
   currentSessionIdRef: React.MutableRefObject<string | null>;
+  agentModeReadyRef: React.MutableRefObject<boolean>;
   sessionStatesRef: React.MutableRefObject<Map<string, SessionState>>;
   userChoiceRequestRef: React.MutableRefObject<UserChoiceRequest | null>;
   userChoiceInputRef: React.MutableRefObject<string>;
@@ -401,6 +404,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 切换到目标会话：在 conversationLoaded 返回前显示加载动画（插件/App 模式统一）
           props.setIsLoadingConversation(true);
           props.setMessages([]);
+          // 清空当前展示的排队横幅，避免自动切换期间串会；conversationLoaded 会按目标会话恢复
+          props.setQueuedMessage(null);
           // 然后向扩展发送 loadConversation 请求，切换到目标 session
           postMessage({
             type: 'loadConversation',
@@ -508,6 +513,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             const targetState = props.sessionStatesRef.current.get(msg.sessionId);
             if (targetState) {
               targetState.hasActiveQuery = true;
+              // 同步动画状态到会话快照，确保之后切换回该会话时能立即恢复 thinking 动画
+              targetState.showThinkingAnimation = true;
+              targetState.animationMode = 'thinking';
             } else {
               // 会话状态不存在（例如从历史记录加载后首次发消息的对话）时创建，
               // 否则 queryBegin 无法标记 hasActiveQuery，对话列表的流水灯不会显示。
@@ -538,6 +546,10 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             break;
           }
           props.setHasActiveQuery(true);
+          // 查询开始即显示 thinking 动画；即使扩展端先发的 showThinkingAnimation
+          // 因时序问题未更新到 UI，这里也保证动画能立刻出现。
+          props.setShowThinkingAnimation(true);
+          props.setAnimationMode('thinking');
           break;
         case 'queryEnd': {
           // 即使被当前 session 过滤，也更新目标 session 的状态
@@ -882,17 +894,28 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               // 因此压缩中必须优先使用 savedState 的 compacting 状态来恢复动画和流水灯。
               const activityPhase = (msg as any).activityPhase as string | undefined;
               const isCompacting = savedState.animationMode === 'compacting' && savedState.showThinkingAnimation === true;
+              // 除了扩展端上报的 hasActiveQuery/activityPhase，本地 savedState 中记录的
+              // showThinkingAnimation 也是可靠来源（后台查询/子代理场景可能未同步 hasActiveQuery）。
+              // 只要不是 tool/text 阶段，恢复会话后应立刻显示 thinking 动画。
+              const savedAnimating = savedState.showThinkingAnimation === true;
+              const phaseActive = activityPhase === 'thinking' || activityPhase === 'text' || activityPhase === 'tool';
+              const runtimeActive = savedAnimating || (msg as any).hasActiveQuery === true || phaseActive;
               const showThinking = isCompacting || (
-                (msg as any).hasActiveQuery === true && activityPhase !== 'tool' && activityPhase !== 'text'
+                runtimeActive &&
+                (activityPhase
+                  ? activityPhase !== 'tool' && activityPhase !== 'text'
+                  : true)
               );
               props.setShowThinkingAnimation(showThinking);
-              props.setHasActiveQuery(isCompacting || (msg as any).hasActiveQuery === true);
+              props.setHasActiveQuery(isCompacting || runtimeActive);
               // 恢复该会话自己的动画类型，避免把其他会话的 compacting 动画带过来
               props.setAnimationMode(isCompacting ? 'compacting' : 'thinking');
               // 同步到 session 状态，确保对话列表的流水灯与引擎实时状态一致
-              savedState.hasActiveQuery = isCompacting || (msg as any).hasActiveQuery === true;
+              savedState.hasActiveQuery = isCompacting || runtimeActive;
               // 优先使用消息中的 agentMode（扩展侧运行时内存值），没有则默认 manual
               props.setAgentMode((msg as any).agentMode || 'manual');
+              props.agentModeReadyRef.current = true;
+              props.setAgentModeReady(true);
               // 提示词模式：优先使用 meta.json 中保存的 savedContext.promptMode，为空回退到普通模式
               const savedCtxPromptMode = (msg as any).savedContext?.promptMode as PromptMode | undefined;
               props.setPromptMode(savedCtxPromptMode ?? 'normal');
@@ -954,13 +977,17 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               // showThinkingAnimation 和 hasActiveQuery 由扩展端根据引擎实时状态提供
               // activityPhase 精确表示当前是 thinking / text / tool / idle，不能仅凭 hasActiveQuery 推断。
               const activityPhase = (msg as any).activityPhase as string | undefined;
+              const phaseActive = activityPhase === 'thinking' || activityPhase === 'text' || activityPhase === 'tool';
+              const runtimeActive = (msg as any).hasActiveQuery === true || phaseActive;
               props.setShowThinkingAnimation(
-                (msg as any).hasActiveQuery === true && activityPhase !== 'tool' && activityPhase !== 'text'
+                runtimeActive && activityPhase !== 'tool' && activityPhase !== 'text'
               );
-              props.setHasActiveQuery((msg as any).hasActiveQuery === true);
+              props.setHasActiveQuery(runtimeActive);
               props.setAnimationMode('thinking');
               // 优先使用消息中的 agentMode（扩展侧运行时内存值），没有则默认 manual
               props.setAgentMode((msg as any).agentMode || 'manual');
+              props.agentModeReadyRef.current = true;
+              props.setAgentModeReady(true);
               // 提示词模式：优先使用 meta.json 中保存的 savedContext.promptMode，为空回退到普通模式
               const savedCtxPromptMode = (msg as any).savedContext?.promptMode as PromptMode | undefined;
               props.setPromptMode(savedCtxPromptMode ?? 'normal');
@@ -992,11 +1019,11 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                   choiceCursorPosition: 0,
                   userChoiceRequest: null,
                   userChoiceInput: '',
-                  showThinkingAnimation: (msg as any).hasActiveQuery === true
-                    && (msg as any).activityPhase !== 'tool'
-                    && (msg as any).activityPhase !== 'text',
+                  showThinkingAnimation: runtimeActive
+                    && activityPhase !== 'tool'
+                    && activityPhase !== 'text',
                   animationMode: 'thinking',
-                  hasActiveQuery: (msg as any).hasActiveQuery === true,
+                  hasActiveQuery: runtimeActive,
                   agentMode: (msg as any).agentMode || 'manual',
                   promptMode: savedCtxPromptMode ?? 'normal',
                   thinkingMode: savedCtxThinkingMode || props.thinkingMode,
@@ -1350,9 +1377,14 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 // 压缩任务不经过 QueryEngine，hasActiveQuery 可能为 false；
                 // 因此压缩中要直接沿用 savedState 的 compacting 状态，而不是被 hasActiveQuery 关掉。
                 const isCompacting = loadedState?.animationMode === 'compacting' && loadedState?.showThinkingAnimation === true;
+                // 同样地，后台/子代理等场景可能让扩展端 hasActiveQuery 为 false，
+                // 但本地 savedState.showThinkingAnimation / activityPhase 仍记录了“该会话正在运行”。
+                const savedAnimating = loadedState?.showThinkingAnimation === true;
+                const phaseActive = activityPhase === 'thinking' || activityPhase === 'text' || activityPhase === 'tool';
+                const runtimeActive = savedAnimating || (msg as any).hasActiveQuery === true || phaseActive;
                 const shouldShowThinking =
                   isCompacting ||
-                  ((msg as any).hasActiveQuery === true &&
+                  (runtimeActive &&
                     (activityPhase
                       ? activityPhase !== 'tool' && activityPhase !== 'text'
                       : !hasRunningTool && !hasStreamingAssistant));
@@ -1362,7 +1394,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 if (loadedState) {
                   loadedState.showThinkingAnimation = shouldShowThinking;
                   loadedState.animationMode = shouldCompact ? 'compacting' : 'thinking';
-                  if (shouldCompact) {
+                  if (shouldCompact || runtimeActive) {
                     loadedState.hasActiveQuery = true;
                   }
                 }
@@ -1471,6 +1503,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 按会话存储排队消息（绑定 sessionId），切换会话后仍能正确归属
           if (msg.sessionId) {
             const payload: QueuedMessagePayload = {
+              sessionId: msg.sessionId,
               content: msg.content,
               images: msg.images,
               filePath: (msg as any).filePath,
@@ -1521,6 +1554,19 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 过滤：只有当前 session 的消息才处理
           if (msg.sessionId && msg.sessionId !== sessionId) {
             break;
+          }
+          // thinking 流式消息到达时确保 thinking 动画处于显示状态。
+          // 覆盖“切换会话后恢复失败”或 showThinkingAnimation 消息丢失的时序问题。
+          if (msg.role === 'thinking') {
+            props.setShowThinkingAnimation(true);
+            props.setAnimationMode('thinking');
+            if (sessionId) {
+              const currentState = props.sessionStatesRef.current.get(sessionId);
+              if (currentState) {
+                currentState.showThinkingAnimation = true;
+                currentState.animationMode = 'thinking';
+              }
+            }
           }
           // streamId 由 RealApi.ts 保证每次 LLM 调用生成唯一 ID，不会为 undefined
           const streamId = (msg as any).streamId!;
@@ -1739,6 +1785,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             if (typeof defaults.providerConfigured === 'boolean') {
               props.setProviderConfigured(defaults.providerConfigured);
             }
+            // 注意：settingsDefaults 只代表“新对话默认值”，不代表当前会话已有的 agentMode，
+            // 因此这里不直接切换 agentMode/退出 loading；等 conversationLoaded 或
+            // setNewConversationDefaults 下发会话级具体值后再显示菜单。
             // 应用界面语言（与 HTML 注入的 __uiLocale 一致，仅在极少数不一致时触发重渲染）
             if (defaults.language === 'zh' || defaults.language === 'en' || defaults.language === 'auto') {
               const changed = setUiLanguage(defaults.language);
@@ -1768,6 +1817,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             // 默认工作模式 / 思考强度 / 联网搜索保持原有行为：保存后应用到当前对话
             if (saved.defaultAgentMode) {
               props.setAgentMode(saved.defaultAgentMode);
+              props.agentModeReadyRef.current = true;
+              props.setAgentModeReady(true);
               const curSid = props.currentSessionIdRef.current;
               if (curSid) {
                 const state = props.sessionStatesRef.current.get(curSid);
@@ -1832,6 +1883,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             props.setThinkingMode(defaults.thinkingMode);
             if (defaults.agentMode) {
               props.setAgentMode(defaults.agentMode);
+              props.agentModeReadyRef.current = true;
+              props.setAgentModeReady(true);
             }
             if (defaults.promptMode === 'normal' || defaults.promptMode === 'minimal' || defaults.promptMode === 'mixed') {
               props.setPromptMode(defaults.promptMode);
