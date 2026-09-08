@@ -40,6 +40,15 @@ const spinZhDict: Record<string, string> = {
   'node.markDone': '标记为已完成',
   'node.clearDone': '清除已完成标记',
   'node.duplicate': '复制',
+  'node.rolloutLabel': '执行次数',
+  'node.rolloutMinus': '减少执行次数',
+  'node.rolloutPlus': '增加执行次数',
+  'node.rolloutHint': '每次执行会提供不同的 ${ROLLOUT_ID}（从 0 开始）',
+  'node.forEachLabel': 'For Each',
+  'node.forEachPlaceholder': '不遍历',
+  'node.forEachHint': '按该变量每行执行，${LINE} 为当前行',
+  'toolbar.saveForEachVarMissing': '节点 {id}: For Each 变量 "{name}" 不存在',
+  'toolbar.saveBuiltinVarConflict': '变量名与内置变量冲突: {names}',
   'toast.saveFailed': '保存失败: ',
   'toast.exportSuccess': '已导出到 {path}',
   'toast.exportFailed': '导出失败: ',
@@ -57,6 +66,7 @@ const spinZhDict: Record<string, string> = {
   'variables.commentCancel': '取消',
   'variables.duplicate': '变量名重复: ',
   'variables.invalidNameHint': '变量名非法',
+  'variables.builtinNameHint': '${ROLLOUT_ID}、${LINE} 是内置变量，不能作为用户变量名',
   'variables.close': '关闭',
   'variables.confirmRename': '共 {count} 次引用，是否替换？',
   'variables.renameYes': '替换',
@@ -96,6 +106,15 @@ const spinEnDict: Record<string, string> = {
   'node.markDone': 'Mark as Done',
   'node.clearDone': 'Clear Done Mark',
   'node.duplicate': 'Duplicate',
+  'node.rolloutLabel': 'Rollout',
+  'node.rolloutMinus': 'Decrease rollout',
+  'node.rolloutPlus': 'Increase rollout',
+  'node.rolloutHint': 'Each run provides a different ${ROLLOUT_ID} (starting at 0)',
+  'node.forEachLabel': 'For Each',
+  'node.forEachPlaceholder': 'None',
+  'node.forEachHint': 'Executes once per line of this variable; ${LINE} is the current line',
+  'toolbar.saveForEachVarMissing': 'Node {id}: For Each variable "{name}" does not exist',
+  'toolbar.saveBuiltinVarConflict': 'Variable name conflicts with built-in variable: {names}',
   'toast.saveFailed': 'Save failed: ',
   'toast.exportSuccess': 'Exported to {path}',
   'toast.exportFailed': 'Export failed: ',
@@ -113,6 +132,7 @@ const spinEnDict: Record<string, string> = {
   'variables.commentCancel': 'Cancel',
   'variables.duplicate': 'Duplicate variable name: ',
   'variables.invalidNameHint': 'Invalid variable name',
+  'variables.builtinNameHint': '${ROLLOUT_ID} and ${LINE} are built-in variables and cannot be used as user variable names',
   'variables.close': 'Close',
   'variables.confirmRename': '{count} reference(s) found. Replace?',
   'variables.renameYes': 'Replace',
@@ -343,6 +363,51 @@ export function getSpinDesignHtml(
     border-radius: 5px; white-space: nowrap;
   }
   .node-menu-item:hover { background: ${c.btnHvr}; }
+  .node-menu-section {
+    margin-top: 4px; padding-top: 4px;
+    border-top: 1px solid ${c.btnBdr};
+  }
+  .node-menu-label {
+    display: block; padding: 2px 10px 4px;
+    font-size: 11px; color: ${c.mute};
+  }
+  .rollout-stepper {
+    display: flex; align-items: center; justify-content: center; gap: 4px;
+    padding: 0 10px;
+  }
+  .rollout-btn {
+    width: 24px; height: 22px; flex-shrink: 0;
+    border: 1px solid ${c.btnBdr}; border-radius: 4px;
+    background: transparent; color: ${c.btnTxt};
+    font-size: 14px; line-height: 1; cursor: pointer; text-align: center;
+    transition: all 0.12s;
+  }
+  .rollout-btn:hover { background: ${c.btnHvr}; border-color: #6366f1; }
+  .rollout-input {
+    width: 64px; height: 22px;
+    border: 1px solid ${c.ndBdr}; border-radius: 4px;
+    background: ${c.inpBg}; color: ${c.fg};
+    font-size: 12px; text-align: center; outline: none;
+    -moz-appearance: textfield;
+  }
+  .rollout-input::-webkit-outer-spin-button,
+  .rollout-input::-webkit-inner-spin-button {
+    -webkit-appearance: none; margin: 0;
+  }
+  .rollout-input:focus { border-color: #6366f1; }
+  .rollout-hint {
+    padding: 4px 10px 6px;
+    font-size: 10px; line-height: 1.4; color: ${c.mute};
+  }
+  .for-each-row { padding: 0 10px; }
+  .for-each-input {
+    width: 100%; height: 26px;
+    padding: 2px 6px;
+    border: 1px solid ${c.ndBdr}; border-radius: 4px;
+    background: ${c.inpBg}; color: ${c.fg};
+    font-size: 12px; outline: none; cursor: pointer;
+  }
+  .for-each-input:focus { border-color: #6366f1; }
   .skill-selector-item {
     display: flex; align-items: flex-start; gap: 6px;
     padding: 4px 6px; border-radius: 4px; cursor: pointer;
@@ -383,7 +448,7 @@ export function getSpinDesignHtml(
   .variables-empty {
     padding: 12px 6px; font-size: 12px; color: ${c.ph}; font-style: italic; text-align: center;
   }
-  .variables-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .variables-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: flex-start; }
   .variables-row input {
     flex: 1; min-width: 0; height: 26px; padding: 3px 6px;
     border-radius: 4px; border: 1px solid ${c.ndBdr};
@@ -391,8 +456,20 @@ export function getSpinDesignHtml(
     outline: none; transition: border-color 0.12s;
   }
   .variables-row .variable-key-input { flex: 0 0 300px; }
-  .variables-row .variable-value-input { flex: 1 1 auto; min-width: 200px; }
-  .variables-row input:focus { border-color: #6366f1; }
+  /* 变量值输入框跟随内容自适应高度：最多 3 行，超出后滚动，不允许手动拖拽缩放 */
+  .variables-row .variable-value-input {
+    flex: 1 1 auto; min-width: 200px;
+    height: 26px; min-height: 26px;
+    padding: 3px 6px;
+    border: 1px solid ${c.ndBdr}; border-radius: 4px;
+    background: ${c.inpBg}; color: ${c.fg};
+    font-size: 12px; line-height: 1.4;
+    font-family: inherit; resize: none;
+    overflow-y: hidden;
+    outline: none; transition: border-color 0.12s;
+  }
+  .variables-row input:focus,
+  .variables-row textarea:focus { border-color: #6366f1; }
   .variables-row .variable-key-input.invalid,
   .variables-row .variable-key-input.invalid:focus { border-color: #ef4444; }
   .variables-row .field-error {
@@ -669,6 +746,16 @@ function __spinT(key, params) {
     return obj;
   }
 
+  function normalizeRolloutValue(value) {
+    var n = Number(value);
+    if (Number.isInteger(n) && n >= 1) return n;
+    return 1;
+  }
+
+  function normalizeForEachValue(value) {
+    return (typeof value === 'string' && value.trim() !== '') ? value.trim() : undefined;
+  }
+
   // 数据源优先级：磁盘 spin.json（initialData）为权威数据源。
   // SpinLoop 执行时会直接更新磁盘上的 meta（已完成状态），而 webview 缓存
   // （savedState）可能滞后于磁盘；若优先使用缓存的空 meta，会导致已完成的
@@ -683,7 +770,7 @@ function __spinT(key, params) {
       showToast('spin.json 数据错误: ' + initialNodeError, 'error');
       updateSaveButton(false);
     } else {
-      nodes = initialData.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: 'Master', skills: n.skills || [], title: (typeof n.title === 'string' && n.title.trim() !== '') ? n.title : undefined }; });
+      nodes = initialData.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], rollout: normalizeRolloutValue(n.rollout), forEach: normalizeForEachValue(n.forEach), role: 'Master', skills: n.skills || [], title: (typeof n.title === 'string' && n.title.trim() !== '') ? n.title : undefined }; });
       edges = initialData.edges || [];
       meta = initialData.meta || {};
       variables = variablesFromData(initialData);
@@ -701,7 +788,7 @@ function __spinT(key, params) {
       showToast('本地缓存数据错误: ' + savedNodeError, 'error');
       updateSaveButton(false);
     } else {
-      nodes = savedState.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: 'Master', skills: n.skills || [], title: (typeof n.title === 'string' && n.title.trim() !== '') ? n.title : undefined }; });
+      nodes = savedState.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], rollout: normalizeRolloutValue(n.rollout), forEach: normalizeForEachValue(n.forEach), role: 'Master', skills: n.skills || [], title: (typeof n.title === 'string' && n.title.trim() !== '') ? n.title : undefined }; });
       edges = savedState.edges || [];
       meta = savedState.meta || {};
       variables = variablesFromData(savedState);
@@ -779,7 +866,10 @@ function __spinT(key, params) {
       list.appendChild(empty);
     } else {
       variables.forEach(function(v, idx) {
-        list.appendChild(createVariableRow(v, idx));
+        var row = createVariableRow(v, idx);
+        list.appendChild(row);
+        var valueInput = row.querySelector('.variable-value-input');
+        if (valueInput) autoSizeVariableValue(valueInput);
       });
     }
     // 添加按钮放在已有变量下面，而不是固定在侧边栏底部
@@ -789,6 +879,25 @@ function __spinT(key, params) {
     addBtn.textContent = __spinT('variables.add');
     addBtn.addEventListener('click', function() { addVariable(); });
     list.appendChild(addBtn);
+  }
+
+  // 变量值输入框最多 3 行：内容不足时收缩，超过 3 行后显示滚动条
+  function autoSizeVariableValue(el) {
+    var cs = window.getComputedStyle(el);
+    var lineHeight = parseFloat(cs.lineHeight);
+    if (!lineHeight || lineHeight <= 0) {
+      lineHeight = parseFloat(cs.fontSize) * 1.4;
+    }
+    var padding = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    var border = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+    var maxHeight = Math.ceil(lineHeight * 3 + padding + border);
+    // 先归零高度再读取 scrollHeight，确保内容减少时也能收缩
+    el.style.minHeight = '0';
+    el.style.height = '0px';
+    var contentHeight = el.scrollHeight + border;
+    el.style.minHeight = '';
+    el.style.height = Math.min(contentHeight, maxHeight) + 'px';
+    el.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
   }
 
   function createVariableRow(v, idx) {
@@ -816,6 +925,7 @@ function __spinT(key, params) {
       v.key = keyInput.value;
       persistState();
       updateVariableKeyValidation(v, idx, keyInput, errorEl);
+      revalidateDesign();
     });
     keyInput.addEventListener('blur', function() {
       normalizeVariableKey(v, idx, keyInput, errorEl);
@@ -827,12 +937,14 @@ function __spinT(key, params) {
       }
     });
 
-    var valueInput = document.createElement('input');
+    var valueInput = document.createElement('textarea');
     valueInput.className = 'variable-value-input';
     valueInput.value = v.value;
     valueInput.placeholder = __spinT('variables.valuePlaceholder');
+    valueInput.spellcheck = false;
     valueInput.addEventListener('input', function() {
       v.value = valueInput.value;
+      autoSizeVariableValue(valueInput);
       persistState();
     });
     valueInput.addEventListener('blur', function() {
@@ -856,6 +968,7 @@ function __spinT(key, params) {
       renderVariables();
       persistState();
       saveDesign();
+      revalidateDesign();
     });
 
     if (commentEl) row.appendChild(commentEl);
@@ -871,6 +984,9 @@ function __spinT(key, params) {
     var key = (v.key || '').trim();
     if (key && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
       return { valid: false, message: __spinT('variables.invalidNameHint') };
+    }
+    if (key === 'ROLLOUT_ID' || key === 'LINE') {
+      return { valid: false, message: __spinT('variables.builtinNameHint') };
     }
     if (key) {
       var dup = variables.some(function(other, i) {
@@ -906,9 +1022,11 @@ function __spinT(key, params) {
         confirmRenameVariable(oldKey, key, refCount);
       } else {
         saveDesign();
+        revalidateDesign();
       }
     } else {
       saveDesign();
+      revalidateDesign();
     }
     return true;
   }
@@ -964,21 +1082,16 @@ function __spinT(key, params) {
 
   function countVariableReferencesInText(text, oldKey) {
     var s = text || '';
+    var needle = '\${' + oldKey + '}';
     var count = 0;
     var i = 0;
     while (i < s.length) {
-      var ch = s.charAt(i);
-      if (ch === '$' && s.charAt(i + 1) === '$') {
+      if (s.charAt(i) === '$' && s.charAt(i + 1) === '$') {
+        // $$ 是字面量 $ 的转义，不把它后面的内容当作变量引用
         i += 2;
-      } else if (ch === '$' && s.substr(i + 1, oldKey.length) === oldKey) {
-        var after = s.charAt(i + 1 + oldKey.length);
-        var isWordChar = (after >= 'A' && after <= 'Z') || (after >= 'a' && after <= 'z') || (after >= '0' && after <= '9') || after === '_';
-        if (!isWordChar) {
-          count++;
-          i += 1 + oldKey.length;
-        } else {
-          i++;
-        }
+      } else if (s.substr(i, needle.length) === needle) {
+        count++;
+        i += needle.length;
       } else {
         i++;
       }
@@ -993,32 +1106,27 @@ function __spinT(key, params) {
       (node.criteria || []).forEach(function(c) {
         count += countVariableReferencesInText(c, oldKey);
       });
+      if (normalizeForEachValue(node.forEach) === oldKey) count++;
     });
     return count;
   }
 
   function replaceVariableReferencesInText(text, oldKey, newKey) {
     var s = text || '';
+    var needle = '\${' + oldKey + '}';
+    var replacement = newKey ? '\${' + newKey + '}' : '';
     var out = '';
     var i = 0;
     while (i < s.length) {
-      var ch = s.charAt(i);
-      if (ch === '$' && s.charAt(i + 1) === '$') {
+      if (s.charAt(i) === '$' && s.charAt(i + 1) === '$') {
         // $$ 是字面量 $ 的转义，不把它后面的内容当作变量引用
         out += '$$';
         i += 2;
-      } else if (ch === '$' && s.substr(i + 1, oldKey.length) === oldKey) {
-        var after = s.charAt(i + 1 + oldKey.length);
-        var isWordChar = (after >= 'A' && after <= 'Z') || (after >= 'a' && after <= 'z') || (after >= '0' && after <= '9') || after === '_';
-        if (!isWordChar) {
-          out += '$' + newKey;
-          i += 1 + oldKey.length;
-        } else {
-          out += ch;
-          i++;
-        }
+      } else if (s.substr(i, needle.length) === needle) {
+        out += replacement;
+        i += needle.length;
       } else {
-        out += ch;
+        out += s.charAt(i);
         i++;
       }
     }
@@ -1038,6 +1146,10 @@ function __spinT(key, params) {
         if (newC !== c) count++;
         return newC;
       });
+      if (normalizeForEachValue(node.forEach) === oldKey) {
+        node.forEach = newKey || undefined;
+        count++;
+      }
     });
     return count;
   }
@@ -1153,17 +1265,17 @@ function __spinT(key, params) {
 
   function getVarPrefixAtCaret() {
     var text = teTextarea.value.substring(0, teTextarea.selectionStart);
-    var idx = text.lastIndexOf('$');
+    var idx = text.lastIndexOf('\${');
     if (idx === -1) return null;
-    // $$ 转义为字面量 $，不触发自动补全
+    // $$ 转义为字面量 $，\${ 不触发自动补全
     if (idx > 0 && text.charAt(idx - 1) === '$') return null;
-    var after = text.substring(idx + 1);
+    var after = text.substring(idx + 2);
     if (after === '') return { prefix: '', start: idx };
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(after)) return null;
     return { prefix: after, start: idx };
   }
 
-  function getVariableKeyList() {
+  function getVariableKeyList(node) {
     var keys = [];
     var seen = {};
     variables.forEach(function(v) {
@@ -1173,6 +1285,17 @@ function __spinT(key, params) {
         keys.push(key);
       }
     });
+    // 内置变量只在对应功能开启时提示：
+    // - \${ROLLOUT_ID}：节点执行次数 rollout > 1
+    // - \${LINE}：节点配置了 For Each
+    if (node && normalizeRolloutValue(node.rollout) > 1 && !seen['ROLLOUT_ID']) {
+      seen['ROLLOUT_ID'] = true;
+      keys.push('ROLLOUT_ID');
+    }
+    if (node && normalizeForEachValue(node.forEach) && !seen['LINE']) {
+      seen['LINE'] = true;
+      keys.push('LINE');
+    }
     return keys;
   }
 
@@ -1181,7 +1304,8 @@ function __spinT(key, params) {
     var info = getVarPrefixAtCaret();
     if (!info) { closeVarAutocomplete(); return; }
     var prefix = info.prefix;
-    var matches = getVariableKeyList().filter(function(key) {
+    var node = getNode(teContext.nodeId);
+    var matches = getVariableKeyList(node).filter(function(key) {
       return key.indexOf(prefix) === 0;
     }).sort();
     if (matches.length === 0) { closeVarAutocomplete(); return; }
@@ -1195,7 +1319,7 @@ function __spinT(key, params) {
     matches.forEach(function(key, i) {
       var item = document.createElement('div');
       item.className = 'var-ac-item' + (i === 0 ? ' active' : '');
-      item.textContent = '$' + key;
+      item.textContent = '\${' + key + '}';
       item.addEventListener('mousedown', function(e) {
         e.preventDefault();
         e.stopPropagation();
@@ -1224,8 +1348,9 @@ function __spinT(key, params) {
     var value = teTextarea.value;
     var before = value.substring(0, info.start);
     var after = value.substring(teTextarea.selectionStart);
-    teTextarea.value = before + '$' + key + after;
-    var pos = before.length + 1 + key.length;
+    var inserted = '\${' + key + '}';
+    teTextarea.value = before + inserted + after;
+    var pos = before.length + inserted.length;
     teTextarea.selectionStart = pos;
     teTextarea.selectionEnd = pos;
     closeVarAutocomplete();
@@ -1264,6 +1389,174 @@ function __spinT(key, params) {
   var nodeMenuOverlay = document.getElementById('node-menu-overlay');
   var nodeMenuBox = document.getElementById('node-menu-box');
 
+  function parseRolloutInput(raw) {
+    var n = Math.trunc(Number(raw));
+    return isNaN(n) ? NaN : n;
+  }
+
+  function commitRolloutInput(nodeId, inputEl) {
+    var node = getNode(nodeId);
+    if (!node) return;
+    var parsed = parseRolloutInput(inputEl.value);
+    var next = (!isNaN(parsed) && parsed >= 1) ? parsed : 1;
+    if (inputEl.value !== String(next)) inputEl.value = String(next);
+    if (node.rollout !== next) {
+      node.rollout = next;
+      persistState();
+      saveDesign();
+      renderNode(nodeId);
+    }
+  }
+
+  function stepRollout(nodeId, inputEl, delta) {
+    var node = getNode(nodeId);
+    if (!node) return;
+    var parsed = parseRolloutInput(inputEl.value);
+    var current = !isNaN(parsed) ? parsed : normalizeRolloutValue(node.rollout);
+    var next = Math.max(1, current + delta);
+    inputEl.value = String(next);
+    if (node.rollout !== next) {
+      node.rollout = next;
+      persistState();
+      saveDesign();
+      renderNode(nodeId);
+    }
+  }
+
+  function appendRolloutControl(container, nodeId) {
+    var node = getNode(nodeId);
+    if (!node) return;
+
+    var section = document.createElement('div');
+    section.className = 'node-menu-section';
+
+    var label = document.createElement('span');
+    label.className = 'node-menu-label';
+    label.textContent = __spinT('node.rolloutLabel');
+    section.appendChild(label);
+
+    var stepper = document.createElement('div');
+    stepper.className = 'rollout-stepper';
+
+    var minusBtn = document.createElement('button');
+    minusBtn.type = 'button';
+    minusBtn.className = 'rollout-btn';
+    minusBtn.textContent = '\u2212';
+    minusBtn.title = __spinT('node.rolloutMinus');
+
+    var inputEl = document.createElement('input');
+    inputEl.type = 'text';
+    inputEl.inputMode = 'numeric';
+    inputEl.className = 'rollout-input';
+    inputEl.value = String(normalizeRolloutValue(node.rollout));
+
+    var plusBtn = document.createElement('button');
+    plusBtn.type = 'button';
+    plusBtn.className = 'rollout-btn';
+    plusBtn.textContent = '+';
+    plusBtn.title = __spinT('node.rolloutPlus');
+
+    minusBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      stepRollout(nodeId, inputEl, -1);
+    });
+    plusBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      stepRollout(nodeId, inputEl, 1);
+    });
+    inputEl.addEventListener('change', function() {
+      commitRolloutInput(nodeId, inputEl);
+    });
+    inputEl.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        commitRolloutInput(nodeId, inputEl);
+      }
+    });
+
+    stepper.appendChild(minusBtn);
+    stepper.appendChild(inputEl);
+    stepper.appendChild(plusBtn);
+    section.appendChild(stepper);
+
+    var hint = document.createElement('div');
+    hint.className = 'rollout-hint';
+    hint.textContent = __spinT('node.rolloutHint');
+    section.appendChild(hint);
+
+    container.appendChild(section);
+  }
+
+  function commitForEachInput(nodeId, inputEl) {
+    var node = getNode(nodeId);
+    if (!node) return;
+    var raw = (typeof inputEl.value === 'string') ? inputEl.value.trim() : '';
+    var value = raw || undefined;
+    if ((node.forEach || '') !== (value || '')) {
+      node.forEach = value;
+      inputEl.value = raw;
+      persistState();
+      saveDesign();
+      renderNode(nodeId);
+    }
+  }
+
+  function appendForEachControl(container, nodeId) {
+    var node = getNode(nodeId);
+    if (!node) return;
+
+    var section = document.createElement('div');
+    section.className = 'node-menu-section';
+
+    var label = document.createElement('span');
+    label.className = 'node-menu-label';
+    label.textContent = __spinT('node.forEachLabel');
+    section.appendChild(label);
+
+    var row = document.createElement('div');
+    row.className = 'for-each-row';
+    var selectEl = document.createElement('select');
+    selectEl.className = 'for-each-input';
+
+    var noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.textContent = __spinT('node.forEachPlaceholder');
+    selectEl.appendChild(noneOpt);
+
+    var current = normalizeForEachValue(node.forEach) || '';
+    var hasCurrentOption = false;
+    variables.forEach(function(v) {
+      var key = (v.key || '').trim();
+      if (key && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && key !== 'ROLLOUT_ID' && key !== 'LINE') {
+        var opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = key;
+        selectEl.appendChild(opt);
+        if (key === current) hasCurrentOption = true;
+      }
+    });
+    // 保留当前值选项，即使该变量已不存在，方便用户看到并改选其他变量
+    if (current && !hasCurrentOption) {
+      var missingOpt = document.createElement('option');
+      missingOpt.value = current;
+      missingOpt.textContent = current;
+      selectEl.appendChild(missingOpt);
+    }
+    selectEl.value = current;
+    selectEl.addEventListener('change', function() {
+      commitForEachInput(nodeId, selectEl);
+    });
+    row.appendChild(selectEl);
+    section.appendChild(row);
+
+    var hint = document.createElement('div');
+    hint.className = 'rollout-hint';
+    hint.textContent = __spinT('node.forEachHint');
+    section.appendChild(hint);
+
+    container.appendChild(section);
+  }
+
   function openNodeMenu(nodeId, anchorEl) {
     var node = getNode(nodeId);
     if (!node) return;
@@ -1289,11 +1582,16 @@ function __spinT(key, params) {
     });
     nodeMenuBox.appendChild(duplicateItem);
 
+    appendRolloutControl(nodeMenuBox, nodeId);
+    appendForEachControl(nodeMenuBox, nodeId);
+
     var r = anchorEl.getBoundingClientRect();
     nodeMenuOverlay.style.position = 'fixed';
     nodeMenuOverlay.style.top = Math.min(window.innerHeight - 90, Math.max(8, r.bottom + 4)) + 'px';
     nodeMenuOverlay.style.left = Math.min(window.innerWidth - 180, Math.max(8, r.left)) + 'px';
     nodeMenuOverlay.className = 'show';
+    var menuHeight = nodeMenuBox.offsetHeight || 160;
+    nodeMenuOverlay.style.top = Math.min(window.innerHeight - menuHeight - 8, Math.max(8, r.bottom + 4)) + 'px';
   }
 
   function closeNodeMenu() {
@@ -1304,8 +1602,8 @@ function __spinT(key, params) {
     var key = String(nodeId);
     var nodeMeta = meta[key];
     if (nodeMeta && nodeMeta.passed) {
-      // 清除已完成标记：保留 note 等已有字段，只把 passed 置为 false
-      meta[key] = Object.assign({}, nodeMeta, { passed: false });
+      // 清除已完成标记：重置 rollout 进度，保证下次执行从头开始
+      meta[key] = Object.assign({}, nodeMeta, { passed: false, rolloutPassed: 0, note: '' });
     } else {
       // 标记为已完成：保留已有字段（如 note），并设置 passed
       meta[key] = Object.assign({}, nodeMeta || {}, { passed: true });
@@ -1327,6 +1625,8 @@ function __spinT(key, params) {
       y: node.y + 30,
       task: node.task || '',
       criteria: (node.criteria || []).slice(),
+      rollout: normalizeRolloutValue(node.rollout),
+      forEach: normalizeForEachValue(node.forEach),
       role: 'Master',
       skills: (node.skills || []).slice(),
       title: node.title || undefined
@@ -1486,6 +1786,8 @@ function __spinT(key, params) {
               y: sourceNode.y,
               task: sourceNode.task || '',
               criteria: (sourceNode.criteria || []).slice(),
+              rollout: normalizeRolloutValue(sourceNode.rollout),
+              forEach: normalizeForEachValue(sourceNode.forEach),
               role: 'Master',
               skills: (sourceNode.skills || []).slice(),
               title: sourceNode.title || undefined
@@ -1552,7 +1854,7 @@ function __spinT(key, params) {
   function persistState() {
     vscode.setState({
       nodes: nodes.map(function(n) {
-        return { id: n.id, x: n.x, y: n.y, task: n.task, criteria: n.criteria.filter(function(c) { return c.trim() !== ''; }), role: 'Master', skills: n.skills || [], title: n.title || undefined };
+        return { id: n.id, x: n.x, y: n.y, task: n.task, criteria: n.criteria.filter(function(c) { return c.trim() !== ''; }), rollout: normalizeRolloutValue(n.rollout), forEach: normalizeForEachValue(n.forEach), role: 'Master', skills: n.skills || [], title: n.title || undefined };
       }),
       edges: edges,
       meta: meta,
@@ -1567,7 +1869,7 @@ function __spinT(key, params) {
     var area = document.getElementById('canvas-area');
     var x = Math.max(0, area.scrollLeft + area.clientWidth / 2 - 130);
     var y = Math.max(0, area.scrollTop + area.clientHeight / 2 - 100);
-    nodes.push({ id: id, x: x, y: y, task: '', criteria: [], role: 'Master', skills: [], title: undefined });
+    nodes.push({ id: id, x: x, y: y, task: '', criteria: [], rollout: 1, role: 'Master', skills: [], title: undefined });
     selectedNodeId = id;
     renderAll();
     persistState();
@@ -1742,57 +2044,59 @@ function __spinT(key, params) {
     });
     body.appendChild(taskDisplay);
 
-    // Acceptance Criteria
-    var acSection = document.createElement('div');
-    acSection.className = 'ac-section';
+    // Acceptance Criteria（rollout > 1 或填写 For Each 时直接不显示）
+    if (normalizeRolloutValue(node.rollout) <= 1 && !normalizeForEachValue(node.forEach)) {
+      var acSection = document.createElement('div');
+      acSection.className = 'ac-section';
 
-    var acHeader = document.createElement('div');
-    acHeader.className = 'ac-header';
-    var acLabel = document.createElement('label');
-    acLabel.textContent = __spinT('node.criteriaLabel');
-    acHeader.appendChild(acLabel);
-    acSection.appendChild(acHeader);
+      var acHeader = document.createElement('div');
+      acHeader.className = 'ac-header';
+      var acLabel = document.createElement('label');
+      acLabel.textContent = __spinT('node.criteriaLabel');
+      acHeader.appendChild(acLabel);
+      acSection.appendChild(acHeader);
 
-    var acList = document.createElement('div');
-    acList.id = 'ac-list-' + node.id;
+      var acList = document.createElement('div');
+      acList.id = 'ac-list-' + node.id;
 
-    (node.criteria || []).forEach(function(val, i) {
-      acList.appendChild(createCriteriaItem(node.id, i, val));
-    });
+      (node.criteria || []).forEach(function(val, i) {
+        acList.appendChild(createCriteriaItem(node.id, i, val));
+      });
 
-    // Add button at bottom of list (hidden delete button for alignment)
-    var addItem = document.createElement('div');
-    addItem.className = 'ac-item';
-    var addBtn = document.createElement('div');
-    addBtn.style.flex = '1';
-    addBtn.style.minHeight = '26px';
-    addBtn.style.display = 'flex';
-    addBtn.style.alignItems = 'center';
-    addBtn.style.justifyContent = 'center';
-    addBtn.style.borderRadius = '4px';
-    addBtn.style.border = '1px dashed ' + (_isDark ? '#3a3a42' : '#d4d4d8');
-    addBtn.style.background = (_isDark ? '#16161c' : '#ffffff');
-    addBtn.style.color = (_isDark ? '#6a6a75' : '#a1a1aa');
-    addBtn.style.fontSize = '13px';
-    addBtn.style.fontStyle = 'italic';
-    addBtn.style.cursor = 'pointer';
-    addBtn.style.transition = 'border-color 0.12s, color 0.12s';
-    addBtn.textContent = __spinT('node.addCriteria');
-    addBtn.addEventListener('click', function(e) { e.stopPropagation(); addCriteria(node.id); });
-    addBtn.addEventListener('mouseenter', function() { addBtn.style.borderColor = '#6366f1'; addBtn.style.color = (_isDark ? '#c1c1c6' : '#18181b'); });
-    addBtn.addEventListener('mouseleave', function() { addBtn.style.borderColor = (_isDark ? '#3a3a42' : '#d4d4d8'); addBtn.style.color = (_isDark ? '#6a6a75' : '#a1a1aa'); });
-    addItem.appendChild(addBtn);
-    // Invisible placeholder for delete button alignment
-    var ph = document.createElement('button');
-    ph.style.width = '20px'; ph.style.height = '24px';
-    ph.style.border = 'none'; ph.style.padding = '0';
-    ph.style.background = 'transparent';
-    ph.style.visibility = 'hidden';
-    addItem.appendChild(ph);
-    acList.appendChild(addItem);
+      // Add button at bottom of list (hidden delete button for alignment)
+      var addItem = document.createElement('div');
+      addItem.className = 'ac-item';
+      var addBtn = document.createElement('div');
+      addBtn.style.flex = '1';
+      addBtn.style.minHeight = '26px';
+      addBtn.style.display = 'flex';
+      addBtn.style.alignItems = 'center';
+      addBtn.style.justifyContent = 'center';
+      addBtn.style.borderRadius = '4px';
+      addBtn.style.border = '1px dashed ' + (_isDark ? '#3a3a42' : '#d4d4d8');
+      addBtn.style.background = (_isDark ? '#16161c' : '#ffffff');
+      addBtn.style.color = (_isDark ? '#6a6a75' : '#a1a1aa');
+      addBtn.style.fontSize = '13px';
+      addBtn.style.fontStyle = 'italic';
+      addBtn.style.cursor = 'pointer';
+      addBtn.style.transition = 'border-color 0.12s, color 0.12s';
+      addBtn.textContent = __spinT('node.addCriteria');
+      addBtn.addEventListener('click', function(e) { e.stopPropagation(); addCriteria(node.id); });
+      addBtn.addEventListener('mouseenter', function() { addBtn.style.borderColor = '#6366f1'; addBtn.style.color = (_isDark ? '#c1c1c6' : '#18181b'); });
+      addBtn.addEventListener('mouseleave', function() { addBtn.style.borderColor = (_isDark ? '#3a3a42' : '#d4d4d8'); addBtn.style.color = (_isDark ? '#6a6a75' : '#a1a1aa'); });
+      addItem.appendChild(addBtn);
+      // Invisible placeholder for delete button alignment
+      var ph = document.createElement('button');
+      ph.style.width = '20px'; ph.style.height = '24px';
+      ph.style.border = 'none'; ph.style.padding = '0';
+      ph.style.background = 'transparent';
+      ph.style.visibility = 'hidden';
+      addItem.appendChild(ph);
+      acList.appendChild(addItem);
 
-    acSection.appendChild(acList);
-    body.appendChild(acSection);
+      acSection.appendChild(acList);
+      body.appendChild(acSection);
+    }
 
     // Skills section
     var skillSection = document.createElement('div');
@@ -2014,8 +2318,9 @@ function __spinT(key, params) {
 
   // 更新保存按钮状态：
   // - 节点数据损坏时禁用保存；
-  // - 图不是 DAG 或存在空节点时仍允许保存，但按钮显示为黄色并给出对应提示。
-  function updateSaveButton(valid, notDag, hasEmptyNode) {
+  // - 图不是 DAG、存在空节点、For Each 变量无效或变量与内置变量冲突时仍允许保存，
+  //   但按钮显示为黄色并给出对应提示。
+  function updateSaveButton(valid, notDag, hasEmptyNode, forEachErrors) {
     var btn = document.getElementById('btnSave');
     var exportBtn = document.getElementById('btnExport');
     if (!valid) {
@@ -2037,13 +2342,14 @@ function __spinT(key, params) {
     exportBtn.disabled = false;
     exportBtn.style.opacity = '1';
     exportBtn.style.cursor = 'pointer';
-    if (notDag || hasEmptyNode) {
+    if (notDag || hasEmptyNode || (forEachErrors && forEachErrors.length > 0)) {
       btn.style.background = '#eab308';
       btn.style.borderColor = '#eab308';
       btn.style.color = '#1a1a1f';
       var tips = [];
       if (hasEmptyNode) tips.push(__spinT('toolbar.saveEmptyNode'));
       if (notDag) tips.push(__spinT('toolbar.saveNotDag'));
+      (forEachErrors || []).forEach(function(tip) { tips.push(tip); });
       btn.title = tips.join('；');
     } else {
       btn.style.background = '';
@@ -2067,8 +2373,33 @@ function __spinT(key, params) {
       return typeof n.task !== 'string' || n.task.trim() === '';
     });
 
+    // For Each 变量有效性 + 用户变量与内置变量冲突检查
+    var forEachErrors = [];
+    var variableKeys = {};
+    var reservedBuiltins = ['ROLLOUT_ID', 'LINE'];
+    variables.forEach(function(v) {
+      var key = (v.key || '').trim();
+      if (key && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && reservedBuiltins.indexOf(key) === -1) {
+        variableKeys[key] = true;
+      }
+    });
+    nodes.forEach(function(n) {
+      var fe = normalizeForEachValue(n.forEach);
+      if (fe && !variableKeys[fe]) {
+        forEachErrors.push(__spinT('toolbar.saveForEachVarMissing', { id: n.id, name: fe }));
+      }
+    });
+    var builtinConflicts = [];
+    variables.forEach(function(v) {
+      var key = (v.key || '').trim();
+      if (key && reservedBuiltins.indexOf(key) !== -1) builtinConflicts.push(key);
+    });
+    if (builtinConflicts.length > 0) {
+      forEachErrors.push(__spinT('toolbar.saveBuiltinVarConflict', { names: builtinConflicts.join(', ') }));
+    }
+
     var nodeIds = nodes.map(function(n) { return n.id; });
-    if (nodeIds.length === 0) { updateSaveButton(true, false, false); return true; }
+    if (nodeIds.length === 0) { updateSaveButton(true, false, false, forEachErrors); return true; }
 
     var idSet = {};
     nodeIds.forEach(function(id) { idSet[id] = true; });
@@ -2096,7 +2427,7 @@ function __spinT(key, params) {
     }
 
     var isDag = sorted.length === nodeIds.length;
-    updateSaveButton(true, !isDag, hasEmptyNode);
+    updateSaveButton(true, !isDag, hasEmptyNode, forEachErrors);
     return isDag;
   }
 
@@ -2160,7 +2491,7 @@ function __spinT(key, params) {
 
     var result = {
       nodes: sortedNodes.map(function(n) {
-        return { id: n.id, x: n.x, y: n.y, task: n.task, criteria: n.criteria.filter(function(c) { return c.trim() !== ''; }), role: 'Master', skills: n.skills || [], title: n.title || undefined };
+        return { id: n.id, x: n.x, y: n.y, task: n.task, criteria: n.criteria.filter(function(c) { return c.trim() !== ''; }), rollout: normalizeRolloutValue(n.rollout), forEach: normalizeForEachValue(n.forEach), role: 'Master', skills: n.skills || [], title: n.title || undefined };
       }),
       edges: edges.map(function(e) { return { from: e.from, to: e.to, fromSide: e.fromSide, toSide: e.toSide }; }),
       meta: meta,
@@ -2207,7 +2538,7 @@ function __spinT(key, params) {
           // 刷新到损坏数据时不覆盖当前画布，直接报错，避免静默变成空列表。
           showToast('刷新数据错误: ' + refreshNodeError, 'error');
         } else {
-          nodes = msg.data.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: 'Master', skills: n.skills || [], title: (typeof n.title === 'string' && n.title.trim() !== '') ? n.title : undefined }; });
+          nodes = msg.data.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], rollout: normalizeRolloutValue(n.rollout), forEach: normalizeForEachValue(n.forEach), role: 'Master', skills: n.skills || [], title: (typeof n.title === 'string' && n.title.trim() !== '') ? n.title : undefined }; });
           edges = msg.data.edges || [];
           meta = msg.data.meta || {};
           variables = variablesFromData(msg.data);

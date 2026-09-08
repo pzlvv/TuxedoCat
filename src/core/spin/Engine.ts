@@ -13,7 +13,7 @@ import * as path from 'path';
 import { getProjectConversationDir, ensureProjectConversationDir } from '../history/Config.js';
 import { tt } from '../i18n.js';
 import { logger } from '../Logger.js';
-import type { SpinDesign, SpinNode, SpinEdge } from './Types.js';
+import type { SpinDesign, SpinNode, SpinEdge, SpinNodeMeta } from './Types.js';
 
 const SPIN_FILE = 'spin.json';
 
@@ -89,6 +89,19 @@ export function validateSpinDesign(config: unknown): string | null {
     return tt('spin.json 中没有可执行的节点。', 'spin.json has no executable nodes.');
   }
 
+  // 用户变量不能与内置变量冲突
+  const reservedBuiltins = ['ROLLOUT_ID', 'LINE'];
+  if (spin.variables && typeof spin.variables === 'object') {
+    for (const key of Object.keys(spin.variables)) {
+      if (reservedBuiltins.includes(key)) {
+        return tt(
+          `变量 "${key}" 与内置变量冲突，请重命名后重试。`,
+          `Variable "${key}" conflicts with a built-in variable. Please rename it and retry.`,
+        );
+      }
+    }
+  }
+
   for (const node of spin.nodes) {
     if (!node || typeof node !== 'object' || typeof (node as Partial<SpinNode>).id !== 'number') {
       return tt('spin.json 中存在无效节点。', 'spin.json contains an invalid node.');
@@ -98,6 +111,22 @@ export function validateSpinDesign(config: unknown): string | null {
       return tt(
         `节点 ${(node as SpinNode).id} 缺少任务描述。`,
         `Node ${(node as SpinNode).id} is missing a task description.`,
+      );
+    }
+    const forEachVar = typeof (node as Partial<SpinNode>).forEach === 'string'
+      ? ((node as Partial<SpinNode>).forEach as string).trim()
+      : '';
+    if (
+      forEachVar
+      && (
+        !spin.variables
+        || typeof spin.variables !== 'object'
+        || !Object.prototype.hasOwnProperty.call(spin.variables, forEachVar)
+      )
+    ) {
+      return tt(
+        `节点 ${(node as SpinNode).id} 的 For Each 变量 "${forEachVar}" 不存在。`,
+        `Node ${(node as SpinNode).id}: For Each variable "${forEachVar}" does not exist.`,
       );
     }
   }
@@ -183,9 +212,9 @@ function escapeRegExp(s: string): string {
 
 /**
  * 替换 Spin 变量引用
- * - $KEY -> variables[KEY]（KEY 为字母/数字/下划线组成的变量名）
+ * - ${KEY} -> variables[KEY]（KEY 为字母/数字/下划线组成的变量名）
  * - $$ -> 字面量 $（转义，且不会被当作变量前缀）
- * - 未匹配的 $ 保持原样
+ * - 未匹配的 ${...} 保持原样
  */
 export function substituteSpinVariables(text: string, variables?: Record<string, string>): string {
   if (!text) return text;
@@ -195,7 +224,7 @@ export function substituteSpinVariables(text: string, variables?: Record<string,
     const keys = Object.keys(variables).sort((a, b) => b.length - a.length);
     for (const key of keys) {
       if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
-      result = result.replace(new RegExp(`\\$${escapeRegExp(key)}\\b`, 'g'), () => variables[key] ?? '');
+      result = result.replace(new RegExp(`\\$\\{${escapeRegExp(key)}\\}`, 'g'), () => variables[key] ?? '');
     }
   }
   // 还原 $$ 转义，并保留未匹配的 $
@@ -217,6 +246,35 @@ export function getNextNode(config: SpinDesign): SpinNode | null {
     }
   }
   return null;
+}
+
+/**
+ * 规范化 rollout 执行次数：必须是 >=1 的整数，否则默认 1
+ */
+export function normalizeRolloutCount(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? value : 1;
+}
+
+/**
+ * 规范化已完成 rollout 数量：必须是 >=0 的整数，否则默认 0
+ */
+export function normalizeRolloutPassed(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+/**
+ * 将 For Each 变量值按行拆分
+ * - 支持 CRLF / LF / CR 换行
+ * - 每行 trim 后，空白行（空行或仅含空格/制表符的行）直接跳过，不参与迭代
+ */
+export function splitForEachRows(value: unknown): string[] {
+  const rows: string[] = [];
+  for (const rawLine of String(value ?? '').split(/\r\n|\r|\n/)) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    rows.push(line);
+  }
+  return rows;
 }
 
 /**
@@ -293,6 +351,7 @@ export function updateNodeMeta(
   nodeId: number,
   passed: boolean,
   note?: string,
+  extra?: Partial<SpinNodeMeta>,
 ): Promise<boolean> {
   return enqueueSpinWrite(async () => {
     const config = await readSpinJson(cwd);
@@ -300,9 +359,12 @@ export function updateNodeMeta(
     if (!config.meta) config.meta = {};
 
     const key = String(nodeId);
+    const prev = config.meta[key] || {};
     config.meta[key] = {
+      ...prev,
       passed,
       note: note || '',
+      ...extra,
     };
 
     await writeSpinJson(cwd, config);

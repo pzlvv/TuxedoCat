@@ -18,6 +18,9 @@ import {
   topologicalSort,
   buildRunPrompt,
   substituteSpinVariables,
+  normalizeRolloutCount,
+  normalizeRolloutPassed,
+  splitForEachRows,
   updateNodeMeta,
 } from './Engine.js';
 import { SpinJudger } from './SpinJudger.js';
@@ -251,14 +254,43 @@ export async function spinLoop(
     const order = topologicalSort(config.nodes, config.edges);
     const currentSeq = order.indexOf(next.id) + 1;
 
-    // 2. 重置或递增尝试计数
+    // 计算 For Each + rollout 迭代信息：
+    // - For Each 优先级高于 rollout：每一行内先完成所有 rollout，再进入下一行
+    // - 未配置 For Each 时按单行处理
+    const rolloutCount = normalizeRolloutCount(next.rollout);
+    const forEachVar = typeof next.forEach === 'string' ? next.forEach.trim() : '';
+    const forEachRows = forEachVar ? splitForEachRows(config.variables?.[forEachVar]) : [''];
+    const totalIterations = forEachRows.length * rolloutCount;
+    const completedIterations = normalizeRolloutPassed(config.meta?.[String(next.id)]?.rolloutPassed);
+    if (completedIterations >= totalIterations) {
+      // 数据异常兜底；For Each 变量没有可遍历行时也直接完成该节点
+      if (forEachVar && forEachRows.length === 0) {
+        logger.warn('SpinLoop', `Task ${currentSeq}: For Each variable "${forEachVar}" has no rows, marking as passed`);
+      }
+      await updateNodeMeta(cwd, next.id, true, '', { rolloutPassed: totalIterations });
+      continue;
+    }
+    const currentRowIndex = Math.floor(completedIterations / rolloutCount);
+    const rolloutId = completedIterations % rolloutCount;
+    const currentRowValue = forEachRows[currentRowIndex] ?? '';
+    const iterationLabel = (
+      forEachRows.length > 1 && rolloutCount > 1
+        ? ` [row ${currentRowIndex + 1}/${forEachRows.length}, rollout ${rolloutId + 1}/${rolloutCount}]`
+        : forEachRows.length > 1
+          ? ` [row ${currentRowIndex + 1}/${forEachRows.length}]`
+          : rolloutCount > 1
+            ? ` [rollout ${rolloutId + 1}/${rolloutCount}]`
+            : ''
+    );
+
+    // 重置或递增尝试计数
     if (currentNodeId !== next.id) {
       currentNodeId = next.id;
       attempts = 0;
     }
 
     if (attempts >= MAX_ATTEMPTS) {
-      logger.info('SpinLoop', `Task ${currentSeq} failed after ${MAX_ATTEMPTS} attempts, stopping spin mode`);
+      logger.info('SpinLoop', `Task ${currentSeq}${iterationLabel} failed after ${MAX_ATTEMPTS} attempts, stopping spin mode`);
       const stopMsgContent = tt(
         `任务 ${currentSeq} 连续失败 ${MAX_ATTEMPTS} 次，已停止整个 Spin 模式执行`,
         `Task ${currentSeq} failed after ${MAX_ATTEMPTS} attempts, stopping the entire Spin mode`
@@ -281,25 +313,38 @@ export async function spinLoop(
     }
 
     attempts++;
-    const attemptSuffix = ` (${attempts}/${MAX_ATTEMPTS})`;
 
-    // 获取之前的 note（如果有）
+    // 获取之前的 note（如果有）；同一 rollout 失败重试时作为上一轮反馈
     const prevNote = config.meta?.[String(next.id)]?.note || undefined;
     // 依次加载该节点勾选的 Skill
     const skillsPrompt = await loadNodeSkillsPrompt(next.skills, cwd, sessionId);
-    // 解析用户定义的变量（$KEY -> value，$$ -> 字面量 $）
-    const spinVariables = config.variables || {};
+    // 解析用户变量，并注入内置变量 ${ROLLOUT_ID}（每次 rollout 从 0 开始递增）；
+    // For Each 生效时，用当前行覆盖被遍历的变量，使 ${变量名} 在任务中指向当前行
+    const spinVariables: Record<string, string> = Object.assign(
+      {},
+      config.variables || {},
+      { ROLLOUT_ID: String(rolloutId), LINE: forEachVar ? currentRowValue : '' },
+    );
+    if (forEachVar) spinVariables[forEachVar] = currentRowValue;
     const resolvedTask = substituteSpinVariables(next.task, spinVariables);
-    const resolvedCriteria = (next.criteria || [])
-      .map(ac => substituteSpinVariables(ac, spinVariables))
-      .filter(ac => ac.trim() !== '');
+    // rollout > 1 或填写 For Each 时验收标准不可用：不注入 prompt，也不进行结果验收
+    const useCriteria = rolloutCount <= 1 && !forEachVar;
+    const resolvedCriteria = useCriteria
+      ? (next.criteria || [])
+          .map(ac => substituteSpinVariables(ac, spinVariables))
+          .filter(ac => ac.trim() !== '')
+      : [];
+    // 没有验收条件时不会重试，因此不展示 [attempt/MAX_ATTEMPTS]
+    const hasAcceptanceCriteria = resolvedCriteria.length > 0;
+    const attemptPrefix = hasAcceptanceCriteria ? `[${attempts}/${MAX_ATTEMPTS}]` : '';
+    const attemptSuffix = hasAcceptanceCriteria ? ` (${attempts}/${MAX_ATTEMPTS})` : '';
     const resolvedNode: SpinNode = { ...next, task: resolvedTask, criteria: resolvedCriteria };
     const nodePrompt = buildRunPrompt(resolvedNode, prevNote, skillsPrompt);
 
-    logger.info('SpinLoop', `Executing Task ${currentSeq} - ${resolvedTask}${attemptSuffix}`);
+    logger.info('SpinLoop', `Executing Task ${currentSeq}${iterationLabel} - ${resolvedTask}${attemptSuffix}`);
     const startMsgContent = tt(
-      `[${attempts}/${MAX_ATTEMPTS}] 开始: 任务 ${currentSeq} - ${resolvedTask}`,
-      `[${attempts}/${MAX_ATTEMPTS}] Starting: Task ${currentSeq} - ${resolvedTask}`
+      `${attemptPrefix}${iterationLabel} 开始: 任务 ${currentSeq} - ${resolvedTask}`,
+      `${attemptPrefix}${iterationLabel} Starting: Task ${currentSeq} - ${resolvedTask}`
     );
     ui.onMessage(sessionId, {
       role: 'user',
@@ -315,7 +360,7 @@ export async function spinLoop(
       (engine as any).mutableMessages.push(startMsg);
     }
 
-    // 3. 执行 Agent 工具
+    // 执行 Agent 工具
     // 先丢弃上一轮子代理遗留的未消费回复，避免旧 Reply 被当前节点误读。
     (engine as any).agentMessageQueue.length = 0;
     await engine.submitToolUse({
@@ -323,18 +368,18 @@ export async function spinLoop(
       input: {
         prompt: nodePrompt,
         agentRole: 'Master',
-        description: `Task ${currentSeq} - ${resolvedTask}`,
+        description: `Task ${currentSeq}${iterationLabel} - ${resolvedTask}`,
       },
     });
 
-    // 4. 等待子 agent 的 Reply
+    // 等待子 agent 的 Reply
     const currentAgentId = await getCurrentSpinAgentId(sessionId);
     const reply = await waitForAgentReply(engine, 1000, currentAgentId);
 
-    // 5. 判断是否通过；没有验收标准时直接通过，不调用 LLM 评审
+    // 判断是否通过；没有验收标准时直接通过，不调用 LLM 评审
     let accept: boolean;
     if (resolvedCriteria.length === 0) {
-      logger.info('SpinLoop', `Task ${currentSeq} has no acceptance criteria, marking as passed`);
+      logger.info('SpinLoop', `Task ${currentSeq}${iterationLabel} has no acceptance criteria, marking as passed`);
       accept = true;
     } else {
       // 先将 sub-agent 的 note 写入 meta（暂标记为未通过，等 LLM 判断）
@@ -346,14 +391,19 @@ export async function spinLoop(
       );
       accept = judgeResult.accept;
     }
-    logger.info('SpinLoop', `Task ${currentSeq} accept judgment: ${accept}`);
+    logger.info('SpinLoop', `Task ${currentSeq}${iterationLabel} accept judgment: ${accept}`);
 
-    // 更新最终结果到 meta
-    await updateNodeMeta(cwd, next.id, accept, reply);
+    // 更新最终结果到 meta：
+    // 只有最后一个迭代通过时才把节点标记为完成；中间的迭代通过后清空 note，
+    // 避免把上一次成功反馈误当作下一次迭代的“上一轮反馈”。
+    const nextCompleted = accept ? completedIterations + 1 : completedIterations;
+    const nodePassed = accept && nextCompleted >= totalIterations;
+    const metaNote = accept && !nodePassed ? '' : reply;
+    await updateNodeMeta(cwd, next.id, nodePassed, metaNote, { rolloutPassed: nextCompleted });
 
     const resultMsgContent = tt(
-      `[${attempts}/${MAX_ATTEMPTS}] ${accept ? '通过' : '失败'}: 任务 ${currentSeq} - ${resolvedTask}`,
-      `[${attempts}/${MAX_ATTEMPTS}] ${accept ? 'Passed' : 'Failed'}: Task ${currentSeq} - ${resolvedTask}`
+      `${attemptPrefix}${iterationLabel} ${accept ? '通过' : '失败'}: 任务 ${currentSeq} - ${resolvedTask}`,
+      `${attemptPrefix}${iterationLabel} ${accept ? 'Passed' : 'Failed'}: Task ${currentSeq} - ${resolvedTask}`
     );
     ui.onMessage(sessionId, {
       role: 'user',
@@ -376,7 +426,7 @@ export async function spinLoop(
     }
 
     if (!accept) {
-      continue; // 重试当前节点
+      continue; // 重试当前 rollout
     }
 
     attempts = 0;
