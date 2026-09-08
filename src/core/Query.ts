@@ -402,11 +402,11 @@ async function* queryLoop(
           } else if (event.type === 'message_delta') {
             // 流接近结束，更新 usage
             if (event.usage) {
-              // 服务端会话被 web search 结果污染已轮换（见 ResponsesApi / serverSession）：
-              // 本轮的 usage.input_tokens 包含了搜索结果（虚高），不能用来更新上下文
-              // 使用量和命中率——否则 compact 阈值判断与缓存命中率都会被污染。
+              // 本轮 usage 不可信（内置 web search 轮次含服务端搜索上下文，或 input_tokens
+              // 超上限，见 ResponsesApi / serverSession）：不能用来更新上下文使用量和命中率，
+              // 否则上下文显示、compact 阈值判断与缓存命中率都会被污染。
               // 处理方式：本轮跳过上下文更新，streamEnd 不携带 usage（webview 不更新
-              // contextLength / 命中率），下一轮从干净会话开始时由真实 usage 正常更新。
+              // contextLength / 命中率），延迟到下一轮干净会话的 usage 再正常更新。
               const serverSessionRotated = (event as any).serverSessionRotated === true;
               const streamEndUsage = serverSessionRotated ? undefined : event.usage;
               if (!serverSessionRotated) {

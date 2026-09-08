@@ -39,12 +39,69 @@ async function recordLLMUsage(_inputTokens: number, _outputTokens: number): Prom
 const ASSISTANT_MAX_TEXT_CHARS = 40_000;
 
 /**
- * 服务端会话轮换阈值（token）。
- * 当一轮 web search 注入服务端会话的 token 数超过该值时，下一轮轮换
- * 服务端会话 ID（x-session-id），避免搜索结果跨轮累积导致 input_tokens 虚高
- * （详见 serverSession.ts）。本地估算可能有偏差，阈值取较大值避免频繁误轮换。
+ * 估算本地输入 token 时，每张图片按固定成本计。
+ * 图片以 base64 内联发送（见 convertMessagesToResponsesInput），其字符长度
+ * 远超真实 token 数，直接按「字符数 / 4」会把估算值抬到远高于 API 实际
+ * input_tokens 的水平，导致污染检测失效。
  */
-const WEB_SEARCH_BLOAT_THRESHOLD = 100_000;
+const IMAGE_TOKEN_ESTIMATE = 1_500;
+
+/**
+ * 估算客户端本轮实际发送的输入 token 数（仅用于诊断日志与异常兜底）。
+ * 关键：先把图片 base64 替换为占位符再计算长度，最后按固定成本补回图片 token。
+ */
+export function estimateLocalInputTokens(
+  responsesInput: unknown[],
+  systemPrompt: string | undefined,
+  responsesTools: unknown[],
+): number {
+  let imageCount = 0;
+  const inputJson = JSON.stringify(responsesInput, (key, value) => {
+    if (key === 'image_url' && typeof value === 'string' && value.startsWith('data:')) {
+      imageCount++;
+      return 'data:image/omitted;base64,';
+    }
+    return value;
+  });
+  const toolsJson = JSON.stringify(responsesTools);
+  return Math.ceil((inputJson.length + (systemPrompt?.length ?? 0) + toolsJson.length) / 4)
+    + imageCount * IMAGE_TOKEN_ESTIMATE;
+}
+
+/** 本轮 usage 是否可信的判断结果 */
+export interface UsageTrustDecision {
+  /** true 表示本轮 usage 不可用于更新上下文，应跳过并延迟到后续轮次 */
+  skip: boolean;
+  /** 跳过原因（写入 serverSession 日志） */
+  reason: string;
+}
+
+/**
+ * 判断本轮 API 返回的 usage 是否可用于更新上下文显示 / compact / 命中率统计。
+ *
+ * - 内置 web search 轮次：`usage.input_tokens` 含服务端搜索上下文（搜索结果 /
+ *   搜索子代理重放对话），实测接近真实上下文的两倍，一律不采用，延迟到下一轮
+ *   干净会话的 usage 再显示；
+ * - 其它轮次：`input_tokens` 超过上下文窗口 60% 时视为服务端异常累积，同样跳过。
+ */
+export function shouldSkipUsageForContext(params: {
+  webSearchUsed: boolean;
+  inputTokens: number;
+  localInputEstimate: number;
+  contextWindow: number;
+}): UsageTrustDecision {
+  if (params.webSearchUsed) {
+    return {
+      skip: true,
+      reason: `web search usage skipped (input=${params.inputTokens}, localEstimate=${params.localInputEstimate})`,
+    };
+  }
+  const absCap = Math.floor(params.contextWindow * 0.6);
+  if (params.inputTokens > absCap) {
+    return { skip: true, reason: `input_tokens ${params.inputTokens} exceeds cap ${absCap}` };
+  }
+  return { skip: false, reason: '' };
+}
 
 /**
  * 检查中断
@@ -386,14 +443,10 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
         logger.info('ResponsesAPI', 'Web Search enabled: attached built-in web_search tool');
       }
 
-      // 本地输入 token 估算（用于检测服务端会话被 web search 结果污染）。
-      // 服务端会在同一会话内跨轮累积搜索结果，导致 response usage.input_tokens
-      // 远超我们实际发送的内容；用本地输入大小做基线，偏差过大即触发会话轮换。
-      // 估算方式：JSON 长度 / 4（与输出 token 估算一致），仅供阈值判断与展示回退，
-      // 不需要精确。
-      const localInputEstimate = Math.ceil(
-        (JSON.stringify(responsesInput).length + (systemPrompt?.length ?? 0) + JSON.stringify(responsesTools).length) / 4
-      );
+      // 本地输入 token 估算（用于诊断日志与异常兜底）。
+      // 注意：图片 base64 必须剔除，否则估算值会被抬到远超真实 input_tokens
+      // 的水平，详见 estimateLocalInputTokens。
+      const localInputEstimate = estimateLocalInputTokens(responsesInput, systemPrompt, responsesTools);
 
       // 构建请求体
       requestBody = {
@@ -559,9 +612,9 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
         if (q && !webSearchQueries.includes(q)) webSearchQueries.push(q);
       };
 
-      // 本轮服务端会话是否被 web search 污染并需要轮换（在 emitMessageDelta 中判定）。
-      // 轮换后：不把虚高的 usage 写入最终消息（避免污染后续 compact / 命中率统计），
-      // 由下一轮干净会话的 usage 正常更新。
+      // 本轮 usage 是否不可信、需要跳过（web search 污染）并轮换服务端会话
+      // （在 emitMessageDelta 中判定）。跳过时：usage 不写入最终消息、不更新上下文/
+      // 命中率（见 Query.ts），延迟到下一轮干净会话的 usage 再显示。
       let serverSessionRotated = false;
 
       // 用 response.output 中的 web_search_call item 补全当前未结束的搜索项（兜底）
@@ -656,23 +709,19 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
         if (!usage) {
           usage = { input_tokens: accumulatedInputTokens, output_tokens: accumulatedOutputTokens, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
         }
-        // 服务端会话轮换决策：
-        // 1. 本轮使用了 web search 且注入量超过阈值 → 会话已被搜索结果污染；
-        // 2. input_tokens 超过上下文窗口的 60% → 兜底，防任意服务端累积。
-        // 轮换后下一轮请求使用全新服务端会话（见 getServerSessionId）。
-        // 本轮的虚高 usage 不写入最终消息、不更新上下文/命中率（由 Query.ts 抑制），
-        // 下一轮干净会话的 usage 会正常更新，避免搜索结果污染 compact 与统计。
+        // 判断本轮 usage 是否可信（web search 轮次 / 超上限 → 跳过）。
+        // 跳过时：usage 不写入最终消息、不更新上下文/命中率（由 Query.ts 抑制），
+        // 延迟到下一轮干净会话的 usage 再显示；同时轮换 x-session-id 避免跨轮累积
+        // （见 shouldSkipUsageForContext / getServerSessionId / serverSession.ts）。
         serverSessionRotated = false;
-        const bloat = usage.input_tokens - localInputEstimate;
-        const contextWindow = getContextWindow(model);
-        const absCap = Math.floor(contextWindow * 0.6);
-        if (webSearchUsed && bloat > WEB_SEARCH_BLOAT_THRESHOLD) {
-          markServerSessionRotate(sessionId,
-            `web search bloat ${bloat} tokens (input=${usage.input_tokens}, localEstimate=${localInputEstimate})`);
-          serverSessionRotated = true;
-        } else if (usage.input_tokens > absCap) {
-          markServerSessionRotate(sessionId,
-            `input_tokens ${usage.input_tokens} exceeds cap ${absCap} (webSearchUsed=${webSearchUsed})`);
+        const skipDecision = shouldSkipUsageForContext({
+          webSearchUsed,
+          inputTokens: usage.input_tokens,
+          localInputEstimate,
+          contextWindow: getContextWindow(model),
+        });
+        if (skipDecision.skip) {
+          markServerSessionRotate(sessionId, skipDecision.reason);
           serverSessionRotated = true;
         }
         yield {
@@ -1121,9 +1170,9 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       }
 
       // yield 最终的完整 assistant message（用于持久化）
-      // 服务端会话被 web search 污染轮换时，不写入虚高的 usage：
-      // 避免 polluting 的 input/cache 数据进入后续 auto-compact 判断与命中率统计，
-      // 下一轮干净会话的 usage 会正常记录（见 emitMessageDelta 的 serverSessionRotated）。
+      // 本轮 usage 被跳过（web search 污染 / 超上限）时不写入：
+      // 避免虚高的 input/cache 数据进入上下文显示、auto-compact 判断与命中率统计，
+      // 延迟到下一轮干净会话的 usage 正常记录（见 emitMessageDelta 的 serverSessionRotated）。
       const finalMsg = buildAssistantMessageFromBlocks(
         contentBlocks,
         stopReason,
