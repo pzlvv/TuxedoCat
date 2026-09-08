@@ -243,14 +243,6 @@ export function getSpinDesignHtml(
     border-bottom: 1px solid ${c.ndBdr};
     font-size: 13px; font-weight: 600; color: ${c.mute};
   }
-  .node-header .role-select {
-    font-size: 11px; font-weight: 500; padding: 2px 6px;
-    border: 1px solid ${c.ndBdr}; border-radius: 4px;
-    background: ${c.inpBg}; color: ${c.fg};
-    cursor: pointer; outline: none; height: 22px;
-  }
-  .node-header .role-select:hover { border-color: #6366f1; }
-  .node-header .role-select:focus { border-color: #6366f1; }
   .node-header .node-title {
     flex: 1 1 0; min-width: 0;
     font-size: 11px; font-weight: 500; color: ${c.mute};
@@ -691,7 +683,7 @@ function __spinT(key, params) {
       showToast('spin.json 数据错误: ' + initialNodeError, 'error');
       updateSaveButton(false);
     } else {
-      nodes = initialData.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: n.role || 'Master', skills: n.skills || [], title: (typeof n.title === 'string' && n.title.trim() !== '') ? n.title : undefined }; });
+      nodes = initialData.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: 'Master', skills: n.skills || [], title: (typeof n.title === 'string' && n.title.trim() !== '') ? n.title : undefined }; });
       edges = initialData.edges || [];
       meta = initialData.meta || {};
       variables = variablesFromData(initialData);
@@ -709,7 +701,7 @@ function __spinT(key, params) {
       showToast('本地缓存数据错误: ' + savedNodeError, 'error');
       updateSaveButton(false);
     } else {
-      nodes = savedState.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: n.role || 'Master', skills: n.skills || [], title: (typeof n.title === 'string' && n.title.trim() !== '') ? n.title : undefined }; });
+      nodes = savedState.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: 'Master', skills: n.skills || [], title: (typeof n.title === 'string' && n.title.trim() !== '') ? n.title : undefined }; });
       edges = savedState.edges || [];
       meta = savedState.meta || {};
       variables = variablesFromData(savedState);
@@ -1335,7 +1327,7 @@ function __spinT(key, params) {
       y: node.y + 30,
       task: node.task || '',
       criteria: (node.criteria || []).slice(),
-      role: node.role || 'Master',
+      role: 'Master',
       skills: (node.skills || []).slice(),
       title: node.title || undefined
     };
@@ -1494,7 +1486,7 @@ function __spinT(key, params) {
               y: sourceNode.y,
               task: sourceNode.task || '',
               criteria: (sourceNode.criteria || []).slice(),
-              role: sourceNode.role || 'Master',
+              role: 'Master',
               skills: (sourceNode.skills || []).slice(),
               title: sourceNode.title || undefined
             };
@@ -1560,7 +1552,7 @@ function __spinT(key, params) {
   function persistState() {
     vscode.setState({
       nodes: nodes.map(function(n) {
-        return { id: n.id, x: n.x, y: n.y, task: n.task, criteria: n.criteria.filter(function(c) { return c.trim() !== ''; }), role: n.role || 'Master', skills: n.skills || [], title: n.title || undefined };
+        return { id: n.id, x: n.x, y: n.y, task: n.task, criteria: n.criteria.filter(function(c) { return c.trim() !== ''; }), role: 'Master', skills: n.skills || [], title: n.title || undefined };
       }),
       edges: edges,
       meta: meta,
@@ -1686,7 +1678,7 @@ function __spinT(key, params) {
       }
     });
 
-    // Header (status badge + role select + delete button)
+    // Header (status badge + title + actions)
     var header = document.createElement('div');
     header.className = 'node-header';
     var statusBadge = document.createElement('div');
@@ -1694,26 +1686,7 @@ function __spinT(key, params) {
     statusBadge.style.display = 'none';
     statusBadge.textContent = '\u2713 ' + __spinT('node.done');
     header.appendChild(statusBadge);
-    // Role selector
-    var roleSel = document.createElement('select');
-    roleSel.className = 'role-select';
-    var agentRoles = ['Master'];
-    agentRoles.forEach(function(r) {
-      var opt = document.createElement('option');
-      opt.value = r;
-      opt.textContent = r;
-      roleSel.appendChild(opt);
-    });
-    roleSel.value = node.role || 'Master';
-    roleSel.addEventListener('change', function(e) {
-      e.stopPropagation();
-      node.role = roleSel.value;
-      persistState();
-      saveDesign();
-    });
-    roleSel.addEventListener('mousedown', function(e) { e.stopPropagation(); });
-    header.appendChild(roleSel);
-    // Node title: 显示在 role 右边，过长截断；双击可编辑，空标题时显示占位符也可双击添加。
+    // Node title: 过长截断；双击可编辑，空标题时显示占位符也可双击添加。
     var titleSpan = document.createElement('span');
     titleSpan.className = 'node-title title-display' + ((node.title || '').trim() === '' ? ' empty' : '');
     titleSpan.textContent = (node.title || '').trim() || __spinT('node.titlePlaceholder');
@@ -2187,7 +2160,7 @@ function __spinT(key, params) {
 
     var result = {
       nodes: sortedNodes.map(function(n) {
-        return { id: n.id, x: n.x, y: n.y, task: n.task, criteria: n.criteria.filter(function(c) { return c.trim() !== ''; }), role: n.role || 'Master', skills: n.skills || [], title: n.title || undefined };
+        return { id: n.id, x: n.x, y: n.y, task: n.task, criteria: n.criteria.filter(function(c) { return c.trim() !== ''; }), role: 'Master', skills: n.skills || [], title: n.title || undefined };
       }),
       edges: edges.map(function(e) { return { from: e.from, to: e.to, fromSide: e.fromSide, toSide: e.toSide }; }),
       meta: meta,
@@ -2234,7 +2207,7 @@ function __spinT(key, params) {
           // 刷新到损坏数据时不覆盖当前画布，直接报错，避免静默变成空列表。
           showToast('刷新数据错误: ' + refreshNodeError, 'error');
         } else {
-          nodes = msg.data.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: n.role || 'Master', skills: n.skills || [], title: (typeof n.title === 'string' && n.title.trim() !== '') ? n.title : undefined }; });
+          nodes = msg.data.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], role: 'Master', skills: n.skills || [], title: (typeof n.title === 'string' && n.title.trim() !== '') ? n.title : undefined }; });
           edges = msg.data.edges || [];
           meta = msg.data.meta || {};
           variables = variablesFromData(msg.data);

@@ -322,7 +322,7 @@ export async function spinLoop(
       name: 'Agent',
       input: {
         prompt: nodePrompt,
-        agentRole: next.role || 'Master',
+        agentRole: 'Master',
         description: `Task ${currentSeq} - ${resolvedTask}`,
       },
     });

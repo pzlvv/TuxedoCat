@@ -8,7 +8,6 @@
 
 import { QueryEngine, getSessionEngine } from '../QueryEngine.js';
 import { getAllTools } from '../tools/index.js';
-import { getToolsForRole } from '../tools/RoleTools.js';
 import { getGlobalUI } from '../AssistantUI.js';
 import type { SpinDesign, SpinNode } from './Types.js';
 import { logger } from '../Logger.js';
@@ -30,19 +29,9 @@ export async function createSubAgent(
 
   const abortController = new AbortController();
 
-  const role = node.role || 'Master';
-  // 根据角色获取工具集
-  let tools;
-  if (role === 'Master') {
-    tools = getAllTools();
-  } else {
-    const toolNames = getToolsForRole(role);
-    if (!toolNames) {
-      tools = getAllTools();
-    } else {
-      tools = getAllTools().filter(t => toolNames.includes(t.name));
-    }
-  }
+  // Spin Design 节点统一使用 Master 角色（完整工具集）
+  const role = 'Master';
+  const tools = getAllTools();
 
 	  // 构建子 Agent 的系统提示词 = 主对话的核心系统提示 + Reply 指令
 	  const subAgentSystemPrompt = generateCoreSystemPrompt() + `
