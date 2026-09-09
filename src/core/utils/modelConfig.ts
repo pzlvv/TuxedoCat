@@ -33,6 +33,15 @@ export interface ModelConfig {
 }
 
 /**
+ * settings.json 中 provider 级 modelConfigs 的单个模型限值。
+ * 只允许覆盖 context 和 output，其它字段仍使用内置注册表。
+ */
+export interface ModelTokenLimits {
+  context?: number;
+  output?: number;
+}
+
+/**
  * 默认模型配置
  * 从 deepseek-v4-flash 复制而来，作为未命中已有模型配置时的兜底配置
  */
@@ -65,35 +74,51 @@ export const MODEL_CONFIGS: ModelConfig[] = [
  * 匹配逻辑：遍历注册表，返回第一个模型名是参数字串的配置
  * 如果没有精确匹配，则尝试子串匹配
  * 如果仍未匹配，返回注册表中的第一个模型配置作为默认配置
+ * 传入 modelConfigs 时，会用 provider 配置中的 context/output 覆盖结果。
  */
-export function getModelConfig(modelName: string): ModelConfig {
+export function getModelConfig(
+  modelName: string,
+  modelConfigs?: Record<string, ModelTokenLimits>,
+): ModelConfig {
   const fallback = DEFAULT_MODEL_CONFIG;
 
-  if (!modelName) {
-    return fallback;
+  let base = fallback;
+  if (modelName) {
+    // 1. 精确匹配
+    const exact = MODEL_CONFIGS.find((cfg) => cfg.name === modelName);
+    if (exact) {
+      base = exact;
+    } else {
+      // 2. 子串匹配：模型名包含注册表中的 name（注册表 name 较短）
+      const substring = MODEL_CONFIGS.find((cfg) => modelName.includes(cfg.name));
+      if (substring) {
+        base = substring;
+      }
+    }
   }
 
-  // 1. 精确匹配
-  const exact = MODEL_CONFIGS.find((cfg) => cfg.name === modelName);
-  if (exact) {
-    return exact;
+  // provider 级 modelConfigs 覆盖（只覆盖 context / output）
+  const override = modelName ? modelConfigs?.[modelName] : undefined;
+  if (override) {
+    return {
+      ...base,
+      contextWindow: Number.isFinite(override.context) ? override.context! : base.contextWindow,
+      maxOutputTokens: Number.isFinite(override.output) ? override.output! : base.maxOutputTokens,
+    };
   }
 
-  // 2. 子串匹配：模型名包含注册表中的 name（注册表 name 较短）
-  const substring = MODEL_CONFIGS.find((cfg) => modelName.includes(cfg.name));
-  if (substring) {
-    return substring;
-  }
-
-  // 3. 回退到注册表中的第一个模型配置
-  return fallback;
+  return base;
 }
 
 /**
  * 获取模型的上下文窗口大小
+ * modelConfigs 为可选的服务商级覆盖（settings.json 的 llm.providers[].modelConfigs）
  */
-export function getContextWindow(modelName: string): number {
-  return getModelConfig(modelName).contextWindow;
+export function getContextWindow(
+  modelName: string,
+  modelConfigs?: Record<string, ModelTokenLimits>,
+): number {
+  return getModelConfig(modelName, modelConfigs).contextWindow;
 }
 
 // ============================================================
@@ -113,7 +138,10 @@ export { ENV_MAX_OUTPUT_TOKENS };
  * 3. 全局默认值 32K
  * 4. 不能超过上限 384K
  */
-export function getMaxOutputTokens(modelName?: string): number {
+export function getMaxOutputTokens(
+  modelName?: string,
+  modelConfigs?: Record<string, ModelTokenLimits>,
+): number {
   // 1. 检查环境变量覆盖（最高优先级）
   const envVal = process.env[ENV_MAX_OUTPUT_TOKENS];
   if (envVal) {
@@ -125,7 +153,7 @@ export function getMaxOutputTokens(modelName?: string): number {
 
   // 2. 如果传入了模型名称，尝试从 ModelConfig 获取模型默认值
   if (modelName) {
-    const modelCfg = getModelConfig(modelName);
+    const modelCfg = getModelConfig(modelName, modelConfigs);
     if (modelCfg.maxOutputTokens) {
       return Math.min(modelCfg.maxOutputTokens, MAX_OUTPUT_TOKENS_UPPER_LIMIT);
     }

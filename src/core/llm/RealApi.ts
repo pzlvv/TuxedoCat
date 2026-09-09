@@ -273,7 +273,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       retryCount: number,
     ): AsyncGenerator<StreamEvent | Message> {
       // 计算 max_tokens：环境变量 > 模型配置 > 全局默认值
-      const effectiveMaxTokens = getMaxOutputTokens(model);
+      const effectiveMaxTokens = getMaxOutputTokens(model, config.modelConfigs);
       const maxTokensValue = maxTokens > 0 ? Math.min(maxTokens, effectiveMaxTokens) : effectiveMaxTokens;
 
       // 构建请求体
@@ -287,7 +287,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       };
 
       // 确定 thinking_token_budget（提前计算，日志中需要使用）
-      const effectiveThinkingTokenBudget = thinkingTokenBudget ?? getModelConfig(model).thinking_token_budget;
+      const effectiveThinkingTokenBudget = thinkingTokenBudget ?? getModelConfig(model, config.modelConfigs).thinking_token_budget;
 
       // 添加 reasoning 配置（chat_template_kwargs 格式）
       if (effectiveThinkingEffort && effectiveThinkingEffort !== 'off') {
@@ -320,7 +320,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
         logger.info('RealAPI', '=== LLM Request (stream) ===');
         logger.info('RealAPI', `Model: ${model}`);
         logger.info('RealAPI', `Max tokens: ${maxTokensValue} (config: ${maxTokens}, default: ${effectiveMaxTokens})`);
-        logger.info('RealAPI', `Context window: ${getContextWindow(model)} tokens`);
+        logger.info('RealAPI', `Context window: ${getContextWindow(model, config.modelConfigs)} tokens`);
         logger.info('RealAPI', `Context usage: ${messages.length} messages (${Buffer.byteLength(JSON.stringify(messages), 'utf8')} bytes), system prompt: ${systemPrompt?.length || 0} chars`);
         logger.info('RealAPI', `Thinking effort: ${effectiveThinkingEffort || 'off'} (budget: ${thinking_budget_tokens || 'default'}, modelConfig budget: ${effectiveThinkingTokenBudget})`);
         logger.info('RealAPI', `Sampling: temperature=1.0, top_p=0.95`);

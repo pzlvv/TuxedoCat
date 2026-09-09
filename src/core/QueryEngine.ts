@@ -194,8 +194,12 @@ export class QueryEngine {
     this.webSearchOverride = webSearch;
     // 极简模式不使用联网搜索：无论传入值如何，实际写入 modelConfig 的开关都强制为 false。
     // 混合模式在首次 LLM 回复前也按极简处理，回复后 getEffectiveModelConfig 会恢复用户设置。
+    // Anthropic（非 Responses）协议不支持内置 web_search，同样视为关闭。
     const activePresetId = this.getActivePromptPresetId();
-    const effectiveWebSearch = activePresetId === 'minimal' ? false : webSearch;
+    const apiType = this.config.modelConfig?.apiType;
+    const effectiveWebSearch = (activePresetId === 'minimal' || (apiType && apiType !== 'Responses'))
+      ? false
+      : webSearch;
     if (this.config.modelConfig) {
       this.config.modelConfig = { ...this.config.modelConfig, webSearch: effectiveWebSearch };
     }
@@ -210,7 +214,9 @@ export class QueryEngine {
    * - 该值与每次 query() 发给 LLM 的配置保持一致，供 AgentTool/SpinRunner 创建子代理时继承。
    */
   getEffectiveModelConfig(): LLMConfig | undefined {
-    if (this.getActivePromptPresetId() === 'minimal') {
+    const presetMinimal = this.getActivePromptPresetId() === 'minimal';
+    const apiTypeNotResponses = !!this.config.modelConfig?.apiType && this.config.modelConfig.apiType !== 'Responses';
+    if (presetMinimal || apiTypeNotResponses) {
       if (this.config.modelConfig) {
         return { ...this.config.modelConfig, webSearch: false };
       }

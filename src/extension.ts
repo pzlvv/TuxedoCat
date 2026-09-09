@@ -257,23 +257,27 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
     if (!this.webviewView) { return; }
 
     let modelName = model;
-    if (!modelName) {
-      try {
-        const settingsPath = path.join(os.homedir(), CONFIG_DIR_NAME, 'settings.json');
-        if (fs.existsSync(settingsPath)) {
-          const cfg = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
-          const activeKey = cfg?.llm?.activeProvider;
-          const activeProvider = activeKey ? cfg?.llm?.providers?.[activeKey] : undefined;
+    let modelConfigs: Record<string, { context?: number; output?: number }> = {};
+    try {
+      const settingsPath = path.join(os.homedir(), CONFIG_DIR_NAME, 'settings.json');
+      if (fs.existsSync(settingsPath)) {
+        const cfg = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+        const activeKey = cfg?.llm?.activeProvider;
+        const activeProvider = activeKey ? cfg?.llm?.providers?.[activeKey] : undefined;
+        if (activeProvider?.modelConfigs && typeof activeProvider.modelConfigs === 'object') {
+          modelConfigs = activeProvider.modelConfigs;
+        }
+        if (!modelName) {
           modelName = activeProvider?.defaultModel || activeProvider?.models?.[0] || '';
         }
-      } catch {
-        // 读取失败则使用默认配置
       }
+    } catch {
+      // 读取失败则使用默认配置
     }
 
     this.webviewView.webview.postMessage({
       type: 'contextLimitUpdated',
-      maxContextTokens: getContextWindow(modelName || ''),
+      maxContextTokens: getContextWindow(modelName || '', modelConfigs),
     });
   }
 

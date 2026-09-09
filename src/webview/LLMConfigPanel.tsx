@@ -425,12 +425,12 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     const targetProvider = resolvedActiveKey
       ? providerPayload.find((p) => p.key === resolvedActiveKey)
       : undefined;
-    // Anthropic 协议不支持联网搜索，保存时强制关闭
-    const effectiveWebSearch = (targetProvider?.apiType || activeProvider?.apiType) === 'Anthropic' ? false : !!webSearch;
+    // 联网搜索设置只记录用户选择；非 Responses provider 仅在界面和实际请求中禁用，不修改该设置
+    const configuredWebSearch = !!webSearch;
     // 预设值只在用户实际修改过时才发送；若与打开面板时的初始值相同，则不重复写入 settings.json
     const presetPayload: Record<string, unknown> = {};
-    if (effectiveWebSearch !== (initialWebSearch ?? DEFAULT_WEB_SEARCH)) {
-      presetPayload.webSearch = effectiveWebSearch;
+    if (configuredWebSearch !== (initialWebSearch ?? DEFAULT_WEB_SEARCH)) {
+      presetPayload.webSearch = configuredWebSearch;
     }
     if (thinkingEffort !== (initialThinkingEffort || DEFAULT_THINKING_EFFORT)) {
       presetPayload.thinkingEffort = thinkingEffort;
@@ -1230,7 +1230,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
             >
               <input
                 type="checkbox"
-                checked={webSearch && !webSearchDisabled}
+                checked={webSearch}
                 disabled={webSearchDisabled}
                 onChange={(e) => setWebSearch(e.target.checked)}
                 style={{ accentColor: colors.harness }}

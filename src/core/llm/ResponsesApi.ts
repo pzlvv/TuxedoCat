@@ -430,7 +430,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       retryCount: number,
     ): AsyncGenerator<StreamEvent | Message> {
       // 计算 max_output_tokens：环境变量 > 模型配置 > 全局默认值
-      const effectiveMaxTokens = getMaxOutputTokens(model);
+      const effectiveMaxTokens = getMaxOutputTokens(model, config.modelConfigs);
       const maxTokensValue = maxTokens > 0 ? Math.min(maxTokens, effectiveMaxTokens) : effectiveMaxTokens;
 
       // 转换消息与工具
@@ -462,7 +462,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       if (effectiveThinkingEffort && effectiveThinkingEffort !== 'off') {
         const effort = effectiveThinkingEffort === 'max' ? 'high' : effectiveThinkingEffort;
         requestBody.reasoning = { effort };
-        const effectiveThinkingTokenBudget = thinkingTokenBudget ?? getModelConfig(model).thinking_token_budget;
+        const effectiveThinkingTokenBudget = thinkingTokenBudget ?? getModelConfig(model, config.modelConfigs).thinking_token_budget;
         logger.debug('ResponsesAPI',
           `Reasoning effort=${effort} (thinking budget ${effectiveThinkingTokenBudget} is not directly supported by Responses API reasoning.effort)`);
       }
@@ -718,7 +718,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
           webSearchUsed,
           inputTokens: usage.input_tokens,
           localInputEstimate,
-          contextWindow: getContextWindow(model),
+          contextWindow: getContextWindow(model, config.modelConfigs),
         });
         if (skipDecision.skip) {
           markServerSessionRotate(sessionId, skipDecision.reason);

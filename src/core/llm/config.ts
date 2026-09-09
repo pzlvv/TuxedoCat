@@ -9,7 +9,7 @@ import * as os from 'os';
 import { logger } from '../Logger.js';
 import { saveApiKeyToSettings, readSettingsJson } from '../history/Config.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
-import { DEFAULT_MODEL_CONFIG } from '../utils/modelConfig.js';
+import { DEFAULT_MODEL_CONFIG, type ModelTokenLimits } from '../utils/modelConfig.js';
 import type { PromptPresetId } from '../prompt/PromptPreset.js';
 
 /**
@@ -48,6 +48,8 @@ export interface LLMConfig {
    * @default 'high'
    */
   thinking_effort?: 'off' | 'low' | 'high' | 'max';
+  /** 当前 active provider 的各模型 context/output 覆盖 */
+  modelConfigs?: Record<string, ModelTokenLimits>;
 }
 
 /** settings.json 中 llm.providers 下的单个 provider 配置 */
@@ -62,6 +64,8 @@ export interface LLMProviderConfig {
   models?: string[];
   /** 该服务商的默认模型 */
   defaultModel?: string;
+  /** 该服务商各模型的 context/output 覆盖（与 models 并列，保存时自动维护） */
+  modelConfigs?: Record<string, ModelTokenLimits>;
 }
 
 /** 返回给设置面板的 provider 信息 */
@@ -72,6 +76,7 @@ export interface LLMProviderInfo {
   apiType: ApiType;
   models: string[];
   defaultModel: string;
+  modelConfigs: Record<string, ModelTokenLimits>;
 }
 
 /** 设置面板需要的完整 LLM 配置载荷 */
@@ -147,6 +152,7 @@ function createDefaultConfig(): LLMConfig {
     webSearch: true,
     thinking_budget_tokens: modelCfg.thinking_token_budget,
     thinking_effort: 'high',
+    modelConfigs: {},
   };
 }
 
@@ -377,6 +383,9 @@ export async function getLLMConfigPanelPayload(): Promise<LLMConfigPanelPayload>
           ))
         : [],
       defaultModel: typeof p?.defaultModel === 'string' && p!.defaultModel.trim() ? p!.defaultModel.trim() : '',
+      modelConfigs: p?.modelConfigs && typeof p.modelConfigs === 'object'
+        ? p.modelConfigs
+        : {},
     }));
 
   const rawActive = llm.activeProvider;
@@ -432,6 +441,9 @@ async function getDefaultConfig(sessionId?: string): Promise<LLMConfig> {
       webSearch: configFile.llm.webSearch ?? defaultConfig.webSearch,
       thinking_budget_tokens: configFile.llm.thinking_budget_tokens ?? defaultConfig.thinking_budget_tokens,
       thinking_effort: configFile.llm.thinking_effort ?? defaultConfig.thinking_effort,
+      modelConfigs: activeProvider?.modelConfigs && typeof activeProvider.modelConfigs === 'object'
+        ? activeProvider.modelConfigs
+        : {},
     };
   } else {
     config = { ...defaultConfig };

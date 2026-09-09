@@ -10,7 +10,7 @@ import { getPendingToolUseIds } from '../core/tools/index.js';
 import { providerKeyFromBaseURL } from '../core/utils/providerKey.js';
 import { buildEditDiffHunks } from '../core/utils/editDiff.js';
 import { buildUserContent, extractUserContent } from '../core/utils/contentBlocks.js';
-import { MODEL_CONFIGS } from '../core/utils/modelConfig.js';
+import { MODEL_CONFIGS, getModelConfig, type ModelTokenLimits } from '../core/utils/modelConfig.js';
 import { userChoiceQueue } from '../core/UserChoiceQueue.js';
 import type { WebviewMessage } from '../core/webviewTypes.js';
 import type { Message } from '../core/types.js';
@@ -1668,11 +1668,33 @@ export class WebviewMessageHandler {
                     .map((m) => m.trim()),
                 ))
               : [];
+            // modelConfigs：已有配置保留，没有的模型写入当前 fallback 值
+            const oldProvider = cfg.llm.providers?.[key];
+            const oldModelConfigs: Record<string, ModelTokenLimits> = oldProvider?.modelConfigs
+              && typeof oldProvider.modelConfigs === 'object'
+              ? oldProvider.modelConfigs
+              : {};
+            const modelConfigs: Record<string, ModelTokenLimits> = {};
+            for (const [model, limits] of Object.entries(oldModelConfigs)) {
+              if (limits && (Number.isFinite(limits?.context) || Number.isFinite(limits?.output))) {
+                modelConfigs[model] = { ...limits };
+              }
+            }
+            for (const model of providerModels) {
+              if (!modelConfigs[model]) {
+                const fallback = getModelConfig(model);
+                modelConfigs[model] = {
+                  context: fallback.contextWindow,
+                  output: fallback.maxOutputTokens,
+                };
+              }
+            }
             providersMap[key] = {
               baseURL: providerBaseURL,
               apiKey: providerApiKey,
               apiType: p?.apiType === 'Anthropic' ? 'Anthropic' : 'Responses',
               models: providerModels,
+              modelConfigs,
               ...(typeof p?.defaultModel === 'string' && p.defaultModel.trim()
                 ? { defaultModel: p.defaultModel.trim() }
                 : {}),

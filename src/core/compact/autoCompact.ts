@@ -4,7 +4,7 @@
 
 import type { Message } from '../types.js';
 import type { AutoCompactTrackingState } from './types.js';
-import { getContextWindow } from '../utils/modelConfig.js';
+import { getContextWindow, type ModelTokenLimits } from '../utils/modelConfig.js';
 import { COMPACT_THRESHOLDS } from './types.js';
 import { logger } from '../Logger.js';
 
@@ -25,8 +25,8 @@ export function isAutoCompactEnabled(): boolean {
  * Get the auto-compact threshold in tokens
  * @param modelName 当前使用的模型名称；未传时使用默认配置（1M 上下文）
  */
-export function getThreshold(modelName?: string): number {
-  return getContextWindow(modelName || '') - COMPACT_THRESHOLDS.AUTOCOMPACT_BUFFER;
+export function getThreshold(modelName?: string, modelConfigs?: Record<string, ModelTokenLimits>): number {
+  return getContextWindow(modelName || '', modelConfigs) - COMPACT_THRESHOLDS.AUTOCOMPACT_BUFFER;
 }
 
 /**
@@ -45,6 +45,8 @@ export async function shouldAutoCompact(
   exactTokenCount?: number,
   /** 当前使用的模型名称，用于获取对应的上下文窗口阈值 */
   modelName?: string,
+  /** 当前 provider 的模型 context/output 覆盖 */
+  modelConfigs?: Record<string, ModelTokenLimits>,
 ): Promise<boolean> {
   // Check if enabled
   if (!isAutoCompactEnabled()) {
@@ -67,7 +69,7 @@ export async function shouldAutoCompact(
   }
 
   const tokenCount = exactTokenCount;
-  const threshold = getThreshold(modelName);
+  const threshold = getThreshold(modelName, modelConfigs);
 
   logger.info('autoCompact', `Token count: ${tokenCount} (exact), threshold: ${threshold} (${Math.round((tokenCount / (threshold + COMPACT_THRESHOLDS.AUTOCOMPACT_BUFFER)) * 100)}%)`);
 

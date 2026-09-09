@@ -127,7 +127,7 @@ async function* queryLoop(
         }
       }
 
-      if (await shouldAutoCompact(messages, state.autoCompactTracking, exactTokenCount, params.modelConfig?.model)) {
+      if (await shouldAutoCompact(messages, state.autoCompactTracking, exactTokenCount, params.modelConfig?.model, params.modelConfig?.modelConfigs)) {
         const result = await compactConversation(params.sessionID, messages, undefined, true);
         const postCompactMessages = buildPostCompactMessages(result);
 

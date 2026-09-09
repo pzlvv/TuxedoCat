@@ -29,6 +29,8 @@ export interface ProviderConfig {
   models?: string[];
   /** 该服务商的默认模型 */
   defaultModel?: string;
+  /** 该服务商各模型的 context/output 配置 */
+  modelConfigs?: Record<string, { context?: number; output?: number }>;
 }
 
 export interface Message {
