@@ -38,9 +38,9 @@ export interface ModelConfig {
  */
 export const DEFAULT_MODEL_CONFIG: ModelConfig = {
   name: 'deepseek-v4-flash',
-  contextWindow: 1_000_000,
+  contextWindow: 1024 * 1024,
   thinking_token_budget: 192_000,
-  maxOutputTokens: 384_000,
+  maxOutputTokens: 384 * 1024,
   supportsThinking: true,
 };
 
@@ -53,9 +53,9 @@ export const MODEL_CONFIGS: ModelConfig[] = [
   // --- deepseek-v4-pro: 高质量模型
   {
     name: 'deepseek-v4-pro',
-    contextWindow: 1_000_000,
+    contextWindow: 1024 * 1024,
     thinking_token_budget: 192_000,
-    maxOutputTokens: 384_000,
+    maxOutputTokens: 384 * 1024,
     supportsThinking: true,
   },
 ];
@@ -102,7 +102,7 @@ export function getContextWindow(modelName: string): number {
 
 // 默认 max_tokens 常量
 const MAX_OUTPUT_TOKENS_DEFAULT = 32_000;
-const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 384_000;
+const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 384 * 1024;
 
 export { ENV_MAX_OUTPUT_TOKENS };
 /**

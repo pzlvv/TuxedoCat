@@ -92,8 +92,8 @@ const ContextProgressBar = React.memo(({ totalContextTokens, isDark, maxContextT
   const maxContext = maxContextTokens;
   const pct = Math.min((totalContextTokens / maxContext) * 100, 100);
   const barColor = pct < 50 ? '#22c55e' : pct < 80 ? '#f97316' : '#ef4444';
-  const contextK = Math.floor(maxContext / 1000);
-  const displayText = `${Math.floor(totalContextTokens / 1000)}/${contextK}`;
+  const contextK = Math.floor(maxContext / 1024);
+  const displayText = `${Math.floor(totalContextTokens / 1024)}/${contextK}`;
 
   return (
     <span

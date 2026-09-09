@@ -49,6 +49,7 @@ export const zhDict: Record<string, string> = {
   'llmConfig.baseUrlHint': '由服务商提供，可在服务商控制台找到',
   'llmConfig.enterBaseUrl': '请输入 API 服务地址',
   'llmConfig.invalidBaseUrl': '无效的 API 服务地址',
+  'llmConfig.duplicateBaseUrl': '该服务地址已存在，请勿重复添加',
   'llmConfig.newProvider': '新服务商',
   'llmConfig.addProvider': '新增',
   'llmConfig.removeProvider': '删除此服务商',

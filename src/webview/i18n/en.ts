@@ -49,6 +49,7 @@ export const enDict: Record<string, string> = {
   'llmConfig.baseUrlHint': 'Provided by your API provider; usually found in the provider console',
   'llmConfig.enterBaseUrl': 'Please enter an API server address',
   'llmConfig.invalidBaseUrl': 'Invalid API server address',
+  'llmConfig.duplicateBaseUrl': 'This server address already exists. Please do not add it again.',
   'llmConfig.newProvider': 'New Provider',
   'llmConfig.addProvider': 'Add',
   'llmConfig.removeProvider': 'Remove this provider',

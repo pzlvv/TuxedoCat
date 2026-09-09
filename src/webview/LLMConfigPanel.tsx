@@ -60,9 +60,9 @@ const API_TYPE_DEFAULT_URL: Record<string, string> = {
 };
 
 /** 生成一个全新的空 Provider 草稿 */
-const createEmptyProviderDraft = (): ProviderDraft => ({
+const createEmptyProviderDraft = (baseURL: string = ''): ProviderDraft => ({
   id: `provider_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
-  baseURL: DEFAULT_BASE_URL,
+  baseURL,
   apiKey: '',
   apiType: DEFAULT_API_TYPE,
   models: [],
@@ -228,6 +228,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   const [defaultPromptMode, setDefaultPromptMode] = useState<PromptMode>(initialDefaultPromptMode || DEFAULT_PROMPT_MODE);
   const [language, setLanguage] = useState<'auto' | 'zh' | 'en'>(initialLanguage || 'auto');
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
+  const [baseURLError, setBaseURLError] = useState<string | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
@@ -243,6 +244,21 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   const [clearingSpaceDirName, setClearingSpaceDirName] = useState<string | null>(null);
 
   const activeProvider = providers.find((p) => p.id === activeTabId) || providers[0];
+
+  // 当前 provider 的地址是否与列表内其它 provider 重复（按 provider key 判断，避免仅路径不同）
+  const activeDuplicateKey = activeProvider
+    ? (() => {
+        const key = providerKeyOf(activeProvider.baseURL);
+        if (!key) return '';
+        const matches = providers.filter((p) => p.id !== activeProvider.id && providerKeyOf(p.baseURL) === key);
+        return matches.length > 0 ? key : '';
+      })()
+    : '';
+  // Base URL 校验：与既有 provider 重复时立即标红；空地址在保存时通过 baseURLError 提示
+  const activeBaseURLError = (() => {
+    if (activeDuplicateKey) return t('llmConfig.duplicateBaseUrl');
+    return null;
+  })() ?? baseURLError;
 
   // 未保存修改检测：与打开面板时的初始值比较
   const initialProvidersSnapshot = initialProviders && initialProviders.length > 0
@@ -297,6 +313,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     if (!activeProvider) return;
     const oldKey = providerKeyOf(activeProvider.baseURL);
     updateProvider(activeProvider.id, { baseURL: value });
+    setBaseURLError(null);
     const newKey = providerKeyOf(value);
     if (pendingUseProviderKey && pendingUseProviderKey === oldKey) {
       setPendingUseProviderKey(newKey || null);
@@ -327,6 +344,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       ? nextDefault
       : activeProvider.baseURL;
     updateProvider(activeProvider.id, { apiType: type, baseURL: nextBaseURL });
+    setBaseURLError(null);
     const newKey = providerKeyOf(nextBaseURL);
     if (pendingUseProviderKey && pendingUseProviderKey === oldKey) {
       setPendingUseProviderKey(newKey || null);
@@ -407,6 +425,25 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     const targetProvider = resolvedActiveKey
       ? providerPayload.find((p) => p.key === resolvedActiveKey)
       : undefined;
+    // Anthropic 协议不支持联网搜索，保存时强制关闭
+    const effectiveWebSearch = (targetProvider?.apiType || activeProvider?.apiType) === 'Anthropic' ? false : !!webSearch;
+    // 预设值只在用户实际修改过时才发送；若与打开面板时的初始值相同，则不重复写入 settings.json
+    const presetPayload: Record<string, unknown> = {};
+    if (effectiveWebSearch !== (initialWebSearch ?? DEFAULT_WEB_SEARCH)) {
+      presetPayload.webSearch = effectiveWebSearch;
+    }
+    if (thinkingEffort !== (initialThinkingEffort || DEFAULT_THINKING_EFFORT)) {
+      presetPayload.thinkingEffort = thinkingEffort;
+    }
+    if (defaultAgentMode !== (initialDefaultAgentMode || DEFAULT_AGENT_MODE)) {
+      presetPayload.defaultAgentMode = defaultAgentMode;
+    }
+    if (defaultPromptMode !== (initialDefaultPromptMode || DEFAULT_PROMPT_MODE)) {
+      presetPayload.defaultPromptMode = defaultPromptMode;
+    }
+    if (language !== (initialLanguage || 'auto')) {
+      presetPayload.language = language;
+    }
     postMessage({
       type: 'saveLLMConfig',
       // 只要需要保存 provider（有 provider 变更或显式选择了服务商），就写入完整 providers；
@@ -424,12 +461,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               : {}),
           }
         : {}),
-      // Anthropic 协议不支持联网搜索，保存时强制关闭
-      webSearch: (targetProvider?.apiType || activeProvider?.apiType) === 'Anthropic' ? false : !!webSearch,
-      thinkingEffort,
-      defaultAgentMode,
-      defaultPromptMode,
-      language,
+      ...presetPayload,
       saveProviders,
       closeAfterSave,
     });
@@ -468,6 +500,30 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     const providerPayload = buildProvidersPayload();
     // 有 provider 变更，或用户显式选择了要使用的服务商时，都需要保存 provider 列表。
     const saveProviders = providersChanged || pendingUseProviderKey !== null;
+    // 保存前校验地址：不允许为空，也不允许与其它服务商重复
+    const duplicateKey = (() => {
+      const seen = new Set<string>();
+      for (const p of providers) {
+        const key = providerKeyOf(p.baseURL);
+        if (!key) continue;
+        if (seen.has(key)) return key;
+        seen.add(key);
+      }
+      return '';
+    })();
+    if (activeProvider && !activeProvider.baseURL.trim()) {
+      setBaseURLError(t('llmConfig.enterBaseUrl'));
+      setApiKeyError(null);
+      setModelError(null);
+      return;
+    }
+    if (duplicateKey) {
+      setBaseURLError(t('llmConfig.duplicateBaseUrl'));
+      setApiKeyError(null);
+      setModelError(null);
+      return;
+    }
+    setBaseURLError(null);
     // 保存前必须至少有一个可用的服务商，并且必须明确选择了要使用的服务商
     const activeKey = pendingUseProviderKey || activeProviderKey || null;
     if (providerPayload.length === 0 || !activeKey || !providerPayload.some((p) => p.key === activeKey)) {
@@ -496,6 +552,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   };
 
   const handleAddProvider = () => {
+    // 新增服务商时不预填默认地址，避免与已有服务商重复；地址栏留空让用户填写
     const draft = createEmptyProviderDraft();
     const next = [...providers, draft];
     setProviders(next);
@@ -505,6 +562,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       setPendingUseProviderKey(providerKeyOf(draft.baseURL));
     }
     setApiKeyError(null);
+    setBaseURLError(null);
     setFetchModelsError(null);
     setModelError(null);
   };
@@ -519,6 +577,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       setActiveProviderKey('');
       setPendingUseProviderKey(null);
       setApiKeyError(null);
+      setBaseURLError(null);
       setFetchModelsError(null);
       setModelError(null);
       return;
@@ -533,14 +592,18 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     }
     if (removed) {
       const removedKey = providerKeyOf(removed.baseURL);
-      if (activeProviderKey && activeProviderKey === removedKey) {
+      // 删除后若仍有其它草稿使用相同 key（重复项），保留原默认/待使用标记；
+      // 只有该 key 完全不存在时才清除标记，避免删除重复项误删原 provider 的标记。
+      const stillHasKey = removedKey && next.some((p) => providerKeyOf(p.baseURL) === removedKey);
+      if (activeProviderKey && activeProviderKey === removedKey && !stillHasKey) {
         setActiveProviderKey('');
       }
-      if (pendingUseProviderKey && pendingUseProviderKey === removedKey) {
+      if (pendingUseProviderKey && pendingUseProviderKey === removedKey && !stillHasKey) {
         setPendingUseProviderKey(null);
       }
     }
     setApiKeyError(null);
+    setBaseURLError(null);
     setFetchModelsError(null);
     setModelError(null);
   };
@@ -706,12 +769,16 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
             >
             {providers.map((p, idx) => {
               const key = providerKeyOf(p.baseURL);
-              const label = key || t('llmConfig.newProvider');
+              // 同一地址的后续草稿视为重复项：重复项不复用原 provider 的标题和默认标记
+              const isDuplicateTab = !!key
+                && providers.findIndex((candidate) => providerKeyOf(candidate.baseURL) === key) !== idx;
+              const label = key && !isDuplicateTab ? key : t('llmConfig.newProvider');
               const isActiveTab = p.id === activeTabId;
               const isPendingUse = !!key && key === pendingUseProviderKey;
               const hasPendingUse = !!pendingUseProviderKey;
-              // 只有一个点：有暂存选择时显示在暂存 tab 上，否则显示在当前默认 tab 上
-              const isDotTarget = !!key && (hasPendingUse ? isPendingUse : key === activeProviderKey);
+              // 同一 key 只在第一个草稿上显示默认/待使用标记，避免重复项继承标记
+              const isDotTarget = !!key && !isDuplicateTab
+                && (hasPendingUse ? isPendingUse : key === activeProviderKey);
               return (
                 <div
                   key={p.id}
@@ -723,7 +790,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                 >
                   <button
                     type="button"
-                    onClick={() => { setActiveTabId(p.id); setApiKeyError(null); setFetchModelsError(null); setModelError(null); }}
+                    onClick={() => { setActiveTabId(p.id); setApiKeyError(null); setBaseURLError(null); setFetchModelsError(null); setModelError(null); }}
                     onDoubleClick={() => handleUseProvider(p)}
                     title={t('llmConfig.useThisProviderHint')}
                     style={{
@@ -860,10 +927,18 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                   value={activeProvider.baseURL}
                   onChange={(e) => handleBaseURLChange(e.target.value)}
                   placeholder={t('llmConfig.baseUrlPlaceholder')}
-                  style={inputStyle}
-                  onFocus={(e) => { e.target.style.borderColor = colors.harness; }}
-                  onBlur={(e) => { e.target.style.borderColor = colors.border; }}
+                  style={{
+                    ...inputStyle,
+                    borderColor: activeBaseURLError ? '#ef4444' : colors.border,
+                  }}
+                  onFocus={(e) => { if (!activeBaseURLError) e.target.style.borderColor = colors.harness; }}
+                  onBlur={(e) => { if (!activeBaseURLError) e.target.style.borderColor = colors.border; }}
                 />
+                {activeBaseURLError && (
+                  <div className="text-[11px] mt-1" style={{ color: '#ef4444' }}>
+                    {activeBaseURLError}
+                  </div>
+                )}
                 <div className="text-[11px] mt-1" style={{ color: colors.textSystem }}>
                   {t('llmConfig.baseUrlHint')}
                 </div>

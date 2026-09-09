@@ -1690,31 +1690,44 @@ export class WebviewMessageHandler {
           }
         }
 
-        if (typeof webSearch === 'boolean') {
+        // 预设值只在发生变化（或尚不存在）时写入；如果 settings 中已经有相同值，
+        // 新建/编辑 Provider 时不再重复写入，避免每次保存都覆盖一遍预设字段。
+        if (typeof webSearch === 'boolean' && cfg.llm.webSearch !== webSearch) {
           cfg.llm.webSearch = webSearch;
         }
-        if (thinkingEffort) {
+        if (thinkingEffort && cfg.llm.thinking_effort !== thinkingEffort) {
           cfg.llm.thinking_effort = thinkingEffort;
         }
         // 默认工作模式：顶层字段，与 llm 平级
-        if (defaultAgentMode) {
+        if (defaultAgentMode && cfg.defaultAgentMode !== defaultAgentMode) {
           cfg.defaultAgentMode = defaultAgentMode;
         }
-        if (defaultPromptMode === 'normal' || defaultPromptMode === 'minimal' || defaultPromptMode === 'mixed') {
+        if ((defaultPromptMode === 'normal' || defaultPromptMode === 'minimal' || defaultPromptMode === 'mixed')
+          && cfg.defaultPromptMode !== defaultPromptMode) {
           cfg.defaultPromptMode = defaultPromptMode;
         }
         // UI 语言（auto | zh | en）：顶层字段
         if (language === 'zh' || language === 'en' || language === 'auto') {
-          cfg.uiLanguage = language;
-        } else {
-          delete cfg.uiLanguage;
+          const nextUiLanguage = language;
+          if (cfg.uiLanguage !== nextUiLanguage) {
+            if (nextUiLanguage === 'auto') {
+              // auto 是默认值，若当前没有显式配置则无需写入
+              if (cfg.uiLanguage !== undefined) {
+                delete cfg.uiLanguage;
+              }
+            } else {
+              cfg.uiLanguage = nextUiLanguage;
+            }
+          }
         }
       });
 
       // 同步更新 core 层界面语言，使 Spin 等核心流程文案跟随设置
       try {
-        const { setCoreUiLanguage } = await import('../core/i18n.js');
-        setCoreUiLanguage(language === 'zh' || language === 'en' || language === 'auto' ? language : 'auto');
+        if (language === 'zh' || language === 'en' || language === 'auto') {
+          const { setCoreUiLanguage } = await import('../core/i18n.js');
+          setCoreUiLanguage(language);
+        }
       } catch {}
 
       this.log(`[VSCodeUI] LLM config saved successfully`);
@@ -1764,7 +1777,7 @@ export class WebviewMessageHandler {
         defaultAgentMode: savedAgentMode,
         defaultPromptMode: savedPromptMode,
         webSearch: savedWebSearch,
-        language: language === 'zh' || language === 'en' || language === 'auto' ? language : 'auto',
+        ...(language === 'zh' || language === 'en' || language === 'auto' ? { language } : {}),
         activeProvider: savedActiveProvider,
         closeAfterSave: !!closeAfterSave,
       });
