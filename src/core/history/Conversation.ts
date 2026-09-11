@@ -6,7 +6,7 @@
 import { appendFile, writeFile, readFile, readdir, stat, unlink } from 'fs/promises';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
-import { getProjectConversationDir, getProjectRoot, getConversationDir, ensureProjectConversationDir, ensureProjectConversationDirSync } from './Config.js';
+import { getProjectConversationDir, getProjectRoot, tryGetProjectRoot, getConversationDir, ensureProjectConversationDir, ensureProjectConversationDirSync } from './Config.js';
 import type { Message } from '../types.js';
 import type { PromptPresetId } from '../prompt/PromptPreset.js';
 import { buildConversationTitle, extractUserContent } from '../utils/contentBlocks.js';
@@ -761,7 +761,16 @@ export function createConversationMetadataSync(
  * 加载对话列表
  */
 export async function loadConversationList(): Promise<ConversationMetadata[]> {
-  const currentProject = getProjectRoot();
+  // 宿主未打开工作目录时（如 VS Code 扩展开发宿主窗口、用户尚未选择文件夹）
+  // 没有项目对话目录，返回空列表而不是抛错：
+  // getProjectRoot() 的异常会一路冒泡到 webview 消息回调，变成
+  // "rejected promise not handled within 1 second"。
+  const currentProject = tryGetProjectRoot();
+  if (!currentProject) {
+    conversationListCache = null;
+    conversationListCacheProject = null;
+    return [];
+  }
 
   // 项目路径变化（工作区切换）时缓存自动失效，重新从新项目目录加载
   if (conversationListCache !== null && conversationListCacheProject !== currentProject) {

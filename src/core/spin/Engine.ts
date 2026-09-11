@@ -40,13 +40,33 @@ export async function readSpinJson(cwd: string): Promise<SpinDesign | null> {
 }
 
 /** spin.json 结构问题分类 */
-export type SpinDesignIssue = 'invalid' | 'empty-node' | 'not-dag';
+export type SpinDesignIssue = 'invalid' | 'empty-node' | 'not-dag' | 'variable-no-value';
+
+/** 内置变量名，不能作为用户变量 */
+const RESERVED_BUILTIN_VARS = ['ROLLOUT_ID', 'LINE'];
+
+/**
+ * 找出“已命名但未赋值”的用户变量名（值为空字符串/仅空白）。
+ * 变量名非法或与内置变量冲突的情况由其他校验处理，这里只关注值缺失。
+ */
+export function getVariablesWithoutValue(config: Partial<SpinDesign>): string[] {
+  const vars = config.variables;
+  if (!vars || typeof vars !== 'object' || Array.isArray(vars)) return [];
+  const result: string[] = [];
+  for (const key of Object.keys(vars)) {
+    if (!key || RESERVED_BUILTIN_VARS.includes(key)) continue;
+    const value = (vars as Record<string, unknown>)[key];
+    if (typeof value !== 'string' || value.trim() === '') result.push(key);
+  }
+  return result;
+}
 
 /**
  * 获取 spin.json 的结构问题类型。
  * - invalid: JSON/节点数据非法
  * - empty-node: 存在空节点（无任务描述）
  * - not-dag: 不是有效的无环有向图（DAG）
+ * - variable-no-value: 存在未赋值的用户变量
  */
 function getSpinDesignIssue(config: unknown): SpinDesignIssue | null {
   if (!config || typeof config !== 'object') return 'invalid';
@@ -63,6 +83,8 @@ function getSpinDesignIssue(config: unknown): SpinDesignIssue | null {
       return 'empty-node';
     }
   }
+
+  if (getVariablesWithoutValue(spin).length > 0) return 'variable-no-value';
 
   if (spin.edges !== undefined && !Array.isArray(spin.edges)) return 'invalid';
 
@@ -90,16 +112,24 @@ export function validateSpinDesign(config: unknown): string | null {
   }
 
   // 用户变量不能与内置变量冲突
-  const reservedBuiltins = ['ROLLOUT_ID', 'LINE'];
   if (spin.variables && typeof spin.variables === 'object') {
     for (const key of Object.keys(spin.variables)) {
-      if (reservedBuiltins.includes(key)) {
+      if (RESERVED_BUILTIN_VARS.includes(key)) {
         return tt(
           `变量 "${key}" 与内置变量冲突，请重命名后重试。`,
           `Variable "${key}" conflicts with a built-in variable. Please rename it and retry.`,
         );
       }
     }
+  }
+
+  // 变量必须已赋值，否则 ${KEY} 会被替换为空字符串
+  const noValueVars = getVariablesWithoutValue(spin);
+  if (noValueVars.length > 0) {
+    return tt(
+      `存在未赋值的变量（${noValueVars.join(', ')}），请在变量列表中填写变量值后重试。`,
+      `Variables without a value (${noValueVars.join(', ')}), please fill in their values in the variable list and retry.`,
+    );
   }
 
   for (const node of spin.nodes) {

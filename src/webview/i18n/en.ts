@@ -17,6 +17,8 @@ export const enDict: Record<string, string> = {
   'app.backToParent': 'Back to parent conversation',
   'app.newChat': 'New Chat',
   'app.closeChat': 'Close this conversation (release resources)',
+  'app.openWorkspaceHint': 'Open a workspace folder to continue',
+  'app.openWorkspaceButton': 'Open Workspace',
 
   /* ── DeleteConfirmDialog.tsx ─────────────────────────────── */
   'deleteConfirm.confirm': 'Are you sure you want to delete "{title}"?',
@@ -93,6 +95,12 @@ export const enDict: Record<string, string> = {
   'llmConfig.languageLabel': 'Language',
   'llmConfig.languageAuto': 'Auto',
   'llmConfig.languageHint': 'UI language; Auto follows the VS Code / system language',
+  'llmConfig.shortcutLabel': 'Wake Shortcut',
+  'llmConfig.shortcutChange': 'Click to change',
+  'llmConfig.shortcutRecording': 'Press keys...',
+  'llmConfig.shortcutHint': 'When the Electron app is minimized to the system tray, use this shortcut to wake the window. Click the button above and press a new key combination.',
+  'llmConfig.shortcutInvalid': 'Invalid shortcut. Please set it again.',
+  'llmConfig.shortcutConflict': 'Shortcut {shortcut} could not be registered. It may be used by the system or another app. Please choose another shortcut.',
   'llmConfig.sectionConversationSpace': 'Conversation Space',
   'llmConfig.conversationSpaceHint': 'Show sizes of conversation spaces. You can clear conversation data.',
   'llmConfig.conversationSpaceStats': 'Scan',

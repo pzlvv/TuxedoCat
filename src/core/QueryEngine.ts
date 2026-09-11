@@ -89,6 +89,8 @@ export class QueryEngine {
   private externalAbortController: AbortControllerLike | undefined;
   // 存储当前活动的 AbortController，供 interrupt() 使用
   private activeAbortController: AbortControllerLike | null = null;
+  /** 用户已请求中止；用于覆盖“中止发生在两次查询之间”的竞态 */
+  private abortRequested = false;
   /** 用户界面的 thinking mode 覆盖值（'off' | 'low' | 'high' | 'max'），覆盖配置文件 */
   public thinkingModeOverride?: 'off' | 'low' | 'high' | 'max';
   /** 会话关联的 Web Search 覆盖值（即使 modelConfig 尚未初始化也记录，供查询时合并） */
@@ -688,6 +690,17 @@ export class QueryEngine {
    * 创建新的 AbortController（每次查询前调用）
    */
   private createAbortController(): AbortControllerLike {
+    // 已请求中止：后续任何新建的 controller 都必须处于 aborted 状态，
+    // 避免 abort 后仍启动新的 LLM 请求或子代理。
+    if (this.abortRequested) {
+      const controller = createAbortController();
+      controller.abort();
+      this.activeAbortController = controller;
+      if (this.externalAbortController && !this.externalAbortController.signal?.aborted) {
+        this.externalAbortController.abort();
+      }
+      return controller;
+    }
     if (this.externalAbortController) {
       // 如果 externalAbortController 已被 abort，说明用户已中止了当前查询。
       // 创建一个新的 controller 但立即 abort 它，使后续 LLM 请求立即失败，
@@ -728,6 +741,11 @@ export class QueryEngine {
 
     const manageQueryUI = options?.manageQueryUI === true;
     const promptStr = typeof _prompt === 'string' ? _prompt : String(_prompt);
+
+    if (type === 'user') {
+      // 用户发起新一轮消息：清除上一次 abort 标记，恢复正常可执行状态
+      this.abortRequested = false;
+    }
 
     if (type === 'reminder') {
       this.pendingReminder = promptStr;
@@ -794,6 +812,13 @@ export class QueryEngine {
    * 构造一条 assistant 消息，包含 tool_use block，然后执行 runTools
    */
   async submitToolUse(toolUseInput: { name: string; input: Record<string, unknown> }): Promise<void> {
+    // 已请求中止时不再启动新的工具调用（例如 SpinLoop 的 Agent 子任务），
+    // 避免 abort 与 submitToolUse 之间的竞态留下仍在运行的子代理。
+    if (this.isAborted()) {
+      logger.info('QueryEngine', `submitToolUse skipped because session ${this.sesssionID} is aborted`);
+      return;
+    }
+
     const toolUseId = `tooluse_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     await this.persistUnpersistedMessages().catch((err: unknown) => {
@@ -1115,9 +1140,60 @@ export class QueryEngine {
   }
 
   /**
-   * 中断当前查询
+   * 当前引擎是否已被用户中止。
+   * 用于 SpinLoop 等待子代理回复时及时退出，避免无限等待。
    */
-  interrupt(): void {
+  isAborted(): boolean {
+    return this.abortRequested || !!(
+      this.activeAbortController?.signal?.aborted ||
+      this.externalAbortController?.signal?.aborted
+    );
+  }
+
+  /**
+   * 丢弃尚未消费的后台 Bash 任务完成通知。
+   * 用户 abort 后，已排队但未进入 LLM 上下文的后台任务结果不应再被消费。
+   */
+  private discardBackgroundTaskNotifications(): void {
+    for (let i = this.agentMessageQueue.length - 1; i >= 0; i--) {
+      const content = this.agentMessageQueue[i]?.content ?? '';
+      if (content.includes('**Background task completed**')) {
+        this.agentMessageQueue.splice(i, 1);
+      }
+    }
+  }
+
+  /**
+   * 中止当前会话所属的所有运行中后台 Bash 任务。
+   * 被中止任务的结果会被 LocalShellTask 直接丢弃，不再通知 LLM。
+   */
+  private abortBackgroundTasksForCurrentSession(): void {
+    try {
+      const { abortBackgroundTasksForSession } = require('./tools/bash/LocalShellTask.js') as typeof import('./tools/bash/LocalShellTask.js');
+      const count = abortBackgroundTasksForSession(this.sesssionID);
+      if (count > 0) {
+        logger.info('QueryEngine', `Aborted ${count} background task(s) for ${this.sesssionID}`);
+      }
+    } catch (err) {
+      logger.warn('QueryEngine', `Failed to abort background tasks for ${this.sesssionID}: ${err}`);
+    }
+  }
+
+  /**
+   * 递归中止当前会话及其所有子对话。
+   * 子对话的后台 Bash 任务同样会被中止，结果直接丢弃。
+   */
+  private interruptRecursive(visited: Set<string>): void {
+    if (visited.has(this.sesssionID)) return;
+    visited.add(this.sesssionID);
+    this.abortRequested = true;
+
+    // 1. 丢弃已排队但未消费的后台任务完成通知
+    this.discardBackgroundTaskNotifications();
+    // 2. 中止本会话的后台 Bash 任务
+    this.abortBackgroundTasksForCurrentSession();
+
+    // 3. 中止当前查询
     if (this.activeAbortController) {
       this.activeAbortController.abort();
     } else {
@@ -1129,6 +1205,26 @@ export class QueryEngine {
         this.externalAbortController.abort();
       }
     }
+
+    // 4. 递归中止子对话（包括其后台任务）
+    try {
+      const { subAgentRegistry } = require('./tools/agent/SubAgentRegistry.js') as typeof import('./tools/agent/SubAgentRegistry.js');
+      for (const childId of subAgentRegistry.listForCreator(this.sesssionID)) {
+        const record = subAgentRegistry.get(childId);
+        if (record?.engine) {
+          record.engine.interruptRecursive(visited);
+        }
+      }
+    } catch (err) {
+      logger.warn('QueryEngine', `Failed to interrupt child sessions for ${this.sesssionID}: ${err}`);
+    }
+  }
+
+  /**
+   * 中断当前查询，并递归中止所有子对话及其后台 Bash 任务。
+   */
+  interrupt(): void {
+    this.interruptRecursive(new Set<string>());
   }
 
   /**

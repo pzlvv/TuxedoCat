@@ -49,6 +49,7 @@ const spinZhDict: Record<string, string> = {
   'node.forEachHint': '按该变量每行执行，${LINE} 为当前行',
   'toolbar.saveForEachVarMissing': '节点 {id}: For Each 变量 "{name}" 不存在',
   'toolbar.saveBuiltinVarConflict': '变量名与内置变量冲突: {names}',
+  'toolbar.saveVariableNoValue': '存在未赋值的变量: {names}',
   'toast.saveFailed': '保存失败: ',
   'toast.exportSuccess': '已导出到 {path}',
   'toast.exportFailed': '导出失败: ',
@@ -115,6 +116,7 @@ const spinEnDict: Record<string, string> = {
   'node.forEachHint': 'Executes once per line of this variable; ${LINE} is the current line',
   'toolbar.saveForEachVarMissing': 'Node {id}: For Each variable "{name}" does not exist',
   'toolbar.saveBuiltinVarConflict': 'Variable name conflicts with built-in variable: {names}',
+  'toolbar.saveVariableNoValue': 'Variables without a value: {names}',
   'toast.saveFailed': 'Save failed: ',
   'toast.exportSuccess': 'Exported to {path}',
   'toast.exportFailed': 'Export failed: ',
@@ -946,6 +948,8 @@ function __spinT(key, params) {
       v.value = valueInput.value;
       autoSizeVariableValue(valueInput);
       persistState();
+      // 变量值清空/填写时同步刷新保存按钮的黄色告警状态
+      revalidateDesign();
     });
     valueInput.addEventListener('blur', function() {
       saveDesign();
@@ -2396,6 +2400,18 @@ function __spinT(key, params) {
     });
     if (builtinConflicts.length > 0) {
       forEachErrors.push(__spinT('toolbar.saveBuiltinVarConflict', { names: builtinConflicts.join(', ') }));
+    }
+
+    // 变量名合法但未填写变量值：保存按钮变黄提示；/spin 执行时同样会被拦截。
+    var noValueVars = [];
+    variables.forEach(function(v) {
+      var key = (v.key || '').trim();
+      if (key && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && reservedBuiltins.indexOf(key) === -1) {
+        if ((v.value || '').trim() === '') noValueVars.push(key);
+      }
+    });
+    if (noValueVars.length > 0) {
+      forEachErrors.push(__spinT('toolbar.saveVariableNoValue', { names: noValueVars.join(', ') }));
     }
 
     var nodeIds = nodes.map(function(n) { return n.id; });

@@ -4,8 +4,8 @@
 
 import type { Message } from '../types.js';
 import type { AutoCompactTrackingState } from './types.js';
-import { getContextWindow, type ModelTokenLimits } from '../utils/modelConfig.js';
-import { COMPACT_THRESHOLDS } from './types.js';
+import { getContextWindow, getMaxOutputTokens, type ModelTokenLimits } from '../utils/modelConfig.js';
+import { COMPACT_THRESHOLDS, getAutoCompactThreshold } from './types.js';
 import { logger } from '../Logger.js';
 
 const autoCompactEnabled = true;
@@ -23,10 +23,17 @@ export function isAutoCompactEnabled(): boolean {
 
 /**
  * Get the auto-compact threshold in tokens
+ *
+ * 阈值 = contextWindow - min(50K, 0.3 * maxOutputTokens)。
+ * 即为输出预留的缓冲最多 50K，且不超过输出上限的 30%；
+ * 当已用 token（input + output）达到该值时触发压缩。
+ *
  * @param modelName 当前使用的模型名称；未传时使用默认配置（1M 上下文）
  */
 export function getThreshold(modelName?: string, modelConfigs?: Record<string, ModelTokenLimits>): number {
-  return getContextWindow(modelName || '', modelConfigs) - COMPACT_THRESHOLDS.AUTOCOMPACT_BUFFER;
+  const contextWindow = getContextWindow(modelName || '', modelConfigs);
+  const maxOutputTokens = getMaxOutputTokens(modelName, modelConfigs);
+  return getAutoCompactThreshold(contextWindow, maxOutputTokens);
 }
 
 /**
@@ -70,8 +77,9 @@ export async function shouldAutoCompact(
 
   const tokenCount = exactTokenCount;
   const threshold = getThreshold(modelName, modelConfigs);
+  const usagePct = threshold > 0 ? Math.round((tokenCount / threshold) * 100) : 100;
 
-  logger.info('autoCompact', `Token count: ${tokenCount} (exact), threshold: ${threshold} (${Math.round((tokenCount / (threshold + COMPACT_THRESHOLDS.AUTOCOMPACT_BUFFER)) * 100)}%)`);
+  logger.info('autoCompact', `Token count: ${tokenCount} (exact), threshold: ${threshold} (${usagePct}%)`);
 
   if (tokenCount >= threshold) {
     logger.info('autoCompact', `Triggering auto-compact: ${tokenCount} >= ${threshold}`);

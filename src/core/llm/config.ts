@@ -9,7 +9,8 @@ import * as os from 'os';
 import { logger } from '../Logger.js';
 import { saveApiKeyToSettings, readSettingsJson } from '../history/Config.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
-import { DEFAULT_MODEL_CONFIG, type ModelTokenLimits } from '../utils/modelConfig.js';
+import { FALLBACK_MODEL_PARAMS, type ModelTokenLimits } from '../utils/modelConfig.js';
+import { DEFAULT_WAKE_SHORTCUT, normalizeAccelerator } from '../utils/shortcut.js';
 import type { PromptPresetId } from '../prompt/PromptPreset.js';
 
 /**
@@ -91,6 +92,8 @@ export interface LLMConfigPanelPayload {
   apiKey: string;
   providers: LLMProviderInfo[];
   activeProvider: string;
+  /** Electron 端唤醒快捷键（accelerator 形式，如 Super+Shift+Z） */
+  shortcut: string;
 }
 
 interface HarnessConfig {
@@ -135,22 +138,23 @@ interface HarnessConfig {
 }
 
 /**
- * 创建默认配置
- * 模型相关字段（model / maxTokens / thinking_budget_tokens）从 MODEL_CONFIGS 注册表获取，
- * 避免与模型配置重复维护；其余为 LLM 服务的基础默认值。
+ * 创建兜底配置（settings.json 完全未配置时使用）
+ *
+ * 注意：这里没有「默认模型」——模型（含默认模型）完全由用户配置：
+ * 默认模型在 llm.providers[].defaultModel，会话模型在各自 meta.json。
+ * 因此 model 留空，等用户在设置页配置 provider 后再由用户指定。
  * apiKey 为空字符串，在 getConfig() 中若发现 apiKey 为空，会弹出密码输入框让用户输入
  */
-function createDefaultConfig(): LLMConfig {
-  const modelCfg = DEFAULT_MODEL_CONFIG;
+function createFallbackConfig(): LLMConfig {
   return {
     apiKey: '',
     baseURL: 'https://api.deepseek.com',
-    model: modelCfg.name,
-    maxTokens: modelCfg.maxOutputTokens,
+    model: '',
+    maxTokens: FALLBACK_MODEL_PARAMS.maxOutputTokens,
     timeout: 300000,
     apiType: 'Responses',
     webSearch: true,
-    thinking_budget_tokens: modelCfg.thinking_token_budget,
+    thinking_budget_tokens: FALLBACK_MODEL_PARAMS.thinking_token_budget,
     thinking_effort: 'high',
     modelConfigs: {},
   };
@@ -224,11 +228,11 @@ function getBaseUrlFromSettings(): string {
       }
       if (activeKey) {
         // 已设置 activeProvider 但 provider 没有 baseURL 时，不使用旧扁平字段
-        return createDefaultConfig().baseURL;
+        return createFallbackConfig().baseURL;
       }
     }
   } catch {}
-  return createDefaultConfig().baseURL;
+  return createFallbackConfig().baseURL;
 }
 
 /**
@@ -337,6 +341,22 @@ function getActiveProviderFromConfig(configFile?: HarnessConfig): LLMProviderCon
 }
 
 /**
+ * 从已解析的配置文件中读取当前 provider 的默认模型：
+ * provider.defaultModel → provider.models[0] → ''。
+ * 模型完全由用户配置，这里不存在内置的「兜底模型」。
+ */
+function getProviderDefaultModelFromConfig(configFile?: HarnessConfig): string {
+  const activeProvider = getActiveProviderFromConfig(configFile);
+  if (activeProvider?.defaultModel?.trim()) {
+    return activeProvider.defaultModel.trim();
+  }
+  if (Array.isArray(activeProvider?.models) && activeProvider.models.length > 0) {
+    return activeProvider.models[0];
+  }
+  return '';
+}
+
+/**
  * 读取 settings.json 中是否已设置有效的 llm.activeProvider。
  * 新对话检测用：未设置时前端应弹出设置页。
  */
@@ -357,7 +377,7 @@ export async function hasActiveProviderSetting(): Promise<boolean> {
  * 只读取 llm.providers / llm.activeProvider，不再兼容旧版扁平字段。
  */
 export async function getLLMConfigPanelPayload(): Promise<LLMConfigPanelPayload> {
-  const defaultConfig = createDefaultConfig();
+  const defaultConfig = createFallbackConfig();
   let settings: Record<string, any> = {};
   try {
     settings = await readSettingsJson();
@@ -405,6 +425,7 @@ export async function getLLMConfigPanelPayload(): Promise<LLMConfigPanelPayload>
       : 'normal',
     providers,
     activeProvider,
+    shortcut: normalizeAccelerator(settings?.shortcut) || DEFAULT_WAKE_SHORTCUT,
   };
 }
 
@@ -416,7 +437,7 @@ async function getDefaultConfig(sessionId?: string): Promise<LLMConfig> {
     return cachedConfig;
   }
 
-  const defaultConfig = createDefaultConfig();
+  const defaultConfig = createFallbackConfig();
 
   // 读取配置文件，失败时回退到默认配置
   let configFile: HarnessConfig | undefined;
@@ -434,7 +455,7 @@ async function getDefaultConfig(sessionId?: string): Promise<LLMConfig> {
     config = {
       apiKey: activeProvider?.apiKey || defaultConfig.apiKey,
       baseURL: activeProvider?.baseURL || defaultConfig.baseURL,
-      model: configFile.llm.model || defaultConfig.model,
+      model: configFile.llm.model || getProviderDefaultModelFromConfig(configFile) || defaultConfig.model,
       maxTokens: configFile.llm.maxTokens || defaultConfig.maxTokens,
       timeout: configFile.llm.timeout || defaultConfig.timeout,
       apiType: activeProvider?.apiType || defaultConfig.apiType,
@@ -536,34 +557,70 @@ export async function getEnableUsageStats(): Promise<boolean> {
 export async function getDefaultThinkingEffort(): Promise<'off' | 'low' | 'high' | 'max'> {
   try {
     const configFile = await loadConfigFile();
-    return configFile?.llm?.thinking_effort ?? createDefaultConfig().thinking_effort ?? 'off';
+    return configFile?.llm?.thinking_effort ?? createFallbackConfig().thinking_effort ?? 'off';
   } catch {
-    return createDefaultConfig().thinking_effort ?? 'off';
+    return createFallbackConfig().thinking_effort ?? 'off';
   }
 }
 
 /**
  * 获取 settings.json 中新对话的默认 model 值
- * 默认模型已归属到具体服务商：读取当前 activeProvider 的 defaultModel，
- * 未设置时回退到该服务商模型列表的第一个模型，再回退到内置默认模型。
+ * 默认模型由用户配置、且归属到具体服务商：读取当前 activeProvider 的 defaultModel，
+ * 未设置时取该服务商模型列表的第一个模型；两者都没有时返回空字符串，
+ * 由用户在设置页配置 provider 后再指定。
  * 仅用于新对话的初始值，已存在的对话使用各自 meta.json 中的 model
- * @returns 模型名称，默认从 MODEL_CONFIGS 注册表获取
+ * @returns 模型名称，未配置 provider 时为空字符串
  */
 export async function getDefaultModel(): Promise<string> {
   try {
     const configFile = await loadConfigFile();
+    return getProviderDefaultModelFromConfig(configFile);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 读取当前 activeProvider 的模型列表与默认模型。
+ * 未配置 activeProvider、或该 provider 没有可用模型列表时返回 null
+ * （此时无法判断模型是否合法，调用方应保持原值不做回退）。
+ */
+export async function getActiveProviderModels(): Promise<{ models: string[]; defaultModel: string } | null> {
+  try {
+    const configFile = await loadConfigFile();
     const activeKey = configFile?.llm?.activeProvider;
     const activeProvider = activeKey ? configFile?.llm?.providers?.[activeKey] : undefined;
-    if (activeProvider?.defaultModel?.trim()) {
-      return activeProvider.defaultModel.trim();
-    }
-    if (Array.isArray(activeProvider?.models) && activeProvider.models.length > 0) {
-      return activeProvider.models[0];
-    }
-    return createDefaultConfig().model;
+    if (!activeProvider?.baseURL) return null;
+    const models = Array.isArray(activeProvider.models)
+      ? Array.from(new Set(
+          (activeProvider.models as unknown[])
+            .filter((m): m is string => typeof m === 'string' && !!m.trim())
+            .map((m) => m.trim()),
+        ))
+      : [];
+    if (models.length === 0) return null;
+    const defaultModel = typeof activeProvider.defaultModel === 'string' && activeProvider.defaultModel.trim()
+      ? activeProvider.defaultModel.trim()
+      : models[0];
+    return { models, defaultModel };
   } catch {
-    return createDefaultConfig().model;
+    return null;
   }
+}
+
+/**
+ * 校验模型是否属于当前 activeProvider 提供的模型列表：
+ * - 属于列表：原样返回
+ * - 不属于列表：回退到 provider 的默认模型（defaultModel，其次 models[0]）
+ * - 无法判断（未配置 provider / 模型列表为空）：原样返回
+ *
+ * 用于「切换 provider、切换对话」等场景，避免继续使用当前服务商不支持的模型。
+ */
+export async function resolveModelForActiveProvider(modelName: string): Promise<string> {
+  const info = await getActiveProviderModels();
+  if (!info) return modelName;
+  if (modelName && info.models.includes(modelName)) return modelName;
+  return info.defaultModel || modelName;
 }
 
 /**
@@ -606,9 +663,9 @@ export async function getDefaultPromptMode(): Promise<PromptPresetId> {
 export async function getDefaultWebSearch(): Promise<boolean> {
   try {
     const configFile = await loadConfigFile();
-    return configFile?.llm?.webSearch ?? createDefaultConfig().webSearch ?? false;
+    return configFile?.llm?.webSearch ?? createFallbackConfig().webSearch ?? false;
   } catch {
-    return createDefaultConfig().webSearch ?? false;
+    return createFallbackConfig().webSearch ?? false;
   }
 }
 

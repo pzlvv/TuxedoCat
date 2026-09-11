@@ -62,6 +62,12 @@ export interface UIHost {
   /** 打开 Spin 设计器 */
   openSpinDesign(): Promise<void>;
 
+  /**
+   * 打开工作目录（VS Code: 弹出选择文件夹；Electron: 可选实现）
+   * 未打开 workspace 时由 webview 引导按钮触发。
+   */
+  openWorkspaceFolder?(): Promise<void>;
+
   /** 用系统默认浏览器打开外部链接（VS Code: vscode.env.openExternal；Electron: shell.openExternal） */
   openExternalUrl(url: string): Promise<void>;
 
@@ -79,6 +85,9 @@ export interface UIHost {
 
   /** 日志输出 */
   log(...args: unknown[]): void;
+
+  /** 刷新宿主侧 abort 按钮状态（后台任务/子代理被中止后调用） */
+  refreshAbortState?(): void;
 
   /** 密码输入回退（无 webview 时使用宿主原生输入） */
   showPasswordInput?(prompt: string, plainText?: boolean): Promise<string | null>;

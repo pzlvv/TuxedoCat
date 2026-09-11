@@ -272,6 +272,38 @@ export function getBackgroundTaskCount(): number {
 }
 
 /**
+ * 中止指定会话的所有运行中后台 Bash 任务。
+ *
+ * 先标记并从注册表移除任务，再 kill 进程：任务 result 回调中查不到 task，
+ * 会直接返回，从而丢弃被中止任务的输出与完成通知。
+ *
+ * @returns 被中止的任务数量
+ */
+export function abortBackgroundTasksForSession(sessionID: string): number {
+  let count = 0;
+  for (const [taskId, task] of Array.from(backgroundTasks.entries())) {
+    if (task.sessionID !== sessionID || task.status !== 'running') {
+      continue;
+    }
+
+    const shellCommand = task.shellCommand;
+    task.status = 'killed';
+    task.endTime = Date.now();
+    task.shellCommand = null;
+    // 先移除再 kill，确保 result.then 回调因查不到 task 而直接丢弃结果。
+    backgroundTasks.delete(taskId);
+    try {
+      shellCommand?.kill();
+    } catch {
+      // 进程可能已结束
+    }
+    logger.info('LocalShellTask', `Aborted background task ${taskId} for session ${sessionID}`);
+    count++;
+  }
+  return count;
+}
+
+/**
  * 通知指定会话的 QueryEngine
  * 通过 sessionID 直接定位到正确的引擎发送通知，避免误发到其他会话
  */

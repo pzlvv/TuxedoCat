@@ -51,6 +51,8 @@ export class ElectronUI implements AssistantUI {
   private webviewMessageHandler: WebviewMessageHandler;
   /** 已打开的辅助预览窗口（用于 closePreview 统一关闭） */
   private previewWindows: BrowserWindowCtor[] = [];
+  /** 当前打开的 Spin 设计窗口（用于 SpinLoop 完成后刷新其数据） */
+  private spinDesignWindow: BrowserWindowCtor | undefined;
 
   private constructor() {
     const outputChannel = {
@@ -248,6 +250,10 @@ export class ElectronUI implements AssistantUI {
         await this.openSpinDesignWindow();
       },
 
+      refreshAbortState: () => {
+        this.syncAbortState();
+      },
+
       openExternalUrl: async (url) => {
         try {
           const { shell } = await import('electron');
@@ -431,6 +437,12 @@ export class ElectronUI implements AssistantUI {
       },
     });
     this.trackPreviewWindow(win);
+    this.spinDesignWindow = win;
+    win.on('closed', () => {
+      if (this.spinDesignWindow === win) {
+        this.spinDesignWindow = undefined;
+      }
+    });
 
     // 保存 spin.json
     const saveSpin = (data: any): void => {
@@ -484,6 +496,44 @@ export class ElectronUI implements AssistantUI {
     });
 
     await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  }
+
+  /**
+   * SpinLoop 执行完成后刷新已打开的 Spin 设计窗口，
+   * 避免窗口内旧缓存数据在用户再次保存时覆盖执行结果。
+   */
+  async refreshSpinDesign(): Promise<void> {
+    const win = this.spinDesignWindow;
+    if (!win || win.isDestroyed()) {
+      return;
+    }
+    const workspacePath = this.getWorkspacePath();
+    const projectDir = this.getProjectConversationDir(workspacePath);
+    if (!projectDir || !workspacePath) {
+      return;
+    }
+
+    const spinJsonPath = path.join(projectDir, 'spin.json');
+    let data: any = null;
+    try {
+      if (fs.existsSync(spinJsonPath)) {
+        data = JSON.parse(fs.readFileSync(spinJsonPath, 'utf-8'));
+      }
+    } catch (err) {
+      this.log(`[ElectronUI] Failed to read spin.json for refresh: ${err}`);
+      return;
+    }
+
+    const { getAllSkills } = await import('../src/core/skills/loadSkillsDir.js');
+    const availableSkills = (await getAllSkills(workspacePath))
+      .filter(s => !s.isHidden && s.userInvocable)
+      .map(s => ({ name: s.name, description: s.description }));
+
+    win.webContents.send('spin-design-message', {
+      type: 'spinDesignData',
+      data,
+      skills: availableSkills,
+    });
   }
 
   private getProjectConversationDir(workspacePath?: string): string | undefined {
@@ -610,6 +660,15 @@ export class ElectronUI implements AssistantUI {
   private hasActiveQueryInScope(sessionId: string): boolean {
     if ((this.queryActiveCounts.get(sessionId) ?? 0) > 0) {
       return true;
+    }
+    // 后台 Bash 任务可能在前台查询结束后继续运行，此时 abort 按钮仍应可用。
+    try {
+      const { getAllBackgroundTasks } = require('../src/core/tools/bash/LocalShellTask.js') as typeof import('../src/core/tools/bash/LocalShellTask.js');
+      if (getAllBackgroundTasks().some(task => task.status === 'running' && task.sessionID === sessionId)) {
+        return true;
+      }
+    } catch {
+      // LocalShellTask 不可用时忽略
     }
     try {
       const { subAgentRegistry } = require('../src/core/tools/agent/SubAgentRegistry.js') as typeof import('../src/core/tools/agent/SubAgentRegistry.js');

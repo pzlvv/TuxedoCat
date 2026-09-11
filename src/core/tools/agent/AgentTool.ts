@@ -273,9 +273,15 @@ export const AgentTool = buildTool({
     const abortController = new AbortController();
 
     if (parentSignal) {
-      parentSignal.addEventListener('abort', () => {
+      if (parentSignal.aborted) {
+        // 父会话在子代理创建前已被中止：立即同步中止子代理，
+        // 避免 addEventListener 对已 abort 的 signal 不触发导致子代理继续运行。
         abortController.abort();
-      }, { once: true });
+      } else {
+        parentSignal.addEventListener('abort', () => {
+          abortController.abort();
+        }, { once: true });
+      }
     }
 
     // 从主会话继承 thinking effort

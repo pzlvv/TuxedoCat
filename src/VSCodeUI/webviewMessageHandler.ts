@@ -10,7 +10,8 @@ import { getPendingToolUseIds } from '../core/tools/index.js';
 import { providerKeyFromBaseURL } from '../core/utils/providerKey.js';
 import { buildEditDiffHunks } from '../core/utils/editDiff.js';
 import { buildUserContent, extractUserContent } from '../core/utils/contentBlocks.js';
-import { MODEL_CONFIGS, getModelConfig, type ModelTokenLimits } from '../core/utils/modelConfig.js';
+import { MODEL_CONFIGS, normalizeModelTokenLimits, type ModelTokenLimits } from '../core/utils/modelConfig.js';
+import { DEFAULT_WAKE_SHORTCUT, normalizeAccelerator } from '../core/utils/shortcut.js';
 import { userChoiceQueue } from '../core/UserChoiceQueue.js';
 import type { WebviewMessage } from '../core/webviewTypes.js';
 import type { Message } from '../core/types.js';
@@ -124,6 +125,21 @@ export class WebviewMessageHandler {
    * 处理来自 webview 的消息
    */
   async handleWebviewMessage(message: any): Promise<void> {
+    try {
+      await this.dispatchWebviewMessage(message);
+    } catch (err) {
+      // 单条消息处理失败不应变成未处理的 rejection：
+      // VS Code 会打印 "rejected promise not handled within 1 second"，
+      // 且整条消息链路静默失败、难以定位。
+      const detail = err instanceof Error ? (err.stack || err.message) : String(err);
+      this.log(`[VSCodeUI] handleWebviewMessage failed for type=${message?.type}: ${detail}`);
+    }
+  }
+
+  /**
+   * 按消息类型分发到具体处理器，由 handleWebviewMessage() 统一兜底异常。
+   */
+  private async dispatchWebviewMessage(message: any): Promise<void> {
     logger.info("handleWebviewMessage", `Received from webview: ${message.type}`);
 
     if (message.type === 'requestCompress') {
@@ -205,6 +221,8 @@ export class WebviewMessageHandler {
       this.log(`[Webview Debug] ${message.message}`);
     } else if (message.type === 'openUrl') {
       await this.handleOpenUrl(message);
+    } else if (message.type === 'openWorkspaceFolder') {
+      await this.handleOpenWorkspaceFolder();
     } else if (message.type === 'requestConversationSpaces') {
       await this.handleRequestConversationSpaces();
     } else if (message.type === 'clearConversationSpace') {
@@ -224,6 +242,23 @@ export class WebviewMessageHandler {
       await this.host.openExternalUrl(url);
     } catch (err) {
       this.log(`[VSCodeUI] Failed to open URL: ${err}`);
+    }
+  }
+
+  /**
+   * 未打开工作目录时，webview 引导用户选择并打开一个文件夹。
+   * 宿主能力由 UIHost.openWorkspaceFolder 提供（Electron 未实现时静默忽略）。
+   */
+  private async handleOpenWorkspaceFolder(): Promise<void> {
+    this.log(`[VSCodeUI] Open workspace folder requested from webview`);
+    if (!this.host.openWorkspaceFolder) {
+      this.log(`[VSCodeUI] openWorkspaceFolder is not supported by current host`);
+      return;
+    }
+    try {
+      await this.host.openWorkspaceFolder();
+    } catch (err) {
+      this.log(`[VSCodeUI] Failed to open workspace folder: ${err}`);
     }
   }
 
@@ -513,6 +548,8 @@ export class WebviewMessageHandler {
     this.log(`[VSCodeUI] Abort requested from webview, sessionId: ${message.sessionId}`);
     const { abortCurrentQuery } = await import('../core/Integration.js');
     abortCurrentQuery(message.sessionId);
+    // 后台任务/子代理可能已同步中止，立即刷新 abort 按钮状态
+    this.host.refreshAbortState?.();
   }
 
   private async handleGetConversations(): Promise<void> {
@@ -598,6 +635,25 @@ export class WebviewMessageHandler {
       }
     } catch (err: any) {
       this.log(`[VSCodeUI] Failed to read default model/thinking from settings.json: ${err.message}`);
+    }
+
+    // 切换对话后校验模型：若该会话保存的模型不在当前 active provider 的模型列表中，
+    // 回退到 provider 默认模型，并持久化到该会话 meta.json，避免继续使用失效模型。
+    if (effectiveModel) {
+      try {
+        const { resolveModelForActiveProvider } = await import('../core/llm/config.js');
+        const resolvedModel = await resolveModelForActiveProvider(effectiveModel);
+        if (resolvedModel && resolvedModel !== effectiveModel) {
+          this.log(`[VSCodeUI] Session model "${effectiveModel}" is not in active provider model list, fallback to "${resolvedModel}"`);
+          effectiveModel = resolvedModel;
+          const { updateConversationContext } = await import('../core/history/index.js');
+          await updateConversationContext(message.sessionId, { model: resolvedModel });
+          const { setSessionModel } = await import('../core/Integration.js');
+          setSessionModel(message.sessionId, resolvedModel);
+        }
+      } catch (err: any) {
+        this.log(`[VSCodeUI] Failed to resolve model for active provider: ${err.message}`);
+      }
     }
 
     if (!this.sessionAgentModes.has(message.sessionId)) {
@@ -1639,10 +1695,27 @@ export class WebviewMessageHandler {
     const {
       webSearch, thinkingEffort,
       defaultAgentMode, defaultPromptMode, language,
+      shortcut,
       providers, activeProvider: requestedActiveProvider, closeAfterSave,
       saveProviders,
+      sessionId: requestedSessionId, currentModel: requestedCurrentModel,
     } = message;
-    this.log(`[VSCodeUI] saveLLMConfig: webSearch=${!!webSearch}, thinkingEffort=${thinkingEffort}, defaultAgentMode=${defaultAgentMode}, defaultPromptMode=${defaultPromptMode}, language=${language}, saveProviders=${!!saveProviders}, providers=${Array.isArray(providers) ? providers.length : 0}, activeProvider=${requestedActiveProvider || ''}, closeAfterSave=${!!closeAfterSave}`);
+
+    // 快捷键只由 Electron 设置页提交；校验失败时不写文件，避免保存无效配置
+    let normalizedShortcut: string | undefined;
+    if (typeof shortcut === 'string') {
+      const normalized = normalizeAccelerator(shortcut);
+      if (!normalized) {
+        this.host.sendToWebview({
+          type: 'llmConfigSaveError',
+          error: '快捷键无效，请重新设置',
+        } as any);
+        return;
+      }
+      normalizedShortcut = normalized;
+    }
+
+    this.log(`[VSCodeUI] saveLLMConfig: webSearch=${!!webSearch}, thinkingEffort=${thinkingEffort}, defaultAgentMode=${defaultAgentMode}, defaultPromptMode=${defaultPromptMode}, language=${language}, shortcut=${normalizedShortcut || ''}, saveProviders=${!!saveProviders}, providers=${Array.isArray(providers) ? providers.length : 0}, activeProvider=${requestedActiveProvider || ''}, closeAfterSave=${!!closeAfterSave}, sessionId=${requestedSessionId || ''}, currentModel=${requestedCurrentModel || ''}`);
 
     try {
       // 串行化写入 settings.json，避免与其他写入口（handleSetModel 等）并发写坏文件
@@ -1668,27 +1741,13 @@ export class WebviewMessageHandler {
                     .map((m) => m.trim()),
                 ))
               : [];
-            // modelConfigs：已有配置保留，没有的模型写入当前 fallback 值
+            // modelConfigs：保留已有 context/output，缺失的字段从内置注册表匹配补齐
             const oldProvider = cfg.llm.providers?.[key];
             const oldModelConfigs: Record<string, ModelTokenLimits> = oldProvider?.modelConfigs
               && typeof oldProvider.modelConfigs === 'object'
               ? oldProvider.modelConfigs
               : {};
-            const modelConfigs: Record<string, ModelTokenLimits> = {};
-            for (const [model, limits] of Object.entries(oldModelConfigs)) {
-              if (limits && (Number.isFinite(limits?.context) || Number.isFinite(limits?.output))) {
-                modelConfigs[model] = { ...limits };
-              }
-            }
-            for (const model of providerModels) {
-              if (!modelConfigs[model]) {
-                const fallback = getModelConfig(model);
-                modelConfigs[model] = {
-                  context: fallback.contextWindow,
-                  output: fallback.maxOutputTokens,
-                };
-              }
-            }
+            const modelConfigs = normalizeModelTokenLimits(providerModels, oldModelConfigs);
             providersMap[key] = {
               baseURL: providerBaseURL,
               apiKey: providerApiKey,
@@ -1709,6 +1768,21 @@ export class WebviewMessageHandler {
               activeKey = keys[0];
             }
             cfg.llm.activeProvider = activeKey;
+          }
+        }
+
+        // 无论本次保存是否修改了 provider，都探测一遍所有 provider 的模型 context/output 配置：
+        // 已有值保留，缺失的字段从内置模型注册表匹配补齐（匹配不到则用兜底配置），
+        // 保证运行时不会因为缺少限值而回退到全局默认值。
+        if (cfg.llm.providers && typeof cfg.llm.providers === 'object') {
+          for (const provider of Object.values(cfg.llm.providers as Record<string, any>)) {
+            if (!provider || typeof provider !== 'object') continue;
+            const models = Array.isArray(provider.models)
+              ? (provider.models as unknown[])
+                  .filter((m): m is string => typeof m === 'string' && !!m.trim())
+                  .map((m) => m.trim())
+              : [];
+            provider.modelConfigs = normalizeModelTokenLimits(models, provider.modelConfigs);
           }
         }
 
@@ -1741,6 +1815,10 @@ export class WebviewMessageHandler {
               cfg.uiLanguage = nextUiLanguage;
             }
           }
+        }
+        // 唤醒快捷键（Electron）：顶层字段，accelerator 形式
+        if (normalizedShortcut && cfg.shortcut !== normalizedShortcut) {
+          cfg.shortcut = normalizedShortcut;
         }
       });
 
@@ -1784,22 +1862,58 @@ export class WebviewMessageHandler {
         savedProviderModels = payload.providers.find((p) => p.key === savedActiveProvider)?.models || [];
       } catch {}
 
+      // 切换 provider 后校验当前会话模型：若不在新 provider 的模型列表中，
+      // 回退到新 provider 的默认模型，并持久化到会话 meta.json、同步引擎配置。
+      // 返回给 webview 的 activeModel 用于刷新当前对话的模型选择（含已有消息的对话）。
+      let activeModel = '';
+      try {
+        const { getActiveSessionId } = await import('../core/history/Config.js');
+        const currentSessionId = (typeof requestedSessionId === 'string' && requestedSessionId) || getActiveSessionId();
+        if (currentSessionId && currentSessionId !== 'undefined') {
+          // 优先使用 webview 回传的当前模型（最贴近界面显示），
+          // 其次读取该会话 meta.json 中保存的模型。
+          let sessionModel = typeof requestedCurrentModel === 'string' ? requestedCurrentModel.trim() : '';
+          if (!sessionModel) {
+            try {
+              const { loadConversation } = await import('../core/history/index.js');
+              const conversation = await loadConversation(currentSessionId);
+              sessionModel = conversation?.metadata?.model || conversation?.metadata?.context?.model || '';
+            } catch { /* 新对话可能还没有 meta.json */ }
+          }
+          const { resolveModelForActiveProvider } = await import('../core/llm/config.js');
+          const resolved = await resolveModelForActiveProvider(sessionModel || savedModel);
+          if (resolved) {
+            activeModel = resolved;
+            if (sessionModel && resolved !== sessionModel) {
+              this.log(`[VSCodeUI] Current session model "${sessionModel}" is not in active provider model list, fallback to "${resolved}"`);
+              const { updateConversationContext } = await import('../core/history/index.js');
+              await updateConversationContext(currentSessionId, { model: resolved });
+            }
+            const { setSessionModel } = await import('../core/Integration.js');
+            setSessionModel(currentSessionId, resolved);
+          }
+        }
+      } catch (err: any) {
+        this.log(`[VSCodeUI] Failed to resolve active model after save: ${err.message}`);
+      }
+
       // 保存后立即刷新主界面的模型下拉列表：有模型列表时用模型列表，否则回退内置模型
       const builtinModels = MODEL_CONFIGS.map((cfg) => cfg.name);
-      const modelList = savedProviderModels.length > 0
-        ? Array.from(new Set([...savedProviderModels, ...(savedModel ? [savedModel] : [])]))
-        : Array.from(new Set([...builtinModels, ...(savedModel ? [savedModel] : [])]));
+      const baseModels = savedProviderModels.length > 0 ? savedProviderModels : builtinModels;
+      const modelList = Array.from(new Set([...baseModels, ...(savedModel ? [savedModel] : []), ...(activeModel ? [activeModel] : [])]));
       this.host.sendToWebview({ type: 'setModels', models: modelList } as any);
 
       // 通知 webview 保存成功
       this.host.sendToWebview({
         type: 'llmConfigSaved',
         defaultModel: savedModel,
+        activeModel,
         thinkingEffort: savedThinkingEffort,
         defaultAgentMode: savedAgentMode,
         defaultPromptMode: savedPromptMode,
         webSearch: savedWebSearch,
         ...(language === 'zh' || language === 'en' || language === 'auto' ? { language } : {}),
+        ...(normalizedShortcut ? { shortcut: normalizedShortcut } : {}),
         activeProvider: savedActiveProvider,
         closeAfterSave: !!closeAfterSave,
       });
@@ -1946,6 +2060,7 @@ export class WebviewMessageHandler {
         providers: [{ key: 'api.deepseek.com', baseURL: 'https://api.deepseek.com', apiKey: '', apiType: 'Responses', models: [] }],
         activeProvider: '',
         language: this.getUiLanguageFromSettings(),
+        shortcut: DEFAULT_WAKE_SHORTCUT,
       });
     }
   }

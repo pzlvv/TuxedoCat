@@ -12,6 +12,7 @@ import type { AutoCompactTrackingState } from './compact/types.js';
 import { sessionQueue } from './SessionQueue.js';
 import { logger } from './Logger.js';
 import { replaceConversationMessages, updateConversationContext } from './history/index.js';
+import { getAvailableOutputTokens } from './utils/modelConfig.js';
 import { replayMessagesToUI } from './utils/replayMessages.js';
 import { CONFIG_DIR_NAME } from '../config/project.js';
 
@@ -102,12 +103,15 @@ async function* queryLoop(
       }
     }
 
+    // 当前上下文已占用的 token 数（最近一次 API 返回的 input + output），
+    // 既用于自动压缩判断，也用于计算本次请求可用的 max output。
+    let exactTokenCount: number | undefined;
+
     // Auto compact 检查
     {
       const { shouldAutoCompact, compactConversation, buildPostCompactMessages } = await import('./compact/index.js');
 
       const apiMessages = messages.filter((m) => m.type === 'assistant');
-      let exactTokenCount: number | undefined;
       for (let i = apiMessages.length - 1; i >= 0; i--) {
         const usage = (apiMessages[i] as any)?.message?.usage;
         if (usage?.input_tokens > 0 && usage?.output_tokens !== undefined) {
@@ -157,6 +161,10 @@ async function* queryLoop(
         }
 
         replayMessagesToUI(params.ui, params.sessionID, postCompactMessages);
+
+        // 压缩后上下文已大幅缩短，旧的 exactTokenCount 不再代表当前上下文，
+        // 重置后本次请求按“无历史占用”计算可用输出，避免输出被压缩前的旧值挤压。
+        exactTokenCount = undefined;
       }
     }
 
@@ -325,6 +333,22 @@ async function* queryLoop(
             val.type === 'web_search_call_done');
       }
 
+      // 本次请求的 max output：min(output, context - current_context)。
+      // 为输出预留的空间不能超过上下文窗口的剩余空间，否则请求会超出窗口。
+      // 仅当能确定模型或已配置 maxTokens 时才覆盖，避免部分配置（如仅 webSearch）
+      // 覆盖掉 callRealLLM 从 settings.json 合并进来的真实 maxTokens。
+      const baseModelConfig = getModelConfig();
+      let requestModelConfig = baseModelConfig;
+      if (baseModelConfig && (baseModelConfig.maxTokens > 0 || baseModelConfig.model)) {
+        const availableOutputTokens = getAvailableOutputTokens(
+          baseModelConfig.model,
+          baseModelConfig.modelConfigs,
+          exactTokenCount ?? 0,
+        );
+        const configured = baseModelConfig.maxTokens > 0 ? baseModelConfig.maxTokens : availableOutputTokens;
+        requestModelConfig = { ...baseModelConfig, maxTokens: Math.min(configured, availableOutputTokens) };
+      }
+
       for await (const event of callLLM({
         messages: apiMessages,
         systemPrompt: fullSystemPrompt,
@@ -334,7 +358,7 @@ async function* queryLoop(
           // 可以在这里处理进度
         },
         thinkingEffort,
-        modelConfig: getModelConfig(),
+        modelConfig: requestModelConfig,
         sessionId: toolUseContext.sessionId as string,
       })) {
         // ---- 处理流式事件 (StreamEvent) ----

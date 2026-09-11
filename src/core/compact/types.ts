@@ -58,7 +58,14 @@ export interface AutoCompactTrackingState {
  * Compact thresholds
  */
 export const COMPACT_THRESHOLDS = {
-  /** Buffer tokens for auto-compact trigger (~80% for 100K context) */
+  /** 自动压缩预留缓冲上限（token） */
+  AUTOCOMPACT_MAX_BUFFER: 50_000,
+  /** 自动压缩预留缓冲比例（相对 maxOutputTokens） */
+  AUTOCOMPACT_OUTPUT_BUFFER_RATIO: 0.3,
+  /**
+   * 预留输出缓冲（保留常量以兼容旧配置）。
+   * 自动压缩阈值现在按 `contextWindow - min(50K, 0.3 * maxOutputTokens)` 计算。
+   */
   AUTOCOMPACT_BUFFER: 12_000,
   /** Buffer tokens for warning threshold (~90%) */
   WARNING_BUFFER: 20_000,
@@ -71,6 +78,24 @@ export const COMPACT_THRESHOLDS = {
   /** Circuit breaker - max consecutive failures */
   MAX_CONSECUTIVE_FAILURES: 3,
 } as const;
+
+/**
+ * 计算自动压缩阈值（可用输入上限）：
+ *   contextWindow - min(50K, 0.3 * maxOutputTokens)
+ *
+ * 为输出预留的缓冲最多 50K，且不超过输出上限的 30%；
+ * 剩余部分即为可安全发送的输入上限。
+ *
+ * 前端进度条与本函数共用同一套规则，保证 UI 与触发条件一致。
+ */
+export function getAutoCompactThreshold(contextWindow: number, maxOutputTokens: number): number {
+  const output = Math.max(0, maxOutputTokens);
+  const buffer = Math.min(
+    COMPACT_THRESHOLDS.AUTOCOMPACT_MAX_BUFFER,
+    COMPACT_THRESHOLDS.AUTOCOMPACT_OUTPUT_BUFFER_RATIO * output,
+  );
+  return Math.max(0, contextWindow - buffer);
+}
 
 /**
  * System prompt used for compact/summary LLM calls

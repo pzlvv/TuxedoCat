@@ -53,6 +53,14 @@ export function abortCurrentQuery(sessionId?: string): void {
       engine.interrupt();
     } else {
       logger.warn('Integration', `No query engine found for session ${sessionId} to abort`);
+      // 引擎可能尚未创建/已释放，但会话仍可能有后台 Bash 任务：兜底中止并丢弃结果。
+      void import('./tools/bash/LocalShellTask.js')
+        .then(({ abortBackgroundTasksForSession }) => {
+          abortBackgroundTasksForSession(sessionId);
+        })
+        .catch((err: unknown) => {
+          logger.warn('Integration', `Failed to abort background tasks for session ${sessionId}: ${err}`);
+        });
     }
     return;
   }

@@ -142,6 +142,11 @@ export class VSCodeUI implements AssistantUI {
       openSpinDesign: async () => {
         await this.openSpinDesignPanel();
       },
+      openWorkspaceFolder: async () => {
+        // 未打开工作目录时，弹出 VS Code 的“打开文件夹”选择器。
+        // 打开后窗口会重载，webview 也会重新注入 __hasWorkspace=true。
+        await vscode.commands.executeCommand('vscode.openFolder');
+      },
       openExternalUrl: async (url) => {
         try {
           await vscode.env.openExternal(vscode.Uri.parse(url));
@@ -181,6 +186,9 @@ export class VSCodeUI implements AssistantUI {
       getLocale: () => vscode.env.language,
       log: (...args) => {
         VSCodeUI.outputChannel?.appendLine(args.map(a => String(a)).join(' '));
+      },
+      refreshAbortState: () => {
+        this.syncAbortState();
       },
     };
   }
@@ -276,16 +284,24 @@ export class VSCodeUI implements AssistantUI {
     return { existingData, spinJsonExists, spinJsonPath, workspacePath, hasWorkspace };
   }
 
+  /** 查找当前已打开的 Spin 设计面板 */
+  private findSpinDesignPanel(): vscode.WebviewPanel | undefined {
+    const existingPanel = vscode.window.tabGroups.all
+      .flatMap(tg => tg.tabs)
+      .find(tab => (tab.input as any)?.viewType === SPIN_DESIGN_PANEL_ID);
+    return existingPanel
+      ? (existingPanel.input as any).webviewPanel as vscode.WebviewPanel
+      : undefined;
+  }
+
   /** 创建或复用 Spin 设计面板 */
   private async openSpinDesignPanel(): Promise<void> {
     const panelId = SPIN_DESIGN_PANEL_ID;
-    const existingPanel = vscode.window.tabGroups.all
-      .flatMap(tg => tg.tabs)
-      .find(tab => (tab.input as any)?.viewType === panelId);
+    const existingPanel = this.findSpinDesignPanel();
 
     let panel: vscode.WebviewPanel;
     if (existingPanel) {
-      panel = (existingPanel.input as any).webviewPanel as vscode.WebviewPanel;
+      panel = existingPanel;
       panel.reveal();
       return;
     }
@@ -305,7 +321,11 @@ export class VSCodeUI implements AssistantUI {
       panelId,
       tt('Spin 设计', 'Spin Design'),
       vscode.ViewColumn.Beside,
-      { enableScripts: true }
+      {
+        enableScripts: true,
+        // 面板切到后台/被遮挡时保持 webview 内容与状态，避免重新加载丢失未保存编辑
+        retainContextWhenHidden: true,
+      }
     );
 
     const { getSpinDesignHtml } = await import('./VSCodeUI/spinDesignHtml.js');
@@ -362,26 +382,46 @@ export class VSCodeUI implements AssistantUI {
           panel?.webview.postMessage({ type: 'spinExportResult', success: false, error: String(err) } as any);
         }
       } else if (msg.type === 'refreshSpinDesign') {
-        const refreshed = await this.readSpinDesignData();
-        if (refreshed.spinJsonExists && !refreshed.existingData) {
-          panel?.webview.postMessage({
-            type: 'spinSaveResult',
-            success: false,
-            error: `Failed to read spin.json: ${refreshed.spinJsonPath}`,
-          } as any);
-          return;
-        }
-        const { getAllSkills } = await import('./core/skills/loadSkillsDir.js');
-        const availableSkills = (await getAllSkills(refreshed.workspacePath))
-          .filter(s => !s.isHidden && s.userInvocable)
-          .map(s => ({ name: s.name, description: s.description }));
-        panel?.webview.postMessage({
-          type: 'spinDesignData',
-          data: refreshed.existingData,
-          skills: availableSkills,
-        } as any);
+        await this.sendSpinDesignDataToPanel(panel);
       }
     });
+  }
+
+  /**
+   * 读取磁盘上最新的 spin.json 与 Skill 列表，并推送给 Spin 设计器面板。
+   * 供设计器“刷新”按钮和 SpinLoop 执行完成后自动刷新共用。
+   */
+  private async sendSpinDesignDataToPanel(panel: vscode.WebviewPanel): Promise<void> {
+    const refreshed = await this.readSpinDesignData();
+    if (refreshed.spinJsonExists && !refreshed.existingData) {
+      panel.webview.postMessage({
+        type: 'spinSaveResult',
+        success: false,
+        error: `Failed to read spin.json: ${refreshed.spinJsonPath}`,
+      } as any);
+      return;
+    }
+    const { getAllSkills } = await import('./core/skills/loadSkillsDir.js');
+    const availableSkills = (await getAllSkills(refreshed.workspacePath))
+      .filter(s => !s.isHidden && s.userInvocable)
+      .map(s => ({ name: s.name, description: s.description }));
+    panel.webview.postMessage({
+      type: 'spinDesignData',
+      data: refreshed.existingData,
+      skills: availableSkills,
+    } as any);
+  }
+
+  /**
+   * SpinLoop 执行完成后刷新已打开的设计器，避免其缓存旧数据后
+   * 用户再次保存时覆盖磁盘上的执行结果。
+   */
+  async refreshSpinDesign(): Promise<void> {
+    const panel = this.findSpinDesignPanel();
+    if (!panel) {
+      return;
+    }
+    await this.sendSpinDesignDataToPanel(panel);
   }
 
   /**
@@ -719,6 +759,16 @@ export class VSCodeUI implements AssistantUI {
   private hasActiveQueryInScope(sessionId: string): boolean {
     if ((this.queryActiveCounts.get(sessionId) ?? 0) > 0) {
       return true;
+    }
+    // 后台 Bash 任务可能在前台查询结束后继续运行，此时 abort 按钮仍应可用，
+    // 以便用户中止该会话（及其子会话）的后台任务。
+    try {
+      const { getAllBackgroundTasks } = require('./core/tools/bash/LocalShellTask.js') as typeof import('./core/tools/bash/LocalShellTask.js');
+      if (getAllBackgroundTasks().some(task => task.status === 'running' && task.sessionID === sessionId)) {
+        return true;
+      }
+    } catch {
+      // LocalShellTask 不可用时忽略
     }
     try {
       const { subAgentRegistry } = require('./core/tools/agent/SubAgentRegistry.js') as typeof import('./core/tools/agent/SubAgentRegistry.js');

@@ -17,6 +17,8 @@ export const zhDict: Record<string, string> = {
   'app.backToParent': '返回父对话',
   'app.newChat': '新对话',
   'app.closeChat': '关闭当前对话（释放资源）',
+  'app.openWorkspaceHint': '请先打开一个工作目录以继续使用',
+  'app.openWorkspaceButton': '打开工作目录',
 
   /* ── DeleteConfirmDialog.tsx ─────────────────────────────── */
   'deleteConfirm.confirm': '确定要删除 "{title}" 吗？',
@@ -93,6 +95,12 @@ export const zhDict: Record<string, string> = {
   'llmConfig.languageLabel': '界面语言',
   'llmConfig.languageAuto': '自动',
   'llmConfig.languageHint': '界面显示语言；自动将跟随 VS Code / 系统语言',
+  'llmConfig.shortcutLabel': '唤醒快捷键',
+  'llmConfig.shortcutChange': '点击修改',
+  'llmConfig.shortcutRecording': '请按下快捷键...',
+  'llmConfig.shortcutHint': 'Electron 桌面端最小化到系统托盘后，使用该快捷键唤醒窗口；点击上方按钮后按下新的组合键',
+  'llmConfig.shortcutInvalid': '快捷键无效，请重新设置',
+  'llmConfig.shortcutConflict': '快捷键 {shortcut} 注册失败，可能已被系统或其它程序占用，请重新设置',
   'llmConfig.sectionConversationSpace': '对话空间管理',
   'llmConfig.conversationSpaceHint': '统计各对话空间的大小，可清空其中的对话数据',
   'llmConfig.conversationSpaceStats': '统计',

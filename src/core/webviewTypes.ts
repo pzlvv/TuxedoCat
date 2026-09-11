@@ -391,11 +391,15 @@ export type WebviewMessage = {
 } | {
   type: 'llmConfigSaved';
   defaultModel?: string;
+  /** 当前会话应使用的模型（已按 active provider 模型列表校验/回退） */
+  activeModel?: string;
   thinkingEffort?: 'off' | 'low' | 'high' | 'max';
   defaultAgentMode?: 'manual' | 'risk' | 'auto';
   defaultPromptMode?: 'normal' | 'minimal' | 'mixed';
   webSearch?: boolean;
   language?: 'auto' | 'zh' | 'en';
+  /** Electron 端唤醒快捷键（accelerator 形式） */
+  shortcut?: string;
   activeProvider?: string;
   closeAfterSave?: boolean;
 } | {
@@ -421,6 +425,14 @@ export type WebviewMessage = {
   providers?: Array<{ key: string; baseURL: string; apiKey: string; apiType: string; models?: string[]; defaultModel?: string }>;
   /** settings.json 的 llm.activeProvider */
   activeProvider?: string;
+  /** Electron 端唤醒快捷键（accelerator 形式） */
+  shortcut?: string;
+} | {
+  type: 'wakeShortcutStatus';
+  /** 当前使用的唤醒快捷键 */
+  shortcut: string;
+  /** 是否已成功注册为全局快捷键 */
+  registered: boolean;
 } | {
   type: 'providerModelsResult';
   /** 自动获取到的模型列表；为空表示获取失败 */

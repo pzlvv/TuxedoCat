@@ -9,6 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { logger } from '../Logger.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
+import { DEFAULT_WAKE_SHORTCUT, normalizeAccelerator } from '../utils/shortcut.js';
 
 /**
  * 获取配置目录（CONFIG_DIR_NAME）
@@ -221,16 +222,31 @@ export function setProjectRootProvider(provider: () => string | undefined): void
 }
 
 /**
+ * 获取当前项目根目录（不存在时返回 undefined，不抛错）
+ *
+ * 适用场景：宿主可能没有打开工作目录（如 VS Code 的扩展开发宿主窗口、
+ * 或用户尚未选择文件夹），此时调用方应降级处理而不是让 Promise 变成
+ * 未处理的 rejection。
+ */
+export function tryGetProjectRoot(): string | undefined {
+  if (!projectRootProvider) {
+    return undefined;
+  }
+  const root = projectRootProvider();
+  return root || undefined;
+}
+
+/**
  * 获取当前项目根目录
  * 必须通过 setProjectRootProvider 设置项目根目录提供者
  * 如果未设置或返回空值，则抛出错误
+ *
+ * 需要"没有工作目录"时优雅降级的场景请改用 tryGetProjectRoot()。
  */
 export function getProjectRoot(): string {
-  if (projectRootProvider) {
-    const root = projectRootProvider();
-    if (root) {
-      return root;
-    }
+  const root = tryGetProjectRoot();
+  if (root) {
+    return root;
   }
   throw new Error(
     'Project root is not configured. ' +
@@ -401,5 +417,20 @@ export function readUiLanguageSync(): 'auto' | 'zh' | 'en' {
     return lang === 'zh' || lang === 'en' || lang === 'auto' ? lang : 'auto';
   } catch {
     return 'auto';
+  }
+}
+
+/**
+ * 同步读取 settings.json 中的唤醒快捷键（Electron accelerator 形式）。
+ * 未配置、读取失败或配置非法时返回默认值 Super+Shift+Z。
+ */
+export function readWakeShortcutSync(): string {
+  try {
+    const settingsPath = join(getConfigHomeDir(), 'settings.json');
+    const content = readFileSync(settingsPath, 'utf-8');
+    const cfg = JSON.parse(content);
+    return normalizeAccelerator(cfg?.shortcut) || DEFAULT_WAKE_SHORTCUT;
+  } catch {
+    return DEFAULT_WAKE_SHORTCUT;
   }
 }

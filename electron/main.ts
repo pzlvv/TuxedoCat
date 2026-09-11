@@ -14,11 +14,12 @@
  * - 文件打开/虚拟文档/Mermaid/Spin 由 UIHost 提供 Electron 实现
  */
 
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents, globalShortcut, Tray, nativeImage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ChatViewManager, SIDEBAR_WIDTH } from './ChatViewManager.js';
 import { CONFIG_DIR_NAME, PRODUCT_NAME } from '../src/config/project.js';
+import { DEFAULT_WAKE_SHORTCUT } from '../src/core/utils/shortcut.js';
 
 /**
  * 判断 URL 是否为需要在系统浏览器打开的外部链接。
@@ -32,6 +33,25 @@ let mainWindow: BrowserWindow | undefined;
 let sidebarView: WebContentsView | undefined;
 let chatViews: ChatViewManager | undefined;
 let workspacePath: string | undefined;
+/** 系统托盘：窗口最小化时隐藏到托盘 */
+let tray: Tray | undefined;
+/** 当前已注册的全局唤醒快捷键（用于设置面板打开时临时注销） */
+let registeredWakeShortcut: string | undefined;
+/** 唤醒快捷键注册状态，供设置页显示冲突 */
+let wakeShortcutStatus: { shortcut: string; registered: boolean } = {
+  shortcut: DEFAULT_WAKE_SHORTCUT,
+  registered: true,
+};
+/** 当前窗口是否由唤醒快捷键/托盘呼出，用于“再按一次回到托盘”的切换判断 */
+let wakeToggleActive = false;
+/**
+ * 打开了设置面板的 webContents 集合。
+ * 打开期间临时注销全局快捷键，避免干扰快捷键设置；
+ * 用集合而不是布尔值，兼容多个会话视图同时打开设置面板的情况。
+ */
+const settingsPanelSenders = new Set<number>();
+/** 应用退出中：避免 destroyed 回调里再尝试注册快捷键 */
+let appQuitting = false;
 // 已加载（打开过）的会话由 ChatViewManager 的视图列表派生，
 // 侧栏列表（仅已发送消息的对话 + loaded 标记）通过 chatViews.getSidebarConversations() 获取
 
@@ -48,9 +68,9 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
+    // 启动早期 mainWindow 可能尚未创建，此时不做处理，避免与 main() 的初始化竞争
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      showMainWindowFromTray();
     }
   });
 
@@ -80,6 +100,7 @@ async function main(): Promise<void> {
   }
 
   createMainWindow();
+  setupTray();
   setupMenu();
   // 系统主题变化时同步聊天视图（只注册一次，避免菜单重建时重复注册）
   nativeTheme.on('updated', () => {
@@ -87,6 +108,9 @@ async function main(): Promise<void> {
   });
   setupIpc();
   initCore();
+  // 注册全局唤醒快捷键（settings.json 中的 shortcut，默认 Super+Shift+Z）
+  // 注册失败时弹窗提示，避免静默失效
+  registerWakeShortcut();
 
   // GPU 进程异常（合成表面丢失 → 整个页面空白）时强制重绘所有视图
   app.on('child-process-gone', (_event, details) => {
@@ -107,9 +131,19 @@ async function main(): Promise<void> {
       app.quit();
     }
   });
+
+  app.on('will-quit', () => {
+    appQuitting = true;
+    globalShortcut.unregisterAll();
+    registeredWakeShortcut = undefined;
+    tray?.destroy();
+    tray = undefined;
+  });
 }
 
 function createMainWindow(): void {
+  // 防止 second-instance / activate 与启动流程并发创建出多个主窗口
+  if (mainWindow && !mainWindow.isDestroyed()) return;
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -131,6 +165,21 @@ function createMainWindow(): void {
   };
   mainWindow.once('ready-to-show', showMainWindow); // 无子视图场景仍可用
   setTimeout(showMainWindow, 3000); // 兜底：3 秒后强制显示
+
+  // 最小化时隐藏到系统托盘，而不是最小化到任务栏；
+  // 之后可通过托盘图标或全局快捷键唤醒。
+  // 注意：Electron 的 minimize 事件不可 preventDefault，这里在最小化后立即隐藏。
+  mainWindow.on('minimize', () => {
+    mainWindow?.hide();
+  });
+  // 用户手动切换窗口/隐藏时，取消“再按一次回托盘”的切换态；
+  // 下次按快捷键应重新把窗口唤到前台，而不是直接隐藏。
+  mainWindow.on('blur', () => {
+    wakeToggleActive = false;
+  });
+  mainWindow.on('hide', () => {
+    wakeToggleActive = false;
+  });
 
   // ── 左侧原生侧栏 ──
   sidebarView = new WebContentsView({
@@ -257,6 +306,182 @@ function createMainWindow(): void {
     sidebarView = undefined;
     chatViews = undefined;
   });
+}
+
+/** 读取 settings.json 中的唤醒快捷键（失败时返回默认值） */
+function readWakeShortcutFromSettings(): string {
+  try {
+    const { readWakeShortcutSync } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
+    return readWakeShortcutSync();
+  } catch {
+    return DEFAULT_WAKE_SHORTCUT;
+  }
+}
+
+/**
+ * 显示/唤醒主窗口。
+ * 窗口被隐藏到托盘、最小化或尚未创建时都能恢复；供托盘点击、全局快捷键、
+ * 第二实例启动复用。
+ */
+function showMainWindowFromTray(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    wakeToggleActive = true;
+    createMainWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+  // Windows 上从托盘/后台恢复时，先置顶再取消，避免窗口只闪烁不聚焦
+  mainWindow.setAlwaysOnTop(true);
+  mainWindow.focus();
+  mainWindow.setAlwaysOnTop(false);
+  wakeToggleActive = true;
+  layout();
+}
+
+/**
+ * 全局快捷键切换：窗口在前台时按快捷键隐藏回托盘，
+ * 不在前台时恢复并聚焦。托盘点击始终只显示窗口。
+ */
+function toggleMainWindowFromTray(): void {
+  if (
+    wakeToggleActive
+    && mainWindow
+    && !mainWindow.isDestroyed()
+    && mainWindow.isVisible()
+    && !mainWindow.isMinimized()
+  ) {
+    wakeToggleActive = false;
+    mainWindow.hide();
+    return;
+  }
+  showMainWindowFromTray();
+}
+
+/** 弹窗提示快捷键冲突（按系统语言输出中/英文） */
+function showShortcutConflictDialog(shortcut: string): void {
+  const isZh = app.getLocale().toLowerCase().startsWith('zh');
+  const message = isZh
+    ? `全局快捷键 ${shortcut} 注册失败`
+    : `Global shortcut ${shortcut} could not be registered`;
+  const detail = isZh
+    ? '该快捷键可能已被系统或其它程序占用。\n可在「设置 - 界面 - 唤醒快捷键」中修改后重新保存。'
+    : 'It may be used by the system or another application.\nChange it in Settings - Interface - Wake Shortcut and save again.';
+  void dialog.showMessageBox({
+    type: 'warning',
+    title: PRODUCT_NAME,
+    message,
+    detail,
+    buttons: [isZh ? '知道了' : 'OK'],
+  }).catch((err) => {
+    console.error('[main] Failed to show shortcut conflict dialog:', err);
+  });
+}
+
+/** 广播唤醒快捷键注册状态给所有聊天视图（设置页据此显示冲突） */
+function broadcastWakeShortcutStatus(): void {
+  chatViews?.broadcast({
+    type: 'wakeShortcutStatus',
+    shortcut: wakeShortcutStatus.shortcut,
+    registered: wakeShortcutStatus.registered,
+  });
+}
+
+/** 创建系统托盘（只创建一次），提供“显示主窗口”和“退出”入口 */
+function setupTray(): void {
+  if (tray) return;
+  try {
+    const iconPath = path.join(APP_ROOT, 'assets', 'logo.png');
+    const image = nativeImage.createFromPath(iconPath);
+    tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image.resize({ width: 16, height: 16 }));
+    tray.setToolTip(PRODUCT_NAME);
+    tray.setContextMenu(Menu.buildFromTemplate([
+      {
+        label: `Show ${PRODUCT_NAME}`,
+        click: () => showMainWindowFromTray(),
+      },
+      { type: 'separator' },
+      {
+        label: 'Quit',
+        click: () => app.quit(),
+      },
+    ]));
+    tray.on('click', () => showMainWindowFromTray());
+    tray.on('double-click', () => showMainWindowFromTray());
+  } catch (err) {
+    console.error('[main] Failed to create tray:', err);
+    tray = undefined;
+  }
+}
+
+/**
+ * 重新注册全局唤醒快捷键：先注销旧值，再读取 settings.json 并注册新值。
+ * 注册失败时弹窗提示，并在设置页显示冲突状态。
+ */
+function registerWakeShortcut(): void {
+  if (appQuitting) return;
+  // 设置面板打开期间不注册全局快捷键，避免快捷键被占用/触发而影响用户录制新组合
+  if (settingsPanelSenders.size > 0) return;
+  if (registeredWakeShortcut) {
+    globalShortcut.unregister(registeredWakeShortcut);
+    registeredWakeShortcut = undefined;
+  }
+  const shortcut = readWakeShortcutFromSettings();
+  try {
+    const ok = globalShortcut.register(shortcut, () => toggleMainWindowFromTray());
+    if (ok) {
+      registeredWakeShortcut = shortcut;
+      wakeShortcutStatus = { shortcut, registered: true };
+      console.log(`[main] Global wake shortcut registered: ${shortcut}`);
+    } else {
+      wakeShortcutStatus = { shortcut, registered: false };
+      console.error(`[main] Failed to register global wake shortcut (occupied?): ${shortcut}`);
+      showShortcutConflictDialog(shortcut);
+    }
+  } catch (err) {
+    wakeShortcutStatus = { shortcut, registered: false };
+    console.error(`[main] Failed to register global wake shortcut ${shortcut}:`, err);
+    showShortcutConflictDialog(shortcut);
+  }
+  broadcastWakeShortcutStatus();
+}
+
+/**
+ * 设置面板打开：临时注销全局唤醒快捷键。
+ * 保持 wakeShortcutStatus 不变，避免设置页把“临时注销”误显示为冲突。
+ */
+function suspendWakeShortcut(sender: Electron.WebContents): void {
+  const senderId = sender.id;
+  if (settingsPanelSenders.has(senderId)) return;
+  settingsPanelSenders.add(senderId);
+  // webview 被销毁（关闭会话/切换工作区/应用退出）时兜底释放，避免快捷键一直处于注销状态
+  sender.once('destroyed', () => {
+    if (settingsPanelSenders.delete(senderId) && settingsPanelSenders.size === 0) {
+      resumeWakeShortcutInternal();
+    }
+  });
+  if (settingsPanelSenders.size === 1 && registeredWakeShortcut) {
+    globalShortcut.unregister(registeredWakeShortcut);
+    registeredWakeShortcut = undefined;
+    console.log('[main] Global wake shortcut suspended while settings panel is open');
+  }
+}
+
+/** 设置面板关闭：所有面板都关闭后按最新 settings.json 恢复注册 */
+function resumeWakeShortcut(sender: Electron.WebContents): void {
+  if (settingsPanelSenders.delete(sender.id) && settingsPanelSenders.size === 0) {
+    resumeWakeShortcutInternal();
+  }
+}
+
+/** 所有设置面板关闭后恢复全局快捷键注册 */
+function resumeWakeShortcutInternal(): void {
+  if (appQuitting) return;
+  registerWakeShortcut();
 }
 
 /** 获取系统 locale（复用 core 的实现） */
@@ -597,7 +822,27 @@ function setupIpc(): void {
       ui.handleWebviewMessage(message).catch((err: any) => console.error(err));
       return;
     }
+    // 设置页打开时查询当前快捷键注册状态（冲突时显示提示）
+    if (message.type === 'requestWakeShortcutStatus') {
+      event.sender.send('webview-message', {
+        type: 'wakeShortcutStatus',
+        shortcut: wakeShortcutStatus.shortcut,
+        registered: wakeShortcutStatus.registered,
+      });
+      return;
+    }
+    // 设置面板打开期间临时注销全局快捷键，关闭后恢复
+    if (message.type === 'suspendWakeShortcut') {
+      suspendWakeShortcut(event.sender);
+      return;
+    }
+    if (message.type === 'resumeWakeShortcut') {
+      resumeWakeShortcut(event.sender);
+      return;
+    }
 
+    // 设置保存不在这里重新注册：设置面板打开期间快捷键已临时注销，
+    // 等面板关闭后由 resumeWakeShortcut 按最新 settings.json 统一恢复。
     ui.handleWebviewMessage(message).catch((err: any) => {
       console.error(`[main] handleWebviewMessage error (${message.type}):`, err);
     });

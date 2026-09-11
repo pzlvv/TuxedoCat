@@ -202,15 +202,25 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
     );
 
     webviewView.webview.onDidReceiveMessage(async (message: any) => {
-      if (message.type === 'requestTheme') {
-        this.sendThemeInfo();
-        return;
+      // 兜底：单条 webview 消息处理失败不应变成未处理的 rejection
+      // （VS Code 会打印 "rejected promise not handled within 1 second"，
+      // 且整条消息链路静默失败，难以定位）。
+      try {
+        if (message.type === 'requestTheme') {
+          this.sendThemeInfo();
+          return;
+        }
+        if (message.type === 'requestContextLimit') {
+          this.sendContextLimit(message.model);
+          return;
+        }
+        await this.ui.handleWebviewMessage(message);
+      } catch (err) {
+        const detail = err instanceof Error ? (err.stack || err.message) : String(err);
+        VSCodeUI['outputChannel']?.appendLine(
+          `[Extension] handleWebviewMessage failed for type=${message?.type}: ${detail}`
+        );
       }
-      if (message.type === 'requestContextLimit') {
-        this.sendContextLimit(message.model);
-        return;
-      }
-      await this.ui.handleWebviewMessage(message);
     });
   }
 

@@ -1,33 +1,91 @@
 {
+  // Tuxedo Cat 调试配置
+  //
+  // 两个调试目标：
+  //   1) VS Code 扩展（extensionHost）：调试 src/extension.ts + webview
+  //   2) Electron 桌面端：调试 electron/main.ts
+  //
+  // 关于「打开就闪退」：
+  //   - 扩展宿主：已安装的其它扩展（尤其是同 ID 的正式版）会与开发版抢注，
+  //     启动参数加了 --disable-extensions 等隔离项，并跳过欢迎页 / 工作区信任，
+  //     避免宿主窗口刚起来就被顶掉或卡在弹窗上。
+  //   - Electron：main.ts 里有单实例锁，上一次调试残留的进程没退干净时，
+  //     新进程会立刻 app.quit()，表现为窗口一闪而过。启动前请确认没有残留进程
+  //     （任务管理器结束 electron.exe），或改用 `npm run electron` 单独验证。
   "version": "0.2.0",
   "configurations": [
     {
+      // 调试扩展本体：F5 后打开一个新的「扩展开发宿主」窗口
       "name": "Debug Extension (VS Code)",
       "type": "extensionHost",
       "request": "launch",
-      "preLaunchTask": "watch:ext",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        // 只加载正在开发的扩展，避免与用户已安装扩展互相干扰
+        "--disable-extensions",
+        // 以下参数与 @vscode/test-electron 保持一致，跳过启动期弹窗与更新检查
+        "--disable-updates",
+        "--disable-workspace-trust",
+        "--skip-welcome",
+        "--skip-release-notes",
+        // 规避部分 Windows 环境下 GPU 沙箱崩溃导致宿主直接退出
+        "--no-sandbox",
+        "--disable-gpu-sandbox"
+      ],
       "outFiles": ["${workspaceFolder}/dist/**/*.js"],
-      "autoAttachChildProcesses": true
+      "sourceMaps": true,
+      "resolveSourceMapLocations": [
+        "${workspaceFolder}/**",
+        "!**/node_modules/**"
+      ],
+      // 扩展宿主崩溃时自动展开调试控制台，方便直接看到异常堆栈
+      "internalConsoleOptions": "openOnSessionStart",
+      "preLaunchTask": "watch:ext",
+      "presentation": {
+        "group": "1-extension",
+        "order": 1
+      }
     },
     {
-      "name": "Debug App (Electron)",
-      "type": "node",
-      "request": "attach",
-      "preLaunchTask": "launch:app:debug",
-      "port": 9229,
-      "restart": true,
-      "skipFiles": ["<node_internals>/**"]
-    },
-    {
+      // 只运行不调试 Electron 应用（改代码后由 watch:app 自动重建）
       "name": "Run App (Electron)",
       "type": "node",
       "request": "launch",
       "noDebug": true,
-      "preLaunchTask": "watch:app",
       "cwd": "${workspaceFolder}",
       "program": "${workspaceFolder}/scripts/electron-launch.js",
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      // 清掉可能存在的全局设置，避免 electron 以纯 Node 模式运行
+      "env": {
+        "ELECTRON_RUN_AS_NODE": null
+      },
+      "skipFiles": ["<node_internals>/**"],
+      "preLaunchTask": "watch:app",
+      "presentation": {
+        "group": "2-app",
+        "order": 1
+      }
+    },
+    {
+      // 调试 Electron 主进程：先构建，再用 --inspect=9229 启动并附加调试器
+      "name": "Debug App (Electron)",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "cwd": "${workspaceFolder}",
+      "restart": true,
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/dist-electron/**/*.cjs"],
+      "resolveSourceMapLocations": [
+        "${workspaceFolder}/**",
+        "!**/node_modules/**"
+      ],
+      "skipFiles": ["<node_internals>/**", "**/node_modules/**"],
+      "preLaunchTask": "launch:app:debug",
+      "presentation": {
+        "group": "2-app",
+        "order": 2
+      }
     }
   ],
   "compounds": []

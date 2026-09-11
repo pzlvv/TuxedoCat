@@ -25,10 +25,10 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
         return '';
       }
 
-      const { detectProjectState } = await import('../../spin/Engine.js');
+      const { detectProjectState, readSpinJson: readSpinJsonForState, getVariablesWithoutValue } = await import('../../spin/Engine.js');
       const state = await detectProjectState(cwd);
 
-      if (state === 'invalid' || state === 'empty-node' || state === 'not-dag') {
+      if (state === 'invalid' || state === 'empty-node' || state === 'not-dag' || state === 'variable-no-value') {
         let errorMsg: string;
         if (state === 'empty-node') {
           errorMsg = tt(
@@ -40,6 +40,18 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
             '流程图不是有效的无环有向图（DAG），请检查连线后重试。',
             'The flow is not a valid directed acyclic graph (DAG), please check the edges and retry.'
           );
+        } else if (state === 'variable-no-value') {
+          const cfgForState = await readSpinJsonForState(cwd);
+          const names = cfgForState ? getVariablesWithoutValue(cfgForState) : [];
+          errorMsg = names.length > 0
+            ? tt(
+              `存在未赋值的变量（${names.join(', ')}），请在 Spin 设计器中填写变量值后重试。`,
+              `Variables without a value (${names.join(', ')}), please fill in their values in the Spin Designer and retry.`
+            )
+            : tt(
+              '存在未赋值的变量，请在 Spin 设计器中填写变量值后重试。',
+              'There are variables without a value, please fill in their values in the Spin Designer and retry.'
+            );
         } else {
           errorMsg = tt(
             'spin.json 格式不合法，请检查文件内容。',
@@ -116,11 +128,20 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
 
       // 启动 spinLoop
       const { spinLoop } = await import('../../spin/Loop.js');
-      await spinLoop(engine, cwd, ui, sessionId);
-      // spinLoop 结束后恢复为 normal 模式
-      (engine as any).workMode = 'normal';
-      // 冲洗所有未持久化的消息
-      await (engine as any).flush();
+      try {
+        await spinLoop(engine, cwd, ui, sessionId);
+      } finally {
+        // spinLoop 结束后恢复为 normal 模式
+        (engine as any).workMode = 'normal';
+        // 冲洗所有未持久化的消息
+        await (engine as any).flush().catch(() => {});
+        // 刷新已打开的 Spin 设计器，避免其旧缓存覆盖执行结果
+        try {
+          await ui.refreshSpinDesign?.();
+        } catch {
+          // 刷新失败不影响 /spin 命令返回
+        }
+      }
       return '';
     },
   };

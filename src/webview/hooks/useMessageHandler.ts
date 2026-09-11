@@ -4,6 +4,7 @@ import { extractUserContent } from '../../core/utils/contentBlocks';
 import type { DiffHunk } from '../../core/utils/editDiff';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, ProviderConfig } from '../types';
 import { postMessage } from '../webviewEnv';
+import { DEFAULT_WAKE_SHORTCUT } from '../../core/utils/shortcut.js';
 import { profileLog } from '../debug';
 import { t, resolveTitle, setUiLanguage, type UiLanguage } from '../i18n';
 
@@ -74,6 +75,8 @@ export interface UseMessageHandlerProps {
   setLocaleVersion: React.Dispatch<React.SetStateAction<number>>;
   /** 设置面板中显示的界面语言 */
   setLlmConfigLanguage: (v: UiLanguage) => void;
+  /** 设置面板中显示的唤醒快捷键（Electron，accelerator 形式） */
+  setLlmConfigShortcut: (v: string) => void;
   /** settings.json 默认值（model / thinkingMode / agentMode / promptMode） */
   setSettingsDefaults: React.Dispatch<React.SetStateAction<SettingsDefaults>>;
   /** settings.json 默认值（当前值，供新会话初始化使用） */
@@ -497,9 +500,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           }
           break;
         case 'contextLimitUpdated':
-          profileLog(`[TokenDebug] contextLimitUpdated: maxContextTokens=${(msg as any).maxContextTokens}`);
-          if ((msg as any).maxContextTokens) {
-            props.setMaxContextTokens((msg as any).maxContextTokens);
+          profileLog(`[TokenDebug] contextLimitUpdated: maxContextTokens=${msg.maxContextTokens}`);
+          if (msg.maxContextTokens) {
+            props.setMaxContextTokens(msg.maxContextTokens);
           } else {
             console.warn(`[TokenDebug] contextLimitUpdated: maxContextTokens is falsy, not setting`);
           }
@@ -1802,7 +1805,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 如果当前对话是未发送消息的新对话，则模型/提示词模式等默认值也立刻生效；
           // 工作模式/思考强度/联网搜索保持原有“保存后应用到当前对话”的行为。
           {
-            const saved = msg as { defaultModel?: string; thinkingEffort?: 'off' | 'low' | 'high' | 'max'; defaultAgentMode?: 'manual' | 'risk' | 'auto'; defaultPromptMode?: PromptMode; webSearch?: boolean };
+            const saved = msg as { defaultModel?: string; activeModel?: string; thinkingEffort?: 'off' | 'low' | 'high' | 'max'; defaultAgentMode?: 'manual' | 'risk' | 'auto'; defaultPromptMode?: PromptMode; webSearch?: boolean; shortcut?: string };
             // 保存成功即说明至少有一个可用的服务商
             props.setProviderConfigured(true);
             if (saved.defaultModel || saved.thinkingEffort || saved.defaultAgentMode || saved.defaultPromptMode || typeof saved.webSearch === 'boolean') {
@@ -1847,11 +1850,18 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 }
               }
             }
+            // 切换 provider 后，扩展端会返回当前对话应使用的模型 activeModel
+            // （已校验是否属于新 provider 的模型列表，不在列表中则回退到 provider 默认模型）。
+            // 该值对已有消息的对话同样生效，避免当前对话保留新 provider 不支持的模型。
+            const curSid = props.currentSessionIdRef.current;
+            const state = curSid ? props.sessionStatesRef.current.get(curSid) : undefined;
+            if (saved.activeModel) {
+              props.setModel(saved.activeModel);
+              if (state) state.model = saved.activeModel;
+            }
             // 当前对话是未发送消息的新对话时，模型与提示词模式也立即使用新默认值
             if (messagesRef.current.length === 0) {
-              const curSid = props.currentSessionIdRef.current;
-              const state = curSid ? props.sessionStatesRef.current.get(curSid) : undefined;
-              if (saved.defaultModel) {
+              if (!saved.activeModel && saved.defaultModel) {
                 props.setModel(saved.defaultModel);
                 if (state) state.model = saved.defaultModel;
               }
@@ -1867,6 +1877,10 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               if (changed) {
                 props.setLocaleVersion((v) => v + 1);
               }
+            }
+            // 唤醒快捷键保存成功：同步本地显示值
+            if (typeof saved.shortcut === 'string' && saved.shortcut.trim()) {
+              props.setLlmConfigShortcut(saved.shortcut);
             }
           }
           break;
@@ -1950,6 +1964,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           props.setLlmConfigApiKey((msg as any).apiKey || '');
           const llmLanguage = (msg as any).language;
           props.setLlmConfigLanguage(llmLanguage === 'zh' || llmLanguage === 'en' || llmLanguage === 'auto' ? llmLanguage : 'auto');
+          const llmShortcut = (msg as any).shortcut;
+          props.setLlmConfigShortcut(typeof llmShortcut === 'string' && llmShortcut.trim() ? llmShortcut : DEFAULT_WAKE_SHORTCUT);
           const rawProviders = (msg as any).providers;
           if (Array.isArray(rawProviders)) {
             props.setLlmConfigProviders(

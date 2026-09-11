@@ -10,6 +10,7 @@ import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, Th
 import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
 import { postMessage, getLogoUri, getHasWorkspace, LOGO_CLASS_NAME, getHostInfo, navigateToConversation } from './webviewEnv';
+import { DEFAULT_WAKE_SHORTCUT } from '../core/utils/shortcut.js';
 import { t } from './i18n';
 import { ConversationTreeItem } from './ConversationTreeItem';
 import { DeleteConfirmDialog } from './components/DeleteConfirmDialog';
@@ -48,6 +49,8 @@ const App = () => {
   const [localeVersion, setLocaleVersion] = useState(0);
   // 设置面板中显示的界面语言（来自 settings.json，保存后生效）
   const [llmConfigLanguage, setLlmConfigLanguage] = useState<'auto' | 'zh' | 'en'>('auto');
+  // 设置面板中显示的唤醒快捷键（仅 Electron 使用，accelerator 形式）
+  const [llmConfigShortcut, setLlmConfigShortcut] = useState<string>(DEFAULT_WAKE_SHORTCUT);
 
   // 对话历史状态
   const [conversations, setConversations] = useState<Array<any>>([]);
@@ -314,6 +317,7 @@ const App = () => {
     setLlmConfigThinkingEffort, setLlmConfigDefaultAgentMode, setLlmConfigDefaultPromptMode, setLlmConfigApiKey,
     setLlmConfigProviders, setLlmConfigActiveProvider,
     setSettingsDefaults, settingsDefaults, setLocaleVersion, setLlmConfigLanguage,
+    setLlmConfigShortcut,
     setProviderConfigured,
     messages,
     currentSessionIdRef, sessionStatesRef, userChoiceRequestRef, userChoiceInputRef,
@@ -548,8 +552,11 @@ const App = () => {
       initialDefaultPromptMode={llmConfigDefaultPromptMode}
       initialApiKey={llmConfigApiKey}
       initialLanguage={llmConfigLanguage}
+      initialShortcut={llmConfigShortcut}
       initialProviders={llmConfigProviders}
       initialActiveProvider={llmConfigActiveProvider}
+      currentSessionId={currentSessionId}
+      currentModel={model}
       onClose={() => {
         setShowLLMConfig(false);
         // 关闭设置后把焦点还给主输入框，继续输入不受影响
@@ -558,16 +565,17 @@ const App = () => {
     />
   ) : null;
 
-  // 未打开工作目录时：右侧聊天区仅显示背景 Logo
-  // （打开工作目录的引导按钮在侧边栏中提供）
+  // 未打开工作目录时：提示用户打开工作目录，并提供引导按钮。
+  // VS Code 宿主会弹出“打开文件夹”选择器；打开后窗口重载并重新注入 __hasWorkspace。
   if (noWorkspace) {
     return (
       <div
-        className="h-screen w-screen flex items-center justify-center"
+        className="h-screen w-screen flex flex-col items-center justify-center gap-4"
         style={{
           backgroundColor: 'transparent',
           position: 'relative',
           overflow: 'clip',
+          padding: '24px',
         }}
       >
         <img
@@ -575,6 +583,26 @@ const App = () => {
           alt="logo"
           className={LOGO_CLASS_NAME}
         />
+        <div
+          className="text-[13px] text-center"
+          style={{ color: colors.textSystem, maxWidth: '320px' }}
+        >
+          {t('app.openWorkspaceHint')}
+        </div>
+        {hostInfo.kind === 'vscode' && (
+          <button
+            onClick={() => postMessage({ type: 'openWorkspaceFolder' })}
+            className="px-4 py-2 rounded-lg text-[13px] transition-opacity hover:opacity-90"
+            style={{
+              backgroundColor: colors.harness,
+              color: '#ffffff',
+              border: 'none',
+              cursor: 'pointer',
+            }}
+          >
+            {t('app.openWorkspaceButton')}
+          </button>
+        )}
         {settingsPanel}
       </div>
     );

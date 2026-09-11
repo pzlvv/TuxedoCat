@@ -85,14 +85,44 @@ interface InputAreaProps {
   isSubAgent?: boolean;
 }
 
+/**
+ * 进度条颜色渐变锚点（按百分比）：
+ * 0~30% 绿 → 50% 黄 → 70% 橙 → 100% 红
+ */
+const CONTEXT_GRADIENT_STOPS: Array<{ at: number; rgb: [number, number, number] }> = [
+  { at: 0, rgb: [34, 197, 94] },    // #22c55e 绿
+  { at: 0.3, rgb: [34, 197, 94] },  // 30% 之前保持绿
+  { at: 0.5, rgb: [234, 179, 8] },  // #eab308 黄
+  { at: 0.7, rgb: [249, 115, 22] }, // #f97316 橙
+  { at: 1, rgb: [239, 68, 68] },    // #ef4444 红
+];
+
+/** 按百分比（0~1）在 绿→黄→橙→红 之间线性插值 */
+function contextGradientColor(ratio: number): string {
+  const r = Number.isFinite(ratio) ? Math.min(Math.max(ratio, 0), 1) : 0;
+  for (let i = 0; i < CONTEXT_GRADIENT_STOPS.length - 1; i++) {
+    const a = CONTEXT_GRADIENT_STOPS[i];
+    const b = CONTEXT_GRADIENT_STOPS[i + 1];
+    if (r <= b.at) {
+      const t = b.at === a.at ? 0 : (r - a.at) / (b.at - a.at);
+      const ch = (idx: number) => Math.round(a.rgb[idx] + (b.rgb[idx] - a.rgb[idx]) * t);
+      return `rgb(${ch(0)}, ${ch(1)}, ${ch(2)})`;
+    }
+  }
+  const last = CONTEXT_GRADIENT_STOPS[CONTEXT_GRADIENT_STOPS.length - 1];
+  return `rgb(${last.rgb[0]}, ${last.rgb[1]}, ${last.rgb[2]})`;
+}
+
 const ContextProgressBar = React.memo(({ totalContextTokens, isDark, maxContextTokens, onClick, colors }: { totalContextTokens: number; isDark: boolean; maxContextTokens?: number | null; onClick?: () => void; colors: Colors }) => {
   if (maxContextTokens == null) {
     return null;
   }
-  const maxContext = maxContextTokens;
-  const pct = Math.min((totalContextTokens / maxContext) * 100, 100);
-  const barColor = pct < 50 ? '#22c55e' : pct < 80 ? '#f97316' : '#ef4444';
-  const contextK = Math.floor(maxContext / 1024);
+  // 进度条填充与文字分母都以完整 context window 为基准，
+  // 颜色按百分比从绿→黄→橙→红渐变（约 95% 的压缩点接近红色）。
+  const ratio = maxContextTokens > 0 ? totalContextTokens / maxContextTokens : 0;
+  const pct = Math.min(ratio * 100, 100);
+  const barColor = contextGradientColor(ratio);
+  const contextK = Math.floor(maxContextTokens / 1024);
   const displayText = `${Math.floor(totalContextTokens / 1024)}/${contextK}`;
 
   return (

@@ -153,6 +153,14 @@ export interface AssistantUI {
   scheduleConversationListRefresh(): void;
 
   /**
+   * 刷新已打开的 Spin 设计器，使其从磁盘重新加载 spin.json。
+   * SpinLoop 执行过程中会直接更新磁盘 meta；若设计器仍持有旧缓存，
+   * 用户后续保存会覆盖执行结果，因此执行完成后必须刷新。
+   * 未打开设计器时无需处理。
+   */
+  refreshSpinDesign?(): void | Promise<void>;
+
+  /**
    * 压缩进度通知
    * @param sessionId 会话 ID
    * @param status 压缩状态

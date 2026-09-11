@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { postMessage } from './webviewEnv';
+import { postMessage, getHostInfo } from './webviewEnv';
 import { providerKeyFromBaseURL } from '../core/utils/providerKey.js';
+import {
+  DEFAULT_WAKE_SHORTCUT,
+  acceleratorFromKeyboardEvent,
+  formatAcceleratorForDisplay,
+  normalizeAccelerator,
+} from '../core/utils/shortcut.js';
 import type { Colors, ThinkingMode, AgentMode, PromptMode } from './types';
 import { t } from './i18n';
 
@@ -38,10 +44,16 @@ interface LLMConfigPanelProps {
   initialApiKey?: string;
   /** 已保存的界面语言（auto | zh | en） */
   initialLanguage?: 'auto' | 'zh' | 'en';
+  /** 已保存的唤醒快捷键（仅 Electron 使用，accelerator 形式） */
+  initialShortcut?: string;
   /** 已保存的 Provider 列表（settings.json 的 llm.providers） */
   initialProviders?: Array<{ key: string; baseURL: string; apiKey: string; apiType: string; models?: string[]; defaultModel?: string }>;
   /** settings.json 的 llm.activeProvider */
   initialActiveProvider?: string;
+  /** 触发设置面板时当前显示的会话 ID（保存时回传，供扩展端校验/回退模型） */
+  currentSessionId?: string | null;
+  /** 触发设置面板时当前会话使用的模型（保存时回传，供扩展端校验/回退模型） */
+  currentModel?: string;
   onClose: () => void;
 }
 
@@ -175,8 +187,11 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   initialDefaultPromptMode,
   initialApiKey,
   initialLanguage,
+  initialShortcut,
   initialProviders,
   initialActiveProvider,
+  currentSessionId,
+  currentModel,
   onClose,
 }) => {
   const [providers, setProviders] = useState<ProviderDraft[]>(() => {
@@ -227,6 +242,14 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   const [defaultAgentMode, setDefaultAgentMode] = useState<AgentMode>(initialDefaultAgentMode || DEFAULT_AGENT_MODE);
   const [defaultPromptMode, setDefaultPromptMode] = useState<PromptMode>(initialDefaultPromptMode || DEFAULT_PROMPT_MODE);
   const [language, setLanguage] = useState<'auto' | 'zh' | 'en'>(initialLanguage || 'auto');
+  /** 仅 Electron 桌面端提供“最小化到托盘 + 快捷键唤醒”设置 */
+  const isElectron = getHostInfo().kind === 'electron';
+  const initialShortcutNormalized = normalizeAccelerator(initialShortcut) || DEFAULT_WAKE_SHORTCUT;
+  const [shortcut, setShortcut] = useState<string>(initialShortcutNormalized);
+  const [shortcutRecording, setShortcutRecording] = useState(false);
+  const [shortcutError, setShortcutError] = useState<string | null>(null);
+  /** 已保存的快捷键注册失败（被系统/其它程序占用） */
+  const [shortcutConflict, setShortcutConflict] = useState(false);
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
   const [baseURLError, setBaseURLError] = useState<string | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
@@ -303,7 +326,8 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     thinkingEffort !== (initialThinkingEffort || DEFAULT_THINKING_EFFORT) ||
     defaultAgentMode !== (initialDefaultAgentMode || DEFAULT_AGENT_MODE) ||
     defaultPromptMode !== (initialDefaultPromptMode || DEFAULT_PROMPT_MODE) ||
-    language !== (initialLanguage || 'auto');
+    language !== (initialLanguage || 'auto') ||
+    (isElectron && shortcut !== initialShortcutNormalized);
 
   const updateProvider = (id: string, patch: Partial<ProviderDraft>) => {
     setProviders((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
@@ -444,6 +468,13 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     if (language !== (initialLanguage || 'auto')) {
       presetPayload.language = language;
     }
+    if (isElectron) {
+      const normalizedShortcut = normalizeAccelerator(shortcut);
+      // 快捷键始终随保存写入，保证 settings.json 中一定有记录（默认 Win+Shift+Z）
+      if (normalizedShortcut) {
+        presetPayload.shortcut = normalizedShortcut;
+      }
+    }
     postMessage({
       type: 'saveLLMConfig',
       // 只要需要保存 provider（有 provider 变更或显式选择了服务商），就写入完整 providers；
@@ -464,6 +495,9 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       ...presetPayload,
       saveProviders,
       closeAfterSave,
+      // 回传当前会话与模型，供扩展端在切换 provider 后校验模型是否仍被支持
+      ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+      ...(currentModel ? { currentModel } : {}),
     });
   };
 
@@ -537,6 +571,14 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     }
     if (saveProviders && activeKey) {
       setActiveProviderKey(activeKey);
+    }
+    if (isElectron) {
+      const normalizedShortcut = normalizeAccelerator(shortcut);
+      if (!normalizedShortcut) {
+        setShortcutError(t('llmConfig.shortcutInvalid'));
+        return;
+      }
+      setShortcut(normalizedShortcut);
     }
     setSaving(true);
     postSaveMessage(activeKey, true, saveProviders);
@@ -686,6 +728,46 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
   }, []);
+
+  // 快捷键录制：点击后捕获下一次按键组合（Esc 取消）
+  useEffect(() => {
+    if (!shortcutRecording) return;
+    const handler = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === 'Escape') {
+        setShortcutRecording(false);
+        return;
+      }
+      const accelerator = acceleratorFromKeyboardEvent(event);
+      if (!accelerator) return; // 只按了修饰键，继续等待
+      setShortcut(accelerator);
+      setShortcutError(null);
+      setShortcutConflict(false);
+      setShortcutRecording(false);
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [shortcutRecording]);
+
+  // 设置面板打开期间临时注销全局快捷键，避免影响快捷键设置；
+  // 同时查询注册状态，冲突时在设置页明确提示，而不是静默失败。
+  useEffect(() => {
+    if (!isElectron) return;
+    const handler = (event: MessageEvent) => {
+      const msg = event.data;
+      if (msg?.type === 'wakeShortcutStatus') {
+        setShortcutConflict(!msg.registered);
+      }
+    };
+    window.addEventListener('message', handler);
+    postMessage({ type: 'suspendWakeShortcut' });
+    postMessage({ type: 'requestWakeShortcutStatus' });
+    return () => {
+      window.removeEventListener('message', handler);
+      postMessage({ type: 'resumeWakeShortcut' });
+    };
+  }, [isElectron]);
 
   const isDark = colors.bg === '#1a1a1f';
 
@@ -1269,6 +1351,56 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               {t('llmConfig.languageHint')}
             </div>
           </div>
+
+          {/* 唤醒快捷键（仅 Electron） */}
+          {isElectron && (
+            <div className="mt-4">
+              <label
+                className="block text-[12px] font-medium mb-1.5"
+                style={{ color: colors.textSystem }}
+              >
+                {t('llmConfig.shortcutLabel')}
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  setShortcutRecording(true);
+                  setShortcutError(null);
+                }}
+                onBlur={() => setShortcutRecording(false)}
+                style={{
+                  ...inputStyle,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '8px',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                  borderColor: shortcutRecording
+                    ? colors.harness
+                    : (shortcutConflict ? '#ef4444' : colors.border),
+                }}
+              >
+                <span style={{ color: shortcutRecording ? colors.textSystem : colors.textPrimary }}>
+                  {shortcutRecording
+                    ? t('llmConfig.shortcutRecording')
+                    : formatAcceleratorForDisplay(shortcut)}
+                </span>
+                <span style={{ color: colors.textSystem, fontSize: '11px', flexShrink: 0 }}>
+                  {shortcutRecording ? '' : t('llmConfig.shortcutChange')}
+                </span>
+              </button>
+              <div
+                className="text-[11px] mt-1"
+                style={{ color: shortcutError || shortcutConflict ? '#ef4444' : colors.textSystem }}
+              >
+                {shortcutError
+                  || (shortcutConflict
+                    ? t('llmConfig.shortcutConflict', { shortcut: formatAcceleratorForDisplay(shortcut) })
+                    : t('llmConfig.shortcutHint'))}
+              </div>
+            </div>
+          )}
         </SectionGroup>
 
         {/* ── 分组四：对话空间管理 ── */}

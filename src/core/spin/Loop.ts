@@ -49,9 +49,35 @@ async function waitForAgentReply(
   engine: QueryEngine,
   pollIntervalMs: number = 1000,
   expectedAgentId?: string,
-): Promise<string> {
+): Promise<string | null> {
   const queue = (engine as any).agentMessageQueue;
   const messages = engine.getMessages();
+
+  /**
+   * 父会话或当前子代理被 abort 时立即结束等待。
+   * 返回 null 表示 spin 执行已被用户中止，调用方应停止主循环。
+   */
+  const checkAborted = async (): Promise<boolean> => {
+    if (typeof (engine as any).isAborted === 'function' && (engine as any).isAborted()) {
+      return true;
+    }
+    if (!expectedAgentId) {
+      return false;
+    }
+    try {
+      const { subAgentRegistry } = await import('../tools/agent/SubAgentRegistry.js');
+      const record = subAgentRegistry.get(expectedAgentId);
+      return typeof (record?.engine as any)?.isAborted === 'function'
+        && (record!.engine as any).isAborted();
+    } catch {
+      return false;
+    }
+  };
+
+  if (await checkAborted()) {
+    logger.info('SpinLoop', 'Spin aborted before waiting for sub-agent Reply');
+    return null;
+  }
 
   /**
    * 只取当前子代理的回复，并清空整个队列。
@@ -110,6 +136,10 @@ async function waitForAgentReply(
   logger.info('SpinLoop', `Waiting for sub-agent Reply (no timeout, agent=${expectedAgentId ?? 'any'})`);
 
   while (true) {
+    if (await checkAborted()) {
+      logger.info('SpinLoop', 'Spin aborted while waiting for sub-agent Reply');
+      return null;
+    }
     if (expectedAgentId) {
       // 等待子代理完全结束（consumer idle）后再取最终 Reply。
       // 这确保子代理若先发送进度/中间反馈、随后才发送最终结果时，
@@ -197,6 +227,12 @@ export async function spinLoop(
   logger.info('SpinLoop', `Starting spin design loop`);
 
   while (true) {
+    // 用户中止后立即停止主循环，不再读取/执行后续节点
+    if (typeof (engine as any).isAborted === 'function' && (engine as any).isAborted()) {
+      logger.info('SpinLoop', 'Spin aborted, stopping loop');
+      break;
+    }
+
     // 1. 读取 spin.json，获取下一个未完成的节点
     const config = await readSpinJson(cwd);
     if (!config) {
@@ -375,6 +411,10 @@ export async function spinLoop(
     // 等待子 agent 的 Reply
     const currentAgentId = await getCurrentSpinAgentId(sessionId);
     const reply = await waitForAgentReply(engine, 1000, currentAgentId);
+    if (reply === null) {
+      logger.info('SpinLoop', 'Spin aborted by user, stopping loop');
+      break;
+    }
 
     // 判断是否通过；没有验收标准时直接通过，不调用 LLM 评审
     let accept: boolean;
