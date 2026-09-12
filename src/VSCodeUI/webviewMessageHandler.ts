@@ -13,6 +13,7 @@ import { buildUserContent, extractUserContent } from '../core/utils/contentBlock
 import { MODEL_CONFIGS, normalizeModelTokenLimits, type ModelTokenLimits } from '../core/utils/modelConfig.js';
 import { DEFAULT_WAKE_SHORTCUT, normalizeAccelerator } from '../core/utils/shortcut.js';
 import { userChoiceQueue } from '../core/UserChoiceQueue.js';
+import { noteSessionActivity, clearSessionIdleState } from '../core/sessionIdle.js';
 import type { WebviewMessage } from '../core/webviewTypes.js';
 import type { Message } from '../core/types.js';
 import type { UserChoiceManager } from './userChoice.js';
@@ -254,17 +255,36 @@ export class WebviewMessageHandler {
     } else if (message.type === 'clearConversationSpace') {
       await this.handleClearConversationSpace(message);
     } else if (message.type === 'requestMcpServers') {
-      await this.handleRequestMcpServers();
+      await this.handleRequestMcpServers(message);
     } else if (message.type === 'setMcpEnabled') {
       await this.handleSetMcpEnabled(message);
+    } else if (message.type === 'recordHighlightLanguage') {
+      // webview 按需加载了某个 Shiki 语言：记录到 settings.json，供下次启动预热
+      await this.handleRecordHighlightLanguage(message);
+    }
+  }
+
+  /**
+   * 记录 webview 已按需加载的 Shiki 语言。
+   * 只在语言首次被加载时由 webview 上报，宿主侧再做一次去重后落盘。
+   */
+  private async handleRecordHighlightLanguage(message: { language?: string }): Promise<void> {
+    if (!message.language) return;
+    try {
+      const { recordHighlightLanguage } = await import('../core/history/Config.js');
+      await recordHighlightLanguage(message.language);
+    } catch (err) {
+      logger.error('handleRecordHighlightLanguage', `记录高亮语言失败: ${err}`);
     }
   }
 
   /**
    * 当前活跃会话 ID（MCP 启用列表是按会话解析的）。
+   * 优先使用调用方显式传入的 sessionId（多 webview 宿主下全局 activeSessionId 可能不准）。
    * 未打开工作区 / 尚未进入任何会话时返回 undefined，此时只用全局默认。
    */
-  private async getActiveMcpSessionId(): Promise<string | undefined> {
+  private async getActiveMcpSessionId(preferred?: string): Promise<string | undefined> {
+    if (preferred && preferred !== 'undefined') return preferred;
     try {
       const { getActiveSessionId } = await import('../core/history/Config.js');
       const sessionId = getActiveSessionId();
@@ -277,16 +297,16 @@ export class WebviewMessageHandler {
   /**
    * 读取 mcp.json + 当前会话的启用状态，并合并运行时状态后推送给 webview。
    */
-  private async handleRequestMcpServers(): Promise<void> {
-    const sessionId = await this.getActiveMcpSessionId();
+  private async handleRequestMcpServers(message?: any): Promise<void> {
+    const sessionId = await this.getActiveMcpSessionId(message?.sessionId);
     this.log(`[VSCodeUI] MCP servers requested (session=${sessionId ?? '-'})`);
     await this.pushMcpServers(sessionId);
     // VS Code 只有一个 webview，这里按「当前活动会话」建立引用是准确的。
     // Electron 有多个 webview，引用由 ChatViewManager 在打开/关闭视图时精确维护；
     // 这里若按全局 activeSessionId acquire，可能引用到已关闭的会话导致泄漏，故跳过。
     if (this.host.kind === 'electron') return;
-    // 打开面板即建立该会话的 MCP 引用（幂等），并等待连接完成后回推一次状态。
-    // acquire 对已连接的服务器是幂等的，且工具集合未变化时不会清空 prompt 缓存。
+    // 打开面板即建立该会话的 MCP 引用（幂等）。acquire 可能耗时（首次拉取包、握手），
+    // 因此后台执行，完成后回推一次运行时状态；期间 webview 显示「连接中」。
     void (async () => {
       try {
         const { getMcpManager } = await import('../core/mcp/Manager.js');
@@ -301,29 +321,40 @@ export class WebviewMessageHandler {
   /**
    * 切换某个 MCP 的启用状态。
    *
-   * 只写入**当前会话**的 meta.json（context.mcpEnabled），不触碰全局默认；
-   * 然后按新状态重连（启动/停止进程），最后回推最新列表与运行时状态。
+   * 只写入**当前会话**的 meta.json（context.mcpEnabled），不触碰全局默认。
+   * 保存后立即回推一次（此时 running 仍为旧值 → webview 显示「连接中」），
+   * 真正的连接/断开放到后台异步执行，完成后再次回推运行时状态。
    */
   private async handleSetMcpEnabled(message: any): Promise<void> {
     const name = typeof message.name === 'string' ? message.name : '';
     const enabled = !!message.enabled;
     if (!name) return;
-    const sessionId = await this.getActiveMcpSessionId();
+    const sessionId = await this.getActiveMcpSessionId(message.sessionId);
     this.log(`[VSCodeUI] Session MCP enabled set: ${name} = ${enabled} (session=${sessionId ?? '-'})`);
     try {
       const { setSessionMcpEnabled } = await import('../core/mcp/Config.js');
-      const { getMcpManager } = await import('../core/mcp/Manager.js');
       await setSessionMcpEnabled(sessionId, name, enabled);
-      // 只调整当前会话的引用：连接/断开可能耗时（首次拉取包、握手），完成后再回推状态
-      await getMcpManager().syncSession(sessionId);
     } catch (err: any) {
       this.log(`[VSCodeUI] Failed to set session MCP enabled: ${err.message}`);
+      return;
     }
+    // 先回推：让菜单立刻反映新的勾选状态（连接尚未开始 → 显示「连接中」）
     await this.pushMcpServers(sessionId);
+    // 连接/断开异步进行，完成后再次回推运行时状态（工具数 / 错误 / 连接中→已连接）
+    void (async () => {
+      try {
+        const { getMcpManager } = await import('../core/mcp/Manager.js');
+        await getMcpManager().syncSession(sessionId);
+      } catch (err: any) {
+        this.log(`[VSCodeUI] Failed to sync session MCP: ${err.message}`);
+      }
+      await this.pushMcpServers(sessionId);
+    })();
   }
 
   /**
    * 组装并推送 MCP 列表：配置（mcp.json）+ 该会话的启用状态 + 运行时状态。
+   * 带上 sessionId，webview 据此区分会话，避免异步回推串到其它会话。
    */
   private async pushMcpServers(sessionId?: string): Promise<void> {
     try {
@@ -333,6 +364,7 @@ export class WebviewMessageHandler {
       const status = getMcpManager().getServerStatus();
       this.host.sendToWebview({
         type: 'setMcpServers',
+        sessionId,
         servers: servers.map((server) => {
           const runtime = status.get(server.name);
           return {
@@ -508,6 +540,10 @@ export class WebviewMessageHandler {
         (userMsg as any)._meta = persistMeta;
       }
 
+      // 标记为"用户主动发送"的消息（含排队消息）：只有这类消息才更新
+      // meta.json 的 updatedAt，使对话列表按最后一条用户消息排序。
+      (userMsg as any)._userInitiated = true;
+
       // 将图片宽高随消息一起持久化，供 meta.json 标题生成使用（不进入 LLM content）
       const imageSizes = (images ?? []).map((img) => ({
         width: img.width,
@@ -542,14 +578,6 @@ export class WebviewMessageHandler {
           meta: Object.keys(uiMeta).length > 0 ? uiMeta : undefined,
         });
       }
-
-      // 与 Integration.sendMessage 路径保持一致，记录到提示词历史
-      try {
-        const { addToHistory } = await import('../core/history/index.js');
-        if (content.trim()) {
-          addToHistory(content);
-        }
-      } catch { /* 历史记录失败不阻塞消息发送 */ }
 
       // 提交到引擎队列：设置 pendingUserMessage，使消息在下次 LLM 请求时被带上。
       // 若 consumer 正在运行，submitMessage 会等待其退出（消息已被现有 consumer
@@ -685,6 +713,8 @@ export class WebviewMessageHandler {
   private async handleSetActiveSessionId(message: any): Promise<void> {
     const { setActiveSessionId } = await import('../core/history/Config.js');
     setActiveSessionId(message.sessionId);
+    // 切换/激活对话：刷新该会话的空闲关闭计时
+    noteSessionActivity(message.sessionId);
     logger.info("handleWebviewMessage", `Set active session from webview: ${message.sessionId}`);
     // 切换会话时查询余额
     this.fetchBalanceAndSend(message.sessionId);
@@ -694,6 +724,8 @@ export class WebviewMessageHandler {
     void (async () => {
       try {
         const { getMcpManager } = await import('../core/mcp/Manager.js');
+        // 先回推该会话的 MCP 配置：连接尚未开始 → webview 显示「连接中」并禁用发送
+        await this.pushMcpServers(message.sessionId);
         await getMcpManager().acquire(message.sessionId);
         await this.pushMcpServers(message.sessionId);
       } catch (err: any) {
@@ -704,6 +736,8 @@ export class WebviewMessageHandler {
 
   private async handleLoadConversation(message: any): Promise<void> {
     this.log(`[VSCodeUI] loadConversation requested: ${message.sessionId}`);
+    // 打开对话：刷新该会话的空闲关闭计时
+    noteSessionActivity(message.sessionId);
 
     const { getActiveSessionId: getCurSessionId } = await import('../core/history/Config.js');
     const { getSessionEngine } = await import('../core/QueryEngine.js');
@@ -730,6 +764,8 @@ export class WebviewMessageHandler {
     void (async () => {
       try {
         const { getMcpManager } = await import('../core/mcp/Manager.js');
+        // 先回推该会话的 MCP 配置：连接尚未开始 → webview 显示「连接中」并禁用发送
+        await this.pushMcpServers(message.sessionId);
         await getMcpManager().acquire(message.sessionId);
         await this.pushMcpServers(message.sessionId);
       } catch (err: any) {
@@ -932,6 +968,8 @@ export class WebviewMessageHandler {
     const { setActiveSessionId } = await import('../core/history/Config.js');
     const newSessionId = message.sessionId;
     setActiveSessionId(newSessionId);
+    // 新建对话：开始空闲关闭计时
+    noteSessionActivity(newSessionId);
     this.setTitle(newSessionId, defaultTitle());
     // 新对话开始时查询余额
     this.fetchBalanceAndSend(newSessionId);
@@ -940,6 +978,8 @@ export class WebviewMessageHandler {
     void (async () => {
       try {
         const { getMcpManager } = await import('../core/mcp/Manager.js');
+        // 先回推新会话的 MCP 配置（按全局默认解析）：连接尚未开始 → 显示「连接中」
+        await this.pushMcpServers(newSessionId);
         await getMcpManager().acquire(newSessionId);
         await this.pushMcpServers(newSessionId);
       } catch (err: any) {
@@ -1083,6 +1123,10 @@ export class WebviewMessageHandler {
 
       // 3) delete：删除磁盘文件并清理引擎池 / 缓存
       await deleteConversation(deletedSessionId);
+      // 会话已删除：清理空闲关闭计时状态
+      for (const sid of affectedSessions) {
+        clearSessionIdleState(sid);
+      }
       this.log(`[VSCodeUI] Conversation deleted: ${deletedSessionId}`);
 
       // NodeRegistry (Redis-based) removed
@@ -2354,17 +2398,25 @@ export class WebviewMessageHandler {
       if (Array.isArray(message.mcpServers)) {
         try {
           const { setDefaultEnabledMcps } = await import('../core/mcp/Config.js');
-          const { getMcpManager } = await import('../core/mcp/Manager.js');
           await setDefaultEnabledMcps(
             (message.mcpServers as unknown[]).filter((n): n is string => typeof n === 'string'),
           );
-          // 默认值变化会影响「没有会话覆盖」的会话，重新对齐进程并刷新菜单
-          // 全局默认变化会影响所有「没有会话覆盖」的已打开会话，
-          // 因此要对所有已注册会话重新对齐引用，而不只是当前活动会话。
-          await getMcpManager().syncAllSessions();
-          const mcpSessionId = await this.getActiveMcpSessionId();
-          await getMcpManager().acquire(mcpSessionId);
+          const mcpSessionId = await this.getActiveMcpSessionId(requestedSessionId);
+          // 先回推一次：默认值已落盘，连接尚未开始 → webview 显示「连接中」。
+          // 这样设置面板保存不会被 MCP 启动阻塞，可以立即返回 llmConfigSaved。
           await this.pushMcpServers(mcpSessionId);
+          // 连接动作放到后台异步执行：默认值变化会影响所有「没有会话覆盖」的已打开会话，
+          // 因此对所有已注册会话重新对齐引用，而不只是当前活动会话。
+          void (async () => {
+            try {
+              const { getMcpManager } = await import('../core/mcp/Manager.js');
+              await getMcpManager().syncAllSessions();
+              await getMcpManager().acquire(mcpSessionId);
+              await this.pushMcpServers(mcpSessionId);
+            } catch (err: any) {
+              this.log(`[VSCodeUI] Failed to sync MCP after default change: ${err.message}`);
+            }
+          })();
         } catch (err: any) {
           this.log(`[VSCodeUI] Failed to save default MCP enabled list: ${err.message}`);
         }

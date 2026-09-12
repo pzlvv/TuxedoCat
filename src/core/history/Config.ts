@@ -22,20 +22,6 @@ export function getConfigHomeDir(): string {
 }
 
 /**
- * 获取历史文件路径
- */
-export function getHistoryFilePath(): string {
-  return join(getConfigHomeDir(), 'history.jsonl');
-}
-
-/**
- * 获取 paste 缓存目录路径
- */
-export function getPasteCacheDir(): string {
-  return join(getConfigHomeDir(), 'paste-cache');
-}
-
-/**
  * 获取对话目录路径（根目录）
  */
 export function getConversationDir(): string {
@@ -189,14 +175,12 @@ async function backfillProjectSettings(): Promise<void> {
  */
 export async function ensureConfigDirs(): Promise<void> {
   const configDir = getConfigHomeDir();
-  const pasteCacheDir = getPasteCacheDir();
   const conversationDir = getConversationDir();
 
   try {
-    // 三个目录并行创建，避免串行 I/O 等待
+    // 两个目录并行创建，避免串行 I/O 等待
     await Promise.all([
       fs.mkdir(configDir, { recursive: true }),
-      fs.mkdir(pasteCacheDir, { recursive: true }),
       fs.mkdir(conversationDir, { recursive: true }),
     ]);
   } catch (error) {
@@ -421,8 +405,65 @@ export function readUiLanguageSync(): 'auto' | 'zh' | 'en' {
 }
 
 /**
+ * Shiki 已使用语言在 settings.json 中的字段名。
+ * webview 侧语法高亮全部改为按需加载，加载过的语言记录在此，
+ * 下次启动时宿主据此注入并预热，避免重复的首次加载延迟。
+ */
+export const HIGHLIGHT_LANGUAGES_FIELD = 'highlightLanguages';
+
+/** 记录上限：避免长期使用后字段无限增长（只保留最近使用的语言） */
+const HIGHLIGHT_LANGUAGES_MAX = 60;
+
+/**
+ * 同步读取 settings.json 中已记录的 Shiki 语言列表。
+ * 供各宿主在创建 webview 时同步注入 window.__highlightLanguages。
+ * 读取失败、未配置或格式非法时返回空数组。
+ */
+export function readHighlightLanguagesSync(): string[] {
+  try {
+    const { readFileSync } = require('fs') as typeof import('fs');
+    const settingsPath = join(getConfigHomeDir(), 'settings.json');
+    const content = readFileSync(settingsPath, 'utf-8');
+    const cfg = JSON.parse(content);
+    const list = cfg?.[HIGHLIGHT_LANGUAGES_FIELD];
+    if (!Array.isArray(list)) return [];
+    return list.filter((v): v is string => typeof v === 'string' && v.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 记录一个已被 webview 按需加载的 Shiki 语言，供下次启动预热。
+ * 已存在时直接返回，不做任何写入（避免每次高亮都触发磁盘写）。
+ * 通过 updateSettingsJson 串行化写入，避免与其他 settings 写入口并发损坏文件。
+ */
+export async function recordHighlightLanguage(language: string): Promise<void> {
+  if (typeof language !== 'string' || !language) return;
+  try {
+    const existing = readHighlightLanguagesSync();
+    if (existing.includes(language)) return;
+
+    await updateSettingsJson((cfg) => {
+      const current: unknown = cfg[HIGHLIGHT_LANGUAGES_FIELD];
+      const list: string[] = Array.isArray(current)
+        ? current.filter((v): v is string => typeof v === 'string' && v.length > 0)
+        : [];
+      if (list.includes(language)) return;
+      list.push(language);
+      // 超出上限时丢弃最早记录，保持字段体积可控
+      cfg[HIGHLIGHT_LANGUAGES_FIELD] = list.length > HIGHLIGHT_LANGUAGES_MAX
+        ? list.slice(list.length - HIGHLIGHT_LANGUAGES_MAX)
+        : list;
+    });
+  } catch (e) {
+    logger.error('Config', `记录高亮语言到 settings.json 失败: ${e}`);
+  }
+}
+
+/**
  * 同步读取 settings.json 中的唤醒快捷键（Electron accelerator 形式）。
- * 未配置、读取失败或配置非法时返回默认值 Super+Shift+Z。
+ * 未配置、读取失败或配置非法时返回默认值 Ctrl+Alt+X。
  */
 export function readWakeShortcutSync(): string {
   try {

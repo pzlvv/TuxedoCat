@@ -92,6 +92,17 @@ export function getWindowSessionId(): string | null {
   return (window as any).__currentSessionId as string ?? null;
 }
 
+/**
+ * 宿主注入的"上次已使用过的 Shiki 语言"列表（来自 settings.json）。
+ * 语法高亮全部按需加载，这里记录的集合会在启动后后台预热，
+ * 避免每次都重新经历首次加载延迟。宿主未注入时返回空数组。
+ */
+export function getPreloadedHighlightLanguages(): string[] {
+  const list = (window as any).__highlightLanguages;
+  if (!Array.isArray(list)) return [];
+  return list.filter((v): v is string => typeof v === 'string' && v.length > 0);
+}
+
 /** Post a typed message to host (VS Code extension / Electron main), returns false if no API. */
 export function postMessage(msg: unknown): boolean {
   if (!hasVscodeApi()) return false;

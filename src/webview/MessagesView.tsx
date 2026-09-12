@@ -4,11 +4,11 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeRaw from 'rehype-raw';
 import rehypeKatex from 'rehype-katex';
-import { File, ChevronRight, Copy, Check, Wrench, Info } from 'lucide-react';
-import { Timeline, ConfigProvider } from 'antd';
+import { Icon } from './Icon';
 import { ThinkingAnimation } from './ThinkingAnimation';
 import { ConversationLoading } from './ConversationLoading';
 import InlineCode from './components/InlineCode';
+import { measureTruncation } from './hooks/measureTruncation';
 import { AnsiText, hasAnsi } from './ansi';
 import { PersistedOutputBox, isPersistedOutput } from './tools/persistedOutput';
 import * as ToolComponents from './tools';
@@ -205,7 +205,7 @@ const ToolCallMessage = memo(function ToolCallMessage({
       }}
     >
       {/* 未知工具兜底：仍显示默认图标，保证所有工具卡片都有图标 */}
-      <Wrench size={12} style={{ color: colors.textSystem, flexShrink: 0 }} />
+      <Icon name="wrench" size={12} style={{ color: colors.textSystem, flexShrink: 0 }} />
       <span
         style={{
           fontWeight: 700,
@@ -311,14 +311,15 @@ const UserMessage = memo(function UserMessage({
   }), [colors]);
 
   // Check if content exceeds max lines after render.
-  // 使用 useLayoutEffect 在浏览器绘制前完成测量并折叠，避免长消息先显示完整高度、
-  // 再在 effect 中折叠的“发送后再折叠”闪烁。
+  // 原实现在这里直接读 contentRef.scrollHeight 并 setIsTruncated：React 提交后布局是脏的，
+  // 读一次就强制整棵树重排；紧接着的状态更新又改脏 DOM，下一条消息再读又重排一次。
+  // 539 条消息的会话实测 251 次读累计 137ms、该 effect self-time 201ms（最大 JS 热点之一）。
+  // 改为登记到批量测量队列：一次只读 + 一次只写（详见 hooks/measureTruncation.ts），
+  // 仍在绘制前完成，折叠语义不变。
   useLayoutEffect(() => {
-    if (contentRef.current) {
-      const lineHeight = parseFloat(getComputedStyle(contentRef.current).lineHeight || '20');
-      const height = contentRef.current.scrollHeight;
-      setIsTruncated(height > lineHeight * 15);
-    }
+    const el = contentRef.current;
+    if (!el) return;
+    measureTruncation(el, setIsTruncated);
   }, [message.content, message.isFromAgent]);
 
   // memo 化 ReactMarkdown：content 未变化时跳过重复解析（例如流式结束帧、
@@ -416,7 +417,7 @@ const UserMessage = memo(function UserMessage({
               style={{ borderColor: colors.border, color: colors.textSystem, fontWeight: 500 }}
               onClick={handleFileClick}
             >
-              <File size={10} />
+              <Icon name="file" size={10} />
               <span>{fileDisplayText}</span>
             </div>
           ) : displayParam ? (
@@ -553,26 +554,33 @@ const ThinkingMessage = memo(function ThinkingMessage({
         }}
       >
         <span>thinking</span>
-        <ChevronRight size={13} className="ml-1 transition-transform group-open:rotate-90" style={{ color: colors.textSystem, flexShrink: 0 }} />
+        <Icon name="chevron-right" size={13} className="ml-1 transition-transform group-open:rotate-90" style={{ color: colors.textSystem, flexShrink: 0 }} />
         {stats && (
           <span
             className="ml-2 whitespace-nowrap"
             style={{ color: colors.textSystem, opacity: 0.7, fontSize: '12px', fontVariantNumeric: 'tabular-nums' }}
           >
-            {stats.ttftMs !== null
-              ? `${t('messagesView.thinkingFor', { time: (stats.ttftMs / 1000).toFixed(1) })}, `
-              : ''}
             {(() => {
-              // decode 时间太短（<0.5s）时速度不准，不显示 "@ xx / s"
+              // 单位缩写：token 用 tok，字符用 chars
+              const unit = stats.unit === 'tokens' ? 'tok' : 'chars';
+              // decode 时间太短（<0.5s）时速度不准，不显示速率
               const showRate = stats.decodeMs >= 500;
-              const key = stats.unit === 'tokens'
-                ? (showRate ? 'messagesView.streamStatsTokens' : 'messagesView.streamStatsTokensNoRate')
-                : (showRate ? 'messagesView.streamStatsChars' : 'messagesView.streamStatsCharsNoRate');
-              return t(key, {
-                count: formatCount(stats.count),
-                time: (stats.decodeMs / 1000).toFixed(1),
-                rate: formatCount(stats.rate),
-              });
+              const decodeText = t(
+                showRate ? 'messagesView.streamStats' : 'messagesView.streamStatsNoRate',
+                {
+                  count: formatCount(stats.count),
+                  unit,
+                  time: (stats.decodeMs / 1000).toFixed(1),
+                  rate: stats.rate.toFixed(1),
+                },
+              );
+              // 有首 token 耗时时展示 Prefill，否则只展示 Decode
+              return stats.ttftMs !== null
+                ? t('messagesView.streamStatsPrefill', {
+                    prefill: (stats.ttftMs / 1000).toFixed(1),
+                    decode: decodeText,
+                  })
+                : decodeText;
             })()}
           </span>
         )}
@@ -602,7 +610,7 @@ const SystemMessage = memo(function SystemMessage({
       className="max-w-full text-left flex items-center"
       style={{ minHeight: '32px', overflowWrap: 'break-word', wordBreak: 'break-word' }}
     >
-      <Info size={12} style={{ color: colors.textSystem, flexShrink: 0 }} />
+      <Icon name="info" size={12} style={{ color: colors.textSystem, flexShrink: 0 }} />
       <p className="text-[13px] italic font-semibold ml-2" style={{ color: colors.textSystem, overflowWrap: 'break-word', wordBreak: 'break-word' }}>
         {message.content}
       </p>
@@ -682,7 +690,7 @@ const CodeBlock = memo(function CodeBlock({
           }}
           title={t('messagesView.copyCode')}
         >
-          {copied ? <Check size={12} /> : <Copy size={12} />}
+          {copied ? <Icon name="check" size={12} /> : <Icon name="copy" size={12} />}
           <span>{copied ? t('messagesView.copied') : t('messagesView.copy')}</span>
         </button>
       </div>
@@ -1203,7 +1211,7 @@ interface MessagesViewProps {
 }
 
 /**
- * Segment timeline component — rendered inside a Timeline from Ant Design.
+ * Segment timeline component — 原生 ol/li 轻量时间线（不再依赖 antd Timeline）。
  * Uses memo with deep comparison to avoid re-render when messages array
  * reference changes but content is the same.
  */
@@ -1232,23 +1240,6 @@ const SegmentTimeline = memo(function SegmentTimeline({
   onExpandToggle?: (isOpen: boolean) => void;
   onBeforePreviewRender?: () => void;
 }) {
-  const theme = useMemo(() => ({
-    token: {
-      colorBorder: colors.timelineLine,
-      colorText: colors.textPrimary,
-      colorSplit: colors.timelineLine,
-    },
-    components: {
-      Timeline: {
-        tailWidth: 2,
-        dotSize: 10,
-      },
-      Steps: {
-        dotCurrentSize: 10,
-      },
-    },
-  }), [colors.timelineLine, colors.textPrimary]);
-
   // ── 使用稳定的 ref 缓存 thinkingItem 的 Timeline item 对象 ─────────
   // 核心思路：即使 SegmentTimeline 因为 nonUserMsgs 变化而重新渲染，
   // thinkingItem 的 JSX 元素引用也保持不变，避免 ThinkingAnimation 被卸载/重建。
@@ -1268,7 +1259,7 @@ const SegmentTimeline = memo(function SegmentTimeline({
       key: 'thinking-animation',
       color: 'transparent' as const,
       dot: (
-        <div className="ripple-dot-container" data-hidden={!showThinkingAnimation ? '' : undefined}>
+        <div className="ripple-dot-container msg-timeline-custom-dot" data-hidden={!showThinkingAnimation ? '' : undefined}>
           <div className="ripple-center" style={{
             backgroundColor: isDark ? 'rgba(167, 139, 250, 0.9)' : 'rgba(99, 102, 241, 0.8)',
           }} />
@@ -1325,28 +1316,16 @@ const SegmentTimeline = memo(function SegmentTimeline({
       return {
         key: message.toolCallId || `msg-${segmentIndex}-${msgIndex}`,
         color: statusColor,
-        dot: message.role === 'toolcall' && message.status === 'running' ? (
-          <div
-            className="timeline-running-fan"
-            style={{
-              backgroundColor: colors.timelineStatusRunning,
-              width: 10,
-              height: 10,
-              borderRadius: '50%',
-              '--timeline-running-color': colors.timelineStatusRunning,
-              '--timeline-running-shade': isDark ? '#a16207' : '#fde68a',
-            } as React.CSSProperties}
-          />
-        ) : (
-          <div style={{ backgroundColor: statusColor, width: 10, height: 10, borderRadius: '50%' }} />
-        ),
+        // 状态点类型：普通圆点与运行中风扇由 CSS 伪元素绘制（不占 DOM 节点），
+        // 只有 thinking 涟漪动画需要真实 DOM（见 buildThinkingItem）
+        dotKind: message.role === 'toolcall' && message.status === 'running' ? 'running' : 'plain',
         children: <MessageItem message={message} colors={colors} isDark={isDark} onNavigate={onNavigate} onThinkingToggle={onThinkingToggle} onExpandToggle={onExpandToggle} onBeforePreviewRender={onBeforePreviewRender} />,
       };
     });
   }, [nonUserMsgs, colors, isDark, segmentIndex]);
 
   // ── 缓存 allItems 的数组引用，仅当 timelineItems 或 thinkingItem 引用变化时才重建 ──
-  // 避免每帧创建新数组引用导致 AntD Timeline 重渲染所有子节点
+  // 避免每帧创建新数组引用导致全部时间线节点重渲染
   const allItemsRef = useRef<any[] | null>(null);
   const prevTimelineItemsRef = useRef<readonly any[] | null>(null);
   const prevThinkingItemRef = useRef<any>(null);
@@ -1367,15 +1346,40 @@ const SegmentTimeline = memo(function SegmentTimeline({
     hasThinkingItem && !showThinkingAnimation ? 'thinking-hidden' : '',
   ].filter(Boolean).join(' ') || undefined;
 
+  // ── 轻量时间线（原生 ol/li）──
+  // 此前使用 antd Timeline（底层是 Steps）：每条消息产生 7 个包装节点
+  // （li/wrapper/icon/dot/section/header/rail）并实例化 StepsItem + Wave 组件
+  // （Wave 还会给每个节点挂一个 click 监听）。这里改为原生 ol/li + 伪元素
+  // 绘制状态点与竖线，每条消息只保留 li + content 两个节点。
+  // 实测 539 条消息的会话：DOM 节点 -2714、JS 堆 -9.8MB、事件监听 -140，
+  // 高亮与内容渲染结果完全一致。
   return (
-    <ConfigProvider theme={theme}>
-      <div
-        className={wrapperClassName}
-        style={{ '--timeline-rail-color': colors.timelineLine } as React.CSSProperties}
-      >
-        <Timeline items={allItems ?? []} style={{ marginTop: '8px' }} />
-      </div>
-    </ConfigProvider>
+    <div
+      className={wrapperClassName}
+      style={{ '--timeline-rail-color': colors.timelineLine } as React.CSSProperties}
+    >
+      <ol className="msg-timeline">
+        {(allItems ?? []).map((item: any) => (
+          <li
+            key={item.key}
+            className={item.dotKind ? `msg-timeline-item msg-timeline-dot-${item.dotKind}` : 'msg-timeline-item'}
+            style={{
+              '--msg-timeline-dot-color': item.color,
+              '--timeline-running-color': colors.timelineStatusRunning,
+              '--timeline-running-shade': isDark ? '#a16207' : '#fde68a',
+            } as React.CSSProperties}
+          >
+            {/* 自定义状态点（thinking 涟漪动画）使用真实 DOM；普通/运行中状态点由 ::before 绘制 */}
+            {item.dot ?? null}
+            {/* 内容直接挂在 li 下：原 <div className="msg-timeline-content"> 是零样式、
+                零 JS 引用的纯包裹层（全仓库仅此一处引用），删除后渲染结果字节级一致，
+                每个消息节点省 1 个 DOM 节点（8 会话实测 -4634）。li 的 display:flow-root
+                已建立 BFC，子元素负 margin 不会逃逸，与包裹层时行为相同。 */}
+            {item.children}
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }, areSegmentTimelineEqual);
 
@@ -1582,6 +1586,13 @@ const MessagesView = memo(({
   const lastMsgRoleRef = useRef<string | undefined>(undefined);
   const prevMsgCountRef = useRef(0);
   const prevForceScrollKeyRef = useRef<number | undefined>(undefined);
+  /**
+   * 上一次 layoutEffect 执行时容器的 scrollHeight。
+   * fallback 分支只在容器确实变高时才跟随滚动：像 thinking 动画显隐这类
+   * 纯 prop 变化不会改变内容高度，不应该触发多余的 scrollToBottom
+   * （否则会把已经停在底部的内容再"拉"一次，表现为页面又滚了一下）。
+   */
+  const lastScrollHeightRef = useRef(0);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -1629,6 +1640,7 @@ const MessagesView = memo(({
     if (isNewUserMessage || forceScrollChanged) {
       profileLog(`[AutoScroll] layoutEffect branch=user/force hasNew=${hasNewMessage} isNewUser=${isNewUserMessage} forceChanged=${forceScrollChanged}`);
       userScrolledAwayRef.current = false;
+      lastScrollHeightRef.current = container.scrollHeight;
       scrollToBottom(true);
       return;
     }
@@ -1642,15 +1654,26 @@ const MessagesView = memo(({
     // New non-user message appended (tool call, assistant block) → scroll
     if (hasNewMessage) {
       profileLog(`[AutoScroll] layoutEffect branch=new-message lastRole=${lastMsg?.role}`);
+      lastScrollHeightRef.current = container.scrollHeight;
       scrollToBottom(true);
       return;
     }
 
     // Streaming content update, user at bottom → ResizeObserver handles multi-frame
     // updates, but do one synchronous scroll for the first frame.
-    profileLog(`[AutoScroll] layoutEffect branch=fallback-scroll hasNew=${hasNewMessage} lastRole=${lastMsg?.role}`);
+    //
+    // 只在容器确实变高时才滚动：本 effect 也会因为 hasRunningTools 等
+    // "非内容" 依赖变化而重跑，此时 scrollHeight 不变，多余的 scrollToBottom
+    // 会把已经停在底部的内容再拉一次（在尚未贴底时就会表现为页面又滚了一下）。
+    const scrollHeight = container.scrollHeight;
+    if (scrollHeight === lastScrollHeightRef.current) {
+      profileLog(`[AutoScroll] layoutEffect branch=fallback-scroll SKIP scrollHeight unchanged (${scrollHeight}) lastRole=${lastMsg?.role}`);
+      return;
+    }
+    lastScrollHeightRef.current = scrollHeight;
+    profileLog(`[AutoScroll] layoutEffect branch=fallback-scroll hasNew=${hasNewMessage} lastRole=${lastMsg?.role} scrollHeight=${scrollHeight}`);
     scrollToBottom();
-  }, [messages.length, forceScrollKey, showThinkingAnimation, animationMode, streamingVersion, hasRunningTools, scrollToBottom, userScrolledAwayRef]);
+  }, [messages.length, forceScrollKey, streamingVersion, hasRunningTools, scrollToBottom, userScrolledAwayRef]);
 
   // Persistent segments cache
   const segmentsCacheRef = useRef<Array<{ userMsg?: Message; nonUserMsgs: Message[] }>>([]);

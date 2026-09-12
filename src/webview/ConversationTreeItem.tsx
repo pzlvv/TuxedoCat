@@ -291,7 +291,7 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
                   </div>
                 </div>
                 <div className={`flex flex-col items-end shrink-0 gap-0.5 text-[11px] ${isRoot ? 'group-hover:invisible' : ''}`} style={{ color: colors.textSystem }}>
-                  <span>{formatRelativeTime(item.createdAt)}</span>
+                  <span>{formatRelativeTime(item.updatedAt ?? item.createdAt)}</span>
                   <span>{t('conversationTree.messageCount', { count: item.messageCount })}</span>
                 </div>
               </div>

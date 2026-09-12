@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { ChevronRight, ChevronDown, RotateCcw } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Icon } from '../Icon';
 import { ToolCallProps } from './Types';
 import { type Highlighter } from 'shiki';
-import { getHighlighter } from './highlighter';
+import { getHighlighter, ensureLanguage, isLanguageReady } from './highlighter';
 import { ToolHeader } from './ToolHeader';
+import { usePreviewLimit, PreviewMoreHint, PREVIEW_LINES, PREVIEW_BOX_HEIGHT, PREVIEW_LINE_HEIGHT } from './previewLimit';
 import { postMessage, getWindowSessionId } from '../webviewEnv';
 import { t } from '../i18n';
 
@@ -23,6 +24,58 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
   const [isExpanded, setIsExpanded] = useState(true);
   const [highlightedCode, setHighlightedCode] = useState<string>('');
   const [highlighter, setHighlighter] = useState<Highlighter | null>(null);
+
+  // ─── 预览按需渲染 + 折行感知限高 ──────────────────────────────────
+  // contentPreview 是写入文件的完整内容，此前会整体走 Shiki 高亮并全部渲染进
+  // 一个 300px 的滚动框（实测单条平均 1269 个 DOM 节点、最大 7243）。
+  // 这里有**两个互相独立**的「展开」，不要混为一谈：
+  //   ① 工具行右侧的箭头（上面的 isExpanded）—— 控制整个预览块的显隐，
+  //      收起后预览完全不进 DOM；
+  //   ② 点击预览框本身（usePreviewLimit 的 expand）—— 控制**行级截断**：
+  //      默认只高亮/渲染前 PREVIEW_LINES 行，点击后渲染全部。
+  // 例外：手动模式下 status === 'normal' 表示正在等待用户授权，
+  // 此时必须完整展开（用户要看到完整内容才能确认），确认后自动恢复缩略。
+  //
+  // ⚠️ 长行会随 webview 宽度自动折行，「16 个逻辑行」并不等于「16 个视觉行」。
+  // usePreviewLimit 会逐行实测真实高度，用于展开态的滚动布局。
+  const previewLines = useMemo(
+    () => (contentPreview ? String(contentPreview).split('\n') : []),
+    [contentPreview],
+  );
+  const totalPreviewLines = previewLines.length;
+  const candidatePreviewLines = Math.min(totalPreviewLines, PREVIEW_LINES);
+  const {
+    contentRef: previewContentRef,
+    fittedLines: fittedPreviewLines,
+    fittedHeight: fittedPreviewHeight,
+    expanded: previewExpanded,
+    truncated: previewTruncated,
+    hasMore: previewHasMore,
+    expand: expandPreview,
+    handleBoxClick: handlePreviewBoxClick,
+  } = usePreviewLimit(totalPreviewLines, status === 'normal', {
+    revision: highlightedCode,
+    // 通知外层暂停自动滚动，避免预览变高后视口被顶走
+    onExpand: () => onExpandToggle?.(true),
+  });
+
+  // 实际送去 Shiki 高亮的文本：缩略态只高亮候选行，展开态高亮全文。
+  const highlightSource = useMemo(() => {
+    if (previewExpanded) return String(contentPreview ?? '');
+    return previewLines.slice(0, candidatePreviewLines).join('\n');
+  }, [previewExpanded, contentPreview, previewLines, candidatePreviewLines]);
+
+  // 把 Shiki 的整段 HTML 按行拆开，逐行渲染成块级元素，便于实测每行高度。
+  const previewLineHtmls = useMemo(() => {
+    const sourceLines = previewExpanded ? previewLines : previewLines.slice(0, candidatePreviewLines);
+    const fallback = sourceLines.map(escapeHtml);
+    if (!highlightedCode) return fallback;
+    // structure:'inline' 用 <br> 分隔各行。行内 token 不可能含 <br>（源码里的
+    // <br> 已被 Shiki 转义为 &lt;br&gt;），因此按字面量切分是安全的；
+    // 数量对不上时退回纯文本。
+    const parts = highlightedCode.split('<br>');
+    return parts.length === sourceLines.length ? parts : fallback;
+  }, [highlightedCode, previewExpanded, previewLines, candidatePreviewLines]);
 
   // ─── 回滚状态 ────────────────────────────────────────────────────
   const [showRollbackConfirm, setShowRollbackConfirm] = useState(false);
@@ -69,23 +122,40 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
     getHighlighter().then(setHighlighter).catch(() => {});
   }, []);
 
-  // 当 contentPreview 变化时，应用语法高亮
+  // 当可见内容变化时，应用语法高亮。
+  // 语言语法按需加载：未加载时先 await ensureLanguage，再生成高亮 HTML
+  // （期间保持纯文本渲染，由渲染层 escapeHtml 兜底）。
+  // 只高亮 highlightSource（截断后），避免为不可见的上千行白跑 Shiki。
   useEffect(() => {
-    if (contentPreview && isExpanded && highlighter) {
-      const language = getLanguageFromPath(filePath);
+    if (!highlightSource || !isExpanded) return;
+    const language = getLanguageFromPath(filePath);
+    let cancelled = false;
+
+    const applyHighlight = async () => {
+      const h = await getHighlighter();
+      if (cancelled) return;
+      if (!isLanguageReady(language)) {
+        await ensureLanguage(language);
+        if (cancelled) return;
+      }
       try {
-        const html = highlighter.codeToHtml(contentPreview, {
+        const html = h.codeToHtml(highlightSource, {
           lang: language,
           theme: isDark ? 'github-dark' : 'github-light',
+          // structure:'inline' 直接输出每行的 token span、用 <br> 分隔，
+          // 不再套 <span class="line">。该 wrapper 没有内联样式，是纯冗余：
+          // 实测 795 行里 135 个空行原本各占一个空 span。
+          structure: 'inline',
         });
-        const match = html.match(/<code[^>]*>([\s\S]*?)<\/code>/);
-        const codeContent = match ? match[1] : contentPreview;
-        setHighlightedCode(codeContent);
+        if (!cancelled) setHighlightedCode(html);
       } catch {
-        setHighlightedCode(contentPreview);
+        if (!cancelled) setHighlightedCode(highlightSource);
       }
-    }
-  }, [contentPreview, isExpanded, filePath, highlighter, isDark]);
+    };
+
+    void applyHighlight();
+    return () => { cancelled = true; };
+  }, [highlightSource, isExpanded, filePath, highlighter, isDark]);
 
   if (!filePath) {
     return (
@@ -133,8 +203,8 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
       'fs': 'fsharp', 'fsi': 'fsharp', 'fsx': 'fsharp', 'ml': 'ocaml', 'mli': 'ocaml',
       'jl': 'julia', 'r': 'r', 'matlab': 'matlab', 'groovy': 'groovy', 'gvy': 'groovy', 'gradle': 'groovy',
       'asm': 'assembly', 's': 'assembly', 'f': 'fortran', 'f90': 'fortran', 'f95': 'fortran',
-      'pas': 'pascal', 'pp': 'pascal', 'm': 'objc', 'mm': 'objc', 'vim': 'vim',
-      'txt': 'plaintext', 'regex': 'regex',
+      'pas': 'pascal', 'pp': 'pascal', 'm': 'objective-c', 'mm': 'objective-c', 'vim': 'vim',
+      'txt': 'plaintext', 'regex': 'regexp',
     };
     return languageMap[ext || ''] || 'plaintext';
   };
@@ -162,7 +232,7 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
             onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.backgroundColor = 'transparent'; }}
             title={t('tool.editFile.rollback')}
           >
-            <RotateCcw size={12} />
+            <Icon name="rotate-ccw" size={12} />
           </button>
         ) : undefined}
       >
@@ -197,35 +267,67 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
             }}
             title={isExpanded ? t('tool.writeFile.collapsePreview') : t('tool.writeFile.expandPreview')}
           >
-            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            {isExpanded ? <Icon name="chevron-down" size={14} /> : <Icon name="chevron-right" size={14} />}
           </button>
         )}
       </ToolHeader>
 
-      {/* 第二行：内容预览（可展开） */}
+      {/* 第二行：内容预览（可展开；按实测高度缩略，点击展开全部） */}
       {isExpanded && contentPreview && (
-        <div
-          className="mt-2"
-          style={{
-            backgroundColor: 'transparent',
-            maxHeight: '300px',
-            overflow: 'auto',
-            border: '1px solid',
-            borderColor: colors.textSystem,
-            borderRadius: '4px',
-          }}
-        >
+        <>
           <div
-            className="code-preview"
+            className="mt-2"
+            onClick={handlePreviewBoxClick}
+            title={previewTruncated ? t('tool.preview.clickToShowAll') : undefined}
             style={{
-              fontSize: '12px',
-              fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
+              backgroundColor: 'transparent',
+              maxHeight: PREVIEW_BOX_HEIGHT,
+              // 缩略态高度 = 实测放得下的整行高度（折行感知）；展开态固定为
+              // PREVIEW_BOX_HEIGHT 并在内部滚动。两者都基于真实行高，因此缩略态
+              // 无论行怎么折都不会溢出、也就不会出现滚动条。
+              height: previewHasMore
+                ? (previewExpanded ? PREVIEW_BOX_HEIGHT : fittedPreviewHeight + 2)
+                : undefined,
+              // 缩略态裁掉多余内容（不滚动）；展开态才允许滚动。
+              overflow: previewExpanded ? 'auto' : 'hidden',
+              border: '1px solid',
+              borderColor: colors.textSystem,
+              // 底部提示条在缩略/展开两态都保留，因此底角始终是直角
+              borderRadius: previewHasMore ? '4px 4px 0 0' : '4px',
+              cursor: previewTruncated ? 'pointer' : undefined,
             }}
-            dangerouslySetInnerHTML={{ __html: highlightedCode || escapeHtml(String(contentPreview ?? '')) }}
-          />
-        </div>
+          >
+            <div
+              ref={previewContentRef}
+              className="code-preview"
+              style={{
+                fontSize: '12px',
+                lineHeight: `${PREVIEW_LINE_HEIGHT}px`,
+                fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}
+            >
+              {previewLineHtmls.map((html, i) => (
+                <div
+                  key={i}
+                  // 空行没有行盒，用 minHeight 保证它仍占一行高度
+                  style={{ minHeight: PREVIEW_LINE_HEIGHT }}
+                  dangerouslySetInnerHTML={{ __html: html }}
+                />
+              ))}
+            </div>
+          </div>
+          {previewHasMore && (
+            <PreviewMoreHint
+              shown={fittedPreviewLines}
+              total={totalPreviewLines}
+              expanded={previewExpanded}
+              colors={colors}
+              onClick={expandPreview}
+            />
+          )}
+        </>
       )}
 
       {/* 回滚确认对话框 */}

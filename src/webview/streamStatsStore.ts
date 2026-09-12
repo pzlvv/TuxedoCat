@@ -74,7 +74,8 @@ function computeStats(entry: Entry): StreamStats | null {
     count,
     ttftMs,
     decodeMs,
-    rate: Math.round((count * 1000) / decodeMs),
+    // 保留原始精度，展示层统一保留一位小数（如 86.0 tok/s）
+    rate: (count * 1000) / decodeMs,
     unit: useTokens ? 'tokens' : 'chars',
     isStreaming: entry.isStreaming,
   };

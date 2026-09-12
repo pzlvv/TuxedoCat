@@ -49,6 +49,7 @@
     }
   },
   "scripts": {
+    "gen:icons": "node scripts/gen-icons.mjs",
     "vscode:prepublish": "npm run check-types && npm run lint && node esbuild.js --production && npm run build:webview && npm run copy-assets",
     "compile": "npm run check-types && npm run lint && node esbuild.js",
     "watch": "npm-run-all -p watch:esbuild watch:tsc watch:webview watch:monaco watch:sidebar watch:electron",
@@ -67,6 +68,7 @@
     "check-types:electron": "tsc --noEmit -p electron/tsconfig.json",
     "lint": "eslint src",
     "test": "vscode-test",
+    "test:edit-diff": "tsc -p tsconfig.test.json && node out/src/test/editDiff.test.js",
     "build:webview": "vite build && vite build --config vite.monaco.config.ts && vite build --config vite.sidebar.config.ts",
     "build:monaco": "vite build --config vite.monaco.config.ts",
     "build:sidebar": "vite build --config vite.sidebar.config.ts",

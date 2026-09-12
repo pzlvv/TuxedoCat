@@ -6,8 +6,10 @@ import { VSCodeUI } from './VSCodeUI.js';
 import { buildDiffUris } from './VSCodeUI/diffUris.js';
 import { setLogCallback } from './core/Logger.js';
 import { initializeHistory } from './core/Integration.js';
+import { startSessionIdleMonitor, stopSessionIdleMonitor } from './core/sessionIdle.js';
 import {
   readUiLanguageSync,
+  readHighlightLanguagesSync,
   setExtensionPathProvider,
 } from './core/history/Config.js';
 import { ensureConfigDirs } from './core/history/index.js';
@@ -63,6 +65,9 @@ export function activate(context: vscode.ExtensionContext) {
   ui.registerWindowStateListener(context);
 
   initializeHistory(ui);
+
+  // 空闲对话自动关闭：非激活对话 2 小时无活动后释放其运行时资源
+  startSessionIdleMonitor();
 
   ensureConfigDirs().catch((error: Error) => {
     console.error('[Extension] Failed to initialize config directories:', error);
@@ -368,6 +373,8 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
     const vscodeLocale = vscode.env.language;
     const systemLocale = getSystemLocale();
     const uiLanguage = readUiLanguageSync();
+    // Shiki 语法高亮全部按需加载：注入上次已使用过的语言，webview 启动后后台预热
+    const highlightLanguages = JSON.stringify(readHighlightLanguagesSync());
 
     html = html.replace(
       /(<script type="module"[^>]*>)/,
@@ -379,6 +386,7 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
       window.__vscodeLocale = "${vscodeLocale}";
       window.__systemLocale = "${systemLocale}";
       window.__uiLocale = "${uiLanguage}";
+      window.__highlightLanguages = ${highlightLanguages};
       window.__hostInfo = {
         kind: 'vscode',
         conversationList: 'webview',
@@ -395,6 +403,8 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
 }
 
 export async function deactivate(): Promise<void> {
+  // 停止空闲巡检定时器
+  stopSessionIdleMonitor();
   // 停用扩展时结束所有 MCP 子进程，避免留下孤儿进程
   try {
     const { getMcpManager } = await import('./core/mcp/Manager.js');

@@ -1,8 +1,8 @@
 /**
  * 全局快捷键工具
  *
- * settings.json 中保存 Electron accelerator 形式（如 Super+Shift+Z），
- * 界面上按 Windows 习惯显示为 Win+Shift+Z。
+ * settings.json 中保存 Electron accelerator 形式（如 Ctrl+Alt+X），
+ * 界面上按 Windows 习惯显示为 Ctrl+Alt+X。
  *
  * 供三处复用：
  *  - Electron 主进程：读取 settings.json 并注册 globalShortcut
@@ -11,7 +11,7 @@
  */
 
 /** 默认唤醒快捷键（Electron accelerator 形式） */
-export const DEFAULT_WAKE_SHORTCUT = 'Super+Shift+Z';
+export const DEFAULT_WAKE_SHORTCUT = 'Ctrl+Alt+X';
 
 /** 修饰键别名 -> Electron accelerator 名称 */
 const MODIFIER_ALIASES: Record<string, string> = {
@@ -31,7 +31,7 @@ const MODIFIER_ALIASES: Record<string, string> = {
   command: 'Super',
 };
 
-/** 规范化后的修饰键顺序（保证 Win+Shift+Z 存为 Super+Shift+Z） */
+/** 规范化后的修饰键顺序（保证 Ctrl+Alt+X 等组合的存储顺序稳定） */
 const MODIFIER_ORDER = ['Ctrl', 'Alt', 'Super', 'Shift', 'AltGr'];
 
 /** 特殊按键别名 -> Electron accelerator 名称 */

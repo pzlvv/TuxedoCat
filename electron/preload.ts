@@ -22,6 +22,11 @@ const vscodeLocale = getStartArg('locale') || 'en';
 const systemLocale = getStartArg('systemLocale') || 'en';
 const uiLanguage = getStartArg('uiLanguage') || 'auto';
 const sessionId = getStartArg('session') || '';
+// Shiki 语法高亮按需加载：上次使用过的语言列表（逗号分隔），webview 启动后后台预热
+const highlightLanguages = (getStartArg('highlightLanguages') || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter((s) => s.length > 0);
 
 // 暴露给 webview 的 API
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -44,6 +49,7 @@ contextBridge.exposeInMainWorld('__hasWorkspace', workspacePath.length > 0);
 contextBridge.exposeInMainWorld('__vscodeLocale', vscodeLocale);
 contextBridge.exposeInMainWorld('__systemLocale', systemLocale);
 contextBridge.exposeInMainWorld('__uiLocale', uiLanguage);
+contextBridge.exposeInMainWorld('__highlightLanguages', highlightLanguages);
 contextBridge.exposeInMainWorld('logoUri', './logo.png');
 contextBridge.exposeInMainWorld('__sessionId', sessionId);
 // 宿主能力声明：对话列表/新建对话由原生侧栏接管，支持关闭 webview，打开会话走 openConversation

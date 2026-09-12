@@ -11,12 +11,13 @@ import type { LLMConfig } from './llm/config.js';
 import type { AssistantUI } from './AssistantUI.js';
 import { getGlobalUI } from './AssistantUI.js';
 import { logger } from './Logger.js';
-import { addToHistory, registerCleanup, setProjectRootProvider, replaceConversationMessages, updateConversationContext } from './history/index.js';
+import { setProjectRootProvider, replaceConversationMessages, updateConversationContext } from './history/index.js';
 import { getProjectRoot } from './history/Config.js';
 import { sessionQueue } from './SessionQueue.js';
 import { userChoiceQueue } from './UserChoiceQueue.js';
 import { replayMessagesToUI } from './utils/replayMessages.js';
 import { buildConversationTitle, buildUserContent, extractUserContent } from './utils/contentBlocks.js';
+import { noteSessionActivity } from './sessionIdle.js';
 
 /**
  * 初始化会话队列回调
@@ -35,9 +36,6 @@ export function initializeSessionQueue(): void {
     },
   });
 }
-
-// 注册进程退出时的历史清理
-registerCleanup();
 
 // 当前活跃的查询引擎（用于中止）
 let currentQueryEngine: QueryEngine | null = null;
@@ -205,6 +203,8 @@ export function createEngine(sessionId: string, title: string, role?: string): Q
   if (existing) {
     return existing;
   }
+  // 会话被创建/打开：刷新空闲关闭计时
+  noteSessionActivity(sessionId);
 
   const ui = getUI();
   const engine = new QueryEngine(sessionId, {
@@ -310,6 +310,8 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
   if (getSessionEngine(sessionID)) {
     return;
   }
+  // 会话被打开（加载历史 / 恢复引擎）：刷新空闲关闭计时
+  noteSessionActivity(sessionID);
   const ui = getUI();
 
   // 如果调用方没有传入 role，尝试从 meta 中读取
@@ -441,6 +443,9 @@ export async function* sendMessage(
 ): AsyncGenerator<Message, void, unknown> {
   const ui = getUI();
 
+  // 用户主动发消息：刷新空闲关闭计时（该会话进入工作状态，不会被自动关闭）
+  noteSessionActivity(sessionId);
+
   // 创建用户消息（需要在创建 QueryEngine 之前，因为需要传入初始消息）
   const fullPrompt = fileInfo?.reminder ? prompt + '\n\n' + fileInfo.reminder : prompt;
   const userContent = buildUserContent(fullPrompt, fileInfo?.images);
@@ -466,6 +471,12 @@ export async function* sendMessage(
     ...(fileInfo?.reminder && { reminder: fileInfo.reminder }),
     ...(Object.keys(meta).length > 0 && { _meta: meta }),
   };
+
+  // 标记为"用户主动发送"的消息：只有这类消息才更新 meta.json 的 updatedAt
+  // （子代理回复、reminder、后台任务通知、远程投递等自动消息不计入）。
+  if (!fileInfo?.reminder && !fileInfo?.upstreamSessionId) {
+    (userMsg as any)._userInitiated = true;
+  }
 
   // 将图片宽高随消息一起持久化，供 meta.json 标题生成使用（不进入 LLM content）
   const imageSizes = (fileInfo?.images ?? []).map((img) => ({
@@ -597,11 +608,6 @@ export async function* sendMessage(
 
   // 通知查询开始
   ui.onQueryBegin(sessionId);
-
-  // 添加到历史记录
-  if (prompt.trim()) {
-    addToHistory(prompt);
-  }
 
   // 如果是新对话，设置标题（文本优先；仅图片时使用 Image[<width>*<height>]）
   if (isNewSession) {

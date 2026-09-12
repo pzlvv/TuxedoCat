@@ -1,10 +1,10 @@
 import React, { useMemo, useLayoutEffect, useRef } from 'react';
-import { Copy, File } from 'lucide-react';
+import { Icon } from '../Icon';
 import { ToolCallProps } from './Types';
 import { ToolHeader } from './ToolHeader';
 import { postMessage } from '../webviewEnv';
 import { t } from '../i18n';
-import { AnsiText } from '../ansi';
+import { AnsiText, hasAnsi, renderAnsiToNodes } from '../ansi';
 
 /**
  * 解析持久化输出标签
@@ -87,6 +87,13 @@ function formatSize(bytes: number): string {
  */
 const MAX_RENDERED_LINES = 300;
 
+/**
+ * 用于「滚到底部」的超大 scrollTop 值。
+ * 浏览器会把它夹到 scrollHeight - clientHeight，因此无需读取 scrollHeight
+ * （读取会强制同步布局，见下方 useLayoutEffect 的注释）。
+ */
+const SCROLL_TO_BOTTOM = 1e9;
+
 export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId, status, isStreaming }) => {
   const command = args.command || '';
   const description = args.description || '';
@@ -98,9 +105,16 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
   // 使用 useLayoutEffect 在绘制前同步滚动，避免长输出先闪一下顶部内容。
   const outputRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    if (outputRef.current) {
-      outputRef.current.scrollTop = outputRef.current.scrollHeight;
-    }
+    const el = outputRef.current;
+    if (!el) return;
+    // 滚到底部：直接写一个远超最大值的数，浏览器按 CSSOM View 规范把它夹到
+    // scrollHeight - clientHeight，等价于原来的 `scrollTop = scrollHeight`，
+    // 但省掉一次 scrollHeight 读取。
+    // 这一步很关键：本 effect 在 React 提交后立即执行，此时布局是脏的，
+    // 读 scrollHeight 会强制整棵消息树同步重排。539 条消息的会话实测
+    // 56 次读取累计 190ms，是本页最大的 JS 热点（滚动容器只有 115px 高，
+    // 每次重排都要重新计算整个 19000+ 节点的容器）。
+    el.scrollTop = SCROLL_TO_BOTTOM;
   }, [output, isStreaming, status]);
 
   // 构造唯一 title，编码 toolCallId 确保每个 Bash 框有独立的虚拟文档
@@ -208,6 +222,50 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
       </>
     );
 
+    // ─── 非流式：整段一次性渲染 ──────────────────────────────────────
+    // 逐行 <div> 的唯一作用是承载 line-height 与「逐行独立解析 ANSI」。
+    // 实测 4248 个输出行里只有 1.5% 含 ANSI 转义，为这 1.5% 让每行都付一个
+    // div + 一个文本节点的代价并不划算。因此输出定型后（执行完成 / 从历史
+    // 加载）改为整段渲染：
+    //   不含 ANSI → 只有一个文本节点
+    //   含 ANSI   → 只给着色片段包 <span>，其余仍是文本节点
+    // 空行由 <pre> 的 white-space:pre 自然保留（无需 \u00A0 占位）。
+    // 注意：整段解析意味着 ANSI 状态会跨行延续，这与真实终端一致
+    //（逐行解析时每行都会重置，属于旧实现的副作用）。
+    const blockStyle: React.CSSProperties = {
+      // 只覆盖 font-family（<pre> 的 UA 样式是 monospace，不继承）；
+      // 不能用 `font: inherit` 简写——它会连带把 line-height 重置成继承值
+      // （实测 16.5px vs 逐行 div 的 17.6px，每行差 1.1px 会让整卡位移）。
+      fontFamily: 'inherit',
+      margin: 0,
+      padding: 0,
+      whiteSpace: 'pre',
+      overflow: 'hidden',
+      // 与逐行 div 一致：超宽行末尾显示省略号而不是溢出
+      textOverflow: 'ellipsis',
+      lineHeight: '1.6',
+    };
+
+    const renderBlock = () => {
+      const text = visibleLines.join('\n');
+      return (
+        <>
+          {hiddenLines > 0 && (
+            <div
+              style={{ color: colors.textSystem, opacity: 0.7, whiteSpace: 'pre', lineHeight: '1.6' }}
+              onClick={handleOutputClick}
+              title={t('tool.bash.clickFullOutput')}
+            >
+              {t('tool.bash.linesHidden', { count: hiddenLines })}
+            </div>
+          )}
+          <pre style={blockStyle}>
+            {hasAnsi(text) ? renderAnsiToNodes(text) : text}
+          </pre>
+        </>
+      );
+    };
+
     // ─── 流式输出：实时显示最新累积输出 + 自动滚动 ───
     if (isStreaming && status === 'running') {
       return (
@@ -270,12 +328,13 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
               }}
               title={t('tool.bash.openFullOutputFile')}
             >
-              <File size={10} />
+              <Icon name="file" size={10} />
               {t('tool.bash.fullOutput', { size: sizeStr })}
             </button>
           </div>
 
-          {/* 预览内容：与流式共用滚动容器（maxHeight 115），按行显示，不换行截断 */}
+          {/* 预览内容：与流式共用滚动容器（maxHeight 115），不换行截断。
+              这里同样是整段渲染（加载历史时走这条路径）。 */}
           <div
             ref={outputRef}
             className="cursor-pointer overflow-auto"
@@ -288,16 +347,12 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
               const MAX_PREVIEW_LINES = 5;
               const showTruncated = previewLines.length > MAX_PREVIEW_LINES;
               const displayLines = showTruncated ? previewLines.slice(0, MAX_PREVIEW_LINES) : previewLines;
+              const text = displayLines.join('\n');
               return (
                 <>
-                  {displayLines.map((line, idx) => (
-                    <div
-                      key={idx}
-                      style={lineStyle}
-                    >
-                      <AnsiText text={line} />
-                    </div>
-                  ))}
+                  <pre style={blockStyle}>
+                    {hasAnsi(text) ? renderAnsiToNodes(text) : text}
+                  </pre>
                   {showTruncated && (
                     <div style={{ color: colors.textSystem, opacity: 0.7, whiteSpace: 'pre', lineHeight: '1.6' }}>
                       {t('tool.bash.previewTruncated', { count: previewLines.length, size: formatSize(persistedInfo.originalSize) })} ...
@@ -332,7 +387,8 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
           onClick={handleOutputClick}
           title={t('tool.bash.clickFullOutput')}
         >
-          {renderLines(false)}
+          {/* 执行完成 / 从历史加载：按是否含 ANSI 分流整段渲染 */}
+          {renderBlock()}
         </div>
       </div>
     );
@@ -385,7 +441,7 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
             style={{ backgroundColor: 'transparent' }}
             title={t('tool.bash.copyCommand')}
           >
-            <Copy size={12} style={{ color: colors.textSystem }} />
+            <Icon name="copy" size={12} style={{ color: colors.textSystem }} />
           </button>
         </div>
 

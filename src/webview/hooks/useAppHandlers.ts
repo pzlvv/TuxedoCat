@@ -81,6 +81,8 @@ export interface UseAppHandlersProps {
   userChoiceInputRef: React.MutableRefObject<string>;
   savedMainInputRef: React.MutableRefObject<string>;
   queuedMessageRef: React.MutableRefObject<Map<string, QueuedMessagePayload>>;
+  /** 用户主动 abort 的会话集合，queryEnd 时用于把排队消息回填到输入框 */
+  abortedSessionsRef: React.MutableRefObject<Set<string>>;
   mainInputRef: React.RefObject<HTMLTextAreaElement | null>;
   choiceInputRef: React.RefObject<HTMLTextAreaElement | null>;
   isDeletingRef: React.MutableRefObject<boolean>;
@@ -311,14 +313,18 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       promptMode: props.promptMode,
     };
 
-    // 新会话发送第一条消息时立即在本地对话列表中加入占位项，
-    // 避免必须等用户打开历史菜单触发 getConversations 后才看到新对话。
-    // 后端返回 conversationsData 后会用权威数据替换该占位项。
+    // 用户主动发消息后立即在本地对话列表中刷新修改时间，使其排到最前，
+    // 无需等待后端落盘 + 刷新列表；新会话则插入占位项。
+    // 后端返回 conversationsData 后会用权威数据替换/校正。
     props.setConversations(prev => {
-      if (prev.some(c => c.sessionId === sessionId)) {
-        return prev;
-      }
       const now = Date.now();
+      const existingIdx = prev.findIndex(c => c.sessionId === sessionId);
+      if (existingIdx !== -1) {
+        // 已存在：只刷新 updatedAt，排序由 useConversationTree 按 updatedAt 完成
+        const next = prev.slice();
+        next[existingIdx] = { ...prev[existingIdx], updatedAt: now };
+        return next;
+      }
       return [{
         sessionId,
         project: '',
@@ -366,9 +372,16 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       throw new Error('VSCode API not available');
     }
 
+    const sessionId = props.currentSessionIdRef.current;
+    // 标记该会话被用户主动中止：queryEnd 到达时若有排队消息，
+    // 不再回发它，而是回填到输入框（见 useMessageHandler 的 queryEnd 处理）。
+    if (sessionId) {
+      props.abortedSessionsRef.current.add(sessionId);
+    }
+
     postMessage({
       type: 'abort',
-      sessionId: props.currentSessionIdRef.current,
+      sessionId,
     });
   }, []);
 

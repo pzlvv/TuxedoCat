@@ -103,6 +103,10 @@ export interface UseMessageHandlerProps {
   userChoiceInputRef: React.MutableRefObject<string>;
   savedMainInputRef: React.MutableRefObject<string>;
   queuedMessageRef: React.MutableRefObject<Map<string, QueuedMessagePayload>>;
+  /** 用户主动 abort 的会话集合，queryEnd 时用于把排队消息回填到输入框 */
+  abortedSessionsRef: React.MutableRefObject<Set<string>>;
+  /** 按会话缓存的 MCP 列表（含连接中状态），用于区分会话、避免异步回推串台 */
+  mcpServersBySessionRef: React.MutableRefObject<Map<string, McpServerInfo[]>>;
   cursorPositionRef: React.MutableRefObject<number | null>;
   choiceCursorPositionRef: React.MutableRefObject<number | null>;
   mainInputRef: React.RefObject<HTMLTextAreaElement | null>;
@@ -206,6 +210,49 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
       const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
       if (distanceFromBottom <= 50) {
         container.scrollTop = container.scrollHeight;
+      }
+    };
+
+    /**
+     * 把排队消息回填到输入框：与用户当前草稿用 \n 连接（草稿为空时直接使用排队内容）。
+     * 目标会话为当前会话时写入实时输入框；否则写入该会话的状态快照，
+     * 保证切换回去后仍能看到回填的草稿。
+     */
+    const restoreQueuedMessageToInput = (targetSessionId: string, queued: QueuedMessagePayload) => {
+      const queuedText = queued.content ?? '';
+      const queuedImages = queued.images ?? [];
+      const joinWithDraft = (draft: string) => (draft ? `${queuedText}\n${draft}` : queuedText);
+
+      const state = props.sessionStatesRef.current.get(targetSessionId);
+      if (state) {
+        state.queuedMessage = null;
+      }
+
+      if (targetSessionId === props.currentSessionIdRef.current) {
+        const draft = props.inputAreaRef.current?.getValue() ?? '';
+        const draftImages = props.inputAreaRef.current?.getPastedImages?.() ?? [];
+        const nextText = joinWithDraft(draft);
+        props.inputAreaRef.current?.setValue(nextText);
+        if (queuedImages.length > 0) {
+          props.inputAreaRef.current?.setPastedImages?.([...queuedImages, ...draftImages]);
+        }
+        // 光标移到末尾，方便用户继续编辑（若期间已切换会话则跳过，避免抢焦点）
+        setTimeout(() => {
+          if (props.currentSessionIdRef.current !== targetSessionId) return;
+          const el = props.mainInputRef.current;
+          if (el) {
+            el.focus();
+            el.setSelectionRange(nextText.length, nextText.length);
+          }
+        }, 0);
+        return;
+      }
+
+      if (state) {
+        state.input = joinWithDraft(state.input ?? '');
+        if (queuedImages.length > 0) {
+          state.pastedImages = [...queuedImages, ...(state.pastedImages ?? [])];
+        }
       }
     };
 
@@ -524,6 +571,23 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           props.setCurrentFile(msg.filePath || '');
           props.setSelectedLines(msg.selectedLines || null);
           break;
+        case 'focusInput': {
+          // 全局唤醒快捷键把窗口唤到前台后，聚焦输入框，用户可直接开始输入。
+          // 等待一帧：窗口刚显示时 DOM 焦点可能还在同步中，立即 focus 会被覆盖。
+          const focus = () => {
+            if (props.userChoiceRequest) {
+              props.choiceInputRef.current?.focus();
+            } else {
+              props.mainInputRef.current?.focus();
+            }
+          };
+          requestAnimationFrame(() => {
+            focus();
+            // 兜底再补一次，覆盖窗口从托盘恢复时的焦点竞争
+            setTimeout(focus, 50);
+          });
+          break;
+        }
         case 'timeStatsResult':
           if (msg.stats) {
             props.setStats(msg.stats);
@@ -547,9 +611,17 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
         case 'setSkills':
           props.setSkills(msg.skills);
           break;
-        case 'setMcpServers':
+        case 'setMcpServers': {
+          // MCP 状态按会话区分：异步回推可能晚于会话切换，
+          // 因此先写入该会话的缓存，只有属于当前会话时才更新可见状态。
+          const targetSessionId = (msg as any).sessionId as string | undefined;
+          if (targetSessionId) {
+            props.mcpServersBySessionRef.current.set(targetSessionId, msg.servers);
+            if (targetSessionId !== props.currentSessionIdRef.current) break;
+          }
           props.setMcpServers(msg.servers);
           break;
+        }
         case 'queryBegin':
           // 记录该 session 本轮 query 的起始时间（用于 TTFT）。
           // 放在 session 过滤之前：即使该会话当前不在前台，也要记录，切回来时才有 TTFT。
@@ -557,6 +629,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             const now = Date.now();
             queryStartBySessionRef.current.set(msg.sessionId, now);
             lastActivityBySessionRef.current.set(msg.sessionId, now);
+            // 新一轮查询开始：清除可能残留的 abort 标记（例如在空闲态误点 abort，
+            // 后端不会发出 queryEnd，标记需要在这里兜底清理）。
+            props.abortedSessionsRef.current.delete(msg.sessionId);
           }
           // 即使被当前 session 过滤，也更新目标 session 的状态（供后续 conversationLoaded 恢复）
           if (msg.sessionId) {
@@ -620,6 +695,11 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             // 递增版本号强制对话列表重渲染，使流水灯即时消失
             props.setSessionRunningVersion(v => v + 1);
           }
+          // 用户主动 abort 的会话：排队消息不再重新投递，而是回填到输入框，
+          // 与用户当前草稿用 \n 连接，交给用户自行修改/重发。
+          const abortedByUser = endedSessionId
+            ? props.abortedSessionsRef.current.delete(endedSessionId)
+            : false;
           // 查询结束后，如果该会话仍有排队消息（未被后端消费，如入队失败/引擎缺失），
           // 将消息投递到"该会话"（而不是当前会话），保证排队消息与会话绑定。
           if (endedSessionId) {
@@ -629,15 +709,20 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               if (endedSessionId === props.currentSessionIdRef.current) {
                 props.setQueuedMessage(null);
               }
-              postMessage({
-                type: 'sendMessage',
-                sessionId: endedSessionId,
-                content: queued.content,
-                images: queued.images,
-                filePath: queued.filePath,
-                selectedLines: queued.selectedLines,
-                fileHidden: queued.fileHidden,
-              });
+              if (abortedByUser) {
+                // abort：不回发排队消息，回填到输入框等待用户确认
+                restoreQueuedMessageToInput(endedSessionId, queued);
+              } else {
+                postMessage({
+                  type: 'sendMessage',
+                  sessionId: endedSessionId,
+                  content: queued.content,
+                  images: queued.images,
+                  filePath: queued.filePath,
+                  selectedLines: queued.selectedLines,
+                  fileHidden: queued.fileHidden,
+                });
+              }
             }
           }
           // 只有当前 session 的消息才更新 UI
@@ -2103,6 +2188,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                   type: String(s?.type || 'local'),
                   command: Array.isArray(s?.command) ? (s.command as unknown[]).filter((c): c is string => typeof c === 'string') : [],
                   environment: (s?.environment && typeof s.environment === 'object' && !Array.isArray(s.environment)) ? s.environment as Record<string, string> : {},
+                  url: typeof s?.url === 'string' ? s.url : '',
+                  headers: (s?.headers && typeof s.headers === 'object' && !Array.isArray(s.headers)) ? s.headers as Record<string, string> : {},
                   enabled: !!s?.enabled,
                 })).filter((s) => !!s.name)
               : [],

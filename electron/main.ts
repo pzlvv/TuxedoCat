@@ -14,10 +14,11 @@
  * - 文件打开/虚拟文档/Mermaid/Spin 由 UIHost 提供 Electron 实现
  */
 
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents, globalShortcut, Tray, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents, globalShortcut, Tray, nativeImage, type NativeImage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ChatViewManager, SIDEBAR_WIDTH } from './ChatViewManager.js';
+import { createTrayStatusIcon, deriveTrayStatus, type TrayStatus } from './trayStatusIcon.js';
 import { CONFIG_DIR_NAME, PRODUCT_NAME } from '../src/config/project.js';
 import { DEFAULT_WAKE_SHORTCUT } from '../src/core/utils/shortcut.js';
 
@@ -33,7 +34,7 @@ let mainWindow: BrowserWindow | undefined;
 let sidebarView: WebContentsView | undefined;
 let chatViews: ChatViewManager | undefined;
 let workspacePath: string | undefined;
-/** 系统托盘：窗口最小化时隐藏到托盘 */
+/** 系统托盘：提供唤醒入口与退出入口（窗口不会因最小化而隐藏到托盘） */
 let tray: Tray | undefined;
 /** 当前已注册的全局唤醒快捷键（用于设置面板打开时临时注销） */
 let registeredWakeShortcut: string | undefined;
@@ -108,7 +109,7 @@ async function main(): Promise<void> {
   });
   setupIpc();
   initCore();
-  // 注册全局唤醒快捷键（settings.json 中的 shortcut，默认 Super+Shift+Z）
+  // 注册全局唤醒快捷键（settings.json 中的 shortcut，默认 Ctrl+Alt+X）
   // 注册失败时弹窗提示，避免静默失效
   registerWakeShortcut();
 
@@ -134,8 +135,16 @@ async function main(): Promise<void> {
 
   app.on('will-quit', () => {
     appQuitting = true;
+    // 停止空闲巡检定时器
+    try {
+      const { stopSessionIdleMonitor } = require('../src/core/sessionIdle.js') as typeof import('../src/core/sessionIdle.js');
+      stopSessionIdleMonitor();
+    } catch {
+      // 退出阶段的清理失败不应影响退出
+    }
     globalShortcut.unregisterAll();
     registeredWakeShortcut = undefined;
+    stopTrayBlink();
     tray?.destroy();
     tray = undefined;
     // 结束所有 MCP 子进程，避免留下孤儿进程
@@ -173,12 +182,8 @@ function createMainWindow(): void {
   mainWindow.once('ready-to-show', showMainWindow); // 无子视图场景仍可用
   setTimeout(showMainWindow, 3000); // 兜底：3 秒后强制显示
 
-  // 最小化时隐藏到系统托盘，而不是最小化到任务栏；
-  // 之后可通过托盘图标或全局快捷键唤醒。
-  // 注意：Electron 的 minimize 事件不可 preventDefault，这里在最小化后立即隐藏。
-  mainWindow.on('minimize', () => {
-    mainWindow?.hide();
-  });
+  // 最小化一律走系统默认行为：窗口最小化到任务栏并保留任务栏图标，
+  // 不再隐藏到托盘（隐藏到托盘只由全局快捷键切换触发）。
   // 用户手动切换窗口/隐藏时，取消“再按一次回托盘”的切换态；
   // 下次按快捷键应重新把窗口唤到前台，而不是直接隐藏。
   mainWindow.on('blur', () => {
@@ -236,9 +241,12 @@ function createMainWindow(): void {
 
   // ── 右侧聊天视图管理器 ──
   let uiLanguage: 'auto' | 'zh' | 'en' = 'auto';
+  let highlightLanguages: string[] = [];
   try {
-    const { readUiLanguageSync } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
+    const { readUiLanguageSync, readHighlightLanguagesSync } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
     uiLanguage = readUiLanguageSync();
+    // Shiki 语法高亮全部按需加载：注入上次已使用过的语言，webview 启动后后台预热
+    highlightLanguages = readHighlightLanguagesSync();
   } catch { /* 读取失败时使用 auto（跟随系统语言） */ }
   chatViews = new ChatViewManager({
     win: mainWindow,
@@ -248,6 +256,7 @@ function createMainWindow(): void {
     locale: app.getLocale(),
     systemLocale: getSystemLocaleForStartup(),
     uiLanguage,
+    highlightLanguages,
     onActiveSessionChanged: (sessionId) => {
       sidebarView?.webContents.send('sidebar:active-session-changed', sessionId);
     },
@@ -336,11 +345,16 @@ function showMainWindowFromTray(): void {
     createMainWindow();
     return;
   }
-  if (mainWindow.isMinimized()) {
-    mainWindow.restore();
-  }
+  // 顺序很重要：必须先 show() 再 restore()。
+  // 窗口可能是被最小化到任务栏（或隐藏到托盘）后被唤醒的；
+  // 若先调用 restore() 再 show()，Windows 上 WebContentsView 会丢失鼠标命中区域，
+  // 表现为恢复后侧栏对话列表与聊天区都无法点击（Electron 43 可稳定复现）。
+  // show() 本身会解除最小化，因此正常路径下 restore() 不会被执行，仅作兜底。
   if (!mainWindow.isVisible()) {
     mainWindow.show();
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
   }
   // Windows 上从托盘/后台恢复时，先置顶再取消，避免窗口只闪烁不聚焦
   mainWindow.setAlwaysOnTop(true);
@@ -367,6 +381,34 @@ function toggleMainWindowFromTray(): void {
     return;
   }
   showMainWindowFromTray();
+  // 通过全局快捷键唤醒后聚焦输入框，用户可直接开始输入
+  focusActiveChatInput();
+}
+
+/**
+ * 唤醒窗口后聚焦当前聊天视图的输入框。
+ * 视图可能尚未创建或仍在加载（应用刚启动时），因此做少量重试；
+ * 页面加载中则等 did-finish-load 再发送，避免消息丢失。
+ */
+function focusActiveChatInput(attempt = 0): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const target = chatViews?.getActiveWebContents();
+  if (!target || target.isDestroyed()) {
+    if (attempt < 20) {
+      setTimeout(() => focusActiveChatInput(attempt + 1), 100);
+    }
+    return;
+  }
+  const send = (): void => {
+    if (target.isDestroyed()) return;
+    target.focus();
+    target.send('webview-message', { type: 'focusInput' });
+  };
+  if (target.isLoading()) {
+    target.once('did-finish-load', send);
+    return;
+  }
+  send();
 }
 
 /** 弹窗提示快捷键冲突（按系统语言输出中/英文） */
@@ -398,14 +440,88 @@ function broadcastWakeShortcutStatus(): void {
   });
 }
 
+/** 托盘图标：在应用 Logo 右下角叠加状态圆点（绿=空闲 / 红=运行中 / 黄=等待用户） */
+const TRAY_ICON_PATH = path.join(APP_ROOT, 'assets', 'logo.png');
+
+/** 托盘当前展示的状态，避免状态未变化时重复重建图标 */
+let trayStatus: TrayStatus | null = null;
+
+/** 托盘提示文案（按系统语言输出中/英文） */
+const TRAY_STATUS_LABEL: Record<TrayStatus, { zh: string; en: string }> = {
+  idle: { zh: '全部任务空闲', en: 'All tasks idle' },
+  running: { zh: '有任务运行中', en: 'Task running' },
+  waiting: { zh: '等待用户确认', en: 'Waiting for your input' },
+};
+
+function trayTooltip(status: TrayStatus): string {
+  const isZh = app.getLocale().toLowerCase().startsWith('zh');
+  const label = TRAY_STATUS_LABEL[status];
+  return `${PRODUCT_NAME} · ${isZh ? label.zh : label.en}`;
+}
+
+/** 等待用户确认时托盘图标闪烁的间隔（毫秒） */
+const TRAY_BLINK_INTERVAL_MS = 500;
+
+/**
+ * 闪烁“熄灭”相位的整体不透明度（0~1）。
+ * 0 表示 Logo 与状态圆点一起完全消失；调成 0.2 左右则变为忽明忽暗的呼吸效果。
+ */
+const TRAY_BLINK_HIDDEN_ALPHA = 0;
+
+/** 闪烁定时器；非等待状态时为 undefined */
+let trayBlinkTimer: ReturnType<typeof setInterval> | null = null;
+
+/** 缓存等待状态“亮 / 灭”两个相位的图标，避免每次闪烁都重新合成位图 */
+let trayBlinkImages: { on: NativeImage; off: NativeImage } | null = null;
+
+function getTrayBlinkImages(): { on: NativeImage; off: NativeImage } | null {
+  if (!trayBlinkImages) {
+    const on = createTrayStatusIcon('waiting', TRAY_ICON_PATH);
+    const off = createTrayStatusIcon('waiting', TRAY_ICON_PATH, { alpha: TRAY_BLINK_HIDDEN_ALPHA });
+    if (on.isEmpty() || off.isEmpty()) return null;
+    trayBlinkImages = { on, off };
+  }
+  return trayBlinkImages;
+}
+
+/** 停止托盘闪烁（退出等待状态或应用退出时调用） */
+function stopTrayBlink(): void {
+  if (trayBlinkTimer) {
+    clearInterval(trayBlinkTimer);
+    trayBlinkTimer = null;
+  }
+}
+
+/**
+ * 启动托盘闪烁：整个图标（Logo + 黄点）在“亮 / 灭”两个相位之间切换，提醒用户需要确认。
+ * 返回是否成功启动（图标不可用时返回 false，调用方回退到静态图标）。
+ */
+function startTrayBlink(): boolean {
+  if (trayBlinkTimer) return true;
+  if (!tray) return false;
+  const images = getTrayBlinkImages();
+  if (!images) return false;
+  let visible = true;
+  tray.setImage(images.on);
+  trayBlinkTimer = setInterval(() => {
+    if (!tray) {
+      stopTrayBlink();
+      return;
+    }
+    visible = !visible;
+    tray.setImage(visible ? images.on : images.off);
+  }, TRAY_BLINK_INTERVAL_MS);
+  return true;
+}
+
 /** 创建系统托盘（只创建一次），提供“显示主窗口”和“退出”入口 */
 function setupTray(): void {
   if (tray) return;
   try {
-    const iconPath = path.join(APP_ROOT, 'assets', 'logo.png');
-    const image = nativeImage.createFromPath(iconPath);
-    tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image.resize({ width: 16, height: 16 }));
-    tray.setToolTip(PRODUCT_NAME);
+    const image = createTrayStatusIcon('idle', TRAY_ICON_PATH);
+    tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image);
+    trayStatus = 'idle';
+    tray.setToolTip(trayTooltip('idle'));
     tray.setContextMenu(Menu.buildFromTemplate([
       {
         label: `Show ${PRODUCT_NAME}`,
@@ -422,6 +538,31 @@ function setupTray(): void {
   } catch (err) {
     console.error('[main] Failed to create tray:', err);
     tray = undefined;
+  }
+}
+
+/**
+ * 根据侧栏对话列表刷新托盘状态点：
+ * 有会话在等待用户确认/提问 → 黄点；有会话运行中 → 红点；全部空闲 → 绿点。
+ * 状态未变化时不重建图标（createFromBitmap / resize 有一定开销）。
+ */
+function updateTrayStatusFromConversations(list: ReadonlyArray<Record<string, unknown>>): void {
+  const status = deriveTrayStatus(list);
+  if (status === trayStatus) return;
+  trayStatus = status;
+  if (!tray) return;
+  try {
+    // 等待用户确认时让整个托盘图标闪烁提醒；其余状态使用静态图标
+    if (status === 'waiting' && startTrayBlink()) {
+      // 闪烁已启动，图标由定时器维护
+    } else {
+      stopTrayBlink();
+      const image = createTrayStatusIcon(status, TRAY_ICON_PATH);
+      if (!image.isEmpty()) tray.setImage(image);
+    }
+    tray.setToolTip(trayTooltip(status));
+  } catch (err) {
+    console.error('[main] Failed to update tray status icon:', err);
   }
 }
 
@@ -684,6 +825,13 @@ function applyWorkspace(p: string): void {
   // 工作区变化：清空旧聊天视图并新建
   chatViews?.disposeAll();
   chatViews?.openNewConversation();
+  // 旧工作区的会话已全部关闭：清空空闲关闭计时状态
+  try {
+    const { resetSessionIdleState } = require('../src/core/sessionIdle.js') as typeof import('../src/core/sessionIdle.js');
+    resetSessionIdleState();
+  } catch (err) {
+    console.error('[main] resetSessionIdleState error:', err);
+  }
   // 清除对话列表缓存：切换工作目录后项目对话目录改变，
   // 必须重新从磁盘加载新项目的对话列表，否则侧栏仍显示旧项目的对话
   try {
@@ -805,6 +953,7 @@ function setupIpc(): void {
       const closedSessionId = chatViews?.closeViewByWebContents(event.sender);
       if (closedSessionId) {
         clearConversationFromCache(closedSessionId);
+        clearSessionIdleTracking(closedSessionId);
       }
       refreshSidebar();
       return;
@@ -891,6 +1040,7 @@ function setupIpc(): void {
     if (typeof sessionId === 'string' && sessionId) {
       chatViews?.closeView(sessionId);
       clearConversationFromCache(sessionId);
+      clearSessionIdleTracking(sessionId);
       refreshSidebar();
     }
   });
@@ -930,6 +1080,10 @@ function setupIpc(): void {
       // 3) delete：删除磁盘文件并清理引擎池 / 缓存
       const { deleteConversation } = await import('../src/core/history/index.js');
       await deleteConversation(sessionId);
+      // 会话已删除：清理空闲关闭计时状态
+      for (const sid of affected) {
+        clearSessionIdleTracking(sid);
+      }
       refreshSidebar();
       return { ok: true };
     } catch (err) {
@@ -1037,6 +1191,7 @@ function refreshSidebar(): void {
     try {
       const list = (await chatViews?.getSidebarConversations()) ?? [];
       sidebarView?.webContents.send('sidebar:conversations-updated', list);
+      updateTrayStatusFromConversations(list);
     } catch (err) {
       console.error('[main] refreshSidebar error:', err);
     }
@@ -1050,6 +1205,16 @@ function clearConversationFromCache(sessionId: string): void {
     removeConversationFromCache(sessionId);
   } catch (err) {
     console.error('[main] removeConversationFromCache error:', err);
+  }
+}
+
+/** 会话被手动关闭 / 删除时，清理其空闲关闭计时状态 */
+function clearSessionIdleTracking(sessionId: string): void {
+  try {
+    const { clearSessionIdleState } = require('../src/core/sessionIdle.js') as typeof import('../src/core/sessionIdle.js');
+    clearSessionIdleState(sessionId);
+  } catch (err) {
+    console.error('[main] clearSessionIdleState error:', err);
   }
 }
 
@@ -1121,6 +1286,8 @@ function initCore(): void {
   ui.setMainWindow(mainWindow!);
   ui.setSidebarView(sidebarView!);
   ui.setChatViewManager(chatViews!);
+  // 侧栏对话列表每次刷新时同步托盘状态点（绿=空闲 / 红=运行中 / 黄=等待用户）
+  ui.setConversationStatusListener((list: Array<Record<string, unknown>>) => updateTrayStatusFromConversations(list));
   ui.setWorkspacePath(workspacePath);
   setGlobalUI(ui);
 
@@ -1137,6 +1304,31 @@ function initCore(): void {
     initializeSessionQueue();
   } catch (err) {
     console.error('[main] initializeSessionQueue error:', err);
+  }
+
+  // 空闲对话自动关闭：非激活对话 2 小时无活动后销毁其聊天视图并释放引擎 / 消息缓存
+  try {
+    const {
+      startSessionIdleMonitor,
+      setSessionIdleCloseHandler,
+      setSessionWaitingForUserProvider,
+      setSessionActiveProvider,
+      releaseSessionResources,
+    } = require('../src/core/sessionIdle.js') as typeof import('../src/core/sessionIdle.js');
+
+    // 当前激活的对话以 ChatViewManager 为准：切换到已加载的视图时不会再发 setActiveSessionId
+    setSessionActiveProvider(() => chatViews?.getActiveSessionId() ?? null);
+    setSessionWaitingForUserProvider((sessionId: string) => ui.hasPendingUserChoice(sessionId));
+    setSessionIdleCloseHandler(async (sessionId: string) => {
+      // 先销毁聊天视图（内部会 abort 该会话的查询并释放 MCP 引用）
+      chatViews?.closeView(sessionId);
+      // 再释放引擎与消息缓存：再次打开该对话时由新视图 loadConversation 从磁盘重建
+      await releaseSessionResources(sessionId);
+      refreshSidebar();
+    });
+    startSessionIdleMonitor();
+  } catch (err) {
+    console.error('[main] init idle session monitor error:', err);
   }
 
   // 扩展路径提供者：ripgrep/pandoc 等资源位于 <root>/dist/resources

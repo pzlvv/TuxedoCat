@@ -33,7 +33,7 @@ Reads the contents of a file from the local filesystem.
 - Line numbers are 1-based and separated by \`|\`
 
 **Limits:**
-- Maximum file size for whole-file reads: ${sizeStr}. Files larger than this require \`offset\` and \`limit\`
+- Maximum file size for whole-file reads: ${sizeStr} (text files only; xlsx/doc/image files are exempt). Files larger than this require \`offset\` and \`limit\`
 - Maximum lines per read: ${maxLines}
 - Maximum characters per line: ${maxLineLength} (longer lines are truncated)
 - Maximum output bytes per read: ${outputBytesStr} (output is capped; use \`offset\` to continue)

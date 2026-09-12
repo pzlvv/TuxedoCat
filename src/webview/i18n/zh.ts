@@ -244,6 +244,11 @@ export const zhDict: Record<string, string> = {
   'tool.writeFile.collapsePreview': '收起内容预览',
   'tool.writeFile.expandPreview': '展开内容预览',
 
+  /* ── tools/previewLimit.tsx 代码预览按需渲染 ───────────────── */
+  'tool.preview.showAllLines': '仅显示前 {shown} 行 / 共 {total} 行，点击显示全部',
+  'tool.preview.clickToShowAll': '点击显示全部内容',
+  'tool.preview.allLinesShown': '共 {total} 行，已显示全部',
+
   /* ── tools/Glob / Grep / QueryUserMemory 等通用英文 ───────── */
   'tool.noPattern': 'no pattern',
   'tool.unknownFile': 'unknown file',
@@ -296,11 +301,9 @@ export const zhDict: Record<string, string> = {
   'messagesView.copied': '已复制',
   'messagesView.copy': '复制',
   'messagesView.expandCompactHistory': '展开压缩的对话历史',
-  'messagesView.thinkingFor': 'Thinking for {time}s',
-  'messagesView.streamStatsChars': '{count} chars generated in {time}s @ {rate} chars / s',
-  'messagesView.streamStatsTokens': '{count} tokens generated in {time}s @ {rate} toks / s',
-  'messagesView.streamStatsCharsNoRate': '{count} chars generated in {time}s',
-  'messagesView.streamStatsTokensNoRate': '{count} tokens generated in {time}s',
+  'messagesView.streamStatsPrefill': 'Prefill: {prefill}s | {decode}',
+  'messagesView.streamStats': 'Decode: {count} {unit} in {time}s ({rate} {unit}/s)',
+  'messagesView.streamStatsNoRate': 'Decode: {count} {unit} in {time}s',
 
   /* ── hooks/useAppHandlers.ts ─────────────────────────────── */
   'handlers.justNow': '刚刚',

@@ -1,0 +1,17 @@
+{
+  "name": "tuxedo-cat-memtest",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MessagesView 渲染 / 内存 / 性能测试 harness（Playwright，仅本地开发使用，不参与正式构建）",
+  "scripts": {
+    "build": "node build.mjs",
+    "mem": "node run.mjs",
+    "perf": "node perf.mjs",
+    "perf:render": "node perf-render.mjs",
+    "startup": "node real-startup.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}

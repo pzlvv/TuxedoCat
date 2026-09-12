@@ -1,10 +1,12 @@
 import React from 'react';
 import { ToolCallProps } from './Types';
 import { toolStyles } from './styles';
-import * as lucideIcons from 'lucide-react';
+import { Icon } from '../Icon';
+import { ICON_ALIAS, ICON_NAMES, type IconName } from '../icons.generated';
 
 export interface ToolHeaderProps {
-  icon: keyof typeof lucideIcons;
+  /** lucide 图标名（PascalCase），如 'Terminal' / 'FileText'；或直接给 kebab-case 名 */
+  icon: string;
   name: string;
   colors: ToolCallProps['colors'];
   children?: React.ReactNode;
@@ -12,14 +14,15 @@ export interface ToolHeaderProps {
   rightExtra?: React.ReactNode;
 }
 
+/** 把调用点沿用的 lucide 名字（PascalCase）解析成 CSS mask 图标名（kebab-case） */
+const resolveIcon = (icon: string): IconName | undefined => {
+  const kebab = icon in ICON_ALIAS ? ICON_ALIAS[icon] : icon.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+  // 未登记的图标名返回 undefined（不渲染），避免出现「有节点但无形状」的空 span
+  return (ICON_NAMES as readonly string[]).includes(kebab) ? (kebab as IconName) : undefined;
+};
+
 export const ToolHeader: React.FC<ToolHeaderProps> = ({ icon, name, colors, children, rightExtra }) => {
-  // 支持两种写法：
-  // - 字符串键：icon="Zap"（大多数工具）
-  // - 组件引用：icon={Zap}（少数工具如 Skill / AskUserQuestion）
-  // lucideIcons[icon] 只接受字符串键，组件引用直接使用，否则图标不会渲染。
-  const IconComponent = (typeof icon === 'string' ? lucideIcons[icon] : icon) as
-    | React.ComponentType<{ size?: number; style?: React.CSSProperties }>
-    | undefined;
+  const iconName = resolveIcon(icon);
 
   return (
     <div
@@ -31,8 +34,8 @@ export const ToolHeader: React.FC<ToolHeaderProps> = ({ icon, name, colors, chil
         marginTop: '-3.5px',
       }}
     >
-      {/* 图标 */}
-      {IconComponent && <IconComponent size={12} style={{ color: colors.textSystem, flexShrink: 0 }} />}
+      {/* 图标：1 个 span + CSS mask（原先每个图标是 svg + N 个 path） */}
+      {iconName && <Icon name={iconName} size={12} style={{ color: colors.textSystem, flexShrink: 0 }} />}
       {/* 工具名：保证完整一行，不换行 */}
       <span
         style={{

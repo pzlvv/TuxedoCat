@@ -1,5 +1,5 @@
 import React from 'react';
-import { CheckSquare, Square, CircleDot, Circle } from 'lucide-react';
+import { Icon } from '../Icon';
 import { ToolCallProps } from './Types';
 import { ToolHeader } from './ToolHeader';
 import { t } from '../i18n';
@@ -11,9 +11,9 @@ interface TodoItem {
 }
 
 const STATUS_ICON: Record<string, React.ReactNode> = {
-  pending: <Square size={12} />,
-  in_progress: <CircleDot size={12} />,
-  completed: <CheckSquare size={12} />,
+  pending: <Icon name="square" size={12} />,
+  in_progress: <Icon name="circle-dot" size={12} />,
+  completed: <Icon name="check-square" size={12} />,
 };
 
 const STATUS_COLOR = {
@@ -111,7 +111,7 @@ export const TodoWrite: React.FC<ToolCallProps> = ({ args, colors, status }) => 
                     : colors.textSystem,
               }}
             >
-              {STATUS_ICON[todo.status] || <Circle size={12} />}
+              {STATUS_ICON[todo.status] || <Icon name="circle" size={12} />}
             </span>
             
             {/* 任务内容 */}

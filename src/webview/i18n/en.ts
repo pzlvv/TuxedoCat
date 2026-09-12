@@ -244,6 +244,11 @@ export const enDict: Record<string, string> = {
   'tool.writeFile.collapsePreview': 'Collapse content preview',
   'tool.writeFile.expandPreview': 'Expand content preview',
 
+  /* ── tools/previewLimit.tsx on-demand code preview ─────────── */
+  'tool.preview.showAllLines': 'Showing first {shown} of {total} lines — click to show all',
+  'tool.preview.clickToShowAll': 'Click to show all content',
+  'tool.preview.allLinesShown': 'All {total} lines shown',
+
   /* ── tools/Glob / Grep / QueryUserMemory 等通用英文 ───────── */
   'tool.noPattern': 'no pattern',
   'tool.unknownFile': 'unknown file',
@@ -296,11 +301,9 @@ export const enDict: Record<string, string> = {
   'messagesView.copied': 'Copied',
   'messagesView.copy': 'Copy',
   'messagesView.expandCompactHistory': 'Expand compacted conversation history',
-  'messagesView.thinkingFor': 'Thinking for {time}s',
-  'messagesView.streamStatsChars': '{count} chars generated in {time}s @ {rate} chars / s',
-  'messagesView.streamStatsTokens': '{count} tokens generated in {time}s @ {rate} toks / s',
-  'messagesView.streamStatsCharsNoRate': '{count} chars generated in {time}s',
-  'messagesView.streamStatsTokensNoRate': '{count} tokens generated in {time}s',
+  'messagesView.streamStatsPrefill': 'Prefill: {prefill}s | {decode}',
+  'messagesView.streamStats': 'Decode: {count} {unit} in {time}s ({rate} {unit}/s)',
+  'messagesView.streamStatsNoRate': 'Decode: {count} {unit} in {time}s',
 
   /* ── hooks/useAppHandlers.ts ─────────────────────────────── */
   'handlers.justNow': 'just now',

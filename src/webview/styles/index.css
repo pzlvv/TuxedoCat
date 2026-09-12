@@ -240,130 +240,140 @@ textarea::-webkit-scrollbar-thumb:hover {
   color: #4f46e5 !important;
 }
 
+/* ── MessagesView 轻量时间线 ──────────────────────────────────────────
+   原生 ol/li 实现，替代 antd Timeline/Steps：
+   每条消息的包装节点由 7 个（li/wrapper/icon/dot/section/header/rail）降为 2 个
+   （li + content），状态点与竖线改用伪元素绘制。
+   实测 539 条消息的会话：DOM 节点 -2714、JS 堆 -9.8MB。 */
+.msg-timeline {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
 /* Timeline item spacing - compact layout with minimum height */
-.ant-timeline .ant-timeline-item {
-  min-height: 36px !important;
-  padding-bottom: 12px !important;
-  margin-bottom: 0 !important;
-  --ant-cmp-steps-rail-size: 2px !important;
+.msg-timeline-item {
+  position: relative;
+  /* flow-root 建立 BFC：阻止首子元素（ToolHeader / thinking summary 均带
+     marginTop: -3.5px）的负 margin 与 li 发生 margin collapse 逃逸到 li 外。
+     若不阻止，内容实际从 li 顶部 0 开始渲染，文字中心在 16px，
+     而圆点中心按 12.5px 定位，表现为圆点偏上 3.5px；
+     阻止后 -3.5px 生效，32px 行的中心正好落在 12.5px 与圆点对齐。 */
+  display: flow-root;
+  min-height: 36px;
+  padding-bottom: 12px;
+  /* 与状态点(10px) + 间隙对齐；竖线水平位置 = 点中心 - 线宽/2 = 5 - 1 = 4px */
+  padding-inline-start: 22px;
 }
 
-.ant-timeline .ant-timeline-item-content {
-  margin-top: 0 !important;
-  padding-top: 0 !important;
+/* 最后一个节点不保留底部间距 */
+.msg-timeline-item:last-child {
+  padding-bottom: 0;
 }
 
-/* Timeline last item - no bottom padding */
-.ant-timeline .ant-timeline-item:last-child {
-  padding-bottom: 0 !important;
-}
-
-/* 当 thinking animation 隐藏时，隐藏内容但保留高度避免布局抖动 */
-.ant-timeline .ant-timeline-item:last-child:has(.thinking-animation-wrapper[data-hidden]) {
-  visibility: hidden;
-  opacity: 0;
-  pointer-events: none;
-  /* 保留正常 padding 和高度，防止 scrollHeight 变化导致布局抖动 */
-  height: auto !important;
-  min-height: 36px !important;
-  padding-bottom: 12px !important;
-}
-
-/* ── Timeline rail 规则（纯 CSS 控制）──
-   每个节点（第一个除外）都有一根向上的 rail；
-   节点隐藏时，对应的 rail 也隐藏。 */
-.ant-timeline .ant-timeline-item-rail {
-  display: none !important;
-  inset-inline-start: calc(var(--ant-cmp-steps-icon-size-max, 10px) / 2) !important;
-  margin-inline-start: calc(var(--ant-cmp-steps-rail-size, 2px) / -2) !important;
-}
-
-/* 中间节点：完整 rail（向上 + 向下），保证与前后节点连续 */
-.ant-timeline .ant-timeline-item:not(:first-child):not(:last-child) .ant-timeline-item-rail {
-  display: block !important;
-  top: 0 !important;
-  bottom: 0 !important;
-}
-
-/* 第一个节点：只有向下 rail（从节点中心到 item 底部） */
-.ant-timeline .ant-timeline-item:first-child:not(:last-child) .ant-timeline-item-rail {
-  display: block !important;
-  top: calc(var(--ant-cmp-steps-heading-height, 24px) / 2) !important;
-  bottom: 0 !important;
-}
-
-/* 最后一个节点：只保留向上 rail（从 item 顶部到节点中心），
-   避免节点下方出现一段孤立、不连接下一个节点的线 */
-.ant-timeline .ant-timeline-item:last-child:not(:first-child) .ant-timeline-item-rail {
-  display: block !important;
-  top: 0 !important;
-  bottom: auto !important;
-  height: calc(var(--ant-cmp-steps-heading-height, 24px) / 2) !important;
-}
-
-/* 非最后一段的最后一个节点：rc-steps 不会为 last item 渲染 rail 元素，
-   上一节点的 rail 只延伸到该 item 顶部，而节点圆点中心位于 item 顶部往下
-   heading-height/2 处，因此会留下一小段空隙。这里用 ::before 补齐该节点
-   向上的半段 rail（从 item 顶部到节点中心），既不留下空隙，也不在节点下方
-   产生孤立线。 */
-.segment-timeline-continues .ant-timeline .ant-timeline-item:last-child:not(:first-child):not(:has(.ant-timeline-item-rail))::before {
+/* ── 竖线（伪元素）──
+   每个节点绘制自己的一段竖线：首节点从圆点中心向下，末节点从顶部到圆点中心，
+   中间节点贯穿整段。相邻节点的线段首尾相接，视觉上是一条连续竖线。 */
+.msg-timeline-item::after {
   content: '';
   position: absolute;
-  top: 0 !important;
-  bottom: auto !important;
-  height: calc(var(--ant-cmp-steps-heading-height, 24px) / 2) !important;
-  inset-inline-start: calc(var(--ant-cmp-steps-icon-size-max, 10px) / 2) !important;
-  margin-inline-start: calc(var(--ant-cmp-steps-rail-size, 2px) / -2) !important;
-  border-inline-start-width: var(--ant-cmp-steps-rail-size, 2px) !important;
-  border-inline-start-style: solid !important;
-  border-inline-start-color: var(--timeline-rail-color, currentColor) !important;
+  inset-inline-start: 4px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--timeline-rail-color, currentColor);
   pointer-events: none;
-  z-index: 0;
 }
 
-/* 唯一节点：不需要 rail */
-.ant-timeline .ant-timeline-item:first-child:last-child .ant-timeline-item-rail {
-  display: none !important;
+/* 首个节点：从圆点中心开始（圆点 top:7.5px + 直径 10px 的一半） */
+.msg-timeline-item:first-child::after {
+  top: 12.5px;
 }
 
-/* thinking 隐藏时，最后一个真实节点按“最后一个可见节点”处理：只保留向上的 rail */
-.thinking-hidden .ant-timeline .ant-timeline-item:nth-last-child(2) .ant-timeline-item-rail {
-  display: block !important;
-  top: 0 !important;
-  bottom: auto !important;
-  height: calc(var(--ant-cmp-steps-heading-height, 24px) / 2) !important;
+/* 最后一个节点：只画到圆点中心，避免节点下方出现孤立线段 */
+.msg-timeline-item:last-child::after {
+  bottom: auto;
+  height: 12.5px;
 }
 
-/* 如果该节点同时也是第一个（唯一真实节点），不需要 rail */
-.thinking-hidden .ant-timeline .ant-timeline-item:first-child:nth-last-child(2) .ant-timeline-item-rail {
-  display: none !important;
+/* 唯一节点：不需要竖线 */
+.msg-timeline-item:first-child:last-child::after {
+  display: none;
 }
 
-/* thinking 动画可见时，最后一个节点是动画节点（rc-steps 不为其渲染 rail），
-   补一段从 item 顶部到图标中心的竖线，让上一节点的 rail 连到动画图标中心 */
-.ant-timeline .ant-timeline-item:last-child:not(:first-child):not(:has(.ant-timeline-item-rail)):has(.thinking-animation-wrapper:not([data-hidden]))::before {
+/* ── 状态点（伪元素）──
+   普通状态点由 CSS 绘制，不再占用 DOM 节点；
+   仅在"运行中风扇"与"thinking 涟漪"场景使用真实 DOM。 */
+.msg-timeline-item::before {
   content: '';
   position: absolute;
-  top: 0 !important;
-  bottom: auto !important;
-  height: calc(var(--ant-cmp-steps-heading-height, 24px) / 2) !important;
-  inset-inline-start: calc(var(--ant-cmp-steps-icon-size-max, 10px) / 2) !important;
-  margin-inline-start: calc(var(--ant-cmp-steps-rail-size, 2px) / -2) !important;
-  border-inline-start-width: var(--ant-cmp-steps-rail-size, 2px) !important;
-  border-inline-start-style: solid !important;
-  border-inline-start-color: var(--timeline-rail-color, currentColor) !important;
+  inset-inline-start: 0;
+  /* 圆点中心对齐内容行视觉中心：ToolHeader / thinking summary 均为
+     minHeight 32px + marginTop -3.5px，视觉中心约在 12.5px（与旧版
+     antd Timeline 的 heading-height/2 = 12px 一致），故 top = 12.5 - 5 = 7.5px */
+  top: 7.5px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--msg-timeline-dot-color, currentColor);
   pointer-events: none;
-  z-index: 0;
+  z-index: 1;
 }
 
-/* ── Timeline 状态点与竖线水平对齐校正 ──
-   强制状态点（10px 圆点）中心与竖线（2px）中心重合，
-   避免不同 antd 版本/环境下自定义 dot 偏离竖线（偏到线右侧）的问题。
-   数值与 SegmentTimeline 主题中的 dotSize: 10 / tailWidth: 2 保持一致。 */
-.ant-timeline .ant-timeline-item-icon {
-  width: 10px !important;
-  height: 10px !important;
-  margin-inline-start: 0 !important;
+/* 运行中的工具节点：风扇旋转状态点 */
+.msg-timeline-dot-running::before {
+  background: conic-gradient(
+    var(--timeline-running-color, #eab308) 0deg 60deg,
+    var(--timeline-running-shade, #a16207) 60deg 120deg,
+    var(--timeline-running-color, #eab308) 120deg 180deg,
+    var(--timeline-running-shade, #a16207) 180deg 240deg,
+    var(--timeline-running-color, #eab308) 240deg 300deg,
+    var(--timeline-running-shade, #a16207) 300deg 360deg
+  );
+  animation: timelineRunningSpin 1s linear infinite;
+}
+
+/* 自定义状态点（thinking 涟漪动画）：22×22 的涟漪盒居中覆盖在 10px 状态点位置，
+   同时隐藏该节点的伪元素状态点，避免两层叠加。
+   涟漪盒高 22px，中心对齐圆点中心 12.5px → top = 12.5 - 11 = 1.5px */
+.msg-timeline-custom-dot {
+  position: absolute;
+  inset-inline-start: -6px;
+  top: 1.5px;
+  z-index: 1;
+}
+
+.msg-timeline-item:has(.msg-timeline-custom-dot)::before {
+  display: none;
+}
+
+/* ── thinking 动画占位节点 ──
+   隐藏时保留高度避免布局抖动，但不绘制状态点/竖线；
+   同时它前面的节点按"最后一个可见节点"处理，竖线只画半段。 */
+.msg-timeline-item:has(.thinking-animation-wrapper[data-hidden])::before,
+.msg-timeline-item:has(.thinking-animation-wrapper[data-hidden])::after {
+  display: none;
+}
+
+/* 占位节点隐藏时恢复底部间距：它此时是"不可见的最后一个节点"，
+   需要与可见状态保持相同占位高度，避免动画出现/消失时 scrollHeight 抖动。
+   （:last-child 的 padding-bottom: 0 是为可见的末尾节点准备的，这里覆盖回来）
+
+   ⚠️ 取值必须按"补足到 36px"来算，不能直接抄相邻节点的 12px：
+     隐藏态内容盒 = wrapper 的 min-height 32px + margin-top -3.5px = 28.5px；
+     可见态该 li 高度 = max(内容 28.5px, min-height 36px) = 36px。
+     故隐藏态 padding-bottom = 36 - 28.5 = 7.5px 才能与可见态等高。
+     若写成 12px（40.5px > min-height 36px，padding 会额外叠加在 min-height 之上），
+     隐藏态就比可见态高 4.5px；而 thinking 动画出现在对话最底部，
+     动画显示的瞬间内容变矮 4.5px → 贴底时浏览器把 scrollTop 夹小 4.5px
+     → 屏幕内容整体下移 4.5px，表现为"页面回滚了一点点"。 */
+.msg-timeline-item:last-child:has(.thinking-animation-wrapper[data-hidden]) {
+  padding-bottom: 7.5px;
+}
+
+.msg-timeline-item:nth-last-child(2):has(+ .msg-timeline-item .thinking-animation-wrapper[data-hidden])::after {
+  bottom: auto;
+  height: 11px;
 }
 
 /* UserChoiceOverlay entry animation */
@@ -464,6 +474,20 @@ textarea::-webkit-scrollbar-thumb:hover {
   font-weight: 600;
 }
 
+/* 时间线内的 thinking 动画文案：与状态点/涟漪图标垂直对齐。
+   工具行（ToolHeader）与 thinking 折叠行（summary）都是
+   "minHeight 32px + marginTop -3.5px + 垂直居中"的几何：
+   行盒从 y=-3.5 到 y=28.5，视觉中心正好落在圆点中心 12.5px 处。
+   而 thinking 动画节点的内容只是一个 inline-block 文本（line-height 1.2），
+   在默认行盒里按基线对齐，文字中心会偏上。这里复制工具行的几何，
+   用 flex 居中让文字中心同样落在 12.5px，与圆点/涟漪图标对齐。 */
+.msg-timeline .thinking-animation-wrapper {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  margin-top: -3.5px;
+}
+
 /* thinking animation 隐藏时保持占位高度，避免布局抖动 */
 .thinking-animation-wrapper[data-hidden] {
   visibility: hidden;
@@ -478,11 +502,25 @@ textarea::-webkit-scrollbar-thumb:hover {
   pointer-events: none;
 }
 
+/* 光标块高度刻意与行高一致（1.2em == .thinking-cursor-wrapper 的 line-height），
+   因此必须用 bottom 对齐到「行盒底边」。
+
+   若用 text-bottom，块底会去对齐「父级内容区底部」（baseline + descent），
+   而字体内容区高度（ascent + descent）并不等于 1.2em 行高：
+     - CJK 字体（微软雅黑）内容区 ≈ 1.26em > 1.2em → 块从下方顶出行盒；
+     - 拉丁字体（Consolas）内容区 ≈ 1.16em < 1.2em → 块从上方顶出行盒。
+   两种情况下行盒都被撑高（实测 15.59px → 16.00px / 15.85px），
+   而外层 .thinking-animation-wrapper 是 flex + align-items:center，
+   行盒一变高就会把整行重新居中，文本基线随之平移约 0.2px——
+   表现为光标出现/消失（idle ↔ scanning ↔ completed 切换）瞬间文本「轻微跳动」。
+
+   改成 bottom 后块高度 == 行高，行盒高度恒定，文本不再跳动。
+   ⚠️ 若日后调整 line-height，需同步调整这里的 height，保持两者相等。 */
 .thinking-cursor-block {
   display: inline-block;
   width: 0.6em;
   height: 1.2em;
-  vertical-align: text-bottom;
+  vertical-align: bottom;
   opacity: 1;
 }
 
@@ -512,7 +550,12 @@ textarea::-webkit-scrollbar-thumb:hover {
 }
 
 .ripple-dot-container {
-  position: relative;
+  /* 注意：不要在这里声明 position: relative。
+     时间线内的涟漪点依赖 .msg-timeline-custom-dot 的 position: absolute
+     （inset-inline-start: -6px; top: 0）对齐到竖线圆点位置；
+     本规则在源码顺序上更靠后，若再设 position 会覆盖掉绝对定位，
+     导致 dot 落回文档流——最后一截 rail 与 dot 断开、
+     且 22px 的 dot 盒子会把下方 thinking 动画文案整体下推。 */
   width: 22px;
   height: 22px;
 }

@@ -1,7 +1,11 @@
 export interface ToolCallProps {
   toolName: string;
   args: Record<string, any>;
-  status: 'running' | 'success' | 'fail';
+  /**
+   * 工具卡片状态。'normal' 表示**正在等待用户授权**（手动模式下工具尚未执行，
+   * 见 useMessageHandler 中 isPending → 'normal' 的判定），其余为执行期/结果态。
+   */
+  status: 'normal' | 'running' | 'success' | 'fail';
   output?: string;
   isDark: boolean;
   colors: any;

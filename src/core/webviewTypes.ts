@@ -7,12 +7,16 @@
 export interface McpServerInfo {
   /** 服务器名（mcp.json 中的 key） */
   name: string;
-  /** 传输类型，如 local / stdio / sse / http */
+  /** 传输类型，如 local / stdio / remote / http / sse */
   type: string;
-  /** 启动命令（统一为数组形式） */
+  /** 启动命令（统一为数组形式；远程传输时为空数组） */
   command: string[];
-  /** 环境变量 */
+  /** 环境变量（仅 local 传输） */
   environment: Record<string, string>;
+  /** 远程 MCP 端点（Streamable HTTP 或旧版 SSE 的入口地址；仅 remote 传输） */
+  url: string;
+  /** 远程请求附带的 HTTP 头（如 Authorization；仅 remote 传输） */
+  headers: Record<string, string>;
   /** 是否启用（来自 settings.json，默认 false） */
   enabled: boolean;
   /** 运行时：进程是否已连接（未启用时为 false） */
@@ -503,8 +507,17 @@ export type WebviewMessage = {
   removedBytes: number;
 } | {
   type: 'setMcpServers';
+  /** 该列表归属的会话 ID；缺省表示与具体会话无关（全局默认） */
+  sessionId?: string;
   /** 所有可用 MCP 服务器及其启用状态 */
   servers: McpServerInfo[];
+} | {
+  type: 'recordHighlightLanguage';
+  /** webview 按需加载过的 Shiki 语言，宿主写入 settings.json 供下次启动预热 */
+  language: string;
+} | {
+  /** 全局唤醒快捷键激活窗口后，要求 webview 聚焦输入框，便于直接开始输入 */
+  type: 'focusInput';
 };
 
 // 不包含 sessionId 的消息类型（调用方传入，postToWebview 会添加）

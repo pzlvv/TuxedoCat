@@ -35,6 +35,8 @@ export interface ChatViewManagerOptions {
   systemLocale: string;
   /** 用户显式选择的界面语言（'auto' | 'zh' | 'en'），随 --uiLanguage 注入 webview */
   uiLanguage?: 'auto' | 'zh' | 'en';
+  /** 上次已使用过的 Shiki 语言（来自 settings.json），随 --highlightLanguages 注入供 webview 预热 */
+  highlightLanguages?: string[];
   onActiveSessionChanged: (sessionId: string | null) => void;
   onViewCreated?: (view: WebContentsView) => void;
 }
@@ -298,6 +300,7 @@ export class ChatViewManager {
           `--locale=${this.opts.locale}`,
           `--systemLocale=${this.opts.systemLocale}`,
           `--uiLanguage=${this.opts.uiLanguage || 'auto'}`,
+          `--highlightLanguages=${(this.opts.highlightLanguages || []).join(',')}`,
           ...(sessionId ? [`--session=${sessionId}`] : []),
         ],
       },

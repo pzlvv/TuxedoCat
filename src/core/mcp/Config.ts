@@ -12,9 +12,20 @@
  *       "type": "local",
  *       "command": ["uvx", "blender-mcp"],
  *       "environment": { "BLENDER_HOST": "localhost", "BLENDER_PORT": "9876" }
+ *     },
+ *     "parallel-search": {
+ *       "type": "remote",
+ *       "url": "https://search.parallel.ai/mcp",
+ *       "headers": { "Authorization": "Bearer <token>" }
  *     }
  *   }
  * }
+ *
+ * type 语义：
+ *   - local / stdio（默认）：用 command 启动子进程，走 stdio 传输
+ *   - remote / http / sse 等：用 url 走远程传输（先试 Streamable HTTP，
+ *     失败后回退旧版 HTTP+SSE）；headers 作为附加请求头（如鉴权）
+ * 若未写 type 但给了 url，同样按远程处理。
  *
  * 启用状态分两层，与项目其它配置（webSearch / model）保持一致：
  *
@@ -179,8 +190,8 @@ function normalizeCommand(value: unknown): string[] {
   return [];
 }
 
-/** 把任意 environment 值规范化为 string -> string 映射 */
-function normalizeEnvironment(value: unknown): Record<string, string> {
+/** 把任意 environment / headers 值规范化为 string -> string 映射 */
+function normalizeStringMap(value: unknown): Record<string, string> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   const out: Record<string, string> = {};
   for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
@@ -188,6 +199,48 @@ function normalizeEnvironment(value: unknown): Record<string, string> {
     out[key] = typeof val === 'string' ? val : String(val);
   }
   return out;
+}
+
+/** 把任意 url 值规范化为去掉首尾空白的字符串 */
+function normalizeUrl(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/** 远程传输的 type 取值集合（大小写不敏感） */
+const REMOTE_TYPES = new Set([
+  'remote',
+  'http',
+  'https',
+  'sse',
+  'http-sse',
+  'streamable',
+  'streamable-http',
+  'streamablehttp',
+]);
+
+/** 该 type 是否表示远程传输 */
+export function isRemoteType(type: string): boolean {
+  return REMOTE_TYPES.has(type.trim().toLowerCase());
+}
+
+/**
+ * 归一化传输类型。
+ * 显式写了远程 type 即为远程；未写 type 但有 url 且没有 command 时也按远程处理。
+ */
+function normalizeType(value: unknown, url: string, command: string[]): string {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (raw) return raw;
+  if (url && command.length === 0) return 'remote';
+  return 'local';
+}
+
+/**
+ * 判断某个服务器定义是否使用远程传输。
+ * 兼容 `type: "local"` + `url` 这类书写错误：只要没有 command 且有 url 就走远程。
+ */
+export function isRemoteServer(server: Pick<McpServerInfo, 'type' | 'url' | 'command'>): boolean {
+  if (isRemoteType(server.type)) return true;
+  return !!server.url && server.command.length === 0;
 }
 
 /** 判断是否为普通对象（排除 null / 数组） */
@@ -224,11 +277,15 @@ async function readMcpServerDefinitions(): Promise<Omit<McpServerInfo, 'enabled'
   const servers: Omit<McpServerInfo, 'enabled'>[] = [];
   for (const [name, value] of Object.entries(serverMap)) {
     if (!isPlainObject(value)) continue;
+    const command = normalizeCommand(value.command);
+    const url = normalizeUrl(value.url ?? value.endpoint ?? value.serverUrl);
     servers.push({
       name,
-      type: typeof value.type === 'string' && value.type ? value.type : 'local',
-      command: normalizeCommand(value.command),
-      environment: normalizeEnvironment(value.environment),
+      type: normalizeType(value.type, url, command),
+      command,
+      environment: normalizeStringMap(value.environment ?? value.env),
+      url,
+      headers: normalizeStringMap(value.headers),
     });
   }
   return servers;

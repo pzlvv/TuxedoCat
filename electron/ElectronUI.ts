@@ -14,6 +14,7 @@ import type { BrowserWindow, WebContentsView } from 'electron';
 import { app, nativeTheme, dialog, BrowserWindow as BrowserWindowCtor } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import { pathToFileURL } from 'url';
 import type { ChatViewManager } from './ChatViewManager.js';
 
 /** 项目根目录（dist-electron 的上一级，与 main.ts 的 APP_ROOT 一致） */
@@ -29,6 +30,7 @@ import { ToolHandler } from '../src/VSCodeUI/toolHandler.js';
 import { buildEditDiffHunks } from '../src/core/utils/editDiff.js';
 import { WebviewMessageHandler } from '../src/VSCodeUI/webviewMessageHandler.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
+import { isImageFile } from '../src/host/imageFiles.js';
 
 export class ElectronUI implements AssistantUI {
   private static instance: ElectronUI | undefined;
@@ -44,6 +46,8 @@ export class ElectronUI implements AssistantUI {
   private sidebarRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   /** 对话列表刷新 debounce timer：消息追加时实时刷新侧栏 + webview 对话列表 */
   private conversationListRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 侧栏对话列表变化监听（main 进程用于刷新托盘状态点） */
+  private conversationStatusListener: ((list: Array<Record<string, unknown>>) => void) | null = null;
 
   // 子模块
   private userChoiceManager: UserChoiceManager;
@@ -116,6 +120,16 @@ export class ElectronUI implements AssistantUI {
     m.setWaitingForUserProvider((sessionId) => this.userChoiceManager.hasPendingChoice(sessionId));
   }
 
+  /** 注册侧栏对话列表变化监听（main 进程据此刷新托盘状态点） */
+  setConversationStatusListener(fn: (list: Array<Record<string, unknown>>) => void): void {
+    this.conversationStatusListener = fn;
+  }
+
+  /** 指定会话是否正在等待用户选择/确认（ask user 提问或权限确认） */
+  hasPendingUserChoice(sessionId: string): boolean {
+    return this.userChoiceManager.hasPendingChoice(sessionId);
+  }
+
   setWorkspacePath(p: string | undefined): void {
     this.workspacePath = p;
     // 工作区变化后通知当前 webview 刷新当前文件上下文
@@ -156,6 +170,7 @@ export class ElectronUI implements AssistantUI {
         try {
           const list = (await this.chatViews?.getSidebarConversations()) ?? [];
           this.sendToSidebar('sidebar:conversations-updated', list);
+          this.conversationStatusListener?.(list);
         } catch (err) {
           this.log(`Failed to refresh sidebar: ${err}`);
         }
@@ -216,6 +231,11 @@ export class ElectronUI implements AssistantUI {
       sendToWebview: (message) => this.sendToRenderer(message),
 
       openFile: async (filePath, selectedLines) => {
+        // 图片用内置图片预览窗口打开，避免 Monaco 按 utf-8 读取显示乱码
+        if (isImageFile(filePath)) {
+          this.openImagePreview(filePath);
+          return;
+        }
         // Monaco 编辑器窗口打开文件并定位到行
         await this.openMonacoWindow({
           mode: 'view',
@@ -297,6 +317,30 @@ export class ElectronUI implements AssistantUI {
       getLocale: () => app.getLocale().startsWith('zh') ? 'zh' : 'en',
       log: (...args) => this.log(...args),
     };
+  }
+
+  /**
+   * 打开图片预览窗口。
+   *
+   * 直接把 file:// URL 交给 Chromium 渲染：浏览器内置的图片查看器会自动
+   * 居中、自适应缩放并支持缩放/拖动，比自建 <img> 页面更接近“默认图片预览”。
+   */
+  private openImagePreview(filePath: string): void {
+    const win = new BrowserWindowCtor({
+      width: 900,
+      height: 700,
+      title: path.basename(filePath),
+      icon: path.join(APP_ROOT, 'assets', 'logo.png'),
+      autoHideMenuBar: true,
+      backgroundColor: nativeTheme.shouldUseDarkColors ? '#1e1e1e' : '#ffffff',
+      webPreferences: { sandbox: true },
+    });
+    this.trackPreviewWindow(win);
+
+    const url = pathToFileURL(filePath).toString();
+    win.loadURL(url).catch((err) => {
+      this.log(`[ElectronUI] Failed to load image preview: ${filePath} (${err})`);
+    });
   }
 
   /**
@@ -719,6 +763,7 @@ export class ElectronUI implements AssistantUI {
       // 原生侧栏列表：磁盘历史（仅已发送消息的对话）+ loaded 标记
       const sidebarList = (await this.chatViews?.getSidebarConversations()) ?? [];
       this.sendToSidebar('sidebar:conversations-updated', sidebarList);
+      this.conversationStatusListener?.(sidebarList);
       // webview 内部列表（子对话树等）
       const { loadConversationList } = await import('../src/core/history/index.js');
       const conversations = await loadConversationList();

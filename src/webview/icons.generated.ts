@@ -1,0 +1,68 @@
+// 本文件由 scripts/gen-icons.mjs 自动生成，请勿手改。
+// 重新生成: node scripts/gen-icons.mjs
+
+/** 全部可用图标名（kebab-case），与 styles/icons.css 的 .ti-<name> 一一对应 */
+export const ICON_NAMES = [
+  'bot',
+  'check',
+  'check-square',
+  'chevron-down',
+  'chevron-right',
+  'circle',
+  'circle-dot',
+  'clock',
+  'copy',
+  'external-link',
+  'eye-off',
+  'file',
+  'file-search',
+  'file-text',
+  'help-circle',
+  'history',
+  'info',
+  'menu',
+  'plus',
+  'reply',
+  'rotate-ccw',
+  'search',
+  'send',
+  'square',
+  'terminal',
+  'wrench',
+  'x',
+  'zap',
+] as const;
+
+export type IconName = (typeof ICON_NAMES)[number];
+
+/** PascalCase（lucide 命名）-> kebab-case 的映射，供 ToolHeader 等沿用 lucide 名字的调用点使用 */
+export const ICON_ALIAS: Record<string, IconName> = {
+  Bot: 'bot',
+  Check: 'check',
+  CheckSquare: 'check-square',
+  ChevronDown: 'chevron-down',
+  ChevronRight: 'chevron-right',
+  Circle: 'circle',
+  CircleDot: 'circle-dot',
+  Clock: 'clock',
+  Copy: 'copy',
+  ExternalLink: 'external-link',
+  EyeOff: 'eye-off',
+  File: 'file',
+  FileSearch: 'file-search',
+  FileText: 'file-text',
+  HelpCircle: 'help-circle',
+  History: 'history',
+  Info: 'info',
+  Menu: 'menu',
+  Plus: 'plus',
+  Reply: 'reply',
+  RotateCcw: 'rotate-ccw',
+  Search: 'search',
+  Send: 'send',
+  Square: 'square',
+  Terminal: 'terminal',
+  Wrench: 'wrench',
+  X: 'x',
+  Zap: 'zap',
+};

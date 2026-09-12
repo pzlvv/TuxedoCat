@@ -3,6 +3,7 @@
  *
  * 限制：
  * 1. maxSizeBytes (256KB) - 读取前通过 stat 检查文件大小（仅未传 limit 的整文件读取）
+ *    - xlsx / doc / 图片文件跳过此检查；图片另有 15MB 上限
  * 2. maxLines (2000) / maxLineLength (2000) / maxOutputBytes (50KB)
  *    - 读取后构建有界窗口，传了 offset/limit 也生效
  */
@@ -29,6 +30,19 @@ const XLSX_MAX_LINES = 50;
 
 /** 支持的文档文件扩展名（通过 pandoc 转为 md） */
 const DOC_EXTENSIONS = ['.doc', '.docx', '.ppt', '.pptx'];
+
+/** 支持的图片扩展名 -> MIME 类型（图片以 base64 返回，不受文本大小限制） */
+const IMAGE_MEDIA_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+};
+
+/** 图片文件的最大字节数（15MB） */
+const MAX_IMAGE_SIZE_BYTES = 15 * 1024 * 1024;
 
 /** Read 窗口限制 */
 interface ReadWindowCaps {
@@ -422,10 +436,12 @@ export const ReadTool = buildTool({
     const fileExt = path.extname(fullPath).toLowerCase();
     const isXlsx = fileExt === '.xlsx' || fileExt === '.xlsm';
     const isDocFile = DOC_EXTENSIONS.includes(fileExt);
+    const isImage = fileExt in IMAGE_MEDIA_TYPES;
 
     // ---- 第 1 层：文件大小预检查（读取前） ----
-    // 只有读取整个文本文件（未提供 limit）时才检查文件大小。xlsx 和 doc 文件跳过此检查。
-    if (limit === undefined && !isXlsx && !isDocFile) {
+    // 只有读取整个文本文件（未提供 limit）时才检查文件大小。
+    // xlsx / doc / 图片文件跳过此检查（图片有自己的 15MB 上限）。
+    if (limit === undefined && !isXlsx && !isDocFile && !isImage) {
       try {
         const stats = statSync(fullPath);
         if (stats.size > maxSizeBytes) {
@@ -477,19 +493,11 @@ export const ReadTool = buildTool({
     const isBinary = await checkBinary(fullPath);
     if (isBinary) {
       const ext = path.extname(fullPath).toLowerCase();
-      const imageMediaTypes: Record<string, string> = {
-        '.png': 'image/png',
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.gif': 'image/gif',
-        '.webp': 'image/webp',
-        '.bmp': 'image/bmp',
-      };
-      const mediaType = imageMediaTypes[ext];
+      const mediaType = IMAGE_MEDIA_TYPES[ext];
       if (mediaType) {
         // 图片文件直接以 base64 形式返回，由上层构造成 image content block 发给 LLM
         const imageStat = statSync(fullPath);
-        if (imageStat.size > 15 * 1024 * 1024) {
+        if (imageStat.size > MAX_IMAGE_SIZE_BYTES) {
           throw new Error(`Image file too large to read: ${filePath} (${imageStat.size} bytes, max 15MB)`);
         }
         const imageBuffer = await fs.readFile(fullPath);

@@ -1,5 +1,5 @@
 import React from 'react';
-import { File } from 'lucide-react';
+import { Icon } from '../Icon';
 import { ToolCallProps } from './Types';
 import { ToolHeader } from './ToolHeader';
 import { postMessage } from '../webviewEnv';
@@ -35,7 +35,7 @@ export const ReadFile: React.FC<ToolCallProps> = ({ args, colors }) => {
           color: colors.textPrimary,
         }}
       >
-        <File size={12} />
+        <Icon name="file" size={12} />
         <span style={{ fontWeight: 600, color: colors.textPrimary }}>Read</span>
         <span style={{ opacity: 0.5 }}>{t('tool.readFile.unknownFile')}</span>
       </div>

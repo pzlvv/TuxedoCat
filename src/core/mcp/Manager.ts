@@ -15,8 +15,9 @@
  * 所有 acquire / release / sync / prune 串行执行，避免并发造成进程重复启动或状态错乱。
  */
 
-import { readMcpServers } from './Config.js';
-import { McpStdioClient, type McpCallResult } from './Client.js';
+import { isRemoteServer, readMcpServers } from './Config.js';
+import { McpStdioClient, type McpCallResult, type McpClient } from './Client.js';
+import { McpHttpClient } from './HttpClient.js';
 import { buildMcpToolName, createMcpTool } from './McpTool.js';
 import type { Tool } from '../tools/Tool.js';
 import type { McpServerInfo } from '../webviewTypes.js';
@@ -37,13 +38,19 @@ const RECLAIM_GRACE_MS = 1500;
 /** 单个 MCP server 的运行时条目 */
 interface McpServerRuntime {
   name: string;
-  client: McpStdioClient | null;
+  client: McpClient | null;
   /** 引用该服务器的会话 ID 集合（替代计数器，天然幂等） */
   refs: Set<string>;
-  /** 期望的启动命令（来自最近一次同步） */
+  /** 是否使用远程（HTTP/SSE）传输 */
+  remote: boolean;
+  /** 期望的启动命令（来自最近一次同步；远程传输为空） */
   command: string[];
-  /** 期望的环境变量（来自最近一次同步） */
+  /** 期望的环境变量（来自最近一次同步；远程传输为空） */
   environment: Record<string, string>;
+  /** 期望的远程端点（来自最近一次同步；本地传输为空） */
+  url: string;
+  /** 期望的远程请求头（来自最近一次同步；本地传输为空） */
+  headers: Record<string, string>;
   /** 期望的配置签名 */
   desiredSignature: string;
   /** 当前 client 实际对应的配置签名；空串表示尚未成功启动 */
@@ -55,13 +62,24 @@ interface McpServerRuntime {
   error: string | null;
 }
 
-/** 把 command + environment 归一化为可比较的配置签名 */
-function buildSignature(command: string[], environment: Record<string, string>): string {
-  const envPart = Object.keys(environment)
+/** 把 string -> string 映射归一化为可比较的片段（key 排序，避免顺序影响签名） */
+function mapSignature(map: Record<string, string>): string {
+  return Object.keys(map)
     .sort()
-    .map((key) => `${key}=${environment[key]}`)
+    .map((key) => `${key}=${map[key]}`)
     .join('\u0001');
-  return `${command.join('\u0001')}\u0002${envPart}`;
+}
+
+/** 把传输类型 + 命令 / 环境 / url / 请求头归一化为可比较的配置签名 */
+function buildSignature(
+  remote: boolean,
+  command: string[],
+  environment: Record<string, string>,
+  url: string,
+  headers: Record<string, string>,
+): string {
+  const transport = remote ? `remote\u0003${url}\u0003${mapSignature(headers)}` : 'local';
+  return `${transport}\u0002${command.join('\u0001')}\u0002${mapSignature(environment)}`;
 }
 
 class McpManager {
@@ -243,7 +261,8 @@ class McpManager {
 
   /** 给某会话增加对某个 server 的引用，并更新期望配置 */
   private attachRef(name: string, sessionId: string, info: McpServerInfo): void {
-    const signature = buildSignature(info.command, info.environment);
+    const remote = isRemoteServer(info);
+    const signature = buildSignature(remote, info.command, info.environment, info.url, info.headers);
     let runtime = this.servers.get(name);
 
     if (!runtime) {
@@ -251,8 +270,11 @@ class McpManager {
         name,
         client: null,
         refs: new Set<string>(),
+        remote,
         command: info.command,
         environment: info.environment,
+        url: info.url,
+        headers: info.headers,
         desiredSignature: signature,
         activeSignature: '',
         starting: null,
@@ -261,8 +283,11 @@ class McpManager {
       };
       this.servers.set(name, runtime);
     } else {
+      runtime.remote = remote;
       runtime.command = info.command;
       runtime.environment = info.environment;
+      runtime.url = info.url;
+      runtime.headers = info.headers;
       runtime.desiredSignature = signature;
     }
 
@@ -352,15 +377,22 @@ class McpManager {
       runtime.client = null;
     }
     runtime.activeSignature = '';
+    // 新一轮启动开始：清掉上一次的失败信息，让 UI 显示「连接中」而不是旧的「连接失败」
+    runtime.error = null;
 
     // 记录本次启动实际使用的配置签名：启动期间 desiredSignature 可能被后续同步改写，
     // 若直接读 runtime.desiredSignature 会把「用旧配置启动的进程」误标为新配置。
     const startSignature = runtime.desiredSignature;
 
-    const client = new McpStdioClient(runtime.name, runtime.command, runtime.environment);
-    // 进程意外退出时保留引用集合，等待下次 ensureStarted / callTool 重启
-    client.onExit = () => {
-      logger.info('McpManager', `MCP "${runtime.name}" 进程已退出，保留 ${runtime.refs.size} 个引用`);
+    const client: McpClient = runtime.remote
+      ? new McpHttpClient(runtime.name, runtime.url, runtime.headers)
+      : new McpStdioClient(runtime.name, runtime.command, runtime.environment);
+    // 连接意外断开时保留引用集合，等待下次 ensureStarted / callTool 重启
+    client.onExit = (reason) => {
+      logger.info(
+        'McpManager',
+        `MCP "${runtime.name}" 连接已断开${reason ? `（${reason}）` : ''}，保留 ${runtime.refs.size} 个引用`,
+      );
     };
     runtime.client = client;
 

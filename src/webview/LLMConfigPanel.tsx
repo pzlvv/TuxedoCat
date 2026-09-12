@@ -619,7 +619,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     }
     if (isElectron) {
       const normalizedShortcut = normalizeAccelerator(shortcut);
-      // 快捷键始终随保存写入，保证 settings.json 中一定有记录（默认 Win+Shift+Z）
+      // 快捷键始终随保存写入，保证 settings.json 中一定有记录（默认 Ctrl+Alt+X）
       if (normalizedShortcut) {
         presetPayload.shortcut = normalizedShortcut;
       }

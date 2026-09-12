@@ -12,6 +12,7 @@ import type { LLMConfig } from './llm/config.js';
 import type { PromptPresetId } from './prompt/PromptPreset.js';
 import { getAllTools } from './tools/index.js';
 import { logger } from './Logger.js';
+import { noteSessionActivity } from './sessionIdle.js';
 
 /**
  * 创建简单的 AbortController polyfill
@@ -442,6 +443,7 @@ export class QueryEngine {
 
     if (!this.isConsumerRunning) {
       this.isConsumerRunning = true;
+      noteSessionActivity(this.sesssionID);
       this.config.ui?.onQueryBegin(this.sesssionID);
       this.startBackgroundConsumer();
     }
@@ -798,6 +800,7 @@ export class QueryEngine {
     }
 
     this.isConsumerRunning = true;
+    noteSessionActivity(this.sesssionID);
     if (manageQueryUI) {
       this.config.ui?.onQueryBegin(this.sesssionID);
     }
@@ -924,6 +927,8 @@ export class QueryEngine {
    * 必须与 isConsumerRunning=false 配对调用。
    */
   private signalConsumerExited(): void {
+    // 会话从「非空闲」回到「空闲」：从这里开始重新计算空闲关闭计时
+    noteSessionActivity(this.sesssionID);
     const resolvers = this.consumerExitResolvers;
     this.consumerExitResolvers = [];
     for (const r of resolvers) {
@@ -1211,6 +1216,15 @@ export class QueryEngine {
 
     // 1. 丢弃已排队但未消费的后台任务完成通知
     this.discardBackgroundTaskNotifications();
+    // 1.5 丢弃尚未被消费的排队用户消息：abort 后不应再把它发给 LLM。
+    //     该消息仍记录在 webview 的 queuedMessageRef 中，会在 queryEnd 时
+    //     回填到输入框（与用户当前草稿用 \n 连接），由用户决定是否重发。
+    //     仅处理排队消息（_needsUINotification），普通消息已进入 mutableMessages 且已回显。
+    if (this.pendingUserMessage !== null && (this.pendingUserMsgData as any)?._needsUINotification) {
+      this.pendingUserMessage = null;
+      this.pendingUserMsgData = null;
+      this.pendingUserMsgUuid = null;
+    }
     // 2. 中止本会话的后台 Bash 任务
     this.abortBackgroundTasksForCurrentSession();
 

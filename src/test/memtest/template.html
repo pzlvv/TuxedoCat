@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>MessagesView Memory Test</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #1a1a1f; }
+  #root { height: 100vh; display: flex; flex-direction: column; }
+  .messages-container { width: 100%; }
+  code, pre { font-family: Consolas, Monaco, "Courier New", monospace; }
+  /* MEMTEST: 轻量时间线样式（原生 ol/li + 伪元素） */
+  .ct-list { list-style: none; margin: 8px 0 0; padding: 0; }
+  .ct-item { position: relative; min-height: 36px; padding-bottom: 12px; padding-left: 22px; }
+  .ct-item:last-child { padding-bottom: 0; }
+  .ct-item::after {
+    content: ''; position: absolute; left: 4px; top: 0; bottom: 0;
+    width: 2px; background: var(--timeline-rail-color, #52525b);
+  }
+  .ct-item:first-child::after { top: 11px; }
+  .ct-item:last-child::after { bottom: auto; height: 11px; }
+  .ct-item:first-child:last-child::after { display: none; }
+  .ct-item::before {
+    content: ''; position: absolute; left: 0; top: 6px;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--ct-dot-color, #888); z-index: 1;
+  }
+  .ct-dot-running::before {
+    background: conic-gradient(
+      var(--timeline-running-color, #eab308) 0deg 60deg,
+      var(--timeline-running-shade, #a16207) 60deg 120deg,
+      var(--timeline-running-color, #eab308) 120deg 180deg,
+      var(--timeline-running-shade, #a16207) 180deg 240deg,
+      var(--timeline-running-color, #eab07) 240deg 300deg,
+      var(--timeline-running-shade, #a16207) 300deg 360deg);
+    animation: timelineRunningSpin 1s linear infinite;
+  }
+  .markdown-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+</style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.17.0/dist/katex.min.css">
+<!-- 真实构建产物 CSS（保证布局与线上一致） -->
+<link rel="stylesheet" href="./real-antd.css">
+<link rel="stylesheet" href="./real-markdown.css">
+<link rel="stylesheet" href="./real-index.css">
+</head>
+<body>
+<div id="root"></div>
+<script>
+  // ── 模拟宿主注入（VS Code extension.ts / Electron preload.ts 的等价注入）──
+  // ?langs=php,ruby 模拟 settings.json 中已记录的 highlightLanguages
+  (function () {
+    var params = new URLSearchParams(location.search);
+    var langs = (params.get('langs') || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    window.__highlightLanguages = langs;
+    window.__injectedLangs = langs;
+
+    // 模拟宿主 API：收集 webview 上报的"按需加载语言"
+    window.__reportedLangs = [];
+    window.vscode = {
+      postMessage: function (msg) {
+        if (msg && msg.type === 'recordHighlightLanguage' && msg.language) {
+          window.__reportedLangs.push(msg.language);
+        }
+      },
+    };
+  })();
+</script>
+<script src="./web.js"></script>
+</body>
+</html>

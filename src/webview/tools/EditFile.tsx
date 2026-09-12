@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { ChevronRight, ChevronDown, RotateCcw } from 'lucide-react';
+import { Icon } from '../Icon';
 import { ToolCallProps } from './Types';
 import { type Highlighter } from 'shiki';
-import { getHighlighter, getHighlighterSync } from './highlighter';
+import { getHighlighter, getHighlighterSync, ensureLanguage, isLanguageReady } from './highlighter';
 import { ToolHeader } from './ToolHeader';
 import { postMessage, getWindowSessionId } from '../webviewEnv';
 import { t } from '../i18n';
 import { profileLog } from '../debug';
 import { buildEditDiffHunks, type DiffHunk, type DiffLine } from '../../core/utils/editDiff';
+import { usePreviewLimit, PreviewMoreHint, PREVIEW_BOX_HEIGHT, PREVIEW_LINE_HEIGHT } from './previewLimit';
 
 // VS Code 扩展模式下由 vscode 注入 --vscode-diffEditor-* CSS 变量；
 // Electron App 模式下这些变量不存在，背景色会解析为空（透明），
@@ -23,7 +24,30 @@ function normalizeLineEndings(content: string): string {
   return content.replaceAll('\r\n', '\n');
 }
 
-export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCallId, onExpandToggle, onBeforePreviewRender }) => {
+/** 仅转义尖括号，与改动前的行为一致（保持渲染结果逐像素不变）。 */
+function escapeLineText(s: string): string {
+  return s.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * 把 Shiki 输出的内联样式字符串（如 `color:#6A737D;font-weight:bold`）
+ * 解析成 React 的 style 对象，用于把「整行只有一个 token」的样式
+ * 直接提到行元素上、省掉那层 span。
+ */
+function parseInlineStyle(s: string): React.CSSProperties {
+  const out: Record<string, string> = {};
+  for (const decl of s.split(';')) {
+    const i = decl.indexOf(':');
+    if (i <= 0) continue;
+    const key = decl.slice(0, i).trim();
+    const value = decl.slice(i + 1).trim();
+    if (!key || !value) continue;
+    out[key.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())] = value;
+  }
+  return out as React.CSSProperties;
+}
+
+export const EditFile: React.FC<ToolCallProps> = ({ args, colors, status, isDark, toolCallId, onExpandToggle, onBeforePreviewRender }) => {
   const filePath = args?.file_path;
   const needsMeta = args?._needsMeta === true;
   const toolUseId = args?._toolUseId as string | undefined;
@@ -102,6 +126,8 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCa
   // 共享单例 highlighter 用 state 持有：加载完成后触发一次重渲染，
   // 让 diff 重新走语法高亮（用 ref 的话加载完不会重渲染，diff 永远不高亮）。
   const [highlighter, setHighlighter] = useState<Highlighter | null>(() => getHighlighterSync());
+  // 语言语法按需加载完成后 +1，用于触发 diff 重新高亮
+  const [highlightVersion, setHighlightVersion] = useState(0);
   useEffect(() => {
     if (getHighlighterSync()) return; // already loaded
     let mounted = true;
@@ -171,6 +197,52 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCa
     });
   }, [loadedDiffHunks, beforeContent, afterContent, args?.startLine, args?.endLine, args?.replace_all]);
 
+  // ─── 预览按需渲染 + 折行感知限高 ──────────────────────────────────
+  // 这里有**两个互相独立**的「展开」，不要混为一谈：
+  //   ① 工具行右侧的箭头（上面的 isExpanded）—— 控制整个 diff 预览块的显隐，
+  //      收起后 diff 完全不进 DOM；
+  //   ② 点击预览框本身（usePreviewLimit 的 expand）—— 控制**行级截断**：
+  //      默认只处理前 PREVIEW_LINES 行，点击后渲染全部。
+  // 例外：手动模式下 status === 'normal' 表示正在等待用户授权，
+  // 此时必须完整展开（用户要看到全部改动才能确认），确认后自动恢复缩略。
+  //
+  // ⚠️ 长行会随 webview 宽度自动折行，一个逻辑行可能占多个视觉行。
+  // usePreviewLimit 会逐行实测真实高度、只显示放得下的整行，并在宽度变化时
+  // 重新测量，避免缩略态出现滚动条。
+  const totalDiffLines = useMemo(
+    () => diffHunks.reduce((sum, hunk) => sum + hunk.lines.length, 0),
+    [diffHunks],
+  );
+  const {
+    contentRef: diffContentRef,
+    truncated: diffTruncated,
+    hasMore: diffHasMore,
+    visibleLines: visibleDiffLines,
+    fittedLines: fittedDiffLines,
+    fittedHeight: fittedDiffHeight,
+    expanded: diffExpanded,
+    expand: expandDiff,
+    handleBoxClick: handleDiffBoxClick,
+  } = usePreviewLimit(totalDiffLines, status === 'normal', {
+    revision: diffHunks,
+    // 通知外层暂停自动滚动，避免预览变高后视口被顶走
+    onExpand: () => onExpandToggle?.(true),
+  });
+
+  // 只保留前 visibleDiffLines 行（跨 hunk 连续计数）
+  const visibleDiffHunks = useMemo(() => {
+    if (visibleDiffLines >= totalDiffLines) return diffHunks;
+    const out: DiffHunk[] = [];
+    let remaining = visibleDiffLines;
+    for (const hunk of diffHunks) {
+      if (remaining <= 0) break;
+      const lines = hunk.lines.length <= remaining ? hunk.lines : hunk.lines.slice(0, remaining);
+      out.push({ ...hunk, lines });
+      remaining -= lines.length;
+    }
+    return out;
+  }, [diffHunks, visibleDiffLines, totalDiffLines]);
+
   if (!filePath) {
     return (
       <ToolHeader icon="FileText" name="Edit" colors={colors}
@@ -193,7 +265,7 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCa
             onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.backgroundColor = 'transparent'; }}
             title={t('tool.editFile.rollback')}
           >
-            <RotateCcw size={12} />
+            <Icon name="rotate-ccw" size={12} />
           </button>
         ) : undefined}
       >
@@ -275,6 +347,67 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCa
       'pascal': 'pascal',
       'vim': 'vim',
       'txt': 'plaintext',
+      // ── 常见扩展名补全 ──
+      // 此前只列了"语言名"（haskell/perl/assembly…），而这里取的是文件扩展名，
+      // 导致 .hs / .pl / .h / .cpp / .mjs 等真实扩展名匹配不到、静默降级为纯文本。
+      // 语法高亮已改为按需加载，补全扩展名不再增加启动成本。
+      'mjs': 'javascript',
+      'cjs': 'javascript',
+      'mts': 'typescript',
+      'cts': 'typescript',
+      'pyi': 'python',
+      'pyw': 'python',
+      'h': 'c',
+      'cc': 'cpp',
+      'cxx': 'cpp',
+      'hpp': 'cpp',
+      'hxx': 'cpp',
+      'htm': 'html',
+      'markdown': 'markdown',
+      'rst': 'markdown',
+      'hs': 'haskell',
+      'lhs': 'haskell',
+      'pl': 'perl',
+      'pm': 'perl',
+      'kts': 'kotlin',
+      'gemfile': 'ruby',
+      'phtml': 'php',
+      'docker': 'dockerfile',
+      'mk': 'makefile',
+      'psm1': 'powershell',
+      'psd1': 'powershell',
+      'zsh': 'bash',
+      'fish': 'bash',
+      'asm': 'asm',
+      's': 'asm',
+      'f': 'fortran',
+      'f90': 'fortran',
+      'f95': 'fortran',
+      'pas': 'pascal',
+      'pp': 'pascal',
+      'fs': 'fsharp',
+      'fsi': 'fsharp',
+      'fsx': 'fsharp',
+      'ml': 'ocaml',
+      'mli': 'ocaml',
+      'clj': 'clojure',
+      'cljs': 'clojure',
+      'cljc': 'clojure',
+      'ex': 'elixir',
+      'exs': 'elixir',
+      'erl': 'erlang',
+      'hrl': 'erlang',
+      'jl': 'julia',
+      'gradle': 'groovy',
+      'gvy': 'groovy',
+      'jsonc': 'jsonc',
+      'ini': 'ini',
+      'cfg': 'ini',
+      'conf': 'ini',
+      'tsql': 'tsql',
+      'm': 'objective-c',
+      'mm': 'objective-c',
+      'matlab': 'matlab',
     };
 
     const ext = path.split('.').pop()?.toLowerCase();
@@ -284,40 +417,68 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCa
   const language = getLanguageFromPath(filePath);
   const theme = isDark ? 'github-dark' : 'github-light';
 
-  // 生成高亮的 HTML
-  const highlightLine = (line: string, wordDiff?: Array<{ text: string; type: 'unchanged' | 'removed' | 'added' }>): string => {
+  // 语言语法按需加载：当前语言尚未加载时异步加载，完成后 bump highlightVersion
+  // 触发 diff 重新高亮（在此之前 diff 以纯文本渲染，不做语法着色）。
+  useEffect(() => {
+    if (!highlighter || isLanguageReady(language)) return;
+    let mounted = true;
+    ensureLanguage(language).then(() => {
+      if (mounted) setHighlightVersion((v) => v + 1);
+    });
+    return () => { mounted = false; };
+  }, [highlighter, language]);
+
+  // 生成高亮的 HTML。
+  // style 非空表示「整行只有一个 token」，它的内联样式可以直接提到行元素上，
+  // 于是每行省掉一个 <span>（实测 7394 行里 3568 行属于这种）。
+  const highlightLine = (
+    line: string,
+    wordDiff?: Array<{ text: string; type: 'unchanged' | 'removed' | 'added' }>,
+  ): { html: string; style: React.CSSProperties | null } => {
     const hl = highlighter;
     if (!hl) {
-      return line.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return { html: escapeLineText(line), style: null };
     }
 
     try {
       if (wordDiff) {
-        // 有单词级差异时，手动渲染
-        return wordDiff.map((word) => {
+        // 单词级差异：只有 removed/added 段需要背景色。
+        // unchanged 段原本也包了一层 background-color:transparent 的 span，
+        // 它没有任何视觉效果（transparent 上的 border-radius 不可见），
+        // 直接输出纯文本即可（实测省 2622 个节点）。
+        const html = wordDiff.map((word) => {
+          const escapedText = escapeLineText(word.text);
+          if (word.type === 'unchanged') return escapedText;
           const bgColor =
             word.type === 'removed'
               ? `var(--vscode-diffEditor-removedTextBackground, ${DIFF_COLORS.removedText})`
-              : word.type === 'added'
-              ? `var(--vscode-diffEditor-insertedTextBackground, ${DIFF_COLORS.insertedText})`
-              : 'transparent';
-
-          const escapedText = word.text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+              : `var(--vscode-diffEditor-insertedTextBackground, ${DIFF_COLORS.insertedText})`;
           return `<span style="background-color: ${bgColor}; border-radius: 2px;">${escapedText}</span>`;
         }).join('');
-      } else {
-        // 没有单词级差异，使用 shiki 高亮
-        const html = hl.codeToHtml(line, {
-          lang: language,
-          theme: theme,
-        });
-        // shiki 返回 <pre><code>...</code></pre>，我们需要提取内容
-        const match = html.match(/<code[^>]*>([\s\S]*?)<\/code>/);
-        return match ? match[1] : line.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return { html, style: null };
       }
+
+      // 没有单词级差异，使用 shiki 高亮。
+      // structure:'inline' 只输出 token 的 <span>，不再套一层 <span class="line">。
+      // 每行本来就是一个独立的 <pre>，这层 wrapper 是纯冗余：它没有内联样式，
+      // 去掉后渲染结果完全一致，但每行少 1 个节点。
+      const html = hl.codeToHtml(line, {
+        lang: language,
+        theme: theme,
+        structure: 'inline',
+      });
+      // 整行只有一个 token 时，把它的内联样式（color / font-weight / …）
+      // 提到行元素上，省掉这层 span。
+      // 用「内层不含 <span」来排除多 token 行——贪婪匹配会把中间的 </span><span>
+      // 一并吞进来；而源码里的 `<` 已被 Shiki 转义成 &lt;，不会误判。
+      const single = /^<span style="([^"]*)">([\s\S]*)<\/span>$/.exec(html);
+      if (single && !single[2].includes('<span')) {
+        return { html: single[2], style: parseInlineStyle(single[1]) };
+      }
+      return { html, style: null };
     } catch (error) {
       console.error('[EditFile] Highlight error:', error);
-      return line.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return { html: escapeLineText(line), style: null };
     }
   };
 
@@ -342,22 +503,27 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCa
   const diffRender = useMemo(() => {
     if (!isExpanded || diffHunks.length === 0) return null;
     const _t0 = performance.now();
-    const rendered = diffHunks.map((hunk, hunkIndex) => ({
-      key: hunkIndex,
-      lines: hunk.lines.map((line, lineIndex) => ({
-        key: lineIndex,
-        bg: getBackgroundColor(line.type),
-        html: highlightLine(line.content, line.wordDiff),
-      })),
-    }));
+    // 扁平化：hunk 之间不再需要包裹层，key 用 "hunkIndex-lineIndex" 保证唯一。
+    const rendered: Array<{ key: string; bg: string; html: string; style: React.CSSProperties | null }> = [];
+    visibleDiffHunks.forEach((hunk, hunkIndex) => {
+      hunk.lines.forEach((line, lineIndex) => {
+        const hl = highlightLine(line.content, line.wordDiff);
+        rendered.push({
+          key: `${hunkIndex}-${lineIndex}`,
+          bg: getBackgroundColor(line.type),
+          html: hl.html,
+          style: hl.style,
+        });
+      });
+    });
     const _t1 = performance.now();
     const elapsed = _t1 - _t0;
     if (elapsed > 10) {
-      const lineCount = diffHunks.reduce((s, h) => s + h.lines.length, 0);
-      profileLog(`[Profile] EditFile diff高亮 | 耗时=${elapsed.toFixed(2)}ms | 行数=${lineCount} | file=${filePath}`);
+      const lineCount = visibleDiffHunks.reduce((s, h) => s + h.lines.length, 0);
+      profileLog(`[Profile] EditFile diff高亮 | 耗时=${elapsed.toFixed(2)}ms | 行数=${lineCount}/${totalDiffLines} | file=${filePath}`);
     }
     return rendered;
-  }, [isExpanded, diffHunks, highlighter, language, theme, colors]);
+  }, [isExpanded, visibleDiffHunks, totalDiffLines, diffHunks.length, highlighter, highlightVersion, language, theme, colors]);
 
   return (
     <div className="w-full">
@@ -380,7 +546,7 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCa
             onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.5'; }}
             title={t('tool.editFile.rollbackHere')}
           >
-            <RotateCcw size={13} />
+            <Icon name="rotate-ccw" size={13} />
           </button>
         ) : undefined}
       >
@@ -414,7 +580,7 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCa
             }}
             title={isExpanded ? t('tool.editFile.collapseDiff') : t('tool.editFile.expandDiff')}
           >
-            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            {isExpanded ? <Icon name="chevron-down" size={14} /> : <Icon name="chevron-right" size={14} />}
           </button>
         )}
       </ToolHeader>
@@ -535,45 +701,69 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, isDark, toolCa
       )}
 
       {diffRender && (
-        <div
-          className="mt-2 code-preview"
-          style={{
-            maxHeight: '300px',
-            overflow: 'auto',
-            backgroundColor: 'transparent',
-            border: '1px solid',
-            borderColor: colors.textSystem,
-            borderRadius: '4px',
-          }}
-        >
-          {diffRender.map((hunk) => (
-            <div key={hunk.key}>
-              {hunk.lines.map((line) => (
-                <div
+        <>
+          <div
+            className="mt-2 code-preview"
+            onClick={handleDiffBoxClick}
+            title={diffTruncated ? t('tool.preview.clickToShowAll') : undefined}
+            style={{
+              maxHeight: PREVIEW_BOX_HEIGHT,
+              // 缩略态高度 = 实测放得下的整行高度（折行感知）；展开态固定为
+              // PREVIEW_BOX_HEIGHT 并在内部滚动。缩略态用真实高度限高，
+              // 因此无论行怎么折都不会溢出、也就不会出现滚动条。
+              height: diffHasMore
+                ? (diffExpanded ? PREVIEW_BOX_HEIGHT : fittedDiffHeight + 2)
+                : undefined,
+              // 缩略态裁掉多余内容（不滚动）；展开态才允许滚动。
+              overflow: diffExpanded ? 'auto' : 'hidden',
+              backgroundColor: 'transparent',
+              border: '1px solid',
+              borderColor: colors.textSystem,
+              // 底部提示条在缩略/展开两态都保留，因此底角始终是直角
+              borderRadius: diffHasMore ? '4px 4px 0 0' : '4px',
+              cursor: diffTruncated ? 'pointer' : undefined,
+            }}
+          >
+            <div ref={diffContentRef}>
+              {diffRender.map((line) => (
+                <pre
                   key={line.key}
                   style={{
+                    margin: 0,
+                    // padding 留在行元素上（而不是外层滚动框），
+                    // 这样差异背景色依然铺满整行宽度。
+                    // 左侧多留一点空隙，代码不贴着预览框左边框。
+                    padding: '0 8px 0 12px',
+                    // 空行没有行盒，用 minHeight 保证它仍占一行高度
+                    minHeight: PREVIEW_LINE_HEIGHT,
+                    fontSize: '12px',
+                    lineHeight: `${PREVIEW_LINE_HEIGHT}px`,
+                    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+                    color: colors.textPrimary,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
                     backgroundColor: line.bg,
+                    // 单 token 行的颜色/字重直接作用在行元素上（放在最后，
+                    // 以便覆盖上面的 color: colors.textPrimary）
+                    ...(line.style || {}),
                   }}
-                >
-                  <pre
-                    style={{
-                      margin: 0,
-                      padding: '0 8px',
-                      fontSize: '12px',
-                      fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-                      color: colors.textPrimary,
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
-                    }}
-                    dangerouslySetInnerHTML={{
-                      __html: line.html,
-                    }}
-                  />
-                </div>
+                  dangerouslySetInnerHTML={{
+                    __html: line.html,
+                  }}
+                />
               ))}
             </div>
-          ))}
-        </div>
+          </div>
+          {diffHasMore && (
+            <PreviewMoreHint
+              shown={fittedDiffLines}
+              total={totalDiffLines}
+              expanded={diffExpanded}
+              colors={colors}
+              onClick={expandDiff}
+            />
+          )}
+        </>
       )}
     </div>
   );

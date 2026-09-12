@@ -103,7 +103,7 @@ export interface LLMConfigPanelPayload {
   apiKey: string;
   providers: LLMProviderInfo[];
   activeProvider: string;
-  /** Electron 端唤醒快捷键（accelerator 形式，如 Super+Shift+Z） */
+  /** Electron 端唤醒快捷键（accelerator 形式，如 Ctrl+Alt+X） */
   shortcut: string;
 }
 

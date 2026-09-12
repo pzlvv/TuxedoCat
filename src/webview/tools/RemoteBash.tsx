@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { Copy, File, ExternalLink } from 'lucide-react';
+import { Icon } from '../Icon';
 import { ToolCallProps } from './Types';
 import { ToolHeader } from './ToolHeader';
 import { postMessage } from '../webviewEnv';
@@ -177,7 +177,7 @@ export const RemoteBash: React.FC<ToolCallProps> = ({ args, output, colors, tool
               }}
               title={t('tool.bash.openFullOutputFile')}
             >
-              <File size={10} />
+              <Icon name="file" size={10} />
               {t('tool.bash.fullOutput', { size: sizeStr })}
             </button>
           </div>
@@ -266,7 +266,7 @@ export const RemoteBash: React.FC<ToolCallProps> = ({ args, output, colors, tool
         )}
         {output.length > 5000 && (
           <div className="flex items-center gap-1 mt-1.5 text-[10px]" style={{ color: colors.textSystem, opacity: 0.6 }}>
-            <ExternalLink size={9} />
+            <Icon name="external-link" size={9} />
             {t('tool.bash.clickFullOutputSize', { size: formatSize(output.length) })}
           </div>
         )}
@@ -335,7 +335,7 @@ export const RemoteBash: React.FC<ToolCallProps> = ({ args, output, colors, tool
             style={{ backgroundColor: 'transparent' }}
             title={t('tool.bash.copyCommand')}
           >
-            <Copy size={12} style={{ color: colors.textSystem }} />
+            <Icon name="copy" size={12} style={{ color: colors.textSystem }} />
           </button>
         </div>
 

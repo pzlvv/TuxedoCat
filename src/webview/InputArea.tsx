@@ -1,5 +1,5 @@
 import React, { useState, useCallback, memo, forwardRef, useImperativeHandle, useRef, useMemo, useEffect, useLayoutEffect } from 'react';
-import { Send, Square, File, EyeOff, Clock, Menu } from 'lucide-react';
+import { Icon } from './Icon';
 import TextareaAutosize from 'react-textarea-autosize';
 import { ConfigProvider, Dropdown } from 'antd';
 import type { Colors, QueuedMessagePayload, ThinkingMode, PromptMode } from './types';
@@ -88,6 +88,8 @@ interface InputAreaProps {
   mcpServers?: McpServerInfo[];
   /** 勾选/取消某个 MCP */
   onMcpToggle?: (name: string, enabled: boolean) => void;
+  /** 当前会话是否有 MCP 正在连接中；为 true 时禁用发送按钮 */
+  mcpConnecting?: boolean;
 }
 
 /**
@@ -133,7 +135,10 @@ const ContextProgressBar = React.memo(({ totalContextTokens, isDark, maxContextT
   return (
     <span
       className="flex flex-col gap-0 text-[11px] whitespace-nowrap"
-      style={{ color: colors.textSystem, width: '56px', flexShrink: 0 }}
+      // 宽度取「文本宽度」与「进度条宽度」的较大值（max-content），
+      // 这样上方文本过长时不会越过右侧的分割线和命中率信息；
+      // 分割线、命中率信息的位置都同时受文本与进度条两者约束。
+      style={{ color: colors.textSystem, width: 'max-content', minWidth: '48px', flexShrink: 0 }}
       title={t('inputArea.clickToCompact')}
     >
       <button
@@ -715,9 +720,13 @@ const ToggleMenu = memo(({
             : server.running
               ? t('inputArea.mcpToolCount', { count: String(server.toolCount ?? 0) })
               : t('inputArea.mcpConnecting');
+        // 本地显示启动命令，远程显示端点地址，都没有时退回传输类型
+        const target = server.command.length > 0
+          ? server.command.join(' ')
+          : (server.url || server.type);
         const tooltip = server.error
           ? `${server.name}: ${server.error}`
-          : (server.command.length > 0 ? server.command.join(' ') : server.type);
+          : target;
 
         return {
           key: `mcp:${server.name}`,
@@ -1044,7 +1053,7 @@ const ToggleMenu = memo(({
         }}
         title={t('inputArea.toggleMenu')}
       >
-        <Menu size={14} />
+        <Icon name="menu" size={14} />
       </button>
     </Dropdown>
     {/* 隐藏测量层，必须始终挂载（不能放进 dropdownRender，否则菜单未展开时量不到）：
@@ -1197,6 +1206,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   isSubAgent,
   mcpServers,
   onMcpToggle,
+  mcpConnecting,
 }, ref) {
   const [input, setInput] = useState('');
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
@@ -1377,12 +1387,13 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
       return;
     }
 
-    // Normal Enter to send
+    // Normal Enter to send（MCP 连接中时禁用发送）
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      if (mcpConnecting) return;
       onSend();
     }
-  }, [showSlash, filteredSkills, slashIndex, commitSlash, onSend, commandHistory, input, savedInput]);
+  }, [showSlash, filteredSkills, slashIndex, commitSlash, onSend, commandHistory, input, savedInput, mcpConnecting]);
 
   // 记录主输入框当前是否聚焦 + 最后一次获得焦点的时间戳，
   // 用于在 blur 的延迟回调中判断是否存在更晚的 focus 事件
@@ -1486,6 +1497,9 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   }, [setModel]);
 
   const hasContent = input.trim().length > 0 || pastedImages.length > 0;
+  // MCP 连接中：禁止发送，但用旋转动画代替置灰，提示「正在连接」
+  const mcpBusy = !!mcpConnecting;
+  const sendDisabled = !hasContent || isInputDisabled || mcpBusy;
 
   return (
     <div
@@ -1530,7 +1544,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             color: colors.textSystem,
           }}
         >
-          <Clock size={14} style={{ flexShrink: 0, color: colors.harness }} />
+          <Icon name="clock" size={14} style={{ flexShrink: 0, color: colors.harness }} />
           <span className="truncate flex-1">
             <span style={{ color: colors.harness, fontWeight: 600 }}>{t('inputArea.waiting')}</span>
             {queuedMessage.content}
@@ -1686,7 +1700,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
                 onClick={onToggleFileHidden}
                 title={fileHidden ? t('inputArea.fileHiddenTitle') : t('inputArea.fileShownTitle')}
               >
-                {fileHidden ? <EyeOff size={12} /> : <File size={12} />}
+                {fileHidden ? <Icon name="eye-off" size={12} /> : <Icon name="file" size={12} />}
                 {currentFile.split(/[/\\]/).pop()}
                 {selectedLines && `:${selectedLines.start}${selectedLines.start !== selectedLines.end ? `~${selectedLines.end}` : ''}`}
               </span>
@@ -1729,18 +1743,35 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             }}
             title={t('inputArea.abort')}
           >
-            <Square size={12} className="text-white" />
+            <Icon name="square" size={12} className="text-white" />
           </button>
           <button
             onClick={onSend}
-            disabled={!hasContent || isInputDisabled}
-            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${hasContent && !isInputDisabled ? 'hover:brightness-110' : ''}`}
+            disabled={sendDisabled}
+            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${!sendDisabled ? 'hover:brightness-110' : ''}`}
             style={{
-              backgroundColor: hasContent && !isInputDisabled ? colors.harness : colors.border,
-              opacity: hasContent && !isInputDisabled ? 1 : 0.5,
+              // MCP 连接中：保持置灰的禁用样式，仅把图标换成 loading 动画
+              backgroundColor: !sendDisabled ? colors.harness : colors.border,
+              opacity: !sendDisabled ? 1 : 0.5,
             }}
+            title={mcpBusy ? t('inputArea.mcpConnecting') : undefined}
           >
-            <Send size={14} className="text-white" />
+            {mcpBusy ? (
+              <span
+                className="animate-spin"
+                style={{
+                  width: 12,
+                  height: 12,
+                  borderRadius: '50%',
+                  border: '2px solid transparent',
+                  borderTopColor: '#fff',
+                  borderRightColor: '#fff',
+                  display: 'inline-block',
+                }}
+              />
+            ) : (
+              <Icon name="send" size={14} className="text-white" />
+            )}
           </button>
         </div>
       </div>

@@ -24,16 +24,15 @@ const InlineCode = memo(function InlineCode({ children, colors }: InlineCodeProp
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    // 先以无 padding 状态测量，避免 padding 本身导致换行影响判断
-    const prevPadding = el.style.padding;
-    const prevRadius = el.style.borderRadius;
-    el.style.padding = '0';
-    el.style.borderRadius = '0';
-    const height = el.offsetHeight;
-    el.style.padding = prevPadding;
-    el.style.borderRadius = prevRadius;
-    const lineHeight = parseFloat(getComputedStyle(el).lineHeight || '16');
-    setMultiline(height > lineHeight * 1.5);
+    // 判断是否折行：行内元素换行后会产生多个行盒，getClientRects() 每个行片段
+    // 返回一个矩形，因此长度 > 1 即表示已经换行。
+    //
+    // 原实现是「写 style(padding=0) → 读 offsetHeight → 还原 style」：每次写样式都会
+    // 把布局标脏，紧接着的读又强制整棵树同步重排。一个会话里有 300+ 个行内代码，
+    // 实测 312 次 / 20ms；更严重的是这些写操作插在其它组件读取 scrollHeight 的中间，
+    // 让后续每一次读取都变成一次完整的强制重排（放大到 190ms 量级）。
+    // 这里全程只读不写，连续读取时布局保持干净，整批只触发一次重排。
+    setMultiline(el.getClientRects().length > 1);
   }, [children]);
 
   return (

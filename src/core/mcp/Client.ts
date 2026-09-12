@@ -1,7 +1,10 @@
 /**
- * MCP stdio 客户端
+ * MCP 客户端公共契约 + stdio 客户端
  *
- * 通过子进程的 stdin/stdout，以「每行一个 JSON-RPC 2.0 消息」的方式与 MCP 服务器通信。
+ * stdio 通过子进程的 stdin/stdout，以「每行一个 JSON-RPC 2.0 消息」的方式与
+ * MCP 服务器通信；远程传输（Streamable HTTP / 旧版 SSE）见 HttpClient.ts。
+ * 两者都实现 McpClient，管理器据此统一驱动。
+ *
  * 只实现本项目需要的最小能力集：
  *   - initialize / notifications/initialized 握手
  *   - tools/list（支持 nextCursor 分页）
@@ -32,13 +35,15 @@ export interface McpCallResult {
   isError: boolean;
 }
 
-interface JsonRpcError {
+/** JSON-RPC 错误体 */
+export interface JsonRpcError {
   code: number;
   message: string;
   data?: unknown;
 }
 
-interface JsonRpcMessage {
+/** 一条 JSON-RPC 2.0 消息 */
+export interface JsonRpcMessage {
   jsonrpc?: string;
   id?: number | string | null;
   method?: string;
@@ -47,10 +52,100 @@ interface JsonRpcMessage {
   error?: JsonRpcError;
 }
 
+/**
+ * MCP 客户端公共契约：stdio 与 HTTP/SSE 传输都实现它，
+ * 管理器无需关心底层传输差异。
+ */
+export interface McpClient {
+  readonly name: string;
+  /** 连接意外断开时的回调；主动 stop() 不触发 */
+  onExit: ((reason: string | null) => void) | null;
+  getTools(): McpToolDefinition[];
+  isRunning(): boolean;
+  getExitReason(): string | null;
+  isInitialized(): boolean;
+  /** 建立连接并完成 initialize 握手 + tools/list */
+  start(): Promise<void>;
+  /** 主动断开连接 */
+  stop(): void;
+  /** 调用某个工具 */
+  callTool(toolName: string, args: Record<string, unknown>): Promise<McpCallResult>;
+}
+
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
   timer: NodeJS.Timeout;
+}
+
+/** 与服务器协商的协议版本（stdio 固定使用；HTTP 以服务器返回为准） */
+export const PROTOCOL_VERSION = '2024-11-05';
+/** 握手 / 列表类请求超时 */
+export const CONTROL_TIMEOUT_MS = 30_000;
+/** tools/call 超时（工具可能耗时较长） */
+export const CALL_TIMEOUT_MS = 300_000;
+
+/** 把一条 JSON-RPC 响应解析为工具列表（含分页），供各传输复用 */
+export async function listMcpTools(
+  request: (method: string, params: unknown, timeoutMs: number) => Promise<unknown>,
+): Promise<McpToolDefinition[]> {
+  const collected: McpToolDefinition[] = [];
+  let cursor: string | undefined;
+
+  // 分页拉取，最多 50 页防御服务器返回环状 cursor
+  for (let page = 0; page < 50; page++) {
+    const result = await request('tools/list', cursor ? { cursor } : {}, CONTROL_TIMEOUT_MS);
+    const asRecord = (result ?? {}) as { tools?: unknown; nextCursor?: unknown };
+    const tools = Array.isArray(asRecord.tools) ? asRecord.tools : [];
+    for (const raw of tools) {
+      if (!raw || typeof raw !== 'object') continue;
+      const item = raw as Record<string, unknown>;
+      if (typeof item.name !== 'string' || !item.name) continue;
+      collected.push({
+        name: item.name,
+        description: typeof item.description === 'string' ? item.description : undefined,
+        inputSchema: item.inputSchema && typeof item.inputSchema === 'object'
+          ? (item.inputSchema as Record<string, unknown>)
+          : undefined,
+        annotations: item.annotations && typeof item.annotations === 'object'
+          ? (item.annotations as Record<string, unknown>)
+          : undefined,
+      });
+    }
+    const nextCursor = asRecord.nextCursor;
+    if (typeof nextCursor !== 'string' || !nextCursor) break;
+    cursor = nextCursor;
+  }
+
+  return collected;
+}
+
+/** 把 tools/call 的返回展平为文本，供各传输复用 */
+export function normalizeMcpCallResult(result: unknown): McpCallResult {
+  const asRecord = (result ?? {}) as { content?: unknown; isError?: unknown };
+  const isError = asRecord.isError === true;
+  const blocks = Array.isArray(asRecord.content) ? asRecord.content : [];
+  const parts: string[] = [];
+
+  for (const block of blocks) {
+    if (!block || typeof block !== 'object') continue;
+    const item = block as Record<string, unknown>;
+    if (item.type === 'text' && typeof item.text === 'string') {
+      parts.push(item.text);
+    } else if (item.type === 'image') {
+      parts.push(`[image ${typeof item.mimeType === 'string' ? item.mimeType : 'unknown'}]`);
+    } else if (item.type === 'resource') {
+      const resource = item.resource as Record<string, unknown> | undefined;
+      if (resource && typeof resource.text === 'string') parts.push(resource.text);
+      else parts.push(`[resource ${typeof resource?.uri === 'string' ? resource.uri : 'unknown'}]`);
+    } else {
+      parts.push(JSON.stringify(item));
+    }
+  }
+
+  // 没有标准 content 时兜底序列化整个结果，避免返回空内容触发上游 "empty content" 报错
+  const text = parts.length > 0 ? parts.join('\n') : JSON.stringify(result ?? null);
+  return { text, isError };
 }
 
 /**
@@ -65,14 +160,7 @@ function quoteWindowsArg(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
-/** 与服务器协商的协议版本 */
-const PROTOCOL_VERSION = '2024-11-05';
-/** 握手 / 列表类请求超时 */
-const CONTROL_TIMEOUT_MS = 30_000;
-/** tools/call 超时（工具可能耗时较长） */
-const CALL_TIMEOUT_MS = 300_000;
-
-export class McpStdioClient {
+export class McpStdioClient implements McpClient {
   readonly name: string;
   private readonly command: string[];
   private readonly environment: Record<string, string>;
@@ -213,7 +301,7 @@ export class McpStdioClient {
       throw new Error(`MCP server "${this.name}" 未运行${this.exitReason ? `（${this.exitReason}）` : ''}`);
     }
     const result = await this.sendRequest('tools/call', { name: toolName, arguments: args }, CALL_TIMEOUT_MS);
-    return this.normalizeCallResult(result);
+    return normalizeMcpCallResult(result);
   }
 
   // ── 内部实现 ────────────────────────────────────────────────
@@ -233,68 +321,8 @@ export class McpStdioClient {
     this.initialized = true;
   }
 
-  private async listTools(): Promise<McpToolDefinition[]> {
-    const collected: McpToolDefinition[] = [];
-    let cursor: string | undefined;
-
-    // 分页拉取，最多 50 页防御服务器返回环状 cursor
-    for (let page = 0; page < 50; page++) {
-      const result = await this.sendRequest(
-        'tools/list',
-        cursor ? { cursor } : {},
-        CONTROL_TIMEOUT_MS,
-      );
-      const asRecord = (result ?? {}) as { tools?: unknown; nextCursor?: unknown };
-      const tools = Array.isArray(asRecord.tools) ? asRecord.tools : [];
-      for (const raw of tools) {
-        if (!raw || typeof raw !== 'object') continue;
-        const item = raw as Record<string, unknown>;
-        if (typeof item.name !== 'string' || !item.name) continue;
-        collected.push({
-          name: item.name,
-          description: typeof item.description === 'string' ? item.description : undefined,
-          inputSchema: item.inputSchema && typeof item.inputSchema === 'object'
-            ? (item.inputSchema as Record<string, unknown>)
-            : undefined,
-          annotations: item.annotations && typeof item.annotations === 'object'
-            ? (item.annotations as Record<string, unknown>)
-            : undefined,
-        });
-      }
-      const nextCursor = asRecord.nextCursor;
-      if (typeof nextCursor !== 'string' || !nextCursor) break;
-      cursor = nextCursor;
-    }
-
-    return collected;
-  }
-
-  /** 把 tools/call 的返回展平为文本 */
-  private normalizeCallResult(result: unknown): McpCallResult {
-    const asRecord = (result ?? {}) as { content?: unknown; isError?: unknown };
-    const isError = asRecord.isError === true;
-    const blocks = Array.isArray(asRecord.content) ? asRecord.content : [];
-    const parts: string[] = [];
-
-    for (const block of blocks) {
-      if (!block || typeof block !== 'object') continue;
-      const item = block as Record<string, unknown>;
-      if (item.type === 'text' && typeof item.text === 'string') {
-        parts.push(item.text);
-      } else if (item.type === 'image') {
-        parts.push(`[image ${typeof item.mimeType === 'string' ? item.mimeType : 'unknown'}]`);
-      } else if (item.type === 'resource') {
-        const resource = item.resource as Record<string, unknown> | undefined;
-        if (resource && typeof resource.text === 'string') parts.push(resource.text);
-        else parts.push(`[resource ${typeof resource?.uri === 'string' ? resource.uri : 'unknown'}]`);
-      } else {
-        parts.push(JSON.stringify(item));
-      }
-    }
-
-    // 没有标准 content 时兜底序列化整个结果，避免返回空内容触发上游 "empty content" 报错
-    const text = parts.length > 0 ? parts.join('\n') : JSON.stringify(result ?? null);
-    return { text, isError };
+  private listTools(): Promise<McpToolDefinition[]> {
+    return listMcpTools((method, params, timeoutMs) => this.sendRequest(method, params, timeoutMs));
   }
 
   private sendNotification(method: string, params?: unknown): void {

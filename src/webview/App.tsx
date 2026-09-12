@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { History, Plus, X } from 'lucide-react';
+import { Icon } from './Icon';
 import 'github-markdown-css/github-markdown.css';
 import { Dropdown } from 'antd';
 import InputArea, { InputAreaRef } from './InputArea';
@@ -101,6 +101,9 @@ const App = () => {
   // 切换会话后排队消息仍归属原会话，不会被误投递到其他会话。
   const [queuedMessage, setQueuedMessage] = useState<QueuedMessagePayload | null>(null);
   const queuedMessageRef = useRef<Map<string, QueuedMessagePayload>>(new Map());
+  // 记录用户主动点击 abort 的会话。queryEnd 到达时用于判断：
+  // 若该会话仍有排队消息，则不重新发送它，而是回填到输入框由用户自行修改。
+  const abortedSessionsRef = useRef<Set<string>>(new Set());
 
   // 服务器负载警告
   const [serverLoadWarning, setServerLoadWarning] = useState<string | null>(null);
@@ -127,8 +130,10 @@ const App = () => {
   // Skills for slash-command autocomplete
   const [skills, setSkills] = useState<Array<{ name: string; description: string; isBuiltin?: boolean }>>([]);
 
-  // MCP 服务器列表（来自 mcp.json + settings.json 启用状态），供菜单勾选
+  // MCP 服务器列表（来自 mcp.json + settings.json 启用状态），供菜单勾选。
+  // 仅展示「当前会话」的列表；mcpServersBySessionRef 按会话缓存，避免异步回推串台。
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([]);
+  const mcpServersBySessionRef = useRef<Map<string, McpServerInfo[]>>(new Map());
 
   /**
    * 全局拦截外部链接点击（document capture 阶段，先于任何组件内 onClick）：
@@ -326,7 +331,7 @@ const App = () => {
     setProviderConfigured,
     messages,
     currentSessionIdRef, sessionStatesRef, userChoiceRequestRef, userChoiceInputRef,
-    agentModeReadyRef, savedMainInputRef, queuedMessageRef, cursorPositionRef, choiceCursorPositionRef,
+    agentModeReadyRef, savedMainInputRef, queuedMessageRef, abortedSessionsRef, mcpServersBySessionRef, cursorPositionRef, choiceCursorPositionRef,
     mainInputRef, choiceInputRef, messagesContainerRef, userScrolledAwayRef,
     streamRafRef, toolStatusRafRef, pendingStreamRef, pendingToolStatusRef,
     bufferedToolStatusRef, conversationLoadingRef, isDeletingRef, listLoadedOnceRef,
@@ -357,7 +362,7 @@ const App = () => {
     setShowThinkingAnimation, setExpandedSubSessions, setNamingSessions,
     currentSessionIdRef, sessionStatesRef, commandHistoryRef, cursorPositionRef,
     choiceCursorPositionRef, userChoiceRequestRef, userChoiceInputRef,
-    savedMainInputRef, queuedMessageRef, mainInputRef, choiceInputRef,
+    savedMainInputRef, queuedMessageRef, abortedSessionsRef, mainInputRef, choiceInputRef,
     isDeletingRef, listLoadedOnceRef, setCurrentSessionIdRef, inputAreaRef,
     COMMAND_HISTORY_MAX, _appMountTime,
   }), [
@@ -383,12 +388,12 @@ const App = () => {
     postMessage({ type: 'requestLLMConfig' });
   }, []);
 
-  // 勾选/取消某个 MCP：交给 extension 写入 settings.json 的 mcp.enabled，
+  // 勾选/取消某个 MCP：交给 extension 写入当前会话 meta.json，
   // 成功后 extension 回推最新列表（setMcpServers）刷新 UI。这里先乐观更新，
-  // 避免等待往返造成勾选延迟。
+  // 避免等待往返造成勾选延迟；带上 sessionId 让宿主写入正确的会话。
   const handleMcpToggle = useCallback((name: string, enabled: boolean) => {
     setMcpServers((prev) => prev.map((s) => (s.name === name ? { ...s, enabled } : s)));
-    postMessage({ type: 'setMcpEnabled', name, enabled });
+    postMessage({ type: 'setMcpEnabled', name, enabled, sessionId: currentSessionIdRef.current ?? undefined });
   }, []);
 
   // MessagesView 的回调保持引用稳定，避免 App 其他状态变化导致
@@ -417,6 +422,16 @@ const App = () => {
   useEffect(() => {
     userChoiceRequestRef.current = userChoiceRequest;
   }, [userChoiceRequest]);
+
+  // 切换会话时把 MCP 列表切换为该会话的缓存（可能为空，随后端回推填充）。
+  // 避免上一个会话的「连接中」状态误禁用新会话的发送按钮。
+  useEffect(() => {
+    setMcpServers(currentSessionId ? (mcpServersBySessionRef.current.get(currentSessionId) ?? []) : []);
+  }, [currentSessionId]);
+
+  // 当前会话是否有 MCP 处于「连接中」（已启用但尚未连接成功、且无错误）。
+  // 连接中禁用发送按钮，避免在不完整的工具集下发出消息。
+  const mcpConnecting = mcpServers.some((s) => s.enabled && !s.running && !s.error);
 
   // 当 userChoiceRequest 弹出时，递增 forceScrollKey 触发底部自动滚动
   const prevUserChoiceRef = useRef<typeof userChoiceRequest>(null);
@@ -865,7 +880,7 @@ const App = () => {
                 style={{ backgroundColor: colors.bgTertiary }}
                 title={t('app.conversationHistory')}
               >
-                <History size={14} style={{ color: colors.textSystem }} />
+                <Icon name="history" size={14} style={{ color: colors.textSystem }} />
               </button>
             </Dropdown>
             )}
@@ -956,7 +971,7 @@ const App = () => {
               style={{ backgroundColor: colors.bgTertiary }}
               title={t('app.newChat')}
             >
-              <Plus size={16} style={{ color: colors.textSystem }} />
+              <Icon name="plus" size={16} style={{ color: colors.textSystem }} />
             </button>
             )}
             {/* 关闭按钮（Electron app 模式）：销毁当前 webview，释放渲染进程资源 */}
@@ -967,7 +982,7 @@ const App = () => {
               style={{ backgroundColor: colors.bgTertiary }}
               title={t('app.closeChat')}
             >
-              <X size={16} style={{ color: colors.textSystem }} />
+              <Icon name="x" size={16} style={{ color: colors.textSystem }} />
             </button>
             )}
           </div>
@@ -1040,6 +1055,7 @@ const App = () => {
               skills={skills}
               mcpServers={mcpServers}
               onMcpToggle={handleMcpToggle}
+              mcpConnecting={mcpConnecting}
               commandHistory={commandHistoryRef.current.get(currentSessionIdRef.current ?? '') ?? []}
               balance={balance}
               balanceCurrency={balanceCurrency}

@@ -477,6 +477,10 @@ export async function appendMessage(message: Message, sessionId: string, parentU
   const effectiveSessionId = sessionId;
   const projectPath = getProjectRoot();
 
+  // 只有用户主动发送的消息（Integration.sendMessage / 排队消息）才更新 updatedAt，
+  // 子代理回复 / reminder / 后台任务通知 / 工具结果等自动消息都不算。
+  const userInitiated = (message as any)._userInitiated === true;
+
   // 生成或使用消息的 UUID（使用类型守卫检查是否有 uuid 属性）
   const existingUuid = 'uuid' in message && typeof message.uuid === 'string' ? message.uuid : null;
   const uuid = existingUuid || `${effectiveSessionId}_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
@@ -521,12 +525,14 @@ export async function appendMessage(message: Message, sessionId: string, parentU
 	  );
 
   // 更新元数据
-  const newTitle = await updateMetadataForNewMessage(effectiveSessionId, projectPath, message, totalContextTokens);
+  const newTitle = await updateMetadataForNewMessage(effectiveSessionId, projectPath, message, totalContextTokens, userInitiated);
 
   // 更新缓存中的元数据
   if (cached) {
     cached.metadata.messageCount = (cached.metadata.messageCount || 0) + 1;
-    cached.metadata.updatedAt = Date.now();
+    if (userInitiated) {
+      cached.metadata.updatedAt = Date.now();
+    }
     if (newTitle) {
       cached.metadata.title = newTitle;
     }
@@ -538,7 +544,9 @@ export async function appendMessage(message: Message, sessionId: string, parentU
     const existing = listCache.find(c => c.sessionId === effectiveSessionId);
     if (existing) {
       existing.messageCount = (existing.messageCount || 0) + 1;
-      existing.updatedAt = Date.now();
+      if (userInitiated) {
+        existing.updatedAt = Date.now();
+      }
       if (newTitle) {
         existing.title = newTitle;
       }
@@ -587,6 +595,8 @@ function titleFromUserMessage(message: Message): string {
  * 更新对话元数据
  * @param totalContextTokens 可选：当前对话的上下文总 token 数（input_tokens + output_tokens），
  *   写入 metadata.context.totalContextTokens
+ * @param userInitiated 是否为用户主动发送的消息；只有 true 时才更新 updatedAt
+ *   （updatedAt 用于对话列表按"最后一条用户消息时间"显示和排序）
  * @returns 如果是新创建的 metadata 则返回 title，否则返回 null
  */
 async function updateMetadataForNewMessage(
@@ -594,6 +604,7 @@ async function updateMetadataForNewMessage(
   projectPath: string,
   message: Message,
   totalContextTokens?: number,
+  userInitiated = false,
 ): Promise<string | null> {
   const metadataPath = getMetadataPath(sessionId, projectPath);
 
@@ -607,7 +618,10 @@ async function updateMetadataForNewMessage(
       // 尝试读取现有元数据
       const existing = await readFile(metadataPath, 'utf8');
       metadata = JSON.parse(existing) as ConversationMetadata;
-      metadata.updatedAt = Date.now();
+      // 仅用户主动发送的消息刷新修改时间，避免后台自动消息把旧会话顶到最前
+      if (userInitiated) {
+        metadata.updatedAt = Date.now();
+      }
 
       // 更新前记录原始 messageCount，用于判断是否为第一条消息
       const prevMessageCount = metadata.messageCount;
@@ -815,8 +829,10 @@ export async function loadConversationList(): Promise<ConversationMetadata[]> {
       }
     }
 
-    // 按创建时间倒序排序
-    conversations.sort((a, b) => b.createdAt - a.createdAt);
+    // 按修改时间（最后一条用户消息）倒序排序；缺失时回退到创建时间
+    conversations.sort(
+      (a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt),
+    );
 
     // 存入缓存
     conversationListCache = conversations;
@@ -1066,7 +1082,7 @@ export async function replaceConversationMessages(sessionId: string, messages: M
     try {
       const existing = await readFile(metadataPath, 'utf8');
       const metadata: ConversationMetadata = JSON.parse(existing) as ConversationMetadata;
-      metadata.updatedAt = Date.now();
+      // 压缩 / 清空属于后台或命令操作，不刷新 updatedAt（它只反映用户发消息的时间）
       metadata.messageCount = messages.length;
       // /clear（空列表替换）只清内容：标记 clearedAt，后续新消息不得覆盖原标题
       if (messages.length === 0) {
@@ -1094,7 +1110,6 @@ export async function replaceConversationMessages(sessionId: string, messages: M
   if (cached) {
     cached.messages = messages;
     cached.metadata.messageCount = messages.length;
-    cached.metadata.updatedAt = Date.now();
     if (messages.length === 0) {
       cached.metadata.clearedAt = Date.now();
     }
@@ -1106,7 +1121,6 @@ export async function replaceConversationMessages(sessionId: string, messages: M
     const existing = listCache.find(c => c.sessionId === effectiveSessionId);
     if (existing) {
       existing.messageCount = messages.length;
-      existing.updatedAt = Date.now();
       if (messages.length === 0) {
         existing.clearedAt = Date.now();
       }
@@ -1487,14 +1501,13 @@ export async function markConversationAsRemote(sessionId: string, _title?: strin
       const metadata: ConversationMetadata = JSON.parse(existing) as ConversationMetadata;
       if (metadata.isRemote !== true) {
         metadata.isRemote = true;
-        metadata.updatedAt = Date.now();
+        // 标记远程不刷新 updatedAt（它只反映用户发消息的时间）
         await writeFile(metadataPath, JSON.stringify(metadata, null, 2), { encoding: 'utf8', mode: 0o600 });
 
         // 同步更新内存缓存
         const cached = conversationCache.get(sessionId);
         if (cached) {
           cached.metadata.isRemote = true;
-          cached.metadata.updatedAt = Date.now();
         }
 
         // 同步更新列表缓存
@@ -1503,7 +1516,6 @@ export async function markConversationAsRemote(sessionId: string, _title?: strin
           const entry = listCache.find(c => c.sessionId === sessionId);
           if (entry) {
             entry.isRemote = true;
-            entry.updatedAt = Date.now();
           }
         }
 

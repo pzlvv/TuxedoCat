@@ -133,8 +133,11 @@ function render(): void {
   }
 
   // 父会话在前，子会话（parentSessionId 非空）缩进排列
-  // 统一按创建时间倒序排序（与 webview 版本一致），点击/发送消息不影响排序
-  const sorted = [...conversations].sort((a, b) => b.createdAt - a.createdAt);
+  // 统一按修改时间（最后一条用户消息）倒序排序（与 webview 版本一致）；
+  // 只有用户主动发消息才会刷新 updatedAt，后台消息不影响排序。
+  const sorted = [...conversations].sort(
+    (a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt),
+  );
   const roots = sorted.filter((c) => !c.parentSessionId);
   const children = sorted.filter((c) => !!c.parentSessionId);
 
@@ -243,7 +246,7 @@ function itemHtml(c: ConversationMeta, isChild: boolean): string {
       ${runningBar}
       ${titleHtml}
       <div class="sub">
-        <span>${relativeTime(c.createdAt)}</span>
+        <span>${relativeTime(c.updatedAt ?? c.createdAt)}</span>
         <span>${c.messageCount} 条${roleTag}</span>
       </div>
       ${actionsHtml}

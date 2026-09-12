@@ -28,6 +28,8 @@ import { DocumentManager } from './VSCodeUI/documentManager.js';
 import { buildDiffUris } from './VSCodeUI/diffUris.js';
 import { ToolHandler } from './VSCodeUI/toolHandler.js';
 import { WebviewMessageHandler } from './VSCodeUI/webviewMessageHandler.js';
+import { isImageFile } from './host/imageFiles.js';
+import { setSessionIdleCloseHandler, setSessionWaitingForUserProvider, releaseSessionResources } from './core/sessionIdle.js';
 
 export type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent };
 
@@ -101,6 +103,18 @@ export class VSCodeUI implements AssistantUI {
 
     // 初始化 UserChoiceQueue 回调
     this.userChoiceManager.initUserChoiceQueue();
+
+    // 空闲对话自动关闭（2 小时无活动）：VS Code 没有独立对话视图，
+    // 关闭 = 释放引擎 / 消息缓存 / MCP 引用（见 releaseSessionResources）。
+    // 当前激活的对话不会被关闭；切换回被关闭的对话时会重新 loadConversation，
+    // 由 restoreConversationEngine 从磁盘重建引擎。
+    setSessionIdleCloseHandler((sessionId) => releaseSessionResources(sessionId));
+    setSessionWaitingForUserProvider((sessionId) => this.hasPendingUserChoice(sessionId));
+  }
+
+  /** 指定会话是否正在等待用户选择/确认（ask user 提问或权限确认） */
+  hasPendingUserChoice(sessionId: string): boolean {
+    return this.userChoiceManager.hasPendingChoice(sessionId);
   }
 
   /**
@@ -115,7 +129,27 @@ export class VSCodeUI implements AssistantUI {
       },
       openFile: async (filePath, selectedLines) => {
         const uri = vscode.Uri.file(filePath);
-        const doc = await vscode.workspace.openTextDocument(uri);
+
+        // 图片文件直接交给默认编辑器（内置图片预览）打开。
+        // 图片是二进制内容，openTextDocument 会抛
+        // "File seems to be binary and cannot be opened as text"。
+        if (isImageFile(filePath)) {
+          await vscode.commands.executeCommand('vscode.open', uri);
+          return;
+        }
+
+        // 其他二进制文件同样无法用 openTextDocument 打开，退回到 vscode.open。
+        let doc: vscode.TextDocument;
+        try {
+          doc = await vscode.workspace.openTextDocument(uri);
+        } catch (err) {
+          VSCodeUI.outputChannel?.appendLine(
+            `[VSCodeUI] openTextDocument failed, fallback to vscode.open: ${filePath} (${err})`
+          );
+          await vscode.commands.executeCommand('vscode.open', uri);
+          return;
+        }
+
         const editor = await vscode.window.showTextDocument(doc);
         if (selectedLines) {
           const startLine = selectedLines.start - 1;

@@ -1,5 +1,5 @@
 import React from 'react';
-import { File } from 'lucide-react';
+import { Icon } from '../Icon';
 import { postMessage } from '../webviewEnv';
 import { t } from '../i18n';
 import { AnsiText } from '../ansi';
@@ -146,7 +146,7 @@ export const PersistedOutputBox: React.FC<{
             }}
             title={t('tool.bash.openFullOutputFile')}
           >
-            <File size={10} />
+            <Icon name="file" size={10} />
             {t('tool.bash.fullOutput', { size: sizeStr })}
           </button>
         )}

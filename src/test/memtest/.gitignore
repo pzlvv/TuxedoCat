@@ -1,0 +1,26 @@
+# 本地依赖（npm install 生成）
+node_modules/
+package-lock.json
+
+# build.mjs 生成的 harness 页面与 bundle
+web.js
+web-*.js
+index.html
+index-*.html
+real-antd.css
+real-markdown.css
+real-index.css
+
+# preprocess.js / make-*.mjs 生成的样本数据
+sessions.json
+sessions-*.json
+big-sessions.json
+length-sweep.json
+edits-dump.json
+
+# run.mjs 等驱动脚本输出的结果
+results*.json
+*-results.json
+
+# 截图 / 差异图
+*.png

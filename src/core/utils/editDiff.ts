@@ -327,7 +327,10 @@ export function buildEditDiffHunks(input: {
     }
 
     const contextStart = Math.max(1, Math.min(originalStart, modifiedStart) - contextLines);
-    const contextEndOriginal = Math.min(originalLineCount + 1, originalEnd + contextLines);
+    // 下方上下文只能取自 modified 侧，且不能越过文件末尾。
+    // 上界以前写作 Math.max(contextEndOriginal, contextEndModified)，但 originalEnd
+    // 在「文件末尾删除若干行」时会明显大于 modifiedEnd，于是循环会把**刚被删除的行**
+    // 再当作 unchanged 上下文渲染一遍（同一条内容先红后白地出现两次）。
     const contextEndModified = Math.min(modifiedLineCount + 1, modifiedEnd + contextLines);
 
     // 添加上下文行（上方）
@@ -366,11 +369,10 @@ export function buildEditDiffHunks(input: {
     }
 
     // 添加上下文行（下方）
-    for (let i = modifiedEnd; i < Math.max(contextEndOriginal, contextEndModified); i++) {
-      const content = i <= modifiedLineCount ? getModifiedLine(i) : getOriginalLine(i);
+    for (let i = modifiedEnd; i < contextEndModified; i++) {
       lines.push({
         lineNumber: i,
-        content,
+        content: getModifiedLine(i),
         type: 'unchanged',
       });
     }

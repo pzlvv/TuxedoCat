@@ -23,10 +23,12 @@ export function useConversationTree(conversations: Array<any>) {
       }
     }
 
-    // Sort each group by createdAt descending
-    roots.sort((a: any, b: any) => b.createdAt - a.createdAt);
+    // Sort each group by updatedAt (last user message) descending, fallback to createdAt
+    const byUpdatedAt = (a: any, b: any) =>
+      (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt);
+    roots.sort(byUpdatedAt);
     for (const [, children] of childrenMap) {
-      children.sort((a: any, b: any) => b.createdAt - a.createdAt);
+      children.sort(byUpdatedAt);
     }
 
     return { roots, childrenMap };
