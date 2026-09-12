@@ -630,6 +630,39 @@ textarea::-webkit-scrollbar-thumb:hover {
   color: var(--text-secondary) !important;
 }
 
+/* ─── 模型列表子菜单：限制高度 + 滚动 ───
+   模型数量可能很多（如 opencode 有 37 个）。antd 给下拉菜单的垂直列表设的是
+   `max-height: calc(100vh - 100px)`，而子菜单弹层是从菜单项向下展开的，
+   底部会超出视口且无法滚到，表现为「模型显示不全」。
+   这里把内层列表限制为视口高度的 60%，超出部分滚动。
+   选择器说明：
+   - class 由 InputArea 的 modelGroup 项通过 popupClassName 传入，
+     rc-menu 把它加在子菜单弹层根节点（与 .ant-dropdown-menu-submenu-popup 同一元素）；
+   - 真正的滚动容器是弹层里的内层 <ul>，类名为
+     .ant-dropdown-menu.ant-dropdown-menu-sub.ant-dropdown-menu-vertical，
+     用后代选择器（0,2,0）盖过 antd 的 .ant-dropdown-menu-vertical（0,1,0）；
+   - overscroll-behavior: contain 防止滚到底后继续带动外层页面滚动。 */
+.model-list-submenu .ant-dropdown-menu {
+  max-height: 60vh !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+}
+
+/* 滚动条：细窄样式，避免占位过宽挤压模型名 */
+.model-list-submenu .ant-dropdown-menu::-webkit-scrollbar {
+  width: 8px;
+}
+.model-list-submenu .ant-dropdown-menu::-webkit-scrollbar-thumb {
+  background-color: rgba(128, 128, 128, 0.4);
+  border-radius: 4px;
+}
+.model-list-submenu .ant-dropdown-menu::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(128, 128, 128, 0.6);
+}
+.model-list-submenu .ant-dropdown-menu::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
 /* ─── Dropdown 弹出动画：纯淡入淡出，避免缩放导致的抖动 ───
    antd 默认用 scale 类动画（slide-down 的 scaleY / zoom-big 的 scale），
    在 webview 内缩放文字渲染会明显抖动。统一改成只做透明度渐变：
@@ -642,6 +675,35 @@ textarea::-webkit-scrollbar-thumb:hover {
 @keyframes agent-dropdown-fade-out {
   from { opacity: 1; }
   to { opacity: 0; }
+}
+
+/* ─── 菜单里「当前模型」超长时的悬停单向滚动 ───
+   菜单宽度在打开时按「当前模型」冻结，展开期间选中更长的模型时名字会溢出：
+   默认用省略号截断；鼠标悬停在整行（.hover-scroll-scope）上时隐藏截断文本、
+   显示滚动层。滚动层内部放两份带右侧间隔的文本，位移 -50%（一份文本 + 间隔）
+   后无缝衔接，始终朝一个方向循环滚动，且首尾之间保留间隔不会粘连。
+   注意：只有 .is-overflowing（确实被截断）时才隐藏截断文本，否则名字完整显示时
+   悬停会变成空白。 */
+.hover-scroll-text__marquee {
+  display: none;
+}
+.hover-scroll-text__marquee-inner {
+  display: inline-block;
+  white-space: nowrap;
+}
+.hover-scroll-text__copy {
+  display: inline-block;
+  /* 首尾之间的间隔由内联 paddingRight（MARQUEE_GAP_PX）提供 */
+}
+.hover-scroll-scope:hover .hover-scroll-text.is-overflowing .hover-scroll-text__ellipsis {
+  visibility: hidden;
+}
+.hover-scroll-scope:hover .hover-scroll-text.is-overflowing .hover-scroll-text__marquee {
+  display: block;
+}
+@keyframes tuxedo-marquee-loop {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
 }
 
 /* 进入动画：去掉位移/缩放，只保留淡入 */

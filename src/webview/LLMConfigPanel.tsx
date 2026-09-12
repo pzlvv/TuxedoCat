@@ -8,7 +8,15 @@ import {
   normalizeAccelerator,
 } from '../core/utils/shortcut.js';
 import type { Colors, ThinkingMode, AgentMode, PromptMode } from './types';
+import type { McpServerInfo } from '../core/webviewTypes';
 import { t } from './i18n';
+
+/** 一个模型的草稿（模型名 + 该模型使用的 API 协议） */
+interface ModelDraft {
+  name: string;
+  /** Responses | OpenAI | Anthropic */
+  apiType: string;
+}
 
 /** 一个 Provider 草稿（对应设置页里的一个 tab） */
 interface ProviderDraft {
@@ -16,9 +24,8 @@ interface ProviderDraft {
   id: string;
   baseURL: string;
   apiKey: string;
-  apiType: string;
   /** 该服务商的模型列表（自动获取或手动维护） */
-  models: string[];
+  models: ModelDraft[];
   /** 该服务商的默认模型 */
   defaultModel: string;
 }
@@ -35,7 +42,6 @@ interface ConversationSpaceItem {
 interface LLMConfigPanelProps {
   colors: Colors;
   initialBaseURL: string;
-  initialApiType?: string;
   initialWebSearch?: boolean;
   initialThinkingEffort?: ThinkingMode;
   initialDefaultAgentMode?: AgentMode;
@@ -46,10 +52,19 @@ interface LLMConfigPanelProps {
   initialLanguage?: 'auto' | 'zh' | 'en';
   /** 已保存的唤醒快捷键（仅 Electron 使用，accelerator 形式） */
   initialShortcut?: string;
-  /** 已保存的 Provider 列表（settings.json 的 llm.providers） */
-  initialProviders?: Array<{ key: string; baseURL: string; apiKey: string; apiType: string; models?: string[]; defaultModel?: string }>;
+  /** 已保存的 Provider 列表（settings.json 的 llm.providers，apiType 在 modelConfigs 里） */
+  initialProviders?: Array<{
+    key: string;
+    baseURL: string;
+    apiKey: string;
+    models?: string[];
+    defaultModel?: string;
+    modelConfigs?: Record<string, { context?: number; output?: number; apiType?: string }>;
+  }>;
   /** settings.json 的 llm.activeProvider */
   initialActiveProvider?: string;
+  /** 全局默认启用的 MCP 列表（settings.json 的 mcp.enabled + mcp.json 的服务器定义） */
+  initialMcpServers?: McpServerInfo[];
   /** 触发设置面板时当前显示的会话 ID（保存时回传，供扩展端校验/回退模型） */
   currentSessionId?: string | null;
   /** 触发设置面板时当前会话使用的模型（保存时回传，供扩展端校验/回退模型） */
@@ -58,28 +73,116 @@ interface LLMConfigPanelProps {
 }
 
 const DEFAULT_BASE_URL = 'https://api.deepseek.com';
-const DEFAULT_API_TYPE = 'Responses';
+/**
+ * 手动添加的模型默认协议：v1 chat completions（兼容性最广）。
+ * 自动获取的模型会由扩展端并发探测后写入真实协议。
+ */
+const DEFAULT_MODEL_API_TYPE = 'OpenAI';
+/** 模型协议可选项（顺序即优先级展示顺序） */
+const MODEL_API_TYPE_OPTIONS: Array<{ value: string; labelKey: string }> = [
+  { value: 'Responses', labelKey: 'llmConfig.apiTypeResponses' },
+  { value: 'OpenAI', labelKey: 'llmConfig.apiTypeOpenAI' },
+  { value: 'Anthropic', labelKey: 'llmConfig.apiTypeAnthropic' },
+];
 /** 首次设置（settings.json 为空）时的预置值 */
 const DEFAULT_THINKING_EFFORT: ThinkingMode = 'high';
 const DEFAULT_WEB_SEARCH = true;
 const DEFAULT_AGENT_MODE: AgentMode = 'manual';
 const DEFAULT_PROMPT_MODE: PromptMode = 'normal';
 
-/** 不同 API 类型对应的默认 base URL */
-const API_TYPE_DEFAULT_URL: Record<string, string> = {
-  Anthropic: 'https://api.deepseek.com/anthropic',
-  Responses: 'https://api.deepseek.com',
-};
-
 /** 生成一个全新的空 Provider 草稿 */
 const createEmptyProviderDraft = (baseURL: string = ''): ProviderDraft => ({
   id: `provider_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
   baseURL,
   apiKey: '',
-  apiType: DEFAULT_API_TYPE,
   models: [],
   defaultModel: '',
 });
+
+/**
+ * 规范化协议值；非法值返回空串。
+ *
+ * 空串表示「尚未探测/未显式配置」——UI 上按默认协议展示，
+ * 保存时不写入 modelConfigs，下次自动获取时会重新探测。
+ */
+const normalizeModelApiType = (value: unknown): string =>
+  value === 'Responses' || value === 'Anthropic' || value === 'OpenAI' ? value : '';
+
+/** 规范化扩展端回传的模型列表（去空、去重、trim） */
+const normalizeModelList = (raw: unknown): string[] => {
+  if (!Array.isArray(raw)) return [];
+  return Array.from(new Set(
+    (raw as unknown[])
+      .filter((m): m is string => typeof m === 'string' && !!m.trim())
+      .map((m) => m.trim()),
+  ));
+};
+
+/** 只保留合法的协议值（非法值返回空串 = 未探测） */
+const sanitizeApiTypeMap = (raw: unknown): Record<string, string> => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, string> = {};
+  for (const [model, apiType] of Object.entries(raw as Record<string, unknown>)) {
+    const normalized = normalizeModelApiType(apiType);
+    if (normalized) out[model] = normalized;
+  }
+  return out;
+};
+
+/**
+ * 把自动获取到的模型合并进指定 provider 草稿：
+ * - 已有模型的协议保持不变（不覆盖用户手动选择的结果）
+ * - 新增模型使用探测结果；没有结果时留空（= 未探测，UI 显示默认协议）
+ * - 默认模型若仍在列表中则保留，否则取第一个
+ */
+const mergeFetchedModels = (
+  prev: ProviderDraft[],
+  providerId: string,
+  models: string[],
+  detected: Record<string, string>,
+): ProviderDraft[] => prev.map((p) => {
+  if (p.id !== providerId) return p;
+  const byName = new Map<string, ModelDraft>();
+  for (const m of p.models) {
+    const name = m.name.trim();
+    if (!name) continue;
+    byName.set(name, { name, apiType: m.apiType });
+  }
+  for (const name of models) {
+    const detectedType = detected[name] || '';
+    const existing = byName.get(name);
+    if (!existing) {
+      byName.set(name, { name, apiType: detectedType });
+    } else if (!existing.apiType && detectedType) {
+      // 已有但尚未配置协议的模型：补上探测结果
+      byName.set(name, { ...existing, apiType: detectedType });
+    }
+  }
+  const merged = Array.from(byName.values());
+  const previousDefault = p.defaultModel.trim();
+  const nextDefault = previousDefault && byName.has(previousDefault)
+    ? previousDefault
+    : (merged[0]?.name || '');
+  return { ...p, models: merged, defaultModel: nextDefault };
+});
+
+/** 由 settings.json 的 models + modelConfigs 还原出模型草稿列表 */
+const buildModelDrafts = (
+  models: unknown,
+  modelConfigs?: Record<string, { apiType?: string }> | null,
+): ModelDraft[] => {
+  if (!Array.isArray(models)) return [];
+  const seen = new Set<string>();
+  const drafts: ModelDraft[] = [];
+  for (const raw of models as unknown[]) {
+    if (typeof raw !== 'string') continue;
+    const name = raw.trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    drafts.push({ name, apiType: normalizeModelApiType(modelConfigs?.[name]?.apiType) });
+  }
+  return drafts;
+};
 
 /** 根据 baseURL 计算 provider key（如 https://opencode.ai/zen/go -> opencode.ai） */
 const providerKeyOf = (baseURL: string): string => {
@@ -180,7 +283,6 @@ const SegmentControl = <T extends string>({
 const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   colors,
   initialBaseURL,
-  initialApiType,
   initialWebSearch,
   initialThinkingEffort,
   initialDefaultAgentMode,
@@ -190,6 +292,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   initialShortcut,
   initialProviders,
   initialActiveProvider,
+  initialMcpServers,
   currentSessionId,
   currentModel,
   onClose,
@@ -200,14 +303,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
         id: p.key || createEmptyProviderDraft().id,
         baseURL: p.baseURL || '',
         apiKey: p.apiKey || '',
-        apiType: p.apiType || DEFAULT_API_TYPE,
-        models: Array.isArray(p.models)
-          ? Array.from(new Set(
-              (p.models as unknown[])
-                .filter((m): m is string => typeof m === 'string' && !!m.trim())
-                .map((m) => m.trim()),
-            ))
-          : [],
+        models: buildModelDrafts(p.models, p.modelConfigs),
         defaultModel: p.defaultModel || '',
       }));
     }
@@ -215,7 +311,6 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       id: createEmptyProviderDraft().id,
       baseURL: initialBaseURL || DEFAULT_BASE_URL,
       apiKey: initialApiKey || '',
-      apiType: initialApiType || DEFAULT_API_TYPE,
       models: [],
       defaultModel: '',
     }];
@@ -242,6 +337,8 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   const [defaultAgentMode, setDefaultAgentMode] = useState<AgentMode>(initialDefaultAgentMode || DEFAULT_AGENT_MODE);
   const [defaultPromptMode, setDefaultPromptMode] = useState<PromptMode>(initialDefaultPromptMode || DEFAULT_PROMPT_MODE);
   const [language, setLanguage] = useState<'auto' | 'zh' | 'en'>(initialLanguage || 'auto');
+  /** MCP 默认启用草稿（保存时把勾选项写回全局 settings.json 的 mcp.enabled） */
+  const [mcpServers, setMcpServers] = useState<McpServerInfo[]>(initialMcpServers ?? []);
   /** 仅 Electron 桌面端提供“最小化到托盘 + 快捷键唤醒”设置 */
   const isElectron = getHostInfo().kind === 'electron';
   const initialShortcutNormalized = normalizeAccelerator(initialShortcut) || DEFAULT_WAKE_SHORTCUT;
@@ -259,6 +356,12 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   const [fetchingProviderId, setFetchingProviderId] = useState<string | null>(null);
   const [fetchModelsError, setFetchModelsError] = useState<string | null>(null);
   const pendingFetchProviderIdRef = useRef<string | null>(null);
+  /** 模型列表已拉取、等待用户确认是否自动检测协议的暂存数据 */
+  const [pendingDetection, setPendingDetection] = useState<{
+    models: string[];
+    modelApiTypes: Record<string, string>;
+    needDetect: string[];
+  } | null>(null);
   /** 对话空间管理 */
   const [conversationSpaces, setConversationSpaces] = useState<ConversationSpaceItem[] | null>(null);
   const [conversationSpacesLoading, setConversationSpacesLoading] = useState(false);
@@ -288,34 +391,26 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     ? initialProviders.map((p) => ({
         baseURL: p.baseURL || '',
         apiKey: p.apiKey || '',
-        apiType: p.apiType || DEFAULT_API_TYPE,
-        models: Array.isArray(p.models)
-          ? Array.from(new Set(
-              (p.models as unknown[])
-                .filter((m): m is string => typeof m === 'string' && !!m.trim())
-                .map((m) => m.trim()),
-            ))
-          : [],
+        models: buildModelDrafts(p.models, p.modelConfigs),
         defaultModel: p.defaultModel || '',
       }))
     : [{
         baseURL: initialBaseURL || DEFAULT_BASE_URL,
         apiKey: initialApiKey || '',
-        apiType: initialApiType || DEFAULT_API_TYPE,
-        models: [],
+        models: [] as ModelDraft[],
         defaultModel: '',
       }];
   const providersChanged =
     providers.length !== initialProvidersSnapshot.length ||
     providers.some((p, i) => {
       const init = initialProvidersSnapshot[i];
-      const currentModels = Array.from(new Set(p.models.map((m) => m.trim()).filter(Boolean)));
-      return !init
-        || p.baseURL !== init.baseURL
+      if (!init) return true;
+      const currentModels = p.models.filter((m) => !!m.name.trim());
+      const initModels = init.models.filter((m) => !!m.name.trim());
+      return p.baseURL !== init.baseURL
         || p.apiKey !== init.apiKey
-        || p.apiType !== init.apiType
-        || currentModels.length !== init.models.length
-        || currentModels.some((m, idx) => m !== init.models[idx])
+        || currentModels.length !== initModels.length
+        || currentModels.some((m, idx) => m.name !== initModels[idx].name || m.apiType !== initModels[idx].apiType)
         || p.defaultModel !== init.defaultModel;
     });
   const isDirty =
@@ -358,37 +453,25 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     }
   };
 
-  /** 切换 API 类型时，若 baseURL 是旧类型默认值（未自定义），则跟随切换到新类型的默认地址 */
-  const handleApiTypeChange = (type: string) => {
-    if (!activeProvider) return;
-    const oldKey = providerKeyOf(activeProvider.baseURL);
-    const prevDefault = API_TYPE_DEFAULT_URL[activeProvider.apiType];
-    const nextDefault = API_TYPE_DEFAULT_URL[type];
-    const nextBaseURL = nextDefault && (!activeProvider.baseURL.trim() || activeProvider.baseURL.trim() === prevDefault)
-      ? nextDefault
-      : activeProvider.baseURL;
-    updateProvider(activeProvider.id, { apiType: type, baseURL: nextBaseURL });
-    setBaseURLError(null);
-    const newKey = providerKeyOf(nextBaseURL);
-    if (pendingUseProviderKey && pendingUseProviderKey === oldKey) {
-      setPendingUseProviderKey(newKey || null);
-    }
-    if (activeProviderKey && activeProviderKey === oldKey) {
-      setActiveProviderKey(newKey || '');
-    }
-  };
-
   const handleModelChange = (index: number, value: string) => {
     if (!activeProvider) return;
-    const models = [...activeProvider.models];
-    models[index] = value;
+    const models = activeProvider.models.map((m, i) => (i === index ? { ...m, name: value } : m));
     updateProvider(activeProvider.id, { models });
     setModelError(null);
   };
 
+  /** 修改单个模型的 API 协议 */
+  const handleModelApiTypeChange = (index: number, apiType: string) => {
+    if (!activeProvider) return;
+    const models = activeProvider.models.map((m, i) => (i === index ? { ...m, apiType } : m));
+    updateProvider(activeProvider.id, { models });
+  };
+
   const handleAddModel = () => {
     if (!activeProvider) return;
-    updateProvider(activeProvider.id, { models: [...activeProvider.models, ''] });
+    updateProvider(activeProvider.id, {
+      models: [...activeProvider.models, { name: '', apiType: DEFAULT_MODEL_API_TYPE }],
+    });
     setModelError(null);
   };
 
@@ -403,6 +486,19 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   const handleSetDefaultModel = (model: string) => {
     if (!activeProvider || !model.trim()) return;
     updateProvider(activeProvider.id, { defaultModel: model.trim() });
+  };
+
+  /**
+   * 收集草稿里「已显式配置协议」的模型，供扩展端跳过重复探测。
+   * 未探测过的模型（apiType 为空串）不在此列，会在自动获取时被探测。
+   */
+  const knownApiTypesOf = (provider: ProviderDraft): Record<string, string> => {
+    const map: Record<string, string> = {};
+    for (const m of provider.models) {
+      const name = m.name.trim();
+      if (name && m.apiType) map[name] = m.apiType;
+    }
+    return map;
   };
 
   const handleFetchModels = () => {
@@ -420,22 +516,69 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     postMessage({
       type: 'fetchProviderModels',
       baseURL,
-      apiType: activeProvider.apiType,
       apiKey,
+      // 已配置协议的模型：扩展端据此跳过重复探测
+      knownApiTypes: knownApiTypesOf(activeProvider),
     });
+  };
+
+  /** 用户确认：对「未设置协议」的模型执行自动检测（可能消耗少量 token） */
+  const handleConfirmDetectApiType = () => {
+    const providerId = pendingFetchProviderIdRef.current;
+    const pending = pendingDetection;
+    if (!providerId || !pending) return;
+    const provider = providers.find((p) => p.id === providerId);
+    if (!provider) return;
+    setPendingDetection(null);
+    // 保持 fetching 状态，按钮继续显示「获取中...」
+    postMessage({
+      type: 'detectProviderModelApiTypes',
+      baseURL: provider.baseURL.trim(),
+      apiKey: provider.apiKey.trim(),
+      models: pending.needDetect,
+      knownApiTypes: pending.modelApiTypes,
+    });
+  };
+
+  /** 用户跳过检测：只把模型列表合并进来，协议留空（运行时回退到默认协议） */
+  const handleSkipDetectApiType = () => {
+    const providerId = pendingFetchProviderIdRef.current;
+    const pending = pendingDetection;
+    setPendingDetection(null);
+    setFetchingProviderId(null);
+    pendingFetchProviderIdRef.current = null;
+    if (!providerId || !pending) return;
+    setProviders((prev) => mergeFetchedModels(prev, providerId, pending.models, pending.modelApiTypes));
+    setFetchModelsError(null);
+    setModelError(null);
   };
 
   /** 从当前 provider 草稿生成要保存的 provider 列表（过滤未填写的 tab） */
   const buildProvidersPayload = () => {
-    const payload: Array<{ key: string; baseURL: string; apiKey: string; apiType: string; models: string[]; defaultModel: string }> = [];
+    const payload: Array<{
+      key: string;
+      baseURL: string;
+      apiKey: string;
+      models: string[];
+      modelApiTypes: Record<string, string>;
+      defaultModel: string;
+    }> = [];
     for (const p of providers) {
       const baseURL = p.baseURL.trim();
       const apiKey = p.apiKey.trim();
       if (!baseURL || !apiKey) continue;
       const key = providerKeyOf(baseURL);
       if (!key) continue;
-      const models = Array.from(new Set(p.models.map((m) => m.trim()).filter(Boolean)));
-      payload.push({ key, baseURL, apiKey, apiType: p.apiType || DEFAULT_API_TYPE, models, defaultModel: p.defaultModel.trim() });
+      const models: string[] = [];
+      const modelApiTypes: Record<string, string> = {};
+      for (const m of p.models) {
+        const name = m.name.trim();
+        if (!name || models.includes(name)) continue;
+        models.push(name);
+        // 只有显式配置/探测出协议的模型才写入；未探测的留空，下次自动获取继续探测
+        if (m.apiType) modelApiTypes[name] = m.apiType;
+      }
+      payload.push({ key, baseURL, apiKey, models, modelApiTypes, defaultModel: p.defaultModel.trim() });
     }
     return payload;
   };
@@ -468,6 +611,12 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     if (language !== (initialLanguage || 'auto')) {
       presetPayload.language = language;
     }
+    // MCP 默认启用列表：只在用户实际改动过时才发送，避免每次保存都覆盖
+    const enabledNamesKey = (list: McpServerInfo[]): string =>
+      list.filter((s) => s.enabled).map((s) => s.name).sort().join('\n');
+    if (enabledNamesKey(mcpServers) !== enabledNamesKey(initialMcpServers ?? [])) {
+      presetPayload.mcpServers = mcpServers.filter((s) => s.enabled).map((s) => s.name);
+    }
     if (isElectron) {
       const normalizedShortcut = normalizeAccelerator(shortcut);
       // 快捷键始终随保存写入，保证 settings.json 中一定有记录（默认 Win+Shift+Z）
@@ -487,7 +636,6 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               ? {
                   baseURL: targetProvider.baseURL.trim() || DEFAULT_BASE_URL,
                   apiKey: targetProvider.apiKey.trim(),
-                  apiType: targetProvider.apiType || DEFAULT_API_TYPE,
                 }
               : {}),
           }
@@ -518,7 +666,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       return;
     }
     // 设为当前使用前必须至少指定 1 个模型
-    const hasModel = provider.models.some((m) => m.trim());
+    const hasModel = provider.models.some((m) => !!m.name.trim());
     if (!hasModel) {
       setModelError(t('llmConfig.atLeastOneModel'));
       return;
@@ -593,6 +741,14 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     onClose();
   };
 
+  /** 放弃进行中的「自动获取 / 协议检测」状态（切换服务商、增删服务商时调用） */
+  const resetFetchState = () => {
+    setFetchingProviderId(null);
+    pendingFetchProviderIdRef.current = null;
+    setPendingDetection(null);
+    setFetchModelsError(null);
+  };
+
   const handleAddProvider = () => {
     // 新增服务商时不预填默认地址，避免与已有服务商重复；地址栏留空让用户填写
     const draft = createEmptyProviderDraft();
@@ -605,7 +761,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     }
     setApiKeyError(null);
     setBaseURLError(null);
-    setFetchModelsError(null);
+    resetFetchState();
     setModelError(null);
   };
 
@@ -620,7 +776,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       setPendingUseProviderKey(null);
       setApiKeyError(null);
       setBaseURLError(null);
-      setFetchModelsError(null);
+      resetFetchState();
       setModelError(null);
       return;
     }
@@ -646,7 +802,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     }
     setApiKeyError(null);
     setBaseURLError(null);
-    setFetchModelsError(null);
+    resetFetchState();
     setModelError(null);
   };
 
@@ -672,32 +828,49 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     return () => window.removeEventListener('message', handler);
   }, [onClose]);
 
-  // 监听自动获取模型结果
+  // 监听自动获取模型的阶段一 / 阶段二结果
   useEffect(() => {
     const handler = (event: MessageEvent) => {
       const msg = event.data;
+
+      // 阶段一：模型列表已拉到，但存在未设置协议的模型 → 先请用户确认是否自动检测
+      if (msg.type === 'providerModelsFetched') {
+        const providerId = pendingFetchProviderIdRef.current;
+        if (!providerId) return;
+        const models = normalizeModelList(msg.models);
+        if (models.length === 0) {
+          setFetchingProviderId(null);
+          pendingFetchProviderIdRef.current = null;
+          setPendingDetection(null);
+          setFetchModelsError(t('llmConfig.fetchModelsFailed'));
+          return;
+        }
+        const known = sanitizeApiTypeMap(msg.modelApiTypes);
+        const needDetect = normalizeModelList(msg.needDetect).filter((m) => models.includes(m));
+        if (needDetect.length > 0) {
+          // 保持 fetching 状态（按钮继续显示「获取中...」），等待用户确认
+          setPendingDetection({ models, modelApiTypes: known, needDetect });
+          return;
+        }
+        // 全部模型都已有协议：直接合并
+        setFetchingProviderId(null);
+        pendingFetchProviderIdRef.current = null;
+        setProviders((prev) => mergeFetchedModels(prev, providerId, models, known));
+        setFetchModelsError(null);
+        setModelError(null);
+        return;
+      }
+
+      // 阶段二：探测完成（或用户跳过后由扩展端直接返回）
       if (msg.type !== 'providerModelsResult') return;
       const providerId = pendingFetchProviderIdRef.current;
       if (!providerId) return;
       setFetchingProviderId(null);
       pendingFetchProviderIdRef.current = null;
-      if (Array.isArray(msg.models) && msg.models.length > 0) {
-        const models = Array.from(new Set(
-          (msg.models as unknown[])
-            .filter((m): m is string => typeof m === 'string' && !!m.trim())
-            .map((m) => m.trim()),
-        ));
-        setProviders((prev) => prev.map((p) => {
-          if (p.id !== providerId) return p;
-          // 自动获取结果与已有手动模型合并，避免覆盖用户手动添加的模型
-          const merged = Array.from(new Set([...p.models, ...models]));
-          // 保留原有默认模型；若原默认模型不在列表中，则将第一个模型设为默认
-          const previousDefault = p.defaultModel.trim();
-          const nextDefault = previousDefault && merged.includes(previousDefault)
-            ? previousDefault
-            : (merged[0] || '');
-          return { ...p, models: merged, defaultModel: nextDefault };
-        }));
+      setPendingDetection(null);
+      const models = normalizeModelList(msg.models);
+      if (models.length > 0) {
+        setProviders((prev) => mergeFetchedModels(prev, providerId, models, sanitizeApiTypeMap(msg.modelApiTypes)));
         setFetchModelsError(null);
         setModelError(null);
       } else {
@@ -773,8 +946,17 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
 
   const inputStyle = getInputStyle(colors, isDark);
 
-  /** Anthropic 协议不支持联网搜索，置灰禁用 */
-  const webSearchDisabled = activeProvider?.apiType === 'Anthropic';
+  /**
+   * 联网搜索只有 Responses 协议支持：按当前 provider「默认模型」的协议判断。
+   * 协议已下放到模型级，因此不能再按 provider 判断。
+   */
+  const defaultModelApiType = (() => {
+    if (!activeProvider) return DEFAULT_MODEL_API_TYPE;
+    const named = activeProvider.models.filter((m) => !!m.name.trim());
+    const target = named.find((m) => m.name.trim() === activeProvider.defaultModel.trim()) || named[0];
+    return target?.apiType || DEFAULT_MODEL_API_TYPE;
+  })();
+  const webSearchDisabled = defaultModelApiType !== 'Responses';
 
   const formatBytes = (bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`;
@@ -872,7 +1054,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                 >
                   <button
                     type="button"
-                    onClick={() => { setActiveTabId(p.id); setApiKeyError(null); setBaseURLError(null); setFetchModelsError(null); setModelError(null); }}
+                    onClick={() => { setActiveTabId(p.id); setApiKeyError(null); setBaseURLError(null); resetFetchState(); setModelError(null); }}
                     onDoubleClick={() => handleUseProvider(p)}
                     title={t('llmConfig.useThisProviderHint')}
                     style={{
@@ -956,46 +1138,6 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
 
           {activeProvider ? (
             <>
-              {/* API Type */}
-              <div className="mb-4">
-                <label
-                  className="block text-[12px] font-medium mb-1.5"
-                  style={{ color: colors.textSystem }}
-                >
-                  {t('llmConfig.apiTypeLabel')}
-                </label>
-                <div className="flex gap-2">
-                  {(['Responses', 'Anthropic'] as const).map((type) => {
-                    const selected = activeProvider.apiType === type;
-                    return (
-                      <button
-                        key={type}
-                        type="button"
-                        onClick={() => handleApiTypeChange(type)}
-                        style={{
-                          flex: 1,
-                          padding: '8px 12px',
-                          borderRadius: '6px',
-                          border: `1px solid ${selected ? colors.harness : colors.border}`,
-                          backgroundColor: selected ? (isDark ? '#2a2a30' : '#ffffff') : 'transparent',
-                          color: selected ? colors.textPrimary : colors.textSystem,
-                          fontSize: '12px',
-                          cursor: 'pointer',
-                          outline: 'none',
-                        }}
-                      >
-                        {t(type === 'Responses' ? 'llmConfig.apiTypeResponses' : 'llmConfig.apiTypeAnthropic')}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="text-[11px] mt-1" style={{ color: colors.textSystem }}>
-                  {activeProvider.apiType === 'Responses'
-                    ? t('llmConfig.apiTypeResponsesHint')
-                    : t('llmConfig.apiTypeAnthropicHint')}
-                </div>
-              </div>
-
               {/* Base URL */}
               <div className="mb-4">
                 <label
@@ -1097,18 +1239,24 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                     }}
                   >
                     {activeProvider.models.map((model, index) => {
-                      const isDefault = !!model.trim() && activeProvider.defaultModel === model.trim();
+                      const modelName = model.name;
+                      const isDefault = !!modelName.trim() && activeProvider.defaultModel === modelName.trim();
                       return (
-                        <div key={index} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+                        <div
+                          key={index}
+                          style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}
+                        >
+                          {/* 模型名：宽度收窄，腾出位置给右侧的协议选择 */}
+                          <div style={{ position: 'relative', flex: '1 1 150px', minWidth: 0 }}>
                             <input
                               type="text"
-                              value={model}
+                              value={modelName}
                               onChange={(e) => handleModelChange(index, e.target.value)}
                               placeholder="model-id"
+                              title={modelName}
                               style={{
                                 ...inputStyle,
-                                paddingRight: isDefault ? 64 : 12,
+                                paddingRight: isDefault ? 52 : 12,
                               }}
                               onFocus={(e) => { e.target.style.borderColor = colors.harness; }}
                               onBlur={(e) => { e.target.style.borderColor = colors.border; }}
@@ -1118,7 +1266,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                                 className="text-[11px]"
                                 style={{
                                   position: 'absolute',
-                                  right: 10,
+                                  right: 8,
                                   top: '50%',
                                   transform: 'translateY(-50%)',
                                   color: colors.textSystem,
@@ -1130,10 +1278,41 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                               </span>
                             )}
                           </div>
+                          {/* 该模型的 API 协议 */}
+                          <select
+                            value={model.apiType || DEFAULT_MODEL_API_TYPE}
+                            onChange={(e) => handleModelApiTypeChange(index, e.target.value)}
+                            title={t('llmConfig.modelApiTypeTitle')}
+                            style={{
+                              flexShrink: 0,
+                              width: 116,
+                              padding: '8px 6px',
+                              borderRadius: '6px',
+                              border: `1px solid ${colors.border}`,
+                              backgroundColor: isDark ? '#2a2a30' : '#ffffff',
+                              color: colors.textPrimary,
+                              fontSize: '12px',
+                              outline: 'none',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            {MODEL_API_TYPE_OPTIONS.map((opt) => (
+                              <option
+                                key={opt.value}
+                                value={opt.value}
+                                style={{
+                                  backgroundColor: isDark ? '#2a2a30' : '#ffffff',
+                                  color: colors.textPrimary,
+                                }}
+                              >
+                                {t(opt.labelKey)}
+                              </option>
+                            ))}
+                          </select>
                           <button
                             type="button"
-                            onClick={() => handleSetDefaultModel(model)}
-                            disabled={!model.trim()}
+                            onClick={() => handleSetDefaultModel(modelName)}
+                            disabled={!modelName.trim()}
                             title={t('llmConfig.setDefaultModel')}
                             style={{
                               flexShrink: 0,
@@ -1143,8 +1322,8 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                               backgroundColor: 'transparent',
                               color: colors.textSystem,
                               fontSize: '11px',
-                              cursor: !model.trim() ? 'not-allowed' : 'pointer',
-                              opacity: !model.trim() ? 0.5 : 1,
+                              cursor: !modelName.trim() ? 'not-allowed' : 'pointer',
+                              opacity: !modelName.trim() ? 0.5 : 1,
                               whiteSpace: 'nowrap',
                             }}
                           >
@@ -1323,6 +1502,47 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               {webSearchDisabled
                 ? t('llmConfig.webSearchDisabledHint')
                 : t('llmConfig.webSearchHint')}
+            </div>
+          </div>
+
+          {/* 默认启用的 MCP（写入全局 settings.json 的 mcp.enabled，作为新对话默认值） */}
+          <div className="mt-4">
+            <label
+              className="block text-[12px] font-medium mb-1.5"
+              style={{ color: colors.textSystem }}
+            >
+              {t('llmConfig.mcpLabel')}
+            </label>
+            {mcpServers.length > 0 ? (
+              <div className="flex flex-col gap-1">
+                {mcpServers.map((server) => (
+                  <label
+                    key={server.name}
+                    className="flex items-center gap-2"
+                    style={{ fontSize: '12px', color: colors.textSystem, cursor: 'pointer' }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={server.enabled}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setMcpServers((prev) =>
+                          prev.map((s) => (s.name === server.name ? { ...s, enabled: checked } : s)),
+                        );
+                      }}
+                      style={{ accentColor: colors.harness }}
+                    />
+                    {server.name}
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <div className="text-[11px]" style={{ color: colors.textSystem }}>
+                {t('llmConfig.mcpEmpty')}
+              </div>
+            )}
+            <div className="text-[11px] mt-1" style={{ color: colors.textSystem }}>
+              {t('llmConfig.mcpHint')}
             </div>
           </div>
         </SectionGroup>
@@ -1531,6 +1751,70 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
           {saving ? t('llmConfig.saving') : t('llmConfig.save')}
         </button>
       </div>
+
+      {/* 自动检测 API 类型确认（模型列表已拉取，但存在未设置协议的模型） */}
+      {pendingDetection && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 200,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: 'rgba(0, 0, 0, 0.45)',
+          }}
+          // 点击遮罩等同于「跳过」：不做消耗 token 的检测
+          onClick={handleSkipDetectApiType}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: colors.bgSecondary,
+              border: `1px solid ${colors.border}`,
+              borderRadius: '8px',
+              padding: '16px',
+              maxWidth: '340px',
+              width: 'calc(100% - 32px)',
+              boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
+            }}
+          >
+            <div className="text-[13px] font-semibold mb-2" style={{ color: colors.textPrimary }}>
+              {t('llmConfig.detectApiTypeTitle')}
+            </div>
+            <div className="text-[12px] mb-2 leading-snug" style={{ color: colors.textPrimary }}>
+              {t('llmConfig.detectApiTypeConfirm', { count: pendingDetection.needDetect.length })}
+            </div>
+            <div className="text-[12px] mb-4 leading-snug" style={{ color: colors.textSystem }}>
+              {t('llmConfig.detectApiTypeWarning')}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleSkipDetectApiType}
+                className="px-3 py-1.5 rounded text-[12px] transition-colors"
+                style={{
+                  backgroundColor: 'transparent',
+                  color: colors.textSystem,
+                  border: `1px solid ${colors.border}`,
+                }}
+              >
+                {t('llmConfig.detectApiTypeSkipBtn')}
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDetectApiType}
+                className="px-3 py-1.5 rounded text-[12px] text-white transition-colors"
+                style={{
+                  backgroundColor: colors.harness,
+                }}
+              >
+                {t('llmConfig.detectApiTypeConfirmBtn')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 放弃修改确认 */}
       {showDiscardConfirm && (

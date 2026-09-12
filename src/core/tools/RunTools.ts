@@ -761,6 +761,13 @@ async function* formatAndEmitResult(
  * 此函数尝试修复这些常见问题，修复后返回新对象，无法修复则返回原输入。
  */
 function fixToolInput(input: unknown): unknown {
+  // 顶层是 JSON 字符串时先解包：模型 / Provider 有时会把整个 input 再 JSON.stringify
+  // 一次（double-encode），例如 AskUserQuestion 的入参变成 "{\"question\":...}"。
+  // 不处理的话 safeParse 必然失败，后续还会把原始字符串传给 UI 层。
+  if (typeof input === 'string') {
+    return tryParseJsonString(input);
+  }
+
   if (typeof input !== 'object' || input === null) {
     return input;
   }
@@ -778,6 +785,29 @@ function fixToolInput(input: unknown): unknown {
   }
 
   return hasFix ? result : input;
+}
+
+/**
+ * 尝试把（可能多层嵌套的）JSON 字符串解包成对象 / 数组。
+ * 只有最终解出对象或数组才认为修复成功，否则返回原字符串，
+ * 避免把普通字符串（如 "hello"）误改语义。
+ */
+function tryParseJsonString(value: string): unknown {
+  let current: unknown = value;
+  // 最多解 3 层，防止异常输入造成无意义的反复解析
+  for (let i = 0; i < 3; i++) {
+    if (typeof current !== 'string') break;
+    const trimmed = current.trim();
+    if (!trimmed) break;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed === current) break;
+      current = parsed;
+    } catch {
+      break;
+    }
+  }
+  return current && typeof current === 'object' ? current : value;
 }
 
 /**

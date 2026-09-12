@@ -11,6 +11,7 @@ import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
 import { postMessage, getLogoUri, getHasWorkspace, LOGO_CLASS_NAME, getHostInfo, navigateToConversation } from './webviewEnv';
 import { DEFAULT_WAKE_SHORTCUT } from '../core/utils/shortcut.js';
+import type { McpServerInfo } from '../core/webviewTypes';
 import { t } from './i18n';
 import { ConversationTreeItem } from './ConversationTreeItem';
 import { DeleteConfirmDialog } from './components/DeleteConfirmDialog';
@@ -110,7 +111,6 @@ const App = () => {
   // LLM 配置面板状态
   const [showLLMConfig, setShowLLMConfig] = useState(false);
   const [llmConfigBaseURL, setLlmConfigBaseURL] = useState('');
-  const [llmConfigApiType, setLlmConfigApiType] = useState('');
   const [llmConfigWebSearch, setLlmConfigWebSearch] = useState(false);
   const [llmConfigThinkingEffort, setLlmConfigThinkingEffort] = useState<ThinkingMode>('off');
   const [llmConfigDefaultAgentMode, setLlmConfigDefaultAgentMode] = useState<AgentMode>('manual');
@@ -118,12 +118,17 @@ const App = () => {
   const [llmConfigApiKey, setLlmConfigApiKey] = useState('');
   const [llmConfigProviders, setLlmConfigProviders] = useState<ProviderConfig[]>([]);
   const [llmConfigActiveProvider, setLlmConfigActiveProvider] = useState('');
+  // 设置面板「默认配置」里的 MCP 默认启用列表（全局 settings.json 的 mcp.enabled）
+  const [llmConfigMcpServers, setLlmConfigMcpServers] = useState<McpServerInfo[]>([]);
   // 服务商配置是否已完成（activeProvider 存在且 apiKey 非空）；未完成时禁用输入框并引导打开设置。
   // 初始为 null（尚未探测到配置），避免启动时因探测延迟而误显示"请配置模型服务"。
   const [providerConfigured, setProviderConfigured] = useState<boolean | null>(null);
 
   // Skills for slash-command autocomplete
   const [skills, setSkills] = useState<Array<{ name: string; description: string; isBuiltin?: boolean }>>([]);
+
+  // MCP 服务器列表（来自 mcp.json + settings.json 启用状态），供菜单勾选
+  const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([]);
 
   /**
    * 全局拦截外部链接点击（document capture 阶段，先于任何组件内 onClick）：
@@ -307,15 +312,15 @@ const App = () => {
     setHasCompactArchive, setIsCompactExpanded, setConversations, setConversationsLoading,
     setVisibleConversationCount, setIsLoadingConversation,
     setTheme, setThemeInitialized, setCurrentFile, setSelectedLines, setStats,
-    setConversationTitle, setMaxContextTokens, setSkills, setConversationDropdownOpen,
+    setConversationTitle, setMaxContextTokens, setSkills, setMcpServers, setConversationDropdownOpen,
     setCurrentSessionId, setParentSessionId, setAgentMode, setAgentModeReady, setThinkingMode,
     setModel, setWebSearch, setContextLength, setQueuedMessage,
     setUserChoiceRequest, setNamingSessions, setStreamingVersion, setForceScrollKey,
     setSessionRunningVersion,
     setExpandedSubSessions, setModels, setBalance, setBalanceCurrency, setIsUnlimited,
-    setCurrentSessionIdRef, setShowLLMConfig, setLlmConfigBaseURL, setLlmConfigApiType, setLlmConfigWebSearch,
+    setCurrentSessionIdRef, setShowLLMConfig, setLlmConfigBaseURL, setLlmConfigWebSearch,
     setLlmConfigThinkingEffort, setLlmConfigDefaultAgentMode, setLlmConfigDefaultPromptMode, setLlmConfigApiKey,
-    setLlmConfigProviders, setLlmConfigActiveProvider,
+    setLlmConfigProviders, setLlmConfigActiveProvider, setLlmConfigMcpServers,
     setSettingsDefaults, settingsDefaults, setLocaleVersion, setLlmConfigLanguage,
     setLlmConfigShortcut,
     setProviderConfigured,
@@ -378,6 +383,14 @@ const App = () => {
     postMessage({ type: 'requestLLMConfig' });
   }, []);
 
+  // 勾选/取消某个 MCP：交给 extension 写入 settings.json 的 mcp.enabled，
+  // 成功后 extension 回推最新列表（setMcpServers）刷新 UI。这里先乐观更新，
+  // 避免等待往返造成勾选延迟。
+  const handleMcpToggle = useCallback((name: string, enabled: boolean) => {
+    setMcpServers((prev) => prev.map((s) => (s.name === name ? { ...s, enabled } : s)));
+    postMessage({ type: 'setMcpEnabled', name, enabled });
+  }, []);
+
   // MessagesView 的回调保持引用稳定，避免 App 其他状态变化导致
   // MessagesView 默认 memo 比较失效而整体重渲染。
   const handleExpandCompact = useCallback(() => {
@@ -419,6 +432,7 @@ const App = () => {
     postMessage({ type: 'requestTheme' });
     postMessage({ type: 'requestContextLimit', model });
     postMessage({ type: 'requestSkills' });
+    postMessage({ type: 'requestMcpServers' });
     postMessage({ type: 'requestModels' });
     // 请求 settings.json 中的默认值（model / thinkingMode / agentMode），
     // 使新对话创建时能一次性使用正确默认值，避免先显示 manual 再跳变
@@ -545,7 +559,6 @@ const App = () => {
     <LLMConfigPanel
       colors={colors}
       initialBaseURL={llmConfigBaseURL}
-      initialApiType={llmConfigApiType}
       initialWebSearch={llmConfigWebSearch}
       initialThinkingEffort={llmConfigThinkingEffort}
       initialDefaultAgentMode={llmConfigDefaultAgentMode}
@@ -555,6 +568,7 @@ const App = () => {
       initialShortcut={llmConfigShortcut}
       initialProviders={llmConfigProviders}
       initialActiveProvider={llmConfigActiveProvider}
+      initialMcpServers={llmConfigMcpServers}
       currentSessionId={currentSessionId}
       currentModel={model}
       onClose={() => {
@@ -1024,6 +1038,8 @@ const App = () => {
               serverLoadWarning={serverLoadWarning}
               onDismissServerLoad={() => setServerLoadWarning(null)}
               skills={skills}
+              mcpServers={mcpServers}
+              onMcpToggle={handleMcpToggle}
               commandHistory={commandHistoryRef.current.get(currentSessionIdRef.current ?? '') ?? []}
               balance={balance}
               balanceCurrency={balanceCurrency}

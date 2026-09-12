@@ -9,16 +9,27 @@ import * as os from 'os';
 import { logger } from '../Logger.js';
 import { saveApiKeyToSettings, readSettingsJson } from '../history/Config.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
-import { FALLBACK_MODEL_PARAMS, type ModelTokenLimits } from '../utils/modelConfig.js';
+import {
+  FALLBACK_MODEL_PARAMS,
+  DEFAULT_API_TYPE,
+  resolveApiTypeForModel,
+  type ModelTokenLimits,
+  type ApiType,
+} from '../utils/modelConfig.js';
 import { DEFAULT_WAKE_SHORTCUT, normalizeAccelerator } from '../utils/shortcut.js';
 import type { PromptPresetId } from '../prompt/PromptPreset.js';
 
 /**
- * LLM API 协议类型
+ * LLM API 协议类型（定义在 utils/modelConfig.ts，这里重新导出方便调用方引用）
+ * - 'Responses': OpenAI Responses API（POST {baseURL}/responses 或 {baseURL}/v1/responses）
+ * - 'OpenAI':    OpenAI Chat Completions（POST {baseURL}/v1/chat/completions）
  * - 'Anthropic': Anthropic 兼容协议（POST {baseURL}/v1/messages）
- * - 'Responses': OpenAI Responses API（默认，POST {baseURL}/responses 或 {baseURL}/v1/responses）
+ *
+ * 注意：协议已下放到模型级（llm.providers[].modelConfigs[model].apiType），
+ * 不再有 provider 级 / 全局 apiType。
  */
-export type ApiType = 'Anthropic' | 'Responses';
+export type { ApiType };
+export { DEFAULT_API_TYPE, resolveApiTypeForModel };
 
 export interface LLMConfig {
   apiKey: string;
@@ -27,8 +38,9 @@ export interface LLMConfig {
   maxTokens: number;
   timeout?: number;
   /**
-   * LLM API 协议类型，来自 settings.json 的 llm.apiType
-   * @default 'Responses'
+   * LLM API 协议类型。由调用方（getConfig / callRealLLM）按最终生效的 model
+   * 从 provider.modelConfigs[model].apiType 解析后填入，不再来自全局配置。
+   * @default 'OpenAI'
    */
   apiType?: ApiType;
   /**
@@ -59,13 +71,14 @@ export interface LLMProviderConfig {
   baseURL: string;
   /** API Key */
   apiKey?: string;
-  /** LLM API 协议类型（Anthropic | Responses） */
-  apiType?: ApiType;
   /** 该服务商可用的模型列表（由用户自动获取或手动维护） */
   models?: string[];
   /** 该服务商的默认模型 */
   defaultModel?: string;
-  /** 该服务商各模型的 context/output 覆盖（与 models 并列，保存时自动维护） */
+  /**
+   * 该服务商各模型的配置（与 models 并列，保存时自动维护）：
+   * context / output 限值 + apiType 协议（协议已下放到模型级）
+   */
   modelConfigs?: Record<string, ModelTokenLimits>;
 }
 
@@ -74,7 +87,6 @@ export interface LLMProviderInfo {
   key: string;
   baseURL: string;
   apiKey: string;
-  apiType: ApiType;
   models: string[];
   defaultModel: string;
   modelConfigs: Record<string, ModelTokenLimits>;
@@ -83,7 +95,6 @@ export interface LLMProviderInfo {
 /** 设置面板需要的完整 LLM 配置载荷 */
 export interface LLMConfigPanelPayload {
   baseURL: string;
-  apiType: ApiType;
   webSearch: boolean;
   thinkingEffort: 'off' | 'low' | 'high' | 'max';
   defaultModel: string;
@@ -152,7 +163,7 @@ function createFallbackConfig(): LLMConfig {
     model: '',
     maxTokens: FALLBACK_MODEL_PARAMS.maxOutputTokens,
     timeout: 300000,
-    apiType: 'Responses',
+    apiType: DEFAULT_API_TYPE,
     webSearch: true,
     thinking_budget_tokens: FALLBACK_MODEL_PARAMS.thinking_token_budget,
     thinking_effort: 'high',
@@ -394,7 +405,6 @@ export async function getLLMConfigPanelPayload(): Promise<LLMConfigPanelPayload>
       key,
       baseURL: p!.baseURL,
       apiKey: p?.apiKey || '',
-      apiType: p?.apiType === 'Anthropic' ? 'Anthropic' : 'Responses',
       models: Array.isArray(p?.models)
         ? Array.from(new Set(
             (p!.models as unknown[])
@@ -414,7 +424,6 @@ export async function getLLMConfigPanelPayload(): Promise<LLMConfigPanelPayload>
   const active = activeProvider ? providersMap[activeProvider] : undefined;
   return {
     baseURL: active?.baseURL || defaultConfig.baseURL,
-    apiType: active?.apiType || 'Responses',
     apiKey: active?.apiKey || '',
     webSearch: typeof llm.webSearch === 'boolean' ? llm.webSearch : defaultConfig.webSearch,
     thinkingEffort: llm.thinking_effort || defaultConfig.thinking_effort,
@@ -452,19 +461,22 @@ async function getDefaultConfig(sessionId?: string): Promise<LLMConfig> {
     // 只使用 llm.activeProvider 指向的 provider 配置；
     // 未设置 activeProvider 时使用默认配置，不再兼容旧版扁平字段
     const activeProvider = getActiveProviderFromConfig(configFile);
+    const model = configFile.llm.model || getProviderDefaultModelFromConfig(configFile) || defaultConfig.model;
+    const modelConfigs = activeProvider?.modelConfigs && typeof activeProvider.modelConfigs === 'object'
+      ? activeProvider.modelConfigs
+      : {};
     config = {
       apiKey: activeProvider?.apiKey || defaultConfig.apiKey,
       baseURL: activeProvider?.baseURL || defaultConfig.baseURL,
-      model: configFile.llm.model || getProviderDefaultModelFromConfig(configFile) || defaultConfig.model,
+      model,
       maxTokens: configFile.llm.maxTokens || defaultConfig.maxTokens,
       timeout: configFile.llm.timeout || defaultConfig.timeout,
-      apiType: activeProvider?.apiType || defaultConfig.apiType,
+      // apiType 已下放到模型级：按最终生效的 model 解析
+      apiType: resolveApiTypeForModel(model, modelConfigs),
       webSearch: configFile.llm.webSearch ?? defaultConfig.webSearch,
       thinking_budget_tokens: configFile.llm.thinking_budget_tokens ?? defaultConfig.thinking_budget_tokens,
       thinking_effort: configFile.llm.thinking_effort ?? defaultConfig.thinking_effort,
-      modelConfigs: activeProvider?.modelConfigs && typeof activeProvider.modelConfigs === 'object'
-        ? activeProvider.modelConfigs
-        : {},
+      modelConfigs,
     };
   } else {
     config = { ...defaultConfig };

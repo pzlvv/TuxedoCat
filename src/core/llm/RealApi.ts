@@ -8,7 +8,7 @@ import * as path from 'path';
 import * as os from 'os';
 import type { Message } from '../types.js';
 import { logger } from '../Logger.js';
-import { getConfig, getEnableUsageStats } from './config.js';
+import { getConfig, getEnableUsageStats, resolveApiTypeForModel } from './config.js';
 import type { LLMConfig } from './config.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
 import { getMaxOutputTokens, getContextWindow, getModelConfig } from '../utils/modelConfig.js';
@@ -42,7 +42,7 @@ export type StreamEvent =
   | { type: 'thinking_delta'; thinking: string; messageId?: string }
   | { type: 'text_delta'; text: string; messageId?: string }
   | { type: 'block_stop'; messageId?: string }
-  | { type: 'message_delta'; usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }; stop_reason?: string; messageId?: string; serverSessionRotated?: boolean }
+  | { type: 'message_delta'; usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; reasoning_tokens?: number }; stop_reason?: string; messageId?: string; serverSessionRotated?: boolean }
   | { type: 'web_search_call'; callId: string; action?: string; queries?: string[]; url?: string; messageId?: string }
   | { type: 'web_search_call_update'; callId: string; action?: string; queries?: string[]; url?: string; messageId?: string }
   | { type: 'web_search_call_done'; callId: string; messageId?: string };
@@ -201,9 +201,11 @@ export function buildAssistantMessageFromBlocks(
 /**
  * 调用 LLM API（流式模式）- 统一入口
  *
- * 根据 settings.json 中的 llm.apiType 字段分发：
- * - 'Anthropic'（默认）: Anthropic 兼容协议（POST {baseURL}/v1/messages）
- * - 'Responses': OpenAI Responses API（POST {baseURL}/responses）
+ * 协议已下放到模型级（llm.providers[].modelConfigs[model].apiType），
+ * 这里按最终生效的 model 解析后分发：
+ * - 'Responses': OpenAI Responses API（POST {baseURL}/v1/responses）
+ * - 'OpenAI':    OpenAI Chat Completions（POST {baseURL}/v1/chat/completions）
+ * - 'Anthropic': Anthropic 兼容协议（POST {baseURL}/v1/messages）
  *
  * 返回两种类型的事件：
  * 1. StreamEvent - 细粒度的流式事件（用于 UI 逐 token 更新）
@@ -218,14 +220,26 @@ export async function* callRealLLM(options: StreamOptions): AsyncGenerator<Strea
   const baseConfig = await getConfig(options.sessionId);
   const config = options.modelConfig ? { ...baseConfig, ...options.modelConfig } : baseConfig;
 
-  if (config.apiType === 'Responses') {
-    logger.info('RealAPI', 'Using OpenAI Responses API adapter');
+  // 切换模型（如 setSessionModel 只覆盖 model）后 apiType 必须跟着变，
+  // 因此这里按最终生效的 model 重新解析，而不是沿用 baseConfig 里的值。
+  const apiType = resolveApiTypeForModel(config.model, config.modelConfigs);
+  config.apiType = apiType;
+
+  if (apiType === 'Responses') {
+    logger.info('RealAPI', `Using OpenAI Responses API adapter (model=${config.model})`);
     const { callResponsesLLM } = await import('./ResponsesApi.js');
     yield* callResponsesLLM({ ...options, modelConfig: config });
     return;
   }
 
-  logger.info('RealAPI', 'Using Anthropic-compatible API adapter');
+  if (apiType === 'OpenAI') {
+    logger.info('RealAPI', `Using OpenAI Chat Completions adapter (model=${config.model})`);
+    const { callOpenAiLLM } = await import('./OpenAiApi.js');
+    yield* callOpenAiLLM({ ...options, modelConfig: config });
+    return;
+  }
+
+  logger.info('RealAPI', `Using Anthropic-compatible API adapter (model=${config.model})`);
   yield* callAnthropicLLM({ ...options, modelConfig: config });
 }
 
@@ -422,7 +436,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       let currentBlockType: string | null = null;
       let currentBlockAccumulator: Record<string, string> = {};
       let stopReason: string | undefined;
-      let usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined;
+      let usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; reasoning_tokens?: number } | undefined;
       // 每次 LLM 调用分配唯一 ID，所有流事件共用，确保 WebView 端能精确配对不同次响应
       // 不依赖 message_start 中的 id 字段（部分模型不返回）
       const streamMessageId = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;

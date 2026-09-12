@@ -109,6 +109,7 @@ export class VSCodeUI implements AssistantUI {
    */
   private buildHost(): UIHost {
     return {
+      kind: 'vscode',
       sendToWebview: (message) => {
         this.webviewView?.webview.postMessage(message as WebviewMessage);
       },
@@ -186,6 +187,20 @@ export class VSCodeUI implements AssistantUI {
       getLocale: () => vscode.env.language,
       log: (...args) => {
         VSCodeUI.outputChannel?.appendLine(args.map(a => String(a)).join(' '));
+      },
+      closeConversation: async (sessionId) => {
+        // 关闭会话 = abort -> 释放 MCP 引用。
+        // VS Code 没有独立的会话视图，用户无法直接触发关闭，仅在删除对话时由删除流程调用。
+        try {
+          const { abortCurrentQuery } = await import('./core/Integration.js');
+          abortCurrentQuery(sessionId);
+        } catch { /* 中止失败不阻塞关闭 */ }
+        try {
+          const { clearSessionMcpOverride } = await import('./core/mcp/Config.js');
+          const { getMcpManager } = await import('./core/mcp/Manager.js');
+          clearSessionMcpOverride(sessionId);
+          await getMcpManager().release(sessionId);
+        } catch { /* 释放失败不影响关闭 */ }
       },
       refreshAbortState: () => {
         this.syncAbortState();
@@ -954,6 +969,16 @@ export class VSCodeUI implements AssistantUI {
     });
     // 查询结束代表消息已持久化完成：推送最新对话列表，历史列表打开时条数实时更新
     void this.refreshConversationList();
+    // 此时 meta.json 一定已创建：把新对话期间（meta.json 尚不存在时）记在内存里的
+    // 会话级 MCP 选择补写进去
+    void (async () => {
+      try {
+        const { flushSessionMcpToMeta } = await import('./core/mcp/Config.js');
+        await flushSessionMcpToMeta(sessionID);
+      } catch {
+        // 补写失败不影响主流程
+      }
+    })();
   }
 
   /**

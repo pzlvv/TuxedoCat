@@ -1,8 +1,9 @@
-import React, { useState, useCallback, memo, forwardRef, useImperativeHandle, useRef, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, memo, forwardRef, useImperativeHandle, useRef, useMemo, useEffect, useLayoutEffect } from 'react';
 import { Send, Square, File, EyeOff, Clock, Menu } from 'lucide-react';
 import TextareaAutosize from 'react-textarea-autosize';
 import { ConfigProvider, Dropdown } from 'antd';
 import type { Colors, QueuedMessagePayload, ThinkingMode, PromptMode } from './types';
+import type { McpServerInfo } from '../core/webviewTypes';
 import { postMessage, getWindowSessionId } from './webviewEnv';
 import { t } from './i18n';
 
@@ -83,6 +84,10 @@ interface InputAreaProps {
   isProviderConfigured: boolean | null;
   /** 当前对话是否为 sub-agent（子代理） */
   isSubAgent?: boolean;
+  /** MCP 服务器列表（含启用状态），在菜单「模型」上方以 checkbox 形式列出 */
+  mcpServers?: McpServerInfo[];
+  /** 勾选/取消某个 MCP */
+  onMcpToggle?: (name: string, enabled: boolean) => void;
 }
 
 /**
@@ -397,6 +402,119 @@ const PromptModeSegmentControl = ({
   );
 };
 
+/**
+ * 隐藏测量层的样式：移出视口 + visibility:hidden，既不可见也不参与布局，
+ * 但仍会被浏览器正常排版，因此可以量到真实像素宽度。
+ */
+const HIDDEN_MEASURE_STYLE: React.CSSProperties = {
+  position: 'fixed',
+  left: -99999,
+  top: 0,
+  width: 'max-content',
+  visibility: 'hidden',
+  pointerEvents: 'none',
+  whiteSpace: 'nowrap',
+};
+
+/** 循环滚动时首尾两份文本之间的间隔（px） */
+const MARQUEE_GAP_PX = 28;
+
+/**
+ * 固定宽度的「当前模型」文本：prefix 固定不滚动，模型名可悬停滚动。
+ *
+ * - prefix（如 "当前: "）位置固定，不参与滚动；
+ * - 模型名默认用省略号截断；
+ * - 仅当模型名超出冻结宽度时，鼠标悬停才单向循环滚动，移开即恢复截断。
+ *
+ * 菜单宽度在打开瞬间按当前模型冻结（见 ToggleMenu 的测量逻辑），
+ * 展开期间选中更长的模型时这里会溢出，靠悬停滚动查看全名，菜单宽度保持不变；
+ * 下次重新打开菜单会按新的当前模型重新冻结宽度，此时不再溢出、也就不需要滚动。
+ */
+const HoverScrollText = memo(({
+  prefix,
+  text,
+  width,
+  style,
+}: {
+  prefix: string;
+  text: string;
+  width?: number | null;
+  style?: React.CSSProperties;
+}) => {
+  const ellipsisRef = useRef<HTMLSpanElement>(null);
+  const [overflow, setOverflow] = useState(0);
+  const [contentWidth, setContentWidth] = useState(0);
+
+  // 省略号截断时 scrollWidth 仍是完整文本宽度，用它判断是否被截断
+  useLayoutEffect(() => {
+    const el = ellipsisRef.current;
+    if (!el) return;
+    const full = el.scrollWidth;
+    const visible = el.clientWidth;
+    setContentWidth(full);
+    setOverflow(full > visible + 1 ? full - visible : 0);
+  }, [text, width, prefix]);
+
+  // 单向循环滚动：内部放两份文本（各带一份间隔），滚动「一份文本 + 间隔」后无缝衔接。
+  // 速度约 30px/s，短名字给一个最短时长，避免滚动过快。
+  const duration = overflow > 0 ? Math.max(1.5, (contentWidth + MARQUEE_GAP_PX) / 30) : 0;
+
+  return (
+    <span
+      // is-overflowing：只有真正被截断时才允许悬停隐藏截断文本，
+      // 否则名字能完整显示时悬停会变成空白
+      className={`hover-scroll-text${overflow > 0 ? ' is-overflowing' : ''}`}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        width: width ?? undefined,
+        overflow: 'hidden',
+        whiteSpace: 'nowrap',
+        ...style,
+      }}
+    >
+      {/* 固定不滚动的前缀；whiteSpace:pre 保留文案自带的尾随空格，避免与模型名粘连 */}
+      <span style={{ flexShrink: 0, whiteSpace: 'pre' }}>{prefix}</span>
+      <span
+        style={{
+          position: 'relative',
+          flex: '1 1 0',
+          minWidth: 0,
+          overflow: 'hidden',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {/* 默认：省略号截断 */}
+        <span
+          ref={ellipsisRef}
+          className="hover-scroll-text__ellipsis"
+          style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        >
+          {text}
+        </span>
+        {/* 悬停：单向循环滚动（复制一份文本实现无缝衔接） */}
+        {overflow > 0 && (
+          <span
+            className="hover-scroll-text__marquee"
+            aria-hidden="true"
+            style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}
+          >
+            <span
+              className="hover-scroll-text__marquee-inner"
+              style={{ animation: `tuxedo-marquee-loop ${duration}s linear infinite` }}
+            >
+              {/* 两份文本各带右侧间隔（padding 计入盒子宽度，保证 -50% 的位移精确）：
+                  位移 -50%（一份文本 + 间隔）后无缝衔接，首尾之间始终留出间隔，不会粘连 */}
+              <span className="hover-scroll-text__copy" style={{ paddingRight: MARQUEE_GAP_PX }}>{text}</span>
+              <span className="hover-scroll-text__copy" aria-hidden="true" style={{ paddingRight: MARQUEE_GAP_PX }}>{text}</span>
+            </span>
+          </span>
+        )}
+      </span>
+    </span>
+  );
+});
+
 const ToggleMenu = memo(({
   agentModeReady,
   model,
@@ -409,6 +527,8 @@ const ToggleMenu = memo(({
   webSearch,
   onWebSearchChange,
   onOpenSettings,
+  mcpServers,
+  onMcpToggle,
   colors,
   isDark,
 }: {
@@ -423,9 +543,49 @@ const ToggleMenu = memo(({
   webSearch: boolean;
   onWebSearchChange: (webSearch: boolean) => void;
   onOpenSettings: () => void;
+  mcpServers?: McpServerInfo[];
+  onMcpToggle?: (name: string, enabled: boolean) => void;
   colors: Colors;
   isDark: boolean;
 }) => {
+  // Dropdown / 二级菜单的展开状态改为受控：Ant 在 submenu 子项被点击后会自动收起弹层，
+  // 受控后才能把「勾选 MCP」这一次收起请求忽略掉（见 suppressCloseUntilRef）。
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [submenuOpenKeys, setSubmenuOpenKeys] = useState<string[]>([]);
+  /** 在该时间戳之前到达的「收起/关闭」请求会被忽略，用于让勾选 MCP 后菜单保持展开 */
+  const suppressCloseUntilRef = useRef(0);
+
+  // 宽度测量（两套，用隐藏层实测像素宽度，而不是按字符数估算 ——
+  // 比例字体下字符数与实际宽度不成正比）：
+  //
+  // 1) 模型列表：按「最长模型名」（600 粗体，覆盖选中态）测量，让所有模型名都能
+  //    完整显示（列表项不滚动、不截断），且切换选中项不会改变二级菜单宽度。
+  // 2) 「当前模型」行：打开菜单时按当前模型实测一次并冻结，菜单宽度取决于当前模型
+  //    而不是最长的模型名；展开期间切换模型不重测，超长名字默认省略号截断、
+  //    鼠标悬停时单向循环滚动查看全名；下次重新打开菜单再按新的当前模型重测。
+  const modelNameMeasureRef = useRef<HTMLDivElement>(null);
+  const currentModelMeasureRef = useRef<HTMLSpanElement>(null);
+  const [modelNameWidth, setModelNameWidth] = useState<number | null>(null);
+  const [currentModelWidth, setCurrentModelWidth] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    const container = modelNameMeasureRef.current;
+    if (!container) return;
+    let max = 0;
+    for (const child of Array.from(container.children)) {
+      max = Math.max(max, (child as HTMLElement).getBoundingClientRect().width);
+    }
+    setModelNameWidth(max > 0 ? Math.ceil(max) : null);
+  }, [models]);
+
+  useLayoutEffect(() => {
+    // 只在打开菜单的那一刻测量并冻结；open 变为 true 后切换模型不会触发重测
+    if (!menuOpen) return;
+    const el = currentModelMeasureRef.current;
+    const w = el ? el.getBoundingClientRect().width : 0;
+    setCurrentModelWidth(w > 0 ? Math.ceil(w) : null);
+  }, [menuOpen]);
+
   // 构建菜单项（每项之间用分割线隔开）
   const makeDivider = (key: string) => ({
     key,
@@ -506,7 +666,8 @@ const ToggleMenu = memo(({
             )}
           </span>
         </span>
-        <span style={{ color: webSearchChecked ? colors.harness : colors.textPrimary, userSelect: 'none', fontSize: '12px', marginLeft: '12px' }}>
+        {/* 勾选只改变 checkbox 自身，文字颜色保持不变，避免整行变色 */}
+        <span style={{ color: colors.textPrimary, userSelect: 'none', fontSize: '12px', marginLeft: '12px' }}>
           {t('inputArea.webSearch')}
         </span>
       </div>
@@ -538,6 +699,112 @@ const ToggleMenu = memo(({
     ),
   };
 
+  // MCP 服务器子菜单：checkbox 形式列出 mcp.json 中声明的全部服务器。
+  // 勾选状态写入 settings.json 的 mcp.enabled，未勾选即 disable（默认全部 disable）。
+  //
+  // Ant 的 submenu 在子项被点击后会收起弹层，导致勾选一个就要重新展开。
+  // 这里把 Dropdown / Menu 的展开状态改为受控，并在勾选瞬间打一个 suppress 时间窗
+  // （见 suppressCloseUntilRef），把紧随其后的「收起二级菜单 / 关闭 Dropdown」请求忽略掉。
+  const mcpChildren = mcpServers && mcpServers.length > 0
+    ? mcpServers.map((server) => {
+        // 启用后的运行时状态：连接中 / 工具数 / 连接失败
+        const statusText = !server.enabled
+          ? ''
+          : server.error
+            ? t('inputArea.mcpError')
+            : server.running
+              ? t('inputArea.mcpToolCount', { count: String(server.toolCount ?? 0) })
+              : t('inputArea.mcpConnecting');
+        const tooltip = server.error
+          ? `${server.name}: ${server.error}`
+          : (server.command.length > 0 ? server.command.join(' ') : server.type);
+
+        return {
+          key: `mcp:${server.name}`,
+          label: (
+            <div
+              onClick={(e) => {
+                // 阻止冒泡到 MenuItem，避免菜单因点击该项而关闭（可连续勾选多个）
+                e.stopPropagation();
+                // 让紧随其后的「收起二级菜单 / 关闭 Dropdown」请求被忽略
+                suppressCloseUntilRef.current = Date.now() + 300;
+                onMcpToggle?.(server.name, !server.enabled);
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                cursor: 'pointer',
+                // 垂直内边距收紧，抵消第二行小字带来的高度；
+                // 水平方向不加额外内边距，避免 checkbox 被推得过于靠右
+                padding: '3px 0',
+              }}
+              title={tooltip}
+            >
+              <span style={{ width: '14px', flexShrink: 0, textAlign: 'center' }}>
+                <span
+                  style={{
+                    display: 'inline-block',
+                    width: 12,
+                    height: 12,
+                    borderRadius: 3,
+                    border: `1px solid ${server.enabled ? colors.harness : colors.border}`,
+                    backgroundColor: server.enabled ? colors.harness : 'transparent',
+                    verticalAlign: '-2px',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {server.enabled && (
+                    <svg width="10" height="10" viewBox="0 0 12 12" style={{ display: 'block', margin: '0 auto' }}>
+                      <path d="M2 6l3 3l5-6" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  )}
+                </span>
+              </span>
+              {/* 名称 + 状态两行：状态字号更小，整体行高与其它菜单项保持一致 */}
+              <span
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  marginLeft: '12px',
+                  lineHeight: 1.15,
+                  userSelect: 'none',
+                  minWidth: 0,
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: '12px',
+                    color: server.enabled ? colors.harness : colors.textPrimary,
+                    maxWidth: '220px',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {server.name}
+                </span>
+                {statusText && (
+                  <span style={{ fontSize: '10px', color: server.error ? '#ef4444' : colors.textSystem }}>
+                    {statusText}
+                  </span>
+                )}
+              </span>
+            </div>
+          ),
+          // 禁用 MenuItem 自身点击，交互完全交给 label 内部 div 处理
+          disabled: true,
+        };
+      })
+    : [{
+        key: 'mcpEmpty',
+        label: (
+          <div style={{ padding: '3px 0', fontSize: '12px', color: colors.textSystem }}>
+            {t('inputArea.mcpEmpty')}
+          </div>
+        ),
+        disabled: true,
+      }];
+
   const menuItems = agentModeReady ? [
     settingsItem,
     makeDivider('divider-1'),
@@ -564,32 +831,115 @@ const ToggleMenu = memo(({
     makeDivider('divider-2'),
     webSearchItem,
     makeDivider('divider-3'),
+    // MCP：位于「模型」上方，二级菜单内以 checkbox 列出所有 MCP
     {
-      key: 'modelGroup',
+      key: 'mcpGroup',
       label: (
         <div style={{ display: 'flex', alignItems: 'center' }}>
           <span style={{ width: '14px', flexShrink: 0 }} />
-          <span style={{ fontSize: '12px', color: colors.textPrimary, userSelect: 'none', marginLeft: '12px' }}>{t('inputArea.model')}</span>
+          <span style={{ fontSize: '12px', color: colors.textPrimary, userSelect: 'none', marginLeft: '12px' }}>{t('inputArea.mcp')}</span>
+        </div>
+      ),
+      type: 'submenu' as const,
+      children: mcpChildren,
+    },
+    makeDivider('divider-3b'),
+    {
+      key: 'modelGroup',
+      // hover-scroll-scope 挂在子菜单的 li 上（Ant 会把 item 的 className 应用到整行），
+      // 这样鼠标放在「模型」这一整行任意位置都能触发当前模型名的滚动，而不只是名字上
+      className: 'hover-scroll-scope',
+      // 子菜单弹层容器的 class（rc-menu 把 popupClassName 加到弹层根节点上）。
+      // 模型列表可能很长（如 opencode 有 37 个），需要限制高度并滚动，见 index.css
+      popupClassName: 'model-list-submenu',
+      label: (
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <span style={{ width: '14px', flexShrink: 0 }} />
+          {/* 「模型」+ 当前模型两行：当前模型字号更小、且单独往前移（不跟随「模型」的缩进）。
+              缩进放在第一行而非容器上，第二行才能单独左移。 */}
+          <span
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '4px',
+              lineHeight: 1.35,
+              userSelect: 'none',
+              minWidth: 0,
+            }}
+          >
+            <span style={{ fontSize: '12px', color: colors.textPrimary, marginLeft: '12px' }}>{t('inputArea.model')}</span>
+            {model && (
+              // 宽度为打开菜单时冻结的「当前: + 当前模型」宽度；
+              // prefix 固定不滚动，模型名默认省略号截断、悬停才单向循环滚动。
+              // 文案自带尾随空格（"当前: "），作为 prefix 单独渲染，避免与模型名粘连。
+              <HoverScrollText
+                prefix={t('inputArea.modelCurrent')}
+                text={model}
+                width={currentModelWidth}
+                style={{ fontSize: '10px', color: colors.textSystem }}
+              />
+            )}
+          </span>
         </div>
       ),
       type: 'submenu' as const,
       children: models.map(m => ({
         key: m,
         label: (
+          // 用块级 flex 而不是 inline-flex：inline-flex 会作为行内盒参与父级行盒的
+          // 基线对齐，选中时出现的实心圆点会改变基线，使菜单项高度在 36.5px / 33px 之间
+          // 抖动。块级 flex 的高度只由内容决定，选中与否都保持 32px（与其它菜单项一致）。
           <span style={{
             fontSize: '12px',
-            display: 'inline-flex',
+            display: 'flex',
             alignItems: 'center',
             color: model === m ? colors.harness : colors.textPrimary,
             fontWeight: model === m ? 600 : 400,
           }}>
-            <span style={{ display: 'inline-block', width: '14px', textAlign: 'center', flexShrink: 0 }}>
-              {model === m && '✓'}
+            {/* 选中标记：用 CSS 画实心圆点，尺寸精确可控（不受字体/行高影响），
+                槽宽收窄到 12px 让模型名更靠左，整体更紧凑 */}
+            <span
+              style={{
+                width: '12px',
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              {model === m && (
+                <span
+                  style={{
+                    display: 'block',
+                    width: 7,
+                    height: 7,
+                    borderRadius: '50%',
+                    backgroundColor: colors.harness,
+                  }}
+                />
+              )}
             </span>
-            <span style={{ marginLeft: '12px' }}>{m}</span>
+            {/* 宽度按最长模型名（600 粗体）固定：列表里名字完整显示、不滚动不截断，
+                切换选中项也不会改变二级菜单宽度（ellipsis 仅作兜底） */}
+            <span
+              style={{
+                marginLeft: '8px',
+                width: modelNameWidth ?? undefined,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {m}
+            </span>
           </span>
         ),
-        onClick: (e: any) => { e.domEvent.stopPropagation(); onModelChange(m); },
+        onClick: (e: any) => {
+          e.domEvent.stopPropagation();
+          // 选择模型后保持菜单与二级菜单都展开，与勾选 MCP 的行为一致
+          suppressCloseUntilRef.current = Date.now() + 300;
+          onModelChange(m);
+        },
       })),
     },
     makeDivider('divider-4'),
@@ -655,9 +1005,23 @@ const ToggleMenu = memo(({
       menu={{
         items: menuItems,
         className: 'agent-mode-menu',
+        openKeys: submenuOpenKeys,
+        onOpenChange: (keys) => {
+          // 勾选 MCP 触发的自动收起：忽略，保持二级菜单展开
+          if (Date.now() < suppressCloseUntilRef.current) return;
+          setSubmenuOpenKeys(keys as string[]);
+        },
       }}
       trigger={['click']}
       placement="topRight"
+      open={menuOpen}
+      onOpenChange={(next) => {
+        // 勾选 MCP / 选择模型触发的自动关闭：忽略，保持整个菜单展开
+        if (!next && Date.now() < suppressCloseUntilRef.current) return;
+        setMenuOpen(next);
+        // 主菜单关闭时一并清空二级菜单展开状态，否则子菜单浮层会残留
+        if (!next) setSubmenuOpenKeys([]);
+      }}
       dropdownRender={(menu) => (
         <div
           className="agent-mode-menu"
@@ -683,6 +1047,21 @@ const ToggleMenu = memo(({
         <Menu size={14} />
       </button>
     </Dropdown>
+    {/* 隐藏测量层，必须始终挂载（不能放进 dropdownRender，否则菜单未展开时量不到）：
+        - 第一层渲染全部模型名（600 粗体），量出最长模型名的宽度，供模型列表项使用，
+          保证列表里每个名字都能完整显示、且切换选中项不改变二级菜单宽度；
+        - 第二层只渲染当前模型，菜单打开时读取并冻结，供「当前:」行使用，
+          使菜单宽度取决于当前模型而不是最长的模型名。 */}
+    <div ref={modelNameMeasureRef} aria-hidden="true" style={HIDDEN_MEASURE_STYLE}>
+      {models.map((m) => (
+        <span key={m} style={{ display: 'inline-block', fontSize: '12px', fontWeight: 600 }}>{m}</span>
+      ))}
+    </div>
+    <div aria-hidden="true" style={HIDDEN_MEASURE_STYLE}>
+      <span ref={currentModelMeasureRef} style={{ display: 'inline-block', fontSize: '10px' }}>
+        {t('inputArea.modelCurrent')}{model}
+      </span>
+    </div>
     </ConfigProvider>
   );
 });
@@ -816,6 +1195,8 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   onOpenSettings,
   isProviderConfigured,
   isSubAgent,
+  mcpServers,
+  onMcpToggle,
 }, ref) {
   const [input, setInput] = useState('');
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
@@ -1326,6 +1707,8 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             webSearch={webSearch}
             onWebSearchChange={handleWebSearchChange}
             onOpenSettings={onOpenSettings || (() => {})}
+            mcpServers={mcpServers}
+            onMcpToggle={onMcpToggle}
             colors={colors}
             isDark={isDark}
           />

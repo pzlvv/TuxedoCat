@@ -41,3 +41,39 @@ export async function closeLLMDispatcher(): Promise<void> {
     // 关闭 dispatcher 失败无需影响扩展退出
   }
 }
+
+let probeDispatcher: Dispatcher | undefined;
+
+/**
+ * 「短请求」专用 dispatcher：模型列表拉取、API 协议探测等。
+ *
+ * 与 getLLMDispatcher 的差别是**保留正常的 keep-alive 连接复用**：
+ * - getLLMDispatcher 的 keepAliveTimeout=1 是为了避免长连接流式请求复用到
+ *   被网关静默丢弃的僵尸 socket；代价是每个请求都要重新做 TCP/TLS 握手。
+ * - 协议探测是短平快的 POST，一次「自动获取」可能打出上百个请求
+ *   （37 模型 × 3 协议 = 111 个），逐个重新握手会让耗时翻倍
+ *   （实测 15.3s → 7.2s）。
+ * - 探测请求本身带 AbortController 超时，即使复用到失效连接也不会无限等待。
+ */
+export function getProbeDispatcher(): Dispatcher {
+  if (!probeDispatcher) {
+    probeDispatcher = new Agent({
+      keepAliveTimeout: 60_000,
+      keepAliveMaxTimeout: 120_000,
+      // 并发探测（默认 10 模型 × 3 协议）时留足连接数
+      connections: 32,
+    });
+  }
+  return probeDispatcher;
+}
+
+export async function closeProbeDispatcher(): Promise<void> {
+  if (!probeDispatcher) return;
+  const dispatcher = probeDispatcher;
+  probeDispatcher = undefined;
+  try {
+    await dispatcher.close();
+  } catch {
+    // 关闭 dispatcher 失败无需影响扩展退出
+  }
+}

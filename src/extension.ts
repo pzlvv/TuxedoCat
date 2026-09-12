@@ -150,6 +150,17 @@ export function activate(context: vscode.ExtensionContext) {
   statusBarItem.show();
 
   context.subscriptions.push(statusBarItem);
+
+  // MCP：引用计数模型下，进程由「打开的对话」驱动，扩展激活时只做残留清理，
+  // 不主动连接任何服务器；会话打开 / 切换时才 acquire。
+  void (async () => {
+    try {
+      const { getMcpManager } = await import('./core/mcp/Manager.js');
+      await getMcpManager().prune();
+    } catch (err) {
+      console.error('[Extension] Failed to initialize MCP servers:', err);
+    }
+  })();
 }
 
 class AssistantViewProvider implements vscode.WebviewViewProvider {
@@ -383,4 +394,12 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
   }
 }
 
-export function deactivate() {}
+export async function deactivate(): Promise<void> {
+  // 停用扩展时结束所有 MCP 子进程，避免留下孤儿进程
+  try {
+    const { getMcpManager } = await import('./core/mcp/Manager.js');
+    getMcpManager().shutdown();
+  } catch {
+    // 停用阶段的清理失败不应影响退出
+  }
+}

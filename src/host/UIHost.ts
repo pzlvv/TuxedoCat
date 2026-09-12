@@ -44,6 +44,9 @@ export interface SaveFileResult {
 }
 
 export interface UIHost {
+  /** 宿主类型（用于区分单 webview / 多 webview 的会话生命周期语义） */
+  readonly kind?: 'vscode' | 'electron';
+
   /** 推送消息到 webview（消息体由调用方组装，含 sessionId 等字段） */
   sendToWebview(message: Record<string, unknown>): void;
 
@@ -85,6 +88,13 @@ export interface UIHost {
 
   /** 日志输出 */
   log(...args: unknown[]): void;
+
+  /**
+   * 关闭会话（仅销毁视图/释放资源，不删除磁盘数据）：先中止正在运行的查询，再释放 MCP 引用。
+   * - Electron：用户可点聊天视图的关闭按钮直接触发，且会销毁对应聊天视图。
+   * - VS Code：用户无法直接触发，仅在删除对话时由删除流程调用。
+   */
+  closeConversation?(sessionId: string): void | Promise<void>;
 
   /** 刷新宿主侧 abort 按钮状态（后台任务/子代理被中止后调用） */
   refreshAbortState?(): void;

@@ -19,18 +19,28 @@ export interface SettingsDefaults {
   webSearch: boolean;
 }
 
+/** LLM API 协议类型（模型级配置） */
+export type ApiType = 'Responses' | 'OpenAI' | 'Anthropic';
+
+/** 单个模型的配置项 */
+export interface ModelConfigEntry {
+  context?: number;
+  output?: number;
+  /** 该模型使用的 API 协议（已下放到模型级） */
+  apiType?: ApiType;
+}
+
 /** settings.json 中的 provider 配置项 */
 export interface ProviderConfig {
   key: string;
   baseURL: string;
   apiKey: string;
-  apiType: 'Responses' | 'Anthropic';
   /** 该服务商可用的模型列表（可选，由自动获取或手动维护） */
   models?: string[];
   /** 该服务商的默认模型 */
   defaultModel?: string;
-  /** 该服务商各模型的 context/output 配置 */
-  modelConfigs?: Record<string, { context?: number; output?: number }>;
+  /** 该服务商各模型的配置（context/output/apiType） */
+  modelConfigs?: Record<string, ModelConfigEntry>;
 }
 
 export interface Message {
@@ -51,6 +61,12 @@ export interface Message {
   isStreaming?: boolean;
   /** 消息到达时间戳（ms），用于统计耗时分布 */
   timestamp?: number;
+  /** API 返回的本次输出 token 数（流式结束后才有，用于 thinking 完成后的统计） */
+  outputTokens?: number;
+  /** API 返回的思考（reasoning）token 数（Responses API 才有，用于 thinking 完成后的统计） */
+  reasoningTokens?: number;
+  /** 流式消息 ID（仅实时流式消息有；历史恢复的消息没有，用于关联全局流式统计） */
+  streamId?: string;
   /** 工具结果返回时间戳（ms），用于精确统计工具执行耗时 */
   toolResultTimestamp?: number;
   /** 工具开始执行时间戳（ms），即用户确认后、工具实际开始运行的时间，用于区分等待用户确认和工具执行时间 */

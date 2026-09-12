@@ -82,6 +82,18 @@ export function registerSessionEngine(sessionID: string, engine: QueryEngine): v
   sessionEngines.set(sessionID, engine);
 }
 
+/**
+ * 清空所有会话引擎的 system prompt / 工具缓存。
+ *
+ * 工具集合在运行期发生变化（如启用/停用 MCP、MCP 连接后工具列表变化）时调用，
+ * 使下一次 LLM 请求重新组装 system prompt 与可用工具列表。
+ */
+export function invalidateAllPromptCaches(): void {
+  for (const engine of sessionEngines.values()) {
+    engine.invalidateToolCache();
+  }
+}
+
 export class QueryEngine {
   private sesssionID: string;
   private config: QueryEngineConfig;
@@ -183,6 +195,15 @@ export class QueryEngine {
   setPromptPreset(id: PromptPresetId): void {
     if (this.promptPresetId === id) return;
     this.promptPresetId = id;
+    this.fullSystemPrompt = null;
+    this.effectiveToolNames = undefined;
+  }
+
+  /**
+   * 清空 system prompt / 工具缓存，使下一次 LLM 请求重新组装。
+   * 供工具集合变化（MCP 启用/停用、工具列表刷新）时调用。
+   */
+  invalidateToolCache(): void {
     this.fullSystemPrompt = null;
     this.effectiveToolNames = undefined;
   }

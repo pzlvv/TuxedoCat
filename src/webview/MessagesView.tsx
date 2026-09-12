@@ -16,6 +16,7 @@ import type { Message, Colors } from './types';
 import { postMessage, getLogoUri, LOGO_CLASS_NAME, navigateToConversation } from './webviewEnv';
 import { profileLog } from './debug';
 import { t } from './i18n';
+import { useStreamStats, formatCount } from './hooks/useStreamStats';
 
 /**
  * Pre-computed stable tool component map — created once outside the component
@@ -99,6 +100,9 @@ function areEqual(prevProps: any, nextProps: any): boolean {
   if (prev.hasBorder !== next.hasBorder) return false;
   if (prev.isFromAgent !== next.isFromAgent) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
+  if (prev.streamId !== next.streamId) return false;
+  if (prev.outputTokens !== next.outputTokens) return false;
+  if (prev.reasoningTokens !== next.reasoningTokens) return false;
   if (prev.param !== next.param) return false;
   if (prev.filePath !== next.filePath) return false;
   if (prev.fileSelectedLines !== next.fileSelectedLines) {
@@ -137,6 +141,13 @@ function areSegmentTimelineEqual(prevProps: any, nextProps: any): boolean {
     if (a.status !== b.status) return false;
     if (a.role !== b.role) return false;
     if (a.toolCallId !== b.toolCallId) return false;
+    // 流式结束标记与完成后才有的 outputTokens / reasoningTokens 必须能传到
+    // ThinkingMessage，否则组件会一直停留在流式统计上无法收敛。
+    // streamId 变化（如切回已打开对话时重新关联统计）也必须能传下去。
+    if (a.isStreaming !== b.isStreaming) return false;
+    if (a.streamId !== b.streamId) return false;
+    if (a.outputTokens !== b.outputTokens) return false;
+    if (a.reasoningTokens !== b.reasoningTokens) return false;
   }
   return true;
 }
@@ -511,6 +522,10 @@ const ThinkingMessage = memo(function ThinkingMessage({
   // 始终用 userExpanded 控制 open，避免流式结束时 React 移除 open 属性导致自动折叠。
   const [userExpanded, setUserExpanded] = useState(false);
 
+  // 流式期间实时统计已生成的字符数与速度（每秒刷新）。
+  // 统计按 streamId 关联，历史恢复的消息没有 streamId，不显示统计。
+  const stats = useStreamStats(message.streamId);
+
   const isOpen = userExpanded;
 
   return (
@@ -539,6 +554,28 @@ const ThinkingMessage = memo(function ThinkingMessage({
       >
         <span>thinking</span>
         <ChevronRight size={13} className="ml-1 transition-transform group-open:rotate-90" style={{ color: colors.textSystem, flexShrink: 0 }} />
+        {stats && (
+          <span
+            className="ml-2 whitespace-nowrap"
+            style={{ color: colors.textSystem, opacity: 0.7, fontSize: '12px', fontVariantNumeric: 'tabular-nums' }}
+          >
+            {stats.ttftMs !== null
+              ? `${t('messagesView.thinkingFor', { time: (stats.ttftMs / 1000).toFixed(1) })}, `
+              : ''}
+            {(() => {
+              // decode 时间太短（<0.5s）时速度不准，不显示 "@ xx / s"
+              const showRate = stats.decodeMs >= 500;
+              const key = stats.unit === 'tokens'
+                ? (showRate ? 'messagesView.streamStatsTokens' : 'messagesView.streamStatsTokensNoRate')
+                : (showRate ? 'messagesView.streamStatsChars' : 'messagesView.streamStatsCharsNoRate');
+              return t(key, {
+                count: formatCount(stats.count),
+                time: (stats.decodeMs / 1000).toFixed(1),
+                rate: formatCount(stats.rate),
+              });
+            })()}
+          </span>
+        )}
       </summary>
       <div
         className="pl-5 whitespace-pre-wrap mt-1"

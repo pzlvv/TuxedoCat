@@ -14,6 +14,7 @@ import { AgentTool } from './agent/AgentTool.js';
 import { ReplyTool } from './agent/ReplyTool.js';
 import { SkillTool } from './skill/SkillTool.js';
 import { AskUserQuestionTool } from './askuser/AskUserQuestion.js';
+import { getMcpTools } from '../mcp/Manager.js';
 
 
 /**
@@ -61,16 +62,22 @@ if (!_lastTool || _lastTool.name !== 'Skill') {
 
 /**
  * 获取所有工具
+ *
+ * 已连接 MCP 服务器的工具会追加在内置工具之后。
+ * 注意：DEFAULT_TOOLS 自身的「最后一项必须是 SkillTool」不变式不受影响，
+ * 这里只是返回一个新的合并数组。
  */
 export function getAllTools(): Tools {
-  return DEFAULT_TOOLS;
+  const mcpTools = getMcpTools();
+  if (mcpTools.length === 0) return DEFAULT_TOOLS;
+  return [...DEFAULT_TOOLS, ...mcpTools];
 }
 
 /**
- * 根据名称查找工具
+ * 根据名称查找工具（含 MCP 工具）
  */
 export function getToolByName(name: string): Tool | undefined {
-  return DEFAULT_TOOLS.find((tool) =>
+  return getAllTools().find((tool) =>
     tool.name === name || tool.aliases?.includes(name),
   );
 }
@@ -79,7 +86,7 @@ export function getToolByName(name: string): Tool | undefined {
  * 过滤启用的工具
  */
 export function getEnabledTools(): Tools {
-  return DEFAULT_TOOLS.filter((tool) => tool.isEnabled());
+  return getAllTools().filter((tool) => tool.isEnabled());
 }
 
 export { getPendingToolUseIds } from './RunTools.js';

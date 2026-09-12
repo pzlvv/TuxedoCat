@@ -10,6 +10,34 @@ import type { PermissionResult } from '../core/tools/Tool.js';
 import type { UserChoiceManager } from './userChoice.js';
 
 /**
+ * 将工具入参规范化为对象。
+ *
+ * core 层在输入校验失败时会把原始 toolUse.input 直接传给 onPreToolCall，
+ * 极端情况下它是 JSON 字符串（模型 double-encode，或 Provider JSON.parse 失败后
+ * 保留了原始字符串）。若不处理，`{ ...args }` 会把字符串展开成字符索引对象，
+ * 后续 `k in args` 也会因右操作数不是对象而抛 TypeError，导致整个 query 失败。
+ */
+function normalizeToolArgs(args: unknown): Record<string, any> {
+  if (args && typeof args === 'object') {
+    return args as Record<string, any>;
+  }
+  if (typeof args === 'string') {
+    const trimmed = args.trim();
+    if (trimmed) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object') {
+          return parsed as Record<string, any>;
+        }
+      } catch {
+        // 不是合法 JSON，按空对象处理
+      }
+    }
+  }
+  return {};
+}
+
+/**
  * ToolHandler - 管理工具调用的 UI 展示
  */
 export class ToolHandler {
@@ -41,11 +69,14 @@ export class ToolHandler {
     sessionID: string,
     toolUseId: string,
     toolName: string,
-    args: Record<string, any>,
+    rawArgs: Record<string, any>,
     tool: unknown,
   ): Promise<PermissionResult> {
     const toolCallId = toolUseId;
     logger.info('VSCodeUI', `onPreToolCall: ${toolName} (toolCallId: ${toolCallId})`);
+
+    // 统一规范化为对象，避免 rawArgs 为 JSON 字符串时后续展开 / `in` 运算崩溃
+    const args = normalizeToolArgs(rawArgs);
 
     // 自动模式跳过确认
     const effectiveAgentMode = this.sessionAgentModes.get(sessionID) ?? 'manual';

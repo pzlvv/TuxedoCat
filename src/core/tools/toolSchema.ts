@@ -143,7 +143,8 @@ export async function toolToLlmFormat(tool: Tool): Promise<LlmTool> {
     },
   );
 
-  const jsonSchema = zodToJsonSchema(tool.inputSchema);
+  // 外部工具（MCP 等）自带 JSON Schema，直接透传，避免经 Zod 往返造成精度丢失
+  const jsonSchema = (tool.llmInputSchema ?? zodToJsonSchema(tool.inputSchema)) as LlmTool['input_schema'];
 
   return {
     name: tool.name,

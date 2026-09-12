@@ -130,6 +130,8 @@ export class ChatViewManager {
     }
     this.touch(sessionId);
     this.show(sessionId);
+    // 会话被打开：建立 MCP 引用（幂等，重复打开不会重复计数）
+    this.acquireMcp(sessionId);
   }
 
   /** 新建对话：打开一个无 session 的聊天视图，webview onStartup 生成会话后关联 */
@@ -170,6 +172,8 @@ export class ChatViewManager {
       this.opts.onActiveSessionChanged(sessionId);
     }
     this.trim();
+    // 新对话首次上报正式 sessionId：建立 MCP 引用（临时 new- key 不参与引用）
+    this.acquireMcp(sessionId);
   }
 
   /** 按 sessionId 发送消息到对应视图 */
@@ -212,11 +216,14 @@ export class ChatViewManager {
   /** 清空所有聊天视图（工作区切换等场景） */
   disposeAll(): void {
     for (const key of [...this.views.keys()]) {
+      // 销毁视图前先中止该会话正在运行的查询（工作区切换 / 退出场景）
+      this.abortSession(key);
       const view = this.views.get(key);
       if (view && !view.webContents.isDestroyed()) {
         this.opts.win.contentView.removeChildView(view);
         view.webContents.close();
       }
+      this.releaseMcp(key);
     }
     this.views.clear();
     this.lru = [];
@@ -239,10 +246,17 @@ export class ChatViewManager {
 
   /** 销毁指定会话的聊天视图（移除 ChildView + 关闭 webContents，释放渲染进程资源） */
   closeView(sessionId: string): void {
+    // 关闭视图 = abort -> 释放 MCP 引用 -> 销毁视图。
+    // 先中止该会话正在运行的查询（含后台 Bash 任务与递归子代理），
+    // 避免关闭后查询仍在后台运行、继续消耗 token 并复活已删除的对话文件。
+    this.abortSession(sessionId);
+
     const view = this.views.get(sessionId);
     if (!view || view.webContents.isDestroyed()) {
       this.views.delete(sessionId);
       this.lru = this.lru.filter((k) => k !== sessionId);
+      // 视图可能已先被销毁但引用仍在：这里统一释放
+      this.releaseMcp(sessionId);
       return;
     }
 
@@ -250,6 +264,8 @@ export class ChatViewManager {
     view.webContents.close();
     this.views.delete(sessionId);
     this.lru = this.lru.filter((k) => k !== sessionId);
+    // 会话被关闭：释放其 MCP 引用（引用归零的 server 进入延迟回收）
+    this.releaseMcp(sessionId);
 
     // 关闭的是当前活动视图：切换到最近使用的其他视图；无可用视图则新建对话
     if (this.currentSessionId === sessionId) {
@@ -346,6 +362,37 @@ export class ChatViewManager {
     return [...this.views.values()].filter((v) => !v.webContents.isDestroyed());
   }
 
+  /**
+   * 会话被打开：建立其 MCP 引用（异步，不阻塞 UI，幂等）。
+   * 临时 new- key 尚未对应正式会话，不参与引用。
+   */
+  private acquireMcp(sessionId?: string): void {
+    if (!sessionId || sessionId.startsWith('new-')) return;
+    void import('../src/core/mcp/Manager.js')
+      .then(({ getMcpManager }) => getMcpManager().acquire(sessionId))
+      .catch((err) => console.error(`[chat-view] MCP acquire failed (${sessionId}):`, err));
+  }
+
+  /**
+   * 会话被关闭 / 删除前：中止其正在运行的查询（含后台 Bash 任务与递归子代理）。
+   * 引擎可能已被移除（删除后再次关闭），此时 abortCurrentQuery 会兜底中止后台任务。
+   * 临时 new- key 尚未对应正式会话，跳过。
+   */
+  private abortSession(sessionId?: string): void {
+    if (!sessionId || sessionId.startsWith('new-')) return;
+    void import('../src/core/Integration.js')
+      .then(({ abortCurrentQuery }) => abortCurrentQuery(sessionId))
+      .catch((err) => console.error(`[chat-view] abort query failed (${sessionId}):`, err));
+  }
+
+  /** 会话被关闭 / 删除：释放其 MCP 引用（引用归零的 server 进入延迟回收） */
+  private releaseMcp(sessionId?: string): void {
+    if (!sessionId || sessionId.startsWith('new-')) return;
+    void import('../src/core/mcp/Manager.js')
+      .then(({ getMcpManager }) => getMcpManager().release(sessionId))
+      .catch((err) => console.error(`[chat-view] MCP release failed (${sessionId}):`, err));
+  }
+
   private touch(sessionId: string): void {
     this.lru = this.lru.filter((k) => k !== sessionId);
     this.lru.push(sessionId);
@@ -357,12 +404,16 @@ export class ChatViewManager {
       const oldest = this.lru.shift();
       if (!oldest) break;
       if (oldest === this.currentSessionId) continue;
+      // LRU 淘汰等价于关闭该对话视图：先 abort，再释放 MCP 引用。
+      // 否则被淘汰的会话仍在后台运行，而其 MCP 引用已归零，工具调用会失败。
+      this.abortSession(oldest);
       const view = this.views.get(oldest);
       if (view && !view.webContents.isDestroyed()) {
         this.opts.win.contentView.removeChildView(view);
         view.webContents.close();
       }
       this.views.delete(oldest);
+      this.releaseMcp(oldest);
     }
   }
 

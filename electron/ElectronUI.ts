@@ -212,6 +212,7 @@ export class ElectronUI implements AssistantUI {
 
   private buildHost(): UIHost {
     return {
+      kind: 'electron',
       sendToWebview: (message) => this.sendToRenderer(message),
 
       openFile: async (filePath, selectedLines) => {
@@ -252,6 +253,12 @@ export class ElectronUI implements AssistantUI {
 
       refreshAbortState: () => {
         this.syncAbortState();
+      },
+
+      closeConversation: (sessionId) => {
+        // 关闭会话 = abort -> 释放 MCP 引用 -> 销毁聊天视图，
+        // 三步都在 ChatViewManager.closeView 内部完成（用户点关闭按钮走的是同一条路径）。
+        this.chatViews?.closeView(sessionId);
       },
 
       openExternalUrl: async (url) => {

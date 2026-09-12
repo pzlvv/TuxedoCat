@@ -41,12 +41,51 @@ export interface ModelConfig extends ModelParams {
 }
 
 /**
- * settings.json 中 provider 级 modelConfigs 的单个模型限值。
- * 只允许覆盖 context 和 output，其它字段仍使用内置注册表。
+ * LLM API 协议类型（下放到模型级配置）：
+ * - 'Responses'  OpenAI Responses API      POST {baseURL}/v1/responses
+ * - 'OpenAI'     OpenAI Chat Completions   POST {baseURL}/v1/chat/completions
+ * - 'Anthropic'  Anthropic Messages API    POST {baseURL}/v1/messages
+ */
+export type ApiType = 'Anthropic' | 'Responses' | 'OpenAI';
+
+/**
+ * 模型未显式配置协议时使用的默认协议。
+ * 取 OpenAI Chat Completions：它是绝大多数服务商都兼容的接口，
+ * 手动添加的模型默认走这里（自动获取的模型会探测后写入真实协议）。
+ */
+export const DEFAULT_API_TYPE: ApiType = 'OpenAI';
+
+/** 自动探测协议时的优先级（靠前者优先） */
+export const API_TYPE_PROBE_ORDER: readonly ApiType[] = ['Responses', 'OpenAI', 'Anthropic'];
+
+/** 把任意输入规范化为合法的 ApiType，非法值回退到 DEFAULT_API_TYPE */
+export function normalizeApiType(value: unknown): ApiType {
+  return value === 'Responses' || value === 'Anthropic' || value === 'OpenAI'
+    ? value
+    : DEFAULT_API_TYPE;
+}
+
+/**
+ * settings.json 中 provider 级 modelConfigs 的单个模型配置。
+ * context / output 可覆盖内置注册表；apiType 指定该模型使用的协议。
  */
 export interface ModelTokenLimits {
   context?: number;
   output?: number;
+  /** 该模型使用的 API 协议（模型级，替代原先的 provider 级 apiType） */
+  apiType?: ApiType;
+}
+
+/**
+ * 解析某个模型最终生效的 API 协议：
+ * modelConfigs[model].apiType → DEFAULT_API_TYPE（未配置时）。
+ */
+export function resolveApiTypeForModel(
+  model: string | undefined,
+  modelConfigs?: Record<string, ModelTokenLimits> | null,
+): ApiType {
+  const explicit = model ? modelConfigs?.[model]?.apiType : undefined;
+  return explicit === undefined ? DEFAULT_API_TYPE : normalizeApiType(explicit);
 }
 
 /**
@@ -136,20 +175,19 @@ export function getContextWindow(
 }
 
 /**
- * 规范化 provider 的模型 context/output 配置（保存设置时使用）。
+ * 规范化 provider 的模型配置（保存设置时使用）。
  *
- * - 已有且合法的 context/output 保留，不做覆盖；
- * - 缺失的字段从内置 MODEL_CONFIGS 注册表按模型名匹配补齐，
+ * - 已有且合法的 context/output/apiType 保留，不做覆盖；
+ * - 缺失的 context/output 从内置 MODEL_CONFIGS 注册表按模型名匹配补齐，
  *   匹配不到时回退到 FALLBACK_MODEL_PARAMS；
- * - models 列表中的每个模型都会生成一条包含 context 与 output 的完整配置；
+ * - apiType 不会被自动填默认值，只来自 apiTypeOverrides（设置面板）或已有值，
+ *   保证「未探测过协议」的模型在下次自动获取时仍会被探测；
  * - existing 中不在本次 models 列表里的历史条目也会保留（避免误删用户自定义限值）。
- *
- * 这样每次保存都能探测一遍配置，缺 context/output 的模型会自动补全，
- * 运行时就不会因为缺少限值而回退到全局默认值。
  */
 export function normalizeModelTokenLimits(
   models: string[],
   existing?: Record<string, ModelTokenLimits> | null,
+  apiTypeOverrides?: Record<string, ApiType> | null,
 ): Record<string, ModelTokenLimits> {
   const result: Record<string, ModelTokenLimits> = {};
   // 只有正数才视为「已存在」的限值，0/负数/非数字都按缺失处理
@@ -162,21 +200,31 @@ export function normalizeModelTokenLimits(
     const entry: ModelTokenLimits = {};
     if (isValidLimit(limits.context)) entry.context = limits.context;
     if (isValidLimit(limits.output)) entry.output = limits.output;
-    if (entry.context !== undefined || entry.output !== undefined) {
+    if (limits.apiType !== undefined) entry.apiType = normalizeApiType(limits.apiType);
+    if (entry.context !== undefined || entry.output !== undefined || entry.apiType !== undefined) {
       result[model] = entry;
     }
   }
 
   // 2. 为 models 列表中的每个模型补齐缺失的 context/output
+  // apiType 只接受显式来源（面板传值 > 已有值），不会自动填充默认值：
+  // 未配置 apiType 的模型需要由「自动获取」探测后写入，否则探测会被跳过。
   for (const rawModel of models) {
     const model = typeof rawModel === 'string' ? rawModel.trim() : '';
     if (!model) continue;
     const fallback = getModelConfig(model);
     const current = result[model] || {};
-    result[model] = {
+    const entry: ModelTokenLimits = {
       context: isValidLimit(current.context) ? current.context : fallback.contextWindow,
       output: isValidLimit(current.output) ? current.output : fallback.maxOutputTokens,
     };
+    const overrideType = apiTypeOverrides?.[model];
+    if (overrideType !== undefined) {
+      entry.apiType = normalizeApiType(overrideType);
+    } else if (current.apiType !== undefined) {
+      entry.apiType = current.apiType;
+    }
+    result[model] = entry;
   }
 
   return result;

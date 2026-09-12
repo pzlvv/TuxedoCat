@@ -242,6 +242,8 @@ export interface StreamEndData {
     output_tokens: number;
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
+    /** 思考（reasoning）部分的 token 数（Responses API: output_tokens_details.reasoning_tokens） */
+    reasoning_tokens?: number;
   };
   /** LLM 消息 ID，用于 WebView 精确匹配到对应消息 */
   streamId?: string;

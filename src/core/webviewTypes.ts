@@ -3,6 +3,28 @@
  * 在 VSCodeUI.ts 和 webview/App.tsx 中共享使用
  */
 
+/** 一个 MCP 服务器的展示信息（来自 ~/<configDir>/mcp.json + settings.json 启用状态） */
+export interface McpServerInfo {
+  /** 服务器名（mcp.json 中的 key） */
+  name: string;
+  /** 传输类型，如 local / stdio / sse / http */
+  type: string;
+  /** 启动命令（统一为数组形式） */
+  command: string[];
+  /** 环境变量 */
+  environment: Record<string, string>;
+  /** 是否启用（来自 settings.json，默认 false） */
+  enabled: boolean;
+  /** 运行时：进程是否已连接（未启用时为 false） */
+  running?: boolean;
+  /** 运行时：已发现的工具数量 */
+  toolCount?: number;
+  /** 运行时：启动/运行错误信息，null 表示正常 */
+  error?: string | null;
+  /** 运行时：当前引用该服务器的会话数（引用计数模型） */
+  refCount?: number;
+}
+
 /** 对话空间统计信息 */
 export interface ConversationSpaceInfo {
   /** 对话空间标识 */
@@ -307,6 +329,8 @@ export type WebviewMessage = {
     output_tokens: number;
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
+    /** 思考（reasoning）部分的 token 数（Responses API: output_tokens_details.reasoning_tokens） */
+    reasoning_tokens?: number;
   };
   /** LLM 消息 ID */
   streamId?: string;
@@ -413,7 +437,6 @@ export type WebviewMessage = {
 } | {
   type: 'showLLMConfig';
   baseURL?: string;
-  apiType?: string;
   webSearch?: boolean;
   thinkingEffort?: string;
   defaultModel?: string;
@@ -421,12 +444,21 @@ export type WebviewMessage = {
   defaultPromptMode?: 'normal' | 'minimal' | 'mixed';
   apiKey?: string;
   language?: 'auto' | 'zh' | 'en';
-  /** 新结构：settings.json 的 llm.providers 列表 */
-  providers?: Array<{ key: string; baseURL: string; apiKey: string; apiType: string; models?: string[]; defaultModel?: string }>;
+  /** 新结构：settings.json 的 llm.providers 列表（apiType 已下放到 modelConfigs[model].apiType） */
+  providers?: Array<{
+    key: string;
+    baseURL: string;
+    apiKey: string;
+    models?: string[];
+    defaultModel?: string;
+    modelConfigs?: Record<string, { context?: number; output?: number; apiType?: string }>;
+  }>;
   /** settings.json 的 llm.activeProvider */
   activeProvider?: string;
   /** Electron 端唤醒快捷键（accelerator 形式） */
   shortcut?: string;
+  /** 全局默认启用的 MCP 列表（设置面板「默认配置」编辑用） */
+  mcpServers?: McpServerInfo[];
 } | {
   type: 'wakeShortcutStatus';
   /** 当前使用的唤醒快捷键 */
@@ -437,8 +469,22 @@ export type WebviewMessage = {
   type: 'providerModelsResult';
   /** 自动获取到的模型列表；为空表示获取失败 */
   models?: string[];
+  /** 自动探测出的模型协议：模型名 -> apiType（Responses | OpenAI | Anthropic） */
+  modelApiTypes?: Record<string, string>;
   /** 错误信息（可选） */
   error?: string;
+} | {
+  /**
+   * 阶段一结果：模型列表已拉取，但协议探测需要用户确认（可能消耗少量 token）。
+   * 面板据此弹出确认条，用户确认后再发 detectProviderModelApiTypes。
+   */
+  type: 'providerModelsFetched';
+  /** 拉取到的完整模型列表 */
+  models?: string[];
+  /** 本次列表里已有协议的模型：模型名 -> apiType */
+  modelApiTypes?: Record<string, string>;
+  /** 尚未设置协议、需要用户确认后探测的模型 */
+  needDetect?: string[];
 } | {
   type: 'requestConversationSpaces';
 } | {
@@ -455,6 +501,10 @@ export type WebviewMessage = {
   dirName: string;
   removedFiles: number;
   removedBytes: number;
+} | {
+  type: 'setMcpServers';
+  /** 所有可用 MCP 服务器及其启用状态 */
+  servers: McpServerInfo[];
 };
 
 // 不包含 sessionId 的消息类型（调用方传入，postToWebview 会添加）

@@ -317,12 +317,16 @@ function extractUsage(respUsage: Record<string, unknown> | undefined): {
   output_tokens: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  /** 思考（reasoning）部分的 token 数，来自 output_tokens_details.reasoning_tokens */
+  reasoning_tokens?: number;
 } | undefined {
   if (!respUsage) return undefined;
   const inputTokens = (respUsage.input_tokens as number) || 0;
   const outputTokens = (respUsage.output_tokens as number) || 0;
   const inputDetails = (respUsage as any).input_tokens_details || {};
+  const outputDetails = (respUsage as any).output_tokens_details || {};
   const cacheRead = inputDetails.cached_tokens || 0;
+  const reasoningTokens = outputDetails.reasoning_tokens;
   return {
     // Responses API 的 input_tokens 已包含缓存命中部分（OpenAI 语义：
     // cached_tokens 是 input_tokens 的子集），无需再加回，否则会双重计数，
@@ -333,6 +337,7 @@ function extractUsage(respUsage: Record<string, unknown> | undefined): {
     output_tokens: outputTokens,
     cache_read_input_tokens: cacheRead,
     cache_creation_input_tokens: 0,
+    ...(typeof reasoningTokens === 'number' ? { reasoning_tokens: reasoningTokens } : {}),
   };
 }
 
@@ -575,7 +580,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       let buffer = '';
       const contentBlocks: any[] = [];
       let stopReason: string | undefined;
-      let usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined;
+      let usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; reasoning_tokens?: number } | undefined;
       // 统计 output_item.added / done，用于判断“流结束但没收到终止事件”时
       // 所有输出块是否其实已经完整返回（服务端可能漏发 response.completed）。
       let outputItemAddedCount = 0;

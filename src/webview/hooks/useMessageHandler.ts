@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import type { WebviewMessage } from '../../core/webviewTypes';
+import type { WebviewMessage, McpServerInfo } from '../../core/webviewTypes';
 import { extractUserContent } from '../../core/utils/contentBlocks';
 import type { DiffHunk } from '../../core/utils/editDiff';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, ProviderConfig } from '../types';
@@ -7,6 +7,7 @@ import { postMessage } from '../webviewEnv';
 import { DEFAULT_WAKE_SHORTCUT } from '../../core/utils/shortcut.js';
 import { profileLog } from '../debug';
 import { t, resolveTitle, setUiLanguage, type UiLanguage } from '../i18n';
+import { beginThinkingStream, updateStreamChars, endStream, endStreamsForSession, hasStreamStats } from '../streamStatsStore';
 
 // Profiling helper
 const profileTag = '[Profile]';
@@ -32,6 +33,8 @@ export interface UseMessageHandlerProps {
   setConversationTitle: (v: string) => void;
   setMaxContextTokens: (v: number | null) => void;
   setSkills: (v: Array<{ name: string; description: string; isBuiltin?: boolean }>) => void;
+  /** MCP 服务器列表（含启用状态），由 extension 读取 mcp.json + settings.json 后下发 */
+  setMcpServers: (v: McpServerInfo[]) => void;
   setConversationDropdownOpen: (v: boolean) => void;
   setCurrentSessionId: (v: string | null) => void;
   setParentSessionId: (v: string | null) => void;
@@ -59,7 +62,6 @@ export interface UseMessageHandlerProps {
   /** LLM 配置面板 */
   setShowLLMConfig: (v: boolean) => void;
   setLlmConfigBaseURL: (v: string) => void;
-  setLlmConfigApiType: (v: string) => void;
   setLlmConfigWebSearch: (v: boolean) => void;
   setLlmConfigThinkingEffort: (v: ThinkingMode) => void;
   setLlmConfigDefaultAgentMode: (v: AgentMode) => void;
@@ -67,6 +69,8 @@ export interface UseMessageHandlerProps {
   setLlmConfigApiKey: (v: string) => void;
   setLlmConfigProviders: (v: ProviderConfig[]) => void;
   setLlmConfigActiveProvider: (v: string) => void;
+  /** MCP 默认启用列表（设置面板「默认配置」编辑用） */
+  setLlmConfigMcpServers: (v: McpServerInfo[]) => void;
   /** 服务商配置完成状态：未完成时输入框禁用并引导打开设置；null 表示尚未探测到配置 */
   setProviderConfigured: (v: boolean | null) => void;
   /** 当前会话的消息列表（用于判断是否为未发送消息的新对话） */
@@ -152,6 +156,35 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
   // 使用 ref 追踪 messages 的最新值，便于在消息事件回调中判断当前会话是否已有消息
   const messagesRef = useRef(props.messages);
   messagesRef.current = props.messages;
+  // 每个 session 本轮 query 的起始时间（用于计算首 token 耗时 TTFT）。
+  // queryBegin 时写入、queryEnd 时删除。
+  const queryStartBySessionRef = useRef<Map<string, number>>(new Map());
+
+  // 每个 session 最近一次「模型产出活动」的时间（流式 delta / streamEnd / 工具完成 / 新消息）。
+  // 每个 thinking block 的 "Thinking for Xs" 从这里算起，而不是从 query 起点累计：
+  // 思考→工具→思考… 时，后一个 block 只统计「它自己开始前」到首 token 的耗时。
+  const lastActivityBySessionRef = useRef<Map<string, number>>(new Map());
+
+  // 已打开会话的消息缓存（仅内存，不持久化）。
+  // 切换对话时 webview 会清空消息并从磁盘重新加载，实时字段（streamId 等）会丢失，
+  // 导致流式性能统计（Thinking for / chars / tokens）消失。这里按 session 缓存最近一次
+  // 的消息对象，重新加载时把 streamId 关联回去，保证同一 webview 内切走再切回不丢数据。
+  //
+  // 不设上限：所有已打开的对话都保留。
+  // 释放时机：Electron 下每个对话是独立 WebContentsView，关闭（或 LRU 淘汰）时整个
+  // 渲染进程销毁，缓存随之释放；VS Code 侧没有「关闭对话」操作，故不额外清理。
+  const sessionMessagesCacheRef = useRef<Map<string, Message[]>>(new Map());
+
+  // 把当前会话的最新消息写入内存缓存。
+  // 注意：切换对话瞬间 setMessages([]) 会先触发一次空数组，此时不能覆盖缓存，
+  // 否则切走时就把缓存清掉了（旧会话的消息仍在缓存里，等切回来时用）。
+  useEffect(() => {
+    const sid = props.currentSessionIdRef.current;
+    if (!sid || props.messages.length === 0) return;
+    const cache = sessionMessagesCacheRef.current;
+    cache.delete(sid);
+    cache.set(sid, props.messages);
+  }, [props.messages]);
 
   useEffect(() => {
     /**
@@ -196,6 +229,10 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 props.setQueuedMessage(null);
               }
             }
+          }
+          // 记录活动时间：下一个 thinking block 从这条消息算起
+          if (msg.sessionId) {
+            lastActivityBySessionRef.current.set(msg.sessionId, Date.now());
           }
           // 过滤：只有当前 session 的消息才处理
           if (msg.sessionId && msg.sessionId !== sessionId) {
@@ -510,7 +547,17 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
         case 'setSkills':
           props.setSkills(msg.skills);
           break;
+        case 'setMcpServers':
+          props.setMcpServers(msg.servers);
+          break;
         case 'queryBegin':
+          // 记录该 session 本轮 query 的起始时间（用于 TTFT）。
+          // 放在 session 过滤之前：即使该会话当前不在前台，也要记录，切回来时才有 TTFT。
+          if (msg.sessionId) {
+            const now = Date.now();
+            queryStartBySessionRef.current.set(msg.sessionId, now);
+            lastActivityBySessionRef.current.set(msg.sessionId, now);
+          }
           // 即使被当前 session 过滤，也更新目标 session 的状态（供后续 conversationLoaded 恢复）
           if (msg.sessionId) {
             const targetState = props.sessionStatesRef.current.get(msg.sessionId);
@@ -558,6 +605,11 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 即使被当前 session 过滤，也更新目标 session 的状态
           const endedSessionId = msg.sessionId;
           if (endedSessionId) {
+            // 查询结束（含 abort）：冻结该会话所有仍在流式的统计，保留 abort 前最后一次的值
+            endStreamsForSession(endedSessionId);
+            // 清理该会话本轮 query 起始时间（无论是否当前会话）
+            queryStartBySessionRef.current.delete(endedSessionId);
+            lastActivityBySessionRef.current.delete(endedSessionId);
             const targetState = props.sessionStatesRef.current.get(endedSessionId);
             if (targetState) {
               targetState.hasActiveQuery = false;
@@ -597,6 +649,12 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 查询结束（含中断）时同步关闭 thinking 动画，避免残留
           props.setShowThinkingAnimation(false);
           props.setAnimationMode('thinking');
+          // abort 时服务端不会为未完成的流发 streamEnd，这里兜底把仍在流式的消息标记完成，
+          // 避免 isStreaming 永远为 true（自动滚动轮询停不下来）。
+          props.setMessages(prev => {
+            if (!prev.some(m => m.isStreaming)) return prev;
+            return prev.map(m => (m.isStreaming ? { ...m, isStreaming: false } : m));
+          });
           break;
         }
         case 'setEnableAbort':
@@ -661,6 +719,10 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           }
           break;
         case 'updateToolStatus':
+          // 记录活动时间：工具完成后的下一个 thinking block 从这里算起
+          if (msg.sessionId && (msg.status === 'success' || msg.status === 'fail')) {
+            lastActivityBySessionRef.current.set(msg.sessionId, Date.now());
+          }
           // 过滤：只有当前 session 的消息才处理
           if (msg.sessionId !== sessionId) {
             // 不是当前会话的更新：存入跨会话缓冲区，供 conversationLoaded 时回放
@@ -1408,6 +1470,22 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 scrollToBottomBeforeRender();
                 // 加载完成，关闭 loading 动画（与 setMessages 同批次提交，避免空状态闪烁）
                 props.setIsLoadingConversation(false);
+                // 已打开的会话：把内存缓存里的 streamId 关联回重新加载的消息，
+                // 使流式性能统计（Thinking for / chars / tokens）切回来后不丢失。
+                // 这些数据只在内存里，不写磁盘。
+                {
+                  const cachedMsgs = sessionMessagesCacheRef.current.get(_convLoadedSessionId || '');
+                  if (cachedMsgs && cachedMsgs.length > 0) {
+                    for (let i = 0; i < restoredMessages.length; i++) {
+                      const c = cachedMsgs[i];
+                      const r = restoredMessages[i];
+                      if (!c || !r || r.streamId || !c.streamId) continue;
+                      // 位置 + 角色 + 内容都对得上才关联，避免消息结构变化时串数据
+                      if (c.role !== r.role || c.content !== r.content) continue;
+                      restoredMessages[i] = { ...r, streamId: c.streamId };
+                    }
+                  }
+                }
                 props.setMessages(restoredMessages);
                 // 触发强制滚动到底部：加载历史对话时，即使上一会话用户曾向上滚动
                 // （userScrolledAwayRef 为 true），也要让新会话的消息滚动到最底部。
@@ -1554,13 +1632,38 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           }
           break;
         case 'streamMessage': {
-          // 过滤：只有当前 session 的消息才处理
+          // streamId 由 RealApi.ts 保证每次 LLM 调用生成唯一 ID，不会为 undefined
+          const streamId = (msg as any).streamId!;
+          const accumulated = msg.accumulated;
+          const role = msg.role;
+          const msgSessionId = msg.sessionId || sessionId || '';
+          const now = Date.now();
+          // 全局流式统计：所有会话都更新（切换走后仍继续刷新，只是不渲染）
+          if (role === 'thinking' && streamId) {
+            if (!hasStreamStats(streamId)) {
+              // 首个 delta：登记统计。起始时间取「该 block 开始前最后一次活动」，
+              // 而不是 query 起点，避免多 block（思考→工具→思考…）时时间累计。
+              const startAt = lastActivityBySessionRef.current.get(msgSessionId)
+                ?? queryStartBySessionRef.current.get(msgSessionId)
+                ?? null;
+              beginThinkingStream({
+                streamId,
+                sessionId: msgSessionId,
+                firstTokenAt: now,
+                thinkingStartAt: startAt,
+              });
+            }
+            updateStreamChars(streamId, accumulated.length);
+          }
+          // 记录活动时间，供下一个 thinking block 计算自己的首 token 耗时
+          lastActivityBySessionRef.current.set(msgSessionId, now);
+          // 过滤：只有当前 session 的消息才渲染
           if (msg.sessionId && msg.sessionId !== sessionId) {
             break;
           }
           // thinking 流式消息到达时确保 thinking 动画处于显示状态。
           // 覆盖“切换会话后恢复失败”或 showThinkingAnimation 消息丢失的时序问题。
-          if (msg.role === 'thinking') {
+          if (role === 'thinking') {
             props.setShowThinkingAnimation(true);
             props.setAnimationMode('thinking');
             if (sessionId) {
@@ -1571,10 +1674,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               }
             }
           }
-          // streamId 由 RealApi.ts 保证每次 LLM 调用生成唯一 ID，不会为 undefined
-          const streamId = (msg as any).streamId!;
-          const accumulated = msg.accumulated;
-          const role = msg.role;
           const mapKey = streamId + ':' + role;
           props.pendingStreamRef.current.set(mapKey, { role, accumulated, streamId });
           if (!props.streamRafRef.current) {
@@ -1604,7 +1703,13 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                     next = next === prev ? next.slice() : next;
                     next[lastIdx] = { ...next[lastIdx], content: acc, isStreaming: true };
                   } else {
-                    next = next.concat({ role: r as any, content: acc, isStreaming: true, streamId: sid, timestamp: Date.now() } as any);
+                    next = next.concat({
+                      role: r as any,
+                      content: acc,
+                      isStreaming: true,
+                      streamId: sid,
+                      timestamp: Date.now(),
+                    } as any);
                   }
                 }
                 return next;
@@ -1619,6 +1724,18 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 否则子代理（Agent Tool）在后台运行时，其 cache token 数据会丢失，
           // 导致切换到子代理后 Cache 命中率不显示。
           const streamEndSessionId = msg.sessionId || sessionId;
+          // 全局流式统计：所有会话都结束（非当前会话切换走后也要收敛）
+          const streamEndStreamId = (msg as any).streamId;
+          if (streamEndStreamId) {
+            endStream(streamEndStreamId, {
+              outputTokens: (msg as any).usage?.output_tokens,
+              reasoningTokens: (msg as any).usage?.reasoning_tokens,
+            });
+          }
+          // 记录活动时间：下一个 thinking block 从这次结束算起
+          if (streamEndSessionId) {
+            lastActivityBySessionRef.current.set(streamEndSessionId, Date.now());
+          }
           if (streamEndSessionId !== sessionId) {
             profileLog(`[TokenDebug] streamEnd: session mismatch, updating session state for ${(streamEndSessionId || '').substring(0,20)} (current=${(sessionId || '').substring(0,20)})`);
             // 仍然更新非当前 session 的 cache token 数据到 sessionStatesRef
@@ -1679,6 +1796,12 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           if (finalBuffer.size > 0) {
             // 流式结束的最终内容渲染前预滚动
             scrollToBottomBeforeRender();
+            // 服务端在流结束时返回精确的 token 数，写入消息供 ThinkingMessage
+            // 完成后显示真实 token（流式期间只有字符数可用）。
+            // - output_tokens：本次调用的总输出 token（thinking + 正文）
+            // - reasoning_tokens：其中思考部分（Responses API 才有），优先用于 thinking 消息
+            const usageOutputTokens = (msg as any).usage?.output_tokens;
+            const usageReasoningTokens = (msg as any).usage?.reasoning_tokens;
             props.setMessages(prev => {
               let next = prev;
               for (const [, { role: r, accumulated: acc, streamId: sid }] of finalBuffer) {
@@ -1690,12 +1813,18 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                     break;
                   }
                 }
+                const tokenPatch = {
+                  ...(typeof usageOutputTokens === 'number' && usageOutputTokens > 0 ? { outputTokens: usageOutputTokens } : {}),
+                  ...(r === 'thinking' && typeof usageReasoningTokens === 'number' && usageReasoningTokens > 0
+                    ? { reasoningTokens: usageReasoningTokens }
+                    : {}),
+                };
                 if (lastIdx >= 0) {
                   // 下标直写，避免全量 map 遍历 O(n)
                   next = next === prev ? next.slice() : next;
-                  next[lastIdx] = { ...next[lastIdx], content: acc, isStreaming: false };
+                  next[lastIdx] = { ...next[lastIdx], content: acc, isStreaming: false, ...tokenPatch };
                 } else {
-                  next = next.concat({ role: r as any, content: acc, isStreaming: false, streamId: sid, timestamp: Date.now() } as any);
+                  next = next.concat({ role: r as any, content: acc, isStreaming: false, streamId: sid, timestamp: Date.now(), ...tokenPatch } as any);
                 }
               }
               return next;
@@ -1956,7 +2085,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
         case 'showLLMConfig':
           // 显示 LLM 配置面板（启动时 apiKey 为空或用户点击设置时触发）
           props.setLlmConfigBaseURL((msg as any).baseURL || '');
-          props.setLlmConfigApiType((msg as any).apiType || '');
           props.setLlmConfigWebSearch(!!(msg as any).webSearch);
           props.setLlmConfigThinkingEffort((msg as any).thinkingEffort || 'off');
           props.setLlmConfigDefaultAgentMode((msg as any).defaultAgentMode || 'manual');
@@ -1966,6 +2094,19 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           props.setLlmConfigLanguage(llmLanguage === 'zh' || llmLanguage === 'en' || llmLanguage === 'auto' ? llmLanguage : 'auto');
           const llmShortcut = (msg as any).shortcut;
           props.setLlmConfigShortcut(typeof llmShortcut === 'string' && llmShortcut.trim() ? llmShortcut : DEFAULT_WAKE_SHORTCUT);
+          // MCP 默认启用列表（设置面板「默认配置」）
+          const rawMcpServers = (msg as any).mcpServers;
+          props.setLlmConfigMcpServers(
+            Array.isArray(rawMcpServers)
+              ? rawMcpServers.map((s: any) => ({
+                  name: String(s?.name || ''),
+                  type: String(s?.type || 'local'),
+                  command: Array.isArray(s?.command) ? (s.command as unknown[]).filter((c): c is string => typeof c === 'string') : [],
+                  environment: (s?.environment && typeof s.environment === 'object' && !Array.isArray(s.environment)) ? s.environment as Record<string, string> : {},
+                  enabled: !!s?.enabled,
+                })).filter((s) => !!s.name)
+              : [],
+          );
           const rawProviders = (msg as any).providers;
           if (Array.isArray(rawProviders)) {
             props.setLlmConfigProviders(
@@ -1973,13 +2114,16 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 key: String(p?.key || ''),
                 baseURL: String(p?.baseURL || ''),
                 apiKey: String(p?.apiKey || ''),
-                apiType: p?.apiType === 'Anthropic' ? 'Anthropic' : 'Responses',
                 models: Array.isArray(p?.models)
                   ? (p.models as unknown[])
                       .filter((m): m is string => typeof m === 'string' && !!m.trim())
                       .map((m) => m.trim())
                   : [],
                 defaultModel: String(p?.defaultModel || ''),
+                // apiType 已下放到模型级：随 modelConfigs 一起回传
+                modelConfigs: (p?.modelConfigs && typeof p.modelConfigs === 'object' && !Array.isArray(p.modelConfigs))
+                  ? p.modelConfigs
+                  : {},
               }))
             );
           } else {

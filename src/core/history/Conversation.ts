@@ -189,6 +189,11 @@ export interface ConversationContext {
   promptMode?: PromptPresetId;
   /** 会话关联的 Web Search 开关（覆盖 settings.json 默认值） */
   webSearch?: boolean;
+  /**
+   * 会话关联的 MCP 启用列表（覆盖全局 settings.json 的 mcp.enabled 默认值）。
+   * 由输入框菜单写入；空数组表示该会话显式禁用全部 MCP。
+   */
+  mcpEnabled?: string[];
   totalContextTokens?: number;
   /** 耗时分布统计快照（压缩时保存，恢复时使用） */
   stats?: ConversationStats;
@@ -267,7 +272,7 @@ function getConversationPath(sessionId: string, projectPath: string): string {
 /**
  * 获取元数据文件路径
  */
-function getMetadataPath(sessionId: string, projectPath: string): string {
+export function getMetadataPath(sessionId: string, projectPath: string): string {
   const projectDir = getProjectConversationDir(projectPath);
   return join(projectDir, `${sessionId}.meta.json`);
 }

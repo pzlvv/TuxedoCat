@@ -130,6 +130,15 @@ export interface Tool<
   /** 输入参数 schema (Zod) */
   readonly inputSchema: Input
 
+  /**
+   * 可选：直接提供给 LLM 的 JSON Schema。
+   *
+   * 外部工具（如 MCP）的参数 schema 本身就是 JSON Schema，无法用 Zod 精确表达，
+   * 而 zodToJsonSchema 只支持扁平原始类型。存在此字段时 toolToLlmFormat 会直接使用它，
+   * 跳过 inputSchema 的自动转换（此时 inputSchema 仅用于放行参数校验）。
+   */
+  readonly llmInputSchema?: Record<string, unknown>
+
   /** 输出结果 schema (可选) */
   readonly outputSchema?: z.ZodType<unknown>
 

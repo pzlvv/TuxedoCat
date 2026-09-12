@@ -5,7 +5,7 @@
 import type { UIHost } from '../host/UIHost.js';
 import { fetch as undiciFetch } from 'undici';
 import { logger } from '../core/Logger.js';
-import { getLLMDispatcher } from '../core/llm/httpDispatcher.js';
+import { getProbeDispatcher } from '../core/llm/httpDispatcher.js';
 import { getPendingToolUseIds } from '../core/tools/index.js';
 import { providerKeyFromBaseURL } from '../core/utils/providerKey.js';
 import { buildEditDiffHunks } from '../core/utils/editDiff.js';
@@ -16,6 +16,30 @@ import { userChoiceQueue } from '../core/UserChoiceQueue.js';
 import type { WebviewMessage } from '../core/webviewTypes.js';
 import type { Message } from '../core/types.js';
 import type { UserChoiceManager } from './userChoice.js';
+
+/**
+ * 自动获取模型时，协议探测的并发上限（按「模型」计，每个模型内部再并发 3 个协议）。
+ * 实测 37 模型：并发 6 → 5.4s，并发 10 → 3.3s；再往上收益递减且更容易触发网关限流。
+ */
+const API_TYPE_PROBE_CONCURRENCY = 10;
+/** 单次协议探测请求的超时时间（含重试的总时长上限） */
+const API_TYPE_PROBE_TIMEOUT_MS = 10_000;
+/** 协议探测的最大重试次数（限流 / 瞬时故障时） */
+const API_TYPE_PROBE_MAX_RETRIES = 2;
+/** 协议探测重试的退避基数（第 n 次重试等待 n × 该值） */
+const API_TYPE_PROBE_RETRY_BASE_DELAY_MS = 500;
+/** 协议探测重试的最大等待时间（同时约束 Retry-After） */
+const API_TYPE_PROBE_MAX_RETRY_DELAY_MS = 5_000;
+/** 需要重试的探测状态码：限流 + 瞬时故障 */
+const API_TYPE_PROBE_RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
+
+/**
+ * 单次协议探测的判定结果：
+ * - supported   该协议可用
+ * - unsupported 明确不支持 / 该协议适配器不可用
+ * - unknown     无法判断（限流重试后仍失败、地区限制、网络异常）→ 不猜测
+ */
+type ProbeVerdict = 'supported' | 'unsupported' | 'unknown';
 
 /**
  * WebviewMessageHandler - 处理 webview 发来的各类消息
@@ -210,6 +234,8 @@ export class WebviewMessageHandler {
       await this.handleRequestModels(message);
     } else if (message.type === 'fetchProviderModels') {
       await this.handleFetchProviderModels(message);
+    } else if (message.type === 'detectProviderModelApiTypes') {
+      await this.handleDetectProviderModelApiTypes(message);
     } else if (message.type === 'saveLLMConfig') {
       await this.handleSaveLLMConfig(message);
     } else if (message.type === 'requestLLMConfig') {
@@ -227,6 +253,99 @@ export class WebviewMessageHandler {
       await this.handleRequestConversationSpaces();
     } else if (message.type === 'clearConversationSpace') {
       await this.handleClearConversationSpace(message);
+    } else if (message.type === 'requestMcpServers') {
+      await this.handleRequestMcpServers();
+    } else if (message.type === 'setMcpEnabled') {
+      await this.handleSetMcpEnabled(message);
+    }
+  }
+
+  /**
+   * 当前活跃会话 ID（MCP 启用列表是按会话解析的）。
+   * 未打开工作区 / 尚未进入任何会话时返回 undefined，此时只用全局默认。
+   */
+  private async getActiveMcpSessionId(): Promise<string | undefined> {
+    try {
+      const { getActiveSessionId } = await import('../core/history/Config.js');
+      const sessionId = getActiveSessionId();
+      return sessionId && sessionId !== 'undefined' ? sessionId : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 读取 mcp.json + 当前会话的启用状态，并合并运行时状态后推送给 webview。
+   */
+  private async handleRequestMcpServers(): Promise<void> {
+    const sessionId = await this.getActiveMcpSessionId();
+    this.log(`[VSCodeUI] MCP servers requested (session=${sessionId ?? '-'})`);
+    await this.pushMcpServers(sessionId);
+    // VS Code 只有一个 webview，这里按「当前活动会话」建立引用是准确的。
+    // Electron 有多个 webview，引用由 ChatViewManager 在打开/关闭视图时精确维护；
+    // 这里若按全局 activeSessionId acquire，可能引用到已关闭的会话导致泄漏，故跳过。
+    if (this.host.kind === 'electron') return;
+    // 打开面板即建立该会话的 MCP 引用（幂等），并等待连接完成后回推一次状态。
+    // acquire 对已连接的服务器是幂等的，且工具集合未变化时不会清空 prompt 缓存。
+    void (async () => {
+      try {
+        const { getMcpManager } = await import('../core/mcp/Manager.js');
+        await getMcpManager().acquire(sessionId);
+        await this.pushMcpServers(sessionId);
+      } catch (err: any) {
+        this.log(`[VSCodeUI] MCP background acquire failed: ${err.message}`);
+      }
+    })();
+  }
+
+  /**
+   * 切换某个 MCP 的启用状态。
+   *
+   * 只写入**当前会话**的 meta.json（context.mcpEnabled），不触碰全局默认；
+   * 然后按新状态重连（启动/停止进程），最后回推最新列表与运行时状态。
+   */
+  private async handleSetMcpEnabled(message: any): Promise<void> {
+    const name = typeof message.name === 'string' ? message.name : '';
+    const enabled = !!message.enabled;
+    if (!name) return;
+    const sessionId = await this.getActiveMcpSessionId();
+    this.log(`[VSCodeUI] Session MCP enabled set: ${name} = ${enabled} (session=${sessionId ?? '-'})`);
+    try {
+      const { setSessionMcpEnabled } = await import('../core/mcp/Config.js');
+      const { getMcpManager } = await import('../core/mcp/Manager.js');
+      await setSessionMcpEnabled(sessionId, name, enabled);
+      // 只调整当前会话的引用：连接/断开可能耗时（首次拉取包、握手），完成后再回推状态
+      await getMcpManager().syncSession(sessionId);
+    } catch (err: any) {
+      this.log(`[VSCodeUI] Failed to set session MCP enabled: ${err.message}`);
+    }
+    await this.pushMcpServers(sessionId);
+  }
+
+  /**
+   * 组装并推送 MCP 列表：配置（mcp.json）+ 该会话的启用状态 + 运行时状态。
+   */
+  private async pushMcpServers(sessionId?: string): Promise<void> {
+    try {
+      const { readMcpServers } = await import('../core/mcp/Config.js');
+      const { getMcpManager } = await import('../core/mcp/Manager.js');
+      const servers = await readMcpServers(sessionId);
+      const status = getMcpManager().getServerStatus();
+      this.host.sendToWebview({
+        type: 'setMcpServers',
+        servers: servers.map((server) => {
+          const runtime = status.get(server.name);
+          return {
+            ...server,
+            running: runtime?.running ?? false,
+            toolCount: runtime?.toolCount ?? 0,
+            error: runtime?.error ?? null,
+            refCount: runtime?.refCount ?? 0,
+          };
+        }),
+      });
+    } catch (err: any) {
+      this.log(`[VSCodeUI] Failed to read MCP servers: ${err.message}`);
     }
   }
 
@@ -569,6 +688,18 @@ export class WebviewMessageHandler {
     logger.info("handleWebviewMessage", `Set active session from webview: ${message.sessionId}`);
     // 切换会话时查询余额
     this.fetchBalanceAndSend(message.sessionId);
+
+    // MCP 引用绑定「会话被打开过」：切换会话只 acquire 新会话，不释放旧会话
+    // （VSCode 没有关闭对话的概念，释放只发生在删除对话 / 扩展停用时）。
+    void (async () => {
+      try {
+        const { getMcpManager } = await import('../core/mcp/Manager.js');
+        await getMcpManager().acquire(message.sessionId);
+        await this.pushMcpServers(message.sessionId);
+      } catch (err: any) {
+        this.log(`[VSCodeUI] MCP acquire on session switch failed: ${err.message}`);
+      }
+    })();
   }
 
   private async handleLoadConversation(message: any): Promise<void> {
@@ -594,6 +725,17 @@ export class WebviewMessageHandler {
     this.log(`[VSCodeUI] Set active session: ${message.sessionId}`);
     // 加载对话时查询余额
     this.fetchBalanceAndSend(message.sessionId);
+
+    // MCP：加载对话即建立该会话的引用（幂等，不释放旧会话）
+    void (async () => {
+      try {
+        const { getMcpManager } = await import('../core/mcp/Manager.js');
+        await getMcpManager().acquire(message.sessionId);
+        await this.pushMcpServers(message.sessionId);
+      } catch (err: any) {
+        this.log(`[VSCodeUI] MCP acquire on loadConversation failed: ${err.message}`);
+      }
+    })();
 
     const hasHistory = conversation.messages && conversation.messages.length > 0;
     this.log(`[VSCodeUI] Conversation has history: ${hasHistory}`);
@@ -794,6 +936,17 @@ export class WebviewMessageHandler {
     // 新对话开始时查询余额
     this.fetchBalanceAndSend(newSessionId);
 
+    // MCP：新对话打开即建立引用（meta.json 尚未创建时按全局默认解析，幂等）
+    void (async () => {
+      try {
+        const { getMcpManager } = await import('../core/mcp/Manager.js');
+        await getMcpManager().acquire(newSessionId);
+        await this.pushMcpServers(newSessionId);
+      } catch (err: any) {
+        this.log(`[VSCodeUI] MCP acquire on new conversation failed: ${err.message}`);
+      }
+    })();
+
     // 从 settings.json 读取新对话的默认 model、thinking_effort、agentMode 和 webSearch 并发送给 webview 立即应用。
     // 注意：不再写入 meta.json（meta.json 只在发第一条消息时由 appendMessage 创建），
     // 默认值在发送第一条消息后仍可通过 handleSetModel/handleSetThinkingMode/handleSetPromptMode 持久化。
@@ -819,14 +972,17 @@ export class WebviewMessageHandler {
     // 新对话如果没有设置 llm.activeProvider（或 active provider 缺少 apiKey），则弹出设置页引导用户配置
     try {
       const { hasActiveProviderSetting, getLLMConfigPanelPayload } = await import('../core/llm/config.js');
-      const [hasActiveProvider, payload] = await Promise.all([
+      const { readMcpServersForDefaults } = await import('../core/mcp/Config.js');
+      const [hasActiveProvider, payload, mcpServers] = await Promise.all([
         hasActiveProviderSetting(),
         getLLMConfigPanelPayload(),
+        readMcpServersForDefaults(),
       ]);
       if (!hasActiveProvider || !payload.apiKey) {
         this.host.sendToWebview({
           type: 'showLLMConfig',
           ...payload,
+          mcpServers,
           language: this.getUiLanguageFromSettings(),
         });
         this.log(`[VSCodeUI] ${hasActiveProvider ? 'Active provider apiKey is empty' : 'No llm.activeProvider configured'}, showing LLM config panel for new conversation`);
@@ -875,10 +1031,10 @@ export class WebviewMessageHandler {
     try {
       const deletedSessionId = message.sessionId;
       const currentActiveSessionId = getActiveSessionId();
+      const allConversations = await loadConversationList();
 
       let needsNewSession = currentActiveSessionId === deletedSessionId;
       if (!needsNewSession) {
-        const allConversations = await loadConversationList();
         let checkId: string | null = currentActiveSessionId;
         while (checkId) {
           const conv = allConversations.find(c => c.sessionId === checkId);
@@ -891,6 +1047,41 @@ export class WebviewMessageHandler {
         }
       }
 
+      // 受影响会话 = 根 + 所有后代（deleteConversation 会级联删除子对话）
+      const affectedSessions = new Set<string>([deletedSessionId]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const conv of allConversations) {
+          const parentId = conv.parentSessionId;
+          if (parentId && affectedSessions.has(parentId) && !affectedSessions.has(conv.sessionId)) {
+            affectedSessions.add(conv.sessionId);
+            grew = true;
+          }
+        }
+      }
+
+      // 删除 = abort -> close -> delete。
+      // 1) abort：先中止受影响会话正在运行的查询（含后台 Bash 任务与递归子代理）。
+      //    必须在 deleteConversation 把引擎移出 sessionEngines 之前执行，
+      //    否则引擎失联后无法再中断，查询会在后台继续跑并复活已删除的对话文件。
+      try {
+        const { abortCurrentQuery } = await import('../core/Integration.js');
+        for (const sid of affectedSessions) {
+          abortCurrentQuery(sid);
+        }
+      } catch { /* 中止失败不阻塞删除 */ }
+
+      // 2) close：关闭会话（中止查询 + 释放 MCP 引用，引用归零的 server 由 McpManager 回收）。
+      //    该动作在 Electron 中也可由用户点关闭按钮直接触发；VS Code 无独立视图，
+      //    用户无法直接触发，只能由这里的删除流程调用。
+      for (const sid of affectedSessions) {
+        try {
+          await this.host.closeConversation?.(sid);
+        } catch { /* 关闭失败不阻塞删除 */ }
+      }
+
+      // 3) delete：删除磁盘文件并清理引擎池 / 缓存
       await deleteConversation(deletedSessionId);
       this.log(`[VSCodeUI] Conversation deleted: ${deletedSessionId}`);
 
@@ -1065,7 +1256,7 @@ export class WebviewMessageHandler {
       const activeProvider = activeKey ? settings?.llm?.providers?.[activeKey] : undefined;
       const baseURL = typeof activeProvider?.baseURL === 'string' ? activeProvider.baseURL.trim() : '';
       const apiKey = typeof activeProvider?.apiKey === 'string' ? activeProvider.apiKey.trim() : '';
-      const apiType = activeProvider?.apiType === 'Anthropic' ? 'Anthropic' : 'Responses';
+
       const savedModels = Array.isArray(activeProvider?.models)
         ? (activeProvider.models as unknown[])
             .filter((m): m is string => typeof m === 'string' && !!m.trim())
@@ -1087,7 +1278,7 @@ export class WebviewMessageHandler {
       };
 
       if (baseURL && apiKey) {
-        const fetched = await this.fetchModelsFromProvider(baseURL, apiType, apiKey);
+        const fetched = await this.fetchModelsFromProvider(baseURL, apiKey);
         if (fetched.length > 0) {
           this.log(`[VSCodeUI] Fetched ${fetched.length} models from API`);
           const models = ensureDefault([...fetched, ...savedModels]);
@@ -1106,42 +1297,117 @@ export class WebviewMessageHandler {
     }
   }
 
-  /** 处理设置页的「自动获取模型」请求 */
+  /** 从消息里提取「模型名 -> 协议」映射（只保留合法的协议值） */
+  private extractApiTypeMap(raw: unknown): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+    for (const [model, apiType] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof apiType === 'string' && (apiType === 'Responses' || apiType === 'OpenAI' || apiType === 'Anthropic')) {
+        out[model] = apiType;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * 处理设置页的「自动获取模型」请求 —— 阶段一：只拉取模型列表。
+   *
+   * 协议探测会向服务商发送探测请求（虽然极小，但可能产生少量 token），
+   * 因此这里只把「哪些模型还没有协议」回传给面板，由用户确认后再执行探测
+   * （见 handleDetectProviderModelApiTypes）。
+   */
   private async handleFetchProviderModels(message: any): Promise<void> {
     const baseURL = typeof message?.baseURL === 'string' ? message.baseURL.trim() : '';
     const apiKey = typeof message?.apiKey === 'string' ? message.apiKey.trim() : '';
-    const apiType = message?.apiType === 'Anthropic' ? 'Anthropic' : 'Responses';
+    // 面板已知的模型协议：已有值的不需要再探测
+    const knownApiTypes = this.extractApiTypeMap(message?.knownApiTypes);
     if (!baseURL || !apiKey) {
-      this.host.sendToWebview({ type: 'providerModelsResult', models: [] } as any);
+      this.host.sendToWebview({ type: 'providerModelsFetched', models: [], modelApiTypes: {}, needDetect: [] } as any);
       return;
     }
     try {
       this.log(`[VSCodeUI] Fetching provider models from ${baseURL}`);
-      const models = await this.fetchModelsFromProvider(baseURL, apiType, apiKey);
-      this.host.sendToWebview({ type: 'providerModelsResult', models } as any);
+      const models = await this.fetchModelsFromProvider(baseURL, apiKey);
+
+      // 只回传「本次列表里且已有协议」的映射，避免把无关模型带回面板
+      const modelApiTypes: Record<string, string> = {};
+      for (const model of models) {
+        if (knownApiTypes[model]) modelApiTypes[model] = knownApiTypes[model];
+      }
+      const needDetect = models.filter((m) => !modelApiTypes[m]);
+      this.log(`[VSCodeUI] Fetched ${models.length} models, ${needDetect.length} without API type`);
+      this.host.sendToWebview({ type: 'providerModelsFetched', models, modelApiTypes, needDetect } as any);
     } catch (err: any) {
       this.log(`[VSCodeUI] Failed to fetch provider models: ${err.message}`);
-      this.host.sendToWebview({ type: 'providerModelsResult', models: [] } as any);
+      this.host.sendToWebview({ type: 'providerModelsFetched', models: [], modelApiTypes: {}, needDetect: [] } as any);
+    }
+  }
+
+  /**
+   * 处理设置页的「确认后自动检测模型协议」请求 —— 阶段二。
+   * 面板已就「可能消耗少量 token」征得用户同意，这里才真正发起探测。
+   */
+  private async handleDetectProviderModelApiTypes(message: any): Promise<void> {
+    const baseURL = typeof message?.baseURL === 'string' ? message.baseURL.trim() : '';
+    const apiKey = typeof message?.apiKey === 'string' ? message.apiKey.trim() : '';
+    const models = Array.isArray(message?.models)
+      ? Array.from(new Set(
+          (message.models as unknown[])
+            .filter((m): m is string => typeof m === 'string' && !!m.trim())
+            .map((m) => m.trim()),
+        ))
+      : [];
+    const knownApiTypes = this.extractApiTypeMap(message?.knownApiTypes);
+
+    const modelApiTypes: Record<string, string> = {};
+    for (const model of models) {
+      if (knownApiTypes[model]) modelApiTypes[model] = knownApiTypes[model];
+    }
+    const toDetect = models.filter((m) => !modelApiTypes[m]);
+
+    if (!baseURL || !apiKey || toDetect.length === 0) {
+      this.host.sendToWebview({ type: 'providerModelsResult', models, modelApiTypes } as any);
+      return;
+    }
+
+    try {
+      this.log(`[VSCodeUI] Detecting API type for ${toDetect.length} model(s) concurrently (concurrency=${API_TYPE_PROBE_CONCURRENCY})...`);
+      const started = Date.now();
+      const detected = await this.mapWithConcurrency(
+        toDetect,
+        API_TYPE_PROBE_CONCURRENCY,
+        async (model) => ({ model, apiType: await this.detectModelApiType(baseURL, apiKey, model) }),
+      );
+      for (const item of detected) {
+        if (item.apiType) modelApiTypes[item.model] = item.apiType;
+      }
+      this.log(`[VSCodeUI] API type detection finished in ${Date.now() - started}ms (${Object.keys(modelApiTypes).length}/${models.length} resolved)`);
+      this.host.sendToWebview({ type: 'providerModelsResult', models, modelApiTypes } as any);
+    } catch (err: any) {
+      this.log(`[VSCodeUI] Failed to detect provider model api types: ${err.message}`);
+      this.host.sendToWebview({ type: 'providerModelsResult', models, modelApiTypes } as any);
     }
   }
 
   /** 从服务商拉取模型列表（兼容 /v1/models 与 /models，兼容 data[].id / data[].model / string） */
-  private async fetchModelsFromProvider(baseURL: string, apiType: 'Anthropic' | 'Responses', apiKey: string): Promise<string[]> {
+  private async fetchModelsFromProvider(baseURL: string, apiKey: string): Promise<string[]> {
     const trimmed = baseURL.replace(/\/+$/, '');
+    const probeSessionId = `probe-${Date.now()}`;
     const headers: Record<string, string> = {
       'Accept': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
+      // 同时携带 Anthropic 风格的鉴权头，兼容只认 x-api-key 的网关
+      'x-api-key': apiKey,
+      'x-opencode-session': probeSessionId,
+      'x-session-id': probeSessionId,
     };
-    if (apiType === 'Anthropic') {
-      headers['x-api-key'] = apiKey;
-    }
     const candidateUrls = [
       `${trimmed}/v1/models`,
       `${trimmed}/models`,
     ];
     for (const url of candidateUrls) {
       try {
-        const response = await undiciFetch(url, { headers, dispatcher: getLLMDispatcher() });
+        const response = await undiciFetch(url, { headers, dispatcher: getProbeDispatcher() });
         if (!response.ok) continue;
         const data = await response.json() as any;
         const rawList: unknown[] = Array.isArray(data?.data) ? data.data
@@ -1166,6 +1432,249 @@ export class WebviewMessageHandler {
       }
     }
     return [];
+  }
+
+  /**
+   * 近乎零成本地探测单个模型支持的 API 协议，按 Responses > OpenAI > Anthropic 取第一个可用的。
+   *
+   * 原理：网关按「路径定协议 → 查模型是否注册该协议 → 鉴权 → 转发上游」的顺序处理。
+   * 探测 body 故意不携带必填的 messages / input，请求会在上游入参校验阶段被拒，
+   * 正常情况下不会进入推理，因此不产生 completion、不消耗 token。
+   *
+   * 注意：并非所有后端都严格遵守 schema（实测 opencode 的 omen-alpha 有时会
+   * 忽略缺失的 messages 直接生成）。因此额外带上 max_tokens / max_output_tokens = 1
+   * 兜底：即使真的生成了，输出也被封顶在 1 个 token（实测 finish_reason=length、
+   * content 为空），单次探测的额外成本可忽略。
+   *
+   * 判定规则见 classifyProbeResult；结果不确定（限流 / 地区限制 / 网络异常）时
+   * 返回 null 而不是猜测，避免写入错误的协议。
+   *
+   * @returns 探测到的协议；不确定或三种都不支持时返回 null
+   */
+  private async detectModelApiType(baseURL: string, apiKey: string, model: string): Promise<'Responses' | 'OpenAI' | 'Anthropic' | null> {
+    const trimmed = baseURL.replace(/\/+$/, '');
+    const v1 = trimmed.endsWith('/v1') ? trimmed : `${trimmed}/v1`;
+    const sessionId = `probe-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+
+    // 顺序即优先级
+    const candidates: Array<{
+      apiType: 'Responses' | 'OpenAI' | 'Anthropic';
+      url: string;
+      headers: Record<string, string>;
+      body: Record<string, unknown>;
+    }> = [
+      {
+        apiType: 'Responses',
+        url: `${v1}/responses`,
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+        // 缺少必填的 input → 上游入参校验必失败；max_output_tokens 兜底封顶
+        body: { model, max_output_tokens: 1 },
+      },
+      {
+        apiType: 'OpenAI',
+        url: `${v1}/chat/completions`,
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+        body: { model, max_tokens: 1 },
+      },
+      {
+        apiType: 'Anthropic',
+        url: `${v1}/messages`,
+        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+        body: { model, max_tokens: 1 },
+      },
+    ];
+
+    // 三个协议**同时发起**，但按优先级顺序 await：
+    // 高优先级一旦有结论就立即返回并 abort 掉其余探测，
+    // 不必等低优先级那些慢请求（最坏情况等价于 Promise.all，最好情况省掉 2/3 等待）。
+    const controllers = candidates.map(() => new AbortController());
+    const timers = controllers.map((controller) =>
+      setTimeout(() => controller.abort(), API_TYPE_PROBE_TIMEOUT_MS));
+
+    const probes = candidates.map((candidate, index) =>
+      this.probeWithRetry(candidate, model, sessionId, controllers[index]));
+
+    try {
+      for (let index = 0; index < candidates.length; index++) {
+        const verdict = await probes[index];
+        if (verdict === 'supported') {
+          // 命中即中止所有更低优先级的探测，避免无谓等待
+          for (let lower = index + 1; lower < controllers.length; lower++) {
+            controllers[lower].abort();
+          }
+          return candidates[index].apiType;
+        }
+        if (verdict === 'unknown') {
+          // 高优先级结果不确定（限流重试后仍失败 / 地区限制 / 网络异常）：
+          // 不猜测、不降级到低优先级，交给用户手动选择或下次自动获取时重试
+          this.log(`[VSCodeUI] probe ${model}: ${candidates[index].apiType} verdict unknown, skipping detection (will retry next fetch)`);
+          for (let lower = index + 1; lower < controllers.length; lower++) {
+            controllers[lower].abort();
+          }
+          return null;
+        }
+      }
+      return null;
+    } finally {
+      for (const controller of controllers) controller.abort();
+      for (const timer of timers) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * 探测一次（含限流重试）。
+   *
+   * 网关/上游返回 429（限流）、502/503/504（瞬时故障）时按退避重试，
+   * 而不是直接判为「不支持」——否则一次限流就会让该模型选到错误的协议。
+   * 优先遵循 Retry-After 响应头。
+   */
+  private async probeWithRetry(
+    candidate: { apiType: 'Responses' | 'OpenAI' | 'Anthropic'; url: string; headers: Record<string, string>; body: Record<string, unknown> },
+    model: string,
+    sessionId: string,
+    controller: AbortController,
+  ): Promise<ProbeVerdict> {
+    let lastStatus = 0;
+    for (let attempt = 0; attempt <= API_TYPE_PROBE_MAX_RETRIES; attempt++) {
+      if (controller.signal.aborted) return 'unknown';
+      try {
+        const response = await undiciFetch(candidate.url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-opencode-session': sessionId,
+            'x-session-id': sessionId,
+            ...candidate.headers,
+          },
+          body: JSON.stringify(candidate.body),
+          signal: controller.signal,
+          dispatcher: getProbeDispatcher(),
+        });
+        const text = await response.text();
+        lastStatus = response.status;
+
+        // 限流 / 瞬时故障：退避重试
+        if (API_TYPE_PROBE_RETRYABLE_STATUS.has(response.status) && attempt < API_TYPE_PROBE_MAX_RETRIES) {
+          const retryAfterMs = this.parseRetryAfterMs(response.headers.get('retry-after'));
+          const delay = retryAfterMs ?? API_TYPE_PROBE_RETRY_BASE_DELAY_MS * (attempt + 1);
+          this.log(`[VSCodeUI] probe ${model} ${candidate.apiType} -> HTTP ${response.status} (retryable), retrying in ${delay}ms (${attempt + 1}/${API_TYPE_PROBE_MAX_RETRIES})`);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+
+        const verdict = this.classifyProbeResult(response.status, text);
+        this.log(`[VSCodeUI] probe ${model} ${candidate.apiType} -> HTTP ${response.status} ${verdict}${verdict === 'supported' ? '' : ` ${text.slice(0, 160)}`}`);
+        return verdict;
+      } catch (err: any) {
+        // 被主动 abort 的低优先级探测不记录为错误
+        if (controller.signal.aborted) return 'unknown';
+        // 网络错误也重试
+        if (attempt < API_TYPE_PROBE_MAX_RETRIES) {
+          const delay = API_TYPE_PROBE_RETRY_BASE_DELAY_MS * (attempt + 1);
+          this.log(`[VSCodeUI] probe ${model} ${candidate.apiType} -> error ${err?.message || err}, retrying in ${delay}ms (${attempt + 1}/${API_TYPE_PROBE_MAX_RETRIES})`);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        this.log(`[VSCodeUI] probe ${model} ${candidate.apiType} -> error ${err?.message || err}`);
+        return 'unknown';
+      }
+    }
+    this.log(`[VSCodeUI] probe ${model} ${candidate.apiType} -> exhausted retries (last HTTP ${lastStatus})`);
+    return 'unknown';
+  }
+
+  /** 解析 Retry-After 响应头（秒数或 HTTP 日期），非法时返回 undefined */
+  private parseRetryAfterMs(header: string | null): number | undefined {
+    if (!header) return undefined;
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.min(seconds * 1000, API_TYPE_PROBE_MAX_RETRY_DELAY_MS);
+    }
+    const date = Date.parse(header);
+    if (Number.isFinite(date)) {
+      return Math.min(Math.max(date - Date.now(), 0), API_TYPE_PROBE_MAX_RETRY_DELAY_MS);
+    }
+    return undefined;
+  }
+
+  /**
+   * 判定一次探测响应的含义（三态）。
+   *
+   * 需要区分三种形状相近、含义完全不同的响应体：
+   *   1. 网关自身信封：{"type":"error","error":{"type":"ModelError"|"AuthError"|"RegionError"|"error"|...}}
+   *      → 与协议无关的拒绝（模型不支持该格式 / 鉴权 / 地区限制 / 内部错误）
+   *   2. 上游错误被网关包一层：{"model":"X","error":{...}} 或 {"error":{...}}
+   *      → 请求已经路由到该协议的上游，说明该协议**可用**
+   *        （例如 gpt-5.6-luna 的 Responses 返回 403 地区限制，恰恰证明 Responses 路由通了）
+   *   3. 上游标准错误（Anthropic 风格）被网关原样透传：
+   *      {"type":"error","error":{"type":"invalid_request_error"|"authentication_error"|...}}
+   *      → 同样说明请求到达了上游
+   */
+  private classifyProbeResult(status: number, text: string): ProbeVerdict {
+    /** 网关自身产生的、明确表示「该协议不可用」的错误类型 */
+    const GATEWAY_REJECT_TYPES = new Set(['ModelError', 'AuthError', 'MissingSessionID', 'CreditsError', 'error']);
+    /** 网关自身产生的、与协议无关（无法判断）的错误类型 */
+    const GATEWAY_UNKNOWN_TYPES = new Set(['RegionError']);
+
+    let payload: any;
+    try {
+      payload = text ? JSON.parse(text) : undefined;
+    } catch {
+      payload = undefined;
+    }
+
+    if (payload && typeof payload === 'object') {
+      const isGatewayEnvelope = payload.type === 'error'
+        && payload.error && typeof payload.error === 'object';
+      if (isGatewayEnvelope) {
+        const errType = typeof payload.error.type === 'string' ? payload.error.type : '';
+        if (GATEWAY_REJECT_TYPES.has(errType)) {
+          // 模型不支持该格式 / 鉴权失败 / 网关内部 500（适配器崩溃）
+          return 'unsupported';
+        }
+        if (GATEWAY_UNKNOWN_TYPES.has(errType)) {
+          // 地区限制等，与协议无关 → 无法判断
+          return 'unknown';
+        }
+        // 其余是上游业务错误（invalid_request_error 等）被网关原样透传：已到达真实上游
+        return status === 400 || status === 422 ? 'supported' : 'unknown';
+      }
+
+      // 上游错误被网关包了一层（可能带顶层 model 字段）→ 已路由到该协议的上游
+      if (payload.error && typeof payload.error === 'object') {
+        return 'supported';
+      }
+    }
+
+    // 无错误体：按状态码兜底
+    //   400/422 → 上游入参校验拒绝（body 缺必填字段）→ 端点存在，支持
+    //   2xx     → 理论上不会发生（body 非法），保守视为支持
+    //   404/405 → 端点不存在 → 不支持
+    //   401/403/其它 5xx → 无法判断
+    if (status === 400 || status === 422) return 'supported';
+    if (status >= 200 && status < 300) return 'supported';
+    if (status === 404 || status === 405) return 'unsupported';
+    return 'unknown';
+  }
+
+  /** 按并发上限执行异步任务，结果顺序与输入一致 */
+  private async mapWithConcurrency<T, R>(
+    items: T[],
+    limit: number,
+    worker: (item: T) => Promise<R>,
+  ): Promise<R[]> {
+    const results: R[] = new Array(items.length);
+    if (items.length === 0) return results;
+    let nextIndex = 0;
+    const runners = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+      while (true) {
+        const index = nextIndex++;
+        if (index >= items.length) return;
+        results[index] = await worker(items[index]);
+      }
+    });
+    await Promise.all(runners);
+    return results;
   }
 
   private async handleRollbackEdit(message: any): Promise<void> {
@@ -1741,17 +2250,27 @@ export class WebviewMessageHandler {
                     .map((m) => m.trim()),
                 ))
               : [];
-            // modelConfigs：保留已有 context/output，缺失的字段从内置注册表匹配补齐
+            // 面板传来的「模型 -> 协议」映射（手动选择或自动探测结果）；
+            // 未出现在映射中的模型保持原状（不写入 apiType），以便下次自动获取时继续探测
+            const apiTypeOverrides: Record<string, 'Responses' | 'OpenAI' | 'Anthropic'> = {};
+            if (p?.modelApiTypes && typeof p.modelApiTypes === 'object' && !Array.isArray(p.modelApiTypes)) {
+              for (const [model, apiType] of Object.entries(p.modelApiTypes as Record<string, unknown>)) {
+                if (apiType === 'Responses' || apiType === 'OpenAI' || apiType === 'Anthropic') {
+                  apiTypeOverrides[model] = apiType;
+                }
+              }
+            }
+            // modelConfigs：保留已有 context/output/apiType，缺失的 context/output
+            // 从内置注册表匹配补齐；apiType 来自面板（手动选择或自动探测结果）
             const oldProvider = cfg.llm.providers?.[key];
             const oldModelConfigs: Record<string, ModelTokenLimits> = oldProvider?.modelConfigs
               && typeof oldProvider.modelConfigs === 'object'
               ? oldProvider.modelConfigs
               : {};
-            const modelConfigs = normalizeModelTokenLimits(providerModels, oldModelConfigs);
+            const modelConfigs = normalizeModelTokenLimits(providerModels, oldModelConfigs, apiTypeOverrides);
             providersMap[key] = {
               baseURL: providerBaseURL,
               apiKey: providerApiKey,
-              apiType: p?.apiType === 'Anthropic' ? 'Anthropic' : 'Responses',
               models: providerModels,
               modelConfigs,
               ...(typeof p?.defaultModel === 'string' && p.defaultModel.trim()
@@ -1829,6 +2348,27 @@ export class WebviewMessageHandler {
           setCoreUiLanguage(language);
         }
       } catch {}
+
+      // MCP 默认启用列表（设置面板「默认配置」）→ 全局 settings.json 的 mcp.enabled。
+      // 只改全局默认；各会话在菜单里的勾选存在各自 meta.json，不受影响。
+      if (Array.isArray(message.mcpServers)) {
+        try {
+          const { setDefaultEnabledMcps } = await import('../core/mcp/Config.js');
+          const { getMcpManager } = await import('../core/mcp/Manager.js');
+          await setDefaultEnabledMcps(
+            (message.mcpServers as unknown[]).filter((n): n is string => typeof n === 'string'),
+          );
+          // 默认值变化会影响「没有会话覆盖」的会话，重新对齐进程并刷新菜单
+          // 全局默认变化会影响所有「没有会话覆盖」的已打开会话，
+          // 因此要对所有已注册会话重新对齐引用，而不只是当前活动会话。
+          await getMcpManager().syncAllSessions();
+          const mcpSessionId = await this.getActiveMcpSessionId();
+          await getMcpManager().acquire(mcpSessionId);
+          await this.pushMcpServers(mcpSessionId);
+        } catch (err: any) {
+          this.log(`[VSCodeUI] Failed to save default MCP enabled list: ${err.message}`);
+        }
+      }
 
       this.log(`[VSCodeUI] LLM config saved successfully`);
 
@@ -2038,10 +2578,16 @@ export class WebviewMessageHandler {
   private async handleRequestLLMConfig(_message: any): Promise<void> {
     try {
       const { getLLMConfigPanelPayload } = await import('../core/llm/config.js');
-      const payload = await getLLMConfigPanelPayload();
+      const { readMcpServersForDefaults } = await import('../core/mcp/Config.js');
+      // 设置面板编辑的是「全局默认」，因此这里给的是全局默认的启用状态
+      const [payload, mcpServers] = await Promise.all([
+        getLLMConfigPanelPayload(),
+        readMcpServersForDefaults(),
+      ]);
       this.host.sendToWebview({
         type: 'showLLMConfig',
         ...payload,
+        mcpServers,
         language: this.getUiLanguageFromSettings(),
       });
     } catch (err: any) {
@@ -2050,17 +2596,17 @@ export class WebviewMessageHandler {
       this.host.sendToWebview({
         type: 'showLLMConfig',
         baseURL: 'https://api.deepseek.com',
-        apiType: 'Responses',
         webSearch: true,
         thinkingEffort: 'high',
         defaultModel: 'deepseek-v4-flash',
         defaultAgentMode: 'manual',
         defaultPromptMode: 'normal',
         apiKey: '',
-        providers: [{ key: 'api.deepseek.com', baseURL: 'https://api.deepseek.com', apiKey: '', apiType: 'Responses', models: [] }],
+        providers: [{ key: 'api.deepseek.com', baseURL: 'https://api.deepseek.com', apiKey: '', models: [], modelConfigs: {} }],
         activeProvider: '',
         language: this.getUiLanguageFromSettings(),
         shortcut: DEFAULT_WAKE_SHORTCUT,
+        mcpServers: [],
       });
     }
   }

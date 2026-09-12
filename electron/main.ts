@@ -138,6 +138,13 @@ async function main(): Promise<void> {
     registeredWakeShortcut = undefined;
     tray?.destroy();
     tray = undefined;
+    // 结束所有 MCP 子进程，避免留下孤儿进程
+    try {
+      const { getMcpManager } = require('../src/core/mcp/Manager.js');
+      getMcpManager().shutdown();
+    } catch {
+      // 退出阶段的清理失败不应影响退出
+    }
   });
 }
 
@@ -905,10 +912,22 @@ function setupIpc(): void {
           }
         }
       }
-      // 先关闭对应聊天视图（若删除的是当前活动会话，closeView 会自动切换到其他会话或新建）
+      // 删除 = abort -> close -> delete。
+      // 1) abort：先中止受影响会话正在运行的查询，必须在引擎被移出 sessionEngines 之前执行。
+      try {
+        const { abortCurrentQuery } = await import('../src/core/Integration.js');
+        for (const sid of affected) {
+          abortCurrentQuery(sid);
+        }
+      } catch (err) {
+        console.error('[main] sidebar:delete-conversation abort error:', err);
+      }
+      // 2) close：关闭对应聊天视图（内部同样先 abort，并释放 MCP 引用，归零的 server 被回收）；
+      //    若删除的是当前活动会话，closeView 会自动切换到其他会话或新建。
       for (const sid of affected) {
         chatViews?.closeView(sid);
       }
+      // 3) delete：删除磁盘文件并清理引擎池 / 缓存
       const { deleteConversation } = await import('../src/core/history/index.js');
       await deleteConversation(sessionId);
       refreshSidebar();
@@ -1140,6 +1159,17 @@ function initCore(): void {
       warmupSystemDynamicInfo(cwd);
     } catch {
       // 预热失败不影响主流程
+    }
+  })();
+
+  // MCP：引用计数模型下，进程由「打开的对话」驱动，启动时只做残留清理，
+  // 不主动连接任何服务器；对话打开（openConversation / registerSession）时才 acquire。
+  (async () => {
+    try {
+      const { getMcpManager } = require('../src/core/mcp/Manager.js');
+      await getMcpManager().prune();
+    } catch (error) {
+      console.error('[main] Failed to initialize MCP servers:', error);
     }
   })();
 }
