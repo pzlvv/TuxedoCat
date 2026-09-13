@@ -9,11 +9,6 @@ import { z } from 'zod';
  */
 export const bashInputSchema = z.strictObject({
   command: z.string().describe('要执行的 shell 命令'),
-  timeout: z
-    .coerce
-    .number()
-    .optional()
-    .describe('可选的超时时间（毫秒），默认 12000ms'),
   description: z
     .string()
     .optional()
@@ -93,6 +88,11 @@ export const MAX_PERSISTED_SIZE = 64 * 1024 * 1024; // 64MB
  */
 export interface ExecOptions {
   command: string;
+  /**
+   * 前台超时（毫秒）。
+   * 0 表示不设超时（如 sleep 命令）。
+   * 普通命令默认 60s，超时自动转入后台。
+   */
   timeout: number;
   cwd?: string;
   signal: AbortSignal;

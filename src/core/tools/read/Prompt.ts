@@ -22,7 +22,7 @@ Reads the contents of a file from the local filesystem.
 
 **Parameters:**
 - \`file_path\` (string, required): The absolute path to the file to read
-- \`offset\` (number, optional): The line number to start reading from (0-indexed)
+- \`offset\` (number, optional): The 1-based line number to start reading from (default: 1; 0 is treated as 1)
 - \`limit\` (number, optional): The number of lines to read
 - \`sheet\` (string, optional): For xlsx/xlsm files, specify the sheet name to read. Defaults to the first sheet if not specified.
 
@@ -30,7 +30,7 @@ Reads the contents of a file from the local filesystem.
 - Read entire file: Use just \`file_path\`
 - Read specific range: Use \`offset\` and \`limit\` to read a portion of the file
 - Read specific sheet: Use \`sheet\` parameter for Excel files
-- Line numbers are 1-based and separated by \`|\`
+- Line numbers shown in output are 1-based and separated by \`|\`; \`offset\` uses the same 1-based numbering (consistent with the Edit tool)
 
 **Limits:**
 - Maximum file size for whole-file reads: ${sizeStr} (text files only; xlsx/doc/image files are exempt). Files larger than this require \`offset\` and \`limit\`

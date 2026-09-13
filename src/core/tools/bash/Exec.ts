@@ -19,15 +19,14 @@ import { findSuitableShell, type ShellInfo } from './ShellDetector.js';
 import { TaskOutput } from './TaskOutput.js';
 import { wrapSpawn } from './ShellCommand.js';
 import { registerBackgroundTask, onBackgroundTaskCompleted } from './LocalShellTask.js';
+import { watchSleepNotifications } from './SleepDetect.js';
 import { logger } from '../../Logger.js';
 
 /** 自动转入后台后，等待完成的超时（不限制，让后台任务自然完成） */
 const AUTO_BG_TIMEOUT_MS = 0; // 0 = no timeout
 
 /** 有后台任务完成通知时，当前前台命令至少已运行的时长（超过则自动转入后台） */
-const AUTO_BG_MIN_RUNNING_MS = 3000;
-
-/**
+const AUTO_BG_MIN_RUNNING_MS = 3000;/**
  * 执行 shell 命令
  *
  * @returns 如果 runInBackground 为 true，立即返回 { backgroundTaskId }，
@@ -93,11 +92,15 @@ async function execForeground(
     resultResolve = resolve;
   });
 
+  // 是否为 sleep 命令（timeout === 0 表示不设前台超时）
+  const isSleepCommand = timeout === 0;
+
   // 定义 onAbort 处理函数（使用声明形式，让 timeout、abort、后台任务通知都能引用）
   const onAbort = () => {
     if (!isResolved) {
       isResolved = true;
       unsubscribeBgCompleted();
+      unsubscribeSleepNotify?.();
       if (timeoutId) clearTimeout(timeoutId);
       if (child) {
         // 在 Windows 上 child.kill('SIGTERM') 可能无效，先尝试 SIGTERM 再 SIGKILL
@@ -138,20 +141,46 @@ async function execForeground(
     }
   });
 
+  // --- sleep 命令的通知监听 ---
+  // sleep 命令不设前台超时，让 sleep 自然完成；
+  // 但 sleep 过程中若收到后台任务完成通知或子代理 Reply，
+  // 则立刻将 sleep 执行转入后台，避免阻塞模型处理通知。
+  let unsubscribeSleepNotify: (() => void) | null = null;
+  if (isSleepCommand) {
+    const watch = watchSleepNotifications(sessionID, (reason) => {
+      const elapsed = Date.now() - startTime;
+      logger.info('Exec', `Notification received (${reason}) while sleep running for ${elapsed}ms; auto-backgrounding "${description || command}"`);
+      triggerAutoBackground(reason);
+    });
+    unsubscribeSleepNotify = watch.unsubscribe;
+  }
+
   /**
    * 将当前前台命令转入后台继续执行
-   * 触发条件：超时，或有后台任务完成通知且当前命令已运行超过 AUTO_BG_MIN_RUNNING_MS
+   * 触发条件：超时，或 sleep 命令执行中收到后台任务完成/子代理 Reply 通知，
+   * 或普通命令执行中收到后台任务完成通知且已运行超过 AUTO_BG_MIN_RUNNING_MS
    */
   const triggerAutoBackground = (reason: string) => {
     if (isResolved || !child) return;
     isResolved = true;
     unsubscribeBgCompleted();
+    unsubscribeSleepNotify?.();
     if (signal) {
       signal.removeEventListener('abort', onAbort);
     }
     if (timeoutId) {
       clearTimeout(timeoutId);
       timeoutId = null;
+    }
+
+    // 转后台前冲刷解码器残留字节：切换为文件模式后不再经过解码器，
+    // 残留的不完整多字节字符若不带过去会直接丢失。
+    const flushedStdout = stdoutDecoder.end();
+    if (flushedStdout) appendFullOutput(flushedStdout);
+    const flushedStderr = stderrDecoder.end();
+    if (flushedStderr) {
+      stderr += flushedStderr;
+      appendFullOutput(flushedStderr);
     }
 
     // 转入后台：detach 子进程，通过文件模式继续收集输出
@@ -175,8 +204,11 @@ async function execForeground(
   };
 
   // --- 超时处理 ---
-  // 当命令运行超过前台预算时，自动转入后台继续执行
-  timeoutId = setTimeout(() => triggerAutoBackground('timeout'), timeout);
+  // 普通命令：运行超过前台预算（默认 60s）时，自动转入后台继续执行
+  // sleep 命令：不设前台超时，由通知监听决定是否转后台
+  if (timeout > 0) {
+    timeoutId = setTimeout(() => triggerAutoBackground('timeout'), timeout);
+  }
 
   async function resolveForegroundResult(baseResult: {
     stdout: string;
@@ -210,10 +242,44 @@ async function execForeground(
     }
   }
 
+  // --- 流式解码 ---
+  // GBK 是多字节编码，一个字符可能被 TCP/管道分包切割在两个 chunk 边界上。
+  // 对每个 chunk 独立 iconv.decode 会把被截断的多字节序列解成乱码。
+  // 这里使用 iconv-lite 的流式 Decoder：不完整的多字节序列留在解码器内部，
+  // 与下一个 chunk 拼接后再解码，既不会乱码也不会发生字节错位
+  // （不能靠"扣下最后一个字节"的启发式判断字符边界：GBK 尾字节范围
+  //   0x40-0xFE 与首字节 0x81-0xFE 重叠，会把完整字符的尾字节误扣下，
+  //   与下一个 chunk 的首字节拼成错误字符并导致后续整段错位）。
+  const useGbk = process.platform === 'win32' && shellInfo.type !== 'bash';
+  interface StreamDecoder {
+    write: (data: Buffer) => string;
+    /** 冲刷解码器内部残留字节（进程退出 / 转入后台前调用），幂等 */
+    end: () => string;
+  }
+  function createDecoder(): StreamDecoder {
+    if (!useGbk) {
+      return {
+        write: (data: Buffer) => data.toString('utf-8'),
+        end: () => '',
+      };
+    }
+    const decoder = iconv.getDecoder('gbk');
+    let ended = false;
+    return {
+      write: (data: Buffer) => (ended ? '' : decoder.write(data)),
+      end: () => {
+        if (ended) return '';
+        ended = true;
+        return decoder.end() ?? '';
+      },
+    };
+  }
+  const stdoutDecoder = createDecoder();
+  const stderrDecoder = createDecoder();
+
   // 处理标准输出
   child.stdout?.on('data', (data: Buffer) => {
-    const useGbk = process.platform === 'win32' && shellInfo.type !== 'bash';
-    const text = useGbk ? iconv.decode(data, 'gbk') : data.toString('utf-8');
+    const text = stdoutDecoder.write(data);
     appendFullOutput(text);
 
     if (onProgress && !isResolved) {
@@ -232,8 +298,7 @@ async function execForeground(
 
   // 处理标准错误
   child.stderr?.on('data', (data: Buffer) => {
-    const useGbk = process.platform === 'win32' && shellInfo.type !== 'bash';
-    const text = useGbk ? iconv.decode(data, 'gbk') : data.toString('utf-8');
+    const text = stderrDecoder.write(data);
     stderr += text;
     appendFullOutput(text);
 
@@ -256,8 +321,18 @@ async function execForeground(
     if (!isResolved) {
       isResolved = true;
       unsubscribeBgCompleted();
+      unsubscribeSleepNotify?.();
       if (timeoutId) clearTimeout(timeoutId);
       if (signal) signal.removeEventListener('abort', onAbort);
+
+      // 冲刷解码器内部残留字节（最后可能遗留一个不完整/完整的多字节字符）
+      const flushedStdout = stdoutDecoder.end();
+      if (flushedStdout) appendFullOutput(flushedStdout);
+      const flushedStderr = stderrDecoder.end();
+      if (flushedStderr) {
+        stderr += flushedStderr;
+        appendFullOutput(flushedStderr);
+      }
 
       resolveForegroundResult({
         stdout: fullOutput,
@@ -273,6 +348,7 @@ async function execForeground(
     if (!isResolved) {
       isResolved = true;
       unsubscribeBgCompleted();
+      unsubscribeSleepNotify?.();
       if (timeoutId) clearTimeout(timeoutId);
       if (signal) signal.removeEventListener('abort', onAbort);
 

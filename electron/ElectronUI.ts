@@ -31,6 +31,11 @@ import { buildEditDiffHunks } from '../src/core/utils/editDiff.js';
 import { WebviewMessageHandler } from '../src/VSCodeUI/webviewMessageHandler.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
 import { isImageFile } from '../src/host/imageFiles.js';
+import { clearConversationData } from '../src/core/history/ops.js';
+import { fetchBalanceAndPush } from '../src/core/history/balancePush.js';
+import { buildConversationLoadedPayload } from '../src/host/conversationPayload.js';
+import { pushToolProgress, inheritAgentMode, isActiveQueryInScope } from '../src/host/queryActivity.js';
+import { shouldOpenSpinDesign } from '../src/core/history/spinCommand.js';
 
 export class ElectronUI implements AssistantUI {
   private static instance: ElectronUI | undefined;
@@ -625,8 +630,7 @@ export class ElectronUI implements AssistantUI {
   // ===================== AssistantUI 接口实现 =====================
 
   onSetAgentMode(parentSessionId: string, childSessionId: string): void {
-    const parentMode = this.sessionAgentModes.get(parentSessionId);
-    this.sessionAgentModes.set(childSessionId, parentMode === 'auto' ? 'auto' : 'risk');
+    inheritAgentMode(this.sessionAgentModes, parentSessionId, childSessionId);
   }
 
   async onPreToolCall(
@@ -656,29 +660,8 @@ export class ElectronUI implements AssistantUI {
   }
 
   onToolProgress(sessionID: string, toolUseId: string, progress: ToolProgressData): void {
-    const p = progress as ToolProgressData & {
-      output?: string;
-      fullOutput?: string;
-      elapsedTimeSeconds?: number;
-      totalLines?: number;
-      totalBytes?: number;
-      taskId?: string;
-    };
-    const STREAM_CAP_CHARS = 100_000;
-    let streamed = p.fullOutput || p.output || '';
-    if (streamed.length > STREAM_CAP_CHARS) {
-      streamed = streamed.slice(-STREAM_CAP_CHARS);
-    }
-    this.postToWebview(sessionID, {
-      type: 'toolProgress',
-      toolCallId: toolUseId,
-      output: streamed,
-      isStreaming: true,
-      elapsedTimeSeconds: p.elapsedTimeSeconds,
-      totalLines: p.totalLines,
-      totalBytes: p.totalBytes,
-      taskId: p.taskId,
-    } as any);
+    pushToolProgress(sessionID, toolUseId, progress, (sessionId, message) =>
+      this.postToWebview(sessionId, message));
   }
 
   onMessage(sessionID: string, data: MessageData): void {
@@ -734,29 +717,23 @@ export class ElectronUI implements AssistantUI {
    * 因此子代理后台运行时父会话的 abort 按钮也应保持可用。
    */
   private hasActiveQueryInScope(sessionId: string): boolean {
-    if ((this.queryActiveCounts.get(sessionId) ?? 0) > 0) {
-      return true;
-    }
-    // 后台 Bash 任务可能在前台查询结束后继续运行，此时 abort 按钮仍应可用。
+    // 后台 Bash 任务
+    let getBackgroundTasks: (() => Array<{ status: string; sessionID?: string }>) | undefined;
     try {
       const { getAllBackgroundTasks } = require('../src/core/tools/bash/LocalShellTask.js') as typeof import('../src/core/tools/bash/LocalShellTask.js');
-      if (getAllBackgroundTasks().some(task => task.status === 'running' && task.sessionID === sessionId)) {
-        return true;
-      }
+      getBackgroundTasks = getAllBackgroundTasks;
     } catch {
       // LocalShellTask 不可用时忽略
     }
+    // 子代理注册表：按入参会话查询其子会话（递归下降用，不能绑定固定 sessionId）
+    let listChildSessions: ((sessionId: string) => string[]) | undefined;
     try {
       const { subAgentRegistry } = require('../src/core/tools/agent/SubAgentRegistry.js') as typeof import('../src/core/tools/agent/SubAgentRegistry.js');
-      for (const childId of subAgentRegistry.listForCreator(sessionId)) {
-        if (this.hasActiveQueryInScope(childId)) {
-          return true;
-        }
-      }
+      listChildSessions = (id) => subAgentRegistry.listForCreator(id);
     } catch {
       // 子代理注册表不可用时只按当前会话自身判断
     }
-    return false;
+    return isActiveQueryInScope(sessionId, this.queryActiveCounts, getBackgroundTasks, listChildSessions);
   }
 
   /**
@@ -850,23 +827,11 @@ export class ElectronUI implements AssistantUI {
   }
 
   private fetchAndSendBalance(sessionID: string): void {
-    import('../src/core/utils/balance.js').then(({ fetchBalance }) => {
-      fetchBalance(sessionID).then(balanceInfo => {
-        if (balanceInfo) {
-          this.postToWebview(sessionID, {
-            type: 'balanceUpdate',
-            totalBalance: balanceInfo.totalBalance,
-            currency: balanceInfo.currency,
-            isUnlimited: balanceInfo.isUnlimited,
-            fetchedAt: balanceInfo.fetchedAt,
-          } as any);
-        }
-      }).catch((err: unknown) => {
-        this.log(`Failed to fetch balance: ${err}`);
-      });
-    }).catch((err: unknown) => {
-      this.log(`Failed to import balance module: ${err}`);
-    });
+    fetchBalanceAndPush(
+      sessionID,
+      (message) => this.postToWebview(sessionID, message),
+      (line) => this.log(line),
+    );
   }
 
   clearMessages(sessionID: string): void {
@@ -894,24 +859,13 @@ export class ElectronUI implements AssistantUI {
 
     if (commandName === 'clear') {
       this.postToWebview(sessionId, { type: 'clearMessages', sessionId });
-      (async () => {
-        try {
-          const { replaceConversationMessages, updateConversationContext } = await import('../src/core/history/index.js');
-          await replaceConversationMessages(sessionId, []);
-          await updateConversationContext(sessionId, { totalContextTokens: 0 });
-          const { getSessionEngine } = await import('../src/core/QueryEngine.js');
-          const engine = getSessionEngine(sessionId);
-          if (engine) {
-            const msgs = engine.getMessages();
-            msgs.length = 0;
-            engine.lastPersistedMessageUuid = null;
-          }
-          // /clear 后同步侧栏列表 messageCount（清空后仍保留会话，显示 0 条）
-          this.refreshSidebarThrottled();
-        } catch (err) {
+      void clearConversationData(sessionId, {
+        // /clear 后同步侧栏列表 messageCount（清空后仍保留会话，显示 0 条）
+        onSuccess: () => this.refreshSidebarThrottled(),
+        onError: (err) => {
           this.log(`Error clearing conversation: ${err}`);
-        }
-      })();
+        },
+      });
       return true;
     }
 
@@ -924,17 +878,11 @@ export class ElectronUI implements AssistantUI {
         return true;
       }
       const ws = this.getWorkspacePath();
-      if (ws) {
-        const projectDir = this.getProjectConversationDir(ws);
-        if (projectDir) {
-          const spinJsonPath = path.join(projectDir, 'spin.json');
-          if (!fs.existsSync(spinJsonPath)) {
-            this.webviewMessageHandler.handleOpenSpinDesign().catch((err: any) => {
-              this.log(`Error opening spin design: ${err}`);
-            });
-            return true;
-          }
-        }
+      if (ws && this.getProjectConversationDir(ws) && shouldOpenSpinDesign(ws)) {
+        this.webviewMessageHandler.handleOpenSpinDesign().catch((err: any) => {
+          this.log(`Error opening spin design: ${err}`);
+        });
+        return true;
       }
     }
 
@@ -1114,61 +1062,9 @@ export class ElectronUI implements AssistantUI {
       model?: string;
     },
   ): void {
-    const trimmed = JSON.parse(JSON.stringify(conversation));
-    const toolMetaMap: Record<string, any> = {};
-
-    if (trimmed.messages) {
-      console.log(`[ElectronUI] postConversationLoaded: raw messages=${trimmed.messages.length}`);
-      trimmed.messages = trimmed.messages.filter(
-        (msg: any) => !msg.isMeta && !msg.silent
-      );
-      console.log(`[ElectronUI] postConversationLoaded: after filter=${trimmed.messages.length}`);
-      for (const msg of trimmed.messages) {
-        if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
-          for (const block of msg.message.content) {
-            if (block.type === 'tool_use' && block._meta) {
-              block._metaTrimmed = true;
-              block._toolUseId = block.id;
-              const rawMeta = block._meta as Record<string, unknown>;
-              const { beforeContent, afterContent, ...smallFields } = rawMeta;
-              block._meta = smallFields;
-
-              if (block.name === 'Edit' && typeof beforeContent === 'string' && typeof afterContent === 'string') {
-                // Edit 只发送 diff 相关行，避免把整个文件内容发给 webview
-                toolMetaMap[block.id!] = {
-                  diffHunks: buildEditDiffHunks({
-                    beforeContent,
-                    afterContent,
-                    startLine: rawMeta.startLine as number | undefined,
-                    endLine: rawMeta.endLine as number | undefined,
-                    replaceAll: Boolean((block.input as any)?.replace_all),
-                  }),
-                };
-              } else {
-                // Write 等工具仍保留原有 beforeContent/afterContent 字段
-                toolMetaMap[block.id!] = { beforeContent, afterContent };
-              }
-            }
-          }
-        }
-      }
-    }
-
-    this.sendToRenderer({
-      type: 'conversationLoaded',
-      conversation: trimmed,
-      pendingToolUseIds: extra.pendingToolUseIds,
-      savedContext: extra.savedContext,
-      parentSessionId: extra.parentSessionId,
-      agentMode: extra.agentMode,
-      hasActiveQuery: extra.hasActiveQuery,
-      sessionId,
-      hasCompactArchive: extra.hasCompactArchive === true,
-      toolMetaMap: Object.keys(toolMetaMap).length > 0 ? toolMetaMap : undefined,
-      model: extra.model || trimmed.metadata?.model ||
-        (trimmed.metadata?.context?.model) ||
-        undefined,
-    } as WebviewMessage);
+    // Electron 版无 activityPhase 字段（与 VSCodeUI 的差异由 extraFields 决定）
+    const payload = buildConversationLoadedPayload(sessionId, conversation, extra);
+    this.sendToRenderer(payload as Record<string, unknown>);
 
     // 同步 abort 状态：打开/切换到含活跃子代理的会话后，abort 按钮应立即可用
     this.syncAbortState();

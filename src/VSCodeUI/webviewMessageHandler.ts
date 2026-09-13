@@ -12,6 +12,7 @@ import { buildEditDiffHunks } from '../core/utils/editDiff.js';
 import { buildUserContent, extractUserContent } from '../core/utils/contentBlocks.js';
 import { MODEL_CONFIGS, normalizeModelTokenLimits, type ModelTokenLimits } from '../core/utils/modelConfig.js';
 import { DEFAULT_WAKE_SHORTCUT, normalizeAccelerator } from '../core/utils/shortcut.js';
+import { extractLastJsonObject } from '../core/utils/lastJson.js';
 import { userChoiceQueue } from '../core/UserChoiceQueue.js';
 import { noteSessionActivity, clearSessionIdleState } from '../core/sessionIdle.js';
 import { isCompacting } from '../core/compact/state.js';
@@ -59,45 +60,34 @@ type ProbeVerdict = 'supported' | 'unsupported' | 'unknown';
 function defaultTitle(): string {
   return '';
 }
-function extractLastJsonObject(text: string): string | null {
-  let lastBrace = -1;
-  let inString = false;
-  let escape = false;
-  for (let i = text.length - 1; i >= 0; i--) {
-    const ch = text[i];
-    if (escape) { escape = false; continue; }
-    if (ch === '\\' && inString) {
-      if (i > 0 && text[i - 1] === '\\') { i--; continue; }
-      continue;
-    }
-    if (ch === '"') { inString = !inString; continue; }
-    if (!inString && ch === '{') { lastBrace = i; break; }
-  }
-  if (lastBrace < 0) return null;
-  let depth = 0;
-  inString = false;
-  escape = false;
-  for (let i = lastBrace; i < text.length; i++) {
-    const ch = text[i];
-    if (escape) { escape = false; continue; }
-    if (ch === '\\' && inString) { escape = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (!inString) {
-      if (ch === '{') { depth++; }
-      else if (ch === '}') {
-        depth--;
-        if (depth === 0) {
-          const jsonStr = text.substring(lastBrace, i + 1);
-          try { const parsed = JSON.parse(jsonStr); if (parsed && typeof parsed.title === 'string') return jsonStr; } catch { }
-          break;
-        }
-      }
-    }
-  }
-  const remainingText = text.substring(0, lastBrace);
-  if (remainingText.length > 0) return extractLastJsonObject(remainingText);
-  return null;
+
+/** 动态加载 MCP Manager 模块的 getMcpManager 工厂（内部 use：acquireMcpInBackground） */
+async function importMcpManager(): Promise<typeof import('../core/mcp/Manager.js')['getMcpManager']> {
+  const mod = await import('../core/mcp/Manager.js');
+  return mod.getMcpManager;
 }
+
+/** 按并发上限执行异步任务，结果顺序与输入一致 */
+export async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  if (items.length === 0) return results;
+  let nextIndex = 0;
+  const runners = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+/** MCP Manager 实例类型 */
+type McpManagerInstance = ReturnType<Awaited<ReturnType<typeof importMcpManager>>>;
 
 export class WebviewMessageHandler {
   private host: UIHost;
@@ -116,6 +106,11 @@ export class WebviewMessageHandler {
   private userChoiceManager: UserChoiceManager;
   /** 用户响应 user choice 后的回调（宿主侧用于刷新侧栏流水灯状态） */
   private onUserChoiceResponded?: (sessionId: string) => void;
+  /** loadConversation 的单调递增序号：并发切换会话时丢弃过期加载结果 */
+  private loadConversationSeq = 0;
+
+  /** 消息类型 -> 处理器分发表（构造函数中构建一次） */
+  private messageHandlers: Map<string, (msg: any) => Promise<void>>;
 
   constructor(deps: {
     host: UIHost;
@@ -141,6 +136,81 @@ export class WebviewMessageHandler {
     this.sessionAgentModes = deps.sessionAgentModes;
     this.userChoiceManager = deps.userChoiceManager;
     this.onUserChoiceResponded = deps.onUserChoiceResponded;
+    this.messageHandlers = this.buildMessageHandlers();
+  }
+
+  /**
+   * 构建消息类型 -> 处理器的分发表。
+   * 大多数处理器直接接收消息对象；少数不使用消息参数的处理器
+   * （requestSkills / openSpinDesign / requestSettingsDefaults / openWorkspaceFolder /
+   * requestConversationSpaces / getConversations）包装为忽略参数的形式；
+   * debugLog 是同步日志分支，包一层同步 lambda。
+   */
+  private buildMessageHandlers(): Map<string, (msg: any) => Promise<void>> {
+    return new Map<string, (msg: any) => Promise<void>>([
+      ['requestCompress', (msg) => this.handleRequestCompress(msg)],
+      ['queueMessage', (msg) => this.handleQueueMessage(msg)],
+      ['sendMessage', (msg) => this.handleSendMessage(msg)],
+      ['openFile', (msg) => this.handleOpenFile(msg)],
+      ['requestToolMeta', (msg) => this.handleRequestToolMeta(msg)],
+      ['showVirtualDocument', (msg) => this.handleShowVirtualDocument(msg)],
+      ['showDiffInVirtualDocument', (msg) => this.handleShowDiffInVirtualDocument(msg)],
+      ['abort', (msg) => this.handleAbort(msg)],
+      ['getConversations', () => this.handleGetConversations()],
+      ['setActiveSessionId', (msg) => this.handleSetActiveSessionId(msg)],
+      ['loadConversation', (msg) => this.handleLoadConversation(msg)],
+      ['updateConversationContext', (msg) => this.handleUpdateConversationContext(msg)],
+      ['requestTimeStats', (msg) => this.handleRequestTimeStats(msg)],
+      ['saveConversationStats', (msg) => this.handleSaveConversationStats(msg)],
+      ['startNewConversation', (msg) => this.handleStartNewConversation(msg)],
+      ['deleteConversation', (msg) => this.handleDeleteConversation(msg)],
+      ['clearConversation', (msg) => this.handleClearConversation(msg)],
+      ['respondUserChoice', (msg) => this.handleRespondUserChoice(msg)],
+      ['setAgentMode', (msg) => this.handleSetAgentMode(msg)],
+      ['setPromptMode', (msg) => this.handleSetPromptMode(msg)],
+      ['setThinkingMode', (msg) => this.handleSetThinkingMode(msg)],
+      ['setWebSearch', (msg) => this.handleSetWebSearch(msg)],
+      ['setModel', (msg) => this.handleSetModel(msg)],
+      ['createEngine', (msg) => this.handleCreateEngine(msg)],
+      ['requestSkills', () => this.handleRequestSkills()],
+      ['openMermaidPreview', (msg) => this.handleOpenMermaidPreview(msg)],
+      ['openSpinDesign', () => this.handleOpenSpinDesign()],
+      ['renameConversation', (msg) => this.handleRenameConversation(msg)],
+      ['requestSmartNaming', (msg) => this.handleRequestSmartNaming(msg)],
+      ['rollbackEdit', (msg) => this.handleRollbackEdit(msg)],
+      ['expandCompact', (msg) => this.handleExpandCompact(msg)],
+      ['requestModels', (msg) => this.handleRequestModels(msg)],
+      ['fetchProviderModels', (msg) => this.handleFetchProviderModels(msg)],
+      ['detectProviderModelApiTypes', (msg) => this.handleDetectProviderModelApiTypes(msg)],
+      ['saveLLMConfig', (msg) => this.handleSaveLLMConfig(msg)],
+      ['requestLLMConfig', (msg) => this.handleRequestLLMConfig(msg)],
+      ['requestSettingsDefaults', () => this.handleRequestSettingsDefaults()],
+      ['debugLog', async (msg) => {
+        // 来自 webview 的诊断日志
+        this.log(`[Webview Debug] ${msg.message}`);
+      }],
+      ['openUrl', (msg) => this.handleOpenUrl(msg)],
+      ['openWorkspaceFolder', () => this.handleOpenWorkspaceFolder()],
+      ['requestConversationSpaces', () => this.handleRequestConversationSpaces()],
+      ['clearConversationSpace', (msg) => this.handleClearConversationSpace(msg)],
+      ['requestMcpServers', (msg) => this.handleRequestMcpServers(msg)],
+      ['setMcpEnabled', (msg) => this.handleSetMcpEnabled(msg)],
+      ['recordHighlightLanguage', (msg) => this.handleRecordHighlightLanguage(msg)],
+    ]);
+  }
+
+  /**
+   * 按消息类型分发到具体处理器，由 handleWebviewMessage() 统一兜底异常。
+   */
+  private async dispatchWebviewMessage(message: any): Promise<void> {
+    logger.info("handleWebviewMessage", `Received from webview: ${message.type}`);
+
+    const handler = this.messageHandlers.get(message.type);
+    if (handler) {
+      await handler(message);
+    } else {
+      logger.warn('webviewMessageHandler', `Unknown message type: ${message.type}`);
+    }
   }
 
   private log(...args: unknown[]): void {
@@ -159,109 +229,6 @@ export class WebviewMessageHandler {
       // 且整条消息链路静默失败、难以定位。
       const detail = err instanceof Error ? (err.stack || err.message) : String(err);
       this.log(`[VSCodeUI] handleWebviewMessage failed for type=${message?.type}: ${detail}`);
-    }
-  }
-
-  /**
-   * 按消息类型分发到具体处理器，由 handleWebviewMessage() 统一兜底异常。
-   */
-  private async dispatchWebviewMessage(message: any): Promise<void> {
-    logger.info("handleWebviewMessage", `Received from webview: ${message.type}`);
-
-    if (message.type === 'requestCompress') {
-      await this.handleRequestCompress(message);
-    } else if (message.type === 'queueMessage') {
-      await this.handleQueueMessage(message);
-    } else if (message.type === 'sendMessage') {
-      await this.handleSendMessage(message);
-    } else if (message.type === 'openFile') {
-      await this.handleOpenFile(message);
-    } else if (message.type === 'requestToolMeta') {
-      await this.handleRequestToolMeta(message);
-    } else if (message.type === 'showVirtualDocument') {
-      await this.handleShowVirtualDocument(message);
-    } else if (message.type === 'showDiffInVirtualDocument') {
-      await this.handleShowDiffInVirtualDocument(message);
-    } else if (message.type === 'abort') {
-      await this.handleAbort(message);
-    } else if (message.type === 'getConversations') {
-      await this.handleGetConversations();
-    } else if (message.type === 'setActiveSessionId') {
-      await this.handleSetActiveSessionId(message);
-    } else if (message.type === 'loadConversation') {
-      await this.handleLoadConversation(message);
-    } else if (message.type === 'updateConversationContext') {
-      await this.handleUpdateConversationContext(message);
-    } else if (message.type === 'requestTimeStats') {
-      await this.handleRequestTimeStats(message);
-    } else if (message.type === 'saveConversationStats') {
-      await this.handleSaveConversationStats(message);
-    } else if (message.type === 'startNewConversation') {
-      await this.handleStartNewConversation(message);
-    } else if (message.type === 'deleteConversation') {
-      await this.handleDeleteConversation(message);
-    } else if (message.type === 'clearConversation') {
-      await this.handleClearConversation(message);
-    } else if (message.type === 'respondUserChoice') {
-      await this.handleRespondUserChoice(message);
-    } else if (message.type === 'setAgentMode') {
-      await this.handleSetAgentMode(message);
-    } else if (message.type === 'setPromptMode') {
-      await this.handleSetPromptMode(message);
-    } else if (message.type === 'setThinkingMode') {
-      await this.handleSetThinkingMode(message);
-    } else if (message.type === 'setWebSearch') {
-      await this.handleSetWebSearch(message);
-    } else if (message.type === 'setModel') {
-      await this.handleSetModel(message);
-    } else if (message.type === 'createEngine') {
-      await this.handleCreateEngine(message);
-    } else if (message.type === 'requestSkills') {
-      await this.handleRequestSkills();
-    } else if (message.type === 'openMermaidPreview') {
-      await this.handleOpenMermaidPreview(message);
-    } else if (message.type === 'openSpinDesign') {
-      await this.handleOpenSpinDesign();
-    } else if (message.type === 'renameConversation') {
-      await this.handleRenameConversation(message);
-    } else if (message.type === 'requestSmartNaming') {
-      await this.handleRequestSmartNaming(message);
-    } else if (message.type === 'rollbackEdit') {
-      await this.handleRollbackEdit(message);
-    } else if (message.type === 'expandCompact') {
-      await this.handleExpandCompact(message);
-    } else if (message.type === 'checkServerLoad') {
-      await this.handleCheckServerLoad(message);
-    } else if (message.type === 'requestModels') {
-      await this.handleRequestModels(message);
-    } else if (message.type === 'fetchProviderModels') {
-      await this.handleFetchProviderModels(message);
-    } else if (message.type === 'detectProviderModelApiTypes') {
-      await this.handleDetectProviderModelApiTypes(message);
-    } else if (message.type === 'saveLLMConfig') {
-      await this.handleSaveLLMConfig(message);
-    } else if (message.type === 'requestLLMConfig') {
-      await this.handleRequestLLMConfig(message);
-    } else if (message.type === 'requestSettingsDefaults') {
-      await this.handleRequestSettingsDefaults();
-    } else if (message.type === 'debugLog') {
-      // 来自 webview 的诊断日志
-      this.log(`[Webview Debug] ${message.message}`);
-    } else if (message.type === 'openUrl') {
-      await this.handleOpenUrl(message);
-    } else if (message.type === 'openWorkspaceFolder') {
-      await this.handleOpenWorkspaceFolder();
-    } else if (message.type === 'requestConversationSpaces') {
-      await this.handleRequestConversationSpaces();
-    } else if (message.type === 'clearConversationSpace') {
-      await this.handleClearConversationSpace(message);
-    } else if (message.type === 'requestMcpServers') {
-      await this.handleRequestMcpServers(message);
-    } else if (message.type === 'setMcpEnabled') {
-      await this.handleSetMcpEnabled(message);
-    } else if (message.type === 'recordHighlightLanguage') {
-      // webview 按需加载了某个 Shiki 语言：记录到 settings.json，供下次启动预热
-      await this.handleRecordHighlightLanguage(message);
     }
   }
 
@@ -296,6 +263,41 @@ export class WebviewMessageHandler {
   }
 
   /**
+   * MCP "push → acquire → push" 后台三段式骨架：
+   * 1. 先回推一次该会话的 MCP 配置（连接尚未开始 → webview 显示「连接中」）；
+   * 2. 后台建立该会话的 MCP 引用（acquire 可能耗时：首次拉取包、握手）；
+   * 3. 完成后再次回推运行时状态（工具数 / 错误 / 连接中→已连接）。
+   *
+   * 个别调用点在进入本方法前已自行 await 过首次回推（此时传 pushFirst: false），
+   * 或需要在 acquire 前做 syncAllSessions 等额外动作（beforeAcquire），
+   * 以此保持各调用点的原有时序与语义。
+   *
+   * @param logLabel 错误日志文案（保持与原各调用点一致的日志格式）
+   */
+  private acquireMcpInBackground(
+    sessionId: string | undefined,
+    logLabel: string,
+    opts: { pushFirst?: boolean; beforeAcquire?: (manager: McpManagerInstance) => Promise<void> } = {},
+  ): void {
+    void (async () => {
+      try {
+        const getMcpManager = await importMcpManager();
+        if (opts.pushFirst !== false) {
+          // 先回推该会话的 MCP 配置：连接尚未开始 → webview 显示「连接中」并禁用发送
+          await this.pushMcpServers(sessionId);
+        }
+        if (opts.beforeAcquire) {
+          await opts.beforeAcquire(getMcpManager());
+        }
+        await getMcpManager().acquire(sessionId);
+        await this.pushMcpServers(sessionId);
+      } catch (err: any) {
+        this.log(`[VSCodeUI] ${logLabel}: ${err.message}`);
+      }
+    })();
+  }
+
+  /**
    * 读取 mcp.json + 当前会话的启用状态，并合并运行时状态后推送给 webview。
    */
   private async handleRequestMcpServers(message?: any): Promise<void> {
@@ -308,15 +310,7 @@ export class WebviewMessageHandler {
     if (this.host.kind === 'electron') return;
     // 打开面板即建立该会话的 MCP 引用（幂等）。acquire 可能耗时（首次拉取包、握手），
     // 因此后台执行，完成后回推一次运行时状态；期间 webview 显示「连接中」。
-    void (async () => {
-      try {
-        const { getMcpManager } = await import('../core/mcp/Manager.js');
-        await getMcpManager().acquire(sessionId);
-        await this.pushMcpServers(sessionId);
-      } catch (err: any) {
-        this.log(`[VSCodeUI] MCP background acquire failed: ${err.message}`);
-      }
-    })();
+    this.acquireMcpInBackground(sessionId, 'MCP background acquire failed', { pushFirst: false });
   }
 
   /**
@@ -748,23 +742,20 @@ export class WebviewMessageHandler {
 
     // MCP 引用绑定「会话被打开过」：切换会话只 acquire 新会话，不释放旧会话
     // （VSCode 没有关闭对话的概念，释放只发生在删除对话 / 扩展停用时）。
-    void (async () => {
-      try {
-        const { getMcpManager } = await import('../core/mcp/Manager.js');
-        // 先回推该会话的 MCP 配置：连接尚未开始 → webview 显示「连接中」并禁用发送
-        await this.pushMcpServers(message.sessionId);
-        await getMcpManager().acquire(message.sessionId);
-        await this.pushMcpServers(message.sessionId);
-      } catch (err: any) {
-        this.log(`[VSCodeUI] MCP acquire on session switch failed: ${err.message}`);
-      }
-    })();
+    this.acquireMcpInBackground(message.sessionId, 'MCP acquire on session switch failed');
   }
 
   private async handleLoadConversation(message: any): Promise<void> {
     this.log(`[VSCodeUI] loadConversation requested: ${message.sessionId}`);
     // 打开对话：刷新该会话的空闲关闭计时
     noteSessionActivity(message.sessionId);
+
+    // 并发切换会话竞态防护：用户快速连点两个对话时，两个 handler 会交错执行
+    // （后发的 loadConversation 可能先完成）。这里登记本次加载的序号，
+    // 所有 await 之后若发现已有更新的加载请求，丢弃过期结果，保证
+    // active session 与 webview 实际显示的对话一致。
+    const loadSeq = ++this.loadConversationSeq;
+    const isStaleLoad = (): boolean => loadSeq !== this.loadConversationSeq;
 
     const { getActiveSessionId: getCurSessionId } = await import('../core/history/Config.js');
     const { getSessionEngine } = await import('../core/QueryEngine.js');
@@ -774,6 +765,10 @@ export class WebviewMessageHandler {
       if (oldEngine) {
         this.log(`[VSCodeUI] Flushing pending persists for old session ${oldSessionId}`);
         await oldEngine.flush();
+        if (isStaleLoad()) {
+          this.log(`[VSCodeUI] loadConversation stale after flush, abort: ${message.sessionId}`);
+          return;
+        }
       }
     }
 
@@ -781,6 +776,10 @@ export class WebviewMessageHandler {
     const { setActiveSessionId } = await import('../core/history/Config.js');
     const { restoreConversationEngine } = await import('../core/Integration.js');
     const conversation = await loadConversation(message.sessionId);
+    if (isStaleLoad()) {
+      this.log(`[VSCodeUI] loadConversation stale after disk load, abort: ${message.sessionId}`);
+      return;
+    }
 
     setActiveSessionId(message.sessionId);
     this.log(`[VSCodeUI] Set active session: ${message.sessionId}`);
@@ -788,20 +787,15 @@ export class WebviewMessageHandler {
     this.fetchBalanceAndSend(message.sessionId);
 
     // MCP：加载对话即建立该会话的引用（幂等，不释放旧会话）
-    void (async () => {
-      try {
-        const { getMcpManager } = await import('../core/mcp/Manager.js');
-        // 先回推该会话的 MCP 配置：连接尚未开始 → webview 显示「连接中」并禁用发送
-        await this.pushMcpServers(message.sessionId);
-        await getMcpManager().acquire(message.sessionId);
-        await this.pushMcpServers(message.sessionId);
-      } catch (err: any) {
-        this.log(`[VSCodeUI] MCP acquire on loadConversation failed: ${err.message}`);
-      }
-    })();
+    this.acquireMcpInBackground(message.sessionId, 'MCP acquire on loadConversation failed');
 
     const hasHistory = conversation.messages && conversation.messages.length > 0;
     this.log(`[VSCodeUI] Conversation has history: ${hasHistory}`);
+
+    if (isStaleLoad()) {
+      this.log(`[VSCodeUI] loadConversation stale before postConversationLoaded, abort: ${message.sessionId}`);
+      return;
+    }
 
     if (conversation.metadata?.title) {
       this.setTitle(message.sessionId, conversation.metadata.title);
@@ -931,43 +925,6 @@ export class WebviewMessageHandler {
     if (msgs && msgs.length > 0) {
       this.log(`[VSCodeUI] requestTimeStats: computing from ${msgs.length} messages (engine=${!!engine})`);
 
-      if (engine) {
-        const engineMsgs = engine.getMessages();
-        for (let ei = 0; ei < engineMsgs.length; ei++) {
-          const em = engineMsgs[ei] as any;
-          if (em.type === 'assistant' && Array.isArray(em.message?.content)) {
-            for (const block of em.message.content) {
-              if (block?.type === 'tool_use') {
-                this.log(`[TimeStatsDebug][ENGINE] [${ei}] tool_use id=${block.id} uuid=${em.uuid} _meta=${JSON.stringify(block?._meta)}`);
-              }
-            }
-          }
-        }
-        for (let wi = 0; wi < message.messages.length; wi++) {
-          const wm = message.messages[wi] as any;
-          if (wm.role === 'toolcall') {
-            this.log(`[TimeStatsDebug][WEBVIEW] [${wi}] toolcall name=${wm.param} ts=${wm.timestamp} toolStart=${wm.toolStartTimestamp} toolResult=${wm.toolResultTimestamp}`);
-          }
-        }
-      }
-
-      for (let i = 0; i < msgs.length; i++) {
-        const m = msgs[i] as any;
-        if (m.type === 'assistant' || m.role === 'assistant') {
-          const content = m.message?.content || m.content;
-          if (Array.isArray(content)) {
-            for (const block of content) {
-              if (block?.type === 'tool_use') {
-                const confirmTs = block?._meta?.confirmTimestamp;
-                const toolStartTs = block?._meta?.toolStartTimestamp;
-                const msgTs = m.timestamp || 0;
-                this.log(`[TimeStatsDebug] [${i}] tool_use id=${block.id} name=${block.name} msgTs=${msgTs} confirmTs=${confirmTs} toolStartTs=${toolStartTs} uuid=${m.uuid} _meta=${JSON.stringify(block?._meta)}`);
-              }
-            }
-          }
-        }
-      }
-
       const stats = computeTimeStats(msgs);
       this.log(`[TimeStatsDebug] result: toolExec=${stats.toolExecution} ai=${stats.aiThinking} human=${stats.humanFeedback} total=${stats.totalTime} toolCount=${stats.toolCount} thinkingCount=${stats.thinkingCount} humanCount=${stats.humanCount}`);
       this.host.sendToWebview({
@@ -1002,17 +959,7 @@ export class WebviewMessageHandler {
     this.fetchBalanceAndSend(newSessionId);
 
     // MCP：新对话打开即建立引用（meta.json 尚未创建时按全局默认解析，幂等）
-    void (async () => {
-      try {
-        const { getMcpManager } = await import('../core/mcp/Manager.js');
-        // 先回推新会话的 MCP 配置（按全局默认解析）：连接尚未开始 → 显示「连接中」
-        await this.pushMcpServers(newSessionId);
-        await getMcpManager().acquire(newSessionId);
-        await this.pushMcpServers(newSessionId);
-      } catch (err: any) {
-        this.log(`[VSCodeUI] MCP acquire on new conversation failed: ${err.message}`);
-      }
-    })();
+    this.acquireMcpInBackground(newSessionId, 'MCP acquire on new conversation failed');
 
     // 从 settings.json 读取新对话的默认 model、thinking_effort、agentMode 和 webSearch 并发送给 webview 立即应用。
     // 注意：不再写入 meta.json（meta.json 只在发第一条消息时由 appendMessage 创建），
@@ -1233,6 +1180,36 @@ export class WebviewMessageHandler {
     }
   }
 
+  /**
+   * 四个 setMode handler（promptMode / thinkingMode / webSearch / model）的公共尾部：
+   * - 仅持久化到会话 meta.json（不影响 settings.json，settings.json 中的值只影响新对话初始值）；
+   * - 持久化失败只记日志，不中断回推；
+   * - 回推 webview 做多端同步（同一会话在其它端也打开时一并更新）；
+   * - sessionId 缺失或为 'undefined' 时两者都不做。
+   *
+   * afterPersist 在持久化之后、回推之前执行（handleSetModel 用它先同步引擎模型配置再回推）。
+   */
+  private async persistSessionContextAndEcho(
+    sessionId: string | undefined,
+    persistField: string,
+    value: unknown,
+    echoType: string,
+    echoField: string,
+    failLogLabel: string,
+    afterPersist?: () => void,
+  ): Promise<void> {
+    if (sessionId && sessionId !== 'undefined') {
+      try {
+        const { updateConversationContext } = await import('../core/history/Conversation.js');
+        await updateConversationContext(sessionId, { [persistField]: value } as any);
+      } catch (err: any) {
+        this.log(`[VSCodeUI] Failed to save ${failLogLabel} to session meta.json: ${err.message}`);
+      }
+      afterPersist?.();
+      this.host.sendToWebview({ type: echoType, [echoField]: value, sessionId } as any);
+    }
+  }
+
   private async handleSetPromptMode(message: any): Promise<void> {
     const { isPromptPresetId } = await import('../core/prompt/PromptPreset.js');
     if (!isPromptPresetId(message.mode)) {
@@ -1243,18 +1220,7 @@ export class WebviewMessageHandler {
     setSessionPromptPreset(message.sessionId, message.mode);
     this.log(`[VSCodeUI] Prompt mode set to: ${message.mode} for session: ${message.sessionId}`);
 
-    // 仅持久化到会话 meta.json（不影响 settings.json，settings.json 中的值只影响新对话初始值）
-    const sessionId = message.sessionId;
-    if (sessionId && sessionId !== 'undefined') {
-      try {
-        const { updateConversationContext } = await import('../core/history/Conversation.js');
-        await updateConversationContext(sessionId, { promptMode: message.mode });
-      } catch (err: any) {
-        this.log(`[VSCodeUI] Failed to save prompt mode to session meta.json: ${err.message}`);
-      }
-      // 多端同步：同一会话在其它端也打开时，一并更新其提示词模式
-      this.host.sendToWebview({ type: 'setPromptMode', mode: message.mode, sessionId } as any);
-    }
+    await this.persistSessionContextAndEcho(message.sessionId, 'promptMode', message.mode, 'setPromptMode', 'mode', 'prompt mode');
   }
 
   private async handleSetThinkingMode(message: any): Promise<void> {
@@ -1262,18 +1228,7 @@ export class WebviewMessageHandler {
     setSessionThinkingMode(message.sessionId, message.mode);
     this.log(`[VSCodeUI] Thinking mode set to: ${message.mode} for session: ${message.sessionId}`);
 
-    // 仅持久化到会话 meta.json（不影响 settings.json，settings.json 中的值只影响新对话初始值）
-    const sessionId = message.sessionId;
-    if (sessionId && sessionId !== 'undefined') {
-      try {
-        const { updateConversationContext } = await import('../core/history/Conversation.js');
-        await updateConversationContext(sessionId, { thinkingMode: message.mode });
-      } catch (err: any) {
-        this.log(`[VSCodeUI] Failed to save thinking mode to session meta.json: ${err.message}`);
-      }
-      // 多端同步：同一会话在其它端也打开时，一并更新其 thinking 模式
-      this.host.sendToWebview({ type: 'setThinkingMode', mode: message.mode, sessionId } as any);
-    }
+    await this.persistSessionContextAndEcho(message.sessionId, 'thinkingMode', message.mode, 'setThinkingMode', 'mode', 'thinking mode');
   }
 
   private async handleSetWebSearch(message: any): Promise<void> {
@@ -1291,45 +1246,29 @@ export class WebviewMessageHandler {
       this.log(`[VSCodeUI] Failed to update engine webSearch: ${err.message}`);
     }
 
-    // 仅持久化到会话 meta.json（不影响 settings.json，settings.json 中的值只影响新对话初始值）
-    const sessionId = message.sessionId;
-    if (sessionId && sessionId !== 'undefined') {
-      try {
-        const { updateConversationContext } = await import('../core/history/Conversation.js');
-        await updateConversationContext(sessionId, { webSearch });
-      } catch (err: any) {
-        this.log(`[VSCodeUI] Failed to save webSearch to session meta.json: ${err.message}`);
-      }
-      // 多端同步：同一会话在其它端也打开时，一并更新其联网开关
-      this.host.sendToWebview({ type: 'setWebSearch', webSearch, sessionId } as any);
-    }
+    await this.persistSessionContextAndEcho(message.sessionId, 'webSearch', webSearch, 'setWebSearch', 'webSearch', 'webSearch');
   }
 
   private async handleSetModel(message: any): Promise<void> {
     this.log(`[VSCodeUI] Model set to: ${message.model} for session: ${message.sessionId}`);
-    // 仅保存到当前会话的 meta.json，不修改全局 settings.json
-    // settings.json 中的 model 仅作为新对话的默认值
-    const sessionId = message.sessionId;
-    if (sessionId && sessionId !== 'undefined') {
-      try {
-        const { updateConversationContext } = await import('../core/history/Conversation.js');
-        await updateConversationContext(sessionId, { model: message.model });
-      } catch (err: any) {
-        this.log(`[VSCodeUI] Failed to save model to session meta.json: ${err.message}`);
-      }
-
+    await this.persistSessionContextAndEcho(
+      message.sessionId,
+      'model',
+      message.model,
+      'setModel',
+      'model',
+      'model',
       // 更新当前引擎的 modelConfig，确保后续 API 调用使用新模型；
       // 若引擎尚未创建（如新对话发送首条消息前），由 Integration 缓存并在引擎创建后应用。
-      try {
-        const { setSessionModel } = await import('../core/Integration.js');
-        setSessionModel(sessionId, message.model);
-      } catch (err: any) {
-        this.log(`[VSCodeUI] Failed to update engine modelConfig: ${err.message}`);
-      }
-
-      // 多端同步：同一会话在其它端也打开时，一并更新其当前模型
-      this.host.sendToWebview({ type: 'setModel', model: message.model, sessionId } as any);
-    }
+      () => {
+        try {
+          const { setSessionModel } = require('../core/Integration.js') as typeof import('../core/Integration.js');
+          setSessionModel(message.sessionId, message.model);
+        } catch (err: any) {
+          this.log(`[VSCodeUI] Failed to update engine modelConfig: ${err.message}`);
+        }
+      },
+    );
   }
 
   private async handleRequestModels(_message: any): Promise<void> {
@@ -1459,7 +1398,7 @@ export class WebviewMessageHandler {
     try {
       this.log(`[VSCodeUI] Detecting API type for ${toDetect.length} model(s) concurrently (concurrency=${API_TYPE_PROBE_CONCURRENCY})...`);
       const started = Date.now();
-      const detected = await this.mapWithConcurrency(
+      const detected = await mapWithConcurrency(
         toDetect,
         API_TYPE_PROBE_CONCURRENCY,
         async (model) => ({ model, apiType: await this.detectModelApiType(baseURL, apiKey, model) }),
@@ -1743,26 +1682,6 @@ export class WebviewMessageHandler {
     return 'unknown';
   }
 
-  /** 按并发上限执行异步任务，结果顺序与输入一致 */
-  private async mapWithConcurrency<T, R>(
-    items: T[],
-    limit: number,
-    worker: (item: T) => Promise<R>,
-  ): Promise<R[]> {
-    const results: R[] = new Array(items.length);
-    if (items.length === 0) return results;
-    let nextIndex = 0;
-    const runners = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
-      while (true) {
-        const index = nextIndex++;
-        if (index >= items.length) return;
-        results[index] = await worker(items[index]);
-      }
-    });
-    await Promise.all(runners);
-    return results;
-  }
-
   private async handleRollbackEdit(message: any): Promise<void> {
     const { sessionId, toolUseId, filePath, direction } = message;
     this.log(`[VSCodeUI] rollbackEdit: session=${sessionId}, toolUseId=${toolUseId}, filePath=${filePath}, direction=${direction}`);
@@ -1854,44 +1773,31 @@ export class WebviewMessageHandler {
 
         const filesToRestore = new Map<string, string | null>(); // filePath -> content to restore to (null = delete file)
 
-        if (direction === 'before') {
-          // 回滚到目标修改**前**：用目标的 beforeContent 写回，并撤销该目标之后所有后续修改
-          filesToRestore.set(targetFilePath, targetBeforeContent);
-          // 对其他文件，恢复到它们在目标时刻的状态（即它们第一次被 Edit 前的状态）
-          for (let i = targetIndex + 1; i < allToolUses.length; i++) {
-            const edit = allToolUses[i];
-            const fp = edit.input?.file_path;
-            if (fp && !filesToRestore.has(fp)) {
-              const bc = edit._meta?.beforeContent;
-              if (bc !== undefined) {
-                filesToRestore.set(fp, bc);
-              }
-            }
-          }
-        } else {
-          // 回滚到目标修改**后**：用目标的 afterContent 写回，并撤销该目标之后的所有后续修改
-          // 但保留目标自身的改动（即不撤销目标的修改）
-          filesToRestore.set(targetFilePath, targetAfterContent);
-          // 对其他文件，恢复到它们在目标时刻的状态
-          for (let i = targetIndex + 1; i < allToolUses.length; i++) {
-            const edit = allToolUses[i];
-            const fp = edit.input?.file_path;
-            if (fp && !filesToRestore.has(fp)) {
-              const bc = edit._meta?.beforeContent;
-              if (bc !== undefined) {
-                filesToRestore.set(fp, bc);
-              }
+        // 两个方向的差异只在目标文件写回的内容：
+        // - before：回滚到目标修改**前**（用目标的 beforeContent 写回，并撤销该目标之后所有后续修改）
+        // - after：回滚到目标修改**后**（用目标的 afterContent 写回，并撤销该目标之后的所有后续修改，
+        //   但保留目标自身的改动，即不撤销目标的修改）
+        // 对其他文件的处理两个方向逐字相同：恢复到它们在目标时刻的状态（即它们第一次被 Edit 前的状态）。
+        filesToRestore.set(targetFilePath, direction === 'before' ? targetBeforeContent : targetAfterContent);
+        for (let i = targetIndex + 1; i < allToolUses.length; i++) {
+          const edit = allToolUses[i];
+          const fp = edit.input?.file_path;
+          if (fp && !filesToRestore.has(fp)) {
+            const bc = edit._meta?.beforeContent;
+            if (bc !== undefined) {
+              filesToRestore.set(fp, bc);
             }
           }
         }
 
         this.log(`[VSCodeUI] rollbackEdit: restoring ${filesToRestore.size} files...`);
+        // 动态 import 统一移到循环外，避免每个文件重复解析模块
+        const { expandPath } = await import('../core/utils/path.js');
+        const { writeFile, unlink, mkdir } = await import('fs/promises');
+        const { dirname } = await import('path');
         let restoredCount = 0;
         for (const [fp, content] of filesToRestore) {
           try {
-            const { expandPath } = await import('../core/utils/path.js');
-            const { writeFile, unlink, mkdir } = await import('fs/promises');
-            const { dirname } = await import('path');
             const fullPath = expandPath(fp);
 
             if (content === null) {
@@ -2251,48 +2157,6 @@ export class WebviewMessageHandler {
   }
 
   /**
-   * 检查服务器负载：时间 + context 大小
-   * webview 发送消息前调用，若满足条件则返回红色警告提示
-   */
-  private async handleCheckServerLoad(message: any): Promise<void> {
-    const sessionId = message.sessionId;
-    const contextLength = message.contextLength as number;
-
-    // 条件1: 周一~周五
-    const now = new Date();
-    const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
-    if (dayOfWeek === 0 || dayOfWeek === 6) {
-      this.host.sendToWebview({ type: 'serverLoadResult', showWarning: false, sessionId } as any);
-      return;
-    }
-
-    // 条件2: 9:30~12:00 或 14:00~18:00
-    const hour = now.getHours();
-    const minute = now.getMinutes();
-    const timeMinutes = hour * 60 + minute;
-    const morningStart = 9 * 60 + 30;  // 9:30
-    const morningEnd = 12 * 60;        // 12:00
-    const afternoonStart = 14 * 60;    // 14:00
-    const afternoonEnd = 18 * 60;      // 18:00
-
-    const inTimeRange = (timeMinutes >= morningStart && timeMinutes < morningEnd) ||
-                        (timeMinutes >= afternoonStart && timeMinutes < afternoonEnd);
-    if (!inTimeRange) {
-      this.host.sendToWebview({ type: 'serverLoadResult', showWarning: false, sessionId } as any);
-      return;
-    }
-
-    // 条件3: context 超过 250K
-    if (contextLength <= 250_000) {
-      this.host.sendToWebview({ type: 'serverLoadResult', showWarning: false, sessionId } as any);
-      return;
-    }
-
-    // 默认不显示警告
-    this.host.sendToWebview({ type: 'serverLoadResult', showWarning: false, sessionId } as any);
-  }
-
-  /**
    * 处理来自 webview 的 LLM 配置保存请求
    * 保存 baseURL、apiKey、apiType、models、defaultModel、webSearch 到 ~/<CONFIG_DIR_NAME>/settings.json 的 llm.*；
    * 默认 thinking_effort 保存到 llm.thinking_effort；
@@ -2461,16 +2325,10 @@ export class WebviewMessageHandler {
           await this.pushMcpServers(mcpSessionId);
           // 连接动作放到后台异步执行：默认值变化会影响所有「没有会话覆盖」的已打开会话，
           // 因此对所有已注册会话重新对齐引用，而不只是当前活动会话。
-          void (async () => {
-            try {
-              const { getMcpManager } = await import('../core/mcp/Manager.js');
-              await getMcpManager().syncAllSessions();
-              await getMcpManager().acquire(mcpSessionId);
-              await this.pushMcpServers(mcpSessionId);
-            } catch (err: any) {
-              this.log(`[VSCodeUI] Failed to sync MCP after default change: ${err.message}`);
-            }
-          })();
+          this.acquireMcpInBackground(mcpSessionId, 'Failed to sync MCP after default change', {
+            pushFirst: false,
+            beforeAcquire: (manager) => manager.syncAllSessions(),
+          });
         } catch (err: any) {
           this.log(`[VSCodeUI] Failed to save default MCP enabled list: ${err.message}`);
         }

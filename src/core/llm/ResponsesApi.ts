@@ -37,11 +37,21 @@ import {
   LLMRepetitionError,
   DEFAULT_MAX_REPETITION_RETRIES,
 } from './repetitionDetector.js';
-import { unwrapToolInput, describeToolInput } from '../utils/toolInput.js';
+import { unwrapToolInput } from '../utils/toolInput.js';
+import {
+  checkAborted,
+  recordLLMUsage,
+  logRawOutput,
+  joinV1Path,
+  extractUsageFields,
+  isRetryableStatus,
+  isNetworkFetchError,
+  sleep,
+  RETRY_DELAY_MS,
+  MAX_RETRIES,
+  type InternalUsage,
+} from './shared.js';
 import type { StreamEvent, StreamOptions } from './RealApi.js';
-
-// RedisStats module removed; local no-op stub
-async function recordLLMUsage(_inputTokens: number, _outputTokens: number): Promise<void> {}
 
 /**
  * 单条 assistant 回复文本的最大字符数（字符数，非 token）。
@@ -120,33 +130,18 @@ export function shouldSkipUsageForContext(params: {
 }
 
 /**
- * 检查中断
- */
-function checkAborted(signal: AbortSignal | null): void {
-  if (signal && signal.aborted) {
-    const abortError = new Error('The operation was aborted');
-    abortError.name = 'AbortError';
-    throw abortError;
-  }
-}
-
-/**
  * 构建 Responses API 请求 URL
  * OpenAI SDK 约定：baseURL 为根路径（如 https://api.deepseek.com）时请求 /responses，
  * baseURL 以 /v1 结尾（如 https://api.deepseek.com/v1）时请求 /v1/responses。
  *
  * 注意：部分服务（如 opencode.ai/zen/go）的 baseURL 不带 /v1 前缀，
  * 但 Responses 端点必须位于 /v1/responses（直接拼 /responses 会 404）。
- * 因此统一规则：
+ * 因此统一规则（见 shared.ts joinV1Path）：
  *   - baseURL 已以 /v1 结尾 → `${baseURL}/responses`
  *   - 否则 → `${baseURL}/v1/responses`（多数 OpenAI 兼容服务同时接受此路径）
  */
 function buildResponsesUrl(baseURL: string): string {
-  const trimmed = baseURL.replace(/\/+$/, '');
-  if (trimmed.endsWith('/v1')) {
-    return `${trimmed}/responses`;
-  }
-  return `${trimmed}/v1/responses`;
+  return joinV1Path(baseURL, 'responses');
 }
 
 /**
@@ -327,34 +322,21 @@ function mapResponsesStatus(status: string | undefined, incompleteDetails?: { re
  *   input_tokens_details: { cached_tokens },
  *   output_tokens_details: { reasoning_tokens }
  * }
+ * 字段提取逻辑与 OpenAiApi 的 extractChatUsage 逐字相同（仅字段名不同），
+ * 参数化收敛到 shared.ts 的 extractUsageFields。
  */
-function extractUsage(respUsage: Record<string, unknown> | undefined): {
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_input_tokens?: number;
-  cache_creation_input_tokens?: number;
-  /** 思考（reasoning）部分的 token 数，来自 output_tokens_details.reasoning_tokens */
-  reasoning_tokens?: number;
-} | undefined {
-  if (!respUsage) return undefined;
-  const inputTokens = (respUsage.input_tokens as number) || 0;
-  const outputTokens = (respUsage.output_tokens as number) || 0;
-  const inputDetails = (respUsage as any).input_tokens_details || {};
-  const outputDetails = (respUsage as any).output_tokens_details || {};
-  const cacheRead = inputDetails.cached_tokens || 0;
-  const reasoningTokens = outputDetails.reasoning_tokens;
-  return {
-    // Responses API 的 input_tokens 已包含缓存命中部分（OpenAI 语义：
-    // cached_tokens 是 input_tokens 的子集），无需再加回，否则会双重计数，
-    // 导致 WebView 端 cache 命中率被低估（约 H/(1+H)，典型高命中会话显示 ~50%）。
-    // 注：Anthropic 兼容端点（RealApi.ts）的 input_tokens 不包含缓存命中部分，
-    // 那里才需要加回 cache_read/cache_creation。
-    input_tokens: inputTokens,
-    output_tokens: outputTokens,
-    cache_read_input_tokens: cacheRead,
-    cache_creation_input_tokens: 0,
-    ...(typeof reasoningTokens === 'number' ? { reasoning_tokens: reasoningTokens } : {}),
-  };
+function extractUsage(respUsage: Record<string, unknown> | undefined): InternalUsage | undefined {
+  return extractUsageFields(respUsage, {
+    inputTokens: 'input_tokens',
+    outputTokens: 'output_tokens',
+    inputDetails: 'input_tokens_details',
+    outputDetails: 'output_tokens_details',
+  });
+  // 语义说明（与原实现一致）：Responses API 的 input_tokens 已包含缓存命中部分
+  // （OpenAI 语义：cached_tokens 是 input_tokens 的子集），无需再加回，否则会双重计数，
+  // 导致 WebView 端 cache 命中率被低估（约 H/(1+H)，典型高命中会话显示 ~50%）。
+  // 注：Anthropic 兼容端点（RealApi.ts）的 input_tokens 不包含缓存命中部分，
+  // 那里才需要加回 cache_read/cache_creation。
 }
 
 /**
@@ -435,7 +417,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
   let requestBody: Record<string, unknown> | undefined;
   // 累积 token 用量（流式模式下从 SSE 中逐步获取）
   let accumulatedInputTokens = 0;
-  let accumulatedOutputTokens = 0 as number;
+  let accumulatedOutputTokens = 0;
 
   // 流式请求看门狗：首字节 300s / 空闲 60s，超时主动 abort。
   // 网关静默不响应（或只发心跳保活）时，undici 的 headersTimeout/bodyTimeout
@@ -452,15 +434,8 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
   let repetitionRetryCount = 0;
 
   try {
-    // 重试配置：最多重试 MAX_RETRIES 次，对 502/503 状态码、网络错误和 TypeError: terminated 生效
-    const RETRY_DELAY_MS = 1000;
-    const MAX_RETRIES = 3;
-
-    // 判断状态码是否可重试（502/503 等服务端瞬时错误）
-    const isRetryableStatus = (status: number): boolean =>
-      status === 502 || status === 503;
-
     // 将核心请求+流读取逻辑提取为内部函数，支持重试
+    // （重试配置 RETRY_DELAY_MS / MAX_RETRIES / isRetryableStatus 见 shared.ts）
     const executeRequest = async function* (
       retryCount: number,
     ): AsyncGenerator<StreamEvent | Message> {
@@ -563,7 +538,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
             timeoutRetryCount++;
             logger.warn('ResponsesAPI',
               `${timeoutError.message}，丢弃本次请求并重试 (${timeoutRetryCount}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+            await sleep(RETRY_DELAY_MS);
             checkAborted(signal);
             yield* executeRequest(retryCount + 1);
             return;
@@ -571,11 +546,9 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
           throw timeoutError;
         }
         // 对网络层错误（fetch failed / ECONNRESET 等）重试数次
-        const isNetworkError = fetchError instanceof TypeError &&
-          (fetchError.message === 'fetch failed' || (fetchError as any)?.cause !== undefined);
-        if (retryCount < MAX_RETRIES && isNetworkError) {
-          logger.warn('ResponsesAPI', `Network error while fetching (${fetchError.message}), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        if (retryCount < MAX_RETRIES && isNetworkFetchError(fetchError)) {
+          logger.warn('ResponsesAPI', `Network error while fetching (${(fetchError as TypeError).message}), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
+          await sleep(RETRY_DELAY_MS);
           checkAborted(signal);
           yield* executeRequest(retryCount + 1);
           return;
@@ -588,7 +561,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
         logger.warn('ResponsesAPI', `API request got ${response.status}, retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
         // 释放未消费的响应体，避免连接被占用
         response.body?.cancel().catch(() => { });
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        await sleep(RETRY_DELAY_MS);
         checkAborted(signal);
         yield* executeRequest(retryCount + 1);
         return;
@@ -812,7 +785,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
               timeoutRetryCount++;
               logger.warn('ResponsesAPI',
                 `${timeoutError.message}，丢弃本次响应并重试 (${timeoutRetryCount}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-              await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+              await sleep(RETRY_DELAY_MS);
               checkAborted(signal);
               yield* executeRequest(retryCount + 1);
               return;
@@ -824,7 +797,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
             logger.warn('ResponsesAPI', `Stream terminated (TypeError: terminated), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
             // 释放之前的 reader
             closeReader();
-            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+            await sleep(RETRY_DELAY_MS);
             checkAborted(signal);
             yield* executeRequest(retryCount + 1);
             return;
@@ -1144,7 +1117,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
           closeReader();
           logger.warn('ResponsesAPI',
             `${loopError.message}，丢弃本次响应并重试 (${repetitionRetryCount}/${DEFAULT_MAX_REPETITION_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+          await sleep(RETRY_DELAY_MS);
           checkAborted(signal);
           yield* executeRequest(retryCount + 1);
           return;
@@ -1215,7 +1188,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
             `outputItems=${outputItemDoneCount}/${outputItemAddedCount}, pendingItem=${currentItemState?.type ?? 'none'}, ` +
             `bufferTail=${JSON.stringify(buffer.slice(-300))}), ` +
             `discarding partial output and retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+          await sleep(RETRY_DELAY_MS);
           checkAborted(signal);
           yield* executeRequest(retryCount + 1);
           return;
@@ -1279,26 +1252,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       );
 
       // 记录 LLM 原始输出的所有 content blocks
-      if ((finalMsg as any).message && Array.isArray((finalMsg as any).message.content)) {
-        const blocks = (finalMsg as any).message.content;
-        logger.info('ResponsesAPI', `[LLM_RAW_OUTPUT] total_blocks=${blocks.length}`);
-        for (let i = 0; i < blocks.length; i++) {
-          const block = blocks[i] as any;
-          if (block.type === 'text') {
-            const text = String(block.text || '');
-            logger.info('ResponsesAPI',
-              `[LLM_RAW_OUTPUT] block[${i}] type=text, ` +
-              `text_len=${text.length}, text_preview=${text.substring(0, 500)}`);
-          } else if (block.type === 'tool_use') {
-            logger.info('ResponsesAPI',
-              `[LLM_RAW_OUTPUT] block[${i}] type=tool_use, ` +
-              `id=${block.id}, name=${block.name}, ` +
-              describeToolInput(block.input));
-          } else {
-            logger.info('ResponsesAPI', `[LLM_RAW_OUTPUT] block[${i}] type=${block.type}`);
-          }
-        }
-      }
+      logRawOutput('ResponsesAPI', finalMsg);
 
       // ---- 超大文本输出持久化（常见于 Web Search 后模型把搜索结果整段写入回复） ----
       // 只要单条 assistant 回复的文本超长（>ASSISTANT_MAX_TEXT_CHARS）就持久化到磁盘，

@@ -5,6 +5,7 @@ import { ConfigProvider, Dropdown } from 'antd';
 import type { Colors, QueuedMessagePayload, ThinkingMode, PromptMode, AgentMode } from './types';
 import type { McpServerInfo } from '../core/webviewTypes';
 import { postMessage, getWindowSessionId } from './webviewEnv';
+import { SegmentControl, CheckboxGlyph } from './components/SegmentControl';
 import { t } from './i18n';
 
 export interface PastedImage {
@@ -64,8 +65,6 @@ interface InputAreaProps {
   queuedMessage: QueuedMessagePayload | null;
   skills: SkillItem[];
   commandHistory: string[];
-  serverLoadWarning?: string | null;
-  onDismissServerLoad?: () => void;
   /** 账户余额 */
   balance?: number;
   /** 余额货币类型 */
@@ -120,7 +119,7 @@ function contextGradientColor(ratio: number): string {
   return `rgb(${last.rgb[0]}, ${last.rgb[1]}, ${last.rgb[2]})`;
 }
 
-const ContextProgressBar = React.memo(({ totalContextTokens, isDark, maxContextTokens, onClick, colors }: { totalContextTokens: number; isDark: boolean; maxContextTokens?: number | null; onClick?: () => void; colors: Colors }) => {
+const ContextProgressBar = React.memo(({ totalContextTokens, maxContextTokens, onClick, colors }: { totalContextTokens: number; maxContextTokens?: number | null; onClick?: () => void; colors: Colors }) => {
   if (maxContextTokens == null) {
     return null;
   }
@@ -154,7 +153,7 @@ const ContextProgressBar = React.memo(({ totalContextTokens, isDark, maxContextT
           display: 'inline-block',
           width: '48px',
           height: '4px',
-          backgroundColor: isDark ? colors.harness + '80' : colors.harness + '80',
+          backgroundColor: colors.harness + '80',
           borderRadius: '2px',
           overflow: 'hidden',
           flexShrink: 0,
@@ -184,51 +183,18 @@ const AskModeSegmentControl = ({
   value: AgentMode;
   onChange: (mode: AgentMode) => void;
   colors: Colors;
-}) => {
-  const segments: { key: AgentMode; label: string; title: string }[] = [
-    { key: 'manual', label: t('inputArea.askModeAlways'), title: t('inputArea.askModeAlwaysTitle') },
-    { key: 'risk', label: t('inputArea.askModeCritical'), title: t('inputArea.askModeCriticalTitle') },
-    { key: 'auto', label: t('inputArea.askModeNever'), title: t('inputArea.askModeNeverTitle') },
-  ];
-
-  return (
-    <div
-      style={{
-        display: 'flex',
-        borderRadius: '6px',
-        border: `1px solid ${colors.border}`,
-        overflow: 'hidden',
-        width: '100%',
-      }}
-    >
-      {segments.map((seg, idx) => {
-        const isSelected = value === seg.key;
-        return (
-          <button
-            key={seg.key}
-            title={seg.title}
-            onClick={(e) => { e.stopPropagation(); onChange(seg.key); }}
-            style={{
-              flex: 1,
-              fontSize: '11px',
-              padding: '3px 6px',
-              border: 'none',
-              borderLeft: idx > 0 ? `1px solid ${colors.border}` : 'none',
-              backgroundColor: isSelected ? colors.harness : 'transparent',
-              color: isSelected ? '#fff' : colors.textSystem,
-              cursor: 'pointer',
-              transition: 'all 0.15s',
-              fontWeight: isSelected ? 600 : 400,
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {seg.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-};
+}) => (
+  <SegmentControl
+    value={value}
+    onChange={onChange}
+    colors={colors}
+    segments={[
+      { key: 'manual', label: t('inputArea.askModeAlways'), title: t('inputArea.askModeAlwaysTitle') },
+      { key: 'risk', label: t('inputArea.askModeCritical'), title: t('inputArea.askModeCriticalTitle') },
+      { key: 'auto', label: t('inputArea.askModeNever'), title: t('inputArea.askModeNeverTitle') },
+    ]}
+  />
+);
 
 const ThinkingSegmentControl = ({
   value,
@@ -238,51 +204,19 @@ const ThinkingSegmentControl = ({
   value: ThinkingMode;
   onChange: (mode: ThinkingMode) => void;
   colors: Colors;
-}) => {
-  const segments: { key: ThinkingMode; label: string }[] = [
-    { key: 'off', label: t('inputArea.thinkingOff') },
-    { key: 'low', label: t('inputArea.thinkingLow') },
-    { key: 'high', label: t('inputArea.thinkingHigh') },
-    { key: 'max', label: t('inputArea.thinkingMax') },
-  ];
-
-  return (
-    <div
-      style={{
-        display: 'flex',
-        borderRadius: '6px',
-        border: `1px solid ${colors.border}`,
-        overflow: 'hidden',
-        width: '100%',
-      }}
-    >
-      {segments.map((seg, idx) => {
-        const isSelected = value === seg.key;
-        return (
-          <button
-            key={seg.key}
-            onClick={(e) => { e.stopPropagation(); onChange(seg.key); }}
-            style={{
-              flex: 1,
-              fontSize: '11px',
-              padding: '3px 6px',
-              border: 'none',
-              borderLeft: idx > 0 ? `1px solid ${colors.border}` : 'none',
-              backgroundColor: isSelected ? colors.harness : 'transparent',
-              color: isSelected ? '#fff' : colors.textSystem,
-              cursor: 'pointer',
-              transition: 'all 0.15s',
-              fontWeight: isSelected ? 600 : 400,
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {seg.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-};
+}) => (
+  <SegmentControl
+    value={value}
+    onChange={onChange}
+    colors={colors}
+    segments={[
+      { key: 'off', label: t('inputArea.thinkingOff') },
+      { key: 'low', label: t('inputArea.thinkingLow') },
+      { key: 'high', label: t('inputArea.thinkingHigh') },
+      { key: 'max', label: t('inputArea.thinkingMax') },
+    ]}
+  />
+);
 
 const PromptModeSegmentControl = ({
   value,
@@ -292,55 +226,18 @@ const PromptModeSegmentControl = ({
   value: PromptMode;
   onChange: (mode: PromptMode) => void;
   colors: Colors;
-}) => {
-  const segments: { key: PromptMode; label: string }[] = [
-    { key: 'normal', label: t('inputArea.promptModeNormal') },
-    { key: 'minimal', label: t('inputArea.promptModeMinimal') },
-    { key: 'mixed', label: t('inputArea.promptModeMixed') },
-  ];
-
-  return (
-    <div
-      style={{
-        display: 'flex',
-        borderRadius: '6px',
-        border: `1px solid ${colors.border}`,
-        overflow: 'hidden',
-        width: '100%',
-      }}
-    >
-      {segments.map((seg, idx) => {
-        const isSelected = value === seg.key;
-        return (
-          <button
-            key={seg.key}
-            title={seg.key === 'normal'
-              ? t('inputArea.promptModeNormalTitle')
-              : seg.key === 'minimal'
-                ? t('inputArea.promptModeMinimalTitle')
-                : t('inputArea.promptModeMixedTitle')}
-            onClick={(e) => { e.stopPropagation(); onChange(seg.key); }}
-            style={{
-              flex: 1,
-              fontSize: '11px',
-              padding: '3px 6px',
-              border: 'none',
-              borderLeft: idx > 0 ? `1px solid ${colors.border}` : 'none',
-              backgroundColor: isSelected ? colors.harness : 'transparent',
-              color: isSelected ? '#fff' : colors.textSystem,
-              cursor: 'pointer',
-              transition: 'all 0.15s',
-              fontWeight: isSelected ? 600 : 400,
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {seg.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-};
+}) => (
+  <SegmentControl
+    value={value}
+    onChange={onChange}
+    colors={colors}
+    segments={[
+      { key: 'normal', label: t('inputArea.promptModeNormal'), title: t('inputArea.promptModeNormalTitle') },
+      { key: 'minimal', label: t('inputArea.promptModeMinimal'), title: t('inputArea.promptModeMinimalTitle') },
+      { key: 'mixed', label: t('inputArea.promptModeMixed'), title: t('inputArea.promptModeMixedTitle') },
+    ]}
+  />
+);
 
 /**
  * 隐藏测量层的样式：移出视口 + visibility:hidden，既不可见也不参与布局，
@@ -615,24 +512,7 @@ const ToggleMenu = memo(({
         title={webSearchDisabled ? t('inputArea.webSearchMinimalHint') : t('inputArea.webSearchHint')}
       >
         <span style={{ width: '14px', flexShrink: 0, textAlign: 'center' }}>
-          <span
-            style={{
-              display: 'inline-block',
-              width: 12,
-              height: 12,
-              borderRadius: 3,
-              border: `1px solid ${webSearchChecked ? colors.harness : colors.border}`,
-              backgroundColor: webSearchChecked ? colors.harness : 'transparent',
-              verticalAlign: '-2px',
-              transition: 'all 0.15s',
-            }}
-          >
-            {webSearchChecked && (
-              <svg width="10" height="10" viewBox="0 0 12 12" style={{ display: 'block', margin: '0 auto' }}>
-                <path d="M2 6l3 3l5-6" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            )}
-          </span>
+          <CheckboxGlyph checked={webSearchChecked} colors={colors} />
         </span>
         {/* 勾选只改变 checkbox 自身，文字颜色保持不变，避免整行变色 */}
         <span style={{ color: colors.textPrimary, userSelect: 'none', fontSize: '12px', marginLeft: '12px' }}>
@@ -713,24 +593,7 @@ const ToggleMenu = memo(({
               title={tooltip}
             >
               <span style={{ width: '14px', flexShrink: 0, textAlign: 'center' }}>
-                <span
-                  style={{
-                    display: 'inline-block',
-                    width: 12,
-                    height: 12,
-                    borderRadius: 3,
-                    border: `1px solid ${server.enabled ? colors.harness : colors.border}`,
-                    backgroundColor: server.enabled ? colors.harness : 'transparent',
-                    verticalAlign: '-2px',
-                    transition: 'all 0.15s',
-                  }}
-                >
-                  {server.enabled && (
-                    <svg width="10" height="10" viewBox="0 0 12 12" style={{ display: 'block', margin: '0 auto' }}>
-                      <path d="M2 6l3 3l5-6" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  )}
-                </span>
+                <CheckboxGlyph checked={server.enabled} colors={colors} />
               </span>
               {/* 名称 + 状态两行：状态字号更小，整体行高与其它菜单项保持一致 */}
               <span
@@ -1183,8 +1046,6 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   queuedMessage,
   skills,
   commandHistory,
-  serverLoadWarning,
-  onDismissServerLoad,
   balance,
   balanceCurrency,
   isUnlimited,
@@ -1377,8 +1238,11 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
       return;
     }
 
-    // Normal Enter to send（MCP 连接中时禁用发送）
+    // Normal Enter to send（MCP 连接中时禁用发送）。
+    // 输入法（IME）合成期间按 Enter 是「确认候选词」，不应触发发送：
+    // keydown 的 isComposing 为 true / keyCode 为 229，此时直接忽略。
     if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
       e.preventDefault();
       if (mcpConnecting) return;
       onSend();
@@ -1547,33 +1411,6 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           </span>
         </div>
       )}
-      {/* Server Load Warning Banner */}
-      {serverLoadWarning && (
-        <div
-          className="px-3 py-1.5 flex items-start gap-2 text-[12px] border-b"
-          style={{
-            backgroundColor: 'rgba(239, 68, 68, 0.12)',
-            borderColor: 'rgba(239, 68, 68, 0.3)',
-            color: '#ef4444',
-          }}
-        >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, marginTop: '1px' }}>
-            <circle cx="8" cy="8" r="7" stroke="#ef4444" strokeWidth="1.5"/>
-            <line x1="8" y1="4.5" x2="8" y2="9.5" stroke="#ef4444" strokeWidth="1.5" strokeLinecap="round"/>
-            <circle cx="8" cy="11.5" r="0.8" fill="#ef4444"/>
-          </svg>
-          <span className="truncate flex-1 leading-relaxed">{serverLoadWarning}</span>
-          <button
-            onClick={onDismissServerLoad}
-            className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded hover:bg-red-500/20 transition-colors"
-            title={t('inputArea.dismiss')}
-          >
-            <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
-              <path d="M9 3L3 9M3 3L9 9" stroke="#ef4444" strokeWidth="1.5" strokeLinecap="round"/>
-            </svg>
-          </button>
-        </div>
-      )}
       {/* Row 1: Pasted images + Textarea with slash popup */}
       <div className="px-3 pt-2 pb-0.5 relative">
         {pastedImages.length > 0 && (
@@ -1651,7 +1488,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
       <div className="px-3 py-1.5 flex justify-between items-center gap-2">
         <div className="flex items-center gap-2 min-w-0">
           {/* Context Usage Progress Bar */}
-          <ContextProgressBar totalContextTokens={totalContextTokens} isDark={isDark} maxContextTokens={maxContextTokens} onClick={onCompress} colors={colors} />
+          <ContextProgressBar totalContextTokens={totalContextTokens} maxContextTokens={maxContextTokens} onClick={onCompress} colors={colors} />
 
           {/* Balance & Cache Hit (combined) */}
           {(balance !== undefined || isUnlimited || (totalCacheReadInputTokens !== undefined && totalCacheReadInputTokens > 0)) && (

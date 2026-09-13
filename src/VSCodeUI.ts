@@ -21,7 +21,6 @@ import { tt, getSystemLocale } from './core/i18n.js';
 import { readUiLanguageSync } from './core/history/Config.js';
 import { MERMAID_PANEL_ID, SPIN_DESIGN_PANEL_ID } from './config/project.js';
 import { replayMessagesToUI } from './core/utils/replayMessages.js';
-import { buildEditDiffHunks } from './core/utils/editDiff.js';
 import type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent } from './VSCodeUI/types.js';
 import { UserChoiceManager } from './VSCodeUI/userChoice.js';
 import { DocumentManager } from './VSCodeUI/documentManager.js';
@@ -30,6 +29,11 @@ import { ToolHandler } from './VSCodeUI/toolHandler.js';
 import { WebviewMessageHandler } from './VSCodeUI/webviewMessageHandler.js';
 import { isImageFile } from './host/imageFiles.js';
 import { setSessionIdleCloseHandler, setSessionWaitingForUserProvider, releaseSessionResources } from './core/sessionIdle.js';
+import { clearConversationData } from './core/history/ops.js';
+import { fetchBalanceAndPush } from './core/history/balancePush.js';
+import { buildConversationLoadedPayload } from './host/conversationPayload.js';
+import { pushToolProgress, inheritAgentMode, isActiveQueryInScope } from './host/queryActivity.js';
+import { shouldOpenSpinDesign } from './core/history/spinCommand.js';
 
 export type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent };
 
@@ -574,62 +578,11 @@ export class VSCodeUI implements AssistantUI {
       model?: string;
     },
   ): void {
-    const trimmed = JSON.parse(JSON.stringify(conversation));
-    const toolMetaMap: Record<string, any> = {};
-
-    if (trimmed.messages) {
-      // 过滤掉 isMeta/silent 消息（如 Skill 注入的 prompt），不在 UI 显示
-      trimmed.messages = trimmed.messages.filter(
-        (msg: any) => !msg.isMeta && !msg.silent
-      );
-
-      for (const msg of trimmed.messages) {
-        if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
-          for (const block of msg.message.content) {
-            if (block.type === 'tool_use' && block._meta) {
-              block._metaTrimmed = true;
-              block._toolUseId = block.id;
-              const rawMeta = block._meta as Record<string, unknown>;
-              const { beforeContent, afterContent, ...smallFields } = rawMeta;
-              block._meta = smallFields;
-
-              if (block.name === 'Edit' && typeof beforeContent === 'string' && typeof afterContent === 'string') {
-                // Edit 只发送 diff 相关行，避免把整个文件内容发给 webview
-                toolMetaMap[block.id!] = {
-                  diffHunks: buildEditDiffHunks({
-                    beforeContent,
-                    afterContent,
-                    startLine: rawMeta.startLine as number | undefined,
-                    endLine: rawMeta.endLine as number | undefined,
-                    replaceAll: Boolean((block.input as any)?.replace_all),
-                  }),
-                };
-              } else {
-                // Write 等工具仍保留原有 beforeContent/afterContent 字段
-                toolMetaMap[block.id!] = { beforeContent, afterContent };
-              }
-            }
-          }
-        }
-      }
-    }
-
-    this.webviewView?.webview.postMessage({
-      type: 'conversationLoaded',
-      conversation: trimmed,
-      pendingToolUseIds: extra.pendingToolUseIds,
-      savedContext: extra.savedContext,
-      parentSessionId: extra.parentSessionId,
-      agentMode: extra.agentMode,
-      hasActiveQuery: extra.hasActiveQuery,
+    const payload = buildConversationLoadedPayload(sessionId, conversation, extra, {
+      // VS Code 版独有：恢复 thinking 动画所需的活动阶段
       activityPhase: this.getActivityPhase(sessionId),
-      sessionId,
-      hasCompactArchive: extra.hasCompactArchive === true,
-      toolMetaMap: Object.keys(toolMetaMap).length > 0 ? toolMetaMap : undefined,
-      model: extra.model || trimmed.metadata?.model ||
-        (trimmed.metadata?.context?.model) ||
-        undefined,
-    } as WebviewMessage);
+    });
+    this.webviewView?.webview.postMessage(payload as WebviewMessage);
 
     // 同步 abort 状态：切换到含活跃子代理的会话后，父会话的 abort 按钮仍应可用
     this.syncAbortState();
@@ -656,8 +609,7 @@ export class VSCodeUI implements AssistantUI {
    * 子代理默认使用 risk 模式，仅当父会话为 auto 时继承 auto（auto > risk > manual）
    */
   onSetAgentMode(parentSessionId: string, childSessionId: string): void {
-    const parentMode = this.sessionAgentModes.get(parentSessionId);
-    this.sessionAgentModes.set(childSessionId, parentMode === 'auto' ? 'auto' : 'risk');
+    inheritAgentMode(this.sessionAgentModes, parentSessionId, childSessionId);
   }
 
   /**
@@ -707,32 +659,8 @@ export class VSCodeUI implements AssistantUI {
    * Bash 运行期间实时推送已累积输出到 webview，实现流式显示
    */
   onToolProgress(sessionID: string, toolUseId: string, progress: ToolProgressData): void {
-    const p = progress as ToolProgressData & {
-      output?: string;
-      fullOutput?: string;
-      elapsedTimeSeconds?: number;
-      totalLines?: number;
-      totalBytes?: number;
-      taskId?: string;
-    };
-
-    // 流式输出可能非常大，限制单次发送大小，仅保留尾部（最新的输出）
-    const STREAM_CAP_CHARS = 100_000;
-    let streamed = p.fullOutput || p.output || '';
-    if (streamed.length > STREAM_CAP_CHARS) {
-      streamed = streamed.slice(-STREAM_CAP_CHARS);
-    }
-
-    this.postToWebview(sessionID, {
-      type: 'toolProgress',
-      toolCallId: toolUseId,
-      output: streamed,
-      isStreaming: true,
-      elapsedTimeSeconds: p.elapsedTimeSeconds,
-      totalLines: p.totalLines,
-      totalBytes: p.totalBytes,
-      taskId: p.taskId,
-    } as any, true /* silent: 流式输出每 chunk 打印一次太频繁，跳过日志 */);
+    pushToolProgress(sessionID, toolUseId, progress, (sessionId, message) =>
+      this.postToWebview(sessionId, message, true /* silent: 流式输出每 chunk 打印一次太频繁，跳过日志 */));
   }
 
   /**
@@ -806,30 +734,23 @@ export class VSCodeUI implements AssistantUI {
    * 子代理在后台运行时，父会话的 abort 按钮仍应可用（中断父会话会连带中断子代理）。
    */
   private hasActiveQueryInScope(sessionId: string): boolean {
-    if ((this.queryActiveCounts.get(sessionId) ?? 0) > 0) {
-      return true;
-    }
-    // 后台 Bash 任务可能在前台查询结束后继续运行，此时 abort 按钮仍应可用，
-    // 以便用户中止该会话（及其子会话）的后台任务。
+    // 后台 Bash 任务
+    let getBackgroundTasks: (() => Array<{ status: string; sessionID?: string }>) | undefined;
     try {
       const { getAllBackgroundTasks } = require('./core/tools/bash/LocalShellTask.js') as typeof import('./core/tools/bash/LocalShellTask.js');
-      if (getAllBackgroundTasks().some(task => task.status === 'running' && task.sessionID === sessionId)) {
-        return true;
-      }
+      getBackgroundTasks = getAllBackgroundTasks;
     } catch {
       // LocalShellTask 不可用时忽略
     }
+    // 子代理注册表：按入参会话查询其子会话（递归下降用，不能绑定固定 sessionId）
+    let listChildSessions: ((sessionId: string) => string[]) | undefined;
     try {
       const { subAgentRegistry } = require('./core/tools/agent/SubAgentRegistry.js') as typeof import('./core/tools/agent/SubAgentRegistry.js');
-      for (const childId of subAgentRegistry.listForCreator(sessionId)) {
-        if (this.hasActiveQueryInScope(childId)) {
-          return true;
-        }
-      }
+      listChildSessions = (id) => subAgentRegistry.listForCreator(id);
     } catch {
       // 子代理注册表不可用时只按当前会话自身判断
     }
-    return false;
+    return isActiveQueryInScope(sessionId, this.queryActiveCounts, getBackgroundTasks, listChildSessions);
   }
 
   /**
@@ -1019,23 +940,11 @@ export class VSCodeUI implements AssistantUI {
    * 获取 DeepSeek 账户余额并发送到 webview
    */
   private fetchAndSendBalance(sessionID: string): void {
-    import('./core/utils/balance.js').then(({ fetchBalance }) => {
-      fetchBalance(sessionID).then(balanceInfo => {
-        if (balanceInfo) {
-          this.postToWebview(sessionID, {
-            type: 'balanceUpdate',
-            totalBalance: balanceInfo.totalBalance,
-            currency: balanceInfo.currency,
-            isUnlimited: balanceInfo.isUnlimited,
-            fetchedAt: balanceInfo.fetchedAt,
-          } as any);
-        }
-      }).catch((err: unknown) => {
-        VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] Failed to fetch balance: ${err}`);
-      });
-    }).catch((err: unknown) => {
-      VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] Failed to import balance module: ${err}`);
-    });
+    fetchBalanceAndPush(
+      sessionID,
+      (message) => this.postToWebview(sessionID, message),
+      (line) => VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] ${line}`),
+    );
   }
 
   /**
@@ -1074,24 +983,13 @@ export class VSCodeUI implements AssistantUI {
         sessionId,
       });
 
-      (async () => {
-        try {
-          const { replaceConversationMessages, updateConversationContext } = await import('./core/history/index.js');
-          await replaceConversationMessages(sessionId, []);
-          await updateConversationContext(sessionId, { totalContextTokens: 0 });
-          const { getSessionEngine } = await import('./core/QueryEngine.js');
-          const engine = getSessionEngine(sessionId);
-          if (engine) {
-            const msgs = engine.getMessages();
-            msgs.length = 0;
-            engine.lastPersistedMessageUuid = null;
-          }
-          // /clear 后同步列表 messageCount（清空后仍保留会话，显示 0 条）
-          await this.refreshConversationList();
-        } catch (err) {
+      void clearConversationData(sessionId, {
+        // /clear 后同步列表 messageCount（清空后仍保留会话，显示 0 条）
+        onSuccess: () => this.refreshConversationList(),
+        onError: (err) => {
           VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] Error clearing conversation: ${err}`);
-        }
-      })();
+        },
+      });
 
       return true;
     }
@@ -1106,23 +1004,12 @@ export class VSCodeUI implements AssistantUI {
       }
       // /spin: check if spin.json exists in ~/<CONFIG_DIR_NAME>/conversations/<encoded-workspace>/, open design if not
       const wf = vscode.workspace.workspaceFolders;
-      if (wf && wf.length > 0) {
-        const { getProjectConversationDir } = require('./core/history/Config.js');
-        const path = require('path') as typeof import('path');
-        const projectDir = getProjectConversationDir(wf[0].uri.fsPath);
-        const spinJsonPath = path.join(projectDir, 'spin.json');
-        const fs = require('fs');
-        let hasSpinJson = false;
-        try {
-          hasSpinJson = fs.existsSync(spinJsonPath);
-        } catch {}
-        if (!hasSpinJson) {
-          // no spin.json, open design
-          this.webviewMessageHandler.handleOpenSpinDesign().catch((err: any) => {
-            VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] Error opening spin design: ${err}`);
-          });
-          return true;
-        }
+      if (wf && wf.length > 0 && shouldOpenSpinDesign(wf[0].uri.fsPath)) {
+        // no spin.json, open design
+        this.webviewMessageHandler.handleOpenSpinDesign().catch((err: any) => {
+          VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] Error opening spin design: ${err}`);
+        });
+        return true;
       }
     }
 

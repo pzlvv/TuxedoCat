@@ -10,7 +10,7 @@ import { z } from 'zod';
 export const inputSchema = z.strictObject({
   file_path: z.string().describe('The absolute path to the file to read'),
   offset: z.coerce.number().int().nonnegative().optional()
-    .describe('The line number to start reading from (0-indexed)'),
+    .describe('The 1-based line number to start reading from (default: 1). 0 is accepted and treated as 1'),
   limit: z.coerce.number().int().positive().optional()
     .describe('The number of lines to read'),
   sheet: z.string().optional()
@@ -25,7 +25,7 @@ export type ReadInput = z.infer<typeof inputSchema>;
 export const outputSchema = z.object({
   content: z.string().describe('The content of the file'),
   lineCount: z.number().describe('Number of lines read'),
-  startLine: z.number().describe('The starting line number (0-indexed)'),
+  startLine: z.number().describe('The starting line number (0-indexed, internal value)'),
   totalLines: z.number().describe('Total number of lines in the file'),
   filePath: z.string().describe('The path to the file that was read'),
   sheetName: z.string().optional().describe('The name of the sheet that was read'),

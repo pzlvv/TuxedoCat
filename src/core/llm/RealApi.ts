@@ -27,10 +27,17 @@ import {
   LLMRepetitionError,
   DEFAULT_MAX_REPETITION_RETRIES,
 } from './repetitionDetector.js';
-import { unwrapToolInput, describeToolInput } from '../utils/toolInput.js';
-
-// RedisStats module removed; local no-op stub
-async function recordLLMUsage(_inputTokens: number, _outputTokens: number): Promise<void> {}
+import { unwrapToolInput } from '../utils/toolInput.js';
+import {
+  checkAborted,
+  recordLLMUsage,
+  logRawOutput,
+  RETRY_DELAY_MS,
+  MAX_RETRIES,
+  isRetryableStatus,
+  isNetworkFetchError,
+  sleep,
+} from './shared.js';
 
 export interface StreamOptions {
   messages: Array<{ role: string; content: string | unknown[] }>;
@@ -62,17 +69,6 @@ export type StreamEvent =
   | { type: 'web_search_call_done'; callId: string; messageId?: string };
 
 /**
- * 检查中断
- */
-function checkAborted(signal: AbortSignal | null): void {
-  if (signal && signal.aborted) {
-    const abortError = new Error('The operation was aborted');
-    abortError.name = 'AbortError';
-    throw abortError;
-  }
-}
-
-/**
  * 在 ~/<CONFIG_DIR_NAME>/ 下创建 LLM 请求失败转储文件
  * 记录完整的请求参数，便于排查问题
  */
@@ -102,7 +98,21 @@ export async function dumpFailedRequest(params: {
     // 确保目录存在
     await fs.mkdir(dumpDir, { recursive: true });
 
-    // 构建转储内容（脱敏处理 apiKey）
+    // 构建转储内容（脱敏处理 apiKey 与所有常见凭证头）
+    const redactHeaders = (headers: Record<string, unknown>): Record<string, unknown> => {
+      const out: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(headers || {})) {
+        const lower = key.toLowerCase();
+        if (lower === 'authorization') {
+          out[key] = 'Bearer <REDACTED>';
+        } else if (lower === 'x-api-key' || lower === 'api-key' || lower === 'x-goog-api-key' || lower === 'cookie' || lower === 'proxy-authorization') {
+          out[key] = '<REDACTED>';
+        } else {
+          out[key] = value;
+        }
+      }
+      return out;
+    };
     const dump = {
       timestamp: new Date().toISOString(),
       url: params.url,
@@ -112,10 +122,7 @@ export async function dumpFailedRequest(params: {
         ...params.config,
         apiKey: params.config.apiKey ? `${params.config.apiKey.slice(0, 8)}...` : '',
       },
-      requestHeaders: {
-        ...params.requestHeaders,
-        Authorization: 'Bearer <REDACTED>',
-      },
+      requestHeaders: redactHeaders(params.requestHeaders),
       requestBody: params.requestBody,
       error: params.error instanceof Error
         ? { name: params.error.name, message: params.error.message, stack: params.error.stack }
@@ -284,7 +291,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
   let requestBody: Record<string, unknown> | undefined;
   // 累积 token 用量（流式模式下从 SSE 中逐步获取）
   let accumulatedInputTokens = 0;
-  let accumulatedOutputTokens = 0 as number;
+  let accumulatedOutputTokens = 0;
 
   // 流式请求看门狗：首字节 300s / 空闲 60s，超时主动 abort。
   // 网关静默不响应（或只发心跳保活）时，undici 的 headersTimeout/bodyTimeout
@@ -301,15 +308,8 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
   let repetitionRetryCount = 0;
 
   try {
-    // 重试配置：最多重试 MAX_RETRIES 次，对 502/503 状态码、网络错误和 TypeError: terminated 生效
-    const RETRY_DELAY_MS = 1000;
-    const MAX_RETRIES = 3;
-
-    // 判断状态码是否可重试（502/503 等服务端瞬时错误）
-    const isRetryableStatus = (status: number): boolean =>
-      status === 502 || status === 503;
-
     // 将核心请求+流读取逻辑提取为内部函数，支持重试
+    // （重试配置 RETRY_DELAY_MS / MAX_RETRIES / isRetryableStatus 见 shared.ts）
     const executeRequest = async function* (
       retryCount: number,
     ): AsyncGenerator<StreamEvent | Message> {
@@ -411,7 +411,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
             timeoutRetryCount++;
             logger.warn('RealAPI',
               `${timeoutError.message}，丢弃本次请求并重试 (${timeoutRetryCount}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+            await sleep(RETRY_DELAY_MS);
             checkAborted(signal);
             yield* executeRequest(retryCount + 1);
             return;
@@ -419,11 +419,9 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
           throw timeoutError;
         }
         // 对网络层错误（fetch failed / ECONNRESET 等）重试数次
-        const isNetworkError = fetchError instanceof TypeError &&
-          (fetchError.message === 'fetch failed' || (fetchError as any)?.cause !== undefined);
-        if (retryCount < MAX_RETRIES && isNetworkError) {
-          logger.warn('RealAPI', `Network error while fetching (${fetchError.message}), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        if (retryCount < MAX_RETRIES && isNetworkFetchError(fetchError)) {
+          logger.warn('RealAPI', `Network error while fetching (${(fetchError as TypeError).message}), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
+          await sleep(RETRY_DELAY_MS);
           checkAborted(signal);
           yield* executeRequest(retryCount + 1);
           return;
@@ -436,7 +434,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
         logger.warn('RealAPI', `API request got ${response.status}, retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
         // 释放未消费的响应体，避免连接被占用
         response.body?.cancel().catch(() => { });
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        await sleep(RETRY_DELAY_MS);
         checkAborted(signal);
         yield* executeRequest(retryCount + 1);
         return;
@@ -490,6 +488,49 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       // 不依赖 message_start 中的 id 字段（部分模型不返回）
       const streamMessageId = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
+      // ---- 主循环与流结束后 buffer 兜底段共用的解析逻辑 ----
+
+      // message_delta 事件解析（主循环会随后 yield 事件，兜底段只更新累计值）
+      const applyMessageDelta = (parsed: Record<string, unknown>): void => {
+        const msgDelta = parsed.delta as Record<string, unknown> || {};
+        const msgUsage = parsed.usage as Record<string, unknown> || {};
+        stopReason = msgDelta.stop_reason as string || stopReason;
+        if (msgUsage.input_tokens !== undefined) {
+          accumulatedInputTokens = msgUsage.input_tokens as number;
+        }
+        if (msgUsage.output_tokens !== undefined) {
+          accumulatedOutputTokens = msgUsage.output_tokens as number;
+        }
+        // DeepSeek API 的 input_tokens 可能不包含缓存命中的部分，
+        // 需要加上 cache_read_input_tokens 和 cache_creation_input_tokens
+        // 才能得到完整的输入 token 数
+        const cacheReadTokens = (msgUsage as any).cache_read_input_tokens || 0;
+        const cacheCreationTokens = (msgUsage as any).cache_creation_input_tokens || 0;
+        const totalInputTokens = accumulatedInputTokens + cacheReadTokens + cacheCreationTokens;
+        usage = { input_tokens: totalInputTokens, output_tokens: accumulatedOutputTokens, cache_read_input_tokens: cacheReadTokens, cache_creation_input_tokens: cacheCreationTokens };
+      };
+
+      // content_block_stop 时解析 tool_use 累积的 partial JSON。
+      // final=true 时日志标签带 _FINAL 后缀（buffer 兜底段）。
+      // 统一使用 unwrapToolInput 解包（模型可能把整个入参 double-encode 成 JSON 字符串）。
+      const parseToolUsePartialJson = (lastBlock: any, final: boolean): void => {
+        const suffix = final ? '_FINAL' : '';
+        const rawJson = (lastBlock as any)._partialJson;
+        logger.info('RealAPI',
+          `[TOOL_USE_RAW_JSON${suffix}] id=${lastBlock.id}, name=${lastBlock.name}, ` +
+          `raw_len=${rawJson.length}, raw_preview=${rawJson.substring(0, 500)}`);
+        try {
+          lastBlock.input = unwrapToolInput(JSON.parse(rawJson));
+        } catch (e) {
+          logger.error('RealAPI',
+            `[TOOL_USE_PARSE_FAILED${suffix}] id=${lastBlock.id}, name=${lastBlock.name}, ` +
+            `raw_len=${rawJson.length}, error=${e}, ` +
+            `raw=${rawJson.substring(0, 1000)}`);
+          // 解析失败则保留原始 input
+        }
+        delete (lastBlock as any)._partialJson;
+      };
+
       // 流式读取期间必须确保 reader 被释放：abort、读取异常或消费者提前退出时，
       // 通过 finally 取消底层流，避免连接/内存泄漏。
       let streamEnded = false;
@@ -512,7 +553,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
               timeoutRetryCount++;
               logger.warn('RealAPI',
                 `${timeoutError.message}，丢弃本次响应并重试 (${timeoutRetryCount}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-              await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+              await sleep(RETRY_DELAY_MS);
               checkAborted(signal);
               yield* executeRequest(retryCount + 1);
               return;
@@ -524,7 +565,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
             logger.warn('RealAPI', `Stream terminated (TypeError: terminated), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
             // 释放之前的 reader
             closeReader();
-            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+            await sleep(RETRY_DELAY_MS);
             checkAborted(signal);
             yield* executeRequest(retryCount + 1);
             return;
@@ -647,21 +688,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
             // 如果是 tool_use，解析累积的 partial JSON
             if (lastBlock && lastBlock.type === 'tool_use') {
               if ((lastBlock as any)._partialJson) {
-                const rawJson = (lastBlock as any)._partialJson;
-                logger.info('RealAPI',
-                  `[TOOL_USE_RAW_JSON] id=${lastBlock.id}, name=${lastBlock.name}, ` +
-                  `raw_len=${rawJson.length}, raw_preview=${rawJson.substring(0, 500)}`);
-                try {
-                  // 模型可能把整个入参 double-encode 成 JSON 字符串，解包后再交给上层
-                  (lastBlock as any).input = unwrapToolInput(JSON.parse(rawJson));
-                } catch (e) {
-                  logger.error('RealAPI',
-                    `[TOOL_USE_PARSE_FAILED] id=${lastBlock.id}, name=${lastBlock.name}, ` +
-                    `raw_len=${rawJson.length}, error=${e}, ` +
-                    `raw=${rawJson.substring(0, 1000)}`);
-                  // 解析失败则保留原始 input
-                }
-                delete (lastBlock as any)._partialJson;
+                parseToolUsePartialJson(lastBlock, false);
               } else {
                 logger.debug('RealAPI',
                   `[TOOL_USE_NO_PARTIAL_JSON] id=${lastBlock.id}, name=${lastBlock.name}`);
@@ -671,22 +698,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
             currentBlockAccumulator = {};
             yield { type: 'block_stop', messageId: streamMessageId } as StreamEvent;
           } else if (eventType === 'message_delta') {
-            const msgDelta = parsed.delta as Record<string, unknown> || {};
-            const msgUsage = parsed.usage as Record<string, unknown> || {};
-            stopReason = msgDelta.stop_reason as string || stopReason;
-            if (msgUsage.input_tokens !== undefined) {
-              accumulatedInputTokens = msgUsage.input_tokens as number;
-            }
-            if (msgUsage.output_tokens !== undefined) {
-              accumulatedOutputTokens = msgUsage.output_tokens as number;
-            }
-            // DeepSeek API 的 input_tokens 可能不包含缓存命中的部分，
-            // 需要加上 cache_read_input_tokens 和 cache_creation_input_tokens
-            // 才能得到完整的输入 token 数
-            const cacheReadTokens = (msgUsage as any).cache_read_input_tokens || 0;
-            const cacheCreationTokens = (msgUsage as any).cache_creation_input_tokens || 0;
-            const totalInputTokens = accumulatedInputTokens + cacheReadTokens + cacheCreationTokens;
-            usage = { input_tokens: totalInputTokens, output_tokens: accumulatedOutputTokens, cache_read_input_tokens: cacheReadTokens, cache_creation_input_tokens: cacheCreationTokens };
+            applyMessageDelta(parsed);
             yield {
               type: 'message_delta',
               usage,
@@ -708,9 +720,6 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
             }
             // 提取消息 ID（部分模型返回，但我们已自生成 streamMessageId）
             // 如果有 id 则覆盖使用模型返回的 id，更可靠
-            if (msg.id && typeof msg.id === 'string') {
-              // 保留但不再赋值给 const 的 streamMessageId
-            }
           } else if (eventType === 'ping') {
             // 心跳，忽略
           }
@@ -725,7 +734,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
           closeReader();
           logger.warn('RealAPI',
             `${loopError.message}，丢弃本次响应并重试 (${repetitionRetryCount}/${DEFAULT_MAX_REPETITION_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+          await sleep(RETRY_DELAY_MS);
           checkAborted(signal);
           yield* executeRequest(retryCount + 1);
           return;
@@ -744,33 +753,13 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
         for (const parsed of finalEvents) {
           const eventType = parsed.type as string;
           if (eventType === 'message_delta') {
-            const msgDelta = (parsed.delta as Record<string, unknown>) || {};
-            const msgUsage = parsed.usage as Record<string, unknown> || {};
-            stopReason = msgDelta.stop_reason as string || stopReason;
-            if ((msgUsage as any).input_tokens !== undefined) accumulatedInputTokens = (msgUsage as any).input_tokens;
-            if ((msgUsage as any).output_tokens !== undefined) accumulatedOutputTokens = (msgUsage as any).output_tokens;
-            const cacheReadTokens = (msgUsage as any).cache_read_input_tokens || 0;
-            const cacheCreationTokens = (msgUsage as any).cache_creation_input_tokens || 0;
-            const totalInputTokens = accumulatedInputTokens + cacheReadTokens + cacheCreationTokens;
-            usage = { input_tokens: totalInputTokens, output_tokens: accumulatedOutputTokens, cache_read_input_tokens: cacheReadTokens, cache_creation_input_tokens: cacheCreationTokens };
+            applyMessageDelta(parsed);
           } else if (eventType === 'content_block_stop') {
             // 处理 buffer 中残留的 content_block_stop（同主循环逻辑）
             const lastBlock = contentBlocks[contentBlocks.length - 1];
             if (lastBlock && lastBlock.type === 'tool_use') {
               if ((lastBlock as any)._partialJson) {
-                const rawJson = (lastBlock as any)._partialJson;
-                logger.info('RealAPI',
-                  `[TOOL_USE_RAW_JSON_FINAL] id=${lastBlock.id}, name=${lastBlock.name}, ` +
-                  `raw_len=${rawJson.length}, raw_preview=${rawJson.substring(0, 500)}`);
-                try {
-                  (lastBlock as any).input = JSON.parse(rawJson);
-                } catch (e) {
-                  logger.error('RealAPI',
-                    `[TOOL_USE_PARSE_FAILED_FINAL] id=${lastBlock.id}, name=${lastBlock.name}, ` +
-                    `raw_len=${rawJson.length}, error=${e}, ` +
-                    `raw=${rawJson.substring(0, 1000)}`);
-                }
-                delete (lastBlock as any)._partialJson;
+                parseToolUsePartialJson(lastBlock, true);
               }
             }
             currentBlockType = null;
@@ -829,26 +818,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       const finalMsg = buildAssistantMessageFromBlocks(contentBlocks, stopReason, usage);
 
       // 记录 LLM 原始输出的所有 content blocks
-      if ((finalMsg as any).message && Array.isArray((finalMsg as any).message.content)) {
-        const blocks = (finalMsg as any).message.content;
-        logger.info('RealAPI', `[LLM_RAW_OUTPUT] total_blocks=${blocks.length}`);
-        for (let i = 0; i < blocks.length; i++) {
-          const block = blocks[i] as any;
-          if (block.type === 'text') {
-            const text = String(block.text || '');
-            logger.info('RealAPI',
-              `[LLM_RAW_OUTPUT] block[${i}] type=text, ` +
-              `text_len=${text.length}, text_preview=${text.substring(0, 500)}`);
-          } else if (block.type === 'tool_use') {
-            logger.info('RealAPI',
-              `[LLM_RAW_OUTPUT] block[${i}] type=tool_use, ` +
-              `id=${block.id}, name=${block.name}, ` +
-              describeToolInput(block.input));
-          } else {
-            logger.info('RealAPI', `[LLM_RAW_OUTPUT] block[${i}] type=${block.type}`);
-          }
-        }
-      }
+      logRawOutput('RealAPI', finalMsg);
 
       yield finalMsg;
 

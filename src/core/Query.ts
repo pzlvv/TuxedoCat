@@ -19,8 +19,11 @@ function cleanWebSearchUrl(url: string): string {
   return url.replace(/[#&?]ws_call_id=[^#&?]*/g, '').replace(/[?#]$/, '');
 }
 
-// 全局 AbortSignal 类型（兼容性）
-type AbortSignal = {
+/**
+ * 兼容性 AbortSignal 形状（与全局 AbortSignal 类型不同：只有 aborted/reason）。
+ * 命名为 *Like 以避免遮蔽全局类型。
+ */
+type AbortSignalLike = {
   aborted: boolean;
   readonly reason?: unknown;
 };
@@ -60,13 +63,136 @@ export interface QueryParams {
 // Mutable state carried between loop iterations
 type State = {
   messages: Message[]
-  toolUseContext: ToolUseContext
   turnCount: number
   autoCompactTracking?: AutoCompactTrackingState
 }
 
 type Terminal = {
   reason: string
+}
+
+type RawApiMessage = { role: string; content: string | unknown[] };
+
+/**
+ * 把 Message[] 转换为 API 请求用的原始消息数组（user/assistant 交替之前的格式）。
+ *
+ * 行为要点（与抽取前的内联实现逐行一致）：
+ * - 只保留 user / assistant 类型
+ * - 字符串 content 中格式化进文件/行号元数据（[Current File: ...]）
+ *   在构造 rawApiMessages 时就把文件/行号元数据格式化进文本，
+ *   而不是后续按 apiMessages 索引回填（索引在合并连续同角色消息后会错位）。
+ * - 数组 content 过滤掉 block 顶层的 _meta / _partialJson 内部字段
+ * - 其他类型 content 统一 String() 化
+ */
+function buildRawApiMessages(messages: Message[]): RawApiMessage[] {
+  return messages
+    .filter((msg) => msg.type === 'user' || msg.type === 'assistant')
+    .map((msg) => {
+      const content = msg.message.content;
+
+      // 处理 content 类型
+      let formattedContent: string | unknown[];
+      if (typeof content === 'string') {
+        let text = content;
+
+        const fileMsg = msg as any;
+        if (
+          msg.type === 'user'
+          && fileMsg.filePath
+          && !fileMsg.fileHidden
+          && !text.startsWith('[Current File:')
+        ) {
+          let fileInfoText = `[Current File: ${fileMsg.filePath}`;
+          const sel = fileMsg.fileSelectedLines;
+          if (sel && sel.start > 0 && sel.end > 0) {
+            if (sel.start === sel.end) {
+              fileInfoText += ` (line ${sel.start})]`;
+            } else {
+              fileInfoText += ` (lines ${sel.start}-${sel.end})]`;
+            }
+          } else {
+            fileInfoText += ']';
+          }
+          text = fileInfoText + '\n\n' + text;
+        }
+
+        formattedContent = text;
+      } else if (Array.isArray(content)) {
+        // content 是数组，需要格式化
+        formattedContent = content.map((block: unknown) => {
+          if (typeof block === 'object' && block !== null) {
+            const srcBlock = block as { type: string;[key: string]: unknown };
+            // 过滤掉 tool_use block 中的顶层 _meta 和 _partialJson 字段
+            // _meta: 仅用于 UI 历史恢复和统计，不应发给 LLM
+            // _partialJson: SSE 流式解析用的内部累积字段，不应发给 LLM
+            if ((srcBlock as any)._meta !== undefined || (srcBlock as any)._partialJson !== undefined) {
+              const { _meta, _partialJson, ...cleanBlock } = srcBlock;
+              void _meta;
+              void _partialJson;
+              return cleanBlock;
+            }
+            return srcBlock;
+          }
+          return block;
+        });
+      } else {
+        formattedContent = String(content);
+      }
+
+      return {
+        role: msg.type === 'user' ? 'user' : 'assistant',
+        content: formattedContent,
+      };
+    });
+}
+
+/**
+ * 为所有 content 为数组但缺少 thinking block 的 assistant 消息补空 thinking。
+ *
+ * 原因：DeepSeek 代理要求当开启 thinking 模式时，历史 assistant 消息的 content 数组
+ * 中必须包含 type=thinking 的 block。如果用户在执行工具过程中（如 sleep 5）将 thinking
+ * 从 off 切换为 max，下一轮 LLM 请求带 thinking 模式时，历史消息中的 assistant 消息
+ * 含有 tool_use 但没有 thinking block，会导致 API 报错：
+ *   "The content[].thinking in the thinking mode must be passed back to the API."
+ * 解决方案：不管当前是否开启 thinking，统一补一个空的 thinking block。
+ * 这样即使中途切换 thinking 模式，历史消息也已满足要求，无需额外处理。
+ */
+function ensureThinkingBlocks(rawApiMessages: RawApiMessage[]): void {
+  for (const msg of rawApiMessages) {
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      const hasThinking = (msg.content as any[]).some((b: any) => b.type === 'thinking');
+      if (!hasThinking) {
+        (msg.content as any[]).unshift({ type: 'thinking', thinking: '' });
+      }
+    }
+  }
+}
+
+/**
+ * 合并连续同角色消息。
+ * Anthropic API requires strict user/assistant alternation: each
+ * tool_use block must have a corresponding tool_result block in the
+ * immediately following message. Without merging, multiple separate
+ * user messages (each with one tool_result) violate this requirement.
+ */
+function mergeConsecutiveSameRole(raw: RawApiMessage[]): RawApiMessage[] {
+  const apiMessages: RawApiMessage[] = [];
+  for (const msg of raw) {
+    const last = apiMessages[apiMessages.length - 1];
+    if (last && last.role === msg.role) {
+      // Merge same-role consecutive messages by concatenating content
+      const lastContent = Array.isArray(last.content)
+        ? last.content
+        : [{ type: 'text', text: last.content as string }];
+      const newContent = Array.isArray(msg.content)
+        ? msg.content
+        : [{ type: 'text', text: msg.content as string }];
+      last.content = [...lastContent, ...newContent];
+    } else {
+      apiMessages.push(msg);
+    }
+  }
+  return apiMessages;
 }
 
 export async function* query(
@@ -86,13 +212,16 @@ async function* queryLoop(
 
   let state: State = {
     messages: params.messages,
-    toolUseContext: params.toolUseContext,
-    turnCount: params.messages.filter(m => m.type === 'assistant').length,
+    // turnCount 只统计本次 query() 内部的工具循环轮次（每条用户消息独立预算），
+    // 不计入历史 assistant 消息：否则 maxTurns 预算跨整条会话共享，
+    // 历史消息数达到 maxTurns 后每条新消息第一轮就被 max_turns 截断。
+    turnCount: 0,
   };
 
   while (true) {
-    const { toolUseContext } = state;
     const { messages, turnCount } = state;
+    // toolUseContext 整个循环不变（每轮不再重新赋回 state），直接取参数值
+    const toolUseContext = params.toolUseContext;
 
     {
       const { getSessionEngine } = await import('./QueryEngine.js');
@@ -140,8 +269,11 @@ async function* queryLoop(
         }
       }
 
+      // 用动态获取的模型配置判断压缩阈值（主调用方只传 getPromptState/getModelConfig 回调，
+      // params.modelConfig 恒为 undefined，会导致 shouldAutoCompact 拿不到模型名而使用默认阈值）。
+      const currentModelConfig = getModelConfig();
       const shouldCompact = pendingCompact
-        || await shouldAutoCompact(messages, state.autoCompactTracking, exactTokenCount, params.modelConfig?.model, params.modelConfig?.modelConfigs);
+        || await shouldAutoCompact(messages, state.autoCompactTracking, exactTokenCount, currentModelConfig?.model, currentModelConfig?.modelConfigs);
 
       if (shouldCompact) {
         if (pendingCompact) {
@@ -189,106 +321,12 @@ async function* queryLoop(
         import('./tools/index.js'),
       ]);
 
-      const rawApiMessages = messages
-        .filter((msg) => msg.type === 'user' || msg.type === 'assistant')
-        .map((msg) => {
-          const content = msg.message.content;
+      const rawApiMessages = buildRawApiMessages(messages);
 
-          // 处理 content 类型
-          let formattedContent: string | unknown[];
-          if (typeof content === 'string') {
-            let text = content;
-
-            // 在构造 rawApiMessages 时就把文件/行号元数据格式化进文本，
-            // 而不是后续按 apiMessages 索引回填（索引在合并连续同角色消息后会错位）。
-            const fileMsg = msg as any;
-            if (
-              msg.type === 'user'
-              && fileMsg.filePath
-              && !fileMsg.fileHidden
-              && !text.startsWith('[Current File:')
-            ) {
-              let fileInfoText = `[Current File: ${fileMsg.filePath}`;
-              const sel = fileMsg.fileSelectedLines;
-              if (sel && sel.start > 0 && sel.end > 0) {
-                if (sel.start === sel.end) {
-                  fileInfoText += ` (line ${sel.start})]`;
-                } else {
-                  fileInfoText += ` (lines ${sel.start}-${sel.end})]`;
-                }
-              } else {
-                fileInfoText += ']';
-              }
-              text = fileInfoText + '\n\n' + text;
-            }
-
-            formattedContent = text;
-          } else if (Array.isArray(content)) {
-            // content 是数组，需要格式化
-            formattedContent = content.map((block: unknown) => {
-              if (typeof block === 'object' && block !== null) {
-                const srcBlock = block as { type: string;[key: string]: unknown };
-                // 过滤掉 tool_use block 中的顶层 _meta 和 _partialJson 字段
-                // _meta: 仅用于 UI 历史恢复和统计，不应发给 LLM
-                // _partialJson: SSE 流式解析用的内部累积字段，不应发给 LLM
-                if ((srcBlock as any)._meta !== undefined || (srcBlock as any)._partialJson !== undefined) {
-                  const { _meta, _partialJson, ...cleanBlock } = srcBlock;
-                  void _meta;
-                  void _partialJson;
-                  return cleanBlock;
-                }
-                return srcBlock;
-              }
-              return block;
-            });
-          } else {
-            formattedContent = String(content);
-          }
-
-          return {
-            role: msg.type === 'user' ? 'user' : 'assistant',
-            content: formattedContent,
-          };
-        });
-
-      // ===== 为所有 content 为数组但缺少 thinking block 的 assistant 消息补空 thinking =====
-      // 原因：DeepSeek 代理要求当开启 thinking 模式时，历史 assistant 消息的 content 数组
-      // 中必须包含 type=thinking 的 block。如果用户在执行工具过程中（如 sleep 5）将 thinking
-      // 从 off 切换为 max，下一轮 LLM 请求带 thinking 模式时，历史消息中的 assistant 消息
-      // 含有 tool_use 但没有 thinking block，会导致 API 报错：
-      //   "The content[].thinking in the thinking mode must be passed back to the API."
-      // 解决方案：不管当前是否开启 thinking，统一补一个空的 thinking block。
-      // 这样即使中途切换 thinking 模式，历史消息也已满足要求，无需额外处理。
-      for (const msg of rawApiMessages) {
-        if (msg.role === 'assistant' && Array.isArray(msg.content)) {
-          const hasThinking = (msg.content as any[]).some((b: any) => b.type === 'thinking');
-          if (!hasThinking) {
-            (msg.content as any[]).unshift({ type: 'thinking', thinking: '' });
-          }
-        }
-      }
+      ensureThinkingBlocks(rawApiMessages);
 
       // Merge consecutive messages with the same role.
-      // Anthropic API requires strict user/assistant alternation: each
-      // tool_use block must have a corresponding tool_result block in the
-      // immediately following message. Without merging, multiple separate
-      // user messages (each with one tool_result) violate this requirement.
-      const apiMessages: Array<{ role: string; content: string | unknown[] }> = [];
-      for (const msg of rawApiMessages) {
-        const last = apiMessages[apiMessages.length - 1];
-        if (last && last.role === msg.role) {
-          // Merge same-role consecutive messages by concatenating content
-          const lastContent = Array.isArray(last.content)
-            ? last.content
-            : [{ type: 'text', text: last.content as string }];
-          const newContent = Array.isArray(msg.content)
-            ? msg.content
-            : [{ type: 'text', text: msg.content as string }];
-          last.content = [...lastContent, ...newContent];
-        } else {
-          apiMessages.push(msg);
-        }
-      }
+      const apiMessages = mergeConsecutiveSameRole(rawApiMessages);
 
       if (apiMessages.length === 0) {
         throw new Error('No valid messages to send to API');
@@ -326,8 +364,8 @@ async function* queryLoop(
       let currentTextStreamId: string | undefined;
       // 当前正在流式输出的 block 类型（用于 block_stop 时精确收尾对应消息）
       let currentBlockType: 'thinking' | 'text' | 'tool_use' | null = null;
-      const newBlockStreamId = (): string =>
-        `blk_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      const { randomId } = await import('./tools/RunTools.js');
+      const newBlockStreamId = (): string => randomId('blk');
       // 辅助函数：判断是否为流式事件
       function isStreamEvent(val: any): val is import('./llm/RealApi.js').StreamEvent {
         return val && typeof val === 'object' && 'type' in val &&
@@ -359,9 +397,6 @@ async function* queryLoop(
         systemPrompt: fullSystemPrompt,
         tools,
         signal: (toolUseContext.abortController as any).signal,
-        onProgress(_msg) {
-          // 可以在这里处理进度
-        },
         thinkingEffort,
         modelConfig: requestModelConfig,
         sessionId: toolUseContext.sessionId as string,
@@ -530,11 +565,6 @@ async function* queryLoop(
         if (event.type === 'assistant') {
           const content = event.message.content as unknown[];
 
-          // ========== 从 LLM 响应中提取 token 用量 ==========
-          const inputTokens = (event.message as any)?.usage?.input_tokens as number | undefined;
-          const outputTokens = (event.message as any)?.usage?.output_tokens as number | undefined;
-          const totalContextTokens = (inputTokens ?? 0) + (outputTokens ?? 0);
-
           /**
            * 数据流：LLM 返回 -> 持久化到 meta.json -> 发送到 webview 更新 UI
            *
@@ -549,21 +579,14 @@ async function* queryLoop(
            *   - webview 自行计算 totalTokens = contextLength + outputTokens 更新进度条
            */
 
-          // 解析 content blocks 并识别 tool_use
+          // 解析 content blocks 并识别 tool_use。
+          // thinking/text 分支已删除：其唯一的操作是重复调用 updateConversationContext
+          // 写入与 message_delta 处理完全相同的 totalContextTokens（同一轮已写多次，
+          // 纯冗余），usage 更新与 UI 收尾均由 message_delta 分支统一处理。
           for (const block of content) {
             const blockType = (block as { type: string }).type;
 
-            if (blockType === 'thinking') {
-              // Thinking 已经通过流事件实时更新，此处只做 meta 更新
-              if (totalContextTokens > 0) {
-                await updateConversationContext(params.sessionID, { totalContextTokens }).catch((e: unknown) => logger.warn('query', 'Failed to update context for thinking:', e));
-              }
-            } else if (blockType === 'text') {
-              // Text 已经通过流事件实时更新，此处只做 meta 更新
-              if (totalContextTokens > 0) {
-                await updateConversationContext(params.sessionID, { totalContextTokens }).catch((e: unknown) => logger.warn('query', 'Failed to update context for text:', e));
-              }
-            } else if (blockType === 'tool_use') {
+            if (blockType === 'tool_use') {
               const toolUse = block as { id: string; name: string; input: unknown };
               toolUseBlocks.push(toolUse);
               needsFollowUp = true;
@@ -604,7 +627,7 @@ async function* queryLoop(
       const errorMessage = error instanceof Error ? error.message : String(error);
       logger.error('query', 'API call error:', errorMessage);
 
-      const signal = toolUseContext.abortController?.signal as AbortSignal | null;
+      const signal = toolUseContext.abortController?.signal as AbortSignalLike | null;
       const isAborted = signal?.aborted ||
         errorMessage.includes('aborted') ||
         errorMessage.includes('The operation was aborted') ||
@@ -647,6 +670,8 @@ async function* queryLoop(
       });
 
       const errorToolResults: Message[] = [];
+      // 动态 import：RunTools 与 Query 在 QueryEngine 中均为动态引用，无循环依赖问题
+      const { buildToolResultMessage } = await import('./tools/RunTools.js');
       for (const assistantMessage of assistantMessages) {
         if (assistantMessage.type !== 'assistant') continue;
         const content = assistantMessage.message.content as unknown[];
@@ -654,22 +679,14 @@ async function* queryLoop(
         for (const block of content) {
           if ((block as { type: string }).type !== 'tool_use') continue;
           const toolUse = block as { id: string; name: string };
-          const toolResultMessage: Message = {
-            type: 'user',
-            message: {
-              role: 'user',
-              content: [
-                {
-                  type: 'tool_result',
-                  tool_use_id: toolUse.id,
-                  content: `Tool execution failed: ${errorMessage}`,
-                  is_error: true,
-                } as unknown,
-              ],
-            },
-            uuid: `tool_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-            timestamp: Date.now(),
-          };
+          const toolResultMessage = buildToolResultMessage(
+            toolUse.id,
+            `Tool execution failed: ${errorMessage}`,
+            -1,
+            false,
+            undefined,
+            { is_error: true },
+          );
           yield toolResultMessage;
           errorToolResults.push(toolResultMessage);
         }
@@ -716,25 +733,15 @@ async function* queryLoop(
       }
 
       const errorMessage = 'Command was interrupted';
+      const { buildToolResultMessage } = await import('./tools/RunTools.js');
       for (const toolUse of toolUseBlocks as { id: string }[]) {
         if (completedToolIds.has(toolUse.id)) continue;
-        const toolResultMessage: Message = {
-          type: 'user',
-          message: {
-            role: 'user',
-            content: [
-              {
-                type: 'tool_result',
-                tool_use_id: toolUse.id,
-                content: errorMessage,
-                exit_code: -1,
-                is_canceled: true,
-              } as unknown,
-            ],
-          },
-          uuid: `tool_${Date.now()}_${Math.random()}`,
-          timestamp: Date.now(),
-        };
+        const toolResultMessage = buildToolResultMessage(
+          toolUse.id,
+          errorMessage,
+          -1,
+          true,
+        );
         yield toolResultMessage;
         toolResults.push(toolResultMessage);
       }
@@ -777,7 +784,6 @@ async function* queryLoop(
     messages.push(...assistantMessages, ...toolResults);
     state = {
       messages,
-      toolUseContext,
       turnCount: nextTurnCount,
       autoCompactTracking: nextTracking,
     };

@@ -24,6 +24,14 @@ import { persistLargeOutput, buildLargeToolResultMessage } from './toolResultSto
 import { unwrapToolInput, normalizeToolInput } from '../utils/toolInput.js';
 
 /**
+ * 生成随机 id 后缀（默认 9 位 base36），统一各处 uuid 生成模式。
+ * N 统一为 9：相比部分调用点原来的 8 位，碰撞风险只减不增。
+ */
+export function randomId(prefix: string, len = 9): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 2 + len)}`;
+}
+
+/**
  * 生成全局唯一的 tool_result uuid
  * 使用 crypto.randomUUID() 保证即使在同一毫秒内也不会冲突
  */
@@ -73,16 +81,25 @@ type AuthorizeOutcome =
   | { action: 'stop'; shouldPreventContinuation?: boolean }
   | { action: 'approve'; item: ApprovedToolItem };
 
+/** tool_result block 的附加标记（is_error / is_canceled / exit_code 等错误路径字段） */
+export interface ToolResultFlags {
+  is_error?: boolean;
+  is_canceled?: boolean;
+  exit_code?: number;
+}
+
 /**
  * 构造一条 tool_result user 消息
  * permission 可选，用于携带 deny 路径的 diff 上下文（beforeContent/afterContent 等）
+ * flags 可选，用于错误路径覆盖默认的 exit_code(-1) / is_canceled(false)，或追加 is_error
  */
-function buildToolResultMessage(
+export function buildToolResultMessage(
   toolUseId: string,
   content: string | unknown[],
   exitCode: number,
   isCanceled: boolean,
   permission?: any,
+  flags?: ToolResultFlags,
 ): Message {
   const toolResultMessage: any = {
     type: 'tool_result',
@@ -91,6 +108,9 @@ function buildToolResultMessage(
     exit_code: exitCode,
     is_canceled: isCanceled,
   };
+  if (flags?.is_error !== undefined) toolResultMessage.is_error = flags.is_error;
+  if (flags?.is_canceled !== undefined) toolResultMessage.is_canceled = flags.is_canceled;
+  if (flags?.exit_code !== undefined) toolResultMessage.exit_code = flags.exit_code;
   if (permission) {
     if (permission.beforeContent !== undefined) toolResultMessage.beforeContent = permission.beforeContent;
     if (permission.afterContent !== undefined) toolResultMessage.afterContent = permission.afterContent;
@@ -166,7 +186,7 @@ export async function* runTools(
     const tool = toolMap.get(toolUse.name);
 
     // ---- 验证 + 授权（可能 yield 错误/拒绝/取消消息）----
-    const authResult = yield* authorizeOne(sessionID, toolUse, tool, toolUseContext, ui, signal, blocks, i);
+    const authResult = yield* authorizeOne(sessionID, toolUse, tool, toolUseContext, ui, blocks, i);
 
     if (authResult.action === 'stop') {
       // authorizeOne 已 yield 拒绝结果并取消剩余工具；前面工具均已执行完成，不会产生孤儿 tool_use
@@ -202,7 +222,7 @@ export async function* runTools(
       if (!nextTool || !nextTool.isConcurrencySafe(nextUse.input as any)) {
         break;
       }
-      const nextAuth = yield* authorizeOne(sessionID, nextUse, nextTool, toolUseContext, ui, signal, blocks, j);
+      const nextAuth = yield* authorizeOne(sessionID, nextUse, nextTool, toolUseContext, ui, blocks, j);
       if (nextAuth.action === 'stop') {
         // 后续工具被拒：为当前 batch 中已批准但尚未执行的工具补发取消结果，避免孤儿 tool_use
         yield* cancelApprovedItems(sessionID, batch, ui);
@@ -241,11 +261,9 @@ async function* authorizeOne(
   tool: Tool | undefined,
   toolUseContext: ToolUseContext,
   ui: AssistantUI | undefined,
-  signal: AbortSignal | null,
   toolUseBlocks: ToolUseBlock[],
   currentIndex: number,
 ): AsyncGenerator<ToolExecutionUpdate, AuthorizeOutcome, unknown> {
-  void signal;
 
   // --- 工具不存在 ---
   if (!tool) {

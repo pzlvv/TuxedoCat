@@ -2,6 +2,7 @@ import { useCallback, useRef } from 'react';
 import { hasVscodeApi, postMessage } from '../webviewEnv';
 import { profileLog } from '../debug';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults } from '../types';
+import { createSessionState } from '../sessionState';
 import { ensureImageSize } from '../imageSize';
 import { buildConversationTitle } from '../../core/utils/contentBlocks';
 import { t } from '../i18n';
@@ -34,7 +35,6 @@ export interface UseAppHandlersProps {
   hasCompactArchive: boolean;
   isCompactExpanded: boolean;
   queuedMessage: QueuedMessagePayload | null;
-  serverLoadWarning: string | null;
   stats: any;
   deleteConfirm: { sessionId: string; title: string } | null;
   userChoiceRequest: UserChoiceRequest | null;
@@ -63,7 +63,6 @@ export interface UseAppHandlersProps {
   setHasCompactArchive: (v: boolean) => void;
   setIsCompactExpanded: (v: boolean) => void;
   setQueuedMessage: (v: QueuedMessagePayload | null) => void;
-  setServerLoadWarning: (v: string | null) => void;
   setStats: (v: any) => void;
   setDeleteConfirm: (v: { sessionId: string; title: string } | null) => void;
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
@@ -178,23 +177,13 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     props.setModel(settingsDefaultsRef.current.model);
     props.setPromptMode(settingsDefaultsRef.current.promptMode);
     // 为新对话创建默认 state
-    props.sessionStatesRef.current.set(newSessionId, {
-      input: '',
-      inputCursorPosition: 0,
-      choiceCursorPosition: 0,
-      userChoiceRequest: null,
-      userChoiceInput: '',
-      showThinkingAnimation: false,
-      animationMode: 'thinking',
-      hasActiveQuery: false,
+    props.sessionStatesRef.current.set(newSessionId, createSessionState({
       agentMode: settingsDefaultsRef.current.agentMode,
       promptMode: settingsDefaultsRef.current.promptMode,
       thinkingMode: settingsDefaultsRef.current.thinkingMode,
       webSearch: settingsDefaultsRef.current.webSearch,
-      contextLength: 0,
-      queuedMessage: null,
       model: settingsDefaultsRef.current.model,
-    });
+    }));
     postMessage({ type: 'startNewConversation', sessionId: newSessionId });
     postMessage({ type: 'setActiveSessionId', sessionId: newSessionId });
     // 聚焦输入框
@@ -212,50 +201,6 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     // 发送前补齐图片宽高，供 core 层生成 Image[<width>*<height>] 标题
     const pastedImages = await Promise.all(rawPastedImages.map((img) => ensureImageSize(img)));
     if (!inputValue.trim() && pastedImages.length === 0) return;
-
-    // ─── 服务器负载检查 ───────────────────────────────────────────
-    // 如果已显示警告，阻止发送
-    if (props.serverLoadWarning) {
-      return;
-    }
-    // 条件1: 周一~周五
-    const now = new Date();
-    const dayOfWeek = now.getDay();
-    const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
-    // 条件2: 9:30~12:00 或 14:00~18:00
-    const hour = now.getHours();
-    const minute = now.getMinutes();
-    const timeMinutes = hour * 60 + minute;
-    const isPeakTime = (timeMinutes >= 570 && timeMinutes < 720) || (timeMinutes >= 840 && timeMinutes < 1080);
-    // 条件3: context > 250K
-    const isLargeContext = props.contextLength > 250_000;
-
-    if (isWeekday && isPeakTime && isLargeContext) {
-      // 向扩展发送负载检查请求，等待返回
-      const warning = await new Promise<string | null>((resolve) => {
-        const handler = (event: MessageEvent) => {
-          const msg = event.data;
-          if (msg.type === 'serverLoadResult') {
-            window.removeEventListener('message', handler);
-            resolve(msg.showWarning ? (msg.warningText || null) : null);
-          }
-        };
-        window.addEventListener('message', handler);
-        // 设置超时，5秒后忽略检查继续发送
-        setTimeout(() => {
-          window.removeEventListener('message', handler);
-          resolve(null);
-        }, 5000);
-        postMessage({ type: 'checkServerLoad', sessionId: props.currentSessionIdRef.current, contextLength: props.contextLength });
-      });
-
-      if (warning) {
-        props.setServerLoadWarning(warning);
-        return; // 不发送消息
-      }
-    }
-    // 清除之前的警告（如果有）
-    props.setServerLoadWarning(null);
 
     // Preserve cursor position before clearing - we'll restore it when user types after abort
     props.cursorPositionRef.current = props.mainInputRef.current?.selectionStart ?? inputValue.length;
@@ -289,23 +234,13 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       props.setModel(settingsDefaultsRef.current.model);
       props.setPromptMode(settingsDefaultsRef.current.promptMode);
       // 为新对话创建默认 state
-      props.sessionStatesRef.current.set(sessionId, {
-        input: '',
-        inputCursorPosition: 0,
-        choiceCursorPosition: 0,
-        userChoiceRequest: null,
-        userChoiceInput: '',
-        showThinkingAnimation: false,
-        animationMode: 'thinking',
-        hasActiveQuery: false,
+      props.sessionStatesRef.current.set(sessionId, createSessionState({
         agentMode: settingsDefaultsRef.current.agentMode,
         promptMode: settingsDefaultsRef.current.promptMode,
         thinkingMode: settingsDefaultsRef.current.thinkingMode,
         webSearch: settingsDefaultsRef.current.webSearch,
-        contextLength: 0,
-        queuedMessage: null,
         model: settingsDefaultsRef.current.model,
-      });
+      }));
       // 重置压缩状态（新对话没有压缩）
       props.setHasCompactArchive(false);
       props.setIsCompactExpanded(false);

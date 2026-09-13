@@ -14,6 +14,7 @@ import { getAllTools } from './tools/index.js';
 import { logger } from './Logger.js';
 import { noteSessionActivity } from './sessionIdle.js';
 import { isCompacting, isPendingCompact, markPendingCompact, unmarkPendingCompact } from './compact/state.js';
+import { randomId } from './tools/RunTools.js';
 
 /**
  * 创建简单的 AbortController polyfill
@@ -97,7 +98,7 @@ export function invalidateAllPromptCaches(): void {
 }
 
 export class QueryEngine {
-  private sesssionID: string;
+  private sessionID: string;
   private config: QueryEngineConfig;
   private mutableMessages: Message[];
   private externalAbortController: AbortControllerLike | undefined;
@@ -212,22 +213,13 @@ export class QueryEngine {
 
   /**
    * 更新会话关联的 Web Search 开关（覆盖 settings.json 中的默认值）
-   * 即使 modelConfig 尚未初始化也会记录覆盖值，避免引擎由 createEngine
-   * 预创建（无 modelConfig）时，会话级 webSearch 开关丢失
+   * 只记录覆盖值，不改写 config.modelConfig：
+   * minimal 预设（或非 Responses 协议）下强制关闭 webSearch 的逻辑
+   * 统一在 getEffectiveModelConfig() 里按当前预设动态计算，
+   * 否则会把用户设置的 webSearch 永久覆写为 false，切回 normal 后无法恢复。
    */
   public updateWebSearch(webSearch: boolean): void {
     this.webSearchOverride = webSearch;
-    // 极简模式不使用联网搜索：无论传入值如何，实际写入 modelConfig 的开关都强制为 false。
-    // 混合模式在首次 LLM 回复前也按极简处理，回复后 getEffectiveModelConfig 会恢复用户设置。
-    // Anthropic（非 Responses）协议不支持内置 web_search，同样视为关闭。
-    const activePresetId = this.getActivePromptPresetId();
-    const apiType = this.config.modelConfig?.apiType;
-    const effectiveWebSearch = (activePresetId === 'minimal' || (apiType && apiType !== 'Responses'))
-      ? false
-      : webSearch;
-    if (this.config.modelConfig) {
-      this.config.modelConfig = { ...this.config.modelConfig, webSearch: effectiveWebSearch };
-    }
   }
 
   /**
@@ -309,7 +301,7 @@ export class QueryEngine {
       : allTools.filter(t => this.effectiveToolNames!.includes(t.name));
 
     // System Prompt 由预设数据驱动组装：核心身份 + 预设声明的区块（工具说明 / 环境等）
-    const uiDynamicInfo = await this.config.ui.getUIDynamicInfo(this.sesssionID);
+    const uiDynamicInfo = await this.config.ui.getUIDynamicInfo(this.sessionID);
     const { getSystemDynamicInfo } = await import('./prompt/SystemEnvironment.js');
     const systemInfo = await getSystemDynamicInfo(uiDynamicInfo.cwd);
     const cwd = uiDynamicInfo.cwd;
@@ -381,7 +373,7 @@ export class QueryEngine {
     const { appendMessage } = await import('./history/Conversation.js');
     const result = await appendMessage(
       this.prepareForPersist(msg),
-      this.sesssionID,
+      this.sessionID,
       this.resolvePersistParentUuid(msg),
       extra?.totalContextTokens,
     );
@@ -411,7 +403,7 @@ export class QueryEngine {
       const { getAllBackgroundTasks } = await import('./tools/bash/LocalShellTask.js');
       const tasks = getAllBackgroundTasks();
       const hasActiveBgTask = tasks.some(
-        (t: any) => t.status === 'running' && t.sessionID === this.sesssionID
+        (t: any) => t.status === 'running' && t.sessionID === this.sessionID
       );
       if (hasActiveBgTask) return false;
     } catch { }
@@ -419,7 +411,7 @@ export class QueryEngine {
     // 2. 检查当前 session 是否有活跃的 Sub-Agent（递归）
     try {
       const { subAgentRegistry } = await import('./tools/agent/SubAgentRegistry.js');
-      const activeSubAgents = subAgentRegistry.listForCreator(this.sesssionID);
+      const activeSubAgents = subAgentRegistry.listForCreator(this.sessionID);
       for (const subId of activeSubAgents) {
         const record = subAgentRegistry.get(subId);
         if (!record) continue;
@@ -430,6 +422,23 @@ export class QueryEngine {
     } catch { }
 
     return true;
+  }
+
+  /**
+   * 启动消费循环的公共样板：置运行标记 → 记录会话活动 → （可选）通知 UI 查询开始 →
+   * 启动后台消费循环。
+   *
+   * @param notifyQueryBegin 是否调用 ui.onQueryBegin。
+   *   enqueueAgentMessage / resumeAfterCompact 传 true；
+   *   submitMessage 的正常路径由 Integration 层管理 UI 状态，传 false。
+   */
+  private beginConsumer(notifyQueryBegin: boolean): void {
+    this.isConsumerRunning = true;
+    noteSessionActivity(this.sessionID);
+    if (notifyQueryBegin) {
+      this.config.ui?.onQueryBegin(this.sessionID);
+    }
+    this.startBackgroundConsumer();
   }
 
   /**
@@ -444,13 +453,10 @@ export class QueryEngine {
 
     // 压缩进行中：只入队，不启动消费循环，避免与压缩并发改写上下文。
     // 压缩结束后由 resumeAfterCompact() 统一排空。
-    if (isCompacting(this.sesssionID)) return;
+    if (isCompacting(this.sessionID)) return;
 
     if (!this.isConsumerRunning) {
-      this.isConsumerRunning = true;
-      noteSessionActivity(this.sesssionID);
-      this.config.ui?.onQueryBegin(this.sesssionID);
-      this.startBackgroundConsumer();
+      this.beginConsumer(true);
     }
   }
 
@@ -485,7 +491,7 @@ export class QueryEngine {
     this.isConsumerRunning = false;
     this.signalConsumerExited();
     if (notifyQueryEnd) {
-      this.config.ui?.onQueryEnd(this.sesssionID);
+      this.config.ui?.onQueryEnd(this.sessionID);
     }
     await this.runPendingCompactIfNeeded();
   }
@@ -498,27 +504,27 @@ export class QueryEngine {
   private async runPendingCompactIfNeeded(): Promise<void> {
     // 已有新的消费循环接管：交给其 queryLoop 在下一轮开始时处理。
     if (this.isConsumerRunning) return;
-    if (isCompacting(this.sesssionID)) return;
-    if (!isPendingCompact(this.sesssionID)) return;
+    if (isCompacting(this.sessionID)) return;
+    if (!isPendingCompact(this.sessionID)) return;
 
     // 清掉标记：无论是否真的执行压缩，都不再重复判定。
-    unmarkPendingCompact(this.sesssionID);
+    unmarkPendingCompact(this.sessionID);
 
     const { compactAndApplyMessages } = await import('./compact/index.js');
 
     // 二次确认：等待中的提交者可能在上面 await 期间被唤醒并立即启动了新的消费循环。
     // 此时把标记还回去，交给新消费循环的 queryLoop 在下一轮开始时处理，避免并发压缩。
-    if (this.isConsumerRunning || isCompacting(this.sesssionID)) {
-      markPendingCompact(this.sesssionID);
+    if (this.isConsumerRunning || isCompacting(this.sessionID)) {
+      markPendingCompact(this.sessionID);
       return;
     }
 
     try {
-      const applied = await compactAndApplyMessages(this.sesssionID, this.mutableMessages, {
+      const applied = await compactAndApplyMessages(this.sessionID, this.mutableMessages, {
         ui: this.config.ui,
       });
       if (!applied) {
-        logger.info('QueryEngine', `Pending compact skipped for ${this.sesssionID} (no messages to summarize)`);
+        logger.info('QueryEngine', `Pending compact skipped for ${this.sessionID} (no messages to summarize)`);
         return;
       }
 
@@ -527,10 +533,10 @@ export class QueryEngine {
       if (lastMsg && 'uuid' in lastMsg && (lastMsg as any).uuid) {
         this.lastPersistedMessageUuid = (lastMsg as any).uuid;
       }
-      logger.info('QueryEngine', `Executed pending compact for ${this.sesssionID}`);
+      logger.info('QueryEngine', `Executed pending compact for ${this.sessionID}`);
     } catch (err) {
-      logger.warn('QueryEngine', `Pending compact failed for ${this.sesssionID}: ${err}`);
-      this.config.ui?.onCompressProgress?.(this.sesssionID, 'error');
+      logger.warn('QueryEngine', `Pending compact failed for ${this.sessionID}: ${err}`);
+      this.config.ui?.onCompressProgress?.(this.sessionID, 'error');
     } finally {
       // 压缩期间入队的消息（用户消息 / Agent 回复）此时才排空。
       this.resumeAfterCompact();
@@ -545,15 +551,12 @@ export class QueryEngine {
    * 已在消费中（例如自动压缩发生在 query 循环内部）时不重复启动。
    */
   resumeAfterCompact(): void {
-    if (isCompacting(this.sesssionID)) return;
+    if (isCompacting(this.sessionID)) return;
     if (this.isConsumerRunning) return;
     if (this.pendingUserMessage === null && this.agentMessageQueue.length === 0 && this.pendingReminder === null) {
       return;
     }
-    this.isConsumerRunning = true;
-    noteSessionActivity(this.sesssionID);
-    this.config.ui?.onQueryBegin(this.sesssionID);
-    this.startBackgroundConsumer();
+    this.beginConsumer(true);
   }
 
   /**
@@ -605,7 +608,7 @@ export class QueryEngine {
     const agentReplyMsg: Message = {
       type: 'user',
       message: { role: 'user', content: item.content },
-      uuid: `agent_reply_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+      uuid: randomId('agent_reply'),
       timestamp: Date.now(),
     };
     // 添加自定义标记，供 UI 层识别为子代理回复
@@ -624,13 +627,74 @@ export class QueryEngine {
    */
   private notifyAgentReplyToUI(item: { content: string; agentId: string }): void {
     const sourceInfo = this.getAgentSourceInfo(item.agentId);
-    this.config.ui?.onMessage(this.sesssionID, {
+    this.config.ui?.onMessage(this.sessionID, {
       role: 'user',
       content: item.content,
       param: sourceInfo,
       isFromAgent: true,
       meta: { param: sourceInfo, type: 'from' },
     });
+  }
+
+  /**
+   * 消费一轮排队消息（Reminder / Agent 回复 / 用户消息），追加到 mutableMessages。
+   *
+   * 消费优先级：Reminder > (Agent + 用户合并) > 纯用户 > 纯 Agent。
+   * 为 messageConsumer 与 flushQueuedMessagesIntoContext 的公共主体；
+   * persist（startPersist(persistUnpersistedMessages())）由各调用侧按原条件执行。
+   *
+   * @param notifyUI 是否向 UI 补发排队消息（messageConsumer 与 flush 均为 true）
+   * @returns 被处理的消息数量
+   */
+  private consumeQueuedOnce(notifyUI: boolean): number {
+    let count = 0;
+
+    const hasReminder = this.pendingReminder !== null;
+    const hasUserMessage = this.pendingUserMessage !== null;
+    const hasAgentMessages = this.agentMessageQueue.length > 0;
+
+    // 消费优先级：Reminder > (Agent + 用户合并) > 纯用户 > 纯 Agent。
+    if (hasReminder) {
+      if (this.flushReminder()) count++;
+    } else if (hasUserMessage && hasAgentMessages) {
+      // 合并场景：先追加 agent reply，再把用户消息放到末尾，保证同一轮 LLM 按序看到。
+      let userMsg: Message | undefined;
+      if (this.pendingUserMsgUuid) {
+        const idx = this.mutableMessages.findIndex(m => (m as any).uuid === this.pendingUserMsgUuid);
+        if (idx !== -1) userMsg = this.mutableMessages.splice(idx, 1)[0];
+        this.pendingUserMsgUuid = null;
+      }
+      userMsg ??= this.pendingUserMsgData ?? this.buildPendingUserMessage();
+      this.pendingUserMsgData = null;
+
+      count += this.consumeAgentMessages(notifyUI);
+      if (userMsg) {
+        if (notifyUI) this.notifyUserMessageToUI(userMsg);
+        this.mutableMessages.push(userMsg);
+        count++;
+      }
+      this.pendingUserMessage = null;
+    } else if (hasUserMessage) {
+      const userMsgInArray = this.pendingUserMsgUuid !== null;
+      this.ensureUserMessageAtEnd();
+      if (!userMsgInArray) {
+        const userMsg = this.pendingUserMsgData ?? this.buildPendingUserMessage();
+        this.pendingUserMsgData = null;
+        if (userMsg) {
+          if (notifyUI) this.notifyUserMessageToUI(userMsg);
+          this.mutableMessages.push(userMsg);
+          count++;
+        }
+      } else {
+        this.pendingUserMsgData = null;
+        count++;
+      }
+      this.pendingUserMessage = null;
+    } else {
+      count += this.consumeAgentMessages(notifyUI);
+    }
+
+    return count;
   }
 
   /**
@@ -650,57 +714,9 @@ export class QueryEngine {
   flushQueuedMessagesIntoContext(): number {
     // 压缩进行中：排队消息不进入 LLM 上下文。
     // 压缩会整体替换 mutableMessages，此时把排队消息插进去会被压缩结果覆盖。
-    if (isCompacting(this.sesssionID)) return 0;
+    if (isCompacting(this.sessionID)) return 0;
 
-    const hasReminder = this.pendingReminder !== null;
-    const hasUserMessage = this.pendingUserMessage !== null;
-    const hasAgentMessages = this.agentMessageQueue.length > 0;
-
-    if (!hasReminder && !hasUserMessage && !hasAgentMessages) {
-      return 0;
-    }
-
-    let flushedCount = 0;
-
-    if (hasReminder) {
-      if (this.flushReminder()) flushedCount++;
-    } else if (hasUserMessage && hasAgentMessages) {
-      // 合并场景：先追加 agent reply，再把用户消息放到末尾，保证同一轮 LLM 按序看到。
-      let userMsg: Message | undefined;
-      if (this.pendingUserMsgUuid) {
-        const idx = this.mutableMessages.findIndex(m => (m as any).uuid === this.pendingUserMsgUuid);
-        if (idx !== -1) userMsg = this.mutableMessages.splice(idx, 1)[0];
-        this.pendingUserMsgUuid = null;
-      }
-      userMsg ??= this.pendingUserMsgData ?? this.buildPendingUserMessage();
-      this.pendingUserMsgData = null;
-
-      flushedCount += this.consumeAgentMessages(true);
-      if (userMsg) {
-        this.notifyUserMessageToUI(userMsg);
-        this.mutableMessages.push(userMsg);
-        flushedCount++;
-      }
-      this.pendingUserMessage = null;
-    } else if (hasUserMessage) {
-      const userMsgInArray = this.pendingUserMsgUuid !== null;
-      this.ensureUserMessageAtEnd();
-      if (!userMsgInArray) {
-        const userMsg = this.pendingUserMsgData ?? this.buildPendingUserMessage();
-        this.pendingUserMsgData = null;
-        if (userMsg) {
-          this.notifyUserMessageToUI(userMsg);
-          this.mutableMessages.push(userMsg);
-          flushedCount++;
-        }
-      } else {
-        this.pendingUserMsgData = null;
-        flushedCount++;
-      }
-      this.pendingUserMessage = null;
-    } else {
-      flushedCount += this.consumeAgentMessages(true);
-    }
+    const flushedCount = this.consumeQueuedOnce(true);
 
     if (flushedCount > 0) {
       this.startPersist(this.persistUnpersistedMessages());
@@ -714,7 +730,7 @@ export class QueryEngine {
     return {
       type: 'user',
       message: { role: 'user', content: this.pendingUserMessage },
-      uuid: `user_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+      uuid: randomId('user'),
       timestamp: Date.now(),
     };
   }
@@ -751,7 +767,7 @@ export class QueryEngine {
 
     const userContent = (userMsg as any).message?.content;
     const { text: uiText, images: uiImages } = extractUserContent(userContent);
-    this.config.ui?.onMessage(this.sesssionID, {
+    this.config.ui?.onMessage(this.sessionID, {
       role: 'user',
       content: uiText,
       images: uiImages.length > 0 ? uiImages : undefined,
@@ -763,7 +779,7 @@ export class QueryEngine {
   }
 
   constructor(sessionID: string, config: QueryEngineConfig) {
-    this.sesssionID = sessionID;
+    this.sessionID = sessionID;
     if (!config.ui) {
       throw new Error('QueryEngine config requires ui to be provided');
     }
@@ -788,7 +804,7 @@ export class QueryEngine {
     // meta.json 只在第一条消息持久化（appendMessage）时创建，避免没发消息就生成会话文件。
     if (this.sessionTitle) {
       // 通知 UI 新会话已创建（如 webview 预初始化 session 状态）
-      config.ui?.onSessionCreated?.(this.sesssionID);
+      config.ui?.onSessionCreated?.(this.sessionID);
     }
 
     // 自动注册到全局引擎池
@@ -821,7 +837,7 @@ export class QueryEngine {
       // 创建一个新的 controller 但立即 abort 它，使后续 LLM 请求立即失败，
       // 避免因重新创建未 abort 的 controller 导致"僵尸"LLM 请求继续执行。
       if (this.externalAbortController.signal?.aborted) {
-        logger.warn('QueryEngine', `externalAbortController already aborted for ${this.sesssionID}, creating aborted controller`);
+        logger.warn('QueryEngine', `externalAbortController already aborted for ${this.sessionID}, creating aborted controller`);
         const controller = createAbortController();
         controller.abort();
         this.activeAbortController = controller;
@@ -895,28 +911,25 @@ export class QueryEngine {
     // 压缩会整体替换 mutableMessages，此时并发跑一轮 query 会让两者互相踩踏
     // （新消息可能被压缩掉，或压缩结果被后续 query 覆盖）。
     // 压缩结束后由 resumeAfterCompact() 统一排空队列。
-    if (isCompacting(this.sesssionID)) return;
+    if (isCompacting(this.sessionID)) return;
 
     this.isConsumerRunning = true;
-    noteSessionActivity(this.sesssionID);
+    noteSessionActivity(this.sessionID);
     if (manageQueryUI) {
-      this.config.ui?.onQueryBegin(this.sesssionID);
+      this.config.ui?.onQueryBegin(this.sessionID);
     }
     try {
       yield* this.messageConsumer();
+      // 循环版重试：原实现只重试一层（第二次 messageConsumer），第三层入队的消息会悬空。
+      // 这里持续消费直到队列排空——messageConsumer 内部对空队列自会 break，安全。
+      // finalizeIdle 与原实现一致：只调一次（循环外）。
+      while (
+        this.agentMessageQueue.length > 0 || this.pendingUserMessage !== null || this.pendingReminder !== null
+      ) {
+        yield* this.messageConsumer();
+      }
     } finally {
       await this.flush().catch((e: unknown) => logger.error('QueryEngine', `submitMessage flush failed: ${e}`));
-
-      if (this.agentMessageQueue.length > 0 || this.pendingUserMessage !== null || this.pendingReminder !== null) {
-        try {
-          yield* this.messageConsumer();
-        } finally {
-          await this.flush().catch((e: unknown) => logger.error('QueryEngine', `submitMessage flush failed: ${e}`));
-          await this.finalizeIdle(manageQueryUI);
-        }
-        return;
-      }
-
       await this.finalizeIdle(manageQueryUI);
     }
   }
@@ -929,11 +942,11 @@ export class QueryEngine {
     // 已请求中止时不再启动新的工具调用（例如 SpinLoop 的 Agent 子任务），
     // 避免 abort 与 submitToolUse 之间的竞态留下仍在运行的子代理。
     if (this.isAborted()) {
-      logger.info('QueryEngine', `submitToolUse skipped because session ${this.sesssionID} is aborted`);
+      logger.info('QueryEngine', `submitToolUse skipped because session ${this.sessionID} is aborted`);
       return;
     }
 
-    const toolUseId = `tooluse_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const toolUseId = randomId('tooluse');
 
     await this.persistUnpersistedMessages().catch((err: unknown) => {
       logger.warn('QueryEngine', `submitToolUse: failed to persist initial messages: ${err}`);
@@ -969,13 +982,13 @@ export class QueryEngine {
         this.internalAppState = updater(this.internalAppState) as Record<string, unknown>;
       },
       messages: this.mutableMessages,
-      sessionId: this.sesssionID,
+      sessionId: this.sessionID,
       toolUseId,
     };
 
     // 执行工具
     const { runTools } = await import('./tools/RunTools.js');
-    for await (const update of runTools(this.sesssionID, [{
+    for await (const update of runTools(this.sessionID, [{
       id: toolUseId,
       name: toolUseInput.name,
       input: toolUseInput.input,
@@ -1018,7 +1031,7 @@ export class QueryEngine {
    */
   private signalConsumerExited(): void {
     // 会话从「非空闲」回到「空闲」：从这里开始重新计算空闲关闭计时
-    noteSessionActivity(this.sesssionID);
+    noteSessionActivity(this.sessionID);
     const resolvers = this.consumerExitResolvers;
     this.consumerExitResolvers = [];
     for (const r of resolvers) {
@@ -1082,43 +1095,7 @@ export class QueryEngine {
         break;
       }
 
-      // 消费优先级：Reminder > (Agent + 用户合并) > 纯用户 > 纯 Agent。
-      if (hasReminder) {
-        this.flushReminder();
-      } else if (hasUserMessage && hasAgentMessages) {
-        // 合并场景：先追加 agent reply，再把用户消息放到末尾，保证同一轮 LLM 按序看到。
-        let userMsg: Message | undefined;
-        if (this.pendingUserMsgUuid) {
-          const idx = this.mutableMessages.findIndex(m => (m as any).uuid === this.pendingUserMsgUuid);
-          if (idx !== -1) userMsg = this.mutableMessages.splice(idx, 1)[0];
-          this.pendingUserMsgUuid = null;
-        }
-        userMsg ??= this.pendingUserMsgData ?? this.buildPendingUserMessage();
-        this.pendingUserMsgData = null;
-
-        this.consumeAgentMessages(true);
-        if (userMsg) {
-          this.notifyUserMessageToUI(userMsg);
-          this.mutableMessages.push(userMsg);
-        }
-        this.pendingUserMessage = null;
-      } else if (hasUserMessage) {
-        const userMsgInArray = this.pendingUserMsgUuid !== null;
-        this.ensureUserMessageAtEnd();
-        if (!userMsgInArray) {
-          const userMsg = this.pendingUserMsgData ?? this.buildPendingUserMessage();
-          this.pendingUserMsgData = null;
-          if (userMsg) {
-            this.notifyUserMessageToUI(userMsg);
-            this.mutableMessages.push(userMsg);
-          }
-        } else {
-          this.pendingUserMsgData = null;
-        }
-        this.pendingUserMessage = null;
-      } else {
-        this.consumeAgentMessages(true);
-      }
+      this.consumeQueuedOnce(true);
 
       this.startPersist(this.persistUnpersistedMessages());
 
@@ -1126,7 +1103,7 @@ export class QueryEngine {
       const messagesBeforeQuery = this.mutableMessages.length;
 
       for await (const message of query({
-        sessionID: this.sesssionID,
+        sessionID: this.sessionID,
         messages: this.mutableMessages,
         staticSystemPrompt: this.fullSystemPrompt!,
         getPromptState: () => this.getPromptStateForQuery(),
@@ -1138,7 +1115,7 @@ export class QueryEngine {
             this.internalAppState = updater(this.internalAppState) as Record<string, unknown>;
           },
           messages: this.mutableMessages,
-          sessionId: this.sesssionID,
+          sessionId: this.sessionID,
           role: this.role,
         },
         querySource: 'sdk',
@@ -1286,12 +1263,12 @@ export class QueryEngine {
   private abortBackgroundTasksForCurrentSession(): void {
     try {
       const { abortBackgroundTasksForSession } = require('./tools/bash/LocalShellTask.js') as typeof import('./tools/bash/LocalShellTask.js');
-      const count = abortBackgroundTasksForSession(this.sesssionID);
+      const count = abortBackgroundTasksForSession(this.sessionID);
       if (count > 0) {
-        logger.info('QueryEngine', `Aborted ${count} background task(s) for ${this.sesssionID}`);
+        logger.info('QueryEngine', `Aborted ${count} background task(s) for ${this.sessionID}`);
       }
     } catch (err) {
-      logger.warn('QueryEngine', `Failed to abort background tasks for ${this.sesssionID}: ${err}`);
+      logger.warn('QueryEngine', `Failed to abort background tasks for ${this.sessionID}: ${err}`);
     }
   }
 
@@ -1300,8 +1277,8 @@ export class QueryEngine {
    * 子对话的后台 Bash 任务同样会被中止，结果直接丢弃。
    */
   private interruptRecursive(visited: Set<string>): void {
-    if (visited.has(this.sesssionID)) return;
-    visited.add(this.sesssionID);
+    if (visited.has(this.sessionID)) return;
+    visited.add(this.sessionID);
     this.abortRequested = true;
 
     // 1. 丢弃已排队但未消费的后台任务完成通知
@@ -1334,14 +1311,14 @@ export class QueryEngine {
     // 4. 递归中止子对话（包括其后台任务）
     try {
       const { subAgentRegistry } = require('./tools/agent/SubAgentRegistry.js') as typeof import('./tools/agent/SubAgentRegistry.js');
-      for (const childId of subAgentRegistry.listForCreator(this.sesssionID)) {
+      for (const childId of subAgentRegistry.listForCreator(this.sessionID)) {
         const record = subAgentRegistry.get(childId);
         if (record?.engine) {
           record.engine.interruptRecursive(visited);
         }
       }
     } catch (err) {
-      logger.warn('QueryEngine', `Failed to interrupt child sessions for ${this.sesssionID}: ${err}`);
+      logger.warn('QueryEngine', `Failed to interrupt child sessions for ${this.sessionID}: ${err}`);
     }
   }
 
@@ -1369,7 +1346,7 @@ export class QueryEngine {
     (async () => {
       try {
         const { appendMessage } = await import('./history/Conversation.js');
-        const result = await appendMessage(msg, this.sesssionID, this.resolvePersistParentUuid(msg));
+        const result = await appendMessage(msg, this.sessionID, this.resolvePersistParentUuid(msg));
         this.lastPersistedMessageUuid = result.uuid;
         (msg as any)._persisted = true;
       } catch (err) {

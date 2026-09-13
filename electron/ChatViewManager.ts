@@ -319,11 +319,14 @@ export class ChatViewManager {
       this.unsentNewKeys.add(sessionId);
     }
 
-    // 如果目标 sessionId 已有视图（如历史会话被重新打开），销毁旧视图避免重复
+    // 如果目标 sessionId 已有视图（如历史会话被重新打开），销毁旧视图避免重复。
+    // 同时把该 sessionId 从 LRU 中移除，避免下面 push 后出现重复条目
+    // 挤占 LRU 配额（12 个上限被脏条目占位）。
     const existing = this.views.get(sessionId);
     if (existing && existing !== view && !existing.webContents.isDestroyed()) {
       this.opts.win.contentView.removeChildView(existing);
       existing.webContents.close();
+      this.lru = this.lru.filter((k) => k !== sessionId);
     }
     this.views.set(sessionId, view);
     this.lru.push(sessionId);
@@ -413,19 +416,56 @@ export class ChatViewManager {
   /** 清空所有聊天视图（工作区切换等场景） */
   disposeAll(): void {
     for (const key of [...this.views.keys()]) {
-      // 销毁视图前先中止该会话正在运行的查询（工作区切换 / 退出场景）
-      this.abortSession(key);
-      const view = this.views.get(key);
-      if (view && !view.webContents.isDestroyed()) {
-        this.opts.win.contentView.removeChildView(view);
-        view.webContents.close();
-      }
-      this.releaseMcp(key);
+      this.destroyViewEntry(key);
     }
     this.views.clear();
     this.lru = [];
     this.unsentNewKeys.clear();
     this.currentSessionId = null;
+  }
+
+  /**
+   * 销毁单个会话视图条目的公共序列：
+   * abort 会话查询 → 移除 ChildView 并关闭 webContents → 从 views 移除 →
+   * 清理「未发送新对话」标记 → 释放 MCP 引用。
+   *
+   * 三处调用方（disposeAll / trim / closeView）原为重复的销毁序列；
+   * 差异点通过参数表达：
+   * - releaseMcp：'always' 无条件释放（disposeAll / trim，会话视图是唯一持有者场景）；
+   *   'ifNoHolders' 仅在没有其它持有者（浏览器客户端）时释放（closeView，会话可能同时被浏览器打开）。
+   * - removeFromLru：trim 已把目标 shift 出 lru，无需再过滤；closeView 需要。
+   * - closeIfAlive：closeView 在「视图已销毁但引用残留」分支不做 close，
+   *   只做 map/标记清理（closeView 传入 false 复用其余步骤）。
+   */
+  private destroyViewEntry(
+    key: string,
+    opts?: {
+      releaseMcp?: 'always' | 'ifNoHolders';
+      removeFromLru?: boolean;
+      closeIfAlive?: boolean;
+    },
+  ): void {
+    const releaseMcp = opts?.releaseMcp ?? 'always';
+    // 销毁视图前先中止该会话正在运行的查询（工作区切换 / LRU 淘汰 / 关闭场景）
+    this.abortSession(key);
+    const view = this.views.get(key);
+    if (view && !view.webContents.isDestroyed()) {
+      this.opts.win.contentView.removeChildView(view);
+      if (opts?.closeIfAlive !== false) {
+        view.webContents.close();
+      }
+    }
+    this.views.delete(key);
+    if (opts?.removeFromLru !== false) {
+      this.lru = this.lru.filter((k) => k !== key);
+    }
+    this.unsentNewKeys.delete(key);
+    if (releaseMcp === 'always') {
+      this.releaseMcp(key);
+    } else {
+      // 会话可能同时被浏览器客户端打开：保留引用，等浏览器断开时再释放
+      this.releaseMcpIfNoHolders(key);
+    }
   }
 
   /**
@@ -444,42 +484,43 @@ export class ChatViewManager {
 
   /** 销毁指定会话的聊天视图（移除 ChildView + 关闭 webContents，释放渲染进程资源） */
   closeView(sessionId: string): void {
-    // 关闭视图 = abort -> 释放 MCP 引用 -> 销毁视图。
+    // 关闭视图 = abort -> 释放 MCP 引用 -> 销毁视图（序列在 destroyViewEntry 内：
     // 先中止该会话正在运行的查询（含后台 Bash 任务与递归子代理），
-    // 避免关闭后查询仍在后台运行、继续消耗 token 并复活已删除的对话文件。
-    this.abortSession(sessionId);
-
+    // 避免关闭后查询仍在后台运行、继续消耗 token 并复活已删除的对话文件）。
     const view = this.views.get(sessionId);
     if (!view || view.webContents.isDestroyed()) {
-      this.views.delete(sessionId);
-      this.lru = this.lru.filter((k) => k !== sessionId);
-      this.unsentNewKeys.delete(sessionId);
-      // 视图可能已先被销毁但引用仍在：这里统一释放（浏览器客户端仍持有该会话时保留引用）
-      this.releaseMcpIfNoHolders(sessionId);
+      // 视图已销毁但引用仍在：只做 map/标记清理（不 close），
+      // 并统一释放 MCP 引用（浏览器客户端仍持有该会话时保留引用）
+      this.destroyViewEntry(sessionId, { releaseMcp: 'ifNoHolders', closeIfAlive: false });
+      // 即使视图已销毁，若它是当前活动会话，也要做善后切换，
+      // 否则 currentSessionId 悬挂在已销毁会话上，sendToActive/layout 等静默失效。
+      this.switchAwayFromClosedSession(sessionId);
       return;
     }
 
-    this.opts.win.contentView.removeChildView(view);
-    view.webContents.close();
-    this.views.delete(sessionId);
-    this.lru = this.lru.filter((k) => k !== sessionId);
-    this.unsentNewKeys.delete(sessionId);
     // 会话被关闭：释放其 MCP 引用（引用归零的 server 进入延迟回收）；
     // 若该会话同时被浏览器客户端打开，则保留引用，等浏览器断开时再释放。
-    this.releaseMcpIfNoHolders(sessionId);
+    this.destroyViewEntry(sessionId, { releaseMcp: 'ifNoHolders' });
 
     // 关闭的是当前活动视图：切换到最近使用的其他视图；无可用视图则新建对话
-    if (this.currentSessionId === sessionId) {
-      this.currentSessionId = null;
-      const next = [...this.lru].reverse().find((k) => {
-        const v = this.views.get(k);
-        return v && !v.webContents.isDestroyed();
-      });
-      if (next) {
-        this.show(next);
-      } else {
-        this.openNewConversation();
-      }
+    this.switchAwayFromClosedSession(sessionId);
+  }
+
+  /**
+   * 关闭的会话是当前活动视图时的善后：切换到最近使用的其他视图；
+   * 无可用视图则新建对话。（保持在调用侧，不属于 destroyViewEntry 的销毁序列）
+   */
+  private switchAwayFromClosedSession(sessionId: string): void {
+    if (this.currentSessionId !== sessionId) return;
+    this.currentSessionId = null;
+    const next = [...this.lru].reverse().find((k) => {
+      const v = this.views.get(k);
+      return v && !v.webContents.isDestroyed();
+    });
+    if (next) {
+      this.show(next);
+    } else {
+      this.openNewConversation();
     }
   }
 
@@ -605,18 +646,16 @@ export class ChatViewManager {
     while (this.lru.length > this.maxViews) {
       const oldest = this.lru.shift();
       if (!oldest) break;
-      if (oldest === this.currentSessionId) continue;
+      if (oldest === this.currentSessionId) {
+        // 当前活动会话不淘汰，但必须放回队尾（而不是丢弃）：
+        // 否则 LRU 链里没有当前会话，后续 touch/trim 的容量判断会失真。
+        this.lru.push(oldest);
+        break;
+      }
       // LRU 淘汰等价于关闭该对话视图：先 abort，再释放 MCP 引用。
       // 否则被淘汰的会话仍在后台运行，而其 MCP 引用已归零，工具调用会失败。
-      this.abortSession(oldest);
-      const view = this.views.get(oldest);
-      if (view && !view.webContents.isDestroyed()) {
-        this.opts.win.contentView.removeChildView(view);
-        view.webContents.close();
-      }
-      this.views.delete(oldest);
-      this.unsentNewKeys.delete(oldest);
-      this.releaseMcp(oldest);
+      // oldest 已 shift 出 lru，无需再过滤。
+      this.destroyViewEntry(oldest, { removeFromLru: false });
     }
   }
 

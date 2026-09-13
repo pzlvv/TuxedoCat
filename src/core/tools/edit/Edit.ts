@@ -65,10 +65,16 @@ function restoreLineEndings(content: string, lineEnding: LineEndingType): string
 /**
  * 解析 replace_all 输入，统一处理字符串/数字/布尔值。
  * checkPermissions 可能收到 LLM 原始参数（replace_all 可能为字符串），
- * call 收到的是 schema 解析后的值。这里与 inputSchema 的 z.coerce.boolean()
- * 保持同一套容错语义，保证两阶段判断一致。
+ * call 收到的是 schema 解析后的值。
+ * 注意：字符串感知转换而非 Boolean(value)——Boolean("false") === true，
+ * 会导致 LLM 显式传 "replace_all": "false" 时执行全量替换。
  */
 function resolveReplaceAll(value: unknown): boolean {
+  if (typeof value === 'string') {
+    if (value === 'false') return false;
+    if (value === 'true') return true;
+    return value.trim() !== '';
+  }
   return Boolean(value);
 }
 
@@ -244,6 +250,128 @@ function logNotFoundDiagnostic(
 }
 
 /**
+ * computeEdit 的返回值
+ */
+interface ComputedEdit {
+  /** 替换后的原始（未还原换行符）内容；换行符还原由调用侧按文件原始格式执行 */
+  newContent: string;
+  replacementsMade: number;
+  /** 1-based，搜索窗口内第一处匹配的行范围 */
+  startLine: number;
+  endLine: number;
+  /** 搜索窗口内最后一处匹配的索引（replaceAll 时用于 diff 窗口终点） */
+  lastMatchIndex: number;
+  /** 第一处匹配在规范化内容中的索引（checkPermissions 计算上下文行用） */
+  firstMatchIndex: number;
+  /** 失败时的错误文案（保留原实现的 throw / deny 语义由调用侧决定） */
+  error?: string;
+}
+
+/**
+ * 在规范化内容上计算编辑结果（搜索窗口匹配 + 替换 + 行号计算）。
+ *
+ * checkPermissions（预览，不写盘）与 call/editFileContent（执行，写盘）的公共主体：
+ * 两阶段曾各自内联实现约 80 行相同逻辑，此函数保证两阶段对
+ * 「搜索窗口计算 / old_string 存在性 / 唯一性 / 替换结果 / 行号」的判定完全一致。
+ *
+ * 错误时返回 error 字段而不抛异常：原实现的错误文案在两处完全相同，
+ * 但失败通道不同（checkPermissions 返回 deny，call 抛 Error），
+ * 由调用侧根据原行为处理。
+ */
+function computeEdit(
+  normalizedContent: string,
+  oldString: string,
+  newString: string,
+  replaceAll: boolean,
+  offset?: number,
+  limit?: number,
+): ComputedEdit {
+  // 根据 offset/limit 计算搜索窗口；未传时覆盖整个文件
+  const searchWindow = getSearchWindow(normalizedContent, offset, limit);
+  const searchContent = searchWindow.slice;
+
+  // 执行替换（只在搜索窗口内匹配和替换）
+  let newContent: string;
+  let replacementsMade: number;
+  const firstMatchLocalIndex = searchContent.indexOf(oldString);
+  const firstMatchIndex = searchWindow.startIndex + firstMatchLocalIndex;
+
+  // 检查 old_string 是否存在（仅限搜索窗口内）
+  if (!searchContent.includes(oldString)) {
+    const rangeHint = offset !== undefined || limit !== undefined
+      ? ' within the specified line range'
+      : ' in the file';
+    return {
+      newContent: normalizedContent,
+      replacementsMade: 0,
+      startLine: 1,
+      endLine: 1,
+      lastMatchIndex: -1,
+      firstMatchIndex: -1,
+      error: `The specified old_string was not found${rangeHint}. Please read the file first and use the exact text.\nNote: Read output uses | as separator between line number and content. Make sure NOT to include the line number and the separator | in old_string.`,
+    };
+  }
+
+  // 非 replaceAll 时，old_string 在搜索窗口内必须唯一匹配；存在多处匹配时直接报错而不是替换第一处，
+  // 避免模型误以为已经精确修改了目标位置。
+  if (!replaceAll) {
+    const occurrenceCount = countOccurrences(searchContent, oldString);
+    if (occurrenceCount > 1) {
+      return {
+        newContent: normalizedContent,
+        replacementsMade: 0,
+        startLine: 1,
+        endLine: 1,
+        lastMatchIndex: -1,
+        firstMatchIndex,
+        error: `The old_string matches ${occurrenceCount} locations within the search range. When replace_all is false, old_string must match exactly once. Please include more surrounding context to make old_string unique, or set replace_all to true.`,
+      };
+    }
+  }
+
+  if (replaceAll) {
+    // 替换搜索窗口内的所有匹配项
+    const matches = searchContent.split(oldString);
+    replacementsMade = matches.length - 1;
+    newContent =
+      normalizedContent.substring(0, searchWindow.startIndex) +
+      matches.join(newString) +
+      normalizedContent.substring(searchWindow.endIndex);
+  } else {
+    // 只替换搜索窗口内的第一个匹配项
+    replacementsMade = 1;
+    newContent =
+      normalizedContent.substring(0, firstMatchIndex) +
+      newString +
+      normalizedContent.substring(firstMatchIndex + oldString.length);
+  }
+
+  // 计算 startLine 和 endLine（1-based，取搜索窗口内第一处匹配的行范围，replaceAll 也适用）
+  let startLine = 1;
+  let endLine = 1;
+  if (firstMatchIndex !== -1) {
+    const range = getLineRangeFromIndex(normalizedContent, firstMatchIndex, oldString.length);
+    startLine = range.startLine;
+    endLine = range.endLine;
+  }
+
+  // replaceAll 时计算搜索窗口内最后一处匹配的位置，用于 diff 窗口终点
+  const lastMatchLocalIndex = searchContent.lastIndexOf(oldString);
+  const lastMatchIndex = lastMatchLocalIndex === -1
+    ? firstMatchIndex
+    : searchWindow.startIndex + lastMatchLocalIndex;
+
+  return {
+    newContent,
+    replacementsMade,
+    startLine,
+    endLine,
+    lastMatchIndex,
+    firstMatchIndex,
+  };
+}
+
+/**
  * 替换文件内容
  */
 async function editFileContent(
@@ -277,76 +405,17 @@ async function editFileContent(
   const normalizedOldString = normalizeLineEndings(oldString);
   const normalizedNewString = normalizeLineEndings(newString);
 
-  // 根据 offset/limit 计算搜索窗口；未传时覆盖整个文件
-  const searchWindow = getSearchWindow(normalizedContent, offset, limit);
-  const searchContent = searchWindow.slice;
+  const edit = computeEdit(normalizedContent, normalizedOldString, normalizedNewString, replaceAll, offset, limit);
 
-  // 检查 old_string 是否存在
-  if (!searchContent.includes(normalizedOldString)) {
-    // 记录详细诊断日志，排查 preview 正常但执行报找不到字符串的问题
-    logNotFoundDiagnostic(normalizedContent, normalizedOldString, oldString, content, checkBeforeContent);
-    const rangeHint = offset !== undefined || limit !== undefined
-      ? ' within the specified line range'
-      : ' in the file';
-    throw new Error(
-      `The specified old_string was not found${rangeHint}. Please read the file first and use the exact text.\nNote: Read output uses | as separator between line number and content. Make sure NOT to include the line number and the separator | in old_string.`,
-    );
-  }
-
-  // 非 replaceAll 时，old_string 在搜索窗口内必须唯一匹配；存在多处匹配时直接报错而不是替换第一处，
-  // 避免模型误以为已经精确修改了目标位置。
-  if (!replaceAll) {
-    const occurrenceCount = countOccurrences(searchContent, normalizedOldString);
-    if (occurrenceCount > 1) {
-      throw new Error(
-        `The old_string matches ${occurrenceCount} locations within the search range. When replace_all is false, old_string must match exactly once. Please include more surrounding context to make old_string unique, or set replace_all to true.`,
-      );
+  if (edit.error !== undefined) {
+    if (edit.error.includes('was not found')) {
+      // 记录详细诊断日志，排查 preview 正常但执行报找不到字符串的问题
+      logNotFoundDiagnostic(normalizedContent, normalizedOldString, oldString, content, checkBeforeContent);
     }
+    throw new Error(edit.error);
   }
 
-  // 执行替换（只在搜索窗口内匹配和替换）
-  let newContent: string;
-  let replacementsMade: number;
-  const firstMatchLocalIndex = searchContent.indexOf(normalizedOldString);
-  const firstMatchIndex = searchWindow.startIndex + firstMatchLocalIndex;
-
-  if (replaceAll) {
-    // 替换搜索窗口内的所有匹配项
-    const matches = searchContent.split(normalizedOldString);
-    replacementsMade = matches.length - 1;
-    newContent =
-      normalizedContent.substring(0, searchWindow.startIndex) +
-      matches.join(normalizedNewString) +
-      normalizedContent.substring(searchWindow.endIndex);
-  } else {
-    // 只替换搜索窗口内的第一个匹配项
-    if (firstMatchLocalIndex === -1) {
-      throw new Error('old_string not found within the specified line range');
-    }
-    replacementsMade = 1;
-    newContent =
-      normalizedContent.substring(0, firstMatchIndex) +
-      normalizedNewString +
-      normalizedContent.substring(firstMatchIndex + normalizedOldString.length);
-  }
-
-  // 还原原始换行符格式
-  newContent = restoreLineEndings(newContent, lineEndings);
-
-  // 计算 startLine 和 endLine（1-based，取搜索窗口内第一处匹配的行范围，replaceAll 也适用）
-  let startLine = 1;
-  let endLine = 1;
-  if (firstMatchIndex !== -1) {
-    const range = getLineRangeFromIndex(normalizedContent, firstMatchIndex, normalizedOldString.length);
-    startLine = range.startLine;
-    endLine = range.endLine;
-  }
-
-  // replaceAll 时计算搜索窗口内最后一处匹配的位置，用于 diff 窗口终点
-  const lastMatchLocalIndex = searchContent.lastIndexOf(normalizedOldString);
-  const lastMatchIndex = lastMatchLocalIndex === -1
-    ? firstMatchIndex
-    : searchWindow.startIndex + lastMatchLocalIndex;
+  const newContent = restoreLineEndings(edit.newContent, lineEndings);
 
   // 计算差异（只对编辑区域附近的行做 diff，避免大文件全量 diff）
   const patch = getPatchFromContents({
@@ -357,10 +426,10 @@ async function editFileContent(
       normalizedContent,
       normalizedOldString,
       normalizedNewString,
-      replacementsMade,
-      startLine,
-      endLine,
-      lastMatchIndex,
+      edit.replacementsMade,
+      edit.startLine,
+      edit.endLine,
+      edit.lastMatchIndex,
     ),
   });
 
@@ -371,14 +440,14 @@ async function editFileContent(
 
   return {
     type: 'update',
-    replacementsMade,
+    replacementsMade: edit.replacementsMade,
     lineCount: countLines(newContent),
     additions,
     deletions,
     patch,
     lineEndings,
-    startLine,
-    endLine,
+    startLine: edit.startLine,
+    endLine: edit.endLine,
     beforeContent: normalizedContent, // 规范化后的原始内容（用于历史记录恢复）
   };
 }
@@ -620,89 +689,28 @@ export const EditTool = buildTool({
     const normalizedOldString = normalizeLineEndings(input.old_string);
     const normalizedNewString = normalizeLineEndings(input.new_string);
 
-    // 根据 offset/limit 计算搜索窗口；未传时覆盖整个文件
-    const searchWindow = getSearchWindow(normalizedContent, input.offset, input.limit);
-    const searchContent = searchWindow.slice;
+    // 与 call/editFileContent 使用同一套编辑计算（搜索窗口 / 唯一性 / 替换结果 / 行号），
+    // 仅做预览，不写盘。
+    const replaceAll = resolveReplaceAll(input.replace_all);
+    const edit = computeEdit(
+      normalizedContent,
+      normalizedOldString,
+      normalizedNewString,
+      replaceAll,
+      input.offset,
+      input.limit,
+    );
 
-    // 检查 old_string 是否存在（仅限搜索窗口内）
-    const firstMatchLocalIndex = searchContent.indexOf(normalizedOldString);
-    if (firstMatchLocalIndex === -1) {
-      const rangeHint = input.offset !== undefined || input.limit !== undefined
-        ? ' within the specified line range'
-        : ' in the file';
+    if (edit.error !== undefined) {
       return {
         behavior: 'deny',
-        message: `The specified old_string was not found${rangeHint}. Please read the file first and use the exact text.\nNote: Read output uses | as separator between line number and content. Make sure NOT to include the line number and the separator | in old_string.`,
+        message: edit.error,
       };
     }
-    const oldStringIndex = searchWindow.startIndex + firstMatchLocalIndex;
 
-    // 非 replaceAll 时，old_string 在搜索窗口内必须唯一匹配；存在多处匹配时拒绝而不是替换第一处
-    const replaceAll = resolveReplaceAll(input.replace_all);
-    if (!replaceAll) {
-      const occurrenceCount = countOccurrences(searchContent, normalizedOldString);
-      if (occurrenceCount > 1) {
-        return {
-          behavior: 'deny',
-          message: `The old_string matches ${occurrenceCount} locations within the search range. When replace_all is false, old_string must match exactly once. Please include more surrounding context to make old_string unique, or set replace_all to true.`,
-        };
-      }
-    }
-
-    // 计算编辑后的内容（在规范化后的内容上操作，只在搜索窗口内替换）
-    let afterContent: string;
-    let replacementsMade: number;
-
-    if (replaceAll) {
-      const parts = searchContent.split(normalizedOldString);
-      replacementsMade = parts.length - 1;
-      afterContent =
-        normalizedContent.substring(0, searchWindow.startIndex) +
-        parts.join(normalizedNewString) +
-        normalizedContent.substring(searchWindow.endIndex);
-    } else {
-      replacementsMade = 1;
-      afterContent =
-        normalizedContent.substring(0, oldStringIndex) +
-        normalizedNewString +
-        normalizedContent.substring(oldStringIndex + normalizedOldString.length);
-    }
-
-    // 还原原始换行符格式
-    afterContent = restoreLineEndings(afterContent, lineEndings);
-
-    // 计算 startLine 和 endLine（1-based，取搜索窗口内第一处匹配的行范围，replaceAll 也适用）
-    let startLine = 1;
-    let endLine = 1;
-    if (oldStringIndex !== -1) {
-      const range = getLineRangeFromIndex(normalizedContent, oldStringIndex, normalizedOldString.length);
-      startLine = range.startLine;
-      endLine = range.endLine;
-    }
-
-    // replaceAll 时计算搜索窗口内最后一处匹配的位置，用于 diff 窗口终点
-    const lastMatchLocalIndex = searchContent.lastIndexOf(normalizedOldString);
-    const lastMatchIndex = lastMatchLocalIndex === -1
-      ? oldStringIndex
-      : searchWindow.startIndex + lastMatchLocalIndex;
-
-    // 计算差异信息（只对编辑区域附近的行做 diff，避免大文件全量 diff）
-    const patch = getPatchFromContents({
-      filePath: input.file_path,
-      oldContent: normalizedContent,
-      newContent: afterContent,
-      lineRange: getEditLineRange(
-        normalizedContent,
-        normalizedOldString,
-        normalizedNewString,
-        replacementsMade,
-        startLine,
-        endLine,
-        lastMatchIndex,
-      ),
-    });
-
-    countLinesChanged(patch);
+    const oldStringIndex = edit.firstMatchIndex;
+    const afterContent = restoreLineEndings(edit.newContent, lineEndings);
+    const { startLine, endLine } = edit;
 
     // 找到 old_string 在文件中的位置，并获取上下文行（前后各4行）
     // 使用规范化后的内容和索引

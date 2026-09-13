@@ -25,6 +25,7 @@ import { getBrowserShimSource } from './server/browserShim.js';
 import { CONFIG_DIR_NAME, PRODUCT_NAME } from '../src/config/project.js';
 import { SERVER_HOST_INFO } from '../src/host/types.js';
 import { DEFAULT_WAKE_SHORTCUT } from '../src/core/utils/shortcut.js';
+import { resolveSmartTitle } from '../src/core/history/smartNaming.js';
 
 /**
  * 判断 URL 是否为需要在系统浏览器打开的外部链接。
@@ -58,6 +59,14 @@ let wakeToggleActive = false;
 const settingsPanelSenders = new Set<number>();
 /** 应用退出中：避免 destroyed 回调里再尝试注册快捷键 */
 let appQuitting = false;
+/**
+ * 白屏恢复用的重绘定时器句柄：
+ * - repaintIntervalTimer：窗口可见期间 30 秒一次的兜底重绘
+ * - focusRepaintTimer：窗口聚焦防抖后的单次重绘
+ * 窗口销毁/应用退出时清理，避免句柄悬挂（纯防御性）。
+ */
+let repaintIntervalTimer: ReturnType<typeof setInterval> | null = null;
+let focusRepaintTimer: ReturnType<typeof setTimeout> | null = null;
 // 已加载（打开过）的会话由 ChatViewManager 的视图列表派生，
 // 侧栏列表（仅已发送消息的对话 + loaded 标记）通过 chatViews.getSidebarConversations() 获取
 
@@ -140,6 +149,15 @@ async function main(): Promise<void> {
 
   app.on('will-quit', () => {
     appQuitting = true;
+    // 停止白屏恢复相关的重绘定时器（窗口销毁回调可能未触发，双保险）
+    if (repaintIntervalTimer) {
+      clearInterval(repaintIntervalTimer);
+      repaintIntervalTimer = null;
+    }
+    if (focusRepaintTimer) {
+      clearTimeout(focusRepaintTimer);
+      focusRepaintTimer = null;
+    }
     // 关闭内置 HTTP 服务器，断开浏览器连接
     if (serverHandle) {
       const handle = serverHandle;
@@ -314,7 +332,6 @@ function createMainWindow(): void {
   mainWindow.on('restore', scheduleRepaintOnVisible);
   mainWindow.on('maximize', scheduleRepaintOnVisible);
   mainWindow.on('unmaximize', scheduleRepaintOnVisible);
-  let focusRepaintTimer: ReturnType<typeof setTimeout> | null = null;
   mainWindow.on('focus', () => {
     // 从被遮挡状态恢复聚焦时也可能丢合成表面，防抖后重绘一次
     if (focusRepaintTimer) clearTimeout(focusRepaintTimer);
@@ -327,7 +344,7 @@ function createMainWindow(): void {
   mainWindow.on('focus', cancelAttention);
 
   // 兜底：窗口可见期间周期性强制重绘，及时修复未触发上述事件的偶发白屏
-  setInterval(() => {
+  repaintIntervalTimer = setInterval(() => {
     if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized()) {
       repaintAllViews();
     }
@@ -337,6 +354,15 @@ function createMainWindow(): void {
     mainWindow = undefined;
     sidebarView = undefined;
     chatViews = undefined;
+    // 窗口已销毁：停止白屏恢复相关的重绘定时器（纯防御性清理）
+    if (repaintIntervalTimer) {
+      clearInterval(repaintIntervalTimer);
+      repaintIntervalTimer = null;
+    }
+    if (focusRepaintTimer) {
+      clearTimeout(focusRepaintTimer);
+      focusRepaintTimer = null;
+    }
   });
 }
 
@@ -705,50 +731,6 @@ function layout(): void {
   const [, h] = mainWindow.getContentSize();
   sidebarView?.setBounds({ x: 0, y: 0, width: SIDEBAR_WIDTH, height: h });
   chatViews?.layout();
-}
-
-/**
- * 从字符串末尾反向查找最后一个完整 JSON 对象（用于智能命名解析 LLM 输出），
- * 与 VSCodeUI/webviewMessageHandler.ts 中的实现保持一致。
- */
-function extractLastJsonObject(text: string): string | null {
-  let lastBrace = -1;
-  let inString = false;
-  let escape = false;
-  for (let i = text.length - 1; i >= 0; i--) {
-    const ch = text[i];
-    if (escape) { escape = false; continue; }
-    if (ch === '\\' && inString) {
-      if (i > 0 && text[i - 1] === '\\') { i--; continue; }
-      continue;
-    }
-    if (ch === '"') { inString = !inString; continue; }
-    if (!inString && ch === '{') { lastBrace = i; break; }
-  }
-  if (lastBrace < 0) return null;
-  let depth = 0;
-  inString = false;
-  escape = false;
-  for (let i = lastBrace; i < text.length; i++) {
-    const ch = text[i];
-    if (escape) { escape = false; continue; }
-    if (ch === '\\' && inString) { escape = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (!inString) {
-      if (ch === '{') { depth++; }
-      else if (ch === '}') {
-        depth--;
-        if (depth === 0) {
-          const jsonStr = text.substring(lastBrace, i + 1);
-          try { const parsed = JSON.parse(jsonStr); if (parsed && typeof parsed.title === 'string') return jsonStr; } catch { }
-          break;
-        }
-      }
-    }
-  }
-  const remainingText = text.substring(0, lastBrace);
-  if (remainingText.length > 0) return extractLastJsonObject(remainingText);
-  return null;
 }
 
 /**
@@ -1271,10 +1253,6 @@ function handleWebviewMessageFromSource(source: WebviewMessageSource, message: a
     sendContextLimit(message.model);
     return;
   }
-  if (message.type === 'requestSkills') {
-    ui.handleWebviewMessage(message).catch((err: any) => console.error(err));
-    return;
-  }
   // 设置面板打开期间临时注销全局快捷键，关闭后恢复（仅原生视图需要）
   if (message.type === 'suspendWakeShortcut') {
     if (source.kind === 'webcontents') suspendWakeShortcut(source.sender);
@@ -1405,67 +1383,7 @@ function setupIpc(): void {
       // 取最近 5 条用户/助手文本 → LLM 生成标题 → 写回 meta.json → 刷新侧栏
       const { loadConversation } = await import('../src/core/history/index.js');
       const conversation = await loadConversation(sessionId);
-      const msgs = (conversation.messages || []) as any[];
-      const contentMessages: string[] = [];
-      for (const m of msgs) {
-        if (m.type === 'user' && typeof m.message?.content === 'string') {
-          contentMessages.push(`[用户]: ${m.message.content.substring(0, 500)}`);
-          if (contentMessages.length >= 5) break;
-        } else if (m.type === 'assistant' && Array.isArray(m.message?.content)) {
-          for (const block of m.message.content) {
-            if (block?.type === 'text' && block.text) {
-              contentMessages.push(`[助手]: ${block.text.substring(0, 500)}`);
-              if (contentMessages.length >= 5) break;
-            }
-          }
-          if (contentMessages.length >= 5) break;
-        }
-      }
-      const { callLLM } = await import('../src/core/llm/index.js');
-      const { getConfig } = await import('../src/core/llm/config.js');
-      const systemPrompt = '你是一个对话标题生成器。\n\n'
-        + '示例1:\n对话内容：[用户]: 帮我写一个Python排序函数\n[助手]: 以下是冒泡排序实现...\n'
-        + '输出：{"title": "Python排序函数"}\n\n'
-        + '示例2:\n对话内容：[用户]: 今天天气怎么样\n[助手]: 今天北京晴转多云...\n'
-        + '输出：{"title": "查询天气"}\n\n'
-        + '现在请为以下对话生成标题（不超过20个字），只输出 JSON：';
-      const modelConfig = await getConfig();
-      let rawResult = '';
-      for await (const event of callLLM({
-        messages: [
-          { role: 'user' as const, content: `${systemPrompt}\n\n对话内容：\n${contentMessages.join('\n\n')}` },
-        ],
-        tools: [],
-        signal: null,
-        modelConfig,
-        sessionId,
-      })) {
-        if (event.type === 'text_delta') {
-          rawResult += event.text;
-        } else if (event.type === 'assistant') {
-          const ct = event.message?.content;
-          if (Array.isArray(ct)) {
-            for (const block of ct) {
-              if (block.type === 'text' && block.text) {
-                rawResult = block.text;
-              }
-            }
-          }
-        }
-      }
-      let title = '';
-      const jsonStr = extractLastJsonObject(rawResult);
-      if (jsonStr) {
-        try { const parsed = JSON.parse(jsonStr); title = parsed.title || ''; } catch { /* ignore */ }
-      }
-      if (!title) {
-        const tMatch = rawResult.match(/\{\s*"title"\s*:\s*"([^"]+)"\s*\}/);
-        if (tMatch) { title = tMatch[1]; }
-        else {
-          const lines = rawResult.split('\n').filter(l => l.trim());
-          title = lines[lines.length - 1]?.trim()?.substring(0, 50) || '智能命名';
-        }
-      }
+      const title = await resolveSmartTitle(sessionId, (conversation.messages || []) as any[]);
       const { updateConversationMetadataTitle } = await import('../src/core/history/Conversation.js');
       await updateConversationMetadataTitle(sessionId, title);
       chatViews?.sendTo(sessionId, { type: 'setTitle', title });
@@ -1525,10 +1443,19 @@ function sendContextLimit(model?: string): void {
     const { getContextWindow } = require('../src/core/utils/modelConfig.js');
     let modelName = model;
     if (!modelName) {
+      // 未显式指定模型时，按 active provider 读取默认模型：
+      // llm.providers[activeProvider].defaultModel → provider.models[0]（与 extension.ts 读取逻辑一致）。
+      // 顶层 cfg.defaultModel / cfg.llm.model 是已废弃的旧扁平字段，不再读取。
       const settingsPath = path.join(require('os').homedir(), CONFIG_DIR_NAME, 'settings.json');
       if (fs.existsSync(settingsPath)) {
         const cfg = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
-        modelName = cfg?.defaultModel || cfg?.llm?.model;
+        const activeKey = cfg?.llm?.activeProvider;
+        const activeProvider = activeKey ? cfg?.llm?.providers?.[activeKey] : undefined;
+        if (typeof activeProvider?.defaultModel === 'string' && activeProvider.defaultModel.trim()) {
+          modelName = activeProvider.defaultModel.trim();
+        } else if (Array.isArray(activeProvider?.models) && activeProvider.models.length > 0) {
+          modelName = activeProvider.models[0];
+        }
       }
     }
     const contextWindow = getContextWindow(modelName || '');

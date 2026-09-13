@@ -22,6 +22,8 @@ import {
 } from './Validation.js';
 import { mapToolResultToToolResultBlockParam } from './Result.js';
 import { getProjectRoot } from '../../history/Config.js';
+import { containsSleepCommand } from './SleepDetect.js';
+import { splitBySeparators, DEFAULT_BASH_TIMEOUT_MS, SLEEP_NO_TIMEOUT_MS } from './TimeoutPolicy.js';
 
 /**
  * Bash 工具实现
@@ -116,11 +118,19 @@ export const BashTool = buildTool({
 
   // ========== Core Execution ==========
   async call(input: BashToolInput, context: ToolUseContext, _parentMessage, onProgress) {
-    const { command, timeout = 12000, run_in_background } = input;
+    const { command, run_in_background } = input;
     const { abortController } = context;
 
     // 使用项目根目录作为默认 cwd
     const cwd = input.cwd || getProjectRoot();
+
+    // 超时策略：
+    // - 命令包含 sleep 子命令（按 ; && || | 拆分后任一子命令为 sleep）：不设超时，
+    //   让 sleep 自然完成；Exec 层会监听后台任务完成/子代理 Reply 通知，
+    //   收到通知时立刻将 sleep 转入后台
+    // - 其他命令：默认 60s 前台超时，超时自动转入后台继续执行
+    const isSleep = containsSleepCommand(splitBySeparators(command));
+    const timeout = isSleep ? SLEEP_NO_TIMEOUT_MS : DEFAULT_BASH_TIMEOUT_MS;
 
     // 检查是否已 abort
     const signal = abortController?.signal as AbortSignal | null | undefined;

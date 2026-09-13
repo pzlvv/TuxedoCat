@@ -442,8 +442,10 @@ export async function getLLMConfigPanelPayload(): Promise<LLMConfigPanelPayload>
  * 获取主模型配置（优先从 settings.json 的 llm.* 读取）
  */
 async function getDefaultConfig(sessionId?: string): Promise<LLMConfig> {
+  // 返回浅拷贝：调用方可能原地修改返回值（如 callRealLLM 写 config.apiType），
+  // 若直接返回 cachedConfig 引用会污染全局缓存，影响后续所有 getConfig 结果。
   if (cachedConfig) {
-    return cachedConfig;
+    return { ...cachedConfig };
   }
 
   const defaultConfig = createFallbackConfig();
@@ -488,7 +490,7 @@ async function getDefaultConfig(sessionId?: string): Promise<LLMConfig> {
   }
 
   cachedConfig = config;
-  return cachedConfig;
+  return { ...cachedConfig };
 }
 
 /**

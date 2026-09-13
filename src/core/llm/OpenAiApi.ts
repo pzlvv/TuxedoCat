@@ -35,24 +35,30 @@ import {
   LLMRepetitionError,
   DEFAULT_MAX_REPETITION_RETRIES,
 } from './repetitionDetector.js';
-import { unwrapToolInput, describeToolInput } from '../utils/toolInput.js';
+import { unwrapToolInput } from '../utils/toolInput.js';
+import {
+  checkAborted,
+  recordLLMUsage,
+  logRawOutput,
+  joinV1Path,
+  extractUsageFields,
+  isRetryableStatus,
+  isNetworkFetchError,
+  sleep,
+  RETRY_DELAY_MS,
+  MAX_RETRIES,
+  type InternalUsage,
+} from './shared.js';
 import type { StreamEvent, StreamOptions } from './RealApi.js';
-
-// RedisStats module removed; local no-op stub
-async function recordLLMUsage(_inputTokens: number, _outputTokens: number): Promise<void> {}
 
 /**
  * 构建 Chat Completions 请求 URL。
- * 与服务商约定的 baseURL 写法保持一致：
+ * 与服务商约定的 baseURL 写法保持一致（统一规则见 shared.ts joinV1Path）：
  *   - baseURL 已以 /v1 结尾（如 https://api.deepseek.com/v1）→ `${baseURL}/chat/completions`
  *   - 否则（如 https://api.deepseek.com、https://opencode.ai/zen/go）→ `${baseURL}/v1/chat/completions`
  */
 export function buildChatCompletionsUrl(baseURL: string): string {
-  const trimmed = baseURL.replace(/\/+$/, '');
-  if (trimmed.endsWith('/v1')) {
-    return `${trimmed}/chat/completions`;
-  }
-  return `${trimmed}/v1/chat/completions`;
+  return joinV1Path(baseURL, 'chat/completions');
 }
 
 /** 将内部 image block（Anthropic 风格 source.data/base64）转为 Chat Completions 的 image_url part */
@@ -230,28 +236,16 @@ export function mapFinishReason(reason: string | undefined): string {
 /**
  * 从 Chat Completions 的 usage 对象提取内部 usage 格式。
  * OpenAI 语义：prompt_tokens 已包含 cached_tokens（子集），因此不额外加回。
+ * 字段提取逻辑与 ResponsesApi 的 extractUsage 逐字相同（仅字段名不同），
+ * 参数化收敛到 shared.ts 的 extractUsageFields。
  */
-export function extractChatUsage(u: Record<string, unknown> | undefined): {
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_input_tokens?: number;
-  cache_creation_input_tokens?: number;
-  reasoning_tokens?: number;
-} | undefined {
-  if (!u) return undefined;
-  const inputTokens = (u.prompt_tokens as number) || 0;
-  const outputTokens = (u.completion_tokens as number) || 0;
-  const promptDetails = (u.prompt_tokens_details as any) || {};
-  const completionDetails = (u.completion_tokens_details as any) || {};
-  const cacheRead = promptDetails.cached_tokens || 0;
-  const reasoningTokens = completionDetails.reasoning_tokens;
-  return {
-    input_tokens: inputTokens,
-    output_tokens: outputTokens,
-    cache_read_input_tokens: cacheRead,
-    cache_creation_input_tokens: 0,
-    ...(typeof reasoningTokens === 'number' ? { reasoning_tokens: reasoningTokens } : {}),
-  };
+export function extractChatUsage(u: Record<string, unknown> | undefined): InternalUsage | undefined {
+  return extractUsageFields(u, {
+    inputTokens: 'prompt_tokens',
+    outputTokens: 'completion_tokens',
+    inputDetails: 'prompt_tokens_details',
+    outputDetails: 'completion_tokens_details',
+  });
 }
 
 /**
@@ -292,11 +286,8 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
   let repetitionRetryCount = 0;
 
   try {
-    const RETRY_DELAY_MS = 1000;
-    const MAX_RETRIES = 3;
-
-    const isRetryableStatus = (status: number): boolean => status === 502 || status === 503;
-
+    // 核心请求+流读取逻辑提取为内部函数，支持重试
+    // （重试配置 RETRY_DELAY_MS / MAX_RETRIES / isRetryableStatus 见 shared.ts）
     const executeRequest = async function* (
       retryCount: number,
     ): AsyncGenerator<StreamEvent | Message> {
@@ -374,18 +365,16 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
             timeoutRetryCount++;
             logger.warn('OpenAiAPI',
               `${timeoutError.message}，丢弃本次请求并重试 (${timeoutRetryCount}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+            await sleep(RETRY_DELAY_MS);
             checkAborted(signal);
             yield* executeRequest(retryCount + 1);
             return;
           }
           throw timeoutError;
         }
-        const isNetworkError = fetchError instanceof TypeError &&
-          (fetchError.message === 'fetch failed' || (fetchError as any)?.cause !== undefined);
-        if (retryCount < MAX_RETRIES && isNetworkError) {
-          logger.warn('OpenAiAPI', `Network error while fetching (${fetchError.message}), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        if (retryCount < MAX_RETRIES && isNetworkFetchError(fetchError)) {
+          logger.warn('OpenAiAPI', `Network error while fetching (${(fetchError as TypeError).message}), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
+          await sleep(RETRY_DELAY_MS);
           checkAborted(signal);
           yield* executeRequest(retryCount + 1);
           return;
@@ -396,7 +385,7 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
       if (isRetryableStatus(response.status) && retryCount < MAX_RETRIES) {
         logger.warn('OpenAiAPI', `API request got ${response.status}, retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
         response.body?.cancel().catch(() => { });
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        await sleep(RETRY_DELAY_MS);
         checkAborted(signal);
         yield* executeRequest(retryCount + 1);
         return;
@@ -417,7 +406,7 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
           && /stream_options/i.test(errorText) && retryCount < MAX_RETRIES) {
           logger.warn('OpenAiAPI', 'Provider rejected "stream_options"; retrying without it...');
           includeStreamUsage = false;
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+          await sleep(RETRY_DELAY_MS);
           checkAborted(signal);
           yield* executeRequest(retryCount + 1);
           return;
@@ -476,7 +465,11 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
             // 模型可能把整个入参 double-encode 成 JSON 字符串，这里再解一层
             openBlock.input = unwrapToolInput(parsed);
           }
-          delete openBlock._partialJson;
+          // 置空而不是 delete：并行工具调用时部分服务商交错发送 index 0/1 的
+          // arguments 分片，若 delete 后同一 block 再收到增量，`undefined + str`
+          // 会拼出 "undefined{...}" 导致 JSON.parse 必然失败。
+          // 置空后新增量继续累积，收尾阶段统一重新解析。
+          openBlock._partialJson = '';
         }
         openKind = null;
         openBlock = null;
@@ -515,7 +508,7 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
                 timeoutRetryCount++;
                 logger.warn('OpenAiAPI',
                   `${timeoutError.message}，丢弃本次响应并重试 (${timeoutRetryCount}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+                await sleep(RETRY_DELAY_MS);
                 checkAborted(signal);
                 yield* executeRequest(retryCount + 1);
                 return;
@@ -525,7 +518,7 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
             if (retryCount < MAX_RETRIES && readError instanceof TypeError && readError.message === 'terminated') {
               logger.warn('OpenAiAPI', `Stream terminated (TypeError: terminated), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
               closeReader();
-              await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+              await sleep(RETRY_DELAY_MS);
               checkAborted(signal);
               yield* executeRequest(retryCount + 1);
               return;
@@ -643,7 +636,7 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
                   if (tc?.function?.name && !block.name) block.name = tc.function.name;
                 }
                 if (typeof tc?.function?.arguments === 'string' && tc.function.arguments) {
-                  block._partialJson += tc.function.arguments;
+                  block._partialJson = (block._partialJson || '') + tc.function.arguments;
                 }
               }
             }
@@ -657,7 +650,7 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
           closeReader();
           logger.warn('OpenAiAPI',
             `${loopError.message}，丢弃本次响应并重试 (${repetitionRetryCount}/${DEFAULT_MAX_REPETITION_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+          await sleep(RETRY_DELAY_MS);
           checkAborted(signal);
           yield* executeRequest(retryCount + 1);
           return;
@@ -693,7 +686,7 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
           stopReason = 'end_turn';
         } else if (retryCount < MAX_RETRIES) {
           logger.warn('OpenAiAPI', `Stream ended without finish_reason and no content, retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+          await sleep(RETRY_DELAY_MS);
           checkAborted(signal);
           yield* executeRequest(retryCount + 1);
           return;
@@ -714,25 +707,23 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
       logger.debug('OpenAiAPI', `Content blocks: ${contentBlocks.length} (types: ${contentBlocks.map(b => b.type).join(', ')})`);
       logger.debug('OpenAiAPI', `Tokens: Input=${usage.input_tokens}, Output=${usage.output_tokens}`);
 
-      const finalMsg = buildAssistantMessageFromBlocks(contentBlocks, stopReason, usage);
-
-      if ((finalMsg as any).message && Array.isArray((finalMsg as any).message.content)) {
-        const blocks = (finalMsg as any).message.content;
-        logger.info('OpenAiAPI', `[LLM_RAW_OUTPUT] total_blocks=${blocks.length}`);
-        for (let i = 0; i < blocks.length; i++) {
-          const block = blocks[i] as any;
-          if (block.type === 'text') {
-            const text = String(block.text || '');
-            logger.info('OpenAiAPI', `[LLM_RAW_OUTPUT] block[${i}] type=text, text_len=${text.length}, text_preview=${text.substring(0, 500)}`);
-          } else if (block.type === 'tool_use') {
-            logger.info('OpenAiAPI',
-              `[LLM_RAW_OUTPUT] block[${i}] type=tool_use, id=${block.id}, name=${block.name}, ` +
-              describeToolInput(block.input));
-          } else {
-            logger.info('OpenAiAPI', `[LLM_RAW_OUTPUT] block[${i}] type=${block.type}`);
+      // 收尾：close 之后又收到 arguments 增量的 tool_use block（并行工具调用交错分片），
+      // 其 _partialJson 在 close 后被置空再累积，这里统一重新解析为最终 input。
+      for (const b of contentBlocks) {
+        if (b && b.type === 'tool_use' && typeof b._partialJson === 'string' && b._partialJson) {
+          try {
+            b.input = unwrapToolInput(JSON.parse(b._partialJson));
+          } catch {
+            // 解析失败保留已固化的 input，交由上层容错
           }
+          delete b._partialJson;
         }
       }
+
+      const finalMsg = buildAssistantMessageFromBlocks(contentBlocks, stopReason, usage);
+
+      // 记录 LLM 原始输出的所有 content blocks
+      logRawOutput('OpenAiAPI', finalMsg);
 
       yield finalMsg;
 
@@ -771,16 +762,5 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
   } finally {
     // 无论成功、失败还是消费者提前退出（生成器被 return/throw），都必须释放看门狗计时器
     watchdog.dispose();
-  }
-}
-
-/**
- * 检查中断
- */
-function checkAborted(signal: AbortSignal | null): void {
-  if (signal && signal.aborted) {
-    const abortError = new Error('The operation was aborted');
-    abortError.name = 'AbortError';
-    throw abortError;
   }
 }

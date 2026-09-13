@@ -5,6 +5,7 @@ import { normalizeToolInput } from '../../core/utils/toolInput';
 import type { DiffHunk } from '../../core/utils/editDiff';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, ProviderConfig, PreviewPayload } from '../types';
 import { postMessage } from '../webviewEnv';
+import { createSessionState, ensureSessionStateWithUsage, accumulateUsageToState } from '../sessionState';
 import { DEFAULT_WAKE_SHORTCUT } from '../../core/utils/shortcut.js';
 import { profileLog } from '../debug';
 import { t, resolveTitle, setUiLanguage, type UiLanguage } from '../i18n';
@@ -15,6 +16,422 @@ const profileTag = '[Profile]';
 
 /** 已提示过的未知消息类型：避免宿主重复发送时把控制台刷爆（同类只提示一次） */
 const warnedUnknownMessageTypes = new Set<string>();
+
+/**
+ * 解析 conversationLoaded 携带的历史消息为当前 Message 格式（纯函数，不依赖 props）：
+ * - toolResultMap：tool_use_id -> tool_result（含时间戳）；
+ * - canceledToolResults：被取消的工具 ID -> 提示内容（渲染为失败状态）；
+ * - 系统消息压缩边界标记跳过、silent 消息跳过；
+ * - 用户消息 _meta/顶层 filePath 双来源兼容、fileHidden 语义保留；
+ * - tool_use 消息从 toolMetaMap 回填裁剪掉的 diff/_meta 大字段。
+ */
+function restoreMessagesFromConversation(msg: Extract<WebviewMessage, { type: 'conversationLoaded' }>): Message[] {
+  // 首先扫描所有消息，建立 tool_use_id 到 tool_result 的映射（含时间戳）
+  const toolResultMap = new Map<string, { content: string; exitCode: number; timestamp?: number }>();
+  // 记录被取消的工具 ID 及其提示内容（未执行被取消的工具需要渲染为失败状态）
+  const canceledToolResults = new Map<string, string>();
+
+  // 历史消息结构来自 core 层持久化格式，字段以 any 处理
+  const rawMessages = msg.conversation.messages as Array<any>;
+  for (const convMsg of rawMessages) {
+    if (convMsg.type === 'user' && Array.isArray(convMsg.message?.content)) {
+      const toolResults = convMsg.message.content.filter((block: any) => block.type === 'tool_result');
+      for (const result of toolResults) {
+        // 被取消的工具：记录 tool_use_id -> 提示内容，后续渲染为失败（红色）
+        if (result.is_canceled === true) {
+          if (result.tool_use_id) {
+            canceledToolResults.set(result.tool_use_id, result.content || '');
+          }
+          continue;
+        }
+        toolResultMap.set(result.tool_use_id, {
+          content: Array.isArray(result.content) ? '[Image]' : (result.content || ''),
+          exitCode: result.exit_code ?? 0,
+          timestamp: typeof (convMsg as any).timestamp === 'number' ? (convMsg as any).timestamp : undefined,
+        });
+      }
+    }
+  }
+
+  // 将历史消息转换为当前格式
+  const restoredMessages: Message[] = [];
+
+  for (const convMsg of rawMessages) {
+    // 跳过流控制消息
+    if (convMsg.type === 'stream_request_start') {
+      continue;
+    }
+
+    // 消息时间戳：优先使用存储的时间戳，否则使用当前时间
+    const msgTimestamp = typeof (convMsg as any).timestamp === 'number' ? (convMsg as any).timestamp : Date.now();
+
+    // 转换系统消息
+    if (convMsg.type === 'system') {
+      // 跳过压缩边界标记（内部标记，无需展示）
+      if ((convMsg as any).subtype === 'compact_boundary') {
+        continue;
+      }
+      const content = convMsg.content || '';
+      restoredMessages.push({
+        role: 'system' as const,
+        content,
+        timestamp: msgTimestamp,
+      });
+      continue;
+    }
+
+    // 转换用户消息
+    if (convMsg.type === 'user') {
+      const content = convMsg.message?.content;
+      // 检查是否是工具结果（content 是数组）
+      if (Array.isArray(content)) {
+        const toolResult = content.find((block: any) => block.type === 'tool_result');
+        if (toolResult) {
+          // 工具结果已经通过 toolcall 消息的 content 显示，跳过单独的 tool_result 消息
+          continue;
+        }
+      }
+
+      // 从 _meta 与消息顶层读取元信息。部分发送路径（如引擎已存在时的普通消息）
+      // 只持久化了顶层 filePath/fileSelectedLines，未写 _meta，因此这里两者都要兼容。
+      const msgMeta = (convMsg as any)._meta as Record<string, unknown> | undefined;
+      const isFromAgent = (convMsg as any).fromSubAgent === true;
+      // 跳过 silent 消息（仅 LLM 可见，UI 不可见）
+      if ((convMsg as any).silent === true) {
+        continue;
+      }
+
+      // 恢复用户消息上的文件标签。
+      // 旧逻辑刻意不展示历史文件信息，但用户消息本身携带的上下文仍应可见。
+      // 需要保留 fileHidden 语义：发送时用户主动隐藏的消息，加载后仍不显示。
+      const rawFilePath = (convMsg as any).filePath || (msgMeta?.filePath as string | undefined) || undefined;
+      const rawFileSelectedLines = (convMsg as any).fileSelectedLines
+        || (msgMeta?.fileSelectedLines as { start: number; end: number } | undefined)
+        || undefined;
+      const wasFileHidden = (convMsg as any).fileHidden === true;
+      const showFileInfo = !wasFileHidden && !!rawFilePath;
+
+      const msgMetaClean = msgMeta ? { ...msgMeta } : undefined;
+      if (msgMetaClean) {
+        if (showFileInfo) {
+          // 保证 meta 与顶层字段一致，UserMessage 无论读哪个来源都能拿到
+          msgMetaClean.filePath = rawFilePath;
+          if (rawFileSelectedLines) {
+            msgMetaClean.fileSelectedLines = rawFileSelectedLines;
+          }
+        } else {
+          delete msgMetaClean.filePath;
+          delete msgMetaClean.fileSelectedLines;
+          // 非子代理的 param 只是文件展示文本；子代理 from/to 的 param 用于跳转/来源展示
+          if (!isFromAgent) {
+            delete msgMetaClean.param;
+          }
+        }
+      }
+      const msgParam = isFromAgent ? (msgMeta?.param as string | undefined) : undefined;
+
+      const { text: userText, images: userImages } = extractUserContent(content as string | unknown[]);
+      restoredMessages.push({
+        role: 'user' as const,
+        content: userText,
+        images: userImages.length > 0 ? userImages : undefined,
+        param: msgParam,
+        filePath: showFileInfo ? rawFilePath : undefined,
+        fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
+        isCompactSummary: (convMsg as any).isCompactSummary === true,
+        isFromAgent,
+        meta: msgMetaClean,
+        timestamp: msgTimestamp,
+      });
+      continue;
+    }
+
+    // 转换助手消息
+    if (convMsg.type === 'assistant') {
+      // 跳过 spin 模式下的 silent 消息
+      if ((convMsg as any).silent === true) {
+        continue;
+      }
+      const blocks = convMsg.message?.content || [];
+
+      // 按照 blocks 的原始顺序处理
+      for (const block of blocks) {
+        if ((block as any).type === 'thinking') {
+          // thinking 消息：转换为 thinking 角色显示
+          restoredMessages.push({
+            role: 'thinking' as const,
+            content: (block as any).thinking || '',
+            timestamp: msgTimestamp,
+          });
+        } else if ((block as any).type === 'text') {
+          // 文本消息
+          restoredMessages.push({
+            role: 'assistant' as const,
+            content: (block as any).text,
+            timestamp: msgTimestamp,
+          });
+        } else if ((block as any).type === 'tool_use') {
+          // 工具调用
+          const toolUse = block as any;
+          const toolUseId = toolUse.id;
+
+          // 被取消的工具调用：渲染为失败（红色），而不是跳过
+          const canceledContent = canceledToolResults.get(toolUseId);
+          if (canceledContent !== undefined) {
+            restoredMessages.push({
+              role: 'toolcall' as const,
+              content: canceledContent,
+              param: `⚙️ ${toolUse.name}`,
+              toolName: toolUse.name,
+              toolArgs: normalizeToolInput(toolUse.input),
+              toolCallId: toolUseId,
+              status: 'fail',
+              timestamp: msgTimestamp,
+            });
+            continue;
+          }
+
+          const result = toolResultMap.get(toolUseId);
+          const hasResult = result !== undefined;
+          const isPending = (msg.pendingToolUseIds || []).includes(toolUseId);
+
+          // 根据保存的状态判断工具执行结果
+          // 没有 result 且在 pendingToolUseIds 中 = 正在等待用户授权，显示 normal
+          // 没有 result 但不在 pendingToolUseIds 中 = 正在执行/已中断，显示 running
+          let status: 'success' | 'fail' | 'normal' | 'running' = 'running';
+          if (hasResult) {
+            status = result.exitCode !== 0 ? 'fail' : 'success';
+          } else if (isPending) {
+            status = 'normal';
+          }
+
+          // 从 _meta 中提取 diff 信息，由 EditFile组件在渲染时使用
+          // _meta 存储在 tool_use block 顶层（不在 input 内部），由 updateToolUseMeta 写入
+          const blockMeta = (toolUse as any)._meta as Record<string, unknown> | undefined;
+          const metaTrimmed = (toolUse as any)._metaTrimmed === true;
+          // 从 conversationLoaded 附带的 toolMetaMap 中查找裁剪掉的 _meta 大字段
+          const preloadedMeta = (msg as any).toolMetaMap?.[toolUseId as string] as
+            { beforeContent?: string; afterContent?: string; diffHunks?: DiffHunk[] } | undefined;
+          // 归一化入参：历史记录里可能存在被 double-encode 成字符串的 input
+          // （例如 AskUserQuestion），直接写属性会抛 TypeError，这里统一解包成对象。
+          const toolArgs = normalizeToolInput(toolUse.input);
+
+          // Write 工具：补充 webview 展示所需的 contentPreview / totalLines / isTruncated
+          // （这些字段在实时工具调用时由 onPreToolCall 添加，但不会持久化到历史记录中）
+          if (toolUse.name === 'Write' && toolArgs.content) {
+            const content = String(toolArgs.content);
+            if (!toolArgs.contentPreview) {
+              (toolArgs as any).contentPreview = content;
+            }
+            if (!toolArgs.totalLines) {
+              (toolArgs as any).totalLines = content.split('\n').length;
+            }
+            if (toolArgs.isTruncated === undefined) {
+              (toolArgs as any).isTruncated = false;
+            }
+          }
+
+          if (blockMeta || preloadedMeta) {
+            if (metaTrimmed) {
+              // 优先使用 preloadedMeta（扩展端随 conversationLoaded 一次性发送），
+              // 避免每个 EditFile/UpdateWiki 组件单独触发 requestToolMeta
+              (toolArgs as any).contextBefore = (blockMeta as any)?.contextBefore || [];
+              (toolArgs as any).contextAfter = (blockMeta as any)?.contextAfter || [];
+              (toolArgs as any).startLine = (blockMeta as any)?.startLine;
+              (toolArgs as any).endLine = (blockMeta as any)?.endLine;
+
+              if (toolUse.name === 'Edit') {
+                // Edit 使用紧凑 diff：只包含 diff 相关行
+                const diffHunks = preloadedMeta?.diffHunks || (blockMeta as any)?.diffHunks || [];
+                (toolArgs as any).diffHunks = diffHunks;
+
+                // 旧数据兜底：还没有紧凑 diff，但 _meta 里是全量 before/after 时，
+                // 保留旧字段让 EditFile 自行计算。
+                if (diffHunks.length === 0) {
+                  const bc = (blockMeta as any)?.beforeContent || '';
+                  const ac = (blockMeta as any)?.afterContent || '';
+                  if (bc || ac) {
+                    (toolArgs as any).beforeContent = bc;
+                    (toolArgs as any).afterContent = ac;
+                  } else if (!preloadedMeta) {
+                    // 仅当 preloadedMeta 和 _meta 中都没有数据时才标记需要按需请求
+                    (toolArgs as any)._needsMeta = true;
+                    (toolArgs as any)._toolUseId = (toolUse as any)._toolUseId || toolUseId;
+                  }
+                }
+              } else {
+                // Write 等工具继续使用 beforeContent/afterContent
+                const bc = preloadedMeta?.beforeContent || (blockMeta as any)?.beforeContent || '';
+                const ac = preloadedMeta?.afterContent || (blockMeta as any)?.afterContent || '';
+                (toolArgs as any).beforeContent = bc;
+                (toolArgs as any).afterContent = ac;
+                if (!preloadedMeta && !bc && !ac) {
+                  (toolArgs as any)._needsMeta = true;
+                  (toolArgs as any)._toolUseId = (toolUse as any)._toolUseId || toolUseId;
+                }
+              }
+            } else {
+              // 完整 _meta（旧数据，兼容）
+              (toolArgs as any).beforeContent = (blockMeta as any)?.beforeContent || '';
+              (toolArgs as any).afterContent = (blockMeta as any)?.afterContent || '';
+              (toolArgs as any).contextBefore = (blockMeta as any)?.contextBefore || [];
+              (toolArgs as any).contextAfter = (blockMeta as any)?.contextAfter || [];
+              (toolArgs as any).startLine = (blockMeta as any)?.startLine;
+              (toolArgs as any).endLine = (blockMeta as any)?.endLine;
+            }
+          }
+
+          restoredMessages.push({
+            role: 'toolcall' as const,
+            content: result?.content || '',
+            param: `⚙️ ${toolUse.name}`,
+            toolName: toolUse.name,
+            toolArgs,
+            toolCallId: toolUseId,
+            status,
+            timestamp: msgTimestamp,
+            toolResultTimestamp: result?.timestamp,
+          });
+        }
+      }
+    }
+  }
+
+  return restoredMessages;
+}
+
+/**
+ * 把跨会话缓冲的 updateToolStatus 回放进刚恢复的消息列表：
+ * 只在缓冲状态比当前状态「更新」（success/fail > running > normal）时覆盖；
+ * 无论是否覆盖都消费掉缓冲条目（避免后续重复应用）。
+ */
+function replayBufferedToolStatusIntoMessages(
+  restoredMessages: Message[],
+  bufferedToolStatusRef: React.MutableRefObject<Map<string, {
+    toolCallId: string;
+    status: string;
+    output?: string;
+    startLine?: number;
+    endLine?: number;
+    toolStartTimestamp?: number;
+    toolResultTimestamp?: number;
+  }>>,
+): void {
+  if (bufferedToolStatusRef.current.size === 0) return;
+  const statusPriority: Record<string, number> = { success: 3, fail: 3, running: 2, normal: 1 };
+  for (let i = 0; i < restoredMessages.length; i++) {
+    const m = restoredMessages[i];
+    if (m.role !== 'toolcall' || !m.toolCallId) continue;
+    const buffered = bufferedToolStatusRef.current.get(m.toolCallId);
+    if (!buffered) continue;
+    const currentPrio = statusPriority[m.status || ''] ?? 0;
+    const bufferedPrio = statusPriority[buffered.status] ?? 0;
+    if (bufferedPrio > currentPrio) {
+      restoredMessages[i] = { ...m, status: buffered.status as any, content: buffered.output || m.content };
+    }
+    bufferedToolStatusRef.current.delete(m.toolCallId);
+  }
+}
+
+interface LoadedConversationCommonContext {
+  savedCtxPromptMode: PromptMode | undefined;
+  savedCtxThinkingMode: ThinkingMode | undefined;
+  savedCtxWebSearch: boolean | undefined;
+  savedCtxToken: number | undefined;
+}
+
+/**
+ * conversationLoaded 恢复时两个分支（有/无 savedState）完全相同的 setter 序列：
+ * agentMode + agentModeReady、promptMode、thinkingMode（savedState 分支多一层回退，见调用点）、
+ * webSearch、model（同上）、timeStats/stats。
+ * thinkingMode / model / webSearch 的回退链在两分支间差一层 savedState，
+ * 由调用点传入分支语义：无 savedState 分支传回退基线值（与原实现一致）。
+ * 返回解析出的 savedContext 关键字段供调用点继续计算 contextLength / 新建 state。
+ */
+function applyLoadedConversationState(
+  msg: Extract<WebviewMessage, { type: 'conversationLoaded' }>,
+  props: UseMessageHandlerProps,
+  currentProps: UseMessageHandlerProps,
+  savedState: SessionState | undefined,
+  branchLabel: string,
+): LoadedConversationCommonContext {
+  const savedCtxPromptMode = (msg as any).savedContext?.promptMode as PromptMode | undefined;
+  const savedCtxThinkingMode = (msg as any).savedContext?.thinkingMode as ThinkingMode | undefined;
+  const savedCtxWebSearch = (msg as any).savedContext?.webSearch as boolean | undefined;
+  const savedCtxToken = (msg as any).savedContext?.totalContextTokens as number | undefined;
+  // 优先使用消息中的 agentMode（扩展侧运行时内存值），没有则默认 risk（关键）
+  props.setAgentMode((msg as any).agentMode || 'risk');
+  props.agentModeReadyRef.current = true;
+  props.setAgentModeReady(true);
+  // 提示词模式：优先使用 meta.json 中保存的 savedContext.promptMode，为空回退到普通模式
+  props.setPromptMode(savedCtxPromptMode ?? 'normal');
+  if (savedState) {
+    // savedState 分支：thinkingMode 优先 savedContext，回退 savedState，再回退当前对话 effort
+    props.setThinkingMode(savedCtxThinkingMode || savedState.thinkingMode || currentProps.thinkingMode);
+    // webSearch：优先 savedContext，回退 savedState，再回退设置默认值
+    props.setWebSearch(
+      typeof savedCtxWebSearch === 'boolean'
+        ? savedCtxWebSearch
+        : (savedState.webSearch ?? currentProps.settingsDefaults.webSearch)
+    );
+    props.setModel((msg as any).model ?? savedState.model ?? currentProps.settingsDefaults.model);
+  } else {
+    // 无 savedState：thinkingMode 没有 savedContext 时继承当前对话 effort
+    props.setThinkingMode(savedCtxThinkingMode || currentProps.thinkingMode);
+    // webSearch：优先 savedContext，回退设置默认值
+    props.setWebSearch(
+      typeof savedCtxWebSearch === 'boolean'
+        ? savedCtxWebSearch
+        : currentProps.settingsDefaults.webSearch
+    );
+    props.setModel((msg as any).model ?? currentProps.settingsDefaults.model);
+  }
+  // 恢复 stats 快照 - 优先使用 conversationLoaded 顶层 timeStats（扩展侧统一计算的最新值），
+  // 同时兼容旧的 savedContext.stats（从 meta.json 恢复的快照）
+  const ctx = (msg as any).savedContext as { stats?: any } | undefined;
+  const timeStats = (msg as any).timeStats || ctx?.stats;
+  profileLog(`[TimeStats] ${branchLabel} | hasTimeStats=${!!(msg as any).timeStats} | hasCtxStats=${!!ctx?.stats} | totalTime=${timeStats?.totalTime ?? 'null'}`);
+  if (timeStats) {
+    props.setStats(timeStats);
+  } else {
+    props.setStats(null);
+  }
+  return { savedCtxPromptMode, savedCtxThinkingMode, savedCtxWebSearch, savedCtxToken };
+}
+
+/** updateToolStatus 缓冲条目的形状（pendingToolStatusRef / bufferedToolStatusRef 共用） */
+interface ToolStatusEntry {
+  toolCallId: string;
+  status: string;
+  output?: string;
+  startLine?: number;
+  endLine?: number;
+  toolStartTimestamp?: number;
+  toolResultTimestamp?: number;
+}
+
+/**
+ * 从 updateToolStatus 消息构造缓冲条目：
+ * - running：记录开始时间戳（用户确认后工具开始执行）；
+ * - success / fail：记录结果返回时间戳。
+ */
+function toToolStatusEntry(msg: {
+  toolCallId: string;
+  status?: 'normal' | 'success' | 'running' | 'fail';
+  output?: string;
+  startLine?: number;
+  endLine?: number;
+}): ToolStatusEntry {
+  return {
+    toolCallId: msg.toolCallId,
+    status: msg.status || 'running',
+    output: msg.output,
+    startLine: msg.startLine,
+    endLine: msg.endLine,
+    toolStartTimestamp: msg.status === 'running' ? Date.now() : undefined,
+    toolResultTimestamp: (msg.status === 'success' || msg.status === 'fail') ? Date.now() : undefined,
+  };
+}
 
 export interface UseMessageHandlerProps {
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
@@ -164,6 +581,12 @@ export interface UseMessageHandlerProps {
 }
 
 export function useMessageHandler(props: UseMessageHandlerProps): void {
+  // 消息监听 effect 只挂载一次（deps 为 []），handleMessage 闭包捕获的是首次渲染的 props。
+  // 值类型的 props（settingsDefaults / model / currentFile / stats 等）会随后续渲染更新，
+  // 直接读取永远是初始值（会导致会话快照保存错误状态、新建会话用错默认值等）。
+  // 统一通过 propsRef 读取最新值；ref 类 props 本身不变，但读取路径保持一致也无副作用。
+  const propsRef = useRef(props);
+  propsRef.current = props;
   // 使用 ref 追踪 contextLength 的最新值，避免 useEffect 闭包捕获过期值
   const contextLengthRef = useRef(props.contextLength);
   contextLengthRef.current = props.contextLength;
@@ -382,33 +805,22 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               if (props.currentSessionIdRef.current) {
                 const state = props.sessionStatesRef.current.get(props.currentSessionIdRef.current);
                 if (state) {
-                  state.contextLength = totalTokens;
                   // 只在 assistant 消息上累加缓存（避免 thinking 和 assistant 重复）
-                  if (msg.role === 'assistant') {
-                    const rawInputTokens = inputTokens - cacheReadTokens - cacheCreationTokens;
-                    state.totalCacheReadInputTokens = (state.totalCacheReadInputTokens || 0) + cacheReadTokens;
-                    state.totalCacheCreationInputTokens = (state.totalCacheCreationInputTokens || 0) + cacheCreationTokens;
-                    state.totalInputTokens = (state.totalInputTokens || 0) + Math.max(0, rawInputTokens);
-                  }
+                  accumulateUsageToState(state, msg.role, totalTokens, inputTokens, cacheReadTokens, cacheCreationTokens);
                 } else {
-                  props.sessionStatesRef.current.set(props.currentSessionIdRef.current, {
-                    input: '',
-                    inputCursorPosition: 0,
-                    choiceCursorPosition: 0,
-                    userChoiceRequest: null,
-                    userChoiceInput: '',
-                    showThinkingAnimation: false,
-                    hasActiveQuery: false,
-                    agentMode: 'risk',
-                    promptMode: props.settingsDefaults.promptMode,
-                    thinkingMode: 'off',
-                    contextLength: totalTokens,
-                    queuedMessage: null,
-                    model: props.model,
-                    totalCacheReadInputTokens: msg.role === 'assistant' ? cacheReadTokens : 0,
-                    totalCacheCreationInputTokens: msg.role === 'assistant' ? cacheCreationTokens : 0,
-                    totalInputTokens: msg.role === 'assistant' ? Math.max(0, inputTokens - cacheReadTokens - cacheCreationTokens) : 0,
-                  });
+                  ensureSessionStateWithUsage(
+                    props.sessionStatesRef,
+                    props.currentSessionIdRef.current,
+                    msg.role,
+                    totalTokens,
+                    inputTokens,
+                    cacheReadTokens,
+                    cacheCreationTokens,
+                    {
+                      promptMode: propsRef.current.settingsDefaults.promptMode,
+                      model: propsRef.current.model,
+                    },
+                  );
                 }
               }
             }
@@ -436,25 +848,11 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
         case 'initSessionState':
           // 预初始化 session 状态（子代理创建时调用，使后续 thinking 动画能正确显示）
           if (msg.sessionId && !props.sessionStatesRef.current.has(msg.sessionId)) {
-            props.sessionStatesRef.current.set(msg.sessionId, {
-              input: '',
-              inputCursorPosition: 0,
-              choiceCursorPosition: 0,
-              userChoiceRequest: null,
-              userChoiceInput: '',
-              showThinkingAnimation: false,
+            props.sessionStatesRef.current.set(msg.sessionId, createSessionState({
               animationMode: 'thinking',
-              hasActiveQuery: false,
-              agentMode: 'risk',
-              promptMode: props.settingsDefaults.promptMode,
-              thinkingMode: 'off',
-              contextLength: 0,
-              queuedMessage: null,
+              promptMode: propsRef.current.settingsDefaults.promptMode,
               model: (msg as any).model || undefined,
-              totalCacheReadInputTokens: 0,
-              totalCacheCreationInputTokens: 0,
-              totalInputTokens: 0,
-            });
+            }));
           }
           break;
         case 'switchToSession':
@@ -463,27 +861,27 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           if (props.currentSessionIdRef.current) {
             const currentSessionId = props.currentSessionIdRef.current;
             const existingState = props.sessionStatesRef.current.get(currentSessionId);
-            props.sessionStatesRef.current.set(currentSessionId, {
+            props.sessionStatesRef.current.set(currentSessionId, createSessionState({
               input: props.inputAreaRef.current?.getValue() ?? '',
               inputCursorPosition: props.mainInputRef.current?.selectionStart ?? 0,
               choiceCursorPosition: props.choiceInputRef.current?.selectionStart ?? 0,
-              userChoiceRequest: props.userChoiceRequest,
+              userChoiceRequest: propsRef.current.userChoiceRequest,
               userChoiceInput: props.userChoiceInputRef.current,
-              showThinkingAnimation: props.showThinkingAnimation,
-              animationMode: props.animationMode,
-              hasActiveQuery: props.hasActiveQuery,
+              showThinkingAnimation: propsRef.current.showThinkingAnimation,
+              animationMode: propsRef.current.animationMode,
+              hasActiveQuery: propsRef.current.hasActiveQuery,
               preCompressHasActiveQuery: existingState?.preCompressHasActiveQuery,
-              agentMode: props.agentMode,
-              promptMode: props.promptMode,
-              thinkingMode: props.thinkingMode,
+              agentMode: propsRef.current.agentMode,
+              promptMode: propsRef.current.promptMode,
+              thinkingMode: propsRef.current.thinkingMode,
               contextLength: contextLengthRef.current,
               queuedMessage: props.queuedMessageRef.current.get(currentSessionId) ?? null,
-              model: props.model,
+              model: propsRef.current.model,
               // 保留 cache token 数据（可能由后台 streamEnd 更新），避免切换后丢失
               totalCacheReadInputTokens: existingState?.totalCacheReadInputTokens,
               totalCacheCreationInputTokens: existingState?.totalCacheCreationInputTokens,
               totalInputTokens: existingState?.totalInputTokens,
-            });
+            }));
             // 立即持久化当前上下文到 meta.json
             // 使用 contextLengthRef.current（ref 避免闭包过期），
             // 只在值 > 0 时持久化，避免覆盖 meta.json 中已有的正确值
@@ -493,8 +891,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 postMessage({
                   type: 'updateConversationContext',
                   sessionId: currentSid,
-                  currentFile: props.currentFile,
-                  selectedLines: props.selectedLines,
+                  currentFile: propsRef.current.currentFile,
+                  selectedLines: propsRef.current.selectedLines,
                   totalContextTokens: contextLengthRef.current,
                 });
               }
@@ -538,11 +936,11 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             props.setParentSessionId(null);
             props.setCurrentSessionId(newSessionId);
             props.setCurrentSessionIdRef(newSessionId);
-            props.setAgentMode(props.settingsDefaults.agentMode);
-            props.setThinkingMode(props.settingsDefaults.thinkingMode);
-            props.setWebSearch(props.settingsDefaults.webSearch);
-            props.setModel(props.settingsDefaults.model);
-            props.setPromptMode(props.settingsDefaults.promptMode);
+            props.setAgentMode(propsRef.current.settingsDefaults.agentMode);
+            props.setThinkingMode(propsRef.current.settingsDefaults.thinkingMode);
+            props.setWebSearch(propsRef.current.settingsDefaults.webSearch);
+            props.setModel(propsRef.current.settingsDefaults.model);
+            props.setPromptMode(propsRef.current.settingsDefaults.promptMode);
             props.setStats(null);
             props.setShowThinkingAnimation(false);
             props.setHasActiveQuery(false);
@@ -553,25 +951,13 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             props.setIsCompactExpanded(false);
 
             // 为新对话创建默认 state
-            props.sessionStatesRef.current.set(newSessionId, {
-              input: '',
-              inputCursorPosition: 0,
-              choiceCursorPosition: 0,
-              userChoiceRequest: null,
-              userChoiceInput: '',
-              showThinkingAnimation: false,
-              hasActiveQuery: false,
-              agentMode: props.settingsDefaults.agentMode,
-              promptMode: props.settingsDefaults.promptMode,
-              thinkingMode: props.settingsDefaults.thinkingMode,
-              webSearch: props.settingsDefaults.webSearch,
-              contextLength: 0,
-              queuedMessage: null,
-              model: props.settingsDefaults.model,
-              totalCacheReadInputTokens: 0,
-              totalCacheCreationInputTokens: 0,
-              totalInputTokens: 0,
-            });
+            props.sessionStatesRef.current.set(newSessionId, createSessionState({
+              agentMode: propsRef.current.settingsDefaults.agentMode,
+              promptMode: propsRef.current.settingsDefaults.promptMode,
+              thinkingMode: propsRef.current.settingsDefaults.thinkingMode,
+              webSearch: propsRef.current.settingsDefaults.webSearch,
+              model: propsRef.current.settingsDefaults.model,
+            }));
 
             // 通知扩展端设置活跃会话 ID
             postMessage({ type: 'setActiveSessionId', sessionId: newSessionId });
@@ -626,7 +1012,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 全局唤醒快捷键把窗口唤到前台后，聚焦输入框，用户可直接开始输入。
           // 等待一帧：窗口刚显示时 DOM 焦点可能还在同步中，立即 focus 会被覆盖。
           const focus = () => {
-            if (props.userChoiceRequest) {
+            if (propsRef.current.userChoiceRequest) {
               props.choiceInputRef.current?.focus();
             } else {
               props.mainInputRef.current?.focus();
@@ -701,23 +1087,16 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             } else {
               // 会话状态不存在（例如从历史记录加载后首次发消息的对话）时创建，
               // 否则 queryBegin 无法标记 hasActiveQuery，对话列表的流水灯不会显示。
-              props.sessionStatesRef.current.set(msg.sessionId, {
-                input: '',
-                inputCursorPosition: 0,
-                choiceCursorPosition: 0,
-                userChoiceRequest: null,
-                userChoiceInput: '',
+              props.sessionStatesRef.current.set(msg.sessionId, createSessionState({
                 showThinkingAnimation: true,
                 animationMode: 'thinking',
                 hasActiveQuery: true,
-                agentMode: props.settingsDefaults.agentMode,
-                promptMode: props.settingsDefaults.promptMode,
-                thinkingMode: props.settingsDefaults.thinkingMode,
-                webSearch: props.settingsDefaults.webSearch,
-                contextLength: 0,
-                queuedMessage: null,
-                model: props.model,
-              });
+                agentMode: propsRef.current.settingsDefaults.agentMode,
+                promptMode: propsRef.current.settingsDefaults.promptMode,
+                thinkingMode: propsRef.current.settingsDefaults.thinkingMode,
+                webSearch: propsRef.current.settingsDefaults.webSearch,
+                model: propsRef.current.model,
+              }));
             }
             // 递增版本号强制对话列表重渲染，使流水灯即时出现（或切换后消失）
             props.setSessionRunningVersion(v => v + 1);
@@ -868,16 +1247,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 过滤：只有当前 session 的消息才处理
           if (msg.sessionId !== sessionId) {
             // 不是当前会话的更新：存入跨会话缓冲区，供 conversationLoaded 时回放
-            const toolCallId = msg.toolCallId;
-            props.bufferedToolStatusRef.current.set(toolCallId, {
-              toolCallId,
-              status: msg.status || 'running',
-              output: msg.output,
-              startLine: msg.startLine,
-              endLine: msg.endLine,
-              toolStartTimestamp: msg.status === 'running' ? Date.now() : undefined,
-              toolResultTimestamp: (msg.status === 'success' || msg.status === 'fail') ? Date.now() : undefined,
-            });
+            props.bufferedToolStatusRef.current.set(msg.toolCallId, toToolStatusEntry(msg));
             break;
           }
           // 🔴 conversationLoading 期间，所有 updateToolStatus（即使是当前会话的消息）
@@ -885,15 +1255,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 避免正常 rAF 路径（pendingToolStatusRef）与 props.setMessages(restoredMessages)
           // 之间的时序竞态导致状态丢失。
           if (props.conversationLoadingRef.current) {
-            props.bufferedToolStatusRef.current.set(msg.toolCallId, {
-              toolCallId: msg.toolCallId,
-              status: msg.status || 'running',
-              output: msg.output,
-              startLine: msg.startLine,
-              endLine: msg.endLine,
-              toolStartTimestamp: msg.status === 'running' ? Date.now() : undefined,
-              toolResultTimestamp: (msg.status === 'success' || msg.status === 'fail') ? Date.now() : undefined,
-            });
+            props.bufferedToolStatusRef.current.set(msg.toolCallId, toToolStatusEntry(msg));
             break;
           }
           // 使用函数式更新 + 防抖：将频繁的 status 更新合并到下一次 rAF 中
@@ -956,17 +1318,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             });
           }
           // 将更新压入缓冲队列（Map 直接覆盖相同 key）
-          props.pendingToolStatusRef.current.set(msg.toolCallId, {
-            toolCallId: msg.toolCallId,
-            status: msg.status || 'running',
-            output: msg.output,
-            startLine: msg.startLine,
-            endLine: msg.endLine,
-            // 工具开始执行时（用户确认后）记录开始时间戳
-            toolStartTimestamp: msg.status === 'running' ? Date.now() : undefined,
-            // 工具执行完成时记录结果返回时间戳
-            toolResultTimestamp: (msg.status === 'success' || msg.status === 'fail') ? Date.now() : undefined,
-          });
+          props.pendingToolStatusRef.current.set(msg.toolCallId, toToolStatusEntry(msg));
           break;
         case 'toolProgress':
           // Bash 流式输出：过滤非当前 session 的消息
@@ -1055,7 +1407,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           }
           break;
         }
-        case 'conversationLoaded':
+        case 'conversationLoaded': {
           const _t_convLoaded = performance.now();
           const _convLoadedSessionId = msg.conversation?.metadata?.sessionId;
           profileLog(`[Profile] conversationLoaded收到 | session=${(_convLoadedSessionId || '').substring(0, 20)} | t=${_t_convLoaded.toFixed(2)}ms`);
@@ -1119,46 +1471,18 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               props.setAnimationMode(isCompacting ? 'compacting' : 'thinking');
               // 同步到 session 状态，确保对话列表的流水灯与引擎实时状态一致
               savedState.hasActiveQuery = isCompacting || runtimeActive;
-              // 优先使用消息中的 agentMode（扩展侧运行时内存值），没有则默认 risk（关键）
-              props.setAgentMode((msg as any).agentMode || 'risk');
-              props.agentModeReadyRef.current = true;
-              props.setAgentModeReady(true);
-              // 提示词模式：优先使用 meta.json 中保存的 savedContext.promptMode，为空回退到普通模式
-              const savedCtxPromptMode = (msg as any).savedContext?.promptMode as PromptMode | undefined;
-              props.setPromptMode(savedCtxPromptMode ?? 'normal');
-              savedState.promptMode = savedCtxPromptMode ?? 'normal';
-              // 优先使用 savedContext.thinkingMode（meta.json 持久化/默认值），回退到 savedState，
-              // 都没有时继承当前对话正在使用的 thinking effort
-              const savedCtxThinkingMode = (msg as any).savedContext?.thinkingMode as ThinkingMode | undefined;
-              props.setThinkingMode(savedCtxThinkingMode || savedState.thinkingMode || props.thinkingMode);
-              // 会话关联的 Web Search：优先 savedContext（meta.json 持久化/默认值），回退 savedState，再回退设置默认值
-              const savedCtxWebSearch = (msg as any).savedContext?.webSearch as boolean | undefined;
-              props.setWebSearch(
-                typeof savedCtxWebSearch === 'boolean'
-                  ? savedCtxWebSearch
-                  : (savedState.webSearch ?? props.settingsDefaults.webSearch)
-              );
-              props.setModel((msg as any).model ?? savedState.model ?? props.settingsDefaults.model);
+              // 两分支相同的 setter 序列（agentMode/ready、promptMode、thinkingMode、webSearch、model、stats）收敛到辅助函数
+              const common = applyLoadedConversationState(msg, props, propsRef.current, savedState, 'savedState分支');
+              savedState.promptMode = common.savedCtxPromptMode ?? 'normal';
               // 优先使用 savedContext.totalContextTokens（meta.json 中持久化的最新值），
               // 回退到 savedState.contextLength（内存中保存的快照值）。
               // 取两者的最大值以处理以下场景：
               // - subagent 在后台运行时，message_delta 已更新 meta.json 但 webview 的 savedState 未同步
               // - savedState 可能保存了切换时的旧值，而 meta.json 中有更新的 token 计数
-              const savedCtxToken = (msg as any).savedContext?.totalContextTokens as number | undefined;
               // 优先使用服务端/meta.json 持久化的最新值，避免本地旧快照把压缩后的值重新抬回 max 旧值
-              const restoredContextLength = savedCtxToken ?? savedState.contextLength ?? 0;
-              profileLog(`[TokenDebug] conversationLoaded(savedState): restoredContextLength=${restoredContextLength} savedCtxToken=${savedCtxToken} savedState.contextLength=${savedState.contextLength}`);
+              const restoredContextLength = common.savedCtxToken ?? savedState.contextLength ?? 0;
+              profileLog(`[TokenDebug] conversationLoaded(savedState): restoredContextLength=${restoredContextLength} savedCtxToken=${common.savedCtxToken} savedState.contextLength=${savedState.contextLength}`);
               props.setContextLength(restoredContextLength);
-              // 恢复 stats 快照 - 优先使用 conversationLoaded 顶层 timeStats（扩展侧统一计算的最新值），
-              // 同时兼容旧的 savedContext.stats（从 meta.json 恢复的快照）
-              const ctx = (msg as any).savedContext as { stats?: any } | undefined;
-              const timeStats = (msg as any).timeStats || ctx?.stats;
-              profileLog(`[TimeStats] savedState分支 | hasTimeStats=${!!(msg as any).timeStats} | hasCtxStats=${!!ctx?.stats} | totalTime=${timeStats?.totalTime ?? 'null'}`);
-              if (timeStats) {
-                props.setStats(timeStats);
-              } else {
-                props.setStats(null);
-              }
               // 延迟恢复焦点和光标位置，等待 DOM 渲染完成
               setTimeout(() => {
                 if (savedState.userChoiceRequest) {
@@ -1191,72 +1515,40 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               );
               props.setHasActiveQuery(runtimeActive);
               props.setAnimationMode('thinking');
-              // 优先使用消息中的 agentMode（扩展侧运行时内存值），没有则默认 risk（关键）
-              props.setAgentMode((msg as any).agentMode || 'risk');
-              props.agentModeReadyRef.current = true;
-              props.setAgentModeReady(true);
-              // 提示词模式：优先使用 meta.json 中保存的 savedContext.promptMode，为空回退到普通模式
-              const savedCtxPromptMode = (msg as any).savedContext?.promptMode as PromptMode | undefined;
-              props.setPromptMode(savedCtxPromptMode ?? 'normal');
-              // 优先使用 savedContext.thinkingMode（meta.json 持久化/默认值），
-              // 没有则继承当前对话正在使用的 thinking effort
-              const savedCtxThinkingMode = (msg as any).savedContext?.thinkingMode as ThinkingMode | undefined;
-              props.setThinkingMode(savedCtxThinkingMode || props.thinkingMode);
-              // 会话关联的 Web Search：优先 savedContext（meta.json 持久化/默认值），回退设置默认值
-              const savedCtxWebSearch = (msg as any).savedContext?.webSearch as boolean | undefined;
-              props.setWebSearch(
-                typeof savedCtxWebSearch === 'boolean'
-                  ? savedCtxWebSearch
-                  : props.settingsDefaults.webSearch
-              );
-              props.setModel((msg as any).model ?? props.settingsDefaults.model);
+              const common = applyLoadedConversationState(msg, props, propsRef.current, undefined, '非savedState分支');
               // 从 savedContext 中恢复 totalContextTokens（meta.json 中持久化的值），
               // 用于 webview 显示进度条。savedState 不存在说明是首次加载，此时应该从 meta 恢复。
-              const savedCtx = (msg as any).savedContext as { totalContextTokens?: number; stats?: any } | undefined;
-              const restoredVal = savedCtx?.totalContextTokens ?? 0;
-              profileLog(`[TokenDebug] conversationLoaded(no savedState): restoredContextLength=${restoredVal} savedCtx.totalContextTokens=${savedCtx?.totalContextTokens}`);
+              const restoredVal = common.savedCtxToken ?? 0;
+              profileLog(`[TokenDebug] conversationLoaded(no savedState): restoredContextLength=${restoredVal} savedCtx.totalContextTokens=${common.savedCtxToken}`);
               props.setContextLength(restoredVal);
               // 确保 sessionStatesRef 中有该会话的状态。首次从历史加载的对话此前没有
               // 状态条目，若不在此时创建，后续 queryBegin 会因找不到 targetState 而无法
               // 标记 hasActiveQuery，导致对话列表的流水灯不显示。
               if (!props.sessionStatesRef.current.has(loadedSessionId)) {
-                props.sessionStatesRef.current.set(loadedSessionId, {
-                  input: '',
-                  inputCursorPosition: 0,
-                  choiceCursorPosition: 0,
-                  userChoiceRequest: null,
-                  userChoiceInput: '',
+                props.sessionStatesRef.current.set(loadedSessionId, createSessionState({
                   showThinkingAnimation: runtimeActive
                     && activityPhase !== 'tool'
                     && activityPhase !== 'text',
                   animationMode: 'thinking',
                   hasActiveQuery: runtimeActive,
                   agentMode: (msg as any).agentMode || 'risk',
-                  promptMode: savedCtxPromptMode ?? 'normal',
-                  thinkingMode: savedCtxThinkingMode || props.thinkingMode,
-                  webSearch: typeof savedCtxWebSearch === 'boolean' ? savedCtxWebSearch : props.settingsDefaults.webSearch,
+                  promptMode: common.savedCtxPromptMode ?? 'normal',
+                  thinkingMode: common.savedCtxThinkingMode || propsRef.current.thinkingMode,
+                  webSearch: typeof common.savedCtxWebSearch === 'boolean' ? common.savedCtxWebSearch : propsRef.current.settingsDefaults.webSearch,
                   contextLength: restoredVal,
-                  queuedMessage: null,
-                  model: (msg as any).model ?? props.settingsDefaults.model,
-                });
-              }
-              // 优先使用 conversationLoaded 顶层 timeStats（扩展侧统一计算的最新值），
-              // 同时兼容旧的 savedContext.stats（从 meta.json 恢复的快照）
-              const timeStats = (msg as any).timeStats || savedCtx?.stats;
-              profileLog(`[TimeStats] 非savedState分支 | hasTimeStats=${!!(msg as any).timeStats} | hasCtxStats=${!!savedCtx?.stats} | totalTime=${timeStats?.totalTime ?? 'null'}`);
-              if (timeStats) {
-                props.setStats(timeStats);
-              } else {
-                props.setStats(null);
+                  model: (msg as any).model ?? propsRef.current.settingsDefaults.model,
+                }));
               }
               // 聚焦输入框（当没有保存的 state 时）
               setTimeout(() => {
                 props.mainInputRef.current?.focus();
               }, 0);
             }
-          }
-          // sessionId 无效时（消息结构异常），立即清除 loading 标记
-          if (props.conversationLoadingRef.current) {
+          } else {
+            // sessionId 无效（消息结构异常）时才立即清除 loading 标记。
+            // 正常路径的标记复位由下方 rAF 回调与 catch 统一负责：
+            // 若在这里同步清空，"加载期间 updateToolStatus 进入缓冲"的防竞态机制
+            // 会失效，加载中的工具状态更新会写进旧 messages 后被覆盖丢失。
             props.conversationLoadingRef.current = false;
           }
           // 设置对话标题
@@ -1266,277 +1558,10 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 恢复对话消息
           if (msg.conversation && msg.conversation.messages) {
             try {
-              // 首先扫描所有消息，建立 tool_use_id 到 tool_result 的映射（含时间戳）
-              const toolResultMap = new Map<string, { content: string; exitCode: number; timestamp?: number }>();
-              // 记录被取消的工具 ID 及其提示内容（未执行被取消的工具需要渲染为失败状态）
-              const canceledToolResults = new Map<string, string>();
-
-              // 历史消息结构来自 core 层持久化格式，字段以 any 处理
-              const rawMessages = msg.conversation.messages as Array<any>;
-              for (const convMsg of rawMessages) {
-                if (convMsg.type === 'user' && Array.isArray(convMsg.message?.content)) {
-                  const toolResults = convMsg.message.content.filter((block: any) => block.type === 'tool_result');
-                  for (const result of toolResults) {
-                    // 被取消的工具：记录 tool_use_id -> 提示内容，后续渲染为失败（红色）
-                    if (result.is_canceled === true) {
-                      if (result.tool_use_id) {
-                        canceledToolResults.set(result.tool_use_id, result.content || '');
-                      }
-                      continue;
-                    }
-                    toolResultMap.set(result.tool_use_id, {
-                      content: Array.isArray(result.content) ? '[Image]' : (result.content || ''),
-                      exitCode: result.exit_code ?? 0,
-                      timestamp: typeof (convMsg as any).timestamp === 'number' ? (convMsg as any).timestamp : undefined,
-                    });
-                  }
-                }
-              }
-
-              // 将历史消息转换为当前格式
-              const restoredMessages: Message[] = [];
-
-              for (const convMsg of rawMessages) {
-                // 跳过流控制消息
-                if (convMsg.type === 'stream_request_start') {
-                  continue;
-                }
-
-                // 消息时间戳：优先使用存储的时间戳，否则使用当前时间
-                const msgTimestamp = typeof (convMsg as any).timestamp === 'number' ? (convMsg as any).timestamp : Date.now();
-
-                // 转换系统消息
-                if (convMsg.type === 'system') {
-                  // 跳过压缩边界标记（内部标记，无需展示）
-                  if ((convMsg as any).subtype === 'compact_boundary') {
-                    continue;
-                  }
-                  const content = convMsg.content || '';
-                  restoredMessages.push({
-                    role: 'system' as const,
-                    content,
-                    timestamp: msgTimestamp,
-                  });
-                  continue;
-                }
-
-                // 转换用户消息
-                if (convMsg.type === 'user') {
-                  const content = convMsg.message?.content;
-                  // 检查是否是工具结果（content 是数组）
-                  if (Array.isArray(content)) {
-                    const toolResult = content.find((block: any) => block.type === 'tool_result');
-                    if (toolResult) {
-                      // 工具结果已经通过 toolcall 消息的 content 显示，跳过单独的 tool_result 消息
-                      continue;
-                    }
-                  }
-
-                  // 从 _meta 与消息顶层读取元信息。部分发送路径（如引擎已存在时的普通消息）
-                  // 只持久化了顶层 filePath/fileSelectedLines，未写 _meta，因此这里两者都要兼容。
-                  const msgMeta = (convMsg as any)._meta as Record<string, unknown> | undefined;
-                  const isFromAgent = (convMsg as any).fromSubAgent === true;
-                  // 跳过 silent 消息（仅 LLM 可见，UI 不可见）
-                  if ((convMsg as any).silent === true) {
-                    continue;
-                  }
-
-                  // 恢复用户消息上的文件标签。
-                  // 旧逻辑刻意不展示历史文件信息，但用户消息本身携带的上下文仍应可见。
-                  // 需要保留 fileHidden 语义：发送时用户主动隐藏的消息，加载后仍不显示。
-                  const rawFilePath = (convMsg as any).filePath || (msgMeta?.filePath as string | undefined) || undefined;
-                  const rawFileSelectedLines = (convMsg as any).fileSelectedLines
-                    || (msgMeta?.fileSelectedLines as { start: number; end: number } | undefined)
-                    || undefined;
-                  const wasFileHidden = (convMsg as any).fileHidden === true;
-                  const showFileInfo = !wasFileHidden && !!rawFilePath;
-
-                  const msgMetaClean = msgMeta ? { ...msgMeta } : undefined;
-                  if (msgMetaClean) {
-                    if (showFileInfo) {
-                      // 保证 meta 与顶层字段一致，UserMessage 无论读哪个来源都能拿到
-                      msgMetaClean.filePath = rawFilePath;
-                      if (rawFileSelectedLines) {
-                        msgMetaClean.fileSelectedLines = rawFileSelectedLines;
-                      }
-                    } else {
-                      delete msgMetaClean.filePath;
-                      delete msgMetaClean.fileSelectedLines;
-                      // 非子代理的 param 只是文件展示文本；子代理 from/to 的 param 用于跳转/来源展示
-                      if (!isFromAgent) {
-                        delete msgMetaClean.param;
-                      }
-                    }
-                  }
-                  const msgParam = isFromAgent ? (msgMeta?.param as string | undefined) : undefined;
-
-                  const { text: userText, images: userImages } = extractUserContent(content as string | unknown[]);
-                  restoredMessages.push({
-                    role: 'user' as const,
-                    content: userText,
-                    images: userImages.length > 0 ? userImages : undefined,
-                    param: msgParam,
-                    filePath: showFileInfo ? rawFilePath : undefined,
-                    fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
-                    isCompactSummary: (convMsg as any).isCompactSummary === true,
-                    isFromAgent,
-                    meta: msgMetaClean,
-                    timestamp: msgTimestamp,
-                  });
-                  continue;
-                }
-
-                // 转换助手消息
-                if (convMsg.type === 'assistant') {
-                  // 跳过 spin 模式下的 silent 消息
-                  if ((convMsg as any).silent === true) {
-                    continue;
-                  }
-                  const blocks = convMsg.message?.content || [];
-
-                  // 按照 blocks 的原始顺序处理
-                  for (const block of blocks) {
-                    if ((block as any).type === 'thinking') {
-                      // thinking 消息：转换为 thinking 角色显示
-                      restoredMessages.push({
-                        role: 'thinking' as const,
-                        content: (block as any).thinking || '',
-                        timestamp: msgTimestamp,
-                      });
-                    } else if ((block as any).type === 'text') {
-                      // 文本消息
-                      restoredMessages.push({
-                        role: 'assistant' as const,
-                        content: (block as any).text,
-                        timestamp: msgTimestamp,
-                      });
-                    } else if ((block as any).type === 'tool_use') {
-                      // 工具调用
-                      const toolUse = block as any;
-                      const toolUseId = toolUse.id;
-
-                      // 被取消的工具调用：渲染为失败（红色），而不是跳过
-                      const canceledContent = canceledToolResults.get(toolUseId);
-                      if (canceledContent !== undefined) {
-                        restoredMessages.push({
-                          role: 'toolcall' as const,
-                          content: canceledContent,
-                          param: `⚙️ ${toolUse.name}`,
-                          toolName: toolUse.name,
-                          toolArgs: normalizeToolInput(toolUse.input),
-                          toolCallId: toolUseId,
-                          status: 'fail',
-                          timestamp: msgTimestamp,
-                        });
-                        continue;
-                      }
-
-                      const result = toolResultMap.get(toolUseId);
-                      const hasResult = result !== undefined;
-                      const isPending = (msg.pendingToolUseIds || []).includes(toolUseId);
-
-                      // 根据保存的状态判断工具执行结果
-                      // 没有 result 且在 pendingToolUseIds 中 = 正在等待用户授权，显示 normal
-                      // 没有 result 但不在 pendingToolUseIds 中 = 正在执行/已中断，显示 running
-                      let status: 'success' | 'fail' | 'normal' | 'running' = 'running';
-                      if (hasResult) {
-                        status = result.exitCode !== 0 ? 'fail' : 'success';
-                      } else if (isPending) {
-                        status = 'normal';
-                      }
-
-                      // 从 _meta 中提取 diff 信息，由 EditFile组件在渲染时使用
-                      // _meta 存储在 tool_use block 顶层（不在 input 内部），由 updateToolUseMeta 写入
-                      const blockMeta = (toolUse as any)._meta as Record<string, unknown> | undefined;
-                      const metaTrimmed = (toolUse as any)._metaTrimmed === true;
-                      // 从 conversationLoaded 附带的 toolMetaMap 中查找裁剪掉的 _meta 大字段
-                      const preloadedMeta = (msg as any).toolMetaMap?.[toolUseId as string] as
-                        { beforeContent?: string; afterContent?: string; diffHunks?: DiffHunk[] } | undefined;
-                      // 归一化入参：历史记录里可能存在被 double-encode 成字符串的 input
-                      // （例如 AskUserQuestion），直接写属性会抛 TypeError，这里统一解包成对象。
-                      const toolArgs = normalizeToolInput(toolUse.input);
-
-                      // Write 工具：补充 webview 展示所需的 contentPreview / totalLines / isTruncated
-                      // （这些字段在实时工具调用时由 onPreToolCall 添加，但不会持久化到历史记录中）
-                      if (toolUse.name === 'Write' && toolArgs.content) {
-                        const content = String(toolArgs.content);
-                        if (!toolArgs.contentPreview) {
-                          (toolArgs as any).contentPreview = content;
-                        }
-                        if (!toolArgs.totalLines) {
-                          (toolArgs as any).totalLines = content.split('\n').length;
-                        }
-                        if (toolArgs.isTruncated === undefined) {
-                          (toolArgs as any).isTruncated = false;
-                        }
-                      }
-
-                      if (blockMeta || preloadedMeta) {
-                        if (metaTrimmed) {
-                          // 优先使用 preloadedMeta（扩展端随 conversationLoaded 一次性发送），
-                          // 避免每个 EditFile/UpdateWiki 组件单独触发 requestToolMeta
-                          (toolArgs as any).contextBefore = (blockMeta as any)?.contextBefore || [];
-                          (toolArgs as any).contextAfter = (blockMeta as any)?.contextAfter || [];
-                          (toolArgs as any).startLine = (blockMeta as any)?.startLine;
-                          (toolArgs as any).endLine = (blockMeta as any)?.endLine;
-
-                          if (toolUse.name === 'Edit') {
-                            // Edit 使用紧凑 diff：只包含 diff 相关行
-                            const diffHunks = preloadedMeta?.diffHunks || (blockMeta as any)?.diffHunks || [];
-                            (toolArgs as any).diffHunks = diffHunks;
-
-                            // 旧数据兜底：还没有紧凑 diff，但 _meta 里是全量 before/after 时，
-                            // 保留旧字段让 EditFile 自行计算。
-                            if (diffHunks.length === 0) {
-                              const bc = (blockMeta as any)?.beforeContent || '';
-                              const ac = (blockMeta as any)?.afterContent || '';
-                              if (bc || ac) {
-                                (toolArgs as any).beforeContent = bc;
-                                (toolArgs as any).afterContent = ac;
-                              } else if (!preloadedMeta) {
-                                // 仅当 preloadedMeta 和 _meta 中都没有数据时才标记需要按需请求
-                                (toolArgs as any)._needsMeta = true;
-                                (toolArgs as any)._toolUseId = (toolUse as any)._toolUseId || toolUseId;
-                              }
-                            }
-                          } else {
-                            // Write 等工具继续使用 beforeContent/afterContent
-                            const bc = preloadedMeta?.beforeContent || (blockMeta as any)?.beforeContent || '';
-                            const ac = preloadedMeta?.afterContent || (blockMeta as any)?.afterContent || '';
-                            (toolArgs as any).beforeContent = bc;
-                            (toolArgs as any).afterContent = ac;
-                            if (!preloadedMeta && !bc && !ac) {
-                              (toolArgs as any)._needsMeta = true;
-                              (toolArgs as any)._toolUseId = (toolUse as any)._toolUseId || toolUseId;
-                            }
-                          }
-                        } else {
-                          // 完整 _meta（旧数据，兼容）
-                          (toolArgs as any).beforeContent = (blockMeta as any)?.beforeContent || '';
-                          (toolArgs as any).afterContent = (blockMeta as any)?.afterContent || '';
-                          (toolArgs as any).contextBefore = (blockMeta as any)?.contextBefore || [];
-                          (toolArgs as any).contextAfter = (blockMeta as any)?.contextAfter || [];
-                          (toolArgs as any).startLine = (blockMeta as any)?.startLine;
-                          (toolArgs as any).endLine = (blockMeta as any)?.endLine;
-                        }
-                      }
-
-                      restoredMessages.push({
-                        role: 'toolcall' as const,
-                        content: result?.content || '',
-                        param: `⚙️ ${toolUse.name}`,
-                        toolName: toolUse.name,
-                        toolArgs,
-                        toolCallId: toolUseId,
-                        status,
-                        timestamp: msgTimestamp,
-                        toolResultTimestamp: result?.timestamp,
-                      });
-                    }
-                  }
-                }
-              }
-
+              // 有消息体时复位 loading 标记的责任交给下方 rAF 回调（setMessages 后）与
+              // catch 分支；此期间 updateToolStatus 会进入缓冲，保证回放不丢。
+              // 历史消息解析抽到模块级 restoreMessagesFromConversation（纯函数）
+              const restoredMessages = restoreMessagesFromConversation(msg);
               const _t_beforeRaf = performance.now();
               profileLog(`[Profile] conversationLoaded 消息解析完成 | session=${(_convLoadedSessionId || '').substring(0, 20)} | 消息数=${restoredMessages.length} | 解析耗时=${(_t_beforeRaf - _t_convLoaded).toFixed(2)}ms`);
               // 在设置新消息前，先强制收起所有 details 元素
@@ -1551,26 +1576,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 }
                 // 回放跨会话缓冲的 updateToolStatus：如果缓冲中有与恢复消息匹配的更新，
                 // 优先使用最新状态（工具在会话切换期间已完成，但 updateToolStatus 被 sessionId 过滤丢失了）
-                if (props.bufferedToolStatusRef.current.size > 0) {
-                  for (let i = 0; i < restoredMessages.length; i++) {
-                    const m = restoredMessages[i];
-                    if (m.role === 'toolcall' && m.toolCallId) {
-                      const buffered = props.bufferedToolStatusRef.current.get(m.toolCallId);
-                      if (buffered) {
-                        // 更新状态：只在缓冲的状态比当前状态"更新"时才覆盖
-                        // success > running > normal > undefined
-                        const statusPriority: Record<string, number> = { success: 3, fail: 3, running: 2, normal: 1 };
-                        const currentPrio = statusPriority[m.status || ''] ?? 0;
-                        const bufferedPrio = statusPriority[buffered.status] ?? 0;
-                        if (bufferedPrio > currentPrio) {
-                          restoredMessages[i] = { ...m, status: buffered.status as any, content: buffered.output || m.content };
-                        }
-                        // 无论是否覆盖，消费后移除（避免后续重复应用）
-                        props.bufferedToolStatusRef.current.delete(m.toolCallId);
-                      }
-                    }
-                  }
-                }
+                replayBufferedToolStatusIntoMessages(restoredMessages, props.bufferedToolStatusRef);
                 // 根据扩展端实时维护的 activityPhase 修正 thinking 动画状态；
                 // 旧版本消息没有 activityPhase 时，退化为从恢复的消息内容推断当前阶段。
                 // 不能用 hasActiveQuery 直接推断 thinking：查询进行中可能正处于
@@ -1654,6 +1660,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             }
           }
           break;
+        }
         case 'clearMessages':
           // 清空本地 UI 消息列表
           // 来自 core 层压缩后的推送（pushCompactMessagesToUI）和 /clear 命令
@@ -1713,11 +1720,11 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             }
             // 压缩完成时，保存当前的耗时分布统计到 meta.json
             if (msg.status === 'complete') {
-              if (props.currentSessionIdRef.current && props.stats) {
+              if (props.currentSessionIdRef.current && propsRef.current.stats) {
                 postMessage({
                   type: 'saveConversationStats',
                   sessionId: props.currentSessionIdRef.current,
-                  stats: props.stats,
+                  stats: propsRef.current.stats,
                 });
               }
             }
@@ -1892,35 +1899,20 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               const totalTokens = inputTokens + outputTokens;
               const role = msg.role;
               if (totalTokens > 0) {
-                const state = props.sessionStatesRef.current.get(streamEndSessionId);
-                if (state) {
-                  if (role === 'assistant') {
-                    const rawInputTokens = inputTokens - cacheReadTokens - cacheCreationTokens;
-                    state.totalCacheReadInputTokens = (state.totalCacheReadInputTokens || 0) + cacheReadTokens;
-                    state.totalCacheCreationInputTokens = (state.totalCacheCreationInputTokens || 0) + cacheCreationTokens;
-                    state.totalInputTokens = (state.totalInputTokens || 0) + Math.max(0, rawInputTokens);
-                  }
-                } else {
-                  props.sessionStatesRef.current.set(streamEndSessionId, {
-                    input: '',
-                    inputCursorPosition: 0,
-                    choiceCursorPosition: 0,
-                    userChoiceRequest: null,
-                    userChoiceInput: '',
-                    showThinkingAnimation: false,
-                    hasActiveQuery: false,
-                    agentMode: 'risk',
-                    promptMode: props.settingsDefaults.promptMode,
-                    thinkingMode: 'off',
-                    contextLength: totalTokens,
-                    queuedMessage: null,
-                    model: props.model,
-                    totalCacheReadInputTokens: role === 'assistant' ? cacheReadTokens : 0,
-                    totalCacheCreationInputTokens: role === 'assistant' ? cacheCreationTokens : 0,
-                    totalInputTokens: role === 'assistant' ? Math.max(0, inputTokens - cacheReadTokens - cacheCreationTokens) : 0,
-                  });
-                  profileLog('[TokenDebug] streamEnd(sessionMismatch): created session state for', streamEndSessionId);
-                }
+                ensureSessionStateWithUsage(
+                  props.sessionStatesRef,
+                  streamEndSessionId,
+                  role,
+                  totalTokens,
+                  inputTokens,
+                  cacheReadTokens,
+                  cacheCreationTokens,
+                  {
+                    promptMode: propsRef.current.settingsDefaults.promptMode,
+                    model: propsRef.current.model,
+                  },
+                );
+                profileLog('[TokenDebug] streamEnd(sessionMismatch): updated/created session state for', streamEndSessionId);
               }
             }
             break;
@@ -1930,13 +1922,18 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           const role = msg.role;
           const mapKey = streamId + ':' + role;
           profileLog(`[TokenDebug] streamEnd: role=${role} streamId=${streamId} hasUsage=${!!(msg as any).usage} usage=${JSON.stringify((msg as any).usage)}`);
-          if (props.streamRafRef.current) {
+          // 取出缓冲中的目标 stream（streamId+role 精确匹配）参与本次收尾；
+          // 其它仍在流式的 stream（如 thinking 与 text 并发）留在缓冲里，
+          // 等它们自己的 rAF/streamEnd 处理，否则会被提前标记为 isStreaming:false 造成闪烁。
+          const bufferedThis = props.pendingStreamRef.current.get(mapKey);
+          props.pendingStreamRef.current.delete(mapKey);
+          const finalBuffer = new Map([[mapKey, bufferedThis ?? { role, accumulated, streamId }]]);
+          // 剩余仍在流式的条目保留在 pendingStreamRef，不取消它们的 rAF：
+          // 只有当缓冲被本次完全清空（没有其它流）时才取消。
+          if (props.pendingStreamRef.current.size === 0 && props.streamRafRef.current) {
             cancelAnimationFrame(props.streamRafRef.current);
             props.streamRafRef.current = null;
           }
-          props.pendingStreamRef.current.set(mapKey, { role, accumulated, streamId });
-          const finalBuffer = props.pendingStreamRef.current;
-          props.pendingStreamRef.current = new Map();
           if (finalBuffer.size > 0) {
             // 流式结束的最终内容渲染前预滚动
             scrollToBottomBeforeRender();
@@ -1992,41 +1989,23 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               // 同步更新到当前 session 的 state 中，确保切换会话后能正确恢复
               const currentSid = props.currentSessionIdRef.current;
               if (currentSid) {
-                const state = props.sessionStatesRef.current.get(currentSid);
-                if (state) {
-                  state.contextLength = totalTokens;
-                  // 只对 role=assistant 累加缓存（thinking 和 assistant 都会收到 streamEnd，但 usage 相同，避免重复累加）
-                  if (role === 'assistant') {
-                    // usage.input_tokens 已包含缓存部分，原始 input_tokens = inputTokens - cacheRead - cacheCreation
-                    const rawInputTokens = inputTokens - cacheReadTokens - cacheCreationTokens;
-                    state.totalCacheReadInputTokens = (state.totalCacheReadInputTokens || 0) + cacheReadTokens;
-                    state.totalCacheCreationInputTokens = (state.totalCacheCreationInputTokens || 0) + cacheCreationTokens;
-                    state.totalInputTokens = (state.totalInputTokens || 0) + Math.max(0, rawInputTokens);
-                  }
-                } else {
-                  // streamEnd 到达时 state 可能尚未初始化（例如子代理会话首次 LLM 回复），
-                  // 此时需要创建初始 state 并写入 token/cache 数据，否则 Cache 命中率不会显示。
-                  // 参考 addMessage 处理器中 role===thinking/assistant 分支的初始化逻辑。
-                  props.sessionStatesRef.current.set(currentSid, {
-                    input: '',
-                    inputCursorPosition: 0,
-                    choiceCursorPosition: 0,
-                    userChoiceRequest: null,
-                    userChoiceInput: '',
-                    showThinkingAnimation: false,
-                    hasActiveQuery: false,
-                    agentMode: 'risk',
-                    promptMode: props.settingsDefaults.promptMode,
-                    thinkingMode: 'off',
-                    contextLength: totalTokens,
-                    queuedMessage: null,
-                    model: props.model,
-                    totalCacheReadInputTokens: role === 'assistant' ? cacheReadTokens : 0,
-                    totalCacheCreationInputTokens: role === 'assistant' ? cacheCreationTokens : 0,
-                    totalInputTokens: role === 'assistant' ? Math.max(0, inputTokens - cacheReadTokens - cacheCreationTokens) : 0,
-                  });
-                  profileLog('[TokenDebug] streamEnd: created session state for', currentSid);
-                }
+                // streamEnd 到达时 state 可能尚未初始化（例如子代理会话首次 LLM 回复），
+                // 此时需要创建初始 state 并写入 token/cache 数据，否则 Cache 命中率不会显示。
+                // 参考 addMessage 处理器中 role===thinking/assistant 分支的初始化逻辑。
+                ensureSessionStateWithUsage(
+                  props.sessionStatesRef,
+                  currentSid,
+                  role,
+                  totalTokens,
+                  inputTokens,
+                  cacheReadTokens,
+                  cacheCreationTokens,
+                  {
+                    promptMode: propsRef.current.settingsDefaults.promptMode,
+                    model: propsRef.current.model,
+                  },
+                );
+                profileLog('[TokenDebug] streamEnd: updated/created session state for', currentSid);
               }
             }
           }
@@ -2163,7 +2142,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             const defaults = msg as { sessionId: string; model: string; thinkingMode: 'off' | 'low' | 'high' | 'max'; agentMode?: 'manual' | 'risk' | 'auto'; promptMode?: PromptMode; webSearch?: boolean };
             profileLog(`[Webview] setNewConversationDefaults received: model=${defaults.model}, thinkingMode=${defaults.thinkingMode}, agentMode=${defaults.agentMode}, promptMode=${defaults.promptMode}, webSearch=${defaults.webSearch}, currentSessionId=${props.currentSessionIdRef.current}`);
             // 如果用户已经手动切换过模型，不要再用 settings.json 的默认模型覆盖用户选择
-            const modelChangedByUser = props.model !== props.settingsDefaults.model;
+            const modelChangedByUser = propsRef.current.model !== propsRef.current.settingsDefaults.model;
             if (!modelChangedByUser) {
               props.setModel(defaults.model);
             }
@@ -2226,7 +2205,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             props.setIsUnlimited(typeof unlimited === 'boolean' ? unlimited : undefined);
           }
           break;
-        case 'showLLMConfig':
+        case 'showLLMConfig': {
           // 显示 LLM 配置面板（启动时 apiKey 为空或用户点击设置时触发）
           props.setLlmConfigBaseURL((msg as any).baseURL || '');
           props.setLlmConfigWebSearch(!!(msg as any).webSearch);
@@ -2279,6 +2258,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           props.setProviderConfigured(!!(msg as any).activeProvider && !!((msg as any).apiKey));
           props.setShowLLMConfig(true);
           break;
+        }
         default:
           // 未知消息类型只提示一次：宿主可能在每轮/每次流式事件里都发同一条消息，
           // 逐条 console.warn 会瞬间刷满控制台，掩盖真正有价值的日志。

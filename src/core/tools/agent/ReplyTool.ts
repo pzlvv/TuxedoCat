@@ -10,6 +10,7 @@ import { z } from 'zod';
 import type { ToolUseContext, ToolResult } from '../Tool.js';
 import { buildTool } from '../Tool.js';
 import { logger } from '../../Logger.js';
+import { emitAgentReplyDelivered } from '../bash/NotifyEvents.js';
 
 export const TOOL_NAME = 'Reply';
 
@@ -165,6 +166,14 @@ Sends a message to a target session.
       const generator = targetEngine.submitMessage(message, 'agent', subAgentId);
 
       logger.info('[ReplyToolDebug]', `submitMessage returned, isConsumerRunning=${targetEngine.isConsumerRunning}`);
+
+      // 发出 Reply 投递事件：供 Exec 前台 sleep 命令监听，
+      // 以便在 sleep 等待过程中收到子代理 Reply 时立刻转入后台
+      emitAgentReplyDelivered({
+        targetSessionId: targetId,
+        fromSessionId: subAgentId,
+        messagePreview: message.length > 100 ? message.slice(0, 100) + '...' : message,
+      });
 
       // 在后台异步消费 generator (不阻塞 Reply 返回)
       (async () => {

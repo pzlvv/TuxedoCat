@@ -148,6 +148,12 @@ function areSegmentTimelineEqual(prevProps: any, nextProps: any): boolean {
     if (a.streamId !== b.streamId) return false;
     if (a.outputTokens !== b.outputTokens) return false;
     if (a.reasoningTokens !== b.reasoningTokens) return false;
+    // toolArgs / toolName / meta 变化（updateToolArgs 补 Edit diffHunks、
+    // WebSearch 参数、toolMetaData 更新等）必须触发重渲染，
+    // 否则内层 MessageItem 拿不到新 args，工具预览不显示。
+    if (a.toolName !== b.toolName) return false;
+    if (!shallowEqualRecord(a.toolArgs, b.toolArgs)) return false;
+    if (!shallowEqualRecord(a.meta, b.meta)) return false;
   }
   return true;
 }
@@ -869,6 +875,48 @@ const MessageItem = memo(function MessageItem({
  */
 const SCROLL_AWAY_THRESHOLD = 50; // px — distance from bottom to consider "away"
 
+/** 消息分组的最小单元：一条用户消息 + 其后的所有非用户消息 */
+interface MessageSegment {
+  userMsg?: Message;
+  nonUserMsgs: Message[];
+}
+
+/**
+ * 把新分组的 segments 与上一轮缓存合并：userMsg 与整段 nonUserMsgs 都未变时直接
+ * 复用缓存对象（保持引用稳定，下游 memo 才能跳过重渲染）；部分变化时按位置保留
+ * 仍然相同的消息对象引用。纯函数，segmentsCacheRef 的写入时机由调用方控制。
+ */
+function mergeCachedSegments(
+  newSegments: MessageSegment[],
+  cache: MessageSegment[],
+): MessageSegment[] {
+  const merged: MessageSegment[] = [];
+  for (let i = 0; i < newSegments.length; i++) {
+    const newSeg = newSegments[i];
+    const cachedSeg = cache[i];
+    if (cachedSeg && cachedSeg.userMsg === newSeg.userMsg) {
+      const cachedMsgs = cachedSeg.nonUserMsgs;
+      const newMsgs = newSeg.nonUserMsgs;
+      if (cachedMsgs.length === newMsgs.length && cachedMsgs.every((m, idx) => m === newMsgs[idx])) {
+        merged.push(cachedSeg);
+      } else {
+        const preserved: Message[] = [];
+        for (let j = 0; j < newMsgs.length; j++) {
+          if (j < cachedMsgs.length && cachedMsgs[j] === newMsgs[j]) {
+            preserved.push(cachedMsgs[j]);
+          } else {
+            preserved.push(newMsgs[j]);
+          }
+        }
+        merged.push({ userMsg: newSeg.userMsg, nonUserMsgs: preserved });
+      }
+    } else {
+      merged.push(newSeg);
+    }
+  }
+  return merged;
+}
+
 function useAutoScroll(
   containerRef: React.RefObject<HTMLDivElement>,
   isStreaming: boolean,
@@ -929,7 +977,10 @@ function useAutoScroll(
         const c = containerRef.current;
         // 二次同步前必须再次确认用户没有主动滚走，避免 rAF 回调把用户
         // 已经向上滚动的位置强行拉回底部。
-        const willSync = !!c && !userScrolledAwayRef.current && c.scrollTop !== c.scrollHeight;
+        // 原条件 c.scrollTop !== c.scrollHeight 恒为 true（scrollTop 最大只能到
+        // scrollHeight - clientHeight），按本意修正为「尚未滚到底」的距离判断。
+        const willSync = !!c && !userScrolledAwayRef.current
+          && c.scrollTop + c.clientHeight < c.scrollHeight;
         profileLog(`[AutoScroll] scrollToBottom rAF-sync willSync=${willSync} userScrolledAway=${userScrolledAwayRef.current} before=${c ? `${c.scrollTop}/${c.scrollHeight}/${c.clientHeight}` : 'null'}`);
         if (willSync) {
           c!.scrollTop = c!.scrollHeight;
@@ -1721,34 +1772,8 @@ const MessagesView = memo(({
       }
     }
 
-    // Reuse cached segments
-    const cache = segmentsCacheRef.current;
-    const merged: typeof newSegments = [];
-
-    for (let i = 0; i < newSegments.length; i++) {
-      const newSeg = newSegments[i];
-      const cachedSeg = cache[i];
-
-      if (cachedSeg && cachedSeg.userMsg === newSeg.userMsg) {
-        const cachedMsgs = cachedSeg.nonUserMsgs;
-        const newMsgs = newSeg.nonUserMsgs;
-        if (cachedMsgs.length === newMsgs.length && cachedMsgs.every((m, idx) => m === newMsgs[idx])) {
-          merged.push(cachedSeg);
-        } else {
-          const preserved: Message[] = [];
-          for (let j = 0; j < newMsgs.length; j++) {
-            if (j < cachedMsgs.length && cachedMsgs[j] === newMsgs[j]) {
-              preserved.push(cachedMsgs[j]);
-            } else {
-              preserved.push(newMsgs[j]);
-            }
-          }
-          merged.push({ userMsg: newSeg.userMsg, nonUserMsgs: preserved });
-        }
-      } else {
-        merged.push(newSeg);
-      }
-    }
+    // Reuse cached segments（缓存合并逻辑抽到模块级 mergeCachedSegments，保持调用时机不变）
+    const merged = mergeCachedSegments(newSegments, segmentsCacheRef.current);
 
     segmentsCacheRef.current = merged;
     const _t1 = performance.now();
@@ -1868,17 +1893,6 @@ const MessagesView = memo(({
           {/* All segments in order (old on top, new at bottom) */}
           {segments.map((segment, index) => {
             const isLastSegment = index === segments.length - 1;
-
-            // 首次渲染时记录第一个和最后一个 segment 的渲染时间
-            if (index === 0 || index === segments.length - 1) {
-              const _t_segLogKey = `seg-${index}`;
-              if (!window.__segLogged?.has(_t_segLogKey)) {
-                if (!window.__segLogged) window.__segLogged = new Set();
-                window.__segLogged.add(_t_segLogKey);
-                const _t_now = performance.now();
-                profileLog(`[Profile] segment渲染 | index=${index}/${segments.length - 1} | userMsg=${!!segment.userMsg} | nonUserMsgs=${segment.nonUserMsgs.length} | t=${_t_now.toFixed(2)}ms`);
-              }
-            }
 
             return (
               <div

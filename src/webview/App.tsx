@@ -6,6 +6,7 @@ import InputArea, { InputAreaRef } from './InputArea';
 import MessagesView from './MessagesView';
 import 'antd/dist/reset.css';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, ProviderConfig, PreviewPayload } from './types';
+import { createSessionState } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
@@ -105,9 +106,6 @@ const App = () => {
   // 记录用户主动点击 abort 的会话。queryEnd 到达时用于判断：
   // 若该会话仍有排队消息，则不重新发送它，而是回填到输入框由用户自行修改。
   const abortedSessionsRef = useRef<Set<string>>(new Set());
-
-  // 服务器负载警告
-  const [serverLoadWarning, setServerLoadWarning] = useState<string | null>(null);
 
   // 正在智能命名的会话 ID 集合
   const [namingSessions, setNamingSessions] = useState<Set<string>>(new Set());
@@ -383,14 +381,14 @@ const App = () => {
     hasActiveQuery, contextLength, maxContextTokens, agentMode, thinkingMode,
     promptMode, setPromptMode,
     model, webSearch, settingsDefaults, hasCompactArchive, isCompactExpanded,
-    queuedMessage, serverLoadWarning, stats, deleteConfirm, userChoiceRequest,
+    queuedMessage, stats, deleteConfirm, userChoiceRequest,
     showThinkingAnimation, animationMode, messages,
     setCurrentFile, setSelectedLines, setFileHidden, setConversations,
     setConversationsLoading, setConversationDropdownOpen, setConversationTitle,
     setCurrentSessionId, setParentSessionId, setHasActiveQuery, setContextLength,
     setMaxContextTokens, setAgentMode, setThinkingMode,
     setModel, setWebSearch, setHasCompactArchive, setIsCompactExpanded, setQueuedMessage,
-    setServerLoadWarning, setStats, setDeleteConfirm, setMessages, setUserChoiceRequest,
+    setStats, setDeleteConfirm, setMessages, setUserChoiceRequest,
     setShowThinkingAnimation, setExpandedSubSessions, setNamingSessions,
     currentSessionIdRef, sessionStatesRef, commandHistoryRef, cursorPositionRef,
     choiceCursorPositionRef, userChoiceRequestRef, userChoiceInputRef,
@@ -404,7 +402,7 @@ const App = () => {
     hasActiveQuery, contextLength, maxContextTokens, agentMode, thinkingMode,
     promptMode,
     model, webSearch, settingsDefaults, hasCompactArchive, isCompactExpanded,
-    queuedMessage, serverLoadWarning, stats, deleteConfirm, userChoiceRequest,
+    queuedMessage, stats, deleteConfirm, userChoiceRequest,
     showThinkingAnimation, animationMode, messages,
   ]);
 
@@ -417,6 +415,127 @@ const App = () => {
 
   // 打开设置（LLM 配置）页面：先向扩展请求当前配置值，
   // 扩展回传 showLLMConfig 后由 useMessageHandler 填充配置面板并打开
+  /**
+   * 保存当前会话快照到 sessionStatesRef，并立即持久化上下文到 meta.json。
+   * 三处重复收敛：ConversationTreeItem onSelect / 新对话按钮 / useMessageHandler
+   * 的 switchToSession 各自保存一份（switchToSession 的版本字段更多，仍在 hook 内）。
+   * 值类型状态（userChoiceRequest / showThinkingAnimation 等）直接读渲染闭包值，
+   * 与原三处行为一致。
+   */
+  const saveCurrentSessionSnapshot = useCallback(() => {
+    const sid = currentSessionIdRef.current;
+    if (!sid) return;
+    const existing = sessionStatesRef.current.get(sid);
+    sessionStatesRef.current.set(sid, createSessionState({
+      input: inputAreaRef.current?.getValue() ?? '',
+      pastedImages: inputAreaRef.current?.getPastedImages?.() ?? [],
+      inputCursorPosition: mainInputRef.current?.selectionStart ?? 0,
+      choiceCursorPosition: choiceInputRef.current?.selectionStart ?? 0,
+      userChoiceRequest,
+      userChoiceInput: userChoiceInputRef.current,
+      showThinkingAnimation,
+      animationMode,
+      hasActiveQuery,
+      preCompressHasActiveQuery: existing?.preCompressHasActiveQuery,
+      agentMode,
+      promptMode,
+      thinkingMode,
+      contextLength,
+      queuedMessage: queuedMessageRef.current.get(sid) ?? null,
+      model,
+    }));
+    postMessage({
+      type: 'updateConversationContext',
+      sessionId: sid,
+      currentFile,
+      selectedLines,
+      totalContextTokens: contextLength,
+    });
+  }, [userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, promptMode, thinkingMode, contextLength, model, currentFile, selectedLines]);
+
+  /**
+   * 导航到目标会话前的固定动作序列（四处重复收敛）：
+   * 1. 当前若是"新建但还没发消息"的对话，先把草稿暂存，供下次"新建"恢复；
+   * 2. 清空消息并显示加载动画（插件模式与 Electron 模式统一）；
+   * 3. 清空当前展示的排队横幅，避免上一会话的 queue 串到新会话；
+   * 4. 发送导航消息（VS Code 插件 postMessage / Electron 内置 HTTP 路由）。
+   */
+  const navigateToSession = useCallback((sessionId: string) => {
+    stashNewChatDraft();
+    setIsLoadingConversation(true);
+    setMessages([]);
+    setQueuedMessage(null);
+    navigateToConversation(sessionId);
+  }, [stashNewChatDraft]);
+
+  const handleNavigateToConversation = navigateToSession;
+
+  /**
+   * 新建对话（顶部"+"按钮）：
+   * - 保存当前会话快照并持久化上下文；
+   * - 暂存"新对话"草稿（未发送过的对话切走时草稿由 stashNewChatDraft 保存）；
+   * - 生成新 sessionId，重置全部 UI 状态到 settings.json 默认值；
+   * - 把上一个"新对话"里没发出去的草稿带过来，避免切换会话后再新建时内容丢失。
+   * 自按钮 onClick 内联约 90 行抽出，行为不变。
+   */
+  const handleNewConversation = useCallback(() => {
+    // Save current session state before switching
+    saveCurrentSessionSnapshot();
+    // 当前若是"新建但还没发消息"的对话，先把草稿暂存，稍后带到新对话
+    stashNewChatDraft();
+    // Generate new session for new conversation
+    setConversationTitle(t('app.untitled'));
+    setParentSessionId(null);
+    const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    setMessages([]);
+    // 把上一个"新对话"里没发出去的草稿带过来，避免切换会话后再新建时内容丢失
+    const draft = newChatDraftRef.current;
+    const draftInput = draft?.input ?? '';
+    const draftImages = draft?.pastedImages ?? [];
+    const draftCursor = Math.min(draft?.cursor ?? draftInput.length, draftInput.length);
+    inputAreaRef.current?.setValue(draftInput);
+    inputAreaRef.current?.setPastedImages?.(draftImages);
+    newChatSessionRef.current = newSessionId;
+    setUserChoiceRequest(null);
+    userChoiceInputRef.current = '';
+    savedMainInputRef.current = '';
+    setShowThinkingAnimation(false);
+    setHasActiveQuery(false);
+    setQueuedMessage(null);
+    setContextLength(0);
+    // 重置压缩状态（新对话没有压缩）
+    setHasCompactArchive(false);
+    setIsCompactExpanded(false);
+    // 新对话使用 settings.json 中的默认值（一次性设置，避免跳变）
+    setAgentMode(settingsDefaults.agentMode);
+    setThinkingMode(settingsDefaults.thinkingMode);
+    setWebSearch(settingsDefaults.webSearch);
+    setModel(settingsDefaults.model);
+    setPromptMode(settingsDefaults.promptMode);
+    setCurrentSessionId(newSessionId);
+    setCurrentSessionIdRef(newSessionId);
+    // 为新对话创建默认 state
+    sessionStatesRef.current.set(newSessionId, createSessionState({
+      input: draftInput,
+      pastedImages: draftImages.length > 0 ? draftImages : undefined,
+      inputCursorPosition: draftCursor,
+      choiceCursorPosition: 0,
+      agentMode: settingsDefaults.agentMode,
+      promptMode: settingsDefaults.promptMode,
+      thinkingMode: settingsDefaults.thinkingMode,
+      webSearch: settingsDefaults.webSearch,
+      model: settingsDefaults.model,
+    }));
+    postMessage({ type: 'setActiveSessionId', sessionId: newSessionId });
+    postMessage({ type: 'startNewConversation', sessionId: newSessionId });
+    // 聚焦输入框，并把光标放回草稿里的原位置
+    setTimeout(() => {
+      mainInputRef.current?.focus();
+      mainInputRef.current?.setSelectionRange(draftCursor, draftCursor);
+    }, 0);
+    // 依赖与 saveCurrentSessionSnapshot 相同（值类型快照来源）；ref 不进依赖数组
+  }, [saveCurrentSessionSnapshot, stashNewChatDraft, settingsDefaults]);
+
   const handleOpenSettings = useCallback(() => {
     postMessage({ type: 'requestLLMConfig' });
   }, []);
@@ -441,17 +560,6 @@ const App = () => {
       });
     }
   }, [hasCompactArchive, isCompactExpanded]);
-
-  const handleNavigateToConversation = useCallback((sessionId: string) => {
-    // 当前若是"新建但还没发消息"的对话，先把草稿暂存，供下次"新建"恢复
-    stashNewChatDraft();
-    // 插件模式与 Electron 模式统一：导航前清空消息并显示加载动画
-    setIsLoadingConversation(true);
-    setMessages([]);
-    // 立即清空当前展示的排队横幅，避免加载期间把上一会话的 queue 带到新会话
-    setQueuedMessage(null);
-    navigateToConversation(sessionId);
-  }, [stashNewChatDraft]);
 
   // 同步 userChoiceRequest 到 ref
   useEffect(() => {
@@ -841,41 +949,8 @@ const App = () => {
                           onToggle={() => _toggleSubSession(item.sessionId)}
                           onSelect={() => {
                             const _t0_save = performance.now();
-                            if (currentSessionIdRef.current) {
-                              const sid = currentSessionIdRef.current;
-                              sessionStatesRef.current.set(sid, {
-                                input: inputAreaRef.current?.getValue() ?? '',
-                                pastedImages: inputAreaRef.current?.getPastedImages?.() ?? [],
-                                inputCursorPosition: mainInputRef.current?.selectionStart ?? 0,
-                                choiceCursorPosition: choiceInputRef.current?.selectionStart ?? 0,
-                                userChoiceRequest,
-                                userChoiceInput: userChoiceInputRef.current,
-                                showThinkingAnimation,
-                                animationMode,
-                                hasActiveQuery,
-                                preCompressHasActiveQuery: sessionStatesRef.current.get(sid)?.preCompressHasActiveQuery,
-                                agentMode,
-                                promptMode,
-                                thinkingMode,
-                                contextLength,
-                                queuedMessage: queuedMessageRef.current.get(sid) ?? null,
-                                model,
-                              });
-                              postMessage({
-                                type: 'updateConversationContext',
-                                sessionId: sid,
-                                currentFile,
-                                selectedLines,
-                                totalContextTokens: contextLength,
-                              });
-                            }
-                            // 当前若是"新建但还没发消息"的对话，先把草稿暂存，供下次"新建"恢复
-                            stashNewChatDraft();
-                            // 插件模式与 Electron 模式统一：导航前清空消息并显示加载动画
-                            setIsLoadingConversation(true);
-                            setMessages([]);
-                            setQueuedMessage(null);
-                            navigateToConversation(item.sessionId);
+                            saveCurrentSessionSnapshot();
+                            navigateToSession(item.sessionId);
                             setConversationDropdownOpen(false);
                             profileLog(`[Profile] onSelect(发送loadConversation) | session=${item.sessionId.substring(0, 20)} | save+postMsg耗时=${(performance.now() - _t0_save).toFixed(2)}ms`);
                           }}
@@ -894,13 +969,7 @@ const App = () => {
                           onToggleSub={_toggleSubSession}
                           depth={1}
                           onChildSelect={(sessionId) => {
-                            // 当前若是"新建但还没发消息"的对话，先把草稿暂存，供下次"新建"恢复
-                            stashNewChatDraft();
-                            // 插件模式与 Electron 模式统一：导航前清空消息并显示加载动画
-                            setIsLoadingConversation(true);
-                            setMessages([]);
-                            setQueuedMessage(null);
-                            navigateToConversation(sessionId);
+                            navigateToSession(sessionId);
                             setConversationDropdownOpen(false);
                           }}
                           onChildDelete={(sessionId, title) => {
@@ -940,96 +1009,7 @@ const App = () => {
             {/* 新对话按钮（Electron 模式下由侧栏"新建"接管） */}
             {hostInfo.newConversation === 'webview' && (
             <button
-              onClick={() => {
-                // Save current session state before switching
-                if (currentSessionIdRef.current) {
-                  const currentSessionId = currentSessionIdRef.current;
-                  sessionStatesRef.current.set(currentSessionId, {
-                    input: inputAreaRef.current?.getValue() ?? '',
-                    pastedImages: inputAreaRef.current?.getPastedImages?.() ?? [],
-                    inputCursorPosition: mainInputRef.current?.selectionStart ?? 0,
-                    choiceCursorPosition: choiceInputRef.current?.selectionStart ?? 0,
-                    userChoiceRequest,
-                    userChoiceInput: userChoiceInputRef.current,
-                    showThinkingAnimation,
-                    animationMode,
-                    hasActiveQuery,
-                    agentMode,
-                    promptMode,
-                    thinkingMode,
-                    contextLength,
-                    queuedMessage: queuedMessageRef.current.get(currentSessionId) ?? null,
-                    model,
-                  });
-                  // 立即持久化当前上下文到 meta.json（不等待防抖）
-                  postMessage({
-                    type: 'updateConversationContext',
-                    sessionId: currentSessionId,
-                    currentFile,
-                    selectedLines,
-                    totalContextTokens: contextLength,
-                  });
-                }
-                // 当前若是"新建但还没发消息"的对话，先把草稿暂存，稍后带到新对话
-                stashNewChatDraft();
-                // Generate new session for new conversation
-                setConversationTitle(t('app.untitled'));
-                setParentSessionId(null);
-                const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-                setMessages([]);
-                // 把上一个"新对话"里没发出去的草稿带过来，避免切换会话后再新建时内容丢失
-                const draft = newChatDraftRef.current;
-                const draftInput = draft?.input ?? '';
-                const draftImages = draft?.pastedImages ?? [];
-                const draftCursor = Math.min(draft?.cursor ?? draftInput.length, draftInput.length);
-                inputAreaRef.current?.setValue(draftInput);
-                inputAreaRef.current?.setPastedImages?.(draftImages);
-                newChatSessionRef.current = newSessionId;
-                setUserChoiceRequest(null);
-                userChoiceInputRef.current = '';
-                savedMainInputRef.current = '';
-                setShowThinkingAnimation(false);
-                setHasActiveQuery(false);
-                setQueuedMessage(null);
-                setContextLength(0);
-                // 重置压缩状态（新对话没有压缩）
-                setHasCompactArchive(false);
-                setIsCompactExpanded(false);
-                // 新对话使用 settings.json 中的默认值（一次性设置，避免跳变）
-                setAgentMode(settingsDefaults.agentMode);
-                setThinkingMode(settingsDefaults.thinkingMode);
-                setWebSearch(settingsDefaults.webSearch);
-                setModel(settingsDefaults.model);
-                setPromptMode(settingsDefaults.promptMode);
-                setCurrentSessionId(newSessionId);
-                setCurrentSessionIdRef(newSessionId);
-                // 为新对话创建默认 state
-                sessionStatesRef.current.set(newSessionId, {
-                  input: draftInput,
-                  pastedImages: draftImages.length > 0 ? draftImages : undefined,
-                  inputCursorPosition: draftCursor,
-                  choiceCursorPosition: 0,
-                  userChoiceRequest: null,
-                  userChoiceInput: '',
-                  showThinkingAnimation: false,
-                  animationMode: 'thinking',
-                  hasActiveQuery: false,
-                  agentMode: settingsDefaults.agentMode,
-                  promptMode: settingsDefaults.promptMode,
-                  thinkingMode: settingsDefaults.thinkingMode,
-                  webSearch: settingsDefaults.webSearch,
-                  contextLength: 0,
-                  queuedMessage: null,
-                  model: settingsDefaults.model,
-                });
-                postMessage({ type: 'setActiveSessionId', sessionId: newSessionId });
-                postMessage({ type: 'startNewConversation', sessionId: newSessionId });
-                // 聚焦输入框，并把光标放回草稿里的原位置
-                setTimeout(() => {
-                  mainInputRef.current?.focus();
-                  mainInputRef.current?.setSelectionRange(draftCursor, draftCursor);
-                }, 0);
-              }}
+onClick={handleNewConversation}
               className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
               style={{ backgroundColor: colors.bgTertiary }}
               title={t('app.newChat')}
@@ -1120,8 +1100,6 @@ const App = () => {
               colors={colors}
               isDark={isDark}
               queuedMessage={activeQueuedMessage}
-              serverLoadWarning={serverLoadWarning}
-              onDismissServerLoad={() => setServerLoadWarning(null)}
               skills={skills}
               mcpServers={mcpServers}
               onMcpToggle={handleMcpToggle}

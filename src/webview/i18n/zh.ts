@@ -132,7 +132,6 @@ export const zhDict: Record<string, string> = {
   'inputArea.waiting': '等待中: ',
   'inputArea.waitingImages': '（含 {count} 张图片）',
   'inputArea.resubmitToEdit': '重新提交即可修改',
-  'inputArea.dismiss': '关闭提示',
   'inputArea.askModeLoading': '加载中...',
   'inputArea.askMode': '询问模式',
   'inputArea.askModeAlways': '所有',

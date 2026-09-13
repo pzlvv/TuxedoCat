@@ -10,6 +10,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { statSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 import { z } from 'zod';
@@ -111,8 +112,12 @@ function getPandocPath(): string {
   const subDir = platform === 'win32' && arch === 'x64' ? 'x64-win32'
     : platform === 'linux' && arch === 'x64' ? 'x64-linux'
     : null;
+
+  // 当前平台没有预编译 pandoc 产物（macOS / linux-arm64 等）：
+  // 回退到 PATH 中的系统 pandoc，而不是直接抛错导致 doc/docx 读取必然失败。
   if (!subDir) {
-    throw new Error(`Unsupported platform: ${platform} ${arch}`);
+    const exeName = platform === 'win32' ? 'pandoc.exe' : 'pandoc';
+    return exeName;
   }
   const exeName = platform === 'win32' ? 'pandoc.exe' : 'pandoc';
 
@@ -128,7 +133,12 @@ function getPandocPath(): string {
   }
 
   // Fallback: getProjectRoot + resources/pandoc/...（dev 模式，未 build 时）
-  return path.join(getProjectRoot(), 'resources', 'pandoc', subDir, exeName);
+  const bundledPath = path.join(getProjectRoot(), 'resources', 'pandoc', subDir, exeName);
+  if (existsSync(bundledPath)) {
+    return bundledPath;
+  }
+  // 打包产物缺失时也回退到 PATH 中的系统 pandoc
+  return exeName;
 }
 
 /**
@@ -142,9 +152,11 @@ export async function convertDocToMd(filePath: string): Promise<string> {
   }
 
   const pandocPath = getPandocPath();
-  if (!existsSync(pandocPath)) {
+  // PATH 回退场景（pandocPath 不含路径分隔符）无法用 existsSync 检查，
+  // 直接尝试执行；报错时给出包含平台信息的提示。
+  if (!existsSync(pandocPath) && pandocPath.includes(path.sep)) {
     throw new Error(
-      `Pandoc not found at ${pandocPath}. Please ensure pandoc is installed in resources/pandoc/`,
+      `Pandoc not found at ${pandocPath}. Please ensure pandoc is installed in resources/pandoc/ or available in PATH.`,
     );
   }
 
@@ -152,9 +164,12 @@ export async function convertDocToMd(filePath: string): Promise<string> {
   const toolResultsDir = getToolResultsDir();
   await fs.mkdir(toolResultsDir, { recursive: true });
 
-  // 用原文件名作为 md 文件名（保持同名但扩展名改为 .md）
+  // md 文件名带源路径 hash：不同目录下的同名文件（a/report.docx 与 b/report.docx）
+  // 若共用 `${name}.md` 会互相覆盖缓存——A 转换后 B 读取时按 mtime 误判，
+  // 甚至拿到 A 的内容。加入源绝对路径 hash 后互不冲突。
   const parsedPath = path.parse(filePath);
-  const mdFileName = `${parsedPath.name}.md`;
+  const pathHash = crypto.createHash('sha1').update(path.resolve(filePath)).digest('hex').slice(0, 10);
+  const mdFileName = `${parsedPath.name}_${pathHash}.md`;
   const mdFilePath = path.join(toolResultsDir, mdFileName);
 
   // 缓存：如果 md 文件已存在且源文件未变更，直接返回
@@ -269,13 +284,14 @@ function readXlsxContent(
   });
 
   // 计算实际要读取的行数（限制在 XLSX_MAX_LINES 内）
-  const startLine = offset ?? 0;
+  // offset 为 1-based 行号（与文本读取路径一致），0/1 都映射到第一行。
+  const firstLine = offset === undefined ? 0 : Math.max(0, offset - 1);
   const effectiveLimit = limit !== undefined
     ? Math.min(limit, XLSX_MAX_LINES)
     : XLSX_MAX_LINES;
-  const endLine = Math.min(startLine + effectiveLimit, totalLines);
+  const endLine = Math.min(firstLine + effectiveLimit, totalLines);
 
-  const selectedRows = trimmedData.slice(startLine, endLine);
+  const selectedRows = trimmedData.slice(firstLine, endLine);
 
   // 找出最大列数以对齐输出
   let maxCols = 0;
@@ -304,7 +320,7 @@ function readXlsxContent(
   const lines: string[] = [];
   for (let i = 0; i < selectedRows.length; i++) {
     const row = selectedRows[i];
-    const lineNum = startLine + i;
+    const lineNum = firstLine + i + 1;
     if (Array.isArray(row)) {
       const cells = row.map((cell: unknown, colIdx: number) => {
         const value = String(cell ?? '');
@@ -324,7 +340,7 @@ function readXlsxContent(
   return {
     content: window.content,
     lineCount: window.lineCount,
-    startLine,
+    startLine: firstLine,
     totalLines,
     sheetName: targetSheet,
     sheets: allSheetNames,
@@ -351,18 +367,21 @@ async function readFileContent(
   const lines = fileContent.split('\n');
   const totalLines = lines.length;
 
-  const startLine = offset ?? 0;
+  // offset 语义为 1-based 行号（与 Read 输出展示的行号、Edit 工具的 offset 一致）；
+  // 历史上本工具按 0-indexed 处理，为兼容旧调用（offset=0 / "Use offset=${endLine}" 的
+  // 0-based 续读提示仍会出现）这里把 0/1 都映射到第一行。
+  const firstLine = offset === undefined ? 0 : Math.max(0, offset - 1);
   const endLine = limit !== undefined
-    ? Math.min(startLine + limit, totalLines)
+    ? Math.min(firstLine + limit, totalLines)
     : totalLines;
 
-  const selectedLines = lines.slice(startLine, endLine);
+  const selectedLines = lines.slice(firstLine, endLine);
   const window = buildBoundedWindow(selectedLines, caps);
 
   return {
     content: window.content,
     lineCount: window.lineCount,
-    startLine,
+    startLine: firstLine,
     totalLines,
     truncatedByBytes: window.truncatedByBytes,
   };
@@ -567,12 +586,14 @@ export const ReadTool = buildTool({
       .map((line, i) => `${data.startLine + i + 1}|${line}`)
       .join('\n');
 
-    // 输出被 50KB/2000 行限制截断时，追加继续读取提示
-    const endLine = data.startLine + data.lineCount;
+    // 输出被 50KB/2000 行限制截断时，追加继续读取提示。
+    // offset 是 1-based：下一窗口从「已展示的最后一行（1-based）的下一行」开始，
+    // 即 endLine（1-based，含）+ 1 = endLine + 1。
+    const lastShownLine = data.startLine + data.lineCount; // 1-based 最后一行
     let content = numberedContent;
-    if (data.lineCount > 0 && endLine < data.totalLines) {
+    if (data.lineCount > 0 && lastShownLine < data.totalLines) {
       const capNote = data.truncatedByBytes ? 'Output capped. ' : '';
-      const footer = `(${capNote}Showing lines ${data.startLine + 1}-${endLine} of ${data.totalLines}. Use offset=${endLine} to continue.)`;
+      const footer = `(${capNote}Showing lines ${data.startLine + 1}-${lastShownLine} of ${data.totalLines}. Use offset=${lastShownLine + 1} to continue.)`;
       content = `${numberedContent}\n${footer}`;
     }
 

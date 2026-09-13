@@ -11,7 +11,11 @@ export const inputSchema = z.strictObject({
   file_path: z.string().describe('The absolute path to the file to edit'),
   old_string: z.string().describe('The exact string to replace'),
   new_string: z.string().describe('The new string to replace it with'),
-  replace_all: z.coerce.boolean().optional().default(false)
+  // 字符串感知：z.coerce.boolean() 会把 "false" 变成 true，这里显式处理字符串形式
+  replace_all: z.union([
+    z.boolean(),
+    z.string().transform((v) => v === 'true' || (v !== 'false' && v.trim() !== '')),
+  ]).optional().default(false)
     .describe('Replace all occurrences within the search range (default: false)'),
   offset: z.coerce.number().int().positive().optional()
     .describe('The 1-based line number where the search range starts (default: 1)'),
