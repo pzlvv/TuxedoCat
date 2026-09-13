@@ -87,6 +87,10 @@ export interface UseAppHandlersProps {
   choiceInputRef: React.RefObject<HTMLTextAreaElement | null>;
   isDeletingRef: React.MutableRefObject<boolean>;
   listLoadedOnceRef: React.MutableRefObject<boolean>;
+  /** 由顶部"+"新建、尚未发送过消息的会话 id（新对话草稿相关） */
+  newChatSessionRef: React.MutableRefObject<string | null>;
+  /** "新对话"里已输入但未发送的草稿（新对话草稿相关） */
+  newChatDraftRef: React.MutableRefObject<{ input: string; pastedImages?: SessionState['pastedImages'] } | null>;
   // special
   setCurrentSessionIdRef: (sid: string | null) => void;
   inputAreaRef: React.RefObject<any>;
@@ -155,6 +159,9 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     props.setConversationTitle(t('app.untitled'));
     props.setParentSessionId(null);
     const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    // 启动时生成的这个会话同样是"新建但还没发消息"的对话：
+    // 不登记的话，用户在这里输入后切走再点"新建"，草稿会被当成普通会话丢掉。
+    props.newChatSessionRef.current = newSessionId;
     props.setMessages([]);
     props.inputAreaRef.current?.setValue('');
     props.inputAreaRef.current?.setPastedImages?.([]);
@@ -262,6 +269,13 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     }
 
     // ─── 普通消息发送 ───────────────────────────────────────────────
+    // 新对话里发出的第一条消息：草稿已被消费，清掉暂存，避免下次"新建"又把旧内容带回来。
+    // 判断必须在生成新 sessionId 之前做 —— 此时 currentSessionId 仍指向那个未发送的新对话。
+    if (props.currentSessionIdRef.current === props.newChatSessionRef.current) {
+      props.newChatSessionRef.current = null;
+      props.newChatDraftRef.current = null;
+    }
+
     // Generate session ID if not exists
     let sessionId = props.currentSessionIdRef.current;
     if (!sessionId) {

@@ -24,6 +24,7 @@ import { persistLargeOutput, buildLargeToolResultMessage } from '../tools/toolRe
 import { getServerSessionId, markServerSessionRotate } from './serverSession.js';
 import { fetch as undiciFetch, type Response as UndiciResponse } from 'undici';
 import { getLLMDispatcher } from './httpDispatcher.js';
+import { unwrapToolInput, describeToolInput } from '../utils/toolInput.js';
 import type { StreamEvent, StreamOptions } from './RealApi.js';
 
 // RedisStats module removed; local no-op stub
@@ -373,7 +374,7 @@ function syncContentBlocksFromOutput(contentBlocks: any[], output: unknown[] | u
     } else if (item.type === 'function_call') {
       let input: unknown = {};
       try {
-        input = JSON.parse(item.arguments || '{}');
+        input = unwrapToolInput(JSON.parse(item.arguments || '{}'));
       } catch {
         input = item.arguments || {};
       }
@@ -909,7 +910,8 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
             const argsStr = (parsed.arguments as string) || (currentFunctionCall as any)?._partialJson || '';
             if (currentFunctionCall) {
               try {
-                currentFunctionCall.input = argsStr ? JSON.parse(argsStr) : {};
+                // 模型可能把整个入参 double-encode 成 JSON 字符串，解包后再交给上层
+                currentFunctionCall.input = argsStr ? unwrapToolInput(JSON.parse(argsStr)) : {};
               } catch (e) {
                 logger.error('ResponsesAPI',
                   `[FUNCTION_CALL_PARSE_FAILED] id=${currentFunctionCall.id}, name=${currentFunctionCall.name}, ` +
@@ -986,7 +988,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
                 }
                 if (argsStr) {
                   try {
-                    currentFunctionCall.input = JSON.parse(argsStr);
+                    currentFunctionCall.input = unwrapToolInput(JSON.parse(argsStr));
                   } catch {
                     currentFunctionCall.input = argsStr;
                   }
@@ -1196,12 +1198,10 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
               `[LLM_RAW_OUTPUT] block[${i}] type=text, ` +
               `text_len=${text.length}, text_preview=${text.substring(0, 500)}`);
           } else if (block.type === 'tool_use') {
-            const inputStr = typeof block.input === 'object' ? JSON.stringify(block.input) : String(block.input);
             logger.info('ResponsesAPI',
               `[LLM_RAW_OUTPUT] block[${i}] type=tool_use, ` +
               `id=${block.id}, name=${block.name}, ` +
-              `input_keys=[${Object.keys(block.input || {}).join(', ')}], ` +
-              `input_size=${inputStr.length}, input_preview=${inputStr.substring(0, 500)}`);
+              describeToolInput(block.input));
           } else {
             logger.info('ResponsesAPI', `[LLM_RAW_OUTPUT] block[${i}] type=${block.type}`);
           }

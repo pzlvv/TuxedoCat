@@ -23,6 +23,7 @@ import { parseSSELines, buildAssistantMessageFromBlocks, dumpFailedRequest } fro
 import { getServerSessionId } from './serverSession.js';
 import { fetch as undiciFetch, type Response as UndiciResponse } from 'undici';
 import { getLLMDispatcher } from './httpDispatcher.js';
+import { unwrapToolInput, describeToolInput } from '../utils/toolInput.js';
 import type { StreamEvent, StreamOptions } from './RealApi.js';
 
 // RedisStats module removed; local no-op stub
@@ -418,12 +419,14 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
         if (openKind === 'tool_use' && openBlock) {
           const raw = openBlock._partialJson as string | undefined;
           if (raw) {
+            let parsed: unknown = raw;
             try {
-              openBlock.input = JSON.parse(raw);
+              parsed = JSON.parse(raw);
             } catch {
               // 解析失败保留原始字符串，交由上层容错
-              openBlock.input = raw;
             }
+            // 模型可能把整个入参 double-encode 成 JSON 字符串，这里再解一层
+            openBlock.input = unwrapToolInput(parsed);
           }
           delete openBlock._partialJson;
         }
@@ -633,10 +636,9 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
             const text = String(block.text || '');
             logger.info('OpenAiAPI', `[LLM_RAW_OUTPUT] block[${i}] type=text, text_len=${text.length}, text_preview=${text.substring(0, 500)}`);
           } else if (block.type === 'tool_use') {
-            const inputStr = typeof block.input === 'object' ? JSON.stringify(block.input) : String(block.input);
             logger.info('OpenAiAPI',
               `[LLM_RAW_OUTPUT] block[${i}] type=tool_use, id=${block.id}, name=${block.name}, ` +
-              `input_keys=[${Object.keys(block.input || {}).join(', ')}], input_size=${inputStr.length}, input_preview=${inputStr.substring(0, 500)}`);
+              describeToolInput(block.input));
           } else {
             logger.info('OpenAiAPI', `[LLM_RAW_OUTPUT] block[${i}] type=${block.type}`);
           }

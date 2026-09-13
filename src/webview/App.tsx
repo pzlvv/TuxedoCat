@@ -276,6 +276,31 @@ const App = () => {
   // 保存 userChoiceRequest 弹出前主输入框的内容，关闭后恢复
   const savedMainInputRef = useRef('');
 
+  // ── "新对话"草稿：避免"新建 → 输入 → 切走 → 再新建"时内容丢失 ──────────
+  // 会话还没发过任何消息时（webview 刚打开，或点了顶部"+"新建），输入框里的内容不属于
+  // 任何已落盘的会话：切换会话时它不会被 sessionStatesRef 保存下来，再点"新建"就丢了。
+  // 这里单独暂存一份，新建对话时恢复。
+  /**
+   * 由顶部"+"新建、且尚未发送过消息的会话 id。
+   * 与 currentSessionIdRef 相等即表示"当前正处于这个未发送的新对话"；
+   * 加载过任何真实会话后两者自然不等，因此不需要额外的复位逻辑。
+   */
+  const newChatSessionRef = useRef<string | null>(null);
+  /** 该对话里已输入但未发送的草稿（含光标位置） */
+  const newChatDraftRef = useRef<{ input: string; cursor: number; pastedImages?: SessionState['pastedImages'] } | null>(null);
+
+  /** 暂存"新对话"里已输入但未发送的草稿（离开该对话前调用） */
+  const stashNewChatDraft = useCallback(() => {
+    if (currentSessionIdRef.current !== newChatSessionRef.current) return;
+    const input = inputAreaRef.current?.getValue() ?? '';
+    newChatDraftRef.current = {
+      input,
+      // 光标位置一并暂存：恢复草稿时不能只把文本塞回去，否则光标会落到末尾
+      cursor: Math.min(mainInputRef.current?.selectionStart ?? input.length, input.length),
+      pastedImages: inputAreaRef.current?.getPastedImages?.() ?? [],
+    };
+  }, []);
+
   // 用户确认对话框状态
   const [userChoiceRequest, setUserChoiceRequest] = useState<UserChoiceRequest | null>(null);
   // 强制滚动 key：递增时 MessagesView 在底部时重新滚动到底部
@@ -332,6 +357,7 @@ const App = () => {
     messages,
     currentSessionIdRef, sessionStatesRef, userChoiceRequestRef, userChoiceInputRef,
     agentModeReadyRef, savedMainInputRef, queuedMessageRef, abortedSessionsRef, mcpServersBySessionRef, cursorPositionRef, choiceCursorPositionRef,
+    stashNewChatDraft, newChatSessionRef,
     mainInputRef, choiceInputRef, messagesContainerRef, userScrolledAwayRef,
     streamRafRef, toolStatusRafRef, pendingStreamRef, pendingToolStatusRef,
     bufferedToolStatusRef, conversationLoadingRef, isDeletingRef, listLoadedOnceRef,
@@ -363,6 +389,7 @@ const App = () => {
     currentSessionIdRef, sessionStatesRef, commandHistoryRef, cursorPositionRef,
     choiceCursorPositionRef, userChoiceRequestRef, userChoiceInputRef,
     savedMainInputRef, queuedMessageRef, abortedSessionsRef, mainInputRef, choiceInputRef,
+    newChatSessionRef, newChatDraftRef,
     isDeletingRef, listLoadedOnceRef, setCurrentSessionIdRef, inputAreaRef,
     COMMAND_HISTORY_MAX, _appMountTime,
   }), [
@@ -410,13 +437,15 @@ const App = () => {
   }, [hasCompactArchive, isCompactExpanded]);
 
   const handleNavigateToConversation = useCallback((sessionId: string) => {
+    // 当前若是"新建但还没发消息"的对话，先把草稿暂存，供下次"新建"恢复
+    stashNewChatDraft();
     // 插件模式与 Electron 模式统一：导航前清空消息并显示加载动画
     setIsLoadingConversation(true);
     setMessages([]);
     // 立即清空当前展示的排队横幅，避免加载期间把上一会话的 queue 带到新会话
     setQueuedMessage(null);
     navigateToConversation(sessionId);
-  }, []);
+  }, [stashNewChatDraft]);
 
   // 同步 userChoiceRequest 到 ref
   useEffect(() => {
@@ -820,6 +849,8 @@ const App = () => {
                                 totalContextTokens: contextLength,
                               });
                             }
+                            // 当前若是"新建但还没发消息"的对话，先把草稿暂存，供下次"新建"恢复
+                            stashNewChatDraft();
                             // 插件模式与 Electron 模式统一：导航前清空消息并显示加载动画
                             setIsLoadingConversation(true);
                             setMessages([]);
@@ -843,6 +874,8 @@ const App = () => {
                           onToggleSub={_toggleSubSession}
                           depth={1}
                           onChildSelect={(sessionId) => {
+                            // 当前若是"新建但还没发消息"的对话，先把草稿暂存，供下次"新建"恢复
+                            stashNewChatDraft();
                             // 插件模式与 Electron 模式统一：导航前清空消息并显示加载动画
                             setIsLoadingConversation(true);
                             setMessages([]);
@@ -917,13 +950,21 @@ const App = () => {
                     totalContextTokens: contextLength,
                   });
                 }
+                // 当前若是"新建但还没发消息"的对话，先把草稿暂存，稍后带到新对话
+                stashNewChatDraft();
                 // Generate new session for new conversation
                 setConversationTitle(t('app.untitled'));
                 setParentSessionId(null);
                 const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
                 setMessages([]);
-                inputAreaRef.current?.setValue('');
-                inputAreaRef.current?.setPastedImages?.([]);
+                // 把上一个"新对话"里没发出去的草稿带过来，避免切换会话后再新建时内容丢失
+                const draft = newChatDraftRef.current;
+                const draftInput = draft?.input ?? '';
+                const draftImages = draft?.pastedImages ?? [];
+                const draftCursor = Math.min(draft?.cursor ?? draftInput.length, draftInput.length);
+                inputAreaRef.current?.setValue(draftInput);
+                inputAreaRef.current?.setPastedImages?.(draftImages);
+                newChatSessionRef.current = newSessionId;
                 setUserChoiceRequest(null);
                 userChoiceInputRef.current = '';
                 savedMainInputRef.current = '';
@@ -944,8 +985,9 @@ const App = () => {
                 setCurrentSessionIdRef(newSessionId);
                 // 为新对话创建默认 state
                 sessionStatesRef.current.set(newSessionId, {
-                  input: '',
-                  inputCursorPosition: 0,
+                  input: draftInput,
+                  pastedImages: draftImages.length > 0 ? draftImages : undefined,
+                  inputCursorPosition: draftCursor,
                   choiceCursorPosition: 0,
                   userChoiceRequest: null,
                   userChoiceInput: '',
@@ -962,9 +1004,10 @@ const App = () => {
                 });
                 postMessage({ type: 'setActiveSessionId', sessionId: newSessionId });
                 postMessage({ type: 'startNewConversation', sessionId: newSessionId });
-                // 聚焦输入框
+                // 聚焦输入框，并把光标放回草稿里的原位置
                 setTimeout(() => {
                   mainInputRef.current?.focus();
+                  mainInputRef.current?.setSelectionRange(draftCursor, draftCursor);
                 }, 0);
               }}
               className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"

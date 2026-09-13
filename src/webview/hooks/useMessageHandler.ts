@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import type { WebviewMessage, McpServerInfo } from '../../core/webviewTypes';
 import { extractUserContent } from '../../core/utils/contentBlocks';
+import { normalizeToolInput } from '../../core/utils/toolInput';
 import type { DiffHunk } from '../../core/utils/editDiff';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, ProviderConfig } from '../types';
 import { postMessage } from '../webviewEnv';
@@ -11,6 +12,9 @@ import { beginThinkingStream, updateStreamChars, endStream, endStreamsForSession
 
 // Profiling helper
 const profileTag = '[Profile]';
+
+/** 已提示过的未知消息类型：避免宿主重复发送时把控制台刷爆（同类只提示一次） */
+const warnedUnknownMessageTypes = new Set<string>();
 
 export interface UseMessageHandlerProps {
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
@@ -109,6 +113,10 @@ export interface UseMessageHandlerProps {
   mcpServersBySessionRef: React.MutableRefObject<Map<string, McpServerInfo[]>>;
   cursorPositionRef: React.MutableRefObject<number | null>;
   choiceCursorPositionRef: React.MutableRefObject<number | null>;
+  /** 暂存"新对话"草稿：自动跳转到其它会话前调用，避免草稿丢失 */
+  stashNewChatDraft: () => void;
+  /** 由"+"或启动时新建、尚未发送过消息的会话 id */
+  newChatSessionRef: React.MutableRefObject<string | null>;
   mainInputRef: React.RefObject<HTMLTextAreaElement | null>;
   choiceInputRef: React.RefObject<HTMLTextAreaElement | null>;
   messagesContainerRef: React.RefObject<HTMLDivElement | null>;
@@ -293,7 +301,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             filePath: msg.filePath,
             fileSelectedLines: msg.fileSelectedLines,
             toolName: msg.toolName,
-            toolArgs: msg.toolArgs,
+            // 统一归一化为对象：compact 归档展开等路径可能直接透传历史 input，
+            // 其中可能存在被 double-encode 成字符串的入参。
+            toolArgs: msg.role === 'toolcall' ? normalizeToolInput(msg.toolArgs) : msg.toolArgs,
             status: msg.status,
             toolCallId: msg.toolCallId || (msg.role === 'toolcall' ? `tool-${Date.now()}-${Math.random()}` : undefined),
             isCompactSummary: msg.isCompactSummary,
@@ -493,6 +503,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           props.setMessages([]);
           // 清空当前展示的排队横幅，避免自动切换期间串会；conversationLoaded 会按目标会话恢复
           props.setQueuedMessage(null);
+          // 自动跳转前先把"新对话"里未发送的草稿暂存下来，避免切换后丢失
+          props.stashNewChatDraft();
           // 然后向扩展发送 loadConversation 请求，切换到目标 session
           postMessage({
             type: 'loadConversation',
@@ -504,6 +516,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 直接复用 onStartup 的逻辑来初始化新会话状态
           {
             const newSessionId = msg.sessionId;
+            // 这也是一个"新建但还没发消息"的对话：登记后用户在这里输入再切走，
+            // 草稿才会被暂存下来（与 onStartup / 顶部"+"一致）
+            props.newChatSessionRef.current = newSessionId;
             // 新会话不需要加载动画
             props.setIsLoadingConversation(false);
             // 重置所有会话状态
@@ -622,6 +637,12 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           props.setMcpServers(msg.servers);
           break;
         }
+        case 'aiBegin':
+        case 'aiEnd':
+          // 扩展端用于同步 thinking 动画的辅助消息；webview 侧的动画已由
+          // queryBegin/queryEnd 与 showThinkingAnimation 驱动，这里显式忽略，
+          // 避免每轮 LLM 调用都刷 "Unknown message type" 警告。
+          break;
         case 'queryBegin':
           // 记录该 session 本轮 query 的起始时间（用于 TTFT）。
           // 放在 session 过滤之前：即使该会话当前不在前台，也要记录，切回来时才有 TTFT。
@@ -1366,7 +1387,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                           content: canceledContent,
                           param: `⚙️ ${toolUse.name}`,
                           toolName: toolUse.name,
-                          toolArgs: (toolUse.input || {}) as Record<string, unknown>,
+                          toolArgs: normalizeToolInput(toolUse.input),
                           toolCallId: toolUseId,
                           status: 'fail',
                           timestamp: msgTimestamp,
@@ -1395,7 +1416,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                       // 从 conversationLoaded 附带的 toolMetaMap 中查找裁剪掉的 _meta 大字段
                       const preloadedMeta = (msg as any).toolMetaMap?.[toolUseId as string] as
                         { beforeContent?: string; afterContent?: string; diffHunks?: DiffHunk[] } | undefined;
-                      const toolArgs = (toolUse.input || {}) as Record<string, unknown>;
+                      // 归一化入参：历史记录里可能存在被 double-encode 成字符串的 input
+                      // （例如 AskUserQuestion），直接写属性会抛 TypeError，这里统一解包成对象。
+                      const toolArgs = normalizeToolInput(toolUse.input);
 
                       // Write 工具：补充 webview 展示所需的 contentPreview / totalLines / isTruncated
                       // （这些字段在实时工具调用时由 onPreToolCall 添加，但不会持久化到历史记录中）
@@ -2221,7 +2244,12 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           props.setShowLLMConfig(true);
           break;
         default:
-          console.warn(`[Webview] Unknown message type: ${msg.type}`);
+          // 未知消息类型只提示一次：宿主可能在每轮/每次流式事件里都发同一条消息，
+          // 逐条 console.warn 会瞬间刷满控制台，掩盖真正有价值的日志。
+          if (!warnedUnknownMessageTypes.has(msg.type)) {
+            warnedUnknownMessageTypes.add(msg.type);
+            console.warn(`[Webview] Unknown message type: ${msg.type}（同类消息仅提示一次）`);
+          }
       }
     };
 

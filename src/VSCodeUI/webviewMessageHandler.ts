@@ -14,6 +14,7 @@ import { MODEL_CONFIGS, normalizeModelTokenLimits, type ModelTokenLimits } from 
 import { DEFAULT_WAKE_SHORTCUT, normalizeAccelerator } from '../core/utils/shortcut.js';
 import { userChoiceQueue } from '../core/UserChoiceQueue.js';
 import { noteSessionActivity, clearSessionIdleState } from '../core/sessionIdle.js';
+import { isCompacting } from '../core/compact/state.js';
 import type { WebviewMessage } from '../core/webviewTypes.js';
 import type { Message } from '../core/types.js';
 import type { UserChoiceManager } from './userChoice.js';
@@ -506,7 +507,7 @@ export class WebviewMessageHandler {
       // - queueMessage / 引擎仍在消费：先只显示在输入框上方的 queue 中，
       //   等下一次 LLM 请求真正消费该消息时再由 QueryEngine 补发到 MessagesView。
       // - sendMessage 且引擎空闲：保持原有行为，立即回显到 MessagesView。
-      const isQueueMessage = message.type === 'queueMessage' || engine.isConsumerRunning;
+      const isQueueMessage = message.type === 'queueMessage' || engine.isConsumerRunning || isCompacting(sessionId);
 
       // 构造用户消息对象（暂存，不立即 push 到 mutableMessages）。
       // 由 flushQueuedMessagesIntoContext 在处理 pendingUserMessage 时用该对象现场追加，

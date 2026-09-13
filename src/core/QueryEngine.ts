@@ -13,6 +13,7 @@ import type { PromptPresetId } from './prompt/PromptPreset.js';
 import { getAllTools } from './tools/index.js';
 import { logger } from './Logger.js';
 import { noteSessionActivity } from './sessionIdle.js';
+import { isCompacting } from './compact/state.js';
 
 /**
  * 创建简单的 AbortController polyfill
@@ -441,6 +442,10 @@ export class QueryEngine {
   enqueueAgentMessage(content: string, agentId?: string): void {
     this.agentMessageQueue.push({ content, agentId: agentId ?? '' });
 
+    // 压缩进行中：只入队，不启动消费循环，避免与压缩并发改写上下文。
+    // 压缩结束后由 resumeAfterCompact() 统一排空。
+    if (isCompacting(this.sesssionID)) return;
+
     if (!this.isConsumerRunning) {
       this.isConsumerRunning = true;
       noteSessionActivity(this.sesssionID);
@@ -466,6 +471,25 @@ export class QueryEngine {
         this.config.ui?.onQueryEnd(this.sesssionID);
       }
     })();
+  }
+
+  /**
+   * 压缩结束后调用：压缩期间入队的消息（用户消息 / Agent 回复 / Reminder）此时才启动消费循环。
+   *
+   * 压缩过程中 submitMessage / enqueueAgentMessage 只入队不启动 consumer，
+   * 因此必须在压缩收尾时显式唤醒一次，否则消息会一直卡在队列里。
+   * 已在消费中（例如自动压缩发生在 query 循环内部）时不重复启动。
+   */
+  resumeAfterCompact(): void {
+    if (isCompacting(this.sesssionID)) return;
+    if (this.isConsumerRunning) return;
+    if (this.pendingUserMessage === null && this.agentMessageQueue.length === 0 && this.pendingReminder === null) {
+      return;
+    }
+    this.isConsumerRunning = true;
+    noteSessionActivity(this.sesssionID);
+    this.config.ui?.onQueryBegin(this.sesssionID);
+    this.startBackgroundConsumer();
   }
 
   /**
@@ -560,6 +584,10 @@ export class QueryEngine {
    * @returns 被 flush 的消息数量
    */
   flushQueuedMessagesIntoContext(): number {
+    // 压缩进行中：排队消息不进入 LLM 上下文。
+    // 压缩会整体替换 mutableMessages，此时把排队消息插进去会被压缩结果覆盖。
+    if (isCompacting(this.sesssionID)) return 0;
+
     const hasReminder = this.pendingReminder !== null;
     const hasUserMessage = this.pendingUserMessage !== null;
     const hasAgentMessages = this.agentMessageQueue.length > 0;
@@ -798,6 +826,12 @@ export class QueryEngine {
         return;
       }
     }
+
+    // 压缩进行中：消息只入队，不启动消费循环。
+    // 压缩会整体替换 mutableMessages，此时并发跑一轮 query 会让两者互相踩踏
+    // （新消息可能被压缩掉，或压缩结果被后续 query 覆盖）。
+    // 压缩结束后由 resumeAfterCompact() 统一排空队列。
+    if (isCompacting(this.sesssionID)) return;
 
     this.isConsumerRunning = true;
     noteSessionActivity(this.sesssionID);

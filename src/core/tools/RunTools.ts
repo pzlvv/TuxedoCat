@@ -21,6 +21,7 @@ import type { ToolUseContext, Tool, ToolProgressData } from './Tool.js';
 import type { AssistantUI } from '../AssistantUI.js';
 import { logger } from '../Logger.js';
 import { persistLargeOutput, buildLargeToolResultMessage } from './toolResultStorage.js';
+import { unwrapToolInput, normalizeToolInput } from '../utils/toolInput.js';
 
 /**
  * 生成全局唯一的 tool_result uuid
@@ -251,7 +252,7 @@ async function* authorizeOne(
     const errorMsg = `Error: Tool "${toolUse.name}" not found`;
     logger.error('runTools', errorMsg);
 
-    await ui?.onPreToolCall(sessionID, toolUse.id, toolUse.name, toolUse.input as Record<string, any>, null);
+    await ui?.onPreToolCall(sessionID, toolUse.id, toolUse.name, normalizeToolInput(toolUse.input), null);
     ui?.onToolResult(sessionID, toolUse.id, toolUse.name, errorMsg, 'error');
 
     yield { message: buildToolResultMessage(toolUse.id, errorMsg, -1, false) };
@@ -279,7 +280,7 @@ async function* authorizeOne(
     const errorMsg = `InputValidationError: ${parsedInput.error.message}`;
     logger.error('runTools', `Tool ${toolUse.name} input validation failed: ${errorMsg}`);
 
-    await ui?.onPreToolCall(sessionID, toolUse.id, toolUse.name, toolUse.input as Record<string, any>, tool);
+    await ui?.onPreToolCall(sessionID, toolUse.id, toolUse.name, normalizeToolInput(toolUse.input), tool);
     ui?.onToolResult(sessionID, toolUse.id, toolUse.name, errorMsg, 'error');
 
     yield { message: buildToolResultMessage(toolUse.id, errorMsg, -1, false) };
@@ -288,6 +289,18 @@ async function* authorizeOne(
 
   if (usedInput !== toolUse.input) {
     (toolUse as any).input = usedInput;
+    // 同步修正已落盘的 tool_use.input：模型 / Provider 偶尔会把整个入参 double-encode
+    // 成字符串，如果只修内存，历史对话恢复时仍会拿到字符串，UI 层对其写属性会抛
+    // "Cannot create property 'xxx' on string"。这里追加一条 tool_use_update 记录，
+    // 让后续加载历史时回放为修正后的对象。
+    if (usedInput && typeof usedInput === 'object') {
+      try {
+        const { updateToolUseInput } = await import('../history/index.js');
+        await updateToolUseInput(sessionID, toolUse.id, usedInput as Record<string, unknown>);
+      } catch (e) {
+        logger.warn('runTools', `Failed to persist fixed input for ${toolUse.name}: ${e}`);
+      }
+    }
   }
 
   // --- 语义验证 ---
@@ -793,21 +806,7 @@ function fixToolInput(input: unknown): unknown {
  * 避免把普通字符串（如 "hello"）误改语义。
  */
 function tryParseJsonString(value: string): unknown {
-  let current: unknown = value;
-  // 最多解 3 层，防止异常输入造成无意义的反复解析
-  for (let i = 0; i < 3; i++) {
-    if (typeof current !== 'string') break;
-    const trimmed = current.trim();
-    if (!trimmed) break;
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (parsed === current) break;
-      current = parsed;
-    } catch {
-      break;
-    }
-  }
-  return current && typeof current === 'object' ? current : value;
+  return unwrapToolInput(value);
 }
 
 /**

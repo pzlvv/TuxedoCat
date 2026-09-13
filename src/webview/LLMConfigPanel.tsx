@@ -345,8 +345,6 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   const [shortcut, setShortcut] = useState<string>(initialShortcutNormalized);
   const [shortcutRecording, setShortcutRecording] = useState(false);
   const [shortcutError, setShortcutError] = useState<string | null>(null);
-  /** 已保存的快捷键注册失败（被系统/其它程序占用） */
-  const [shortcutConflict, setShortcutConflict] = useState(false);
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
   const [baseURLError, setBaseURLError] = useState<string | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
@@ -923,21 +921,11 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     return () => window.removeEventListener('keydown', handler, true);
   }, [shortcutRecording]);
 
-  // 设置面板打开期间临时注销全局快捷键，避免影响快捷键设置；
-  // 同时查询注册状态，冲突时在设置页明确提示，而不是静默失败。
+  // 设置面板打开期间临时注销全局快捷键，避免影响快捷键设置
   useEffect(() => {
     if (!isElectron) return;
-    const handler = (event: MessageEvent) => {
-      const msg = event.data;
-      if (msg?.type === 'wakeShortcutStatus') {
-        setShortcutConflict(!msg.registered);
-      }
-    };
-    window.addEventListener('message', handler);
     postMessage({ type: 'suspendWakeShortcut' });
-    postMessage({ type: 'requestWakeShortcutStatus' });
     return () => {
-      window.removeEventListener('message', handler);
       postMessage({ type: 'resumeWakeShortcut' });
     };
   }, [isElectron]);
@@ -1596,9 +1584,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                   gap: '8px',
                   textAlign: 'left',
                   cursor: 'pointer',
-                  borderColor: shortcutRecording
-                    ? colors.harness
-                    : (shortcutConflict ? '#ef4444' : colors.border),
+                  borderColor: shortcutRecording ? colors.harness : colors.border,
                 }}
               >
                 <span style={{ color: shortcutRecording ? colors.textSystem : colors.textPrimary }}>
@@ -1612,12 +1598,9 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               </button>
               <div
                 className="text-[11px] mt-1"
-                style={{ color: shortcutError || shortcutConflict ? '#ef4444' : colors.textSystem }}
+                style={{ color: shortcutError ? '#ef4444' : colors.textSystem }}
               >
-                {shortcutError
-                  || (shortcutConflict
-                    ? t('llmConfig.shortcutConflict', { shortcut: formatAcceleratorForDisplay(shortcut) })
-                    : t('llmConfig.shortcutHint'))}
+                {shortcutError || t('llmConfig.shortcutHint')}
               </div>
             </div>
           )}

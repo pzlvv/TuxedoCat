@@ -14,6 +14,7 @@ import { CONFIG_DIR_NAME } from '../../config/project.js';
 import { getMaxOutputTokens, getContextWindow, getModelConfig } from '../utils/modelConfig.js';
 import { fetch as undiciFetch, type Response as UndiciResponse } from 'undici';
 import { getLLMDispatcher } from './httpDispatcher.js';
+import { unwrapToolInput, describeToolInput } from '../utils/toolInput.js';
 
 // RedisStats module removed; local no-op stub
 async function recordLLMUsage(_inputTokens: number, _outputTokens: number): Promise<void> {}
@@ -579,7 +580,8 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
                   `[TOOL_USE_RAW_JSON] id=${lastBlock.id}, name=${lastBlock.name}, ` +
                   `raw_len=${rawJson.length}, raw_preview=${rawJson.substring(0, 500)}`);
                 try {
-                  (lastBlock as any).input = JSON.parse(rawJson);
+                  // 模型可能把整个入参 double-encode 成 JSON 字符串，解包后再交给上层
+                  (lastBlock as any).input = unwrapToolInput(JSON.parse(rawJson));
                 } catch (e) {
                   logger.error('RealAPI',
                     `[TOOL_USE_PARSE_FAILED] id=${lastBlock.id}, name=${lastBlock.name}, ` +
@@ -749,12 +751,10 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
               `[LLM_RAW_OUTPUT] block[${i}] type=text, ` +
               `text_len=${text.length}, text_preview=${text.substring(0, 500)}`);
           } else if (block.type === 'tool_use') {
-            const inputStr = typeof block.input === 'object' ? JSON.stringify(block.input) : String(block.input);
             logger.info('RealAPI',
               `[LLM_RAW_OUTPUT] block[${i}] type=tool_use, ` +
               `id=${block.id}, name=${block.name}, ` +
-              `input_keys=[${Object.keys(block.input || {}).join(', ')}], ` +
-              `input_size=${inputStr.length}, input_preview=${inputStr.substring(0, 500)}`);
+              describeToolInput(block.input));
           } else {
             logger.info('RealAPI', `[LLM_RAW_OUTPUT] block[${i}] type=${block.type}`);
           }

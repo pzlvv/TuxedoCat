@@ -753,5 +753,9 @@ export async function requestCompact(sessionId: string): Promise<void> {
       role: 'system',
       content: `压缩失败: ${error instanceof Error ? error.message : String(error)}`,
     });
+  } finally {
+    // 压缩期间新发的消息只入队不消费（见 compact/state.ts），这里统一唤醒一次，
+    // 否则用户压缩时发的消息会一直卡在队列里没人处理。
+    engine.resumeAfterCompact();
   }
 }

@@ -11,6 +11,7 @@ import { logger } from '../Logger.js';
 import { getGlobalUI } from '../AssistantUI.js';
 import { updateConversationContext, saveCompactArchive } from '../history/Conversation.js';
 import { getConfig } from '../llm/config.js';
+import { markCompacting, unmarkCompacting } from './state.js';
 
 /**
  * Compact conversation by summarizing and creating a boundary marker
@@ -22,8 +23,34 @@ import { getConfig } from '../llm/config.js';
  * 4. Create boundary marker
  * 5. Create summary message
  * 6. Keep recent important messages (last N messages)
+ *
+ * 注意：压缩期间会把会话标记为"正在压缩"（见 compact/state.ts），
+ * 期间用户新发的消息只入队不消费，压缩结束后由 QueryEngine.resumeAfterCompact() 排空。
  */
 export async function compactConversation(
+  sessionId: string,
+  messages: Message[],
+  customInstructions?: string,
+  isAutoCompact: boolean = false,
+  maxMessagesToKeep: number = 30
+): Promise<CompactionResult> {
+  // 整个压缩过程（含提前返回与异常）都持有"正在压缩"标记：
+  // 压缩会整体替换 mutableMessages，期间不能并发消费排队消息。
+  markCompacting(sessionId);
+  try {
+    return await compactConversationInner(
+      sessionId,
+      messages,
+      customInstructions,
+      isAutoCompact,
+      maxMessagesToKeep,
+    );
+  } finally {
+    unmarkCompacting(sessionId);
+  }
+}
+
+async function compactConversationInner(
   sessionId: string,
   messages: Message[],
   customInstructions?: string,
