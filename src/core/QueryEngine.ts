@@ -13,7 +13,7 @@ import type { PromptPresetId } from './prompt/PromptPreset.js';
 import { getAllTools } from './tools/index.js';
 import { logger } from './Logger.js';
 import { noteSessionActivity } from './sessionIdle.js';
-import { isCompacting } from './compact/state.js';
+import { isCompacting, isPendingCompact, markPendingCompact, unmarkPendingCompact } from './compact/state.js';
 
 /**
  * 创建简单的 AbortController polyfill
@@ -466,11 +466,75 @@ export class QueryEngine {
           return;
         }
         await this.flush().catch((e: unknown) => logger.error('QueryEngine', `background consumer flush failed: ${e}`));
-        this.isConsumerRunning = false;
-        this.signalConsumerExited();
-        this.config.ui?.onQueryEnd(this.sesssionID);
+        await this.finalizeIdle(true);
       }
     })();
+  }
+
+  /**
+   * 消费循环退出（会话由"运行中"转为"空闲"）时的统一收尾。
+   *
+   * 顺序：置空闲标记 → 唤醒等待中的提交者 → 通知 UI 查询结束 → 补判待执行的压缩请求。
+   *
+   * 之所以要在"已置为空闲"之后再判定压缩：用户可能正好在最后一轮对话进行中点压缩，
+   * 之后不会再有下一轮对话，Query.ts 的自动压缩检查不会再被触发；这里补判一次，
+   * 否则该压缩请求会一直悬空。此时会话已空闲，任何后续点击压缩都会走立即压缩路径，
+   * 因此不存在"请求被漏掉"的窗口。
+   */
+  private async finalizeIdle(notifyQueryEnd: boolean): Promise<void> {
+    this.isConsumerRunning = false;
+    this.signalConsumerExited();
+    if (notifyQueryEnd) {
+      this.config.ui?.onQueryEnd(this.sesssionID);
+    }
+    await this.runPendingCompactIfNeeded();
+  }
+
+  /**
+   * 对话结束后的补判：执行用户此前登记、但一直没有等到"下一轮对话"的压缩请求。
+   *
+   * 仅在没有并发消费（刚置为空闲）时执行；不满足压缩条件时只清标记、不做任何处理。
+   */
+  private async runPendingCompactIfNeeded(): Promise<void> {
+    // 已有新的消费循环接管：交给其 queryLoop 在下一轮开始时处理。
+    if (this.isConsumerRunning) return;
+    if (isCompacting(this.sesssionID)) return;
+    if (!isPendingCompact(this.sesssionID)) return;
+
+    // 清掉标记：无论是否真的执行压缩，都不再重复判定。
+    unmarkPendingCompact(this.sesssionID);
+
+    const { compactAndApplyMessages } = await import('./compact/index.js');
+
+    // 二次确认：等待中的提交者可能在上面 await 期间被唤醒并立即启动了新的消费循环。
+    // 此时把标记还回去，交给新消费循环的 queryLoop 在下一轮开始时处理，避免并发压缩。
+    if (this.isConsumerRunning || isCompacting(this.sesssionID)) {
+      markPendingCompact(this.sesssionID);
+      return;
+    }
+
+    try {
+      const applied = await compactAndApplyMessages(this.sesssionID, this.mutableMessages, {
+        ui: this.config.ui,
+      });
+      if (!applied) {
+        logger.info('QueryEngine', `Pending compact skipped for ${this.sesssionID} (no messages to summarize)`);
+        return;
+      }
+
+      // 压缩会重建消息数组，把 lastPersistedMessageUuid 指向新的末尾消息。
+      const lastMsg = this.mutableMessages[this.mutableMessages.length - 1];
+      if (lastMsg && 'uuid' in lastMsg && (lastMsg as any).uuid) {
+        this.lastPersistedMessageUuid = (lastMsg as any).uuid;
+      }
+      logger.info('QueryEngine', `Executed pending compact for ${this.sesssionID}`);
+    } catch (err) {
+      logger.warn('QueryEngine', `Pending compact failed for ${this.sesssionID}: ${err}`);
+      this.config.ui?.onCompressProgress?.(this.sesssionID, 'error');
+    } finally {
+      // 压缩期间入队的消息（用户消息 / Agent 回复）此时才排空。
+      this.resumeAfterCompact();
+    }
   }
 
   /**
@@ -848,20 +912,12 @@ export class QueryEngine {
           yield* this.messageConsumer();
         } finally {
           await this.flush().catch((e: unknown) => logger.error('QueryEngine', `submitMessage flush failed: ${e}`));
-          this.isConsumerRunning = false;
-          this.signalConsumerExited();
-        }
-        if (manageQueryUI) {
-          this.config.ui?.onQueryEnd(this.sesssionID);
+          await this.finalizeIdle(manageQueryUI);
         }
         return;
       }
 
-      this.isConsumerRunning = false;
-      this.signalConsumerExited();
-      if (manageQueryUI) {
-        this.config.ui?.onQueryEnd(this.sesssionID);
-      }
+      await this.finalizeIdle(manageQueryUI);
     }
   }
 

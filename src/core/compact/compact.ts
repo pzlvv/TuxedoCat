@@ -8,8 +8,9 @@ import { COMPACT_SYSTEM_PROMPT } from './types.js';
 
 import { generateCompactSummaryPrompt, generateCompactUserMessage, generateCompactBoundaryContent, getUserInputHistory, formatUserInputHistory } from './prompt.js';
 import { logger } from '../Logger.js';
-import { getGlobalUI } from '../AssistantUI.js';
-import { updateConversationContext, saveCompactArchive } from '../history/Conversation.js';
+import { getGlobalUI, type AssistantUI } from '../AssistantUI.js';
+import { updateConversationContext, saveCompactArchive, replaceConversationMessages } from '../history/Conversation.js';
+import { replayMessagesToUI } from '../utils/replayMessages.js';
 import { getConfig } from '../llm/config.js';
 import { markCompacting, unmarkCompacting } from './state.js';
 
@@ -26,6 +27,9 @@ import { markCompacting, unmarkCompacting } from './state.js';
  *
  * 注意：压缩期间会把会话标记为"正在压缩"（见 compact/state.ts），
  * 期间用户新发的消息只入队不消费，压缩结束后由 QueryEngine.resumeAfterCompact() 排空。
+ *
+ * @returns 压缩结果；当不满足压缩条件（边界之后的消息数 <= maxMessagesToKeep，没有可摘要
+ *   的内容）时返回 null，表示"未做任何处理"。
  */
 export async function compactConversation(
   sessionId: string,
@@ -33,7 +37,14 @@ export async function compactConversation(
   customInstructions?: string,
   isAutoCompact: boolean = false,
   maxMessagesToKeep: number = 30
-): Promise<CompactionResult> {
+): Promise<CompactionResult | null> {
+  // 不满足压缩条件：不做任何处理 —— 不标记"正在压缩"、不通知 UI、不替换消息。
+  // 调用方（手动 / 自动压缩）据此直接返回，避免把会话压缩成只剩一条边界标记。
+  if (!hasCompactableMessages(messages, maxMessagesToKeep)) {
+    logger.info('compact', 'Not enough messages to compact, skipping (no-op)');
+    return null;
+  }
+
   // 整个压缩过程（含提前返回与异常）都持有"正在压缩"标记：
   // 压缩会整体替换 mutableMessages，期间不能并发消费排队消息。
   markCompacting(sessionId);
@@ -50,13 +61,23 @@ export async function compactConversation(
   }
 }
 
+/**
+ * 判断会话是否有可压缩的消息。
+ *
+ * 压缩会保留最近 maxMessagesToKeep 条消息，只把更早的消息摘要掉；
+ * 因此压缩边界之后的消息数必须严格大于 maxMessagesToKeep，否则没有可摘要的内容。
+ */
+export function hasCompactableMessages(messages: Message[], maxMessagesToKeep: number = 30): boolean {
+  return getMessagesAfterCompactBoundary(messages).length > maxMessagesToKeep;
+}
+
 async function compactConversationInner(
   sessionId: string,
   messages: Message[],
   customInstructions?: string,
   isAutoCompact: boolean = false,
   maxMessagesToKeep: number = 30
-): Promise<CompactionResult> {
+): Promise<CompactionResult | null> {
   logger.info('compact', 'Starting compact conversation');
 
   const ui = getGlobalUI();
@@ -82,8 +103,9 @@ async function compactConversationInner(
   const messagesToSummarize = messagesForCompact.slice(0, -maxMessagesToKeep);
 
   if (messagesToSummarize.length === 0) {
+    // 兜底：调用方已通过 hasCompactableMessages 提前拦截，正常不会走到这里。
     logger.warn('compact', 'No messages to summarize, compact not needed');
-    return createEmptyCompactionResult(isAutoCompact);
+    return null;
   }
 
   // Step 3: Generate summary via LLM
@@ -237,36 +259,6 @@ async function generateSummary(messages: Message[], customInstructions: string |
 }
 
 /**
- * Create empty compaction result when no compaction needed
- */
-function createEmptyCompactionResult(
-  isAutoCompact: boolean
-): CompactionResult {
-  const trigger: 'auto' | 'manual' = isAutoCompact ? 'auto' : 'manual';
-  const boundaryMarker = {
-    type: 'system' as const,
-    subtype: 'compact_boundary' as const,
-    content: generateCompactBoundaryContent(
-      trigger,
-      0
-    ),
-    uuid: `compact_${Date.now()}`,
-    timestamp: Date.now(),
-    compactMetadata: {
-      trigger,
-      preCompactTokenCount: 0,
-      postCompactTokenCount: 0,
-      timestamp: Date.now(),
-    },
-  };
-
-  return {
-    boundaryMarker,
-    summaryMessages: [],
-  };
-}
-
-/**
  * Build post-compact messages array
  */
 export function buildPostCompactMessages(result: CompactionResult): Message[] {
@@ -275,6 +267,72 @@ export function buildPostCompactMessages(result: CompactionResult): Message[] {
     ...result.summaryMessages,
     ...(result.messagesToKeep || []),
   ];
+}
+
+/**
+ * 执行压缩并把结果应用回会话：就地替换 messages、落盘、更新 meta 上下文、通知 UI 重放。
+ *
+ * 三个调用点共用这段逻辑，避免"压缩结果应用"各写一份导致行为不一致：
+ * - Integration.requestCompact（空闲时手动触发）
+ * - Query.ts queryLoop（自动压缩 / 下一轮对话开始时执行延后的手动压缩）
+ * - QueryEngine.finalizeIdle（最后一轮对话结束后补判延后的手动压缩）
+ *
+ * @returns 是否真正执行了压缩；false 表示不满足压缩条件（没有可摘要内容），未做任何处理。
+ */
+export async function compactAndApplyMessages(
+  sessionId: string,
+  messages: Message[],
+  options: {
+    /** 是否自动压缩（决定边界标记 trigger 文案）；默认 false（手动） */
+    isAutoCompact?: boolean;
+    /** 自定义摘要指令 */
+    customInstructions?: string;
+    /** 通知 UI 的实例；不传则使用全局 UI */
+    ui?: AssistantUI;
+  } = {},
+): Promise<boolean> {
+  const result = await compactConversation(
+    sessionId,
+    messages,
+    options.customInstructions,
+    options.isAutoCompact ?? false,
+  );
+  // 不满足压缩条件：不做任何处理，保持上下文原样。
+  if (!result) return false;
+
+  const postCompactMessages = buildPostCompactMessages(result);
+
+  // 就地替换，保持与 QueryEngine.mutableMessages 同一引用。
+  messages.length = 0;
+  messages.push(...postCompactMessages);
+
+  // 持久化压缩后的消息到磁盘
+  await replaceConversationMessages(sessionId, postCompactMessages);
+
+  // 标记压缩产生的消息为已持久化：
+  // boundaryMarker / summaryMessage 是 compactConversation 新建的对象，没有 _persisted 标记，
+  // 若不标记，下一次 QueryEngine 的 persist-all 循环会把它们再次 appendMessage 到 JSONL 末尾，
+  // 产生相同 uuid 的重复消息，导致 loadConversation 的 messageMap 覆盖根节点、整条消息链断开、
+  // 对话加载后空白。
+  for (const msg of postCompactMessages) {
+    (msg as any)._persisted = true;
+  }
+
+  // 标记 meta 中的压缩状态
+  await updateConversationContext(sessionId, {
+    isCompacted: true,
+    isExpanded: false,
+  }).catch((err: unknown) => {
+    logger.warn('compact', `Failed to update compact context: ${err}`);
+  });
+
+  const ui = options.ui ?? getGlobalUI();
+  if (ui) {
+    // 通知 UI 压缩完成：清空旧消息并推送压缩后的内容
+    replayMessagesToUI(ui, sessionId, postCompactMessages);
+  }
+
+  return true;
 }
 
 /**

@@ -5,10 +5,11 @@ import { Dropdown } from 'antd';
 import InputArea, { InputAreaRef } from './InputArea';
 import MessagesView from './MessagesView';
 import 'antd/dist/reset.css';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, ProviderConfig } from './types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, ProviderConfig, PreviewPayload } from './types';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
+import PreviewOverlay from './PreviewOverlay';
 import { postMessage, getLogoUri, getHasWorkspace, LOGO_CLASS_NAME, getHostInfo, navigateToConversation } from './webviewEnv';
 import { DEFAULT_WAKE_SHORTCUT } from '../core/utils/shortcut.js';
 import type { McpServerInfo } from '../core/webviewTypes';
@@ -70,7 +71,7 @@ const App = () => {
   const [hasActiveQuery, setHasActiveQuery] = useState(false);
   const [contextLength, setContextLength] = useState<number>(0);
   const [maxContextTokens, setMaxContextTokens] = useState<number | null>(null);
-  const [agentMode, setAgentMode] = useState<AgentMode>('manual');
+  const [agentMode, setAgentMode] = useState<AgentMode>('risk');
   /** agentMode 是否已收到会话/默认值；未收到前 UI 显示 loading，不展示具体模式 */
   const [agentModeReady, setAgentModeReady] = useState(false);
   const agentModeReadyRef = useRef(false);
@@ -80,11 +81,11 @@ const App = () => {
   const [webSearch, setWebSearch] = useState<boolean>(false);
   const [model, setModel] = useState<string>('deepseek-v4-flash');
   const [models, setModels] = useState<string[]>(['deepseek-v4-flash', 'deepseek-v4-pro']);
-  // settings.json 中的默认值（新对话创建时一次性使用，避免先显示 manual 再跳变）
+  // settings.json 中的默认值（新对话创建时一次性使用，避免先显示 risk 再跳变）
   const [settingsDefaults, setSettingsDefaults] = useState<SettingsDefaults>({
     model: 'deepseek-v4-flash',
     thinkingMode: 'off',
-    agentMode: 'manual',
+    agentMode: 'risk',
     promptMode: 'normal',
     webSearch: false,
   });
@@ -116,7 +117,7 @@ const App = () => {
   const [llmConfigBaseURL, setLlmConfigBaseURL] = useState('');
   const [llmConfigWebSearch, setLlmConfigWebSearch] = useState(false);
   const [llmConfigThinkingEffort, setLlmConfigThinkingEffort] = useState<ThinkingMode>('off');
-  const [llmConfigDefaultAgentMode, setLlmConfigDefaultAgentMode] = useState<AgentMode>('manual');
+  const [llmConfigDefaultAgentMode, setLlmConfigDefaultAgentMode] = useState<AgentMode>('risk');
   const [llmConfigDefaultPromptMode, setLlmConfigDefaultPromptMode] = useState<PromptMode>('normal');
   const [llmConfigApiKey, setLlmConfigApiKey] = useState('');
   const [llmConfigProviders, setLlmConfigProviders] = useState<ProviderConfig[]>([]);
@@ -126,6 +127,10 @@ const App = () => {
   // 服务商配置是否已完成（activeProvider 存在且 apiKey 非空）；未完成时禁用输入框并引导打开设置。
   // 初始为 null（尚未探测到配置），避免启动时因探测延迟而误显示"请配置模型服务"。
   const [providerConfigured, setProviderConfigured] = useState<boolean | null>(null);
+
+  // 页内预览（仅浏览器端）：查看文件 / 虚拟文档 / diff / Mermaid 时由宿主回推内容，
+  // 在这里就地展示，避免打开桌面原生窗口（查看类操作不跨端）。
+  const [preview, setPreview] = useState<PreviewPayload | null>(null);
 
   // Skills for slash-command autocomplete
   const [skills, setSkills] = useState<Array<{ name: string; description: string; isBuiltin?: boolean }>>([]);
@@ -354,6 +359,7 @@ const App = () => {
     setSettingsDefaults, settingsDefaults, setLocaleVersion, setLlmConfigLanguage,
     setLlmConfigShortcut,
     setProviderConfigured,
+    setPreview,
     messages,
     currentSessionIdRef, sessionStatesRef, userChoiceRequestRef, userChoiceInputRef,
     agentModeReadyRef, savedMainInputRef, queuedMessageRef, abortedSessionsRef, mcpServersBySessionRef, cursorPositionRef, choiceCursorPositionRef,
@@ -577,6 +583,14 @@ const App = () => {
   // 使用 useMemo 缓存 colors 对象，避免每次 App 重渲染都新建
   const colors = useMemo(() => getColors(isDark), [isDark]);
 
+  // 同步浏览器状态栏 / 地址栏配色（移动端顶部系统预留区）。
+  // 页面内容画不到那块区域，未设置 theme-color 时浏览器会填成白色，
+  // 深色界面下顶部就会多出一条白条（刘海机型更高、更明显）。
+  useEffect(() => {
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', colors.bg);
+  }, [colors.bg]);
+
   // 排队消息横幅必须与会话绑定：若全局 queuedMessage 仍停留在上一个会话
   // （例如切换会话后的短暂加载期），不把它传给输入区，避免“串会”显示。
   const activeQueuedMessage =
@@ -591,7 +605,7 @@ const App = () => {
 
   if (!themeInitialized) {
     return (
-      <div className="h-screen w-screen flex items-center justify-center" style={{ backgroundColor: 'transparent', overflow: 'clip' }}>
+      <div className="app-viewport w-full flex items-center justify-center" style={{ backgroundColor: 'transparent', overflow: 'clip' }}>
         <div className="text-[13px]" style={{ color: '#9f9fa9' }}>{t('app.loading')}</div>
       </div>
     );
@@ -628,7 +642,7 @@ const App = () => {
   if (noWorkspace) {
     return (
       <div
-        className="h-screen w-screen flex flex-col items-center justify-center gap-4"
+        className="app-viewport w-full flex flex-col items-center justify-center gap-4"
         style={{
           backgroundColor: 'transparent',
           position: 'relative',
@@ -695,7 +709,7 @@ const App = () => {
       `}</style>
       <div
         key={`locale-${localeVersion}`}
-        className={`h-screen w-screen flex flex-col overflow-hidden ${theme}`}
+        className={`app-viewport w-full flex flex-col overflow-hidden ${theme}`}
         style={{
           backgroundColor: 'transparent',
           color: colors.textPrimary,
@@ -717,7 +731,13 @@ const App = () => {
         {/* Header */}
         <div
           className="px-4 py-2 border-b flex justify-between items-center"
-          style={{ borderColor: colors.border, backgroundColor: 'transparent' }}
+          style={{
+            borderColor: colors.border,
+            backgroundColor: 'transparent',
+            // 刻意不使用 env(safe-area-inset-top) 做顶部留白：
+            // 普通浏览器标签页里浏览器 UI 已经占住了状态栏区域，
+            // 全屏时该值又会变成状态栏/挖孔高度，两种情况都会在顶部多出一条空白。
+          }}
         >
           <div className="flex items-center gap-2 min-w-0">
             {/* 子对话返回按钮 */}
@@ -1050,7 +1070,14 @@ const App = () => {
         />
 
         {/* Input Area — 条件渲染 UserChoiceOverlay / InputArea，保持相同位置 */}
-        <div className="px-4 pb-4 pt-2">
+        <div
+          className="px-4 pt-2"
+          style={{
+            // 底部安全区：仅在系统手势条/圆角比常规留白更高时才生效（max 而非相加），
+            // 避免普通浏览器下多出一截空白；桌面 / VS Code 下 env() 为 0，等于 1rem。
+            paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))',
+          }}
+        >
           {userChoiceRequest ? (
             <UserChoiceOverlay
               userChoiceRequest={userChoiceRequest}
@@ -1127,6 +1154,9 @@ const App = () => {
           />
         )}
         {settingsPanel}
+        {preview && (
+          <PreviewOverlay payload={preview} colors={colors} onClose={() => setPreview(null)} />
+        )}
       </div>
 
     </>

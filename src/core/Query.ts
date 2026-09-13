@@ -11,9 +11,8 @@ import type { Tool } from './tools/Tool.js';
 import type { AutoCompactTrackingState } from './compact/types.js';
 import { sessionQueue } from './SessionQueue.js';
 import { logger } from './Logger.js';
-import { replaceConversationMessages, updateConversationContext } from './history/index.js';
+import { updateConversationContext } from './history/index.js';
 import { getAvailableOutputTokens } from './utils/modelConfig.js';
-import { replayMessagesToUI } from './utils/replayMessages.js';
 import { CONFIG_DIR_NAME } from '../config/project.js';
 
 function cleanWebSearchUrl(url: string): string {
@@ -107,9 +106,19 @@ async function* queryLoop(
     // 既用于自动压缩判断，也用于计算本次请求可用的 max output。
     let exactTokenCount: number | undefined;
 
-    // Auto compact 检查
+    // Auto compact 检查（含手动触发但被延后的压缩）
     {
-      const { shouldAutoCompact, compactConversation, buildPostCompactMessages } = await import('./compact/index.js');
+      const {
+        shouldAutoCompact,
+        compactAndApplyMessages,
+        isPendingCompact,
+        unmarkPendingCompact,
+      } = await import('./compact/index.js');
+
+      // 手动触发压缩时会话若非空闲，会登记"待压缩"（见 Integration.requestCompact）。
+      // 这里把它当作"已达到需要压缩的条件"，与自动压缩走同一条安全路径，
+      // 从而在下一轮对话开始时（本次 LLM 请求之前）完成压缩。
+      const pendingCompact = isPendingCompact(params.sessionID);
 
       const apiMessages = messages.filter((m) => m.type === 'assistant');
       for (let i = apiMessages.length - 1; i >= 0; i--) {
@@ -131,40 +140,36 @@ async function* queryLoop(
         }
       }
 
-      if (await shouldAutoCompact(messages, state.autoCompactTracking, exactTokenCount, params.modelConfig?.model, params.modelConfig?.modelConfigs)) {
-        const result = await compactConversation(params.sessionID, messages, undefined, true);
-        const postCompactMessages = buildPostCompactMessages(result);
+      const shouldCompact = pendingCompact
+        || await shouldAutoCompact(messages, state.autoCompactTracking, exactTokenCount, params.modelConfig?.model, params.modelConfig?.modelConfigs);
 
-        // 就地替换，保持与 QueryEngine.mutableMessages 同一引用。
-        messages.length = 0;
-        messages.push(...postCompactMessages);
-        await replaceConversationMessages(params.sessionID, postCompactMessages);
-        for (const msg of postCompactMessages) {
-          (msg as any)._persisted = true;
+      if (shouldCompact) {
+        if (pendingCompact) {
+          unmarkPendingCompact(params.sessionID);
+          logger.info('query', `Executing deferred manual compact for session ${params.sessionID}`);
         }
-        {
-          const { updateConversationContext } = await import('./history/Conversation.js');
-          await updateConversationContext(params.sessionID, {
-            isCompacted: true,
-            isExpanded: false,
-          }).catch((err: unknown) => {
-            logger.warn('query', `Failed to update compact context: ${err}`);
-          });
-        }
-        {
+        // 延后的手动压缩按 manual 记录边界（trigger = 'manual'）；自动压缩保持 'auto'。
+        const applied = await compactAndApplyMessages(params.sessionID, messages, {
+          isAutoCompact: !pendingCompact,
+          ui: params.ui,
+        });
+
+        if (!applied) {
+          // 不满足压缩条件（没有可摘要的消息）：不做任何处理，保持上下文原样。
+          logger.info('query', `Compact skipped for session ${params.sessionID} (no messages to summarize)`);
+        } else {
+          // 压缩会重建消息数组，需要把 lastPersistedMessageUuid 指向新的末尾消息。
           const { getSessionEngine } = await import('./QueryEngine.js');
           const engine = getSessionEngine(params.sessionID);
-          const lastMsg = postCompactMessages[postCompactMessages.length - 1];
+          const lastMsg = messages[messages.length - 1];
           if (engine && lastMsg && 'uuid' in lastMsg && (lastMsg as any).uuid) {
             engine.lastPersistedMessageUuid = (lastMsg as any).uuid;
           }
+
+          // 压缩后上下文已大幅缩短，旧的 exactTokenCount 不再代表当前上下文，
+          // 重置后本次请求按“无历史占用”计算可用输出，避免输出被压缩前的旧值挤压。
+          exactTokenCount = undefined;
         }
-
-        replayMessagesToUI(params.ui, params.sessionID, postCompactMessages);
-
-        // 压缩后上下文已大幅缩短，旧的 exactTokenCount 不再代表当前上下文，
-        // 重置后本次请求按“无历史占用”计算可用输出，避免输出被压缩前的旧值挤压。
-        exactTokenCount = undefined;
       }
     }
 

@@ -36,7 +36,9 @@ export interface LLMConfig {
   baseURL: string;
   model: string;
   maxTokens: number;
-  timeout?: number;
+  // 注：不再提供 timeout 配置项。
+  // 流式请求的超时保护统一由 streamTimeout.ts 的看门狗负责
+  // （首字节 300s / 空闲 60s），配置项与真实行为不一致会造成误导。
   /**
    * LLM API 协议类型。由调用方（getConfig / callRealLLM）按最终生效的 model
    * 从 provider.modelConfigs[model].apiType 解析后填入，不再来自全局配置。
@@ -111,7 +113,6 @@ interface HarnessConfig {
   llm: {
     model: string;
     maxTokens: number;
-    timeout?: number;
     /** 是否启用 Web Search（仅 apiType='Responses' 时生效） */
     webSearch?: boolean;
     thinking_budget_tokens?: number;
@@ -162,7 +163,6 @@ function createFallbackConfig(): LLMConfig {
     baseURL: 'https://api.deepseek.com',
     model: '',
     maxTokens: FALLBACK_MODEL_PARAMS.maxOutputTokens,
-    timeout: 300000,
     apiType: DEFAULT_API_TYPE,
     webSearch: true,
     thinking_budget_tokens: FALLBACK_MODEL_PARAMS.thinking_token_budget,
@@ -428,7 +428,7 @@ export async function getLLMConfigPanelPayload(): Promise<LLMConfigPanelPayload>
     webSearch: typeof llm.webSearch === 'boolean' ? llm.webSearch : defaultConfig.webSearch,
     thinkingEffort: llm.thinking_effort || defaultConfig.thinking_effort,
     defaultModel: active?.defaultModel || active?.models?.[0] || defaultConfig.model,
-    defaultAgentMode: settings?.defaultAgentMode === 'risk' || settings?.defaultAgentMode === 'auto' ? settings.defaultAgentMode : 'manual',
+    defaultAgentMode: settings?.defaultAgentMode === 'manual' || settings?.defaultAgentMode === 'auto' ? settings.defaultAgentMode : 'risk',
     defaultPromptMode: settings?.defaultPromptMode === 'minimal' || settings?.defaultPromptMode === 'mixed'
       ? settings.defaultPromptMode
       : 'normal',
@@ -470,7 +470,6 @@ async function getDefaultConfig(sessionId?: string): Promise<LLMConfig> {
       baseURL: activeProvider?.baseURL || defaultConfig.baseURL,
       model,
       maxTokens: configFile.llm.maxTokens || defaultConfig.maxTokens,
-      timeout: configFile.llm.timeout || defaultConfig.timeout,
       // apiType 已下放到模型级：按最终生效的 model 解析
       apiType: resolveApiTypeForModel(model, modelConfigs),
       webSearch: configFile.llm.webSearch ?? defaultConfig.webSearch,
@@ -636,18 +635,18 @@ export async function resolveModelForActiveProvider(modelName: string): Promise<
 }
 
 /**
- * 获取 settings.json 中新对话的默认工作模式（manual | risk | auto）
+ * 获取 settings.json 中新对话的默认询问模式（manual=所有 | risk=关键 | auto=禁用）
  * 读取顶层 defaultAgentMode（与 llm 平级）
  * 仅用于新对话的初始值，已存在的对话使用各自会话中保存的值
- * @returns 工作模式，默认返回 'manual'
+ * @returns 询问模式，默认返回 'risk'（关键）
  */
 export async function getDefaultAgentMode(): Promise<'manual' | 'risk' | 'auto'> {
   try {
     const configFile = await loadConfigFile();
     const mode = configFile?.defaultAgentMode;
-    return mode === 'manual' || mode === 'risk' || mode === 'auto' ? mode : 'manual';
+    return mode === 'manual' || mode === 'risk' || mode === 'auto' ? mode : 'risk';
   } catch {
-    return 'manual';
+    return 'risk';
   }
 }
 

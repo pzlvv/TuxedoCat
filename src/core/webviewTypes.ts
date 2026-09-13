@@ -87,6 +87,26 @@ export type WebviewMessage = {
   filePath?: string;
   selectedLines?: { start: number; end: number };
 } | {
+  /**
+   * 浏览器端（内置 HTTP 服务器）页内预览：宿主把查看内容按 sessionId + clientId
+   * 定向回推给发起端，由 PreviewOverlay 展示，不打开桌面原生窗口。
+   */
+  type: 'openPreview';
+  mode: 'text' | 'image' | 'diff' | 'mermaid';
+  title?: string;
+  filePath?: string;
+  content?: string;
+  dataUrl?: string;
+  language?: string;
+  code?: string;
+  selectedLines?: { start: number; end: number } | null;
+  beforeContent?: string;
+  afterContent?: string;
+  newContent?: string;
+  error?: string;
+  sessionId?: string;
+  clientId?: string;
+} | {
   type: 'setTitle';
   sessionId: string;
   title: string;
@@ -251,6 +271,7 @@ export type WebviewMessage = {
   models: string[];
 } | {
   type: 'compressProgress';
+  sessionId: string;
   /** 压缩进度: 'start' | 'complete' | 'error' */
   status: 'start' | 'complete' | 'error';
   /** 压缩后的 token 使用量（complete 时提供） */
@@ -463,12 +484,6 @@ export type WebviewMessage = {
   shortcut?: string;
   /** 全局默认启用的 MCP 列表（设置面板「默认配置」编辑用） */
   mcpServers?: McpServerInfo[];
-} | {
-  type: 'wakeShortcutStatus';
-  /** 当前使用的唤醒快捷键 */
-  shortcut: string;
-  /** 是否已成功注册为全局快捷键 */
-  registered: boolean;
 } | {
   type: 'providerModelsResult';
   /** 自动获取到的模型列表；为空表示获取失败 */

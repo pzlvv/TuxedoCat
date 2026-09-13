@@ -3,7 +3,7 @@ import type { WebviewMessage, McpServerInfo } from '../../core/webviewTypes';
 import { extractUserContent } from '../../core/utils/contentBlocks';
 import { normalizeToolInput } from '../../core/utils/toolInput';
 import type { DiffHunk } from '../../core/utils/editDiff';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, ProviderConfig } from '../types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, ProviderConfig, PreviewPayload } from '../types';
 import { postMessage } from '../webviewEnv';
 import { DEFAULT_WAKE_SHORTCUT } from '../../core/utils/shortcut.js';
 import { profileLog } from '../debug';
@@ -33,6 +33,8 @@ export interface UseMessageHandlerProps {
   setThemeInitialized: (v: boolean) => void;
   setCurrentFile: (v: string) => void;
   setSelectedLines: (v: { start: number; end: number } | null) => void;
+  /** 页内预览浮层（浏览器端查看文件 / 虚拟文档 / diff / Mermaid） */
+  setPreview: (v: PreviewPayload | null) => void;
   setStats: (v: any) => void;
   setConversationTitle: (v: string) => void;
   setMaxContextTokens: (v: number | null) => void;
@@ -119,7 +121,7 @@ export interface UseMessageHandlerProps {
   newChatSessionRef: React.MutableRefObject<string | null>;
   mainInputRef: React.RefObject<HTMLTextAreaElement | null>;
   choiceInputRef: React.RefObject<HTMLTextAreaElement | null>;
-  messagesContainerRef: React.RefObject<HTMLDivElement | null>;
+  messagesContainerRef: React.RefObject<HTMLDivElement>;
   /** 用户是否已主动滚离底部；为 true 时预滚动逻辑必须立刻停止，避免与用户上滚冲突 */
   userScrolledAwayRef: React.MutableRefObject<boolean>;
   streamRafRef: React.MutableRefObject<number | null>;
@@ -267,6 +269,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
     const handleMessage = (event: MessageEvent<WebviewMessage>) => {
       const msg = event.data as WebviewMessage;
       const sessionId = props.currentSessionIdRef.current;
+      // 会话级同步消息（setModel / setAgentMode 等）只作用于当前展示的会话
+      const hostSessionId = (msg as any).sessionId as string | undefined;
+      const fromCurrentSession = !hostSessionId || hostSessionId === sessionId;
       profileLog(`[Webview] handleMessage: type=${msg.type} sessionId=${((msg as any).sessionId || '').substring(0, 20)} currentSessionId=${(sessionId || '').substring(0, 20)}`);
 
       switch (msg.type) {
@@ -394,7 +399,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                     userChoiceInput: '',
                     showThinkingAnimation: false,
                     hasActiveQuery: false,
-                    agentMode: 'manual',
+                    agentMode: 'risk',
                     promptMode: props.settingsDefaults.promptMode,
                     thinkingMode: 'off',
                     contextLength: totalTokens,
@@ -440,7 +445,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               showThinkingAnimation: false,
               animationMode: 'thinking',
               hasActiveQuery: false,
-              agentMode: 'manual',
+              agentMode: 'risk',
               promptMode: props.settingsDefaults.promptMode,
               thinkingMode: 'off',
               contextLength: 0,
@@ -585,6 +590,37 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
         case 'setCurrentFile':
           props.setCurrentFile(msg.filePath || '');
           props.setSelectedLines(msg.selectedLines || null);
+          break;
+        // 浏览器端页内预览：宿主把查看内容按 sessionId + clientId 定向回推给发起端
+        case 'openPreview':
+          props.setPreview(msg as unknown as PreviewPayload);
+          break;
+        // 会话级设置的多端同步：同一会话在其它端被修改时同步本端 UI。
+        // 值相同时 React 会跳过更新，不会再次上报，因此不会形成回环。
+        case 'setModel':
+          if (fromCurrentSession && typeof (msg as any).model === 'string') {
+            props.setModel((msg as any).model);
+          }
+          break;
+        case 'setAgentMode':
+          if (fromCurrentSession && (msg as any).mode) {
+            props.setAgentMode((msg as any).mode);
+          }
+          break;
+        case 'setThinkingMode':
+          if (fromCurrentSession && (msg as any).mode) {
+            props.setThinkingMode((msg as any).mode);
+          }
+          break;
+        case 'setWebSearch':
+          if (fromCurrentSession) {
+            props.setWebSearch(!!(msg as any).webSearch);
+          }
+          break;
+        case 'setPromptMode':
+          if (fromCurrentSession && (msg as any).mode) {
+            props.setPromptMode((msg as any).mode);
+          }
           break;
         case 'focusInput': {
           // 全局唤醒快捷键把窗口唤到前台后，聚焦输入框，用户可直接开始输入。
@@ -1083,8 +1119,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               props.setAnimationMode(isCompacting ? 'compacting' : 'thinking');
               // 同步到 session 状态，确保对话列表的流水灯与引擎实时状态一致
               savedState.hasActiveQuery = isCompacting || runtimeActive;
-              // 优先使用消息中的 agentMode（扩展侧运行时内存值），没有则默认 manual
-              props.setAgentMode((msg as any).agentMode || 'manual');
+              // 优先使用消息中的 agentMode（扩展侧运行时内存值），没有则默认 risk（关键）
+              props.setAgentMode((msg as any).agentMode || 'risk');
               props.agentModeReadyRef.current = true;
               props.setAgentModeReady(true);
               // 提示词模式：优先使用 meta.json 中保存的 savedContext.promptMode，为空回退到普通模式
@@ -1155,8 +1191,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               );
               props.setHasActiveQuery(runtimeActive);
               props.setAnimationMode('thinking');
-              // 优先使用消息中的 agentMode（扩展侧运行时内存值），没有则默认 manual
-              props.setAgentMode((msg as any).agentMode || 'manual');
+              // 优先使用消息中的 agentMode（扩展侧运行时内存值），没有则默认 risk（关键）
+              props.setAgentMode((msg as any).agentMode || 'risk');
               props.agentModeReadyRef.current = true;
               props.setAgentModeReady(true);
               // 提示词模式：优先使用 meta.json 中保存的 savedContext.promptMode，为空回退到普通模式
@@ -1195,7 +1231,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                     && activityPhase !== 'text',
                   animationMode: 'thinking',
                   hasActiveQuery: runtimeActive,
-                  agentMode: (msg as any).agentMode || 'manual',
+                  agentMode: (msg as any).agentMode || 'risk',
                   promptMode: savedCtxPromptMode ?? 'normal',
                   thinkingMode: savedCtxThinkingMode || props.thinkingMode,
                   webSearch: typeof savedCtxWebSearch === 'boolean' ? savedCtxWebSearch : props.settingsDefaults.webSearch,
@@ -1546,7 +1582,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 const hasStreamingAssistant = restoredMessages.some(m =>
                   m.role === 'assistant' && m.isStreaming === true
                 );
-                const loadedState = props.sessionStatesRef.current.get(_convLoadedSessionId);
+                const loadedState = props.sessionStatesRef.current.get(_convLoadedSessionId || '');
                 // 压缩任务不经过 QueryEngine，hasActiveQuery 可能为 false；
                 // 因此压缩中要直接沿用 savedState 的 compacting 状态，而不是被 hasActiveQuery 关掉。
                 const isCompacting = loadedState?.animationMode === 'compacting' && loadedState?.showThinkingAnimation === true;
@@ -1873,7 +1909,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                     userChoiceInput: '',
                     showThinkingAnimation: false,
                     hasActiveQuery: false,
-                    agentMode: 'manual',
+                    agentMode: 'risk',
                     promptMode: props.settingsDefaults.promptMode,
                     thinkingMode: 'off',
                     contextLength: totalTokens,
@@ -1979,7 +2015,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                     userChoiceInput: '',
                     showThinkingAnimation: false,
                     hasActiveQuery: false,
-                    agentMode: 'manual',
+                    agentMode: 'risk',
                     promptMode: props.settingsDefaults.promptMode,
                     thinkingMode: 'off',
                     contextLength: totalTokens,
@@ -2195,7 +2231,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           props.setLlmConfigBaseURL((msg as any).baseURL || '');
           props.setLlmConfigWebSearch(!!(msg as any).webSearch);
           props.setLlmConfigThinkingEffort((msg as any).thinkingEffort || 'off');
-          props.setLlmConfigDefaultAgentMode((msg as any).defaultAgentMode || 'manual');
+          props.setLlmConfigDefaultAgentMode((msg as any).defaultAgentMode || 'risk');
           props.setLlmConfigDefaultPromptMode((msg as any).defaultPromptMode === 'minimal' || (msg as any).defaultPromptMode === 'mixed' ? (msg as any).defaultPromptMode : 'normal');
           props.setLlmConfigApiKey((msg as any).apiKey || '');
           const llmLanguage = (msg as any).language;

@@ -11,13 +11,13 @@ import type { LLMConfig } from './llm/config.js';
 import type { AssistantUI } from './AssistantUI.js';
 import { getGlobalUI } from './AssistantUI.js';
 import { logger } from './Logger.js';
-import { setProjectRootProvider, replaceConversationMessages, updateConversationContext } from './history/index.js';
+import { setProjectRootProvider, updateConversationContext } from './history/index.js';
 import { getProjectRoot } from './history/Config.js';
 import { sessionQueue } from './SessionQueue.js';
 import { userChoiceQueue } from './UserChoiceQueue.js';
-import { replayMessagesToUI } from './utils/replayMessages.js';
 import { buildConversationTitle, buildUserContent, extractUserContent } from './utils/contentBlocks.js';
 import { noteSessionActivity } from './sessionIdle.js';
+import { isCompacting, isPendingCompact, markPendingCompact, unmarkPendingCompact } from './compact/state.js';
 
 /**
  * 初始化会话队列回调
@@ -690,6 +690,16 @@ export async function* sendMessage(
 /**
  * 请求手动压缩对话
  * 从 webview 触发，压缩历史消息并保留摘要
+ *
+ * 分两种情况：
+ * - 会话空闲：直接开始压缩（原行为）。
+ * - 会话非空闲（consumer 运行中 / 有后台任务或子代理）：立即压缩会与运行中的查询
+ *   并发改写 mutableMessages（新消息被压缩掉 / 压缩结果被覆盖），因此只登记"待压缩"，
+ *   视为"已达到需要压缩的条件"，由下一轮对话开始时（Query.ts 的自动压缩检查）执行；
+ *   若之后不再有下一轮对话（例如用户在最后一轮点了压缩），则由 QueryEngine 在消费循环
+ *   退出时补判一次并执行。
+ *
+ * 不满足压缩条件（边界之后的消息不足 maxMessagesToKeep，没有可摘要的内容）时不做任何处理。
  */
 export async function requestCompact(sessionId: string): Promise<void> {
   const engine = getSessionEngine(sessionId);
@@ -698,50 +708,66 @@ export async function requestCompact(sessionId: string): Promise<void> {
     return;
   }
 
+  // 不满足压缩条件：不做任何处理（不排队、不通知 UI、不替换消息）。
+  {
+    const { hasCompactableMessages } = await import('./compact/index.js');
+    if (!hasCompactableMessages(engine.getMessages())) {
+      logger.info('Integration', `No compactable messages for session ${sessionId}, ignoring compress request`);
+      return;
+    }
+  }
+
+  // 已在压缩中：忽略重复请求，避免并发压缩互相覆盖上下文。
+  if (isCompacting(sessionId)) {
+    logger.info('Integration', `Compact already in progress for session ${sessionId}, ignoring request`);
+    return;
+  }
+
+  // 非空闲判定与 sessionIdle.isSessionBusy 保持一致：
+  // consumer 运行中，或仍有后台任务 / 子代理（engine.isIdle() 为 false）时不算空闲。
+  let busy = engine.isConsumerRunning;
+  if (!busy) {
+    try {
+      busy = !(await engine.isIdle());
+    } catch {
+      busy = false;
+    }
+  }
+  if (busy) {
+    if (!isPendingCompact(sessionId)) {
+      markPendingCompact(sessionId);
+      logger.info('Integration', `Session ${sessionId} is busy, compact deferred to next turn`);
+      getGlobalUI()?.onMessage(sessionId, {
+        role: 'system',
+        content: '当前会话正在处理中，压缩已排队，将在本轮对话结束后执行。',
+      });
+    } else {
+      logger.info('Integration', `Session ${sessionId} already has a pending compact request`);
+    }
+    return;
+  }
+
   try {
-    const { compactConversation } = await import('./compact/index.js');
-    const messages = engine.getMessages();
+    // 立即压缩：清掉可能存在的"待压缩"标记，避免本轮压缩完成后下一轮又重复压缩一次。
+    unmarkPendingCompact(sessionId);
+    const { compactAndApplyMessages } = await import('./compact/index.js');
 
+    // 就地替换消息 + 落盘 + 更新 meta + 通知 UI 重放，统一由 compactAndApplyMessages 处理。
+    const applied = await compactAndApplyMessages(sessionId, engine.getMessages(), { ui: getUI() });
 
-    const result = await compactConversation(sessionId, messages);
-
-    // 替换引擎中的消息
-    const { buildPostCompactMessages } = await import('./compact/index.js');
-    const postCompactMessages = buildPostCompactMessages(result);
-
-    // 清空并重新设置消息
-    engine.getMessages().length = 0;
-    engine.getMessages().push(...postCompactMessages);
-
-    // 持久化压缩后的消息到磁盘
-    await replaceConversationMessages(sessionId, postCompactMessages);
-
-    // 标记压缩产生的消息为已持久化：
-    // boundaryMarker / summaryMessage 是 compactConversation 新建的对象，没有 _persisted 标记，
-    // 若不标记，下一次 QueryEngine 的 persist-all 循环会把它们再次 appendMessage 到 JSONL 末尾，
-    // 产生相同 uuid 的重复消息，导致 loadConversation 的 messageMap 覆盖根节点、整条消息链断开、
-    // 对话加载后空白。
-    for (const msg of postCompactMessages) {
-      (msg as any)._persisted = true;
+    // 不满足压缩条件（消息在检查后发生变化）：不做任何处理。
+    if (!applied) {
+      logger.info('Integration', `Compact skipped for session ${sessionId} (no messages to summarize)`);
+      return;
     }
 
-    // 标记 meta 中的压缩状态
-    await updateConversationContext(sessionId, {
-      isCompacted: true,
-      isExpanded: false,
-    }).catch((err: unknown) => {
-      logger.warn('Integration', `Failed to update compact context: ${err}`);
-    });
-
     // 重置引擎中的 lastPersistedMessageUuid，指向压缩后最后一条消息的 uuid
-    const lastMsg = postCompactMessages[postCompactMessages.length - 1];
+    const messages = engine.getMessages();
+    const lastMsg = messages[messages.length - 1];
     const lastUuid = lastMsg && 'uuid' in lastMsg ? (lastMsg as any).uuid : null;
     if (lastUuid) {
       engine.lastPersistedMessageUuid = lastUuid;
     }
-
-    // 通知 UI 压缩完成：清空旧消息并推送压缩后的内容
-    replayMessagesToUI(getUI(), sessionId, postCompactMessages);
 
   } catch (error) {
     logger.error('Integration', `Compact failed for session ${sessionId}:`, error);

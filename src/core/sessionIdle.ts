@@ -181,6 +181,14 @@ export async function releaseSessionResources(sessionId: string): Promise<void> 
     // 引擎池清理失败不影响其余释放
   }
 
+  // 2.5 丢弃"待压缩"标记：会话已释放，之前排队的手动压缩不应在重新打开后突然执行
+  try {
+    const { unmarkPendingCompact } = await import('./compact/state.js');
+    unmarkPendingCompact(sessionId);
+  } catch {
+    // 状态清理失败不影响其余释放
+  }
+
   // 3. 移除消息内存缓存，下次打开从磁盘重新加载
   try {
     const { removeConversationFromCache } = await import('./history/Conversation.js');

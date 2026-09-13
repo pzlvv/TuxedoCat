@@ -79,7 +79,7 @@ export class ToolHandler {
     const args = normalizeToolArgs(rawArgs);
 
     // 自动模式跳过确认
-    const effectiveAgentMode = this.sessionAgentModes.get(sessionID) ?? 'manual';
+    const effectiveAgentMode = this.sessionAgentModes.get(sessionID) ?? 'risk';
 
     // Auto 模式下 Edit/Write 的 checkPermissions 可能要读取大文件/计算 diff，
     // 先立即上架一张 running 工具卡片，避免出现“既没有 thinking 也没有 running”的空窗期。

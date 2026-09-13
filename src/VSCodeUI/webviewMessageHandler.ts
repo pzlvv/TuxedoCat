@@ -617,11 +617,17 @@ export class WebviewMessageHandler {
   }
 
   private async handleOpenFile(message: any): Promise<void> {
-    const { filePath, selectedLines } = message;
+    const { filePath, selectedLines, sessionId, clientId } = message;
     this.log(`[VSCodeUI] openFile: ${filePath} ${JSON.stringify(selectedLines)}`);
 
     if (filePath) {
       try {
+        // 浏览器端（带 clientId）：由服务端读取内容回推给发起端，在页面内预览，
+        // 不打开宿主原生窗口（查看类操作不跨端）
+        if (clientId && this.host.previewFile) {
+          await this.host.previewFile(filePath, selectedLines, sessionId, clientId);
+          return;
+        }
         await this.host.openFile(filePath, selectedLines);
       } catch (err) {
         this.log(`[VSCodeUI] Error opening file: ${err}`);
@@ -676,13 +682,33 @@ export class WebviewMessageHandler {
   }
 
   private async handleShowVirtualDocument(message: any): Promise<void> {
-    const { content, title } = message;
+    const { content, title, language, sessionId, clientId } = message;
     this.log(`[VSCodeUI] showVirtualDocument: ${title}`);
+    // 浏览器端：内容本来就在 webview 里，回推给发起端在页面内预览即可，不打开桌面窗口
+    if (clientId) {
+      this.host.sendToWebview({ type: 'openPreview', mode: 'text', title, content, language, sessionId, clientId } as any);
+      return;
+    }
     await this.host.showVirtualDocument(content, title);
   }
 
   private async handleShowDiffInVirtualDocument(message: any): Promise<void> {
-    const { filePath, newContent, title, beforeContent, afterContent } = message;
+    const { filePath, newContent, title, beforeContent, afterContent, sessionId, clientId } = message;
+    // 浏览器端：回推给发起端在页面内预览 diff
+    if (clientId) {
+      this.host.sendToWebview({
+        type: 'openPreview',
+        mode: 'diff',
+        filePath,
+        title,
+        beforeContent,
+        afterContent,
+        newContent,
+        sessionId,
+        clientId,
+      } as any);
+      return;
+    }
     await this.host.showDiff({
       filePath,
       newContent,
@@ -836,8 +862,8 @@ export class WebviewMessageHandler {
     }
 
     if (!this.sessionAgentModes.has(message.sessionId)) {
-      // 会话没有保存工作模式时，使用 settings.json 中的默认工作模式
-      let defaultAgentMode: 'manual' | 'risk' | 'auto' = 'manual';
+      // 会话没有保存询问模式时，使用 settings.json 中的默认询问模式
+      let defaultAgentMode: 'manual' | 'risk' | 'auto' = 'risk';
       try {
         const { getDefaultAgentMode } = await import('../core/llm/config.js');
         defaultAgentMode = await getDefaultAgentMode();
@@ -863,7 +889,7 @@ export class WebviewMessageHandler {
       pendingToolUseIds,
       savedContext: effectiveSavedContext,
       parentSessionId: conversation.metadata?.parentSessionId,
-      agentMode: this.sessionAgentModes.get(message.sessionId) ?? 'manual',
+      agentMode: this.sessionAgentModes.get(message.sessionId) ?? 'risk',
       hasActiveQuery,
       hasCompactArchive,
       model: effectiveModel,
@@ -1025,6 +1051,8 @@ export class WebviewMessageHandler {
           ...payload,
           mcpServers,
           language: this.getUiLanguageFromSettings(),
+          // 定向到刚创建的会话：避免新对话的配置引导弹到其它端
+          sessionId: newSessionId,
         });
         this.log(`[VSCodeUI] ${hasActiveProvider ? 'Active provider apiKey is empty' : 'No llm.activeProvider configured'}, showing LLM config panel for new conversation`);
       }
@@ -1199,6 +1227,10 @@ export class WebviewMessageHandler {
   private async handleSetAgentMode(message: any): Promise<void> {
     this.sessionAgentModes.set(message.sessionId, message.mode);
     this.log(`[VSCodeUI] Agent mode set to: ${message.mode} for session: ${message.sessionId}`);
+    // 多端同步：同一会话在其它端也打开时，一并更新其 agent 模式
+    if (message.sessionId) {
+      this.host.sendToWebview({ type: 'setAgentMode', mode: message.mode, sessionId: message.sessionId } as any);
+    }
   }
 
   private async handleSetPromptMode(message: any): Promise<void> {
@@ -1220,6 +1252,8 @@ export class WebviewMessageHandler {
       } catch (err: any) {
         this.log(`[VSCodeUI] Failed to save prompt mode to session meta.json: ${err.message}`);
       }
+      // 多端同步：同一会话在其它端也打开时，一并更新其提示词模式
+      this.host.sendToWebview({ type: 'setPromptMode', mode: message.mode, sessionId } as any);
     }
   }
 
@@ -1237,6 +1271,8 @@ export class WebviewMessageHandler {
       } catch (err: any) {
         this.log(`[VSCodeUI] Failed to save thinking mode to session meta.json: ${err.message}`);
       }
+      // 多端同步：同一会话在其它端也打开时，一并更新其 thinking 模式
+      this.host.sendToWebview({ type: 'setThinkingMode', mode: message.mode, sessionId } as any);
     }
   }
 
@@ -1264,6 +1300,8 @@ export class WebviewMessageHandler {
       } catch (err: any) {
         this.log(`[VSCodeUI] Failed to save webSearch to session meta.json: ${err.message}`);
       }
+      // 多端同步：同一会话在其它端也打开时，一并更新其联网开关
+      this.host.sendToWebview({ type: 'setWebSearch', webSearch, sessionId } as any);
     }
   }
 
@@ -1288,6 +1326,9 @@ export class WebviewMessageHandler {
       } catch (err: any) {
         this.log(`[VSCodeUI] Failed to update engine modelConfig: ${err.message}`);
       }
+
+      // 多端同步：同一会话在其它端也打开时，一并更新其当前模型
+      this.host.sendToWebview({ type: 'setModel', model: message.model, sessionId } as any);
     }
   }
 
@@ -1946,6 +1987,18 @@ export class WebviewMessageHandler {
     if (!code.trim()) return;
 
     this.log(`[VSCodeUI] openMermaidPreview`);
+    // 浏览器端：回推给发起端在页面内预览（页内按源码展示，不打开桌面窗口）
+    if (message.clientId) {
+      this.host.sendToWebview({
+        type: 'openPreview',
+        mode: 'mermaid',
+        title: 'Mermaid',
+        code,
+        sessionId: message.sessionId,
+        clientId: message.clientId,
+      } as any);
+      return;
+    }
     try {
       await this.host.openMermaidPreview(code);
     } catch (err) {
@@ -2436,7 +2489,7 @@ export class WebviewMessageHandler {
       // webview 据此更新本地的默认值并应用到当前对话（如默认工作模式）
       let savedModel = '';
       let savedThinkingEffort: 'off' | 'low' | 'high' | 'max' = 'off';
-      let savedAgentMode: 'manual' | 'risk' | 'auto' = 'manual';
+      let savedAgentMode: 'manual' | 'risk' | 'auto' = 'risk';
       let savedPromptMode: 'normal' | 'minimal' | 'mixed' = 'normal';
       let savedWebSearch = false;
       let savedActiveProvider = '';
@@ -2628,7 +2681,13 @@ export class WebviewMessageHandler {
    * 处理来自 webview 的 LLM 配置读取请求（用户点击设置按钮时触发）
    * 读取 settings.json 并回传 showLLMConfig，由 webview 打开配置面板
    */
-  private async handleRequestLLMConfig(_message: any): Promise<void> {
+  private async handleRequestLLMConfig(message: any): Promise<void> {
+    // 设置面板只在「点开设置的那个端」打开：带上发起端的 sessionId / clientId 做定向回推，
+    // 不带则会被广播到所有浏览器端（req: 设置页面不要同步到其它端打开）
+    const route = {
+      sessionId: message?.sessionId,
+      clientId: message?.clientId,
+    };
     try {
       const { getLLMConfigPanelPayload } = await import('../core/llm/config.js');
       const { readMcpServersForDefaults } = await import('../core/mcp/Config.js');
@@ -2642,17 +2701,18 @@ export class WebviewMessageHandler {
         ...payload,
         mcpServers,
         language: this.getUiLanguageFromSettings(),
+        ...route,
       });
     } catch (err: any) {
       this.log(`[VSCodeUI] Failed to read LLM config: ${err.message}`);
-      // 读取失败时仍然打开面板，使用首次设置的预置值（允许联网、thinking=high、flash、手动模式）
+      // 读取失败时仍然打开面板，使用首次设置的预置值（允许联网、thinking=high、flash、关键模式）
       this.host.sendToWebview({
         type: 'showLLMConfig',
         baseURL: 'https://api.deepseek.com',
         webSearch: true,
         thinkingEffort: 'high',
         defaultModel: 'deepseek-v4-flash',
-        defaultAgentMode: 'manual',
+        defaultAgentMode: 'risk',
         defaultPromptMode: 'normal',
         apiKey: '',
         providers: [{ key: 'api.deepseek.com', baseURL: 'https://api.deepseek.com', apiKey: '', models: [], modelConfigs: {} }],
@@ -2660,6 +2720,7 @@ export class WebviewMessageHandler {
         language: this.getUiLanguageFromSettings(),
         shortcut: DEFAULT_WAKE_SHORTCUT,
         mcpServers: [],
+        ...route,
       });
     }
   }

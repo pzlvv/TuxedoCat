@@ -41,15 +41,48 @@ export interface ChatViewManagerOptions {
   onViewCreated?: (view: WebContentsView) => void;
 }
 
+/**
+ * 外部聊天客户端（内置 HTTP 服务器接入的浏览器连接）。
+ *
+ * 浏览器页面没有 WebContentsView，但需要与原生聊天视图共享同一套消息路由：
+ * ElectronUI 通过 chatViews.sendTo(sessionId, msg) 把消息按会话投递，
+ * 因此这里把每个浏览器连接登记成一个「虚拟视图」，按 sessionId 参与路由。
+ */
+export interface ExternalChatClient {
+  /** 客户端唯一标识（自增，避免与 WebContents.id 混淆） */
+  readonly id: number;
+  /** 连接是否已断开 */
+  isDestroyed(): boolean;
+  /** 向浏览器推送消息（channel 固定为 'webview-message'） */
+  send(channel: string, message: unknown): void;
+  /** 注册连接断开回调（用于清理会话资源） */
+  onDestroyed(callback: () => void): void;
+}
+
 export class ChatViewManager {
   /** sessionId -> view；新建会话使用 `new-<timestamp>` 临时 key，webview 上报后关联 */
   private views = new Map<string, WebContentsView>();
   private lru: string[] = [];
   private currentSessionId: string | null = null;
   private readonly maxViews = 12;
+  /**
+   * 「新建但还没发过任何消息」的会话 key 集合（含尚未上报正式 sessionId 的 `new-` 临时 key）。
+   *
+   * 这类对话没有落盘、不会出现在侧栏列表里，一旦用户切走就再也回不去。
+   * 保留这份标记是为了让「新建对话」复用同一个视图（草稿仍留在输入框里），
+   * 而不是再开一个空白视图，导致上一个新对话里输入的内容丢失。
+   * 发出第一条消息后由 markSessionUsed() 移除。
+   */
+  private unsentNewKeys = new Set<string>();
   private readonly opts: ChatViewManagerOptions;
   /** 会话是否正在等待用户输入（ask user / 权限确认）的判定，由 ElectronUI 注入 */
   private waitingForUserProvider: ((sessionId: string) => boolean) | null = null;
+  /**
+   * 内置 HTTP 服务器接入的浏览器客户端：id -> { client, sessionId, clientId }。
+   * sessionId 为该连接当前正在展示的会话，用于按会话投递消息与维护 MCP 引用；
+   * clientId 为页面侧生成的唯一标识，用于把「只回给发起端」的消息精确定位到该连接。
+   */
+  private externalClients = new Map<number, { client: ExternalChatClient; sessionId: string | null; clientId?: string }>();
 
   constructor(opts: ChatViewManagerOptions) {
     this.opts = opts;
@@ -86,10 +119,78 @@ export class ChatViewManager {
 
   /** 当前已加载（有活动视图）的真实会话 ID 列表（排除新建中的临时 key） */
   getLoadedSessionIds(): string[] {
-    return [...this.views.keys()].filter((key) => {
+    const ids = [...this.views.keys()].filter((key) => {
       const view = this.views.get(key);
       return !key.startsWith('new-') && !!view && !view.webContents.isDestroyed();
     });
+    // 浏览器客户端当前展示的会话同样视为「已加载」（abort 状态、侧栏 loaded 标记）
+    for (const { client, sessionId } of this.externalClients.values()) {
+      if (sessionId && !sessionId.startsWith('new-') && !client.isDestroyed() && !ids.includes(sessionId)) {
+        ids.push(sessionId);
+      }
+    }
+    return ids;
+  }
+
+  // ===================== 外部客户端（内置 HTTP 服务器 / 浏览器） =====================
+
+  /** 登记一个浏览器客户端（新连接建立时调用） */
+  registerExternalClient(client: ExternalChatClient): void {
+    this.externalClients.set(client.id, { client, sessionId: null });
+    client.onDestroyed(() => this.unregisterExternalClient(client));
+  }
+
+  /** 登记浏览器客户端当前页面的唯一标识（页面发来带 clientId 的消息时调用） */
+  setExternalClientToken(client: ExternalChatClient, clientId: string): void {
+    const entry = this.externalClients.get(client.id);
+    if (entry) entry.clientId = clientId;
+  }
+
+  /** 注销浏览器客户端并释放其持有的会话资源（连接断开时调用） */
+  unregisterExternalClient(client: ExternalChatClient): void {
+    const entry = this.externalClients.get(client.id);
+    if (!entry) return;
+    this.externalClients.delete(client.id);
+    if (entry.sessionId) {
+      this.releaseMcpIfNoHolders(entry.sessionId, client.id);
+    }
+  }
+
+  /**
+   * 更新浏览器客户端当前展示的会话（webview 上报 setActiveSessionId / startNewConversation /
+   * loadConversation 时调用）。切换会话时释放旧会话的 MCP 引用并 acquire 新会话。
+   */
+  setExternalClientSession(client: ExternalChatClient, sessionId: string | null): void {
+    const entry = this.externalClients.get(client.id);
+    if (!entry) return;
+    if (entry.sessionId === sessionId) return;
+    const previous = entry.sessionId;
+    entry.sessionId = sessionId;
+    if (previous) {
+      this.releaseMcpIfNoHolders(previous, client.id);
+    }
+    this.acquireMcp(sessionId ?? undefined);
+  }
+
+  /**
+   * 该会话是否仍被其它持有者引用（原生聊天视图或其它浏览器客户端）。
+   * MCP 引用是「按会话」的（Set<sessionId>，非计数），
+   * 因此同一会话被多处打开时，只有最后一个持有者离开才释放。
+   */
+  private hasOtherSessionHolder(sessionId: string, excludeClientId?: number): boolean {
+    const view = this.views.get(sessionId);
+    if (view && !view.webContents.isDestroyed()) return true;
+    for (const { client, sessionId: sid } of this.externalClients.values()) {
+      if (client.id !== excludeClientId && sid === sessionId && !client.isDestroyed()) return true;
+    }
+    return false;
+  }
+
+  /** 仅在没有任何持有者时释放该会话的 MCP 引用 */
+  private releaseMcpIfNoHolders(sessionId?: string, excludeClientId?: number): void {
+    if (!sessionId || sessionId.startsWith('new-')) return;
+    if (this.hasOtherSessionHolder(sessionId, excludeClientId)) return;
+    this.releaseMcp(sessionId);
   }
 
   /**
@@ -136,13 +237,66 @@ export class ChatViewManager {
     this.acquireMcp(sessionId);
   }
 
-  /** 新建对话：打开一个无 session 的聊天视图，webview onStartup 生成会话后关联 */
+  /**
+   * 新建对话：打开一个无 session 的聊天视图，webview onStartup 生成会话后关联。
+   *
+   * 若已存在「新建但还没发过消息」的对话，则直接切回那个视图而不是再开一个：
+   * 用户可能在那个新对话里已经输入了草稿，切到其它对话后再点「新建」时，
+   * 复用旧视图才能保住草稿（与 webview 顶部「+」的行为一致），
+   * 否则新视图是空白的，旧草稿随着被隐藏的视图一起"丢失"。
+   */
   openNewConversation(): void {
+    const reusable = this.findReusableNewConversation();
+    if (reusable) {
+      this.touch(reusable);
+      // 已经在展示这个未发送的新对话：只聚焦，保留输入框里的草稿，避免重复 addChildView
+      if (reusable === this.currentSessionId) {
+        this.views.get(reusable)?.webContents.focus();
+      } else {
+        this.show(reusable);
+      }
+      return;
+    }
+
     const key = `new-${Date.now()}`;
     const view = this.createView(undefined);
     this.views.set(key, view);
+    this.unsentNewKeys.add(key);
     this.touch(key);
     this.show(key);
+  }
+
+  /**
+   * 查找可复用的「未发送新对话」视图（优先当前正在展示的那个）。
+   * 返回 null 表示没有可复用的，需要新建。
+   */
+  private findReusableNewConversation(): string | null {
+    // 优先复用当前活动视图，避免无谓的视图切换
+    if (this.currentSessionId && this.isUnsentNewConversation(this.currentSessionId)) {
+      return this.currentSessionId;
+    }
+    for (const key of this.unsentNewKeys) {
+      const view = this.views.get(key);
+      if (view && !view.webContents.isDestroyed()) {
+        return key;
+      }
+    }
+    return null;
+  }
+
+  /** 该 key 是否对应一个「新建但还没发过消息」的对话 */
+  private isUnsentNewConversation(key: string): boolean {
+    if (!this.unsentNewKeys.has(key)) return false;
+    const view = this.views.get(key);
+    return !!view && !view.webContents.isDestroyed();
+  }
+
+  /**
+   * 会话已发出第一条消息（sendMessage / queueMessage）：不再属于「未发送新对话」，
+   * 后续点「新建」应创建新的视图。
+   */
+  markSessionUsed(sessionId: string): void {
+    this.unsentNewKeys.delete(sessionId);
   }
 
   /**
@@ -160,6 +314,10 @@ export class ChatViewManager {
     const view = this.views.get(tempKey)!;
     this.views.delete(tempKey);
     this.lru = this.lru.filter((k) => k !== tempKey);
+    // 临时 new- key 转为正式 sessionId：同步迁移「未发送新对话」标记
+    if (this.unsentNewKeys.delete(tempKey)) {
+      this.unsentNewKeys.add(sessionId);
+    }
 
     // 如果目标 sessionId 已有视图（如历史会话被重新打开），销毁旧视图避免重复
     const existing = this.views.get(sessionId);
@@ -178,23 +336,55 @@ export class ChatViewManager {
     this.acquireMcp(sessionId);
   }
 
-  /** 按 sessionId 发送消息到对应视图 */
+  /** 按 sessionId 发送消息到对应视图（原生聊天视图 + 浏览器客户端） */
   sendTo(sessionId: string | undefined, message: unknown): boolean {
+    // 指定了发起端（浏览器页面）时只回给该客户端：
+    // 查看文件、打开设置面板这类操作属于「本地行为」，不能落到其它端。
+    const targetClientId = (message as { clientId?: unknown } | null)?.clientId;
+    if (typeof targetClientId === 'string' && targetClientId) {
+      for (const { client, clientId } of this.externalClients.values()) {
+        if (clientId === targetClientId && !client.isDestroyed()) {
+          client.send('webview-message', message);
+          return true;
+        }
+      }
+      return false;
+    }
+
+    let sent = false;
     if (sessionId) {
       const view = this.views.get(sessionId);
       if (view && !view.webContents.isDestroyed()) {
         view.webContents.send('webview-message', message);
-        return true;
+        sent = true;
+      }
+      for (const { client, sessionId: clientSessionId } of this.externalClients.values()) {
+        if (clientSessionId === sessionId && !client.isDestroyed()) {
+          client.send('webview-message', message);
+          sent = true;
+        }
       }
     }
-    return false;
+    return sent;
   }
 
-  /** 发送消息到当前活动视图 */
+  /** 发送消息到当前活动视图（会话无关的广播类消息同时推送给浏览器客户端） */
   sendToActive(message: unknown): void {
+    const scoped = message as { sessionId?: unknown; clientId?: unknown } | null;
+    // 指定了发起端或会话的消息不做广播，避免串到其它端（由 sendTo 精确投递）
+    if (scoped?.clientId) return;
+
     const active = this.currentSessionId ? this.views.get(this.currentSessionId) : undefined;
     if (active && !active.webContents.isDestroyed()) {
       active.webContents.send('webview-message', message);
+    }
+    // 指定了 sessionId 但未匹配到任何视图/客户端时，不再广播给浏览器，
+    // 避免把某个会话的内容串到其它浏览器会话。
+    if (scoped?.sessionId) return;
+    for (const { client } of this.externalClients.values()) {
+      if (!client.isDestroyed()) {
+        client.send('webview-message', message);
+      }
     }
   }
 
@@ -203,6 +393,11 @@ export class ChatViewManager {
     for (const view of this.views.values()) {
       if (!view.webContents.isDestroyed()) {
         view.webContents.send('webview-message', message);
+      }
+    }
+    for (const { client } of this.externalClients.values()) {
+      if (!client.isDestroyed()) {
+        client.send('webview-message', message);
       }
     }
   }
@@ -229,6 +424,7 @@ export class ChatViewManager {
     }
     this.views.clear();
     this.lru = [];
+    this.unsentNewKeys.clear();
     this.currentSessionId = null;
   }
 
@@ -257,8 +453,9 @@ export class ChatViewManager {
     if (!view || view.webContents.isDestroyed()) {
       this.views.delete(sessionId);
       this.lru = this.lru.filter((k) => k !== sessionId);
-      // 视图可能已先被销毁但引用仍在：这里统一释放
-      this.releaseMcp(sessionId);
+      this.unsentNewKeys.delete(sessionId);
+      // 视图可能已先被销毁但引用仍在：这里统一释放（浏览器客户端仍持有该会话时保留引用）
+      this.releaseMcpIfNoHolders(sessionId);
       return;
     }
 
@@ -266,8 +463,10 @@ export class ChatViewManager {
     view.webContents.close();
     this.views.delete(sessionId);
     this.lru = this.lru.filter((k) => k !== sessionId);
-    // 会话被关闭：释放其 MCP 引用（引用归零的 server 进入延迟回收）
-    this.releaseMcp(sessionId);
+    this.unsentNewKeys.delete(sessionId);
+    // 会话被关闭：释放其 MCP 引用（引用归零的 server 进入延迟回收）；
+    // 若该会话同时被浏览器客户端打开，则保留引用，等浏览器断开时再释放。
+    this.releaseMcpIfNoHolders(sessionId);
 
     // 关闭的是当前活动视图：切换到最近使用的其他视图；无可用视图则新建对话
     if (this.currentSessionId === sessionId) {
@@ -416,6 +615,7 @@ export class ChatViewManager {
         view.webContents.close();
       }
       this.views.delete(oldest);
+      this.unsentNewKeys.delete(oldest);
       this.releaseMcp(oldest);
     }
   }

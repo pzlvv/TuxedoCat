@@ -87,7 +87,7 @@ const MODEL_API_TYPE_OPTIONS: Array<{ value: string; labelKey: string }> = [
 /** 首次设置（settings.json 为空）时的预置值 */
 const DEFAULT_THINKING_EFFORT: ThinkingMode = 'high';
 const DEFAULT_WEB_SEARCH = true;
-const DEFAULT_AGENT_MODE: AgentMode = 'manual';
+const DEFAULT_AGENT_MODE: AgentMode = 'risk';
 const DEFAULT_PROMPT_MODE: PromptMode = 'normal';
 
 /** 生成一个全新的空 Provider 草稿 */
@@ -914,7 +914,6 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       if (!accelerator) return; // 只按了修饰键，继续等待
       setShortcut(accelerator);
       setShortcutError(null);
-      setShortcutConflict(false);
       setShortcutRecording(false);
     };
     window.addEventListener('keydown', handler, true);
@@ -1402,19 +1401,19 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
             </div>
           </div>
 
-          {/* 默认工作模式 */}
+          {/* 默认询问模式 */}
           <div className="mb-4">
             <label
               className="block text-[12px] font-medium mb-1.5"
               style={{ color: colors.textSystem }}
             >
-              {t('llmConfig.defaultAgentModeLabel')}
+              {t('llmConfig.defaultAskModeLabel')}
             </label>
             <SegmentControl
               segments={[
-                { key: 'manual' as const, label: t('inputArea.agentModeManual') },
-                { key: 'risk' as const, label: t('inputArea.agentModeRisk') },
-                { key: 'auto' as const, label: t('inputArea.agentModeAuto') },
+                { key: 'manual' as const, label: t('inputArea.askModeAlways') },
+                { key: 'risk' as const, label: t('inputArea.askModeCritical') },
+                { key: 'auto' as const, label: t('inputArea.askModeNever') },
               ]}
               value={defaultAgentMode}
               onChange={setDefaultAgentMode}
@@ -1422,9 +1421,9 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
             />
             <div className="mt-1.5 flex flex-col gap-1 text-[11px]">
               {[
-                { key: 'manual' as const, label: t('inputArea.agentModeManual'), desc: t('llmConfig.agentModeManualDesc') },
-                { key: 'risk' as const, label: t('inputArea.agentModeRisk'), desc: t('llmConfig.agentModeRiskDesc') },
-                { key: 'auto' as const, label: t('inputArea.agentModeAuto'), desc: t('llmConfig.agentModeAutoDesc') },
+                { key: 'manual' as const, label: t('inputArea.askModeAlways'), desc: t('llmConfig.askModeAlwaysDesc') },
+                { key: 'risk' as const, label: t('inputArea.askModeCritical'), desc: t('llmConfig.askModeCriticalDesc') },
+                { key: 'auto' as const, label: t('inputArea.askModeNever'), desc: t('llmConfig.askModeNeverDesc') },
               ].map((m) => {
                 const active = defaultAgentMode === m.key;
                 return (
@@ -1440,7 +1439,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               })}
             </div>
             <div className="text-[11px] mt-1" style={{ color: colors.textSystem }}>
-              {t('llmConfig.defaultAgentModeHint')}
+              {t('llmConfig.defaultAskModeHint')}
             </div>
           </div>
 

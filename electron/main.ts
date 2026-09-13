@@ -17,9 +17,13 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents, globalShortcut, Tray, nativeImage, type NativeImage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { ChatViewManager, SIDEBAR_WIDTH } from './ChatViewManager.js';
 import { createTrayStatusIcon, deriveTrayStatus, type TrayStatus } from './trayStatusIcon.js';
+import { startWebServer, type WebServerHandle, type WebServerClient } from './server/webServer.js';
+import { getBrowserShimSource } from './server/browserShim.js';
 import { CONFIG_DIR_NAME, PRODUCT_NAME } from '../src/config/project.js';
+import { SERVER_HOST_INFO } from '../src/host/types.js';
 import { DEFAULT_WAKE_SHORTCUT } from '../src/core/utils/shortcut.js';
 
 /**
@@ -36,13 +40,14 @@ let chatViews: ChatViewManager | undefined;
 let workspacePath: string | undefined;
 /** 系统托盘：提供唤醒入口与退出入口（窗口不会因最小化而隐藏到托盘） */
 let tray: Tray | undefined;
+/** 内置 HTTP 服务器句柄（File 菜单 Start Server / Stop Server 控制） */
+let serverHandle: WebServerHandle | undefined;
+/** 内置 HTTP 服务器默认端口（被占用时自动向后尝试其它端口） */
+const DEFAULT_SERVER_PORT = 3210;
+/** 端口占用时最多向后尝试的端口数 */
+const SERVER_PORT_RETRY = 20;
 /** 当前已注册的全局唤醒快捷键（用于设置面板打开时临时注销） */
 let registeredWakeShortcut: string | undefined;
-/** 唤醒快捷键注册状态，供设置页显示冲突 */
-let wakeShortcutStatus: { shortcut: string; registered: boolean } = {
-  shortcut: DEFAULT_WAKE_SHORTCUT,
-  registered: true,
-};
 /** 当前窗口是否由唤醒快捷键/托盘呼出，用于“再按一次回到托盘”的切换判断 */
 let wakeToggleActive = false;
 /**
@@ -135,6 +140,12 @@ async function main(): Promise<void> {
 
   app.on('will-quit', () => {
     appQuitting = true;
+    // 关闭内置 HTTP 服务器，断开浏览器连接
+    if (serverHandle) {
+      const handle = serverHandle;
+      serverHandle = undefined;
+      void handle.close().catch(() => undefined);
+    }
     // 停止空闲巡检定时器
     try {
       const { stopSessionIdleMonitor } = require('../src/core/sessionIdle.js') as typeof import('../src/core/sessionIdle.js');
@@ -310,6 +321,11 @@ function createMainWindow(): void {
     focusRepaintTimer = setTimeout(repaintAllViews, 120);
   });
 
+  // 用户打开/还原/聚焦界面后，取消任务栏与托盘的闪烁提醒
+  mainWindow.on('show', cancelAttention);
+  mainWindow.on('restore', cancelAttention);
+  mainWindow.on('focus', cancelAttention);
+
   // 兜底：窗口可见期间周期性强制重绘，及时修复未触发上述事件的偶发白屏
   setInterval(() => {
     if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized()) {
@@ -361,6 +377,8 @@ function showMainWindowFromTray(): void {
   mainWindow.focus();
   mainWindow.setAlwaysOnTop(false);
   wakeToggleActive = true;
+  // 用户已经打开界面，取消任务栏/托盘的闪烁提醒
+  cancelAttention();
   layout();
 }
 
@@ -411,35 +429,6 @@ function focusActiveChatInput(attempt = 0): void {
   send();
 }
 
-/** 弹窗提示快捷键冲突（按系统语言输出中/英文） */
-function showShortcutConflictDialog(shortcut: string): void {
-  const isZh = app.getLocale().toLowerCase().startsWith('zh');
-  const message = isZh
-    ? `全局快捷键 ${shortcut} 注册失败`
-    : `Global shortcut ${shortcut} could not be registered`;
-  const detail = isZh
-    ? '该快捷键可能已被系统或其它程序占用。\n可在「设置 - 界面 - 唤醒快捷键」中修改后重新保存。'
-    : 'It may be used by the system or another application.\nChange it in Settings - Interface - Wake Shortcut and save again.';
-  void dialog.showMessageBox({
-    type: 'warning',
-    title: PRODUCT_NAME,
-    message,
-    detail,
-    buttons: [isZh ? '知道了' : 'OK'],
-  }).catch((err) => {
-    console.error('[main] Failed to show shortcut conflict dialog:', err);
-  });
-}
-
-/** 广播唤醒快捷键注册状态给所有聊天视图（设置页据此显示冲突） */
-function broadcastWakeShortcutStatus(): void {
-  chatViews?.broadcast({
-    type: 'wakeShortcutStatus',
-    shortcut: wakeShortcutStatus.shortcut,
-    registered: wakeShortcutStatus.registered,
-  });
-}
-
 /** 托盘图标：在应用 Logo 右下角叠加状态圆点（绿=空闲 / 红=运行中 / 黄=等待用户） */
 const TRAY_ICON_PATH = path.join(APP_ROOT, 'assets', 'logo.png');
 
@@ -459,7 +448,7 @@ function trayTooltip(status: TrayStatus): string {
   return `${PRODUCT_NAME} · ${isZh ? label.zh : label.en}`;
 }
 
-/** 等待用户确认时托盘图标闪烁的间隔（毫秒） */
+/** 提醒（任务栏 / 托盘）闪烁的间隔（毫秒） */
 const TRAY_BLINK_INTERVAL_MS = 500;
 
 /**
@@ -468,41 +457,68 @@ const TRAY_BLINK_INTERVAL_MS = 500;
  */
 const TRAY_BLINK_HIDDEN_ALPHA = 0;
 
-/** 闪烁定时器；非等待状态时为 undefined */
+/** 闪烁定时器；无闪烁时为 null */
 let trayBlinkTimer: ReturnType<typeof setInterval> | null = null;
 
-/** 缓存等待状态“亮 / 灭”两个相位的图标，避免每次闪烁都重新合成位图 */
-let trayBlinkImages: { on: NativeImage; off: NativeImage } | null = null;
+/** 当前闪烁使用的状态（决定状态圆点颜色），无闪烁时为 null */
+let trayBlinkStatus: TrayStatus | null = null;
 
-function getTrayBlinkImages(): { on: NativeImage; off: NativeImage } | null {
-  if (!trayBlinkImages) {
-    const on = createTrayStatusIcon('waiting', TRAY_ICON_PATH);
-    const off = createTrayStatusIcon('waiting', TRAY_ICON_PATH, { alpha: TRAY_BLINK_HIDDEN_ALPHA });
-    if (on.isEmpty() || off.isEmpty()) return null;
-    trayBlinkImages = { on, off };
-  }
-  return trayBlinkImages;
+/** 按状态缓存“亮 / 灭”两个相位的图标，避免每次闪烁都重新合成位图 */
+const trayBlinkImageCache = new Map<TrayStatus, { on: NativeImage; off: NativeImage }>();
+
+/**
+ * 是否有正在进行的“任务结束”提醒（任务栏图标闪烁 + 托盘图标闪烁）。
+ * 由 startAttention 置位，用户打开界面（cancelAttention）时清除。
+ */
+let attentionActive = false;
+
+function getTrayBlinkImages(status: TrayStatus): { on: NativeImage; off: NativeImage } | null {
+  const cached = trayBlinkImageCache.get(status);
+  if (cached) return cached;
+  const on = createTrayStatusIcon(status, TRAY_ICON_PATH);
+  const off = createTrayStatusIcon(status, TRAY_ICON_PATH, { alpha: TRAY_BLINK_HIDDEN_ALPHA });
+  if (on.isEmpty() || off.isEmpty()) return null;
+  const images = { on, off };
+  trayBlinkImageCache.set(status, images);
+  return images;
 }
 
-/** 停止托盘闪烁（退出等待状态或应用退出时调用） */
+/** 停止托盘闪烁（不改动当前图标） */
 function stopTrayBlink(): void {
   if (trayBlinkTimer) {
     clearInterval(trayBlinkTimer);
     trayBlinkTimer = null;
   }
+  trayBlinkStatus = null;
+}
+
+/** 停止闪烁并把托盘图标恢复为当前状态的静态图标（同时刷新提示文案） */
+function restoreTrayIcon(): void {
+  stopTrayBlink();
+  if (!tray || !trayStatus) return;
+  try {
+    const image = createTrayStatusIcon(trayStatus, TRAY_ICON_PATH);
+    if (!image.isEmpty()) tray.setImage(image);
+    tray.setToolTip(trayTooltip(trayStatus));
+  } catch (err) {
+    console.error('[main] Failed to restore tray icon:', err);
+  }
 }
 
 /**
- * 启动托盘闪烁：整个图标（Logo + 黄点）在“亮 / 灭”两个相位之间切换，提醒用户需要确认。
+ * 启动托盘闪烁：整个图标（Logo + 状态圆点）在“亮 / 灭”两个相位之间切换。
+ * `status` 决定圆点颜色（空闲绿点 / 等待黄点）。
  * 返回是否成功启动（图标不可用时返回 false，调用方回退到静态图标）。
  */
-function startTrayBlink(): boolean {
-  if (trayBlinkTimer) return true;
+function startTrayBlink(status: TrayStatus): boolean {
+  if (trayBlinkTimer && trayBlinkStatus === status) return true;
   if (!tray) return false;
-  const images = getTrayBlinkImages();
+  const images = getTrayBlinkImages(status);
   if (!images) return false;
+  stopTrayBlink();
   let visible = true;
   tray.setImage(images.on);
+  trayBlinkStatus = status;
   trayBlinkTimer = setInterval(() => {
     if (!tray) {
       stopTrayBlink();
@@ -512,6 +528,48 @@ function startTrayBlink(): boolean {
     tray.setImage(visible ? images.on : images.off);
   }, TRAY_BLINK_INTERVAL_MS);
   return true;
+}
+
+/** 窗口是否处于后台（最小化或隐藏到托盘）——只有此时才需要闪烁提醒 */
+function isWindowInBackground(): boolean {
+  if (!mainWindow || mainWindow.isDestroyed()) return true;
+  return mainWindow.isMinimized() || !mainWindow.isVisible();
+}
+
+/** 停止任务栏图标闪烁 */
+function stopTaskbarFlash(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    mainWindow.flashFrame(false);
+  } catch {
+    // 部分平台/状态下 flashFrame 可能抛错，忽略即可
+  }
+}
+
+/**
+ * 任务从运行中结束（变为空闲或等待用户确认）且窗口处于后台时的提醒：
+ * 最小化时闪烁任务栏图标（隐藏到托盘没有任务栏按钮，跳过），
+ * 同时让托盘图标一起闪烁，颜色跟随当前状态（空闲绿点 / 等待黄点）。
+ */
+function startAttention(status: TrayStatus): void {
+  if (!isWindowInBackground()) return;
+  attentionActive = true;
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isMinimized()) {
+    try {
+      mainWindow.flashFrame(true);
+    } catch {
+      // 闪烁失败不影响托盘提醒
+    }
+  }
+  if (tray && !startTrayBlink(status)) restoreTrayIcon();
+}
+
+/** 用户打开/还原/聚焦界面后取消提醒（停止任务栏闪烁并恢复静态托盘图标） */
+function cancelAttention(): void {
+  if (!attentionActive) return;
+  attentionActive = false;
+  stopTaskbarFlash();
+  restoreTrayIcon();
 }
 
 /** 创建系统托盘（只创建一次），提供“显示主窗口”和“退出”入口 */
@@ -545,30 +603,38 @@ function setupTray(): void {
  * 根据侧栏对话列表刷新托盘状态点：
  * 有会话在等待用户确认/提问 → 黄点；有会话运行中 → 红点；全部空闲 → 绿点。
  * 状态未变化时不重建图标（createFromBitmap / resize 有一定开销）。
+ *
+ * 另外负责“任务结束提醒”：当任务从运行中变为空闲或等待用户确认、且窗口处于
+ * 后台（最小化/隐藏）时，闪烁任务栏图标并让托盘图标一起闪烁，直到用户打开界面。
  */
 function updateTrayStatusFromConversations(list: ReadonlyArray<Record<string, unknown>>): void {
   const status = deriveTrayStatus(list);
   if (status === trayStatus) return;
+  const previous = trayStatus;
   trayStatus = status;
-  if (!tray) return;
-  try {
-    // 等待用户确认时让整个托盘图标闪烁提醒；其余状态使用静态图标
-    if (status === 'waiting' && startTrayBlink()) {
-      // 闪烁已启动，图标由定时器维护
-    } else {
-      stopTrayBlink();
-      const image = createTrayStatusIcon(status, TRAY_ICON_PATH);
-      if (!image.isEmpty()) tray.setImage(image);
-    }
-    tray.setToolTip(trayTooltip(status));
-  } catch (err) {
-    console.error('[main] Failed to update tray status icon:', err);
+
+  // 新任务开始运行说明用户已在界面里操作，之前“任务结束”的提醒已过时，直接取消
+  if (status === 'running' && attentionActive) {
+    attentionActive = false;
+    stopTaskbarFlash();
+  }
+
+  // 提醒进行中（窗口仍在后台）时让托盘闪烁跟随最新状态着色；否则显示静态图标
+  if (attentionActive) {
+    if (!startTrayBlink(status)) restoreTrayIcon();
+  } else {
+    restoreTrayIcon();
+  }
+
+  // 任务从运行中结束（变为空闲或等待用户确认）且窗口在后台 → 提醒用户
+  if (previous === 'running' && (status === 'idle' || status === 'waiting')) {
+    startAttention(status);
   }
 }
 
 /**
  * 重新注册全局唤醒快捷键：先注销旧值，再读取 settings.json 并注册新值。
- * 注册失败时弹窗提示，并在设置页显示冲突状态。
+ * 注册失败（快捷键被系统或其它程序占用）时静默忽略，不弹窗也不报错。
  */
 function registerWakeShortcut(): void {
   if (appQuitting) return;
@@ -580,28 +646,16 @@ function registerWakeShortcut(): void {
   }
   const shortcut = readWakeShortcutFromSettings();
   try {
-    const ok = globalShortcut.register(shortcut, () => toggleMainWindowFromTray());
-    if (ok) {
+    if (globalShortcut.register(shortcut, () => toggleMainWindowFromTray())) {
       registeredWakeShortcut = shortcut;
-      wakeShortcutStatus = { shortcut, registered: true };
       console.log(`[main] Global wake shortcut registered: ${shortcut}`);
-    } else {
-      wakeShortcutStatus = { shortcut, registered: false };
-      console.error(`[main] Failed to register global wake shortcut (occupied?): ${shortcut}`);
-      showShortcutConflictDialog(shortcut);
     }
-  } catch (err) {
-    wakeShortcutStatus = { shortcut, registered: false };
-    console.error(`[main] Failed to register global wake shortcut ${shortcut}:`, err);
-    showShortcutConflictDialog(shortcut);
+  } catch {
+    // 静默忽略：快捷键注册失败不影响应用主流程
   }
-  broadcastWakeShortcutStatus();
 }
 
-/**
- * 设置面板打开：临时注销全局唤醒快捷键。
- * 保持 wakeShortcutStatus 不变，避免设置页把“临时注销”误显示为冲突。
- */
+/** 设置面板打开：临时注销全局唤醒快捷键，避免影响用户录制新组合键 */
 function suspendWakeShortcut(sender: Electron.WebContents): void {
   const senderId = sender.id;
   if (settingsPanelSenders.has(senderId)) return;
@@ -736,6 +790,188 @@ function scheduleRepaintOnVisible(): void {
   setTimeout(repaintAllViews, 100); // 等待窗口框架生效后再补一次，双保险
 }
 
+// ===================== 内置 HTTP 服务器（File 菜单 Start Server） =====================
+
+/** 统一弹窗入口（主窗口不可用时退化为无父窗口弹窗） */
+function showMessageBox(options: Electron.MessageBoxOptions): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    void dialog.showMessageBox(mainWindow, options).catch(() => undefined);
+  } else {
+    void dialog.showMessageBox(options).catch(() => undefined);
+  }
+}
+
+/** 服务器可访问地址：localhost + 所有非回环 IPv4 网卡地址（局域网访问） */
+function getServerUrlCandidates(port: number): string[] {
+  const urls = [`http://localhost:${port}/`];
+  try {
+    const nets = os.networkInterfaces();
+    for (const name of Object.keys(nets)) {
+      for (const info of nets[name] ?? []) {
+        if (!info || info.internal) continue;
+        // Node 18+ family 为 'IPv4'，旧版本为数字 4，这里都兼容
+        const isIPv4 = info.family === 'IPv4' || (info.family as unknown as number) === 4;
+        if (isIPv4) {
+          urls.push(`http://${info.address}:${port}/`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[main] Failed to enumerate network interfaces:', err);
+  }
+  return urls;
+}
+
+/**
+ * 启动内置 HTTP 服务器：
+ * - 前端：dist/webview（webview 构建产物），浏览器直接访问
+ * - 后端：Electron 主进程（复用 ElectronUI / core），消息经 WebSocket 转发
+ * 默认端口被占用时自动向后尝试，全部失败则弹窗提示。
+ */
+async function startServer(): Promise<void> {
+  if (serverHandle) {
+    openServerInBrowser();
+    return;
+  }
+  if (!workspacePath) {
+    const isZh = app.getLocale().toLowerCase().startsWith('zh');
+    showMessageBox({
+      type: 'warning',
+      title: PRODUCT_NAME,
+      message: isZh ? '请先打开工作目录' : 'Please open a workspace folder first',
+      detail: isZh
+        ? '内置服务器需要工作目录来运行后端（File - Open Workspace Folder...）。'
+        : 'The built-in server needs a workspace folder to run the backend (File - Open Workspace Folder...).',
+      buttons: [isZh ? '知道了' : 'OK'],
+    });
+    return;
+  }
+
+  const webRoot = path.join(APP_ROOT, 'dist', 'webview');
+  if (!fs.existsSync(path.join(webRoot, 'index.html'))) {
+    const isZh = app.getLocale().toLowerCase().startsWith('zh');
+    showMessageBox({
+      type: 'error',
+      title: PRODUCT_NAME,
+      message: isZh ? '未找到前端构建产物' : 'Frontend build not found',
+      detail: isZh
+        ? `缺少 ${webRoot}\\index.html，请先执行 npm run build:webview。`
+        : `Missing ${webRoot}\\index.html. Run npm run build:webview first.`,
+      buttons: [isZh ? '知道了' : 'OK'],
+    });
+    return;
+  }
+
+  const shimSource = getBrowserShimSource();
+  let lastError: unknown;
+  for (let i = 0; i < SERVER_PORT_RETRY; i++) {
+    const port = DEFAULT_SERVER_PORT + i;
+    try {
+      serverHandle = await startWebServer({
+        webRoot,
+        host: '0.0.0.0',
+        port,
+        shimSource,
+        // 每次请求 index.html 时读取最新宿主信息（工作区/语言等）
+        getHostGlobals: () => ({
+          workspacePath: workspacePath ?? '',
+          hasWorkspace: !!workspacePath,
+          vscodeLocale: app.getLocale(),
+          systemLocale: getSystemLocaleForStartup(),
+          uiLanguage: readUiLanguage(),
+          highlightLanguages: readHighlightLanguages(),
+          // 浏览器访问时尝试全屏显示（受浏览器用户手势限制，见 browserShim.ts）
+          fullscreen: true,
+          hostInfo: SERVER_HOST_INFO,
+        }),
+        onClientConnected: (client) => {
+          chatViews?.registerExternalClient(client);
+        },
+        onClientMessage: (client, message) => {
+          handleWebviewMessageFromSource({ kind: 'server', client }, message);
+        },
+        onClientDisconnected: (client) => {
+          // ChatViewManager 内部已通过 client.onDestroyed 兜底清理，这里仅记录
+          console.log(`[main] server client #${client.id} disconnected`);
+        },
+      });
+      break;
+    } catch (err) {
+      lastError = err;
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== 'EADDRINUSE') break;
+    }
+  }
+
+  if (!serverHandle) {
+    const isZh = app.getLocale().toLowerCase().startsWith('zh');
+    showMessageBox({
+      type: 'error',
+      title: PRODUCT_NAME,
+      message: isZh ? 'HTTP 服务器启动失败' : 'Failed to start HTTP server',
+      detail: String((lastError as Error)?.message ?? lastError ?? ''),
+      buttons: [isZh ? '知道了' : 'OK'],
+    });
+    return;
+  }
+
+  setupMenu();
+  const port = serverHandle.port;
+  const isZh = app.getLocale().toLowerCase().startsWith('zh');
+  showMessageBox({
+    type: 'info',
+    title: PRODUCT_NAME,
+    message: isZh ? 'HTTP 服务器已启动' : 'HTTP server started',
+    detail: (isZh
+      ? '前端（webview）已就绪，可在浏览器中访问以下地址：\n\n'
+      : 'Frontend (webview) is ready. Open one of the URLs below in a browser:\n\n')
+      + getServerUrlCandidates(port).join('\n'),
+    buttons: [isZh ? '确定' : 'OK'],
+  });
+}
+
+/** 停止内置 HTTP 服务器并断开所有浏览器连接 */
+async function stopServer(): Promise<void> {
+  const handle = serverHandle;
+  if (!handle) return;
+  serverHandle = undefined;
+  setupMenu();
+  try {
+    await handle.close();
+    console.log('[main] HTTP server stopped');
+  } catch (err) {
+    console.error('[main] Failed to stop HTTP server:', err);
+  }
+}
+
+/** 用系统默认浏览器打开服务器首页 */
+function openServerInBrowser(): void {
+  if (!serverHandle) return;
+  void shell.openExternal(serverHandle.url).catch((err) => {
+    console.error('[main] Failed to open server URL:', err);
+  });
+}
+
+/** 读取 settings.json 中的界面语言（失败时回退 auto） */
+function readUiLanguage(): 'auto' | 'zh' | 'en' {
+  try {
+    const { readUiLanguageSync } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
+    return readUiLanguageSync();
+  } catch {
+    return 'auto';
+  }
+}
+
+/** 读取 settings.json 中已使用过的 Shiki 高亮语言（失败时返回空数组） */
+function readHighlightLanguages(): string[] {
+  try {
+    const { readHighlightLanguagesSync } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
+    return readHighlightLanguagesSync();
+  } catch {
+    return [];
+  }
+}
+
 function setupMenu(): void {
   const isMac = process.platform === 'darwin';
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -752,6 +988,17 @@ function setupMenu(): void {
         {
           label: 'Recent Workspaces',
           submenu: buildRecentWorkspacesMenu(),
+        },
+        { type: 'separator' },
+        // 内置 HTTP 服务器：把 webview 作为前端对外提供，Electron 作为后端处理请求
+        {
+          label: serverHandle ? 'Stop Server' : 'Start Server',
+          click: () => { void (serverHandle ? stopServer() : startServer()); },
+        },
+        {
+          label: 'Open Server in Browser',
+          enabled: !!serverHandle,
+          click: () => openServerInBrowser(),
         },
         { type: 'separator' },
         isMac ? { role: 'close' } : { role: 'quit' },
@@ -842,6 +1089,8 @@ function applyWorkspace(p: string): void {
   }
   refreshSidebar();
   broadcastWorkspace();
+  // 工作区切换后浏览器客户端的会话已失效：通知页面重载，重新初始化新工作区的会话
+  serverHandle?.broadcast({ type: 'serverReload' });
 }
 
 /** 推送工作区路径到侧栏 */
@@ -924,84 +1173,128 @@ function saveLastWorkspace(p: string): void {
   }
 }
 
-function setupIpc(): void {
-  ipcMain.on('webview-message', (event, message: any) => {
-    if (!message || typeof message.type !== 'string') return;
+/**
+ * 消息来源：原生聊天视图（WebContents）或内置 HTTP 服务器的浏览器客户端。
+ * 两者的消息协议完全一致，仅会话注册/回推方式不同。
+ */
+type WebviewMessageSource =
+  | { kind: 'webcontents'; sender: Electron.WebContents }
+  | { kind: 'server'; client: WebServerClient };
 
-    const ui = require('./ElectronUI.js').ElectronUI.getInstance();
+/**
+ * 处理一条来自 webview（原生视图或浏览器客户端）的消息。
+ * 与 extension.ts AssistantViewProvider 的专用消息处理保持一致，
+ * 其余消息统一委托给 ElectronUI（复用同一份 WebviewMessageHandler）。
+ */
+function handleWebviewMessageFromSource(source: WebviewMessageSource, message: any): void {
+  if (!message || typeof message.type !== 'string') return;
 
-    // 新建对话/会话切换时，将来源 webContents 关联到 sessionId
-    if (message.type === 'setActiveSessionId' || message.type === 'startNewConversation') {
-      if (message.sessionId && typeof message.sessionId === 'string') {
-        chatViews?.registerSession(event.sender, message.sessionId);
+  const ui = require('./ElectronUI.js').ElectronUI.getInstance();
+  const sessionId = typeof message.sessionId === 'string' ? message.sessionId : undefined;
+
+  // 浏览器页面会带上自己的 clientId：登记到对应连接后，
+  // 宿主回推的「只回给发起端」消息（查看文件 / 打开设置面板）就能精确定位到该连接，
+  // 不会落到原生视图或其它浏览器端。
+  if (source.kind === 'server' && typeof message.clientId === 'string' && message.clientId) {
+    chatViews?.setExternalClientToken(source.client, message.clientId);
+  }
+
+  // 用户发出了新对话的第一条消息：该会话开始落盘，不再是「新建但还没发过消息」的对话。
+  // 清除该标记后，下次点侧栏「新建」才会创建新的聊天视图，而不是复用这个已有内容的对话。
+  if ((message.type === 'sendMessage' || message.type === 'queueMessage') && sessionId) {
+    chatViews?.markSessionUsed(sessionId);
+  }
+
+  // 新建对话/会话切换时，将来源关联到 sessionId：
+  // - 原生视图：把临时 new- 视图转为正式会话条目
+  // - 浏览器客户端：登记该连接当前展示的会话，并维护 MCP 引用
+  if (message.type === 'setActiveSessionId' || message.type === 'startNewConversation') {
+    if (sessionId) {
+      if (source.kind === 'webcontents') {
+        chatViews?.registerSession(source.sender, sessionId);
         refreshSidebar();
+      } else {
+        chatViews?.setExternalClientSession(source.client, sessionId);
       }
     }
+  }
 
-    // webview 内点击子代理/回复/From 链接等跳转到指定会话：
-    // App 与 VS Code 不同，新起一个 webview 加载该对话（chatViews.openConversation 创建/切换视图）
-    if (message.type === 'openConversation') {
-      if (message.sessionId && typeof message.sessionId === 'string') {
-        chatViews?.openConversation(message.sessionId);
-        refreshSidebar();
-      }
-      return;
+  // 浏览器端加载指定会话：先登记会话，后续 conversationLoaded 才能按 sessionId 投递
+  if (message.type === 'loadConversation') {
+    if (sessionId && source.kind === 'server') {
+      chatViews?.setExternalClientSession(source.client, sessionId);
     }
+  }
 
-    // 关闭按钮：销毁来源 webview（释放渲染进程资源），并刷新侧栏（已加载状态/空对话）
-    if (message.type === 'closeWebview') {
-      const closedSessionId = chatViews?.closeViewByWebContents(event.sender);
+  // webview 内点击子代理/回复/From 链接等跳转到指定会话：
+  // - 原生视图：新起一个 webview 加载该对话（chatViews.openConversation 创建/切换视图）
+  // - 浏览器客户端：不支持新起原生视图，退化为在当前页面内重新加载（loadConversation）
+  if (message.type === 'openConversation') {
+    if (sessionId) {
+      if (source.kind === 'webcontents') {
+        chatViews?.openConversation(sessionId);
+        refreshSidebar();
+      } else {
+        chatViews?.setExternalClientSession(source.client, sessionId);
+        void ui.handleWebviewMessage({ ...message, type: 'loadConversation' });
+      }
+    }
+    return;
+  }
+
+  // 关闭按钮：销毁来源 webview（释放渲染进程资源），并刷新侧栏（已加载状态/空对话）。
+  // 浏览器客户端没有可销毁的原生视图，直接忽略。
+  if (message.type === 'closeWebview') {
+    if (source.kind === 'webcontents') {
+      const closedSessionId = chatViews?.closeViewByWebContents(source.sender);
       if (closedSessionId) {
         clearConversationFromCache(closedSessionId);
         clearSessionIdleTracking(closedSessionId);
       }
       refreshSidebar();
-      return;
     }
+    return;
+  }
 
-    // webview 内“打开工作目录”按钮（未设置工作区时的引导）
-    if (message.type === 'openWorkspace') {
-      void openWorkspaceDialog();
-      return;
-    }
+  // webview 内“打开工作目录”按钮（未设置工作区时的引导）
+  if (message.type === 'openWorkspace') {
+    void openWorkspaceDialog();
+    return;
+  }
 
-    // 与 extension.ts AssistantViewProvider 一致的专用消息处理
-    if (message.type === 'requestTheme') {
-      sendTheme();
-      return;
-    }
-    if (message.type === 'requestContextLimit') {
-      sendContextLimit(message.model);
-      return;
-    }
-    if (message.type === 'requestSkills') {
-      ui.handleWebviewMessage(message).catch((err: any) => console.error(err));
-      return;
-    }
-    // 设置页打开时查询当前快捷键注册状态（冲突时显示提示）
-    if (message.type === 'requestWakeShortcutStatus') {
-      event.sender.send('webview-message', {
-        type: 'wakeShortcutStatus',
-        shortcut: wakeShortcutStatus.shortcut,
-        registered: wakeShortcutStatus.registered,
-      });
-      return;
-    }
-    // 设置面板打开期间临时注销全局快捷键，关闭后恢复
-    if (message.type === 'suspendWakeShortcut') {
-      suspendWakeShortcut(event.sender);
-      return;
-    }
-    if (message.type === 'resumeWakeShortcut') {
-      resumeWakeShortcut(event.sender);
-      return;
-    }
+  // 与 extension.ts AssistantViewProvider 一致的专用消息处理
+  if (message.type === 'requestTheme') {
+    sendTheme();
+    return;
+  }
+  if (message.type === 'requestContextLimit') {
+    sendContextLimit(message.model);
+    return;
+  }
+  if (message.type === 'requestSkills') {
+    ui.handleWebviewMessage(message).catch((err: any) => console.error(err));
+    return;
+  }
+  // 设置面板打开期间临时注销全局快捷键，关闭后恢复（仅原生视图需要）
+  if (message.type === 'suspendWakeShortcut') {
+    if (source.kind === 'webcontents') suspendWakeShortcut(source.sender);
+    return;
+  }
+  if (message.type === 'resumeWakeShortcut') {
+    if (source.kind === 'webcontents') resumeWakeShortcut(source.sender);
+    return;
+  }
 
-    // 设置保存不在这里重新注册：设置面板打开期间快捷键已临时注销，
-    // 等面板关闭后由 resumeWakeShortcut 按最新 settings.json 统一恢复。
-    ui.handleWebviewMessage(message).catch((err: any) => {
-      console.error(`[main] handleWebviewMessage error (${message.type}):`, err);
-    });
+  // 设置保存不在这里重新注册：设置面板打开期间快捷键已临时注销，
+  // 等面板关闭后由 resumeWakeShortcut 按最新 settings.json 统一恢复。
+  ui.handleWebviewMessage(message).catch((err: any) => {
+    console.error(`[main] handleWebviewMessage error (${message.type}):`, err);
+  });
+}
+
+function setupIpc(): void {
+  ipcMain.on('webview-message', (event, message: any) => {
+    handleWebviewMessageFromSource({ kind: 'webcontents', sender: event.sender }, message);
   });
 
   // ── 侧栏 IPC ──
@@ -1261,10 +1554,15 @@ async function checkAndSendLLMConfig(): Promise<void> {
     }
 
     const { readUiLanguageSync } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
-    chatViews?.sendToActive({
+    // 只推给触发本次检查的原生视图（按会话路由），不要广播到浏览器端，
+    // 否则桌面端打开新对话会把设置面板弹到所有浏览器端。
+    const activeSessionId = chatViews?.getActiveSessionId();
+    if (!activeSessionId) return;
+    chatViews?.sendTo(activeSessionId, {
       type: 'showLLMConfig',
       ...payload,
       language: readUiLanguageSync(),
+      sessionId: activeSessionId,
     });
   } catch (err) {
     console.error('[main] checkAndSendLLMConfig error:', err);

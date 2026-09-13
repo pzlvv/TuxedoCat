@@ -17,7 +17,9 @@ const baseConfig = {
   target: 'node18',
   sourcemap: !production,
   minify: production,
-  external: ['electron'],
+  // bufferutil / utf-8-validate 是 ws 的可选原生加速模块，运行时缺失也能正常工作；
+  // 标记为 external 避免 esbuild 因解析不到它们而报错。
+  external: ['electron', 'bufferutil', 'utf-8-validate'],
   tsconfig: project.resolve('tsconfig.json'),
 };
 

@@ -870,7 +870,7 @@ const MessageItem = memo(function MessageItem({
 const SCROLL_AWAY_THRESHOLD = 50; // px — distance from bottom to consider "away"
 
 function useAutoScroll(
-  containerRef: React.RefObject<HTMLDivElement | null>,
+  containerRef: React.RefObject<HTMLDivElement>,
   isStreaming: boolean,
   hasRunningTools: boolean,
   forceScrollKey?: number,
@@ -1189,7 +1189,7 @@ function useAutoScroll(
 interface MessagesViewProps {
   messages: Array<Message>;
   /** 外部滚动容器 ref（用于在消息渲染前预滚动等场景） */
-  containerRef?: React.RefObject<HTMLDivElement | null>;
+  containerRef?: React.RefObject<HTMLDivElement>;
   /** 外部共享的用户滚离状态；由 App 传给 useMessageHandler，使渲染前预滚动也遵守该状态 */
   userScrolledAwayRef?: React.MutableRefObject<boolean>;
   /** App 模式（Electron）下正在加载对话：空状态显示 loading 动画替代静态 Logo */

@@ -2,7 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      移动端适配：
+      - viewport-fit=cover：允许内容延伸到刘海/圆角区域，配合 env(safe-area-inset-*) 做安全区留白
+      - interactive-widget=resizes-content：软键盘弹出时收缩布局视口，
+        使底部输入框不会被键盘遮挡（Chrome 108+；不支持的浏览器会忽略该属性）
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+    <!--
+      状态栏 / 地址栏配色：页面内容画不到系统预留的顶部区域（刘海、状态栏），
+      该区域由浏览器用 theme-color 填充，未设置时是白色 —— 深色界面下顶部就会出现一条白条。
+      这里给成与 App 背景一致的颜色；运行时会随主题同步更新（见 App.tsx）。
+    -->
+    <meta name="theme-color" content="#1a1a1f" />
+    <!--
+      禁用缓存的传统写法：部分 WebView（含微信 X5/XWeb）会参考这些 meta，
+      而只依赖响应头有时不足以阻止其文档缓存。
+    -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <title>WV Assistant</title>
   </head>
   <body>

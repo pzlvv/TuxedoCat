@@ -59,7 +59,7 @@ const UserChoiceOverlay = memo(function UserChoiceOverlay({
       }}
     >
       {/* 选项说明 — 可滚动区域，仅消息内容滚动 */}
-      <div className="max-h-[25vh] overflow-y-auto px-3 pt-2 animate-fade-in">
+      <div className="choice-list overflow-y-auto px-3 pt-2 animate-fade-in">
         <div className="text-sm whitespace-pre-wrap pb-2" style={{ color: colors.textPrimary }}>
           {userChoiceRequest.message}
         </div>

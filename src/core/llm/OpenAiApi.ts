@@ -23,6 +23,18 @@ import { parseSSELines, buildAssistantMessageFromBlocks, dumpFailedRequest } fro
 import { getServerSessionId } from './serverSession.js';
 import { fetch as undiciFetch, type Response as UndiciResponse } from 'undici';
 import { getLLMDispatcher } from './httpDispatcher.js';
+import {
+  createStreamWatchdog,
+  DEFAULT_FIRST_BYTE_TIMEOUT_MS,
+  DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+  DEFAULT_MAX_TIMEOUT_RETRIES,
+} from './streamTimeout.js';
+import {
+  RepetitionDetector,
+  checkRepetition,
+  LLMRepetitionError,
+  DEFAULT_MAX_REPETITION_RETRIES,
+} from './repetitionDetector.js';
 import { unwrapToolInput, describeToolInput } from '../utils/toolInput.js';
 import type { StreamEvent, StreamOptions } from './RealApi.js';
 
@@ -265,6 +277,20 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
    */
   let includeStreamUsage = true;
 
+  // 流式请求看门狗：首字节 300s / 空闲 60s，超时主动 abort。
+  // 网关静默不响应（或只发心跳保活）时，undici 的 headersTimeout/bodyTimeout
+  // 会被不断到达的心跳重置，没有这层保护请求会永远挂着且不留任何日志。
+  const watchdog = createStreamWatchdog({
+    signal,
+    firstByteTimeoutMs: DEFAULT_FIRST_BYTE_TIMEOUT_MS,
+    idleTimeoutMs: DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+    component: 'OpenAiAPI',
+  });
+  // 超时重试计数（单次 callOpenAiLLM 内共享，跨重试不重置）
+  let timeoutRetryCount = 0;
+  // 退化重复重试计数（与超时/网络错误分开计数）
+  let repetitionRetryCount = 0;
+
   try {
     const RETRY_DELAY_MS = 1000;
     const MAX_RETRIES = 3;
@@ -327,16 +353,34 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
       const chatUrl = buildChatCompletionsUrl(baseURL);
       logger.debug('OpenAiAPI', `Request URL: ${chatUrl}`);
 
+      // 每次尝试都重新武装看门狗（重试时首字节计时重新开始）
+      watchdog.restart();
+
       let response: UndiciResponse;
       try {
         response = await undiciFetch(chatUrl, {
           method: 'POST',
           headers: requestHeaders,
-          signal: signal || undefined,
+          // 用看门狗的 signal：外部中断与超时都会中止本次请求
+          signal: watchdog.signal,
           body: JSON.stringify(requestBody),
           dispatcher: getLLMDispatcher(),
         });
       } catch (fetchError) {
+        // 看门狗超时（网关静默不响应）：单独处理，不按 TypeError 判定
+        const timeoutError = watchdog.timeoutError();
+        if (timeoutError) {
+          if (timeoutRetryCount < DEFAULT_MAX_TIMEOUT_RETRIES) {
+            timeoutRetryCount++;
+            logger.warn('OpenAiAPI',
+              `${timeoutError.message}，丢弃本次请求并重试 (${timeoutRetryCount}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+            checkAborted(signal);
+            yield* executeRequest(retryCount + 1);
+            return;
+          }
+          throw timeoutError;
+        }
         const isNetworkError = fetchError instanceof TypeError &&
           (fetchError.message === 'fetch failed' || (fetchError as any)?.cause !== undefined);
         if (retryCount < MAX_RETRIES && isNetworkError) {
@@ -410,6 +454,10 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
       let openBlock: any = null;
       let currentThinkingText = '';
       let currentText = '';
+      // 退化重复检测：正文与思考各自独立（不随 block 边界重置，否则同一段话被切成
+      // 多个 block 重复时会被漏掉）。工具调用参数不参与检测。
+      const textRepetition = new RepetitionDetector();
+      const thinkingRepetition = new RepetitionDetector();
       /** 按 tool_calls[].index 归并同一轮内的多个工具调用 */
       const toolBlockByIndex = new Map<number, any>();
       let messageDeltaYielded = false;
@@ -459,6 +507,21 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
           try {
             readResult = await reader.read();
           } catch (readError) {
+            // 看门狗超时（流停滞 / 网关只发心跳）：释放底层流后按超时策略处理
+            const timeoutError = watchdog.timeoutError();
+            if (timeoutError) {
+              closeReader();
+              if (timeoutRetryCount < DEFAULT_MAX_TIMEOUT_RETRIES) {
+                timeoutRetryCount++;
+                logger.warn('OpenAiAPI',
+                  `${timeoutError.message}，丢弃本次响应并重试 (${timeoutRetryCount}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
+                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+                checkAborted(signal);
+                yield* executeRequest(retryCount + 1);
+                return;
+              }
+              throw timeoutError;
+            }
             if (retryCount < MAX_RETRIES && readError instanceof TypeError && readError.message === 'terminated') {
               logger.warn('OpenAiAPI', `Stream terminated (TypeError: terminated), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
               closeReader();
@@ -481,6 +544,13 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
 
           const { parsed: parsedEvents, remaining } = parseSSELines(buffer);
           buffer = remaining;
+
+          // Chat Completions 的 SSE 没有统一的 type 字段，凡是能解析出 JSON 的
+          // 数据帧（choices / usage / error）都算进展；纯注释型心跳不会被 parseSSELines
+          // 解析成事件，因此不会重置空闲计时器。
+          if (parsedEvents.length > 0) {
+            watchdog.noteProgress();
+          }
 
           for (const parsed of parsedEvents) {
             // 服务商在流中回传错误对象
@@ -521,6 +591,7 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
                 currentThinkingText = '';
                 yield { type: 'block_start', block: { type: 'thinking' }, messageId: streamMessageId } as StreamEvent;
               }
+              checkRepetition(thinkingRepetition, reasoningDelta, 'thinking');
               currentThinkingText += reasoningDelta;
               openBlock.thinking = currentThinkingText;
               yield { type: 'thinking_delta', thinking: reasoningDelta, messageId: streamMessageId } as StreamEvent;
@@ -537,6 +608,7 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
                 currentText = '';
                 yield { type: 'block_start', block: { type: 'text' }, messageId: streamMessageId } as StreamEvent;
               }
+              checkRepetition(textRepetition, delta.content, 'text');
               currentText += delta.content;
               openBlock.text = currentText;
               yield { type: 'text_delta', text: delta.content, messageId: streamMessageId } as StreamEvent;
@@ -577,8 +649,25 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
             }
           }
         }
+      } catch (loopError) {
+        // 退化重复（模型循环输出同一段内容）：丢弃本轮已产生的全部输出 ——
+        // 既有的 contentBlocks 全部作废，不写入上下文、不落盘，按服务端异常重试。
+        if (loopError instanceof LLMRepetitionError && repetitionRetryCount < DEFAULT_MAX_REPETITION_RETRIES) {
+          repetitionRetryCount++;
+          closeReader();
+          logger.warn('OpenAiAPI',
+            `${loopError.message}，丢弃本次响应并重试 (${repetitionRetryCount}/${DEFAULT_MAX_REPETITION_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+          checkAborted(signal);
+          yield* executeRequest(retryCount + 1);
+          return;
+        }
+        throw loopError;
       } finally {
         closeReader();
+        // 读取阶段已结束（正常读完或已超时），停表避免收尾阶段误报超时。
+        // 重试时新的 executeRequest 会重新 restart()。
+        watchdog.stop();
       }
 
       // 流结束，解析 buffer 中的残余数据
@@ -679,6 +768,9 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
     });
 
     throw error;
+  } finally {
+    // 无论成功、失败还是消费者提前退出（生成器被 return/throw），都必须释放看门狗计时器
+    watchdog.dispose();
   }
 }
 

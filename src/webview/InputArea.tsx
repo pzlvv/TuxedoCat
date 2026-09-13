@@ -2,7 +2,7 @@ import React, { useState, useCallback, memo, forwardRef, useImperativeHandle, us
 import { Icon } from './Icon';
 import TextareaAutosize from 'react-textarea-autosize';
 import { ConfigProvider, Dropdown } from 'antd';
-import type { Colors, QueuedMessagePayload, ThinkingMode, PromptMode } from './types';
+import type { Colors, QueuedMessagePayload, ThinkingMode, PromptMode, AgentMode } from './types';
 import type { McpServerInfo } from '../core/webviewTypes';
 import { postMessage, getWindowSessionId } from './webviewEnv';
 import { t } from './i18n';
@@ -40,10 +40,10 @@ interface InputAreaProps {
   totalContextTokens: number;
   maxContextTokens?: number | null;
   hasActiveQuery: boolean;
-  agentMode: 'manual' | 'risk' | 'auto';
+  agentMode: AgentMode;
   /** 是否已收到当前会话/默认的 agentMode；false 时仅显示 loading，不显示具体选项 */
   agentModeReady: boolean;
-  setAgentMode: (mode: 'manual' | 'risk' | 'auto') => void;
+  setAgentMode: (mode: AgentMode) => void;
   /** 会话关联的提示词模式（普通/极简/混合，持久化到 meta.json） */
   promptMode: PromptMode;
   setPromptMode: (mode: PromptMode) => void;
@@ -176,124 +176,59 @@ const ContextProgressBar = React.memo(({ totalContextTokens, isDark, maxContextT
   );
 });
 
-const AgentModeSelector = memo(({
-  agentMode,
-  agentModeReady,
-  onModeChange,
+const AskModeSegmentControl = ({
+  value,
+  onChange,
   colors,
-  isDark,
 }: {
-  agentMode: 'manual' | 'risk' | 'auto';
-  agentModeReady: boolean;
-  onModeChange: (mode: 'manual' | 'risk' | 'auto') => void;
+  value: AgentMode;
+  onChange: (mode: AgentMode) => void;
   colors: Colors;
-  isDark: boolean;
 }) => {
-  const modeText =
-    agentMode === 'auto' ? t('inputArea.agentModeAuto') :
-    agentMode === 'risk' ? t('inputArea.agentModeRisk') :
-    t('inputArea.agentModeManual');
-  const modeTitle =
-    agentMode === 'auto' ? t('inputArea.agentModeAutoTitle') :
-    agentMode === 'risk' ? t('inputArea.agentModeRiskTitle') :
-    t('inputArea.agentModeManualTitle');
-
-  const menuItems = [
-    {
-      key: 'manual',
-      label: <span style={{ fontSize: '12px' }}>{t('inputArea.agentModeManual')}</span>,
-      onClick: () => onModeChange('manual'),
-    },
-    {
-      key: 'risk',
-      label: <span style={{ fontSize: '12px' }}>{t('inputArea.agentModeRisk')}</span>,
-      onClick: () => onModeChange('risk'),
-    },
-    {
-      key: 'auto',
-      label: <span style={{ fontSize: '12px' }}>{t('inputArea.agentModeAuto')}</span>,
-      onClick: () => onModeChange('auto'),
-    },
+  const segments: { key: AgentMode; label: string; title: string }[] = [
+    { key: 'manual', label: t('inputArea.askModeAlways'), title: t('inputArea.askModeAlwaysTitle') },
+    { key: 'risk', label: t('inputArea.askModeCritical'), title: t('inputArea.askModeCriticalTitle') },
+    { key: 'auto', label: t('inputArea.askModeNever'), title: t('inputArea.askModeNeverTitle') },
   ];
 
-  const buttonStyle: React.CSSProperties = {
-    backgroundColor: 'transparent',
-    color: colors.textSystem,
-    border: `1px solid ${colors.border}`,
-    fontSize: '12px',
-    padding: '4px 8px',
-    whiteSpace: 'nowrap',
-    minWidth: '54px',
-    position: 'relative',
-    overflow: 'hidden',
-    cursor: agentModeReady ? 'pointer' : 'not-allowed',
-    opacity: agentModeReady ? 1 : 0.75,
-  };
-
   return (
-    <ConfigProvider
-      theme={{
-        components: {
-          Dropdown: {
-            colorBgElevated: colors.primaryFrame,
-            colorText: colors.textSystem,
-            controlItemBgHover: isDark ? 'rgba(99, 102, 241, 0.12)' : 'rgba(99, 102, 241, 0.06)',
-            controlItemBgActive: isDark ? 'rgba(99, 102, 241, 0.2)' : 'rgba(99, 102, 241, 0.12)',
-            fontSize: 12,
-          },
-        },
+    <div
+      style={{
+        display: 'flex',
+        borderRadius: '6px',
+        border: `1px solid ${colors.border}`,
+        overflow: 'hidden',
+        width: '100%',
       }}
     >
-      {agentModeReady ? (
-        <Dropdown
-          menu={{
-            items: menuItems,
-            selectedKeys: [agentMode],
-            className: 'agent-mode-menu',
-          }}
-          trigger={['click']}
-          placement="topRight"
-        >
+      {segments.map((seg, idx) => {
+        const isSelected = value === seg.key;
+        return (
           <button
-            className="px-2 h-7 rounded-md flex items-center justify-center hover:brightness-110"
-            style={buttonStyle}
-            title={modeTitle}
-          >
-            {modeText}
-          </button>
-        </Dropdown>
-      ) : (
-        <button
-          className="px-2 h-7 rounded-md flex items-center justify-center"
-          style={buttonStyle}
-          title={t('inputArea.agentModeLoading')}
-          disabled
-        >
-          {/* 用隐藏的真实模式文案占位，确保 loading 时不会撑宽 agentMode 框 */}
-          <span style={{ visibility: 'hidden' }}>{modeText}</span>
-          <span
+            key={seg.key}
+            title={seg.title}
+            onClick={(e) => { e.stopPropagation(); onChange(seg.key); }}
             style={{
-              position: 'absolute',
-              left: 8,
-              right: 8,
-              top: 0,
-              bottom: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              overflow: 'hidden',
+              flex: 1,
+              fontSize: '11px',
+              padding: '3px 6px',
+              border: 'none',
+              borderLeft: idx > 0 ? `1px solid ${colors.border}` : 'none',
+              backgroundColor: isSelected ? colors.harness : 'transparent',
+              color: isSelected ? '#fff' : colors.textSystem,
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+              fontWeight: isSelected ? 600 : 400,
               whiteSpace: 'nowrap',
             }}
           >
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
-              {t('inputArea.agentModeLoading')}
-            </span>
-          </span>
-        </button>
-      )}
-    </ConfigProvider>
+            {seg.label}
+          </button>
+        );
+      })}
+    </div>
   );
-});
+};
 
 const ThinkingSegmentControl = ({
   value,
@@ -522,6 +457,8 @@ const HoverScrollText = memo(({
 
 const ToggleMenu = memo(({
   agentModeReady,
+  agentMode,
+  onAgentModeChange,
   model,
   onModelChange,
   models,
@@ -538,6 +475,8 @@ const ToggleMenu = memo(({
   isDark,
 }: {
   agentModeReady: boolean;
+  agentMode: AgentMode;
+  onAgentModeChange: (mode: AgentMode) => void;
   model: string;
   onModelChange: (model: string) => void;
   models: string[];
@@ -559,6 +498,27 @@ const ToggleMenu = memo(({
   const [submenuOpenKeys, setSubmenuOpenKeys] = useState<string[]>([]);
   /** 在该时间戳之前到达的「收起/关闭」请求会被忽略，用于让勾选 MCP 后菜单保持展开 */
   const suppressCloseUntilRef = useRef(0);
+
+  /**
+   * 关闭整个菜单：主菜单与二级菜单一起收起。
+   *
+   * rc-menu 的二级菜单弹层（MCP / 模型）是独立挂载的浮层，且移动端没有 mouseleave
+   * 这类「移出即收起」的交互，只关主菜单容易留下悬空的子菜单浮层。
+   * 因此所有关闭路径统一走这里。
+   */
+  const closeMenu = useCallback(() => {
+    setMenuOpen(false);
+    setSubmenuOpenKeys([]);
+  }, []);
+
+  // 兜底：只要主菜单处于关闭状态，就确保二级菜单展开状态被清空。
+  // 覆盖 onOpenChange 之外的关闭路径（点击外部、再次点按钮、程序化关闭等），
+  // 避免子菜单浮层残留（移动端尤其明显）。
+  useEffect(() => {
+    if (menuOpen) return;
+    // 只在确有展开项时更新，避免空数组触发无意义的重渲染
+    setSubmenuOpenKeys((keys) => (keys.length > 0 ? [] : keys));
+  }, [menuOpen]);
 
   // 宽度测量（两套，用隐藏层实测像素宽度，而不是按字符数估算 ——
   // 比例字体下字符数与实际宽度不成正比）：
@@ -624,7 +584,10 @@ const ToggleMenu = memo(({
         </span>
       </div>
     ),
-    onClick: () => onOpenSettings(),
+    onClick: () => {
+      closeMenu();
+      onOpenSettings();
+    },
     disabled: false,
   };
 
@@ -699,7 +662,7 @@ const ToggleMenu = memo(({
             flexShrink: 0,
           }}
         />
-        <span style={{ fontSize: '12px' }}>{t('inputArea.agentModeLoading')}</span>
+        <span style={{ fontSize: '12px' }}>{t('inputArea.askModeLoading')}</span>
       </div>
     ),
   };
@@ -834,7 +797,10 @@ const ToggleMenu = memo(({
           </span>
         </div>
       ),
-      onClick: () => postMessage({ type: 'openSpinDesign' }),
+      onClick: () => {
+        closeMenu();
+        postMessage({ type: 'openSpinDesign' });
+      },
       disabled: false,
     },
     makeDivider('divider-2'),
@@ -973,6 +939,28 @@ const ToggleMenu = memo(({
       disabled: true,
     },
     makeDivider('divider-5'),
+    // 询问模式：位于 Thinking Effort 上方
+    {
+      key: 'askMode',
+      label: (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', padding: '5px 12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            {/* checkbox 占位符，保持文字对齐 */}
+            <span style={{ width: '14px', flexShrink: 0 }} />
+            <span style={{ fontSize: '12px', color: colors.textPrimary, userSelect: 'none', fontWeight: 500, marginLeft: '12px' }}>
+              {t('inputArea.askMode')}
+            </span>
+          </div>
+          <AskModeSegmentControl
+            value={agentMode}
+            onChange={onAgentModeChange}
+            colors={colors}
+          />
+        </div>
+      ),
+      disabled: true,
+    },
+    makeDivider('divider-6'),
     // 注意: Thinking Effort 永远保持在菜单最后一项
     {
       key: 'thinkingEffort',
@@ -982,7 +970,7 @@ const ToggleMenu = memo(({
             {/* checkbox 占位符，保持文字对齐 */}
             <span style={{ width: '14px', flexShrink: 0 }} />
             <span style={{ fontSize: '12px', color: colors.textPrimary, userSelect: 'none', fontWeight: 500, marginLeft: '12px' }}>
-              Thinking Effort
+              {t('inputArea.thinkingEffort')}
             </span>
           </div>
           <ThinkingSegmentControl
@@ -1024,12 +1012,14 @@ const ToggleMenu = memo(({
       trigger={['click']}
       placement="topRight"
       open={menuOpen}
+      // 关闭时彻底销毁弹层 DOM，避免二级菜单浮层残留（移动端点击外部关闭时尤其明显）
+      destroyOnHidden
       onOpenChange={(next) => {
         // 勾选 MCP / 选择模型触发的自动关闭：忽略，保持整个菜单展开
         if (!next && Date.now() < suppressCloseUntilRef.current) return;
-        setMenuOpen(next);
-        // 主菜单关闭时一并清空二级菜单展开状态，否则子菜单浮层会残留
-        if (!next) setSubmenuOpenKeys([]);
+        if (next) setMenuOpen(true);
+        // 主菜单关闭时一并收起二级菜单，否则子菜单浮层会残留
+        else closeMenu();
       }}
       dropdownRender={(menu) => (
         <div
@@ -1472,7 +1462,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     }
   }, [input]);
 
-  const handleModeChange = useCallback((mode: 'manual' | 'risk' | 'auto') => {
+  const handleModeChange = useCallback((mode: AgentMode) => {
     setAgentMode(mode);
   }, [setAgentMode]);
 
@@ -1711,6 +1701,8 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
         <div className="flex items-center gap-2 flex-shrink-0">
           <ToggleMenu
             agentModeReady={agentModeReady}
+            agentMode={agentMode}
+            onAgentModeChange={handleModeChange}
             model={model}
             onModelChange={handleModelChange}
             models={models}
@@ -1723,13 +1715,6 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             onOpenSettings={onOpenSettings || (() => {})}
             mcpServers={mcpServers}
             onMcpToggle={onMcpToggle}
-            colors={colors}
-            isDark={isDark}
-          />
-          <AgentModeSelector
-            agentMode={agentMode}
-            agentModeReady={agentModeReady}
-            onModeChange={handleModeChange}
             colors={colors}
             isDark={isDark}
           />

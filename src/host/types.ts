@@ -9,7 +9,7 @@
  */
 export interface HostInfo {
   /** 宿主类型 */
-  kind: 'vscode' | 'electron';
+  kind: 'vscode' | 'electron' | 'server';
   /** 对话列表由谁渲染：host（Electron 原生侧栏）或 webview（VS Code 内置下拉） */
   conversationList: 'host' | 'webview';
   /** 新建对话由谁触发：host（Electron 原生侧栏按钮）或 webview（VS Code 顶部按钮） */
@@ -36,4 +36,20 @@ export const ELECTRON_HOST_INFO: HostInfo = {
   newConversation: 'host',
   closeConversation: true,
   openConversationMode: 'openConversation',
+};
+
+/**
+ * 内置 HTTP 服务器宿主（Electron 开启「Start Server」后，浏览器访问的 Web 端）的能力声明。
+ *
+ * 与 Electron 桌面端的差异：
+ * - 浏览器没有原生侧栏，对话列表 / 新建对话 / 关闭对话全部由 webview 自己渲染
+ * - 打开会话在当前页面内重新加载（loadConversation），而不是新起一个原生视图
+ * - 后端仍然是 Electron 主进程（复用 ElectronUI / core），因此 kind 语义上与 electron 一致
+ */
+export const SERVER_HOST_INFO: HostInfo = {
+  kind: 'server',
+  conversationList: 'webview',
+  newConversation: 'webview',
+  closeConversation: false,
+  openConversationMode: 'loadConversation',
 };

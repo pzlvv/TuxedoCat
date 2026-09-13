@@ -164,3 +164,33 @@ export interface Colors {
   error: string;
 }
 
+
+/**
+ * 页内预览浮层载荷。
+ *
+ * 浏览器端（内置 HTTP 服务器）点击「查看文件 / 虚拟文档 / diff / Mermaid」时，
+ * 宿主把内容按 sessionId + clientId 回推给发起端，由 PreviewOverlay 在页面内展示，
+ * 而不是打开桌面原生窗口（查看类操作不跨端）。
+ */
+export interface PreviewPayload {
+  mode: 'text' | 'image' | 'diff' | 'mermaid';
+  /** 标题（一般是文件名） */
+  title?: string;
+  filePath?: string;
+  /** 文本内容（mode=text） */
+  content?: string;
+  /** 图片 data URL（mode=image） */
+  dataUrl?: string;
+  /** 代码语言（mode=text） */
+  language?: string;
+  /** Mermaid 源码（mode=mermaid） */
+  code?: string;
+  /** 需要高亮的行范围（mode=text） */
+  selectedLines?: { start: number; end: number } | null;
+  /** diff 前后内容（mode=diff） */
+  beforeContent?: string;
+  afterContent?: string;
+  newContent?: string;
+  /** 读取失败原因 */
+  error?: string;
+}

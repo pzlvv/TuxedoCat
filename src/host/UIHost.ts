@@ -53,6 +53,20 @@ export interface UIHost {
   /** 打开文件并定位到行（宿主编辑器能力） */
   openFile(filePath: string, selectedLines?: { start: number; end: number }): Promise<void>;
 
+  /**
+   * 浏览器端（内置 HTTP 服务器）预览文件：读取内容后按 sessionId / clientId
+   * 回推给发起端，在页面内展示，而不是打开宿主原生窗口。
+   *
+   * 仅 Electron 宿主实现；桌面原生视图与 VS Code 走 openFile。
+   * 返回是否已按浏览器预览方式处理。
+   */
+  previewFile?(
+    filePath: string,
+    selectedLines: { start: number; end: number } | undefined,
+    sessionId?: string,
+    clientId?: string,
+  ): Promise<void>;
+
   /** 显示虚拟文档（内容预览） */
   showVirtualDocument(content: string, title: string): Promise<void>;
 

@@ -45,7 +45,7 @@ export interface UseAppHandlersProps {
   setCurrentFile: (v: string) => void;
   setSelectedLines: (v: { start: number; end: number } | null) => void;
   setFileHidden: React.Dispatch<React.SetStateAction<boolean>>;
-  setConversations: (v: Array<any>) => void;
+  setConversations: React.Dispatch<React.SetStateAction<Array<any>>>;
   setConversationsLoading: (v: boolean) => void;
   setConversationDropdownOpen: (v: boolean) => void;
   setConversationTitle: (v: string) => void;

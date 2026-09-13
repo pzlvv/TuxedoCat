@@ -245,6 +245,38 @@ export class ElectronUI implements AssistantUI {
         });
       },
 
+      /**
+       * 浏览器端（内置服务器）查看文件：把内容读出来回推给发起端，
+       * 由页面内的预览浮层展示，不打开桌面窗口（查看类操作不跨端）。
+       */
+      previewFile: async (filePath, selectedLines, sessionId, clientId) => {
+        const message: Record<string, unknown> = {
+          type: 'openPreview',
+          filePath,
+          title: path.basename(filePath),
+          selectedLines,
+          sessionId,
+          clientId,
+        };
+        try {
+          if (isImageFile(filePath)) {
+            const buffer = await fs.promises.readFile(filePath);
+            const ext = path.extname(filePath).slice(1).toLowerCase();
+            const mime = ext === 'jpg' ? 'jpeg' : ext;
+            message.mode = 'image';
+            message.dataUrl = `data:image/${mime};base64,${buffer.toString('base64')}`;
+          } else {
+            message.mode = 'text';
+            message.content = await fs.promises.readFile(filePath, 'utf-8');
+          }
+        } catch (err) {
+          message.mode = 'text';
+          message.error = err instanceof Error ? err.message : String(err);
+          message.content = '';
+        }
+        this.sendToRenderer(message);
+      },
+
       showVirtualDocument: async (content, title) => {
         await this.openMonacoWindow({
           mode: 'content',
@@ -393,18 +425,11 @@ export class ElectronUI implements AssistantUI {
       }
     }
 
-    // 桌面版没有 VS Code 的 activeTextEditor 概念，"当前选中的文件"即最近在
-    // Monaco 视图中打开的真实文件（view 模式）。通知聊天 webview，
-    // 使发送消息时能带上当前文件信息（与 VS Code 的 sendCurrentFileInfo 对应）。
-    if (init.mode === 'view' && init.filePath) {
-      this.sendToRenderer({
-        type: 'setCurrentFile',
-        filePath: init.filePath,
-        selectedLines: init.selectedLines,
-      });
-      this.log(`[ElectronUI] Current file set: ${init.filePath}`);
-    }
-
+    // 注意：Electron 桌面端不维护「当前文件」上下文。
+    // VS Code 有 activeTextEditor 的概念，可以自动把「当前文件 + 选中行」带进消息；
+    // 桌面端没有等价物（打开 Monaco 只是查看文件内容，不代表用户要把它作为消息上下文），
+    // 因此这里刻意不发送 setCurrentFile —— 工具结果里点文件链接、查看 diff 等
+    // 任务操作都不应改变发消息时附带的文件信息。
     win.webContents.send('monaco-init', data);
   }
 
