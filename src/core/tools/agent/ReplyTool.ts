@@ -190,6 +190,20 @@ Sends a message to a target session.
         }
       })();
 
+      // ========== spin 模式优化：子代理首次 Reply 后静默中止其自身引擎 ==========
+      // spin 模式下子代理只需回复一次执行结果。Reply 送达后立即复用 abort 逻辑
+      // 停止该子代理引擎，避免其继续消耗 token / 产生多余消息；同时标记为
+      // “静默中止”，不向 UI 回显 "*User Interrupted*" 等中断消息。
+      // 仅当当前会话是被 spin 主会话创建的子代理时才执行，不影响普通子代理。
+      if (targetEngine.workMode === 'spin' && subAgentId && subAgentId !== targetId) {
+        const selfRecord = subAgentRegistry.get(subAgentId);
+        const selfEngine = selfRecord?.engine ?? getSessionEngine(subAgentId);
+        if (selfEngine && selfEngine !== targetEngine && !selfEngine.isAborted()) {
+          logger.info('ReplyTool', `Spin sub-agent ${subAgentId} replied, silently aborting its engine`);
+          selfEngine.requestSilentAbort();
+        }
+      }
+
       logger.info('[ReplyToolDebug]', `Returning success. targetId=${targetId}, message.length=${message.length}`);
 
       return {

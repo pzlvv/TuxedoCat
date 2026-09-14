@@ -468,9 +468,15 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
         top_p: 0.95,
       };
 
-      // 确定 reasoning 配置（Responses API 的 effort 仅支持 low | medium | high）
-      if (effectiveThinkingEffort && effectiveThinkingEffort !== 'off') {
-        const effort = effectiveThinkingEffort === 'max' ? 'high' : effectiveThinkingEffort;
+      // 确定 reasoning 配置。
+      // 对齐 DeepSeek Responses API 的 thinking 参数：reasoning.effort 支持
+      // none | low | high | max，其中 none 关闭思考。
+      //   - 'off'  → 'none'（必须显式传 none：服务端默认开启思考，不传无法关闭）
+      //   - 'low'  → 'low'
+      //   - 'high' → 'high'
+      //   - 'max'  → 'max'（不能降级成 high，否则「思考强度」选择不生效）
+      if (effectiveThinkingEffort) {
+        const effort = effectiveThinkingEffort === 'off' ? 'none' : effectiveThinkingEffort;
         requestBody.reasoning = { effort };
         const effectiveThinkingTokenBudget = thinkingTokenBudget ?? getModelConfig(model, config.modelConfigs).thinking_token_budget;
         logger.debug('ResponsesAPI',

@@ -402,6 +402,13 @@ textarea::-webkit-scrollbar-thumb:hover {
   height: 11px;
 }
 
+/* 只有一个可见节点 + 隐藏的 thinking 占位节点时，上方节点既是首节点也是
+   「倒数第二个」节点。此时它没有可连接的下一节点（thinking 占位是隐藏的），
+   上面那条 11px 的半段竖线会悬在圆点下方多出一截，这里直接隐藏。 */
+.msg-timeline-item:first-child:nth-last-child(2):has(+ .msg-timeline-item .thinking-animation-wrapper[data-hidden])::after {
+  display: none;
+}
+
 /* UserChoiceOverlay entry animation */
 .user-choice-overlay {
   animation: user-choice-slide-up 0.15s ease-out forwards;

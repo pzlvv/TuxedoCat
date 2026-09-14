@@ -56,6 +56,12 @@ export interface QueryParams {
   getModelConfig?: () => LLMConfig | undefined
   /** 静默模式：不推送流式消息到 UI */
   silent?: boolean
+  /**
+   * 静默中止判定：返回 true 时，本次因 abort 结束的查询不向 UI 回显
+   * "*User Interrupted*" 等中断消息（用于业务主动结束，如 spin 子代理
+   * 首次 Reply 后停止自身）。
+   */
+  silentAbort?: () => boolean
 }
 
 // -- query loop state
@@ -647,6 +653,12 @@ async function* queryLoop(
       if (isAborted) {
         sessionQueue.cancelQueued(params.sessionID);
 
+        // 静默中止（业务主动结束，如 spin 子代理首次 Reply 后停止自身）：
+        // 不向 UI 回显中断消息，直接结束本轮查询。
+        if (params.silentAbort?.()) {
+          return { reason: 'user_aborted' };
+        }
+
         params.ui?.onMessage(params.sessionID, {
           role: 'system',
           content: '*User Interrupted*',
@@ -744,6 +756,13 @@ async function* queryLoop(
         );
         yield toolResultMessage;
         toolResults.push(toolResultMessage);
+      }
+
+      // 静默中止（业务主动结束，如 spin 子代理首次 Reply 后停止自身）：
+      // 已补齐所有 tool_result 后直接结束，不向 UI 回显中断消息。
+      if (params.silentAbort?.()) {
+        messages.push(...assistantMessages, ...toolResults);
+        return { reason: 'user_aborted' };
       }
 
       const interruptedMessage: Message = {

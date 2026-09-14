@@ -13,7 +13,9 @@
  * - animationMode 唯一的比较是 `=== 'compacting'`，undefined 与 'thinking' 等价；
  * - webSearch / pastedImages / preCompressHasActiveQuery 默认保持 undefined，
  *   不做默认填充（webSearch 的读取链 `savedState.webSearch ?? settingsDefaults.webSearch`
- *   依赖 undefined 触发回退，填 false 会改变行为）。
+ *   依赖 undefined 触发回退，填 false 会改变行为）；
+ * - promptMode / thinkingMode 同样默认 undefined：webview 不再内置兜底值，
+ *   未从宿主 settings.json 获取到之前保持未设置，避免被误当成用户配置。
  */
 import type { MutableRefObject } from 'react';
 import type { SessionState } from './types';
@@ -31,8 +33,10 @@ export function createSessionState(overrides?: Partial<SessionState>): SessionSt
     hasActiveQuery: false,
     preCompressHasActiveQuery: undefined,
     agentMode: 'risk',
-    promptMode: 'normal',
-    thinkingMode: 'off',
+    // promptMode / thinkingMode 不设默认值：未从宿主 settings.json 获取到之前保持
+    // undefined，避免 webview 内置兜底值被误当成用户配置。
+    promptMode: undefined,
+    thinkingMode: undefined,
     webSearch: undefined,
     contextLength: 0,
     queuedMessage: null,

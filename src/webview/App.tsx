@@ -76,20 +76,28 @@ const App = () => {
   /** agentMode 是否已收到会话/默认值；未收到前 UI 显示 loading，不展示具体模式 */
   const [agentModeReady, setAgentModeReady] = useState(false);
   const agentModeReadyRef = useRef(false);
-  /** 会话关联的提示词模式（普通/极简/混合），持久化到 meta.json */
-  const [promptMode, setPromptMode] = useState<PromptMode>('normal');
-  const [thinkingMode, setThinkingMode] = useState<ThinkingMode>('off');
+  /**
+   * 会话关联的提示词模式（普通/极简/混合），持久化到 meta.json。
+   * 不设内置默认值：未从宿主 settings.json 获取到之前保持 undefined，
+   * 发送按钮也会保持禁用（见 configReady）。
+   */
+  const [promptMode, setPromptMode] = useState<PromptMode | undefined>(undefined);
+  const [thinkingMode, setThinkingMode] = useState<ThinkingMode | undefined>(undefined);
   const [webSearch, setWebSearch] = useState<boolean>(false);
-  const [model, setModel] = useState<string>('deepseek-v4-flash');
-  const [models, setModels] = useState<string[]>(['deepseek-v4-flash', 'deepseek-v4-pro']);
-  // settings.json 中的默认值（新对话创建时一次性使用，避免先显示 risk 再跳变）
-  const [settingsDefaults, setSettingsDefaults] = useState<SettingsDefaults>({
-    model: 'deepseek-v4-flash',
-    thinkingMode: 'off',
-    agentMode: 'risk',
-    promptMode: 'normal',
-    webSearch: false,
-  });
+  /**
+   * 当前会话模型。不设内置默认模型：模型完全由用户配置，
+   * 未获取到之前保持空串，发送按钮禁用。
+   */
+  const [model, setModel] = useState<string>('');
+  const [models, setModels] = useState<string[]>([]);
+  // settings.json 中的默认值（新对话创建时一次性使用，避免先显示 risk 再跳变）。
+  // 不内置任何兜底值：未收到宿主回传前字段为 undefined。
+  const [settingsDefaults, setSettingsDefaults] = useState<SettingsDefaults>({});
+  /**
+   * 会话配置（模型 / 思考强度 / 提示词模式等）是否已从宿主获取到。
+   * 未就绪时禁用发送按钮（复用 MCP 连接中的效果），避免用空/兜底配置发起请求。
+   */
+  const [configReady, setConfigReady] = useState(false);
   // 全局余额信息（与会话无关）
   const [balance, setBalance] = useState<number | undefined>(undefined);
   const [balanceCurrency, setBalanceCurrency] = useState<string | undefined>(undefined);
@@ -169,22 +177,26 @@ const App = () => {
     postMessage({ type: 'setAgentMode', mode: agentMode, sessionId: currentSessionId });
   }, [agentMode]);
 
-  // 当 promptMode 变化时通知 extension（会话级，持久化到 meta.json）
+  // 当 promptMode 变化时通知 extension（会话级，持久化到 meta.json）。
+  // 未获取到配置前 promptMode 为 undefined：此时不下发，避免把 undefined 写进 meta.json。
   useEffect(() => {
-    if (currentSessionId) {
+    if (currentSessionId && promptMode) {
       postMessage({ type: 'setPromptMode', mode: promptMode, sessionId: currentSessionId });
     }
   }, [promptMode, currentSessionId]);
 
-  // 当 thinkingMode 变化时通知 extension（使其在对话中动态生效）
+  // 当 thinkingMode 变化时通知 extension（使其在对话中动态生效）。
+  // 未获取到配置前 thinkingMode 为 undefined：此时不下发。
   useEffect(() => {
-    if (currentSessionId) {
+    if (currentSessionId && thinkingMode) {
       postMessage({ type: 'setThinkingMode', mode: thinkingMode, sessionId: currentSessionId });
     }
   }, [thinkingMode, currentSessionId]);
 
-  // 当 model 变化时通知 extension，并重新请求对应模型的上下文限制
+  // 当 model 变化时通知 extension，并重新请求对应模型的上下文限制。
+  // 未获取到模型前 model 为空串：此时不下发，避免空模型覆盖/污染会话配置。
   useEffect(() => {
+    if (!model) return;
     if (currentSessionId) {
       postMessage({ type: 'setModel', model, sessionId: currentSessionId });
     }
@@ -357,6 +369,7 @@ const App = () => {
     setSettingsDefaults, settingsDefaults, setLocaleVersion, setLlmConfigLanguage,
     setLlmConfigShortcut,
     setProviderConfigured,
+    setConfigReady,
     setPreview,
     messages,
     currentSessionIdRef, sessionStatesRef, userChoiceRequestRef, userChoiceInputRef,
@@ -506,12 +519,18 @@ const App = () => {
     // 重置压缩状态（新对话没有压缩）
     setHasCompactArchive(false);
     setIsCompactExpanded(false);
-    // 新对话使用 settings.json 中的默认值（一次性设置，避免跳变）
-    setAgentMode(settingsDefaults.agentMode);
-    setThinkingMode(settingsDefaults.thinkingMode);
-    setWebSearch(settingsDefaults.webSearch);
-    setModel(settingsDefaults.model);
-    setPromptMode(settingsDefaults.promptMode);
+    // 新对话使用 settings.json 中的默认值（一次性设置，避免跳变）。
+    // settingsDefaults 尚未就绪（undefined）时保留当前值，不写入兜底默认值。
+    const nextAgentMode = settingsDefaults.agentMode ?? agentMode;
+    const nextThinkingMode = settingsDefaults.thinkingMode ?? thinkingMode;
+    const nextWebSearch = settingsDefaults.webSearch ?? webSearch;
+    const nextModel = settingsDefaults.model ?? model;
+    const nextPromptMode = settingsDefaults.promptMode ?? promptMode;
+    setAgentMode(nextAgentMode);
+    setThinkingMode(nextThinkingMode);
+    setWebSearch(nextWebSearch);
+    setModel(nextModel);
+    setPromptMode(nextPromptMode);
     setCurrentSessionId(newSessionId);
     setCurrentSessionIdRef(newSessionId);
     // 为新对话创建默认 state
@@ -520,11 +539,11 @@ const App = () => {
       pastedImages: draftImages.length > 0 ? draftImages : undefined,
       inputCursorPosition: draftCursor,
       choiceCursorPosition: 0,
-      agentMode: settingsDefaults.agentMode,
-      promptMode: settingsDefaults.promptMode,
-      thinkingMode: settingsDefaults.thinkingMode,
-      webSearch: settingsDefaults.webSearch,
-      model: settingsDefaults.model,
+      agentMode: nextAgentMode,
+      promptMode: nextPromptMode,
+      thinkingMode: nextThinkingMode,
+      webSearch: nextWebSearch,
+      model: nextModel,
     }));
     postMessage({ type: 'setActiveSessionId', sessionId: newSessionId });
     postMessage({ type: 'startNewConversation', sessionId: newSessionId });
@@ -534,7 +553,7 @@ const App = () => {
       mainInputRef.current?.setSelectionRange(draftCursor, draftCursor);
     }, 0);
     // 依赖与 saveCurrentSessionSnapshot 相同（值类型快照来源）；ref 不进依赖数组
-  }, [saveCurrentSessionSnapshot, stashNewChatDraft, settingsDefaults]);
+  }, [saveCurrentSessionSnapshot, stashNewChatDraft, settingsDefaults, agentMode, thinkingMode, webSearch, model, promptMode]);
 
   const handleOpenSettings = useCallback(() => {
     postMessage({ type: 'requestLLMConfig' });
@@ -1104,6 +1123,7 @@ onClick={handleNewConversation}
               mcpServers={mcpServers}
               onMcpToggle={handleMcpToggle}
               mcpConnecting={mcpConnecting}
+              configLoading={!configReady}
               commandHistory={commandHistoryRef.current.get(currentSessionIdRef.current ?? '') ?? []}
               balance={balance}
               balanceCurrency={balanceCurrency}

@@ -556,10 +556,26 @@ function startTrayBlink(status: TrayStatus): boolean {
   return true;
 }
 
-/** 窗口是否处于后台（最小化或隐藏到托盘）——只有此时才需要闪烁提醒 */
+/**
+ * 窗口是否处于后台——只有此时任务结束才需要闪烁提醒。
+ * 三种情况都算后台：最小化、隐藏到托盘、可见但不在顶层（被其它窗口遮挡
+ * 或切到了别的应用，即失去焦点）。
+ */
 function isWindowInBackground(): boolean {
   if (!mainWindow || mainWindow.isDestroyed()) return true;
-  return mainWindow.isMinimized() || !mainWindow.isVisible();
+  if (mainWindow.isMinimized()) return true;
+  if (!mainWindow.isVisible()) return true;
+  return !mainWindow.isFocused();
+}
+
+/**
+ * 是否需要闪烁任务栏图标：最小化，或可见但不在顶层（未聚焦）。
+ * 隐藏到托盘时任务栏没有窗口按钮，无从闪烁，返回 false（此时仅闪烁托盘图标）。
+ */
+function shouldFlashTaskbar(): boolean {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  if (mainWindow.isMinimized()) return true;
+  return mainWindow.isVisible() && !mainWindow.isFocused();
 }
 
 /** 停止任务栏图标闪烁 */
@@ -574,13 +590,14 @@ function stopTaskbarFlash(): void {
 
 /**
  * 任务从运行中结束（变为空闲或等待用户确认）且窗口处于后台时的提醒：
- * 最小化时闪烁任务栏图标（隐藏到托盘没有任务栏按钮，跳过），
- * 同时让托盘图标一起闪烁，颜色跟随当前状态（空闲绿点 / 等待黄点）。
+ * 最小化或非顶层（可见但未聚焦）时闪烁任务栏图标（隐藏到托盘没有任务栏
+ * 按钮，跳过），同时让托盘图标一起闪烁，颜色跟随当前状态（空闲绿点 /
+ * 等待黄点）。
  */
 function startAttention(status: TrayStatus): void {
   if (!isWindowInBackground()) return;
   attentionActive = true;
-  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isMinimized()) {
+  if (shouldFlashTaskbar() && mainWindow) {
     try {
       mainWindow.flashFrame(true);
     } catch {
@@ -631,7 +648,8 @@ function setupTray(): void {
  * 状态未变化时不重建图标（createFromBitmap / resize 有一定开销）。
  *
  * 另外负责“任务结束提醒”：当任务从运行中变为空闲或等待用户确认、且窗口处于
- * 后台（最小化/隐藏）时，闪烁任务栏图标并让托盘图标一起闪烁，直到用户打开界面。
+ * 后台（最小化/隐藏/可见但非顶层）时，闪烁任务栏图标并让托盘图标一起闪烁，
+ * 直到用户打开界面。
  */
 function updateTrayStatusFromConversations(list: ReadonlyArray<Record<string, unknown>>): void {
   const status = deriveTrayStatus(list);

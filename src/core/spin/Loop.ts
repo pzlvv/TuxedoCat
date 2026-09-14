@@ -67,8 +67,16 @@ async function waitForAgentReply(
     try {
       const { subAgentRegistry } = await import('../tools/agent/SubAgentRegistry.js');
       const record = subAgentRegistry.get(expectedAgentId);
-      return typeof (record?.engine as any)?.isAborted === 'function'
-        && (record!.engine as any).isAborted();
+      const childEngine = record?.engine as any;
+      if (typeof childEngine?.isAborted !== 'function' || !childEngine.isAborted()) {
+        return false;
+      }
+      // 子代理的“静默中止”是其在首次 Reply 后主动停止自身，并非用户中止；
+      // 此时仍需继续读取其 Reply，否则会把正常完成误判为中止而终止整个 spin。
+      if (typeof childEngine.isSilentAbort === 'function' && childEngine.isSilentAbort()) {
+        return false;
+      }
+      return true;
     } catch {
       return false;
     }

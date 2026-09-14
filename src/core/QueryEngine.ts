@@ -106,6 +106,11 @@ export class QueryEngine {
   private activeAbortController: AbortControllerLike | null = null;
   /** 用户已请求中止；用于覆盖“中止发生在两次查询之间”的竞态 */
   private abortRequested = false;
+  /**
+   * 静默中止标记：本次中止是业务主动结束（如 spin 子代理首次 Reply 后停止自身），
+   * 复用 interrupt() 的中止逻辑，但不向 UI 回显中断消息。
+   */
+  private silentAbortRequested = false;
   /** 用户界面的 thinking mode 覆盖值（'off' | 'low' | 'high' | 'max'），覆盖配置文件 */
   public thinkingModeOverride?: 'off' | 'low' | 'high' | 'max';
   /** 会话关联的 Web Search 覆盖值（即使 modelConfig 尚未初始化也记录，供查询时合并） */
@@ -394,10 +399,15 @@ export class QueryEngine {
   /**
    * 判断当前会话是否处于空闲状态，即没有活跃的后台工作。
    *
-   * 空闲 = 无活跃后台 Bash 任务 + 无活跃 Sub-Agent（递归检查）
+   * 空闲 = 消费循环未运行 + 无活跃后台 Bash 任务 + 无活跃 Sub-Agent（递归检查）
    * 非空闲时不应触发 todo reminder 等操作，因为后台工作完成后会自动通知 LLM。
    */
   async isIdle(): Promise<boolean> {
+    // 0. 自身对话正在消费（运行中）时不算空闲。
+    // 例如长轮次的 LLM 调用 / 工具执行期间，consumer 仍在运行，此时后台 Bash
+    // 任务与 Sub-Agent 都可能为空，若不检查 isConsumerRunning 会被误判为空闲。
+    if (this.isConsumerRunning) return false;
+
     // 1. 检查当前 session 是否有活跃的后台 Bash 任务
     try {
       const { getAllBackgroundTasks } = await import('./tools/bash/LocalShellTask.js');
@@ -433,6 +443,11 @@ export class QueryEngine {
    *   submitMessage 的正常路径由 Integration 层管理 UI 状态，传 false。
    */
   private beginConsumer(notifyQueryBegin: boolean): void {
+    // spin 模式没有 LLM 消费循环：排队消息由 SpinLoop 读取（子代理 Reply）或直接丢弃，
+    // messageConsumer 的 spin 分支不消费队列，启动 consumer 只会空转，
+    // 还会让 startBackgroundConsumer 的「队列非空就重启」判断陷入忙等。这里直接忽略。
+    if (this.workMode === 'spin') return;
+
     this.isConsumerRunning = true;
     noteSessionActivity(this.sessionID);
     if (notifyQueryBegin) {
@@ -467,7 +482,10 @@ export class QueryEngine {
           void _message;
         }
       } finally {
-        if (this.agentMessageQueue.length > 0 || this.pendingUserMessage !== null || this.pendingReminder !== null) {
+        // 收尾期间可能又有消息入队，需要再跑一轮（messageConsumer 退出时队列不保证为空）。
+        // spin 模式例外：队列由 SpinLoop 读取/排空，messageConsumer 不消费，
+        // 这里若重启会变成纯微任务忙等，饿死事件循环。
+        if (this.workMode !== 'spin' && this.hasQueuedMessages()) {
           this.startBackgroundConsumer();
           return;
         }
@@ -553,9 +571,8 @@ export class QueryEngine {
   resumeAfterCompact(): void {
     if (isCompacting(this.sessionID)) return;
     if (this.isConsumerRunning) return;
-    if (this.pendingUserMessage === null && this.agentMessageQueue.length === 0 && this.pendingReminder === null) {
-      return;
-    }
+    if (!this.hasQueuedMessages()) return;
+    // spin 模式下 beginConsumer 会直接忽略（无 LLM 消费循环）
     this.beginConsumer(true);
   }
 
@@ -634,6 +651,18 @@ export class QueryEngine {
       isFromAgent: true,
       meta: { param: sourceInfo, type: 'from' },
     });
+  }
+
+  /**
+   * 是否还有待消费的排队消息（Reminder / 用户消息 / Agent 回复）。
+   *
+   * 「队列是否为空」在消费循环、后台 consumer 收尾、压缩收尾等多处都要判断，
+   * 统一收在这里，避免各处手写同一个条件而产生分歧。
+   */
+  private hasQueuedMessages(): boolean {
+    return this.pendingReminder !== null
+      || this.pendingUserMessage !== null
+      || this.agentMessageQueue.length > 0;
   }
 
   /**
@@ -876,6 +905,7 @@ export class QueryEngine {
     if (type === 'user') {
       // 用户发起新一轮消息：清除上一次 abort 标记，恢复正常可执行状态
       this.abortRequested = false;
+      this.silentAbortRequested = false;
     }
 
     if (type === 'reminder') {
@@ -902,9 +932,8 @@ export class QueryEngine {
     if (this.isConsumerRunning) {
       await this.waitForIdle();
       if (this.isConsumerRunning) return;
-      if (this.pendingUserMessage === null && this.agentMessageQueue.length === 0 && this.pendingReminder === null) {
-        return;
-      }
+      // 等待期间已有 consumer 把本次消息消费掉了
+      if (!this.hasQueuedMessages()) return;
     }
 
     // 压缩进行中：消息只入队，不启动消费循环。
@@ -919,15 +948,8 @@ export class QueryEngine {
       this.config.ui?.onQueryBegin(this.sessionID);
     }
     try {
+      // messageConsumer 内部会一直消费到队列排空（含收尾竞态），这里调用一次即可。
       yield* this.messageConsumer();
-      // 循环版重试：原实现只重试一层（第二次 messageConsumer），第三层入队的消息会悬空。
-      // 这里持续消费直到队列排空——messageConsumer 内部对空队列自会 break，安全。
-      // finalizeIdle 与原实现一致：只调一次（循环外）。
-      while (
-        this.agentMessageQueue.length > 0 || this.pendingUserMessage !== null || this.pendingReminder !== null
-      ) {
-        yield* this.messageConsumer();
-      }
     } finally {
       await this.flush().catch((e: unknown) => logger.error('QueryEngine', `submitMessage flush failed: ${e}`));
       await this.finalizeIdle(manageQueryUI);
@@ -1046,9 +1068,15 @@ export class QueryEngine {
   /**
    * 消息消费者 - 从队列中取出消息并依次执行查询
    *
+   * 一次调用会把队列消费干净：内部循环「消费一批 → 跑 query → 再判断队列」，
+   * 退出时队列保证为空（除 spin 模式外，见下），调用方无需再补跑。
+   *
    * 消费优先级：用户消息 > Agent消息
    * - 用户消息已由 Integration.ts 添加到 mutableMessages，无需重复添加
    * - Agent消息通过 flushAgentQueue 逐条追加到 mutableMessages
+   *
+   * spin 模式例外：主会话不跑 LLM，只清空 pending 消息后立即结束；
+   * agentMessageQueue 保留给 SpinLoop.waitForAgentReply 读取。
    */
   private async *messageConsumer(): AsyncGenerator<unknown, void, unknown> {
 
@@ -1075,8 +1103,15 @@ export class QueryEngine {
     }
 
     // ========== 消息消费主循环 ==========
+    // 这是唯一的消费循环：消费一批排队消息 → 跑一轮 query（可能多轮工具调用）
+    // → 回到顶部重新判断，直到队列真正为空才退出。
 
     while (true) {
+      // spin 模式：主会话不跑 LLM，这里只清空 pending 消息后结束本次消费。
+      // agentMessageQueue 必须保留——子代理 Reply 要留给 SpinLoop.waitForAgentReply
+      // 读取（takeCurrentQueueReply），因此绝不能进入下面的「队列为空」判断：
+      // 否则队列永远非空 → 纯微任务忙等，饿死事件循环（定时器/IO 无法推进，
+      // SpinLoop 轮询的 setTimeout 不再触发，Reply 永远读不到）。
       if (this.workMode === 'spin') {
         this.pendingReminder = null;
         this.pendingUserMessage = null;
@@ -1086,13 +1121,13 @@ export class QueryEngine {
         break;
       }
 
-      const hasReminder = this.pendingReminder !== null;
-      const hasUserMessage = this.pendingUserMessage !== null;
-      const hasAgentMessages = this.agentMessageQueue.length > 0;
-
-      if (!hasReminder && !hasUserMessage && !hasAgentMessages) {
+      if (!this.hasQueuedMessages()) {
         await this.flush();
-        break;
+        // flush 期间可能又有消息入队：此时 isConsumerRunning 仍为 true，
+        // 入队方（enqueueAgentMessage / submitMessage）不会再另起 consumer，
+        // 必须再确认一次队列为空才能退出，否则消息会一直悬空到下一次用户消息。
+        if (!this.hasQueuedMessages()) break;
+        continue;
       }
 
       this.consumeQueuedOnce(true);
@@ -1122,6 +1157,8 @@ export class QueryEngine {
         maxTurns,
         ui: this.config.ui,
         silent: false,
+        // 静默中止判定：spin 子代理 Reply 后主动停止自身时不回显中断消息
+        silentAbort: () => this.silentAbortRequested,
       })) {
         const shouldPersist = message.type === 'assistant'
           || (message.type === 'user' && Array.isArray(message.message?.content))
@@ -1241,6 +1278,26 @@ export class QueryEngine {
       this.activeAbortController?.signal?.aborted ||
       this.externalAbortController?.signal?.aborted
     );
+  }
+
+  /**
+   * 当前会话是否处于“静默中止”状态（业务主动结束，不回显中断消息）。
+   */
+  isSilentAbort(): boolean {
+    return this.silentAbortRequested;
+  }
+
+  /**
+   * 静默中止当前会话：复用 interrupt() 的完整中止逻辑（终止当前查询、后台任务、
+   * 递归中止子会话），但标记为静默中止，使查询循环不再向 UI 回显
+   * "*User Interrupted*" 等中断消息。
+   *
+   * 使用场景：spin 模式下子代理首次 Reply 后立即停止自身，避免其继续消耗 token、
+   * 产生多余消息；主循环仍会正常读取该 Reply 并推进后续节点。
+   */
+  requestSilentAbort(): void {
+    this.silentAbortRequested = true;
+    this.interrupt();
   }
 
   /**

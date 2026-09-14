@@ -45,11 +45,12 @@ interface InputAreaProps {
   /** 是否已收到当前会话/默认的 agentMode；false 时仅显示 loading，不显示具体选项 */
   agentModeReady: boolean;
   setAgentMode: (mode: AgentMode) => void;
-  /** 会话关联的提示词模式（普通/极简/混合，持久化到 meta.json） */
-  promptMode: PromptMode;
-  setPromptMode: (mode: PromptMode) => void;
-  thinkingMode: ThinkingMode;
-  setThinkingMode: (mode: ThinkingMode) => void;
+  /** 会话关联的提示词模式（普通/极简/混合，持久化到 meta.json）；未获取到前为 undefined */
+  promptMode?: PromptMode;
+  setPromptMode: (mode: PromptMode | undefined) => void;
+  /** 会话关联的思考强度；未获取到前为 undefined */
+  thinkingMode?: ThinkingMode;
+  setThinkingMode: (mode: ThinkingMode | undefined) => void;
   /** 会话关联的 Web Search 开关 */
   webSearch: boolean;
   setWebSearch: (webSearch: boolean) => void;
@@ -89,6 +90,12 @@ interface InputAreaProps {
   onMcpToggle?: (name: string, enabled: boolean) => void;
   /** 当前会话是否有 MCP 正在连接中；为 true 时禁用发送按钮 */
   mcpConnecting?: boolean;
+  /**
+   * 会话配置（模型 / 思考强度 / 提示词模式等）是否仍在加载中。
+   * 为 true 时禁用发送按钮并显示转圈（复用 MCP 连接中的效果），
+   * 避免在尚未获取到真实配置时用空/兜底值发起请求。
+   */
+  configLoading?: boolean;
 }
 
 /**
@@ -201,7 +208,7 @@ const ThinkingSegmentControl = ({
   onChange,
   colors,
 }: {
-  value: ThinkingMode;
+  value: ThinkingMode | undefined;
   onChange: (mode: ThinkingMode) => void;
   colors: Colors;
 }) => (
@@ -223,7 +230,7 @@ const PromptModeSegmentControl = ({
   onChange,
   colors,
 }: {
-  value: PromptMode;
+  value: PromptMode | undefined;
   onChange: (mode: PromptMode) => void;
   colors: Colors;
 }) => (
@@ -377,9 +384,9 @@ const ToggleMenu = memo(({
   model: string;
   onModelChange: (model: string) => void;
   models: string[];
-  promptMode: PromptMode;
+  promptMode?: PromptMode;
   onPromptModeChange: (mode: PromptMode) => void;
-  thinkingMode: ThinkingMode;
+  thinkingMode?: ThinkingMode;
   onThinkingModeChange: (mode: ThinkingMode) => void;
   webSearch: boolean;
   onWebSearchChange: (webSearch: boolean) => void;
@@ -1058,6 +1065,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   mcpServers,
   onMcpToggle,
   mcpConnecting,
+  configLoading,
 }, ref) {
   const [input, setInput] = useState('');
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
@@ -1351,9 +1359,12 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   }, [setModel]);
 
   const hasContent = input.trim().length > 0 || pastedImages.length > 0;
-  // MCP 连接中：禁止发送，但用旋转动画代替置灰，提示「正在连接」
+  // MCP 连接中 / 会话配置（模型、思考强度、提示词模式等）尚未获取到：禁止发送，
+  // 但用旋转动画代替纯置灰，提示「正在连接 / 加载配置」。
   const mcpBusy = !!mcpConnecting;
-  const sendDisabled = !hasContent || isInputDisabled || mcpBusy;
+  const configBusy = !!configLoading;
+  const busy = mcpBusy || configBusy;
+  const sendDisabled = !hasContent || isInputDisabled || busy;
 
   return (
     <div
@@ -1572,13 +1583,13 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             disabled={sendDisabled}
             className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${!sendDisabled ? 'hover:brightness-110' : ''}`}
             style={{
-              // MCP 连接中：保持置灰的禁用样式，仅把图标换成 loading 动画
+              // MCP 连接中 / 配置加载中：保持置灰的禁用样式，仅把图标换成 loading 动画
               backgroundColor: !sendDisabled ? colors.harness : colors.border,
               opacity: !sendDisabled ? 1 : 0.5,
             }}
-            title={mcpBusy ? t('inputArea.mcpConnecting') : undefined}
+            title={busy ? t('inputArea.mcpConnecting') : undefined}
           >
-            {mcpBusy ? (
+            {busy ? (
               <span
                 className="animate-spin"
                 style={{

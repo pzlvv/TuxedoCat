@@ -84,6 +84,77 @@ const MODEL_API_TYPE_OPTIONS: Array<{ value: string; labelKey: string }> = [
   { value: 'OpenAI', labelKey: 'llmConfig.apiTypeOpenAI' },
   { value: 'Anthropic', labelKey: 'llmConfig.apiTypeAnthropic' },
 ];
+/**
+ * 协议下拉框的自绘箭头。
+ * 配合 appearance:none 使用：关闭原生下拉控件外观，改由 CSS 绘制，
+ * 避免 Chromium 在重渲染 / 滚动时重绘原生控件造成的明显闪烁。
+ */
+const SELECT_CHEVRON =
+  "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M1 3l4 4 4-4' fill='none' stroke='%23a1a1aa' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/></svg>\")";
+
+/**
+ * 模型 API 协议下拉框。
+ *
+ * 单独抽成 memo 组件：模型行在 providers 每次变更时都会重渲染（例如在模型名 /
+ * API Key 输入框里打字），若 select 每次都跟着重渲染，Chromium 的原生下拉控件
+ * 会出现明显闪烁（重绘原生控件，关闭态还会短暂回退到首个选项）。
+ * 这里让 select 只在 value / providerId / index / 主题变化时才更新，
+ * 并用 appearance:none + 自绘箭头彻底避免原生控件的重绘闪烁。
+ */
+const ApiTypeSelect = React.memo(function ApiTypeSelect({
+  value,
+  providerId,
+  index,
+  onChange,
+  colors,
+  isDark,
+}: {
+  value: string;
+  providerId: string;
+  index: number;
+  onChange: (providerId: string, index: number, value: string) => void;
+  colors: Colors;
+  isDark: boolean;
+}) {
+  return (
+    <select
+      value={value || DEFAULT_MODEL_API_TYPE}
+      onChange={(e) => onChange(providerId, index, e.target.value)}
+      title={t('llmConfig.modelApiTypeTitle')}
+      style={{
+        flexShrink: 0,
+        width: 116,
+        padding: '8px 22px 8px 8px',
+        borderRadius: '6px',
+        border: `1px solid ${colors.border}`,
+        backgroundColor: isDark ? '#2a2a30' : '#ffffff',
+        color: colors.textPrimary,
+        fontSize: '12px',
+        outline: 'none',
+        cursor: 'pointer',
+        appearance: 'none',
+        WebkitAppearance: 'none',
+        backgroundImage: SELECT_CHEVRON,
+        backgroundRepeat: 'no-repeat',
+        backgroundPosition: 'right 6px center',
+        backgroundSize: '10px 10px',
+      }}
+    >
+      {MODEL_API_TYPE_OPTIONS.map((opt) => (
+        <option
+          key={opt.value}
+          value={opt.value}
+          style={{
+            backgroundColor: isDark ? '#2a2a30' : '#ffffff',
+            color: colors.textPrimary,
+          }}
+        >
+          {t(opt.labelKey)}
+        </option>
+      ))}
+    </select>
+  );
+});
 /** 首次设置（settings.json 为空）时的预置值 */
 const DEFAULT_THINKING_EFFORT: ThinkingMode = 'high';
 const DEFAULT_WEB_SEARCH = true;
@@ -458,12 +529,18 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     setModelError(null);
   };
 
-  /** 修改单个模型的 API 协议 */
-  const handleModelApiTypeChange = (index: number, apiType: string) => {
-    if (!activeProvider) return;
-    const models = activeProvider.models.map((m, i) => (i === index ? { ...m, apiType } : m));
-    updateProvider(activeProvider.id, { models });
-  };
+  /**
+   * 修改单个模型的 API 协议。
+   * 显式接收 providerId：这样 ApiTypeSelect 的 onChange 引用可以保持稳定
+   * （配合 memo 避免下拉框在无关重渲染时闪烁），同时避免误改其它服务商。
+   */
+  const handleModelApiTypeChange = React.useCallback((providerId: string, index: number, apiType: string) => {
+    setProviders((prev) => prev.map((p) => {
+      if (p.id !== providerId) return p;
+      const models = p.models.map((m, i) => (i === index ? { ...m, apiType } : m));
+      return { ...p, models };
+    }));
+  }, []);
 
   const handleAddModel = () => {
     if (!activeProvider) return;
@@ -845,17 +922,19 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
         }
         const known = sanitizeApiTypeMap(msg.modelApiTypes);
         const needDetect = normalizeModelList(msg.needDetect).filter((m) => models.includes(m));
+        // 先刷新模型列表（让用户立即看到最新拉取到的模型），再决定是否弹出自动检测提示。
+        // 未探测出协议的模型 apiType 保持为空，UI 暂按默认协议展示。
+        setProviders((prev) => mergeFetchedModels(prev, providerId, models, known));
+        setFetchModelsError(null);
+        setModelError(null);
         if (needDetect.length > 0) {
           // 保持 fetching 状态（按钮继续显示「获取中...」），等待用户确认
           setPendingDetection({ models, modelApiTypes: known, needDetect });
           return;
         }
-        // 全部模型都已有协议：直接合并
+        // 全部模型都已有协议：无需检测，直接结束
         setFetchingProviderId(null);
         pendingFetchProviderIdRef.current = null;
-        setProviders((prev) => mergeFetchedModels(prev, providerId, models, known));
-        setFetchModelsError(null);
-        setModelError(null);
         return;
       }
 
@@ -1266,36 +1345,14 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                             )}
                           </div>
                           {/* 该模型的 API 协议 */}
-                          <select
-                            value={model.apiType || DEFAULT_MODEL_API_TYPE}
-                            onChange={(e) => handleModelApiTypeChange(index, e.target.value)}
-                            title={t('llmConfig.modelApiTypeTitle')}
-                            style={{
-                              flexShrink: 0,
-                              width: 116,
-                              padding: '8px 6px',
-                              borderRadius: '6px',
-                              border: `1px solid ${colors.border}`,
-                              backgroundColor: isDark ? '#2a2a30' : '#ffffff',
-                              color: colors.textPrimary,
-                              fontSize: '12px',
-                              outline: 'none',
-                              cursor: 'pointer',
-                            }}
-                          >
-                            {MODEL_API_TYPE_OPTIONS.map((opt) => (
-                              <option
-                                key={opt.value}
-                                value={opt.value}
-                                style={{
-                                  backgroundColor: isDark ? '#2a2a30' : '#ffffff',
-                                  color: colors.textPrimary,
-                                }}
-                              >
-                                {t(opt.labelKey)}
-                              </option>
-                            ))}
-                          </select>
+                          <ApiTypeSelect
+                            value={model.apiType}
+                            providerId={activeProvider.id}
+                            index={index}
+                            onChange={handleModelApiTypeChange}
+                            colors={colors}
+                            isDark={isDark}
+                          />
                           <button
                             type="button"
                             onClick={() => handleSetDefaultModel(modelName)}

@@ -7,16 +7,19 @@ export type Theme = 'dark' | 'light';
 export type AgentMode = 'manual' | 'risk' | 'auto';
 export type PromptMode = 'normal' | 'minimal' | 'mixed';
 export type ThinkingMode = 'off' | 'low' | 'high' | 'max';
-export type ModelType = 'deepseek-v4-flash' | 'deepseek-v4-pro';
 export type RankingPeriod = 'daily' | 'monthly' | 'total';
 
-/** settings.json 中的默认值（新对话一次性使用，避免创建后跳变） */
+/**
+ * settings.json 中的默认值（新对话一次性使用，避免创建后跳变）。
+ * 全部可选：webview 启动时不再内置任何默认值/兜底，未收到宿主回传前保持
+ * undefined（此时发送按钮禁用，避免用错误默认值发起请求）。
+ */
 export interface SettingsDefaults {
-  model: string;
-  thinkingMode: ThinkingMode;
-  agentMode: AgentMode;
-  promptMode: PromptMode;
-  webSearch: boolean;
+  model?: string;
+  thinkingMode?: ThinkingMode;
+  agentMode?: AgentMode;
+  promptMode?: PromptMode;
+  webSearch?: boolean;
 }
 
 /** LLM API 协议类型（模型级配置） */
@@ -119,7 +122,8 @@ export interface SessionState {
   agentMode: AgentMode;
   /** 会话关联的提示词模式（普通/极简/混合），持久化到 meta.json */
   promptMode?: PromptMode;
-  thinkingMode: ThinkingMode;
+  /** 会话关联的思考强度（未从宿主获取到前为 undefined） */
+  thinkingMode?: ThinkingMode;
   /** 会话关联的 Web Search 开关（未设置时使用 settings.json 默认值） */
   webSearch?: boolean;
   contextLength: number;

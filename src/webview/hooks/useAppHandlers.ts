@@ -24,9 +24,9 @@ export interface UseAppHandlersProps {
   contextLength: number;
   maxContextTokens: number | null;
   agentMode: AgentMode;
-  thinkingMode: ThinkingMode;
+  thinkingMode: ThinkingMode | undefined;
   /** 会话关联的提示词模式（普通/极简/混合，持久化到 meta.json） */
-  promptMode: PromptMode;
+  promptMode: PromptMode | undefined;
   model: string;
   /** 会话关联的 Web Search 开关 */
   webSearch: boolean;
@@ -56,8 +56,8 @@ export interface UseAppHandlersProps {
   setMaxContextTokens: (v: number | null) => void;
   setForceScrollKey: (v: number | ((prev: number) => number)) => void;
   setAgentMode: (v: AgentMode) => void;
-  setThinkingMode: (v: ThinkingMode) => void;
-  setPromptMode: (v: PromptMode) => void;
+  setThinkingMode: (v: ThinkingMode | undefined) => void;
+  setPromptMode: (v: PromptMode | undefined) => void;
   setWebSearch: (v: boolean) => void;
   setModel: (v: string) => void;
   setHasCompactArchive: (v: boolean) => void;
@@ -170,19 +170,26 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     props.setContextLength(0);
     props.setCurrentSessionId(newSessionId);
     props.setCurrentSessionIdRef(newSessionId);
-    // 新对话使用 settings.json 中的默认值（一次性设置，避免先显示 manual 再跳变）
-    props.setAgentMode(settingsDefaultsRef.current.agentMode);
-    props.setThinkingMode(settingsDefaultsRef.current.thinkingMode);
-    props.setWebSearch(settingsDefaultsRef.current.webSearch);
-    props.setModel(settingsDefaultsRef.current.model);
-    props.setPromptMode(settingsDefaultsRef.current.promptMode);
+    // 新对话使用 settings.json 中的默认值（一次性设置，避免先显示 manual 再跳变）。
+    // 默认值未就绪（undefined）时保留当前值，不写入任何兜底默认。
+    const sd = settingsDefaultsRef.current;
+    const nextAgentMode = sd.agentMode ?? props.agentMode;
+    const nextThinkingMode = sd.thinkingMode ?? props.thinkingMode;
+    const nextWebSearch = sd.webSearch ?? props.webSearch;
+    const nextModel = sd.model ?? props.model;
+    const nextPromptMode = sd.promptMode ?? props.promptMode;
+    props.setAgentMode(nextAgentMode);
+    props.setThinkingMode(nextThinkingMode);
+    props.setWebSearch(nextWebSearch);
+    props.setModel(nextModel);
+    props.setPromptMode(nextPromptMode);
     // 为新对话创建默认 state
     props.sessionStatesRef.current.set(newSessionId, createSessionState({
-      agentMode: settingsDefaultsRef.current.agentMode,
-      promptMode: settingsDefaultsRef.current.promptMode,
-      thinkingMode: settingsDefaultsRef.current.thinkingMode,
-      webSearch: settingsDefaultsRef.current.webSearch,
-      model: settingsDefaultsRef.current.model,
+      agentMode: nextAgentMode,
+      promptMode: nextPromptMode,
+      thinkingMode: nextThinkingMode,
+      webSearch: nextWebSearch,
+      model: nextModel,
     }));
     postMessage({ type: 'startNewConversation', sessionId: newSessionId });
     postMessage({ type: 'setActiveSessionId', sessionId: newSessionId });
@@ -227,19 +234,26 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       sessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
       props.setCurrentSessionIdRef(sessionId);
       props.setCurrentSessionId(sessionId);
-      // 新对话使用 settings.json 中的默认值（一次性设置，避免跳变）
-      props.setAgentMode(settingsDefaultsRef.current.agentMode);
-      props.setThinkingMode(settingsDefaultsRef.current.thinkingMode);
-      props.setWebSearch(settingsDefaultsRef.current.webSearch);
-      props.setModel(settingsDefaultsRef.current.model);
-      props.setPromptMode(settingsDefaultsRef.current.promptMode);
+      // 新对话使用 settings.json 中的默认值（一次性设置，避免跳变）；
+      // 未就绪时保留当前值，不写入兜底默认。
+      const sd = settingsDefaultsRef.current;
+      const nextAgentMode = sd.agentMode ?? props.agentMode;
+      const nextThinkingMode = sd.thinkingMode ?? props.thinkingMode;
+      const nextWebSearch = sd.webSearch ?? props.webSearch;
+      const nextModel = sd.model ?? props.model;
+      const nextPromptMode = sd.promptMode ?? props.promptMode;
+      props.setAgentMode(nextAgentMode);
+      props.setThinkingMode(nextThinkingMode);
+      props.setWebSearch(nextWebSearch);
+      props.setModel(nextModel);
+      props.setPromptMode(nextPromptMode);
       // 为新对话创建默认 state
       props.sessionStatesRef.current.set(sessionId, createSessionState({
-        agentMode: settingsDefaultsRef.current.agentMode,
-        promptMode: settingsDefaultsRef.current.promptMode,
-        thinkingMode: settingsDefaultsRef.current.thinkingMode,
-        webSearch: settingsDefaultsRef.current.webSearch,
-        model: settingsDefaultsRef.current.model,
+        agentMode: nextAgentMode,
+        promptMode: nextPromptMode,
+        thinkingMode: nextThinkingMode,
+        webSearch: nextWebSearch,
+        model: nextModel,
       }));
       // 重置压缩状态（新对话没有压缩）
       props.setHasCompactArchive(false);

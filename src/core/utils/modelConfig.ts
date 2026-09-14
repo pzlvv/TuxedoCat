@@ -55,8 +55,10 @@ export type ApiType = 'Anthropic' | 'Responses' | 'OpenAI';
  */
 export const DEFAULT_API_TYPE: ApiType = 'OpenAI';
 
-/** 自动探测协议时的优先级（靠前者优先） */
-export const API_TYPE_PROBE_ORDER: readonly ApiType[] = ['Responses', 'OpenAI', 'Anthropic'];
+/**
+ * 自动探测协议时的优先级由 llm/apiTypes 的协议注册表决定
+ * （每个协议类自带 probePriority，数值越小越优先）。
+ */
 
 /** 把任意输入规范化为合法的 ApiType，非法值回退到 DEFAULT_API_TYPE */
 export function normalizeApiType(value: unknown): ApiType {

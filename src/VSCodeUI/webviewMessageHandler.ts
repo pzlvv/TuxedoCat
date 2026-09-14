@@ -6,11 +6,17 @@ import type { UIHost } from '../host/UIHost.js';
 import { fetch as undiciFetch } from 'undici';
 import { logger } from '../core/Logger.js';
 import { getProbeDispatcher } from '../core/llm/httpDispatcher.js';
+import {
+  apiTypeRegistry,
+  type ApiTypeDefinition,
+  type ApiTypeProbeRequest,
+  type ProbeVerdict,
+} from '../core/llm/apiTypes/index.js';
 import { getPendingToolUseIds } from '../core/tools/index.js';
 import { providerKeyFromBaseURL } from '../core/utils/providerKey.js';
 import { buildEditDiffHunks } from '../core/utils/editDiff.js';
 import { buildUserContent, extractUserContent } from '../core/utils/contentBlocks.js';
-import { MODEL_CONFIGS, normalizeModelTokenLimits, type ModelTokenLimits } from '../core/utils/modelConfig.js';
+import { normalizeModelTokenLimits, type ModelTokenLimits, type ApiType } from '../core/utils/modelConfig.js';
 import { DEFAULT_WAKE_SHORTCUT, normalizeAccelerator } from '../core/utils/shortcut.js';
 import { extractLastJsonObject } from '../core/utils/lastJson.js';
 import { userChoiceQueue } from '../core/UserChoiceQueue.js';
@@ -35,14 +41,6 @@ const API_TYPE_PROBE_RETRY_BASE_DELAY_MS = 500;
 const API_TYPE_PROBE_MAX_RETRY_DELAY_MS = 5_000;
 /** 需要重试的探测状态码：限流 + 瞬时故障 */
 const API_TYPE_PROBE_RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
-
-/**
- * 单次协议探测的判定结果：
- * - supported   该协议可用
- * - unsupported 明确不支持 / 该协议适配器不可用
- * - unknown     无法判断（限流重试后仍失败、地区限制、网络异常）→ 不猜测
- */
-type ProbeVerdict = 'supported' | 'unsupported' | 'unknown';
 
 /**
  * WebviewMessageHandler - 处理 webview 发来的各类消息
@@ -1273,7 +1271,6 @@ export class WebviewMessageHandler {
 
   private async handleRequestModels(_message: any): Promise<void> {
     this.log(`[VSCodeUI] Requesting model list from API`);
-    const builtinModels = MODEL_CONFIGS.map((cfg) => cfg.name);
     try {
       const { readSettingsJson } = await import('../core/history/Config.js');
       const settings = await (readSettingsJson as () => Promise<Record<string, any>>)();
@@ -1313,12 +1310,12 @@ export class WebviewMessageHandler {
         this.log(`[VSCodeUI] API returned no models, using saved/builtin models`);
       }
 
-      // Fallback：优先使用已保存的模型列表；没有时使用内置模型
-      const fallbackModels = ensureDefault(savedModels.length > 0 ? savedModels : builtinModels);
-      this.host.sendToWebview({ type: 'setModels', models: fallbackModels } as any);
+      // 没有可拉取的模型时只回传已保存的模型列表（可能为空）。
+      // 不再回退到内置模型名：模型完全由用户配置，webview 侧不保留默认模型。
+      this.host.sendToWebview({ type: 'setModels', models: ensureDefault(savedModels) } as any);
     } catch (err: any) {
       this.log(`[VSCodeUI] Failed to fetch models: ${err.message}`);
-      this.host.sendToWebview({ type: 'setModels', models: builtinModels } as any);
+      this.host.sendToWebview({ type: 'setModels', models: [] } as any);
     }
   }
 
@@ -1460,58 +1457,35 @@ export class WebviewMessageHandler {
   }
 
   /**
-   * 近乎零成本地探测单个模型支持的 API 协议，按 Responses > OpenAI > Anthropic 取第一个可用的。
+   * 近乎零成本地探测单个模型支持的 API 协议。
+   *
+   * 各协议的探测规则（如何构建探测请求、如何判定响应）由 apiTypes 注册表中的
+   * 协议类实现（一个 Type 一个类），这里只负责按优先级并发发起、按顺序等待，
+   * 取第一个可用的协议。
    *
    * 原理：网关按「路径定协议 → 查模型是否注册该协议 → 鉴权 → 转发上游」的顺序处理。
-   * 探测 body 故意不携带必填的 messages / input，请求会在上游入参校验阶段被拒，
-   * 正常情况下不会进入推理，因此不产生 completion、不消耗 token。
+   * 探测 body 故意不携带必填字段，请求会在上游入参校验阶段被拒，正常情况下不会
+   * 进入推理，因此不产生 completion、不消耗 token（各协议实现里用 1 token 兜底封顶）。
    *
-   * 注意：并非所有后端都严格遵守 schema（实测 opencode 的 omen-alpha 有时会
-   * 忽略缺失的 messages 直接生成）。因此额外带上 max_tokens / max_output_tokens = 1
-   * 兜底：即使真的生成了，输出也被封顶在 1 个 token（实测 finish_reason=length、
-   * content 为空），单次探测的额外成本可忽略。
+   * 结果不确定（限流 / 地区限制 / 网络异常）时返回 null 而不是猜测，
+   * 避免写入错误的协议。
    *
-   * 判定规则见 classifyProbeResult；结果不确定（限流 / 地区限制 / 网络异常）时
-   * 返回 null 而不是猜测，避免写入错误的协议。
-   *
-   * @returns 探测到的协议；不确定或三种都不支持时返回 null
+   * @returns 探测到的协议；不确定或所有协议都不支持时返回 null
    */
-  private async detectModelApiType(baseURL: string, apiKey: string, model: string): Promise<'Responses' | 'OpenAI' | 'Anthropic' | null> {
-    const trimmed = baseURL.replace(/\/+$/, '');
-    const v1 = trimmed.endsWith('/v1') ? trimmed : `${trimmed}/v1`;
+  private async detectModelApiType(baseURL: string, apiKey: string, model: string): Promise<ApiType | null> {
     const sessionId = `probe-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+    // 按探测优先级取已注册的协议（未注册的协议自动跳过）
+    const definitions = apiTypeRegistry.listByProbePriority();
+    if (definitions.length === 0) return null;
 
-    // 顺序即优先级
-    const candidates: Array<{
-      apiType: 'Responses' | 'OpenAI' | 'Anthropic';
-      url: string;
-      headers: Record<string, string>;
-      body: Record<string, unknown>;
-    }> = [
-      {
-        apiType: 'Responses',
-        url: `${v1}/responses`,
-        headers: { 'Authorization': `Bearer ${apiKey}` },
-        // 缺少必填的 input → 上游入参校验必失败；max_output_tokens 兜底封顶
-        body: { model, max_output_tokens: 1 },
-      },
-      {
-        apiType: 'OpenAI',
-        url: `${v1}/chat/completions`,
-        headers: { 'Authorization': `Bearer ${apiKey}` },
-        body: { model, max_tokens: 1 },
-      },
-      {
-        apiType: 'Anthropic',
-        url: `${v1}/messages`,
-        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-        body: { model, max_tokens: 1 },
-      },
-    ];
+    const candidates = definitions.map((definition) => ({
+      definition,
+      request: definition.buildProbeRequest({ baseURL, apiKey, model, sessionId }),
+    }));
 
-    // 三个协议**同时发起**，但按优先级顺序 await：
+    // 所有协议**同时发起**，但按优先级顺序 await：
     // 高优先级一旦有结论就立即返回并 abort 掉其余探测，
-    // 不必等低优先级那些慢请求（最坏情况等价于 Promise.all，最好情况省掉 2/3 等待）。
+    // 不必等低优先级那些慢请求（最坏情况等价于 Promise.all，最好情况省掉大部分等待）。
     const controllers = candidates.map(() => new AbortController());
     const timers = controllers.map((controller) =>
       setTimeout(() => controller.abort(), API_TYPE_PROBE_TIMEOUT_MS));
@@ -1519,23 +1493,25 @@ export class WebviewMessageHandler {
     const probes = candidates.map((candidate, index) =>
       this.probeWithRetry(candidate, model, sessionId, controllers[index]));
 
+    const abortLower = (fromIndex: number): void => {
+      for (let lower = fromIndex + 1; lower < controllers.length; lower++) {
+        controllers[lower].abort();
+      }
+    };
+
     try {
       for (let index = 0; index < candidates.length; index++) {
         const verdict = await probes[index];
         if (verdict === 'supported') {
           // 命中即中止所有更低优先级的探测，避免无谓等待
-          for (let lower = index + 1; lower < controllers.length; lower++) {
-            controllers[lower].abort();
-          }
-          return candidates[index].apiType;
+          abortLower(index);
+          return candidates[index].definition.type;
         }
         if (verdict === 'unknown') {
           // 高优先级结果不确定（限流重试后仍失败 / 地区限制 / 网络异常）：
           // 不猜测、不降级到低优先级，交给用户手动选择或下次自动获取时重试
-          this.log(`[VSCodeUI] probe ${model}: ${candidates[index].apiType} verdict unknown, skipping detection (will retry next fetch)`);
-          for (let lower = index + 1; lower < controllers.length; lower++) {
-            controllers[lower].abort();
-          }
+          this.log(`[VSCodeUI] probe ${model}: ${candidates[index].definition.type} verdict unknown, skipping detection (will retry next fetch)`);
+          abortLower(index);
           return null;
         }
       }
@@ -1554,24 +1530,25 @@ export class WebviewMessageHandler {
    * 优先遵循 Retry-After 响应头。
    */
   private async probeWithRetry(
-    candidate: { apiType: 'Responses' | 'OpenAI' | 'Anthropic'; url: string; headers: Record<string, string>; body: Record<string, unknown> },
+    candidate: { definition: ApiTypeDefinition; request: ApiTypeProbeRequest },
     model: string,
     sessionId: string,
     controller: AbortController,
   ): Promise<ProbeVerdict> {
+    const apiType = candidate.definition.type;
     let lastStatus = 0;
     for (let attempt = 0; attempt <= API_TYPE_PROBE_MAX_RETRIES; attempt++) {
       if (controller.signal.aborted) return 'unknown';
       try {
-        const response = await undiciFetch(candidate.url, {
+        const response = await undiciFetch(candidate.request.url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'x-opencode-session': sessionId,
             'x-session-id': sessionId,
-            ...candidate.headers,
+            ...candidate.request.headers,
           },
-          body: JSON.stringify(candidate.body),
+          body: JSON.stringify(candidate.request.body),
           signal: controller.signal,
           dispatcher: getProbeDispatcher(),
         });
@@ -1582,13 +1559,14 @@ export class WebviewMessageHandler {
         if (API_TYPE_PROBE_RETRYABLE_STATUS.has(response.status) && attempt < API_TYPE_PROBE_MAX_RETRIES) {
           const retryAfterMs = this.parseRetryAfterMs(response.headers.get('retry-after'));
           const delay = retryAfterMs ?? API_TYPE_PROBE_RETRY_BASE_DELAY_MS * (attempt + 1);
-          this.log(`[VSCodeUI] probe ${model} ${candidate.apiType} -> HTTP ${response.status} (retryable), retrying in ${delay}ms (${attempt + 1}/${API_TYPE_PROBE_MAX_RETRIES})`);
+          this.log(`[VSCodeUI] probe ${model} ${apiType} -> HTTP ${response.status} (retryable), retrying in ${delay}ms (${attempt + 1}/${API_TYPE_PROBE_MAX_RETRIES})`);
           await new Promise((resolve) => setTimeout(resolve, delay));
           continue;
         }
 
-        const verdict = this.classifyProbeResult(response.status, text);
-        this.log(`[VSCodeUI] probe ${model} ${candidate.apiType} -> HTTP ${response.status} ${verdict}${verdict === 'supported' ? '' : ` ${text.slice(0, 160)}`}`);
+        // 判定规则由协议类实现（默认复用 ProbeClassify 的通用三态规则）
+        const verdict = candidate.definition.classifyProbeResponse(response.status, text);
+        this.log(`[VSCodeUI] probe ${model} ${apiType} -> HTTP ${response.status} ${verdict}${verdict === 'supported' ? '' : ` ${text.slice(0, 160)}`}`);
         return verdict;
       } catch (err: any) {
         // 被主动 abort 的低优先级探测不记录为错误
@@ -1596,15 +1574,15 @@ export class WebviewMessageHandler {
         // 网络错误也重试
         if (attempt < API_TYPE_PROBE_MAX_RETRIES) {
           const delay = API_TYPE_PROBE_RETRY_BASE_DELAY_MS * (attempt + 1);
-          this.log(`[VSCodeUI] probe ${model} ${candidate.apiType} -> error ${err?.message || err}, retrying in ${delay}ms (${attempt + 1}/${API_TYPE_PROBE_MAX_RETRIES})`);
+          this.log(`[VSCodeUI] probe ${model} ${apiType} -> error ${err?.message || err}, retrying in ${delay}ms (${attempt + 1}/${API_TYPE_PROBE_MAX_RETRIES})`);
           await new Promise((resolve) => setTimeout(resolve, delay));
           continue;
         }
-        this.log(`[VSCodeUI] probe ${model} ${candidate.apiType} -> error ${err?.message || err}`);
+        this.log(`[VSCodeUI] probe ${model} ${apiType} -> error ${err?.message || err}`);
         return 'unknown';
       }
     }
-    this.log(`[VSCodeUI] probe ${model} ${candidate.apiType} -> exhausted retries (last HTTP ${lastStatus})`);
+    this.log(`[VSCodeUI] probe ${model} ${apiType} -> exhausted retries (last HTTP ${lastStatus})`);
     return 'unknown';
   }
 
@@ -1620,66 +1598,6 @@ export class WebviewMessageHandler {
       return Math.min(Math.max(date - Date.now(), 0), API_TYPE_PROBE_MAX_RETRY_DELAY_MS);
     }
     return undefined;
-  }
-
-  /**
-   * 判定一次探测响应的含义（三态）。
-   *
-   * 需要区分三种形状相近、含义完全不同的响应体：
-   *   1. 网关自身信封：{"type":"error","error":{"type":"ModelError"|"AuthError"|"RegionError"|"error"|...}}
-   *      → 与协议无关的拒绝（模型不支持该格式 / 鉴权 / 地区限制 / 内部错误）
-   *   2. 上游错误被网关包一层：{"model":"X","error":{...}} 或 {"error":{...}}
-   *      → 请求已经路由到该协议的上游，说明该协议**可用**
-   *        （例如 gpt-5.6-luna 的 Responses 返回 403 地区限制，恰恰证明 Responses 路由通了）
-   *   3. 上游标准错误（Anthropic 风格）被网关原样透传：
-   *      {"type":"error","error":{"type":"invalid_request_error"|"authentication_error"|...}}
-   *      → 同样说明请求到达了上游
-   */
-  private classifyProbeResult(status: number, text: string): ProbeVerdict {
-    /** 网关自身产生的、明确表示「该协议不可用」的错误类型 */
-    const GATEWAY_REJECT_TYPES = new Set(['ModelError', 'AuthError', 'MissingSessionID', 'CreditsError', 'error']);
-    /** 网关自身产生的、与协议无关（无法判断）的错误类型 */
-    const GATEWAY_UNKNOWN_TYPES = new Set(['RegionError']);
-
-    let payload: any;
-    try {
-      payload = text ? JSON.parse(text) : undefined;
-    } catch {
-      payload = undefined;
-    }
-
-    if (payload && typeof payload === 'object') {
-      const isGatewayEnvelope = payload.type === 'error'
-        && payload.error && typeof payload.error === 'object';
-      if (isGatewayEnvelope) {
-        const errType = typeof payload.error.type === 'string' ? payload.error.type : '';
-        if (GATEWAY_REJECT_TYPES.has(errType)) {
-          // 模型不支持该格式 / 鉴权失败 / 网关内部 500（适配器崩溃）
-          return 'unsupported';
-        }
-        if (GATEWAY_UNKNOWN_TYPES.has(errType)) {
-          // 地区限制等，与协议无关 → 无法判断
-          return 'unknown';
-        }
-        // 其余是上游业务错误（invalid_request_error 等）被网关原样透传：已到达真实上游
-        return status === 400 || status === 422 ? 'supported' : 'unknown';
-      }
-
-      // 上游错误被网关包了一层（可能带顶层 model 字段）→ 已路由到该协议的上游
-      if (payload.error && typeof payload.error === 'object') {
-        return 'supported';
-      }
-    }
-
-    // 无错误体：按状态码兜底
-    //   400/422 → 上游入参校验拒绝（body 缺必填字段）→ 端点存在，支持
-    //   2xx     → 理论上不会发生（body 非法），保守视为支持
-    //   404/405 → 端点不存在 → 不支持
-    //   401/403/其它 5xx → 无法判断
-    if (status === 400 || status === 422) return 'supported';
-    if (status >= 200 && status < 300) return 'supported';
-    if (status === 404 || status === 405) return 'unsupported';
-    return 'unknown';
   }
 
   private async handleRollbackEdit(message: any): Promise<void> {
@@ -2401,9 +2319,9 @@ export class WebviewMessageHandler {
         this.log(`[VSCodeUI] Failed to resolve active model after save: ${err.message}`);
       }
 
-      // 保存后立即刷新主界面的模型下拉列表：有模型列表时用模型列表，否则回退内置模型
-      const builtinModels = MODEL_CONFIGS.map((cfg) => cfg.name);
-      const baseModels = savedProviderModels.length > 0 ? savedProviderModels : builtinModels;
+      // 保存后立即刷新主界面的模型下拉列表：只使用该服务商保存的模型列表
+      // （不再回退到内置模型名，模型完全由用户配置）。
+      const baseModels = savedProviderModels;
       const modelList = Array.from(new Set([...baseModels, ...(savedModel ? [savedModel] : []), ...(activeModel ? [activeModel] : [])]));
       this.host.sendToWebview({ type: 'setModels', models: modelList } as any);
 
@@ -2460,6 +2378,18 @@ export class WebviewMessageHandler {
       this.log(`[VSCodeUI] Sent settings defaults: model=${model}, thinkingMode=${thinkingMode}, agentMode=${agentMode}, promptMode=${promptMode}, webSearch=${webSearch}, providerConfigured=${providerConfigured}`);
     } catch (err: any) {
       this.log(`[VSCodeUI] Failed to send settings defaults: ${err.message}`);
+      // 读取失败也要回一条：否则 webview 的 configReady 永远为 false，发送按钮会一直禁用。
+      // 不带任何默认值，providerConfigured=false 会让输入框引导用户去设置页配置。
+      this.host.sendToWebview({
+        type: 'settingsDefaults',
+        model: '',
+        thinkingMode: undefined,
+        agentMode: undefined,
+        promptMode: undefined,
+        webSearch: false,
+        language: this.getUiLanguageFromSettings(),
+        providerConfigured: false,
+      } as any);
     }
   }
 
@@ -2563,17 +2493,18 @@ export class WebviewMessageHandler {
       });
     } catch (err: any) {
       this.log(`[VSCodeUI] Failed to read LLM config: ${err.message}`);
-      // 读取失败时仍然打开面板，使用首次设置的预置值（允许联网、thinking=high、flash、关键模式）
+      // 读取失败时仍然打开面板，但不预置任何默认配置：
+      // 让用户从空面板自行填写服务地址 / Key / 模型，避免内置默认值被误当成用户配置。
       this.host.sendToWebview({
         type: 'showLLMConfig',
-        baseURL: 'https://api.deepseek.com',
-        webSearch: true,
-        thinkingEffort: 'high',
-        defaultModel: 'deepseek-v4-flash',
+        baseURL: '',
+        webSearch: false,
+        thinkingEffort: 'off',
+        defaultModel: '',
         defaultAgentMode: 'risk',
         defaultPromptMode: 'normal',
         apiKey: '',
-        providers: [{ key: 'api.deepseek.com', baseURL: 'https://api.deepseek.com', apiKey: '', models: [], modelConfigs: {} }],
+        providers: [],
         activeProvider: '',
         language: this.getUiLanguageFromSettings(),
         shortcut: DEFAULT_WAKE_SHORTCUT,

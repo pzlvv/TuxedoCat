@@ -46,7 +46,14 @@ export function getUiLanguage(): UiLanguage {
 export function setUiLanguage(lang: UiLanguage): boolean {
   const prev = getLocale();
   uiLanguage = lang;
-  (window as any).__uiLocale = lang;
+  // Electron 通过 contextBridge 暴露的 __uiLocale 是只读属性，直接赋值会抛
+  // TypeError: Cannot assign to read only property '__uiLocale'。
+  // 这里仅把它当作诊断用的镜像，写入失败不影响语言切换本身。
+  try {
+    (window as any).__uiLocale = lang;
+  } catch {
+    // 只读属性（contextBridge）时忽略
+  }
   return getLocale() !== prev;
 }
 

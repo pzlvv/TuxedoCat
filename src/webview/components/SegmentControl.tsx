@@ -14,7 +14,8 @@ export function SegmentControl<T extends string>({
   segments,
   colors,
 }: {
-  value: T;
+  /** 当前值；undefined 表示尚未获取到（此时所有分段都不高亮） */
+  value: T | undefined;
   onChange: (value: T) => void;
   segments: Array<{ key: T; label: string; title?: string }>;
   colors: Colors;

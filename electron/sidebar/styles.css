@@ -43,8 +43,9 @@ body {
 .list::-webkit-scrollbar-thumb { background: #3a3a42; border-radius: 2px; }
 .item {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 6px;
   padding: 8px 10px;
   border-radius: 6px;
   cursor: pointer;
@@ -52,6 +53,33 @@ body {
 }
 .item:hover { background: #26262c; }
 .item.active { background: rgba(99, 102, 241, 0.18); }
+
+/* ── 左侧预留列：上槽位＝绿点（已打开对话），下槽位＝折叠按钮 ──
+   两槽位固定尺寸、始终占位，因此所有对话（有无绿点/有无子对话）标题左边缘都对齐。 */
+.item-rail {
+  flex: 0 0 14px;
+  width: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+}
+.rail-slot {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* 标题 + 副标题（时间/条数）+ 删除确认条 */
+.item-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 .item .title {
   font-size: 12px;
   color: #c1c1c6;
@@ -143,9 +171,28 @@ body {
   font-size: 11px;
   color: #71717a;
 }
-.item.child { margin-left: 14px; }
 
-/* ── 操作按钮（hover 显示，2 行 2 列，垂直居中） ── */
+/* ── 子会话展开/折叠按钮（参考 webview 对话列表的 chevron） ── */
+.toggle-btn {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #a1a1aa;
+  cursor: pointer;
+  padding: 0;
+  border-radius: 3px;
+  transition: transform 0.15s ease;
+}
+.toggle-btn:hover { background: rgba(255, 255, 255, 0.12); color: #e4e4e7; }
+.toggle-btn.expanded { transform: rotate(90deg); }
+
+/* ── 操作按钮（hover 显示，垂直居中）
+   根对话：2 行 2 列（重命名/智能命名/删除/关闭）；子代理：单列（仅关闭） ── */
 .item { position: relative; }
 .item-actions {
   position: absolute;
@@ -160,6 +207,8 @@ body {
   padding: 2px;
 }
 .item:hover .item-actions { display: grid; }
+/* 子代理对话仅有一个「关闭」按钮：单列布局，避免按钮组比图标宽出一截 */
+.item-actions--single { grid-template-columns: 20px; }
 .action-btn {
   width: 20px;
   height: 20px;

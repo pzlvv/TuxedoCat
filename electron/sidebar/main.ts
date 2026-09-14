@@ -13,6 +13,12 @@
  * 交互参考插件 webview 版本（ConversationTreeItem.tsx）：
  * 根对话 hover 时显示 重命名/智能命名/删除/关闭 按钮（2 行 2 列）；重命名为行内输入框；
  * 删除需二次确认；智能命名进行中显示转圈。
+ * 子代理（subagent）对话 hover 时仅显示「关闭」按钮——关闭其聊天视图、释放资源，
+ * 但不提供重命名/智能命名/删除（子代理历史由父会话管理，避免误删）。
+ *
+ * 布局：每条对话左侧预留固定宽度的一列（.item-rail）——
+ *   上槽位显示绿点（该对话已打开/已加载），下槽位显示子对话折叠按钮。
+ * 两个槽位无论是否有内容都占位，因此所有对话的标题/副标题左边缘始终对齐。
  */
 
 import { PRODUCT_NAME } from '../../src/config/project.js';
@@ -71,6 +77,12 @@ let renameValue = '';
 let confirmDeleteId: string | null = null;
 /** 正在智能命名的会话集合 */
 const namingSessions = new Set<string>();
+/**
+ * 子会话展开状态（父会话 sessionId -> 是否展开）。
+ * 与 webview 版本一致：未显式设置时，仅当该父会话（或其某个后代）是当前活跃
+ * 会话时才默认展开，否则折叠，避免子代理对话把列表撑得很长。
+ */
+const expandedSubSessions: Record<string, boolean> = {};
 
 function relativeTime(ts: number): string {
   const diff = Date.now() - ts;
@@ -138,22 +150,46 @@ function render(): void {
   const sorted = [...conversations].sort(
     (a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt),
   );
-  const roots = sorted.filter((c) => !c.parentSessionId);
-  const children = sorted.filter((c) => !!c.parentSessionId);
+
+  // 按 parentSessionId 构建子会话映射（父会话不存在的视为根，避免孤儿丢失）
+  const byId = new Map(sorted.map((c) => [c.sessionId, c]));
+  const childrenMap = new Map<string, ConversationMeta[]>();
+  const roots: ConversationMeta[] = [];
+  for (const c of sorted) {
+    const pid = c.parentSessionId;
+    if (pid && pid !== c.sessionId && byId.has(pid)) {
+      const arr = childrenMap.get(pid) || [];
+      arr.push(c);
+      childrenMap.set(pid, arr);
+    } else {
+      roots.push(c);
+    }
+  }
+
+  // 子树是否包含当前活跃会话（用于决定默认展开状态）
+  const subtreeHasActive = (id: string, depth = 0): boolean => {
+    if (depth > 20) return false;
+    if (id === activeSessionId) return true;
+    const kids = childrenMap.get(id) || [];
+    return kids.some((k) => subtreeHasActive(k.sessionId, depth + 1));
+  };
+  const isSubExpanded = (id: string): boolean => {
+    const explicit = expandedSubSessions[id];
+    if (explicit !== undefined) return explicit;
+    // 默认：当前活跃会话所在的分支展开，其余折叠（参考 webview 对话列表）
+    return subtreeHasActive(id);
+  };
 
   const html: string[] = [];
-  for (const c of roots) {
-    html.push(itemHtml(c, false));
-    for (const child of children.filter((ch) => ch.parentSessionId === c.sessionId)) {
-      html.push(itemHtml(child, true));
+  const renderNode = (c: ConversationMeta, depth: number): void => {
+    const kids = childrenMap.get(c.sessionId) || [];
+    const expanded = kids.length > 0 && isSubExpanded(c.sessionId);
+    html.push(itemHtml(c, depth, kids.length, expanded));
+    if (expanded) {
+      for (const child of kids) renderNode(child, depth + 1);
     }
-  }
-  // 孤儿子会话（父会话不存在）
-  for (const child of children) {
-    if (!roots.some((r) => r.sessionId === child.parentSessionId)) {
-      html.push(itemHtml(child, true));
-    }
-  }
+  };
+  for (const c of roots) renderNode(c, 0);
 
   listEl.innerHTML = html.join('');
 
@@ -180,6 +216,7 @@ function render(): void {
       else if (action === 'close') closeConversation(sessionId);
       else if (action === 'confirm-delete') doDelete(sessionId);
       else if (action === 'cancel-delete') cancelDelete();
+      else if (action === 'toggle-sub') toggleSubSession(sessionId);
     });
   });
 
@@ -203,11 +240,11 @@ function render(): void {
   setActive(activeSessionId);
 }
 
-function itemHtml(c: ConversationMeta, isChild: boolean): string {
+function itemHtml(c: ConversationMeta, depth: number, childCount: number, isExpanded: boolean): string {
   const title = c.title && c.title.trim() ? c.title : '(未命名对话)';
   const active = c.sessionId === activeSessionId ? ' active' : '';
   const roleTag = c.role && c.role !== 'Master' ? ` · ${escapeHtml(c.role)}` : '';
-  const dot = c.loaded ? '<span class="loaded-dot" title="已加载"></span>' : '';
+  const dot = c.loaded ? '<span class="loaded-dot" title="已打开"></span>' : '';
   // 非 idle 对话显示左边流水灯条（与 webview 对话列表一致；当前活跃会话同样显示）
   // 正在等待用户输入（ask user / 权限确认）时显示黄色
   const runningBar = c.running
@@ -217,20 +254,37 @@ function itemHtml(c: ConversationMeta, isChild: boolean): string {
   const isNaming = namingSessions.has(c.sessionId);
   const isConfirming = confirmDeleteId === c.sessionId;
 
+  // 折叠按钮（仅在有关联子对话时显示，参考 webview 对话列表的 chevron），
+  // 放在左侧预留列的下槽位。
+  const toggleHtml = childCount > 0
+    ? `<button class="toggle-btn${isExpanded ? ' expanded' : ''}" data-action="toggle-sub" data-session-id="${c.sessionId}" title="${isExpanded ? '折叠子对话' : '展开子对话'}">
+         <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+           <path d="M2 0L6 4L2 8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+         </svg>
+       </button>`
+    : '';
+
   // 标题区域：重命名时显示行内输入框
   const titleHtml = isRenaming
     ? `<input class="rename-input" type="text" value="${escapeHtml(renameValue)}" spellcheck="false" />`
-    : `<div class="title">${dot}${escapeHtml(title)}${isNaming ? ' <span class="naming-hint">智能命名中…</span>' : ''}</div>`;
+    : `<div class="title">${escapeHtml(title)}${isNaming ? ' <span class="naming-hint">智能命名中…</span>' : ''}</div>`;
 
-  // 操作按钮（仅根对话，hover 显示，与 webview 版本一致；2 行 2 列）
-  const actionsHtml = !isChild && !isRenaming && !isConfirming
-    ? `<div class="item-actions">
+  // 操作按钮（hover 显示，与 webview 版本一致）：
+  // - 根对话：重命名 / 智能命名 / 删除 / 关闭（2 行 2 列）
+  // - 子代理（subagent）：仅「关闭」（关闭其聊天视图、释放资源），
+  //   不提供重命名 / 智能命名 / 删除——子代理历史由父会话管理，避免误删。
+  const actionsHtml = isRenaming || isConfirming
+    ? ''
+    : depth === 0
+      ? `<div class="item-actions">
          <button class="action-btn" data-action="rename" data-session-id="${c.sessionId}" title="重命名">${ICON_RENAME}</button>
          <button class="action-btn" data-action="smart-name" data-session-id="${c.sessionId}" title="智能命名" ${isNaming ? 'disabled' : ''}>${isNaming ? '<span class="spinner"></span>' : ICON_SMART_NAME}</button>
          <button class="action-btn danger" data-action="delete" data-session-id="${c.sessionId}" title="删除此对话">${ICON_DELETE}</button>
          <button class="action-btn" data-action="close" data-session-id="${c.sessionId}" title="关闭对话（释放资源）">${ICON_CLOSE}</button>
        </div>`
-    : '';
+      : `<div class="item-actions item-actions--single">
+         <button class="action-btn" data-action="close" data-session-id="${c.sessionId}" title="关闭子代理对话（释放资源）">${ICON_CLOSE}</button>
+       </div>`;
 
   // 删除二次确认条
   const confirmHtml = isConfirming
@@ -241,17 +295,43 @@ function itemHtml(c: ConversationMeta, isChild: boolean): string {
        </div>`
     : '';
 
+  // 按层级缩进（子会话每层 14px）
+  const indent = depth > 0 ? ` style="margin-left: ${depth * 14}px"` : '';
+
   return `
-    <div class="item${isChild ? ' child' : ''}${active}" data-session-id="${c.sessionId}">
+    <div class="item${depth > 0 ? ' child' : ''}${active}"${indent} data-session-id="${c.sessionId}">
       ${runningBar}
-      ${titleHtml}
-      <div class="sub">
-        <span>${relativeTime(c.updatedAt ?? c.createdAt)}</span>
-        <span>${c.messageCount} 条${roleTag}</span>
+      <div class="item-rail">
+        <span class="rail-slot">${dot}</span>
+        <span class="rail-slot">${toggleHtml}</span>
+      </div>
+      <div class="item-main">
+        ${titleHtml}
+        <div class="sub">
+          <span>${relativeTime(c.updatedAt ?? c.createdAt)}</span>
+          <span>${c.messageCount} 条${roleTag}</span>
+        </div>
+        ${confirmHtml}
       </div>
       ${actionsHtml}
-      ${confirmHtml}
     </div>`;
+}
+
+/** 切换子会话展开/折叠状态并重渲染 */
+function toggleSubSession(sessionId: string): void {
+  // 与默认展开规则保持一致：首次点击时基于当前默认状态取反
+  const subtreeHasActive = (id: string, depth = 0): boolean => {
+    if (depth > 20) return false;
+    if (id === activeSessionId) return true;
+    return conversations
+      .filter((k) => k.parentSessionId === id)
+      .some((k) => subtreeHasActive(k.sessionId, depth + 1));
+  };
+  const current = expandedSubSessions[sessionId] !== undefined
+    ? expandedSubSessions[sessionId]
+    : subtreeHasActive(sessionId);
+  expandedSubSessions[sessionId] = !current;
+  render();
 }
 
 /* ── 交互逻辑 ── */
