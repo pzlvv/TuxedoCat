@@ -71,6 +71,13 @@ export interface ToolUseContext {
   /** 中断控制器 */
   abortController: AbortControllerLike
 
+  /**
+   * 当前会话的工作目录（项目根目录，绝对路径）。
+   * 由 QueryEngine 从自己的 config.cwd 填入，工具一律以此为准，
+   * 不要使用 process.cwd()（那是宿主进程的启动目录，与工作区无关）。
+   */
+  cwd: string
+
   /** 获取应用状态 */
   getAppState(): unknown
 

@@ -6,7 +6,6 @@ import type { Uri } from 'vscode';
 import type { LogChannel } from '../host/UIHost.js';
 import { userChoiceQueue } from '../core/UserChoiceQueue.js';
 import type { ShowDiffInVirtualDocumentEvent } from './types.js';
-import type { ValidationRule } from '../core/webviewTypes.js';
 import type { DiffUris } from './diffUris.js';
 
 /**
@@ -17,8 +16,6 @@ export class UserChoiceManager {
   private postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
   private closePreview: () => void;
   private getActiveSessionIdInternal: () => string | undefined;
-  private showPasswordInput: ((prompt: string, plainText?: boolean) => Promise<string | null>) | undefined;
-  private hasWebview: () => boolean;
 
   /** 当前打开的预览文档标识（统一使用 vscode.Uri 规范化对象） */
   public currentPreviewUris: Uri[] = [];
@@ -38,8 +35,6 @@ export class UserChoiceManager {
   public currentDiffHash: string = '';
   /** 按 choiceId 存储的 pending 用户选择回调 */
   public pendingUserChoices: Map<string, { sessionId: string; resolve: (value: { index: number; reply?: string }) => void }> = new Map();
-  /** 按 passwordId 存储的 pending 密码输入回调 */
-  public pendingPasswordRequests: Map<string, { resolve: (value: string | null) => void }> = new Map();
   /** diff 回调 */
   private onShowDiffInVirtualDocumentCallback?: (event: ShowDiffInVirtualDocumentEvent) => void | Promise<void>;
   /** 构建 diff URI（宿主相关；Electron 宿主不需要传） */
@@ -54,8 +49,6 @@ export class UserChoiceManager {
     getActiveSessionIdInternal: () => string | undefined;
     onShowDiffInVirtualDocumentCallback?: (event: ShowDiffInVirtualDocumentEvent) => void | Promise<void>;
     buildDiffUris?: (title: string) => DiffUris;
-    showPasswordInput?: (prompt: string, plainText?: boolean) => Promise<string | null>;
-    hasWebview?: () => boolean;
     onChoiceShown?: (sessionId: string) => void;
   }) {
     this.outputChannel = deps.outputChannel;
@@ -64,8 +57,6 @@ export class UserChoiceManager {
     this.getActiveSessionIdInternal = deps.getActiveSessionIdInternal;
     this.onShowDiffInVirtualDocumentCallback = deps.onShowDiffInVirtualDocumentCallback;
     this.buildDiffUris = deps.buildDiffUris;
-    this.showPasswordInput = deps.showPasswordInput;
-    this.hasWebview = deps.hasWebview ?? (() => true);
     this.onChoiceShown = deps.onChoiceShown;
   }
 
@@ -239,33 +230,6 @@ export class UserChoiceManager {
           resolve(value);
         }
       });
-    });
-  }
-
-  /**
-   * 请求用户输入密码（优先通过 WebView 展示，无 webview 时降级为宿主原生输入）
-   * @param plainText 如果为 true，则以明文输入框显示
-   */
-  async requestPassword(sessionID: string, prompt: string, validationRule?: ValidationRule, plainText?: boolean): Promise<string | null> {
-    if (!this.hasWebview()) {
-      // 无 webview 通道时使用宿主原生输入（如 VSCode showInputBox / Electron dialog）
-      if (this.showPasswordInput) {
-        return this.showPasswordInput(prompt, plainText);
-      }
-      return null;
-    }
-
-    const passwordId = `password-${Date.now()}-${Math.random()}`;
-    this.postToWebview(sessionID, {
-      type: 'requestPassword',
-      passwordId,
-      prompt,
-      plainText: plainText || false,
-      validationRule: validationRule ? { pattern: validationRule.pattern.source, message: validationRule.message } : undefined,
-    });
-
-    return new Promise((resolve) => {
-      this.pendingPasswordRequests.set(passwordId, { resolve });
     });
   }
 

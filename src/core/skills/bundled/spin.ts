@@ -118,7 +118,7 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
           title: spinTitle,
           workMode: 'spin',
         });
-        ui.setTitle?.(sessionId, spinTitle);
+        ui.setTitle(sessionId, spinTitle);
       }
       // 确保引擎为 spin 模式（无论是否新创建的）
       (engine as any).workMode = 'spin';
@@ -137,7 +137,7 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
         await (engine as any).flush().catch(() => {});
         // 刷新已打开的 Spin 设计器，避免其旧缓存覆盖执行结果
         try {
-          await ui.refreshSpinDesign?.();
+          await ui.refreshSpinDesign();
         } catch {
           // 刷新失败不影响 /spin 命令返回
         }

@@ -16,9 +16,9 @@ export type BalanceLog = (message: string) => void;
  * 统一行为：查询失败（返回 null）时回推 totalBalance: null 清空 webview 余额显示，
  * 避免继续展示旧值（与 webviewMessageHandler 版本一致，最正确的行为）。
  */
-export function fetchBalanceAndPush(sessionId: string, push: BalancePush, log?: BalanceLog): void {
+export function fetchBalanceAndPush(push: BalancePush, log?: BalanceLog): void {
   import('../utils/balance.js').then(({ fetchBalance }) => {
-    fetchBalance(sessionId).then(balanceInfo => {
+    fetchBalance().then(balanceInfo => {
       let message: Record<string, unknown>;
       if (balanceInfo) {
         message = {

@@ -7,6 +7,7 @@
  */
 
 import { QueryEngine, getSessionEngine } from '../QueryEngine.js';
+import { getProjectRoot } from '../history/Config.js';
 import { getAllTools } from '../tools/index.js';
 import { getGlobalUI } from '../AssistantUI.js';
 import type { SpinDesign, SpinNode } from './Types.js';
@@ -66,7 +67,8 @@ The JSON format must be:
 
   // 创建子引擎
   const subEngine = new QueryEngine(subSessionID, {
-    cwd: process.cwd(), // 子 Agent 的 cwd；由 VSCodeUI 确保子进程被调用时在工作区
+    // 子 Agent 继承父会话的工作目录，不要用 process.cwd()（那是宿主进程启动目录）
+    cwd: parentEngine?.getCwd() ?? getProjectRoot(),
     tools,
     role: role,
     getAppState: () => ({}),

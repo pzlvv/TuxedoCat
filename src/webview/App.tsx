@@ -764,8 +764,8 @@ const App = () => {
     />
   ) : null;
 
-  // 未打开工作目录时：提示用户打开工作目录，并提供引导按钮。
-  // VS Code 宿主会弹出“打开文件夹”选择器；打开后窗口重载并重新注入 __hasWorkspace。
+  // 未打开工作目录时：只提示，不给操作入口 —— 打开/切换工作目录由 IDE 自己管理
+  // （VS Code: File → Open Folder…；Electron: File → Open Workspace Folder…）。
   if (noWorkspace) {
     return (
       <div
@@ -788,20 +788,6 @@ const App = () => {
         >
           {t('app.openWorkspaceHint')}
         </div>
-        {hostInfo.kind === 'vscode' && (
-          <button
-            onClick={() => postMessage({ type: 'openWorkspaceFolder' })}
-            className="px-4 py-2 rounded-lg text-[13px] transition-opacity hover:opacity-90"
-            style={{
-              backgroundColor: colors.harness,
-              color: '#ffffff',
-              border: 'none',
-              cursor: 'pointer',
-            }}
-          >
-            {t('app.openWorkspaceButton')}
-          </button>
-        )}
         {settingsPanel}
       </div>
     );

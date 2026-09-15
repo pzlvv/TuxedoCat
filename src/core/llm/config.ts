@@ -7,7 +7,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { logger } from '../Logger.js';
-import { saveApiKeyToSettings, readSettingsJson } from '../history/Config.js';
+import { readSettingsJson } from '../history/Config.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
 import {
   FALLBACK_MODEL_PARAMS,
@@ -155,7 +155,7 @@ interface HarnessConfig {
  * 注意：这里没有「默认模型」——模型（含默认模型）完全由用户配置：
  * 默认模型在 llm.providers[].defaultModel，会话模型在各自 meta.json。
  * 因此 model 留空，等用户在设置页配置 provider 后再由用户指定。
- * apiKey 为空字符串，在 getConfig() 中若发现 apiKey 为空，会弹出密码输入框让用户输入
+ * apiKey 为空字符串，getConfig() 发现 apiKey 为空时会直接抛错，引导用户到设置面板配置。
  */
 function createFallbackConfig(): LLMConfig {
   return {
@@ -212,133 +212,13 @@ async function loadConfigFile(): Promise<HarnessConfig> {
 }
 
 /**
- * Per-process 锁，用于防止多个并行 getConfig 同时弹出 apiKey 输入框。
- * 当第一个 getConfig 弹出输入框时，其他调用等待（await 此 Promise）。
- * apiKey 输入完成后，锁 resolve，所有等待的调用直接读取 settings 中已保存的 apiKey。
- */
-const pendingApiKeyPromises = new Map<string, {
-  promise: Promise<string | null>;
-  resolve: (token: string | null) => void;
-}>();
-
-/**
- * 从 settings.json 中读取 baseURL，若不存在则返回默认值
- */
-function getBaseUrlFromSettings(): string {
-  try {
-    const fs = require('fs');
-    const path = require('path');
-    const homeDir = require('os').homedir();
-    const configPath = path.join(homeDir, CONFIG_DIR_NAME, 'settings.json');
-    if (fs.existsSync(configPath)) {
-      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-      const activeKey = cfg?.llm?.activeProvider;
-      const activeProvider = activeKey ? cfg?.llm?.providers?.[activeKey] : undefined;
-      if (activeProvider?.baseURL) {
-        return activeProvider.baseURL;
-      }
-      if (activeKey) {
-        // 已设置 activeProvider 但 provider 没有 baseURL 时，不使用旧扁平字段
-        return createFallbackConfig().baseURL;
-      }
-    }
-  } catch {}
-  return createFallbackConfig().baseURL;
-}
-
-/**
- * 保存 baseURL 到 settings.json（串行化写入，避免并发写坏文件）
- */
-async function saveBaseUrlToSettings(baseURL: string): Promise<void> {
-  try {
-    const { updateSettingsJson } = await import('../history/Config.js');
-    await updateSettingsJson((cfg: Record<string, any>) => {
-      if (!cfg.llm) cfg.llm = {};
-      // 新结构：baseURL 只保存到 activeProvider 对应的 provider 内
-      const activeKey = cfg.llm.activeProvider;
-      if (activeKey && cfg.llm.providers?.[activeKey]) {
-        cfg.llm.providers[activeKey].baseURL = baseURL;
-      }
-    });
-    // 清除缓存，下次读取时会重新加载
-    clearConfigCache();
-  } catch (e) {
-    logger.error('Config', `保存 baseURL 到 settings.json 失败: ${e}`);
-  }
-}
-
-/**
- * 弹出配置对话框，让用户编辑 baseURL 和 API Key
- * 先提示 baseURL（从文件中预填，或使用默认值），再提示 apiKey
- * 用户输入后保存到 settings.json
- */
-async function promptApiKey(context?: { sessionId?: string }): Promise<string | null> {
-  // 动态导入 AssistantUI 以避免循环依赖
-  const { getGlobalUI } = await import('../AssistantUI.js');
-  const ui = getGlobalUI();
-
-  if (!ui?.requestPassword) {
-    // 没有 UI 交互能力（如 CLI 模式）时无法输入
-    throw new Error(
-      `API Key 未配置。请编辑 ~/${CONFIG_DIR_NAME}/settings.json 配置 LLM API Key：\n` +
-      '  { "llm": { "apiKey": "your_api_key_here" } }\n' +
-      '或访问 LLM 服务商控制台获取 API Key。'
-    );
-  }
-
-  // 第一步：提示 baseURL（使用明文输入框，预填已有的或默认值）
-  const existingBaseURL = getBaseUrlFromSettings();
-  let baseURL = existingBaseURL;
-  try {
-    if (ui?.requestPassword) {
-      const userBaseURL = await ui.requestPassword(
-        context?.sessionId || '',
-        '请输入 API Base URL（服务端地址）',
-        undefined,
-        true, // plainText: true，以明文显示
-      );
-      if (userBaseURL && userBaseURL.trim()) {
-        baseURL = userBaseURL.trim();
-      }
-    }
-  } catch {}
-
-  // 第二步：提示 apiKey
-  const msg =
-    '请前往 LLM 服务商控制台获取 API Key，\n' +
-    '然后将 Key 粘贴到下方输入框中，点击完成保存。';
-
-  const apiKey = await ui.requestPassword(context?.sessionId || '', msg, {
-    pattern: /^sk-/,
-    message: 'API Key 格式错误，必须以 "sk-" 开头',
-  });
-  if (!apiKey) {
-    return null; // 用户取消
-  }
-
-  // 保存 baseURL 到 settings.json（如果发生了变化）
-  if (baseURL !== existingBaseURL) {
-    await saveBaseUrlToSettings(baseURL);
-  }
-
-  // 保存 apiKey 到 settings.json
-  await saveApiKeyToSettings(apiKey);
-  // 清除配置缓存，确保下次 getConfig 能读到新配置
-  clearConfigCache();
-
-  logger.info('getConfig', `Base URL and API Key saved to settings.json (baseURL=${baseURL})`);
-  return apiKey;
-}
-
-/**
  * 获取 LLM 配置
  * 优先从配置文件 ~/<CONFIG_DIR_NAME>/settings.json 读取，否则使用硬编码的默认值
  *
- * @param sessionId - 会话 ID（用于弹出 apiKey 输入框时标识所属会话）
- * @returns LLM 配置对象
+ * @returns LLM 配置对象；apiKey 未配置时抛错
  */
-export async function getConfig(sessionId?: string): Promise<LLMConfig> {
-  return getDefaultConfig(sessionId);
+export async function getConfig(): Promise<LLMConfig> {
+  return getDefaultConfig();
 }
 
 /**
@@ -441,7 +321,7 @@ export async function getLLMConfigPanelPayload(): Promise<LLMConfigPanelPayload>
 /**
  * 获取主模型配置（优先从 settings.json 的 llm.* 读取）
  */
-async function getDefaultConfig(sessionId?: string): Promise<LLMConfig> {
+async function getDefaultConfig(): Promise<LLMConfig> {
   // 返回浅拷贝：调用方可能原地修改返回值（如 callRealLLM 写 config.apiType），
   // 若直接返回 cachedConfig 引用会污染全局缓存，影响后续所有 getConfig 结果。
   if (cachedConfig) {
@@ -483,63 +363,17 @@ async function getDefaultConfig(sessionId?: string): Promise<LLMConfig> {
     config = { ...defaultConfig };
   }
 
-  // 如果 apiKey 为空，弹出输入框让用户输入
+  // apiKey 是必填项：未配置时直接报错，引导用户到设置面板 / settings.json 配置
   if (!config.apiKey) {
-    const userApiKey = await promptForApiKey(sessionId);
-    config.apiKey = userApiKey;
+    throw new Error(
+      'API Key 未配置，无法调用 LLM。\n' +
+      '请在「设置 → LLM 配置」中填写 API Key，\n' +
+      `或编辑 ~/${CONFIG_DIR_NAME}/settings.json 中对应 provider 的 apiKey 字段。`
+    );
   }
 
   cachedConfig = config;
   return { ...cachedConfig };
-}
-
-/**
- * 弹出 apiKey 输入框让用户输入
- * 使用 Per-process 锁防止多个并行调用同时弹出多个输入框
- */
-async function promptForApiKey(sessionId?: string): Promise<string> {
-  const lockKey = 'llm_api_key';
-
-  const pending = pendingApiKeyPromises.get(lockKey);
-  if (pending) {
-    // 已有调用在等待输入，await 那个输入的结果
-    logger.info('getConfig', 'Waiting for pending apiKey input...');
-    const userApiKey = await pending.promise;
-    if (!userApiKey) {
-      throw new Error(
-        '用户取消了 API Key 输入，无法配置 LLM。\n' +
-        '请前往 LLM 服务商控制台获取 API Key 后，\n' +
-        `编辑 ~/${CONFIG_DIR_NAME}/settings.json 中的 "llm.apiKey" 字段。`
-      );
-    }
-    // apiKey 已由第一个调用保存到 settings，重新从缓存中获取完整配置
-    if (cachedConfig) {
-      return cachedConfig.apiKey;
-    }
-    return userApiKey;
-  }
-
-  // 没有 pending 输入，创建新的锁并弹出输入框
-  let resolveApiKeyPromise: (apiKey: string | null) => void = () => { };
-  const apiKeyPromise = new Promise<string | null>((resolve) => {
-    resolveApiKeyPromise = resolve;
-  });
-  pendingApiKeyPromises.set(lockKey, { promise: apiKeyPromise, resolve: resolveApiKeyPromise });
-
-  try {
-    const userApiKey = await promptApiKey({ sessionId });
-    resolveApiKeyPromise(userApiKey);
-    if (!userApiKey) {
-      throw new Error(
-        '用户取消了 API Key 输入，无法配置 LLM。\n' +
-        '请前往 LLM 服务商控制台获取 API Key 后，\n' +
-        `编辑 ~/${CONFIG_DIR_NAME}/settings.json 中的 "llm.apiKey" 字段。`
-      );
-    }
-    return userApiKey;
-  } finally {
-    pendingApiKeyPromises.delete(lockKey);
-  }
 }
 
 /**

@@ -237,7 +237,7 @@ export function buildAssistantMessageFromBlocks(
 export async function* callRealLLM(options: StreamOptions): AsyncGenerator<StreamEvent | Message> {
   // 支持部分 modelConfig 覆盖（如引擎只有 webSearch 覆盖值时）：
   // 与 settings.json 的全量配置合并，避免缺失 apiKey/baseURL/model 等字段
-  const baseConfig = await getConfig(options.sessionId);
+  const baseConfig = await getConfig();
   const config = options.modelConfig ? { ...baseConfig, ...options.modelConfig } : baseConfig;
 
   // 切换模型（如 setSessionModel 只覆盖 model）后 apiType 必须跟着变，
@@ -277,7 +277,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
   const { messages, systemPrompt, tools, signal, thinkingEffort, thinkingTokenBudget, modelConfig: optionsModelConfig, sessionId } = options;
 
   // 从配置读取：优先使用传入的 modelConfig，否则读取 settings.json
-  const config = optionsModelConfig ?? await getConfig(sessionId);
+  const config = optionsModelConfig ?? await getConfig();
   const { apiKey, baseURL, model, maxTokens, thinking_budget_tokens } = config;
   const enableUsageStats = await getEnableUsageStats();
 

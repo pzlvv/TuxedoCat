@@ -7,7 +7,6 @@ import { z } from 'zod';
 import type { ToolUseContext, ToolResult } from '../Tool.js';
 import { buildTool } from '../Tool.js';
 import { expandPath } from '../../utils/path.js';
-import { getProjectRoot } from '../../history/Config.js';
 import { ripGrep } from '../../utils/ripgrep.js';
 import { TOOL_NAME, DESCRIPTION, getPrompt } from './Prompt.js';
 
@@ -135,7 +134,7 @@ export const GrepTool = buildTool({
       throw new Error('pattern is required and must be a string');
     }
 
-    const projectRoot = getProjectRoot();
+    const projectRoot = context.cwd;
     const searchPath = inputPath ? expandPath(inputPath) : projectRoot;
 
     const args = ['--hidden'];

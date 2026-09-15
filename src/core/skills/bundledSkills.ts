@@ -26,7 +26,7 @@ const bundledSkills: SkillCommand[] = [];
 /**
  * 注册一个内置 Skill
  *
- * Bundled skills are compiled into the CLI binary and available to all users.
+ * Bundled skills are compiled into the extension bundle and available to all users.
  *
  * @param definition Skill 定义
  */

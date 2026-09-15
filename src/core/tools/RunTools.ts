@@ -592,7 +592,7 @@ async function executeSingleTool(
     // 将 Bash 等工具的流式进度转发给 UI（实时更新输出，而非等完整输出）
     const p = progress as { toolUseID?: string; data?: ToolProgressData } | undefined;
     if (p?.data?.type === 'bash_progress') {
-      ui?.onToolProgress?.(sessionID, item.toolUse.id, p.data);
+      ui?.onToolProgress(sessionID, item.toolUse.id, p.data);
     }
   };
 

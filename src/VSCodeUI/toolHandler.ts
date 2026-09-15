@@ -4,6 +4,7 @@
  */
 import type { LogChannel } from '../host/UIHost.js';
 import { expandPath } from '../core/utils/path.js';
+import { getProjectRoot } from '../core/history/Config.js';
 import { logger } from '../core/Logger.js';
 import { buildEditDiffHunks } from '../core/utils/editDiff.js';
 import type { PermissionResult } from '../core/tools/Tool.js';
@@ -103,6 +104,7 @@ export class ToolHandler {
     if (tool && typeof tool === 'object' && 'checkPermissions' in tool && typeof tool.checkPermissions === 'function') {
       const context = {
         abortController: new AbortController(),
+        cwd: getProjectRoot(),
         getAppState: () => ({}),
         setAppState: () => {},
         messages: [],

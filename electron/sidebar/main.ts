@@ -13,8 +13,9 @@
  * 交互参考插件 webview 版本（ConversationTreeItem.tsx）：
  * 根对话 hover 时显示 重命名/智能命名/删除/关闭 按钮（2 行 2 列）；重命名为行内输入框；
  * 删除需二次确认；智能命名进行中显示转圈。
- * 子代理（subagent）对话 hover 时仅显示「关闭」按钮——关闭其聊天视图、释放资源，
- * 但不提供重命名/智能命名/删除（子代理历史由父会话管理，避免误删）。
+ * 子代理（subagent）对话 hover 时只提供「关闭」——关闭其聊天视图、释放资源，
+ * 不提供重命名/智能命名/删除（子代理历史由父会话管理，避免误删）；
+ * 其余 3 格用不可见占位符撑住，使关闭按钮与根对话落在同一格、位置完全一致。
  *
  * 布局：每条对话左侧预留固定宽度的一列（.item-rail）——
  *   上槽位显示绿点（该对话已打开/已加载），下槽位显示子对话折叠按钮。
@@ -269,10 +270,13 @@ function itemHtml(c: ConversationMeta, depth: number, childCount: number, isExpa
     ? `<input class="rename-input" type="text" value="${escapeHtml(renameValue)}" spellcheck="false" />`
     : `<div class="title">${escapeHtml(title)}${isNaming ? ' <span class="naming-hint">智能命名中…</span>' : ''}</div>`;
 
-  // 操作按钮（hover 显示，与 webview 版本一致）：
-  // - 根对话：重命名 / 智能命名 / 删除 / 关闭（2 行 2 列）
-  // - 子代理（subagent）：仅「关闭」（关闭其聊天视图、释放资源），
+  // 操作按钮（hover 显示，与 webview 版本一致），固定 2 行 2 列：
+  // 重命名 / 智能命名 / 删除 / 关闭。
+  // - 根对话：四个按钮全部可用。
+  // - 子代理（subagent）：只保留「关闭」（关闭其聊天视图、释放资源），
   //   不提供重命名 / 智能命名 / 删除——子代理历史由父会话管理，避免误删。
+  //   其余 3 格用不可见占位符占住，保证关闭按钮仍在第 2 列第 2 行，
+  //   与根对话的关闭按钮位置完全一致（只是其余 3 个按钮不显示）。
   const actionsHtml = isRenaming || isConfirming
     ? ''
     : depth === 0
@@ -282,7 +286,10 @@ function itemHtml(c: ConversationMeta, depth: number, childCount: number, isExpa
          <button class="action-btn danger" data-action="delete" data-session-id="${c.sessionId}" title="删除此对话">${ICON_DELETE}</button>
          <button class="action-btn" data-action="close" data-session-id="${c.sessionId}" title="关闭对话（释放资源）">${ICON_CLOSE}</button>
        </div>`
-      : `<div class="item-actions item-actions--single">
+      : `<div class="item-actions">
+         <span class="action-ghost" aria-hidden="true"></span>
+         <span class="action-ghost" aria-hidden="true"></span>
+         <span class="action-ghost" aria-hidden="true"></span>
          <button class="action-btn" data-action="close" data-session-id="${c.sessionId}" title="关闭子代理对话（释放资源）">${ICON_CLOSE}</button>
        </div>`;
 

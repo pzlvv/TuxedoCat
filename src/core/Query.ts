@@ -413,7 +413,7 @@ async function* queryLoop(
             streamedThinkingContent += event.thinking;
             // 逐 token 通知 UI 增量追加（使用当前 block 的 streamId）
             if (!params.silent) {
-              params.ui?.onStreamMessage?.(params.sessionID, {
+              params.ui?.onStreamMessage(params.sessionID, {
                 role: 'thinking',
                 delta: event.thinking,
                 accumulated: streamedThinkingContent,
@@ -424,7 +424,7 @@ async function* queryLoop(
             streamedTextContent += event.text;
             // 逐 token 通知 UI 增量追加（使用当前 block 的 streamId）
             if (!params.silent) {
-              params.ui?.onStreamMessage?.(params.sessionID, {
+              params.ui?.onStreamMessage(params.sessionID, {
                 role: 'assistant',
                 delta: event.text,
                 accumulated: streamedTextContent,
@@ -454,14 +454,14 @@ async function* queryLoop(
             // isStreaming=true，导致 WebView 的自动滚动轮询持续运行。
             // usage 传 undefined：token 统计仍由 message_delta 统一更新。
             if (currentBlockType === 'thinking' && streamedThinkingContent && !params.silent) {
-              params.ui?.onStreamEnd?.(params.sessionID, {
+              params.ui?.onStreamEnd(params.sessionID, {
                 role: 'thinking',
                 accumulated: streamedThinkingContent,
                 usage: undefined,
                 streamId: currentThinkingStreamId ?? event.messageId,
               });
             } else if (currentBlockType === 'text' && streamedTextContent && !params.silent) {
-              params.ui?.onStreamEnd?.(params.sessionID, {
+              params.ui?.onStreamEnd(params.sessionID, {
                 role: 'assistant',
                 accumulated: streamedTextContent,
                 usage: undefined,
@@ -487,7 +487,7 @@ async function* queryLoop(
               }
               if (streamedThinkingContent) {
                 if (!params.silent) {
-                  params.ui?.onStreamEnd?.(params.sessionID, {
+                  params.ui?.onStreamEnd(params.sessionID, {
                     role: 'thinking',
                     accumulated: streamedThinkingContent,
                     usage: streamEndUsage,
@@ -498,7 +498,7 @@ async function* queryLoop(
               }
               if (streamedTextContent) {
                 if (!params.silent) {
-                  params.ui?.onStreamEnd?.(params.sessionID, {
+                  params.ui?.onStreamEnd(params.sessionID, {
                     role: 'assistant',
                     accumulated: streamedTextContent,
                     usage: streamEndUsage,
@@ -509,7 +509,7 @@ async function* queryLoop(
               }
               // 纯 tool_use 场景：虽然没有 thinking/text 内容，但仍需传递 usage 更新 token 计数
               if (!streamedThinkingContent && !streamedTextContent && !params.silent) {
-                params.ui?.onStreamEnd?.(params.sessionID, {
+                params.ui?.onStreamEnd(params.sessionID, {
                   role: 'assistant',
                   accumulated: '',
                   usage: streamEndUsage,
@@ -551,7 +551,7 @@ async function* queryLoop(
             const action = event.action || 'search';
             const url = cleanWebSearchUrl(event.url || '');
             if (!params.silent) {
-              params.ui?.updateToolArgs?.(params.sessionID, `websearch_${event.callId}`, {
+              params.ui?.updateToolArgs(params.sessionID, `websearch_${event.callId}`, {
                 action,
                 queries,
                 url,
@@ -615,7 +615,7 @@ async function* queryLoop(
             );
             if (persistedTextBlock && !params.silent) {
               const collapseStreamId = currentTextStreamId ?? persistedTextBlock._streamId;
-              params.ui?.onStreamEnd?.(params.sessionID, {
+              params.ui?.onStreamEnd(params.sessionID, {
                 role: 'assistant',
                 accumulated: String(persistedTextBlock.text || ''),
                 usage: undefined,

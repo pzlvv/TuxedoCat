@@ -23,9 +23,9 @@ export interface BalanceInfo {
  * 查询 DeepSeek 账户余额
  * @returns 余额信息，查询失败则返回 null
  */
-export async function fetchBalance(sessionId?: string): Promise<BalanceInfo | null> {
+export async function fetchBalance(): Promise<BalanceInfo | null> {
   try {
-    const config = await getConfig(sessionId);
+    const config = await getConfig();
     if (!config.apiKey) {
       logger.warn('fetchBalance', 'No API key configured, skipping balance fetch');
       return null;

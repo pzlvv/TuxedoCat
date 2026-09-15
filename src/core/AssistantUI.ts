@@ -5,7 +5,6 @@
 
 import type { UIDynamicInfo } from './prompt/SystemPrompt.js';
 import type { PermissionResult, ToolProgressData } from './tools/Tool.js';
-import type { ValidationRule } from './webviewTypes.js';
 
 /**
  * 全局 UI 实例
@@ -27,13 +26,6 @@ export function getGlobalUI(): AssistantUI | undefined {
 }
 
 export interface AssistantUI {
-  /**
-   * 请求用户输入密码（如敏感信息）
-   * 返回用户输入的密码，如果用户取消则返回 null
-   * @param plainText 如果为 true，则以明文输入框显示（非密码模式）
-   */
-  requestPassword?(sessionID: string, prompt: string, validationRule?: ValidationRule, plainText?: boolean): Promise<string | null>;
-
   /**
    * 通知工具调用开始前（UI 先显示，状态为 normal）
    * 同时调用 checkPermissions 获取权限结果，避免重复计算
@@ -61,7 +53,7 @@ export interface AssistantUI {
    * @param toolUseId 工具调用的唯一 ID
    * @param args 要合并进 toolArgs 的参数
    */
-  updateToolArgs?(sessionID: string, toolUseId: string, args: Record<string, unknown>): void;
+  updateToolArgs(sessionID: string, toolUseId: string, args: Record<string, unknown>): void;
 
   /**
    * 工具执行进度（流式输出）
@@ -70,7 +62,7 @@ export interface AssistantUI {
    * @param toolUseId 工具调用的唯一 ID（来自 toolUse.id）
    * @param progress 进度数据（type 区分具体工具）
    */
-  onToolProgress?(sessionID: string, toolUseId: string, progress: ToolProgressData): void;
+  onToolProgress(sessionID: string, toolUseId: string, progress: ToolProgressData): void;
 
   /**
    * 请求用户选择或确认
@@ -137,14 +129,14 @@ export interface AssistantUI {
    * 新会话创建通知
    * 用于子代理等场景，在会话文件创建后通知 UI（如 webview）预初始化状态
    */
-  onSessionCreated?(sessionID: string): void;
+  onSessionCreated(sessionID: string): void;
 
   /**
    * 刷新对话列表
    * 用于子代理等场景，新子会话的 meta.json 创建后，通知 UI（如 webview）
    * 重新加载对话列表，使子对话能正确显示并关联到主对话
    */
-  refreshConversationList?(): void | Promise<void>;
+  refreshConversationList(): void | Promise<void>;
 
   /**
    * 节流/防抖刷新对话列表
@@ -158,7 +150,7 @@ export interface AssistantUI {
    * 用户后续保存会覆盖执行结果，因此执行完成后必须刷新。
    * 未打开设计器时无需处理。
    */
-  refreshSpinDesign?(): void | Promise<void>;
+  refreshSpinDesign(): void | Promise<void>;
 
   /**
    * 压缩进度通知
@@ -166,7 +158,7 @@ export interface AssistantUI {
    * @param status 压缩状态
    * @param postCompactTokenCount 压缩后的 token 数（complete 时提供）
    */
-  onCompressProgress?(sessionId: string, status: 'start' | 'complete' | 'error', postCompactTokenCount?: number): void;
+  onCompressProgress(sessionId: string, status: 'start' | 'complete' | 'error', postCompactTokenCount?: number): void;
 
   /**
    * 清空 UI 上的对话消息列表
@@ -178,7 +170,7 @@ export interface AssistantUI {
    * 展开压缩的对话
    * 从归档中恢复原始消息并重新加载
    */
-  onExpandCompact?(sessionID: string): Promise<void>;
+  onExpandCompact(sessionID: string): Promise<void>;
 
   /**
    * 通知 UI 显示排队消息状态
@@ -187,7 +179,7 @@ export interface AssistantUI {
    * @param images 排队的消息携带的图片
    * @param fileInfo 排队消息的文件上下文（供 queryEnd 重新投递时保留）
    */
-  onQueuedMessage?(sessionId: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>, fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean }): void;
+  onQueuedMessage(sessionId: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>, fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean }): void;
 
   /**
    * 命令发送回调
@@ -197,7 +189,7 @@ export interface AssistantUI {
    * @param sessionId 会话 ID
    * @returns true 表示 UI 层已处理客户端操作
    */
-  onCommandSend?(commandName: string, args: string, sessionId: string): Promise<boolean>;
+  onCommandSend(commandName: string, args: string, sessionId: string): Promise<boolean>;
 
   // ========== 流式消息接口 ==========
 
@@ -207,7 +199,7 @@ export interface AssistantUI {
    * @param sessionID 会话 ID
    * @param data 流式消息数据（增量 + 累积内容）
    */
-  onStreamMessage?(sessionID: string, data: StreamMessageData): void;
+  onStreamMessage(sessionID: string, data: StreamMessageData): void;
 
   /**
    * 流结束通知
@@ -215,7 +207,7 @@ export interface AssistantUI {
    * @param sessionID 会话 ID
    * @param data 流结束数据（最终累积内容 + token 用量）
    */
-  onStreamEnd?(sessionID: string, data: StreamEndData): void;
+  onStreamEnd(sessionID: string, data: StreamEndData): void;
 }
 
 /** 流式消息数据 */

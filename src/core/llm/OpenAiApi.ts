@@ -255,7 +255,7 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
   const { messages, systemPrompt, tools, signal, thinkingEffort, modelConfig: optionsModelConfig, sessionId } = options;
 
   // 从配置读取：优先使用传入的 modelConfig，否则读取 settings.json
-  const config = optionsModelConfig ?? await getConfig(sessionId);
+  const config = optionsModelConfig ?? await getConfig();
   const { apiKey, baseURL, model, maxTokens } = config;
   const enableUsageStats = await getEnableUsageStats();
 

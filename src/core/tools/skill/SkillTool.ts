@@ -53,7 +53,7 @@ export const SkillTool = buildTool({
     return getPrompt();
   },
 
-  async validateInput(input, _context): Promise<ValidationResult> {
+  async validateInput(input, context): Promise<ValidationResult> {
     const trimmed = input.skill.trim();
     if (!trimmed) {
       return {
@@ -63,8 +63,7 @@ export const SkillTool = buildTool({
       };
     }
 
-    const cwd = process.cwd();
-    const skill = await findSkill(trimmed, cwd);
+    const skill = await findSkill(trimmed, context.cwd);
     if (!skill) {
       return {
         result: false,
@@ -88,9 +87,8 @@ export const SkillTool = buildTool({
     _onProgress?,
   ): Promise<ToolResult<SkillToolOutput>> {
     const trimmed = skill.trim().replace(/^\//, '');
-    const cwd = process.cwd();
 
-    const command = await findSkill(trimmed, cwd);
+    const command = await findSkill(trimmed, context.cwd);
     if (!command) {
       throw new Error(`Skill '${trimmed}' not found`);
     }

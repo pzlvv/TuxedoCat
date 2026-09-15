@@ -288,7 +288,7 @@ export async function requestUserChoice(
     contextAfter: permResult.contextAfter as string[] | undefined,
   };
 
-  // 未初始化 UserChoiceQueue 时（如 CLI 单次执行模式），退化为直接调用 UI，
+  // 未初始化 UserChoiceQueue 时（宿主未注册队列回调），退化为直接调用 UI，
   // 避免入队后没有回调消费队列导致 Promise 永远不会 resolve。
   if (!userChoiceQueue.isInitialized()) {
     const ui = getUI();
@@ -345,7 +345,7 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
     }
     const perSessionModel = conversation?.metadata?.model || conversation?.metadata?.context?.model;
     const { getDefaultModel, getConfig: getLLMConfig } = await import('./llm/config.js');
-    const globalConfig = await getLLMConfig(sessionID);
+    const globalConfig = await getLLMConfig();
     const effectiveModel = perSessionModel || await getDefaultModel();
     engine.updateModelConfig({
       ...globalConfig,
@@ -536,7 +536,7 @@ export async function* sendMessage(
       }
       const perSessionModel = conversation?.metadata?.model || conversation?.metadata?.context?.model;
       const effectiveModel = perSessionModel || await getDefaultModel();
-      const globalConfig = await getLLMConfig(sessionId);
+      const globalConfig = await getLLMConfig();
       engine.updateModelConfig({
         ...globalConfig,
         model: effectiveModel,
@@ -583,7 +583,7 @@ export async function* sendMessage(
       // 先同步写入 model，确保即使后续读取全量配置失败，请求仍会使用该模型。
       engine.updateModelConfig({ model: sendModel } as LLMConfig);
       const { getConfig } = await import('./llm/config.js');
-      const globalConfig = await getConfig(sessionId);
+      const globalConfig = await getConfig();
       engine.updateModelConfig({ ...globalConfig, model: sendModel });
       await updateConversationContext(sessionId, { model: sendModel });
     } catch (e) {
@@ -773,7 +773,7 @@ export async function requestCompact(sessionId: string): Promise<void> {
     logger.error('Integration', `Compact failed for session ${sessionId}:`, error);
 
     const ui = getUI();
-    ui.onCompressProgress?.(sessionId, 'error');
+    ui.onCompressProgress(sessionId, 'error');
 
     ui.onMessage(sessionId, {
       role: 'system',

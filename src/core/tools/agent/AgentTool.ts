@@ -217,7 +217,7 @@ export const AgentTool = buildTool({
         const osType = os.type();
         const osRelease = os.release();
         const shell = process.env.SHELL || process.env.ComSpec || 'unknown';
-        const cwd = process.cwd();
+        const cwd = context.cwd;
 
         environmentInfoSection = `
 	## Environment
@@ -327,7 +327,7 @@ Important guidelines:
 
     // 创建子代理的 QueryEngine
     const subEngine = new QueryEngine(subSessionID, {
-      cwd: process.cwd(),
+      cwd: context.cwd,
       tools: [],
       role: agentRole || undefined,
       getAppState: () => context.getAppState(),
@@ -503,9 +503,7 @@ Important guidelines:
         }
         // 刷新对话列表：此时子代理的消息已持久化（messageCount >= 1），
         // 确保新子会话能在对话树中正确显示并关联到主对话。
-        if (ui && typeof (ui as any).refreshConversationList === 'function') {
-          (ui as any).refreshConversationList();
-        }
+        ui?.refreshConversationList();
       }
     })();
 
@@ -515,9 +513,7 @@ Important guidelines:
 
     // 通知 UI 刷新对话列表（尽早刷新一次；若此时首条消息尚未落盘导致列表未包含
     // 子会话，后台任务 finally 中的刷新会兜底确保最终可见）
-    if (ui && typeof (ui as any).refreshConversationList === 'function') {
-      (ui as any).refreshConversationList();
-    }
+    ui?.refreshConversationList();
 
     return {
       data: {

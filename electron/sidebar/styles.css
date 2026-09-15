@@ -207,8 +207,13 @@ body {
   padding: 2px;
 }
 .item:hover .item-actions { display: grid; }
-/* 子代理对话仅有一个「关闭」按钮：单列布局，避免按钮组比图标宽出一截 */
-.item-actions--single { grid-template-columns: 20px; }
+/* 子代理对话只有「关闭」可用：其余 3 格用不可见占位符撑住，
+   保证关闭按钮仍落在第 2 列第 2 行，与根对话位置完全一致 */
+.action-ghost {
+  width: 20px;
+  height: 20px;
+  pointer-events: none;
+}
 .action-btn {
   width: 20px;
   height: 20px;

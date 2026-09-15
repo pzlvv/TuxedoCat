@@ -79,9 +79,10 @@ while (true) {
 
 ```typescript
 import { QueryEngine } from './core/QueryEngine.js'
+import { getProjectRoot } from './core/history/Config.js'
 
 const engine = new QueryEngine({
-  cwd: process.cwd(),
+  cwd: getProjectRoot(),
   tools: [readTool, writeTool],
   canUseTool: async (tool, input) => {
     // TODO: 实现权限检查

@@ -14,7 +14,7 @@ import * as vscode from 'vscode';
 import type { AssistantUI } from './core/AssistantUI.js';
 import type { MessageData, StreamMessageData, StreamEndData, UIDynamicInfo } from './core/AssistantUI.js';
 import type { ToolProgressData } from './core/tools/Tool.js';
-import type { WebviewMessage, ValidationRule } from './core/webviewTypes.js';
+import type { WebviewMessage } from './core/webviewTypes.js';
 import type { UIHost } from './host/UIHost.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from './host/mermaidHtml.js';
 import { tt, getSystemLocale } from './core/i18n.js';
@@ -74,16 +74,6 @@ export class VSCodeUI implements AssistantUI {
       getActiveSessionIdInternal: () => this.getActiveSessionIdInternal(),
       onShowDiffInVirtualDocumentCallback: undefined, // 稍后设置
       buildDiffUris: (title) => buildDiffUris(title),
-      showPasswordInput: async (prompt, plainText) => {
-        const result = await vscode.window.showInputBox({
-          prompt,
-          password: !plainText,
-          ignoreFocusOut: true,
-          placeHolder: plainText ? '请输入' : '请输入API密钥',
-        });
-        return result || null;
-      },
-      hasWebview: () => !!this.webviewView,
     });
 
     this.documentManager = new DocumentManager(VSCodeUI.outputChannel);
@@ -180,11 +170,6 @@ export class VSCodeUI implements AssistantUI {
       },
       openSpinDesign: async () => {
         await this.openSpinDesignPanel();
-      },
-      openWorkspaceFolder: async () => {
-        // 未打开工作目录时，弹出 VS Code 的“打开文件夹”选择器。
-        // 打开后窗口会重载，webview 也会重新注入 __hasWorkspace=true。
-        await vscode.commands.executeCommand('vscode.openFolder');
       },
       openExternalUrl: async (url) => {
         try {
@@ -294,9 +279,8 @@ export class VSCodeUI implements AssistantUI {
   }> {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     const hasWorkspace = !!(workspaceFolders && workspaceFolders.length > 0);
-    const workspacePath = hasWorkspace
-      ? workspaceFolders![0].uri.fsPath
-      : process.cwd();
+    // 未打开工作区时留空，绝不退回 process.cwd()（那是扩展宿主进程的启动目录）
+    const workspacePath = hasWorkspace ? workspaceFolders![0].uri.fsPath : '';
 
     if (!hasWorkspace) {
       return {
@@ -384,7 +368,8 @@ export class VSCodeUI implements AssistantUI {
     const { getSpinDesignHtml } = await import('./VSCodeUI/spinDesignHtml.js');
     const { getAllSkills } = await import('./core/skills/loadSkillsDir.js');
     const isDark = this.buildHost().isDarkTheme();
-    const availableSkills = (await getAllSkills(workspacePath))
+    // 无工作区时不做技能扫描（workspacePath 为空，扫相对路径会落到宿主进程目录）
+    const availableSkills = (hasWorkspace ? await getAllSkills(workspacePath) : [])
       .filter(s => !s.isHidden && s.userInvocable)
       .map(s => ({ name: s.name, description: s.description }));
     panel.webview.html = getSpinDesignHtml(
@@ -941,7 +926,6 @@ export class VSCodeUI implements AssistantUI {
    */
   private fetchAndSendBalance(sessionID: string): void {
     fetchBalanceAndPush(
-      sessionID,
       (message) => this.postToWebview(sessionID, message),
       (line) => VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] ${line}`),
     );
@@ -1081,15 +1065,8 @@ export class VSCodeUI implements AssistantUI {
    * 获取 UI 动态信息
    */
   async getUIDynamicInfo(_sessionID: string): Promise<UIDynamicInfo> {
-    const workspacePath = this.getWorkspacePath() || process.cwd();
-    return { cwd: workspacePath };
-  }
-
-  /**
-   * 请求用户输入密码
-   */
-  async requestPassword(sessionID: string, prompt: string, validationRule?: ValidationRule, plainText?: boolean): Promise<string | null> {
-    return this.userChoiceManager.requestPassword(sessionID, prompt, validationRule, plainText);
+    // 未打开工作区时返回空字符串（与 ElectronUI 一致），不要退回 process.cwd()
+    return { cwd: this.getWorkspacePath() || '' };
   }
 
   /**

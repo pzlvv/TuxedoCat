@@ -235,6 +235,14 @@ export class QueryEngine {
    *   返回仅含 webSearch 的部分配置，由 callRealLLM 与 settings.json 全量配置合并
    * - 该值与每次 query() 发给 LLM 的配置保持一致，供 AgentTool/SpinRunner 创建子代理时继承。
    */
+  /**
+   * 获取本会话的工作目录（项目根目录）。
+   * 供 AgentTool / SpinRunner 创建子代理时继承父会话的 cwd，避免退回 process.cwd()。
+   */
+  getCwd(): string {
+    return this.config.cwd;
+  }
+
   getEffectiveModelConfig(): LLMConfig | undefined {
     const presetMinimal = this.getActivePromptPresetId() === 'minimal';
     const apiTypeNotResponses = !!this.config.modelConfig?.apiType && this.config.modelConfig.apiType !== 'Responses';
@@ -554,7 +562,7 @@ export class QueryEngine {
       logger.info('QueryEngine', `Executed pending compact for ${this.sessionID}`);
     } catch (err) {
       logger.warn('QueryEngine', `Pending compact failed for ${this.sessionID}: ${err}`);
-      this.config.ui?.onCompressProgress?.(this.sessionID, 'error');
+      this.config.ui?.onCompressProgress(this.sessionID, 'error');
     } finally {
       // 压缩期间入队的消息（用户消息 / Agent 回复）此时才排空。
       this.resumeAfterCompact();
@@ -833,7 +841,7 @@ export class QueryEngine {
     // meta.json 只在第一条消息持久化（appendMessage）时创建，避免没发消息就生成会话文件。
     if (this.sessionTitle) {
       // 通知 UI 新会话已创建（如 webview 预初始化 session 状态）
-      config.ui?.onSessionCreated?.(this.sessionID);
+      config.ui?.onSessionCreated(this.sessionID);
     }
 
     // 自动注册到全局引擎池
@@ -999,6 +1007,7 @@ export class QueryEngine {
     const abortController = this.createAbortController();
     const toolUseContext = {
       abortController,
+      cwd: this.config.cwd,
       getAppState: () => this.internalAppState,
       setAppState: (updater: (prev: unknown) => unknown) => {
         this.internalAppState = updater(this.internalAppState) as Record<string, unknown>;
@@ -1145,6 +1154,7 @@ export class QueryEngine {
         getModelConfig: () => this.getEffectiveModelConfig(),
         toolUseContext: {
           abortController,
+          cwd: this.config.cwd,
           getAppState: () => this.internalAppState,
           setAppState: (updater: (prev: unknown) => unknown) => {
             this.internalAppState = updater(this.internalAppState) as Record<string, unknown>;

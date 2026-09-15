@@ -267,7 +267,7 @@ class UserChoiceQueueManager {
 
   /**
    * 是否已注册插件回调（即是否已初始化队列消费能力）
-   * 未初始化时（如 CLI 单次执行模式）不应入队等待，否则 Promise 永远不会 resolve
+   * 未初始化时（宿主未注册队列回调）不应入队等待，否则 Promise 永远不会 resolve
    */
   isInitialized(): boolean {
     return this.callbacks !== null;

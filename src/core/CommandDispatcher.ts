@@ -80,9 +80,7 @@ export async function dispatch(
 
     try {
       // 先通知 UI 层执行客户端操作（如清空消息列表）
-      if (context.ui.onCommandSend) {
-        await context.ui.onCommandSend(cmd.name, cmdArgs, context.sessionId);
-      }
+      await context.ui.onCommandSend(cmd.name, cmdArgs, context.sessionId);
 
       // 执行命令
       const result = await cmd.execute(cmdArgs, cmdContext);

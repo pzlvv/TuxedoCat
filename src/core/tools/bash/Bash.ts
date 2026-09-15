@@ -21,7 +21,6 @@ import {
   validateInput,
 } from './Validation.js';
 import { mapToolResultToToolResultBlockParam } from './Result.js';
-import { getProjectRoot } from '../../history/Config.js';
 import { containsSleepCommand } from './SleepDetect.js';
 import { splitBySeparators, DEFAULT_BASH_TIMEOUT_MS, SLEEP_NO_TIMEOUT_MS } from './TimeoutPolicy.js';
 
@@ -121,8 +120,8 @@ export const BashTool = buildTool({
     const { command, run_in_background } = input;
     const { abortController } = context;
 
-    // 使用项目根目录作为默认 cwd
-    const cwd = input.cwd || getProjectRoot();
+    // 使用会话工作目录作为默认 cwd
+    const cwd = input.cwd || context.cwd;
 
     // 超时策略：
     // - 命令包含 sleep 子命令（按 ; && || | 拆分后任一子命令为 sleep）：不设超时，

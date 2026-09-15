@@ -34,7 +34,6 @@ Tuxedo Cat 是一个面向 VS Code 与 Electron 的 AI 助手，提供侧边栏�
 │   └── ripgrep/            # ripgrep 各平台可执行文件
 ├── scripts/                # 开发/打包辅助脚本
 ├── src/
-│   ├── cli/                # CLI 入口
 │   ├── config/             # 工程配置
 │   ├── core/               # 核心对话/查询引擎
 │   ├── host/               # UI Host 抽象

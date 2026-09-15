@@ -206,29 +206,27 @@ export function setProjectRootProvider(provider: () => string | undefined): void
 }
 
 /**
- * 获取当前项目根目录（不存在时返回 undefined，不抛错）
+ * 当前是否有可用的项目根目录（宿主已打开工作目录）
  *
- * 适用场景：宿主可能没有打开工作目录（如 VS Code 的扩展开发宿主窗口、
- * 或用户尚未选择文件夹），此时调用方应降级处理而不是让 Promise 变成
- * 未处理的 rejection。
+ * 与 getProjectRoot() 的区别：只判断、不取值也不抛错，
+ * 供"没有工作目录时降级"的调用点做前置守卫：
+ *
+ *   if (!hasProjectRoot()) return [];
+ *   const root = getProjectRoot();
  */
-export function tryGetProjectRoot(): string | undefined {
-  if (!projectRootProvider) {
-    return undefined;
-  }
-  const root = projectRootProvider();
-  return root || undefined;
+export function hasProjectRoot(): boolean {
+  return !!projectRootProvider?.();
 }
 
 /**
- * 获取当前项目根目录
- * 必须通过 setProjectRootProvider 设置项目根目录提供者
- * 如果未设置或返回空值，则抛出错误
+ * 获取当前项目根目录（绝对路径）
  *
- * 需要"没有工作目录"时优雅降级的场景请改用 tryGetProjectRoot()。
+ * 必须通过 setProjectRootProvider 设置提供者；未设置或返回空值时抛错，
+ * 让"没有工作目录"这类问题在调用点显式暴露，而不是静默拿到一个错误路径。
+ * 需要降级处理（如宿主尚未打开工作目录）的调用点，先用 hasProjectRoot() 守卫。
  */
 export function getProjectRoot(): string {
-  const root = tryGetProjectRoot();
+  const root = projectRootProvider?.();
   if (root) {
     return root;
   }

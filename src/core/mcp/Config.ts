@@ -47,9 +47,8 @@
 import { join } from 'path';
 import * as fs from 'fs/promises';
 import { logger } from '../Logger.js';
-import { getConfigHomeDir, readSettingsJson, updateSettingsJson } from '../history/Config.js';
+import { getConfigHomeDir, readSettingsJson, updateSettingsJson, getProjectRoot, hasProjectRoot } from '../history/Config.js';
 import { getMetadataPath, updateConversationContext } from '../history/Conversation.js';
-import { tryGetProjectRoot } from '../history/Config.js';
 import type { McpServerInfo } from '../webviewTypes.js';
 
 /** mcp.json 路径（与全局 settings.json 同目录） */
@@ -94,8 +93,9 @@ export async function readSessionEnabledMcps(sessionId?: string): Promise<string
   if (cached) return cached;
 
   // 从 meta.json 的 context.mcpEnabled 恢复（进程重启后走这条路径）
-  const projectPath = tryGetProjectRoot();
-  if (!projectPath) return null;
+  // 宿主未打开工作目录时没有项目目录，视为"未设置过"，返回 null
+  if (!hasProjectRoot()) return null;
+  const projectPath = getProjectRoot();
   try {
     const content = await fs.readFile(getMetadataPath(sessionId, projectPath), 'utf-8');
     const metadata = JSON.parse(content) as { context?: { mcpEnabled?: unknown } };

@@ -86,7 +86,7 @@ async function compactConversationInner(
   }
 
   // Notify UI: compact started
-  ui?.onCompressProgress?.(sessionId, 'start');
+  ui?.onCompressProgress(sessionId, 'start');
 
   // Step 1: Get messages after last compact boundary
   const messagesForCompact = getMessagesAfterCompactBoundary(messages);
@@ -154,7 +154,7 @@ async function compactConversationInner(
   };
 
   // Notify UI: compact complete with actual output tokens from summary generation
-  ui?.onCompressProgress?.(sessionId, 'complete', summaryOutputTokens);
+  ui?.onCompressProgress(sessionId, 'complete', summaryOutputTokens);
 
   // Update meta.json with the output tokens from summary generation
   // This ensures the UI can display the correct token usage after compact
@@ -225,7 +225,7 @@ async function generateSummary(messages: Message[], customInstructions: string |
       systemPrompt: COMPACT_SYSTEM_PROMPT,
       tools: [],
       signal: null,
-      modelConfig: await getConfig(sessionId),
+      modelConfig: await getConfig(),
       sessionId,
     })) {
       if (message.type === 'assistant') {

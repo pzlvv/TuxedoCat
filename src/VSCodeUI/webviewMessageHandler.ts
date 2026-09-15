@@ -3,6 +3,7 @@
  * 接收和处理来自 webview 的所有消息
  */
 import type { UIHost } from '../host/UIHost.js';
+import { isImageFile } from '../host/imageFiles.js';
 import { fetch as undiciFetch } from 'undici';
 import { logger } from '../core/Logger.js';
 import { getProbeDispatcher } from '../core/llm/httpDispatcher.js';
@@ -140,7 +141,7 @@ export class WebviewMessageHandler {
   /**
    * 构建消息类型 -> 处理器的分发表。
    * 大多数处理器直接接收消息对象；少数不使用消息参数的处理器
-   * （requestSkills / openSpinDesign / requestSettingsDefaults / openWorkspaceFolder /
+   * （requestSkills / openSpinDesign / requestSettingsDefaults /
    * requestConversationSpaces / getConversations）包装为忽略参数的形式；
    * debugLog 是同步日志分支，包一层同步 lambda。
    */
@@ -188,7 +189,6 @@ export class WebviewMessageHandler {
         this.log(`[Webview Debug] ${msg.message}`);
       }],
       ['openUrl', (msg) => this.handleOpenUrl(msg)],
-      ['openWorkspaceFolder', () => this.handleOpenWorkspaceFolder()],
       ['requestConversationSpaces', () => this.handleRequestConversationSpaces()],
       ['clearConversationSpace', (msg) => this.handleClearConversationSpace(msg)],
       ['requestMcpServers', (msg) => this.handleRequestMcpServers(msg)],
@@ -389,23 +389,6 @@ export class WebviewMessageHandler {
     }
   }
 
-  /**
-   * 未打开工作目录时，webview 引导用户选择并打开一个文件夹。
-   * 宿主能力由 UIHost.openWorkspaceFolder 提供（Electron 未实现时静默忽略）。
-   */
-  private async handleOpenWorkspaceFolder(): Promise<void> {
-    this.log(`[VSCodeUI] Open workspace folder requested from webview`);
-    if (!this.host.openWorkspaceFolder) {
-      this.log(`[VSCodeUI] openWorkspaceFolder is not supported by current host`);
-      return;
-    }
-    try {
-      await this.host.openWorkspaceFolder();
-    } catch (err) {
-      this.log(`[VSCodeUI] Failed to open workspace folder: ${err}`);
-    }
-  }
-
   private async handleRequestCompress(message: any): Promise<void> {
     this.log(`[VSCodeUI] Request compress from webview`);
     const { requestCompact } = await import('../core/Integration.js');
@@ -550,7 +533,7 @@ export class WebviewMessageHandler {
         // 排队消息不立即回显到 MessagesView，只在输入框上方显示队列状态。
         // QueryEngine 真正把它追加进 LLM 上下文时，会通过 _needsUINotification 补发 addMessage。
         (userMsg as any)._needsUINotification = true;
-        ui?.onQueuedMessage?.(sessionId, content, uiImages, {
+        ui?.onQueuedMessage(sessionId, content, uiImages, {
           filePath: message.filePath,
           selectedLines: selectedLines || undefined,
           fileHidden: !!message.fileHidden,
@@ -612,18 +595,48 @@ export class WebviewMessageHandler {
     const { filePath, selectedLines, sessionId, clientId } = message;
     this.log(`[VSCodeUI] openFile: ${filePath} ${JSON.stringify(selectedLines)}`);
 
-    if (filePath) {
+    if (!filePath) return;
+
+    // 浏览器端（带 clientId）：读取内容后按 sessionId + clientId 回推给发起端，
+    // 由页面内的 PreviewOverlay 展示，不打开宿主原生窗口（查看类操作不跨端）。
+    // 与 showVirtualDocument / showDiffInVirtualDocument 一致：这段逻辑与宿主无关，
+    // 直接收敛在共享 handler 内，不再下沉到 UIHost。
+    if (clientId) {
+      const path = require('path') as typeof import('path');
+      const fs = require('fs') as typeof import('fs');
+      const preview: Record<string, unknown> = {
+        type: 'openPreview',
+        filePath,
+        title: path.basename(filePath),
+        selectedLines,
+        sessionId,
+        clientId,
+      };
       try {
-        // 浏览器端（带 clientId）：由服务端读取内容回推给发起端，在页面内预览，
-        // 不打开宿主原生窗口（查看类操作不跨端）
-        if (clientId && this.host.previewFile) {
-          await this.host.previewFile(filePath, selectedLines, sessionId, clientId);
-          return;
+        if (isImageFile(filePath)) {
+          // 图片是二进制：转 dataUrl 交给页面内的 <img> 渲染
+          const buffer = await fs.promises.readFile(filePath);
+          const ext = path.extname(filePath).slice(1).toLowerCase();
+          const mime = ext === 'jpg' ? 'jpeg' : ext;
+          preview.mode = 'image';
+          preview.dataUrl = `data:image/${mime};base64,${buffer.toString('base64')}`;
+        } else {
+          preview.mode = 'text';
+          preview.content = await fs.promises.readFile(filePath, 'utf-8');
         }
-        await this.host.openFile(filePath, selectedLines);
       } catch (err) {
-        this.log(`[VSCodeUI] Error opening file: ${err}`);
+        preview.mode = 'text';
+        preview.error = err instanceof Error ? err.message : String(err);
+        preview.content = '';
       }
+      this.host.sendToWebview(preview);
+      return;
+    }
+
+    try {
+      await this.host.openFile(filePath, selectedLines);
+    } catch (err) {
+      this.log(`[VSCodeUI] Error opening file: ${err}`);
     }
   }
 
@@ -1011,7 +1024,7 @@ export class WebviewMessageHandler {
    */
   private fetchBalanceAndSend(sessionID: string): void {
     import('../core/utils/balance.js').then(({ fetchBalance }) => {
-      fetchBalance(sessionID).then(balanceInfo => {
+      fetchBalance().then(balanceInfo => {
         if (balanceInfo) {
           this.postToWebview(sessionID, {
             type: 'balanceUpdate',
@@ -1786,7 +1799,9 @@ export class WebviewMessageHandler {
     const { getSkillDirCommands } = await import('../core/skills/loadSkillsDir.js');
     const { getBuiltinCommands } = await import('../core/skills/builtinCommands.js');
     const bundled = getBundledSkills();
-    const fileSkills = await getSkillDirCommands(process.cwd());
+    // 项目技能必须基于工作区目录扫描，不能用 process.cwd()
+    const { getProjectRoot } = await import('../core/history/Config.js');
+    const fileSkills = await getSkillDirCommands(getProjectRoot());
     const builtinCmds = getBuiltinCommands();
     const allSkills = [...bundled, ...fileSkills];
     this.host.sendToWebview({

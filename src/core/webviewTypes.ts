@@ -537,11 +537,3 @@ export type WebviewMessage = {
 
 // 不包含 sessionId 的消息类型（调用方传入，postToWebview 会添加）
 export type WebviewMessageWithoutSessionId = Omit<WebviewMessage, 'sessionId'>;
-
-/** 密码输入校验规则 */
-export interface ValidationRule {
-  /** 正则表达式，输入值必须匹配此规则 */
-  pattern: RegExp;
-  /** 不匹配时显示的错误提示 */
-  message: string;
-}

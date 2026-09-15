@@ -21,7 +21,7 @@ import type { ChatViewManager } from './ChatViewManager.js';
 const APP_ROOT = path.resolve(__dirname, '..');
 import type { AssistantUI, MessageData, StreamMessageData, StreamEndData, UIDynamicInfo } from '../src/core/AssistantUI.js';
 import type { ToolProgressData } from '../src/core/tools/Tool.js';
-import type { WebviewMessage, ValidationRule } from '../src/core/webviewTypes.js';
+import type { WebviewMessage } from '../src/core/webviewTypes.js';
 import type { UIHost } from '../src/host/UIHost.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
 import { tt, getSystemLocale } from '../src/core/i18n.js';
@@ -74,8 +74,6 @@ export class ElectronUI implements AssistantUI {
       closePreview: () => this.closePreview(),
       getActiveSessionIdInternal: () => this.getActiveSessionIdInternal(),
       onShowDiffInVirtualDocumentCallback: undefined,
-      showPasswordInput: async (_prompt, _plainText) => null,
-      hasWebview: () => !!this.mainWindow && !this.mainWindow.isDestroyed(),
       // 用户选择框弹出（ask user / 权限确认）：刷新侧栏，流水灯显示黄色
       onChoiceShown: () => this.refreshSidebarThrottled(),
     });
@@ -248,38 +246,6 @@ export class ElectronUI implements AssistantUI {
           selectedLines,
           title: path.basename(filePath),
         });
-      },
-
-      /**
-       * 浏览器端（内置服务器）查看文件：把内容读出来回推给发起端，
-       * 由页面内的预览浮层展示，不打开桌面窗口（查看类操作不跨端）。
-       */
-      previewFile: async (filePath, selectedLines, sessionId, clientId) => {
-        const message: Record<string, unknown> = {
-          type: 'openPreview',
-          filePath,
-          title: path.basename(filePath),
-          selectedLines,
-          sessionId,
-          clientId,
-        };
-        try {
-          if (isImageFile(filePath)) {
-            const buffer = await fs.promises.readFile(filePath);
-            const ext = path.extname(filePath).slice(1).toLowerCase();
-            const mime = ext === 'jpg' ? 'jpeg' : ext;
-            message.mode = 'image';
-            message.dataUrl = `data:image/${mime};base64,${buffer.toString('base64')}`;
-          } else {
-            message.mode = 'text';
-            message.content = await fs.promises.readFile(filePath, 'utf-8');
-          }
-        } catch (err) {
-          message.mode = 'text';
-          message.error = err instanceof Error ? err.message : String(err);
-          message.content = '';
-        }
-        this.sendToRenderer(message);
       },
 
       showVirtualDocument: async (content, title) => {
@@ -828,7 +794,6 @@ export class ElectronUI implements AssistantUI {
 
   private fetchAndSendBalance(sessionID: string): void {
     fetchBalanceAndPush(
-      sessionID,
       (message) => this.postToWebview(sessionID, message),
       (line) => this.log(line),
     );
@@ -1015,10 +980,6 @@ export class ElectronUI implements AssistantUI {
   async getUIDynamicInfo(_sessionID: string): Promise<UIDynamicInfo> {
     // 不使用当前工作目录作为默认：未选择工作区时返回空字符串（引擎也无法在无工作区下运行）
     return { cwd: this.getWorkspacePath() || '' };
-  }
-
-  async requestPassword(sessionID: string, prompt: string, validationRule?: ValidationRule, plainText?: boolean): Promise<string | null> {
-    return this.userChoiceManager.requestPassword(sessionID, prompt, validationRule, plainText);
   }
 
   async requestUserChoice(sessionID: string, options: {

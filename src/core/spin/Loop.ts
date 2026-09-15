@@ -234,6 +234,19 @@ export async function spinLoop(
 
   logger.info('SpinLoop', `Starting spin design loop`);
 
+  /**
+   * 刷新已打开的 Spin 设计器，让页面上的完成标记与磁盘上的 spin.json 同步。
+   * 不刷新的话页面会一直停留在旧状态，直到整个 Spin 循环结束才更新
+   * （用户看到的就是“结果不同步”）。刷新失败不影响主循环。
+   */
+  const refreshDesigner = async (): Promise<void> => {
+    try {
+      await ui.refreshSpinDesign();
+    } catch (err) {
+      logger.warn('SpinLoop', `refreshSpinDesign failed: ${err}`);
+    }
+  };
+
   while (true) {
     // 用户中止后立即停止主循环，不再读取/执行后续节点
     if (typeof (engine as any).isAborted === 'function' && (engine as any).isAborted()) {
@@ -312,6 +325,8 @@ export async function spinLoop(
         logger.warn('SpinLoop', `Task ${currentSeq}: For Each variable "${forEachVar}" has no rows, marking as passed`);
       }
       await updateNodeMeta(cwd, next.id, true, '', { rolloutPassed: totalIterations });
+      // 兜底补齐 passed 也是一次完成状态变化，同样要同步到设计器页面
+      await refreshDesigner();
       continue;
     }
     const currentRowIndex = Math.floor(completedIterations / rolloutCount);
@@ -471,6 +486,12 @@ export async function spinLoop(
         const { appendMessage } = await import('../history/Conversation.js');
         await appendMessage(resultMsg, sessionId, (engine as any).lastPersistedMessageUuid);
       } catch {}
+    }
+
+    // 本节点已完成（spin.json 的 meta 已落盘）：立刻刷新设计器页面，
+    // 不要等到整个循环结束才更新，否则执行过程中页面上的完成标记一直是旧的。
+    if (nodePassed) {
+      await refreshDesigner();
     }
 
     if (!accept) {

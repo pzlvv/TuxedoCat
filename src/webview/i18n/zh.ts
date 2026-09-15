@@ -18,7 +18,6 @@ export const zhDict: Record<string, string> = {
   'app.newChat': '新对话',
   'app.closeChat': '关闭当前对话（释放资源）',
   'app.openWorkspaceHint': '请先打开一个工作目录以继续使用',
-  'app.openWorkspaceButton': '打开工作目录',
 
   /* ── DeleteConfirmDialog.tsx ─────────────────────────────── */
   'deleteConfirm.confirm': '确定要删除 "{title}" 吗？',

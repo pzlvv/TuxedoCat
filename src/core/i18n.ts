@@ -1,11 +1,11 @@
 /**
  * Lightweight i18n for the core layer.
  *
- * The core layer is used by both the VS Code extension and the CLI, so it
- * cannot depend on `vscode.env.language` directly. Instead the host sets the
+ * The core layer is shared by multiple hosts (VS Code extension / Electron), so
+ * it cannot depend on `vscode.env.language` directly. Instead the host sets the
  * locale once at startup via `setCoreLocale()`:
  *   - VS Code extension: `setCoreLocale(vscode.env.language)`
- *   - CLI: `setCoreLocale(process.env.LANG || process.env.LC_ALL || '')`
+ *   - Electron: `setCoreLocale(app.getLocale())`
  *
  * `tt()` picks between a Chinese and an English string based on the active
  * core locale. Non-UI strings (logs, prompts that must not be localized)
