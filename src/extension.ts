@@ -16,7 +16,9 @@ import { VSCODE_HOST_INFO } from './host/types.js';
 import { getContextWindow } from './core/utils/modelConfig.js';
 import { getLLMConfigPanelPayload, hasActiveProviderSetting } from './core/llm/config.js';
 import { getSystemLocale, setCoreLocale, setCoreUiLanguage } from './core/i18n.js';
-import { setGlobalUI } from './core/AssistantUI.js';
+import { setGlobalEventBus, requireEventBus } from './core/AssistantEventBus.js';
+import { createEventBus } from './host/EventBus.js';
+import { initializeCoreEvents } from './core/initializeCoreEvents.js';
 import {
   COMMAND_PREFIX,
   DIFF_AFTER_SCHEME,
@@ -58,9 +60,13 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   VSCodeUI.setOutputChannel(outputChannel);
-  const ui = VSCodeUI.getInstance();
+  // 事件总线：core 与 UI 的唯一耦合点（DEVELOPMENT.md 第 3 节）。
+  // 顺序：注册总线 → 注册 core 侧 UiEvent 订阅 → 创建 UI（其构造函数注册 CoreEvent 处理器）。
+  const bus = createEventBus();
+  setGlobalEventBus(bus);
+  initializeCoreEvents(bus);
+  const ui = VSCodeUI.create(bus);
   ui.setExtensionUri(context.extensionUri);
-  setGlobalUI(ui);
   ui.registerWindowStateListener(context);
 
   initializeHistory(ui);
@@ -324,17 +330,19 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
     filePath: string,
     selectedLines: { start: number; end: number }
   ): Promise<void> {
-    const { getActiveSessionId } = await import('./core/history/Config.js');
-    const { updateConversationContext } = await import('./core/history/Conversation.js');
-
-    const sessionId = getActiveSessionId();
-    if (!sessionId) {
+    // 「当前活跃会话」由 UI 自己维护（第 15.6 节）；
+    // 写 meta.json 的动作翻译成 UiEvent.conversationContextUpdated 走总线
+    const activeSessionId = this.ui.getActiveSessionId();
+    if (!activeSessionId) {
       return;
     }
-
-    await updateConversationContext(sessionId, {
-      currentFile: filePath,
-      selectedLines,
+    requireEventBus().emitToCore({
+      type: 'conversationContextUpdated',
+      sessionId: activeSessionId,
+      changes: [
+        { key: 'currentFile', value: filePath },
+        { key: 'selectedLines', value: selectedLines },
+      ],
     });
   }
 

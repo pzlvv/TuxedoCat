@@ -8,7 +8,14 @@
 import { logger } from '../Logger.js';
 import { tt } from '../i18n.js';
 import type { QueryEngine } from '../QueryEngine.js';
-import type { AssistantUI, MessageData } from '../AssistantUI.js';
+import type { CoreEvent } from '../AssistantEventBus.js';
+import { requireEventBus } from '../AssistantEventBus.js';
+import type { MessageData } from '../types.js';
+
+/** core → UI 单向事件的发送侧封装（SpinLoop 统一走它） */
+function emitToUi(event: CoreEvent): void {
+  requireEventBus().emitToUi(event);
+}
 import { getAllSkills } from '../skills/loadSkillsDir.js';
 import { substituteBuiltinVariables } from '../skills/variableResolver.js';
 import {
@@ -226,7 +233,6 @@ async function loadNodeSkillsPrompt(
 export async function spinLoop(
   engine: QueryEngine,
   cwd: string,
-  ui: AssistantUI,
   sessionId: string,
 ): Promise<void> {
   let currentNodeId: number | undefined;
@@ -241,9 +247,9 @@ export async function spinLoop(
    */
   const refreshDesigner = async (): Promise<void> => {
     try {
-      await ui.refreshSpinDesign();
+      emitToUi({ type: 'spinDesignDataChanged' });
     } catch (err) {
-      logger.warn('SpinLoop', `refreshSpinDesign failed: ${err}`);
+      logger.warn('SpinLoop', `spinDesignDataChanged failed: ${err}`);
     }
   };
 
@@ -262,10 +268,10 @@ export async function spinLoop(
         'Cannot read spin.json: file is missing or invalid JSON.'
       );
       logger.warn('SpinLoop', errorMsg);
-      ui.onMessage(sessionId, {
+      emitToUi({ type: 'message', sessionId, data: {
         role: 'user',
         content: errorMsg,
-      } as MessageData);
+      } as MessageData });
       {
         const errorMsgObj: Message = {
           type: 'user',
@@ -281,10 +287,10 @@ export async function spinLoop(
     const validationError = validateSpinDesign(config);
     if (validationError) {
       logger.warn('SpinLoop', `spin.json validation failed: ${validationError}`);
-      ui.onMessage(sessionId, {
+      emitToUi({ type: 'message', sessionId, data: {
         role: 'user',
         content: validationError,
-      } as MessageData);
+      } as MessageData });
       {
         const errorMsgObj: Message = {
           type: 'user',
@@ -300,10 +306,10 @@ export async function spinLoop(
     const next = getNextNode(config);
     if (!next) {
       logger.info('SpinLoop', 'All nodes completed');
-      ui.onMessage(sessionId, {
+      emitToUi({ type: 'message', sessionId, data: {
         role: 'system',
         content: tt('所有任务已完成！', 'All tasks completed!'),
-      } as MessageData);
+      } as MessageData });
       break;
     }
 
@@ -354,10 +360,10 @@ export async function spinLoop(
         `任务 ${currentSeq} 连续失败 ${MAX_ATTEMPTS} 次，已停止整个 Spin 模式执行`,
         `Task ${currentSeq} failed after ${MAX_ATTEMPTS} attempts, stopping the entire Spin mode`
       );
-      ui.onMessage(sessionId, {
+      emitToUi({ type: 'message', sessionId, data: {
         role: 'user',
         content: stopMsgContent,
-      } as MessageData);
+      } as MessageData });
       {
         const stopMsg: Message = {
           type: 'user',
@@ -405,10 +411,10 @@ export async function spinLoop(
       `${attemptPrefix}${iterationLabel} 开始: 任务 ${currentSeq} - ${resolvedTask}`,
       `${attemptPrefix}${iterationLabel} Starting: Task ${currentSeq} - ${resolvedTask}`
     );
-    ui.onMessage(sessionId, {
+    emitToUi({ type: 'message', sessionId, data: {
       role: 'user',
       content: startMsgContent,
-    } as MessageData);
+    } as MessageData });
     {
       const startMsg: Message = {
         type: 'user',
@@ -468,10 +474,10 @@ export async function spinLoop(
       `${attemptPrefix}${iterationLabel} ${accept ? '通过' : '失败'}: 任务 ${currentSeq} - ${resolvedTask}`,
       `${attemptPrefix}${iterationLabel} ${accept ? 'Passed' : 'Failed'}: Task ${currentSeq} - ${resolvedTask}`
     );
-    ui.onMessage(sessionId, {
+    emitToUi({ type: 'message', sessionId, data: {
       role: 'user',
       content: resultMsgContent,
-    } as MessageData);
+    } as MessageData });
     {
       const resultMsg: Message = {
         type: 'user',

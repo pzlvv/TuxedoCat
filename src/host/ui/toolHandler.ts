@@ -1,125 +1,62 @@
 /**
  * src/host/ui/toolHandler.ts - 工具调用处理
  * 处理 onPreToolCall / onToolCall / onToolResult 等工具生命周期
+ *
+ * 阶段 2.5 起，权限规则（agentMode → checkPermissions → auto/risk/manual 加工 →
+ * displayArgs 展开）全部搬到 core 的 PermissionPolicy。本类只剩「展示」：
+ * - 把 core 传来的 displayArgs 上架成工具卡片（normal 状态）
+ * - permResult.behavior === 'ask' 时弹确认框（UserChoiceManager）并回传用户选择
+ * - 工具卡片的运行/失败状态更新
+ * - Edit / Write 的 diff 信息暂存（供工具卡片展示与权限确认框复用）
  */
-import type { LogChannel } from '../UIHost.js';
-import { expandPath } from '../../core/utils/path.js';
-import { getProjectRoot } from '../../core/history/Config.js';
+import type { LogChannel, UIHost } from '../UIHost.js';
 import { logger } from '../../core/Logger.js';
-import { buildEditDiffHunks } from '../../core/utils/editDiff.js';
+import { updateToolUseMeta } from '../../core/history/index.js';
 import type { PermissionResult } from '../../core/tools/Tool.js';
 import type { UserChoiceManager } from './userChoice.js';
-
-/**
- * 将工具入参规范化为对象。
- *
- * core 层在输入校验失败时会把原始 toolUse.input 直接传给 onPreToolCall，
- * 极端情况下它是 JSON 字符串（模型 double-encode，或 Provider JSON.parse 失败后
- * 保留了原始字符串）。若不处理，`{ ...args }` 会把字符串展开成字符索引对象，
- * 后续 `k in args` 也会因右操作数不是对象而抛 TypeError，导致整个 query 失败。
- */
-function normalizeToolArgs(args: unknown): Record<string, any> {
-  if (args && typeof args === 'object') {
-    return args as Record<string, any>;
-  }
-  if (typeof args === 'string') {
-    const trimmed = args.trim();
-    if (trimmed) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (parsed && typeof parsed === 'object') {
-          return parsed as Record<string, any>;
-        }
-      } catch {
-        // 不是合法 JSON，按空对象处理
-      }
-    }
-  }
-  return {};
-}
 
 /**
  * ToolHandler - 管理工具调用的 UI 展示
  */
 export class ToolHandler {
-  private outputChannel: LogChannel | undefined;
+  private host: UIHost;
   private postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
-  private sessionAgentModes: Map<string, 'manual' | 'risk' | 'auto'>;
   private userChoiceManager: UserChoiceManager;
 
   constructor(deps: {
-    outputChannel: LogChannel | undefined;
+    host: UIHost;
     postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
-    sessionAgentModes: Map<string, 'manual' | 'risk' | 'auto'>;
     userChoiceManager: UserChoiceManager;
   }) {
-    this.outputChannel = deps.outputChannel;
+    this.host = deps.host;
     this.postToWebview = deps.postToWebview;
-    this.sessionAgentModes = deps.sessionAgentModes;
     this.userChoiceManager = deps.userChoiceManager;
   }
 
   private log(...args: unknown[]): void {
-    this.outputChannel?.appendLine(args.map(a => String(a)).join(' '));
+    this.host.log(...args);
   }
 
   /**
-   * core 层调用：通知工具调用开始前
+   * core 层调用（CoreRequest.toolPermission 的处理方）：
+   * permResult 已由 core 的 PermissionPolicy 加工完——
+   * - allow → 直接返回
+   * - deny  → 直接返回
+   * - ask   → 弹确认框并返回用户选择
+   * 同时负责把工具卡片上架 / 更新（展示职责）。
    */
   async onPreToolCall(
     sessionID: string,
     toolUseId: string,
     toolName: string,
-    rawArgs: Record<string, any>,
-    tool: unknown,
+    permResult: PermissionResult,
+    displayArgs: Record<string, unknown>,
   ): Promise<PermissionResult> {
     const toolCallId = toolUseId;
-    logger.info('VSCodeUI', `onPreToolCall: ${toolName} (toolCallId: ${toolCallId})`);
-
-    // 统一规范化为对象，避免 rawArgs 为 JSON 字符串时后续展开 / `in` 运算崩溃
-    const args = normalizeToolArgs(rawArgs);
-
-    // 自动模式跳过确认
-    const effectiveAgentMode = this.sessionAgentModes.get(sessionID) ?? 'risk';
-
-    // Auto 模式下 Edit/Write 的 checkPermissions 可能要读取大文件/计算 diff，
-    // 先立即上架一张 running 工具卡片，避免出现“既没有 thinking 也没有 running”的空窗期。
-    let prePostedToolCard = false;
-    if (effectiveAgentMode === 'auto' && (toolName === 'Edit' || toolName === 'Write')) {
-      prePostedToolCard = true;
-      this.postToWebview(sessionID, {
-        type: 'addMessage',
-        role: 'toolcall',
-        content: '',
-        param: `⚙️ ${toolName}`,
-        toolName,
-        toolArgs: { ...args },
-        status: 'running',
-        toolCallId,
-      });
-    }
-
-    // 调用 checkPermissions 获取权限结果
-    let permResult: PermissionResult = { behavior: 'allow' };
-    if (tool && typeof tool === 'object' && 'checkPermissions' in tool && typeof tool.checkPermissions === 'function') {
-      const context = {
-        abortController: new AbortController(),
-        cwd: getProjectRoot(),
-        getAppState: () => ({}),
-        setAppState: () => {},
-        messages: [],
-        sessionId: sessionID,
-      };
-      try {
-        permResult = await (tool as any).checkPermissions(args, context);
-      } catch (error) {
-        this.log(`[VSCodeUI] checkPermissions error: ${error}`);
-        permResult = { behavior: 'deny', message: `权限检查失败: ${error}` };
-      }
-    }
+    logger.info('ToolHandler', `onPreToolCall: ${toolName} (toolCallId: ${toolCallId})`);
 
     // 保存 Edit / Write 工具的 diff 信息。
-    // 注意：只有在本次 checkPermissions 结果里确实携带了 diff 字段时才保存/使用
+    // 注意：只有在本次权限结果里确实携带了 diff 字段时才保存/使用
     // userChoiceManager 中的快照，否则会把上一次 Edit/Write 的 diff 错误地挂到
     // 本次（例如 old_string 多处匹配被 deny）的失败工具卡片上。
     const hasPermDiff = (toolName === 'Edit' || toolName === 'Write') && 'beforeContent' in permResult;
@@ -134,136 +71,27 @@ export class ToolHandler {
       this.userChoiceManager.currentEndLine = (permResult as any).endLine;
     }
 
-    // Auto 模式下 AskUserQuestion 不可用：不弹出提问框，直接返回不可用结果
-    if (toolName === 'AskUserQuestion' && effectiveAgentMode === 'auto') {
-      logger.info('VSCodeUI', `Auto mode (session ${sessionID}): AskUserQuestion unavailable, denying tool call`);
-      permResult = {
-        behavior: 'deny',
-        message: 'AskUserQuestion is unavailable in Auto mode. Please analyze the situation and make a reasonable decision on your own.',
-      };
-    }
-
-    if (effectiveAgentMode === 'auto' && permResult.behavior === 'ask') {
-      logger.info('VSCodeUI', `Auto mode (session ${sessionID}): allowing tool ${toolName} without confirmation`);
-      permResult = { behavior: 'allow' };
-    }
-
-    // 风险拦截模式：只拦截危险操作，普通操作自动放行
-    if (effectiveAgentMode === 'risk' && permResult.behavior === 'ask') {
-      if (this.isOperationRisky(tool, toolName, args)) {
-        logger.info('VSCodeUI', `Risk mode (session ${sessionID}): intercepting risky tool ${toolName}`);
-        // Keep 'ask' behavior - still ask user for confirmation
-      } else {
-        logger.info('VSCodeUI', `Risk mode (session ${sessionID}): allowing non-risky tool ${toolName} without confirmation`);
-        permResult = { behavior: 'allow' };
-      }
-    }
-
-    // 对文件操作工具展开路径
-    let displayArgs = { ...args };
-    if (toolName === 'Read' || toolName === 'Write' || toolName === 'Edit') {
-      const filePath = args.file_path || args.path;
-      if (filePath && typeof filePath === 'string') {
-        try {
-          const absolutePath = expandPath(filePath);
-          displayArgs = { ...args, file_path: absolutePath };
-        } catch (error) {
-          logger.error('VSCodeUI', `路径展开失败: ${error}`);
-        }
-      }
-
-      if (toolName === 'Write' && args.content) {
-        const content = String(args.content);
-        // 保留 null（新建文件）以便回滚时删除文件
-        const permBeforeContent = (permResult as any).beforeContent;
-        const wBeforeContent = permBeforeContent !== undefined && permBeforeContent !== '' ? permBeforeContent : (this.userChoiceManager.currentBeforeContent !== undefined ? this.userChoiceManager.currentBeforeContent : null);
-        const wAfterContent = this.userChoiceManager.currentAfterContent || args.content || '';
-        displayArgs = {
-          ...displayArgs,
-          content: args.content,
-          contentPreview: content,
-          totalLines: content.split('\n').length,
-          isTruncated: false,
-          beforeContent: wBeforeContent,
-          afterContent: wAfterContent,
-        };
-      }
-
-      if (toolName === 'Edit') {
-        const oldString = args.old_string ? String(args.old_string) : '';
-        const newString = args.new_string ? String(args.new_string) : '';
-        const replaceAll = args.replace_all || false;
-
-        displayArgs = {
-          ...displayArgs,
-          old_string: oldString,
-          new_string: newString,
-          replace_all: replaceAll,
-        };
-
-        // 只有本次权限检查确实携带 diff 信息时才附加 diff 字段。
-        // 若 checkPermissions 直接 deny（例如 old_string 匹配到多处），
-        // permResult 中没有 beforeContent/afterContent，此时不应使用
-        // userChoiceManager 中上一次请求遗留的 diff，否则 webview 会显示错误 diff。
-        if (hasPermDiff) {
-          const beforeContent = this.userChoiceManager.currentBeforeContent || '';
-          const afterContent = this.userChoiceManager.currentAfterContent || '';
-          displayArgs = {
-            ...displayArgs,
-            contextBefore: this.userChoiceManager.currentContextBefore || [],
-            contextAfter: this.userChoiceManager.currentContextAfter || [],
-            // Edit 只发送 diff 相关行，避免把整个文件内容发给 webview
-            diffHunks: buildEditDiffHunks({
-              beforeContent,
-              afterContent,
-              startLine: this.userChoiceManager.currentStartLine,
-              endLine: this.userChoiceManager.currentEndLine,
-              replaceAll,
-            }),
-            startLine: this.userChoiceManager.currentStartLine,
-            endLine: this.userChoiceManager.currentEndLine,
-          };
-        }
-      }
-    }
-
-    // 添加 previewContent
-    if (permResult && typeof permResult === 'object' && 'previewContent' in permResult && permResult.previewContent) {
-      displayArgs = { ...displayArgs, _preview: String(permResult.previewContent) };
-    }
-
-    // 发送到 webview：Auto 模式 Edit/Write 已在上方预发了 running 卡片，这里改为补全参数；
-    // 其他工具仍走原来的 addMessage（normal 状态，等待授权/执行）。
-    if (prePostedToolCard) {
-      this.postToWebview(sessionID, {
-        type: 'updateToolArgs',
-        toolCallId,
-        toolArgs: displayArgs,
-      });
-    } else {
-      this.postToWebview(sessionID, {
-        type: 'addMessage',
-        role: 'toolcall',
-        content: '',
-        param: `⚙️ ${toolName}`,
-        toolName,
-        toolArgs: displayArgs,
-        status: 'normal',
-        toolCallId,
-      });
-    }
+    // 发送工具卡片到 webview（normal 状态，等待授权/执行）
+    this.postToWebview(sessionID, {
+      type: 'addMessage',
+      role: 'toolcall',
+      content: '',
+      param: `⚙️ ${toolName}`,
+      toolName,
+      toolArgs: displayArgs,
+      status: 'normal',
+      toolCallId,
+    });
 
     const diffLineCount = Array.isArray((displayArgs as any).diffHunks)
       ? (displayArgs as any).diffHunks.reduce((s: number, h: any) => s + (h.lines?.length || 0), 0)
       : 0;
-    this.log(`[VSCodeUI] ${prePostedToolCard ? 'updateToolArgs' : 'addMessage'}: ${toolName} file=${(displayArgs as any).file_path || '-'} diffLines=${diffLineCount} beforeLen=${(displayArgs as any).beforeContent?.length || 0} afterLen=${(displayArgs as any).afterContent?.length || 0}`);
+    this.log(`[ToolHandler] addMessage: ${toolName} file=${(displayArgs as any).file_path || '-'} diffLines=${diffLineCount} beforeLen=${(displayArgs as any).beforeContent?.length || 0} afterLen=${(displayArgs as any).afterContent?.length || 0}`);
 
     // 异步追加写入 block 顶层 _meta（append-only，避免整文件读改写）。
     // 不设置 updatedInput，避免 RunTools 再触发一次无意义的 updateToolUseInput。
     if (permResult && typeof permResult === 'object' && !('updatedInput' in permResult)) {
-      const hasExtraFields = Object.keys(displayArgs).some(k => !(k in args));
-      if (hasExtraFields) {
-        const { updateToolUseMeta } = require('../../core/history/index.js');
+      if (hasPermDiff) {
         updateToolUseMeta(sessionID, toolUseId, {
           beforeContent: this.userChoiceManager.currentBeforeContent !== undefined ? this.userChoiceManager.currentBeforeContent : '',
           afterContent: this.userChoiceManager.currentAfterContent || '',
@@ -272,11 +100,14 @@ export class ToolHandler {
           startLine: this.userChoiceManager.currentStartLine,
           endLine: this.userChoiceManager.currentEndLine,
         }).catch((e: unknown) =>
-          this.log(`[VSCodeUI] updateToolUseMeta error: ${e}`)
+          this.log(`[ToolHandler] updateToolUseMeta error: ${e}`)
         );
       }
     }
 
+    // ask：不在这里弹确认框。RunTools 在拿到 'ask' 结果后会走
+    // Integration.requestUserChoice（全局 UserChoiceQueue，支持多会话排队与自动跳转），
+    // 这里提前弹框会造成双重确认。
     return permResult;
   }
 
@@ -285,7 +116,7 @@ export class ToolHandler {
    */
   onToolCall(sessionID: string, toolUseId: string, toolName: string): void {
     const toolCallId = toolUseId;
-    logger.info('VSCodeUI', `Tool call start: ${toolName} (toolCallId: ${toolCallId})`);
+    logger.info('ToolHandler', `Tool call start: ${toolName} (toolCallId: ${toolCallId})`);
     this.postToWebview(sessionID, {
       type: 'updateToolStatus',
       toolCallId,
@@ -298,12 +129,12 @@ export class ToolHandler {
    */
   onToolResult(sessionID: string, toolUseId: string, toolName: string, output: string, status: 'success' | 'error'): void {
     const toolCallId = toolUseId;
-    logger.info('VSCodeUI', `Tool result: ${toolName} - ${status} (toolCallId: ${toolCallId})`);
+    logger.info('ToolHandler', `Tool result: ${toolName} - ${status} (toolCallId: ${toolCallId})`);
 
     const outputObj = output as any;
     if (toolName === 'Edit') {
       if (status === 'error') {
-        this.log(`[VSCodeUI] Edit tool failed, clearing diff display`);
+        this.log(`[ToolHandler] Edit tool failed, clearing diff display`);
         this.postToWebview(sessionID, {
           type: 'updateToolArgs',
           toolCallId,
@@ -314,7 +145,7 @@ export class ToolHandler {
           contextAfter: [],
         });
       } else if (outputObj.hasContext || status === 'success') {
-        this.log(`[VSCodeUI] Edit tool has context: ${outputObj.contextBefore?.length || 0} before, ${outputObj.contextAfter?.length || 0} after`);
+        this.log(`[ToolHandler] Edit tool has context: ${outputObj.contextBefore?.length || 0} before, ${outputObj.contextAfter?.length || 0} after`);
         this.postToWebview(sessionID, {
           type: 'updateToolArgs',
           toolCallId,
@@ -339,35 +170,5 @@ export class ToolHandler {
     }
 
     this.postToWebview(sessionID, statusUpdate);
-  }
-
-  /**
-   * 判断操作是否为危险操作（用于风险拦截模式）
-   * 危险操作定义：
-   * 1. Bash 破坏性命令（dd、mkfs、format、fdisk、shred、wipe 等）
-   * 2. Git 破坏性命令（仅 checkout、reset）
-   * 注意：cp、mv 以及除 checkout/reset 之外的 git 操作不属于危险操作，无需确认。
-   */
-  private isOperationRisky(tool: unknown, toolName: string, args: Record<string, any>): boolean {
-    // Bash 命令
-    if (toolName === 'Bash') {
-      const command = (args as any)?.command || '';
-      // 使用工具自身的 isDestructive 方法判断（mv、cp 已不属于破坏性命令）
-      if (tool && typeof tool === 'object' && 'isDestructive' in tool && typeof (tool as any).isDestructive === 'function') {
-        try {
-          if ((tool as any).isDestructive(args)) {
-            return true;
-          }
-        } catch {
-          // ignore
-        }
-      }
-      // Git 破坏性命令（仅 checkout、reset）
-      if (/\bgit\s+(checkout|reset)\b/.test(command)) {
-        return true;
-      }
-    }
-
-    return false;
   }
 }

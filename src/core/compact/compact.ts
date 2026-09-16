@@ -8,11 +8,16 @@ import { COMPACT_SYSTEM_PROMPT } from './types.js';
 
 import { generateCompactSummaryPrompt, generateCompactUserMessage, generateCompactBoundaryContent, getUserInputHistory, formatUserInputHistory } from './prompt.js';
 import { logger } from '../Logger.js';
-import { requireGlobalUI, type AssistantUI } from '../AssistantUI.js';
+import { requireEventBus, type CoreEvent } from '../AssistantEventBus.js';
 import { updateConversationContext, saveCompactArchive, replaceConversationMessages } from '../history/Conversation.js';
 import { replayMessagesToUI } from '../utils/replayMessages.js';
 import { getConfig } from '../llm/config.js';
 import { markCompacting, unmarkCompacting } from './state.js';
+
+/** core → UI 单向事件的发送侧封装（compact 模块统一走它） */
+function emitToUi(event: CoreEvent): void {
+  requireEventBus().emitToUi(event);
+}
 
 /**
  * Compact conversation by summarizing and creating a boundary marker
@@ -80,11 +85,8 @@ async function compactConversationInner(
 ): Promise<CompactionResult | null> {
   logger.info('compact', 'Starting compact conversation');
 
-  // 压缩必须有 UI 才能反馈进度：未初始化直接抛错，不做静默降级
-  const ui = requireGlobalUI();
-
   // Notify UI: compact started
-  ui.onCompressProgress(sessionId, 'start');
+  emitToUi({ type: 'compactBegin', sessionId });
 
   // Step 1: Get messages after last compact boundary
   const messagesForCompact = getMessagesAfterCompactBoundary(messages);
@@ -152,7 +154,11 @@ async function compactConversationInner(
   };
 
   // Notify UI: compact complete with actual output tokens from summary generation
-  ui?.onCompressProgress(sessionId, 'complete', summaryOutputTokens);
+  emitToUi({
+    type: 'compactEnd',
+    sessionId,
+    result: { status: 'complete', postCompactTokenCount: summaryOutputTokens },
+  });
 
   // Update meta.json with the output tokens from summary generation
   // This ensures the UI can display the correct token usage after compact
@@ -285,8 +291,6 @@ export async function compactAndApplyMessages(
     isAutoCompact?: boolean;
     /** 自定义摘要指令 */
     customInstructions?: string;
-    /** 通知 UI 的实例；不传则使用全局 UI */
-    ui?: AssistantUI;
   } = {},
 ): Promise<boolean> {
   const result = await compactConversation(
@@ -324,9 +328,8 @@ export async function compactAndApplyMessages(
     logger.warn('compact', `Failed to update compact context: ${err}`);
   });
 
-  const ui = options.ui ?? requireGlobalUI();
   // 通知 UI 压缩完成：清空旧消息并推送压缩后的内容
-  replayMessagesToUI(ui, sessionId, postCompactMessages);
+  replayMessagesToUI(sessionId, postCompactMessages);
 
   return true;
 }

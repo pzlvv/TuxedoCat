@@ -106,17 +106,15 @@ export function isLanguageReady(language: string): boolean {
   }
 }
 
-/** 语言首次加载成功后上报宿主，写入 settings.json 供下次启动预热。 */
+/**
+ * 语言首次加载成功后的本地记录。
+ * 高亮语言预热集合改由 core 维护（DEVELOPMENT.md 第 7.3 节 2.6）：
+ * core 在消息落盘时扫描围栏代码块语言写入 settings.json，
+ * webview 不再上报（recordHighlightLanguage 协议消息已删除）。
+ */
 function reportLanguageUsed(language: string): void {
   if (reportedLanguages.has(language)) return;
   reportedLanguages.add(language);
-  // 已记录过（宿主注入的历史集合）则无需重复上报
-  if (getPreloadedSet().has(language)) return;
-  try {
-    postMessage({ type: 'recordHighlightLanguage', language });
-  } catch {
-    // 独立/调试环境下宿主 API 可能不存在，忽略
-  }
 }
 
 /**

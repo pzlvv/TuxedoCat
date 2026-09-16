@@ -19,9 +19,16 @@
  */
 
 import { logger } from './Logger.js';
-import type { MessageData } from './AssistantUI.js';
+import type { MessageData } from './types.js';
+import type { CoreEvent } from './AssistantEventBus.js';
+import { requireEventBus } from './AssistantEventBus.js';
 import { getBuiltinCommands } from './skills/builtinCommands.js';
 import type { CommandContext } from './skills/builtinCommands.js';
+
+/** core → UI 单向事件的发送侧封装（CommandDispatcher 统一走它） */
+function emitToUi(event: CoreEvent): void {
+  requireEventBus().emitToUi(event);
+}
 
 /** 派遣结果 */
 export type DispatchResult = 'handled' | 'passthrough' | 'skill';
@@ -79,23 +86,31 @@ export async function dispatch(
     };
 
     try {
-      // 先通知 UI 层执行客户端操作（如清空消息列表）
-      await context.ui.onCommandSend(cmd.name, cmdArgs, context.sessionId);
+      // 通知 UI 层执行客户端操作（如 /clear 清空消息、/spin 打开设计器）；
+      // 唯一调用方（这里）丢弃返回值，不需要 Promise<boolean> 形态
+      requireEventBus().emitToUi({
+        type: 'commandDispatched',
+        sessionId: context.sessionId,
+        commandName: cmd.name,
+        args: cmdArgs,
+      });
 
       // 执行命令
       const result = await cmd.execute(cmdArgs, cmdContext);
       if (result) {
-        context.ui.onMessage(context.sessionId, {
-          role: 'system',
-          content: String(result),
-        } as MessageData);
+        emitToUi({
+          type: 'message',
+          sessionId: context.sessionId,
+          data: { role: 'system', content: String(result) } as MessageData,
+        });
       }
     } catch (err) {
       logger.error('CommandDispatcher', `Command /${cmdName} failed: ${err}`);
-      context.ui.onMessage(context.sessionId, {
-        role: 'system',
-        content: `Command /${cmdName} failed: ${err}`,
-      } as MessageData);
+      emitToUi({
+        type: 'message',
+        sessionId: context.sessionId,
+        data: { role: 'system', content: `Command /${cmdName} failed: ${err}` } as MessageData,
+      });
     }
 
     return { result: 'handled' };

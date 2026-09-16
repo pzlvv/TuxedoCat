@@ -8,7 +8,7 @@
  * 4. 通过回调将消息投递给 UI 层显示或将用户消息提交处理
  */
 
-import type { MessageData } from './AssistantUI.js';
+import type { MessageData } from './types.js';
 import { logger } from './Logger.js';
 
 export interface SessionQueueCallbacks {

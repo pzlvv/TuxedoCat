@@ -9,8 +9,53 @@ import { join } from 'path';
 import { getProjectConversationDir, getProjectRoot, hasProjectRoot, getConversationDir, ensureProjectConversationDir, ensureProjectConversationDirSync } from './Config.js';
 import type { Message } from '../types.js';
 import type { PromptPresetId } from '../prompt/PromptPreset.js';
+import { requireEventBus, type CoreEvent } from '../AssistantEventBus.js';
 import { buildConversationTitle, extractUserContent } from '../utils/contentBlocks.js';
 import { logger } from '../Logger.js';
+
+/** core → UI 单向事件的发送侧封装（history/Conversation 统一走它） */
+function emitToUi(event: CoreEvent): void {
+  requireEventBus().emitToUi(event);
+}
+
+/**
+ * 从一条消息里提取围栏代码块的语言列表（去重）。
+ * 扫描 user / assistant 消息的字符串内容中的 ```lang 围栏标记，
+ * 供 appendMessage 时预热 Shiki 高亮语言集合（见第 7.3 节 2.6）。
+ */
+function collectFenceLanguages(message: Message): string[] {
+  const langs = new Set<string>();
+  const scan = (text: unknown): void => {
+    if (typeof text !== 'string' || !text) return;
+    // 围栏开头行：```lang 或 ~~~lang（忽略缩进；lang 为常见标识符）
+    const re = /(?:^|\n)[ \t]*(?:```|~~~)[ \t]*([A-Za-z0-9_+#-]+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const lang = m[1];
+      if (lang && lang.length <= 32) {
+        langs.add(lang);
+      }
+    }
+  };
+
+  const content = message.type === 'user' || message.type === 'assistant'
+    ? message.message?.content
+    : undefined;
+  if (typeof content === 'string') {
+    scan(content);
+  } else if (Array.isArray(content)) {
+    for (const block of content) {
+      const b = block as { type?: string; text?: string; thinking?: string; content?: unknown; input?: Record<string, unknown> };
+      if (b.type === 'text' || b.type === 'thinking') {
+        scan(b.text ?? b.thinking);
+      } else if (b.type === 'tool_result') {
+        // 工具结果里也常出现代码（如 Read 输出文件内容）
+        if (typeof b.content === 'string') scan(b.content);
+      }
+    }
+  }
+  return [...langs];
+}
 
 /**
  * 安全的 JSON 序列化，确保 \u2028（行分隔符）和 \u2029（段落分隔符）被转义。
@@ -502,6 +547,22 @@ export async function appendMessage(message: Message, sessionId: string, parentU
   // 确保项目对话目录存在，并写入 settings.json（记录 workspacePath）
   await ensureProjectConversationDir(projectPath);
 
+  // 高亮语言预热集合改由 core 自己维护（DEVELOPMENT.md 第 7.3 节 2.6）：
+  // 在消息落盘时扫描内容里的围栏代码块语言，直接调 recordHighlightLanguage，
+  // 不再需要 webview 上报。预热集合变成「会话内容里出现过的语言」，
+  // 比「webview 实际加载过的语言」更早、更完整。
+  try {
+    const langs = collectFenceLanguages(message);
+    if (langs.length > 0) {
+      const { recordHighlightLanguage } = await import('./Config.js');
+      for (const lang of langs) {
+        await recordHighlightLanguage(lang);
+      }
+    }
+  } catch {
+    // 扫描 / 记录失败不影响落盘主流程
+  }
+
 	  // 追加到 JSONL 文件（通过写队列串行化，防止与 updateToolUseMeta 并发导致文件损坏）
 	  const conversationPath = getConversationPath(effectiveSessionId, projectPath);
 	  const jsonLine = safeJsonStringify(storedMessage) + '\n';
@@ -542,11 +603,10 @@ export async function appendMessage(message: Message, sessionId: string, parentU
     }
   }
 
-  // 通知 UI 防抖刷新对话列表，让侧栏消息数在对话进行中实时更新。
-  // UI 层会合并短时间内的多次调度，避免每条消息都触发一次读盘。
-  // 这里必须存在 UI：未初始化属于集成缺失，直接抛错而不是静默跳过。
-  const { requireGlobalUI } = await import('../AssistantUI.js');
-  requireGlobalUI().scheduleConversationListRefresh();
+  // 通知 UI 刷新对话列表，让侧栏消息数在对话进行中实时更新。
+  // 「立即还是节流、推给哪些视图」是 UI 的表现策略，由 WebViewUI 的
+  // onConversationListChanged（500ms 防抖）决定，core 只报告事实。
+  emitToUi({ type: 'conversationListChanged' });
 
   return { uuid, newTitle: newTitle ?? undefined };
 }
@@ -1110,9 +1170,8 @@ export async function replaceConversationMessages(sessionId: string, messages: M
     }
   }
 
-  // 压缩 / 清空会整体改写消息数，同样通知 UI 刷新列表（必须有 UI，未初始化直接抛错）
-  const { requireGlobalUI } = await import('../AssistantUI.js');
-  requireGlobalUI().scheduleConversationListRefresh();
+  // 压缩 / 清空会整体改写消息数，同样通知 UI 刷新列表
+  emitToUi({ type: 'conversationListChanged' });
 }
 
 // ========== Compact Archive Functions ==========

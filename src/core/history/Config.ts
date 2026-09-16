@@ -270,25 +270,6 @@ export function getExtensionPath(): string {
 }
 
 /**
- * 当前活跃的会话 ID
- */
-let activeSessionId: string;
-
-/**
- * 设置当前活跃的会话 ID
- */
-export function setActiveSessionId(sessionId: string): void {
-  activeSessionId = sessionId;
-}
-
-/**
- * 获取当前活跃的会话 ID
- */
-export function getActiveSessionId(): string {
-  return activeSessionId;
-}
-
-/**
  * settings.json 缓存
  */
 let cachedSettings: Record<string, any> | null = null;

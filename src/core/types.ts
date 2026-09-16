@@ -121,3 +121,74 @@ export type Terminal = {
   reason: string
   error?: unknown
 }
+
+/**
+ * 询问模式（agent mode）：
+ * - manual：所有危险操作都询问用户
+ * - risk：只拦截危险操作，普通操作自动放行
+ * - auto：全部自动放行（AskUserQuestion 不可用）
+ */
+export type AgentMode = 'manual' | 'risk' | 'auto';
+
+// ==================== core → UI 事件载荷（原 AssistantUI.ts，随总线化搬家）====================
+
+/** 流式消息数据 */
+export interface StreamMessageData {
+  /** 消息角色：'thinking' 或 'assistant' */
+  role: 'thinking' | 'assistant';
+  /** 本次增量文本 */
+  delta: string;
+  /** 当前累积的完整文本 */
+  accumulated: string;
+  /** LLM 消息 ID，用于 WebView 精确匹配到对应消息，防止多轮对话覆盖 */
+  streamId?: string;
+}
+
+/** 流结束数据 */
+export interface StreamEndData {
+  /** 消息角色：'thinking' 或 'assistant' */
+  role: 'thinking' | 'assistant';
+  /** 最终累积的完整文本 */
+  accumulated: string;
+  /** token 用量 */
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+    /** 思考（reasoning）部分的 token 数（Responses API: output_tokens_details.reasoning_tokens） */
+    reasoning_tokens?: number;
+  };
+  /** LLM 消息 ID，用于 WebView 精确匹配到对应消息 */
+  streamId?: string;
+}
+
+export interface MessageData {
+  role: 'user' | 'assistant' | 'thinking' | 'toolcall' | 'system';
+  content: string;
+  param?: string;
+  filePath?: string;
+  fileSelectedLines?: { start: number; end: number };
+  toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  toolCallId?: string;
+  status?: 'normal' | 'success' | 'running' | 'fail';
+  /** 当前请求的 context token 数（input_tokens） */
+  contextLength?: number;
+  /** 当前请求的 output token 数（output_tokens） */
+  outputTokens?: number;
+  /** 缓存读取 token 数 */
+  cacheReadInputTokens?: number;
+  /** 缓存创建 token 数 */
+  cacheCreationInputTokens?: number;
+  /** 是否是压缩摘要消息 */
+  isCompactSummary?: boolean;
+  /** 是否显示边框（用于子代理 Reply 回复） */
+  hasBorder?: boolean;
+  /** 是否来自代理消息 */
+  isFromAgent?: boolean;
+  /** 用户消息携带的图片（仅用于 UI 展示，LLM 请求使用 content blocks） */
+  images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
+  /** 消息元信息，如文件引用、agent来源等 */
+  meta?: Record<string, unknown>;
+}

@@ -9,10 +9,16 @@
 import { QueryEngine, getSessionEngine } from '../QueryEngine.js';
 import { getProjectRoot } from '../history/Config.js';
 import { getAllTools } from '../tools/index.js';
-import { requireGlobalUI } from '../AssistantUI.js';
+import type { CoreEvent } from '../AssistantEventBus.js';
+import { requireEventBus } from '../AssistantEventBus.js';
 import type { SpinDesign, SpinNode } from './Types.js';
 import { logger } from '../Logger.js';
 import { generateCoreSystemPrompt } from '../prompt/SystemPrompt.js';
+
+/** core → UI 单向事件的发送侧封装（SpinRunner 统一走它） */
+function emitToUi(event: CoreEvent): void {
+  requireEventBus().emitToUi(event);
+}
 
 /**
  * 创建子 Agent 执行一个 story
@@ -25,7 +31,6 @@ export async function createSubAgent(
   node: SpinNode,
 ): Promise<string> {
   const subSessionID = `spin-runner-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const ui = requireGlobalUI();
 
   const abortController = new AbortController();
 
@@ -72,7 +77,6 @@ The JSON format must be:
     role: role,
     getAppState: () => ({}),
     setAppState: () => {},
-    ui: ui as any,
     abortController: abortController as any,
     initialMessages: [taskMessage],
     maxTurns: Number.MAX_SAFE_INTEGER,
@@ -98,7 +102,7 @@ The JSON format must be:
   }
 
   // 通知 UI 子代理开始
-  ui.onQueryBegin(subSessionID);
+  emitToUi({ type: 'queryBegin', sessionId: subSessionID });
 
   let result = '';
 
@@ -129,7 +133,7 @@ The JSON format must be:
     logger.error('SpinRunner', `Sub-agent ${subSessionID} error: ${err}`);
     result = `Error: ${err}`;
   } finally {
-    ui.onQueryEnd(subSessionID);
+    emitToUi({ type: 'queryEnd', sessionId: subSessionID });
   }
 
   return result;

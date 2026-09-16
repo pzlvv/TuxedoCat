@@ -39,9 +39,9 @@ let waitingForUserProvider: ((sessionId: string) => boolean) | null = null;
 
 /**
  * 宿主注入的「当前激活会话」判定。
- * 未注入时回退到 core 的 getActiveSessionId()。
- * Electron 需要注入：切换已加载的视图时不会再发 setActiveSessionId，
- * 只有 ChatViewManager 知道当前真正显示的是哪个对话。
+ * 「哪个会话在前台」是 UI 自己的状态（DEVELOPMENT.md 第 15.6 节），
+ * core 不再持有 activeSessionId 缓存；未注入时视为「无激活会话」
+ * （VS Code 侧由 extension.ts 注入 trackedActiveSessionId 的读取器）。
  */
 let activeSessionProvider: (() => string | null | undefined) | null = null;
 
@@ -99,16 +99,9 @@ export function setSessionActiveProvider(
 }
 
 async function resolveActiveSessionId(): Promise<string | null> {
-  if (activeSessionProvider) {
-    try {
-      return activeSessionProvider() ?? null;
-    } catch {
-      return null;
-    }
-  }
+  if (!activeSessionProvider) return null;
   try {
-    const { getActiveSessionId } = await import('./history/Config.js');
-    return getActiveSessionId() || null;
+    return activeSessionProvider() ?? null;
   } catch {
     return null;
   }

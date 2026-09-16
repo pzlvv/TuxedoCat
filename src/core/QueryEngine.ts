@@ -2,11 +2,12 @@
  * QueryEngine - 管理会话状态和消息处理的主引擎
  */
 
-import type { Message } from './types.js';
+import type { Message, MessageData } from './types.js';
 import { extractUserContent } from './utils/contentBlocks.js';
 import { query } from './Query.js';
 import type { AbortControllerLike } from './tools/Tool.js';
-import type { AssistantUI } from './AssistantUI.js';
+import type { CoreEvent } from './AssistantEventBus.js';
+import { requireEventBus } from './AssistantEventBus.js';
 import type { Tool } from './tools/Tool.js';
 import type { LLMConfig } from './llm/config.js';
 import type { PromptPresetId } from './prompt/PromptPreset.js';
@@ -15,6 +16,11 @@ import { logger } from './Logger.js';
 import { noteSessionActivity } from './sessionIdle.js';
 import { isCompacting, isPendingCompact, markPendingCompact, unmarkPendingCompact } from './compact/state.js';
 import { randomId } from './tools/RunTools.js';
+
+/** core → UI 单向事件的发送侧封装（QueryEngine 统一走它） */
+function emitToUi(event: CoreEvent): void {
+  requireEventBus().emitToUi(event);
+}
 
 /**
  * 创建简单的 AbortController polyfill
@@ -58,7 +64,6 @@ export interface QueryEngineConfig {
   upstreamHostname?: string;
   /** 上游节点的工作区路径（跨节点 Reply 路由用） */
   upstreamWorkspace?: string;
-  ui: AssistantUI;
   /** 工作模式：normal（默认）| spin（主消息不发 LLM，由内部逻辑接管） */
   workMode?: WorkMode;
 }
@@ -459,7 +464,7 @@ export class QueryEngine {
     this.isConsumerRunning = true;
     noteSessionActivity(this.sessionID);
     if (notifyQueryBegin) {
-      this.config.ui?.onQueryBegin(this.sessionID);
+      emitToUi({ type: 'queryBegin', sessionId: this.sessionID });
     }
     this.startBackgroundConsumer();
   }
@@ -517,7 +522,7 @@ export class QueryEngine {
     this.isConsumerRunning = false;
     this.signalConsumerExited();
     if (notifyQueryEnd) {
-      this.config.ui?.onQueryEnd(this.sessionID);
+      emitToUi({ type: 'queryEnd', sessionId: this.sessionID });
     }
     await this.runPendingCompactIfNeeded();
   }
@@ -546,9 +551,7 @@ export class QueryEngine {
     }
 
     try {
-      const applied = await compactAndApplyMessages(this.sessionID, this.mutableMessages, {
-        ui: this.config.ui,
-      });
+      const applied = await compactAndApplyMessages(this.sessionID, this.mutableMessages);
       if (!applied) {
         logger.info('QueryEngine', `Pending compact skipped for ${this.sessionID} (no messages to summarize)`);
         return;
@@ -562,7 +565,7 @@ export class QueryEngine {
       logger.info('QueryEngine', `Executed pending compact for ${this.sessionID}`);
     } catch (err) {
       logger.warn('QueryEngine', `Pending compact failed for ${this.sessionID}: ${err}`);
-      this.config.ui?.onCompressProgress(this.sessionID, 'error');
+      emitToUi({ type: 'compactEnd', sessionId: this.sessionID, result: { status: 'error' } });
     } finally {
       // 压缩期间入队的消息（用户消息 / Agent 回复）此时才排空。
       this.resumeAfterCompact();
@@ -652,12 +655,16 @@ export class QueryEngine {
    */
   private notifyAgentReplyToUI(item: { content: string; agentId: string }): void {
     const sourceInfo = this.getAgentSourceInfo(item.agentId);
-    this.config.ui?.onMessage(this.sessionID, {
-      role: 'user',
-      content: item.content,
-      param: sourceInfo,
-      isFromAgent: true,
-      meta: { param: sourceInfo, type: 'from' },
+    emitToUi({
+      type: 'message',
+      sessionId: this.sessionID,
+      data: {
+        role: 'user',
+        content: item.content,
+        param: sourceInfo,
+        isFromAgent: true,
+        meta: { param: sourceInfo, type: 'from' },
+      } as MessageData,
     });
   }
 
@@ -804,22 +811,23 @@ export class QueryEngine {
 
     const userContent = (userMsg as any).message?.content;
     const { text: uiText, images: uiImages } = extractUserContent(userContent);
-    this.config.ui?.onMessage(this.sessionID, {
-      role: 'user',
-      content: uiText,
-      images: uiImages.length > 0 ? uiImages : undefined,
-      param,
-      filePath: sendFilePath,
-      fileSelectedLines: sendSelectedLines,
-      meta: Object.keys(uiMeta).length > 0 ? uiMeta : undefined,
+    emitToUi({
+      type: 'message',
+      sessionId: this.sessionID,
+      data: {
+        role: 'user',
+        content: uiText,
+        images: uiImages.length > 0 ? uiImages : undefined,
+        param,
+        filePath: sendFilePath,
+        fileSelectedLines: sendSelectedLines,
+        meta: Object.keys(uiMeta).length > 0 ? uiMeta : undefined,
+      } as MessageData,
     });
   }
 
   constructor(sessionID: string, config: QueryEngineConfig) {
     this.sessionID = sessionID;
-    if (!config.ui) {
-      throw new Error('QueryEngine config requires ui to be provided');
-    }
     this.config = config;
     // 创建副本而非直接引用，避免 mutableMessages 与 conversationCache 共享同一数组。
     // 若共享同一引用，sendMessage 中 push 用户消息后，messageConsumer 调用
@@ -840,8 +848,13 @@ export class QueryEngine {
     // 注意：不再提前创建会话文件（meta.json + .jsonl）。
     // meta.json 只在第一条消息持久化（appendMessage）时创建，避免没发消息就生成会话文件。
     if (this.sessionTitle) {
-      // 通知 UI 新会话已创建（如 webview 预初始化 session 状态）
-      config.ui?.onSessionCreated(this.sessionID);
+      // 通知 UI 新会话已创建（如 webview 预初始化 session 状态）；
+      // 子代理会话带 parentSessionId，供 UI 展示树形结构与返回主对话按钮
+      emitToUi({
+        type: 'sessionCreated',
+        sessionId: this.sessionID,
+        parentSessionId: this.parentSessionId ?? null,
+      });
     }
 
     // 自动注册到全局引擎池
@@ -953,7 +966,7 @@ export class QueryEngine {
     this.isConsumerRunning = true;
     noteSessionActivity(this.sessionID);
     if (manageQueryUI) {
-      this.config.ui?.onQueryBegin(this.sessionID);
+      emitToUi({ type: 'queryBegin', sessionId: this.sessionID });
     }
     try {
       // messageConsumer 内部会一直消费到队列排空（含收尾竞态），这里调用一次即可。
@@ -1023,7 +1036,7 @@ export class QueryEngine {
       id: toolUseId,
       name: toolUseInput.name,
       input: toolUseInput.input,
-    }], toolUseContext as any, this.config.ui as any)) {
+    }], toolUseContext as any)) {
       if (update.message) {
         this.mutableMessages.push(update.message);
       }
@@ -1165,7 +1178,6 @@ export class QueryEngine {
         },
         querySource: 'sdk',
         maxTurns,
-        ui: this.config.ui,
         silent: false,
         // 静默中止判定：spin 子代理 Reply 后主动停止自身时不回显中断消息
         silentAbort: () => this.silentAbortRequested,

@@ -506,10 +506,6 @@ export type WebviewMessage = {
   /** 所有可用 MCP 服务器及其启用状态 */
   servers: McpServerInfo[];
 } | {
-  type: 'recordHighlightLanguage';
-  /** webview 按需加载过的 Shiki 语言，宿主写入 settings.json 供下次启动预热 */
-  language: string;
-} | {
   /** 全局唤醒快捷键激活窗口后，要求 webview 聚焦输入框，便于直接开始输入 */
   type: 'focusInput';
 };

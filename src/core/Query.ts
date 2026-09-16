@@ -3,17 +3,23 @@
  * 用户消息 → API 调用 → 工具执行 → 下一轮
  */
 
-import type { Message } from './types.js';
+import type { Message, MessageData, StreamMessageData, StreamEndData } from './types.js';
 import type { ToolUseContext } from './tools/Tool.js';
 import type { LLMConfig } from './llm/config.js';
-import type { AssistantUI } from './AssistantUI.js';
 import type { Tool } from './tools/Tool.js';
 import type { AutoCompactTrackingState } from './compact/types.js';
+import type { CoreEvent } from './AssistantEventBus.js';
 import { sessionQueue } from './SessionQueue.js';
 import { logger } from './Logger.js';
 import { updateConversationContext } from './history/index.js';
 import { getAvailableOutputTokens } from './utils/modelConfig.js';
 import { CONFIG_DIR_NAME } from '../config/project.js';
+
+/** core → UI 单向事件的发送侧封装（Query 模块统一走它） */
+function emitToUi(event: CoreEvent): void {
+  const { requireEventBus } = require('./AssistantEventBus.js') as typeof import('./AssistantEventBus.js');
+  requireEventBus().emitToUi(event);
+}
 
 function cleanWebSearchUrl(url: string): string {
   return url.replace(/[#&?]ws_call_id=[^#&?]*/g, '').replace(/[?#]$/, '');
@@ -35,9 +41,11 @@ export interface QueryParams {
   toolUseContext: ToolUseContext
   querySource: string
   maxTurns?: number
-  ui: AssistantUI
-  /** 可用的工具名称列表，不指定则使用全部工具 */
-  availableTools?: string[]
+  /**
+   * 静默模式：不推送流式消息到 UI（core 不再持有 UI 引用，事件一律走总线）。
+   * 保留该标记以维持「不向 UI 推送」的能力（子代理等静默场景）。
+   */
+  silent?: boolean
   /**
    * 动态获取当前 system prompt 和可用工具。
    * 每次 query 内部循环（工具调用后的下一轮 LLM 请求）都会重新获取，
@@ -54,8 +62,6 @@ export interface QueryParams {
    * 未提供时使用 modelConfig 常量。
    */
   getModelConfig?: () => LLMConfig | undefined
-  /** 静默模式：不推送流式消息到 UI */
-  silent?: boolean
   /**
    * 静默中止判定：返回 true 时，本次因 abort 结束的查询不向 UI 回显
    * "*User Interrupted*" 等中断消息（用于业务主动结束，如 spin 子代理
@@ -213,7 +219,7 @@ async function* queryLoop(
   const { staticSystemPrompt, maxTurns } = params;
 
   const getPromptState = params.getPromptState
-    ?? (async () => ({ systemPrompt: staticSystemPrompt, availableTools: params.availableTools }));
+    ?? (async () => ({ systemPrompt: staticSystemPrompt, availableTools: undefined }));
   const getModelConfig = params.getModelConfig ?? (() => params.modelConfig);
 
   let state: State = {
@@ -289,7 +295,6 @@ async function* queryLoop(
         // 延后的手动压缩按 manual 记录边界（trigger = 'manual'）；自动压缩保持 'auto'。
         const applied = await compactAndApplyMessages(params.sessionID, messages, {
           isAutoCompact: !pendingCompact,
-          ui: params.ui,
         });
 
         if (!applied) {
@@ -318,7 +323,7 @@ async function* queryLoop(
     let needsFollowUp = false;
     const activeWebSearchCalls = new Set<string>();
 
-    params.ui?.onAIBegin(params.sessionID);
+    emitToUi({ type: 'aiBegin', sessionId: params.sessionID });
 
     try {
       const [{ callLLM }, { convertToolsToLlmFormat }, { getAllTools }] = await Promise.all([
@@ -413,22 +418,30 @@ async function* queryLoop(
             streamedThinkingContent += event.thinking;
             // 逐 token 通知 UI 增量追加（使用当前 block 的 streamId）
             if (!params.silent) {
-              params.ui?.onStreamMessage(params.sessionID, {
-                role: 'thinking',
-                delta: event.thinking,
-                accumulated: streamedThinkingContent,
-                streamId: currentThinkingStreamId ?? event.messageId,
+              emitToUi({
+                type: 'streamMessage',
+                sessionId: params.sessionID,
+                data: {
+                  role: 'thinking',
+                  delta: event.thinking,
+                  accumulated: streamedThinkingContent,
+                  streamId: currentThinkingStreamId ?? event.messageId,
+                } as StreamMessageData,
               });
             }
           } else if (event.type === 'text_delta') {
             streamedTextContent += event.text;
             // 逐 token 通知 UI 增量追加（使用当前 block 的 streamId）
             if (!params.silent) {
-              params.ui?.onStreamMessage(params.sessionID, {
-                role: 'assistant',
-                delta: event.text,
-                accumulated: streamedTextContent,
-                streamId: currentTextStreamId ?? event.messageId,
+              emitToUi({
+                type: 'streamMessage',
+                sessionId: params.sessionID,
+                data: {
+                  role: 'assistant',
+                  delta: event.text,
+                  accumulated: streamedTextContent,
+                  streamId: currentTextStreamId ?? event.messageId,
+                } as StreamMessageData,
               });
             }
           } else if (event.type === 'block_start') {
@@ -454,18 +467,26 @@ async function* queryLoop(
             // isStreaming=true，导致 WebView 的自动滚动轮询持续运行。
             // usage 传 undefined：token 统计仍由 message_delta 统一更新。
             if (currentBlockType === 'thinking' && streamedThinkingContent && !params.silent) {
-              params.ui?.onStreamEnd(params.sessionID, {
-                role: 'thinking',
-                accumulated: streamedThinkingContent,
-                usage: undefined,
-                streamId: currentThinkingStreamId ?? event.messageId,
+              emitToUi({
+                type: 'streamEnd',
+                sessionId: params.sessionID,
+                data: {
+                  role: 'thinking',
+                  accumulated: streamedThinkingContent,
+                  usage: undefined,
+                  streamId: currentThinkingStreamId ?? event.messageId,
+                } as StreamEndData,
               });
             } else if (currentBlockType === 'text' && streamedTextContent && !params.silent) {
-              params.ui?.onStreamEnd(params.sessionID, {
-                role: 'assistant',
-                accumulated: streamedTextContent,
-                usage: undefined,
-                streamId: currentTextStreamId ?? event.messageId,
+              emitToUi({
+                type: 'streamEnd',
+                sessionId: params.sessionID,
+                data: {
+                  role: 'assistant',
+                  accumulated: streamedTextContent,
+                  usage: undefined,
+                  streamId: currentTextStreamId ?? event.messageId,
+                } as StreamEndData,
               });
             }
             currentBlockType = null;
@@ -487,33 +508,45 @@ async function* queryLoop(
               }
               if (streamedThinkingContent) {
                 if (!params.silent) {
-                  params.ui?.onStreamEnd(params.sessionID, {
-                    role: 'thinking',
-                    accumulated: streamedThinkingContent,
-                    usage: streamEndUsage,
-                    // 使用最后一个 thinking block 的 streamId，保证更新到对应消息
-                    streamId: currentThinkingStreamId ?? event.messageId,
+                  emitToUi({
+                    type: 'streamEnd',
+                    sessionId: params.sessionID,
+                    data: {
+                      role: 'thinking',
+                      accumulated: streamedThinkingContent,
+                      usage: streamEndUsage,
+                      // 使用最后一个 thinking block 的 streamId，保证更新到对应消息
+                      streamId: currentThinkingStreamId ?? event.messageId,
+                    } as StreamEndData,
                   });
                 }
               }
               if (streamedTextContent) {
                 if (!params.silent) {
-                  params.ui?.onStreamEnd(params.sessionID, {
-                    role: 'assistant',
-                    accumulated: streamedTextContent,
-                    usage: streamEndUsage,
-                    // 使用最后一个 text block 的 streamId，保证更新到对应消息
-                    streamId: currentTextStreamId ?? event.messageId,
+                  emitToUi({
+                    type: 'streamEnd',
+                    sessionId: params.sessionID,
+                    data: {
+                      role: 'assistant',
+                      accumulated: streamedTextContent,
+                      usage: streamEndUsage,
+                      // 使用最后一个 text block 的 streamId，保证更新到对应消息
+                      streamId: currentTextStreamId ?? event.messageId,
+                    } as StreamEndData,
                   });
                 }
               }
               // 纯 tool_use 场景：虽然没有 thinking/text 内容，但仍需传递 usage 更新 token 计数
               if (!streamedThinkingContent && !streamedTextContent && !params.silent) {
-                params.ui?.onStreamEnd(params.sessionID, {
-                  role: 'assistant',
-                  accumulated: '',
-                  usage: streamEndUsage,
-                  streamId: event.messageId,
+                emitToUi({
+                  type: 'streamEnd',
+                  sessionId: params.sessionID,
+                  data: {
+                    role: 'assistant',
+                    accumulated: '',
+                    usage: streamEndUsage,
+                    streamId: event.messageId,
+                  } as StreamEndData,
                 });
               }
             }
@@ -528,18 +561,22 @@ async function* queryLoop(
             if (!params.silent) {
               const toolCallId = `websearch_${event.callId}`;
               activeWebSearchCalls.add(toolCallId);
-              params.ui?.onMessage(params.sessionID, {
-                role: 'toolcall',
-                content: '',
-                param: 'WebSearch',
-                toolName: 'WebSearch',
-                toolArgs: {
-                  action,
-                  queries,
-                  url,
-                },
-                toolCallId,
-                status: 'running',
+              emitToUi({
+                type: 'message',
+                sessionId: params.sessionID,
+                data: {
+                  role: 'toolcall',
+                  content: '',
+                  param: 'WebSearch',
+                  toolName: 'WebSearch',
+                  toolArgs: {
+                    action,
+                    queries,
+                    url,
+                  },
+                  toolCallId,
+                  status: 'running',
+                } as MessageData,
               });
             }
           } else if (event.type === 'web_search_call_update') {
@@ -551,17 +588,29 @@ async function* queryLoop(
             const action = event.action || 'search';
             const url = cleanWebSearchUrl(event.url || '');
             if (!params.silent) {
-              params.ui?.updateToolArgs(params.sessionID, `websearch_${event.callId}`, {
-                action,
-                queries,
-                url,
+              emitToUi({
+                type: 'toolArgsUpdated',
+                sessionId: params.sessionID,
+                toolUseId: `websearch_${event.callId}`,
+                args: {
+                  action,
+                  queries,
+                  url,
+                },
               });
             }
           } else if (event.type === 'web_search_call_done') {
             if (!params.silent) {
               const toolCallId = `websearch_${event.callId}`;
               activeWebSearchCalls.delete(toolCallId);
-              params.ui?.onToolResult?.(params.sessionID, toolCallId, 'WebSearch', '', 'success');
+              emitToUi({
+                type: 'toolResult',
+                sessionId: params.sessionID,
+                toolUseId: toolCallId,
+                toolName: 'WebSearch',
+                output: '',
+                status: 'success',
+              });
             }
           }
           continue;
@@ -579,7 +628,7 @@ async function* queryLoop(
            *   - updatedAt（更新时间）
            *   - context.totalContextTokens（当前上下文总 token 数，用于恢复时显示进度条）
            *
-           * 步骤 2: params.ui?.onMessage() 将消息和 token 数据发送到 webview
+           * 步骤 2: emitToUi(message) 将消息和 token 数据发送到 webview
            *   - contextLength（input_tokens）：当前用于显示的输入 token 数
            *   - outputTokens：本次输出 token 数
            *   - webview 自行计算 totalTokens = contextLength + outputTokens 更新进度条
@@ -615,11 +664,15 @@ async function* queryLoop(
             );
             if (persistedTextBlock && !params.silent) {
               const collapseStreamId = currentTextStreamId ?? persistedTextBlock._streamId;
-              params.ui?.onStreamEnd(params.sessionID, {
-                role: 'assistant',
-                accumulated: String(persistedTextBlock.text || ''),
-                usage: undefined,
-                streamId: collapseStreamId,
+              emitToUi({
+                type: 'streamEnd',
+                sessionId: params.sessionID,
+                data: {
+                  role: 'assistant',
+                  accumulated: String(persistedTextBlock.text || ''),
+                  usage: undefined,
+                  streamId: collapseStreamId,
+                } as StreamEndData,
               });
             }
           }
@@ -628,7 +681,7 @@ async function* queryLoop(
         }
       }
     } catch (error) {
-      params.ui?.onAIEnd(params.sessionID);
+      emitToUi({ type: 'aiEnd', sessionId: params.sessionID });
 
       const errorMessage = error instanceof Error ? error.message : String(error);
       logger.error('query', 'API call error:', errorMessage);
@@ -640,14 +693,16 @@ async function* queryLoop(
         error instanceof Error && error.name === 'AbortError';
 
       for (const toolCallId of activeWebSearchCalls) {
-        params.ui?.onToolResult?.(
-          params.sessionID,
-          toolCallId,
-          'WebSearch',
-          isAborted ? 'User Interrupted' : errorMessage,
-          'error',
-        );
+        emitToUi({
+          type: 'toolResult',
+          sessionId: params.sessionID,
+          toolUseId: toolCallId,
+          toolName: 'WebSearch',
+          output: isAborted ? 'User Interrupted' : errorMessage,
+          status: 'error',
+        });
       }
+      activeWebSearchCalls.clear();
       activeWebSearchCalls.clear();
 
       if (isAborted) {
@@ -659,9 +714,10 @@ async function* queryLoop(
           return { reason: 'user_aborted' };
         }
 
-        params.ui?.onMessage(params.sessionID, {
-          role: 'system',
-          content: '*User Interrupted*',
+        emitToUi({
+          type: 'message',
+          sessionId: params.sessionID,
+          data: { role: 'system', content: '*User Interrupted*' } as MessageData,
         });
 
         const abortMsg: Message = {
@@ -676,9 +732,13 @@ async function* queryLoop(
         return { reason: 'user_aborted' };
       }
 
-      params.ui?.onMessage(params.sessionID, {
-        role: 'system',
-        content: `❌ **LLM API Error**\n\n\`\`\`\n${errorMessage}\n\`\`\`\n\nPlease check your API configuration in \`~/${CONFIG_DIR_NAME}/settings.json\`.`,
+      emitToUi({
+        type: 'message',
+        sessionId: params.sessionID,
+        data: {
+          role: 'system',
+          content: `❌ **LLM API Error**\n\n\`\`\`\n${errorMessage}\n\`\`\`\n\nPlease check your API configuration in \`~/${CONFIG_DIR_NAME}/settings.json\`.`,
+        } as MessageData,
       });
 
       const errorToolResults: Message[] = [];
@@ -710,7 +770,7 @@ async function* queryLoop(
     }
 
     if (!needsFollowUp) {
-      params.ui?.onAIEnd(params.sessionID);
+      emitToUi({ type: 'aiEnd', sessionId: params.sessionID });
       messages.push(...assistantMessages);
       return { reason: 'completed' };
     }
@@ -719,7 +779,7 @@ async function* queryLoop(
     let shouldPreventContinuation = false;
 
     const { runTools } = await import('./tools/RunTools.js');
-    for await (const update of runTools(params.sessionID, toolUseBlocks, toolUseContext, params.ui)) {
+    for await (const update of runTools(params.sessionID, toolUseBlocks, toolUseContext)) {
       if (update.message) {
         yield update.message;
         toolResults.push(update.message);
@@ -772,9 +832,10 @@ async function* queryLoop(
         timestamp: Date.now(),
       };
 
-      params.ui?.onMessage(params.sessionID, {
-        role: 'system',
-        content: interruptedMessage.content
+      emitToUi({
+        type: 'message',
+        sessionId: params.sessionID,
+        data: { role: 'system', content: interruptedMessage.content } as MessageData,
       });
 
       yield interruptedMessage;
@@ -785,13 +846,13 @@ async function* queryLoop(
 
     const nextTurnCount = turnCount + 1;
     if (maxTurns && nextTurnCount > maxTurns) {
-      params.ui?.onAIEnd(params.sessionID);
+      emitToUi({ type: 'aiEnd', sessionId: params.sessionID });
       messages.push(...assistantMessages, ...toolResults);
       yield { type: 'attachment', attachment: { type: 'max_turns_reached' } } as Message;
       return { reason: 'max_turns' as const };
     }
 
-    params.ui?.onAIEnd(params.sessionID);
+    emitToUi({ type: 'aiEnd', sessionId: params.sessionID });
 
     const nextTracking: AutoCompactTrackingState = {
       consecutiveFailures: state.autoCompactTracking?.consecutiveFailures ?? 0,

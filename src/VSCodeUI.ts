@@ -1,16 +1,19 @@
 /**
- * VSCodeUI - Singleton 管理 VSCode UI 交互
- * 实现 AssistantUI 接口，负责 core 层和 webview 之间的通信桥接
+ * VSCodeUI - VS Code 侧 UI 实现（阶段 1 过渡形态）
  *
- * 宿主共享模块（VSCodeUI / ElectronUI 共用）已迁到 src/host/ui/：
+ * 阶段 1 起 core 不再 import UI：本类在构造时把 CoreEventHandlers / CoreRequestHandlers
+ * 两张映射表注册到总线（穷尽检查由映射类型保证），阶段 5 将与本文件的宿主部分
+ * 拆开合并为 WebViewUI。
+ *
+ * 宿主共享模块（VSCodeUI / ElectronUI 共用）位于 src/host/ui/：
  *   - types.ts / userChoice.ts / toolHandler.ts / webviewMessageHandler.ts / spinDesignHtml.ts
  * 本文件仅保留 VS Code 专有部分（webview 生命周期、虚拟文档、面板等）：
  *   - documentManager.ts / diffUris.ts
  */
 
 import * as vscode from 'vscode';
-import type { AssistantUI } from './core/AssistantUI.js';
-import type { MessageData, StreamMessageData, StreamEndData } from './core/AssistantUI.js';
+import type { MessageData, StreamMessageData, StreamEndData } from './core/types.js';
+import type { CoreEventHandlers, CoreRequestHandlers, AssistantEventBus } from './core/AssistantEventBus.js';
 import type { ToolProgressData } from './core/tools/Tool.js';
 import type { WebviewMessage } from './core/webviewTypes.js';
 import type { UIHost } from './host/UIHost.js';
@@ -18,7 +21,6 @@ import { getMermaidErrorHtml, getMermaidPreviewHtml } from './host/mermaidHtml.j
 import { tt, getSystemLocale } from './core/i18n.js';
 import { readUiLanguageSync } from './core/history/Config.js';
 import { MERMAID_PANEL_ID, SPIN_DESIGN_PANEL_ID } from './config/project.js';
-import { replayMessagesToUI } from './core/utils/replayMessages.js';
 import type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent } from './host/ui/types.js';
 import { UserChoiceManager } from './host/ui/userChoice.js';
 import { DocumentManager } from './VSCodeUI/documentManager.js';
@@ -36,7 +38,7 @@ import { shouldOpenSpinDesign } from './core/history/spinCommand.js';
 
 export type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent };
 
-export class VSCodeUI implements AssistantUI {
+export class VSCodeUI {
   private static outputChannel: vscode.OutputChannel | undefined;
   private static instance: VSCodeUI | undefined;
   private webviewView: vscode.WebviewView | undefined;
@@ -58,7 +60,7 @@ export class VSCodeUI implements AssistantUI {
   private webviewMessageHandler: WebviewMessageHandler;
   private extensionUri: vscode.Uri = vscode.Uri.file('');
 
-  constructor() {
+  constructor(bus: AssistantEventBus) {
     // 先初始化子模块（需要引用 postToWebview 等方法）
     this.userChoiceManager = new UserChoiceManager({
       outputChannel: VSCodeUI.outputChannel,
@@ -72,9 +74,8 @@ export class VSCodeUI implements AssistantUI {
     this.documentManager = new DocumentManager(VSCodeUI.outputChannel);
 
     this.toolHandler = new ToolHandler({
-      outputChannel: VSCodeUI.outputChannel,
+      host: this.buildHost(),
       postToWebview: (sessionId, message) => this.postToWebview(sessionId, message),
-      sessionAgentModes: this.sessionAgentModes,
       userChoiceManager: this.userChoiceManager,
     });
 
@@ -83,8 +84,7 @@ export class VSCodeUI implements AssistantUI {
       postToWebview: (sessionId, message) => this.postToWebview(sessionId, message),
       postConversationLoaded: (sessionId, conversation, extra) =>
         this.postConversationLoaded(sessionId, conversation, extra),
-      setTitle: (sessionID, title) => this.setTitle(sessionID, title),
-      sessionAgentModes: this.sessionAgentModes,
+      setTitle: (sessionID, title) => this.onTitleChanged(sessionID, title),
       userChoiceManager: this.userChoiceManager,
     });
 
@@ -97,6 +97,62 @@ export class VSCodeUI implements AssistantUI {
     // 由 restoreConversationEngine 从磁盘重建引擎。
     setSessionIdleCloseHandler((sessionId) => releaseSessionResources(sessionId));
     setSessionWaitingForUserProvider((sessionId) => this.hasPendingUserChoice(sessionId));
+
+    // ===================== 总线注册（阶段 1.5/1.6）=====================
+    // 两张映射表一次性注册；漏写任何一个 CoreEvent['type'] / CoreRequest['type']
+    // 都会编译报错（映射类型穷尽检查）。
+    bus.onCoreEvents(this.buildCoreEventHandlers());
+    bus.onCoreRequests(this.buildCoreRequestHandlers());
+  }
+
+  /** core → UI 单向事件的处理器表（原 AssistantUI 方法搬到这里，命名去 on 前缀） */
+  private buildCoreEventHandlers(): CoreEventHandlers {
+    return {
+      // ===== 渲染 =====
+      message: (e) => this.onMessage(e.sessionId, e.data),
+      streamMessage: (e) => this.onStreamMessage(e.sessionId, e.data),
+      streamEnd: (e) => this.onStreamEnd(e.sessionId, e.data),
+      toolCall: (e) => this.onToolCall(e.sessionId, e.toolUseId, e.toolName),
+      toolResult: (e) => this.onToolResult(e.sessionId, e.toolUseId, e.toolName, e.output, e.status),
+      toolArgsUpdated: (e) => this.onToolArgsUpdated(e.sessionId, e.toolUseId, e.args),
+      toolProgress: (e) => this.onToolProgress(e.sessionId, e.toolUseId, e.progress),
+      aiBegin: (e) => this.onAIBegin(e.sessionId),
+      aiEnd: (e) => this.onAIEnd(e.sessionId),
+      clearMessages: (e) => this.clearMessages(e.sessionId),
+
+      // ===== 控制面 =====
+      queryBegin: (e) => this.onQueryBegin(e.sessionId),
+      queryEnd: (e) => this.onQueryEnd(e.sessionId),
+      titleChanged: (e) => this.onTitleChanged(e.sessionId, e.title),
+      sessionCreated: (e) => this.onSessionCreated(e.sessionId),
+      conversationListChanged: () => this.scheduleConversationListRefresh(),
+      spinDesignDataChanged: () => void this.refreshSpinDesign(),
+      compactBegin: (e) => this.onCompressProgress(e.sessionId, 'start'),
+      compactEnd: (e) =>
+        this.onCompressProgress(
+          e.sessionId,
+          e.result.status === 'complete' ? 'complete' : 'error',
+          e.result.status === 'complete' ? e.result.postCompactTokenCount ?? undefined : undefined,
+        ),
+      commandDispatched: (e) => void this.onCommandSend(e.commandName, e.args, e.sessionId),
+      sessionConfigChanged: () => {
+        // 阶段 2 落地：core 广播会话配置变化 → 多端同步回推 webview。
+        // 当前 core 还不产生该事件（配置持久化仍在 webviewMessageHandler 内联）。
+      },
+    };
+  }
+
+  /** core → UI 请求的处理器表 */
+  private buildCoreRequestHandlers(): CoreRequestHandlers {
+    return {
+      toolPermission: (r) =>
+        this.onPreToolCall(r.sessionId, r.toolUseId, r.toolName, r.permResult, r.displayArgs),
+      userChoice: (r) =>
+        this.requestUserChoice(r.sessionId, {
+          ...r.options,
+          beforeContent: r.options.beforeContent ?? undefined,
+        }),
+    };
   }
 
   /** 指定会话是否正在等待用户选择/确认（ask user 提问或权限确认） */
@@ -462,21 +518,27 @@ export class VSCodeUI implements AssistantUI {
   }
 
   /**
-   * 获取当前的活跃 session ID（从内存缓存读取）
+   * 获取当前的活跃 session ID。
+   * 「哪个会话在前台」是 UI 自己的状态（第 15.6 节）：委托 webviewMessageHandler
+   * 维护的 trackedActiveSessionId，不再读写 core 的全局缓存。
    */
   private getActiveSessionIdInternal(): string | undefined {
-    try {
-      const configModule = require('./core/history/Config.js') as typeof import('./core/history/Config.js');
-      return configModule.getActiveSessionId();
-    } catch {
-      return undefined;
-    }
+    return this.webviewMessageHandler.getActiveSessionId();
   }
 
   static getInstance(): VSCodeUI {
     if (!VSCodeUI.instance) {
-      VSCodeUI.instance = new VSCodeUI();
+      throw new Error('VSCodeUI not initialized. Call VSCodeUI.create(bus) first.');
     }
+    return VSCodeUI.instance;
+  }
+
+  /** 创建全局唯一实例并注册总线处理器 */
+  static create(bus: AssistantEventBus): VSCodeUI {
+    if (VSCodeUI.instance) {
+      throw new Error('VSCodeUI already created.');
+    }
+    VSCodeUI.instance = new VSCodeUI(bus);
     return VSCodeUI.instance;
   }
 
@@ -520,6 +582,11 @@ export class VSCodeUI implements AssistantUI {
   setShowDiffInVirtualDocumentCallback(callback: (event: ShowDiffInVirtualDocumentEvent) => void | Promise<void>): void {
     this.documentManager.setShowDiffCallback(callback);
     this.userChoiceManager.setShowDiffCallback(callback);
+  }
+
+  /** 当前活跃会话 ID（UI 自己维护的状态，供宿主注入 sessionIdle provider 使用） */
+  getActiveSessionId(): string | undefined {
+    return this.webviewMessageHandler.getActiveSessionId();
   }
 
   /**
@@ -586,7 +653,7 @@ export class VSCodeUI implements AssistantUI {
     this.userChoiceManager.resetPreviewState();
   }
 
-  // ===================== AssistantUI 接口实现 =====================
+  // ===================== CoreEvent 处理器（原 AssistantUI 实现） =====================
 
   /**
    * 设置子会话的 agent mode
@@ -597,18 +664,20 @@ export class VSCodeUI implements AssistantUI {
   }
 
   /**
-   * 工具调用开始前
+   * 工具调用开始前（收到 CoreRequest.toolPermission）：
+   * 显示工具卡片；permResult.behavior === 'ask' 时弹确认框并回传用户选择。
+   * 权限决策已由 core 的 PermissionPolicy 加工完，这里只做展示。
    */
   async onPreToolCall(
     sessionID: string,
     toolUseId: string,
     toolName: string,
-    args: Record<string, any>,
-    tool: unknown,
+    permResult: import('./core/tools/Tool.js').PermissionResult,
+    displayArgs: Record<string, unknown>,
   ): Promise<import('./core/tools/Tool.js').PermissionResult> {
     // 进入工具阶段（包括等待用户授权/权限检查），thinking 动画应让位于工具卡片
     this.sessionUi.beginToolPhase(sessionID);
-    return this.toolHandler.onPreToolCall(sessionID, toolUseId, toolName, args, tool);
+    return this.toolHandler.onPreToolCall(sessionID, toolUseId, toolName, permResult, displayArgs);
   }
 
   /**
@@ -630,7 +699,7 @@ export class VSCodeUI implements AssistantUI {
   /**
    * 更新已存在工具卡片的参数（如 WebSearch 卡片补全搜索词/URL）
    */
-  updateToolArgs(sessionID: string, toolUseId: string, args: Record<string, unknown>): void {
+  onToolArgsUpdated(sessionID: string, toolUseId: string, args: Record<string, unknown>): void {
     this.postToWebview(sessionID, {
       type: 'updateToolArgs',
       toolCallId: toolUseId,
@@ -735,24 +804,13 @@ export class VSCodeUI implements AssistantUI {
   }
 
   /**
-   * 通知用户中止操作
+   * 设置当前对话标题（原 setTitle，重命名为 onTitleChanged）
    */
-  onAbort(_sessionID: string): void {
-    this.webviewView?.webview.postMessage({
-      type: 'abort',
-    });
-  }
-
-  /**
-   * 设置当前对话标题
-   */
-  setTitle(sessionID: string, title: string): void {
+  onTitleChanged(sessionID: string, title: string): void {
     this.postToWebview(sessionID, {
       type: 'setTitle',
       title,
     });
-
-    // NodeRegistry (Redis-based) removed
   }
 
   /**
@@ -767,6 +825,7 @@ export class VSCodeUI implements AssistantUI {
   /**
    * 节流刷新对话列表：消息持久化在 appendMessage 中异步完成，
    * 延迟 500ms 拉取可保证拿到包含最新 messageCount 的列表。
+   * core 的 conversationListChanged 事件统一走这里（UI 决定节流策略）。
    */
   scheduleConversationListRefresh(): void {
     if (this.conversationListRefreshTimer) clearTimeout(this.conversationListRefreshTimer);
@@ -780,6 +839,7 @@ export class VSCodeUI implements AssistantUI {
    * 刷新对话列表并推送到 webview
    * 用于子代理创建等场景：新子会话的 meta.json 创建后，通知 webview 重新加载
    * 对话列表，使子对话能在树形结构中正确显示并关联到主对话。
+   * （阶段 3 起该方法迁到 ConversationManager。）
    */
   async refreshConversationList(): Promise<void> {
     try {
@@ -891,7 +951,7 @@ export class VSCodeUI implements AssistantUI {
   }
 
   /**
-   * 通知 UI 显示或清除排队消息状态
+   * 通知 UI 显示或清除排队消息状态（供 webviewMessageHandler 的 queue 路径调用）
    */
   onQueuedMessage(sessionID: string, content: string | null, images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>, fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean }): void {
     this.postToWebview(sessionID, content
@@ -908,7 +968,8 @@ export class VSCodeUI implements AssistantUI {
   }
 
   /**
-   * 命令发送回调
+   * 命令发送回调（CoreEvent.commandDispatched 的处理方）。
+   * 唯一调用方（CommandDispatcher）丢弃返回值，改为 Promise<void>。
    */
   async onCommandSend(commandName: string, args: string, sessionId: string): Promise<boolean> {
     if (commandName === 'clear') {
@@ -962,55 +1023,7 @@ export class VSCodeUI implements AssistantUI {
   }
 
   /**
-   * 展开压缩的对话：从归档读取消息推给 webview 显示，不动 JSONL
-   * LLM 仍然只看到压缩后的消息，展开仅影响 webview 显示
-   *
-   * 归档契约（见 core/compact/compact.ts）：
-   * 归档 = 被压缩消息 + 摘要，保留的最近消息（retainedMessages）不入归档。
-   * replayMessagesToUI 第一步是 clearMessages，因此展开时必须把 retainedMessages
-   * 与归档一起重推；否则压缩后的最近消息会从 UI 上消失。
-   */
-  async onExpandCompact(sessionID: string): Promise<void> {
-    try {
-      const { loadCompactArchive } = await import('./core/history/Conversation.js');
-
-      const originalMessages = await loadCompactArchive(sessionID);
-      if (!originalMessages || originalMessages.length === 0) {
-        return;
-      }
-
-      const { loadConversation } = await import('./core/history/index.js');
-      const conversation = await loadConversation(sessionID);
-
-      // 压缩摘要：新归档自带；旧归档（不含摘要）需要从压缩后的主 JSONL 补齐
-      const compressedSummaries = conversation.messages.filter(
-        m => m.type === 'user' && m.isCompactSummary === true
-      );
-      // 当前未被压缩部分（保留的最近消息）；compact_boundary 是 system 消息，已被类型过滤排除
-      const retainedMessages = conversation.messages.filter(
-        m => (m.type === 'user' && m.isCompactSummary !== true) || m.type === 'assistant'
-      );
-      const summaryCount = originalMessages.filter(
-        m => m.type === 'user' && m.isCompactSummary === true
-      ).length;
-
-      // 顺序：归档消息 -> （旧归档补齐的）压缩摘要 -> 当前未被压缩部分
-      const messagesToDisplay = summaryCount === 0 && compressedSummaries.length > 0
-        ? [...originalMessages, ...compressedSummaries, ...retainedMessages]
-        : [...originalMessages, ...retainedMessages];
-
-      replayMessagesToUI(this, sessionID, messagesToDisplay);
-
-      // 通知 webview 展开完成
-      this.postToWebview(sessionID, { type: 'expandCompactDone' });
-
-    } catch (err) {
-      VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] Failed to expand compact for ${sessionID}: ${err}`);
-    }
-  }
-
-  /**
-   * 请求用户选择或确认
+   * 请求用户选择或确认（CoreRequest.userChoice 的处理方）
    */
   async requestUserChoice(sessionID: string, options: {
     toolName: string;

@@ -9,7 +9,15 @@
 
 import type { BuiltinCommandDefinition } from '../builtinCommands.js';
 import type { CommandContext } from '../builtinCommands.js';
+import type { CoreEvent } from '../../AssistantEventBus.js';
+import { requireEventBus } from '../../AssistantEventBus.js';
+import type { MessageData } from '../../types.js';
 import { tt } from '../../i18n.js';
+
+/** core → UI 单向事件的发送侧封装（spin 命令统一走它） */
+function emitToUi(event: CoreEvent): void {
+  requireEventBus().emitToUi(event);
+}
 
 export function getSpinCommandDefinition(): BuiltinCommandDefinition {
   return {
@@ -17,7 +25,7 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
     description: () => tt('执行 Spin 任务', 'Execute Spin tasks'),
     aliases: ['sprint'],
     execute: async (args: string, context: CommandContext) => {
-      const { sessionId, cwd, ui } = context;
+      const { sessionId, cwd } = context;
       const trimmed = args.trim() || 'auto';
 
       if (trimmed === 'design') {
@@ -58,9 +66,10 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
             'spin.json is invalid, please check the file content.'
           );
         }
-        ui.onMessage(sessionId, {
-          role: 'user',
-          content: errorMsg,
+        emitToUi({
+          type: 'message',
+          sessionId,
+          data: { role: 'user', content: errorMsg } as MessageData,
         });
         return '';
       }
@@ -71,9 +80,10 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
           '未找到 spin.json 设计文件，请先创建并保存 Spin 设计。',
           'spin.json design file not found, please create and save a Spin design first.'
         );
-        ui.onMessage(sessionId, {
-          role: 'user',
-          content: errorMsg,
+        emitToUi({
+          type: 'message',
+          sessionId,
+          data: { role: 'user', content: errorMsg } as MessageData,
         });
         return '';
       }
@@ -86,9 +96,10 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
       const currentCfg = await readSpinJson(cwd);
       if (!currentCfg) {
         const errorMsg = tt('无法读取 spin.json。', 'Cannot read spin.json.');
-        ui.onMessage(sessionId, {
-          role: 'user',
-          content: errorMsg,
+        emitToUi({
+          type: 'message',
+          sessionId,
+          data: { role: 'user', content: errorMsg } as MessageData,
         });
         return '';
       }
@@ -104,9 +115,10 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
           uuid: `user_${Date.now()}`,
           timestamp: Date.now(),
         };
-        ui.onMessage(sessionId, {
-          role: 'user',
-          content: '/spin run',
+        emitToUi({
+          type: 'message',
+          sessionId,
+          data: { role: 'user', content: '/spin run' } as MessageData,
         });
         engine = new QueryEngine(sessionId, {
           cwd,
@@ -114,11 +126,10 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
           getAppState: () => ({}),
           setAppState: () => {},
           initialMessages: [userMsg],
-          ui: ui as any,
           title: spinTitle,
           workMode: 'spin',
         });
-        ui.setTitle(sessionId, spinTitle);
+        emitToUi({ type: 'titleChanged', sessionId, title: spinTitle });
       }
       // 确保引擎为 spin 模式（无论是否新创建的）
       (engine as any).workMode = 'spin';
@@ -129,7 +140,7 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
       // 启动 spinLoop
       const { spinLoop } = await import('../../spin/Loop.js');
       try {
-        await spinLoop(engine, cwd, ui, sessionId);
+        await spinLoop(engine, cwd, sessionId);
       } finally {
         // spinLoop 结束后恢复为 normal 模式
         (engine as any).workMode = 'normal';
@@ -137,7 +148,7 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
         await (engine as any).flush().catch(() => {});
         // 刷新已打开的 Spin 设计器，避免其旧缓存覆盖执行结果
         try {
-          await ui.refreshSpinDesign();
+          emitToUi({ type: 'spinDesignDataChanged' });
         } catch {
           // 刷新失败不影响 /spin 命令返回
         }

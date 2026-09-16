@@ -19,7 +19,8 @@ import type { ChatViewManager } from './ChatViewManager.js';
 
 /** 项目根目录（dist-electron 的上一级，与 main.ts 的 APP_ROOT 一致） */
 const APP_ROOT = path.resolve(__dirname, '..');
-import type { AssistantUI, MessageData, StreamMessageData, StreamEndData } from '../src/core/AssistantUI.js';
+import type { MessageData, StreamMessageData, StreamEndData } from '../src/core/types.js';
+import type { CoreEventHandlers, CoreRequestHandlers, AssistantEventBus } from '../src/core/AssistantEventBus.js';
 import type { ToolProgressData } from '../src/core/tools/Tool.js';
 import type { WebviewMessage } from '../src/core/webviewTypes.js';
 import type { UIHost } from '../src/host/UIHost.js';
@@ -27,7 +28,6 @@ import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidH
 import { tt, getSystemLocale } from '../src/core/i18n.js';
 import { UserChoiceManager } from '../src/host/ui/userChoice.js';
 import { ToolHandler } from '../src/host/ui/toolHandler.js';
-import { buildEditDiffHunks } from '../src/core/utils/editDiff.js';
 import { WebviewMessageHandler } from '../src/host/ui/webviewMessageHandler.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
 import { isImageFile } from '../src/host/imageFiles.js';
@@ -38,7 +38,7 @@ import { pushToolProgress, inheritAgentMode } from '../src/host/queryActivity.js
 import { SessionUiState } from '../src/host/SessionUiState.js';
 import { shouldOpenSpinDesign } from '../src/core/history/spinCommand.js';
 
-export class ElectronUI implements AssistantUI {
+export class ElectronUI {
   private static instance: ElectronUI | undefined;
   private mainWindow: BrowserWindow | undefined;
   private sidebarView: WebContentsView | undefined;
@@ -66,7 +66,7 @@ export class ElectronUI implements AssistantUI {
   /** 当前打开的 Spin 设计窗口（用于 SpinLoop 完成后刷新其数据） */
   private spinDesignWindow: BrowserWindowCtor | undefined;
 
-  private constructor() {
+  private constructor(bus: AssistantEventBus) {
     const outputChannel = {
       appendLine: (line: string) => this.log(line),
     };
@@ -82,9 +82,8 @@ export class ElectronUI implements AssistantUI {
     });
 
     this.toolHandler = new ToolHandler({
-      outputChannel,
+      host: this.buildHost(),
       postToWebview: (sessionId, message) => this.postToWebview(sessionId, message),
-      sessionAgentModes: this.sessionAgentModes,
       userChoiceManager: this.userChoiceManager,
     });
 
@@ -94,20 +93,81 @@ export class ElectronUI implements AssistantUI {
       postConversationLoaded: (sessionId, conversation, extra) =>
         this.postConversationLoaded(sessionId, conversation, extra),
       setTitle: (sessionID, title) => this.setTitle(sessionID, title),
-      sessionAgentModes: this.sessionAgentModes,
       userChoiceManager: this.userChoiceManager,
       // 用户响应选择后刷新侧栏：黄色流水灯恢复为紫色/消失
       onUserChoiceResponded: () => this.refreshSidebarThrottled(),
     });
 
     this.userChoiceManager.initUserChoiceQueue();
+
+    // ===================== 总线注册（阶段 1.5/1.6）=====================
+    bus.onCoreEvents(this.buildCoreEventHandlers());
+    bus.onCoreRequests(this.buildCoreRequestHandlers());
   }
 
   static getInstance(): ElectronUI {
     if (!ElectronUI.instance) {
-      ElectronUI.instance = new ElectronUI();
+      throw new Error('ElectronUI not initialized. Call ElectronUI.create(bus) first.');
     }
     return ElectronUI.instance;
+  }
+
+  /** 创建全局唯一实例并注册总线处理器 */
+  static create(bus: AssistantEventBus): ElectronUI {
+    if (ElectronUI.instance) {
+      throw new Error('ElectronUI already created.');
+    }
+    ElectronUI.instance = new ElectronUI(bus);
+    return ElectronUI.instance;
+  }
+
+  /** core → UI 单向事件的处理器表（原 AssistantUI 方法搬到这里，命名去 on 前缀） */
+  private buildCoreEventHandlers(): CoreEventHandlers {
+    return {
+      // ===== 渲染 =====
+      message: (e) => this.onMessage(e.sessionId, e.data),
+      streamMessage: (e) => this.onStreamMessage(e.sessionId, e.data),
+      streamEnd: (e) => this.onStreamEnd(e.sessionId, e.data),
+      toolCall: (e) => this.onToolCall(e.sessionId, e.toolUseId, e.toolName),
+      toolResult: (e) => this.onToolResult(e.sessionId, e.toolUseId, e.toolName, e.output, e.status),
+      toolArgsUpdated: (e) => this.onToolArgsUpdated(e.sessionId, e.toolUseId, e.args),
+      toolProgress: (e) => this.onToolProgress(e.sessionId, e.toolUseId, e.progress),
+      aiBegin: (e) => this.onAIBegin(e.sessionId),
+      aiEnd: (e) => this.onAIEnd(e.sessionId),
+      clearMessages: (e) => this.clearMessages(e.sessionId),
+
+      // ===== 控制面 =====
+      queryBegin: (e) => this.onQueryBegin(e.sessionId),
+      queryEnd: (e) => this.onQueryEnd(e.sessionId),
+      titleChanged: (e) => this.setTitle(e.sessionId, e.title),
+      sessionCreated: (e) => this.onSessionCreated(e.sessionId),
+      conversationListChanged: () => this.scheduleConversationListRefresh(),
+      spinDesignDataChanged: () => void this.refreshSpinDesign(),
+      compactBegin: (e) => this.onCompressProgress(e.sessionId, 'start'),
+      compactEnd: (e) =>
+        this.onCompressProgress(
+          e.sessionId,
+          e.result.status === 'complete' ? 'complete' : 'error',
+          e.result.status === 'complete' ? e.result.postCompactTokenCount ?? undefined : undefined,
+        ),
+      commandDispatched: (e) => void this.onCommandSend(e.commandName, e.args, e.sessionId),
+      sessionConfigChanged: () => {
+        // 阶段 2 落地：core 广播会话配置变化 → 多端同步回推 webview。
+      },
+    };
+  }
+
+  /** core → UI 请求的处理器表 */
+  private buildCoreRequestHandlers(): CoreRequestHandlers {
+    return {
+      toolPermission: (r) =>
+        this.onPreToolCall(r.sessionId, r.toolUseId, r.toolName, r.permResult, r.displayArgs),
+      userChoice: (r) =>
+        this.requestUserChoice(r.sessionId, {
+          ...r.options,
+          beforeContent: r.options.beforeContent ?? undefined,
+        }),
+    };
   }
 
   // ===================== 宿主接线 =====================
@@ -196,14 +256,13 @@ export class ElectronUI implements AssistantUI {
     }, 500);
   }
 
-  /** 获取当前活跃 session ID（从内存缓存读取） */
+  /**
+   * 获取当前活跃 session ID。
+   * 「哪个会话在前台」是 UI 自己的状态（第 15.6 节）：以 ChatViewManager 为准
+   * （切换已加载的视图时不会再发 setActiveSessionId）。
+   */
   private getActiveSessionIdInternal(): string | undefined {
-    try {
-      const configModule = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
-      return configModule.getActiveSessionId();
-    } catch {
-      return undefined;
-    }
+    return this.chatViews?.getActiveSessionId() ?? undefined;
   }
 
   private log(...args: unknown[]): void {
@@ -600,20 +659,25 @@ export class ElectronUI implements AssistantUI {
     }
   }
 
-  // ===================== AssistantUI 接口实现 =====================
+  // ===================== CoreEvent / CoreRequest 处理器（原 AssistantUI 实现）=====================
 
   onSetAgentMode(parentSessionId: string, childSessionId: string): void {
     inheritAgentMode(this.sessionAgentModes, parentSessionId, childSessionId);
   }
 
+  /**
+   * 工具调用开始前（收到 CoreRequest.toolPermission）：
+   * 显示工具卡片；permResult.behavior === 'ask' 时弹确认框并回传用户选择。
+   * 权限决策已由 core 的 PermissionPolicy 加工完，这里只做展示。
+   */
   async onPreToolCall(
     sessionID: string,
     toolUseId: string,
     toolName: string,
-    args: Record<string, any>,
-    tool: unknown,
+    permResult: import('../src/core/tools/Tool.js').PermissionResult,
+    displayArgs: Record<string, unknown>,
   ): Promise<import('../src/core/tools/Tool.js').PermissionResult> {
-    return this.toolHandler.onPreToolCall(sessionID, toolUseId, toolName, args, tool);
+    return this.toolHandler.onPreToolCall(sessionID, toolUseId, toolName, permResult, displayArgs);
   }
 
   onToolCall(sessionID: string, toolUseId: string, toolName: string): void {
@@ -624,7 +688,8 @@ export class ElectronUI implements AssistantUI {
     this.toolHandler.onToolResult(sessionID, toolUseId, toolName, output, status);
   }
 
-  updateToolArgs(sessionID: string, toolUseId: string, args: Record<string, unknown>): void {
+  /** 原 updateToolArgs，重命名为 onToolArgsUpdated */
+  onToolArgsUpdated(sessionID: string, toolUseId: string, args: Record<string, unknown>): void {
     this.postToWebview(sessionID, {
       type: 'updateToolArgs',
       toolCallId: toolUseId,
@@ -703,10 +768,6 @@ export class ElectronUI implements AssistantUI {
     for (const sessionId of this.chatViews.getLoadedSessionIds()) {
       this.setEnableAbortForSession(sessionId, this.hasActiveQueryInScope(sessionId));
     }
-  }
-
-  onAbort(_sessionID: string): void {
-    this.sendToRenderer({ type: 'abort' });
   }
 
   setTitle(sessionID: string, title: string): void {
@@ -846,125 +907,6 @@ export class ElectronUI implements AssistantUI {
 
   onCompressProgress(sessionID: string, status: 'start' | 'complete' | 'error', postCompactTokenCount?: number): void {
     this.postToWebview(sessionID, { type: 'compressProgress', status, postCompactTokenCount });
-  }
-
-  async onExpandCompact(sessionID: string): Promise<void> {
-    this.log(`Expanding compact for session: ${sessionID}`);
-    try {
-      const { loadCompactArchive } = await import('../src/core/history/Conversation.js');
-      const originalMessages = await loadCompactArchive(sessionID);
-      if (!originalMessages || originalMessages.length === 0) {
-        return;
-      }
-      const { loadConversation } = await import('../src/core/history/index.js');
-      const conversation = await loadConversation(sessionID);
-      const compressedSummaries = conversation.messages.filter((m: any) =>
-        m.type === 'user' && (m as any).isCompactSummary === true
-      );
-      const retainedMessages = conversation.messages.filter((m: any) =>
-        (m.type === 'user' || m.type === 'assistant')
-        && !(m as any).isCompactSummary
-        && !((m as any).subtype === 'compact_boundary')
-      );
-      const summaryCount = originalMessages.filter((m: any) => (m as any).isCompactSummary === true).length;
-      const messagesToDisplay = summaryCount === 0 && compressedSummaries.length > 0
-        ? [...originalMessages, ...compressedSummaries, ...retainedMessages]
-        : [...originalMessages, ...retainedMessages];
-
-      this.postToWebview(sessionID, { type: 'clearMessages' });
-
-      const toolResultMap = new Map<string, { content: string; exitCode: number }>();
-      for (const msg of messagesToDisplay) {
-        if (msg.type === 'user' && Array.isArray((msg as any).message?.content)) {
-          const toolResults = ((msg as any).message.content as any[]).filter((block: any) => block.type === 'tool_result');
-          for (const result of toolResults) {
-            const r = result as { tool_use_id?: string; is_canceled?: boolean; content?: string; exit_code?: number };
-            if (r.tool_use_id && r.is_canceled !== true) {
-              toolResultMap.set(r.tool_use_id, { content: r.content || '', exitCode: r.exit_code ?? 0 });
-            }
-          }
-        }
-      }
-
-      for (const msg of messagesToDisplay) {
-        const m = msg as any;
-        if (m.isMeta || m.silent) continue;
-        if (m.type === 'system') {
-          if (m.subtype === 'compact_boundary') continue;
-          this.postToWebview(sessionID, { type: 'addMessage', role: 'system', content: m.content });
-        } else if (m.type === 'user') {
-          const content = typeof m.message?.content === 'string' ? m.message.content : undefined;
-          if (content !== undefined) {
-            const rawFilePath = m.filePath || m._meta?.filePath;
-            const rawFileSelectedLines = m.fileSelectedLines || m._meta?.fileSelectedLines;
-            const showFileInfo = !m.fileHidden && !!rawFilePath;
-            const replayMeta = m._meta ? { ...m._meta } : undefined;
-            if (replayMeta) {
-              if (showFileInfo) {
-                replayMeta.filePath = rawFilePath;
-                if (rawFileSelectedLines) replayMeta.fileSelectedLines = rawFileSelectedLines;
-              } else {
-                delete replayMeta.filePath;
-                delete replayMeta.fileSelectedLines;
-                if (!m.fromSubAgent) delete replayMeta.param;
-              }
-            }
-            this.postToWebview(sessionID, {
-              type: 'addMessage',
-              role: 'user',
-              content,
-              filePath: showFileInfo ? rawFilePath : undefined,
-              fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
-              isCompactSummary: m.isCompactSummary === true,
-              isFromAgent: m.fromSubAgent === true,
-              meta: replayMeta,
-            });
-          }
-        } else if (m.type === 'assistant' && Array.isArray(m.message?.content)) {
-          for (const block of m.message.content) {
-            const b = block as any;
-            if (b.type === 'thinking') {
-              this.postToWebview(sessionID, { type: 'addMessage', role: 'thinking', content: b.thinking || '' });
-            } else if (b.type === 'text') {
-              this.postToWebview(sessionID, { type: 'addMessage', role: 'assistant', content: b.text || '' });
-            } else if (b.type === 'tool_use') {
-              const toolUseId = b.id || '';
-              const result = toolResultMap.get(toolUseId);
-              const toolArgs: Record<string, unknown> = b.input ? { ...b.input } : {};
-              const blockMeta = b._meta as Record<string, unknown> | undefined;
-              if (b.name === 'Edit' && typeof blockMeta?.beforeContent === 'string' && typeof blockMeta?.afterContent === 'string') {
-                // Edit 只发送 diff 相关行
-                toolArgs.diffHunks = buildEditDiffHunks({
-                  beforeContent: blockMeta.beforeContent,
-                  afterContent: blockMeta.afterContent,
-                  startLine: blockMeta.startLine as number | undefined,
-                  endLine: blockMeta.endLine as number | undefined,
-                  replaceAll: Boolean(b.input?.replace_all),
-                });
-              } else if (blockMeta?.beforeContent !== undefined || blockMeta?.afterContent !== undefined) {
-                // Write 等工具保留原有 before/after 字段
-                toolArgs.beforeContent = blockMeta.beforeContent;
-                toolArgs.afterContent = blockMeta.afterContent;
-              }
-              this.postToWebview(sessionID, {
-                type: 'addMessage',
-                role: 'toolcall',
-                content: result?.content || '',
-                param: `⚙️ ${b.name || 'tool'}`,
-                toolName: b.name,
-                toolArgs,
-                toolCallId: toolUseId,
-                status: result ? (result.exitCode !== 0 ? 'fail' : 'success') : 'running',
-              });
-            }
-          }
-        }
-      }
-
-      this.postToWebview(sessionID, { type: 'expandCompactDone' });
-    } catch (err) {
-      this.log(`Failed to expand compact for ${sessionID}: ${err}`);
-    }
   }
 
   async requestUserChoice(sessionID: string, options: {

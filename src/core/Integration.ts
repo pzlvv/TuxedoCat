@@ -4,12 +4,11 @@
 
 import { QueryEngine, getSessionEngine } from './QueryEngine.js';
 import { getAllTools } from './tools/index.js';
-import type { Message } from './types.js';
+import type { Message, MessageData } from './types.js';
 import type { Tool } from './tools/Tool.js';
 import type { PromptPresetId } from './prompt/PromptPreset.js';
 import type { LLMConfig } from './llm/config.js';
-import type { AssistantUI } from './AssistantUI.js';
-import { requireGlobalUI } from './AssistantUI.js';
+import { requireEventBus, type CoreEvent } from './AssistantEventBus.js';
 import { logger } from './Logger.js';
 import { setProjectRootProvider, updateConversationContext } from './history/index.js';
 import { getProjectRoot } from './history/Config.js';
@@ -24,12 +23,9 @@ import { isCompacting, isPendingCompact, markPendingCompact, unmarkPendingCompac
  * 必须在扩展激活时调用一次
  */
 export function initializeSessionQueue(): void {
-  const ui = getUI();
-  const { setGlobalUI } = require('./AssistantUI.js');
-  setGlobalUI(ui);
   sessionQueue.setCallbacks({
-    onDisplayMessage: (sessionId: string, data: import('./AssistantUI.js').MessageData) => {
-      ui.onMessage(sessionId, data);
+    onDisplayMessage: (sessionId: string, data: MessageData) => {
+      emitToUi({ type: 'message', sessionId, data });
     },
     onProcessUserMessage: async () => {
       // 由 sendMessage 路径处理
@@ -39,6 +35,11 @@ export function initializeSessionQueue(): void {
 
 // 当前活跃的查询引擎（用于中止）
 let currentQueryEngine: QueryEngine | null = null;
+
+/** core → UI 单向事件的发送侧封装（Integration 内统一走它，便于 grep 对照第 4.1 节允许清单） */
+function emitToUi(event: CoreEvent): void {
+  requireEventBus().emitToUi(event);
+}
 
 /**
  * 中止当前查询
@@ -206,14 +207,12 @@ export function createEngine(sessionId: string, title: string, role?: string): Q
   // 会话被创建/打开：刷新空闲关闭计时
   noteSessionActivity(sessionId);
 
-  const ui = getUI();
   const engine = new QueryEngine(sessionId, {
     cwd: getProjectRoot(),
     tools: getAllTools() as Tool[],
     getAppState: () => ({}),
     setAppState: () => { },
     initialMessages: [],
-    ui,
     title,
     role: role || 'Master',
   });
@@ -229,7 +228,7 @@ export function createEngine(sessionId: string, title: string, role?: string): Q
 
 /**
  * 初始化历史记录系统
- * 应在扩展激活时调用，传入 VSCodeUI 实例以获取 workspace 路径
+ * 应在扩展激活时调用，传入宿主能力的 getWorkspacePath 以获取工作区路径
  */
 export function initializeHistory(ui?: { getWorkspacePath(): string | undefined }): void {
   if (ui && 'getWorkspacePath' in ui) {
@@ -244,15 +243,8 @@ export function initializeHistory(ui?: { getWorkspacePath(): string | undefined 
 }
 
 /**
- * 获取 UI 实例
- */
-function getUI(): AssistantUI {
-  return requireGlobalUI();
-}
-
-/**
  * 请求用户选择 - 供 RunTools 权限确认和 AskUserQuestion 工具调用
- * onPreToolCall 已经计算了权限结果，这里只处理用户确认对话框
+ * 权限决策已经算完（RunTools / PermissionPolicy），这里只处理用户确认对话框
  *
  * 该函数会将用户选择请求加入全局队列，而不是直接弹出对话框。
  * UserChoiceQueue 维护一个 FIFO 队列 + per-session 状态：
@@ -286,11 +278,10 @@ export async function requestUserChoice(
     contextAfter: permResult.contextAfter as string[] | undefined,
   };
 
-  // 未初始化 UserChoiceQueue 时（宿主未注册队列回调），退化为直接调用 UI，
+  // 未初始化 UserChoiceQueue 时（宿主未注册队列回调），退化为直接发总线请求，
   // 避免入队后没有回调消费队列导致 Promise 永远不会 resolve。
   if (!userChoiceQueue.isInitialized()) {
-    const ui = getUI();
-    return ui.requestUserChoice(sessionID, options);
+    return requireEventBus().request({ type: 'userChoice', sessionId: sessionID, options });
   }
 
   // 将请求加入全局队列，返回的 Promise 会在用户做出选择后 resolve
@@ -310,7 +301,6 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
   }
   // 会话被打开（加载历史 / 恢复引擎）：刷新空闲关闭计时
   noteSessionActivity(sessionID);
-  const ui = getUI();
 
   // 如果调用方没有传入 role，尝试从 meta 中读取
   let conversation: any = undefined;
@@ -331,7 +321,6 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
     setAppState: () => { },
     initialMessages: messages,
     role,
-    ui,
   });
 
   // 为恢复的对话设置 per-session modelConfig（从 meta.json 读取，回退到 settings.json 默认值）
@@ -439,8 +428,6 @@ export async function* sendMessage(
   sessionId: string,
   fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean; thinkingMode?: 'off' | 'low' | 'high' | 'max'; webSearch?: boolean; model?: string; reminder?: string; upstreamSessionId?: string; upstreamHostname?: string; upstreamWorkspace?: string; promptPreset?: PromptPresetId; images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }> },
 ): AsyncGenerator<Message, void, unknown> {
-  const ui = getUI();
-
   // 用户主动发消息：刷新空闲关闭计时（该会话进入工作状态，不会被自动关闭）
   noteSessionActivity(sessionId);
 
@@ -489,7 +476,6 @@ export async function* sendMessage(
   const { dispatch } = await import('./CommandDispatcher.js');
   const dispatchResult = await dispatch(prompt, {
     sessionId,
-    ui,
     cwd: getProjectRoot(),
   });
 
@@ -515,7 +501,6 @@ export async function* sendMessage(
       getAppState: () => ({}),
       setAppState: () => { },
       initialMessages: [userMsg],
-      ui,
       upstreamSessionId: fileInfo?.upstreamSessionId,
       upstreamHostname: fileInfo?.upstreamHostname,
       upstreamWorkspace: fileInfo?.upstreamWorkspace,
@@ -605,12 +590,12 @@ export async function* sendMessage(
   }
 
   // 通知查询开始
-  ui.onQueryBegin(sessionId);
+  emitToUi({ type: 'queryBegin', sessionId });
 
   // 如果是新对话，设置标题（文本优先；仅图片时使用 Image[<width>*<height>]）
   if (isNewSession) {
     const title = buildConversationTitle(prompt, fileInfo?.images);
-    ui.setTitle(sessionId, title);
+    emitToUi({ type: 'titleChanged', sessionId, title });
   }
 
   // 通知 UI 用户消息，包含文件信息（只显示文件名+行号，不显示 "File:" 前缀）
@@ -632,14 +617,18 @@ export async function* sendMessage(
   }
 
   const { text: uiText, images: uiImages } = extractUserContent(userContent);
-  ui.onMessage(sessionId, {
-    role: 'user',
-    content: uiText,
-    images: uiImages.length > 0 ? uiImages : undefined,
-    param,
-    filePath: sendFilePath,
-    fileSelectedLines: sendSelectedLines,
-    meta: Object.keys(uiMeta).length > 0 ? uiMeta : undefined,
+  emitToUi({
+    type: 'message',
+    sessionId,
+    data: {
+      role: 'user',
+      content: uiText,
+      images: uiImages.length > 0 ? uiImages : undefined,
+      param,
+      filePath: sendFilePath,
+      fileSelectedLines: sendSelectedLines,
+      meta: Object.keys(uiMeta).length > 0 ? uiMeta : undefined,
+    },
   });
 
   yield userMsg;
@@ -680,7 +669,7 @@ export async function* sendMessage(
     logger.error('Integration', 'Query error:', error);
     throw error;
   } finally {
-    ui.onQueryEnd(sessionId);
+    emitToUi({ type: 'queryEnd', sessionId });
     currentQueryEngine = null;
   }
 }
@@ -735,9 +724,10 @@ export async function requestCompact(sessionId: string): Promise<void> {
     if (!isPendingCompact(sessionId)) {
       markPendingCompact(sessionId);
       logger.info('Integration', `Session ${sessionId} is busy, compact deferred to next turn`);
-      getUI().onMessage(sessionId, {
-        role: 'system',
-        content: '当前会话正在处理中，压缩已排队，将在本轮对话结束后执行。',
+      emitToUi({
+        type: 'message',
+        sessionId,
+        data: { role: 'system', content: '当前会话正在处理中，压缩已排队，将在本轮对话结束后执行。' },
       });
     } else {
       logger.info('Integration', `Session ${sessionId} already has a pending compact request`);
@@ -751,7 +741,7 @@ export async function requestCompact(sessionId: string): Promise<void> {
     const { compactAndApplyMessages } = await import('./compact/index.js');
 
     // 就地替换消息 + 落盘 + 更新 meta + 通知 UI 重放，统一由 compactAndApplyMessages 处理。
-    const applied = await compactAndApplyMessages(sessionId, engine.getMessages(), { ui: getUI() });
+    const applied = await compactAndApplyMessages(sessionId, engine.getMessages());
 
     // 不满足压缩条件（消息在检查后发生变化）：不做任何处理。
     if (!applied) {
@@ -770,12 +760,12 @@ export async function requestCompact(sessionId: string): Promise<void> {
   } catch (error) {
     logger.error('Integration', `Compact failed for session ${sessionId}:`, error);
 
-    const ui = getUI();
-    ui.onCompressProgress(sessionId, 'error');
+    emitToUi({ type: 'compactEnd', sessionId, result: { status: 'error' } });
 
-    ui.onMessage(sessionId, {
-      role: 'system',
-      content: `压缩失败: ${error instanceof Error ? error.message : String(error)}`,
+    emitToUi({
+      type: 'message',
+      sessionId,
+      data: { role: 'system', content: `压缩失败: ${error instanceof Error ? error.message : String(error)}` },
     });
   } finally {
     // 压缩期间新发的消息只入队不消费（见 compact/state.ts），这里统一唤醒一次，

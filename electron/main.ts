@@ -1506,7 +1506,9 @@ async function checkAndSendLLMConfig(): Promise<void> {
 
 /** 初始化 core 层（与 extension.ts activate 对应） */
 function initCore(): void {
-  const { setGlobalUI } = require('../src/core/AssistantUI.js');
+  const { setGlobalEventBus } = require('../src/core/AssistantEventBus.js');
+  const { createEventBus } = require('../src/host/EventBus.js');
+  const { initializeCoreEvents } = require('../src/core/initializeCoreEvents.js');
   const { initializeHistory, initializeSessionQueue } = require('../src/core/Integration.js');
   const { setExtensionPathProvider } = require('../src/core/history/Config.js');
   const { setLogCallback, setLogToConsole } = require('../src/core/Logger.js');
@@ -1515,14 +1517,18 @@ function initCore(): void {
 
   setCoreLocale(app.getLocale().startsWith('zh') ? 'zh' : 'en');
 
-  const ui = require('./ElectronUI.js').ElectronUI.getInstance();
+  // 事件总线：core 与 UI 的唯一耦合点（DEVELOPMENT.md 第 3 节）。
+  // 顺序：注册总线 → 注册 core 侧 UiEvent 订阅 → 创建 UI（其构造函数注册 CoreEvent 处理器）。
+  const bus = createEventBus();
+  setGlobalEventBus(bus);
+  initializeCoreEvents(bus);
+  const ui = require('./ElectronUI.js').ElectronUI.create(bus);
   ui.setMainWindow(mainWindow!);
   ui.setSidebarView(sidebarView!);
   ui.setChatViewManager(chatViews!);
   // 侧栏对话列表每次刷新时同步托盘状态点（绿=空闲 / 红=运行中 / 黄=等待用户）
   ui.setConversationStatusListener((list: Array<Record<string, unknown>>) => updateTrayStatusFromConversations(list));
   ui.setWorkspacePath(workspacePath);
-  setGlobalUI(ui);
 
   // 日志：输出到控制台（Electron 无 OutputChannel）
   setLogToConsole(true);

@@ -18,10 +18,16 @@ import { randomUUID } from 'crypto';
 import type { Message } from '../types.js';
 import { getAllTools } from './index.js';
 import type { ToolUseContext, Tool, ToolProgressData } from './Tool.js';
-import type { AssistantUI } from '../AssistantUI.js';
+import type { CoreEvent } from '../AssistantEventBus.js';
+import { requireEventBus } from '../AssistantEventBus.js';
 import { logger } from '../Logger.js';
 import { persistLargeOutput, buildLargeToolResultMessage } from './toolResultStorage.js';
 import { unwrapToolInput, normalizeToolInput } from '../utils/toolInput.js';
+
+/** core → UI 单向事件的发送侧封装（RunTools 统一走它） */
+function emitToUi(event: CoreEvent): void {
+  requireEventBus().emitToUi(event);
+}
 
 /**
  * 生成随机 id 后缀（默认 9 位 base36），统一各处 uuid 生成模式。
@@ -132,12 +138,18 @@ async function* cancelRemainingTools(
   sessionID: string,
   toolUseBlocks: ToolUseBlock[],
   currentIndex: number,
-  ui: AssistantUI | undefined,
   cancelMsg: string,
 ): AsyncGenerator<ToolExecutionUpdate, void, unknown> {
   if (currentIndex >= 0 && currentIndex < toolUseBlocks.length - 1) {
     for (const remainingTool of toolUseBlocks.slice(currentIndex + 1) as ToolUseBlock[]) {
-      ui?.onToolResult(sessionID, remainingTool.id, remainingTool.name, cancelMsg, 'error');
+      emitToUi({
+        type: 'toolResult',
+        sessionId: sessionID,
+        toolUseId: remainingTool.id,
+        toolName: remainingTool.name,
+        output: cancelMsg,
+        status: 'error',
+      });
       yield { message: buildToolResultMessage(remainingTool.id, cancelMsg, -1, true) };
     }
   }
@@ -150,11 +162,17 @@ async function* cancelRemainingTools(
 async function* cancelApprovedItems(
   sessionID: string,
   items: ApprovedToolItem[],
-  ui: AssistantUI | undefined,
   cancelMsg = 'Tool was canceled because a later tool in the batch was denied',
 ): AsyncGenerator<ToolExecutionUpdate, void, unknown> {
   for (const item of items) {
-    ui?.onToolResult(sessionID, item.toolUse.id, item.toolUse.name, cancelMsg, 'error');
+    emitToUi({
+      type: 'toolResult',
+      sessionId: sessionID,
+      toolUseId: item.toolUse.id,
+      toolName: item.toolUse.name,
+      output: cancelMsg,
+      status: 'error',
+    });
     yield { message: buildToolResultMessage(item.toolUse.id, cancelMsg, -1, true) };
   }
 }
@@ -169,7 +187,6 @@ export async function* runTools(
   sessionID: string,
   toolUseBlocks: unknown[],
   toolUseContext: ToolUseContext,
-  ui?: AssistantUI,
 ): AsyncGenerator<ToolExecutionUpdate, void, unknown> {
   const tools = getAllTools();
   const toolMap = new Map(tools.map(t => [t.name, t]));
@@ -186,7 +203,7 @@ export async function* runTools(
     const tool = toolMap.get(toolUse.name);
 
     // ---- 验证 + 授权（可能 yield 错误/拒绝/取消消息）----
-    const authResult = yield* authorizeOne(sessionID, toolUse, tool, toolUseContext, ui, blocks, i);
+    const authResult = yield* authorizeOne(sessionID, toolUse, tool, toolUseContext, blocks, i);
 
     if (authResult.action === 'stop') {
       // authorizeOne 已 yield 拒绝结果并取消剩余工具；前面工具均已执行完成，不会产生孤儿 tool_use
@@ -204,7 +221,7 @@ export async function* runTools(
 
     // ---- 非并发安全工具：立即完整执行（执行完再进入下一个工具）----
     if (!tool!.isConcurrencySafe(item.parsedInput)) {
-      yield* executeSingleItem(sessionID, item, ui, signal);
+      yield* executeSingleItem(sessionID, item, signal);
       i++;
       continue;
     }
@@ -222,10 +239,10 @@ export async function* runTools(
       if (!nextTool || !nextTool.isConcurrencySafe(nextUse.input as any)) {
         break;
       }
-      const nextAuth = yield* authorizeOne(sessionID, nextUse, nextTool, toolUseContext, ui, blocks, j);
+      const nextAuth = yield* authorizeOne(sessionID, nextUse, nextTool, toolUseContext, blocks, j);
       if (nextAuth.action === 'stop') {
         // 后续工具被拒：为当前 batch 中已批准但尚未执行的工具补发取消结果，避免孤儿 tool_use
-        yield* cancelApprovedItems(sessionID, batch, ui);
+        yield* cancelApprovedItems(sessionID, batch);
         stopFlag = nextAuth.shouldPreventContinuation;
         shouldStop = true;
         break;
@@ -246,8 +263,86 @@ export async function* runTools(
     }
 
     // 并行执行本批次
-    yield* executeParallelBatch(sessionID, batch, ui, signal);
+    yield* executeParallelBatch(sessionID, batch, signal);
     i = j;
+  }
+}
+
+/**
+ * 单个工具：验证输入 + 用户授权
+ * 通过 generator yield 错误 / 拒绝 / 取消消息，最终返回 AuthorizeOutcome
+ */
+
+/** 通知 UI 工具以 error 结束（卡片置为失败态） */
+function emitToolResultError(sessionID: string, toolUseId: string, toolName: string, output: string): void {
+  emitToUi({
+    type: 'toolResult',
+    sessionId: sessionID,
+    toolUseId,
+    toolName,
+    output,
+    status: 'error',
+  });
+}
+
+/** 超时兜底常量：toolPermission 请求 UI 无响应时按 deny 处理（fail-safe：不弹框就不执行） */
+const TOOL_PERMISSION_TIMEOUT_MS = 30_000;
+
+/** 带超时的 Promise 包装（DEVELOPMENT.md 第 3.8 节：request() 本身不实现超时，由调用方决定） */
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  onTimeout: () => T,
+): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const timer = setTimeout(() => resolve(onTimeout()), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        throw err;
+      },
+    ).catch((err) => {
+      clearTimeout(timer);
+      throw err;
+    });
+  });
+}
+
+/**
+ * 发送 toolPermission 请求并等待 UI 返回权限决策。
+ * UI 侧只负责展示（工具卡片 / 确认框），决策本身已由 PermissionPolicy 加工完。
+ * 超时按 deny 处理，避免 UI 重建 / reload 期间查询永久挂起。
+ */
+async function emitToolPermissionRequest(
+  sessionID: string,
+  toolUseId: string,
+  toolName: string,
+  args: Record<string, any>,
+  tool: unknown,
+): Promise<import('../AssistantEventBus.js').CoreRequestResultMap['toolPermission']> {
+  const { resolveToolPermission } = await import('./PermissionPolicy.js');
+  const { permResult, displayArgs } = await resolveToolPermission(sessionID, toolName, args, tool);
+  try {
+    return await withTimeout(
+      requireEventBus().request({
+        type: 'toolPermission',
+        sessionId: sessionID,
+        toolUseId,
+        toolName,
+        permResult,
+        displayArgs,
+      }),
+      TOOL_PERMISSION_TIMEOUT_MS,
+      () => ({ behavior: 'deny' as const, message: 'Permission request timed out' }),
+    );
+  } catch (err) {
+    // 总线请求失败（无订阅者 / 处理器异常）同样按 deny 处理
+    logger.warn('runTools', `toolPermission request failed: ${err}`);
+    return { behavior: 'deny' as const, message: `Permission request failed: ${err}` };
   }
 }
 
@@ -260,18 +355,16 @@ async function* authorizeOne(
   toolUse: ToolUseBlock,
   tool: Tool | undefined,
   toolUseContext: ToolUseContext,
-  ui: AssistantUI | undefined,
   toolUseBlocks: ToolUseBlock[],
   currentIndex: number,
 ): AsyncGenerator<ToolExecutionUpdate, AuthorizeOutcome, unknown> {
-
   // --- 工具不存在 ---
   if (!tool) {
     const errorMsg = `Error: Tool "${toolUse.name}" not found`;
     logger.error('runTools', errorMsg);
 
-    await ui?.onPreToolCall(sessionID, toolUse.id, toolUse.name, normalizeToolInput(toolUse.input), null);
-    ui?.onToolResult(sessionID, toolUse.id, toolUse.name, errorMsg, 'error');
+    await emitToolPermissionRequest(sessionID, toolUse.id, toolUse.name, normalizeToolInput(toolUse.input), null);
+    emitToolResultError(sessionID, toolUse.id, toolUse.name, errorMsg);
 
     yield { message: buildToolResultMessage(toolUse.id, errorMsg, -1, false) };
     return { action: 'skip' };
@@ -298,8 +391,8 @@ async function* authorizeOne(
     const errorMsg = `InputValidationError: ${parsedInput.error.message}`;
     logger.error('runTools', `Tool ${toolUse.name} input validation failed: ${errorMsg}`);
 
-    await ui?.onPreToolCall(sessionID, toolUse.id, toolUse.name, normalizeToolInput(toolUse.input), tool);
-    ui?.onToolResult(sessionID, toolUse.id, toolUse.name, errorMsg, 'error');
+    await emitToolPermissionRequest(sessionID, toolUse.id, toolUse.name, normalizeToolInput(toolUse.input), tool);
+    emitToolResultError(sessionID, toolUse.id, toolUse.name, errorMsg);
 
     yield { message: buildToolResultMessage(toolUse.id, errorMsg, -1, false) };
     return { action: 'skip' };
@@ -328,8 +421,8 @@ async function* authorizeOne(
       const errorMsg = `InputValidationError: ${validationResult.message}`;
       logger.error('runTools', `Tool ${toolUse.name} input validation failed: ${errorMsg}`);
 
-      await ui?.onPreToolCall(sessionID, toolUse.id, toolUse.name, toolUse.input as Record<string, any>, tool);
-      ui?.onToolResult(sessionID, toolUse.id, toolUse.name, errorMsg, 'error');
+      await emitToolPermissionRequest(sessionID, toolUse.id, toolUse.name, toolUse.input as Record<string, any>, tool);
+      emitToolResultError(sessionID, toolUse.id, toolUse.name, errorMsg);
 
       yield { message: buildToolResultMessage(toolUse.id, errorMsg, -1, false) };
       return { action: 'skip' };
@@ -340,11 +433,11 @@ async function* authorizeOne(
   pendingToolUseIds.add(toolUse.id);
   logger.info('runTools', `Added pending tool: ${toolUse.id}, current pending: ${Array.from(pendingToolUseIds)}`);
 
-  // 传入 schema 解析后的输入，保证 checkPermissions 与 call 使用的是同一份规范化数据
-  let permission = await ui?.onPreToolCall(sessionID, toolUse.id, toolUse.name, parsedInput.data as Record<string, any>, tool);
-  if (!permission) {
-    permission = { behavior: 'allow' };
-  }
+  // 传入 schema 解析后的输入，保证权限决策与 call 使用的是同一份规范化数据。
+  // 发送前先发 toolCall 事件：UI 收到后立即上架 running 卡片，
+  // 避免「权限决策期间既没有 thinking 也没有 running」的空窗（见 DEVELOPMENT.md 7.2）。
+  emitToUi({ type: 'toolCall', sessionId: sessionID, toolUseId: toolUse.id, toolName: toolUse.name });
+  let permission = await emitToolPermissionRequest(sessionID, toolUse.id, toolUse.name, parsedInput.data as Record<string, any>, tool);
 
   const updatedInput = (permission as any).updatedInput as Record<string, unknown> | undefined;
   if (updatedInput) {
@@ -383,7 +476,7 @@ async function* authorizeOne(
       if (hasReply) denyMessage += `，原因：${reply.trim()}`;
       const shouldTerminate = !hasReply;
 
-      ui?.onToolResult(sessionID, toolUse.id, toolUse.name, denyMessage, 'error');
+      emitToolResultError(sessionID, toolUse.id, toolUse.name, denyMessage);
       yield { message: buildToolResultMessage(toolUse.id, denyMessage, -1, false, permission as any) };
 
       // 取消后续剩余工具
@@ -391,7 +484,6 @@ async function* authorizeOne(
         sessionID,
         toolUseBlocks,
         currentIndex,
-        ui,
         `Tool "${toolUse.name}" was canceled because a previous tool in the batch was denied`,
       );
       return { action: 'stop', shouldPreventContinuation: shouldTerminate };
@@ -406,7 +498,7 @@ async function* authorizeOne(
 
   if (permission.behavior === 'deny') {
     const denyReason = permission.message || `Tool "${toolUse.name}" was denied by permission check`;
-    ui?.onToolResult(sessionID, toolUse.id, toolUse.name, denyReason, 'error');
+    emitToolResultError(sessionID, toolUse.id, toolUse.name, denyReason);
 
     yield { message: buildToolResultMessage(toolUse.id, denyReason, -1, false, permission as any) };
 
@@ -415,7 +507,6 @@ async function* authorizeOne(
       sessionID,
       toolUseBlocks,
       currentIndex,
-      ui,
       `Tool "${toolUse.name}" was canceled because a previous tool in the batch was denied`,
     );
     return { action: 'stop', shouldPreventContinuation: (permission as any).shouldTerminate === true };
@@ -439,13 +530,12 @@ async function* authorizeOne(
 async function* executeParallelBatch(
   sessionID: string,
   batch: ApprovedToolItem[],
-  ui?: AssistantUI,
   signal?: AbortSignal | null,
 ): AsyncGenerator<ToolExecutionUpdate, void, unknown> {
   // 如果信号已经中止，直接返回取消结果
   if (signal?.aborted) {
     logger.warn('executeParallelBatch', 'Signal already aborted, skipping execution');
-    yield* cancelApprovedItems(sessionID, batch, ui, 'Command was aborted before execution');
+    yield* cancelApprovedItems(sessionID, batch, 'Command was aborted before execution');
     yield { shouldPreventContinuation: true };
     return;
   }
@@ -464,7 +554,7 @@ async function* executeParallelBatch(
       const { updateToolUseMeta } = await import('../history/index.js');
       await updateToolUseMeta(sessionID, b.toolUse.id, { confirmTimestamp: confirmNow });
     }
-    ui?.onToolCall(sessionID, b.toolUse.id, b.toolUse.name);
+    emitToUi({ type: 'toolCall', sessionId: sessionID, toolUseId: b.toolUse.id, toolName: b.toolUse.name });
   }
 
   // 为每个工具创建子 AbortController，隔离各自的 abort 信号
@@ -480,7 +570,7 @@ async function* executeParallelBatch(
   const parallelStart = Date.now();
   logger.info('executeParallelBatch', `Promise.allSettled START for ${batch.length} tools [${batch.map(b => `${b.toolUse.name}(${b.toolUse.id})`).join(', ')}]`);
   const results = await Promise.allSettled(
-    batch.map(b => executeSingleTool(sessionID, b, ui))
+    batch.map(b => executeSingleTool(sessionID, b))
   );
   logger.info('executeParallelBatch', `Promise.allSettled END for ${batch.length} tools, elapsed=${Date.now() - parallelStart}ms`);
 
@@ -492,12 +582,12 @@ async function* executeParallelBatch(
 
     // 如果信号已中止，后续未处理的工具结果标记为取消（不执行的实际跳过）
     if (hasAborted) {
-      yield* cancelApprovedItems(sessionID, [b], ui, 'Tool was canceled due to abort');
+      yield* cancelApprovedItems(sessionID, [b], 'Tool was canceled due to abort');
       continue;
     }
 
     if (result.status === 'fulfilled') {
-      yield* formatAndEmitResult(sessionID, b, result.value, ui, signal);
+      yield* formatAndEmitResult(sessionID, b, result.value, signal);
       if (signal?.aborted && !hasAborted) {
         hasAborted = true;
       }
@@ -505,7 +595,7 @@ async function* executeParallelBatch(
       // Promise rejected
       const errorMessage = result.reason instanceof Error ? result.reason.message : String(result.reason);
       logger.error('executeParallelBatch', `Tool ${b.toolUse.name} failed: ${errorMessage}`);
-      ui?.onToolResult(sessionID, b.toolUse.id, b.toolUse.name, errorMessage, 'error');
+      emitToolResultError(sessionID, b.toolUse.id, b.toolUse.name, errorMessage);
 
       yield {
         message: buildToolResultMessage(
@@ -531,13 +621,12 @@ async function* executeParallelBatch(
 async function* executeSingleItem(
   sessionID: string,
   item: ApprovedToolItem,
-  ui?: AssistantUI,
   signal?: AbortSignal | null,
 ): AsyncGenerator<ToolExecutionUpdate, void, unknown> {
   // 如果信号已经中止，直接返回取消结果
   if (signal?.aborted) {
     logger.warn('executeSingleItem', 'Signal already aborted, skipping execution');
-    ui?.onToolResult(sessionID, item.toolUse.id, item.toolUse.name, 'Command was aborted before execution', 'error');
+    emitToolResultError(sessionID, item.toolUse.id, item.toolUse.name, 'Command was aborted before execution');
     yield { message: buildToolResultMessage(item.toolUse.id, 'Command was aborted before execution', -1, true) };
     yield { shouldPreventContinuation: true };
     return;
@@ -554,11 +643,11 @@ async function* executeSingleItem(
     const { updateToolUseMeta } = await import('../history/index.js');
     await updateToolUseMeta(sessionID, item.toolUse.id, { confirmTimestamp: confirmNow });
   }
-  ui?.onToolCall(sessionID, item.toolUse.id, item.toolUse.name);
+  emitToUi({ type: 'toolCall', sessionId: sessionID, toolUseId: item.toolUse.id, toolName: item.toolUse.name });
 
   try {
-    const result = await executeSingleTool(sessionID, item, ui);
-    yield* formatAndEmitResult(sessionID, item, result, ui, signal);
+    const result = await executeSingleTool(sessionID, item);
+    yield* formatAndEmitResult(sessionID, item, result, signal);
     if (signal?.aborted) {
       yield { shouldPreventContinuation: true };
       return;
@@ -566,7 +655,7 @@ async function* executeSingleItem(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error('executeSingleItem', `Tool ${item.toolUse.name} failed: ${errorMessage}`);
-    ui?.onToolResult(sessionID, item.toolUse.id, item.toolUse.name, errorMessage, 'error');
+    emitToolResultError(sessionID, item.toolUse.id, item.toolUse.name, errorMessage);
 
     yield {
       message: buildToolResultMessage(
@@ -586,13 +675,17 @@ async function* executeSingleItem(
 async function executeSingleTool(
   sessionID: string,
   item: ApprovedToolItem,
-  ui?: AssistantUI,
 ): Promise<unknown> {
   const onProgress = (progress: unknown) => {
     // 将 Bash 等工具的流式进度转发给 UI（实时更新输出，而非等完整输出）
     const p = progress as { toolUseID?: string; data?: ToolProgressData } | undefined;
     if (p?.data?.type === 'bash_progress') {
-      ui?.onToolProgress(sessionID, item.toolUse.id, p.data);
+      emitToUi({
+        type: 'toolProgress',
+        sessionId: sessionID,
+        toolUseId: item.toolUse.id,
+        progress: p.data,
+      });
     }
   };
 
@@ -631,7 +724,6 @@ async function* formatAndEmitResult(
   sessionID: string,
   item: ApprovedToolItem,
   toolResult: unknown,
-  ui?: AssistantUI,
   _signal?: AbortSignal | null,
 ): AsyncGenerator<ToolExecutionUpdate, void, unknown> {
   const toolUse = item.toolUse;
@@ -732,7 +824,7 @@ async function* formatAndEmitResult(
 
   // [ReplyToolDebug] 打印最终状态
   if (toolUse.name === 'Reply') {
-    logger.info('[ReplyToolDebug]', `formatAndEmitResult final: sessionID=${sessionID}, toolUseId=${toolUse.id}, output.length=${Array.isArray(output) ? output.length : output.length}, exitCode=${exitCode}, status=${status}, onToolResult=${typeof ui?.onToolResult}`);
+    logger.info('[ReplyToolDebug]', `formatAndEmitResult final: sessionID=${sessionID}, toolUseId=${toolUse.id}, output.length=${Array.isArray(output) ? output.length : output.length}, exitCode=${exitCode}, status=${status}`);
   }
 
   logger.info('runTools', '=== Tool Execution ===');
@@ -743,7 +835,14 @@ async function* formatAndEmitResult(
   logger.info('runTools', `Status: ${status}`);
   logger.info('runTools', '=====================');
 
-  ui?.onToolResult(sessionID, toolUse.id, toolUse.name, outputForUI, status);
+  emitToUi({
+    type: 'toolResult',
+    sessionId: sessionID,
+    toolUseId: toolUse.id,
+    toolName: toolUse.name,
+    output: outputForUI,
+    status: status as 'success' | 'error',
+  });
 
   const toolResultMessage: any = {
     type: 'tool_result',

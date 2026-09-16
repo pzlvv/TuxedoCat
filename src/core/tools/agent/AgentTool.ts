@@ -20,8 +20,15 @@ import { generateCoreSystemPrompt } from '../../prompt/SystemPrompt.js';
 import { getAvailableCommands } from '../../prompt/SystemEnvironment.js';
 import type { AgentToolInput, AgentToolOutput } from './Types.js';
 import { inputSchema, outputSchema } from './Types.js';
+import type { CoreEvent } from '../../AssistantEventBus.js';
+import { requireEventBus } from '../../AssistantEventBus.js';
 import { logger } from '../../Logger.js';
 import { subAgentRegistry } from './SubAgentRegistry.js';
+
+/** core → UI 单向事件的发送侧封装（AgentTool 统一走它） */
+function emitToUi(event: CoreEvent): void {
+  requireEventBus().emitToUi(event);
+}
 
 /**
  * 检查子代理引擎的消息中，在最后一个"真正的用户输入"之后是否有 Reply 工具调用。
@@ -259,11 +266,6 @@ export const AgentTool = buildTool({
       timestamp: Date.now(),
     };
 
-    // ========== 2. 获取 UI 实例 ==========
-
-    const { requireGlobalUI } = await import('../../AssistantUI.js');
-    const ui = requireGlobalUI();
-
     // ========== 3. 创建 QueryEngine  ==========
 
     const { QueryEngine, getSessionEngine } = await import('../../QueryEngine.js');
@@ -334,7 +336,6 @@ Important guidelines:
       setAppState: (updater: (prev: unknown) => unknown) => {
         context.setAppState(updater);
       },
-      ui,
       abortController: abortController as any,
       initialMessages: [taskMessage as any],
       maxTurns: Number.MAX_SAFE_INTEGER,
@@ -365,15 +366,20 @@ Important guidelines:
     // 注册到全局注册表
     subAgentRegistry.register(subSessionID, subEngine, context, creatorSessionId);
 
-    // 继承父会话的 agent mode
-    ui?.onSetAgentMode(creatorSessionId, subSessionID);
+    // 继承父会话的 agent mode（agentMode 归 core；子代理默认 risk，父为 auto 时继承 auto）
+    try {
+      const { inheritAgentMode } = await import('../PermissionPolicy.js');
+      inheritAgentMode(creatorSessionId, subSessionID);
+    } catch (err) {
+      logger.warn('AgentTool', `inheritAgentMode failed: ${err}`);
+    }
 
     // 在后台启动子代理处理初始消息（不阻塞）
     (async () => {
       logger.info('AgentTool', `Sub-agent ${subSessionID} started in background`);
       // 通知 UI 子代理开始查询（使 abort 按钮可用）
-      logger.info('AgentTool', `Calling ui.onQueryBegin for sub-agent ${subSessionID}`);
-      ui.onQueryBegin(subSessionID);
+      logger.info('AgentTool', `Emitting queryBegin for sub-agent ${subSessionID}`);
+      emitToUi({ type: 'queryBegin', sessionId: subSessionID });
       try {
         const generator = subEngine.submitMessage(prompt);
         let result = await generator.next();
@@ -493,11 +499,11 @@ Important guidelines:
       } catch (err) {
         logger.error('AgentTool', `Sub-agent ${subSessionID} background error: ${err}`);
       } finally {
-        logger.info('AgentTool', `Calling ui.onQueryEnd for sub-agent ${subSessionID}`);
-        ui.onQueryEnd(subSessionID);
+        logger.info('AgentTool', `Emitting queryEnd for sub-agent ${subSessionID}`);
+        emitToUi({ type: 'queryEnd', sessionId: subSessionID });
         // 刷新对话列表：此时子代理的消息已持久化（messageCount >= 1），
         // 确保新子会话能在对话树中正确显示并关联到主对话。
-        ui.refreshConversationList();
+        emitToUi({ type: 'conversationListChanged' });
       }
     })();
 
@@ -507,7 +513,7 @@ Important guidelines:
 
     // 通知 UI 刷新对话列表（尽早刷新一次；若此时首条消息尚未落盘导致列表未包含
     // 子会话，后台任务 finally 中的刷新会兜底确保最终可见）
-    ui.refreshConversationList();
+    emitToUi({ type: 'conversationListChanged' });
 
     return {
       data: {

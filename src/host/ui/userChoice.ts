@@ -128,7 +128,8 @@ export class UserChoiceManager<TUri = unknown> {
   }
 
   /**
-   * 请求用户选择或确认
+   * 请求用户选择或确认。
+   * beforeContent 允许 null：Write 新建文件时无原文，diff 预览需要区分「空串」与「无原文件」。
    */
   async requestUserChoice(sessionID: string, options: {
     toolName: string;

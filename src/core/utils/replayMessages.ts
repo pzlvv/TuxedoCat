@@ -1,7 +1,13 @@
-import type { AssistantUI } from '../AssistantUI.js';
-import type { Message } from '../types.js';
+import type { Message, MessageData } from '../types.js';
+import type { CoreEvent } from '../AssistantEventBus.js';
+import { requireEventBus } from '../AssistantEventBus.js';
 import { extractUserContent } from './contentBlocks.js';
 import { buildEditDiffHunks } from './editDiff.js';
+
+/** core → UI 单向事件的发送侧封装（replayMessages 统一走它） */
+function emitToUi(event: CoreEvent): void {
+  requireEventBus().emitToUi(event);
+}
 
 type ToolResultInfo = { content: string; exitCode: number };
 
@@ -25,8 +31,8 @@ export function buildToolResultMap(messages: readonly Message[]): Map<string, To
 /**
  * 将历史消息重新推送到 UI（压缩后重建 / 展开归档共用）。
  */
-export function replayMessagesToUI(ui: AssistantUI, sessionId: string, messages: readonly Message[]): void {
-  ui.clearMessages(sessionId);
+export function replayMessagesToUI(sessionId: string, messages: readonly Message[]): void {
+  emitToUi({ type: 'clearMessages', sessionId });
   const toolResultMap = buildToolResultMap(messages);
 
   for (const msg of messages) {
@@ -35,7 +41,11 @@ export function replayMessagesToUI(ui: AssistantUI, sessionId: string, messages:
 
     if (msg.type === 'system') {
       if (meta.subtype === 'compact_boundary') continue;
-      ui.onMessage(sessionId, { role: 'system', content: msg.content });
+      emitToUi({
+        type: 'message',
+        sessionId,
+        data: { role: 'system', content: msg.content } as MessageData,
+      });
       continue;
     }
 
@@ -67,15 +77,19 @@ export function replayMessagesToUI(ui: AssistantUI, sessionId: string, messages:
         }
       }
 
-      ui.onMessage(sessionId, {
-        role: 'user',
-        content: text,
-        images: images.length > 0 ? images : undefined,
-        filePath: showFileInfo ? rawFilePath : undefined,
-        fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
-        isCompactSummary: meta.isCompactSummary === true,
-        isFromAgent: meta.fromSubAgent === true,
-        meta: replayMeta,
+      emitToUi({
+        type: 'message',
+        sessionId,
+        data: {
+          role: 'user',
+          content: text,
+          images: images.length > 0 ? images : undefined,
+          filePath: showFileInfo ? rawFilePath : undefined,
+          fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
+          isCompactSummary: meta.isCompactSummary === true,
+          isFromAgent: meta.fromSubAgent === true,
+          meta: replayMeta,
+        } as MessageData,
       });
       continue;
     }
@@ -84,9 +98,17 @@ export function replayMessagesToUI(ui: AssistantUI, sessionId: string, messages:
       for (const block of msg.message.content) {
         const b = block as { type?: string; text?: string; thinking?: string; name?: string; id?: string; input?: Record<string, unknown>; _meta?: Record<string, unknown> };
         if (b.type === 'thinking') {
-          ui.onMessage(sessionId, { role: 'thinking', content: b.thinking || '' });
+          emitToUi({
+            type: 'message',
+            sessionId,
+            data: { role: 'thinking', content: b.thinking || '' } as MessageData,
+          });
         } else if (b.type === 'text') {
-          ui.onMessage(sessionId, { role: 'assistant', content: b.text || '' });
+          emitToUi({
+            type: 'message',
+            sessionId,
+            data: { role: 'assistant', content: b.text || '' } as MessageData,
+          });
         } else if (b.type === 'tool_use') {
           const toolUseId = b.id || '';
           const result = toolResultMap.get(toolUseId);
@@ -108,14 +130,18 @@ export function replayMessagesToUI(ui: AssistantUI, sessionId: string, messages:
             toolArgs.afterContent = blockMeta.afterContent;
           }
 
-          ui.onMessage(sessionId, {
-            role: 'toolcall',
-            content: result?.content || '',
-            param: `⚙️ ${b.name || 'tool'}`,
-            toolName: b.name,
-            toolArgs,
-            toolCallId: toolUseId,
-            status: result ? (result.exitCode !== 0 ? 'fail' : 'success') : 'running',
+          emitToUi({
+            type: 'message',
+            sessionId,
+            data: {
+              role: 'toolcall',
+              content: result?.content || '',
+              param: `⚙️ ${b.name || 'tool'}`,
+              toolName: b.name,
+              toolArgs,
+              toolCallId: toolUseId,
+              status: result ? (result.exitCode !== 0 ? 'fail' : 'success') : 'running',
+            } as MessageData,
           });
         }
       }

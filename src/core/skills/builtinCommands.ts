@@ -20,8 +20,6 @@ export interface CommandContext {
   cwd: string
   /** 命令名称（如 'clear', 'spin'），由 dispatch 自动填充 */
   commandName?: string
-  /** UI 实例，用于发送消息显示 */
-  ui: import('../AssistantUI.js').AssistantUI
 }
 
 /**
