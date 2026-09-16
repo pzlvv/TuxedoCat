@@ -48,6 +48,18 @@ export interface UserMessage {
   fileHidden?: boolean
   /** 静默消息，不展示在 UI 中但会发给 LLM */
   silent?: boolean
+  /** 持久化元信息（文件引用 / agent 来源等），不进入 LLM content */
+  _meta?: Record<string, unknown>
+  /** 是否用户主动发送：只有这类消息才更新 meta.json 的 updatedAt（列表按最后一条用户消息排序） */
+  _userInitiated?: boolean
+  /** 随消息持久化的图片宽高（供标题生成使用，不进入 LLM content） */
+  imageSizes?: Array<{ width?: number; height?: number }>
+  /** 排队消息标记：真正进入 LLM 上下文时补发 addMessage 通知 UI */
+  _needsUINotification?: boolean
+  /** 压缩摘要消息标记（展开归档时用于区分摘要与普通消息） */
+  isCompactSummary?: boolean
+  /** 子代理产生的自动消息（Agent 回复 / 提醒），UI 上以代理身份展示 */
+  fromSubAgent?: boolean
 }
 
 /**

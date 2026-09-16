@@ -9,6 +9,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
+import { ELECTRON_HOST_INFO } from '../src/host/types.js';
 
 // 收集启动参数（由 main 在创建窗口前通过 additionalArguments 传入）
 const getStartArg = (key: string): string | undefined => {
@@ -53,13 +54,7 @@ contextBridge.exposeInMainWorld('__highlightLanguages', highlightLanguages);
 contextBridge.exposeInMainWorld('logoUri', './logo.png');
 contextBridge.exposeInMainWorld('__sessionId', sessionId);
 // 宿主能力声明：对话列表/新建对话由原生侧栏接管，支持关闭 webview，打开会话走 openConversation
-contextBridge.exposeInMainWorld('__hostInfo', {
-  kind: 'electron',
-  conversationList: 'host',
-  newConversation: 'host',
-  closeConversation: true,
-  openConversationMode: 'openConversation',
-});
+contextBridge.exposeInMainWorld('__hostInfo', ELECTRON_HOST_INFO);
 
 // main -> webview 消息桥接：ipcRenderer 事件转发为 window message 事件
 // 注意：必须在页面脚本执行前注册，webview 挂载时立即监听 window message

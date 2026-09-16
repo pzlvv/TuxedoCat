@@ -161,24 +161,11 @@ async function enqueueMetadataWrite(metadataPath: string, fn: () => Promise<void
 }
 
 /**
- * 耗时分布统计快照（持久化到 meta.json，压缩时更新）
- */
-export interface ConversationStats {
-  toolExecution: number;
-  aiThinking: number;
-  humanFeedback: number;
-  toolCount: number;
-  thinkingCount: number;
-  humanCount: number;
-}
-
-/**
  * 对话会话上下文（持久化到 meta.json，加载对话时恢复）
  *
  * 字段说明：
  * - totalContextTokens: 当前对话的上下文总 token 数（input_tokens + output_tokens）
  *   每次 LLM 返回消息后更新，用于 webview 显示进度条
- * - stats: 耗时分布统计快照，压缩时由 webview 写入，加载后直接显示
  */
 export interface ConversationContext {
   currentFile?: string;
@@ -195,8 +182,6 @@ export interface ConversationContext {
    */
   mcpEnabled?: string[];
   totalContextTokens?: number;
-  /** 耗时分布统计快照（压缩时保存，恢复时使用） */
-  stats?: ConversationStats;
   /** 是否已进行过对话压缩（用于加载时只显示压缩后的消息） */
   isCompacted?: boolean;
   /** 是否已展开压缩（不可逆，展开后不再折叠） */
@@ -559,10 +544,9 @@ export async function appendMessage(message: Message, sessionId: string, parentU
 
   // 通知 UI 防抖刷新对话列表，让侧栏消息数在对话进行中实时更新。
   // UI 层会合并短时间内的多次调度，避免每条消息都触发一次读盘。
-  try {
-    const { getGlobalUI } = await import('../AssistantUI.js');
-    getGlobalUI()?.scheduleConversationListRefresh();
-  } catch { /* UI 未初始化或不可用时忽略 */ }
+  // 这里必须存在 UI：未初始化属于集成缺失，直接抛错而不是静默跳过。
+  const { requireGlobalUI } = await import('../AssistantUI.js');
+  requireGlobalUI().scheduleConversationListRefresh();
 
   return { uuid, newTitle: newTitle ?? undefined };
 }
@@ -1126,11 +1110,9 @@ export async function replaceConversationMessages(sessionId: string, messages: M
     }
   }
 
-  // 压缩 / 清空会整体改写消息数，同样通知 UI 刷新列表
-  try {
-    const { getGlobalUI } = await import('../AssistantUI.js');
-    getGlobalUI()?.scheduleConversationListRefresh();
-  } catch { /* UI 未初始化或不可用时忽略 */ }
+  // 压缩 / 清空会整体改写消息数，同样通知 UI 刷新列表（必须有 UI，未初始化直接抛错）
+  const { requireGlobalUI } = await import('../AssistantUI.js');
+  requireGlobalUI().scheduleConversationListRefresh();
 }
 
 // ========== Compact Archive Functions ==========

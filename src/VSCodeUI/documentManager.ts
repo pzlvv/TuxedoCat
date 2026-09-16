@@ -3,7 +3,7 @@
  * 管理虚拟文档、diff 预览文档的打开和关闭
  */
 import * as vscode from 'vscode';
-import type { ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent } from './types.js';
+import type { ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent } from '../host/ui/types.js';
 import { PRODUCT_NAME } from '../config/project.js';
 import { buildDiffUris } from './diffUris.js';
 

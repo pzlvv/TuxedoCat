@@ -19,6 +19,7 @@ import { ConversationTreeItem } from './ConversationTreeItem';
 import { DeleteConfirmDialog } from './components/DeleteConfirmDialog';
 import { getColors } from './colors';
 import { useConversationTree } from './hooks/useConversationTree';
+import { useConversationLoading } from './hooks/useConversationLoading';
 import { useMessageHandler } from './hooks/useMessageHandler';
 import { useAppHandlers } from './hooks/useAppHandlers';
 import { profileLog } from './debug';
@@ -61,8 +62,25 @@ const App = () => {
   // 插件模式（webview 渲染对话列表）下，历史对话分页展示：默认 50 条，滚动到底再加载 50 条
   const [visibleConversationCount, setVisibleConversationCount] = useState(50);
   const CONVERSATION_PAGE_SIZE = 50;
-  // App 模式（Electron）下：正在加载对话（conversationLoaded 尚未到达）的 loading 状态
-  const [isLoadingConversation, setIsLoadingConversation] = useState(false);
+  // 本视图创建时绑定的目标会话（Electron：URL ?session= / preload 注入的 __sessionId）。
+  // 单视图内切换（VSCode / 浏览器）时由 useConversationLoading.begin 更新。
+  const initialSessionId = useMemo(() => {
+    const urlSession = new URLSearchParams(window.location.search).get('session');
+    const injectedSession = (window as any).__sessionId as string | undefined;
+    return urlSession || injectedSession || null;
+  }, []);
+  /**
+   * 会话加载状态由「对话」自己持有（单一职责）：
+   * 只在本视图确实要加载某个会话时进入 loading，收到该会话的 conversationLoaded 后结束。
+   * Electron 下切换会话由宿主另开一个视图完成，本视图不进入 loading，
+   * 因此不会出现「显示了 loading 但没有任何人通知它完成」。
+   */
+  const {
+    isLoading: isLoadingConversation,
+    begin: beginConversationLoad,
+    finish: finishConversationLoad,
+    reset: resetConversationLoad,
+  } = useConversationLoading(initialSessionId);
   // 子对话展开状态（sessionId -> boolean）
   const [conversationDropdownOpen, setConversationDropdownOpen] = useState(false);
   const [conversationTitle, setConversationTitle] = useState<string>(t('app.untitled'));
@@ -245,12 +263,6 @@ const App = () => {
 
   // 流式消息批量更新：使用 rAF throttle 合并高频 delta 更新
   const streamRafRef = useRef<number | null>(null);
-  // 耗时分布统计（由 core 侧统一计算，webview 只做展示）
-  const [stats, setStats] = useState<{
-    toolExecution: number; aiThinking: number; humanFeedback: number;
-    totalTime: number; toolPct: number; thinkingPct: number; humanPct: number;
-    toolCount: number; thinkingCount: number; humanCount: number;
-  } | null>(null);
   const pendingStreamRef = useRef<Map<string, { role: string; accumulated: string; streamId?: string }>>(new Map());
 
   // 流式渲染版本号：每次 streamMessage content 更新时递增，
@@ -355,8 +367,8 @@ const App = () => {
   const handlerProps = useMemo(() => ({
     setMessages, setShowThinkingAnimation, setAnimationMode, setHasActiveQuery,
     setHasCompactArchive, setIsCompactExpanded, setConversations, setConversationsLoading,
-    setVisibleConversationCount, setIsLoadingConversation,
-    setTheme, setThemeInitialized, setCurrentFile, setSelectedLines, setStats,
+    setVisibleConversationCount, beginConversationLoad, finishConversationLoad, resetConversationLoad,
+    setTheme, setThemeInitialized, setCurrentFile, setSelectedLines,
     setConversationTitle, setMaxContextTokens, setSkills, setMcpServers, setConversationDropdownOpen,
     setCurrentSessionId, setParentSessionId, setAgentMode, setAgentModeReady, setThinkingMode,
     setModel, setWebSearch, setContextLength, setQueuedMessage,
@@ -384,8 +396,8 @@ const App = () => {
     // 当前会话实时状态（切换会话保存快照时使用）
     userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode,
     promptMode, setPromptMode,
-    currentFile, selectedLines, stats,
-  }), [model, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, promptMode, currentFile, selectedLines, stats, messages]);
+    currentFile, selectedLines,
+  }), [model, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, promptMode, currentFile, selectedLines, messages]);
   useMessageHandler(handlerProps);
 
   const appHandlerProps = useMemo(() => ({
@@ -394,14 +406,14 @@ const App = () => {
     hasActiveQuery, contextLength, maxContextTokens, agentMode, thinkingMode,
     promptMode, setPromptMode,
     model, webSearch, settingsDefaults, hasCompactArchive, isCompactExpanded,
-    queuedMessage, stats, deleteConfirm, userChoiceRequest,
+    queuedMessage, deleteConfirm, userChoiceRequest,
     showThinkingAnimation, animationMode, messages,
     setCurrentFile, setSelectedLines, setFileHidden, setConversations,
     setConversationsLoading, setConversationDropdownOpen, setConversationTitle,
     setCurrentSessionId, setParentSessionId, setHasActiveQuery, setContextLength,
     setMaxContextTokens, setAgentMode, setThinkingMode,
     setModel, setWebSearch, setHasCompactArchive, setIsCompactExpanded, setQueuedMessage,
-    setStats, setDeleteConfirm, setMessages, setUserChoiceRequest,
+    setDeleteConfirm, setMessages, setUserChoiceRequest,
     setShowThinkingAnimation, setExpandedSubSessions, setNamingSessions,
     currentSessionIdRef, sessionStatesRef, commandHistoryRef, cursorPositionRef,
     choiceCursorPositionRef, userChoiceRequestRef, userChoiceInputRef,
@@ -415,7 +427,7 @@ const App = () => {
     hasActiveQuery, contextLength, maxContextTokens, agentMode, thinkingMode,
     promptMode,
     model, webSearch, settingsDefaults, hasCompactArchive, isCompactExpanded,
-    queuedMessage, stats, deleteConfirm, userChoiceRequest,
+    queuedMessage, deleteConfirm, userChoiceRequest,
     showThinkingAnimation, animationMode, messages,
   ]);
 
@@ -474,12 +486,22 @@ const App = () => {
    * 4. 发送导航消息（VS Code 插件 postMessage / Electron 内置 HTTP 路由）。
    */
   const navigateToSession = useCallback((sessionId: string) => {
+    // 当前若是"新建但还没发消息"的对话，先把草稿暂存，供下次"新建"恢复
     stashNewChatDraft();
-    setIsLoadingConversation(true);
+    // Electron：由宿主另开一个会话视图来加载目标会话，本视图不参与加载。
+    // 这里只做委托，不改动本视图的会话状态（消息 / loading），
+    // 否则切回本视图会看到空消息或永远转圈的 loading（没有人为它通知完成）。
+    if (hostInfo.openConversationMode === 'openConversation') {
+      navigateToConversation(sessionId);
+      return;
+    }
+    // VSCode / 浏览器：在当前视图内原地加载。loading 由对话自身持有，
+    // 收到目标会话的 conversationLoaded 后自动结束。
+    beginConversationLoad(sessionId);
     setMessages([]);
     setQueuedMessage(null);
     navigateToConversation(sessionId);
-  }, [stashNewChatDraft]);
+  }, [stashNewChatDraft, hostInfo.openConversationMode, beginConversationLoad]);
 
   const handleNavigateToConversation = navigateToSession;
 
@@ -496,6 +518,8 @@ const App = () => {
     saveCurrentSessionSnapshot();
     // 当前若是"新建但还没发消息"的对话，先把草稿暂存，稍后带到新对话
     stashNewChatDraft();
+    // 新对话无需等待任何会话数据：结束对话自身的 loading 状态
+    resetConversationLoad();
     // Generate new session for new conversation
     setConversationTitle(t('app.untitled'));
     setParentSessionId(null);
@@ -553,7 +577,7 @@ const App = () => {
       mainInputRef.current?.setSelectionRange(draftCursor, draftCursor);
     }, 0);
     // 依赖与 saveCurrentSessionSnapshot 相同（值类型快照来源）；ref 不进依赖数组
-  }, [saveCurrentSessionSnapshot, stashNewChatDraft, settingsDefaults, agentMode, thinkingMode, webSearch, model, promptMode]);
+  }, [saveCurrentSessionSnapshot, stashNewChatDraft, resetConversationLoad, settingsDefaults, agentMode, thinkingMode, webSearch, model, promptMode]);
 
   const handleOpenSettings = useCallback(() => {
     postMessage({ type: 'requestLLMConfig' });
@@ -616,31 +640,16 @@ const App = () => {
     postMessage({ type: 'requestSettingsDefaults' });
   }, []);
 
-  // App 模式（Electron）：侧栏点击打开对话时 URL 带 session 参数（或 preload 注入），
-  // 在 conversationLoaded 到达前显示加载动画，替代默认的静态 Logo。
-  useEffect(() => {
-    if (hostInfo.openConversationMode !== 'openConversation') return;
-    const urlSession = new URLSearchParams(window.location.search).get('session');
-    const injectedSession = (window as any).__sessionId as string | undefined;
-    if (urlSession || injectedSession) {
-      setIsLoadingConversation(true);
-      // 兜底：若 conversationLoaded 长时间未到达（加载失败等异常场景），自动关闭 loading
-      const timer = setTimeout(() => setIsLoadingConversation(false), 15000);
-      return () => clearTimeout(timer);
-    }
-  }, []);
-
   // 组件启动时异步加载对话列表
   useEffect(() => {
     // 延迟加载，避免阻塞初始化
     const timer = setTimeout(() => {
       loadConversations();
-      // Electron 侧栏点击打开对话时：加载指定会话（URL 参数或 preload 注入）
-      const urlSession = new URLSearchParams(window.location.search).get('session');
-      const injectedSession = (window as any).__sessionId as string | undefined;
-      const targetSession = urlSession || injectedSession;
-      if (targetSession) {
-        postMessage({ type: 'loadConversation', sessionId: targetSession });
+      // Electron 侧栏点击打开对话时：视图创建时就绑定了目标会话（URL 参数 / preload 注入），
+      // 由本视图主动请求加载；没有目标会话时创建新对话。
+      // loading 由 useConversationLoading 在视图初始化时进入（见 initialSessionId）。
+      if (initialSessionId) {
+        postMessage({ type: 'loadConversation', sessionId: initialSessionId });
       } else {
         onStartup();
       }

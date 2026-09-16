@@ -1,25 +1,24 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 import { VSCodeUI } from './VSCodeUI.js';
 import { buildDiffUris } from './VSCodeUI/diffUris.js';
 import { setLogCallback } from './core/Logger.js';
 import { initializeHistory } from './core/Integration.js';
 import { startSessionIdleMonitor, stopSessionIdleMonitor } from './core/sessionIdle.js';
 import {
+  readActiveProviderModelContextSync,
   readUiLanguageSync,
   readHighlightLanguagesSync,
   setExtensionPathProvider,
 } from './core/history/Config.js';
 import { ensureConfigDirs } from './core/history/index.js';
+import { VSCODE_HOST_INFO } from './host/types.js';
 import { getContextWindow } from './core/utils/modelConfig.js';
 import { getLLMConfigPanelPayload, hasActiveProviderSetting } from './core/llm/config.js';
 import { getSystemLocale, setCoreLocale, setCoreUiLanguage } from './core/i18n.js';
 import { setGlobalUI } from './core/AssistantUI.js';
 import {
   COMMAND_PREFIX,
-  CONFIG_DIR_NAME,
   DIFF_AFTER_SCHEME,
   DIFF_BEFORE_SCHEME,
   OUTPUT_CHANNEL_NAME,
@@ -282,24 +281,9 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
   private sendContextLimit(model?: string): void {
     if (!this.webviewView) { return; }
 
-    let modelName = model;
-    let modelConfigs: Record<string, { context?: number; output?: number }> = {};
-    try {
-      const settingsPath = path.join(os.homedir(), CONFIG_DIR_NAME, 'settings.json');
-      if (fs.existsSync(settingsPath)) {
-        const cfg = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
-        const activeKey = cfg?.llm?.activeProvider;
-        const activeProvider = activeKey ? cfg?.llm?.providers?.[activeKey] : undefined;
-        if (activeProvider?.modelConfigs && typeof activeProvider.modelConfigs === 'object') {
-          modelConfigs = activeProvider.modelConfigs;
-        }
-        if (!modelName) {
-          modelName = activeProvider?.defaultModel || activeProvider?.models?.[0] || '';
-        }
-      }
-    } catch {
-      // 读取失败则使用默认配置
-    }
+    // 与 Electron 共用同一份读取逻辑（含 provider 级 modelConfigs 覆盖），
+    // 避免两端对「切换模型后的 context window」计算出不同结果。
+    const { model: modelName, modelConfigs } = readActiveProviderModelContextSync(model);
 
     this.webviewView.webview.postMessage({
       type: 'contextLimitUpdated',
@@ -387,13 +371,7 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
       window.__systemLocale = "${systemLocale}";
       window.__uiLocale = "${uiLanguage}";
       window.__highlightLanguages = ${highlightLanguages};
-      window.__hostInfo = {
-        kind: 'vscode',
-        conversationList: 'webview',
-        newConversation: 'webview',
-        closeConversation: false,
-        openConversationMode: 'loadConversation'
-      };
+      window.__hostInfo = ${JSON.stringify(VSCODE_HOST_INFO)};
     </script>
     $1`
     );

@@ -10,6 +10,7 @@ import { createHash } from 'crypto';
 import { logger } from '../Logger.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
 import { DEFAULT_WAKE_SHORTCUT, normalizeAccelerator } from '../utils/shortcut.js';
+import type { ModelTokenLimits } from '../utils/modelConfig.js';
 
 /**
  * 获取配置目录（CONFIG_DIR_NAME）
@@ -472,4 +473,46 @@ export function readWakeShortcutSync(): string {
   } catch {
     return DEFAULT_WAKE_SHORTCUT;
   }
+}
+
+/**
+ * 同步读取 settings.json 中当前 active provider 的模型上下文信息，
+ * 供各宿主在响应 webview 的 requestContextLimit 时使用。
+ *
+ * - model：显式传入的模型名优先（会话/下拉框选中的模型）；
+ *   未传入时按 activeProvider.defaultModel → activeProvider.models[0] → '' 回退。
+ * - modelConfigs：activeProvider.modelConfigs，即 settings.json 中每个模型的
+ *   context/output 覆盖值。
+ *
+ * 必须同时返回 modelConfigs：只按内置 MODEL_CONFIGS 注册表计算 context window
+ * 会忽略用户在 settings.json 中为各模型配置的 context 覆盖，
+ * 表现为「切换模型后 webview 里的 context 不跟随变化」。
+ * VSCode 与 Electron 两端共用本函数，避免逻辑再次分叉。
+ */
+export function readActiveProviderModelContextSync(model?: string): {
+  model: string;
+  modelConfigs: Record<string, ModelTokenLimits>;
+} {
+  let modelName = model || '';
+  let modelConfigs: Record<string, ModelTokenLimits> = {};
+  try {
+    const settingsPath = join(getConfigHomeDir(), 'settings.json');
+    const content = readFileSync(settingsPath, 'utf-8');
+    const cfg = JSON.parse(content);
+    const activeKey = cfg?.llm?.activeProvider;
+    const activeProvider = activeKey ? cfg?.llm?.providers?.[activeKey] : undefined;
+    if (activeProvider?.modelConfigs && typeof activeProvider.modelConfigs === 'object') {
+      modelConfigs = activeProvider.modelConfigs;
+    }
+    if (!modelName) {
+      if (typeof activeProvider?.defaultModel === 'string' && activeProvider.defaultModel.trim()) {
+        modelName = activeProvider.defaultModel.trim();
+      } else if (Array.isArray(activeProvider?.models) && activeProvider.models.length > 0) {
+        modelName = activeProvider.models[0];
+      }
+    }
+  } catch {
+    // 读取失败：保留传入的模型名，modelConfigs 为空（回退内置注册表）
+  }
+  return { model: modelName, modelConfigs };
 }

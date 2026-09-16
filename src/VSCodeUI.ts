@@ -2,17 +2,15 @@
  * VSCodeUI - Singleton 管理 VSCode UI 交互
  * 实现 AssistantUI 接口，负责 core 层和 webview 之间的通信桥接
  *
- * 已拆分为以下模块:
- *   - types.ts: 接口定义
- *   - userChoice.ts: UserChoiceQueue 管理 (UserChoiceManager)
- *   - toolHandler.ts: 工具调用处理 (ToolHandler)
- *   - documentManager.ts: 文档/Diff/预览管理 (DocumentManager)
- *   - webviewMessageHandler.ts: WebView 消息处理 (WebviewMessageHandler)
+ * 宿主共享模块（VSCodeUI / ElectronUI 共用）已迁到 src/host/ui/：
+ *   - types.ts / userChoice.ts / toolHandler.ts / webviewMessageHandler.ts / spinDesignHtml.ts
+ * 本文件仅保留 VS Code 专有部分（webview 生命周期、虚拟文档、面板等）：
+ *   - documentManager.ts / diffUris.ts
  */
 
 import * as vscode from 'vscode';
 import type { AssistantUI } from './core/AssistantUI.js';
-import type { MessageData, StreamMessageData, StreamEndData, UIDynamicInfo } from './core/AssistantUI.js';
+import type { MessageData, StreamMessageData, StreamEndData } from './core/AssistantUI.js';
 import type { ToolProgressData } from './core/tools/Tool.js';
 import type { WebviewMessage } from './core/webviewTypes.js';
 import type { UIHost } from './host/UIHost.js';
@@ -21,18 +19,19 @@ import { tt, getSystemLocale } from './core/i18n.js';
 import { readUiLanguageSync } from './core/history/Config.js';
 import { MERMAID_PANEL_ID, SPIN_DESIGN_PANEL_ID } from './config/project.js';
 import { replayMessagesToUI } from './core/utils/replayMessages.js';
-import type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent } from './VSCodeUI/types.js';
-import { UserChoiceManager } from './VSCodeUI/userChoice.js';
+import type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent } from './host/ui/types.js';
+import { UserChoiceManager } from './host/ui/userChoice.js';
 import { DocumentManager } from './VSCodeUI/documentManager.js';
 import { buildDiffUris } from './VSCodeUI/diffUris.js';
-import { ToolHandler } from './VSCodeUI/toolHandler.js';
-import { WebviewMessageHandler } from './VSCodeUI/webviewMessageHandler.js';
+import { ToolHandler } from './host/ui/toolHandler.js';
+import { WebviewMessageHandler } from './host/ui/webviewMessageHandler.js';
 import { isImageFile } from './host/imageFiles.js';
 import { setSessionIdleCloseHandler, setSessionWaitingForUserProvider, releaseSessionResources } from './core/sessionIdle.js';
 import { clearConversationData } from './core/history/ops.js';
 import { fetchBalanceAndPush } from './core/history/balancePush.js';
 import { buildConversationLoadedPayload } from './host/conversationPayload.js';
-import { pushToolProgress, inheritAgentMode, isActiveQueryInScope } from './host/queryActivity.js';
+import { pushToolProgress, inheritAgentMode } from './host/queryActivity.js';
+import { SessionUiState } from './host/SessionUiState.js';
 import { shouldOpenSpinDesign } from './core/history/spinCommand.js';
 
 export type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent };
@@ -44,22 +43,16 @@ export class VSCodeUI implements AssistantUI {
   /** 按 session 保存的 agent mode */
   private sessionAgentModes: Map<string, 'manual' | 'risk' | 'auto'> = new Map();
   /**
-   * 按 session 保存当前活动阶段。
-   * 用于在切换对话时正确恢复 thinking 动画，而不是简单用 hasActiveQuery 推断：
-   * - idle: 无活动
-   * - thinking: 正在 LLM thinking / 等待 LLM 开始
-   * - text: 正在流式输出 assistant 文本（此时应显示文本而不是 thinking 动画）
-   * - tool: 正在执行/等待工具（此时应显示工具卡片而不是 thinking 动画）
+   * 按会话的 UI 运行时状态（活动阶段 / 工具计数 / 查询计数 / abort scope）。
+   * 与 ElectronUI 共用同一实现，避免两端逻辑分叉。
    */
-  private sessionActivityPhases: Map<string, 'idle' | 'thinking' | 'text' | 'tool'> = new Map();
-  /** 每个 session 当前处于 tool 阶段的工具数量，用于并发工具结束后正确恢复 idle */
-  private sessionActiveToolCounts: Map<string, number> = new Map();
+  private readonly sessionUi = new SessionUiState();
   /** 对话列表刷新 debounce timer：消息落盘是异步的，延迟刷新可拿到最新 messageCount */
   private conversationListRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private _windowStateRegistered: boolean = false;
 
   // 子模块
-  private userChoiceManager: UserChoiceManager;
+  private userChoiceManager: UserChoiceManager<vscode.Uri>;
   private documentManager: DocumentManager;
   private toolHandler: ToolHandler;
   private webviewMessageHandler: WebviewMessageHandler;
@@ -117,11 +110,17 @@ export class VSCodeUI implements AssistantUI {
    */
   private buildHost(): UIHost {
     return {
-      kind: 'vscode',
       sendToWebview: (message) => {
-        this.webviewView?.webview.postMessage(message as WebviewMessage);
+        this.webviewView?.webview.postMessage(message);
       },
-      openFile: async (filePath, selectedLines) => {
+      onSessionOpened: (sessionId) => {
+        // 单 webview 宿主：打开 MCP 面板即按当前活动会话建立引用（幂等）。
+        // acquire 可能耗时（首次拉取包、握手），后台执行，完成后回推运行时状态；
+        // 期间 webview 显示「连接中」。多视图宿主由视图管理器维护，见 ElectronUI。
+        this.webviewMessageHandler.acquireMcpOnSessionOpen(sessionId);
+      },
+      openFile: async (filePath, target) => {
+        const selectedLines = target;
         const uri = vscode.Uri.file(filePath);
 
         // 图片文件直接交给默认编辑器（内置图片预览）打开。
@@ -200,7 +199,7 @@ export class VSCodeUI implements AssistantUI {
           return { success: true, filePath: uri.fsPath };
         } catch (err) {
           VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] saveTextFile failed: ${err}`);
-          return { success: false, error: String(err) };
+          return { success: false, canceled: false, error: String(err) };
         }
       },
       isDarkTheme: () => {
@@ -365,7 +364,7 @@ export class VSCodeUI implements AssistantUI {
       }
     );
 
-    const { getSpinDesignHtml } = await import('./VSCodeUI/spinDesignHtml.js');
+    const { getSpinDesignHtml } = await import('./host/ui/spinDesignHtml.js');
     const { getAllSkills } = await import('./core/skills/loadSkillsDir.js');
     const isDark = this.buildHost().isDarkTheme();
     // 无工作区时不做技能扫描（workspacePath 为空，扫相对路径会落到宿主进程目录）
@@ -608,7 +607,7 @@ export class VSCodeUI implements AssistantUI {
     tool: unknown,
   ): Promise<import('./core/tools/Tool.js').PermissionResult> {
     // 进入工具阶段（包括等待用户授权/权限检查），thinking 动画应让位于工具卡片
-    this.setActivityPhase(sessionID, 'tool');
+    this.sessionUi.beginToolPhase(sessionID);
     return this.toolHandler.onPreToolCall(sessionID, toolUseId, toolName, args, tool);
   }
 
@@ -616,7 +615,7 @@ export class VSCodeUI implements AssistantUI {
    * 工具调用开始
    */
   onToolCall(sessionID: string, toolUseId: string, toolName: string): void {
-    this.sessionActivityPhases.set(sessionID, 'tool');
+    this.sessionUi.markToolPhase(sessionID);
     this.toolHandler.onToolCall(sessionID, toolUseId, toolName);
   }
 
@@ -624,7 +623,7 @@ export class VSCodeUI implements AssistantUI {
    * 工具调用结果
    */
   onToolResult(sessionID: string, toolUseId: string, toolName: string, output: string, status: 'success' | 'error'): void {
-    this.finishToolPhase(sessionID);
+    this.sessionUi.endToolPhase(sessionID);
     this.toolHandler.onToolResult(sessionID, toolUseId, toolName, output, status);
   }
 
@@ -670,7 +669,11 @@ export class VSCodeUI implements AssistantUI {
       return;
     }
     // 流式阶段决定当前是 thinking 还是 assistant 文本输出
-    this.sessionActivityPhases.set(sessionID, data.role === 'assistant' ? 'text' : 'thinking');
+    if (data.role === 'assistant') {
+      this.sessionUi.markText(sessionID);
+    } else {
+      this.sessionUi.markThinking(sessionID);
+    }
     this.postToWebview(sessionID, {
       type: 'streamMessage',
       role: data.role,
@@ -719,23 +722,7 @@ export class VSCodeUI implements AssistantUI {
    * 子代理在后台运行时，父会话的 abort 按钮仍应可用（中断父会话会连带中断子代理）。
    */
   private hasActiveQueryInScope(sessionId: string): boolean {
-    // 后台 Bash 任务
-    let getBackgroundTasks: (() => Array<{ status: string; sessionID?: string }>) | undefined;
-    try {
-      const { getAllBackgroundTasks } = require('./core/tools/bash/LocalShellTask.js') as typeof import('./core/tools/bash/LocalShellTask.js');
-      getBackgroundTasks = getAllBackgroundTasks;
-    } catch {
-      // LocalShellTask 不可用时忽略
-    }
-    // 子代理注册表：按入参会话查询其子会话（递归下降用，不能绑定固定 sessionId）
-    let listChildSessions: ((sessionId: string) => string[]) | undefined;
-    try {
-      const { subAgentRegistry } = require('./core/tools/agent/SubAgentRegistry.js') as typeof import('./core/tools/agent/SubAgentRegistry.js');
-      listChildSessions = (id) => subAgentRegistry.listForCreator(id);
-    } catch {
-      // 子代理注册表不可用时只按当前会话自身判断
-    }
-    return isActiveQueryInScope(sessionId, this.queryActiveCounts, getBackgroundTasks, listChildSessions);
+    return this.sessionUi.hasActiveQueryInScope(sessionId);
   }
 
   /**
@@ -808,41 +795,17 @@ export class VSCodeUI implements AssistantUI {
   }
 
   /**
-   * 更新某个 session 的活动阶段
-   */
-  private setActivityPhase(sessionID: string, phase: 'idle' | 'thinking' | 'text' | 'tool'): void {
-    if (phase === 'tool') {
-      const count = (this.sessionActiveToolCounts.get(sessionID) ?? 0) + 1;
-      this.sessionActiveToolCounts.set(sessionID, count);
-    }
-    this.sessionActivityPhases.set(sessionID, phase);
-  }
-
-  /**
-   * 工具结束：递减并发计数，全部结束后回到 idle
-   */
-  private finishToolPhase(sessionID: string): void {
-    const count = Math.max(0, (this.sessionActiveToolCounts.get(sessionID) ?? 0) - 1);
-    if (count === 0) {
-      this.sessionActiveToolCounts.delete(sessionID);
-      this.sessionActivityPhases.set(sessionID, 'idle');
-    } else {
-      this.sessionActiveToolCounts.set(sessionID, count);
-    }
-  }
-
-  /**
    * 获取某个 session 当前活动阶段（供 conversationLoaded 恢复 thinking 动画使用）
    */
   getActivityPhase(sessionID: string): 'idle' | 'thinking' | 'text' | 'tool' {
-    return this.sessionActivityPhases.get(sessionID) ?? 'idle';
+    return this.sessionUi.getActivityPhase(sessionID);
   }
 
   /**
    * AI 开始处理
    */
   onAIBegin(sessionID: string): void {
-    this.sessionActivityPhases.set(sessionID, 'thinking');
+    this.sessionUi.markThinking(sessionID);
     this.setThinkingAnimation(sessionID, true);
     this.postToWebview(sessionID, {
       type: 'aiBegin',
@@ -853,7 +816,7 @@ export class VSCodeUI implements AssistantUI {
    * AI 处理结束（每轮 LLM 调用后触发）
    */
   onAIEnd(sessionID: string): void {
-    this.sessionActivityPhases.set(sessionID, 'idle');
+    this.sessionUi.markIdle(sessionID);
     this.setThinkingAnimation(sessionID, false);
     this.postToWebview(sessionID, {
       type: 'aiEnd',
@@ -863,21 +826,15 @@ export class VSCodeUI implements AssistantUI {
   }
 
   /**
-   * 每个 session 当前处于"查询进行中"的计数。
+   * 查询开始。
    * 同一 session 可能被多个调用方同时标记 begin（主 sendMessage、排队消息 manageQueryUI、
-   * enqueueAgentMessage 后台 consumer、子代理等），用计数去重，保证一次查询只发一次 queryBegin/queryEnd。
-   */
-  private queryActiveCounts: Map<string, number> = new Map();
-
-  /**
-   * 查询开始
+   * enqueueAgentMessage 后台 consumer、子代理等），由 SessionUiState 计数去重，
+   * 保证一次查询只发一次 queryBegin/queryEnd。
    */
   onQueryBegin(sessionID: string): void {
-    const count = (this.queryActiveCounts.get(sessionID) ?? 0) + 1;
-    this.queryActiveCounts.set(sessionID, count);
-    if (count > 1) return;
+    if (!this.sessionUi.beginQuery(sessionID)) return;
     // 查询开始时立即显示 thinking 动画，覆盖前置耗时
-    this.sessionActivityPhases.set(sessionID, 'thinking');
+    this.sessionUi.markThinking(sessionID);
     this.setThinkingAnimation(sessionID, true);
     this.syncAbortState();
     this.postToWebview(sessionID, {
@@ -889,15 +846,8 @@ export class VSCodeUI implements AssistantUI {
    * 查询结束
    */
   onQueryEnd(sessionID: string): void {
-    const count = this.queryActiveCounts.get(sessionID) ?? 0;
-    if (count <= 0) return;
-    const next = count - 1;
-    if (next > 0) {
-      this.queryActiveCounts.set(sessionID, next);
-      return;
-    }
-    this.queryActiveCounts.delete(sessionID);
-    this.sessionActivityPhases.set(sessionID, 'idle');
+    if (!this.sessionUi.endQuery(sessionID)) return;
+    this.sessionUi.markIdle(sessionID);
     // 查询结束必须关闭 thinking 动画：中断（尤其子代理中断）可能没有 onAIEnd，
     // 若只发 queryEnd 会让 webview 的 thinking 动画残留。
     this.setThinkingAnimation(sessionID, false);
@@ -1014,6 +964,11 @@ export class VSCodeUI implements AssistantUI {
   /**
    * 展开压缩的对话：从归档读取消息推给 webview 显示，不动 JSONL
    * LLM 仍然只看到压缩后的消息，展开仅影响 webview 显示
+   *
+   * 归档契约（见 core/compact/compact.ts）：
+   * 归档 = 被压缩消息 + 摘要，保留的最近消息（retainedMessages）不入归档。
+   * replayMessagesToUI 第一步是 clearMessages，因此展开时必须把 retainedMessages
+   * 与归档一起重推；否则压缩后的最近消息会从 UI 上消失。
    */
   async onExpandCompact(sessionID: string): Promise<void> {
     try {
@@ -1024,32 +979,25 @@ export class VSCodeUI implements AssistantUI {
         return;
       }
 
-      // 后备：如果归档中没有 summary 消息（旧归档），从压缩后的主 JSONL 中读取并补充
-      let messagesToDisplay = originalMessages;
-      {
-        const summaryCount = originalMessages.filter(m => (m as any).isCompactSummary === true).length;
-        if (summaryCount === 0) {
-          try {
-            const { loadConversation } = await import('./core/history/index.js');
-            const conversation = await loadConversation(sessionID);
-            const compressedSummaries = conversation.messages.filter((m: any) =>
-              m.type === 'user' && (m as any).isCompactSummary === true
-            );
-            // 从压缩后消息中提取"当前未被压缩部分"（保留的最近消息）
-            const retainedMessages = conversation.messages.filter((m: any) =>
-              (m.type === 'user' || m.type === 'assistant')
-              && !(m as any).isCompactSummary
-              && !((m as any).subtype === 'compact_boundary')
-            );
-            if (compressedSummaries.length > 0) {
-              // 顺序：归档消息 -> 压缩摘要 -> 当前未被压缩部分
-              messagesToDisplay = [...originalMessages, ...compressedSummaries, ...retainedMessages];
-            }
-          } catch (err) {
-            VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] Failed to load summaries from compressed messages: ${err}`);
-          }
-        }
-      }
+      const { loadConversation } = await import('./core/history/index.js');
+      const conversation = await loadConversation(sessionID);
+
+      // 压缩摘要：新归档自带；旧归档（不含摘要）需要从压缩后的主 JSONL 补齐
+      const compressedSummaries = conversation.messages.filter(
+        m => m.type === 'user' && m.isCompactSummary === true
+      );
+      // 当前未被压缩部分（保留的最近消息）；compact_boundary 是 system 消息，已被类型过滤排除
+      const retainedMessages = conversation.messages.filter(
+        m => (m.type === 'user' && m.isCompactSummary !== true) || m.type === 'assistant'
+      );
+      const summaryCount = originalMessages.filter(
+        m => m.type === 'user' && m.isCompactSummary === true
+      ).length;
+
+      // 顺序：归档消息 -> （旧归档补齐的）压缩摘要 -> 当前未被压缩部分
+      const messagesToDisplay = summaryCount === 0 && compressedSummaries.length > 0
+        ? [...originalMessages, ...compressedSummaries, ...retainedMessages]
+        : [...originalMessages, ...retainedMessages];
 
       replayMessagesToUI(this, sessionID, messagesToDisplay);
 
@@ -1059,14 +1007,6 @@ export class VSCodeUI implements AssistantUI {
     } catch (err) {
       VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] Failed to expand compact for ${sessionID}: ${err}`);
     }
-  }
-
-  /**
-   * 获取 UI 动态信息
-   */
-  async getUIDynamicInfo(_sessionID: string): Promise<UIDynamicInfo> {
-    // 未打开工作区时返回空字符串（与 ElectronUI 一致），不要退回 process.cwd()
-    return { cwd: this.getWorkspacePath() || '' };
   }
 
   /**

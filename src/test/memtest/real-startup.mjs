@@ -57,7 +57,13 @@ await page.addInitScript(() => {
   const post = () => {};
   window.vscode = { postMessage: post, getState: () => null, setState: post };
   window.acquireVsCodeApi = () => window.vscode;
-  window.__hostInfo = { kind: 'vscode' };
+  window.__hostInfo = {
+    kind: 'vscode',
+    conversationList: 'webview',
+    newConversation: 'webview',
+    closeConversation: false,
+    openConversationMode: 'loadConversation',
+  };
   window.__highlightLanguages = [];
   // 记录「模块图就绪」时刻：等 #root 出现 React 渲染的节点
   window.__marks = {};

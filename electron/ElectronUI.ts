@@ -19,22 +19,23 @@ import type { ChatViewManager } from './ChatViewManager.js';
 
 /** 项目根目录（dist-electron 的上一级，与 main.ts 的 APP_ROOT 一致） */
 const APP_ROOT = path.resolve(__dirname, '..');
-import type { AssistantUI, MessageData, StreamMessageData, StreamEndData, UIDynamicInfo } from '../src/core/AssistantUI.js';
+import type { AssistantUI, MessageData, StreamMessageData, StreamEndData } from '../src/core/AssistantUI.js';
 import type { ToolProgressData } from '../src/core/tools/Tool.js';
 import type { WebviewMessage } from '../src/core/webviewTypes.js';
 import type { UIHost } from '../src/host/UIHost.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
 import { tt, getSystemLocale } from '../src/core/i18n.js';
-import { UserChoiceManager } from '../src/VSCodeUI/userChoice.js';
-import { ToolHandler } from '../src/VSCodeUI/toolHandler.js';
+import { UserChoiceManager } from '../src/host/ui/userChoice.js';
+import { ToolHandler } from '../src/host/ui/toolHandler.js';
 import { buildEditDiffHunks } from '../src/core/utils/editDiff.js';
-import { WebviewMessageHandler } from '../src/VSCodeUI/webviewMessageHandler.js';
+import { WebviewMessageHandler } from '../src/host/ui/webviewMessageHandler.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
 import { isImageFile } from '../src/host/imageFiles.js';
 import { clearConversationData } from '../src/core/history/ops.js';
 import { fetchBalanceAndPush } from '../src/core/history/balancePush.js';
 import { buildConversationLoadedPayload } from '../src/host/conversationPayload.js';
-import { pushToolProgress, inheritAgentMode, isActiveQueryInScope } from '../src/host/queryActivity.js';
+import { pushToolProgress, inheritAgentMode } from '../src/host/queryActivity.js';
+import { SessionUiState } from '../src/host/SessionUiState.js';
 import { shouldOpenSpinDesign } from '../src/core/history/spinCommand.js';
 
 export class ElectronUI implements AssistantUI {
@@ -46,6 +47,8 @@ export class ElectronUI implements AssistantUI {
   private workspacePath: string | undefined;
   /** 按 session 保存的 agent mode */
   private sessionAgentModes: Map<string, 'manual' | 'risk' | 'auto'> = new Map();
+  /** 按会话的 UI 运行时状态（活动阶段 / 工具计数 / 查询计数 / abort scope），与 VSCodeUI 共用实现 */
+  private readonly sessionUi = new SessionUiState();
   /** 侧栏刷新 debounce timer：消息落盘是异步的（appendMessage 在 onMessage 之后执行），
    *  延迟再拉取可保证拿到包含新对话的最新列表 */
   private sidebarRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -230,10 +233,14 @@ export class ElectronUI implements AssistantUI {
 
   private buildHost(): UIHost {
     return {
-      kind: 'electron',
       sendToWebview: (message) => this.sendToRenderer(message),
 
-      openFile: async (filePath, selectedLines) => {
+      onSessionOpened: () => {
+        // 多视图宿主：MCP 引用由 ChatViewManager 在打开/关闭聊天视图时精确维护，
+        // 这里不按全局 activeSessionId acquire（可能引用到已关闭的会话导致泄漏）。
+      },
+
+      openFile: async (filePath, target) => {
         // 图片用内置图片预览窗口打开，避免 Monaco 按 utf-8 读取显示乱码
         if (isImageFile(filePath)) {
           this.openImagePreview(filePath);
@@ -243,7 +250,7 @@ export class ElectronUI implements AssistantUI {
         await this.openMonacoWindow({
           mode: 'view',
           filePath,
-          selectedLines,
+          selectedLines: target ?? undefined,
           title: path.basename(filePath),
         });
       },
@@ -312,7 +319,7 @@ export class ElectronUI implements AssistantUI {
           return { success: true, filePath: result.filePath };
         } catch (err) {
           this.log(`[ElectronUI] saveTextFile failed: ${err}`);
-          return { success: false, error: String(err) };
+          return { success: false, canceled: false, error: String(err) };
         }
       },
 
@@ -465,7 +472,7 @@ export class ElectronUI implements AssistantUI {
       }
     }
 
-    const { getSpinDesignHtml } = await import('../src/VSCodeUI/spinDesignHtml.js');
+    const { getSpinDesignHtml } = await import('../src/host/ui/spinDesignHtml.js');
     const isDark = nativeTheme.shouldUseDarkColors;
     const html = getSpinDesignHtml(existingData, isDark, app.getLocale().startsWith('zh') ? 'zh' : 'en', getSystemLocale());
 
@@ -683,23 +690,7 @@ export class ElectronUI implements AssistantUI {
    * 因此子代理后台运行时父会话的 abort 按钮也应保持可用。
    */
   private hasActiveQueryInScope(sessionId: string): boolean {
-    // 后台 Bash 任务
-    let getBackgroundTasks: (() => Array<{ status: string; sessionID?: string }>) | undefined;
-    try {
-      const { getAllBackgroundTasks } = require('../src/core/tools/bash/LocalShellTask.js') as typeof import('../src/core/tools/bash/LocalShellTask.js');
-      getBackgroundTasks = getAllBackgroundTasks;
-    } catch {
-      // LocalShellTask 不可用时忽略
-    }
-    // 子代理注册表：按入参会话查询其子会话（递归下降用，不能绑定固定 sessionId）
-    let listChildSessions: ((sessionId: string) => string[]) | undefined;
-    try {
-      const { subAgentRegistry } = require('../src/core/tools/agent/SubAgentRegistry.js') as typeof import('../src/core/tools/agent/SubAgentRegistry.js');
-      listChildSessions = (id) => subAgentRegistry.listForCreator(id);
-    } catch {
-      // 子代理注册表不可用时只按当前会话自身判断
-    }
-    return isActiveQueryInScope(sessionId, this.queryActiveCounts, getBackgroundTasks, listChildSessions);
+    return this.sessionUi.hasActiveQueryInScope(sessionId);
   }
 
   /**
@@ -743,27 +734,25 @@ export class ElectronUI implements AssistantUI {
   }
 
   onAIBegin(sessionID: string): void {
+    this.sessionUi.markThinking(sessionID);
     this.setThinkingAnimation(sessionID, true);
     this.postToWebview(sessionID, { type: 'aiBegin' });
   }
 
   onAIEnd(sessionID: string): void {
+    this.sessionUi.markIdle(sessionID);
     this.setThinkingAnimation(sessionID, false);
     this.postToWebview(sessionID, { type: 'aiEnd' });
     this.fetchAndSendBalance(sessionID);
   }
 
-  /** 每个 session 当前处于"查询进行中"的计数（同一 session 可能被多个调用方同时标记 begin，用于去重，保证一次查询只发一次 queryEnd） */
-  private queryActiveCounts: Map<string, number> = new Map();
-
   onQueryBegin(sessionID: string): void {
-    const count = (this.queryActiveCounts.get(sessionID) ?? 0) + 1;
-    this.queryActiveCounts.set(sessionID, count);
-    if (count > 1) {
-      // 同一 session 已处于查询中（嵌套 begin），忽略，避免 UI 状态抖动
-      this.log(`Ignoring nested queryBegin for session: ${sessionID} (count=${count})`);
+    // 同一 session 的嵌套 begin 由 SessionUiState 计数去重，避免 UI 状态抖动
+    if (!this.sessionUi.beginQuery(sessionID)) {
+      this.log(`Ignoring nested queryBegin for session: ${sessionID}`);
       return;
     }
+    this.sessionUi.markThinking(sessionID);
     this.syncAbortState();
     this.setThinkingAnimation(sessionID, true);
     this.postToWebview(sessionID, { type: 'queryBegin' });
@@ -772,24 +761,25 @@ export class ElectronUI implements AssistantUI {
   }
 
   onQueryEnd(sessionID: string): void {
-    const count = this.queryActiveCounts.get(sessionID) ?? 0;
-    if (count <= 0) {
+    if (!this.sessionUi.endQuery(sessionID)) {
       // 没有对应的 queryBegin（重复 onQueryEnd），忽略，保证一次查询只发一次 queryEnd
       this.log(`Ignoring redundant queryEnd for session: ${sessionID}`);
       return;
     }
-    const next = count - 1;
-    if (next > 0) {
-      // 该 session 还有其他进行中的查询（嵌套 begin 未结束），暂不发送 queryEnd
-      this.queryActiveCounts.set(sessionID, next);
-      this.log(`Query still active for session: ${sessionID} (remaining=${next}), deferring queryEnd`);
-      return;
-    }
-    this.queryActiveCounts.delete(sessionID);
+    this.sessionUi.markIdle(sessionID);
     this.syncAbortState();
     this.postToWebview(sessionID, { type: 'queryEnd' });
     // 查询结束：用户消息已持久化（appendMessage 已完成），刷新侧栏使新对话出现在列表中
     this.refreshSidebarThrottled();
+    // 与 VSCodeUI 一致：meta.json 此时一定已存在，补写新对话期间记在内存里的会话级 MCP 选择
+    void (async () => {
+      try {
+        const { flushSessionMcpToMeta } = await import('../src/core/mcp/Config.js');
+        await flushSessionMcpToMeta(sessionID);
+      } catch {
+        // 补写失败不影响主流程
+      }
+    })();
   }
 
   private fetchAndSendBalance(sessionID: string): void {
@@ -975,11 +965,6 @@ export class ElectronUI implements AssistantUI {
     } catch (err) {
       this.log(`Failed to expand compact for ${sessionID}: ${err}`);
     }
-  }
-
-  async getUIDynamicInfo(_sessionID: string): Promise<UIDynamicInfo> {
-    // 不使用当前工作目录作为默认：未选择工作区时返回空字符串（引擎也无法在无工作区下运行）
-    return { cwd: this.getWorkspacePath() || '' };
   }
 
   async requestUserChoice(sessionID: string, options: {

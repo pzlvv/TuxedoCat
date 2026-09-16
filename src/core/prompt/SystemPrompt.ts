@@ -149,17 +149,6 @@ ${info.availableSkills}`);
 }
 
 /**
- * UI 动态环境信息
- * 由 VSCode 扩展提供，包含当前工作目录
- *
- * 注意：此类型也在 AssistantUI.ts 中导出，保持一致
- */
-export interface UIDynamicInfo {
-  /** 当前工作目录 */
-  cwd: string;
-}
-
-/**
  * 生成完整的系统提示词
  * @deprecated 使用 generateStaticSystemPrompt、generateSystemDynamicPrompt 分别生成
  */

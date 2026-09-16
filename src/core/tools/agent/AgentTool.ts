@@ -261,8 +261,8 @@ export const AgentTool = buildTool({
 
     // ========== 2. 获取 UI 实例 ==========
 
-    const { getGlobalUI } = await import('../../AssistantUI.js');
-    const ui = getGlobalUI();
+    const { requireGlobalUI } = await import('../../AssistantUI.js');
+    const ui = requireGlobalUI();
 
     // ========== 3. 创建 QueryEngine  ==========
 
@@ -334,7 +334,7 @@ Important guidelines:
       setAppState: (updater: (prev: unknown) => unknown) => {
         context.setAppState(updater);
       },
-      ui: ui as any,
+      ui,
       abortController: abortController as any,
       initialMessages: [taskMessage as any],
       maxTurns: Number.MAX_SAFE_INTEGER,
@@ -366,18 +366,14 @@ Important guidelines:
     subAgentRegistry.register(subSessionID, subEngine, context, creatorSessionId);
 
     // 继承父会话的 agent mode
-    if (ui && typeof (ui as any).onSetAgentMode === 'function') {
-      (ui as any).onSetAgentMode(creatorSessionId, subSessionID);
-    }
+    ui?.onSetAgentMode(creatorSessionId, subSessionID);
 
     // 在后台启动子代理处理初始消息（不阻塞）
     (async () => {
       logger.info('AgentTool', `Sub-agent ${subSessionID} started in background`);
       // 通知 UI 子代理开始查询（使 abort 按钮可用）
-      if (ui) {
-        logger.info('AgentTool', `Calling ui.onQueryBegin for sub-agent ${subSessionID}`);
-        ui.onQueryBegin(subSessionID);
-      }
+      logger.info('AgentTool', `Calling ui.onQueryBegin for sub-agent ${subSessionID}`);
+      ui.onQueryBegin(subSessionID);
       try {
         const generator = subEngine.submitMessage(prompt);
         let result = await generator.next();
@@ -497,13 +493,11 @@ Important guidelines:
       } catch (err) {
         logger.error('AgentTool', `Sub-agent ${subSessionID} background error: ${err}`);
       } finally {
-        if (ui) {
-          logger.info('AgentTool', `Calling ui.onQueryEnd for sub-agent ${subSessionID}`);
-          ui.onQueryEnd(subSessionID);
-        }
+        logger.info('AgentTool', `Calling ui.onQueryEnd for sub-agent ${subSessionID}`);
+        ui.onQueryEnd(subSessionID);
         // 刷新对话列表：此时子代理的消息已持久化（messageCount >= 1），
         // 确保新子会话能在对话树中正确显示并关联到主对话。
-        ui?.refreshConversationList();
+        ui.refreshConversationList();
       }
     })();
 
@@ -513,7 +507,7 @@ Important guidelines:
 
     // 通知 UI 刷新对话列表（尽早刷新一次；若此时首条消息尚未落盘导致列表未包含
     // 子会话，后台任务 finally 中的刷新会兜底确保最终可见）
-    ui?.refreshConversationList();
+    ui.refreshConversationList();
 
     return {
       data: {

@@ -87,10 +87,10 @@ export function registerBuiltinCommand(definition: BuiltinCommandDefinition): vo
  * 获取所有已注册的内置命令
  * 函数形式的 description 在此时求值，保证返回的是当前 locale 的文案。
  */
-export function getBuiltinCommands(): BuiltinCommand[] {
+export function getBuiltinCommands(): Array<BuiltinCommand & { description: string }> {
   return builtinCommands.map((c) => ({
     ...c,
-    description: typeof c.description === 'function' ? (c.description as () => string)() : c.description,
+    description: typeof c.description === 'function' ? c.description() : c.description,
   }));
 }
 

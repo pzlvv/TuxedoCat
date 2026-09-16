@@ -9,7 +9,7 @@
 import { QueryEngine, getSessionEngine } from '../QueryEngine.js';
 import { getProjectRoot } from '../history/Config.js';
 import { getAllTools } from '../tools/index.js';
-import { getGlobalUI } from '../AssistantUI.js';
+import { requireGlobalUI } from '../AssistantUI.js';
 import type { SpinDesign, SpinNode } from './Types.js';
 import { logger } from '../Logger.js';
 import { generateCoreSystemPrompt } from '../prompt/SystemPrompt.js';
@@ -25,8 +25,7 @@ export async function createSubAgent(
   node: SpinNode,
 ): Promise<string> {
   const subSessionID = `spin-runner-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const ui = getGlobalUI();
-  if (!ui) throw new Error('UI not initialized');
+  const ui = requireGlobalUI();
 
   const abortController = new AbortController();
 

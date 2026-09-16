@@ -10,7 +10,6 @@
  */
 
 import type { HostInfo } from '../host/types';
-import { VSCODE_HOST_INFO, ELECTRON_HOST_INFO } from '../host/types';
 
 interface VscodeApi {
   postMessage(message: unknown): void;
@@ -22,51 +21,71 @@ let _hasWorkspace: boolean | undefined;
 let _hostInfo: HostInfo | null = null;
 
 /**
- * Lazily resolve host API handle. Electron 优先走 window.electronAPI，
- * VS Code 走 window.vscode（acquireVsCodeApi），standalone / dev 构建可能回退。
+ * 解析宿主消息通道。
+ * Electron 走 window.electronAPI（preload 注入），VS Code / 浏览器 shim 走 window.vscode。
+ * 两者都不存在时抛错——这是宿主集成缺失，不做静默降级。
  */
+function resolveVscodeApi(): VscodeApi {
+  if (_vscode) return _vscode;
+  const electronApi = (window as any).electronAPI as { postMessage?: (m: unknown) => void } | undefined;
+  if (electronApi?.postMessage) {
+    _vscode = { postMessage: (msg: unknown) => electronApi.postMessage!(msg) };
+    return _vscode;
+  }
+  const vscodeApi = (window as any).vscode as VscodeApi | undefined;
+  if (vscodeApi?.postMessage) {
+    _vscode = vscodeApi;
+    return _vscode;
+  }
+  throw new Error(
+    '宿主消息通道未就绪：既没有 window.electronAPI（Electron preload），也没有 window.vscode（VS Code / 浏览器 shim）。'
+  );
+}
+
 export function getVscodeApi(): VscodeApi {
-  if (!_vscode) {
-    const electronApi = (window as any).electronAPI as { postMessage?: (m: unknown) => void } | undefined;
-    if (electronApi?.postMessage) {
-      _vscode = { postMessage: (msg: unknown) => electronApi.postMessage!(msg) };
-    } else {
-      _vscode = (window as any).vscode as VscodeApi ?? null;
-    }
-  }
-  if (!_vscode) {
-    throw new Error('Host API not available');
-  }
-  return _vscode;
+  return resolveVscodeApi();
 }
 
 export function hasVscodeApi(): boolean {
-  if (!_vscode) {
-    const electronApi = (window as any).electronAPI as { postMessage?: (m: unknown) => void } | undefined;
-    if (electronApi?.postMessage) {
-      _vscode = { postMessage: (msg: unknown) => electronApi.postMessage!(msg) };
-    } else {
-      _vscode = (window as any).vscode as VscodeApi ?? null;
-    }
-  }
-  return !!_vscode;
+  if (_vscode) return true;
+  const electronApi = (window as any).electronAPI as { postMessage?: (m: unknown) => void } | undefined;
+  if (electronApi?.postMessage) return true;
+  const vscodeApi = (window as any).vscode as VscodeApi | undefined;
+  return !!vscodeApi?.postMessage;
 }
 
 /**
- * 获取宿主能力声明（由各宿主注入 window.__hostInfo）。
- * 未注入时（dev / standalone 构建）按 electronAPI 存在性回退推断，保持向后兼容。
+ * 获取宿主能力声明（由各宿主在页面加载时注入 window.__hostInfo）。
+ *
+ * 这是 webview 感知宿主差异的唯一入口：注入缺失或字段不完整时直接抛错，
+ * 让「新宿主忘记声明能力」在启动时就暴露，而不是靠嗅探回退掩盖。
  */
 export function getHostInfo(): HostInfo {
-  if (!_hostInfo) {
-    const injected = (window as any).__hostInfo as HostInfo | undefined;
-    if (injected && (injected.kind === 'vscode' || injected.kind === 'electron' || injected.kind === 'server')) {
-      _hostInfo = injected;
-    } else if ((window as any).electronAPI) {
-      _hostInfo = ELECTRON_HOST_INFO;
-    } else {
-      _hostInfo = VSCODE_HOST_INFO;
-    }
+  if (_hostInfo) return _hostInfo;
+  const injected = (window as any).__hostInfo as Partial<HostInfo> | undefined;
+  if (!injected) {
+    throw new Error('window.__hostInfo 未注入：宿主必须在 webview 启动前声明能力（见 src/host/types.ts）。');
   }
+  const problems: string[] = [];
+  if (injected.kind !== 'vscode' && injected.kind !== 'electron' && injected.kind !== 'server') {
+    problems.push(`kind=${String(injected.kind)}`);
+  }
+  if (injected.conversationList !== 'host' && injected.conversationList !== 'webview') {
+    problems.push(`conversationList=${String(injected.conversationList)}`);
+  }
+  if (injected.newConversation !== 'host' && injected.newConversation !== 'webview') {
+    problems.push(`newConversation=${String(injected.newConversation)}`);
+  }
+  if (typeof injected.closeConversation !== 'boolean') {
+    problems.push(`closeConversation=${String(injected.closeConversation)}`);
+  }
+  if (injected.openConversationMode !== 'openConversation' && injected.openConversationMode !== 'loadConversation') {
+    problems.push(`openConversationMode=${String(injected.openConversationMode)}`);
+  }
+  if (problems.length > 0) {
+    throw new Error(`window.__hostInfo 字段非法或缺失：${problems.join(', ')}（见 src/host/types.ts 的 HostInfo）。`);
+  }
+  _hostInfo = injected as HostInfo;
   return _hostInfo;
 }
 

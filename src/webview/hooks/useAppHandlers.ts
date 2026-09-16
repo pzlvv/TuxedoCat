@@ -35,7 +35,6 @@ export interface UseAppHandlersProps {
   hasCompactArchive: boolean;
   isCompactExpanded: boolean;
   queuedMessage: QueuedMessagePayload | null;
-  stats: any;
   deleteConfirm: { sessionId: string; title: string } | null;
   userChoiceRequest: UserChoiceRequest | null;
   showThinkingAnimation: boolean;
@@ -63,7 +62,6 @@ export interface UseAppHandlersProps {
   setHasCompactArchive: (v: boolean) => void;
   setIsCompactExpanded: (v: boolean) => void;
   setQueuedMessage: (v: QueuedMessagePayload | null) => void;
-  setStats: (v: any) => void;
   setDeleteConfirm: (v: { sessionId: string; title: string } | null) => void;
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
   setUserChoiceRequest: (v: UserChoiceRequest | null) => void;

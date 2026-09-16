@@ -1,13 +1,13 @@
 /**
- * VSCodeUI/toolHandler.ts - 工具调用处理
+ * src/host/ui/toolHandler.ts - 工具调用处理
  * 处理 onPreToolCall / onToolCall / onToolResult 等工具生命周期
  */
-import type { LogChannel } from '../host/UIHost.js';
-import { expandPath } from '../core/utils/path.js';
-import { getProjectRoot } from '../core/history/Config.js';
-import { logger } from '../core/Logger.js';
-import { buildEditDiffHunks } from '../core/utils/editDiff.js';
-import type { PermissionResult } from '../core/tools/Tool.js';
+import type { LogChannel } from '../UIHost.js';
+import { expandPath } from '../../core/utils/path.js';
+import { getProjectRoot } from '../../core/history/Config.js';
+import { logger } from '../../core/Logger.js';
+import { buildEditDiffHunks } from '../../core/utils/editDiff.js';
+import type { PermissionResult } from '../../core/tools/Tool.js';
 import type { UserChoiceManager } from './userChoice.js';
 
 /**
@@ -263,7 +263,7 @@ export class ToolHandler {
     if (permResult && typeof permResult === 'object' && !('updatedInput' in permResult)) {
       const hasExtraFields = Object.keys(displayArgs).some(k => !(k in args));
       if (hasExtraFields) {
-        const { updateToolUseMeta } = require('../core/history/index.js');
+        const { updateToolUseMeta } = require('../../core/history/index.js');
         updateToolUseMeta(sessionID, toolUseId, {
           beforeContent: this.userChoiceManager.currentBeforeContent !== undefined ? this.userChoiceManager.currentBeforeContent : '',
           afterContent: this.userChoiceManager.currentAfterContent || '',

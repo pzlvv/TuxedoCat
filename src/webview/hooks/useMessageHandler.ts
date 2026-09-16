@@ -343,7 +343,7 @@ interface LoadedConversationCommonContext {
 /**
  * conversationLoaded 恢复时两个分支（有/无 savedState）完全相同的 setter 序列：
  * agentMode + agentModeReady、promptMode、thinkingMode（savedState 分支多一层回退，见调用点）、
- * webSearch、model（同上）、timeStats/stats。
+ * webSearch、model（同上）。
  * thinkingMode / model / webSearch 的回退链在两分支间差一层 savedState，
  * 由调用点传入分支语义：无 savedState 分支传回退基线值（与原实现一致）。
  * 返回解析出的 savedContext 关键字段供调用点继续计算 contextLength / 新建 state。
@@ -353,7 +353,6 @@ function applyLoadedConversationState(
   props: UseMessageHandlerProps,
   currentProps: UseMessageHandlerProps,
   savedState: SessionState | undefined,
-  branchLabel: string,
 ): LoadedConversationCommonContext {
   const savedCtxPromptMode = (msg as any).savedContext?.promptMode as PromptMode | undefined;
   const savedCtxThinkingMode = (msg as any).savedContext?.thinkingMode as ThinkingMode | undefined;
@@ -387,16 +386,6 @@ function applyLoadedConversationState(
         : (currentProps.settingsDefaults.webSearch ?? false)
     );
     props.setModel((msg as any).model ?? currentProps.settingsDefaults.model ?? '');
-  }
-  // 恢复 stats 快照 - 优先使用 conversationLoaded 顶层 timeStats（扩展侧统一计算的最新值），
-  // 同时兼容旧的 savedContext.stats（从 meta.json 恢复的快照）
-  const ctx = (msg as any).savedContext as { stats?: any } | undefined;
-  const timeStats = (msg as any).timeStats || ctx?.stats;
-  profileLog(`[TimeStats] ${branchLabel} | hasTimeStats=${!!(msg as any).timeStats} | hasCtxStats=${!!ctx?.stats} | totalTime=${timeStats?.totalTime ?? 'null'}`);
-  if (timeStats) {
-    props.setStats(timeStats);
-  } else {
-    props.setStats(null);
   }
   return { savedCtxPromptMode, savedCtxThinkingMode, savedCtxWebSearch, savedCtxToken };
 }
@@ -446,15 +435,18 @@ export interface UseMessageHandlerProps {
   setConversationsLoading: (v: boolean) => void;
   /** 插件模式对话列表当前可见条数（滚动到底时追加一页） */
   setVisibleConversationCount: (v: number | ((prev: number) => number)) => void;
-  /** App 模式加载对话的 loading 状态（conversationLoaded 到达后关闭） */
-  setIsLoadingConversation: (v: boolean) => void;
+  /** 声明本视图开始原地加载某个会话（loading 状态由对话自身持有，见 useConversationLoading） */
+  beginConversationLoad: (sessionId: string | null | undefined) => void;
+  /** 收到某会话的 conversationLoaded 数据：结束对话自身的 loading */
+  finishConversationLoad: (sessionId?: string | null) => void;
+  /** 进入无需加载的新对话：清除对话自身的 loading */
+  resetConversationLoad: () => void;
   setTheme: (v: Theme) => void;
   setThemeInitialized: (v: boolean) => void;
   setCurrentFile: (v: string) => void;
   setSelectedLines: (v: { start: number; end: number } | null) => void;
   /** 页内预览浮层（浏览器端查看文件 / 虚拟文档 / diff / Mermaid） */
   setPreview: (v: PreviewPayload | null) => void;
-  setStats: (v: any) => void;
   setConversationTitle: (v: string) => void;
   setMaxContextTokens: (v: number | null) => void;
   setSkills: (v: Array<{ name: string; description: string; isBuiltin?: boolean }>) => void;
@@ -522,7 +514,6 @@ export interface UseMessageHandlerProps {
   thinkingMode: ThinkingMode | undefined;
   currentFile: string;
   selectedLines: { start: number; end: number } | null;
-  stats: any;
   currentSessionIdRef: React.MutableRefObject<string | null>;
   agentModeReadyRef: React.MutableRefObject<boolean>;
   sessionStatesRef: React.MutableRefObject<Map<string, SessionState>>;
@@ -586,7 +577,7 @@ export interface UseMessageHandlerProps {
 
 export function useMessageHandler(props: UseMessageHandlerProps): void {
   // 消息监听 effect 只挂载一次（deps 为 []），handleMessage 闭包捕获的是首次渲染的 props。
-  // 值类型的 props（settingsDefaults / model / currentFile / stats 等）会随后续渲染更新，
+  // 值类型的 props（settingsDefaults / model / currentFile 等）会随后续渲染更新，
   // 直接读取永远是初始值（会导致会话快照保存错误状态、新建会话用错默认值等）。
   // 统一通过 propsRef 读取最新值；ref 类 props 本身不变，但读取路径保持一致也无副作用。
   const propsRef = useRef(props);
@@ -905,8 +896,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 重置压缩状态（conversationLoaded 会覆盖为正确值）
           props.setHasCompactArchive(false);
           props.setIsCompactExpanded(false);
-          // 切换到目标会话：在 conversationLoaded 返回前显示加载动画（插件/App 模式统一）
-          props.setIsLoadingConversation(true);
+          // 切换到目标会话：由对话自身进入 loading（conversationLoaded 到达后结束）
+          props.beginConversationLoad(msg.sessionId);
           props.setMessages([]);
           // 清空当前展示的排队横幅，避免自动切换期间串会；conversationLoaded 会按目标会话恢复
           props.setQueuedMessage(null);
@@ -927,7 +918,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             // 草稿才会被暂存下来（与 onStartup / 顶部"+"一致）
             props.newChatSessionRef.current = newSessionId;
             // 新会话不需要加载动画
-            props.setIsLoadingConversation(false);
+            props.resetConversationLoad();
             // 重置所有会话状态
             props.setMessages([]);
             props.inputAreaRef.current?.setValue('');
@@ -952,7 +943,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             props.setWebSearch(nextWebSearch);
             props.setModel(nextModel);
             props.setPromptMode(nextPromptMode);
-            props.setStats(null);
             props.setShowThinkingAnimation(false);
             props.setHasActiveQuery(false);
             props.setQueuedMessage(null);
@@ -1036,13 +1026,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           });
           break;
         }
-        case 'timeStatsResult':
-          if (msg.stats) {
-            props.setStats(msg.stats);
-          } else {
-            props.setStats(null);
-          }
-          break;
         case 'setTitle':
           if (msg.sessionId === props.currentSessionIdRef.current) {
             props.setConversationTitle(resolveTitle(msg.title));
@@ -1482,8 +1465,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               props.setAnimationMode(isCompacting ? 'compacting' : 'thinking');
               // 同步到 session 状态，确保对话列表的流水灯与引擎实时状态一致
               savedState.hasActiveQuery = isCompacting || runtimeActive;
-              // 两分支相同的 setter 序列（agentMode/ready、promptMode、thinkingMode、webSearch、model、stats）收敛到辅助函数
-              const common = applyLoadedConversationState(msg, props, propsRef.current, savedState, 'savedState分支');
+              // 两分支相同的 setter 序列（agentMode/ready、promptMode、thinkingMode、webSearch、model）收敛到辅助函数
+              const common = applyLoadedConversationState(msg, props, propsRef.current, savedState);
               savedState.promptMode = common.savedCtxPromptMode ?? 'normal';
               // 优先使用 savedContext.totalContextTokens（meta.json 中持久化的最新值），
               // 回退到 savedState.contextLength（内存中保存的快照值）。
@@ -1526,7 +1509,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               );
               props.setHasActiveQuery(runtimeActive);
               props.setAnimationMode('thinking');
-              const common = applyLoadedConversationState(msg, props, propsRef.current, undefined, '非savedState分支');
+              const common = applyLoadedConversationState(msg, props, propsRef.current, undefined);
               // 从 savedContext 中恢复 totalContextTokens（meta.json 中持久化的值），
               // 用于 webview 显示进度条。savedState 不存在说明是首次加载，此时应该从 meta 恢复。
               const restoredVal = common.savedCtxToken ?? 0;
@@ -1630,7 +1613,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 // 历史消息渲染前预滚动，避免大量代码/diff 先渲染再滚动
                 scrollToBottomBeforeRender();
                 // 加载完成，关闭 loading 动画（与 setMessages 同批次提交，避免空状态闪烁）
-                props.setIsLoadingConversation(false);
+                props.finishConversationLoad(_convLoadedSessionId);
                 // 已打开的会话：把内存缓存里的 streamId 关联回重新加载的消息，
                 // 使流式性能统计（Thinking for / chars / tokens）切回来后不丢失。
                 // 这些数据只在内存里，不写磁盘。
@@ -1668,7 +1651,12 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             } catch (error) {
               console.error('[App] 恢复对话时出错:', error);
               props.conversationLoadingRef.current = false;
+              // 恢复失败也必须结束 loading，否则遮罩会永久留在页面上
+              props.finishConversationLoad(_convLoadedSessionId);
             }
+          } else {
+            // 没有消息体（异常/空载荷）：同样结束 loading，避免遮罩卡死
+            props.finishConversationLoad(_convLoadedSessionId);
           }
           break;
         }
@@ -1680,7 +1668,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           }
           props.setMessages([]);
           props.setContextLength(0);
-          props.setStats(null);
           break;
         case 'compressProgress': {
           // Handle compress progress notifications
@@ -1728,16 +1715,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             // 刷新 token 使用量显示为压缩后的值
             if (msg.postCompactTokenCount !== undefined) {
               props.setContextLength(msg.postCompactTokenCount);
-            }
-            // 压缩完成时，保存当前的耗时分布统计到 meta.json
-            if (msg.status === 'complete') {
-              if (props.currentSessionIdRef.current && propsRef.current.stats) {
-                postMessage({
-                  type: 'saveConversationStats',
-                  sessionId: props.currentSessionIdRef.current,
-                  stats: propsRef.current.stats,
-                });
-              }
             }
           }
           break;

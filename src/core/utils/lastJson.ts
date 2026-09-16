@@ -3,7 +3,7 @@
  *
  * 智能命名等场景需要从模型输出（可能夹杂思考过程的花括号）中解析 JSON。
  * 这里从字符串末尾反向查找，只取最终输出的完整 JSON 对象。
- * 原实现分散在 VSCodeUI/webviewMessageHandler.ts 与 electron/main.ts 各一份，
+ * 原实现分散在 host/ui/webviewMessageHandler.ts 与 electron/main.ts 各一份，
  * 收敛到这里共享，避免两份拷贝将来行为漂移。
  */
 

@@ -8,7 +8,7 @@ import { COMPACT_SYSTEM_PROMPT } from './types.js';
 
 import { generateCompactSummaryPrompt, generateCompactUserMessage, generateCompactBoundaryContent, getUserInputHistory, formatUserInputHistory } from './prompt.js';
 import { logger } from '../Logger.js';
-import { getGlobalUI, type AssistantUI } from '../AssistantUI.js';
+import { requireGlobalUI, type AssistantUI } from '../AssistantUI.js';
 import { updateConversationContext, saveCompactArchive, replaceConversationMessages } from '../history/Conversation.js';
 import { replayMessagesToUI } from '../utils/replayMessages.js';
 import { getConfig } from '../llm/config.js';
@@ -80,13 +80,11 @@ async function compactConversationInner(
 ): Promise<CompactionResult | null> {
   logger.info('compact', 'Starting compact conversation');
 
-  const ui = getGlobalUI();
-  if (!ui) {
-    logger.warn('compact', 'No UI instance available, skipping compact progress notifications');
-  }
+  // 压缩必须有 UI 才能反馈进度：未初始化直接抛错，不做静默降级
+  const ui = requireGlobalUI();
 
   // Notify UI: compact started
-  ui?.onCompressProgress(sessionId, 'start');
+  ui.onCompressProgress(sessionId, 'start');
 
   // Step 1: Get messages after last compact boundary
   const messagesForCompact = getMessagesAfterCompactBoundary(messages);
@@ -326,11 +324,9 @@ export async function compactAndApplyMessages(
     logger.warn('compact', `Failed to update compact context: ${err}`);
   });
 
-  const ui = options.ui ?? getGlobalUI();
-  if (ui) {
-    // 通知 UI 压缩完成：清空旧消息并推送压缩后的内容
-    replayMessagesToUI(ui, sessionId, postCompactMessages);
-  }
+  const ui = options.ui ?? requireGlobalUI();
+  // 通知 UI 压缩完成：清空旧消息并推送压缩后的内容
+  replayMessagesToUI(ui, sessionId, postCompactMessages);
 
   return true;
 }

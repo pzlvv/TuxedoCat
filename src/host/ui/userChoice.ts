@@ -1,24 +1,25 @@
 /**
- * VSCodeUI/userChoice.ts - UserChoiceQueue 逻辑
+ * src/host/ui/userChoice.ts - UserChoiceQueue 逻辑
  * 维护全局 FIFO 队列 + per-session 状态，支持自动跳转
  */
-import type { Uri } from 'vscode';
-import type { LogChannel } from '../host/UIHost.js';
-import { userChoiceQueue } from '../core/UserChoiceQueue.js';
-import type { ShowDiffInVirtualDocumentEvent } from './types.js';
-import type { DiffUris } from './diffUris.js';
+import type { LogChannel } from '../UIHost.js';
+import { userChoiceQueue } from '../../core/UserChoiceQueue.js';
+import type { DiffUriPair, ShowDiffInVirtualDocumentEvent } from './types.js';
 
 /**
- * UserChoiceManager - 管理 UserChoice 展示、diff 预览、用户选择处理等
+ * UserChoiceManager - 管理 UserChoice 展示、diff 预览、用户选择处理等。
+ *
+ * 泛型 TUri 表示宿主原生的预览文档句柄（VS Code: vscode.Uri；Electron 不使用预览句柄）。
+ * 共享模块本身不 import 任何宿主 API，宿主通过 buildDiffUris 注入句柄构造方式。
  */
-export class UserChoiceManager {
+export class UserChoiceManager<TUri = unknown> {
   private outputChannel: LogChannel | undefined;
   private postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
   private closePreview: () => void;
   private getActiveSessionIdInternal: () => string | undefined;
 
-  /** 当前打开的预览文档标识（统一使用 vscode.Uri 规范化对象） */
-  public currentPreviewUris: Uri[] = [];
+  /** 当前打开的预览文档句柄（统一使用宿主规范化后的对象） */
+  public currentPreviewUris: TUri[] = [];
   /** 当前请求的上下文（前） */
   public currentContextBefore: string[] = [];
   /** 当前请求的上下文（后） */
@@ -37,8 +38,8 @@ export class UserChoiceManager {
   public pendingUserChoices: Map<string, { sessionId: string; resolve: (value: { index: number; reply?: string }) => void }> = new Map();
   /** diff 回调 */
   private onShowDiffInVirtualDocumentCallback?: (event: ShowDiffInVirtualDocumentEvent) => void | Promise<void>;
-  /** 构建 diff URI（宿主相关；Electron 宿主不需要传） */
-  private buildDiffUris?: (title: string) => DiffUris;
+  /** 构建 diff 预览句柄（宿主相关；Electron 宿主不需要传） */
+  private buildDiffUris?: (title: string) => DiffUriPair<TUri>;
   /** 用户选择框弹出后的回调（宿主侧用于刷新侧栏流水灯为黄色） */
   private onChoiceShown?: (sessionId: string) => void;
 
@@ -48,7 +49,7 @@ export class UserChoiceManager {
     closePreview: () => void;
     getActiveSessionIdInternal: () => string | undefined;
     onShowDiffInVirtualDocumentCallback?: (event: ShowDiffInVirtualDocumentEvent) => void | Promise<void>;
-    buildDiffUris?: (title: string) => DiffUris;
+    buildDiffUris?: (title: string) => DiffUriPair<TUri>;
     onChoiceShown?: (sessionId: string) => void;
   }) {
     this.outputChannel = deps.outputChannel;

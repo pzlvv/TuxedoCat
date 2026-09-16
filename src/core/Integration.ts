@@ -9,7 +9,7 @@ import type { Tool } from './tools/Tool.js';
 import type { PromptPresetId } from './prompt/PromptPreset.js';
 import type { LLMConfig } from './llm/config.js';
 import type { AssistantUI } from './AssistantUI.js';
-import { getGlobalUI } from './AssistantUI.js';
+import { requireGlobalUI } from './AssistantUI.js';
 import { logger } from './Logger.js';
 import { setProjectRootProvider, updateConversationContext } from './history/index.js';
 import { getProjectRoot } from './history/Config.js';
@@ -247,9 +247,7 @@ export function initializeHistory(ui?: { getWorkspacePath(): string | undefined 
  * 获取 UI 实例
  */
 function getUI(): AssistantUI {
-  const ui = getGlobalUI();
-  if (!ui) throw new Error('UI not initialized. Call setGlobalUI() first.');
-  return ui;
+  return requireGlobalUI();
 }
 
 /**
@@ -737,7 +735,7 @@ export async function requestCompact(sessionId: string): Promise<void> {
     if (!isPendingCompact(sessionId)) {
       markPendingCompact(sessionId);
       logger.info('Integration', `Session ${sessionId} is busy, compact deferred to next turn`);
-      getGlobalUI()?.onMessage(sessionId, {
+      getUI().onMessage(sessionId, {
         role: 'system',
         content: '当前会话正在处理中，压缩已排队，将在本轮对话结束后执行。',
       });

@@ -314,10 +314,10 @@ export class QueryEngine {
       : allTools.filter(t => this.effectiveToolNames!.includes(t.name));
 
     // System Prompt 由预设数据驱动组装：核心身份 + 预设声明的区块（工具说明 / 环境等）
-    const uiDynamicInfo = await this.config.ui.getUIDynamicInfo(this.sessionID);
+    // cwd 用引擎自己的 config.cwd（创建引擎时取自宿主工作区），不再向 UI 回查
+    const cwd = this.config.cwd;
     const { getSystemDynamicInfo } = await import('./prompt/SystemEnvironment.js');
-    const systemInfo = await getSystemDynamicInfo(uiDynamicInfo.cwd);
-    const cwd = uiDynamicInfo.cwd;
+    const systemInfo = await getSystemDynamicInfo(cwd);
 
     this.fullSystemPrompt = this.config.staticSystemPrompt
       ?? await assembleSystemPrompt(preset, { tools: presetTools, systemInfo, cwd });

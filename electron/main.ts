@@ -22,10 +22,11 @@ import { ChatViewManager, SIDEBAR_WIDTH } from './ChatViewManager.js';
 import { createTrayStatusIcon, deriveTrayStatus, type TrayStatus } from './trayStatusIcon.js';
 import { startWebServer, type WebServerHandle, type WebServerClient } from './server/webServer.js';
 import { getBrowserShimSource } from './server/browserShim.js';
-import { CONFIG_DIR_NAME, PRODUCT_NAME } from '../src/config/project.js';
+import { PRODUCT_NAME } from '../src/config/project.js';
 import { SERVER_HOST_INFO } from '../src/host/types.js';
 import { DEFAULT_WAKE_SHORTCUT } from '../src/core/utils/shortcut.js';
 import { resolveSmartTitle } from '../src/core/history/smartNaming.js';
+import { readActiveProviderModelContextSync } from '../src/core/history/Config.js';
 
 /**
  * 判断 URL 是否为需要在系统浏览器打开的外部链接。
@@ -1459,24 +1460,13 @@ function sendTheme(): void {
 function sendContextLimit(model?: string): void {
   try {
     const { getContextWindow } = require('../src/core/utils/modelConfig.js');
-    let modelName = model;
-    if (!modelName) {
-      // 未显式指定模型时，按 active provider 读取默认模型：
-      // llm.providers[activeProvider].defaultModel → provider.models[0]（与 extension.ts 读取逻辑一致）。
-      // 顶层 cfg.defaultModel / cfg.llm.model 是已废弃的旧扁平字段，不再读取。
-      const settingsPath = path.join(require('os').homedir(), CONFIG_DIR_NAME, 'settings.json');
-      if (fs.existsSync(settingsPath)) {
-        const cfg = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
-        const activeKey = cfg?.llm?.activeProvider;
-        const activeProvider = activeKey ? cfg?.llm?.providers?.[activeKey] : undefined;
-        if (typeof activeProvider?.defaultModel === 'string' && activeProvider.defaultModel.trim()) {
-          modelName = activeProvider.defaultModel.trim();
-        } else if (Array.isArray(activeProvider?.models) && activeProvider.models.length > 0) {
-          modelName = activeProvider.models[0];
-        }
-      }
-    }
-    const contextWindow = getContextWindow(modelName || '');
+    // 与 extension.ts 共用同一份读取逻辑：
+    // - 显式传入 model 时用该模型；否则回退到 activeProvider.defaultModel → models[0]
+    // - 同时读取 activeProvider.modelConfigs，让 settings.json 中每个模型的
+    //   context/output 覆盖生效（此前 Electron 只按内置注册表计算，切换模型后
+    //   webview 里的 context window 不会跟随变化）。
+    const { model: modelName, modelConfigs } = readActiveProviderModelContextSync(model);
+    const contextWindow = getContextWindow(modelName || '', modelConfigs);
     chatViews?.sendToActive({
       type: 'contextLimitUpdated',
       maxContextTokens: contextWindow,

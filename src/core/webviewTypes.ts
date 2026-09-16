@@ -199,20 +199,6 @@ export type WebviewMessage = {
   hasCompactArchive?: boolean;
   /** 裁剪掉的 _meta 大字段索引：toolUseId -> 紧凑 diff 或 before/after 内容 */
   toolMetaMap?: Record<string, unknown>;
-  /** 压缩前原始消息数量（展开后加载用） */
-  /** 由 core 侧 TimeStats 统一计算的耗时分布统计 */
-  timeStats?: {
-    toolExecution: number;
-    aiThinking: number;
-    humanFeedback: number;
-    totalTime: number;
-    toolPct: number;
-    thinkingPct: number;
-    humanPct: number;
-    toolCount: number;
-    thinkingCount: number;
-    humanCount: number;
-  };
 } | {
   type: 'respondUserChoice';
   choiceId: string;
@@ -256,10 +242,15 @@ export type WebviewMessage = {
   webSearch?: boolean;
 } | {
   type: 'settingsDefaults';
+  /** 默认模型（读取失败时为空串） */
   model: string;
-  thinkingMode: 'off' | 'low' | 'high' | 'max';
-  agentMode: 'manual' | 'risk' | 'auto';
-  promptMode: 'normal' | 'minimal' | 'mixed';
+  /**
+   * 会话级默认值。读取 settings.json 失败时宿主无法给出这些值，
+   * 会显式下发 undefined，由 webview 保持「未配置」状态（发送按钮禁用）。
+   */
+  thinkingMode?: 'off' | 'low' | 'high' | 'max';
+  agentMode?: 'manual' | 'risk' | 'auto';
+  promptMode?: 'normal' | 'minimal' | 'mixed';
   webSearch: boolean;
   language?: 'auto' | 'zh' | 'en';
   /** 是否已完成服务商配置（activeProvider 存在且 apiKey 非空） */
@@ -410,12 +401,12 @@ export type WebviewMessage = {
 } | {
   type: 'balanceUpdate';
   sessionId: string;
-  /** 账户总余额 */
-  totalBalance: number;
-  /** 货币类型 */
-  currency: string;
-  /** 是否无限额度 */
-  isUnlimited: boolean;
+  /** 账户总余额；null 表示查询失败，webview 清空余额显示 */
+  totalBalance: number | null;
+  /** 货币类型；null 表示查询失败 */
+  currency: string | null;
+  /** 是否无限额度；null 表示查询失败 */
+  isUnlimited: boolean | null;
   /** 查询时间戳 */
   fetchedAt: number;
 } | {
@@ -423,20 +414,6 @@ export type WebviewMessage = {
   sessionId: string;
   /** 会话默认模型（可选） */
   model?: string;
-} | {
-  type: 'timeStatsResult';
-  stats: {
-    toolExecution: number;
-    aiThinking: number;
-    humanFeedback: number;
-    totalTime: number;
-    toolPct: number;
-    thinkingPct: number;
-    humanPct: number;
-    toolCount: number;
-    thinkingCount: number;
-    humanCount: number;
-  } | null;
 } | {
   type: 'llmConfigSaved';
   defaultModel?: string;
@@ -461,6 +438,8 @@ export type WebviewMessage = {
   toolMeta?: Record<string, unknown>;
 } | {
   type: 'showLLMConfig';
+  /** 定向会话（多视图宿主据此把设置面板只弹到发起端） */
+  sessionId?: string;
   baseURL?: string;
   webSearch?: boolean;
   thinkingEffort?: string;

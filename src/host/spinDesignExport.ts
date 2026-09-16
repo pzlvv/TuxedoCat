@@ -9,7 +9,7 @@ import type { SaveFileResult, UIHost } from './UIHost.js';
 export async function exportSpinDesignJson(
   host: UIHost,
   data: unknown,
-  title?: string,
+  title: string,
 ): Promise<SaveFileResult> {
   return host.saveTextFile(JSON.stringify(data, null, 2) + '\n', {
     defaultFileName: 'spin.json',

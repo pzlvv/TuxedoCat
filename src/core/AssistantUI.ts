@@ -3,7 +3,6 @@
  * core 层通过此接口与 UI 通信，不依赖具体的 VSCode 实现
  */
 
-import type { UIDynamicInfo } from './prompt/SystemPrompt.js';
 import type { PermissionResult, ToolProgressData } from './tools/Tool.js';
 
 /**
@@ -19,9 +18,16 @@ export function setGlobalUI(ui: AssistantUI): void {
 }
 
 /**
- * 获取全局 UI 实例
+ * 获取全局 UI 实例；未初始化时直接抛错。
+ *
+ * 消息投递 / 列表刷新 / 进度通知这类逻辑必须有 UI 才能完成，
+ * 若返回 undefined 并让调用方用 `?.` 静默跳过，会把「UI 未初始化」这类
+ * 集成缺失伪装成「什么都没发生」。这里直接失败，问题在启动期就暴露。
  */
-export function getGlobalUI(): AssistantUI | undefined {
+export function requireGlobalUI(): AssistantUI {
+  if (!globalUI) {
+    throw new Error('UI not initialized. Call setGlobalUI() first.');
+  }
   return globalUI;
 }
 
@@ -115,12 +121,6 @@ export interface AssistantUI {
   onQueryEnd(sessionID: string): void;
 
   /**
-   * 获取 UI 动态信息
-   * 用于生成 system prompt 的 UI 相关部分（当前文件、选中行等）
-   */
-  getUIDynamicInfo(sessionID: string): Promise<UIDynamicInfo>;
-
-  /**
    * 设置对话标题
    */
   setTitle(sessionID: string, title: string): void;
@@ -130,6 +130,12 @@ export interface AssistantUI {
    * 用于子代理等场景，在会话文件创建后通知 UI（如 webview）预初始化状态
    */
   onSessionCreated(sessionID: string): void;
+
+  /**
+   * 子会话创建时继承父会话的 agent mode（auto > risk > manual）。
+   * 宿主据此为子代理会话初始化询问模式，避免子代理沿用无关会话的模式。
+   */
+  onSetAgentMode(parentSessionId: string, childSessionId: string): void;
 
   /**
    * 刷新对话列表
@@ -270,6 +276,3 @@ export interface MessageData {
   /** 消息元信息，如文件引用、agent来源等 */
   meta?: Record<string, unknown>;
 }
-
-// 重新导出 UIDynamicInfo 类型
-export type { UIDynamicInfo } from './prompt/SystemPrompt.js';
