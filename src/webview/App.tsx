@@ -5,14 +5,13 @@ import { Dropdown } from 'antd';
 import InputArea, { InputAreaRef } from './InputArea';
 import MessagesView from './MessagesView';
 import 'antd/dist/reset.css';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, ProviderConfig, PreviewPayload } from './types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, ProviderConfig } from './types';
 import { createSessionState } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
-import PreviewOverlay from './PreviewOverlay';
-import { postMessage, getLogoUri, getHasWorkspace, LOGO_CLASS_NAME, getHostInfo, navigateToConversation } from './webviewEnv';
-import { DEFAULT_WAKE_SHORTCUT } from '../core/utils/shortcut.js';
+import { postMessage, getLogoUri, getHasWorkspace, LOGO_CLASS_NAME, getHostInfo, navigateToConversation, getIsPrewarmView } from './webviewEnv';
+import { canCloseConversation, openConversationModeOf, rendersConversationListInWebview } from '../host/types';
 import type { McpServerInfo } from '../core/webviewTypes';
 import { t } from './i18n';
 import { ConversationTreeItem } from './ConversationTreeItem';
@@ -53,8 +52,6 @@ const App = () => {
   const [localeVersion, setLocaleVersion] = useState(0);
   // 设置面板中显示的界面语言（来自 settings.json，保存后生效）
   const [llmConfigLanguage, setLlmConfigLanguage] = useState<'auto' | 'zh' | 'en'>('auto');
-  // 设置面板中显示的唤醒快捷键（仅 Electron 使用，accelerator 形式）
-  const [llmConfigShortcut, setLlmConfigShortcut] = useState<string>(DEFAULT_WAKE_SHORTCUT);
 
   // 对话历史状态
   const [conversations, setConversations] = useState<Array<any>>([]);
@@ -152,10 +149,6 @@ const App = () => {
   // 初始为 null（尚未探测到配置），避免启动时因探测延迟而误显示"请配置模型服务"。
   const [providerConfigured, setProviderConfigured] = useState<boolean | null>(null);
 
-  // 页内预览（仅浏览器端）：查看文件 / 虚拟文档 / diff / Mermaid 时由宿主回推内容，
-  // 在这里就地展示，避免打开桌面原生窗口（查看类操作不跨端）。
-  const [preview, setPreview] = useState<PreviewPayload | null>(null);
-
   // Skills for slash-command autocomplete
   const [skills, setSkills] = useState<Array<{ name: string; description: string; isBuiltin?: boolean }>>([]);
 
@@ -190,10 +183,13 @@ const App = () => {
     return () => document.removeEventListener('click', handleExternalLinkClick, true);
   }, []);
 
-  // 当 agentMode 变化时通知 extension
+  // 当 agentMode 变化时通知 extension（会话级，持久化到 meta.json）。
+  // 会话尚未建立时 currentSessionId 为 null：此时不下发，等会话建立后本 effect 会因
+  // currentSessionId 变化重跑并补发，避免以 null 作为 sessionId 写入 core 存储 / meta.json。
   useEffect(() => {
+    if (!currentSessionId) return;
     postMessage({ type: 'setAgentMode', mode: agentMode, sessionId: currentSessionId });
-  }, [agentMode]);
+  }, [agentMode, currentSessionId]);
 
   // 当 promptMode 变化时通知 extension（会话级，持久化到 meta.json）。
   // 未获取到配置前 promptMode 为 undefined：此时不下发，避免把 undefined 写进 meta.json。
@@ -288,6 +284,8 @@ const App = () => {
   }, []);
   // Per-session state: input, userChoiceRequest, userChoiceInput
   const sessionStatesRef = useRef<Map<string, SessionState>>(new Map());
+  // core 推送的会话运行时状态（running / waiting）：对话树流水灯的唯一数据源
+  const sessionRuntimeStatesRef = useRef<Map<string, { running: boolean; waiting: boolean }>>(new Map());
   // Per-session command history (most recent first)
   const commandHistoryRef = useRef<Map<string, string[]>>(new Map());
   const COMMAND_HISTORY_MAX = 50;
@@ -332,9 +330,9 @@ const App = () => {
   const [userChoiceRequest, setUserChoiceRequest] = useState<UserChoiceRequest | null>(null);
   // 强制滚动 key：递增时 MessagesView 在底部时重新滚动到底部
   const [forceScrollKey, setForceScrollKey] = useState(0);
-  // 会话运行状态版本号：任意会话 queryBegin/queryEnd 时递增，
-  // 强制 App 重渲染，使对话列表的流水灯（running-bar）即时出现/消失。
-  const [, setSessionRunningVersion] = useState(0);
+  // 会话运行状态版本号：core 推来 sessionRuntimeStates 时递增，
+  // 强制 App 重渲染，使对话列表的流水灯（running-bar）与 abort 按钮即时变化。
+  const [sessionRunningVersion, setSessionRunningVersion] = useState(0);
 
   // 输入框 refs
   const mainInputRef = useRef<HTMLTextAreaElement>(null);
@@ -349,12 +347,23 @@ const App = () => {
   // -- hooks --
   const { conversationTree, expandedSubSessions, setExpandedSubSessions } = useConversationTree(conversations);
 
-  // 判断会话是否正在等待用户输入（ask user 提问 / 权限确认）：
-  // 查询仍在运行（hasActiveQuery）且存在待响应的 userChoiceRequest 时，流水灯显示黄色。
-  const getSessionWaitingState = useCallback((sid: string): boolean => {
-    const s = sessionStatesRef.current.get(sid);
-    return !!(s?.hasActiveQuery && s?.userChoiceRequest);
+  // 对话树流水灯（running / waiting）只读 core 推送的会话运行时状态：
+  // 与 Electron 侧栏同一数据源（core sessionRuntimeChanged），不再本地推导（第 11 节）。
+  const getSessionRunningState = useCallback((sid: string): boolean => {
+    return sessionRuntimeStatesRef.current.get(sid)?.running ?? false;
   }, []);
+  const getSessionWaitingState = useCallback((sid: string): boolean => {
+    return sessionRuntimeStatesRef.current.get(sid)?.waiting ?? false;
+  }, []);
+
+  // abort 按钮：会话非空闲即可中止。判定读 core 的 sessionRuntime（running 已合并
+  // 查询 / 压缩 / 后台 Bash / 子代理，见 core sessionResources.isSessionBusy）——
+  // 引擎没在跑、但后台 Bash 或子代理还在时同样可以中止。
+  const abortEnabled = useMemo(
+    () => (currentSessionId ? (sessionRuntimeStatesRef.current.get(currentSessionId)?.running ?? false) : false),
+    // sessionRunningVersion 是 core 推来新状态时的重渲染信号（ref 本身不触发渲染）
+    [currentSessionId, sessionRunningVersion],
+  );
 
   // 插件模式对话下拉滚动到底时，动态追加一页历史对话
   const handleConversationScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
@@ -379,12 +388,10 @@ const App = () => {
     setLlmConfigThinkingEffort, setLlmConfigDefaultAgentMode, setLlmConfigDefaultPromptMode, setLlmConfigApiKey,
     setLlmConfigProviders, setLlmConfigActiveProvider, setLlmConfigMcpServers,
     setSettingsDefaults, settingsDefaults, setLocaleVersion, setLlmConfigLanguage,
-    setLlmConfigShortcut,
     setProviderConfigured,
     setConfigReady,
-    setPreview,
     messages,
-    currentSessionIdRef, sessionStatesRef, userChoiceRequestRef, userChoiceInputRef,
+    currentSessionIdRef, sessionStatesRef, sessionRuntimeStatesRef, userChoiceRequestRef, userChoiceInputRef,
     agentModeReadyRef, savedMainInputRef, queuedMessageRef, abortedSessionsRef, mcpServersBySessionRef, cursorPositionRef, choiceCursorPositionRef,
     stashNewChatDraft, newChatSessionRef,
     mainInputRef, choiceInputRef, messagesContainerRef, userScrolledAwayRef,
@@ -483,25 +490,25 @@ const App = () => {
    * 1. 当前若是"新建但还没发消息"的对话，先把草稿暂存，供下次"新建"恢复；
    * 2. 清空消息并显示加载动画（插件模式与 Electron 模式统一）；
    * 3. 清空当前展示的排队横幅，避免上一会话的 queue 串到新会话；
-   * 4. 发送导航消息（VS Code 插件 postMessage / Electron 内置 HTTP 路由）。
+   * 4. 发送导航消息（VS Code 插件 / Electron 都走 postMessage，由宿主决定打开方式）。
    */
   const navigateToSession = useCallback((sessionId: string) => {
     // 当前若是"新建但还没发消息"的对话，先把草稿暂存，供下次"新建"恢复
     stashNewChatDraft();
-    // Electron：由宿主另开一个会话视图来加载目标会话，本视图不参与加载。
+    // 多视图：由宿主另开一个会话视图来加载目标会话，本视图不参与加载。
     // 这里只做委托，不改动本视图的会话状态（消息 / loading），
     // 否则切回本视图会看到空消息或永远转圈的 loading（没有人为它通知完成）。
-    if (hostInfo.openConversationMode === 'openConversation') {
+    if (openConversationModeOf(hostInfo) === 'openConversation') {
       navigateToConversation(sessionId);
       return;
     }
-    // VSCode / 浏览器：在当前视图内原地加载。loading 由对话自身持有，
+    // 单视图：在当前视图内原地加载。loading 由对话自身持有，
     // 收到目标会话的 conversationLoaded 后自动结束。
     beginConversationLoad(sessionId);
     setMessages([]);
     setQueuedMessage(null);
     navigateToConversation(sessionId);
-  }, [stashNewChatDraft, hostInfo.openConversationMode, beginConversationLoad]);
+  }, [stashNewChatDraft, hostInfo.conversationList, beginConversationLoad]);
 
   const handleNavigateToConversation = navigateToSession;
 
@@ -569,7 +576,6 @@ const App = () => {
       webSearch: nextWebSearch,
       model: nextModel,
     }));
-    postMessage({ type: 'setActiveSessionId', sessionId: newSessionId });
     postMessage({ type: 'startNewConversation', sessionId: newSessionId });
     // 聚焦输入框，并把光标放回草稿里的原位置
     setTimeout(() => {
@@ -628,10 +634,33 @@ const App = () => {
     prevUserChoiceRef.current = userChoiceRequest;
   }, [userChoiceRequest]);
 
+  /**
+   * 后台预热的「新对话」视图（Electron 专属，见 electron/ChatViewManager.ts 的 prewarmKey）。
+   *
+   * 这类视图的页面照常加载（所以被切到前台时不需要再等加载），但跳过部分启动初始化：
+   *   - 不生成 session：启动就生成会让 core 为一个可能永远不用的会话预创建
+   *     引擎 / MCP 引用；
+   *   - 不请求技能 / 模型 / MCP / settings 默认值：它们的回包发给「当前活动视图」，
+   *     预热视图在后台收不到。
+   * 主题 / 上下文限制例外：宿主按「来源 webContents」直发回包，预热视图能收到，
+   * 照常请求以便在后台就把真实 UI 渲染出来。
+   * 等宿主把它切到前台并发来 activatePrewarmedView 时，再补做上述被跳过的初始化 ——
+   * 此时它就是活动视图，所有回包都能正确送达。
+   */
+  const prewarmPendingRef = useRef(getIsPrewarmView());
+  // onStartup 由 useCallback 创建，依赖变化时会重建；用 ref 保证激活时拿到最新实现
+  const onStartupRef = useRef(onStartup);
+  onStartupRef.current = onStartup;
+
   // 组件启动时主动请求主题和上下文限制（无延迟，确保尽早收到）
   useEffect(() => {
+    // 主题 / 上下文限制的回包由宿主按「来源 webContents」直发（见 electron/main.ts），
+    // 预热视图也能正确收到，所以照常请求 —— 让它在后台就渲染出真实 UI，
+    // 被切到前台时不出现 Loading 一闪。
     postMessage({ type: 'requestTheme' });
     postMessage({ type: 'requestContextLimit', model });
+    if (prewarmPendingRef.current) return;
+    // 其余请求的回包走「当前活动视图」，预热视图在后台收不到，等激活时再补（见下）
     postMessage({ type: 'requestSkills' });
     postMessage({ type: 'requestMcpServers' });
     postMessage({ type: 'requestModels' });
@@ -642,6 +671,8 @@ const App = () => {
 
   // 组件启动时异步加载对话列表
   useEffect(() => {
+    // 预热视图：等被切到前台（activatePrewarmedView）后再初始化
+    if (prewarmPendingRef.current) return;
     // 延迟加载，避免阻塞初始化
     const timer = setTimeout(() => {
       loadConversations();
@@ -656,6 +687,30 @@ const App = () => {
     }, 500);
 
     return () => clearTimeout(timer);
+  }, [loadConversations]);
+
+  // 预热视图被宿主切到前台：补做启动初始化
+  useEffect(() => {
+    if (!prewarmPendingRef.current) return;
+    const handleActivate = (event: MessageEvent) => {
+      if ((event.data as { type?: string } | null)?.type !== 'activatePrewarmedView') return;
+      if (!prewarmPendingRef.current) return;
+      prewarmPendingRef.current = false;
+      // 先生成 session 并上报（startNewConversation）：
+      // 宿主的 MCP 面板等按「当前会话」取数，必须先有会话 ID。
+      onStartupRef.current();
+      // 此刻视图已是活动视图：所有「发给活动视图」的回包都能正确送达
+      postMessage({ type: 'requestSkills' });
+      postMessage({ type: 'requestMcpServers' });
+      postMessage({ type: 'requestModels' });
+      postMessage({ type: 'requestSettingsDefaults' });
+      loadConversations();
+    };
+    window.addEventListener('message', handleActivate);
+    // 告诉宿主「已挂载、可以收消息」：若点「新建」时页面还在加载，
+    // 宿主直发的激活消息会丢，这里由宿主收到 ready 后补发。
+    postMessage({ type: 'prewarmViewReady' });
+    return () => window.removeEventListener('message', handleActivate);
   }, [loadConversations]);
 
   // 键盘监听：在选择框模式下按 1-9 选择选项
@@ -759,7 +814,6 @@ const App = () => {
       initialDefaultPromptMode={llmConfigDefaultPromptMode}
       initialApiKey={llmConfigApiKey}
       initialLanguage={llmConfigLanguage}
-      initialShortcut={llmConfigShortcut}
       initialProviders={llmConfigProviders}
       initialActiveProvider={llmConfigActiveProvider}
       initialMcpServers={llmConfigMcpServers}
@@ -880,7 +934,7 @@ const App = () => {
             <h1 className="text-[13px] font-semibold truncate" style={{ color: colors.textPrimary }}>{conversationTitle}</h1>
           </div>
           <div className="flex items-center gap-2">
-            {hostInfo.conversationList === 'webview' && (
+            {rendersConversationListInWebview(hostInfo) && (
             <Dropdown
               open={conversationDropdownOpen}
               onOpenChange={(open) => {
@@ -956,9 +1010,9 @@ const App = () => {
                               ? item.sessionId === currentSessionId
                               : expandedSubSessions[item.sessionId]
                           }
-                          isRunning={sessionStatesRef.current.get(item.sessionId)?.hasActiveQuery ?? false}
+                          isRunning={getSessionRunningState(item.sessionId)}
                           isWaitingForUser={getSessionWaitingState(item.sessionId)}
-                          getSessionRunningState={(sid: string) => sessionStatesRef.current.get(sid)?.hasActiveQuery ?? false}
+                          getSessionRunningState={getSessionRunningState}
                           getSessionWaitingState={getSessionWaitingState}
                           onToggle={() => _toggleSubSession(item.sessionId)}
                           onSelect={() => {
@@ -1031,8 +1085,8 @@ onClick={handleNewConversation}
               <Icon name="plus" size={16} style={{ color: colors.textSystem }} />
             </button>
             )}
-            {/* 关闭按钮（Electron app 模式）：销毁当前 webview，释放渲染进程资源 */}
-            {hostInfo.closeConversation && (
+            {/* 关闭按钮（多视图模式）：销毁当前 webview，释放渲染进程资源 */}
+            {canCloseConversation(hostInfo) && (
             <button
               onClick={() => postMessage({ type: 'closeWebview' })}
               className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors hover:bg-red-500/20 group"
@@ -1094,7 +1148,7 @@ onClick={handleNewConversation}
               onToggleFileHidden={handleToggleFileHidden}
               totalContextTokens={contextLength}
               maxContextTokens={maxContextTokens}
-              hasActiveQuery={hasActiveQuery}
+              abortEnabled={abortEnabled}
               agentMode={agentMode}
               agentModeReady={agentModeReady}
               setAgentMode={setAgentMode}
@@ -1147,9 +1201,6 @@ onClick={handleNewConversation}
           />
         )}
         {settingsPanel}
-        {preview && (
-          <PreviewOverlay payload={preview} colors={colors} onClose={() => setPreview(null)} />
-        )}
       </div>
 
     </>

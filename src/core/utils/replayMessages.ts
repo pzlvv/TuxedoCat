@@ -29,10 +29,13 @@ export function buildToolResultMap(messages: readonly Message[]): Map<string, To
 }
 
 /**
- * 将历史消息重新推送到 UI（压缩后重建 / 展开归档共用）。
+ * 把持久化格式的历史消息转换成 UI 显示用的 `MessageData[]`（纯函数）。
+ *
+ * 这是「历史消息 → 显示消息」的**唯一转换点**：core 的压缩后重建与宿主的展开归档
+ * 都调它，不再各写一份裁剪逻辑（`_meta` 裁剪、Edit `diffHunks` 构建都在这里）。
  */
-export function replayMessagesToUI(sessionId: string, messages: readonly Message[]): void {
-  emitToUi({ type: 'clearMessages', sessionId });
+export function buildReplayMessageData(messages: readonly Message[]): MessageData[] {
+  const out: MessageData[] = [];
   const toolResultMap = buildToolResultMap(messages);
 
   for (const msg of messages) {
@@ -41,11 +44,7 @@ export function replayMessagesToUI(sessionId: string, messages: readonly Message
 
     if (msg.type === 'system') {
       if (meta.subtype === 'compact_boundary') continue;
-      emitToUi({
-        type: 'message',
-        sessionId,
-        data: { role: 'system', content: msg.content } as MessageData,
-      });
+      out.push({ role: 'system', content: msg.content } as MessageData);
       continue;
     }
 
@@ -77,20 +76,16 @@ export function replayMessagesToUI(sessionId: string, messages: readonly Message
         }
       }
 
-      emitToUi({
-        type: 'message',
-        sessionId,
-        data: {
-          role: 'user',
-          content: text,
-          images: images.length > 0 ? images : undefined,
-          filePath: showFileInfo ? rawFilePath : undefined,
-          fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
-          isCompactSummary: meta.isCompactSummary === true,
-          isFromAgent: meta.fromSubAgent === true,
-          meta: replayMeta,
-        } as MessageData,
-      });
+      out.push({
+        role: 'user',
+        content: text,
+        images: images.length > 0 ? images : undefined,
+        filePath: showFileInfo ? rawFilePath : undefined,
+        fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
+        isCompactSummary: meta.isCompactSummary === true,
+        isFromAgent: meta.fromSubAgent === true,
+        meta: replayMeta,
+      } as MessageData);
       continue;
     }
 
@@ -98,17 +93,9 @@ export function replayMessagesToUI(sessionId: string, messages: readonly Message
       for (const block of msg.message.content) {
         const b = block as { type?: string; text?: string; thinking?: string; name?: string; id?: string; input?: Record<string, unknown>; _meta?: Record<string, unknown> };
         if (b.type === 'thinking') {
-          emitToUi({
-            type: 'message',
-            sessionId,
-            data: { role: 'thinking', content: b.thinking || '' } as MessageData,
-          });
+          out.push({ role: 'thinking', content: b.thinking || '' } as MessageData);
         } else if (b.type === 'text') {
-          emitToUi({
-            type: 'message',
-            sessionId,
-            data: { role: 'assistant', content: b.text || '' } as MessageData,
-          });
+          out.push({ role: 'assistant', content: b.text || '' } as MessageData);
         } else if (b.type === 'tool_use') {
           const toolUseId = b.id || '';
           const result = toolResultMap.get(toolUseId);
@@ -130,21 +117,29 @@ export function replayMessagesToUI(sessionId: string, messages: readonly Message
             toolArgs.afterContent = blockMeta.afterContent;
           }
 
-          emitToUi({
-            type: 'message',
-            sessionId,
-            data: {
-              role: 'toolcall',
-              content: result?.content || '',
-              param: `⚙️ ${b.name || 'tool'}`,
-              toolName: b.name,
-              toolArgs,
-              toolCallId: toolUseId,
-              status: result ? (result.exitCode !== 0 ? 'fail' : 'success') : 'running',
-            } as MessageData,
-          });
+          out.push({
+            role: 'toolcall',
+            content: result?.content || '',
+            param: `⚙️ ${b.name || 'tool'}`,
+            toolName: b.name,
+            toolArgs,
+            toolCallId: toolUseId,
+            status: result ? (result.exitCode !== 0 ? 'fail' : 'success') : 'running',
+          } as MessageData);
         }
       }
     }
   }
+
+  return out;
+}
+
+/**
+ * 将历史消息整批替换到 UI（压缩后重建 / 展开归档共用）。
+ *
+ * 只发一条 `messagesReplaced`，不再「先发 clearMessages 再逐条补 message」——
+ * 两步动作会让 UI 中间态（列表空着）暴露，也让「替换」这件事在事件流里看不出边界。
+ */
+export function replayMessagesToUI(sessionId: string, messages: readonly Message[]): void {
+  emitToUi({ type: 'messagesReplaced', sessionId, messages: buildReplayMessageData(messages) });
 }

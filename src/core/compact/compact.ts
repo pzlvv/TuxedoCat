@@ -13,6 +13,7 @@ import { updateConversationContext, saveCompactArchive, replaceConversationMessa
 import { replayMessagesToUI } from '../utils/replayMessages.js';
 import { getConfig } from '../llm/config.js';
 import { markCompacting, unmarkCompacting } from './state.js';
+import { markSessionCompacting } from '../sessionRuntime.js';
 
 /** core → UI 单向事件的发送侧封装（compact 模块统一走它） */
 function emitToUi(event: CoreEvent): void {
@@ -53,6 +54,10 @@ export async function compactConversation(
   // 整个压缩过程（含提前返回与异常）都持有"正在压缩"标记：
   // 压缩会整体替换 mutableMessages，期间不能并发消费排队消息。
   markCompacting(sessionId);
+  // 同一事实同步给运行时状态：压缩算「会话在忙」（对话树 / 侧栏流水灯、托盘、空闲回收）。
+  // 与 compact/state 的 markCompacting 是两件事：前者给 QueryEngine 判断能否并发消费，
+  // 后者是跨层可见的运行时事实。
+  markSessionCompacting(sessionId, true);
   try {
     return await compactConversationInner(
       sessionId,
@@ -63,6 +68,7 @@ export async function compactConversation(
     );
   } finally {
     unmarkCompacting(sessionId);
+    markSessionCompacting(sessionId, false);
   }
 }
 

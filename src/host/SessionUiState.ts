@@ -1,18 +1,18 @@
 /**
  * SessionUiState - 宿主共享的「按会话」UI 运行时状态。
  *
- * VSCodeUI 与 ElectronUI 此前各自维护同一套 Map（活动阶段 / 工具计数 / 查询计数），
+ * 两个宿主实现此前各自维护同一套 Map（活动阶段 / 工具计数 / 查询计数），
  * 且已经出现行为分叉（Electron 侧没有活动阶段）。这里收敛为单一实现：
  *
  * - 活动阶段（idle / thinking / text / tool）：切换对话时恢复 thinking 动画用
  * - 工具并发计数：并发工具全部结束才回到 idle
  * - 查询计数：同一会话嵌套 begin/end 去重，保证只发一次 queryBegin/queryEnd
- * - abort scope 判定：会话自身 + 后台 Bash 任务 + 递归子代理
+ *
+ * abort 按钮可用性**不在这里**：它读 core 的 sessionRuntime（`sessionRuntimeStates`，
+ * 见 sessionResources.isSessionBusy），webview 自己推导。
  *
  * 只保存状态与纯逻辑，不涉及任何宿主 API（推送 / 视图生命周期由宿主负责）。
  */
-
-import { resolveActiveQueryInScope } from './queryActivity.js';
 
 export type SessionActivityPhase = 'idle' | 'thinking' | 'text' | 'tool';
 
@@ -101,13 +101,6 @@ export class SessionUiState {
     }
     this.queryActiveCounts.delete(sessionId);
     return true;
-  }
-
-  // ===================== abort scope =====================
-
-  /** 会话自身（含后台任务与递归子代理）是否有活跃查询 */
-  hasActiveQueryInScope(sessionId: string): boolean {
-    return resolveActiveQueryInScope(sessionId, this.queryActiveCounts);
   }
 
   // ===================== 生命周期 =====================

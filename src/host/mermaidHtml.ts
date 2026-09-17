@@ -1,6 +1,6 @@
 /**
  * Mermaid 预览 HTML 模板（纯函数，无宿主依赖）
- * 由 VSCodeUI / ElectronUI 的 openMermaidPreview 调用
+ * 由 UIHost.openMermaidPreview 调用
  */
 
 function escapeHtml(code: string): string {

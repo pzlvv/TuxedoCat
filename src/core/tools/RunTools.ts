@@ -285,37 +285,13 @@ function emitToolResultError(sessionID: string, toolUseId: string, toolName: str
   });
 }
 
-/** 超时兜底常量：toolPermission 请求 UI 无响应时按 deny 处理（fail-safe：不弹框就不执行） */
-const TOOL_PERMISSION_TIMEOUT_MS = 30_000;
-
-/** 带超时的 Promise 包装（DEVELOPMENT.md 第 3.8 节：request() 本身不实现超时，由调用方决定） */
-function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  onTimeout: () => T,
-): Promise<T> {
-  return new Promise<T>((resolve) => {
-    const timer = setTimeout(() => resolve(onTimeout()), timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        throw err;
-      },
-    ).catch((err) => {
-      clearTimeout(timer);
-      throw err;
-    });
-  });
-}
-
 /**
- * 发送 toolPermission 请求并等待 UI 返回权限决策。
+ * 发送 toolPermissionRequested 请求并等待 UI 返回权限决策。
  * UI 侧只负责展示（工具卡片 / 确认框），决策本身已由 PermissionPolicy 加工完。
- * 超时按 deny 处理，避免 UI 重建 / reload 期间查询永久挂起。
+ *
+ * **不设超时**：权限确认的耗时取决于用户（可能正在看 diff），没有合理的上界。
+ * 只有请求本身失败（无订阅者 / 处理器异常）才按 deny 兜底——那是调用链坏了，
+ * 不是用户还在犹豫。
  */
 async function emitToolPermissionRequest(
   sessionID: string,
@@ -323,25 +299,22 @@ async function emitToolPermissionRequest(
   toolName: string,
   args: Record<string, any>,
   tool: unknown,
-): Promise<import('../AssistantEventBus.js').CoreRequestResultMap['toolPermission']> {
+): Promise<import('../AssistantEventBus.js').CoreRequestResultMap['toolPermissionRequested']> {
   const { resolveToolPermission } = await import('./PermissionPolicy.js');
-  const { permResult, displayArgs } = await resolveToolPermission(sessionID, toolName, args, tool);
+  const { permResult, displayArgs, agentMode } = await resolveToolPermission(sessionID, toolName, args, tool);
   try {
-    return await withTimeout(
-      requireEventBus().request({
-        type: 'toolPermission',
-        sessionId: sessionID,
-        toolUseId,
-        toolName,
-        permResult,
-        displayArgs,
-      }),
-      TOOL_PERMISSION_TIMEOUT_MS,
-      () => ({ behavior: 'deny' as const, message: 'Permission request timed out' }),
-    );
+    return await requireEventBus().request({
+      type: 'toolPermissionRequested',
+      sessionId: sessionID,
+      toolUseId,
+      toolName,
+      permResult,
+      displayArgs,
+      agentMode,
+    });
   } catch (err) {
-    // 总线请求失败（无订阅者 / 处理器异常）同样按 deny 处理
-    logger.warn('runTools', `toolPermission request failed: ${err}`);
+    // 总线请求失败（无订阅者 / 处理器异常）按 deny 处理
+    logger.warn('runTools', `toolPermissionRequested request failed: ${err}`);
     return { behavior: 'deny' as const, message: `Permission request failed: ${err}` };
   }
 }
@@ -463,7 +436,15 @@ async function* authorizeOne(
     // ask 需要在用户响应后再移除 pendingToolUseIds，
     // 这样切换会话时 webview 能正确显示为 "等待确认"（normal）状态
     const { requestUserChoice } = await import('../Integration.js');
-    const userChoice = await requestUserChoice(sessionID, toolUse.name, permission as any);
+    let userChoice: { index: number; reply?: string } | undefined;
+    try {
+      userChoice = await requestUserChoice(sessionID, toolUse.name, permission as any);
+    } catch (err) {
+      // 请求失败（如会话在等待期间被关闭，UserChoiceQueue.rejectPending）按 deny 处理，
+      // 与 toolPermissionRequested 的失败兜底同一口径：不弹框就不执行。
+      logger.warn('runTools', `userChoice request failed: ${err}`);
+      userChoice = undefined;
+    }
 
     // 用户响应后移除 pending 状态
     pendingToolUseIds.delete(toolUse.id);
@@ -764,7 +745,7 @@ async function* formatAndEmitResult(
       if (!alreadyPersistedByTool && typeof formattedContent === 'string' && formattedContent.length > (tool.maxResultSizeChars ?? Infinity)) {
         try {
           const persistTaskId = `tool-${toolUse.name}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-          const persisted = await persistLargeOutput(formattedContent, persistTaskId);
+          const persisted = await persistLargeOutput(formattedContent, sessionID, persistTaskId);
           if (persisted) {
             // 将 formattedResult.content 替换为持久化预览消息
             const previewMsg = buildLargeToolResultMessage(

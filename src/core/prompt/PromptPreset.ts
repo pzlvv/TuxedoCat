@@ -17,6 +17,7 @@ import {
   generateToolUsagePrompt,
   type SystemDynamicInfo,
 } from './SystemPrompt.js';
+import { readAgentsMd } from './AgentsMd.js';
 
 /** 预设 ID */
 export type PromptPresetId = 'normal' | 'minimal' | 'mixed';
@@ -61,12 +62,21 @@ export const ENVIRONMENT_SECTION: PromptSectionProvider = {
   },
 };
 
+/** 工作目录 AGENTS.md 区块（原样追加，不加任何修饰） */
+export const AGENTS_MD_SECTION: PromptSectionProvider = {
+  key: 'agents-md',
+  async render(ctx) {
+    return (await readAgentsMd(ctx.cwd)) ?? '';
+  },
+};
+
 /** 预设注册表：新增模式只在这里加条目 */
 export const PROMPT_PRESETS: Readonly<Record<PromptPresetId, PromptPreset>> = {
   normal: {
     id: 'normal',
     corePrompt: generateCoreSystemPrompt(),
-    sections: [TOOL_USAGE_SECTION, ENVIRONMENT_SECTION],
+    // AGENTS_MD_SECTION 放最后：项目上下文原样追加到 system prompt 末尾
+    sections: [TOOL_USAGE_SECTION, ENVIRONMENT_SECTION, AGENTS_MD_SECTION],
   },
   minimal: {
     id: 'minimal',

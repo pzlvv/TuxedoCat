@@ -84,6 +84,27 @@
           "endsPattern": "Debugger listening on ws://.*"
         }
       }
+    },
+    {
+      "label": "plantuml:server",
+      "type": "npm",
+      "script": "plantuml:server",
+      "isBackground": true,
+      "runOptions": { "runOn": "folderOpen" },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "group": "plantuml"
+      },
+      "problemMatcher": {
+        "owner": "plantuml-server",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "plantuml:server: start",
+          "endsPattern": "plantuml:server: ready"
+        }
+      }
     }
   ]
 }

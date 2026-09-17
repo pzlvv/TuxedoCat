@@ -1,6 +1,6 @@
 /**
  * src/host/ui/toolHandler.ts - 工具调用处理
- * 处理 onPreToolCall / onToolCall / onToolResult 等工具生命周期
+ * 处理 requestToolPermission / onToolCall / onToolResult 等工具生命周期
  *
  * 阶段 2.5 起，权限规则（agentMode → checkPermissions → auto/risk/manual 加工 →
  * displayArgs 展开）全部搬到 core 的 PermissionPolicy。本类只剩「展示」：
@@ -11,7 +11,9 @@
  */
 import type { UIHost } from '../UIHost.js';
 import { logger } from '../../core/Logger.js';
+
 import { updateToolUseMeta } from '../../core/history/index.js';
+import type { AgentMode } from '../../core/types.js';
 import type { PermissionResult } from '../../core/tools/Tool.js';
 import type { UserChoiceManager } from './userChoice.js';
 
@@ -38,40 +40,45 @@ export class ToolHandler {
   }
 
   /**
-   * core 层调用（CoreRequest.toolPermission 的处理方）：
+   * core 层调用（CoreRequest.toolPermissionRequested 的处理方）：
    * permResult 已由 core 的 PermissionPolicy 加工完——
    * - allow → 直接返回
    * - deny  → 直接返回
    * - ask   → 弹确认框并返回用户选择
    * 同时负责把工具卡片上架 / 更新（展示职责）。
    */
-  async onPreToolCall(
+  async requestToolPermission(
     sessionID: string,
     toolUseId: string,
     toolName: string,
     permResult: PermissionResult,
     displayArgs: Record<string, unknown>,
+    agentMode?: AgentMode,
   ): Promise<PermissionResult> {
     const toolCallId = toolUseId;
-    logger.info('ToolHandler', `onPreToolCall: ${toolName} (toolCallId: ${toolCallId})`);
+    logger.info('ToolHandler', `requestToolPermission: ${toolName} (toolCallId: ${toolCallId})`);
 
     // 保存 Edit / Write 工具的 diff 信息。
     // 注意：只有在本次权限结果里确实携带了 diff 字段时才保存/使用
     // userChoiceManager 中的快照，否则会把上一次 Edit/Write 的 diff 错误地挂到
     // 本次（例如 old_string 多处匹配被 deny）的失败工具卡片上。
-    const hasPermDiff = (toolName === 'Edit' || toolName === 'Write') && 'beforeContent' in permResult;
+    const hasPermDiff = (toolName === 'Edit' || toolName === 'Write') && (permResult as any).beforeContent !== undefined;
     if (hasPermDiff) {
       // Write 新建文件时 beforeContent 为 null，需要保留 null 以便回滚时删除文件
       const pc = (permResult as any).beforeContent;
-      this.userChoiceManager.currentBeforeContent = pc !== undefined ? pc : '';
-      this.userChoiceManager.currentAfterContent = (permResult as any).afterContent || '';
-      this.userChoiceManager.currentContextBefore = (permResult as any).contextBefore || [];
-      this.userChoiceManager.currentContextAfter = (permResult as any).contextAfter || [];
-      this.userChoiceManager.currentStartLine = (permResult as any).startLine;
-      this.userChoiceManager.currentEndLine = (permResult as any).endLine;
+      this.userChoiceManager.saveDiffSnapshot(sessionID, {
+        beforeContent: pc !== undefined ? pc : '',
+        afterContent: (permResult as any).afterContent || '',
+        contextBefore: (permResult as any).contextBefore || [],
+        contextAfter: (permResult as any).contextAfter || [],
+        startLine: (permResult as any).startLine,
+        endLine: (permResult as any).endLine,
+      });
     }
 
-    // 发送工具卡片到 webview（normal 状态，等待授权/执行）
+    // 授权前先显示这次改动：webview 侧是工具卡片里的 diff（normal 状态，等待授权/执行），
+    // 宿主侧是 VS Code 的原生 diff 标签（Electron 空实现——它的 diff 只在 webview 里渲染）。
+    // 两处渲染在权限确认框弹出前就已可见，用户确认后都保留。
     this.postToWebview(sessionID, {
       type: 'addMessage',
       role: 'toolcall',
@@ -82,6 +89,16 @@ export class ToolHandler {
       status: 'normal',
       toolCallId,
     });
+    // 只有 manual 模式才在宿主侧打开 diff 标签：auto / risk 下改动是自动放行的，
+    // 再弹一个原生 diff 编辑器只会打扰用户（webview 工具卡片里的 diff 仍然展示）。
+    if (hasPermDiff && agentMode === 'manual') {
+      this.showHostDiff(
+        toolName,
+        displayArgs,
+        this.userChoiceManager.currentBeforeContent,
+        this.userChoiceManager.currentAfterContent,
+      );
+    }
 
     const diffLineCount = Array.isArray((displayArgs as any).diffHunks)
       ? (displayArgs as any).diffHunks.reduce((s: number, h: any) => s + (h.lines?.length || 0), 0)
@@ -109,6 +126,28 @@ export class ToolHandler {
     // Integration.requestUserChoice（全局 UserChoiceQueue，支持多会话排队与自动跳转），
     // 这里提前弹框会造成双重确认。
     return permResult;
+  }
+
+  /**
+   * 在宿主侧打开这次改动的 diff（VS Code 原生 diff 标签；Electron 空实现）。
+   * 标题用展开后的文件路径，展开由 core 的 PermissionPolicy 完成。
+   */
+  private showHostDiff(
+    toolName: string,
+    displayArgs: Record<string, unknown>,
+    beforeContent: string,
+    afterContent: string,
+  ): void {
+    const filePath = typeof displayArgs.file_path === 'string' ? displayArgs.file_path : '';
+    void this.host.showDiff({
+      filePath: null,
+      newContent: null,
+      title: filePath || toolName,
+      beforeContent,
+      afterContent,
+    }).catch((err: unknown) => {
+      this.log(`[ToolHandler] showDiff error: ${err}`);
+    });
   }
 
   /**

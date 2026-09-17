@@ -3,7 +3,7 @@
  *
  * 负责在消息进入 LLM 之前，拦截并处理以 / 开头的命令。
  * 处理优先级：
- *   1. 内置命令（如 /clear, /spin）：由对应的 handler 直接处理
+ *   1. 内置命令（如 /spin）：由对应的 handler 直接处理
  *   2. Skill 命令（如 /archive, /commit）：匹配到 Skill 名称时，
  *      返回 'skill' 结果，由上层（Integration）生成 Skill tool call 注入引擎
  *   3. 其他 / 命令：走正常 LLM 流程
@@ -86,7 +86,7 @@ export async function dispatch(
     };
 
     try {
-      // 通知 UI 层执行客户端操作（如 /clear 清空消息、/spin 打开设计器）；
+      // 通知 UI 层执行客户端操作（如 /spin 打开设计器）；
       // 唯一调用方（这里）丢弃返回值，不需要 Promise<boolean> 形态
       requireEventBus().emitToUi({
         type: 'commandDispatched',

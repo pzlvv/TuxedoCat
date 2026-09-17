@@ -104,11 +104,6 @@ export const enDict: Record<string, string> = {
   'llmConfig.languageLabel': 'Language',
   'llmConfig.languageAuto': 'Auto',
   'llmConfig.languageHint': 'UI language; Auto follows the VS Code / system language',
-  'llmConfig.shortcutLabel': 'Wake Shortcut',
-  'llmConfig.shortcutChange': 'Click to change',
-  'llmConfig.shortcutRecording': 'Press keys...',
-  'llmConfig.shortcutHint': 'When the Electron app is minimized to the system tray, use this shortcut to wake the window. Click the button above and press a new key combination.',
-  'llmConfig.shortcutInvalid': 'Invalid shortcut. Please set it again.',
   'llmConfig.sectionConversationSpace': 'Conversation Space',
   'llmConfig.conversationSpaceHint': 'Show sizes of conversation spaces. You can clear conversation data.',
   'llmConfig.conversationSpaceStats': 'Scan',
@@ -309,14 +304,4 @@ export const enDict: Record<string, string> = {
   'handlers.minutesAgo': '{count} minutes ago',
   'handlers.hoursAgo': '{count} hours ago',
   'handlers.daysAgo': '{count} days ago',
-
-  /* ── PreviewOverlay.tsx (in-page preview for the browser client) ── */
-  'preview.title': 'Preview',
-  'preview.close': 'Close (Esc)',
-  'preview.readError': 'Failed to read file',
-  'preview.truncated': 'Content is large; showing the first {count} lines only',
-  'preview.mermaidHint': 'Mermaid rendering is not available in the browser; showing the source',
-  'preview.diffSplit': 'Compare',
-  'preview.diffAfter': 'After',
-  'preview.diffBefore': 'Before',
 };

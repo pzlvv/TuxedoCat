@@ -9,11 +9,12 @@
  * 构造注入 host + spinDesign + conversations（三个契约，见第 5 节）。
  *
  * 渲染 handler 与控制面 handler 在一个类里按注释分区
- * （不再拆 WebViewNotifier / WebViewController，见第 3.3 节）。
+ * （不拆 WebViewNotifier / WebViewController，见第 3.3 节）。
  */
 
 import type { AssistantEventBus, CoreEventHandlers, CoreRequestHandlers } from '../core/AssistantEventBus.js';
-import type { MessageData, StreamMessageData, StreamEndData } from '../core/types.js';
+import { requireEventBus } from '../core/AssistantEventBus.js';
+import type { AgentMode, MessageData, StreamMessageData, StreamEndData } from '../core/types.js';
 import type { ToolProgressData, PermissionResult } from '../core/tools/Tool.js';
 import type { UIHost } from './UIHost.js';
 import type { SpinDesign } from './SpinDesign.js';
@@ -34,8 +35,6 @@ export class WebViewUI implements WebViewUiPort {
 
   /** 按会话的 UI 运行时状态（活动阶段 / 工具计数 / 查询计数 / abort scope） */
   public readonly sessionUi = new SessionUiState();
-  /** 对话列表刷新 debounce timer（500ms） */
-  private conversationListRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** 共享子模块 */
   private readonly userChoiceManager: UserChoiceManager;
@@ -143,8 +142,6 @@ export class WebViewUI implements WebViewUiPort {
       activityPhase: this.getActivityPhase(sessionId),
     });
     this.host.sendToWebview(payload as never);
-    // 同步 abort 状态：切换到含活跃子代理的会话后，父会话的 abort 按钮仍应可用
-    this.refreshAbortState();
   }
 
   /** 会话标题变化通知（转调 onTitleChanged） */
@@ -156,9 +153,15 @@ export class WebViewUI implements WebViewUiPort {
     this.postToWebview(sessionId, { type: 'setTitle', title });
   }
 
-  /** 该会话的 UI 侧状态已释放（视图关闭 / 会话删除） */
+  /**
+   * 该会话的 UI 侧状态已释放（视图关闭 / 会话删除）：
+   * fan-out 给所有持有 per-session 状态的子模块，各自清理。
+   * 由 `releaseConversation` 统一调用（第 6.1 节 / 第 10.5 节）。
+   */
   dropSession(sessionId: string): void {
-    this.sessionUi.dropSession(sessionId);
+    this.sessionUi.dropSession(sessionId);                  // 阶段 / 工具计数 / 查询计数 / abort scope
+    this.userChoiceManager.dropSession(sessionId);          // 挂起的选择回调 + diff 快照
+    this.webviewMessageHandler.dropTrackedSession(sessionId); // tracked active session
   }
 
   /** 通知 UI 显示或清除排队消息状态（从 AssistantUI 移来） */
@@ -181,16 +184,6 @@ export class WebViewUI implements WebViewUiPort {
       : { type: 'clearQueuedMessage', sessionId });
   }
 
-  /** 会话（含后台任务与递归子代理）是否有活跃查询 */
-  hasActiveQueryInScope(sessionId: string): boolean {
-    return this.sessionUi.hasActiveQueryInScope(sessionId);
-  }
-
-  /** 重新计算并下发 abort 按钮状态（内部调 host.syncAbortState） */
-  refreshAbortState(): void {
-    this.host.syncAbortState((sid) => this.sessionUi.hasActiveQueryInScope(sid));
-  }
-
   /** 当前活跃 session ID（委托 WebviewMessageHandler 维护的 UI 状态） */
   getActiveSessionId(): string | undefined {
     return this.webviewMessageHandler.getActiveSessionId();
@@ -204,6 +197,11 @@ export class WebViewUI implements WebViewUiPort {
   /** 重新读取并分发对话列表（转调 ConversationManager.refresh） */
   refreshConversations(): Promise<void> {
     return this.conversations.refresh();
+  }
+
+  /** 记录会话活动，重置该会话的空闲关闭计时（空闲回收是 VS Code 专属，见第 5.4 节） */
+  noteSessionActivity(sessionId: string): void {
+    this.conversations.noteSessionActivity(sessionId);
   }
 
   // ===================== 事件处理器（私有，命名与事件 type 对应）=====================
@@ -220,7 +218,7 @@ export class WebViewUI implements WebViewUiPort {
       toolProgress: (e) => this.onToolProgress(e.sessionId, e.toolUseId, e.progress),
       aiBegin: (e) => this.onAIBegin(e.sessionId),
       aiEnd: (e) => this.onAIEnd(e.sessionId),
-      clearMessages: (e) => this.clearMessages(e.sessionId),
+      messagesReplaced: (e) => this.onMessagesReplaced(e.sessionId, e.messages),
 
       // ===== 控制面 =====
       queryBegin: (e) => this.onQueryBegin(e.sessionId),
@@ -230,6 +228,8 @@ export class WebViewUI implements WebViewUiPort {
       conversationListChanged: () => this.onConversationListChanged(),
       sessionRuntimeChanged: (e) => this.onSessionRuntimeChanged(e.states),
       spinDesignDataChanged: () => this.onSpinDesignDataChanged(),
+      highlightLanguagesUsed: (e) => this.onHighlightLanguagesUsed(e.languages),
+      projectConversationDirReady: (e) => this.onProjectConversationDirReady(e.projectDir, e.workspacePath),
       compactBegin: (e) => this.onCompactBegin(e.sessionId),
       compactEnd: (e) => this.onCompactEnd(e.sessionId, e.result),
       commandDispatched: (e) => void this.onCommandSend(e.commandName, e.args, e.sessionId),
@@ -239,8 +239,8 @@ export class WebViewUI implements WebViewUiPort {
 
   private buildCoreRequestHandlers(): CoreRequestHandlers {
     return {
-      toolPermission: (r) =>
-        this.onPreToolCall(r.sessionId, r.toolUseId, r.toolName, r.permResult, r.displayArgs),
+      toolPermissionRequested: (r) =>
+        this.requestToolPermission(r.sessionId, r.toolUseId, r.toolName, r.permResult, r.displayArgs, r.agentMode),
       userChoice: (r) => this.requestUserChoice(r.sessionId, r.options),
     };
   }
@@ -325,26 +325,28 @@ export class WebViewUI implements WebViewUiPort {
     this.fetchAndSendBalance(sessionId);
   }
 
-  clearMessages(sessionId: string): void {
-    this.postToWebview(sessionId, { type: 'clearMessages' });
+  /** 整批替换该会话显示的消息（core 的 messagesReplaced：压缩后重建 / 展开归档） */
+  onMessagesReplaced(sessionId: string, messages: readonly MessageData[]): void {
+    this.postToWebview(sessionId, { type: 'messagesReplaced', messages });
   }
 
   // --- 控制面 handler ---
 
   /**
-   * 工具调用开始前（CoreRequest.toolPermission 的处理方）：
+   * 工具调用开始前（CoreRequest.toolPermissionRequested 的处理方）：
    * 显示工具卡片；permResult.behavior === 'ask' 时弹确认框并回传用户选择。
    */
-  onPreToolCall(
+  requestToolPermission(
     sessionId: string,
     toolUseId: string,
     toolName: string,
     permResult: PermissionResult,
     displayArgs: Record<string, unknown>,
+    agentMode: AgentMode,
   ): Promise<PermissionResult> {
     // 进入工具阶段（包括等待用户授权/权限检查），thinking 动画应让位于工具卡片
     this.sessionUi.beginToolPhase(sessionId);
-    return this.toolHandler.onPreToolCall(sessionId, toolUseId, toolName, permResult, displayArgs);
+    return this.toolHandler.requestToolPermission(sessionId, toolUseId, toolName, permResult, displayArgs, agentMode);
   }
 
   requestUserChoice(sessionId: string, options: UserChoiceOptions): Promise<{ index: number; reply?: string }> {
@@ -364,7 +366,6 @@ export class WebViewUI implements WebViewUiPort {
     // 查询开始时立即显示 thinking 动画，覆盖前置耗时
     this.sessionUi.markThinking(sessionId);
     this.setThinkingAnimation(sessionId, true);
-    this.refreshAbortState();
     this.postToWebview(sessionId, { type: 'queryBegin' });
   }
 
@@ -378,9 +379,6 @@ export class WebViewUI implements WebViewUiPort {
     // 查询结束必须关闭 thinking 动画：中断（尤其子代理中断）可能没有 onAIEnd，
     // 若只发 queryEnd 会让 webview 的 thinking 动画残留。（统一显式发，11.1 #4）
     this.setThinkingAnimation(sessionId, false);
-    // 先同步 abort 状态再发 queryEnd：若当前会话仍有其他查询/子代理在运行，
-    // 这里会保持 abort 按钮可用，而不是被其他会话的 queryEnd 置灰。
-    this.refreshAbortState();
     this.postToWebview(sessionId, { type: 'queryEnd' });
     // 查询结束代表消息已持久化完成：推送最新对话列表，历史列表打开时条数实时更新
     this.onConversationListChanged();
@@ -391,21 +389,15 @@ export class WebViewUI implements WebViewUiPort {
   }
 
   /**
-   * 对话列表数据变化（磁盘元数据）。
-   * 内部 500ms trailing debounce 后调 conversations.refresh()，
-   * core 不再选择「立即 / 节流」，也不再关心推给哪些界面。
+   * 对话列表数据变化（磁盘元数据）→ conversations.refresh()。
+   * 「立即还是节流、推给哪些界面」由 ConversationManager 决定，core 不参与。
    */
   onConversationListChanged(): void {
-    if (this.conversationListRefreshTimer) clearTimeout(this.conversationListRefreshTimer);
-    this.conversationListRefreshTimer = setTimeout(() => {
-      this.conversationListRefreshTimer = null;
-      void this.conversations.refresh();
-    }, 500);
+    void this.conversations.refresh();
   }
 
   /**
-   * 会话运行时状态变化（running / waiting）。
-   * 不防抖——状态要即时，直接 conversations.updateSessionStates(states)。
+   * 会话运行时状态变化（running / waiting）→ conversations.updateSessionStates(states)。
    * 只读：sessionUi 的活跃计数由 queryBegin/queryEnd 自维护，本 handler 不写回。
    */
   onSessionRuntimeChanged(states: readonly SessionRuntimeState[]): void {
@@ -415,6 +407,29 @@ export class WebViewUI implements WebViewUiPort {
   /** Spin 设计器数据变化 → spinDesign.refresh()（设计器不在 UIHost 上） */
   onSpinDesignDataChanged(): void {
     void this.spinDesign.refresh();
+  }
+
+  /**
+   * 消息里出现了新的高亮语言 → 并入 settings.json 的 highlightLanguages 字段。
+   * core 只报告事实，字段名 / 去重 / 上限在 core 的 `highlightLanguagesMutator`，
+   * 写盘由宿主承担（core 只读不写 settings.json）。
+   */
+  /**
+   * 项目对话目录已就绪 → 让宿主写入其中的 settings.json（记录 workspacePath）。
+   * core 只报告事实，写盘归宿主（core 只读不写 settings.json）。
+   */
+  onProjectConversationDirReady(projectDir: string, workspacePath: string): void {
+    void this.host.ensureProjectSettings(projectDir, workspacePath).catch((err: unknown) => {
+      this.log(`Failed to write project settings.json for ${projectDir}: ${err}`);
+    });
+  }
+
+  onHighlightLanguagesUsed(languages: readonly string[]): void {
+    void import('../core/history/Config.js').then(({ highlightLanguagesMutator }) =>
+      this.host.updateSettingsJson(highlightLanguagesMutator(languages))
+    ).catch((err: unknown) => {
+      this.log(`Failed to record highlight languages: ${err}`);
+    });
   }
 
   onCompactBegin(sessionId: string): void {
@@ -439,20 +454,7 @@ export class WebViewUI implements WebViewUiPort {
    * 命令发送回调（CoreEvent.commandDispatched 的处理方）。
    * 唯一调用方（CommandDispatcher）丢弃返回值。
    */
-  async onCommandSend(commandName: string, args: string, sessionId: string): Promise<void> {
-    if (commandName === 'clear') {
-      this.postToWebview(sessionId, { type: 'clearMessages', sessionId });
-      const { clearConversationData } = await import('../core/history/ops.js');
-      void clearConversationData(sessionId, {
-        // /clear 后同步列表 messageCount（清空后仍保留会话，显示 0 条）
-        onSuccess: () => this.onConversationListChanged(),
-        onError: (err) => {
-          this.log(`Error clearing conversation: ${err}`);
-        },
-      });
-      return;
-    }
-
+  async onCommandSend(commandName: string, args: string, _sessionId: string): Promise<void> {
     if (commandName === 'spin') {
       const trimmed = args.trim();
       if (trimmed === 'design') {
@@ -531,14 +533,23 @@ export class WebViewUI implements WebViewUiPort {
   }
 
   /**
+   * 释放会话的运行时内存与 UI 侧状态，不销毁宿主视图。
+   *
+   * 这是 ChatViewManager 的「卸内存」入口（视图销毁序列在它内部自行完成，
+   * 见 electron/ChatViewManager.destroyViewEntry），避免「关闭视图」与
+   * 「卸内存」互相回调形成环。
+   */
+  releaseConversation(sessionId: string): void {
+    requireEventBus().emitToCore({ type: 'conversationClosed', sessionId }); // core 卸内存
+    this.dropSession(sessionId); // 清 UI 侧 per-session 状态（fan-out，见 dropSession）
+  }
+
+  /**
    * 关闭会话：卸下运行时内存 + 销毁宿主视图。两件事归属不同，这里只做分发。
    */
   closeConversation(sessionId: string): void {
-    const { requireEventBus } = require('../core/AssistantEventBus.js') as typeof import('../core/AssistantEventBus.js');
-    requireEventBus().emitToCore({ type: 'conversationClosed', sessionId }); // core 卸内存
+    this.releaseConversation(sessionId);
     void this.host.closeConversationView(sessionId); // 宿主销毁视图（VS Code 空）
-    this.sessionUi.dropSession(sessionId); // 清 UI 侧 per-session 状态（阶段/计数/abort scope）
-    this.webviewMessageHandler.dropTrackedSession(sessionId); // 清 UI 侧 tracked active session
   }
 
   /** 获取 DeepSeek 账户余额并发送到 webview（统一走 host.log，11.1 #13） */

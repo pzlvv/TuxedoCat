@@ -82,20 +82,6 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
   const [rollbackDirection, setRollbackDirection] = useState<'before' | 'after'>('before');
   const [rollbackResult, setRollbackResult] = useState<{ success: boolean; message: string } | null>(null);
 
-  // 监听 rollbackEditResult 消息
-  useEffect(() => {
-    const handler = (event: MessageEvent) => {
-      const msg = event.data;
-      if (msg.type === 'rollbackEditResult') {
-        setShowRollbackConfirm(false);
-        setRollbackResult({ success: msg.success, message: msg.message });
-        setTimeout(() => setRollbackResult(null), 5000);
-      }
-    };
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
-  }, []);
-
   const handleRollbackConfirm = () => {
     const sid = getWindowSessionId();
     if (!sid) {
@@ -306,6 +292,8 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
                 fontFamily: 'Consolas, Monaco, "Courier New", monospace',
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
+                // 左侧留一点空隙，代码不贴着预览框左边框显示。
+                paddingLeft: '4px',
               }}
             >
               {previewLineHtmls.map((html, i) => (

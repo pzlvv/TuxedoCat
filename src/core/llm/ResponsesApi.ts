@@ -1275,7 +1275,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
         if (totalTextLen > ASSISTANT_MAX_TEXT_CHARS) {
           try {
             const fullText = textBlocks.map((b: any) => String(b.text || '')).join('\n\n');
-            const persisted = await persistLargeOutput(fullText, `assistant-${streamMessageId}`);
+            const persisted = await persistLargeOutput(fullText, sessionId, `assistant-${streamMessageId}`);
             if (persisted) {
               const persistedMsg = buildLargeToolResultMessage(
                 persisted.filepath,

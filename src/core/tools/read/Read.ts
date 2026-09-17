@@ -20,7 +20,7 @@ import type { ReadInput, ReadOutput } from './Types.js';
 import { TOOL_NAME, DESCRIPTION, getPrompt } from './Prompt.js';
 import { expandPath } from '../../utils/path.js';
 import { getExtensionPath, getProjectRoot } from '../../history/Config.js';
-import { getToolResultsDir } from '../toolResultStorage.js';
+import { getToolResultsDir, getToolResultFilePrefix } from '../toolResultStorage.js';
 import {
   getDefaultLimits,
   FileTooLargeError,
@@ -143,9 +143,14 @@ function getPandocPath(): string {
 
 /**
  * 使用 pandoc 将 doc/docx 转换为 markdown
+ *
+ * 输出文件名带会话前缀（与持久化工具结果一致），删除对话时按前缀一并清理。
+ *
+ * @param filePath - 源文档路径
+ * @param sessionId - 当前会话 ID（用于文件名前缀与按会话清理）
  * @returns 转换后的 markdown 文件路径
  */
-export async function convertDocToMd(filePath: string): Promise<string> {
+export async function convertDocToMd(filePath: string, sessionId?: string): Promise<string> {
   const ext = path.extname(filePath).toLowerCase();
   if (!DOC_EXTENSIONS.includes(ext)) {
     throw new Error(`Unsupported document format: ${ext}`);
@@ -167,9 +172,11 @@ export async function convertDocToMd(filePath: string): Promise<string> {
   // md 文件名带源路径 hash：不同目录下的同名文件（a/report.docx 与 b/report.docx）
   // 若共用 `${name}.md` 会互相覆盖缓存——A 转换后 B 读取时按 mtime 误判，
   // 甚至拿到 A 的内容。加入源绝对路径 hash 后互不冲突。
+  // 文件名再带会话前缀，使转换结果随对话删除一并清理（缓存不再跨会话共享）。
   const parsedPath = path.parse(filePath);
   const pathHash = crypto.createHash('sha1').update(path.resolve(filePath)).digest('hex').slice(0, 10);
-  const mdFileName = `${parsedPath.name}_${pathHash}.md`;
+  const sessionPrefix = sessionId ? getToolResultFilePrefix(sessionId) : '';
+  const mdFileName = `${sessionPrefix}${parsedPath.name}_${pathHash}.md`;
   const mdFilePath = path.join(toolResultsDir, mdFileName);
 
   // 缓存：如果 md 文件已存在且源文件未变更，直接返回
@@ -428,7 +435,7 @@ export const ReadTool = buildTool({
 
   async call(
     input: ReadInput,
-    _context: ToolUseContext,
+    context: ToolUseContext,
   ): Promise<ToolResult<ReadOutput>> {
     // 支持 file_path 和 path 两种参数名
     const filePath = (input as any).file_path || (input as any).path;
@@ -503,7 +510,7 @@ export const ReadTool = buildTool({
 
     // doc/docx 文件：先转 md，然后走常规文本读取流程
     if (isDocFile) {
-      const mdFilePath = await convertDocToMd(fullPath);
+      const mdFilePath = await convertDocToMd(fullPath, context.sessionId);
       // 重定向 fullPath 到 md 文件，复用后续的文本读取逻辑
       fullPath = mdFilePath;
     }

@@ -9,7 +9,7 @@
  * 宿主差异（app / 插件）统一由 __hostInfo 能力声明驱动，webview 不做宿主嗅探。
  */
 
-import type { HostInfo } from '../host/types';
+import { openConversationModeOf, type HostInfo } from '../host/types';
 
 interface VscodeApi {
   postMessage(message: unknown): void;
@@ -67,20 +67,11 @@ export function getHostInfo(): HostInfo {
     throw new Error('window.__hostInfo 未注入：宿主必须在 webview 启动前声明能力（见 src/host/types.ts）。');
   }
   const problems: string[] = [];
-  if (injected.kind !== 'vscode' && injected.kind !== 'electron' && injected.kind !== 'server') {
-    problems.push(`kind=${String(injected.kind)}`);
-  }
-  if (injected.conversationList !== 'host' && injected.conversationList !== 'webview') {
+  if (injected.conversationList !== 'single' && injected.conversationList !== 'multi') {
     problems.push(`conversationList=${String(injected.conversationList)}`);
   }
   if (injected.newConversation !== 'host' && injected.newConversation !== 'webview') {
     problems.push(`newConversation=${String(injected.newConversation)}`);
-  }
-  if (typeof injected.closeConversation !== 'boolean') {
-    problems.push(`closeConversation=${String(injected.closeConversation)}`);
-  }
-  if (injected.openConversationMode !== 'openConversation' && injected.openConversationMode !== 'loadConversation') {
-    problems.push(`openConversationMode=${String(injected.openConversationMode)}`);
   }
   if (problems.length > 0) {
     throw new Error(`window.__hostInfo 字段非法或缺失：${problems.join(', ')}（见 src/host/types.ts 的 HostInfo）。`);
@@ -112,44 +103,13 @@ export function getWindowSessionId(): string | null {
 }
 
 /**
- * 当前页面在浏览器端（内置 HTTP 服务器）的唯一标识。
- * 桌面（Electron 原生窗口）/ VS Code 宿主未注入，返回 undefined。
- */
-export function getClientId(): string | undefined {
-  const id = (window as any).__clientId;
-  return typeof id === 'string' && id.length > 0 ? id : undefined;
-}
-
-/**
- * 「只回给发起端」的消息类型：
- * - 查看类（打开文件 / 虚拟文档 / diff / Mermaid）：属于本地查看行为，
- *   不应在其它端弹出窗口或浮层（req: 查看类操作不同步）
- * - requestLLMConfig：设置面板只应在点开设置的那个端打开
+ * 是否为后台预热的「新对话」视图（仅 Electron 宿主会注入 window.__prewarm）。
  *
- * 这些消息统一补上 sessionId（按会话路由）与 clientId（精确定位发起端）。
- * 带 clientId 的回推消息由 ChatViewManager 只投递给该浏览器客户端，
- * 不会落到原生视图或其它浏览器端。
+ * 预热视图的页面照常加载，但跳过启动初始化（不生成 session、不申请主题/模型等），
+ * 等被切到前台时由宿主发 activatePrewarmedView 触发。其他宿主返回 false。
  */
-const CLIENT_SCOPED_TYPES = new Set([
-  'openFile',
-  'showVirtualDocument',
-  'showDiffInVirtualDocument',
-  'openMermaidPreview',
-  'requestLLMConfig',
-]);
-
-function withClientScope(msg: unknown): unknown {
-  if (!msg || typeof msg !== 'object') return msg;
-  const m = msg as Record<string, unknown>;
-  if (typeof m.type !== 'string' || !CLIENT_SCOPED_TYPES.has(m.type)) return msg;
-  const clientId = getClientId();
-  // 桌面 / VS Code：没有 clientId，保持原有行为（交给宿主打开）
-  if (!clientId) return msg;
-  return {
-    ...m,
-    clientId,
-    ...(m.sessionId ? {} : { sessionId: getWindowSessionId() ?? undefined }),
-  };
+export function getIsPrewarmView(): boolean {
+  return (window as any).__prewarm === true;
 }
 
 /**
@@ -166,20 +126,20 @@ export function getPreloadedHighlightLanguages(): string[] {
 /** Post a typed message to host (VS Code extension / Electron main), returns false if no API. */
 export function postMessage(msg: unknown): boolean {
   if (!hasVscodeApi()) return false;
-  getVscodeApi().postMessage(withClientScope(msg));
+  getVscodeApi().postMessage(msg);
   return true;
 }
 
 /**
  * 加载/跳转到指定会话（子代理链接、From 链接、返回父会话等）。
  *
- * 打开方式由宿主能力声明决定：
- *   - VS Code 插件：当前 webview 内重新加载对话（loadConversation）
- *   - Electron App：新起一个 webview 加载对话（openConversation，由主进程创建/切换聊天视图）
+ * 打开方式由视图模式推导（见 src/host/types.ts 的 openConversationModeOf）：
+ *   - 单视图（VS Code 插件）：当前 webview 内重新加载对话（loadConversation）
+ *   - 多视图（Electron App）：新起一个 webview 加载对话（openConversation，由主进程创建/切换聊天视图）
  */
 export function navigateToConversation(sessionId: string): boolean {
   return postMessage({
-    type: getHostInfo().openConversationMode,
+    type: openConversationModeOf(getHostInfo()),
     sessionId,
   });
 }

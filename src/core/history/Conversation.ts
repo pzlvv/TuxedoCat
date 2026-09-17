@@ -12,6 +12,7 @@ import type { Message } from '../types.js';
 import type { PromptPresetId } from '../prompt/PromptPreset.js';
 import { requireEventBus, type CoreEvent } from '../AssistantEventBus.js';
 import { buildConversationTitle, extractUserContent } from '../utils/contentBlocks.js';
+import { deleteSessionToolResults } from '../tools/toolResultStorage.js';
 import { logger } from '../Logger.js';
 
 /** core → UI 单向事件的发送侧封装（history/Conversation 统一走它） */
@@ -22,7 +23,7 @@ function emitToUi(event: CoreEvent): void {
 /**
  * 从一条消息里提取围栏代码块的语言列表（去重）。
  * 扫描 user / assistant 消息的字符串内容中的 ```lang 围栏标记，
- * 供 appendMessage 时预热 Shiki 高亮语言集合（见第 7.3 节 2.6）。
+ * 供 appendMessage 上报 Shiki 高亮语言预热集合（见第 7.3 节 2.6）。
  */
 function collectFenceLanguages(message: Message): string[] {
   const langs = new Set<string>();
@@ -246,7 +247,7 @@ export interface ConversationMetadata {
   createdAt: number;
   updatedAt: number;
   messageCount: number;
-  /** /clear 后标记：内容已清空但会话/标题保留 */
+  /** 清空对话后标记：内容已清空但会话/标题保留 */
   clearedAt?: number;
   /** 当前对话的上下文（文件、模式等），用于加载时恢复 */
   context?: ConversationContext;
@@ -545,23 +546,25 @@ export async function appendMessage(message: Message, sessionId: string, parentU
     logger.info('Conversation', `[CacheTrack] appendMessage | session=${effectiveSessionId.substring(0,20)} | NO_CACHE`);
   }
 
-  // 确保项目对话目录存在，并写入 settings.json（记录 workspacePath）
+  // 确保项目对话目录存在（目录由 core 建；其中的 settings.json 由宿主写）
   await ensureProjectConversationDir(projectPath);
 
-  // 高亮语言预热集合改由 core 自己维护（DEVELOPMENT.md 第 7.3 节 2.6）：
-  // 在消息落盘时扫描内容里的围栏代码块语言，直接调 recordHighlightLanguage，
-  // 不再需要 webview 上报。预热集合变成「会话内容里出现过的语言」，
-  // 比「webview 实际加载过的语言」更早、更完整。
+  // 高亮语言预热集合由 core 扫描并上报（DEVELOPMENT.md 第 7.3 节 2.6）：
+  // 在消息落盘时扫描内容里的围栏代码块语言，只上报**尚未记录过**的语言，
+  // 避免每次落盘都触发一次磁盘写。写盘由 UI 侧经 UIHost.updateSettingsJson
+  // 承担（core 只读不写 settings.json）。
   try {
     const langs = collectFenceLanguages(message);
     if (langs.length > 0) {
-      const { recordHighlightLanguage } = await import('./Config.js');
-      for (const lang of langs) {
-        await recordHighlightLanguage(lang);
+      const { readHighlightLanguagesSync } = await import('./Config.js');
+      const known = new Set(readHighlightLanguagesSync());
+      const fresh = langs.filter((lang) => !known.has(lang));
+      if (fresh.length > 0) {
+        emitToUi({ type: 'highlightLanguagesUsed', languages: fresh });
       }
     }
   } catch {
-    // 扫描 / 记录失败不影响落盘主流程
+    // 扫描 / 上报失败不影响落盘主流程
   }
 
 	  // 追加到 JSONL 文件（通过写队列串行化，防止与 updateToolUseMeta 并发导致文件损坏）
@@ -605,8 +608,8 @@ export async function appendMessage(message: Message, sessionId: string, parentU
   }
 
   // 通知 UI 刷新对话列表，让侧栏消息数在对话进行中实时更新。
-  // 「立即还是节流、推给哪些视图」是 UI 的表现策略，由 WebViewUI 的
-  // onConversationListChanged（500ms 防抖）决定，core 只报告事实。
+  // 「推给哪些视图、怎么推」是 UI 的表现策略，由 WebViewUI 的
+  // onConversationListChanged → ConversationManager.refresh 决定，core 只报告事实。
   emitToUi({ type: 'conversationListChanged' });
 
   return { uuid, newTitle: newTitle ?? undefined };
@@ -672,11 +675,11 @@ async function updateMetadataForNewMessage(
       const prevMessageCount = metadata.messageCount;
       metadata.messageCount += 1;
 
-      // /clear 只清空内容，不清空标题：后续再发新消息不得覆盖原标题
+      // 清空对话只清空内容，不清空标题：后续再发新消息不得覆盖原标题
       const isCleared = metadata.clearedAt !== undefined;
 
       // 如果当前还没有用户消息（新对话或从历史恢复但无消息），
-      // 用首条用户消息生成标题；但 /clear 后的会话必须保留原标题
+      // 用首条用户消息生成标题；但清空过的会话必须保留原标题
       if (!isCleared && prevMessageCount === 0 && message.type === 'user' && 'message' in message) {
         const title = titleFromUserMessage(message);
         if (title) {
@@ -863,7 +866,7 @@ export async function loadConversationList(): Promise<ConversationMetadata[]> {
 
         const metadata: ConversationMetadata = JSON.parse(content);
         // 跳过未发送过消息的空对话（messageCount === 0）；
-        // 但 /clear 清空过的会话保留在列表中（标题和条目不随内容清空而消失）
+        // 但清空过的会话保留在列表中（标题和条目不随内容清空而消失）
         if (metadata.messageCount === 0 && !metadata.clearedAt) {
           continue;
         }
@@ -1128,14 +1131,14 @@ export async function replaceConversationMessages(sessionId: string, messages: M
       const metadata: ConversationMetadata = JSON.parse(existing) as ConversationMetadata;
       // 压缩 / 清空属于后台或命令操作，不刷新 updatedAt（它只反映用户发消息的时间）
       metadata.messageCount = messages.length;
-      // /clear（空列表替换）只清内容：标记 clearedAt，后续新消息不得覆盖原标题
+      // 清空对话（空列表替换）只清内容：标记 clearedAt，后续新消息不得覆盖原标题
       if (messages.length === 0) {
         metadata.clearedAt = Date.now();
       }
       await writeFile(metadataPath, JSON.stringify(metadata, null, 2), { encoding: 'utf8', mode: 0o600 });
     } catch {
       // 元数据不存在则创建。
-      // 注意：空列表替换（/clear）发生在已有会话上时，上面的 try 分支已写入 clearedAt；
+      // 注意：空列表替换（清空对话）发生在已有会话上时，上面的 try 分支已写入 clearedAt；
       // 若连 meta.json 都不存在则说明没有可保留的原标题，不应标记为 cleared 空会话。
       const metadata: ConversationMetadata = {
         sessionId: effectiveSessionId,
@@ -1402,51 +1405,71 @@ export async function updateConversationMetadataTitle(
   });
 }
 
-/**
- * 删除对话（同时删除所有关联的子对话）
- */
-export async function deleteConversation(sessionId: string): Promise<void> {
-  const currentProject = getProjectRoot();
-
-  // 先查找并删除所有子对话
+/** 读取项目对话目录下的全部元数据（用于计算「受影响闭包」） */
+async function readProjectConversationMetadata(currentProject: string): Promise<ConversationMetadata[]> {
   const projectDir = getProjectConversationDir(currentProject);
-  const childIds: string[] = [];
+  const result: ConversationMetadata[] = [];
   try {
     const files = await readdir(projectDir);
     for (const file of files) {
       if (!file.endsWith('.meta.json')) continue;
       try {
-        const filePath = join(projectDir, file);
-        const content = await readFile(filePath, 'utf8');
-        const metadata: ConversationMetadata = JSON.parse(content);
-        if (metadata.parentSessionId === sessionId) {
-          // 递归删除子对话
-          const childId = metadata.sessionId;
-          childIds.push(childId);
-          const childConversationPath = getConversationPath(childId, currentProject);
-          await unlink(childConversationPath).catch((e) => {
-            logger.error('Conversation', `删除子对话文件失败: ${e}`);
-          });
-          await unlink(filePath).catch((e) => {
-            logger.error('Conversation', `删除元数据文件失败: ${e}`);
-          });
-          // 同步删除子对话的 compact_archive（如果有）
-          const childArchivePath = getCompactArchivePath(childId, currentProject);
-          await unlink(childArchivePath).catch((e) => {
-            if ((e as any)?.code !== 'ENOENT') {
-              logger.warn('Conversation', `删除子对话 compact_archive 失败: ${e}`);
-            }
-          });
-          conversationCache.delete(childId);
-        }
+        const content = await readFile(join(projectDir, file), 'utf8');
+        result.push(JSON.parse(content) as ConversationMetadata);
       } catch (e) {
-        logger.error('Conversation', `读取子对话元数据失败: ${e}`);
+        logger.error('Conversation', `读取对话元数据失败: ${e}`);
       }
     }
   } catch (e) {
-    logger.error('Conversation', `扫描子对话目录失败: ${e}`);
+    logger.error('Conversation', `扫描对话目录失败: ${e}`);
   }
+  return result;
+}
 
+/**
+ * 「受影响闭包」：sessionId 自身 + 所有层级的子孙对话（沿 `parentSessionId` 传递闭包）。
+ *
+ * 纯函数，输入全量对话列表。宿主删除对话前用它算出要关哪些视图
+ * （Electron 每个会话一个 webview）；`deleteConversation` 用同一条规则删盘。
+ */
+export function collectConversationClosure(
+  sessionId: string,
+  list: readonly ConversationMetadata[],
+): string[] {
+  const affected = new Set<string>([sessionId]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const c of list) {
+      const pid = c.parentSessionId;
+      if (pid && affected.has(pid) && c.sessionId && !affected.has(c.sessionId)) {
+        affected.add(c.sessionId);
+        grew = true;
+      }
+    }
+  }
+  return [...affected];
+}
+
+/**
+ * 删除对话：**递归**删除该会话及其所有层级的子孙对话（文件 / 缓存 / 引擎 / MCP 引用）。
+ *
+ * 子代理可以再起子代理，`parentSessionId` 链可以任意深；闭包规则与宿主关视图
+ * （`collectConversationClosure`）一致。先删子孙再删自己，中途失败不会留下孤儿。
+ */
+export async function deleteConversation(sessionId: string): Promise<void> {
+  const currentProject = getProjectRoot();
+  const list = await readProjectConversationMetadata(currentProject);
+  const closure = collectConversationClosure(sessionId, list);
+  for (const id of closure) {
+    if (id === sessionId) continue;
+    await deleteSingleConversation(id, currentProject);
+  }
+  await deleteSingleConversation(sessionId, currentProject);
+}
+
+/** 删除单个会话的落盘数据与内存 / 引擎 / MCP 引用（**不处理子对话**） */
+async function deleteSingleConversation(sessionId: string, currentProject: string): Promise<void> {
   // 删除消息文件（JSONL）
   const conversationPath = getConversationPath(sessionId, currentProject);
   await unlink(conversationPath).catch((e) => {
@@ -1467,6 +1490,16 @@ export async function deleteConversation(sessionId: string): Promise<void> {
     }
   });
 
+  // 同步删除该对话在 tool-results 下带会话前缀的持久化结果文件
+  try {
+    const removed = await deleteSessionToolResults(sessionId);
+    if (removed > 0) {
+      logger.info('Conversation', `删除对话关联的工具结果文件 ${removed} 个 | session=${sessionId.substring(0, 20)}`);
+    }
+  } catch (e) {
+    logger.warn('Conversation', `删除工具结果文件失败: ${e}`);
+  }
+
   // 清理内存缓存
   conversationCache.delete(sessionId);
 
@@ -1478,22 +1511,10 @@ export async function deleteConversation(sessionId: string): Promise<void> {
     }
   }
 
-  // 清理子对话的 pendingToolMetas
-  for (const childId of childIds) {
-    for (const key of pendingToolMetas.keys()) {
-      if (key.startsWith(childId + '::')) {
-        pendingToolMetas.delete(key);
-      }
-    }
-  }
-
   // 清理 QueryEngine 引擎池中对应的引擎
   try {
     const { sessionEngines } = await import('../QueryEngine.js');
     sessionEngines.delete(sessionId);
-    for (const childId of childIds) {
-      sessionEngines.delete(childId);
-    }
   } catch (e) {
     logger.error('Conversation', `清理 QueryEngine 引擎池失败: ${e}`);
   }
@@ -1502,22 +1523,15 @@ export async function deleteConversation(sessionId: string): Promise<void> {
   try {
     const { getMCPHost } = await import('../mcp/MCPHost.js');
     await getMCPHost().onSessionClosed(sessionId);
-    for (const childId of childIds) {
-      await getMCPHost().onSessionClosed(childId);
-    }
   } catch (e) {
     logger.warn('Conversation', `释放 MCP 引用失败: ${e}`);
   }
 
-  // 增量更新对话列表缓存（移除已删除的对话及其子对话）
+  // 增量更新对话列表缓存（移除已删除的对话）
   const listCache = getCurrentConversationListCache();
   if (listCache) {
-    const idsToRemove = [sessionId, ...childIds];
-    for (let i = listCache.length - 1; i >= 0; i--) {
-      if (idsToRemove.includes(listCache[i].sessionId)) {
-        listCache.splice(i, 1);
-      }
-    }
+    const idx = listCache.findIndex((c) => c.sessionId === sessionId);
+    if (idx >= 0) listCache.splice(idx, 1);
   }
 }
 

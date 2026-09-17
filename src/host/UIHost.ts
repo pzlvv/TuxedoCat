@@ -93,11 +93,16 @@ export interface UIHost {
   showVirtualDocument(content: string, title: string): Promise<void>;
 
   /**
-   * 显示 diff 预览。
+   * 在宿主里显示一次改动（before / after 两段内容）。
+   *
+   * 调用点：`ToolHandler.requestToolPermission`——Edit / Write 的权限请求带上 diff 内容时，
+   * 在权限确认框弹出**之前**调用，让用户先看到改动（webview 侧同一份改动由工具卡片渲染）。
+   *
+   * - VS Code：`DocumentManager.showDiff` 打开 before/after 两个虚拟文档组成的 diff 标签
+   * - Electron：空实现——diff 只在 webview 的工具卡片里渲染，桌面端不再开 Monaco 窗口
+   *   （见 DEVELOPMENT.md 第 11.1 节 UIHost 对照表）
+   *
    * 同一个 diff 重复打开时由宿主自行去重；打开新的 diff 前由宿主自行关闭上一个预览。
-   * - VS Code：DocumentManager.showDiff 打开 diff 标签
-   * - Electron：空实现（见第 11.1 节第 9 项）——预览能力已经在 webview 里
-   *   （PreviewOverlay 支持 text / image / diff / mermaid），不再重复开 Monaco 窗口
    */
   showDiff(options: ShowDiffOptions): Promise<void>;
 
@@ -123,25 +128,35 @@ export interface UIHost {
   // ===================== 会话 / 列表 / 状态 =====================
 
   /**
-   * 同步 abort 按钮状态。
-   *
-   * `isActive` 由 WebViewUI 提供（判定「会话自身 + 后台任务 + 递归子代理」是否有活跃查询），
-   * 宿主只负责决定「要对哪些会话下发」：
-   * - VS Code：只处理当前活动会话；无活动会话时下发 disable
-   * - Electron：遍历 ChatViewManager.getLoadedSessionIds() 逐会话下发
-   */
-  syncAbortState(isActive: (sessionId: string) => boolean): void;
-
-  /**
    * 销毁该会话的 UI 视图。只销毁视图——不删磁盘数据，也不释放运行时内存。
    *
-   * - Electron：销毁对应聊天视图（ChatViewManager.closeView）
-   * - VS Code：空实现。只有一个 webview，没有「关闭会话」这个 UI 动作
-   *   （HostInfo.closeConversation === false，webview 也不渲染关闭按钮）
+   * - Electron（多视图）：销毁对应聊天视图（ChatViewManager.closeView）
+   * - VS Code（单视图）：空实现。只有一个 webview，没有「关闭会话」这个 UI 动作
+   *   （webview 侧由 canCloseConversation(hostInfo) 判定为 false，不渲染关闭按钮）
    *
    * 「关视图」与「卸内存」是两件事，归属也不同：
    * - 销毁视图：宿主（本方法）
    * - 释放运行时内存：core（UiEvent.conversationClosed → releaseSessionResources）
    */
   closeConversationView(sessionId: string): Promise<void>;
+
+  // ===================== 配置文件 =====================
+
+  /**
+   * 串行化「读-改-写」settings.json（~/<CONFIG_DIR_NAME>/settings.json）。
+   *
+   * 配置文件是宿主资源：**写**由宿主承担，core 只读（第 2 节规则 9）。
+   * `mutator` 同步修改 cfg；返回非 undefined 时作为新的完整配置写回。
+   * 两个宿主共用 `src/host/settingsFile.ts` 的实现（串行队列 + 写后清 core 读缓存）。
+   */
+  updateSettingsJson(mutator: (cfg: Record<string, any>) => void | Record<string, any>): Promise<void>;
+
+  /**
+   * 确保项目对话目录的 settings.json 记录 `workspacePath`
+   * （用于从 conversations 下的子目录反查原始项目路径）。
+   *
+   * 目录本身由 core 创建（core 的会话数据），这份清单文件的**写**归宿主。
+   * 两个宿主共用 `src/host/settingsFile.ts` 的实现。
+   */
+  ensureProjectSettings(projectDir: string, workspacePath: string): Promise<void>;
 }

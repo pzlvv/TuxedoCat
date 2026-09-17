@@ -17,7 +17,6 @@ import {
   type ModelTokenLimits,
   type ApiType,
 } from '../utils/modelConfig.js';
-import { DEFAULT_WAKE_SHORTCUT, normalizeAccelerator } from '../utils/shortcut.js';
 import type { PromptPresetId } from '../prompt/PromptPreset.js';
 
 /**
@@ -106,8 +105,6 @@ export interface LLMConfigPanelPayload {
   apiKey: string;
   providers: LLMProviderInfo[];
   activeProvider: string;
-  /** Electron 端唤醒快捷键（accelerator 形式，如 Ctrl+Alt+X） */
-  shortcut: string;
 }
 
 interface HarnessConfig {
@@ -315,7 +312,6 @@ export async function getLLMConfigPanelPayload(): Promise<LLMConfigPanelPayload>
       : 'normal',
     providers,
     activeProvider,
-    shortcut: normalizeAccelerator(settings?.shortcut) || DEFAULT_WAKE_SHORTCUT,
   };
 }
 

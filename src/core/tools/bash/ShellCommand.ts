@@ -42,6 +42,8 @@ export interface ShellCommand {
   result: Promise<ExecResult>;
   /** 终止进程 */
   kill: () => void;
+  /** 子进程 pid（spawn 失败 / 已 cleanup 时为 undefined） */
+  readonly pid?: number;
   /** 当前状态 */
   status: 'running' | 'backgrounded' | 'completed' | 'killed';
   /** 清理资源 */
@@ -101,6 +103,11 @@ export class ShellCommandImpl implements ShellCommand {
 
   get status(): 'running' | 'backgrounded' | 'completed' | 'killed' {
     return this._status;
+  }
+
+  /** 子进程 pid（cleanup 后为 undefined） */
+  get pid(): number | undefined {
+    return this._childProcess?.pid;
   }
 
   /**

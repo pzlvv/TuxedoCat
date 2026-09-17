@@ -5,7 +5,7 @@
  * - core → UI：emitToUi / request 广播给 onCoreEvents / onCoreRequests 注册的处理器
  * - UI → core：emitToCore 按 type 分发给 onUiEvent 注册的订阅者
  *
- * 边界语义（DEVELOPMENT.md 第 3.8 节）：
+ * 边界语义（DEVELOPMENT.md 第 3.7 节）：
  * - emitToUi 时处理器未注册 → 抛错（bootstrap 顺序错误，启动期暴露）
  * - emitToCore 时某 type 无订阅者 → 静默丢弃（合法中间态）
  * - request() 无内置超时：调用点必须自带超时兜底（总线保持纯路由）

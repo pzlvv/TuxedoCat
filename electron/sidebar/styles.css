@@ -260,6 +260,8 @@ body {
   font-size: 12px;
   outline: none;
   font-family: inherit;
+  /* body 上是 user-select: none，输入框需要能选中/编辑文本 */
+  user-select: text;
 }
 
 /* 删除二次确认条 */

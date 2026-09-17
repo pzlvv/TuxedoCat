@@ -28,7 +28,7 @@ export type EditInput = z.infer<typeof inputSchema>;
 /**
  * Edit 工具输出 Schema
  * 注意: diff 相关字段 (patch, contextBefore, contextAfter, afterContent)
- * 已在 onPreToolCall 阶段计算并显示，这里只返回执行结果
+ * 已在 requestToolPermission 阶段计算并显示，这里只返回执行结果
  *
  * beforeContent: 编辑前的文件内容，用于历史记录恢复时还原 diff 显示。
  * 虽然在当前对话的生命周期中 diff 已在 checkPermissions 阶段计算并显示，

@@ -23,6 +23,10 @@ const vscodeLocale = getStartArg('locale') || 'en';
 const systemLocale = getStartArg('systemLocale') || 'en';
 const uiLanguage = getStartArg('uiLanguage') || 'auto';
 const sessionId = getStartArg('session') || '';
+// 后台预热的「新对话」视图：页面照常加载，但跳过启动初始化（不生成 session、
+// 不申请主题/模型等），等被切到前台时由宿主发 activatePrewarmedView 触发。
+// 详见 electron/ChatViewManager.ts 的 spareKey。
+const prewarm = getStartArg('prewarm') === '1';
 // Shiki 语法高亮按需加载：上次使用过的语言列表（逗号分隔），webview 启动后后台预热
 const highlightLanguages = (getStartArg('highlightLanguages') || '')
   .split(',')
@@ -53,6 +57,8 @@ contextBridge.exposeInMainWorld('__uiLocale', uiLanguage);
 contextBridge.exposeInMainWorld('__highlightLanguages', highlightLanguages);
 contextBridge.exposeInMainWorld('logoUri', './logo.png');
 contextBridge.exposeInMainWorld('__sessionId', sessionId);
+// 是否为后台预热视图（见 ChatViewManager.spareKey）：webview 据此跳过启动初始化
+contextBridge.exposeInMainWorld('__prewarm', prewarm);
 // 宿主能力声明：对话列表/新建对话由原生侧栏接管，支持关闭 webview，打开会话走 openConversation
 contextBridge.exposeInMainWorld('__hostInfo', ELECTRON_HOST_INFO);
 

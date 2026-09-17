@@ -8,7 +8,14 @@
  *   - closeConversation(id)     关闭对话聊天视图（释放资源）
  *   - renameConversation(id)    重命名
  *   - smartNameConversation(id) 智能命名（LLM 生成标题）
- *   - onConversationsUpdated()  主进程推送列表变化
+ *   - onConversationsUpdated()  主进程推送列表变化（纯磁盘元数据）
+ *   - onSessionStatesUpdated()  主进程推送会话运行时状态（running / waiting 全量）
+ *   - onSessionLoadedChanged()  主进程推送「已打开会话」集合变化（视图层状态）
+ *   - getLoadedSessions()       读取当前已打开会话集合（初始化用）
+ *
+ * 三条流各自单一 owner（DEVELOPMENT.md 第 5.4 节规则 8）：
+ *   列表（磁盘元数据）+ 运行时状态（core sessionRuntime）+ loaded（ChatViewManager 视图层），
+ *   在 render() 时合并，列表载荷本身不再携带 loaded / running / waitingForUser 标记。
  *
  * 交互参考插件 webview 版本（ConversationTreeItem.tsx）：
  * 根对话 hover 时显示 重命名/智能命名/删除/关闭 按钮（2 行 2 列）；重命名为行内输入框；
@@ -32,15 +39,20 @@ interface ConversationMeta {
   messageCount: number;
   parentSessionId?: string;
   role?: string;
-  loaded?: boolean;
-  /** 会话是否正在运行（非 idle），用于流水灯效果 */
-  running?: boolean;
-  /** 会话是否正在等待用户输入（ask user / 权限确认），流水灯显示黄色 */
-  waitingForUser?: boolean;
+}
+
+/** 会话运行时状态（与 core 的 SessionRuntimeState 同构，见 DEVELOPMENT.md 第 3.1 节） */
+interface SessionRuntimeState {
+  sessionId: string;
+  /** 有活跃查询（引擎消费 / 后台 Bash / 递归子代理） */
+  running: boolean;
+  /** 正在等待用户操作（ask user / 权限确认） */
+  waiting: boolean;
 }
 
 interface SidebarAPI {
   getConversations: () => Promise<ConversationMeta[]>;
+  getLoadedSessions: () => Promise<string[]>;
   getActiveSession: () => Promise<string | null>;
   getWorkspace: () => Promise<string | null>;
   openWorkspace: () => void;
@@ -51,6 +63,8 @@ interface SidebarAPI {
   renameConversation: (sessionId: string, title: string) => Promise<{ ok: boolean; error?: string }>;
   smartNameConversation: (sessionId: string) => Promise<{ ok: boolean; title?: string; error?: string }>;
   onConversationsUpdated: (cb: (list: ConversationMeta[]) => void) => void;
+  onSessionStatesUpdated: (cb: (states: SessionRuntimeState[]) => void) => void;
+  onSessionLoadedChanged: (cb: (sessionIds: string[]) => void) => void;
   onActiveSessionChanged: (cb: (sessionId: string | null) => void) => void;
   onWorkspaceChanged: (cb: (workspace: string | null) => void) => void;
 }
@@ -71,6 +85,29 @@ let activeSessionId: string | null = null;
 let workspacePath: string | null = null;
 let subscribed = false;
 
+/** 会话运行时状态（running / waiting），来自 `sidebar:session-states-updated` 全量推送 */
+let sessionStates = new Map<string, SessionRuntimeState>();
+/** 已打开（有活动视图）的会话集合，来自 `sidebar:session-loaded-changed` */
+let loadedSessions = new Set<string>();
+
+/** 归一化 IPC 传来的运行时状态（跨进程边界，做一次防御性校验） */
+function normalizeSessionStates(states: unknown): Map<string, SessionRuntimeState> {
+  const map = new Map<string, SessionRuntimeState>();
+  if (!Array.isArray(states)) return map;
+  for (const s of states as SessionRuntimeState[]) {
+    if (s && typeof s.sessionId === 'string') {
+      map.set(s.sessionId, { sessionId: s.sessionId, running: !!s.running, waiting: !!s.waiting });
+    }
+  }
+  return map;
+}
+
+/** 归一化 IPC 传来的 loaded sessionId 列表 */
+function normalizeLoadedSessions(sessionIds: unknown): Set<string> {
+  if (!Array.isArray(sessionIds)) return new Set();
+  return new Set(sessionIds.filter((id): id is string => typeof id === 'string'));
+}
+
 // 交互状态（render 重建 DOM 后仍需保留）
 let renamingSessionId: string | null = null;
 let renameValue = '';
@@ -84,6 +121,16 @@ const namingSessions = new Set<string>();
  * 会话时才默认展开，否则折叠，避免子代理对话把列表撑得很长。
  */
 const expandedSubSessions: Record<string, boolean> = {};
+
+/**
+ * 增量渲染缓存（避免整列表重建导致闪烁）：
+ * - itemEls:      sessionId -> 已渲染的 .item 元素（复用 DOM，保留 hover / 焦点 / 动画）
+ * - itemHtmlCache: sessionId -> 上次渲染该项的 HTML（内容没变就不动 DOM）
+ * active 高亮不写进 HTML，改由 setActive() 单独 toggle class，
+ * 因此切换/打开对话（仅 active、loaded 变化）时不会再重建整列表。
+ */
+const itemEls = new Map<string, HTMLElement>();
+const itemHtmlCache = new Map<string, string>();
 
 function relativeTime(ts: number): string {
   const diff = Date.now() - ts;
@@ -99,7 +146,12 @@ function relativeTime(ts: number): string {
 }
 
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // 引号也要转义：标题会写进重命名输入框的 value="..." 属性
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 /** 更新侧边栏顶部：显示当前打开的工作目录名（无图标） */
@@ -117,12 +169,37 @@ const ICON_SMART_NAME = `<svg width="13" height="13" viewBox="0 0 24 24" fill="n
 const ICON_DELETE = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>`;
 const ICON_CLOSE = `<svg width="13" height="13" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round"><path d="M9 3L3 9M3 3L9 9"/></svg>`;
 
+/** 清空列表与增量渲染缓存（切到空态 / 工作区引导态时调用） */
+function resetList(): void {
+  itemEls.clear();
+  itemHtmlCache.clear();
+  listEl.innerHTML = '';
+}
+
+/** 把 itemHtml 生成的字符串解析成 .item 元素 */
+function createItemElement(html: string): HTMLElement {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html.trim();
+  return tmp.firstElementChild as HTMLElement;
+}
+
+/**
+ * 增量渲染：按 sessionId 复用已有 DOM 元素，只重建内容发生变化的项。
+ *
+ * 此前每次都整体替换 listEl.innerHTML：打开对话（只有 loaded 标记变化）也会
+ * 把整列表销毁重建，造成列表闪烁、hover 丢失、滚动位置回到顶部、流水灯动画重播。
+ * 现在：
+ *   - 内容未变的项原样保留（完全不触碰 DOM，动画 / hover / 焦点不受影响）；
+ *   - 内容变化的项才替换元素；
+ *   - 顺序变化用 insertBefore 移动，已删除的项单独移除。
+ */
 function render(): void {
   // 顶部显示当前工作目录名
   updateHeader();
 
   // 未选择工作区：显示引导占位（含“打开工作目录”按钮）
   if (!workspacePath) {
+    resetList();
     listEl.innerHTML = `
       <div class="workspace-placeholder">
         <div class="workspace-title">请先打开一个工作目录</div>
@@ -140,6 +217,7 @@ function render(): void {
   newChatBtn.style.display = '';
 
   if (!conversations.length) {
+    resetList();
     listEl.innerHTML = '<div class="empty">暂无对话</div>';
     footerEl.textContent = '';
     return;
@@ -181,75 +259,90 @@ function render(): void {
     return subtreeHasActive(id);
   };
 
-  const html: string[] = [];
-  const renderNode = (c: ConversationMeta, depth: number): void => {
+  // 按前序展开成「父在前、展开的子紧随其后」的渲染序列
+  const ordered: Array<{ c: ConversationMeta; html: string }> = [];
+  const collect = (c: ConversationMeta, depth: number): void => {
     const kids = childrenMap.get(c.sessionId) || [];
     const expanded = kids.length > 0 && isSubExpanded(c.sessionId);
-    html.push(itemHtml(c, depth, kids.length, expanded));
+    ordered.push({ c, html: itemHtml(c, depth, kids.length, expanded) });
     if (expanded) {
-      for (const child of kids) renderNode(child, depth + 1);
+      for (const child of kids) collect(child, depth + 1);
     }
   };
-  for (const c of roots) renderNode(c, 0);
+  for (const c of roots) collect(c, 0);
 
-  listEl.innerHTML = html.join('');
+  // 阶段 1：确保每个会话都有元素，并按目标顺序排列（复用已有元素，不触碰其内容）
+  const seen = new Set<string>();
+  const elements: HTMLElement[] = [];
+  for (const node of ordered) {
+    const sid = node.c.sessionId;
+    seen.add(sid);
+    let el = itemEls.get(sid);
+    if (!el) {
+      el = createItemElement(node.html);
+      itemEls.set(sid, el);
+      itemHtmlCache.set(sid, node.html);
+    }
+    elements.push(el);
+  }
+  let anchor: Node | null = listEl.firstChild;
+  for (const el of elements) {
+    if (el !== anchor) listEl.insertBefore(el, anchor);
+    anchor = el.nextSibling;
+  }
+  // 移除已不存在的会话元素
+  for (const [sid, el] of [...itemEls]) {
+    if (!seen.has(sid)) {
+      el.remove();
+      itemEls.delete(sid);
+      itemHtmlCache.delete(sid);
+    }
+  }
+  // 清掉空态占位 / 空白文本节点，只保留对话项
+  for (const node of Array.from(listEl.childNodes)) {
+    if (!(node instanceof HTMLElement) || !node.classList.contains('item')) {
+      node.remove();
+    }
+  }
 
-  // 绑定点击：打开对话
-  listEl.querySelectorAll<HTMLElement>('.item').forEach((el) => {
-    el.addEventListener('click', (e) => {
-      // 点击交互控件时不打开对话
-      if ((e.target as HTMLElement).closest('.item-actions, .rename-input, .confirm-bar')) return;
-      const sessionId = el.dataset.sessionId!;
-      window.sidebarAPI?.openConversation(sessionId);
-      setActive(sessionId);
-    });
-  });
-
-  // 绑定操作按钮
-  listEl.querySelectorAll<HTMLElement>('[data-action]').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const { action, sessionId } = btn.dataset;
-      if (!action || !sessionId) return;
-      if (action === 'rename') startRename(sessionId);
-      else if (action === 'smart-name') smartName(sessionId);
-      else if (action === 'delete') armDelete(sessionId);
-      else if (action === 'close') closeConversation(sessionId);
-      else if (action === 'confirm-delete') doDelete(sessionId);
-      else if (action === 'cancel-delete') cancelDelete();
-      else if (action === 'toggle-sub') toggleSubSession(sessionId);
-    });
-  });
-
-  // 重命名输入框：聚焦 + 绑定键盘
-  const renameInput = listEl.querySelector<HTMLInputElement>('.rename-input input');
-  if (renameInput) {
-    renameInput.focus();
-    renameInput.select();
-    renameInput.addEventListener('keydown', (e) => {
-      e.stopPropagation();
-      if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
-      else if (e.key === 'Escape') { cancelRename(); }
-    });
-    renameInput.addEventListener('input', () => { renameValue = renameInput.value; });
-    renameInput.addEventListener('blur', () => commitRename());
+  // 阶段 2：内容变化的项才替换元素（未变化的项完全不触碰，避免闪烁）
+  for (const node of ordered) {
+    const sid = node.c.sessionId;
+    if (itemHtmlCache.get(sid) === node.html) continue;
+    const el = itemEls.get(sid);
+    if (!el) continue;
+    const next = createItemElement(node.html);
+    el.replaceWith(next);
+    itemEls.set(sid, next);
+    itemHtmlCache.set(sid, node.html);
   }
 
   footerEl.textContent = `${conversations.length} 个对话`;
 
-  // render 重建了 DOM，需重新应用当前活跃会话高亮
+  // 重建 DOM 后重新应用当前活跃会话高亮
   setActive(activeSessionId);
+
+  // 重命名输入框：元素被重建后恢复焦点（不覆盖用户已输入的内容）
+  if (renamingSessionId) {
+    const input = listEl.querySelector<HTMLInputElement>('input.rename-input');
+    if (input && document.activeElement !== input) {
+      input.focus();
+      const end = input.value.length;
+      try { input.setSelectionRange(end, end); } catch { /* ignore */ }
+    }
+  }
 }
 
 function itemHtml(c: ConversationMeta, depth: number, childCount: number, isExpanded: boolean): string {
   const title = c.title && c.title.trim() ? c.title : '(未命名对话)';
-  const active = c.sessionId === activeSessionId ? ' active' : '';
   const roleTag = c.role && c.role !== 'Master' ? ` · ${escapeHtml(c.role)}` : '';
-  const dot = c.loaded ? '<span class="loaded-dot" title="已打开"></span>' : '';
+  // 已打开（视图层状态）与运行状态（core 运行时状态）来自各自的流，不挂在列表项上
+  const dot = loadedSessions.has(c.sessionId) ? '<span class="loaded-dot" title="已打开"></span>' : '';
+  const state = sessionStates.get(c.sessionId);
   // 非 idle 对话显示左边流水灯条（与 webview 对话列表一致；当前活跃会话同样显示）
   // 正在等待用户输入（ask user / 权限确认）时显示黄色
-  const runningBar = c.running
-    ? `<div class="running-bar${c.waitingForUser ? ' running-bar--waiting' : ''}"></div>`
+  const runningBar = state?.running
+    ? `<div class="running-bar${state.waiting ? ' running-bar--waiting' : ''}"></div>`
     : '';
   const isRenaming = renamingSessionId === c.sessionId;
   const isNaming = namingSessions.has(c.sessionId);
@@ -306,7 +399,7 @@ function itemHtml(c: ConversationMeta, depth: number, childCount: number, isExpa
   const indent = depth > 0 ? ` style="margin-left: ${depth * 14}px"` : '';
 
   return `
-    <div class="item${depth > 0 ? ' child' : ''}${active}"${indent} data-session-id="${c.sessionId}">
+    <div class="item${depth > 0 ? ' child' : ''}"${indent} data-session-id="${c.sessionId}">
       ${runningBar}
       <div class="item-rail">
         <span class="rail-slot">${dot}</span>
@@ -349,6 +442,10 @@ function startRename(sessionId: string): void {
   renameValue = c?.title || '';
   confirmDeleteId = null;
   render();
+  // 进入重命名：聚焦并全选，方便直接覆盖输入
+  const input = listEl.querySelector<HTMLInputElement>('input.rename-input');
+  input?.focus();
+  input?.select();
 }
 
 function cancelRename(): void {
@@ -358,11 +455,12 @@ function cancelRename(): void {
 
 function commitRename(): void {
   const sessionId = renamingSessionId;
+  if (!sessionId) return; // 已提交/取消（如元素重建触发的 focusout），避免重复处理
   renamingSessionId = null;
   const newTitle = renameValue.trim();
   renameValue = '';
-  if (!sessionId) { render(); return; }
-  if (!newTitle) { render(); return; }
+  render();
+  if (!newTitle) return;
   window.sidebarAPI?.renameConversation(sessionId, newTitle)
     .catch((err) => console.error('[sidebar] rename failed:', err));
   // 列表由主进程推送刷新
@@ -412,6 +510,62 @@ function setActive(sessionId: string | null): void {
   });
 }
 
+/**
+ * 列表事件代理（只绑定一次）。
+ *
+ * 增量渲染会不断增删 / 替换 .item 元素，逐元素绑定会随重建失效且开销大；
+ * 统一在 listEl 上委托，元素怎么重建都不受影响。
+ */
+function bindListEvents(): void {
+  listEl.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement;
+
+    // 操作按钮优先：按钮在 .item 内部，处理完直接返回，避免同时触发「打开对话」
+    const actionEl = target.closest<HTMLElement>('[data-action]');
+    if (actionEl) {
+      e.stopPropagation();
+      const { action, sessionId } = actionEl.dataset;
+      if (!action || !sessionId) return;
+      if (action === 'rename') startRename(sessionId);
+      else if (action === 'smart-name') smartName(sessionId);
+      else if (action === 'delete') armDelete(sessionId);
+      else if (action === 'close') closeConversation(sessionId);
+      else if (action === 'confirm-delete') doDelete(sessionId);
+      else if (action === 'cancel-delete') cancelDelete();
+      else if (action === 'toggle-sub') toggleSubSession(sessionId);
+      return;
+    }
+
+    // 点击交互控件时不打开对话
+    if (target.closest('.item-actions, .rename-input, .confirm-bar')) return;
+
+    const item = target.closest<HTMLElement>('.item');
+    const sessionId = item?.dataset.sessionId;
+    if (!item || !sessionId) return;
+    window.sidebarAPI?.openConversation(sessionId);
+    setActive(sessionId);
+  });
+
+  // 重命名输入框：回车提交 / Esc 取消
+  listEl.addEventListener('keydown', (e) => {
+    const input = (e.target as HTMLElement).closest('.rename-input');
+    if (!input) return;
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+    else if (e.key === 'Escape') { cancelRename(); }
+  });
+  listEl.addEventListener('input', (e) => {
+    const input = (e.target as HTMLElement).closest('.rename-input') as HTMLInputElement | null;
+    if (input) renameValue = input.value;
+  });
+  // blur 不冒泡，用 focusout 代理；元素已被移除时忽略（避免重建触发误提交）
+  listEl.addEventListener('focusout', (e) => {
+    const input = (e.target as HTMLElement).closest('.rename-input') as HTMLInputElement | null;
+    if (!input || !input.isConnected) return;
+    commitRename();
+  });
+}
+
 function subscribe(): void {
   if (subscribed || !window.sidebarAPI) return;
   subscribed = true;
@@ -427,18 +581,34 @@ function subscribe(): void {
     }
     render();
   });
+  window.sidebarAPI.onSessionStatesUpdated((states) => {
+    sessionStates = normalizeSessionStates(states);
+    render();
+  });
+  window.sidebarAPI.onSessionLoadedChanged((sessionIds) => {
+    loadedSessions = normalizeLoadedSessions(sessionIds);
+    render();
+  });
   window.sidebarAPI.onActiveSessionChanged((sessionId) => {
     setActive(sessionId);
   });
   window.sidebarAPI.onWorkspaceChanged((workspace) => {
     workspacePath = workspace;
-    // 工作区变化：重新拉取对话列表（主进程随后也会推送 conversations-updated）
+    // 工作区变化：清空旧工作区的视图层/运行时状态，重新拉取（主进程随后也会推送）
+    sessionStates = new Map();
+    loadedSessions = new Set();
     window.sidebarAPI?.getConversations()
       .then((list) => {
         conversations = list;
         render();
       })
       .catch((err) => console.error('[sidebar] reload conversations failed:', err));
+    window.sidebarAPI?.getLoadedSessions()
+      .then((ids) => {
+        loadedSessions = normalizeLoadedSessions(ids);
+        render();
+      })
+      .catch(() => undefined);
     window.sidebarAPI?.getActiveSession()
       .then((sid) => setActive(sid))
       .catch(() => undefined);
@@ -461,6 +631,7 @@ async function init(): Promise<void> {
     listEl.innerHTML = '<div class="empty">Sidebar API 不可用</div>';
     return;
   }
+  bindListEvents();
   subscribe();
 
   newChatBtn.addEventListener('click', () => {
@@ -468,14 +639,16 @@ async function init(): Promise<void> {
   });
 
   try {
-    const [list, active, ws] = await Promise.all([
+    const [list, active, ws, loaded] = await Promise.all([
       window.sidebarAPI.getConversations(),
       window.sidebarAPI.getActiveSession(),
       window.sidebarAPI.getWorkspace(),
+      window.sidebarAPI.getLoadedSessions(),
     ]);
     conversations = list;
     activeSessionId = active;
     workspacePath = ws;
+    loadedSessions = normalizeLoadedSessions(loaded);
     render();
   } catch (err) {
     listEl.innerHTML = `<div class="empty">加载失败: ${escapeHtml(String(err))}</div>`;

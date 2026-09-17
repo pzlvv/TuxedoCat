@@ -3,7 +3,6 @@
  * 接收和处理来自 webview 的所有消息
  */
 import type { UIHost } from '../UIHost.js';
-import { isImageFile } from '../imageFiles.js';
 import { fetch as undiciFetch } from 'undici';
 import { logger } from '../../core/Logger.js';
 import { getProbeDispatcher } from '../../core/llm/httpDispatcher.js';
@@ -16,17 +15,16 @@ import {
 import { getPendingToolUseIds } from '../../core/tools/index.js';
 import { providerKeyFromBaseURL } from '../../core/utils/providerKey.js';
 import { buildEditDiffHunks } from '../../core/utils/editDiff.js';
+import { buildReplayMessageData } from '../../core/utils/replayMessages.js';
 import { buildUserContent, extractUserContent } from '../../core/utils/contentBlocks.js';
 import { normalizeModelTokenLimits, type ModelTokenLimits, type ApiType } from '../../core/utils/modelConfig.js';
-import { DEFAULT_WAKE_SHORTCUT, normalizeAccelerator } from '../../core/utils/shortcut.js';
 import { extractLastJsonObject } from '../../core/utils/lastJson.js';
 import { userChoiceQueue } from '../../core/UserChoiceQueue.js';
-import { noteSessionActivity } from '../../core/sessionIdle.js';
 import { isCompacting } from '../../core/compact/state.js';
 import type { WebviewMessage } from '../../core/webviewTypes.js';
 import type { UiEvent } from '../../core/AssistantEventBus.js';
 import { requireEventBus } from '../../core/AssistantEventBus.js';
-import type { UserMessage } from '../../core/types.js';
+import type { UserMessage, Message } from '../../core/types.js';
 import type { ConversationContext } from '../../core/history/Conversation.js';
 import type { UserChoiceManager } from './userChoice.js';
 
@@ -90,9 +88,9 @@ export class WebviewMessageHandler {
   private host: UIHost;
   /** WebViewUI 端口（阶段 4 正式化；当前由宿主注入） */
   uiPort?: {
-    hasActiveQueryInScope(sessionId: string): boolean;
     openSpinDesign(): Promise<void>;
     refreshConversations(): Promise<void>;
+    noteSessionActivity(sessionId: string): void;
   };
   private postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
   private postConversationLoaded: (sessionId: string, conversation: any, extra: {
@@ -112,8 +110,8 @@ export class WebviewMessageHandler {
   private loadConversationSeq = 0;
   /**
    * UI 侧维护的「最近一次成功加载/新建」会话 ID（原 core 的 activeSessionId）。
-   * 「哪个会话在前台」是 UI 自己的状态，core 不感知（DEVELOPMENT.md 第 15.6 节）。
-   * core 需要时通过注入的 provider 查询（sessionIdle.setSessionActiveProvider）。
+   * 「哪个会话在前台」是 UI 自己的状态，core 不感知（DEVELOPMENT.md 第 12.7 节）。
+   * 空闲巡检（宿主层 ConversationManager）需要时通过注入的 provider 查询。
    */
   private trackedActiveSessionId: string | undefined;
 
@@ -147,7 +145,8 @@ export class WebviewMessageHandler {
 
   /**
    * UI → core：把 webview 协议消息翻译成 UiEvent 发到总线。
-   * 本 handler 不再直接调 core 的状态变更函数（「解析 + 翻译」职责拆分，见第 7.3 节）。
+   * 本 handler 只做「解析 + 翻译」：改 core 状态的请求发 UiEvent，
+   * 写 settings.json 经 UIHost（core 只读不写，见第 7.3 节）。
    */
   private emitUiEvent(event: UiEvent): Promise<void> {
     requireEventBus().emitToCore(event);
@@ -182,7 +181,6 @@ export class WebviewMessageHandler {
       ['openFile', (msg) => this.handleOpenFile(msg)],
       ['requestToolMeta', (msg) => this.handleRequestToolMeta(msg)],
       ['showVirtualDocument', (msg) => this.handleShowVirtualDocument(msg)],
-      ['showDiffInVirtualDocument', (msg) => this.handleShowDiffInVirtualDocument(msg)],
       ['openMermaidPreview', (msg) => this.handleOpenMermaidPreview(msg)],
       ['openSpinDesign', () => this.handleOpenSpinDesign()],
       ['openUrl', (msg) => this.handleOpenUrl(msg)],
@@ -217,7 +215,6 @@ export class WebviewMessageHandler {
       ['loadConversation', (msg) => this.handleLoadConversation(msg)],
       ['startNewConversation', (msg) => this.handleStartNewConversation(msg)],
       ['deleteConversation', (msg) => this.emitUiEvent({ type: 'conversationDeleted', sessionId: msg.sessionId })],
-      ['clearConversation', (msg) => this.emitUiEvent({ type: 'conversationCleared', sessionId: msg.sessionId })],
       ['renameConversation', (msg) => this.emitUiEvent({ type: 'conversationRenamed', sessionId: msg.sessionId, title: msg.title })],
       ['updateConversationContext', (msg) => this.handleUpdateConversationContext(msg)],
       ['clearConversationSpace', (msg) => this.emitUiEvent({ type: 'conversationSpaceCleared', sessionId: msg.dirName })],
@@ -265,7 +262,7 @@ export class WebviewMessageHandler {
       // VS Code 会打印 "rejected promise not handled within 1 second"，
       // 且整条消息链路静默失败、难以定位。
       const detail = err instanceof Error ? (err.stack || err.message) : String(err);
-      this.log(`[VSCodeUI] handleWebviewMessage failed for type=${message?.type}: ${detail}`);
+      this.log(`[WebviewMessageHandler] handleWebviewMessage failed for type=${message?.type}: ${detail}`);
     }
   }
 
@@ -330,12 +327,12 @@ export class WebviewMessageHandler {
     const enabled = !!message.enabled;
     if (!name) return;
     const sessionId = await this.getActiveMcpSessionId(message.sessionId);
-    this.log(`[VSCodeUI] Session MCP enabled set: ${name} = ${enabled} (session=${sessionId ?? '-'})`);
+    this.log(`[WebviewMessageHandler] Session MCP enabled set: ${name} = ${enabled} (session=${sessionId ?? '-'})`);
     try {
       const { setSessionMcpEnabled } = await import('../../core/mcp/Config.js');
       await setSessionMcpEnabled(sessionId, name, enabled);
     } catch (err: any) {
-      this.log(`[VSCodeUI] Failed to set session MCP enabled: ${err.message}`);
+      this.log(`[WebviewMessageHandler] Failed to set session MCP enabled: ${err.message}`);
       return;
     }
     // 先回推：让菜单立刻反映新的勾选状态（连接尚未开始 → 显示「连接中」）
@@ -376,7 +373,7 @@ export class WebviewMessageHandler {
         }),
       });
     } catch (err: any) {
-      this.log(`[VSCodeUI] Failed to read MCP servers: ${err.message}`);
+      this.log(`[WebviewMessageHandler] Failed to read MCP servers: ${err.message}`);
     }
   }
 
@@ -387,11 +384,11 @@ export class WebviewMessageHandler {
   private async handleOpenUrl(message: any): Promise<void> {
     const url = typeof message.url === 'string' ? message.url : '';
     if (!url) return;
-    this.log(`[VSCodeUI] Open URL externally: ${url}`);
+    this.log(`[WebviewMessageHandler] Open URL externally: ${url}`);
     try {
       await this.host.openExternalUrl(url);
     } catch (err) {
-      this.log(`[VSCodeUI] Failed to open URL: ${err}`);
+      this.log(`[WebviewMessageHandler] Failed to open URL: ${err}`);
     }
   }
 
@@ -408,7 +405,10 @@ export class WebviewMessageHandler {
     if (!sessionId || typeof content !== 'string' || (!content.trim() && (!images || images.length === 0))) {
       return;
     }
-    logger.info('VSCodeUI', `User message received for session ${sessionId} (unified queue path)`);
+    logger.info('WebviewMessageHandler', `User message received for session ${sessionId} (unified queue path)`);
+
+    // 用户主动发消息：刷新该会话的空闲关闭计时（空闲回收只在 VS Code 生效）
+    this.uiPort?.noteSessionActivity(sessionId);
 
     try {
       const { getSessionEngine } = await import('../../core/QueryEngine.js');
@@ -422,7 +422,7 @@ export class WebviewMessageHandler {
 
       // engine 不存在：走正常 sendMessage 路径（会创建 engine、处理命令等）
       if (!engine) {
-        logger.warn('VSCodeUI', `No engine for message session ${sessionId}, falling back to sendMessage`);
+        logger.warn('WebviewMessageHandler', `No engine for message session ${sessionId}, falling back to sendMessage`);
         const { sendMessage } = await import('../../core/Integration.js');
         const { isPromptPresetId } = await import('../../core/prompt/PromptPreset.js');
         for await (const _ of sendMessage(content, sessionId, {
@@ -476,7 +476,7 @@ export class WebviewMessageHandler {
 
       // 等待之前的持久化完成，确保新消息在消息链中按顺序持久化
       await engine.flush().catch((e: any) => {
-        logger.error('VSCodeUI', `Queued message flush failed: ${e}`);
+        logger.error('WebviewMessageHandler', `Queued message flush failed: ${e}`);
       });
 
       const selectedLines = message.selectedLines || message.fileSelectedLines;
@@ -576,11 +576,11 @@ export class WebviewMessageHandler {
             void _;
           }
         } catch (e) {
-          logger.error('VSCodeUI', `Error processing queued message: ${e}`);
+          logger.error('WebviewMessageHandler', `Error processing queued message: ${e}`);
         }
       })();
     } catch (err) {
-      this.log(`[VSCodeUI] Failed to enqueue queued message: ${err}`);
+      this.log(`[WebviewMessageHandler] Failed to enqueue queued message: ${err}`);
       // 入队失败时通知 webview 显示排队状态，由 webview 在 queryEnd 后重新投递
       this.host.sendToWebview({
         type: 'queuedMessage',
@@ -597,58 +597,21 @@ export class WebviewMessageHandler {
   }
 
   private async handleOpenFile(message: any): Promise<void> {
-    const { filePath, selectedLines, sessionId, clientId } = message;
-    this.log(`[VSCodeUI] openFile: ${filePath} ${JSON.stringify(selectedLines)}`);
+    const { filePath, selectedLines } = message;
+    this.log(`[WebviewMessageHandler] openFile: ${filePath} ${JSON.stringify(selectedLines)}`);
 
     if (!filePath) return;
-
-    // 浏览器端（带 clientId）：读取内容后按 sessionId + clientId 回推给发起端，
-    // 由页面内的 PreviewOverlay 展示，不打开宿主原生窗口（查看类操作不跨端）。
-    // 与 showVirtualDocument / showDiffInVirtualDocument 一致：这段逻辑与宿主无关，
-    // 直接收敛在共享 handler 内，不再下沉到 UIHost。
-    if (clientId) {
-      const path = require('path') as typeof import('path');
-      const fs = require('fs') as typeof import('fs');
-      const preview: Extract<WebviewMessage, { type: 'openPreview' }> = {
-        type: 'openPreview',
-        mode: 'text',
-        filePath,
-        title: path.basename(filePath),
-        selectedLines,
-        sessionId,
-        clientId,
-      };
-      try {
-        if (isImageFile(filePath)) {
-          // 图片是二进制：转 dataUrl 交给页面内的 <img> 渲染
-          const buffer = await fs.promises.readFile(filePath);
-          const ext = path.extname(filePath).slice(1).toLowerCase();
-          const mime = ext === 'jpg' ? 'jpeg' : ext;
-          preview.mode = 'image';
-          preview.dataUrl = `data:image/${mime};base64,${buffer.toString('base64')}`;
-        } else {
-          preview.mode = 'text';
-          preview.content = await fs.promises.readFile(filePath, 'utf-8');
-        }
-      } catch (err) {
-        preview.mode = 'text';
-        preview.error = err instanceof Error ? err.message : String(err);
-        preview.content = '';
-      }
-      this.host.sendToWebview(preview);
-      return;
-    }
 
     try {
       await this.host.openFile(filePath, selectedLines ?? null);
     } catch (err) {
-      this.log(`[VSCodeUI] Error opening file: ${err}`);
+      this.log(`[WebviewMessageHandler] Error opening file: ${err}`);
     }
   }
 
   private async handleRequestToolMeta(message: any): Promise<void> {
     const { sessionId: targetSessionId, toolUseIds } = message;
-    this.log(`[VSCodeUI] requestToolMeta: ${targetSessionId}, ids: ${JSON.stringify(toolUseIds)}`);
+    this.log(`[WebviewMessageHandler] requestToolMeta: ${targetSessionId}, ids: ${JSON.stringify(toolUseIds)}`);
 
     (async () => {
       try {
@@ -687,54 +650,21 @@ export class WebviewMessageHandler {
           sessionId: targetSessionId,
         });
       } catch (err) {
-        this.log(`[VSCodeUI] Error loading tool meta: ${err}`);
+        this.log(`[WebviewMessageHandler] Error loading tool meta: ${err}`);
       }
     })();
   }
 
   private async handleShowVirtualDocument(message: any): Promise<void> {
-    const { content, title, language, sessionId, clientId } = message;
-    this.log(`[VSCodeUI] showVirtualDocument: ${title}`);
-    // 浏览器端：内容本来就在 webview 里，回推给发起端在页面内预览即可，不打开桌面窗口
-    if (clientId) {
-      this.host.sendToWebview({ type: 'openPreview', mode: 'text', title, content, language, sessionId, clientId });
-      return;
-    }
+    const { content, title } = message;
+    this.log(`[WebviewMessageHandler] showVirtualDocument: ${title}`);
     await this.host.showVirtualDocument(content, title);
-  }
-
-  private async handleShowDiffInVirtualDocument(message: any): Promise<void> {
-    const { filePath, newContent, title, beforeContent, afterContent, sessionId, clientId } = message;
-    // 浏览器端：回推给发起端在页面内预览 diff
-    if (clientId) {
-      this.host.sendToWebview({
-        type: 'openPreview',
-        mode: 'diff',
-        filePath,
-        title,
-        beforeContent,
-        afterContent,
-        newContent,
-        sessionId,
-        clientId,
-      });
-      return;
-    }
-    await this.host.showDiff({
-      filePath,
-      newContent,
-      title,
-      beforeContent,
-      afterContent,
-    });
   }
 
   private async handleAbort(message: any): Promise<void> {
     this.log(`Abort requested from webview, sessionId: ${message.sessionId}`);
     // UI → core：中止请求走总线（core 侧由 Integration.abortCurrentQuery 消费）
     await this.emitUiEvent({ type: 'abortRequested', sessionId: message.sessionId });
-    // 后台任务/子代理可能已同步中止，立即刷新 abort 按钮状态
-    this.host.syncAbortState((sid) => this.uiPort?.hasActiveQueryInScope(sid) ?? false);
   }
 
   private async handleGetConversations(): Promise<void> {
@@ -754,9 +684,9 @@ export class WebviewMessageHandler {
   }
 
   private async handleLoadConversation(message: any): Promise<void> {
-    this.log(`[VSCodeUI] loadConversation requested: ${message.sessionId}`);
-    // 打开对话：刷新该会话的空闲关闭计时
-    noteSessionActivity(message.sessionId);
+    this.log(`[WebviewMessageHandler] loadConversation requested: ${message.sessionId}`);
+    // 打开对话：刷新该会话的空闲关闭计时（空闲回收只在 VS Code 生效）
+    this.uiPort?.noteSessionActivity(message.sessionId);
 
     // 并发切换会话竞态防护：用户快速连点两个对话时，两个 handler 会交错执行
     // （后发的 loadConversation 可能先完成）。这里登记本次加载的序号，
@@ -765,17 +695,17 @@ export class WebviewMessageHandler {
     const loadSeq = ++this.loadConversationSeq;
     const isStaleLoad = (): boolean => loadSeq !== this.loadConversationSeq;
 
-    // 「哪个会话在前台」是 UI 自己的状态（第 15.6 节）：不再读写 core 的
+    // 「哪个会话在前台」是 UI 自己的状态（第 12.7 节）：不再读写 core 的
     // activeSessionId 全局缓存，由本 handler 维护最近一次成功加载的会话。
     const { getSessionEngine } = await import('../../core/QueryEngine.js');
     const oldSessionId = this.trackedActiveSessionId;
     if (oldSessionId && oldSessionId !== message.sessionId) {
       const oldEngine = getSessionEngine(oldSessionId);
       if (oldEngine) {
-        this.log(`[VSCodeUI] Flushing pending persists for old session ${oldSessionId}`);
+        this.log(`[WebviewMessageHandler] Flushing pending persists for old session ${oldSessionId}`);
         await oldEngine.flush();
         if (isStaleLoad()) {
-          this.log(`[VSCodeUI] loadConversation stale after flush, abort: ${message.sessionId}`);
+          this.log(`[WebviewMessageHandler] loadConversation stale after flush, abort: ${message.sessionId}`);
           return;
         }
       }
@@ -785,7 +715,7 @@ export class WebviewMessageHandler {
     const { restoreConversationEngine } = await import('../../core/Integration.js');
     const conversation = await loadConversation(message.sessionId);
     if (isStaleLoad()) {
-      this.log(`[VSCodeUI] loadConversation stale after disk load, abort: ${message.sessionId}`);
+      this.log(`[WebviewMessageHandler] loadConversation stale after disk load, abort: ${message.sessionId}`);
       return;
     }
 
@@ -798,10 +728,10 @@ export class WebviewMessageHandler {
     // → MCPHost.onSessionOpened 驱动（幂等，不释放旧会话），UI 不再触发 acquire
 
     const hasHistory = conversation.messages && conversation.messages.length > 0;
-    this.log(`[VSCodeUI] Conversation has history: ${hasHistory}`);
+    this.log(`[WebviewMessageHandler] Conversation has history: ${hasHistory}`);
 
     if (isStaleLoad()) {
-      this.log(`[VSCodeUI] loadConversation stale before postConversationLoaded, abort: ${message.sessionId}`);
+      this.log(`[WebviewMessageHandler] loadConversation stale before postConversationLoaded, abort: ${message.sessionId}`);
       return;
     }
 
@@ -813,7 +743,7 @@ export class WebviewMessageHandler {
     logger.info('handleWebviewMessage', `pendingToolUseIds: ${JSON.stringify(pendingToolUseIds)}`);
 
     const savedContext = conversation.metadata?.context;
-    this.log(`[VSCodeUI] Conversation context: ${JSON.stringify(savedContext)}`);
+    this.log(`[WebviewMessageHandler] Conversation context: ${JSON.stringify(savedContext)}`);
 
     // 如果没有 per-session 的 thinkingMode/model/webSearch，从 settings.json 读取默认值
     let effectiveSavedContext = savedContext;
@@ -841,7 +771,7 @@ export class WebviewMessageHandler {
         effectiveSavedContext = nextCtx;
       }
     } catch (err: any) {
-      this.log(`[VSCodeUI] Failed to read default model/thinking from settings.json: ${err.message}`);
+      this.log(`[WebviewMessageHandler] Failed to read default model/thinking from settings.json: ${err.message}`);
     }
 
     // 切换对话后校验模型：若该会话保存的模型不在当前 active provider 的模型列表中，
@@ -851,7 +781,7 @@ export class WebviewMessageHandler {
         const { resolveModelForActiveProvider } = await import('../../core/llm/config.js');
         const resolvedModel = await resolveModelForActiveProvider(effectiveModel);
         if (resolvedModel && resolvedModel !== effectiveModel) {
-          this.log(`[VSCodeUI] Session model "${effectiveModel}" is not in active provider model list, fallback to "${resolvedModel}"`);
+          this.log(`[WebviewMessageHandler] Session model "${effectiveModel}" is not in active provider model list, fallback to "${resolvedModel}"`);
           effectiveModel = resolvedModel;
           const { updateConversationContext } = await import('../../core/history/index.js');
           await updateConversationContext(message.sessionId, { model: resolvedModel });
@@ -859,7 +789,7 @@ export class WebviewMessageHandler {
           setSessionModel(message.sessionId, resolvedModel);
         }
       } catch (err: any) {
-        this.log(`[VSCodeUI] Failed to resolve model for active provider: ${err.message}`);
+        this.log(`[WebviewMessageHandler] Failed to resolve model for active provider: ${err.message}`);
       }
     }
 
@@ -880,7 +810,7 @@ export class WebviewMessageHandler {
         defaultAgentMode = await getDefaultAgentMode();
       } catch { /* ignore */ }
       effectiveAgentMode = defaultAgentMode;
-      this.log(`[VSCodeUI] No agentMode for session ${message.sessionId}, defaulting to ${defaultAgentMode}`);
+      this.log(`[WebviewMessageHandler] No agentMode for session ${message.sessionId}, defaulting to ${defaultAgentMode}`);
     }
 
     const targetEngine = getSessionEngine(message.sessionId);
@@ -909,15 +839,15 @@ export class WebviewMessageHandler {
     userChoiceQueue.onSessionLoaded(message.sessionId);
 
     if (hasHistory) {
-      this.log(`[VSCodeUI] Restoring conversation engine with ${conversation.messages.length} history messages`);
+      this.log(`[WebviewMessageHandler] Restoring conversation engine with ${conversation.messages.length} history messages`);
       restoreConversationEngine(message.sessionId, conversation.messages, conversation.metadata.role).catch(err => {
-        this.log(`[VSCodeUI] Error restoring engine: ${err}`);
+        this.log(`[WebviewMessageHandler] Error restoring engine: ${err}`);
       });
     }
   }
 
   private async handleUpdateConversationContext(message: any): Promise<void> {
-    this.log(`[VSCodeUI] updateConversationContext: ${message.sessionId}`);
+    this.log(`[WebviewMessageHandler] updateConversationContext: ${message.sessionId}`);
     const { updateConversationContext } = await import('../../core/history/index.js');
     const ctxUpdate: ConversationContext = {
       currentFile: message.currentFile,
@@ -931,12 +861,12 @@ export class WebviewMessageHandler {
 
   private async handleStartNewConversation(message: any): Promise<void> {
     const newSessionId = message.sessionId;
-    // 「哪个会话在前台」由 UI 自己维护（第 15.6 节）
+    // 「哪个会话在前台」由 UI 自己维护（第 12.7 节）
     this.trackedActiveSessionId = newSessionId;
-    // UI → core：报告「用户新建了对话」（core 预创建引擎 + 刷新空闲计时）
+    // UI → core：报告「用户新建了对话」（core 预创建引擎）
     await this.emitUiEvent({ type: 'conversationStarted', sessionId: newSessionId });
-    // 新建对话：开始空闲关闭计时
-    noteSessionActivity(newSessionId);
+    // 新建对话：开始空闲关闭计时（空闲回收只在 VS Code 生效）
+    this.uiPort?.noteSessionActivity(newSessionId);
     this.setTitle(newSessionId, defaultTitle());
     // 新对话开始时查询余额
     this.fetchBalanceAndSend(newSessionId);
@@ -963,7 +893,7 @@ export class WebviewMessageHandler {
         webSearch: defaultWebSearch,
       });
     } catch (err: any) {
-      this.log(`[VSCodeUI] Failed to send defaults: ${err.message}`);
+      this.log(`[WebviewMessageHandler] Failed to send defaults: ${err.message}`);
     }
 
     // 新对话如果没有设置 llm.activeProvider（或 active provider 缺少 apiKey），则弹出设置页引导用户配置
@@ -984,10 +914,10 @@ export class WebviewMessageHandler {
           // 定向到刚创建的会话：避免新对话的配置引导弹到其它端
           sessionId: newSessionId,
         });
-        this.log(`[VSCodeUI] ${hasActiveProvider ? 'Active provider apiKey is empty' : 'No llm.activeProvider configured'}, showing LLM config panel for new conversation`);
+        this.log(`[WebviewMessageHandler] ${hasActiveProvider ? 'Active provider apiKey is empty' : 'No llm.activeProvider configured'}, showing LLM config panel for new conversation`);
       }
     } catch (err: any) {
-      this.log(`[VSCodeUI] Failed to check active provider: ${err.message}`);
+      this.log(`[WebviewMessageHandler] Failed to check active provider: ${err.message}`);
     }
   }
 
@@ -1024,7 +954,7 @@ export class WebviewMessageHandler {
   }
 
   private async handleRespondUserChoice(message: any): Promise<void> {
-    this.log(`[VSCodeUI] User choice response: ${message.choiceId}, index: ${message.index}`);
+    this.log(`[WebviewMessageHandler] User choice response: ${message.choiceId}, index: ${message.index}`);
     const pending = this.userChoiceManager.pendingUserChoices.get(message.choiceId);
     if (pending) {
       this.userChoiceManager.pendingUserChoices.delete(message.choiceId);
@@ -1032,12 +962,12 @@ export class WebviewMessageHandler {
       pending.resolve({ index: message.index, reply: message.reply });
       this.onUserChoiceResponded?.(pending.sessionId);
     } else {
-      this.log(`[VSCodeUI] Warning: No pending choice found for ${message.choiceId}`);
+      this.log(`[WebviewMessageHandler] Warning: No pending choice found for ${message.choiceId}`);
     }
   }
 
   private async handleRequestModels(_message: any): Promise<void> {
-    this.log(`[VSCodeUI] Requesting model list from API`);
+    this.log(`[WebviewMessageHandler] Requesting model list from API`);
     try {
       const { readSettingsJson } = await import('../../core/history/Config.js');
       const settings = await (readSettingsJson as () => Promise<Record<string, any>>)();
@@ -1069,19 +999,19 @@ export class WebviewMessageHandler {
       if (baseURL && apiKey) {
         const fetched = await this.fetchModelsFromProvider(baseURL, apiKey);
         if (fetched.length > 0) {
-          this.log(`[VSCodeUI] Fetched ${fetched.length} models from API`);
+          this.log(`[WebviewMessageHandler] Fetched ${fetched.length} models from API`);
           const models = ensureDefault([...fetched, ...savedModels]);
           this.host.sendToWebview({ type: 'setModels', models });
           return;
         }
-        this.log(`[VSCodeUI] API returned no models, using saved/builtin models`);
+        this.log(`[WebviewMessageHandler] API returned no models, using saved/builtin models`);
       }
 
       // 没有可拉取的模型时只回传已保存的模型列表（可能为空）。
       // 不再回退到内置模型名：模型完全由用户配置，webview 侧不保留默认模型。
       this.host.sendToWebview({ type: 'setModels', models: ensureDefault(savedModels) });
     } catch (err: any) {
-      this.log(`[VSCodeUI] Failed to fetch models: ${err.message}`);
+      this.log(`[WebviewMessageHandler] Failed to fetch models: ${err.message}`);
       this.host.sendToWebview({ type: 'setModels', models: [] });
     }
   }
@@ -1115,7 +1045,7 @@ export class WebviewMessageHandler {
       return;
     }
     try {
-      this.log(`[VSCodeUI] Fetching provider models from ${baseURL}`);
+      this.log(`[WebviewMessageHandler] Fetching provider models from ${baseURL}`);
       const models = await this.fetchModelsFromProvider(baseURL, apiKey);
 
       // 只回传「本次列表里且已有协议」的映射，避免把无关模型带回面板
@@ -1124,10 +1054,10 @@ export class WebviewMessageHandler {
         if (knownApiTypes[model]) modelApiTypes[model] = knownApiTypes[model];
       }
       const needDetect = models.filter((m) => !modelApiTypes[m]);
-      this.log(`[VSCodeUI] Fetched ${models.length} models, ${needDetect.length} without API type`);
+      this.log(`[WebviewMessageHandler] Fetched ${models.length} models, ${needDetect.length} without API type`);
       this.host.sendToWebview({ type: 'providerModelsFetched', models, modelApiTypes, needDetect });
     } catch (err: any) {
-      this.log(`[VSCodeUI] Failed to fetch provider models: ${err.message}`);
+      this.log(`[WebviewMessageHandler] Failed to fetch provider models: ${err.message}`);
       this.host.sendToWebview({ type: 'providerModelsFetched', models: [], modelApiTypes: {}, needDetect: [] });
     }
   }
@@ -1160,7 +1090,7 @@ export class WebviewMessageHandler {
     }
 
     try {
-      this.log(`[VSCodeUI] Detecting API type for ${toDetect.length} model(s) concurrently (concurrency=${API_TYPE_PROBE_CONCURRENCY})...`);
+      this.log(`[WebviewMessageHandler] Detecting API type for ${toDetect.length} model(s) concurrently (concurrency=${API_TYPE_PROBE_CONCURRENCY})...`);
       const started = Date.now();
       const detected = await mapWithConcurrency(
         toDetect,
@@ -1170,10 +1100,10 @@ export class WebviewMessageHandler {
       for (const item of detected) {
         if (item.apiType) modelApiTypes[item.model] = item.apiType;
       }
-      this.log(`[VSCodeUI] API type detection finished in ${Date.now() - started}ms (${Object.keys(modelApiTypes).length}/${models.length} resolved)`);
+      this.log(`[WebviewMessageHandler] API type detection finished in ${Date.now() - started}ms (${Object.keys(modelApiTypes).length}/${models.length} resolved)`);
       this.host.sendToWebview({ type: 'providerModelsResult', models, modelApiTypes });
     } catch (err: any) {
-      this.log(`[VSCodeUI] Failed to detect provider model api types: ${err.message}`);
+      this.log(`[WebviewMessageHandler] Failed to detect provider model api types: ${err.message}`);
       this.host.sendToWebview({ type: 'providerModelsResult', models, modelApiTypes });
     }
   }
@@ -1278,7 +1208,7 @@ export class WebviewMessageHandler {
         if (verdict === 'unknown') {
           // 高优先级结果不确定（限流重试后仍失败 / 地区限制 / 网络异常）：
           // 不猜测、不降级到低优先级，交给用户手动选择或下次自动获取时重试
-          this.log(`[VSCodeUI] probe ${model}: ${candidates[index].definition.type} verdict unknown, skipping detection (will retry next fetch)`);
+          this.log(`[WebviewMessageHandler] probe ${model}: ${candidates[index].definition.type} verdict unknown, skipping detection (will retry next fetch)`);
           abortLower(index);
           return null;
         }
@@ -1327,14 +1257,14 @@ export class WebviewMessageHandler {
         if (API_TYPE_PROBE_RETRYABLE_STATUS.has(response.status) && attempt < API_TYPE_PROBE_MAX_RETRIES) {
           const retryAfterMs = this.parseRetryAfterMs(response.headers.get('retry-after'));
           const delay = retryAfterMs ?? API_TYPE_PROBE_RETRY_BASE_DELAY_MS * (attempt + 1);
-          this.log(`[VSCodeUI] probe ${model} ${apiType} -> HTTP ${response.status} (retryable), retrying in ${delay}ms (${attempt + 1}/${API_TYPE_PROBE_MAX_RETRIES})`);
+          this.log(`[WebviewMessageHandler] probe ${model} ${apiType} -> HTTP ${response.status} (retryable), retrying in ${delay}ms (${attempt + 1}/${API_TYPE_PROBE_MAX_RETRIES})`);
           await new Promise((resolve) => setTimeout(resolve, delay));
           continue;
         }
 
         // 判定规则由协议类实现（默认复用 ProbeClassify 的通用三态规则）
         const verdict = candidate.definition.classifyProbeResponse(response.status, text);
-        this.log(`[VSCodeUI] probe ${model} ${apiType} -> HTTP ${response.status} ${verdict}${verdict === 'supported' ? '' : ` ${text.slice(0, 160)}`}`);
+        this.log(`[WebviewMessageHandler] probe ${model} ${apiType} -> HTTP ${response.status} ${verdict}${verdict === 'supported' ? '' : ` ${text.slice(0, 160)}`}`);
         return verdict;
       } catch (err: any) {
         // 被主动 abort 的低优先级探测不记录为错误
@@ -1342,15 +1272,15 @@ export class WebviewMessageHandler {
         // 网络错误也重试
         if (attempt < API_TYPE_PROBE_MAX_RETRIES) {
           const delay = API_TYPE_PROBE_RETRY_BASE_DELAY_MS * (attempt + 1);
-          this.log(`[VSCodeUI] probe ${model} ${apiType} -> error ${err?.message || err}, retrying in ${delay}ms (${attempt + 1}/${API_TYPE_PROBE_MAX_RETRIES})`);
+          this.log(`[WebviewMessageHandler] probe ${model} ${apiType} -> error ${err?.message || err}, retrying in ${delay}ms (${attempt + 1}/${API_TYPE_PROBE_MAX_RETRIES})`);
           await new Promise((resolve) => setTimeout(resolve, delay));
           continue;
         }
-        this.log(`[VSCodeUI] probe ${model} ${apiType} -> error ${err?.message || err}`);
+        this.log(`[WebviewMessageHandler] probe ${model} ${apiType} -> error ${err?.message || err}`);
         return 'unknown';
       }
     }
-    this.log(`[VSCodeUI] probe ${model} ${apiType} -> exhausted retries (last HTTP ${lastStatus})`);
+    this.log(`[WebviewMessageHandler] probe ${model} ${apiType} -> exhausted retries (last HTTP ${lastStatus})`);
     return 'unknown';
   }
 
@@ -1369,7 +1299,7 @@ export class WebviewMessageHandler {
   }
 
   private async handleRequestSkills(): Promise<void> {
-    this.log(`[VSCodeUI] Skills requested`);
+    this.log(`[WebviewMessageHandler] Skills requested`);
     const { getBundledSkills } = await import('../../core/skills/bundledSkills.js');
     const { getSkillDirCommands } = await import('../../core/skills/loadSkillsDir.js');
     const { getBuiltinCommands } = await import('../../core/skills/builtinCommands.js');
@@ -1400,23 +1330,11 @@ export class WebviewMessageHandler {
     const code: string = message.code || '';
     if (!code.trim()) return;
 
-    this.log(`[VSCodeUI] openMermaidPreview`);
-    // 浏览器端：回推给发起端在页面内预览（页内按源码展示，不打开桌面窗口）
-    if (message.clientId) {
-      this.host.sendToWebview({
-        type: 'openPreview',
-        mode: 'mermaid',
-        title: 'Mermaid',
-        code,
-        sessionId: message.sessionId,
-        clientId: message.clientId,
-      });
-      return;
-    }
+    this.log(`[WebviewMessageHandler] openMermaidPreview`);
     try {
       await this.host.openMermaidPreview(code);
     } catch (err) {
-      this.log(`[VSCodeUI] Error opening mermaid preview: ${err}`);
+      this.log(`[WebviewMessageHandler] Error opening mermaid preview: ${err}`);
     }
   }
 
@@ -1434,7 +1352,7 @@ export class WebviewMessageHandler {
   }
 
   private async handleRequestSmartNaming(message: any): Promise<void> {
-    this.log(`[VSCodeUI] requestSmartNaming: ${message.sessionId}`);
+    this.log(`[WebviewMessageHandler] requestSmartNaming: ${message.sessionId}`);
     const sessionId = message.sessionId;
     (async () => {
       try {
@@ -1503,37 +1421,36 @@ export class WebviewMessageHandler {
             title = lines[lines.length - 1]?.trim()?.substring(0, 50) || '智能命名';
           }
         }
-        this.log(`[VSCodeUI] smartNaming raw response: ${rawResult.substring(0, 500)}`);
-        this.log(`[VSCodeUI] smartNaming extracted jsonStr: ${jsonStr || '(null)'}`);
-        this.log(`[VSCodeUI] smartNaming result for ${sessionId}: "${title}"`);
-        const { updateConversationMetadataTitle: updateTitle } = await import('../../core/history/Conversation.js');
-        await updateTitle(sessionId, title);
+        this.log(`[WebviewMessageHandler] smartNaming raw response: ${rawResult.substring(0, 500)}`);
+        this.log(`[WebviewMessageHandler] smartNaming extracted jsonStr: ${jsonStr || '(null)'}`);
+        this.log(`[WebviewMessageHandler] smartNaming result for ${sessionId}: "${title}"`);
         this.setTitle(sessionId, title);
         this.host.sendToWebview({ type: 'smartNamingResult', sessionId, title });
-        const { loadConversationList: loadList } = await import('../../core/history/index.js');
-        const convs = await loadList();
-        this.host.sendToWebview({ type: 'conversationsData', conversations: convs });
+        // UI → core：标题写盘走总线（core 落盘 + 广播 titleChanged / conversationListChanged）；
+        // 列表刷新由 conversationListChanged → ConversationManager.refresh() 统一驱动，
+        // 这里不再直接落盘、也不直接推 conversationsData。
+        await this.emitUiEvent({ type: 'conversationRenamed', sessionId, title });
       } catch (error: any) {
-        this.log(`[VSCodeUI] smartNaming error: ${error.message}`);
+        this.log(`[WebviewMessageHandler] smartNaming error: ${error.message}`);
       }
     })();
   }
 
   private async handleExpandCompact(message: any): Promise<void> {
-    this.log(`[VSCodeUI] expandCompact requested: ${message.sessionId}`);
+    this.log(`[WebviewMessageHandler] expandCompact requested: ${message.sessionId}`);
     try {
       const { loadCompactArchive } = await import('../../core/history/Conversation.js');
 
       const originalMessages = await loadCompactArchive(message.sessionId);
       if (!originalMessages || originalMessages.length === 0) {
-        this.log(`[VSCodeUI] No compact archive found for ${message.sessionId}`);
+        this.log(`[WebviewMessageHandler] No compact archive found for ${message.sessionId}`);
         return;
       }
 
-      this.log(`[VSCodeUI] Expanding compact: ${originalMessages.length} messages from archive`);
+      this.log(`[WebviewMessageHandler] Expanding compact: ${originalMessages.length} messages from archive`);
 
       // 从压缩后的主 JSONL 读取 summary 和保留的最近消息
-      let messagesToDisplay: any[] = originalMessages;
+      let messagesToDisplay: Message[] = originalMessages;
       {
         const summaryCount = originalMessages.filter(m => m.type === 'user' && m.isCompactSummary === true).length;
         try {
@@ -1549,7 +1466,7 @@ export class WebviewMessageHandler {
             (m.type === 'user' || m.type === 'assistant')
             && !(m.type === 'user' && m.isCompactSummary)
           );
-          this.log(`[VSCodeUI] Archive=${originalMessages.length} (summaries=${summaryCount}), compressed summaries=${compressedSummaries.length}, retained=${retainedMessages.length}`);
+          this.log(`[WebviewMessageHandler] Archive=${originalMessages.length} (summaries=${summaryCount}), compressed summaries=${compressedSummaries.length}, retained=${retainedMessages.length}`);
           // 顺序：被压缩归档消息 -> 摘要 -> 当前未被压缩部分
           if (summaryCount === 0 && compressedSummaries.length > 0) {
             // 旧归档：从主 JSONL 取 summary
@@ -1558,94 +1475,19 @@ export class WebviewMessageHandler {
             // 新归档：归档中已有 summary，只需补充 retainedMessages
             messagesToDisplay = [...originalMessages, ...retainedMessages];
           }
-          this.log(`[VSCodeUI] Built display: archive=${originalMessages.length} + retained=${retainedMessages.length}`);
+          this.log(`[WebviewMessageHandler] Built display: archive=${originalMessages.length} + retained=${retainedMessages.length}`);
         } catch (err) {
-          this.log(`[VSCodeUI] Failed to load data from compressed messages: ${err}`);
+          this.log(`[WebviewMessageHandler] Failed to load data from compressed messages: ${err}`);
         }
       }
 
-      // 清空 webview 当前显示
+      // 整批替换 webview 当前显示：转换逻辑与 core 的压缩后重建共用同一个纯函数
+      // （`buildReplayMessageData`），不再在这里复制一份裁剪 / diffHunks 逻辑。
       this.host.sendToWebview({
-        type: 'clearMessages',
+        type: 'messagesReplaced',
         sessionId: message.sessionId,
+        messages: buildReplayMessageData(messagesToDisplay),
       });
-
-      // 先扫描所有消息，建立 tool_use_id -> tool_result 的映射
-      const toolResultMap = new Map<string, { content: string; exitCode: number }>();
-      for (const msg of messagesToDisplay) {
-        if (msg.type === 'user' && Array.isArray(msg.message.content)) {
-          for (const block of msg.message.content) {
-            if (!block || typeof block !== 'object') continue;
-            const r = block as Record<string, unknown>;
-            if (r.type !== 'tool_result' || typeof r.tool_use_id !== 'string' || r.is_canceled === true) continue;
-            toolResultMap.set(r.tool_use_id, {
-              content: typeof r.content === 'string' ? r.content : '',
-              exitCode: typeof r.exit_code === 'number' ? r.exit_code : 0,
-            });
-          }
-        }
-      }
-
-      // 从归档推送完整消息到 webview 显示（复用 pushCompactMessagesToUI 的转换逻辑）
-      // 不修改 JSONL 文件，LLM 仍然只看到压缩后的消息
-      for (const msg of messagesToDisplay) {
-        // isMeta / silent 只存在于 user 消息（静默消息不回显但会发给 LLM）
-        if (msg.type === 'user' && (msg.isMeta || msg.silent)) continue;
-
-        if (msg.type === 'system') {
-          if (msg.subtype === 'compact_boundary') continue;
-          this.postToWebview(message.sessionId, {
-            type: 'addMessage',
-            role: 'system',
-            content: msg.content,
-          });
-        } else if (msg.type === 'user') {
-          const content = typeof msg.message.content === 'string' ? msg.message.content : undefined;
-          if (content !== undefined) {
-            this.postToWebview(message.sessionId, {
-              type: 'addMessage',
-              role: 'user',
-              content,
-              filePath: msg.filePath,
-              fileSelectedLines: msg.fileSelectedLines,
-              isCompactSummary: msg.isCompactSummary === true,
-              isFromAgent: msg.fromSubAgent === true,
-              meta: msg._meta,
-            });
-          }
-        } else if (msg.type === 'assistant' && Array.isArray(msg.message.content)) {
-          for (const block of msg.message.content) {
-            const b = block as Record<string, unknown>;
-            if (b.type === 'thinking') {
-              this.postToWebview(message.sessionId, {
-                type: 'addMessage',
-                role: 'thinking',
-                content: typeof b.thinking === 'string' ? b.thinking : '',
-              });
-            } else if (b.type === 'text') {
-              this.postToWebview(message.sessionId, {
-                type: 'addMessage',
-                role: 'assistant',
-                content: typeof b.text === 'string' ? b.text : '',
-              });
-            } else if (b.type === 'tool_use') {
-              const toolUseId = typeof b.id === 'string' ? b.id : '';
-              const result = toolResultMap.get(toolUseId);
-              const toolName = typeof b.name === 'string' ? b.name : 'tool';
-              this.postToWebview(message.sessionId, {
-                type: 'addMessage',
-                role: 'toolcall',
-                content: result?.content || '',
-                param: `⚙️ ${toolName}`,
-                toolName,
-                toolArgs: (b.input && typeof b.input === 'object' ? b.input : {}) as Record<string, unknown>,
-                toolCallId: toolUseId,
-                status: result ? (result.exitCode !== 0 ? 'fail' : 'success') : 'running',
-              });
-            }
-          }
-        }
-      }
 
       // 通知 webview 展开完成（删除展开按钮）
       this.host.sendToWebview({
@@ -1653,9 +1495,9 @@ export class WebviewMessageHandler {
         sessionId: message.sessionId,
       });
 
-      this.log(`[VSCodeUI] Compact expanded for ${message.sessionId}: messages displayed from archive`);
+      this.log(`[WebviewMessageHandler] Compact expanded for ${message.sessionId}: messages displayed from archive`);
     } catch (err) {
-      this.log(`[VSCodeUI] Failed to expand compact for ${message.sessionId}: ${err}`);
+      this.log(`[WebviewMessageHandler] Failed to expand compact for ${message.sessionId}: ${err}`);
     }
   }
 
@@ -1667,38 +1509,23 @@ export class WebviewMessageHandler {
    */
   private async handleSaveLLMConfig(message: any): Promise<void> {
     // UI → core：报告「用户保存了 LLM 全局配置」（core 清除配置缓存，下次 getConfig 重新读盘）。
-    // settings.json 写入与 webview 协议回推暂留本 handler（收编清单见第 7.3 节）。
+    // settings.json 的写由 UIHost 承担（core 只读不写）；本 handler 只组装 mutator + 回推协议消息。
     await this.emitUiEvent({ type: 'llmConfigSaved', config: message });
     const {
       webSearch, thinkingEffort,
       defaultAgentMode, defaultPromptMode, language,
-      shortcut,
       providers, activeProvider: requestedActiveProvider, closeAfterSave,
       saveProviders,
       sessionId: requestedSessionId, currentModel: requestedCurrentModel,
     } = message;
 
-    // 快捷键只由 Electron 设置页提交；校验失败时不写文件，避免保存无效配置
-    let normalizedShortcut: string | undefined;
-    if (typeof shortcut === 'string') {
-      const normalized = normalizeAccelerator(shortcut);
-      if (!normalized) {
-        this.host.sendToWebview({
-          type: 'llmConfigSaveError',
-          error: '快捷键无效，请重新设置',
-        });
-        return;
-      }
-      normalizedShortcut = normalized;
-    }
-
-    this.log(`[VSCodeUI] saveLLMConfig: webSearch=${!!webSearch}, thinkingEffort=${thinkingEffort}, defaultAgentMode=${defaultAgentMode}, defaultPromptMode=${defaultPromptMode}, language=${language}, shortcut=${normalizedShortcut || ''}, saveProviders=${!!saveProviders}, providers=${Array.isArray(providers) ? providers.length : 0}, activeProvider=${requestedActiveProvider || ''}, closeAfterSave=${!!closeAfterSave}, sessionId=${requestedSessionId || ''}, currentModel=${requestedCurrentModel || ''}`);
+    this.log(`[WebviewMessageHandler] saveLLMConfig: webSearch=${!!webSearch}, thinkingEffort=${thinkingEffort}, defaultAgentMode=${defaultAgentMode}, defaultPromptMode=${defaultPromptMode}, language=${language}, saveProviders=${!!saveProviders}, providers=${Array.isArray(providers) ? providers.length : 0}, activeProvider=${requestedActiveProvider || ''}, closeAfterSave=${!!closeAfterSave}, sessionId=${requestedSessionId || ''}, currentModel=${requestedCurrentModel || ''}`);
 
     try {
-      // 串行化写入 settings.json，避免与其他写入口（handleSetModel 等）并发写坏文件
-      const { updateSettingsJson } = await import('../../core/history/Config.js');
+      // 写 settings.json 是宿主能力（core 只读不写，第 2 节规则 9）：
+      // host.updateSettingsJson 内部串行化，避免与其他写入口并发写坏文件
       const keyOf = providerKeyFromBaseURL;
-      await updateSettingsJson((cfg: Record<string, any>) => {
+      await this.host.updateSettingsJson((cfg: Record<string, any>) => {
         if (!cfg.llm) cfg.llm = {};
 
         // 有 provider 变更（如编辑模型列表/API 配置）或显式选择「使用此 Provider」时，
@@ -1803,10 +1630,6 @@ export class WebviewMessageHandler {
             }
           }
         }
-        // 唤醒快捷键（Electron）：顶层字段，accelerator 形式
-        if (normalizedShortcut && cfg.shortcut !== normalizedShortcut) {
-          cfg.shortcut = normalizedShortcut;
-        }
       });
 
       // 同步更新 core 层界面语言，使 Spin 等核心流程文案跟随设置
@@ -1821,10 +1644,10 @@ export class WebviewMessageHandler {
       // 只改全局默认；各会话在菜单里的勾选存在各自 meta.json，不受影响。
       if (Array.isArray(message.mcpServers)) {
         try {
-          const { setDefaultEnabledMcps } = await import('../../core/mcp/Config.js');
-          await setDefaultEnabledMcps(
+          const { mcpDefaultsMutator } = await import('../../core/mcp/Config.js');
+          await this.host.updateSettingsJson(mcpDefaultsMutator(
             (message.mcpServers as unknown[]).filter((n): n is string => typeof n === 'string'),
-          );
+          ));
           const mcpSessionId = await this.getActiveMcpSessionId(requestedSessionId);
           // 先回推一次：默认值已落盘，连接尚未开始 → webview 显示「连接中」。
           // 这样设置面板保存不会被 MCP 启动阻塞，可以立即返回 llmConfigSaved。
@@ -1840,14 +1663,14 @@ export class WebviewMessageHandler {
             this.log(`Failed to sync MCP after default change: ${err.message}`);
           });
         } catch (err: any) {
-          this.log(`[VSCodeUI] Failed to save default MCP enabled list: ${err.message}`);
+          this.log(`[WebviewMessageHandler] Failed to save default MCP enabled list: ${err.message}`);
         }
       }
 
-      this.log(`[VSCodeUI] LLM config saved successfully`);
+      this.log(`[WebviewMessageHandler] LLM config saved successfully`);
 
       // 清除 config.ts 中的缓存，下次 getConfig 能读到新配置
-      // （updateSettingsJson 内部已清除 Config.ts 的 cachedSettings）
+      // （host.updateSettingsJson 写盘后已清除 Config.ts 的 cachedSettings）
       try {
         const { clearConfigCache } = await import('../../core/llm/config.js');
         clearConfigCache();
@@ -1898,7 +1721,7 @@ export class WebviewMessageHandler {
           if (resolved) {
             activeModel = resolved;
             if (sessionModel && resolved !== sessionModel) {
-              this.log(`[VSCodeUI] Current session model "${sessionModel}" is not in active provider model list, fallback to "${resolved}"`);
+              this.log(`[WebviewMessageHandler] Current session model "${sessionModel}" is not in active provider model list, fallback to "${resolved}"`);
               const { updateConversationContext } = await import('../../core/history/index.js');
               await updateConversationContext(currentSessionId, { model: resolved });
             }
@@ -1907,7 +1730,7 @@ export class WebviewMessageHandler {
           }
         }
       } catch (err: any) {
-        this.log(`[VSCodeUI] Failed to resolve active model after save: ${err.message}`);
+        this.log(`[WebviewMessageHandler] Failed to resolve active model after save: ${err.message}`);
       }
 
       // 保存后立即刷新主界面的模型下拉列表：只使用该服务商保存的模型列表
@@ -1926,12 +1749,11 @@ export class WebviewMessageHandler {
         defaultPromptMode: savedPromptMode,
         webSearch: savedWebSearch,
         ...(language === 'zh' || language === 'en' || language === 'auto' ? { language } : {}),
-        ...(normalizedShortcut ? { shortcut: normalizedShortcut } : {}),
         activeProvider: savedActiveProvider,
         closeAfterSave: !!closeAfterSave,
       });
     } catch (err) {
-      this.log(`[VSCodeUI] Failed to save LLM config: ${err}`);
+      this.log(`[WebviewMessageHandler] Failed to save LLM config: ${err}`);
       this.host.sendToWebview({
         type: 'llmConfigSaveError',
         error: `保存失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -1966,9 +1788,9 @@ export class WebviewMessageHandler {
         language: this.getUiLanguageFromSettings(),
         providerConfigured,
       });
-      this.log(`[VSCodeUI] Sent settings defaults: model=${model}, thinkingMode=${thinkingMode}, agentMode=${agentMode}, promptMode=${promptMode}, webSearch=${webSearch}, providerConfigured=${providerConfigured}`);
+      this.log(`[WebviewMessageHandler] Sent settings defaults: model=${model}, thinkingMode=${thinkingMode}, agentMode=${agentMode}, promptMode=${promptMode}, webSearch=${webSearch}, providerConfigured=${providerConfigured}`);
     } catch (err: any) {
-      this.log(`[VSCodeUI] Failed to send settings defaults: ${err.message}`);
+      this.log(`[WebviewMessageHandler] Failed to send settings defaults: ${err.message}`);
       // 读取失败也要回一条：否则 webview 的 configReady 永远为 false，发送按钮会一直禁用。
       // 不带任何默认值，providerConfigured=false 会让输入框引导用户去设置页配置。
       this.host.sendToWebview({
@@ -1998,13 +1820,13 @@ export class WebviewMessageHandler {
    * 处理来自 webview 的对话空间统计请求
    */
   private async handleRequestConversationSpaces(): Promise<void> {
-    this.log(`[VSCodeUI] requestConversationSpaces`);
+    this.log(`[WebviewMessageHandler] requestConversationSpaces`);
     try {
       const { getConversationSpaces } = await import('../../core/history/ConversationSpace.js');
       const spaces = await getConversationSpaces();
       this.host.sendToWebview({ type: 'conversationSpacesData', spaces });
     } catch (err: any) {
-      this.log(`[VSCodeUI] Failed to get conversation spaces: ${err.message}`);
+      this.log(`[WebviewMessageHandler] Failed to get conversation spaces: ${err.message}`);
       this.host.sendToWebview({
         type: 'conversationSpacesError',
         error: `统计对话空间失败: ${err.message}`,
@@ -2020,12 +1842,8 @@ export class WebviewMessageHandler {
    * 读取 settings.json 并回传 showLLMConfig，由 webview 打开配置面板
    */
   private async handleRequestLLMConfig(message: any): Promise<void> {
-    // 设置面板只在「点开设置的那个端」打开：带上发起端的 sessionId / clientId 做定向回推，
-    // 不带则会被广播到所有浏览器端（req: 设置页面不要同步到其它端打开）
-    const route = {
-      sessionId: message?.sessionId,
-      clientId: message?.clientId,
-    };
+    // 定向会话：多视图宿主据此把设置面板只弹到发起端（同一会话的其它视图不同步弹）
+    const sessionId: string | undefined = message?.sessionId;
     try {
       const { getLLMConfigPanelPayload } = await import('../../core/llm/config.js');
       const { readMcpServersForDefaults } = await import('../../core/mcp/Config.js');
@@ -2039,10 +1857,10 @@ export class WebviewMessageHandler {
         ...payload,
         mcpServers,
         language: this.getUiLanguageFromSettings(),
-        ...route,
+        sessionId,
       });
     } catch (err: any) {
-      this.log(`[VSCodeUI] Failed to read LLM config: ${err.message}`);
+      this.log(`[WebviewMessageHandler] Failed to read LLM config: ${err.message}`);
       // 读取失败时仍然打开面板，但不预置任何默认配置：
       // 让用户从空面板自行填写服务地址 / Key / 模型，避免内置默认值被误当成用户配置。
       this.host.sendToWebview({
@@ -2057,9 +1875,8 @@ export class WebviewMessageHandler {
         providers: [],
         activeProvider: '',
         language: this.getUiLanguageFromSettings(),
-        shortcut: DEFAULT_WAKE_SHORTCUT,
         mcpServers: [],
-        ...route,
+        sessionId,
       });
     }
   }

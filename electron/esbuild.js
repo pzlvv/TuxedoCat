@@ -29,6 +29,7 @@ const entries = [
   { entryPoints: [project.resolve('electron', 'spinPreload.ts')], outfile: project.electronSpinPreloadOut },
   { entryPoints: [project.resolve('electron', 'monacoPreload.ts')], outfile: project.electronMonacoPreloadOut },
   { entryPoints: [project.resolve('electron', 'sidebarPreload.ts')], outfile: project.electronSidebarPreloadOut },
+  { entryPoints: [project.resolve('electron', 'shortcutPreload.ts')], outfile: project.electronShortcutPreloadOut },
 ];
 
 async function main() {

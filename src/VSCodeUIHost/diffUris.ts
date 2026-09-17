@@ -1,5 +1,5 @@
 /**
- * VSCodeUI/diffUris.ts - Diff 虚拟文档 URI 构造
+ * VSCodeUIHost/diffUris.ts - Diff 虚拟文档 URI 构造
  *
  * 统一使用 vscode.Uri.parse 构造 before/after URI，并保证记录、打开、关闭时
  * 使用同一套规范化后的 Uri 对象，避免 Windows/Linux 路径编码差异导致

@@ -2,7 +2,7 @@
  * Utility for persisting large tool results to disk instead of truncating them.
  */
 
-import { mkdir, writeFile, stat as fsStat, link, copyFile, truncate as fsTruncate } from 'fs/promises';
+import { mkdir, writeFile, stat as fsStat, link, copyFile, truncate as fsTruncate, unlink, readdir } from 'fs/promises';
 import { join } from 'path';
 import { getProjectConversationDir, getProjectRoot, ensureProjectConversationDir } from '../history/Config.js';
 import { logger } from '../Logger.js';
@@ -30,11 +30,25 @@ export function getToolResultsDir(): string {
 }
 
 /**
- * 获取工具结果文件路径
+ * 工具结果文件名的会话前缀：`<sessionId>__<id>.<ext>`。
+ *
+ * 文件名带 sessionId，删除对话时按前缀直接清理，无需回扫消息内容。
+ * 分隔符用双下划线：sessionId 形如 `session_<ts>_<rand>`，只含单个下划线，
+ * 不会与其他会话的前缀（如 `session_1_ab` 与 `session_1_abc`）混淆。
  */
-export function getToolResultPath(id: string, isJson: boolean): string {
+const SESSION_PREFIX_SEPARATOR = '__';
+
+/** 工具结果文件的会话前缀（用于按会话清理） */
+export function getToolResultFilePrefix(sessionId: string): string {
+  return `${sessionId}${SESSION_PREFIX_SEPARATOR}`;
+}
+
+/**
+ * 获取工具结果文件路径（文件名带会话前缀，便于按会话清理）
+ */
+export function getToolResultPath(sessionId: string, id: string, isJson: boolean): string {
   const ext = isJson ? 'json' : 'txt';
-  return join(getToolResultsDir(), `${id}.${ext}`);
+  return join(getToolResultsDir(), `${getToolResultFilePrefix(sessionId)}${id}.${ext}`);
 }
 
 /**
@@ -89,11 +103,13 @@ export function buildLargeToolResultMessage(
  * 持久化大型输出到磁盘
  *
  * @param stdout - stdout 内容
+ * @param sessionId - 会话 ID（写入文件名前缀，便于删除对话时清理）
  * @param taskId - 任务 ID（用于文件名）
  * @returns 持久化信息，如果无需持久化则返回 null
  */
 export async function persistLargeOutput(
   stdout: string,
+  sessionId: string,
   taskId: string,
 ): Promise<{
   filepath: string;
@@ -108,7 +124,7 @@ export async function persistLargeOutput(
 
   try {
     await ensureToolResultsDir();
-    const filepath = getToolResultPath(taskId, false);
+    const filepath = getToolResultPath(sessionId, taskId, false);
     const originalSize = stdout.length;
 
     // 如果超过最大持久化大小，截断
@@ -144,6 +160,7 @@ export async function persistLargeOutput(
  */
 export async function persistOutputFile(
   outputFilePath: string,
+  sessionId: string,
   taskId: string,
 ): Promise<{
   filepath: string;
@@ -154,7 +171,7 @@ export async function persistOutputFile(
     const originalSize = fileStat.size;
 
     await ensureToolResultsDir();
-    const dest = getToolResultPath(taskId, false);
+    const dest = getToolResultPath(sessionId, taskId, false);
 
     // 超过最大持久化大小时截断
     if (fileStat.size > MAX_PERSISTED_SIZE) {
@@ -177,4 +194,43 @@ export async function persistOutputFile(
     // 文件可能已删除 - stdout 预览已足够
     return null;
   }
+}
+
+/**
+ * 删除指定会话在 tool-results 下的全部会话关联文件。
+ *
+ * 持久化工具结果（见 getToolResultPath）与 Read 工具生成的 pandoc 转换结果
+ * （见 Read.convertDocToMd）文件名都带会话前缀，这里按前缀扫描目录直接删除，
+ * 不需要回扫对话消息内容。
+ *
+ * @returns 实际删除的文件数
+ */
+export async function deleteSessionToolResults(sessionId: string): Promise<number> {
+  const toolResultsDir = getToolResultsDir();
+  const prefix = getToolResultFilePrefix(sessionId);
+
+  let entries;
+  try {
+    entries = await readdir(toolResultsDir, { withFileTypes: true });
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') {
+      logger.warn('toolResultStorage', `读取 tool-results 目录失败: ${err}`);
+    }
+    return 0;
+  }
+
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.startsWith(prefix)) continue;
+    try {
+      await unlink(join(toolResultsDir, entry.name));
+      removed += 1;
+    } catch (err: any) {
+      if (err?.code !== 'ENOENT') {
+        logger.warn('toolResultStorage', `删除工具结果文件失败 ${entry.name}: ${err}`);
+      }
+    }
+  }
+
+  return removed;
 }

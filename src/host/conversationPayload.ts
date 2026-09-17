@@ -1,12 +1,12 @@
 /**
  * 构建 conversationLoaded 消息的共享逻辑。
  *
- * VSCodeUI.postConversationLoaded 与 ElectronUI.postConversationLoaded
- * 原为约 60 行近乎逐字的重复：JSON 深拷贝、isMeta/silent 过滤、
+ * 两个宿主实现各自的 postConversationLoaded 原为约 60 行近乎逐字的重复：
+ * JSON 深拷贝、isMeta/silent 过滤、
  * tool_use _meta 裁剪（beforeContent/afterContent 摘出，避免整文件内容发给 webview）、
  * Edit diffHunks 构建、消息组装。
  *
- * 宿主差异通过 extraFields 注入（如 VSCodeUI 独有的 activityPhase）。
+ * 宿主差异通过 extraFields 注入（如 WebViewUI 传入的 activityPhase）。
  */
 import { buildEditDiffHunks } from '../core/utils/editDiff.js';
 
@@ -84,7 +84,7 @@ export function trimConversationForWebview(conversation: any): {
  * @param sessionId 目标会话
  * @param conversation 磁盘/内存中的会话对象（函数内部深拷贝，不修改原对象）
  * @param extra WebviewMessageHandler 传入的额外信息
- * @param extraFields 宿主专属附加字段（如 VSCodeUI 的 activityPhase）
+ * @param extraFields 附加字段（如 WebViewUI 的 activityPhase）
  */
 export function buildConversationLoadedPayload(
   sessionId: string,

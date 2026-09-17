@@ -5,9 +5,9 @@
  * - 读该会话的 agentMode（core 拥有会话配置，UI 只做展示）
  * - 调工具自身的 checkPermissions
  * - 按 auto / risk / manual 规则加工最终 PermissionResult
- * - 展开 displayArgs（路径展开 / Write / Edit 的 diff 字段），随 CoreRequest.toolPermission 下发
+ * - 展开 displayArgs（路径展开 / Write / Edit 的 diff 字段），随 CoreRequest.toolPermissionRequested 下发
  *
- * UI（WebViewUI 的 onPreToolCall）收到请求时只负责「上架卡片 + 弹确认框」，
+ * UI（WebViewUI 的 requestToolPermission）收到请求时只负责「上架卡片 + 弹确认框」，
  * 不再做任何策略判断。
  */
 
@@ -15,7 +15,7 @@ import { expandPath } from '../utils/path.js';
 import { getProjectRoot } from '../history/Config.js';
 import { buildEditDiffHunks } from '../utils/editDiff.js';
 import { logger } from '../Logger.js';
-import type { PermissionResult } from './Tool.js';
+import type { PermissionDiffPayload, PermissionResult } from './Tool.js';
 import type { AgentMode } from '../types.js';
 
 /** 工具入参规范化：极端情况下 LLM 会把整个入参 double-encode 成字符串 */
@@ -115,14 +115,15 @@ function isOperationRisky(tool: unknown, toolName: string, args: Record<string, 
  * @param toolName 工具名
  * @param rawArgs 工具入参（可能是未解析的原始值）
  * @param tool 工具实例；不存在（找不到工具 / 校验失败前的展示）时传 null
- * @returns permResult（最终权限决策）与 displayArgs（展示用参数，路径已展开）
+ * @returns permResult（最终权限决策）、displayArgs（展示用参数，路径已展开）
+ *          与 agentMode（本次决策实际采用的询问模式，供 UI 决定是否打开宿主侧 diff）
  */
 export async function resolveToolPermission(
   sessionId: string,
   toolName: string,
   rawArgs: Record<string, any>,
   tool: unknown,
-): Promise<{ permResult: PermissionResult; displayArgs: Record<string, unknown> }> {
+): Promise<{ permResult: PermissionResult; displayArgs: Record<string, unknown>; agentMode: AgentMode }> {
   // 统一规范化为对象，避免 rawArgs 为 JSON 字符串时后续展开 / `in` 运算崩溃
   const args = normalizeToolArgs(rawArgs);
 
@@ -156,6 +157,20 @@ export async function resolveToolPermission(
     }
   }
 
+  // 改动内容（展示用）取自**工具自己的**权限结果，与下面按 agentMode 做的决策加工无关：
+  // auto / risk 把 ask 自动放行为 allow 时，改动内容仍要保留，用户才看得到这次修改。
+  const diffPayload: PermissionDiffPayload = (toolName === 'Edit' || toolName === 'Write') && permResult.behavior === 'ask'
+    ? {
+        beforeContent: permResult.beforeContent,
+        afterContent: permResult.afterContent,
+        contextBefore: permResult.contextBefore,
+        contextAfter: permResult.contextAfter,
+        startLine: permResult.startLine,
+        endLine: permResult.endLine,
+        lineEndings: permResult.lineEndings,
+      }
+    : {};
+
   // Auto 模式下 AskUserQuestion 不可用：不弹出提问框，直接返回不可用结果
   if (toolName === 'AskUserQuestion' && effectiveAgentMode === 'auto') {
     logger.info('PermissionPolicy', `Auto mode (session ${sessionId}): AskUserQuestion unavailable, denying tool call`);
@@ -165,10 +180,10 @@ export async function resolveToolPermission(
     };
   }
 
-  // auto 模式：ask → allow（跳过确认）
+  // auto 模式：ask → allow（跳过确认）；改动内容照常带上供 UI 展示
   if (effectiveAgentMode === 'auto' && permResult.behavior === 'ask') {
     logger.info('PermissionPolicy', `Auto mode (session ${sessionId}): allowing tool ${toolName} without confirmation`);
-    permResult = { behavior: 'allow' };
+    permResult = { behavior: 'allow', ...diffPayload };
   }
 
   // 风险拦截模式：只拦截危险操作，普通操作自动放行
@@ -178,21 +193,21 @@ export async function resolveToolPermission(
       // Keep 'ask' behavior - still ask user for confirmation
     } else {
       logger.info('PermissionPolicy', `Risk mode (session ${sessionId}): allowing non-risky tool ${toolName} without confirmation`);
-      permResult = { behavior: 'allow' };
+      permResult = { behavior: 'allow', ...diffPayload };
     }
   }
 
   // manual 模式：保持 ask（无需加工）
 
   // 展示用参数：路径展开 + Write / Edit 的 diff 字段
-  const hasPermDiff = (toolName === 'Edit' || toolName === 'Write') && 'beforeContent' in (permResult as Record<string, unknown>);
-  const pc = (permResult as Record<string, unknown>).beforeContent;
+  const hasPermDiff = (toolName === 'Edit' || toolName === 'Write') && diffPayload.beforeContent !== undefined;
+  const pc = diffPayload.beforeContent;
   const diffBeforeContent: string = hasPermDiff ? (pc !== undefined && pc !== null ? String(pc) : '') : '';
-  const diffAfterContent: string = hasPermDiff ? String((permResult as Record<string, unknown>).afterContent ?? '') : '';
-  const diffContextBefore = hasPermDiff ? ((permResult as Record<string, unknown>).contextBefore as string[] | undefined) || [] : [];
-  const diffContextAfter = hasPermDiff ? ((permResult as Record<string, unknown>).contextAfter as string[] | undefined) || [] : [];
-  const diffStartLine = hasPermDiff ? (permResult as Record<string, unknown>).startLine as number | undefined : undefined;
-  const diffEndLine = hasPermDiff ? (permResult as Record<string, unknown>).endLine as number | undefined : undefined;
+  const diffAfterContent: string = hasPermDiff ? String(diffPayload.afterContent ?? '') : '';
+  const diffContextBefore = hasPermDiff ? diffPayload.contextBefore || [] : [];
+  const diffContextAfter = hasPermDiff ? diffPayload.contextAfter || [] : [];
+  const diffStartLine = hasPermDiff ? diffPayload.startLine : undefined;
+  const diffEndLine = hasPermDiff ? diffPayload.endLine : undefined;
 
   let displayArgs: Record<string, unknown> = { ...args };
   if (toolName === 'Read' || toolName === 'Write' || toolName === 'Edit') {
@@ -256,11 +271,12 @@ export async function resolveToolPermission(
   }
 
   // previewContent（工具在 checkPermissions 时给出的展示预览）
-  if (permResult && typeof permResult === 'object' && 'previewContent' in permResult && (permResult as Record<string, unknown>).previewContent) {
-    displayArgs = { ...displayArgs, _preview: String((permResult as Record<string, unknown>).previewContent) };
+  const previewContent = (permResult as { previewContent?: unknown }).previewContent;
+  if (typeof previewContent === 'string' && previewContent) {
+    displayArgs = { ...displayArgs, _preview: previewContent };
   }
 
-  return { permResult, displayArgs };
+  return { permResult, displayArgs, agentMode: effectiveAgentMode };
 }
 
 /**

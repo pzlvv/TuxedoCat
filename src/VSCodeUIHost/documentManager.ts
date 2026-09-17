@@ -1,5 +1,5 @@
 /**
- * VSCodeUI/documentManager.ts - 文档/Diff/预览管理
+ * VSCodeUIHost/documentManager.ts - 文档/Diff/预览管理
  * 管理虚拟文档、diff 预览文档的打开和关闭
  */
 import * as vscode from 'vscode';
@@ -43,7 +43,7 @@ export class DocumentManager {
       return;
     }
 
-    this.log(`[VSCodeUI] Closing preview documents: ${this.currentPreviewUris.length}`);
+    this.log(`[DocumentManager] Closing preview documents: ${this.currentPreviewUris.length}`);
 
     try {
       const tabGroups = vscode.window.tabGroups;
@@ -73,13 +73,13 @@ export class DocumentManager {
       for (const tab of tabsToClose) {
         try {
           vscode.window.tabGroups.close(tab);
-          this.log(`[VSCodeUI] Closed tab: ${tab.label}`);
+          this.log(`[DocumentManager] Closed tab: ${tab.label}`);
         } catch (_err) {
-          this.log(`[VSCodeUI] Failed to close tab: ${_err}`);
+          this.log(`[DocumentManager] Failed to close tab: ${_err}`);
         }
       }
     } catch (err) {
-      this.log(`[VSCodeUI] Error closing preview tabs: ${err}`);
+      this.log(`[DocumentManager] Error closing preview tabs: ${err}`);
     }
 
     this.currentPreviewUris = [];
@@ -98,7 +98,7 @@ export class DocumentManager {
     onShowContent?: (event: ShowContentInVirtualDocumentEvent) => void;
   }): Promise<void> {
     const { filePath, newContent, title, beforeContent: providedBeforeContent, afterContent: providedAfterContent, onShowContent } = options;
-    this.log(`[VSCodeUI] showDiffInVirtualDocument: ${title || filePath}`);
+    this.log(`[DocumentManager] showDiff: ${title || filePath}`);
 
     const displayTitle = `[${PRODUCT_NAME}] ${title || filePath}`;
 
@@ -111,7 +111,7 @@ export class DocumentManager {
         const fs = await import('fs/promises');
         beforeContent = await fs.readFile(filePath, 'utf-8');
       } catch {
-        this.log(`[VSCodeUI] File not found or cannot read, showing new content only: ${filePath}`);
+        this.log(`[DocumentManager] File not found or cannot read, showing new content only: ${filePath}`);
         if (onShowContent || this.onShowContentInVirtualDocumentCallback) {
           const callback = onShowContent || this.onShowContentInVirtualDocumentCallback!;
           callback({
@@ -127,7 +127,7 @@ export class DocumentManager {
       const newDiffHash = `${beforeContent.length}-${afterContent.length}-${beforeContent.substring(0, 100)}-${afterContent.substring(0, 100)}`;
 
       if (this.currentDiffHash === newDiffHash) {
-        this.log(`[VSCodeUI] Same diff already open, skipping: ${title || filePath}`);
+        this.log(`[DocumentManager] Same diff already open, skipping: ${title || filePath}`);
       } else {
         if (this.currentPreviewUris.length > 0) {
           this.closePreview();
@@ -137,7 +137,9 @@ export class DocumentManager {
 
         const result = this.onShowDiffInVirtualDocumentCallback!({
           beforeContent,
-          afterContent: newContent || '',
+          // 用上面算好的 afterContent：调用方（权限请求）只给 before/after 两段内容，
+          // newContent 为 null，写成 `newContent || ''` 会让 diff 右侧变成空白
+          afterContent,
           title: displayTitle,
         });
         if (result && typeof result.then === 'function') {
@@ -148,7 +150,7 @@ export class DocumentManager {
         this.currentPreviewUris.push(beforeUri, afterUri);
       }
     } else {
-      this.log('[VSCodeUI] Warning: No callback registered for ShowDiffInVirtualDocument');
+      this.log('[DocumentManager] Warning: No callback registered for ShowDiffInVirtualDocument');
     }
   }
 }

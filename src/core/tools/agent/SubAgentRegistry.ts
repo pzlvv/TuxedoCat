@@ -6,6 +6,7 @@
 import type { QueryEngine } from '../../QueryEngine.js';
 import type { ToolUseContext } from '../Tool.js';
 import { logger } from '../../Logger.js';
+import { markSessionSubAgent } from '../../sessionRuntime.js';
 
 export interface SubAgentRecord {
   id: string;
@@ -28,6 +29,10 @@ class SubAgentRegistryImpl {
       createdAt: Date.now(),
     });
     logger.info('SubAgentRegistry', `Registered sub-agent: ${id} (creator: ${creatorSessionId})`);
+    // 父会话据此算「非空闲」：子代理在跑时父会话的 abort 按钮要可用。
+    // 父会话自己消费队列时 query 来源也会为真；spin 模式下父会话不消费队列，
+    // 只有这个来源能反映「子代理还在跑」。
+    this.syncCreatorState(creatorSessionId);
   }
 
   get(id: string): SubAgentRecord | undefined {
@@ -36,8 +41,15 @@ class SubAgentRegistryImpl {
 
   /** 移除并清理子代理 */
   unregister(id: string): void {
+    const creatorSessionId = this.agents.get(id)?.creatorSessionId;
     this.agents.delete(id);
     logger.info('SubAgentRegistry', `Unregistered sub-agent: ${id}`);
+    if (creatorSessionId) this.syncCreatorState(creatorSessionId);
+  }
+
+  /** 按「该创建者是否还有活跃子代理」同步 sessionRuntime 的 subagent 事实 */
+  private syncCreatorState(creatorSessionId: string): void {
+    markSessionSubAgent(creatorSessionId, this.hasActiveForCreator(creatorSessionId));
   }
 
   /** 获取所有活跃子代理 ID */

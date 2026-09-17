@@ -32,4 +32,5 @@ module.exports = {
   electronSpinPreloadOut: resolve(project.build.electronSpinPreloadOut),
   electronMonacoPreloadOut: resolve(project.build.electronMonacoPreloadOut),
   electronSidebarPreloadOut: resolve(project.build.electronSidebarPreloadOut),
+  electronShortcutPreloadOut: resolve(project.build.electronShortcutPreloadOut),
 };

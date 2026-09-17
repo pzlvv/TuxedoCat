@@ -19,10 +19,8 @@ export interface UserChoiceOptions {
   showPreview?: boolean;
   previewContent?: string;
   previewTitle?: string;
-  showDiff?: boolean;
   beforeContent?: string;
   afterContent?: string;
-  diffTitle?: string;
   contextBefore?: string[];
   contextAfter?: string[];
 }

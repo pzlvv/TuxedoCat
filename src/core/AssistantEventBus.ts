@@ -10,7 +10,7 @@
  * - CoreEvent / CoreRequest 的 type = 处理器方法名去掉 on 前缀
  * - UiEvent 的 type 是过去式，描述用户已经做完的动作
  *
- * 边界语义（见 DEVELOPMENT.md 第 3.8 节）：
+ * 边界语义（见 DEVELOPMENT.md 第 3.7 节）：
  * - emitToUi 时 onCoreEvents 尚未注册 → 抛错（bootstrap 顺序错误，启动期暴露）
  * - emitToCore / onUiEvent 对某 type 尚无 core 订阅者 → 静默丢弃（合法中间态）
  * - request() 的响应方不存在或响应丢失 → 永久挂起；调用点必须自带超时
@@ -57,7 +57,11 @@ export type CoreEvent =
     }
   | { type: 'aiBegin'; sessionId: string }
   | { type: 'aiEnd'; sessionId: string }
-  | { type: 'clearMessages'; sessionId: string }
+  /**
+   * 整批替换该会话显示的消息（压缩后重建 / 展开归档共用）。
+   * core 只描述「消息列表被替换成了这些」，不做「先清空再逐条补」的两步动作。
+   */
+  | { type: 'messagesReplaced'; sessionId: string; messages: readonly MessageData[] }
   | { type: 'queryBegin'; sessionId: string }
   | { type: 'queryEnd'; sessionId: string }
   | { type: 'titleChanged'; sessionId: string; title: string }
@@ -77,13 +81,29 @@ export type CoreEvent =
    *
    * 与 conversationListChanged 是两条独立的流：
    * - conversationListChanged：磁盘列表变了（落盘 / 改名 / 删除 / 新建）
-   * - sessionRuntimeChanged：运行时状态变了（查询开始结束 / 等用户 / 用户响应）
+   * - sessionRuntimeChanged：运行时状态变了（查询开始结束 / 等用户 / 用户响应 / 压缩开始结束）
    */
   | {
       type: 'sessionRuntimeChanged';
       states: readonly SessionRuntimeState[];
     }
   | { type: 'spinDesignDataChanged' }
+  /**
+   * 消息里出现了新的高亮语言（围栏代码块语言），需要并入 settings.json 的
+   * highlightLanguages 字段，供下次启动预热 Shiki。
+   *
+   * core 只报告事实：字段名 / 去重 / 上限在 `highlightLanguagesMutator`，
+   * 写盘由 UI 侧经 `UIHost.updateSettingsJson` 承担（core 只读不写）。
+   * 只带尚未记录过的语言，避免每次落盘都触发一次磁盘写。
+   */
+  | { type: 'highlightLanguagesUsed'; languages: readonly string[] }
+  /**
+   * 项目对话目录已就绪（目录由 core 创建）。
+   *
+   * core 只报告事实：目录里的 settings.json（记录 workspacePath）由 UI 侧经
+   * `UIHost.ensureProjectSettings` 写（core 只读不写 settings.json）。
+   */
+  | { type: 'projectConversationDirReady'; projectDir: string; workspacePath: string }
   | { type: 'compactBegin'; sessionId: string }
   | {
       type: 'compactEnd';
@@ -116,11 +136,11 @@ export type CoreEvent =
 
 /**
  * 需要 UI 返回结果的请求。
- * 对应 WebViewUI 的两个带返回值的方法（onPreToolCall / requestUserChoice）。
+ * 对应 WebViewUI 的两个带返回值的方法（requestToolPermission / requestUserChoice）。
  */
 export type CoreRequest =
   | {
-      type: 'toolPermission';
+      type: 'toolPermissionRequested';
       sessionId: string;
       toolUseId: string;
       toolName: string;
@@ -132,12 +152,17 @@ export type CoreRequest =
       permResult: PermissionResult;
       /** 展示用参数（路径已展开） */
       displayArgs: Record<string, unknown>;
+      /**
+       * 本次决策实际采用的询问模式（core 已解析会话级覆盖 / settings.json 默认）。
+       * UI 只读展示：仅 manual 模式才打开宿主侧 diff 标签。
+       */
+      agentMode: AgentMode;
     }
   | { type: 'userChoice'; sessionId: string; options: UserChoiceOptions };
 
 /** 请求 → 结果的类型映射（判别联合，字段完整） */
 export type CoreRequestResultMap = {
-  toolPermission: PermissionResult;
+  toolPermissionRequested: PermissionResult;
   userChoice: { index: number; reply?: string };
 };
 
@@ -194,12 +219,11 @@ export type UiEvent =
   | { type: 'conversationOpened'; sessionId: string }
   /**
    * 会话被关闭：释放该会话的运行时内存，磁盘数据不动。
-   * core 收到后调 `sessionIdle.releaseSessionResources(sessionId)`。
+   * core 收到后调 `sessionResources.releaseSessionResources(sessionId)`。
    */
   | { type: 'conversationClosed'; sessionId: string }
   | { type: 'conversationRenamed'; sessionId: string; title: string }
   | { type: 'conversationDeleted'; sessionId: string }
-  | { type: 'conversationCleared'; sessionId: string }
   /**
    * 会话上下文（meta.json 的 context 字段）部分更新。
    * 用 changes 数组而不是可选字段：一次可带多个字段，未列出的字段保持原值。
@@ -238,7 +262,7 @@ export type UiEvent =
  */
 export interface SessionRuntimeState {
   sessionId: string;
-  /** 有活跃查询：引擎在消费消息 / 后台 Bash 任务 / 递归子代理 */
+  /** 会话在忙：有活跃查询（引擎消费 / 后台 Bash 任务 / 递归子代理）或正在压缩上下文 */
   running: boolean;
   /** 正在等待用户操作（ask user / 权限确认） */
   waiting: boolean;
@@ -271,7 +295,7 @@ export interface AssistantEventBus {
    *
    * ```ts
    * const permission = await bus.request({
-   *   type: 'toolPermission', sessionId, toolUseId, toolName, permResult, displayArgs,
+   *   type: 'toolPermissionRequested', sessionId, toolUseId, toolName, permResult, displayArgs,
    * });  // permission: PermissionResult
    * ```
    */

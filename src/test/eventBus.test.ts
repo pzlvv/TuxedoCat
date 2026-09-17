@@ -1,5 +1,5 @@
 /**
- * EventBus 单测（DEVELOPMENT.md 第 13 节，阶段 1.6 随附）：
+ * EventBus 单测（阶段 1.6 随附）：
  * - onCoreEvents / onCoreRequests 注册与分发
  * - 重复注册抛错
  * - emitToUi 未注册处理器抛错
@@ -45,7 +45,7 @@ function buildHandlers(): { handlers: CoreEventHandlers; seen: string[] } {
     toolProgress: (_e: unknown) => { seen.push('toolProgress'); },
     aiBegin: (_e: unknown) => { seen.push('aiBegin'); },
     aiEnd: (_e: unknown) => { seen.push('aiEnd'); },
-    clearMessages: (_e: unknown) => { seen.push('clearMessages'); },
+    messagesReplaced: (_e: unknown) => { seen.push('messagesReplaced'); },
     queryBegin: (_e: unknown) => { seen.push('queryBegin'); },
     queryEnd: (_e: unknown) => { seen.push('queryEnd'); },
     titleChanged: (e: { title: string }) => { seen.push(`titleChanged:${e.title}`); },
@@ -53,6 +53,8 @@ function buildHandlers(): { handlers: CoreEventHandlers; seen: string[] } {
     conversationListChanged: (_e: unknown) => { seen.push('conversationListChanged'); },
     sessionRuntimeChanged: (_e: unknown) => { seen.push('sessionRuntimeChanged'); },
     spinDesignDataChanged: (_e: unknown) => { seen.push('spinDesignDataChanged'); },
+    highlightLanguagesUsed: (_e: unknown) => { seen.push('highlightLanguagesUsed'); },
+    projectConversationDirReady: (_e: unknown) => { seen.push('projectConversationDirReady'); },
     compactBegin: (_e: unknown) => { seen.push('compactBegin'); },
     compactEnd: (_e: unknown) => { seen.push('compactEnd'); },
     commandDispatched: (_e: unknown) => { seen.push('commandDispatched'); },
@@ -74,7 +76,7 @@ async function run(): Promise<void> {
   const off = bus.onCoreEvents(handlers);
 
   bus.onCoreRequests({
-    toolPermission: async () => ({ behavior: 'allow' }),
+    toolPermissionRequested: async () => ({ behavior: 'allow' }),
     userChoice: async () => ({ index: 0 }),
   });
 
@@ -85,7 +87,7 @@ async function run(): Promise<void> {
   // ---- 重复注册抛错 ----
   check('duplicate onCoreEvents throws', throws(() => bus.onCoreEvents(buildHandlers().handlers)));
   check('duplicate onCoreRequests throws', throws(() => bus.onCoreRequests({
-    toolPermission: async () => ({ behavior: 'allow' }),
+    toolPermissionRequested: async () => ({ behavior: 'allow' }),
     userChoice: async () => ({ index: 0 }),
   })));
 
@@ -112,8 +114,8 @@ async function run(): Promise<void> {
   check('unsubscribed UiEvent dropped', received === undefined);
 
   // ---- request 类型对应 ----
-  const p = await handle(bus.request({ type: 'toolPermission', sessionId: 's1', toolUseId: 't1', toolName: 'Bash', permResult: { behavior: 'ask' }, displayArgs: {} }));
-  check('request(toolPermission) returns PermissionResult', (p as { behavior: string }).behavior === 'allow');
+  const p = await handle(bus.request({ type: 'toolPermissionRequested', sessionId: 's1', toolUseId: 't1', toolName: 'Bash', permResult: { behavior: 'ask' }, displayArgs: {}, agentMode: 'manual' }));
+  check('request(toolPermissionRequested) returns PermissionResult', (p as { behavior: string }).behavior === 'allow');
 
   const choice = await handle(bus.request({ type: 'userChoice', sessionId: 's1', options: { toolName: 'Bash', message: 'm', choices: [] } }));
   check('request(userChoice) returns index', (choice as { index: number }).index === 0);

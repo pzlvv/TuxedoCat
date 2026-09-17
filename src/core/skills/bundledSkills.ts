@@ -16,7 +16,6 @@ import type { BundledSkillDefinition, ContentBlock, SkillCommand } from './Types
 import { logger } from '../Logger.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
 import { getCommitSkillDefinition } from './bundled/commit.js';
-import { getClearCommandDefinition } from './bundled/clear.js';
 import { getSpinCommandDefinition } from './bundled/spin.js';
 import { registerBuiltinCommand, checkSkillConflict } from './builtinCommands.js';
 
@@ -205,7 +204,6 @@ function prependBaseDir(
 // 在模块加载时自动注册所有内置 Skill
 (function initBuiltinSkills(): void {
   // 注册内置命令（优先于 Skill）
-  registerBuiltinCommand(getClearCommandDefinition());
   registerBuiltinCommand(getSpinCommandDefinition());
 
   // 注册内置 Skill（与内置命令冲突的 Skill 会被跳过，并记录 WARNING）

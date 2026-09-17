@@ -8,10 +8,10 @@ import './styles/index.css';
 import './styles/icons.css';
 import 'katex/dist/katex.min.css';
 
-// 桌面/内置服务器环境标记：由 __hostInfo 能力声明驱动。
-// 用于在 CSS 层提供深色背景（如 electron-app），不影响 VS Code 扩展。
-if (getHostInfo().kind === 'electron' || getHostInfo().kind === 'server') {
-  document.documentElement.classList.add('electron-app');
+// 独立窗口标记：多视图宿主（Electron / 浏览器端）不继承 VS Code 主题，
+// 需在 CSS 层提供深色背景兜底（避免 BrowserWindow 白闪）；单视图（VS Code 扩展）不加。
+if (getHostInfo().conversationList === 'multi') {
+  document.documentElement.classList.add('standalone-host');
 }
 
 // 移动端视口高度适配（地址栏显隐由 CSS dvh 处理；软键盘遮挡在此兜底）

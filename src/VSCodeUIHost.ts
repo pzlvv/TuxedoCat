@@ -18,6 +18,7 @@ import { MERMAID_PANEL_ID } from './config/project.js';
 import { DocumentManager } from './VSCodeUIHost/documentManager.js';
 import type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent } from './host/ui/types.js';
 import { isImageFile } from './host/imageFiles.js';
+import { writeProjectSettings, writeSettingsJson } from './host/settingsFile.js';
 
 export type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent };
 
@@ -25,9 +26,6 @@ export class VSCodeUIHost implements UIHost {
   private webviewView: vscode.WebviewView | undefined;
   private extensionUri: vscode.Uri = vscode.Uri.file('');
   private _windowStateRegistered: boolean = false;
-  /** 活跃会话判定（由 WebViewUI 注入；syncAbortState 用） */
-  isActiveQueryInScope: (sessionId: string) => boolean = () => false;
-
   // VS Code 专有：虚拟文档管理（预览句柄由 DocumentManager 持有）
   private readonly documentManager: DocumentManager;
 
@@ -184,24 +182,23 @@ export class VSCodeUIHost implements UIHost {
     }
   }
 
-  syncAbortState(isActive: (sessionId: string) => boolean): void {
-    // VS Code：只处理当前活动会话；无活动会话时下发 disable。
-    // 活跃会话由宿主 bootstrap 注入（读 webviewMessageHandler 维护的 UI 状态）。
-    const getActive = this.getActiveSessionId;
-    const activeSessionId = getActive();
-    this.webviewView?.webview.postMessage({
-      type: 'setEnableAbort',
-      enable: activeSessionId ? isActive(activeSessionId) : false,
-    });
-  }
-
   /** 当前活跃会话读取器（bootstrap 注入，读 WebViewUI 维护的 UI 状态） */
   getActiveSessionId: () => string | undefined = () => undefined;
 
-  // VS Code 只有一个 webview，没有可关闭的会话视图：
-  // HostInfo.closeConversation === false，webview 也不渲染关闭按钮 → 空实现
+  // VS Code 是单视图，只有一个 webview，没有可关闭的会话视图：
+  // webview 侧由 canCloseConversation(hostInfo) 判定为 false，不渲染关闭按钮 → 空实现
   async closeConversationView(): Promise<void> {
     /* 空实现 */
+  }
+
+  // settings.json 的写入口（core 只读不写；两个宿主共用同一份实现）
+  updateSettingsJson(mutator: (cfg: Record<string, any>) => void | Record<string, any>): Promise<void> {
+    return writeSettingsJson(mutator);
+  }
+
+  // 项目对话目录的 settings.json（记录 workspacePath）
+  ensureProjectSettings(projectDir: string, workspacePath: string): Promise<void> {
+    return writeProjectSettings(projectDir, workspacePath);
   }
 
   // ===================== VS Code 专有：Mermaid 预览面板 =====================
@@ -242,10 +239,5 @@ export class VSCodeUIHost implements UIHost {
       this.log(`[VSCodeUIHost] Mermaid preview error: ${err}`);
       panel.webview.html = getMermaidErrorHtml(code, String(err));
     }
-  }
-
-  /** 供 webviewMessageHandler 的 showVirtualDocument 路径回推（浏览器端页内预览） */
-  getDocumentManager(): DocumentManager {
-    return this.documentManager;
   }
 }

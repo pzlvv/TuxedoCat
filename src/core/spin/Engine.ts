@@ -183,7 +183,7 @@ export function validateSpinDesign(config: unknown): string | null {
  * 读到空文件或半截 JSON，导致 Spin Design 打开时节点内容被误判为空。
  */
 export async function writeSpinJson(cwd: string, config: SpinDesign): Promise<void> {
-  // 确保项目对话目录存在，并写入 settings.json（记录 workspacePath）
+  // 确保项目对话目录存在（目录由 core 建；其中的 settings.json 由宿主写）
   await ensureProjectConversationDir(cwd);
   const content = JSON.stringify(config, null, 2);
   const spinPath = getSpinJsonPath(cwd);

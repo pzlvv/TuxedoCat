@@ -104,11 +104,6 @@ export const zhDict: Record<string, string> = {
   'llmConfig.languageLabel': '界面语言',
   'llmConfig.languageAuto': '自动',
   'llmConfig.languageHint': '界面显示语言；自动将跟随 VS Code / 系统语言',
-  'llmConfig.shortcutLabel': '唤醒快捷键',
-  'llmConfig.shortcutChange': '点击修改',
-  'llmConfig.shortcutRecording': '请按下快捷键...',
-  'llmConfig.shortcutHint': 'Electron 桌面端最小化到系统托盘后，使用该快捷键唤醒窗口；点击上方按钮后按下新的组合键',
-  'llmConfig.shortcutInvalid': '快捷键无效，请重新设置',
   'llmConfig.sectionConversationSpace': '对话空间管理',
   'llmConfig.conversationSpaceHint': '统计各对话空间的大小，可清空其中的对话数据',
   'llmConfig.conversationSpaceStats': '统计',
@@ -309,14 +304,4 @@ export const zhDict: Record<string, string> = {
   'handlers.minutesAgo': '{count} 分钟前',
   'handlers.hoursAgo': '{count} 小时前',
   'handlers.daysAgo': '{count} 天前',
-
-  /* ── PreviewOverlay.tsx（浏览器端页内查看） ──────────────── */
-  'preview.title': '预览',
-  'preview.close': '关闭（Esc）',
-  'preview.readError': '读取失败',
-  'preview.truncated': '内容过大，仅显示前 {count} 行',
-  'preview.mermaidHint': '浏览器端暂不支持 Mermaid 渲染，以下为源码',
-  'preview.diffSplit': '对比',
-  'preview.diffAfter': '修改后',
-  'preview.diffBefore': '修改前',
 };

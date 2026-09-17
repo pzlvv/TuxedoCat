@@ -18,7 +18,7 @@ export interface CommandContext {
   sessionId: string
   /** 工作目录 */
   cwd: string
-  /** 命令名称（如 'clear', 'spin'），由 dispatch 自动填充 */
+  /** 命令名称（如 'spin'），由 dispatch 自动填充 */
   commandName?: string
 }
 
@@ -42,7 +42,7 @@ export interface BuiltinCommandDefinition {
 
   /**
    * 执行回调
-   * @param args 命令参数（如 /clear all 中的 "all"）
+   * @param args 命令参数（如 /spin design 中的 "design"）
    * @param context 执行上下文
    * @returns 执行结果描述（可选，用于通知用户）
    */

@@ -8,7 +8,7 @@ import { UserChoiceManager } from './host/ui/userChoice.js';
 import { buildDiffUris } from './VSCodeUIHost/diffUris.js';
 import { setLogCallback } from './core/Logger.js';
 import { initializeHistory } from './core/Integration.js';
-import { startSessionIdleMonitor, stopSessionIdleMonitor } from './core/sessionIdle.js';
+import { setSessionWaitingForUserProvider } from './core/sessionResources.js';
 import {
   readActiveProviderModelContextSync,
   readUiLanguageSync,
@@ -32,6 +32,9 @@ import {
   PRODUCT_NAME,
   VIEW_ID,
 } from './config/project.js';
+
+/** 当前 ConversationManager（空闲巡检的计时 owner），供 deactivate 停止巡检 */
+let conversationManager: SingleWebViewConversationManager | undefined;
 
 class VirtualDocumentProvider implements vscode.TextDocumentContentProvider {
   private contentMap = new Map<string, string>();
@@ -70,36 +73,42 @@ export function activate(context: vscode.ExtensionContext) {
   setGlobalEventBus(bus);
   initializeCoreEvents(bus);
   // 宿主实现与共享 UI 一次成型；托盘/侧栏是 Electron 的事，VS Code 用空 manager
+  const conversations = new SingleWebViewConversationManager(host);
+  conversationManager = conversations;
   const ui = WebViewUI.create(
     host,
     bus,
     new VSCodeSpinDesign(host),
-    new SingleWebViewConversationManager(host),
+    conversations,
     {
       log: (...args: unknown[]) => {
         outputChannel.appendLine(args.map(a => String(a)).join(' '));
       },
       createUserChoiceManager: (post, closePreview, uiPort) =>
-        new UserChoiceManager<vscode.Uri>({
+        new UserChoiceManager({
           outputChannel,
           postToWebview: post,
           closePreview,
           getActiveSessionIdInternal: () => uiPort.getActiveSessionId(),
-          onShowDiffInVirtualDocumentCallback: undefined,
-          buildDiffUris: (title) => buildDiffUris(title),
         }),
     },
   );
   host.setExtensionUri(context.extensionUri);
   host.registerWindowStateListener(context);
-  // abort 按钮判定与活跃会话读取（bootstrap 注入）
-  host.isActiveQueryInScope = (sid) => ui.hasActiveQueryInScope(sid);
+  // 活跃会话读取（bootstrap 注入）；abort 按钮状态由 webview 从 core 的
+  // sessionRuntimeStates 自行推导，不再由宿主推送
   host.getActiveSessionId = () => ui.getActiveSessionId();
 
   initializeHistory(ui);
 
-  // 空闲对话自动关闭：非激活对话 2 小时无活动后释放其运行时资源
-  startSessionIdleMonitor();
+  // 空闲对话自动关闭（VS Code 专属：单 webview，关闭只是卸内存）。
+  // 计时 owner 是 SingleWebViewConversationManager，core 不参与计时；
+  // 非激活对话 2 小时无活动后走 WebViewUI.closeConversation（core 卸内存 + 宿主销毁视图）。
+  // core 的「是否在忙」判定需要「等待用户」事实（ask user / 权限确认）
+  setSessionWaitingForUserProvider((sessionId) => ui.hasPendingUserChoice(sessionId));
+  conversations.setActiveSessionProvider(() => ui.getActiveSessionId() ?? null);
+  conversations.setIdleCloseHandler((sessionId) => ui.closeConversation(sessionId));
+  conversations.startIdleMonitor();
 
   ensureConfigDirs().catch((error: Error) => {
     console.error('[Extension] Failed to initialize config directories:', error);
@@ -358,7 +367,7 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
     filePath: string,
     selectedLines: { start: number; end: number }
   ): Promise<void> {
-    // 「当前活跃会话」由 UI 自己维护（第 15.6 节）；
+    // 「当前活跃会话」由 UI 自己维护（第 12.7 节）；
     // 写 meta.json 的动作翻译成 UiEvent.conversationContextUpdated 走总线
     const activeSessionId = this.ui.getActiveSessionId();
     if (!activeSessionId) {
@@ -417,8 +426,8 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
 }
 
 export async function deactivate(): Promise<void> {
-  // 停止空闲巡检定时器
-  stopSessionIdleMonitor();
+  // 停止空闲巡检定时器（计时 owner 是 ConversationManager）
+  conversationManager?.stopIdleMonitor();
   // 停用扩展时结束所有 MCP 子进程，避免留下孤儿进程
   try {
     const { getMCPHost } = await import('./core/mcp/MCPHost.js');

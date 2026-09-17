@@ -2,8 +2,6 @@
  * ElectronUIHost - Electron 侧的对话 webview 宿主能力实现（implements UIHost）
  *
  * 由原 ElectronUI 的宿主部分（sendToRenderer / 预览窗口 / 对话框）整体迁入。
- * 它同时服务 kind: 'electron' 与 kind: 'server'
- * （浏览器端复用 ChatViewManager.registerExternalClient）。
  *
  * 本文件允许 import electron（宿主实现层是唯一允许 import 宿主 API 的地方）。
  */
@@ -18,6 +16,7 @@ import type { UIHost } from '../src/host/UIHost.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
 import { isImageFile } from '../src/host/imageFiles.js';
+import { writeProjectSettings, writeSettingsJson } from '../src/host/settingsFile.js';
 
 /** 项目根目录（dist-electron 的上一级，与 main.ts 的 APP_ROOT 一致） */
 const APP_ROOT = path.resolve(__dirname, '..');
@@ -28,8 +27,8 @@ export class ElectronUIHost implements UIHost {
   private chatViews: ChatViewManager | undefined;
   /** 当前工作区路径（由 main 进程设置，用户通过菜单选择） */
   private workspacePath: string | undefined;
-  /** 已打开的辅助预览窗口（用于 closePreview 统一关闭） */
-  private previewWindows: BrowserWindowCtor[] = [];
+  /** 复用的 Mermaid 预览窗口（与 VSCodeUIHost 的单面板语义一致） */
+  private mermaidWindow: BrowserWindowCtor | undefined;
 
   /** 内部日志实现（console 前缀） */
   private writeLog(...args: unknown[]): void {
@@ -90,7 +89,9 @@ export class ElectronUIHost implements UIHost {
   }
 
   getLocale(): string {
-    return app.getLocale().startsWith('zh') ? 'zh' : 'en';
+    // 与 VS Code 的 vscode.env.language 对齐：返回原始 BCP-47 标签（如 zh-CN / en-US），
+    // 不做归一化。消费方（getSpinDesignHtml）按 startsWith('zh') 判断是否中文。
+    return app.getLocale();
   }
 
   async openFile(filePath: string, target: import('../src/host/UIHost.js').LineSelection | null): Promise<void> {
@@ -116,24 +117,26 @@ export class ElectronUIHost implements UIHost {
     });
   }
 
-  // 空实现：预览能力已经在 webview 里（PreviewOverlay 支持 text/image/diff/mermaid），
-  // Electron 不再重复开 Monaco diff 窗口（DEVELOPMENT.md 第 11.1 节第 9 项）
+  /**
+   * 空实现：Electron 没有「原生 diff」这个界面。
+   * Edit / Write 的改动只在 webview 的工具卡片里渲染（第 7.2 节），
+   * 桌面端不再重复开 Monaco diff 窗口（DEVELOPMENT.md 第 11.1 节 UIHost 对照表）。
+   */
   async showDiff(): Promise<void> {
-    /* 空实现：预览归 webview */
+    /* 空实现：diff 归 webview */
   }
 
   async openMermaidPreview(code: string): Promise<void> {
     this.openMermaidWindow(code);
   }
 
-  /** 关闭全部辅助预览窗口 */
+  /**
+   * 空实现：`closePreview` 关的是**宿主侧**预览（VS Code 是虚拟文档预览标签）。
+   * Electron 的预览是独立的 Monaco / Mermaid 窗口，不属于「宿主预览」这个概念
+   * ——它们由用户自行关闭，不随选择框响应等 UI 动作被连带关掉。
+   */
   closePreview(): void {
-    for (const win of this.previewWindows) {
-      if (!win.isDestroyed()) {
-        win.close();
-      }
-    }
-    this.previewWindows = [];
+    /* 空实现：Electron 没有宿主侧预览 */
   }
 
   async openExternalUrl(url: string): Promise<void> {
@@ -168,32 +171,22 @@ export class ElectronUIHost implements UIHost {
     }
   }
 
-  syncAbortState(isActive: (sessionId: string) => boolean): void {
-    if (!this.chatViews) return;
-    // Electron：遍历已打开聊天视图逐会话下发（只发给该会话自己的视图，避免跨会话覆盖）
-    for (const sessionId of this.chatViews.getLoadedSessionIds()) {
-      this.chatViews.sendTo(sessionId, {
-        type: 'setEnableAbort',
-        sessionId,
-        enable: isActive(sessionId),
-      });
-    }
-  }
-
   /** 只销毁视图；abort 与 MCP 释放归 core（conversationClosed / MCPHost.onSessionClosed） */
   async closeConversationView(sessionId: string): Promise<void> {
     this.chatViews?.closeView(sessionId);
   }
 
-  // ===================== Electron 专有：预览窗口 =====================
-
-  /** 注册辅助窗口并跟踪，便于统一关闭 */
-  trackPreviewWindow(win: BrowserWindowCtor): void {
-    this.previewWindows.push(win);
-    win.on('closed', () => {
-      this.previewWindows = this.previewWindows.filter((w) => w !== win);
-    });
+  // settings.json 的写入口（core 只读不写；两个宿主共用同一份实现）
+  updateSettingsJson(mutator: (cfg: Record<string, any>) => void | Record<string, any>): Promise<void> {
+    return writeSettingsJson(mutator);
   }
+
+  // 项目对话目录的 settings.json（记录 workspacePath）
+  ensureProjectSettings(projectDir: string, workspacePath: string): Promise<void> {
+    return writeProjectSettings(projectDir, workspacePath);
+  }
+
+  // ===================== Electron 专有：预览窗口 =====================
 
   /**
    * 打开图片预览窗口。
@@ -211,7 +204,6 @@ export class ElectronUIHost implements UIHost {
       backgroundColor: nativeTheme.shouldUseDarkColors ? '#1e1e1e' : '#ffffff',
       webPreferences: { sandbox: true },
     });
-    this.trackPreviewWindow(win);
 
     const url = pathToFileURL(filePath).toString();
     win.loadURL(url).catch((err) => {
@@ -221,16 +213,14 @@ export class ElectronUIHost implements UIHost {
 
   /**
    * 打开 Monaco 编辑器窗口并发送初始化数据
-   * view 模式由主进程读取文件内容；diff/content 模式直接传入内容
+   * view 模式由主进程读取文件内容；content 模式直接传入内容
    */
   private async openMonacoWindow(init: {
-    mode: 'view' | 'diff' | 'content';
+    mode: 'view' | 'content';
     filePath?: string;
     selectedLines?: { start: number; end: number };
     content?: string;
     title?: string;
-    beforeContent?: string;
-    afterContent?: string;
   }): Promise<void> {
     const win = new BrowserWindowCtor({
       width: 1080,
@@ -246,7 +236,6 @@ export class ElectronUIHost implements UIHost {
         preload: path.join(__dirname, 'monacoPreload.cjs'),
       },
     });
-    this.trackPreviewWindow(win);
 
     const indexPath = path.join(APP_ROOT, 'dist', 'monaco', 'index.html');
     if (!fs.existsSync(indexPath)) {
@@ -277,43 +266,44 @@ export class ElectronUIHost implements UIHost {
     win.webContents.send('monaco-init', data);
   }
 
-  /** Mermaid 预览窗口 */
+  /**
+   * Mermaid 预览窗口：复用同一个窗口（与 VSCodeUIHost 的单面板语义一致），
+   * 避免同一会话多次预览堆出一串窗口。
+   */
   private openMermaidWindow(code: string): void {
-    const win = new BrowserWindowCtor({
-      width: 1000,
-      height: 700,
-      title: 'Mermaid Preview',
-      icon: path.join(APP_ROOT, 'assets', 'logo.png'),
-      autoHideMenuBar: true,
-      backgroundColor: '#1a1a1f',
-      webPreferences: { sandbox: true },
-    });
-    this.trackPreviewWindow(win);
+    let win = this.mermaidWindow;
+    if (!win || win.isDestroyed()) {
+      win = new BrowserWindowCtor({
+        width: 1000,
+        height: 700,
+        title: 'Mermaid Preview',
+        icon: path.join(APP_ROOT, 'assets', 'logo.png'),
+        autoHideMenuBar: true,
+        backgroundColor: '#1a1a1f',
+        webPreferences: { sandbox: true },
+      });
+      this.mermaidWindow = win;
+      win.on('closed', () => {
+        if (this.mermaidWindow === win) this.mermaidWindow = undefined;
+      });
+    } else {
+      win.focus();
+    }
+
     const isDark = nativeTheme.shouldUseDarkColors;
     // 优先使用 dist/webview/assets/mermaid.min.js（与 VS Code 版本一致）
-    const appPath = APP_ROOT;
     const mermaidCandidates = [
-      path.join(appPath, 'dist', 'webview', 'assets', 'mermaid.min.js'),
-      path.join(appPath, 'node_modules', 'mermaid', 'dist', 'mermaid.min.js'),
+      path.join(APP_ROOT, 'dist', 'webview', 'assets', 'mermaid.min.js'),
+      path.join(APP_ROOT, 'node_modules', 'mermaid', 'dist', 'mermaid.min.js'),
     ];
     const mermaidSrc = mermaidCandidates.find((p) => fs.existsSync(p));
     try {
-      if (mermaidSrc) {
-        win.loadFile(mermaidSrc).catch(() => undefined);
-        win.webContents.once('did-finish-load', () => {
-          win.webContents.executeJavaScript(`window.__mermaidLoaded = true;`).catch(() => undefined);
-        });
-        // 先加载本地 mermaid.min.js 再注入预览页会导致时序复杂，直接加载预览页并从 file:// 引用
-        win.loadURL(
-          'data:text/html;charset=utf-8,' +
-          encodeURIComponent(getMermaidPreviewHtml(code, `file:///${mermaidSrc.replace(/\\/g, '/')}`, isDark))
-        );
-      } else {
-        win.loadURL(
-          'data:text/html;charset=utf-8,' +
-          encodeURIComponent(getMermaidPreviewHtml(code, '', isDark))
-        );
-      }
+      // 直接加载预览页并从 file:// 引用本地 mermaid.min.js
+      const mermaidUri = mermaidSrc ? `file:///${mermaidSrc.replace(/\\/g, '/')}` : '';
+      win.loadURL(
+        'data:text/html;charset=utf-8,' +
+        encodeURIComponent(getMermaidPreviewHtml(code, mermaidUri, isDark))
+      );
     } catch (err) {
       win.loadURL(
         'data:text/html;charset=utf-8,' +

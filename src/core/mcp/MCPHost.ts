@@ -10,7 +10,7 @@
  *
  * 解法：把「会话生命周期 → MCP 引用」的映射收口到 MCPHost，驱动信号全部来自 core：
  * - 会话打开：Integration.createEngine / restoreConversationEngine
- * - 会话关闭：sessionIdle.releaseSessionResources / history.deleteConversation
+ * - 会话关闭：sessionResources.releaseSessionResources / history.deleteConversation
  * - 启用列表变化：UiEvent.mcpEnabledChanged 的 core 侧处理
  * - 宿主退出：bootstrap
  *
@@ -49,27 +49,6 @@ class DefaultMCPHost {
       const { getMcpManager } = await import('./Manager.js');
       await getMcpManager().syncSession(sessionId);
     });
-  }
-
-  /**
-   * 浏览器客户端（kind: 'server'）断开 → 该会话的浏览器侧持有者消失。
-   * 仅当没有任何会话内存持有（引擎池为空）时才真正 release；
-   * 空闲回收 / 会话关闭路径兜底。
-   */
-  async onExternalClientDetached(sessionId: string | undefined): Promise<void> {
-    if (!sessionId || sessionId === 'undefined') return;
-    // 会话仍开着（引擎在池内 / 引擎仍在运行）时不释放：引用跟会话走
-    try {
-      const { getSessionEngine } = await import('../QueryEngine.js');
-      const engine = getSessionEngine(sessionId);
-      if (engine) {
-        logger.info('MCPHost', `External client detached but session ${sessionId} is open; keep MCP refs`);
-        return;
-      }
-    } catch {
-      // 引擎池不可用时按「无内存持有」处理，走释放
-    }
-    await this.onSessionClosed(sessionId);
   }
 
   /** 启动时清理没有任何会话引用的残留进程 */

@@ -47,7 +47,7 @@
 import { join } from 'path';
 import * as fs from 'fs/promises';
 import { logger } from '../Logger.js';
-import { getConfigHomeDir, readSettingsJson, updateSettingsJson, getProjectRoot, hasProjectRoot } from '../history/Config.js';
+import { getConfigHomeDir, readSettingsJson, getProjectRoot, hasProjectRoot } from '../history/Config.js';
 import { getMetadataPath, updateConversationContext } from '../history/Conversation.js';
 import type { McpServerInfo } from '../webviewTypes.js';
 
@@ -168,14 +168,18 @@ export function clearSessionMcpOverride(sessionId: string): void {
 }
 
 /**
- * 直接覆盖全局默认启用列表（设置面板一次性保存多个勾选项时用）。
+ * 构造「把全局默认启用列表覆盖为 names」的 settings.json 修改器
+ * （设置面板一次性保存多个勾选项时用）。
+ *
+ * core 只描述**怎么改**，**写盘由宿主承担**（`UIHost.updateSettingsJson`，
+ * 见第 2 节规则 9）。
  */
-export async function setDefaultEnabledMcps(names: string[]): Promise<void> {
+export function mcpDefaultsMutator(names: readonly string[]): (cfg: Record<string, any>) => void {
   const normalized = Array.from(new Set(names.filter((n): n is string => typeof n === 'string' && !!n)));
-  await updateSettingsJson((cfg) => {
+  return (cfg) => {
     if (!isPlainObject(cfg.mcp)) cfg.mcp = {};
     cfg.mcp.enabled = normalized;
-  });
+  };
 }
 
 /** 把任意 command 值规范化为字符串数组（兼容 string / string[]） */

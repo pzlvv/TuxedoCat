@@ -17,7 +17,6 @@ import { getProjectRoot } from './history/Config.js';
 import { sessionQueue } from './SessionQueue.js';
 import { userChoiceQueue } from './UserChoiceQueue.js';
 import { buildConversationTitle, buildUserContent, extractUserContent } from './utils/contentBlocks.js';
-import { noteSessionActivity } from './sessionIdle.js';
 import { isCompacting, isPendingCompact, markPendingCompact, unmarkPendingCompact } from './compact/state.js';
 
 /**
@@ -44,25 +43,12 @@ function emitToUi(event: CoreEvent): void {
 }
 
 /**
- * 中止当前查询
+ * 中止当前查询 / 该会话的整棵工作树
  * @param sessionId - 可选，指定要中止的会话 ID；不指定则中止 currentQueryEngine
  */
 export function abortCurrentQuery(sessionId?: string): void {
   if (sessionId) {
-    const engine = getSessionEngine(sessionId);
-    if (engine) {
-      engine.interrupt();
-    } else {
-      logger.warn('Integration', `No query engine found for session ${sessionId} to abort`);
-      // 引擎可能尚未创建/已释放，但会话仍可能有后台 Bash 任务：兜底中止并丢弃结果。
-      void import('./tools/bash/LocalShellTask.js')
-        .then(({ abortBackgroundTasksForSession }) => {
-          abortBackgroundTasksForSession(sessionId);
-        })
-        .catch((err: unknown) => {
-          logger.warn('Integration', `Failed to abort background tasks for session ${sessionId}: ${err}`);
-        });
-    }
+    void abortSessionScope(sessionId, new Set<string>());
     return;
   }
   if (currentQueryEngine) {
@@ -70,6 +56,43 @@ export function abortCurrentQuery(sessionId?: string): void {
     currentQueryEngine = null;
   } else {
     logger.warn('Integration', 'No query engine to abort');
+  }
+}
+
+/**
+ * 中止一个会话及其递归子代理的运行中工作。
+ *
+ * abort 按钮的可用性是「会话非空闲」（见 `isSessionBusy`），而不是「引擎在消费」——
+ * 所以这里必须覆盖引擎已经不在跑、但后台 Bash 任务 / 子代理还在的情况：
+ * - 引擎在池里 → `engine.interrupt()`（内部已递归中止子对话的后台 Bash 与子代理）
+ * - 引擎已释放 → 兜底中止该会话的后台 Bash 任务
+ * 两条路径都走一遍，任一侧有残留工作都能被立刻停掉（幂等）。
+ */
+async function abortSessionScope(sessionId: string, visited: Set<string>): Promise<void> {
+  if (!sessionId || visited.has(sessionId)) return;
+  visited.add(sessionId);
+
+  const engine = getSessionEngine(sessionId);
+  if (engine) {
+    engine.interrupt();
+  } else {
+    logger.warn('Integration', `No query engine found for session ${sessionId} to abort; aborting background tasks`);
+    try {
+      const { abortBackgroundTasksForSession } = await import('./tools/bash/LocalShellTask.js');
+      abortBackgroundTasksForSession(sessionId);
+    } catch (err: unknown) {
+      logger.warn('Integration', `Failed to abort background tasks for session ${sessionId}: ${err}`);
+    }
+  }
+
+  // 递归子代理：父引擎还在时 interrupt() 已覆盖，这里兜底「父引擎已释放但子代理还在跑」的情况
+  try {
+    const { subAgentRegistry } = await import('./tools/agent/SubAgentRegistry.js');
+    for (const childId of subAgentRegistry.listForCreator(sessionId)) {
+      await abortSessionScope(childId, visited);
+    }
+  } catch (err: unknown) {
+    logger.warn('Integration', `Failed to abort sub-agents for session ${sessionId}: ${err}`);
   }
 }
 
@@ -206,8 +229,7 @@ export function createEngine(sessionId: string, title: string, role?: string): Q
   if (existing) {
     return existing;
   }
-  // 会话被创建/打开：刷新空闲关闭计时；MCP 引用按该会话启用列表建立（幂等）
-  noteSessionActivity(sessionId);
+  // 会话被创建/打开：MCP 引用按该会话启用列表建立（幂等）
   void getMCPHost().onSessionOpened(sessionId).catch((err: unknown) => {
     logger.warn('Integration', `MCP onSessionOpened failed: ${err}`);
   });
@@ -275,10 +297,8 @@ export async function requestUserChoice(
     showPreview: permResult.showPreview as boolean | undefined,
     previewContent: permResult.previewContent as string | undefined,
     previewTitle: permResult.previewTitle as string | undefined,
-    showDiff: permResult.showDiff as boolean | undefined,
     beforeContent: permResult.beforeContent as string | undefined,
     afterContent: permResult.afterContent as string | undefined,
-    diffTitle: permResult.diffTitle as string | undefined,
     contextBefore: permResult.contextBefore as string[] | undefined,
     contextAfter: permResult.contextAfter as string[] | undefined,
   };
@@ -304,8 +324,7 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
   if (getSessionEngine(sessionID)) {
     return;
   }
-  // 会话被打开（加载历史 / 恢复引擎）：刷新空闲关闭计时；MCP 引用建立（幂等）
-  noteSessionActivity(sessionID);
+  // 会话被打开（加载历史 / 恢复引擎）：MCP 引用建立（幂等）
   void getMCPHost().onSessionOpened(sessionID).catch((err: unknown) => {
     logger.warn('Integration', `MCP onSessionOpened failed: ${err}`);
   });
@@ -436,9 +455,6 @@ export async function* sendMessage(
   sessionId: string,
   fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean; thinkingMode?: 'off' | 'low' | 'high' | 'max'; webSearch?: boolean; model?: string; reminder?: string; upstreamSessionId?: string; upstreamHostname?: string; upstreamWorkspace?: string; promptPreset?: PromptPresetId; images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }> },
 ): AsyncGenerator<Message, void, unknown> {
-  // 用户主动发消息：刷新空闲关闭计时（该会话进入工作状态，不会被自动关闭）
-  noteSessionActivity(sessionId);
-
   // 创建用户消息（需要在创建 QueryEngine 之前，因为需要传入初始消息）
   const fullPrompt = fileInfo?.reminder ? prompt + '\n\n' + fileInfo.reminder : prompt;
   const userContent = buildUserContent(fullPrompt, fileInfo?.images);
@@ -587,7 +603,7 @@ export async function* sendMessage(
     engine.thinkingModeOverride = fileInfo.thinkingMode;
   }
 
-  // 设置会话关联的提示词预设（meta.json 持久化由 VSCodeUI 的 setPromptMode 路径负责）
+  // 设置会话关联的提示词预设（meta.json 持久化由 UiEvent.promptModeChanged 的 core 侧处理负责）
   if (fileInfo?.promptPreset !== undefined) {
     engine.setPromptPreset(fileInfo.promptPreset);
   }
@@ -720,15 +736,15 @@ export async function requestCompact(sessionId: string): Promise<void> {
     return;
   }
 
-  // 非空闲判定与 sessionIdle.isSessionBusy 保持一致：
-  // consumer 运行中，或仍有后台任务 / 子代理（engine.isIdle() 为 false）时不算空闲。
-  let busy = engine.isConsumerRunning;
-  if (!busy) {
-    try {
-      busy = !(await engine.isIdle());
-    } catch {
-      busy = false;
-    }
+  // 非空闲判定走 sessionResources.isSessionBusy（唯一入口）：
+  // 消费循环 / 后台任务 / 子代理 / 压缩 / 等用户确认任一是真，都不能就地压缩
+  // （压缩会整体替换 mutableMessages，与运行中的查询并发会互相覆盖）。
+  let busy = false;
+  try {
+    const { isSessionBusy } = await import('./sessionResources.js');
+    busy = await isSessionBusy(sessionId);
+  } catch {
+    busy = false;
   }
   if (busy) {
     if (!isPendingCompact(sessionId)) {

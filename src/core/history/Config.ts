@@ -5,9 +5,10 @@
 import { join } from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';
-import { mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { mkdirSync, readFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { logger } from '../Logger.js';
+import { requireEventBus } from '../AssistantEventBus.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
 import { DEFAULT_WAKE_SHORTCUT, normalizeAccelerator } from '../utils/shortcut.js';
 import type { ModelTokenLimits } from '../utils/modelConfig.js';
@@ -52,23 +53,18 @@ export function getProjectConversationDir(projectPath: string): string {
 }
 
 /**
- * 获取项目对话目录中的 settings.json 路径
- * @param projectPath - 项目路径
- */
-export function getProjectSettingsPath(projectPath: string): string {
-  return join(getProjectConversationDir(projectPath), 'settings.json');
-}
-
-/**
  * 已确保存在 settings.json 的项目对话目录缓存
  * 避免每次 appendMessage 都重复读 settings.json
  */
 const ensuredProjectDirs = new Set<string>();
 
 /**
- * 确保项目对话目录存在，并在其中写入/更新 settings.json。
+ * 确保项目对话目录存在，并上报「目录已就绪」。
  * settings.json 用于记录该编码目录对应的完整 workspacePath，
  * 便于从 conversations 下的子目录反查原始项目路径。
+ *
+ * 目录本身由 core 创建（core 自己的会话数据）；**settings.json 的写归宿主**
+ * （`UIHost.ensureProjectSettings`，见第 2 节规则 9），这里只上报事实。
  */
 export async function ensureProjectConversationDir(projectPath: string): Promise<string> {
   const projectDir = getProjectConversationDir(projectPath);
@@ -76,7 +72,7 @@ export async function ensureProjectConversationDir(projectPath: string): Promise
     return projectDir;
   }
   await fs.mkdir(projectDir, { recursive: true });
-  await writeProjectSettings(projectDir, projectPath);
+  notifyProjectConversationDirReady(projectDir, projectPath);
   ensuredProjectDirs.add(projectDir);
   return projectDir;
 }
@@ -88,48 +84,19 @@ export function ensureProjectConversationDirSync(projectPath: string): string {
   const projectDir = getProjectConversationDir(projectPath);
   if (!ensuredProjectDirs.has(projectDir)) {
     mkdirSync(projectDir, { recursive: true });
-    writeProjectSettingsSync(projectDir, projectPath);
+    notifyProjectConversationDirReady(projectDir, projectPath);
     ensuredProjectDirs.add(projectDir);
   }
   return projectDir;
 }
 
-async function writeProjectSettings(projectDir: string, workspacePath: string): Promise<void> {
-  const settingsPath = join(projectDir, 'settings.json');
-  let settings: Record<string, unknown> = {};
+/** 上报「项目对话目录已就绪」：settings.json 由宿主写（core 只读不写） */
+function notifyProjectConversationDirReady(projectDir: string, workspacePath: string): void {
   try {
-    const content = await fs.readFile(settingsPath, 'utf8');
-    const parsed = JSON.parse(content);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      settings = parsed as Record<string, unknown>;
-      if (settings.workspacePath === workspacePath) {
-        return;
-      }
-    }
-  } catch {
-    // 文件不存在或解析失败，按空对象重建
+    requireEventBus().emitToUi({ type: 'projectConversationDirReady', projectDir, workspacePath });
+  } catch (error) {
+    logger.error('Config', `Failed to report project conversation dir ${projectDir}: ${error}`);
   }
-  settings.workspacePath = workspacePath;
-  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
-}
-
-function writeProjectSettingsSync(projectDir: string, workspacePath: string): void {
-  const settingsPath = join(projectDir, 'settings.json');
-  let settings: Record<string, unknown> = {};
-  try {
-    const content = readFileSync(settingsPath, 'utf8');
-    const parsed = JSON.parse(content);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      settings = parsed as Record<string, unknown>;
-      if (settings.workspacePath === workspacePath) {
-        return;
-      }
-    }
-  } catch {
-    // 文件不存在或解析失败，按空对象重建
-  }
-  settings.workspacePath = workspacePath;
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
 }
 
 /**
@@ -146,7 +113,8 @@ function decodeProjectDirName(dirName: string): string | null {
 }
 
 /**
- * 为 conversations 下已存在的旧项目目录补写 settings.json
+ * 为 conversations 下已存在的旧项目目录补上报一次「目录已就绪」，
+ * 让宿主补写其中的 settings.json（core 只读不写）
  */
 async function backfillProjectSettings(): Promise<void> {
   let entries;
@@ -189,7 +157,7 @@ export async function ensureConfigDirs(): Promise<void> {
     throw error;
   }
 
-  // 为已存在的旧项目目录补写 settings.json（记录 workspacePath）
+  // 为已存在的旧项目目录补上报一次（目录清单 settings.json 由宿主写）
   await backfillProjectSettings();
 }
 
@@ -302,71 +270,6 @@ export async function readSettingsJson(): Promise<Record<string, any>> {
 }
 
 /**
- * settings.json 写操作串行队列
- * 防止多个写入口（handleSetModel、handleSaveLLMConfig、saveApiKeyToSettings 等）
- * 并发"读-改-写"导致文件损坏或字段丢失（丢失更新）。
- */
-let settingsWriteChain: Promise<void> = Promise.resolve();
-
-/**
- * 串行化执行对 ~/<CONFIG_DIR_NAME>/settings.json 的读-改-写操作
- *
- * 所有写操作按调用顺序排队执行（Promise 链），避免并发写同一文件造成：
- *  - 文件被截断/交错写坏（Windows 下 writeFile 非原子）
- *  - 后写者覆盖先写者的字段（丢失更新）
- *
- * @param mutator 同步修改 cfg 对象；返回值若非 undefined 则作为新的完整配置写回
- * @returns 写入完成后的 Promise
- */
-export function updateSettingsJson(
-  mutator: (cfg: Record<string, any>) => void | Record<string, any>
-): Promise<void> {
-  const run = async (): Promise<void> => {
-    const settingsPath = join(getConfigHomeDir(), 'settings.json');
-    let cfg: Record<string, any> = {};
-    try {
-      const content = await fs.readFile(settingsPath, 'utf-8');
-      cfg = JSON.parse(content);
-    } catch {
-      // 文件不存在或解析失败，从空对象开始
-    }
-    const result = mutator(cfg);
-    const nextCfg = (result !== undefined ? result : cfg) as Record<string, any>;
-    await fs.mkdir(getConfigHomeDir(), { recursive: true });
-    await fs.writeFile(settingsPath, JSON.stringify(nextCfg, null, 2), 'utf-8');
-    // 清除缓存，下次读取时重新加载
-    cachedSettings = null;
-  };
-
-  // 串行执行：上一个完成后才开始下一个；单个失败不影响后续队列
-  const next = settingsWriteChain.then(run, run);
-  settingsWriteChain = next.catch(() => {});
-  return next;
-}
-
-
-
-/**
- * 保存 API Key 到 settings.json
- * 用于 LLM 配置中 apiKey 为空时，通过密码输入框获取后保存
- * 通过 updateSettingsJson 串行化写入，避免并发写坏文件
- */
-export async function saveApiKeyToSettings(apiKey: string): Promise<void> {
-  try {
-    await updateSettingsJson((cfg) => {
-      if (!cfg.llm) cfg.llm = {};
-      // 新结构：apiKey 只保存到 activeProvider 对应的 provider 内
-      const activeKey = cfg.llm.activeProvider;
-      if (activeKey && cfg.llm.providers?.[activeKey]) {
-        cfg.llm.providers[activeKey].apiKey = apiKey;
-      }
-    });
-  } catch (e) {
-    logger.error('Config', `保存 API Key 到 settings.json 失败: ${e}`);
-  }
-}
-
-/**
  * 同步读取 settings.json 中的 UI 语言设置（'auto' | 'zh' | 'en'）。
  * 供各宿主在创建 webview 时同步注入 window.__uiLocale，避免首帧语言闪变。
  * 读取失败或未配置时返回 'auto'。
@@ -391,9 +294,6 @@ export function readUiLanguageSync(): 'auto' | 'zh' | 'en' {
  */
 export const HIGHLIGHT_LANGUAGES_FIELD = 'highlightLanguages';
 
-/** 记录上限：避免长期使用后字段无限增长（只保留最近使用的语言） */
-const HIGHLIGHT_LANGUAGES_MAX = 60;
-
 /**
  * 同步读取 settings.json 中已记录的 Shiki 语言列表。
  * 供各宿主在创建 webview 时同步注入 window.__highlightLanguages。
@@ -413,32 +313,36 @@ export function readHighlightLanguagesSync(): string[] {
   }
 }
 
-/**
- * 记录一个已被 webview 按需加载的 Shiki 语言，供下次启动预热。
- * 已存在时直接返回，不做任何写入（避免每次高亮都触发磁盘写）。
- * 通过 updateSettingsJson 串行化写入，避免与其他 settings 写入口并发损坏文件。
- */
-export async function recordHighlightLanguage(language: string): Promise<void> {
-  if (typeof language !== 'string' || !language) return;
-  try {
-    const existing = readHighlightLanguagesSync();
-    if (existing.includes(language)) return;
+/** 记录上限：避免长期使用后字段无限增长（只保留最近使用的语言） */
+const HIGHLIGHT_LANGUAGES_MAX = 60;
 
-    await updateSettingsJson((cfg) => {
-      const current: unknown = cfg[HIGHLIGHT_LANGUAGES_FIELD];
-      const list: string[] = Array.isArray(current)
-        ? current.filter((v): v is string => typeof v === 'string' && v.length > 0)
-        : [];
-      if (list.includes(language)) return;
+/**
+ * 构造「把 languages 并入 highlightLanguages 字段」的 settings.json 修改器。
+ *
+ * core 只描述**怎么改**（字段名 / 去重 / 上限都在这里），**写盘由宿主承担**
+ * （`UIHost.updateSettingsJson`，见第 2 节规则 9）。
+ */
+export function highlightLanguagesMutator(
+  languages: readonly string[]
+): (cfg: Record<string, any>) => void {
+  return (cfg) => {
+    const current: unknown = cfg[HIGHLIGHT_LANGUAGES_FIELD];
+    const list: string[] = Array.isArray(current)
+      ? current.filter((v): v is string => typeof v === 'string' && v.length > 0)
+      : [];
+    let changed = false;
+    for (const language of languages) {
+      if (typeof language !== 'string' || !language) continue;
+      if (list.includes(language)) continue;
       list.push(language);
-      // 超出上限时丢弃最早记录，保持字段体积可控
-      cfg[HIGHLIGHT_LANGUAGES_FIELD] = list.length > HIGHLIGHT_LANGUAGES_MAX
-        ? list.slice(list.length - HIGHLIGHT_LANGUAGES_MAX)
-        : list;
-    });
-  } catch (e) {
-    logger.error('Config', `记录高亮语言到 settings.json 失败: ${e}`);
-  }
+      changed = true;
+    }
+    if (!changed) return;
+    // 超出上限时丢弃最早记录，保持字段体积可控
+    cfg[HIGHLIGHT_LANGUAGES_FIELD] = list.length > HIGHLIGHT_LANGUAGES_MAX
+      ? list.slice(list.length - HIGHLIGHT_LANGUAGES_MAX)
+      : list;
+  };
 }
 
 /**

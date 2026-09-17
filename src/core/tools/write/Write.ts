@@ -139,11 +139,9 @@ export const WriteTool = buildTool({
         { label: '允许', description: actionType === 'create' ? '创建文件' : '覆盖文件' },
         { label: '拒绝', description: '取消操作' },
       ],
-      // 始终显示 diff：创建文件时左边是空的，覆盖文件时左边是旧内容
-      showDiff: true,
+      // 始终带 diff 内容：创建文件时左边是空的，覆盖文件时左边是旧内容
       beforeContent: actionType === 'overwrite' ? beforeContent : null,
       afterContent: input.content,
-      diffTitle: `${input.file_path}`,
     };
 
     return result;

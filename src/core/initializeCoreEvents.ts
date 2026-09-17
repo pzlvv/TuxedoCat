@@ -3,8 +3,8 @@
  *
  * 与 initializeHistory 同属 bootstrap 序列，在 setGlobalEventBus(bus) 之后调用一次。
  *
- * 按 core 模块分注册函数（Integration / history / sessionIdle / mcp），
- * 每个模块订阅自己关心的少数几个事件（DEVELOPMENT.md 第 3.7 / 4.3 节）。
+ * 按 core 模块分注册函数（Integration / history / sessionResources / mcp），
+ * 每个模块订阅自己关心的少数几个事件（DEVELOPMENT.md 第 3.6 / 4.3 节）。
  * 不做成映射表穷尽检查：core 侧漏订阅是「该动作暂无 core 消费方」的合法中间态，
  * 由第 4.3 节的「core 侧消费方」列在评审时对照兜底。
  *
@@ -33,7 +33,6 @@ async function registerIntegrationUiEvents(bus: AssistantEventBus): Promise<void
   const { setSessionAgentMode } = await import('./tools/PermissionPolicy.js');
   const { createConversationMetadataSync, updateConversationMetadataTitle } = await import('./history/Conversation.js');
   const { loadConversation } = await import('./history/index.js');
-  const { noteSessionActivity } = await import('./sessionIdle.js');
 
   // ===== 消息 =====
   bus.onUiEvent('messageQueued', (e) => {
@@ -77,7 +76,7 @@ async function registerIntegrationUiEvents(bus: AssistantEventBus): Promise<void
 
   // ===== 会话生命周期 =====
   // conversationStarted：用户点「新建对话」，会话还没有任何内容。
-  // core 侧动作：预创建引擎（引擎在第一轮查询时才建），刷新空闲计时。
+  // core 侧动作：预创建引擎（引擎在第一轮查询时才建）。
   bus.onUiEvent('conversationStarted', ({ sessionId }) => {
     // 预创建引擎（幂等）：engine 不存在时创建；存在则返回已有实例。
     // 空标题：标题在第一条消息时由 appendMessage / sendMessage 生成。
@@ -180,10 +179,9 @@ async function registerIntegrationUiEvents(bus: AssistantEventBus): Promise<void
 
   void createConversationMetadataSync;
   void updateConversationMetadataTitle;
-  void noteSessionActivity;
 }
 
-// ==================== history：重命名 / 删除 / 清空 / 上下文 / 空间 ====================
+// ==================== history：重命名 / 删除 / 上下文 / 空间 ====================
 
 async function registerHistoryUiEvents(bus: AssistantEventBus): Promise<void> {
   const {
@@ -193,7 +191,6 @@ async function registerHistoryUiEvents(bus: AssistantEventBus): Promise<void> {
   const {
     updateConversationMetadataTitle,
   } = await import('./history/Conversation.js');
-  const { clearConversationData } = await import('./history/ops.js');
   const { clearConversationSpace, getConversationSpaces } = await import('./history/ConversationSpace.js');
 
   bus.onUiEvent('conversationRenamed', ({ sessionId, title }) => {
@@ -201,6 +198,8 @@ async function registerHistoryUiEvents(bus: AssistantEventBus): Promise<void> {
       try {
         await updateConversationMetadataTitle(sessionId, title);
         requireEventBus().emitToUi({ type: 'titleChanged', sessionId, title });
+        // 标题已落盘：广播列表变化，让 ConversationManager.refresh() 重新读盘分发
+        requireEventBus().emitToUi({ type: 'conversationListChanged' });
       } catch (err) {
         logger.warn('history', `conversationRenamed handling failed: ${err}`);
       }
@@ -217,18 +216,6 @@ async function registerHistoryUiEvents(bus: AssistantEventBus): Promise<void> {
         requireEventBus().emitToUi({ type: 'conversationListChanged' });
       } catch (err) {
         logger.warn('history', `conversationDeleted handling failed: ${err}`);
-      }
-    })();
-  });
-
-  bus.onUiEvent('conversationCleared', ({ sessionId }) => {
-    void (async () => {
-      try {
-        await clearConversationData(sessionId);
-        await updateConversationContext(sessionId, { totalContextTokens: 0 });
-        requireEventBus().emitToUi({ type: 'conversationListChanged' });
-      } catch (err) {
-        logger.warn('history', `conversationCleared handling failed: ${err}`);
       }
     })();
   });
@@ -269,37 +256,34 @@ async function registerHistoryUiEvents(bus: AssistantEventBus): Promise<void> {
   });
 }
 
-// ==================== sessionIdle：conversationClosed ====================
+// ==================== sessionResources：conversationClosed ====================
 
-async function registerSessionIdleUiEvents(bus: AssistantEventBus): Promise<void> {
-  const { releaseSessionResources } = await import('./sessionIdle.js');
-  const { clearSessionIdleState } = await import('./sessionIdle.js');
+async function registerSessionResourcesUiEvents(bus: AssistantEventBus): Promise<void> {
+  const { releaseSessionResources } = await import('./sessionResources.js');
 
   bus.onUiEvent('conversationClosed', ({ sessionId }) => {
     void (async () => {
       try {
         await releaseSessionResources(sessionId);
       } catch (err) {
-        logger.warn('sessionIdle', `conversationClosed handling failed: ${err}`);
+        logger.warn('sessionResources', `conversationClosed handling failed: ${err}`);
       }
     })();
   });
-  void clearSessionIdleState;
 }
 
 // ==================== mcp：mcpEnabledChanged ====================
 
 async function registerMcpUiEvents(bus: AssistantEventBus): Promise<void> {
   const { setSessionMcpEnabled } = await import('./mcp/Config.js');
-  const { getMcpManager } = await import('./mcp/Manager.js');
+  const { getMCPHost } = await import('./mcp/MCPHost.js');
 
   bus.onUiEvent('mcpEnabledChanged', ({ sessionId, name, enabled }) => {
     void (async () => {
       try {
         await setSessionMcpEnabled(sessionId, name, enabled);
-        // 连接/断开差量同步；完成后由 CoreEvent.conversationListChanged /
-        // pushMcpServers 的读取路径回推状态（UI 侧轮询读取）
-        await getMcpManager().syncSession(sessionId);
+        // 连接/断开差量同步（唯一入口 MCPHost）；完成后由 pushMcpServers 的读取路径回推状态
+        await getMCPHost().onSessionEnabledChanged(sessionId);
       } catch (err) {
         logger.warn('mcp', `mcpEnabledChanged handling failed: ${err}`);
       }
@@ -313,6 +297,6 @@ async function registerMcpUiEvents(bus: AssistantEventBus): Promise<void> {
 export function initializeCoreEvents(bus: AssistantEventBus): void {
   void registerIntegrationUiEvents(bus);
   void registerHistoryUiEvents(bus);
-  void registerSessionIdleUiEvents(bus);
+  void registerSessionResourcesUiEvents(bus);
   void registerMcpUiEvents(bus);
 }

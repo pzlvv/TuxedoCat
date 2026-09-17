@@ -7,10 +7,27 @@ import type { z } from 'zod';
 /**
  * 工具权限结果
  */
+/**
+ * 展示用的改动内容（Edit / Write 的权限结果携带）。
+ *
+ * 只用于 UI 展示（工具卡片 diff、宿主 diff）与 `_meta` 落盘，**不参与权限决策**：
+ * core 在 auto / risk 模式下把 `ask` 自动放行为 `allow` 时，这些字段会原样保留，
+ * 因此「有没有授权流程」不影响用户看到改动（DEVELOPMENT.md 第 7.2 节）。
+ */
+export interface PermissionDiffPayload {
+  beforeContent?: string | null;
+  afterContent?: string;
+  contextBefore?: string[];
+  contextAfter?: string[];
+  startLine?: number;
+  endLine?: number;
+  lineEndings?: string;
+}
+
 export type PermissionResult =
-  | { behavior: 'allow'; updatedInput?: Record<string, unknown> }
+  | ({ behavior: 'allow'; updatedInput?: Record<string, unknown> } & PermissionDiffPayload)
   | { behavior: 'deny'; message?: string; shouldTerminate?: boolean } // 添加 shouldTerminate 标志
-  | {
+  | ({
       behavior: 'ask';
       message?: string;
       choices?: Array<{ label: string; description?: string }>;
@@ -19,12 +36,7 @@ export type PermissionResult =
       showPreview?: boolean;
       previewContent?: string;
       previewTitle?: string;
-      // diff 预览相关
-      showDiff?: boolean;
-      beforeContent?: string | null;
-      afterContent?: string;
-      diffTitle?: string;
-    }
+    } & PermissionDiffPayload)
 
 /**
  * 验证结果

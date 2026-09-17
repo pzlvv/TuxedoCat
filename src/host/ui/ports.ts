@@ -40,8 +40,9 @@ export interface WebViewUiPort {
 
   /**
    * 该会话的 UI 侧状态已释放（视图关闭 / 会话删除）。
-   * 子模块收到后清掉自己的 per-session 状态：
-   * ToolHandler 清 diff 快照暂存；UserChoiceManager 清 pending 队列项。
+   * `WebViewUI.dropSession` 借此 fan-out 给持有 per-session 状态的子模块：
+   * `SessionUiState` 清阶段 / 计数 / abort scope；`UserChoiceManager` 清挂起的选择回调
+   * 与 diff 快照；`WebviewMessageHandler` 清 tracked active session。
    */
   dropSession(sessionId: string): void;
 
@@ -60,12 +61,6 @@ export interface WebViewUiPort {
     },
   ): void;
 
-  /** 会话（含后台任务与递归子代理）是否有活跃查询 */
-  hasActiveQueryInScope(sessionId: string): boolean;
-
-  /** 重新计算并下发 abort 按钮状态（内部调 host.syncAbortState） */
-  refreshAbortState(): void;
-
   /** 当前活跃 session ID（UI 自己的状态，与宿主无关） */
   getActiveSessionId(): string | undefined;
 
@@ -77,4 +72,11 @@ export interface WebViewUiPort {
 
   /** 重新读取并分发对话列表（转调 ConversationManager.refresh） */
   refreshConversations(): Promise<void>;
+
+  /**
+   * 记录会话活动（打开 / 新建 / 用户发消息时调用），重置空闲关闭计时。
+   * 空闲计时的 owner 是 VS Code 的 SingleWebViewConversationManager
+   * （core 不参与计时；Electron 不做空闲回收，收到后无操作）。
+   */
+  noteSessionActivity(sessionId: string): void;
 }

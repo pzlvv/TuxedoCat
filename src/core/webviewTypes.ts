@@ -1,7 +1,9 @@
 /**
  * VSCode extension -> webview 消息的联合类型（discriminated union）
- * 在 VSCodeUI.ts 和 webview/App.tsx 中共享使用
+ * 在 host（WebViewUI）与 webview/App.tsx 中共享使用
  */
+
+import type { MessageData } from './types.js';
 
 /** 一个 MCP 服务器的展示信息（来自 ~/<configDir>/mcp.json + settings.json 启用状态） */
 export interface McpServerInfo {
@@ -87,26 +89,6 @@ export type WebviewMessage = {
   filePath?: string;
   selectedLines?: { start: number; end: number };
 } | {
-  /**
-   * 浏览器端（内置 HTTP 服务器）页内预览：宿主把查看内容按 sessionId + clientId
-   * 定向回推给发起端，由 PreviewOverlay 展示，不打开桌面原生窗口。
-   */
-  type: 'openPreview';
-  mode: 'text' | 'image' | 'diff' | 'mermaid';
-  title?: string;
-  filePath?: string;
-  content?: string;
-  dataUrl?: string;
-  language?: string;
-  code?: string;
-  selectedLines?: { start: number; end: number } | null;
-  beforeContent?: string;
-  afterContent?: string;
-  newContent?: string;
-  error?: string;
-  sessionId?: string;
-  clientId?: string;
-} | {
   type: 'setTitle';
   sessionId: string;
   title: string;
@@ -122,9 +104,6 @@ export type WebviewMessage = {
 } | {
   type: 'queryEnd';
   sessionId: string;
-} | {
-  type: 'setEnableAbort';
-  enable: boolean;
 } | {
   type: 'updateToolArgs';
   sessionId: string;
@@ -174,6 +153,13 @@ export type WebviewMessage = {
   type: 'conversationsData';
   conversations: Array<{ sessionId: string; title: string; createdAt: number; updatedAt: number; messageCount: number; parentSessionId?: string }>;
 } | {
+  /**
+   * 会话运行时状态全量推送（core `sessionRuntimeChanged` → 宿主 → webview）。
+   * 对话树的流水灯（running / waiting）只读这份数据，不再从 `queryBegin` / `queryEnd` 推导。
+   */
+  type: 'sessionRuntimeStates';
+  states: Array<{ sessionId: string; running: boolean; waiting: boolean }>;
+} | {
   type: 'conversationLoaded';
   conversation: {
     metadata?: {
@@ -206,9 +192,6 @@ export type WebviewMessage = {
   reply?: string;
 } | {
   type: 'abort';
-} | {
-  type: 'setActiveSessionId';
-  sessionId: string;
 } | {
   type: 'error';
   message: string;
@@ -268,16 +251,15 @@ export type WebviewMessage = {
   /** 压缩后的 token 使用量（complete 时提供） */
   postCompactTokenCount?: number;
 } | {
-  type: 'clearConversation';
-  sessionId: string;
-} | {
   type: 'spinCommand';
   sessionId: string;
   cmd: 'init' | 'status' | 'auto';
   args?: string;
 } | {
-  type: 'clearMessages';
+  type: 'messagesReplaced';
   sessionId: string;
+  /** 整批替换后的消息（压缩后重建 / 展开归档共用；顺序即显示顺序） */
+  messages: MessageData[];
 } | {
   type: 'queuedMessage';
   sessionId: string;
@@ -308,19 +290,6 @@ export type WebviewMessage = {
   currentFile?: string;
   selectedLines?: { start: number; end: number };
   totalContextTokens?: number;
-} | {
-  type: 'getTokenRankings';
-  period: 'daily' | 'monthly' | 'total';
-} | {
-  type: 'tokenRankingsData';
-  rankings: Array<{
-    username: string;
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-    totalCalls: number;
-  }>;
-  period: 'daily' | 'monthly' | 'total';
 } | {
   type: 'requestSkills';
 } | {
@@ -354,16 +323,6 @@ export type WebviewMessage = {
   type: 'switchToSession';
   sessionId: string;
 } | {
-  type: 'switchToNewSession';
-  sessionId: string;
-} | {
-  type: 'fetchEmployeeName';
-  username: string;
-} | {
-  type: 'employeeNameResult';
-  username: string;
-  employeeName: string | null;
-} | {
   type: 'renameConversation';
   sessionId: string;
   title: string;
@@ -384,12 +343,6 @@ export type WebviewMessage = {
   filePath: string;
   /** 回滚方向：'before' = 回滚到此修改前，'after' = 回滚到此修改后 */
   direction: 'before' | 'after';
-} | {
-  type: 'rollbackEditResult';
-  success: boolean;
-  message: string;
-  /** 回滚的文件数量 */
-  restoredFiles?: number;
 } | {
   type: 'expandCompact';
   sessionId: string;
@@ -424,8 +377,6 @@ export type WebviewMessage = {
   defaultPromptMode?: 'normal' | 'minimal' | 'mixed';
   webSearch?: boolean;
   language?: 'auto' | 'zh' | 'en';
-  /** Electron 端唤醒快捷键（accelerator 形式） */
-  shortcut?: string;
   activeProvider?: string;
   closeAfterSave?: boolean;
 } | {
@@ -459,8 +410,6 @@ export type WebviewMessage = {
   }>;
   /** settings.json 的 llm.activeProvider */
   activeProvider?: string;
-  /** Electron 端唤醒快捷键（accelerator 形式） */
-  shortcut?: string;
   /** 全局默认启用的 MCP 列表（设置面板「默认配置」编辑用） */
   mcpServers?: McpServerInfo[];
 } | {
@@ -508,6 +457,15 @@ export type WebviewMessage = {
 } | {
   /** 全局唤醒快捷键激活窗口后，要求 webview 聚焦输入框，便于直接开始输入 */
   type: 'focusInput';
+} | {
+  /**
+   * 后台预热的「新对话」视图被宿主切到前台：补做被跳过的启动初始化
+   * （见 electron/ChatViewManager.ts 的 spareKey / src/webview/App.tsx）。
+   */
+  type: 'activatePrewarmedView';
+} | {
+  /** 预热视图（webview → 宿主）：页面已挂载、可以接收 activatePrewarmedView */
+  type: 'prewarmViewReady';
 };
 
 // 不包含 sessionId 的消息类型（调用方传入，postToWebview 会添加）

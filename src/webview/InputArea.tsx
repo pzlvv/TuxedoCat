@@ -40,7 +40,8 @@ interface InputAreaProps {
   onToggleFileHidden: () => void;
   totalContextTokens: number;
   maxContextTokens?: number | null;
-  hasActiveQuery: boolean;
+  /** 会话非空闲 → 可中止（由 core 的 sessionRuntime 推导，见 App.tsx） */
+  abortEnabled: boolean;
   agentMode: AgentMode;
   /** 是否已收到当前会话/默认的 agentMode；false 时仅显示 loading，不显示具体选项 */
   agentModeReady: boolean;
@@ -1031,7 +1032,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   onToggleFileHidden,
   totalContextTokens,
   maxContextTokens,
-  hasActiveQuery,
+  abortEnabled,
   agentMode,
   agentModeReady,
   setAgentMode,
@@ -1350,8 +1351,11 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     // 极简模式不使用联网搜索，菜单已置灰；此处兜底拦截，避免任何路径误触发。
     if (promptMode === 'minimal') return;
     setWebSearch(value);
-    // 通知 extension：更新引擎 modelConfig.webSearch 并持久化到会话 meta.json
-    postMessage({ type: 'setWebSearch', webSearch: value, sessionId: getWindowSessionId() ?? undefined });
+    // 通知 extension：更新引擎 modelConfig.webSearch 并持久化到会话 meta.json。
+    // 会话尚未建立时没有落点：不下发（该值仍会随第一条消息的 webSearch 字段一起生效）。
+    const sessionId = getWindowSessionId();
+    if (!sessionId) return;
+    postMessage({ type: 'setWebSearch', webSearch: value, sessionId });
   }, [setWebSearch, promptMode]);
 
   const handleModelChange = useCallback((newModel: string) => {
@@ -1568,11 +1572,11 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           />
           <button
             onClick={onAbort}
-            disabled={!hasActiveQuery}
-            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${hasActiveQuery ? 'hover:brightness-110' : ''}`}
+            disabled={!abortEnabled}
+            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${abortEnabled ? 'hover:brightness-110' : ''}`}
             style={{
-              backgroundColor: hasActiveQuery ? '#ef4444' : colors.border,
-              opacity: hasActiveQuery ? 1 : 0.5,
+              backgroundColor: abortEnabled ? '#ef4444' : colors.border,
+              opacity: abortEnabled ? 1 : 0.5,
             }}
             title={t('inputArea.abort')}
           >

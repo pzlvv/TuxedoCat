@@ -50,6 +50,7 @@
   },
   "scripts": {
     "gen:icons": "node scripts/gen-icons.mjs",
+    "plantuml:server": "node scripts/plantuml-server.js",
     "vscode:prepublish": "npm run check-types && npm run lint && node esbuild.js --production && npm run build:webview && npm run copy-assets",
     "compile": "npm run check-types && npm run lint && node esbuild.js",
     "watch": "npm-run-all -p watch:esbuild watch:tsc watch:webview watch:monaco watch:sidebar watch:electron",
@@ -72,6 +73,8 @@
     "test:edit-diff": "tsc -p tsconfig.test.json && node out/src/test/editDiff.test.js",
     "test:event-bus": "tsc -p tsconfig.test.json && node out/src/test/eventBus.test.js",
     "test:session-runtime": "tsc -p tsconfig.test.json && node out/src/test/sessionRuntime.test.js",
+    "test:user-choice": "tsc -p tsconfig.test.json && node out/src/test/userChoice.test.js",
+    "test:conversation-closure": "tsc -p tsconfig.test.json && node out/src/test/conversationClosure.test.js",
     "build:webview": "vite build && vite build --config vite.monaco.config.ts && vite build --config vite.sidebar.config.ts",
     "build:monaco": "vite build --config vite.monaco.config.ts",
     "build:sidebar": "vite build --config vite.sidebar.config.ts",

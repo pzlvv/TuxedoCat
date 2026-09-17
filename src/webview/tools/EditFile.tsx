@@ -146,21 +146,6 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, status, isDark
 
   const effectiveToolCallId = toolCallId || toolUseId || '';
 
-  // 监听 rollbackEditResult 消息
-  useEffect(() => {
-    const handler = (event: MessageEvent) => {
-      const msg = event.data;
-      if (msg.type === 'rollbackEditResult') {
-        setShowRollbackConfirm(false);
-        setRollbackResult({ success: msg.success, message: msg.message });
-        // 5 秒后自动清除状态提示
-        setTimeout(() => setRollbackResult(null), 5000);
-      }
-    };
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
-  }, []);
-
   const handleRollbackConfirm = () => {
     const sid = getWindowSessionId();
     if (!sid) {

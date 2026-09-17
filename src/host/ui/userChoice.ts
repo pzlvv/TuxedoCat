@@ -5,22 +5,18 @@
 import type { LogChannel } from '../UIHost.js';
 import { userChoiceQueue } from '../../core/UserChoiceQueue.js';
 import { markSessionWaiting } from '../../core/sessionRuntime.js';
-import type { DiffUriPair, ShowDiffInVirtualDocumentEvent } from './types.js';
 
 /**
- * UserChoiceManager - 管理 UserChoice 展示、diff 预览、用户选择处理等。
+ * UserChoiceManager - 管理 UserChoice 的展示与用户选择处理。
  *
- * 泛型 TUri 表示宿主原生的预览文档句柄（VS Code: vscode.Uri；Electron 不使用预览句柄）。
- * 共享模块本身不 import 任何宿主 API，宿主通过 buildDiffUris 注入句柄构造方式。
+ * 共享模块本身不 import 任何宿主 API；需要宿主能力时用注入的回调。
  */
-export class UserChoiceManager<TUri = unknown> {
+export class UserChoiceManager {
   private outputChannel: LogChannel | undefined;
   private postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
   private closePreview: () => void;
   private getActiveSessionIdInternal: () => string | undefined;
 
-  /** 当前打开的预览文档句柄（统一使用宿主规范化后的对象） */
-  public currentPreviewUris: TUri[] = [];
   /** 当前请求的上下文（前） */
   public currentContextBefore: string[] = [];
   /** 当前请求的上下文（后） */
@@ -33,14 +29,14 @@ export class UserChoiceManager<TUri = unknown> {
   public currentStartLine?: number;
   /** 当前请求的 endLine */
   public currentEndLine?: number;
-  /** 当前打开的 diff 的哈希值 */
-  public currentDiffHash: string = '';
+  /**
+   * diff 快照归属的会话（最后一次写入者）。
+   * 快照是「当前请求」的全局暂存位，本身不带会话键；记下写入方才能在
+   * dropSession 时只清理属于该会话的快照，不误伤其它会话正在进行的 Edit / Write。
+   */
+  private diffSnapshotSessionId: string | undefined;
   /** 按 choiceId 存储的 pending 用户选择回调 */
   public pendingUserChoices: Map<string, { sessionId: string; resolve: (value: { index: number; reply?: string }) => void }> = new Map();
-  /** diff 回调 */
-  private onShowDiffInVirtualDocumentCallback?: (event: ShowDiffInVirtualDocumentEvent) => void | Promise<void>;
-  /** 构建 diff 预览句柄（宿主相关；Electron 宿主不需要传） */
-  private buildDiffUris?: (title: string) => DiffUriPair<TUri>;
   /** 用户选择框弹出后的回调（宿主侧用于刷新侧栏流水灯为黄色） */
   private onChoiceShown?: (sessionId: string) => void;
 
@@ -49,25 +45,49 @@ export class UserChoiceManager<TUri = unknown> {
     postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
     closePreview: () => void;
     getActiveSessionIdInternal: () => string | undefined;
-    onShowDiffInVirtualDocumentCallback?: (event: ShowDiffInVirtualDocumentEvent) => void | Promise<void>;
-    buildDiffUris?: (title: string) => DiffUriPair<TUri>;
     onChoiceShown?: (sessionId: string) => void;
   }) {
     this.outputChannel = deps.outputChannel;
     this.postToWebview = deps.postToWebview;
     this.closePreview = deps.closePreview;
     this.getActiveSessionIdInternal = deps.getActiveSessionIdInternal;
-    this.onShowDiffInVirtualDocumentCallback = deps.onShowDiffInVirtualDocumentCallback;
-    this.buildDiffUris = deps.buildDiffUris;
     this.onChoiceShown = deps.onChoiceShown;
-  }
-
-  setShowDiffCallback(callback: (event: ShowDiffInVirtualDocumentEvent) => void | Promise<void>): void {
-    this.onShowDiffInVirtualDocumentCallback = callback;
   }
 
   private log(...args: unknown[]): void {
     this.outputChannel?.appendLine(args.map(a => String(a)).join(' '));
+  }
+
+  /**
+   * 写入 diff 快照并登记归属会话（供 ToolHandler 与权限确认共用）。
+   * 全量覆盖 6 个字段，与原先直接赋值的语义一致。
+   */
+  saveDiffSnapshot(sessionId: string, snapshot: {
+    beforeContent: string;
+    afterContent: string;
+    contextBefore: string[];
+    contextAfter: string[];
+    startLine?: number;
+    endLine?: number;
+  }): void {
+    this.diffSnapshotSessionId = sessionId;
+    this.currentBeforeContent = snapshot.beforeContent;
+    this.currentAfterContent = snapshot.afterContent;
+    this.currentContextBefore = snapshot.contextBefore;
+    this.currentContextAfter = snapshot.contextAfter;
+    this.currentStartLine = snapshot.startLine;
+    this.currentEndLine = snapshot.endLine;
+  }
+
+  /** 清空 diff 快照与归属标记 */
+  private clearDiffSnapshot(): void {
+    this.diffSnapshotSessionId = undefined;
+    this.currentBeforeContent = '';
+    this.currentAfterContent = '';
+    this.currentContextBefore = [];
+    this.currentContextAfter = [];
+    this.currentStartLine = undefined;
+    this.currentEndLine = undefined;
   }
 
   /**
@@ -105,12 +125,12 @@ export class UserChoiceManager<TUri = unknown> {
       return;
     }
 
-    this.log(`[VSCodeUI] Restoring pending user choice for session ${sessionId}`);
+    this.log(`[UserChoiceManager] Restoring pending user choice for session ${sessionId}`);
 
     // 清理该 session 在 pendingUserChoices 中旧的条目
     for (const [choiceId, entry] of this.pendingUserChoices) {
       if (entry.sessionId === sessionId) {
-        this.log(`[VSCodeUI] Cleaning up stale pendingUserChoice ${choiceId} for session ${sessionId}`);
+        this.log(`[UserChoiceManager] Cleaning up stale pendingUserChoice ${choiceId} for session ${sessionId}`);
         this.pendingUserChoices.delete(choiceId);
       }
     }
@@ -124,7 +144,7 @@ export class UserChoiceManager<TUri = unknown> {
 
     // 显示 user choice
     this.requestUserChoice(sessionId, pendingOptions).catch(err => {
-      this.log(`[VSCodeUI] restoreUserChoiceIfPending error: ${err}`);
+      this.log(`[UserChoiceManager] restoreUserChoiceIfPending error: ${err}`);
     });
   }
 
@@ -139,57 +159,12 @@ export class UserChoiceManager<TUri = unknown> {
     showPreview?: boolean;
     previewContent?: string;
     previewTitle?: string;
-    showDiff?: boolean;
     beforeContent?: string | null;
     afterContent?: string;
-    diffTitle?: string;
     contextBefore?: string[];
     contextAfter?: string[];
   }): Promise<{ index: number; reply?: string }> {
     const choiceId = `choice-${Date.now()}-${Math.random()}`;
-
-    // 如果需要显示 diff，先检查是否已经打开了相同的 diff
-    const shouldShowDiff = options.showDiff === true
-      && this.onShowDiffInVirtualDocumentCallback !== undefined
-      && options.beforeContent !== undefined
-      && options.afterContent !== undefined;
-
-    if (shouldShowDiff) {
-      const bc = options.beforeContent || '';
-      const ac = options.afterContent || '';
-      const newDiffHash = `${bc.length}-${ac.length}-${bc.substring(0, 100)}-${ac.substring(0, 100)}`;
-
-      if (this.currentDiffHash === newDiffHash) {
-        this.log(`[VSCodeUI] Same diff already open, skipping virtual doc creation`);
-      } else {
-        // 关闭之前的预览文档
-        if (this.currentPreviewUris.length > 0) {
-          this.closePreview();
-        }
-
-        this.currentDiffHash = newDiffHash;
-
-        try {
-          const result = this.onShowDiffInVirtualDocumentCallback!({
-            beforeContent: options.beforeContent!,
-            afterContent: options.afterContent!,
-            title: options.diffTitle || '',
-          });
-
-          if (result && typeof result.then === 'function') {
-            await result;
-          }
-
-          const displayTitle = options.diffTitle || '';
-          const diffUris = this.buildDiffUris?.(displayTitle);
-          if (diffUris) {
-            this.currentPreviewUris.push(diffUris.beforeUri, diffUris.afterUri);
-          }
-        } catch (err) {
-          this.log(`[VSCodeUI] Error in diff callback: ${err}`);
-        }
-      }
-    }
 
     this.currentContextBefore = (options.contextBefore || [])
       .filter((line) => {
@@ -204,8 +179,10 @@ export class UserChoiceManager<TUri = unknown> {
 
     this.currentBeforeContent = options.beforeContent || '';
     this.currentAfterContent = options.afterContent || '';
+    // 本次写入归属该会话（startLine / endLine 由 ToolHandler 侧保留，这里不动）
+    this.diffSnapshotSessionId = sessionID;
 
-    this.log(`[VSCodeUI] Saved beforeContent (${this.currentBeforeContent.length} chars) and afterContent (${this.currentAfterContent.length} chars)`);
+    this.log(`[UserChoiceManager] Saved beforeContent (${this.currentBeforeContent.length} chars) and afterContent (${this.currentAfterContent.length} chars)`);
 
     const postData: Record<string, unknown> = {
       type: 'requestUserChoice',
@@ -253,10 +230,20 @@ export class UserChoiceManager<TUri = unknown> {
   }
 
   /**
-   * 重置预览状态（由 VSCodeUI.closePreview() 调用）
+   * 会话的 UI 侧状态已释放（视图关闭 / 会话删除）：清掉该会话在本模块的 per-session 状态。
+   * 由 `WebViewUI.dropSession` 统一 fan-out 调用（DEVELOPMENT.md 第 10.5 节）。
+   *
+   * - 丢弃该会话挂起的用户选择回调：webview 已不在，响应不会再回来；
+   * - diff 快照只有在归属该会话时才清空，避免误伤其它会话正在进行的 Edit / Write。
    */
-  resetPreviewState(): void {
-    this.currentPreviewUris = [];
-    this.currentDiffHash = '';
+  dropSession(sessionId: string): void {
+    for (const [choiceId, entry] of this.pendingUserChoices) {
+      if (entry.sessionId === sessionId) {
+        this.pendingUserChoices.delete(choiceId);
+      }
+    }
+    if (this.diffSnapshotSessionId === sessionId) {
+      this.clearDiffSnapshot();
+    }
   }
 }

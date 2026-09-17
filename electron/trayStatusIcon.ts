@@ -180,24 +180,9 @@ export function createTrayStatusIcon(
 }
 
 /**
- * 由侧栏对话列表推导托盘状态：
- * 只要有会话在等待用户确认/提问 → waiting（黄）；
- * 否则只要有会话运行中 → running（红）；
- * 全部空闲 → idle（绿）。
- */
-export function deriveTrayStatus(list: ReadonlyArray<Record<string, unknown>>): TrayStatus {
-  let running = false;
-  for (const item of list) {
-    if (item.waitingForUser === true) return 'waiting';
-    if (item.running === true) running = true;
-  }
-  return running ? 'running' : 'idle';
-}
-
-/**
- * 从会话运行时状态流聚合托盘状态（阶段 3.6）：
+ * 从会话运行时状态流聚合托盘状态：
  * waiting > running > idle。托盘是聚合状态，吃的是 SessionRuntimeState[] 全量推送，
- * 不再从对话列表（磁盘元数据）推导。
+ * 不从对话列表（磁盘元数据）推导（DEVELOPMENT.md 第 5.4 节规则 8）。
  */
 export function deriveTrayStatusFromStates(states: ReadonlyArray<{ running?: boolean; waiting?: boolean }>): TrayStatus {
   let running = false;

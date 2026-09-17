@@ -17,7 +17,6 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents, globalShortcut, Tray, nativeImage, type NativeImage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import * as os from 'os';
 import { ChatViewManager, SIDEBAR_WIDTH } from './ChatViewManager.js';
 import { ElectronUIHost } from './ElectronUIHost.js';
 import { ElectronSpinDesign } from './ElectronSpinDesign.js';
@@ -25,12 +24,16 @@ import { ElectronConversationManager } from './ElectronConversationManager.js';
 import { WebViewUI } from '../src/host/WebViewUI.js';
 import { UserChoiceManager } from '../src/host/ui/userChoice.js';
 import type { WebviewPoster } from '../src/host/ui/ports.js';
-import { createTrayStatusIcon, deriveTrayStatus, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
-import { startWebServer, type WebServerHandle, type WebServerClient } from './server/webServer.js';
-import { getBrowserShimSource } from './server/browserShim.js';
+import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
-import { SERVER_HOST_INFO } from '../src/host/types.js';
-import { DEFAULT_WAKE_SHORTCUT } from '../src/core/utils/shortcut.js';
+import {
+  DEFAULT_WAKE_SHORTCUT,
+  acceleratorFromKeyboardEvent,
+  formatAcceleratorForDisplay,
+  normalizeAccelerator,
+} from '../src/core/utils/shortcut.js';
+import { tt } from '../src/core/i18n.js';
+import { getShortcutDialogHtml } from './shortcutDialogHtml.js';
 import { resolveSmartTitle } from '../src/core/history/smartNaming.js';
 import { readActiveProviderModelContextSync } from '../src/core/history/Config.js';
 
@@ -45,6 +48,8 @@ function isExternalUrl(targetUrl: string): boolean {
 let mainWindow: BrowserWindow | undefined;
 let sidebarView: WebContentsView | undefined;
 let chatViews: ChatViewManager | undefined;
+/** 对话列表的读取与分发（bootstrap 创建；sidebar:get-conversations 读它的列表快照） */
+let conversations: ElectronConversationManager | undefined;
 let workspacePath: string | undefined;
 /** 当前 WebViewUI 实例（initCore 创建；消息路由 / 工作区切换使用） */
 let webviewUi: WebViewUI | undefined;
@@ -52,22 +57,18 @@ let webviewUi: WebViewUI | undefined;
 let uiHost: ElectronUIHost | undefined;
 /** 系统托盘：提供唤醒入口与退出入口（窗口不会因最小化而隐藏到托盘） */
 let tray: Tray | undefined;
-/** 内置 HTTP 服务器句柄（File 菜单 Start Server / Stop Server 控制） */
-let serverHandle: WebServerHandle | undefined;
-/** 内置 HTTP 服务器默认端口（被占用时自动向后尝试其它端口） */
-const DEFAULT_SERVER_PORT = 3210;
-/** 端口占用时最多向后尝试的端口数 */
-const SERVER_PORT_RETRY = 20;
-/** 当前已注册的全局唤醒快捷键（用于设置面板打开时临时注销） */
+/** 当前已注册的全局唤醒快捷键（快捷键设置对话框打开时临时注销） */
 let registeredWakeShortcut: string | undefined;
 /** 当前窗口是否由唤醒快捷键/托盘呼出，用于“再按一次回到托盘”的切换判断 */
 let wakeToggleActive = false;
 /**
- * 打开了设置面板的 webContents 集合。
- * 打开期间临时注销全局快捷键，避免干扰快捷键设置；
- * 用集合而不是布尔值，兼容多个会话视图同时打开设置面板的情况。
+ * 打开了「唤醒快捷键设置」对话框的 webContents 集合。
+ * 打开期间临时注销全局快捷键，避免用户按下的组合键先触发唤醒；
+ * 用集合而不是布尔值，兼容同时打开多个的情况。
  */
-const settingsPanelSenders = new Set<number>();
+const shortcutDialogSenders = new Set<number>();
+/** 唤醒快捷键设置对话框（File - Shortcut...；同一时刻只开一个） */
+let shortcutDialogWindow: BrowserWindow | undefined;
 /** 应用退出中：避免 destroyed 回调里再尝试注册快捷键 */
 let appQuitting = false;
 /**
@@ -78,8 +79,10 @@ let appQuitting = false;
  */
 let repaintIntervalTimer: ReturnType<typeof setInterval> | null = null;
 let focusRepaintTimer: ReturnType<typeof setTimeout> | null = null;
-// 已加载（打开过）的会话由 ChatViewManager 的视图列表派生，
-// 侧栏列表（仅已发送消息的对话 + loaded 标记）通过 chatViews.getSidebarConversations() 获取
+// 侧栏三条流各自单一 owner（DEVELOPMENT.md 第 5.4 节）：
+// - 列表（纯磁盘元数据）→ ConversationManager.dispatchList → sidebar:conversations-updated
+// - 运行时状态（running / waiting）→ ConversationManager.dispatchStates → sidebar:session-states-updated
+// - loaded（视图层）→ ChatViewManager.onLoadedChanged → sidebar:session-loaded-changed
 
 /**
  * 项目根目录（dist-electron 的上一级）
@@ -128,9 +131,11 @@ async function main(): Promise<void> {
   createMainWindow();
   setupTray();
   setupMenu();
-  // 系统主题变化时同步聊天视图（只注册一次，避免菜单重建时重复注册）
+  // 系统主题变化时同步所有聊天视图（只注册一次，避免菜单重建时重复注册）。
+  // 用 broadcast 而不是只发活动视图：隐藏的对话视图与后台预热视图同样要更新，
+  // 否则它们被切回前台时会带着过期的主题。
   nativeTheme.on('updated', () => {
-    sendTheme();
+    broadcastTheme();
   });
   setupIpc();
   initCore();
@@ -152,6 +157,11 @@ async function main(): Promise<void> {
     }
   });
 
+  // 本应用任意窗口（主窗口 / 快捷键设置对话框等）获得焦点即取消闪烁提醒。
+  // 只监听 mainWindow 的 focus 会漏掉子窗口聚焦的情况——子窗口聚焦时主窗口
+  // 失去焦点，但用户正在使用本应用，不应继续闪烁。
+  app.on('browser-window-focus', () => cancelAttention());
+
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
       app.quit();
@@ -168,19 +178,6 @@ async function main(): Promise<void> {
     if (focusRepaintTimer) {
       clearTimeout(focusRepaintTimer);
       focusRepaintTimer = null;
-    }
-    // 关闭内置 HTTP 服务器，断开浏览器连接
-    if (serverHandle) {
-      const handle = serverHandle;
-      serverHandle = undefined;
-      void handle.close().catch(() => undefined);
-    }
-    // 停止空闲巡检定时器
-    try {
-      const { stopSessionIdleMonitor } = require('../src/core/sessionIdle.js') as typeof import('../src/core/sessionIdle.js');
-      stopSessionIdleMonitor();
-    } catch {
-      // 退出阶段的清理失败不应影响退出
     }
     globalShortcut.unregisterAll();
     registeredWakeShortcut = undefined;
@@ -300,13 +297,25 @@ function createMainWindow(): void {
     onActiveSessionChanged: (sessionId) => {
       sidebarView?.webContents.send('sidebar:active-session-changed', sessionId);
     },
+    onLoadedChanged: (sessionIds) => {
+      // 视图层「已打开会话」集合单独推送（不并入对话列表流），见 DEVELOPMENT.md 第 5.4 节
+      sidebarView?.webContents.send('sidebar:session-loaded-changed', sessionIds);
+    },
     onViewCreated: (view) => {
       view.webContents.on('did-finish-load', () => {
         showMainWindow(); // 聊天视图加载完成再显示窗口，避免空白闪烁
         layout(); // 页面加载完成后按当前实际尺寸重排，避免初始视口偏差导致输入框被遮挡
-        sendTheme();
-        sendContextLimit();
-        setTimeout(() => checkAndSendLLMConfig(), 1000);
+        // 主题 / 上下文限制按「本视图」直发：后台预热的视图不是活动视图，
+        // 走 sendToActive 会发错对象（预热视图将一直停在 Loading）。
+        sendTheme(view.webContents);
+        sendContextLimit(undefined, view.webContents);
+        setTimeout(() => {
+          // 后台预热视图仍在后台时不弹设置页：它被切到前台时会走
+          // handleStartNewConversation 的同一段逻辑（那时也才真正需要配置面板）。
+          // 否则面板会在预热视图里悄悄打开，用户配置完成后仍残留。
+          if (chatViews?.isPrewarmWebContents(view.webContents)) return;
+          void checkAndSendLLMConfig(view.webContents);
+        }, 1000);
       });
     },
   });
@@ -320,7 +329,6 @@ function createMainWindow(): void {
     const sid = autoOpen.slice('--auto-open='.length);
     setTimeout(() => {
       chatViews?.openConversation(sid);
-      refreshSidebar();
     }, 2000);
   }
 
@@ -362,6 +370,8 @@ function createMainWindow(): void {
   }, 30_000);
 
   mainWindow.on('closed', () => {
+    // 后台预热的聊天视图未挂在窗口上，需显式清理（其余视图随窗口销毁）
+    chatViews?.dispose();
     mainWindow = undefined;
     sidebarView = undefined;
     chatViews = undefined;
@@ -561,6 +571,16 @@ function startTrayBlink(status: TrayStatus): boolean {
       stopTrayBlink();
       return;
     }
+    // 兜底：窗口/应用重新获得焦点后立即停止闪烁并恢复静态图标。
+    // 正常情况下 focus 事件已调用 cancelAttention，这里防止事件丢失导致
+    // 有焦点时仍持续闪烁。不复用 cancelAttention 是因为它在 attentionActive
+    // 为 false 时会提前返回，可能把图标停在“熄灭”相位。
+    if (!isWindowInBackground()) {
+      attentionActive = false;
+      stopTaskbarFlash();
+      restoreTrayIcon();
+      return;
+    }
     visible = !visible;
     tray.setImage(visible ? images.on : images.off);
   }, TRAY_BLINK_INTERVAL_MS);
@@ -568,15 +588,28 @@ function startTrayBlink(status: TrayStatus): boolean {
 }
 
 /**
+ * 本应用是否有任一窗口处于前台（拥有焦点）。
+ *
+ * 不能只看 `mainWindow.isFocused()`：唤醒快捷键设置对话框是带 parent 的独立
+ * BrowserWindow，它聚焦时主窗口失去焦点，但用户其实正在使用本应用，此时不应
+ * 再闪烁提醒。`BrowserWindow.getFocusedWindow()` 会覆盖主窗口与所有子窗口。
+ */
+function isAppFocused(): boolean {
+  const focused = BrowserWindow.getFocusedWindow();
+  return !!focused && !focused.isDestroyed();
+}
+
+/**
  * 窗口是否处于后台——只有此时任务结束才需要闪烁提醒。
  * 三种情况都算后台：最小化、隐藏到托盘、可见但不在顶层（被其它窗口遮挡
- * 或切到了别的应用，即失去焦点）。
+ * 或切到了别的应用，即失去焦点）。只要本应用还有窗口拥有焦点（如快捷键
+ * 设置对话框），就算前台，不提醒。
  */
 function isWindowInBackground(): boolean {
   if (!mainWindow || mainWindow.isDestroyed()) return true;
   if (mainWindow.isMinimized()) return true;
   if (!mainWindow.isVisible()) return true;
-  return !mainWindow.isFocused();
+  return !isAppFocused();
 }
 
 /**
@@ -586,7 +619,7 @@ function isWindowInBackground(): boolean {
 function shouldFlashTaskbar(): boolean {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   if (mainWindow.isMinimized()) return true;
-  return mainWindow.isVisible() && !mainWindow.isFocused();
+  return mainWindow.isVisible() && !isAppFocused();
 }
 
 /** 停止任务栏图标闪烁 */
@@ -654,43 +687,15 @@ function setupTray(): void {
 }
 
 /**
- * 根据侧栏对话列表刷新托盘状态点：
+ * 托盘状态点：running / waiting 由 core 的 sessionRuntimeChanged 全量推送，
+ * 经 ElectronConversationManager.setStatusListener 到达这里；不再从对话列表推导。
+ *
  * 有会话在等待用户确认/提问 → 黄点；有会话运行中 → 红点；全部空闲 → 绿点。
  * 状态未变化时不重建图标（createFromBitmap / resize 有一定开销）。
  *
  * 另外负责“任务结束提醒”：当任务从运行中变为空闲或等待用户确认、且窗口处于
  * 后台（最小化/隐藏/可见但非顶层）时，闪烁任务栏图标并让托盘图标一起闪烁，
  * 直到用户打开界面。
- */
-function updateTrayStatusFromConversations(list: ReadonlyArray<Record<string, unknown>>): void {
-  const status = deriveTrayStatus(list);
-  if (status === trayStatus) return;
-  const previous = trayStatus;
-  trayStatus = status;
-
-  // 新任务开始运行说明用户已在界面里操作，之前“任务结束”的提醒已过时，直接取消
-  if (status === 'running' && attentionActive) {
-    attentionActive = false;
-    stopTaskbarFlash();
-  }
-
-  // 提醒进行中（窗口仍在后台）时让托盘闪烁跟随最新状态着色；否则显示静态图标
-  if (attentionActive) {
-    if (!startTrayBlink(status)) restoreTrayIcon();
-  } else {
-    restoreTrayIcon();
-  }
-
-  // 任务从运行中结束（变为空闲或等待用户确认）且窗口在后台 → 提醒用户
-  if (previous === 'running' && (status === 'idle' || status === 'waiting')) {
-    startAttention(status);
-  }
-}
-
-/**
- * 托盘只吃状态流（阶段 3.6）：running / waiting 由 core 的 sessionRuntimeChanged
- * 全量推送，经 ElectronConversationManager.setStatusListener 到达这里；
- * 不再从对话列表推导。
  */
 function updateTrayStatusFromStates(
   states: ReadonlyArray<import('../src/core/AssistantEventBus.js').SessionRuntimeState>,
@@ -721,14 +726,18 @@ function updateTrayStatusFromStates(
  * 注册失败（快捷键被系统或其它程序占用）时静默忽略，不弹窗也不报错。
  */
 function registerWakeShortcut(): void {
+  registerWakeShortcutValue(readWakeShortcutFromSettings());
+}
+
+/** 按指定值注册全局唤醒快捷键（先注销旧值）；注册失败静默忽略 */
+function registerWakeShortcutValue(shortcut: string): void {
   if (appQuitting) return;
-  // 设置面板打开期间不注册全局快捷键，避免快捷键被占用/触发而影响用户录制新组合
-  if (settingsPanelSenders.size > 0) return;
+  // 快捷键设置对话框打开期间不注册全局快捷键，避免用户按下的组合键被占用/触发
+  if (shortcutDialogSenders.size > 0) return;
   if (registeredWakeShortcut) {
     globalShortcut.unregister(registeredWakeShortcut);
     registeredWakeShortcut = undefined;
   }
-  const shortcut = readWakeShortcutFromSettings();
   try {
     if (globalShortcut.register(shortcut, () => toggleMainWindowFromTray())) {
       registeredWakeShortcut = shortcut;
@@ -739,35 +748,158 @@ function registerWakeShortcut(): void {
   }
 }
 
-/** 设置面板打开：临时注销全局唤醒快捷键，避免影响用户录制新组合键 */
+/** 快捷键设置对话框打开：临时注销全局唤醒快捷键，避免用户按下的组合键直接触发唤醒 */
 function suspendWakeShortcut(sender: Electron.WebContents): void {
   const senderId = sender.id;
-  if (settingsPanelSenders.has(senderId)) return;
-  settingsPanelSenders.add(senderId);
-  // webview 被销毁（关闭会话/切换工作区/应用退出）时兜底释放，避免快捷键一直处于注销状态
+  if (shortcutDialogSenders.has(senderId)) return;
+  shortcutDialogSenders.add(senderId);
+  // 窗口被销毁（关闭 / 应用退出）时兜底释放，避免快捷键一直处于注销状态
   sender.once('destroyed', () => {
-    if (settingsPanelSenders.delete(senderId) && settingsPanelSenders.size === 0) {
+    if (shortcutDialogSenders.delete(senderId) && shortcutDialogSenders.size === 0) {
       resumeWakeShortcutInternal();
     }
   });
-  if (settingsPanelSenders.size === 1 && registeredWakeShortcut) {
+  if (shortcutDialogSenders.size === 1 && registeredWakeShortcut) {
     globalShortcut.unregister(registeredWakeShortcut);
     registeredWakeShortcut = undefined;
-    console.log('[main] Global wake shortcut suspended while settings panel is open');
+    console.log('[main] Global wake shortcut suspended while the shortcut dialog is open');
   }
 }
 
-/** 设置面板关闭：所有面板都关闭后按最新 settings.json 恢复注册 */
-function resumeWakeShortcut(sender: Electron.WebContents): void {
-  if (settingsPanelSenders.delete(sender.id) && settingsPanelSenders.size === 0) {
-    resumeWakeShortcutInternal();
-  }
-}
-
-/** 所有设置面板关闭后恢复全局快捷键注册 */
+/** 所有设置对话框关闭后恢复全局快捷键注册（按最新 settings.json） */
 function resumeWakeShortcutInternal(): void {
   if (appQuitting) return;
   registerWakeShortcut();
+}
+
+/**
+ * 打开唤醒快捷键设置对话框（File - Shortcut...）。
+ *
+ * 快捷键是 Electron 专属能力（webview 里做不了：页面收不到被系统抢占的组合键，
+ * 也没法注销已注册的全局快捷键），因此单独一个对话框：
+ * - 打开期间注销当前全局快捷键（suspendWakeShortcut），关闭后按最新 settings.json 恢复
+ * - 按键捕获在主进程的 before-input-event 里做，复用 core 的快捷键解析；
+ *   页面只负责显示，通过 preload 的 shortcutAPI 通信
+ * - 保存时经 `UIHost.updateSettingsJson` 写盘（写 settings.json 是宿主能力），写完后关闭
+ */
+function openShortcutDialog(): void {
+  if (shortcutDialogWindow && !shortcutDialogWindow.isDestroyed()) {
+    shortcutDialogWindow.focus();
+    return;
+  }
+
+  /** 候选快捷键：随用户按键更新，保存时才落盘 */
+  let candidate = readWakeShortcutFromSettings();
+  let error: string | undefined;
+
+  // 主窗口可见时才挂为子窗口：窗口最小化到托盘时挂隐藏的父窗口会让对话框也显示不出来
+  const parent = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() ? mainWindow : undefined;
+  const win = new BrowserWindow({
+    width: 420,
+    height: 268,
+    ...(parent ? { parent } : {}),
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    show: false,
+    title: tt('唤醒快捷键', 'Wake Shortcut'),
+    icon: path.join(APP_ROOT, 'assets', 'logo.png'),
+    autoHideMenuBar: true,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1a1a1f' : '#ffffff',
+    webPreferences: {
+      sandbox: false,
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'shortcutPreload.cjs'),
+    },
+  });
+  shortcutDialogWindow = win;
+
+  const currentState = (): { display: string; error?: string } => ({
+    display: formatAcceleratorForDisplay(candidate),
+    error,
+  });
+  const pushState = (): void => {
+    if (!win.isDestroyed()) win.webContents.send('shortcut-dialog:state', currentState());
+  };
+  const closeDialog = (): void => {
+    if (!win.isDestroyed()) win.close();
+  };
+
+  /**
+   * 保存：写 settings.json 是宿主能力（core 只读不写），写盘完成后关闭对话框——
+   * 关闭回调按最新 settings.json 重新注册全局快捷键。
+   */
+  const save = (): void => {
+    const normalized = normalizeAccelerator(candidate);
+    if (!normalized) {
+      error = tt('快捷键无效，请重新设置', 'Invalid shortcut. Please set it again.');
+      pushState();
+      return;
+    }
+    if (!uiHost) {
+      error = tt('保存失败', 'Failed to save');
+      pushState();
+      return;
+    }
+    error = undefined;
+    void uiHost.updateSettingsJson((cfg) => {
+      cfg.shortcut = normalized;
+    })
+      .then(() => closeDialog())
+      .catch((err: unknown) => {
+        console.error('[main] save wake shortcut failed:', err);
+        error = tt('保存失败', 'Failed to save');
+        pushState();
+      });
+  };
+
+  // 打开期间注销全局快捷键：否则用户按下的组合键会先触发唤醒
+  suspendWakeShortcut(win.webContents);
+
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    event.preventDefault();
+    if (input.key === 'Escape') {
+      closeDialog();
+      return;
+    }
+    if (input.key === 'Enter') {
+      save();
+      return;
+    }
+    const accelerator = acceleratorFromKeyboardEvent({
+      code: input.code,
+      key: input.key,
+      ctrlKey: input.control,
+      altKey: input.alt,
+      metaKey: input.meta,
+      shiftKey: input.shift,
+    });
+    if (!accelerator) return; // 只按了修饰键，继续等待
+    candidate = accelerator;
+    error = undefined;
+    pushState();
+  });
+
+  ipcMain.handle('shortcut-dialog:get-state', () => currentState());
+  ipcMain.on('shortcut-dialog:save', save);
+  ipcMain.on('shortcut-dialog:cancel', closeDialog);
+  win.on('closed', () => {
+    ipcMain.removeHandler('shortcut-dialog:get-state');
+    ipcMain.removeListener('shortcut-dialog:save', save);
+    ipcMain.removeListener('shortcut-dialog:cancel', closeDialog);
+    if (shortcutDialogWindow === win) shortcutDialogWindow = undefined;
+  });
+
+  win.once('ready-to-show', () => win.show());
+
+  const html = getShortcutDialogHtml({
+    isDark: nativeTheme.shouldUseDarkColors,
+    locale: app.getLocale().startsWith('zh') ? 'zh' : 'en',
+  });
+  void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 }
 
 /** 获取系统 locale（复用 core 的实现） */
@@ -830,188 +962,6 @@ function scheduleRepaintOnVisible(): void {
   setTimeout(repaintAllViews, 100); // 等待窗口框架生效后再补一次，双保险
 }
 
-// ===================== 内置 HTTP 服务器（File 菜单 Start Server） =====================
-
-/** 统一弹窗入口（主窗口不可用时退化为无父窗口弹窗） */
-function showMessageBox(options: Electron.MessageBoxOptions): void {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    void dialog.showMessageBox(mainWindow, options).catch(() => undefined);
-  } else {
-    void dialog.showMessageBox(options).catch(() => undefined);
-  }
-}
-
-/** 服务器可访问地址：localhost + 所有非回环 IPv4 网卡地址（局域网访问） */
-function getServerUrlCandidates(port: number): string[] {
-  const urls = [`http://localhost:${port}/`];
-  try {
-    const nets = os.networkInterfaces();
-    for (const name of Object.keys(nets)) {
-      for (const info of nets[name] ?? []) {
-        if (!info || info.internal) continue;
-        // Node 18+ family 为 'IPv4'，旧版本为数字 4，这里都兼容
-        const isIPv4 = info.family === 'IPv4' || (info.family as unknown as number) === 4;
-        if (isIPv4) {
-          urls.push(`http://${info.address}:${port}/`);
-        }
-      }
-    }
-  } catch (err) {
-    console.error('[main] Failed to enumerate network interfaces:', err);
-  }
-  return urls;
-}
-
-/**
- * 启动内置 HTTP 服务器：
- * - 前端：dist/webview（webview 构建产物），浏览器直接访问
- * - 后端：Electron 主进程（复用 WebViewUI / core），消息经 WebSocket 转发
- * 默认端口被占用时自动向后尝试，全部失败则弹窗提示。
- */
-async function startServer(): Promise<void> {
-  if (serverHandle) {
-    openServerInBrowser();
-    return;
-  }
-  if (!workspacePath) {
-    const isZh = app.getLocale().toLowerCase().startsWith('zh');
-    showMessageBox({
-      type: 'warning',
-      title: PRODUCT_NAME,
-      message: isZh ? '请先打开工作目录' : 'Please open a workspace folder first',
-      detail: isZh
-        ? '内置服务器需要工作目录来运行后端（File - Open Workspace Folder...）。'
-        : 'The built-in server needs a workspace folder to run the backend (File - Open Workspace Folder...).',
-      buttons: [isZh ? '知道了' : 'OK'],
-    });
-    return;
-  }
-
-  const webRoot = path.join(APP_ROOT, 'dist', 'webview');
-  if (!fs.existsSync(path.join(webRoot, 'index.html'))) {
-    const isZh = app.getLocale().toLowerCase().startsWith('zh');
-    showMessageBox({
-      type: 'error',
-      title: PRODUCT_NAME,
-      message: isZh ? '未找到前端构建产物' : 'Frontend build not found',
-      detail: isZh
-        ? `缺少 ${webRoot}\\index.html，请先执行 npm run build:webview。`
-        : `Missing ${webRoot}\\index.html. Run npm run build:webview first.`,
-      buttons: [isZh ? '知道了' : 'OK'],
-    });
-    return;
-  }
-
-  const shimSource = getBrowserShimSource();
-  let lastError: unknown;
-  for (let i = 0; i < SERVER_PORT_RETRY; i++) {
-    const port = DEFAULT_SERVER_PORT + i;
-    try {
-      serverHandle = await startWebServer({
-        webRoot,
-        host: '0.0.0.0',
-        port,
-        shimSource,
-        // 每次请求 index.html 时读取最新宿主信息（工作区/语言等）
-        getHostGlobals: () => ({
-          workspacePath: workspacePath ?? '',
-          hasWorkspace: !!workspacePath,
-          vscodeLocale: app.getLocale(),
-          systemLocale: getSystemLocaleForStartup(),
-          uiLanguage: readUiLanguage(),
-          highlightLanguages: readHighlightLanguages(),
-          // 浏览器访问时尝试全屏显示（受浏览器用户手势限制，见 browserShim.ts）
-          fullscreen: true,
-          hostInfo: SERVER_HOST_INFO,
-        }),
-        onClientConnected: (client) => {
-          chatViews?.registerExternalClient(client);
-        },
-        onClientMessage: (client, message) => {
-          handleWebviewMessageFromSource({ kind: 'server', client }, message);
-        },
-        onClientDisconnected: (client) => {
-          // ChatViewManager 内部已通过 client.onDestroyed 兜底清理，这里仅记录
-          console.log(`[main] server client #${client.id} disconnected`);
-        },
-      });
-      break;
-    } catch (err) {
-      lastError = err;
-      const code = (err as NodeJS.ErrnoException)?.code;
-      if (code !== 'EADDRINUSE') break;
-    }
-  }
-
-  if (!serverHandle) {
-    const isZh = app.getLocale().toLowerCase().startsWith('zh');
-    showMessageBox({
-      type: 'error',
-      title: PRODUCT_NAME,
-      message: isZh ? 'HTTP 服务器启动失败' : 'Failed to start HTTP server',
-      detail: String((lastError as Error)?.message ?? lastError ?? ''),
-      buttons: [isZh ? '知道了' : 'OK'],
-    });
-    return;
-  }
-
-  setupMenu();
-  const port = serverHandle.port;
-  const isZh = app.getLocale().toLowerCase().startsWith('zh');
-  showMessageBox({
-    type: 'info',
-    title: PRODUCT_NAME,
-    message: isZh ? 'HTTP 服务器已启动' : 'HTTP server started',
-    detail: (isZh
-      ? '前端（webview）已就绪，可在浏览器中访问以下地址：\n\n'
-      : 'Frontend (webview) is ready. Open one of the URLs below in a browser:\n\n')
-      + getServerUrlCandidates(port).join('\n'),
-    buttons: [isZh ? '确定' : 'OK'],
-  });
-}
-
-/** 停止内置 HTTP 服务器并断开所有浏览器连接 */
-async function stopServer(): Promise<void> {
-  const handle = serverHandle;
-  if (!handle) return;
-  serverHandle = undefined;
-  setupMenu();
-  try {
-    await handle.close();
-    console.log('[main] HTTP server stopped');
-  } catch (err) {
-    console.error('[main] Failed to stop HTTP server:', err);
-  }
-}
-
-/** 用系统默认浏览器打开服务器首页 */
-function openServerInBrowser(): void {
-  if (!serverHandle) return;
-  void shell.openExternal(serverHandle.url).catch((err) => {
-    console.error('[main] Failed to open server URL:', err);
-  });
-}
-
-/** 读取 settings.json 中的界面语言（失败时回退 auto） */
-function readUiLanguage(): 'auto' | 'zh' | 'en' {
-  try {
-    const { readUiLanguageSync } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
-    return readUiLanguageSync();
-  } catch {
-    return 'auto';
-  }
-}
-
-/** 读取 settings.json 中已使用过的 Shiki 高亮语言（失败时返回空数组） */
-function readHighlightLanguages(): string[] {
-  try {
-    const { readHighlightLanguagesSync } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
-    return readHighlightLanguagesSync();
-  } catch {
-    return [];
-  }
-}
-
 function setupMenu(): void {
   const isMac = process.platform === 'darwin';
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -1030,15 +980,10 @@ function setupMenu(): void {
           submenu: buildRecentWorkspacesMenu(),
         },
         { type: 'separator' },
-        // 内置 HTTP 服务器：把 webview 作为前端对外提供，Electron 作为后端处理请求
+        // 唤醒快捷键：Electron 专属能力（最小化到托盘后用该快捷键呼出窗口）
         {
-          label: serverHandle ? 'Stop Server' : 'Start Server',
-          click: () => { void (serverHandle ? stopServer() : startServer()); },
-        },
-        {
-          label: 'Open Server in Browser',
-          enabled: !!serverHandle,
-          click: () => openServerInBrowser(),
+          label: 'Shortcut...',
+          click: () => openShortcutDialog(),
         },
         { type: 'separator' },
         isMac ? { role: 'close' } : { role: 'quit' },
@@ -1111,25 +1056,16 @@ function applyWorkspace(p: string): void {
   // 工作区变化：清空旧聊天视图并新建
   chatViews?.disposeAll();
   chatViews?.openNewConversation();
-  // 旧工作区的会话已全部关闭：清空空闲关闭计时状态
-  try {
-    const { resetSessionIdleState } = require('../src/core/sessionIdle.js') as typeof import('../src/core/sessionIdle.js');
-    resetSessionIdleState();
-  } catch (err) {
-    console.error('[main] resetSessionIdleState error:', err);
-  }
   // 清除对话列表缓存：切换工作目录后项目对话目录改变，
   // 必须重新从磁盘加载新项目的对话列表，否则侧栏仍显示旧项目的对话
+  conversations?.invalidateCachedList();
   try {
     const { resetConversationListCache } = require('../src/core/history/index.js');
     resetConversationListCache();
   } catch (err) {
     console.error('[main] resetConversationListCache error:', err);
   }
-  refreshSidebar();
   broadcastWorkspace();
-  // 工作区切换后浏览器客户端的会话已失效：通知页面重载，重新初始化新工作区的会话
-  serverHandle?.broadcast({ type: 'serverReload' });
 }
 
 /** 推送工作区路径到侧栏 */
@@ -1213,31 +1149,16 @@ function saveLastWorkspace(p: string): void {
 }
 
 /**
- * 消息来源：原生聊天视图（WebContents）或内置 HTTP 服务器的浏览器客户端。
- * 两者的消息协议完全一致，仅会话注册/回推方式不同。
- */
-type WebviewMessageSource =
-  | { kind: 'webcontents'; sender: Electron.WebContents }
-  | { kind: 'server'; client: WebServerClient };
-
-/**
- * 处理一条来自 webview（原生视图或浏览器客户端）的消息。
+ * 处理一条来自 webview（原生聊天视图）的消息。
  * 与 extension.ts AssistantViewProvider 的专用消息处理保持一致，
  * 其余消息统一委托给 WebViewUI（复用同一份 WebviewMessageHandler）。
  */
-function handleWebviewMessageFromSource(source: WebviewMessageSource, message: any): void {
+function handleWebviewMessageFromSource(sender: Electron.WebContents, message: any): void {
   if (!message || typeof message.type !== 'string') return;
 
   const ui = webviewUi;
   if (!ui) return;
   const sessionId = typeof message.sessionId === 'string' ? message.sessionId : undefined;
-
-  // 浏览器页面会带上自己的 clientId：登记到对应连接后，
-  // 宿主回推的「只回给发起端」消息（查看文件 / 打开设置面板）就能精确定位到该连接，
-  // 不会落到原生视图或其它浏览器端。
-  if (source.kind === 'server' && typeof message.clientId === 'string' && message.clientId) {
-    chatViews?.setExternalClientToken(source.client, message.clientId);
-  }
 
   // 用户发出了新对话的第一条消息：该会话开始落盘，不再是「新建但还没发过消息」的对话。
   // 清除该标记后，下次点侧栏「新建」才会创建新的聊天视图，而不是复用这个已有内容的对话。
@@ -1245,53 +1166,39 @@ function handleWebviewMessageFromSource(source: WebviewMessageSource, message: a
     chatViews?.markSessionUsed(sessionId);
   }
 
-  // 新建对话/会话切换时，将来源关联到 sessionId：
-  // - 原生视图：把临时 new- 视图转为正式会话条目
-  // - 浏览器客户端：登记该连接当前展示的会话，并维护 MCP 引用
-  if (message.type === 'setActiveSessionId' || message.type === 'startNewConversation') {
+  // 视图的会话身份变化时，把临时 new- 视图转为正式会话条目。
+  // 只有这两条消息表达「这个视图现在是哪个会话」：
+  // - startNewConversation：webview 新建对话（含预热视图激活）
+  // - loadConversation：webview 请求加载某个会话（含 switchToSession 触发的自动跳转）
+  // 对「key 已经等于 sessionId」的调用，registerSession 是提前返回的空操作。
+  if (message.type === 'startNewConversation' || message.type === 'loadConversation') {
     if (sessionId) {
-      if (source.kind === 'webcontents') {
-        chatViews?.registerSession(source.sender, sessionId);
-        refreshSidebar();
-      } else {
-        chatViews?.setExternalClientSession(source.client, sessionId);
-      }
+      chatViews?.registerSession(sender, sessionId);
     }
   }
 
-  // 浏览器端加载指定会话：先登记会话，后续 conversationLoaded 才能按 sessionId 投递
-  if (message.type === 'loadConversation') {
-    if (sessionId && source.kind === 'server') {
-      chatViews?.setExternalClientSession(source.client, sessionId);
-    }
-  }
-
-  // webview 内点击子代理/回复/From 链接等跳转到指定会话：
-  // - 原生视图：新起一个 webview 加载该对话（chatViews.openConversation 创建/切换视图）
-  // - 浏览器客户端：不支持新起原生视图，退化为在当前页面内重新加载（loadConversation）
+  // webview 内点击子代理/回复/From 链接等跳转到指定会话：新起一个 webview 加载该对话
   if (message.type === 'openConversation') {
     if (sessionId) {
-      if (source.kind === 'webcontents') {
-        chatViews?.openConversation(sessionId);
-        refreshSidebar();
-      } else {
-        chatViews?.setExternalClientSession(source.client, sessionId);
-        void ui.handleWebviewMessage({ ...message, type: 'loadConversation' });
-      }
+      chatViews?.openConversation(sessionId);
     }
     return;
   }
 
-  // 关闭按钮：卸内存 + 销毁视图走 WebViewUI.closeConversation（与侧栏「关闭」同一入口），
-  // 再刷新侧栏（已加载状态/空对话）。浏览器客户端没有可销毁的原生视图，直接忽略。
+  // 关闭按钮：卸内存 + 销毁视图走 WebViewUI.closeConversation（与侧栏「关闭」同一入口）。
+  // loaded 变化由 ChatViewManager 单独推给侧栏，列表变化由 core 的 conversationListChanged 推。
   if (message.type === 'closeWebview') {
-    if (source.kind === 'webcontents') {
-      const closedSessionId = chatViews?.closeViewByWebContents(source.sender);
-      if (closedSessionId) {
-        webviewUi?.closeConversation(closedSessionId);
-      }
-      refreshSidebar();
+    const closedSessionId = chatViews?.closeViewByWebContents(sender);
+    if (closedSessionId) {
+      webviewUi?.closeConversation(closedSessionId);
     }
+    return;
+  }
+
+  // 后台预热视图报告「已挂载」：若它已被切到前台，补发激活消息
+  // （用户可能在页面加载完成前就点了「新建」）
+  if (message.type === 'prewarmViewReady') {
+    chatViews?.handlePrewarmViewReady(sender);
     return;
   }
 
@@ -1302,26 +1209,15 @@ function handleWebviewMessageFromSource(source: WebviewMessageSource, message: a
   }
 
   // 与 extension.ts AssistantViewProvider 一致的专用消息处理
+  // 回包按来源 webContents 直发：预热视图等非活动视图也发起这些请求
   if (message.type === 'requestTheme') {
-    sendTheme();
+    sendTheme(sender);
     return;
   }
   if (message.type === 'requestContextLimit') {
-    sendContextLimit(message.model);
+    sendContextLimit(message.model, sender);
     return;
   }
-  // 设置面板打开期间临时注销全局快捷键，关闭后恢复（仅原生视图需要）
-  if (message.type === 'suspendWakeShortcut') {
-    if (source.kind === 'webcontents') suspendWakeShortcut(source.sender);
-    return;
-  }
-  if (message.type === 'resumeWakeShortcut') {
-    if (source.kind === 'webcontents') resumeWakeShortcut(source.sender);
-    return;
-  }
-
-  // 设置保存不在这里重新注册：设置面板打开期间快捷键已临时注销，
-  // 等面板关闭后由 resumeWakeShortcut 按最新 settings.json 统一恢复。
   ui.handleWebviewMessage(message).catch((err: any) => {
     console.error(`[main] handleWebviewMessage error (${message.type}):`, err);
   });
@@ -1329,17 +1225,30 @@ function handleWebviewMessageFromSource(source: WebviewMessageSource, message: a
 
 function setupIpc(): void {
   ipcMain.on('webview-message', (event, message: any) => {
-    handleWebviewMessageFromSource({ kind: 'webcontents', sender: event.sender }, message);
+    handleWebviewMessageFromSource(event.sender, message);
   });
 
   // ── 侧栏 IPC ──
+  // 列表流：纯磁盘元数据（单一来源 loadConversationList；loaded / running / waiting 走各自通道）
   ipcMain.handle('sidebar:get-conversations', async () => {
+    // 优先返回最近一次推送的列表快照（ConversationManager.getCachedList），
+    // 不再每次拉取都重读磁盘——列表变化本来就会经 conversationListChanged 推送并更新快照。
+    const cached = conversations?.getCachedList();
+    if (cached) return cached;
+    // 尚无快照（刚启动 / 刚切换工作区）：读一次盘（refresh 顺带推送给侧栏并填充快照）
+    if (!conversations) return [];
     try {
-      return (await chatViews?.getSidebarConversations()) ?? [];
+      await conversations.refresh();
+      return conversations.getCachedList() ?? [];
     } catch (err) {
       console.error('[main] sidebar:get-conversations error:', err);
       return [];
     }
+  });
+
+  // 视图流：已打开会话集合（owner 是 ChatViewManager）
+  ipcMain.handle('sidebar:get-loaded-sessions', () => {
+    return chatViews?.getLoadedSessionIds() ?? [];
   });
 
   ipcMain.handle('sidebar:get-active-session', () => {
@@ -1355,7 +1264,6 @@ function setupIpc(): void {
   ipcMain.on('sidebar:open-conversation', (_event, sessionId: string) => {
     if (typeof sessionId === 'string' && sessionId) {
       chatViews?.openConversation(sessionId);
-      refreshSidebar();
     }
   });
 
@@ -1368,7 +1276,6 @@ function setupIpc(): void {
   ipcMain.on('sidebar:close-conversation', (_event, sessionId: string) => {
     if (typeof sessionId === 'string' && sessionId) {
       webviewUi?.closeConversation(sessionId);
-      refreshSidebar();
     }
   });
 
@@ -1376,30 +1283,18 @@ function setupIpc(): void {
   ipcMain.handle('sidebar:delete-conversation', async (_event, sessionId: string) => {
     try {
       // 宿主只负责「关视图」：对受影响闭包逐个调 WebViewUI.closeConversation
-      // （卸内存 + 销毁视图，5.5 节约定顺序）；删盘与列表广播由 core 的
-      // conversationDeleted 订阅（deleteConversation → conversationListChanged）承担。
-      const list = (await chatViews?.getSidebarConversations()) ?? [];
-      const affected = new Set<string>([sessionId]);
-      let grew = true;
-      while (grew) {
-        grew = false;
-        for (const c of list) {
-          const pid = c.parentSessionId as string | undefined;
-          if (pid && affected.has(pid) && !affected.has(c.sessionId as string)) {
-            affected.add(c.sessionId as string);
-            grew = true;
-          }
-        }
-      }
+      // （卸内存 + 销毁视图，5.5 节约定顺序）。闭包由 core 的
+      // collectConversationClosure 算出——与 deleteConversation 同一条规则，
+      // 不再在宿主里重写一遍；删盘与列表广播由 core 的 conversationDeleted
+      // 订阅（deleteConversation → conversationListChanged）承担。
+      const { loadConversationList, collectConversationClosure } = await import('../src/core/history/index.js');
+      const affected = collectConversationClosure(sessionId, await loadConversationList());
       for (const sid of affected) {
         webviewUi?.closeConversation(sid);
       }
       // 删盘（core 消费方：算闭包已由宿主完成，这里只发 root）
       const { requireEventBus } = await import('../src/core/AssistantEventBus.js');
       requireEventBus().emitToCore({ type: 'conversationDeleted', sessionId });
-      // 等待 core 删盘完成后刷新侧栏（会话列表事件随后也会刷新）
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      refreshSidebar();
       return { ok: true };
     } catch (err) {
       console.error('[main] sidebar:delete-conversation error:', err);
@@ -1413,8 +1308,7 @@ function setupIpc(): void {
       // conversationListChanged 广播，多端同步）
       const { requireEventBus } = await import('../src/core/AssistantEventBus.js');
       requireEventBus().emitToCore({ type: 'conversationRenamed', sessionId, title });
-      // 标题回推与列表刷新由 core 广播；这里只保证侧栏尽快更新
-      setTimeout(() => refreshSidebar(), 100);
+      // 标题回推与列表刷新由 core 广播（titleChanged / conversationListChanged）
       return { ok: true };
     } catch (err) {
       console.error('[main] sidebar:rename-conversation error:', err);
@@ -1432,7 +1326,7 @@ function setupIpc(): void {
       const title = await resolveSmartTitle(sessionId, (conversation.messages || []) as any[]);
       const { requireEventBus } = await import('../src/core/AssistantEventBus.js');
       requireEventBus().emitToCore({ type: 'conversationRenamed', sessionId, title });
-      setTimeout(() => refreshSidebar(), 200);
+      // 标题回推与列表刷新由 core 广播（titleChanged / conversationListChanged）
       return { ok: true, title };
     } catch (err) {
       console.error('[main] sidebar:smart-name-conversation error:', err);
@@ -1441,29 +1335,36 @@ function setupIpc(): void {
   });
 }
 
-/** 刷新侧栏对话列表（对话创建/删除/切换后调用） */
-function refreshSidebar(): void {
-  (async () => {
-    try {
-      const list = (await chatViews?.getSidebarConversations()) ?? [];
-      sidebarView?.webContents.send('sidebar:conversations-updated', list);
-      updateTrayStatusFromConversations(list);
-    } catch (err) {
-      console.error('[main] refreshSidebar error:', err);
-    }
-  })();
-}
-
-function sendTheme(): void {
+/**
+ * 下发主题。
+ *
+ * target 指定时只发给该视图（视图自己的 did-finish-load / requestTheme 回包），
+ * 否则发给当前活动视图（系统主题变化等全局广播场景）。
+ * 后台预热的视图不是活动视图，必须按 target 直发，否则它会一直停在
+ * 「Loading」（webview 的 setTheme 是解除启动 loading 的条件）。
+ */
+function sendTheme(target?: Electron.WebContents): void {
   const theme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
   console.log(`[main] sendTheme: ${theme} (themeSource=${nativeTheme.themeSource})`);
-  chatViews?.sendToActive({
-    type: 'setTheme',
-    theme,
-  });
+  const message = { type: 'setTheme', theme };
+  if (target) {
+    if (!target.isDestroyed()) target.send('webview-message', message);
+    return;
+  }
+  chatViews?.sendToActive(message);
 }
 
-function sendContextLimit(model?: string): void {
+/**
+ * 系统主题变化：广播给所有聊天视图（含隐藏对话视图与后台预热视图）。
+ * 这些视图各自独立渲染，只发活动视图会让它们停留在旧主题。
+ */
+function broadcastTheme(): void {
+  const theme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+  console.log(`[main] broadcastTheme: ${theme} (themeSource=${nativeTheme.themeSource})`);
+  chatViews?.broadcast({ type: 'setTheme', theme });
+}
+
+function sendContextLimit(model?: string, target?: Electron.WebContents): void {
   try {
     const { getContextWindow } = require('../src/core/utils/modelConfig.js');
     // 与 extension.ts 共用同一份读取逻辑：
@@ -1473,17 +1374,28 @@ function sendContextLimit(model?: string): void {
     //   webview 里的 context window 不会跟随变化）。
     const { model: modelName, modelConfigs } = readActiveProviderModelContextSync(model);
     const contextWindow = getContextWindow(modelName || '', modelConfigs);
-    chatViews?.sendToActive({
+    const message = {
       type: 'contextLimitUpdated',
       maxContextTokens: contextWindow,
-    });
+    };
+    if (target) {
+      if (!target.isDestroyed()) target.send('webview-message', message);
+      return;
+    }
+    chatViews?.sendToActive(message);
   } catch (err) {
     console.error('[main] sendContextLimit error:', err);
   }
 }
 
-/** 检测 LLM 配置是否完整，未配置 active provider 或其 apiKey 为空时弹出配置面板（与 extension.ts checkAndSendLLMConfig 一致） */
-async function checkAndSendLLMConfig(): Promise<void> {
+/**
+ * 检测 LLM 配置是否完整，未配置 active provider 或其 apiKey 为空时弹出配置面板（与 extension.ts checkAndSendLLMConfig 一致）。
+ *
+ * target 指定时只推给该视图（视图创建完成后的初始化）；
+ * 否则推给当前活动视图。无论哪种都只推一个视图，不要广播，
+ * 否则打开新对话会把设置面板弹到所有聊天视图。
+ */
+async function checkAndSendLLMConfig(target?: Electron.WebContents): Promise<void> {
   try {
     const { getLLMConfigPanelPayload, hasActiveProviderSetting } = await import('../src/core/llm/config.js');
     const payload = await getLLMConfigPanelPayload();
@@ -1495,16 +1407,21 @@ async function checkAndSendLLMConfig(): Promise<void> {
     }
 
     const { readUiLanguageSync } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
-    // 只推给触发本次检查的原生视图（按会话路由），不要广播到浏览器端，
-    // 否则桌面端打开新对话会把设置面板弹到所有浏览器端。
-    const activeSessionId = chatViews?.getActiveSessionId();
-    if (!activeSessionId) return;
-    chatViews?.sendTo(activeSessionId, {
+    const targetSessionId = target
+      ? chatViews?.getKeyByWebContents(target) ?? chatViews?.getActiveSessionId() ?? null
+      : chatViews?.getActiveSessionId() ?? null;
+    if (!targetSessionId) return;
+    const message = {
       type: 'showLLMConfig',
       ...payload,
       language: readUiLanguageSync(),
-      sessionId: activeSessionId,
-    });
+      sessionId: targetSessionId,
+    };
+    if (target) {
+      if (!target.isDestroyed()) target.send('webview-message', message);
+      return;
+    }
+    chatViews?.sendTo(targetSessionId, message);
   } catch (err) {
     console.error('[main] checkAndSendLLMConfig error:', err);
   }
@@ -1529,38 +1446,36 @@ function initCore(): void {
   setGlobalEventBus(bus);
   initializeCoreEvents(bus);
   const host = new ElectronUIHost();
-  const spinDesign = new ElectronSpinDesign(host, (win) => host.trackPreviewWindow(win));
-  const conversations = new ElectronConversationManager(
+  const spinDesign = new ElectronSpinDesign(host);
+  const conversationsMgr = new ElectronConversationManager(
     host,
     (channel: string, payload: unknown) => {
       if (sidebarView && !sidebarView.webContents.isDestroyed()) {
         sidebarView.webContents.send(channel, payload);
       }
     },
+    (message: unknown) => chatViews?.broadcast(message),
   );
+  conversations = conversationsMgr;
   // 托盘只吃状态流（阶段 3.6）：running / waiting 来自 core 的 sessionRuntimeChanged
-  conversations.setStatusListener((states) => updateTrayStatusFromStates(states));
+  conversationsMgr.setStatusListener((states) => updateTrayStatusFromStates(states));
   const ui = WebViewUI.create(
     host,
     bus,
     spinDesign,
-    conversations,
+    conversationsMgr,
     {
       log: (...args: unknown[]) => {
         console.log('[WebViewUI]', args.map(a => String(a)).join(' '));
       },
+      // 用户选择框弹出（ask user / 权限确认）不再刷新侧栏：
+      // waiting 由 core 的 sessionRuntimeChanged → dispatchStates 推给侧栏（黄灯）与托盘
       createUserChoiceManager: (post, closePreview, uiPort) =>
         new UserChoiceManager({
           outputChannel: { appendLine: (line: string) => console.log('[WebViewUI]', line) },
           postToWebview: post,
           closePreview,
           getActiveSessionIdInternal: () => uiPort.getActiveSessionId(),
-          onShowDiffInVirtualDocumentCallback: undefined,
-          // 用户选择框弹出（ask user / 权限确认）：刷新侧栏，流水灯显示黄色
-          onChoiceShown: () => {
-            // 用户选择框弹出（ask user / 权限确认）：列表流刷新侧栏（waiting 走状态流）
-            void conversations.refresh();
-          },
         }),
     },
   );
@@ -1570,10 +1485,9 @@ function initCore(): void {
   host.setWorkspacePath(workspacePath);
   webviewUi = ui;
   uiHost = host;
-  // 侧栏黄色流水灯的「等待用户」判定
-  chatViews?.setWaitingForUserProvider((sessionId: string) => ui.hasPendingUserChoice(sessionId));
-  // trim / disposeAll / 关闭按钮统一走 WebViewUI.closeConversation（core 卸内存 + 宿主销毁视图）
-  chatViews!.closeConversation = (sessionId: string) => ui.closeConversation(sessionId);
+  // 视图销毁序列（closeView / LRU trim / disposeAll）在销毁视图前只卸内存：
+  // 指向 WebViewUI.releaseConversation（不回调 closeConversationView，避免与视图销毁互相回调成环）
+  chatViews!.closeConversation = (sessionId: string) => ui.releaseConversation(sessionId);
 
   // 日志：输出到控制台（Electron 无 OutputChannel）
   setLogToConsole(true);
@@ -1588,31 +1502,6 @@ function initCore(): void {
     initializeSessionQueue();
   } catch (err) {
     console.error('[main] initializeSessionQueue error:', err);
-  }
-
-  // 空闲对话自动关闭：非激活对话 2 小时无活动后销毁其聊天视图并释放引擎 / 消息缓存
-  try {
-    const {
-      startSessionIdleMonitor,
-      setSessionIdleCloseHandler,
-      setSessionWaitingForUserProvider,
-      setSessionActiveProvider,
-      releaseSessionResources,
-    } = require('../src/core/sessionIdle.js') as typeof import('../src/core/sessionIdle.js');
-
-    // 当前激活的对话以 ChatViewManager 为准：切换到已加载的视图时不会再发 setActiveSessionId
-    setSessionActiveProvider(() => chatViews?.getActiveSessionId() ?? null);
-    setSessionWaitingForUserProvider((sessionId: string) => ui.hasPendingUserChoice(sessionId));
-    setSessionIdleCloseHandler(async (sessionId: string) => {
-      // 先销毁聊天视图（内部会 abort 该会话的查询并释放 MCP 引用）
-      chatViews?.closeView(sessionId);
-      // 再释放引擎与消息缓存：再次打开该对话时由新视图 loadConversation 从磁盘重建
-      await releaseSessionResources(sessionId);
-      refreshSidebar();
-    });
-    startSessionIdleMonitor();
-  } catch (err) {
-    console.error('[main] init idle session monitor error:', err);
   }
 
   // 扩展路径提供者：ripgrep/pandoc 等资源位于 <root>/dist/resources

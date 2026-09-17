@@ -3,7 +3,7 @@
  *
  * 从 UI 侧 webviewMessageHandler.handleRollbackEdit 迁入（DEVELOPMENT.md 第 4.3 节 #41）：
  * 「回滚历史编辑」改的是磁盘文件，属 core 业务；UI 只发 UiEvent.editRolledBack，
- * 结果通过 CoreEvent.message（rollbackEditResult 内容）回传 webview 展示。
+ * 结果作为一条普通消息（CoreEvent.message）回传 webview 展示。
  */
 
 import { requireEventBus } from '../AssistantEventBus.js';

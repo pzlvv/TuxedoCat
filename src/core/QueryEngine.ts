@@ -14,7 +14,6 @@ import type { LLMConfig } from './llm/config.js';
 import type { PromptPresetId } from './prompt/PromptPreset.js';
 import { getAllTools } from './tools/index.js';
 import { logger } from './Logger.js';
-import { noteSessionActivity } from './sessionIdle.js';
 import { isCompacting, isPendingCompact, markPendingCompact, unmarkPendingCompact } from './compact/state.js';
 import { randomId } from './tools/RunTools.js';
 
@@ -135,7 +134,7 @@ export class QueryEngine {
   public readonly role?: string;
   /** 工作模式 */
   public readonly workMode: WorkMode;
-  /** 会话关联的提示词预设（运行时值；持久化由 VSCodeUI/meta.json 负责） */
+  /** 会话关联的提示词预设（运行时值；持久化由 UiEvent 的 core 侧处理写入 meta.json） */
   public promptPresetId: PromptPresetId = 'normal';
   /** 混合模式是否已完成首次 LLM 回复；完成后从极简切换为普通 */
   private firstAssistantReplyCompleted = false;
@@ -162,6 +161,11 @@ export class QueryEngine {
   private consumerExitResolvers: Array<() => void> = [];
   /** 待处理的 Reminder 消息（LLM 可见，UI 不可见） */
   private pendingReminder: string | null = null;
+  /**
+   * 已提醒过「后台仍在运行」的后台任务 ID 集合。
+   * 用于保证每个后台任务只提醒一次，避免「提醒 → 查询 → 提醒」的无限递归。
+   */
+  private remindedBackgroundTaskIds = new Set<string>();
   /** 正在进行的持久化操作列表，供 flush() 等待 */
   private pendingPersists: Promise<void>[] = [];
   /** 追踪最后一条持久化到磁盘的消息 uuid，用于在 appendMessage 时正确设置 parentUuid */
@@ -204,7 +208,7 @@ export class QueryEngine {
   /**
    * 设置当前会话的提示词预设（普通 / 极简 / 混合）。
    * 切换时清空 system prompt 缓存，使下一个消费循环按新预设重新组装。
-   * 持久化由上层（VSCodeUI/meta.json）负责。
+   * 持久化由上层（UiEvent 的 core 侧处理）负责。
    */
   setPromptPreset(id: PromptPresetId): void {
     if (this.promptPresetId === id) return;
@@ -411,44 +415,6 @@ export class QueryEngine {
   }
 
   /**
-   * 判断当前会话是否处于空闲状态，即没有活跃的后台工作。
-   *
-   * 空闲 = 消费循环未运行 + 无活跃后台 Bash 任务 + 无活跃 Sub-Agent（递归检查）
-   * 非空闲时不应触发 todo reminder 等操作，因为后台工作完成后会自动通知 LLM。
-   */
-  async isIdle(): Promise<boolean> {
-    // 0. 自身对话正在消费（运行中）时不算空闲。
-    // 例如长轮次的 LLM 调用 / 工具执行期间，consumer 仍在运行，此时后台 Bash
-    // 任务与 Sub-Agent 都可能为空，若不检查 isConsumerRunning 会被误判为空闲。
-    if (this.isConsumerRunning) return false;
-
-    // 1. 检查当前 session 是否有活跃的后台 Bash 任务
-    try {
-      const { getAllBackgroundTasks } = await import('./tools/bash/LocalShellTask.js');
-      const tasks = getAllBackgroundTasks();
-      const hasActiveBgTask = tasks.some(
-        (t: any) => t.status === 'running' && t.sessionID === this.sessionID
-      );
-      if (hasActiveBgTask) return false;
-    } catch { }
-
-    // 2. 检查当前 session 是否有活跃的 Sub-Agent（递归）
-    try {
-      const { subAgentRegistry } = await import('./tools/agent/SubAgentRegistry.js');
-      const activeSubAgents = subAgentRegistry.listForCreator(this.sessionID);
-      for (const subId of activeSubAgents) {
-        const record = subAgentRegistry.get(subId);
-        if (!record) continue;
-        // 递归检查子代理是否空闲
-        const isSubIdle = await record.engine.isIdle();
-        if (!isSubIdle) return false;
-      }
-    } catch { }
-
-    return true;
-  }
-
-  /**
    * 启动消费循环的公共样板：置运行标记 → 记录会话活动 → （可选）通知 UI 查询开始 →
    * 启动后台消费循环。
    *
@@ -463,7 +429,6 @@ export class QueryEngine {
     if (this.workMode === 'spin') return;
 
     this.isConsumerRunning = true;
-    noteSessionActivity(this.sessionID);
     markQueryRunning(this.sessionID, true);
     if (notifyQueryBegin) {
       emitToUi({ type: 'queryBegin', sessionId: this.sessionID });
@@ -528,6 +493,90 @@ export class QueryEngine {
       emitToUi({ type: 'queryEnd', sessionId: this.sessionID });
     }
     await this.runPendingCompactIfNeeded();
+    await this.maybeRemindBackgroundTasks();
+  }
+
+  /**
+   * 查询结束（End）后的兜底提醒：若本会话仍有运行中的后台 Bash 任务，
+   * 向 LLM 注入一条 reminder，列出当前后台进程（taskId + pid + 命令），让 LLM 二选一：
+   * - 不再需要的 → 执行 reminder 里按当前 OS 生成好的 kill 命令；
+   * - 都还需要 → 直接结束本轮等待完成通知，不要 sleep / 轮询。
+   *
+   * 只发一次：已提醒过的 taskId 记录在 remindedBackgroundTaskIds 中，
+   * 后续 finalizeIdle 不会对同一批任务重复提醒，因此即使提醒本身触发了一轮
+   * 新的查询（本方法会启动消费循环），也不会出现「提醒 → 查询 → 提醒」的递归。
+   */
+  private async maybeRemindBackgroundTasks(): Promise<void> {
+    // spin 模式没有 LLM 消费循环，提醒不会被读取
+    if (this.workMode === 'spin') return;
+    // 已有消费循环在跑（如压缩收尾已唤醒）或用户已中止：本次不重复处理
+    if (this.isConsumerRunning || this.isAborted()) return;
+
+    let runningTasks: Array<{ taskId: string; description: string; command: string; pid?: number }>;
+    try {
+      const { getRunningBackgroundTasksForSession } = await import('./tools/bash/LocalShellTask.js');
+      runningTasks = getRunningBackgroundTasksForSession(this.sessionID)
+        .filter(t => !this.remindedBackgroundTaskIds.has(t.taskId))
+        .map(t => ({ taskId: t.taskId, description: t.description, command: t.command, pid: t.pid }));
+    } catch (err) {
+      logger.warn('QueryEngine', `Failed to inspect background tasks for ${this.sessionID}: ${err}`);
+      return;
+    }
+
+    if (runningTasks.length === 0) return;
+
+    // 先登记再入队：提醒触发的查询结束后会再次进入 finalizeIdle，
+    // 此时同一批 taskId 已在集合中，不会被再次提醒。
+    for (const task of runningTasks) {
+      this.remindedBackgroundTaskIds.add(task.taskId);
+    }
+
+    // 直接按当前 OS 生成可执行的 kill 命令，省得 LLM 自己判断平台。
+    // Windows 用 taskkill /T 连子进程树一起杀；其他平台用 kill。
+    const isWindows = process.platform === 'win32';
+    const buildKillCommand = (pid: number): string =>
+      isWindows ? `taskkill /T /F /PID ${pid}` : `kill ${pid}`;
+
+    const lines = runningTasks
+      .map(t => {
+        const pidPart = t.pid !== undefined ? `pid ${t.pid}` : 'pid unknown';
+        const cmdPart = t.command && t.command !== t.description ? ` — \`${t.command}\`` : '';
+        const killPart = t.pid !== undefined ? `\n  kill: ${buildKillCommand(t.pid)}` : '';
+        return `- ${t.taskId} (${pidPart}): ${t.description}${cmdPart}${killPart}`;
+      })
+      .join('\n');
+    this.pendingReminder = [
+      '<reminder>',
+      `You still have ${runningTasks.length} background bash command(s) running:`,
+      lines,
+      '',
+      'Review them once and act accordingly:',
+      '- If any of them is no longer needed, run the "kill:" command shown next to it (already adapted to this OS).',
+      '- If all of them are still needed, do NOT sleep, poll, or repeatedly check their output. Simply finish this turn and wait — you will be notified automatically when a background command completes.',
+      '</reminder>',
+    ].join('\n');
+
+    // 压缩进行中：只入队，压缩结束后由 resumeAfterCompact() 唤醒消费循环
+    if (isCompacting(this.sessionID)) return;
+
+    // 主动投递提醒（与后台任务完成通知一致）：启动消费循环，让 LLM 立即看到。
+    //
+    // 延后一个宏任务再启动：finalizeIdle 可能由 submitMessage 的 finally 触发，
+    // 而 Integration 会在 submitMessage 返回后补发 queryEnd / markQueryRunning(false)；
+    // 若同步启动消费循环，会被 Integration 的收尾覆盖成「已空闲」。
+    // 延后到宏任务可保证「上一轮先收尾，再开始提醒这一轮」。
+    //
+    // remindedBackgroundTaskIds 已保证同一批任务只提醒一次，因此不会递归重复提醒。
+    const timer = setTimeout(() => {
+      // 期间已被别的消费循环接管 / 用户中止 / 会话已释放：交给接管方或直接放弃
+      if (this.isConsumerRunning || this.isAborted()) return;
+      if (isCompacting(this.sessionID)) return;
+      if (this.pendingReminder === null) return;
+      if (getSessionEngine(this.sessionID) !== this) return;
+      this.beginConsumer(true);
+    }, 0);
+    // 不因这条提醒阻止进程退出
+    (timer as { unref?: () => void }).unref?.();
   }
 
   /**
@@ -703,6 +752,13 @@ export class QueryEngine {
     // 消费优先级：Reminder > (Agent + 用户合并) > 纯用户 > 纯 Agent。
     if (hasReminder) {
       if (this.flushReminder()) count++;
+      // 若同时有待处理的用户消息，并入同一轮（reminder 在前、用户消息在末尾）。
+      // 原因：consumer 空闲时 Integration 会先把用户消息 push 进 mutableMessages，
+      // 若这里只 flush reminder，这一轮 LLM 其实已经带上了用户消息并响应一次，
+      // 随后用户消息又会被移到末尾单独跑一轮 → 用户消息被重复响应。
+      if (hasUserMessage) {
+        count += this.consumePendingUserMessage(notifyUI);
+      }
     } else if (hasUserMessage && hasAgentMessages) {
       // 合并场景：先追加 agent reply，再把用户消息放到末尾，保证同一轮 LLM 按序看到。
       let userMsg: Message | undefined;
@@ -722,25 +778,38 @@ export class QueryEngine {
       }
       this.pendingUserMessage = null;
     } else if (hasUserMessage) {
-      const userMsgInArray = this.pendingUserMsgUuid !== null;
-      this.ensureUserMessageAtEnd();
-      if (!userMsgInArray) {
-        const userMsg = this.pendingUserMsgData ?? this.buildPendingUserMessage();
-        this.pendingUserMsgData = null;
-        if (userMsg) {
-          if (notifyUI) this.notifyUserMessageToUI(userMsg);
-          this.mutableMessages.push(userMsg);
-          count++;
-        }
-      } else {
-        this.pendingUserMsgData = null;
-        count++;
-      }
-      this.pendingUserMessage = null;
+      count += this.consumePendingUserMessage(notifyUI);
     } else {
       count += this.consumeAgentMessages(notifyUI);
     }
 
+    return count;
+  }
+
+  /**
+   * 消费待处理的用户消息：确保其位于 mutableMessages 末尾（必要时追加），
+   * 并清空 pending 状态。
+   *
+   * 供 consumeQueuedOnce 的「纯用户」与「Reminder + 用户」分支复用。
+   * @returns 处理数量（0 或 1）
+   */
+  private consumePendingUserMessage(notifyUI: boolean): number {
+    const userMsgInArray = this.pendingUserMsgUuid !== null;
+    this.ensureUserMessageAtEnd();
+    let count = 0;
+    if (!userMsgInArray) {
+      const userMsg = this.pendingUserMsgData ?? this.buildPendingUserMessage();
+      this.pendingUserMsgData = null;
+      if (userMsg) {
+        if (notifyUI) this.notifyUserMessageToUI(userMsg);
+        this.mutableMessages.push(userMsg);
+        count++;
+      }
+    } else {
+      this.pendingUserMsgData = null;
+      count++;
+    }
+    this.pendingUserMessage = null;
     return count;
   }
 
@@ -967,7 +1036,6 @@ export class QueryEngine {
     if (isCompacting(this.sessionID)) return;
 
     this.isConsumerRunning = true;
-    noteSessionActivity(this.sessionID);
     markQueryRunning(this.sessionID, true);
     if (manageQueryUI) {
       emitToUi({ type: 'queryBegin', sessionId: this.sessionID });
@@ -1078,8 +1146,6 @@ export class QueryEngine {
    * 必须与 isConsumerRunning=false 配对调用。
    */
   private signalConsumerExited(): void {
-    // 会话从「非空闲」回到「空闲」：从这里开始重新计算空闲关闭计时
-    noteSessionActivity(this.sessionID);
     const resolvers = this.consumerExitResolvers;
     this.consumerExitResolvers = [];
     for (const r of resolvers) {
@@ -1375,6 +1441,9 @@ export class QueryEngine {
       this.pendingUserMsgData = null;
       this.pendingUserMsgUuid = null;
     }
+    // 1.6 丢弃尚未消费的 reminder：abort 会同时中止后台任务，之前排队的
+    //     「后台任务仍在运行」提醒已经过期，不应在下一轮再发给 LLM。
+    this.pendingReminder = null;
     // 2. 中止本会话的后台 Bash 任务
     this.abortBackgroundTasksForCurrentSession();
 

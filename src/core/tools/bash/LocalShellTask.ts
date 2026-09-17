@@ -9,6 +9,16 @@
 
 import type { ShellCommand } from './ShellCommand.js';
 import { logger } from '../../Logger.js';
+import { markSessionBackground } from '../../sessionRuntime.js';
+
+/**
+ * 后台任务增减后同步 sessionRuntime 的 background 事实。
+ * 一个会话可能有多个后台任务，只有全部结束时才算「没有后台工作」。
+ */
+function syncBackgroundState(sessionID: string | undefined): void {
+  if (!sessionID) return;
+  markSessionBackground(sessionID, getRunningBackgroundTasksForSession(sessionID).length > 0);
+}
 
 export interface LocalShellTaskState {
   taskId: string;
@@ -20,6 +30,8 @@ export interface LocalShellTaskState {
   startTime: number;
   endTime?: number;
   exitCode?: number;
+  /** 子进程 pid（供展示 / 让 LLM 自行 kill；进程结束后可能已被系统复用） */
+  pid?: number;
   shellCommand: ShellCommand | null;
   toolUseId?: string;
   agentId?: string;
@@ -98,6 +110,7 @@ export function registerBackgroundTask(
     command,
     isBackgrounded: true,
     startTime: Date.now(),
+    pid: shellCommand.pid,
     shellCommand,
     toolUseId,
     agentId,
@@ -109,6 +122,7 @@ export function registerBackgroundTask(
 
   // 将进程转为后台
   shellCommand.background(taskId);
+  syncBackgroundState(sessionID);
 
   // 监听结果
   void shellCommand.result.then(result => {
@@ -120,6 +134,7 @@ export function registerBackgroundTask(
     task.endTime = Date.now();
     task.exitCode = result.code;
     task.shellCommand = null;
+    syncBackgroundState(sessionID);
 
     logger.info('LocalShellTask', `Background task ${taskId} ${finalStatus} (exit ${result.code})`);
 
@@ -187,6 +202,7 @@ export function backgroundExistingTask(
     command,
     isBackgrounded: true,
     startTime: Date.now(),
+    pid: shellCommand.pid,
     shellCommand,
     toolUseId,
     agentId,
@@ -201,6 +217,7 @@ export function backgroundExistingTask(
     backgroundTasks.delete(taskId);
     return false;
   }
+  syncBackgroundState(sessionID);
 
   // 监听结果
   void shellCommand.result.then(result => {
@@ -212,6 +229,7 @@ export function backgroundExistingTask(
     task.endTime = Date.now();
     task.exitCode = result.code;
     task.shellCommand = null;
+    syncBackgroundState(sessionID);
 
     const duration = task.endTime - task.startTime;
     const durationStr = formatDuration(duration);
@@ -265,6 +283,15 @@ export function getAllBackgroundTasks(): LocalShellTaskState[] {
 }
 
 /**
+ * 获取指定会话所有仍在运行中的后台任务
+ */
+export function getRunningBackgroundTasksForSession(sessionID: string): LocalShellTaskState[] {
+  return Array.from(backgroundTasks.values()).filter(
+    task => task.status === 'running' && task.sessionID === sessionID,
+  );
+}
+
+/**
  * 获取后台任务数量
  */
 export function getBackgroundTaskCount(): number {
@@ -300,6 +327,7 @@ export function abortBackgroundTasksForSession(sessionID: string): number {
     logger.info('LocalShellTask', `Aborted background task ${taskId} for session ${sessionID}`);
     count++;
   }
+  if (count > 0) syncBackgroundState(sessionID);
   return count;
 }
 

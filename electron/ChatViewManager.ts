@@ -39,31 +39,23 @@ export interface ChatViewManagerOptions {
   highlightLanguages?: string[];
   onActiveSessionChanged: (sessionId: string | null) => void;
   onViewCreated?: (view: WebContentsView) => void;
-}
-
-/**
- * 外部聊天客户端（内置 HTTP 服务器接入的浏览器连接）。
- *
- * 浏览器页面没有 WebContentsView，但需要与原生聊天视图共享同一套消息路由：
- * WebViewUI 通过 chatViews.sendTo(sessionId, msg) 把消息按会话投递，
- * 因此这里把每个浏览器连接登记成一个「虚拟视图」，按 sessionId 参与路由。
- */
-export interface ExternalChatClient {
-  /** 客户端唯一标识（自增，避免与 WebContents.id 混淆） */
-  readonly id: number;
-  /** 连接是否已断开 */
-  isDestroyed(): boolean;
-  /** 向浏览器推送消息（channel 固定为 'webview-message'） */
-  send(channel: string, message: unknown): void;
-  /** 注册连接断开回调（用于清理会话资源） */
-  onDestroyed(callback: () => void): void;
+  /**
+   * 「已打开会话」集合变化（视图层状态，owner 是 ChatViewManager）。
+   * 视图创建 / 销毁 / LRU 淘汰时触发，
+   * 由宿主推给侧栏（`sidebar:session-loaded-changed`），不并入对话列表流。
+   */
+  onLoadedChanged?: (sessionIds: string[]) => void;
 }
 
 export class ChatViewManager {
   /**
-   * 「卸内存」入口（宿主注入：WebViewUI.closeConversation）。
+   * 「卸内存」入口（宿主注入：WebViewUI.releaseConversation）。
    * closeView / LRU trim / disposeAll 在销毁视图前先走它
    * （core：conversationClosed → releaseSessionResources；宿主随后只销毁视图）。
+   *
+   * 注意必须指向 releaseConversation（只卸内存），不能指向 closeConversation——
+   * 后者还会回调 closeConversationView，与视图销毁序列互相回调形成死循环。
+   *
    * 未注入时退化为仅 abortSession（集成缺失暴露在启动期）。
    */
   closeConversation: ((sessionId: string) => void) | null = null;
@@ -81,23 +73,36 @@ export class ChatViewManager {
    * 发出第一条消息后由 markSessionUsed() 移除。
    */
   private unsentNewKeys = new Set<string>();
-  private readonly opts: ChatViewManagerOptions;
-  /** 会话是否正在等待用户输入（ask user / 权限确认）的判定，由宿主注入 */
-  private waitingForUserProvider: ((sessionId: string) => boolean) | null = null;
   /**
-   * 内置 HTTP 服务器接入的浏览器客户端：id -> { client, sessionId, clientId }。
-   * sessionId 为该连接当前正在展示的会话，用于按会话投递消息与维护 MCP 引用；
-   * clientId 为页面侧生成的唯一标识，用于把「只回给发起端」的消息精确定位到该连接。
+   * 后台预热的「空闲新对话」视图 key（`new-` 临时 key，最多一个）。
+   *
+   * 当前可见的新对话被「消耗」（发出第一条消息）后，用户下次点「新建对话」
+   * 若还要现建视图 + 加载页面，就会看到明显的闪烁/等待。因此在消耗后延迟一点
+   * 在后台把这个视图建好并完成加载，点击「新建」时直接 show()，几乎瞬切。
+   *
+   * 预热视图同时进入 unsentNewKeys（与可见的新对话同一语义：还没发过消息、
+   * 切走也能复用）。它不进 LRU：既不代表「最近使用过的会话」，也不该被 LRU
+   * 淘汰（成为活动视图时由 touch() 入 LRU）。
+   *
+   * 预热视图带 `--prewarm=1` 启动：页面照常加载并渲染 UI（主题/上下文限制按
+   * 来源 webContents 直发回包），但跳过会「落地」的启动初始化 —— 不生成 session
+   * （否则 core 会为一个可能永远不用的会话预创建引擎 / MCP 引用），
+   * 也不请求技能 / 模型 / MCP / settings 默认值（这些回包只发给活动视图）。
+   * 等被切到前台时由本类发 activatePrewarmedView 补做（见 electron/preload.ts
+   * 与 src/webview/App.tsx）。
+   *
+   * 生命周期：创建时置位 → 被切到前台时发激活消息（置位保留）→ webview 上报
+   * 正式 sessionId（registerSession）或视图被销毁时清空。置位期间无论「切走再切回」
+   * 还是「页面加载中就被切前台」，都能保证激活消息最终送达。
    */
-  private externalClients = new Map<number, { client: ExternalChatClient; sessionId: string | null; clientId?: string }>();
+  private prewarmKey: string | null = null;
+  private prewarmTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 预热延迟：避开刚发出的第一条消息（正在流式输出）的 CPU/网络高峰 */
+  private readonly prewarmDelayMs = 1200;
+  private readonly opts: ChatViewManagerOptions;
 
   constructor(opts: ChatViewManagerOptions) {
     this.opts = opts;
-  }
-
-  /** 注册"会话是否正在等待用户输入"判定（用于侧栏黄色流水灯） */
-  setWaitingForUserProvider(fn: (sessionId: string) => boolean): void {
-    this.waitingForUserProvider = fn;
   }
 
   /** 更新工作区路径（工作区变化后新建的视图会携带新 --workspace= 参数） */
@@ -124,87 +129,35 @@ export class ChatViewManager {
     return undefined;
   }
 
+  /** 该 webContents 是否为「仍在后台、尚未被切到前台」的预热视图 */
+  isPrewarmWebContents(webContents: WebContents): boolean {
+    return !!this.prewarmKey && this.prewarmKey === this.getKeyByWebContents(webContents);
+  }
+
+  /** 根据 webContents 反查其对应的 key（正式会话 ID 或 new- 临时 key），找不到返回 null */
+  getKeyByWebContents(webContents: WebContents): string | null {
+    for (const [key, view] of this.views) {
+      if (!view.webContents.isDestroyed() && view.webContents.id === webContents.id) {
+        return key;
+      }
+    }
+    return null;
+  }
+
   /** 当前已加载（有活动视图）的真实会话 ID 列表（排除新建中的临时 key） */
   getLoadedSessionIds(): string[] {
-    const ids = [...this.views.keys()].filter((key) => {
+    return [...this.views.keys()].filter((key) => {
       const view = this.views.get(key);
       return !key.startsWith('new-') && !!view && !view.webContents.isDestroyed();
     });
-    // 浏览器客户端当前展示的会话同样视为「已加载」（abort 状态、侧栏 loaded 标记）
-    for (const { client, sessionId } of this.externalClients.values()) {
-      if (sessionId && !sessionId.startsWith('new-') && !client.isDestroyed() && !ids.includes(sessionId)) {
-        ids.push(sessionId);
-      }
-    }
-    return ids;
-  }
-
-  // ===================== 外部客户端（内置 HTTP 服务器 / 浏览器） =====================
-
-  /** 登记一个浏览器客户端（新连接建立时调用） */
-  registerExternalClient(client: ExternalChatClient): void {
-    this.externalClients.set(client.id, { client, sessionId: null });
-    client.onDestroyed(() => this.unregisterExternalClient(client));
-  }
-
-  /** 登记浏览器客户端当前页面的唯一标识（页面发来带 clientId 的消息时调用） */
-  setExternalClientToken(client: ExternalChatClient, clientId: string): void {
-    const entry = this.externalClients.get(client.id);
-    if (entry) entry.clientId = clientId;
-  }
-
-  /** 注销浏览器客户端并释放其持有的会话资源（连接断开时调用） */
-  unregisterExternalClient(client: ExternalChatClient): void {
-    const entry = this.externalClients.get(client.id);
-    if (!entry) return;
-    this.externalClients.delete(client.id);
-    if (entry.sessionId) {
-      // 浏览器侧持有者消失：MCP 引用由 MCPHost 判定「无内存持有才 release」
-      void import('../src/core/mcp/MCPHost.js').then(({ getMCPHost }) =>
-        getMCPHost().onExternalClientDetached(entry.sessionId ?? undefined)
-      ).catch((err) => console.error(`[chat-view] MCP onExternalClientDetached failed:`, err));
-    }
   }
 
   /**
-   * 更新浏览器客户端当前展示的会话（webview 上报 setActiveSessionId / startNewConversation /
-   * loadConversation 时调用）。切换会话时释放旧会话的 MCP 引用并 acquire 新会话。
+   * 推送「已打开会话」集合变化（视图层状态，owner 是本类）。
+   * 侧栏据此渲染绿点；不并入对话列表流（DEVELOPMENT.md 第 5.4 节规则 8）。
    */
-  setExternalClientSession(client: ExternalChatClient, sessionId: string | null): void {
-    const entry = this.externalClients.get(client.id);
-    if (!entry) return;
-    if (entry.sessionId === sessionId) return;
-    entry.sessionId = sessionId;
-    // 浏览器端切换会话：MCP 引用由 core 的会话生命周期管理。
-    // 新会话由 webview 的 loadConversation / startNewConversation 路径
-    // （createEngine / restoreConversationEngine → MCPHost.onSessionOpened）建立；
-    // 旧会话仍开着（引擎在池内）时保留引用，空闲回收 / 删除对话时释放。
-  }
-
-  /**
-   * 侧栏对话列表：仅磁盘历史（已发送过消息的对话）+ loaded/running 标记。
-   * 新建对话（messageCount === 0）尚未落盘，loadConversationList 不会包含它，
-   * 因此用户发送第一条消息前，侧栏不显示任何新项；首条消息落盘后
-   * 由 WebViewUI.onMessage 触发的 refreshSidebarThrottled 拉取到最新列表。
-   * running 标记用于侧栏流水灯效果（非 idle 的会话）。
-   */
-  async getSidebarConversations(): Promise<Array<Record<string, unknown>>> {
-    const { loadConversationList } = await import('../src/core/history/index.js');
-    const list = (await loadConversationList()) as unknown as Array<Record<string, unknown>>;
-    const loadedIds = new Set(this.getLoadedSessionIds());
-    const { getSessionEngine } = await import('../src/core/QueryEngine.js');
-
-    return list.map((c) => {
-      const sid = c.sessionId as string;
-      const engine = getSessionEngine(sid);
-      return {
-        ...c,
-        loaded: loadedIds.has(sid),
-        running: !!engine?.isConsumerRunning,
-        // 正在等待用户输入（ask user / 权限确认）→ 侧栏流水灯显示黄色
-        waitingForUser: this.waitingForUserProvider ? !!this.waitingForUserProvider(sid) : false,
-      };
-    });
+  private emitLoadedChanged(): void {
+    this.opts.onLoadedChanged?.(this.getLoadedSessionIds());
   }
 
   /** 打开（或切换）指定会话的聊天视图 */
@@ -223,6 +176,7 @@ export class ChatViewManager {
     this.show(sessionId);
     // 会话被打开：MCP 引用由 core 的 loadConversation 流程建立
     // （restoreConversationEngine → MCPHost.onSessionOpened），视图层不再触发
+    this.emitLoadedChanged();
   }
 
   /**
@@ -232,10 +186,15 @@ export class ChatViewManager {
    * 用户可能在那个新对话里已经输入了草稿，切到其它对话后再点「新建」时，
    * 复用旧视图才能保住草稿（与 webview 顶部「+」的行为一致），
    * 否则新视图是空白的，旧草稿随着被隐藏的视图一起"丢失"。
+   *
+   * 后台预热的视图（prewarmKey）也走这条复用路径：直接 show() 即可，
+   * 同时补发 activatePrewarmedView 让它完成启动初始化。
    */
   openNewConversation(): void {
     const reusable = this.findReusableNewConversation();
     if (reusable) {
+      // 复用后台预热的视图：它此前跳过了启动初始化，切到前台后需要补做一次
+      const needsActivation = reusable === this.prewarmKey;
       this.touch(reusable);
       // 已经在展示这个未发送的新对话：只聚焦，保留输入框里的草稿，避免重复 addChildView
       if (reusable === this.currentSessionId) {
@@ -243,6 +202,11 @@ export class ChatViewManager {
       } else {
         this.show(reusable);
       }
+      if (needsActivation) {
+        const view = this.views.get(reusable);
+        if (view) this.activatePrewarmedView(view);
+      }
+      this.emitLoadedChanged();
       return;
     }
 
@@ -252,6 +216,7 @@ export class ChatViewManager {
     this.unsentNewKeys.add(key);
     this.touch(key);
     this.show(key);
+    this.emitLoadedChanged();
   }
 
   /**
@@ -263,13 +228,86 @@ export class ChatViewManager {
     if (this.currentSessionId && this.isUnsentNewConversation(this.currentSessionId)) {
       return this.currentSessionId;
     }
+    // 其次复用后台预热的视图（已经加载好，直接切过去最快）
+    if (this.prewarmKey && this.isUnsentNewConversation(this.prewarmKey)) {
+      return this.prewarmKey;
+    }
     for (const key of this.unsentNewKeys) {
-      const view = this.views.get(key);
-      if (view && !view.webContents.isDestroyed()) {
+      if (this.isUnsentNewConversation(key)) {
         return key;
       }
     }
     return null;
+  }
+
+  /** 是否已存在「新建但还没发过消息」的对话视图（含后台预热的那个） */
+  private hasUnsentNewConversation(): boolean {
+    for (const key of this.unsentNewKeys) {
+      if (this.isUnsentNewConversation(key)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 后台预热下一个「新对话」视图（延迟执行，避开刚发出的第一条消息的高峰）。
+   *
+   * 已有未发送的新对话（可见或后台）时不重复创建；重复调用会被去重。
+   */
+  private schedulePrewarmNewConversation(): void {
+    if (this.prewarmTimer) return;
+    this.prewarmTimer = setTimeout(() => {
+      this.prewarmTimer = null;
+      this.prewarmNewConversation();
+    }, this.prewarmDelayMs);
+  }
+
+  private cancelPrewarm(): void {
+    if (this.prewarmTimer) {
+      clearTimeout(this.prewarmTimer);
+      this.prewarmTimer = null;
+    }
+  }
+
+  private prewarmNewConversation(): void {
+    // 窗口已销毁（退出中）时不再创建
+    if (this.opts.win.isDestroyed()) return;
+    if (this.hasUnsentNewConversation()) return;
+    const key = `new-${Date.now()}`;
+    const view = this.createView(undefined, { prewarm: true });
+    // 提前给出正确视口尺寸：预热视图未挂到窗口，若不设 bounds 会以 0x0 渲染，
+    // 切到前台再 resize 可能出现一次布局跳动。
+    view.setBounds(this.chatBounds());
+    this.views.set(key, view);
+    this.unsentNewKeys.add(key);
+    this.prewarmKey = key;
+    // 预热视图不进 LRU（见 prewarmKey 注释），也不触发 loaded 变化（new- key 不算已打开会话）
+  }
+
+  /**
+   * 唤醒预热的视图：告诉它「已被切到前台」，补做启动初始化。
+   *
+   * 直接发一次即可（页面多半已挂载）；若此刻页面还在加载、监听器尚未注册，
+   * 消息会丢，但 webview 挂载后会发 prewarmViewReady，由
+   * handlePrewarmViewReady 补发（见那里）。
+   */
+  private activatePrewarmedView(view: WebContentsView): void {
+    const wc = view.webContents;
+    if (wc.isDestroyed()) return;
+    wc.send('webview-message', { type: 'activatePrewarmedView' });
+  }
+
+  /**
+   * 预热视图报告「已挂载、可以接收消息」。
+   *
+   * 若它此刻已被切到前台（用户在页面加载完成前就点了「新建」），补发激活消息 ——
+   * 否则 openNewConversation 直发的那次会因为监听器还没注册而丢失，视图停在 Loading。
+   * 仍在后台的预热视图保持休眠，等真正被切到前台时再激活。
+   */
+  handlePrewarmViewReady(webContents: WebContents): void {
+    const key = this.getKeyByWebContents(webContents);
+    if (!key || key !== this.currentSessionId || key !== this.prewarmKey) return;
+    const view = this.views.get(key);
+    if (view) this.activatePrewarmedView(view);
   }
 
   /** 该 key 是否对应一个「新建但还没发过消息」的对话 */
@@ -285,10 +323,14 @@ export class ChatViewManager {
    */
   markSessionUsed(sessionId: string): void {
     this.unsentNewKeys.delete(sessionId);
+    // 这个新对话已被消耗（发出第一条消息 → 开始落盘、出现在侧栏），
+    // 后台补一个空闲的新对话视图，保证下次点「新建」能瞬切。
+    // 已有空闲新对话时（含后台预热的）由 prewarm 内部去重。
+    this.schedulePrewarmNewConversation();
   }
 
   /**
-   * 将来源 webContents 关联到 sessionId（webview 上报 setActiveSessionId/startNewConversation 时调用）
+   * 将来源 webContents 关联到 sessionId（webview 上报 startNewConversation / loadConversation 时调用）
    * 处理新建对话场景：临时 key 的 view 在 webview 生成 session 后转为正式条目
    */
   registerSession(webContents: WebContents, sessionId: string): void {
@@ -305,6 +347,10 @@ export class ChatViewManager {
     // 临时 new- key 转为正式 sessionId：同步迁移「未发送新对话」标记
     if (this.unsentNewKeys.delete(tempKey)) {
       this.unsentNewKeys.add(sessionId);
+    }
+    // 预热视图已上报正式 sessionId：激活完成，清掉预热标记
+    if (this.prewarmKey === tempKey) {
+      this.prewarmKey = null;
     }
 
     // 如果目标 sessionId 已有视图（如历史会话被重新打开），销毁旧视图避免重复。
@@ -324,57 +370,25 @@ export class ChatViewManager {
     }
     this.trim();
     // 新对话首次上报正式 sessionId：MCP 引用由 core 的会话生命周期建立
+    this.emitLoadedChanged();
   }
 
-  /** 按 sessionId 发送消息到对应视图（原生聊天视图 + 浏览器客户端） */
+  /** 按 sessionId 发送消息到对应视图 */
   sendTo(sessionId: string | undefined, message: unknown): boolean {
-    // 指定了发起端（浏览器页面）时只回给该客户端：
-    // 查看文件、打开设置面板这类操作属于「本地行为」，不能落到其它端。
-    const targetClientId = (message as { clientId?: unknown } | null)?.clientId;
-    if (typeof targetClientId === 'string' && targetClientId) {
-      for (const { client, clientId } of this.externalClients.values()) {
-        if (clientId === targetClientId && !client.isDestroyed()) {
-          client.send('webview-message', message);
-          return true;
-        }
-      }
-      return false;
+    if (!sessionId) return false;
+    const view = this.views.get(sessionId);
+    if (view && !view.webContents.isDestroyed()) {
+      view.webContents.send('webview-message', message);
+      return true;
     }
-
-    let sent = false;
-    if (sessionId) {
-      const view = this.views.get(sessionId);
-      if (view && !view.webContents.isDestroyed()) {
-        view.webContents.send('webview-message', message);
-        sent = true;
-      }
-      for (const { client, sessionId: clientSessionId } of this.externalClients.values()) {
-        if (clientSessionId === sessionId && !client.isDestroyed()) {
-          client.send('webview-message', message);
-          sent = true;
-        }
-      }
-    }
-    return sent;
+    return false;
   }
 
-  /** 发送消息到当前活动视图（会话无关的广播类消息同时推送给浏览器客户端） */
+  /** 发送消息到当前活动视图（会话无关的广播类消息） */
   sendToActive(message: unknown): void {
-    const scoped = message as { sessionId?: unknown; clientId?: unknown } | null;
-    // 指定了发起端或会话的消息不做广播，避免串到其它端（由 sendTo 精确投递）
-    if (scoped?.clientId) return;
-
     const active = this.currentSessionId ? this.views.get(this.currentSessionId) : undefined;
     if (active && !active.webContents.isDestroyed()) {
       active.webContents.send('webview-message', message);
-    }
-    // 指定了 sessionId 但未匹配到任何视图/客户端时，不再广播给浏览器，
-    // 避免把某个会话的内容串到其它浏览器会话。
-    if (scoped?.sessionId) return;
-    for (const { client } of this.externalClients.values()) {
-      if (!client.isDestroyed()) {
-        client.send('webview-message', message);
-      }
     }
   }
 
@@ -383,11 +397,6 @@ export class ChatViewManager {
     for (const view of this.views.values()) {
       if (!view.webContents.isDestroyed()) {
         view.webContents.send('webview-message', message);
-      }
-    }
-    for (const { client } of this.externalClients.values()) {
-      if (!client.isDestroyed()) {
-        client.send('webview-message', message);
       }
     }
   }
@@ -400,8 +409,29 @@ export class ChatViewManager {
     }
   }
 
+  /**
+   * 窗口关闭时的收尾：后台预热的视图没有挂到窗口上，不会随窗口一起销毁，
+   * 需要显式关闭它的 webContents（其余视图是窗口子视图，随窗口销毁）。
+   */
+  dispose(): void {
+    this.cancelPrewarm();
+    const key = this.prewarmKey;
+    this.prewarmKey = null;
+    if (!key) return;
+    const view = this.views.get(key);
+    this.views.delete(key);
+    this.unsentNewKeys.delete(key);
+    if (view && !view.webContents.isDestroyed()) {
+      try {
+        view.webContents.close();
+      } catch { /* 窗口正在销毁，忽略 */ }
+    }
+  }
+
   /** 清空所有聊天视图（工作区切换等场景） */
   disposeAll(): void {
+    this.cancelPrewarm();
+    this.prewarmKey = null;
     for (const key of [...this.views.keys()]) {
       this.destroyViewEntry(key);
     }
@@ -409,6 +439,7 @@ export class ChatViewManager {
     this.lru = [];
     this.unsentNewKeys.clear();
     this.currentSessionId = null;
+    this.emitLoadedChanged();
   }
 
   /**
@@ -433,7 +464,7 @@ export class ChatViewManager {
     },
   ): void {
     // 销毁视图前先卸内存（core：abort + 引擎出池 + MCP 释放），
-    // 再做纯视图销毁（第 11.1 #18：不再依赖视图层内部 abort/release）
+    // 再做纯视图销毁（不再依赖视图层内部 abort/release，见 DEVELOPMENT.md 第 11.1 节）
     if (this.closeConversation) {
       this.closeConversation(key);
     } else {
@@ -451,6 +482,7 @@ export class ChatViewManager {
       this.lru = this.lru.filter((k) => k !== key);
     }
     this.unsentNewKeys.delete(key);
+    if (this.prewarmKey === key) this.prewarmKey = null;
   }
 
   /**
@@ -479,6 +511,9 @@ export class ChatViewManager {
       // 即使视图已销毁，若它是当前活动会话，也要做善后切换，
       // 否则 currentSessionId 悬挂在已销毁会话上，sendToActive/layout 等静默失效。
       this.switchAwayFromClosedSession(sessionId);
+      this.emitLoadedChanged();
+      // 关掉的若是后台预热视图（或善后切换后已没有空闲新对话），补一个
+      this.schedulePrewarmNewConversation();
       return;
     }
 
@@ -487,6 +522,9 @@ export class ChatViewManager {
 
     // 关闭的是当前活动视图：切换到最近使用的其他视图；无可用视图则新建对话
     this.switchAwayFromClosedSession(sessionId);
+    this.emitLoadedChanged();
+    // 关掉的若是后台预热视图（或善后切换后已没有空闲新对话），补一个
+    this.schedulePrewarmNewConversation();
   }
 
   /**
@@ -507,7 +545,7 @@ export class ChatViewManager {
     }
   }
 
-  private createView(sessionId?: string): WebContentsView {
+  private createView(sessionId?: string, opts?: { prewarm?: boolean }): WebContentsView {
     const view = new WebContentsView({
       webPreferences: {
         preload: this.opts.preloadPath,
@@ -525,6 +563,8 @@ export class ChatViewManager {
           `--uiLanguage=${this.opts.uiLanguage || 'auto'}`,
           `--highlightLanguages=${(this.opts.highlightLanguages || []).join(',')}`,
           ...(sessionId ? [`--session=${sessionId}`] : []),
+          // 预热视图：页面照常加载，但跳过启动初始化，等被切到前台再补做
+          ...(opts?.prewarm ? ['--prewarm=1'] : []),
         ],
       },
     });

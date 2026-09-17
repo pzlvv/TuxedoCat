@@ -16,8 +16,6 @@ declare global {
     __hasWorkspace?: boolean;
     __sessionId?: string;
     __currentSessionId?: string | null;
-    /** 浏览器端（内置服务器）当前页面的唯一标识；桌面 / VS Code 宿主为 undefined */
-    __clientId?: string;
     /** 开启后输出 [Profile]/[TokenDebug] 等诊断日志（性能优化用，默认关闭） */
     __debugEnabled?: boolean;
     logoUri?: string;

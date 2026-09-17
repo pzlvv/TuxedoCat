@@ -1,14 +1,14 @@
 import React, { useEffect, useRef } from 'react';
 import type { WebviewMessage, McpServerInfo } from '../../core/webviewTypes';
+import type { MessageData } from '../../core/types';
 import { extractUserContent } from '../../core/utils/contentBlocks';
 import { normalizeToolInput } from '../../core/utils/toolInput';
 import type { DiffHunk } from '../../core/utils/editDiff';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, ProviderConfig, PreviewPayload } from '../types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, ProviderConfig } from '../types';
 import { postMessage } from '../webviewEnv';
 import { createSessionState, ensureSessionStateWithUsage, accumulateUsageToState } from '../sessionState';
-import { DEFAULT_WAKE_SHORTCUT } from '../../core/utils/shortcut.js';
 import { profileLog } from '../debug';
-import { t, resolveTitle, setUiLanguage, type UiLanguage } from '../i18n';
+import { resolveTitle, setUiLanguage, type UiLanguage } from '../i18n';
 import { beginThinkingStream, updateStreamChars, endStream, endStreamsForSession, hasStreamStats } from '../streamStatsStore';
 
 // Profiling helper
@@ -217,7 +217,7 @@ function restoreMessagesFromConversation(msg: Extract<WebviewMessage, { type: 'c
           const toolArgs = normalizeToolInput(toolUse.input);
 
           // Write 工具：补充 webview 展示所需的 contentPreview / totalLines / isTruncated
-          // （这些字段在实时工具调用时由 onPreToolCall 添加，但不会持久化到历史记录中）
+          // （这些字段在实时工具调用时由 requestToolPermission 添加，但不会持久化到历史记录中）
           if (toolUse.name === 'Write' && toolArgs.content) {
             const content = String(toolArgs.content);
             if (!toolArgs.contentPreview) {
@@ -424,6 +424,34 @@ function toToolStatusEntry(msg: {
   };
 }
 
+/**
+ * 把 wire 上的一条消息（`addMessage` / `messagesReplaced` 的单项）构造成 UI 侧 `Message`。
+ * 两条通道共用，避免「增量追加」与「整批替换」的消息形状漂移。
+ */
+function toUiMessage(msg: MessageData): Message {
+  return {
+    role: msg.role,
+    content: msg.content || '',
+    param: msg.param,
+    filePath: msg.filePath,
+    fileSelectedLines: msg.fileSelectedLines,
+    toolName: msg.toolName,
+    // 统一归一化为对象：compact 归档展开等路径可能直接透传历史 input，
+    // 其中可能存在被 double-encode 成字符串的入参。
+    toolArgs: msg.role === 'toolcall' ? normalizeToolInput(msg.toolArgs) : msg.toolArgs,
+    status: msg.status,
+    toolCallId: msg.toolCallId || (msg.role === 'toolcall' ? `tool-${Date.now()}-${Math.random()}` : undefined),
+    isCompactSummary: msg.isCompactSummary,
+    hasBorder: msg.hasBorder,
+    isFromAgent: msg.isFromAgent,
+    images: msg.images,
+    meta: msg.meta as Record<string, unknown> | undefined,
+    timestamp: Date.now(),
+    cacheReadInputTokens: msg.cacheReadInputTokens,
+    cacheCreationInputTokens: msg.cacheCreationInputTokens,
+  };
+}
+
 export interface UseMessageHandlerProps {
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
   setShowThinkingAnimation: (v: boolean) => void;
@@ -445,8 +473,6 @@ export interface UseMessageHandlerProps {
   setThemeInitialized: (v: boolean) => void;
   setCurrentFile: (v: string) => void;
   setSelectedLines: (v: { start: number; end: number } | null) => void;
-  /** 页内预览浮层（浏览器端查看文件 / 虚拟文档 / diff / Mermaid） */
-  setPreview: (v: PreviewPayload | null) => void;
   setConversationTitle: (v: string) => void;
   setMaxContextTokens: (v: number | null) => void;
   setSkills: (v: Array<{ name: string; description: string; isBuiltin?: boolean }>) => void;
@@ -498,8 +524,6 @@ export interface UseMessageHandlerProps {
   setLocaleVersion: React.Dispatch<React.SetStateAction<number>>;
   /** 设置面板中显示的界面语言 */
   setLlmConfigLanguage: (v: UiLanguage) => void;
-  /** 设置面板中显示的唤醒快捷键（Electron，accelerator 形式） */
-  setLlmConfigShortcut: (v: string) => void;
   /** settings.json 默认值（model / thinkingMode / agentMode / promptMode） */
   setSettingsDefaults: React.Dispatch<React.SetStateAction<SettingsDefaults>>;
   /** settings.json 默认值（当前值，供新会话初始化使用） */
@@ -517,6 +541,8 @@ export interface UseMessageHandlerProps {
   currentSessionIdRef: React.MutableRefObject<string | null>;
   agentModeReadyRef: React.MutableRefObject<boolean>;
   sessionStatesRef: React.MutableRefObject<Map<string, SessionState>>;
+  /** core 推送的会话运行时状态（running / waiting）：对话树流水灯的唯一数据源 */
+  sessionRuntimeStatesRef: React.MutableRefObject<Map<string, { running: boolean; waiting: boolean }>>;
   userChoiceRequestRef: React.MutableRefObject<UserChoiceRequest | null>;
   userChoiceInputRef: React.MutableRefObject<string>;
   savedMainInputRef: React.MutableRefObject<string>;
@@ -717,27 +743,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             break;
           }
 
-          const newMessage: Message = {
-            role: msg.role,
-            content: msg.content || '',
-            param: msg.param,
-            filePath: msg.filePath,
-            fileSelectedLines: msg.fileSelectedLines,
-            toolName: msg.toolName,
-            // 统一归一化为对象：compact 归档展开等路径可能直接透传历史 input，
-            // 其中可能存在被 double-encode 成字符串的入参。
-            toolArgs: msg.role === 'toolcall' ? normalizeToolInput(msg.toolArgs) : msg.toolArgs,
-            status: msg.status,
-            toolCallId: msg.toolCallId || (msg.role === 'toolcall' ? `tool-${Date.now()}-${Math.random()}` : undefined),
-            isCompactSummary: msg.isCompactSummary,
-            hasBorder: msg.hasBorder,
-            isFromAgent: msg.isFromAgent,
-            images: msg.images,
-            meta: msg.meta as Record<string, unknown> | undefined,
-            timestamp: Date.now(),
-            cacheReadInputTokens: (msg as any).cacheReadInputTokens,
-            cacheCreationInputTokens: (msg as any).cacheCreationInputTokens,
-          };
+          const newMessage: Message = toUiMessage(msg);
 
           // 新消息渲染前先把滚动容器预滚到底部，避免 Bash/Write/Edit 等
           // 工具卡片先渲染出来、再被滚动到视野内。
@@ -909,66 +915,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             sessionId: msg.sessionId,
           });
           break;
-        case 'switchToNewSession':
-          // 当当前活跃会话被删除时，扩展端通知 webview 切换到新创建的会话
-          // 直接复用 onStartup 的逻辑来初始化新会话状态
-          {
-            const newSessionId = msg.sessionId;
-            // 这也是一个"新建但还没发消息"的对话：登记后用户在这里输入再切走，
-            // 草稿才会被暂存下来（与 onStartup / 顶部"+"一致）
-            props.newChatSessionRef.current = newSessionId;
-            // 新会话不需要加载动画
-            props.resetConversationLoad();
-            // 重置所有会话状态
-            props.setMessages([]);
-            props.inputAreaRef.current?.setValue('');
-            props.inputAreaRef.current?.setPastedImages?.([]);
-            props.setUserChoiceRequest(null);
-            props.userChoiceInputRef.current = '';
-            props.savedMainInputRef.current = '';
-            props.setContextLength(0);
-            props.setConversationTitle(t('app.untitled'));
-            props.setParentSessionId(null);
-            props.setCurrentSessionId(newSessionId);
-            props.setCurrentSessionIdRef(newSessionId);
-            // 使用 settings.json 默认值初始化；未就绪（undefined）时保留当前值
-            const sd = propsRef.current.settingsDefaults;
-            const nextAgentMode = sd.agentMode ?? propsRef.current.agentMode;
-            const nextThinkingMode = sd.thinkingMode ?? propsRef.current.thinkingMode;
-            const nextWebSearch = sd.webSearch ?? false;
-            const nextModel = sd.model ?? propsRef.current.model;
-            const nextPromptMode = sd.promptMode ?? propsRef.current.promptMode;
-            props.setAgentMode(nextAgentMode);
-            props.setThinkingMode(nextThinkingMode);
-            props.setWebSearch(nextWebSearch);
-            props.setModel(nextModel);
-            props.setPromptMode(nextPromptMode);
-            props.setShowThinkingAnimation(false);
-            props.setHasActiveQuery(false);
-            props.setQueuedMessage(null);
-
-            // 重置压缩状态（conversationLoaded 会覆盖为正确值）
-            props.setHasCompactArchive(false);
-            props.setIsCompactExpanded(false);
-
-            // 为新对话创建默认 state
-            props.sessionStatesRef.current.set(newSessionId, createSessionState({
-              agentMode: nextAgentMode,
-              promptMode: nextPromptMode,
-              thinkingMode: nextThinkingMode,
-              webSearch: nextWebSearch,
-              model: nextModel,
-            }));
-
-            // 通知扩展端设置活跃会话 ID
-            postMessage({ type: 'setActiveSessionId', sessionId: newSessionId });
-
-            // 聚焦输入框
-            setTimeout(() => {
-              props.mainInputRef.current?.focus();
-            }, 0);
-          }
-          break;
         case 'setTheme':
           props.setTheme(msg.theme);
           props.setThemeInitialized(true);
@@ -977,10 +923,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
         case 'setCurrentFile':
           props.setCurrentFile(msg.filePath || '');
           props.setSelectedLines(msg.selectedLines || null);
-          break;
-        // 浏览器端页内预览：宿主把查看内容按 sessionId + clientId 定向回推给发起端
-        case 'openPreview':
-          props.setPreview(msg as unknown as PreviewPayload);
           break;
         // 会话级设置的多端同步：同一会话在其它端被修改时同步本端 UI。
         // 值相同时 React 会跳过更新，不会再次上报，因此不会形成回环。
@@ -1026,6 +968,10 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           });
           break;
         }
+        case 'activatePrewarmedView':
+          // 预热视图的启动初始化由 App.tsx 自己的监听处理（需要 onStartup 等组件级能力），
+          // 这里只做登记，避免落到 default 分支打「未知消息类型」告警。
+          break;
         case 'setTitle':
           if (msg.sessionId === props.currentSessionIdRef.current) {
             props.setConversationTitle(resolveTitle(msg.title));
@@ -1092,8 +1038,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 model: propsRef.current.model,
               }));
             }
-            // 递增版本号强制对话列表重渲染，使流水灯即时出现（或切换后消失）
-            props.setSessionRunningVersion(v => v + 1);
+            // 对话树流水灯不在这里刷新：它只读 core 推送的 sessionRuntimeStates
           }
           // 只有当前 session 的消息才更新 UI
           // 如果当前没有 session（props.currentSessionIdRef.current 为 null），也接受 queryBegin
@@ -1122,8 +1067,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               targetState.showThinkingAnimation = false;
               targetState.animationMode = 'thinking';
             }
-            // 递增版本号强制对话列表重渲染，使流水灯即时消失
-            props.setSessionRunningVersion(v => v + 1);
+            // 对话树流水灯不在这里刷新：它只读 core 推送的 sessionRuntimeStates
           }
           // 用户主动 abort 的会话：排队消息不再重新投递，而是回填到输入框，
           // 与用户当前草稿用 \n 连接，交给用户自行修改/重发。
@@ -1172,10 +1116,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           });
           break;
         }
-        case 'setEnableAbort':
-          // 扩展端请求启用/禁用 abort 按钮
-          props.setHasActiveQuery(msg.enable === true);
-          break;
         case 'updateToolArgs':
           // 过滤：只有当前 session 的消息才处理
           if (msg.sessionId !== sessionId) {
@@ -1367,6 +1307,18 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             totalBytes: msg.totalBytes,
           });
           break;
+        case 'sessionRuntimeStates': {
+          // core 的会话运行时状态（running / waiting）全量推送：
+          // 这是对话树流水灯的唯一数据源（不再从 queryBegin / queryEnd 推导）。
+          const runtime = new Map<string, { running: boolean; waiting: boolean }>();
+          for (const s of msg.states || []) {
+            if (s?.sessionId) runtime.set(s.sessionId, { running: !!s.running, waiting: !!s.waiting });
+          }
+          props.sessionRuntimeStatesRef.current = runtime;
+          // 强制对话列表重渲染，使流水灯即时出现 / 消失 / 变黄
+          props.setSessionRunningVersion(v => v + 1);
+          break;
+        }
         case 'conversationsData': {
           const convs = msg.conversations || [];
           props.setConversations(convs);
@@ -1419,8 +1371,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             props.setIsCompactExpanded(false);
             // 记录父会话 ID（子对话时有值）
             props.setParentSessionId((msg as any).parentSessionId || null);
-            // 通知 extension 设置活跃会话
-            postMessage({ type: 'setActiveSessionId', sessionId: loadedSessionId });
             // 恢复该会话的 UI 状态（input, userChoiceRequest, userChoiceInput, showThinkingAnimation）
             const savedState = props.sessionStatesRef.current.get(loadedSessionId);
             if (savedState) {
@@ -1660,13 +1610,15 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           }
           break;
         }
-        case 'clearMessages':
-          // 清空本地 UI 消息列表
-          // 来自 core 层压缩后的推送（pushCompactMessagesToUI）和 /clear 命令
+        case 'messagesReplaced':
+          // 整批替换本地消息列表（core 的压缩后重建 / 宿主的展开归档共用这一条）。
+          // 与 addMessage 的差别：这里不追加、不处理排队消息与 token 累加，
+          // 只把整批历史消息铺成当前列表。
           if (msg.sessionId && msg.sessionId !== sessionId) {
             break;
           }
-          props.setMessages([]);
+          scrollToBottomBeforeRender();
+          props.setMessages(msg.messages.map(toUiMessage));
           props.setContextLength(0);
           break;
         case 'compressProgress': {
@@ -1693,8 +1645,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 targetState.showThinkingAnimation = false;
                 targetState.animationMode = 'thinking';
               }
-              // 强制对话列表重渲染，使压缩期间的流水灯即时出现/消失
-              props.setSessionRunningVersion(v => v + 1);
             }
           }
 
@@ -1705,17 +1655,24 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             props.setAnimationMode('compacting');
             props.setShowThinkingAnimation(true);
             props.setHasActiveQuery(true);
-          } else if (msg.status === 'complete' || msg.status === 'error') {
+          } else if (msg.status === 'complete') {
             props.setShowThinkingAnimation(false);
             props.setAnimationMode('thinking');
             // 恢复压缩前的查询状态（自动压缩仍在查询中时保持 true，手动压缩恢复 false）
             props.setHasActiveQuery(restoredActiveQuery ?? false);
-            // 压缩完成后，设置 hasCompactArchive 以便显示展开按钮
+            // 只有压缩成功才写出了归档文件，此时才显示「展开压缩」按钮
             props.setHasCompactArchive(true);
             // 刷新 token 使用量显示为压缩后的值
             if (msg.postCompactTokenCount !== undefined) {
               props.setContextLength(msg.postCompactTokenCount);
             }
+          } else if (msg.status === 'error') {
+            // 压缩失败（多见于网络问题）：静默——不置 hasCompactArchive，避免出现一个
+            // 点了没反应的「展开压缩」按钮。core 侧已记录错误日志，用户或后续循环会重新触发压缩。
+            props.setShowThinkingAnimation(false);
+            props.setAnimationMode('thinking');
+            props.setHasActiveQuery(restoredActiveQuery ?? false);
+            console.warn(`[Webview] compact failed for session ${targetSessionId}（详见 core 日志与对话内的系统消息）`);
           }
           break;
         }
@@ -2071,7 +2028,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 如果当前对话是未发送消息的新对话，则模型/提示词模式等默认值也立刻生效；
           // 工作模式/思考强度/联网搜索保持原有“保存后应用到当前对话”的行为。
           {
-            const saved = msg as { defaultModel?: string; activeModel?: string; thinkingEffort?: 'off' | 'low' | 'high' | 'max'; defaultAgentMode?: 'manual' | 'risk' | 'auto'; defaultPromptMode?: PromptMode; webSearch?: boolean; shortcut?: string };
+            const saved = msg as { defaultModel?: string; activeModel?: string; thinkingEffort?: 'off' | 'low' | 'high' | 'max'; defaultAgentMode?: 'manual' | 'risk' | 'auto'; defaultPromptMode?: PromptMode; webSearch?: boolean };
             // 保存成功即说明至少有一个可用的服务商
             props.setProviderConfigured(true);
             // 配置已可用：解除发送按钮禁用
@@ -2145,10 +2102,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               if (changed) {
                 props.setLocaleVersion((v) => v + 1);
               }
-            }
-            // 唤醒快捷键保存成功：同步本地显示值
-            if (typeof saved.shortcut === 'string' && saved.shortcut.trim()) {
-              props.setLlmConfigShortcut(saved.shortcut);
             }
           }
           break;
@@ -2235,8 +2188,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           props.setLlmConfigApiKey((msg as any).apiKey || '');
           const llmLanguage = (msg as any).language;
           props.setLlmConfigLanguage(llmLanguage === 'zh' || llmLanguage === 'en' || llmLanguage === 'auto' ? llmLanguage : 'auto');
-          const llmShortcut = (msg as any).shortcut;
-          props.setLlmConfigShortcut(typeof llmShortcut === 'string' && llmShortcut.trim() ? llmShortcut : DEFAULT_WAKE_SHORTCUT);
           // MCP 默认启用列表（设置面板「默认配置」）
           const rawMcpServers = (msg as any).mcpServers;
           props.setLlmConfigMcpServers(

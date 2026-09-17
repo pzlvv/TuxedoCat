@@ -190,7 +190,6 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       model: nextModel,
     }));
     postMessage({ type: 'startNewConversation', sessionId: newSessionId });
-    postMessage({ type: 'setActiveSessionId', sessionId: newSessionId });
     // 聚焦输入框
     setTimeout(() => {
       props.mainInputRef.current?.focus();
@@ -256,8 +255,6 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       // 重置压缩状态（新对话没有压缩）
       props.setHasCompactArchive(false);
       props.setIsCompactExpanded(false);
-      // Notify extension to set active session
-      postMessage({ type: 'setActiveSessionId', sessionId });
     }
 
     const messagePayload = {

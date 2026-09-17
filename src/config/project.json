@@ -36,6 +36,7 @@
     "electronPreloadOut": "dist-electron/preload.cjs",
     "electronSpinPreloadOut": "dist-electron/spinPreload.cjs",
     "electronMonacoPreloadOut": "dist-electron/monacoPreload.cjs",
-    "electronSidebarPreloadOut": "dist-electron/sidebarPreload.cjs"
+    "electronSidebarPreloadOut": "dist-electron/sidebarPreload.cjs",
+    "electronShortcutPreloadOut": "dist-electron/shortcutPreload.cjs"
   }
 }

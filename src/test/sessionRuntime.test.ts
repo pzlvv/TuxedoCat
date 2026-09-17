@@ -1,5 +1,5 @@
 /**
- * sessionRuntime 单测（DEVELOPMENT.md 第 13 节，阶段 3.6 随附）：
+ * sessionRuntime 单测（阶段 3.6 随附）：
  * - running/waiting 聚合与 diff（无变化不发事件）
  * - 多会话并发状态
  * - dropSessionRuntime 清理
@@ -38,7 +38,7 @@ function buildBus(): { events: Array<{ type: string; payload: unknown }>; bus: R
     toolProgress: () => undefined,
     aiBegin: () => undefined,
     aiEnd: () => undefined,
-    clearMessages: () => undefined,
+    messagesReplaced: () => undefined,
     queryBegin: () => undefined,
     queryEnd: () => undefined,
     titleChanged: () => undefined,
@@ -48,6 +48,8 @@ function buildBus(): { events: Array<{ type: string; payload: unknown }>; bus: R
       events.push({ type: 'sessionRuntimeChanged', payload: [...e.states] });
     },
     spinDesignDataChanged: () => undefined,
+    highlightLanguagesUsed: () => undefined,
+    projectConversationDirReady: () => undefined,
     compactBegin: () => undefined,
     compactEnd: () => undefined,
     commandDispatched: () => undefined,
@@ -55,7 +57,7 @@ function buildBus(): { events: Array<{ type: string; payload: unknown }>; bus: R
   };
   bus.onCoreEvents(handlers);
   bus.onCoreRequests({
-    toolPermission: async () => ({ behavior: 'allow' }),
+    toolPermissionRequested: async () => ({ behavior: 'allow' }),
     userChoice: async () => ({ index: 0 }),
   } as CoreRequestHandlers);
   return { events, bus };
