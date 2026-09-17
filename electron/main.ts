@@ -1282,14 +1282,13 @@ function handleWebviewMessageFromSource(source: WebviewMessageSource, message: a
     return;
   }
 
-  // 关闭按钮：销毁来源 webview（释放渲染进程资源），并刷新侧栏（已加载状态/空对话）。
-  // 浏览器客户端没有可销毁的原生视图，直接忽略。
+  // 关闭按钮：卸内存 + 销毁视图走 WebViewUI.closeConversation（与侧栏「关闭」同一入口），
+  // 再刷新侧栏（已加载状态/空对话）。浏览器客户端没有可销毁的原生视图，直接忽略。
   if (message.type === 'closeWebview') {
     if (source.kind === 'webcontents') {
       const closedSessionId = chatViews?.closeViewByWebContents(source.sender);
       if (closedSessionId) {
-        clearConversationFromCache(closedSessionId);
-        clearSessionIdleTracking(closedSessionId);
+        webviewUi?.closeConversation(closedSessionId);
       }
       refreshSidebar();
     }
@@ -1364,12 +1363,11 @@ function setupIpc(): void {
     chatViews?.openNewConversation();
   });
 
-  // 关闭指定会话的聊天视图（释放渲染进程资源），并刷新侧栏（已加载状态）
+  // 关闭指定会话（UI → core 走 WebViewUI.closeConversation：
+  // 发 UiEvent.conversationClosed 卸内存 + 宿主销毁视图；列表刷新走 conversationListChanged 流）
   ipcMain.on('sidebar:close-conversation', (_event, sessionId: string) => {
     if (typeof sessionId === 'string' && sessionId) {
-      chatViews?.closeView(sessionId);
-      clearConversationFromCache(sessionId);
-      clearSessionIdleTracking(sessionId);
+      webviewUi?.closeConversation(sessionId);
       refreshSidebar();
     }
   });
@@ -1377,7 +1375,9 @@ function setupIpc(): void {
   // ── 侧栏对话操作：删除 / 重命名 / 智能命名 ──
   ipcMain.handle('sidebar:delete-conversation', async (_event, sessionId: string) => {
     try {
-      // 受影响会话 = 根 + 所有直接/间接子会话（删除根时子会话一并删除）
+      // 宿主只负责「关视图」：对受影响闭包逐个调 WebViewUI.closeConversation
+      // （卸内存 + 销毁视图，5.5 节约定顺序）；删盘与列表广播由 core 的
+      // conversationDeleted 订阅（deleteConversation → conversationListChanged）承担。
       const list = (await chatViews?.getSidebarConversations()) ?? [];
       const affected = new Set<string>([sessionId]);
       let grew = true;
@@ -1391,28 +1391,14 @@ function setupIpc(): void {
           }
         }
       }
-      // 删除 = abort -> close -> delete。
-      // 1) abort：先中止受影响会话正在运行的查询，必须在引擎被移出 sessionEngines 之前执行。
-      try {
-        const { abortCurrentQuery } = await import('../src/core/Integration.js');
-        for (const sid of affected) {
-          abortCurrentQuery(sid);
-        }
-      } catch (err) {
-        console.error('[main] sidebar:delete-conversation abort error:', err);
-      }
-      // 2) close：关闭对应聊天视图（内部同样先 abort，并释放 MCP 引用，归零的 server 被回收）；
-      //    若删除的是当前活动会话，closeView 会自动切换到其他会话或新建。
       for (const sid of affected) {
-        chatViews?.closeView(sid);
+        webviewUi?.closeConversation(sid);
       }
-      // 3) delete：删除磁盘文件并清理引擎池 / 缓存
-      const { deleteConversation } = await import('../src/core/history/index.js');
-      await deleteConversation(sessionId);
-      // 会话已删除：清理空闲关闭计时状态
-      for (const sid of affected) {
-        clearSessionIdleTracking(sid);
-      }
+      // 删盘（core 消费方：算闭包已由宿主完成，这里只发 root）
+      const { requireEventBus } = await import('../src/core/AssistantEventBus.js');
+      requireEventBus().emitToCore({ type: 'conversationDeleted', sessionId });
+      // 等待 core 删盘完成后刷新侧栏（会话列表事件随后也会刷新）
+      await new Promise((resolve) => setTimeout(resolve, 300));
       refreshSidebar();
       return { ok: true };
     } catch (err) {
@@ -1423,11 +1409,12 @@ function setupIpc(): void {
 
   ipcMain.handle('sidebar:rename-conversation', async (_event, sessionId: string, title: string) => {
     try {
-      const { updateConversationMetadataTitle } = await import('../src/core/history/Conversation.js');
-      await updateConversationMetadataTitle(sessionId, title);
-      // 若该会话有打开的聊天视图，同步更新 webview 头部标题
-      chatViews?.sendTo(sessionId, { type: 'setTitle', title });
-      refreshSidebar();
+      // UI → core：重命名走总线（core 写 meta.json → CoreEvent.titleChanged /
+      // conversationListChanged 广播，多端同步）
+      const { requireEventBus } = await import('../src/core/AssistantEventBus.js');
+      requireEventBus().emitToCore({ type: 'conversationRenamed', sessionId, title });
+      // 标题回推与列表刷新由 core 广播；这里只保证侧栏尽快更新
+      setTimeout(() => refreshSidebar(), 100);
       return { ok: true };
     } catch (err) {
       console.error('[main] sidebar:rename-conversation error:', err);
@@ -1437,15 +1424,15 @@ function setupIpc(): void {
 
   ipcMain.handle('sidebar:smart-name-conversation', async (_event, sessionId: string) => {
     try {
-      // 与 webview 版本 handleRequestSmartNaming 一致的智能命名逻辑：
-      // 取最近 5 条用户/助手文本 → LLM 生成标题 → 写回 meta.json → 刷新侧栏
+      // 智能命名编排属 core（与 webview 版 handleRequestSmartNaming 同一逻辑：
+      // 取最近 5 条用户/助手文本 → LLM 生成标题 → 写 meta.json）；
+      // 标题写盘走 UiEvent.conversationRenamed，后续广播（titleChanged / 列表刷新）走 core
       const { loadConversation } = await import('../src/core/history/index.js');
       const conversation = await loadConversation(sessionId);
       const title = await resolveSmartTitle(sessionId, (conversation.messages || []) as any[]);
-      const { updateConversationMetadataTitle } = await import('../src/core/history/Conversation.js');
-      await updateConversationMetadataTitle(sessionId, title);
-      chatViews?.sendTo(sessionId, { type: 'setTitle', title });
-      refreshSidebar();
+      const { requireEventBus } = await import('../src/core/AssistantEventBus.js');
+      requireEventBus().emitToCore({ type: 'conversationRenamed', sessionId, title });
+      setTimeout(() => refreshSidebar(), 200);
       return { ok: true, title };
     } catch (err) {
       console.error('[main] sidebar:smart-name-conversation error:', err);
@@ -1465,26 +1452,6 @@ function refreshSidebar(): void {
       console.error('[main] refreshSidebar error:', err);
     }
   })();
-}
-
-/** 关闭对话时从内存缓存中移除指定会话（不删除磁盘数据） */
-function clearConversationFromCache(sessionId: string): void {
-  try {
-    const { removeConversationFromCache } = require('../src/core/history/Conversation.js') as typeof import('../src/core/history/Conversation.js');
-    removeConversationFromCache(sessionId);
-  } catch (err) {
-    console.error('[main] removeConversationFromCache error:', err);
-  }
-}
-
-/** 会话被手动关闭 / 删除时，清理其空闲关闭计时状态 */
-function clearSessionIdleTracking(sessionId: string): void {
-  try {
-    const { clearSessionIdleState } = require('../src/core/sessionIdle.js') as typeof import('../src/core/sessionIdle.js');
-    clearSessionIdleState(sessionId);
-  } catch (err) {
-    console.error('[main] clearSessionIdleState error:', err);
-  }
 }
 
 function sendTheme(): void {
@@ -1605,6 +1572,8 @@ function initCore(): void {
   uiHost = host;
   // 侧栏黄色流水灯的「等待用户」判定
   chatViews?.setWaitingForUserProvider((sessionId: string) => ui.hasPendingUserChoice(sessionId));
+  // trim / disposeAll / 关闭按钮统一走 WebViewUI.closeConversation（core 卸内存 + 宿主销毁视图）
+  chatViews!.closeConversation = (sessionId: string) => ui.closeConversation(sessionId);
 
   // 日志：输出到控制台（Electron 无 OutputChannel）
   setLogToConsole(true);

@@ -60,6 +60,13 @@ export interface ExternalChatClient {
 }
 
 export class ChatViewManager {
+  /**
+   * 「卸内存」入口（宿主注入：WebViewUI.closeConversation）。
+   * closeView / LRU trim / disposeAll 在销毁视图前先走它
+   * （core：conversationClosed → releaseSessionResources；宿主随后只销毁视图）。
+   * 未注入时退化为仅 abortSession（集成缺失暴露在启动期）。
+   */
+  closeConversation: ((sessionId: string) => void) | null = null;
   /** sessionId -> view；新建会话使用 `new-<timestamp>` 临时 key，webview 上报后关联 */
   private views = new Map<string, WebContentsView>();
   private lru: string[] = [];
@@ -425,8 +432,13 @@ export class ChatViewManager {
       closeIfAlive?: boolean;
     },
   ): void {
-    // 销毁视图前先中止该会话正在运行的查询（工作区切换 / LRU 淘汰 / 关闭场景）
-    this.abortSession(key);
+    // 销毁视图前先卸内存（core：abort + 引擎出池 + MCP 释放），
+    // 再做纯视图销毁（第 11.1 #18：不再依赖视图层内部 abort/release）
+    if (this.closeConversation) {
+      this.closeConversation(key);
+    } else {
+      this.abortSession(key);
+    }
     const view = this.views.get(key);
     if (view && !view.webContents.isDestroyed()) {
       this.opts.win.contentView.removeChildView(view);
