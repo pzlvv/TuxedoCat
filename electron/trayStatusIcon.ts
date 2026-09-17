@@ -193,3 +193,17 @@ export function deriveTrayStatus(list: ReadonlyArray<Record<string, unknown>>): 
   }
   return running ? 'running' : 'idle';
 }
+
+/**
+ * 从会话运行时状态流聚合托盘状态（阶段 3.6）：
+ * waiting > running > idle。托盘是聚合状态，吃的是 SessionRuntimeState[] 全量推送，
+ * 不再从对话列表（磁盘元数据）推导。
+ */
+export function deriveTrayStatusFromStates(states: ReadonlyArray<{ running?: boolean; waiting?: boolean }>): TrayStatus {
+  let running = false;
+  for (const item of states) {
+    if (item.waiting === true) return 'waiting';
+    if (item.running === true) running = true;
+  }
+  return running ? 'running' : 'idle';
+}

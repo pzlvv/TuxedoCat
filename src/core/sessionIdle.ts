@@ -190,12 +190,12 @@ export async function releaseSessionResources(sessionId: string): Promise<void> 
     // 缓存清理失败不影响其余释放
   }
 
-  // 4. 释放 MCP 引用（引用归零的 server 由 McpManager 延迟回收）
+  // 4. 释放 MCP 引用（MCPHost 管生命周期；引用归零的 server 由 McpManager 延迟回收）
   try {
     const { clearSessionMcpOverride } = await import('./mcp/Config.js');
-    const { getMcpManager } = await import('./mcp/Manager.js');
+    const { getMCPHost } = await import('./mcp/MCPHost.js');
     clearSessionMcpOverride(sessionId);
-    await getMcpManager().release(sessionId);
+    await getMCPHost().onSessionClosed(sessionId);
   } catch {
     // 释放失败不影响关闭
   }

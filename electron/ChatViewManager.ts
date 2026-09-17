@@ -152,7 +152,10 @@ export class ChatViewManager {
     if (!entry) return;
     this.externalClients.delete(client.id);
     if (entry.sessionId) {
-      this.releaseMcpIfNoHolders(entry.sessionId, client.id);
+      // 浏览器侧持有者消失：MCP 引用由 MCPHost 判定「无内存持有才 release」
+      void import('../src/core/mcp/MCPHost.js').then(({ getMCPHost }) =>
+        getMCPHost().onExternalClientDetached(entry.sessionId ?? undefined)
+      ).catch((err) => console.error(`[chat-view] MCP onExternalClientDetached failed:`, err));
     }
   }
 
@@ -164,33 +167,11 @@ export class ChatViewManager {
     const entry = this.externalClients.get(client.id);
     if (!entry) return;
     if (entry.sessionId === sessionId) return;
-    const previous = entry.sessionId;
     entry.sessionId = sessionId;
-    if (previous) {
-      this.releaseMcpIfNoHolders(previous, client.id);
-    }
-    this.acquireMcp(sessionId ?? undefined);
-  }
-
-  /**
-   * 该会话是否仍被其它持有者引用（原生聊天视图或其它浏览器客户端）。
-   * MCP 引用是「按会话」的（Set<sessionId>，非计数），
-   * 因此同一会话被多处打开时，只有最后一个持有者离开才释放。
-   */
-  private hasOtherSessionHolder(sessionId: string, excludeClientId?: number): boolean {
-    const view = this.views.get(sessionId);
-    if (view && !view.webContents.isDestroyed()) return true;
-    for (const { client, sessionId: sid } of this.externalClients.values()) {
-      if (client.id !== excludeClientId && sid === sessionId && !client.isDestroyed()) return true;
-    }
-    return false;
-  }
-
-  /** 仅在没有任何持有者时释放该会话的 MCP 引用 */
-  private releaseMcpIfNoHolders(sessionId?: string, excludeClientId?: number): void {
-    if (!sessionId || sessionId.startsWith('new-')) return;
-    if (this.hasOtherSessionHolder(sessionId, excludeClientId)) return;
-    this.releaseMcp(sessionId);
+    // 浏览器端切换会话：MCP 引用由 core 的会话生命周期管理。
+    // 新会话由 webview 的 loadConversation / startNewConversation 路径
+    // （createEngine / restoreConversationEngine → MCPHost.onSessionOpened）建立；
+    // 旧会话仍开着（引擎在池内）时保留引用，空闲回收 / 删除对话时释放。
   }
 
   /**
@@ -233,8 +214,8 @@ export class ChatViewManager {
     }
     this.touch(sessionId);
     this.show(sessionId);
-    // 会话被打开：建立 MCP 引用（幂等，重复打开不会重复计数）
-    this.acquireMcp(sessionId);
+    // 会话被打开：MCP 引用由 core 的 loadConversation 流程建立
+    // （restoreConversationEngine → MCPHost.onSessionOpened），视图层不再触发
   }
 
   /**
@@ -335,8 +316,7 @@ export class ChatViewManager {
       this.opts.onActiveSessionChanged(sessionId);
     }
     this.trim();
-    // 新对话首次上报正式 sessionId：建立 MCP 引用（临时 new- key 不参与引用）
-    this.acquireMcp(sessionId);
+    // 新对话首次上报正式 sessionId：MCP 引用由 core 的会话生命周期建立
   }
 
   /** 按 sessionId 发送消息到对应视图（原生聊天视图 + 浏览器客户端） */
@@ -427,12 +407,13 @@ export class ChatViewManager {
   /**
    * 销毁单个会话视图条目的公共序列：
    * abort 会话查询 → 移除 ChildView 并关闭 webContents → 从 views 移除 →
-   * 清理「未发送新对话」标记 → 释放 MCP 引用。
+   * 清理「未发送新对话」标记。
    *
-   * 三处调用方（disposeAll / trim / closeView）原为重复的销毁序列；
+   * MCP 引用的释放不在视图层（阶段 3.5，MCPHost 拥有生命周期）：
+   * 引用跟会话走，由空闲回收（releaseSessionResources）/ 删除对话
+   * （deleteConversation → MCPHost.onSessionClosed）驱动，不随视图销毁释放。
+   *
    * 差异点通过参数表达：
-   * - releaseMcp：'always' 无条件释放（disposeAll / trim，会话视图是唯一持有者场景）；
-   *   'ifNoHolders' 仅在没有其它持有者（浏览器客户端）时释放（closeView，会话可能同时被浏览器打开）。
    * - removeFromLru：trim 已把目标 shift 出 lru，无需再过滤；closeView 需要。
    * - closeIfAlive：closeView 在「视图已销毁但引用残留」分支不做 close，
    *   只做 map/标记清理（closeView 传入 false 复用其余步骤）。
@@ -440,12 +421,10 @@ export class ChatViewManager {
   private destroyViewEntry(
     key: string,
     opts?: {
-      releaseMcp?: 'always' | 'ifNoHolders';
       removeFromLru?: boolean;
       closeIfAlive?: boolean;
     },
   ): void {
-    const releaseMcp = opts?.releaseMcp ?? 'always';
     // 销毁视图前先中止该会话正在运行的查询（工作区切换 / LRU 淘汰 / 关闭场景）
     this.abortSession(key);
     const view = this.views.get(key);
@@ -460,12 +439,6 @@ export class ChatViewManager {
       this.lru = this.lru.filter((k) => k !== key);
     }
     this.unsentNewKeys.delete(key);
-    if (releaseMcp === 'always') {
-      this.releaseMcp(key);
-    } else {
-      // 会话可能同时被浏览器客户端打开：保留引用，等浏览器断开时再释放
-      this.releaseMcpIfNoHolders(key);
-    }
   }
 
   /**
@@ -489,18 +462,16 @@ export class ChatViewManager {
     // 避免关闭后查询仍在后台运行、继续消耗 token 并复活已删除的对话文件）。
     const view = this.views.get(sessionId);
     if (!view || view.webContents.isDestroyed()) {
-      // 视图已销毁但引用仍在：只做 map/标记清理（不 close），
-      // 并统一释放 MCP 引用（浏览器客户端仍持有该会话时保留引用）
-      this.destroyViewEntry(sessionId, { releaseMcp: 'ifNoHolders', closeIfAlive: false });
+      // 视图已销毁但引用仍在：只做 map/标记清理（不 close）
+      this.destroyViewEntry(sessionId, { closeIfAlive: false });
       // 即使视图已销毁，若它是当前活动会话，也要做善后切换，
       // 否则 currentSessionId 悬挂在已销毁会话上，sendToActive/layout 等静默失效。
       this.switchAwayFromClosedSession(sessionId);
       return;
     }
 
-    // 会话被关闭：释放其 MCP 引用（引用归零的 server 进入延迟回收）；
-    // 若该会话同时被浏览器客户端打开，则保留引用，等浏览器断开时再释放。
-    this.destroyViewEntry(sessionId, { releaseMcp: 'ifNoHolders' });
+    // 会话被关闭：只销毁视图。MCP 引用由 core 持有（引用跟会话走）。
+    this.destroyViewEntry(sessionId);
 
     // 关闭的是当前活动视图：切换到最近使用的其他视图；无可用视图则新建对话
     this.switchAwayFromClosedSession(sessionId);
@@ -606,17 +577,6 @@ export class ChatViewManager {
   }
 
   /**
-   * 会话被打开：建立其 MCP 引用（异步，不阻塞 UI，幂等）。
-   * 临时 new- key 尚未对应正式会话，不参与引用。
-   */
-  private acquireMcp(sessionId?: string): void {
-    if (!sessionId || sessionId.startsWith('new-')) return;
-    void import('../src/core/mcp/Manager.js')
-      .then(({ getMcpManager }) => getMcpManager().acquire(sessionId))
-      .catch((err) => console.error(`[chat-view] MCP acquire failed (${sessionId}):`, err));
-  }
-
-  /**
    * 会话被关闭 / 删除前：中止其正在运行的查询（含后台 Bash 任务与递归子代理）。
    * 引擎可能已被移除（删除后再次关闭），此时 abortCurrentQuery 会兜底中止后台任务。
    * 临时 new- key 尚未对应正式会话，跳过。
@@ -626,14 +586,6 @@ export class ChatViewManager {
     void import('../src/core/Integration.js')
       .then(({ abortCurrentQuery }) => abortCurrentQuery(sessionId))
       .catch((err) => console.error(`[chat-view] abort query failed (${sessionId}):`, err));
-  }
-
-  /** 会话被关闭 / 删除：释放其 MCP 引用（引用归零的 server 进入延迟回收） */
-  private releaseMcp(sessionId?: string): void {
-    if (!sessionId || sessionId.startsWith('new-')) return;
-    void import('../src/core/mcp/Manager.js')
-      .then(({ getMcpManager }) => getMcpManager().release(sessionId))
-      .catch((err) => console.error(`[chat-view] MCP release failed (${sessionId}):`, err));
   }
 
   private touch(sessionId: string): void {

@@ -15,7 +15,6 @@
 import type { AssistantEventBus } from './AssistantEventBus.js';
 import { logger } from './Logger.js';
 import { requireEventBus } from './AssistantEventBus.js';
-import type { CoreEvent } from './AssistantEventBus.js';
 
 // ==================== Integration：消息 / 压缩 / 配置 / 生命周期 ====================
 

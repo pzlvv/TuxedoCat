@@ -4,6 +4,7 @@
  */
 import type { LogChannel } from '../UIHost.js';
 import { userChoiceQueue } from '../../core/UserChoiceQueue.js';
+import { markSessionWaiting } from '../../core/sessionRuntime.js';
 import type { DiffUriPair, ShowDiffInVirtualDocumentEvent } from './types.js';
 
 /**
@@ -221,7 +222,8 @@ export class UserChoiceManager<TUri = unknown> {
     }
     this.postToWebview(sessionID, postData);
 
-    // 用户选择框已弹出：通知宿主（如 Electron 侧栏将流水灯刷新为黄色）
+    // 会话运行时状态：等待用户操作（ask user / 权限确认）→ 侧栏黄灯 / 托盘状态点
+    markSessionWaiting(sessionID, true);
     this.onChoiceShown?.(sessionID);
 
     return new Promise((resolve) => {
@@ -229,6 +231,8 @@ export class UserChoiceManager<TUri = unknown> {
         sessionId: sessionID,
         resolve: (value) => {
           this.closePreview();
+          // 用户已响应：waiting 解除
+          markSessionWaiting(sessionID, false);
           resolve(value);
         }
       });

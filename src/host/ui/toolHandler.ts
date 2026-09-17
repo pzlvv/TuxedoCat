@@ -9,7 +9,7 @@
  * - 工具卡片的运行/失败状态更新
  * - Edit / Write 的 diff 信息暂存（供工具卡片展示与权限确认框复用）
  */
-import type { LogChannel, UIHost } from '../UIHost.js';
+import type { UIHost } from '../UIHost.js';
 import { logger } from '../../core/Logger.js';
 import { updateToolUseMeta } from '../../core/history/index.js';
 import type { PermissionResult } from '../../core/tools/Tool.js';

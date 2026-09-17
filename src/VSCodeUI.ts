@@ -18,9 +18,7 @@ import type { ToolProgressData } from './core/tools/Tool.js';
 import type { WebviewMessage } from './core/webviewTypes.js';
 import type { UIHost } from './host/UIHost.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from './host/mermaidHtml.js';
-import { tt, getSystemLocale } from './core/i18n.js';
-import { readUiLanguageSync } from './core/history/Config.js';
-import { MERMAID_PANEL_ID, SPIN_DESIGN_PANEL_ID } from './config/project.js';
+import { MERMAID_PANEL_ID } from './config/project.js';
 import type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent } from './host/ui/types.js';
 import { UserChoiceManager } from './host/ui/userChoice.js';
 import { DocumentManager } from './VSCodeUI/documentManager.js';
@@ -32,9 +30,13 @@ import { setSessionIdleCloseHandler, setSessionWaitingForUserProvider, releaseSe
 import { clearConversationData } from './core/history/ops.js';
 import { fetchBalanceAndPush } from './core/history/balancePush.js';
 import { buildConversationLoadedPayload } from './host/conversationPayload.js';
-import { pushToolProgress, inheritAgentMode } from './host/queryActivity.js';
+import { pushToolProgress } from './host/queryActivity.js';
 import { SessionUiState } from './host/SessionUiState.js';
 import { shouldOpenSpinDesign } from './core/history/spinCommand.js';
+import { SingleWebViewConversationManager } from './VSCodeConversationManager.js';
+import type { ConversationManager } from './host/ConversationManager.js';
+import { VSCodeSpinDesign } from './VSCodeSpinDesign.js';
+import type { SpinDesign } from './host/SpinDesign.js';
 
 export type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent };
 
@@ -42,8 +44,6 @@ export class VSCodeUI {
   private static outputChannel: vscode.OutputChannel | undefined;
   private static instance: VSCodeUI | undefined;
   private webviewView: vscode.WebviewView | undefined;
-  /** 按 session 保存的 agent mode */
-  private sessionAgentModes: Map<string, 'manual' | 'risk' | 'auto'> = new Map();
   /**
    * 按会话的 UI 运行时状态（活动阶段 / 工具计数 / 查询计数 / abort scope）。
    * 与 ElectronUI 共用同一实现，避免两端逻辑分叉。
@@ -59,6 +59,11 @@ export class VSCodeUI {
   private toolHandler: ToolHandler;
   private webviewMessageHandler: WebviewMessageHandler;
   private extensionUri: vscode.Uri = vscode.Uri.file('');
+
+  /** 对话列表的读取与分发（构造注入，与 UIHost 平行） */
+  private readonly conversations: ConversationManager;
+  /** Spin 设计器契约（构造注入，与 UIHost 平行） */
+  private readonly spinDesign: SpinDesign;
 
   constructor(bus: AssistantEventBus) {
     // 先初始化子模块（需要引用 postToWebview 等方法）
@@ -79,6 +84,9 @@ export class VSCodeUI {
       userChoiceManager: this.userChoiceManager,
     });
 
+    this.spinDesign = new VSCodeSpinDesign(this.buildHost());
+    this.conversations = new SingleWebViewConversationManager(this.buildHost());
+
     this.webviewMessageHandler = new WebviewMessageHandler({
       host: this.buildHost(),
       postToWebview: (sessionId, message) => this.postToWebview(sessionId, message),
@@ -87,6 +95,11 @@ export class VSCodeUI {
       setTitle: (sessionID, title) => this.onTitleChanged(sessionID, title),
       userChoiceManager: this.userChoiceManager,
     });
+    this.webviewMessageHandler.uiPort = {
+      hasActiveQueryInScope: (sid) => this.sessionUi.hasActiveQueryInScope(sid),
+      openSpinDesign: () => this.spinDesign.open(),
+      refreshConversations: () => this.conversations.refresh(),
+    };
 
     // 初始化 UserChoiceQueue 回调
     this.userChoiceManager.initUserChoiceQueue();
@@ -126,6 +139,9 @@ export class VSCodeUI {
       titleChanged: (e) => this.onTitleChanged(e.sessionId, e.title),
       sessionCreated: (e) => this.onSessionCreated(e.sessionId),
       conversationListChanged: () => this.scheduleConversationListRefresh(),
+      // VS Code 单 webview：webview 对话树从 queryBegin/queryEnd 自己维护（第 4.5 节），
+      // 不需要宿主再推一遍运行时状态 → 空实现（合法 no-op）
+      sessionRuntimeChanged: () => { /* VS Code 无原生侧栏/托盘消费者 */ },
       spinDesignDataChanged: () => void this.refreshSpinDesign(),
       compactBegin: (e) => this.onCompressProgress(e.sessionId, 'start'),
       compactEnd: (e) =>
@@ -169,13 +185,16 @@ export class VSCodeUI {
       sendToWebview: (message) => {
         this.webviewView?.webview.postMessage(message);
       },
-      onSessionOpened: (sessionId) => {
-        // 单 webview 宿主：打开 MCP 面板即按当前活动会话建立引用（幂等）。
-        // acquire 可能耗时（首次拉取包、握手），后台执行，完成后回推运行时状态；
-        // 期间 webview 显示「连接中」。多视图宿主由视图管理器维护，见 ElectronUI。
-        this.webviewMessageHandler.acquireMcpOnSessionOpen(sessionId);
+      log: (...args) => {
+        VSCodeUI.outputChannel?.appendLine(args.map(a => String(a)).join(' '));
       },
-      openFile: async (filePath, target) => {
+      getWorkspacePath: () => this.getWorkspacePath(),
+      isDarkTheme: () => {
+        const kind = vscode.window.activeColorTheme.kind;
+        return kind === vscode.ColorThemeKind.Dark || kind === vscode.ColorThemeKind.HighContrast;
+      },
+      getLocale: () => vscode.env.language,
+      openFile: async (filePath: string, target: import('./host/UIHost.js').LineSelection | null) => {
         const selectedLines = target;
         const uri = vscode.Uri.file(filePath);
 
@@ -223,9 +242,6 @@ export class VSCodeUI {
       openMermaidPreview: async (code) => {
         this.openMermaidPreviewPanel(code);
       },
-      openSpinDesign: async () => {
-        await this.openSpinDesignPanel();
-      },
       openExternalUrl: async (url) => {
         try {
           await vscode.env.openExternal(vscode.Uri.parse(url));
@@ -258,30 +274,17 @@ export class VSCodeUI {
           return { success: false, canceled: false, error: String(err) };
         }
       },
-      isDarkTheme: () => {
-        const kind = vscode.window.activeColorTheme.kind;
-        return kind === vscode.ColorThemeKind.Dark || kind === vscode.ColorThemeKind.HighContrast;
+      closePreview: () => {
+        this.closePreview();
       },
-      getLocale: () => vscode.env.language,
-      log: (...args) => {
-        VSCodeUI.outputChannel?.appendLine(args.map(a => String(a)).join(' '));
+      syncAbortState: (isActive) => {
+        const activeSessionId = this.getActiveSessionIdInternal();
+        this.setEnableAbort(activeSessionId ? isActive(activeSessionId) : false);
       },
-      closeConversation: async (sessionId) => {
-        // 关闭会话 = abort -> 释放 MCP 引用。
-        // VS Code 没有独立的会话视图，用户无法直接触发关闭，仅在删除对话时由删除流程调用。
-        try {
-          const { abortCurrentQuery } = await import('./core/Integration.js');
-          abortCurrentQuery(sessionId);
-        } catch { /* 中止失败不阻塞关闭 */ }
-        try {
-          const { clearSessionMcpOverride } = await import('./core/mcp/Config.js');
-          const { getMcpManager } = await import('./core/mcp/Manager.js');
-          clearSessionMcpOverride(sessionId);
-          await getMcpManager().release(sessionId);
-        } catch { /* 释放失败不影响关闭 */ }
-      },
-      refreshAbortState: () => {
-        this.syncAbortState();
+      // VS Code 只有一个 webview，没有可关闭的会话视图：
+      // HostInfo.closeConversation === false，webview 也不渲染关闭按钮 → 空实现
+      closeConversationView: async () => {
+        /* 空实现：VS Code 没有独立会话视图 */
       },
     };
   }
@@ -324,197 +327,12 @@ export class VSCodeUI {
     }
   }
 
-  /** 读取 Spin 设计数据（spin.json + 工作区路径），带重试保护 */
-  private async readSpinDesignData(): Promise<{
-    existingData: any;
-    spinJsonExists: boolean;
-    spinJsonPath: string | null;
-    workspacePath: string;
-    hasWorkspace: boolean;
-  }> {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    const hasWorkspace = !!(workspaceFolders && workspaceFolders.length > 0);
-    // 未打开工作区时留空，绝不退回 process.cwd()（那是扩展宿主进程的启动目录）
-    const workspacePath = hasWorkspace ? workspaceFolders![0].uri.fsPath : '';
-
-    if (!hasWorkspace) {
-      return {
-        existingData: null,
-        spinJsonExists: false,
-        spinJsonPath: null,
-        workspacePath,
-        hasWorkspace: false,
-      };
-    }
-
-    const { getProjectConversationDir } = await import('./core/history/Config.js');
-    const path = require('path') as typeof import('path');
-    const projectDir = getProjectConversationDir(workspacePath);
-    const spinJsonPath = path.join(projectDir, 'spin.json');
-    const fs = require('fs');
-    let existingData: any = null;
-    let spinJsonExists = false;
-
-    // 使用重试读取：即使写入方已改为原子写，仍可能在极端情况下遇到文件占用/瞬时不可读，
-    // 避免因一次读取失败就回退到空画布，导致节点内容看起来被清空。
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        if (fs.existsSync(spinJsonPath)) {
-          spinJsonExists = true;
-          const content = fs.readFileSync(spinJsonPath, 'utf-8');
-          existingData = JSON.parse(content);
-        }
-        break;
-      } catch {
-        existingData = null;
-        if (attempt < 2) {
-          await new Promise(resolve => setTimeout(resolve, 100 * (attempt + 1)));
-        }
-      }
-    }
-
-    return { existingData, spinJsonExists, spinJsonPath, workspacePath, hasWorkspace };
-  }
-
-  /** 查找当前已打开的 Spin 设计面板 */
-  private findSpinDesignPanel(): vscode.WebviewPanel | undefined {
-    const existingPanel = vscode.window.tabGroups.all
-      .flatMap(tg => tg.tabs)
-      .find(tab => (tab.input as any)?.viewType === SPIN_DESIGN_PANEL_ID);
-    return existingPanel
-      ? (existingPanel.input as any).webviewPanel as vscode.WebviewPanel
-      : undefined;
-  }
-
-  /** 创建或复用 Spin 设计面板 */
-  private async openSpinDesignPanel(): Promise<void> {
-    const panelId = SPIN_DESIGN_PANEL_ID;
-    const existingPanel = this.findSpinDesignPanel();
-
-    let panel: vscode.WebviewPanel;
-    if (existingPanel) {
-      panel = existingPanel;
-      panel.reveal();
-      return;
-    }
-
-    // 读取已存在的 spin.json（从 ~/<CONFIG_DIR_NAME>/conversations/<encoded-workspace>/）
-    const { existingData, spinJsonExists, spinJsonPath, workspacePath, hasWorkspace } =
-      await this.readSpinDesignData();
-
-    // 文件存在但连续重试仍无法解析时，不能打开空编辑器，
-    // 否则后续保存可能用空数据覆盖真实 spin.json。
-    if (spinJsonExists && !existingData) {
-      vscode.window.showErrorMessage(`Failed to read spin.json: ${spinJsonPath}`);
-      return;
-    }
-
-    panel = vscode.window.createWebviewPanel(
-      panelId,
-      tt('Spin 设计', 'Spin Design'),
-      vscode.ViewColumn.Beside,
-      {
-        enableScripts: true,
-        // 面板切到后台/被遮挡时保持 webview 内容与状态，避免重新加载丢失未保存编辑
-        retainContextWhenHidden: true,
-      }
-    );
-
-    const { getSpinDesignHtml } = await import('./host/ui/spinDesignHtml.js');
-    const { getAllSkills } = await import('./core/skills/loadSkillsDir.js');
-    const isDark = this.buildHost().isDarkTheme();
-    // 无工作区时不做技能扫描（workspacePath 为空，扫相对路径会落到宿主进程目录）
-    const availableSkills = (hasWorkspace ? await getAllSkills(workspacePath) : [])
-      .filter(s => !s.isHidden && s.userInvocable)
-      .map(s => ({ name: s.name, description: s.description }));
-    panel.webview.html = getSpinDesignHtml(
-      existingData,
-      isDark,
-      this.buildHost().getLocale(),
-      getSystemLocale(),
-      readUiLanguageSync(),
-      availableSkills,
-    );
-
-    // 监听来自 spin design webview 的消息
-    panel.webview.onDidReceiveMessage(async (msg: any) => {
-      if (msg.type === 'saveSpinDesign' && msg.data) {
-        if (hasWorkspace) {
-          const { getProjectConversationDir } = await import('./core/history/Config.js');
-          const projectDir = getProjectConversationDir(workspacePath);
-          const data = { ...msg.data, meta: msg.data.meta || {} };
-          // 确保目录存在
-          const fs = require('fs');
-          if (!fs.existsSync(projectDir)) {
-            fs.mkdirSync(projectDir, { recursive: true });
-          }
-          try {
-            // 串行写入 spin.json，避免与 SpinLoop 的 updateNodeMeta 并发
-            // "读-改-写"导致清除结果被回写（保存不生效）
-            const { writeSpinJsonQueued } = await import('./core/spin/Engine.js');
-            await writeSpinJsonQueued(workspacePath, data);
-            panel?.webview.postMessage({ type: 'spinSaveResult', success: true });
-          } catch (err) {
-            VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] spin.json save failed: ${err}`);
-            panel?.webview.postMessage({ type: 'spinSaveResult', success: false, error: String(err) });
-          }
-        } else {
-          panel?.webview.postMessage({ type: 'spinSaveResult', success: false, error: tt('没有打开的工作目录', 'No workspace folder is open') });
-        }
-      } else if (msg.type === 'exportSpinDesign' && msg.data) {
-        try {
-          const { exportSpinDesignJson } = await import('./host/spinDesignExport.js');
-          const result = await exportSpinDesignJson(
-            this.buildHost(),
-            msg.data,
-            tt('导出 Spin 设计', 'Export Spin Design'),
-          );
-          panel?.webview.postMessage({ type: 'spinExportResult', ...result } as any);
-        } catch (err) {
-          VSCodeUI.outputChannel?.appendLine(`[VSCodeUI] spin.json export failed: ${err}`);
-          panel?.webview.postMessage({ type: 'spinExportResult', success: false, error: String(err) } as any);
-        }
-      } else if (msg.type === 'refreshSpinDesign') {
-        await this.sendSpinDesignDataToPanel(panel);
-      }
-    });
-  }
-
-  /**
-   * 读取磁盘上最新的 spin.json 与 Skill 列表，并推送给 Spin 设计器面板。
-   * 供设计器“刷新”按钮和 SpinLoop 执行完成后自动刷新共用。
-   */
-  private async sendSpinDesignDataToPanel(panel: vscode.WebviewPanel): Promise<void> {
-    const refreshed = await this.readSpinDesignData();
-    if (refreshed.spinJsonExists && !refreshed.existingData) {
-      panel.webview.postMessage({
-        type: 'spinSaveResult',
-        success: false,
-        error: `Failed to read spin.json: ${refreshed.spinJsonPath}`,
-      } as any);
-      return;
-    }
-    const { getAllSkills } = await import('./core/skills/loadSkillsDir.js');
-    const availableSkills = (await getAllSkills(refreshed.workspacePath))
-      .filter(s => !s.isHidden && s.userInvocable)
-      .map(s => ({ name: s.name, description: s.description }));
-    panel.webview.postMessage({
-      type: 'spinDesignData',
-      data: refreshed.existingData,
-      skills: availableSkills,
-    } as any);
-  }
-
   /**
    * SpinLoop 执行完成后刷新已打开的设计器，避免其缓存旧数据后
    * 用户再次保存时覆盖磁盘上的执行结果。
    */
   async refreshSpinDesign(): Promise<void> {
-    const panel = this.findSpinDesignPanel();
-    if (!panel) {
-      return;
-    }
-    await this.sendSpinDesignDataToPanel(panel);
+    await this.spinDesign.refresh();
   }
 
   /**
@@ -654,14 +472,6 @@ export class VSCodeUI {
   }
 
   // ===================== CoreEvent 处理器（原 AssistantUI 实现） =====================
-
-  /**
-   * 设置子会话的 agent mode
-   * 子代理默认使用 risk 模式，仅当父会话为 auto 时继承 auto（auto > risk > manual）
-   */
-  onSetAgentMode(parentSessionId: string, childSessionId: string): void {
-    inheritAgentMode(this.sessionAgentModes, parentSessionId, childSessionId);
-  }
 
   /**
    * 工具调用开始前（收到 CoreRequest.toolPermission）：

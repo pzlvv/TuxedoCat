@@ -1497,6 +1497,17 @@ export async function deleteConversation(sessionId: string): Promise<void> {
     logger.error('Conversation', `清理 QueryEngine 引擎池失败: ${e}`);
   }
 
+  // 释放 MCP 引用（MCPHost.onSessionClosed；删除对话即会话关闭）
+  try {
+    const { getMCPHost } = await import('../mcp/MCPHost.js');
+    await getMCPHost().onSessionClosed(sessionId);
+    for (const childId of childIds) {
+      await getMCPHost().onSessionClosed(childId);
+    }
+  } catch (e) {
+    logger.warn('Conversation', `释放 MCP 引用失败: ${e}`);
+  }
+
   // 增量更新对话列表缓存（移除已删除的对话及其子对话）
   const listCache = getCurrentConversationListCache();
   if (listCache) {

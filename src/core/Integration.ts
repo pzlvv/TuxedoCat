@@ -9,6 +9,8 @@ import type { Tool } from './tools/Tool.js';
 import type { PromptPresetId } from './prompt/PromptPreset.js';
 import type { LLMConfig } from './llm/config.js';
 import { requireEventBus, type CoreEvent } from './AssistantEventBus.js';
+import { markQueryRunning } from './sessionRuntime.js';
+import { getMCPHost } from './mcp/MCPHost.js';
 import { logger } from './Logger.js';
 import { setProjectRootProvider, updateConversationContext } from './history/index.js';
 import { getProjectRoot } from './history/Config.js';
@@ -204,8 +206,11 @@ export function createEngine(sessionId: string, title: string, role?: string): Q
   if (existing) {
     return existing;
   }
-  // 会话被创建/打开：刷新空闲关闭计时
+  // 会话被创建/打开：刷新空闲关闭计时；MCP 引用按该会话启用列表建立（幂等）
   noteSessionActivity(sessionId);
+  void getMCPHost().onSessionOpened(sessionId).catch((err: unknown) => {
+    logger.warn('Integration', `MCP onSessionOpened failed: ${err}`);
+  });
 
   const engine = new QueryEngine(sessionId, {
     cwd: getProjectRoot(),
@@ -299,8 +304,11 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
   if (getSessionEngine(sessionID)) {
     return;
   }
-  // 会话被打开（加载历史 / 恢复引擎）：刷新空闲关闭计时
+  // 会话被打开（加载历史 / 恢复引擎）：刷新空闲关闭计时；MCP 引用建立（幂等）
   noteSessionActivity(sessionID);
+  void getMCPHost().onSessionOpened(sessionID).catch((err: unknown) => {
+    logger.warn('Integration', `MCP onSessionOpened failed: ${err}`);
+  });
 
   // 如果调用方没有传入 role，尝试从 meta 中读取
   let conversation: any = undefined;
@@ -589,7 +597,8 @@ export async function* sendMessage(
     engine.updateWebSearch(fileInfo.webSearch);
   }
 
-  // 通知查询开始
+  // 通知查询开始 + 更新会话运行时状态（running）
+  markQueryRunning(sessionId, true);
   emitToUi({ type: 'queryBegin', sessionId });
 
   // 如果是新对话，设置标题（文本优先；仅图片时使用 Image[<width>*<height>]）
@@ -669,6 +678,7 @@ export async function* sendMessage(
     logger.error('Integration', 'Query error:', error);
     throw error;
   } finally {
+    markQueryRunning(sessionId, false);
     emitToUi({ type: 'queryEnd', sessionId });
     currentQueryEngine = null;
   }

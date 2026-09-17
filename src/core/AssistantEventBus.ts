@@ -68,6 +68,20 @@ export type CoreEvent =
     }
   /** 对话列表（磁盘元数据）发生变化：落盘 / 改名 / 删除 / 新建 */
   | { type: 'conversationListChanged' }
+  /**
+   * 会话运行时状态变化（有活跃查询 / 正在等待用户操作）。
+   *
+   * 推全量（所有已知会话的状态）而不是增量：会话数量是几十的量级，
+   * 全量让消费者不必自己维护状态表，也不会因为丢一条增量而永久错位。
+   *
+   * 与 conversationListChanged 是两条独立的流：
+   * - conversationListChanged：磁盘列表变了（落盘 / 改名 / 删除 / 新建）
+   * - sessionRuntimeChanged：运行时状态变了（查询开始结束 / 等用户 / 用户响应）
+   */
+  | {
+      type: 'sessionRuntimeChanged';
+      states: readonly SessionRuntimeState[];
+    }
   | { type: 'spinDesignDataChanged' }
   | { type: 'compactBegin'; sessionId: string }
   | {
@@ -211,6 +225,23 @@ export type UiEvent =
   // ===== 其它 =====
   | { type: 'editRolledBack'; sessionId: string; toolUseId: string; direction: string }
   | { type: 'llmConfigSaved'; config: unknown };
+
+// ==================== 会话运行时状态 ====================
+
+/**
+ * 单个会话的运行时状态。消费者：Electron 侧栏流水灯、系统托盘状态点、
+ * webview 对话树的运行标记。
+ *
+ * 只有 core 能提供的事实进这里；宿主自己的界面状态（如 Electron 的
+ * 「视图已打开」）由宿主自己维护，不混进来。
+ */
+export interface SessionRuntimeState {
+  sessionId: string;
+  /** 有活跃查询：引擎在消费消息 / 后台 Bash 任务 / 递归子代理 */
+  running: boolean;
+  /** 正在等待用户操作（ask user / 权限确认） */
+  waiting: boolean;
+}
 
 // ==================== 通用 ====================
 

@@ -8,6 +8,7 @@ import { query } from './Query.js';
 import type { AbortControllerLike } from './tools/Tool.js';
 import type { CoreEvent } from './AssistantEventBus.js';
 import { requireEventBus } from './AssistantEventBus.js';
+import { markQueryRunning } from './sessionRuntime.js';
 import type { Tool } from './tools/Tool.js';
 import type { LLMConfig } from './llm/config.js';
 import type { PromptPresetId } from './prompt/PromptPreset.js';
@@ -463,6 +464,7 @@ export class QueryEngine {
 
     this.isConsumerRunning = true;
     noteSessionActivity(this.sessionID);
+    markQueryRunning(this.sessionID, true);
     if (notifyQueryBegin) {
       emitToUi({ type: 'queryBegin', sessionId: this.sessionID });
     }
@@ -521,6 +523,7 @@ export class QueryEngine {
   private async finalizeIdle(notifyQueryEnd: boolean): Promise<void> {
     this.isConsumerRunning = false;
     this.signalConsumerExited();
+    markQueryRunning(this.sessionID, false);
     if (notifyQueryEnd) {
       emitToUi({ type: 'queryEnd', sessionId: this.sessionID });
     }
@@ -965,6 +968,7 @@ export class QueryEngine {
 
     this.isConsumerRunning = true;
     noteSessionActivity(this.sessionID);
+    markQueryRunning(this.sessionID, true);
     if (manageQueryUI) {
       emitToUi({ type: 'queryBegin', sessionId: this.sessionID });
     }

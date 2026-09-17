@@ -34,9 +34,12 @@ import { isImageFile } from '../src/host/imageFiles.js';
 import { clearConversationData } from '../src/core/history/ops.js';
 import { fetchBalanceAndPush } from '../src/core/history/balancePush.js';
 import { buildConversationLoadedPayload } from '../src/host/conversationPayload.js';
-import { pushToolProgress, inheritAgentMode } from '../src/host/queryActivity.js';
+import { pushToolProgress } from '../src/host/queryActivity.js';
 import { SessionUiState } from '../src/host/SessionUiState.js';
 import { shouldOpenSpinDesign } from '../src/core/history/spinCommand.js';
+import { ElectronConversationManager } from './ElectronConversationManager.js';
+import { ElectronSpinDesign } from './ElectronSpinDesign.js';
+import type { ConversationManager } from '../src/host/ConversationManager.js';
 
 export class ElectronUI {
   private static instance: ElectronUI | undefined;
@@ -45,8 +48,6 @@ export class ElectronUI {
   private chatViews: ChatViewManager | undefined;
   /** 当前工作区路径（由 main 进程设置，用户通过菜单选择） */
   private workspacePath: string | undefined;
-  /** 按 session 保存的 agent mode */
-  private sessionAgentModes: Map<string, 'manual' | 'risk' | 'auto'> = new Map();
   /** 按会话的 UI 运行时状态（活动阶段 / 工具计数 / 查询计数 / abort scope），与 VSCodeUI 共用实现 */
   private readonly sessionUi = new SessionUiState();
   /** 侧栏刷新 debounce timer：消息落盘是异步的（appendMessage 在 onMessage 之后执行），
@@ -63,8 +64,10 @@ export class ElectronUI {
   private webviewMessageHandler: WebviewMessageHandler;
   /** 已打开的辅助预览窗口（用于 closePreview 统一关闭） */
   private previewWindows: BrowserWindowCtor[] = [];
-  /** 当前打开的 Spin 设计窗口（用于 SpinLoop 完成后刷新其数据） */
-  private spinDesignWindow: BrowserWindowCtor | undefined;
+  /** 对话列表的读取与分发（构造注入，与 UIHost 平行） */
+  private readonly conversations: ConversationManager;
+  /** Spin 设计器契约（构造注入，与 UIHost 平行） */
+  private readonly spinDesign: ElectronSpinDesign;
 
   private constructor(bus: AssistantEventBus) {
     const outputChannel = {
@@ -97,6 +100,15 @@ export class ElectronUI {
       // 用户响应选择后刷新侧栏：黄色流水灯恢复为紫色/消失
       onUserChoiceResponded: () => this.refreshSidebarThrottled(),
     });
+    // ElectronConversationManager 依赖 sendToSidebar（宿主能力），
+    // 在 setSidebarView 之前先用 no-op 出口占位，setSidebarView 时替换
+    this.spinDesign = new ElectronSpinDesign(this.buildHost(), (win) => this.trackPreviewWindow(win));
+    this.conversations = new ElectronConversationManager(this.buildHost(), () => { /* sidebar 未就绪 */ });
+    this.webviewMessageHandler.uiPort = {
+      hasActiveQueryInScope: (sid) => this.sessionUi.hasActiveQueryInScope(sid),
+      openSpinDesign: () => this.spinDesign.open(),
+      refreshConversations: () => this.conversations.refresh(),
+    };
 
     this.userChoiceManager.initUserChoiceQueue();
 
@@ -142,6 +154,10 @@ export class ElectronUI {
       titleChanged: (e) => this.setTitle(e.sessionId, e.title),
       sessionCreated: (e) => this.onSessionCreated(e.sessionId),
       conversationListChanged: () => this.scheduleConversationListRefresh(),
+      // 会话运行时状态：推侧栏流水灯 + 托盘（ElectronConversationManager.dispatchStates）
+      sessionRuntimeChanged: (e) => {
+        this.conversations.updateSessionStates(e.states);
+      },
       spinDesignDataChanged: () => void this.refreshSpinDesign(),
       compactBegin: (e) => this.onCompressProgress(e.sessionId, 'start'),
       compactEnd: (e) =>
@@ -294,10 +310,10 @@ export class ElectronUI {
     return {
       sendToWebview: (message) => this.sendToRenderer(message),
 
-      onSessionOpened: () => {
-        // 多视图宿主：MCP 引用由 ChatViewManager 在打开/关闭聊天视图时精确维护，
-        // 这里不按全局 activeSessionId acquire（可能引用到已关闭的会话导致泄漏）。
-      },
+      log: (...args) => this.log(...args),
+      getWorkspacePath: () => this.workspacePath,
+      isDarkTheme: () => nativeTheme.shouldUseDarkColors,
+      getLocale: () => app.getLocale().startsWith('zh') ? 'zh' : 'en',
 
       openFile: async (filePath, target) => {
         // 图片用内置图片预览窗口打开，避免 Monaco 按 utf-8 读取显示乱码
@@ -322,32 +338,14 @@ export class ElectronUI {
         });
       },
 
-      showDiff: async (options) => {
-        await this.openMonacoWindow({
-          mode: 'diff',
-          filePath: options.filePath,
-          beforeContent: options.beforeContent || '',
-          afterContent: options.afterContent || '',
-          title: options.title || 'Diff',
-        });
+      // 空实现：预览能力已经在 webview 里（PreviewOverlay 支持 text/image/diff/mermaid），
+      // Electron 不再重复开 Monaco diff 窗口（第 11.1 节第 9 项）
+      showDiff: async () => {
+        /* 空实现：预览归 webview */
       },
 
       openMermaidPreview: async (code) => {
         this.openMermaidWindow(code);
-      },
-
-      openSpinDesign: async () => {
-        await this.openSpinDesignWindow();
-      },
-
-      refreshAbortState: () => {
-        this.syncAbortState();
-      },
-
-      closeConversation: (sessionId) => {
-        // 关闭会话 = abort -> 释放 MCP 引用 -> 销毁聊天视图，
-        // 三步都在 ChatViewManager.closeView 内部完成（用户点关闭按钮走的是同一条路径）。
-        this.chatViews?.closeView(sessionId);
       },
 
       openExternalUrl: async (url) => {
@@ -382,9 +380,21 @@ export class ElectronUI {
         }
       },
 
-      isDarkTheme: () => nativeTheme.shouldUseDarkColors,
-      getLocale: () => app.getLocale().startsWith('zh') ? 'zh' : 'en',
-      log: (...args) => this.log(...args),
+      closePreview: () => {
+        this.closePreview();
+      },
+
+      syncAbortState: (isActive: (sessionId: string) => boolean) => {
+        if (!this.chatViews) return;
+        for (const sessionId of this.chatViews.getLoadedSessionIds()) {
+          this.setEnableAbortForSession(sessionId, isActive(sessionId));
+        }
+      },
+
+      // 只销毁视图；abort 与 MCP 释放归 core（conversationClosed / MCPHost.onSessionClosed）
+      closeConversationView: async (sessionId: string) => {
+        this.chatViews?.closeView(sessionId);
+      },
     };
   }
 
@@ -515,138 +525,12 @@ export class ElectronUI {
     }
   }
 
-  /** Spin 设计窗口（注入 acquireVsCodeApi shim 使 spinDesignHtml 可复用） */
-  private async openSpinDesignWindow(): Promise<void> {
-    // 读取已存在的 spin.json
-    let existingData: any = null;
-    const projectDir = this.getProjectConversationDir(this.getWorkspacePath());
-    if (projectDir) {
-      const spinJsonPath = path.join(projectDir, 'spin.json');
-      try {
-        if (fs.existsSync(spinJsonPath)) {
-          existingData = JSON.parse(fs.readFileSync(spinJsonPath, 'utf-8'));
-        }
-      } catch {
-        // 忽略
-      }
-    }
-
-    const { getSpinDesignHtml } = await import('../src/host/ui/spinDesignHtml.js');
-    const isDark = nativeTheme.shouldUseDarkColors;
-    const html = getSpinDesignHtml(existingData, isDark, app.getLocale().startsWith('zh') ? 'zh' : 'en', getSystemLocale());
-
-    const win = new BrowserWindowCtor({
-      width: 1100,
-      height: 720,
-      title: tt('Spin 设计', 'Spin Design'),
-      icon: path.join(APP_ROOT, 'assets', 'logo.png'),
-      autoHideMenuBar: true,
-      backgroundColor: '#1a1a1f',
-      webPreferences: {
-        sandbox: false,
-        nodeIntegration: false,
-        contextIsolation: true,
-        preload: path.join(__dirname, 'spinPreload.cjs'),
-      },
-    });
-    this.trackPreviewWindow(win);
-    this.spinDesignWindow = win;
-    win.on('closed', () => {
-      if (this.spinDesignWindow === win) {
-        this.spinDesignWindow = undefined;
-      }
-    });
-
-    // 保存 spin.json
-    const saveSpin = (data: any): void => {
-      if (!projectDir) {
-        win.webContents.send('spin-design-message', { type: 'spinSaveResult', success: false, error: tt('没有打开的工作目录', 'No workspace folder is open') });
-        return;
-      }
-      const workspacePath = this.getWorkspacePath();
-      if (!workspacePath) {
-        win.webContents.send('spin-design-message', { type: 'spinSaveResult', success: false, error: tt('没有打开的工作目录', 'No workspace folder is open') });
-        return;
-      }
-      const fullData = { ...data, meta: data.meta || {} };
-      if (!fs.existsSync(projectDir)) {
-        fs.mkdirSync(projectDir, { recursive: true });
-      }
-      // 串行写入 spin.json，避免与 SpinLoop 的 updateNodeMeta 并发
-      // "读-改-写"导致清除结果被回写（保存不生效）
-      import('../src/core/spin/Engine.js').then(({ writeSpinJsonQueued }) =>
-        writeSpinJsonQueued(workspacePath, fullData)
-      ).then(() => {
-        win.webContents.send('spin-design-message', { type: 'spinSaveResult', success: true });
-      }).catch((err) => {
-        win.webContents.send('spin-design-message', { type: 'spinSaveResult', success: false, error: String(err) });
-      });
-    };
-
-    // 监听 spin 窗口发来的保存消息
-    const { ipcMain } = await import('electron');
-    const listener = (_e: any, msg: any) => {
-      if (msg?.type === 'saveSpinDesign' && msg.data) {
-        saveSpin(msg.data);
-      } else if (msg?.type === 'exportSpinDesign' && msg.data) {
-        import('../src/host/spinDesignExport.js').then(({ exportSpinDesignJson }) =>
-          exportSpinDesignJson(this.buildHost(), msg.data, tt('导出 Spin 设计', 'Export Spin Design'))
-        ).then((result) => {
-          if (!win.isDestroyed()) {
-            win.webContents.send('spin-design-message', { type: 'spinExportResult', ...result });
-          }
-        }).catch((err) => {
-          this.log(`[ElectronUI] spin.json export failed: ${err}`);
-          if (!win.isDestroyed()) {
-            win.webContents.send('spin-design-message', { type: 'spinExportResult', success: false, error: String(err) });
-          }
-        });
-      }
-    };
-    ipcMain.on('spin-design-message', listener);
-    win.on('closed', () => {
-      ipcMain.removeListener('spin-design-message', listener);
-    });
-
-    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-  }
 
   /**
-   * SpinLoop 执行完成后刷新已打开的 Spin 设计窗口，
-   * 避免窗口内旧缓存数据在用户再次保存时覆盖执行结果。
+   * SpinLoop 执行完成后刷新已打开的 Spin 设计窗口（委托 ElectronSpinDesign）。
    */
   async refreshSpinDesign(): Promise<void> {
-    const win = this.spinDesignWindow;
-    if (!win || win.isDestroyed()) {
-      return;
-    }
-    const workspacePath = this.getWorkspacePath();
-    const projectDir = this.getProjectConversationDir(workspacePath);
-    if (!projectDir || !workspacePath) {
-      return;
-    }
-
-    const spinJsonPath = path.join(projectDir, 'spin.json');
-    let data: any = null;
-    try {
-      if (fs.existsSync(spinJsonPath)) {
-        data = JSON.parse(fs.readFileSync(spinJsonPath, 'utf-8'));
-      }
-    } catch (err) {
-      this.log(`[ElectronUI] Failed to read spin.json for refresh: ${err}`);
-      return;
-    }
-
-    const { getAllSkills } = await import('../src/core/skills/loadSkillsDir.js');
-    const availableSkills = (await getAllSkills(workspacePath))
-      .filter(s => !s.isHidden && s.userInvocable)
-      .map(s => ({ name: s.name, description: s.description }));
-
-    win.webContents.send('spin-design-message', {
-      type: 'spinDesignData',
-      data,
-      skills: availableSkills,
-    });
+    await this.spinDesign.refresh();
   }
 
   private getProjectConversationDir(workspacePath?: string): string | undefined {
@@ -660,10 +544,6 @@ export class ElectronUI {
   }
 
   // ===================== CoreEvent / CoreRequest 处理器（原 AssistantUI 实现）=====================
-
-  onSetAgentMode(parentSessionId: string, childSessionId: string): void {
-    inheritAgentMode(this.sessionAgentModes, parentSessionId, childSessionId);
-  }
 
   /**
    * 工具调用开始前（收到 CoreRequest.toolPermission）：

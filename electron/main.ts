@@ -19,7 +19,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { ChatViewManager, SIDEBAR_WIDTH } from './ChatViewManager.js';
-import { createTrayStatusIcon, deriveTrayStatus, type TrayStatus } from './trayStatusIcon.js';
+import { createTrayStatusIcon, deriveTrayStatus, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
 import { startWebServer, type WebServerHandle, type WebServerClient } from './server/webServer.js';
 import { getBrowserShimSource } from './server/browserShim.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
@@ -672,6 +672,35 @@ function updateTrayStatusFromConversations(list: ReadonlyArray<Record<string, un
   }
 
   // 任务从运行中结束（变为空闲或等待用户确认）且窗口在后台 → 提醒用户
+  if (previous === 'running' && (status === 'idle' || status === 'waiting')) {
+    startAttention(status);
+  }
+}
+
+/**
+ * 托盘只吃状态流（阶段 3.6）：running / waiting 由 core 的 sessionRuntimeChanged
+ * 全量推送，经 ElectronConversationManager.setStatusListener 到达这里；
+ * 不再从对话列表推导。
+ */
+function updateTrayStatusFromStates(
+  states: ReadonlyArray<import('../src/core/AssistantEventBus.js').SessionRuntimeState>,
+): void {
+  const status = deriveTrayStatusFromStates(states);
+  if (status === trayStatus) return;
+  const previous = trayStatus;
+  trayStatus = status;
+
+  if (status === 'running' && attentionActive) {
+    attentionActive = false;
+    stopTaskbarFlash();
+  }
+
+  if (attentionActive) {
+    if (!startTrayBlink(status)) restoreTrayIcon();
+  } else {
+    restoreTrayIcon();
+  }
+
   if (previous === 'running' && (status === 'idle' || status === 'waiting')) {
     startAttention(status);
   }
@@ -1526,8 +1555,10 @@ function initCore(): void {
   ui.setMainWindow(mainWindow!);
   ui.setSidebarView(sidebarView!);
   ui.setChatViewManager(chatViews!);
-  // 侧栏对话列表每次刷新时同步托盘状态点（绿=空闲 / 红=运行中 / 黄=等待用户）
-  ui.setConversationStatusListener((list: Array<Record<string, unknown>>) => updateTrayStatusFromConversations(list));
+  // 托盘只吃状态流（阶段 3.6）：running / waiting 来自 core 的 sessionRuntimeChanged，
+  // 经 ElectronConversationManager.setStatusListener 到达托盘；不再从对话列表推导
+  const conversations = ui.getConversationManager();
+  conversations.setStatusListener((states: import('../src/core/AssistantEventBus.js').SessionRuntimeState[]) => updateTrayStatusFromStates(states));
   ui.setWorkspacePath(workspacePath);
 
   // 日志：输出到控制台（Electron 无 OutputChannel）

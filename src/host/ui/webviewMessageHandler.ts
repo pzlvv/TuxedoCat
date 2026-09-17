@@ -21,7 +21,7 @@ import { normalizeModelTokenLimits, type ModelTokenLimits, type ApiType } from '
 import { DEFAULT_WAKE_SHORTCUT, normalizeAccelerator } from '../../core/utils/shortcut.js';
 import { extractLastJsonObject } from '../../core/utils/lastJson.js';
 import { userChoiceQueue } from '../../core/UserChoiceQueue.js';
-import { noteSessionActivity, clearSessionIdleState } from '../../core/sessionIdle.js';
+import { noteSessionActivity } from '../../core/sessionIdle.js';
 import { isCompacting } from '../../core/compact/state.js';
 import type { WebviewMessage } from '../../core/webviewTypes.js';
 import type { UiEvent } from '../../core/AssistantEventBus.js';
@@ -63,11 +63,6 @@ function defaultTitle(): string {
   return '';
 }
 
-/** 动态加载 MCP Manager 模块的 getMcpManager 工厂（内部 use：acquireMcpInBackground） */
-async function importMcpManager(): Promise<typeof import('../../core/mcp/Manager.js')['getMcpManager']> {
-  const mod = await import('../../core/mcp/Manager.js');
-  return mod.getMcpManager;
-}
 
 /** 按并发上限执行异步任务，结果顺序与输入一致 */
 export async function mapWithConcurrency<T, R>(
@@ -89,10 +84,16 @@ export async function mapWithConcurrency<T, R>(
   return results;
 }
 /** MCP Manager 实例类型 */
-type McpManagerInstance = ReturnType<Awaited<ReturnType<typeof importMcpManager>>>;
+type McpManagerInstance = ReturnType<typeof import('../../core/mcp/Manager.js').getMcpManager>;
 
 export class WebviewMessageHandler {
   private host: UIHost;
+  /** WebViewUI 端口（阶段 4 正式化；当前由宿主注入） */
+  uiPort?: {
+    hasActiveQueryInScope(sessionId: string): boolean;
+    openSpinDesign(): Promise<void>;
+    refreshConversations(): Promise<void>;
+  };
   private postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
   private postConversationLoaded: (sessionId: string, conversation: any, extra: {
     pendingToolUseIds: string[];
@@ -270,43 +271,27 @@ export class WebviewMessageHandler {
   }
 
   /**
-   * MCP "push → acquire → push" 后台三段式骨架：
-   * 1. 先回推一次该会话的 MCP 配置（连接尚未开始 → webview 显示「连接中」）；
-   * 2. 后台建立该会话的 MCP 引用（acquire 可能耗时：首次拉取包、握手）；
-   * 3. 完成后再次回推运行时状态（工具数 / 错误 / 连接中→已连接）。
-   *
-   * 个别调用点在进入本方法前已自行 await 过首次回推（此时传 pushFirst: false），
-   * 或需要在 acquire 前做 syncAllSessions 等额外动作（beforeAcquire），
-   * 以此保持各调用点的原有时序与语义。
-   *
-   * @param logLabel 错误日志文案（保持与原各调用点一致的日志格式）
+   * MCP 状态后台刷新骨架：回推一次该会话的 MCP 配置与运行时状态。
+   * acquire 已收编进 core 的 MCPHost（会话生命周期驱动），UI 侧不再触发 acquire。
    */
   private acquireMcpInBackground(
     sessionId: string | undefined,
     logLabel: string,
     opts: { pushFirst?: boolean; beforeAcquire?: (manager: McpManagerInstance) => Promise<void> } = {},
   ): void {
+    void logLabel;
+    void opts;
     void (async () => {
       try {
-        const getMcpManager = await importMcpManager();
-        if (opts.pushFirst !== false) {
-          // 先回推该会话的 MCP 配置：连接尚未开始 → webview 显示「连接中」并禁用发送
-          await this.pushMcpServers(sessionId);
-        }
-        if (opts.beforeAcquire) {
-          await opts.beforeAcquire(getMcpManager());
-        }
-        await getMcpManager().acquire(sessionId);
         await this.pushMcpServers(sessionId);
       } catch (err: any) {
-        this.log(`[VSCodeUI] ${logLabel}: ${err.message}`);
+        this.log(`pushMcpServers failed: ${err.message}`);
       }
     })();
   }
 
   /**
-   * 会话被打开时建立该会话的 MCP 引用（供单 webview 宿主在 onSessionOpened 中调用）。
-   * acquire 可能耗时（首次拉取包、握手），后台执行，完成后回推运行时状态。
+   * 兼容入口（阶段 3 起 MCP acquire 由 MCPHost 承担，此方法保留为「回推运行时状态」）。
    */
   acquireMcpOnSessionOpen(sessionId: string | undefined): void {
     this.acquireMcpInBackground(sessionId, 'MCP background acquire failed', { pushFirst: false });
@@ -317,11 +302,10 @@ export class WebviewMessageHandler {
    */
   private async handleRequestMcpServers(message?: any): Promise<void> {
     const sessionId = await this.getActiveMcpSessionId(message?.sessionId);
-    this.log(`[VSCodeUI] MCP servers requested (session=${sessionId ?? '-'})`);
+    this.log(`MCP servers requested (session=${sessionId ?? '-'})`);
+    // 只读展示：引用的建立在 core 的会话生命周期（createEngine / restoreConversationEngine
+    // → MCPHost.onSessionOpened），面板只是读状态，不再触发 acquire
     await this.pushMcpServers(sessionId);
-    // 是否在「会话打开」时建立 MCP 引用由宿主决定（单 webview 宿主需要，多视图宿主由
-    // 视图管理器在打开/关闭视图时精确维护）。共享 handler 只负责通知，不感知宿主类型。
-    this.host.onSessionOpened(sessionId);
   }
 
   /**
@@ -346,14 +330,13 @@ export class WebviewMessageHandler {
     }
     // 先回推：让菜单立刻反映新的勾选状态（连接尚未开始 → 显示「连接中」）
     await this.pushMcpServers(sessionId);
-    // 连接/断开异步进行，完成后再次回推运行时状态（工具数 / 错误 / 连接中→已连接）
+    // 连接/断开由 MCPHost.onSessionEnabledChanged（本消息已翻译成 UiEvent，
+    // core 订阅处理）驱动；这里再次回推运行时状态供面板更新
     void (async () => {
       try {
-        const { getMcpManager } = await import('../../core/mcp/Manager.js');
-        await getMcpManager().syncSession(sessionId);
-      } catch (err: any) {
-        this.log(`[VSCodeUI] Failed to sync session MCP: ${err.message}`);
-      }
+        // 延迟一拍等 core 订阅处理完成
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      } catch { /* ignore */ }
       await this.pushMcpServers(sessionId);
     })();
   }
@@ -741,18 +724,23 @@ export class WebviewMessageHandler {
     // UI → core：中止请求走总线（core 侧由 Integration.abortCurrentQuery 消费）
     await this.emitUiEvent({ type: 'abortRequested', sessionId: message.sessionId });
     // 后台任务/子代理可能已同步中止，立即刷新 abort 按钮状态
-    this.host.refreshAbortState();
+    this.host.syncAbortState((sid) => this.uiPort?.hasActiveQueryInScope(sid) ?? false);
   }
 
   private async handleGetConversations(): Promise<void> {
-    this.log(`[VSCodeUI] getConversations requested`);
+    this.log(`getConversations requested`);
+    // 列表查询走 ConversationManager.refresh()（唯一产出 conversationsData 的地方，
+    // 见第 5.4 节）；端口未注入时回退直读（过渡形态）
+    if (this.uiPort?.refreshConversations) {
+      await this.uiPort.refreshConversations();
+      return;
+    }
     const { loadConversationList } = await import('../../core/history/index.js');
     const conversations = await loadConversationList();
-
     this.host.sendToWebview({
       type: 'conversationsData',
       conversations,
-    });
+    } as WebviewMessage);
   }
 
   private async handleLoadConversation(message: any): Promise<void> {
@@ -796,8 +784,8 @@ export class WebviewMessageHandler {
     // 加载对话时查询余额
     this.fetchBalanceAndSend(message.sessionId);
 
-    // MCP：加载对话即建立该会话的引用（幂等，不释放旧会话）
-    this.acquireMcpInBackground(message.sessionId, 'MCP acquire on loadConversation failed');
+    // MCP：加载对话即建立该会话的引用——由 core 的 restoreConversationEngine
+    // → MCPHost.onSessionOpened 驱动（幂等，不释放旧会话），UI 不再触发 acquire
 
     const hasHistory = conversation.messages && conversation.messages.length > 0;
     this.log(`[VSCodeUI] Conversation has history: ${hasHistory}`);
@@ -943,8 +931,8 @@ export class WebviewMessageHandler {
     // 新对话开始时查询余额
     this.fetchBalanceAndSend(newSessionId);
 
-    // MCP：新对话打开即建立引用（meta.json 尚未创建时按全局默认解析，幂等）
-    this.acquireMcpInBackground(newSessionId, 'MCP acquire on new conversation failed');
+    // MCP：新对话打开即建立引用——由 core 的 createEngine（conversationStarted
+    // 事件消费）→ MCPHost.onSessionOpened 驱动，UI 不再触发 acquire
 
     // 从 settings.json 读取新对话的默认 model、thinking_effort、agentMode 和 webSearch 并发送给 webview 立即应用。
     // 注意：不再写入 meta.json（meta.json 只在发第一条消息时由 appendMessage 创建），
@@ -1423,11 +1411,15 @@ export class WebviewMessageHandler {
   }
 
   public async handleOpenSpinDesign(): Promise<void> {
-    this.log(`[VSCodeUI] openSpinDesign`);
+    this.log(`openSpinDesign`);
     try {
-      await this.host.openSpinDesign();
+      // Spin 设计器是独立 surface（第 5.2 节）：经由 WebViewUI 转发到 SpinDesign.open，
+      // 不再放回 UIHost
+      if (this.uiPort?.openSpinDesign) {
+        await this.uiPort.openSpinDesign();
+      }
     } catch (err) {
-      this.log(`[VSCodeUI] Error opening spin design: ${err}`);
+      this.log(`Error opening spin design: ${err}`);
     }
   }
 
@@ -1827,11 +1819,15 @@ export class WebviewMessageHandler {
           // 先回推一次：默认值已落盘，连接尚未开始 → webview 显示「连接中」。
           // 这样设置面板保存不会被 MCP 启动阻塞，可以立即返回 llmConfigSaved。
           await this.pushMcpServers(mcpSessionId);
-          // 连接动作放到后台异步执行：默认值变化会影响所有「没有会话覆盖」的已打开会话，
-          // 因此对所有已注册会话重新对齐引用，而不只是当前活动会话。
-          this.acquireMcpInBackground(mcpSessionId, 'Failed to sync MCP after default change', {
-            pushFirst: false,
-            beforeAcquire: (manager) => manager.syncAllSessions(),
+          // 默认值变化会影响所有「没有会话覆盖」的已打开会话：
+          // 对所有已注册会话重新对齐引用（MCPHost 拥有生命周期）
+          void import('../../core/mcp/MCPHost.js').then(async ({ getMCPHost }) => {
+            const { getMcpManager } = await import('../../core/mcp/Manager.js');
+            await getMcpManager().syncAllSessions();
+            await getMCPHost().onSessionEnabledChanged(mcpSessionId);
+            await this.pushMcpServers(mcpSessionId);
+          }).catch((err: any) => {
+            this.log(`Failed to sync MCP after default change: ${err.message}`);
           });
         } catch (err: any) {
           this.log(`[VSCodeUI] Failed to save default MCP enabled list: ${err.message}`);
