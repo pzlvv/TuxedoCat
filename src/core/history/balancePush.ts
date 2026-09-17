@@ -1,14 +1,14 @@
 /**
  * 余额查询并推送到 UI 的共享实现。
  *
- * 三个版本（webviewMessageHandler / VSCodeUI / ElectronUI）原为三份拷贝；
+ * 三个版本（webviewMessageHandler / WebViewUI）原为三份拷贝；
  * 推送通道（postToWebview / host.sendToWebview）由宿主注入。
  */
 
-/** 推送通道：由宿主注入（VSCodeUI.postToWebview / ElectronUI.postToWebview / host.sendToWebview） */
+/** 推送通道：由宿主注入（WebViewUI.postToWebview / host.sendToWebview） */
 export type BalancePush = (message: Record<string, unknown>) => void;
 
-/** 宿主日志通道（VSCodeUI.outputChannel / ElectronUI.log） */
+/** 宿主日志通道（WebViewUI（宿主 log）） */
 export type BalanceLog = (message: string) => void;
 
 /**

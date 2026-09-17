@@ -45,7 +45,7 @@ export interface ChatViewManagerOptions {
  * 外部聊天客户端（内置 HTTP 服务器接入的浏览器连接）。
  *
  * 浏览器页面没有 WebContentsView，但需要与原生聊天视图共享同一套消息路由：
- * ElectronUI 通过 chatViews.sendTo(sessionId, msg) 把消息按会话投递，
+ * WebViewUI 通过 chatViews.sendTo(sessionId, msg) 把消息按会话投递，
  * 因此这里把每个浏览器连接登记成一个「虚拟视图」，按 sessionId 参与路由。
  */
 export interface ExternalChatClient {
@@ -82,7 +82,7 @@ export class ChatViewManager {
    */
   private unsentNewKeys = new Set<string>();
   private readonly opts: ChatViewManagerOptions;
-  /** 会话是否正在等待用户输入（ask user / 权限确认）的判定，由 ElectronUI 注入 */
+  /** 会话是否正在等待用户输入（ask user / 权限确认）的判定，由宿主注入 */
   private waitingForUserProvider: ((sessionId: string) => boolean) | null = null;
   /**
    * 内置 HTTP 服务器接入的浏览器客户端：id -> { client, sessionId, clientId }。
@@ -185,7 +185,7 @@ export class ChatViewManager {
    * 侧栏对话列表：仅磁盘历史（已发送过消息的对话）+ loaded/running 标记。
    * 新建对话（messageCount === 0）尚未落盘，loadConversationList 不会包含它，
    * 因此用户发送第一条消息前，侧栏不显示任何新项；首条消息落盘后
-   * 由 ElectronUI.onMessage 触发的 refreshSidebarThrottled 拉取到最新列表。
+   * 由 WebViewUI.onMessage 触发的 refreshSidebarThrottled 拉取到最新列表。
    * running 标记用于侧栏流水灯效果（非 idle 的会话）。
    */
   async getSidebarConversations(): Promise<Array<Record<string, unknown>>> {

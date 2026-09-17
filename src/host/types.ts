@@ -4,7 +4,7 @@
  * 由各宿主（VS Code 扩展 / Electron 应用）在 webview 启动时注入 `window.__hostInfo`，
  * webview 据此渲染 UI，不再通过嗅探 `window.electronAPI` 区分 app / 插件。
  *
- * 每个宿主（VSCodeUI / ElectronUI，均实现 AssistantUI）在 bootstrap 时声明自己的能力，
+ * 每个宿主（WebViewUI，均实现 AssistantUI）在 bootstrap 时声明自己的能力，
  * 差异全部收敛到此处，webview 只按能力渲染。
  */
 export interface HostInfo {

@@ -2,7 +2,7 @@
  * 智能命名：从对话最近消息生成标题。
  *
  * 供 electron/main.ts（sidebar:smart-name-conversation）使用；
- * VSCodeUI 的 webviewMessageHandler 版本下次收敛时复用同一签名。
+ * WebViewUI 的 webviewMessageHandler 版本下次收敛时复用同一签名。
  */
 import { extractLastJsonObject } from '../utils/lastJson.js';
 

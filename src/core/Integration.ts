@@ -96,7 +96,7 @@ function applyPendingThinkingMode(sessionId: string, engine: QueryEngine): void 
 
 /**
  * 设置指定会话的 thinking mode 覆盖值
- * 供 VSCodeUI 在收到 setThinkingMode 消息时调用
+ * 供 core 在收到 setThinkingMode 消息时调用
  */
 export function setSessionThinkingMode(sessionId: string, mode: 'off' | 'low' | 'high' | 'max'): void {
   const engine = getSessionEngine(sessionId);
@@ -138,8 +138,8 @@ function applyPendingPromptMode(sessionId: string, engine: QueryEngine): void {
 
 /**
  * 设置指定会话的提示词预设（普通 / 极简 / 混合）
- * 供 VSCodeUI 在收到 setPromptMode 消息时调用；
- * meta.json 的持久化由 VSCodeUI 负责。
+ * 供 core 在收到 setPromptMode 消息时调用；
+ * meta.json 的持久化由 core 的会话配置处理负责。
  */
 export function setSessionPromptPreset(sessionId: string, presetId: PromptPresetId): void {
   const engine = getSessionEngine(sessionId);
@@ -173,8 +173,8 @@ function applyPendingModel(sessionId: string, engine: QueryEngine): void {
 
 /**
  * 设置指定会话的模型覆盖值
- * 供 VSCodeUI 在收到 setModel 消息时调用；
- * meta.json 的持久化由 VSCodeUI 负责。
+ * 供 core 在收到 setModel 消息时调用；
+ * meta.json 的持久化由 core 的会话配置处理负责。
  */
 export function setSessionModel(sessionId: string, model: string): void {
   const engine = getSessionEngine(sessionId);

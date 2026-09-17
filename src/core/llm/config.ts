@@ -4,6 +4,7 @@
  */
 
 import * as fs from 'fs/promises';
+import type { AgentMode } from '../types.js';
 import * as path from 'path';
 import * as os from 'os';
 import { logger } from '../Logger.js';
@@ -100,7 +101,7 @@ export interface LLMConfigPanelPayload {
   webSearch: boolean;
   thinkingEffort: 'off' | 'low' | 'high' | 'max';
   defaultModel: string;
-  defaultAgentMode: 'manual' | 'risk' | 'auto';
+  defaultAgentMode: AgentMode;
   defaultPromptMode: PromptPresetId;
   apiKey: string;
   providers: LLMProviderInfo[];
@@ -135,7 +136,7 @@ interface HarnessConfig {
    * 新对话的默认工作模式（manual | risk | auto，顶层，与 llm 平级）
    * 仅影响新对话的默认值，已存在的对话使用各自会话中保存的值
    */
-  defaultAgentMode?: 'manual' | 'risk' | 'auto';
+  defaultAgentMode?: AgentMode;
   /**
    * 新对话的默认提示词模式（normal | minimal | mixed，顶层，与 llm 平级）
    * 仅影响新对话的默认值，已存在的对话使用各自 meta.json 中保存的值
@@ -476,7 +477,7 @@ export async function resolveModelForActiveProvider(modelName: string): Promise<
  * 仅用于新对话的初始值，已存在的对话使用各自会话中保存的值
  * @returns 询问模式，默认返回 'risk'（关键）
  */
-export async function getDefaultAgentMode(): Promise<'manual' | 'risk' | 'auto'> {
+export async function getDefaultAgentMode(): Promise<AgentMode> {
   try {
     const configFile = await loadConfigFile();
     const mode = configFile?.defaultAgentMode;

@@ -17,6 +17,7 @@
  */
 
 import type { MessageData, StreamMessageData, StreamEndData } from './types.js';
+import type { AgentMode } from './types.js';
 import type { PermissionResult, ToolProgressData } from './tools/Tool.js';
 import type { UserChoiceOptions } from './UserChoiceQueue.js';
 
@@ -106,7 +107,7 @@ export type CoreEvent =
         | { key: 'model'; value: string }
         | { key: 'thinkingEffort'; value: 'off' | 'low' | 'high' | 'max' }
         | { key: 'promptMode'; value: 'normal' | 'minimal' | 'mixed' }
-        | { key: 'agentMode'; value: 'manual' | 'risk' | 'auto' }
+        | { key: 'agentMode'; value: AgentMode }
         | { key: 'webSearch'; value: boolean }
         | { key: 'mcpEnabled'; value: string[] };
     };
@@ -218,7 +219,7 @@ export type UiEvent =
   | { type: 'modelChanged'; sessionId: string; model: string }
   | { type: 'thinkingEffortChanged'; sessionId: string; mode: 'off' | 'low' | 'high' | 'max' }
   | { type: 'promptModeChanged'; sessionId: string; mode: 'normal' | 'minimal' | 'mixed' }
-  | { type: 'agentModeChanged'; sessionId: string; mode: 'manual' | 'risk' | 'auto' }
+  | { type: 'agentModeChanged'; sessionId: string; mode: AgentMode }
   | { type: 'webSearchChanged'; sessionId: string; enabled: boolean }
   | { type: 'mcpEnabledChanged'; sessionId: string; name: string; enabled: boolean }
 

@@ -10,7 +10,7 @@
  *
  * 工作流程：
  *   webview 发消息
- *     -> VSCodeUI.handleWebviewMessage (透明透传，不处理任何命令)
+ *     -> WebViewUI.handleWebviewMessage (透明透传，不处理任何命令)
  *       -> Integration.sendMessage
  *         -> CommandDispatcher.dispatch  (检查命令类型)
  *           -> 内置命令: 执行 handler，返回 'handled'

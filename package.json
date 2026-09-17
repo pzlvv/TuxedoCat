@@ -70,6 +70,8 @@
     "lint": "eslint src",
     "test": "vscode-test",
     "test:edit-diff": "tsc -p tsconfig.test.json && node out/src/test/editDiff.test.js",
+    "test:event-bus": "tsc -p tsconfig.test.json && node out/src/test/eventBus.test.js",
+    "test:session-runtime": "tsc -p tsconfig.test.json && node out/src/test/sessionRuntime.test.js",
     "build:webview": "vite build && vite build --config vite.monaco.config.ts && vite build --config vite.sidebar.config.ts",
     "build:monaco": "vite build --config vite.monaco.config.ts",
     "build:sidebar": "vite build --config vite.sidebar.config.ts",

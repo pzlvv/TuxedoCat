@@ -1,7 +1,7 @@
 /**
  * 宿主共享的对话操作（/clear 等）。
  *
- * 三个版本（webviewMessageHandler / VSCodeUI.onCommandSend / ElectronUI.onCommandSend）
+ * 三个版本（webviewMessageHandler / WebViewUI.onCommandSend）
  * 的公共核心：清空 JSONL + 重置 context tokens + 清引擎消息 + lastPersistedMessageUuid=null。
  * 各宿主"清空后"的收尾动作不同（刷新 webview 列表 / 刷新原生侧栏），由回调注入。
  */

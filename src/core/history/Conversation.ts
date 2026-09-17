@@ -4,6 +4,7 @@
  */
 
 import { appendFile, writeFile, readFile, readdir, stat, unlink } from 'fs/promises';
+import type { AgentMode } from '../types.js';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
 import { getProjectConversationDir, getProjectRoot, hasProjectRoot, getConversationDir, ensureProjectConversationDir, ensureProjectConversationDirSync } from './Config.js';
@@ -215,7 +216,7 @@ async function enqueueMetadataWrite(metadataPath: string, fn: () => Promise<void
 export interface ConversationContext {
   currentFile?: string;
   selectedLines?: { start: number; end: number };
-  agentMode?: 'manual' | 'risk' | 'auto';
+  agentMode?: AgentMode;
   thinkingMode?: 'off' | 'low' | 'high' | 'max';
   /** 会话关联的提示词模式（普通 / 极简 / 混合） */
   promptMode?: PromptPresetId;

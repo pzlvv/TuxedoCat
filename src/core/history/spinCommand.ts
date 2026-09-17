@@ -1,7 +1,7 @@
 /**
  * /spin 命令共享逻辑。
  *
- * VSCodeUI.onCommandSend 与 ElectronUI.onCommandSend 原为重复的：
+ * WebViewUI.onCommandSend 原为重复的：
  * design 子命令分发 + spin.json 存在性检查（不存在则打开设计器）。
  * 宿主差异（如何确定工作目录、日志通道）由调用方处理。
  */
