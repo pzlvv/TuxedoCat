@@ -1,0 +1,251 @@
+/**
+ * VSCodeUIHost - VS Code 侧的对话 webview 宿主能力实现（implements UIHost）
+ *
+ * 由原 VSCodeUI 的宿主部分（buildHost + webview 生命周期 + Mermaid 面板 +
+ * 虚拟文档回调）整体迁入。core 与 UI 的事件通信不经过本类：
+ * 它只实现 UIHost；总线订阅在 src/host/WebViewUI.ts。
+ *
+ * 硬约束：本文件不能放进 src/host/ 目录。electron/tsconfig.json 的 include
+ * 含 ../src/host/ 下所有 ts，放进去会被 electron 侧编译，而本文件
+ * 依赖 vscode API，会直接编译失败。
+ */
+
+
+import * as vscode from 'vscode';
+import type { UIHost } from './host/UIHost.js';
+import { getMermaidErrorHtml, getMermaidPreviewHtml } from './host/mermaidHtml.js';
+import { MERMAID_PANEL_ID } from './config/project.js';
+import { DocumentManager } from './VSCodeUIHost/documentManager.js';
+import type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent } from './host/ui/types.js';
+import { isImageFile } from './host/imageFiles.js';
+
+export type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent };
+
+export class VSCodeUIHost implements UIHost {
+  private webviewView: vscode.WebviewView | undefined;
+  private extensionUri: vscode.Uri = vscode.Uri.file('');
+  private _windowStateRegistered: boolean = false;
+  /** 活跃会话判定（由 WebViewUI 注入；syncAbortState 用） */
+  isActiveQueryInScope: (sessionId: string) => boolean = () => false;
+
+  // VS Code 专有：虚拟文档管理（预览句柄由 DocumentManager 持有）
+  private readonly documentManager: DocumentManager;
+
+  constructor(private readonly outputChannel: vscode.OutputChannel) {
+    this.documentManager = new DocumentManager(outputChannel);
+  }
+
+  // ===================== bootstrap 专用接线（不属于 UIHost）=====================
+
+  setExtensionUri(uri: vscode.Uri): void {
+    this.extensionUri = uri;
+  }
+
+  setWebviewView(webviewView: vscode.WebviewView): void {
+    this.webviewView = webviewView;
+  }
+
+  registerWindowStateListener(_context: vscode.ExtensionContext): void {
+    if (this._windowStateRegistered) {
+      return;
+    }
+    this._windowStateRegistered = true;
+    // 不再注册任何监听器
+  }
+
+  /** 设置显示内容虚拟文档的回调 */
+  setShowContentInVirtualDocumentCallback(callback: (event: ShowContentInVirtualDocumentEvent) => void | Promise<void>): void {
+    this.documentManager.setShowContentCallback(callback);
+  }
+
+  /** 设置显示 diff 虚拟文档的回调 */
+  setShowDiffInVirtualDocumentCallback(callback: (event: ShowDiffInVirtualDocumentEvent) => void | Promise<void>): void {
+    this.documentManager.setShowDiffCallback(callback);
+  }
+
+  // ===================== UIHost 实现 =====================
+
+  sendToWebview(message: never): void {
+    try {
+      this.webviewView?.webview.postMessage(message);
+    } catch (err) {
+      this.outputChannel?.appendLine(`[VSCodeUIHost] postToWebview error: ${err}`);
+    }
+  }
+
+  log(...args: unknown[]): void {
+    this.outputChannel?.appendLine(args.map(a => String(a)).join(' '));
+  }
+
+  getWorkspacePath(): string | undefined {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders && workspaceFolders.length > 0) {
+      return workspaceFolders[0].uri.fsPath;
+    }
+    return undefined;
+  }
+
+  isDarkTheme(): boolean {
+    const kind = vscode.window.activeColorTheme.kind;
+    return kind === vscode.ColorThemeKind.Dark || kind === vscode.ColorThemeKind.HighContrast;
+  }
+
+  getLocale(): string {
+    return vscode.env.language;
+  }
+
+  async openFile(filePath: string, target: import('./host/UIHost.js').LineSelection | null): Promise<void> {
+    const selectedLines = target;
+    const uri = vscode.Uri.file(filePath);
+
+    // 图片文件直接交给默认编辑器（内置图片预览）打开。
+    // 图片是二进制内容，openTextDocument 会抛
+    // "File seems to be binary and cannot be opened as text"。
+    if (isImageFile(filePath)) {
+      await vscode.commands.executeCommand('vscode.open', uri);
+      return;
+    }
+
+    // 其他二进制文件同样无法用 openTextDocument 打开，退回到 vscode.open。
+    let doc: vscode.TextDocument;
+    try {
+      doc = await vscode.workspace.openTextDocument(uri);
+    } catch (err) {
+      this.outputChannel?.appendLine(
+        `[VSCodeUIHost] openTextDocument failed, fallback to vscode.open: ${filePath} (${err})`
+      );
+      await vscode.commands.executeCommand('vscode.open', uri);
+      return;
+    }
+
+    const editor = await vscode.window.showTextDocument(doc);
+    if (selectedLines) {
+      const startLine = selectedLines.start - 1;
+      const endLine = selectedLines.end - 1;
+      const start = new vscode.Position(startLine, 0);
+      const end = new vscode.Position(endLine, editor.document.lineAt(endLine).text.length);
+      editor.selection = new vscode.Selection(start, end);
+      editor.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenter);
+    }
+  }
+
+  async showVirtualDocument(content: string, title: string): Promise<void> {
+    const callback = (this.documentManager as any).onShowContentInVirtualDocumentCallback;
+    if (typeof callback === 'function') {
+      await callback({ content, title });
+    } else {
+      this.log('[VSCodeUIHost] Warning: No callback registered for showVirtualDocument');
+    }
+  }
+
+  async showDiff(options: import('./host/UIHost.js').ShowDiffOptions): Promise<void> {
+    await this.documentManager.showDiff(options as any);
+  }
+
+  async openMermaidPreview(code: string): Promise<void> {
+    this.openMermaidPreviewPanel(code);
+  }
+
+  closePreview(): void {
+    this.documentManager.closePreview();
+  }
+
+  async openExternalUrl(url: string): Promise<void> {
+    try {
+      await vscode.env.openExternal(vscode.Uri.parse(url));
+    } catch (err) {
+      this.log(`[VSCodeUIHost] Failed to open external URL: ${err}`);
+    }
+  }
+
+  async saveTextFile(content: string, options: import('./host/UIHost.js').SaveFileOptions): Promise<import('./host/UIHost.js').SaveFileResult> {
+    const path = require('path') as typeof import('path');
+    const os = require('os') as typeof import('os');
+    const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir();
+    const filters: { [name: string]: string[] } = {};
+    for (const filter of options?.filters ?? []) {
+      filters[filter.name] = filter.extensions;
+    }
+    try {
+      const uri = await vscode.window.showSaveDialog({
+        title: options?.title,
+        defaultUri: vscode.Uri.file(path.join(baseDir, options?.defaultFileName ?? 'untitled.txt')),
+        filters,
+      });
+      if (!uri) {
+        return { success: false, canceled: true };
+      }
+      const fs = require('fs') as typeof import('fs');
+      await fs.promises.writeFile(uri.fsPath, content, 'utf-8');
+      return { success: true, filePath: uri.fsPath };
+    } catch (err) {
+      this.log(`[VSCodeUIHost] saveTextFile failed: ${err}`);
+      return { success: false, canceled: false, error: String(err) };
+    }
+  }
+
+  syncAbortState(isActive: (sessionId: string) => boolean): void {
+    // VS Code：只处理当前活动会话；无活动会话时下发 disable。
+    // 活跃会话由宿主 bootstrap 注入（读 webviewMessageHandler 维护的 UI 状态）。
+    const getActive = this.getActiveSessionId;
+    const activeSessionId = getActive();
+    this.webviewView?.webview.postMessage({
+      type: 'setEnableAbort',
+      enable: activeSessionId ? isActive(activeSessionId) : false,
+    });
+  }
+
+  /** 当前活跃会话读取器（bootstrap 注入，读 WebViewUI 维护的 UI 状态） */
+  getActiveSessionId: () => string | undefined = () => undefined;
+
+  // VS Code 只有一个 webview，没有可关闭的会话视图：
+  // HostInfo.closeConversation === false，webview 也不渲染关闭按钮 → 空实现
+  async closeConversationView(): Promise<void> {
+    /* 空实现 */
+  }
+
+  // ===================== VS Code 专有：Mermaid 预览面板 =====================
+
+  /** 创建或复用 Mermaid 预览面板 */
+  private openMermaidPreviewPanel(code: string): void {
+    const panelId = MERMAID_PANEL_ID;
+    const existingPanel = vscode.window.tabGroups.all
+      .flatMap(tg => tg.tabs)
+      .find(tab => (tab.input as any)?.viewType === panelId);
+
+    let panel: vscode.WebviewPanel;
+    if (existingPanel) {
+      panel = (existingPanel.input as any).webviewPanel as vscode.WebviewPanel;
+      panel.reveal();
+    } else {
+      panel = vscode.window.createWebviewPanel(
+        panelId,
+        'Mermaid Preview',
+        vscode.ViewColumn.Beside,
+        {
+          enableScripts: true,
+          localResourceRoots: [
+            vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview', 'assets'),
+          ],
+        }
+      );
+    }
+
+    // 获取本地 mermaid.min.js 的 webview URI
+    const mermaidUri = panel.webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview', 'assets', 'mermaid.min.js')
+    );
+
+    try {
+      panel.webview.html = getMermaidPreviewHtml(code, mermaidUri.toString(), this.isDarkTheme());
+    } catch (err) {
+      this.log(`[VSCodeUIHost] Mermaid preview error: ${err}`);
+      panel.webview.html = getMermaidErrorHtml(code, String(err));
+    }
+  }
+
+  /** 供 webviewMessageHandler 的 showVirtualDocument 路径回推（浏览器端页内预览） */
+  getDocumentManager(): DocumentManager {
+    return this.documentManager;
+  }
+}

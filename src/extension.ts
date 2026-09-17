@@ -1,7 +1,11 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
-import { VSCodeUI } from './VSCodeUI.js';
-import { buildDiffUris } from './VSCodeUI/diffUris.js';
+import { VSCodeUIHost } from './VSCodeUIHost.js';
+import { VSCodeSpinDesign } from './VSCodeSpinDesign.js';
+import { SingleWebViewConversationManager } from './VSCodeConversationManager.js';
+import { WebViewUI } from './host/WebViewUI.js';
+import { UserChoiceManager } from './host/ui/userChoice.js';
+import { buildDiffUris } from './VSCodeUIHost/diffUris.js';
 import { setLogCallback } from './core/Logger.js';
 import { initializeHistory } from './core/Integration.js';
 import { startSessionIdleMonitor, stopSessionIdleMonitor } from './core/sessionIdle.js';
@@ -59,15 +63,38 @@ export function activate(context: vscode.ExtensionContext) {
     outputChannel.appendLine(message);
   });
 
-  VSCodeUI.setOutputChannel(outputChannel);
+  const host = new VSCodeUIHost(outputChannel);
   // 事件总线：core 与 UI 的唯一耦合点（DEVELOPMENT.md 第 3 节）。
   // 顺序：注册总线 → 注册 core 侧 UiEvent 订阅 → 创建 UI（其构造函数注册 CoreEvent 处理器）。
   const bus = createEventBus();
   setGlobalEventBus(bus);
   initializeCoreEvents(bus);
-  const ui = VSCodeUI.create(bus);
-  ui.setExtensionUri(context.extensionUri);
-  ui.registerWindowStateListener(context);
+  // 宿主实现与共享 UI 一次成型；托盘/侧栏是 Electron 的事，VS Code 用空 manager
+  const ui = WebViewUI.create(
+    host,
+    bus,
+    new VSCodeSpinDesign(host),
+    new SingleWebViewConversationManager(host),
+    {
+      log: (...args: unknown[]) => {
+        outputChannel.appendLine(args.map(a => String(a)).join(' '));
+      },
+      createUserChoiceManager: (post, closePreview, uiPort) =>
+        new UserChoiceManager<vscode.Uri>({
+          outputChannel,
+          postToWebview: post,
+          closePreview,
+          getActiveSessionIdInternal: () => uiPort.getActiveSessionId(),
+          onShowDiffInVirtualDocumentCallback: undefined,
+          buildDiffUris: (title) => buildDiffUris(title),
+        }),
+    },
+  );
+  host.setExtensionUri(context.extensionUri);
+  host.registerWindowStateListener(context);
+  // abort 按钮判定与活跃会话读取（bootstrap 注入）
+  host.isActiveQueryInScope = (sid) => ui.hasActiveQueryInScope(sid);
+  host.getActiveSessionId = () => ui.getActiveSessionId();
 
   initializeHistory(ui);
 
@@ -96,7 +123,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.workspace.registerTextDocumentContentProvider(DIFF_AFTER_SCHEME, virtualDocumentProvider)
   );
 
-  ui.setShowContentInVirtualDocumentCallback(async ({ content, title }) => {
+  host.setShowContentInVirtualDocumentCallback(async ({ content, title }: { content: string; title: string }) => {
     const displayTitle = `[${PRODUCT_NAME}] ${title}`;
     const uri = vscode.Uri.parse(`${PREVIEW_SCHEME}:${encodeURIComponent(displayTitle)}`);
     virtualDocumentProvider.setContent(uri, content);
@@ -113,7 +140,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
   });
 
-  ui.setShowDiffInVirtualDocumentCallback(async ({ beforeContent, afterContent, title }) => {
+  host.setShowDiffInVirtualDocumentCallback(async ({ beforeContent, afterContent, title }: { beforeContent: string; afterContent: string; title: string }) => {
     try {
       const { beforeUri, afterUri } = buildDiffUris(title);
       virtualDocumentProvider.setContent(beforeUri, beforeContent);
@@ -165,8 +192,8 @@ export function activate(context: vscode.ExtensionContext) {
   // 不主动连接任何服务器；会话打开 / 切换时才 acquire。
   void (async () => {
     try {
-      const { getMcpManager } = await import('./core/mcp/Manager.js');
-      await getMcpManager().prune();
+      const { getMCPHost } = await import('./core/mcp/MCPHost.js');
+      await getMCPHost().prune();
     } catch (err) {
       console.error('[Extension] Failed to initialize MCP servers:', err);
     }
@@ -175,12 +202,14 @@ export function activate(context: vscode.ExtensionContext) {
 
 class AssistantViewProvider implements vscode.WebviewViewProvider {
   private webviewView: vscode.WebviewView | undefined;
-  private ui: VSCodeUI;
+  private ui: WebViewUI;
+  private host: VSCodeUIHost;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
   ) {
-    this.ui = VSCodeUI.getInstance();
+    this.ui = WebViewUI.getInstance();
+    this.host = this.ui.host as VSCodeUIHost;
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -191,7 +220,7 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
     };
 
     webviewView.webview.html = this.getWebviewContent();
-    this.ui.setWebviewView(webviewView);
+    this.host.setWebviewView(webviewView);
 
     this.sendCurrentFileInfo();
 
@@ -238,7 +267,7 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
         await this.ui.handleWebviewMessage(message);
       } catch (err) {
         const detail = err instanceof Error ? (err.stack || err.message) : String(err);
-        VSCodeUI['outputChannel']?.appendLine(
+        this.host.log(
           `[Extension] handleWebviewMessage failed for type=${message?.type}: ${detail}`
         );
       }
@@ -259,8 +288,7 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
-      const outputChannel = VSCodeUI['outputChannel'];
-      outputChannel?.appendLine('[Extension] Active provider apiKey is empty, sending showLLMConfig to webview');
+      this.host.log('[Extension] Active provider apiKey is empty, sending showLLMConfig to webview');
       this.webviewView?.webview.postMessage({
         type: 'showLLMConfig',
         ...payload,
@@ -393,8 +421,8 @@ export async function deactivate(): Promise<void> {
   stopSessionIdleMonitor();
   // 停用扩展时结束所有 MCP 子进程，避免留下孤儿进程
   try {
-    const { getMcpManager } = await import('./core/mcp/Manager.js');
-    getMcpManager().shutdown();
+    const { getMCPHost } = await import('./core/mcp/MCPHost.js');
+    getMCPHost().shutdown();
   } catch {
     // 停用阶段的清理失败不应影响退出
   }

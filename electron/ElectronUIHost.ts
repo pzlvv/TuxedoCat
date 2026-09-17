@@ -1,0 +1,324 @@
+/**
+ * ElectronUIHost - Electron 侧的对话 webview 宿主能力实现（implements UIHost）
+ *
+ * 由原 ElectronUI 的宿主部分（sendToRenderer / 预览窗口 / 对话框）整体迁入。
+ * 它同时服务 kind: 'electron' 与 kind: 'server'
+ * （浏览器端复用 ChatViewManager.registerExternalClient）。
+ *
+ * 本文件允许 import electron（宿主实现层是唯一允许 import 宿主 API 的地方）。
+ */
+
+import type { BrowserWindow, WebContentsView } from 'electron';
+import { app, nativeTheme, dialog, BrowserWindow as BrowserWindowCtor } from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
+import { pathToFileURL } from 'url';
+import type { ChatViewManager } from './ChatViewManager.js';
+import type { UIHost } from '../src/host/UIHost.js';
+import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
+import { PRODUCT_NAME } from '../src/config/project.js';
+import { isImageFile } from '../src/host/imageFiles.js';
+
+/** 项目根目录（dist-electron 的上一级，与 main.ts 的 APP_ROOT 一致） */
+const APP_ROOT = path.resolve(__dirname, '..');
+
+export class ElectronUIHost implements UIHost {
+  private mainWindow: BrowserWindow | undefined;
+  private sidebarView: WebContentsView | undefined;
+  private chatViews: ChatViewManager | undefined;
+  /** 当前工作区路径（由 main 进程设置，用户通过菜单选择） */
+  private workspacePath: string | undefined;
+  /** 已打开的辅助预览窗口（用于 closePreview 统一关闭） */
+  private previewWindows: BrowserWindowCtor[] = [];
+
+  /** 内部日志实现（console 前缀） */
+  private writeLog(...args: unknown[]): void {
+    const line = args.map(a => String(a)).join(' ');
+    console.log(`[ElectronUIHost] ${line}`);
+  }
+
+  // ===================== bootstrap 专用接线（不属于 UIHost）=====================
+
+  setMainWindow(win: BrowserWindow): void {
+    this.mainWindow = win;
+  }
+
+  setSidebarView(view: WebContentsView): void {
+    this.sidebarView = view;
+  }
+
+  setChatViewManager(m: ChatViewManager): void {
+    this.chatViews = m;
+  }
+
+  setWorkspacePath(p: string | undefined): void {
+    this.workspacePath = p;
+    // 工作区变化后通知当前 webview 刷新当前文件上下文
+    if (p) {
+      this.chatViews?.sendToActive({
+        type: 'workspaceChanged',
+        workspacePath: p,
+      });
+    }
+  }
+
+  /** 推送消息到渲染进程：优先按 sessionId 路由到对应聊天视图，否则发给当前活动视图 */
+  private sendToRenderer(message: Record<string, unknown>): void {
+    const sessionId = message.sessionId as string | undefined;
+    if (sessionId && this.chatViews?.sendTo(sessionId, message)) {
+      return;
+    }
+    this.chatViews?.sendToActive(message);
+  }
+
+  // ===================== UIHost 实现 =====================
+
+  sendToWebview(message: never): void {
+    this.sendToRenderer(message as unknown as Record<string, unknown>);
+  }
+
+  log(...args: unknown[]): void {
+    this.writeLog(...args);
+  }
+
+  getWorkspacePath(): string | undefined {
+    return this.workspacePath;
+  }
+
+  isDarkTheme(): boolean {
+    return nativeTheme.shouldUseDarkColors;
+  }
+
+  getLocale(): string {
+    return app.getLocale().startsWith('zh') ? 'zh' : 'en';
+  }
+
+  async openFile(filePath: string, target: import('../src/host/UIHost.js').LineSelection | null): Promise<void> {
+    // 图片用内置图片预览窗口打开，避免 Monaco 按 utf-8 读取显示乱码
+    if (isImageFile(filePath)) {
+      this.openImagePreview(filePath);
+      return;
+    }
+    // Monaco 编辑器窗口打开文件并定位到行
+    await this.openMonacoWindow({
+      mode: 'view',
+      filePath,
+      selectedLines: target ?? undefined,
+      title: path.basename(filePath),
+    });
+  }
+
+  async showVirtualDocument(content: string, title: string): Promise<void> {
+    await this.openMonacoWindow({
+      mode: 'content',
+      content,
+      title,
+    });
+  }
+
+  // 空实现：预览能力已经在 webview 里（PreviewOverlay 支持 text/image/diff/mermaid），
+  // Electron 不再重复开 Monaco diff 窗口（DEVELOPMENT.md 第 11.1 节第 9 项）
+  async showDiff(): Promise<void> {
+    /* 空实现：预览归 webview */
+  }
+
+  async openMermaidPreview(code: string): Promise<void> {
+    this.openMermaidWindow(code);
+  }
+
+  /** 关闭全部辅助预览窗口 */
+  closePreview(): void {
+    for (const win of this.previewWindows) {
+      if (!win.isDestroyed()) {
+        win.close();
+      }
+    }
+    this.previewWindows = [];
+  }
+
+  async openExternalUrl(url: string): Promise<void> {
+    try {
+      const { shell } = await import('electron');
+      await shell.openExternal(url);
+    } catch (err) {
+      this.log(`Failed to open external URL: ${err}`);
+    }
+  }
+
+  async saveTextFile(content: string, options: import('../src/host/UIHost.js').SaveFileOptions): Promise<import('../src/host/UIHost.js').SaveFileResult> {
+    const baseDir = this.getWorkspacePath() ?? app.getPath('home');
+    const dialogOptions = {
+      title: options?.title,
+      defaultPath: path.join(baseDir, options?.defaultFileName ?? 'untitled.txt'),
+      filters: options?.filters,
+    };
+    const win = BrowserWindowCtor.getFocusedWindow();
+    const result = win
+      ? await dialog.showSaveDialog(win, dialogOptions)
+      : await dialog.showSaveDialog(dialogOptions);
+    if (result.canceled || !result.filePath) {
+      return { success: false, canceled: true };
+    }
+    try {
+      await fs.promises.writeFile(result.filePath, content, 'utf-8');
+      return { success: true, filePath: result.filePath };
+    } catch (err) {
+      this.log(`saveTextFile failed: ${err}`);
+      return { success: false, canceled: false, error: String(err) };
+    }
+  }
+
+  syncAbortState(isActive: (sessionId: string) => boolean): void {
+    if (!this.chatViews) return;
+    // Electron：遍历已打开聊天视图逐会话下发（只发给该会话自己的视图，避免跨会话覆盖）
+    for (const sessionId of this.chatViews.getLoadedSessionIds()) {
+      this.chatViews.sendTo(sessionId, {
+        type: 'setEnableAbort',
+        sessionId,
+        enable: isActive(sessionId),
+      });
+    }
+  }
+
+  /** 只销毁视图；abort 与 MCP 释放归 core（conversationClosed / MCPHost.onSessionClosed） */
+  async closeConversationView(sessionId: string): Promise<void> {
+    this.chatViews?.closeView(sessionId);
+  }
+
+  // ===================== Electron 专有：预览窗口 =====================
+
+  /** 注册辅助窗口并跟踪，便于统一关闭 */
+  trackPreviewWindow(win: BrowserWindowCtor): void {
+    this.previewWindows.push(win);
+    win.on('closed', () => {
+      this.previewWindows = this.previewWindows.filter((w) => w !== win);
+    });
+  }
+
+  /**
+   * 打开图片预览窗口。
+   *
+   * 直接把 file:// URL 交给 Chromium 渲染：浏览器内置的图片查看器会自动
+   * 居中、自适应缩放并支持缩放/拖动，比自建 <img> 页面更接近“默认图片预览”。
+   */
+  private openImagePreview(filePath: string): void {
+    const win = new BrowserWindowCtor({
+      width: 900,
+      height: 700,
+      title: path.basename(filePath),
+      icon: path.join(APP_ROOT, 'assets', 'logo.png'),
+      autoHideMenuBar: true,
+      backgroundColor: nativeTheme.shouldUseDarkColors ? '#1e1e1e' : '#ffffff',
+      webPreferences: { sandbox: true },
+    });
+    this.trackPreviewWindow(win);
+
+    const url = pathToFileURL(filePath).toString();
+    win.loadURL(url).catch((err) => {
+      this.log(`Failed to load image preview: ${filePath} (${err})`);
+    });
+  }
+
+  /**
+   * 打开 Monaco 编辑器窗口并发送初始化数据
+   * view 模式由主进程读取文件内容；diff/content 模式直接传入内容
+   */
+  private async openMonacoWindow(init: {
+    mode: 'view' | 'diff' | 'content';
+    filePath?: string;
+    selectedLines?: { start: number; end: number };
+    content?: string;
+    title?: string;
+    beforeContent?: string;
+    afterContent?: string;
+  }): Promise<void> {
+    const win = new BrowserWindowCtor({
+      width: 1080,
+      height: 720,
+      title: init.title || PRODUCT_NAME,
+      icon: path.join(APP_ROOT, 'assets', 'logo.png'),
+      autoHideMenuBar: true,
+      backgroundColor: '#1e1e1e',
+      webPreferences: {
+        sandbox: false,
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, 'monacoPreload.cjs'),
+      },
+    });
+    this.trackPreviewWindow(win);
+
+    const indexPath = path.join(APP_ROOT, 'dist', 'monaco', 'index.html');
+    if (!fs.existsSync(indexPath)) {
+      this.log(`Monaco page not found: ${indexPath}. Run npm run build:monaco`);
+      return;
+    }
+    await win.loadFile(indexPath);
+
+    // 读取文件内容（view 模式）
+    const data: Record<string, unknown> = { ...init };
+    if (init.mode === 'view' && init.filePath) {
+      try {
+        data.content = await fs.promises.readFile(init.filePath, 'utf-8');
+      } catch (err: any) {
+        if (err.code === 'ENOENT') {
+          data.content = '';
+        } else {
+          data.content = `// 无法读取文件: ${err.message}`;
+        }
+      }
+    }
+
+    // 注意：Electron 桌面端不维护「当前文件」上下文。
+    // VS Code 有 activeTextEditor 的概念，可以自动把「当前文件 + 选中行」带进消息；
+    // 桌面端没有等价物（打开 Monaco 只是查看文件内容，不代表用户要把它作为消息上下文），
+    // 因此这里刻意不发送 setCurrentFile —— 工具结果里点文件链接、查看 diff 等
+    // 任务操作都不应改变发消息时附带的文件信息。
+    win.webContents.send('monaco-init', data);
+  }
+
+  /** Mermaid 预览窗口 */
+  private openMermaidWindow(code: string): void {
+    const win = new BrowserWindowCtor({
+      width: 1000,
+      height: 700,
+      title: 'Mermaid Preview',
+      icon: path.join(APP_ROOT, 'assets', 'logo.png'),
+      autoHideMenuBar: true,
+      backgroundColor: '#1a1a1f',
+      webPreferences: { sandbox: true },
+    });
+    this.trackPreviewWindow(win);
+    const isDark = nativeTheme.shouldUseDarkColors;
+    // 优先使用 dist/webview/assets/mermaid.min.js（与 VS Code 版本一致）
+    const appPath = APP_ROOT;
+    const mermaidCandidates = [
+      path.join(appPath, 'dist', 'webview', 'assets', 'mermaid.min.js'),
+      path.join(appPath, 'node_modules', 'mermaid', 'dist', 'mermaid.min.js'),
+    ];
+    const mermaidSrc = mermaidCandidates.find((p) => fs.existsSync(p));
+    try {
+      if (mermaidSrc) {
+        win.loadFile(mermaidSrc).catch(() => undefined);
+        win.webContents.once('did-finish-load', () => {
+          win.webContents.executeJavaScript(`window.__mermaidLoaded = true;`).catch(() => undefined);
+        });
+        // 先加载本地 mermaid.min.js 再注入预览页会导致时序复杂，直接加载预览页并从 file:// 引用
+        win.loadURL(
+          'data:text/html;charset=utf-8,' +
+          encodeURIComponent(getMermaidPreviewHtml(code, `file:///${mermaidSrc.replace(/\\/g, '/')}`, isDark))
+        );
+      } else {
+        win.loadURL(
+          'data:text/html;charset=utf-8,' +
+          encodeURIComponent(getMermaidPreviewHtml(code, '', isDark))
+        );
+      }
+    } catch (err) {
+      win.loadURL(
+        'data:text/html;charset=utf-8,' +
+        encodeURIComponent(getMermaidErrorHtml(code, String(err)))
+      );
+    }
+  }
+}

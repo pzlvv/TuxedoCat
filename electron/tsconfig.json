@@ -15,9 +15,10 @@
     "../src/config/**/*.ts",
     "../src/host/**/*.ts",
     "../src/core/**/*.ts",
-    "../src/VSCodeUI/toolHandler.ts",
-    "../src/VSCodeUI/userChoice.ts",
-    "../src/VSCodeUI/webviewMessageHandler.ts",
-    "../src/VSCodeUI/types.ts"
+    "../src/VSCodeUIHost.ts",
+    "../src/VSCodeUIHost/**/*.ts",
+    "../src/VSCodeSpinDesign.ts",
+    "../src/VSCodeConversationManager.ts",
+    "../src/extension.ts"
   ]
 }

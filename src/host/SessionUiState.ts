@@ -109,4 +109,16 @@ export class SessionUiState {
   hasActiveQueryInScope(sessionId: string): boolean {
     return resolveActiveQueryInScope(sessionId, this.queryActiveCounts);
   }
+
+  // ===================== 生命周期 =====================
+
+  /**
+   * 会话关闭 / 删除：移除该会话的全部 per-session 状态（防长期运行累积）。
+   * 由 WebViewUI.closeConversation 调用（DEVELOPMENT.md 第 10 节 / 第 6.1 节）。
+   */
+  dropSession(sessionId: string): void {
+    this.activityPhases.delete(sessionId);
+    this.activeToolCounts.delete(sessionId);
+    this.queryActiveCounts.delete(sessionId);
+  }
 }

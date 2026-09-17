@@ -3,7 +3,7 @@
  *
  * 职责：
  * 1. 创建主窗口：左侧原生侧栏（对话列表）+ 右侧聊天 WebContentsView（每对话一个标签）
- * 2. 注册 IPC（webview-message）并委托给 ElectronUI（复用同一份 WebviewMessageHandler）
+ * 2. 注册 IPC（webview-message）并委托给 WebViewUI（复用同一份 WebviewMessageHandler）
  * 3. 侧栏 IPC：对话列表读写、打开/新建对话、列表变化推送
  * 4. 初始化 core（setGlobalUI / initializeHistory / setExtensionPathProvider / 日志）
  * 5. 提供菜单：打开工作区、最近打开的工作目录、深色模式同步
@@ -19,6 +19,12 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { ChatViewManager, SIDEBAR_WIDTH } from './ChatViewManager.js';
+import { ElectronUIHost } from './ElectronUIHost.js';
+import { ElectronSpinDesign } from './ElectronSpinDesign.js';
+import { ElectronConversationManager } from './ElectronConversationManager.js';
+import { WebViewUI } from '../src/host/WebViewUI.js';
+import { UserChoiceManager } from '../src/host/ui/userChoice.js';
+import type { WebviewPoster } from '../src/host/ui/ports.js';
 import { createTrayStatusIcon, deriveTrayStatus, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
 import { startWebServer, type WebServerHandle, type WebServerClient } from './server/webServer.js';
 import { getBrowserShimSource } from './server/browserShim.js';
@@ -40,6 +46,10 @@ let mainWindow: BrowserWindow | undefined;
 let sidebarView: WebContentsView | undefined;
 let chatViews: ChatViewManager | undefined;
 let workspacePath: string | undefined;
+/** 当前 WebViewUI 实例（initCore 创建；消息路由 / 工作区切换使用） */
+let webviewUi: WebViewUI | undefined;
+/** 当前宿主实现（initCore 创建） */
+let uiHost: ElectronUIHost | undefined;
 /** 系统托盘：提供唤醒入口与退出入口（窗口不会因最小化而隐藏到托盘） */
 let tray: Tray | undefined;
 /** 内置 HTTP 服务器句柄（File 菜单 Start Server / Stop Server 控制） */
@@ -855,7 +865,7 @@ function getServerUrlCandidates(port: number): string[] {
 /**
  * 启动内置 HTTP 服务器：
  * - 前端：dist/webview（webview 构建产物），浏览器直接访问
- * - 后端：Electron 主进程（复用 ElectronUI / core），消息经 WebSocket 转发
+ * - 后端：Electron 主进程（复用 WebViewUI / core），消息经 WebSocket 转发
  * 默认端口被占用时自动向后尝试，全部失败则弹窗提示。
  */
 async function startServer(): Promise<void> {
@@ -1095,8 +1105,7 @@ function applyWorkspace(p: string): void {
   saveLastWorkspace(p);
   // 工作区变化后重建菜单，使“最近打开的工作目录”列表保持最新
   setupMenu();
-  const ui = require('./ElectronUI.js').ElectronUI.getInstance();
-  ui.setWorkspacePath(workspacePath);
+  uiHost?.setWorkspacePath(workspacePath);
   // 后续新建的聊天视图携带新 --workspace= 参数
   chatViews?.setWorkspacePath(workspacePath);
   // 工作区变化：清空旧聊天视图并新建
@@ -1214,12 +1223,13 @@ type WebviewMessageSource =
 /**
  * 处理一条来自 webview（原生视图或浏览器客户端）的消息。
  * 与 extension.ts AssistantViewProvider 的专用消息处理保持一致，
- * 其余消息统一委托给 ElectronUI（复用同一份 WebviewMessageHandler）。
+ * 其余消息统一委托给 WebViewUI（复用同一份 WebviewMessageHandler）。
  */
 function handleWebviewMessageFromSource(source: WebviewMessageSource, message: any): void {
   if (!message || typeof message.type !== 'string') return;
 
-  const ui = require('./ElectronUI.js').ElectronUI.getInstance();
+  const ui = webviewUi;
+  if (!ui) return;
   const sessionId = typeof message.sessionId === 'string' ? message.sessionId : undefined;
 
   // 浏览器页面会带上自己的 clientId：登记到对应连接后，
@@ -1551,15 +1561,50 @@ function initCore(): void {
   const bus = createEventBus();
   setGlobalEventBus(bus);
   initializeCoreEvents(bus);
-  const ui = require('./ElectronUI.js').ElectronUI.create(bus);
-  ui.setMainWindow(mainWindow!);
-  ui.setSidebarView(sidebarView!);
-  ui.setChatViewManager(chatViews!);
-  // 托盘只吃状态流（阶段 3.6）：running / waiting 来自 core 的 sessionRuntimeChanged，
-  // 经 ElectronConversationManager.setStatusListener 到达托盘；不再从对话列表推导
-  const conversations = ui.getConversationManager();
-  conversations.setStatusListener((states: import('../src/core/AssistantEventBus.js').SessionRuntimeState[]) => updateTrayStatusFromStates(states));
-  ui.setWorkspacePath(workspacePath);
+  const host = new ElectronUIHost();
+  const spinDesign = new ElectronSpinDesign(host, (win) => host.trackPreviewWindow(win));
+  const conversations = new ElectronConversationManager(
+    host,
+    (channel: string, payload: unknown) => {
+      if (sidebarView && !sidebarView.webContents.isDestroyed()) {
+        sidebarView.webContents.send(channel, payload);
+      }
+    },
+  );
+  // 托盘只吃状态流（阶段 3.6）：running / waiting 来自 core 的 sessionRuntimeChanged
+  conversations.setStatusListener((states) => updateTrayStatusFromStates(states));
+  const ui = WebViewUI.create(
+    host,
+    bus,
+    spinDesign,
+    conversations,
+    {
+      log: (...args: unknown[]) => {
+        console.log('[WebViewUI]', args.map(a => String(a)).join(' '));
+      },
+      createUserChoiceManager: (post, closePreview, uiPort) =>
+        new UserChoiceManager({
+          outputChannel: { appendLine: (line: string) => console.log('[WebViewUI]', line) },
+          postToWebview: post,
+          closePreview,
+          getActiveSessionIdInternal: () => uiPort.getActiveSessionId(),
+          onShowDiffInVirtualDocumentCallback: undefined,
+          // 用户选择框弹出（ask user / 权限确认）：刷新侧栏，流水灯显示黄色
+          onChoiceShown: () => {
+            // 用户选择框弹出（ask user / 权限确认）：列表流刷新侧栏（waiting 走状态流）
+            void conversations.refresh();
+          },
+        }),
+    },
+  );
+  host.setMainWindow(mainWindow!);
+  host.setSidebarView(sidebarView!);
+  host.setChatViewManager(chatViews!);
+  host.setWorkspacePath(workspacePath);
+  webviewUi = ui;
+  uiHost = host;
+  // 侧栏黄色流水灯的「等待用户」判定
+  chatViews?.setWaitingForUserProvider((sessionId: string) => ui.hasPendingUserChoice(sessionId));
 
   // 日志：输出到控制台（Electron 无 OutputChannel）
   setLogToConsole(true);
@@ -1567,7 +1612,7 @@ function initCore(): void {
     console.log(message);
   });
 
-  // 项目根目录提供者（从 ElectronUI 获取工作区）
+  // 项目根目录提供者（从宿主实现获取工作区）
   initializeHistory(ui);
   // 初始化会话队列回调
   try {

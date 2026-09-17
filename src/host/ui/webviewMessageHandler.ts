@@ -160,6 +160,16 @@ export class WebviewMessageHandler {
   }
 
   /**
+   * 会话被关闭 / 删除：清除 UI 侧维护的 tracked active session
+   * （该会话已卸内存，不再被视为前台会话）。
+   */
+  dropTrackedSession(sessionId: string): void {
+    if (this.trackedActiveSessionId === sessionId) {
+      this.trackedActiveSessionId = undefined;
+    }
+  }
+
+  /**
    * 构建消息类型 -> 处理器的分发表。
    * 大多数处理器直接接收消息对象；少数不使用消息参数的处理器
    * （requestSkills / openSpinDesign / requestSettingsDefaults /
