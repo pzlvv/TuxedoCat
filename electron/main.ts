@@ -5,7 +5,7 @@
  * 1. 创建主窗口：左侧原生侧栏（对话列表）+ 右侧聊天 WebContentsView（每对话一个标签）
  * 2. 注册 IPC（webview-message）并委托给 WebViewUI（复用同一份 WebviewMessageHandler）
  * 3. 侧栏 IPC：对话列表读写、打开/新建对话、列表变化推送
- * 4. 初始化 core（setGlobalUI / initializeHistory / setExtensionPathProvider / 日志）
+ * 4. 初始化 core（setGlobalEventBus / initializeCoreEvents / initializeHistory / 日志）
  * 5. 提供菜单：打开工作区、最近打开的工作目录、深色模式同步
  *
  * 与 VS Code 扩展的差异点（extension.ts）：
