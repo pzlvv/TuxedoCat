@@ -12,7 +12,8 @@
 
 
 import * as vscode from 'vscode';
-import type { UIHost } from './host/UIHost.js';
+import type { UIHost, WebviewViewHandle } from './host/UIHost.js';
+import type { WebviewMessage } from './core/webviewTypes.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from './host/mermaidHtml.js';
 import { MERMAID_PANEL_ID } from './config/project.js';
 import { DocumentManager } from './VSCodeUIHost/documentManager.js';
@@ -63,12 +64,29 @@ export class VSCodeUIHost implements UIHost {
 
   // ===================== UIHost 实现 =====================
 
-  sendToWebview(message: never): void {
+  sendToWebview(message: WebviewMessage): void {
     try {
       this.webviewView?.webview.postMessage(message);
     } catch (err) {
       this.outputChannel?.appendLine(`[VSCodeUIHost] postToWebview error: ${err}`);
     }
+  }
+
+  // 单视图宿主：广播与直发都落到唯一的 webview（句柄不参与路由）
+  broadcastToWebviews(message: WebviewMessage): void {
+    this.sendToWebview(message);
+  }
+
+  sendToWebviewView(_view: WebviewViewHandle, message: WebviewMessage): void {
+    this.sendToWebview(message);
+  }
+
+  // 单视图宿主：无论是否指定视图，都下发到唯一的 webview
+  onThemeChanged(_view: WebviewViewHandle | null): void {
+    this.sendToWebview({
+      type: 'setTheme',
+      theme: this.isDarkTheme() ? 'dark' : 'light',
+    });
   }
 
   log(...args: unknown[]): void {

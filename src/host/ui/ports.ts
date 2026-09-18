@@ -13,6 +13,15 @@
  */
 export type WebviewPoster = (sessionId: string, message: Record<string, unknown>) => void;
 
+/**
+ * LLM 配置面板的触发场景。
+ *
+ * - `startup`：视图加载完成后的补弹——仅当「已配置 active provider 但 apiKey 为空」
+ * - `new-conversation`：新建对话的引导——仅当「未配置 active provider 或 apiKey 为空」
+ * - `request`：webview 主动请求（用户点设置按钮）——无条件弹
+ */
+export type LLMConfigPanelTrigger = 'startup' | 'new-conversation' | 'request';
+
 /** conversationLoaded 的附加信息（由 WebviewMessageHandler 提供） */
 export interface ConversationLoadedExtra {
   pendingToolUseIds: string[];
@@ -41,7 +50,7 @@ export interface WebViewUiPort {
   /**
    * 该会话的 UI 侧状态已释放（视图关闭 / 会话删除）。
    * `WebViewUI.dropSession` 借此 fan-out 给持有 per-session 状态的子模块：
-   * `SessionUiState` 清阶段 / 计数 / abort scope；`UserChoiceManager` 清挂起的选择回调
+   * `SessionUiState` 清阶段 / 计数；`UserChoiceManager` 清挂起的选择回调
    * 与 diff 快照；`WebviewMessageHandler` 清 tracked active session。
    */
   dropSession(sessionId: string): void;
@@ -79,4 +88,13 @@ export interface WebViewUiPort {
    * （core 不参与计时；Electron 不做空闲回收，收到后无操作）。
    */
   noteSessionActivity(sessionId: string): void;
+
+  /**
+   * 打开 LLM 配置面板。
+   *
+   * core 只提供配置事实（`getLLMConfigPanelPayload` / `hasActiveProviderSetting` /
+   * `readMcpServersForDefaults`），wire message 的组装与投递在 WebViewUI 完成。
+   * `sessionId` 为定向视图；`null` 表示单视图宿主的唯一 webview。
+   */
+  showLLMConfigPanel(trigger: LLMConfigPanelTrigger, sessionId: string | null): Promise<void>;
 }

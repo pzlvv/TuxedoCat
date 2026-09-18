@@ -183,12 +183,13 @@ export function createTrayStatusIcon(
  * 从会话运行时状态流聚合托盘状态：
  * waiting > running > idle。托盘是聚合状态，吃的是 SessionRuntimeState[] 全量推送，
  * 不从对话列表（磁盘元数据）推导（DEVELOPMENT.md 第 5.4 节规则 8）。
+ * 会话是否「在跑」用 `idle === false` 判定（core 的 isIdle 语义）。
  */
-export function deriveTrayStatusFromStates(states: ReadonlyArray<{ running?: boolean; waiting?: boolean }>): TrayStatus {
+export function deriveTrayStatusFromStates(states: ReadonlyArray<{ idle?: boolean; waiting?: boolean }>): TrayStatus {
   let running = false;
   for (const item of states) {
     if (item.waiting === true) return 'waiting';
-    if (item.running === true) running = true;
+    if (item.idle === false) running = true;
   }
   return running ? 'running' : 'idle';
 }

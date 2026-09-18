@@ -9,13 +9,13 @@
  *   - renameConversation(id)    重命名
  *   - smartNameConversation(id) 智能命名（LLM 生成标题）
  *   - onConversationsUpdated()  主进程推送列表变化（纯磁盘元数据）
- *   - onSessionStatesUpdated()  主进程推送会话运行时状态（running / waiting 全量）
+ *   - onSessionStatesUpdated()  主进程推送会话运行时状态（idle / waiting 全量）
  *   - onSessionLoadedChanged()  主进程推送「已打开会话」集合变化（视图层状态）
  *   - getLoadedSessions()       读取当前已打开会话集合（初始化用）
  *
  * 三条流各自单一 owner（DEVELOPMENT.md 第 5.4 节规则 8）：
  *   列表（磁盘元数据）+ 运行时状态（core sessionRuntime）+ loaded（ChatViewManager 视图层），
- *   在 render() 时合并，列表载荷本身不再携带 loaded / running / waitingForUser 标记。
+ *   在 render() 时合并，列表载荷本身不再携带 loaded / idle / waitingForUser 标记。
  *
  * 交互参考插件 webview 版本（ConversationTreeItem.tsx）：
  * 根对话 hover 时显示 重命名/智能命名/删除/关闭 按钮（2 行 2 列）；重命名为行内输入框；
@@ -44,8 +44,8 @@ interface ConversationMeta {
 /** 会话运行时状态（与 core 的 SessionRuntimeState 同构，见 DEVELOPMENT.md 第 3.1 节） */
 interface SessionRuntimeState {
   sessionId: string;
-  /** 有活跃查询（引擎消费 / 后台 Bash / 递归子代理） */
-  running: boolean;
+  /** 会话是否空闲（false = 有活跃查询 / 压缩 / 后台 Bash / 递归子代理） */
+  idle: boolean;
   /** 正在等待用户操作（ask user / 权限确认） */
   waiting: boolean;
 }
@@ -85,7 +85,7 @@ let activeSessionId: string | null = null;
 let workspacePath: string | null = null;
 let subscribed = false;
 
-/** 会话运行时状态（running / waiting），来自 `sidebar:session-states-updated` 全量推送 */
+/** 会话运行时状态（idle / waiting），来自 `sidebar:session-states-updated` 全量推送 */
 let sessionStates = new Map<string, SessionRuntimeState>();
 /** 已打开（有活动视图）的会话集合，来自 `sidebar:session-loaded-changed` */
 let loadedSessions = new Set<string>();
@@ -96,7 +96,8 @@ function normalizeSessionStates(states: unknown): Map<string, SessionRuntimeStat
   if (!Array.isArray(states)) return map;
   for (const s of states as SessionRuntimeState[]) {
     if (s && typeof s.sessionId === 'string') {
-      map.set(s.sessionId, { sessionId: s.sessionId, running: !!s.running, waiting: !!s.waiting });
+      // idle 缺省视为 true（空闲），避免旧格式 / 字段缺失时误亮流水灯
+      map.set(s.sessionId, { sessionId: s.sessionId, idle: s.idle !== false, waiting: !!s.waiting });
     }
   }
   return map;
@@ -341,7 +342,7 @@ function itemHtml(c: ConversationMeta, depth: number, childCount: number, isExpa
   const state = sessionStates.get(c.sessionId);
   // 非 idle 对话显示左边流水灯条（与 webview 对话列表一致；当前活跃会话同样显示）
   // 正在等待用户输入（ask user / 权限确认）时显示黄色
-  const runningBar = state?.running
+  const runningBar = state && !state.idle
     ? `<div class="running-bar${state.waiting ? ' running-bar--waiting' : ''}"></div>`
     : '';
   const isRenaming = renamingSessionId === c.sessionId;

@@ -1452,7 +1452,7 @@ export function collectConversationClosure(
 }
 
 /**
- * 删除对话：**递归**删除该会话及其所有层级的子孙对话（文件 / 缓存 / 引擎 / MCP 引用）。
+ * 删除对话：**递归**删除该会话及其所有层级的子孙对话（文件 / 缓存 / 引擎 / MCP 引用 / 运行时状态）。
  *
  * 子代理可以再起子代理，`parentSessionId` 链可以任意深；闭包规则与宿主关视图
  * （`collectConversationClosure`）一致。先删子孙再删自己，中途失败不会留下孤儿。
@@ -1525,6 +1525,15 @@ async function deleteSingleConversation(sessionId: string, currentProject: strin
     await getMCPHost().onSessionClosed(sessionId);
   } catch (e) {
     logger.warn('Conversation', `释放 MCP 引用失败: ${e}`);
+  }
+
+  // 丢弃 sessionRuntime 状态（idle / waiting）：删除对话即会话关闭，
+  // 侧栏黄灯 / 托盘状态点不应残留（幂等，对不存在的会话无副作用）。
+  try {
+    const { dropSessionRuntime } = await import('../sessionRuntime.js');
+    dropSessionRuntime(sessionId);
+  } catch (e) {
+    logger.warn('Conversation', `清理 sessionRuntime 失败: ${e}`);
   }
 
   // 增量更新对话列表缓存（移除已删除的对话）

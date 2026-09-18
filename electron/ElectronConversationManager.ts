@@ -5,9 +5,9 @@
  * dispatchStates：① 原生侧栏流水灯（sidebar:session-states-updated）② statusListener（托盘）
  *                 ③ 广播给所有聊天视图（webview 据此推导 abort 按钮可用性）
  *
- * 纯磁盘列表不再贴 loaded/running/waitingForUser 标记：
+ * 纯磁盘列表不再贴 loaded/idle/waitingForUser 标记：
  * - loaded 由 ChatViewManager 自己推（sidebar:session-loaded-changed）
- * - running / waiting 走状态流（dispatchStates）
+ * - idle / waiting 走状态流（dispatchStates）
  */
 
 import type { ConversationMetadata } from '../src/core/history/Conversation.js';
@@ -25,15 +25,10 @@ export class ElectronConversationManager extends ConversationManager {
   constructor(
     host: UIHost,
     sendToSidebar: (channel: string, payload: unknown) => void,
-    sendToChatViews: (message: unknown) => void,
   ) {
     super(host);
     this.setSidebarOutlet(sendToSidebar);
-    this.sendToChatViews = sendToChatViews;
   }
-
-  /** 广播给所有聊天视图（ChatViewManager.broadcast）：多视图下每个视图都要能推导自己的 abort 状态 */
-  private readonly sendToChatViews: (message: unknown) => void;
 
   /** 流 1：纯磁盘列表 → ① 原生侧栏 ② webview 子对话树 */
   protected async dispatchList(list: readonly ConversationMetadata[]): Promise<void> {
@@ -53,6 +48,6 @@ export class ElectronConversationManager extends ConversationManager {
     this.statusListener?.(states);
     // webview 不直接吃 core 事件，只读宿主推来的状态快照（与 VS Code 同一形态）。
     // 广播而非按 sessionId 单发：每个视图都持有全量快照，自己挑自己那份。
-    this.sendToChatViews({ type: 'sessionRuntimeStates', states });
+    this.host.broadcastToWebviews({ type: 'sessionRuntimeStates', states });
   }
 }

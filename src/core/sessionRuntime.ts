@@ -1,24 +1,25 @@
 /**
- * sessionRuntime - 会话运行时状态（running / waiting）的唯一 owner
+ * sessionRuntime - 会话运行时状态（idle / waiting）的唯一 owner
  *
  * 变化时推全量 `CoreEvent.sessionRuntimeChanged`（消费者不维护状态表，见第 3.1 节）：
- * - running（对外）＝ 下面任一来源为真，即「会话非空闲」
+ * - idle（对外）＝ 下面所有来源都为假，即「会话空闲」
  * - waiting：正在等待用户操作（ask user / 权限确认，pending user choice）
  *
- * 内部按来源分开记账，对外合并成 running。分开的理由：多个来源会重叠
- * （自动压缩发生在一轮查询中间、后台 Bash 常在一轮查询结束后继续跑），
- * 若共用一个布尔位，任一来源结束就会把其他来源的 running 一起清掉。
+ * 对外只暴露 `idle`（= !非空闲），流水灯与 abort 按钮都读它。内部按来源分开记账：
+ * 多个来源会重叠（自动压缩发生在一轮查询中间、后台 Bash 常在一轮查询结束后继续跑），
+ * 若共用一个布尔位，任一来源结束就会把其他来源的状态一起清掉。
  *
  * | 来源 | 事实 | 设置方 |
  * | --- | --- | --- |
  * | query | 引擎在消费消息 / 有活跃查询 | Integration、QueryEngine |
  * | compacting | 正在压缩上下文（会整体替换消息数组） | compact/compact.ts |
  * | background | 有运行中的后台 Bash 任务 | tools/bash/LocalShellTask |
- * | subagent | 有运行中的子代理会话（spin 模式下父会话不消费队列） | tools/agent/SubAgentRegistry |
+ * | subagent | 已注册子代理（仅作变更信号；idle 递归看子代理是否非 idle） | tools/agent/SubAgentRegistry |
+ * | waiting | 正在等待用户操作（ask user / 权限确认） | host/ui/userChoice.ts |
  *
- * 与 SessionUiState（host 侧渲染投影）的分工（第 4.5 节）：
- * - core 的 sessionRuntime 是唯一事实 owner；SessionRuntimeState 进 CoreEvent
- * - SessionUiState 只留渲染投影（getActivityPhase），禁止互相写值
+ * 与 sessionResources.isSessionIdle 的关系：后者是宿主侧（空闲回收 / 手动压缩是否延后）
+ * 的**异步只读**判定，覆盖同样的来源 + 子代理递归；本模块是跨层推送的**同步快照**。
+ * 两者都读同一批事实，禁止互相写值。
  *
  * 各 core 模块在自己的事实变化点调用 mark* 函数（幂等，内部 diff 后才发事件）；
  * `dropSessionRuntime` 在会话关闭 / 删除时清理。
@@ -38,7 +39,10 @@ interface Entry {
   compacting: boolean;
   /** 有运行中的后台 Bash 任务 */
   background: boolean;
-  /** 有运行中的子代理会话 */
+  /**
+   * 该会话是否已注册子代理（仅作「父会话需要重算 idle」的变更信号）。
+   * idle 不看这个标志——它递归看子代理**当前是否非 idle**，见 isIdleInSnapshot。
+   */
   subagent: boolean;
 }
 
@@ -49,10 +53,46 @@ function emptyEntry(): Entry {
   return { query: false, waiting: false, compacting: false, background: false, subagent: false };
 }
 
-/** 对外快照：各来源合并成 running（消费者只关心「忙不忙」） */
-function toSnapshot(entry: Entry): { running: boolean; waiting: boolean } {
+/**
+ * 惰性取「某会话的子代理 id 列表」。
+ * 用 require 而不是顶层 import：SubAgentRegistry 反向 import 本模块的 markSessionSubAgent，
+ * 顶层互相 import 会形成初始化环；快照阶段（事件推送时）再惰性加载是安全的。
+ */
+function listSubAgentIds(creatorSessionId: string): string[] {
+  try {
+    const { subAgentRegistry } = require('./tools/agent/SubAgentRegistry.js') as typeof import('./tools/agent/SubAgentRegistry.js');
+    return subAgentRegistry.listForCreator(creatorSessionId);
+  } catch {
+    // 注册表不可用（测试 / 启动窗口）时按「无子代理」处理
+    return [];
+  }
+}
+
+/**
+ * 递归判定会话是否空闲（快照用，同步）：
+ * 自身无 query / waiting / compacting / background，且所有已注册子代理都 idle。
+ * 子代理非 idle 同样递归判定（子代理自己也可能有后台 Bash / 更下层子代理）。
+ *
+ * 用「子代理当前是否非 idle」而不是「是否有已注册子代理」：子代理完成一轮后
+ * 可能仍留在注册表里等 Reply，此时父会话应当回到 idle。
+ */
+function isIdleInSnapshot(sessionId: string, visiting: Set<string>): boolean {
+  if (visiting.has(sessionId)) return true; // 环保护
+  visiting.add(sessionId);
+
+  const entry = states.get(sessionId);
+  if (entry && (entry.query || entry.waiting || entry.compacting || entry.background)) return false;
+
+  for (const childId of listSubAgentIds(sessionId)) {
+    if (!isIdleInSnapshot(childId, visiting)) return false;
+  }
+  return true;
+}
+
+/** 对外快照：自身事实 + 递归子代理合并成 idle（消费者只关心「闲不闲」） */
+function toSnapshot(sessionId: string, entry: Entry): { idle: boolean; waiting: boolean } {
   return {
-    running: entry.query || entry.compacting || entry.background || entry.subagent,
+    idle: isIdleInSnapshot(sessionId, new Set<string>()),
     waiting: entry.waiting,
   };
 }
@@ -99,7 +139,7 @@ function pushIfChanged(next: Map<string, Entry>): void {
 
   const snapshot: SessionRuntimeState[] = [...states.entries()].map(([sessionId, entry]) => ({
     sessionId,
-    ...toSnapshot(entry),
+    ...toSnapshot(sessionId, entry),
   }));
   try {
     requireEventBus().emitToUi({ type: 'sessionRuntimeChanged', states: snapshot });
@@ -122,7 +162,7 @@ function update(sessionId: string, mutate: (entry: Entry) => void): void {
 }
 
 /**
- * 查询开始 / 结束（queryBegin / queryEnd）时更新 running。
+ * 查询开始 / 结束（queryBegin / queryEnd）时更新 query 来源。
  * waiting 的值保持当前 provider 判定结果。
  */
 export function markQueryRunning(sessionId: string, running: boolean): void {
@@ -135,7 +175,7 @@ export function markQueryRunning(sessionId: string, running: boolean): void {
 /**
  * 压缩上下文开始 / 结束时更新 compacting（`compact/compact.ts` 调用）。
  * 与 query 分开记账：自动压缩发生在一轮查询中间，压缩结束时不能把该轮查询的
- * running 一起清掉。
+ * query 来源一起清掉。
  */
 export function markSessionCompacting(sessionId: string, compacting: boolean): void {
   update(sessionId, (entry) => { entry.compacting = compacting; });
@@ -146,7 +186,11 @@ export function markSessionBackground(sessionId: string, background: boolean): v
   update(sessionId, (entry) => { entry.background = background; });
 }
 
-/** 子代理会话开始 / 结束时更新 subagent（`tools/agent/SubAgentRegistry` 调用） */
+/**
+ * 子代理注册 / 注销时更新 subagent 变更信号（`tools/agent/SubAgentRegistry` 调用）。
+ * 该标志不参与 idle 计算（idle 递归看子代理当前是否非 idle，见 isIdleInSnapshot），
+ * 只用于触发父会话快照重算并推送。
+ */
 export function markSessionSubAgent(sessionId: string, subagent: boolean): void {
   update(sessionId, (entry) => { entry.subagent = subagent; });
 }
@@ -170,7 +214,7 @@ export function dropSessionRuntime(sessionId: string): void {
 export function getSessionRuntimeStates(): readonly SessionRuntimeState[] {
   return [...states.entries()].map(([sessionId, entry]) => ({
     sessionId,
-    ...toSnapshot(entry),
+    ...toSnapshot(sessionId, entry),
   }));
 }
 

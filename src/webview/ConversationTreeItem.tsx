@@ -20,10 +20,11 @@ export interface ConversationTreeItemProps {
   isActive: boolean;
   isRoot: boolean;
   isExpanded: boolean;
-  isRunning: boolean;
+  /** 会话是否空闲（core 的 isIdle）；非 idle 时显示左侧流水灯 */
+  isIdle: boolean;
   /** 会话是否正在等待用户输入（ask user / 权限确认）——流水灯显示黄色 */
   isWaitingForUser?: boolean;
-  getSessionRunningState: (sessionId: string) => boolean;
+  getSessionIdleState: (sessionId: string) => boolean;
   /** 获取子会话是否正在等待用户输入 */
   getSessionWaitingState?: (sessionId: string) => boolean;
   onToggle: () => void;
@@ -56,9 +57,9 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
   isActive,
   isRoot,
   isExpanded,
-  isRunning,
+  isIdle,
   isWaitingForUser,
-  getSessionRunningState,
+  getSessionIdleState,
   getSessionWaitingState,
   onToggle,
   onSelect,
@@ -141,7 +142,7 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
         }}
         onClick={isRenaming ? undefined : onSelect}
       >
-        {isRunning && (
+        {!isIdle && (
           <div className={isWaitingForUser ? 'running-bar running-bar--waiting' : 'running-bar'} />
         )}
         <div className="flex items-center justify-between gap-2">
@@ -309,9 +310,9 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
               isActive={child.sessionId === currentSessionId}
               isRoot={false}
               isExpanded={expandedSubSessions[child.sessionId] === true}
-              isRunning={getSessionRunningState(child.sessionId)}
+              isIdle={getSessionIdleState(child.sessionId)}
               isWaitingForUser={getSessionWaitingState?.(child.sessionId) ?? false}
-              getSessionRunningState={getSessionRunningState}
+              getSessionIdleState={getSessionIdleState}
               getSessionWaitingState={getSessionWaitingState}
               onToggle={() => onToggleSub(child.sessionId)}
               onSelect={() => {

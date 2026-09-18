@@ -35,7 +35,6 @@ import {
 import { tt } from '../src/core/i18n.js';
 import { getShortcutDialogHtml } from './shortcutDialogHtml.js';
 import { resolveSmartTitle } from '../src/core/history/smartNaming.js';
-import { readActiveProviderModelContextSync } from '../src/core/history/Config.js';
 
 /**
  * 判断 URL 是否为需要在系统浏览器打开的外部链接。
@@ -73,15 +72,13 @@ let shortcutDialogWindow: BrowserWindow | undefined;
 let appQuitting = false;
 /**
  * 白屏恢复用的重绘定时器句柄：
- * - repaintIntervalTimer：窗口可见期间 30 秒一次的兜底重绘
  * - focusRepaintTimer：窗口聚焦防抖后的单次重绘
  * 窗口销毁/应用退出时清理，避免句柄悬挂（纯防御性）。
  */
-let repaintIntervalTimer: ReturnType<typeof setInterval> | null = null;
 let focusRepaintTimer: ReturnType<typeof setTimeout> | null = null;
 // 侧栏三条流各自单一 owner（DEVELOPMENT.md 第 5.4 节）：
 // - 列表（纯磁盘元数据）→ ConversationManager.dispatchList → sidebar:conversations-updated
-// - 运行时状态（running / waiting）→ ConversationManager.dispatchStates → sidebar:session-states-updated
+// - 运行时状态（idle / waiting）→ ConversationManager.dispatchStates → sidebar:session-states-updated
 // - loaded（视图层）→ ChatViewManager.onLoadedChanged → sidebar:session-loaded-changed
 
 /**
@@ -132,10 +129,10 @@ async function main(): Promise<void> {
   setupTray();
   setupMenu();
   // 系统主题变化时同步所有聊天视图（只注册一次，避免菜单重建时重复注册）。
-  // 用 broadcast 而不是只发活动视图：隐藏的对话视图与后台预热视图同样要更新，
-  // 否则它们被切回前台时会带着过期的主题。
+  // onThemeChanged(null) 广播而不是只发活动视图：隐藏的对话视图与后台预热视图
+  // 同样要更新，否则它们被切回前台时会带着过期的主题。
   nativeTheme.on('updated', () => {
-    broadcastTheme();
+    uiHost?.onThemeChanged(null);
   });
   setupIpc();
   initCore();
@@ -171,10 +168,6 @@ async function main(): Promise<void> {
   app.on('will-quit', () => {
     appQuitting = true;
     // 停止白屏恢复相关的重绘定时器（窗口销毁回调可能未触发，双保险）
-    if (repaintIntervalTimer) {
-      clearInterval(repaintIntervalTimer);
-      repaintIntervalTimer = null;
-    }
     if (focusRepaintTimer) {
       clearTimeout(focusRepaintTimer);
       focusRepaintTimer = null;
@@ -307,8 +300,8 @@ function createMainWindow(): void {
         layout(); // 页面加载完成后按当前实际尺寸重排，避免初始视口偏差导致输入框被遮挡
         // 主题 / 上下文限制按「本视图」直发：后台预热的视图不是活动视图，
         // 走 sendToActive 会发错对象（预热视图将一直停在 Loading）。
-        sendTheme(view.webContents);
-        sendContextLimit(undefined, view.webContents);
+        sendThemeToSource(view.webContents);
+        sendContextLimit(view.webContents);
         setTimeout(() => {
           // 后台预热视图仍在后台时不弹设置页：它被切到前台时会走
           // handleStartNewConversation 的同一段逻辑（那时也才真正需要配置面板）。
@@ -362,13 +355,6 @@ function createMainWindow(): void {
   mainWindow.on('restore', cancelAttention);
   mainWindow.on('focus', cancelAttention);
 
-  // 兜底：窗口可见期间周期性强制重绘，及时修复未触发上述事件的偶发白屏
-  repaintIntervalTimer = setInterval(() => {
-    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized()) {
-      repaintAllViews();
-    }
-  }, 30_000);
-
   mainWindow.on('closed', () => {
     // 后台预热的聊天视图未挂在窗口上，需显式清理（其余视图随窗口销毁）
     chatViews?.dispose();
@@ -376,10 +362,6 @@ function createMainWindow(): void {
     sidebarView = undefined;
     chatViews = undefined;
     // 窗口已销毁：停止白屏恢复相关的重绘定时器（纯防御性清理）
-    if (repaintIntervalTimer) {
-      clearInterval(repaintIntervalTimer);
-      repaintIntervalTimer = null;
-    }
     if (focusRepaintTimer) {
       clearTimeout(focusRepaintTimer);
       focusRepaintTimer = null;
@@ -467,7 +449,8 @@ function focusActiveChatInput(attempt = 0): void {
   const send = (): void => {
     if (target.isDestroyed()) return;
     target.focus();
-    target.send('webview-message', { type: 'focusInput' });
+    const host = uiHost;
+    if (host) host.sendToWebviewView(host.webviewHandleFor(target), { type: 'focusInput' });
   };
   if (target.isLoading()) {
     target.once('did-finish-load', send);
@@ -1208,17 +1191,10 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: a
     return;
   }
 
-  // 与 extension.ts AssistantViewProvider 一致的专用消息处理
-  // 回包按来源 webContents 直发：预热视图等非活动视图也发起这些请求
-  if (message.type === 'requestTheme') {
-    sendTheme(sender);
-    return;
-  }
-  if (message.type === 'requestContextLimit') {
-    sendContextLimit(message.model, sender);
-    return;
-  }
-  ui.handleWebviewMessage(message).catch((err: any) => {
+  // 其余消息统一走 WebViewUI 的共享分发表（requestTheme / requestContextLimit
+  // 已收编进 WebviewMessageHandler，按 ctx.sender 定向回包：预热视图等
+  // 非活动视图发起的请求也能收到回包）。
+  ui.handleWebviewMessage(message, { sender: uiHost?.webviewHandleFor(sender) ?? null }).catch((err: any) => {
     console.error(`[main] handleWebviewMessage error (${message.type}):`, err);
   });
 }
@@ -1336,92 +1312,42 @@ function setupIpc(): void {
 }
 
 /**
- * 下发主题。
+ * 把当前主题直发某个来源视图（did-finish-load 初始化；requestTheme 回包
+ * 已收编进 WebviewMessageHandler，不再经过这里）。
  *
- * target 指定时只发给该视图（视图自己的 did-finish-load / requestTheme 回包），
- * 否则发给当前活动视图（系统主题变化等全局广播场景）。
- * 后台预热的视图不是活动视图，必须按 target 直发，否则它会一直停在
+ * 后台预热的视图不是活动视图，必须按来源 webContents 直发，否则它会一直停在
  * 「Loading」（webview 的 setTheme 是解除启动 loading 的条件）。
+ * 系统主题变化那条路走 `uiHost.onThemeChanged(null)`，广播到所有视图。
  */
-function sendTheme(target?: Electron.WebContents): void {
-  const theme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
-  console.log(`[main] sendTheme: ${theme} (themeSource=${nativeTheme.themeSource})`);
-  const message = { type: 'setTheme', theme };
-  if (target) {
-    if (!target.isDestroyed()) target.send('webview-message', message);
-    return;
-  }
-  chatViews?.sendToActive(message);
+function sendThemeToSource(source: Electron.WebContents): void {
+  const host = uiHost;
+  if (host) host.onThemeChanged(host.webviewHandleFor(source));
 }
 
 /**
- * 系统主题变化：广播给所有聊天视图（含隐藏对话视图与后台预热视图）。
- * 这些视图各自独立渲染，只发活动视图会让它们停留在旧主题。
- */
-function broadcastTheme(): void {
-  const theme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
-  console.log(`[main] broadcastTheme: ${theme} (themeSource=${nativeTheme.themeSource})`);
-  chatViews?.broadcast({ type: 'setTheme', theme });
-}
-
-function sendContextLimit(model?: string, target?: Electron.WebContents): void {
-  try {
-    const { getContextWindow } = require('../src/core/utils/modelConfig.js');
-    // 与 extension.ts 共用同一份读取逻辑：
-    // - 显式传入 model 时用该模型；否则回退到 activeProvider.defaultModel → models[0]
-    // - 同时读取 activeProvider.modelConfigs，让 settings.json 中每个模型的
-    //   context/output 覆盖生效（此前 Electron 只按内置注册表计算，切换模型后
-    //   webview 里的 context window 不会跟随变化）。
-    const { model: modelName, modelConfigs } = readActiveProviderModelContextSync(model);
-    const contextWindow = getContextWindow(modelName || '', modelConfigs);
-    const message = {
-      type: 'contextLimitUpdated',
-      maxContextTokens: contextWindow,
-    };
-    if (target) {
-      if (!target.isDestroyed()) target.send('webview-message', message);
-      return;
-    }
-    chatViews?.sendToActive(message);
-  } catch (err) {
-    console.error('[main] sendContextLimit error:', err);
-  }
-}
-
-/**
- * 检测 LLM 配置是否完整，未配置 active provider 或其 apiKey 为空时弹出配置面板（与 extension.ts checkAndSendLLMConfig 一致）。
+ * 把上下文限制直发某个来源视图（did-finish-load 初始化）。
  *
- * target 指定时只推给该视图（视图创建完成后的初始化）；
- * 否则推给当前活动视图。无论哪种都只推一个视图，不要广播，
+ * 读取与组装在 WebViewUI 的共享实现里（与 webview 的 `requestContextLimit` 同一份）；
+ * 这里只负责把来源 webContents 包成句柄传进去。
+ */
+function sendContextLimit(target: Electron.WebContents): void {
+  webviewUi?.pushContextLimit(uiHost?.webviewHandleFor(target) ?? null);
+}
+
+/**
+ * 视图加载完成后补弹 LLM 配置面板（active provider 已配置但缺 apiKey 时）。
+ *
+ * target 指定时定向到该视图（视图创建完成后的初始化），否则定向到当前活动视图。
+ * 配置读取与消息组装在 WebViewUI；这里只触发，且只推一个视图（不广播），
  * 否则打开新对话会把设置面板弹到所有聊天视图。
  */
 async function checkAndSendLLMConfig(target?: Electron.WebContents): Promise<void> {
   try {
-    const { getLLMConfigPanelPayload, hasActiveProviderSetting } = await import('../src/core/llm/config.js');
-    const payload = await getLLMConfigPanelPayload();
-    const hasActiveProvider = await hasActiveProviderSetting();
-    // 仅在 active provider 已设置但缺少 apiKey 时补弹；
-    // 没有 active provider 的场景由 handleStartNewConversation 在新对话时弹设置页
-    if (!hasActiveProvider || payload.apiKey) {
-      return;
-    }
-
-    const { readUiLanguageSync } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
-    const targetSessionId = target
+    const sessionId = target
       ? chatViews?.getKeyByWebContents(target) ?? chatViews?.getActiveSessionId() ?? null
       : chatViews?.getActiveSessionId() ?? null;
-    if (!targetSessionId) return;
-    const message = {
-      type: 'showLLMConfig',
-      ...payload,
-      language: readUiLanguageSync(),
-      sessionId: targetSessionId,
-    };
-    if (target) {
-      if (!target.isDestroyed()) target.send('webview-message', message);
-      return;
-    }
-    chatViews?.sendTo(targetSessionId, message);
+    if (!sessionId) return;
+    await webviewUi?.showLLMConfigPanel('startup', sessionId);
   } catch (err) {
     console.error('[main] checkAndSendLLMConfig error:', err);
   }
@@ -1454,7 +1380,6 @@ function initCore(): void {
         sidebarView.webContents.send(channel, payload);
       }
     },
-    (message: unknown) => chatViews?.broadcast(message),
   );
   conversations = conversationsMgr;
   // 托盘只吃状态流（阶段 3.6）：running / waiting 来自 core 的 sessionRuntimeChanged

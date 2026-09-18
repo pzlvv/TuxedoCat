@@ -5,13 +5,13 @@
  *
  * |          | 流 1：对话列表                     | 流 2：会话运行时状态              |
  * | -------- | --------------------------------- | -------------------------------- |
- * | 内容     | 磁盘元数据（title/createdAt/...）   | running / waiting                |
+ * | 内容     | 磁盘元数据（title/createdAt/...）   | idle / waiting                   |
  * | 数据源   | 磁盘（core 的 loadConversationList）| core 的 sessionRuntime           |
  * | 变化频率 | 低（落盘/改名/删除/新建）           | 高（每次查询开始结束、等用户）      |
  * | 触发     | CoreEvent.conversationListChanged | CoreEvent.sessionRuntimeChanged  |
  * | 消费者   | webview 子对话树、Electron 原生侧栏 | Electron 侧栏流水灯、系统托盘      |
  *
- * 两条流分开推：列表只承载磁盘事实，不把 running/waitingForUser「贴」上去，
+ * 两条流分开推：列表只承载磁盘事实，不把 idle/waitingForUser「贴」上去，
  * 状态变化也就不必重读盘；托盘直接吃状态流。
  *
  * 用抽象类而不是接口：load() 两端一致、只有 dispatch*() 不同，

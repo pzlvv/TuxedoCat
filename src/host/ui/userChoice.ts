@@ -37,7 +37,11 @@ export class UserChoiceManager {
   private diffSnapshotSessionId: string | undefined;
   /** 按 choiceId 存储的 pending 用户选择回调 */
   public pendingUserChoices: Map<string, { sessionId: string; resolve: (value: { index: number; reply?: string }) => void }> = new Map();
-  /** 用户选择框弹出后的回调（宿主侧用于刷新侧栏流水灯为黄色） */
+  /**
+   * 用户选择框弹出后的可选回调（当前无人传入，保留给宿主做额外动作）。
+   * waiting 状态已由 core 的 `sessionRuntime` → `CoreEvent.sessionRuntimeChanged`
+   * 推给侧栏（黄灯）与托盘，宿主不再借该回调刷新侧栏。
+   */
   private onChoiceShown?: (sessionId: string) => void;
 
   constructor(deps: {

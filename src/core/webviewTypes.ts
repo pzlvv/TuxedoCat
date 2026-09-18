@@ -155,10 +155,11 @@ export type WebviewMessage = {
 } | {
   /**
    * 会话运行时状态全量推送（core `sessionRuntimeChanged` → 宿主 → webview）。
-   * 对话树的流水灯（running / waiting）只读这份数据，不再从 `queryBegin` / `queryEnd` 推导。
+   * 对话树的流水灯（idle / waiting）与 abort 按钮只读这份数据，不再从 `queryBegin` / `queryEnd` 推导。
    */
   type: 'sessionRuntimeStates';
-  states: Array<{ sessionId: string; running: boolean; waiting: boolean }>;
+  /** 全量快照；宿主不持有其所有权，调用方只读 */
+  states: ReadonlyArray<{ sessionId: string; idle: boolean; waiting: boolean }>;
 } | {
   type: 'conversationLoaded';
   conversation: {

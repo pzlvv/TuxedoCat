@@ -284,8 +284,8 @@ const App = () => {
   }, []);
   // Per-session state: input, userChoiceRequest, userChoiceInput
   const sessionStatesRef = useRef<Map<string, SessionState>>(new Map());
-  // core 推送的会话运行时状态（running / waiting）：对话树流水灯的唯一数据源
-  const sessionRuntimeStatesRef = useRef<Map<string, { running: boolean; waiting: boolean }>>(new Map());
+  // core 推送的会话运行时状态（idle / waiting）：对话树流水灯与 abort 按钮的唯一数据源
+  const sessionRuntimeStatesRef = useRef<Map<string, { idle: boolean; waiting: boolean }>>(new Map());
   // Per-session command history (most recent first)
   const commandHistoryRef = useRef<Map<string, string[]>>(new Map());
   const COMMAND_HISTORY_MAX = 50;
@@ -332,7 +332,7 @@ const App = () => {
   const [forceScrollKey, setForceScrollKey] = useState(0);
   // 会话运行状态版本号：core 推来 sessionRuntimeStates 时递增，
   // 强制 App 重渲染，使对话列表的流水灯（running-bar）与 abort 按钮即时变化。
-  const [sessionRunningVersion, setSessionRunningVersion] = useState(0);
+  const [sessionIdleVersion, setSessionIdleVersion] = useState(0);
 
   // 输入框 refs
   const mainInputRef = useRef<HTMLTextAreaElement>(null);
@@ -347,22 +347,23 @@ const App = () => {
   // -- hooks --
   const { conversationTree, expandedSubSessions, setExpandedSubSessions } = useConversationTree(conversations);
 
-  // 对话树流水灯（running / waiting）只读 core 推送的会话运行时状态：
+  // 对话树流水灯（idle / waiting）只读 core 推送的会话运行时状态：
   // 与 Electron 侧栏同一数据源（core sessionRuntimeChanged），不再本地推导（第 11 节）。
-  const getSessionRunningState = useCallback((sid: string): boolean => {
-    return sessionRuntimeStatesRef.current.get(sid)?.running ?? false;
+  // 未记录的会话视为 idle（不显示流水灯）。
+  const getSessionIdleState = useCallback((sid: string): boolean => {
+    return sessionRuntimeStatesRef.current.get(sid)?.idle ?? true;
   }, []);
   const getSessionWaitingState = useCallback((sid: string): boolean => {
     return sessionRuntimeStatesRef.current.get(sid)?.waiting ?? false;
   }, []);
 
-  // abort 按钮：会话非空闲即可中止。判定读 core 的 sessionRuntime（running 已合并
-  // 查询 / 压缩 / 后台 Bash / 子代理，见 core sessionResources.isSessionBusy）——
+  // abort 按钮：会话非空闲即可中止。判定读 core 的 sessionRuntime（idle 已合并
+  // 查询 / 压缩 / 后台 Bash / 子代理，见 core sessionResources.isSessionIdle）——
   // 引擎没在跑、但后台 Bash 或子代理还在时同样可以中止。
   const abortEnabled = useMemo(
-    () => (currentSessionId ? (sessionRuntimeStatesRef.current.get(currentSessionId)?.running ?? false) : false),
-    // sessionRunningVersion 是 core 推来新状态时的重渲染信号（ref 本身不触发渲染）
-    [currentSessionId, sessionRunningVersion],
+    () => (currentSessionId ? !(sessionRuntimeStatesRef.current.get(currentSessionId)?.idle ?? true) : false),
+    // sessionIdleVersion 是 core 推来新状态时的重渲染信号（ref 本身不触发渲染）
+    [currentSessionId, sessionIdleVersion],
   );
 
   // 插件模式对话下拉滚动到底时，动态追加一页历史对话
@@ -382,7 +383,7 @@ const App = () => {
     setCurrentSessionId, setParentSessionId, setAgentMode, setAgentModeReady, setThinkingMode,
     setModel, setWebSearch, setContextLength, setQueuedMessage,
     setUserChoiceRequest, setNamingSessions, setStreamingVersion, setForceScrollKey,
-    setSessionRunningVersion,
+    setSessionIdleVersion,
     setExpandedSubSessions, setModels, setBalance, setBalanceCurrency, setIsUnlimited,
     setCurrentSessionIdRef, setShowLLMConfig, setLlmConfigBaseURL, setLlmConfigWebSearch,
     setLlmConfigThinkingEffort, setLlmConfigDefaultAgentMode, setLlmConfigDefaultPromptMode, setLlmConfigApiKey,
@@ -1010,9 +1011,9 @@ const App = () => {
                               ? item.sessionId === currentSessionId
                               : expandedSubSessions[item.sessionId]
                           }
-                          isRunning={getSessionRunningState(item.sessionId)}
+                          isIdle={getSessionIdleState(item.sessionId)}
                           isWaitingForUser={getSessionWaitingState(item.sessionId)}
-                          getSessionRunningState={getSessionRunningState}
+                          getSessionIdleState={getSessionIdleState}
                           getSessionWaitingState={getSessionWaitingState}
                           onToggle={() => _toggleSubSession(item.sessionId)}
                           onSelect={() => {

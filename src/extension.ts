@@ -10,15 +10,12 @@ import { setLogCallback } from './core/Logger.js';
 import { initializeHistory } from './core/Integration.js';
 import { setSessionWaitingForUserProvider } from './core/sessionResources.js';
 import {
-  readActiveProviderModelContextSync,
   readUiLanguageSync,
   readHighlightLanguagesSync,
   setExtensionPathProvider,
 } from './core/history/Config.js';
 import { ensureConfigDirs } from './core/history/index.js';
 import { VSCODE_HOST_INFO } from './host/types.js';
-import { getContextWindow } from './core/utils/modelConfig.js';
-import { getLLMConfigPanelPayload, hasActiveProviderSetting } from './core/llm/config.js';
 import { getSystemLocale, setCoreLocale, setCoreUiLanguage } from './core/i18n.js';
 import { setGlobalEventBus, requireEventBus } from './core/AssistantEventBus.js';
 import { createEventBus } from './host/EventBus.js';
@@ -246,8 +243,10 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
     );
 
     setTimeout(() => {
-      this.sendThemeInfo();
-      this.sendContextLimit();
+      // 主题 / 上下文限制的加载初始化推送（sender 为 null 走默认路由）；
+      // webview 的 requestTheme / requestContextLimit 走共享分发表，与这里共用同一份实现
+      this.host.onThemeChanged(null);
+      this.ui.pushContextLimit(null);
     }, 100);
 
     setTimeout(() => {
@@ -256,7 +255,7 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
 
     this.context.subscriptions.push(
       vscode.window.onDidChangeActiveColorTheme(() => {
-        this.sendThemeInfo();
+        this.host.onThemeChanged(null);
       })
     );
 
@@ -265,14 +264,6 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
       // （VS Code 会打印 "rejected promise not handled within 1 second"，
       // 且整条消息链路静默失败，难以定位）。
       try {
-        if (message.type === 'requestTheme') {
-          this.sendThemeInfo();
-          return;
-        }
-        if (message.type === 'requestContextLimit') {
-          this.sendContextLimit(message.model);
-          return;
-        }
         await this.ui.handleWebviewMessage(message);
       } catch (err) {
         const detail = err instanceof Error ? (err.stack || err.message) : String(err);
@@ -284,54 +275,11 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * 检测 LLM 配置是否完整，如果不完整则向 webview 发送配置面板消息。
-   * 新结构下：没有设置 llm.activeProvider 或 active provider 缺少 apiKey 时弹配置面板。
+   * 视图加载完成后补弹 LLM 配置面板（active provider 已配置但缺 apiKey 时）。
+   * 配置读取与消息组装在 WebViewUI；这里只触发（第 12.6 节：core 描述事实，UI 决定表现）。
    */
   private async checkAndSendLLMConfig(): Promise<void> {
-    try {
-      const payload = await getLLMConfigPanelPayload();
-      const hasActiveProvider = await hasActiveProviderSetting();
-      // 仅在 active provider 已设置但缺少 apiKey 时补弹；
-      // 没有 active provider 的场景由 handleStartNewConversation 在新对话时弹设置页
-      if (!hasActiveProvider || payload.apiKey) {
-        return;
-      }
-
-      this.host.log('[Extension] Active provider apiKey is empty, sending showLLMConfig to webview');
-      this.webviewView?.webview.postMessage({
-        type: 'showLLMConfig',
-        ...payload,
-        language: readUiLanguageSync(),
-      });
-    } catch (err) {
-      console.error('[Extension] checkAndSendLLMConfig error:', err);
-    }
-  }
-
-  private sendThemeInfo(): void {
-    if (!this.webviewView) { return; }
-
-    const theme = vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark
-      ? 'dark'
-      : 'light';
-
-    this.webviewView.webview.postMessage({
-      type: 'setTheme',
-      theme,
-    });
-  }
-
-  private sendContextLimit(model?: string): void {
-    if (!this.webviewView) { return; }
-
-    // 与 Electron 共用同一份读取逻辑（含 provider 级 modelConfigs 覆盖），
-    // 避免两端对「切换模型后的 context window」计算出不同结果。
-    const { model: modelName, modelConfigs } = readActiveProviderModelContextSync(model);
-
-    this.webviewView.webview.postMessage({
-      type: 'contextLimitUpdated',
-      maxContextTokens: getContextWindow(modelName || '', modelConfigs),
-    });
+    await this.ui.showLLMConfigPanel('startup', null);
   }
 
   private sendCurrentFileInfo(): void {
@@ -340,7 +288,7 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
     const editor = vscode.window.activeTextEditor;
     // 仅把真实文件系统文件当作“当前文件”；Output、Terminal、虚拟文档等非文件窗口一律屏蔽
     if (!editor || editor.document.uri.scheme !== 'file') {
-      this.webviewView.webview.postMessage({
+      this.host.sendToWebview({
         type: 'setCurrentFile',
         filePath: '',
       });
@@ -356,7 +304,7 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
 
     void this.persistCurrentFileContext(filePath, selectedLines);
 
-    this.webviewView.webview.postMessage({
+    this.host.sendToWebview({
       type: 'setCurrentFile',
       filePath,
       selectedLines,

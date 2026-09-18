@@ -494,8 +494,8 @@ export interface UseMessageHandlerProps {
   setNamingSessions: React.Dispatch<React.SetStateAction<Set<string>>>;
   setStreamingVersion: (v: number | ((prev: number) => number)) => void;
   setForceScrollKey: (v: number | ((prev: number) => number)) => void;
-  /** 任意会话 queryBegin/queryEnd 时递增，强制对话列表重渲染以刷新流水灯 */
-  setSessionRunningVersion: (v: number | ((prev: number) => number)) => void;
+  /** core 推来会话运行时状态时递增，强制对话列表重渲染以刷新流水灯与 abort 按钮 */
+  setSessionIdleVersion: (v: number | ((prev: number) => number)) => void;
   setExpandedSubSessions: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   setModels: (v: string[]) => void;
   setBalance: (v: number | undefined) => void;
@@ -541,8 +541,8 @@ export interface UseMessageHandlerProps {
   currentSessionIdRef: React.MutableRefObject<string | null>;
   agentModeReadyRef: React.MutableRefObject<boolean>;
   sessionStatesRef: React.MutableRefObject<Map<string, SessionState>>;
-  /** core 推送的会话运行时状态（running / waiting）：对话树流水灯的唯一数据源 */
-  sessionRuntimeStatesRef: React.MutableRefObject<Map<string, { running: boolean; waiting: boolean }>>;
+  /** core 推送的会话运行时状态（idle / waiting）：对话树流水灯与 abort 按钮的唯一数据源 */
+  sessionRuntimeStatesRef: React.MutableRefObject<Map<string, { idle: boolean; waiting: boolean }>>;
   userChoiceRequestRef: React.MutableRefObject<UserChoiceRequest | null>;
   userChoiceInputRef: React.MutableRefObject<string>;
   savedMainInputRef: React.MutableRefObject<string>;
@@ -1308,15 +1308,15 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           });
           break;
         case 'sessionRuntimeStates': {
-          // core 的会话运行时状态（running / waiting）全量推送：
-          // 这是对话树流水灯的唯一数据源（不再从 queryBegin / queryEnd 推导）。
-          const runtime = new Map<string, { running: boolean; waiting: boolean }>();
+          // core 的会话运行时状态（idle / waiting）全量推送：
+          // 这是对话树流水灯与 abort 按钮的唯一数据源（不再从 queryBegin / queryEnd 推导）。
+          const runtime = new Map<string, { idle: boolean; waiting: boolean }>();
           for (const s of msg.states || []) {
-            if (s?.sessionId) runtime.set(s.sessionId, { running: !!s.running, waiting: !!s.waiting });
+            if (s?.sessionId) runtime.set(s.sessionId, { idle: s.idle !== false, waiting: !!s.waiting });
           }
           props.sessionRuntimeStatesRef.current = runtime;
           // 强制对话列表重渲染，使流水灯即时出现 / 消失 / 变黄
-          props.setSessionRunningVersion(v => v + 1);
+          props.setSessionIdleVersion(v => v + 1);
           break;
         }
         case 'conversationsData': {

@@ -9,7 +9,7 @@
  * - 查询计数：同一会话嵌套 begin/end 去重，保证只发一次 queryBegin/queryEnd
  *
  * abort 按钮可用性**不在这里**：它读 core 的 sessionRuntime（`sessionRuntimeStates`，
- * 见 sessionResources.isSessionBusy），webview 自己推导。
+ * 见 sessionResources.isSessionIdle），webview 自己推导。
  *
  * 只保存状态与纯逻辑，不涉及任何宿主 API（推送 / 视图生命周期由宿主负责）。
  */

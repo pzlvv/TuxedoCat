@@ -62,30 +62,34 @@ export function abortCurrentQuery(sessionId?: string): void {
 /**
  * 中止一个会话及其递归子代理的运行中工作。
  *
- * abort 按钮的可用性是「会话非空闲」（见 `isSessionBusy`），而不是「引擎在消费」——
- * 所以这里必须覆盖引擎已经不在跑、但后台 Bash 任务 / 子代理还在的情况：
+ * abort 按钮的可用性是「会话非空闲」（见 `isSessionIdle`），而不是「引擎在消费」——
+ * 所以这里必须递归覆盖三类残留工作，任一类还在都能被立刻停掉（幂等）：
  * - 引擎在池里 → `engine.interrupt()`（内部已递归中止子对话的后台 Bash 与子代理）
- * - 引擎已释放 → 兜底中止该会话的后台 Bash 任务
- * 两条路径都走一遍，任一侧有残留工作都能被立刻停掉（幂等）。
+ * - 该会话的后台 Bash 任务 → 无论引擎在不在都直接中止（引擎已释放时只有这条路）
+ * - 子代理 → 递归 `abortSessionScope`（父引擎已释放但子代理还在跑时兜底）
  */
 async function abortSessionScope(sessionId: string, visited: Set<string>): Promise<void> {
   if (!sessionId || visited.has(sessionId)) return;
   visited.add(sessionId);
 
+  // 1. 引擎在池里 → interrupt()（内部递归覆盖子会话的后台 Bash 与子代理）
   const engine = getSessionEngine(sessionId);
   if (engine) {
     engine.interrupt();
   } else {
     logger.warn('Integration', `No query engine found for session ${sessionId} to abort; aborting background tasks`);
-    try {
-      const { abortBackgroundTasksForSession } = await import('./tools/bash/LocalShellTask.js');
-      abortBackgroundTasksForSession(sessionId);
-    } catch (err: unknown) {
-      logger.warn('Integration', `Failed to abort background tasks for session ${sessionId}: ${err}`);
-    }
   }
 
-  // 递归子代理：父引擎还在时 interrupt() 已覆盖，这里兜底「父引擎已释放但子代理还在跑」的情况
+  // 2. 无论引擎在不在，都直接中止该会话的后台 Bash 任务（引擎已释放时只有这条路；
+  //    引擎在时 interrupt() 已覆盖，这里是幂等兜底）。
+  try {
+    const { abortBackgroundTasksForSession } = await import('./tools/bash/LocalShellTask.js');
+    abortBackgroundTasksForSession(sessionId);
+  } catch (err: unknown) {
+    logger.warn('Integration', `Failed to abort background tasks for session ${sessionId}: ${err}`);
+  }
+
+  // 3. 递归子代理：父引擎还在时 interrupt() 已覆盖，这里兜底「父引擎已释放但子代理还在跑」的情况
   try {
     const { subAgentRegistry } = await import('./tools/agent/SubAgentRegistry.js');
     for (const childId of subAgentRegistry.listForCreator(sessionId)) {
@@ -613,7 +617,7 @@ export async function* sendMessage(
     engine.updateWebSearch(fileInfo.webSearch);
   }
 
-  // 通知查询开始 + 更新会话运行时状态（running）
+  // 通知查询开始 + 更新会话运行时状态（非 idle）
   markQueryRunning(sessionId, true);
   emitToUi({ type: 'queryBegin', sessionId });
 
@@ -736,13 +740,13 @@ export async function requestCompact(sessionId: string): Promise<void> {
     return;
   }
 
-  // 非空闲判定走 sessionResources.isSessionBusy（唯一入口）：
+  // 非空闲判定走 sessionResources.isSessionIdle（唯一入口）：
   // 消费循环 / 后台任务 / 子代理 / 压缩 / 等用户确认任一是真，都不能就地压缩
   // （压缩会整体替换 mutableMessages，与运行中的查询并发会互相覆盖）。
   let busy = false;
   try {
-    const { isSessionBusy } = await import('./sessionResources.js');
-    busy = await isSessionBusy(sessionId);
+    const { isSessionIdle } = await import('./sessionResources.js');
+    busy = !(await isSessionIdle(sessionId));
   } catch {
     busy = false;
   }

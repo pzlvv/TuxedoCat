@@ -61,6 +61,20 @@ export type SaveFileResult =
   | { success: false; canceled: true }
   | { success: false; canceled: false; error: string };
 
+/**
+ * 对话视图句柄：标识宿主里的一个具体对话视图。
+ *
+ * 宿主实现用它包裹自己的视图对象（Electron 包裹 `WebContents`），调用方只透传、不解读。
+ * 句柄是名义类型——必须是本类的实例，任意对象无法冒充（编译期拦截）。
+ * 产出方式见 `sendToWebviewView` 的说明。
+ */
+export class WebviewViewHandle {
+  constructor(
+    /** 宿主内部视图对象；仅宿主实现读取，契约与调用方不解读 */
+    readonly view: unknown,
+  ) {}
+}
+
 export interface UIHost {
   // ===================== 传输 =====================
 
@@ -69,6 +83,36 @@ export interface UIHost {
    * 消息体由调用方组装（含 sessionId 等字段）；多视图宿主据此按 sessionId 路由。
    */
   sendToWebview(message: WebviewMessage): void;
+
+  /**
+   * 广播消息到所有对话视图。
+   *
+   * 多视图宿主（Electron）发给每个已打开的聊天视图；单视图宿主（VS Code）等价于
+   * `sendToWebview`。用于与具体会话无关的全局变更（如系统主题）。
+   */
+  broadcastToWebviews(message: WebviewMessage): void;
+
+  /**
+   * 直发某个对话视图（预热视图初始化、按来源回包）。
+   *
+   * `view` 由宿主实现产出：多视图宿主把来源视图对象包成句柄交给调用方透传
+   * （Electron 为 `WebviewViewHandle` 包裹 `WebContents`，见第 8.6 节）；单视图宿主
+   * （VS Code）等价于 `sendToWebview`，句柄不参与路由。
+   */
+  sendToWebviewView(view: WebviewViewHandle, message: WebviewMessage): void;
+
+  /**
+   * 把当前主题下发给对话 webview。
+   *
+   * 值由宿主实现用 `isDarkTheme()` 计算——`isDarkTheme()` 是主题的唯一判定源
+   * （Mermaid 预览与 Spin 设计器 HTML 也读它）。
+   *
+   * - `view` 为 `null`：广播到所有对话视图（单视图宿主即唯一 webview）
+   * - `view` 指定句柄：只发该视图（视图加载初始化、`requestTheme` 回包）
+   *
+   * 调用点：视图加载完成、系统主题变化、webview 的 `requestTheme`。
+   */
+  onThemeChanged(view: WebviewViewHandle | null): void;
 
   // ===================== 环境 =====================
 

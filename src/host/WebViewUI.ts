@@ -16,7 +16,7 @@ import type { AssistantEventBus, CoreEventHandlers, CoreRequestHandlers } from '
 import { requireEventBus } from '../core/AssistantEventBus.js';
 import type { AgentMode, MessageData, StreamMessageData, StreamEndData } from '../core/types.js';
 import type { ToolProgressData, PermissionResult } from '../core/tools/Tool.js';
-import type { UIHost } from './UIHost.js';
+import type { UIHost, WebviewViewHandle } from './UIHost.js';
 import type { SpinDesign } from './SpinDesign.js';
 import type { ConversationManager } from './ConversationManager.js';
 import type { UserChoiceOptions } from '../core/UserChoiceQueue.js';
@@ -24,16 +24,18 @@ import type { SessionRuntimeState } from '../core/AssistantEventBus.js';
 import { SessionUiState } from './SessionUiState.js';
 import { UserChoiceManager } from './ui/userChoice.js';
 import { ToolHandler } from './ui/toolHandler.js';
-import { WebviewMessageHandler } from './ui/webviewMessageHandler.js';
+import { WebviewMessageHandler, type WebviewRequestContext } from './ui/webviewMessageHandler.js';
 import { fetchBalanceAndPush } from '../core/history/balancePush.js';
 import { pushToolProgress } from './queryActivity.js';
 import { buildConversationLoadedPayload } from './conversationPayload.js';
-import type { WebViewUiPort, ConversationLoadedExtra, WebviewPoster } from './ui/ports.js';
+import { readUiLanguageSync } from '../core/history/Config.js';
+import type { WebviewMessage } from '../core/webviewTypes.js';
+import type { WebViewUiPort, ConversationLoadedExtra, WebviewPoster, LLMConfigPanelTrigger } from './ui/ports.js';
 
 export class WebViewUI implements WebViewUiPort {
   private static instance: WebViewUI | undefined;
 
-  /** 按会话的 UI 运行时状态（活动阶段 / 工具计数 / 查询计数 / abort scope） */
+  /** 按会话的 UI 运行时状态（活动阶段 / 工具计数 / 查询计数） */
   public readonly sessionUi = new SessionUiState();
 
   /** 共享子模块 */
@@ -159,7 +161,7 @@ export class WebViewUI implements WebViewUiPort {
    * 由 `releaseConversation` 统一调用（第 6.1 节 / 第 10.5 节）。
    */
   dropSession(sessionId: string): void {
-    this.sessionUi.dropSession(sessionId);                  // 阶段 / 工具计数 / 查询计数 / abort scope
+    this.sessionUi.dropSession(sessionId);                  // 阶段 / 工具计数 / 查询计数
     this.userChoiceManager.dropSession(sessionId);          // 挂起的选择回调 + diff 快照
     this.webviewMessageHandler.dropTrackedSession(sessionId); // tracked active session
   }
@@ -397,7 +399,7 @@ export class WebViewUI implements WebViewUiPort {
   }
 
   /**
-   * 会话运行时状态变化（running / waiting）→ conversations.updateSessionStates(states)。
+   * 会话运行时状态变化（idle / waiting）→ conversations.updateSessionStates(states)。
    * 只读：sessionUi 的活跃计数由 queryBegin/queryEnd 自维护，本 handler 不写回。
    */
   onSessionRuntimeChanged(states: readonly SessionRuntimeState[]): void {
@@ -512,9 +514,25 @@ export class WebViewUI implements WebViewUiPort {
 
   // ===================== 公开方法（供宿主接线 / core 调用）=====================
 
-  /** 处理来自 webview 的消息（入口：宿主 webview 的 onDidReceiveMessage） */
-  async handleWebviewMessage(message: unknown): Promise<void> {
-    await this.webviewMessageHandler.handleWebviewMessage(message);
+  /**
+   * 处理来自 webview 的消息（入口：宿主 webview 的 onDidReceiveMessage）。
+   *
+   * `ctx.sender` 标识消息来源视图（多视图宿主把平台对象包成 WebviewViewHandle 传入；
+   * 单视图宿主 / 宿主主动推送省略）。需要按来源回包的消息（requestTheme /
+   * requestContextLimit）依赖它定向投递。
+   */
+  async handleWebviewMessage(message: unknown, ctx?: WebviewRequestContext): Promise<void> {
+    await this.webviewMessageHandler.handleWebviewMessage(message, ctx);
+  }
+
+  /**
+   * 向对话 webview 下发当前上下文上限（视图加载完成时的初始化推送）。
+   *
+   * `sender` 为 null 时走默认路由（单视图宿主 / 活动视图）；模型切换的回包走 webview 的
+   * `requestContextLimit`（第 7.3 节），与这里共用 `WebviewMessageHandler` 的同一份实现。
+   */
+  pushContextLimit(sender: WebviewViewHandle | null): void {
+    this.webviewMessageHandler.pushContextLimit(sender, undefined);
   }
 
   /** 某会话当前活动阶段，供 conversationLoaded 恢复 thinking 动画 */
@@ -530,6 +548,59 @@ export class WebViewUI implements WebViewUiPort {
   /** 当前工作区路径（委托 host.getWorkspacePath()，供 initializeHistory 使用） */
   getWorkspacePath(): string | undefined {
     return this.host.getWorkspacePath();
+  }
+
+  /**
+   * 打开 LLM 配置面板。
+   *
+   * core 只提供配置事实（`getLLMConfigPanelPayload` / `hasActiveProviderSetting` /
+   * `readMcpServersForDefaults`）；wire message 的组装与投递在 UI 层完成（第 12.6 节）。
+   *
+   * `trigger` 决定是否弹：
+   * - `'startup'`：仅当「已配置 active provider 但 apiKey 为空」时弹（视图加载后的补弹）
+   * - `'new-conversation'`：仅当「未配置 active provider 或 apiKey 为空」时弹（新对话引导）
+   * - `'request'`：无条件弹（webview 主动请求）
+   *
+   * `sessionId` 为定向视图；`null` 表示单视图宿主的唯一 webview。
+   */
+  async showLLMConfigPanel(trigger: LLMConfigPanelTrigger, sessionId: string | null): Promise<void> {
+    let message: Extract<WebviewMessage, { type: 'showLLMConfig' }>;
+    try {
+      const { getLLMConfigPanelPayload, hasActiveProviderSetting } = await import('../core/llm/config.js');
+      const [payload, hasActiveProvider] = await Promise.all([
+        getLLMConfigPanelPayload(),
+        hasActiveProviderSetting(),
+      ]);
+      // 补弹只在「有 provider 缺 key」时触发；新对话引导只在配置不完整时触发
+      if (trigger === 'startup' && (!hasActiveProvider || !!payload.apiKey)) return;
+      if (trigger === 'new-conversation' && hasActiveProvider && !!payload.apiKey) return;
+      // 三条路径共用同一份面板载荷（含 MCP 默认启用列表），不因触发场景裁剪
+      const { readMcpServersForDefaults } = await import('../core/mcp/Config.js');
+      message = {
+        type: 'showLLMConfig',
+        ...payload,
+        mcpServers: await readMcpServersForDefaults(),
+        language: readUiLanguageSync(),
+      };
+    } catch (err) {
+      this.log(`[WebViewUI] Failed to read LLM config: ${err}`);
+      // 读取失败仍打开面板，但不预置任何默认值（避免内置默认被误当成用户配置）
+      message = {
+        type: 'showLLMConfig',
+        baseURL: '',
+        webSearch: false,
+        thinkingEffort: 'off',
+        defaultModel: '',
+        defaultAgentMode: 'risk',
+        defaultPromptMode: 'normal',
+        apiKey: '',
+        providers: [],
+        activeProvider: '',
+        language: readUiLanguageSync(),
+        mcpServers: [],
+      };
+    }
+    this.host.sendToWebview(sessionId ? { ...message, sessionId } : message);
   }
 
   /**

@@ -9,8 +9,8 @@
  * 因此不参与回收。
  *
  * 规则：非激活对话在最后一次活动后空闲超过 SESSION_IDLE_CLOSE_MS（2 小时）即关闭，
- * 每 SESSION_IDLE_CHECK_INTERVAL_MS（1 分钟）巡检一次。「是否仍在工作」由 core 的
- * 只读查询 isSessionBusy 判定，判定失败时保守视为「忙」。
+ * 每 SESSION_IDLE_CHECK_INTERVAL_MS（1 分钟）巡检一次。「是否空闲」由 core 的
+ * 只读查询 isSessionIdle 判定，判定失败时保守视为「非空闲」。
  */
 
 import type { ConversationMetadata } from './core/history/Conversation.js';
@@ -18,7 +18,7 @@ import type { SessionRuntimeState } from './core/AssistantEventBus.js';
 import type { WebviewMessage } from './core/webviewTypes.js';
 import type { UIHost } from './host/UIHost.js';
 import { ConversationManager } from './host/ConversationManager.js';
-import { isSessionBusy } from './core/sessionResources.js';
+import { isSessionIdle } from './core/sessionResources.js';
 
 /** 非激活对话空闲多久后自动关闭（2 小时） */
 export const SESSION_IDLE_CLOSE_MS = 2 * 60 * 60 * 1000;
@@ -47,7 +47,7 @@ export class SingleWebViewConversationManager extends ConversationManager {
   /**
    * 流 2：空实现——webview 的对话树从 queryBegin/queryEnd 自己维护（第 4.5 节）。
    *
-   * 空闲计时顺带在这里刷新：会话进入工作（running / waiting）或从工作回到空闲时，
+   * 空闲计时顺带在这里刷新：会话从空闲进入工作（非 idle）或从工作回到空闲时，
    * 都视为一次活动（工作结束后才从头计时）。
    */
   updateSessionStates(states: readonly SessionRuntimeState[]): void {
@@ -56,7 +56,7 @@ export class SingleWebViewConversationManager extends ConversationManager {
     for (const state of states) {
       if (!state.sessionId || isTemporarySessionId(state.sessionId)) continue;
       seen.add(state.sessionId);
-      const busy = state.running || state.waiting;
+      const busy = !state.idle;
       const wasBusy = this.sessionBusy.get(state.sessionId) ?? false;
       if (busy || wasBusy) {
         this.lastActivityAt.set(state.sessionId, now);
@@ -71,7 +71,7 @@ export class SingleWebViewConversationManager extends ConversationManager {
 
   /**
    * 流 2 的分发方：把 core 的会话运行时状态推给 webview，供对话树的流水灯
-   * （running / waiting）使用。VS Code 没有原生侧栏 / 托盘消费者。
+   * （idle / waiting）使用。VS Code 没有原生侧栏 / 托盘消费者。
    *
    * 这是流水灯的**唯一数据源**——webview 不再从 `queryBegin` / `queryEnd` 自行推导。
    */
@@ -79,7 +79,7 @@ export class SingleWebViewConversationManager extends ConversationManager {
     this.host.sendToWebview({
       type: 'sessionRuntimeStates',
       states,
-    } as unknown as WebviewMessage);
+    });
   }
 
   // ===================== 空闲会话回收（计时 owner 在宿主层） =====================
@@ -211,10 +211,10 @@ export class SingleWebViewConversationManager extends ConversationManager {
     }
   }
 
-  /** 会话是否仍在工作（core 只读事实查询）；判定失败时保守视为「忙」 */
+  /** 会话是否仍在工作（core 只读事实查询）；判定失败时保守视为「非空闲」 */
   private async isBusy(sessionId: string): Promise<boolean> {
     try {
-      return await isSessionBusy(sessionId);
+      return !(await isSessionIdle(sessionId));
     } catch {
       return true;
     }

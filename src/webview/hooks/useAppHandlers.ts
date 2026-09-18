@@ -1,5 +1,5 @@
 import { useCallback, useRef } from 'react';
-import { hasVscodeApi, postMessage } from '../webviewEnv';
+import { hasHostMessageApi, postMessage } from '../webviewEnv';
 import { profileLog } from '../debug';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults } from '../types';
 import { createSessionState } from '../sessionState';
@@ -134,7 +134,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
   }, []);
 
   const loadConversations = useCallback(() => {
-    if (!hasVscodeApi()) return;
+    if (!hasHostMessageApi()) return;
 
     // 非首次加载：跳过 loading 状态，直接用旧数据展示，后台静默刷新
     if (props.listLoadedOnceRef.current) {
@@ -213,7 +213,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     props.inputAreaRef.current?.clear();
 
     // Send message to VSCode extension
-    if (!hasVscodeApi()) {
+    if (!hasHostMessageApi()) {
       throw new Error('VSCode API not available - this webview must be run within VSCode');
     }
 
@@ -326,7 +326,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
   };
 
   const handleAbort = useCallback(() => {
-    if (!hasVscodeApi()) {
+    if (!hasHostMessageApi()) {
       throw new Error('VSCode API not available');
     }
 
@@ -344,7 +344,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
   }, []);
 
   const handleCompress = useCallback(() => {
-    if (!hasVscodeApi()) {
+    if (!hasHostMessageApi()) {
       throw new Error('VSCode API not available');
     }
 
@@ -362,7 +362,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
   const handleUserChoiceResponse = useCallback((index: number, reply?: string) => {
     // use ref to avoid stale closure over userChoiceRequest
     const currentRequest = props.userChoiceRequestRef.current;
-    if (!hasVscodeApi() || !currentRequest) {
+    if (!hasHostMessageApi() || !currentRequest) {
       return;
     }
 

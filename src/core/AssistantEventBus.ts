@@ -13,7 +13,8 @@
  * 边界语义（见 DEVELOPMENT.md 第 3.7 节）：
  * - emitToUi 时 onCoreEvents 尚未注册 → 抛错（bootstrap 顺序错误，启动期暴露）
  * - emitToCore / onUiEvent 对某 type 尚无 core 订阅者 → 静默丢弃（合法中间态）
- * - request() 的响应方不存在或响应丢失 → 永久挂起；调用点必须自带超时
+ * - request() 无内置超时：响应方不存在 / 响应丢失会永久挂起；
+ *   当前两个请求都不设超时，调用点自行决定兜底
  */
 
 import type { MessageData, StreamMessageData, StreamEndData } from './types.js';
@@ -255,16 +256,20 @@ export type UiEvent =
 
 /**
  * 单个会话的运行时状态。消费者：Electron 侧栏流水灯、系统托盘状态点、
- * webview 对话树的运行标记。
+ * webview 对话树的运行标记、两端的 abort 按钮。
  *
  * 只有 core 能提供的事实进这里；宿主自己的界面状态（如 Electron 的
  * 「视图已打开」）由宿主自己维护，不混进来。
+ *
+ * 判定统一用 `idle`（见 `sessionResources.isSessionIdle` 与第 4.5 节）：
+ * 「非空闲」= queryEngine 在跑 / 正在压缩 / 有后台 Bash 任务 / 有非 idle 子代理 /
+ * 正在等待用户确认。流水灯、abort 按钮都读它，不再有 `running` 概念。
  */
 export interface SessionRuntimeState {
   sessionId: string;
-  /** 会话在忙：有活跃查询（引擎消费 / 后台 Bash 任务 / 递归子代理）或正在压缩上下文 */
-  running: boolean;
-  /** 正在等待用户操作（ask user / 权限确认） */
+  /** 会话是否空闲（true = 无任何在跑的工作）。非 idle 即「会话在忙」 */
+  idle: boolean;
+  /** 正在等待用户操作（ask user / 权限确认）——流水灯显示黄色 */
   waiting: boolean;
 }
 

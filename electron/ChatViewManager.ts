@@ -59,6 +59,16 @@ export class ChatViewManager {
    * 未注入时退化为仅 abortSession（集成缺失暴露在启动期）。
    */
   closeConversation: ((sessionId: string) => void) | null = null;
+
+  /**
+   * 预热视图被切到前台时的出口（`ElectronUIHost` 在 `setChatViewManager` 时注入）。
+   *
+   * 由宿主组装并直发 `activatePrewarmedView`——视图管理器不直连 `webContents.send`。
+   * 未注入时不发，视图会停在 Loading，直到 webview 自己发 `prewarmViewReady`
+   * 由 `handlePrewarmViewReady` 补发。
+   */
+  onActivatePrewarmedView: ((view: WebContentsView) => void) | null = null;
+
   /** sessionId -> view；新建会话使用 `new-<timestamp>` 临时 key，webview 上报后关联 */
   private views = new Map<string, WebContentsView>();
   private lru: string[] = [];
@@ -286,14 +296,13 @@ export class ChatViewManager {
   /**
    * 唤醒预热的视图：告诉它「已被切到前台」，补做启动初始化。
    *
-   * 直接发一次即可（页面多半已挂载）；若此刻页面还在加载、监听器尚未注册，
+   * 交给注入的出口发一次即可（页面多半已挂载）；若此刻页面还在加载、监听器尚未注册，
    * 消息会丢，但 webview 挂载后会发 prewarmViewReady，由
    * handlePrewarmViewReady 补发（见那里）。
    */
   private activatePrewarmedView(view: WebContentsView): void {
-    const wc = view.webContents;
-    if (wc.isDestroyed()) return;
-    wc.send('webview-message', { type: 'activatePrewarmedView' });
+    if (view.webContents.isDestroyed()) return;
+    this.onActivatePrewarmedView?.(view);
   }
 
   /**

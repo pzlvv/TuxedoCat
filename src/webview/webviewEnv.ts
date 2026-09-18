@@ -11,11 +11,15 @@
 
 import { openConversationModeOf, type HostInfo } from '../host/types';
 
-interface VscodeApi {
+/**
+ * 宿主消息通道的最小契约：VS Code 的 `acquireVsCodeApi()` 与 Electron preload 暴露的
+ * `window.electronAPI` 都满足它，webview 只依赖这一个方法，不关心通道由谁提供。
+ */
+interface HostMessageApi {
   postMessage(message: unknown): void;
 }
 
-let _vscode: VscodeApi | null = null;
+let _hostMessageApi: HostMessageApi | null = null;
 let _logoUri: string | null = null;
 let _hasWorkspace: boolean | undefined;
 let _hostInfo: HostInfo | null = null;
@@ -25,32 +29,37 @@ let _hostInfo: HostInfo | null = null;
  * Electron 走 window.electronAPI（preload 注入），VS Code / 浏览器 shim 走 window.vscode。
  * 两者都不存在时抛错——这是宿主集成缺失，不做静默降级。
  */
-function resolveVscodeApi(): VscodeApi {
-  if (_vscode) return _vscode;
+function resolveHostMessageApi(): HostMessageApi {
+  if (_hostMessageApi) return _hostMessageApi;
   const electronApi = (window as any).electronAPI as { postMessage?: (m: unknown) => void } | undefined;
   if (electronApi?.postMessage) {
-    _vscode = { postMessage: (msg: unknown) => electronApi.postMessage!(msg) };
-    return _vscode;
+    _hostMessageApi = { postMessage: (msg: unknown) => electronApi.postMessage!(msg) };
+    return _hostMessageApi;
   }
-  const vscodeApi = (window as any).vscode as VscodeApi | undefined;
+  const vscodeApi = (window as any).vscode as HostMessageApi | undefined;
   if (vscodeApi?.postMessage) {
-    _vscode = vscodeApi;
-    return _vscode;
+    _hostMessageApi = vscodeApi;
+    return _hostMessageApi;
   }
   throw new Error(
     '宿主消息通道未就绪：既没有 window.electronAPI（Electron preload），也没有 window.vscode（VS Code / 浏览器 shim）。'
   );
 }
 
-export function getVscodeApi(): VscodeApi {
-  return resolveVscodeApi();
+/**
+ * 取宿主消息通道。
+ * Electron 下返回 electronAPI 的包装对象（内部走 ipcRenderer.send），VS Code 下返回 acquireVsCodeApi() 的实例。
+ */
+export function getHostMessageApi(): HostMessageApi {
+  return resolveHostMessageApi();
 }
 
-export function hasVscodeApi(): boolean {
-  if (_vscode) return true;
+/** 宿主消息通道是否就绪：存在即 true；不抛错、不写缓存（供可选发送路径先行判断）。 */
+export function hasHostMessageApi(): boolean {
+  if (_hostMessageApi) return true;
   const electronApi = (window as any).electronAPI as { postMessage?: (m: unknown) => void } | undefined;
   if (electronApi?.postMessage) return true;
-  const vscodeApi = (window as any).vscode as VscodeApi | undefined;
+  const vscodeApi = (window as any).vscode as HostMessageApi | undefined;
   return !!vscodeApi?.postMessage;
 }
 
@@ -125,8 +134,8 @@ export function getPreloadedHighlightLanguages(): string[] {
 
 /** Post a typed message to host (VS Code extension / Electron main), returns false if no API. */
 export function postMessage(msg: unknown): boolean {
-  if (!hasVscodeApi()) return false;
-  getVscodeApi().postMessage(msg);
+  if (!hasHostMessageApi()) return false;
+  getHostMessageApi().postMessage(msg);
   return true;
 }
 

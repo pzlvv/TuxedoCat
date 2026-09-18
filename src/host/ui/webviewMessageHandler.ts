@@ -17,7 +17,8 @@ import { providerKeyFromBaseURL } from '../../core/utils/providerKey.js';
 import { buildEditDiffHunks } from '../../core/utils/editDiff.js';
 import { buildReplayMessageData } from '../../core/utils/replayMessages.js';
 import { buildUserContent, extractUserContent } from '../../core/utils/contentBlocks.js';
-import { normalizeModelTokenLimits, type ModelTokenLimits, type ApiType } from '../../core/utils/modelConfig.js';
+import { normalizeModelTokenLimits, getContextWindow, type ModelTokenLimits, type ApiType } from '../../core/utils/modelConfig.js';
+import { readActiveProviderModelContextSync } from '../../core/history/Config.js';
 import { extractLastJsonObject } from '../../core/utils/lastJson.js';
 import { userChoiceQueue } from '../../core/UserChoiceQueue.js';
 import { isCompacting } from '../../core/compact/state.js';
@@ -25,8 +26,8 @@ import type { WebviewMessage } from '../../core/webviewTypes.js';
 import type { UiEvent } from '../../core/AssistantEventBus.js';
 import { requireEventBus } from '../../core/AssistantEventBus.js';
 import type { UserMessage, Message } from '../../core/types.js';
-import type { ConversationContext } from '../../core/history/Conversation.js';
 import type { UserChoiceManager } from './userChoice.js';
+import type { LLMConfigPanelTrigger } from './ports.js';
 
 /**
  * 自动获取模型时，协议探测的并发上限（按「模型」计，每个模型内部再并发 3 个协议）。
@@ -81,8 +82,20 @@ export async function mapWithConcurrency<T, R>(
   await Promise.all(runners);
   return results;
 }
-/** MCP Manager 实例类型 */
-type McpManagerInstance = ReturnType<typeof import('../../core/mcp/Manager.js').getMcpManager>;
+/**
+ * 一次 webview 消息的发送上下文。
+ *
+ * `sender` 标识消息来自哪个对话视图（宿主已把平台对象包成句柄）：
+ * - 多视图宿主（Electron）：按来源视图直发回包（预热视图等非活动视图也能收到）；
+ * - 单视图宿主（VS Code）：没有 sender 概念，恒为 `null`，按默认路由回包；
+ * - 宿主主动触发（非 webview 请求，如视图加载完成时的初始化推送）：也传 `null`。
+ */
+export interface WebviewRequestContext {
+  sender: import('../UIHost.js').WebviewViewHandle | null;
+}
+
+/** 缺省上下文：单视图宿主 / 宿主主动推送 */
+const DEFAULT_REQUEST_CONTEXT: WebviewRequestContext = { sender: null };
 
 export class WebviewMessageHandler {
   private host: UIHost;
@@ -91,6 +104,8 @@ export class WebviewMessageHandler {
     openSpinDesign(): Promise<void>;
     refreshConversations(): Promise<void>;
     noteSessionActivity(sessionId: string): void;
+    /** 打开 LLM 配置面板（core 给配置，WebViewUI 组装 wire message） */
+    showLLMConfigPanel(trigger: LLMConfigPanelTrigger, sessionId: string | null): Promise<void>;
   };
   private postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
   private postConversationLoaded: (sessionId: string, conversation: any, extra: {
@@ -116,7 +131,7 @@ export class WebviewMessageHandler {
   private trackedActiveSessionId: string | undefined;
 
   /** 消息类型 -> 处理器分发表（构造函数中构建一次） */
-  private messageHandlers: Map<string, (msg: any) => Promise<void>>;
+  private messageHandlers: Map<string, (msg: any, ctx: WebviewRequestContext) => Promise<void> | void>;
 
   constructor(deps: {
     host: UIHost;
@@ -175,8 +190,8 @@ export class WebviewMessageHandler {
    * requestConversationSpaces / getConversations）包装为忽略参数的形式；
    * debugLog 是同步日志分支，包一层同步 lambda。
    */
-  private buildMessageHandlers(): Map<string, (msg: any) => Promise<void>> {
-    return new Map<string, (msg: any) => Promise<void>>([
+  private buildMessageHandlers(): Map<string, (msg: any, ctx: WebviewRequestContext) => Promise<void> | void> {
+    return new Map<string, (msg: any, ctx: WebviewRequestContext) => Promise<void> | void>([
       // ===== 纯宿主操作（留在 handler 内直接调 UIHost，见第 4.3 节保留清单）=====
       ['openFile', (msg) => this.handleOpenFile(msg)],
       ['requestToolMeta', (msg) => this.handleRequestToolMeta(msg)],
@@ -199,6 +214,14 @@ export class WebviewMessageHandler {
       ['requestConversationSpaces', () => this.handleRequestConversationSpaces()],
       ['requestMcpServers', (msg) => this.handleRequestMcpServers(msg)],
       ['getConversations', () => this.handleGetConversations()],
+
+      // ===== 环境查询（按来源视图直发回包；此前由两宿主在消息入口各自拦截实现）=====
+      ['requestTheme', (msg, ctx) => {
+        // sender 为 null（单视图宿主 / 宿主主动推送）时广播语义，由 UIHost 实现决定；
+        // 指定句柄时只发该视图（Electron 多视图下预热视图也能收到回包）。
+        this.host.onThemeChanged(ctx.sender);
+      }],
+      ['requestContextLimit', (msg, ctx) => this.pushContextLimit(ctx.sender, msg.model)],
 
       // ===== 请求响应 / 显示 =====
       ['respondUserChoice', (msg) => this.handleRespondUserChoice(msg)],
@@ -236,12 +259,12 @@ export class WebviewMessageHandler {
   /**
    * 按消息类型分发到具体处理器，由 handleWebviewMessage() 统一兜底异常。
    */
-  private async dispatchWebviewMessage(message: any): Promise<void> {
+  private async dispatchWebviewMessage(message: any, ctx: WebviewRequestContext): Promise<void> {
     logger.info("handleWebviewMessage", `Received from webview: ${message.type}`);
 
     const handler = this.messageHandlers.get(message.type);
     if (handler) {
-      await handler(message);
+      await handler(message, ctx);
     } else {
       logger.warn('webviewMessageHandler', `Unknown message type: ${message.type}`);
     }
@@ -253,10 +276,13 @@ export class WebviewMessageHandler {
 
   /**
    * 处理来自 webview 的消息
+   *
+   * `ctx.sender` 标识消息来源视图（多视图宿主传入，单视图宿主 / 宿主主动推送为 null），
+   * 需要「按来源回包」的消息（requestTheme / requestContextLimit）依赖它定向投递。
    */
-  async handleWebviewMessage(message: any): Promise<void> {
+  async handleWebviewMessage(message: any, ctx: WebviewRequestContext = DEFAULT_REQUEST_CONTEXT): Promise<void> {
     try {
-      await this.dispatchWebviewMessage(message);
+      await this.dispatchWebviewMessage(message, ctx);
     } catch (err) {
       // 单条消息处理失败不应变成未处理的 rejection：
       // VS Code 会打印 "rejected promise not handled within 1 second"，
@@ -275,33 +301,6 @@ export class WebviewMessageHandler {
     if (preferred && preferred !== 'undefined') return preferred;
     const sessionId = this.trackedActiveSessionId;
     return sessionId && sessionId !== 'undefined' ? sessionId : undefined;
-  }
-
-  /**
-   * MCP 状态后台刷新骨架：回推一次该会话的 MCP 配置与运行时状态。
-   * acquire 已收编进 core 的 MCPHost（会话生命周期驱动），UI 侧不再触发 acquire。
-   */
-  private acquireMcpInBackground(
-    sessionId: string | undefined,
-    logLabel: string,
-    opts: { pushFirst?: boolean; beforeAcquire?: (manager: McpManagerInstance) => Promise<void> } = {},
-  ): void {
-    void logLabel;
-    void opts;
-    void (async () => {
-      try {
-        await this.pushMcpServers(sessionId);
-      } catch (err: any) {
-        this.log(`pushMcpServers failed: ${err.message}`);
-      }
-    })();
-  }
-
-  /**
-   * 兼容入口（阶段 3 起 MCP acquire 由 MCPHost 承担，此方法保留为「回推运行时状态」）。
-   */
-  acquireMcpOnSessionOpen(sessionId: string | undefined): void {
-    this.acquireMcpInBackground(sessionId, 'MCP background acquire failed', { pushFirst: false });
   }
 
   /**
@@ -725,7 +724,11 @@ export class WebviewMessageHandler {
     this.fetchBalanceAndSend(message.sessionId);
 
     // MCP：加载对话即建立该会话的引用——由 core 的 restoreConversationEngine
-    // → MCPHost.onSessionOpened 驱动（幂等，不释放旧会话），UI 不再触发 acquire
+    // → MCPHost.onSessionOpened 驱动（幂等，不释放旧会话），UI 不再触发 acquire。
+    // 但菜单里的列表是按会话展示的：webview 在 currentSessionId 变化时会先把列表
+    // 清空为该会话的缓存，必须回推一次该会话的配置，否则菜单会一直显示「未配置」
+    //（设置面板走 readMcpServersForDefaults 重新读盘，与本路径无关，所以那里正常）。
+    void this.pushMcpServers(message.sessionId);
 
     const hasHistory = conversation.messages && conversation.messages.length > 0;
     this.log(`[WebviewMessageHandler] Conversation has history: ${hasHistory}`);
@@ -848,15 +851,21 @@ export class WebviewMessageHandler {
 
   private async handleUpdateConversationContext(message: any): Promise<void> {
     this.log(`[WebviewMessageHandler] updateConversationContext: ${message.sessionId}`);
-    const { updateConversationContext } = await import('../../core/history/index.js');
-    const ctxUpdate: ConversationContext = {
-      currentFile: message.currentFile,
-      selectedLines: message.selectedLines,
-    };
-    if (message.totalContextTokens !== undefined) {
-      ctxUpdate.totalContextTokens = message.totalContextTokens;
+    // 写 meta.json 的请求翻译成 UiEvent.conversationContextUpdated 走总线
+    // （core 侧消费方 initializeCoreEvents → history.updateConversationContext）。
+    // webview 消息是扁平字段，总线载荷是 changes 数组，这里做映射；
+    // 未携带的字段不进入 changes，保持 meta.json 原值。
+    const changes: Extract<UiEvent, { type: 'conversationContextUpdated' }>['changes'] = [];
+    if (message.currentFile !== undefined) {
+      changes.push({ key: 'currentFile', value: message.currentFile ?? null });
     }
-    await updateConversationContext(message.sessionId, ctxUpdate);
+    if (message.selectedLines !== undefined) {
+      changes.push({ key: 'selectedLines', value: message.selectedLines ?? null });
+    }
+    if (message.totalContextTokens !== undefined) {
+      changes.push({ key: 'totalContextTokens', value: message.totalContextTokens });
+    }
+    await this.emitUiEvent({ type: 'conversationContextUpdated', sessionId: message.sessionId, changes });
   }
 
   private async handleStartNewConversation(message: any): Promise<void> {
@@ -872,7 +881,9 @@ export class WebviewMessageHandler {
     this.fetchBalanceAndSend(newSessionId);
 
     // MCP：新对话打开即建立引用——由 core 的 createEngine（conversationStarted
-    // 事件消费）→ MCPHost.onSessionOpened 驱动，UI 不再触发 acquire
+    // 事件消费）→ MCPHost.onSessionOpened 驱动，UI 不再触发 acquire。
+    // 同 loadConversation：回推该会话的 MCP 列表，避免菜单被清空后显示「未配置」。
+    void this.pushMcpServers(newSessionId);
 
     // 从 settings.json 读取新对话的默认 model、thinking_effort、agentMode 和 webSearch 并发送给 webview 立即应用。
     // 注意：不再写入 meta.json（meta.json 只在发第一条消息时由 appendMessage 创建），
@@ -896,29 +907,9 @@ export class WebviewMessageHandler {
       this.log(`[WebviewMessageHandler] Failed to send defaults: ${err.message}`);
     }
 
-    // 新对话如果没有设置 llm.activeProvider（或 active provider 缺少 apiKey），则弹出设置页引导用户配置
-    try {
-      const { hasActiveProviderSetting, getLLMConfigPanelPayload } = await import('../../core/llm/config.js');
-      const { readMcpServersForDefaults } = await import('../../core/mcp/Config.js');
-      const [hasActiveProvider, payload, mcpServers] = await Promise.all([
-        hasActiveProviderSetting(),
-        getLLMConfigPanelPayload(),
-        readMcpServersForDefaults(),
-      ]);
-      if (!hasActiveProvider || !payload.apiKey) {
-        this.host.sendToWebview({
-          type: 'showLLMConfig',
-          ...payload,
-          mcpServers,
-          language: this.getUiLanguageFromSettings(),
-          // 定向到刚创建的会话：避免新对话的配置引导弹到其它端
-          sessionId: newSessionId,
-        });
-        this.log(`[WebviewMessageHandler] ${hasActiveProvider ? 'Active provider apiKey is empty' : 'No llm.activeProvider configured'}, showing LLM config panel for new conversation`);
-      }
-    } catch (err: any) {
-      this.log(`[WebviewMessageHandler] Failed to check active provider: ${err.message}`);
-    }
+    // 新对话引导配置：未配置 active provider 或 apiKey 为空时弹设置页。
+    // core 只提供配置事实，消息组装在 WebViewUI（sessionId 定向到刚创建的会话）。
+    await this.uiPort?.showLLMConfigPanel('new-conversation', newSessionId);
   }
 
   /**
@@ -963,6 +954,34 @@ export class WebviewMessageHandler {
       this.onUserChoiceResponded?.(pending.sessionId);
     } else {
       this.log(`[WebviewMessageHandler] Warning: No pending choice found for ${message.choiceId}`);
+    }
+  }
+
+  /**
+   * 读取当前上下文上限并回包 `contextLimitUpdated`。
+   *
+   * 两条路径共用这一份实现：webview 的 `requestContextLimit`（带 `model`），以及宿主在
+   * 视图加载完成时的初始化推送（`model` 为 `undefined`，按 active provider 默认模型算）。
+   * 读取逻辑为 `readActiveProviderModelContextSync` + `getContextWindow`（含 settings.json
+   * 的 modelConfigs 覆盖）。投递：
+   * - `sender` 指定句柄：直发该视图（Electron 多视图，预热视图也能收到）；
+   * - `sender` 为 null：走默认路由（单视图宿主即唯一 webview）。
+   */
+  pushContextLimit(sender: WebviewRequestContext['sender'], model: string | undefined): void {
+    try {
+      const { model: modelName, modelConfigs } = readActiveProviderModelContextSync(model);
+      const message: WebviewMessage = {
+        type: 'contextLimitUpdated',
+        maxContextTokens: getContextWindow(modelName || '', modelConfigs),
+      };
+      if (sender) {
+        this.host.sendToWebviewView(sender, message);
+      } else {
+        this.host.sendToWebview(message);
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? (err.stack || err.message) : String(err);
+      this.log(`[WebviewMessageHandler] pushContextLimit failed: ${detail}`);
     }
   }
 
@@ -1838,47 +1857,13 @@ export class WebviewMessageHandler {
    * 处理来自 webview 的对话空间清空请求
    */
   /**
-   * 处理来自 webview 的 LLM 配置读取请求（用户点击设置按钮时触发）
-   * 读取 settings.json 并回传 showLLMConfig，由 webview 打开配置面板
+   * 处理来自 webview 的 LLM 配置读取请求（用户点击设置按钮时触发）。
+   * core 只提供配置事实，消息组装与投递在 WebViewUI。
    */
   private async handleRequestLLMConfig(message: any): Promise<void> {
     // 定向会话：多视图宿主据此把设置面板只弹到发起端（同一会话的其它视图不同步弹）
     const sessionId: string | undefined = message?.sessionId;
-    try {
-      const { getLLMConfigPanelPayload } = await import('../../core/llm/config.js');
-      const { readMcpServersForDefaults } = await import('../../core/mcp/Config.js');
-      // 设置面板编辑的是「全局默认」，因此这里给的是全局默认的启用状态
-      const [payload, mcpServers] = await Promise.all([
-        getLLMConfigPanelPayload(),
-        readMcpServersForDefaults(),
-      ]);
-      this.host.sendToWebview({
-        type: 'showLLMConfig',
-        ...payload,
-        mcpServers,
-        language: this.getUiLanguageFromSettings(),
-        sessionId,
-      });
-    } catch (err: any) {
-      this.log(`[WebviewMessageHandler] Failed to read LLM config: ${err.message}`);
-      // 读取失败时仍然打开面板，但不预置任何默认配置：
-      // 让用户从空面板自行填写服务地址 / Key / 模型，避免内置默认值被误当成用户配置。
-      this.host.sendToWebview({
-        type: 'showLLMConfig',
-        baseURL: '',
-        webSearch: false,
-        thinkingEffort: 'off',
-        defaultModel: '',
-        defaultAgentMode: 'risk',
-        defaultPromptMode: 'normal',
-        apiKey: '',
-        providers: [],
-        activeProvider: '',
-        language: this.getUiLanguageFromSettings(),
-        mcpServers: [],
-        sessionId,
-      });
-    }
+    await this.uiPort?.showLLMConfigPanel('request', sessionId ?? null);
   }
 
 }

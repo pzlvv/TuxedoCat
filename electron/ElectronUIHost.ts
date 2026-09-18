@@ -6,13 +6,15 @@
  * 本文件允许 import electron（宿主实现层是唯一允许 import 宿主 API 的地方）。
  */
 
-import type { BrowserWindow, WebContentsView } from 'electron';
+import type { BrowserWindow, WebContents, WebContentsView } from 'electron';
 import { app, nativeTheme, dialog, BrowserWindow as BrowserWindowCtor } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { pathToFileURL } from 'url';
 import type { ChatViewManager } from './ChatViewManager.js';
 import type { UIHost } from '../src/host/UIHost.js';
+import { WebviewViewHandle } from '../src/host/UIHost.js';
+import type { WebviewMessage } from '../src/core/webviewTypes.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
 import { isImageFile } from '../src/host/imageFiles.js';
@@ -48,17 +50,25 @@ export class ElectronUIHost implements UIHost {
 
   setChatViewManager(m: ChatViewManager): void {
     this.chatViews = m;
+    // 预热视图被切到前台：宿主组装并直发 activatePrewarmedView
+    // （视图管理器不直连 webContents.send，投递统一走 UIHost 传输成员）
+    m.onActivatePrewarmedView = (view) => {
+      this.sendToWebviewView(new WebviewViewHandle(view.webContents), {
+        type: 'activatePrewarmedView',
+      });
+    };
+  }
+
+  /**
+   * bootstrap 接线：把来源视图对象包成对话视图句柄（不属于 UIHost 契约）。
+   * 句柄由 `sendToWebviewView` 解包回 `WebContents` 后直发。
+   */
+  webviewHandleFor(source: WebContents): WebviewViewHandle {
+    return new WebviewViewHandle(source);
   }
 
   setWorkspacePath(p: string | undefined): void {
     this.workspacePath = p;
-    // 工作区变化后通知当前 webview 刷新当前文件上下文
-    if (p) {
-      this.chatViews?.sendToActive({
-        type: 'workspaceChanged',
-        workspacePath: p,
-      });
-    }
   }
 
   /** 推送消息到渲染进程：优先按 sessionId 路由到对应聊天视图，否则发给当前活动视图 */
@@ -72,8 +82,34 @@ export class ElectronUIHost implements UIHost {
 
   // ===================== UIHost 实现 =====================
 
-  sendToWebview(message: never): void {
+  sendToWebview(message: WebviewMessage): void {
     this.sendToRenderer(message as unknown as Record<string, unknown>);
+  }
+
+  /** 广播到所有已打开的聊天视图（含隐藏对话视图与后台预热视图） */
+  broadcastToWebviews(message: WebviewMessage): void {
+    this.chatViews?.broadcast(message);
+  }
+
+  /** 直发某个对话视图（句柄包裹该视图的 `WebContents`） */
+  sendToWebviewView(view: WebviewViewHandle, message: WebviewMessage): void {
+    const source = view.view as WebContents | undefined;
+    if (source && !source.isDestroyed()) {
+      source.send('webview-message', message);
+    }
+  }
+
+  /** 下发主题：指定视图则直发，否则广播到所有对话视图 */
+  onThemeChanged(view: WebviewViewHandle | null): void {
+    const message: WebviewMessage = {
+      type: 'setTheme',
+      theme: this.isDarkTheme() ? 'dark' : 'light',
+    };
+    if (view) {
+      this.sendToWebviewView(view, message);
+      return;
+    }
+    this.broadcastToWebviews(message);
   }
 
   log(...args: unknown[]): void {
