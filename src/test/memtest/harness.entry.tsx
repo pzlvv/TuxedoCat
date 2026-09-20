@@ -62,12 +62,6 @@ function collectDomStats(root: HTMLElement): DomStats {
   const toolNodes: Record<string, number> = {};
   let totalNodes = 0;
   const walk = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-  // 按工具卡片 class 聚合
-  const toolSelectors: Record<string, string> = {
-    EditFile: '.code-preview',
-    WriteFile: '.code-preview, pre',
-    Bash: 'pre',
-  };
   let n: Node | null;
   while ((n = walk.nextNode())) {
     totalNodes++;
@@ -105,7 +99,6 @@ const dataPromise: Promise<{ sessions: SessionData[] }> = (async () => {
 })();
 
 function App() {
-  const [sessionName, setSessionName] = React.useState<string | null>(null);
   const [messages, setMessages] = React.useState<Message[]>([]);
   const containerRef = React.useRef<HTMLDivElement>(null);
 

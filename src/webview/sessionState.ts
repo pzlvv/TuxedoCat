@@ -40,7 +40,7 @@ export function createSessionState(overrides?: Partial<SessionState>): SessionSt
     webSearch: undefined,
     contextLength: 0,
     queuedMessage: null,
-    model: undefined,
+    modelRef: undefined,
     totalCacheReadInputTokens: 0,
     totalCacheCreationInputTokens: 0,
     totalInputTokens: 0,

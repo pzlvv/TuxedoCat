@@ -18,6 +18,7 @@ import {
   type ApiType,
 } from '../utils/modelConfig.js';
 import type { PromptPresetId } from '../prompt/PromptPreset.js';
+import type { ModelRef } from './modelRef.js';
 
 /**
  * LLM API 协议类型（定义在 utils/modelConfig.ts，这里重新导出方便调用方引用）
@@ -30,6 +31,14 @@ import type { PromptPresetId } from '../prompt/PromptPreset.js';
  */
 export type { ApiType };
 export { DEFAULT_API_TYPE, resolveApiTypeForModel };
+
+/**
+ * DeepSeek 官方服务地址。
+ *
+ * 余额查询（core/utils/balance.ts）固定走这里，与当前 active provider 无关：
+ * 余额接口只有 DeepSeek 官方提供，第三方网关的 Key 打过去必然 401。
+ */
+export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 
 export interface LLMConfig {
   apiKey: string;
@@ -158,7 +167,7 @@ interface HarnessConfig {
 function createFallbackConfig(): LLMConfig {
   return {
     apiKey: '',
-    baseURL: 'https://api.deepseek.com',
+    baseURL: DEEPSEEK_BASE_URL,
     model: '',
     maxTokens: FALLBACK_MODEL_PARAMS.maxOutputTokens,
     apiType: DEFAULT_API_TYPE,
@@ -408,63 +417,186 @@ export async function getDefaultThinkingEffort(): Promise<'off' | 'low' | 'high'
 }
 
 /**
- * 获取 settings.json 中新对话的默认 model 值
- * 默认模型由用户配置、且归属到具体服务商：读取当前 activeProvider 的 defaultModel，
- * 未设置时取该服务商模型列表的第一个模型；两者都没有时返回空字符串，
- * 由用户在设置页配置 provider 后再指定。
- * 仅用于新对话的初始值，已存在的对话使用各自 meta.json 中的 model
- * @returns 模型名称，未配置 provider 时为空字符串
+ * 读取当前 active provider 对应的模型身份（provider + 该 provider 的默认模型）。
+ *
+ * 这是「没有已保存模型时该用哪个模型」的唯一来源（新对话初始值 / 未记录 provider 的会话）。
+ * 未配置 activeProvider、或该 provider 缺少 baseURL 时返回 undefined，
+ * 由调用方按「未配置」处理，不再回退到其它 provider。
  */
-export async function getDefaultModel(): Promise<string> {
+export async function getActiveModelRef(): Promise<ModelRef | undefined> {
+  const settings = await readSettingsJson();
+  const providersMap = readProvidersMap(settings);
+  const activeKey = readActiveProviderKey(settings, providersMap);
+  if (!activeKey) return undefined;
+  return { provider: activeKey, model: providerDefaultModel(providersMap[activeKey]) };
+}
+
+// ==================== 多 provider：模型菜单与 (provider, model) 校验 ====================
+
+/** 规范化 provider 的模型列表（去空、trim、去重，保持原顺序） */
+function normalizeProviderModels(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return Array.from(new Set(
+    (raw as unknown[])
+      .filter((m): m is string => typeof m === 'string' && !!m.trim())
+      .map((m) => m.trim()),
+  ));
+}
+
+/** provider 的默认模型：defaultModel → models[0] → '' */
+function providerDefaultModel(provider: LLMProviderConfig | undefined): string {
+  if (typeof provider?.defaultModel === 'string' && provider.defaultModel.trim()) {
+    return provider.defaultModel.trim();
+  }
+  return normalizeProviderModels(provider?.models)[0] || '';
+}
+
+/** 从已解析的 settings.json 中取出 llm.providers 映射（只保留对象） */
+function readProvidersMap(settings: Record<string, any>): Record<string, LLMProviderConfig> {
+  const providers = settings?.llm?.providers;
+  return providers && typeof providers === 'object' ? providers : {};
+}
+
+/** 从已解析的 settings.json 中取出有效的 activeProvider key（无有效项时为空串） */
+function readActiveProviderKey(settings: Record<string, any>, providersMap: Record<string, LLMProviderConfig>): string {
+  const raw = settings?.llm?.activeProvider;
+  return typeof raw === 'string' && providersMap[raw]?.baseURL ? raw : '';
+}
+
+/**
+ * 取 baseURL 的 hostname（小写）；解析失败或为空返回空串。
+ * 用于按域名识别 provider，避免把 `https://api.deepseek.com/v1` 这类带路径的写法漏掉。
+ */
+function baseUrlHostname(baseURL: unknown): string {
+  if (typeof baseURL !== 'string' || !baseURL.trim()) return '';
   try {
-    const configFile = await loadConfigFile();
-    return getProviderDefaultModelFromConfig(configFile);
+    return new URL(baseURL.trim()).hostname.toLowerCase();
   } catch {
     return '';
   }
 }
 
 /**
- * 读取当前 activeProvider 的模型列表与默认模型。
- * 未配置 activeProvider、或该 provider 没有可用模型列表时返回 null
- * （此时无法判断模型是否合法，调用方应保持原值不做回退）。
+ * 读取「api.deepseek.com」这个 provider 的 API Key —— 余额查询专用。
+ *
+ * 为什么不能直接用 getConfig()：它返回的是 **active provider** 的 apiKey/baseURL。
+ * active provider 通常是第三方网关（opencode.ai / z.ai ...），拿它的 Key 去打
+ * https://api.deepseek.com/user/balance 只会得到 401 Authorization Required。
+ * 余额只有 DeepSeek 官方能查，所以这里固定按域名找 provider：
+ * - 匹配 baseURL 的 hostname === api.deepseek.com（也兼容 provider key 恰好是域名）；
+ * - 找不到该 provider、或它没配 apiKey → 返回 null，调用方跳过余额查询（不发请求）。
  */
-export async function getActiveProviderModels(): Promise<{ models: string[]; defaultModel: string } | null> {
+export async function getDeepSeekProviderApiKey(): Promise<string | null> {
+  let settings: Record<string, any> = {};
   try {
-    const configFile = await loadConfigFile();
-    const activeKey = configFile?.llm?.activeProvider;
-    const activeProvider = activeKey ? configFile?.llm?.providers?.[activeKey] : undefined;
-    if (!activeProvider?.baseURL) return null;
-    const models = Array.isArray(activeProvider.models)
-      ? Array.from(new Set(
-          (activeProvider.models as unknown[])
-            .filter((m): m is string => typeof m === 'string' && !!m.trim())
-            .map((m) => m.trim()),
-        ))
-      : [];
-    if (models.length === 0) return null;
-    const defaultModel = typeof activeProvider.defaultModel === 'string' && activeProvider.defaultModel.trim()
-      ? activeProvider.defaultModel.trim()
-      : models[0];
-    return { models, defaultModel };
+    settings = await readSettingsJson();
   } catch {
     return null;
   }
+  const providersMap = readProvidersMap(settings);
+  const targetHost = baseUrlHostname(DEEPSEEK_BASE_URL);
+
+  for (const [key, provider] of Object.entries(providersMap)) {
+    const matches = baseUrlHostname(provider?.baseURL) === targetHost
+      || (typeof key === 'string' && key.trim().toLowerCase() === targetHost);
+    if (!matches) continue;
+    const apiKey = typeof provider?.apiKey === 'string' ? provider.apiKey.trim() : '';
+    if (apiKey) return apiKey;
+  }
+  return null;
 }
 
 /**
- * 校验模型是否属于当前 activeProvider 提供的模型列表：
- * - 属于列表：原样返回
- * - 不属于列表：回退到 provider 的默认模型（defaultModel，其次 models[0]）
- * - 无法判断（未配置 provider / 模型列表为空）：原样返回
+ * 按模型身份构造完整的 LLMConfig（会话级模型切换用）。
  *
- * 用于「切换 provider、切换对话」等场景，避免继续使用当前服务商不支持的模型。
+ * provider 必须存在于 settings.json 且带 baseURL，否则直接抛错：
+ * 静默回退到 activeProvider 会让用户拿到非预期的服务商（baseURL/apiKey 全变），
+ * 属于必须暴露的错误，不做兜底。
+ *
+ * - model 为空 → 取 provider.defaultModel → provider.models[0]；
+ * - apiType 按最终生效的 model + 该 provider 的 modelConfigs 解析。
+ * - 与 provider 无关的全局字段（maxTokens / webSearch / thinking_*）仍取
+ *   settings.json → 环境变量兜底。
+ *
+ * apiKey 未配置时抛错（与 getConfig 一致，引导用户到设置面板配置）。
  */
-export async function resolveModelForActiveProvider(modelName: string): Promise<string> {
-  const info = await getActiveProviderModels();
-  if (!info) return modelName;
-  if (modelName && info.models.includes(modelName)) return modelName;
-  return info.defaultModel || modelName;
+export async function getConfigForProvider(ref: ModelRef): Promise<LLMConfig> {
+  const fallback = createFallbackConfig();
+  const settings = await readSettingsJson();
+  const llm = settings?.llm || {};
+  const providersMap = readProvidersMap(settings);
+  const provider = providersMap[ref.provider];
+  if (!provider?.baseURL) {
+    logger.error('getConfigForProvider', `provider "${ref.provider}" 不存在或缺少 baseURL，拒绝构造 LLMConfig`);
+    throw new Error(`provider "${ref.provider}" 不存在或未配置 baseURL`);
+  }
+  const modelConfigs = provider.modelConfigs && typeof provider.modelConfigs === 'object'
+    ? provider.modelConfigs
+    : {};
+  const effectiveModel = ref.model || providerDefaultModel(provider);
+
+  const config: LLMConfig = {
+    apiKey: provider.apiKey ?? '',
+    baseURL: provider.baseURL,
+    model: effectiveModel,
+    maxTokens: llm.maxTokens || fallback.maxTokens,
+    // apiType 已下放到模型级：按最终生效的 model + 该 provider 的 modelConfigs 解析
+    apiType: resolveApiTypeForModel(effectiveModel, modelConfigs),
+    webSearch: typeof llm.webSearch === 'boolean' ? llm.webSearch : fallback.webSearch,
+    thinking_budget_tokens: llm.thinking_budget_tokens ?? fallback.thinking_budget_tokens,
+    thinking_effort: llm.thinking_effort ?? fallback.thinking_effort,
+    modelConfigs,
+  };
+
+  if (!config.apiKey) {
+    throw new Error(
+      'API Key 未配置，无法调用 LLM。\n' +
+      '请在「设置 → LLM 配置」中填写 API Key，\n' +
+      `或编辑 ~/${CONFIG_DIR_NAME}/settings.json 中对应 provider 的 apiKey 字段。`
+    );
+  }
+
+  return config;
+}
+
+/**
+ * 校验会话保存的模型身份是否仍然有效，并在失效时解析出可用的身份。
+ *
+ * 这是「读盘数据 → 运行时模型身份」的唯一校验入口（切换会话 / 保存设置后调用）：
+ * - ref 为 undefined（meta.json 未记录 provider）→ 取当前 active provider 的默认模型；
+ * - provider 已从 settings.json 移除 → 记录日志，回退到 active provider 的默认模型；
+ * - provider 存在但 model 不在其模型列表 → 用该 provider 的默认模型；
+ * - provider 与 model 都合法 → 原样返回。
+ *
+ * 返回 undefined 表示「没有任何可用 provider」，调用方按「未配置」处理。
+ */
+export async function resolveModelRef(ref: ModelRef | undefined): Promise<ModelRef | undefined> {
+  const settings = await readSettingsJson();
+  const providersMap = readProvidersMap(settings);
+  const activeKey = readActiveProviderKey(settings, providersMap);
+  const activeRef: ModelRef | undefined = activeKey
+    ? { provider: activeKey, model: providerDefaultModel(providersMap[activeKey]) }
+    : undefined;
+
+  if (!ref) return activeRef;
+
+  const provider = providersMap[ref.provider];
+  if (!provider?.baseURL) {
+    logger.warn(
+      'resolveModelRef',
+      `provider "${ref.provider}" 已不存在，回退到 active provider "${activeKey || '(未配置)'}"`,
+    );
+    return activeRef;
+  }
+  const models = normalizeProviderModels(provider.models);
+  if (models.length === 0) {
+    // 无法判断模型是否合法：保留 provider，模型为空时用该 provider 的默认模型
+    return { provider: ref.provider, model: ref.model || providerDefaultModel(provider) };
+  }
+  if (ref.model && models.includes(ref.model)) {
+    return { provider: ref.provider, model: ref.model };
+  }
+  return { provider: ref.provider, model: providerDefaultModel(provider) || models[0] };
 }
 
 /**

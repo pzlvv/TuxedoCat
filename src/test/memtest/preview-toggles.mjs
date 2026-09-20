@@ -44,7 +44,6 @@ const probe = () => page.evaluate(() => {
   };
   const out = [];
   const lis = [...root.querySelectorAll('li.msg-timeline-item')];
-  lis.forEach((i, k) => { /* noop */ });
   lis.forEach((li, i) => {
     const n = nameOf(li);
     if (n !== 'Edit' && n !== 'Write') return;
@@ -53,7 +52,6 @@ const probe = () => page.evaluate(() => {
     const arrow = card.querySelector('button .ti-chevron-down, button .ti-chevron-right');
     const box = card.querySelector('.code-preview') || card.querySelector('div[style*="overflow"]');
     const pre = card.querySelectorAll('pre').length;
-    const lines = card.querySelectorAll('div[style*="min-height"], pre').length;
     out.push({ i, tool: n, preCount: pre, hasArrow: !!arrow, hasBox: !!box, boxClickable: box ? getComputedStyle(box).cursor : null });
   });
   return out;

@@ -162,6 +162,7 @@ export const zhDict: Record<string, string> = {
   'inputArea.spinDesign': 'Spin 设计',
   'inputArea.model': '模型',
   'inputArea.modelCurrent': '当前: ',
+  'inputArea.modelEmpty': '（无模型）',
   'inputArea.mcp': 'MCP',
   'inputArea.mcpEmpty': '未配置 MCP（在 mcp.json 中添加）',
   'inputArea.mcpConnecting': '连接中…',

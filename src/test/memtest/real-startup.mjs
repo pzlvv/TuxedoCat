@@ -64,7 +64,6 @@ await page.addInitScript(() => {
   window.__highlightLanguages = [];
   // 记录「模块图就绪」时刻：等 #root 出现 React 渲染的节点
   window.__marks = {};
-  const t0 = performance.now();
   const poll = () => {
     const root = document.getElementById('root');
     if (root && root.children.length > 0 && !window.__marks.firstRender) {
@@ -78,10 +77,8 @@ await page.addInitScript(() => {
   requestAnimationFrame(poll);
 });
 
-const t0 = Date.now();
 await page.goto(`http://localhost:${port}/index.html`, { waitUntil: 'domcontentloaded', timeout: 60000 });
 await page.waitForTimeout(4000);
-const wall = Date.now() - t0;
 
 const data = await page.evaluate(() => {
   const nav = performance.getEntriesByType('navigation')[0] || {};

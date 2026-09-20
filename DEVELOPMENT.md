@@ -81,7 +81,7 @@ HOST .up.> CORE : 事件类型 / 只读函数
 | core（业务层） | `src/core/` | 引擎（`QueryEngine` / `Query` / `RunTools`）、历史（`history/`）、工具（`tools/`）、MCP（`mcp/`）、LLM 配置（`llm/`）、压缩（`compact/`）、skills、prompt、spin、会话运行时（`sessionRuntime.ts`）、命令分发（`CommandDispatcher.ts`） | `AssistantEventBus` 的事件类型与 `requireEventBus()` | host/、宿主实现（只读函数与类型） |
 | AssistantEventBus（事件契约） | 类型在 `src/core/AssistantEventBus.ts`，实现在 `src/host/EventBus.ts` | core 与 UI 之间唯一的耦合点；事件词汇表 `CoreEvent` / `CoreRequest` / `UiEvent`；全局注册（`setGlobalEventBus` / `requireEventBus` / `resetGlobalEventBus`） | 无（纯接口 + 纯数据类型） | core、host、宿主实现 |
 | host（UI 层） | `src/host/`，禁止 import `vscode` / `electron` | `WebViewUI`（唯一 UI 实现）；三契约 `UIHost` / `SpinDesign` / `ConversationManager`；总线实现；共享子模块（`ui/toolHandler.ts` / `ui/userChoice.ts` / `ui/webviewMessageHandler.ts`）；`SessionUiState` | core 的事件类型与只读函数 | 宿主实现（implements 三契约） |
-| 宿主实现 | `src/VSCode*.ts`、`electron/*.ts` | 三契约的 VS Code / Electron 双端实现（`VSCodeUIHost` / `ElectronUIHost`、`VSCodeSpinDesign` / `ElectronSpinDesign`、`SingleWebViewConversationManager` / `ElectronConversationManager`）；bootstrap 接线（`extension.ts` / `main.ts`） | host/（三契约与 WebViewUI）、core 只读函数、宿主 API | —（顶层） |
+| 宿主实现 | `src/VSCode*.ts`、`electron/*.ts` | 三契约的 VS Code / Electron 双端实现（`VSCodeUIHost` / `ElectronUIHost`、`VSCodeSpinDesign` / `ElectronSpinDesign`、`SingleWebViewConversationManager` / `ElectronConversationManager`）；bootstrap 接线（`extension.ts` / `main.ts` 调用共享骨架 `host/bootstrapCore.ts`） | host/（三契约、WebViewUI 与 bootstrap 骨架）、core 只读函数、宿主 API | —（顶层） |
 
 #### 模块要点
 
@@ -97,7 +97,9 @@ HOST .up.> CORE : 事件类型 / 只读函数
   Spin 设计器、`ConversationManager` 服务对话列表与会话运行时状态；
   全部由宿主实现层提供，`WebViewUI` 只认契约不认实现。
 - **宿主实现**：唯一允许 import `vscode` / `electron` 的层；同时负责 bootstrap 接线：
-  `createEventBus` → `setGlobalEventBus` → `initializeCoreEvents` → `WebViewUI.create`。
+  共享骨架 `host/bootstrapCore.ts`（`createEventBus` → `setGlobalEventBus` →
+  `initializeCoreEvents` → `WebViewUI.create` → 历史 / 会话队列 / 等待用户读取器）+
+  各自的宿主专属接线（第 8.6 节）。
 
 ### 1.3 目录布局
 
@@ -106,6 +108,7 @@ HOST .up.> CORE : 事件类型 / 只读函数
 | `src/core/AssistantEventBus.ts` | 事件类型（`CoreEvent` / `CoreRequest` / `UiEvent`）、处理器映射类型、总线接口、全局注册（`setGlobalEventBus` / `requireEventBus` / `resetGlobalEventBus`） |
 | `src/host/EventBus.ts` | 总线实现 `createEventBus()`，纯内存发布订阅，无宿主依赖 |
 | `src/core/initializeCoreEvents.ts` | core 侧 `UiEvent` 订阅的唯一注册入口，由 bootstrap 在 `setGlobalEventBus` 之后调用一次 |
+| `src/host/bootstrapCore.ts` | 共享启动接线骨架：locale / 日志 / 扩展路径 / 总线与 core 侧订阅 / `WebViewUI.create` / 历史 / 会话队列 / 等待用户读取器 / 异步收尾；导出 `bootstrapSnapshot()`（启动自检）与 `shutdownCore()`（退出清理） |
 | `src/core/sessionRuntime.ts` | 会话运行时状态（`idle` / `waiting`）的唯一 owner，`sessionRuntimeChanged` 的生产者 |
 | `src/core/tools/PermissionPolicy.ts` | 权限规则加工（agentMode → `resolveToolPermission`）与会话级 agentMode 存储 |
 | `src/core/mcp/MCPHost.ts` | MCP 会话引用生命周期的唯一入口。它不是宿主契约，仅有一个 core 侧单例 |
@@ -127,7 +130,7 @@ HOST .up.> CORE : 事件类型 / 只读函数
 | `src/VSCodeSpinDesign.ts` / `electron/ElectronSpinDesign.ts` | `SpinDesign` 的两个实现（构造注入 `UIHost`） |
 | `src/VSCodeConversationManager.ts` / `electron/ElectronConversationManager.ts` | `ConversationManager` 的两个实现；空闲会话回收（计时 / 巡检 / 关闭动作）只在 VS Code 侧 |
 | `electron/shortcutDialogHtml.ts` + `electron/shortcutPreload.ts` | Electron 专属：唤醒快捷键设置对话框（File - Shortcut...，见第 5.5 节） |
-| `src/extension.ts` / `electron/main.ts` | bootstrap 接线：`createEventBus` → `setGlobalEventBus` → `initializeCoreEvents` → `WebViewUI.create` |
+| `src/extension.ts` / `electron/main.ts` | 各自的 bootstrap：构造三契约与宿主句柄 → 调用共享骨架 `bootstrapCore` → 执行宿主专属接线（第 8.6 节） |
 
 **硬约束**：`VSCodeUIHost.ts` / `VSCodeSpinDesign.ts` / `VSCodeConversationManager.ts`
 不得放入 `src/host/`。`electron/tsconfig.json` 的 `include` 包含 `../src/host/**/*.ts`，
@@ -189,6 +192,13 @@ class EventBusModule <<module>> {
   +setGlobalEventBus(bus)
   +requireEventBus()
   +resetGlobalEventBus()
+}
+
+' ==================== 启动接线（宿主无关）====================
+class BootstrapCore <<module>> {
+  +bootstrapCore(host, spinDesign, conversations, options)
+  +bootstrapSnapshot()
+  +shutdownCore()
 }
 
 ' ==================== UI 实现 ====================
@@ -314,6 +324,11 @@ ConversationManager ..> UIHost : dispatchList 时使用 sendToWebview
 ElectronConversationManager ..> ChatViewManager : 订阅 loaded（视图开关）
 
 EventBusModule ..> AssistantEventBus : 注册与获取
+BootstrapCore ..> EventBusModule : createEventBus / setGlobalEventBus
+BootstrapCore ..> WebViewUI : create
+BootstrapCore ..> UIHost : 构造注入
+BootstrapCore ..> SpinDesign : 构造注入
+BootstrapCore ..> ConversationManager : 构造注入
 @enduml
 ```
 
@@ -590,17 +605,36 @@ requireEventBus();        // 取全局总线；未注册时抛错，不用 ?. �
 resetGlobalEventBus();    // 测试用：清空全局总线
 ```
 
-bootstrap 顺序（`extension.ts` 与 `electron/main.ts` 一致）：
+两个宿主的启动接线由**共享骨架**执行（`src/host/bootstrapCore.ts` 的 `bootstrapCore`），
+宿主只提供自身差异（locale / 日志出口 / 资源根目录），因此顺序只有一份：
 
 ```
-createEventBus() → setGlobalEventBus(bus) → initializeCoreEvents(bus) → WebViewUI.create(...)
+1.  setCoreLocale(options.locale)
+2.  setCoreUiLanguage(readUiLanguageSync())
+3.  setExtensionPathProvider(() => options.extensionPath)
+4.  setLogToConsole(options.logToConsole) 与 setLogCallback(options.log)
+5.  createEventBus() → setGlobalEventBus(bus)
+6.  initializeCoreEvents(bus)
+7.  WebViewUI.create(host, bus, spinDesign, conversations, { log, createUserChoiceManager })
+8.  initializeHistory(ui)
+9.  initializeSessionQueue()
+10. setSessionWaitingForUserProvider((sid) => ui.hasPendingUserChoice(sid))
+11. ensureConfigDirs()（异步，失败记日志）
+12. 系统环境预热（异步，无工作区时跳过）
+13. getMCPHost().prune()（异步，失败记日志）
 ```
 
-- `initializeCoreEvents` 必须在 core 第一次被使用之前完成，否则第一批 `UiEvent` 会落空
-  （见第 3.7 节）。
-- `WebViewUI.create` 在构造里注册 core 事件处理器；在它之前 `emitToUi` 会抛错（第 3.7 节）。
-- core 模块随 bundle 加载，**模块顶层不能订阅**（加载时总线还不存在）；订阅统一收敛到
-  `initializeCoreEvents`（第 3.6 节）。
+顺序约束：
+
+- 第 1–4 步在任何 core 模块被使用之前完成；
+- 第 5–6 步在 `WebViewUI.create` 之前完成，否则第一批 `UiEvent` 落空（见第 3.7 节）；
+- 第 7 步必须在 core 第一次 `emitToUi` 之前完成，否则总线抛错（第 3.7 节）；
+- 第 8–10 步依赖第 7 步产出的实例；
+- 第 11–13 步是异步收尾，不阻塞启动，失败只记日志。
+
+core 模块随 bundle 加载，**模块顶层不能订阅**（加载时总线还不存在）；订阅统一收敛到
+`initializeCoreEvents`（第 3.6 节）。接线项归属、注入点与读取器、启动自检与退出路径见
+第 8.6–8.10 节。
 
 ### 3.6 core 侧 UiEvent 订阅：initializeCoreEvents
 
@@ -733,13 +767,13 @@ core 里任何一个需要工作目录的地方（history / mcp / tools / spin /
 | 31 | `conversationDeleted` | `sessionId` | `deleteConversation`、Electron 侧栏 | `history.deleteConversation`（**递归删除整棵子树**：自身 + 所有层级的子孙对话）→ `conversationListChanged` |
 | 32 | `conversationContextUpdated` | `sessionId`, `changes` | `updateConversationContext` 消息、`extension.ts`（编辑器上下文） | `history.updateConversationContext`（合并语义） |
 | 33 | `conversationSpaceCleared` | `sessionId` | `clearConversationSpace` | `history/ConversationSpace.clearConversationSpace` → `message` + `conversationListChanged` |
-| 34 | `modelChanged` | `sessionId`, `model` | `setModel` | `setSessionModel` + 写 meta.json → `sessionConfigChanged` |
+| 34 | `modelChanged` | `sessionId`, `ref`（`ModelRef` = provider + model） | `setModel`（wire 是扁平的 `model` / `provider`，handler 入口组装成 `ModelRef`；provider 为空即非法，记录日志并忽略） | `setSessionModel` + 写 meta.json（**保持扁平字段** `model` / `provider`）→ `sessionConfigChanged` |
 | 35 | `thinkingEffortChanged` | `sessionId`, `mode` | `setThinkingMode` | `setSessionThinkingMode` + 写 meta.json（字段名仍是 `thinkingMode`）→ `sessionConfigChanged` |
 | 36 | `promptModeChanged` | `sessionId`, `mode` | `setPromptMode` | `setSessionPromptPreset` + 写 meta.json → `sessionConfigChanged` |
 | 37 | `agentModeChanged` | `sessionId`, `mode` | `setAgentMode` | `setSessionAgentMode` + 写 meta.json → `sessionConfigChanged` |
 | 38 | `webSearchChanged` | `sessionId`, `enabled` | `setWebSearch` | `engine.updateWebSearch` + 写 meta.json → `sessionConfigChanged` |
 | 39 | `mcpEnabledChanged` | `sessionId`, `name`, `enabled` | `setMcpEnabled` | `mcp/Config.setSessionMcpEnabled` + `Manager.syncSession` |
-| 40 | `editRolledBack` | `sessionId`, `toolUseId`, `direction` | `rollbackEdit` | `history/rollback.rollbackEdit` |
+| 40 | `editRolledBack` | `sessionId`, `toolUseId`, `direction`, `filePath?` | `rollbackEdit` | `history/rollback.rollbackEdit`（`filePath` 作为 `input.file_path` 缺失时的兜底路径） |
 | 41 | `llmConfigSaved` | `config` | `saveLLMConfig` | `llm/config.clearConfigCache` |
 
 **`changes` 数组而不是可选字段**：`history.updateConversationContext` 是**部分合并**语义
@@ -1074,8 +1108,9 @@ VS Code 实现里的成员：
 活动来源：宿主侧上报（打开 / 新建 / 用户发消息，经 `WebViewUiPort.noteSessionActivity`）
 与 `updateSessionStates` 的状态跃迁。
 
-`isSessionIdle` 的「等待用户」事实由 bootstrap 注入：VS Code 在 `extension.ts` 里
-`setSessionWaitingForUserProvider(sid => ui.hasPendingUserChoice(sid))`。
+`isSessionIdle` 的「等待用户」事实由共享骨架注入（两个宿主一致）：
+`bootstrapCore` 内 `setSessionWaitingForUserProvider(sid => ui.hasPendingUserChoice(sid))`；
+消费点用 `requireSessionWaitingForUserProvider()` 取用，未注入直接抛错（第 12.1 节）。
 
 **调用方**：
 
@@ -1167,16 +1202,15 @@ import core 的只读函数与类型（第 2 节规则 9）。
 `createUserChoiceManager` 是唯一用工厂而非实例注入的依赖：`UserChoiceManager` 需要
 `WebviewPoster` 与 `WebViewUiPort`（即 `this`），这两者在构造期间才存在。
 
-**bootstrap 调用**（两个宿主各一次，`bus` 已先 `setGlobalEventBus(bus)`）：
+**bootstrap 调用**（两个宿主各一次，均在共享骨架 `bootstrapCore` 内）：
 
 ```ts
-// src/extension.ts
-WebViewUI.create(host, bus, new VSCodeSpinDesign(host), conversations, { ... });
-// electron/main.ts
-WebViewUI.create(host, bus, spinDesign, conversations, { ... });
+// src/host/bootstrapCore.ts（骨架内部，两个宿主共用）
+const ui = WebViewUI.create(host, bus, spinDesign, conversations, { log, createUserChoiceManager });
 ```
 
-`host` / `spinDesign` / `conversations` 三者平行注入（契约按 UI surface 划分，第 2 节规则 7）。
+`host` / `spinDesign` / `conversations` 三者平行注入（契约按 UI surface 划分，第 2 节规则 7）；
+`createUserChoiceManager` 由骨架构造（日志出口取自宿主的 `log` 参数），宿主不再各自实现。
 
 **类内分区**（同一个类内按注释分区，不拆类）：
 
@@ -1301,7 +1335,7 @@ thinking / text / tool 动画）。
 | --- | --- |
 | `handleWebviewMessage(message, ctx?)` | 宿主 webview 的 `onDidReceiveMessage`（`extension.ts` / `electron/main.ts`）。`ctx.sender` 为来源视图句柄：Electron 用 `webviewHandleFor(sender)` 传入；单视图宿主 / 宿主主动推送省略（见第 7.3 节） |
 | `getActiveSessionId()` | `host.getActiveSessionId` 接线（VS Code 空闲巡检的 `activeSessionProvider`、MCP 面板取当前会话）、`extension.ts` 的 `persistCurrentFileContext` |
-| `hasPendingUserChoice(sessionId)` | VS Code 的 `setSessionWaitingForUserProvider`（空闲巡检的「忙」判定）；Electron 侧栏的等待标记改由 core 的 `sessionRuntimeChanged` 状态流提供 |
+| `hasPendingUserChoice(sessionId)` | 共享骨架的 `setSessionWaitingForUserProvider`（空闲巡检与手动压缩延后的「忙」判定，两个宿主一致）；侧栏 / 托盘的等待标记另由 core 的 `sessionRuntimeChanged` 状态流提供 |
 | `getActivityPhase(sessionId)` | `postConversationLoaded` 内部；`conversationLoaded` 的 `activityPhase` 字段来源 |
 | `getWorkspacePath()` | `initializeHistory(ui)`（结构类型 `{ getWorkspacePath() }`） |
 | `closeConversation(sessionId)` | VS Code 空闲回收的 `idleCloseHandler`；Electron 关闭按钮 / 侧栏「关闭」、删除对话流程 |
@@ -1424,11 +1458,11 @@ diff 快照——**确认框不在这里弹**（见下）。
 | --- | --- |
 | 纯宿主操作 | `openFile` / `requestToolMeta` / `showVirtualDocument` / `openMermaidPreview` / `openSpinDesign` / `openUrl` / `debugLog` |
 | 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestSkills` / `requestConversationSpaces` / `requestMcpServers` / `getConversations` |
-| 环境查询 | `requestTheme`（→ `host.onThemeChanged(ctx.sender)`）/ `requestContextLimit`（→ `pushContextLimit(ctx.sender, msg.model)`：读 active provider 的模型上下文配置，经 `sendToWebviewView` / `sendToWebview` 回包 `contextLimitUpdated`）；`pushContextLimit` 也是 `WebViewUI` 的对外方法，供宿主在视图加载时主动推同一份内容 |
+| 环境查询 | `requestTheme`（→ `host.onThemeChanged(ctx.sender)`）/ `requestContextLimit`（→ `pushContextLimit(ctx.sender, modelRefOf(msg.provider, msg.model))`：读该模型身份（provider + model）的上下文配置，经 `sendToWebviewView` / `sendToWebview` 回包 `contextLimitUpdated`；`ref` 为 `undefined` 时按 active provider 的默认模型算，视图加载初始化推送即走这条）；`pushContextLimit` 也是 `WebViewUI` 的对外方法，供宿主在视图加载时主动推同一份内容 |
 | 请求响应 / 显示 | `respondUserChoice` / `expandCompact` / `rollbackEdit`（→ `UiEvent`） |
 | 消息 / 压缩 / 中止 | `queueMessage` / `sendMessage` / `abort` / `requestCompress`（后两者 → `UiEvent`） |
 | 会话生命周期 | `loadConversation` / `startNewConversation` / `deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace`（`deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace` → `UiEvent`） |
-| 会话配置 | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpEnabled`（全部 → `UiEvent`，core 处理后广播 `sessionConfigChanged` 回推多端） |
+| 会话配置 | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpEnabled`（全部 → `UiEvent`，core 处理后广播 `sessionConfigChanged` 回推多端）。`setModel` 的 wire 载荷是扁平的 `model` + `provider`，在 handler 入口组装成 `ModelRef`（provider 空串非法：记录日志并忽略，不回退到其它 provider） |
 | 其它 | `saveLLMConfig` / `requestSmartNaming` |
 
 前两个分区留在本模块内（只操作宿主或只读 core）；其余要么发 `UiEvent`，要么是**显示类**动作。
@@ -1612,32 +1646,97 @@ export class ElectronUIHost implements UIHost {
 
 ### 8.6 宿主接线
 
-两个 bootstrap 的顺序一致：**先建总线并注册 core 侧订阅 → 再建 UI（其构造函数注册 CoreEvent
-处理器）**（第 3.3 节的启动期约定）。差异只在宿主句柄的注入方式。
+本节覆盖进程启动阶段（VS Code 的 `activate` / Electron 的 `main()`）完成的接线：core 全局
+单例与宿主能力提供者的注册、事件总线的创建与订阅、`WebViewUI` 的创建与子模块接线、
+历史系统 / 会话队列 / 配置目录 / 系统环境预热 / MCP 残留清理，以及退出路径对 core 资源的
+释放。窗口 / 面板 / 菜单 / 托盘 / 快捷键等宿主界面构造与 webview 内容注入属于宿主实现层，
+不在本节范围。
+
+启动接线分成两层：**共享骨架**（`src/host/bootstrapCore.ts` 的 `bootstrapCore`）与
+**宿主专属接线**（各自 bootstrap 内）。骨架内的顺序固定（第 3.5 节），
+宿主差异以 `CoreBootstrapOptions` 的必选成员传入——漏传是编译错误。
+
+```ts
+export interface CoreBootstrapOptions {
+  /** 宿主 locale 原始值（BCP-47）；二值收敛由 core 的 setCoreLocale 承担 */
+  locale: string;
+  /** 日志出口：core Logger / WebViewUI / UserChoiceManager 共用 */
+  log: (...args: unknown[]) => void;
+  /** core 日志是否同时输出到控制台 */
+  logToConsole: boolean;
+  /** 扩展 / 应用根目录，用于定位 ripgrep、pandoc 等资源 */
+  extensionPath: string;
+}
+
+bootstrapCore(host, spinDesign, conversations, options): { bus, ui }
+```
+
+每个接线项有唯一归属，归属只有三种：
+
+| 归属 | 含义 |
+| --- | --- |
+| 共享骨架 | 由 `bootstrapCore` 执行，两个宿主都执行且只执行一次 |
+| 宿主专属 | 只有一个宿主需要的接线，留在该宿主的 bootstrap 内 |
+| 宿主参数 | 两端都执行、但取值来自宿主环境，以必选参数传入共享启动函数 |
+
+**共享骨架**（`src/host/bootstrapCore.ts`；该模块位于 `host/`，不 import `vscode` / `electron`）：
+
+| 接线项 | 说明 |
+| --- | --- |
+| locale / UI 语言 / 扩展路径 / 日志出口 | 取值来自宿主参数 |
+| 总线创建与全局注册 / core 侧 UiEvent 订阅 | `createEventBus` → `setGlobalEventBus` → `initializeCoreEvents` |
+| `WebViewUI.create` 与 `UserChoiceManager` 工厂 | 工厂在骨架内构造，日志出口取自 `options.log`；宿主不提供该工厂 |
+| `initializeHistory` / `initializeSessionQueue` / `setSessionWaitingForUserProvider` | 依赖 `WebViewUI` 实例；等待用户读取器闭包在骨架内引用该实例，宿主不参与 |
+| 配置目录 / 系统环境预热 / MCP 残留清理 | 异步收尾，不阻塞启动 |
+
+**宿主参数**：
+
+| 参数 | VS Code 取值 | Electron 取值 |
+| --- | --- | --- |
+| `locale` | `vscode.env.language` | `app.getLocale()` |
+| `log` | `(...args) => outputChannel.appendLine(args.map(String).join(' '))` | `(...args) => console.log('[WebViewUI]', args.map(String).join(' '))` |
+| `logToConsole` | `false` | `true` |
+| `extensionPath` | `context.extensionPath` | `APP_ROOT` |
+
+**宿主专属**（在共享骨架返回之后执行，且只读写宿主自身持有的句柄）：
+
+| 接线项 | 宿主 | 说明 |
+| --- | --- | --- |
+| `host.setExtensionUri` / `registerWindowStateListener` | VS Code | 扩展资源与窗口状态 |
+| `host.getActiveSessionId = () => ui.getActiveSessionId()` | VS Code | `UIHost` 的读取器属性 |
+| 空闲会话巡检（`setActiveSessionProvider` / `setIdleCloseHandler` / `startIdleMonitor`） | VS Code | 空闲回收只在 VS Code 生效 |
+| 虚拟文档 provider（预览 / diff 三个 scheme） | VS Code | 无对应 Electron 能力 |
+| `registerWebviewViewProvider` / 命令 / 状态栏项 | VS Code | 扩展界面入口 |
+| `host.setMainWindow` / `setSidebarView` / `setChatViewManager` / `setWorkspacePath` | Electron | 主进程句柄注入 |
+| `conversations.setStatusListener` | Electron | 托盘状态点与闪烁提醒 |
+| 侧栏出口（`sendToSidebar`） | Electron | 原生侧栏三条流 |
+| `chatViews.closeConversation = (sid) => ui.releaseConversation(sid)` | Electron | 视图销毁序列只卸内存 |
+| 菜单 / 托盘 / 全局唤醒快捷键 / 单实例锁 | Electron | 桌面端集成 |
 
 ```ts
 // src/extension.ts
 const outputChannel = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
-setLogCallback((message) => outputChannel.appendLine(message));
-
 const host = new VSCodeUIHost(outputChannel);
-const bus = createEventBus();
-setGlobalEventBus(bus);              // core 侧随时可用
-initializeCoreEvents(bus);           // 注册全部 UiEvent 订阅
-
 const conversations = new SingleWebViewConversationManager(host);
-const ui = WebViewUI.create(host, bus, new VSCodeSpinDesign(host), conversations, {
-  log, createUserChoiceManager,
+
+const { ui } = bootstrapCore(host, new VSCodeSpinDesign(host), conversations, {
+  locale: vscode.env.language,
+  log: (...args) => outputChannel.appendLine(args.map(String).join(' ')),
+  logToConsole: false,
+  extensionPath: context.extensionPath,
 });
 
-// WebViewUI 之后才能注入的读取器（读 ui 的状态）
+// 骨架之后才能注入的读取器（读 ui 的状态）
+host.setExtensionUri(context.extensionUri);
+host.registerWindowStateListener(context);
 host.getActiveSessionId = () => ui.getActiveSessionId();
 
-initializeHistory(ui);               // 注入 getWorkspacePath，History 才知道工作区
-setSessionWaitingForUserProvider((sid) => ui.hasPendingUserChoice(sid));  // 空闲巡检的「忙」判定
+// VS Code 专属：空闲回收（计时 owner 在 SingleWebViewConversationManager）
 conversations.setActiveSessionProvider(() => ui.getActiveSessionId() ?? null);
 conversations.setIdleCloseHandler((sid) => ui.closeConversation(sid));
-conversations.startIdleMonitor();    // VS Code 专属：空闲回收
+conversations.startIdleMonitor();
+
+outputChannel.appendLine(`[bootstrap] ${JSON.stringify(bootstrapSnapshot())}`);
 
 // 虚拟文档 provider（预览 / diff）与 webview provider
 context.subscriptions.push(
@@ -1650,30 +1749,31 @@ context.subscriptions.push(
 
 ```ts
 // electron/main.ts（initCore）
-setCoreLocale(app.getLocale().startsWith('zh') ? 'zh' : 'en');
-
-const bus = createEventBus();
-setGlobalEventBus(bus);
-initializeCoreEvents(bus);
-
 const host = new ElectronUIHost();
 const spinDesign = new ElectronSpinDesign(host);
-const conversations = new ElectronConversationManager(host, (channel, payload) => {
-  if (sidebarView && !sidebarView.webContents.isDestroyed()) sidebarView.webContents.send(channel, payload);
-}, (message) => chatViews?.broadcast(message));
+const conversations = new ElectronConversationManager(host, sendToSidebar);
 conversations.setStatusListener((states) => updateTrayStatusFromStates(states));  // 托盘只吃状态流
 
-const ui = WebViewUI.create(host, bus, spinDesign, conversations, { log, createUserChoiceManager });
+const { ui } = bootstrapCore(host, spinDesign, conversations, {
+  locale: app.getLocale(),
+  log: (...args) => console.log('[WebViewUI]', args.map(String).join(' ')),
+  logToConsole: true,
+  extensionPath: APP_ROOT,
+});
 
-host.setMainWindow(mainWindow);      // 宿主句柄在 create 之后注入
+host.setMainWindow(mainWindow);      // 宿主句柄在骨架之后注入
 host.setSidebarView(sidebarView);
 host.setChatViewManager(chatViews);
 host.setWorkspacePath(workspacePath);
 
 chatViews.closeConversation = (sid) => ui.releaseConversation(sid);   // 视图销毁序列只卸内存
 // chatViews 的 onLoadedChanged → sidebar:session-loaded-changed（视图层状态，独立成流）
-initializeHistory(ui);
+
+console.log(`[bootstrap] ${JSON.stringify(bootstrapSnapshot())}`);
 ```
+
+`bootstrapSnapshot()`（`src/host/bootstrapCore.ts`）返回本进程的接线快照，两个宿主在骨架
+之后各输出一行；字段与守卫测试见第 8.8、8.10 节。
 
 **向对话 webview 下发消息**：宿主侧（bootstrap 或 `WebViewUI` / `WebviewMessageHandler`）组装 wire
 消息后经 `UIHost` 的传输成员投递，不直接操作 webview / webContents（第 5.1 节）。
@@ -1694,18 +1794,121 @@ Electron 的视图句柄：`ElectronUIHost.webviewHandleFor(source)` 把来源 `
 `activatePrewarmedView` 出口由 `ElectronUIHost.setChatViewManager` 注入
 （`onActivatePrewarmedView`），视图管理器不直连 `webContents.send`。
 
-两个 bootstrap 的差异：
+两个 bootstrap 的差异（共享骨架之外的宿主专属接线）：
 
 | | VS Code（`extension.ts`） | Electron（`main.ts`） |
 | --- | --- | --- |
-| 宿主句柄注入 | 构造时给 `outputChannel`；`webviewView` 在 `resolveWebviewView` 时 `setWebviewView` | 全部用 `set*` 在 `WebViewUI.create` 之后注入 |
+| 宿主句柄注入 | 构造时给 `outputChannel`；`webviewView` 在 `resolveWebviewView` 时 `setWebviewView` | 全部用 `set*` 在骨架之后注入 |
 | 向聊天视图下发消息 | 经 `UIHost` 传输成员（单 webview） | 经 `UIHost` 传输成员（`ChatViewManager` 路由 / 广播 / 句柄直发） |
 | 工作区来源 | `vscode.workspace.workspaceFolders` | 菜单 / 命令行 `--workspace=` / 上次记录（`setWorkspacePath`） |
 | 空闲回收 | 启用（`startIdleMonitor`） | 不启用 |
 | 托盘 | 无 | `setStatusListener` → 状态点 + 闪烁提醒 |
 | 侧栏 | 无（webview 内下拉） | 原生 `WebContentsView` + 三条流：`sidebar:conversations-updated` / `sidebar:session-states-updated` / `sidebar:session-loaded-changed` |
 | 虚拟文档 | 注册三个 `TextDocumentContentProvider` | 无（用 Monaco 辅助窗口） |
-| 退出清理 | `deactivate()`：`stopIdleMonitor` + `MCPHost.shutdown` | `will-quit`：注销全局快捷键、停托盘闪烁并销毁托盘、`McpManager.shutdown` |
+| 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销全局快捷键、停托盘闪烁并销毁托盘、`shutdownCore()` |
+
+### 8.7 注入点与读取器
+
+每个供启动期注入的 core 状态满足两条性质：
+
+1. 有一个 `set*Provider` / `set*Callback` 写入入口；
+2. 有一个对应的读取入口，未注入时**抛错**。
+
+| 状态 | 写入入口 | 读取入口 | 未注入时 |
+| --- | --- | --- | --- |
+| 全局事件总线 | `setGlobalEventBus(bus)` | `requireEventBus()` | 抛错 |
+| 项目根目录 | `setProjectRootProvider(fn)` | `getProjectRoot()` | 抛错 |
+| 扩展路径 | `setExtensionPathProvider(fn)` | `getExtensionPath()` | 抛错 |
+| 会话等待用户 | `setSessionWaitingForUserProvider(fn)` | `requireSessionWaitingForUserProvider()` | 抛错 |
+| 宿主 locale | `setCoreLocale(locale)` | `getCoreLocale()` | 返回默认值 `en`（可接受） |
+| UI 语言 | `setCoreUiLanguage(lang)` | `getCoreLocale()` | 返回默认值 `en`（可接受） |
+| 日志出口 | `setLogCallback(fn)` | — | 静默丢弃（可接受） |
+
+规则：
+
+- 消费点调用读取入口，不使用可选链静默降级。
+- 允许默认值的项（locale / UI 语言 / 日志）以「缺失不构成错误」为前提：
+  其取值不影响跨端一致性，且无业务分支依赖「是否已注入」。
+- 抛错的项（总线 / 项目根 / 扩展路径 / 等待用户）在骨架内保证注入，
+  因此启动完成后不存在未注入状态。
+
+`sessionResources.isSessionIdle` 对等待用户读取器的调用位于骨架保证注入之后，
+不再用 try/catch 吞掉「未注入」。
+
+### 8.8 启动自检
+
+`src/host/bootstrapCore.ts` 导出：
+
+```ts
+export interface BootstrapSnapshot {
+  locale: string;
+  uiLanguage: 'auto' | 'zh' | 'en';
+  eventBusRegistered: boolean;
+  uiCreated: boolean;
+  projectRootProviderInjected: boolean;
+  extensionPathProviderInjected: boolean;
+  sessionQueueInitialized: boolean;
+  waitingForUserInjected: boolean;
+  logToConsole: boolean;
+}
+
+/** 当前进程的接线快照（只读；用于启动日志与一致性断言） */
+export function bootstrapSnapshot(): BootstrapSnapshot;
+```
+
+- 快照在 `bootstrapCore` 返回前写入；未执行骨架时调用抛错。
+- 布尔字段由 core 的读取入口实际查询得出（总线 / UI 单例 / 项目根 provider /
+  扩展路径 provider / 会话队列回调 / 等待用户 provider），不是骨架的自报值。
+- 两个宿主的 bootstrap 在骨架返回后各输出一行快照日志：
+  VS Code 写 `OutputChannel`，Electron 写 `console`。
+- 快照用于双端对照：两端日志的字段差异即漂移点。
+
+### 8.9 退出路径
+
+core 资源的释放有单一入口：
+
+```ts
+/** 释放 core 侧进程级资源（当前为 MCP 子进程） */
+export function shutdownCore(): void;
+```
+
+| 宿主 | 退出钩子 | 调用 |
+| --- | --- | --- |
+| VS Code | `deactivate()` | `stopIdleMonitor()`（宿主专属）+ `shutdownCore()` |
+| Electron | `app.on('will-quit')` | 宿主专属清理（快捷键 / 托盘 / 定时器）+ `shutdownCore()` |
+
+`shutdownCore` 内部经 `MCPHost.shutdown()` 结束 MCP 子进程；宿主不直接调用
+`McpManager` 的同类方法。
+
+### 8.10 一致性守护
+
+**编译期**：
+
+- `CoreBootstrapOptions` 的成员全部必选，不出现 `?`。
+- 骨架函数的形参顺序固定：三个契约在前，宿主参数在后。
+
+**测试期**：`src/test/bootstrapWiring.test.ts`（`npm run test:bootstrap-wiring`）断言：
+
+1. 骨架执行完毕后，`bootstrapSnapshot()` 的每个布尔字段为 `true`；
+2. 快照的 `locale` 保留宿主传入的原始值（不做收敛后再上报）；
+3. `hasProjectRootProvider()` 与 `hasExtensionPathProvider()` 为真；
+4. `requireEventBus()` 与 `requireSessionWaitingForUserProvider()` 可调用（不抛错），
+   `sessionQueue.hasCallbacks()` 为真；
+5. 静态扫描 `src/core/**/*.ts` 中导出的 `set*` / `initialize*` 名字，每个名字出现在
+   `bootstrapCore.ts` 或白名单中。白名单只含会话级运行时 setter（`setSession*`）
+   与由 `initializeHistory(ui)` 间接注入的 `setProjectRootProvider`。
+
+### 8.11 新增启动期注入点检查清单
+
+新增一个启动期注入点时，依次完成：
+
+1. 在 core 中定义 `set*` 写入入口；
+2. 在 core 中定义对应的读取入口（未注入抛错，或说明默认值可接受的理由）；
+3. 在 `bootstrapCore` 内加入接线步骤，并确定它在顺序中的位置；
+4. 若取值来自宿主环境，加入 `CoreBootstrapOptions` 的必选成员；
+5. 在 `bootstrapSnapshot` 中暴露其状态（布尔或取值）；
+6. 在 `src/test/bootstrapWiring.test.ts` 的断言或白名单中登记；
+7. 同步本文档对应章节的表格。
 
 ---
 
@@ -1989,7 +2192,8 @@ dropSession(sessionId: string): void {
 
 1. **webview 能力声明**：`HostInfo` 决定列表 / 新建 / 关闭 / 打开方式由谁负责（第 9 节）；
 2. **三个契约实现**：`UIHost` / `SpinDesign` / `ConversationManager`（第 5 节）；
-3. **两个 bootstrap**：`src/extension.ts`（VS Code）与 `electron/main.ts`（Electron）；
+3. **宿主 bootstrap**：共享骨架 `src/host/bootstrapCore.ts` + 各自 bootstrap
+   `src/extension.ts`（VS Code）与 `electron/main.ts`（Electron）；
 4. **webview 内的能力分支**：只读 `HostInfo`，不嗅探宿主（第 9.3 节）。
 
 本章只列**当前仍存在**的分叉：11.1 是有意保留的宿主固有差异，11.2 是尚未收敛的分叉点。
@@ -2051,8 +2255,13 @@ Electron 的 `sidebar:get-conversations` 直接读它，不重复读盘；工作
 
 **bootstrap / 传输层**（`src/extension.ts` / `electron/main.ts` + `electron/preload.ts`）
 
+启动接线的共享部分在 `src/host/bootstrapCore.ts`（第 8.6 节）；本表只列两端差异。
+
 | 项 | VS Code | Electron |
 | --- | --- | --- |
+| 启动接线骨架 | `bootstrapCore(...)`（共享） | 同左 |
+| 宿主参数 | `locale: vscode.env.language`、`logToConsole: false`、`extensionPath: context.extensionPath` | `locale: app.getLocale()`、`logToConsole: true`、`extensionPath: APP_ROOT` |
+| 启动自检 | `bootstrapSnapshot()` 写入 `OutputChannel` | `bootstrapSnapshot()` 写入 `console` |
 | 消息通道 | HTML 内联脚本注入 `window.vscode`（`acquireVsCodeApi`） | `contextBridge` 注入 `window.electronAPI` |
 | 能力声明注入 | `getWebviewContent()` 内联 `window.__hostInfo` | `preload.ts` `exposeInMainWorld('__hostInfo')` |
 | webview 消息入口 | `handleWebviewMessage(message)`（单 webview，`sender` 为 `null`） | `handleWebviewMessage(message, { sender: webviewHandleFor(sender) })`（按来源视图回包） |
@@ -2061,6 +2270,7 @@ Electron 的 `sidebar:get-conversations` 直接读它，不重复读盘；工作
 | 工作区来源 | `workspaceFolders` | 菜单选择的 `workspacePath` |
 | 原生侧栏 / 托盘 / Monaco 窗口 / 快捷键对话框 / 菜单 | 无 | 有 |
 | 空闲回收 / 状态栏项 / 虚拟文档 provider / 命令注册 | 有 | 无 |
+| 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销快捷键、销毁托盘、`shutdownCore()` |
 
 **托盘状态点与「任务结束」闪烁提醒**属于 `statusListener` 这条流：它吃的是**会话状态流**
 （`deriveTrayStatusFromStates(states)`：`waiting` > `running`（`idle === false`）> `idle`），
@@ -2102,6 +2312,9 @@ MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 
 | 宿主请求无处理器 | `request()` reject；总线不内置超时，**当前两个请求都不设超时**（第 3.7 节） | `src/host/EventBus.ts`；`RunTools.emitToolPermissionRequest` 请求失败 → deny |
 | webview 读宿主能力 | `getHostInfo()` 逐字段校验，缺失或非法直接抛错 | `src/webview/webviewEnv.ts` |
 | 取 UI 单例 | `WebViewUI.getInstance()` 未创建直接抛错（替代静默 `undefined`） | `src/host/WebViewUI.ts` |
+| 取启动快照 | `bootstrapSnapshot()` 未执行骨架时抛错 | `src/host/bootstrapCore.ts` |
+| 取「等待用户」判定 | `requireSessionWaitingForUserProvider()` 未注入直接抛错 | `src/core/sessionResources.ts` |
+| 取项目根 / 扩展路径 | `getProjectRoot()` / `getExtensionPath()` 未注入直接抛错 | `src/core/history/Config.ts` |
 | 宿主契约成员 | 全部必选，禁止 `host.foo?.()` 静默降级（见 12.2） | `src/host/UIHost.ts` |
 
 允许 no-op 的只有**合法瞬时状态**，且必须注释说明理由：

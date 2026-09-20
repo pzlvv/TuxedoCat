@@ -162,6 +162,7 @@ export const enDict: Record<string, string> = {
   'inputArea.spinDesign': 'Spin Design',
   'inputArea.model': 'Model',
   'inputArea.modelCurrent': 'Current: ',
+  'inputArea.modelEmpty': '(no models)',
   'inputArea.mcp': 'MCP',
   'inputArea.mcpEmpty': 'No MCP configured (add one in mcp.json)',
   'inputArea.mcpConnecting': 'connecting…',

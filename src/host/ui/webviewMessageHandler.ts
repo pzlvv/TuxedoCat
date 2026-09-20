@@ -18,7 +18,9 @@ import { buildEditDiffHunks } from '../../core/utils/editDiff.js';
 import { buildReplayMessageData } from '../../core/utils/replayMessages.js';
 import { buildUserContent, extractUserContent } from '../../core/utils/contentBlocks.js';
 import { normalizeModelTokenLimits, getContextWindow, type ModelTokenLimits, type ApiType } from '../../core/utils/modelConfig.js';
-import { readActiveProviderModelContextSync } from '../../core/history/Config.js';
+import { readModelContextSync } from '../../core/history/Config.js';
+import { modelRefOf, sameModelRef, type ModelRef } from '../../core/llm/modelRef.js';
+import { getConversationModelRef } from '../../core/history/Conversation.js';
 import { extractLastJsonObject } from '../../core/utils/lastJson.js';
 import { userChoiceQueue } from '../../core/UserChoiceQueue.js';
 import { isCompacting } from '../../core/compact/state.js';
@@ -115,7 +117,7 @@ export class WebviewMessageHandler {
     agentMode: string;
     hasActiveQuery: boolean;
     hasCompactArchive?: boolean;
-    model?: string;
+    modelRef?: ModelRef;
   }) => void;
   private setTitle: (sessionID: string, title: string) => void;
   private userChoiceManager: UserChoiceManager;
@@ -143,7 +145,7 @@ export class WebviewMessageHandler {
       agentMode: string;
       hasActiveQuery: boolean;
       hasCompactArchive?: boolean;
-      model?: string;
+      modelRef?: ModelRef;
     }) => void;
     setTitle: (sessionID: string, title: string) => void;
     userChoiceManager: UserChoiceManager;
@@ -221,12 +223,12 @@ export class WebviewMessageHandler {
         // 指定句柄时只发该视图（Electron 多视图下预热视图也能收到回包）。
         this.host.onThemeChanged(ctx.sender);
       }],
-      ['requestContextLimit', (msg, ctx) => this.pushContextLimit(ctx.sender, msg.model)],
+      ['requestContextLimit', (msg, ctx) => this.pushContextLimit(ctx.sender, modelRefOf(msg.provider, msg.model))],
 
       // ===== 请求响应 / 显示 =====
       ['respondUserChoice', (msg) => this.handleRespondUserChoice(msg)],
       ['expandCompact', (msg) => this.handleExpandCompact(msg)],
-      ['rollbackEdit', (msg) => this.emitUiEvent({ type: 'editRolledBack', sessionId: msg.sessionId, toolUseId: msg.toolUseId, direction: msg.direction })],
+      ['rollbackEdit', (msg) => this.emitUiEvent({ type: 'editRolledBack', sessionId: msg.sessionId, toolUseId: msg.toolUseId, direction: msg.direction, filePath: msg.filePath })],
 
       // ===== 消息 / 压缩 / 中止（UiEvent 翻译）=====
       ['requestCompress', (msg) => this.emitUiEvent({ type: 'compactRequested', sessionId: msg.sessionId })],
@@ -243,7 +245,7 @@ export class WebviewMessageHandler {
       ['clearConversationSpace', (msg) => this.emitUiEvent({ type: 'conversationSpaceCleared', sessionId: msg.dirName })],
 
       // ===== 会话配置（UiEvent 翻译：core 处理并广播 sessionConfigChanged）=====
-      ['setModel', (msg) => this.emitUiEvent({ type: 'modelChanged', sessionId: msg.sessionId, model: msg.model })],
+      ['setModel', (msg) => this.handleSetModel(msg)],
       ['setThinkingMode', (msg) => this.emitUiEvent({ type: 'thinkingEffortChanged', sessionId: msg.sessionId, mode: msg.mode })],
       ['setPromptMode', (msg) => this.emitUiEvent({ type: 'promptModeChanged', sessionId: msg.sessionId, mode: msg.mode })],
       ['setAgentMode', (msg) => this.emitUiEvent({ type: 'agentModeChanged', sessionId: msg.sessionId, mode: msg.mode })],
@@ -430,6 +432,7 @@ export class WebviewMessageHandler {
           fileHidden: !!message.fileHidden,
           thinkingMode: message.thinkingMode,
           webSearch: message.webSearch,
+          modelRef: this.messageModelRef(message),
           promptPreset: isPromptPresetId(message.promptMode) ? message.promptMode : undefined,
           images,
         })) {
@@ -448,6 +451,7 @@ export class WebviewMessageHandler {
           fileHidden: !!message.fileHidden,
           thinkingMode: message.thinkingMode || engine.thinkingModeOverride,
           webSearch: message.webSearch,
+          modelRef: this.messageModelRef(message),
           promptPreset: isPromptPresetId(message.promptMode) ? message.promptMode : undefined,
           images,
         })) {
@@ -593,6 +597,37 @@ export class WebviewMessageHandler {
   private async handleSendMessage(message: any): Promise<void> {
     // 与 queueMessage 共用同一套入队/处理逻辑，避免两套行为分叉
     await this.handleQueueMessage(message);
+  }
+
+  /**
+   * 会话模型切换（webview → core）。
+   *
+   * webview 侧模型身份是 (provider, model) 整体：provider 缺失或为空串即非法，
+   * 记录日志并忽略，不再猜测/回退到其它 provider。
+   */
+  private async handleSetModel(message: any): Promise<void> {
+    const ref = modelRefOf(message?.provider, message?.model);
+    if (!ref) {
+      this.log(`[WebviewMessageHandler] setModel: provider 为空（非法），忽略 model="${message?.model ?? ''}"`);
+      return;
+    }
+    await this.emitUiEvent({ type: 'modelChanged', sessionId: message.sessionId, ref });
+  }
+
+  /**
+   * 从 webview 消息的扁平字段组装「本次发送携带的模型身份」。
+   *
+   * model 与 provider 必须同时提供：只给 model 不给 provider 属于非法
+   * （provider 空串不表示「未知」），记录日志并按「未携带模型」处理，
+   * 由 Integration 沿用会话已选模型。
+   */
+  private messageModelRef(message: any): ModelRef | undefined {
+    const hasModel = typeof message?.model === 'string' && message.model.trim().length > 0;
+    const ref = modelRefOf(message?.provider, message?.model);
+    if (hasModel && !ref) {
+      this.log(`[WebviewMessageHandler] message carries model without provider (illegal), ignored: model="${message.model}"`);
+    }
+    return ref;
   }
 
   private async handleOpenFile(message: any): Promise<void> {
@@ -748,18 +783,15 @@ export class WebviewMessageHandler {
     const savedContext = conversation.metadata?.context;
     this.log(`[WebviewMessageHandler] Conversation context: ${JSON.stringify(savedContext)}`);
 
-    // 如果没有 per-session 的 thinkingMode/model/webSearch，从 settings.json 读取默认值
+    // 如果没有 per-session 的 thinkingMode/webSearch/promptMode，从 settings.json 读取默认值
     let effectiveSavedContext = savedContext;
-    let effectiveModel = conversation.metadata?.model || conversation.metadata?.context?.model;
+    // meta.json 保持扁平字段：这里组装成模型身份（provider 缺失 → undefined）
+    let modelRef = getConversationModelRef(conversation.metadata);
     try {
-      if (!savedContext?.thinkingMode || !effectiveModel || typeof savedContext?.webSearch !== 'boolean' || !savedContext?.promptMode) {
-        const { getDefaultThinkingEffort, getDefaultModel, getDefaultWebSearch } = await import('../../core/llm/config.js');
+      if (!savedContext?.thinkingMode || typeof savedContext?.webSearch !== 'boolean' || !savedContext?.promptMode) {
+        const { getDefaultThinkingEffort, getDefaultWebSearch } = await import('../../core/llm/config.js');
         const defaultThinkingEffort = await getDefaultThinkingEffort();
-        const defaultModel = await getDefaultModel();
         const defaultWebSearch = await getDefaultWebSearch();
-        if (!effectiveModel) {
-          effectiveModel = defaultModel;
-        }
         let nextCtx = effectiveSavedContext;
         if (!nextCtx?.thinkingMode) {
           nextCtx = { ...(nextCtx || {}), thinkingMode: defaultThinkingEffort };
@@ -774,26 +806,29 @@ export class WebviewMessageHandler {
         effectiveSavedContext = nextCtx;
       }
     } catch (err: any) {
-      this.log(`[WebviewMessageHandler] Failed to read default model/thinking from settings.json: ${err.message}`);
+      this.log(`[WebviewMessageHandler] Failed to read default thinking/webSearch from settings.json: ${err.message}`);
     }
 
-    // 切换对话后校验模型：若该会话保存的模型不在当前 active provider 的模型列表中，
-    // 回退到 provider 默认模型，并持久化到该会话 meta.json，避免继续使用失效模型。
-    if (effectiveModel) {
-      try {
-        const { resolveModelForActiveProvider } = await import('../../core/llm/config.js');
-        const resolvedModel = await resolveModelForActiveProvider(effectiveModel);
-        if (resolvedModel && resolvedModel !== effectiveModel) {
-          this.log(`[WebviewMessageHandler] Session model "${effectiveModel}" is not in active provider model list, fallback to "${resolvedModel}"`);
-          effectiveModel = resolvedModel;
+    // 切换对话后校验模型身份（meta.json 是扁平字段，这里解析成 ModelRef）：
+    // - 未记录 provider（undefined）→ 取 active provider 的默认模型，但不回写 meta.json；
+    // - provider 已被移除 / 模型不在其列表 → 解析出可用身份，回写 meta.json 并同步引擎配置；
+    // - 身份合法 → 原样使用。
+    try {
+      const stored = modelRef;
+      const { resolveModelRef } = await import('../../core/llm/config.js');
+      const resolved = await resolveModelRef(stored);
+      modelRef = resolved;
+      if (stored && !sameModelRef(stored, resolved)) {
+        this.log(`[WebviewMessageHandler] Session model (provider="${stored.provider}", model="${stored.model}") invalid, resolved to (provider="${resolved?.provider ?? ''}", model="${resolved?.model ?? ''}")`);
+        if (resolved) {
           const { updateConversationContext } = await import('../../core/history/index.js');
-          await updateConversationContext(message.sessionId, { model: resolvedModel });
+          await updateConversationContext(message.sessionId, { model: resolved.model, provider: resolved.provider });
           const { setSessionModel } = await import('../../core/Integration.js');
-          setSessionModel(message.sessionId, resolvedModel);
+          setSessionModel(message.sessionId, resolved);
         }
-      } catch (err: any) {
-        this.log(`[WebviewMessageHandler] Failed to resolve model for active provider: ${err.message}`);
       }
+    } catch (err: any) {
+      this.log(`[WebviewMessageHandler] Failed to resolve model for session: ${err.message}`);
     }
 
     // 会话询问模式归 core：内存未记录时回退 meta.json / settings.json 默认值。
@@ -836,7 +871,7 @@ export class WebviewMessageHandler {
       agentMode: effectiveAgentMode,
       hasActiveQuery,
       hasCompactArchive,
-      model: effectiveModel,
+      modelRef,
     });
 
     userChoiceQueue.onSessionLoaded(message.sessionId);
@@ -889,15 +924,19 @@ export class WebviewMessageHandler {
     // 注意：不再写入 meta.json（meta.json 只在发第一条消息时由 appendMessage 创建），
     // 默认值在发送第一条消息后仍可通过 handleSetModel/handleSetThinkingMode/handleSetPromptMode 持久化。
     try {
-      const { getDefaultModel, getDefaultThinkingEffort, getDefaultAgentMode, getDefaultPromptMode, getDefaultWebSearch } = await import('../../core/llm/config.js');
-      const defaultModel = await getDefaultModel();
-      const defaultThinkingEffort = await getDefaultThinkingEffort();
-      const defaultAgentMode = await getDefaultAgentMode();
-      const defaultPromptMode = await getDefaultPromptMode();
-      const defaultWebSearch = await getDefaultWebSearch();
+      const { getActiveModelRef, getDefaultThinkingEffort, getDefaultAgentMode, getDefaultPromptMode, getDefaultWebSearch } = await import('../../core/llm/config.js');
+      const [defaultModelRef, defaultThinkingEffort, defaultAgentMode, defaultPromptMode, defaultWebSearch] = await Promise.all([
+        getActiveModelRef(),
+        getDefaultThinkingEffort(),
+        getDefaultAgentMode(),
+        getDefaultPromptMode(),
+        getDefaultWebSearch(),
+      ]);
       this.postToWebview(newSessionId, {
         type: 'setNewConversationDefaults',
-        model: defaultModel,
+        // wire 协议保持扁平：模型身份拆成 model / provider 两个字段
+        model: defaultModelRef?.model ?? '',
+        provider: defaultModelRef?.provider,
         thinkingMode: defaultThinkingEffort,
         agentMode: defaultAgentMode,
         promptMode: defaultPromptMode,
@@ -960,16 +999,16 @@ export class WebviewMessageHandler {
   /**
    * 读取当前上下文上限并回包 `contextLimitUpdated`。
    *
-   * 两条路径共用这一份实现：webview 的 `requestContextLimit`（带 `model`），以及宿主在
-   * 视图加载完成时的初始化推送（`model` 为 `undefined`，按 active provider 默认模型算）。
-   * 读取逻辑为 `readActiveProviderModelContextSync` + `getContextWindow`（含 settings.json
+   * 两条路径共用这一份实现：webview 的 `requestContextLimit`（带模型身份），以及
+   * 宿主在视图加载完成时的初始化推送（`ref` 为 undefined，按 active provider 默认模型算）。
+   * 读取逻辑为 `readModelContextSync` + `getContextWindow`（含 settings.json
    * 的 modelConfigs 覆盖）。投递：
    * - `sender` 指定句柄：直发该视图（Electron 多视图，预热视图也能收到）；
    * - `sender` 为 null：走默认路由（单视图宿主即唯一 webview）。
    */
-  pushContextLimit(sender: WebviewRequestContext['sender'], model: string | undefined): void {
+  pushContextLimit(sender: WebviewRequestContext['sender'], ref?: ModelRef): void {
     try {
-      const { model: modelName, modelConfigs } = readActiveProviderModelContextSync(model);
+      const { model: modelName, modelConfigs } = readModelContextSync(ref);
       const message: WebviewMessage = {
         type: 'contextLimitUpdated',
         maxContextTokens: getContextWindow(modelName || '', modelConfigs),
@@ -986,52 +1025,73 @@ export class WebviewMessageHandler {
   }
 
   private async handleRequestModels(_message: any): Promise<void> {
-    this.log(`[WebviewMessageHandler] Requesting model list from API`);
+    this.log(`[WebviewMessageHandler] Requesting model list from all providers`);
     try {
       const { readSettingsJson } = await import('../../core/history/Config.js');
       const settings = await (readSettingsJson as () => Promise<Record<string, any>>)();
-      const activeKey = settings?.llm?.activeProvider;
-      const activeProvider = activeKey ? settings?.llm?.providers?.[activeKey] : undefined;
-      const baseURL = typeof activeProvider?.baseURL === 'string' ? activeProvider.baseURL.trim() : '';
-      const apiKey = typeof activeProvider?.apiKey === 'string' ? activeProvider.apiKey.trim() : '';
+      const providersMap: Record<string, any> =
+        settings?.llm?.providers && typeof settings.llm.providers === 'object'
+          ? settings.llm.providers
+          : {};
+      const activeKey = typeof settings?.llm?.activeProvider === 'string'
+        && providersMap[settings.llm.activeProvider]?.baseURL
+        ? settings.llm.activeProvider
+        : '';
 
-      const savedModels = Array.isArray(activeProvider?.models)
-        ? (activeProvider.models as unknown[])
-            .filter((m): m is string => typeof m === 'string' && !!m.trim())
-            .map((m) => m.trim())
+      const normalize = (raw: unknown): string[] => Array.isArray(raw)
+        ? Array.from(new Set(
+            (raw as unknown[])
+              .filter((m): m is string => typeof m === 'string' && !!m.trim())
+              .map((m) => m.trim()),
+          ))
         : [];
-      // 当前服务商的默认 model，确保始终出现在模型列表中
-      const defaultModel: string | undefined =
-        (typeof activeProvider?.defaultModel === 'string' && activeProvider.defaultModel.trim())
-          ? activeProvider.defaultModel.trim()
-          : (Array.isArray(activeProvider?.models) && activeProvider.models.length > 0
-              ? activeProvider.models[0]
-              : undefined);
-      const ensureDefault = (models: string[]): string[] => {
-        const unique = Array.from(new Set(models.filter((m) => !!m.trim())));
-        if (defaultModel && !unique.includes(defaultModel)) {
-          unique.unshift(defaultModel);
-        }
-        return unique;
-      };
 
-      if (baseURL && apiKey) {
-        const fetched = await this.fetchModelsFromProvider(baseURL, apiKey);
-        if (fetched.length > 0) {
-          this.log(`[WebviewMessageHandler] Fetched ${fetched.length} models from API`);
-          const models = ensureDefault([...fetched, ...savedModels]);
-          this.host.sendToWebview({ type: 'setModels', models });
-          return;
+      // 按 settings.json 的定义顺序收集全部 provider（baseURL 非空）。
+      // 模型名与 provider 分开存放，菜单据此建立三级子菜单，不做字符串拼接。
+      const groups = Object.entries(providersMap)
+        .filter(([, p]) => !!p?.baseURL)
+        .map(([key, p]) => {
+          const models = normalize(p?.models);
+          const defaultModel = typeof p?.defaultModel === 'string' && p.defaultModel.trim()
+            ? p.defaultModel.trim()
+            : models[0];
+          const unique = Array.from(new Set(models.filter((m) => !!m.trim())));
+          if (defaultModel && !unique.includes(defaultModel)) unique.unshift(defaultModel);
+          return {
+            key,
+            baseURL: typeof p?.baseURL === 'string' ? p.baseURL.trim() : '',
+            apiKey: typeof p?.apiKey === 'string' ? p.apiKey.trim() : '',
+            defaultModel,
+            models: unique,
+          };
+        });
+
+      // 仅 active provider 尝试从 API 拉取最新模型并合并（其它 provider 直接用已保存列表）。
+      const activeGroup = groups.find((g) => g.key === activeKey);
+      if (activeGroup && activeGroup.baseURL && activeGroup.apiKey) {
+        try {
+          const fetched = await this.fetchModelsFromProvider(activeGroup.baseURL, activeGroup.apiKey);
+          if (fetched.length > 0) {
+            this.log(`[WebviewMessageHandler] Fetched ${fetched.length} models from API for ${activeGroup.key}`);
+            activeGroup.models = Array.from(new Set(
+              [activeGroup.defaultModel, ...fetched, ...activeGroup.models].filter((m) => !!m && !!m.trim()),
+            ));
+          } else {
+            this.log(`[WebviewMessageHandler] API returned no models for ${activeGroup.key}, using saved models`);
+          }
+        } catch (err: any) {
+          this.log(`[WebviewMessageHandler] Failed to fetch models for ${activeGroup.key}: ${err?.message || err}`);
         }
-        this.log(`[WebviewMessageHandler] API returned no models, using saved/builtin models`);
       }
 
-      // 没有可拉取的模型时只回传已保存的模型列表（可能为空）。
-      // 不再回退到内置模型名：模型完全由用户配置，webview 侧不保留默认模型。
-      this.host.sendToWebview({ type: 'setModels', models: ensureDefault(savedModels) });
+      this.host.sendToWebview({
+        type: 'setModels',
+        providers: groups.map((g) => ({ key: g.key, models: g.models })),
+        activeProvider: activeKey,
+      });
     } catch (err: any) {
       this.log(`[WebviewMessageHandler] Failed to fetch models: ${err.message}`);
-      this.host.sendToWebview({ type: 'setModels', models: [] });
+      this.host.sendToWebview({ type: 'setModels', providers: [], activeProvider: '' });
     }
   }
 
@@ -1536,6 +1596,7 @@ export class WebviewMessageHandler {
       providers, activeProvider: requestedActiveProvider, closeAfterSave,
       saveProviders,
       sessionId: requestedSessionId, currentModel: requestedCurrentModel,
+      currentProvider: requestedCurrentProvider,
     } = message;
 
     this.log(`[WebviewMessageHandler] saveLLMConfig: webSearch=${!!webSearch}, thinkingEffort=${thinkingEffort}, defaultAgentMode=${defaultAgentMode}, defaultPromptMode=${defaultPromptMode}, language=${language}, saveProviders=${!!saveProviders}, providers=${Array.isArray(providers) ? providers.length : 0}, activeProvider=${requestedActiveProvider || ''}, closeAfterSave=${!!closeAfterSave}, sessionId=${requestedSessionId || ''}, currentModel=${requestedCurrentModel || ''}`);
@@ -1703,46 +1764,50 @@ export class WebviewMessageHandler {
       let savedPromptMode: 'normal' | 'minimal' | 'mixed' = 'normal';
       let savedWebSearch = false;
       let savedActiveProvider = '';
-      let savedProviderModels: string[] = [];
+      let savedProviderGroups: Array<{ key: string; models: string[] }> = [];
       try {
-        const { getDefaultModel, getDefaultThinkingEffort, getDefaultAgentMode, getDefaultPromptMode, getDefaultWebSearch, getLLMConfigPanelPayload } = await import('../../core/llm/config.js');
-        [savedModel, savedThinkingEffort, savedAgentMode, savedPromptMode, savedWebSearch] = await Promise.all([
-          getDefaultModel(),
+        const { getActiveModelRef, getDefaultThinkingEffort, getDefaultAgentMode, getDefaultPromptMode, getDefaultWebSearch, getLLMConfigPanelPayload } = await import('../../core/llm/config.js');
+        let savedModelRef: ModelRef | undefined;
+        [savedModelRef, savedThinkingEffort, savedAgentMode, savedPromptMode, savedWebSearch] = await Promise.all([
+          getActiveModelRef(),
           getDefaultThinkingEffort(),
           getDefaultAgentMode(),
           getDefaultPromptMode(),
           getDefaultWebSearch(),
         ]);
+        savedModel = savedModelRef?.model ?? '';
         const payload = await getLLMConfigPanelPayload();
         savedActiveProvider = payload.activeProvider;
-        savedProviderModels = payload.providers.find((p) => p.key === savedActiveProvider)?.models || [];
+        savedProviderGroups = payload.providers.map((p) => ({ key: p.key, models: p.models }));
       } catch {}
 
-      // 切换 provider 后校验当前会话模型：若不在新 provider 的模型列表中，
-      // 回退到新 provider 的默认模型，并持久化到会话 meta.json、同步引擎配置。
-      // 返回给 webview 的 activeModel 用于刷新当前对话的模型选择（含已有消息的对话）。
+      // 保存后校验当前会话的模型身份：provider 或模型失效时解析出可用身份，
+      // 并持久化到会话 meta.json、同步引擎配置。返回给 webview 的
+      // activeModel / activeModelProvider 用于刷新当前对话的模型选择（含已有消息的对话）。
       let activeModel = '';
+      let activeModelProvider = '';
       try {
         const currentSessionId = (typeof requestedSessionId === 'string' && requestedSessionId) || this.trackedActiveSessionId;
         if (currentSessionId && currentSessionId !== 'undefined') {
-          // 优先使用 webview 回传的当前模型（最贴近界面显示），
-          // 其次读取该会话 meta.json 中保存的模型。
-          let sessionModel = typeof requestedCurrentModel === 'string' ? requestedCurrentModel.trim() : '';
-          if (!sessionModel) {
+          // 优先使用 webview 回传的当前模型身份（最贴近界面显示），
+          // 其次读取该会话 meta.json 中保存的值（meta.json 是扁平字段）。
+          let storedRef = modelRefOf(requestedCurrentProvider, requestedCurrentModel);
+          if (!storedRef) {
             try {
               const { loadConversation } = await import('../../core/history/index.js');
               const conversation = await loadConversation(currentSessionId);
-              sessionModel = conversation?.metadata?.model || conversation?.metadata?.context?.model || '';
+              storedRef = getConversationModelRef(conversation?.metadata);
             } catch { /* 新对话可能还没有 meta.json */ }
           }
-          const { resolveModelForActiveProvider } = await import('../../core/llm/config.js');
-          const resolved = await resolveModelForActiveProvider(sessionModel || savedModel);
+          const { resolveModelRef } = await import('../../core/llm/config.js');
+          const resolved = await resolveModelRef(storedRef);
           if (resolved) {
-            activeModel = resolved;
-            if (sessionModel && resolved !== sessionModel) {
-              this.log(`[WebviewMessageHandler] Current session model "${sessionModel}" is not in active provider model list, fallback to "${resolved}"`);
+            activeModel = resolved.model;
+            activeModelProvider = resolved.provider;
+            if (storedRef && !sameModelRef(storedRef, resolved)) {
+              this.log(`[WebviewMessageHandler] Current session model (provider="${storedRef.provider}", model="${storedRef.model}") invalid, resolved to (provider="${resolved.provider}", model="${resolved.model}")`);
               const { updateConversationContext } = await import('../../core/history/index.js');
-              await updateConversationContext(currentSessionId, { model: resolved });
+              await updateConversationContext(currentSessionId, { model: resolved.model, provider: resolved.provider });
             }
             const { setSessionModel } = await import('../../core/Integration.js');
             setSessionModel(currentSessionId, resolved);
@@ -1752,17 +1817,25 @@ export class WebviewMessageHandler {
         this.log(`[WebviewMessageHandler] Failed to resolve active model after save: ${err.message}`);
       }
 
-      // 保存后立即刷新主界面的模型下拉列表：只使用该服务商保存的模型列表
-      // （不再回退到内置模型名，模型完全由用户配置）。
-      const baseModels = savedProviderModels;
-      const modelList = Array.from(new Set([...baseModels, ...(savedModel ? [savedModel] : []), ...(activeModel ? [activeModel] : [])]));
-      this.host.sendToWebview({ type: 'setModels', models: modelList });
+      // 保存后立即刷新主界面的模型下拉列表：回传全部 provider 的分组列表。
+      // 当前会话选中的模型/默认模型若不在对应 provider 列表里，则补进去。
+      const groups = savedProviderGroups.map((g) => ({ key: g.key, models: [...g.models] }));
+      const ensureModel = (providerKey: string, model: string) => {
+        if (!providerKey || !model) return;
+        const group = groups.find((g) => g.key === providerKey);
+        if (group && !group.models.includes(model)) group.models.unshift(model);
+      };
+      ensureModel(savedActiveProvider, savedModel);
+      ensureModel(activeModelProvider, activeModel);
+      this.host.sendToWebview({ type: 'setModels', providers: groups, activeProvider: savedActiveProvider });
 
       // 通知 webview 保存成功
       this.host.sendToWebview({
         type: 'llmConfigSaved',
         defaultModel: savedModel,
+        defaultModelProvider: savedActiveProvider,
         activeModel,
+        activeModelProvider,
         thinkingEffort: savedThinkingEffort,
         defaultAgentMode: savedAgentMode,
         defaultPromptMode: savedPromptMode,
@@ -1787,9 +1860,9 @@ export class WebviewMessageHandler {
    */
   private async handleRequestSettingsDefaults(): Promise<void> {
     try {
-      const { getDefaultModel, getDefaultThinkingEffort, getDefaultAgentMode, getDefaultPromptMode, getDefaultWebSearch, getLLMConfigPanelPayload } = await import('../../core/llm/config.js');
-      const [model, thinkingMode, agentMode, promptMode, webSearch, payload] = await Promise.all([
-        getDefaultModel(),
+      const { getActiveModelRef, getDefaultThinkingEffort, getDefaultAgentMode, getDefaultPromptMode, getDefaultWebSearch, getLLMConfigPanelPayload } = await import('../../core/llm/config.js');
+      const [defaultModelRef, thinkingMode, agentMode, promptMode, webSearch, payload] = await Promise.all([
+        getActiveModelRef(),
         getDefaultThinkingEffort(),
         getDefaultAgentMode(),
         getDefaultPromptMode(),
@@ -1799,7 +1872,9 @@ export class WebviewMessageHandler {
       const providerConfigured = !!payload.activeProvider && !!payload.apiKey;
       this.host.sendToWebview({
         type: 'settingsDefaults',
-        model,
+        // wire 协议保持扁平：模型身份拆成 model / provider 两个字段
+        model: defaultModelRef?.model ?? '',
+        provider: defaultModelRef?.provider,
         thinkingMode,
         agentMode,
         promptMode,
@@ -1807,7 +1882,7 @@ export class WebviewMessageHandler {
         language: this.getUiLanguageFromSettings(),
         providerConfigured,
       });
-      this.log(`[WebviewMessageHandler] Sent settings defaults: model=${model}, thinkingMode=${thinkingMode}, agentMode=${agentMode}, promptMode=${promptMode}, webSearch=${webSearch}, providerConfigured=${providerConfigured}`);
+      this.log(`[WebviewMessageHandler] Sent settings defaults: model=${defaultModelRef?.model ?? ''}, provider=${defaultModelRef?.provider ?? ''}, thinkingMode=${thinkingMode}, agentMode=${agentMode}, promptMode=${promptMode}, webSearch=${webSearch}, providerConfigured=${providerConfigured}`);
     } catch (err: any) {
       this.log(`[WebviewMessageHandler] Failed to send settings defaults: ${err.message}`);
       // 读取失败也要回一条：否则 webview 的 configReady 永远为 false，发送按钮会一直禁用。

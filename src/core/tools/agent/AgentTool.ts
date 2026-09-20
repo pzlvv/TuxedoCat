@@ -347,6 +347,11 @@ Important guidelines:
 
     // 继承父对话的 thinking effort
     subEngine.thinkingModeOverride = parentThinkingEffort;
+    // 继承父对话的模型身份（provider + model；meta.json 也要记录）
+    const parentModelRef = parentEngine?.modelRefOverride;
+    if (parentModelRef) {
+      subEngine.modelRefOverride = parentModelRef;
+    }
 
     // ========== 持久化子会话元数据（meta.json）==========
     // 子代理会话必须把 parentSessionId（关联主对话）、role、model 写入 meta.json，
@@ -357,7 +362,7 @@ Important guidelines:
     // 现有 meta.json 并保留这些字段，仅递增 messageCount 和更新标题。
     try {
       const { createConversationMetadataSync } = await import('../../history/Conversation.js');
-      createConversationMetadataSync(subSessionID, subTitle, creatorSessionId, agentRole, modelConfig?.model);
+      createConversationMetadataSync(subSessionID, subTitle, creatorSessionId, agentRole, parentModelRef);
       logger.info('AgentTool', `Pre-created conversation metadata for sub-agent ${subSessionID} (parent=${creatorSessionId}, role=${agentRole}, model=${modelConfig?.model ?? 'inherit'})`);
     } catch (err) {
       logger.warn('AgentTool', `Failed to pre-create conversation metadata for sub-agent ${subSessionID}: ${err}`);

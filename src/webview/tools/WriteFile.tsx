@@ -97,6 +97,9 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
       filePath: filePath || '',
       direction: rollbackDirection,
     });
+    // 回滚在 core 侧异步执行，结果以一条系统消息（CoreEvent.message）回传聊天区展示，
+    // 因此这里直接关闭确认框；旧实现等待 rollbackEditResult 回包，该回包已随总线重构移除。
+    setShowRollbackConfirm(false);
   };
 
   const handleRollbackCancel = () => {

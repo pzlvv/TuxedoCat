@@ -36,6 +36,8 @@ import {
   MAX_RETRIES,
   isRetryableStatus,
   isNetworkFetchError,
+  formatErrorChain,
+  serializeError,
   sleep,
 } from './shared.js';
 
@@ -124,9 +126,9 @@ export async function dumpFailedRequest(params: {
       },
       requestHeaders: redactHeaders(params.requestHeaders),
       requestBody: params.requestBody,
-      error: params.error instanceof Error
-        ? { name: params.error.name, message: params.error.message, stack: params.error.stack }
-        : String(params.error),
+      // 保留完整 cause 链与系统错误码：undici 的 `fetch failed` 只是外壳，
+      // 根因（ECONNRESET / ENOTFOUND / UND_ERR_CONNECT_TIMEOUT ...）在 cause 上。
+      error: serializeError(params.error),
       responseBody: params.responseBody,
     };
 
@@ -420,7 +422,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
         }
         // 对网络层错误（fetch failed / ECONNRESET 等）重试数次
         if (retryCount < MAX_RETRIES && isNetworkFetchError(fetchError)) {
-          logger.warn('RealAPI', `Network error while fetching (${(fetchError as TypeError).message}), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
+          logger.warn('RealAPI', `Network error while fetching (${formatErrorChain(fetchError)}), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
           await sleep(RETRY_DELAY_MS);
           checkAborted(signal);
           yield* executeRequest(retryCount + 1);
@@ -842,7 +844,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       throw error;
     }
 
-    logger.error('RealAPI', `API call failed: ${error}`);
+    logger.error('RealAPI', `API call failed: ${formatErrorChain(error)}`);
 
     // 网络异常时 requestBody 可能尚未构建完整
     await dumpFailedRequest({

@@ -14,6 +14,7 @@ import { requireEventBus, type CoreEvent } from '../AssistantEventBus.js';
 import { buildConversationTitle, extractUserContent } from '../utils/contentBlocks.js';
 import { deleteSessionToolResults } from '../tools/toolResultStorage.js';
 import { logger } from '../Logger.js';
+import { modelRefOf, type ModelRef } from '../llm/modelRef.js';
 
 /** core → UI 单向事件的发送侧封装（history/Conversation 统一走它） */
 function emitToUi(event: CoreEvent): void {
@@ -235,6 +236,11 @@ export interface ConversationContext {
   isExpanded?: boolean;
   /** 当前对话使用的模型名称 */
   model?: string;
+  /**
+   * 当前对话使用的模型所属 provider key（baseURL 的 hostname）。
+   * 模型 + provider 一起才能完整表征一个模型（同名模型可能属于不同 provider）。
+   */
+  provider?: string;
 }
 
 /**
@@ -259,6 +265,22 @@ export interface ConversationMetadata {
   isRemote?: boolean;
   /** 当前对话使用的模型名称 */
   model?: string;
+  /** 当前对话使用的模型所属 provider key（模型 + provider 一起才能完整表征一个模型） */
+  provider?: string;
+}
+
+/**
+ * 从 meta.json 元数据组装模型身份。
+ *
+ * meta.json 保持扁平字段（顶层 model/provider，兼容旧数据的 context.model/provider），
+ * 组装只在这一处做，运行时一律传 ModelRef。
+ * provider 缺失（旧数据 / 未配置）时返回 undefined，由调用方决定取 active provider 或按未配置处理。
+ */
+export function getConversationModelRef(metadata: ConversationMetadata | undefined): ModelRef | undefined {
+  return modelRefOf(
+    metadata?.provider ?? metadata?.context?.provider,
+    metadata?.model ?? metadata?.context?.model,
+  );
 }
 
 /**
@@ -698,14 +720,15 @@ async function updateMetadataForNewMessage(
         // 持久化，使对话树正确关联到主对话（即使创建方未预创建 meta.json）。
         let parentSessionId: string | undefined;
         let role: string | undefined;
-        let model: string | undefined;
+        let modelRef: ModelRef | undefined;
         try {
           const { getSessionEngine } = await import('../QueryEngine.js');
           const engine = getSessionEngine(sessionId);
           if (engine) {
             parentSessionId = (engine as any).parentSessionId;
             role = (engine as any).role;
-            model = (engine as any).config?.modelConfig?.model;
+            // 模型身份由会话运行时记录（provider + model 一起才能完整表征一个模型）
+            modelRef = engine.modelRefOverride;
           }
         } catch { /* ignore */ }
 
@@ -719,7 +742,9 @@ async function updateMetadataForNewMessage(
           ...(parentSessionId ? { parentSessionId } : {}),
           // 非默认角色才写入 role（默认 'Master' 不写入，避免所有对话都带冗余字段）
           ...(role && role !== 'Master' ? { role } : {}),
-          ...(model ? { model } : {}),
+          // meta.json 保持扁平字段：这里把模型身份拆回 model / provider
+          ...(modelRef?.model ? { model: modelRef.model } : {}),
+          ...(modelRef?.provider ? { provider: modelRef.provider } : {}),
         };
         created = true;
       } else {
@@ -793,18 +818,19 @@ class MetadataUpdatedTitle {
  * @param sessionId - 会话 ID
  * @param title - 会话标题
  * @param parentSessionId - 可选，父会话 ID
+ * @param modelRef - 可选，模型身份（provider + model）；写入时拆回扁平的 model / provider 字段
  */
 export function createConversationMetadataSync(
   sessionId: string,
   title: string,
   parentSessionId?: string,
   role?: string,
-  model?: string,
+  modelRef?: ModelRef,
 ): void {
   const projectPath = getProjectRoot();
   ensureProjectConversationDirSync(projectPath);
 
-  // 创建 meta.json
+  // 创建 meta.json（保持扁平字段）
   const metadataPath = getMetadataPath(sessionId, projectPath);
   const metadata: ConversationMetadata = {
     sessionId,
@@ -815,7 +841,8 @@ export function createConversationMetadataSync(
     messageCount: 0,
     parentSessionId,
     role,
-    model,
+    ...(modelRef?.model ? { model: modelRef.model } : {}),
+    ...(modelRef?.provider ? { provider: modelRef.provider } : {}),
   };
   writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), { encoding: 'utf8', mode: 0o600 });
 
@@ -1321,9 +1348,12 @@ export async function updateConversationContext(
       if (context.totalContextTokens !== undefined && context.totalContextTokens >= 0) {
         metadata.context.totalContextTokens = context.totalContextTokens;
       }
-      // model 字段同时写入 metadata 顶层（便于快速读取）和 context.model
+      // model / provider 字段同时写入 metadata 顶层（便于快速读取）和 context
       if (context.model !== undefined) {
         metadata.model = context.model;
+      }
+      if (context.provider !== undefined) {
+        metadata.provider = context.provider;
       }
       // 注意：不更新 updatedAt —— 它只反映"最后消息时间"（appendMessage 维护），
       // UI 上下文（输入框/当前文件/token 数）的保存不应让旧会话显示为"刚刚"
@@ -1345,6 +1375,9 @@ export async function updateConversationContext(
         }
         if (context.model !== undefined) {
           cached.metadata.model = context.model;
+        }
+        if (context.provider !== undefined) {
+          cached.metadata.provider = context.provider;
         }
       }
     } catch (err) {
@@ -1406,7 +1439,7 @@ export async function updateConversationMetadataTitle(
 }
 
 /** 读取项目对话目录下的全部元数据（用于计算「受影响闭包」） */
-async function readProjectConversationMetadata(currentProject: string): Promise<ConversationMetadata[]> {
+export async function readProjectConversationMetadata(currentProject: string): Promise<ConversationMetadata[]> {
   const projectDir = getProjectConversationDir(currentProject);
   const result: ConversationMetadata[] = [];
   try {

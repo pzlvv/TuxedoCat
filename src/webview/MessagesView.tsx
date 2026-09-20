@@ -13,7 +13,8 @@ import { AnsiText, hasAnsi } from './ansi';
 import { PersistedOutputBox, isPersistedOutput } from './tools/persistedOutput';
 import * as ToolComponents from './tools';
 import type { Message, Colors } from './types';
-import { postMessage, getLogoUri, LOGO_CLASS_NAME, navigateToConversation } from './webviewEnv';
+import { postMessage, LOGO_CLASS_NAME, navigateToConversation } from './webviewEnv';
+import { getPlaceholderLogoUri } from './placeholderLogo';
 import { profileLog } from './debug';
 import { t } from './i18n';
 import { useStreamStats, formatCount } from './hooks/useStreamStats';
@@ -1846,7 +1847,7 @@ const MessagesView = memo(({
             </div>
           ) : (
             <img
-              src={getLogoUri()}
+              src={getPlaceholderLogoUri()}
               alt="logo"
               className={LOGO_CLASS_NAME}
             />

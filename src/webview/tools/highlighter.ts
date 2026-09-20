@@ -1,5 +1,5 @@
 import type { Highlighter } from 'shiki';
-import { getPreloadedHighlightLanguages, postMessage } from '../webviewEnv';
+import { getPreloadedHighlightLanguages } from '../webviewEnv';
 import { profileLog } from '../debug';
 
 /**
@@ -151,7 +151,7 @@ export function ensureLanguage(language: string): Promise<void> {
  * 顺序加载（而非并发）以避免多份语法同时编译正则造成主线程长任务。
  */
 function schedulePreload(): void {
-  const list = getPreloadedHighlightLanguages();
+  const list = [...getPreloadedSet()];
   if (list.length === 0) return;
 
   const _t0 = performance.now();

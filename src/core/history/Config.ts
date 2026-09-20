@@ -12,6 +12,7 @@ import { requireEventBus } from '../AssistantEventBus.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
 import { DEFAULT_WAKE_SHORTCUT, normalizeAccelerator } from '../utils/shortcut.js';
 import type { ModelTokenLimits } from '../utils/modelConfig.js';
+import type { ModelRef } from '../llm/modelRef.js';
 
 /**
  * 获取配置目录（CONFIG_DIR_NAME）
@@ -175,6 +176,16 @@ export function setProjectRootProvider(provider: () => string | undefined): void
 }
 
 /**
+ * 项目根目录提供者是否已注册（启动自检用）。
+ *
+ * 与 hasProjectRoot() 的区别：只看"提供者有没有被注入"，不看它当前返回什么值。
+ * 未打开工作目录时提供者仍然存在，属于合法的启动完成状态。
+ */
+export function hasProjectRootProvider(): boolean {
+  return projectRootProvider !== null;
+}
+
+/**
  * 当前是否有可用的项目根目录（宿主已打开工作目录）
  *
  * 与 getProjectRoot() 的区别：只判断、不取值也不抛错，
@@ -217,6 +228,11 @@ let extensionPathProvider: (() => string | undefined) | null = null;
  */
 export function setExtensionPathProvider(provider: () => string | undefined): void {
   extensionPathProvider = provider;
+}
+
+/** 扩展路径提供者是否已注册（启动自检用；不看当前返回值） */
+export function hasExtensionPathProvider(): boolean {
+  return extensionPathProvider !== null;
 }
 
 /**
@@ -361,12 +377,13 @@ export function readWakeShortcutSync(): string {
 }
 
 /**
- * 同步读取 settings.json 中当前 active provider 的模型上下文信息，
+ * 同步读取 settings.json 中指定模型身份（provider + model）的上下文信息，
  * 供各宿主在响应 webview 的 requestContextLimit 时使用。
  *
- * - model：显式传入的模型名优先（会话/下拉框选中的模型）；
- *   未传入时按 activeProvider.defaultModel → activeProvider.models[0] → '' 回退。
- * - modelConfigs：activeProvider.modelConfigs，即 settings.json 中每个模型的
+ * - ref 提供时：只查该 provider 的 modelConfigs，不回退到其它 provider
+ *   （provider 不存在时记录日志，仅按内置注册表计算）。
+ * - ref 未提供时：按 activeProvider 的默认模型算（视图初始化推送用）。
+ * - modelConfigs：provider.modelConfigs，即 settings.json 中每个模型的
  *   context/output 覆盖值。
  *
  * 必须同时返回 modelConfigs：只按内置 MODEL_CONFIGS 注册表计算 context window
@@ -374,26 +391,37 @@ export function readWakeShortcutSync(): string {
  * 表现为「切换模型后 webview 里的 context 不跟随变化」。
  * VSCode 与 Electron 两端共用本函数，避免逻辑再次分叉。
  */
-export function readActiveProviderModelContextSync(model?: string): {
+export function readModelContextSync(ref?: ModelRef): {
   model: string;
   modelConfigs: Record<string, ModelTokenLimits>;
 } {
-  let modelName = model || '';
+  let modelName = ref?.model ?? '';
   let modelConfigs: Record<string, ModelTokenLimits> = {};
   try {
     const settingsPath = join(getConfigHomeDir(), 'settings.json');
     const content = readFileSync(settingsPath, 'utf-8');
     const cfg = JSON.parse(content);
+    const providers = cfg?.llm?.providers;
     const activeKey = cfg?.llm?.activeProvider;
-    const activeProvider = activeKey ? cfg?.llm?.providers?.[activeKey] : undefined;
-    if (activeProvider?.modelConfigs && typeof activeProvider.modelConfigs === 'object') {
-      modelConfigs = activeProvider.modelConfigs;
+    let chosenKey = '';
+    if (ref) {
+      if (providers?.[ref.provider]?.baseURL) {
+        chosenKey = ref.provider;
+      } else {
+        logger.warn('readModelContextSync', `provider "${ref.provider}" 不存在，仅按内置注册表计算 context`);
+      }
+    } else if (activeKey && providers?.[activeKey]?.baseURL) {
+      chosenKey = activeKey;
     }
-    if (!modelName) {
-      if (typeof activeProvider?.defaultModel === 'string' && activeProvider.defaultModel.trim()) {
-        modelName = activeProvider.defaultModel.trim();
-      } else if (Array.isArray(activeProvider?.models) && activeProvider.models.length > 0) {
-        modelName = activeProvider.models[0];
+    const chosenProvider = chosenKey ? providers?.[chosenKey] : undefined;
+    if (chosenProvider?.modelConfigs && typeof chosenProvider.modelConfigs === 'object') {
+      modelConfigs = chosenProvider.modelConfigs;
+    }
+    if (!modelName && chosenProvider) {
+      if (typeof chosenProvider.defaultModel === 'string' && chosenProvider.defaultModel.trim()) {
+        modelName = chosenProvider.defaultModel.trim();
+      } else if (Array.isArray(chosenProvider.models) && chosenProvider.models.length > 0) {
+        modelName = chosenProvider.models[0];
       }
     }
   } catch {

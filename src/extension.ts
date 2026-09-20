@@ -4,22 +4,12 @@ import { VSCodeUIHost } from './VSCodeUIHost.js';
 import { VSCodeSpinDesign } from './VSCodeSpinDesign.js';
 import { SingleWebViewConversationManager } from './VSCodeConversationManager.js';
 import { WebViewUI } from './host/WebViewUI.js';
-import { UserChoiceManager } from './host/ui/userChoice.js';
+import { bootstrapCore, bootstrapSnapshot, shutdownCore } from './host/bootstrapCore.js';
 import { buildDiffUris } from './VSCodeUIHost/diffUris.js';
-import { setLogCallback } from './core/Logger.js';
-import { initializeHistory } from './core/Integration.js';
-import { setSessionWaitingForUserProvider } from './core/sessionResources.js';
-import {
-  readUiLanguageSync,
-  readHighlightLanguagesSync,
-  setExtensionPathProvider,
-} from './core/history/Config.js';
-import { ensureConfigDirs } from './core/history/index.js';
+import { readUiLanguageSync, readHighlightLanguagesSync } from './core/history/Config.js';
 import { VSCODE_HOST_INFO } from './host/types.js';
-import { getSystemLocale, setCoreLocale, setCoreUiLanguage } from './core/i18n.js';
-import { setGlobalEventBus, requireEventBus } from './core/AssistantEventBus.js';
-import { createEventBus } from './host/EventBus.js';
-import { initializeCoreEvents } from './core/initializeCoreEvents.js';
+import { getSystemLocale } from './core/i18n.js';
+import { requireEventBus } from './core/AssistantEventBus.js';
 import {
   COMMAND_PREFIX,
   DIFF_AFTER_SCHEME,
@@ -52,74 +42,39 @@ class VirtualDocumentProvider implements vscode.TextDocumentContentProvider {
 }
 
 export function activate(context: vscode.ExtensionContext) {
-  setCoreLocale(vscode.env.language);
-  setCoreUiLanguage(readUiLanguageSync());
-  setExtensionPathProvider(() => context.extensionPath);
-
   const outputChannel = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
   outputChannel.appendLine(`${PRODUCT_NAME} extension activated`);
 
-  setLogCallback((message: string) => {
-    outputChannel.appendLine(message);
-  });
-
   const host = new VSCodeUIHost(outputChannel);
-  // 事件总线：core 与 UI 的唯一耦合点（DEVELOPMENT.md 第 3 节）。
-  // 顺序：注册总线 → 注册 core 侧 UiEvent 订阅 → 创建 UI（其构造函数注册 CoreEvent 处理器）。
-  const bus = createEventBus();
-  setGlobalEventBus(bus);
-  initializeCoreEvents(bus);
   // 宿主实现与共享 UI 一次成型；托盘/侧栏是 Electron 的事，VS Code 用空 manager
   const conversations = new SingleWebViewConversationManager(host);
   conversationManager = conversations;
-  const ui = WebViewUI.create(
-    host,
-    bus,
-    new VSCodeSpinDesign(host),
-    conversations,
-    {
-      log: (...args: unknown[]) => {
-        outputChannel.appendLine(args.map(a => String(a)).join(' '));
-      },
-      createUserChoiceManager: (post, closePreview, uiPort) =>
-        new UserChoiceManager({
-          outputChannel,
-          postToWebview: post,
-          closePreview,
-          getActiveSessionIdInternal: () => uiPort.getActiveSessionId(),
-        }),
+
+  // 共享启动接线：locale / 日志 / 总线 / core 侧订阅 / WebViewUI / 历史 / 会话队列 /
+  // 等待用户读取器 / 配置目录 / 环境预热 / MCP 残留清理（DEVELOPMENT.md 第 3.5、8.6 节）
+  const { ui } = bootstrapCore(host, new VSCodeSpinDesign(host), conversations, {
+    locale: vscode.env.language,
+    log: (...args: unknown[]) => {
+      outputChannel.appendLine(args.map(a => String(a)).join(' '));
     },
-  );
+    logToConsole: false,
+    extensionPath: context.extensionPath,
+  });
+
   host.setExtensionUri(context.extensionUri);
   host.registerWindowStateListener(context);
   // 活跃会话读取（bootstrap 注入）；abort 按钮状态由 webview 从 core 的
   // sessionRuntimeStates 自行推导，不再由宿主推送
   host.getActiveSessionId = () => ui.getActiveSessionId();
 
-  initializeHistory(ui);
-
   // 空闲对话自动关闭（VS Code 专属：单 webview，关闭只是卸内存）。
   // 计时 owner 是 SingleWebViewConversationManager，core 不参与计时；
   // 非激活对话 2 小时无活动后走 WebViewUI.closeConversation（core 卸内存 + 宿主销毁视图）。
-  // core 的「是否在忙」判定需要「等待用户」事实（ask user / 权限确认）
-  setSessionWaitingForUserProvider((sessionId) => ui.hasPendingUserChoice(sessionId));
   conversations.setActiveSessionProvider(() => ui.getActiveSessionId() ?? null);
   conversations.setIdleCloseHandler((sessionId) => ui.closeConversation(sessionId));
   conversations.startIdleMonitor();
 
-  ensureConfigDirs().catch((error: Error) => {
-    console.error('[Extension] Failed to initialize config directories:', error);
-  });
-
-  void (async () => {
-    try {
-      const { warmupSystemDynamicInfo } = await import('./core/prompt/SystemEnvironment.js');
-      const { getProjectRoot } = await import('./core/history/Config.js');
-      warmupSystemDynamicInfo(getProjectRoot());
-    } catch {
-      // 预热失败不影响主流程
-    }
-  })();
+  outputChannel.appendLine(`[bootstrap] ${JSON.stringify(bootstrapSnapshot())}`);
 
   // 注册虚拟文档内容提供者
   const virtualDocumentProvider = new VirtualDocumentProvider();
@@ -193,17 +148,6 @@ export function activate(context: vscode.ExtensionContext) {
   statusBarItem.show();
 
   context.subscriptions.push(statusBarItem);
-
-  // MCP：引用计数模型下，进程由「打开的对话」驱动，扩展激活时只做残留清理，
-  // 不主动连接任何服务器；会话打开 / 切换时才 acquire。
-  void (async () => {
-    try {
-      const { getMCPHost } = await import('./core/mcp/MCPHost.js');
-      await getMCPHost().prune();
-    } catch (err) {
-      console.error('[Extension] Failed to initialize MCP servers:', err);
-    }
-  })();
 }
 
 class AssistantViewProvider implements vscode.WebviewViewProvider {
@@ -342,8 +286,9 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
     );
     html = html.replace(/"\.\//g, `"${webviewBaseUri}/`);
 
+    // 空状态背景图的第一张；webview 只取它所在目录，再拼候选文件名（见 placeholderLogo.ts）
     const logoUri = this.webviewView!.webview.asWebviewUri(
-      vscode.Uri.joinPath(vscode.Uri.file(this.context.extensionPath), 'dist', 'webview', 'logo.png')
+      vscode.Uri.joinPath(vscode.Uri.file(this.context.extensionPath), 'dist', 'webview', 'logo1.png')
     );
 
     const hasWorkspace = !!(vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0);
@@ -376,11 +321,6 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
 export async function deactivate(): Promise<void> {
   // 停止空闲巡检定时器（计时 owner 是 ConversationManager）
   conversationManager?.stopIdleMonitor();
-  // 停用扩展时结束所有 MCP 子进程，避免留下孤儿进程
-  try {
-    const { getMCPHost } = await import('./core/mcp/MCPHost.js');
-    getMCPHost().shutdown();
-  } catch {
-    // 停用阶段的清理失败不应影响退出
-  }
+  // core 侧的进程级资源（MCP 子进程）统一由共享骨架释放
+  shutdownCore();
 }

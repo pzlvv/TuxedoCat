@@ -3,6 +3,8 @@
  * Message, Colors 等类型在多个组件间重复定义，统一抽离到这里
  */
 
+import type { ModelRef } from '../core/llm/modelRef';
+
 export type Theme = 'dark' | 'light';
 export type AgentMode = 'manual' | 'risk' | 'auto';
 export type PromptMode = 'normal' | 'minimal' | 'mixed';
@@ -15,7 +17,8 @@ export type RankingPeriod = 'daily' | 'monthly' | 'total';
  * undefined（此时发送按钮禁用，避免用错误默认值发起请求）。
  */
 export interface SettingsDefaults {
-  model?: string;
+  /** 默认模型身份（provider + model）；未从宿主获取到之前为 undefined */
+  modelRef?: ModelRef;
   thinkingMode?: ThinkingMode;
   agentMode?: AgentMode;
   promptMode?: PromptMode;
@@ -128,7 +131,8 @@ export interface SessionState {
   webSearch?: boolean;
   contextLength: number;
   queuedMessage: QueuedMessagePayload | null;
-  model?: string;
+  /** 会话当前选择的模型身份（provider + model）；undefined = 尚未选择 / 未配置 */
+  modelRef?: ModelRef;
   /** 累计缓存读取 token 数 */
   totalCacheReadInputTokens?: number;
   /** 累计缓存创建 token 数 */

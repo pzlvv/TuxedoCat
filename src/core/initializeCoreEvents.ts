@@ -54,6 +54,7 @@ async function registerIntegrationUiEvents(bus: AssistantEventBus): Promise<void
           fileHidden: e.fileInfo?.fileHidden,
           thinkingMode: e.fileInfo?.thinkingMode,
           webSearch: e.fileInfo?.webSearch,
+          modelRef: e.fileInfo?.modelRef,
           promptPreset,
           images,
         })) {
@@ -104,11 +105,13 @@ async function registerIntegrationUiEvents(bus: AssistantEventBus): Promise<void
     }
   };
 
-  bus.onUiEvent('modelChanged', ({ sessionId, model }) => {
+  bus.onUiEvent('modelChanged', ({ sessionId, ref }) => {
     void persistAndBroadcast(sessionId, 'model', async () => {
-      setSessionModel(sessionId, model);
-      await updateConversationContext(sessionId, { model });
-      requireEventBus().emitToUi({ type: 'sessionConfigChanged', sessionId, change: { key: 'model', value: model } });
+      // provider + model 一起表征一个模型：两者都要写入引擎配置与 meta.json。
+      setSessionModel(sessionId, ref);
+      // meta.json 保持扁平字段（model / provider 分开写）
+      await updateConversationContext(sessionId, { model: ref.model, provider: ref.provider });
+      requireEventBus().emitToUi({ type: 'sessionConfigChanged', sessionId, change: { key: 'model', ref } });
     });
   });
 
@@ -152,12 +155,14 @@ async function registerIntegrationUiEvents(bus: AssistantEventBus): Promise<void
 
   // ===== 其它 =====
   // editRolledBack：Edit/Write 文件回滚（core 业务，原 webviewMessageHandler.handleRollbackEdit 迁入）
-  bus.onUiEvent('editRolledBack', ({ sessionId, toolUseId, direction }) => {
+  bus.onUiEvent('editRolledBack', ({ sessionId, toolUseId, direction, filePath }) => {
     void (async () => {
       try {
         const { rollbackEdit } = await import('./history/rollback.js');
         const dir: 'before' | 'after' = direction === 'after' ? 'after' : 'before';
-        await rollbackEdit(sessionId, toolUseId, dir);
+        // filePath 是 UI 侧归一化后的兜底路径：磁盘上的 tool_use.input 若被
+        // double-encode 成字符串，core 取不到 input.file_path，需要它兜底。
+        await rollbackEdit(sessionId, toolUseId, dir, filePath);
       } catch (err) {
         logger.warn('Integration', `editRolledBack handling failed: ${err}`);
       }
@@ -189,8 +194,12 @@ async function registerHistoryUiEvents(bus: AssistantEventBus): Promise<void> {
     deleteConversation,
   } = await import('./history/index.js');
   const {
+    collectConversationClosure,
     updateConversationMetadataTitle,
   } = await import('./history/Conversation.js');
+  const {
+    releaseSessionResources,
+  } = await import('./sessionResources.js');
   const { clearConversationSpace, getConversationSpaces } = await import('./history/ConversationSpace.js');
 
   bus.onUiEvent('conversationRenamed', ({ sessionId, title }) => {
@@ -206,12 +215,25 @@ async function registerHistoryUiEvents(bus: AssistantEventBus): Promise<void> {
     })();
   });
 
-  // conversationDeleted：core 消费方负责算受影响闭包 + 删盘。
-  // 编排（abort → close 视图 → delete）的阶段 6 形态：宿主先对每个受影响会话调
-  // WebViewUI.closeConversation(sid)，再对 root 发本事件；本订阅只删盘并广播列表变化。
+  // conversationDeleted：core 消费方负责「删除即关闭」+ 算受影响闭包 + 删盘。
+  // 编排（abort → close 视图 → delete）的阶段 6 形态：多视图宿主（Electron）先对
+  // 每个受影响会话调 WebViewUI.closeConversation(sid)（卸内存 + 销毁视图），再发本
+  // 事件——此时 releaseSessionResources 幂等，无副作用。单视图宿主（VS Code）没有
+  // 可销毁的会话视图，webview 删除当前对话后直接新建对话跳转，运行中查询的
+  // abort / MCP 引用释放 / runtime 状态清理统一由这里的「删除即关闭」兜底；
+  // 本订阅最后删盘并广播列表变化。
   bus.onUiEvent('conversationDeleted', ({ sessionId }) => {
     void (async () => {
       try {
+        const { getProjectRoot } = await import('./history/Config.js');
+        const { readProjectConversationMetadata } = await import('./history/Conversation.js');
+        const closure = collectConversationClosure(
+          sessionId,
+          await readProjectConversationMetadata(getProjectRoot()),
+        );
+        for (const sid of closure) {
+          await releaseSessionResources(sid);
+        }
         await deleteConversation(sessionId);
         requireEventBus().emitToUi({ type: 'conversationListChanged' });
       } catch (err) {

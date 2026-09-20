@@ -1,8 +1,9 @@
 import React, { useEffect, useRef } from 'react';
-import type { WebviewMessage, McpServerInfo } from '../../core/webviewTypes';
+import type { WebviewMessage, McpServerInfo, ProviderModels } from '../../core/webviewTypes';
 import type { MessageData } from '../../core/types';
 import { extractUserContent } from '../../core/utils/contentBlocks';
 import { normalizeToolInput } from '../../core/utils/toolInput';
+import { modelRefOf, sameModelRef, type ModelRef } from '../../core/llm/modelRef';
 import type { DiffHunk } from '../../core/utils/editDiff';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, ProviderConfig } from '../types';
 import { postMessage } from '../webviewEnv';
@@ -358,6 +359,11 @@ function applyLoadedConversationState(
   const savedCtxThinkingMode = (msg as any).savedContext?.thinkingMode as ThinkingMode | undefined;
   const savedCtxWebSearch = (msg as any).savedContext?.webSearch as boolean | undefined;
   const savedCtxToken = (msg as any).savedContext?.totalContextTokens as number | undefined;
+  const savedCtxProvider = (msg as any).savedContext?.provider as string | undefined;
+  // 模型身份：wire 消息是扁平字段（model / provider），这里组装成 ModelRef。
+  // 优先消息顶层（宿主已按当前 settings 校验过），其次用 savedContext.provider 与消息 model 组合
+  // （旧数据兼容），都没有时由调用点继续回退到会话快照 / settings.json 默认值。
+  const msgModelRef = modelRefOf((msg as any).provider ?? savedCtxProvider, (msg as any).model);
   // 优先使用消息中的 agentMode（扩展侧运行时内存值），没有则默认 risk（关键）
   props.setAgentMode((msg as any).agentMode || 'risk');
   props.agentModeReadyRef.current = true;
@@ -375,7 +381,8 @@ function applyLoadedConversationState(
         ? savedCtxWebSearch
         : (savedState.webSearch ?? currentProps.settingsDefaults.webSearch ?? false)
     );
-    props.setModel((msg as any).model ?? savedState.model ?? currentProps.settingsDefaults.model ?? '');
+    // 模型身份整体恢复：消息顶层 → 会话快照 → settings.json 默认值
+    props.setModelRef(msgModelRef ?? savedState.modelRef ?? currentProps.settingsDefaults.modelRef);
   } else {
     // 无 savedState：thinkingMode 没有 savedContext 时继承当前对话 effort
     props.setThinkingMode(savedCtxThinkingMode || currentProps.thinkingMode);
@@ -385,7 +392,8 @@ function applyLoadedConversationState(
         ? savedCtxWebSearch
         : (currentProps.settingsDefaults.webSearch ?? false)
     );
-    props.setModel((msg as any).model ?? currentProps.settingsDefaults.model ?? '');
+    // 模型身份整体恢复：消息顶层 → settings.json 默认值
+    props.setModelRef(msgModelRef ?? currentProps.settingsDefaults.modelRef);
   }
   return { savedCtxPromptMode, savedCtxThinkingMode, savedCtxWebSearch, savedCtxToken };
 }
@@ -487,7 +495,8 @@ export interface UseMessageHandlerProps {
   setPromptMode: (v: PromptMode | undefined) => void;
   setThinkingMode: (v: ThinkingMode | undefined) => void;
   setWebSearch: (v: boolean) => void;
-  setModel: (v: string) => void;
+  /** 当前选择的模型身份（provider + model）；undefined = 尚未选择 / 未配置 */
+  setModelRef: (v: ModelRef | undefined) => void;
   setContextLength: (v: number | ((prev: number) => number)) => void;
   setQueuedMessage: (v: QueuedMessagePayload | null) => void;
   setUserChoiceRequest: (v: UserChoiceRequest | null) => void;
@@ -497,7 +506,8 @@ export interface UseMessageHandlerProps {
   /** core 推来会话运行时状态时递增，强制对话列表重渲染以刷新流水灯与 abort 按钮 */
   setSessionIdleVersion: (v: number | ((prev: number) => number)) => void;
   setExpandedSubSessions: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
-  setModels: (v: string[]) => void;
+  /** 全部 provider 及其模型列表（菜单三级子菜单数据源） */
+  setProviderModels: (v: ProviderModels[]) => void;
   setBalance: (v: number | undefined) => void;
   setBalanceCurrency: (v: string | undefined) => void;
   setIsUnlimited: (v: boolean | undefined) => void;
@@ -596,7 +606,8 @@ export interface UseMessageHandlerProps {
   isDeletingRef: React.MutableRefObject<boolean>;
   listLoadedOnceRef: React.MutableRefObject<boolean>;
   _appMountTime: React.MutableRefObject<number | null>;
-  model: string;
+  /** 当前选择的模型身份（provider + model）；undefined = 尚未选择 / 未配置 */
+  modelRef: ModelRef | undefined;
   contextLength: number;
   inputAreaRef: React.RefObject<any>;
 }
@@ -819,7 +830,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                     cacheCreationTokens,
                     {
                       promptMode: propsRef.current.settingsDefaults.promptMode,
-                      model: propsRef.current.model,
+                      modelRef: propsRef.current.modelRef,
                     },
                   );
                 }
@@ -852,7 +863,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             props.sessionStatesRef.current.set(msg.sessionId, createSessionState({
               animationMode: 'thinking',
               promptMode: propsRef.current.settingsDefaults.promptMode,
-              model: (msg as any).model || undefined,
+              // wire 消息是扁平的 model / provider，组装成模型身份
+              modelRef: modelRefOf((msg as any).provider, (msg as any).model),
             }));
           }
           break;
@@ -877,7 +889,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               thinkingMode: propsRef.current.thinkingMode,
               contextLength: contextLengthRef.current,
               queuedMessage: props.queuedMessageRef.current.get(currentSessionId) ?? null,
-              model: propsRef.current.model,
+              modelRef: propsRef.current.modelRef,
               // 保留 cache token 数据（可能由后台 streamEnd 更新），避免切换后丢失
               totalCacheReadInputTokens: existingState?.totalCacheReadInputTokens,
               totalCacheCreationInputTokens: existingState?.totalCacheCreationInputTokens,
@@ -926,11 +938,15 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           break;
         // 会话级设置的多端同步：同一会话在其它端被修改时同步本端 UI。
         // 值相同时 React 会跳过更新，不会再次上报，因此不会形成回环。
-        case 'setModel':
-          if (fromCurrentSession && typeof (msg as any).model === 'string') {
-            props.setModel((msg as any).model);
+        case 'setModel': {
+          // 多端同步：wire 消息是扁平的 model / provider，这里组装成模型身份。
+          // provider 缺失（空串非法）时忽略本次同步，避免只改一半造成漂移。
+          const ref = modelRefOf((msg as any).provider, (msg as any).model);
+          if (fromCurrentSession && ref) {
+            props.setModelRef(ref);
           }
           break;
+        }
         case 'setAgentMode':
           if (fromCurrentSession && (msg as any).mode) {
             props.setAgentMode((msg as any).mode);
@@ -1035,7 +1051,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 promptMode: propsRef.current.settingsDefaults.promptMode,
                 thinkingMode: propsRef.current.settingsDefaults.thinkingMode,
                 webSearch: propsRef.current.settingsDefaults.webSearch,
-                model: propsRef.current.model,
+                modelRef: propsRef.current.modelRef,
               }));
             }
             // 对话树流水灯不在这里刷新：它只读 core 推送的 sessionRuntimeStates
@@ -1480,7 +1496,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                   thinkingMode: common.savedCtxThinkingMode || propsRef.current.thinkingMode,
                   webSearch: typeof common.savedCtxWebSearch === 'boolean' ? common.savedCtxWebSearch : propsRef.current.settingsDefaults.webSearch,
                   contextLength: restoredVal,
-                  model: (msg as any).model ?? propsRef.current.settingsDefaults.model,
+                  // 模型身份：消息顶层（扁平字段组装）→ settings.json 默认值
+                  modelRef: modelRefOf((msg as any).provider ?? (msg as any).savedContext?.provider, (msg as any).model)
+                    ?? propsRef.current.settingsDefaults.modelRef,
                 }));
               }
               // 聚焦输入框（当没有保存的 state 时）
@@ -1854,7 +1872,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                   cacheCreationTokens,
                   {
                     promptMode: propsRef.current.settingsDefaults.promptMode,
-                    model: propsRef.current.model,
+                    modelRef: propsRef.current.modelRef,
                   },
                 );
                 profileLog('[TokenDebug] streamEnd(sessionMismatch): updated/created session state for', streamEndSessionId);
@@ -1947,7 +1965,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                   cacheCreationTokens,
                   {
                     promptMode: propsRef.current.settingsDefaults.promptMode,
-                    model: propsRef.current.model,
+                    modelRef: propsRef.current.modelRef,
                   },
                 );
                 profileLog('[TokenDebug] streamEnd: updated/created session state for', currentSid);
@@ -1962,8 +1980,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           props.setIsCompactExpanded(true);
           break;
         case 'setModels':
-          if ((msg as any).models && Array.isArray((msg as any).models)) {
-            props.setModels((msg as any).models);
+          // 全量 provider 分组列表（三级子菜单数据源）；模型名与 provider 分开，不拼接
+          if (Array.isArray((msg as any).providers)) {
+            props.setProviderModels((msg as any).providers);
           }
           break;
         case 'providerModelsResult':
@@ -1973,10 +1992,12 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 从扩展端接收 settings.json 中的默认值（model / thinkingMode / agentMode / promptMode），
           // 供新对话创建时一次性使用，避免先显示 manual 再跳变
           {
-            const defaults = msg as { model?: string; thinkingMode?: 'off' | 'low' | 'high' | 'max'; agentMode?: 'manual' | 'risk' | 'auto'; promptMode?: PromptMode; webSearch?: boolean; language?: UiLanguage; providerConfigured?: boolean };
-            profileLog(`[Webview] settingsDefaults received: model=${defaults.model}, thinkingMode=${defaults.thinkingMode}, agentMode=${defaults.agentMode}, promptMode=${defaults.promptMode}, webSearch=${defaults.webSearch}, language=${defaults.language}, providerConfigured=${defaults.providerConfigured}`);
+            const defaults = msg as { model?: string; provider?: string; thinkingMode?: 'off' | 'low' | 'high' | 'max'; agentMode?: 'manual' | 'risk' | 'auto'; promptMode?: PromptMode; webSearch?: boolean; language?: UiLanguage; providerConfigured?: boolean };
+            // wire 消息是扁平的 model / provider，这里组装成模型身份（provider 为空 → undefined = 未配置）
+            const defaultsModelRef = modelRefOf(defaults.provider, defaults.model);
+            profileLog(`[Webview] settingsDefaults received: model=${defaults.model}, provider=${defaults.provider}, thinkingMode=${defaults.thinkingMode}, agentMode=${defaults.agentMode}, promptMode=${defaults.promptMode}, webSearch=${defaults.webSearch}, language=${defaults.language}, providerConfigured=${defaults.providerConfigured}`);
             props.setSettingsDefaults({
-              model: defaults.model,
+              modelRef: defaultsModelRef,
               thinkingMode: defaults.thinkingMode,
               agentMode: defaults.agentMode,
               // 不做 'normal' 兜底：未配置时保持 undefined，由调用方决定
@@ -1994,9 +2015,10 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             if (messagesRef.current.length === 0) {
               const sid = props.currentSessionIdRef.current;
               const st = sid ? props.sessionStatesRef.current.get(sid) : undefined;
-              if (!propsRef.current.model && defaults.model) {
-                props.setModel(defaults.model);
-                if (st) st.model = defaults.model;
+              // 模型身份整体补齐（仅在尚未设置时）：provider + model 一起，避免只补一半造成漂移
+              if (!propsRef.current.modelRef && defaultsModelRef) {
+                props.setModelRef(defaultsModelRef);
+                if (st) st.modelRef = defaultsModelRef;
               }
               if (!propsRef.current.thinkingMode && defaults.thinkingMode) {
                 props.setThinkingMode(defaults.thinkingMode);
@@ -2028,14 +2050,16 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // 如果当前对话是未发送消息的新对话，则模型/提示词模式等默认值也立刻生效；
           // 工作模式/思考强度/联网搜索保持原有“保存后应用到当前对话”的行为。
           {
-            const saved = msg as { defaultModel?: string; activeModel?: string; thinkingEffort?: 'off' | 'low' | 'high' | 'max'; defaultAgentMode?: 'manual' | 'risk' | 'auto'; defaultPromptMode?: PromptMode; webSearch?: boolean };
+            const saved = msg as { defaultModel?: string; defaultModelProvider?: string; activeModel?: string; activeModelProvider?: string; thinkingEffort?: 'off' | 'low' | 'high' | 'max'; defaultAgentMode?: 'manual' | 'risk' | 'auto'; defaultPromptMode?: PromptMode; webSearch?: boolean };
             // 保存成功即说明至少有一个可用的服务商
             props.setProviderConfigured(true);
             // 配置已可用：解除发送按钮禁用
             props.setConfigReady(true);
             if (saved.defaultModel || saved.thinkingEffort || saved.defaultAgentMode || saved.defaultPromptMode || typeof saved.webSearch === 'boolean') {
+              // wire 消息是扁平的 defaultModel / defaultModelProvider，组装成模型身份整体更新
+              const nextDefaultModelRef = modelRefOf(saved.defaultModelProvider, saved.defaultModel) ?? propsRef.current.settingsDefaults.modelRef;
               props.setSettingsDefaults(prev => ({
-                model: saved.defaultModel || prev.model,
+                modelRef: nextDefaultModelRef,
                 thinkingMode: saved.thinkingEffort || prev.thinkingMode,
                 agentMode: saved.defaultAgentMode || prev.agentMode,
                 promptMode: saved.defaultPromptMode || prev.promptMode,
@@ -2080,15 +2104,18 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             // 该值对已有消息的对话同样生效，避免当前对话保留新 provider 不支持的模型。
             const curSid = props.currentSessionIdRef.current;
             const state = curSid ? props.sessionStatesRef.current.get(curSid) : undefined;
-            if (saved.activeModel) {
-              props.setModel(saved.activeModel);
-              if (state) state.model = saved.activeModel;
+            // wire 消息是扁平字段（activeModel/activeModelProvider 等），组装成模型身份整体更新
+            const activeModelRef = modelRefOf(saved.activeModelProvider, saved.activeModel);
+            if (activeModelRef) {
+              props.setModelRef(activeModelRef);
+              if (state) state.modelRef = activeModelRef;
             }
             // 当前对话是未发送消息的新对话时，模型与提示词模式也立即使用新默认值
             if (messagesRef.current.length === 0) {
-              if (!saved.activeModel && saved.defaultModel) {
-                props.setModel(saved.defaultModel);
-                if (state) state.model = saved.defaultModel;
+              const defaultModelRef = modelRefOf(saved.defaultModelProvider, saved.defaultModel);
+              if (!activeModelRef && defaultModelRef) {
+                props.setModelRef(defaultModelRef);
+                if (state) state.modelRef = defaultModelRef;
               }
               if (saved.defaultPromptMode) {
                 props.setPromptMode(saved.defaultPromptMode);
@@ -2108,16 +2135,18 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
         case 'setNewConversationDefaults':
           // 从扩展端接收新对话的默认 model、thinkingMode、agentMode、promptMode 和 webSearch（来自 settings.json）
           {
-            const defaults = msg as { sessionId: string; model: string; thinkingMode: 'off' | 'low' | 'high' | 'max'; agentMode?: 'manual' | 'risk' | 'auto'; promptMode?: PromptMode; webSearch?: boolean };
-            profileLog(`[Webview] setNewConversationDefaults received: model=${defaults.model}, thinkingMode=${defaults.thinkingMode}, agentMode=${defaults.agentMode}, promptMode=${defaults.promptMode}, webSearch=${defaults.webSearch}, currentSessionId=${props.currentSessionIdRef.current}`);
+            const defaults = msg as { sessionId: string; model: string; provider?: string; thinkingMode: 'off' | 'low' | 'high' | 'max'; agentMode?: 'manual' | 'risk' | 'auto'; promptMode?: PromptMode; webSearch?: boolean };
+            profileLog(`[Webview] setNewConversationDefaults received: model=${defaults.model}, provider=${defaults.provider}, thinkingMode=${defaults.thinkingMode}, agentMode=${defaults.agentMode}, promptMode=${defaults.promptMode}, webSearch=${defaults.webSearch}, currentSessionId=${props.currentSessionIdRef.current}`);
             // 会话级默认值已下发：解除发送按钮禁用
             props.setConfigReady(true);
             // 如果用户已经手动切换过模型，不要再用 settings.json 的默认模型覆盖用户选择。
-            // settingsDefaults.model 尚未获取到（undefined）时不视为用户修改，正常应用默认模型。
-            const sdModel = propsRef.current.settingsDefaults.model;
-            const modelChangedByUser = sdModel !== undefined && propsRef.current.model !== sdModel;
+            // settingsDefaults 尚未获取到（undefined）时不视为用户修改，正常应用默认模型。
+            // wire 消息是扁平的 model / provider，组装成模型身份整体应用。
+            const defaultsModelRef = modelRefOf(defaults.provider, defaults.model);
+            const sdModelRef = propsRef.current.settingsDefaults.modelRef;
+            const modelChangedByUser = sdModelRef !== undefined && !sameModelRef(sdModelRef, propsRef.current.modelRef);
             if (!modelChangedByUser) {
-              props.setModel(defaults.model);
+              props.setModelRef(defaultsModelRef);
             }
             props.setThinkingMode(defaults.thinkingMode);
             if (defaults.agentMode) {
@@ -2137,7 +2166,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               const state = props.sessionStatesRef.current.get(curSid);
               if (state) {
                 if (!modelChangedByUser) {
-                  state.model = defaults.model;
+                  state.modelRef = defaultsModelRef;
                 }
                 state.thinkingMode = defaults.thinkingMode;
                 if (defaults.agentMode) {

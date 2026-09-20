@@ -1,6 +1,6 @@
 import React from 'react';
 import type { Colors } from './types';
-import { getLogoUri } from './webviewEnv';
+import { getPlaceholderLogoUri } from './placeholderLogo';
 import { t } from './i18n';
 
 interface ConversationLoadingProps {
@@ -25,7 +25,7 @@ export const ConversationLoading: React.FC<ConversationLoadingProps> = ({ colors
         <div className="conversation-loading-ring" style={{ borderColor: accent }} />
         <div className="conversation-loading-ring" style={{ borderColor: accent }} />
         <img
-          src={getLogoUri()}
+          src={getPlaceholderLogoUri()}
           alt="logo"
           className="conversation-loading-logo"
           style={{ opacity: isDark ? 0.9 : 0.8 }}

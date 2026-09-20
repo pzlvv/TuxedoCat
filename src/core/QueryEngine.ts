@@ -11,6 +11,7 @@ import { requireEventBus } from './AssistantEventBus.js';
 import { markQueryRunning } from './sessionRuntime.js';
 import type { Tool } from './tools/Tool.js';
 import type { LLMConfig } from './llm/config.js';
+import type { ModelRef } from './llm/modelRef.js';
 import type { PromptPresetId } from './prompt/PromptPreset.js';
 import { getAllTools } from './tools/index.js';
 import { logger } from './Logger.js';
@@ -120,6 +121,12 @@ export class QueryEngine {
   public thinkingModeOverride?: 'off' | 'low' | 'high' | 'max';
   /** 会话关联的 Web Search 覆盖值（即使 modelConfig 尚未初始化也记录，供查询时合并） */
   private webSearchOverride?: boolean;
+  /**
+   * 会话当前选择的模型身份（provider + model）。
+   * 由 Integration 在应用会话模型配置时写入；meta.json 落盘与子代理继承都读取本字段。
+   * 单独存一份而不是从 modelConfig 推导：LLMConfig 只含模型名，不含 provider。
+   */
+  public modelRefOverride?: ModelRef;
   /** 会话标题 */
   private sessionTitle?: string;
   /** 父会话 ID */

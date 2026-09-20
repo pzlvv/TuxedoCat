@@ -9,6 +9,7 @@
  * - extractUsageFields：usage 对象到内部 usage 格式的参数化提取
  * - 重试骨架中的逐字相同碎片：RETRY_DELAY_MS / MAX_RETRIES / isRetryableStatus /
  *   isNetworkFetchError / sleep
+ * - 错误序列化：serializeError（结构化，供失败转储）/ formatErrorChain（单行，供日志）
  */
 
 import { logger } from '../Logger.js';
@@ -45,6 +46,104 @@ export function isRetryableStatus(status: number): boolean {
 export function isNetworkFetchError(error: unknown): boolean {
   return error instanceof TypeError &&
     ((error as TypeError).message === 'fetch failed' || (error as any)?.cause !== undefined);
+}
+
+/**
+ * 错误 cause 链的最大序列化深度。
+ *
+ * undici 的 `fetch failed` 只是一个外壳，真正的根因（ECONNRESET / ENOTFOUND /
+ * UND_ERR_CONNECT_TIMEOUT 等）藏在 `error.cause` 里，有时还有第二层
+ * （如 `fetch failed` → `SocketError` → `Error: read ECONNRESET`）。
+ * 限深是为了避免极端情况下的循环引用把转储文件撑爆。
+ */
+export const MAX_ERROR_CAUSE_DEPTH = 4;
+
+/** 序列化后的错误信息（写入失败转储，比默认 JSON.stringify(Error) 多出 cause 链与系统错误码） */
+export interface SerializedError {
+  name: string;
+  message: string;
+  stack?: string;
+  /** Node 系统错误码：ECONNRESET / ENOTFOUND / ETIMEDOUT / UND_ERR_* ... */
+  code?: string;
+  errno?: string | number;
+  /** 出错时的系统调用：connect / read / getaddrinfo ... */
+  syscall?: string;
+  /** 嵌套原因（递归序列化） */
+  cause?: SerializedError | string;
+  /** AggregateError 的子错误（如 undici 多地址连接全部失败） */
+  errors?: Array<SerializedError | string>;
+}
+
+/**
+ * 把任意抛出物序列化为可写入 JSON 的结构，保留 cause 链与系统错误码。
+ *
+ * 背景：`JSON.stringify(new Error('fetch failed'))` 会得到 `{}`，而只取
+ * name/message/stack 又会丢掉 undici 挂在 `cause` 上的真实网络错误，
+ * 导致失败转储里只剩一句「fetch failed」，无法区分 DNS 失败 / 连接被拒 /
+ * TLS 失败 / 读超时。
+ */
+export function serializeError(error: unknown, depth = 0): SerializedError {
+  if (!(error instanceof Error)) {
+    return { name: 'NonError', message: String(error) };
+  }
+
+  const out: SerializedError = { name: error.name, message: error.message };
+  if (error.stack) out.stack = error.stack;
+
+  const e = error as Error & { code?: unknown; errno?: unknown; syscall?: unknown; cause?: unknown; errors?: unknown };
+  if (e.code !== undefined) out.code = String(e.code);
+  if (e.errno !== undefined) out.errno = typeof e.errno === 'number' ? e.errno : String(e.errno);
+  if (e.syscall !== undefined) out.syscall = String(e.syscall);
+
+  if (depth >= MAX_ERROR_CAUSE_DEPTH) {
+    if (e.cause !== undefined && e.cause !== null) out.cause = '<max depth reached>';
+    if (Array.isArray(e.errors) && e.errors.length > 0) out.errors = ['<max depth reached>'];
+    return out;
+  }
+  if (e.cause !== undefined && e.cause !== null) {
+    out.cause = serializeError(e.cause, depth + 1);
+  }
+  if (Array.isArray(e.errors) && e.errors.length > 0) {
+    out.errors = e.errors.map((sub) => serializeError(sub, depth + 1));
+  }
+  return out;
+}
+
+/**
+ * 把错误（含 cause 链）压成单行字符串，用于日志。
+ *
+ * 例：`TypeError: fetch failed <- Error: connect ECONNRESET 127.0.0.1:443 (code=ECONNRESET, errno=-4077, syscall=connect)`
+ */
+export function formatErrorChain(error: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = error;
+  let depth = 0;
+
+  while (current !== undefined && current !== null) {
+    if (!(current instanceof Error)) {
+      parts.push(String(current));
+      return parts.join(' <- ');
+    }
+    const e = current as Error & { code?: unknown; errno?: unknown; syscall?: unknown; cause?: unknown; errors?: unknown };
+    const extra: string[] = [];
+    if (e.code !== undefined) extra.push(`code=${String(e.code)}`);
+    if (e.errno !== undefined) extra.push(`errno=${String(e.errno)}`);
+    if (e.syscall !== undefined) extra.push(`syscall=${String(e.syscall)}`);
+    if (Array.isArray(e.errors) && e.errors.length > 0) {
+      const sub = e.errors.map((it) => (it instanceof Error ? `${it.name}: ${it.message}` : String(it)));
+      extra.push(`errors=[${sub.join('; ')}]`);
+    }
+    parts.push(`${e.name}: ${e.message}${extra.length > 0 ? ` (${extra.join(', ')})` : ''}`);
+
+    current = e.cause;
+    depth++;
+    if (depth >= MAX_ERROR_CAUSE_DEPTH && current !== undefined && current !== null) {
+      parts.push('<max depth reached>');
+      break;
+    }
+  }
+
+  return parts.length > 0 ? parts.join(' <- ') : String(error);
 }
 
 /** 重试等待 */

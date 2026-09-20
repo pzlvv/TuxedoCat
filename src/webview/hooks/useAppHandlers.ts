@@ -5,6 +5,7 @@ import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, Ag
 import { createSessionState } from '../sessionState';
 import { ensureImageSize } from '../imageSize';
 import { buildConversationTitle } from '../../core/utils/contentBlocks';
+import type { ModelRef } from '../../core/llm/modelRef';
 import { t } from '../i18n';
 
 const profileTag = '[Profile]';
@@ -27,7 +28,8 @@ export interface UseAppHandlersProps {
   thinkingMode: ThinkingMode | undefined;
   /** 会话关联的提示词模式（普通/极简/混合，持久化到 meta.json） */
   promptMode: PromptMode | undefined;
-  model: string;
+  /** 当前选择的模型身份（provider + model）；undefined = 尚未选择 / 未配置 */
+  modelRef: ModelRef | undefined;
   /** 会话关联的 Web Search 开关 */
   webSearch: boolean;
   /** settings.json 中的默认值（新对话一次性使用） */
@@ -58,7 +60,7 @@ export interface UseAppHandlersProps {
   setThinkingMode: (v: ThinkingMode | undefined) => void;
   setPromptMode: (v: PromptMode | undefined) => void;
   setWebSearch: (v: boolean) => void;
-  setModel: (v: string) => void;
+  setModelRef: (v: ModelRef | undefined) => void;
   setHasCompactArchive: (v: boolean) => void;
   setIsCompactExpanded: (v: boolean) => void;
   setQueuedMessage: (v: QueuedMessagePayload | null) => void;
@@ -174,12 +176,13 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     const nextAgentMode = sd.agentMode ?? props.agentMode;
     const nextThinkingMode = sd.thinkingMode ?? props.thinkingMode;
     const nextWebSearch = sd.webSearch ?? props.webSearch;
-    const nextModel = sd.model ?? props.model;
+    // 模型身份整体跟随默认值：settingsDefaults 未就绪时保留当前选择
+    const nextModelRef = sd.modelRef ?? props.modelRef;
     const nextPromptMode = sd.promptMode ?? props.promptMode;
     props.setAgentMode(nextAgentMode);
     props.setThinkingMode(nextThinkingMode);
     props.setWebSearch(nextWebSearch);
-    props.setModel(nextModel);
+    props.setModelRef(nextModelRef);
     props.setPromptMode(nextPromptMode);
     // 为新对话创建默认 state
     props.sessionStatesRef.current.set(newSessionId, createSessionState({
@@ -187,7 +190,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       promptMode: nextPromptMode,
       thinkingMode: nextThinkingMode,
       webSearch: nextWebSearch,
-      model: nextModel,
+      modelRef: nextModelRef,
     }));
     postMessage({ type: 'startNewConversation', sessionId: newSessionId });
     // 聚焦输入框
@@ -237,12 +240,13 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       const nextAgentMode = sd.agentMode ?? props.agentMode;
       const nextThinkingMode = sd.thinkingMode ?? props.thinkingMode;
       const nextWebSearch = sd.webSearch ?? props.webSearch;
-      const nextModel = sd.model ?? props.model;
+      // 模型身份整体跟随默认值：settingsDefaults 未就绪时保留当前选择
+      const nextModelRef = sd.modelRef ?? props.modelRef;
       const nextPromptMode = sd.promptMode ?? props.promptMode;
       props.setAgentMode(nextAgentMode);
       props.setThinkingMode(nextThinkingMode);
       props.setWebSearch(nextWebSearch);
-      props.setModel(nextModel);
+      props.setModelRef(nextModelRef);
       props.setPromptMode(nextPromptMode);
       // 为新对话创建默认 state
       props.sessionStatesRef.current.set(sessionId, createSessionState({
@@ -250,7 +254,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
         promptMode: nextPromptMode,
         thinkingMode: nextThinkingMode,
         webSearch: nextWebSearch,
-        model: nextModel,
+        modelRef: nextModelRef,
       }));
       // 重置压缩状态（新对话没有压缩）
       props.setHasCompactArchive(false);
@@ -269,6 +273,10 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       thinkingMode: props.thinkingMode,
       webSearch: props.webSearch,
       promptMode: props.promptMode,
+      // 模型身份随消息一起下发：避免 setModel 消息尚未处理时用错 provider。
+      // wire 协议保持扁平：拆成 model / provider 两个字段。
+      model: props.modelRef?.model,
+      provider: props.modelRef?.provider,
     };
 
     // 用户主动发消息后立即在本地对话列表中刷新修改时间，使其排到最前，

@@ -46,6 +46,7 @@ import {
   extractUsageFields,
   isRetryableStatus,
   isNetworkFetchError,
+  formatErrorChain,
   sleep,
   RETRY_DELAY_MS,
   MAX_RETRIES,
@@ -553,7 +554,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
         }
         // 对网络层错误（fetch failed / ECONNRESET 等）重试数次
         if (retryCount < MAX_RETRIES && isNetworkFetchError(fetchError)) {
-          logger.warn('ResponsesAPI', `Network error while fetching (${(fetchError as TypeError).message}), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
+          logger.warn('ResponsesAPI', `Network error while fetching (${formatErrorChain(fetchError)}), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
           await sleep(RETRY_DELAY_MS);
           checkAborted(signal);
           yield* executeRequest(retryCount + 1);
@@ -1332,7 +1333,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       throw error;
     }
 
-    logger.error('ResponsesAPI', `API call failed: ${error}`);
+    logger.error('ResponsesAPI', `API call failed: ${formatErrorChain(error)}`);
 
     // 网络异常时 requestBody 可能尚未构建完整
     await dumpFailedRequest({

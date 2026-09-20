@@ -48,7 +48,6 @@ const raw = await page.evaluate(() => {
     const next = box.nextElementSibling;
     if (!(next && /仅显示前/.test(next.textContent || ''))) continue; // 只看被截断的
     const isDiff = box.className.includes('code-preview');
-    const st = getComputedStyle(box);
     if (isDiff) {
       // 每个 diff 行是一个 wrapper div > pre，pre 高度即该行真实占用高度
       const pres = Array.from(box.querySelectorAll('pre'));

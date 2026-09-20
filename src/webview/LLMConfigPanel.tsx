@@ -61,6 +61,8 @@ interface LLMConfigPanelProps {
   currentSessionId?: string | null;
   /** 触发设置面板时当前会话使用的模型（保存时回传，供扩展端校验/回退模型） */
   currentModel?: string;
+  /** 触发设置面板时当前会话模型所属 provider（保存时回传，供扩展端校验/回退 provider） */
+  currentProvider?: string;
   onClose: () => void;
 }
 
@@ -357,6 +359,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   initialMcpServers,
   currentSessionId,
   currentModel,
+  currentProvider,
   onClose,
 }) => {
   const [providers, setProviders] = useState<ProviderDraft[]>(() => {
@@ -695,9 +698,10 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       ...presetPayload,
       saveProviders,
       closeAfterSave,
-      // 回传当前会话与模型，供扩展端在切换 provider 后校验模型是否仍被支持
+      // 回传当前会话与 (provider, model)，供扩展端校验模型是否仍被支持
       ...(currentSessionId ? { sessionId: currentSessionId } : {}),
       ...(currentModel ? { currentModel } : {}),
+      ...(currentProvider ? { currentProvider } : {}),
     });
   };
 

@@ -55,7 +55,8 @@ contextBridge.exposeInMainWorld('__vscodeLocale', vscodeLocale);
 contextBridge.exposeInMainWorld('__systemLocale', systemLocale);
 contextBridge.exposeInMainWorld('__uiLocale', uiLanguage);
 contextBridge.exposeInMainWorld('__highlightLanguages', highlightLanguages);
-contextBridge.exposeInMainWorld('logoUri', './logo.png');
+// 空状态背景图的第一张；webview 只取它所在目录，再拼候选文件名（见 placeholderLogo.ts）
+contextBridge.exposeInMainWorld('logoUri', './logo1.png');
 contextBridge.exposeInMainWorld('__sessionId', sessionId);
 // 是否为后台预热视图（见 ChatViewManager.spareKey）：webview 据此跳过启动初始化
 contextBridge.exposeInMainWorld('__prewarm', prewarm);

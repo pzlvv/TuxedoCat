@@ -37,6 +37,11 @@ class SessionQueueManager {
     this.callbacks = cbs;
   }
 
+  /** 回调是否已注册（启动自检用） */
+  hasCallbacks(): boolean {
+    return this.callbacks !== null;
+  }
+
   /**
    * 标记 session 开始处理
    */

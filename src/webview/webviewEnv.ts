@@ -91,13 +91,18 @@ export function getHostInfo(): HostInfo {
 
 export function getLogoUri(): string {
   if (_logoUri === null) {
-    _logoUri = (window as any).logoUri ?? './logo.png';
+    _logoUri = (window as any).logoUri ?? './logo1.png';
   }
   return _logoUri as string;
 }
 
-/** Shared Tailwind classes for the logo image in empty/placeholder states. */
-export const LOGO_CLASS_NAME = 'w-[240px] h-auto opacity-80';
+/**
+ * Shared Tailwind classes for the logo image in empty/placeholder states.
+ *
+ * `max-w-full`：窄侧栏（VS Code 面板可以拖到很窄）下按容器收缩，避免横向溢出；
+ * 有空间时按 360px 展示（原 240px 的 1.5 倍）。
+ */
+export const LOGO_CLASS_NAME = 'w-[360px] max-w-full h-auto opacity-80';
 
 export function getHasWorkspace(): boolean {
   if (_hasWorkspace === undefined) {
@@ -109,6 +114,19 @@ export function getHasWorkspace(): boolean {
 /** Get the current session ID stored on the window (for tool components). */
 export function getWindowSessionId(): string | null {
   return (window as any).__currentSessionId as string ?? null;
+}
+
+/**
+ * 本视图创建时绑定的目标会话（Electron：URL `?session=` / preload 注入的 `__sessionId`）。
+ *
+ * 与 getWindowSessionId 的区别：这里读的是**视图创建时**由宿主绑定的会话（只读、不变），
+ * 而不是 webview 自己维护的当前会话。没有绑定会话（单视图 VS Code，或 Electron 的
+ * 新对话视图）时返回 null —— 调用方据此判断本页启动后进入的是「新对话」。
+ */
+export function getInjectedSessionId(): string | null {
+  const urlSession = new URLSearchParams(window.location.search).get('session');
+  const injectedSession = (window as any).__sessionId as string | undefined;
+  return urlSession || injectedSession || null;
 }
 
 /**

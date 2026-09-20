@@ -31,6 +31,17 @@ export interface McpServerInfo {
   refCount?: number;
 }
 
+/**
+ * 一个 provider 及其模型列表（供输入框菜单按 provider 分组展示）。
+ * 模型名与 provider 分开存放，不拼接。
+ */
+export interface ProviderModels {
+  /** provider key（baseURL 的 hostname） */
+  key: string;
+  /** 该 provider 的模型列表 */
+  models: string[];
+}
+
 /** 对话空间统计信息 */
 export interface ConversationSpaceInfo {
   /** 对话空间标识 */
@@ -166,16 +177,19 @@ export type WebviewMessage = {
     metadata?: {
       sessionId?: string;
       title?: string;
-      context?: { currentFile?: string; selectedLines?: { start: number; end: number }; agentMode?: 'manual' | 'risk' | 'auto'; thinkingMode?: 'off' | 'low' | 'high' | 'max'; promptMode?: 'normal' | 'minimal' | 'mixed'; webSearch?: boolean; totalContextTokens?: number; isCompacted?: boolean; isExpanded?: boolean; model?: string };
+      context?: { currentFile?: string; selectedLines?: { start: number; end: number }; agentMode?: 'manual' | 'risk' | 'auto'; thinkingMode?: 'off' | 'low' | 'high' | 'max'; promptMode?: 'normal' | 'minimal' | 'mixed'; webSearch?: boolean; totalContextTokens?: number; isCompacted?: boolean; isExpanded?: boolean; model?: string; provider?: string };
       parentSessionId?: string;
       model?: string;
+      provider?: string;
     };
     messages?: unknown[]
   };
   pendingToolUseIds?: string[];
   /** 从 meta.json 恢复的上下文，webview 加载后直接应用 */
-  savedContext?: { currentFile?: string; selectedLines?: { start: number; end: number }; agentMode?: 'manual' | 'risk' | 'auto'; thinkingMode?: 'off' | 'low' | 'high' | 'max'; promptMode?: 'normal' | 'minimal' | 'mixed'; webSearch?: boolean; totalContextTokens?: number; isCompacted?: boolean; isExpanded?: boolean };
+  savedContext?: { currentFile?: string; selectedLines?: { start: number; end: number }; agentMode?: 'manual' | 'risk' | 'auto'; thinkingMode?: 'off' | 'low' | 'high' | 'max'; promptMode?: 'normal' | 'minimal' | 'mixed'; webSearch?: boolean; totalContextTokens?: number; isCompacted?: boolean; isExpanded?: boolean; provider?: string };
   parentSessionId?: string;
+  /** 当前会话模型所属 provider（已按 provider 模型列表校验/回退） */
+  provider?: string;
   /** 当前会话的 agent mode（运行时内存值，不持久化到文件） */
   agentMode?: 'manual' | 'risk' | 'auto';
   /** 引擎是否正在消费消息（查询进行中） */
@@ -211,6 +225,8 @@ export type WebviewMessage = {
 } | {
   type: 'setModel';
   model: string;
+  /** 模型所属 provider；model + provider 一起表征一个模型 */
+  provider?: string;
   sessionId: string;
 } | {
   type: 'setWebSearch';
@@ -220,6 +236,8 @@ export type WebviewMessage = {
   type: 'setNewConversationDefaults';
   sessionId: string;
   model: string;
+  /** 默认模型所属 provider（model + provider 一起表征一个模型） */
+  provider?: string;
   thinkingMode: 'off' | 'low' | 'high' | 'max';
   agentMode?: 'manual' | 'risk' | 'auto';
   promptMode?: 'normal' | 'minimal' | 'mixed';
@@ -228,6 +246,8 @@ export type WebviewMessage = {
   type: 'settingsDefaults';
   /** 默认模型（读取失败时为空串） */
   model: string;
+  /** 默认模型所属 provider（activeProvider；无有效 provider 时为空串） */
+  provider?: string;
   /**
    * 会话级默认值。读取 settings.json 失败时宿主无法给出这些值，
    * 会显式下发 undefined，由 webview 保持「未配置」状态（发送按钮禁用）。
@@ -243,7 +263,13 @@ export type WebviewMessage = {
   type: 'requestModels';
 } | {
   type: 'setModels';
-  models: string[];
+  /**
+   * 全部 provider 及其模型列表（按 provider 分组）。
+   * 菜单按 provider 建立三级子菜单；模型名与 provider 分开，不拼接。
+   */
+  providers: ProviderModels[];
+  /** 当前 activeProvider key（用于默认/勾选状态；无有效 provider 时为空串） */
+  activeProvider?: string;
 } | {
   type: 'compressProgress';
   sessionId: string;
@@ -368,11 +394,17 @@ export type WebviewMessage = {
   sessionId: string;
   /** 会话默认模型（可选） */
   model?: string;
+  /** 会话默认模型所属 provider（可选） */
+  provider?: string;
 } | {
   type: 'llmConfigSaved';
   defaultModel?: string;
-  /** 当前会话应使用的模型（已按 active provider 模型列表校验/回退） */
+  /** 默认模型所属 provider（activeProvider） */
+  defaultModelProvider?: string;
+  /** 当前会话应使用的模型（已按会话 provider 模型列表校验/回退） */
   activeModel?: string;
+  /** 当前会话应使用的模型所属 provider（与 activeModel 配套） */
+  activeModelProvider?: string;
   thinkingEffort?: 'off' | 'low' | 'high' | 'max';
   defaultAgentMode?: 'manual' | 'risk' | 'auto';
   defaultPromptMode?: 'normal' | 'minimal' | 'mixed';

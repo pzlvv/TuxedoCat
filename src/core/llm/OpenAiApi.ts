@@ -44,6 +44,7 @@ import {
   extractUsageFields,
   isRetryableStatus,
   isNetworkFetchError,
+  formatErrorChain,
   sleep,
   RETRY_DELAY_MS,
   MAX_RETRIES,
@@ -373,7 +374,7 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
           throw timeoutError;
         }
         if (retryCount < MAX_RETRIES && isNetworkFetchError(fetchError)) {
-          logger.warn('OpenAiAPI', `Network error while fetching (${(fetchError as TypeError).message}), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
+          logger.warn('OpenAiAPI', `Network error while fetching (${formatErrorChain(fetchError)}), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
           await sleep(RETRY_DELAY_MS);
           checkAborted(signal);
           yield* executeRequest(retryCount + 1);
@@ -744,7 +745,7 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
       throw error;
     }
 
-    logger.error('OpenAiAPI', `API call failed: ${error}`);
+    logger.error('OpenAiAPI', `API call failed: ${formatErrorChain(error)}`);
 
     await dumpFailedRequest({
       url: buildChatCompletionsUrl(baseURL),

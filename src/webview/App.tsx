@@ -10,9 +10,11 @@ import { createSessionState } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
-import { postMessage, getLogoUri, getHasWorkspace, LOGO_CLASS_NAME, getHostInfo, navigateToConversation, getIsPrewarmView } from './webviewEnv';
+import { postMessage, getHasWorkspace, getInjectedSessionId, LOGO_CLASS_NAME, getHostInfo, navigateToConversation, getIsPrewarmView } from './webviewEnv';
+import { getPlaceholderLogoUri, rotatePlaceholderLogo } from './placeholderLogo';
 import { canCloseConversation, openConversationModeOf, rendersConversationListInWebview } from '../host/types';
-import type { McpServerInfo } from '../core/webviewTypes';
+import type { McpServerInfo, ProviderModels } from '../core/webviewTypes';
+import type { ModelRef } from '../core/llm/modelRef';
 import { t } from './i18n';
 import { ConversationTreeItem } from './ConversationTreeItem';
 import { DeleteConfirmDialog } from './components/DeleteConfirmDialog';
@@ -61,11 +63,7 @@ const App = () => {
   const CONVERSATION_PAGE_SIZE = 50;
   // 本视图创建时绑定的目标会话（Electron：URL ?session= / preload 注入的 __sessionId）。
   // 单视图内切换（VSCode / 浏览器）时由 useConversationLoading.begin 更新。
-  const initialSessionId = useMemo(() => {
-    const urlSession = new URLSearchParams(window.location.search).get('session');
-    const injectedSession = (window as any).__sessionId as string | undefined;
-    return urlSession || injectedSession || null;
-  }, []);
+  const initialSessionId = useMemo(() => getInjectedSessionId(), []);
   /**
    * 会话加载状态由「对话」自己持有（单一职责）：
    * 只在本视图确实要加载某个会话时进入 loading，收到该会话的 conversationLoaded 后结束。
@@ -100,11 +98,14 @@ const App = () => {
   const [thinkingMode, setThinkingMode] = useState<ThinkingMode | undefined>(undefined);
   const [webSearch, setWebSearch] = useState<boolean>(false);
   /**
-   * 当前会话模型。不设内置默认模型：模型完全由用户配置，
-   * 未获取到之前保持空串，发送按钮禁用。
+   * 当前会话选择的模型身份（provider + model）。不设内置默认模型：模型完全由用户配置，
+   * 未获取到之前为 undefined，发送按钮禁用。
+   * provider 与 model 必须成对存在（provider 空串非法，不表示「未知」），
+   * 因此不拆成两个独立状态，避免二者漂移。
    */
-  const [model, setModel] = useState<string>('');
-  const [models, setModels] = useState<string[]>([]);
+  const [modelRef, setModelRef] = useState<ModelRef | undefined>(undefined);
+  /** 全部 provider 及其模型列表（菜单按 provider 建立三级子菜单） */
+  const [providerModels, setProviderModels] = useState<ProviderModels[]>([]);
   // settings.json 中的默认值（新对话创建时一次性使用，避免先显示 risk 再跳变）。
   // 不内置任何兜底值：未收到宿主回传前字段为 undefined。
   const [settingsDefaults, setSettingsDefaults] = useState<SettingsDefaults>({});
@@ -207,15 +208,17 @@ const App = () => {
     }
   }, [thinkingMode, currentSessionId]);
 
-  // 当 model 变化时通知 extension，并重新请求对应模型的上下文限制。
-  // 未获取到模型前 model 为空串：此时不下发，避免空模型覆盖/污染会话配置。
+  // 当模型身份（provider + model）变化时通知 extension，并重新请求对应模型的上下文限制。
+  // 未获取到模型前为 undefined：此时不下发，避免空模型覆盖/污染会话配置。
+  // wire 协议保持扁平：这里把模型身份拆成 model / provider 两个字段。
+  // 依赖用两个标量而非对象本身，避免每次 setModelRef 生成新对象导致重复下发。
   useEffect(() => {
-    if (!model) return;
+    if (!modelRef) return;
     if (currentSessionId) {
-      postMessage({ type: 'setModel', model, sessionId: currentSessionId });
+      postMessage({ type: 'setModel', model: modelRef.model, provider: modelRef.provider, sessionId: currentSessionId });
     }
-    postMessage({ type: 'requestContextLimit', model });
-  }, [model, currentSessionId]);
+    postMessage({ type: 'requestContextLimit', model: modelRef.model, provider: modelRef.provider });
+  }, [modelRef?.model, modelRef?.provider, currentSessionId]);
 
   // 注意：不再使用防抖定时器持久化上下文，
   // currentFile/selectedLines 由 Extension 端的 sendCurrentFileInfo() 直接处理，
@@ -381,10 +384,10 @@ const App = () => {
     setTheme, setThemeInitialized, setCurrentFile, setSelectedLines,
     setConversationTitle, setMaxContextTokens, setSkills, setMcpServers, setConversationDropdownOpen,
     setCurrentSessionId, setParentSessionId, setAgentMode, setAgentModeReady, setThinkingMode,
-    setModel, setWebSearch, setContextLength, setQueuedMessage,
+    setModelRef, setWebSearch, setContextLength, setQueuedMessage,
     setUserChoiceRequest, setNamingSessions, setStreamingVersion, setForceScrollKey,
     setSessionIdleVersion,
-    setExpandedSubSessions, setModels, setBalance, setBalanceCurrency, setIsUnlimited,
+    setExpandedSubSessions, setProviderModels, setBalance, setBalanceCurrency, setIsUnlimited,
     setCurrentSessionIdRef, setShowLLMConfig, setLlmConfigBaseURL, setLlmConfigWebSearch,
     setLlmConfigThinkingEffort, setLlmConfigDefaultAgentMode, setLlmConfigDefaultPromptMode, setLlmConfigApiKey,
     setLlmConfigProviders, setLlmConfigActiveProvider, setLlmConfigMcpServers,
@@ -399,13 +402,13 @@ const App = () => {
     streamRafRef, toolStatusRafRef, pendingStreamRef, pendingToolStatusRef,
     bufferedToolStatusRef, conversationLoadingRef, isDeletingRef, listLoadedOnceRef,
     toolProgressRafRef, pendingToolProgressRef,
-    _appMountTime, model, contextLength,
+    _appMountTime, modelRef, contextLength,
     inputAreaRef,
     // 当前会话实时状态（切换会话保存快照时使用）
     userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode,
     promptMode, setPromptMode,
     currentFile, selectedLines,
-  }), [model, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, promptMode, currentFile, selectedLines, messages]);
+  }), [modelRef, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, promptMode, currentFile, selectedLines, messages]);
   useMessageHandler(handlerProps);
 
   const appHandlerProps = useMemo(() => ({
@@ -413,14 +416,14 @@ const App = () => {
     conversationDropdownOpen, conversationTitle, currentSessionId, parentSessionId,
     hasActiveQuery, contextLength, maxContextTokens, agentMode, thinkingMode,
     promptMode, setPromptMode,
-    model, webSearch, settingsDefaults, hasCompactArchive, isCompactExpanded,
+    modelRef, webSearch, settingsDefaults, hasCompactArchive, isCompactExpanded,
     queuedMessage, deleteConfirm, userChoiceRequest,
     showThinkingAnimation, animationMode, messages,
     setCurrentFile, setSelectedLines, setFileHidden, setConversations,
     setConversationsLoading, setConversationDropdownOpen, setConversationTitle,
     setCurrentSessionId, setParentSessionId, setHasActiveQuery, setContextLength,
     setMaxContextTokens, setAgentMode, setThinkingMode,
-    setModel, setWebSearch, setHasCompactArchive, setIsCompactExpanded, setQueuedMessage,
+    setModelRef, setWebSearch, setHasCompactArchive, setIsCompactExpanded, setQueuedMessage,
     setDeleteConfirm, setMessages, setUserChoiceRequest,
     setShowThinkingAnimation, setExpandedSubSessions, setNamingSessions,
     currentSessionIdRef, sessionStatesRef, commandHistoryRef, cursorPositionRef,
@@ -434,7 +437,7 @@ const App = () => {
     conversationDropdownOpen, conversationTitle, currentSessionId, parentSessionId,
     hasActiveQuery, contextLength, maxContextTokens, agentMode, thinkingMode,
     promptMode,
-    model, webSearch, settingsDefaults, hasCompactArchive, isCompactExpanded,
+    modelRef, webSearch, settingsDefaults, hasCompactArchive, isCompactExpanded,
     queuedMessage, deleteConfirm, userChoiceRequest,
     showThinkingAnimation, animationMode, messages,
   ]);
@@ -475,7 +478,7 @@ const App = () => {
       thinkingMode,
       contextLength,
       queuedMessage: queuedMessageRef.current.get(sid) ?? null,
-      model,
+      modelRef,
     }));
     postMessage({
       type: 'updateConversationContext',
@@ -484,7 +487,7 @@ const App = () => {
       selectedLines,
       totalContextTokens: contextLength,
     });
-  }, [userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, promptMode, thinkingMode, contextLength, model, currentFile, selectedLines]);
+  }, [userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, promptMode, thinkingMode, contextLength, modelRef, currentFile, selectedLines]);
 
   /**
    * 导航到目标会话前的固定动作序列（四处重复收敛）：
@@ -517,6 +520,7 @@ const App = () => {
    * 新建对话（顶部"+"按钮）：
    * - 保存当前会话快照并持久化上下文；
    * - 暂存"新对话"草稿（未发送过的对话切走时草稿由 stashNewChatDraft 保存）；
+   * - 轮换空状态背景图（每次新对话换一张，不与上一次重复）；
    * - 生成新 sessionId，重置全部 UI 状态到 settings.json 默认值；
    * - 把上一个"新对话"里没发出去的草稿带过来，避免切换会话后再新建时内容丢失。
    * 自按钮 onClick 内联约 90 行抽出，行为不变。
@@ -526,6 +530,8 @@ const App = () => {
     saveCurrentSessionSnapshot();
     // 当前若是"新建但还没发消息"的对话，先把草稿暂存，稍后带到新对话
     stashNewChatDraft();
+    // 换一张空状态背景图（见 placeholderLogo.ts：随机且不与上一次重复）
+    rotatePlaceholderLogo();
     // 新对话无需等待任何会话数据：结束对话自身的 loading 状态
     resetConversationLoad();
     // Generate new session for new conversation
@@ -556,12 +562,13 @@ const App = () => {
     const nextAgentMode = settingsDefaults.agentMode ?? agentMode;
     const nextThinkingMode = settingsDefaults.thinkingMode ?? thinkingMode;
     const nextWebSearch = settingsDefaults.webSearch ?? webSearch;
-    const nextModel = settingsDefaults.model ?? model;
+    // 模型身份整体跟随默认值：settingsDefaults 未就绪时保留当前选择。
+    const nextModelRef = settingsDefaults.modelRef ?? modelRef;
     const nextPromptMode = settingsDefaults.promptMode ?? promptMode;
     setAgentMode(nextAgentMode);
     setThinkingMode(nextThinkingMode);
     setWebSearch(nextWebSearch);
-    setModel(nextModel);
+    setModelRef(nextModelRef);
     setPromptMode(nextPromptMode);
     setCurrentSessionId(newSessionId);
     setCurrentSessionIdRef(newSessionId);
@@ -575,7 +582,7 @@ const App = () => {
       promptMode: nextPromptMode,
       thinkingMode: nextThinkingMode,
       webSearch: nextWebSearch,
-      model: nextModel,
+      modelRef: nextModelRef,
     }));
     postMessage({ type: 'startNewConversation', sessionId: newSessionId });
     // 聚焦输入框，并把光标放回草稿里的原位置
@@ -584,7 +591,7 @@ const App = () => {
       mainInputRef.current?.setSelectionRange(draftCursor, draftCursor);
     }, 0);
     // 依赖与 saveCurrentSessionSnapshot 相同（值类型快照来源）；ref 不进依赖数组
-  }, [saveCurrentSessionSnapshot, stashNewChatDraft, resetConversationLoad, settingsDefaults, agentMode, thinkingMode, webSearch, model, promptMode]);
+  }, [saveCurrentSessionSnapshot, stashNewChatDraft, resetConversationLoad, settingsDefaults, agentMode, thinkingMode, webSearch, modelRef, promptMode]);
 
   const handleOpenSettings = useCallback(() => {
     postMessage({ type: 'requestLLMConfig' });
@@ -659,7 +666,8 @@ const App = () => {
     // 预热视图也能正确收到，所以照常请求 —— 让它在后台就渲染出真实 UI，
     // 被切到前台时不出现 Loading 一闪。
     postMessage({ type: 'requestTheme' });
-    postMessage({ type: 'requestContextLimit', model });
+    // 挂载时还没有模型身份（modelRef 为 undefined）：宿主按 active provider 的默认模型算。
+    postMessage({ type: 'requestContextLimit', model: modelRef?.model, provider: modelRef?.provider });
     if (prewarmPendingRef.current) return;
     // 其余请求的回包走「当前活动视图」，预热视图在后台收不到，等激活时再补（见下）
     postMessage({ type: 'requestSkills' });
@@ -819,7 +827,8 @@ const App = () => {
       initialActiveProvider={llmConfigActiveProvider}
       initialMcpServers={llmConfigMcpServers}
       currentSessionId={currentSessionId}
-      currentModel={model}
+      currentModel={modelRef?.model ?? ''}
+      currentProvider={modelRef?.provider ?? ''}
       onClose={() => {
         setShowLLMConfig(false);
         // 关闭设置后把焦点还给主输入框，继续输入不受影响
@@ -842,7 +851,7 @@ const App = () => {
         }}
       >
         <img
-          src={getLogoUri()}
+          src={getPlaceholderLogoUri()}
           alt="logo"
           className={LOGO_CLASS_NAME}
         />
@@ -1159,9 +1168,9 @@ onClick={handleNewConversation}
               setThinkingMode={setThinkingMode}
               webSearch={webSearch}
               setWebSearch={setWebSearch}
-              model={model}
-              setModel={setModel}
-              models={models}
+              modelRef={modelRef}
+              setModelRef={setModelRef}
+              providerModels={providerModels}
               onSend={handleSend}
               onAbort={handleAbort}
               onCompress={handleCompress}
@@ -1195,9 +1204,20 @@ onClick={handleNewConversation}
             colors={colors}
             onCancel={() => setDeleteConfirm(null)}
             onConfirm={(sessionId) => {
-              isDeletingRef.current = true;
+              // 删除的是当前打开的对话（单视图宿主才有 webview 侧删除入口）：
+              // 跳过「删除中保持面板打开」的标记，直接新建对话，
+              // 完成「关闭当前对话 + 跳转到新对话页」（多视图宿主由原生侧栏
+              // 删除并逐个关视图，不走这里）。
+              const isCurrent = sessionId === currentSessionIdRef.current;
+              if (!isCurrent) {
+                isDeletingRef.current = true;
+              }
               postMessage({ type: 'deleteConversation', sessionId });
               setDeleteConfirm(null);
+              if (isCurrent) {
+                setConversationDropdownOpen(false);
+                handleNewConversation();
+              }
             }}
           />
         )}

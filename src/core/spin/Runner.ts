@@ -86,6 +86,12 @@ The JSON format must be:
     parentSessionId,
   });
 
+  // 继承父会话的模型身份（provider + model；meta.json 也要记录）
+  const parentModelRef = parentEngine?.modelRefOverride;
+  if (parentModelRef) {
+    subEngine.modelRefOverride = parentModelRef;
+  }
+
   // 注册
   const { subAgentRegistry } = await import('../tools/agent/SubAgentRegistry.js');
   subAgentRegistry.register(subSessionID, subEngine, null as any, parentSessionId);
@@ -95,7 +101,7 @@ The JSON format must be:
   // 对话树中正确关联到主对话，进入子会话后能显示"返回主对话"按钮。
   try {
     const { createConversationMetadataSync } = await import('../history/Conversation.js');
-    createConversationMetadataSync(subSessionID, subTitle, parentSessionId, role, modelConfig?.model);
+    createConversationMetadataSync(subSessionID, subTitle, parentSessionId, role, parentModelRef);
     logger.info('SpinRunner', `Pre-created conversation metadata for sub-agent ${subSessionID} (parent=${parentSessionId}, role=${role}, model=${modelConfig?.model ?? 'inherit'})`);
   } catch (err) {
     logger.warn('SpinRunner', `Failed to pre-create conversation metadata for sub-agent ${subSessionID}: ${err}`);

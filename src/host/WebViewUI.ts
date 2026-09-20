@@ -15,6 +15,7 @@
 import type { AssistantEventBus, CoreEventHandlers, CoreRequestHandlers } from '../core/AssistantEventBus.js';
 import { requireEventBus } from '../core/AssistantEventBus.js';
 import type { AgentMode, MessageData, StreamMessageData, StreamEndData } from '../core/types.js';
+import type { ModelRef } from '../core/llm/modelRef.js';
 import type { ToolProgressData, PermissionResult } from '../core/tools/Tool.js';
 import type { UIHost, WebviewViewHandle } from './UIHost.js';
 import type { SpinDesign } from './SpinDesign.js';
@@ -482,7 +483,7 @@ export class WebViewUI implements WebViewUiPort {
   onSessionConfigChanged(
     sessionId: string,
     change:
-      | { key: 'model'; value: string }
+      | { key: 'model'; ref: ModelRef }
       | { key: 'thinkingEffort'; value: 'off' | 'low' | 'high' | 'max' }
       | { key: 'promptMode'; value: 'normal' | 'minimal' | 'mixed' }
       | { key: 'agentMode'; value: 'manual' | 'risk' | 'auto' }
@@ -491,7 +492,9 @@ export class WebViewUI implements WebViewUiPort {
   ): void {
     switch (change.key) {
       case 'model':
-        this.postToWebview(sessionId, { type: 'setModel', model: change.value });
+        // wire 协议保持扁平：模型身份拆成 model / provider 两个字段下发，
+        // webview 需要 provider 才能把选中标记落到正确的分组。
+        this.postToWebview(sessionId, { type: 'setModel', model: change.ref.model, provider: change.ref.provider });
         break;
       case 'thinkingEffort':
         // 落盘字段仍是 thinkingMode（wire 协议命名不受事件约定约束，见第 3.4 节）

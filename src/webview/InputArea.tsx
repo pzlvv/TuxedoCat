@@ -3,7 +3,8 @@ import { Icon } from './Icon';
 import TextareaAutosize from 'react-textarea-autosize';
 import { ConfigProvider, Dropdown } from 'antd';
 import type { Colors, QueuedMessagePayload, ThinkingMode, PromptMode, AgentMode } from './types';
-import type { McpServerInfo } from '../core/webviewTypes';
+import type { McpServerInfo, ProviderModels } from '../core/webviewTypes';
+import type { ModelRef } from '../core/llm/modelRef';
 import { postMessage, getWindowSessionId } from './webviewEnv';
 import { SegmentControl, CheckboxGlyph } from './components/SegmentControl';
 import { t } from './i18n';
@@ -55,9 +56,11 @@ interface InputAreaProps {
   /** 会话关联的 Web Search 开关 */
   webSearch: boolean;
   setWebSearch: (webSearch: boolean) => void;
-  model: string;
-  setModel: (model: string) => void;
-  models: string[];
+  /** 当前选择的模型身份（provider + model）；undefined = 尚未选择 / 未配置 */
+  modelRef?: ModelRef;
+  setModelRef: (ref: ModelRef | undefined) => void;
+  /** 全部 provider 及其模型列表（菜单按 provider 建立三级子菜单） */
+  providerModels: ProviderModels[];
   onSend: () => void;
   onAbort: () => void;
   onCompress: () => void;
@@ -364,9 +367,9 @@ const ToggleMenu = memo(({
   agentModeReady,
   agentMode,
   onAgentModeChange,
-  model,
+  modelRef,
   onModelChange,
-  models,
+  providerModels,
   promptMode,
   onPromptModeChange,
   thinkingMode,
@@ -382,9 +385,11 @@ const ToggleMenu = memo(({
   agentModeReady: boolean;
   agentMode: AgentMode;
   onAgentModeChange: (mode: AgentMode) => void;
-  model: string;
-  onModelChange: (model: string) => void;
-  models: string[];
+  /** 当前选择的模型身份（provider + model）；undefined = 尚未选择 */
+  modelRef?: ModelRef;
+  /** 选择某个 provider 下的模型：整体上报模型身份 */
+  onModelChange: (ref: ModelRef) => void;
+  providerModels: ProviderModels[];
   promptMode?: PromptMode;
   onPromptModeChange: (mode: PromptMode) => void;
   thinkingMode?: ThinkingMode;
@@ -438,6 +443,13 @@ const ToggleMenu = memo(({
   const [modelNameWidth, setModelNameWidth] = useState<number | null>(null);
   const [currentModelWidth, setCurrentModelWidth] = useState<number | null>(null);
 
+  // 全部 provider 的模型名扁平列表：用于测量最长模型名宽度（隐藏测量层）。
+  // 菜单按 provider 分组展示，但宽度需覆盖所有分组里的模型名。
+  const allModels = useMemo(
+    () => providerModels.flatMap((p) => p.models),
+    [providerModels],
+  );
+
   useLayoutEffect(() => {
     const container = modelNameMeasureRef.current;
     if (!container) return;
@@ -446,7 +458,7 @@ const ToggleMenu = memo(({
       max = Math.max(max, (child as HTMLElement).getBoundingClientRect().width);
     }
     setModelNameWidth(max > 0 ? Math.ceil(max) : null);
-  }, [models]);
+  }, [allModels]);
 
   useLayoutEffect(() => {
     // 只在打开菜单的那一刻测量并冻结；open 变为 true 后切换模型不会触发重测
@@ -471,6 +483,49 @@ const ToggleMenu = memo(({
     ),
     disabled: true,
   });
+
+  /**
+   * provider 级菜单项标签：当前使用的 provider 与选中的模型一样显示选中态
+   * （圆点 + 主色 + 加粗）。
+   * 圆点槽与模型项同宽（12px 槽 + 8px 间距），保证 provider 名与模型名左对齐，
+   * 选中与否槽宽都不变，菜单项高度不会抖动。
+   */
+  const makeProviderLabel = (p: ProviderModels) => {
+    const selected = modelRef?.provider === p.key;
+    return (
+      <span style={{
+        fontSize: '12px',
+        display: 'flex',
+        alignItems: 'center',
+        color: selected ? colors.harness : colors.textPrimary,
+        fontWeight: selected ? 600 : 400,
+        userSelect: 'none',
+      }}>
+        <span
+          style={{
+            width: '12px',
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {selected && (
+            <span
+              style={{
+                display: 'block',
+                width: 7,
+                height: 7,
+                borderRadius: '50%',
+                backgroundColor: colors.harness,
+              }}
+            />
+          )}
+        </span>
+        <span style={{ marginLeft: '8px' }}>{p.key}</span>
+      </span>
+    );
+  };
 
   // 菜单最上面：设置按钮（点击进入 API Key 配置页）
   const settingsItem = {
@@ -714,13 +769,13 @@ const ToggleMenu = memo(({
             }}
           >
             <span style={{ fontSize: '12px', color: colors.textPrimary, marginLeft: '12px' }}>{t('inputArea.model')}</span>
-            {model && (
+            {modelRef?.model && (
               // 宽度为打开菜单时冻结的「当前: + 当前模型」宽度；
               // prefix 固定不滚动，模型名默认省略号截断、悬停才单向循环滚动。
               // 文案自带尾随空格（"当前: "），作为 prefix 单独渲染，避免与模型名粘连。
               <HoverScrollText
                 prefix={t('inputArea.modelCurrent')}
-                text={model}
+                text={modelRef?.model ?? ''}
                 width={currentModelWidth}
                 style={{ fontSize: '10px', color: colors.textSystem }}
               />
@@ -729,64 +784,98 @@ const ToggleMenu = memo(({
         </div>
       ),
       type: 'submenu' as const,
-      children: models.map(m => ({
-        key: m,
-        label: (
-          // 用块级 flex 而不是 inline-flex：inline-flex 会作为行内盒参与父级行盒的
-          // 基线对齐，选中时出现的实心圆点会改变基线，使菜单项高度在 36.5px / 33px 之间
-          // 抖动。块级 flex 的高度只由内容决定，选中与否都保持 32px（与其它菜单项一致）。
-          <span style={{
-            fontSize: '12px',
-            display: 'flex',
-            alignItems: 'center',
-            color: model === m ? colors.harness : colors.textPrimary,
-            fontWeight: model === m ? 600 : 400,
-          }}>
-            {/* 选中标记：用 CSS 画实心圆点，尺寸精确可控（不受字体/行高影响），
-                槽宽收窄到 12px 让模型名更靠左，整体更紧凑 */}
-            <span
-              style={{
-                width: '12px',
-                flexShrink: 0,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              {model === m && (
-                <span
-                  style={{
-                    display: 'block',
-                    width: 7,
-                    height: 7,
-                    borderRadius: '50%',
-                    backgroundColor: colors.harness,
-                  }}
-                />
-              )}
-            </span>
-            {/* 宽度按最长模型名（600 粗体）固定：列表里名字完整显示、不滚动不截断，
-                切换选中项也不会改变二级菜单宽度（ellipsis 仅作兜底） */}
-            <span
-              style={{
-                marginLeft: '8px',
-                width: modelNameWidth ?? undefined,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {m}
-            </span>
-          </span>
-        ),
-        onClick: (e: any) => {
-          e.domEvent.stopPropagation();
-          // 选择模型后保持菜单与二级菜单都展开，与勾选 MCP 的行为一致
-          suppressCloseUntilRef.current = Date.now() + 300;
-          onModelChange(m);
-        },
-      })),
+      // 三级菜单：模型 → provider → 该 provider 下的模型。
+      // 模型名与 provider 分开存放，选中态用 (provider, model) 组合判定，
+      // 不把 provider 拼进模型名。
+      children: providerModels.length > 0
+        ? providerModels.map((p) => ({
+            key: `provider:${p.key}`,
+            // 当前使用的 provider 与选中的模型一样带选中态（圆点 + 主色 + 加粗）
+            label: makeProviderLabel(p),
+            type: 'submenu' as const,
+            // provider 下的模型可能很多，复用同一套限高滚动样式
+            popupClassName: 'model-list-submenu',
+            children: p.models.length > 0
+              ? p.models.map((m) => {
+                  const selected = modelRef?.model === m && modelRef?.provider === p.key;
+                  return {
+                    key: `${p.key}::${m}`,
+                    label: (
+                      // 用块级 flex 而不是 inline-flex：inline-flex 会作为行内盒参与父级行盒的
+                      // 基线对齐，选中时出现的实心圆点会改变基线，使菜单项高度在 36.5px / 33px 之间
+                      // 抖动。块级 flex 的高度只由内容决定，选中与否都保持 32px（与其它菜单项一致）。
+                      <span style={{
+                        fontSize: '12px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        color: selected ? colors.harness : colors.textPrimary,
+                        fontWeight: selected ? 600 : 400,
+                      }}>
+                        {/* 选中标记：用 CSS 画实心圆点，尺寸精确可控（不受字体/行高影响），
+                            槽宽收窄到 12px 让模型名更靠左，整体更紧凑 */}
+                        <span
+                          style={{
+                            width: '12px',
+                            flexShrink: 0,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          {selected && (
+                            <span
+                              style={{
+                                display: 'block',
+                                width: 7,
+                                height: 7,
+                                borderRadius: '50%',
+                                backgroundColor: colors.harness,
+                              }}
+                            />
+                          )}
+                        </span>
+                        {/* 宽度按最长模型名（600 粗体）固定：列表里名字完整显示、不滚动不截断，
+                            切换选中项也不会改变菜单宽度（ellipsis 仅作兜底） */}
+                        <span
+                          style={{
+                            marginLeft: '8px',
+                            width: modelNameWidth ?? undefined,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {m}
+                        </span>
+                      </span>
+                    ),
+                    onClick: (e: any) => {
+                      e.domEvent.stopPropagation();
+                      // 选择模型后保持菜单与各级子菜单都展开，与勾选 MCP 的行为一致
+                      suppressCloseUntilRef.current = Date.now() + 300;
+                      onModelChange({ provider: p.key, model: m });
+                    },
+                  };
+                })
+              : [{
+                  key: `${p.key}::__empty`,
+                  label: (
+                    <span style={{ fontSize: '12px', color: colors.textSystem }}>
+                      {t('inputArea.modelEmpty')}
+                    </span>
+                  ),
+                  disabled: true,
+                }],
+          }))
+        : [{
+            key: 'modelEmpty',
+            label: (
+              <span style={{ fontSize: '12px', color: colors.textSystem }}>
+                {t('inputArea.modelEmpty')}
+              </span>
+            ),
+            disabled: true,
+          }],
     },
     makeDivider('divider-4'),
     {
@@ -923,13 +1012,13 @@ const ToggleMenu = memo(({
         - 第二层只渲染当前模型，菜单打开时读取并冻结，供「当前:」行使用，
           使菜单宽度取决于当前模型而不是最长的模型名。 */}
     <div ref={modelNameMeasureRef} aria-hidden="true" style={HIDDEN_MEASURE_STYLE}>
-      {models.map((m) => (
-        <span key={m} style={{ display: 'inline-block', fontSize: '12px', fontWeight: 600 }}>{m}</span>
+      {allModels.map((m, i) => (
+        <span key={`${i}::${m}`} style={{ display: 'inline-block', fontSize: '12px', fontWeight: 600 }}>{m}</span>
       ))}
     </div>
     <div aria-hidden="true" style={HIDDEN_MEASURE_STYLE}>
       <span ref={currentModelMeasureRef} style={{ display: 'inline-block', fontSize: '10px' }}>
-        {t('inputArea.modelCurrent')}{model}
+        {t('inputArea.modelCurrent')}{modelRef?.model ?? ''}
       </span>
     </div>
     </ConfigProvider>
@@ -1042,9 +1131,9 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   setThinkingMode,
   webSearch,
   setWebSearch,
-  model,
-  setModel,
-  models,
+  modelRef,
+  setModelRef,
+  providerModels,
   onSend,
   onAbort,
   onCompress,
@@ -1358,9 +1447,10 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     postMessage({ type: 'setWebSearch', webSearch: value, sessionId });
   }, [setWebSearch, promptMode]);
 
-  const handleModelChange = useCallback((newModel: string) => {
-    setModel(newModel);
-  }, [setModel]);
+  // 选择模型：整体更新模型身份（provider + model；同名模型可能属于不同 provider）
+  const handleModelChange = useCallback((ref: ModelRef) => {
+    setModelRef(ref);
+  }, [setModelRef]);
 
   const hasContent = input.trim().length > 0 || pastedImages.length > 0;
   // MCP 连接中 / 会话配置（模型、思考强度、提示词模式等）尚未获取到：禁止发送，
@@ -1555,9 +1645,9 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             agentModeReady={agentModeReady}
             agentMode={agentMode}
             onAgentModeChange={handleModeChange}
-            model={model}
+            modelRef={modelRef}
             onModelChange={handleModelChange}
-            models={models}
+            providerModels={providerModels}
             promptMode={promptMode}
             onPromptModeChange={handlePromptModeChange}
             thinkingMode={thinkingMode}

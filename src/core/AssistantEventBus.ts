@@ -19,6 +19,7 @@
 
 import type { MessageData, StreamMessageData, StreamEndData } from './types.js';
 import type { AgentMode } from './types.js';
+import type { ModelRef } from './llm/modelRef.js';
 import type { PermissionResult, ToolProgressData } from './tools/Tool.js';
 import type { UserChoiceOptions } from './UserChoiceQueue.js';
 
@@ -125,7 +126,7 @@ export type CoreEvent =
       sessionId: string;
       /** 只带被改动的字段（判别联合，避免可选字段） */
       change:
-        | { key: 'model'; value: string }
+        | { key: 'model'; ref: ModelRef }
         | { key: 'thinkingEffort'; value: 'off' | 'low' | 'high' | 'max' }
         | { key: 'promptMode'; value: 'normal' | 'minimal' | 'mixed' }
         | { key: 'agentMode'; value: AgentMode }
@@ -207,6 +208,8 @@ export type UiEvent =
         webSearch?: boolean;
         promptMode?: string;
         agentMode?: string;
+        /** 本次发送携带的模型身份（provider + model） */
+        modelRef?: ModelRef;
       } | null;
     }
   | { type: 'abortRequested'; sessionId: string }
@@ -241,7 +244,7 @@ export type UiEvent =
   | { type: 'conversationSpaceCleared'; sessionId: string }
 
   // ===== 会话配置 =====
-  | { type: 'modelChanged'; sessionId: string; model: string }
+  | { type: 'modelChanged'; sessionId: string; ref: ModelRef }
   | { type: 'thinkingEffortChanged'; sessionId: string; mode: 'off' | 'low' | 'high' | 'max' }
   | { type: 'promptModeChanged'; sessionId: string; mode: 'normal' | 'minimal' | 'mixed' }
   | { type: 'agentModeChanged'; sessionId: string; mode: AgentMode }
@@ -249,7 +252,14 @@ export type UiEvent =
   | { type: 'mcpEnabledChanged'; sessionId: string; name: string; enabled: boolean }
 
   // ===== 其它 =====
-  | { type: 'editRolledBack'; sessionId: string; toolUseId: string; direction: string }
+  /**
+   * 用户请求把某个 Edit / Write 操作回滚到修改前 / 后。
+   *
+   * `filePath` 是目标 tool_use 的 `input.file_path` 缺失时的兜底路径：
+   * provider 偶发把整个入参 double-encode 成字符串，磁盘上的 `input` 不是对象，
+   * core 取不到 `file_path`，此时用 UI 侧归一化后的 args.file_path 兜底。
+   */
+  | { type: 'editRolledBack'; sessionId: string; toolUseId: string; direction: string; filePath?: string }
   | { type: 'llmConfigSaved'; config: unknown };
 
 // ==================== 会话运行时状态 ====================

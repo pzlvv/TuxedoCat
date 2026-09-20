@@ -34,6 +34,27 @@ export function setSessionWaitingForUserProvider(
 }
 
 /**
+ * 取「会话是否正在等待用户输入」判定；未注入时抛错。
+ *
+ * 接线缺失属于启动错误（bootstrap 必定注入），不用可选链静默降级成「没有等待用户」——
+ * 那会让等待用户确认的会话被判定为空闲。
+ */
+export function requireSessionWaitingForUserProvider(): (sessionId: string) => boolean {
+  if (!waitingForUserProvider) {
+    throw new Error(
+      'Session waiting-for-user provider is not configured. ' +
+      'Call setSessionWaitingForUserProvider() during bootstrap.'
+    );
+  }
+  return waitingForUserProvider;
+}
+
+/** 「会话是否正在等待用户输入」判定是否已注入（启动自检用） */
+export function hasSessionWaitingForUserProvider(): boolean {
+  return waitingForUserProvider !== null;
+}
+
+/**
  * 判断会话当前是否「空闲」。
  *
  * **这是「是否空闲」的唯一判定入口**：宿主空闲回收、手动压缩的是否延后都调它，
@@ -46,6 +67,8 @@ export function setSessionWaitingForUserProvider(
  * - 引擎消费循环在运行
  *
  * 只读：不修改任何状态。引擎状态无法判定时保守返回 false（视为非空闲）。
+ * 前置条件：「等待用户」读取器由共享骨架注入（`requireSessionWaitingForUserProvider`），
+ * 未注入时直接抛错——接线缺失属于启动错误，不静默降级成「没有等待用户」。
  */
 export async function isSessionIdle(sessionId: string, visited: Set<string> = new Set()): Promise<boolean> {
   if (!sessionId || visited.has(sessionId)) return true;
@@ -59,8 +82,10 @@ export async function isSessionIdle(sessionId: string, visited: Set<string> = ne
     // 判定失败继续走后面的检查
   }
 
+  // 等待用户：接线缺失属于启动错误，直接抛（不吞掉）；判定本身异常才按「不忙」继续
+  const waitingForUser = requireSessionWaitingForUserProvider();
   try {
-    if (waitingForUserProvider?.(sessionId)) return false;
+    if (waitingForUser(sessionId)) return false;
   } catch {
     // 判定失败按「不忙」处理，交给后面的检查
   }

@@ -702,8 +702,12 @@ textarea::-webkit-scrollbar-thumb:hover {
   background-color: rgba(99, 102, 241, 0.2) !important;
 }
 
-/* 子菜单展开箭头 — 与文字颜色一致 */
-.agent-mode-menu .ant-dropdown-menu-submenu-title .ant-dropdown-menu-submenu-arrow-icon {
+/* 子菜单展开箭头 — 与文字颜色一致。
+   子菜单弹层是独立挂载的浮层（不在 .agent-mode-menu 内），因此 provider 级箭头
+   需要用弹层自身的 class（popupClassName=model-list-submenu）单独覆盖，
+   否则会落到 antd 默认的 colorIcon，深浅色下都与其它箭头不一致。 */
+.agent-mode-menu .ant-dropdown-menu-submenu-title .ant-dropdown-menu-submenu-arrow-icon,
+.model-list-submenu .ant-dropdown-menu-submenu-title .ant-dropdown-menu-submenu-arrow-icon {
   color: var(--text-secondary) !important;
 }
 

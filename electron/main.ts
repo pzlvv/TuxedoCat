@@ -22,8 +22,6 @@ import { ElectronUIHost } from './ElectronUIHost.js';
 import { ElectronSpinDesign } from './ElectronSpinDesign.js';
 import { ElectronConversationManager } from './ElectronConversationManager.js';
 import { WebViewUI } from '../src/host/WebViewUI.js';
-import { UserChoiceManager } from '../src/host/ui/userChoice.js';
-import type { WebviewPoster } from '../src/host/ui/ports.js';
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
 import {
@@ -52,6 +50,8 @@ let conversations: ElectronConversationManager | undefined;
 let workspacePath: string | undefined;
 /** 当前 WebViewUI 实例（initCore 创建；消息路由 / 工作区切换使用） */
 let webviewUi: WebViewUI | undefined;
+/** core 侧进程级资源的释放入口（initCore 从共享骨架取得；will-quit 调用） */
+let coreShutdown: (() => void) | undefined;
 /** 当前宿主实现（initCore 创建） */
 let uiHost: ElectronUIHost | undefined;
 /** 系统托盘：提供唤醒入口与退出入口（窗口不会因最小化而隐藏到托盘） */
@@ -177,13 +177,8 @@ async function main(): Promise<void> {
     stopTrayBlink();
     tray?.destroy();
     tray = undefined;
-    // 结束所有 MCP 子进程，避免留下孤儿进程
-    try {
-      const { getMcpManager } = require('../src/core/mcp/Manager.js');
-      getMcpManager().shutdown();
-    } catch {
-      // 退出阶段的清理失败不应影响退出
-    }
+    // core 侧的进程级资源（MCP 子进程）统一由共享骨架释放
+    coreShutdown?.();
   });
 }
 
@@ -1355,22 +1350,8 @@ async function checkAndSendLLMConfig(target?: Electron.WebContents): Promise<voi
 
 /** 初始化 core 层（与 extension.ts activate 对应） */
 function initCore(): void {
-  const { setGlobalEventBus } = require('../src/core/AssistantEventBus.js');
-  const { createEventBus } = require('../src/host/EventBus.js');
-  const { initializeCoreEvents } = require('../src/core/initializeCoreEvents.js');
-  const { initializeHistory, initializeSessionQueue } = require('../src/core/Integration.js');
-  const { setExtensionPathProvider } = require('../src/core/history/Config.js');
-  const { setLogCallback, setLogToConsole } = require('../src/core/Logger.js');
-  const { ensureConfigDirs } = require('../src/core/history/index.js');
-  const { setCoreLocale } = require('../src/core/i18n.js');
+  const { bootstrapCore, bootstrapSnapshot, shutdownCore } = require('../src/host/bootstrapCore.js') as typeof import('../src/host/bootstrapCore.js');
 
-  setCoreLocale(app.getLocale().startsWith('zh') ? 'zh' : 'en');
-
-  // 事件总线：core 与 UI 的唯一耦合点（DEVELOPMENT.md 第 3 节）。
-  // 顺序：注册总线 → 注册 core 侧 UiEvent 订阅 → 创建 UI（其构造函数注册 CoreEvent 处理器）。
-  const bus = createEventBus();
-  setGlobalEventBus(bus);
-  initializeCoreEvents(bus);
   const host = new ElectronUIHost();
   const spinDesign = new ElectronSpinDesign(host);
   const conversationsMgr = new ElectronConversationManager(
@@ -1384,26 +1365,18 @@ function initCore(): void {
   conversations = conversationsMgr;
   // 托盘只吃状态流（阶段 3.6）：running / waiting 来自 core 的 sessionRuntimeChanged
   conversationsMgr.setStatusListener((states) => updateTrayStatusFromStates(states));
-  const ui = WebViewUI.create(
-    host,
-    bus,
-    spinDesign,
-    conversationsMgr,
-    {
-      log: (...args: unknown[]) => {
-        console.log('[WebViewUI]', args.map(a => String(a)).join(' '));
-      },
-      // 用户选择框弹出（ask user / 权限确认）不再刷新侧栏：
-      // waiting 由 core 的 sessionRuntimeChanged → dispatchStates 推给侧栏（黄灯）与托盘
-      createUserChoiceManager: (post, closePreview, uiPort) =>
-        new UserChoiceManager({
-          outputChannel: { appendLine: (line: string) => console.log('[WebViewUI]', line) },
-          postToWebview: post,
-          closePreview,
-          getActiveSessionIdInternal: () => uiPort.getActiveSessionId(),
-        }),
+
+  // 共享启动接线：locale / 日志 / 总线 / core 侧订阅 / WebViewUI / 历史 / 会话队列 /
+  // 等待用户读取器 / 配置目录 / 环境预热 / MCP 残留清理（DEVELOPMENT.md 第 3.5、8.6 节）
+  const { ui } = bootstrapCore(host, spinDesign, conversationsMgr, {
+    locale: app.getLocale(),
+    log: (...args: unknown[]) => {
+      console.log('[WebViewUI]', args.map(a => String(a)).join(' '));
     },
-  );
+    logToConsole: true,
+    extensionPath: APP_ROOT,
+  });
+
   host.setMainWindow(mainWindow!);
   host.setSidebarView(sidebarView!);
   host.setChatViewManager(chatViews!);
@@ -1414,52 +1387,7 @@ function initCore(): void {
   // 指向 WebViewUI.releaseConversation（不回调 closeConversationView，避免与视图销毁互相回调成环）
   chatViews!.closeConversation = (sessionId: string) => ui.releaseConversation(sessionId);
 
-  // 日志：输出到控制台（Electron 无 OutputChannel）
-  setLogToConsole(true);
-  setLogCallback((message: string) => {
-    console.log(message);
-  });
-
-  // 项目根目录提供者（从宿主实现获取工作区）
-  initializeHistory(ui);
-  // 初始化会话队列回调
-  try {
-    initializeSessionQueue();
-  } catch (err) {
-    console.error('[main] initializeSessionQueue error:', err);
-  }
-
-  // 扩展路径提供者：ripgrep/pandoc 等资源位于 <root>/dist/resources
-  setExtensionPathProvider(() => APP_ROOT);
-
-  // 配置目录
-  ensureConfigDirs().then(() => {
-    console.log('[main] ensureConfigDirs done');
-  }).catch((error: Error) => {
-    console.error('[main] Failed to initialize config directories:', error);
-  });
-
-  // 预热系统动态环境信息
-  (async () => {
-    try {
-      if (!workspacePath) return; // 未选择工作区时跳过（getProjectRoot 不可用）
-      const { warmupSystemDynamicInfo } = require('../src/core/prompt/SystemEnvironment.js');
-      const { getProjectRoot } = require('../src/core/history/Config.js');
-      const cwd = getProjectRoot();
-      warmupSystemDynamicInfo(cwd);
-    } catch {
-      // 预热失败不影响主流程
-    }
-  })();
-
-  // MCP：引用计数模型下，进程由「打开的对话」驱动，启动时只做残留清理，
-  // 不主动连接任何服务器；对话打开（openConversation / registerSession）时才 acquire。
-  (async () => {
-    try {
-      const { getMcpManager } = require('../src/core/mcp/Manager.js');
-      await getMcpManager().prune();
-    } catch (error) {
-      console.error('[main] Failed to initialize MCP servers:', error);
-    }
-  })();
+  console.log(`[bootstrap] ${JSON.stringify(bootstrapSnapshot())}`);
+  // 退出路径（will-quit）复用同一份 core 清理入口
+  coreShutdown = shutdownCore;
 }

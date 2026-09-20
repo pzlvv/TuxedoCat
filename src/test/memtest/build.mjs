@@ -32,7 +32,7 @@ if (variant === 'no-katex' || variant === 'neither') {
 
 const outName = variant === 'full' ? 'web.js' : `web-${variant}.js`;
 
-const result = await esbuild.build({
+await esbuild.build({
   entryPoints: [path.join(__dirname, 'harness.entry.tsx')],
   bundle: true,
   outfile: path.join(__dirname, outName),

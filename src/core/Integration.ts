@@ -8,6 +8,7 @@ import type { Message, MessageData } from './types.js';
 import type { Tool } from './tools/Tool.js';
 import type { PromptPresetId } from './prompt/PromptPreset.js';
 import type { LLMConfig } from './llm/config.js';
+import { sameModelRef, type ModelRef } from './llm/modelRef.js';
 import { requireEventBus, type CoreEvent } from './AssistantEventBus.js';
 import { markQueryRunning } from './sessionRuntime.js';
 import { getMCPHost } from './mcp/MCPHost.js';
@@ -181,9 +182,24 @@ export function setSessionPromptPreset(sessionId: string, presetId: PromptPreset
 /**
  * 待应用的模型切换（引擎尚未创建时缓存，引擎创建后应用）
  * 场景：新对话在发送第一条消息前切换模型，此时 engine/meta.json 都不存在；
- * 如果只依赖 handleSetModel 直接更新 engine，模型选择会丢失并回退到默认模型。
+ * 如果只依赖 setSessionModel 直接更新 engine，模型选择会丢失并回退到默认模型。
  */
-const pendingSessionModels = new Map<string, string>();
+const pendingSessionModels = new Map<string, ModelRef>();
+
+/**
+ * 用模型身份构造完整 LLMConfig 并写入引擎。
+ *
+ * 竞态保护：等待读盘期间用户可能又切换了模型，过期结果不得覆盖最新选择。
+ * 这里比较完整的 (provider, model)：只比 model 会在「同名模型换 provider」时失效
+ * （旧 provider 的 baseURL/apiKey 会覆盖掉新 provider 的）。
+ */
+async function applySessionModelConfig(engine: QueryEngine, ref: ModelRef): Promise<void> {
+  const { getConfigForProvider } = await import('./llm/config.js');
+  const config = await getConfigForProvider(ref);
+  if (engine.modelRefOverride && !sameModelRef(engine.modelRefOverride, ref)) return;
+  engine.modelRefOverride = ref;
+  engine.updateModelConfig(config);
+}
 
 /**
  * 将缓存的模型覆盖值应用到刚创建的引擎（如果有）
@@ -191,28 +207,35 @@ const pendingSessionModels = new Map<string, string>();
  */
 function applyPendingModel(sessionId: string, engine: QueryEngine): void {
   const pending = pendingSessionModels.get(sessionId);
-  if (pending !== undefined) {
-    pendingSessionModels.delete(sessionId);
-    // 这里只需先写入 model 字段；sendMessage/LLM 调用会与 settings.json 的全量配置合并。
-    engine.updateModelConfig({ model: pending } as LLMConfig);
-  }
+  if (pending === undefined) return;
+  pendingSessionModels.delete(sessionId);
+  // 先同步写入 model 字段；随后异步加载该 provider 的全量配置（baseURL/apiKey/modelConfigs）。
+  engine.modelRefOverride = pending;
+  engine.updateModelConfig({ model: pending.model } as LLMConfig);
+  void applySessionModelConfig(engine, pending).catch((e) => {
+    logger.warn('Integration', `Failed to apply pending model config: ${e}`);
+  });
 }
 
 /**
- * 设置指定会话的模型覆盖值
+ * 设置指定会话的模型身份（provider + model）
  * 供 core 在收到 setModel 消息时调用；
  * meta.json 的持久化由 core 的会话配置处理负责。
  */
-export function setSessionModel(sessionId: string, model: string): void {
+export function setSessionModel(sessionId: string, ref: ModelRef): void {
   const engine = getSessionEngine(sessionId);
   if (engine) {
     // 先同步写入 model 字段，避免异步加载全量配置时被后续切换覆盖；
-    // LLM 请求时会与 settings.json 的全量配置合并。
-    engine.updateModelConfig({ model } as LLMConfig);
+    // 随后异步加载该 provider 的全量配置（baseURL/apiKey/modelConfigs）。
+    engine.modelRefOverride = ref;
+    engine.updateModelConfig({ model: ref.model } as LLMConfig);
+    void applySessionModelConfig(engine, ref).catch((e) => {
+      logger.warn('Integration', `Failed to apply session model config: ${e}`);
+    });
   } else {
-    // 引擎尚未创建（如新对话发送首条消息前、历史对话恢复中），缓存覆盖值，
+    // 引擎尚未创建（如新对话发送首条消息前、历史对话恢复中），缓存模型身份，
     // 等引擎创建后由 applyPendingModel / sendMessage 应用。
-    pendingSessionModels.set(sessionId, model);
+    pendingSessionModels.set(sessionId, ref);
   }
 }
 
@@ -354,21 +377,23 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
     role,
   });
 
-  // 为恢复的对话设置 per-session modelConfig（从 meta.json 读取，回退到 settings.json 默认值）
-  // 始终设置 modelConfig，保证后续会话关联的 webSearch 能正常覆盖
+  // 为恢复的对话设置 per-session modelConfig：优先使用 meta.json 中保存的模型身份，
+  // 未记录 provider 时取 settings.json 的 active provider（唯一回退来源）。
   try {
     if (!conversation) {
       const { loadConversation } = await import('./history/index.js');
       conversation = await loadConversation(sessionID);
     }
-    const perSessionModel = conversation?.metadata?.model || conversation?.metadata?.context?.model;
-    const { getDefaultModel, getConfig: getLLMConfig } = await import('./llm/config.js');
-    const globalConfig = await getLLMConfig();
-    const effectiveModel = perSessionModel || await getDefaultModel();
-    engine.updateModelConfig({
-      ...globalConfig,
-      model: effectiveModel,
-    });
+    const { getConversationModelRef } = await import('./history/index.js');
+    const { getActiveModelRef, getConfigForProvider } = await import('./llm/config.js');
+    const ref = getConversationModelRef(conversation?.metadata) ?? await getActiveModelRef();
+    if (!ref) {
+      logger.warn('Integration', `No usable model for restored session ${sessionID} (provider 未配置)`);
+    } else {
+      engine.modelRefOverride = ref;
+      const config = await getConfigForProvider(ref);
+      engine.updateModelConfig(config);
+    }
   } catch (e) {
     logger.warn('Integration', `Failed to set per-session model config for restored engine: ${e}`);
   }
@@ -457,7 +482,7 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
 export async function* sendMessage(
   prompt: string,
   sessionId: string,
-  fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean; thinkingMode?: 'off' | 'low' | 'high' | 'max'; webSearch?: boolean; model?: string; reminder?: string; upstreamSessionId?: string; upstreamHostname?: string; upstreamWorkspace?: string; promptPreset?: PromptPresetId; images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }> },
+  fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean; thinkingMode?: 'off' | 'low' | 'high' | 'max'; webSearch?: boolean; modelRef?: ModelRef; reminder?: string; upstreamSessionId?: string; upstreamHostname?: string; upstreamWorkspace?: string; promptPreset?: PromptPresetId; images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }> },
 ): AsyncGenerator<Message, void, unknown> {
   // 创建用户消息（需要在创建 QueryEngine 之前，因为需要传入初始消息）
   const fullPrompt = fileInfo?.reminder ? prompt + '\n\n' + fileInfo.reminder : prompt;
@@ -535,23 +560,25 @@ export async function* sendMessage(
     });
     userMsgInContext = true; // initialMessages 已包含 userMsg
 
-    // 为新对话设置 modelConfig（从 meta.json 读取，回退到 settings.json 默认值）
+    // 为新对话设置 modelConfig：优先使用 meta.json 中已保存的模型身份，
+    // 未记录 provider 时取 settings.json 的 active provider（唯一回退来源）。
     try {
-      const { getDefaultModel, getConfig: getLLMConfig } = await import('./llm/config.js');
-      const { loadConversation } = await import('./history/index.js');
+      const { getActiveModelRef, getConfigForProvider } = await import('./llm/config.js');
+      const { loadConversation, getConversationModelRef } = await import('./history/index.js');
       let conversation: any;
       try {
         conversation = await loadConversation(sessionId);
       } catch {
-        // meta.json 尚不存在（新会话未初始化），使用 settings.json 默认值
+        // meta.json 尚不存在（新会话未初始化）
       }
-      const perSessionModel = conversation?.metadata?.model || conversation?.metadata?.context?.model;
-      const effectiveModel = perSessionModel || await getDefaultModel();
-      const globalConfig = await getLLMConfig();
-      engine.updateModelConfig({
-        ...globalConfig,
-        model: effectiveModel,
-      });
+      const ref = getConversationModelRef(conversation?.metadata) ?? await getActiveModelRef();
+      if (!ref) {
+        logger.warn('Integration', `No usable model for session ${sessionId} (provider 未配置)`);
+      } else {
+        engine.modelRefOverride = ref;
+        const config = await getConfigForProvider(ref);
+        engine.updateModelConfig(config);
+      }
     } catch (e) {
       logger.warn('Integration', `Failed to set per-session model config: ${e}`);
     }
@@ -582,23 +609,24 @@ export async function* sendMessage(
   // 保存当前查询引擎引用（用于中止）
   currentQueryEngine = engine;
 
-  // 应用模型切换：优先使用本次发送消息携带的模型（避免 setModel 消息尚未处理时丢失），
-  // 其次使用引擎创建前缓存的模型切换；如果 meta.json 已存在则同步持久化。
-  const pendingModel = pendingSessionModels.get(sessionId);
-  const sendModel = fileInfo?.model || pendingModel;
-  if (sendModel) {
-    if (pendingModel !== undefined) {
+  // 应用模型切换：优先使用本次发送消息携带的模型身份（避免 setModel 消息尚未处理时丢失），
+  // 其次使用引擎创建前缓存的模型切换；如果 meta.json 已存在则同步持久化（meta.json 保持扁平字段）。
+  const pendingSelection = pendingSessionModels.get(sessionId);
+  const sendRef = fileInfo?.modelRef ?? pendingSelection;
+  if (sendRef) {
+    if (pendingSelection !== undefined) {
       pendingSessionModels.delete(sessionId);
     }
     try {
+      engine.modelRefOverride = sendRef;
       // 先同步写入 model，确保即使后续读取全量配置失败，请求仍会使用该模型。
-      engine.updateModelConfig({ model: sendModel } as LLMConfig);
-      const { getConfig } = await import('./llm/config.js');
-      const globalConfig = await getConfig();
-      engine.updateModelConfig({ ...globalConfig, model: sendModel });
-      await updateConversationContext(sessionId, { model: sendModel });
+      engine.updateModelConfig({ model: sendRef.model } as LLMConfig);
+      const { getConfigForProvider } = await import('./llm/config.js');
+      const config = await getConfigForProvider(sendRef);
+      engine.updateModelConfig(config);
+      await updateConversationContext(sessionId, { model: sendRef.model, provider: sendRef.provider });
     } catch (e) {
-      logger.warn('Integration', `Failed to fully apply model "${sendModel}" for session ${sessionId}: ${e}`);
+      logger.warn('Integration', `Failed to fully apply model "${sendRef.model}" for session ${sessionId}: ${e}`);
     }
   }
 

@@ -9,6 +9,8 @@
  * 宿主差异通过 extraFields 注入（如 WebViewUI 传入的 activityPhase）。
  */
 import { buildEditDiffHunks } from '../core/utils/editDiff.js';
+import type { ModelRef } from '../core/llm/modelRef.js';
+import { getConversationModelRef } from '../core/history/Conversation.js';
 
 /** conversationLoaded 消息中除核心字段外的宿主专属字段 */
 export type ConversationLoadedExtraFields = Record<string, unknown>;
@@ -20,7 +22,8 @@ export interface ConversationLoadedExtra {
   agentMode: string;
   hasActiveQuery: boolean;
   hasCompactArchive?: boolean;
-  model?: string;
+  /** 模型身份（provider + model）；wire 消息保持扁平的 model / provider 字段 */
+  modelRef?: ModelRef;
 }
 
 /**
@@ -94,6 +97,11 @@ export function buildConversationLoadedPayload(
 ): Record<string, unknown> {
   const { conversation: trimmed, toolMetaMap } = trimConversationForWebview(conversation);
 
+  // 模型身份：优先用调用方解析好的（已按当前 settings 校验），
+  // 其次从会话元数据组装（meta.json 保持扁平字段）。
+  // wire 消息也保持扁平：这里拆成 model / provider 两个字段下发。
+  const modelRef = extra.modelRef ?? getConversationModelRef(trimmed.metadata);
+
   return {
     type: 'conversationLoaded',
     conversation: trimmed,
@@ -105,9 +113,8 @@ export function buildConversationLoadedPayload(
     sessionId,
     hasCompactArchive: extra.hasCompactArchive === true,
     toolMetaMap: Object.keys(toolMetaMap).length > 0 ? toolMetaMap : undefined,
-    model: extra.model || trimmed.metadata?.model ||
-      (trimmed.metadata?.context?.model) ||
-      undefined,
+    model: modelRef?.model,
+    provider: modelRef?.provider,
     ...extraFields,
   };
 }
