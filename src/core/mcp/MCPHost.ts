@@ -19,6 +19,7 @@
 
 import type { Tool } from '../tools/Tool.js';
 import { logger } from '../Logger.js';
+import { requireEventBus } from '../AssistantEventBus.js';
 
 class DefaultMCPHost {
   /**
@@ -30,6 +31,9 @@ class DefaultMCPHost {
     return this.enqueue(async () => {
       const { getMcpManager } = await import('./Manager.js');
       await getMcpManager().acquire(sessionId);
+      // 首次打开会话时引用刚建立、server 可能还没连上；同步结束后广播事实，
+      // 让 UI 重新读取运行时状态（连接中 → 已连接 / 失败）。
+      await this.notifyServersChanged(sessionId);
     });
   }
 
@@ -48,7 +52,33 @@ class DefaultMCPHost {
     return this.enqueue(async () => {
       const { getMcpManager } = await import('./Manager.js');
       await getMcpManager().syncSession(sessionId);
+      // 差量同步（连接 / 断开）结束后广播事实，否则 webview 会一直停在
+      // 勾选时乐观更新出来的「连接中」。
+      await this.notifyServersChanged(sessionId);
     });
+  }
+
+  /**
+   * 广播「该会话的 MCP 服务器状态已变化」这一事实。
+   *
+   * 连接 / 断开是异步的：调用方 await 到本方法时 server 已处于最终状态
+   * （running 或 error）。UI 收到 sessionConfigChanged(mcpEnabled) 后重新读取
+   * 运行时状态并回推 `setMcpServers`，webview 才能把「连接中」收敛掉。
+   */
+  private async notifyServersChanged(sessionId: string): Promise<void> {
+    try {
+      const servers = await this.readServers(sessionId);
+      requireEventBus().emitToUi({
+        type: 'sessionConfigChanged',
+        sessionId,
+        change: {
+          key: 'mcpEnabled',
+          value: servers.filter((server) => server.enabled).map((server) => server.name),
+        },
+      });
+    } catch (err) {
+      logger.warn('MCPHost', `notify MCP servers changed failed: ${err}`);
+    }
   }
 
   /** 启动时清理没有任何会话引用的残留进程 */

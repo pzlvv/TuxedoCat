@@ -304,7 +304,8 @@ async function registerMcpUiEvents(bus: AssistantEventBus): Promise<void> {
     void (async () => {
       try {
         await setSessionMcpEnabled(sessionId, name, enabled);
-        // 连接/断开差量同步（唯一入口 MCPHost）；完成后由 pushMcpServers 的读取路径回推状态
+        // 连接/断开差量同步（唯一入口 MCPHost）；同步结束后由 MCPHost 广播
+        // sessionConfigChanged(mcpEnabled)，UI 据此重新读取运行时状态并回推给 webview。
         await getMCPHost().onSessionEnabledChanged(sessionId);
       } catch (err) {
         logger.warn('mcp', `mcpEnabledChanged handling failed: ${err}`);

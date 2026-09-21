@@ -510,7 +510,10 @@ export class WebViewUI implements WebViewUiPort {
         this.postToWebview(sessionId, { type: 'setWebSearch', webSearch: change.value });
         break;
       case 'mcpEnabled':
-        this.postToWebview(sessionId, { type: 'setMcpServers' });
+        // 重新读取该会话的 MCP 配置 + 运行时状态并回推：
+        // core 在连接/断开同步完成后才广播本事件，webview 据此把「连接中」刷新为
+        // 连接成功 / 失败；不能只发一个不带 servers 的裸消息（webview 会清空列表）。
+        void this.webviewMessageHandler.pushMcpServers(sessionId);
         break;
     }
   }

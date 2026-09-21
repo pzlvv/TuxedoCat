@@ -207,6 +207,10 @@ body {
   padding: 2px;
 }
 .item:hover .item-actions { display: grid; }
+/* 选中项的操作菜单：跟随选中行的 indigo 色调。
+   .item.active 的底色是 rgba(99,102,241,0.18) 叠在 #16161b 上，
+   若菜单仍用上面的中性灰 #26262c，会在 indigo 底上浮出一块颜色不一致的灰方块。 */
+.item.active .item-actions { background: rgba(46, 46, 84, 0.96); }
 /* 子代理对话只有「关闭」可用：其余 3 格用不可见占位符撑住，
    保证关闭按钮仍落在第 2 列第 2 行，与根对话位置完全一致 */
 .action-ghost {

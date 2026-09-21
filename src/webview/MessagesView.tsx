@@ -17,7 +17,7 @@ import { postMessage, LOGO_CLASS_NAME, navigateToConversation } from './webviewE
 import { getPlaceholderLogoUri } from './placeholderLogo';
 import { profileLog } from './debug';
 import { t } from './i18n';
-import { useStreamStats, formatCount } from './hooks/useStreamStats';
+import { StreamStatsLabel } from './StreamStatsLabel';
 
 /**
  * Pre-computed stable tool component map — created once outside the component
@@ -530,10 +530,6 @@ const ThinkingMessage = memo(function ThinkingMessage({
   // 始终用 userExpanded 控制 open，避免流式结束时 React 移除 open 属性导致自动折叠。
   const [userExpanded, setUserExpanded] = useState(false);
 
-  // 流式期间实时统计已生成的字符数与速度（每秒刷新）。
-  // 统计按 streamId 关联，历史恢复的消息没有 streamId，不显示统计。
-  const stats = useStreamStats(message.streamId);
-
   const isOpen = userExpanded;
 
   return (
@@ -562,35 +558,8 @@ const ThinkingMessage = memo(function ThinkingMessage({
       >
         <span>thinking</span>
         <Icon name="chevron-right" size={13} className="ml-1 transition-transform group-open:rotate-90" style={{ color: colors.textSystem, flexShrink: 0 }} />
-        {stats && (
-          <span
-            className="ml-2 whitespace-nowrap"
-            style={{ color: colors.textSystem, opacity: 0.7, fontSize: '12px', fontVariantNumeric: 'tabular-nums' }}
-          >
-            {(() => {
-              // 单位缩写：token 用 tok，字符用 chars
-              const unit = stats.unit === 'tokens' ? 'tok' : 'chars';
-              // decode 时间太短（<0.5s）时速度不准，不显示速率
-              const showRate = stats.decodeMs >= 500;
-              const decodeText = t(
-                showRate ? 'messagesView.streamStats' : 'messagesView.streamStatsNoRate',
-                {
-                  count: formatCount(stats.count),
-                  unit,
-                  time: (stats.decodeMs / 1000).toFixed(1),
-                  rate: stats.rate.toFixed(1),
-                },
-              );
-              // 有首 token 耗时时展示 Prefill，否则只展示 Decode
-              return stats.ttftMs !== null
-                ? t('messagesView.streamStatsPrefill', {
-                    prefill: (stats.ttftMs / 1000).toFixed(1),
-                    decode: decodeText,
-                  })
-                : decodeText;
-            })()}
-          </span>
-        )}
+        {/* 统计独立订阅 store：只有这一小块随每秒刷新重渲染 */}
+        <StreamStatsLabel streamId={message.streamId} colors={colors} />
       </summary>
       <div
         className="pl-5 whitespace-pre-wrap mt-1"

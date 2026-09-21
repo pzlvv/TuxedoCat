@@ -276,7 +276,6 @@ class SingleWebViewConversationManager {
   +setIdleCloseHandler(fn)
   +startIdleMonitor()
   +stopIdleMonitor()
-  +resetIdleState()
   +sweepIdleSessions(now)
 }
 class ElectronConversationManager
@@ -722,7 +721,7 @@ wire message（若该事件会产生 webview 协议消息）。
 | 18 | `compactBegin` | `sessionId` | `compact/compact` | `onCompactBegin` | `compressProgress`（`status: 'start'`） |
 | 19 | `compactEnd` | `sessionId`, `result` | `compact/compact`（`complete`）、`Integration` / `QueryEngine`（`error`） | `onCompactEnd` | `compressProgress`（`status: 'complete'` / `'error'`） |
 | 20 | `commandDispatched` | `sessionId`, `commandName`, `args` | `CommandDispatcher` | `onCommandSend` | `/spin`：打开设计器 |
-| 21 | `sessionConfigChanged` | `sessionId`, `change` | `initializeCoreEvents`（六个配置 UiEvent 处理完后，已写完 meta.json；`change.key` 用 `thinkingEffort`，落盘字段仍是 `thinkingMode`） | `onSessionConfigChanged` | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpServers` |
+| 21 | `sessionConfigChanged` | `sessionId`, `change` | `initializeCoreEvents`（前五个配置 UiEvent 写完 meta.json 后广播；`change.key` 用 `thinkingEffort`，落盘字段仍是 `thinkingMode`）；`MCPHost`（`mcpEnabledChanged` 的差量同步、以及会话首次打开的 `acquire` 连接 / 断开完成后广播，让 UI 拿到最终运行时状态） | `onSessionConfigChanged` | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpServers` |
 | 22 | `highlightLanguagesUsed` | `languages: readonly string[]` | `history/Conversation`（消息落盘时扫描围栏代码块语言，只报未记录过的） | `onHighlightLanguagesUsed` | 写 settings.json 的 `highlightLanguages` 字段（经 `UIHost.updateSettingsJson`，见第 5.1 节） |
 | 23 | `projectConversationDirReady` | `projectDir`, `workspacePath` | `history/Config.ensureProjectConversationDir`（目录由 core 创建后上报一次） | `onProjectConversationDirReady` | 写 `<projectDir>/settings.json` 的 `workspacePath`（经 `UIHost.ensureProjectSettings`） |
 
@@ -772,7 +771,7 @@ core 里任何一个需要工作目录的地方（history / mcp / tools / spin /
 | 36 | `promptModeChanged` | `sessionId`, `mode` | `setPromptMode` | `setSessionPromptPreset` + 写 meta.json → `sessionConfigChanged` |
 | 37 | `agentModeChanged` | `sessionId`, `mode` | `setAgentMode` | `setSessionAgentMode` + 写 meta.json → `sessionConfigChanged` |
 | 38 | `webSearchChanged` | `sessionId`, `enabled` | `setWebSearch` | `engine.updateWebSearch` + 写 meta.json → `sessionConfigChanged` |
-| 39 | `mcpEnabledChanged` | `sessionId`, `name`, `enabled` | `setMcpEnabled` | `mcp/Config.setSessionMcpEnabled` + `Manager.syncSession` |
+| 39 | `mcpEnabledChanged` | `sessionId`, `name`, `enabled` | `setMcpEnabled` | `mcp/Config.setSessionMcpEnabled` + `Manager.syncSession` → `sessionConfigChanged`（差量同步完成后） |
 | 40 | `editRolledBack` | `sessionId`, `toolUseId`, `direction`, `filePath?` | `rollbackEdit` | `history/rollback.rollbackEdit`（`filePath` 作为 `input.file_path` 缺失时的兜底路径） |
 | 41 | `llmConfigSaved` | `config` | `saveLLMConfig` | `llm/config.clearConfigCache` |
 
@@ -1008,11 +1007,16 @@ core 与它只有一条连接：`CoreEvent.spinDesignDataChanged` → `WebViewUI
 
 | 成员 | 触发 | 语义 |
 | --- | --- | --- |
-| `onSessionOpened(sessionId)` | `Integration.createEngine` / `restoreConversationEngine` | 按该会话的启用列表建立引用（幂等；可能耗时，后台执行不阻塞） |
+| `onSessionOpened(sessionId)` | `Integration.createEngine` / `restoreConversationEngine` | 按该会话的启用列表建立引用（幂等；可能耗时，后台执行不阻塞）；连接 / 断开结束后广播 `sessionConfigChanged(mcpEnabled)` |
 | `onSessionClosed(sessionId)` | `sessionResources.releaseSessionResources` / `history.deleteConversation` | 释放该会话的全部引用（归零的 server 进入延迟回收） |
-| `onSessionEnabledChanged(sessionId)` | 启用列表变化 | 差量同步 |
+| `onSessionEnabledChanged(sessionId)` | 启用列表变化 | 差量同步；结束后广播 `sessionConfigChanged(mcpEnabled)` |
 | `prune()` | bootstrap | 清理没有任何会话引用的残留进程 |
 | `shutdown()` | 宿主退出 | 结束全部 MCP 子进程，避免留下孤儿进程 |
+
+`onSessionOpened` / `onSessionEnabledChanged` 在串行链内 `await` 到 server 进入最终状态
+（running 或 error）后广播 `sessionConfigChanged(mcpEnabled)`：连接是异步的，缺这条事实，
+webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接中」。UI 收到后重新读取运行时
+状态并回推 `setMcpServers`（第 4.1 节事件 21）。
 
 另提供三个只读转发：`getTools()` / `getServerStatus()` / `readServers(sessionId)`；工具聚合
 与面板读取的实际路径是 `mcp/Manager` 与 `mcp/Config`。
@@ -1094,7 +1098,6 @@ VS Code 实现里的成员：
 | `setActiveSessionProvider(fn)` | 注入「当前激活会话」读取器（前台会话永不关闭，且持续刷新计时） |
 | `setIdleCloseHandler(fn)` | 注入「关闭对话」回调（bootstrap 指向 `WebViewUI.closeConversation`） |
 | `startIdleMonitor()` / `stopIdleMonitor()` | 启动 / 停止巡检（间隔 `SESSION_IDLE_CHECK_INTERVAL_MS` = 1 分钟） |
-| `resetIdleState()` | 清空全部计时状态（工作区切换 / 退出） |
 | `sweepIdleSessions(now)` | 巡检一次：关闭所有满足条件的空闲会话，返回被关闭的 sessionId 列表 |
 | `updateSessionStates(states)`（覆盖） | 先刷新空闲计时再调 `super`（会话进入工作、或从工作回到空闲时都算一次活动） |
 

@@ -317,43 +317,13 @@ export class WebviewMessageHandler {
   }
 
   /**
-   * 切换某个 MCP 的启用状态。
-   *
-   * 只写入**当前会话**的 meta.json（context.mcpEnabled），不触碰全局默认。
-   * 保存后立即回推一次（此时 running 仍为旧值 → webview 显示「连接中」），
-   * 真正的连接/断开放到后台异步执行，完成后再次回推运行时状态。
-   */
-  private async handleSetMcpEnabled(message: any): Promise<void> {
-    const name = typeof message.name === 'string' ? message.name : '';
-    const enabled = !!message.enabled;
-    if (!name) return;
-    const sessionId = await this.getActiveMcpSessionId(message.sessionId);
-    this.log(`[WebviewMessageHandler] Session MCP enabled set: ${name} = ${enabled} (session=${sessionId ?? '-'})`);
-    try {
-      const { setSessionMcpEnabled } = await import('../../core/mcp/Config.js');
-      await setSessionMcpEnabled(sessionId, name, enabled);
-    } catch (err: any) {
-      this.log(`[WebviewMessageHandler] Failed to set session MCP enabled: ${err.message}`);
-      return;
-    }
-    // 先回推：让菜单立刻反映新的勾选状态（连接尚未开始 → 显示「连接中」）
-    await this.pushMcpServers(sessionId);
-    // 连接/断开由 MCPHost.onSessionEnabledChanged（本消息已翻译成 UiEvent，
-    // core 订阅处理）驱动；这里再次回推运行时状态供面板更新
-    void (async () => {
-      try {
-        // 延迟一拍等 core 订阅处理完成
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      } catch { /* ignore */ }
-      await this.pushMcpServers(sessionId);
-    })();
-  }
-
-  /**
    * 组装并推送 MCP 列表：配置（mcp.json）+ 该会话的启用状态 + 运行时状态。
    * 带上 sessionId，webview 据此区分会话，避免异步回推串到其它会话。
+   *
+   * 公开给 `WebViewUI`：core 广播 `sessionConfigChanged(mcpEnabled)`（MCP 连接/断开
+   * 同步完成）时由 UI 侧调用，重新读取运行时状态回推给 webview。
    */
-  private async pushMcpServers(sessionId?: string): Promise<void> {
+  async pushMcpServers(sessionId?: string): Promise<void> {
     try {
       const { readMcpServers } = await import('../../core/mcp/Config.js');
       const { getMcpManager } = await import('../../core/mcp/Manager.js');

@@ -124,12 +124,6 @@ export class SingleWebViewConversationManager extends ConversationManager {
     this.idleCloseHandler = fn;
   }
 
-  /** 清空全部计时状态（工作区切换 / 退出等场景） */
-  resetIdleState(): void {
-    this.lastActivityAt.clear();
-    this.sessionBusy.clear();
-  }
-
   /** 启动空闲巡检（幂等；宿主在启动时调用一次） */
   startIdleMonitor(): void {
     if (this.idleTimer) return;

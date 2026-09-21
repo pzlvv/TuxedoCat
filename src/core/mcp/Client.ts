@@ -16,6 +16,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { logger } from '../Logger.js';
+import { EXTENSION_NAME } from '../../config/project.js';
 
 /** MCP 服务器返回的工具定义 */
 export interface McpToolDefinition {
@@ -312,7 +313,7 @@ export class McpStdioClient implements McpClient {
       {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: 'tuxedo-cat', version: '1.0.0' },
+        clientInfo: { name: EXTENSION_NAME, version: '1.0.0' },
       },
       CONTROL_TIMEOUT_MS,
     );

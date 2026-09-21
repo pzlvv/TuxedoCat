@@ -30,6 +30,7 @@ import {
   type McpToolDefinition,
 } from './Client.js';
 import { logger } from '../Logger.js';
+import { EXTENSION_NAME } from '../../config/project.js';
 
 /** 一次待响应的请求（旧版 SSE 模式下响应从长连接回流） */
 interface PendingRequest {
@@ -260,7 +261,7 @@ export class McpHttpClient implements McpClient {
     return {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: { name: 'tuxedo-cat', version: '1.0.0' },
+      clientInfo: { name: EXTENSION_NAME, version: '1.0.0' },
     };
   }
 

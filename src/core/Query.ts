@@ -13,6 +13,7 @@ import { sessionQueue } from './SessionQueue.js';
 import { logger } from './Logger.js';
 import { updateConversationContext } from './history/index.js';
 import { getAvailableOutputTokens } from './utils/modelConfig.js';
+import { estimateRequestTokens } from './utils/tokenEstimate.js';
 import { CONFIG_DIR_NAME } from '../config/project.js';
 
 /** core → UI 单向事件的发送侧封装（Query 模块统一走它） */
@@ -86,6 +87,36 @@ type Terminal = {
 type RawApiMessage = { role: string; content: string | unknown[] };
 
 /**
+ * content block 上「只服务 UI / 内部流程、不参与 LLM 请求」的字段。
+ *
+ * - `_meta` / `_partialJson`：UI 历史恢复与统计、SSE 流式解析的累积字段；
+ * - `beforeContent` / `afterContent` / `contextBefore` / `contextAfter`：
+ *   Edit / Write 的 diff 展示字段（见 tools/Tool.ts 的 PermissionDiffPayload），
+ *   只用于 webview 工具卡片 diff 与 editRollback 兜底。`beforeContent` 可能是
+ *   **整份文件内容**，留在请求里会把上下文撑大若干倍（实测 700 条消息的会话
+ *   因此从 400K 被估成 3M token，远未到阈值就触发自动压缩）。
+ *
+ * 注意：只在「请求载荷」里剔除，持久化的对话消息保持原样
+ * （webview 展开归档与 editRollback 仍要从 tool_result 读 beforeContent）。
+ */
+const NON_LLM_BLOCK_FIELDS = [
+  '_meta',
+  '_partialJson',
+  'beforeContent',
+  'afterContent',
+  'contextBefore',
+  'contextAfter',
+] as const;
+
+/** 返回剔除 UI 专用字段后的 block 副本；没有可剔除字段时原样返回（避免无谓拷贝）。 */
+function stripNonLlmBlockFields(block: Record<string, unknown>): Record<string, unknown> {
+  if (!NON_LLM_BLOCK_FIELDS.some((key) => block[key] !== undefined)) return block;
+  const clean: Record<string, unknown> = { ...block };
+  for (const key of NON_LLM_BLOCK_FIELDS) delete clean[key];
+  return clean;
+}
+
+/**
  * 把 Message[] 转换为 API 请求用的原始消息数组（user/assistant 交替之前的格式）。
  *
  * 行为要点（与抽取前的内联实现逐行一致）：
@@ -93,10 +124,13 @@ type RawApiMessage = { role: string; content: string | unknown[] };
  * - 字符串 content 中格式化进文件/行号元数据（[Current File: ...]）
  *   在构造 rawApiMessages 时就把文件/行号元数据格式化进文本，
  *   而不是后续按 apiMessages 索引回填（索引在合并连续同角色消息后会错位）。
- * - 数组 content 过滤掉 block 顶层的 _meta / _partialJson 内部字段
+ * - 数组 content 剔除 block 上的 UI 专用字段（见 NON_LLM_BLOCK_FIELDS）
  * - 其他类型 content 统一 String() 化
+ *
+ * 该函数同时是「当前请求输入量」的唯一口径：自动压缩判断与 max_output_tokens
+ * 预留都基于它的输出估算，保证估算与实际发送内容一致。
  */
-function buildRawApiMessages(messages: Message[]): RawApiMessage[] {
+export function buildRawApiMessages(messages: Message[]): RawApiMessage[] {
   return messages
     .filter((msg) => msg.type === 'user' || msg.type === 'assistant')
     .map((msg) => {
@@ -133,17 +167,9 @@ function buildRawApiMessages(messages: Message[]): RawApiMessage[] {
         // content 是数组，需要格式化
         formattedContent = content.map((block: unknown) => {
           if (typeof block === 'object' && block !== null) {
-            const srcBlock = block as { type: string;[key: string]: unknown };
-            // 过滤掉 tool_use block 中的顶层 _meta 和 _partialJson 字段
-            // _meta: 仅用于 UI 历史恢复和统计，不应发给 LLM
-            // _partialJson: SSE 流式解析用的内部累积字段，不应发给 LLM
-            if ((srcBlock as any)._meta !== undefined || (srcBlock as any)._partialJson !== undefined) {
-              const { _meta, _partialJson, ...cleanBlock } = srcBlock;
-              void _meta;
-              void _partialJson;
-              return cleanBlock;
-            }
-            return srcBlock;
+            // 剔除 UI 专用字段（_meta / _partialJson / diff 展示字段），
+            // 它们体积可能远超真正的 tool 输出，且不属于 LLM 输入。
+            return stripNonLlmBlockFields(block as Record<string, unknown>);
           }
           return block;
         });
@@ -281,11 +307,22 @@ async function* queryLoop(
         }
       }
 
+      // 用估算值兜底 exactTokenCount：估算包含本轮新增消息与 system prompt，
+      // 偏保守（宁可高估），避免上下文实际已接近窗口却因旧 usage 偏低而不触发压缩。
+      //
+      // 估算口径必须与真正发出去的载荷一致：先经 buildRawApiMessages 剔除
+      // _meta 与 tool_result 的 diff 展示字段（可能是整份文件内容），否则会把
+      // 400K 的上下文估成 3M token，导致远未到阈值就触发自动压缩。
+      const contextTokenCount = Math.max(
+        exactTokenCount ?? 0,
+        estimateRequestTokens({ messages: buildRawApiMessages(messages), systemPrompt: staticSystemPrompt }),
+      );
+
       // 用动态获取的模型配置判断压缩阈值（主调用方只传 getPromptState/getModelConfig 回调，
       // params.modelConfig 恒为 undefined，会导致 shouldAutoCompact 拿不到模型名而使用默认阈值）。
       const currentModelConfig = getModelConfig();
       const shouldCompact = pendingCompact
-        || await shouldAutoCompact(messages, state.autoCompactTracking, exactTokenCount, currentModelConfig?.model, currentModelConfig?.modelConfigs);
+        || await shouldAutoCompact(messages, state.autoCompactTracking, contextTokenCount, currentModelConfig?.model, currentModelConfig?.modelConfigs);
 
       if (shouldCompact) {
         if (pendingCompact) {
@@ -311,6 +348,7 @@ async function* queryLoop(
 
           // 压缩后上下文已大幅缩短，旧的 exactTokenCount 不再代表当前上下文，
           // 重置后本次请求按“无历史占用”计算可用输出，避免输出被压缩前的旧值挤压。
+          // 下面构建请求时会用压缩后的 messages 重新估算实际输入。
           exactTokenCount = undefined;
         }
       }
@@ -389,6 +427,12 @@ async function* queryLoop(
 
       // 本次请求的 max output：min(output, context - current_context)。
       // 为输出预留的空间不能超过上下文窗口的剩余空间，否则请求会超出窗口。
+      // 这里用「真正要发送的 payload」（合并后的消息 + system prompt + 工具 schema）
+      // 再估一次，与 exactTokenCount 取较大者；估算偏保守，宁可少留输出也不超窗口。
+      const requestTokenCount = Math.max(
+        exactTokenCount ?? 0,
+        estimateRequestTokens({ messages: apiMessages, systemPrompt: fullSystemPrompt, tools }),
+      );
       // 仅当能确定模型或已配置 maxTokens 时才覆盖，避免部分配置（如仅 webSearch）
       // 覆盖掉 callRealLLM 从 settings.json 合并进来的真实 maxTokens。
       const baseModelConfig = getModelConfig();
@@ -397,7 +441,7 @@ async function* queryLoop(
         const availableOutputTokens = getAvailableOutputTokens(
           baseModelConfig.model,
           baseModelConfig.modelConfigs,
-          exactTokenCount ?? 0,
+          requestTokenCount,
         );
         const configured = baseModelConfig.maxTokens > 0 ? baseModelConfig.maxTokens : availableOutputTokens;
         requestModelConfig = { ...baseModelConfig, maxTokens: Math.min(configured, availableOutputTokens) };

@@ -48,8 +48,11 @@ export function getThreshold(modelName?: string, modelConfigs?: Record<string, M
 export async function shouldAutoCompact(
   messages: Message[],
   tracking?: AutoCompactTrackingState,
-  /** 精确 token 数（input+output），来自 API 返回的 usage */
-  exactTokenCount?: number,
+  /**
+   * 当前上下文已占用的 token 数：优先用 API usage（input + output），
+   * 拿不到或已过期时由调用方传入「宁可高估」的请求估算值。
+   */
+  tokenCount?: number,
   /** 当前使用的模型名称，用于获取对应的上下文窗口阈值 */
   modelName?: string,
   /** 当前 provider 的模型 context/output 覆盖 */
@@ -69,17 +72,16 @@ export async function shouldAutoCompact(
     }
   }
 
-  // Token count must be provided via exactTokenCount (from API usage)
-  if (exactTokenCount === undefined) {
-    logger.warn('autoCompact', 'exactTokenCount is required but not provided, skipping auto-compact check');
+  // Token count must be provided (API usage 或调用方的保守估算)
+  if (tokenCount === undefined) {
+    logger.warn('autoCompact', 'tokenCount is required but not provided, skipping auto-compact check');
     return false;
   }
 
-  const tokenCount = exactTokenCount;
   const threshold = getThreshold(modelName, modelConfigs);
   const usagePct = threshold > 0 ? Math.round((tokenCount / threshold) * 100) : 100;
 
-  logger.info('autoCompact', `Token count: ${tokenCount} (exact), threshold: ${threshold} (${usagePct}%)`);
+  logger.info('autoCompact', `Token count: ${tokenCount}, threshold: ${threshold} (${usagePct}%)`);
 
   if (tokenCount >= threshold) {
     logger.info('autoCompact', `Triggering auto-compact: ${tokenCount} >= ${threshold}`);

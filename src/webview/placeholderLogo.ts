@@ -7,11 +7,12 @@
  *   - **相邻两次不同**：袋内天然不同；换新一轮时若洗出的第一张恰好是上一轮最后一张，
  *     就把它和后面随机一张换位，保证跨轮边界也不同。
  *
- * 轮换时机与「新对话」一一对应，不在渲染时轮换：
+ * 轮换时机（只在这些明确时机调用，不要放进会反复执行的渲染路径）：
  *   - 页面加载：没有绑定会话的视图就是「新对话」视图（Electron 每个新会话一个视图，
  *     后台预热视图也在这里轮换），见 Main.tsx；
- *   - 单视图内点「+」新建对话：见 App.tsx 的 handleNewConversation。
- * 打开已有会话不轮换 —— 它只是复用当前这张背景图。
+ *   - 单视图内点「+」新建对话：见 App.tsx 的 handleNewConversation；
+ *   - 切换/打开会话时的 loading 动画出现：见 ConversationLoading（每个挂载周期轮换一张，
+ *     让 loading 动画与随后露出的空状态背景图都是随机且一致的那张）。
  *
  * 候选 URI 只借用宿主注入的 window.logoUri 定位**目录**（取最后一个 `/` 之前的部分），
  * 再拼上候选文件名：宿主不需要知道有哪几张背景图，新增一张只改 LOGO_FILES，
@@ -24,6 +25,7 @@
  * 不抛错、不影响展示。
  */
 import { getLogoUri } from './webviewEnv';
+import { EXTENSION_NAME } from '../config/project';
 
 /** 背景图候选文件名（与宿主注入的基准图同目录，随 public/ 一起构建进 dist/webview） */
 const LOGO_FILES = [
@@ -46,7 +48,7 @@ interface LogoCycle {
   bag: LogoFile[];
 }
 
-const STORAGE_KEY = 'tuxedo-cat:placeholder-logo';
+const STORAGE_KEY = `${EXTENSION_NAME}:placeholder-logo`;
 
 /** 本页的轮换状态；null = 还没读过（首次使用时从 localStorage 载入） */
 let cycle: LogoCycle | null = null;
@@ -125,8 +127,8 @@ function currentCycle(): LogoCycle {
 /**
  * 轮换到下一张背景图：从本轮袋里取下一张，取空了就洗新的一轮。
  *
- * 只应由「新对话」的创建路径调用（页面加载 / 点「+」），不要放进渲染函数，
- * 否则每次重渲染都会换图。
+ * 只应在明确的轮换时机调用（页面加载 / 点「+」/ loading 动画挂载），
+ * 不要放进会反复执行的渲染路径，否则每次重渲染都会换图。
  */
 export function rotatePlaceholderLogo(): void {
   const current = currentCycle();

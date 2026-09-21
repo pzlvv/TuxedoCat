@@ -430,23 +430,34 @@ const ToggleMenu = memo(({
     setSubmenuOpenKeys((keys) => (keys.length > 0 ? [] : keys));
   }, [menuOpen]);
 
-  // 宽度测量（两套，用隐藏层实测像素宽度，而不是按字符数估算 ——
+  // 宽度测量（三套，用隐藏层实测像素宽度，而不是按字符数估算 ——
   // 比例字体下字符数与实际宽度不成正比）：
   //
   // 1) 模型列表：按「最长模型名」（600 粗体，覆盖选中态）测量，让所有模型名都能
-  //    完整显示（列表项不滚动、不截断），且切换选中项不会改变二级菜单宽度。
-  // 2) 「当前模型」行：打开菜单时按当前模型实测一次并冻结，菜单宽度取决于当前模型
+  //    完整显示（列表项不滚动、不截断），且切换选中项不会改变该列表宽度。
+  // 2) provider 列表（二级菜单）：按「最长 provider 名」（600 粗体，覆盖选中态）测量，
+  //    选中态只改字重/颜色，菜单宽度不随选中的 provider 变化、三级菜单不跟着位移。
+  // 3) 「当前模型」行：打开菜单时按当前模型实测一次并冻结，菜单宽度取决于当前模型
   //    而不是最长的模型名；展开期间切换模型不重测，超长名字默认省略号截断、
   //    鼠标悬停时单向循环滚动查看全名；下次重新打开菜单再按新的当前模型重测。
   const modelNameMeasureRef = useRef<HTMLDivElement>(null);
+  const providerNameMeasureRef = useRef<HTMLDivElement>(null);
   const currentModelMeasureRef = useRef<HTMLSpanElement>(null);
   const [modelNameWidth, setModelNameWidth] = useState<number | null>(null);
+  const [providerNameWidth, setProviderNameWidth] = useState<number | null>(null);
   const [currentModelWidth, setCurrentModelWidth] = useState<number | null>(null);
 
   // 全部 provider 的模型名扁平列表：用于测量最长模型名宽度（隐藏测量层）。
   // 菜单按 provider 分组展示，但宽度需覆盖所有分组里的模型名。
   const allModels = useMemo(
     () => providerModels.flatMap((p) => p.models),
+    [providerModels],
+  );
+
+  // 全部 provider 名：用于测量最长 provider 名宽度（隐藏测量层）。
+  // provider 项选中时会加粗（600），用最粗字重量测，保证选中/未选中宽度一致。
+  const allProviderNames = useMemo(
+    () => providerModels.map((p) => p.key),
     [providerModels],
   );
 
@@ -459,6 +470,16 @@ const ToggleMenu = memo(({
     }
     setModelNameWidth(max > 0 ? Math.ceil(max) : null);
   }, [allModels]);
+
+  useLayoutEffect(() => {
+    const container = providerNameMeasureRef.current;
+    if (!container) return;
+    let max = 0;
+    for (const child of Array.from(container.children)) {
+      max = Math.max(max, (child as HTMLElement).getBoundingClientRect().width);
+    }
+    setProviderNameWidth(max > 0 ? Math.ceil(max) : null);
+  }, [allProviderNames]);
 
   useLayoutEffect(() => {
     // 只在打开菜单的那一刻测量并冻结；open 变为 true 后切换模型不会触发重测
@@ -489,6 +510,9 @@ const ToggleMenu = memo(({
    * （圆点 + 主色 + 加粗）。
    * 圆点槽与模型项同宽（12px 槽 + 8px 间距），保证 provider 名与模型名左对齐，
    * 选中与否槽宽都不变，菜单项高度不会抖动。
+   *
+   * provider 名同样按「最长 provider 名（600 粗体）」固定宽度：选中态只改字重/颜色，
+   * 不改布局宽度，否则切换选中的 provider 会让二级菜单宽度抖动、三级菜单跟着位移。
    */
   const makeProviderLabel = (p: ProviderModels) => {
     const selected = modelRef?.provider === p.key;
@@ -522,7 +546,17 @@ const ToggleMenu = memo(({
             />
           )}
         </span>
-        <span style={{ marginLeft: '8px' }}>{p.key}</span>
+        <span
+          style={{
+            marginLeft: '8px',
+            width: providerNameWidth ?? undefined,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {p.key}
+        </span>
       </span>
     );
   };
@@ -1009,11 +1043,18 @@ const ToggleMenu = memo(({
     {/* 隐藏测量层，必须始终挂载（不能放进 dropdownRender，否则菜单未展开时量不到）：
         - 第一层渲染全部模型名（600 粗体），量出最长模型名的宽度，供模型列表项使用，
           保证列表里每个名字都能完整显示、且切换选中项不改变二级菜单宽度；
-        - 第二层只渲染当前模型，菜单打开时读取并冻结，供「当前:」行使用，
+        - 第二层渲染全部 provider 名（600 粗体），量出最长 provider 名的宽度，供 provider
+          列表项使用，保证选中态（加粗）不改变二级菜单宽度；
+        - 第三层只渲染当前模型，菜单打开时读取并冻结，供「当前:」行使用，
           使菜单宽度取决于当前模型而不是最长的模型名。 */}
     <div ref={modelNameMeasureRef} aria-hidden="true" style={HIDDEN_MEASURE_STYLE}>
       {allModels.map((m, i) => (
         <span key={`${i}::${m}`} style={{ display: 'inline-block', fontSize: '12px', fontWeight: 600 }}>{m}</span>
+      ))}
+    </div>
+    <div ref={providerNameMeasureRef} aria-hidden="true" style={HIDDEN_MEASURE_STYLE}>
+      {allProviderNames.map((name, i) => (
+        <span key={`${i}::${name}`} style={{ display: 'inline-block', fontSize: '12px', fontWeight: 600 }}>{name}</span>
       ))}
     </div>
     <div aria-hidden="true" style={HIDDEN_MEASURE_STYLE}>
