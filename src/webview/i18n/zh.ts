@@ -11,6 +11,7 @@ export const zhDict: Record<string, string> = {
   'app.loading': '加载中...',
   'app.untitled': '未命名',
   'app.conversationHistory': '对话历史',
+  'app.conversationHistoryPending': '有会话正在等待你的输入，点击查看',
   'app.loadingConversations': '加载中...',
   'app.loadingConversation': '正在加载对话...',
   'app.noConversationHistory': '暂无对话历史',
@@ -283,7 +284,7 @@ export const zhDict: Record<string, string> = {
   /* ── MessagesView.tsx ────────────────────────────────────── */
   'messagesView.compactSummary': '对话压缩摘要',
   'messagesView.openConversation': 'Open conversation: {id}',
-  'messagesView.clickShowFullContent': '点击显示完整内容',
+  'messagesView.clickToJumpToMessage': '点击跳转到该消息的位置',
   'messagesView.showFullContent': '显示完整内容',
   'messagesView.collapse': '收起',
   'messagesView.previewChart': '预览图表',

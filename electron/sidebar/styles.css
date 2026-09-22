@@ -123,6 +123,16 @@ body {
   animation: runningBarFlow 1.5s linear infinite;
 }
 
+/* 等待用户输入的黄色流水灯呼吸：在 runningBarFlow 流水之上叠加透明度脉动 */
+@keyframes runningBarWaitingBreathing {
+  0%, 100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 /* 等待用户输入（ask user 提问 / 权限确认）时的黄色流水灯 */
 .running-bar--waiting {
   background: linear-gradient(
@@ -133,6 +143,10 @@ body {
     rgba(250, 204, 21, 0.5) 70%,
     transparent 100%
   );
+  /* 覆盖 .running-bar 的单条动画，保留流水并叠加呼吸（两处样式需与 webview 对话列表保持一致） */
+  animation:
+    runningBarFlow 1.5s linear infinite,
+    runningBarWaitingBreathing 1.6s ease-in-out infinite;
 }
 
 /* ── 未选择工作区时的引导占位 ── */

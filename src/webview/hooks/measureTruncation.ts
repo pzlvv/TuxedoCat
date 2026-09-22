@@ -20,9 +20,18 @@ import { flushSync } from 'react-dom';
  * 「绘制前完成测量与折叠」的语义，与原 useLayoutEffect 等价。
  */
 
+/**
+ * 截断判定模式：
+ * - 'lines'：按行数阈值（15 行）判定，用于子代理 From/To 消息（保持原有行为）；
+ * - 'overflow'：元素已按折叠高度 clamp，直接看内容是否溢出（scrollHeight > clientHeight），
+ *   用于真正的用户消息——折叠高度随消息区高度变化，必须按实际溢出判定。
+ */
+export type TruncationMode = 'lines' | 'overflow';
+
 interface Job {
   el: HTMLElement;
   apply: (truncated: boolean) => void;
+  mode: TruncationMode;
 }
 
 let queue: Job[] = [];
@@ -44,8 +53,13 @@ function flush(): void {
       results[i] = false;
       continue;
     }
-    const lineHeight = parseFloat(getComputedStyle(el).lineHeight || '20');
-    results[i] = el.scrollHeight > lineHeight * 15;
+    if (jobs[i].mode === 'overflow') {
+      // 已按折叠高度 clamp：内容比可见高度多 1px 以上即视为截断（+1 容忍取整误差）
+      results[i] = el.scrollHeight > el.clientHeight + 1;
+    } else {
+      const lineHeight = parseFloat(getComputedStyle(el).lineHeight || '20');
+      results[i] = el.scrollHeight > lineHeight * 15;
+    }
   }
 
   // ── 只写阶段 ──
@@ -58,8 +72,8 @@ function flush(): void {
 }
 
 /** 登记一次截断测量；同一批（同一微任务内）的登记会合并成一次强制布局 */
-export function measureTruncation(el: HTMLElement, apply: (truncated: boolean) => void): void {
-  queue.push({ el, apply });
+export function measureTruncation(el: HTMLElement, apply: (truncated: boolean) => void, mode: TruncationMode = 'lines'): void {
+  queue.push({ el, apply, mode });
   if (scheduled) return;
   scheduled = true;
   queueMicrotask(flush);

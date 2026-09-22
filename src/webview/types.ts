@@ -63,6 +63,11 @@ export interface Message {
   isCompactCollapsed?: boolean;
   hasBorder?: boolean;
   isFromAgent?: boolean;
+  /**
+   * 后台 Bash 任务完成通知等系统自动消息：按普通纯文本渲染，
+   * 但语义等同代理消息，不参与用户消息滚动置顶。
+   */
+  fromBashTask?: boolean;
   /** 消息是否正在流式输出中（用于 ThinkingMessage 默认展开） */
   isStreaming?: boolean;
   /** 消息到达时间戳（ms），用于统计耗时分布 */

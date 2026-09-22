@@ -1388,7 +1388,7 @@ thinking / text / tool 动画）。
 | 依赖 | 用途 |
 | --- | --- |
 | `outputChannel` | 日志（`LogChannel` 形状） |
-| `postToWebview(sessionId, message)` | 回推 `requestUserChoice` / `switchToSession` / `showThinkingAnimation` |
+| `postToWebview(sessionId, message)` | 回推 `requestUserChoice` / `showThinkingAnimation` |
 | `closePreview()` | 用户响应后关闭宿主预览（`UIHost.closePreview`） |
 | `getActiveSessionIdInternal()` | 回答 core `UserChoiceQueue` 的「当前前台会话」查询 |
 | `onChoiceShown?(sessionId)` | 选择框弹出后的可选回调（当前无人传入；waiting 由 core 的 `sessionRuntimeChanged` 推给侧栏与托盘） |
@@ -1397,9 +1397,9 @@ thinking / text / tool 动画）。
 
 | 成员 | 语义 |
 | --- | --- |
-| `initUserChoiceQueue()` | 把 core `UserChoiceQueue` 的 4 个回调接到本类：`onShowUserChoice` / `onSessionLoaded` → 恢复该会话的待答选择；`onSwitchSession` → 投递 `switchToSession`；`onGetActiveSessionId` → 上面注入的读取器 |
-| `requestUserChoice(sessionId, options)` | ① 保存 diff 快照（`beforeContent` / `afterContent` / 上下文 / 起止行）② 投递 `requestUserChoice` ③ `markSessionWaiting(sessionId, true)`（`idle` / `waiting` 归 core，见第 4.5 节）④ 返回 Promise，`resolve` 时 `closePreview()` + `markSessionWaiting(false)` |
-| `hasPendingChoice(sessionId)` | 该会话是否有待答选择（宿主用它显示「等待用户」） |
+| `initUserChoiceQueue()` | 把 core `UserChoiceQueue` 的 3 个回调接到本类：`onShowUserChoice` / `onSessionLoaded` → 恢复该会话的待答选择；`onGetActiveSessionId` → 上面注入的读取器。**不注册会话切换**：用户请求只在当前会话弹出，其它会话的请求保留 pending，由 UI 提醒用户手动进入 |
+| `requestUserChoice(sessionId, options)` | ① 保存 diff 快照（`beforeContent` / `afterContent` / 上下文 / 起止行）② 投递 `requestUserChoice` ③ `markSessionWaiting(sessionId, true)`（`idle` / `waiting` 归 core，见第 4.5 节；入队时 `Integration.requestUserChoice` 已提前标记，此处幂等）④ 返回 Promise，`resolve` 时 `closePreview()` + `markSessionWaiting(false)` |
+| `hasPendingChoice(sessionId)` | 该会话是否有待答选择：`pendingUserChoices`（已弹出）或 `userChoiceQueue`（已入队未弹出）任一命中即为真。供 core `isSessionIdle` 判定「非空闲，不回收」 |
 | `saveDiffSnapshot(sessionId, snapshot)` | 写入 diff 快照（`beforeContent` / `afterContent` / 上下文 / 起止行）并登记归属会话。`ToolHandler.requestToolPermission` 调用（`requestUserChoice` 也直接写同一份快照） |
 | `dropSession(sessionId)` | 会话 UI 侧状态释放：清掉该会话的 `pendingUserChoices` 回调，并在 diff 快照归属该会话时清空快照。由 `WebViewUI.dropSession` fan-out 调用（第 10.5 节） |
 | `pendingUserChoices: Map<choiceId, {sessionId, resolve}>` | 待答选择表；`WebviewMessageHandler.handleRespondUserChoice` 按 `choiceId` 取出并 resolve |
@@ -1421,7 +1421,7 @@ diff 快照——**确认框不在这里弹**（见下）。
 
 **不做权限判断**：`permResult` 已由 core 按 agentMode 规则加工完（`allow` / `deny` / `ask`，
 见第 4.2 节）。`ask` 的确认框由 core 的 `RunTools` → `Integration.requestUserChoice`
-（全局 `UserChoiceQueue`，支持多会话排队与自动跳转）触发，UI 侧提前弹框会造成双重确认。
+（全局 `UserChoiceQueue`，支持多会话排队，不自动切换会话）触发，UI 侧提前弹框会造成双重确认。
 
 **diff 的显示规则**（Edit / Write 的改动）
 
@@ -2419,7 +2419,7 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 | webview 渲染阶段（thinking / text / tool） | `SessionUiState`（宿主侧渲染投影，第 10 节） | 渲染与 abort 按钮（不参与 abort 判定） |
 | 对话列表 | 磁盘（`loadConversationList`） | `ConversationManager.refresh()` 分发并留快照，`sidebar:get-conversations` 读快照（第 5.4 节） |
 | 对话树删除闭包 | 纯函数 `collectConversationClosure`（`src/core/history/Conversation.ts`） | core `deleteConversation` 与 Electron 宿主都调它，不各写一份（第 11.1 节） |
-| 「哪个会话在前台」 | UI（VS Code：`SingleWebViewConversationManager` 的 `activeSessionProvider`；Electron：`ChatViewManager.getActiveSessionId`） | 空闲回收的「前台会话不关」、MCP 面板取数、`UserChoiceManager` 自动跳转。core **不保存**这份状态（曾经在 `Config` 里缓存过一份） |
+| 「哪个会话在前台」 | UI（VS Code：`SingleWebViewConversationManager` 的 `activeSessionProvider`；Electron：`ChatViewManager.getActiveSessionId`） | 空闲回收的「前台会话不关」、MCP 面板取数、`UserChoiceQueue` 判断「当前会话的请求是否可直接弹出」（不再用它切换会话）。core **不保存**这份状态（曾经在 `Config` 里缓存过一份） |
 | 视图 ↔ 会话 ID 的绑定 | Electron `ChatViewManager`（`registerSession`） | 由 webview 上报的 `startNewConversation` / `loadConversation` 驱动（这两条消息才表达「这个视图当前属于哪个会话」） |
 
 **禁止从投影反推事实**：`WebViewUI.onSessionRuntimeChanged` 只把 core 的状态转给

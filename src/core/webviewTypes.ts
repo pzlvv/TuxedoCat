@@ -347,9 +347,6 @@ export type WebviewMessage = {
   /** LLM 消息 ID */
   streamId?: string;
 } | {
-  type: 'switchToSession';
-  sessionId: string;
-} | {
   type: 'renameConversation';
   sessionId: string;
   title: string;

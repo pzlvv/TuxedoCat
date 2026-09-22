@@ -369,6 +369,19 @@ const App = () => {
     [currentSessionId, sessionIdleVersion],
   );
 
+  // Single View 才有内嵌的历史对话按钮（对话列表由 webview 渲染）。
+  // 当「其它会话」正在等待用户输入（ask user / 权限确认）时，用户请求不再自动切换会话，
+  // 因此在历史对话按钮上加黄色呼吸效果提醒用户：去那个会话处理待答请求。
+  // 数据源与流水灯一致（core sessionRuntimeStates.waiting）。
+  const historyButtonAttention = useMemo(() => {
+    if (!rendersConversationListInWebview(hostInfo)) return false;
+    for (const [sid, state] of sessionRuntimeStatesRef.current) {
+      if (state.waiting && sid !== currentSessionId) return true;
+    }
+    return false;
+    // sessionIdleVersion 是 waiting 变化时的重渲染信号（ref 本身不触发渲染）
+  }, [currentSessionId, sessionIdleVersion, hostInfo]);
+
   // 插件模式对话下拉滚动到底时，动态追加一页历史对话
   const handleConversationScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
@@ -380,7 +393,7 @@ const App = () => {
   const handlerProps = useMemo(() => ({
     setMessages, setShowThinkingAnimation, setAnimationMode, setHasActiveQuery,
     setHasCompactArchive, setIsCompactExpanded, setConversations, setConversationsLoading,
-    setVisibleConversationCount, beginConversationLoad, finishConversationLoad, resetConversationLoad,
+    setVisibleConversationCount, finishConversationLoad, resetConversationLoad,
     setTheme, setThemeInitialized, setCurrentFile, setSelectedLines,
     setConversationTitle, setMaxContextTokens, setSkills, setMcpServers, setConversationDropdownOpen,
     setCurrentSessionId, setParentSessionId, setAgentMode, setAgentModeReady, setThinkingMode,
@@ -397,7 +410,7 @@ const App = () => {
     messages,
     currentSessionIdRef, sessionStatesRef, sessionRuntimeStatesRef, userChoiceRequestRef, userChoiceInputRef,
     agentModeReadyRef, savedMainInputRef, queuedMessageRef, abortedSessionsRef, mcpServersBySessionRef, cursorPositionRef, choiceCursorPositionRef,
-    stashNewChatDraft, newChatSessionRef,
+    newChatSessionRef,
     mainInputRef, choiceInputRef, messagesContainerRef, userScrolledAwayRef,
     streamRafRef, toolStatusRafRef, pendingStreamRef, pendingToolStatusRef,
     bufferedToolStatusRef, conversationLoadingRef, isDeletingRef, listLoadedOnceRef,
@@ -453,10 +466,8 @@ const App = () => {
   // 扩展回传 showLLMConfig 后由 useMessageHandler 填充配置面板并打开
   /**
    * 保存当前会话快照到 sessionStatesRef，并立即持久化上下文到 meta.json。
-   * 三处重复收敛：ConversationTreeItem onSelect / 新对话按钮 / useMessageHandler
-   * 的 switchToSession 各自保存一份（switchToSession 的版本字段更多，仍在 hook 内）。
-   * 值类型状态（userChoiceRequest / showThinkingAnimation 等）直接读渲染闭包值，
-   * 与原三处行为一致。
+   * 收敛 ConversationTreeItem onSelect / 新对话按钮等会话切换入口的保存动作。
+   * 值类型状态（userChoiceRequest / showThinkingAnimation 等）直接读渲染闭包值。
    */
   const saveCurrentSessionSnapshot = useCallback(() => {
     const sid = currentSessionIdRef.current;
@@ -1076,11 +1087,12 @@ const App = () => {
               )}
             >
               <button
-                className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
+                className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors${historyButtonAttention ? ' history-btn--attention' : ''}`}
                 style={{ backgroundColor: colors.bgTertiary }}
-                title={t('app.conversationHistory')}
+                title={historyButtonAttention ? t('app.conversationHistoryPending') : t('app.conversationHistory')}
               >
-                <Icon name="history" size={14} style={{ color: colors.textSystem }} />
+                {/* 提醒态的图标颜色由 .history-btn--attention 按主题给（亮色用更深的琥珀） */}
+                <Icon name="history" size={14} style={historyButtonAttention ? undefined : { color: colors.textSystem }} />
               </button>
             </Dropdown>
             )}

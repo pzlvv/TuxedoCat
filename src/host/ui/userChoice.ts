@@ -1,6 +1,9 @@
 /**
  * src/host/ui/userChoice.ts - UserChoiceQueue 逻辑
- * 维护全局 FIFO 队列 + per-session 状态，支持自动跳转
+ *
+ * 维护全局 FIFO 队列 + per-session 状态。用户请求（ask user 提问 / 权限确认）
+ * 不再触发会话切换：请求只在用户当前所在的会话弹出，其它会话的请求保留 pending，
+ * 由 UI 提醒用户手动进入（Single View 的历史对话按钮呼吸效果 / Electron 侧栏黄灯）。
  */
 import type { LogChannel } from '../UIHost.js';
 import { userChoiceQueue } from '../../core/UserChoiceQueue.js';
@@ -105,13 +108,6 @@ export class UserChoiceManager {
 
       onSessionLoaded: (sessionId: string) => {
         this.restoreUserChoiceIfPending(sessionId);
-      },
-
-      onSwitchSession: (sessionId: string) => {
-        this.postToWebview(sessionId, {
-          type: 'switchToSession',
-          sessionId,
-        });
       },
 
       onGetActiveSessionId: () => {
@@ -222,9 +218,17 @@ export class UserChoiceManager {
 
   /**
    * 检查指定 session 是否正在等待用户选择/确认（ask user 提问或权限确认）。
-   * 用于宿主侧（如 Electron 侧栏）将流水灯显示为黄色。
+   *
+   * 两个来源都算「等待」：
+   * - `pendingUserChoices`：已经在该会话的 webview 里弹出、等用户点选；
+   * - `userChoiceQueue`：已入队但尚未弹出（用户当前不在该会话），请求仍在等待。
+   *
+   * 供 core 的 `isSessionIdle` 判定「非空闲，不应被空闲回收」。
    */
   hasPendingChoice(sessionId: string): boolean {
+    if (userChoiceQueue.hasPendingChoice(sessionId)) {
+      return true;
+    }
     for (const entry of this.pendingUserChoices.values()) {
       if (entry.sessionId === sessionId) {
         return true;

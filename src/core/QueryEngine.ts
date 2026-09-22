@@ -747,6 +747,8 @@ export class QueryEngine {
         data: {
           role: 'user',
           content: item.content,
+          // 后台任务通知属于系统自动消息：UI 侧与 From 消息一样不参与滚动置顶
+          fromBashTask: true,
         } as MessageData,
       });
       return;

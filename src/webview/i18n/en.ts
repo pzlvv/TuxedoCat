@@ -11,6 +11,7 @@ export const enDict: Record<string, string> = {
   'app.loading': 'Loading...',
   'app.untitled': 'Untitled',
   'app.conversationHistory': 'Conversation History',
+  'app.conversationHistoryPending': 'A conversation is waiting for your input — click to view',
   'app.loadingConversations': 'Loading...',
   'app.loadingConversation': 'Loading conversation...',
   'app.noConversationHistory': 'No conversation history',
@@ -283,7 +284,7 @@ export const enDict: Record<string, string> = {
   /* ── MessagesView.tsx ────────────────────────────────────── */
   'messagesView.compactSummary': 'Conversation compact summary',
   'messagesView.openConversation': 'Open conversation: {id}',
-  'messagesView.clickShowFullContent': 'Click to show full content',
+  'messagesView.clickToJumpToMessage': 'Click to jump to this message',
   'messagesView.showFullContent': 'Show full content',
   'messagesView.collapse': 'Collapse',
   'messagesView.previewChart': 'Preview chart',

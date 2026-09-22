@@ -97,6 +97,8 @@ function restoreMessagesFromConversation(msg: Extract<WebviewMessage, { type: 'c
       // 只持久化了顶层 filePath/fileSelectedLines，未写 _meta，因此这里两者都要兼容。
       const msgMeta = (convMsg as any)._meta as Record<string, unknown> | undefined;
       const isFromAgent = (convMsg as any).fromSubAgent === true;
+      // 后台 Bash 任务完成通知：按普通纯文本展示，但语义等同代理消息（不参与置顶）
+      const isFromBashTask = (convMsg as any).fromBashTask === true;
       // 跳过 silent 消息（仅 LLM 可见，UI 不可见）
       if ((convMsg as any).silent === true) {
         continue;
@@ -141,6 +143,7 @@ function restoreMessagesFromConversation(msg: Extract<WebviewMessage, { type: 'c
         fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
         isCompactSummary: (convMsg as any).isCompactSummary === true,
         isFromAgent,
+        fromBashTask: isFromBashTask || undefined,
         meta: msgMetaClean,
         timestamp: msgTimestamp,
       });
@@ -452,6 +455,7 @@ function toUiMessage(msg: MessageData): Message {
     isCompactSummary: msg.isCompactSummary,
     hasBorder: msg.hasBorder,
     isFromAgent: msg.isFromAgent,
+    fromBashTask: msg.fromBashTask,
     images: msg.images,
     meta: msg.meta as Record<string, unknown> | undefined,
     timestamp: Date.now(),
@@ -471,8 +475,6 @@ export interface UseMessageHandlerProps {
   setConversationsLoading: (v: boolean) => void;
   /** 插件模式对话列表当前可见条数（滚动到底时追加一页） */
   setVisibleConversationCount: (v: number | ((prev: number) => number)) => void;
-  /** 声明本视图开始原地加载某个会话（loading 状态由对话自身持有，见 useConversationLoading） */
-  beginConversationLoad: (sessionId: string | null | undefined) => void;
   /** 收到某会话的 conversationLoaded 数据：结束对话自身的 loading */
   finishConversationLoad: (sessionId?: string | null) => void;
   /** 进入无需加载的新对话：清除对话自身的 loading */
@@ -563,8 +565,6 @@ export interface UseMessageHandlerProps {
   mcpServersBySessionRef: React.MutableRefObject<Map<string, McpServerInfo[]>>;
   cursorPositionRef: React.MutableRefObject<number | null>;
   choiceCursorPositionRef: React.MutableRefObject<number | null>;
-  /** 暂存"新对话"草稿：自动跳转到其它会话前调用，避免草稿丢失 */
-  stashNewChatDraft: () => void;
   /** 由"+"或启动时新建、尚未发送过消息的会话 id */
   newChatSessionRef: React.MutableRefObject<string | null>;
   mainInputRef: React.RefObject<HTMLTextAreaElement | null>;
@@ -867,65 +867,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               modelRef: modelRefOf((msg as any).provider, (msg as any).model),
             }));
           }
-          break;
-        case 'switchToSession':
-          // UserChoiceQueue 触发的自动会话跳转
-          // 先保存当前 session 的状态
-          if (props.currentSessionIdRef.current) {
-            const currentSessionId = props.currentSessionIdRef.current;
-            const existingState = props.sessionStatesRef.current.get(currentSessionId);
-            props.sessionStatesRef.current.set(currentSessionId, createSessionState({
-              input: props.inputAreaRef.current?.getValue() ?? '',
-              inputCursorPosition: props.mainInputRef.current?.selectionStart ?? 0,
-              choiceCursorPosition: props.choiceInputRef.current?.selectionStart ?? 0,
-              userChoiceRequest: propsRef.current.userChoiceRequest,
-              userChoiceInput: props.userChoiceInputRef.current,
-              showThinkingAnimation: propsRef.current.showThinkingAnimation,
-              animationMode: propsRef.current.animationMode,
-              hasActiveQuery: propsRef.current.hasActiveQuery,
-              preCompressHasActiveQuery: existingState?.preCompressHasActiveQuery,
-              agentMode: propsRef.current.agentMode,
-              promptMode: propsRef.current.promptMode,
-              thinkingMode: propsRef.current.thinkingMode,
-              contextLength: contextLengthRef.current,
-              queuedMessage: props.queuedMessageRef.current.get(currentSessionId) ?? null,
-              modelRef: propsRef.current.modelRef,
-              // 保留 cache token 数据（可能由后台 streamEnd 更新），避免切换后丢失
-              totalCacheReadInputTokens: existingState?.totalCacheReadInputTokens,
-              totalCacheCreationInputTokens: existingState?.totalCacheCreationInputTokens,
-              totalInputTokens: existingState?.totalInputTokens,
-            }));
-            // 立即持久化当前上下文到 meta.json
-            // 使用 contextLengthRef.current（ref 避免闭包过期），
-            // 只在值 > 0 时持久化，避免覆盖 meta.json 中已有的正确值
-            if (contextLengthRef.current > 0) {
-              const currentSid = props.currentSessionIdRef.current;
-              if (currentSid) {
-                postMessage({
-                  type: 'updateConversationContext',
-                  sessionId: currentSid,
-                  currentFile: propsRef.current.currentFile,
-                  selectedLines: propsRef.current.selectedLines,
-                  totalContextTokens: contextLengthRef.current,
-                });
-              }
-            }
-          }
-          // 重置压缩状态（conversationLoaded 会覆盖为正确值）
-          props.setHasCompactArchive(false);
-          props.setIsCompactExpanded(false);
-          // 切换到目标会话：由对话自身进入 loading（conversationLoaded 到达后结束）
-          props.beginConversationLoad(msg.sessionId);
-          props.setMessages([]);
-          // 清空当前展示的排队横幅，避免自动切换期间串会；conversationLoaded 会按目标会话恢复
-          props.setQueuedMessage(null);
-          // 自动跳转前先把"新对话"里未发送的草稿暂存下来，避免切换后丢失
-          props.stashNewChatDraft();
-          // 然后向扩展发送 loadConversation 请求，切换到目标 session
-          postMessage({
-            type: 'loadConversation',
-            sessionId: msg.sessionId,
-          });
           break;
         case 'setTheme':
           props.setTheme(msg.theme);

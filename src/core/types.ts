@@ -193,6 +193,11 @@ export interface MessageData {
   hasBorder?: boolean;
   /** 是否来自代理消息 */
   isFromAgent?: boolean;
+  /**
+   * 后台 Bash 任务完成通知等系统自动消息：UI 上按普通纯文本渲染，
+   * 但语义上等同代理消息（不参与用户消息滚动置顶等用户消息专属处理）。
+   */
+  fromBashTask?: boolean;
   /** 用户消息携带的图片（仅用于 UI 展示，LLM 请求使用 content blocks） */
   images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
   /** 消息元信息，如文件引用、agent来源等 */

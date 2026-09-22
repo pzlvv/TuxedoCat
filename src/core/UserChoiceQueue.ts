@@ -4,8 +4,8 @@
  * 管理多会话场景下的用户选择请求：
  * 1. 每个 session 最多有一个 pending 的 user choice（新请求会覆盖旧的）
  * 2. 维护一个全局 FIFO 队列，按 enqueue 顺序排列所有待处理的 user choice
- * 3. 每次 enqueue 或 respond 后，尝试消费队列：如果当前活跃 session 没有 user choice，
- *    则从队列头部取出下一个，自动跳转到对应 session 并弹出 choice
+ * 3. 每次 enqueue 或 respond 后尝试消费队列，但**只在目标恰好是当前活跃 session 时**弹出；
+ *    其它会话的请求不会触发会话切换，只保留 pending 状态，由宿主 UI 提醒用户手动进入
  * 4. 用户做出选择后，移除该 session 的 pending 状态并 resolve Promise，然后继续消费下一个
  * 5. 当用户手动切换到某个 session 时，如果该 session 有 pending 的 user choice，自动弹出
  */
@@ -47,8 +47,6 @@ export interface UserChoiceCallbacks {
   onShowUserChoice: (sessionId: string, options: UserChoiceOptions) => void;
   /** 当 session 被加载时，检查是否需要恢复 user choice */
   onSessionLoaded: (sessionId: string) => void;
-  /** 切换到指定 session */
-  onSwitchSession: (sessionId: string) => void;
   /** 获取当前活跃的 session ID */
   onGetActiveSessionId: () => string | undefined;
 }
@@ -119,7 +117,9 @@ class UserChoiceQueueManager {
    *    - 无论当前 session 是否有 pending choice（就是它自己），直接弹出
    * 3. 如果这个 entry 属于其他 session：
    *    - 当前活跃 session 如果已有 pending choice（正在展示中），不消费队列
-   *    - 否则，出队并跳转到目标 session
+   *    - 否则，出队但**不切换会话**：请求仍保留在 pendingChoices 中，
+   *      等用户手动进入该会话时由 onSessionLoaded 恢复弹出；
+   *      宿主 UI 依据 sessionRuntime 的 waiting 状态提醒用户（Single View 的历史对话按钮呼吸效果）
    */
   private tryProcessNext(): void {
     if (this.processingQueue) return;
@@ -165,14 +165,14 @@ class UserChoiceQueueManager {
           `Active session ${activeSessionId} still has pending choice, deferring queue consumption`,
         );
       } else {
-        // 跳转到目标 session
+        // 不再自动切换会话：把该请求移出 FIFO 队列（仍保留在 pendingChoices 中），
+        // 等用户手动进入该会话时由 onSessionLoaded 恢复弹出。
+        // 出队是必要的——否则它会一直卡在队头，挡住后续属于当前会话的请求。
         logger.info(
           'UserChoiceQueue',
-          `Switching from session ${activeSessionId} to session ${targetEntry.sessionId} to show user choice`,
+          `Deferring choice for session ${targetEntry.sessionId} (no auto-switch, awaiting manual navigation)`,
         );
         this.removeFromQueue(targetEntry);
-        // 触发跳转，跳转完成后的 UI 恢复会通过 onSessionLoaded 触发 choice 弹出
-        this.callbacks?.onSwitchSession(targetEntry.sessionId);
       }
     } finally {
       this.processingQueue = false;
@@ -258,8 +258,13 @@ class UserChoiceQueueManager {
       'UserChoiceQueue',
       `Session ${sessionId} loaded, checking for pending choice...`,
     );
+    // 该会话已被加载：回调会弹出它的 pending choice；
+    // 先从 FIFO 队列移除，避免下面的 tryProcessNext 对同一会话重复弹出（重复弹框会让
+    // 旧 Promise 永远不 resolve，对应工具调用挂死）。
+    const entry = this.pendingChoices.get(sessionId);
+    if (entry) this.removeFromQueue(entry);
     this.callbacks?.onSessionLoaded(sessionId);
-    // session 切换后尝试消费队列
+    // 尝试消费其它（属于当前会话的）请求
     this.tryProcessNext();
   }
 

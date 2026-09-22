@@ -39,7 +39,7 @@ export function buildReplayMessageData(messages: readonly Message[]): MessageDat
   const toolResultMap = buildToolResultMap(messages);
 
   for (const msg of messages) {
-    const meta = msg as Message & { isMeta?: boolean; silent?: boolean; subtype?: string; filePath?: string; fileSelectedLines?: { start: number; end: number }; fileHidden?: boolean; isCompactSummary?: boolean; fromSubAgent?: boolean; _meta?: Record<string, unknown> };
+    const meta = msg as Message & { isMeta?: boolean; silent?: boolean; subtype?: string; filePath?: string; fileSelectedLines?: { start: number; end: number }; fileHidden?: boolean; isCompactSummary?: boolean; fromSubAgent?: boolean; fromBashTask?: boolean; _meta?: Record<string, unknown> };
     if (meta.isMeta || meta.silent) continue;
 
     if (msg.type === 'system') {
@@ -84,6 +84,8 @@ export function buildReplayMessageData(messages: readonly Message[]): MessageDat
         fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
         isCompactSummary: meta.isCompactSummary === true,
         isFromAgent: meta.fromSubAgent === true,
+        // 后台任务通知：与 From 消息一样属于系统自动消息（不参与滚动置顶）
+        fromBashTask: meta.fromBashTask === true,
         meta: replayMeta,
       } as MessageData);
       continue;

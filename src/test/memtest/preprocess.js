@@ -163,6 +163,7 @@ function restoreMessages(rawMessages, toolMetaMap) {
       if (Array.isArray(content) && content.some((b) => b?.type === 'tool_result')) continue;
       const msgMeta = convMsg._meta;
       const isFromAgent = convMsg.fromSubAgent === true;
+      const isFromBashTask = convMsg.fromBashTask === true;
       if (convMsg.silent === true) continue;
       const rawFilePath = convMsg.filePath || msgMeta?.filePath || undefined;
       const rawFileSelectedLines = convMsg.fileSelectedLines || msgMeta?.fileSelectedLines || undefined;
@@ -190,6 +191,7 @@ function restoreMessages(rawMessages, toolMetaMap) {
         fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
         isCompactSummary: convMsg.isCompactSummary === true,
         isFromAgent,
+        fromBashTask: isFromBashTask || undefined,
         meta: msgMetaClean,
         timestamp: msgTimestamp,
       });

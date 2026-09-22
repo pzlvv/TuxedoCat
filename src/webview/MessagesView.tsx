@@ -90,6 +90,8 @@ function escapeNumericTildeInMarkdown(text: string): string {
 function areEqual(prevProps: any, nextProps: any): boolean {
   const prev = prevProps.message;
   const next = nextProps.message;
+  // 置顶状态只影响用户消息的边框/背景，必须参与比较，否则 sticky 消息拿不到 pinned 变化
+  if (prevProps.pinned !== nextProps.pinned) return false;
   if (prev === next && prevProps.colors === nextProps.colors && prevProps.isDark === nextProps.isDark) return true;
   if (prevProps.colors !== nextProps.colors) return false;
   if (prevProps.isDark !== nextProps.isDark) return false;
@@ -100,6 +102,7 @@ function areEqual(prevProps: any, nextProps: any): boolean {
   if (prev.isCompactSummary !== next.isCompactSummary) return false;
   if (prev.hasBorder !== next.hasBorder) return false;
   if (prev.isFromAgent !== next.isFromAgent) return false;
+  if (prev.fromBashTask !== next.fromBashTask) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
   if (prev.streamId !== next.streamId) return false;
   if (prev.outputTokens !== next.outputTokens) return false;
@@ -236,11 +239,14 @@ const UserMessage = memo(function UserMessage({
   message,
   colors,
   isDark,
+  pinned,
   onExpandToggle,
 }: {
   message: Message;
   colors: Colors;
   isDark: boolean;
+  /** 滚动置顶（sticky 吸附）时，背景/边框由外层置顶容器绘制 */
+  pinned?: boolean;
   onExpandToggle?: (isOpen: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -324,10 +330,16 @@ const UserMessage = memo(function UserMessage({
   // 改为登记到批量测量队列：一次只读 + 一次只写（详见 hooks/measureTruncation.ts），
   // 仍在绘制前完成，折叠语义不变。
   useLayoutEffect(() => {
+    // 展开态不重测：折叠高度已放开，按溢出判定会误判为「未截断」，
+    // 导致「收起」按钮消失；保持 isTruncated 即可。
+    if (expanded) return;
     const el = contentRef.current;
     if (!el) return;
-    measureTruncation(el, setIsTruncated);
-  }, [message.content, message.isFromAgent]);
+    // 真正的用户消息已按折叠高度 clamp → 按溢出判定；
+    // 子代理 From/To 消息与后台任务通知沿用行数阈值，保持原有行为。
+    const plainUserMessage = !message.isFromAgent && !message.fromBashTask;
+    measureTruncation(el, setIsTruncated, plainUserMessage ? 'overflow' : 'lines');
+  }, [message.content, message.isFromAgent, message.fromBashTask, expanded]);
 
   // memo 化 ReactMarkdown：content 未变化时跳过重复解析（例如流式结束帧、
   // isStreaming/status 等字段变化触发的重渲染），只有内容或主题色变化时才重新解析。
@@ -379,14 +391,33 @@ const UserMessage = memo(function UserMessage({
     );
   }
 
-  const userBg = isDark ? 'transparent' : '#fafafa';
+  // 真正的用户消息始终是纯色背景：亮色纯白 / 暗色纯黑（不再使用透明或灰底）；
+  // 子代理 From/To 消息（isFromAgent）与后台任务通知（fromBashTask）保持原有背景，不受影响。
+  const isPlainUserMessage = !message.isFromAgent && !message.fromBashTask;
+  const userBg = isPlainUserMessage ? (isDark ? '#000000' : '#ffffff') : (isDark ? 'transparent' : '#fafafa');
+  // 折叠遮罩渐隐到消息自身背景色
+  const collapsedFadeColor = isPlainUserMessage ? userBg : (isDark ? '#1e1e1e' : '#ffffff');
+  // 折叠高度：真正的用户消息 = 原 180px 的 40%（展开后完整显示）；
+  // 子代理 From/To 消息保持原有 180px + 行数阈值行为。
+  const collapsedContentHeight = isPlainUserMessage
+    ? USER_MESSAGE_COLLAPSED_HEIGHT
+    : AGENT_MESSAGE_COLLAPSED_HEIGHT;
+  const fadeHeight = isPlainUserMessage ? USER_MESSAGE_FADE_HEIGHT : AGENT_MESSAGE_FADE_HEIGHT;
+  const contentMaxHeight: number | 'none' = expanded
+    ? 'none'
+    : isPlainUserMessage
+      // 真正的用户消息始终按折叠高度 clamp（测量据此按溢出判定是否截断）
+      ? collapsedContentHeight
+      : (isTruncated ? AGENT_MESSAGE_COLLAPSED_HEIGHT : 'none');
+  // 置顶时边框由外层 sticky 容器接管（去掉左/右/上边框，只留整宽底边）：
+  // 内层保持同样的 1px 透明边框与内边距，保证消息内容与位置不发生任何变化。
   return (
     <div
       className="w-full px-2 py-1.5 text-left rounded-lg"
       style={{
         backgroundColor: userBg,
         color: colors.textPrimary,
-        border: `1px solid ${colors.border}`,
+        border: `1px solid ${pinned ? 'transparent' : colors.border}`,
         overflowWrap: 'break-word',
         wordBreak: 'break-word',
       }}
@@ -423,6 +454,8 @@ const UserMessage = memo(function UserMessage({
               className="flex items-center gap-1 text-[12px] mb-0.5 pb-0.5 border-b cursor-pointer hover:underline"
               style={{ borderColor: colors.border, color: colors.textSystem, fontWeight: 500 }}
               onClick={handleFileClick}
+              // 点击文件标签是「打开文件」，置顶时不应同时触发跳转
+              data-no-jump=""
             >
               <Icon name="file" size={10} />
               <span>{fileDisplayText}</span>
@@ -439,13 +472,10 @@ const UserMessage = memo(function UserMessage({
       )}
       <div
         ref={contentRef}
-        onClick={(!expanded && isTruncated) ? handleToggleExpand : undefined}
         style={{
           overflow: 'hidden',
-          maxHeight: (!expanded && isTruncated) ? 180 : 'none',
-          cursor: (!expanded && isTruncated) ? 'pointer' : undefined,
+          maxHeight: contentMaxHeight,
         }}
-        title={(!expanded && isTruncated) ? t('messagesView.clickShowFullContent') : undefined}
       >
         {message.isFromAgent ? (
           <div className="markdown-body text-[13px] leading-snug" style={{ lineHeight: '1.4' }}>
@@ -477,10 +507,10 @@ const UserMessage = memo(function UserMessage({
         <div
           style={{
             position: 'relative',
-            marginTop: '-50px',
-            height: 50,
+            marginTop: -fadeHeight,
+            height: fadeHeight,
             pointerEvents: 'none',
-            background: `linear-gradient(to bottom, transparent, ${isDark ? '#1e1e1e' : '#ffffff'})`,
+            background: `linear-gradient(to bottom, transparent, ${collapsedFadeColor})`,
             marginBottom: 4,
           }}
         />
@@ -489,6 +519,9 @@ const UserMessage = memo(function UserMessage({
         <div
           className="flex items-center gap-1 mt-1 text-[11px] cursor-pointer hover:underline"
           onClick={handleToggleExpand}
+          data-no-jump=""
+          // 置顶时点「展开」：先跳回消息原位再展开（见 handlePinnedMessageClickCapture）
+          data-expand-toggle=""
           style={{ color: colors.textSystem, opacity: 0.7 }}
         >
           <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
@@ -501,6 +534,7 @@ const UserMessage = memo(function UserMessage({
         <div
           className="flex items-center gap-1 mt-1 text-[11px] cursor-pointer hover:underline"
           onClick={handleToggleExpand}
+          data-no-jump=""
           style={{ color: colors.textSystem, opacity: 0.7 }}
         >
           <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
@@ -796,6 +830,7 @@ const MessageItem = memo(function MessageItem({
   message,
   colors,
   isDark,
+  pinned,
   onNavigate,
   onThinkingToggle,
   onExpandToggle,
@@ -804,6 +839,8 @@ const MessageItem = memo(function MessageItem({
   message: Message;
   colors: Colors;
   isDark: boolean;
+  /** 用户消息是否正处于滚动置顶（sticky 吸附）状态 */
+  pinned?: boolean;
   onNavigate?: (sessionId: string) => void;
   onThinkingToggle?: (isOpen: boolean) => void;
   onExpandToggle?: (isOpen: boolean) => void;
@@ -813,7 +850,7 @@ const MessageItem = memo(function MessageItem({
     return <ToolCallMessage message={message} colors={colors} isDark={isDark} onNavigate={onNavigate} onExpandToggle={onExpandToggle} onBeforePreviewRender={onBeforePreviewRender} />;
   }
   if (message.role === 'user') {
-    return <UserMessage message={message} colors={colors} isDark={isDark} onExpandToggle={onExpandToggle} />;
+    return <UserMessage message={message} colors={colors} isDark={isDark} pinned={pinned} onExpandToggle={onExpandToggle} />;
   }
   if (message.role === 'thinking') {
     return <ThinkingMessage message={message} colors={colors} onThinkingToggle={onThinkingToggle} />;
@@ -845,10 +882,53 @@ const MessageItem = memo(function MessageItem({
  */
 const SCROLL_AWAY_THRESHOLD = 50; // px — distance from bottom to consider "away"
 
+/**
+ * 消息滚动容器（.messages-container）的上内边距：py-4 = 16px。
+ * 浏览器把 position:sticky 约束在容器的内容盒顶部，因此 sticky top 需要减去这个值，
+ * 置顶消息才会贴在容器顶边（并覆盖顶部内边距），而不是低 16px 留出一条缝。
+ */
+const MESSAGES_CONTAINER_PADDING_TOP = 16;
+
+/** 用户消息折叠后的最大高度：原 180px 的 40% */
+const USER_MESSAGE_COLLAPSED_HEIGHT = 72;
+/** 折叠渐隐遮罩高度：随折叠高度同比缩小（原 50px 的 40%） */
+const USER_MESSAGE_FADE_HEIGHT = 20;
+/** 子代理 From/To 消息保持原有折叠高度与渐隐高度，不受用户消息改动影响 */
+const AGENT_MESSAGE_COLLAPSED_HEIGHT = 180;
+const AGENT_MESSAGE_FADE_HEIGHT = 50;
+
 /** 消息分组的最小单元：一条用户消息 + 其后的所有非用户消息 */
 interface MessageSegment {
   userMsg?: Message;
   nonUserMsgs: Message[];
+}
+
+/**
+ * 置顶分组：从一条真正的用户消息开始，直到下一条真正的用户消息为止。
+ * From/To/压缩摘要等 role=user 但非用户的消息不另起一组——它们所在的 segment 仍按
+ * 原样渲染，只是被并入上一组，这样上一条用户消息的 sticky 容器可以跨过它们继续吸附，
+ * 不会被顶掉（From 在置顶语义上等同非用户消息）。
+ */
+interface PinGroup {
+  userMsg?: Message;
+  /** 组内 segment 的全局下标（升序）；只存下标，避免每次分段变化都产生大量小对象 */
+  segmentIndices: number[];
+  /** 组首 segment 的全局下标（其 userMsg 渲染在组容器上）；无用户消息的引导组为 -1 */
+  headIndex: number;
+}
+
+/**
+ * 只有「真正的用户消息」参与滚动置顶：
+ * - 子代理 From / To 消息（isFromAgent）虽然同样以 role=user 渲染，但必须保持原样；
+ * - 后台 Bash 任务完成通知（fromBashTask）也是系统自动消息，等同 From 处理；
+ * - 压缩摘要是系统生成的 user 消息，同样不参与。
+ */
+function isPinnableUserMessage(message: Message | undefined): message is Message {
+  return !!message
+    && message.role === 'user'
+    && !message.isFromAgent
+    && !message.fromBashTask
+    && !message.isCompactSummary;
 }
 
 /**
@@ -1423,6 +1503,166 @@ const MessagesView = memo(({
   const fallbackContainerRef = useRef<HTMLDivElement>(null);
   const containerRef = containerRefProp ?? fallbackContainerRef;
 
+  // ── 用户消息滚动置顶（sticky）──────────────────────────────────────
+  // 真正的用户消息（不含 From/To 子代理消息与压缩摘要）外层包一个 sticky 容器：
+  // 消息滚到滚动容器顶部时被吸附，同时背景扩展为整宽、去掉左/右/上边框。
+  // 吸附判断：sticky 元素被吸住时 rect.top 恰好等于容器顶部，被下一段顶出时更小；
+  // 按文档顺序排列后 rect.top 单调不减，因此可用二分查找找出「最后一个越过容器顶部的
+  // sticky 消息」，即当前置顶的那条。
+  const [pinnedMessage, setPinnedMessage] = useState<Message | null>(null);
+  /**
+   * 高于可视区的用户消息不参与吸附：sticky 元素比视口还高时无法滚动浏览，
+   * 会把后续回复整屏挡住（典型场景是点开「显示完整内容」展开超长消息）。
+   * 这类消息保持普通文档流布局，等折叠/窗口变高后再恢复吸附。
+   */
+  const [oversizedPinnedMessages, setOversizedPinnedMessages] = useState<ReadonlySet<Message>>(() => new Set<Message>());
+  /**
+   * oversizedPinnedMessages 的最新值镜像。measurePinnedMessage 必须保持引用稳定：
+   * UserMessage 的 memo 比较器不比较 onExpandToggle，一旦回调因依赖该 state 而换新，
+   * 旧闭包会被 memo 保留下来，展开/收起时读到过期的超高集合。
+   */
+  const oversizedPinnedRef = useRef(oversizedPinnedMessages);
+  oversizedPinnedRef.current = oversizedPinnedMessages;
+  /** 按 segment 下标保存置顶候选容器 DOM（仅在 commit 阶段由 ref 回调写入） */
+  const pinElsRef = useRef<Array<HTMLDivElement | null>>([]);
+  /** 文档顺序的置顶候选（消息 + 容器），供二分查找与点击跳转使用 */
+  const pinEntriesRef = useRef<Array<{ msg: Message; el: HTMLDivElement }>>([]);
+  /** 消息 → 容器，用于复查「超高」消息是否已恢复可吸附 */
+  const pinElByMsgRef = useRef<Map<Message, HTMLDivElement>>(new Map());
+  /** 从 sticky 切回普通流时需要补偿滚动的容器（保持视觉位置不变） */
+  const pendingUnstickRef = useRef<HTMLDivElement | null>(null);
+
+  const measurePinnedMessage = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const containerTop = container.getBoundingClientRect().top;
+    const containerHeight = container.clientHeight;
+    const oversized = oversizedPinnedRef.current;
+
+    // 复查已标记「超高」的消息：折叠或窗口变高后应恢复吸附
+    if (oversized.size > 0) {
+      let changed = false;
+      const next = new Set(oversized);
+      for (const msg of oversized) {
+        const el = pinElByMsgRef.current.get(msg);
+        const h = el ? el.getBoundingClientRect().height : -1;
+        if (!el || h <= containerHeight) {
+          next.delete(msg);
+          changed = true;
+        }
+      }
+      if (changed) {
+        setOversizedPinnedMessages(next);
+        return;
+      }
+    }
+
+    const entries = pinEntriesRef.current;
+    if (entries.length === 0) {
+      setPinnedMessage(prev => (prev === null ? prev : null));
+      return;
+    }
+    let lo = 0;
+    let hi = entries.length - 1;
+    let found = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (entries[mid].el.getBoundingClientRect().top <= containerTop + 0.5) {
+        found = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    if (found < 0) {
+      setPinnedMessage(prev => (prev === null ? prev : null));
+      return;
+    }
+    const candidate = entries[found];
+    const candidateH = candidate.el.getBoundingClientRect().height;
+    if (oversized.has(candidate.msg)) {
+      setPinnedMessage(prev => (prev === null ? prev : null));
+      return;
+    }
+    // 比视口还高 → 取消吸附，并登记滚动补偿（等 DOM 切回普通流后执行）
+    if (candidateH > containerHeight) {
+      pendingUnstickRef.current = candidate.el;
+      setOversizedPinnedMessages(prev => {
+        if (prev.has(candidate.msg)) return prev;
+        const next = new Set(prev);
+        next.add(candidate.msg);
+        return next;
+      });
+      setPinnedMessage(prev => (prev === null ? prev : null));
+      return;
+    }
+    setPinnedMessage(prev => (prev === candidate.msg ? prev : candidate.msg));
+  }, [containerRef]);
+
+  /** 置顶重算的按帧调度（滚动、容器尺寸变化、消息展开/收起共用） */
+  const pinnedMeasureRafRef = useRef<number | null>(null);
+  const schedulePinnedMeasure = useCallback(() => {
+    if (pinnedMeasureRafRef.current !== null) return;
+    pinnedMeasureRafRef.current = requestAnimationFrame(() => {
+      pinnedMeasureRafRef.current = null;
+      measurePinnedMessage();
+    });
+  }, [measurePinnedMessage]);
+
+  // 滚动 / 容器尺寸变化时按帧重算置顶消息（无变化时 setState 会被 React 短路，不触发重渲染）
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    container.addEventListener('scroll', schedulePinnedMeasure, { passive: true });
+    const ro = new ResizeObserver(schedulePinnedMeasure);
+    ro.observe(container);
+    return () => {
+      container.removeEventListener('scroll', schedulePinnedMeasure);
+      ro.disconnect();
+    };
+  }, [containerRef, schedulePinnedMeasure]);
+
+  // 组件卸载时取消未执行的置顶重算
+  useEffect(() => () => {
+    if (pinnedMeasureRafRef.current !== null) {
+      cancelAnimationFrame(pinnedMeasureRafRef.current);
+      pinnedMeasureRafRef.current = null;
+    }
+  }, []);
+
+  /** 把吸附中的置顶消息滚回它在对话流中的原始位置 */
+  const jumpToMessageStaticPosition = useCallback((el: HTMLDivElement) => {
+    const container = containerRef.current;
+    if (!container) return;
+    // 临时取消 sticky，同步读取消息在内容流中的真实位置（同一任务内恢复，不会绘制中间态）
+    const prevPosition = el.style.position;
+    el.style.position = 'static';
+    const staticTop = el.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+    el.style.position = prevPosition;
+    // 让消息回到内容区顶部，此时它恰好脱离吸附状态
+    container.scrollTop = Math.max(0, staticTop - MESSAGES_CONTAINER_PADDING_TOP);
+    // 跳转后消息已不再吸附，立即清掉置顶态，避免后续展开时残留整宽样式闪一帧
+    setPinnedMessage(prev => (prev === null ? prev : null));
+  }, [containerRef]);
+
+  // 点击置顶消息：跳回它在对话流中的原始位置
+  const handlePinnedMessageClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement | null;
+    // 消息内的链接/按钮等交互元素保持原有行为，不触发跳转
+    if (target && target.closest('a, button, [role="button"], [data-no-jump]')) return;
+    // 正在选择文本时不跳转，避免打断复制
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && selection.toString().trim().length > 0) return;
+    jumpToMessageStaticPosition(e.currentTarget);
+  }, [jumpToMessageStaticPosition]);
+
+  // 置顶消息内点「展开」：capture 阶段先跳回原位，再让按钮自身的展开逻辑（冒泡阶段）执行
+  const handlePinnedMessageClickCapture = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement | null;
+    if (!target || !target.closest('[data-expand-toggle]')) return;
+    jumpToMessageStaticPosition(e.currentTarget);
+  }, [jumpToMessageStaticPosition]);
+
   // 对话加载遮罩的本地淡出状态。
   // conversationLoaded 会一次性把 messages 设为新内容并关闭 isLoadingConversation，
   // 如果直接卸载 Loading 组件，长对话首次渲染/自动滚动造成的布局抖动会暴露出来。
@@ -1599,6 +1839,13 @@ const MessagesView = memo(({
     });
   }, [containerRef, userScrolledAwayRef]);
 
+  // 用户消息展开/收起：沿用「展开先暂停自动滚动」，并重新评估置顶状态
+  // （展开后的超长消息会超过视口，需要取消吸附，避免整屏挡住后续回复）
+  const handleUserMessageExpandToggle = useCallback((isOpen: boolean) => {
+    handleContentToggle(isOpen);
+    schedulePinnedMeasure();
+  }, [handleContentToggle, schedulePinnedMeasure]);
+
   /**
    * useLayoutEffect: handles the "structural" scroll triggers that ResizeObserver
    * doesn't cover — new messages appearing, force-scroll events, initial load.
@@ -1756,6 +2003,59 @@ const MessagesView = memo(({
   const { beforeFirstUser, segments } = messageGroups;
   const hasBeforeFirstUser = beforeFirstUser.length > 0;
   const isEmpty = messages.length === 0;
+
+  // 把 segments 归并成置顶分组：From/To/压缩摘要等非用户消息不另起一组，
+  // 保证上一条真正用户消息的 sticky 容器能跨过它们继续吸附。
+  const pinGroups = useMemo(() => {
+    const groups: PinGroup[] = [];
+    for (let i = 0; i < segments.length; i++) {
+      const isHead = isPinnableUserMessage(segments[i].userMsg);
+      if (isHead || groups.length === 0) {
+        groups.push({
+          userMsg: isHead ? segments[i].userMsg : undefined,
+          segmentIndices: [],
+          headIndex: isHead ? i : -1,
+        });
+      }
+      groups[groups.length - 1].segmentIndices.push(i);
+    }
+    return groups;
+  }, [segments]);
+
+  // 分段变化（新消息/流式更新/切换会话）后重建置顶候选列表并重算置顶状态。
+  // ref 回调在 commit 阶段已写入最新 DOM，layout effect 在绘制前执行，不会闪错状态。
+  useLayoutEffect(() => {
+    const entries: Array<{ msg: Message; el: HTMLDivElement }> = [];
+    const elByMsg = new Map<Message, HTMLDivElement>();
+    for (let i = 0; i < pinGroups.length; i++) {
+      const userMsg = pinGroups[i].userMsg;
+      if (!isPinnableUserMessage(userMsg)) continue;
+      const el = pinElsRef.current[i];
+      if (!el) continue;
+      entries.push({ msg: userMsg, el });
+      elByMsg.set(userMsg, el);
+    }
+    pinEntriesRef.current = entries;
+    pinElByMsgRef.current = elByMsg;
+    // 组数收缩时清掉尾部残留引用，避免继续持有已卸载的 DOM
+    pinElsRef.current.length = pinGroups.length;
+
+    // 「超高」消息由 sticky 切回普通流后，补偿滚动让它保持原来的视觉位置。
+    // 若样式尚未切换（还在 sticky），保留 pending 等下一次 commit 再补偿。
+    const unstick = pendingUnstickRef.current;
+    if (unstick && unstick.style.position !== 'sticky') {
+      pendingUnstickRef.current = null;
+      const container = containerRef.current;
+      if (container && unstick.isConnected) {
+        const offset = unstick.getBoundingClientRect().top - container.getBoundingClientRect().top;
+        if (offset < 0) container.scrollTop += offset;
+      }
+    }
+
+    measurePinnedMessage();
+    // oversizedPinnedMessages 只作为「超高集合变化后重跑本 effect」的触发源
+  }, [pinGroups, measurePinnedMessage, containerRef, oversizedPinnedMessages]);
+
   // 已禁用 content-visibility 离屏布局优化：它在滚动/渲染过程中会导致布局跳动，
   // 对长对话的稳定性影响大于性能收益。
 
@@ -1860,36 +2160,93 @@ const MessagesView = memo(({
             </div>
           )}
 
-          {/* All segments in order (old on top, new at bottom) */}
-          {segments.map((segment, index) => {
-            const isLastSegment = index === segments.length - 1;
+          {/* 置顶分组：每条真正的用户消息一组，组内可包含 From/To 等非用户消息段。
+              这样上一条用户消息的 sticky 容器能跨过 From 继续吸附，不会被顶掉。 */}
+          {pinGroups.map((group, groupIndex) => {
+            const groupUserMsg = group.userMsg;
+            // 仅真正的用户消息参与滚动置顶；From/To/压缩摘要等保持原有渲染。
+            // 高于视口的消息（展开超长内容）不吸附，保持普通流。
+            const pinnable = isPinnableUserMessage(groupUserMsg);
+            const stickyEnabled = pinnable && !oversizedPinnedMessages.has(groupUserMsg!);
+            const isPinned = stickyEnabled && pinnedMessage === groupUserMsg;
 
             return (
-              <div
-                key={`segment-${index}`}
-                className="mb-4"
-              >
-                {segment.userMsg && (
-                  <div>
-                    <MessageItem message={segment.userMsg} colors={colors} isDark={isDark} />
+              // 组间距放在组自身的 margin 上：组内最后一个 segment 不留 margin，
+              // 这样 sticky 容器的底边就是内容底边，上一条置顶消息能被干净地顶出视口，
+              // 不会在容器顶部内边距里留下一条残影。
+              <div key={`pin-group-${groupIndex}`} className="mb-4">
+                {groupUserMsg && (
+                  <div
+                    className={pinnable ? 'user-msg-pin' : undefined}
+                    ref={pinnable ? (el: HTMLDivElement | null) => { pinElsRef.current[groupIndex] = el; } : undefined}
+                    style={stickyEnabled || isPinned ? {
+                      ...(stickyEnabled ? {
+                        // sticky 只负责吸附，不改变消息在文档流中的位置与尺寸。
+                        // top 用负的容器上内边距抵消（见 MESSAGES_CONTAINER_PADDING_TOP）。
+                        position: 'sticky',
+                        top: -MESSAGES_CONTAINER_PADDING_TOP,
+                        zIndex: 10,
+                      } : null),
+                      ...(isPinned ? {
+                        // 置顶：背景扩展到滚动容器整宽，去掉左/右/上边框
+                        backgroundColor: isDark ? '#000000' : '#ffffff',
+                        marginLeft: -16,
+                        marginRight: -16,
+                        paddingLeft: 16,
+                        paddingRight: 16,
+                        borderBottom: `1px solid ${colors.border}`,
+                        // 补掉 border 的 1px，避免下方内容发生位移
+                        marginBottom: -1,
+                        cursor: 'pointer',
+                      } : null),
+                    } : undefined}
+                    onClick={isPinned ? handlePinnedMessageClick : undefined}
+                    onClickCapture={isPinned ? handlePinnedMessageClickCapture : undefined}
+                    title={isPinned ? t('messagesView.clickToJumpToMessage') : undefined}
+                    data-pinned={isPinned ? 'true' : undefined}
+                  >
+                    <MessageItem
+                      message={groupUserMsg}
+                      colors={colors}
+                      isDark={isDark}
+                      pinned={isPinned}
+                      // 仅真正的用户消息需要展开后重算吸附；From/To 等保持原有行为
+                      onExpandToggle={pinnable ? handleUserMessageExpandToggle : undefined}
+                    />
                   </div>
                 )}
 
-                {(segment.nonUserMsgs.length > 0 || isLastSegment) && (
-                  <SegmentTimeline
-                    segmentIndex={index}
-                    isLastSegment={isLastSegment}
-                    nonUserMsgs={segment.nonUserMsgs}
-                    showThinkingAnimation={showThinkingAnimation}
-                    animationMode={animationMode}
-                    colors={colors}
-                    isDark={isDark}
-                    onNavigate={onNavigate}
-                    onThinkingToggle={handleContentToggle}
-                    onExpandToggle={handleContentToggle}
-                    onBeforePreviewRender={handleBeforePreviewRender}
-                  />
-                )}
+                {group.segmentIndices.map((globalIndex, segmentInGroupIndex) => {
+                  const segment = segments[globalIndex];
+                  const isLastSegment = globalIndex === segments.length - 1;
+                  const isLastInGroup = segmentInGroupIndex === group.segmentIndices.length - 1;
+                  // 组首的用户消息已渲染在组容器上，这里只渲染它后面的时间线
+                  const segmentUserMsg = globalIndex === group.headIndex ? undefined : segment.userMsg;
+                  return (
+                    <div key={`segment-${globalIndex}`} className={isLastInGroup ? undefined : 'mb-4'}>
+                      {segmentUserMsg && (
+                        <div>
+                          <MessageItem message={segmentUserMsg} colors={colors} isDark={isDark} />
+                        </div>
+                      )}
+                      {(segment.nonUserMsgs.length > 0 || isLastSegment) && (
+                        <SegmentTimeline
+                          segmentIndex={globalIndex}
+                          isLastSegment={isLastSegment}
+                          nonUserMsgs={segment.nonUserMsgs}
+                          showThinkingAnimation={showThinkingAnimation}
+                          animationMode={animationMode}
+                          colors={colors}
+                          isDark={isDark}
+                          onNavigate={onNavigate}
+                          onThinkingToggle={handleContentToggle}
+                          onExpandToggle={handleContentToggle}
+                          onBeforePreviewRender={handleBeforePreviewRender}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             );
           })}

@@ -14,7 +14,7 @@
  * - 文件打开/虚拟文档/Mermaid/Spin 由 UIHost 提供 Electron 实现
  */
 
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents, globalShortcut, Tray, nativeImage, type NativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents, globalShortcut, Tray, nativeImage, screen, type NativeImage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ChatViewManager, SIDEBAR_WIDTH } from './ChatViewManager.js';
@@ -185,9 +185,12 @@ async function main(): Promise<void> {
 function createMainWindow(): void {
   // 防止 second-instance / activate 与启动流程并发创建出多个主窗口
   if (mainWindow && !mainWindow.isDestroyed()) return;
+  // 默认高度取主屏工作区（已排除任务栏/Dock）的 80%，不写死：
+  // 大屏不会过高、小屏也不会超出可视区域。宽度保持固定默认值。
+  const { height: workAreaHeight } = screen.getPrimaryDisplay().workAreaSize;
   mainWindow = new BrowserWindow({
     width: 1280,
-    height: 820,
+    height: Math.round(workAreaHeight * 0.8),
     minWidth: 800,
     minHeight: 600,
     title: PRODUCT_NAME,
@@ -1115,7 +1118,7 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: a
   // 视图的会话身份变化时，把临时 new- 视图转为正式会话条目。
   // 只有这两条消息表达「这个视图现在是哪个会话」：
   // - startNewConversation：webview 新建对话（含预热视图激活）
-  // - loadConversation：webview 请求加载某个会话（含 switchToSession 触发的自动跳转）
+  // - loadConversation：webview 请求加载某个会话（用户手动切换 / 打开某对话）
   // 对「key 已经等于 sessionId」的调用，registerSession 是提前返回的空操作。
   if (message.type === 'startNewConversation' || message.type === 'loadConversation') {
     if (sessionId) {

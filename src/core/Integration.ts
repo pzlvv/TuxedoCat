@@ -10,7 +10,7 @@ import type { PromptPresetId } from './prompt/PromptPreset.js';
 import type { LLMConfig } from './llm/config.js';
 import { sameModelRef, type ModelRef } from './llm/modelRef.js';
 import { requireEventBus, type CoreEvent } from './AssistantEventBus.js';
-import { markQueryRunning } from './sessionRuntime.js';
+import { markQueryRunning, markSessionWaiting } from './sessionRuntime.js';
 import { getMCPHost } from './mcp/MCPHost.js';
 import { logger } from './Logger.js';
 import { setProjectRootProvider, updateConversationContext } from './history/index.js';
@@ -302,11 +302,12 @@ export function initializeHistory(ui?: { getWorkspacePath(): string | undefined 
  *
  * 该函数会将用户选择请求加入全局队列，而不是直接弹出对话框。
  * UserChoiceQueue 维护一个 FIFO 队列 + per-session 状态：
- * - 如果当前活跃 session 没有 user choice，自动从队列头部取一个，
- *   跳转到对应 session 并弹出选择框
- * - 如果当前活跃 session 已有 user choice，排队等待，等当前 choice
- *   响应后再自动跳转处理下一个
+ * - 只在用户当前所在的会话弹出选择框；其它会话的请求保留 pending，不切换会话
+ * - 用户手动进入某个有待答请求的会话时，由 onSessionLoaded 恢复弹出
  * - 用户做出选择后自动消费队列中的下一个
+ *
+ * 入队即把该会话标记为「等待用户」（sessionRuntime.waiting）：UI 据此提醒用户
+ * （Single View 历史对话按钮呼吸效果 / Electron 侧栏黄灯 / 托盘状态点）。
  */
 export async function requestUserChoice(
   sessionID: string,
@@ -332,9 +333,15 @@ export async function requestUserChoice(
 
   // 未初始化 UserChoiceQueue 时（宿主未注册队列回调），退化为直接发总线请求，
   // 避免入队后没有回调消费队列导致 Promise 永远不会 resolve。
+  // 该路径由 UserChoiceManager.requestUserChoice 标记 waiting（弹出时才标记）。
   if (!userChoiceQueue.isInitialized()) {
     return requireEventBus().request({ type: 'userChoice', sessionId: sessionID, options });
   }
+
+  // 入队即视为「该会话等待用户」：即使请求尚未在 UI 里弹出（用户不在该会话），
+  // 会话运行时状态也立即变 waiting，供 UI 提醒用户（不再自动切换会话）。
+  // 用户响应后由 UserChoiceManager 的 resolve 回调解除。
+  markSessionWaiting(sessionID, true);
 
   // 将请求加入全局队列，返回的 Promise 会在用户做出选择后 resolve
   const userChoice = await userChoiceQueue.enqueue(sessionID, options);

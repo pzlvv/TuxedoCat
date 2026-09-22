@@ -855,6 +855,16 @@ textarea::-webkit-scrollbar-thumb:hover {
   animation: runningBarFlow 1.5s linear infinite;
 }
 
+/* 等待用户输入的黄色流水灯呼吸：在 runningBarFlow 流水之上叠加透明度脉动 */
+@keyframes runningBarWaitingBreathing {
+  0%, 100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 /* 等待用户输入（ask user 提问 / 权限确认）时的黄色流水灯 */
 .running-bar--waiting {
   background: linear-gradient(
@@ -865,6 +875,42 @@ textarea::-webkit-scrollbar-thumb:hover {
     rgba(250, 204, 21, 0.5) 70%,
     transparent 100%
   );
+  /* 覆盖 .running-bar 的单条动画，保留流水并叠加呼吸（两处样式需与 Electron 侧栏保持一致） */
+  animation:
+    runningBarFlow 1.5s linear infinite,
+    runningBarWaitingBreathing 1.6s ease-in-out infinite;
+}
+
+/* Single View：其它会话正在等待用户输入时，历史对话按钮的呼吸提醒。
+   - 颜色走 --history-attention-rgb，便于按主题切换：暗色用亮黄（yellow-400），
+     亮色用更深的琥珀（amber-600），避免在浅背景上刺眼、同时对比更好；
+   - 用 box-shadow 做呼吸光晕（按钮的 background 由内联样式控制，不在这里覆盖）；
+   - 图标颜色由按钮的 color 继承（.ti 用 currentColor 绘制）。 */
+@keyframes historyButtonBreathing {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(var(--history-attention-rgb), 0);
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px rgba(var(--history-attention-rgb), var(--history-attention-ring-alpha)),
+      0 0 8px 2px rgba(var(--history-attention-rgb), var(--history-attention-glow-alpha));
+  }
+}
+
+.history-btn--attention {
+  /* 暗色主题：亮黄（yellow-400），保持原提醒强度 */
+  --history-attention-rgb: 250, 204, 21;
+  --history-attention-ring-alpha: 0.45;
+  --history-attention-glow-alpha: 0.5;
+  color: rgb(var(--history-attention-rgb));
+  animation: historyButtonBreathing 1.6s ease-in-out infinite;
+}
+
+.light .history-btn--attention {
+  /* 亮色主题：更深的琥珀（amber-600）+ 更弱的光晕，避免浅背景上刺眼 */
+  --history-attention-rgb: 217, 119, 6;
+  --history-attention-ring-alpha: 0.3;
+  --history-attention-glow-alpha: 0.32;
 }
 
 /* ─── (removed: memory-dots animation was unused) ─── */
