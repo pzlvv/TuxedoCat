@@ -8,7 +8,7 @@
  */
 
 import type { ToolResult, ValidationResult, PermissionResult } from '../Tool.js';
-import { buildTool } from '../Tool.js';
+import { buildTool, MAX_RESULT_SIZE_CHARS } from '../Tool.js';
 import type { SkillCommand } from '../../skills/Types.js';
 import { getAllSkills } from '../../skills/loadSkillsDir.js';
 import { TOOL_NAME, getPrompt } from './Prompt.js';
@@ -31,7 +31,8 @@ async function findSkill(name: string, cwd: string): Promise<SkillCommand | unde
 export const SkillTool = buildTool({
   name: TOOL_NAME,
   searchHint: 'invoke a slash-command skill',
-  maxResultSizeChars: 100_000,
+  // 统一上限（4K，前 2K + 后 2K 预览）
+  maxResultSizeChars: MAX_RESULT_SIZE_CHARS,
 
   get inputSchema(): typeof inputSchema {
     return inputSchema;

@@ -1089,7 +1089,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                         title={isPendingUse
                           ? t('llmConfig.useThisProviderSelected')
                           : t('llmConfig.providerInUse')}
-                        style={{ color: colors.harness, fontSize: '10px', lineHeight: 1 }}
+                        style={{ color: colors.success, fontSize: '14px', lineHeight: 1 }}
                       >
                         ●
                       </span>

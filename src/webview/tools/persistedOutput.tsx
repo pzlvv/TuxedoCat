@@ -5,22 +5,25 @@ import { t } from '../i18n';
 import { AnsiText } from '../ansi';
 
 /**
- * 解析持久化输出标签
+ * 解析持久化输出标签（Bash / RemoteBash / assistant 超长文本共用）
  * 格式:
  * <persisted-output>
  * Output too large (XXKB). Full output saved to: /path/to/file
  *
- * Preview (first 8KB):
- * ...preview text...
- * ...
+ * Preview (first 2K + last 2K):
+ * ...前 2K...
+ * ... (N chars omitted) ...
+ * ...后 2K...
  * </persisted-output>
+ *
+ * 预览内容由工具层统一裁剪（见 core/tools/toolResultStorage.ts），
+ * UI 只负责解析展示，不再二次截断。
  */
 export function parsePersistedOutput(output: string): {
   isPersisted: boolean;
   originalSize: number;
   filePath: string;
   preview: string;
-  hasMore: boolean;
 } | null {
   const persistedTag = '<persisted-output>';
   const closingTag = '</persisted-output>';
@@ -39,24 +42,15 @@ export function parsePersistedOutput(output: string): {
   const filePathMatch = body.match(/Full output saved to: (.+)$/m);
   const sizeMatch = body.match(/Output too large \((\d+)KB\)/);
 
-  // 预览文本在 "Preview (first 8KB):" 之后
+  // 预览文本在 "Preview (first 2K + last 2K):" 之后
   const previewMarker = 'Preview';
   const previewMarkerIdx = body.indexOf(previewMarker);
   let preview = '';
-  let hasMore = false;
 
   if (previewMarkerIdx !== -1) {
-    // 跳过 "Preview (first 8KB):\n"
     const previewStart = body.indexOf('\n', previewMarkerIdx);
     if (previewStart !== -1) {
       preview = body.slice(previewStart + 1).trimEnd();
-      // 移除末尾的 "..." 和 closing tag 之前的内容
-      if (preview.endsWith('...')) {
-        hasMore = true;
-        preview = preview.slice(0, -3).trimEnd();
-      }
-      // 去掉末尾可能残留的换行
-      preview = preview.replace(/\n\.\.\.$/, '');
     }
   }
 
@@ -65,7 +59,6 @@ export function parsePersistedOutput(output: string): {
     originalSize: sizeMatch ? parseInt(sizeMatch[1], 10) * 1024 : 0,
     filePath: filePathMatch ? filePathMatch[1] : '',
     preview,
-    hasMore,
   };
 }
 
@@ -93,8 +86,7 @@ export function isPersistedOutput(content: string): boolean {
 export const PersistedOutputBox: React.FC<{
   content: string;
   colors: any;
-  maxPreviewLines?: number;
-}> = ({ content, colors, maxPreviewLines = 5 }) => {
+}> = ({ content, colors }) => {
   const parsed = React.useMemo(() => parsePersistedOutput(content), [content]);
   if (!parsed) return null;
 
@@ -110,9 +102,8 @@ export const PersistedOutputBox: React.FC<{
     }
   };
 
+  // 预览已由工具层按统一上限裁剪（4K：前 2K + 后 2K），这里整段渲染、不再截断。
   const previewLines = parsed.preview.split('\n');
-  const showTruncated = previewLines.length > maxPreviewLines;
-  const displayLines = showTruncated ? previewLines.slice(0, maxPreviewLines) : previewLines;
 
   return (
     <div
@@ -152,9 +143,10 @@ export const PersistedOutputBox: React.FC<{
         )}
       </div>
 
-      {/* 预览内容 */}
-      <div className="overflow-hidden">
-        {displayLines.map((line, idx) => (
+      {/* 预览内容：内容已由工具层按统一上限裁剪（4K），这里只限制可视高度、可滚动，
+          不再截断内容（与 Edit/Write 预览内容区同高：288px）。 */}
+      <div className="overflow-auto" style={{ maxHeight: 288 }}>
+        {previewLines.map((line, idx) => (
           <div
             key={idx}
             style={{
@@ -167,16 +159,6 @@ export const PersistedOutputBox: React.FC<{
             <AnsiText text={line} />
           </div>
         ))}
-        {showTruncated && (
-          <div style={{ color: colors.textSystem, opacity: 0.7, whiteSpace: 'pre', lineHeight: '1.6' }}>
-            {t('tool.bash.previewTruncated', { count: previewLines.length, size: formatSize(parsed.originalSize) })} ...
-          </div>
-        )}
-        {!showTruncated && parsed.hasMore && (
-          <div style={{ color: colors.textSystem, opacity: 0.7, whiteSpace: 'pre', lineHeight: '1.6' }}>
-            ...
-          </div>
-        )}
       </div>
     </div>
   );

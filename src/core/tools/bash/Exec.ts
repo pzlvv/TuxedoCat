@@ -14,7 +14,7 @@ import { open } from 'fs/promises';
 import { constants as fsConstants } from 'fs';
 import * as iconv from 'iconv-lite';
 import type { BashToolOutput, ExecOptions } from './Types.js';
-import { MAX_PERSISTED_SIZE } from './Types.js';
+import { MAX_PERSISTED_SIZE, capResultContent } from '../toolResultStorage.js';
 import { findSuitableShell, type ShellInfo } from './ShellDetector.js';
 import { TaskOutput } from './TaskOutput.js';
 import { wrapSpawn } from './ShellCommand.js';
@@ -277,23 +277,30 @@ async function execForeground(
   const stdoutDecoder = createDecoder();
   const stderrDecoder = createDecoder();
 
+  /**
+   * 上报流式进度。
+   *
+   * `fullOutput` 走与最终结果相同的统一上限（4K，前 2K + 后 2K）：工具层是唯一
+   * 的截断入口，宿主 / UI 不再各自限制单次推送大小。
+   * totalLines / totalBytes 仍按完整输出统计，保证 UI 上的规模信息不缩水。
+   */
+  const emitProgress = (chunk: string) => {
+    if (!onProgress || isResolved) return;
+    const elapsedTimeSeconds = (Date.now() - startTime) / 1000;
+    onProgress({
+      output: chunk,
+      fullOutput: capResultContent(fullOutput),
+      elapsedTimeSeconds,
+      totalLines: fullOutput.split('\n').length,
+      totalBytes: fullOutput.length,
+    });
+  };
+
   // 处理标准输出
   child.stdout?.on('data', (data: Buffer) => {
     const text = stdoutDecoder.write(data);
     appendFullOutput(text);
-
-    if (onProgress && !isResolved) {
-      const elapsedTimeSeconds = (Date.now() - startTime) / 1000;
-      const totalLines = fullOutput.split('\n').length;
-      const totalBytes = fullOutput.length;
-      onProgress({
-        output: text,
-        fullOutput,
-        elapsedTimeSeconds,
-        totalLines,
-        totalBytes,
-      });
-    }
+    emitProgress(text);
   });
 
   // 处理标准错误
@@ -301,19 +308,7 @@ async function execForeground(
     const text = stderrDecoder.write(data);
     stderr += text;
     appendFullOutput(text);
-
-    if (onProgress && !isResolved) {
-      const elapsedTimeSeconds = (Date.now() - startTime) / 1000;
-      const totalLines = fullOutput.split('\n').length;
-      const totalBytes = fullOutput.length;
-      onProgress({
-        output: text,
-        fullOutput,
-        elapsedTimeSeconds,
-        totalLines,
-        totalBytes,
-      });
-    }
+    emitProgress(text);
   });
 
   // 处理进程退出

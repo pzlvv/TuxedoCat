@@ -58,8 +58,14 @@ export interface UserMessage {
   _needsUINotification?: boolean
   /** 压缩摘要消息标记（展开归档时用于区分摘要与普通消息） */
   isCompactSummary?: boolean
-  /** 子代理产生的自动消息（Agent 回复 / 提醒），UI 上以代理身份展示 */
+  /** 子代理产生的自动消息（Agent 回复 / 提醒），UI 上以代理身份展示（markdown + From 头） */
   fromSubAgent?: boolean
+  /**
+   * 后台 Bash 任务完成通知等系统自动消息。
+   * 与 fromSubAgent 一样属于「非用户真实输入」（压缩时不进用户输入历史），
+   * 但 UI 按普通纯文本消息展示，不渲染 markdown。
+   */
+  fromBashTask?: boolean
 }
 
 /**

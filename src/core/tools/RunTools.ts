@@ -18,6 +18,7 @@ import { randomUUID } from 'crypto';
 import type { Message } from '../types.js';
 import { getAllTools } from './index.js';
 import type { ToolUseContext, Tool, ToolProgressData } from './Tool.js';
+import { MAX_RESULT_SIZE_CHARS } from './Tool.js';
 import type { CoreEvent } from '../AssistantEventBus.js';
 import { requireEventBus } from '../AssistantEventBus.js';
 import { logger } from '../Logger.js';
@@ -735,14 +736,13 @@ async function* formatAndEmitResult(
         throw new Error(`Tool ${toolUse.name} returned empty content`);
       }
 
-      // --- 全局大结果持久化机制 ---
-      // 检查输出是否超过工具定义的 maxResultSizeChars，
-      // 且该工具尚未自行处理持久化（通过 persistedOutputPath 标记）。
-      // 如果满足条件，RunTools 自动将结果持久化到磁盘并替换为带 preview 的消息。
+      // --- 全局大结果持久化机制（唯一的结果上限入口）---
+      // 所有工具共用 MAX_RESULT_SIZE_CHARS（4K）：超过即把完整结果持久化到磁盘，
+      // 上下文 / UI 只保留「前 2K + 后 2K」预览。工具自身不再另设阈值。
       // 多模态 content block 数组（如图片）不参与文本持久化。
       const alreadyPersistedByTool = (data as any)?.persistedOutputPath !== undefined;
       let finalOutputContent = formattedContent;
-      if (!alreadyPersistedByTool && typeof formattedContent === 'string' && formattedContent.length > (tool.maxResultSizeChars ?? Infinity)) {
+      if (!alreadyPersistedByTool && typeof formattedContent === 'string' && formattedContent.length > (tool.maxResultSizeChars ?? MAX_RESULT_SIZE_CHARS)) {
         try {
           const persistTaskId = `tool-${toolUse.name}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
           const persisted = await persistLargeOutput(formattedContent, sessionID, persistTaskId);
@@ -752,7 +752,6 @@ async function* formatAndEmitResult(
               persisted.filepath,
               persisted.originalSize,
               persisted.preview,
-              persisted.hasMore,
             );
             formattedResult.content = previewMsg;
             finalOutputContent = previewMsg;

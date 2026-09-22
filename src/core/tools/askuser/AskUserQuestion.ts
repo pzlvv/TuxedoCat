@@ -6,7 +6,7 @@
  * 与权限确认共用 UserChoiceQueue，保证切换对话再切回后能恢复显示选择框。
  */
 
-import { buildTool } from '../Tool.js';
+import { buildTool, MAX_RESULT_SIZE_CHARS } from '../Tool.js';
 import { TOOL_NAME, DESCRIPTION, getPrompt } from './Prompt.js';
 import { inputSchema, outputSchema } from './Types.js';
 import type { AskUserQuestionOutput } from './Types.js';
@@ -15,7 +15,8 @@ import { logger } from '../../Logger.js';
 export const AskUserQuestionTool = buildTool({
   name: TOOL_NAME,
   searchHint: 'ask the user a question',
-  maxResultSizeChars: 1000,
+  // 统一上限（4K，前 2K + 后 2K 预览）
+  maxResultSizeChars: MAX_RESULT_SIZE_CHARS,
 
   get inputSchema(): typeof inputSchema {
     return inputSchema;

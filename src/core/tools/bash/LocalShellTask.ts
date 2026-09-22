@@ -154,12 +154,7 @@ export function registerBackgroundTask(
         summary = `Background command "${description}" was stopped`;
     }
 
-    const notification = `**Background task completed**
-
-- **Task**: ${taskId}
-- **Description**: ${summary}
-- **Duration**: ${durationStr}
-${result.stdout ? `**First 500 chars of output**:\n\`\`\`\n${result.stdout.slice(0, 500)}${result.stdout.length > 500 ? '\n...' : ''}\n\`\`\`` : ''}`;
+    const notification = buildCompletionNotification(taskId, summary, durationStr, result.stdout);
 
     // 触发后台任务完成事件（供 Exec 前台命令观察，决定是否自动转入后台）
     emitBackgroundTaskCompleted({
@@ -246,12 +241,7 @@ export function backgroundExistingTask(
         summary = `Background command "${description}" was stopped`;
     }
 
-    const notification = `**Background task completed**
-
-- **Task**: ${taskId}
-- **Description**: ${summary}
-- **Duration**: ${durationStr}
-${result.stdout ? `**First 500 chars of output**:\n\`\`\`\n${result.stdout.slice(0, 500)}${result.stdout.length > 500 ? '\n...' : ''}\n\`\`\`` : ''}`;
+    const notification = buildCompletionNotification(taskId, summary, durationStr, result.stdout);
 
     // 触发后台任务完成事件（供 Exec 前台命令观察，决定是否自动转入后台）
     emitBackgroundTaskCompleted({
@@ -266,6 +256,31 @@ ${result.stdout ? `**First 500 chars of output**:\n\`\`\`\n${result.stdout.slice
   });
 
   return true;
+}
+
+/**
+ * 后台任务完成通知（纯文本）。
+ *
+ * 通知会作为一条 user 消息进入 LLM 上下文并在 UI 展示；UI 侧按普通消息渲染
+ * （不走 markdown），因此这里不使用 markdown 语法（加粗 / 列表 / 代码围栏）。
+ */
+function buildCompletionNotification(
+  taskId: string,
+  summary: string,
+  durationStr: string,
+  stdout: string,
+): string {
+  const lines = [
+    'Background task completed',
+    `Task: ${taskId}`,
+    `Description: ${summary}`,
+    `Duration: ${durationStr}`,
+  ];
+  if (stdout) {
+    lines.push('Output (first 500 chars):');
+    lines.push(stdout.slice(0, 500) + (stdout.length > 500 ? '\n...' : ''));
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -334,6 +349,8 @@ export function abortBackgroundTasksForSession(sessionID: string): number {
 /**
  * 通知指定会话的 QueryEngine
  * 通过 sessionID 直接定位到正确的引擎发送通知，避免误发到其他会话
+ *
+ * 来源固定为 `bash`：UI 侧按纯文本系统通知展示（不是子代理回复，不渲染 markdown）。
  */
 function notifyEngine(notification: string, sessionID?: string, agentId?: string): void {
   try {
@@ -343,7 +360,7 @@ function notifyEngine(notification: string, sessionID?: string, agentId?: string
       const engine = getSessionEngine(sessionID);
       if (engine && typeof engine.enqueueAgentMessage === 'function') {
         logger.info('LocalShellTask', `Notifying engine for sessionID=${sessionID}`);
-        engine.enqueueAgentMessage(notification, agentId);
+        engine.enqueueAgentMessage(notification, agentId, 'bash');
         return;
       }
       logger.warn('LocalShellTask', `Session engine not found for sessionID=${sessionID}, falling back to first available`);
@@ -352,7 +369,7 @@ function notifyEngine(notification: string, sessionID?: string, agentId?: string
     if (sessionEngines) {
       for (const [, engine] of sessionEngines) {
         if (engine && typeof engine.enqueueAgentMessage === 'function') {
-          engine.enqueueAgentMessage(notification, agentId);
+          engine.enqueueAgentMessage(notification, agentId, 'bash');
           break;
         }
       }

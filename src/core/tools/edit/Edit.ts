@@ -5,7 +5,7 @@
 import * as fs from 'fs/promises';
 import { z } from 'zod';
 import type { ToolUseContext, ToolResult } from '../Tool.js';
-import { buildTool } from '../Tool.js';
+import { buildTool, MAX_RESULT_SIZE_CHARS } from '../Tool.js';
 import { getPatchFromContents, countLinesChanged } from '../../../utils/diff.js';
 import type { EditInput, EditOutput } from './Types.js';
 import { TOOL_NAME, DESCRIPTION, getPrompt } from './Prompt.js';
@@ -599,7 +599,8 @@ function getEditLineRange(
 export const EditTool = buildTool({
   name: TOOL_NAME,
   searchHint: 'modify file contents in place',
-  maxResultSizeChars: 50_000,
+  // 统一上限（4K，前 2K + 后 2K 预览）
+  maxResultSizeChars: MAX_RESULT_SIZE_CHARS,
   strict: true,
 
   get inputSchema() {

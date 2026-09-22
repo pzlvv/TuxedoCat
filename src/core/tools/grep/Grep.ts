@@ -5,7 +5,7 @@
 import * as path from 'path';
 import { z } from 'zod';
 import type { ToolUseContext, ToolResult } from '../Tool.js';
-import { buildTool } from '../Tool.js';
+import { buildTool, MAX_RESULT_SIZE_CHARS } from '../Tool.js';
 import { expandPath } from '../../utils/path.js';
 import { ripGrep } from '../../utils/ripgrep.js';
 import { TOOL_NAME, DESCRIPTION, getPrompt } from './Prompt.js';
@@ -69,7 +69,8 @@ function applyHeadLimit<T>(
 export const GrepTool = buildTool({
   name: GREP_TOOL_NAME,
   searchHint: 'search file contents with regex (ripgrep)',
-  maxResultSizeChars: 50_000, // 50KB - 超过此大小由 RunTools 持久化到磁盘
+  // 统一上限（4K，前 2K + 后 2K 预览）
+  maxResultSizeChars: MAX_RESULT_SIZE_CHARS,
   strict: true,
 
   get inputSchema() {

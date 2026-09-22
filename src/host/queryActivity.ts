@@ -2,15 +2,12 @@
  * 查询活动相关 UI 逻辑的宿主共享实现。
  *
  * 原为两个宿主各自逐字重复的部分，收敛于此：
- * - onToolProgress（工具流式进度推送，含尾部截断）
+ * - onToolProgress（工具流式进度推送）
  * - onSetAgentMode（子代理 agent mode 继承）
  *
  * 宿主差异（推送通道、日志）通过参数注入。
  */
 import type { ToolProgressData } from '../core/tools/Tool.js';
-
-/** 流式输出单次发送上限：超过则仅保留尾部（最新的输出） */
-export const STREAM_CAP_CHARS = 100_000;
 
 /** 宿主推送通道（UIHost.sendToWebview） */
 export type HostPush = (sessionId: string, message: Record<string, unknown>) => void;
@@ -23,6 +20,8 @@ export type HostLog = (message: string) => void;
  * Bash 运行期间实时推送已累积输出到 UI，实现流式显示。
  * VS Code 侧推送时带 silent 标记（流式输出每 chunk 打印一次太频繁，跳过日志）；
  * Electron 侧无 silent 参数，postToWebview 本身不打日志，行为一致。
+ *
+ * 推送内容已由工具层按统一上限（4K，前 2K + 后 2K）裁剪，宿主原样转发、不再二次截断。
  */
 export function pushToolProgress(
   sessionId: string,
@@ -39,11 +38,7 @@ export function pushToolProgress(
     taskId?: string;
   };
 
-  // 流式输出可能非常大，限制单次发送大小，仅保留尾部（最新的输出）
-  let streamed = p.fullOutput || p.output || '';
-  if (streamed.length > STREAM_CAP_CHARS) {
-    streamed = streamed.slice(-STREAM_CAP_CHARS);
-  }
+  const streamed = p.fullOutput || p.output || '';
 
   push(sessionId, {
     type: 'toolProgress',

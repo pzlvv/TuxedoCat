@@ -14,7 +14,7 @@
 
 import { z } from 'zod';
 import type { ToolUseContext, ToolResult, PermissionResult } from '../Tool.js';
-import { buildTool } from '../Tool.js';
+import { buildTool, MAX_RESULT_SIZE_CHARS } from '../Tool.js';
 import { TOOL_NAME, DESCRIPTION, getPrompt } from './Prompt.js';
 import { generateCoreSystemPrompt } from '../../prompt/SystemPrompt.js';
 import { getAvailableCommands } from '../../prompt/SystemEnvironment.js';
@@ -114,7 +114,8 @@ export const AgentTool = buildTool({
   name: TOOL_NAME,
   aliases: ['subagent', 'delegate'],
   searchHint: 'delegate work to a sub-agent',
-  maxResultSizeChars: 100_000,
+  // 统一上限（4K，前 2K + 后 2K 预览）
+  maxResultSizeChars: MAX_RESULT_SIZE_CHARS,
   strict: true,
 
   get inputSchema() {

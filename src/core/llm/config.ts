@@ -600,7 +600,7 @@ export async function resolveModelRef(ref: ModelRef | undefined): Promise<ModelR
 }
 
 /**
- * 获取 settings.json 中新对话的默认询问模式（manual=所有 | risk=关键 | auto=禁用）
+ * 获取 settings.json 中新对话的默认询问模式（manual=总是 | risk=关键 | auto=从不）
  * 读取顶层 defaultAgentMode（与 llm 平级）
  * 仅用于新对话的初始值，已存在的对话使用各自会话中保存的值
  * @returns 询问模式，默认返回 'risk'（关键）

@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 import type { ToolUseContext, ToolResult } from '../Tool.js';
-import { buildTool } from '../Tool.js';
+import { buildTool, MAX_RESULT_SIZE_CHARS } from '../Tool.js';
 import { logger } from '../../Logger.js';
 import { emitAgentReplyDelivered } from '../bash/NotifyEvents.js';
 
@@ -34,7 +34,8 @@ export const ReplyTool = buildTool({
   name: TOOL_NAME,
   aliases: ['agent-reply'],
   searchHint: 'send a reply message to a target session',
-  maxResultSizeChars: 100_000,
+  // 统一上限（4K，前 2K + 后 2K 预览）
+  maxResultSizeChars: MAX_RESULT_SIZE_CHARS,
   strict: true,
 
   get inputSchema() {

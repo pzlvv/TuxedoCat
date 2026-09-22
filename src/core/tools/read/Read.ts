@@ -15,7 +15,7 @@ import { statSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { ToolUseContext, ToolResult } from '../Tool.js';
-import { buildTool } from '../Tool.js';
+import { buildTool, MAX_RESULT_SIZE_CHARS } from '../Tool.js';
 import type { ReadInput, ReadOutput } from './Types.js';
 import { TOOL_NAME, DESCRIPTION, getPrompt } from './Prompt.js';
 import { expandPath } from '../../utils/path.js';
@@ -400,7 +400,8 @@ async function readFileContent(
 export const ReadTool = buildTool({
   name: TOOL_NAME,
   searchHint: 'read file contents',
-  maxResultSizeChars: 500_000, // 500KB - 超过此大小由 RunTools 持久化到磁盘
+  // 统一上限（4K，前 2K + 后 2K 预览）
+  maxResultSizeChars: MAX_RESULT_SIZE_CHARS,
   strict: true,
 
   get inputSchema() {

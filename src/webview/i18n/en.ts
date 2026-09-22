@@ -178,10 +178,6 @@ export const enDict: Record<string, string> = {
   'tool.bash.clickFullOutput': 'Click to view full output',
   'tool.bash.fullOutput': 'Full output {size}',
   'tool.bash.openFullOutputFile': 'Open full output file',
-  'tool.bash.previewTruncated': '... ({count} lines in preview, {size} total) ...',
-  'tool.bash.linesTotal': '... ({count} lines total) ...',
-  'tool.bash.linesHidden': '... {count} lines hidden (click for full output) ...',
-  'tool.bash.clickFullOutputSize': 'Click to view full output ({size})',
   'tool.bash.clickFullCommand': 'Click to view full command',
   'tool.bash.copyCommand': 'Copy command',
 

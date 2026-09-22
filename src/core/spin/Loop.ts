@@ -101,7 +101,9 @@ async function waitForAgentReply(
    */
   const takeCurrentQueueReply = (): string | null => {
     if (!queue || queue.length === 0) return null;
-    const items = queue.filter((item: any) => !expectedAgentId || item.agentId === expectedAgentId);
+    // 只认子代理回复：后台 Bash 完成通知（source='bash'）不是 Reply，不能当结果消费
+    const items = queue.filter((item: any) =>
+      item.source !== 'bash' && (!expectedAgentId || item.agentId === expectedAgentId));
     queue.length = 0;
     if (items.length === 0) return null;
     // spin 模式下只接受该子代理最后一次 Reply（通常是最终结果），

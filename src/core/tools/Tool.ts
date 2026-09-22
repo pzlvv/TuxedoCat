@@ -113,6 +113,21 @@ export interface ToolUseContext {
 }
 
 /**
+ * 工具结果统一上限（字符数）——**唯一**的结果上限入口。
+ *
+ * 所有工具（含 Bash）的 `maxResultSizeChars` 一律取此值，工具内部不再另设阈值：
+ * 超过 4K 时由 RunTools 统一把完整结果持久化到磁盘，进入上下文 / UI 的内容
+ * 替换为「前 2K + 后 2K」预览（见 toolResultStorage.generateHeadTailPreview）。
+ */
+export const MAX_RESULT_SIZE_CHARS = 4 * 1024; // 4K
+
+/** 超限结果预览保留的头部字符数 */
+export const PREVIEW_HEAD_CHARS = 2 * 1024; // 2K
+
+/** 超限结果预览保留的尾部字符数 */
+export const PREVIEW_TAIL_CHARS = 2 * 1024; // 2K
+
+/**
  * 工具结果
  */
 export interface ToolResult<T> {

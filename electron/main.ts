@@ -345,7 +345,7 @@ function createMainWindow(): void {
     focusRepaintTimer = setTimeout(repaintAllViews, 120);
   });
 
-  // 用户打开/还原/聚焦界面后，取消任务栏与托盘的闪烁提醒
+  // 用户打开/还原/聚焦界面后，取消托盘闪烁提醒
   mainWindow.on('show', cancelAttention);
   mainWindow.on('restore', cancelAttention);
   mainWindow.on('focus', cancelAttention);
@@ -401,7 +401,7 @@ function showMainWindowFromTray(): void {
   mainWindow.focus();
   mainWindow.setAlwaysOnTop(false);
   wakeToggleActive = true;
-  // 用户已经打开界面，取消任务栏/托盘的闪烁提醒
+  // 用户已经打开界面，取消托盘闪烁提醒
   cancelAttention();
   layout();
 }
@@ -473,7 +473,7 @@ function trayTooltip(status: TrayStatus): string {
   return `${PRODUCT_NAME} · ${isZh ? label.zh : label.en}`;
 }
 
-/** 提醒（任务栏 / 托盘）闪烁的间隔（毫秒） */
+/** 提醒（托盘图标）闪烁的间隔（毫秒） */
 const TRAY_BLINK_INTERVAL_MS = 500;
 
 /**
@@ -492,7 +492,7 @@ let trayBlinkStatus: TrayStatus | null = null;
 const trayBlinkImageCache = new Map<TrayStatus, { on: NativeImage; off: NativeImage }>();
 
 /**
- * 是否有正在进行的“任务结束”提醒（任务栏图标闪烁 + 托盘图标闪烁）。
+ * 是否有正在进行的“任务结束”提醒（仅闪烁托盘图标）。
  * 由 startAttention 置位，用户打开界面（cancelAttention）时清除。
  */
 let attentionActive = false;
@@ -555,7 +555,6 @@ function startTrayBlink(status: TrayStatus): boolean {
     // 为 false 时会提前返回，可能把图标停在“熄灭”相位。
     if (!isWindowInBackground()) {
       attentionActive = false;
-      stopTaskbarFlash();
       restoreTrayIcon();
       return;
     }
@@ -591,49 +590,20 @@ function isWindowInBackground(): boolean {
 }
 
 /**
- * 是否需要闪烁任务栏图标：最小化，或可见但不在顶层（未聚焦）。
- * 隐藏到托盘时任务栏没有窗口按钮，无从闪烁，返回 false（此时仅闪烁托盘图标）。
- */
-function shouldFlashTaskbar(): boolean {
-  if (!mainWindow || mainWindow.isDestroyed()) return false;
-  if (mainWindow.isMinimized()) return true;
-  return mainWindow.isVisible() && !isAppFocused();
-}
-
-/** 停止任务栏图标闪烁 */
-function stopTaskbarFlash(): void {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  try {
-    mainWindow.flashFrame(false);
-  } catch {
-    // 部分平台/状态下 flashFrame 可能抛错，忽略即可
-  }
-}
-
-/**
  * 任务从运行中结束（变为空闲或等待用户确认）且窗口处于后台时的提醒：
- * 最小化或非顶层（可见但未聚焦）时闪烁任务栏图标（隐藏到托盘没有任务栏
- * 按钮，跳过），同时让托盘图标一起闪烁，颜色跟随当前状态（空闲绿点 /
- * 等待黄点）。
+ * 只闪烁托盘图标（颜色跟随当前状态：空闲绿点 / 等待黄点），不闪烁窗口 /
+ * 任务栏图标——窗口闪烁过于打扰，提醒入口统一收敛到托盘。
  */
 function startAttention(status: TrayStatus): void {
   if (!isWindowInBackground()) return;
   attentionActive = true;
-  if (shouldFlashTaskbar() && mainWindow) {
-    try {
-      mainWindow.flashFrame(true);
-    } catch {
-      // 闪烁失败不影响托盘提醒
-    }
-  }
   if (tray && !startTrayBlink(status)) restoreTrayIcon();
 }
 
-/** 用户打开/还原/聚焦界面后取消提醒（停止任务栏闪烁并恢复静态托盘图标） */
+/** 用户打开/还原/聚焦界面后取消提醒（停止托盘闪烁并恢复静态托盘图标） */
 function cancelAttention(): void {
   if (!attentionActive) return;
   attentionActive = false;
-  stopTaskbarFlash();
   restoreTrayIcon();
 }
 
@@ -672,8 +642,7 @@ function setupTray(): void {
  * 状态未变化时不重建图标（createFromBitmap / resize 有一定开销）。
  *
  * 另外负责“任务结束提醒”：当任务从运行中变为空闲或等待用户确认、且窗口处于
- * 后台（最小化/隐藏/可见但非顶层）时，闪烁任务栏图标并让托盘图标一起闪烁，
- * 直到用户打开界面。
+ * 后台（最小化/隐藏/可见但非顶层）时，只闪烁托盘图标，直到用户打开界面。
  */
 function updateTrayStatusFromStates(
   states: ReadonlyArray<import('../src/core/AssistantEventBus.js').SessionRuntimeState>,
@@ -685,7 +654,6 @@ function updateTrayStatusFromStates(
 
   if (status === 'running' && attentionActive) {
     attentionActive = false;
-    stopTaskbarFlash();
   }
 
   if (attentionActive) {

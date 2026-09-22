@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 import type { ToolUseContext, ToolResult } from '../Tool.js';
-import { buildTool } from '../Tool.js';
+import { buildTool, MAX_RESULT_SIZE_CHARS } from '../Tool.js';
 import { TOOL_NAME, DESCRIPTION, TODO_WRITE_PROMPT } from './Prompt.js';
 
 /**
@@ -73,7 +73,8 @@ export const TodoWriteTool = buildTool({
   name: TOOL_NAME,
   aliases: ['todo', 'todolist', 'tasks'],
   searchHint: 'manage the session task checklist',
-  maxResultSizeChars: 100_000,
+  // 统一上限（4K，前 2K + 后 2K 预览）
+  maxResultSizeChars: MAX_RESULT_SIZE_CHARS,
   strict: true,
 
   get inputSchema() {

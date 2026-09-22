@@ -4,7 +4,7 @@
  */
 
 import type { BashProgress, ToolUseContext } from '../Tool.js';
-import { buildTool } from '../Tool.js';
+import { buildTool, MAX_RESULT_SIZE_CHARS } from '../Tool.js';
 import { bashInputSchema, bashOutputSchema, type BashToolInput, type BashToolOutput } from './Types.js';
 import { execCommand } from './Exec.js';
 import {
@@ -30,7 +30,8 @@ import { splitBySeparators, DEFAULT_BASH_TIMEOUT_MS, SLEEP_NO_TIMEOUT_MS } from 
 export const BashTool = buildTool({
   name: 'Bash',
   aliases: ['bash', 'sh', 'shell'],
-  maxResultSizeChars: 10_000, // 10KB - 超过此大小由 RunTools 持久化到磁盘
+  // 统一上限（4K，前 2K + 后 2K 预览）：Bash 不例外
+  maxResultSizeChars: MAX_RESULT_SIZE_CHARS,
 
   // ========== Schema ==========
   inputSchema: bashInputSchema,

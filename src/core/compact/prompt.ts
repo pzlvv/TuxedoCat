@@ -139,6 +139,7 @@ export function getUserInputHistory(messages: Message[]): UserMessage[] {
     const msg = message as UserMessage & {
       silent?: boolean;
       fromSubAgent?: boolean;
+      fromBashTask?: boolean;
       isCompactSummary?: boolean;
       reminder?: string;
     };
@@ -146,6 +147,8 @@ export function getUserInputHistory(messages: Message[]): UserMessage[] {
     // 跳过系统自动产生的消息
     if (msg.silent === true) continue;
     if (msg.fromSubAgent === true) continue;
+    // 后台 Bash 完成通知（纯文本系统消息）同样不是用户真实输入
+    if (msg.fromBashTask === true) continue;
     if (msg.isMeta === true) continue;
     if (msg.isCompactSummary === true) continue;
     if (msg.reminder !== undefined) continue;

@@ -40,6 +40,16 @@ function createAbortController(): AbortControllerLike {
 
 export type WorkMode = 'normal' | 'spin';
 
+/**
+ * 排队消息（agentMessageQueue）的来源。
+ *
+ * - `subagent`：子代理 Reply 等真正的「来自子代理」的消息，UI 以代理身份展示并按
+ *   markdown 渲染；
+ * - `bash`：后台 Bash 任务完成通知，属于系统通知而非子代理回复，UI 以纯文本展示
+ *   （不渲染 markdown、不带 From 头）。
+ */
+export type AgentMessageSource = 'subagent' | 'bash';
+
 export interface QueryEngineConfig {
   cwd: string;
   tools: readonly unknown[];
@@ -160,8 +170,8 @@ export class QueryEngine {
   private pendingUserMsgUuid: string | null = null;
   /** 待处理用户消息的完整 Message 对象（排队路径未 push 时暂存，consumer 处理时现场追加） */
   private pendingUserMsgData: Message | null = null;
-  /** 子代理回复消息队列（多条，追加） */
-  public agentMessageQueue: Array<{ content: string; agentId: string }> = [];
+  /** 子代理回复 / 后台 Bash 通知队列（多条，追加）；source 决定 UI 的展示方式 */
+  public agentMessageQueue: Array<{ content: string; agentId: string; source: AgentMessageSource }> = [];
   /** 消息消费者是否正在运行 */
   public isConsumerRunning: boolean = false;
   /** 等待 consumer 退出的 Promise 解析器（用于 submitMessage 排队等待） */
@@ -449,9 +459,12 @@ export class QueryEngine {
    * submitMessage 是 async* 生成器函数，直接调用不会执行函数体。
    * 后台任务完成通知等场景需要同步入队 + 启动消费循环。
    * 消息入队后，messageConsumer 的 while 循环会捕获到并触发 flushAgentQueue。
+   *
+   * @param source 消息来源：默认 `subagent`（子代理回复）；后台 Bash 完成通知传 `bash`，
+   *   UI 会以纯文本展示而不是 markdown 代理消息。
    */
-  enqueueAgentMessage(content: string, agentId?: string): void {
-    this.agentMessageQueue.push({ content, agentId: agentId ?? '' });
+  enqueueAgentMessage(content: string, agentId?: string, source: AgentMessageSource = 'subagent'): void {
+    this.agentMessageQueue.push({ content, agentId: agentId ?? '', source });
 
     // 压缩进行中：只入队，不启动消费循环，避免与压缩并发改写上下文。
     // 压缩结束后由 resumeAfterCompact() 统一排空。
@@ -689,30 +702,56 @@ export class QueryEngine {
   }
 
   /**
-   * 构造一条 Agent 回复消息（user 类型，标记 fromSubAgent / agentId / _meta）
+   * 构造一条排队消息（user 类型）。
+   *
+   * - `subagent`：标记 fromSubAgent / agentId / _meta，UI 以「来自子代理」渲染
+   *   （markdown + From 头）；
+   * - `bash`：后台 Bash 完成通知，只标记 fromBashTask（自动消息，不进用户输入历史），
+   *   UI 走普通纯文本消息路径，不渲染 markdown。
    */
-  private buildAgentReplyMessage(item: { content: string; agentId: string }): Message {
+  private buildAgentReplyMessage(item: { content: string; agentId: string; source: AgentMessageSource }): Message {
     const agentReplyMsg: Message = {
       type: 'user',
       message: { role: 'user', content: item.content },
       uuid: randomId('agent_reply'),
       timestamp: Date.now(),
     };
-    // 添加自定义标记，供 UI 层识别为子代理回复
-    (agentReplyMsg as any).fromSubAgent = true;
-    (agentReplyMsg as any).agentId = item.agentId;
+
+    if (item.source === 'bash') {
+      (agentReplyMsg as any).fromBashTask = true;
+    } else {
+      // 添加自定义标记，供 UI 层识别为子代理回复
+      (agentReplyMsg as any).fromSubAgent = true;
+      (agentReplyMsg as any).agentId = item.agentId;
+      // 来源位置信息（用于 UI 显示 host:agent:agentId）
+      (agentReplyMsg as any)._meta = { param: this.getAgentSourceInfo(item.agentId), type: 'from' };
+    }
+
     if (this.workMode === 'spin') {
       (agentReplyMsg as any).silent = true;
     }
-    // 来源位置信息（用于 UI 显示 host:agent:agentId）
-    (agentReplyMsg as any)._meta = { param: this.getAgentSourceInfo(item.agentId), type: 'from' };
     return agentReplyMsg;
   }
 
   /**
-   * 通知 UI 显示一条 Agent 回复消息（与 messageConsumer 行为一致）
+   * 通知 UI 显示一条排队消息（与 messageConsumer 行为一致）。
+   *
+   * 只有子代理回复才带 isFromAgent / From 头（UI 按 markdown 渲染）；
+   * 后台 Bash 通知按普通 user 消息纯文本展示。
    */
-  private notifyAgentReplyToUI(item: { content: string; agentId: string }): void {
+  private notifyAgentReplyToUI(item: { content: string; agentId: string; source: AgentMessageSource }): void {
+    if (item.source === 'bash') {
+      emitToUi({
+        type: 'message',
+        sessionId: this.sessionID,
+        data: {
+          role: 'user',
+          content: item.content,
+        } as MessageData,
+      });
+      return;
+    }
+
     const sourceInfo = this.getAgentSourceInfo(item.agentId);
     emitToUi({
       type: 'message',
@@ -1011,7 +1050,7 @@ export class QueryEngine {
     if (type === 'reminder') {
       this.pendingReminder = promptStr;
     } else if (type === 'agent') {
-      this.agentMessageQueue.push({ content: promptStr, agentId: agentId ?? '' });
+      this.agentMessageQueue.push({ content: promptStr, agentId: agentId ?? '', source: 'subagent' });
     } else {
       this.pendingUserMessage = promptStr;
       this.pendingUserMsgData = options?.userMsgData ?? null;
@@ -1021,7 +1060,7 @@ export class QueryEngine {
         this.pendingUserMsgUuid = null;
       } else {
         const matchedMsg = [...this.mutableMessages].reverse().find(m =>
-          (m as any).type === 'user' && !(m as any).fromSubAgent
+          (m as any).type === 'user' && !(m as any).fromSubAgent && !(m as any).fromBashTask
           && typeof (m as any).message?.content === 'string'
           && (m as any).message.content === promptStr
         );
@@ -1402,11 +1441,12 @@ export class QueryEngine {
   /**
    * 丢弃尚未消费的后台 Bash 任务完成通知。
    * 用户 abort 后，已排队但未进入 LLM 上下文的后台任务结果不应再被消费。
+   *
+   * 直接按队列项的 source 判定，不再嗅探通知正文（正文格式可自由调整）。
    */
   private discardBackgroundTaskNotifications(): void {
     for (let i = this.agentMessageQueue.length - 1; i >= 0; i--) {
-      const content = this.agentMessageQueue[i]?.content ?? '';
-      if (content.includes('**Background task completed**')) {
+      if (this.agentMessageQueue[i]?.source === 'bash') {
         this.agentMessageQueue.splice(i, 1);
       }
     }

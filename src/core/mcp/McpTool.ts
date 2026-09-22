@@ -9,7 +9,7 @@
  */
 
 import { z } from 'zod';
-import { buildTool } from '../tools/Tool.js';
+import { buildTool, MAX_RESULT_SIZE_CHARS } from '../tools/Tool.js';
 import type { Tool } from '../tools/Tool.js';
 import type { McpCallResult, McpToolDefinition } from './Client.js';
 
@@ -56,7 +56,8 @@ export function createMcpTool(
   return buildTool({
     name: exposedName,
     searchHint: `MCP tool from ${serverName}`,
-    maxResultSizeChars: 100_000,
+    // 统一上限（4K，前 2K + 后 2K 预览）
+    maxResultSizeChars: MAX_RESULT_SIZE_CHARS,
 
     get inputSchema() {
       // 放行任意参数：真正的约束由 llmInputSchema 交给 LLM，MCP 服务器自行校验

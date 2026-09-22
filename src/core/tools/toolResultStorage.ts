@@ -1,17 +1,16 @@
 /**
- * Utility for persisting large tool results to disk instead of truncating them.
+ * 工具结果持久化与统一预览。
+ *
+ * 结果上限只有一个入口：Tool.ts 的 MAX_RESULT_SIZE_CHARS（4K），所有工具共用。
+ * 超过上限的结果在这里把**完整内容**写到磁盘（不丢数据），进入上下文 / UI 的
+ * 内容替换为「前 2K + 后 2K」预览；本模块不再设第二道阈值。
  */
 
 import { mkdir, writeFile, stat as fsStat, link, copyFile, truncate as fsTruncate, unlink, readdir } from 'fs/promises';
 import { join } from 'path';
 import { getProjectConversationDir, getProjectRoot, ensureProjectConversationDir } from '../history/Config.js';
 import { logger } from '../Logger.js';
-
-/**
- * 预览大小阈值
- * 当输出超过此大小时，stdout 只包含预览，完整内容持久化到文件
- */
-export const PREVIEW_SIZE_BYTES = 8 * 1024; // 8KB
+import { MAX_RESULT_SIZE_CHARS, PREVIEW_HEAD_CHARS, PREVIEW_TAIL_CHARS } from './Tool.js';
 
 /**
  * 持久化输出最大大小（超过此大小会被截断）
@@ -60,52 +59,70 @@ export async function ensureToolResultsDir(): Promise<void> {
 }
 
 /**
- * 生成内容的预览，尽可能在新行边界处截断
+ * 生成「前 2K + 后 2K」预览。
+ *
+ * 超出上限的内容取头部 PREVIEW_HEAD_CHARS 与尾部 PREVIEW_TAIL_CHARS，
+ * 中间用一行省略标记衔接（保留被省略的字符数，便于模型/用户判断规模）。
+ * 内容不超上限时原样返回。
  */
-export function generatePreview(
+export function generateHeadTailPreview(
   content: string,
-  maxBytes: number,
+  headChars = PREVIEW_HEAD_CHARS,
+  tailChars = PREVIEW_TAIL_CHARS,
 ): { preview: string; hasMore: boolean } {
-  if (content.length <= maxBytes) {
+  if (content.length <= headChars + tailChars) {
     return { preview: content, hasMore: false };
   }
 
-  // 在限制范围内查找最后一个换行符，避免截断在行中间
-  const truncated = content.slice(0, maxBytes);
-  const lastNewline = truncated.lastIndexOf('\n');
-
-  // 如果找到的新行在合理位置，使用它；否则直接使用精确限制
-  const cutPoint = lastNewline > maxBytes * 0.5 ? lastNewline : maxBytes;
-
-  return { preview: content.slice(0, cutPoint), hasMore: true };
+  const head = content.slice(0, headChars);
+  const tail = content.slice(content.length - tailChars);
+  const omitted = content.length - headChars - tailChars;
+  return {
+    preview: `${head}\n... (${omitted} chars omitted) ...\n${tail}`,
+    hasMore: true,
+  };
 }
 
 /**
- * 构建大型工具结果的持久化消息（带预览）
+ * 按统一上限裁剪内容：超过 4K 时返回「前 2K + 后 2K」预览，否则原样返回。
+ *
+ * 供「不落盘、只展示」的场景（如 Bash 流式进度）复用同一套上限规则，
+ * 保证 UI 拿到的内容永远不超过工具层上限，UI / 宿主不再各自截断。
+ */
+export function capResultContent(content: string): string {
+  if (content.length <= MAX_RESULT_SIZE_CHARS) return content;
+  return generateHeadTailPreview(content).preview;
+}
+
+/**
+ * 构建大型工具结果的持久化消息（带「前 2K + 后 2K」预览）
  */
 export function buildLargeToolResultMessage(
   filepath: string,
   originalSize: number,
   preview: string,
-  hasMore: boolean,
 ): string {
   const sizeKB = Math.round(originalSize / 1024);
+  const headK = Math.round(PREVIEW_HEAD_CHARS / 1024);
+  const tailK = Math.round(PREVIEW_TAIL_CHARS / 1024);
   let message = `${PERSISTED_OUTPUT_TAG}\n`;
   message += `Output too large (${sizeKB}KB). Full output saved to: ${filepath}\n\n`;
-  message += `Preview (first ${Math.round(PREVIEW_SIZE_BYTES / 1024)}KB):\n`;
+  message += `Preview (first ${headK}K + last ${tailK}K):\n`;
   message += preview;
-  message += hasMore ? '\n...\n' : '\n';
-  message += PERSISTED_OUTPUT_CLOSING_TAG;
+  message += `\n${PERSISTED_OUTPUT_CLOSING_TAG}`;
   return message;
 }
 
 /**
- * 持久化大型输出到磁盘
+ * 持久化大型输出到磁盘。
  *
- * @param stdout - stdout 内容
+ * 是否「过大」由调用方按统一上限（MAX_RESULT_SIZE_CHARS）判定，这里不再设第二道阈值：
+ * 上限入口只有工具层一处。
+ *
+ * @param stdout - 完整输出内容
  * @param sessionId - 会话 ID（写入文件名前缀，便于删除对话时清理）
  * @param taskId - 任务 ID（用于文件名）
- * @returns 持久化信息，如果无需持久化则返回 null
+ * @returns 持久化信息（含「前 2K + 后 2K」预览），写入失败时返回 null
  */
 export async function persistLargeOutput(
   stdout: string,
@@ -115,13 +132,7 @@ export async function persistLargeOutput(
   filepath: string;
   originalSize: number;
   preview: string;
-  hasMore: boolean;
 } | null> {
-  // 如果输出太小，不需要持久化
-  if (stdout.length <= PREVIEW_SIZE_BYTES) {
-    return null;
-  }
-
   try {
     await ensureToolResultsDir();
     const filepath = getToolResultPath(sessionId, taskId, false);
@@ -137,8 +148,8 @@ export async function persistLargeOutput(
     // 写入文件
     await writeFile(filepath, contentToWrite, { encoding: 'utf-8' });
 
-    // 生成预览
-    const { preview, hasMore } = generatePreview(stdout, PREVIEW_SIZE_BYTES);
+    // 生成预览（前 2K + 后 2K）
+    const { preview } = generateHeadTailPreview(stdout);
 
     logger.info('toolResultStorage', `Persisted large output to ${filepath} (${Math.round(originalSize / 1024)}KB)`);
 
@@ -146,7 +157,6 @@ export async function persistLargeOutput(
       filepath,
       originalSize,
       preview,
-      hasMore,
     };
   } catch (error) {
     logger.error('toolResultStorage', 'Failed to persist large output:', error);

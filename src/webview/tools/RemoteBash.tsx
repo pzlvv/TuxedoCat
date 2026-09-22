@@ -5,80 +5,7 @@ import { ToolHeader } from './ToolHeader';
 import { postMessage } from '../webviewEnv';
 import { t } from '../i18n';
 import { AnsiText } from '../ansi';
-
-/**
- * 解析持久化输出标签
- * 格式:
- * <persisted-output>
- * Output too large (XXKB). Full output saved to: /path/to/file
- *
- * Preview (first 8KB):
- * ...preview text...
- * ...
- * </persisted-output>
- */
-function parsePersistedOutput(output: string): {
-  isPersisted: boolean;
-  originalSize: number;
-  filePath: string;
-  preview: string;
-  hasMore: boolean;
-} | null {
-  const persistedTag = '<persisted-output>';
-  const closingTag = '</persisted-output>';
-
-  const startIdx = output.indexOf(persistedTag);
-  const endIdx = output.indexOf(closingTag);
-
-  if (startIdx === -1 || endIdx === -1) {
-    return null;
-  }
-
-  const body = output.slice(startIdx + persistedTag.length, endIdx).trim();
-
-  // 解析文件路径
-  // 格式: "Output too large (XXKB). Full output saved to: /path/to/file"
-  const filePathMatch = body.match(/Full output saved to: (.+)$/m);
-  const sizeMatch = body.match(/Output too large \((\d+)KB\)/);
-
-  // 预览文本在 "Preview (first 8KB):" 之后
-  const previewMarker = 'Preview';
-  const previewMarkerIdx = body.indexOf(previewMarker);
-  let preview = '';
-  let hasMore = false;
-
-  if (previewMarkerIdx !== -1) {
-    // 跳过 "Preview (first 8KB):\n"
-    const previewStart = body.indexOf('\n', previewMarkerIdx);
-    if (previewStart !== -1) {
-      preview = body.slice(previewStart + 1).trimEnd();
-      // 移除末尾的 "..." 和 closing tag 之前的内容
-      if (preview.endsWith('...')) {
-        hasMore = true;
-        preview = preview.slice(0, -3).trimEnd();
-      }
-      // 去掉末尾可能残留的换行
-      preview = preview.replace(/\n\.\.\.$/, '');
-    }
-  }
-
-  return {
-    isPersisted: true,
-    originalSize: sizeMatch ? parseInt(sizeMatch[1], 10) * 1024 : 0,
-    filePath: filePathMatch ? filePathMatch[1] : '',
-    preview,
-    hasMore,
-  };
-}
-
-/**
- * 格式化文件大小
- */
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
+import { formatSize, parsePersistedOutput } from './persistedOutput';
 
 export const RemoteBash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId }) => {
   const command = args.command || '';
@@ -182,61 +109,38 @@ export const RemoteBash: React.FC<ToolCallProps> = ({ args, output, colors, tool
             </button>
           </div>
 
-          {/* 预览内容：按行显示，最多 5 行，不换行截断 */}
+          {/* 预览内容：由工具层按「前 2K + 后 2K」裁剪，这里整段渲染、不再截断 */}
           <div
-            className="cursor-pointer overflow-hidden"
+            className="cursor-pointer overflow-auto"
             onClick={handleOutputClick}
             title={t('tool.bash.clickFullOutput')}
             style={{ maxHeight: 115 }}
           >
-            {(() => {
-              const previewLines = persistedInfo.preview.split('\n');
-              const MAX_PREVIEW_LINES = 5;
-              const showTruncated = previewLines.length > MAX_PREVIEW_LINES;
-              const displayLines = showTruncated ? previewLines.slice(0, MAX_PREVIEW_LINES) : previewLines;
-              return (
-                <>
-                  {displayLines.map((line, idx) => (
-                    <div
-                      key={idx}
-                      className="truncate"
-                      style={{
-                        whiteSpace: 'pre',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        lineHeight: '1.6',
-                      }}
-                    >
-                      <AnsiText text={line} />
-                    </div>
-                  ))}
-                  {showTruncated && (
-                    <div style={{ color: colors.textSystem, opacity: 0.7, whiteSpace: 'pre', lineHeight: '1.6' }}>
-                      {t('tool.bash.previewTruncated', { count: previewLines.length, size: formatSize(persistedInfo.originalSize) })} ...
-                    </div>
-                  )}
-                  {!showTruncated && persistedInfo.hasMore && (
-                    <div style={{ color: colors.textSystem, opacity: 0.7, whiteSpace: 'pre', lineHeight: '1.6' }}>
-                      ...
-                    </div>
-                  )}
-                </>
-              );
-            })()}
+            {persistedInfo.preview.split('\n').map((line, idx) => (
+              <div
+                key={idx}
+                className="truncate"
+                style={{
+                  whiteSpace: 'pre',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  lineHeight: '1.6',
+                }}
+              >
+                <AnsiText text={line} />
+              </div>
+            ))}
           </div>
         </div>
       );
     }
 
-    // 普通输出：显示前几行 + 截断指示
+    // 普通输出：内容已由工具层按统一上限裁剪，整段渲染 + 滚动
     const lines = output.split('\n');
-    const MAX_PREVIEW_LINES = 5;
-    const showTruncated = lines.length > MAX_PREVIEW_LINES;
-    const previewLines = showTruncated ? lines.slice(0, MAX_PREVIEW_LINES) : lines;
 
     return (
       <div
-        className="px-3 py-2 text-[11px] font-mono cursor-pointer overflow-hidden"
+        className="px-3 py-2 text-[11px] font-mono cursor-pointer overflow-auto"
         style={{
           backgroundColor: colors.bgSecondary,
           color: colors.textSystem,
@@ -245,7 +149,7 @@ export const RemoteBash: React.FC<ToolCallProps> = ({ args, output, colors, tool
         onClick={handleOutputClick}
         title={t('tool.bash.clickFullOutput')}
       >
-        {previewLines.map((line, idx) => (
+        {lines.map((line, idx) => (
           <div
             key={idx}
             className="truncate"
@@ -259,17 +163,6 @@ export const RemoteBash: React.FC<ToolCallProps> = ({ args, output, colors, tool
             <AnsiText text={line} />
           </div>
         ))}
-        {showTruncated && (
-          <div style={{ color: colors.textSystem, opacity: 0.7, whiteSpace: 'pre', lineHeight: '1.6' }}>
-            {t('tool.bash.linesTotal', { count: lines.length })} ...
-          </div>
-        )}
-        {output.length > 5000 && (
-          <div className="flex items-center gap-1 mt-1.5 text-[10px]" style={{ color: colors.textSystem, opacity: 0.6 }}>
-            <Icon name="external-link" size={9} />
-            {t('tool.bash.clickFullOutputSize', { size: formatSize(output.length) })}
-          </div>
-        )}
       </div>
     );
   };

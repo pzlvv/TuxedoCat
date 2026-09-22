@@ -1282,7 +1282,6 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
                 persisted.filepath,
                 persisted.originalSize,
                 persisted.preview,
-                persisted.hasMore,
               );
               // 用单个持久化消息块替换所有 text 块，保留 thinking / tool_use 等块
               const newContent: any[] = [];

@@ -73,17 +73,6 @@ export const bashOutputSchema = z.object({
 export type BashToolOutput = z.infer<typeof bashOutputSchema>;
 
 /**
- * 预览大小阈值
- * 当输出超过此大小时，stdout 只包含预览，完整内容持久化到文件
- */
-export const PREVIEW_SIZE_BYTES = 8 * 1024; // 8KB
-
-/**
- * 持久化输出最大大小（超过此大小会被截断）
- */
-export const MAX_PERSISTED_SIZE = 64 * 1024 * 1024; // 64MB
-
-/**
  * 执行命令的选项
  */
 export interface ExecOptions {

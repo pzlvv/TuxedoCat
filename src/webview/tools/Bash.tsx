@@ -5,87 +5,7 @@ import { ToolHeader } from './ToolHeader';
 import { postMessage } from '../webviewEnv';
 import { t } from '../i18n';
 import { AnsiText, hasAnsi, renderAnsiToNodes } from '../ansi';
-
-/**
- * 解析持久化输出标签
- * 格式:
- * <persisted-output>
- * Output too large (XXKB). Full output saved to: /path/to/file
- *
- * Preview (first 8KB):
- * ...preview text...
- * ...
- * </persisted-output>
- */
-function parsePersistedOutput(output: string): {
-  isPersisted: boolean;
-  originalSize: number;
-  filePath: string;
-  preview: string;
-  hasMore: boolean;
-} | null {
-  const persistedTag = '<persisted-output>';
-  const closingTag = '</persisted-output>';
-
-  const startIdx = output.indexOf(persistedTag);
-  const endIdx = output.indexOf(closingTag);
-
-  if (startIdx === -1 || endIdx === -1) {
-    return null;
-  }
-
-  const body = output.slice(startIdx + persistedTag.length, endIdx).trim();
-
-  // 解析文件路径
-  // 格式: "Output too large (XXKB). Full output saved to: /path/to/file"
-  const filePathMatch = body.match(/Full output saved to: (.+)$/m);
-  const sizeMatch = body.match(/Output too large \((\d+)KB\)/);
-
-  // 预览文本在 "Preview (first 8KB):" 之后
-  const previewMarker = 'Preview';
-  const previewMarkerIdx = body.indexOf(previewMarker);
-  let preview = '';
-  let hasMore = false;
-
-  if (previewMarkerIdx !== -1) {
-    // 跳过 "Preview (first 8KB):\n"
-    const previewStart = body.indexOf('\n', previewMarkerIdx);
-    if (previewStart !== -1) {
-      preview = body.slice(previewStart + 1).trimEnd();
-      // 移除末尾的 "..." 和 closing tag 之前的内容
-      if (preview.endsWith('...')) {
-        hasMore = true;
-        preview = preview.slice(0, -3).trimEnd();
-      }
-      // 去掉末尾可能残留的换行
-      preview = preview.replace(/\n\.\.\.$/, '');
-    }
-  }
-
-  return {
-    isPersisted: true,
-    originalSize: sizeMatch ? parseInt(sizeMatch[1], 10) * 1024 : 0,
-    filePath: filePathMatch ? filePathMatch[1] : '',
-    preview,
-    hasMore,
-  };
-}
-
-/**
- * 格式化文件大小
- */
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
-
-/**
- * 输出行渲染上限：超长输出（如构建日志、测试输出）只渲染末尾窗口，
- * 避免一次渲染数万个 DOM 节点导致卡顿。盒子本身 maxHeight 只有 115px，
- * 300 行已足够滚动浏览；完整输出可点击打开虚拟文档/持久化文件。
- */
-const MAX_RENDERED_LINES = 300;
+import { formatSize, parsePersistedOutput } from './persistedOutput';
 
 /**
  * 用于「滚到底部」的超大 scrollTop 值。
@@ -191,32 +111,18 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
     while (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') {
       rawLines.pop();
     }
+    // 内容上限已在工具层统一执行（4K，前 2K + 后 2K），UI 不再二次截断，
+    // 收到多少就渲染多少（滚动容器 maxHeight 负责可视高度）。
     const lines = rawLines;
-
-    // ─── 行数裁剪：超长输出只渲染末尾窗口 ───────────────────────────
-    // key 使用绝对行号（hiddenLines + idx）：流式时窗口每帧滑动 1 行，
-    // 大部分行 key 不变可复用 DOM 节点，只有滑出/滑入的少量行变化。
-    const totalLines = lines.length;
-    const hiddenLines = totalLines > MAX_RENDERED_LINES ? totalLines - MAX_RENDERED_LINES : 0;
-    const visibleLines = hiddenLines > 0 ? lines.slice(hiddenLines) : lines;
 
     // 统一行渲染（withCursor 用于流式末尾光标）
     const renderLines = (withCursor: boolean) => (
       <>
-        {hiddenLines > 0 && (
-          <div
-            style={{ color: colors.textSystem, opacity: 0.7, whiteSpace: 'pre', lineHeight: '1.6' }}
-            onClick={handleOutputClick}
-            title={t('tool.bash.clickFullOutput')}
-          >
-            {t('tool.bash.linesHidden', { count: hiddenLines })}
-          </div>
-        )}
-        {visibleLines.map((line, idx) => (
-          <div key={hiddenLines + idx} style={lineStyle}>
+        {lines.map((line, idx) => (
+          <div key={idx} style={lineStyle}>
             {line ? <AnsiText text={line} /> : '\u00A0'}
             {/* 光标内联在最后一行末尾，不额外占一行，保证高度与完成态一致 */}
-            {withCursor && idx === visibleLines.length - 1 && <span style={cursorStyle} />}
+            {withCursor && idx === lines.length - 1 && <span style={cursorStyle} />}
           </div>
         ))}
       </>
@@ -247,22 +153,11 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
     };
 
     const renderBlock = () => {
-      const text = visibleLines.join('\n');
+      const text = lines.join('\n');
       return (
-        <>
-          {hiddenLines > 0 && (
-            <div
-              style={{ color: colors.textSystem, opacity: 0.7, whiteSpace: 'pre', lineHeight: '1.6' }}
-              onClick={handleOutputClick}
-              title={t('tool.bash.clickFullOutput')}
-            >
-              {t('tool.bash.linesHidden', { count: hiddenLines })}
-            </div>
-          )}
-          <pre style={blockStyle}>
-            {hasAnsi(text) ? renderAnsiToNodes(text) : text}
-          </pre>
-        </>
+        <pre style={blockStyle}>
+          {hasAnsi(text) ? renderAnsiToNodes(text) : text}
+        </pre>
       );
     };
 
@@ -334,7 +229,7 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
           </div>
 
           {/* 预览内容：与流式共用滚动容器（maxHeight 115），不换行截断。
-              这里同样是整段渲染（加载历史时走这条路径）。 */}
+              预览由工具层按「前 2K + 后 2K」生成，UI 原样整段渲染（加载历史时走这条路径）。 */}
           <div
             ref={outputRef}
             className="cursor-pointer overflow-auto"
@@ -342,30 +237,11 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
             title={t('tool.bash.clickFullOutput')}
             style={{ maxHeight: 115 }}
           >
-            {(() => {
-              const previewLines = persistedInfo.preview.split('\n');
-              const MAX_PREVIEW_LINES = 5;
-              const showTruncated = previewLines.length > MAX_PREVIEW_LINES;
-              const displayLines = showTruncated ? previewLines.slice(0, MAX_PREVIEW_LINES) : previewLines;
-              const text = displayLines.join('\n');
-              return (
-                <>
-                  <pre style={blockStyle}>
-                    {hasAnsi(text) ? renderAnsiToNodes(text) : text}
-                  </pre>
-                  {showTruncated && (
-                    <div style={{ color: colors.textSystem, opacity: 0.7, whiteSpace: 'pre', lineHeight: '1.6' }}>
-                      {t('tool.bash.previewTruncated', { count: previewLines.length, size: formatSize(persistedInfo.originalSize) })} ...
-                    </div>
-                  )}
-                  {!showTruncated && persistedInfo.hasMore && (
-                    <div style={{ color: colors.textSystem, opacity: 0.7, whiteSpace: 'pre', lineHeight: '1.6' }}>
-                      ...
-                    </div>
-                  )}
-                </>
-              );
-            })()}
+            <pre style={blockStyle}>
+              {hasAnsi(persistedInfo.preview)
+                ? renderAnsiToNodes(persistedInfo.preview)
+                : persistedInfo.preview}
+            </pre>
           </div>
         </div>
       );
