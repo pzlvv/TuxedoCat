@@ -53,7 +53,15 @@ export interface QueryParams {
    * 用于混合模式在首次 LLM 回复后从极简切换到普通。
    * 未提供时使用 staticSystemPrompt / availableTools 常量。
    */
-  getPromptState?: () => Promise<{ systemPrompt: string; availableTools?: string[] }>
+  getPromptState?: () => Promise<{
+    systemPrompt: string;
+    availableTools?: string[];
+    /**
+     * 本会话启用的 MCP server 集合。提供时只把这些 server 的 MCP 工具发给 LLM，
+     * 避免把其它会话启用、但本会话未勾选的 MCP 工具带出去。
+     */
+    enabledMcpServers?: ReadonlySet<string>;
+  }>
   /** LLM 配置覆盖，不指定则使用 settings.json 中的配置 */
   modelConfig?: LLMConfig
   /**
@@ -245,7 +253,7 @@ async function* queryLoop(
   const { staticSystemPrompt, maxTurns } = params;
 
   const getPromptState = params.getPromptState
-    ?? (async () => ({ systemPrompt: staticSystemPrompt, availableTools: undefined }));
+    ?? (async () => ({ systemPrompt: staticSystemPrompt, availableTools: undefined, enabledMcpServers: undefined }));
   const getModelConfig = params.getModelConfig ?? (() => params.modelConfig);
 
   let state: State = {
@@ -383,9 +391,10 @@ async function* queryLoop(
 
       // 获取当前 system prompt 和工具列表。
       // 混合模式下首次 LLM 回复完成后，这里会拿到普通模式的 system prompt 和完整工具列表。
-      const { systemPrompt: fullSystemPrompt, availableTools } = await getPromptState();
+      const { systemPrompt: fullSystemPrompt, availableTools, enabledMcpServers } = await getPromptState();
 
-      const allTools = getAllTools();
+      // MCP 工具按会话过滤：即使进程被其它会话继续引用，也不把本会话未勾选的 MCP 工具发出去
+      const allTools = getAllTools(enabledMcpServers);
       const filteredTools = availableTools
         ? allTools.filter(t => availableTools.includes(t.name))
         : allTools;

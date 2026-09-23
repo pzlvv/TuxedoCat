@@ -35,15 +35,19 @@ export function isValidRole(role: string): role is AgentRole {
 /**
  * 获取角色对应的可用工具列表
  * @param role 角色名
+ * @param enabledMcpServers 会话启用的 MCP server 集合；传入时只暴露这些 server 的 MCP 工具
  * @returns 工具名数组（角色可见的工具），或 undefined（表示全部工具可见）
  */
-export function getToolsForRole(role?: string): string[] | undefined {
+export function getToolsForRole(
+  role?: string,
+  enabledMcpServers?: ReadonlySet<string>,
+): string[] | undefined {
   if (!role) return undefined;
 
   switch (role) {
     case 'Master': {
-      // Master：所有工具可见
-      const allTools = getAllTools() as unknown as Array<{ name: string }>;
+      // Master：所有工具可见（MCP 工具按会话启用集合过滤）
+      const allTools = getAllTools(enabledMcpServers) as unknown as Array<{ name: string }>;
       return allTools.map(t => t.name);
     }
     default:

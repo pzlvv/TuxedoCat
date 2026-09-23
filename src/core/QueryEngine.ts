@@ -113,6 +113,17 @@ export function invalidateAllPromptCaches(): void {
   }
 }
 
+/**
+ * 只清空指定会话引擎的 system prompt / 工具缓存。
+ *
+ * 用于「该会话的 MCP 启用列表变化，但 MCP 进程被其它会话继续引用」的场景：
+ * 此时全局工具集合不变，invalidateAllPromptCaches 不会被触发，但本会话
+ * 需要重新组装 prompt / 工具列表（去掉或加上刚勾选/取消的 MCP 工具）。
+ */
+export function invalidateSessionPromptCache(sessionId: string): void {
+  sessionEngines.get(sessionId)?.invalidateToolCache();
+}
+
 export class QueryEngine {
   private sessionID: string;
   private config: QueryEngineConfig;
@@ -161,6 +172,12 @@ export class QueryEngine {
   private fullSystemPrompt: string | null = null;
   /** 缓存的角色可用工具列表 */
   private roleTools?: string[];
+  /**
+   * 本会话实际启用的 MCP server 名集合（组装 prompt 时读取并缓存）。
+   * 用于把 MCP 工具按会话过滤：只有该会话勾选过的 server 的工具才会发给 LLM，
+   * 即使进程因其它会话仍存活。`undefined` 表示尚未计算。
+   */
+  private enabledMcpServers?: ReadonlySet<string>;
   /** SystemEnvironment 模块预热 Promise（构造函数中提前 import，触发模块级预加载） */
   private _warmupSystemEnv: Promise<any> | undefined;
   private initialized = false;
@@ -241,6 +258,7 @@ export class QueryEngine {
   invalidateToolCache(): void {
     this.fullSystemPrompt = null;
     this.effectiveToolNames = undefined;
+    this.enabledMcpServers = undefined;
   }
 
   /**
@@ -320,6 +338,43 @@ export class QueryEngine {
   }
 
   /**
+   * 解析本会话实际启用的 MCP server 名集合。
+   *
+   * - 子代理（有 parentSessionId 且父引擎存在）继承父会话的启用集合，
+   *   否则子代理会各自回退到全局默认，可能与父会话不一致；
+   * - 其余情况按本会话配置读取（会话覆盖优先，其次全局默认）。
+   *
+   * 读取配置而不是复用 McpManager.sessionRefs：后者是异步建立的，
+   * 首条消息存在竞态；这里在组装 prompt 时 await 读取，结果是权威且最新的。
+   */
+  private async resolveEnabledMcpServers(): Promise<ReadonlySet<string>> {
+    const parentId = this.parentSessionId;
+    if (parentId && parentId !== this.sessionID) {
+      const parent = sessionEngines.get(parentId);
+      if (parent) {
+        try {
+          return await parent.getEnabledMcpServers();
+        } catch (err) {
+          logger.warn('QueryEngine', `继承父会话 MCP 启用集合失败，回退本会话配置: ${err}`);
+        }
+      }
+    }
+    const { readEnabledMcps } = await import('./mcp/Config.js');
+    return new Set(await readEnabledMcps(this.sessionID));
+  }
+
+  /**
+   * 本会话启用的 MCP server 集合（按需先组装 prompt 以完成解析）。
+   * 供子代理继承父会话的 MCP 启用范围。
+   */
+  async getEnabledMcpServers(): Promise<ReadonlySet<string>> {
+    if (!this.fullSystemPrompt) {
+      await this.ensureFullSystemPrompt();
+    }
+    return this.enabledMcpServers ?? new Set<string>();
+  }
+
+  /**
    * 确保完整 system prompt 已按当前实际生效的预设生成。
    * 混合模式首次回复后由 markFirstAssistantReplyCompleted 清空缓存，下次调用会重建为普通模式。
    */
@@ -327,8 +382,11 @@ export class QueryEngine {
     const { assembleSystemPrompt } = await import('./prompt/SystemPrompt.js');
     const { getPromptPreset } = await import('./prompt/PromptPreset.js');
     const { getToolsForRole } = await import('./tools/RoleTools.js');
-    const allTools = getAllTools() as Tool[];
-    this.roleTools = getToolsForRole(this.role);
+    // MCP 工具按会话过滤：只把本会话勾选过的 server 的工具纳入 prompt / 可用工具
+    const enabledMcpServers = await this.resolveEnabledMcpServers();
+    this.enabledMcpServers = enabledMcpServers;
+    const allTools = getAllTools(enabledMcpServers) as Tool[];
+    this.roleTools = getToolsForRole(this.role, enabledMcpServers);
     const preset = getPromptPreset(this.getActivePromptPresetId());
     // 有效工具 = 角色可用工具 ∩ 预设白名单（纯集合运算，无模式分支）
     const roleToolNames = this.roleTools;
@@ -354,14 +412,21 @@ export class QueryEngine {
    * 供 Query 层在每次 LLM 请求前获取当前 system prompt 和可用工具。
    * 混合模式在首次 LLM 回复后会由 markFirstAssistantReplyCompleted 清空缓存，
    * 因此这里会按需重建普通模式的 system prompt / 工具列表。
+   *
+   * `enabledMcpServers` 供 Query 层按会话过滤 MCP 工具（即使全局进程仍在运行）。
    */
-  async getPromptStateForQuery(): Promise<{ systemPrompt: string; availableTools?: string[] }> {
+  async getPromptStateForQuery(): Promise<{
+    systemPrompt: string;
+    availableTools?: string[];
+    enabledMcpServers?: ReadonlySet<string>;
+  }> {
     if (!this.fullSystemPrompt) {
       await this.ensureFullSystemPrompt();
     }
     return {
       systemPrompt: this.fullSystemPrompt!,
       availableTools: this.effectiveToolNames ?? this.roleTools,
+      enabledMcpServers: this.enabledMcpServers,
     };
   }
 

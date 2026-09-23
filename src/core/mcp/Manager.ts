@@ -70,6 +70,15 @@ function mapSignature(map: Record<string, string>): string {
     .join('\u0001');
 }
 
+/** 判断两个字符串集合是否相等（元素相同，与顺序无关） */
+function sameStringSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const value of a) {
+    if (!b.has(value)) return false;
+  }
+  return true;
+}
+
 /** 把传输类型 + 命令 / 环境 / url / 请求头归一化为可比较的配置签名 */
 function buildSignature(
   remote: boolean,
@@ -87,6 +96,8 @@ class McpManager {
   /** sessionId -> 该会话当前持有的 server 名集合，release 时据此精确回退 */
   private sessionRefs = new Map<string, Set<string>>();
   private tools: Tool[] = [];
+  /** 暴露工具名 -> 所属 MCP server 名；用于按会话过滤（会话只保留自己启用的 server 的工具） */
+  private toolServers = new Map<string, string>();
   /** 上次重建时的工具名签名，用于判断工具集合是否真的变化 */
   private toolsSignature = '';
   /** 所有状态变更串行执行 */
@@ -95,6 +106,20 @@ class McpManager {
   /** 当前已连接 MCP 服务器的工具（同步，供 getAllTools 使用） */
   getTools(): Tool[] {
     return this.tools;
+  }
+
+  /**
+   * 只返回属于给定 server 集合的 MCP 工具。
+   *
+   * 进程是全局的（多个会话可能共享同一个 server），但「把哪些 MCP 工具暴露给某个
+   * 会话的 LLM」必须按该会话的启用列表决定，否则 A 会话已取消勾选、却因为 B 会话
+   * 仍启用而把该 MCP 工具发给 A。
+   */
+  getToolsForServers(enabledServers: ReadonlySet<string>): Tool[] {
+    return this.tools.filter((tool) => {
+      const server = this.toolServers.get(tool.name);
+      return server !== undefined && enabledServers.has(server);
+    });
   }
 
   /**
@@ -193,6 +218,7 @@ class McpManager {
     this.servers.clear();
     this.sessionRefs.clear();
     this.tools = [];
+    this.toolServers.clear();
     this.toolsSignature = '';
   }
 
@@ -236,7 +262,12 @@ class McpManager {
       this.attachRef(name, sessionId, info);
     }
 
-    this.sessionRefs.set(sessionId, new Set(desired.keys()));
+    // 该会话的启用集合是否发生变化：MCP 工具是「按会话」暴露给 LLM 的，
+    // 即使进程因其它会话仍存活（全局工具集合不变），本会话也必须重新组装
+    // prompt / 工具列表，否则会继续把已取消勾选的 MCP 工具发出去。
+    const next = new Set(desired.keys());
+    const sessionChanged = !sameStringSet(prev, next);
+    this.sessionRefs.set(sessionId, next);
 
     // 3. 确保所有仍有引用的 server 都已启动
     await this.ensureStarted();
@@ -244,6 +275,12 @@ class McpManager {
     // 4. 重建工具列表；只有工具集合真的变化时才清空 prompt 缓存
     if (this.rebuildTools()) {
       await this.invalidatePromptCaches();
+    }
+
+    // 5. 本会话启用集合变化：单独失效该会话的 prompt / 工具缓存。
+    //    必须放在 rebuildTools 之外，因为进程可能被其它会话继续引用（全局工具未变）。
+    if (sessionChanged) {
+      await this.invalidateSessionPromptCache(sessionId);
     }
   }
 
@@ -447,9 +484,23 @@ class McpManager {
     }
   }
 
+  /**
+   * 只清空指定会话引擎的 system prompt / 工具缓存。
+   * 用于「该会话的 MCP 启用列表变化，但进程被其它会话继续引用」的场景。
+   */
+  private async invalidateSessionPromptCache(sessionId: string): Promise<void> {
+    try {
+      const { invalidateSessionPromptCache } = await import('../QueryEngine.js');
+      invalidateSessionPromptCache(sessionId);
+    } catch (err) {
+      logger.error('McpManager', `清空会话 ${sessionId} 的 prompt 缓存失败: ${err}`);
+    }
+  }
+
   /** 重建工具列表；返回工具集合是否发生变化 */
   private rebuildTools(): boolean {
     const tools: Tool[] = [];
+    const toolServers = new Map<string, string>();
     const routes = new Map<string, { server: string; tool: string }>();
 
     for (const [serverName, runtime] of this.servers) {
@@ -462,6 +513,7 @@ class McpManager {
           continue;
         }
         routes.set(exposedName, { server: serverName, tool: def.name });
+        toolServers.set(exposedName, serverName);
         tools.push(
           createMcpTool(serverName, exposedName, def, (toolName, args) =>
             this.callTool(serverName, toolName, args),
@@ -473,6 +525,7 @@ class McpManager {
     const signature = tools.map((tool) => tool.name).join('|');
     const changed = signature !== this.toolsSignature;
     this.tools = tools;
+    this.toolServers = toolServers;
     this.toolsSignature = signature;
     return changed;
   }
@@ -494,4 +547,15 @@ export function getMcpManager(): McpManager {
  */
 export function getMcpTools(): Tool[] {
   return manager ? manager.getTools() : [];
+}
+
+/**
+ * 同步获取「某个会话启用的 server」对应的 MCP 工具。
+ *
+ * 与 getMcpTools 的区别：后者返回进程内全部已连接 MCP 工具（全局），
+ * 本函数按会话启用集合过滤，供 QueryEngine / Query 组装某会话的请求时使用，
+ * 避免把别的会话启用的 MCP 工具发给当前会话。
+ */
+export function getMcpToolsForServers(enabledServers: ReadonlySet<string>): Tool[] {
+  return manager ? manager.getToolsForServers(enabledServers) : [];
 }

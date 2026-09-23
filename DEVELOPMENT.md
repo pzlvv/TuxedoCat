@@ -1040,6 +1040,17 @@ webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接�
 | `webviewMessageHandler` 的 `setMcpEnabled` 翻译 | 发 `UiEvent.mcpEnabledChanged`；写盘与差量同步由 core 侧处理 |
 | webview 侧 MCP 面板 | 纯展示 |
 
+**按会话暴露 MCP 工具**：MCP 进程是进程级全局的（多个会话可共享同一个 server），但
+「把哪些 MCP 工具发给某个会话的 LLM」必须按该会话的启用列表过滤，否则 A 会话已取消勾选、
+却因为 B 会话仍启用（进程继续存活）而把该 MCP 工具发给 A：
+
+| 环节 | 做法 |
+| --- | --- |
+| 组装 prompt | `QueryEngine.ensureFullSystemPrompt` 读取该会话生效的启用列表（`readEnabledMcps(sessionId)`；子代理经 `parentSessionId` 继承父会话），据此过滤工具 |
+| 组装请求 | `QueryEngine.getPromptStateForQuery()` 把启用集合交给 `Query`，`Query` 用 `getAllTools(enabledMcpServers)` 只把本会话启用的 server 的 MCP 工具放进 `tools` |
+| 缓存失效 | 会话启用列表变化时，`McpManager.syncSessionInternal` 调 `invalidateSessionPromptCache(sessionId)` 单独失效该会话的 prompt 缓存，**不依赖**全局工具集合是否变化 |
+| 工具执行 | `RunTools` 仍用全局 `getAllTools()`，保证历史消息里已发出的工具调用仍能按名解析 |
+
 ### 5.4 对话相关数据：ConversationManager
 
 位置：`src/host/ConversationManager.ts`（abstract class）。
