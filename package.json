@@ -95,7 +95,7 @@
     "electron": "node scripts/electron-launch.js",
     "electron:debug": "node scripts/electron-launch.js --inspect=9229",
     "dev:electron": "npm run build:webview && npm run copy-assets && npm run build:electron && node scripts/electron-launch.js",
-    "package:app": "npm run build:webview && npm run copy-assets && npm run build:electron:prod && electron-builder --config electron-builder.config.js",
+    "package:app": "npm run build:webview && npm run copy-assets && npm run build:electron:prod && electron-builder --config electron-builder.config.js && node scripts/verify-nsis-payload.mjs",
     "package:electron": "npm run package:app",
     "demo": "tsc -p tsconfig.test.json && node out/test/vscode-diff-demo.js"
   },
@@ -111,6 +111,7 @@
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.9.2",
+    "7zip-bin": "5.2.0",
     "autoprefixer": "^10.4.20",
     "electron": "^44.3.0",
     "electron-builder": "^26.15.3",
