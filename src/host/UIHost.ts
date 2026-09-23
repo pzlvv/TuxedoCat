@@ -13,6 +13,9 @@
  * - UIHost 服务**对话 webview**
  * - SpinDesign 服务 Spin 设计器（独立面板/窗口，见第 5.2 节）
  * - ConversationManager 服务对话列表与会话状态（见第 5.4 节）
+ *
+ * `WorkspaceProvider` 是工作区（进程级环境事实）的独立契约，`UIHost` 继承它：
+ * core 经订阅获得当前工作区与变化，启动期不主动读取。
  */
 
 import type { WebviewMessage } from '../core/webviewTypes.js';
@@ -75,7 +78,33 @@ export class WebviewViewHandle {
   ) {}
 }
 
-export interface UIHost {
+/**
+ * WorkspaceProvider - 工作区路径契约（宿主实现）。
+ *
+ * 工作区是**进程级环境事实**，不属于任何 UI surface：单独成契约，
+ * 供只需要工作区的消费方（如 Spin 设计器）依赖。
+ *
+ * 消费方式：core 启动期不调用 `getWorkspacePath()` 取值，而由 `onDidChangeWorkspace`
+ * 订阅——宿主在订阅时立即回调一次当前值（初始快照），之后工作区打开 / 切换 / 关闭
+ * 再回调。该时序覆盖「订阅时尚无工作区、稍后才打开」的场景（Electron 的工作区
+ * 由菜单设置，晚于 bootstrap）。
+ */
+export interface WorkspaceProvider {
+  /** 当前工作区路径；未打开工作区返回 undefined（绝不退回 process.cwd()） */
+  getWorkspacePath(): string | undefined;
+
+  /**
+   * 订阅工作区变化。
+   *
+   * 契约要求：**订阅时立即以当前值回调一次**，之后每次变化再回调。
+   * 回调参数为当前工作区路径；未打开 / 已关闭时为 `undefined`。
+   *
+   * @returns 取消订阅函数
+   */
+  onDidChangeWorkspace(listener: (path: string | undefined) => void): () => void;
+}
+
+export interface UIHost extends WorkspaceProvider {
   // ===================== 传输 =====================
 
   /**
@@ -119,8 +148,8 @@ export interface UIHost {
   /** 日志输出（VS Code: OutputChannel；Electron: console） */
   log(...args: unknown[]): void;
 
-  /** 当前工作区路径；未打开工作区返回 undefined（绝不退回 process.cwd()） */
-  getWorkspacePath(): string | undefined;
+  // 工作区路径（getWorkspacePath）与变化订阅（onDidChangeWorkspace）
+  // 由 WorkspaceProvider 提供，UIHost 继承该契约。
 
   /** 当前是否为深色主题 */
   isDarkTheme(): boolean;

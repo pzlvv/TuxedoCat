@@ -30,12 +30,16 @@ const availableCommandsPromise: Promise<string[] | undefined> = detectAvailableC
 let cachedSystemDynamicInfo: SystemDynamicInfo | null = null;
 
 /**
- * 在扩展激活阶段提前预热系统动态信息，将耗时前置到启动阶段。
- * 调用方（extension.ts activate）不 await，后台执行。
+ * 提前预热系统动态信息，将耗时前置到启动阶段。
+ * 调用方（bootstrapCore 的工作区订阅）不 await，后台执行。
  * 预热完成后，getSystemDynamicInfo 直接返回缓存结果。
+ *
+ * 工作区变化（打开 / 切换 / 关闭后重新打开）会以新 cwd 再次调用本函数，
+ * 因此这里先失效旧缓存，否则 getSystemDynamicInfo 会直接命中旧 cwd 的结果。
  */
 export async function warmupSystemDynamicInfo(cwd: string): Promise<void> {
   try {
+    cachedSystemDynamicInfo = null;
     cachedSystemDynamicInfo = await getSystemDynamicInfo(cwd);
   } catch {
     // 预热失败不影响主流程

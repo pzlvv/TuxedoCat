@@ -744,8 +744,10 @@ wire message（若该事件会产生 webview 协议消息）。
 结果类型的映射写在 `CoreRequestResultMap`（第 3.1 节），保证 handler 返回类型与请求一一对应。
 超时口径见第 3.7 节。
 
-**没有 `uiDynamicInfo` 这类请求**：工作目录走**注入**而不是事件——
-`UIHost.getWorkspacePath()` → `setProjectRootProvider` → core 的 `getProjectRoot()`。
+**没有 `uiDynamicInfo` 这类请求**：工作目录经**注入 + 订阅**获得，不经过事件总线。
+`initializeHistory(host)` 把 `WorkspaceProvider.getWorkspacePath` 登记为
+`setProjectRootProvider`，core 的 `getProjectRoot()` 惰性读取当前值；
+`bootstrapCore` 以 `host.onDidChangeWorkspace(...)` 订阅变化，回调里以新路径预热系统环境信息。
 core 里任何一个需要工作目录的地方（history / mcp / tools / spin / prompt）读的都是这一份，
 不需要总线参与。
 
@@ -867,17 +869,20 @@ webview 对话树的运行标记、两端 abort 按钮），生产者是 `src/co
 
 ## 5. 契约：UIHost / SpinDesign / MCPHost / ConversationManager
 
-宿主差异全部收敛在三个契约上，外加一个 core 侧的 MCP 生命周期入口：
+宿主差异全部收敛在四个宿主契约上，外加一个 core 侧的 MCP 生命周期入口：
 
 | 名称 | 形态 | 服务的 surface | 实现 |
 | --- | --- | --- | --- |
-| `UIHost` | interface | 对话 webview 的宿主能力 | `VSCodeUIHost` / `ElectronUIHost` |
+| `UIHost` | interface（`extends WorkspaceProvider`） | 对话 webview 的宿主能力 | `VSCodeUIHost` / `ElectronUIHost` |
+| `WorkspaceProvider` | interface | 工作区（进程级环境事实，不是 UI surface） | 同上两个宿主类 |
 | `SpinDesign` | interface | Spin 设计器（独立面板 / 窗口） | `VSCodeSpinDesign` / `ElectronSpinDesign` |
 | `MCPHost` | core 单例 | MCP 的会话级生命周期（**不是宿主契约**） | 唯一实现，无宿主分支 |
 | `ConversationManager` | abstract class | 对话列表 / 会话运行时状态（空闲会话回收在 VS Code 实现里） | `SingleWebViewConversationManager` / `ElectronConversationManager` |
 
 契约按 **UI surface** 划分（第 2 节规则 7）：新增面板、窗口或列表类功能时，先确定其所属
-surface，而不是向 `UIHost` 追加成员。
+surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实，不属于任何 UI surface，
+因此 `WorkspaceProvider` 单独成契约，供只需要工作区的消费方依赖；`UIHost` 继承它，
+保持「对话 webview 宿主」契约的完整性。
 
 ### 5.1 UIHost：对话 webview 的宿主能力
 
@@ -892,7 +897,7 @@ surface，而不是向 `UIHost` 追加成员。
 | 入参显式 | 可选语义用 `null`，而不是省略参数 |
 | 返回值统一 `Promise<void>` | 不用 `void \| Promise<void>` 联合 |
 
-成员清单（全部必选，共 18 个）：
+成员清单（全部必选，共 19 个：`UIHost` 自身 17 个 + 继承 `WorkspaceProvider` 的 2 个）：
 
 | 分组 | 成员 | 语义 |
 | --- | --- | --- |
@@ -901,9 +906,10 @@ surface，而不是向 `UIHost` 追加成员。
 | | `sendToWebviewView(view: WebviewViewHandle, message: WebviewMessage): void` | 某个具体视图；`view` 由宿主产出 |
 | | `onThemeChanged(view: WebviewViewHandle \| null): void` | 下发当前主题；`view` 为 `null` 广播，指定句柄直发；值取自 `isDarkTheme()` |
 | 环境 | `log(...args: unknown[]): void` | 日志输出（VS Code：`OutputChannel`；Electron：`console`） |
-| | `getWorkspacePath(): string \| undefined` | 当前工作区路径；未打开工作区返回 `undefined`（不退回 `process.cwd()`） |
 | | `isDarkTheme(): boolean` | 当前是否深色主题 |
 | | `getLocale(): string` | UI 语言（如 `zh` / `en`） |
+| 工作区（继承 `WorkspaceProvider`） | `getWorkspacePath(): string \| undefined` | 当前工作区路径；未打开工作区返回 `undefined`（不退回 `process.cwd()`） |
+| | `onDidChangeWorkspace(listener: (path: string \| undefined) => void): () => void` | 订阅工作区变化；**订阅时立即回调一次当前值**，返回取消订阅函数 |
 | 面板 / 窗口 | `openFile(filePath: string, target: LineSelection \| null): Promise<void>` | 打开文件并定位到行；不需要定位时传 `null` |
 | | `showVirtualDocument(content: string, title: string): Promise<void>` | 显示虚拟文档（内容预览） |
 | | `showDiff(options: ShowDiffOptions): Promise<void>` | 显示一次改动的 before / after（仅 manual 模式，见下） |
@@ -914,6 +920,10 @@ surface，而不是向 `UIHost` 追加成员。
 | 会话 / 状态 | `closeConversationView(sessionId: string): Promise<void>` | 只销毁该会话的 UI 视图（不删磁盘数据、不释放运行时内存） |
 | 配置文件 | `updateSettingsJson(mutator: (cfg: Record<string, any>) => void \| Record<string, any>): Promise<void>` | 串行化「读-改-写」全局 `settings.json` |
 | | `ensureProjectSettings(projectDir: string, workspacePath: string): Promise<void>` | 写项目对话目录清单的 `workspacePath` |
+
+`WorkspaceProvider`（同文件）是工作区契约：core 通过 `onDidChangeWorkspace` **订阅**当前值与
+变化；启动期不调用 `getWorkspacePath()` 取值。两个宿主实现：VS Code 由
+`onDidChangeWorkspaceFolders` 驱动，Electron 由 `setWorkspacePath`（菜单 / 命令行）驱动。
 
 `WebviewViewHandle` 是名义类型（必须是该类实例，任意对象无法冒充）：多视图宿主用它包裹自己的
 视图对象，单视图宿主的 `sendToWebviewView` 等价于 `sendToWebview`（句柄不参与路由）。句柄的产出
@@ -1351,7 +1361,7 @@ thinking / text / tool 动画）。
 | `getActiveSessionId()` | `host.getActiveSessionId` 接线（VS Code 空闲巡检的 `activeSessionProvider`、MCP 面板取当前会话）、`extension.ts` 的 `persistCurrentFileContext` |
 | `hasPendingUserChoice(sessionId)` | 共享骨架的 `setSessionWaitingForUserProvider`（空闲巡检与手动压缩延后的「忙」判定，两个宿主一致）；侧栏 / 托盘的等待标记另由 core 的 `sessionRuntimeChanged` 状态流提供 |
 | `getActivityPhase(sessionId)` | `postConversationLoaded` 内部；`conversationLoaded` 的 `activityPhase` 字段来源 |
-| `getWorkspacePath()` | `initializeHistory(ui)`（结构类型 `{ getWorkspacePath() }`） |
+| `getWorkspacePath()` | `initializeHistory(host)`（结构类型 `{ getWorkspacePath() }`）；工作区变化由 `bootstrapCore` 的 `host.onDidChangeWorkspace(...)` 订阅 |
 | `closeConversation(sessionId)` | VS Code 空闲回收的 `idleCloseHandler`；Electron 关闭按钮 / 侧栏「关闭」、删除对话流程 |
 | `releaseConversation(sessionId)` | `ChatViewManager.closeConversation`（视图销毁序列） |
 | `onTitleChanged(sessionId, title)` | 子模块注入的 `setTitle` 回调 |
@@ -1587,7 +1597,8 @@ export class ElectronUIHost implements UIHost {
 - `webviewHandleFor(source)` 把来源 `WebContents` 包成 `WebviewViewHandle`，供
   `sendToWebviewView` / `onThemeChanged` 定向投递，并作为 `ctx.sender` 传给
   `WebViewUI.handleWebviewMessage`（第 7.3 节）。
-- `setWorkspacePath` 只记录工作区；侧栏的 `sidebar:workspace-changed` 由 `main.ts` 的
+- `setWorkspacePath` 记录工作区并通知 `onDidChangeWorkspace` 订阅者（`bootstrapCore` 以新路径
+  预热系统环境信息）；侧栏的 `sidebar:workspace-changed` 由 `main.ts` 的
   `broadcastWorkspace()` 单独推送。
 - 私有辅助：`sendToRenderer`（按 `sessionId` 定向，未命中回退活动视图）、`openImagePreview`、
   `openMonacoWindow`、`openMermaidWindow`。
@@ -1602,6 +1613,7 @@ export class ElectronUIHost implements UIHost {
 | `onThemeChanged(view)` | `sendToWebview(message)`（句柄不参与路由；值取 `isDarkTheme()`） | `view` 为 `null` → `chatViews.broadcast`；指定句柄 → 解包直发（值取 `isDarkTheme()`） |
 | `log(...args)` | `outputChannel.appendLine(...)` | `console.log('[ElectronUIHost] ...')` |
 | `getWorkspacePath()` | `vscode.workspace.workspaceFolders?.[0]?.uri.fsPath` | `this.workspacePath`（由菜单设置） |
+| `onDidChangeWorkspace(listener)` | 订阅时立即回调当前值；`vscode.workspace.onDidChangeWorkspaceFolders` 驱动后续回调；返回 `dispose` | 订阅时立即回调当前值；`setWorkspacePath` 驱动后续回调；返回取消函数 |
 | `isDarkTheme()` | `vscode.window.activeColorTheme.kind`（Dark / HighContrast） | `nativeTheme.shouldUseDarkColors` |
 | `getLocale()` | `vscode.env.language` | `app.getLocale()`（原始 BCP-47，不做归一化；消费方按 `startsWith('zh')` 判断） |
 | `openFile(filePath, target)` | 图片 → `vscode.open`；文本 → `openTextDocument` + `showTextDocument` + 选区定位；`openTextDocument` 抛错（二进制）→ 回退 `vscode.open` | 图片 → `openImagePreview`；其余 → `openMonacoWindow({ mode: 'view' })` 并定位到行 |
@@ -1701,7 +1713,8 @@ bootstrapCore(host, spinDesign, conversations, options): { bus, ui }
 | 总线创建与全局注册 / core 侧 UiEvent 订阅 | `createEventBus` → `setGlobalEventBus` → `initializeCoreEvents` |
 | `WebViewUI.create` 与 `UserChoiceManager` 工厂 | 工厂在骨架内构造，日志出口取自 `options.log`；宿主不提供该工厂 |
 | `initializeHistory` / `initializeSessionQueue` / `setSessionWaitingForUserProvider` | 依赖 `WebViewUI` 实例；等待用户读取器闭包在骨架内引用该实例，宿主不参与 |
-| 配置目录 / 系统环境预热 / MCP 残留清理 | 异步收尾，不阻塞启动 |
+| 工作区订阅（`host.onDidChangeWorkspace`） | 工作区当前值与变化经订阅获得，启动期不主动读取；订阅时宿主立即回调当前值，之后打开 / 切换 / 关闭再回调；回调以新路径预热系统动态信息。`initializeHistory(host)` 登记惰性读取入口 |
+| 配置目录 / MCP 残留清理 | 异步收尾，不阻塞启动 |
 
 **宿主参数**：
 

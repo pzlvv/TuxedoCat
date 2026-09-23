@@ -36,6 +36,11 @@ function createStubHost(): UIHost {
     onThemeChanged: () => undefined,
     log: () => undefined,
     getWorkspacePath: () => undefined,
+    onDidChangeWorkspace: (listener) => {
+      // 契约：订阅时立即回调一次当前值
+      listener(undefined);
+      return () => undefined;
+    },
     isDarkTheme: () => false,
     getLocale: () => 'en',
     openFile: async () => undefined,
@@ -70,7 +75,7 @@ const stubSpinDesign: SpinDesign = {
  * 白名单：不需要出现在 bootstrapCore.ts 的注入点。
  *
  * - `setSession*`：会话级运行时 setter，由 UiEvent 驱动，不属于启动接线；
- * - `setProjectRootProvider`：由骨架内的 `initializeHistory(ui)` 间接注入。
+ * - `setProjectRootProvider`：由骨架内的 `initializeHistory(host)` 间接注入。
  */
 function isAllowedOutsideBootstrap(name: string): boolean {
   if (name === 'setSessionWaitingForUserProvider') return false;

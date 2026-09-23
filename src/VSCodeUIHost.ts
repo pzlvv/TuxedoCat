@@ -101,6 +101,18 @@ export class VSCodeUIHost implements UIHost {
     return undefined;
   }
 
+  /**
+   * 订阅工作区变化：订阅时立即回调当前值（WorkspaceProvider 契约），
+   * 之后由 `onDidChangeWorkspaceFolders` 驱动。
+   */
+  onDidChangeWorkspace(listener: (path: string | undefined) => void): () => void {
+    listener(this.getWorkspacePath());
+    const subscription = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      listener(this.getWorkspacePath());
+    });
+    return () => subscription.dispose();
+  }
+
   isDarkTheme(): boolean {
     const kind = vscode.window.activeColorTheme.kind;
     return kind === vscode.ColorThemeKind.Dark || kind === vscode.ColorThemeKind.HighContrast;

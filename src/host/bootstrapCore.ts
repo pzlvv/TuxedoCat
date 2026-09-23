@@ -10,6 +10,7 @@
  *   → 创建总线并注册 → 注册 core 侧 UiEvent 订阅
  *   → 创建 WebViewUI（其构造函数注册 CoreEvent / CoreRequest 处理器）
  *   → 历史系统 / 会话队列 / 等待用户读取器
+ *   → 工作区订阅（宿主推送当前值 + 后续变化；启动期不主动读取）
  *   → 异步收尾：配置目录 / 系统环境预热 / MCP 残留清理
  *
  * 顺序错误在启动期暴露：`setGlobalEventBus` 重复注册抛错，
@@ -75,6 +76,9 @@ export interface BootstrapSnapshot {
 
 let snapshot: BootstrapSnapshot | null = null;
 
+/** 工作区订阅的取消函数（宿主退出 / 重复 bootstrap 时释放） */
+let disposeWorkspaceSubscription: (() => void) | null = null;
+
 /**
  * 执行共享启动接线。
  *
@@ -118,25 +122,32 @@ export function bootstrapCore(
   });
 
   // ── 4. 依赖 WebViewUI 实例的接线 ──
-  initializeHistory(ui);
+  // 工作区 provider 由宿主实现（UIHost 继承 WorkspaceProvider）：这里只登记
+  // 惰性读取入口（core 取项目根时向宿主读取），启动期不主动取值。
+  initializeHistory(host);
   initializeSessionQueue();
   setSessionWaitingForUserProvider((sessionId) => ui.hasPendingUserChoice(sessionId));
 
-  // ── 5. 异步收尾：不阻塞启动，失败只记日志 ──
+  // ── 5. 工作区订阅：当前值与变化都经订阅获得，启动期不主动读取 ──
+  // 契约保证订阅时立即回调一次当前值，因此初始预热也走这条路径；
+  // Electron 的工作区由菜单设置（晚于 bootstrap），VS Code 可切换工作区。
+  disposeWorkspaceSubscription?.();
+  disposeWorkspaceSubscription = host.onDidChangeWorkspace((workspacePath) => {
+    if (!workspacePath) return;
+    void (async () => {
+      try {
+        const { warmupSystemDynamicInfo } = await import('../core/prompt/SystemEnvironment.js');
+        await warmupSystemDynamicInfo(workspacePath);
+      } catch (error) {
+        log(`[bootstrap] Failed to warm up system info for workspace: ${error}`);
+      }
+    })();
+  });
+
+  // ── 6. 异步收尾：不阻塞启动，失败只记日志 ──
   void ensureConfigDirs().catch((error: Error) => {
     log(`[bootstrap] Failed to initialize config directories: ${error.message}`);
   });
-
-  void (async () => {
-    try {
-      // 无工作目录时 getProjectRoot() 抛错，与「预热失败」同样跳过
-      const { getProjectRoot } = await import('../core/history/Config.js');
-      const { warmupSystemDynamicInfo } = await import('../core/prompt/SystemEnvironment.js');
-      await warmupSystemDynamicInfo(getProjectRoot());
-    } catch {
-      // 预热失败不影响主流程
-    }
-  })();
 
   void (async () => {
     try {
@@ -152,6 +163,8 @@ export function bootstrapCore(
 
 /** 释放 core 侧的进程级资源（MCP 子进程）；宿主退出钩子调用一次 */
 export function shutdownCore(): void {
+  disposeWorkspaceSubscription?.();
+  disposeWorkspaceSubscription = null;
   try {
     getMCPHost().shutdown();
   } catch {

@@ -29,6 +29,8 @@ export class ElectronUIHost implements UIHost {
   private chatViews: ChatViewManager | undefined;
   /** 当前工作区路径（由 main 进程设置，用户通过菜单选择） */
   private workspacePath: string | undefined;
+  /** 工作区变化订阅者（WorkspaceProvider.onDidChangeWorkspace） */
+  private readonly workspaceListeners = new Set<(path: string | undefined) => void>();
   /** 复用的 Mermaid 预览窗口（与 VSCodeUIHost 的单面板语义一致） */
   private mermaidWindow: BrowserWindowCtor | undefined;
 
@@ -68,7 +70,16 @@ export class ElectronUIHost implements UIHost {
   }
 
   setWorkspacePath(p: string | undefined): void {
+    if (this.workspacePath === p) return;
     this.workspacePath = p;
+    // 通知订阅者（WorkspaceProvider 契约）；单个订阅者抛错不影响其它订阅者
+    for (const listener of [...this.workspaceListeners]) {
+      try {
+        listener(p);
+      } catch (err) {
+        this.writeLog(`workspace listener failed: ${err}`);
+      }
+    }
   }
 
   /** 推送消息到渲染进程：优先按 sessionId 路由到对应聊天视图，否则发给当前活动视图 */
@@ -118,6 +129,18 @@ export class ElectronUIHost implements UIHost {
 
   getWorkspacePath(): string | undefined {
     return this.workspacePath;
+  }
+
+  /**
+   * 订阅工作区变化：订阅时立即回调当前值（WorkspaceProvider 契约），
+   * 之后由 `setWorkspacePath`（菜单 / 命令行设置工作区）驱动。
+   */
+  onDidChangeWorkspace(listener: (path: string | undefined) => void): () => void {
+    this.workspaceListeners.add(listener);
+    listener(this.workspacePath);
+    return () => {
+      this.workspaceListeners.delete(listener);
+    };
   }
 
   isDarkTheme(): boolean {
