@@ -82,6 +82,14 @@ export type WebviewMessage = {
   hasBorder?: boolean;
   /** 是否来自代理消息 */
   isFromAgent?: boolean;
+  /**
+   * 后台 Bash 任务完成通知等系统自动消息：UI 按普通纯文本渲染，
+   * 但不参与用户消息的滚动置顶（语义等同代理消息）。
+   *
+   * 与 `MessageData.fromBashTask` 一一对应；宿主 `onMessage` 会把该字段原样透传，
+   * webview 的 `toUiMessage` 依赖它区分「真正的用户消息」与系统通知。
+   */
+  fromBashTask?: boolean;
   /** 消息元信息，如文件引用、agent来源等 */
   meta?: Record<string, unknown>;
   /** 标记为压缩折叠区域的消息（加载时从 boundary 开始） */

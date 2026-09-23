@@ -6,36 +6,62 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { getExtensionPath } from '../history/Config.js';
+import { getExtensionPath, getProjectRoot } from '../history/Config.js';
 
 const execFileAsync = promisify(execFile);
 
 const MAX_BUFFER_SIZE = 20_000_000; // 20MB
 
 /**
- * Get the path to the ripgrep executable
+ * 当前平台/架构对应的预编译 ripgrep 目录名（`<arch>-<platform>`），
+ * 与 resources/ripgrep 下的目录命名保持一致。
+ * 没有预编译产物时返回 null（回退到 PATH 中的系统 rg）。
  */
-async function getRipgrepPath(): Promise<string> {
-  // Try to find rg.exe in the resources directory
+function getRipgrepSubDir(): string | null {
   const platform = process.platform;
   const arch = process.arch;
 
-  // In production (VSCode extension), resources are in extensionPath/dist/resources
-  let rgDir: string;
+  if (platform === 'win32' && (arch === 'x64' || arch === 'arm64')) {
+    return `${arch}-win32`;
+  }
+  if (platform === 'linux' && arch === 'x64') {
+    return 'x64-linux';
+  }
+  return null;
+}
 
-  if (platform === 'win32' && arch === 'x64') {
-    rgDir = path.join(getExtensionPath(), 'dist', 'resources', 'ripgrep', 'x64-win32');
-  } else if (platform === 'linux' && arch === 'x64') {
-    rgDir = path.join(getExtensionPath(), 'dist', 'resources', 'ripgrep', 'x64-linux');
-  } else {
-    // Fallback to system rg
+/**
+ * Get the path to the ripgrep executable
+ */
+async function getRipgrepPath(): Promise<string> {
+  const platform = process.platform;
+  const subDir = getRipgrepSubDir();
+
+  // 当前平台/架构没有预编译产物（macOS / linux-arm64 等）：回退到系统 rg
+  if (!subDir) {
     return 'rg';
   }
 
-  const rgPath = path.join(rgDir, platform === 'win32' ? 'rg.exe' : 'rg');
+  const exeName = platform === 'win32' ? 'rg.exe' : 'rg';
 
-  await fs.access(rgPath);
-  return rgPath;
+  // 优先用 getExtensionPath（生产环境：extension/dist/resources/ripgrep/<subDir>/）
+  try {
+    const exePath = path.join(getExtensionPath(), 'dist', 'resources', 'ripgrep', subDir, exeName);
+    await fs.access(exePath);
+    return exePath;
+  } catch {
+    // getExtensionPath 不可用（dev 模式）或产物缺失，fallback 到 getProjectRoot
+  }
+
+  // Fallback: getProjectRoot + resources/ripgrep/<subDir>/（dev 模式，未 build 时）
+  const bundledPath = path.join(getProjectRoot(), 'resources', 'ripgrep', subDir, exeName);
+  try {
+    await fs.access(bundledPath);
+    return bundledPath;
+  } catch {
+    // 打包产物缺失时也回退到 PATH 中的系统 rg
+    return 'rg';
+  }
 }
 
 /**

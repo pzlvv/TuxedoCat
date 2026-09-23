@@ -34,7 +34,7 @@ module.exports = {
     target: [
       {
         target: 'nsis',
-        arch: ['x64'],
+        arch: ['x64', 'arm64'],
       },
     ],
   },
@@ -43,7 +43,12 @@ module.exports = {
     perMachine: false,
     allowToChangeInstallationDirectory: true,
     shortcutName: project.productName,
-    artifactName: '${productName}-${version}-setup.${ext}',
+    // buildUniversalInstaller: false —— 只产出分架构安装包（-x64 / -arm64），
+    // 不再额外产出一个内嵌双架构的通用包（约 227MB）。
+    // 该开关为 false 时，${arch} 必须保留在 artifactName 中，否则两个架构同名覆盖
+    // （见 app-builder-lib/out/targets/nsis/NsisTarget.js 的 shouldBuildUniversalInstaller）
+    buildUniversalInstaller: false,
+    artifactName: '${productName}-${version}-setup-${arch}.${ext}',
   },
   electronLanguages: ['zh-CN', 'en-US'],
 };
