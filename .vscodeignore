@@ -1,39 +1,26 @@
-.vscode/**
-.github/**
-.git/**
-.gitignore
-*.vsix
-.vscodeignore
-.vscode-test.mjs
-.vscode-test/**
-node_modules/**
-src/**
-test/**
-**/*.ts
-**/tsconfig.json
-**/tsconfig.*.json
-*.tsbuildinfo
-esbuild.js
-eslint.config.*
-postcss.config.*
-tailwind.config.*
-vite.config.*
-vite.monaco.config.ts
-electron-builder.config.js
-project.config.cjs
-*.md
+# 白名单打包：默认排除全部文件，再显式放行运行时必需产物。
+# 这样源码、开发配置、开发文档、Electron 产物等都不会混进 vsix；
+# 以后新增文件默认也不会被打进去（要打包必须显式加进下面的白名单）。
+# 注意：vsce 用 minimatch 匹配，不带 `**` 的裸文件名只匹配根目录，
+# 所以放行子目录时必须写成 `dir/**` 的形式。
+**
+
+# 扩展入口（esbuild 产物；`.map` 未放行，开发构建的 sourcemap 不会进包）
+!dist/extension.js
+
+# Webview 前端产物：vite 输出 index.html + assets/，public/ 下的占位背景图在 webview 根目录
+!dist/webview/index.html
+!dist/webview/assets/**
+!dist/webview/logo.svg
+!dist/webview/logo*.png
+
+# 运行时外部可执行文件（预编译 ripgrep：win32-x64 / win32-arm64 / linux-x64）
+!dist/resources/**
+
+# 扩展图标 / 视图图标（package.json 的 icon 与 contributes.viewsContainers 引用）
+!assets/**
+
+# 说明与许可证（vsce 会读取并重命名为 readme.md / LICENSE.txt）
 !README.md
+!LICENSE
 !CHANGELOG.md
-!LICENSE.md
-**/*.map
-out/
-# Electron 桌面应用相关（打包插件时排除）
-electron/**
-dist-electron/**
-dist/win-unpacked/**
-dist/monaco/**
-dist/sidebar/**
-release/**
-scripts/**
-# 开发期静态资源已由 copy-assets 复制到 dist/resources，插件运行时使用 dist/resources
-resources/**
