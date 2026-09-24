@@ -3,6 +3,18 @@
  */
 
 /**
+ * 消息来源统一标记。
+ *
+ * - `user`：用户真实输入（默认，未显式标记时按此处理）
+ * - `agent`：子代理回复 / 提醒等系统自动消息（UI 以 markdown + From 头渲染）
+ * - `bash`：后台 Bash 任务完成通知（UI 按纯文本 + ANSI 颜色渲染，不参与滚动置顶）
+ *
+ * 历史会话里用的是 `fromSubAgent` / `fromBashTask` 两个布尔字段，
+ * 读取时统一由 `getMessageOrigin` 归一化，见 `utils/messageOrigin.ts`。
+ */
+export type MessageOrigin = 'user' | 'agent' | 'bash'
+
+/**
  * 消息类型 - 核心消息联合类型
  */
 export type Message =
@@ -58,14 +70,18 @@ export interface UserMessage {
   _needsUINotification?: boolean
   /** 压缩摘要消息标记（展开归档时用于区分摘要与普通消息） */
   isCompactSummary?: boolean
-  /** 子代理产生的自动消息（Agent 回复 / 提醒），UI 上以代理身份展示（markdown + From 头） */
-  fromSubAgent?: boolean
   /**
-   * 后台 Bash 任务完成通知等系统自动消息。
-   * 与 fromSubAgent 一样属于「非用户真实输入」（压缩时不进用户输入历史），
-   * 但 UI 按普通纯文本消息展示，不渲染 markdown。
+   * 消息来源（仅系统自动消息需要显式标记，用户消息留空即视为 `user`）。
+   *
+   * - `agent`：子代理产生的自动消息（Agent 回复 / 提醒），UI 上以代理身份展示
+   *   （markdown + From 头），压缩时不进用户输入历史；
+   * - `bash`：后台 Bash 任务完成通知，同样属于「非用户真实输入」，
+   *   但 UI 按普通纯文本消息展示，不渲染 markdown。
+   *
+   * 兼容字段：历史会话里的 `fromSubAgent` / `fromBashTask` 由
+   * `getMessageOrigin` 读取时归一化。
    */
-  fromBashTask?: boolean
+  origin?: MessageOrigin
 }
 
 /**
@@ -191,13 +207,11 @@ export interface MessageData {
   isCompactSummary?: boolean;
   /** 是否显示边框（用于子代理 Reply 回复） */
   hasBorder?: boolean;
-  /** 是否来自代理消息 */
-  isFromAgent?: boolean;
   /**
-   * 后台 Bash 任务完成通知等系统自动消息：UI 上按普通纯文本渲染，
-   * 但语义上等同代理消息（不参与用户消息滚动置顶等用户消息专属处理）。
+   * 消息来源：`agent`（子代理）或 `bash`（后台任务通知）；
+   * 用户消息留空即视为 `user`。UI 依赖它决定渲染方式与是否参与滚动置顶。
    */
-  fromBashTask?: boolean;
+  origin?: MessageOrigin;
   /** 用户消息携带的图片（仅用于 UI 展示，LLM 请求使用 content blocks） */
   images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
   /** 消息元信息，如文件引用、agent来源等 */

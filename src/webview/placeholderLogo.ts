@@ -1,5 +1,5 @@
 /**
- * 空状态背景图（logo1.png … logo7.png）的随机轮换。
+ * 空状态背景图（logo1.png … logo8.png）的随机轮换。
  *
  * 规则（按「新对话」计数，每开一次新对话轮换一次）：
  *   - **N 次正好覆盖全部 N 张**：每轮把 N 张洗成一个随机排列（洗牌袋），依次取出，
@@ -36,6 +36,7 @@ const LOGO_FILES = [
   'logo5.png',
   'logo6.png',
   'logo7.png',
+  'logo8.png',
 ] as const;
 
 type LogoFile = (typeof LOGO_FILES)[number];

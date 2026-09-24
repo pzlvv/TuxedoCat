@@ -4,6 +4,7 @@
  */
 
 import type { ModelRef } from '../core/llm/modelRef';
+import type { MessageOrigin } from '../core/types';
 
 export type Theme = 'dark' | 'light';
 export type AgentMode = 'manual' | 'risk' | 'auto';
@@ -62,12 +63,14 @@ export interface Message {
   isCompactSummary?: boolean;
   isCompactCollapsed?: boolean;
   hasBorder?: boolean;
-  isFromAgent?: boolean;
   /**
-   * 后台 Bash 任务完成通知等系统自动消息：按普通纯文本渲染，
-   * 但语义等同代理消息，不参与用户消息滚动置顶。
+   * 消息来源：`agent`（子代理 Reply）或 `bash`（后台任务通知）；
+   * 用户消息留空即视为 `user`。
+   *
+   * - `agent`：按 markdown + From 头渲染，不参与滚动置顶；
+   * - `bash`：按普通纯文本（含 ANSI 颜色）渲染，同样不参与滚动置顶。
    */
-  fromBashTask?: boolean;
+  origin?: MessageOrigin;
   /** 消息是否正在流式输出中（用于 ThinkingMessage 默认展开） */
   isStreaming?: boolean;
   /** 消息到达时间戳（ms），用于统计耗时分布 */

@@ -11,6 +11,7 @@ import type { QueryEngine } from '../QueryEngine.js';
 import type { CoreEvent } from '../AssistantEventBus.js';
 import { requireEventBus } from '../AssistantEventBus.js';
 import type { MessageData } from '../types.js';
+import { getMessageOrigin } from '../utils/messageOrigin.js';
 
 /** core → UI 单向事件的发送侧封装（SpinLoop 统一走它） */
 function emitToUi(event: CoreEvent): void {
@@ -115,13 +116,13 @@ async function waitForAgentReply(
 
   // Step 1: 先在 mutableMessages 中查找从磁盘恢复的 agent reply。
   // 恢复场景：spin 模式重启后，agentMessageQueue 为空，但已持久化的消息中
-  // 可能包含子 agent 的回复（agent_reply_* 或 silent=fromSubAgent 的 user 消息）。
+  // 可能包含子 agent 的回复（agent_reply_* 或 origin=agent 且 silent 的 user 消息）。
   // 必须按 expectedAgentId 过滤，避免上一轮子代理的旧回复被当成当前节点结果。
   let persistedReply: string | null = null;
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i] as any;
-    // 查找 fromSubAgent 且 silent 的 user 消息（spin 模式下 agent reply 的标记）
-    if (msg.type === 'user' && msg.fromSubAgent === true && msg.silent === true && typeof msg.message?.content === 'string') {
+    // 查找 origin=agent 且 silent 的 user 消息（spin 模式下 agent reply 的标记）
+    if (msg.type === 'user' && getMessageOrigin(msg) === 'agent' && msg.silent === true && typeof msg.message?.content === 'string') {
       if (expectedAgentId && msg.agentId !== expectedAgentId) continue;
       persistedReply = msg.message.content as string;
       logger.info('SpinLoop', `Found persisted agent reply in mutableMessages (agent=${expectedAgentId ?? 'any'}): "${persistedReply.substring(0, 100)}..."`);

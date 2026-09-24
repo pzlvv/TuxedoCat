@@ -3,7 +3,7 @@
  * 在 host（WebViewUI）与 webview/App.tsx 中共享使用
  */
 
-import type { MessageData } from './types.js';
+import type { MessageData, MessageOrigin } from './types.js';
 
 /** 一个 MCP 服务器的展示信息（来自 ~/<configDir>/mcp.json + settings.json 启用状态） */
 export interface McpServerInfo {
@@ -80,16 +80,14 @@ export type WebviewMessage = {
   isCompactSummary?: boolean;
   /** 是否显示边框（用于子代理 Reply 回复） */
   hasBorder?: boolean;
-  /** 是否来自代理消息 */
-  isFromAgent?: boolean;
   /**
-   * 后台 Bash 任务完成通知等系统自动消息：UI 按普通纯文本渲染，
-   * 但不参与用户消息的滚动置顶（语义等同代理消息）。
+   * 消息来源：`agent`（子代理 Reply）或 `bash`（后台任务通知）；
+   * 用户消息留空即视为 `user`。
    *
-   * 与 `MessageData.fromBashTask` 一一对应；宿主 `onMessage` 会把该字段原样透传，
+   * 与 `MessageData.origin` 一一对应；宿主 `onMessage` 会把该字段原样透传，
    * webview 的 `toUiMessage` 依赖它区分「真正的用户消息」与系统通知。
    */
-  fromBashTask?: boolean;
+  origin?: MessageOrigin;
   /** 消息元信息，如文件引用、agent来源等 */
   meta?: Record<string, unknown>;
   /** 标记为压缩折叠区域的消息（加载时从 boundary 开始） */

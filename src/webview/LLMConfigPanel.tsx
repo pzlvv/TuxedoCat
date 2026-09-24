@@ -773,6 +773,16 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       setApiKeyError(t('llmConfig.enterApiKey'));
       return;
     }
+    // 保存前必须为「每个」服务商至少添加 1 个模型，否则无法发起请求
+    const providerWithoutModel = providerPayload.find((p) => p.models.length === 0);
+    if (providerWithoutModel) {
+      // 切到缺少模型的服务商 tab，让红色提示显示在它下面
+      const targetDraft = providers.find((p) => providerKeyOf(p.baseURL) === providerWithoutModel.key);
+      if (targetDraft) setActiveTabId(targetDraft.id);
+      setModelError(t('llmConfig.atLeastOneModel'));
+      setApiKeyError(null);
+      return;
+    }
     if (saveProviders && activeKey) {
       setActiveProviderKey(activeKey);
     }

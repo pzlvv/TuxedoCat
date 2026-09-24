@@ -3,6 +3,7 @@
  */
 
 import type { Message, UserMessage } from '../types.js';
+import { isAutoMessage } from '../utils/messageOrigin.js';
 
 /**
  * Format messages for compact summary generation
@@ -123,7 +124,7 @@ function isReminderText(content: string): boolean {
  *
  * 过滤掉由系统自动产生、并非用户真实输入的消息：
  * - silent 消息（reminder、子代理自动消息等，仅 LLM 可见）
- * - fromSubAgent 消息（子代理产生的自动消息）
+ * - origin 为 agent / bash 的消息（子代理回复、后台 Bash 通知）
  * - isMeta 消息（如 Skill 注入的 prompt）
  * - isCompactSummary 消息（压缩摘要）
  * - 携带 reminder 字段的消息
@@ -138,17 +139,14 @@ export function getUserInputHistory(messages: Message[]): UserMessage[] {
 
     const msg = message as UserMessage & {
       silent?: boolean;
-      fromSubAgent?: boolean;
-      fromBashTask?: boolean;
       isCompactSummary?: boolean;
       reminder?: string;
     };
 
     // 跳过系统自动产生的消息
     if (msg.silent === true) continue;
-    if (msg.fromSubAgent === true) continue;
-    // 后台 Bash 完成通知（纯文本系统消息）同样不是用户真实输入
-    if (msg.fromBashTask === true) continue;
+    // 子代理回复 / 后台 Bash 完成通知（兼容旧字段 fromSubAgent / fromBashTask）
+    if (isAutoMessage(message)) continue;
     if (msg.isMeta === true) continue;
     if (msg.isCompactSummary === true) continue;
     if (msg.reminder !== undefined) continue;

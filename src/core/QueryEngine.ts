@@ -4,6 +4,7 @@
 
 import type { Message, MessageData } from './types.js';
 import { extractUserContent } from './utils/contentBlocks.js';
+import { isAutoMessage } from './utils/messageOrigin.js';
 import { query } from './Query.js';
 import type { AbortControllerLike } from './tools/Tool.js';
 import type { CoreEvent } from './AssistantEventBus.js';
@@ -769,10 +770,10 @@ export class QueryEngine {
   /**
    * 构造一条排队消息（user 类型）。
    *
-   * - `subagent`：标记 fromSubAgent / agentId / _meta，UI 以「来自子代理」渲染
+   * - `subagent`：标记 origin='agent' / agentId / _meta，UI 以「来自子代理」渲染
    *   （markdown + From 头）；
-   * - `bash`：后台 Bash 完成通知，只标记 fromBashTask（自动消息，不进用户输入历史），
-   *   UI 走普通纯文本消息路径，不渲染 markdown。
+   * - `bash`：后台 Bash 完成通知，只标记 origin='bash'（自动消息，不进用户输入历史），
+   *   UI 走普通纯文本消息路径（含 ANSI 颜色），不渲染 markdown。
    */
   private buildAgentReplyMessage(item: { content: string; agentId: string; source: AgentMessageSource }): Message {
     const agentReplyMsg: Message = {
@@ -783,10 +784,10 @@ export class QueryEngine {
     };
 
     if (item.source === 'bash') {
-      (agentReplyMsg as any).fromBashTask = true;
+      (agentReplyMsg as any).origin = 'bash';
     } else {
       // 添加自定义标记，供 UI 层识别为子代理回复
-      (agentReplyMsg as any).fromSubAgent = true;
+      (agentReplyMsg as any).origin = 'agent';
       (agentReplyMsg as any).agentId = item.agentId;
       // 来源位置信息（用于 UI 显示 host:agent:agentId）
       (agentReplyMsg as any)._meta = { param: this.getAgentSourceInfo(item.agentId), type: 'from' };
@@ -801,8 +802,8 @@ export class QueryEngine {
   /**
    * 通知 UI 显示一条排队消息（与 messageConsumer 行为一致）。
    *
-   * 只有子代理回复才带 isFromAgent / From 头（UI 按 markdown 渲染）；
-   * 后台 Bash 通知按普通 user 消息纯文本展示。
+   * 只有子代理回复才带 origin='agent' / From 头（UI 按 markdown 渲染）；
+   * 后台 Bash 通知按普通 user 消息纯文本展示（含 ANSI 颜色）。
    */
   private notifyAgentReplyToUI(item: { content: string; agentId: string; source: AgentMessageSource }): void {
     if (item.source === 'bash') {
@@ -813,7 +814,7 @@ export class QueryEngine {
           role: 'user',
           content: item.content,
           // 后台任务通知属于系统自动消息：UI 侧与 From 消息一样不参与滚动置顶
-          fromBashTask: true,
+          origin: 'bash',
         } as MessageData,
       });
       return;
@@ -827,7 +828,7 @@ export class QueryEngine {
         role: 'user',
         content: item.content,
         param: sourceInfo,
-        isFromAgent: true,
+        origin: 'agent',
         meta: { param: sourceInfo, type: 'from' },
       } as MessageData,
     });
@@ -1127,7 +1128,7 @@ export class QueryEngine {
         this.pendingUserMsgUuid = null;
       } else {
         const matchedMsg = [...this.mutableMessages].reverse().find(m =>
-          (m as any).type === 'user' && !(m as any).fromSubAgent && !(m as any).fromBashTask
+          (m as any).type === 'user' && !isAutoMessage(m)
           && typeof (m as any).message?.content === 'string'
           && (m as any).message.content === promptStr
         );
@@ -1451,7 +1452,8 @@ export class QueryEngine {
     };
     // 标记为 silent：追加到 mutableMessages 但不通知 UI
     (reminderMsg as any).silent = true;
-    (reminderMsg as any).fromSubAgent = true;
+    // 提醒属于系统自动消息，与子代理回复同源（非用户真实输入）
+    (reminderMsg as any).origin = 'agent';
 
     this.mutableMessages.push(reminderMsg);
     return true;

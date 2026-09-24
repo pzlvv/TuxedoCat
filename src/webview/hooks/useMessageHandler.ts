@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import type { WebviewMessage, McpServerInfo, ProviderModels } from '../../core/webviewTypes';
 import type { MessageData } from '../../core/types';
 import { extractUserContent } from '../../core/utils/contentBlocks';
+import { getMessageOrigin } from '../../core/utils/messageOrigin';
 import { normalizeToolInput } from '../../core/utils/toolInput';
 import { modelRefOf, sameModelRef, type ModelRef } from '../../core/llm/modelRef';
 import type { DiffHunk } from '../../core/utils/editDiff';
@@ -96,9 +97,8 @@ function restoreMessagesFromConversation(msg: Extract<WebviewMessage, { type: 'c
       // 从 _meta 与消息顶层读取元信息。部分发送路径（如引擎已存在时的普通消息）
       // 只持久化了顶层 filePath/fileSelectedLines，未写 _meta，因此这里两者都要兼容。
       const msgMeta = (convMsg as any)._meta as Record<string, unknown> | undefined;
-      const isFromAgent = (convMsg as any).fromSubAgent === true;
-      // 后台 Bash 任务完成通知：按普通纯文本展示，但语义等同代理消息（不参与置顶）
-      const isFromBashTask = (convMsg as any).fromBashTask === true;
+      // 消息来源：agent（子代理）/ bash（后台任务通知）/ undefined（用户真实输入）
+      const origin = getMessageOrigin(convMsg);
       // 跳过 silent 消息（仅 LLM 可见，UI 不可见）
       if ((convMsg as any).silent === true) {
         continue;
@@ -126,12 +126,12 @@ function restoreMessagesFromConversation(msg: Extract<WebviewMessage, { type: 'c
           delete msgMetaClean.filePath;
           delete msgMetaClean.fileSelectedLines;
           // 非子代理的 param 只是文件展示文本；子代理 from/to 的 param 用于跳转/来源展示
-          if (!isFromAgent) {
+          if (origin !== 'agent') {
             delete msgMetaClean.param;
           }
         }
       }
-      const msgParam = isFromAgent ? (msgMeta?.param as string | undefined) : undefined;
+      const msgParam = origin === 'agent' ? (msgMeta?.param as string | undefined) : undefined;
 
       const { text: userText, images: userImages } = extractUserContent(content as string | unknown[]);
       restoredMessages.push({
@@ -142,8 +142,7 @@ function restoreMessagesFromConversation(msg: Extract<WebviewMessage, { type: 'c
         filePath: showFileInfo ? rawFilePath : undefined,
         fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
         isCompactSummary: (convMsg as any).isCompactSummary === true,
-        isFromAgent,
-        fromBashTask: isFromBashTask || undefined,
+        origin,
         meta: msgMetaClean,
         timestamp: msgTimestamp,
       });
@@ -454,8 +453,7 @@ function toUiMessage(msg: MessageData): Message {
     toolCallId: msg.toolCallId || (msg.role === 'toolcall' ? `tool-${Date.now()}-${Math.random()}` : undefined),
     isCompactSummary: msg.isCompactSummary,
     hasBorder: msg.hasBorder,
-    isFromAgent: msg.isFromAgent,
-    fromBashTask: msg.fromBashTask,
+    origin: msg.origin,
     images: msg.images,
     meta: msg.meta as Record<string, unknown> | undefined,
     timestamp: Date.now(),
@@ -731,7 +729,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
 
       switch (msg.type) {
         case 'addMessage':
-          profileLog(`[Webview] addMessage: role=${msg.role} toolName=${msg.toolName || '-'} sessionMatch=${msg.sessionId === sessionId} isFromAgent=${!!msg.isFromAgent} isCompactSummary=${!!msg.isCompactSummary} contentStart=${(msg.content || '').substring(0, 50)}`);
+          profileLog(`[Webview] addMessage: role=${msg.role} toolName=${msg.toolName || '-'} sessionMatch=${msg.sessionId === sessionId} origin=${msg.origin || 'user'} isCompactSummary=${!!msg.isCompactSummary} contentStart=${(msg.content || '').substring(0, 50)}`);
           // 排队消息被后端真正消费并显示后，清除该会话的排队状态：
           // 入队消息已进入引擎队列，会在下次 LLM 请求时被带上，
           // 不再需要等待 queryEnd 重新投递（避免重复发送）。
@@ -780,7 +778,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           } else {
             props.setMessages((prev) => {
               const next = [...prev, newMessage];
-              profileLog(`[Webview] addMessage APPEND: role=${msg.role} isFromAgent=${!!msg.isFromAgent} | msgs.length ${prev.length}->${next.length} | contentStart=${(msg.content || '').substring(0, 50)}`);
+              profileLog(`[Webview] addMessage APPEND: role=${msg.role} origin=${msg.origin || 'user'} | msgs.length ${prev.length}->${next.length} | contentStart=${(msg.content || '').substring(0, 50)}`);
               return next;
             });
           }

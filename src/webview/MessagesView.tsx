@@ -18,6 +18,7 @@ import { getPlaceholderLogoUri } from './placeholderLogo';
 import { profileLog } from './debug';
 import { t } from './i18n';
 import { StreamStatsLabel } from './StreamStatsLabel';
+import { isAutoMessageOrigin as isAutoOrigin } from '../core/utils/messageOrigin';
 
 /**
  * Pre-computed stable tool component map — created once outside the component
@@ -101,8 +102,7 @@ function areEqual(prevProps: any, nextProps: any): boolean {
   if (prev.toolCallId !== next.toolCallId) return false;
   if (prev.isCompactSummary !== next.isCompactSummary) return false;
   if (prev.hasBorder !== next.hasBorder) return false;
-  if (prev.isFromAgent !== next.isFromAgent) return false;
-  if (prev.fromBashTask !== next.fromBashTask) return false;
+  if (prev.origin !== next.origin) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
   if (prev.streamId !== next.streamId) return false;
   if (prev.outputTokens !== next.outputTokens) return false;
@@ -260,7 +260,7 @@ const UserMessage = memo(function UserMessage({
   const metaFileSelectedLines = (meta?.fileSelectedLines as { start: number; end: number } | undefined) || message.fileSelectedLines || undefined;
 
   // 判断消息类型
-  const isAgentMessage = message.isFromAgent && !!metaParam;
+  const isAgentMessage = message.origin === 'agent' && !!metaParam;
   const isFileMessage = !!metaFilePath;
   // agent 消息细分：通过 meta.type 区分
   const metaType = meta?.type as string | undefined;
@@ -337,14 +337,14 @@ const UserMessage = memo(function UserMessage({
     if (!el) return;
     // 真正的用户消息已按折叠高度 clamp → 按溢出判定；
     // 子代理 From/To 消息与后台任务通知沿用行数阈值，保持原有行为。
-    const plainUserMessage = !message.isFromAgent && !message.fromBashTask;
+    const plainUserMessage = !isAutoOrigin(message.origin);
     measureTruncation(el, setIsTruncated, plainUserMessage ? 'overflow' : 'lines');
-  }, [message.content, message.isFromAgent, message.fromBashTask, expanded]);
+  }, [message.content, message.origin, expanded]);
 
   // memo 化 ReactMarkdown：content 未变化时跳过重复解析（例如流式结束帧、
   // isStreaming/status 等字段变化触发的重渲染），只有内容或主题色变化时才重新解析。
   const userMarkdownElement = useMemo(() => {
-    if (!message.isFromAgent) return null;
+    if (message.origin !== 'agent') return null;
     return (
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
@@ -354,7 +354,7 @@ const UserMessage = memo(function UserMessage({
         {escapeNumericTildeInMarkdown(message.content)}
       </ReactMarkdown>
     );
-  }, [message.content, message.isFromAgent, userMarkdownComponents]);
+  }, [message.content, message.origin, userMarkdownComponents]);
 
   const handleToggleExpand = useCallback(() => {
     const next = !expanded;
@@ -392,8 +392,8 @@ const UserMessage = memo(function UserMessage({
   }
 
   // 真正的用户消息始终是纯色背景：亮色纯白 / 暗色纯黑（不再使用透明或灰底）；
-  // 子代理 From/To 消息（isFromAgent）与后台任务通知（fromBashTask）保持原有背景，不受影响。
-  const isPlainUserMessage = !message.isFromAgent && !message.fromBashTask;
+  // 子代理 From/To 消息（origin=agent）与后台任务通知（origin=bash）保持原有背景，不受影响。
+  const isPlainUserMessage = !isAutoOrigin(message.origin);
   const userBg = isPlainUserMessage ? (isDark ? '#000000' : '#ffffff') : (isDark ? 'transparent' : '#fafafa');
   // 折叠遮罩渐隐到消息自身背景色
   const collapsedFadeColor = isPlainUserMessage ? userBg : (isDark ? '#1e1e1e' : '#ffffff');
@@ -477,7 +477,7 @@ const UserMessage = memo(function UserMessage({
           maxHeight: contentMaxHeight,
         }}
       >
-        {message.isFromAgent ? (
+        {message.origin === 'agent' ? (
           <div className="markdown-body text-[13px] leading-snug" style={{ lineHeight: '1.4' }}>
             {userMarkdownElement}
           </div>
@@ -497,7 +497,10 @@ const UserMessage = memo(function UserMessage({
               </div>
             )}
             {message.content && (
-              <p className="whitespace-pre-wrap text-[13px] leading-relaxed" style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}>{message.content}</p>
+              <p className="whitespace-pre-wrap text-[13px] leading-relaxed" style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}>
+                {/* 后台 Bash 任务通知：还原 stdout 里的 ANSI 颜色，与 bash 工具结果保持一致 */}
+                {message.origin === 'bash' ? <AnsiText text={message.content} /> : message.content}
+              </p>
             )}
           </>
         )}
@@ -919,15 +922,14 @@ interface PinGroup {
 
 /**
  * 只有「真正的用户消息」参与滚动置顶：
- * - 子代理 From / To 消息（isFromAgent）虽然同样以 role=user 渲染，但必须保持原样；
- * - 后台 Bash 任务完成通知（fromBashTask）也是系统自动消息，等同 From 处理；
+ * - 子代理 From / To 消息（origin=agent）虽然同样以 role=user 渲染，但必须保持原样；
+ * - 后台 Bash 任务完成通知（origin=bash）也是系统自动消息，等同 From 处理；
  * - 压缩摘要是系统生成的 user 消息，同样不参与。
  */
 function isPinnableUserMessage(message: Message | undefined): message is Message {
   return !!message
     && message.role === 'user'
-    && !message.isFromAgent
-    && !message.fromBashTask
+    && !isAutoOrigin(message.origin)
     && !message.isCompactSummary;
 }
 

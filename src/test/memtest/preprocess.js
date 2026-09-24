@@ -162,8 +162,11 @@ function restoreMessages(rawMessages, toolMetaMap) {
       const content = convMsg.message?.content;
       if (Array.isArray(content) && content.some((b) => b?.type === 'tool_result')) continue;
       const msgMeta = convMsg._meta;
-      const isFromAgent = convMsg.fromSubAgent === true;
-      const isFromBashTask = convMsg.fromBashTask === true;
+      // 消息来源：兼容旧会话文件的 fromSubAgent / fromBashTask
+      const origin = convMsg.origin === 'user' || convMsg.origin === 'agent' || convMsg.origin === 'bash'
+        ? convMsg.origin
+        : (convMsg.fromSubAgent === true ? 'agent' : (convMsg.fromBashTask === true ? 'bash' : undefined));
+      const isFromAgent = origin === 'agent';
       if (convMsg.silent === true) continue;
       const rawFilePath = convMsg.filePath || msgMeta?.filePath || undefined;
       const rawFileSelectedLines = convMsg.fileSelectedLines || msgMeta?.fileSelectedLines || undefined;
@@ -190,8 +193,7 @@ function restoreMessages(rawMessages, toolMetaMap) {
         filePath: showFileInfo ? rawFilePath : undefined,
         fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
         isCompactSummary: convMsg.isCompactSummary === true,
-        isFromAgent,
-        fromBashTask: isFromBashTask || undefined,
+        origin,
         meta: msgMetaClean,
         timestamp: msgTimestamp,
       });

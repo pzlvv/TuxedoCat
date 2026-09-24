@@ -182,17 +182,29 @@ async function main(): Promise<void> {
   });
 }
 
+/** 主窗口默认宽度（无历史尺寸时使用） */
+const DEFAULT_WINDOW_WIDTH = 1280;
+/** 主窗口最小尺寸（与 BrowserWindow 的 minWidth/minHeight 保持一致） */
+const MIN_WINDOW_WIDTH = 800;
+const MIN_WINDOW_HEIGHT = 600;
+
 function createMainWindow(): void {
   // 防止 second-instance / activate 与启动流程并发创建出多个主窗口
   if (mainWindow && !mainWindow.isDestroyed()) return;
-  // 默认高度取主屏工作区（已排除任务栏/Dock）的 80%，不写死：
-  // 大屏不会过高、小屏也不会超出可视区域。宽度保持固定默认值。
-  const { height: workAreaHeight } = screen.getPrimaryDisplay().workAreaSize;
+  // 尺寸优先用上次退出时保存的值（存在 workspace-state.json，只存宽高）；
+  // 没有记录时才用默认值：高度取主屏工作区（已排除任务栏/Dock）的 80%，
+  // 不写死，大屏不会过高、小屏也不会超出可视区域。宽度保持固定默认值。
+  const { width: workAreaWidth, height: workAreaHeight } = screen.getPrimaryDisplay().workAreaSize;
+  const savedSize = readSavedWindowSize();
+  const targetWidth = savedSize ? savedSize.width : DEFAULT_WINDOW_WIDTH;
+  const targetHeight = savedSize ? savedSize.height : Math.round(workAreaHeight * 0.8);
+  // 夹在工作区范围内，避免换到更小的屏幕后窗口超出可视区域。
+  // 不传 x/y：Electron 默认把窗口居中，位置不持久化。
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: Math.round(workAreaHeight * 0.8),
-    minWidth: 800,
-    minHeight: 600,
+    width: Math.max(MIN_WINDOW_WIDTH, Math.min(targetWidth, workAreaWidth)),
+    height: Math.max(MIN_WINDOW_HEIGHT, Math.min(targetHeight, workAreaHeight)),
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     title: PRODUCT_NAME,
     icon: path.join(APP_ROOT, 'assets', 'logo.png'),
     backgroundColor: '#16161b',
@@ -219,6 +231,30 @@ function createMainWindow(): void {
   });
   mainWindow.on('hide', () => {
     wakeToggleActive = false;
+  });
+
+  // ── 窗口大小持久化 ──
+  // 只保存宽高（位置不持久化，启动时仍由 Electron 居中）。
+  // resize 在拖拽过程中会高频触发，防抖到停止调整后再写盘；close 时补一次，
+  // 避免最后一次调整因防抖未触发而丢失。
+  const win = mainWindow;
+  let sizeSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  const persistWindowSize = (): void => {
+    if (win.isDestroyed() || win.isMinimized()) return;
+    // 最大化/全屏时用 normal bounds，保存的是还原后的尺寸，而不是铺满屏幕的尺寸
+    const { width, height } = win.getNormalBounds();
+    saveWindowSize(width, height);
+  };
+  win.on('resize', () => {
+    if (sizeSaveTimer) clearTimeout(sizeSaveTimer);
+    sizeSaveTimer = setTimeout(persistWindowSize, 2000);
+  });
+  win.on('close', () => {
+    if (sizeSaveTimer) {
+      clearTimeout(sizeSaveTimer);
+      sizeSaveTimer = undefined;
+    }
+    persistWindowSize();
   });
 
   // ── 左侧原生侧栏 ──
@@ -1026,30 +1062,50 @@ function broadcastWorkspace(): void {
  * 工作区状态文件。
  * 位于 Electron userData 目录（Windows 下即 %APPDATA%\<PRODUCT_NAME>\），
  * 用于记录最近一次打开的工作目录与最近打开的工作目录列表（最多 10 个），
- * 其中 lastWorkspace 供下次启动默认打开，recentWorkspaces 供菜单展示。
+ * 其中 lastWorkspace 供下次启动默认打开，recentWorkspaces 供菜单展示；
+ * windowSize 记录上次主窗口大小（只存宽高，位置不持久化）。
  * 文件格式：
  * {
  *   "lastWorkspace": "C:\\path\\to\\ws",
- *   "recentWorkspaces": ["C:\\path\\to\\ws2", "C:\\path\\to\\ws", ...]
+ *   "recentWorkspaces": ["C:\\path\\to\\ws2", "C:\\path\\to\\ws", ...],
+ *   "windowSize": { "width": 1280, "height": 860 }
  * }
  */
 const MAX_RECENT_WORKSPACES = 10;
+
+interface WorkspaceState {
+  lastWorkspace?: string;
+  recentWorkspaces?: string[];
+  /** 上次主窗口大小；只存宽高，位置始终由 Electron 居中 */
+  windowSize?: { width?: number; height?: number };
+}
 
 function getWorkspaceStateFile(): string {
   return path.join(app.getPath('userData'), 'workspace-state.json');
 }
 
 /** 读取工作区状态文件（损坏/不存在时返回空对象） */
-function readWorkspaceState(): { lastWorkspace?: string; recentWorkspaces?: string[] } {
+function readWorkspaceState(): WorkspaceState {
   try {
     const file = getWorkspaceStateFile();
     if (!fs.existsSync(file)) return {};
     const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
     if (!data || typeof data !== 'object') return {};
-    return data as { lastWorkspace?: string; recentWorkspaces?: string[] };
+    return data as WorkspaceState;
   } catch {
     // 读取失败时忽略，回到未选择工作区状态
     return {};
+  }
+}
+
+/** 写回完整状态（调用方负责先 read 再合并，避免覆盖其它字段） */
+function writeWorkspaceState(state: WorkspaceState): void {
+  try {
+    const dir = app.getPath('userData');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(getWorkspaceStateFile(), JSON.stringify(state, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('[main] Failed to write workspace state:', err);
   }
 }
 
@@ -1083,18 +1139,37 @@ function readRecentWorkspaces(): string[] {
 
 /** 保存最近使用的工作区：更新 lastWorkspace，并把该目录置顶写入最近列表（去重、最多 10 个） */
 function saveLastWorkspace(p: string): void {
-  try {
-    const dir = app.getPath('userData');
-    fs.mkdirSync(dir, { recursive: true });
-    const prev = readWorkspaceState();
-    const prevRecents = Array.isArray(prev.recentWorkspaces) ? prev.recentWorkspaces : [];
-    const recentWorkspaces = [p, ...prevRecents.filter((ws) => ws !== p)]
-      .filter((ws): ws is string => typeof ws === 'string' && ws.trim().length > 0)
-      .slice(0, MAX_RECENT_WORKSPACES);
-    fs.writeFileSync(getWorkspaceStateFile(), JSON.stringify({ lastWorkspace: p, recentWorkspaces }, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('[main] Failed to save last workspace:', err);
-  }
+  const prev = readWorkspaceState();
+  const prevRecents = Array.isArray(prev.recentWorkspaces) ? prev.recentWorkspaces : [];
+  const recentWorkspaces = [p, ...prevRecents.filter((ws) => ws !== p)]
+    .filter((ws): ws is string => typeof ws === 'string' && ws.trim().length > 0)
+    .slice(0, MAX_RECENT_WORKSPACES);
+  // 保留 windowSize，避免切换工作区时把已保存的窗口尺寸抹掉
+  writeWorkspaceState({ ...prev, lastWorkspace: p, recentWorkspaces });
+}
+
+/**
+ * 读取上次保存的主窗口大小（仅宽高）。
+ * 非法/缺失/小于最小尺寸时返回 undefined，由调用方回退到默认值。
+ */
+function readSavedWindowSize(): { width: number; height: number } | undefined {
+  const { windowSize } = readWorkspaceState();
+  if (!windowSize || typeof windowSize !== 'object') return undefined;
+  const width = Math.round(Number(windowSize.width));
+  const height = Math.round(Number(windowSize.height));
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return undefined;
+  if (width < MIN_WINDOW_WIDTH || height < MIN_WINDOW_HEIGHT) return undefined;
+  return { width, height };
+}
+
+/** 保存主窗口大小（只存宽高；位置不落盘，启动时始终居中） */
+function saveWindowSize(width: number, height: number): void {
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+  const prev = readWorkspaceState();
+  writeWorkspaceState({
+    ...prev,
+    windowSize: { width: Math.round(width), height: Math.round(height) },
+  });
 }
 
 /**

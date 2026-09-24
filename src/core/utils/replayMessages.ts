@@ -3,6 +3,7 @@ import type { CoreEvent } from '../AssistantEventBus.js';
 import { requireEventBus } from '../AssistantEventBus.js';
 import { extractUserContent } from './contentBlocks.js';
 import { buildEditDiffHunks } from './editDiff.js';
+import { getMessageOrigin } from './messageOrigin.js';
 
 /** core → UI 单向事件的发送侧封装（replayMessages 统一走它） */
 function emitToUi(event: CoreEvent): void {
@@ -39,7 +40,8 @@ export function buildReplayMessageData(messages: readonly Message[]): MessageDat
   const toolResultMap = buildToolResultMap(messages);
 
   for (const msg of messages) {
-    const meta = msg as Message & { isMeta?: boolean; silent?: boolean; subtype?: string; filePath?: string; fileSelectedLines?: { start: number; end: number }; fileHidden?: boolean; isCompactSummary?: boolean; fromSubAgent?: boolean; fromBashTask?: boolean; _meta?: Record<string, unknown> };
+    const meta = msg as Message & { isMeta?: boolean; silent?: boolean; subtype?: string; filePath?: string; fileSelectedLines?: { start: number; end: number }; fileHidden?: boolean; isCompactSummary?: boolean; _meta?: Record<string, unknown> };
+    const origin = getMessageOrigin(meta);
     if (meta.isMeta || meta.silent) continue;
 
     if (msg.type === 'system') {
@@ -70,7 +72,7 @@ export function buildReplayMessageData(messages: readonly Message[]): MessageDat
           delete replayMeta.filePath;
           delete replayMeta.fileSelectedLines;
           // 子代理 from/to 的 param 仍用于跳转/来源展示
-          if (!meta.fromSubAgent) {
+          if (origin !== 'agent') {
             delete replayMeta.param;
           }
         }
@@ -83,9 +85,8 @@ export function buildReplayMessageData(messages: readonly Message[]): MessageDat
         filePath: showFileInfo ? rawFilePath : undefined,
         fileSelectedLines: showFileInfo ? rawFileSelectedLines : undefined,
         isCompactSummary: meta.isCompactSummary === true,
-        isFromAgent: meta.fromSubAgent === true,
-        // 后台任务通知：与 From 消息一样属于系统自动消息（不参与滚动置顶）
-        fromBashTask: meta.fromBashTask === true,
+        // 消息来源：agent（子代理）/ bash（后台任务通知）；用户消息为 undefined
+        origin,
         meta: replayMeta,
       } as MessageData);
       continue;
