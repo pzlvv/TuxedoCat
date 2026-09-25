@@ -7,10 +7,9 @@
  * 第 2 条是「新增注入点忘了接线」的静态守卫：core 新增一个 set*Provider 却
  * 没在 bootstrapCore.ts 里接线时，本测试失败。
  *
- * 运行方式：tsc -p tsconfig.test.json && node out/src/test/bootstrapWiring.test.js
+ * 运行方式：npm run test:all -- bootstrap-wiring
  */
 
-import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { bootstrapCore, bootstrapSnapshot } from '../host/bootstrapCore';
@@ -22,39 +21,11 @@ import {
 import { requireSessionWaitingForUserProvider } from '../core/sessionResources';
 import { sessionQueue } from '../core/SessionQueue';
 import { ConversationManager } from '../host/ConversationManager';
-import type { UIHost } from '../host/UIHost';
 import type { SpinDesign } from '../host/SpinDesign';
 import type { ConversationMetadata } from '../core/history/Conversation';
 import type { SessionRuntimeState } from '../core/AssistantEventBus';
-
-/** 最小 UIHost 桩：骨架只读取它并把它注入 WebViewUI，不发任何消息 */
-function createStubHost(): UIHost {
-  return {
-    sendToWebview: () => undefined,
-    broadcastToWebviews: () => undefined,
-    sendToWebviewView: () => undefined,
-    onThemeChanged: () => undefined,
-    log: () => undefined,
-    getWorkspacePath: () => undefined,
-    onDidChangeWorkspace: (listener) => {
-      // 契约：订阅时立即回调一次当前值
-      listener(undefined);
-      return () => undefined;
-    },
-    isDarkTheme: () => false,
-    getLocale: () => 'en',
-    openFile: async () => undefined,
-    showVirtualDocument: async () => undefined,
-    showDiff: async () => undefined,
-    openMermaidPreview: async () => undefined,
-    closePreview: () => undefined,
-    openExternalUrl: async () => undefined,
-    saveTextFile: async () => ({ success: false, canceled: true }),
-    closeConversationView: async () => undefined,
-    updateSettingsJson: async () => undefined,
-    ensureProjectSettings: async () => undefined,
-  };
-}
+import { createChecker, runTests } from './helpers/harness';
+import { createTestHost } from './helpers/fixtures';
 
 class StubConversationManager extends ConversationManager {
   protected async dispatchList(_list: readonly ConversationMetadata[]): Promise<void> {
@@ -99,15 +70,10 @@ function collectCoreSources(dir: string): string[] {
 }
 
 function run(): void {
-  let passed = 0;
-  let failed = 0;
-  const check = (name: string, cond: boolean): void => {
-    if (cond) { passed++; console.log(`ok   ${name}`); }
-    else { failed++; console.log(`FAIL ${name}`); }
-  };
+  const { check, finish } = createChecker();
 
   // ── 1. 执行共享骨架并校验自检快照 ──
-  const host = createStubHost();
+  const host = createTestHost();
   const conversations = new StubConversationManager(host);
   bootstrapCore(host, stubSpinDesign, conversations, {
     locale: 'zh-CN',
@@ -157,8 +123,7 @@ function run(): void {
     check(`${name} 已在 bootstrapCore.ts 登记`, bootstrapSource.includes(name));
   }
 
-  console.log(`\n${passed} passed, ${failed} failed`);
-  assert.strictEqual(failed, 0, `${failed} bootstrap wiring check(s) failed`);
+  finish();
 }
 
-run();
+runTests('bootstrapWiring', run);

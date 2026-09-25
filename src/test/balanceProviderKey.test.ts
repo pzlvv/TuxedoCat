@@ -2,9 +2,7 @@
  * 余额查询的 provider / Key 解析单元测试（core/llm/config.ts 的 getDeepSeekProviderApiKey
  * 与 core/utils/balance.ts 的 fetchBalance 跳过逻辑）。
  *
- * 运行方式（两种都支持）：
- *   1. 独立运行：`npx tsc -p tsconfig.test.json && node out/src/test/balanceProviderKey.test.js`
- *   2. 在 vscode-test 的 mocha 环境下自动注册为测试用例。
+ * 运行方式：npm run test:all -- balance-provider-key
  *
  * 背景：余额接口只有 DeepSeek 官方提供（https://api.deepseek.com/user/balance）。
  * 旧实现用 getConfig() 取 **active provider** 的 apiKey，而 active provider 常常是
@@ -17,14 +15,15 @@
  */
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
+import { makeTempDir } from './helpers/fixtures';
+import { runCases } from './helpers/harness';
 
 const CONFIG_DIR = '.tuxedo-cat';
 
 /** 在临时 HOME 下写 settings.json 并返回该 HOME 路径 */
 function makeTempHome(settings: unknown): string {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-balance-'));
+  const home = makeTempDir('balance');
   if (settings !== undefined) {
     const dir = path.join(home, CONFIG_DIR);
     fs.mkdirSync(dir, { recursive: true });
@@ -54,7 +53,6 @@ async function withHome<T>(
     else process.env.USERPROFILE = prevProfile;
     if (prevHome === undefined) delete process.env.HOME;
     else process.env.HOME = prevHome;
-    fs.rmSync(home, { recursive: true, force: true });
   }
 }
 
@@ -223,33 +221,4 @@ const CASES: Case[] = [
   },
 ];
 
-// mocha 环境（vscode-test）下注册为测试用例；否则独立运行并返回退出码。
-if (typeof (globalThis as { suite?: unknown }).suite === 'function') {
-  const g = globalThis as unknown as {
-    suite: (name: string, fn: () => void) => void;
-    test: (name: string, fn: () => void | Promise<void>) => void;
-  };
-  g.suite('balanceProviderKey', () => {
-    for (const c of CASES) {
-      g.test(c.name, async () => {
-        await c.run();
-      });
-    }
-  });
-} else {
-  void (async () => {
-    let failed = 0;
-    for (const c of CASES) {
-      try {
-        await c.run();
-        console.log(`ok   ${c.name}`);
-      } catch (err) {
-        failed++;
-        console.log(`FAIL ${c.name}`);
-        console.log(String((err as Error).message).split('\n').map((l) => `     ${l}`).join('\n'));
-      }
-    }
-    console.log(failed === 0 ? `\n全部通过（${CASES.length} 个用例）` : `\n${failed}/${CASES.length} 个用例失败`);
-    process.exit(failed === 0 ? 0 : 1);
-  })();
-}
+runCases('balanceProviderKey', CASES);

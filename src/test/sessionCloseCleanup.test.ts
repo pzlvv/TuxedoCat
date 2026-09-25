@@ -5,20 +5,11 @@
  * - `sessionResources.releaseSessionResources`（`conversationClosed` 消费方）
  * - `history.deleteConversation`（`conversationDeleted` 消费方）
  *
- * 运行方式：tsc -p tsconfig.test.json && node out/src/test/sessionCloseCleanup.test.js
+ * 运行方式：npm run test:all -- session-close-cleanup
  */
 
 import * as assert from 'assert';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { createEventBus } from '../host/EventBus';
-import {
-  setGlobalEventBus,
-  resetGlobalEventBus,
-  type CoreEventHandlers,
-  type SessionRuntimeState,
-} from '../core/AssistantEventBus';
+import { setGlobalEventBus, resetGlobalEventBus } from '../core/AssistantEventBus';
 import {
   markQueryRunning,
   getSessionRuntimeStates,
@@ -26,57 +17,17 @@ import {
 } from '../core/sessionRuntime';
 import { releaseSessionResources } from '../core/sessionResources';
 import { setProjectRootProvider } from '../core/history/index';
-
-function buildBus(): ReturnType<typeof createEventBus> {
-  const bus = createEventBus();
-  const noop = (): void => undefined;
-  const handlers: CoreEventHandlers = {
-    message: noop,
-    streamMessage: noop,
-    streamEnd: noop,
-    toolCall: noop,
-    toolResult: noop,
-    toolArgsUpdated: noop,
-    toolProgress: noop,
-    aiBegin: noop,
-    aiEnd: noop,
-    messagesReplaced: noop,
-    queryBegin: noop,
-    queryEnd: noop,
-    titleChanged: noop,
-    sessionCreated: noop,
-    conversationListChanged: noop,
-    sessionRuntimeChanged: (_e: { states: readonly SessionRuntimeState[] }) => undefined,
-    spinDesignDataChanged: noop,
-    highlightLanguagesUsed: noop,
-    projectConversationDirReady: noop,
-    compactBegin: noop,
-    compactEnd: noop,
-    commandDispatched: noop,
-    sessionConfigChanged: noop,
-  };
-  bus.onCoreEvents(handlers);
-  bus.onCoreRequests({
-    toolPermissionRequested: async () => ({ behavior: 'allow' }),
-    userChoice: async () => ({ index: 0 }),
-  });
-  return bus;
-}
+import { createChecker, runTests } from './helpers/harness';
+import { makeTempDir, makeTestBus } from './helpers/fixtures';
 
 async function run(): Promise<void> {
-  let passed = 0;
-  let failed = 0;
-  const check = (name: string, cond: boolean): void => {
-    if (cond) { passed++; console.log(`ok   ${name}`); }
-    else { failed++; console.log(`FAIL ${name}`); }
-  };
+  const { check, finish } = createChecker();
 
   // 需要一个可写的工作区，deleteConversation 会读写项目对话目录
-  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-session-cleanup-'));
+  const projectRoot = makeTempDir('session-cleanup');
   setProjectRootProvider(() => projectRoot);
 
-  const bus = buildBus();
-  setGlobalEventBus(bus);
+  setGlobalEventBus(makeTestBus().bus);
   resetSessionRuntime();
 
   // releaseSessionResources：conversationClosed 的消费方
@@ -104,10 +55,8 @@ async function run(): Promise<void> {
 
   resetSessionRuntime();
   resetGlobalEventBus();
-  fs.rmSync(projectRoot, { recursive: true, force: true });
 
-  console.log(`\n${failed === 0 ? '全部通过' : '存在失败'}（${passed} 通过 / ${failed} 失败）`);
-  if (failed > 0) process.exitCode = 1;
+  finish();
 }
 
-void run();
+runTests('sessionCloseCleanup', run);

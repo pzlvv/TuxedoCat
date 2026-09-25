@@ -9,7 +9,7 @@
  * 宿主差异（app / 插件）统一由 __hostInfo 能力声明驱动，webview 不做宿主嗅探。
  */
 
-import { openConversationModeOf, type HostInfo } from '../host/types';
+import { hostInfoForViewMode, openConversationModeOf, type HostInfo } from '../host/types';
 
 /**
  * 宿主消息通道的最小契约：VS Code 的 `acquireVsCodeApi()` 与 Electron preload 暴露的
@@ -23,6 +23,16 @@ let _hostMessageApi: HostMessageApi | null = null;
 let _logoUri: string | null = null;
 let _hasWorkspace: boolean | undefined;
 let _hostInfo: HostInfo | null = null;
+/**
+ * 运行期视图模式。宿主注入的 `__hostInfo.conversationList` 只是启动时的初始值；
+ * Electron 悬浮窗模式会隐藏原生侧栏，此时列表改由 webview 顶栏渲染（单视图），
+ * 宿主通过 `setConversationListMode` 消息在运行期切换（见 App.tsx 的订阅）。
+ */
+let _viewMode: HostInfo['conversationList'] | null = null;
+const _viewModeListeners = new Set<(mode: HostInfo['conversationList']) => void>();
+/** getEffectiveHostInfo 的派生缓存（按模式失效），保证同模式下引用稳定 */
+let _effectiveHostInfo: HostInfo | null = null;
+let _effectiveHostInfoMode: HostInfo['conversationList'] | null = null;
 
 /**
  * 解析宿主消息通道。
@@ -87,6 +97,52 @@ export function getHostInfo(): HostInfo {
   }
   _hostInfo = injected as HostInfo;
   return _hostInfo;
+}
+
+/** 当前视图模式（未收到过运行期切换时即宿主注入的初始值） */
+export function getViewMode(): HostInfo['conversationList'] {
+  if (_viewMode) return _viewMode;
+  _viewMode = getHostInfo().conversationList;
+  return _viewMode;
+}
+
+/**
+ * 按当前视图模式推导的宿主能力：UI 渲染与「打开会话」行为都读它，不直接读 getHostInfo()。
+ *
+ * 派生结果按模式缓存：同一个模式下多次调用返回**同一个对象引用**，否则
+ * `hostInfoForViewMode` 在「注入模式 ≠ 当前模式」时每次都会新建对象，
+ * 放进 useMemo/useCallback 依赖里会造成无谓重建。
+ */
+export function getEffectiveHostInfo(): HostInfo {
+  const mode = getViewMode();
+  if (!_effectiveHostInfo || _effectiveHostInfoMode !== mode) {
+    _effectiveHostInfo = hostInfoForViewMode(getHostInfo(), mode);
+    _effectiveHostInfoMode = mode;
+  }
+  return _effectiveHostInfo;
+}
+
+/**
+ * 运行期切换视图模式（宿主消息 `setConversationListMode` 驱动）。
+ * 模式未变化时不通知，避免无意义的重渲染。
+ */
+export function setViewMode(mode: HostInfo['conversationList']): void {
+  if (getViewMode() === mode) return;
+  _viewMode = mode;
+  // 隔离单个订阅者的异常：否则一个组件抛错会中断其余订阅者的重渲染
+  for (const listener of _viewModeListeners) {
+    try {
+      listener(mode);
+    } catch (err) {
+      console.error('[webviewEnv] view mode listener failed:', err);
+    }
+  }
+}
+
+/** 订阅视图模式变化，返回取消订阅函数（供 React 组件在 useEffect 中调用） */
+export function onViewModeChanged(listener: (mode: HostInfo['conversationList']) => void): () => void {
+  _viewModeListeners.add(listener);
+  return () => { _viewModeListeners.delete(listener); };
 }
 
 export function getLogoUri(): string {
@@ -158,15 +214,20 @@ export function postMessage(msg: unknown): boolean {
 }
 
 /**
- * 加载/跳转到指定会话（子代理链接、From 链接、返回父会话等）。
+ * 会话跳转的**底层原语**：只负责按视图模式把跳转消息发给宿主。
  *
  * 打开方式由视图模式推导（见 src/host/types.ts 的 openConversationModeOf）：
  *   - 单视图（VS Code 插件）：当前 webview 内重新加载对话（loadConversation）
  *   - 多视图（Electron App）：新起一个 webview 加载对话（openConversation，由主进程创建/切换聊天视图）
+ *
+ * 架构约束：**UI 层的会话跳转入口有且只有 `App.tsx` 的 `navigateToSession`**。
+ * 它负责切换前的固定动作（草稿暂存、loading 状态、清空消息等），再委托到这里。
+ * 子代理链接 / From 链接 / 返回父会话等任何入口都不得直接调用本函数——否则会绕过
+ * loading，出现「有的跳转显示加载、有的不显示」的双路径不一致。
  */
 export function navigateToConversation(sessionId: string): boolean {
   return postMessage({
-    type: openConversationModeOf(getHostInfo()),
+    type: openConversationModeOf(getEffectiveHostInfo()),
     sessionId,
   });
 }

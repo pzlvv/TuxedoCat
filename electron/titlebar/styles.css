@@ -1,0 +1,250 @@
+/* 自绘标题栏样式：与侧栏 / 聊天视图同一套深色配色（#16161b / #26262c / #6366f1） */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  background: #16161b;
+  color: #c1c1c6;
+  user-select: none;
+}
+
+/* ── 标题栏主体：整条可拖拽 ── */
+.titlebar {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  background: #16161b;
+  border-bottom: 1px solid #26262c;
+  -webkit-app-region: drag;
+}
+
+/* 品牌区 */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px 0 12px;
+  /* 可收缩：浮窗模式这里显示工作目录，长路径要能省略号收住而不是挤掉右侧按钮 */
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.brand-logo {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+.brand-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #d4d4d8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 浮窗可以缩到 280px：品牌区 + 5 个按钮已接近这个宽度，
+   窄到放不下时先让出品牌名，保证最右侧关闭按钮不被裁掉 */
+@media (max-width: 320px) {
+  .brand-name {
+    display: none;
+  }
+  .brand {
+    padding: 0 6px 0 10px;
+  }
+}
+
+/* ── 通用图标按钮（模式切换 / 置顶钉） ── */
+.tb-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #c1c1c6;
+  height: 100%;
+  margin: 0;
+  border-radius: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.tb-btn:active:not(:disabled) {
+  background: #32323a;
+}
+.tb-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.tb-btn:hover:not(:disabled) {
+  background: #26262c;
+  color: #ffffff;
+}
+.tb-btn:disabled {
+  opacity: 0.35;
+}
+/* 置顶钉：钉住时用强调色 + 实心图标 */
+.pin-btn svg {
+  fill: none;
+}
+.pin-btn.active {
+  color: #8b8cf8;
+  background: rgba(99, 102, 241, 0.16);
+}
+.pin-btn.active svg {
+  fill: currentColor;
+  fill-opacity: 0.25;
+}
+/* 置顶钉与模式切换紧邻窗口按钮，统一用窗口按钮的几何（全高、直角、同宽） */
+.pin-btn,
+.mode-toggle {
+  width: 46px;
+}
+
+/* ── 菜单栏 ── */
+.menubar {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  height: 100%;
+  padding-left: 4px;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+.menu-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #c1c1c6;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 5px;
+  cursor: default;
+  white-space: nowrap;
+}
+.menu-btn:hover {
+  background: #26262c;
+  color: #e4e4e7;
+}
+.menu-btn.open {
+  background: #2f2f37;
+  color: #ffffff;
+}
+
+.titlebar-spacer {
+  flex: 1 1 auto;
+  height: 100%;
+}
+
+/* ── 窗口控制按钮 ── */
+.window-controls {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+.wc {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #c1c1c6;
+  width: 46px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.wc svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+}
+.wc:hover {
+  background: #26262c;
+  color: #ffffff;
+}
+.wc:active {
+  background: #32323a;
+}
+.wc-close:hover {
+  background: #e81123;
+  color: #ffffff;
+}
+.wc-close:active {
+  background: #c50f1f;
+  color: #ffffff;
+}
+
+/* 最大化状态：切换「最大化 / 还原」两个图标 */
+.wc .icon-restore {
+  display: none;
+}
+body.maximized .wc .icon-max {
+  display: none;
+}
+body.maximized .wc .icon-restore {
+  display: block;
+}
+
+/* ── 悬浮窗模式：只保留切换按钮 / 品牌 / 置顶钉 / 窗口按钮 ── */
+body.mode-floating .menubar {
+  display: none;
+}
+/* 窄窗下窗口按钮与紧邻的两个图标按钮一起收窄 */
+body.mode-floating .wc,
+body.mode-floating .pin-btn,
+body.mode-floating .mode-toggle {
+  width: 36px;
+}
+.pin-btn {
+  display: none;
+}
+body.mode-floating .pin-btn {
+  display: flex;
+}
+/* 切换按钮图标随模式互换 */
+.mode-toggle .icon-expand {
+  display: none;
+}
+body.mode-floating .mode-toggle .icon-compact {
+  display: none;
+}
+body.mode-floating .mode-toggle .icon-expand {
+  display: block;
+}
+
+/* ── macOS：保留系统红绿灯，隐藏自绘窗口按钮与菜单栏 ── */
+body.platform-darwin .window-controls,
+body.platform-darwin .menubar {
+  display: none;
+}
+/* 左侧留出系统红绿灯的位置，自绘内容整体右移 */
+body.platform-darwin .titlebar {
+  padding-left: 72px;
+}

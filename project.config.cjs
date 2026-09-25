@@ -27,10 +27,13 @@ module.exports = {
   webviewOut: resolve(project.build.webviewOut),
   monacoOut: resolve(project.build.monacoOut),
   sidebarOut: resolve(project.build.sidebarOut),
+  titlebarOut: resolve(project.build.titlebarOut),
   electronMainOut: resolve(project.build.electronMainOut),
   electronPreloadOut: resolve(project.build.electronPreloadOut),
   electronSpinPreloadOut: resolve(project.build.electronSpinPreloadOut),
   electronMonacoPreloadOut: resolve(project.build.electronMonacoPreloadOut),
   electronSidebarPreloadOut: resolve(project.build.electronSidebarPreloadOut),
   electronShortcutPreloadOut: resolve(project.build.electronShortcutPreloadOut),
+  electronTitlebarPreloadOut: resolve(project.build.electronTitlebarPreloadOut),
+  electronTitlebarMenuPreloadOut: resolve(project.build.electronTitlebarMenuPreloadOut),
 };

@@ -1,9 +1,7 @@
 /**
  * 流式请求看门狗单元测试（core/llm/streamTimeout.ts）。
  *
- * 运行方式（两种都支持）：
- *   1. 独立运行：`npx tsc -p tsconfig.test.json && node out/src/test/streamTimeout.test.js`
- *   2. 在 vscode-test 的 mocha 环境下自动注册为测试用例。
+ * 运行方式：npm run test:all -- stream-timeout
  *
  * 背景：网关「接受连接后静默不响应」或「持续发 ping 心跳挂住连接」时，
  * undici 的 headersTimeout/bodyTimeout 会被不断到达的心跳重置，请求永远挂着
@@ -12,6 +10,7 @@
  */
 import * as assert from 'assert';
 import { createStreamWatchdog, isProgressEvent } from '../core/llm/streamTimeout';
+import { runCases } from './helpers/harness';
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -133,33 +132,4 @@ const CASES: Case[] = [
   },
 ];
 
-// mocha 环境（vscode-test）下注册为测试用例；否则独立运行并返回退出码。
-if (typeof (globalThis as { suite?: unknown }).suite === 'function') {
-  const g = globalThis as unknown as {
-    suite: (name: string, fn: () => void) => void;
-    test: (name: string, fn: () => void | Promise<void>) => void;
-  };
-  g.suite('streamTimeout', () => {
-    for (const c of CASES) {
-      g.test(c.name, async () => {
-        await c.run();
-      });
-    }
-  });
-} else {
-  void (async () => {
-    let failed = 0;
-    for (const c of CASES) {
-      try {
-        await c.run();
-        console.log(`ok   ${c.name}`);
-      } catch (err) {
-        failed++;
-        console.log(`FAIL ${c.name}`);
-        console.log(String((err as Error).message).split('\n').map((l) => `     ${l}`).join('\n'));
-      }
-    }
-    console.log(failed === 0 ? `\n全部通过（${CASES.length} 个用例）` : `\n${failed}/${CASES.length} 个用例失败`);
-    process.exit(failed === 0 ? 0 : 1);
-  })();
-}
+runCases('streamTimeout', CASES);

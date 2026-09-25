@@ -13,14 +13,13 @@
  *       可能是**整份文件内容**）
  *   这些字段一个字节都不会发给 LLM，却占了该会话 8.6MB 中的绝大部分。
  *
- * 运行方式（两种都支持）：
- *   1. 独立运行：`npm run test:context-token-estimate`
- *   2. 在 vscode-test 的 mocha 环境下自动注册为测试用例。
+ * 运行方式：npm run test:all -- context-token-estimate
  */
 
 import * as assert from 'assert';
 import { buildRawApiMessages } from '../core/Query';
 import { estimateRequestTokens, estimateTextTokens } from '../core/utils/tokenEstimate';
+import { runCases } from './helpers/harness';
 
 /** 构造一条「Edit 工具结果」user 消息：content 很短，diff 展示字段极大。 */
 function editToolResultMessage(toolUseId: string, fileBody: string): any {
@@ -153,27 +152,4 @@ const CASES: Array<[string, () => void]> = [
   ['buildRawApiMessages 保留非数组 content 语义', checkPreservesNonArrayContent],
 ];
 
-// mocha 环境（vscode-test）下注册为测试用例；否则独立运行并返回退出码。
-if (typeof (globalThis as { suite?: unknown }).suite === 'function') {
-  const g = globalThis as unknown as {
-    suite: (name: string, fn: () => void) => void;
-    test: (name: string, fn: () => void) => void;
-  };
-  g.suite('contextTokenEstimate', () => {
-    for (const [name, fn] of CASES) g.test(name, fn);
-  });
-} else {
-  let failed = 0;
-  for (const [name, fn] of CASES) {
-    try {
-      fn();
-      console.log(`ok   ${name}`);
-    } catch (err) {
-      failed++;
-      console.log(`FAIL ${name}`);
-      console.log(String((err as Error).message).split('\n').map((l) => `     ${l}`).join('\n'));
-    }
-  }
-  console.log(failed === 0 ? `\n全部通过（${CASES.length} 个用例）` : `\n${failed}/${CASES.length} 个用例失败`);
-  process.exit(failed === 0 ? 0 : 1);
-}
+runCases('contextTokenEstimate', CASES.map(([name, run]) => ({ name, run })));

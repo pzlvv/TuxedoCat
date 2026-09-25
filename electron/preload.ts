@@ -9,7 +9,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
-import { ELECTRON_HOST_INFO } from '../src/host/types.js';
+import { ELECTRON_HOST_INFO, hostInfoForViewMode } from '../src/host/types.js';
 
 // 收集启动参数（由 main 在创建窗口前通过 additionalArguments 传入）
 const getStartArg = (key: string): string | undefined => {
@@ -27,6 +27,8 @@ const sessionId = getStartArg('session') || '';
 // 不申请主题/模型等），等被切到前台时由宿主发 activatePrewarmedView 触发。
 // 详见 electron/ChatViewManager.ts 的 spareKey。
 const prewarm = getStartArg('prewarm') === '1';
+// 视图模式：悬浮窗（单视图）为 single，完整模式（原生侧栏）为 multi
+const viewMode = getStartArg('viewMode') || 'multi';
 // Shiki 语法高亮按需加载：上次使用过的语言列表（逗号分隔），webview 启动后后台预热
 const highlightLanguages = (getStartArg('highlightLanguages') || '')
   .split(',')
@@ -60,8 +62,13 @@ contextBridge.exposeInMainWorld('logoUri', './logo1.png');
 contextBridge.exposeInMainWorld('__sessionId', sessionId);
 // 是否为后台预热视图（见 ChatViewManager.spareKey）：webview 据此跳过启动初始化
 contextBridge.exposeInMainWorld('__prewarm', prewarm);
-// 宿主能力声明：对话列表/新建对话由原生侧栏接管，支持关闭 webview，打开会话走 openConversation
-contextBridge.exposeInMainWorld('__hostInfo', ELECTRON_HOST_INFO);
+// 宿主能力声明：对话列表/新建对话由原生侧栏接管，支持关闭 webview，打开会话走 openConversation。
+// 悬浮窗（单视图）模式下侧栏被隐藏，能力声明随之推导为 single：列表移到 webview 顶栏、
+// 隐藏关闭按钮、新建入口也在顶栏（运行期切换由 setConversationListMode 消息补齐）。
+contextBridge.exposeInMainWorld(
+  '__hostInfo',
+  hostInfoForViewMode(ELECTRON_HOST_INFO, viewMode === 'single' ? 'single' : 'multi'),
+);
 
 // main -> webview 消息桥接：ipcRenderer 事件转发为 window message 事件
 // 注意：必须在页面脚本执行前注册，webview 挂载时立即监听 window message

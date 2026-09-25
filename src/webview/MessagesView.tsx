@@ -13,7 +13,7 @@ import { AnsiText, hasAnsi } from './ansi';
 import { PersistedOutputBox, isPersistedOutput } from './tools/persistedOutput';
 import * as ToolComponents from './tools';
 import type { Message, Colors } from './types';
-import { postMessage, LOGO_CLASS_NAME, navigateToConversation } from './webviewEnv';
+import { postMessage, LOGO_CLASS_NAME } from './webviewEnv';
 import { getPlaceholderLogoUri } from './placeholderLogo';
 import { profileLog } from './debug';
 import { t } from './i18n';
@@ -93,6 +93,9 @@ function areEqual(prevProps: any, nextProps: any): boolean {
   const next = nextProps.message;
   // 置顶状态只影响用户消息的边框/背景，必须参与比较，否则 sticky 消息拿不到 pinned 变化
   if (prevProps.pinned !== nextProps.pinned) return false;
+  // 会话跳转入口必须参与比较：漏掉会让「先无回调、后有回调」的渲染停在旧闭包上，
+  // 表现为点 From/子代理链接没反应（onExpandToggle 则相反，刻意不比较，见 1527 行说明）
+  if (prevProps.onNavigate !== nextProps.onNavigate) return false;
   if (prev === next && prevProps.colors === nextProps.colors && prevProps.isDark === nextProps.isDark) return true;
   if (prevProps.colors !== nextProps.colors) return false;
   if (prevProps.isDark !== nextProps.isDark) return false;
@@ -240,6 +243,7 @@ const UserMessage = memo(function UserMessage({
   colors,
   isDark,
   pinned,
+  onNavigate,
   onExpandToggle,
 }: {
   message: Message;
@@ -247,6 +251,8 @@ const UserMessage = memo(function UserMessage({
   isDark: boolean;
   /** 滚动置顶（sticky 吸附）时，背景/边框由外层置顶容器绘制 */
   pinned?: boolean;
+  /** 统一的会话跳转入口（App 的 navigateToSession）；子代理 From 消息点击时使用 */
+  onNavigate?: (sessionId: string) => void;
   onExpandToggle?: (isOpen: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -273,10 +279,11 @@ const UserMessage = memo(function UserMessage({
   const agentUserName = agentUserMatch ? agentUserMatch[1] : null;
   const handleAgentClick = useCallback(() => {
     if (agentSessionId) {
-      // VS Code：当前 webview 重新加载对话；Electron App：新起 webview 加载对话
-      navigateToConversation(agentSessionId);
+      // 统一走 navigateToSession（由 App 注入）：VS Code 在当前视图原地加载并进入 loading，
+      // Electron 新起 webview。不再直连 navigateToConversation，避免绕过 loading 的第二条入口。
+      onNavigate?.(agentSessionId);
     }
-  }, [agentSessionId]);
+  }, [agentSessionId, onNavigate]);
 
   // 文件消息处理
   const handleFileClick = useCallback(() => {
@@ -853,7 +860,7 @@ const MessageItem = memo(function MessageItem({
     return <ToolCallMessage message={message} colors={colors} isDark={isDark} onNavigate={onNavigate} onExpandToggle={onExpandToggle} onBeforePreviewRender={onBeforePreviewRender} />;
   }
   if (message.role === 'user') {
-    return <UserMessage message={message} colors={colors} isDark={isDark} pinned={pinned} onExpandToggle={onExpandToggle} />;
+    return <UserMessage message={message} colors={colors} isDark={isDark} pinned={pinned} onNavigate={onNavigate} onExpandToggle={onExpandToggle} />;
   }
   if (message.role === 'thinking') {
     return <ThinkingMessage message={message} colors={colors} onThinkingToggle={onThinkingToggle} />;
@@ -1725,7 +1732,9 @@ const MessagesView = memo(({
     // 内容可滚动：轮询 scrollHeight，等待异步渲染（EditFile diff meta、
     // Shiki 高亮、图片等）把高度稳定下来再淡出，避免“滚动条先撑满再慢慢加载”的跳动。
     // 实时会话（流式/运行中工具）不能等太久，给一个较短上限。
-    const MIN_HOLD_MS = hasLiveActivity ? 300 : 600;
+    // MIN_HOLD_MS 只作为「遮罩最短可见时间」的下限：数据已就绪时不应让用户干等，
+    // 真正的防跳动靠下面的 SETTLE_MS 稳定轮询，故这里取 100ms。
+    const MIN_HOLD_MS = 100;
     const SETTLE_MS = hasLiveActivity ? 150 : 200;
     const MAX_WAIT_MS = hasLiveActivity ? 1500 : 4000;
     const startedAt = performance.now();
@@ -2214,6 +2223,8 @@ const MessagesView = memo(({
                       pinned={isPinned}
                       // 仅真正的用户消息需要展开后重算吸附；From/To 等保持原有行为
                       onExpandToggle={pinnable ? handleUserMessageExpandToggle : undefined}
+                      // From/To 等 agent 消息虽然不参与置顶，但仍要能点链接跳转
+                      onNavigate={onNavigate}
                     />
                   </div>
                 )}
@@ -2228,7 +2239,9 @@ const MessagesView = memo(({
                     <div key={`segment-${globalIndex}`} className={isLastInGroup ? undefined : 'mb-4'}>
                       {segmentUserMsg && (
                         <div>
-                          <MessageItem message={segmentUserMsg} colors={colors} isDark={isDark} />
+                          {/* From/To 等 agent 消息不参与置顶分组，走这里渲染：
+                              必须带上 onNavigate，否则点击子代理链接会变成空操作 */}
+                          <MessageItem message={segmentUserMsg} colors={colors} isDark={isDark} onNavigate={onNavigate} />
                         </div>
                       )}
                       {(segment.nonUserMsgs.length > 0 || isLastSegment) && (

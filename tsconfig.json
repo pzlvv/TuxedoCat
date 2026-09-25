@@ -17,6 +17,7 @@
 		"vite.config.ts",
 		"vite.monaco.config.ts",
 		"vite.sidebar.config.ts",
+		"vite.titlebar.config.ts",
 		"src/webview/**/*",
 		"src/test/**/*",
 		"test/**/*",

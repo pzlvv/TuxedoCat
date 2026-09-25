@@ -2,19 +2,15 @@
  * UserChoiceManager.dropSession 单测（DEVELOPMENT.md 第 10.5 节）：
  * - 清掉该会话挂起的用户选择回调，不影响其它会话
  * - diff 快照只在归属该会话时清空
- * 运行方式：tsc -p tsconfig.test.json && node out/src/test/userChoice.test.js
+ * 运行方式：npm run test:all -- user-choice
  */
 
 import * as assert from 'assert';
 import { UserChoiceManager } from '../host/ui/userChoice';
+import { createChecker, runTests } from './helpers/harness';
 
 async function run(): Promise<void> {
-  let passed = 0;
-  let failed = 0;
-  const check = (name: string, cond: boolean): void => {
-    if (cond) { passed++; console.log(`ok   ${name}`); }
-    else { failed++; console.log(`FAIL ${name}`); }
-  };
+  const { check, finish } = createChecker();
 
   const manager = new UserChoiceManager({
     outputChannel: undefined,
@@ -64,8 +60,7 @@ async function run(): Promise<void> {
   assert.equal(manager.currentBeforeContent, 'b2');
   check('dropSession does not clear snapshot owned by another session', true);
 
-  console.log(`\n${passed} passed, ${failed} failed`);
-  if (failed > 0) process.exitCode = 1;
+  finish();
 }
 
-void run();
+runTests('userChoice', run);

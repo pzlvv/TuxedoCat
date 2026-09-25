@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 只允许加载随包分发的本地资源；file:// 下 'self' 可能不匹配，故显式放行 file: -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' file:; style-src 'self' file:; img-src 'self' file: data:; font-src 'self' file:"
+    />
+    <title>Title Bar</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <!-- 自绘标题栏：左侧品牌区 + 菜单栏，右侧窗口控制按钮。
+         整条为拖拽区（-webkit-app-region: drag），按钮/菜单单独设为 no-drag。 -->
+    <div class="titlebar" id="titlebar">
+      <div class="brand" id="brand">
+        <img class="brand-logo" id="brandLogo" src="./logo.png" alt="" draggable="false" />
+        <span class="brand-name" id="brandName"></span>
+      </div>
+
+      <nav class="menubar" id="menubar" role="menubar"></nav>
+
+      <div class="titlebar-spacer"></div>
+
+      <!-- 悬浮窗模式专属：总在最前（钉住） -->
+      <button class="tb-btn pin-btn" id="btnPin" type="button" title="总在最前" aria-label="Always on top" aria-pressed="false">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M6 1.5h4l-.7 3.2 2.2 2.2v1.1H9v3.3l-1 2.2-1-2.2V8H4.5V6.9l2.2-2.2L6 1.5z" />
+        </svg>
+      </button>
+
+      <!-- 完整模式 ↔ 悬浮窗模式切换（未打开工作区时禁用），紧贴最小化按钮左侧 -->
+      <button class="tb-btn mode-toggle" id="btnMode" type="button" title="切换到悬浮窗模式" aria-label="Toggle window mode">
+        <svg class="icon-compact" viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" />
+          <path d="M6 2.5v11" />
+          <path d="M3.5 5.5h1M3.5 8h1" />
+        </svg>
+        <svg class="icon-expand" viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" />
+          <path d="M10 2.5v11" />
+          <path d="M12.5 5.5h1M12.5 8h1" />
+        </svg>
+      </button>
+
+      <div class="window-controls" id="windowControls">
+        <button class="wc" id="btnMinimize" type="button" title="Minimize" aria-label="Minimize">
+          <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10" /></svg>
+        </button>
+        <button class="wc" id="btnMaximize" type="button" title="Maximize" aria-label="Maximize">
+          <svg class="icon-max" viewBox="0 0 10 10" aria-hidden="true"><rect x="0.5" y="0.5" width="9" height="9" rx="1" /></svg>
+          <svg class="icon-restore" viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M2.5 2.5V1a.5.5 0 0 1 .5-.5h6a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-.5.5H8" />
+            <rect x="1" y="2.5" width="6.5" height="6.5" rx="1" />
+          </svg>
+        </button>
+        <button class="wc wc-close" id="btnClose" type="button" title="Close" aria-label="Close">
+          <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0.5 0.5l9 9M9.5 0.5l-9 9" /></svg>
+        </button>
+      </div>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

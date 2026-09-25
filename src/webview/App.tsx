@@ -10,9 +10,9 @@ import { createSessionState } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
-import { postMessage, getHasWorkspace, getInjectedSessionId, LOGO_CLASS_NAME, getHostInfo, navigateToConversation, getIsPrewarmView } from './webviewEnv';
+import { postMessage, getHasWorkspace, getInjectedSessionId, LOGO_CLASS_NAME, getEffectiveHostInfo, onViewModeChanged, navigateToConversation, getIsPrewarmView } from './webviewEnv';
 import { getPlaceholderLogoUri, rotatePlaceholderLogo } from './placeholderLogo';
-import { canCloseConversation, openConversationModeOf, rendersConversationListInWebview } from '../host/types';
+import { canCloseConversation, openConversationModeOf, rendersConversationListInWebview, type HostInfo } from '../host/types';
 import type { McpServerInfo, ProviderModels } from '../core/webviewTypes';
 import type { ModelRef } from '../core/llm/modelRef';
 import { t } from './i18n';
@@ -40,8 +40,17 @@ const App = () => {
   const [themeInitialized, setThemeInitialized] = useState(false);
   // 检查是否已打开工作目录（由 extension 在 HTML 注入）
   const noWorkspace = getHasWorkspace() === false;
-  // 宿主能力声明：决定对话列表 / 新建对话 / 关闭按钮等由谁渲染
-  const hostInfo = getHostInfo();
+  // 宿主能力声明：决定对话列表 / 新建对话 / 关闭按钮等由谁渲染。
+  // 视图模式可在运行期切换（Electron 悬浮窗 → 单视图，列表移到顶栏），故放进 state 订阅。
+  const [hostInfo, setHostInfo] = useState<HostInfo>(() => getEffectiveHostInfo());
+  useEffect(() => onViewModeChanged(() => {
+    setHostInfo(getEffectiveHostInfo());
+    // 模式切换会卸载 / 重挂「历史对话」下拉（只有 single 渲染它）：残留的 open 状态
+    // 会让它切回 single 时自动弹出，而且不触发 onOpenChange → 列表不刷新。
+    // 删除确认弹层同理，切模式时一并收起。
+    setConversationDropdownOpen(false);
+    setDeleteConfirm(null);
+  }), []);
   const [messages, setMessages] = useState<Array<Message>>([]);
   const inputAreaRef = useRef<InputAreaRef>(null);
   const [inputFocused, setInputFocused] = useState(false);
@@ -501,7 +510,10 @@ const App = () => {
   }, [userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, promptMode, thinkingMode, contextLength, modelRef, currentFile, selectedLines]);
 
   /**
-   * 导航到目标会话前的固定动作序列（四处重复收敛）：
+   * **会话跳转的唯一 UI 入口**（对话列表 / 对话树 / 子代理 From 链接 / 返回父会话按钮
+   * 全部收敛到这里；不允许任何入口直接调 webviewEnv.navigateToConversation）。
+   *
+   * 切换前的固定动作序列：
    * 1. 当前若是"新建但还没发消息"的对话，先把草稿暂存，供下次"新建"恢复；
    * 2. 清空消息并显示加载动画（插件模式与 Electron 模式统一）；
    * 3. 清空当前展示的排队横幅，避免上一会话的 queue 串到新会话；
@@ -524,8 +536,6 @@ const App = () => {
     setQueuedMessage(null);
     navigateToConversation(sessionId);
   }, [stashNewChatDraft, hostInfo.conversationList, beginConversationLoad]);
-
-  const handleNavigateToConversation = navigateToSession;
 
   /**
    * 新建对话（顶部"+"按钮）：
@@ -937,11 +947,11 @@ const App = () => {
           }}
         >
           <div className="flex items-center gap-2 min-w-0">
-            {/* 子对话返回按钮 */}
+            {/* 子对话返回按钮：与列表选会话共用 navigateToSession，避免出现「绕过 loading」的第二条入口 */}
             {parentSessionId && (
               <button
                 onClick={() => {
-                  navigateToConversation(parentSessionId);
+                  navigateToSession(parentSessionId);
                 }}
                 className="w-6 h-6 rounded flex items-center justify-center transition-colors shrink-0 hover:bg-white/10"
                 style={{ color: colors.textSystem }}
@@ -1136,7 +1146,7 @@ onClick={handleNewConversation}
           hasCompactArchive={hasCompactArchive}
           isCompactExpanded={isCompactExpanded}
           onExpandCompact={handleExpandCompact}
-          onNavigate={handleNavigateToConversation}
+          onNavigate={navigateToSession}
         />
 
         {/* Input Area — 条件渲染 UserChoiceOverlay / InputArea，保持相同位置 */}

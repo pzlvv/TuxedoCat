@@ -1,9 +1,7 @@
 /**
  * 错误序列化单元测试（core/llm/shared.ts 的 serializeError / formatErrorChain）。
  *
- * 运行方式（两种都支持）：
- *   1. 独立运行：`npx tsc -p tsconfig.test.json && node out/src/test/errorSerialize.test.js`
- *   2. 在 vscode-test 的 mocha 环境下自动注册为测试用例。
+ * 运行方式：npm run test:all -- error-serialize
  *
  * 背景：undici 的 `fetch failed` 只是外壳，真实根因（ECONNRESET / ENOTFOUND /
  * UND_ERR_CONNECT_TIMEOUT ...）挂在 `error.cause` 上。失败转储此前只写
@@ -12,6 +10,7 @@
  */
 import * as assert from 'assert';
 import { serializeError, formatErrorChain, MAX_ERROR_CAUSE_DEPTH } from '../core/llm/shared';
+import { runCases } from './helpers/harness';
 
 /** 构造 undici 风格的网络错误：TypeError('fetch failed') -> SocketError -> Error(read ECONNRESET) */
 function buildUndiciStyleError(): Error {
@@ -156,33 +155,4 @@ const CASES: Case[] = [
   },
 ];
 
-// mocha 环境（vscode-test）下注册为测试用例；否则独立运行并返回退出码。
-if (typeof (globalThis as { suite?: unknown }).suite === 'function') {
-  const g = globalThis as unknown as {
-    suite: (name: string, fn: () => void) => void;
-    test: (name: string, fn: () => void | Promise<void>) => void;
-  };
-  g.suite('errorSerialize', () => {
-    for (const c of CASES) {
-      g.test(c.name, async () => {
-        await c.run();
-      });
-    }
-  });
-} else {
-  void (async () => {
-    let failed = 0;
-    for (const c of CASES) {
-      try {
-        await c.run();
-        console.log(`ok   ${c.name}`);
-      } catch (err) {
-        failed++;
-        console.log(`FAIL ${c.name}`);
-        console.log(String((err as Error).message).split('\n').map((l) => `     ${l}`).join('\n'));
-      }
-    }
-    console.log(failed === 0 ? `\n全部通过（${CASES.length} 个用例）` : `\n${failed}/${CASES.length} 个用例失败`);
-    process.exit(failed === 0 ? 0 : 1);
-  })();
-}
+runCases('errorSerialize', CASES);

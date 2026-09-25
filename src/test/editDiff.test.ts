@@ -1,9 +1,7 @@
 /**
  * buildEditDiffHunks 单元测试（Edit 工具 diff 预览的数据源）。
  *
- * 运行方式（两种都支持）：
- *   1. 独立运行：`npm run test:edit-diff`
- *   2. 在 vscode-test 的 mocha 环境下自动注册为测试用例。
+ * 运行方式：npm run test:all -- edit-diff
  *
  * 重点覆盖「下方上下文行」的边界：
  * 在文件末尾删除行时，旧实现用 Math.max(contextEndOriginal, contextEndModified)
@@ -12,6 +10,7 @@
  */
 import * as assert from 'assert';
 import { buildEditDiffHunks, type DiffLine } from '../core/utils/editDiff';
+import { runCases } from './helpers/harness';
 
 /** 期望的一行：`[类型, 内容]`。顺序敏感，逐行比对。 */
 type ExpectedLine = [DiffLine['type'], string];
@@ -208,29 +207,4 @@ function checkCase(c: Case): void {
   );
 }
 
-// mocha 环境（vscode-test）下注册为测试用例；否则独立运行并返回退出码。
-if (typeof (globalThis as { suite?: unknown }).suite === 'function') {
-  const g = globalThis as unknown as {
-    suite: (name: string, fn: () => void) => void;
-    test: (name: string, fn: () => void) => void;
-  };
-  g.suite('buildEditDiffHunks', () => {
-    for (const c of CASES) {
-      g.test(c.name, () => checkCase(c));
-    }
-  });
-} else {
-  let failed = 0;
-  for (const c of CASES) {
-    try {
-      checkCase(c);
-      console.log(`ok   ${c.name}`);
-    } catch (err) {
-      failed++;
-      console.log(`FAIL ${c.name}`);
-      console.log(String((err as Error).message).split('\n').map((l) => `     ${l}`).join('\n'));
-    }
-  }
-  console.log(failed === 0 ? `\n全部通过（${CASES.length} 个用例）` : `\n${failed}/${CASES.length} 个用例失败`);
-  process.exit(failed === 0 ? 0 : 1);
-}
+runCases('buildEditDiffHunks', CASES.map((c) => ({ name: c.name, run: () => checkCase(c) })));

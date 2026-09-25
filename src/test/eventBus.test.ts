@@ -5,24 +5,18 @@
  * - emitToUi 未注册处理器抛错
  * - emitToCore 无订阅者静默丢弃；订阅后分发
  * - request 类型对应
- * 运行方式：tsc -p tsconfig.test.json && node out/src/test/eventBus.test.js
+ * 运行方式：npm run test:all -- event-bus
  */
 
 import { createEventBus } from '../host/EventBus';
-import { setGlobalEventBus, requireEventBus, resetGlobalEventBus, type CoreEventHandlers, type UiEvent } from '../core/AssistantEventBus';
-
-let passed = 0;
-let failed = 0;
-
-function check(name: string, cond: boolean): void {
-  if (cond) {
-    passed++;
-    console.log(`ok   ${name}`);
-  } else {
-    failed++;
-    console.log(`FAIL ${name}`);
-  }
-}
+import {
+  setGlobalEventBus,
+  requireEventBus,
+  resetGlobalEventBus,
+  type UiEvent,
+} from '../core/AssistantEventBus';
+import { createChecker, runTests } from './helpers/harness';
+import { makeTestBus } from './helpers/fixtures';
 
 function throws(fn: () => void): boolean {
   try {
@@ -33,66 +27,35 @@ function throws(fn: () => void): boolean {
   }
 }
 
-function buildHandlers(): { handlers: CoreEventHandlers; seen: string[] } {
-  const seen: string[] = [];
-  const handlers: CoreEventHandlers = {
-    message: (e: { sessionId: string }) => { seen.push(`message:${e.sessionId}`); },
-    streamMessage: (_e: unknown) => { seen.push('streamMessage'); },
-    streamEnd: (_e: unknown) => { seen.push('streamEnd'); },
-    toolCall: (_e: unknown) => { seen.push('toolCall'); },
-    toolResult: (_e: unknown) => { seen.push('toolResult'); },
-    toolArgsUpdated: (_e: unknown) => { seen.push('toolArgsUpdated'); },
-    toolProgress: (_e: unknown) => { seen.push('toolProgress'); },
-    aiBegin: (_e: unknown) => { seen.push('aiBegin'); },
-    aiEnd: (_e: unknown) => { seen.push('aiEnd'); },
-    messagesReplaced: (_e: unknown) => { seen.push('messagesReplaced'); },
-    queryBegin: (_e: unknown) => { seen.push('queryBegin'); },
-    queryEnd: (_e: unknown) => { seen.push('queryEnd'); },
-    titleChanged: (e: { title: string }) => { seen.push(`titleChanged:${e.title}`); },
-    sessionCreated: (_e: unknown) => { seen.push('sessionCreated'); },
-    conversationListChanged: (_e: unknown) => { seen.push('conversationListChanged'); },
-    sessionRuntimeChanged: (_e: unknown) => { seen.push('sessionRuntimeChanged'); },
-    spinDesignDataChanged: (_e: unknown) => { seen.push('spinDesignDataChanged'); },
-    highlightLanguagesUsed: (_e: unknown) => { seen.push('highlightLanguagesUsed'); },
-    projectConversationDirReady: (_e: unknown) => { seen.push('projectConversationDirReady'); },
-    compactBegin: (_e: unknown) => { seen.push('compactBegin'); },
-    compactEnd: (_e: unknown) => { seen.push('compactEnd'); },
-    commandDispatched: (_e: unknown) => { seen.push('commandDispatched'); },
-    sessionConfigChanged: (_e: unknown) => { seen.push('sessionConfigChanged'); },
-  };
-  return { handlers, seen };
-}
-
 async function run(): Promise<void> {
-  const bus = createEventBus();
+  const { check, finish } = createChecker();
 
   // ---- 注册前 emitToUi 抛错 ----
+  const bare = createEventBus();
   check('emitToUi before onCoreEvents throws', throws(() => {
-    bus.emitToUi({ type: 'aiBegin', sessionId: 's1' });
+    bare.emitToUi({ type: 'aiBegin', sessionId: 's1' });
   }));
 
   // ---- 正常分发 ----
-  const { handlers, seen } = buildHandlers();
-  const off = bus.onCoreEvents(handlers);
-
-  bus.onCoreRequests({
-    toolPermissionRequested: async () => ({ behavior: 'allow' }),
-    userChoice: async () => ({ index: 0 }),
-  });
+  const { bus, received, unsubscribeCoreEvents } = makeTestBus();
 
   bus.emitToUi({ type: 'message', sessionId: 's1', data: { role: 'user', content: 'hi' } });
   bus.emitToUi({ type: 'titleChanged', sessionId: 's1', title: 'T' });
-  check('events dispatched', seen.includes('message:s1') && seen.includes('titleChanged:T'));
+  check(
+    'events dispatched',
+    received('message')[0]?.sessionId === 's1' && received('titleChanged')[0]?.title === 'T',
+  );
 
   // ---- 重复注册抛错 ----
-  check('duplicate onCoreEvents throws', throws(() => bus.onCoreEvents(buildHandlers().handlers)));
+  // 重新造一份处理器即可（内容无关，只为触发「已注册」这条路径）
+  check('duplicate onCoreEvents throws', throws(() => bus.onCoreEvents(makeTestBus().handlers)));
   check('duplicate onCoreRequests throws', throws(() => bus.onCoreRequests({
     toolPermissionRequested: async () => ({ behavior: 'allow' }),
     userChoice: async () => ({ index: 0 }),
   })));
 
   // ---- 取消订阅后再发事件抛错 ----
-  off();
+  unsubscribeCoreEvents();
   check('emitToUi after unsubscribe throws', throws(() => {
     bus.emitToUi({ type: 'aiEnd', sessionId: 's1' });
   }));
@@ -102,23 +65,35 @@ async function run(): Promise<void> {
   check('emitToCore without subscriber is silent', true);
 
   // ---- UI → core：订阅后可达 ----
-  let received: UiEvent | undefined;
-  const offCore = bus.onUiEvent('conversationDeleted', (e) => { received = e; });
+  let delivered: Extract<UiEvent, { type: 'conversationDeleted' }> | undefined;
+  const offCore = bus.onUiEvent('conversationDeleted', (e) => { delivered = e; });
   bus.emitToCore({ type: 'conversationDeleted', sessionId: 's9' });
-  check('emitToCore reaches subscriber', (received as any)?.sessionId === 's9');
+  check('emitToCore reaches subscriber', delivered?.sessionId === 's9');
 
   // ---- 取消订阅后不再收到 ----
   offCore();
-  received = undefined;
+  delivered = undefined;
   bus.emitToCore({ type: 'conversationDeleted', sessionId: 's8' });
-  check('unsubscribed UiEvent dropped', received === undefined);
+  check('unsubscribed UiEvent dropped', delivered === undefined);
 
-  // ---- request 类型对应 ----
-  const p = await handle(bus.request({ type: 'toolPermissionRequested', sessionId: 's1', toolUseId: 't1', toolName: 'Bash', permResult: { behavior: 'ask' }, displayArgs: {}, agentMode: 'manual' }));
-  check('request(toolPermissionRequested) returns PermissionResult', (p as { behavior: string }).behavior === 'allow');
+  // ---- request 类型对应（makeTestBus 默认：放行 / 选第 0 项） ----
+  const permission = await bus.request({
+    type: 'toolPermissionRequested',
+    sessionId: 's1',
+    toolUseId: 't1',
+    toolName: 'Bash',
+    permResult: { behavior: 'ask' },
+    displayArgs: {},
+    agentMode: 'manual',
+  });
+  check('request(toolPermissionRequested) returns PermissionResult', permission.behavior === 'allow');
 
-  const choice = await handle(bus.request({ type: 'userChoice', sessionId: 's1', options: { toolName: 'Bash', message: 'm', choices: [] } }));
-  check('request(userChoice) returns index', (choice as { index: number }).index === 0);
+  const choice = await bus.request({
+    type: 'userChoice',
+    sessionId: 's1',
+    options: { toolName: 'Bash', message: 'm', choices: [] },
+  });
+  check('request(userChoice) returns index', choice.index === 0);
 
   // ---- 全局注册 ----
   check('requireEventBus throws before set', throws(() => requireEventBus()));
@@ -128,14 +103,7 @@ async function run(): Promise<void> {
   resetGlobalEventBus();
   check('requireEventBus throws after reset', throws(() => requireEventBus()));
 
-  console.log(`\n${failed === 0 ? '全部通过' : '存在失败'}（${passed} 通过 / ${failed} 失败）`);
-  if (failed > 0) {
-    process.exitCode = 1;
-  }
+  finish();
 }
 
-function handle<T>(p: Promise<T>): Promise<T> {
-  return p;
-}
-
-void run();
+runTests('eventBus', run);

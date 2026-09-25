@@ -17,7 +17,14 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents, globalShortcut, Tray, nativeImage, screen, type NativeImage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import { ChatViewManager, SIDEBAR_WIDTH } from './ChatViewManager.js';
+import * as crypto from 'crypto';
+import { ChatViewManager, SIDEBAR_WIDTH, TITLEBAR_HEIGHT } from './ChatViewManager.js';
+import {
+  getTitlebarMenuHtml,
+  TITLEBAR_MENU_WIDTH,
+  TITLEBAR_SUBMENU_WIDTH,
+  type TitlebarMenuNode,
+} from './titlebarMenuHtml.js';
 import { ElectronUIHost } from './ElectronUIHost.js';
 import { ElectronSpinDesign } from './ElectronSpinDesign.js';
 import { ElectronConversationManager } from './ElectronConversationManager.js';
@@ -42,9 +49,145 @@ function isExternalUrl(targetUrl: string): boolean {
   return /^(https?|mailto|tel):/i.test(targetUrl);
 }
 
+/**
+ * 应用自有 WebContentsView 的导航防御（与侧栏 / 聊天视图同策略）：
+ * 拒绝一切 window.open，应用内 file:// 导航放行，其余一律拦下并交给系统浏览器。
+ *
+ * 标题栏 / 菜单视图虽然只加载本地文件与 data: URL，但页面一旦被拖放或脚本导航到
+ * 外部页面，preload 会在新页面重跑、把 titlebarAPI / titlebarMenuAPI 交给外部页面，
+ * 外部页面即可调用菜单动作（含退出）。这里补上第二道防线。
+ */
+function guardViewNavigation(wc: Electron.WebContents): void {
+  wc.setWindowOpenHandler(({ url: targetUrl }) => {
+    if (isExternalUrl(targetUrl)) {
+      void shell.openExternal(targetUrl).catch((err) => {
+        console.error(`[view] Failed to open external URL (window.open): ${err}`);
+      });
+    }
+    return { action: 'deny' };
+  });
+  wc.on('will-navigate', (event, targetUrl) => {
+    if (targetUrl.startsWith('file://')) return; // 应用内导航放行
+    event.preventDefault();
+    if (isExternalUrl(targetUrl)) {
+      void shell.openExternal(targetUrl).catch((err) => {
+        console.error(`[view] Failed to open external URL (navigate): ${err}`);
+      });
+    }
+  });
+}
+
+/**
+ * 加载自绘标题栏页面。
+ *
+ * 失败时只留一条日志的后果很严重：无边框窗口（Windows/Linux）没有系统标题栏，
+ * 用户既不能拖动也不能最小化/关闭。这里延迟重试一次（覆盖「构建产物还没落盘」的
+ * 开发期场景），并在日志里给出可执行的修复命令。
+ */
+function loadTitlebarView(wc: Electron.WebContents): void {
+  const file = path.join(APP_ROOT, 'dist', 'titlebar', 'index.html');
+  let retried = false;
+  wc.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
+    if (!isMainFrame) return;
+    console.error(`[titlebar] load failed: ${code} ${desc} (${url})`);
+    if (retried) return;
+    retried = true;
+    // 开发期最常见的原因是 dist/titlebar 还没构建（见 scripts/watch-app.js）：
+    // 延迟重试一次，给构建脚本一点落盘时间。注意 Electron 无法在运行期给窗口加回系统
+    // 边框，所以这里没有「降级为带边框窗口」的兜底，只能重试 + 明确报错。
+    setTimeout(() => {
+      if (wc.isDestroyed()) return;
+      wc.loadFile(file).catch((err) => {
+        console.error('[titlebar] retry failed; run `npm run build:titlebar`:', err);
+      });
+    }, 800);
+  });
+  void wc.loadFile(file).catch((err) => {
+    console.error('[titlebar] loadFile rejected; run `npm run build:titlebar`:', err);
+  });
+}
+
+/**
+ * 菜单项定义：原生菜单（macOS 系统菜单栏 / 平台约定）与自绘标题栏菜单的唯一来源。
+ * 两处共用同一份定义与同一批动作，避免「原生能点、自绘点不了」这类不一致。
+ */
+interface MenuItemDef {
+  /** 菜单项唯一 id（自绘菜单点击与快捷键兜底都按 id 找动作） */
+  id?: string;
+  label?: string;
+  accelerator?: string;
+  enabled?: boolean;
+  /** 自绘菜单里的危险色（如删除/退出类） */
+  danger?: boolean;
+  type?: 'separator';
+  /** 子菜单：原生菜单保留层级，自绘菜单平铺为 header + items */
+  submenu?: MenuItemDef[];
+  /** macOS 原生菜单角色（与 run 二选一，role 优先） */
+  role?: Electron.MenuItemConstructorOptions['role'];
+  run?: () => void;
+}
+
+/** 菜单分区（File / View / Help ...） */
+interface MenuSectionDef {
+  id: string;
+  label: string;
+  items: MenuItemDef[];
+}
+
+/** 自绘下拉菜单的分区（items 已平铺为展示节点） */
+interface TitlebarMenuSection {
+  id: string;
+  label: string;
+  items: TitlebarMenuNode[];
+}
+
 let mainWindow: BrowserWindow | undefined;
 let sidebarView: WebContentsView | undefined;
+/** 顶部自绘标题栏（品牌区 + 菜单按钮 + 窗口控制按钮） */
+let titlebarView: WebContentsView | undefined;
 let chatViews: ChatViewManager | undefined;
+/**
+ * 自绘下拉菜单视图（主窗口内的 WebContentsView，按需创建后复用）。
+ *
+ * 刻意不用独立 BrowserWindow：窗口 show()/focus() 会触发系统窗口动画与
+ * 层级窗口合成，表现为菜单「闪一下」；视图只是同一窗口内的一块合成区域，
+ * 定位即显示，没有任何开窗动画。
+ */
+let titlebarMenuView: WebContentsView | undefined;
+/** 当前打开的下拉菜单分区 id（null = 未打开） */
+let titlebarMenuOpenId: string | null = null;
+/** 菜单视图里当前渲染的分区 id（用于判断是否需要重新 loadURL） */
+let titlebarMenuLoadedId: string | null = null;
+/** 菜单测量结果缓存（分区 id → 尺寸与左偏移），命中后再次打开无需重新测量 */
+const titlebarMenuSizeCache = new Map<string, { width: number; height: number; offsetX: number }>();
+/** 下拉菜单左边缘（相对内容区，由标题栏视图上报） */
+let titlebarMenuAnchorX = 0;
+/**
+ * 打开菜单前持有焦点的视图 id。菜单视图会主动获取焦点（Esc / 方向键依赖它），
+ * 关闭时把焦点还回去，否则焦点会停在已隐藏的菜单视图上，用户敲键盘没反应。
+ */
+let titlebarMenuPrevFocusId: number | undefined;
+/** 标题栏菜单分区（子菜单已平铺为展示项） */
+let titlebarMenuSections: TitlebarMenuSection[] = [];
+/** 菜单项 id → 动作（原生菜单与自绘菜单共用同一份） */
+let titlebarMenuActions = new Map<string, () => void>();
+/** 规范化 accelerator → 菜单项 id（无边框窗口下兜底处理快捷键） */
+let titlebarMenuAccelerators = new Map<string, string>();
+/** 同一次按键可能同时触发原生菜单与兜底处理，按 id 去重 */
+const recentMenuActionAt = new Map<string, number>();
+
+/**
+ * 窗口模式：
+ * - normal：完整模式，左侧多对话侧栏 + 右侧聊天视图
+ * - floating：悬浮窗模式，隐藏侧栏、只显示当前对话（单视图），可置顶
+ * 两种模式的位置与尺寸各自独立存储（见 readSavedWindowRect / saveWindowRect）。
+ */
+type WindowMode = 'normal' | 'floating';
+let windowMode: WindowMode = 'normal';
+/** 浮窗模式是否总在最前（浮窗专属；默认开启，符合「悬浮窗」语义） */
+let floatingPinned = true;
+/** 模式切换进行中（applyWindowMode 含 await）：用于防重入 */
+let windowModeSwitching = false;
 /** 对话列表的读取与分发（bootstrap 创建；sidebar:get-conversations 读它的列表快照） */
 let conversations: ElectronConversationManager | undefined;
 let workspacePath: string | undefined;
@@ -139,7 +282,6 @@ async function main(): Promise<void> {
   // 注册全局唤醒快捷键（settings.json 中的 shortcut，默认 Ctrl+Alt+X）
   // 注册失败时弹窗提示，避免静默失效
   registerWakeShortcut();
-
   // GPU 进程异常（合成表面丢失 → 整个页面空白）时强制重绘所有视图
   app.on('child-process-gone', (_event, details) => {
     if (details.type === 'GPU') {
@@ -187,29 +329,84 @@ const DEFAULT_WINDOW_WIDTH = 1280;
 /** 主窗口最小尺寸（与 BrowserWindow 的 minWidth/minHeight 保持一致） */
 const MIN_WINDOW_WIDTH = 800;
 const MIN_WINDOW_HEIGHT = 600;
+/** 浮窗默认宽度；高度取工作区高度的 80% */
+const FLOATING_WINDOW_WIDTH = 480;
+/** 浮窗最小尺寸（窄窗，允许用户继续收窄） */
+const MIN_FLOATING_WIDTH = 280;
+const MIN_FLOATING_HEIGHT = 240;
+
+/**
+ * 最近一次由程序设置的目标窗口矩形（创建窗口 / 切换模式时记录）。
+ *
+ * Windows 会对无边框窗口做 1~4 DIP 的尺寸微调（请求 1294 实际得到 1296）；
+ * 若把微调后的实际值落盘、下次再按它请求，尺寸会逐次变大。落盘时若实际值与
+ * 目标值偏差很小就用目标值，用户真正拖动/缩放产生的大偏差仍按实际值保存。
+ */
+let lastRequestedWindowRect: { x: number; y: number; width: number; height: number } | undefined;
+/** 视为「OS 微调」而非「用户改动」的最大偏差（DIP） */
+const WINDOW_RECT_DRIFT_TOLERANCE = 8;
 
 function createMainWindow(): void {
   // 防止 second-instance / activate 与启动流程并发创建出多个主窗口
   if (mainWindow && !mainWindow.isDestroyed()) return;
-  // 尺寸优先用上次退出时保存的值（存在 workspace-state.json，只存宽高）；
+  // 模式优先沿用上次退出时的：只有「上次是浮窗」且本次确实打开了工作区才恢复浮窗
+  // （浮窗隐藏侧栏，没有工作区就没法再选，因此这种情况下退回完整模式）
+  windowMode = readLastWindowMode() === 'floating' && canToggleWindowMode() ? 'floating' : 'normal';
+  // 「总在最前」同样沿用上次的（默认开启）
+  floatingPinned = readLastFloatingPinned();
+
+  // 尺寸与位置优先用该模式上次退出时保存的值（存在 workspace-state.json）；
   // 没有记录时才用默认值：高度取主屏工作区（已排除任务栏/Dock）的 80%，
   // 不写死，大屏不会过高、小屏也不会超出可视区域。宽度保持固定默认值。
-  const { width: workAreaWidth, height: workAreaHeight } = screen.getPrimaryDisplay().workAreaSize;
-  const savedSize = readSavedWindowSize();
-  const targetWidth = savedSize ? savedSize.width : DEFAULT_WINDOW_WIDTH;
-  const targetHeight = savedSize ? savedSize.height : Math.round(workAreaHeight * 0.8);
-  // 夹在工作区范围内，避免换到更小的屏幕后窗口超出可视区域。
-  // 不传 x/y：Electron 默认把窗口居中，位置不持久化。
+  const primaryWorkArea = screen.getPrimaryDisplay().workAreaSize;
+  const savedRect = readSavedWindowRect(windowMode);
+  const fallbackRect = windowMode === 'floating'
+    ? defaultFloatingWindowRect()
+    : { width: DEFAULT_WINDOW_WIDTH, height: Math.round(primaryWorkArea.height * 0.8) };
+  const targetWidth = savedRect ? savedRect.width : fallbackRect.width;
+  const targetHeight = savedRect ? savedRect.height : fallbackRect.height;
+  // 位置：只有旧坐标仍落在某个显示器工作区内才复用，否则交给 Electron 居中
+  const savedPosition =
+    savedRect && savedRect.x !== undefined && savedRect.y !== undefined
+    && isRectVisibleOnSomeDisplay({ x: savedRect.x, y: savedRect.y, width: targetWidth, height: targetHeight })
+      ? { x: savedRect.x, y: savedRect.y }
+      : {};
+  const isMac = process.platform === 'darwin';
+  const minSize = minWindowSizeFor(windowMode);
+  // 夹取用「窗口实际会落在的那块屏」的工作区，而不是主屏：
+  // 上次停在较小的副屏时，按主屏高度建窗会让窗口大面积超出副屏可视区。
+  const targetDisplay = savedPosition.x !== undefined
+    ? screen.getDisplayMatching({ x: savedPosition.x, y: savedPosition.y, width: targetWidth, height: targetHeight })
+    : screen.getPrimaryDisplay();
+  const { width: workAreaWidth, height: workAreaHeight } = targetDisplay.workAreaSize;
+  const windowWidth = Math.max(minSize.width, Math.min(targetWidth, workAreaWidth));
+  const windowHeight = Math.max(minSize.height, Math.min(targetHeight, workAreaHeight));
   mainWindow = new BrowserWindow({
-    width: Math.max(MIN_WINDOW_WIDTH, Math.min(targetWidth, workAreaWidth)),
-    height: Math.max(MIN_WINDOW_HEIGHT, Math.min(targetHeight, workAreaHeight)),
-    minWidth: MIN_WINDOW_WIDTH,
-    minHeight: MIN_WINDOW_HEIGHT,
-    title: PRODUCT_NAME,
+    ...savedPosition,
+    width: windowWidth,
+    height: windowHeight,
+    minWidth: minSize.width,
+    minHeight: minSize.height,
+    title: windowTitleForCurrentState(),
     icon: path.join(APP_ROOT, 'assets', 'logo.png'),
     backgroundColor: '#16161b',
     show: false,
+    // ── 自绘标题栏 ──
+    // Windows/Linux：去掉系统边框（同时去掉系统标题栏与系统菜单栏），
+    // 由顶部 WebContentsView 自绘品牌区 / 菜单 / 最小化-最大化-关闭按钮。
+    // macOS：保留系统红绿灯与系统菜单栏（平台约定），只隐藏标题栏文字。
+    ...(isMac
+      ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 12, y: 13 } }
+      : { frame: false }),
   });
+  // 记录目标矩形：尺寸用请求值（抵消 OS 微调），位置没有记录时用居中后的实际值
+  const createdBounds = mainWindow.getBounds();
+  lastRequestedWindowRect = {
+    x: savedPosition.x ?? createdBounds.x,
+    y: savedPosition.y ?? createdBounds.y,
+    width: windowWidth,
+    height: windowHeight,
+  };
   // WebContentsView 场景下 ready-to-show 不触发（Electron 已知行为，见 issue #42325），
   // 改用侧栏加载完成显示 + 超时兜底，确保窗口一定显示
   let windowShown = false;
@@ -228,33 +425,48 @@ function createMainWindow(): void {
   // 下次按快捷键应重新把窗口唤到前台，而不是直接隐藏。
   mainWindow.on('blur', () => {
     wakeToggleActive = false;
+    // 整个窗口失活（切到别的应用）：已打开的下拉菜单一并关掉
+    closeTitlebarMenu();
   });
   mainWindow.on('hide', () => {
     wakeToggleActive = false;
+    closeTitlebarMenu();
   });
 
-  // ── 窗口大小持久化 ──
-  // 只保存宽高（位置不持久化，启动时仍由 Electron 居中）。
+  // ── 窗口位置与大小持久化 ──
+  // 位置与尺寸都落盘，且完整模式 / 浮窗模式各存一份（见 saveWindowRect）。
   // resize 在拖拽过程中会高频触发，防抖到停止调整后再写盘；close 时补一次，
   // 避免最后一次调整因防抖未触发而丢失。
   const win = mainWindow;
   let sizeSaveTimer: ReturnType<typeof setTimeout> | undefined;
-  const persistWindowSize = (): void => {
+  const persistWindowRect = (): void => {
     if (win.isDestroyed() || win.isMinimized()) return;
-    // 最大化/全屏时用 normal bounds，保存的是还原后的尺寸，而不是铺满屏幕的尺寸
-    const { width, height } = win.getNormalBounds();
-    saveWindowSize(width, height);
+    // 最大化/全屏时用 normal bounds，保存的是还原后的位置与尺寸，而不是铺满屏幕的
+    // 按当前模式分别存储：完整模式与浮窗模式的位置/尺寸互不覆盖
+    saveWindowRect(windowMode, resolvePersistableWindowRect(win.getNormalBounds()));
   };
   win.on('resize', () => {
     if (sizeSaveTimer) clearTimeout(sizeSaveTimer);
-    sizeSaveTimer = setTimeout(persistWindowSize, 2000);
+    sizeSaveTimer = setTimeout(persistWindowRect, 2000);
+    // 窗口尺寸变化会让已打开菜单的定位失效，直接关掉（与原生菜单一致）
+    closeTitlebarMenu();
+    // 菜单页的 maxHeight / availableRight 在 loadURL 时烘进 HTML，尺寸缓存必须一起作废：
+    // 否则缩小窗口后重开菜单会命中缓存不重载，菜单按旧高度布局、超出部分被视图裁掉。
+    invalidateTitlebarMenuCache();
+  });
+  // 位置变化同样要落盘（拖拽移动窗口后切换模式要能还原）
+  win.on('move', () => {
+    if (sizeSaveTimer) clearTimeout(sizeSaveTimer);
+    sizeSaveTimer = setTimeout(persistWindowRect, 2000);
+    // 窗口被拖动后菜单的锚点失效，直接关掉（与原生菜单一致）
+    closeTitlebarMenu();
   });
   win.on('close', () => {
     if (sizeSaveTimer) {
       clearTimeout(sizeSaveTimer);
       sizeSaveTimer = undefined;
     }
-    persistWindowSize();
+    persistWindowRect();
   });
 
   // ── 左侧原生侧栏 ──
@@ -272,6 +484,8 @@ function createMainWindow(): void {
   void sidebarView.webContents.loadFile(path.join(APP_ROOT, 'dist', 'sidebar', 'index.html'));
   // 侧栏（本地文件）加载完成即显示窗口（兜底路径之一）
   sidebarView.webContents.on('did-finish-load', () => showMainWindow());
+  // 焦点移到侧栏（点了对话列表/工作区）：关掉标题栏下拉菜单
+  sidebarView.webContents.on('focus', () => closeTitlebarMenu());
 
   // 渲染进程崩溃/GPU 异常时恢复侧栏显示
   sidebarView.webContents.on('render-process-gone', (_e, details) => {
@@ -302,6 +516,39 @@ function createMainWindow(): void {
       });
     }
   });
+  // 无边框窗口下原生菜单栏不再绘制，菜单快捷键用 before-input-event 兜底
+  sidebarView.webContents.on('before-input-event', handleMenuAccelerator);
+
+  // ── 顶部自绘标题栏 ──
+  // 独立 WebContentsView 占满窗口顶部：模式切换 + 品牌区 + 菜单按钮 + 窗口控制按钮。
+  // 下拉菜单不画在这里（会被视图 bounds 裁掉），由另一个 WebContentsView 承载，见 openTitlebarMenu。
+  titlebarView = new WebContentsView({
+    webPreferences: {
+      preload: path.join(__dirname, 'titlebarPreload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      // preload 只用 contextBridge/ipcRenderer，页面是本地静态文件，开沙箱即可
+      sandbox: true,
+      backgroundThrottling: false,
+    },
+  });
+  mainWindow.contentView.addChildView(titlebarView);
+  loadTitlebarView(titlebarView.webContents);
+  guardViewNavigation(titlebarView.webContents);
+  titlebarView.webContents.on('before-input-event', handleMenuAccelerator);
+  // 刻意不监听标题栏的 blur 来关菜单：显示菜单视图会让焦点重新计算（可能变成
+  // 「无焦点视图」），据此关菜单会让菜单刚弹出就被自己关掉。关闭触发点改为：
+  // 侧栏 / 聊天视图获得焦点（点了别处）、窗口失活、窗口移动或缩放、Esc、点标题栏空白。
+
+  // 最大化 / 全屏状态变化推给标题栏（切换「最大化 / 还原」按钮图标）
+  const pushTitlebarWindowState = (): void => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    sendToTitlebar('titlebar:window-state', { maximized: mainWindow.isMaximized() });
+  };
+  mainWindow.on('maximize', pushTitlebarWindowState);
+  mainWindow.on('unmaximize', pushTitlebarWindowState);
+  mainWindow.on('enter-full-screen', pushTitlebarWindowState);
+  mainWindow.on('leave-full-screen', pushTitlebarWindowState);
 
   // ── 右侧聊天视图管理器 ──
   let uiLanguage: 'auto' | 'zh' | 'en' = 'auto';
@@ -321,6 +568,10 @@ function createMainWindow(): void {
     systemLocale: getSystemLocaleForStartup(),
     uiLanguage,
     highlightLanguages,
+    // 聊天视图整体下移，给顶部自绘标题栏让位
+    topInset: TITLEBAR_HEIGHT,
+    // 视图模式随窗口模式推导：悬浮窗隐藏原生侧栏，列表改由 webview 顶栏渲染
+    viewMode: windowMode === 'floating' ? 'single' : 'multi',
     onActiveSessionChanged: (sessionId) => {
       sidebarView?.webContents.send('sidebar:active-session-changed', sessionId);
     },
@@ -329,6 +580,10 @@ function createMainWindow(): void {
       sidebarView?.webContents.send('sidebar:session-loaded-changed', sessionIds);
     },
     onViewCreated: (view) => {
+      // 无边框窗口下原生菜单栏不再绘制，菜单快捷键用 before-input-event 兜底
+      view.webContents.on('before-input-event', handleMenuAccelerator);
+      // 焦点移到聊天视图：关掉标题栏下拉菜单
+      view.webContents.on('focus', () => closeTitlebarMenu());
       view.webContents.on('did-finish-load', () => {
         showMainWindow(); // 聊天视图加载完成再显示窗口，避免空白闪烁
         layout(); // 页面加载完成后按当前实际尺寸重排，避免初始视口偏差导致输入框被遮挡
@@ -346,6 +601,8 @@ function createMainWindow(): void {
       });
     },
   });
+
+  // 布局模式已由构造参数 viewMode 决定（浮窗启动即单视图），无需再补一次
 
   // 初始打开一个新对话
   chatViews.openNewConversation();
@@ -369,6 +626,8 @@ function createMainWindow(): void {
   mainWindow.once('show', () => {
     layout();
     setTimeout(layout, 100); // 等待窗口框架完全生效后再重算一次，双保险
+    // 浮窗模式启动时按钉住状态置顶（置顶要在窗口显示后落，隐藏时设置可能不生效）
+    if (windowMode === 'floating') applyAlwaysOnTop(floatingPinned);
   });
 
   // ── 白屏恢复：WebContentsView 偶发"整个页面空白，调整窗口大小后才恢复" ──
@@ -394,7 +653,14 @@ function createMainWindow(): void {
     chatViews?.dispose();
     mainWindow = undefined;
     sidebarView = undefined;
+    titlebarView = undefined;
+    titlebarMenuView = undefined;
     chatViews = undefined;
+    // 菜单状态是模块级的，必须随窗口一起复位：窗口销毁后重建（托盘/activate）时，
+    // 残留的 openId 会让该分区点不开，残留的尺寸缓存会让新视图直接显示空白面板。
+    titlebarMenuOpenId = null;
+    titlebarMenuPrevFocusId = undefined;
+    invalidateTitlebarMenuCache();
     // 窗口已销毁：停止白屏恢复相关的重绘定时器（纯防御性清理）
     if (focusRepaintTimer) {
       clearTimeout(focusRepaintTimer);
@@ -435,10 +701,11 @@ function showMainWindowFromTray(): void {
   if (mainWindow.isMinimized()) {
     mainWindow.restore();
   }
-  // Windows 上从托盘/后台恢复时，先置顶再取消，避免窗口只闪烁不聚焦
-  mainWindow.setAlwaysOnTop(true);
+  // Windows 上从托盘/后台恢复时，先置顶再取消，避免窗口只闪烁不聚焦。
+  // 浮窗模式下「取消置顶」要回到该模式的置顶状态（钉住时保持置顶）。
+  applyAlwaysOnTop(true);
   mainWindow.focus();
-  mainWindow.setAlwaysOnTop(false);
+  applyAlwaysOnTop(windowMode === 'floating' && floatingPinned);
   wakeToggleActive = true;
   // 用户已经打开界面，取消托盘闪烁提醒
   cancelAttention();
@@ -899,13 +1166,300 @@ function getSystemLocaleForStartup(): string {
 
 /**
  * 整体布局：侧栏固定左侧，聊天视图占右侧剩余空间。
+ * 浮窗（单视图）模式下隐藏侧栏，聊天视图占满整宽。
  * 依赖均为模块级变量，因此可提升为模块级函数供 repaintAllViews 复用。
  */
 function layout(): void {
   if (!mainWindow) return;
-  const [, h] = mainWindow.getContentSize();
-  sidebarView?.setBounds({ x: 0, y: 0, width: SIDEBAR_WIDTH, height: h });
+  const [w, h] = mainWindow.getContentSize();
+  // 顶部标题栏整条占满宽度；侧栏与聊天视图整体下移 TITLEBAR_HEIGHT
+  titlebarView?.setBounds({ x: 0, y: 0, width: w, height: TITLEBAR_HEIGHT });
+  const contentHeight = Math.max(0, h - TITLEBAR_HEIGHT);
+  if (windowMode === 'floating') {
+    // 单视图模式：侧栏收成 0 尺寸，聊天视图占满整宽。
+    // 刻意用 0×0 bounds 而不是 setVisible(false)：本仓库已知 WebContentsView 被标记隐藏后
+    // 重新显示时可能丢合成表面（整页空白，需 resize 才恢复），收成 0 尺寸不触发那条路径。
+    sidebarView?.setBounds({ x: 0, y: TITLEBAR_HEIGHT, width: 0, height: 0 });
+  } else {
+    sidebarView?.setBounds({ x: 0, y: TITLEBAR_HEIGHT, width: SIDEBAR_WIDTH, height: contentHeight });
+  }
   chatViews?.layout();
+}
+
+/**
+ * 设置窗口置顶。
+ *
+ * Electron 44 在部分 Windows 环境下默认层级（floating）不会真正落下
+ * WS_EX_TOPMOST（`isAlwaysOnTop()` 仍为 false），「钉住」看起来没生效；
+ * 这里逐级兜底：默认层级 → 显式 pop-up-menu → 先取消再设 pop-up-menu。
+ */
+function applyAlwaysOnTop(on: boolean): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.setAlwaysOnTop(on);
+  if (!on || mainWindow.isAlwaysOnTop()) return;
+  // 兜底 1：显式 pop-up-menu 层级（部分环境下默认层级不生效）
+  mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
+  if (mainWindow.isAlwaysOnTop()) return;
+  // 兜底 2：个别环境下「flag 不变、只换层级」会被忽略，先取消再设置一次
+  mainWindow.setAlwaysOnTop(false);
+  mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
+}
+
+/** 当前模式是否允许切换（未打开工作区时禁用：浮窗隐藏侧栏，无法再选工作区） */
+function canToggleWindowMode(): boolean {
+  return !!workspacePath;
+}
+
+/**
+ * 向标题栏视图发消息。
+ *
+ * 统一判存活：窗口拆除期间（blur/hide 会触发关闭菜单）视图可能已销毁，
+ * 直接 send 会抛 "Object has been destroyed" 并中断关闭流程。
+ */
+function sendToTitlebar(channel: string, payload: unknown): void {
+  const wc = titlebarView?.webContents;
+  if (!wc || wc.isDestroyed()) return;
+  wc.send(channel, payload);
+}
+
+/**
+ * 该 IPC 是否来自应用自有的标题栏 / 菜单视图。
+ * titlebar:* 与 titlebar-menu:* 能触发退出、切工作区、改窗口模式等动作，
+ * 不能仅凭「有 ipcRenderer 就能调」放行。
+ */
+function isTitlebarSender(sender: Electron.WebContents): boolean {
+  const titlebar = titlebarView?.webContents;
+  if (titlebar && !titlebar.isDestroyed() && sender === titlebar) return true;
+  const menu = titlebarMenuView?.webContents;
+  return !!menu && !menu.isDestroyed() && sender === menu;
+}
+
+/** 把窗口模式 / 置顶状态 / 工作区推给标题栏（按钮高亮、禁用态、浮窗标题） */
+function pushTitlebarModeState(): void {
+  sendToTitlebar('titlebar:mode-state', {
+    mode: windowMode,
+    pinned: windowMode === 'floating' && floatingPinned,
+    canToggleMode: canToggleWindowMode(),
+    // 浮窗没有侧栏，品牌位改显示当前工作目录名，给用户上下文
+    workspaceName: workspaceDisplayName() || null,
+  });
+}
+
+/**
+ * 落盘用的窗口矩形。
+ *
+ * Windows 会对无边框窗口的尺寸做 1~4 DIP 的微调（请求 1294 实际得到 1296）。
+ * 若把微调后的实际值落盘、下次再按它请求，尺寸会逐次变大；这里与「程序设置过的
+ * 目标矩形」偏差在容差内时改用目标值，消除漂移。用户真正拖动/缩放造成的偏差更大，
+ * 此时按实际值保存，并把基线更新为实际值（后续以它为准）。
+ */
+function resolvePersistableWindowRect(
+  actual: { x: number; y: number; width: number; height: number },
+): { x: number; y: number; width: number; height: number } {
+  const target = lastRequestedWindowRect;
+  if (!target) return actual;
+  const drift = Math.max(
+    Math.abs(actual.x - target.x),
+    Math.abs(actual.y - target.y),
+    Math.abs(actual.width - target.width),
+    Math.abs(actual.height - target.height),
+  );
+  if (drift <= WINDOW_RECT_DRIFT_TOLERANCE) return { ...target };
+  lastRequestedWindowRect = { ...actual };
+  return actual;
+}
+
+/** 记录当前模式的窗口位置与大小（切换模式前调用，避免新模式覆盖旧模式的记录） */
+function captureCurrentWindowRect(): void {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized()) return;
+  saveWindowRect(windowMode, resolvePersistableWindowRect(mainWindow.getNormalBounds()));
+}
+
+/**
+ * 等待一次窗口事件，最多等 timeoutMs 后放行。
+ *
+ * 用于「先还原最大化 / 退出全屏，再 setBounds」：这两个状态变化都是异步的，
+ * 事件没落定就 setBounds 会被忽略或只改「还原尺寸」。超时兜底避免事件不来时永久卡住。
+ */
+function waitForWindowEvent(
+  win: BrowserWindow,
+  event: 'unmaximize' | 'leave-full-screen',
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise((resolve) => {
+    // BrowserWindow.once 的重载不接受联合类型的事件名，这里按 EventEmitter 使用
+    const emitter = win as unknown as NodeJS.EventEmitter;
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      emitter.removeListener(event, finish);
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    emitter.once(event, finish);
+  });
+}
+
+/**
+ * 切换窗口模式。
+ *
+ * - normal → floating：记录完整模式尺寸 → 收窄到浮窗尺寸（默认 480 宽 / 工作区 80% 高）、
+ *   隐藏侧栏（单视图）、按钉住状态置顶
+ * - floating → normal：记录浮窗尺寸 → 恢复到完整模式尺寸、显示侧栏、取消置顶
+ *
+ * 尺寸按模式独立存储；切换过程中复用同一个窗口与聊天 webview，不重新加载对话。
+ */
+async function applyWindowMode(mode: WindowMode): Promise<void> {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mode === windowMode) return;
+  // 浮窗模式隐藏侧栏，未打开工作区时无从选择工作区，因此禁用切换
+  if (mode === 'floating' && !canToggleWindowMode()) return;
+  // 切换过程含 await：期间用户再点一次切换按钮会重入，直接把状态改乱
+  if (windowModeSwitching) return;
+  windowModeSwitching = true;
+  try {
+    // 最大化/全屏时先还原，否则 setBounds 会被忽略或只改「还原尺寸」。
+    // 两个状态变化都是异步的（macOS 退出全屏还有过渡动画），必须等事件落定再 setBounds。
+    if (mainWindow.isFullScreen()) {
+      // 先挂监听再触发动作，避免事件在注册前就发出、白等一个超时
+      const leftFullScreen = waitForWindowEvent(mainWindow, 'leave-full-screen', 1000);
+      mainWindow.setFullScreen(false);
+      await leftFullScreen;
+    }
+    if (mainWindow.isMaximized()) {
+      const unmaximized = waitForWindowEvent(mainWindow, 'unmaximize', 1000);
+      mainWindow.unmaximize();
+      await unmaximized;
+    }
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+
+    // 先按旧模式落盘当前位置与尺寸，再切换（后续 move/resize 会写入新模式的槽位）
+    captureCurrentWindowRect();
+    windowMode = mode;
+
+    if (mode === 'floating') {
+      mainWindow.setMinimumSize(MIN_FLOATING_WIDTH, MIN_FLOATING_HEIGHT);
+      // 按浮窗自己记录的位置与尺寸还原；没有记录时沿用当前位置、用默认尺寸
+      applyWindowRect(readSavedWindowRect('floating') ?? defaultFloatingWindowRect());
+      // 置顶放在 setBounds 之后：尺寸变更会把 z-order 层级重置回普通
+      applyAlwaysOnTop(floatingPinned);
+    } else {
+      mainWindow.setMinimumSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT);
+      applyWindowRect(readSavedWindowRect('normal') ?? defaultNormalWindowRect());
+      applyAlwaysOnTop(false);
+    }
+
+    // 悬浮窗隐藏原生侧栏：webview 顶栏接管对话列表（历史对话入口）并隐藏关闭按钮。
+    // 该调用同时负责布局（聊天视图左边距）与能力声明，不要再单独改布局开关。
+    chatViews?.setViewMode(mode === 'floating' ? 'single' : 'multi');
+    // 记录模式供下次启动恢复；浮窗模式下标题显示当前工作目录
+    saveLastWindowMode(mode);
+    syncWindowTitle();
+    layout();
+    pushTitlebarModeState();
+  } finally {
+    windowModeSwitching = false;
+  }
+}
+
+/** 读取上次使用的窗口模式（非法/缺失时按完整模式处理） */
+function readLastWindowMode(): WindowMode {
+  const { windowMode: saved } = readWorkspaceState();
+  return saved === 'floating' ? 'floating' : 'normal';
+}
+
+/** 记录当前窗口模式（切换模式时写盘，下次启动按它恢复） */
+function saveLastWindowMode(mode: WindowMode): void {
+  writeWorkspaceState({ ...readWorkspaceState(), windowMode: mode });
+}
+
+/** 读取上次浮窗的「总在最前」状态（缺失/非法时默认开启） */
+function readLastFloatingPinned(): boolean {
+  const { floatingPinned: saved } = readWorkspaceState();
+  return typeof saved === 'boolean' ? saved : true;
+}
+
+/** 记录浮窗的「总在最前」状态（切换钉住时写盘，下次启动按它恢复） */
+function saveFloatingPinned(pinned: boolean): void {
+  writeWorkspaceState({ ...readWorkspaceState(), floatingPinned: pinned });
+}
+
+/**
+ * 当前应显示的窗口标题。
+ * 浮窗模式下显示当前工作目录（悬浮窗没有侧栏，标题是任务栏/Alt-Tab 里唯一的上下文），
+ * 其余情况显示产品名。
+ */
+function windowTitleForCurrentState(): string {
+  const name = workspaceDisplayName();
+  return windowMode === 'floating' && name ? name : PRODUCT_NAME;
+}
+
+/**
+ * 当前工作目录的显示名（浮窗标题用）。
+ *
+ * 用目录名而不是完整路径：浮窗标题栏只有 480px 宽、任务栏标签也会从右侧截断，
+ * 而路径里最有信息量的恰好是尾部目录名。路径可能带尾部分隔符、混用 / 与 \，
+ * 先去掉尾部分隔符再取 basename；取不到（如盘符根目录）时退回原路径。
+ */
+function workspaceDisplayName(): string {
+  if (!workspacePath) return '';
+  const trimmed = workspacePath.replace(/[\\/]+$/, '');
+  return path.basename(trimmed) || workspacePath;
+}
+
+/** 把窗口标题同步到当前模式 / 工作区 */
+function syncWindowTitle(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.setTitle(windowTitleForCurrentState());
+}
+
+/** 完整模式默认窗口：固定宽度 + 主屏工作区高度的 80% */
+function defaultNormalWindowRect(): { width: number; height: number } {
+  return {
+    width: DEFAULT_WINDOW_WIDTH,
+    height: Math.round(screen.getPrimaryDisplay().workAreaSize.height * 0.8),
+  };
+}
+
+/**
+ * 按目标位置与尺寸调整窗口，并夹回对应显示器工作区内
+ * （切换模式后窗口变窄/变矮，原坐标可能让右边缘或下边缘超出屏幕）。
+ *
+ * rect 不带 x/y（首次切换 / 历史数据只存过宽高）时沿用窗口当前位置。
+ */
+function applyWindowRect(rect: { x?: number; y?: number; width: number; height: number }): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const current = mainWindow.getBounds();
+  const probe = { x: rect.x ?? current.x, y: rect.y ?? current.y, width: rect.width, height: rect.height };
+  // 记录的位置可能已经失效（换屏 / 拔显示器），失效时退回当前位置
+  const useSavedPosition =
+    rect.x !== undefined && rect.y !== undefined && isRectVisibleOnSomeDisplay(probe);
+  const anchorX = useSavedPosition ? rect.x! : current.x;
+  const anchorY = useSavedPosition ? rect.y! : current.y;
+  const { workArea } = screen.getDisplayMatching({ ...probe, x: anchorX, y: anchorY });
+  // 最小尺寸按当前模式取：完整模式的最小尺寸（800x600）与浮窗（280x240）不同，
+  // 用浮窗的最小值夹完整模式会让 setMinimumSize 成为唯一约束，语义错误且脆弱
+  const min = minWindowSizeFor(windowMode);
+  const width = Math.max(min.width, Math.min(Math.round(rect.width), workArea.width));
+  const height = Math.max(min.height, Math.min(Math.round(rect.height), workArea.height));
+  const x = Math.min(Math.max(anchorX, workArea.x), workArea.x + workArea.width - width);
+  const y = Math.min(Math.max(anchorY, workArea.y), workArea.y + workArea.height - height);
+  mainWindow.setBounds({ x, y, width, height });
+  // 记录目标矩形：OS 可能对无边框窗口尺寸做微调，落盘时用它抵消
+  lastRequestedWindowRect = { x, y, width, height };
+}
+
+/** 切换浮窗的「总在最前」 */
+function toggleFloatingPinned(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (windowMode !== 'floating') return;
+  floatingPinned = !floatingPinned;
+  applyAlwaysOnTop(floatingPinned);
+  // 落盘：下次启动（或下次进浮窗）沿用这次的选择
+  saveFloatingPinned(floatingPinned);
+  pushTitlebarModeState();
 }
 
 /**
@@ -939,6 +1493,7 @@ function repaintAllViews(): void {
     try { view.webContents.invalidate(); } catch { /* ignore */ }
   }
   try { sidebarView?.webContents.invalidate(); } catch { /* ignore */ }
+  try { titlebarView?.webContents.invalidate(); } catch { /* ignore */ }
 }
 
 /** 窗口从不可见/遮挡状态恢复可见时，延迟强制重绘一次 */
@@ -947,74 +1502,438 @@ function scheduleRepaintOnVisible(): void {
   setTimeout(repaintAllViews, 100); // 等待窗口框架生效后再补一次，双保险
 }
 
-function setupMenu(): void {
+/** 显示「关于」对话框（原生菜单与自绘菜单共用） */
+function showAboutDialog(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  void dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: `About ${PRODUCT_NAME}`,
+    message: PRODUCT_NAME,
+    detail: `Version ${app.getVersion()}`,
+  });
+}
+
+/**
+ * 构建菜单定义（原生菜单与自绘标题栏菜单的唯一来源）。
+ * 分区内的 items 支持 separator / item / submenu；自绘菜单会把 submenu 平铺展开。
+ */
+function buildMenuSections(): MenuSectionDef[] {
   const isMac = process.platform === 'darwin';
-  const template: Electron.MenuItemConstructorOptions[] = [
-    ...(isMac ? [{ label: app.name, submenu: [{ role: 'about' as const }, { type: 'separator' as const }, { role: 'quit' as const }] }] : []),
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'Open Workspace Folder...',
-          accelerator: 'CmdOrCtrl+O',
-          click: () => { void openWorkspaceDialog(); },
-        },
+  const sections: MenuSectionDef[] = [];
+
+  // macOS 的应用菜单在屏幕顶部系统菜单栏里（平台约定），保留原生 role
+  if (isMac) {
+    sections.push({
+      id: 'app',
+      label: app.name,
+      items: [
+        { id: 'app.about', label: `About ${PRODUCT_NAME}`, role: 'about' },
         { type: 'separator' },
-        {
-          label: 'Recent Workspaces',
-          submenu: buildRecentWorkspacesMenu(),
-        },
-        { type: 'separator' },
-        // 唤醒快捷键：Electron 专属能力（最小化到托盘后用该快捷键呼出窗口）
-        {
-          label: 'Shortcut...',
-          click: () => openShortcutDialog(),
-        },
-        { type: 'separator' },
-        isMac ? { role: 'close' } : { role: 'quit' },
+        { id: 'app.quit', label: `Quit ${PRODUCT_NAME}`, role: 'quit' },
       ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        {
-          label: 'Toggle Developer Tools',
-          accelerator: 'CmdOrCtrl+Shift+I',
-          click: () => toggleDevTools(),
-        },
-      ],
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: `About ${PRODUCT_NAME}`,
-          click: () => {
-            if (!mainWindow || mainWindow.isDestroyed()) return;
-            void dialog.showMessageBox(mainWindow, {
-              type: 'info',
-              title: `About ${PRODUCT_NAME}`,
-              message: PRODUCT_NAME,
-              detail: `Version ${app.getVersion()}`,
-            });
-          },
-        },
-      ],
-    },
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+    });
+  }
+
+  sections.push({
+    id: 'file',
+    label: 'File',
+    items: [
+      {
+        id: 'file.openWorkspace',
+        label: 'Open Workspace Folder...',
+        accelerator: 'CmdOrCtrl+O',
+        run: () => { void openWorkspaceDialog(); },
+      },
+      { id: 'file.recent', label: 'Recent Workspaces', submenu: buildRecentWorkspacesMenu() },
+      { type: 'separator' },
+      // 唤醒快捷键：Electron 专属能力（最小化到托盘后用该快捷键呼出窗口）
+      { id: 'file.shortcut', label: 'Shortcut...', run: () => openShortcutDialog() },
+      { type: 'separator' },
+      isMac
+        ? { id: 'file.close', label: 'Close Window', role: 'close' as const }
+        : { id: 'file.quit', label: 'Exit', run: () => app.quit() },
+    ],
+  });
+
+  sections.push({
+    id: 'view',
+    label: 'View',
+    items: [
+      {
+        id: 'view.devTools',
+        label: 'Toggle Developer Tools',
+        accelerator: 'CmdOrCtrl+Shift+I',
+        run: () => toggleDevTools(),
+      },
+    ],
+  });
+
+  sections.push({
+    id: 'help',
+    label: 'Help',
+    items: [{ id: 'help.about', label: `About ${PRODUCT_NAME}`, run: () => showAboutDialog() }],
+  });
+
+  return sections;
 }
 
 /** 构建“最近打开的工作目录”子菜单项（目录已不存在时自动过滤） */
-function buildRecentWorkspacesMenu(): Electron.MenuItemConstructorOptions[] {
+function buildRecentWorkspacesMenu(): MenuItemDef[] {
   const recents = readRecentWorkspaces();
   if (recents.length === 0) {
-    return [{ label: 'No Recent Workspaces', enabled: false }];
+    return [{ id: 'file.recent.none', label: 'No Recent Workspaces', enabled: false }];
   }
-  return recents.map((p) => ({
+  return recents.map((p, index) => ({
+    id: `file.recent.${index}`,
     label: p,
-    click: () => applyWorkspace(p),
+    run: () => applyWorkspace(p),
   }));
+}
+
+/** 定义 → 原生菜单项（子菜单保留层级） */
+function toNativeMenuItem(def: MenuItemDef): Electron.MenuItemConstructorOptions {
+  if (def.type === 'separator') return { type: 'separator' };
+  const item: Electron.MenuItemConstructorOptions = { label: def.label };
+  if (def.accelerator) item.accelerator = def.accelerator;
+  if (def.enabled === false) item.enabled = false;
+  if (def.submenu) {
+    item.submenu = def.submenu.map(toNativeMenuItem);
+  } else if (def.role) {
+    item.role = def.role;
+  } else if (def.id && def.run) {
+    item.click = () => invokeMenuAction(def.id!);
+  }
+  return item;
+}
+
+/** 定义 → 自绘菜单展示节点（子菜单保留为二级飞出菜单，默认收起） */
+function toTitlebarMenuNodes(defs: MenuItemDef[]): TitlebarMenuNode[] {
+  const nodes: TitlebarMenuNode[] = [];
+  for (const def of defs) {
+    if (def.type === 'separator') {
+      nodes.push({ type: 'separator' });
+      continue;
+    }
+    if (def.submenu) {
+      if (!def.id) continue;
+      nodes.push({
+        type: 'submenu',
+        id: def.id,
+        label: def.label ?? '',
+        enabled: def.enabled !== false,
+        items: toTitlebarMenuNodes(def.submenu),
+      });
+      continue;
+    }
+    if (!def.id) continue;
+    nodes.push({
+      type: 'item',
+      id: def.id,
+      label: def.label ?? '',
+      accelerator: def.accelerator ? formatAcceleratorForDisplay(def.accelerator) : undefined,
+      enabled: def.enabled !== false,
+      danger: def.danger,
+    });
+  }
+  return nodes;
+}
+
+/** 收集 id → 动作 */
+function collectMenuActions(defs: MenuItemDef[], actions: Map<string, () => void>): void {
+  for (const def of defs) {
+    if (def.submenu) collectMenuActions(def.submenu, actions);
+    else if (def.id && def.run) actions.set(def.id, def.run);
+  }
+}
+
+/** 收集 规范化 accelerator → id（无边框窗口下 before-input-event 兜底用） */
+function collectMenuAccelerators(defs: MenuItemDef[], index: Map<string, string>): void {
+  for (const def of defs) {
+    if (def.submenu) {
+      collectMenuAccelerators(def.submenu, index);
+      continue;
+    }
+    if (!def.id || !def.run || !def.accelerator) continue;
+    const normalized = normalizeAccelerator(def.accelerator);
+    if (normalized) index.set(normalized, def.id);
+  }
+}
+
+/**
+ * 执行菜单项动作。
+ * 原生菜单 accelerator 与 before-input-event 兜底可能对同一次按键都触发，
+ * 因此按 id 做短时间去重（250ms），避免「按一次 Ctrl+O 弹出两个对话框」。
+ */
+function invokeMenuAction(id: string): void {
+  const run = titlebarMenuActions.get(id);
+  if (!run) return;
+  const now = Date.now();
+  if (now - (recentMenuActionAt.get(id) ?? 0) < 250) return;
+  recentMenuActionAt.set(id, now);
+  try {
+    run();
+  } catch (err) {
+    console.error(`[main] menu action failed (${id}):`, err);
+  }
+}
+
+/**
+ * 菜单快捷键兜底。
+ *
+ * 主窗口改为无边框后系统菜单栏不再绘制，原生 accelerator 是否仍然生效依赖平台实现；
+ * 这里在 before-input-event 里按同一份 accelerator 定义再兜一次。
+ * 两处都命中时由 invokeMenuAction 去重，不会重复执行。
+ * macOS 保留系统菜单栏（原生 accelerator 可用），不走兜底。
+ */
+function handleMenuAccelerator(event: Electron.Event, input: Electron.Input): void {
+  if (process.platform === 'darwin') return;
+  if (input.type !== 'keyDown' || input.isAutoRepeat) return;
+  const accelerator = acceleratorFromKeyboardEvent({
+    code: input.code,
+    key: input.key,
+    ctrlKey: input.control,
+    altKey: input.alt,
+    metaKey: input.meta,
+    shiftKey: input.shift,
+  });
+  if (!accelerator) return;
+  const id = titlebarMenuAccelerators.get(accelerator);
+  if (!id) return;
+  event.preventDefault();
+  invokeMenuAction(id);
+}
+
+/**
+ * 建立菜单：原生菜单与自绘标题栏菜单共用同一份定义。
+ *
+ * 原生菜单在 macOS 是屏幕顶部的系统菜单栏，在 Windows/Linux 无边框窗口下不绘制
+ * （保留它可让 role 类平台行为保持一致）；自绘菜单负责实际展示。
+ */
+function setupMenu(): void {
+  const sections = buildMenuSections();
+
+  const actions = new Map<string, () => void>();
+  const accelerators = new Map<string, string>();
+  for (const section of sections) {
+    collectMenuActions(section.items, actions);
+    collectMenuAccelerators(section.items, accelerators);
+  }
+  titlebarMenuActions = actions;
+  titlebarMenuAccelerators = accelerators;
+  titlebarMenuSections = sections.map((section) => ({
+    id: section.id,
+    label: section.label,
+    items: toTitlebarMenuNodes(section.items),
+  }));
+
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate(
+      sections.map((section) => ({
+        label: section.label,
+        submenu: section.items.map(toNativeMenuItem),
+      })),
+    ),
+  );
+
+  // 已打开的菜单先关掉并作废测量缓存，避免重建后仍展示旧内容
+  // （切换工作区会重建「最近打开」列表，尺寸也随之变化）
+  closeTitlebarMenu();
+  invalidateTitlebarMenuCache();
+  // 通知标题栏重建菜单按钮（最近工作区变化时也要刷新）
+  sendToTitlebar('titlebar:model-changed', {
+    sections: titlebarMenuSections.map((s) => ({ id: s.id, label: s.label })),
+  });
+}
+
+/** 创建（或复用）自绘下拉菜单视图：挂在主窗口内容区，关闭时隐藏（不销毁，复用已渲染页面） */
+function ensureTitlebarMenuView(): WebContentsView {
+  if (titlebarMenuView && !titlebarMenuView.webContents.isDestroyed()) return titlebarMenuView;
+
+  const view = new WebContentsView({
+    webPreferences: {
+      preload: path.join(__dirname, 'titlebarMenuPreload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      // 页面由主进程生成的 data: URL 渲染、preload 只用 contextBridge，可开沙箱
+      sandbox: true,
+      // 与侧栏同理：避免被遮挡/隐藏时暂停渲染，重新显示时出现空白帧
+      backgroundThrottling: false,
+    },
+  });
+  // 页面内容完全由主进程生成，但仍拒绝任何导航 / window.open：
+  // 一旦被拖放导航到外部页面，preload 重跑会把 titlebarMenuAPI 交给外部页面
+  guardViewNavigation(view.webContents);
+  // 视图自身背景必须透明：页面底色透明只解决页面内部，视图默认是白底，
+  // 二级飞出面板之外多出来的那块会露出白边（实测踩过）
+  view.setBackgroundColor('#00000000');
+  // 先给一个正常视口尺寸再隐藏：页面需要视口才能量出菜单自然高度
+  view.setBounds({ x: 0, y: 0, width: TITLEBAR_MENU_WIDTH, height: 480 });
+  view.setVisible(false);
+  // 菜单视图始终置于最上层：聊天视图是动态 addChildView 的，会盖在它上面
+  mainWindow?.contentView.addChildView(view);
+  titlebarMenuView = view;
+  return view;
+}
+
+/** 隐藏菜单视图（保留 bounds，便于下次打开时页面已按正常视口完成布局） */
+function hideTitlebarMenuView(): void {
+  const view = titlebarMenuView;
+  if (!view || view.webContents.isDestroyed()) return;
+  view.setVisible(false);
+  // 页面会被复用（不重新加载），通知它收起二级飞出面板，避免下次打开时残留展开态
+  view.webContents.send('titlebar-menu:reset');
+}
+
+/** 关闭下拉菜单（视图复用，只隐藏），并把焦点还给打开前的视图 */
+function closeTitlebarMenu(): void {
+  const id = titlebarMenuOpenId;
+  if (!id) return;
+  titlebarMenuOpenId = null;
+  hideTitlebarMenuView();
+  sendToTitlebar('titlebar:menu-state', { openId: null });
+  restoreFocusAfterMenu();
+}
+
+/** 把焦点还给打开菜单前的视图（窗口仍在前台时才还，避免抢回已切走的焦点） */
+function restoreFocusAfterMenu(): void {
+  const prevId = titlebarMenuPrevFocusId;
+  titlebarMenuPrevFocusId = undefined;
+  if (prevId === undefined) return;
+  if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isFocused()) return;
+  const prev = webContents.fromId(prevId);
+  if (prev && !prev.isDestroyed()) prev.focus();
+}
+
+/**
+ * 按当前锚点与菜单尺寸把菜单视图摆到标题栏下方并显示。
+ *
+ * 尺寸由菜单页上报：主面板 ∪ 二级飞出面板。offsetX 是页面相对锚点的左偏移
+ * （二级面板向左展开时为负），视图左边要跟着左移，主面板才能对齐菜单按钮。
+ */
+function showTitlebarMenu(size: { width: number; height: number; offsetX?: number }): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const view = titlebarMenuView;
+  if (!view || view.webContents.isDestroyed()) return;
+
+  const content = mainWindow.getContentBounds();
+  const offsetX = Math.round(size.offsetX ?? 0);
+  // 上限放到「主面板 + 二级面板」，避免把二级菜单裁掉
+  const maxWidth = TITLEBAR_MENU_WIDTH + TITLEBAR_SUBMENU_WIDTH;
+  const width = Math.max(160, Math.min(maxWidth, Math.round(size.width) || TITLEBAR_MENU_WIDTH));
+  // 高度兜底：菜单页已按 maxHeight 自限，这里防止异常尺寸超出窗口
+  const height = Math.max(
+    36,
+    Math.min(Math.round(size.height) || 120, Math.max(36, content.height - TITLEBAR_HEIGHT - 8)),
+  );
+  const minX = content.x;
+  const maxX = content.x + content.width - width;
+  const anchorX = content.x + titlebarMenuAnchorX + offsetX;
+  const x = Math.min(Math.max(minX, anchorX), Math.max(minX, maxX));
+  const y = content.y + TITLEBAR_HEIGHT + 2;
+
+  // 内容区坐标系：把屏幕坐标换算回相对内容区的位置
+  view.setBounds({
+    x: Math.round(x - content.x),
+    y: Math.round(y - content.y),
+    width,
+    height,
+  });
+  view.setVisible(true);
+  // 重新 addChildView 把它提到最上层（聊天视图可能在其后添加过）。
+  // 注意不要先 removeChildView：那会让焦点掉成「无视图」，菜单会随即被关掉。
+  mainWindow.contentView.addChildView(view);
+  // 焦点交给菜单视图：Esc / 方向键 / 点击菜单项都依赖它
+  view.webContents.focus();
+}
+
+/** 打开指定分区的下拉菜单（标题栏菜单按钮点击） */
+function openTitlebarMenu(payload: { id?: string; anchorX?: number }): void {
+  if (process.platform === 'darwin') return; // macOS 用系统菜单栏，不弹自绘菜单
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  const id = typeof payload?.id === 'string' ? payload.id : '';
+  const section = titlebarMenuSections.find((s) => s.id === id);
+  if (!section) return;
+  if (titlebarMenuOpenId === id) return; // 已经是打开状态，不重复加载
+
+  titlebarMenuOpenId = id;
+  // 数值兜底：NaN / Infinity 会一路传到 showTitlebarMenu 的 Math.min/max，
+  // 最终 setBounds({ x: NaN }) 抛错
+  const anchorX = Number(payload.anchorX);
+  titlebarMenuAnchorX = Number.isFinite(anchorX) ? Math.max(0, Math.round(anchorX)) : 0;
+  // 记下当前焦点视图，关闭时还回去（菜单视图会抢走焦点）
+  const focusedBefore = webContents.getFocusedWebContents();
+  titlebarMenuPrevFocusId = focusedBefore && !focusedBefore.isDestroyed() ? focusedBefore.id : undefined;
+
+  const view = ensureTitlebarMenuView();
+  const cached = titlebarMenuSizeCache.get(id);
+  if (cached && titlebarMenuLoadedId === id) {
+    // 尺寸已知且页面就是这一份：直接摆位显示，零加载、零闪烁
+    showTitlebarMenu(cached);
+  } else {
+    // 先隐藏并给一个正常视口再换内容：避免旧菜单内容在换页过程中被看到，
+    // 同时保证页面能量出菜单自然高度
+    view.setVisible(false);
+    view.setBounds({ x: 0, y: 0, width: TITLEBAR_MENU_WIDTH, height: 480 });
+    titlebarMenuLoadedId = id;
+    const content = mainWindow.getContentBounds();
+    // 菜单最大高度：窗口内容区扣掉标题栏与上下留白；超出时菜单内部滚动
+    const maxHeight = Math.max(80, content.height - TITLEBAR_HEIGHT - 8);
+    // 锚点右侧剩余宽度：不够放二级飞出面板时，菜单页会改成向左展开
+    const availableRight = content.width - titlebarMenuAnchorX - 4;
+    const html = getTitlebarMenuHtml({
+      items: section.items,
+      isDark: nativeTheme.shouldUseDarkColors,
+      maxHeight,
+      availableRight,
+      // 每次生成新 nonce：菜单页的内联 style/script 只认这一个，注入的脚本无法执行
+      nonce: crypto.randomBytes(16).toString('base64'),
+    });
+    // 失败必须复位 openId：否则该分区的按钮再也点不开（openTitlebarMenu 开头会提前返回）
+    view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch((err) => {
+      console.error(`[titlebar] menu load failed (${id}):`, err);
+      closeTitlebarMenu();
+    });
+  }
+  sendToTitlebar('titlebar:menu-state', { openId: id });
+}
+
+/**
+ * 菜单页渲染完成后上报尺寸。
+ * 首次打开（或菜单内容变化后）走这里：缓存尺寸并落到最终位置。
+ */
+function positionTitlebarMenu(size: { width?: number; height?: number; offsetX?: number }): void {
+  const id = titlebarMenuOpenId;
+  if (!id) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const view = titlebarMenuView;
+  if (!view || view.webContents.isDestroyed()) return;
+
+  const measured = {
+    width: Math.max(160, Math.round(Number(size?.width) || TITLEBAR_MENU_WIDTH)),
+    height: Math.max(36, Math.round(Number(size?.height) || 120)),
+    offsetX: Math.round(Number(size?.offsetX) || 0),
+  };
+  const cached = titlebarMenuSizeCache.get(id);
+  // 尺寸与偏移都没变且已经显示：跳过二次 setBounds，避免抖动。
+  // 二级面板展开/收起会改变尺寸与偏移，必须走 setBounds。
+  if (
+    cached
+    && cached.width === measured.width
+    && cached.height === measured.height
+    && cached.offsetX === measured.offsetX
+    && view.getVisible()
+  ) {
+    return;
+  }
+  titlebarMenuSizeCache.set(id, measured);
+  showTitlebarMenu(measured);
+}
+
+/** 菜单内容重建（切换工作区等）后清掉测量缓存，下次打开重新测量 */
+function invalidateTitlebarMenuCache(): void {
+  titlebarMenuSizeCache.clear();
+  titlebarMenuLoadedId = null;
 }
 
 /** 弹出系统目录选择框并应用所选工作区（未传 --workspace= 时的引导入口） */
@@ -1035,6 +1954,10 @@ function applyWorkspace(p: string): void {
   saveLastWorkspace(p);
   // 工作区变化后重建菜单，使“最近打开的工作目录”列表保持最新
   setupMenu();
+  // 打开工作区后「切换浮窗」按钮由禁用变为可用
+  pushTitlebarModeState();
+  // 浮窗模式下标题跟随工作区
+  syncWindowTitle();
   uiHost?.setWorkspacePath(workspacePath);
   // 后续新建的聊天视图携带新 --workspace= 参数
   chatViews?.setWorkspacePath(workspacePath);
@@ -1063,21 +1986,40 @@ function broadcastWorkspace(): void {
  * 位于 Electron userData 目录（Windows 下即 %APPDATA%\<PRODUCT_NAME>\），
  * 用于记录最近一次打开的工作目录与最近打开的工作目录列表（最多 10 个），
  * 其中 lastWorkspace 供下次启动默认打开，recentWorkspaces 供菜单展示；
- * windowSize 记录上次主窗口大小（只存宽高，位置不持久化）。
+ * windowSize / floatingWindowSize 分别记录完整模式与浮窗模式的上次窗口位置与大小
+ * （两个模式各存一份，切换模式时按各自记录还原位置）；
+ * windowMode / floatingPinned 记录上次使用的窗口模式与浮窗置顶状态，启动时优先按它们恢复。
  * 文件格式：
  * {
  *   "lastWorkspace": "C:\\path\\to\\ws",
  *   "recentWorkspaces": ["C:\\path\\to\\ws2", "C:\\path\\to\\ws", ...],
- *   "windowSize": { "width": 1280, "height": 860 }
+ *   "windowSize": { "x": 320, "y": 180, "width": 1280, "height": 860 },
+ *   "floatingWindowSize": { "x": 1500, "y": 120, "width": 480, "height": 780 },
+ *   "windowMode": "floating",
+ *   "floatingPinned": true
  * }
  */
 const MAX_RECENT_WORKSPACES = 10;
 
+/** 窗口位置与大小（x/y 可缺失：历史版本只存过宽高） */
+interface WindowRect {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+}
+
 interface WorkspaceState {
   lastWorkspace?: string;
   recentWorkspaces?: string[];
-  /** 上次主窗口大小；只存宽高，位置始终由 Electron 居中 */
-  windowSize?: { width?: number; height?: number };
+  /** 完整模式窗口位置与大小（字段名沿用 windowSize，现在同时存位置） */
+  windowSize?: WindowRect;
+  /** 悬浮窗模式窗口位置与大小；与完整模式独立存储 */
+  floatingWindowSize?: WindowRect;
+  /** 上次退出时的窗口模式：启动时优先按它恢复 */
+  windowMode?: 'normal' | 'floating';
+  /** 浮窗「总在最前」状态：启动时优先按它恢复（默认 true） */
+  floatingPinned?: boolean;
 }
 
 function getWorkspaceStateFile(): string {
@@ -1148,28 +2090,64 @@ function saveLastWorkspace(p: string): void {
   writeWorkspaceState({ ...prev, lastWorkspace: p, recentWorkspaces });
 }
 
-/**
- * 读取上次保存的主窗口大小（仅宽高）。
- * 非法/缺失/小于最小尺寸时返回 undefined，由调用方回退到默认值。
- */
-function readSavedWindowSize(): { width: number; height: number } | undefined {
-  const { windowSize } = readWorkspaceState();
-  if (!windowSize || typeof windowSize !== 'object') return undefined;
-  const width = Math.round(Number(windowSize.width));
-  const height = Math.round(Number(windowSize.height));
-  if (!Number.isFinite(width) || !Number.isFinite(height)) return undefined;
-  if (width < MIN_WINDOW_WIDTH || height < MIN_WINDOW_HEIGHT) return undefined;
-  return { width, height };
+/** 各模式的最小窗口尺寸（读取历史尺寸时用于过滤非法值） */
+function minWindowSizeFor(mode: WindowMode): { width: number; height: number } {
+  return mode === 'floating'
+    ? { width: MIN_FLOATING_WIDTH, height: MIN_FLOATING_HEIGHT }
+    : { width: MIN_WINDOW_WIDTH, height: MIN_WINDOW_HEIGHT };
 }
 
-/** 保存主窗口大小（只存宽高；位置不落盘，启动时始终居中） */
-function saveWindowSize(width: number, height: number): void {
-  if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+/**
+ * 读取上次保存的窗口位置与大小（按模式区分）。
+ * 宽高非法/缺失/小于该模式最小尺寸时返回 undefined，由调用方回退到默认值；
+ * x/y 缺失（历史数据只存过宽高）时返回的对象里不带 x/y。
+ */
+function readSavedWindowRect(mode: WindowMode): { x?: number; y?: number; width: number; height: number } | undefined {
+  const state = readWorkspaceState();
+  const saved = mode === 'floating' ? state.floatingWindowSize : state.windowSize;
+  if (!saved || typeof saved !== 'object') return undefined;
+  const width = Math.round(Number(saved.width));
+  const height = Math.round(Number(saved.height));
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return undefined;
+  const min = minWindowSizeFor(mode);
+  if (width < min.width || height < min.height) return undefined;
+  const x = Math.round(Number(saved.x));
+  const y = Math.round(Number(saved.y));
+  const hasPosition = Number.isFinite(x) && Number.isFinite(y);
+  return hasPosition ? { x, y, width, height } : { width, height };
+}
+
+/** 保存窗口位置与大小；完整模式与浮窗模式各存一份，互不覆盖 */
+function saveWindowRect(mode: WindowMode, rect: { x: number; y: number; width: number; height: number }): void {
+  if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height)) return;
   const prev = readWorkspaceState();
-  writeWorkspaceState({
-    ...prev,
-    windowSize: { width: Math.round(width), height: Math.round(height) },
+  const saved: WindowRect = {
+    x: Math.round(rect.x),
+    y: Math.round(rect.y),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+  };
+  writeWorkspaceState(
+    mode === 'floating' ? { ...prev, floatingWindowSize: saved } : { ...prev, windowSize: saved },
+  );
+}
+
+/** 判断矩形是否还有足够部分落在某个显示器工作区内（换屏 / 拔显示器后旧坐标可能失效） */
+function isRectVisibleOnSomeDisplay(rect: { x: number; y: number; width: number; height: number }): boolean {
+  // 至少要露出这么多，否则用户拖不回来
+  const minVisibleX = 120;
+  const minVisibleY = 40;
+  return screen.getAllDisplays().some(({ workArea }) => {
+    const overlapX = Math.min(rect.x + rect.width, workArea.x + workArea.width) - Math.max(rect.x, workArea.x);
+    const overlapY = Math.min(rect.y + rect.height, workArea.y + workArea.height) - Math.max(rect.y, workArea.y);
+    return overlapX >= minVisibleX && overlapY >= minVisibleY;
   });
+}
+
+/** 浮窗模式的默认尺寸：宽 480，高度取主屏工作区高度的 80%（位置沿用当前窗口） */
+function defaultFloatingWindowRect(): { width: number; height: number } {
+  const { height: workAreaHeight } = screen.getPrimaryDisplay().workAreaSize;
+  return { width: FLOATING_WINDOW_WIDTH, height: Math.max(MIN_FLOATING_HEIGHT, Math.round(workAreaHeight * 0.8)) };
 }
 
 /**
@@ -1243,6 +2221,93 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: a
 function setupIpc(): void {
   ipcMain.on('webview-message', (event, message: any) => {
     handleWebviewMessageFromSource(event.sender, message);
+  });
+
+  // ── 自绘标题栏 IPC ──
+  // 这些通道能退出应用、切换工作区、改窗口模式，必须校验来源（只接受标题栏 / 菜单视图）。
+  ipcMain.handle('titlebar:get-state', (event) => {
+    if (!isTitlebarSender(event.sender)) throw new Error('unauthorized: titlebar:get-state');
+    return {
+      platform: process.platform,
+      productName: PRODUCT_NAME,
+      maximized: !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized(),
+      sections: titlebarMenuSections.map((s) => ({ id: s.id, label: s.label })),
+      mode: windowMode,
+      pinned: windowMode === 'floating' && floatingPinned,
+      canToggleMode: canToggleWindowMode(),
+      // 浮窗没有侧栏，品牌位改显示当前工作目录名（浮窗标题栏的唯一上下文）
+      workspaceName: workspaceDisplayName() || null,
+      // 标题栏是独立页面，拿不到 core 的 i18n 上下文：文案由主进程按当前语言下发，
+      // 避免中文 tooltip 与英文 aria-label 混排（原先写死在页面里）。
+      labels: {
+        minimize: tt('最小化', 'Minimize'),
+        maximize: tt('最大化', 'Maximize'),
+        restore: tt('还原', 'Restore'),
+        close: tt('关闭', 'Close'),
+        alwaysOnTop: tt('总在最前', 'Always on top'),
+        unpin: tt('取消总在最前', 'Stop always on top'),
+        toggleToFloating: tt('切换到悬浮窗模式', 'Switch to floating window'),
+        toggleToFull: tt('切换到完整模式', 'Switch to full mode'),
+        modeDisabled: tt('未打开工作区，无法切换', 'Open a workspace first to switch mode'),
+      },
+    };
+  });
+
+  ipcMain.on('titlebar:toggle-mode', (event) => {
+    if (!isTitlebarSender(event.sender)) return;
+    void applyWindowMode(windowMode === 'floating' ? 'normal' : 'floating');
+  });
+
+  ipcMain.on('titlebar:toggle-pin', (event) => {
+    if (!isTitlebarSender(event.sender)) return;
+    toggleFloatingPinned();
+  });
+
+  ipcMain.on('titlebar:minimize', (event) => {
+    if (!isTitlebarSender(event.sender)) return;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.minimize();
+  });
+
+  ipcMain.on('titlebar:toggle-maximize', (event) => {
+    if (!isTitlebarSender(event.sender)) return;
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMaximized()) mainWindow.unmaximize();
+    else mainWindow.maximize();
+  });
+
+  ipcMain.on('titlebar:close', (event) => {
+    if (!isTitlebarSender(event.sender)) return;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+  });
+
+  ipcMain.on('titlebar:open-menu', (event, payload: { id?: string; anchorX?: number }) => {
+    if (!isTitlebarSender(event.sender)) return;
+    openTitlebarMenu(payload ?? {});
+  });
+
+  ipcMain.on('titlebar:close-menu', (event) => {
+    if (!isTitlebarSender(event.sender)) return;
+    closeTitlebarMenu();
+  });
+
+  // ── 自绘下拉菜单窗口 IPC ──
+  ipcMain.on('titlebar-menu:select', (event, id: string) => {
+    if (!isTitlebarSender(event.sender)) return;
+    // 只在菜单确实打开时接受选择：id 最终会在 invokeMenuAction 里按动作表校验
+    if (!titlebarMenuOpenId) return;
+    if (typeof id !== 'string' || !id) return;
+    closeTitlebarMenu();
+    invokeMenuAction(id);
+  });
+
+  ipcMain.on('titlebar-menu:close', (event) => {
+    if (!isTitlebarSender(event.sender)) return;
+    closeTitlebarMenu();
+  });
+
+  ipcMain.on('titlebar-menu:resize', (event, size: { width?: number; height?: number }) => {
+    if (!isTitlebarSender(event.sender)) return;
+    positionTitlebarMenu(size ?? {});
   });
 
   // ── 侧栏 IPC ──

@@ -1,7 +1,7 @@
 /**
  * 后台 watch 构建器（npm run watch:app / VS Code 后台任务）
  *
- * 并行启动 webview / monaco / sidebar / electron 的 watch 构建，
+ * 并行启动 webview / monaco / sidebar / titlebar / electron 的 watch 构建，
  * 初次构建完成后输出 "watch:app: ready"（供 VS Code 后台任务问题匹配器识别）。
  * 之后源码变化会在后台自动重建，按 F5 启动时无需再全量构建，大幅加速。
  *
@@ -20,6 +20,7 @@ const READY_TARGETS = [
   'dist/webview/index.html',
   'dist/monaco/index.html',
   'dist/sidebar/index.html',
+  'dist/titlebar/index.html',
   'dist-electron/main.cjs',
 ];
 
@@ -82,6 +83,7 @@ const watchers = [
   { name: 'webview', command: 'npm run watch:webview' },
   { name: 'monaco', command: 'npm run watch:monaco' },
   { name: 'sidebar', command: 'npm run watch:sidebar' },
+  { name: 'titlebar', command: 'npm run watch:titlebar' },
   { name: 'electron', command: 'npm run watch:electron' },
 ];
 

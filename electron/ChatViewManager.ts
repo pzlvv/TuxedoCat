@@ -13,8 +13,11 @@
 
 import { BrowserWindow, WebContents, WebContentsView, Rectangle, shell } from 'electron';
 import * as path from 'path';
+import type { WebviewMessage } from '../src/core/webviewTypes.js';
 
 export const SIDEBAR_WIDTH = 280;
+/** 自绘标题栏高度：主窗口顶部由标题栏 WebContentsView 占据，侧栏/聊天视图整体下移 */
+export const TITLEBAR_HEIGHT = 38;
 /** 与主窗口 backgroundColor 一致，避免 webview 加载期间白屏闪烁 */
 export const CHAT_VIEW_BACKGROUND = '#16161b';
 
@@ -37,6 +40,18 @@ export interface ChatViewManagerOptions {
   uiLanguage?: 'auto' | 'zh' | 'en';
   /** 上次已使用过的 Shiki 语言（来自 settings.json），随 --highlightLanguages 注入供 webview 预热 */
   highlightLanguages?: string[];
+  /**
+   * 内容区顶部内缩量（自绘标题栏高度）。
+   * 聊天视图从该 y 坐标开始，避免被顶部标题栏遮挡。
+   */
+  topInset?: number;
+  /**
+   * 视图模式，随 `--viewMode=` 注入 webview 的 `__hostInfo`：
+   * - `multi`（默认）：对话列表由宿主原生侧栏渲染，顶栏保留「关闭当前会话」
+   * - `single`：悬浮窗单视图，宿主隐藏侧栏，列表改由 webview 顶栏渲染（历史对话入口）
+   * 运行期可用 setViewMode 切换。
+   */
+  viewMode?: 'single' | 'multi';
   onActiveSessionChanged: (sessionId: string | null) => void;
   onViewCreated?: (view: WebContentsView) => void;
   /**
@@ -109,10 +124,14 @@ export class ChatViewManager {
   private prewarmTimer: ReturnType<typeof setTimeout> | null = null;
   /** 预热延迟：避开刚发出的第一条消息（正在流式输出）的 CPU/网络高峰 */
   private readonly prewarmDelayMs = 1200;
+  /** 单视图模式（悬浮窗）：侧栏隐藏，聊天视图占满整宽（由 viewMode 派生） */
+  private singleView: boolean;
   private readonly opts: ChatViewManagerOptions;
 
   constructor(opts: ChatViewManagerOptions) {
     this.opts = opts;
+    // 与 viewMode 保持一致：以悬浮窗启动时首帧布局就是单视图，无需调用方再补一次
+    this.singleView = opts.viewMode === 'single';
   }
 
   /** 更新工作区路径（工作区变化后新建的视图会携带新 --workspace= 参数） */
@@ -120,9 +139,50 @@ export class ChatViewManager {
     this.opts.workspacePath = p;
   }
 
+  /**
+   * 切换视图模式（宿主能力声明里的 conversationList）。
+   *
+   * 悬浮窗隐藏原生侧栏后，对话列表必须改由 webview 顶栏渲染（单视图形态），
+   * 否则用户既看不到列表、也无法新建对话。已打开的视图发消息就地切换，
+   * 之后新建的视图直接用新的 `--viewMode=` 启动参数，避免顶栏闪一下。
+   *
+   * 布局（singleView）与能力声明在同一个入口里同步更新：分成两个方法靠调用方自觉配对，
+   * 一旦只调其一就会出现「侧栏隐藏了但顶栏仍显示关闭按钮 / 没有历史列表」这类错配。
+   * 只改布局、不重建视图——当前对话的 webview 原样复用，不会重新加载。
+   */
+  setViewMode(mode: 'single' | 'multi'): void {
+    const changed = (this.opts.viewMode ?? 'multi') !== mode;
+    this.opts.viewMode = mode;
+    const single = mode === 'single';
+    if (this.singleView !== single) {
+      this.singleView = single;
+      this.layout();
+    }
+    if (!changed) return;
+    for (const view of this.views.values()) {
+      if (!view.webContents.isDestroyed()) {
+        view.webContents.send('webview-message', this.viewModeMessage(mode));
+      }
+    }
+  }
+
+  /**
+   * 视图模式切换消息。
+   *
+   * 标注为 WebviewMessage：channel 与 payload 都走同一个联合类型，
+   * 拼错 type / mode 会在编译期暴露（webContents.send 本身不做校验）。
+   */
+  private viewModeMessage(mode: 'single' | 'multi'): WebviewMessage {
+    return { type: 'setConversationListMode', mode };
+  }
+
   private chatBounds(): Rectangle {
     const [w, h] = this.opts.win.getContentSize();
-    return { x: SIDEBAR_WIDTH, y: 0, width: Math.max(320, w - SIDEBAR_WIDTH), height: h };
+    const top = this.opts.topInset ?? 0;
+    // 单视图模式：左侧不留侧栏宽度；窄窗下不再强撑 320（否则会被窗口裁掉）
+    const left = this.singleView ? 0 : SIDEBAR_WIDTH;
+    const width = this.singleView ? Math.max(0, w - left) : Math.max(320, w - left);
+    return { x: left, y: top, width, height: Math.max(0, h - top) };
   }
 
   getActiveSessionId(): string | null {
@@ -571,6 +631,7 @@ export class ChatViewManager {
           `--systemLocale=${this.opts.systemLocale}`,
           `--uiLanguage=${this.opts.uiLanguage || 'auto'}`,
           `--highlightLanguages=${(this.opts.highlightLanguages || []).join(',')}`,
+          `--viewMode=${this.opts.viewMode ?? 'multi'}`,
           ...(sessionId ? [`--session=${sessionId}`] : []),
           // 预热视图：页面照常加载，但跳过启动初始化，等被切到前台再补做
           ...(opts?.prewarm ? ['--prewarm=1'] : []),
@@ -583,6 +644,15 @@ export class ChatViewManager {
       ? `file://${indexPath.replace(/\\/g, '/')}?session=${encodeURIComponent(sessionId)}`
       : `file://${indexPath.replace(/\\/g, '/')}`;
     view.setBackgroundColor(CHAT_VIEW_BACKGROUND); // 加载期间保持深色，避免闪烁
+    // 页面加载完成后补发当前视图模式。
+    // 页面就绪前 send 会丢（webview 的 message 监听器还没注册，见 activatePrewarmedView
+    // 的同类处理）：若视图创建后、加载完成前用户切了悬浮窗，它就会停在 multi 形态
+    // （无历史列表、无「+」、有关闭按钮）。补发一次保证与当前模式一致；模式未变时
+    // webview 侧的 setViewMode 是空操作，不会产生多余重渲染。
+    view.webContents.on('did-finish-load', () => {
+      if (view.webContents.isDestroyed()) return;
+      view.webContents.send('webview-message', this.viewModeMessage(this.opts.viewMode ?? 'multi'));
+    });
     void view.webContents.loadURL(url);
 
     // 外部链接防御：webview 内任何 window.open / target=_blank 都不在 Electron 中打开，

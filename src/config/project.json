@@ -32,11 +32,14 @@
     "webviewOut": "dist/webview",
     "monacoOut": "dist/monaco",
     "sidebarOut": "dist/sidebar",
+    "titlebarOut": "dist/titlebar",
     "electronMainOut": "dist-electron/main.cjs",
     "electronPreloadOut": "dist-electron/preload.cjs",
     "electronSpinPreloadOut": "dist-electron/spinPreload.cjs",
     "electronMonacoPreloadOut": "dist-electron/monacoPreload.cjs",
     "electronSidebarPreloadOut": "dist-electron/sidebarPreload.cjs",
-    "electronShortcutPreloadOut": "dist-electron/shortcutPreload.cjs"
+    "electronShortcutPreloadOut": "dist-electron/shortcutPreload.cjs",
+    "electronTitlebarPreloadOut": "dist-electron/titlebarPreload.cjs",
+    "electronTitlebarMenuPreloadOut": "dist-electron/titlebarMenuPreload.cjs"
   }
 }

@@ -130,6 +130,8 @@ HOST .up.> CORE : 事件类型 / 只读函数
 | `src/VSCodeSpinDesign.ts` / `electron/ElectronSpinDesign.ts` | `SpinDesign` 的两个实现（构造注入 `UIHost`） |
 | `src/VSCodeConversationManager.ts` / `electron/ElectronConversationManager.ts` | `ConversationManager` 的两个实现；空闲会话回收（计时 / 巡检 / 关闭动作）只在 VS Code 侧 |
 | `electron/shortcutDialogHtml.ts` + `electron/shortcutPreload.ts` | Electron 专属：唤醒快捷键设置对话框（File - Shortcut...，见第 5.5 节） |
+| `electron/titlebar/` + `electron/titlebarPreload.ts` | Electron 专属：自绘标题栏（左侧品牌区 + 菜单按钮；右侧置顶钉 / 模式切换 / 最小化-最大化-关闭，两个图标按钮与窗口按钮同宽同高），替代系统默认标题栏与系统菜单栏 |
+| `electron/titlebarMenuHtml.ts` + `electron/titlebarMenuPreload.ts` | Electron 专属：标题栏下拉菜单。菜单由独立 `WebContentsView` 承载（标题栏视图只有 38px 高，自身 bounds 会裁掉向下展开的菜单），首次打开测量尺寸后缓存，再次打开直接摆位显示；子菜单（「最近打开的工作目录」）渲染成右侧飞出面板，默认收起 |
 | `src/extension.ts` / `electron/main.ts` | 各自的 bootstrap：构造三契约与宿主句柄 → 调用共享骨架 `bootstrapCore` → 执行宿主专属接线（第 8.6 节） |
 
 **硬约束**：`VSCodeUIHost.ts` / `VSCodeSpinDesign.ts` / `VSCodeConversationManager.ts`
@@ -1739,6 +1741,8 @@ bootstrapCore(host, spinDesign, conversations, options): { bus, ui }
 | 侧栏出口（`sendToSidebar`） | Electron | 原生侧栏三条流 |
 | `chatViews.closeConversation = (sid) => ui.releaseConversation(sid)` | Electron | 视图销毁序列只卸内存 |
 | 菜单 / 托盘 / 全局唤醒快捷键 / 单实例锁 | Electron | 桌面端集成 |
+| 自绘标题栏（`titlebarView` + 菜单视图 + `titlebar:*` / `titlebar-menu:*` IPC） | Electron | 无边框窗口下替代系统标题栏与菜单栏；菜单定义与原生菜单同源（`buildMenuSections`），无边框窗口下原生 accelerator 是否生效依平台而定，故另挂 `before-input-event` 兜底并按 id 去重 |
+| 窗口模式（`applyWindowMode` / `floatingWindowSize` / `chatViews.setViewMode`） | Electron | 完整模式（侧栏 + 聊天视图）↔ 悬浮窗模式（隐藏侧栏、单视图、可置顶）；两种模式尺寸独立落盘。布局开关与能力声明由 `setViewMode` 一起更新，不再单独暴露 `setSingleView` |
 
 ```ts
 // src/extension.ts
@@ -1914,7 +1918,7 @@ export function shutdownCore(): void;
 - `CoreBootstrapOptions` 的成员全部必选，不出现 `?`。
 - 骨架函数的形参顺序固定：三个契约在前，宿主参数在后。
 
-**测试期**：`src/test/bootstrapWiring.test.ts`（`npm run test:bootstrap-wiring`）断言：
+**测试期**：`src/test/bootstrapWiring.test.ts`（`npm run test:all -- bootstrap-wiring`）断言：
 
 1. 骨架执行完毕后，`bootstrapSnapshot()` 的每个布尔字段为 `true`；
 2. 快照的 `locale` 保留宿主传入的原始值（不做收敛后再上报）；
@@ -1924,6 +1928,8 @@ export function shutdownCore(): void;
 5. 静态扫描 `src/core/**/*.ts` 中导出的 `set*` / `initialize*` 名字，每个名字出现在
    `bootstrapCore.ts` 或白名单中。白名单只含会话级运行时 setter（`setSession*`）
    与由 `initializeHistory(ui)` 间接注入的 `setProjectRootProvider`。
+
+测试怎么跑、单元测试与宿主集成测试怎么分工、新测试写在哪，见 `src/test/README.md`。
 
 ### 8.11 新增启动期注入点检查清单
 
@@ -2013,8 +2019,27 @@ webview 只按能力渲染，不判断宿主类型：
 | `App.tsx` 顶栏 | `rendersConversationListInWebview(hostInfo)` | `true` 时渲染对话历史下拉（`Dropdown`）；`false` 时由 Electron 原生侧栏接管，webview 不渲染 |
 | `App.tsx` 顶栏 | `newConversation === 'webview'` | 渲染「新建对话」按钮；`'host'` 时由侧栏按钮触发 |
 | `App.tsx` 顶栏 | `canCloseConversation(hostInfo)` | `true` 时渲染关闭按钮，发 `{ type: 'closeWebview' }`（销毁 webview，释放渲染进程） |
-| `webviewEnv.navigateToConversation()`、`App.tsx.navigateToSession()` | `openConversationModeOf(hostInfo)` | 子代理链接 / 返回父会话跳转时：`openConversation` 只发消息交给宿主另开视图；`loadConversation` 在当前视图内原地加载 |
-| `Main.tsx` | `conversationList === 'multi'` | 多视图宿主（Electron / 浏览器端）给 `<html>` 加 `standalone-host` class（深色背景 CSS）；单视图（VS Code 扩展）不加 |
+| `App.tsx.navigateToSession()`（会话跳转的唯一 UI 入口，内部委托 `webviewEnv.navigateToConversation()`） | `openConversationModeOf(hostInfo)` | 对话列表 / 对话树 / 子代理 From 链接 / 返回父会话跳转时：`openConversation` 只发消息交给宿主另开视图；`loadConversation` 在当前视图内原地加载。任何入口都不得直连 `navigateToConversation`，否则会绕过 loading（统一入口见 9.3.1） |
+| `Main.tsx` | 是否注入 `window.electronAPI` | 独立宿主（Electron）给 `<html>` 加 `standalone-host` class（深色背景 CSS）；VS Code 扩展不加。**不要用 `conversationList` 判定**：悬浮窗注入的是 `single`，但它仍是独立窗口，一样需要深色兜底 |
+
+#### 9.3.1 会话跳转的唯一入口
+
+会话跳转（对话列表、对话树、子代理 From 链接、返回父会话按钮）**有且只有 `App.tsx` 的
+`navigateToSession()` 一个 UI 入口**。它统一完成切换前的固定动作——暂存新对话草稿、进入
+`useConversationLoading` 的 loading 状态、清空消息与排队横幅——最后才委托
+`webviewEnv.navigateToConversation()` 把消息发给宿主。
+
+`webviewEnv.navigateToConversation()` 是**底层原语，不是入口**，只允许被 `navigateToSession()`
+调用。历史上返回父会话按钮与 From 链接曾直连该原语，导致同一类跳转「有的显示 loading、
+有的直接换内容」的双路径不一致（直连路径还会让旧会话内容在 `conversationLoaded` 到达前
+继续显示，且失败时没有超时兜底）。新增跳转入口时必须走 `navigateToSession()`。
+
+**运行期切换**：`conversationList` 不只由注入值决定。Electron 悬浮窗模式会隐藏原生侧栏，
+此时宿主发 `{ type: 'setConversationListMode', mode }` 消息，`webviewEnv` 写进模块级模式
+并通知订阅者；`App.tsx` 用 `useState` + `onViewModeChanged` 重渲染，其余消费点统一读
+`getEffectiveHostInfo()`（= `hostInfoForViewMode(getHostInfo(), 当前模式)`），不再直接读
+`getHostInfo()`。`Main.tsx` 的 `standalone-host` 不看视图模式，改用 `window.electronAPI` 判定
+宿主类型（见 9.3 表格）：视图模式会随悬浮窗变化，而「是否独立窗口」不会。
 
 ### 9.4 消息通道
 
@@ -2295,7 +2320,7 @@ Electron 的 `sidebar:get-conversations` 直接读它，不重复读盘；工作
 | 视图加载时的环境推送 | `resolveWebviewView` 后延时推 `requestTheme` / `requestContextLimit`（走同一 handler） | `did-finish-load` 时 `onThemeChanged(handle)` + 推 `requestContextLimit`（走同一 handler） |
 | 编辑器上下文 | 有：`persistCurrentFileContext` → `conversationContextUpdated`（`activeTextEditor` + 选中行） | **刻意没有**：桌面端没有 `activeTextEditor` 等价物，打开 Monaco 只是查看，不改变发消息时附带的文件上下文 |
 | 工作区来源 | `workspaceFolders` | 菜单选择的 `workspacePath` |
-| 原生侧栏 / 托盘 / Monaco 窗口 / 快捷键对话框 / 菜单 | 无 | 有 |
+| 原生侧栏 / 托盘 / Monaco 窗口 / 快捷键对话框 / 菜单 / 自绘标题栏 / 悬浮窗模式 | 无 | 有 |
 | 空闲回收 / 状态栏项 / 虚拟文档 provider / 命令注册 | 有 | 无 |
 | 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销快捷键、销毁托盘、`shutdownCore()` |
 
@@ -2314,6 +2339,28 @@ Electron 的 `sidebar:get-conversations` 直接读它，不重复读盘；工作
 core 侧对应 `sessionRuntime`（引擎池 + pending user choice）：它维护每个会话的
 `idle` / `waiting`，变化时推**全量** `sessionRuntimeChanged`；托盘只是这份全量状态的一个消费者。
 MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 侧的只有「把状态读出来给面板看」。
+
+**自绘标题栏与窗口模式**（`electron/titlebar/` + `electron/main.ts`）：
+
+| 项 | 现状 | 说明 |
+| --- | --- | --- |
+| 窗口框架 | `frame: false`（macOS 用 `titleBarStyle: 'hiddenInset'`） | 系统标题栏与系统菜单栏都不再绘制，改由顶部 38px 的 `titlebarView` 自绘 |
+| 菜单定义 | `buildMenuSections()` 单一来源 | 同时驱动原生 `Menu`（macOS 系统菜单栏 / role 类行为）与自绘菜单（`toTitlebarMenuNodes` 保留 `submenu` 层级） |
+| 二级菜单 | 飞出面板（`.flyout`） | 「最近打开的工作目录」等子菜单默认收起，悬停/点击父项才展开；面板绝对定位在主面板右侧，右侧放不下时改向左展开（`offsetX` 为负） |
+| 二级菜单不裁切 | 视图尺寸 = 主面板 ∪ 飞出面板；**页面底色与视图背景都要透明** | 视图比主面板大时多出的区域必须能透出下方内容。实测 `WebContentsView` 的透明区域可与下方兄弟视图正常混叠（无需窗口级 `transparent`）。注意 `view.setBackgroundColor('#00000000')` 与页面 `background: transparent` **两者都要**：只改页面会露出视图默认的白底（表现为白边，已踩过）。展开/收起时页面重新上报尺寸，主进程 `setBounds` 调整视图 |
+| 下拉菜单 | 独立 `WebContentsView` | 不用 `BrowserWindow`：开窗有系统动画与层级窗口合成，会「闪一下」；视图只是同窗口内的一块合成区域，摆位即显示。首次打开测量尺寸并缓存 |
+| 菜单关闭 | 侧栏/聊天视图 focus + 窗口 blur/hide/move/resize + 点标题栏空白 + Esc | **不要用标题栏 blur 关菜单**：显示菜单视图会让焦点重新计算（可能变成「无焦点视图」），据此关菜单会让菜单刚弹出就被自己关掉（已踩过）。打开时把焦点交给菜单视图（Esc/方向键依赖它），关闭时还给打开前的视图 |
+| 菜单置顶 | `addChildView` 重新入栈 | 聊天视图是动态 `addChildView` 的，会盖住菜单视图；显示菜单时再 `addChildView` 一次即可提到最上层。**不要先 `removeChildView`**——那会把焦点掉成「无视图」，菜单随即被关掉 |
+| 快捷键 | 原生 accelerator + `before-input-event` 兜底 | 无边框窗口下原生 accelerator 是否生效依平台而定，两处都命中时按 id 去重（250ms） |
+| 窗口模式 | `windowMode: 'normal' \| 'floating'` | floating = 隐藏侧栏（`sidebarView` 收成 0 尺寸）+ 聊天视图占满整宽（`chatViews.setViewMode`），复用同一批 webview，不重新加载对话 |
+| 模式切换的异步状态 | `waitForWindowEvent()` + `windowModeSwitching` | 先还原最大化/退出全屏（等 `unmaximize` / `leave-full-screen` 事件落定，1s 超时兜底）再 `setBounds`，否则会被忽略或只改还原尺寸；切换期间用标志位防重入 |
+| 模式切换条件 | `canToggleWindowMode()` | 未打开工作区时禁用（浮窗隐藏侧栏，切换后无法再选工作区） |
+| 模式位置与尺寸 | `windowSize` / `floatingWindowSize` | 两种模式各自独立落盘 `{x,y,width,height}`，切换时按各自记录还原（旧坐标失效则退回当前位置）；浮窗默认 480 宽、工作区高度 80% |
+| 模式持久化 | `windowMode` + `readLastWindowMode()` | 切换模式时落盘；启动时优先按上次的模式建窗口（尺寸/位置也取该模式的记录）。**上次是浮窗但本次没有工作区时退回完整模式**（浮窗隐藏侧栏，没有工作区就没法再选） |
+| 置顶持久化 | `floatingPinned` + `readLastFloatingPinned()` | 点钉住按钮时落盘（默认 `true`），启动时按它恢复浮窗的「总在最前」；缺失/非法值一律按默认开启处理 |
+| 浮窗标题 | `windowTitleForCurrentState()` + `workspaceDisplayName()` + 标题栏品牌位 | 浮窗模式下**窗口标题**（任务栏 / Alt-Tab）与**自绘标题栏的品牌位**都显示当前工作目录的**目录名（basename）**，其余情况显示产品名。取目录名而非完整路径：浮窗标题栏只有 480px 宽、任务栏标签也从右侧截断，而路径里最有信息量的恰好是尾部目录名。窗口是无边框的，光设 OS 标题在窗口里看不到，所以两处都要跟着变；目录名随 `titlebar:mode-state` / `titlebar:get-state` 的 `workspaceName` 下发，切模式与切工作区时同步 |
+| 悬浮窗的顶栏形态 | `chatViews.setViewMode()` + `setConversationListMode` 消息 | 悬浮窗隐藏原生侧栏，视图模式必须切到 `single`：列表改由 webview 顶栏渲染（历史对话入口）、隐藏「关闭当前对话」、新建入口移到顶栏。已打开视图就地切换，新建视图走 `--viewMode=` 启动参数 |
+| 置顶 | `applyAlwaysOnTop()` | Electron 44 在部分 Windows 环境下 `setAlwaysOnTop(true)` 不落下 `WS_EX_TOPMOST`，按「默认层级 → `pop-up-menu` → 先取消再设」三级兜底 |
 
 ### 11.2 尚未收敛的分叉点
 

@@ -1,7 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
-import { getHostInfo, getInjectedSessionId } from './webviewEnv';
+import { getInjectedSessionId } from './webviewEnv';
 import { rotatePlaceholderLogo } from './placeholderLogo';
 import { setupAppViewportHeight } from './viewport';
 import './styles/index.css';
@@ -9,9 +9,13 @@ import './styles/index.css';
 import './styles/icons.css';
 import 'katex/dist/katex.min.css';
 
-// 独立窗口标记：多视图宿主（Electron / 浏览器端）不继承 VS Code 主题，
-// 需在 CSS 层提供深色背景兜底（避免 BrowserWindow 白闪）；单视图（VS Code 扩展）不加。
-if (getHostInfo().conversationList === 'multi') {
+// 独立窗口标记：独立宿主（Electron / 浏览器端）不继承 VS Code 主题，
+// 需在 CSS 层提供深色背景兜底（避免 BrowserWindow 白闪）；VS Code 扩展内不加。
+//
+// 判定必须用「宿主类型」而不是视图模式：Electron 悬浮窗注入的 conversationList 是
+// single（运行期能力），但它仍然是独立窗口，一样需要深色兜底。这里用 Electron preload
+// 注入的 electronAPI 作为判据（VS Code 走 acquireVsCodeApi，没有这个对象）。
+if (typeof (window as { electronAPI?: unknown }).electronAPI !== 'undefined') {
   document.documentElement.classList.add('standalone-host');
 }
 

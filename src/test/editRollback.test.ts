@@ -9,10 +9,9 @@
  * `input.file_path`，必须靠这条兜底路径才能定位要回滚的文件。此前该字段在
  * 「消息 → UiEvent → rollbackEdit」中被整条丢掉，导致回滚直接报「缺少文件路径」。
  *
- * 运行方式：tsc -p tsconfig.test.json && node out/src/test/editRollback.test.js
+ * 运行方式：npm run test:all -- edit-rollback
  */
 
-import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { createEventBus } from '../host/EventBus';
@@ -20,6 +19,8 @@ import { setGlobalEventBus, resetGlobalEventBus } from '../core/AssistantEventBu
 import { setProjectRootProvider, getProjectConversationDir } from '../core/history/Config';
 import { initializeCoreEvents } from '../core/initializeCoreEvents';
 import { WebviewMessageHandler } from '../host/ui/webviewMessageHandler';
+import { createChecker, runTests } from './helpers/harness';
+import { makeTempDir } from './helpers/fixtures';
 
 /** 写一条最小的、可被 loadConversation 还原的 Edit 会话（input 故意 double-encode 成字符串）。 */
 async function writeEditConversation(
@@ -75,14 +76,9 @@ async function writeEditConversation(
 }
 
 async function run(): Promise<void> {
-  let passed = 0;
-  let failed = 0;
-  const check = (name: string, cond: boolean): void => {
-    if (cond) { passed++; console.log(`ok   ${name}`); }
-    else { failed++; console.log(`FAIL ${name}`); }
-  };
+  const { check, finish } = createChecker();
 
-  const tmpHome = path.join(os.tmpdir(), `tc-edit-rollback-${Date.now()}`);
+  const tmpHome = makeTempDir('edit-rollback');
   const projectRoot = path.join(tmpHome, 'project');
   process.env.USERPROFILE = tmpHome;
   process.env.HOME = tmpHome;
@@ -134,8 +130,7 @@ async function run(): Promise<void> {
   );
 
   resetGlobalEventBus();
-  console.log(`\n${passed} passed, ${failed} failed`);
-  if (failed > 0) process.exit(1);
+  finish();
 }
 
-run().catch((e) => { console.error('FAIL', e); process.exit(1); });
+runTests('editRollback', run);

@@ -65,7 +65,8 @@ npm run check-types
 npm run lint
 
 # 运行测试
-npm test
+npm run test:all     # 单元测试：快，不需要 VS Code 宿主
+npm test             # 宿主集成测试：需要真实 VS Code，首次会下载
 
 # 构建 VS Code 扩展
 npm run build
