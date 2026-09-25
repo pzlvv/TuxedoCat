@@ -54,6 +54,10 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 完整模式品牌位没有文字：不占位，品牌区只剩软件图标 */
+.brand-name:empty {
+  display: none;
+}
 /* 浮窗可以缩到 280px：品牌区 + 5 个按钮已接近这个宽度，
    窄到放不下时先让出品牌名，保证最右侧关闭按钮不被裁掉 */
 @media (max-width: 320px) {
@@ -151,6 +155,121 @@ body {
   background: #2f2f37;
   color: #ffffff;
 }
+/* 单一顶层菜单：用图标按钮表示，不显示文字 */
+.menu-btn-icon {
+  width: 30px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── 工作目录标签页（占用原菜单栏右侧区域） ── */
+.workspace-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 100%;
+  min-width: 0;
+  flex-shrink: 1;
+  /* 逐张收窄到下限后横向滚动（规格 §5）；滚动条隐藏，避免撑破 38px 标题栏 */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  /* 与左侧菜单图标留出间距 */
+  margin-left: 12px;
+  -webkit-app-region: no-drag;
+}
+.workspace-tabs::-webkit-scrollbar { display: none; }
+.ws-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  max-width: 170px;
+  /* 收窄下限：再窄就只剩省略号，且必须能看出是哪一个目录 */
+  min-width: 56px;
+  padding: 0 4px 0 10px;
+  border-radius: 5px;
+  font-size: 12.5px;
+  line-height: 1;
+  color: #c1c1c6;
+  cursor: default;
+  white-space: nowrap;
+  flex: 0 1 auto;
+  outline: none;
+  /* 拖拽排序的放置指示线用绝对定位伪元素画，不参与布局 */
+  position: relative;
+}
+.ws-tab:hover { background: #26262c; }
+.ws-tab.active { background: #2f2f37; color: #ffffff; }
+.ws-tab:focus-visible {
+  box-shadow: inset 0 0 0 1px #5b8cff;
+}
+/* ── 拖拽排序 ── */
+.ws-tab.dragging {
+  opacity: 0.45;
+}
+/* 放置指示线：插到目标之前 / 之后 */
+.ws-tab.drop-before::before,
+.ws-tab.drop-after::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: #6366f1;
+}
+.ws-tab.drop-before::before { left: -1px; }
+.ws-tab.drop-after::after { right: -1px; }
+.ws-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* 关闭按钮始终占位（visibility 切换），避免 hover 进出时标签页宽度跳变 */
+.ws-tab-close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  visibility: hidden;
+}
+.ws-tab:hover .ws-tab-close,
+.ws-tab.active .ws-tab-close,
+.ws-tab:focus-within .ws-tab-close { visibility: visible; }
+.ws-tab-close:hover { background: rgba(255, 255, 255, 0.15); }
+.ws-tab-close:focus-visible {
+  outline: 1px solid #5b8cff;
+  outline-offset: 1px;
+}
+.ws-add {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #c1c1c6;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.ws-add:hover { background: #26262c; color: #e4e4e7; }
 
 .titlebar-spacer {
   flex: 1 1 auto;
@@ -213,7 +332,8 @@ body.maximized .wc .icon-restore {
 }
 
 /* ── 悬浮窗模式：只保留切换按钮 / 品牌 / 置顶钉 / 窗口按钮 ── */
-body.mode-floating .menubar {
+body.mode-floating .menubar,
+body.mode-floating .workspace-tabs {
   display: none;
 }
 /* 窄窗下窗口按钮与紧邻的两个图标按钮一起收窄 */

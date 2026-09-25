@@ -1,6 +1,6 @@
 /**
  * Electron preload - 侧栏专用
- * 暴露 sidebarAPI：对话列表读写 + 打开对话 + 列表变化推送
+ * 暴露 sidebarAPI：对话列表读写 + 工作目录（打开集合 / 添加 / 切换 / 关闭）+ 变化推送
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
@@ -8,12 +8,20 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('sidebarAPI', {
   getConversations: (): Promise<unknown> => ipcRenderer.invoke('sidebar:get-conversations'),
   getActiveSession: (): Promise<string | null> => ipcRenderer.invoke('sidebar:get-active-session'),
-  getWorkspace: (): Promise<string | null> => ipcRenderer.invoke('sidebar:get-workspace'),
-  openWorkspace: (): void => {
-    ipcRenderer.send('sidebar:open-workspace');
+  /** 打开集合 + 活动项 + 最近工作目录 */
+  getWorkspaces: (): Promise<unknown> => ipcRenderer.invoke('sidebar:get-workspaces'),
+  /** 添加工作目录；不传 paths 时弹出系统目录选择框 */
+  addWorkspaces: (paths?: string[]): void => {
+    ipcRenderer.send('sidebar:add-workspaces', paths);
   },
-  openConversation: (sessionId: string): void => {
-    ipcRenderer.send('sidebar:open-conversation', sessionId);
+  activateWorkspace: (path: string): void => {
+    ipcRenderer.send('sidebar:activate-workspace', path);
+  },
+  closeWorkspace: (path: string): void => {
+    ipcRenderer.send('sidebar:close-workspace', path);
+  },
+  openConversation: (sessionId: string, project?: string): void => {
+    ipcRenderer.send('sidebar:open-conversation', sessionId, project);
   },
   newConversation: (): void => {
     ipcRenderer.send('sidebar:new-conversation');
@@ -43,7 +51,7 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
   onActiveSessionChanged: (callback: (sessionId: string | null) => void): void => {
     ipcRenderer.on('sidebar:active-session-changed', (_event, sessionId) => callback(sessionId));
   },
-  onWorkspaceChanged: (callback: (workspace: string | null) => void): void => {
-    ipcRenderer.on('sidebar:workspace-changed', (_event, workspace) => callback(workspace));
+  onWorkspacesChanged: (callback: (state: unknown) => void): void => {
+    ipcRenderer.on('sidebar:workspaces-changed', (_event, state) => callback(state));
   },
 });

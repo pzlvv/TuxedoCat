@@ -9,6 +9,7 @@
 import { requireEventBus } from '../AssistantEventBus.js';
 import type { MessageData } from '../types.js';
 import { expandPath } from '../utils/path.js';
+import { getProjectRoot } from './Config.js';
 import { logger } from '../Logger.js';
 
 /** 回滚方向：before = 回到修改前；after = 回到修改后（保留目标自身改动） */
@@ -35,6 +36,11 @@ export async function rollbackEdit(
   try {
     const { loadConversation } = await import('./index.js');
     const conversation = await loadConversation(sessionId);
+
+    // 回滚的相对路径以该会话自己的工作目录为基准：多工作目录下若用进程级项目根，
+    // 会话切到后台（活动目录已变）时会解析到别的目录，可能改错文件。
+    // loadConversation 已按 meta.json 的 project 登记会话工作目录，此处可稳定解析。
+    const sessionCwd = getProjectRoot(sessionId);
 
     // 收集所有 Edit/Write tool_use block（按消息出现的顺序排列）
     const allToolUses: Array<{ id: string; name: string; _meta: Record<string, unknown>; input: Record<string, unknown> }> = [];
@@ -126,7 +132,7 @@ export async function rollbackEdit(
     let restoredCount = 0;
     for (const [fp, content] of filesToRestore) {
       try {
-        const fullPath = expandPath(fp);
+        const fullPath = expandPath(fp, sessionCwd);
 
         if (content === null) {
           // beforeContent 为 null 表示文件原本不存在，删除它

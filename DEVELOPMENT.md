@@ -124,14 +124,15 @@ HOST .up.> CORE : 事件类型 / 只读函数
 | `src/host/ui/types.ts` | 共享子模块的接口定义（`ShowVirtualDocumentEvent` / `ShowDiffInVirtualDocumentEvent` 等） |
 | `src/host/ui/spinDesignHtml.ts` | Spin 设计器 HTML 生成 |
 | `src/host/SessionUiState.ts` | 会话级 UI 运行时状态（活动阶段 / 工具计数 / 查询计数） |
-| `src/host/queryActivity.ts`、`conversationPayload.ts`、`mermaidHtml.ts`、`imageFiles.ts`、`spinDesignExport.ts`、`types.ts` | 共享辅助：活动查询判定、`conversationLoaded` 组装、Mermaid HTML、图片判定、Spin 导出、`HostInfo` |
+| `src/host/queryActivity.ts`、`conversationPayload.ts`、`mermaidHtml.ts`、`imageFiles.ts`、`spinDesignExport.ts`、`types.ts`、`workspacePaths.ts` | 共享辅助：活动查询判定、`conversationLoaded` 组装、Mermaid HTML、图片判定、Spin 导出、`HostInfo`、工作目录路径归一与去重 |
 | `src/VSCodeUIHost.ts` + `src/VSCodeUIHost/` | `UIHost` 的 VS Code 实现（含 `documentManager.ts` / `diffUris.ts`） |
 | `electron/ElectronUIHost.ts` | `UIHost` 的 Electron 实现 |
 | `src/VSCodeSpinDesign.ts` / `electron/ElectronSpinDesign.ts` | `SpinDesign` 的两个实现（构造注入 `UIHost`） |
 | `src/VSCodeConversationManager.ts` / `electron/ElectronConversationManager.ts` | `ConversationManager` 的两个实现；空闲会话回收（计时 / 巡检 / 关闭动作）只在 VS Code 侧 |
 | `electron/shortcutDialogHtml.ts` + `electron/shortcutPreload.ts` | Electron 专属：唤醒快捷键设置对话框（File - Shortcut...，见第 5.5 节） |
-| `electron/titlebar/` + `electron/titlebarPreload.ts` | Electron 专属：自绘标题栏（左侧品牌区 + 菜单按钮；右侧置顶钉 / 模式切换 / 最小化-最大化-关闭，两个图标按钮与窗口按钮同宽同高），替代系统默认标题栏与系统菜单栏 |
-| `electron/titlebarMenuHtml.ts` + `electron/titlebarMenuPreload.ts` | Electron 专属：标题栏下拉菜单。菜单由独立 `WebContentsView` 承载（标题栏视图只有 38px 高，自身 bounds 会裁掉向下展开的菜单），首次打开测量尺寸后缓存，再次打开直接摆位显示；子菜单（「最近打开的工作目录」）渲染成右侧飞出面板，默认收起 |
+| `electron/titlebar/` + `electron/titlebarPreload.ts` | Electron 专属：自绘标题栏（左侧品牌区 + 单一菜单图标 + 工作目录标签页区；右侧置顶钉 / 模式切换 / 最小化-最大化-关闭，两个图标按钮与窗口按钮同宽同高），替代系统默认标题栏与系统菜单栏 |
+| `electron/titlebarMenuHtml.ts` + `electron/titlebarMenuPreload.ts` | Electron 专属：标题栏下拉菜单。菜单由独立 `WebContentsView` 承载（标题栏视图只有 38px 高，自身 bounds 会裁掉向下展开的菜单），首次打开测量尺寸后缓存，再次打开直接摆位显示；子菜单（「添加最近的工作目录」）渲染成右侧飞出面板，默认收起 |
+| `electron/sidebar/` + `electron/sidebarPreload.ts` | Electron 专属：原生侧栏（头部搜索框 + 新对话按钮；对话列表；空态「添加工作目录」+ 最近工作目录） |
 | `src/extension.ts` / `electron/main.ts` | 各自的 bootstrap：构造三契约与宿主句柄 → 调用共享骨架 `bootstrapCore` → 执行宿主专属接线（第 8.6 节） |
 
 **硬约束**：`VSCodeUIHost.ts` / `VSCodeSpinDesign.ts` / `VSCodeConversationManager.ts`
@@ -748,9 +749,15 @@ wire message（若该事件会产生 webview 协议消息）。
 
 **没有 `uiDynamicInfo` 这类请求**：工作目录经**注入 + 订阅**获得，不经过事件总线。
 `initializeHistory(host)` 把 `WorkspaceProvider.getWorkspacePath` 登记为
-`setProjectRootProvider`，core 的 `getProjectRoot()` 惰性读取当前值；
+`setProjectRootProvider`（**活动工作目录**，进程级默认值）；
 `bootstrapCore` 以 `host.onDidChangeWorkspace(...)` 订阅变化，回调里以新路径预热系统环境信息。
-core 里任何一个需要工作目录的地方（history / mcp / tools / spin / prompt）读的都是这一份，
+
+工作目录是**对话的属性**：core 另有一份会话工作目录表（`Config.setSessionWorkspace` /
+`getSessionWorkspace`），登记时机为新建对话（宿主提供活动工作目录）、加载对话（元数据
+`project`）、子对话（继承父对话）。`getProjectRoot(sessionId?)` 优先按会话解析，
+未登记或未传 `sessionId` 时回退到活动工作目录。core 里需要工作目录的地方
+（history / mcp / tools / spin / prompt）都按会话解析，不读单一全局值；
+工具侧一律以 `ToolUseContext.cwd`（引擎的 `config.cwd`）为基准展开相对路径，
 不需要总线参与。
 
 ### 4.3 UiEvent（UI → core，单向）
@@ -910,8 +917,8 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | 环境 | `log(...args: unknown[]): void` | 日志输出（VS Code：`OutputChannel`；Electron：`console`） |
 | | `isDarkTheme(): boolean` | 当前是否深色主题 |
 | | `getLocale(): string` | UI 语言（如 `zh` / `en`） |
-| 工作区（继承 `WorkspaceProvider`） | `getWorkspacePath(): string \| undefined` | 当前工作区路径；未打开工作区返回 `undefined`（不退回 `process.cwd()`） |
-| | `onDidChangeWorkspace(listener: (path: string \| undefined) => void): () => void` | 订阅工作区变化；**订阅时立即回调一次当前值**，返回取消订阅函数 |
+| 工作目录（继承 `WorkspaceProvider`） | `getWorkspacePath(): string \| undefined` | 当前**活动**工作目录路径；打开集合为空返回 `undefined`（不退回 `process.cwd()`） |
+| | `onDidChangeWorkspace(listener: (path: string \| undefined) => void): () => void` | 订阅活动工作目录变化；**订阅时立即回调一次当前值**，返回取消订阅函数 |
 | 面板 / 窗口 | `openFile(filePath: string, target: LineSelection \| null): Promise<void>` | 打开文件并定位到行；不需要定位时传 `null` |
 | | `showVirtualDocument(content: string, title: string): Promise<void>` | 显示虚拟文档（内容预览） |
 | | `showDiff(options: ShowDiffOptions): Promise<void>` | 显示一次改动的 before / after（仅 manual 模式，见下） |
@@ -923,9 +930,11 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | 配置文件 | `updateSettingsJson(mutator: (cfg: Record<string, any>) => void \| Record<string, any>): Promise<void>` | 串行化「读-改-写」全局 `settings.json` |
 | | `ensureProjectSettings(projectDir: string, workspacePath: string): Promise<void>` | 写项目对话目录清单的 `workspacePath` |
 
-`WorkspaceProvider`（同文件）是工作区契约：core 通过 `onDidChangeWorkspace` **订阅**当前值与
-变化；启动期不调用 `getWorkspacePath()` 取值。两个宿主实现：VS Code 由
-`onDidChangeWorkspaceFolders` 驱动，Electron 由 `setWorkspacePath`（菜单 / 命令行）驱动。
+`WorkspaceProvider`（同文件）是工作目录契约，表达的是**活动工作目录**：core 通过
+`onDidChangeWorkspace` **订阅**当前值与变化；启动期不调用 `getWorkspacePath()` 取值。
+两个宿主实现：VS Code 由 `onDidChangeWorkspaceFolders` 驱动（单一工作目录）；
+Electron 由 `setWorkspacePath` 驱动，切换活动标签页时更新它。**对话自己的工作目录**
+不经该契约表达，由 core 的会话工作目录表按 `sessionId` 解析（见第 4.2 节）。
 
 `WebviewViewHandle` 是名义类型（必须是该类实例，任意对象无法冒充）：多视图宿主用它包裹自己的
 视图对象，单视图宿主的 `sendToWebviewView` 等价于 `sendToWebview`（句柄不参与路由）。句柄的产出
@@ -1583,7 +1592,7 @@ export class ElectronUIHost implements UIHost {
   setMainWindow(win: BrowserWindow): void;
   setSidebarView(view: WebContentsView): void;
   setChatViewManager(m: ChatViewManager): void;    // 记录视图管理器，并注入 activatePrewarmedView 出口
-  setWorkspacePath(p: string | undefined): void;   // 记录工作区
+  setWorkspacePath(p: string | undefined): void;   // 记录活动工作目录
   webviewHandleFor(source: WebContents): WebviewViewHandle;   // 来源视图包成句柄
 
   // ===== UIHost 实现 =====
@@ -1599,9 +1608,9 @@ export class ElectronUIHost implements UIHost {
 - `webviewHandleFor(source)` 把来源 `WebContents` 包成 `WebviewViewHandle`，供
   `sendToWebviewView` / `onThemeChanged` 定向投递，并作为 `ctx.sender` 传给
   `WebViewUI.handleWebviewMessage`（第 7.3 节）。
-- `setWorkspacePath` 记录工作区并通知 `onDidChangeWorkspace` 订阅者（`bootstrapCore` 以新路径
-  预热系统环境信息）；侧栏的 `sidebar:workspace-changed` 由 `main.ts` 的
-  `broadcastWorkspace()` 单独推送。
+- `setWorkspacePath` 记录**活动工作目录**并通知 `onDidChangeWorkspace` 订阅者（`bootstrapCore`
+  以新路径预热系统环境信息）；侧栏的 `sidebar:workspaces-changed`（打开集合 + 活动项 + 最近
+  工作目录）由 `main.ts` 的 `broadcastWorkspaces()` 单独推送。
 - 私有辅助：`sendToRenderer`（按 `sessionId` 定向，未命中回退活动视图）、`openImagePreview`、
   `openMonacoWindow`、`openMermaidWindow`。
 
@@ -1614,7 +1623,7 @@ export class ElectronUIHost implements UIHost {
 | `sendToWebviewView(view, message)` | `sendToWebview(message)`（句柄不参与路由） | 句柄解包为 `WebContents` 后 `webContents.send('webview-message', message)` |
 | `onThemeChanged(view)` | `sendToWebview(message)`（句柄不参与路由；值取 `isDarkTheme()`） | `view` 为 `null` → `chatViews.broadcast`；指定句柄 → 解包直发（值取 `isDarkTheme()`） |
 | `log(...args)` | `outputChannel.appendLine(...)` | `console.log('[ElectronUIHost] ...')` |
-| `getWorkspacePath()` | `vscode.workspace.workspaceFolders?.[0]?.uri.fsPath` | `this.workspacePath`（由菜单设置） |
+| `getWorkspacePath()` | `vscode.workspace.workspaceFolders?.[0]?.uri.fsPath` | `this.workspacePath`（活动工作目录；由标签页切换 / 添加 / 关闭驱动） |
 | `onDidChangeWorkspace(listener)` | 订阅时立即回调当前值；`vscode.workspace.onDidChangeWorkspaceFolders` 驱动后续回调；返回 `dispose` | 订阅时立即回调当前值；`setWorkspacePath` 驱动后续回调；返回取消函数 |
 | `isDarkTheme()` | `vscode.window.activeColorTheme.kind`（Dark / HighContrast） | `nativeTheme.shouldUseDarkColors` |
 | `getLocale()` | `vscode.env.language` | `app.getLocale()`（原始 BCP-47，不做归一化；消费方按 `startsWith('zh')` 判断） |
@@ -1795,7 +1804,7 @@ const { ui } = bootstrapCore(host, spinDesign, conversations, {
 host.setMainWindow(mainWindow);      // 宿主句柄在骨架之后注入
 host.setSidebarView(sidebarView);
 host.setChatViewManager(chatViews);
-host.setWorkspacePath(workspacePath);
+host.setWorkspacePath(workspacePath);   // 活动工作目录（打开集合中的一项）
 
 chatViews.closeConversation = (sid) => ui.releaseConversation(sid);   // 视图销毁序列只卸内存
 // chatViews 的 onLoadedChanged → sidebar:session-loaded-changed（视图层状态，独立成流）
@@ -1848,7 +1857,8 @@ Electron 的视图句柄：`ElectronUIHost.webviewHandleFor(source)` 把来源 `
 | 状态 | 写入入口 | 读取入口 | 未注入时 |
 | --- | --- | --- | --- |
 | 全局事件总线 | `setGlobalEventBus(bus)` | `requireEventBus()` | 抛错 |
-| 项目根目录 | `setProjectRootProvider(fn)` | `getProjectRoot()` | 抛错 |
+| 活动工作目录（项目根默认值） | `setProjectRootProvider(fn)` | `getProjectRoot()` / `hasProjectRoot()` | 抛错 |
+| 会话工作目录 | `setSessionWorkspace(sessionId, path)` | `getProjectRoot(sessionId)` / `getSessionWorkspace(sessionId)` | 回退到活动工作目录 |
 | 扩展路径 | `setExtensionPathProvider(fn)` | `getExtensionPath()` | 抛错 |
 | 会话等待用户 | `setSessionWaitingForUserProvider(fn)` | `requireSessionWaitingForUserProvider()` | 抛错 |
 | 宿主 locale | `setCoreLocale(locale)` | `getCoreLocale()` | 返回默认值 `en`（可接受） |
@@ -2264,7 +2274,7 @@ dropSession(sessionId: string): void {
 | `sendToWebviewView` | `sendToWebview`（句柄不参与路由） | 句柄解包为 `WebContents` 后直发 |
 | `onThemeChanged` | `sendToWebview`（单 webview；值取 `isDarkTheme()`） | `null` → `chatViews.broadcast`；指定句柄 → 直发（值取 `isDarkTheme()`） |
 | `log` | `OutputChannel.appendLine` | `console.log`（`[ElectronUIHost]` 前缀） |
-| `getWorkspacePath` | `workspaceFolders[0].uri.fsPath` | 主进程持有的 `workspacePath`（用户经菜单选择） |
+| `getWorkspacePath` | `workspaceFolders[0].uri.fsPath`（单一工作目录） | 主进程持有的 `workspacePath`（**活动工作目录**：打开集合中的一项，由标题栏标签页切换 / 添加 / 关闭驱动） |
 | `isDarkTheme` | `activeColorTheme` 为 Dark 或 HighContrast | `nativeTheme.shouldUseDarkColors` |
 | `getLocale` | `vscode.env.language`（BCP-47，如 `zh-cn`） | `app.getLocale()`（BCP-47，如 `zh-CN`）——与 VS Code 同一值域，不做归一化 |
 | `openFile` | 编辑器打开并选中行；图片 / 二进制退到 `vscode.open` | 图片开内置预览窗口；其余开 Monaco 窗口（`mode: 'view'`） |
@@ -2279,6 +2289,30 @@ dropSession(sessionId: string): void {
 
 > `showDiff` / `showVirtualDocument` / `openMermaidPreview` 这几个预览入口体现一条一般分工：
 > **预览类操作归 webview，宿主只在没有页内渲染能力时才开原生窗口**（diff 在 Electron 侧就是空实现）。
+
+**工作目录（多工作目录，Electron 专属）**（`electron/main.ts` + 侧栏 / 标题栏）
+
+工作目录是**对话的属性**：core 按 `sessionId` 解析（第 4.2 节）。Electron 侧的多工作目录
+呈现与交互：
+
+| 方面 | 现状 |
+| --- | --- |
+| 打开集合 | `openWorkspaces: string[]`（主进程进程内事实，按标签页顺序）；活动项 `workspacePath`（打开集合中的一项） |
+| 标签页 | 标题栏（原菜单栏区域）：`titlebar:workspaces` 下发 `{ workspaces: [{path,name}], activeWorkspace }`（与 `titlebar:get-state` 同字段名），标题栏渲染标签页（活动项高亮、每项可关闭、键盘可切换、可拖拽排序）+「添加」按钮；总宽超出时逐张收窄到 56px 下限后横向滚动；打开集合为空时不渲染标签页区域（添加入口在侧栏空态与菜单）；浮窗模式隐藏菜单图标与标签页 |
+| 标签页拖拽排序 | 渲染层用 HTML5 drag 事件（`dragstart` / `dragover` / `drop` / `dragend`）：越过目标中线决定插到其前 / 后，`drop-before` / `drop-after` 伪元素画放置指示线；提交完整排列经 `titlebar:reorder-workspaces` → `reorderWorkspaces()`，主进程按去重键校验「同组目录的排列」后才写入打开集合并落盘，非法排列整次忽略；活动项与已打开视图不受顺序影响 |
+| 非活动标签页预加载 | 首次启动（`createMainWindow` 打开活动目录的新对话之后）对打开集合里**非活动**的每个目录调用 `chatViews.preloadWorkspace(ws)`（错开 400ms + 250ms×i，避免启动瞬间同时拉起多个渲染进程）；实现复用后台预热机制（`--prewarm=1` 后台加载渲染、跳过会话初始化），切到该目录时 `setActiveWorkspace` 命中它直接 `show()` + 补发激活消息，不再现建视图 + 等页面加载。`new-` 临时 key 带自增序号，避免同毫秒连续创建撞 key；`setActiveWorkspace` 不再销毁其它目录的预热视图（它们是那些标签页的预加载视图，关闭目录 / 窗口时统一销毁） |
+| 菜单 | Windows / Linux 全部收编为单一分区 `main`，标题栏用一个图标按钮表示；条目：添加工作目录 / 添加最近的工作目录 ▸ / 快捷键 / 开发者工具 / 关于 / 退出。macOS 沿用系统菜单栏分区 |
+| 侧栏头部 | 「搜索框 + 新对话」：搜索框按标题过滤当前活动工作目录的对话列表 |
+| 空态 | 打开集合为空时，侧栏显示「添加工作目录」+ 最近工作目录（点击即添加）；聊天区保持纯提示 |
+| 添加 | `openWorkspaceDialog()` 支持多选，`addWorkspaces(paths)` 按顺序加入打开集合、末项置为活动项；已在集合中的目录直接切为活动项 |
+| 路径去重 | `src/host/workspacePaths.ts`：`normalizeWorkspacePath`（resolve）+ `workspaceKey`（realpath + Windows 大小写不敏感）+ `sameWorkspace` / `dedupeWorkspacePaths`。打开集合、最近工作目录、会话索引都按去重键判等，同一目录的不同表示（尾部分隔符 / 相对路径 / 分隔符风格 / 大小写 / 符号链接 / 8.3 短名）不重复入集合、不重复写最近列表 |
+| 关闭 | `closeWorkspace(p)`：移出打开集合、`chatViews.closeWorkspace(p)` 销毁该目录下所有对话视图并中止运行中查询、清 `sessionWorkspaces` 中该目录的条目；关闭活动项后活动权移交相邻项，集合为空时回到空态 |
+| 切换 | `activateWorkspace(p)`：更新 provider（`uiHost.setWorkspacePath`）、`chatViews.setActiveWorkspace(p)`（切到该目录最近使用的对话，没有则新建）、刷新侧栏列表与标题栏 |
+| 宿主会话工作目录索引 | `sessionWorkspaces: Map<sessionId, path>`：来源为各工作目录对话列表的 `project` 字段 + 视图自己的目录（`ChatViewManager.getWorkspaceForWebContents`）；打开对话时据此注入 `--workspace=` |
+| 聊天视图 | `ChatViewManager` 按视图记录所属工作目录（`viewWorkspaces`）；`openConversation(id, workspace)` / `openNewConversation(workspace)` 注入对应 `--workspace=`；切换活动目录不销毁视图 |
+| 持久化 | `workspace-state.json` 的 `openWorkspaces` / `activeWorkspace`（无活动项写 `null`）；启动恢复打开集合与活动项，已不存在的目录剔除。字段缺失或非法即按「没有」处理，不做跨字段回退；升级路径由 `migrateLegacyWorkspaceState()` 一次性迁移（旧 userData 目录 + 旧 `lastWorkspace` 字段 → `openWorkspaces` / `activeWorkspace`），迁移后不再回退读旧字段 |
+| userData 目录 | `electron/main.ts` 启动最早期用 `app.setPath('userData', appData + <配置里的应用目录名>)` 显式指定：开发态（`electron dist-electron/main.cjs`）默认名是 `Electron`、打包态是 `productName`，不指定会落到不同目录；指定后两态读写同一份工作目录状态 / 窗口位置 / 缓存。目录名取自 `src/config/project.json` 的 `extensionName`，不硬编码 |
+| 浮窗模式 | 以当前活动工作目录（即活动对话的工作目录）为窗口上下文；品牌位显示活动目录名 |
 
 **`SpinDesign`**（`src/VSCodeSpinDesign.ts` / `electron/ElectronSpinDesign.ts`）
 
@@ -2353,8 +2387,9 @@ MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 
 | 菜单置顶 | `addChildView` 重新入栈 | 聊天视图是动态 `addChildView` 的，会盖住菜单视图；显示菜单时再 `addChildView` 一次即可提到最上层。**不要先 `removeChildView`**——那会把焦点掉成「无视图」，菜单随即被关掉 |
 | 快捷键 | 原生 accelerator + `before-input-event` 兜底 | 无边框窗口下原生 accelerator 是否生效依平台而定，两处都命中时按 id 去重（250ms） |
 | 窗口模式 | `windowMode: 'normal' \| 'floating'` | floating = 隐藏侧栏（`sidebarView` 收成 0 尺寸）+ 聊天视图占满整宽（`chatViews.setViewMode`），复用同一批 webview，不重新加载对话 |
+| 浮窗最小化 | `mainWindow.on('minimize')` + `titlebar:minimize` | 完整模式最小化到任务栏；浮窗模式最小化改走 `hide()` 隐藏到系统托盘（隐藏的窗口不在任务栏保留按钮），唤醒入口是托盘图标单击 / 双击与全局快捷键（`showMainWindowFromTray`） |
 | 模式切换的异步状态 | `waitForWindowEvent()` + `windowModeSwitching` | 先还原最大化/退出全屏（等 `unmaximize` / `leave-full-screen` 事件落定，1s 超时兜底）再 `setBounds`，否则会被忽略或只改还原尺寸；切换期间用标志位防重入 |
-| 模式切换条件 | `canToggleWindowMode()` | 未打开工作区时禁用（浮窗隐藏侧栏，切换后无法再选工作区） |
+| 模式切换条件 | `canToggleWindowMode()` | 打开集合为空时禁用（浮窗隐藏侧栏，切换后无法再选工作目录） |
 | 模式位置与尺寸 | `windowSize` / `floatingWindowSize` | 两种模式各自独立落盘 `{x,y,width,height}`，切换时按各自记录还原（旧坐标失效则退回当前位置）；浮窗默认 480 宽、工作区高度 80% |
 | 模式持久化 | `windowMode` + `readLastWindowMode()` | 切换模式时落盘；启动时优先按上次的模式建窗口（尺寸/位置也取该模式的记录）。**上次是浮窗但本次没有工作区时退回完整模式**（浮窗隐藏侧栏，没有工作区就没法再选） |
 | 置顶持久化 | `floatingPinned` + `readLastFloatingPinned()` | 点钉住按钮时落盘（默认 `true`），启动时按它恢复浮窗的「总在最前」；缺失/非法值一律按默认开启处理 |
@@ -2388,7 +2423,7 @@ MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 
 | 取 UI 单例 | `WebViewUI.getInstance()` 未创建直接抛错（替代静默 `undefined`） | `src/host/WebViewUI.ts` |
 | 取启动快照 | `bootstrapSnapshot()` 未执行骨架时抛错 | `src/host/bootstrapCore.ts` |
 | 取「等待用户」判定 | `requireSessionWaitingForUserProvider()` 未注入直接抛错 | `src/core/sessionResources.ts` |
-| 取项目根 / 扩展路径 | `getProjectRoot()` / `getExtensionPath()` 未注入直接抛错 | `src/core/history/Config.ts` |
+| 取项目根 / 扩展路径 | `getProjectRoot(sessionId?)`（未登记会话时回退活动工作目录）/ `getExtensionPath()` 未注入直接抛错 | `src/core/history/Config.ts` |
 | 宿主契约成员 | 全部必选，禁止 `host.foo?.()` 静默降级（见 12.2） | `src/host/UIHost.ts` |
 
 允许 no-op 的只有**合法瞬时状态**，且必须注释说明理由：

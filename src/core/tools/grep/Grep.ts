@@ -136,7 +136,7 @@ export const GrepTool = buildTool({
     }
 
     const projectRoot = context.cwd;
-    const searchPath = inputPath ? expandPath(inputPath) : projectRoot;
+    const searchPath = inputPath ? expandPath(inputPath, projectRoot) : projectRoot;
 
     const args = ['--hidden'];
 

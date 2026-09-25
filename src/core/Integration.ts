@@ -262,7 +262,7 @@ export function createEngine(sessionId: string, title: string, role?: string): Q
   });
 
   const engine = new QueryEngine(sessionId, {
-    cwd: getProjectRoot(),
+    cwd: getProjectRoot(sessionId),
     tools: getAllTools() as Tool[],
     getAppState: () => ({}),
     setAppState: () => { },
@@ -376,7 +376,7 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
   }
 
   const engine = new QueryEngine(sessionID, {
-    cwd: getProjectRoot(),
+    cwd: getProjectRoot(sessionID),
     tools: getAllTools() as Tool[],
     getAppState: () => ({}),
     setAppState: () => { },
@@ -536,7 +536,7 @@ export async function* sendMessage(
   const { dispatch } = await import('./CommandDispatcher.js');
   const dispatchResult = await dispatch(prompt, {
     sessionId,
-    cwd: getProjectRoot(),
+    cwd: getProjectRoot(sessionId),
   });
 
   if (dispatchResult.result === 'handled') {
@@ -556,7 +556,7 @@ export async function* sendMessage(
   if (!engine) {
     // 主对话（非子代理）默认 Master 角色
     engine = new QueryEngine(sessionId, {
-      cwd: getProjectRoot(),
+      cwd: getProjectRoot(sessionId),
       tools: getAllTools() as Tool[],
       getAppState: () => ({}),
       setAppState: () => { },

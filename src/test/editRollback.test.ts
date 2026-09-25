@@ -16,7 +16,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { createEventBus } from '../host/EventBus';
 import { setGlobalEventBus, resetGlobalEventBus } from '../core/AssistantEventBus';
-import { setProjectRootProvider, getProjectConversationDir } from '../core/history/Config';
+import { setProjectRootProvider, setSessionWorkspace, getProjectConversationDir } from '../core/history/Config';
 import { initializeCoreEvents } from '../core/initializeCoreEvents';
 import { WebviewMessageHandler } from '../host/ui/webviewMessageHandler';
 import { createChecker, runTests } from './helpers/harness';
@@ -127,6 +127,36 @@ async function run(): Promise<void> {
   check(
     '回滚结果以系统消息回传',
     emitted.some((e) => e.type === 'message' && typeof e.data?.content === 'string' && e.data.content.includes('已回滚')),
+  );
+
+  // 3) 多工作目录：相对路径必须以「会话自己的工作目录」为基准，而不是当前活动目录。
+  //    会话属于 sessionRoot，但活动工作目录仍是 projectRoot；若回退到活动目录，
+  //    会改到 projectRoot 下的同名文件。
+  const sessionRoot = path.join(tmpHome, 'session-ws');
+  await fs.mkdir(sessionRoot, { recursive: true });
+  const sessionId2 = 'sess-rollback-ws';
+  setSessionWorkspace(sessionId2, sessionRoot);
+  await writeEditConversation(sessionRoot, sessionId2, 'relative.txt');
+  await fs.writeFile(path.join(sessionRoot, 'relative.txt'), 'NEW CONTENT\n', 'utf-8');
+  const decoyFile = path.join(projectRoot, 'relative.txt');
+  await fs.writeFile(decoyFile, 'DECOY\n', 'utf-8');
+
+  await handler.handleWebviewMessage({
+    type: 'rollbackEdit',
+    sessionId: sessionId2,
+    toolUseId: 'toolu_1',
+    filePath: 'relative.txt',
+    direction: 'before',
+  });
+  await new Promise((r) => setTimeout(r, 800));
+
+  check(
+    '相对路径以会话自己的工作目录为基准（会话目录已回滚）',
+    (await fs.readFile(path.join(sessionRoot, 'relative.txt'), 'utf-8')) === 'OLD CONTENT\n',
+  );
+  check(
+    '相对路径不回退到活动工作目录（活动目录的同名文件未被改动）',
+    (await fs.readFile(decoyFile, 'utf-8')) === 'DECOY\n',
   );
 
   resetGlobalEventBus();

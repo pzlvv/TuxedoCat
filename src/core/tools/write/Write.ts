@@ -101,7 +101,7 @@ export const WriteTool = buildTool({
     return 'Write';
   },
 
-  async checkPermissions(input: WriteInput) {
+  async checkPermissions(input: WriteInput, context: ToolUseContext) {
     // 验证输入
     if (!input.file_path || typeof input.file_path !== 'string') {
       return {
@@ -117,7 +117,7 @@ export const WriteTool = buildTool({
     }
 
     // 准备内容预览
-    const fullPath = expandPath(input.file_path);
+    const fullPath = expandPath(input.file_path, context.cwd);
 
     // 检查文件是否存在（区分 create 和 update）
     let actionType = 'create';
@@ -150,7 +150,7 @@ export const WriteTool = buildTool({
 
   async call(
     input: WriteInput,
-    _context: ToolUseContext,
+    context: ToolUseContext,
   ): Promise<ToolResult<WriteOutput>> {
     const { file_path, content } = input;
 
@@ -163,7 +163,7 @@ export const WriteTool = buildTool({
     }
 
     // 展开路径（支持 ~、相对路径等）
-    const fullPath = expandPath(file_path);
+    const fullPath = expandPath(file_path, context.cwd);
 
     // 读取写入前的文件内容（用于回滚备份）
     let beforeContent: string | null = null;

@@ -143,7 +143,7 @@ export async function resolveToolPermission(
   if (tool && typeof tool === 'object' && 'checkPermissions' in tool && typeof (tool as any).checkPermissions === 'function') {
     const context = {
       abortController: new AbortController(),
-      cwd: getProjectRoot(),
+      cwd: getProjectRoot(sessionId),
       getAppState: () => ({}),
       setAppState: () => {},
       messages: [],
@@ -214,7 +214,7 @@ export async function resolveToolPermission(
     const filePath = args.file_path || args.path;
     if (filePath && typeof filePath === 'string') {
       try {
-        const absolutePath = expandPath(filePath);
+        const absolutePath = expandPath(filePath, getProjectRoot(sessionId));
         displayArgs = { ...displayArgs, file_path: absolutePath };
       } catch (error) {
         logger.error('PermissionPolicy', `路径展开失败: ${error}`);

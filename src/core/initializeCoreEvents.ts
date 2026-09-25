@@ -33,6 +33,7 @@ async function registerIntegrationUiEvents(bus: AssistantEventBus): Promise<void
   const { setSessionAgentMode } = await import('./tools/PermissionPolicy.js');
   const { createConversationMetadataSync, updateConversationMetadataTitle } = await import('./history/Conversation.js');
   const { loadConversation } = await import('./history/index.js');
+  const { hasProjectRoot } = await import('./history/Config.js');
 
   // ===== 消息 =====
   bus.onUiEvent('messageQueued', (e) => {
@@ -79,6 +80,10 @@ async function registerIntegrationUiEvents(bus: AssistantEventBus): Promise<void
   // conversationStarted：用户点「新建对话」，会话还没有任何内容。
   // core 侧动作：预创建引擎（引擎在第一轮查询时才建）。
   bus.onUiEvent('conversationStarted', ({ sessionId }) => {
+    // 没有工作目录时不预创建引擎：引擎的 cwd、历史落盘、工具路径都依赖工作目录，
+    // 此时建引擎会直接抛错。无工作目录的会话不会落盘（webview 只显示引导），
+    // 等宿主打开工作目录后再建（新建对话走 conversationStarted 的正常路径）。
+    if (!hasProjectRoot(sessionId)) return;
     // 预创建引擎（幂等）：engine 不存在时创建；存在则返回已有实例。
     // 空标题：标题在第一条消息时由 appendMessage / sendMessage 生成。
     createEngine(sessionId, '', undefined);
@@ -229,7 +234,7 @@ async function registerHistoryUiEvents(bus: AssistantEventBus): Promise<void> {
         const { readProjectConversationMetadata } = await import('./history/Conversation.js');
         const closure = collectConversationClosure(
           sessionId,
-          await readProjectConversationMetadata(getProjectRoot()),
+          await readProjectConversationMetadata(getProjectRoot(sessionId)),
         );
         for (const sid of closure) {
           await releaseSessionResources(sid);

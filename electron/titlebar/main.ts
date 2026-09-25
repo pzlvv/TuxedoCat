@@ -50,6 +50,8 @@ interface TitlebarLabels {
   toggleToFloating: string;
   toggleToFull: string;
   modeDisabled: string;
+  addWorkspace: string;
+  closeWorkspace: string;
 }
 
 interface TitlebarState extends TitlebarModeState {
@@ -58,12 +60,26 @@ interface TitlebarState extends TitlebarModeState {
   maximized: boolean;
   sections: TitlebarSection[];
   labels: TitlebarLabels;
+  workspaces?: TitlebarWorkspace[];
+  activeWorkspace?: string | null;
 }
 
 interface TitlebarMenuAnchor {
   id: string;
   /** 菜单按钮左边缘（相对窗口内容区，标题栏视图位于 (0,0)，与视口坐标一致） */
   anchorX: number;
+}
+
+/** 工作目录标签页：path 为绝对路径，name 为主进程取好的目录名 */
+interface TitlebarWorkspace {
+  path: string;
+  name: string;
+}
+
+/** 打开集合 + 活动项（标题栏标签页区渲染）；字段名与 get-state 一致（activeWorkspace） */
+interface TitlebarWorkspacesState {
+  workspaces: TitlebarWorkspace[];
+  activeWorkspace: string | null;
 }
 
 interface TitlebarAPI {
@@ -75,10 +91,16 @@ interface TitlebarAPI {
   closeMenu: () => void;
   toggleMode: () => void;
   togglePin: () => void;
+  activateWorkspace: (path: string) => void;
+  closeWorkspace: (path: string) => void;
+  addWorkspace: () => void;
+  /** 拖拽排序：提交完整的打开集合顺序（主进程按去重键校验） */
+  reorderWorkspaces: (paths: string[]) => void;
   onWindowState: (callback: (state: { maximized: boolean }) => void) => void;
   onMenuState: (callback: (state: { openId: string | null }) => void) => void;
   onModelChanged: (callback: (state: { sections: TitlebarSection[] }) => void) => void;
   onModeState: (callback: (state: TitlebarModeState) => void) => void;
+  onWorkspacesChanged: (callback: (state: TitlebarWorkspacesState) => void) => void;
 }
 
 declare global {
@@ -91,6 +113,7 @@ const api = window.titlebarAPI;
 
 const titlebarEl = document.getElementById('titlebar')!;
 const menubarEl = document.getElementById('menubar')!;
+const tabsEl = document.getElementById('workspaceTabs')!;
 const brandNameEl = document.getElementById('brandName')!;
 const brandLogoEl = document.getElementById('brandLogo') as HTMLImageElement;
 const btnMode = document.getElementById('btnMode') as HTMLButtonElement;
@@ -119,17 +142,34 @@ let labels: TitlebarLabels = {
   toggleToFloating: 'Switch to floating window',
   toggleToFull: 'Switch to full mode',
   modeDisabled: 'Open a workspace first to switch mode',
+  addWorkspace: 'Add workspace folder',
+  closeWorkspace: 'Close workspace folder',
 };
 
-/** 渲染菜单栏按钮（分区变化时重建） */
+/** 三点图标（单一顶层菜单入口） */
+const ICON_MENU = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.6" cy="8" r="1.35" fill="currentColor" /><circle cx="8" cy="8" r="1.35" fill="currentColor" /><circle cx="12.4" cy="8" r="1.35" fill="currentColor" /></svg>`;
+/** 标签页关闭图标 */
+const ICON_TAB_CLOSE = `<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" /></svg>`;
+/** 添加工作目录图标 */
+const ICON_TAB_ADD = `<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5v9M1.5 6h9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>`;
+
+/** 渲染菜单栏按钮（分区变化时重建）。
+ *  单一分区时渲染成图标按钮（顶层菜单收编为一个图标），多分区时保持文字按钮（macOS 不渲染）。 */
 function renderMenubar(sections: TitlebarSection[]): void {
   menubarEl.textContent = '';
   if (isMac) return; // macOS 走系统菜单栏
+  const single = sections.length === 1;
   for (const section of sections) {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'menu-btn';
-    btn.textContent = section.label;
+    btn.className = single ? 'menu-btn menu-btn-icon' : 'menu-btn';
+    if (single) {
+      btn.innerHTML = ICON_MENU;
+      btn.title = section.label;
+      btn.setAttribute('aria-label', section.label);
+    } else {
+      btn.textContent = section.label;
+    }
     btn.dataset.menuId = section.id;
     btn.setAttribute('role', 'menuitem');
     if (section.id === openMenuId) btn.classList.add('open');
@@ -153,6 +193,149 @@ function renderMenubar(sections: TitlebarSection[]): void {
     });
     menubarEl.appendChild(btn);
   }
+}
+
+/** 当前渲染的打开集合（拖拽排序时据此计算新顺序） */
+let renderedWorkspaces: TitlebarWorkspace[] = [];
+/** 正在被拖拽的标签页路径（null = 没有拖拽） */
+let draggingPath: string | null = null;
+/** 拖拽刚结束的一小段时间内抑制 click，避免「拖完误触发切换标签页」 */
+let suppressTabClickUntil = 0;
+
+/** 清掉所有标签页的放置指示线 */
+function clearDropIndicators(): void {
+  tabsEl.querySelectorAll('.ws-tab').forEach((el) => el.classList.remove('drop-before', 'drop-after'));
+}
+
+/**
+ * 计算把 fromPath 移到 toPath 前 / 后的新顺序。
+ * 返回 null 表示顺序未变化或参数非法（调用方据此不发提交）。
+ */
+function computeReorderedPaths(fromPath: string, toPath: string, after: boolean): string[] | null {
+  const order = renderedWorkspaces.map((w) => w.path);
+  const fromIdx = order.indexOf(fromPath);
+  if (fromIdx < 0) return null;
+  order.splice(fromIdx, 1);
+  let toIdx = order.indexOf(toPath);
+  if (toIdx < 0) return null;
+  if (after) toIdx += 1;
+  order.splice(toIdx, 0, fromPath);
+  if (order.every((p, i) => p === renderedWorkspaces[i].path)) return null;
+  return order;
+}
+
+/**
+ * 渲染工作目录标签页（打开集合变化时重建）。
+ * 标签页占用原菜单栏区域；活动项高亮；每张标签页带关闭按钮、可拖拽排序；末尾是「添加」按钮。
+ */
+function renderWorkspaces(workspaces: TitlebarWorkspace[], active: string | null): void {
+  renderedWorkspaces = workspaces;
+  draggingPath = null;
+  tabsEl.textContent = '';
+  // 打开集合为空时不渲染标签页区域（规格 §5）：添加目录入口在侧栏空态与菜单里
+  if (workspaces.length === 0) return;
+
+  for (const ws of workspaces) {
+    const isActive = ws.path === active;
+    // 键盘可达：tab 可聚焦，Enter / Space 切换；关闭按钮是真实 button，
+    // 通过 :focus-within 在聚焦时显现（否则 visibility: hidden 不可聚焦）
+    const tab = document.createElement('div');
+    tab.className = 'ws-tab' + (isActive ? ' active' : '');
+    tab.dataset.path = ws.path;
+    tab.title = ws.path;
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    tab.tabIndex = 0;
+
+    const label = document.createElement('span');
+    label.className = 'ws-tab-label';
+    label.textContent = ws.name || ws.path;
+    tab.appendChild(label);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'ws-tab-close';
+    closeBtn.title = labels.closeWorkspace;
+    closeBtn.setAttribute('aria-label', `${labels.closeWorkspace}: ${ws.name || ws.path}`);
+    closeBtn.innerHTML = ICON_TAB_CLOSE;
+    closeBtn.addEventListener('mousedown', (event) => event.stopPropagation());
+    closeBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      api?.closeWorkspace(ws.path);
+    });
+    tab.appendChild(closeBtn);
+
+    tab.addEventListener('mousedown', (event) => event.stopPropagation());
+    tab.addEventListener('click', (event) => {
+      event.stopPropagation();
+      // 刚拖拽排序完：抑制这次 click，避免顺带切换标签页
+      if (Date.now() < suppressTabClickUntil) return;
+      if (!isActive) api?.activateWorkspace(ws.path);
+    });
+    tab.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      if (!isActive) api?.activateWorkspace(ws.path);
+    });
+
+    // ── 拖拽排序 ──
+    tab.draggable = true;
+    tab.addEventListener('dragstart', (event) => {
+      // 从关闭按钮起拖不触发排序（关闭按钮是 tab 的子元素，默认会带起 tab 的拖拽）
+      if ((event.target as HTMLElement | null)?.closest('.ws-tab-close')) {
+        event.preventDefault();
+        return;
+      }
+      draggingPath = ws.path;
+      tab.classList.add('dragging');
+      event.dataTransfer?.setData('text/plain', ws.path);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+    });
+    tab.addEventListener('dragend', () => {
+      draggingPath = null;
+      suppressTabClickUntil = Date.now() + 250;
+      tab.classList.remove('dragging');
+      clearDropIndicators();
+    });
+    tab.addEventListener('dragover', (event) => {
+      if (!draggingPath || draggingPath === ws.path) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      // 越过中线即视为插到目标之后，否则插到之前
+      const rect = tab.getBoundingClientRect();
+      const after = event.clientX > rect.left + rect.width / 2;
+      clearDropIndicators();
+      tab.classList.add(after ? 'drop-after' : 'drop-before');
+    });
+    tab.addEventListener('dragleave', () => {
+      tab.classList.remove('drop-before', 'drop-after');
+    });
+    tab.addEventListener('drop', (event) => {
+      event.preventDefault();
+      const from = draggingPath;
+      clearDropIndicators();
+      if (!from || from === ws.path) return;
+      const rect = tab.getBoundingClientRect();
+      const after = event.clientX > rect.left + rect.width / 2;
+      const next = computeReorderedPaths(from, ws.path, after);
+      if (next) api?.reorderWorkspaces(next);
+    });
+
+    tabsEl.appendChild(tab);
+  }
+
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'ws-add';
+  addBtn.title = labels.addWorkspace;
+  addBtn.setAttribute('aria-label', labels.addWorkspace);
+  addBtn.innerHTML = ICON_TAB_ADD;
+  addBtn.addEventListener('mousedown', (event) => event.stopPropagation());
+  addBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    api?.addWorkspace();
+  });
+  tabsEl.appendChild(addBtn);
 }
 
 /** 同步菜单按钮高亮状态 */
@@ -184,12 +367,14 @@ function applyModeState(state: TitlebarModeState): void {
   btnPin.classList.toggle('active', state.pinned);
   btnPin.setAttribute('aria-pressed', String(state.pinned));
   btnPin.title = state.pinned ? labels.unpin : labels.alwaysOnTop;
-  // 品牌位：浮窗模式显示当前工作目录名（浮窗没有侧栏，这是窗口里唯一的上下文），
-  // 完整模式仍是产品名。目录名由主进程取 basename，超长时 CSS 省略号收住。
+  // 品牌位：完整模式只保留软件图标（不显示产品名），浮窗模式显示当前工作目录名
+  // （浮窗没有侧栏，这是窗口里唯一的上下文）。目录名由主进程取 basename，
+  // 超长时 CSS 省略号收住。
   const workspaceName = typeof state.workspaceName === 'string' ? state.workspaceName : '';
-  const brandText = floating && workspaceName ? workspaceName : productName;
+  const brandText = floating && workspaceName ? workspaceName : '';
   brandNameEl.textContent = brandText;
-  brandNameEl.title = brandText;
+  // 完整模式品牌位没有文字：把产品名挂在 title 上，悬停软件图标仍能看到应用名
+  brandNameEl.title = brandText || productName;
 }
 
 /** 按当前 labels 刷新窗口按钮的 title / aria-label（含 getState 失败时的英文默认值） */
@@ -234,7 +419,7 @@ async function init(): Promise<void> {
   titlebarEl.addEventListener('dblclick', (event) => {
     if (isMac) return;
     const target = event.target as HTMLElement | null;
-    if (target && target.closest('.menubar, .window-controls, .tb-btn')) return;
+    if (target && target.closest('.menubar, .workspace-tabs, .window-controls, .tb-btn')) return;
     api.toggleMaximize();
   });
 
@@ -244,7 +429,8 @@ async function init(): Promise<void> {
     syncMenuHighlight();
   });
   api.onModelChanged((s) => renderMenubar(s?.sections ?? []));
-  api.onModeState((s) => applyModeState(s));
+  api.onModeState((s) => { if (s) applyModeState(s); });
+  api.onWorkspacesChanged((s) => renderWorkspaces(s?.workspaces ?? [], s?.activeWorkspace ?? null));
 
   let state: TitlebarState;
   try {
@@ -263,7 +449,8 @@ async function init(): Promise<void> {
   isMac = state.platform === 'darwin';
   document.body.classList.add(`platform-${state.platform}`);
   productName = state.productName;
-  brandNameEl.textContent = productName;
+  // 品牌位文字由 applyModeState 按模式决定（完整模式为空，只显示软件图标）
+  brandNameEl.title = productName;
   // 图标缺失时隐藏占位（避免破图）；已加载失败的情况 error 事件不会再触发，需按 naturalWidth 判断
   if (brandLogoEl.complete && brandLogoEl.naturalWidth === 0) {
     brandLogoEl.style.display = 'none';
@@ -271,6 +458,7 @@ async function init(): Promise<void> {
     brandLogoEl.addEventListener('error', () => { brandLogoEl.style.display = 'none'; });
   }
   renderMenubar(state.sections ?? []);
+  renderWorkspaces(state.workspaces ?? [], state.activeWorkspace ?? null);
   applyWindowState(state.maximized);
   applyModeState(state);
 }

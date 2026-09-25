@@ -176,6 +176,38 @@ export function setProjectRootProvider(provider: () => string | undefined): void
 }
 
 /**
+ * 会话工作目录表（sessionId → 工作目录绝对路径）。
+ *
+ * 工作目录是对话的属性：同一进程内可同时存在归属不同工作目录的对话。
+ * 需要工作目录的 core 调用按 sessionId 查表；未登记时回退到项目根提供者
+ * （宿主当前的活动工作目录）。
+ */
+const sessionWorkspaces = new Map<string, string>();
+
+/** 登记会话的工作目录（新建 / 加载对话、子对话继承父对话时调用） */
+export function setSessionWorkspace(sessionId: string, workspacePath: string): void {
+  if (typeof sessionId !== 'string' || !sessionId) return;
+  if (typeof workspacePath !== 'string' || !workspacePath) return;
+  sessionWorkspaces.set(sessionId, workspacePath);
+}
+
+/** 注销会话的工作目录（会话被回收 / 删除时调用） */
+export function clearSessionWorkspace(sessionId: string): void {
+  sessionWorkspaces.delete(sessionId);
+}
+
+/** 清空会话工作目录表（进程级资源释放） */
+export function clearAllSessionWorkspaces(): void {
+  sessionWorkspaces.clear();
+}
+
+/** 读取会话的工作目录（未登记时返回 undefined） */
+export function getSessionWorkspace(sessionId: string | null | undefined): string | undefined {
+  if (!sessionId) return undefined;
+  return sessionWorkspaces.get(sessionId);
+}
+
+/**
  * 项目根目录提供者是否已注册（启动自检用）。
  *
  * 与 hasProjectRoot() 的区别：只看"提供者有没有被注入"，不看它当前返回什么值。
@@ -193,19 +225,27 @@ export function hasProjectRootProvider(): boolean {
  *
  *   if (!hasProjectRoot()) return [];
  *   const root = getProjectRoot();
+ *
+ * 传入 sessionId 时按该会话自己的工作目录判断（会话工作目录表优先）。
  */
-export function hasProjectRoot(): boolean {
+export function hasProjectRoot(sessionId?: string | null): boolean {
+  if (getSessionWorkspace(sessionId)) return true;
   return !!projectRootProvider?.();
 }
 
 /**
- * 获取当前项目根目录（绝对路径）
+ * 获取项目根目录（绝对路径）
  *
- * 必须通过 setProjectRootProvider 设置提供者；未设置或返回空值时抛错，
- * 让"没有工作目录"这类问题在调用点显式暴露，而不是静默拿到一个错误路径。
- * 需要降级处理（如宿主尚未打开工作目录）的调用点，先用 hasProjectRoot() 守卫。
+ * 传入 sessionId 时优先取该会话自己的工作目录（会话工作目录表）；
+ * 未登记或未传时回退到项目根提供者（宿主当前的活动工作目录）。
+ * 两者皆无时抛错，让"没有工作目录"这类问题在调用点显式暴露，
+ * 而不是静默拿到一个错误路径。需要降级处理的调用点，先用 hasProjectRoot() 守卫。
  */
-export function getProjectRoot(): string {
+export function getProjectRoot(sessionId?: string | null): string {
+  const scoped = getSessionWorkspace(sessionId);
+  if (scoped) {
+    return scoped;
+  }
   const root = projectRootProvider?.();
   if (root) {
     return root;

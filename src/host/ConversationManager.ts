@@ -33,10 +33,21 @@ export abstract class ConversationManager {
   /** 最近一次 refresh() 分发的列表快照（见 getCachedList） */
   private cachedList: readonly ConversationMetadata[] | null = null;
 
+  /**
+   * 快照对应的活动工作目录。
+   * 列表是「按目录」的：读盘期间用户可能切换活动目录，此时旧目录的列表既不进
+   * 快照、也不推给界面（否则侧栏/子对话树会显示上一个目录的对话）。
+   */
+  private cachedListWorkspace: string | undefined;
+
   /** 重新读取对话列表并分发给该宿主所有需要它的界面 */
   async refresh(): Promise<void> {
+    const workspace = this.host.getWorkspacePath();
     const list = await this.load();
+    // 读盘期间活动工作目录已切换：丢弃过期结果，等新目录自己的 refresh()
+    if (this.host.getWorkspacePath() !== workspace) return;
     this.cachedList = list;
+    this.cachedListWorkspace = workspace;
     await this.dispatchList(list);
   }
 
@@ -55,14 +66,20 @@ export abstract class ConversationManager {
    * 宿主用它响应「拉取列表」请求——Electron 的 `sidebar:get-conversations`
    * 优先读这份快照，不必再读一次盘；列表变化本来就会经 `conversationListChanged`
    * → `refresh()` 更新快照并推送。
+   *
+   * 活动工作目录与快照不一致时返回 null（等价于「未缓存」），
+   * 调用方会重新 refresh 拿到当前目录的列表。
    */
   getCachedList(): readonly ConversationMetadata[] | null {
+    if (this.cachedList === null) return null;
+    if (this.cachedListWorkspace !== this.host.getWorkspacePath()) return null;
     return this.cachedList;
   }
 
   /** 丢弃列表快照（工作区切换等场景），下次拉取时重新读盘 */
   invalidateCachedList(): void {
     this.cachedList = null;
+    this.cachedListWorkspace = undefined;
   }
 
   // ===================== 流 2：会话运行时状态 =====================

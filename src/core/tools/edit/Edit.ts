@@ -637,7 +637,7 @@ export const EditTool = buildTool({
     return 'Edit';
   },
 
-  async checkPermissions(input: EditInput) {
+  async checkPermissions(input: EditInput, context: ToolUseContext) {
     // 验证输入
     if (!input.file_path || typeof input.file_path !== 'string') {
       return {
@@ -658,7 +658,7 @@ export const EditTool = buildTool({
       };
     }
 
-    const fullPath = expandPath(input.file_path);
+    const fullPath = expandPath(input.file_path, context.cwd);
 
     // 检查文件是否存在
     try {
@@ -747,7 +747,7 @@ export const EditTool = buildTool({
 
   async call(
     input: EditInput,
-    _context: ToolUseContext,
+    context: ToolUseContext,
   ): Promise<ToolResult<EditOutput>> {
     const { file_path, old_string, new_string, offset, limit } = input;
 
@@ -766,7 +766,7 @@ export const EditTool = buildTool({
     const replaceAll = resolveReplaceAll(input.replace_all);
 
     // 展开路径（支持 ~、相对路径等）
-    const fullPath = expandPath(file_path);
+    const fullPath = expandPath(file_path, context.cwd);
 
     // _meta 已通过 updateToolUseMeta 写入 block 顶层，不再从 input 内部读取。
     // checkBeforeContent 仅用于诊断日志对比，传 undefined 表示跳过快照对比。

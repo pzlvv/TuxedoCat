@@ -31,6 +31,20 @@ contextBridge.exposeInMainWorld('titlebarAPI', {
   togglePin: (): void => {
     ipcRenderer.send('titlebar:toggle-pin');
   },
+  /** 打开集合（标签页区）：切换活动项 / 关闭某项 / 添加 / 拖拽排序 */
+  activateWorkspace: (path: string): void => {
+    ipcRenderer.send('titlebar:activate-workspace', path);
+  },
+  closeWorkspace: (path: string): void => {
+    ipcRenderer.send('titlebar:close-workspace', path);
+  },
+  addWorkspace: (): void => {
+    ipcRenderer.send('titlebar:add-workspace');
+  },
+  /** 拖拽排序后提交新的打开集合顺序（完整排列，主进程校验） */
+  reorderWorkspaces: (paths: string[]): void => {
+    ipcRenderer.send('titlebar:reorder-workspaces', paths);
+  },
   onWindowState: (callback: (state: unknown) => void): void => {
     ipcRenderer.on('titlebar:window-state', (_event, state) => callback(state));
   },
@@ -42,5 +56,8 @@ contextBridge.exposeInMainWorld('titlebarAPI', {
   },
   onModeState: (callback: (state: unknown) => void): void => {
     ipcRenderer.on('titlebar:mode-state', (_event, state) => callback(state));
+  },
+  onWorkspacesChanged: (callback: (state: unknown) => void): void => {
+    ipcRenderer.on('titlebar:workspaces', (_event, state) => callback(state));
   },
 });

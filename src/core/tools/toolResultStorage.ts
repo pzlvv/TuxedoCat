@@ -22,10 +22,20 @@ export const PERSISTED_OUTPUT_TAG = '<persisted-output>';
 export const PERSISTED_OUTPUT_CLOSING_TAG = '</persisted-output>';
 
 /**
- * 获取工具结果目录
+ * 获取工具结果目录。
+ * 传入 sessionId 时取该会话自己的工作目录；省略时回退到活动工作目录。
  */
-export function getToolResultsDir(): string {
-  return join(getProjectConversationDir(getProjectRoot()), 'tool-results');
+export function getToolResultsDir(sessionId?: string): string {
+  return join(getProjectConversationDir(getProjectRoot(sessionId)), 'tool-results');
+}
+
+/**
+ * 按显式项目路径获取工具结果目录。
+ * 删除对话（含子对话）时用：子对话未必登记在会话工作目录表里，
+ * 按 sessionId 解析会回退到活动工作目录，导致清理到别的目录。
+ */
+export function getToolResultsDirForProject(projectPath: string): string {
+  return join(getProjectConversationDir(projectPath), 'tool-results');
 }
 
 /**
@@ -47,15 +57,15 @@ export function getToolResultFilePrefix(sessionId: string): string {
  */
 export function getToolResultPath(sessionId: string, id: string, isJson: boolean): string {
   const ext = isJson ? 'json' : 'txt';
-  return join(getToolResultsDir(), `${getToolResultFilePrefix(sessionId)}${id}.${ext}`);
+  return join(getToolResultsDir(sessionId), `${getToolResultFilePrefix(sessionId)}${id}.${ext}`);
 }
 
 /**
  * 确保工具结果目录存在
  */
-export async function ensureToolResultsDir(): Promise<void> {
-  await ensureProjectConversationDir(getProjectRoot());
-  await mkdir(getToolResultsDir(), { recursive: true });
+export async function ensureToolResultsDir(sessionId?: string): Promise<void> {
+  await ensureProjectConversationDir(getProjectRoot(sessionId));
+  await mkdir(getToolResultsDir(sessionId), { recursive: true });
 }
 
 /**
@@ -134,7 +144,7 @@ export async function persistLargeOutput(
   preview: string;
 } | null> {
   try {
-    await ensureToolResultsDir();
+    await ensureToolResultsDir(sessionId);
     const filepath = getToolResultPath(sessionId, taskId, false);
     const originalSize = stdout.length;
 
@@ -180,7 +190,7 @@ export async function persistOutputFile(
     const fileStat = await fsStat(outputFilePath);
     const originalSize = fileStat.size;
 
-    await ensureToolResultsDir();
+    await ensureToolResultsDir(sessionId);
     const dest = getToolResultPath(sessionId, taskId, false);
 
     // 超过最大持久化大小时截断
@@ -213,10 +223,13 @@ export async function persistOutputFile(
  * （见 Read.convertDocToMd）文件名都带会话前缀，这里按前缀扫描目录直接删除，
  * 不需要回扫对话消息内容。
  *
+ * @param projectPath 该会话所属项目目录；省略时按 sessionId 解析
  * @returns 实际删除的文件数
  */
-export async function deleteSessionToolResults(sessionId: string): Promise<number> {
-  const toolResultsDir = getToolResultsDir();
+export async function deleteSessionToolResults(sessionId: string, projectPath?: string): Promise<number> {
+  const toolResultsDir = projectPath
+    ? getToolResultsDirForProject(projectPath)
+    : getToolResultsDir(sessionId);
   const prefix = getToolResultFilePrefix(sessionId);
 
   let entries;

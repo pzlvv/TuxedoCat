@@ -94,8 +94,8 @@ export async function readSessionEnabledMcps(sessionId?: string): Promise<string
 
   // 从 meta.json 的 context.mcpEnabled 恢复（进程重启后走这条路径）
   // 宿主未打开工作目录时没有项目目录，视为"未设置过"，返回 null
-  if (!hasProjectRoot()) return null;
-  const projectPath = getProjectRoot();
+  if (!hasProjectRoot(sessionId)) return null;
+  const projectPath = getProjectRoot(sessionId);
   try {
     const content = await fs.readFile(getMetadataPath(sessionId, projectPath), 'utf-8');
     const metadata = JSON.parse(content) as { context?: { mcpEnabled?: unknown } };

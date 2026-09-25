@@ -116,7 +116,7 @@ export const GlobTool = buildTool({
     const start = Date.now();
 
     const projectRoot = context.cwd;
-    let searchDir = inputPath ? expandPath(inputPath) : projectRoot;
+    let searchDir = inputPath ? expandPath(inputPath, projectRoot) : projectRoot;
     let searchPattern = pattern;
 
     if (path.isAbsolute(pattern)) {

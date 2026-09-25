@@ -7,7 +7,7 @@ import { appendFile, writeFile, readFile, readdir, stat, unlink } from 'fs/promi
 import type { AgentMode } from '../types.js';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
-import { getProjectConversationDir, getProjectRoot, hasProjectRoot, getConversationDir, ensureProjectConversationDir, ensureProjectConversationDirSync } from './Config.js';
+import { getProjectConversationDir, getProjectRoot, hasProjectRoot, getConversationDir, ensureProjectConversationDir, ensureProjectConversationDirSync, setSessionWorkspace, clearSessionWorkspace } from './Config.js';
 import type { Message } from '../types.js';
 import type { PromptPresetId } from '../prompt/PromptPreset.js';
 import { requireEventBus, type CoreEvent } from '../AssistantEventBus.js';
@@ -136,40 +136,39 @@ const pendingToolMetas = new Map<string, Record<string, unknown>>();
 export { pendingToolMetas };
 
 /**
- * 对话列表缓存
- * 调用 loadConversationList() 后缓存结果，当任何对话发生变更时自动清除。
- * null 表示未缓存或缓存已失效。
+ * 对话列表缓存（工作目录 → 列表）
+ * 调用 loadConversationList() 后缓存结果，当任何对话发生变更时增量更新。
+ * 每个工作目录各持一份，切换活动工作目录时互不清空（切回时无需重新读盘）。
  */
-let conversationListCache: ConversationMetadata[] | null = null;
+const conversationListCaches = new Map<string, ConversationMetadata[]>();
+
+/** 获取某个工作目录对应的对话列表缓存（未缓存时返回 null） */
+function getConversationListCache(projectPath: string): ConversationMetadata[] | null {
+  return conversationListCaches.get(projectPath) ?? null;
+}
 
 /**
- * 对话列表缓存所属的项目路径
- * 用于工作区切换时自动失效：项目路径变化后，缓存的旧项目对话列表必须重新从磁盘加载。
+ * 按会话解析其工作目录，再取该目录的对话列表缓存。
+ * 会话工作目录无法解析（未登记且宿主未打开工作目录）时返回 null。
  */
-let conversationListCacheProject: string | null = null;
-
-/**
- * 获取当前项目对应的对话列表缓存。
- * 工作区切换后项目对话目录改变，若缓存属于旧项目则返回 null（自动失效），
- * 防止返回旧项目的对话列表。
- */
-function getCurrentConversationListCache(): ConversationMetadata[] | null {
-  if (conversationListCache === null) return null;
+function getConversationListCacheForSession(sessionId: string): ConversationMetadata[] | null {
   try {
-    return conversationListCacheProject === getProjectRoot() ? conversationListCache : null;
+    return getConversationListCache(getProjectRoot(sessionId));
   } catch {
     return null;
   }
 }
 
 /**
- * 清除对话列表缓存（工作区切换等场景调用）
- * 切换工作目录后必须重置缓存，否则 loadConversationList 会返回旧项目缓存的对话列表，
- * 导致侧栏对话列表不刷新。
+ * 清除对话列表缓存。
+ * 传 projectPath 时只清该工作目录；不传时清空全部（工作目录关闭等场景）。
  */
-export function resetConversationListCache(): void {
-  conversationListCache = null;
-  conversationListCacheProject = null;
+export function resetConversationListCache(projectPath?: string): void {
+  if (projectPath) {
+    conversationListCaches.delete(projectPath);
+  } else {
+    conversationListCaches.clear();
+  }
 }
 
 /**
@@ -438,7 +437,7 @@ async function appendToolUseUpdate(
   logLabel: string,
 ): Promise<void> {
   const startTs = Date.now();
-  const projectPath = getProjectRoot();
+  const projectPath = getProjectRoot(sessionId);
   if (!projectPath) return;
 
   const conversationPath = getConversationPath(sessionId, projectPath);
@@ -529,7 +528,7 @@ export async function updateToolUseMeta(
  */
 export async function appendMessage(message: Message, sessionId: string, parentUuid: string | null = null, totalContextTokens?: number): Promise<{ uuid: string; newTitle?: string }> {
   const effectiveSessionId = sessionId;
-  const projectPath = getProjectRoot();
+  const projectPath = getProjectRoot(sessionId);
 
   // 只有用户主动发送的消息（Integration.sendMessage / 排队消息）才更新 updatedAt，
   // 子代理回复 / reminder / 后台任务通知 / 工具结果等自动消息都不算。
@@ -611,7 +610,7 @@ export async function appendMessage(message: Message, sessionId: string, parentU
   }
 
   // 增量更新对话列表缓存
-  const listCache = getCurrentConversationListCache();
+  const listCache = getConversationListCache(projectPath);
   if (listCache) {
     const existing = listCache.find(c => c.sessionId === effectiveSessionId);
     if (existing) {
@@ -623,9 +622,8 @@ export async function appendMessage(message: Message, sessionId: string, parentU
         existing.title = newTitle;
       }
     } else {
-      // 缓存中没有这项（偶尔会出现，例如并发场景），重置缓存
-      conversationListCache = null;
-      conversationListCacheProject = null;
+      // 缓存中没有这项（偶尔会出现，例如并发场景），重置该工作目录的缓存
+      resetConversationListCache(projectPath);
     }
   }
 
@@ -827,7 +825,7 @@ export function createConversationMetadataSync(
   role?: string,
   modelRef?: ModelRef,
 ): void {
-  const projectPath = getProjectRoot();
+  const projectPath = getProjectRoot(sessionId);
   ensureProjectConversationDirSync(projectPath);
 
   // 创建 meta.json（保持扁平字段）
@@ -852,28 +850,29 @@ export function createConversationMetadataSync(
 }
 
 /**
- * 加载对话列表
+ * 加载对话列表。
+ *
+ * 传入 workspacePath 时加载该工作目录的列表；未传时用宿主当前的活动工作目录。
+ * 每个工作目录各有一份缓存，切换活动工作目录不清空其它目录的缓存。
  */
-export async function loadConversationList(): Promise<ConversationMetadata[]> {
+export async function loadConversationList(workspacePath?: string): Promise<ConversationMetadata[]> {
   // 宿主未打开工作目录时（如 VS Code 扩展开发宿主窗口、用户尚未选择文件夹）
   // 没有项目对话目录，返回空列表而不是抛错：异常会一路冒泡到 webview 消息回调，
   // 变成 "rejected promise not handled within 1 second"。
-  if (!hasProjectRoot()) {
-    conversationListCache = null;
-    conversationListCacheProject = null;
-    return [];
-  }
-  const currentProject = getProjectRoot();
-
-  // 项目路径变化（工作区切换）时缓存自动失效，重新从新项目目录加载
-  if (conversationListCache !== null && conversationListCacheProject !== currentProject) {
-    conversationListCache = null;
-    conversationListCacheProject = null;
+  let currentProject: string;
+  if (workspacePath) {
+    currentProject = workspacePath;
+  } else {
+    if (!hasProjectRoot()) {
+      return [];
+    }
+    currentProject = getProjectRoot();
   }
 
   // 检查缓存
-  if (conversationListCache !== null) {
-    return conversationListCache;
+  const cached = getConversationListCache(currentProject);
+  if (cached !== null) {
+    return cached;
   }
 
   const projectDir = getProjectConversationDir(currentProject);
@@ -909,8 +908,7 @@ export async function loadConversationList(): Promise<ConversationMetadata[]> {
     );
 
     // 存入缓存
-    conversationListCache = conversations;
-    conversationListCacheProject = currentProject;
+    conversationListCaches.set(currentProject, conversations);
 
     return conversations;
   } catch (error) {
@@ -926,7 +924,7 @@ export async function loadConversationList(): Promise<ConversationMetadata[]> {
  */
 export async function loadConversation(sessionId: string): Promise<Conversation> {
 
-    const currentProject = getProjectRoot();
+    const currentProject = getProjectRoot(sessionId);
 
     // 检查缓存
     const cached = conversationCache.get(sessionId);
@@ -951,6 +949,11 @@ export async function loadConversation(sessionId: string): Promise<Conversation>
       // 加载元数据
       const metadataContent = await readFile(metadataPath, 'utf8');
       const metadata = JSON.parse(metadataContent);
+
+      // 记录该对话的工作目录：后续按会话解析工作目录时无需再回退到活动工作目录
+      if (metadata && typeof metadata.project === 'string' && metadata.project) {
+        setSessionWorkspace(sessionId, metadata.project);
+      }
 
       // 加载消息（JSONL 格式）
       const content = await readFile(conversationPath, 'utf8');
@@ -1115,7 +1118,7 @@ export async function loadConversation(sessionId: string): Promise<Conversation>
  */
 export async function replaceConversationMessages(sessionId: string, messages: Message[]): Promise<void> {
   const effectiveSessionId = sessionId;
-  const projectPath = getProjectRoot();
+  const projectPath = getProjectRoot(sessionId);
   await ensureProjectConversationDir(projectPath);
 
   const conversationPath = getConversationPath(effectiveSessionId, projectPath);
@@ -1190,7 +1193,7 @@ export async function replaceConversationMessages(sessionId: string, messages: M
   }
 
   // 增量更新对话列表缓存
-  const listCache = getCurrentConversationListCache();
+  const listCache = getConversationListCache(projectPath);
   if (listCache) {
     const existing = listCache.find(c => c.sessionId === effectiveSessionId);
     if (existing) {
@@ -1221,7 +1224,7 @@ function getCompactArchivePath(sessionId: string, projectPath: string): string {
  * @param messages - 压缩前要归档的原始消息
  */
 export async function saveCompactArchive(sessionId: string, messages: Message[]): Promise<void> {
-  const projectPath = getProjectRoot();
+  const projectPath = getProjectRoot(sessionId);
   const archivePath = getCompactArchivePath(sessionId, projectPath);
   await ensureProjectConversationDir(projectPath);
 
@@ -1248,7 +1251,7 @@ export async function saveCompactArchive(sessionId: string, messages: Message[])
  * Load archived original messages from compact archive
  */
 export async function loadCompactArchive(sessionId: string): Promise<Message[] | null> {
-  const projectPath = getProjectRoot();
+  const projectPath = getProjectRoot(sessionId);
   const archivePath = getCompactArchivePath(sessionId, projectPath);
 
   try {
@@ -1275,7 +1278,7 @@ export async function loadCompactArchive(sessionId: string): Promise<Message[] |
  * Delete the compact archive file (after expanding)
  */
 export async function deleteCompactArchive(sessionId: string): Promise<void> {
-  const projectPath = getProjectRoot();
+  const projectPath = getProjectRoot(sessionId);
   const archivePath = getCompactArchivePath(sessionId, projectPath);
 
   try {
@@ -1292,7 +1295,7 @@ export async function deleteCompactArchive(sessionId: string): Promise<void> {
  * Check if a session has a compact archive
  */
 export async function hasCompactArchive(sessionId: string): Promise<boolean> {
-  const projectPath = getProjectRoot();
+  const projectPath = getProjectRoot(sessionId);
   const archivePath = getCompactArchivePath(sessionId, projectPath);
 
   try {
@@ -1318,7 +1321,7 @@ export async function updateConversationContext(
     return;
   }
 
-  const projectPath = getProjectRoot();
+  const projectPath = getProjectRoot(sessionId);
   const metadataPath = getMetadataPath(sessionId, projectPath);
 
   await enqueueMetadataWrite(metadataPath, async () => {
@@ -1405,7 +1408,7 @@ export async function updateConversationMetadataTitle(
     return;
   }
 
-  const projectPath = getProjectRoot();
+  const projectPath = getProjectRoot(sessionId);
   const metadataPath = getMetadataPath(sessionId, projectPath);
 
   await enqueueMetadataWrite(metadataPath, async () => {
@@ -1423,7 +1426,7 @@ export async function updateConversationMetadataTitle(
       }
 
       // 同步更新对话列表缓存
-      const listCache = getCurrentConversationListCache();
+      const listCache = getConversationListCacheForSession(sessionId);
       if (listCache) {
         const entry = listCache.find(c => c.sessionId === sessionId);
         if (entry) {
@@ -1491,7 +1494,7 @@ export function collectConversationClosure(
  * （`collectConversationClosure`）一致。先删子孙再删自己，中途失败不会留下孤儿。
  */
 export async function deleteConversation(sessionId: string): Promise<void> {
-  const currentProject = getProjectRoot();
+  const currentProject = getProjectRoot(sessionId);
   const list = await readProjectConversationMetadata(currentProject);
   const closure = collectConversationClosure(sessionId, list);
   for (const id of closure) {
@@ -1523,9 +1526,11 @@ async function deleteSingleConversation(sessionId: string, currentProject: strin
     }
   });
 
-  // 同步删除该对话在 tool-results 下带会话前缀的持久化结果文件
+  // 同步删除该对话在 tool-results 下带会话前缀的持久化结果文件。
+  // 传 currentProject：子对话可能未登记在会话工作目录表里，按 sessionId 解析会
+  // 回退到活动工作目录，导致结果文件残留在真正的项目目录中
   try {
-    const removed = await deleteSessionToolResults(sessionId);
+    const removed = await deleteSessionToolResults(sessionId, currentProject);
     if (removed > 0) {
       logger.info('Conversation', `删除对话关联的工具结果文件 ${removed} 个 | session=${sessionId.substring(0, 20)}`);
     }
@@ -1535,6 +1540,9 @@ async function deleteSingleConversation(sessionId: string, currentProject: strin
 
   // 清理内存缓存
   conversationCache.delete(sessionId);
+
+  // 注销会话工作目录（会话已删除，按会话解析工作目录不再需要该条目）
+  clearSessionWorkspace(sessionId);
 
   // 清理 pendingToolMetas 中该 session 的条目
   // updateToolUseMeta 在助理消息尚未 push 到 mutableMessages 时使用此暂存区
@@ -1570,7 +1578,7 @@ async function deleteSingleConversation(sessionId: string, currentProject: strin
   }
 
   // 增量更新对话列表缓存（移除已删除的对话）
-  const listCache = getCurrentConversationListCache();
+  const listCache = getConversationListCacheForSession(sessionId);
   if (listCache) {
     const idx = listCache.findIndex((c) => c.sessionId === sessionId);
     if (idx >= 0) listCache.splice(idx, 1);
@@ -1581,7 +1589,7 @@ async function deleteSingleConversation(sessionId: string, currentProject: strin
  * 获取指定会话的 isRemote 状态
  */
 export async function getConversationIsRemote(sessionId: string): Promise<boolean> {
-  const projectPath = getProjectRoot();
+  const projectPath = getProjectRoot(sessionId);
   const metadataPath = getMetadataPath(sessionId, projectPath);
 
   try {
@@ -1599,7 +1607,7 @@ export async function getConversationIsRemote(sessionId: string): Promise<boolea
  * 在 meta.json 中记录 isRemote 标记。
  */
 export async function markConversationAsRemote(sessionId: string, _title?: string): Promise<void> {
-  const projectPath = getProjectRoot();
+  const projectPath = getProjectRoot(sessionId);
   const metadataPath = getMetadataPath(sessionId, projectPath);
 
   // 更新 meta.json 中的 isRemote 字段
@@ -1619,7 +1627,7 @@ export async function markConversationAsRemote(sessionId: string, _title?: strin
         }
 
         // 同步更新列表缓存
-        const listCache = getCurrentConversationListCache();
+        const listCache = getConversationListCacheForSession(sessionId);
         if (listCache) {
           const entry = listCache.find(c => c.sessionId === sessionId);
           if (entry) {

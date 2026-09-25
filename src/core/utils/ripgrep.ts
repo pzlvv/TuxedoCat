@@ -6,7 +6,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { getExtensionPath, getProjectRoot } from '../history/Config.js';
+import { getExtensionPath } from '../history/Config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -44,24 +44,27 @@ async function getRipgrepPath(): Promise<string> {
 
   const exeName = platform === 'win32' ? 'rg.exe' : 'rg';
 
-  // 优先用 getExtensionPath（生产环境：extension/dist/resources/ripgrep/<subDir>/）
+  // 资源定位一律基于应用 / 扩展根目录，不用对话工作目录（规格 §4.4）：
+  // 优先 dist/resources（打包产物），其次 resources（dev 未 build 时）
   try {
-    const exePath = path.join(getExtensionPath(), 'dist', 'resources', 'ripgrep', subDir, exeName);
-    await fs.access(exePath);
-    return exePath;
+    const extPath = getExtensionPath();
+    for (const candidate of [
+      path.join(extPath, 'dist', 'resources', 'ripgrep', subDir, exeName),
+      path.join(extPath, 'resources', 'ripgrep', subDir, exeName),
+    ]) {
+      try {
+        await fs.access(candidate);
+        return candidate;
+      } catch {
+        // 继续尝试下一个候选路径
+      }
+    }
   } catch {
-    // getExtensionPath 不可用（dev 模式）或产物缺失，fallback 到 getProjectRoot
+    // getExtensionPath 未注入（独立运行 core 的场景）：回退 PATH
   }
 
-  // Fallback: getProjectRoot + resources/ripgrep/<subDir>/（dev 模式，未 build 时）
-  const bundledPath = path.join(getProjectRoot(), 'resources', 'ripgrep', subDir, exeName);
-  try {
-    await fs.access(bundledPath);
-    return bundledPath;
-  } catch {
-    // 打包产物缺失时也回退到 PATH 中的系统 rg
-    return 'rg';
-  }
+  // 打包产物缺失时也回退到 PATH 中的系统 rg
+  return 'rg';
 }
 
 /**

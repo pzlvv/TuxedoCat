@@ -13,6 +13,15 @@
  *   - onSessionLoadedChanged()  主进程推送「已打开会话」集合变化（视图层状态）
  *   - getLoadedSessions()       读取当前已打开会话集合（初始化用）
  *
+ * 工作目录（多工作目录）：
+ *   - getWorkspaces()           读取打开集合 + 活动项 + 最近工作目录
+ *   - addWorkspaces(paths?)     添加工作目录（不传 paths 时弹出系统目录选择框）
+ *   - activateWorkspace(path)   切换活动工作目录
+ *   - closeWorkspace(path)      关闭工作目录
+ *   - onWorkspacesChanged()     主进程推送打开集合变化
+ * 侧栏头部为「搜索框 + 新对话」：搜索框按标题过滤当前活动工作目录的对话列表；
+ * 打开集合为空时空态展示「添加工作目录」+ 最近工作目录（点击即添加）。
+ *
  * 三条流各自单一 owner（DEVELOPMENT.md 第 5.4 节规则 8）：
  *   列表（磁盘元数据）+ 运行时状态（core sessionRuntime）+ loaded（ChatViewManager 视图层），
  *   在 render() 时合并，列表载荷本身不再携带 loaded / idle / waitingForUser 标记。
@@ -39,6 +48,21 @@ interface ConversationMeta {
   messageCount: number;
   parentSessionId?: string;
   role?: string;
+  /** 该对话所属的工作目录（绝对路径）：打开对话时回传主进程，按对话解析工作目录 */
+  project?: string;
+}
+
+/** 工作目录标签页（主进程取好目录名下发） */
+interface WorkspaceTab {
+  path: string;
+  name: string;
+}
+
+/** 打开集合 + 活动项 + 最近工作目录 */
+interface WorkspacesState {
+  workspaces: WorkspaceTab[];
+  active: string | null;
+  recent: string[];
 }
 
 /** 会话运行时状态（与 core 的 SessionRuntimeState 同构，见 DEVELOPMENT.md 第 3.1 节） */
@@ -54,9 +78,11 @@ interface SidebarAPI {
   getConversations: () => Promise<ConversationMeta[]>;
   getLoadedSessions: () => Promise<string[]>;
   getActiveSession: () => Promise<string | null>;
-  getWorkspace: () => Promise<string | null>;
-  openWorkspace: () => void;
-  openConversation: (sessionId: string) => void;
+  getWorkspaces: () => Promise<WorkspacesState>;
+  addWorkspaces: (paths?: string[]) => void;
+  activateWorkspace: (path: string) => void;
+  closeWorkspace: (path: string) => void;
+  openConversation: (sessionId: string, project?: string) => void;
   newConversation: () => void;
   deleteConversation: (sessionId: string) => Promise<{ ok: boolean; error?: string }>;
   closeConversation: (sessionId: string) => void;
@@ -66,7 +92,7 @@ interface SidebarAPI {
   onSessionStatesUpdated: (cb: (states: SessionRuntimeState[]) => void) => void;
   onSessionLoadedChanged: (cb: (sessionIds: string[]) => void) => void;
   onActiveSessionChanged: (cb: (sessionId: string | null) => void) => void;
-  onWorkspaceChanged: (cb: (workspace: string | null) => void) => void;
+  onWorkspacesChanged: (cb: (state: WorkspacesState) => void) => void;
 }
 
 declare global {
@@ -78,11 +104,20 @@ declare global {
 const listEl = document.getElementById('list')!;
 const footerEl = document.getElementById('footer')!;
 const newChatBtn = document.getElementById('newChat') as HTMLButtonElement;
-const workspaceNameEl = document.getElementById('workspaceName')!;
+const searchInputEl = document.getElementById('searchInput') as HTMLInputElement;
 
 let conversations: ConversationMeta[] = [];
 let activeSessionId: string | null = null;
-let workspacePath: string | null = null;
+/** 打开集合 + 活动项 + 最近工作目录（来自 `sidebar:workspaces-changed` / getWorkspaces） */
+let workspacesState: WorkspacesState = { workspaces: [], active: null, recent: [] };
+/** 搜索框内容：按标题过滤当前活动工作目录的对话列表 */
+let searchQuery = '';
+/**
+ * 活动工作目录代次：每次收到 workspaces-changed 时 +1。
+ * 异步拉取（getConversations / getLoadedSessions / getActiveSession）的回包
+ * 只在自己发起时的代次仍是最新时才应用，避免快速切换目录时旧目录的结果覆盖新目录。
+ */
+let listGeneration = 0;
 let subscribed = false;
 
 /** 会话运行时状态（idle / waiting），来自 `sidebar:session-states-updated` 全量推送 */
@@ -155,13 +190,51 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-/** 更新侧边栏顶部：显示当前打开的工作目录名（无图标） */
-function updateHeader(): void {
-  const name = workspacePath
-    ? (workspacePath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || workspacePath)
-    : '未选择工作目录';
-  workspaceNameEl.textContent = name;
-  workspaceNameEl.title = workspacePath || '';
+/** 路径的目录名（空目录名时退回原路径） */
+function basenameOf(p: string): string {
+  return p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
+}
+
+/**
+ * 无工作目录空态：显示「添加工作目录」按钮，下方列出最近工作目录（点击即添加）。
+ * 聊天区保持纯提示，不提供添加入口。
+ */
+function renderEmptyState(): void {
+  resetList();
+  const recents = workspacesState.recent;
+  const recentHtml = recents.length
+    ? `<div class="recent-title">最近打开的工作目录</div>
+       <div class="recent-list">
+         ${recents
+           .map(
+             (p) =>
+               `<button class="recent-item" data-path="${escapeHtml(p)}" title="${escapeHtml(p)}">` +
+               `<span class="recent-name">${escapeHtml(basenameOf(p))}</span>` +
+               `<span class="recent-path">${escapeHtml(p)}</span></button>`,
+           )
+           .join('')}
+       </div>`
+    : '';
+  listEl.innerHTML = `
+    <div class="workspace-placeholder">
+      <div class="workspace-title">尚未打开工作目录</div>
+      <div class="workspace-desc">添加一个工作目录后即可开始使用 ${PRODUCT_NAME}</div>
+      <button class="workspace-btn" id="addWorkspaceBtn">添加工作目录</button>
+      ${recentHtml}
+    </div>`;
+  footerEl.textContent = '';
+  newChatBtn.style.display = 'none';
+  searchInputEl.style.display = 'none';
+  document.getElementById('addWorkspaceBtn')?.addEventListener('click', () => {
+    window.sidebarAPI?.addWorkspaces();
+  });
+  listEl.querySelectorAll<HTMLElement>('.recent-item').forEach((el) => {
+    el.addEventListener('click', () => {
+      const p = el.dataset.path;
+      if (p) window.sidebarAPI?.addWorkspaces([p]);
+    });
+  });
+  setActive(null);
 }
 
 /* ── SVG 图标（与 webview 版本一致，智能命名使用 Sparkles） ── */
@@ -195,31 +268,24 @@ function createItemElement(html: string): HTMLElement {
  *   - 顺序变化用 insertBefore 移动，已删除的项单独移除。
  */
 function render(): void {
-  // 顶部显示当前工作目录名
-  updateHeader();
-
-  // 未选择工作区：显示引导占位（含“打开工作目录”按钮）
-  if (!workspacePath) {
-    resetList();
-    listEl.innerHTML = `
-      <div class="workspace-placeholder">
-        <div class="workspace-title">请先打开一个工作目录</div>
-        <div class="workspace-desc">选择项目文件夹后即可开始使用 ${PRODUCT_NAME}</div>
-        <button class="workspace-btn" id="openWorkspaceBtn">打开工作目录</button>
-      </div>`;
-    footerEl.textContent = '';
-    newChatBtn.style.display = 'none';
-    document.getElementById('openWorkspaceBtn')?.addEventListener('click', () => {
-      window.sidebarAPI?.openWorkspace();
-    });
-    setActive(null);
+  // 打开集合为空：显示添加工作目录引导 + 最近工作目录
+  if (workspacesState.workspaces.length === 0) {
+    renderEmptyState();
     return;
   }
   newChatBtn.style.display = '';
+  searchInputEl.style.display = '';
 
-  if (!conversations.length) {
+  // 搜索框按标题过滤当前活动工作目录的对话列表
+  const filtered = searchQuery
+    ? conversations.filter((c) => (c.title || '').toLowerCase().includes(searchQuery))
+    : conversations;
+
+  if (!filtered.length) {
     resetList();
-    listEl.innerHTML = '<div class="empty">暂无对话</div>';
+    listEl.innerHTML = searchQuery
+      ? '<div class="empty">没有匹配的对话</div>'
+      : '<div class="empty">暂无对话</div>';
     footerEl.textContent = '';
     return;
   }
@@ -227,7 +293,7 @@ function render(): void {
   // 父会话在前，子会话（parentSessionId 非空）缩进排列
   // 统一按修改时间（最后一条用户消息）倒序排序（与 webview 版本一致）；
   // 只有用户主动发消息才会刷新 updatedAt，后台消息不影响排序。
-  const sorted = [...conversations].sort(
+  const sorted = [...filtered].sort(
     (a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt),
   );
 
@@ -318,7 +384,9 @@ function render(): void {
     itemHtmlCache.set(sid, node.html);
   }
 
-  footerEl.textContent = `${conversations.length} 个对话`;
+  footerEl.textContent = searchQuery
+    ? `${filtered.length} / ${conversations.length} 个对话`
+    : `${filtered.length} 个对话`;
 
   // 重建 DOM 后重新应用当前活跃会话高亮
   setActive(activeSessionId);
@@ -543,7 +611,9 @@ function bindListEvents(): void {
     const item = target.closest<HTMLElement>('.item');
     const sessionId = item?.dataset.sessionId;
     if (!item || !sessionId) return;
-    window.sidebarAPI?.openConversation(sessionId);
+    // 回传该对话自己的工作目录：主进程据此给聊天视图注入正确的 --workspace=
+    const project = conversations.find((c) => c.sessionId === sessionId)?.project;
+    window.sidebarAPI?.openConversation(sessionId, project);
     setActive(sessionId);
   });
 
@@ -593,25 +663,44 @@ function subscribe(): void {
   window.sidebarAPI.onActiveSessionChanged((sessionId) => {
     setActive(sessionId);
   });
-  window.sidebarAPI.onWorkspaceChanged((workspace) => {
-    workspacePath = workspace;
-    // 工作区变化：清空旧工作区的视图层/运行时状态，重新拉取（主进程随后也会推送）
+  window.sidebarAPI.onWorkspacesChanged((state) => {
+    const next = state ?? { workspaces: [], active: null, recent: [] };
+    // 活动工作目录是否变化：决定要不要丢掉旧目录的列表 / 搜索关键字
+    const activeChanged = workspacesState.active !== next.active;
+    workspacesState = next;
+    // 代次 +1：此前发出的 getConversations 回包已属于旧目录，回来时必须丢弃
+    listGeneration += 1;
+    const generation = listGeneration;
+    // 清空视图层/运行时状态，重新拉取该目录的列表与状态
     sessionStates = new Map();
     loadedSessions = new Set();
+    if (activeChanged) {
+      // 旧目录的列表不能继续展示（否则切换后一瞬间还能看到/点开上一个目录的对话）
+      conversations = [];
+      // 搜索关键字属于上一个目录：清空，避免新目录被旧关键字过滤成空列表
+      searchQuery = '';
+      searchInputEl.value = '';
+    }
+    render();
     window.sidebarAPI?.getConversations()
       .then((list) => {
+        if (generation !== listGeneration) return; // 目录已再次变化，丢弃过期回包
         conversations = list;
         render();
       })
       .catch((err) => console.error('[sidebar] reload conversations failed:', err));
     window.sidebarAPI?.getLoadedSessions()
       .then((ids) => {
+        if (generation !== listGeneration) return;
         loadedSessions = normalizeLoadedSessions(ids);
         render();
       })
       .catch(() => undefined);
     window.sidebarAPI?.getActiveSession()
-      .then((sid) => setActive(sid))
+      .then((sid) => {
+        if (generation !== listGeneration) return;
+        setActive(sid);
+      })
       .catch(() => undefined);
   });
 }
@@ -639,16 +728,26 @@ async function init(): Promise<void> {
     window.sidebarAPI?.newConversation();
   });
 
+  // 搜索框：按标题过滤当前活动工作目录的对话列表（即时过滤）
+  searchInputEl.addEventListener('input', () => {
+    searchQuery = searchInputEl.value.trim().toLowerCase();
+    render();
+  });
+
+  const generation = listGeneration;
   try {
-    const [list, active, ws, loaded] = await Promise.all([
+    const [list, active, workspaces, loaded] = await Promise.all([
       window.sidebarAPI.getConversations(),
       window.sidebarAPI.getActiveSession(),
-      window.sidebarAPI.getWorkspace(),
+      window.sidebarAPI.getWorkspaces(),
       window.sidebarAPI.getLoadedSessions(),
     ]);
+    // 初始化期间用户已切换工作目录（workspaces-changed 已把状态更新并重新拉取）：
+    // 这批结果属于旧状态，丢弃，避免覆盖新目录的列表
+    if (generation !== listGeneration) return;
     conversations = list;
     activeSessionId = active;
-    workspacePath = ws;
+    workspacesState = workspaces ?? { workspaces: [], active: null, recent: [] };
     loadedSessions = normalizeLoadedSessions(loaded);
     render();
   } catch (err) {

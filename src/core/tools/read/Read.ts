@@ -19,7 +19,7 @@ import { buildTool, MAX_RESULT_SIZE_CHARS } from '../Tool.js';
 import type { ReadInput, ReadOutput } from './Types.js';
 import { TOOL_NAME, DESCRIPTION, getPrompt } from './Prompt.js';
 import { expandPath } from '../../utils/path.js';
-import { getExtensionPath, getProjectRoot } from '../../history/Config.js';
+import { getExtensionPath } from '../../history/Config.js';
 import { getToolResultsDir, getToolResultFilePrefix } from '../toolResultStorage.js';
 import {
   getDefaultLimits,
@@ -121,22 +121,22 @@ function getPandocPath(): string {
   }
   const exeName = platform === 'win32' ? 'pandoc.exe' : 'pandoc';
 
-  // 优先用 getExtensionPath（生产环境：extension/dist/resources/pandoc/...）
+  // 资源定位一律基于应用 / 扩展根目录，不用对话工作目录（规格 §4.4）：
+  // 优先 dist/resources（打包产物），其次 resources（dev 未 build 时）
   try {
     const extPath = getExtensionPath();
-    const exePath = path.join(extPath, 'dist', 'resources', 'pandoc', subDir, exeName);
-    if (existsSync(exePath)) {
-      return exePath;
+    for (const candidate of [
+      path.join(extPath, 'dist', 'resources', 'pandoc', subDir, exeName),
+      path.join(extPath, 'resources', 'pandoc', subDir, exeName),
+    ]) {
+      if (existsSync(candidate)) {
+        return candidate;
+      }
     }
   } catch {
-    // getExtensionPath 不可用（dev 模式下），fallback 到 getProjectRoot
+    // getExtensionPath 未注入（独立运行 core 的场景）：回退 PATH
   }
 
-  // Fallback: getProjectRoot + resources/pandoc/...（dev 模式，未 build 时）
-  const bundledPath = path.join(getProjectRoot(), 'resources', 'pandoc', subDir, exeName);
-  if (existsSync(bundledPath)) {
-    return bundledPath;
-  }
   // 打包产物缺失时也回退到 PATH 中的系统 pandoc
   return exeName;
 }
@@ -166,7 +166,7 @@ export async function convertDocToMd(filePath: string, sessionId?: string): Prom
   }
 
   // 输出文件放到 tool-results 目录
-  const toolResultsDir = getToolResultsDir();
+  const toolResultsDir = getToolResultsDir(sessionId);
   await fs.mkdir(toolResultsDir, { recursive: true });
 
   // md 文件名带源路径 hash：不同目录下的同名文件（a/report.docx 与 b/report.docx）
@@ -448,7 +448,7 @@ export const ReadTool = buildTool({
     }
 
     // 展开路径（支持 ~、相对路径等）
-    let fullPath = expandPath(filePath);
+    let fullPath = expandPath(filePath, context.cwd);
 
     // 获取限制值
     const { maxSizeBytes, maxLines, maxLineLength, maxOutputBytes } = getDefaultLimits();

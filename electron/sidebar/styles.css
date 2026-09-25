@@ -11,22 +11,26 @@ body {
 .header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid #26262c;
   flex-shrink: 0;
 }
-/* 顶部：显示当前打开的工作目录名（无图标） */
-.workspace-name {
+/* 顶部：搜索框（按标题过滤当前活动工作目录的对话列表） */
+.search-input {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
-  font-weight: 600;
+  background: #1f1f25;
+  border: 1px solid #2e2e36;
+  border-radius: 6px;
   color: #d4d4d8;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 5px 8px;
+  outline: none;
 }
+.search-input::placeholder { color: #6b6b74; }
+.search-input:focus { border-color: #6366f1; }
 .new-chat-btn {
   background: #6366f1;
   color: #fff;
@@ -179,6 +183,56 @@ body {
   cursor: pointer;
 }
 .workspace-btn:hover { background: #7c7ff5; }
+/* 空态下方：最近打开的工作目录（点击即添加） */
+.recent-title {
+  align-self: stretch;
+  margin-top: 14px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: #71717a;
+  text-align: left;
+}
+.recent-list {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+}
+.recent-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  background: transparent;
+  border: 1px solid #2e2e36;
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  min-width: 0;
+}
+.recent-item:hover { background: #26262c; border-color: #3a3a42; }
+.recent-name {
+  font-size: 12.5px;
+  color: #d4d4d8;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recent-path {
+  font-size: 10.5px;
+  color: #6b6b74;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
 .item .sub {
   display: flex;
   gap: 8px;

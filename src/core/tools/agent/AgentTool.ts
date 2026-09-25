@@ -328,6 +328,13 @@ Important guidelines:
     const modelConfig = parentEngine?.getEffectiveModelConfig();
     logger.info('AgentTool', `Model config for role=${agentRole}: ${modelConfig ? `model=${modelConfig.model}` : 'inherited from parent (no explicit model config, will use same fallback as parent)'}`);
 
+    // 子代理归属父会话的工作目录：登记后，子代理的历史读写 / 工具结果等按会话解析
+    // 工作目录时与父会话一致，不再回退到活动工作目录。
+    try {
+      const { setSessionWorkspace } = await import('../../history/Config.js');
+      setSessionWorkspace(subSessionID, context.cwd);
+    } catch { /* 工作目录不可用时忽略：引擎 cwd 仍由 context.cwd 提供 */ }
+
     // 创建子代理的 QueryEngine
     const subEngine = new QueryEngine(subSessionID, {
       cwd: context.cwd,

@@ -7,7 +7,7 @@
  */
 
 import { QueryEngine, getSessionEngine } from '../QueryEngine.js';
-import { getProjectRoot } from '../history/Config.js';
+import { getProjectRoot, setSessionWorkspace } from '../history/Config.js';
 import { getAllTools } from '../tools/index.js';
 import type { CoreEvent } from '../AssistantEventBus.js';
 import { requireEventBus } from '../AssistantEventBus.js';
@@ -69,10 +69,17 @@ The JSON format must be:
   const parentEngine = getSessionEngine(parentSessionId);
   const modelConfig = parentEngine?.getEffectiveModelConfig();
 
+  // 子 Agent 继承父会话的工作目录，不要用 process.cwd()（那是宿主进程启动目录）
+  const subCwd = parentEngine?.getCwd() ?? getProjectRoot(parentSessionId);
+
+  // 子代理归属父会话的工作目录：登记后，子代理的历史读写 / 工具结果等按会话解析
+  // 工作目录时与父会话一致，不再回退到「当时的活动工作目录」
+  // （与 AgentTool 同一口径；否则多工作目录下子对话会写到别的目录）
+  setSessionWorkspace(subSessionID, subCwd);
+
   // 创建子引擎
   const subEngine = new QueryEngine(subSessionID, {
-    // 子 Agent 继承父会话的工作目录，不要用 process.cwd()（那是宿主进程启动目录）
-    cwd: parentEngine?.getCwd() ?? getProjectRoot(),
+    cwd: subCwd,
     tools,
     role: role,
     getAppState: () => ({}),

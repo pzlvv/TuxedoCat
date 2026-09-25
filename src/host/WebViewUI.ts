@@ -457,7 +457,7 @@ export class WebViewUI implements WebViewUiPort {
    * 命令发送回调（CoreEvent.commandDispatched 的处理方）。
    * 唯一调用方（CommandDispatcher）丢弃返回值。
    */
-  async onCommandSend(commandName: string, args: string, _sessionId: string): Promise<void> {
+  async onCommandSend(commandName: string, args: string, sessionId: string): Promise<void> {
     if (commandName === 'spin') {
       const trimmed = args.trim();
       if (trimmed === 'design') {
@@ -468,7 +468,9 @@ export class WebViewUI implements WebViewUiPort {
       }
       // /spin: 无 spin.json 时打开设计器（shouldOpenSpinDesign 是 core 的只读函数）
       const { shouldOpenSpinDesign } = await import('../core/history/spinCommand.js');
-      const ws = this.host.getWorkspacePath();
+      // spin.json 属于对话自己的工作目录：按会话解析，未登记时回退活动工作目录
+      const { getProjectRoot, hasProjectRoot } = await import('../core/history/Config.js');
+      const ws = hasProjectRoot(sessionId) ? getProjectRoot(sessionId) : undefined;
       if (ws && shouldOpenSpinDesign(ws)) {
         void this.spinDesign.open().catch((err: unknown) => {
           this.log(`Error opening spin design: ${err}`);

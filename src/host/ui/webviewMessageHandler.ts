@@ -1353,9 +1353,12 @@ export class WebviewMessageHandler {
     const { getSkillDirCommands } = await import('../../core/skills/loadSkillsDir.js');
     const { getBuiltinCommands } = await import('../../core/skills/builtinCommands.js');
     const bundled = getBundledSkills();
-    // 项目技能必须基于工作区目录扫描，不能用 process.cwd()
-    const { getProjectRoot } = await import('../../core/history/Config.js');
-    const fileSkills = await getSkillDirCommands(getProjectRoot());
+    // 项目技能必须基于会话自己的工作目录扫描，不能用 process.cwd()。
+    // 没有工作目录时（空态视图也会请求技能）跳过项目技能，而不是让 getProjectRoot 抛错
+    const { getProjectRoot, hasProjectRoot } = await import('../../core/history/Config.js');
+    const fileSkills = hasProjectRoot(this.trackedActiveSessionId)
+      ? await getSkillDirCommands(getProjectRoot(this.trackedActiveSessionId))
+      : [];
     const builtinCmds = getBuiltinCommands();
     const allSkills = [...bundled, ...fileSkills];
     this.host.sendToWebview({

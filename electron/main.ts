@@ -6,10 +6,11 @@
  * 2. 注册 IPC（webview-message）并委托给 WebViewUI（复用同一份 WebviewMessageHandler）
  * 3. 侧栏 IPC：对话列表读写、打开/新建对话、列表变化推送
  * 4. 初始化 core（setGlobalEventBus / initializeCoreEvents / initializeHistory / 日志）
- * 5. 提供菜单：打开工作区、最近打开的工作目录、深色模式同步
+ * 5. 提供单一图标菜单（添加工作目录 / 添加最近的工作目录 / 快捷键 / 开发者工具 / 关于 / 退出）
+ * 6. 多工作目录：打开集合 + 活动项，标题栏标签页，按对话解析工作目录
  *
  * 与 VS Code 扩展的差异点（extension.ts）：
- * - workspace 路径由用户通过菜单选择（VS Code 从 workspaceFolders 获取）
+ * - 工作目录由用户添加（VS Code 从 workspaceFolders 获取）；可同时打开多个，标题栏标签页呈现
  * - 对话列表由原生侧栏展示（VS Code 在 webview 内展示）
  * - 文件打开/虚拟文档/Mermaid/Spin 由 UIHost 提供 Electron 实现
  */
@@ -29,8 +30,9 @@ import { ElectronUIHost } from './ElectronUIHost.js';
 import { ElectronSpinDesign } from './ElectronSpinDesign.js';
 import { ElectronConversationManager } from './ElectronConversationManager.js';
 import { WebViewUI } from '../src/host/WebViewUI.js';
+import { normalizeWorkspacePath, sameWorkspace, dedupeWorkspacePaths, applyWorkspaceOrder } from '../src/host/workspacePaths.js';
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
-import { PRODUCT_NAME } from '../src/config/project.js';
+import { PRODUCT_NAME, EXTENSION_NAME } from '../src/config/project.js';
 import {
   DEFAULT_WAKE_SHORTCUT,
   acceleratorFromKeyboardEvent,
@@ -190,7 +192,12 @@ let floatingPinned = true;
 let windowModeSwitching = false;
 /** 对话列表的读取与分发（bootstrap 创建；sidebar:get-conversations 读它的列表快照） */
 let conversations: ElectronConversationManager | undefined;
+/** 打开集合：已打开的工作目录，按标签页顺序排列（进程内事实） */
+let openWorkspaces: string[] = [];
+/** 活动工作目录（打开集合中的一项；集合为空时 undefined） */
 let workspacePath: string | undefined;
+/** 会话 → 工作目录 索引：按对话解析工作目录（打开某个对话时用它注入 --workspace=） */
+const sessionWorkspaces = new Map<string, string>();
 /** 当前 WebViewUI 实例（initCore 创建；消息路由 / 工作区切换使用） */
 let webviewUi: WebViewUI | undefined;
 /** core 侧进程级资源的释放入口（initCore 从共享骨架取得；will-quit 调用） */
@@ -231,6 +238,16 @@ let focusRepaintTimer: ReturnType<typeof setTimeout> | null = null;
  */
 const APP_ROOT = path.resolve(__dirname, '..');
 
+/**
+ * 统一 userData 目录（工作目录状态 / 窗口位置 / 缓存都落在这里）。
+ *
+ * 不指定时 Electron 按应用名推导：开发态用 `electron dist-electron/main.cjs` 启动时
+ * 应用名是默认的 "Electron"，打包态是 productName（含空格），两者会落到不同目录。
+ * 这里显式指向配置里的应用目录名（`src/config/project.json` 的 extensionName），
+ * 保证开发态与打包态读写同一份状态。必须在 `app.whenReady()` 之前设置。
+ */
+app.setPath('userData', path.join(app.getPath('appData'), EXTENSION_NAME));
+
 // 单实例锁：避免多开导致会话文件冲突
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -252,20 +269,27 @@ async function main(): Promise<void> {
   // ── 强制 dark 配色 ──
   nativeTheme.themeSource = 'dark';
 
-  // ── 工作区路径 ──
-  // 不默认使用当前工作目录：优先命令行 --workspace=；未传入/无效时默认打开最近一次的工作目录
-  // （最近工作区路径保存在 Windows app data 目录，即 Electron userData）
-  workspacePath = undefined;
+  // ── 工作目录 ──
+  // 不默认使用当前工作目录：恢复上次打开的打开集合与活动项；
+  // 命令行 --workspace= 作为额外的一项加入打开集合并置为活动项。
+  // （状态保存在 Windows app data 目录，即 Electron userData 的 workspace-state.json）
+  // 旧版本的状态文件（旧 userData 目录 / lastWorkspace 字段）在这里一次性迁移
+  migrateLegacyWorkspaceState();
+  openWorkspaces = readOpenWorkspaces();
+  workspacePath = readActiveWorkspace(openWorkspaces);
   const cliWorkspace = process.argv.find((a) => a.startsWith('--workspace='));
   if (cliWorkspace) {
     const cliPath = cliWorkspace.slice('--workspace='.length);
-    if (cliPath && fs.existsSync(cliPath) && fs.statSync(cliPath).isDirectory()) {
-      workspacePath = cliPath;
-      saveLastWorkspace(workspacePath);
+    if (isValidWorkspaceDir(cliPath)) {
+      // 与 addWorkspaces 同一口径：规范化 + 按去重键判等，避免同一目录的不同写法
+      // 变成两张标签页（也避免原始路径与视图登记值不一致导致切标签时找不到视图）
+      const normalized = normalizeWorkspacePath(cliPath);
+      const existing = openWorkspaces.find((w) => sameWorkspace(w, normalized));
+      if (!existing) openWorkspaces.push(normalized);
+      workspacePath = existing ?? normalized;
+      rememberRecentWorkspace(workspacePath);
+      saveOpenWorkspaces(openWorkspaces, workspacePath);
     }
-  }
-  if (!workspacePath) {
-    workspacePath = readLastWorkspace();
   }
 
   createMainWindow();
@@ -419,10 +443,16 @@ function createMainWindow(): void {
   mainWindow.once('ready-to-show', showMainWindow); // 无子视图场景仍可用
   setTimeout(showMainWindow, 3000); // 兜底：3 秒后强制显示
 
-  // 最小化一律走系统默认行为：窗口最小化到任务栏并保留任务栏图标，
-  // 不再隐藏到托盘（隐藏到托盘只由全局快捷键切换触发）。
+  // 完整模式最小化走系统默认行为：窗口最小化到任务栏并保留任务栏图标。
+  // 浮窗模式最小化改走「隐藏到系统托盘」：最小化后立即 hide()，
+  // 隐藏的窗口不在任务栏保留按钮；唤醒入口是托盘图标（单击 / 双击）与全局快捷键
+  // （标题栏最小化按钮在 IPC 处已直接走 hide()，这里覆盖系统级最小化路径）。
   // 用户手动切换窗口/隐藏时，取消“再按一次回托盘”的切换态；
   // 下次按快捷键应重新把窗口唤到前台，而不是直接隐藏。
+  mainWindow.on('minimize', () => {
+    if (windowMode !== 'floating') return;
+    mainWindow?.hide();
+  });
   mainWindow.on('blur', () => {
     wakeToggleActive = false;
     // 整个窗口失活（切到别的应用）：已打开的下拉菜单一并关掉
@@ -604,15 +634,32 @@ function createMainWindow(): void {
 
   // 布局模式已由构造参数 viewMode 决定（浮窗启动即单视图），无需再补一次
 
-  // 初始打开一个新对话
-  chatViews.openNewConversation();
+  // 初始打开活动工作目录下的一个新对话（无工作目录时打开空态视图）
+  chatViews.openNewConversation(workspacePath ?? '');
+
+  // 首次启动：为非活动的工作目录各预加载一个聊天视图，点标签页时直接 show()，
+  // 不再现建视图 + 等页面加载（消除首次切换的闪烁）。
+  // 错开创建，避免启动瞬间同时拉起多个渲染进程造成卡顿。
+  openWorkspaces
+    .filter((ws) => !sameWorkspace(ws, workspacePath))
+    .forEach((ws, index) => {
+      setTimeout(() => {
+        // 定时器触发时该目录可能已被关闭：仍在打开集合里才预加载
+        if (openWorkspaces.some((w) => sameWorkspace(w, ws))) chatViews?.preloadWorkspace(ws);
+      }, 400 + index * 250);
+    });
 
   // 开发调试：--auto-open=<sessionId> 自动打开指定会话（与侧栏点击同路径）
   const autoOpen = process.argv.find((a) => a.startsWith('--auto-open='));
   if (autoOpen) {
     const sid = autoOpen.slice('--auto-open='.length);
     setTimeout(() => {
-      chatViews?.openConversation(sid);
+      // 与 sidebar:open-conversation 同一口径：先解析该会话自己的工作目录并登记到
+      // core，否则 loadConversation 会按活动工作目录读取（非活动目录的会话打不开）
+      syncSessionWorkspaceIndex();
+      const workspace = sessionWorkspaces.get(sid);
+      if (workspace) void registerCoreSessionWorkspace(sid, workspace);
+      chatViews?.openConversation(sid, workspace);
     }, 2000);
   }
 
@@ -1404,15 +1451,28 @@ function windowTitleForCurrentState(): string {
  * 先去掉尾部分隔符再取 basename；取不到（如盘符根目录）时退回原路径。
  */
 function workspaceDisplayName(): string {
-  if (!workspacePath) return '';
-  const trimmed = workspacePath.replace(/[\\/]+$/, '');
-  return path.basename(trimmed) || workspacePath;
+  return workspaceDisplayNameOf(workspacePath);
+}
+
+/** 指定工作目录的显示名（标题栏标签页 / 浮窗品牌位用） */
+function workspaceDisplayNameOf(p: string | undefined): string {
+  if (!p) return '';
+  const trimmed = p.replace(/[\\/]+$/, '');
+  return path.basename(trimmed) || p;
 }
 
 /** 把窗口标题同步到当前模式 / 工作区 */
 function syncWindowTitle(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.setTitle(windowTitleForCurrentState());
+}
+
+/** 把打开集合与活动项推给标题栏（标签页区渲染；字段名与 get-state 统一为 activeWorkspace） */
+function syncTitlebarWorkspaces(): void {
+  sendToTitlebar('titlebar:workspaces', {
+    workspaces: openWorkspaces.map((p) => ({ path: p, name: workspaceDisplayNameOf(p) })),
+    activeWorkspace: workspacePath ?? null,
+  });
 }
 
 /** 完整模式默认窗口：固定宽度 + 主屏工作区高度的 80% */
@@ -1534,59 +1594,86 @@ function buildMenuSections(): MenuSectionDef[] {
     });
   }
 
-  sections.push({
-    id: 'file',
-    label: 'File',
-    items: [
-      {
-        id: 'file.openWorkspace',
-        label: 'Open Workspace Folder...',
-        accelerator: 'CmdOrCtrl+O',
-        run: () => { void openWorkspaceDialog(); },
-      },
-      { id: 'file.recent', label: 'Recent Workspaces', submenu: buildRecentWorkspacesMenu() },
-      { type: 'separator' },
-      // 唤醒快捷键：Electron 专属能力（最小化到托盘后用该快捷键呼出窗口）
-      { id: 'file.shortcut', label: 'Shortcut...', run: () => openShortcutDialog() },
-      { type: 'separator' },
-      isMac
-        ? { id: 'file.close', label: 'Close Window', role: 'close' as const }
-        : { id: 'file.quit', label: 'Exit', run: () => app.quit() },
-    ],
-  });
+  // 添加工作目录：Electron 专属能力（VS Code 从 workspaceFolders 获取）
+  const addWorkspaceItem: MenuItemDef = {
+    id: 'main.addWorkspace',
+    label: tt('添加工作目录...', 'Add Workspace Folder...'),
+    accelerator: 'CmdOrCtrl+O',
+    run: () => { void openWorkspaceDialog(); },
+  };
+  const recentWorkspaceItem: MenuItemDef = {
+    id: 'main.recent',
+    label: tt('添加最近的工作目录', 'Add Recent Workspace'),
+    submenu: buildRecentWorkspacesMenu(),
+  };
+  // 唤醒快捷键：Electron 专属能力（最小化到托盘后用该快捷键呼出窗口）
+  const shortcutItem: MenuItemDef = {
+    id: 'main.shortcut',
+    label: tt('快捷键...', 'Shortcut...'),
+    run: () => openShortcutDialog(),
+  };
+  const devToolsItem: MenuItemDef = {
+    id: 'main.devTools',
+    label: tt('开发者工具', 'Toggle Developer Tools'),
+    accelerator: 'CmdOrCtrl+Shift+I',
+    run: () => toggleDevTools(),
+  };
+  const aboutItem: MenuItemDef = {
+    id: 'main.about',
+    label: tt(`关于 ${PRODUCT_NAME}`, `About ${PRODUCT_NAME}`),
+    run: () => showAboutDialog(),
+  };
 
-  sections.push({
-    id: 'view',
-    label: 'View',
-    items: [
-      {
-        id: 'view.devTools',
-        label: 'Toggle Developer Tools',
-        accelerator: 'CmdOrCtrl+Shift+I',
-        run: () => toggleDevTools(),
-      },
-    ],
-  });
+  if (isMac) {
+    // macOS 沿用系统菜单栏的分区（自绘标题栏在 macOS 不渲染菜单）
+    sections.push({
+      id: 'file',
+      label: 'File',
+      items: [
+        addWorkspaceItem,
+        recentWorkspaceItem,
+        { type: 'separator' },
+        shortcutItem,
+        { type: 'separator' },
+        { id: 'file.close', label: 'Close Window', role: 'close' as const },
+      ],
+    });
+    sections.push({ id: 'view', label: 'View', items: [devToolsItem] });
+    sections.push({ id: 'help', label: 'Help', items: [aboutItem] });
+    return sections;
+  }
 
+  // Windows / Linux：全部收编到单一菜单分区，标题栏用一个图标按钮表示
   sections.push({
-    id: 'help',
-    label: 'Help',
-    items: [{ id: 'help.about', label: `About ${PRODUCT_NAME}`, run: () => showAboutDialog() }],
+    id: 'main',
+    label: PRODUCT_NAME,
+    items: [
+      addWorkspaceItem,
+      recentWorkspaceItem,
+      { type: 'separator' },
+      shortcutItem,
+      { type: 'separator' },
+      devToolsItem,
+      { type: 'separator' },
+      aboutItem,
+      { type: 'separator' },
+      { id: 'main.quit', label: tt('退出', 'Exit'), run: () => app.quit() },
+    ],
   });
 
   return sections;
 }
 
-/** 构建“最近打开的工作目录”子菜单项（目录已不存在时自动过滤） */
+/** 构建「添加最近的工作目录」子菜单项（目录已不存在时自动过滤） */
 function buildRecentWorkspacesMenu(): MenuItemDef[] {
   const recents = readRecentWorkspaces();
   if (recents.length === 0) {
-    return [{ id: 'file.recent.none', label: 'No Recent Workspaces', enabled: false }];
+    return [{ id: 'main.recent.none', label: tt('无最近的工作目录', 'No Recent Workspaces'), enabled: false }];
   }
   return recents.map((p, index) => ({
-    id: `file.recent.${index}`,
+    id: `main.recent.${index}`,
     label: p,
-    run: () => applyWorkspace(p),
+    run: () => addWorkspaces([p]),
   }));
 }
 
@@ -1936,68 +2023,181 @@ function invalidateTitlebarMenuCache(): void {
   titlebarMenuLoadedId = null;
 }
 
-/** 弹出系统目录选择框并应用所选工作区（未传 --workspace= 时的引导入口） */
+/** 弹出系统目录选择框并把所选目录加入打开集合（支持多选，按选择顺序） */
 async function openWorkspaceDialog(): Promise<void> {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: '选择工作区文件夹',
-    properties: ['openDirectory'],
+    title: '选择工作目录',
+    properties: ['openDirectory', 'multiSelections'],
   });
-  if (!result.canceled && result.filePaths.length > 0) {
-    applyWorkspace(result.filePaths[0]);
-  }
+  if (result.canceled || result.filePaths.length === 0) return;
+  addWorkspaces(result.filePaths);
 }
 
-/** 应用工作区：记录最近工作区、通知 UI、重建聊天视图并刷新侧栏 */
-function applyWorkspace(p: string): void {
-  workspacePath = p;
-  saveLastWorkspace(p);
-  // 工作区变化后重建菜单，使“最近打开的工作目录”列表保持最新
-  setupMenu();
-  // 打开工作区后「切换浮窗」按钮由禁用变为可用
-  pushTitlebarModeState();
-  // 浮窗模式下标题跟随工作区
-  syncWindowTitle();
-  uiHost?.setWorkspacePath(workspacePath);
-  // 后续新建的聊天视图携带新 --workspace= 参数
-  chatViews?.setWorkspacePath(workspacePath);
-  // 工作区变化：清空旧聊天视图并新建
-  chatViews?.disposeAll();
-  chatViews?.openNewConversation();
-  // 清除对话列表缓存：切换工作目录后项目对话目录改变，
-  // 必须重新从磁盘加载新项目的对话列表，否则侧栏仍显示旧项目的对话
-  conversations?.invalidateCachedList();
+/** 把「会话 → 工作目录」登记到 core 的会话工作目录表（core 按会话解析工作目录） */
+function registerCoreSessionWorkspace(sessionId: string, workspace: string): void {
   try {
-    const { resetConversationListCache } = require('../src/core/history/index.js');
-    resetConversationListCache();
+    const { setSessionWorkspace } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
+    setSessionWorkspace(sessionId, workspace);
   } catch (err) {
-    console.error('[main] resetConversationListCache error:', err);
+    console.error('[main] register session workspace error:', err);
   }
-  broadcastWorkspace();
-}
-
-/** 推送工作区路径到侧栏 */
-function broadcastWorkspace(): void {
-  sidebarView?.webContents.send('sidebar:workspace-changed', workspacePath ?? null);
 }
 
 /**
- * 工作区状态文件。
+ * 用当前对话列表快照刷新宿主的「会话 → 工作目录」索引。
+ * 打开对话时按它给聊天视图注入该对话自己的工作目录。
+ */
+function syncSessionWorkspaceIndex(): void {
+  const list = conversations?.getCachedList();
+  if (!list) return;
+  for (const c of list as ReadonlyArray<{ sessionId?: string; project?: string }>) {
+    if (c && typeof c.sessionId === 'string' && typeof c.project === 'string' && c.project) {
+      // 统一规范化：视图按这个值注入 --workspace=，关闭工作目录时按同一表示匹配
+      sessionWorkspaces.set(c.sessionId, normalizeWorkspacePath(c.project));
+    }
+  }
+}
+
+/**
+ * 添加工作目录：按顺序加入打开集合，最后一项成为活动项。
+ * 已在集合中的目录不重复加入，直接置为活动项；每个目录都写入最近列表。
+ */
+function addWorkspaces(paths: readonly string[]): void {
+  const added: string[] = [];
+  for (const raw of paths) {
+    if (!isValidWorkspaceDir(raw)) continue;
+    const p = normalizeWorkspacePath(raw);
+    // 按去重键判断是否已在打开集合中（同一目录的不同表示视为同一个）
+    const existing = openWorkspaces.find((w) => sameWorkspace(w, p));
+    if (!existing) openWorkspaces.push(p);
+    rememberRecentWorkspace(p);
+    added.push(existing ?? p);
+  }
+  if (added.length === 0) return;
+  activateWorkspace(added[added.length - 1]);
+}
+
+/**
+ * 重排打开集合（标题栏标签页拖拽排序）。
+ *
+ * 只接受「与当前打开集合同一组目录」的完整排列（按去重键校验），
+ * 长度不符 / 含未知目录 / 有重复一律忽略整次提交。
+ * 活动项与各目录下已打开的对话视图不受顺序影响。
+ */
+function reorderWorkspaces(paths: readonly string[]): void {
+  const next = applyWorkspaceOrder(openWorkspaces, paths);
+  if (!next) return; // 非法排列：整次忽略
+  if (next.every((p, i) => p === openWorkspaces[i])) return; // 顺序未变
+  openWorkspaces = next;
+  saveOpenWorkspaces(openWorkspaces, workspacePath);
+  syncTitlebarWorkspaces();
+}
+
+/**
+ * 切换活动工作目录：更新宿主 / 聊天视图 / 侧栏 / 标题栏，并记住打开集合与活动项。
+ *
+ * 聊天视图按对话自己的工作目录保留，切换活动项不销毁任何视图。
+ */
+function activateWorkspace(p: string): void {
+  // 按去重键匹配打开集合中的项，传入不同表示也能定位到同一张标签页
+  const target = openWorkspaces.find((w) => sameWorkspace(w, p));
+  if (!target) return;
+  p = target;
+  const prev = workspacePath;
+  const changed = !sameWorkspace(prev, p);
+  workspacePath = p;
+  uiHost?.setWorkspacePath(workspacePath);
+  if (changed) {
+    saveOpenWorkspaces(openWorkspaces, workspacePath);
+    conversations?.invalidateCachedList();
+    // 从「无工作目录」进入：销毁空态视图（--workspace= 为空），避免残留
+    if (!prev) chatViews?.closeWorkspace('');
+  }
+  // setActiveWorkspace 自己负责更新 opts.workspacePath 并清理属于旧目录的后台预热视图，
+  // 这里不要再先调 setWorkspacePath（那会让它内部的「目录已变」判断失效）
+  chatViews?.setActiveWorkspace(p);
+  setupMenu();
+  pushTitlebarModeState();
+  syncWindowTitle();
+  syncTitlebarWorkspaces();
+  broadcastWorkspaces();
+}
+
+/**
+ * 关闭工作目录：移出打开集合，销毁该目录下所有对话视图并中止运行中查询；
+ * 关闭的是活动项时把活动权移交相邻项。
+ */
+function closeWorkspace(p: string): void {
+  // 按去重键匹配打开集合中的项
+  const target = openWorkspaces.find((w) => sameWorkspace(w, p));
+  if (!target) return;
+  p = target;
+  const idx = openWorkspaces.indexOf(p);
+  if (idx < 0) return;
+  openWorkspaces.splice(idx, 1);
+  chatViews?.closeWorkspace(p);
+  for (const [sid, ws] of [...sessionWorkspaces]) {
+    if (sameWorkspace(ws, p)) sessionWorkspaces.delete(sid);
+  }
+  const wasActive = sameWorkspace(workspacePath, p);
+  if (wasActive) {
+    const next = openWorkspaces[Math.min(idx, openWorkspaces.length - 1)];
+    workspacePath = next;
+    saveOpenWorkspaces(openWorkspaces, workspacePath);
+    uiHost?.setWorkspacePath(workspacePath);
+    conversations?.invalidateCachedList();
+    if (next) {
+      // setActiveWorkspace 负责更新 opts.workspacePath 并清理旧目录的预热视图
+      chatViews?.setActiveWorkspace(next);
+    } else {
+      // 打开集合为空：聊天区回到「无工作目录」空态
+      chatViews?.setWorkspacePath('');
+      chatViews?.disposeAll();
+      chatViews?.openNewConversation('');
+      // 浮窗隐藏侧栏与标签页，没有可添加目录的入口：集合清空时退回完整模式
+      // （规格 §10：打开集合为空时不允许处于浮窗模式）
+      if (windowMode === 'floating') void applyWindowMode('normal');
+    }
+  } else {
+    saveOpenWorkspaces(openWorkspaces, workspacePath);
+  }
+  setupMenu();
+  pushTitlebarModeState();
+  syncWindowTitle();
+  syncTitlebarWorkspaces();
+  broadcastWorkspaces();
+}
+
+/** 推送打开集合与活动项到侧栏 */
+function broadcastWorkspaces(): void {
+  sidebarView?.webContents.send('sidebar:workspaces-changed', {
+    workspaces: openWorkspaces.map((p) => ({ path: p, name: workspaceDisplayNameOf(p) })),
+    active: workspacePath ?? null,
+    recent: readRecentWorkspaces(),
+  });
+}
+
+/**
+ * 工作目录状态文件。
  * 位于 Electron userData 目录（Windows 下即 %APPDATA%\<PRODUCT_NAME>\），
- * 用于记录最近一次打开的工作目录与最近打开的工作目录列表（最多 10 个），
- * 其中 lastWorkspace 供下次启动默认打开，recentWorkspaces 供菜单展示；
+ * 用于记录打开集合、活动工作目录与最近打开的工作目录列表（最多 10 个）；
  * windowSize / floatingWindowSize 分别记录完整模式与浮窗模式的上次窗口位置与大小
  * （两个模式各存一份，切换模式时按各自记录还原位置）；
  * windowMode / floatingPinned 记录上次使用的窗口模式与浮窗置顶状态，启动时优先按它们恢复。
  * 文件格式：
  * {
- *   "lastWorkspace": "C:\\path\\to\\ws",
+ *   "openWorkspaces": ["C:\\path\\to\\ws", "C:\\path\\to\\ws2"],
+ *   "activeWorkspace": "C:\\path\\to\\ws2",
  *   "recentWorkspaces": ["C:\\path\\to\\ws2", "C:\\path\\to\\ws", ...],
  *   "windowSize": { "x": 320, "y": 180, "width": 1280, "height": 860 },
  *   "floatingWindowSize": { "x": 1500, "y": 120, "width": 480, "height": 780 },
  *   "windowMode": "floating",
  *   "floatingPinned": true
  * }
+ *
+ * 读取口径：字段缺失或非法即按「没有」处理，不做任何跨字段回退
+ * （例如 openWorkspaces 缺失就是没有打开任何工作目录）。
  */
 const MAX_RECENT_WORKSPACES = 10;
 
@@ -2010,7 +2210,10 @@ interface WindowRect {
 }
 
 interface WorkspaceState {
-  lastWorkspace?: string;
+  /** 打开集合：按标签页顺序排列的已打开工作目录 */
+  openWorkspaces?: string[];
+  /** 活动工作目录（打开集合中的一项）；无活动项时为 null */
+  activeWorkspace?: string | null;
   recentWorkspaces?: string[];
   /** 完整模式窗口位置与大小（字段名沿用 windowSize，现在同时存位置） */
   windowSize?: WindowRect;
@@ -2051,43 +2254,130 @@ function writeWorkspaceState(state: WorkspaceState): void {
   }
 }
 
-/** 判断路径是否仍为存在的目录 */
-function isValidWorkspaceDir(p: unknown): p is string {
-  return typeof p === 'string' && p.trim().length > 0 && fs.existsSync(p) && fs.statSync(p).isDirectory();
-}
+/**
+ * 一次性迁移旧版本的状态文件（只在目标文件不存在时执行）：
+ *
+ * 1. userData 目录：新版本显式指定为 `appData/<extensionName>`；旧版本打包态落在
+ *    `appData/<productName>`（"Tuxedo Cat"），开发态落在 `appData/Electron`。
+ * 2. 字段：旧版本只记单个 `lastWorkspace`，新版本记 `openWorkspaces` /
+ *    `activeWorkspace`。迁移时把 lastWorkspace 提升为打开集合的唯一一项。
+ *
+ * 不做跨字段回退（读取路径仍严格要求 openWorkspaces），迁移只发生在这里一次。
+ */
+function migrateLegacyWorkspaceState(): void {
+  try {
+    const targetFile = getWorkspaceStateFile();
+    if (fs.existsSync(targetFile)) return;
 
-/** 读取最近一次使用的工作区路径（目录仍存在时返回） */
-function readLastWorkspace(): string | undefined {
-  const { lastWorkspace } = readWorkspaceState();
-  if (isValidWorkspaceDir(lastWorkspace)) {
-    return lastWorkspace;
+    const candidates = [PRODUCT_NAME, 'Electron']
+      .map((name) => path.join(app.getPath('appData'), name, 'workspace-state.json'))
+      .filter((file) => file !== targetFile);
+
+    for (const legacyFile of candidates) {
+      if (!fs.existsSync(legacyFile)) continue;
+      try {
+        const raw = JSON.parse(fs.readFileSync(legacyFile, 'utf-8')) as
+          (WorkspaceState & { lastWorkspace?: unknown }) | null;
+        if (!raw || typeof raw !== 'object') continue;
+
+        const { lastWorkspace, ...rest } = raw;
+        const legacyOpen = Array.isArray(raw.openWorkspaces)
+          ? raw.openWorkspaces.filter((ws): ws is string => isValidWorkspaceDir(ws))
+          : [];
+        const legacyLast = isValidWorkspaceDir(lastWorkspace) ? normalizeWorkspacePath(lastWorkspace) : undefined;
+        const open = dedupeWorkspacePaths(legacyOpen.length > 0 ? legacyOpen : legacyLast ? [legacyLast] : []);
+        const legacyActive =
+          typeof raw.activeWorkspace === 'string' && raw.activeWorkspace ? raw.activeWorkspace : undefined;
+        const fallbackActive = legacyLast ?? (open.length > 0 ? open[open.length - 1] : undefined);
+        const active = legacyActive
+          ? open.find((w) => sameWorkspace(w, legacyActive)) ?? fallbackActive
+          : fallbackActive;
+
+        writeWorkspaceState({
+          ...rest,
+          openWorkspaces: open,
+          activeWorkspace: active ?? null,
+        });
+        console.log(`[main] migrated legacy workspace state from ${legacyFile}`);
+        return;
+      } catch (err) {
+        // 单个候选文件损坏不影响尝试下一个候选
+        console.error(`[main] Failed to migrate legacy workspace state from ${legacyFile}:`, err);
+      }
+    }
+  } catch (err) {
+    console.error('[main] Failed to migrate legacy workspace state:', err);
   }
-  return undefined;
 }
 
-/** 读取最近打开的工作目录列表（仅保留仍存在的目录，最多 10 个，最近的在最前） */
+/**
+ * 判断路径是否仍为存在的目录。
+ * 只 stat 一次并吞掉异常：existsSync + statSync 的组合在「检查后目录被删 / 无权限」
+ * 时会抛错，而调用点（启动恢复、IPC 添加目录）都在没有 try/catch 的路径上。
+ */
+function isValidWorkspaceDir(p: unknown): p is string {
+  if (typeof p !== 'string' || p.trim().length === 0) return false;
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 读取打开集合（仅保留仍存在的目录，按去重键去重）。
+ * `openWorkspaces` 缺失 / 非法即视为「没有打开任何工作目录」，不回退到其它字段。
+ */
+function readOpenWorkspaces(): string[] {
+  const { openWorkspaces } = readWorkspaceState();
+  if (!Array.isArray(openWorkspaces)) return [];
+  const valid = openWorkspaces.filter((ws): ws is string => isValidWorkspaceDir(ws));
+  return dedupeWorkspacePaths(valid);
+}
+
+/** 读取活动工作目录（必须属于打开集合；字段缺失 / 不在集合中时取最后一项） */
+function readActiveWorkspace(open: readonly string[]): string | undefined {
+  const { activeWorkspace } = readWorkspaceState();
+  if (typeof activeWorkspace === 'string' && activeWorkspace) {
+    const found = open.find((w) => sameWorkspace(w, activeWorkspace));
+    if (found) return found;
+  }
+  return open.length > 0 ? open[open.length - 1] : undefined;
+}
+
+/** 保存打开集合与活动项（顺带清掉旧版本遗留的 lastWorkspace 字段） */
+function saveOpenWorkspaces(open: readonly string[], active: string | undefined): void {
+  const prev = readWorkspaceState() as WorkspaceState & { lastWorkspace?: unknown };
+  const { lastWorkspace: _legacy, ...rest } = prev;
+  writeWorkspaceState({
+    ...rest,
+    openWorkspaces: [...open],
+    // 无活动项时写 null（而不是 undefined：JSON.stringify 会省略该键，与规格 §11 不符）
+    activeWorkspace: active ?? null,
+  });
+}
+
+/**
+ * 读取最近打开的工作目录列表（仅保留仍存在的目录，按去重键去重，最多 10 个，最近的在最前）。
+ * 同一目录的不同表示（尾部分隔符 / 大小写 / 符号链接等）只保留最靠前的一条。
+ */
 function readRecentWorkspaces(): string[] {
   const { recentWorkspaces } = readWorkspaceState();
   if (!Array.isArray(recentWorkspaces)) return [];
-  const recents: string[] = [];
-  for (const ws of recentWorkspaces) {
-    if (recents.length >= MAX_RECENT_WORKSPACES) break;
-    if (isValidWorkspaceDir(ws) && !recents.includes(ws)) {
-      recents.push(ws);
-    }
-  }
-  return recents;
+  const valid = recentWorkspaces.filter((ws): ws is string => isValidWorkspaceDir(ws));
+  return dedupeWorkspacePaths(valid).slice(0, MAX_RECENT_WORKSPACES);
 }
 
-/** 保存最近使用的工作区：更新 lastWorkspace，并把该目录置顶写入最近列表（去重、最多 10 个） */
-function saveLastWorkspace(p: string): void {
+/** 把目录置顶写入最近工作目录列表（按去重键去重、最多 10 个） */
+function rememberRecentWorkspace(p: string): void {
   const prev = readWorkspaceState();
-  const prevRecents = Array.isArray(prev.recentWorkspaces) ? prev.recentWorkspaces : [];
-  const recentWorkspaces = [p, ...prevRecents.filter((ws) => ws !== p)]
-    .filter((ws): ws is string => typeof ws === 'string' && ws.trim().length > 0)
+  // 先按类型过滤再判等：状态文件被手改坏（数组里混入非字符串）时
+  // sameWorkspace → path.resolve 会抛 TypeError
+  const prevRecents = (Array.isArray(prev.recentWorkspaces) ? prev.recentWorkspaces : [])
+    .filter((ws): ws is string => typeof ws === 'string' && ws.trim().length > 0);
+  const recentWorkspaces = [p, ...prevRecents.filter((ws) => !sameWorkspace(ws, p))]
     .slice(0, MAX_RECENT_WORKSPACES);
-  // 保留 windowSize，避免切换工作区时把已保存的窗口尺寸抹掉
-  writeWorkspaceState({ ...prev, lastWorkspace: p, recentWorkspaces });
+  writeWorkspaceState({ ...prev, recentWorkspaces });
 }
 
 /** 各模式的最小窗口尺寸（读取历史尺寸时用于过滤非法值） */
@@ -2175,14 +2465,29 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: a
   // 对「key 已经等于 sessionId」的调用，registerSession 是提前返回的空操作。
   if (message.type === 'startNewConversation' || message.type === 'loadConversation') {
     if (sessionId) {
+      // 该视图自己的工作目录是权威来源（新建对话继承它；加载对话本就属于它）
+      const workspace = chatViews?.getWorkspaceForWebContents(sender);
       chatViews?.registerSession(sender, sessionId);
+      const resolved = workspace ?? chatViews?.getWorkspaceForKey(sessionId);
+      if (resolved) {
+        const p = normalizeWorkspacePath(resolved);
+        sessionWorkspaces.set(sessionId, p);
+        void registerCoreSessionWorkspace(sessionId, p);
+      }
     }
   }
 
   // webview 内点击子代理/回复/From 链接等跳转到指定会话：新起一个 webview 加载该对话
   if (message.type === 'openConversation') {
     if (sessionId) {
-      chatViews?.openConversation(sessionId);
+      syncSessionWorkspaceIndex();
+      const workspace = sessionWorkspaces.get(sessionId);
+      if (workspace) void registerCoreSessionWorkspace(sessionId, workspace);
+      // 对话属于已打开但不是活动的目录：先切活动项，保持「活动标签页 = 活动对话」一致
+      if (workspace && !sameWorkspace(workspace, workspacePath) && openWorkspaces.some((w) => sameWorkspace(w, workspace))) {
+        activateWorkspace(workspace);
+      }
+      chatViews?.openConversation(sessionId, workspace);
     }
     return;
   }
@@ -2237,6 +2542,9 @@ function setupIpc(): void {
       canToggleMode: canToggleWindowMode(),
       // 浮窗没有侧栏，品牌位改显示当前工作目录名（浮窗标题栏的唯一上下文）
       workspaceName: workspaceDisplayName() || null,
+      // 打开集合（标题栏标签页区渲染）与活动项
+      workspaces: openWorkspaces.map((p) => ({ path: p, name: workspaceDisplayNameOf(p) })),
+      activeWorkspace: workspacePath ?? null,
       // 标题栏是独立页面，拿不到 core 的 i18n 上下文：文案由主进程按当前语言下发，
       // 避免中文 tooltip 与英文 aria-label 混排（原先写死在页面里）。
       labels: {
@@ -2249,6 +2557,8 @@ function setupIpc(): void {
         toggleToFloating: tt('切换到悬浮窗模式', 'Switch to floating window'),
         toggleToFull: tt('切换到完整模式', 'Switch to full mode'),
         modeDisabled: tt('未打开工作区，无法切换', 'Open a workspace first to switch mode'),
+        addWorkspace: tt('添加工作目录', 'Add workspace folder'),
+        closeWorkspace: tt('关闭工作目录', 'Close workspace folder'),
       },
     };
   });
@@ -2263,9 +2573,37 @@ function setupIpc(): void {
     toggleFloatingPinned();
   });
 
+  // ── 标题栏工作目录标签页 ──
+  ipcMain.on('titlebar:activate-workspace', (event, p: unknown) => {
+    if (!isTitlebarSender(event.sender)) return;
+    if (typeof p === 'string' && p) activateWorkspace(p);
+  });
+
+  ipcMain.on('titlebar:close-workspace', (event, p: unknown) => {
+    if (!isTitlebarSender(event.sender)) return;
+    if (typeof p === 'string' && p) closeWorkspace(p);
+  });
+
+  ipcMain.on('titlebar:add-workspace', (event) => {
+    if (!isTitlebarSender(event.sender)) return;
+    void openWorkspaceDialog();
+  });
+
+  ipcMain.on('titlebar:reorder-workspaces', (event, paths: unknown) => {
+    if (!isTitlebarSender(event.sender)) return;
+    if (!Array.isArray(paths) || !paths.every((p) => typeof p === 'string')) return;
+    reorderWorkspaces(paths as string[]);
+  });
+
   ipcMain.on('titlebar:minimize', (event) => {
     if (!isTitlebarSender(event.sender)) return;
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.minimize();
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    // 浮窗模式：最小化 = 隐藏到系统托盘（不保留任务栏按钮）；完整模式最小化到任务栏
+    if (windowMode === 'floating') {
+      mainWindow.hide();
+      return;
+    }
+    mainWindow.minimize();
   });
 
   ipcMain.on('titlebar:toggle-maximize', (event) => {
@@ -2316,11 +2654,15 @@ function setupIpc(): void {
     // 优先返回最近一次推送的列表快照（ConversationManager.getCachedList），
     // 不再每次拉取都重读磁盘——列表变化本来就会经 conversationListChanged 推送并更新快照。
     const cached = conversations?.getCachedList();
-    if (cached) return cached;
+    if (cached) {
+      syncSessionWorkspaceIndex();
+      return cached;
+    }
     // 尚无快照（刚启动 / 刚切换工作区）：读一次盘（refresh 顺带推送给侧栏并填充快照）
     if (!conversations) return [];
     try {
       await conversations.refresh();
+      syncSessionWorkspaceIndex();
       return conversations.getCachedList() ?? [];
     } catch (err) {
       console.error('[main] sidebar:get-conversations error:', err);
@@ -2337,20 +2679,53 @@ function setupIpc(): void {
     return chatViews?.getActiveSessionId() ?? null;
   });
 
-  ipcMain.handle('sidebar:get-workspace', () => workspacePath ?? null);
+  // 工作目录流：打开集合 + 活动项 + 最近列表
+  ipcMain.handle('sidebar:get-workspaces', () => ({
+    workspaces: openWorkspaces.map((p) => ({ path: p, name: workspaceDisplayNameOf(p) })),
+    active: workspacePath ?? null,
+    recent: readRecentWorkspaces(),
+  }));
 
-  ipcMain.on('sidebar:open-workspace', () => {
-    void openWorkspaceDialog();
+  ipcMain.on('sidebar:add-workspaces', (_event, paths?: unknown) => {
+    if (Array.isArray(paths) && paths.every((p) => typeof p === 'string')) {
+      addWorkspaces(paths as string[]);
+    } else {
+      void openWorkspaceDialog();
+    }
   });
 
-  ipcMain.on('sidebar:open-conversation', (_event, sessionId: string) => {
+  ipcMain.on('sidebar:activate-workspace', (_event, p: unknown) => {
+    if (typeof p === 'string' && p) activateWorkspace(p);
+  });
+
+  ipcMain.on('sidebar:close-workspace', (_event, p: unknown) => {
+    if (typeof p === 'string' && p) closeWorkspace(p);
+  });
+
+  ipcMain.on('sidebar:open-conversation', (_event, sessionId: string, project?: string) => {
     if (typeof sessionId === 'string' && sessionId) {
-      chatViews?.openConversation(sessionId);
+      if (typeof project === 'string' && project) {
+        // 只接受仍处于打开集合中的目录：陈旧列表项（工作目录已关闭）不得把
+        // 会话重新登记到已关闭目录，否则会打开一张没有对应标签页的视图
+        const projectPath = normalizeWorkspacePath(project);
+        if (!openWorkspaces.some((w) => sameWorkspace(w, projectPath))) {
+          console.warn('[main] ignore open-conversation for closed workspace:', projectPath);
+          return;
+        }
+        sessionWorkspaces.set(sessionId, projectPath);
+      }
+      const workspace = sessionWorkspaces.get(sessionId);
+      if (workspace) void registerCoreSessionWorkspace(sessionId, workspace);
+      // 对话属于已打开但不是活动的目录：先切活动项，保持「活动标签页 = 活动对话」一致
+      if (workspace && !sameWorkspace(workspace, workspacePath) && openWorkspaces.some((w) => sameWorkspace(w, workspace))) {
+        activateWorkspace(workspace);
+      }
+      chatViews?.openConversation(sessionId, workspace);
     }
   });
 
   ipcMain.on('sidebar:new-conversation', () => {
-    chatViews?.openNewConversation();
+    chatViews?.openNewConversation(workspacePath);
   });
 
   // 关闭指定会话（UI → core 走 WebViewUI.closeConversation：
@@ -2364,15 +2739,28 @@ function setupIpc(): void {
   // ── 侧栏对话操作：删除 / 重命名 / 智能命名 ──
   ipcMain.handle('sidebar:delete-conversation', async (_event, sessionId: string) => {
     try {
+      // 先刷新会话工作目录索引：下面按该会话自己的工作目录读列表
+      syncSessionWorkspaceIndex();
+      // 登记该会话的工作目录：core 的 deleteConversation 按 sessionId 解析工作目录，
+      // 未登记时会回退到活动工作目录，导致删错目录（与 rename / smart-name 同口径）。
+      // 必须在下面删除索引条目之前取，否则 root 自身的映射已被移除。
+      const deleteWs = sessionWorkspaces.get(sessionId);
+      if (deleteWs) void registerCoreSessionWorkspace(sessionId, deleteWs);
       // 宿主只负责「关视图」：对受影响闭包逐个调 WebViewUI.closeConversation
       // （卸内存 + 销毁视图，5.5 节约定顺序）。闭包由 core 的
       // collectConversationClosure 算出——与 deleteConversation 同一条规则，
       // 不再在宿主里重写一遍；删盘与列表广播由 core 的 conversationDeleted
       // 订阅（deleteConversation → conversationListChanged）承担。
       const { loadConversationList, collectConversationClosure } = await import('../src/core/history/index.js');
-      const affected = collectConversationClosure(sessionId, await loadConversationList());
+      // 按该会话自己的工作目录读列表：删除的对话可能不在当前活动工作目录
+      const affected = collectConversationClosure(
+        sessionId,
+        await loadConversationList(sessionWorkspaces.get(sessionId)),
+      );
       for (const sid of affected) {
         webviewUi?.closeConversation(sid);
+        // 宿主索引同步清理：会话已删除，避免陈旧 sessionId → 目录 条目长期残留
+        sessionWorkspaces.delete(sid);
       }
       // 删盘（core 消费方：算闭包已由宿主完成，这里只发 root）
       const { requireEventBus } = await import('../src/core/AssistantEventBus.js');
@@ -2386,6 +2774,10 @@ function setupIpc(): void {
 
   ipcMain.handle('sidebar:rename-conversation', async (_event, sessionId: string, title: string) => {
     try {
+      // 登记该会话的工作目录：core 写 meta.json 时按会话解析工作目录
+      syncSessionWorkspaceIndex();
+      const renameWs = sessionWorkspaces.get(sessionId);
+      if (renameWs) void registerCoreSessionWorkspace(sessionId, renameWs);
       // UI → core：重命名走总线（core 写 meta.json → CoreEvent.titleChanged /
       // conversationListChanged 广播，多端同步）
       const { requireEventBus } = await import('../src/core/AssistantEventBus.js');
@@ -2400,6 +2792,10 @@ function setupIpc(): void {
 
   ipcMain.handle('sidebar:smart-name-conversation', async (_event, sessionId: string) => {
     try {
+      // 先刷新会话工作目录索引并登记到 core：loadConversation 按会话解析工作目录
+      syncSessionWorkspaceIndex();
+      const smartWs = sessionWorkspaces.get(sessionId);
+      if (smartWs) void registerCoreSessionWorkspace(sessionId, smartWs);
       // 智能命名编排属 core（与 webview 版 handleRequestSmartNaming 同一逻辑：
       // 取最近 5 条用户/助手文本 → LLM 生成标题 → 写 meta.json）；
       // 标题写盘走 UiEvent.conversationRenamed，后续广播（titleChanged / 列表刷新）走 core
