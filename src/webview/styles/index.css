@@ -865,7 +865,7 @@ textarea::-webkit-scrollbar-thumb:hover {
   animation: runningBarFlow 1.5s linear infinite;
 }
 
-/* 等待用户输入的黄色流水灯呼吸：在 runningBarFlow 流水之上叠加透明度脉动 */
+/* 等待用户输入的黄色呼吸：只有明暗脉动，不流水 */
 @keyframes runningBarWaitingBreathing {
   0%, 100% {
     opacity: 0.5;
@@ -875,7 +875,7 @@ textarea::-webkit-scrollbar-thumb:hover {
   }
 }
 
-/* 等待用户输入（ask user 提问 / 权限确认）时的黄色流水灯 */
+/* 等待用户输入（ask user 提问 / 权限确认）时的黄色呼吸灯 */
 .running-bar--waiting {
   background: linear-gradient(
     180deg,
@@ -885,10 +885,8 @@ textarea::-webkit-scrollbar-thumb:hover {
     rgba(250, 204, 21, 0.5) 70%,
     transparent 100%
   );
-  /* 覆盖 .running-bar 的单条动画，保留流水并叠加呼吸（两处样式需与 Electron 侧栏保持一致） */
-  animation:
-    runningBarFlow 1.5s linear infinite,
-    runningBarWaitingBreathing 1.6s ease-in-out infinite;
+  /* 覆盖 .running-bar 的流水动画，改为单一呼吸动画（与 Electron 标题栏语义一致） */
+  animation: runningBarWaitingBreathing 1.6s ease-in-out infinite;
 }
 
 /* Single View：其它会话正在等待用户输入时，历史对话按钮的呼吸提醒。

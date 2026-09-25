@@ -165,7 +165,7 @@ class CoreRequest <<type>> {
 }
 
 class UiEvent <<type>> {
-  messageQueued / abortRequested / compactRequested
+  abortRequested / compactRequested
   conversationStarted / Opened / Closed
   conversationRenamed / Deleted
   conversationContextUpdated / conversationSpaceCleared
@@ -723,7 +723,7 @@ wire message（若该事件会产生 webview 协议消息）。
 | 17 | `spinDesignDataChanged` | 无 | `skills/bundled/spin`、`spin/Loop` | `onSpinDesignDataChanged` | `SpinDesign.refresh()` |
 | 18 | `compactBegin` | `sessionId` | `compact/compact` | `onCompactBegin` | `compressProgress`（`status: 'start'`） |
 | 19 | `compactEnd` | `sessionId`, `result` | `compact/compact`（`complete`）、`Integration` / `QueryEngine`（`error`） | `onCompactEnd` | `compressProgress`（`status: 'complete'` / `'error'`） |
-| 20 | `commandDispatched` | `sessionId`, `commandName`, `args` | `CommandDispatcher` | `onCommandSend` | `/spin`：打开设计器 |
+| 20 | `commandDispatched` | `sessionId`, `commandName`, `args` | `CommandDispatcher`（命令在引擎消费循环的轮次边界解析时就地执行） | `onCommandSend` | `/spin`：打开设计器；同时清除该会话的排队项（内置命令不进入上下文、不补发用户气泡） |
 | 21 | `sessionConfigChanged` | `sessionId`, `change` | `initializeCoreEvents`（前五个配置 UiEvent 写完 meta.json 后广播；`change.key` 用 `thinkingEffort`，落盘字段仍是 `thinkingMode`）；`MCPHost`（`mcpEnabledChanged` 的差量同步、以及会话首次打开的 `acquire` 连接 / 断开完成后广播，让 UI 拿到最终运行时状态） | `onSessionConfigChanged` | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpServers` |
 | 22 | `highlightLanguagesUsed` | `languages: readonly string[]` | `history/Conversation`（消息落盘时扫描围栏代码块语言，只报未记录过的） | `onHighlightLanguagesUsed` | 写 settings.json 的 `highlightLanguages` 字段（经 `UIHost.updateSettingsJson`，见第 5.1 节） |
 | 23 | `projectConversationDirReady` | `projectDir`, `workspacePath` | `history/Config.ensureProjectConversationDir`（目录由 core 创建后上报一次） | `onProjectConversationDirReady` | 写 `<projectDir>/settings.json` 的 `workspacePath`（经 `UIHost.ensureProjectSettings`） |
@@ -767,24 +767,23 @@ wire message（若该事件会产生 webview 协议消息）。
 
 | # | `type` | 载荷 | UI 侧触发点 | core 侧消费方 |
 | --- | --- | --- | --- | --- |
-| 24 | `messageQueued` | `sessionId`, `content`, `images`, `fileInfo` | **无发送方**：`handleQueueMessage` 直接调 `Integration.sendMessage` / `engine.submitMessage` | `Integration.sendMessage`（订阅已就位） |
-| 25 | `abortRequested` | `sessionId` | `abort` 消息（webview 的 abort 按钮由 `sessionRuntimeStates` 的 `idle` 推导，见第 10.4 节） | `Integration.abortCurrentQuery`（整棵工作树：该会话引擎 `interrupt()` + 该会话后台 Bash + 递归子代理，三条路径都走，幂等） |
-| 26 | `compactRequested` | `sessionId` | `requestCompress` | `Integration.requestCompact` |
-| 27 | `conversationStarted` | `sessionId` | `startNewConversation` | `Integration.createEngine`（预创建引擎 + MCP 引用） |
-| 28 | `conversationOpened` | `sessionId` | **无发送方**：`loadConversation` 直接调 `restoreConversationEngine` | **无订阅者** |
-| 29 | `conversationClosed` | `sessionId` | `WebViewUI.releaseConversation`（关闭按钮 / 侧栏关闭 / VS Code 空闲回收 / Electron 视图销毁序列 `ChatViewManager.closeConversation`） | `sessionResources.releaseSessionResources`（卸内存 + 拒绝该会话挂起的 user choice；磁盘不动） |
-| 30 | `conversationRenamed` | `sessionId`, `title` | `renameConversation`、智能命名、Electron 侧栏 | `history.updateConversationMetadataTitle` → `titleChanged` + `conversationListChanged` |
-| 31 | `conversationDeleted` | `sessionId` | `deleteConversation`、Electron 侧栏 | `history.deleteConversation`（**递归删除整棵子树**：自身 + 所有层级的子孙对话）→ `conversationListChanged` |
-| 32 | `conversationContextUpdated` | `sessionId`, `changes` | `updateConversationContext` 消息、`extension.ts`（编辑器上下文） | `history.updateConversationContext`（合并语义） |
-| 33 | `conversationSpaceCleared` | `sessionId` | `clearConversationSpace` | `history/ConversationSpace.clearConversationSpace` → `message` + `conversationListChanged` |
-| 34 | `modelChanged` | `sessionId`, `ref`（`ModelRef` = provider + model） | `setModel`（wire 是扁平的 `model` / `provider`，handler 入口组装成 `ModelRef`；provider 为空即非法，记录日志并忽略） | `setSessionModel` + 写 meta.json（**保持扁平字段** `model` / `provider`）→ `sessionConfigChanged` |
-| 35 | `thinkingEffortChanged` | `sessionId`, `mode` | `setThinkingMode` | `setSessionThinkingMode` + 写 meta.json（字段名仍是 `thinkingMode`）→ `sessionConfigChanged` |
-| 36 | `promptModeChanged` | `sessionId`, `mode` | `setPromptMode` | `setSessionPromptPreset` + 写 meta.json → `sessionConfigChanged` |
-| 37 | `agentModeChanged` | `sessionId`, `mode` | `setAgentMode` | `setSessionAgentMode` + 写 meta.json → `sessionConfigChanged` |
-| 38 | `webSearchChanged` | `sessionId`, `enabled` | `setWebSearch` | `engine.updateWebSearch` + 写 meta.json → `sessionConfigChanged` |
-| 39 | `mcpEnabledChanged` | `sessionId`, `name`, `enabled` | `setMcpEnabled` | `mcp/Config.setSessionMcpEnabled` + `Manager.syncSession` → `sessionConfigChanged`（差量同步完成后） |
-| 40 | `editRolledBack` | `sessionId`, `toolUseId`, `direction`, `filePath?` | `rollbackEdit` | `history/rollback.rollbackEdit`（`filePath` 作为 `input.file_path` 缺失时的兜底路径） |
-| 41 | `llmConfigSaved` | `config` | `saveLLMConfig` | `llm/config.clearConfigCache` |
+| 24 | `abortRequested` | `sessionId` | `abort` 消息（webview 的 abort 按钮由 `sessionRuntimeStates` 的 `idle` 推导，见第 10.4 节） | `Integration.abortCurrentQuery`（整棵工作树：该会话引擎 `interrupt()` + 该会话后台 Bash + 递归子代理，三条路径都走，幂等） |
+| 25 | `compactRequested` | `sessionId` | `requestCompress` | `Integration.requestCompact` |
+| 26 | `conversationStarted` | `sessionId` | `startNewConversation` | `Integration.createEngine`（预创建引擎 + MCP 引用） |
+| 27 | `conversationOpened` | `sessionId` | **无发送方**：`loadConversation` 直接调 `restoreConversationEngine` | **无订阅者** |
+| 28 | `conversationClosed` | `sessionId` | `WebViewUI.releaseConversation`（关闭按钮 / 侧栏关闭 / VS Code 空闲回收 / Electron 视图销毁序列 `ChatViewManager.closeConversation`） | `sessionResources.releaseSessionResources`（卸内存 + 拒绝该会话挂起的 user choice；磁盘不动） |
+| 29 | `conversationRenamed` | `sessionId`, `title` | `renameConversation`、智能命名、Electron 侧栏 | `history.updateConversationMetadataTitle` → `titleChanged` + `conversationListChanged` |
+| 30 | `conversationDeleted` | `sessionId` | `deleteConversation`、Electron 侧栏 | `history.deleteConversation`（**递归删除整棵子树**：自身 + 所有层级的子孙对话）→ `conversationListChanged` |
+| 31 | `conversationContextUpdated` | `sessionId`, `changes` | `updateConversationContext` 消息、`extension.ts`（编辑器上下文） | `history.updateConversationContext`（合并语义） |
+| 32 | `conversationSpaceCleared` | `sessionId` | `clearConversationSpace` | `history/ConversationSpace.clearConversationSpace` → `message` + `conversationListChanged` |
+| 33 | `modelChanged` | `sessionId`, `ref`（`ModelRef` = provider + model） | `setModel`（wire 是扁平的 `model` / `provider`，handler 入口组装成 `ModelRef`；provider 为空即非法，记录日志并忽略） | `setSessionModel` + 写 meta.json（**保持扁平字段** `model` / `provider`）→ `sessionConfigChanged` |
+| 34 | `thinkingEffortChanged` | `sessionId`, `mode` | `setThinkingMode` | `setSessionThinkingMode` + 写 meta.json（字段名仍是 `thinkingMode`）→ `sessionConfigChanged` |
+| 35 | `promptModeChanged` | `sessionId`, `mode` | `setPromptMode` | `setSessionPromptPreset` + 写 meta.json → `sessionConfigChanged` |
+| 36 | `agentModeChanged` | `sessionId`, `mode` | `setAgentMode` | `setSessionAgentMode` + 写 meta.json → `sessionConfigChanged` |
+| 37 | `webSearchChanged` | `sessionId`, `enabled` | `setWebSearch` | `engine.updateWebSearch` + 写 meta.json → `sessionConfigChanged` |
+| 38 | `mcpEnabledChanged` | `sessionId`, `name`, `enabled` | `setMcpEnabled` | `mcp/Config.setSessionMcpEnabled` + `Manager.syncSession` → `sessionConfigChanged`（差量同步完成后） |
+| 39 | `editRolledBack` | `sessionId`, `toolUseId`, `direction`, `filePath?` | `rollbackEdit` | `history/rollback.rollbackEdit`（`filePath` 作为 `input.file_path` 缺失时的兜底路径） |
+| 40 | `llmConfigSaved` | `config` | `saveLLMConfig` | `llm/config.clearConfigCache` |
 
 **`changes` 数组而不是可选字段**：`history.updateConversationContext` 是**部分合并**语义
 （未列出的字段保持原值），用数组而不是一组可选字段，是为了同时满足「一次可带多个字段」
@@ -808,7 +807,7 @@ wire message（若该事件会产生 webview 协议消息）。
 | 类别 | 消息 | 为什么不是 UiEvent |
 | --- | --- | --- |
 | 纯宿主操作 | `openFile` / `openMermaidPreview` / `openSpinDesign` / `openUrl` / `showVirtualDocument` / `requestToolMeta` / `debugLog` | 只操作宿主，不涉及 core 业务 |
-| 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestMcpServers` / `requestSkills` / `requestConversationSpaces` / `requestSmartNaming` | 只读，不改变 core 状态；直接调 core 的查询函数即可 |
+| 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestMcpServers` / `requestSkills` / `requestConversationSpaces` / `requestSessionRuntimeStates` / `requestSmartNaming` | 只读，不改变 core 状态；直接调 core 的查询函数即可。其中 `requestMcpServers` / `requestSkills` 是**按会话**解析的（project skills / MCP 启用列表跟会话的工作目录走）：会话归属取 `trackedActiveSessionId`——多视图宿主必须由宿主在活动视图变化时同步（见 7.3 节的 `setActiveSessionId`），否则会取到别的标签页的工作目录；`requestSkills` / `requestSessionRuntimeStates` 的回包按 `ctx.sender` 定向投递 |
 | 环境查询 | `requestTheme` / `requestContextLimit` | 只读宿主环境并回包，不涉及 core 状态；按 `ctx.sender` 定向投递（`sender` 为 `null` 走默认路由，见第 7.3 节） |
 | 列表查询 | `getConversations` | 走 `WebViewUiPort.refreshConversations()` → `ConversationManager.refresh()`（唯一产出 `conversationsData` 的地方，见第 5.4 节） |
 | 请求响应 | `respondUserChoice` | 走 `CoreRequest.userChoice` 的 Promise 回传 |
@@ -858,6 +857,11 @@ webview 对话树的运行标记、两端 abort 按钮），生产者是 `src/co
 - `waiting` 的取值由 `markSessionWaiting` 直接驱动；`setSessionRuntimeWaitingProvider`
   （「该会话是否有 pending user choice」读取器）是它的补充来源——当前仅单测注册，生产未注入。
 - 读全量：`getSessionRuntimeStates()`。
+- 分发有**推**和**拉**两条：推是常态（变化时经 `CoreEvent.sessionRuntimeChanged` 全量推给已存在的视图）；
+  视图创建 / 激活时可能错过推送（当时视图还不存在），因此 webview 启动、或切到单视图时发
+  `requestSessionRuntimeStates` 主动拉一次快照——`WebviewMessageHandler.pushSessionRuntimeStates`
+  调 `getSessionRuntimeStates()` 并按**来源视图**回包（多视图宿主下请求方不一定是活动视图）。
+  否则新视图的对话树流水灯 / abort 按钮 / 历史提醒会"失明"到下一次状态变化。
 - **「是否空闲」的唯一判定入口是 `sessionResources.isSessionIdle(sessionId)`**（异步只读查询，
   覆盖上表全部来源 + 子代理递归）。宿主空闲回收与「手动压缩是否延后」都调它。
 
@@ -986,15 +990,20 @@ Electron 里是 `BrowserWindow`。它有自己的生命周期（打开 → 复�
 
 | 成员 | 语义 |
 | --- | --- |
-| `open()` | 打开设计器；已打开则聚焦复用，不重复创建 |
+| `open(workspacePath?)` | 打开设计器；已打开则复用（**目录不同则切到新目录的数据**）。`workspacePath` 是发起方会话的工作目录——`spin.json` 与技能清单都归属它；不传时回退宿主的活动工作目录（兼容旧调用 / 无会话场景） |
 | `refresh()` | 从磁盘重读 `spin.json` + Skill 列表推给已打开的设计器；未打开时 no-op |
 
 `refresh` 的必要性：SpinLoop 执行过程中会直接更新磁盘 meta，若设计器仍持有旧缓存，
 用户后续保存会覆盖执行结果，因此执行完成后必须刷新。
 
+**归属目录必须由调用方传入，不能回查活动目录**：多工作目录宿主（Electron）里设计器是
+单例窗口，从别的标签页再 `/spin` 时活动目录可能已经变了；实现内部把 `open()` 收到的目录
+**绑定**下来，`refresh()` 与保存都用它（保存不回查活动目录，否则会把当前目录的内容写进
+另一个目录的 `spin.json`）。
+
 **构造依赖**：`constructor(host: UIHost)`。实现只用其中 5 个成员——`getWorkspacePath()`
-（定位 `spin.json`）、`isDarkTheme()` / `getLocale()`（生成 HTML）、`saveTextFile()`（导出）、
-`log()`。**不反向要求 `UIHost` 知道 Spin 的存在。**
+（未显式传目录时的回退）、`isDarkTheme()` / `getLocale()`（生成 HTML）、`saveTextFile()`
+（导出）、`log()`。**不反向要求 `UIHost` 知道 Spin 的存在。**
 
 **设计器消息协议**（设计器 ↔ 宿主，不走 `AssistantEventBus`）：
 
@@ -1483,19 +1492,20 @@ diff 快照——**确认框不在这里弹**（见下）。
 | --- | --- |
 | `handleWebviewMessage(message, ctx?)` | 唯一入口（宿主 webview 的 `onDidReceiveMessage`）；按 `message.type` 查表分发，未知类型只记日志；异常兜底成一条日志，不冒泡成未处理的 rejection。`ctx.sender` 标识消息来源视图（`WebviewRequestContext`）：多视图宿主传入句柄，单视图宿主 / 宿主主动推送省略（缺省 `{ sender: null }`）；需要按来源回包的消息依赖它定向投递 |
 | `getActiveSessionId()` | UI 自己维护的「当前前台会话」（core 不感知） |
+| `setActiveSessionId(sessionId)` | 宿主切换前台会话时同步「当前活跃会话」。多视图宿主（Electron）切到**已打开**的视图不会再走 `loadConversation` / `startNewConversation`，必须由宿主在活动视图变化时显式同步（`ChatViewManager.show` → `onActiveSessionChanged` → `WebViewUI.setActiveSessionId`）；否则 `trackedActiveSessionId` 停在旧视图，按会话解析的数据（project skills / MCP 启用列表）会取到别的标签页的工作目录 |
 | `dropTrackedSession(sessionId)` | 会话关闭 / 删除时清掉 `trackedActiveSessionId`（若指向该会话） |
 | `emitUiEvent(event)` | `requireEventBus().emitToCore(event)`——**改 core 状态的唯一出口** |
-| `buildMessageHandlers()` | 39 个消息类型 → 处理器（见下）；其中 `queueMessage` 没有发送方，它只是 `handleSendMessage` 的内部委托目标 |
+| `buildMessageHandlers()` | 39 个消息类型 → 处理器（见下）；其中 `sendMessage` 是用户消息的唯一入口（`handleUserMessage`），不区分「新消息 / 排队消息」 |
 
 **消息分发表**（`buildMessageHandlers`，按代码注释分区）：
 
 | 分区 | 内容 |
 | --- | --- |
 | 纯宿主操作 | `openFile` / `requestToolMeta` / `showVirtualDocument` / `openMermaidPreview` / `openSpinDesign` / `openUrl` / `debugLog` |
-| 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestSkills` / `requestConversationSpaces` / `requestMcpServers` / `getConversations` |
+| 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestSkills` / `requestConversationSpaces` / `requestMcpServers` / `requestSessionRuntimeStates` / `getConversations` |
 | 环境查询 | `requestTheme`（→ `host.onThemeChanged(ctx.sender)`）/ `requestContextLimit`（→ `pushContextLimit(ctx.sender, modelRefOf(msg.provider, msg.model))`：读该模型身份（provider + model）的上下文配置，经 `sendToWebviewView` / `sendToWebview` 回包 `contextLimitUpdated`；`ref` 为 `undefined` 时按 active provider 的默认模型算，视图加载初始化推送即走这条）；`pushContextLimit` 也是 `WebViewUI` 的对外方法，供宿主在视图加载时主动推同一份内容 |
 | 请求响应 / 显示 | `respondUserChoice` / `expandCompact` / `rollbackEdit`（→ `UiEvent`） |
-| 消息 / 压缩 / 中止 | `queueMessage` / `sendMessage` / `abort` / `requestCompress`（后两者 → `UiEvent`） |
+| 消息 / 压缩 / 中止 | `sendMessage`（→ `handleUserMessage`：取 / 建引擎后入队，不走 `UiEvent`）/ `abort` / `requestCompress`（后两者 → `UiEvent`） |
 | 会话生命周期 | `loadConversation` / `startNewConversation` / `deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace`（`deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace` → `UiEvent`） |
 | 会话配置 | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpEnabled`（全部 → `UiEvent`，core 处理后广播 `sessionConfigChanged` 回推多端）。`setModel` 的 wire 载荷是扁平的 `model` + `provider`，在 handler 入口组装成 `ModelRef`（provider 空串非法：记录日志并忽略，不回退到其它 provider） |
 | 其它 | `saveLLMConfig` / `requestSmartNaming` |
@@ -1529,7 +1539,7 @@ diff 快照——**确认框不在这里弹**（见下）。
 | `postConversationLoaded(sessionId, conversation, extra)` | 推送 `conversationLoaded`（含 `activityPhase`，见第 6.2 节） |
 | `onTitleChanged(sessionId, title)` | 会话标题变化（`WebviewMessageHandler` 的 `setTitle` 回调走它） |
 | `dropSession(sessionId)` | 该会话的 UI 侧状态已释放 |
-| `onQueuedMessage(sessionId, content, images?, fileInfo?)` | 显示 / 清除排队消息状态（`content` 为 `null` 表示清除） |
+| `onQueuedMessage(sessionId, content, images?, fileInfo?)` | 显示 / 清除排队消息状态（`content` 为 `null` 表示清除）。清除调用点：内置命令就地执行（`onCommandSend`）；进入上下文的用户消息由补发的 `addMessage`（带 `messageUuid`）清除 |
 | `getActiveSessionId()` | 当前前台会话 |
 | `openSpinDesign()` | 打开 Spin 设计器（子模块不直接持有 `SpinDesign`，见第 5.2 节） |
 | `refreshConversations()` | 重新读取并分发对话列表 |
@@ -1651,8 +1661,9 @@ export class ElectronUIHost implements UIHost {
 
 | `SpinDesign` 成员 | VSCodeSpinDesign（`src/VSCodeSpinDesign.ts`） | ElectronSpinDesign（`electron/ElectronSpinDesign.ts`） |
 | --- | --- | --- |
-| `open()` | 扫 `vscode.window.tabGroups.all` 找 `viewType === SPIN_DESIGN_PANEL_ID`：已打开则 `panel.reveal()` 复用；否则 `createWebviewPanel` 并灌入 `getSpinDesignHtml` | 自持 `spinDesignWindow`：已打开则 `restore()`（若最小化）+ `focus()` 复用；否则 `new BrowserWindow` + `spinPreload.cjs`（注入 `acquireVsCodeApi` shim，让 `spinDesignHtml` 原样复用） |
+| `open(workspacePath?)` | 扫 `vscode.window.tabGroups.all` 找 `viewType === SPIN_DESIGN_PANEL_ID`：已打开则 `panel.reveal()` 复用（目录不同则先按新目录重推数据）；否则 `createWebviewPanel` 并灌入 `getSpinDesignHtml` | 自持 `spinDesignWindow`：已打开则 `restore()`（若最小化）+ `focus()` 复用（目录不同则先按新目录重推数据）；否则 `new BrowserWindow` + `spinPreload.cjs`（注入 `acquireVsCodeApi` shim，让 `spinDesignHtml` 原样复用） |
 | `refresh()` | 找到面板 → 重读 `spin.json` + Skill 列表 → `panel.webview.postMessage({ type: 'spinDesignData' })`；未打开时 no-op | 找到窗口 → 同上 → `win.webContents.send('spin-design-message', { type: 'spinDesignData', ... })` |
+| 归属目录 | `open()` 收到的目录绑定到 `this.workspacePath`；`readSpinDesignData` / `refresh` / 保存都用它，**不回查活动目录** | 同左 |
 
 实现要点：
 
@@ -1724,7 +1735,7 @@ bootstrapCore(host, spinDesign, conversations, options): { bus, ui }
 | 总线创建与全局注册 / core 侧 UiEvent 订阅 | `createEventBus` → `setGlobalEventBus` → `initializeCoreEvents` |
 | `WebViewUI.create` 与 `UserChoiceManager` 工厂 | 工厂在骨架内构造，日志出口取自 `options.log`；宿主不提供该工厂 |
 | `initializeHistory` / `initializeSessionQueue` / `setSessionWaitingForUserProvider` | 依赖 `WebViewUI` 实例；等待用户读取器闭包在骨架内引用该实例，宿主不参与 |
-| 工作区订阅（`host.onDidChangeWorkspace`） | 工作区当前值与变化经订阅获得，启动期不主动读取；订阅时宿主立即回调当前值，之后打开 / 切换 / 关闭再回调；回调以新路径预热系统动态信息。`initializeHistory(host)` 登记惰性读取入口 |
+| 工作区订阅（`host.onDidChangeWorkspace`） | 工作区当前值与变化经订阅获得，启动期不主动读取；订阅时宿主立即回调当前值，之后打开 / 切换 / 关闭再回调；回调以新路径预热系统动态信息（`SystemEnvironment` 的缓存**按 cwd 分桶**；不同工作目录不能互相命中，否则另一个目录的会话会在 system prompt 里拿到活动目录的 git 信息 / 技能清单）。`initializeHistory(host)` 登记惰性读取入口 |
 | 配置目录 / MCP 残留清理 | 异步收尾，不阻塞启动 |
 
 **宿主参数**：
@@ -2029,7 +2040,7 @@ webview 只按能力渲染，不判断宿主类型：
 | 消费点 | 读取 | 行为 |
 | --- | --- | --- |
 | `App.tsx` 顶栏 | `rendersConversationListInWebview(hostInfo)` | `true` 时渲染对话历史下拉（`Dropdown`）；`false` 时由 Electron 原生侧栏接管，webview 不渲染 |
-| `App.tsx` 历史对话按钮提醒 | `sessionRuntimeStatesRef` 的 `waiting` + 本视图 `conversations` 的 `sessionId` 集合 | 单视图（VS Code / Electron 悬浮窗）下，**本视图对话列表里**有「其它会话」在等待用户操作（ask user / 权限确认）时给历史按钮加黄色呼吸提醒（`history-btn--attention`）。只认本视图列表里的会话：列表按工作目录读盘（`loadConversationList(workspace)`），因此其它工作目录的 `waiting` 不提醒——浮窗只能看 / 切到本目录的对话，提醒了也过不去 |
+| `App.tsx` 历史对话按钮提醒 | `sessionRuntimeStatesRef` 的 `waiting` + 本视图 `conversations` 的 `sessionId` 集合 | 单视图（VS Code / Electron 悬浮窗）下，**本视图对话列表里**有「其它会话」在等待用户操作（ask user / 权限确认）时给历史按钮加黄色呼吸提醒（`history-btn--attention`）。只认本视图列表里的会话：列表按工作目录读盘（`loadConversationList(workspace)`），因此其它工作目录的 `waiting` 不提醒——浮窗只能看 / 切到本目录的对话，提醒了也过不去。列表与运行时状态都是**视图本地缓存**：列表只推给活动视图、状态只在变化时推，所以切到单视图时 `App.tsx` 会主动补发 `getConversations` + `requestSessionRuntimeStates`，避免「之前不是活动视图」的浮窗用旧数据判断（第 4.5 节） |
 | `App.tsx` 顶栏 | `newConversation === 'webview'` | 渲染「新建对话」按钮；`'host'` 时由侧栏按钮触发 |
 | `App.tsx` 顶栏 | `canCloseConversation(hostInfo)` | `true` 时渲染关闭按钮，发 `{ type: 'closeWebview' }`（销毁 webview，释放渲染进程） |
 | `App.tsx.navigateToSession()`（会话跳转的唯一 UI 入口，内部委托 `webviewEnv.navigateToConversation()`） | `openConversationModeOf(hostInfo)` | 对话列表 / 对话树 / 子代理 From 链接 / 返回父会话跳转时：`openConversation` 只发消息交给宿主另开视图；`loadConversation` 在当前视图内原地加载。任何入口都不得直连 `navigateToConversation`，否则会绕过 loading（统一入口见 9.3.1） |
@@ -2301,8 +2312,8 @@ dropSession(sessionId: string): void {
 | 方面 | 现状 |
 | --- | --- |
 | 打开集合 | `openWorkspaces: string[]`（主进程进程内事实，按标签页顺序）；活动项 `workspacePath`（打开集合中的一项） |
-| 标签页 | 标题栏（原菜单栏区域）：`titlebar:workspaces` 下发 `{ workspaces: [{path,name}], activeWorkspace, activity }`（与 `titlebar:get-state` 同字段名），标题栏渲染标签页（活动项高亮、每项可关闭、键盘可切换、可拖拽排序）+「添加」按钮；总宽超出时逐张收窄到 56px 下限后横向滚动；打开集合为空时不渲染标签页区域（添加入口在侧栏空态与菜单）；浮窗模式隐藏菜单图标与标签页 |
-| 标签页流水灯 | 每个工作目录的聚合运行时状态（`activity`：路径 → `waiting` / `running`），由主进程 `collectWorkspaceActivity()` 读 core `sessionRuntime` + 会话工作目录表按会话归并：该目录下任一会话在等待用户操作 → `waiting`（黄，优先），否则任一非 idle → `running`（蓝）。状态流每次变化（`setStatusListener` 里）另推 `titlebar:workspace-activity`，渲染层就地切换 class 不重建标签页（重建会打断流水动画、丢 hover / 焦点 / 拖拽状态）；配色与动画复用侧栏 / webview 对话列表的 `running-bar` |
+| 标签页 | 标题栏（原菜单栏区域）：`titlebar:workspaces` 下发 `{ workspaces: [{path,name}], activeWorkspace, activity }`（与 `titlebar:get-state` 同字段名），标题栏渲染标签页（活动项高亮、每项可关闭、键盘可切换、可拖拽排序）+「添加」按钮；宽度够时每张固定 192px，总宽超出时逐张收窄到 56px 下限后横向滚动；打开集合为空时不渲染标签页区域（添加入口在侧栏空态与菜单）；浮窗模式隐藏菜单图标与标签页 |
+| 标签页运行指示 | 每个工作目录的聚合运行时状态（`activity`：路径 → `waiting` / `running`），由主进程 `collectWorkspaceActivity()` 读 core `sessionRuntime` + 会话工作目录表按会话归并：该目录下任一会话在等待用户操作 → `waiting`（黄，优先），否则任一非 idle → `running`（蓝）。状态流每次变化（`setStatusListener` 里）另推 `titlebar:workspace-activity`，渲染层就地切换 class 不重建标签页（重建会打断动画、丢 hover / 焦点 / 拖拽状态）。动效与对话列表 `running-bar` 对齐：运行中＝蓝色流水（渐变滚动），等待用户＝黄色呼吸（只脉动不滚动）——对话列表的黄色同样是呼吸（`.running-bar--waiting` 的 `background` 简写把 `background-size` 复位成 `auto`，流水不产生位移） |
 | 标签页拖拽排序 | 渲染层用 HTML5 drag 事件（`dragstart` / `dragover` / `drop` / `dragend`）：越过目标中线决定插到其前 / 后，`drop-before` / `drop-after` 伪元素画放置指示线；提交完整排列经 `titlebar:reorder-workspaces` → `reorderWorkspaces()`，主进程按去重键校验「同组目录的排列」后才写入打开集合并落盘，非法排列整次忽略；活动项与已打开视图不受顺序影响 |
 | 非活动标签页预加载 | 首次启动（`createMainWindow` 打开活动目录的新对话之后）对打开集合里**非活动**的每个目录调用 `chatViews.preloadWorkspace(ws)`（错开 400ms + 250ms×i，避免启动瞬间同时拉起多个渲染进程）；实现复用后台预热机制（`--prewarm=1` 后台加载渲染、跳过会话初始化），切到该目录时 `setActiveWorkspace` 命中它直接 `show()` + 补发激活消息，不再现建视图 + 等页面加载。`new-` 临时 key 带自增序号，避免同毫秒连续创建撞 key；`setActiveWorkspace` 不再销毁其它目录的预热视图（它们是那些标签页的预加载视图，关闭目录 / 窗口时统一销毁） |
 | 菜单 | Windows / Linux 全部收编为单一分区 `main`，标题栏用一个图标按钮表示；条目：添加工作目录 / 添加最近的工作目录 ▸ / 主题 ▸ / 快捷键 / 开发者工具 / 关于 / 退出。macOS 沿用系统菜单栏分区 |
@@ -2392,6 +2403,7 @@ MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 
 | 主题 | `nativeTheme.themeSource`（`system` / `light` / `dark`）+ 聊天视图 `setTheme` 消息 | 模式持久化在全局 settings.json 的 `theme` 字段，菜单「主题 ▸」切换（`applyThemeMode`）。`themeSource` 驱动原生配色、各渲染进程的 `prefers-color-scheme`（自绘标题栏 / 侧栏 / Monaco 预览的浅色覆盖）与窗口兜底底色；聊天 webview 不监听 `prefers-color-scheme`，由 `uiHost.onThemeChanged(null)` 广播 `setTheme`，新视图用 `--theme=` + `window.__initialTheme` 保证首帧底色正确。跟随系统时 OS 切换走 `nativeTheme.on('updated')`：除了刷新底色与广播主题，还要**作废自绘菜单缓存**——菜单配色是生成 HTML 时烘进内联样式的，缓存复用会让菜单停留在旧配色 |
 | 二级菜单 | 飞出面板（`.flyout`） | 「最近打开的工作目录」等子菜单默认收起，悬停/点击父项才展开；面板绝对定位在主面板右侧，右侧放不下时改向左展开（`offsetX` 为负） |
 | 二级菜单不裁切 | 视图尺寸 = 主面板 ∪ 飞出面板；**页面底色与视图背景都要透明** | 视图比主面板大时多出的区域必须能透出下方内容。实测 `WebContentsView` 的透明区域可与下方兄弟视图正常混叠（无需窗口级 `transparent`）。注意 `view.setBackgroundColor('#00000000')` 与页面 `background: transparent` **两者都要**：只改页面会露出视图默认的白底（表现为白边，已踩过）。展开/收起时页面重新上报尺寸，主进程 `setBounds` 调整视图 |
+| 飞出面板不被 `body` 裁掉 | `body` 的 `min-height` = 菜单可用高度上限（`maxHeight`） | 飞出面板是 `body` 的绝对定位子元素，而 `body` 只按主面板 `.menu` 的自然高度撑开，`overflow: hidden` 会把超出主面板的那截飞出面板整段裁掉——此时飞出面板自身 `scrollHeight == clientHeight`（不出现滚动条），后半截条目既看不到也滚不到，「添加最近的工作目录」条目多时就是「列表显示不全」。飞出面板底边由 `positionFlyout` 限制在 `maxHeight` 以内，所以 `body` 撑到 `maxHeight` 一定装得下（且撑满后不改变上报尺寸：`reportSize` 量的是主面板/飞出面板的 rect，不是 `body`）。回归用例：`src/test/titlebarMenu.test.ts` |
 | 下拉菜单 | 独立 `WebContentsView` | 不用 `BrowserWindow`：开窗有系统动画与层级窗口合成，会「闪一下」；视图只是同窗口内的一块合成区域，摆位即显示。首次打开测量尺寸并缓存 |
 | 菜单关闭 | 侧栏/聊天视图 focus + 窗口 blur/hide/move/resize + 点标题栏空白 + Esc | **不要用标题栏 blur 关菜单**：显示菜单视图会让焦点重新计算（可能变成「无焦点视图」），据此关菜单会让菜单刚弹出就被自己关掉（已踩过）。打开时把焦点交给菜单视图（Esc/方向键依赖它），关闭时还给打开前的视图 |
 | 菜单置顶 | `addChildView` 重新入栈 | 聊天视图是动态 `addChildView` 的，会盖住菜单视图；显示菜单时再 `addChildView` 一次即可提到最上层。**不要先 `removeChildView`**——那会把焦点掉成「无视图」，菜单随即被关掉 |

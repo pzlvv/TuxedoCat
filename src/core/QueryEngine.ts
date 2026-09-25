@@ -18,6 +18,7 @@ import { getAllTools } from './tools/index.js';
 import { logger } from './Logger.js';
 import { isCompacting, isPendingCompact, markPendingCompact, unmarkPendingCompact } from './compact/state.js';
 import { randomId } from './tools/RunTools.js';
+import type { DispatchResult, SkillDispatchInfo } from './CommandDispatcher.js';
 
 /** core → UI 单向事件的发送侧封装（QueryEngine 统一走它） */
 function emitToUi(event: CoreEvent): void {
@@ -188,6 +189,13 @@ export class QueryEngine {
   private pendingUserMsgUuid: string | null = null;
   /** 待处理用户消息的完整 Message 对象（排队路径未 push 时暂存，consumer 处理时现场追加） */
   private pendingUserMsgData: Message | null = null;
+  /**
+   * 已解析但尚未注入的 Skill 命令（来自排队消息 "/<skill> args"）。
+   * 命令在「出队」时才解析（见 resolvePendingCommand）：解析出 Skill 后先让用户消息
+   * 进入 mutableMessages，再据此注入 Skill tool_use，顺序固定为
+   * [用户消息, assistant(tool_use), tool_result]。
+   */
+  private pendingSkillInjection: SkillDispatchInfo | null = null;
   /** 子代理回复 / 后台 Bash 通知队列（多条，追加）；source 决定 UI 的展示方式 */
   public agentMessageQueue: Array<{ content: string; agentId: string; source: AgentMessageSource }> = [];
   /** 消息消费者是否正在运行 */
@@ -503,7 +511,7 @@ export class QueryEngine {
    *
    * @param notifyQueryBegin 是否调用 ui.onQueryBegin。
    *   enqueueAgentMessage / resumeAfterCompact 传 true；
-   *   submitMessage 的正常路径由 Integration 层管理 UI 状态，传 false。
+   *   submitMessage 由调用方通过 options.manageQueryUI 决定（宿主用户消息入口传 true）。
    */
   private beginConsumer(notifyQueryBegin: boolean): void {
     // spin 模式没有 LLM 消费循环：排队消息由 SpinLoop 读取（子代理 Reply）或直接丢弃，
@@ -846,6 +854,73 @@ export class QueryEngine {
       || this.agentMessageQueue.length > 0;
   }
 
+  /** 待处理用户消息是否为「需要由 consumer 解析」的斜杠命令（/xxx）。 */
+  private isPendingUserCommand(): boolean {
+    return this.pendingUserMessage !== null && this.pendingUserMessage.trim().startsWith('/');
+  }
+
+  /** 丢弃待处理的用户消息（命令已被就地执行时使用：不进入 LLM 上下文）。 */
+  private clearPendingUserMessage(): void {
+    this.pendingUserMessage = null;
+    this.pendingUserMsgUuid = null;
+    this.pendingUserMsgData = null;
+    this.pendingSkillInjection = null;
+  }
+
+  /**
+   * 解析队首的命令消息（"/<skill|command> args"）。
+   *
+   * 命令在「出队」时才解析，而不是消息一发出就生效：这样即使当前正在跑一轮多步
+   * 工具调用，Skill 也不会被中途注入、内置命令也不会被中途执行。
+   *
+   * - 内置命令：就地执行（dispatch 内部完成），并丢弃该消息 → 'handled'
+   * - Skill 命令：记下待注入信息，用户消息照常进入上下文 → 'skill'
+   * - 其它（未匹配的 / 开头文本 / 普通消息）→ 'none'，按普通消息处理
+   */
+  private async resolvePendingCommand(): Promise<'handled' | 'skill' | 'none'> {
+    if (!this.isPendingUserCommand()) return 'none';
+
+    const text = this.pendingUserMessage!;
+    let dispatched: { result: DispatchResult; skillInfo?: SkillDispatchInfo };
+    try {
+      const { dispatch } = await import('./CommandDispatcher.js');
+      dispatched = await dispatch(text, { sessionId: this.sessionID, cwd: this.config.cwd });
+    } catch (err) {
+      logger.warn('QueryEngine', `Failed to dispatch queued command: ${err}`);
+      return 'none';
+    }
+
+    if (dispatched.result === 'handled') {
+      this.clearPendingUserMessage();
+      return 'handled';
+    }
+    if (dispatched.result === 'skill' && dispatched.skillInfo) {
+      this.pendingSkillInjection = dispatched.skillInfo;
+      return 'skill';
+    }
+    return 'none';
+  }
+
+  /**
+   * 注入 Skill tool_use（assistant tool_use + tool_result 携带技能正文）。
+   * 复用 submitToolUse，但沿用当前 consumer 的 AbortController，
+   * 避免覆盖 activeAbortController 导致后续 abort 打不中正在进行的查询。
+   */
+  private async injectSkillToolUse(
+    info: SkillDispatchInfo,
+    abortController?: AbortControllerLike,
+  ): Promise<void> {
+    try {
+      await this.submitToolUse({
+        name: 'Skill',
+        input: { skill: info.skillName, args: info.skillArgs || undefined },
+      }, { abortController });
+    } catch (error) {
+      logger.error('QueryEngine', 'Skill tool call error:', error);
+      // 不中断流程，继续走 LLM query 让 LLM 尝试处理
+    }
+  }
+
   /**
    * 消费一轮排队消息（Reminder / Agent 回复 / 用户消息），追加到 mutableMessages。
    *
@@ -854,13 +929,17 @@ export class QueryEngine {
    * persist（startPersist(persistUnpersistedMessages())）由各调用侧按原条件执行。
    *
    * @param notifyUI 是否向 UI 补发排队消息（messageConsumer 与 flush 均为 true）
+   * @param includeCommandUserMessage 是否允许本轮消费「命令消息」（/xxx）。
+   *   查询中途（flushQueuedMessagesIntoContext）传 false：命令只在轮次边界生效，
+   *   不能在多步工具调用进行到一半时注入 Skill / 执行内置命令。
    * @returns 被处理的消息数量
    */
-  private consumeQueuedOnce(notifyUI: boolean): number {
+  private consumeQueuedOnce(notifyUI: boolean, includeCommandUserMessage = true): number {
     let count = 0;
 
     const hasReminder = this.pendingReminder !== null;
-    const hasUserMessage = this.pendingUserMessage !== null;
+    const hasUserMessage = this.pendingUserMessage !== null
+      && (includeCommandUserMessage || !this.isPendingUserCommand());
     const hasAgentMessages = this.agentMessageQueue.length > 0;
 
     // 消费优先级：Reminder > (Agent + 用户合并) > 纯用户 > 纯 Agent。
@@ -946,7 +1025,9 @@ export class QueryEngine {
     // 压缩会整体替换 mutableMessages，此时把排队消息插进去会被压缩结果覆盖。
     if (isCompacting(this.sessionID)) return 0;
 
-    const flushedCount = this.consumeQueuedOnce(true);
+    // 命令消息（/xxx）不在查询中途消费：留给 messageConsumer 在下一轮开始前解析，
+    // 避免正在进行的多步工具调用被 Skill 注入 / 内置命令打断。
+    const flushedCount = this.consumeQueuedOnce(true, false);
 
     if (flushedCount > 0) {
       this.startPersist(this.persistUnpersistedMessages());
@@ -968,11 +1049,11 @@ export class QueryEngine {
   /**
    * 通知 UI 显示一条“排队后真正进入 LLM 上下文”的用户消息。
    *
-   * 排队路径（webview 在 hasActiveQuery 时发 queueMessage）不再立即回显到
-   * MessagesView，而是先显示在输入框上方的 queue 中；只有 flushQueuedMessagesIntoContext
-   * / messageConsumer 真正把该消息追加到 mutableMessages（下一次 LLM 请求）时，
-   * 才通过这里补发 addMessage，让消息在“发送给 LLM”的时机出现在对话流中。
-   * 普通 sendMessage 路径已经由 Integration 立即通知过 UI，不会设置 _needsUINotification。
+   * 排队路径（引擎忙碌 / 命令消息）不立即回显到 MessagesView，而是先显示在输入框上方的
+   * queue 中；只有 flushQueuedMessagesIntoContext / messageConsumer 真正把该消息追加到
+   * mutableMessages（下一次 LLM 请求）时，才通过这里补发 addMessage，让消息在“发送给 LLM”
+   * 的时机出现在对话流中。
+   * 引擎空闲时的普通消息由宿主入口立即回显，不设置 _needsUINotification。
    */
   private notifyUserMessageToUI(userMsg: Message): void {
     const record = userMsg as any;
@@ -1002,6 +1083,7 @@ export class QueryEngine {
       sessionId: this.sessionID,
       data: {
         role: 'user',
+        messageUuid: record.uuid,
         content: uiText,
         images: uiImages.length > 0 ? uiImages : undefined,
         param,
@@ -1096,8 +1178,8 @@ export class QueryEngine {
    * @param type - 消息类型：'user'（用户消息，替换队列中已有用户消息）| 'agent'（Agent回复，追加到队列）
    * @param agentId - Agent ID
    * @param options.manageQueryUI - 是否由本调用负责 onQueryBegin/onQueryEnd UI 状态。
-   *   正常 sendMessage 路径由 Integration 层管理；排队消息（handleQueueMessage）绕过
-   *   sendMessage 直接入队，需要自行管理查询开始/结束状态（与 enqueueAgentMessage 一致）。
+   *   宿主用户消息入口（handleUserMessage）传 true，查询开始 / 结束状态由消费循环发出
+   *   （与 enqueueAgentMessage 一致）。
    */
   async *submitMessage(
     _prompt: string | unknown[], // ContentBlockParam[]
@@ -1167,7 +1249,10 @@ export class QueryEngine {
    * 注入一个 Agent tool_use 到消息队列中执行（不经过 LLM 生成）
    * 构造一条 assistant 消息，包含 tool_use block，然后执行 runTools
    */
-  async submitToolUse(toolUseInput: { name: string; input: Record<string, unknown> }): Promise<void> {
+  async submitToolUse(
+    toolUseInput: { name: string; input: Record<string, unknown> },
+    options?: { abortController?: AbortControllerLike },
+  ): Promise<void> {
     // 已请求中止时不再启动新的工具调用（例如 SpinLoop 的 Agent 子任务），
     // 避免 abort 与 submitToolUse 之间的竞态留下仍在运行的子代理。
     if (this.isAborted()) {
@@ -1202,8 +1287,10 @@ export class QueryEngine {
     // 添加到 mutableMessages
     this.mutableMessages.push(assistantMsg);
 
-    // 构造 ToolUseContext
-    const abortController = this.createAbortController();
+    // 构造 ToolUseContext。
+    // 调用方（如 consumer 内注入 Skill）可传入正在使用的 AbortController，
+    // 避免新建 controller 覆盖 activeAbortController 后 abort 打不中当前查询。
+    const abortController = options?.abortController ?? this.createAbortController();
     const toolUseContext = {
       abortController,
       cwd: this.config.cwd,
@@ -1298,8 +1385,8 @@ export class QueryEngine {
       this.initialized = true;
     }
 
-    // 注意：用户消息已经在 Integration.sendMessage 中创建并添加到 mutableMessages
-    // 这里不需要再次添加，避免重复
+    // 注意：用户消息由宿主入口在入队时登记，消费循环把它追加到 mutableMessages
+    // （见 consumePendingUserMessage），这里不需要再次添加，避免重复。
 
     // ========== System Prompt 惰性生成并缓存（仅首次构建，后续复用） ==========
     // 混合模式在首次 LLM 回复后由 markFirstAssistantReplyCompleted 清空缓存，
@@ -1320,9 +1407,7 @@ export class QueryEngine {
       // SpinLoop 轮询的 setTimeout 不再触发，Reply 永远读不到）。
       if (this.workMode === 'spin') {
         this.pendingReminder = null;
-        this.pendingUserMessage = null;
-        this.pendingUserMsgData = null;
-        this.pendingUserMsgUuid = null;
+        this.clearPendingUserMessage();
         await this.flush();
         break;
       }
@@ -1336,7 +1421,26 @@ export class QueryEngine {
         continue;
       }
 
+      // 命令消息（/xxx）在轮次边界解析：内置命令就地执行、Skill 记下待注入。
+      // 放在消费之前，且不在 flushQueuedMessagesIntoContext 里做，
+      // 保证命令不会在查询中途生效。
+      const commandResult = await this.resolvePendingCommand();
+      if (commandResult === 'handled') {
+        // 内置命令已执行完毕：该消息不进入 LLM 上下文，本轮不跑 LLM
+        await this.flush();
+        if (!this.hasQueuedMessages()) break;
+        continue;
+      }
+
       this.consumeQueuedOnce(true);
+
+      // Skill 命令：用户消息已进入上下文，紧接着注入 Skill tool_use
+      // （assistant tool_use + tool_result 携带技能正文），供本轮 LLM 读取。
+      if (this.pendingSkillInjection) {
+        const skillInfo = this.pendingSkillInjection;
+        this.pendingSkillInjection = null;
+        await this.injectSkillToolUse(skillInfo, abortController);
+      }
 
       this.startPersist(this.persistUnpersistedMessages());
 
@@ -1462,10 +1566,10 @@ export class QueryEngine {
   /**
    * 确保待处理的用户消息位于 mutableMessages 末尾。
    *
-   * 用户消息由 Integration.sendMessage push 到 mutableMessages 后，
-   * 若当前 consumer 仍在执行查询，其 tool_result / assistant 回复可能被追加到
-   * 用户消息之后，导致用户消息不再位于末尾。在处理用户消息前将其移动到末尾，
-   * 保证 LLM 上下文顺序正确（用户消息应紧跟在已有对话之后）。
+   * 子代理把任务消息预置进 initialMessages 后，若当前 consumer 仍在执行查询，
+   * 其 tool_result / assistant 回复可能被追加到该消息之后，导致用户消息不再位于末尾。
+   * 在处理用户消息前将其移动到末尾，保证 LLM 上下文顺序正确
+   * （用户消息应紧跟在已有对话之后）。
    */
   private ensureUserMessageAtEnd(): void {
     if (!this.pendingUserMsgUuid) return;
@@ -1553,9 +1657,7 @@ export class QueryEngine {
     //     回填到输入框（与用户当前草稿用 \n 连接），由用户决定是否重发。
     //     仅处理排队消息（_needsUINotification），普通消息已进入 mutableMessages 且已回显。
     if (this.pendingUserMessage !== null && (this.pendingUserMsgData as any)?._needsUINotification) {
-      this.pendingUserMessage = null;
-      this.pendingUserMsgData = null;
-      this.pendingUserMsgUuid = null;
+      this.clearPendingUserMessage();
     }
     // 1.6 丢弃尚未消费的 reminder：abort 会同时中止后台任务，之前排队的
     //     「后台任务仍在运行」提醒已经过期，不应在下一轮再发给 LLM。

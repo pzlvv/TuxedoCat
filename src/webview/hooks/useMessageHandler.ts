@@ -732,11 +732,12 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           profileLog(`[Webview] addMessage: role=${msg.role} toolName=${msg.toolName || '-'} sessionMatch=${msg.sessionId === sessionId} origin=${msg.origin || 'user'} isCompactSummary=${!!msg.isCompactSummary} contentStart=${(msg.content || '').substring(0, 50)}`);
           // 排队消息被后端真正消费并显示后，清除该会话的排队状态：
           // 入队消息已进入引擎队列，会在下次 LLM 请求时被带上，
-          // 不再需要等待 queryEnd 重新投递（避免重复发送）。
+          // 不需要等待 queryEnd 重新投递（避免重复发送）。
+          // 按消息 uuid 配对清除（文本相同的两条消息互不影响）。
           // 放在 session 过滤之前，即使消息属于非当前会话也清除对应排队项。
-          if (msg.role === 'user' && msg.sessionId) {
+          if (msg.role === 'user' && msg.sessionId && msg.messageUuid) {
             const queued = props.queuedMessageRef.current.get(msg.sessionId);
-            if (queued !== undefined && queued.content === msg.content) {
+            if (queued !== undefined && queued.uuid === msg.messageUuid) {
               props.queuedMessageRef.current.delete(msg.sessionId);
               if (msg.sessionId === sessionId) {
                 props.setQueuedMessage(null);
@@ -1646,6 +1647,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           if (msg.sessionId) {
             const payload: QueuedMessagePayload = {
               sessionId: msg.sessionId,
+              uuid: (msg as any).uuid,
               content: msg.content,
               images: msg.images,
               filePath: (msg as any).filePath,

@@ -14,22 +14,33 @@ import { readUiLanguageSync } from './core/history/Config.js';
 import { SPIN_DESIGN_PANEL_ID } from './config/project.js';
 
 export class VSCodeSpinDesign implements SpinDesign {
+  /** 设计器当前绑定的工作目录（spin.json / 技能归属它）；未绑定时回退活动目录 */
+  private workspacePath: string | undefined;
+
   constructor(private readonly host: UIHost) {}
 
-  /** 创建或复用 Spin 设计面板（已打开则 reveal 复用） */
-  async open(): Promise<void> {
+  /** 创建或复用 Spin 设计面板（已打开则 reveal 复用；目录不同则切到新目录的数据） */
+  async open(workspacePath?: string): Promise<void> {
     const panelId = SPIN_DESIGN_PANEL_ID;
+    const target = workspacePath || this.host.getWorkspacePath();
     const existingPanel = this.findSpinDesignPanel();
 
     let panel: vscode.WebviewPanel;
     if (existingPanel) {
       panel = existingPanel;
+      // 目录变了（从别的标签页发起 /spin）：切到新目录的 spin.json + 技能，
+      // 否则面板里显示的还是上一个目录的内容，保存也会写到上一个目录
+      if (target && target !== this.workspacePath) {
+        this.workspacePath = target;
+        await this.sendSpinDesignDataToPanel(panel);
+      }
       panel.reveal();
       return;
     }
+    this.workspacePath = target;
 
     // 读取已存在的 spin.json（从 ~/<CONFIG_DIR_NAME>/conversations/<encoded-workspace>/）
-    const { existingData, spinJsonExists, spinJsonPath, workspacePath, hasWorkspace } =
+    const { existingData, spinJsonExists, spinJsonPath, workspacePath: resolvedWorkspacePath, hasWorkspace } =
       await this.readSpinDesignData();
 
     // 文件存在但连续重试仍无法解析时，不能打开空编辑器，
@@ -54,7 +65,7 @@ export class VSCodeSpinDesign implements SpinDesign {
     const { getAllSkills } = await import('./core/skills/loadSkillsDir.js');
     const isDark = this.host.isDarkTheme();
     // 无工作区时不做技能扫描（workspacePath 为空，扫相对路径会落到宿主进程目录）
-    const availableSkills = (hasWorkspace ? await getAllSkills(workspacePath) : [])
+    const availableSkills = (hasWorkspace ? await getAllSkills(resolvedWorkspacePath) : [])
       .filter(s => !s.isHidden && s.userInvocable)
       .map(s => ({ name: s.name, description: s.description }));
     panel.webview.html = getSpinDesignHtml(
@@ -69,7 +80,7 @@ export class VSCodeSpinDesign implements SpinDesign {
     // 监听来自 spin design webview 的消息
     panel.webview.onDidReceiveMessage(async (msg: any) => {
       if (msg.type === 'saveSpinDesign' && msg.data) {
-        await this.handleSave(msg.data, workspacePath, hasWorkspace, panel);
+        await this.handleSave(msg.data, panel);
       } else if (msg.type === 'exportSpinDesign' && msg.data) {
         await this.handleExport(msg.data, panel);
       } else if (msg.type === 'refreshSpinDesign') {
@@ -89,8 +100,11 @@ export class VSCodeSpinDesign implements SpinDesign {
     await this.sendSpinDesignDataToPanel(panel);
   }
 
-  private async handleSave(data: any, workspacePath: string, hasWorkspace: boolean, panel: vscode.WebviewPanel): Promise<void> {
-    if (!hasWorkspace) {
+  private async handleSave(data: any, panel: vscode.WebviewPanel): Promise<void> {
+    // 按设计器**绑定**的目录保存，不回查活动目录：否则从别的标签页打开过设计器后，
+    // 保存会把当前目录的内容写进另一个目录的 spin.json
+    const workspacePath = this.workspacePath || this.host.getWorkspacePath();
+    if (!workspacePath) {
       panel?.webview.postMessage({ type: 'spinSaveResult', success: false, error: tt('没有打开的工作目录', 'No workspace folder is open') });
       return;
     }
@@ -137,7 +151,8 @@ export class VSCodeSpinDesign implements SpinDesign {
     workspacePath: string;
     hasWorkspace: boolean;
   }> {
-    const workspacePath = this.host.getWorkspacePath();
+    // 归属目录 = 设计器绑定的目录（按发起会话解析），未绑定时回退活动目录
+    const workspacePath = this.workspacePath || this.host.getWorkspacePath() || '';
     const hasWorkspace = !!workspacePath;
 
     if (!hasWorkspace || !workspacePath) {

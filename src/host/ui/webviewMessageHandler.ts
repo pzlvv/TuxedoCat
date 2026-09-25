@@ -20,9 +20,11 @@ import { buildUserContent, extractUserContent } from '../../core/utils/contentBl
 import { normalizeModelTokenLimits, getContextWindow, type ModelTokenLimits, type ApiType } from '../../core/utils/modelConfig.js';
 import { readModelContextSync } from '../../core/history/Config.js';
 import { modelRefOf, sameModelRef, type ModelRef } from '../../core/llm/modelRef.js';
+import type { LLMConfig } from '../../core/llm/config.js';
 import { getConversationModelRef } from '../../core/history/Conversation.js';
 import { extractLastJsonObject } from '../../core/utils/lastJson.js';
 import { userChoiceQueue } from '../../core/UserChoiceQueue.js';
+import { getSessionRuntimeStates } from '../../core/sessionRuntime.js';
 import { isCompacting } from '../../core/compact/state.js';
 import type { WebviewMessage } from '../../core/webviewTypes.js';
 import type { UiEvent } from '../../core/AssistantEventBus.js';
@@ -176,6 +178,18 @@ export class WebviewMessageHandler {
   }
 
   /**
+   * 宿主切换前台会话时同步「当前活跃会话」。
+   *
+   * 多视图宿主（Electron）里切到**已经打开**的视图不会再走 `loadConversation` /
+   * `startNewConversation`，必须由宿主在活动视图变化时显式同步，否则
+   * `trackedActiveSessionId` 会停在旧视图，导致按会话解析的数据（project skills /
+   * MCP 启用列表）取到别的标签页的工作目录。
+   */
+  setActiveSessionId(sessionId: string | undefined): void {
+    this.trackedActiveSessionId = sessionId || undefined;
+  }
+
+  /**
    * 会话被关闭 / 删除：清除 UI 侧维护的 tracked active session
    * （该会话已卸内存，不再被视为前台会话）。
    */
@@ -212,10 +226,13 @@ export class WebviewMessageHandler {
       ['detectProviderModelApiTypes', (msg) => this.handleDetectProviderModelApiTypes(msg)],
       ['requestLLMConfig', (msg) => this.handleRequestLLMConfig(msg)],
       ['requestSettingsDefaults', () => this.handleRequestSettingsDefaults()],
-      ['requestSkills', () => this.handleRequestSkills()],
+      ['requestSkills', (_msg, ctx) => this.handleRequestSkills(ctx)],
       ['requestConversationSpaces', () => this.handleRequestConversationSpaces()],
       ['requestMcpServers', (msg) => this.handleRequestMcpServers(msg)],
       ['getConversations', () => this.handleGetConversations()],
+      // 会话运行时状态全量快照：状态流只在「变化」时推，视图创建 / 激活不会补发，
+      // 新视图会错过广播；webview 启动 / 切到单视图时主动拉一次（按来源回包）。
+      ['requestSessionRuntimeStates', (_msg, ctx) => this.pushSessionRuntimeStates(ctx.sender)],
 
       // ===== 环境查询（按来源视图直发回包；此前由两宿主在消息入口各自拦截实现）=====
       ['requestTheme', (msg, ctx) => {
@@ -232,8 +249,7 @@ export class WebviewMessageHandler {
 
       // ===== 消息 / 压缩 / 中止（UiEvent 翻译）=====
       ['requestCompress', (msg) => this.emitUiEvent({ type: 'compactRequested', sessionId: msg.sessionId })],
-      ['queueMessage', (msg) => this.handleQueueMessage(msg)],
-      ['sendMessage', (msg) => this.handleSendMessage(msg)],
+      ['sendMessage', (msg) => this.handleUserMessage(msg)],
       ['abort', (msg) => this.handleAbort(msg)],
 
       // ===== 会话生命周期（UiEvent 翻译）=====
@@ -363,12 +379,14 @@ export class WebviewMessageHandler {
     }
   }
 
-  private async handleQueueMessage(message: any): Promise<void> {
-    // 统一消息入口：sendMessage 与 queueMessage 都汇聚到这里。
-    // - engine 不存在时走 Integration.sendMessage 完整路径（创建引擎、命令分发、Skill 注入等）。
-    // - engine 已存在且为普通消息时直接入队到 QueryEngine，使消息在"下一次 LLM 请求"时立刻
-    //   被带上，即使当前 query 正处于多轮工具调用循环中也不会中断。
-    // - 命令类消息仍交给 sendMessage 处理，保留内置命令 / Skill 命令的原有行为。
+  /**
+   * 用户消息的唯一处理入口：取 / 建会话引擎，登记会话覆盖，入队到引擎待处理队列。
+   *
+   * 命令解析、Skill 注入、内置命令执行都发生在引擎的消费循环（轮次边界，见
+   * QueryEngine.resolvePendingCommand）。入口不做这些事，因此查询进行中不会被立刻
+   * 注入 Skill / 执行内置命令。
+   */
+  private async handleUserMessage(message: any): Promise<void> {
     const { sessionId, content } = message;
     const images: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }> | undefined = Array.isArray(message.images)
       ? message.images
@@ -376,14 +394,19 @@ export class WebviewMessageHandler {
     if (!sessionId || typeof content !== 'string' || (!content.trim() && (!images || images.length === 0))) {
       return;
     }
-    logger.info('WebviewMessageHandler', `User message received for session ${sessionId} (unified queue path)`);
+    logger.info('WebviewMessageHandler', `User message received for session ${sessionId} (queue path)`);
 
     // 用户主动发消息：刷新该会话的空闲关闭计时（空闲回收只在 VS Code 生效）
     this.uiPort?.noteSessionActivity(sessionId);
 
     try {
       const { getSessionEngine } = await import('../../core/QueryEngine.js');
-      const engine = getSessionEngine(sessionId);
+      let engine = getSessionEngine(sessionId);
+      if (!engine) {
+        // 会话尚未预创建引擎：按新会话建立（幂等），使用户消息只有一条入队路径。
+        const { createEngine } = await import('../../core/Integration.js');
+        engine = createEngine(sessionId, '');
+      }
 
       if (message.agentMode) {
         // agentMode 归 core（取代原 UI 层 Map）；随消息路径同步进 core 存储
@@ -391,57 +414,36 @@ export class WebviewMessageHandler {
         setSessionAgentMode(sessionId, message.agentMode);
       }
 
-      // engine 不存在：走正常 sendMessage 路径（会创建 engine、处理命令等）
-      if (!engine) {
-        logger.warn('WebviewMessageHandler', `No engine for message session ${sessionId}, falling back to sendMessage`);
-        const { sendMessage } = await import('../../core/Integration.js');
-        const { isPromptPresetId } = await import('../../core/prompt/PromptPreset.js');
-        for await (const _ of sendMessage(content, sessionId, {
-          filePath: message.filePath,
-          selectedLines: message.selectedLines || message.fileSelectedLines,
-          fileHidden: !!message.fileHidden,
-          thinkingMode: message.thinkingMode,
-          webSearch: message.webSearch,
-          modelRef: this.messageModelRef(message),
-          promptPreset: isPromptPresetId(message.promptMode) ? message.promptMode : undefined,
-          images,
-        })) {
-          void _;
-        }
-        return;
-      }
-
-      // 命令类消息继续交给 sendMessage，由 CommandDispatcher 处理内置命令 / Skill 注入
-      if (content.trim().startsWith('/')) {
-        const { sendMessage } = await import('../../core/Integration.js');
-        const { isPromptPresetId } = await import('../../core/prompt/PromptPreset.js');
-        for await (const _ of sendMessage(content, sessionId, {
-          filePath: message.filePath,
-          selectedLines: message.selectedLines || message.fileSelectedLines,
-          fileHidden: !!message.fileHidden,
-          thinkingMode: message.thinkingMode || engine.thinkingModeOverride,
-          webSearch: message.webSearch,
-          modelRef: this.messageModelRef(message),
-          promptPreset: isPromptPresetId(message.promptMode) ? message.promptMode : undefined,
-          images,
-        })) {
-          void _;
-        }
-        return;
-      }
-
-      // 普通消息：入队到 QueryEngine
+      // 入队到 QueryEngine：消息在"下一次 LLM 请求"时被带上，即使当前 query 正处于
+      // 多轮工具调用循环中也不会中断；命令消息在轮次边界解析。
       // 这里根据 webview 传入的当前 thinking 模式显式设置，
       // 未传入时回退到引擎当前的 thinking effort（当前对话正在使用的值）。
       const thinkingEffort = message.thinkingMode || engine.thinkingModeOverride;
       engine.thinkingModeOverride = thinkingEffort;
 
-      // 应用会话关联的 Web Search 开关（与 sendMessage 路径一致）
+      // 应用消息携带的模型身份：避免「切换模型后立刻发消息」时因 setModel 尚未处理
+      // 而用错 provider。身份与当前一致时跳过，省掉一次配置读取。
+      const sendRef = this.messageModelRef(message);
+      if (sendRef && (engine.modelRefOverride?.provider !== sendRef.provider || engine.modelRefOverride?.model !== sendRef.model)) {
+        try {
+          engine.modelRefOverride = sendRef;
+          engine.updateModelConfig({ model: sendRef.model } as LLMConfig);
+          const { getConfigForProvider } = await import('../../core/llm/config.js');
+          const config = await getConfigForProvider(sendRef);
+          engine.updateModelConfig(config);
+          const { updateConversationContext } = await import('../../core/history/index.js');
+          await updateConversationContext(sessionId, { model: sendRef.model, provider: sendRef.provider });
+        } catch (e) {
+          logger.warn('WebviewMessageHandler', `Failed to apply model "${sendRef.model}" for session ${sessionId}: ${e}`);
+        }
+      }
+
+      // 应用会话关联的 Web Search 开关
       if (typeof message.webSearch === 'boolean') {
         engine.updateWebSearch(message.webSearch);
       }
 
-      // 应用会话关联的提示词预设（仅内存；与 sendMessage 路径一致）
+      // 应用会话关联的提示词预设（仅内存）
       const { isPromptPresetId } = await import('../../core/prompt/PromptPreset.js');
       if (isPromptPresetId(message.promptMode)) {
         engine.setPromptPreset(message.promptMode);
@@ -453,11 +455,16 @@ export class WebviewMessageHandler {
       });
 
       const selectedLines = message.selectedLines || message.fileSelectedLines;
-      // 区分“排队消息”与“空闲会话的普通发送”：
-      // - queueMessage / 引擎仍在消费：先只显示在输入框上方的 queue 中，
+      // 区分“引擎忙碌 / 命令消息”与“引擎空闲的普通消息”：
+      // - 引擎仍在消费（或压缩中）：先只显示在输入框上方的 queue 中，
       //   等下一次 LLM 请求真正消费该消息时再由 QueryEngine 补发到 MessagesView。
-      // - sendMessage 且引擎空闲：保持原有行为，立即回显到 MessagesView。
-      const isQueueMessage = message.type === 'queueMessage' || engine.isConsumerRunning || isCompacting(sessionId);
+      // - 引擎空闲的普通消息：立即回显到 MessagesView。
+      // - 命令消息（/xxx）：延迟回显，由 QueryEngine 出队解析，只有真正进入
+      //   LLM 上下文（Skill 命令）时才补发用户气泡；内置命令（如 /spin）执行后不进入
+      //   上下文，因此不该留下一个不会被持久化的用户气泡。
+      const isCommandMessage = content.trim().startsWith('/');
+      const isQueueMessage = engine.isConsumerRunning || isCompacting(sessionId);
+      const deferUserBubble = isQueueMessage || isCommandMessage;
 
       // 构造用户消息对象（暂存，不立即 push 到 mutableMessages）。
       // 由 flushQueuedMessagesIntoContext 在处理 pendingUserMessage 时用该对象现场追加，
@@ -465,8 +472,8 @@ export class WebviewMessageHandler {
       // 同时保留 filePath / fileSelectedLines 等元数据。
       const userContent = buildUserContent(content, images);
       const { text: uiText, images: uiImages } = extractUserContent(userContent);
-      // 与 Integration.sendMessage 的落盘格式保持一致：文件信息同时写入 _meta，
-      // 避免“引擎已存在时的后续消息”只带顶层字段，导致历史加载/压缩展开时无法还原文件标签。
+      // 落盘格式：文件信息同时写入顶层字段与 _meta，
+      // 避免只带顶层字段导致历史加载/压缩展开时无法还原文件标签。
       const persistMeta: Record<string, unknown> = {};
       if (message.filePath) {
         persistMeta.filePath = message.filePath;
@@ -502,21 +509,27 @@ export class WebviewMessageHandler {
         userMsg.imageSizes = imageSizes;
       }
 
-      if (isQueueMessage) {
-        // 排队消息不立即回显到 MessagesView，只在输入框上方显示队列状态。
-        // QueryEngine 真正把它追加进 LLM 上下文时，会通过 _needsUINotification 补发 addMessage。
+      if (deferUserBubble) {
+        // 延迟回显：QueryEngine 真正把它追加进 LLM 上下文时，
+        // 通过 _needsUINotification 补发 addMessage（携带 messageUuid）。
+        // （命令若被就地执行、未进入上下文，则不会补发用户气泡，由宿主在
+        //   commandDispatched 时清除排队项。）
         userMsg._needsUINotification = true;
-        this.postToWebview(sessionId, {
-          type: 'queuedMessage',
-          sessionId,
-          content,
-          images: uiImages,
-          filePath: message.filePath,
-          selectedLines: selectedLines || undefined,
-          fileHidden: !!message.fileHidden,
-        } as Record<string, unknown>);
+        if (isQueueMessage) {
+          // 仍在排队：先在输入框上方显示队列状态（带 uuid，供按消息精确清除）
+          this.postToWebview(sessionId, {
+            type: 'queuedMessage',
+            sessionId,
+            uuid: userMsg.uuid,
+            content,
+            images: uiImages,
+            filePath: message.filePath,
+            selectedLines: selectedLines || undefined,
+            fileHidden: !!message.fileHidden,
+          } as Record<string, unknown>);
+        }
       } else {
-        // 显示用户消息到 UI（文件信息逻辑与 sendMessage 一致）
+        // 引擎空闲的普通消息：立即显示到 UI
         const uiMeta: Record<string, unknown> = {};
         if (message.filePath && !message.fileHidden) {
           uiMeta.filePath = message.filePath;
@@ -525,6 +538,7 @@ export class WebviewMessageHandler {
         this.postToWebview(sessionId, {
           type: 'addMessage',
           role: 'user',
+          messageUuid: userMsg.uuid,
           content: uiText,
           images: uiImages.length > 0 ? uiImages : undefined,
           filePath: message.fileHidden ? undefined : message.filePath,
@@ -536,24 +550,23 @@ export class WebviewMessageHandler {
       // 提交到引擎队列：设置 pendingUserMessage，使消息在下次 LLM 请求时被带上。
       // 若 consumer 正在运行，submitMessage 会等待其退出（消息已被现有 consumer
       // 在 while 循环中消费）；若已退出，则启动新的 consumer 处理该消息。
-      // manageQueryUI=true：排队消息绕过 Integration.sendMessage，若该调用启动了
-      // 自己的 consumer，需要自行管理 onQueryBegin/onQueryEnd（与 enqueueAgentMessage 一致）。
+      // manageQueryUI=true：查询开始 / 结束状态由消费循环发出（与 enqueueAgentMessage 一致）。
       void (async () => {
         try {
           for await (const _ of engine.submitMessage(content, 'user', undefined, {
             manageQueryUI: true,
-            // 排队路径：消息未 push 到 mutableMessages，consumer 处理时用此对象现场追加
+            // 消息未 push 到 mutableMessages，consumer 处理时用此对象现场追加
             userMsgData: userMsg,
           })) {
-            // 排队消息的回复由现有/新 consumer 通过正常路径推送，无需在此转发
+            // 回复由现有/新 consumer 通过正常路径推送，无需在此转发
             void _;
           }
         } catch (e) {
-          logger.error('WebviewMessageHandler', `Error processing queued message: ${e}`);
+          logger.error('WebviewMessageHandler', `Error processing user message: ${e}`);
         }
       })();
     } catch (err) {
-      this.log(`[WebviewMessageHandler] Failed to enqueue queued message: ${err}`);
+      this.log(`[WebviewMessageHandler] Failed to enqueue user message: ${err}`);
       // 入队失败时通知 webview 显示排队状态，由 webview 在 queryEnd 后重新投递
       this.host.sendToWebview({
         type: 'queuedMessage',
@@ -562,11 +575,6 @@ export class WebviewMessageHandler {
         images,
       } as WebviewMessage);
     }
-  }
-
-  private async handleSendMessage(message: any): Promise<void> {
-    // 与 queueMessage 共用同一套入队/处理逻辑，避免两套行为分叉
-    await this.handleQueueMessage(message);
   }
 
   /**
@@ -994,6 +1002,33 @@ export class WebviewMessageHandler {
     }
   }
 
+  /**
+   * 推送会话运行时状态（idle / waiting）的全量快照，回包 `sessionRuntimeStates`。
+   *
+   * 状态流（core `sessionRuntimeChanged` → `dispatchStates`）只在**变化**时推一次，
+   * 视图创建 / 激活时不会补发。webview 启动、或切到单视图（浮窗）时主动拉一次，
+   * 避免新视图的对话树流水灯 / abort 按钮 / 历史提醒因为错过广播而"失明"到下一次状态变化。
+   *
+   * 投递：`sender` 指定句柄时直发该视图（Electron 多视图下请求方不一定是活动视图）；
+   * `sender` 为 null 时走默认路由（单视图宿主即唯一 webview）。
+   */
+  private pushSessionRuntimeStates(sender: WebviewRequestContext['sender']): void {
+    try {
+      const message: WebviewMessage = {
+        type: 'sessionRuntimeStates',
+        states: getSessionRuntimeStates(),
+      };
+      if (sender) {
+        this.host.sendToWebviewView(sender, message);
+      } else {
+        this.host.sendToWebview(message);
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? (err.stack || err.message) : String(err);
+      this.log(`[WebviewMessageHandler] pushSessionRuntimeStates failed: ${detail}`);
+    }
+  }
+
   private async handleRequestModels(_message: any): Promise<void> {
     this.log(`[WebviewMessageHandler] Requesting model list from all providers`);
     try {
@@ -1347,13 +1382,15 @@ export class WebviewMessageHandler {
     return undefined;
   }
 
-  private async handleRequestSkills(): Promise<void> {
+  private async handleRequestSkills(ctx: WebviewRequestContext): Promise<void> {
     this.log(`[WebviewMessageHandler] Skills requested`);
     const { getBundledSkills } = await import('../../core/skills/bundledSkills.js');
     const { getSkillDirCommands } = await import('../../core/skills/loadSkillsDir.js');
     const { getBuiltinCommands } = await import('../../core/skills/builtinCommands.js');
     const bundled = getBundledSkills();
     // 项目技能必须基于会话自己的工作目录扫描，不能用 process.cwd()。
+    // 会话归属取 `trackedActiveSessionId`——多视图宿主下由宿主在活动视图变化时同步
+    // （见 setActiveSessionId），否则会停在旧视图、扫到别的标签页的技能。
     // 没有工作目录时（空态视图也会请求技能）跳过项目技能，而不是让 getProjectRoot 抛错
     const { getProjectRoot, hasProjectRoot } = await import('../../core/history/Config.js');
     const fileSkills = hasProjectRoot(this.trackedActiveSessionId)
@@ -1361,7 +1398,7 @@ export class WebviewMessageHandler {
       : [];
     const builtinCmds = getBuiltinCommands();
     const allSkills = [...bundled, ...fileSkills];
-    this.host.sendToWebview({
+    const message: WebviewMessage = {
       type: 'setSkills',
       skills: [
         ...builtinCmds.map(c => ({
@@ -1375,7 +1412,13 @@ export class WebviewMessageHandler {
           isBuiltin: false as const,
         })),
       ],
-    });
+    };
+    // 按来源视图回包（多视图宿主下请求方不一定是活动视图）
+    if (ctx.sender) {
+      this.host.sendToWebviewView(ctx.sender, message);
+    } else {
+      this.host.sendToWebview(message);
+    }
   }
 
   private async handleOpenMermaidPreview(message: any): Promise<void> {

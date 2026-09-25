@@ -20,26 +20,34 @@ const APP_ROOT = path.resolve(__dirname, '..');
 export class ElectronSpinDesign implements SpinDesign {
   /** 当前打开的 Spin 设计窗口（用于 SpinLoop 完成后刷新其数据） */
   private spinDesignWindow: BrowserWindowCtor | undefined;
+  /** 设计器当前绑定的工作目录（spin.json / 技能归属它）；未绑定时回退活动目录 */
+  private workspacePath: string | undefined;
 
   constructor(private readonly host: UIHost) {}
 
   /** 打开 Spin 设计窗口（注入 acquireVsCodeApi shim 使 spinDesignHtml 可复用） */
-  async open(): Promise<void> {
+  async open(workspacePath?: string): Promise<void> {
+    const target = workspacePath || this.host.getWorkspacePath();
     // 已打开则聚焦复用，不重复创建（与 VSCodeSpinDesign / SpinDesign.open() 契约一致）
     const opened = this.spinDesignWindow;
     if (opened && !opened.isDestroyed()) {
+      // 目录变了（从别的标签页发起 /spin）：切到新目录的 spin.json + 技能，
+      // 否则窗口里显示的还是上一个目录的内容，保存也会写到上一个目录
+      if (target && target !== this.workspacePath) {
+        this.workspacePath = target;
+        await this.refresh();
+      }
       if (opened.isMinimized()) {
         opened.restore();
       }
       opened.focus();
       return;
     }
+    this.workspacePath = target;
 
-    const workspacePath = this.host.getWorkspacePath();
-
-    // 读取已存在的 spin.json
+    // 读取已存在的 spin.json（按设计器绑定的目录）
     let existingData: any = null;
-    const projectDir = this.getProjectConversationDir(workspacePath);
+    const projectDir = this.getProjectConversationDir(this.workspacePath);
     if (projectDir) {
       const spinJsonPath = path.join(projectDir, 'spin.json');
       try {
@@ -55,8 +63,8 @@ export class ElectronSpinDesign implements SpinDesign {
     const { getAllSkills } = await import('../src/core/skills/loadSkillsDir.js');
     const { readUiLanguageSync } = await import('../src/core/history/Config.js');
     // 与 VSCodeSpinDesign 一致：主题 / 语言走 UIHost（不直连 electron API）；
-    // 无工作区时不做技能扫描（workspacePath 为空，扫相对路径会落到宿主进程目录）
-    const availableSkills = (workspacePath ? await getAllSkills(workspacePath) : [])
+    // 无工作区时不做技能扫描（路径为空，扫相对路径会落到宿主进程目录）
+    const availableSkills = (this.workspacePath ? await getAllSkills(this.workspacePath) : [])
       .filter(s => !s.isHidden && s.userInvocable)
       .map(s => ({ name: s.name, description: s.description }));
     const html = getSpinDesignHtml(
@@ -93,13 +101,11 @@ export class ElectronSpinDesign implements SpinDesign {
 
     // 保存 spin.json
     const saveSpin = (data: any): void => {
-      if (!projectDir) {
-        win.webContents.send('spin-design-message', { type: 'spinSaveResult', success: false, error: tt('没有打开的工作目录', 'No workspace folder is open') });
-        return;
-      }
-      // 保存时按「当前」工作区解析目标目录（打开设计器之后用户可能切换过工作区）
-      const currentWorkspacePath = this.host.getWorkspacePath();
-      if (!currentWorkspacePath) {
+      // 按设计器**绑定**的目录保存，不回查活动目录：否则从别的标签页打开过设计器后，
+      // 保存会把当前目录的内容写进另一个目录的 spin.json
+      const workspacePath = this.workspacePath || this.host.getWorkspacePath();
+      const projectDir = this.getProjectConversationDir(workspacePath);
+      if (!workspacePath || !projectDir) {
         win.webContents.send('spin-design-message', { type: 'spinSaveResult', success: false, error: tt('没有打开的工作目录', 'No workspace folder is open') });
         return;
       }
@@ -110,7 +116,7 @@ export class ElectronSpinDesign implements SpinDesign {
       // 串行写入 spin.json，避免与 SpinLoop 的 updateNodeMeta 并发
       // "读-改-写"导致清除结果被回写（保存不生效）
       import('../src/core/spin/Engine.js').then(({ writeSpinJsonQueued }) =>
-        writeSpinJsonQueued(currentWorkspacePath, fullData)
+        writeSpinJsonQueued(workspacePath, fullData)
       ).then(() => {
         win.webContents.send('spin-design-message', { type: 'spinSaveResult', success: true });
       }).catch((err) => {
@@ -155,7 +161,8 @@ export class ElectronSpinDesign implements SpinDesign {
     if (!win || win.isDestroyed()) {
       return;
     }
-    const workspacePath = this.host.getWorkspacePath();
+    // 刷新设计器**绑定**的目录，不回查活动目录（SpinLoop 完成的刷新同理）
+    const workspacePath = this.workspacePath || this.host.getWorkspacePath();
     const projectDir = this.getProjectConversationDir(workspacePath);
     if (!projectDir || !workspacePath) {
       return;

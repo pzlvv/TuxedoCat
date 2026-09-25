@@ -192,9 +192,31 @@ export class WebViewUI implements WebViewUiPort {
     return this.webviewMessageHandler.getActiveSessionId();
   }
 
-  /** 打开 Spin 设计器（转调 SpinDesign.open） */
-  openSpinDesign(): Promise<void> {
-    return this.spinDesign.open();
+  /**
+   * 宿主切换前台会话时同步「当前活跃 session」。
+   *
+   * 多视图宿主（Electron）切到已打开的视图不会再触发 loadConversation /
+   * startNewConversation，必须由宿主在活动视图变化时显式调用，否则 handler 的
+   * tracked active session 会停在旧视图，按会话解析的数据（project skills / MCP
+   * 启用列表）会取到别的标签页的工作目录。
+   */
+  setActiveSessionId(sessionId: string | undefined): void {
+    this.webviewMessageHandler.setActiveSessionId(sessionId);
+  }
+
+  /** 打开 Spin 设计器（按当前活跃会话解析 spin.json 归属目录，转调 SpinDesign.open） */
+  async openSpinDesign(): Promise<void> {
+    const ws = await this.workspaceForSession(this.getActiveSessionId());
+    return this.spinDesign.open(ws);
+  }
+
+  /**
+   * 按会话解析其工作目录（Spin 设计器归属：spin.json / 技能都跟会话走）。
+   * 未登记时回退活动工作目录；无工作目录时返回 undefined。
+   */
+  private async workspaceForSession(sessionId: string | undefined): Promise<string | undefined> {
+    const { getProjectRoot, hasProjectRoot } = await import('../core/history/Config.js');
+    return hasProjectRoot(sessionId) ? getProjectRoot(sessionId) : undefined;
   }
 
   /** 重新读取并分发对话列表（转调 ConversationManager.refresh） */
@@ -458,21 +480,25 @@ export class WebViewUI implements WebViewUiPort {
    * 唯一调用方（CommandDispatcher）丢弃返回值。
    */
   async onCommandSend(commandName: string, args: string, sessionId: string): Promise<void> {
+    // 内置命令就地执行、不进入 LLM 上下文，因此不会补发用户气泡。
+    // 这里显式清除该会话的排队项，避免 webview 在 queryEnd 时把它当成
+    // 「未被消费」而重复投递（见 DEVELOPMENT.md 第 7.4 节的 onQueuedMessage）。
+    this.onQueuedMessage(sessionId, null);
     if (commandName === 'spin') {
       const trimmed = args.trim();
+      // spin.json 属于对话自己的工作目录：按会话解析，未登记时回退活动工作目录。
+      // 显式传给设计器，避免设计器回查「活动工作目录」（多工作目录下会串到别的标签页）。
+      const ws = await this.workspaceForSession(sessionId);
       if (trimmed === 'design') {
-        void this.spinDesign.open().catch((err: unknown) => {
+        void this.spinDesign.open(ws).catch((err: unknown) => {
           this.log(`Error opening spin design: ${err}`);
         });
         return;
       }
       // /spin: 无 spin.json 时打开设计器（shouldOpenSpinDesign 是 core 的只读函数）
       const { shouldOpenSpinDesign } = await import('../core/history/spinCommand.js');
-      // spin.json 属于对话自己的工作目录：按会话解析，未登记时回退活动工作目录
-      const { getProjectRoot, hasProjectRoot } = await import('../core/history/Config.js');
-      const ws = hasProjectRoot(sessionId) ? getProjectRoot(sessionId) : undefined;
       if (ws && shouldOpenSpinDesign(ws)) {
-        void this.spinDesign.open().catch((err: unknown) => {
+        void this.spinDesign.open(ws).catch((err: unknown) => {
           this.log(`Error opening spin design: ${err}`);
         });
       }

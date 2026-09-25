@@ -20,7 +20,6 @@ import { requireEventBus } from './AssistantEventBus.js';
 
 async function registerIntegrationUiEvents(bus: AssistantEventBus): Promise<void> {
   const {
-    sendMessage,
     requestCompact,
     setSessionModel,
     setSessionThinkingMode,
@@ -34,38 +33,6 @@ async function registerIntegrationUiEvents(bus: AssistantEventBus): Promise<void
   const { createConversationMetadataSync, updateConversationMetadataTitle } = await import('./history/Conversation.js');
   const { loadConversation } = await import('./history/index.js');
   const { hasProjectRoot } = await import('./history/Config.js');
-
-  // ===== 消息 =====
-  bus.onUiEvent('messageQueued', (e) => {
-    // 「新消息」与「排队消息」在 core 侧是同一条路径（Integration.sendMessage）。
-    // fileInfo 携带的 thinking/webSearch/promptPreset 沿原 sendMessage 的可选项传入。
-    void (async () => {
-      try {
-        const images = e.images ?? undefined;
-        let promptPreset: import('./prompt/PromptPreset.js').PromptPresetId | undefined;
-        if (e.fileInfo?.promptMode) {
-          const { isPromptPresetId } = await import('./prompt/PromptPreset.js');
-          if (isPromptPresetId(e.fileInfo.promptMode)) {
-            promptPreset = e.fileInfo.promptMode;
-          }
-        }
-        for await (const _ of sendMessage(e.content, e.sessionId, {
-          filePath: e.fileInfo?.filePath ?? undefined,
-          selectedLines: e.fileInfo?.selectedLines ?? undefined,
-          fileHidden: e.fileInfo?.fileHidden,
-          thinkingMode: e.fileInfo?.thinkingMode,
-          webSearch: e.fileInfo?.webSearch,
-          modelRef: e.fileInfo?.modelRef,
-          promptPreset,
-          images,
-        })) {
-          void _;
-        }
-      } catch (err) {
-        logger.error('Integration', `messageQueued handling failed: ${err}`);
-      }
-    })();
-  });
 
   bus.onUiEvent('abortRequested', ({ sessionId }) => {
     abortCurrentQuery(sessionId);

@@ -677,6 +677,10 @@ function createMainWindow(): void {
     viewMode: windowMode === 'floating' ? 'single' : 'multi',
     onActiveSessionChanged: (sessionId) => {
       sidebarView?.webContents.send('sidebar:active-session-changed', sessionId);
+      // 同步 UI 侧的「当前活跃会话」：切到已打开的视图不会再走 loadConversation /
+      // startNewConversation，不同步的话按会话解析的数据（project skills / MCP 启用
+      // 列表）会停在旧视图，取到别的标签页的工作目录。
+      webviewUi?.setActiveSessionId(sessionId ?? undefined);
     },
     onLoadedChanged: (sessionIds) => {
       // 视图层「已打开会话」集合单独推送（不并入对话列表流），见 DEVELOPMENT.md 第 5.4 节

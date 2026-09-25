@@ -191,27 +191,9 @@ export type CoreRequestResult = CoreRequestResultMap[keyof CoreRequestResultMap]
 export type UiEvent =
   // ===== 消息 =====
   /**
-   * 用户提交了一条消息。
-   * 「新消息」与「排队消息」在 core 侧是同一条路径（handleSendMessage
-   * 本来就委托给 handleQueueMessage），不需要两个事件。
+   * 用户消息不经 UiEvent 进入 core：宿主用户消息入口（WebviewMessageHandler.handleUserMessage）
+   * 直接把消息入队到会话引擎（QueryEngine.submitMessage）。
    */
-  | {
-      type: 'messageQueued';
-      sessionId: string;
-      content: string;
-      images: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }> | null;
-      fileInfo: {
-        filePath?: string;
-        selectedLines?: { start: number; end: number } | null;
-        fileHidden?: boolean;
-        thinkingMode?: 'off' | 'low' | 'high' | 'max';
-        webSearch?: boolean;
-        promptMode?: string;
-        agentMode?: string;
-        /** 本次发送携带的模型身份（provider + model） */
-        modelRef?: ModelRef;
-      } | null;
-    }
   | { type: 'abortRequested'; sessionId: string }
 
   // ===== 压缩 =====

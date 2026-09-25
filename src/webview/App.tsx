@@ -45,13 +45,20 @@ const App = () => {
   // 宿主能力声明：决定对话列表 / 新建对话 / 关闭按钮等由谁渲染。
   // 视图模式可在运行期切换（Electron 悬浮窗 → 单视图，列表移到顶栏），故放进 state 订阅。
   const [hostInfo, setHostInfo] = useState<HostInfo>(() => getEffectiveHostInfo());
-  useEffect(() => onViewModeChanged(() => {
+  useEffect(() => onViewModeChanged((mode) => {
     setHostInfo(getEffectiveHostInfo());
     // 模式切换会卸载 / 重挂「历史对话」下拉（只有 single 渲染它）：残留的 open 状态
     // 会让它切回 single 时自动弹出，而且不触发 onOpenChange → 列表不刷新。
     // 删除确认弹层同理，切模式时一并收起。
     setConversationDropdownOpen(false);
     setDeleteConfirm(null);
+    // 切到单视图（Electron 浮窗 / VS Code）：对话列表改由顶栏渲染，且「历史提醒」
+    // 要判断本 workspace 的 waiting。本视图此前可能长期不是活动视图，conversations 与
+    // 运行时状态都可能是旧的（列表只推给活动视图、状态只在变化时推），主动拉一次。
+    if (mode === 'single') {
+      postMessage({ type: 'getConversations' });
+      postMessage({ type: 'requestSessionRuntimeStates' });
+    }
   }), []);
   const [messages, setMessages] = useState<Array<Message>>([]);
   const inputAreaRef = useRef<InputAreaRef>(null);
@@ -712,6 +719,9 @@ const App = () => {
     // 延迟加载，避免阻塞初始化
     const timer = setTimeout(() => {
       loadConversations();
+      // 运行时状态只在变化时推：本视图可能在等待状态产生之后才创建，主动拉一次快照，
+      // 否则对话树流水灯 / abort 按钮会一直"失明"到下一次状态变化。
+      postMessage({ type: 'requestSessionRuntimeStates' });
       // Electron 侧栏点击打开对话时：视图创建时就绑定了目标会话（URL 参数 / preload 注入），
       // 由本视图主动请求加载；没有目标会话时创建新对话。
       // loading 由 useConversationLoading 在视图初始化时进入（见 initialSessionId）。
@@ -741,6 +751,8 @@ const App = () => {
       postMessage({ type: 'requestModels' });
       postMessage({ type: 'requestSettingsDefaults' });
       loadConversations();
+      // 同启动路径：补一次运行时状态快照（预热视图创建时同样可能错过广播）
+      postMessage({ type: 'requestSessionRuntimeStates' });
     };
     window.addEventListener('message', handleActivate);
     // 告诉宿主「已挂载、可以收消息」：若点「新建」时页面还在加载，

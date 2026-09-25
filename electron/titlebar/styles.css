@@ -25,7 +25,9 @@ body {
   display: flex;
   align-items: center;
   background: #16161b;
-  border-bottom: 1px solid #26262c;
+  /* 标签条底边线：与「选中标签」同色，直接画在标题栏底边上，
+     这样它能拉满整个窗口宽度（而不是只在标签条那一小段）。 */
+  border-bottom: 2px solid #2f2f37;
   -webkit-app-region: drag;
 }
 
@@ -168,7 +170,8 @@ body {
 .workspace-tabs {
   display: flex;
   align-items: center;
-  gap: 2px;
+  /* 标签紧挨着排，中间不留空隙 */
+  gap: 0;
   height: 100%;
   min-width: 0;
   flex-shrink: 1;
@@ -178,37 +181,81 @@ body {
   scrollbar-width: none;
   /* 与左侧菜单图标留出间距 */
   margin-left: 12px;
-  -webkit-app-region: no-drag;
+  /* 末尾「加号」右边留一段余量：标签铺满时加号不至于贴住右侧的模式切换 / 窗口按钮。
+     原来是 12px，按要求放大到 3 倍（36px）。 */
+  padding-right: 36px;
+  /* 容器整体算「拖动区」，标签页 / 加号再各自 no-drag 挖出去。
+     这样加号右边这段空白（以及加号上下那点缝）是窗口拖动区，而不是点不动的死区。 */
+  -webkit-app-region: drag;
 }
 .workspace-tabs::-webkit-scrollbar { display: none; }
 .ws-tab {
   display: flex;
   align-items: center;
   gap: 4px;
-  height: 26px;
-  max-width: 170px;
-  /* 收窄下限：再窄就只剩省略号，且必须能看出是哪一个目录 */
+  /* 默认每张 192px。这里必须用 width 而不是 flex-basis：.workspace-tabs 自己
+     是标题栏的 flex 子项、宽度按内容算，而 flex-basis 不参与父容器的内容宽度
+     计算——用 flex-basis 容器只会被压成文字宽，短名字的标签就跟着变小。 */
+  flex: 0 1 auto;
+  width: 192px;
+  /* 放不下时按 flex-shrink 收窄，下限 56px（文字省略号收住），再不够才横向滚动 */
   min-width: 56px;
   padding: 0 4px 0 10px;
-  border-radius: 5px;
+  /* 浏览器标签页形状：只有上方圆角，底边与标签条底边线齐平 */
+  border-radius: 8px 8px 0 0;
+  /* 撑满标签条高度：文字与左侧品牌区 / 菜单同一条中轴，底边又能贴住底边线 */
+  align-self: stretch;
   font-size: 12.5px;
   line-height: 1;
   color: #c1c1c6;
   cursor: default;
   white-space: nowrap;
-  flex: 0 1 auto;
   outline: none;
   /* 拖拽排序的放置指示线用绝对定位伪元素画，不参与布局 */
   position: relative;
+  /* 标签页是可交互区域，从容器的拖动区里挖出来 */
+  -webkit-app-region: no-drag;
 }
 .ws-tab:hover { background: #26262c; }
-.ws-tab.active { background: #2f2f37; color: #ffffff; }
+.ws-tab.active { background: #2f2f37; color: #ffffff; z-index: 1; }
 .ws-tab:focus-visible {
   box-shadow: inset 0 0 0 1px #5b8cff;
 }
 
-/* ── 标签页流水灯：该目录下非 idle 会话（蓝=运行中 / 黄=等待用户，黄优先） ──
-   与侧栏 / webview 对话列表的 running-bar 同一套动画与配色，只是改成标签页左侧的短条。 */
+/* ── 未选中标签之间的竖线分隔（Chrome 风格） ──
+   两种主题下未选中标签都与标题栏同色（深色 = 透明露底 / 浅色 = 透明露底），
+   不画一根竖线就分不清标签边界。只在相邻两张都未选中时出现：
+   紧邻活动标签、或任一侧 hover（此时有 hover 底色）时都隐藏。
+   选择器用 :where() 把权重压到与 `.ws-tab.drop-before::before` 相同，
+   拖拽放置指示线（源文件更靠后）才能覆盖掉这条竖线。 */
+.ws-tab:where(:not(.active)) + .ws-tab:where(:not(.active))::before,
+/* 末尾标签与「加号」之间同一条竖线：加号不是 .ws-tab，单独补一条选择器；
+   规则与标签之间一致——只在末尾标签未选中时出现，紧邻活动标签则隐藏。 */
+.ws-tab:where(:not(.active)) + .ws-add::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 50%;
+  width: 1px;
+  height: 18px;
+  transform: translateY(-50%);
+  /* 比标题栏底色亮一档以上，未选中标签之间才看得清分界 */
+  background: #4a4a55;
+  pointer-events: none;
+}
+.ws-tab:hover::before,
+.ws-tab:hover + .ws-tab::before,
+.ws-tab:hover + .ws-add::before {
+  opacity: 0;
+}
+/* 注意：加号自身的 hover 不隐藏它左边那条竖线——加号要一直「在分割线右边」，
+   不能 hover 一下就变成孤立一个加号。 */
+
+/* ── 标签页运行指示：该目录下非 idle 会话（蓝=运行中 / 黄=等待用户，黄优先） ──
+   与侧栏 / webview 对话列表的 running-bar 同一套配色，只是改成标签页左侧的短条。
+   两种状态的动效不同（与对话列表保持一致）：
+   - 运行中：蓝色「流水灯」——渐变背景上下滚动。
+   - 等待用户：黄色「呼吸」——只有明暗脉动，不滚动（对话列表用同一条单一动画）。 */
 @keyframes wsTabFlow {
   0% { background-position: 0% 0%; }
   100% { background-position: 0% 100%; }
@@ -231,9 +278,8 @@ body {
 .ws-tab.activity-running .ws-tab-activity,
 .ws-tab.activity-waiting .ws-tab-activity {
   display: block;
-  animation: wsTabFlow 1.5s linear infinite;
 }
-/* 运行中（查询 / 压缩 / 后台 Bash / 子代理）：蓝色流水 */
+/* 运行中（查询 / 压缩 / 后台 Bash / 子代理）：蓝色流水灯 */
 .ws-tab.activity-running .ws-tab-activity {
   background-image: linear-gradient(
     180deg,
@@ -243,8 +289,9 @@ body {
     rgba(99, 102, 241, 0.5) 70%,
     transparent 100%
   );
+  animation: wsTabFlow 1.5s linear infinite;
 }
-/* 等待用户操作（ask user / 权限确认）：黄色流水 + 呼吸（优先于蓝） */
+/* 等待用户操作（ask user / 权限确认）：黄色呼吸（不流水，优先于蓝） */
 .ws-tab.activity-waiting .ws-tab-activity {
   background-image: linear-gradient(
     180deg,
@@ -254,25 +301,28 @@ body {
     rgba(250, 204, 21, 0.5) 70%,
     transparent 100%
   );
-  animation:
-    wsTabFlow 1.5s linear infinite,
-    wsTabWaitingBreathing 1.6s ease-in-out infinite;
+  animation: wsTabWaitingBreathing 1.6s ease-in-out infinite;
 }
 
 /* ── 拖拽排序 ── */
 .ws-tab.dragging {
   opacity: 0.45;
 }
-/* 放置指示线：插到目标之前 / 之后 */
-.ws-tab.drop-before::before,
-.ws-tab.drop-after::after {
+/* 放置指示线：插到目标之前 / 之后。
+   带 .workspace-tabs 前缀提高权重，压过上面的「未选中标签竖线分隔」——
+   两者都画在 ::before 上，且竖线会设 height / transform，这里要一并复位。 */
+.workspace-tabs .ws-tab.drop-before::before,
+.workspace-tabs .ws-tab.drop-after::after {
   content: '';
   position: absolute;
   top: 3px;
   bottom: 3px;
+  height: auto;
+  transform: none;
   width: 2px;
   border-radius: 1px;
   background: #6366f1;
+  opacity: 1;
 }
 .ws-tab.drop-before::before { left: -1px; }
 .ws-tab.drop-after::after { right: -1px; }
@@ -297,6 +347,8 @@ body {
   padding: 0;
   cursor: pointer;
   flex-shrink: 0;
+  /* 推到标签最右边：不与文字挨着，中间留白随标签宽度伸缩 */
+  margin-left: auto;
   visibility: hidden;
 }
 .ws-tab:hover .ws-tab-close,
@@ -321,6 +373,10 @@ body {
   padding: 0;
   cursor: pointer;
   flex-shrink: 0;
+  /* 左侧与末尾标签之间的竖线用 ::before 绝对定位画 */
+  position: relative;
+  /* 加号是按钮，从容器的拖动区里挖出来 */
+  -webkit-app-region: no-drag;
 }
 .ws-add:hover { background: #26262c; color: #e4e4e7; }
 
@@ -427,21 +483,22 @@ body.platform-darwin .titlebar {
    prefers-color-scheme；这里只做颜色覆盖，深色样式（上方）保持不变。
    强调色（#6366f1 / #5b8cff）与关闭按钮红底白字在两种主题下都适用，不覆盖。 */
 @media (prefers-color-scheme: light) {
-  /* 标题栏与侧栏同色（纯白），与 webview 的浅灰（#f4f4f5）形成「外壳 / 内容」两层，
-     与深色主题下 titlebar/sidebar 同色、webview 略浅的层次关系一致。 */
+  /* 标题栏用「未选中标签」的颜色（#e4e4e7）：未选中标签不再单独上色，直接融入标题栏，
+     活动标签用纯白浮起来（像浏览器的标签条）。 */
   body {
-    background: #ffffff;
+    background: #e4e4e7;
     color: #3f3f46;
   }
   .titlebar {
-    background: #ffffff;
-    border-bottom-color: #e4e4e7;
+    background: #e4e4e7;
+    /* 底边线取「选中标签」的纯白，拉满整条标题栏 */
+    border-bottom-color: #ffffff;
   }
   .brand-name { color: #27272a; }
 
   .tb-btn { color: #3f3f46; }
   .tb-btn:hover:not(:disabled) { background: #f4f4f5; color: #18181b; }
-  .tb-btn:active:not(:disabled) { background: #e4e4e7; }
+  .tb-btn:active:not(:disabled) { background: #d4d4d8; }
   .pin-btn.active {
     color: #4f46e5;
     background: rgba(99, 102, 241, 0.14);
@@ -449,19 +506,26 @@ body.platform-darwin .titlebar {
 
   .menu-btn { color: #3f3f46; }
   .menu-btn:hover { background: #f4f4f5; color: #18181b; }
-  .menu-btn.open { background: #e4e4e7; color: #18181b; }
+  .menu-btn.open { background: #d4d4d8; color: #18181b; }
 
-  /* 选中 / 未选中的底色互换：未选中为浅灰，选中为纯白（与标题栏同色，像浏览器标签页
-     那样「融入内容区」）；文字色随之互换以保持对比。 */
-  .ws-tab { background: #e4e4e7; color: #18181b; }
+  /* 未选中 = 透明（露出标题栏底色），选中 = 纯白；文字色选中更强，
+     形成「活动项更亮」的层次。hover 取两者之间（#f4f4f5），
+     与深色主题 unselected < hover < active 的关系一致。 */
+  .ws-tab { background: transparent; color: #3f3f46; }
   .ws-tab:hover { background: #f4f4f5; }
-  .ws-tab.active { background: transparent; color: #3f3f46; }
+  .ws-tab.active { background: #ffffff; color: #18181b; }
   .ws-tab-close:hover { background: rgba(0, 0, 0, 0.06); }
+
+  /* 未选中标签之间 / 末尾标签与加号之间的竖线：比标题栏底色深一档以上，分界要看得清 */
+  .ws-tab:where(:not(.active)) + .ws-tab:where(:not(.active))::before,
+  .ws-tab:where(:not(.active)) + .ws-add::before {
+    background: #a8a8b0;
+  }
 
   .ws-add { color: #3f3f46; }
   .ws-add:hover { background: #f4f4f5; color: #18181b; }
 
   .wc { color: #3f3f46; }
   .wc:hover { background: #f4f4f5; color: #18181b; }
-  .wc:active { background: #e4e4e7; }
+  .wc:active { background: #d4d4d8; }
 }

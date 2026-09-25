@@ -398,10 +398,10 @@ const UserMessage = memo(function UserMessage({
     );
   }
 
-  // 真正的用户消息始终是纯色背景：亮色纯白 / 暗色纯黑（不再使用透明或灰底）；
+  // 真正的用户消息用统一的浅靛蓝底色（与侧栏选中项同色）：亮色 #eff0fe / 暗色 #242442；
   // 子代理 From/To 消息（origin=agent）与后台任务通知（origin=bash）保持原有背景，不受影响。
   const isPlainUserMessage = !isAutoOrigin(message.origin);
-  const userBg = isPlainUserMessage ? (isDark ? '#000000' : '#ffffff') : (isDark ? 'transparent' : '#fafafa');
+  const userBg = isPlainUserMessage ? (isDark ? '#242442' : '#eff0fe') : (isDark ? 'transparent' : '#fafafa');
   // 折叠遮罩渐隐到消息自身背景色
   const collapsedFadeColor = isPlainUserMessage ? userBg : (isDark ? '#1e1e1e' : '#ffffff');
   // 折叠高度：真正的用户消息 = 原 180px 的 40%（展开后完整显示）；
@@ -2221,7 +2221,7 @@ const MessagesView = memo(({
                       } : null),
                       ...(isPinned ? {
                         // 置顶：背景扩展到滚动容器整宽，去掉左/右/上边框
-                        backgroundColor: isDark ? '#000000' : '#ffffff',
+                        backgroundColor: isDark ? '#242442' : '#eff0fe',
                         marginLeft: -16,
                         marginRight: -16,
                         paddingLeft: 16,
@@ -2304,7 +2304,7 @@ const MessagesView = memo(({
             // +1px 与置顶消息背景重叠，避免取整后留下一条缝（同色不可见）
             width: pinnedGutter + 1,
             height: pinnedHeight,
-            backgroundColor: isDark ? '#000000' : '#ffffff',
+            backgroundColor: isDark ? '#242442' : '#eff0fe',
             borderBottom: `1px solid ${colors.border}`,
             boxSizing: 'border-box',
             pointerEvents: 'none',

@@ -18,8 +18,15 @@
 
 /** Spin 设计器的宿主契约。 */
 export interface SpinDesign {
-  /** 打开设计器；已打开则聚焦复用，不重复创建 */
-  open(): Promise<void>;
+  /**
+   * 打开设计器；已打开则复用（**目录不同则切到新目录的数据**），不重复创建。
+   *
+   * @param workspacePath 发起方会话的工作目录——spin.json 与技能清单都归属它。
+   *   多工作目录宿主（Electron）里不能回退到「活动工作目录」：设计器是单例窗口，
+   *   从别的标签页再 `/spin` 时活动目录可能已经变了。不传时回退宿主的活动工作目录
+   *   （兼容旧调用 / 无会话场景）。
+   */
+  open(workspacePath?: string): Promise<void>;
 
   /**
    * 从磁盘重读 spin.json + Skill 列表推给已打开的设计器；未打开时 no-op。

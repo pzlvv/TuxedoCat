@@ -171,6 +171,12 @@ export function getTitlebarMenuHtml(options: TitlebarMenuHtmlOptions): string {
   html, body { background: transparent; overflow: hidden; }
   body {
     position: relative;
+    /* 撑满菜单可用高度：飞出面板是 body 的绝对定位子元素，body 若只按 .menu 的自然高度
+       撑开，overflow: hidden 会把超出主面板的那截飞出面板整段裁掉——此时飞出面板自身
+       scrollHeight == clientHeight（滚动条不出现），后半截条目既看不到也滚不到。
+       「添加最近的工作目录」条目多时就是这个症状。取菜单可用高度上限即可：飞出面板底边
+       由 positionFlyout 限制在 maxHeight 以内，永远不会超过这个值。 */
+    ${maxHeight ? `min-height: ${maxHeight}px;` : ''}
     font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
     font-size: 12.5px;
     color: ${fg};

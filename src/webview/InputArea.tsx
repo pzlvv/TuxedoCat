@@ -1251,17 +1251,23 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   }, [filteredSkills.length]);
 
   const commitSlash = useCallback((skillName: string) => {
-    setInput(`/${skillName} `);
+    const inserted = `/${skillName} `;
+    // 只替换用户实际敲出来的 "/<query>" 前缀，保留输入框里原有的其余内容：
+    // 例如原本已有「修复登录问题」，在开头补 "/" 后选中 commit，
+    // 结果是 "/commit 修复登录问题"，而不是把已有内容整段清掉。
+    const prefixLen = 1 + slashQuery.length;
+    const next = inserted + input.slice(prefixLen);
+    setInput(next);
     setShowSlash(false);
     setSlashQuery('');
     slashActiveRef.current = false;
     // Focus the textarea and move cursor to end
     setTimeout(() => {
       mainInputRef.current?.focus();
-      const len = `/${skillName} `.length;
+      const len = next.length;
       mainInputRef.current?.setSelectionRange(len, len);
     }, 0);
-  }, [skills, mainInputRef]);
+  }, [input, slashQuery, mainInputRef]);
 
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
@@ -1282,13 +1288,17 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
         postMessage({ type: 'requestSkills' });
       }
 
-      // Extract the query after / (before first space)
-      const spaceIdx = value.indexOf(' ');
-      if (spaceIdx === -1) {
-        // Still typing the skill name
-        const query = value.slice(1);
+      // 技能名区间 = "/" 之后到第一个空白（空格 / 制表 / 换行）为止。
+      // 用「光标是否已越过该空白」判断用户是否还在输入技能名：
+      // 只看整串里有没有空格是不行的 —— 输入框原本已有内容时（例如在
+      // 「修复登录问题」前补一个 "/"），那个空格属于已有正文，会被误判成
+      // 「已经进入参数区」从而不弹补全。
+      const wsIdx = value.slice(1).search(/\s/);
+      const tokenEnd = wsIdx === -1 ? value.length : 1 + wsIdx;
+      const caret = e.target.selectionStart ?? value.length;
+      if (caret >= 1 && caret <= tokenEnd) {
         setShowSlash(true);
-        setSlashQuery(query);
+        setSlashQuery(value.slice(1, caret));
       } else {
         setShowSlash(false);
         setSlashQuery('');

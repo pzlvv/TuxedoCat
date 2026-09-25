@@ -60,6 +60,11 @@ export type WebviewMessage = {
   type: 'addMessage';
   sessionId: string;
   role: 'user' | 'thinking' | 'toolcall' | 'system' | 'assistant';
+  /**
+   * 用户消息的 uuid：与 `queuedMessage.uuid` 配对，供 webview 精确清除排队项。
+   * 只有代表用户输入的用户气泡携带该字段。
+   */
+  messageUuid?: string;
   content: string;
   param?: string;
   filePath?: string;
@@ -304,6 +309,8 @@ export type WebviewMessage = {
 } | {
   type: 'queuedMessage';
   sessionId: string;
+  /** 该排队消息的 uuid；与补发的用户气泡 `messageUuid` 配对，用于按消息精确清除 */
+  uuid?: string;
   /** 排队的消息内容 */
   content: string;
   /** 排队的消息携带的图片 */
@@ -333,6 +340,8 @@ export type WebviewMessage = {
   totalContextTokens?: number;
 } | {
   type: 'requestSkills';
+} | {
+  type: 'requestSessionRuntimeStates';
 } | {
   type: 'streamMessage';
   sessionId: string;

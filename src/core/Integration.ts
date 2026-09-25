@@ -10,14 +10,13 @@ import type { PromptPresetId } from './prompt/PromptPreset.js';
 import type { LLMConfig } from './llm/config.js';
 import { sameModelRef, type ModelRef } from './llm/modelRef.js';
 import { requireEventBus, type CoreEvent } from './AssistantEventBus.js';
-import { markQueryRunning, markSessionWaiting } from './sessionRuntime.js';
+import { markSessionWaiting } from './sessionRuntime.js';
 import { getMCPHost } from './mcp/MCPHost.js';
 import { logger } from './Logger.js';
-import { setProjectRootProvider, updateConversationContext } from './history/index.js';
+import { setProjectRootProvider } from './history/index.js';
 import { getProjectRoot } from './history/Config.js';
 import { sessionQueue } from './SessionQueue.js';
 import { userChoiceQueue } from './UserChoiceQueue.js';
-import { buildConversationTitle, buildUserContent, extractUserContent } from './utils/contentBlocks.js';
 import { isCompacting, isPendingCompact, markPendingCompact, unmarkPendingCompact } from './compact/state.js';
 
 /**
@@ -35,29 +34,17 @@ export function initializeSessionQueue(): void {
   });
 }
 
-// 当前活跃的查询引擎（用于中止）
-let currentQueryEngine: QueryEngine | null = null;
-
 /** core → UI 单向事件的发送侧封装（Integration 内统一走它，便于 grep 对照第 4.1 节允许清单） */
 function emitToUi(event: CoreEvent): void {
   requireEventBus().emitToUi(event);
 }
 
 /**
- * 中止当前查询 / 该会话的整棵工作树
- * @param sessionId - 可选，指定要中止的会话 ID；不指定则中止 currentQueryEngine
+ * 中止指定会话的整棵工作树（引擎 + 后台 Bash + 递归子代理）。
+ * @param sessionId - 要中止的会话 ID
  */
-export function abortCurrentQuery(sessionId?: string): void {
-  if (sessionId) {
-    void abortSessionScope(sessionId, new Set<string>());
-    return;
-  }
-  if (currentQueryEngine) {
-    currentQueryEngine.interrupt();
-    currentQueryEngine = null;
-  } else {
-    logger.warn('Integration', 'No query engine to abort');
-  }
+export function abortCurrentQuery(sessionId: string): void {
+  void abortSessionScope(sessionId, new Set<string>());
 }
 
 /**
@@ -481,262 +468,6 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
     }
   }
 
-}
-
-/**
- * 发送消息并处理响应
- */
-export async function* sendMessage(
-  prompt: string,
-  sessionId: string,
-  fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean; thinkingMode?: 'off' | 'low' | 'high' | 'max'; webSearch?: boolean; modelRef?: ModelRef; reminder?: string; upstreamSessionId?: string; upstreamHostname?: string; upstreamWorkspace?: string; promptPreset?: PromptPresetId; images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }> },
-): AsyncGenerator<Message, void, unknown> {
-  // 创建用户消息（需要在创建 QueryEngine 之前，因为需要传入初始消息）
-  const fullPrompt = fileInfo?.reminder ? prompt + '\n\n' + fileInfo.reminder : prompt;
-  const userContent = buildUserContent(fullPrompt, fileInfo?.images);
-
-  // 构建 _meta：将文件信息、参数等元数据统一存放
-  const meta: Record<string, unknown> = {};
-  if (fileInfo?.filePath) {
-    meta.filePath = fileInfo.filePath;
-    meta.param = `${fileInfo.filePath.split(/[/\\]/).pop()}${fileInfo.selectedLines ? `:${fileInfo.selectedLines.start}${fileInfo.selectedLines.start !== fileInfo.selectedLines.end ? `~${fileInfo.selectedLines.end}` : ''}` : ''}`;
-  }
-  if (fileInfo?.selectedLines) {
-    meta.fileSelectedLines = fileInfo.selectedLines;
-  }
-
-  const userMsg: Message = {
-    type: 'user',
-    message: { role: 'user', content: userContent },
-    uuid: `user_${Date.now()}`,
-    timestamp: Date.now(),
-    ...(fileInfo?.filePath && { filePath: fileInfo.filePath }),
-    ...(fileInfo?.selectedLines && { fileSelectedLines: fileInfo.selectedLines }),
-    ...(fileInfo?.fileHidden && { fileHidden: true }),
-    ...(fileInfo?.reminder && { reminder: fileInfo.reminder }),
-    ...(Object.keys(meta).length > 0 && { _meta: meta }),
-  };
-
-  // 标记为"用户主动发送"的消息：只有这类消息才更新 meta.json 的 updatedAt
-  // （子代理回复、reminder、后台任务通知、远程投递等自动消息不计入）。
-  if (!fileInfo?.reminder && !fileInfo?.upstreamSessionId) {
-    (userMsg as any)._userInitiated = true;
-  }
-
-  // 将图片宽高随消息一起持久化，供 meta.json 标题生成使用（不进入 LLM content）
-  const imageSizes = (fileInfo?.images ?? []).map((img) => ({
-    width: img.width,
-    height: img.height,
-  }));
-  if (imageSizes.some((s) => s.width && s.height)) {
-    (userMsg as any).imageSizes = imageSizes;
-  }
-
-  // 在创建/获取 engine 之前，先通过 CommandDispatcher 检查命令类型
-  const { dispatch } = await import('./CommandDispatcher.js');
-  const dispatchResult = await dispatch(prompt, {
-    sessionId,
-    cwd: getProjectRoot(sessionId),
-  });
-
-  if (dispatchResult.result === 'handled') {
-    // 内置命令已被处理，不需要走 LLM 流程
-    // 仍然 yield userMsg 让调用方知道消息已被接收
-    yield userMsg;
-    return;
-  }
-
-  // 获取或创建 QueryEngine（传入初始消息）
-  // userMsgInContext 记录用户消息是否已加入 mutableMessages：
-  // 已加入时 submitMessage 传 userMsgUuid，consumer 按 uuid 定位/重排；
-  // 未加入时仅传 userMsgData，由 consumer 处理 pendingUserMessage 时现场追加。
-  let userMsgInContext = false;
-  const isNewSession = !getSessionEngine(sessionId);
-  let engine = getSessionEngine(sessionId);
-  if (!engine) {
-    // 主对话（非子代理）默认 Master 角色
-    engine = new QueryEngine(sessionId, {
-      cwd: getProjectRoot(sessionId),
-      tools: getAllTools() as Tool[],
-      getAppState: () => ({}),
-      setAppState: () => { },
-      initialMessages: [userMsg],
-      upstreamSessionId: fileInfo?.upstreamSessionId,
-      upstreamHostname: fileInfo?.upstreamHostname,
-      upstreamWorkspace: fileInfo?.upstreamWorkspace,
-    });
-    userMsgInContext = true; // initialMessages 已包含 userMsg
-
-    // 为新对话设置 modelConfig：优先使用 meta.json 中已保存的模型身份，
-    // 未记录 provider 时取 settings.json 的 active provider（唯一回退来源）。
-    try {
-      const { getActiveModelRef, getConfigForProvider } = await import('./llm/config.js');
-      const { loadConversation, getConversationModelRef } = await import('./history/index.js');
-      let conversation: any;
-      try {
-        conversation = await loadConversation(sessionId);
-      } catch {
-        // meta.json 尚不存在（新会话未初始化）
-      }
-      const ref = getConversationModelRef(conversation?.metadata) ?? await getActiveModelRef();
-      if (!ref) {
-        logger.warn('Integration', `No usable model for session ${sessionId} (provider 未配置)`);
-      } else {
-        engine.modelRefOverride = ref;
-        const config = await getConfigForProvider(ref);
-        engine.updateModelConfig(config);
-      }
-    } catch (e) {
-      logger.warn('Integration', `Failed to set per-session model config: ${e}`);
-    }
-
-    // 应用之前缓存下来的 thinking mode 覆盖值（若引擎创建前 webview 已发送过 setThinkingMode）
-    applyPendingThinkingMode(sessionId, engine);
-  } else {
-    // 检查是否在 spin 模式
-    if (engine.workMode === 'spin') {
-      yield userMsg;
-      return;
-    }
-    // 已有引擎：等待之前的持久化完成，再追加新消息
-    await engine.flush().catch((e: any) => {
-      logger.error('Integration', `引擎 flush 失败: ${e}`);
-    });
-    // 仅当 consumer 空闲时 push 到 mutableMessages：
-    // - consumer 空闲：消息会在本次新启动的 consumer 的第一次 query() 中被带上；
-    // - consumer 运行中：不 push，由 queryLoop 阶段 0.5（flushQueuedMessagesIntoContext）
-    //   在"下一次 LLM 请求"时用 userMsgData 现场追加，使排队消息立刻进入上下文，
-    //   无需等整个多轮 query 结束。
-    if (!engine.isConsumerRunning) {
-      engine.getMessages().push(userMsg);
-      userMsgInContext = true;
-    }
-  }
-
-  // 保存当前查询引擎引用（用于中止）
-  currentQueryEngine = engine;
-
-  // 应用模型切换：优先使用本次发送消息携带的模型身份（避免 setModel 消息尚未处理时丢失），
-  // 其次使用引擎创建前缓存的模型切换；如果 meta.json 已存在则同步持久化（meta.json 保持扁平字段）。
-  const pendingSelection = pendingSessionModels.get(sessionId);
-  const sendRef = fileInfo?.modelRef ?? pendingSelection;
-  if (sendRef) {
-    if (pendingSelection !== undefined) {
-      pendingSessionModels.delete(sessionId);
-    }
-    try {
-      engine.modelRefOverride = sendRef;
-      // 先同步写入 model，确保即使后续读取全量配置失败，请求仍会使用该模型。
-      engine.updateModelConfig({ model: sendRef.model } as LLMConfig);
-      const { getConfigForProvider } = await import('./llm/config.js');
-      const config = await getConfigForProvider(sendRef);
-      engine.updateModelConfig(config);
-      await updateConversationContext(sessionId, { model: sendRef.model, provider: sendRef.provider });
-    } catch (e) {
-      logger.warn('Integration', `Failed to fully apply model "${sendRef.model}" for session ${sessionId}: ${e}`);
-    }
-  }
-
-  // 设置 thinking mode 覆盖值（'off' 也需要显式设置，以覆盖之前的高/最大值）
-  if (fileInfo?.thinkingMode !== undefined) {
-    engine.thinkingModeOverride = fileInfo.thinkingMode;
-  }
-
-  // 设置会话关联的提示词预设（meta.json 持久化由 UiEvent.promptModeChanged 的 core 侧处理负责）
-  if (fileInfo?.promptPreset !== undefined) {
-    engine.setPromptPreset(fileInfo.promptPreset);
-  }
-
-  // 设置会话关联的 Web Search 开关（覆盖 settings.json 默认值，webview 每次发送都会带上当前值）
-  if (fileInfo?.webSearch !== undefined) {
-    engine.updateWebSearch(fileInfo.webSearch);
-  }
-
-  // 通知查询开始 + 更新会话运行时状态（非 idle）
-  markQueryRunning(sessionId, true);
-  emitToUi({ type: 'queryBegin', sessionId });
-
-  // 如果是新对话，设置标题（文本优先；仅图片时使用 Image[<width>*<height>]）
-  if (isNewSession) {
-    const title = buildConversationTitle(prompt, fileInfo?.images);
-    emitToUi({ type: 'titleChanged', sessionId, title });
-  }
-
-  // 通知 UI 用户消息，包含文件信息（只显示文件名+行号，不显示 "File:" 前缀）
-  // 如果 fileHidden 为 true，不发送文件信息到 UI
-  const sendFilePath = fileInfo?.fileHidden ? undefined : fileInfo?.filePath;
-  const sendSelectedLines = fileInfo?.fileHidden ? undefined : fileInfo?.selectedLines;
-  const param = sendFilePath
-    ? `${sendFilePath.split(/[/\\]/).pop()}${sendSelectedLines ? `:${sendSelectedLines.start}${sendSelectedLines.start !== sendSelectedLines.end ? `~${sendSelectedLines.end}` : ''}` : ''}`
-    : undefined;
-
-  // 构建发送到 UI 的 meta（排除 fileHidden 的情况）
-  const uiMeta: Record<string, unknown> = {};
-  if (sendFilePath) {
-    uiMeta.filePath = sendFilePath;
-    uiMeta.param = param;
-  }
-  if (sendSelectedLines) {
-    uiMeta.fileSelectedLines = sendSelectedLines;
-  }
-
-  const { text: uiText, images: uiImages } = extractUserContent(userContent);
-  emitToUi({
-    type: 'message',
-    sessionId,
-    data: {
-      role: 'user',
-      content: uiText,
-      images: uiImages.length > 0 ? uiImages : undefined,
-      param,
-      filePath: sendFilePath,
-      fileSelectedLines: sendSelectedLines,
-      meta: Object.keys(uiMeta).length > 0 ? uiMeta : undefined,
-    },
-  });
-
-  yield userMsg;
-
-  // 如果是 Skill 命令（如 /archive），在用户消息已通知 UI 后、
-  // submitMessage 前插入 submitToolUse，注入 Skill tool call。
-  // submitToolUse 会往 mutableMessages 中添加 assistant(tool_use) + tool_result(Skill prompt)，
-  // 后续 LLM query 能读到这些消息，按 Skill 指令执行。
-  if (dispatchResult.result === 'skill' && dispatchResult.skillInfo) {
-    const { skillName, skillArgs } = dispatchResult.skillInfo;
-
-    try {
-      await engine.submitToolUse({
-        name: 'Skill',
-        input: {
-          skill: skillName,
-          args: skillArgs || undefined,
-        },
-      });
-    } catch (error) {
-      logger.error('Integration', 'Skill tool call error:', error);
-      // 不中断流程，继续走 LLM query 让 LLM 尝试处理
-    }
-  }
-
-  // 执行查询（query 层会自动通知 UI）
-  try {
-    for await (const message of engine.submitMessage(prompt, 'user', undefined, {
-      userMsgUuid: userMsgInContext ? userMsg.uuid : undefined,
-      userMsgData: userMsg,
-    }) as AsyncIterable<Message>) {
-      yield message;
-    }
-
-    // 查询完成后清除引擎引用
-    currentQueryEngine = null;
-  } catch (error) {
-    logger.error('Integration', 'Query error:', error);
-    throw error;
-  } finally {
-    markQueryRunning(sessionId, false);
-    emitToUi({ type: 'queryEnd', sessionId });
-    currentQueryEngine = null;
-  }
 }
 
 /**

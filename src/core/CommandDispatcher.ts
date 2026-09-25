@@ -5,17 +5,23 @@
  * 处理优先级：
  *   1. 内置命令（如 /spin）：由对应的 handler 直接处理
  *   2. Skill 命令（如 /archive, /commit）：匹配到 Skill 名称时，
- *      返回 'skill' 结果，由上层（Integration）生成 Skill tool call 注入引擎
+ *      返回 'skill' 结果，由调用方生成 Skill tool call 注入引擎
  *   3. 其他 / 命令：走正常 LLM 流程
+ *
+ * 调用时机（唯一路径）：
+ *   用户消息先入队，由 QueryEngine 在「出队」时解析
+ *   （QueryEngine.resolvePendingCommand）。解析只发生在轮次边界，
+ *   因此查询进行中不会被立刻注入 Skill / 执行内置命令。
  *
  * 工作流程：
  *   webview 发消息
  *     -> WebViewUI.handleWebviewMessage (透明透传，不处理任何命令)
- *       -> Integration.sendMessage
- *         -> CommandDispatcher.dispatch  (检查命令类型)
- *           -> 内置命令: 执行 handler，返回 'handled'
- *           -> Skill 匹配: 返回 'skill' (携带 skill 名称和参数)
- *           -> 其他: 返回 'passthrough'，继续正常 LLM 流程
+ *       -> WebviewMessageHandler.handleUserMessage
+ *         -> QueryEngine.submitMessage 入队
+ *              -> QueryEngine.messageConsumer 出队 -> CommandDispatcher.dispatch
+ *           -> 内置命令: 执行 handler，返回 'handled'（消息不进入 LLM 上下文）
+ *           -> Skill 匹配: 返回 'skill' (携带 skill 名称和参数)，注入 Skill tool_use
+ *           -> 其他: 返回 'passthrough'，按普通消息进入正常 LLM 流程
  */
 
 import { logger } from './Logger.js';
@@ -61,8 +67,10 @@ export async function dispatch(
     return { result: 'passthrough' };
   }
 
-  // 解析命令名和参数
-  const match = trimmed.match(/^\/(\S+)(?:\s+(.*))?$/);
+  // 解析命令名和参数。
+  // 参数用 [\s\S] 而非 . ：多行输入（如 "/commit 修复 A\n再修 B"）也必须能匹配到，
+  // 否则会被判为 passthrough，退化成普通消息、由 LLM 自行决定是否调用 Skill。
+  const match = trimmed.match(/^\/(\S+)(?:\s+([\s\S]*))?$/);
   if (!match) {
     return { result: 'passthrough' };
   }

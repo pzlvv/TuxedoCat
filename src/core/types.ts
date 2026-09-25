@@ -188,6 +188,8 @@ export interface StreamEndData {
 export interface MessageData {
   role: 'user' | 'assistant' | 'thinking' | 'toolcall' | 'system';
   content: string;
+  /** 用户消息的 uuid：与 `queuedMessage.uuid` 配对，供 webview 精确清除排队项 */
+  messageUuid?: string;
   param?: string;
   filePath?: string;
   fileSelectedLines?: { start: number; end: number };

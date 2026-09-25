@@ -24,23 +24,30 @@ const execAsync = promisify(exec);
 const availableCommandsPromise: Promise<string[] | undefined> = detectAvailableCommandsStart();
 
 /**
- * 模块级缓存：预热后的系统动态信息
- * 由 warmupSystemDynamicInfo 在扩展激活阶段填充，getSystemDynamicInfo 优先使用。
+ * 模块级缓存：**按工作目录**缓存预热后的系统动态信息。
+ *
+ * 必须按 cwd 分桶：多工作目录宿主（Electron）里同时存在归属不同目录的会话，
+ * 每个会话的 system prompt 都要读自己目录的 git 信息 / 技能清单。此前用单个
+ * 全局缓存，只要预热过活动目录，其它目录的会话就会命中活动目录的结果（串目录）。
+ *
+ * 由 warmupSystemDynamicInfo 在扩展激活 / 工作区切换时预热活动目录；
+ * getSystemDynamicInfo 命中同 cwd 的条目才复用，否则现算并写入。
  */
-let cachedSystemDynamicInfo: SystemDynamicInfo | null = null;
+const cachedSystemDynamicInfo = new Map<string, SystemDynamicInfo>();
+/** 缓存条目上限：打开过的工作目录数量有限，超出后按插入顺序淘汰最旧的 */
+const SYSTEM_DYNAMIC_CACHE_MAX = 8;
 
 /**
  * 提前预热系统动态信息，将耗时前置到启动阶段。
  * 调用方（bootstrapCore 的工作区订阅）不 await，后台执行。
- * 预热完成后，getSystemDynamicInfo 直接返回缓存结果。
  *
- * 工作区变化（打开 / 切换 / 关闭后重新打开）会以新 cwd 再次调用本函数，
- * 因此这里先失效旧缓存，否则 getSystemDynamicInfo 会直接命中旧 cwd 的结果。
+ * 预热是**刷新**语义：先丢弃该 cwd 的旧条目再重算，因此切回一个已打开过的
+ * 工作目录时，git 信息 / 技能清单都是当前的。
  */
 export async function warmupSystemDynamicInfo(cwd: string): Promise<void> {
   try {
-    cachedSystemDynamicInfo = null;
-    cachedSystemDynamicInfo = await getSystemDynamicInfo(cwd);
+    cachedSystemDynamicInfo.delete(cwd);
+    await getSystemDynamicInfo(cwd);
   } catch {
     // 预热失败不影响主流程
   }
@@ -235,12 +242,13 @@ async function detectAvailableCommandsSync(): Promise<string[]> {
 /**
  * 获取系统动态环境信息
  * @param cwd 当前工作目录（由 UI 层提供）
- * @returns 系统动态信息（优先返回预热缓存；Git 信息每次都实时获取，命令检测来自后台启动的缓存）
+ * @returns 系统动态信息（命中**同 cwd** 的预热缓存才复用，否则现算并写缓存）
  */
 export async function getSystemDynamicInfo(cwd: string): Promise<SystemDynamicInfo> {
-  // 如果已有预热缓存，直接返回
-  if (cachedSystemDynamicInfo) {
-    return cachedSystemDynamicInfo;
+  // 只复用同 cwd 的缓存：不同工作目录的 git 信息 / 技能清单不同，不能跨目录命中
+  const cached = cachedSystemDynamicInfo.get(cwd);
+  if (cached) {
+    return cached;
   }
 
   logger.info('SystemEnvironment', 'Collecting system dynamic info...');
@@ -255,7 +263,7 @@ export async function getSystemDynamicInfo(cwd: string): Promise<SystemDynamicIn
     new Promise<undefined>((resolve) => { setTimeout(() => resolve(undefined), 0); }),
   ]);
 
-  // Git 信息：每次都实时获取（依赖 cwd）
+  // Git 信息：依赖 cwd，在缓存未命中（或预热刷新）时现算
   const gitInfo = await getGitInfo(cwd);
 
   // 获取可用的 Skill 列表（需要 cwd，实时获取）
@@ -292,6 +300,13 @@ Example: \`{ "skill": "commit", "args": "-m 'message'" }\``;
     availableCommands,
     availableSkills,
   };
+
+  // 写入按 cwd 分桶的缓存（超出上限时淘汰最旧的条目，避免长会话里无限增长）
+  if (cachedSystemDynamicInfo.size >= SYSTEM_DYNAMIC_CACHE_MAX) {
+    const oldest = cachedSystemDynamicInfo.keys().next().value;
+    if (oldest !== undefined) cachedSystemDynamicInfo.delete(oldest);
+  }
+  cachedSystemDynamicInfo.set(cwd, info);
 
   logger.info('SystemEnvironment', `System dynamic info collected in ${Date.now() - t0}ms`);
   return info;

@@ -262,7 +262,9 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     }
 
     const messagePayload = {
-      type: props.hasActiveQuery ? 'queueMessage' as const : 'sendMessage' as const,
+      // 用户消息只有一个 wire 类型：是否排队由宿主按引擎忙碌状态决定，
+      // 排队项由宿主回推 queuedMessage 建立（见 DEVELOPMENT.md 第 7.3 节）。
+      type: 'sendMessage' as const,
       sessionId,
       content: messageContent,
       images: pastedImages.length > 0 ? pastedImages : undefined,
@@ -302,20 +304,8 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       }, ...prev];
     });
 
-    if (props.hasActiveQuery) {
-      // 当前有查询在进行，消息排队（按会话绑定，切换会话后仍归属正确会话）
-      // 同时保存文件上下文，避免 queryEnd 重新投递时丢失 filePath/selectedLines
-      const queuedPayload: QueuedMessagePayload = {
-        sessionId,
-        content: messageContent,
-        images: pastedImages.length > 0 ? pastedImages : undefined,
-        filePath: props.currentFile || undefined,
-        selectedLines: props.selectedLines || undefined,
-        fileHidden: props.fileHidden,
-      };
-      props.queuedMessageRef.current.set(sessionId, queuedPayload);
-      props.setQueuedMessage(queuedPayload);
-    }
+    // 排队项不在发送侧乐观登记：宿主入队后按引擎忙碌状态回推 queuedMessage，
+    // 保证「登记」与「清除」都只有宿主一个来源（见 DEVELOPMENT.md 第 12.7 节）。
 
     // Save to per-session command history
     if (sessionId && messageContent.trim()) {
