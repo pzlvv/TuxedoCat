@@ -949,7 +949,7 @@ before/after 两个虚拟文档组成的 diff 标签，Electron 空实现（diff
 
 | 文件 | 内容 | 写入口 |
 | --- | --- | --- |
-| `~/<CONFIG_DIR_NAME>/settings.json` | 全局配置（llm / mcp / uiLanguage / highlightLanguages / shortcut…） | `updateSettingsJson` |
+| `~/<CONFIG_DIR_NAME>/settings.json` | 全局配置（llm / mcp / uiLanguage / highlightLanguages / theme / shortcut…） | `updateSettingsJson` |
 | `<conversations>/<project>/settings.json` | 该目录对应的 `workspacePath`（反查用） | `ensureProjectSettings` |
 
 两个宿主共用 `src/host/settingsFile.ts`：`updateSettingsJson` 串行化「读-改-写」（避免并发写坏
@@ -1872,6 +1872,8 @@ Electron 的视图句柄：`ElectronUIHost.webviewHandleFor(source)` 把来源 `
   其取值不影响跨端一致性，且无业务分支依赖「是否已注入」。
 - 抛错的项（总线 / 项目根 / 扩展路径 / 等待用户）在骨架内保证注入，
   因此启动完成后不存在未注入状态。
+- 语言变化用 `onCoreLocaleChanged(listener)` 通知订阅者（Electron 原生菜单据此重建）；
+  只在**有效语言**真正变化时触发，单个订阅者抛错不影响其它订阅者。
 
 `sessionResources.isSessionIdle` 对等待用户读取器的调用位于骨架保证注入之后，
 不再用 try/catch 吞掉「未注入」。
@@ -2027,6 +2029,7 @@ webview 只按能力渲染，不判断宿主类型：
 | 消费点 | 读取 | 行为 |
 | --- | --- | --- |
 | `App.tsx` 顶栏 | `rendersConversationListInWebview(hostInfo)` | `true` 时渲染对话历史下拉（`Dropdown`）；`false` 时由 Electron 原生侧栏接管，webview 不渲染 |
+| `App.tsx` 历史对话按钮提醒 | `sessionRuntimeStatesRef` 的 `waiting` + 本视图 `conversations` 的 `sessionId` 集合 | 单视图（VS Code / Electron 悬浮窗）下，**本视图对话列表里**有「其它会话」在等待用户操作（ask user / 权限确认）时给历史按钮加黄色呼吸提醒（`history-btn--attention`）。只认本视图列表里的会话：列表按工作目录读盘（`loadConversationList(workspace)`），因此其它工作目录的 `waiting` 不提醒——浮窗只能看 / 切到本目录的对话，提醒了也过不去 |
 | `App.tsx` 顶栏 | `newConversation === 'webview'` | 渲染「新建对话」按钮；`'host'` 时由侧栏按钮触发 |
 | `App.tsx` 顶栏 | `canCloseConversation(hostInfo)` | `true` 时渲染关闭按钮，发 `{ type: 'closeWebview' }`（销毁 webview，释放渲染进程） |
 | `App.tsx.navigateToSession()`（会话跳转的唯一 UI 入口，内部委托 `webviewEnv.navigateToConversation()`） | `openConversationModeOf(hostInfo)` | 对话列表 / 对话树 / 子代理 From 链接 / 返回父会话跳转时：`openConversation` 只发消息交给宿主另开视图；`loadConversation` 在当前视图内原地加载。任何入口都不得直连 `navigateToConversation`，否则会绕过 loading（统一入口见 9.3.1） |
@@ -2298,10 +2301,11 @@ dropSession(sessionId: string): void {
 | 方面 | 现状 |
 | --- | --- |
 | 打开集合 | `openWorkspaces: string[]`（主进程进程内事实，按标签页顺序）；活动项 `workspacePath`（打开集合中的一项） |
-| 标签页 | 标题栏（原菜单栏区域）：`titlebar:workspaces` 下发 `{ workspaces: [{path,name}], activeWorkspace }`（与 `titlebar:get-state` 同字段名），标题栏渲染标签页（活动项高亮、每项可关闭、键盘可切换、可拖拽排序）+「添加」按钮；总宽超出时逐张收窄到 56px 下限后横向滚动；打开集合为空时不渲染标签页区域（添加入口在侧栏空态与菜单）；浮窗模式隐藏菜单图标与标签页 |
+| 标签页 | 标题栏（原菜单栏区域）：`titlebar:workspaces` 下发 `{ workspaces: [{path,name}], activeWorkspace, activity }`（与 `titlebar:get-state` 同字段名），标题栏渲染标签页（活动项高亮、每项可关闭、键盘可切换、可拖拽排序）+「添加」按钮；总宽超出时逐张收窄到 56px 下限后横向滚动；打开集合为空时不渲染标签页区域（添加入口在侧栏空态与菜单）；浮窗模式隐藏菜单图标与标签页 |
+| 标签页流水灯 | 每个工作目录的聚合运行时状态（`activity`：路径 → `waiting` / `running`），由主进程 `collectWorkspaceActivity()` 读 core `sessionRuntime` + 会话工作目录表按会话归并：该目录下任一会话在等待用户操作 → `waiting`（黄，优先），否则任一非 idle → `running`（蓝）。状态流每次变化（`setStatusListener` 里）另推 `titlebar:workspace-activity`，渲染层就地切换 class 不重建标签页（重建会打断流水动画、丢 hover / 焦点 / 拖拽状态）；配色与动画复用侧栏 / webview 对话列表的 `running-bar` |
 | 标签页拖拽排序 | 渲染层用 HTML5 drag 事件（`dragstart` / `dragover` / `drop` / `dragend`）：越过目标中线决定插到其前 / 后，`drop-before` / `drop-after` 伪元素画放置指示线；提交完整排列经 `titlebar:reorder-workspaces` → `reorderWorkspaces()`，主进程按去重键校验「同组目录的排列」后才写入打开集合并落盘，非法排列整次忽略；活动项与已打开视图不受顺序影响 |
 | 非活动标签页预加载 | 首次启动（`createMainWindow` 打开活动目录的新对话之后）对打开集合里**非活动**的每个目录调用 `chatViews.preloadWorkspace(ws)`（错开 400ms + 250ms×i，避免启动瞬间同时拉起多个渲染进程）；实现复用后台预热机制（`--prewarm=1` 后台加载渲染、跳过会话初始化），切到该目录时 `setActiveWorkspace` 命中它直接 `show()` + 补发激活消息，不再现建视图 + 等页面加载。`new-` 临时 key 带自增序号，避免同毫秒连续创建撞 key；`setActiveWorkspace` 不再销毁其它目录的预热视图（它们是那些标签页的预加载视图，关闭目录 / 窗口时统一销毁） |
-| 菜单 | Windows / Linux 全部收编为单一分区 `main`，标题栏用一个图标按钮表示；条目：添加工作目录 / 添加最近的工作目录 ▸ / 快捷键 / 开发者工具 / 关于 / 退出。macOS 沿用系统菜单栏分区 |
+| 菜单 | Windows / Linux 全部收编为单一分区 `main`，标题栏用一个图标按钮表示；条目：添加工作目录 / 添加最近的工作目录 ▸ / 主题 ▸ / 快捷键 / 开发者工具 / 关于 / 退出。macOS 沿用系统菜单栏分区 |
 | 侧栏头部 | 「搜索框 + 新对话」：搜索框按标题过滤当前活动工作目录的对话列表 |
 | 空态 | 打开集合为空时，侧栏显示「添加工作目录」+ 最近工作目录（点击即添加）；聊天区保持纯提示 |
 | 添加 | `openWorkspaceDialog()` 支持多选，`addWorkspaces(paths)` 按顺序加入打开集合、末项置为活动项；已在集合中的目录直接切为活动项 |
@@ -2338,6 +2342,11 @@ VS Code 推给 webview（`sessionRuntimeStates`），Electron 推给侧栏，web
 列表流也有一份快照：基类 `refresh()` 把最近一次列表存进 `getCachedList()`，
 Electron 的 `sidebar:get-conversations` 直接读它，不重复读盘；工作区切换时
 `invalidateCachedList()` 丢弃快照，下次拉取重新读。
+
+状态流是「变化时才推」的，没有快照：侧栏初始化 / 重载时用 `sidebar:get-session-states`
+拉一次 core `sessionRuntime` 的当前全量（`getSessionRuntimeStates()`）播种，补上推送
+早于侧栏就绪造成的空档。**切工作目录不清空这份状态**——`sessionRuntime` 是跨工作目录的
+全局快照、会话视图切目录时保留，清空后没有任何通道能补回来，流水灯会一直不亮。
 
 **bootstrap / 传输层**（`src/extension.ts` / `electron/main.ts` + `electron/preload.ts`）
 
@@ -2380,6 +2389,7 @@ MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 
 | --- | --- | --- |
 | 窗口框架 | `frame: false`（macOS 用 `titleBarStyle: 'hiddenInset'`） | 系统标题栏与系统菜单栏都不再绘制，改由顶部 38px 的 `titlebarView` 自绘 |
 | 菜单定义 | `buildMenuSections()` 单一来源 | 同时驱动原生 `Menu`（macOS 系统菜单栏 / role 类行为）与自绘菜单（`toTitlebarMenuNodes` 保留 `submenu` 层级） |
+| 主题 | `nativeTheme.themeSource`（`system` / `light` / `dark`）+ 聊天视图 `setTheme` 消息 | 模式持久化在全局 settings.json 的 `theme` 字段，菜单「主题 ▸」切换（`applyThemeMode`）。`themeSource` 驱动原生配色、各渲染进程的 `prefers-color-scheme`（自绘标题栏 / 侧栏 / Monaco 预览的浅色覆盖）与窗口兜底底色；聊天 webview 不监听 `prefers-color-scheme`，由 `uiHost.onThemeChanged(null)` 广播 `setTheme`，新视图用 `--theme=` + `window.__initialTheme` 保证首帧底色正确。跟随系统时 OS 切换走 `nativeTheme.on('updated')`：除了刷新底色与广播主题，还要**作废自绘菜单缓存**——菜单配色是生成 HTML 时烘进内联样式的，缓存复用会让菜单停留在旧配色 |
 | 二级菜单 | 飞出面板（`.flyout`） | 「最近打开的工作目录」等子菜单默认收起，悬停/点击父项才展开；面板绝对定位在主面板右侧，右侧放不下时改向左展开（`offsetX` 为负） |
 | 二级菜单不裁切 | 视图尺寸 = 主面板 ∪ 飞出面板；**页面底色与视图背景都要透明** | 视图比主面板大时多出的区域必须能透出下方内容。实测 `WebContentsView` 的透明区域可与下方兄弟视图正常混叠（无需窗口级 `transparent`）。注意 `view.setBackgroundColor('#00000000')` 与页面 `background: transparent` **两者都要**：只改页面会露出视图默认的白底（表现为白边，已踩过）。展开/收起时页面重新上报尺寸，主进程 `setBounds` 调整视图 |
 | 下拉菜单 | 独立 `WebContentsView` | 不用 `BrowserWindow`：开窗有系统动画与层级窗口合成，会「闪一下」；视图只是同窗口内的一块合成区域，摆位即显示。首次打开测量尺寸并缓存 |

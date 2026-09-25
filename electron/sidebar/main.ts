@@ -77,6 +77,8 @@ interface SessionRuntimeState {
 interface SidebarAPI {
   getConversations: () => Promise<ConversationMeta[]>;
   getLoadedSessions: () => Promise<string[]>;
+  /** 运行时状态全量快照（初始化 / 重载时拉取播种；推送只在状态变化时发生） */
+  getSessionStates: () => Promise<SessionRuntimeState[]>;
   getActiveSession: () => Promise<string | null>;
   getWorkspaces: () => Promise<WorkspacesState>;
   addWorkspaces: (paths?: string[]) => void;
@@ -671,8 +673,10 @@ function subscribe(): void {
     // 代次 +1：此前发出的 getConversations 回包已属于旧目录，回来时必须丢弃
     listGeneration += 1;
     const generation = listGeneration;
-    // 清空视图层/运行时状态，重新拉取该目录的列表与状态
-    sessionStates = new Map();
+    // 列表按目录重新拉取；loaded 也重拉（视图集合的 owner 是 ChatViewManager）。
+    // 运行时状态（流水灯 / 等待标记）不清空：sessionRuntime 是跨工作目录的全局快照，
+    // 会话视图切目录时保留，而状态流「只在变化时推」——清空后没有任何通道能补回来，
+    // 流水灯就会在切换标签页 / 切到别目录的对话后一直不亮。
     loadedSessions = new Set();
     if (activeChanged) {
       // 旧目录的列表不能继续展示（否则切换后一瞬间还能看到/点开上一个目录的对话）
@@ -736,11 +740,12 @@ async function init(): Promise<void> {
 
   const generation = listGeneration;
   try {
-    const [list, active, workspaces, loaded] = await Promise.all([
+    const [list, active, workspaces, loaded, states] = await Promise.all([
       window.sidebarAPI.getConversations(),
       window.sidebarAPI.getActiveSession(),
       window.sidebarAPI.getWorkspaces(),
       window.sidebarAPI.getLoadedSessions(),
+      window.sidebarAPI.getSessionStates(),
     ]);
     // 初始化期间用户已切换工作目录（workspaces-changed 已把状态更新并重新拉取）：
     // 这批结果属于旧状态，丢弃，避免覆盖新目录的列表
@@ -749,6 +754,10 @@ async function init(): Promise<void> {
     activeSessionId = active;
     workspacesState = workspaces ?? { workspaces: [], active: null, recent: [] };
     loadedSessions = normalizeLoadedSessions(loaded);
+    // 播种运行时状态：状态流只在变化时推，若推送早于侧栏就绪（或侧栏刚重载），
+    // 不主动拉一次就会永远缺这份快照，流水灯 / 等待标记不亮。
+    // 仅在本进程尚无推送时播种，避免晚到的旧快照覆盖订阅期间收到的更新状态。
+    if (sessionStates.size === 0) sessionStates = normalizeSessionStates(states);
     render();
   } catch (err) {
     listEl.innerHTML = `<div class="empty">加载失败: ${escapeHtml(String(err))}</div>`;

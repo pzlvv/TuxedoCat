@@ -69,11 +69,17 @@
       }
     },
     {
+      // 等价于 `npm run electron:debug`，额外透传隐藏的多实例测试参数：
+      // VS Code 的 npm 任务类型只认 script/path、不支持追加参数，
+      // 因此这里改用 shell + `npm run ... -- <args>`。
+      // 固定 id（而非裸 --multi-instance）是为了让 userData 稳定，
+      // 工作区 / 窗口位置能跨调试会话保留。
       "label": "launch:app:debug",
       "dependsOn": ["build:app"],
       "dependsOrder": "sequence",
-      "type": "npm",
-      "script": "electron:debug",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "electron:debug", "--", "--multi-instance=debug"],
       "isBackground": true,
       "problemMatcher": {
         "owner": "electron",

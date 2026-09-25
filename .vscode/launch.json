@@ -10,8 +10,12 @@
   //     启动参数加了 --disable-extensions 等隔离项，并跳过欢迎页 / 工作区信任，
   //     避免宿主窗口刚起来就被顶掉或卡在弹窗上。
   //   - Electron：main.ts 里有单实例锁，上一次调试残留的进程没退干净时，
-  //     新进程会立刻 app.quit()，表现为窗口一闪而过。启动前请确认没有残留进程
-  //     （任务管理器结束 electron.exe），或改用 `npm run electron` 单独验证。
+  //     新进程会立刻 app.quit()，表现为窗口一闪而过。下面两个 Electron 配置
+  //     都带上了隐藏的 `--multi-instance=<id>` 测试参数（见 electron/main.ts），
+  //     跳过单实例锁并把 userData 隔离到独立目录，因此不会被残留进程顶掉。
+  //     用固定 id 而不是裸 `--multi-instance`：后者每次启动都会换一个随机目录，
+  //     工作区 / 窗口位置无法跨次保留；但同一 id 并发启动仍会共用同一份
+  //     userData，要并行多开请换 id。
   "version": "0.2.0",
   "configurations": [
     {
@@ -54,6 +58,9 @@
       "noDebug": true,
       "cwd": "${workspaceFolder}",
       "program": "${workspaceFolder}/scripts/electron-launch.js",
+      // 隐藏的多实例测试参数（electron-launch.js 会把参数透传给 main.cjs）：
+      // 跳过单实例锁 + userData 隔离，可反复启动多个实例
+      "args": ["--multi-instance=dev"],
       "console": "integratedTerminal",
       // 清掉可能存在的全局设置，避免 electron 以纯 Node 模式运行
       "env": {
@@ -67,7 +74,9 @@
       }
     },
     {
-      // 调试 Electron 主进程：先构建，再用 --inspect=9229 启动并附加调试器
+      // 调试 Electron 主进程：先构建，再用 --inspect=9229 启动并附加调试器。
+      // 应用由 preLaunchTask `launch:app:debug` 拉起（npm 任务类型不支持透传参数，
+      // 该任务已改为 shell 命令并带上 --multi-instance=debug）。
       "name": "Debug App (Electron)",
       "type": "node",
       "request": "attach",

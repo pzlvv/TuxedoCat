@@ -287,7 +287,9 @@ export class ElectronUIHost implements UIHost {
       title: init.title || PRODUCT_NAME,
       icon: path.join(APP_ROOT, 'assets', 'logo.png'),
       autoHideMenuBar: true,
-      backgroundColor: '#1e1e1e',
+      // 兜底底色与 Monaco 的 vs / vs-dark 编辑器底色一致（见 electron/monaco/main.ts），
+      // 页面加载完成前不闪另一种主题的色块
+      backgroundColor: nativeTheme.shouldUseDarkColors ? '#1e1e1e' : '#ffffff',
       webPreferences: {
         sandbox: false,
         nodeIntegration: false,
@@ -338,7 +340,8 @@ export class ElectronUIHost implements UIHost {
         title: 'Mermaid Preview',
         icon: path.join(APP_ROOT, 'assets', 'logo.png'),
         autoHideMenuBar: true,
-        backgroundColor: '#1a1a1f',
+        // 与 getMermaidPreviewHtml 的 body 底色一致（isDark ? '#1a1a1f' : '#ffffff'）
+        backgroundColor: nativeTheme.shouldUseDarkColors ? '#1a1a1f' : '#ffffff',
         webPreferences: { sandbox: true },
       });
       this.mermaidWindow = win;

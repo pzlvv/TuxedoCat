@@ -1520,6 +1520,14 @@ const MessagesView = memo(({
   // sticky 消息」，即当前置顶的那条。
   const [pinnedMessage, setPinnedMessage] = useState<Message | null>(null);
   /**
+   * 当前置顶消息的高度（px）。滚动条由滚动容器自己绘制、且内容被裁剪在 scrollport 内，
+   * 负边距最多只能把置顶消息的背景铺到 scrollport 边缘，盖不住右侧的滚动条 gutter。
+   * 这里记录高度，供滚动容器父级里的覆盖层对齐（见 render 中的 pin-gutter-cover）。
+   */
+  const [pinnedHeight, setPinnedHeight] = useState(0);
+  /** 滚动容器右侧滚动条 gutter 宽度（px），为 0 时说明滚动条是 overlay 模式，无需覆盖 */
+  const [pinnedGutter, setPinnedGutter] = useState(0);
+  /**
    * 高于可视区的用户消息不参与吸附：sticky 元素比视口还高时无法滚动浏览，
    * 会把后续回复整屏挡住（典型场景是点开「显示完整内容」展开超长消息）。
    * 这类消息保持普通文档流布局，等折叠/窗口变高后再恢复吸附。
@@ -1541,12 +1549,24 @@ const MessagesView = memo(({
   /** 从 sticky 切回普通流时需要补偿滚动的容器（保持视觉位置不变） */
   const pendingUnstickRef = useRef<HTMLDivElement | null>(null);
 
+  /**
+   * 取消置顶：同时收起父级里盖滚动条的覆盖层。
+   * 引用保持稳定，供置顶重算与「点击置顶消息跳回原位」共用同一份语义。
+   */
+  const clearPinned = useCallback(() => {
+    setPinnedMessage(prev => (prev === null ? prev : null));
+    setPinnedHeight(prev => (prev === 0 ? prev : 0));
+  }, []);
+
   const measurePinnedMessage = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
     const containerTop = container.getBoundingClientRect().top;
     const containerHeight = container.clientHeight;
     const oversized = oversizedPinnedRef.current;
+    // 滚动条占据 offsetWidth - clientWidth（容器无边框），置顶覆盖层按它对齐宽度
+    const gutter = container.offsetWidth - container.clientWidth;
+    setPinnedGutter(prev => (prev === gutter ? prev : gutter));
 
     // 复查已标记「超高」的消息：折叠或窗口变高后应恢复吸附
     if (oversized.size > 0) {
@@ -1568,7 +1588,7 @@ const MessagesView = memo(({
 
     const entries = pinEntriesRef.current;
     if (entries.length === 0) {
-      setPinnedMessage(prev => (prev === null ? prev : null));
+      clearPinned();
       return;
     }
     let lo = 0;
@@ -1584,13 +1604,13 @@ const MessagesView = memo(({
       }
     }
     if (found < 0) {
-      setPinnedMessage(prev => (prev === null ? prev : null));
+      clearPinned();
       return;
     }
     const candidate = entries[found];
     const candidateH = candidate.el.getBoundingClientRect().height;
     if (oversized.has(candidate.msg)) {
-      setPinnedMessage(prev => (prev === null ? prev : null));
+      clearPinned();
       return;
     }
     // 比视口还高 → 取消吸附，并登记滚动补偿（等 DOM 切回普通流后执行）
@@ -1602,11 +1622,12 @@ const MessagesView = memo(({
         next.add(candidate.msg);
         return next;
       });
-      setPinnedMessage(prev => (prev === null ? prev : null));
+      clearPinned();
       return;
     }
     setPinnedMessage(prev => (prev === candidate.msg ? prev : candidate.msg));
-  }, [containerRef]);
+    setPinnedHeight(prev => (prev === candidateH ? prev : candidateH));
+  }, [containerRef, clearPinned]);
 
   /** 置顶重算的按帧调度（滚动、容器尺寸变化、消息展开/收起共用） */
   const pinnedMeasureRafRef = useRef<number | null>(null);
@@ -1650,9 +1671,9 @@ const MessagesView = memo(({
     el.style.position = prevPosition;
     // 让消息回到内容区顶部，此时它恰好脱离吸附状态
     container.scrollTop = Math.max(0, staticTop - MESSAGES_CONTAINER_PADDING_TOP);
-    // 跳转后消息已不再吸附，立即清掉置顶态，避免后续展开时残留整宽样式闪一帧
-    setPinnedMessage(prev => (prev === null ? prev : null));
-  }, [containerRef]);
+    // 跳转后消息已不再吸附，立即清掉置顶态（含覆盖层高度），避免后续展开时残留整宽样式闪一帧
+    clearPinned();
+  }, [containerRef, clearPinned]);
 
   // 点击置顶消息：跳回它在对话流中的原始位置
   const handlePinnedMessageClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -2268,6 +2289,29 @@ const MessagesView = memo(({
         </>
       )}
       </div>
+      {/* 滚动容器会把内容裁剪在 scrollport 内，sticky 消息的负边距最多铺到 scrollport
+          边缘，盖不住右侧滚动条 gutter。这里在父级（relative）补一块与置顶消息等高的
+          覆盖层：它按定位元素绘制，压在滚动容器（含其滚动条）之上，于是置顶消息看起来
+          是整宽盖住了滚动条。overlay 滚动条（gutter=0）时无需覆盖。 */}
+      {pinnedMessage && pinnedHeight > 0 && pinnedGutter > 0 && (
+        <div
+          aria-hidden
+          className="pin-gutter-cover"
+          style={{
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            // +1px 与置顶消息背景重叠，避免取整后留下一条缝（同色不可见）
+            width: pinnedGutter + 1,
+            height: pinnedHeight,
+            backgroundColor: isDark ? '#000000' : '#ffffff',
+            borderBottom: `1px solid ${colors.border}`,
+            boxSizing: 'border-box',
+            pointerEvents: 'none',
+            zIndex: 20,
+          }}
+        />
+      )}
       {showLoadingOverlay && (
         <div
           className={`conversation-loading-overlay${loadingFading ? ' conversation-loading-overlay-fading' : ''}`}

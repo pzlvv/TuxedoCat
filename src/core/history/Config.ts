@@ -402,6 +402,52 @@ export function highlightLanguagesMutator(
 }
 
 /**
+ * 应用主题模式：
+ * - 'system' 跟随系统（产品默认值）
+ * - 'light'  强制浅色
+ * - 'dark'   强制深色
+ *
+ * 持久化在全局 settings.json 的 `theme` 字段（THEME_FIELD）。
+ */
+export type ThemeMode = 'system' | 'light' | 'dark';
+
+/** settings.json 中主题模式的字段名 */
+export const THEME_FIELD = 'theme';
+
+/** 判断任意值是否为合法主题模式 */
+export function isThemeMode(value: unknown): value is ThemeMode {
+  return value === 'system' || value === 'light' || value === 'dark';
+}
+
+/**
+ * 同步读取 settings.json 中的主题模式。
+ * 未配置、读取失败或取值非法时返回 'system'（跟随系统）。
+ */
+export function readThemeSync(): ThemeMode {
+  try {
+    const settingsPath = join(getConfigHomeDir(), 'settings.json');
+    const content = readFileSync(settingsPath, 'utf-8');
+    const cfg = JSON.parse(content);
+    const value = cfg?.[THEME_FIELD];
+    return isThemeMode(value) ? value : 'system';
+  } catch {
+    return 'system';
+  }
+}
+
+/**
+ * 构造「把主题模式写入 settings.json」的修改器。
+ *
+ * 与唤醒快捷键一致：core 只描述**怎么改**，**写盘由宿主承担**
+ * （`UIHost.updateSettingsJson`，见 DEVELOPMENT.md 第 2 节规则 9）。
+ */
+export function themeMutator(mode: ThemeMode): (cfg: Record<string, any>) => void {
+  return (cfg) => {
+    cfg[THEME_FIELD] = mode;
+  };
+}
+
+/**
  * 同步读取 settings.json 中的唤醒快捷键（Electron accelerator 形式）。
  * 未配置、读取失败或配置非法时返回默认值 Ctrl+Alt+X。
  */

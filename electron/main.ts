@@ -19,7 +19,7 @@ import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import { ChatViewManager, SIDEBAR_WIDTH, TITLEBAR_HEIGHT } from './ChatViewManager.js';
+import { ChatViewManager, SIDEBAR_WIDTH, TITLEBAR_HEIGHT, chatViewBackgroundColor } from './ChatViewManager.js';
 import {
   getTitlebarMenuHtml,
   TITLEBAR_MENU_WIDTH,
@@ -39,9 +39,12 @@ import {
   formatAcceleratorForDisplay,
   normalizeAccelerator,
 } from '../src/core/utils/shortcut.js';
-import { tt } from '../src/core/i18n.js';
+import { tt, onCoreLocaleChanged } from '../src/core/i18n.js';
 import { getShortcutDialogHtml } from './shortcutDialogHtml.js';
 import { resolveSmartTitle } from '../src/core/history/smartNaming.js';
+// 仅类型：主题模式的读写实现来自 core 的 Config（运行时用 require 惰性加载，
+// 避免主进程模块初始化阶段就拉起 core 的事件总线等依赖）。
+import type { ThemeMode } from '../src/core/history/Config.js';
 
 /**
  * 判断 URL 是否为需要在系统浏览器打开的外部链接。
@@ -121,7 +124,14 @@ interface MenuItemDef {
   enabled?: boolean;
   /** 自绘菜单里的危险色（如删除/退出类） */
   danger?: boolean;
-  type?: 'separator';
+  /**
+   * 菜单项类型：
+   * - separator 分隔线
+   * - radio / checkbox 可勾选项（原生菜单用对应类型，自绘菜单画勾）
+   */
+  type?: 'separator' | 'radio' | 'checkbox';
+  /** radio / checkbox 是否选中 */
+  checked?: boolean;
   /** 子菜单：原生菜单保留层级，自绘菜单平铺为 header + items */
   submenu?: MenuItemDef[];
   /** macOS 原生菜单角色（与 run 二选一，role 优先） */
@@ -204,6 +214,12 @@ let webviewUi: WebViewUI | undefined;
 let coreShutdown: (() => void) | undefined;
 /** 当前宿主实现（initCore 创建） */
 let uiHost: ElectronUIHost | undefined;
+/**
+ * 当前生效的主题模式（内存事实）。
+ * 启动时从 settings.json 载入，菜单里切换后立即更新——菜单勾选态据此渲染，
+ * 不直接读盘：写盘是异步队列，读盘可能读到尚未落盘的旧值。
+ */
+let currentThemeMode: ThemeMode = 'system';
 /** 系统托盘：提供唤醒入口与退出入口（窗口不会因最小化而隐藏到托盘） */
 let tray: Tray | undefined;
 /** 当前已注册的全局唤醒快捷键（快捷键设置对话框打开时临时注销） */
@@ -239,35 +255,80 @@ let focusRepaintTimer: ReturnType<typeof setTimeout> | null = null;
 const APP_ROOT = path.resolve(__dirname, '..');
 
 /**
+ * 隐藏的多实例开关（不对外公开，仅供本地测试）。
+ *
+ *   --multi-instance           随机实例后缀
+ *   --multi-instance=<id>      指定实例后缀（便于脚本重复启动同一实例）
+ *
+ * 命中时跳过单实例锁，并把 userData 隔离到 `<EXTENSION_NAME>-multi-<id>`：
+ * 多开时 Chromium 的 profile 与窗口位置 / 工作目录状态都在同一份 userData 里，
+ * 不隔离会互相覆盖。注意对话与 settings.json 仍在用户主目录的共享配置目录下，
+ * 多实例共用（测试时留意并发写）。
+ *
+ * 同一 `<id>` 并发启动仍会共用同一份 userData（profile / 窗口状态互相覆盖），
+ * 固定 id 只用于「跨次启动保留状态」；并发多开请用不同 id。
+ */
+const multiInstanceArg = process.argv.find(
+  (a) => a === '--multi-instance' || a.startsWith('--multi-instance='),
+);
+const multiInstance = multiInstanceArg !== undefined;
+/** 多实例后缀：显式 <id> 取过滤后的值，否则用短随机串（同一次启动内稳定） */
+const multiInstanceSuffix = (() => {
+  if (!multiInstance) return '';
+  const explicit = multiInstanceArg!.startsWith('--multi-instance=')
+    ? multiInstanceArg!.slice('--multi-instance='.length)
+    : '';
+  const safe = explicit.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32);
+  return safe || crypto.randomBytes(3).toString('hex');
+})();
+
+/**
  * 统一 userData 目录（工作目录状态 / 窗口位置 / 缓存都落在这里）。
  *
  * 不指定时 Electron 按应用名推导：开发态用 `electron dist-electron/main.cjs` 启动时
  * 应用名是默认的 "Electron"，打包态是 productName（含空格），两者会落到不同目录。
  * 这里显式指向配置里的应用目录名（`src/config/project.json` 的 extensionName），
  * 保证开发态与打包态读写同一份状态。必须在 `app.whenReady()` 之前设置。
+ *
+ * --multi-instance 时追加实例后缀，让每个实例有独立 userData。
  */
-app.setPath('userData', path.join(app.getPath('appData'), EXTENSION_NAME));
+app.setPath(
+  'userData',
+  path.join(
+    app.getPath('appData'),
+    multiInstance ? `${EXTENSION_NAME}-multi-${multiInstanceSuffix}` : EXTENSION_NAME,
+  ),
+);
 
-// 单实例锁：避免多开导致会话文件冲突
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
-  app.quit();
-} else {
-  app.on('second-instance', () => {
-    // 启动早期 mainWindow 可能尚未创建，此时不做处理，避免与 main() 的初始化竞争
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      showMainWindowFromTray();
-    }
-  });
-
+// 单实例锁：避免多开导致会话文件冲突（--multi-instance 测试开关命中时跳过）
+if (multiInstance) {
   void main();
+} else {
+  const gotLock = app.requestSingleInstanceLock();
+  if (!gotLock) {
+    app.quit();
+  } else {
+    app.on('second-instance', () => {
+      // 启动早期 mainWindow 可能尚未创建，此时不做处理，避免与 main() 的初始化竞争
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        showMainWindowFromTray();
+      }
+    });
+
+    void main();
+  }
 }
 
 async function main(): Promise<void> {
   await app.whenReady();
 
-  // ── 强制 dark 配色 ──
-  nativeTheme.themeSource = 'dark';
+  // ── 主题 ──
+  // 读取持久化偏好（settings.json 的 theme 字段，默认跟随系统）并应用。
+  // themeSource 同时驱动原生配色与所有渲染进程的 prefers-color-scheme，
+  // 自绘标题栏 / 侧栏据此切浅色样式；聊天 webview 由 setTheme 消息单独同步。
+  // 必须在 createMainWindow 之前设置：窗口 backgroundColor 按当前主题取值。
+  currentThemeMode = readThemeModeFromSettings();
+  nativeTheme.themeSource = currentThemeMode;
 
   // ── 工作目录 ──
   // 不默认使用当前工作目录：恢复上次打开的打开集合与活动项；
@@ -294,15 +355,27 @@ async function main(): Promise<void> {
 
   createMainWindow();
   setupTray();
-  setupMenu();
   // 系统主题变化时同步所有聊天视图（只注册一次，避免菜单重建时重复注册）。
   // onThemeChanged(null) 广播而不是只发活动视图：隐藏的对话视图与后台预热视图
   // 同样要更新，否则它们被切回前台时会带着过期的主题。
+  // 跟随系统时 OS 切换也会走这里，因此一并刷新窗口 / 视图的兜底背景色。
   nativeTheme.on('updated', () => {
     uiHost?.onThemeChanged(null);
+    chatViews?.setBackgroundColor(chatViewBackgroundColor());
+    mainWindow?.setBackgroundColor(windowBackgroundColor());
+    // 自绘菜单的配色是生成 HTML 时烘进内联样式的，且打开时命中缓存直接复用页面；
+    // 不在这里作废的话，跟随系统模式下 OS 切换主题后菜单仍会显示旧配色。
+    closeTitlebarMenu();
+    invalidateTitlebarMenuCache();
   });
   setupIpc();
   initCore();
+  // 菜单必须等 core 语言初始化之后再建：bootstrapCore（initCore 内）才会
+  // setCoreLocale / setCoreUiLanguage，提前建菜单会用到默认英文，
+  // 之后任意一次重建又变成中文，表现为菜单语言「一会儿中文一会儿英文」。
+  // 运行期在设置面板改语言不会重建菜单，这里订阅语言变化补一次。
+  onCoreLocaleChanged(() => setupMenu());
+  setupMenu();
   // 注册全局唤醒快捷键（settings.json 中的 shortcut，默认 Ctrl+Alt+X）
   // 注册失败时弹窗提示，避免静默失效
   registerWakeShortcut();
@@ -413,7 +486,7 @@ function createMainWindow(): void {
     minHeight: minSize.height,
     title: windowTitleForCurrentState(),
     icon: path.join(APP_ROOT, 'assets', 'logo.png'),
-    backgroundColor: '#16161b',
+    backgroundColor: windowBackgroundColor(),
     show: false,
     // ── 自绘标题栏 ──
     // Windows/Linux：去掉系统边框（同时去掉系统标题栏与系统菜单栏），
@@ -714,6 +787,49 @@ function createMainWindow(): void {
       focusRepaintTimer = null;
     }
   });
+}
+
+/** 读取 settings.json 中持久化的主题模式（失败时回退跟随系统） */
+function readThemeModeFromSettings(): ThemeMode {
+  try {
+    const { readThemeSync } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
+    return readThemeSync();
+  } catch {
+    return 'system';
+  }
+}
+
+/** 主窗口 / 标题栏兜底背景色：与自绘 UI 的深/浅底色保持一致，避免加载期闪白或闪黑 */
+function windowBackgroundColor(): string {
+  return nativeTheme.shouldUseDarkColors ? '#16161b' : '#f4f4f5';
+}
+
+/**
+ * 应用主题模式（菜单「主题」子菜单的动作）。
+ *
+ * - `nativeTheme.themeSource`：驱动系统级配色、原生对话框，以及各渲染进程的
+ *   prefers-color-scheme（自绘标题栏 / 侧栏 / Monaco 预览据此切换深浅）；
+ * - 显式 `onThemeChanged(null)`：聊天 webview 不监听 prefers-color-scheme，
+ *   主题值靠 setTheme 消息下发；重复选择同一项时不会触发 nativeTheme 的
+ *   updated 事件，因此这里主动广播一次，保证值一致；
+ * - 写盘是宿主能力（core 只读不写），走 `updateSettingsJson` 的串行队列；
+ * - 重建菜单：刷新子菜单当前选中项的勾选态。
+ */
+function applyThemeMode(mode: ThemeMode): void {
+  currentThemeMode = mode;
+  nativeTheme.themeSource = mode;
+  try {
+    const { themeMutator } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
+    void uiHost?.updateSettingsJson(themeMutator(mode)).catch((err: unknown) => {
+      console.error('[main] persist theme failed:', err);
+    });
+  } catch (err) {
+    console.error('[main] persist theme failed:', err);
+  }
+  uiHost?.onThemeChanged(null);
+  chatViews?.setBackgroundColor(chatViewBackgroundColor());
+  mainWindow?.setBackgroundColor(windowBackgroundColor());
+  setupMenu();
 }
 
 /** 读取 settings.json 中的唤醒快捷键（失败时返回默认值） */
@@ -1467,11 +1583,49 @@ function syncWindowTitle(): void {
   mainWindow.setTitle(windowTitleForCurrentState());
 }
 
+/** 标签页流水灯的聚合状态：waiting（黄，优先）> running（蓝） */
+type WorkspaceActivityLevel = 'waiting' | 'running';
+
+/**
+ * 汇总每个打开的工作目录的运行时状态，供标题栏标签页流水灯使用：
+ * 该目录下任一会话在等待用户操作（ask user / 权限确认）→ `waiting`（黄，优先）；
+ * 否则任一会话非 idle（查询 / 压缩 / 后台 Bash / 子代理）→ `running`（蓝）。
+ * 按会话自己的工作目录归并（core 的会话工作目录表，见 history/Config.ts）。
+ */
+function collectWorkspaceActivity(): Record<string, WorkspaceActivityLevel> {
+  const result: Record<string, WorkspaceActivityLevel> = {};
+  try {
+    const { getSessionRuntimeStates } = require('../src/core/sessionRuntime.js') as typeof import('../src/core/sessionRuntime.js');
+    const { getSessionWorkspace } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
+    for (const state of getSessionRuntimeStates()) {
+      // idle 且非 waiting = 空闲，不点亮
+      if (state.idle && !state.waiting) continue;
+      const workspace = getSessionWorkspace(state.sessionId);
+      if (!workspace) continue;
+      // 会话登记的目录与打开集合可能写法不同（大小写 / 分隔符 / 尾斜杠），按去重键匹配
+      const target = openWorkspaces.find((w) => sameWorkspace(w, workspace));
+      if (!target) continue;
+      if (state.waiting) result[target] = 'waiting';
+      else if (result[target] !== 'waiting') result[target] = 'running';
+    }
+  } catch (err) {
+    console.error('[main] collect workspace activity error:', err);
+  }
+  return result;
+}
+
+/** 把标签页流水灯状态推给标题栏（状态流每次变化时调用，就地更新不重建标签页） */
+function syncTitlebarActivity(): void {
+  sendToTitlebar('titlebar:workspace-activity', collectWorkspaceActivity());
+}
+
 /** 把打开集合与活动项推给标题栏（标签页区渲染；字段名与 get-state 统一为 activeWorkspace） */
 function syncTitlebarWorkspaces(): void {
   sendToTitlebar('titlebar:workspaces', {
     workspaces: openWorkspaces.map((p) => ({ path: p, name: workspaceDisplayNameOf(p) })),
     activeWorkspace: workspacePath ?? null,
+    // 重建标签页时带上当前流水灯状态，避免重建后指示灯短暂消失
+    activity: collectWorkspaceActivity(),
   });
 }
 
@@ -1606,6 +1760,12 @@ function buildMenuSections(): MenuSectionDef[] {
     label: tt('添加最近的工作目录', 'Add Recent Workspace'),
     submenu: buildRecentWorkspacesMenu(),
   };
+  // 主题：跟随系统 / 浅色 / 深色（二级菜单，单选；持久化在 settings.json 的 theme 字段）
+  const themeItem: MenuItemDef = {
+    id: 'main.theme',
+    label: tt('主题', 'Theme'),
+    submenu: buildThemeMenu(),
+  };
   // 唤醒快捷键：Electron 专属能力（最小化到托盘后用该快捷键呼出窗口）
   const shortcutItem: MenuItemDef = {
     id: 'main.shortcut',
@@ -1633,6 +1793,7 @@ function buildMenuSections(): MenuSectionDef[] {
         addWorkspaceItem,
         recentWorkspaceItem,
         { type: 'separator' },
+        themeItem,
         shortcutItem,
         { type: 'separator' },
         { id: 'file.close', label: 'Close Window', role: 'close' as const },
@@ -1651,6 +1812,7 @@ function buildMenuSections(): MenuSectionDef[] {
       addWorkspaceItem,
       recentWorkspaceItem,
       { type: 'separator' },
+      themeItem,
       shortcutItem,
       { type: 'separator' },
       devToolsItem,
@@ -1662,6 +1824,25 @@ function buildMenuSections(): MenuSectionDef[] {
   });
 
   return sections;
+}
+
+/**
+ * 构建「主题」二级菜单：跟随系统 / 浅色 / 深色，单选。
+ * 勾选态取内存里的 currentThemeMode（切换后立即重建菜单，不读盘）。
+ */
+function buildThemeMenu(): MenuItemDef[] {
+  const options: Array<{ mode: ThemeMode; zh: string; en: string }> = [
+    { mode: 'system', zh: '跟随系统', en: 'Follow System' },
+    { mode: 'light', zh: '浅色', en: 'Light' },
+    { mode: 'dark', zh: '深色', en: 'Dark' },
+  ];
+  return options.map(({ mode, zh, en }) => ({
+    id: `main.theme.${mode}`,
+    label: tt(zh, en),
+    type: 'radio' as const,
+    checked: currentThemeMode === mode,
+    run: () => applyThemeMode(mode),
+  }));
 }
 
 /** 构建「添加最近的工作目录」子菜单项（目录已不存在时自动过滤） */
@@ -1681,6 +1862,10 @@ function buildRecentWorkspacesMenu(): MenuItemDef[] {
 function toNativeMenuItem(def: MenuItemDef): Electron.MenuItemConstructorOptions {
   if (def.type === 'separator') return { type: 'separator' };
   const item: Electron.MenuItemConstructorOptions = { label: def.label };
+  if (def.type === 'radio' || def.type === 'checkbox') {
+    item.type = def.type;
+    item.checked = def.checked === true;
+  }
   if (def.accelerator) item.accelerator = def.accelerator;
   if (def.enabled === false) item.enabled = false;
   if (def.submenu) {
@@ -1713,6 +1898,9 @@ function toTitlebarMenuNodes(defs: MenuItemDef[]): TitlebarMenuNode[] {
       continue;
     }
     if (!def.id) continue;
+    // 仅 radio / checkbox 传 checked + checkType（未定义 = 不是可勾选项，自绘菜单不预留勾选位，
+    // 也不会把普通项渲染成 menuitemradio）
+    const checkType = def.type === 'radio' || def.type === 'checkbox' ? def.type : undefined;
     nodes.push({
       type: 'item',
       id: def.id,
@@ -1720,6 +1908,7 @@ function toTitlebarMenuNodes(defs: MenuItemDef[]): TitlebarMenuNode[] {
       accelerator: def.accelerator ? formatAcceleratorForDisplay(def.accelerator) : undefined,
       enabled: def.enabled !== false,
       danger: def.danger,
+      ...(checkType ? { checked: def.checked === true, checkType } : {}),
     });
   }
   return nodes;
@@ -2545,6 +2734,8 @@ function setupIpc(): void {
       // 打开集合（标题栏标签页区渲染）与活动项
       workspaces: openWorkspaces.map((p) => ({ path: p, name: workspaceDisplayNameOf(p) })),
       activeWorkspace: workspacePath ?? null,
+      // 标签页流水灯：每个工作目录的聚合运行时状态（waiting 优先，其次 running）
+      activity: collectWorkspaceActivity(),
       // 标题栏是独立页面，拿不到 core 的 i18n 上下文：文案由主进程按当前语言下发，
       // 避免中文 tooltip 与英文 aria-label 混排（原先写死在页面里）。
       labels: {
@@ -2673,6 +2864,14 @@ function setupIpc(): void {
   // 视图流：已打开会话集合（owner 是 ChatViewManager）
   ipcMain.handle('sidebar:get-loaded-sessions', () => {
     return chatViews?.getLoadedSessionIds() ?? [];
+  });
+
+  // 运行时状态流：core sessionRuntime 的当前全量快照（owner 是 core 的 sessionRuntime）。
+  // 状态流是「变化时才推」的：侧栏初始化 / 重载时主动拉一次，补上「推送早于侧栏就绪」
+  // 造成的空档，否则流水灯 / 等待标记会一直不亮。
+  ipcMain.handle('sidebar:get-session-states', () => {
+    const { getSessionRuntimeStates } = require('../src/core/sessionRuntime.js') as typeof import('../src/core/sessionRuntime.js');
+    return getSessionRuntimeStates();
   });
 
   ipcMain.handle('sidebar:get-active-session', () => {
@@ -2871,7 +3070,11 @@ function initCore(): void {
   );
   conversations = conversationsMgr;
   // 托盘只吃状态流（阶段 3.6）：running / waiting 来自 core 的 sessionRuntimeChanged
-  conversationsMgr.setStatusListener((states) => updateTrayStatusFromStates(states));
+  conversationsMgr.setStatusListener((states) => {
+    updateTrayStatusFromStates(states);
+    // 标题栏标签页流水灯（蓝=运行 / 黄=等待）也吃这条状态流，就地刷新不重建标签页
+    syncTitlebarActivity();
+  });
 
   // 共享启动接线：locale / 日志 / 总线 / core 侧订阅 / WebViewUI / 历史 / 会话队列 /
   // 等待用户读取器 / 配置目录 / 环境预热 / MCP 残留清理（DEVELOPMENT.md 第 3.5、8.6 节）

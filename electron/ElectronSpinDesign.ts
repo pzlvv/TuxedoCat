@@ -74,7 +74,9 @@ export class ElectronSpinDesign implements SpinDesign {
       title: tt('Spin 设计', 'Spin Design'),
       icon: path.join(APP_ROOT, 'assets', 'logo.png'),
       autoHideMenuBar: true,
-      backgroundColor: '#1a1a1f',
+      // 与 getSpinDesignHtml 的页面底色一致（isDark ? '#1a1a1f' : '#f5f5f7'），
+      // 主题仍以 host.isDarkTheme() 为唯一判定源（见 UIHost 契约）
+      backgroundColor: this.host.isDarkTheme() ? '#1a1a1f' : '#f5f5f7',
       webPreferences: {
         sandbox: false,
         nodeIntegration: false,

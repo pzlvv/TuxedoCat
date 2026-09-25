@@ -71,6 +71,16 @@ body {
   background: #1a1a1f;
   color: #c1c1c6;
 }
+/* 独立窗口宿主 + 浅色主题（Electron 注入 __initialTheme=light）：
+   与 getColors(false).bg 对齐，保证首帧 loading 背景不是深色 */
+.standalone-host.theme-light {
+  background: #f4f4f5;
+  color: #18181b;
+}
+.standalone-host.theme-light body {
+  background: #f4f4f5;
+  color: #18181b;
+}
 
 /* Global scrollbar */
 * {

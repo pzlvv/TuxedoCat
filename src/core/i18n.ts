@@ -19,13 +19,45 @@ let coreLocaleSource: string = '';
 
 export type CoreLocale = 'zh' | 'en';
 
+/**
+ * 语言变化订阅者（宿主据此刷新已经建好的本地化 UI，如 Electron 的原生菜单）。
+ * 只在**有效语言**真正变化时通知，避免同值重复触发。
+ */
+const localeListeners = new Set<() => void>();
+
+/** 订阅核心语言变化；返回取消订阅函数。 */
+export function onCoreLocaleChanged(listener: () => void): () => void {
+  localeListeners.add(listener);
+  return () => {
+    localeListeners.delete(listener);
+  };
+}
+
+function notifyCoreLocaleChanged(): void {
+  for (const listener of [...localeListeners]) {
+    try {
+      listener();
+    } catch {
+      // 单个订阅者抛错不影响其它订阅者
+    }
+  }
+}
+
+/** 更新有效语言并在变化时通知订阅者 */
+function applyCoreLocale(next: 'zh' | 'en'): void {
+  if (next === coreLocale) return;
+  coreLocale = next;
+  notifyCoreLocaleChanged();
+}
+
 function refreshCoreLocale(): void {
   const systemLocale = getSystemLocale();
-  coreLocale =
+  applyCoreLocale(
     (typeof coreLocaleSource === 'string' && coreLocaleSource.toLowerCase().startsWith('zh')) ||
     (systemLocale !== '' && systemLocale.toLowerCase().startsWith('zh'))
       ? 'zh'
-      : 'en';
+      : 'en',
+  );
 }
 
 /**
@@ -46,11 +78,11 @@ export function setCoreLocale(locale: string | undefined | null): void {
  */
 export function setCoreUiLanguage(lang: 'auto' | 'zh' | 'en'): void {
   if (lang === 'zh') {
-    coreLocale = 'zh';
+    applyCoreLocale('zh');
     return;
   }
   if (lang === 'en') {
-    coreLocale = 'en';
+    applyCoreLocale('en');
     return;
   }
   refreshCoreLocale();

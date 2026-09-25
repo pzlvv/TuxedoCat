@@ -60,4 +60,8 @@ contextBridge.exposeInMainWorld('titlebarAPI', {
   onWorkspacesChanged: (callback: (state: unknown) => void): void => {
     ipcRenderer.on('titlebar:workspaces', (_event, state) => callback(state));
   },
+  /** 标签页流水灯：工作目录 -> 聚合运行时状态（waiting / running），状态流变化时推送 */
+  onWorkspaceActivity: (callback: (activity: unknown) => void): void => {
+    ipcRenderer.on('titlebar:workspace-activity', (_event, activity) => callback(activity));
+  },
 });

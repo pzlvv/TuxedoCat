@@ -31,6 +31,17 @@ export type TitlebarMenuNode =
       accelerator?: string;
       enabled?: boolean;
       danger?: boolean;
+      /**
+       * 可勾选项（radio / checkbox）的选中态。
+       * 显式给值（true/false）表示这一行预留勾选位——同组未选中项也要占位对齐；
+       * undefined 表示普通项，不预留。
+       */
+      checked?: boolean;
+      /**
+       * 可勾选项的语义类型（与 checked 同时给出）：radio → menuitemradio，
+       * checkbox → menuitemcheckbox。缺省按 radio 处理。
+       */
+      checkType?: 'radio' | 'checkbox';
     }
   | {
       type: 'submenu';
@@ -85,12 +96,26 @@ function renderNode(node: TitlebarMenuNode): string {
   const classes = ['item'];
   if (disabled) classes.push('disabled');
   if (node.danger) classes.push('danger');
+  // 可勾选项：预留固定宽度的勾选列（同组未选中项也占位，标题左边缘才对齐）
+  const checkable = node.checked !== undefined;
+  if (checkable) classes.push('has-check');
+  const check = checkable
+    ? `<span class="check">${
+      node.checked
+        ? '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M1.6 5.4l2.2 2.2L8.4 2.4" /></svg>'
+        : ''
+    }</span>`
+    : '';
   const accelerator = node.accelerator
     ? `<span class="accel">${escapeHtml(node.accelerator)}</span>`
     : '';
-  return `<div class="${classes.join(' ')}" role="menuitem" data-id="${escapeHtml(node.id)}"${
+  const role = checkable
+    ? (node.checkType === 'checkbox' ? 'menuitemcheckbox' : 'menuitemradio')
+    : 'menuitem';
+  const ariaChecked = checkable ? ` aria-checked="${node.checked ? 'true' : 'false'}"` : '';
+  return `<div class="${classes.join(' ')}" role="${role}" data-id="${escapeHtml(node.id)}"${
     disabled ? ' aria-disabled="true"' : ''
-  }><span class="label">${escapeHtml(node.label)}</span>${accelerator}</div>`;
+  }${ariaChecked}>${check}<span class="label">${escapeHtml(node.label)}</span>${accelerator}</div>`;
 }
 
 /** 二级面板里不再嵌套子菜单：更深的层级平铺成 分组标题 + 条目 */
@@ -200,6 +225,25 @@ export function getTitlebarMenuHtml(options: TitlebarMenuHtmlOptions): string {
     fill: none;
     stroke: ${muted};
     stroke-width: 1.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  /* 可勾选项：固定宽度的勾选列（未选中项也占位），整组标题左边缘对齐 */
+  .item.has-check { gap: 8px; }
+  .item .check {
+    flex: 0 0 14px;
+    width: 14px;
+    height: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .item .check svg {
+    width: 11px;
+    height: 11px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
     stroke-linecap: round;
     stroke-linejoin: round;
   }
@@ -389,13 +433,17 @@ export function getTitlebarMenuHtml(options: TitlebarMenuHtmlOptions): string {
       });
     }
 
-    // 悬停到主面板的空白/分组处收起二级面板
-    menu.addEventListener('mouseenter', function (event) {
-      if (event.target === menu) closeFlyout();
-    });
+    // 悬停到主面板的「分组标题 / 分隔线」处收起二级面板。
+    //
+    // 不能用 event.target === menu 判断空白处：.menu 有 5px 内边距 + 1px 边框，
+    // 条目只铺满内容盒，鼠标从触发项移向右侧飞出面板时会经过这条内边距，
+    // 此刻 target 恰好是 .menu，会把刚展开的面板立刻关掉——表现为二级菜单
+    // 「一移上去就消失、点不到」。只认分组标题/分隔线即可覆盖真正的空白区域。
     menu.addEventListener('mouseover', function (event) {
       var el = event.target;
-      if (el === menu) closeFlyout();
+      if (el && el.classList && (el.classList.contains('group') || el.classList.contains('sep'))) {
+        closeFlyout();
+      }
     });
     // 主面板滚动后触发项位置变了，飞出面板要跟着走
     menu.addEventListener('scroll', function () {

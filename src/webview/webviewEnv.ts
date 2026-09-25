@@ -206,6 +206,18 @@ export function getPreloadedHighlightLanguages(): string[] {
   return list.filter((v): v is string => typeof v === 'string' && v.length > 0);
 }
 
+/**
+ * 宿主注入的首帧主题（仅 Electron 宿主会注入 window.__initialTheme）。
+ *
+ * 主题的权威值仍由宿主的 `setTheme` 消息下发（VS Code 跟随编辑器主题、
+ * Electron 跟随 nativeTheme）；这里只用于 React 渲染前选对兜底背景色，
+ * 避免浅色主题下先闪一帧深色 loading。其他宿主 / 未注入时回退 'dark'
+ * （与独立宿主的深色兜底一致）。
+ */
+export function getInitialTheme(): 'dark' | 'light' {
+  return (window as any).__initialTheme === 'light' ? 'light' : 'dark';
+}
+
 /** Post a typed message to host (VS Code extension / Electron main), returns false if no API. */
 export function postMessage(msg: unknown): boolean {
   if (!hasHostMessageApi()) return false;

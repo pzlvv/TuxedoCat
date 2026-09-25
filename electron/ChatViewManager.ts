@@ -11,7 +11,7 @@
  *   └──────────┴──────────────────────────────┘
  */
 
-import { BrowserWindow, WebContents, WebContentsView, Rectangle, shell } from 'electron';
+import { BrowserWindow, WebContents, WebContentsView, Rectangle, nativeTheme, shell } from 'electron';
 import * as path from 'path';
 import type { WebviewMessage } from '../src/core/webviewTypes.js';
 import { sameWorkspace } from '../src/host/workspacePaths.js';
@@ -19,8 +19,23 @@ import { sameWorkspace } from '../src/host/workspacePaths.js';
 export const SIDEBAR_WIDTH = 280;
 /** 自绘标题栏高度：主窗口顶部由标题栏 WebContentsView 占据，侧栏/聊天视图整体下移 */
 export const TITLEBAR_HEIGHT = 38;
-/** 与主窗口 backgroundColor 一致，避免 webview 加载期间白屏闪烁 */
-export const CHAT_VIEW_BACKGROUND = '#16161b';
+/** 深色主题下的聊天视图兜底背景色（与主窗口 backgroundColor 一致，避免加载期闪烁） */
+const CHAT_VIEW_BACKGROUND = '#16161b';
+/** 浅色主题下的聊天视图兜底背景色 */
+const CHAT_VIEW_BACKGROUND_LIGHT = '#f4f4f5';
+
+/**
+ * 聊天视图的兜底背景色（按当前主题）。
+ *
+ * 页面加载完成前 WebContentsView 会先铺这层底色：
+ * - 浅色取 webview 自身首帧背景 #f4f4f5（见 src/webview/styles/index.css 的
+ *   .standalone-host.theme-light），否则会先闪一下深色；
+ * - 深色沿用外壳色 #16161b（与主窗口 / 标题栏 / 侧栏一致），与 webview 首帧的
+ *   #1a1a1f 只差一点明度，加载期察觉不到。
+ */
+export function chatViewBackgroundColor(isDark: boolean = nativeTheme.shouldUseDarkColors): string {
+  return isDark ? CHAT_VIEW_BACKGROUND : CHAT_VIEW_BACKGROUND_LIGHT;
+}
 
 /**
  * 判断 URL 是否为需要在系统浏览器打开的外部链接。
@@ -615,6 +630,18 @@ export class ChatViewManager {
     }
   }
 
+  /**
+   * 更新所有聊天视图的兜底背景色（主题切换时调用）。
+   * 已加载完成的页面会盖住这层底色，但预热视图 / 下次加载仍会用到。
+   */
+  setBackgroundColor(color: string): void {
+    for (const view of this.views.values()) {
+      if (!view.webContents.isDestroyed()) {
+        view.setBackgroundColor(color);
+      }
+    }
+  }
+
   /** 窗口尺寸变化时更新当前视图布局 */
   layout(): void {
     const active = this.currentSessionId ? this.views.get(this.currentSessionId) : undefined;
@@ -772,6 +799,9 @@ export class ChatViewManager {
 
   private createView(sessionId?: string, opts?: { prewarm?: boolean; workspace?: string }): WebContentsView {
     const workspace = opts?.workspace ?? this.opts.workspacePath;
+    // 首帧主题：preload 读它注入 window.__initialTheme，webview 据此在 React
+    // 渲染前就选对背景色（否则浅色主题会先闪一帧深色 loading 背景）。
+    const initialTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
     const view = new WebContentsView({
       webPreferences: {
         preload: this.opts.preloadPath,
@@ -789,6 +819,7 @@ export class ChatViewManager {
           `--uiLanguage=${this.opts.uiLanguage || 'auto'}`,
           `--highlightLanguages=${(this.opts.highlightLanguages || []).join(',')}`,
           `--viewMode=${this.opts.viewMode ?? 'multi'}`,
+          `--theme=${initialTheme}`,
           ...(sessionId ? [`--session=${sessionId}`] : []),
           // 预热视图：页面照常加载，但跳过启动初始化，等被切到前台再补做
           ...(opts?.prewarm ? ['--prewarm=1'] : []),
@@ -800,7 +831,7 @@ export class ChatViewManager {
     const url = sessionId
       ? `file://${indexPath.replace(/\\/g, '/')}?session=${encodeURIComponent(sessionId)}`
       : `file://${indexPath.replace(/\\/g, '/')}`;
-    view.setBackgroundColor(CHAT_VIEW_BACKGROUND); // 加载期间保持深色，避免闪烁
+    view.setBackgroundColor(chatViewBackgroundColor()); // 加载期间铺主题底色，避免闪烁
     // 页面加载完成后补发当前视图模式。
     // 页面就绪前 send 会丢（webview 的 message 监听器还没注册，见 activatePrewarmedView
     // 的同类处理）：若视图创建后、加载完成前用户切了悬浮窗，它就会停在 multi 形态

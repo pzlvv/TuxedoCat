@@ -10,7 +10,7 @@ import { createSessionState } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
-import { postMessage, getHasWorkspace, getInjectedSessionId, LOGO_CLASS_NAME, getEffectiveHostInfo, onViewModeChanged, navigateToConversation, getIsPrewarmView } from './webviewEnv';
+import { postMessage, getHasWorkspace, getInjectedSessionId, LOGO_CLASS_NAME, getEffectiveHostInfo, onViewModeChanged, navigateToConversation, getIsPrewarmView, getInitialTheme } from './webviewEnv';
 import { getPlaceholderLogoUri, rotatePlaceholderLogo } from './placeholderLogo';
 import { canCloseConversation, openConversationModeOf, rendersConversationListInWebview, type HostInfo } from '../host/types';
 import type { McpServerInfo, ProviderModels } from '../core/webviewTypes';
@@ -36,7 +36,9 @@ const App = () => {
     profileLog(`${profileTag} App 组件挂载 | t=${_appMountTime.current.toFixed(2)}ms`);
     _appFirstRender.current = false;
   }
-  const [theme, setTheme] = useState<Theme>('dark');
+  // 首帧主题：Electron 宿主注入 __initialTheme，渲染前就选对兜底背景色；
+  // 权威值随后由宿主的 setTheme 消息下发（setThemeInitialized(true)）。
+  const [theme, setTheme] = useState<Theme>(() => getInitialTheme());
   const [themeInitialized, setThemeInitialized] = useState(false);
   // 检查是否已打开工作目录（由 extension 在 HTML 注入）
   const noWorkspace = getHasWorkspace() === false;
@@ -379,17 +381,21 @@ const App = () => {
   );
 
   // Single View 才有内嵌的历史对话按钮（对话列表由 webview 渲染）。
-  // 当「其它会话」正在等待用户输入（ask user / 权限确认）时，用户请求不再自动切换会话，
-  // 因此在历史对话按钮上加黄色呼吸效果提醒用户：去那个会话处理待答请求。
-  // 数据源与流水灯一致（core sessionRuntimeStates.waiting）。
+  // 当「本工作目录的其它会话」正在等待用户输入（ask user / 权限确认）时，用户请求不再
+  // 自动切换会话，因此在历史对话按钮上加黄色呼吸效果提醒用户：去那个会话处理待答请求。
+  // 数据源与流水灯一致（core sessionRuntimeStates.waiting），但只认本视图对话列表里的会话：
+  // 列表本身就是当前工作目录的（每条带 project 归属），其它工作目录的 waiting 不在这里
+  // 提醒——浮窗（单视图）只能看到 / 切换到本目录的对话，提醒了也过不去。
   const historyButtonAttention = useMemo(() => {
     if (!rendersConversationListInWebview(hostInfo)) return false;
+    const localSessionIds = new Set<string>(conversations.map((c) => c.sessionId));
     for (const [sid, state] of sessionRuntimeStatesRef.current) {
-      if (state.waiting && sid !== currentSessionId) return true;
+      if (state.waiting && sid !== currentSessionId && localSessionIds.has(sid)) return true;
     }
     return false;
-    // sessionIdleVersion 是 waiting 变化时的重渲染信号（ref 本身不触发渲染）
-  }, [currentSessionId, sessionIdleVersion, hostInfo]);
+    // sessionIdleVersion 是 waiting 变化时的重渲染信号（ref 本身不触发渲染）；
+    // conversations 变化（切工作目录 / 列表刷新）也要重算「本目录有哪些会话」。
+  }, [currentSessionId, sessionIdleVersion, hostInfo, conversations]);
 
   // 插件模式对话下拉滚动到底时，动态追加一页历史对话
   const handleConversationScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
@@ -812,6 +818,16 @@ const App = () => {
     if (meta) meta.setAttribute('content', colors.bg);
   }, [colors.bg]);
 
+  // 独立宿主（Electron / 浏览器端）的 html/body 兜底背景由 .standalone-host 提供，
+  // 必须随主题切换同步 class：内容区大多是透明底（.app-viewport backgroundColor:
+  // transparent），根背景不跟着换的话，切到浅色后整块区域仍是深色，看起来就像
+  // 「主题没生效」。Main.tsx 只在启动时按 __initialTheme 加一次，运行期靠这里补齐。
+  useEffect(() => {
+    const root = document.documentElement;
+    if (!root.classList.contains('standalone-host')) return;
+    root.classList.toggle('theme-light', theme === 'light');
+  }, [theme]);
+
   // 排队消息横幅必须与会话绑定：若全局 queuedMessage 仍停留在上一个会话
   // （例如切换会话后的短暂加载期），不把它传给输入区，避免“串会”显示。
   const activeQueuedMessage =
@@ -827,7 +843,8 @@ const App = () => {
   if (!themeInitialized) {
     return (
       <div className="app-viewport w-full flex items-center justify-center" style={{ backgroundColor: 'transparent', overflow: 'clip' }}>
-        <div className="text-[13px]" style={{ color: '#9f9fa9' }}>{t('app.loading')}</div>
+        {/* 文案颜色跟随主题：浅色下写死的 #9f9fa9 对比度不足（约 2.3:1） */}
+        <div className="text-[13px]" style={{ color: colors.textSystem }}>{t('app.loading')}</div>
       </div>
     );
   }

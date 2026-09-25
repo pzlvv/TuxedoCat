@@ -29,6 +29,9 @@ const sessionId = getStartArg('session') || '';
 const prewarm = getStartArg('prewarm') === '1';
 // 视图模式：悬浮窗（单视图）为 single，完整模式（原生侧栏）为 multi
 const viewMode = getStartArg('viewMode') || 'multi';
+// 首帧主题：由主进程按当前 nativeTheme 注入，webview 在 React 渲染前就选对背景色，
+// 避免浅色主题下先闪一帧深色 loading（后续主题变化仍走 setTheme 消息）。
+const initialTheme = getStartArg('theme') === 'light' ? 'light' : 'dark';
 // Shiki 语法高亮按需加载：上次使用过的语言列表（逗号分隔），webview 启动后后台预热
 const highlightLanguages = (getStartArg('highlightLanguages') || '')
   .split(',')
@@ -57,6 +60,8 @@ contextBridge.exposeInMainWorld('__vscodeLocale', vscodeLocale);
 contextBridge.exposeInMainWorld('__systemLocale', systemLocale);
 contextBridge.exposeInMainWorld('__uiLocale', uiLanguage);
 contextBridge.exposeInMainWorld('__highlightLanguages', highlightLanguages);
+// 首帧主题（'dark' | 'light'）：供 webview 在 React 渲染前选对兜底背景色
+contextBridge.exposeInMainWorld('__initialTheme', initialTheme);
 // 空状态背景图的第一张；webview 只取它所在目录，再拼候选文件名（见 placeholderLogo.ts）
 contextBridge.exposeInMainWorld('logoUri', './logo1.png');
 contextBridge.exposeInMainWorld('__sessionId', sessionId);

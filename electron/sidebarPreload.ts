@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
     return ipcRenderer.invoke('sidebar:smart-name-conversation', sessionId);
   },
   getLoadedSessions: (): Promise<unknown> => ipcRenderer.invoke('sidebar:get-loaded-sessions'),
+  /** 会话运行时状态（idle / waiting）的当前全量快照（初始化 / 重载时播种用） */
+  getSessionStates: (): Promise<unknown> => ipcRenderer.invoke('sidebar:get-session-states'),
   onConversationsUpdated: (callback: (list: unknown) => void): void => {
     ipcRenderer.on('sidebar:conversations-updated', (_event, list) => callback(list));
   },

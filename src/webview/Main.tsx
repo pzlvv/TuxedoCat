@@ -17,6 +17,11 @@ import 'katex/dist/katex.min.css';
 // 注入的 electronAPI 作为判据（VS Code 走 acquireVsCodeApi，没有这个对象）。
 if (typeof (window as { electronAPI?: unknown }).electronAPI !== 'undefined') {
   document.documentElement.classList.add('standalone-host');
+  // 浅色主题下的首帧兜底背景：宿主注入 __initialTheme（跟随 nativeTheme）。
+  // 权威主题仍由 setTheme 消息驱动，这里只保证加载期不闪深色。
+  if ((window as { __initialTheme?: unknown }).__initialTheme === 'light') {
+    document.documentElement.classList.add('theme-light');
+  }
 }
 
 // 移动端视口高度适配（地址栏显隐由 CSS dvh 处理；软键盘遮挡在此兜底）

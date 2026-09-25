@@ -56,7 +56,10 @@ body {
   margin-bottom: 2px;
 }
 .item:hover { background: #26262c; }
-.item.active { background: rgba(99, 102, 241, 0.18); }
+/* 选中行用不透明底色：hover 操作条靠 background: inherit 跟随行底色，
+   若这里是半透明 indigo，操作条会把同一层 indigo 再叠一次而浮出色块。
+   #242442 = rgba(99,102,241,0.18) 叠在 #16161b 上，视觉与原来完全一致。 */
+.item.active { background: #242442; }
 
 /* ── 左侧预留列：上槽位＝绿点（已打开对话），下槽位＝折叠按钮 ──
    两槽位固定尺寸、始终占位，因此所有对话（有无绿点/有无子对话）标题左边缘都对齐。 */
@@ -270,15 +273,15 @@ body {
   display: none;
   grid-template-columns: repeat(2, 20px);
   gap: 2px;
-  background: rgba(38, 38, 44, 0.95);
-  border-radius: 5px;
+  /* 与所在行完全同色：inherit 直接取 .item 当前 hover / active 的底色，
+     整块操作条融进行里，不描边、不投影、不留圆角。
+     不用圆角是因为面板要盖住下层标题文字，圆角处会从角落透出文字。
+     前提是 .item.active 用不透明底色（见上），否则半透明 indigo 会叠两次。 */
+  background: inherit;
+  border-radius: 0;
   padding: 2px;
 }
 .item:hover .item-actions { display: grid; }
-/* 选中项的操作菜单：跟随选中行的 indigo 色调。
-   .item.active 的底色是 rgba(99,102,241,0.18) 叠在 #16161b 上，
-   若菜单仍用上面的中性灰 #26262c，会在 indigo 底上浮出一块颜色不一致的灰方块。 */
-.item.active .item-actions { background: rgba(46, 46, 84, 0.96); }
 /* 子代理对话只有「关闭」可用：其余 3 格用不可见占位符撑住，
    保证关闭按钮仍落在第 2 列第 2 行，与根对话位置完全一致 */
 .action-ghost {
@@ -370,4 +373,63 @@ body {
   font-size: 11px;
   color: #52525b;
   flex-shrink: 0;
+}
+
+/* ── 浅色主题覆盖 ──
+   主题由主进程 nativeTheme.themeSource 驱动，Chromium 据此匹配
+   prefers-color-scheme；这里只做颜色覆盖，深色样式（上方）保持不变。
+   强调色（#6366f1 / #818cf8）、状态色（绿点 / 红色危险）两种主题下通用，不覆盖。 */
+@media (prefers-color-scheme: light) {
+  /* 侧栏用纯白，与 webview 的浅灰（#f4f4f5）拉开分界；
+     右侧补一条细边框，让两块的边界更明确（浅色下仅靠明度差不够利落）。 */
+  body {
+    background: #ffffff;
+    color: #3f3f46;
+    border-right: 1px solid #e4e4e7;
+  }
+  .header { border-bottom-color: #e4e4e7; }
+
+  .search-input {
+    background: #f4f4f5;
+    border-color: #e4e4e7;
+    color: #27272a;
+  }
+  .search-input::placeholder { color: #9ca3af; }
+
+  .list::-webkit-scrollbar-thumb { background: #d4d4d8; }
+
+  .item:hover { background: #f4f4f5; }
+  /* 同深色主题：选中行用不透明底色，操作条才能靠 background: inherit 完全贴合。
+     #eff0fe = rgba(99,102,241,0.10) 叠在纯白侧栏上。 */
+  .item.active { background: #eff0fe; }
+  .item .title { color: #3f3f46; }
+  .item.active .title { color: #18181b; }
+
+  .workspace-title { color: #27272a; }
+
+  .recent-item { border-color: #e4e4e7; }
+  .recent-item:hover { background: #f4f4f5; border-color: #d4d4d8; }
+  .recent-name { color: #27272a; }
+  .recent-path { color: #9ca3af; }
+
+  .toggle-btn { color: #52525b; }
+  .toggle-btn:hover { background: rgba(0, 0, 0, 0.06); color: #18181b; }
+
+  /* 操作条不再单独上色：底色由 .item-actions 的 background: inherit 跟随行底色，
+     两种主题下都与所在行融为一体（浅色下同样不描边、不投影）。 */
+  .action-btn { color: #52525b; }
+  .action-btn:hover { background: rgba(0, 0, 0, 0.06); color: #18181b; }
+
+  .rename-input {
+    background: #ffffff;
+    color: #18181b;
+  }
+
+  .confirm-btn { background: #f4f4f5; color: #27272a; }
+  .confirm-btn:hover { background: #e4e4e7; }
+
+  .footer {
+    border-top-color: #e4e4e7;
+    color: #71717a;
+  }
 }

@@ -62,6 +62,8 @@ interface TitlebarState extends TitlebarModeState {
   labels: TitlebarLabels;
   workspaces?: TitlebarWorkspace[];
   activeWorkspace?: string | null;
+  /** 标签页流水灯状态（初始渲染用；后续变化走 titlebar:workspace-activity） */
+  activity?: WorkspaceActivity;
 }
 
 interface TitlebarMenuAnchor {
@@ -76,10 +78,18 @@ interface TitlebarWorkspace {
   name: string;
 }
 
+/** 标签页流水灯的聚合状态：waiting（黄，优先）> running（蓝） */
+type WorkspaceActivityLevel = 'waiting' | 'running';
+
+/** 工作目录路径 -> 聚合运行时状态（主进程按 core 的会话工作目录表汇总后下发） */
+type WorkspaceActivity = Record<string, WorkspaceActivityLevel>;
+
 /** 打开集合 + 活动项（标题栏标签页区渲染）；字段名与 get-state 一致（activeWorkspace） */
 interface TitlebarWorkspacesState {
   workspaces: TitlebarWorkspace[];
   activeWorkspace: string | null;
+  /** 标签页流水灯状态（可缺省：老版本主进程 / 尚无运行时状态） */
+  activity?: WorkspaceActivity;
 }
 
 interface TitlebarAPI {
@@ -101,6 +111,8 @@ interface TitlebarAPI {
   onModelChanged: (callback: (state: { sections: TitlebarSection[] }) => void) => void;
   onModeState: (callback: (state: TitlebarModeState) => void) => void;
   onWorkspacesChanged: (callback: (state: TitlebarWorkspacesState) => void) => void;
+  /** 标签页流水灯状态变化（就地更新，不重建标签页） */
+  onWorkspaceActivity: (callback: (activity: WorkspaceActivity) => void) => void;
 }
 
 declare global {
@@ -201,6 +213,38 @@ let renderedWorkspaces: TitlebarWorkspace[] = [];
 let draggingPath: string | null = null;
 /** 拖拽刚结束的一小段时间内抑制 click，避免「拖完误触发切换标签页」 */
 let suppressTabClickUntil = 0;
+/** 当前标签页流水灯状态（工作目录路径 -> waiting / running） */
+let workspaceActivity: WorkspaceActivity = {};
+
+/** 归一化主进程下发的流水灯状态（跨进程边界，做一次防御性校验） */
+function normalizeWorkspaceActivity(activity: unknown): WorkspaceActivity {
+  const result: WorkspaceActivity = {};
+  if (!activity || typeof activity !== 'object') return result;
+  for (const [path, level] of Object.entries(activity as Record<string, unknown>)) {
+    if (typeof path === 'string' && (level === 'waiting' || level === 'running')) {
+      result[path] = level;
+    }
+  }
+  return result;
+}
+
+/** 把流水灯状态写进标签页 class（waiting 优先于 running；无状态 = 不点亮） */
+function applyTabActivity(tab: HTMLElement, level: WorkspaceActivityLevel | undefined): void {
+  tab.classList.toggle('activity-running', level === 'running');
+  tab.classList.toggle('activity-waiting', level === 'waiting');
+}
+
+/**
+ * 应用新的流水灯状态：更新缓存，并就地刷新已渲染标签页的 class
+ * （不重建 DOM——重建会打断流水动画，也会丢 hover / 焦点 / 拖拽状态）。
+ */
+function applyWorkspaceActivity(activity: unknown): void {
+  workspaceActivity = normalizeWorkspaceActivity(activity);
+  tabsEl.querySelectorAll<HTMLElement>('.ws-tab').forEach((tab) => {
+    const path = tab.dataset.path;
+    applyTabActivity(tab, path ? workspaceActivity[path] : undefined);
+  });
+}
 
 /** 清掉所有标签页的放置指示线 */
 function clearDropIndicators(): void {
@@ -227,10 +271,16 @@ function computeReorderedPaths(fromPath: string, toPath: string, after: boolean)
 /**
  * 渲染工作目录标签页（打开集合变化时重建）。
  * 标签页占用原菜单栏区域；活动项高亮；每张标签页带关闭按钮、可拖拽排序；末尾是「添加」按钮。
+ * `activity` 缺省时沿用已缓存的流水灯状态（状态变化走 applyWorkspaceActivity 就地更新）。
  */
-function renderWorkspaces(workspaces: TitlebarWorkspace[], active: string | null): void {
+function renderWorkspaces(
+  workspaces: TitlebarWorkspace[],
+  active: string | null,
+  activity?: WorkspaceActivity,
+): void {
   renderedWorkspaces = workspaces;
   draggingPath = null;
+  if (activity !== undefined) workspaceActivity = normalizeWorkspaceActivity(activity);
   tabsEl.textContent = '';
   // 打开集合为空时不渲染标签页区域（规格 §5）：添加目录入口在侧栏空态与菜单里
   if (workspaces.length === 0) return;
@@ -241,11 +291,19 @@ function renderWorkspaces(workspaces: TitlebarWorkspace[], active: string | null
     // 通过 :focus-within 在聚焦时显现（否则 visibility: hidden 不可聚焦）
     const tab = document.createElement('div');
     tab.className = 'ws-tab' + (isActive ? ' active' : '');
+    // 流水灯：非 idle 点亮（黄 waiting 优先，蓝 running 次之）
+    applyTabActivity(tab, workspaceActivity[ws.path]);
     tab.dataset.path = ws.path;
     tab.title = ws.path;
     tab.setAttribute('role', 'tab');
     tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
     tab.tabIndex = 0;
+
+    // 流水灯条（绝对定位在标签页左侧；按状态显示蓝 / 黄）
+    const activityBar = document.createElement('span');
+    activityBar.className = 'ws-tab-activity';
+    activityBar.setAttribute('aria-hidden', 'true');
+    tab.appendChild(activityBar);
 
     const label = document.createElement('span');
     label.className = 'ws-tab-label';
@@ -430,7 +488,9 @@ async function init(): Promise<void> {
   });
   api.onModelChanged((s) => renderMenubar(s?.sections ?? []));
   api.onModeState((s) => { if (s) applyModeState(s); });
-  api.onWorkspacesChanged((s) => renderWorkspaces(s?.workspaces ?? [], s?.activeWorkspace ?? null));
+  api.onWorkspacesChanged((s) => renderWorkspaces(s?.workspaces ?? [], s?.activeWorkspace ?? null, s?.activity));
+  // 流水灯状态变化：就地更新 class，不重建标签页（重建会打断流水动画）
+  api.onWorkspaceActivity((activity) => applyWorkspaceActivity(activity));
 
   let state: TitlebarState;
   try {
@@ -458,7 +518,7 @@ async function init(): Promise<void> {
     brandLogoEl.addEventListener('error', () => { brandLogoEl.style.display = 'none'; });
   }
   renderMenubar(state.sections ?? []);
-  renderWorkspaces(state.workspaces ?? [], state.activeWorkspace ?? null);
+  renderWorkspaces(state.workspaces ?? [], state.activeWorkspace ?? null, state.activity);
   applyWindowState(state.maximized);
   applyModeState(state);
 }
