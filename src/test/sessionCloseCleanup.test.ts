@@ -16,7 +16,7 @@ import {
   resetSessionRuntime,
 } from '../core/sessionRuntime';
 import { releaseSessionResources } from '../core/sessionResources';
-import { setProjectRootProvider } from '../core/history/index';
+import { setActiveWorkspace } from '../core/history/index';
 import { createChecker, runTests } from './helpers/harness';
 import { makeTempDir, makeTestBus } from './helpers/fixtures';
 
@@ -25,7 +25,7 @@ async function run(): Promise<void> {
 
   // 需要一个可写的工作区，deleteConversation 会读写项目对话目录
   const projectRoot = makeTempDir('session-cleanup');
-  setProjectRootProvider(() => projectRoot);
+  setActiveWorkspace(projectRoot);
 
   setGlobalEventBus(makeTestBus().bus);
   resetSessionRuntime();

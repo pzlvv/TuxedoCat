@@ -13,7 +13,6 @@ import { requireEventBus, type CoreEvent } from './AssistantEventBus.js';
 import { markSessionWaiting } from './sessionRuntime.js';
 import { getMCPHost } from './mcp/MCPHost.js';
 import { logger } from './Logger.js';
-import { setProjectRootProvider } from './history/index.js';
 import { getProjectRoot } from './history/Config.js';
 import { sessionQueue } from './SessionQueue.js';
 import { userChoiceQueue } from './UserChoiceQueue.js';
@@ -265,22 +264,6 @@ export function createEngine(sessionId: string, title: string, role?: string): Q
   // 应用之前缓存下来的模型切换值（若引擎创建前用户已切换过模型）
   applyPendingModel(sessionId, engine);
   return engine;
-}
-
-/**
- * 初始化历史记录系统
- * 应在扩展激活时调用，传入宿主能力的 getWorkspacePath 以获取工作区路径
- */
-export function initializeHistory(ui?: { getWorkspacePath(): string | undefined }): void {
-  if (ui && 'getWorkspacePath' in ui) {
-    setProjectRootProvider(() => ui.getWorkspacePath());
-  } else {
-    logger.warn(
-      'Integration',
-      'History system initialized without workspace provider. ' +
-      'getProjectRoot() will throw an error until a provider is set.'
-    );
-  }
 }
 
 /**

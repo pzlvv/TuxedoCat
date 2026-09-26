@@ -5,7 +5,7 @@
  * 1. 创建主窗口：左侧原生侧栏（对话列表）+ 右侧聊天 WebContentsView（每对话一个标签）
  * 2. 注册 IPC（webview-message）并委托给 WebViewUI（复用同一份 WebviewMessageHandler）
  * 3. 侧栏 IPC：对话列表读写、打开/新建对话、列表变化推送
- * 4. 初始化 core（setGlobalEventBus / initializeCoreEvents / initializeHistory / 日志）
+ * 4. 初始化 core（bootstrapCore：总线 / core 侧订阅 / 宿主环境与工作目录经总线传递）
  * 5. 提供单一图标菜单（添加工作目录 / 添加最近的工作目录 / 快捷键 / 开发者工具 / 关于 / 退出）
  * 6. 多工作目录：打开集合 + 活动项，标题栏标签页，按对话解析工作目录
  *
@@ -32,19 +32,16 @@ import { ElectronConversationManager } from './ElectronConversationManager.js';
 import { WebViewUI } from '../src/host/WebViewUI.js';
 import { normalizeWorkspacePath, sameWorkspace, dedupeWorkspacePaths, applyWorkspaceOrder } from '../src/host/workspacePaths.js';
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
-import { PRODUCT_NAME, EXTENSION_NAME } from '../src/config/project.js';
+import { PRODUCT_NAME, EXTENSION_NAME, CONFIG_DIR_NAME, SETTINGS_FILE_NAME } from '../src/config/project.js';
 import {
   DEFAULT_WAKE_SHORTCUT,
   acceleratorFromKeyboardEvent,
   formatAcceleratorForDisplay,
   normalizeAccelerator,
-} from '../src/core/utils/shortcut.js';
+} from './shortcut.js';
 import { tt, onCoreLocaleChanged } from '../src/core/i18n.js';
 import { getShortcutDialogHtml } from './shortcutDialogHtml.js';
 import { resolveSmartTitle } from '../src/core/history/smartNaming.js';
-// 仅类型：主题模式的读写实现来自 core 的 Config（运行时用 require 惰性加载，
-// 避免主进程模块初始化阶段就拉起 core 的事件总线等依赖）。
-import type { ThemeMode } from '../src/core/history/Config.js';
 
 /**
  * 判断 URL 是否为需要在系统浏览器打开的外部链接。
@@ -322,20 +319,23 @@ if (multiInstance) {
 async function main(): Promise<void> {
   await app.whenReady();
 
+  // ── 宿主本地状态（userData/workspace-state.json）──
+  // 旧版本的状态文件（旧 userData 目录 / lastWorkspace 字段）在这里一次性迁移；
+  // 旧版本写在 core settings.json 里的 theme / shortcut 也在这里搬进状态文件。
+  migrateLegacyWorkspaceState();
+  migrateLegacyThemeAndShortcut();
+
   // ── 主题 ──
-  // 读取持久化偏好（settings.json 的 theme 字段，默认跟随系统）并应用。
+  // 读取宿主本地偏好（workspace-state.json 的 theme 字段，默认跟随系统）并应用。
   // themeSource 同时驱动原生配色与所有渲染进程的 prefers-color-scheme，
   // 自绘标题栏 / 侧栏据此切浅色样式；聊天 webview 由 setTheme 消息单独同步。
   // 必须在 createMainWindow 之前设置：窗口 backgroundColor 按当前主题取值。
-  currentThemeMode = readThemeModeFromSettings();
+  currentThemeMode = readThemeModeSync();
   nativeTheme.themeSource = currentThemeMode;
 
   // ── 工作目录 ──
   // 不默认使用当前工作目录：恢复上次打开的打开集合与活动项；
   // 命令行 --workspace= 作为额外的一项加入打开集合并置为活动项。
-  // （状态保存在 Windows app data 目录，即 Electron userData 的 workspace-state.json）
-  // 旧版本的状态文件（旧 userData 目录 / lastWorkspace 字段）在这里一次性迁移
-  migrateLegacyWorkspaceState();
   openWorkspaces = readOpenWorkspaces();
   workspacePath = readActiveWorkspace(openWorkspaces);
   const cliWorkspace = process.argv.find((a) => a.startsWith('--workspace='));
@@ -793,16 +793,6 @@ function createMainWindow(): void {
   });
 }
 
-/** 读取 settings.json 中持久化的主题模式（失败时回退跟随系统） */
-function readThemeModeFromSettings(): ThemeMode {
-  try {
-    const { readThemeSync } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
-    return readThemeSync();
-  } catch {
-    return 'system';
-  }
-}
-
 /** 主窗口 / 标题栏兜底背景色：与自绘 UI 的深/浅底色保持一致，避免加载期闪白或闪黑 */
 function windowBackgroundColor(): string {
   return nativeTheme.shouldUseDarkColors ? '#16161b' : '#f4f4f5';
@@ -816,17 +806,14 @@ function windowBackgroundColor(): string {
  * - 显式 `onThemeChanged(null)`：聊天 webview 不监听 prefers-color-scheme，
  *   主题值靠 setTheme 消息下发；重复选择同一项时不会触发 nativeTheme 的
  *   updated 事件，因此这里主动广播一次，保证值一致；
- * - 写盘是宿主能力（core 只读不写），走 `updateSettingsJson` 的串行队列；
+ * - 持久化落在宿主本地偏好（core 不参与）；
  * - 重建菜单：刷新子菜单当前选中项的勾选态。
  */
 function applyThemeMode(mode: ThemeMode): void {
   currentThemeMode = mode;
   nativeTheme.themeSource = mode;
   try {
-    const { themeMutator } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
-    void uiHost?.updateSettingsJson(themeMutator(mode)).catch((err: unknown) => {
-      console.error('[main] persist theme failed:', err);
-    });
+    writeThemeMode(mode);
   } catch (err) {
     console.error('[main] persist theme failed:', err);
   }
@@ -834,16 +821,6 @@ function applyThemeMode(mode: ThemeMode): void {
   chatViews?.setBackgroundColor(chatViewBackgroundColor());
   mainWindow?.setBackgroundColor(windowBackgroundColor());
   setupMenu();
-}
-
-/** 读取 settings.json 中的唤醒快捷键（失败时返回默认值） */
-function readWakeShortcutFromSettings(): string {
-  try {
-    const { readWakeShortcutSync } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
-    return readWakeShortcutSync();
-  } catch {
-    return DEFAULT_WAKE_SHORTCUT;
-  }
 }
 
 /**
@@ -1141,11 +1118,11 @@ function updateTrayStatusFromStates(
 }
 
 /**
- * 重新注册全局唤醒快捷键：先注销旧值，再读取 settings.json 并注册新值。
+ * 重新注册全局唤醒快捷键：先注销旧值，再读取宿主本地偏好并注册新值。
  * 注册失败（快捷键被系统或其它程序占用）时静默忽略，不弹窗也不报错。
  */
 function registerWakeShortcut(): void {
-  registerWakeShortcutValue(readWakeShortcutFromSettings());
+  registerWakeShortcutValue(readWakeShortcutSync());
 }
 
 /** 按指定值注册全局唤醒快捷键（先注销旧值）；注册失败静默忽略 */
@@ -1196,10 +1173,10 @@ function resumeWakeShortcutInternal(): void {
  *
  * 快捷键是 Electron 专属能力（webview 里做不了：页面收不到被系统抢占的组合键，
  * 也没法注销已注册的全局快捷键），因此单独一个对话框：
- * - 打开期间注销当前全局快捷键（suspendWakeShortcut），关闭后按最新 settings.json 恢复
- * - 按键捕获在主进程的 before-input-event 里做，复用 core 的快捷键解析；
+ * - 打开期间注销当前全局快捷键（suspendWakeShortcut），关闭后按最新偏好恢复
+ * - 按键捕获在主进程的 before-input-event 里做，复用宿主的快捷键解析；
  *   页面只负责显示，通过 preload 的 shortcutAPI 通信
- * - 保存时经 `UIHost.updateSettingsJson` 写盘（写 settings.json 是宿主能力），写完后关闭
+ * - 保存时写入宿主本地偏好，写完后关闭
  */
 function openShortcutDialog(): void {
   if (shortcutDialogWindow && !shortcutDialogWindow.isDestroyed()) {
@@ -1208,7 +1185,7 @@ function openShortcutDialog(): void {
   }
 
   /** 候选快捷键：随用户按键更新，保存时才落盘 */
-  let candidate = readWakeShortcutFromSettings();
+  let candidate = readWakeShortcutSync();
   let error: string | undefined;
 
   // 主窗口可见时才挂为子窗口：窗口最小化到托盘时挂隐藏的父窗口会让对话框也显示不出来
@@ -1247,8 +1224,8 @@ function openShortcutDialog(): void {
   };
 
   /**
-   * 保存：写 settings.json 是宿主能力（core 只读不写），写盘完成后关闭对话框——
-   * 关闭回调按最新 settings.json 重新注册全局快捷键。
+   * 保存：写入宿主本地偏好，写完后关闭对话框——
+   * 关闭回调按最新偏好重新注册全局快捷键。
    */
   const save = (): void => {
     const normalized = normalizeAccelerator(candidate);
@@ -1257,21 +1234,15 @@ function openShortcutDialog(): void {
       pushState();
       return;
     }
-    if (!uiHost) {
+    error = undefined;
+    try {
+      writeWakeShortcut(normalized);
+      closeDialog();
+    } catch (err: unknown) {
+      console.error('[main] save wake shortcut failed:', err);
       error = tt('保存失败', 'Failed to save');
       pushState();
-      return;
     }
-    error = undefined;
-    void uiHost.updateSettingsJson((cfg) => {
-      cfg.shortcut = normalized;
-    })
-      .then(() => closeDialog())
-      .catch((err: unknown) => {
-        console.error('[main] save wake shortcut failed:', err);
-        error = tt('保存失败', 'Failed to save');
-        pushState();
-      });
   };
 
   // 打开期间注销全局快捷键：否则用户按下的组合键会先触发唤醒
@@ -2372,12 +2343,13 @@ function broadcastWorkspaces(): void {
 }
 
 /**
- * 工作目录状态文件。
+ * Electron 宿主本地状态文件。
  * 位于 Electron userData 目录（Windows 下即 %APPDATA%\<PRODUCT_NAME>\），
  * 用于记录打开集合、活动工作目录与最近打开的工作目录列表（最多 10 个）；
  * windowSize / floatingWindowSize 分别记录完整模式与浮窗模式的上次窗口位置与大小
  * （两个模式各存一份，切换模式时按各自记录还原位置）；
- * windowMode / floatingPinned 记录上次使用的窗口模式与浮窗置顶状态，启动时优先按它们恢复。
+ * windowMode / floatingPinned 记录上次使用的窗口模式与浮窗置顶状态，启动时优先按它们恢复；
+ * theme / shortcut 是只有 Electron 消费的宿主本地偏好，core 不读不写。
  * 文件格式：
  * {
  *   "openWorkspaces": ["C:\\path\\to\\ws", "C:\\path\\to\\ws2"],
@@ -2386,7 +2358,9 @@ function broadcastWorkspaces(): void {
  *   "windowSize": { "x": 320, "y": 180, "width": 1280, "height": 860 },
  *   "floatingWindowSize": { "x": 1500, "y": 120, "width": 480, "height": 780 },
  *   "windowMode": "floating",
- *   "floatingPinned": true
+ *   "floatingPinned": true,
+ *   "theme": "system",
+ *   "shortcut": "Ctrl+Alt+X"
  * }
  *
  * 读取口径：字段缺失或非法即按「没有」处理，不做任何跨字段回退
@@ -2416,6 +2390,10 @@ interface WorkspaceState {
   windowMode?: 'normal' | 'floating';
   /** 浮窗「总在最前」状态：启动时优先按它恢复（默认 true） */
   floatingPinned?: boolean;
+  /** 主题模式：跟随系统 / 强制浅色 / 强制深色（宿主本地偏好，core 不读） */
+  theme?: ThemeMode;
+  /** 唤醒快捷键（Electron accelerator 形式；宿主本地偏好，core 不读） */
+  shortcut?: string;
 }
 
 function getWorkspaceStateFile(): string {
@@ -2444,6 +2422,82 @@ function writeWorkspaceState(state: WorkspaceState): void {
     fs.writeFileSync(getWorkspaceStateFile(), JSON.stringify(state, null, 2), 'utf-8');
   } catch (err) {
     console.error('[main] Failed to write workspace state:', err);
+  }
+}
+
+// ==================== 宿主本地偏好：theme / shortcut ====================
+
+/**
+ * 主题模式：
+ * - 'system' 跟随系统（产品默认值）
+ * - 'light'  强制浅色
+ * - 'dark'   强制深色
+ */
+type ThemeMode = 'system' | 'light' | 'dark';
+
+/** 判断任意值是否为合法主题模式 */
+function isThemeMode(value: unknown): value is ThemeMode {
+  return value === 'system' || value === 'light' || value === 'dark';
+}
+
+/** 读取持久化的主题模式（缺失 / 非法时回退跟随系统） */
+function readThemeModeSync(): ThemeMode {
+  const value = readWorkspaceState().theme;
+  return isThemeMode(value) ? value : 'system';
+}
+
+/** 持久化主题模式 */
+function writeThemeMode(mode: ThemeMode): void {
+  writeWorkspaceState({ ...readWorkspaceState(), theme: mode });
+}
+
+/** 读取持久化的唤醒快捷键（缺失 / 非法时回退默认值） */
+function readWakeShortcutSync(): string {
+  return normalizeAccelerator(readWorkspaceState().shortcut) || DEFAULT_WAKE_SHORTCUT;
+}
+
+/** 持久化唤醒快捷键（调用方已规范化） */
+function writeWakeShortcut(shortcut: string): void {
+  writeWorkspaceState({ ...readWorkspaceState(), shortcut });
+}
+
+/**
+ * 一次性迁移：把旧版本写在 core settings.json 里的 `theme` / `shortcut` 搬进状态文件。
+ *
+ * 幂等：状态文件里两个字段都已存在时跳过。settings.json 的旧字段不删除（该文件的
+ * 写盘归 core，宿主不再触碰），读取路径只认状态文件。
+ */
+function migrateLegacyThemeAndShortcut(): void {
+  try {
+    const state = readWorkspaceState();
+    if (state.theme !== undefined && state.shortcut !== undefined) return;
+
+    const legacy = readLegacySettingsFields();
+    if (!legacy) return;
+
+    const next: WorkspaceState = { ...state };
+    if (next.theme === undefined && isThemeMode(legacy.theme)) next.theme = legacy.theme;
+    if (next.shortcut === undefined) {
+      const shortcut = normalizeAccelerator(legacy.shortcut);
+      if (shortcut) next.shortcut = shortcut;
+    }
+    if (next.theme === state.theme && next.shortcut === state.shortcut) return;
+    writeWorkspaceState(next);
+  } catch (err) {
+    console.error('[main] Failed to migrate legacy theme/shortcut:', err);
+  }
+}
+
+/** 读取旧版本位于 settings.json 的 theme / shortcut（失败时返回 null） */
+function readLegacySettingsFields(): { theme?: unknown; shortcut?: unknown } | null {
+  try {
+    const file = path.join(app.getPath('home'), CONFIG_DIR_NAME, SETTINGS_FILE_NAME);
+    if (!fs.existsSync(file)) return null;
+    const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    if (!data || typeof data !== 'object') return null;
+    return data as { theme?: unknown; shortcut?: unknown };
+  } catch {
+    return null;
   }
 }
 

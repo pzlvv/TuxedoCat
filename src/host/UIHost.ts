@@ -84,8 +84,9 @@ export class WebviewViewHandle {
  * 工作区是**进程级环境事实**，不属于任何 UI surface：单独成契约，
  * 供只需要工作区的消费方（如 Spin 设计器）依赖。
  *
- * 消费方式：core 启动期不调用 `getWorkspacePath()` 取值，而由 `onDidChangeWorkspace`
- * 订阅——宿主在订阅时立即回调一次当前值（初始快照），之后工作区打开 / 切换 / 关闭
+ * 消费方式：共享骨架（`bootstrapCore`）不调用 `getWorkspacePath()` 取值，而由
+ * `onDidChangeWorkspace` 订阅，把回调翻译为 `UiEvent.workspaceChanged` 交给 core
+ * ——宿主在订阅时立即回调一次当前值（初始快照），之后工作区打开 / 切换 / 关闭
  * 再回调。该时序覆盖「订阅时尚无工作区、稍后才打开」的场景（Electron 的工作区
  * 由菜单设置，晚于 bootstrap）。
  */

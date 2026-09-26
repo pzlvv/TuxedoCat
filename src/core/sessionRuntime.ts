@@ -15,7 +15,7 @@
  * | compacting | 正在压缩上下文（会整体替换消息数组） | compact/compact.ts |
  * | background | 有运行中的后台 Bash 任务 | tools/bash/LocalShellTask |
  * | subagent | 已注册子代理（仅作变更信号；idle 递归看子代理是否非 idle） | tools/agent/SubAgentRegistry |
- * | waiting | 正在等待用户操作（ask user / 权限确认） | host/ui/userChoice.ts |
+ * | waiting | 正在等待用户操作（ask user / 权限确认） | Integration（入队）、`UiEvent.userChoicePendingChanged`（弹出 / 应答） |
  *
  * 与 sessionResources.isSessionIdle 的关系：后者是宿主侧（空闲回收 / 手动压缩是否延后）
  * 的**异步只读**判定，覆盖同样的来源 + 子代理递归；本模块是跨层推送的**同步快照**。
@@ -97,16 +97,6 @@ function toSnapshot(sessionId: string, entry: Entry): { idle: boolean; waiting: 
   };
 }
 
-/** 「会话是否正在等待用户」的 provider（与 sessionResources 同一注入模式） */
-let waitingProvider: ((sessionId: string) => boolean) | null = null;
-
-/** 注册「会话是否正在等待用户输入」判定（bootstrap 注入） */
-export function setSessionRuntimeWaitingProvider(
-  fn: ((sessionId: string) => boolean) | null,
-): void {
-  waitingProvider = fn;
-}
-
 /** 两个事实条目是否完全一致（diff 用） */
 function sameEntry(a: Entry, b: Entry): boolean {
   return (
@@ -163,13 +153,10 @@ function update(sessionId: string, mutate: (entry: Entry) => void): void {
 
 /**
  * 查询开始 / 结束（queryBegin / queryEnd）时更新 query 来源。
- * waiting 的值保持当前 provider 判定结果。
+ * waiting 是独立来源，不随查询开始 / 结束变化。
  */
 export function markQueryRunning(sessionId: string, running: boolean): void {
-  update(sessionId, (entry) => {
-    entry.query = running;
-    entry.waiting = waitingProvider ? !!waitingProvider(sessionId) : entry.waiting;
-  });
+  update(sessionId, (entry) => { entry.query = running; });
 }
 
 /**
@@ -208,6 +195,16 @@ export function dropSessionRuntime(sessionId: string): void {
     if (key !== sessionId) next.set(key, { ...entry });
   }
   pushIfChanged(next);
+}
+
+/**
+ * 单个会话是否正在等待用户（ask user / 权限确认）。
+ *
+ * 供 `sessionResources.isSessionIdle` 读取——「等待用户」是 core 自己的事实，
+ * 不由宿主注入判定闭包（第 8.7 节）。
+ */
+export function isSessionWaiting(sessionId: string): boolean {
+  return !!states.get(sessionId)?.waiting;
 }
 
 /** 读全量（MCPHost / 空闲回收 / 测试用） */

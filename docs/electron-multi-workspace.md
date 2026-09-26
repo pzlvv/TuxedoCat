@@ -147,7 +147,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | --- | --- |
 | 添加工作目录... | 打开系统目录选择框，选中目录加入打开集合 |
 | 添加最近的工作目录 ▸ | 子菜单列出最近工作目录，点击即添加 |
-| 主题 ▸ | 子菜单单选：跟随系统 / 浅色 / 深色；持久化在全局 settings.json 的 `theme` 字段，切换后立即应用到窗口、自绘标题栏 / 侧栏与所有对话视图 |
+| 主题 ▸ | 子菜单单选：跟随系统 / 浅色 / 深色；持久化在宿主本地状态 `userData/workspace-state.json` 的 `theme` 字段，切换后立即应用到窗口、自绘标题栏 / 侧栏与所有对话视图 |
 | 快捷键... | 打开唤醒快捷键设置对话框 |
 | 开发者工具 | 切换开发者工具 |
 | 关于 | 显示关于对话框 |
@@ -269,8 +269,8 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | 侧栏对话列表 | `electron/sidebar/main.ts` 的 `render`、`sidebar:conversations-updated` 流 |
 | 对话列表加载 | `src/core/history/Conversation.ts` 的 `loadConversationList` / `readProjectConversationMetadata` |
 | 对话元数据 | `src/core/history/Conversation.ts` 的 `ConversationMetadata.project` |
-| 项目根解析 | `src/core/history/Config.ts` 的 `getProjectRoot` / `setProjectRootProvider` |
-| 宿主工作目录注入 | `src/core/Integration.ts` 的 `initializeHistory`、`src/host/UIHost.ts` 的 `WorkspaceProvider` |
+| 项目根解析 | `src/core/history/Config.ts` 的 `getProjectRoot` / `setActiveWorkspace` |
+| 宿主工作目录传递 | `src/host/bootstrapCore.ts` 的 `host.onDidChangeWorkspace` 订阅 → `UiEvent.workspaceChanged`；`src/host/UIHost.ts` 的 `WorkspaceProvider` |
 | 聊天视图工作目录 | `electron/ChatViewManager.ts` 的 `createView`（`--workspace=` 参数） |
 | 工具工作目录 | `src/core/tools/Tool.ts` 的 `ToolUseContext.cwd` |
 | 引擎 cwd | `src/core/QueryEngine.ts` 的 `config.cwd` / `getCwd` |

@@ -3,7 +3,7 @@
  *
  * 与 Spin 设计窗口同构：主进程把 HTML 作为 data URL 载入 BrowserWindow，
  * 页面只负责显示。按键捕获在主进程的 before-input-event 里做（复用
- * src/core/utils/shortcut.ts），页面里不重复实现一遍快捷键解析。
+ * electron/shortcut.ts），页面里不重复实现一遍快捷键解析。
  *
  * 页面通过 preload 暴露的 window.shortcutAPI 与主进程通信：
  *   getState()   取当前显示值

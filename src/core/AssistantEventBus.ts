@@ -132,7 +132,14 @@ export type CoreEvent =
         | { key: 'agentMode'; value: AgentMode }
         | { key: 'webSearch'; value: boolean }
         | { key: 'mcpEnabled'; value: string[] };
-    };
+    }
+  /**
+   * core 日志行（已格式化）。
+   *
+   * core 只报告事实：日志出口由 UI 决定（VS Code 写 OutputChannel，Electron 写 console），
+   * core 侧没有日志出口的注入入口。
+   */
+  | { type: 'log'; message: string };
 
 // ==================== core → UI：请求-响应 ====================
 
@@ -242,7 +249,40 @@ export type UiEvent =
    * core 取不到 `file_path`，此时用 UI 侧归一化后的 args.file_path 兜底。
    */
   | { type: 'editRolledBack'; sessionId: string; toolUseId: string; direction: string; filePath?: string }
-  | { type: 'llmConfigSaved'; config: unknown };
+  | { type: 'llmConfigSaved'; config: unknown }
+
+  // ===== 宿主环境 =====
+  /**
+   * 宿主环境（连接建立后由 UI 发一次）。
+   *
+   * 三项都是宿主固有差异；core 侧没有对应的注入入口，只认这条事件。
+   */
+  | {
+      type: 'hostEnvironmentProvided';
+      /** 宿主 locale 原始值（BCP-47 等）；「是否中文」的收敛由 core 的 setCoreLocale 承担 */
+      locale: string;
+      /** 扩展 / 应用根目录（ripgrep、pandoc 等资源的定位基准） */
+      extensionPath: string;
+      /** core 日志是否同时输出到控制台 */
+      logToConsole: boolean;
+    }
+  /**
+   * 活动工作目录变化。
+   *
+   * 宿主在订阅时立即回调一次当前值（初始快照），之后打开 / 切换 / 关闭再回调；
+   * 未打开 / 已关闭时为 `null`。
+   */
+  | { type: 'workspaceChanged'; workspacePath: string | null }
+
+  // ===== 用户选择 =====
+  /**
+   * 某个会话的用户选择（ask user / 权限确认）在 webview 里弹出 / 被应答。
+   *
+   * 宿主只报告自己知道的事实（弹出、应答）；core 据此维护 `sessionRuntime.waiting`，
+   * 供 `isSessionIdle` 判定「非空闲」。入队阶段（尚未弹出）由 core 自己在
+   * `Integration.requestUserChoice` 里标记。
+   */
+  | { type: 'userChoicePendingChanged'; sessionId: string; pending: boolean };
 
 // ==================== 会话运行时状态 ====================
 

@@ -16,7 +16,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { createEventBus } from '../host/EventBus';
 import { setGlobalEventBus, resetGlobalEventBus } from '../core/AssistantEventBus';
-import { setProjectRootProvider, setSessionWorkspace, getProjectConversationDir } from '../core/history/Config';
+import { setActiveWorkspace, setSessionWorkspace, getProjectConversationDir } from '../core/history/Config';
 import { initializeCoreEvents } from '../core/initializeCoreEvents';
 import { WebviewMessageHandler } from '../host/ui/webviewMessageHandler';
 import { createChecker, runTests } from './helpers/harness';
@@ -83,7 +83,7 @@ async function run(): Promise<void> {
   process.env.USERPROFILE = tmpHome;
   process.env.HOME = tmpHome;
   await fs.mkdir(projectRoot, { recursive: true });
-  setProjectRootProvider(() => projectRoot);
+  setActiveWorkspace(projectRoot);
 
   const sessionId = 'sess-rollback';
   const targetFile = path.join(projectRoot, 'target.txt');

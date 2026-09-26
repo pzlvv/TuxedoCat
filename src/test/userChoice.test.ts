@@ -2,15 +2,21 @@
  * UserChoiceManager.dropSession 单测（DEVELOPMENT.md 第 10.5 节）：
  * - 清掉该会话挂起的用户选择回调，不影响其它会话
  * - diff 快照只在归属该会话时清空
+ * - 清掉已弹出的选择时经总线解除「等待用户」状态
  * 运行方式：npm run test:all -- user-choice
  */
 
 import * as assert from 'assert';
+import { setGlobalEventBus, resetGlobalEventBus } from '../core/AssistantEventBus';
 import { UserChoiceManager } from '../host/ui/userChoice';
 import { createChecker, runTests } from './helpers/harness';
+import { makeTestBus } from './helpers/fixtures';
 
 async function run(): Promise<void> {
   const { check, finish } = createChecker();
+
+  // UserChoiceManager 经总线上报「等待用户」状态（dropSession 会解除该状态）
+  setGlobalEventBus(makeTestBus().bus);
 
   const manager = new UserChoiceManager({
     outputChannel: undefined,
@@ -60,6 +66,7 @@ async function run(): Promise<void> {
   assert.equal(manager.currentBeforeContent, 'b2');
   check('dropSession does not clear snapshot owned by another session', true);
 
+  resetGlobalEventBus();
   finish();
 }
 

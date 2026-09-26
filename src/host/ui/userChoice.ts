@@ -6,8 +6,18 @@
  * 由 UI 提醒用户手动进入（Single View 的历史对话按钮呼吸效果 / Electron 侧栏黄灯）。
  */
 import type { LogChannel } from '../UIHost.js';
+import { requireEventBus } from '../../core/AssistantEventBus.js';
 import { userChoiceQueue } from '../../core/UserChoiceQueue.js';
-import { markSessionWaiting } from '../../core/sessionRuntime.js';
+
+/**
+ * 上报「该会话的用户选择是否在 webview 里等待应答」。
+ *
+ * 状态归 core 的 `sessionRuntime`；宿主只报告自己知道的事实（弹出 / 应答 / 释放），
+ * 经总线发送。入队阶段（尚未弹出）由 core 的 `Integration.requestUserChoice` 自己标记。
+ */
+function emitUserChoicePending(sessionId: string, pending: boolean): void {
+  requireEventBus().emitToCore({ type: 'userChoicePendingChanged', sessionId, pending });
+}
 
 /**
  * UserChoiceManager - 管理 UserChoice 的展示与用户选择处理。
@@ -200,7 +210,7 @@ export class UserChoiceManager {
     this.postToWebview(sessionID, postData);
 
     // 会话运行时状态：等待用户操作（ask user / 权限确认）→ 侧栏黄灯 / 托盘状态点
-    markSessionWaiting(sessionID, true);
+    emitUserChoicePending(sessionID, true);
     this.onChoiceShown?.(sessionID);
 
     return new Promise((resolve) => {
@@ -209,7 +219,7 @@ export class UserChoiceManager {
         resolve: (value) => {
           this.closePreview();
           // 用户已响应：waiting 解除
-          markSessionWaiting(sessionID, false);
+          emitUserChoicePending(sessionID, false);
           resolve(value);
         }
       });
@@ -245,11 +255,15 @@ export class UserChoiceManager {
    * - diff 快照只有在归属该会话时才清空，避免误伤其它会话正在进行的 Edit / Write。
    */
   dropSession(sessionId: string): void {
+    let hadPending = false;
     for (const [choiceId, entry] of this.pendingUserChoices) {
       if (entry.sessionId === sessionId) {
         this.pendingUserChoices.delete(choiceId);
+        hadPending = true;
       }
     }
+    // 已弹出的选择随视图一起消失：等待状态同步解除（否则该会话永远判为非空闲）
+    if (hadPending) emitUserChoicePending(sessionId, false);
     if (this.diffSnapshotSessionId === sessionId) {
       this.clearDiffSnapshot();
     }

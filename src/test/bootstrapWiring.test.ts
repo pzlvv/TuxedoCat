@@ -2,10 +2,11 @@
  * 启动接线守卫（DEVELOPMENT.md 第 8.10 节）：
  *
  * 1. 共享骨架执行完毕后，自检快照的每个字段都成立；
- * 2. core 中导出的启动期注入点都在共享骨架内登记（或属于白名单）。
+ * 2. core 中导出的启动期注入点都在启动接线内登记（或属于白名单）。
  *
- * 第 2 条是「新增注入点忘了接线」的静态守卫：core 新增一个 set*Provider 却
- * 没在 bootstrapCore.ts 里接线时，本测试失败。
+ * 第 2 条是「新增注入点忘了接线」的静态守卫：core 新增一个启动期 setter 却
+ * 没在 `bootstrapCore.ts`（宿主侧骨架）或 `initializeCoreEvents.ts`（core 侧
+ * UiEvent 订阅注册）里接线时，本测试失败。
  *
  * 运行方式：npm run test:all -- bootstrap-wiring
  */
@@ -15,10 +16,9 @@ import * as path from 'path';
 import { bootstrapCore, bootstrapSnapshot } from '../host/bootstrapCore';
 import { requireEventBus } from '../core/AssistantEventBus';
 import {
-  hasExtensionPathProvider,
-  hasProjectRootProvider,
+  hasActiveWorkspaceProvided,
+  hasExtensionPath,
 } from '../core/history/Config';
-import { requireSessionWaitingForUserProvider } from '../core/sessionResources';
 import { sessionQueue } from '../core/SessionQueue';
 import { ConversationManager } from '../host/ConversationManager';
 import type { SpinDesign } from '../host/SpinDesign';
@@ -43,16 +43,12 @@ const stubSpinDesign: SpinDesign = {
 };
 
 /**
- * 白名单：不需要出现在 bootstrapCore.ts 的注入点。
+ * 白名单：不需要出现在启动接线（`bootstrapCore.ts` 或 `initializeCoreEvents.ts`）的注入点。
  *
- * - `setSession*`：会话级运行时 setter，由 UiEvent 驱动，不属于启动接线；
- * - `setProjectRootProvider`：由骨架内的 `initializeHistory(host)` 间接注入。
+ * - `setSession*`：会话级运行时 setter，由 UiEvent 驱动，不属于启动接线。
  */
 function isAllowedOutsideBootstrap(name: string): boolean {
-  if (name === 'setSessionWaitingForUserProvider') return false;
-  if (name.startsWith('setSession')) return true;
-  if (name === 'setProjectRootProvider') return true;
-  return false;
+  return name.startsWith('setSession');
 }
 
 /** 递归收集 src/core 下所有 .ts 文件路径 */
@@ -86,29 +82,28 @@ function run(): void {
   check('snapshot.locale 保留宿主原始值', snapshot.locale === 'zh-CN');
   check('snapshot.eventBusRegistered', snapshot.eventBusRegistered === true);
   check('snapshot.uiCreated', snapshot.uiCreated === true);
-  check('snapshot.projectRootProviderInjected', snapshot.projectRootProviderInjected === true);
-  check('snapshot.extensionPathProviderInjected', snapshot.extensionPathProviderInjected === true);
+  check('snapshot.activeWorkspaceProvided', snapshot.activeWorkspaceProvided === true);
+  check('snapshot.extensionPathProvided', snapshot.extensionPathProvided === true);
   check('snapshot.sessionQueueInitialized', snapshot.sessionQueueInitialized === true);
-  check('snapshot.waitingForUserInjected', snapshot.waitingForUserInjected === true);
   check('snapshot.logToConsole 保留宿主取值', snapshot.logToConsole === false);
 
   // ── 2. 读取入口在骨架执行完毕后可用（未注入即抛错的项） ──
   check('requireEventBus() 可用', (() => {
     try { requireEventBus(); return true; } catch { return false; }
   })());
-  check('hasProjectRootProvider() 为真', hasProjectRootProvider());
-  check('hasExtensionPathProvider() 为真', hasExtensionPathProvider());
+  check('hasActiveWorkspaceProvided() 为真', hasActiveWorkspaceProvided());
+  check('hasExtensionPath() 为真', hasExtensionPath());
   check('sessionQueue.hasCallbacks() 为真', sessionQueue.hasCallbacks());
-  check('requireSessionWaitingForUserProvider() 可用', (() => {
-    try { requireSessionWaitingForUserProvider(); return true; } catch { return false; }
-  })());
 
   // ── 3. 静态守卫：core 的注入点都在骨架内登记 ──
   const coreDir = path.resolve(__dirname, '../../../src/core');
-  const bootstrapSource = fs.readFileSync(
+  // 启动接线分布在两处：宿主侧骨架 + core 侧 UiEvent 订阅注册
+  const bootstrapSource = [
     path.resolve(__dirname, '../../../src/host/bootstrapCore.ts'),
-    'utf8',
-  );
+    path.resolve(__dirname, '../../../src/core/initializeCoreEvents.ts'),
+  ]
+    .map((file) => fs.readFileSync(file, 'utf8'))
+    .join('\n');
   const exported = new Set<string>();
   for (const file of collectCoreSources(coreDir)) {
     const text = fs.readFileSync(file, 'utf8');
@@ -120,7 +115,7 @@ function run(): void {
   check('静态扫描到 core 的注入点', exported.size > 0);
   for (const name of [...exported].sort()) {
     if (isAllowedOutsideBootstrap(name)) continue;
-    check(`${name} 已在 bootstrapCore.ts 登记`, bootstrapSource.includes(name));
+    check(`${name} 已在启动接线中登记`, bootstrapSource.includes(name));
   }
 
   finish();

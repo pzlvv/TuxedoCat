@@ -10,7 +10,6 @@ import { createHash } from 'crypto';
 import { logger } from '../Logger.js';
 import { requireEventBus } from '../AssistantEventBus.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
-import { DEFAULT_WAKE_SHORTCUT, normalizeAccelerator } from '../utils/shortcut.js';
 import type { ModelTokenLimits } from '../utils/modelConfig.js';
 import type { ModelRef } from '../llm/modelRef.js';
 
@@ -163,24 +162,34 @@ export async function ensureConfigDirs(): Promise<void> {
 }
 
 /**
- * 项目根目录提供者
- * 允许外部传入项目路径（如从 VSCode workspace）
+ * 活动工作目录（宿主当前打开的工作目录）。
+ *
+ * 由 `UiEvent.workspaceChanged` 写入；未收到事件前为 undefined。
+ * 存的是路径字符串而不是惰性读取入口：远程部署时宿主与 core 不在同一进程，
+ * core 无法反向调用宿主取值。
  */
-let projectRootProvider: (() => string | undefined) | null = null;
+let activeWorkspacePath: string | undefined;
+
+/** 活动工作目录是否已上报（启动自检用；不看当前是否打开了目录） */
+let activeWorkspaceProvided = false;
 
 /**
- * 设置项目根目录提供者
+ * 记录活动工作目录（未打开 / 已关闭时传 null）。
+ *
+ * 唯一写入入口是 `initializeCoreEvents` 的 `workspaceChanged` 订阅。
  */
-export function setProjectRootProvider(provider: () => string | undefined): void {
-  projectRootProvider = provider;
+export function setActiveWorkspace(workspacePath: string | null): void {
+  activeWorkspacePath =
+    typeof workspacePath === 'string' && workspacePath ? workspacePath : undefined;
+  activeWorkspaceProvided = true;
 }
 
 /**
  * 会话工作目录表（sessionId → 工作目录绝对路径）。
  *
  * 工作目录是对话的属性：同一进程内可同时存在归属不同工作目录的对话。
- * 需要工作目录的 core 调用按 sessionId 查表；未登记时回退到项目根提供者
- * （宿主当前的活动工作目录）。
+ * 需要工作目录的 core 调用按 sessionId 查表；未登记时回退到活动工作目录
+ * （`UiEvent.workspaceChanged` 写入）。
  */
 const sessionWorkspaces = new Map<string, string>();
 
@@ -208,13 +217,13 @@ export function getSessionWorkspace(sessionId: string | null | undefined): strin
 }
 
 /**
- * 项目根目录提供者是否已注册（启动自检用）。
+ * 活动工作目录是否已上报（启动自检用）。
  *
- * 与 hasProjectRoot() 的区别：只看"提供者有没有被注入"，不看它当前返回什么值。
- * 未打开工作目录时提供者仍然存在，属于合法的启动完成状态。
+ * 与 hasProjectRoot() 的区别：只看"事件有没有到过"，不看当前有没有目录。
+ * 未打开工作目录时事件已经到过（值为 null），属于合法的启动完成状态。
  */
-export function hasProjectRootProvider(): boolean {
-  return projectRootProvider !== null;
+export function hasActiveWorkspaceProvided(): boolean {
+  return activeWorkspaceProvided;
 }
 
 /**
@@ -230,14 +239,14 @@ export function hasProjectRootProvider(): boolean {
  */
 export function hasProjectRoot(sessionId?: string | null): boolean {
   if (getSessionWorkspace(sessionId)) return true;
-  return !!projectRootProvider?.();
+  return !!activeWorkspacePath;
 }
 
 /**
  * 获取项目根目录（绝对路径）
  *
  * 传入 sessionId 时优先取该会话自己的工作目录（会话工作目录表）；
- * 未登记或未传时回退到项目根提供者（宿主当前的活动工作目录）。
+ * 未登记或未传时回退到活动工作目录（`UiEvent.workspaceChanged` 写入）。
  * 两者皆无时抛错，让"没有工作目录"这类问题在调用点显式暴露，
  * 而不是静默拿到一个错误路径。需要降级处理的调用点，先用 hasProjectRoot() 守卫。
  */
@@ -246,50 +255,49 @@ export function getProjectRoot(sessionId?: string | null): string {
   if (scoped) {
     return scoped;
   }
-  const root = projectRootProvider?.();
-  if (root) {
-    return root;
+  if (activeWorkspacePath) {
+    return activeWorkspacePath;
   }
   throw new Error(
     'Project root is not configured. ' +
-    'Please call setProjectRootProvider() before using getProjectRoot(). ' +
-    'In VSCode extension, this is typically done in initializeHistory().'
+    'The active workspace is written by UiEvent.workspaceChanged; ' +
+    'getProjectRoot() is called before that event arrived.'
   );
 }
 
 /**
- * 扩展路径提供者
- * 允许外部传入扩展安装路径（如从 VSCode ExtensionContext）
+ * 扩展 / 应用根目录（ripgrep、pandoc 等资源的定位基准）。
+ *
+ * 由 `UiEvent.hostEnvironmentProvided` 写入；未收到事件前为 undefined。
  */
-let extensionPathProvider: (() => string | undefined) | null = null;
+let extensionPath: string | undefined;
 
 /**
- * 设置扩展路径提供者
+ * 记录扩展 / 应用根目录。
+ *
+ * 唯一写入入口是 `initializeCoreEvents` 的 `hostEnvironmentProvided` 订阅。
  */
-export function setExtensionPathProvider(provider: () => string | undefined): void {
-  extensionPathProvider = provider;
+export function setExtensionPath(path: string): void {
+  extensionPath = typeof path === 'string' && path ? path : undefined;
 }
 
-/** 扩展路径提供者是否已注册（启动自检用；不看当前返回值） */
-export function hasExtensionPathProvider(): boolean {
-  return extensionPathProvider !== null;
+/** 扩展路径是否已上报（启动自检用；不看当前值是否非空） */
+export function hasExtensionPath(): boolean {
+  return !!extensionPath;
 }
 
 /**
  * 获取扩展安装路径
- * 必须通过 setExtensionPathProvider 设置扩展路径提供者
- * 如果未设置或返回空值，则抛出错误
+ * 未收到 `UiEvent.hostEnvironmentProvided` 时抛错
  */
 export function getExtensionPath(): string {
-  if (extensionPathProvider) {
-    const extPath = extensionPathProvider();
-    if (extPath) {
-      return extPath;
-    }
+  if (extensionPath) {
+    return extensionPath;
   }
   throw new Error(
     'Extension path is not configured. ' +
-    'Please call setExtensionPathProvider() before using getExtensionPath().'
+    'It is written by UiEvent.hostEnvironmentProvided; ' +
+    'getExtensionPath() is called before that event arrived.'
   );
 }
 
@@ -399,67 +407,6 @@ export function highlightLanguagesMutator(
       ? list.slice(list.length - HIGHLIGHT_LANGUAGES_MAX)
       : list;
   };
-}
-
-/**
- * 应用主题模式：
- * - 'system' 跟随系统（产品默认值）
- * - 'light'  强制浅色
- * - 'dark'   强制深色
- *
- * 持久化在全局 settings.json 的 `theme` 字段（THEME_FIELD）。
- */
-export type ThemeMode = 'system' | 'light' | 'dark';
-
-/** settings.json 中主题模式的字段名 */
-export const THEME_FIELD = 'theme';
-
-/** 判断任意值是否为合法主题模式 */
-export function isThemeMode(value: unknown): value is ThemeMode {
-  return value === 'system' || value === 'light' || value === 'dark';
-}
-
-/**
- * 同步读取 settings.json 中的主题模式。
- * 未配置、读取失败或取值非法时返回 'system'（跟随系统）。
- */
-export function readThemeSync(): ThemeMode {
-  try {
-    const settingsPath = join(getConfigHomeDir(), 'settings.json');
-    const content = readFileSync(settingsPath, 'utf-8');
-    const cfg = JSON.parse(content);
-    const value = cfg?.[THEME_FIELD];
-    return isThemeMode(value) ? value : 'system';
-  } catch {
-    return 'system';
-  }
-}
-
-/**
- * 构造「把主题模式写入 settings.json」的修改器。
- *
- * 与唤醒快捷键一致：core 只描述**怎么改**，**写盘由宿主承担**
- * （`UIHost.updateSettingsJson`，见 DEVELOPMENT.md 第 2 节规则 9）。
- */
-export function themeMutator(mode: ThemeMode): (cfg: Record<string, any>) => void {
-  return (cfg) => {
-    cfg[THEME_FIELD] = mode;
-  };
-}
-
-/**
- * 同步读取 settings.json 中的唤醒快捷键（Electron accelerator 形式）。
- * 未配置、读取失败或配置非法时返回默认值 Ctrl+Alt+X。
- */
-export function readWakeShortcutSync(): string {
-  try {
-    const settingsPath = join(getConfigHomeDir(), 'settings.json');
-    const content = readFileSync(settingsPath, 'utf-8');
-    const cfg = JSON.parse(content);
-    return normalizeAccelerator(cfg?.shortcut) || DEFAULT_WAKE_SHORTCUT;
-  } catch {
-    return DEFAULT_WAKE_SHORTCUT;
-  }
 }
 
 /**

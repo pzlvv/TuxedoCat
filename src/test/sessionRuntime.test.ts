@@ -3,7 +3,7 @@
  * - idle/waiting 聚合与 diff（无变化不发事件）
  * - 多会话并发状态
  * - dropSessionRuntime 清理
- * - waiting provider 接入
+ * - waiting 来源：markSessionWaiting 写入 / isSessionWaiting 读取
  * 运行方式：npm run test:all -- session-runtime
  */
 
@@ -19,7 +19,7 @@ import {
   dropSessionRuntime,
   getSessionRuntimeStates,
   resetSessionRuntime,
-  setSessionRuntimeWaitingProvider,
+  isSessionWaiting,
 } from '../core/sessionRuntime';
 import { subAgentRegistry } from '../core/tools/agent/SubAgentRegistry';
 import { createChecker, runTests } from './helpers/harness';
@@ -30,7 +30,6 @@ async function run(): Promise<void> {
   const testBus = makeTestBus();
   setGlobalEventBus(testBus.bus);
   resetSessionRuntime();
-  setSessionRuntimeWaitingProvider(null);
 
   /** 最近一次推送的全量快照 */
   const lastStates = (): readonly SessionRuntimeState[] =>
@@ -62,12 +61,19 @@ async function run(): Promise<void> {
   assert.equal(s2?.idle, false);
   check('multi-session states aggregated', true);
 
-  // waiting provider
-  setSessionRuntimeWaitingProvider((sid) => sid === 's2');
+  // waiting 来源：markSessionWaiting 写入，isSessionWaiting 读取
+  assert.equal(isSessionWaiting('s2'), false, 'waiting defaults to false');
   markSessionWaiting('s2', true);
   states = lastStates();
   assert.equal(states.find((s) => s.sessionId === 's2')?.waiting, true);
+  assert.equal(isSessionWaiting('s2'), true);
+  assert.equal(isSessionWaiting('s1'), false);
   check('waiting propagated', true);
+
+  // waiting 是独立来源：query 开始 / 结束不清掉它
+  markQueryRunning('s2', true);
+  assert.equal(isSessionWaiting('s2'), true, 'markQueryRunning keeps waiting');
+  check('markQueryRunning keeps waiting', true);
 
   // 无变化不推
   const countBefore = testBus.count('sessionRuntimeChanged');

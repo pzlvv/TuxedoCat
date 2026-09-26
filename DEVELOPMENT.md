@@ -129,6 +129,7 @@ HOST .up.> CORE : 事件类型 / 只读函数
 | `electron/ElectronUIHost.ts` | `UIHost` 的 Electron 实现 |
 | `src/VSCodeSpinDesign.ts` / `electron/ElectronSpinDesign.ts` | `SpinDesign` 的两个实现（构造注入 `UIHost`） |
 | `src/VSCodeConversationManager.ts` / `electron/ElectronConversationManager.ts` | `ConversationManager` 的两个实现；空闲会话回收（计时 / 巡检 / 关闭动作）只在 VS Code 侧 |
+| `electron/shortcut.ts` | Electron 专属：Electron accelerator 解析与规范化（唤醒快捷键）；core 不读不写 |
 | `electron/shortcutDialogHtml.ts` + `electron/shortcutPreload.ts` | Electron 专属：唤醒快捷键设置对话框（File - Shortcut...，见第 5.5 节） |
 | `electron/titlebar/` + `electron/titlebarPreload.ts` | Electron 专属：自绘标题栏（左侧品牌区 + 单一菜单图标 + 工作目录标签页区；右侧置顶钉 / 模式切换 / 最小化-最大化-关闭，两个图标按钮与窗口按钮同宽同高），替代系统默认标题栏与系统菜单栏 |
 | `electron/titlebarMenuHtml.ts` + `electron/titlebarMenuPreload.ts` | Electron 专属：标题栏下拉菜单。菜单由独立 `WebContentsView` 承载（标题栏视图只有 38px 高，自身 bounds 会裁掉向下展开的菜单），首次打开测量尺寸后缓存，再次打开直接摆位显示；子菜单（「添加最近的工作目录」）渲染成右侧飞出面板，默认收起 |
@@ -213,8 +214,6 @@ class WebViewUI {
   +releaseConversation(sessionId)
   +closeConversation(sessionId)
   +getActivityPhase(sessionId)
-  +hasPendingUserChoice(sessionId)
-  +getWorkspacePath()
 }
 
 interface WebViewUiPort {
@@ -439,6 +438,8 @@ core/  ←  host/  ←  宿主实现（VSCode* / Electron*）
   见第 5.1 节）。宿主写盘后调 core 的 `resetSettingsCache()` 清读缓存——它只清内存，不写盘。
   对话目录下的 `<conversations>/<project>/settings.json`（记录 workspacePath）同理：
   目录由 core 创建，清单文件的写由宿主经 `UIHost.ensureProjectSettings` 承担。
+  宿主本地偏好（`theme` / `shortcut`）不在这两份文件里：它们只有 Electron 消费，落
+  `userData/workspace-state.json`（`electron/main.ts`），core 不读不写（第 11.1 节）。
 
 ---
 
@@ -479,13 +480,13 @@ UI 可以被替换，也可以只订阅自己关心的事件。
 
 ### 3.1 事件定义
 
-三组词汇表，共 43 个事件：
+三组词汇表，共 46 个事件：
 
 | 词汇表 | 方向 | 语义 | 数量 |
 | --- | --- | --- | --- |
-| `CoreEvent` | core → UI | 单向事实通知 | 23 |
+| `CoreEvent` | core → UI | 单向事实通知 | 24 |
 | `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 2 |
-| `UiEvent` | UI → core | 单向，报告「用户做了什么」 | 18 |
+| `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 20 |
 
 逐事件的载荷 / 触发点 / 处理方见第 4 章。
 
@@ -611,28 +612,31 @@ resetGlobalEventBus();    // 测试用：清空全局总线
 宿主只提供自身差异（locale / 日志出口 / 资源根目录），因此顺序只有一份：
 
 ```
-1.  setCoreLocale(options.locale)
-2.  setCoreUiLanguage(readUiLanguageSync())
-3.  setExtensionPathProvider(() => options.extensionPath)
-4.  setLogToConsole(options.logToConsole) 与 setLogCallback(options.log)
-5.  createEventBus() → setGlobalEventBus(bus)
-6.  initializeCoreEvents(bus)
-7.  WebViewUI.create(host, bus, spinDesign, conversations, { log, createUserChoiceManager })
-8.  initializeHistory(ui)
-9.  initializeSessionQueue()
-10. setSessionWaitingForUserProvider((sid) => ui.hasPendingUserChoice(sid))
-11. ensureConfigDirs()（异步，失败记日志）
-12. 系统环境预热（异步，无工作区时跳过）
-13. getMCPHost().prune()（异步，失败记日志）
+1.  createEventBus() → setGlobalEventBus(bus)
+2.  initializeCoreEvents(bus)
+    - 同步注册「宿主环境」与「活动工作目录」两条事件的处理器
+    - 读取 core 自己的 settings.json 设置 UI 语言
+3.  bus.emitToCore({ type: 'hostEnvironmentProvided', locale, extensionPath, logToConsole })
+4.  WebViewUI.create(host, bus, spinDesign, conversations, { log, createUserChoiceManager })
+5.  initializeSessionQueue()
+6.  host.onDidChangeWorkspace(...) 订阅：回调翻译为 `workspaceChanged` 事件
+7.  ensureConfigDirs()（异步，失败记日志）
+8.  getMCPHost().prune()（异步，失败记日志）
 ```
 
 顺序约束：
 
-- 第 1–4 步在任何 core 模块被使用之前完成；
-- 第 5–6 步在 `WebViewUI.create` 之前完成，否则第一批 `UiEvent` 落空（见第 3.7 节）；
-- 第 7 步必须在 core 第一次 `emitToUi` 之前完成，否则总线抛错（第 3.7 节）；
-- 第 8–10 步依赖第 7 步产出的实例；
-- 第 11–13 步是异步收尾，不阻塞启动，失败只记日志。
+- 第 1–2 步在任何 core 模块被使用之前完成；
+- 第 2 步必须**同步**注册第 3 / 7 步要发的两条事件：异步注册会让事件在处理器就位前
+  到达，被总线按「暂无订阅者」静默丢弃；
+- 第 3 步只写 core 自己的状态，不 emit 到 UI，因此可以在 `WebViewUI.create` 之前；
+- 第 4 步必须在 core 第一次 `emitToUi` 之前完成，否则总线抛错（第 3.7 节）；
+- 第 5 步依赖第 4 步产出的实例；
+- 第 6 步的订阅在订阅时立即回调一次当前值（初始快照）；
+- 第 7–8 步是异步收尾，不阻塞启动，失败只记日志。
+
+宿主环境差异（locale / 扩展路径 / 日志出口开关）与活动工作目录都经总线传递，
+core 侧没有对应的直接注入入口（第 8.7 节）。
 
 core 模块随 bundle 加载，**模块顶层不能订阅**（加载时总线还不存在）；订阅统一收敛到
 `initializeCoreEvents`（第 3.6 节）。接线项归属、注入点与读取器、启动自检与退出路径见
@@ -647,6 +651,12 @@ core 侧**没有处理器契约**，与 UI 侧同理：消费方是分散的模�
 
 ```ts
 export function initializeCoreEvents(bus: AssistantEventBus): void {
+  setCoreUiLanguage(readUiLanguageSync());     // UI 语言取自 core 自己的 settings.json
+
+  registerHostEnvironmentUiEvents(bus);        // hostEnvironmentProvided（同步注册）
+  registerWorkspaceUiEvents(bus);              // workspaceChanged（同步注册）
+  registerUserChoiceUiEvents(bus);             // userChoicePendingChanged（同步注册）
+
   void registerIntegrationUiEvents(bus);       // 消息 / 压缩 / 配置 / 会话生命周期
   void registerHistoryUiEvents(bus);           // 重命名 / 删除 / 上下文 / 空间
   void registerSessionResourcesUiEvents(bus);  // conversationClosed → releaseSessionResources
@@ -656,6 +666,10 @@ export function initializeCoreEvents(bus: AssistantEventBus): void {
 
 要点：
 
+- **前三个注册函数同步执行**：`hostEnvironmentProvided` 由调用方在 `initializeCoreEvents`
+  之后立刻发出，`workspaceChanged` 由 `host.onDidChangeWorkspace` 在订阅时立刻回调一次，
+  `userChoicePendingChanged` 由宿主在任意时刻发出；异步注册会让事件在处理器就位前到达，
+  被总线按「暂无订阅者」静默丢弃。
 - 事件 handler 内部**不直接持有跨模块状态**：只调用对应模块自己的导出函数
   （`abortCurrentQuery` / `updateConversationContext` / `releaseSessionResources` …），
   保持与直接函数调用相同的内聚度。
@@ -691,9 +705,9 @@ wire message（若该事件会产生 webview 协议消息）。
 
 | 组 | 方向 | 数量 | 处理方 |
 | --- | --- | --- | --- |
-| `CoreEvent` | core → UI | 23 | `WebViewUI`（`onCoreEvents` 映射表） |
+| `CoreEvent` | core → UI | 24 | `WebViewUI`（`onCoreEvents` 映射表） |
 | `CoreRequest` | core → UI | 2 | `WebViewUI`（`onCoreRequests` 映射表） |
-| `UiEvent` | UI → core | 18 | core 侧订阅者（`initializeCoreEvents`） |
+| `UiEvent` | UI → core | 20 | core 侧订阅者（`initializeCoreEvents`） |
 
 命名规则见第 3.4 节。
 
@@ -727,8 +741,9 @@ wire message（若该事件会产生 webview 协议消息）。
 | 21 | `sessionConfigChanged` | `sessionId`, `change` | `initializeCoreEvents`（前五个配置 UiEvent 写完 meta.json 后广播；`change.key` 用 `thinkingEffort`，落盘字段仍是 `thinkingMode`）；`MCPHost`（`mcpEnabledChanged` 的差量同步、以及会话首次打开的 `acquire` 连接 / 断开完成后广播，让 UI 拿到最终运行时状态） | `onSessionConfigChanged` | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpServers` |
 | 22 | `highlightLanguagesUsed` | `languages: readonly string[]` | `history/Conversation`（消息落盘时扫描围栏代码块语言，只报未记录过的） | `onHighlightLanguagesUsed` | 写 settings.json 的 `highlightLanguages` 字段（经 `UIHost.updateSettingsJson`，见第 5.1 节） |
 | 23 | `projectConversationDirReady` | `projectDir`, `workspacePath` | `history/Config.ensureProjectConversationDir`（目录由 core 创建后上报一次） | `onProjectConversationDirReady` | 写 `<projectDir>/settings.json` 的 `workspacePath`（经 `UIHost.ensureProjectSettings`） |
+| 24 | `log` | `message`（已格式化的整行） | `Logger`（每写一行日志） | `log` | 写 UI 自己的日志出口（VS Code 是 OutputChannel，Electron 是 console） |
 
-> 第 1–10 项是渲染类 handler，第 11–23 项是控制面与事实通知 handler——这条界线只是 `WebViewUI` 内部的
+> 第 1–10 项是渲染类 handler，第 11–24 项是控制面与事实通知 handler——这条界线只是 `WebViewUI` 内部的
 > 分区，不是事件类型的分组。
 >
 > `sessionCreated.parentSessionId` 表达「这是一个子代理会话」这个事实，UI 据此做展示
@@ -747,10 +762,10 @@ wire message（若该事件会产生 webview 协议消息）。
 结果类型的映射写在 `CoreRequestResultMap`（第 3.1 节），保证 handler 返回类型与请求一一对应。
 超时口径见第 3.7 节。
 
-**没有 `uiDynamicInfo` 这类请求**：工作目录经**注入 + 订阅**获得，不经过事件总线。
-`initializeHistory(host)` 把 `WorkspaceProvider.getWorkspacePath` 登记为
-`setProjectRootProvider`（**活动工作目录**，进程级默认值）；
-`bootstrapCore` 以 `host.onDidChangeWorkspace(...)` 订阅变化，回调里以新路径预热系统环境信息。
+**没有 `uiDynamicInfo` 这类请求**：活动工作目录经 `UiEvent.workspaceChanged` 获得，
+不经过请求-响应。`bootstrapCore` 以 `host.onDidChangeWorkspace(...)` 订阅宿主的
+`WorkspaceProvider`，回调只负责发事件；写活动工作目录（`setActiveWorkspace`）与以新路径
+预热系统环境信息都在 core 侧的 `workspaceChanged` 处理器里。
 
 工作目录是**对话的属性**：core 另有一份会话工作目录表（`Config.setSessionWorkspace` /
 `getSessionWorkspace`），登记时机为新建对话（宿主提供活动工作目录）、加载对话（元数据
@@ -784,6 +799,9 @@ wire message（若该事件会产生 webview 协议消息）。
 | 38 | `mcpEnabledChanged` | `sessionId`, `name`, `enabled` | `setMcpEnabled` | `mcp/Config.setSessionMcpEnabled` + `Manager.syncSession` → `sessionConfigChanged`（差量同步完成后） |
 | 39 | `editRolledBack` | `sessionId`, `toolUseId`, `direction`, `filePath?` | `rollbackEdit` | `history/rollback.rollbackEdit`（`filePath` 作为 `input.file_path` 缺失时的兜底路径） |
 | 40 | `llmConfigSaved` | `config` | `saveLLMConfig` | `llm/config.clearConfigCache` |
+| 41 | `hostEnvironmentProvided` | `locale`, `extensionPath`, `logToConsole` | `bootstrapCore`（总线建好、core 侧订阅注册完毕后发一次） | `initializeCoreEvents` 的 `registerHostEnvironmentUiEvents` → `setCoreLocale` / `setExtensionPath` / `setLogToConsole` |
+| 42 | `workspaceChanged` | `workspacePath: string \| null` | `bootstrapCore` 的 `host.onDidChangeWorkspace(...)` 订阅（订阅时立即回调一次当前值，之后打开 / 切换 / 关闭再回调） | `initializeCoreEvents` 的 `registerWorkspaceUiEvents` → `setActiveWorkspace` + 以新路径预热系统动态信息 |
+| 43 | `userChoicePendingChanged` | `sessionId`, `pending: boolean` | `UserChoiceManager`（webview 弹出选择、用户应答、`dropSession` 释放视图时） | `initializeCoreEvents` 的 `registerUserChoiceUiEvents` → `markSessionWaiting`（`sessionRuntime` 的 `waiting` 来源，供 `isSessionIdle` 判定） |
 
 **`changes` 数组而不是可选字段**：`history.updateConversationContext` 是**部分合并**语义
 （未列出的字段保持原值），用数组而不是一组可选字段，是为了同时满足「一次可带多个字段」
@@ -841,7 +859,7 @@ webview 对话树的运行标记、两端 abort 按钮），生产者是 `src/co
 | `markSessionCompacting(sessionId, compacting)` | `compacting` | 正在压缩上下文（会整体替换消息数组） | `compact/compact.ts`（`compactConversation` 的进出） |
 | `markSessionBackground(sessionId, background)` | `background` | 有运行中的后台 Bash 任务 | `tools/bash/LocalShellTask`（注册 / 结束 / 中止后按剩余任务数同步） |
 | `markSessionSubAgent(sessionId, subagent)` | `subagent` | 该会话已注册子代理（idle 递归看子代理当前是否非 idle，本标志只作变更信号） | `tools/agent/SubAgentRegistry`（register / unregister） |
-| `markSessionWaiting(sessionId, waiting)` | `waiting` | 正在等待用户操作 | `host/ui/userChoice`（进出 ask user / 权限确认） |
+| `markSessionWaiting(sessionId, waiting)` | `waiting` | 正在等待用户操作 | `Integration`（入队时标记）；`initializeCoreEvents` 的 `userChoicePendingChanged` 订阅（webview 弹出 / 应答时标记） |
 | `dropSessionRuntime(sessionId)` | — | 会话关闭 / 删除时清理该会话的状态 | `sessionResources.releaseSessionResources`、`history.deleteConversation` |
 
 **`idle` 的取值**
@@ -854,8 +872,9 @@ webview 对话树的运行标记、两端 abort 按钮），生产者是 `src/co
 对外快照里每个会话都递归计算该值，因此子代理的 `query` / `waiting` / `compacting` / `background`
 变化会连带刷新其创建者的 `idle`。`waiting` 字段单独保留，供流水灯显示黄色。
 
-- `waiting` 的取值由 `markSessionWaiting` 直接驱动；`setSessionRuntimeWaitingProvider`
-  （「该会话是否有 pending user choice」读取器）是它的补充来源——当前仅单测注册，生产未注入。
+- `waiting` 的取值由 `markSessionWaiting` 直接驱动：入队时由 `Integration.requestUserChoice`
+  标记，webview 弹出 / 应答时由 `UiEvent.userChoicePendingChanged` 标记。
+  `sessionResources.isSessionIdle` 经 `isSessionWaiting(sessionId)` 读同一份事实。
 - 读全量：`getSessionRuntimeStates()`。
 - 分发有**推**和**拉**两条：推是常态（变化时经 `CoreEvent.sessionRuntimeChanged` 全量推给已存在的视图）；
   视图创建 / 激活时可能错过推送（当时视图还不存在），因此 webview 启动、或切到单视图时发
@@ -953,8 +972,11 @@ before/after 两个虚拟文档组成的 diff 标签，Electron 空实现（diff
 
 | 文件 | 内容 | 写入口 |
 | --- | --- | --- |
-| `~/<CONFIG_DIR_NAME>/settings.json` | 全局配置（llm / mcp / uiLanguage / highlightLanguages / theme / shortcut…） | `updateSettingsJson` |
+| `~/<CONFIG_DIR_NAME>/settings.json` | 全局配置（llm / mcp / uiLanguage / highlightLanguages / defaultAgentMode / defaultPromptMode…） | `updateSettingsJson` |
 | `<conversations>/<project>/settings.json` | 该目录对应的 `workspacePath`（反查用） | `ensureProjectSettings` |
+
+`theme` / `shortcut` 不属于这两份文件：它们是 Electron 宿主本地偏好，落
+`userData/workspace-state.json`（`electron/main.ts`），core 不读不写（第 11.1 节）。
 
 两个宿主共用 `src/host/settingsFile.ts`：`updateSettingsJson` 串行化「读-改-写」（避免并发写坏
 文件或丢字段），写盘后调 core 的 `resetSettingsCache()` 让读缓存失效。
@@ -962,7 +984,7 @@ before/after 两个虚拟文档组成的 diff 标签，Electron 空实现（diff
 字段名与合并规则仍归 core，但以**纯函数**给出（不写盘），例如
 `history/Config.highlightLanguagesMutator`（去重 + 上限 60）、`mcp/Config.mcpDefaultsMutator`。
 调用方把 mutator 交给宿主执行：`WebviewMessageHandler.handleSaveLLMConfig`（LLM 配置）、
-`WebViewUI.onHighlightLanguagesUsed`（高亮语言）、`electron/main.ts` 的快捷键对话框；
+`WebViewUI.onHighlightLanguagesUsed`（高亮语言）；
 项目目录清单则由 `WebViewUI.onProjectConversationDirReady` 交给 `ensureProjectSettings`。
 
 `closeConversationView` **只销毁视图**：不删磁盘数据，也不释放运行时内存。两件事归属不同——
@@ -1152,9 +1174,9 @@ VS Code 实现里的成员：
 活动来源：宿主侧上报（打开 / 新建 / 用户发消息，经 `WebViewUiPort.noteSessionActivity`）
 与 `updateSessionStates` 的状态跃迁。
 
-`isSessionIdle` 的「等待用户」事实由共享骨架注入（两个宿主一致）：
-`bootstrapCore` 内 `setSessionWaitingForUserProvider(sid => ui.hasPendingUserChoice(sid))`；
-消费点用 `requireSessionWaitingForUserProvider()` 取用，未注入直接抛错（第 12.1 节）。
+`isSessionIdle` 的「等待用户」事实读 core 自己的 `sessionRuntime`（`isSessionWaiting`）：
+入队时 `Integration.requestUserChoice` 标记，webview 弹出 / 应答时宿主经
+`UiEvent.userChoicePendingChanged` 上报（第 4.3 节），core 侧由 `markSessionWaiting` 落地。
 
 **调用方**：
 
@@ -1186,7 +1208,7 @@ import core 的只读函数与类型（第 2 节规则 9）。
 | Electron 侧栏：删除 | `sidebar:delete-conversation` | 先用 core 的 `collectConversationClosure` 求受影响闭包（自身 + 所有层级子孙，与 `deleteConversation` 同一条规则），逐个 `closeConversation`，再对 root 发 `conversationDeleted`（core 递归删盘） |
 | Electron 侧栏：重命名 | `sidebar:rename-conversation` | `conversationRenamed` |
 | Electron 侧栏：智能命名 | `sidebar:smart-name-conversation` | LLM 起名后发 `conversationRenamed` |
-| Electron 菜单：唤醒快捷键 | File - Shortcut... 对话框（`electron/main.ts`） | 直接调 `UIHost.updateSettingsJson`（写 settings.json 是宿主能力，不是 `UiEvent`） |
+| Electron 菜单：唤醒快捷键 | File - Shortcut... 对话框（`electron/main.ts`） | 写宿主本地状态（`workspace-state.json` 的 `shortcut` 字段），不经总线 |
 
 **留在宿主 / 共享子模块内、不翻译为事件的**：
 
@@ -1195,7 +1217,8 @@ import core 的只读函数与类型（第 2 节规则 9）。
 | 纯宿主操作 | `openFile` / `openMermaidPreview` / `openSpinDesign` / `openUrl` / `showVirtualDocument` / `requestToolMeta` / `debugLog` |
 | 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestMcpServers` / `requestSkills` / `requestConversationSpaces` / `requestSmartNaming` |
 | 纯显示操作 | `expandCompact`（只读归档 + 重放消息到 webview，不改 core 状态） |
-| 配置文件写入 | `UIHost.updateSettingsJson`（LLM 配置 / MCP 默认值 / 高亮语言 / 唤醒快捷键）与 `UIHost.ensureProjectSettings`（项目目录清单）——写 `settings.json` 是宿主能力，core 只读不写 |
+| 配置文件写入 | `UIHost.updateSettingsJson`（LLM 配置 / MCP 默认值 / 高亮语言）与 `UIHost.ensureProjectSettings`（项目目录清单）——写 `settings.json` 是宿主能力，core 只读不写 |
+| 宿主本地偏好写入 | `electron/main.ts` 的 `writeThemeMode` / `writeWakeShortcut`（`theme` / `shortcut`）——落 `userData/workspace-state.json`，与 core 的 settings.json 无关 |
 | 载体 / 视图层动作 | Electron 的 `sidebar:new-conversation` / `sidebar:open-conversation` / `sidebar:get-active-session` / `sidebar:active-session-changed`（开视图与视图层状态，随后由新视图自己发 `loadConversation`）；webview 的 `closeWebview` / `openConversation` / `prewarmViewReady` 由 `electron/main.ts` 的消息入口直接消化，不经 `WebviewMessageHandler`、不走总线 |
 | 环境查询（按来源回包） | webview 的 `requestTheme` / `requestContextLimit` 在 `WebviewMessageHandler` 内处理（按 `ctx.sender` 回包），但不走总线——它们只读 core 的配置函数与宿主环境，不改 core 状态。宿主在视图加载时也推同一对消息（`UIHost.onThemeChanged` / `WebViewUI.pushContextLimit`），但那次推送受时序约束（VS Code `resolveWebviewView` 后延时、Electron `did-finish-load`），由 webview 主动拉取才能尽早解除首屏 Loading，也让多视图宿主下的后台预热视图拿到回包 |
 
@@ -1208,9 +1231,9 @@ import core 的只读函数与类型（第 2 节规则 9）。
 | 环节 | 做法 |
 | --- | --- |
 | 打开 | `suspendWakeShortcut(win.webContents)` 注销当前全局快捷键（与窗口销毁时的兜底恢复配对），避免用户按下的组合键先触发唤醒 |
-| 按键捕获 | 主进程 `before-input-event` → `core/utils/shortcut.acceleratorFromKeyboardEvent`（页面只负责显示） |
-| 保存 | 调 `UIHost.updateSettingsJson` 写 settings.json（core 只读不写），写盘完成后关闭窗口；关闭回调按最新 settings.json 重新注册 |
-| 取消 / Esc | 直接关闭；关闭后按最新 settings.json 恢复注册 |
+| 按键捕获 | 主进程 `before-input-event` → `electron/shortcut.acceleratorFromKeyboardEvent`（页面只负责显示） |
+| 保存 | 写宿主本地偏好（`writeWakeShortcut`），写完后关闭窗口；关闭回调按最新偏好重新注册 |
+| 取消 / Esc | 直接关闭；关闭后按最新偏好恢复注册 |
 | 注册入口 | `registerWakeShortcutValue(shortcut)`：先注销旧值再注册新值，失败静默忽略 |
 
 ---
@@ -1379,9 +1402,7 @@ thinking / text / tool 动画）。
 | --- | --- |
 | `handleWebviewMessage(message, ctx?)` | 宿主 webview 的 `onDidReceiveMessage`（`extension.ts` / `electron/main.ts`）。`ctx.sender` 为来源视图句柄：Electron 用 `webviewHandleFor(sender)` 传入；单视图宿主 / 宿主主动推送省略（见第 7.3 节） |
 | `getActiveSessionId()` | `host.getActiveSessionId` 接线（VS Code 空闲巡检的 `activeSessionProvider`、MCP 面板取当前会话）、`extension.ts` 的 `persistCurrentFileContext` |
-| `hasPendingUserChoice(sessionId)` | 共享骨架的 `setSessionWaitingForUserProvider`（空闲巡检与手动压缩延后的「忙」判定，两个宿主一致）；侧栏 / 托盘的等待标记另由 core 的 `sessionRuntimeChanged` 状态流提供 |
 | `getActivityPhase(sessionId)` | `postConversationLoaded` 内部；`conversationLoaded` 的 `activityPhase` 字段来源 |
-| `getWorkspacePath()` | `initializeHistory(host)`（结构类型 `{ getWorkspacePath() }`）；工作区变化由 `bootstrapCore` 的 `host.onDidChangeWorkspace(...)` 订阅 |
 | `closeConversation(sessionId)` | VS Code 空闲回收的 `idleCloseHandler`；Electron 关闭按钮 / 侧栏「关闭」、删除对话流程 |
 | `releaseConversation(sessionId)` | `ChatViewManager.closeConversation`（视图销毁序列） |
 | `onTitleChanged(sessionId, title)` | 子模块注入的 `setTitle` 回调 |
@@ -1439,7 +1460,7 @@ thinking / text / tool 动画）。
 | 成员 | 语义 |
 | --- | --- |
 | `initUserChoiceQueue()` | 把 core `UserChoiceQueue` 的 3 个回调接到本类：`onShowUserChoice` / `onSessionLoaded` → 恢复该会话的待答选择；`onGetActiveSessionId` → 上面注入的读取器。**不注册会话切换**：用户请求只在当前会话弹出，其它会话的请求保留 pending，由 UI 提醒用户手动进入 |
-| `requestUserChoice(sessionId, options)` | ① 保存 diff 快照（`beforeContent` / `afterContent` / 上下文 / 起止行）② 投递 `requestUserChoice` ③ `markSessionWaiting(sessionId, true)`（`idle` / `waiting` 归 core，见第 4.5 节；入队时 `Integration.requestUserChoice` 已提前标记，此处幂等）④ 返回 Promise，`resolve` 时 `closePreview()` + `markSessionWaiting(false)` |
+| `requestUserChoice(sessionId, options)` | ① 保存 diff 快照（`beforeContent` / `afterContent` / 上下文 / 起止行）② 投递 `requestUserChoice` ③ 发 `UiEvent.userChoicePendingChanged(pending: true)`（`idle` / `waiting` 归 core，见第 4.5 节；入队时 `Integration.requestUserChoice` 已提前标记，此处幂等）④ 返回 Promise，`resolve` 时 `closePreview()` + 发 `userChoicePendingChanged(pending: false)` |
 | `hasPendingChoice(sessionId)` | 该会话是否有待答选择：`pendingUserChoices`（已弹出）或 `userChoiceQueue`（已入队未弹出）任一命中即为真。供 core `isSessionIdle` 判定「非空闲，不回收」 |
 | `saveDiffSnapshot(sessionId, snapshot)` | 写入 diff 快照（`beforeContent` / `afterContent` / 上下文 / 起止行）并登记归属会话。`ToolHandler.requestToolPermission` 调用（`requestUserChoice` 也直接写同一份快照） |
 | `dropSession(sessionId)` | 会话 UI 侧状态释放：清掉该会话的 `pendingUserChoices` 回调，并在 diff 快照归属该会话时清空快照。由 `WebViewUI.dropSession` fan-out 调用（第 10.5 节） |
@@ -1734,8 +1755,9 @@ bootstrapCore(host, spinDesign, conversations, options): { bus, ui }
 | locale / UI 语言 / 扩展路径 / 日志出口 | 取值来自宿主参数 |
 | 总线创建与全局注册 / core 侧 UiEvent 订阅 | `createEventBus` → `setGlobalEventBus` → `initializeCoreEvents` |
 | `WebViewUI.create` 与 `UserChoiceManager` 工厂 | 工厂在骨架内构造，日志出口取自 `options.log`；宿主不提供该工厂 |
-| `initializeHistory` / `initializeSessionQueue` / `setSessionWaitingForUserProvider` | 依赖 `WebViewUI` 实例；等待用户读取器闭包在骨架内引用该实例，宿主不参与 |
-| 工作区订阅（`host.onDidChangeWorkspace`） | 工作区当前值与变化经订阅获得，启动期不主动读取；订阅时宿主立即回调当前值，之后打开 / 切换 / 关闭再回调；回调以新路径预热系统动态信息（`SystemEnvironment` 的缓存**按 cwd 分桶**；不同工作目录不能互相命中，否则另一个目录的会话会在 system prompt 里拿到活动目录的 git 信息 / 技能清单）。`initializeHistory(host)` 登记惰性读取入口 |
+| 宿主环境事件（`hostEnvironmentProvided`） | 总线建好、core 侧订阅注册完毕后由骨架发一次：locale / 扩展路径 / 日志出口开关。core 侧没有对应的直接注入入口 |
+| `initializeSessionQueue` | 依赖 `WebViewUI` 实例；由骨架调用一次 |
+| 工作区订阅（`host.onDidChangeWorkspace`） | 工作区当前值与变化经订阅获得，启动期不主动读取；订阅时宿主立即回调当前值，之后打开 / 切换 / 关闭再回调；骨架把回调翻译为 `workspaceChanged` 事件，写活动工作目录与以新路径预热系统动态信息（`SystemEnvironment` 的缓存**按 cwd 分桶**；不同工作目录不能互相命中，否则另一个目录的会话会在 system prompt 里拿到活动目录的 git 信息 / 技能清单）都在 core 侧处理器里 |
 | 配置目录 / MCP 残留清理 | 异步收尾，不阻塞启动 |
 
 **宿主参数**：
@@ -1858,36 +1880,42 @@ Electron 的视图句柄：`ElectronUIHost.webviewHandleFor(source)` 把来源 `
 | 虚拟文档 | 注册三个 `TextDocumentContentProvider` | 无（用 Monaco 辅助窗口） |
 | 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销全局快捷键、停托盘闪烁并销毁托盘、`shutdownCore()` |
 
-### 8.7 注入点与读取器
+### 8.7 启动期状态：写入入口与读取器
 
-每个供启动期注入的 core 状态满足两条性质：
+core 的启动期状态按来源分两类。
 
-1. 有一个 `set*Provider` / `set*Callback` 写入入口；
-2. 有一个对应的读取入口，未注入时**抛错**。
+**A. 经总线传入**（宿主环境差异 + 活动工作目录）：core 侧没有直接注入入口，
+唯一写入路径是 `UiEvent`，落地函数由 `initializeCoreEvents` 的订阅调用。
+
+| 状态 | 来源（`UiEvent`） | 落地函数 | 读取入口 | 未到达时 |
+| --- | --- | --- | --- | --- |
+| 宿主 locale | `hostEnvironmentProvided.locale` | `setCoreLocale` | `getCoreLocale()` | 返回默认值 `en`（可接受） |
+| 扩展路径 | `hostEnvironmentProvided.extensionPath` | `setExtensionPath` | `getExtensionPath()` | 抛错 |
+| 日志出口开关 | `hostEnvironmentProvided.logToConsole` | `setLogToConsole` | — | 静默丢弃（可接受） |
+| 活动工作目录（项目根默认值） | `workspaceChanged.workspacePath` | `setActiveWorkspace` | `getProjectRoot()` / `hasProjectRoot()` | 抛错 |
+
+会话工作目录表（`setSessionWorkspace(sessionId, path)` → `getSessionWorkspace(sessionId)`）是
+core 自己的对话属性，不来自宿主、也不经总线；未登记时回退到活动工作目录。
+
+**B. 进程内注入**（不跨进程，仍由骨架直接接线）：
 
 | 状态 | 写入入口 | 读取入口 | 未注入时 |
 | --- | --- | --- | --- |
 | 全局事件总线 | `setGlobalEventBus(bus)` | `requireEventBus()` | 抛错 |
-| 活动工作目录（项目根默认值） | `setProjectRootProvider(fn)` | `getProjectRoot()` / `hasProjectRoot()` | 抛错 |
-| 会话工作目录 | `setSessionWorkspace(sessionId, path)` | `getProjectRoot(sessionId)` / `getSessionWorkspace(sessionId)` | 回退到活动工作目录 |
-| 扩展路径 | `setExtensionPathProvider(fn)` | `getExtensionPath()` | 抛错 |
-| 会话等待用户 | `setSessionWaitingForUserProvider(fn)` | `requireSessionWaitingForUserProvider()` | 抛错 |
-| 宿主 locale | `setCoreLocale(locale)` | `getCoreLocale()` | 返回默认值 `en`（可接受） |
 | UI 语言 | `setCoreUiLanguage(lang)` | `getCoreLocale()` | 返回默认值 `en`（可接受） |
-| 日志出口 | `setLogCallback(fn)` | — | 静默丢弃（可接受） |
 
 规则：
 
 - 消费点调用读取入口，不使用可选链静默降级。
-- 允许默认值的项（locale / UI 语言 / 日志）以「缺失不构成错误」为前提：
-  其取值不影响跨端一致性，且无业务分支依赖「是否已注入」。
-- 抛错的项（总线 / 项目根 / 扩展路径 / 等待用户）在骨架内保证注入，
-  因此启动完成后不存在未注入状态。
+- 允许默认值的项（locale / UI 语言 / 日志出口开关）以「缺失不构成错误」为前提：
+  其取值不影响跨端一致性，且无业务分支依赖「是否已到达」。
+- 抛错的项（总线 / 扩展路径 / 活动工作目录）在启动接线内保证写入，
+  因此启动完成后不存在未写入状态。
 - 语言变化用 `onCoreLocaleChanged(listener)` 通知订阅者（Electron 原生菜单据此重建）；
   只在**有效语言**真正变化时触发，单个订阅者抛错不影响其它订阅者。
 
-`sessionResources.isSessionIdle` 对等待用户读取器的调用位于骨架保证注入之后，
-不再用 try/catch 吞掉「未注入」。
+`sessionResources.isSessionIdle` 的「等待用户」来源是 core 自己的 `sessionRuntime`
+（`isSessionWaiting`），没有需要保证注入的读取器（第 4.5 节）。
 
 ### 8.8 启动自检
 
@@ -1899,10 +1927,9 @@ export interface BootstrapSnapshot {
   uiLanguage: 'auto' | 'zh' | 'en';
   eventBusRegistered: boolean;
   uiCreated: boolean;
-  projectRootProviderInjected: boolean;
-  extensionPathProviderInjected: boolean;
+  activeWorkspaceProvided: boolean;
+  extensionPathProvided: boolean;
   sessionQueueInitialized: boolean;
-  waitingForUserInjected: boolean;
   logToConsole: boolean;
 }
 
@@ -1945,12 +1972,11 @@ export function shutdownCore(): void;
 
 1. 骨架执行完毕后，`bootstrapSnapshot()` 的每个布尔字段为 `true`；
 2. 快照的 `locale` 保留宿主传入的原始值（不做收敛后再上报）；
-3. `hasProjectRootProvider()` 与 `hasExtensionPathProvider()` 为真；
-4. `requireEventBus()` 与 `requireSessionWaitingForUserProvider()` 可调用（不抛错），
-   `sessionQueue.hasCallbacks()` 为真；
+3. `hasActiveWorkspaceProvided()` 与 `hasExtensionPath()` 为真；
+4. `requireEventBus()` 可调用（不抛错），`sessionQueue.hasCallbacks()` 为真；
 5. 静态扫描 `src/core/**/*.ts` 中导出的 `set*` / `initialize*` 名字，每个名字出现在
-   `bootstrapCore.ts` 或白名单中。白名单只含会话级运行时 setter（`setSession*`）
-   与由 `initializeHistory(ui)` 间接注入的 `setProjectRootProvider`。
+   启动接线（`bootstrapCore.ts` 或 `initializeCoreEvents.ts`）或白名单中。
+   白名单只含会话级运行时 setter（`setSession*`）。
 
 测试怎么跑、单元测试与宿主集成测试怎么分工、新测试写在哪，见 `src/test/README.md`。
 
@@ -1958,9 +1984,13 @@ export function shutdownCore(): void;
 
 新增一个启动期注入点时，依次完成：
 
-1. 在 core 中定义 `set*` 写入入口；
-2. 在 core 中定义对应的读取入口（未注入抛错，或说明默认值可接受的理由）；
-3. 在 `bootstrapCore` 内加入接线步骤，并确定它在顺序中的位置；
+1. 在 core 中定义写入入口；
+2. 在 core 中定义对应的读取入口（未写入抛错，或说明默认值可接受的理由）；
+3. 判断它属于哪一类（第 8.7 节）：
+   - **宿主环境 / 工作目录**：加一条 `UiEvent`，在 `initializeCoreEvents` 的
+     `registerHostEnvironmentUiEvents` / `registerWorkspaceUiEvents` 里**同步**注册处理器；
+     取值来自宿主时，在 `bootstrapCore` 内发出该事件，并确定它在顺序中的位置；
+   - **进程内**：在 `bootstrapCore` 内加入接线步骤，并确定它在顺序中的位置；
 4. 若取值来自宿主环境，加入 `CoreBootstrapOptions` 的必选成员；
 5. 在 `bootstrapSnapshot` 中暴露其状态（布尔或取值）；
 6. 在 `src/test/bootstrapWiring.test.ts` 的断言或白名单中登记；
@@ -2400,14 +2430,14 @@ MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 
 | --- | --- | --- |
 | 窗口框架 | `frame: false`（macOS 用 `titleBarStyle: 'hiddenInset'`） | 系统标题栏与系统菜单栏都不再绘制，改由顶部 38px 的 `titlebarView` 自绘 |
 | 菜单定义 | `buildMenuSections()` 单一来源 | 同时驱动原生 `Menu`（macOS 系统菜单栏 / role 类行为）与自绘菜单（`toTitlebarMenuNodes` 保留 `submenu` 层级） |
-| 主题 | `nativeTheme.themeSource`（`system` / `light` / `dark`）+ 聊天视图 `setTheme` 消息 | 模式持久化在全局 settings.json 的 `theme` 字段，菜单「主题 ▸」切换（`applyThemeMode`）。`themeSource` 驱动原生配色、各渲染进程的 `prefers-color-scheme`（自绘标题栏 / 侧栏 / Monaco 预览的浅色覆盖）与窗口兜底底色；聊天 webview 不监听 `prefers-color-scheme`，由 `uiHost.onThemeChanged(null)` 广播 `setTheme`，新视图用 `--theme=` + `window.__initialTheme` 保证首帧底色正确。跟随系统时 OS 切换走 `nativeTheme.on('updated')`：除了刷新底色与广播主题，还要**作废自绘菜单缓存**——菜单配色是生成 HTML 时烘进内联样式的，缓存复用会让菜单停留在旧配色 |
+| 主题 | `nativeTheme.themeSource`（`system` / `light` / `dark`）+ 聊天视图 `setTheme` 消息 | 模式持久化在宿主本地状态 `userData/workspace-state.json` 的 `theme` 字段（旧版本写在 settings.json 的 `theme` 由 `migrateLegacyThemeAndShortcut()` 一次性迁移），菜单「主题 ▸」切换（`applyThemeMode`）。`themeSource` 驱动原生配色、各渲染进程的 `prefers-color-scheme`（自绘标题栏 / 侧栏 / Monaco 预览的浅色覆盖）与窗口兜底底色；聊天 webview 不监听 `prefers-color-scheme`，由 `uiHost.onThemeChanged(null)` 广播 `setTheme`，新视图用 `--theme=` + `window.__initialTheme` 保证首帧底色正确。跟随系统时 OS 切换走 `nativeTheme.on('updated')`：除了刷新底色与广播主题，还要**作废自绘菜单缓存**——菜单配色是生成 HTML 时烘进内联样式的，缓存复用会让菜单停留在旧配色 |
 | 二级菜单 | 飞出面板（`.flyout`） | 「最近打开的工作目录」等子菜单默认收起，悬停/点击父项才展开；面板绝对定位在主面板右侧，右侧放不下时改向左展开（`offsetX` 为负） |
 | 二级菜单不裁切 | 视图尺寸 = 主面板 ∪ 飞出面板；**页面底色与视图背景都要透明** | 视图比主面板大时多出的区域必须能透出下方内容。实测 `WebContentsView` 的透明区域可与下方兄弟视图正常混叠（无需窗口级 `transparent`）。注意 `view.setBackgroundColor('#00000000')` 与页面 `background: transparent` **两者都要**：只改页面会露出视图默认的白底（表现为白边，已踩过）。展开/收起时页面重新上报尺寸，主进程 `setBounds` 调整视图 |
 | 飞出面板不被 `body` 裁掉 | `body` 的 `min-height` = 菜单可用高度上限（`maxHeight`） | 飞出面板是 `body` 的绝对定位子元素，而 `body` 只按主面板 `.menu` 的自然高度撑开，`overflow: hidden` 会把超出主面板的那截飞出面板整段裁掉——此时飞出面板自身 `scrollHeight == clientHeight`（不出现滚动条），后半截条目既看不到也滚不到，「添加最近的工作目录」条目多时就是「列表显示不全」。飞出面板底边由 `positionFlyout` 限制在 `maxHeight` 以内，所以 `body` 撑到 `maxHeight` 一定装得下（且撑满后不改变上报尺寸：`reportSize` 量的是主面板/飞出面板的 rect，不是 `body`）。回归用例：`src/test/titlebarMenu.test.ts` |
 | 下拉菜单 | 独立 `WebContentsView` | 不用 `BrowserWindow`：开窗有系统动画与层级窗口合成，会「闪一下」；视图只是同窗口内的一块合成区域，摆位即显示。首次打开测量尺寸并缓存 |
 | 菜单关闭 | 侧栏/聊天视图 focus + 窗口 blur/hide/move/resize + 点标题栏空白 + Esc | **不要用标题栏 blur 关菜单**：显示菜单视图会让焦点重新计算（可能变成「无焦点视图」），据此关菜单会让菜单刚弹出就被自己关掉（已踩过）。打开时把焦点交给菜单视图（Esc/方向键依赖它），关闭时还给打开前的视图 |
 | 菜单置顶 | `addChildView` 重新入栈 | 聊天视图是动态 `addChildView` 的，会盖住菜单视图；显示菜单时再 `addChildView` 一次即可提到最上层。**不要先 `removeChildView`**——那会把焦点掉成「无视图」，菜单随即被关掉 |
-| 快捷键 | 原生 accelerator + `before-input-event` 兜底 | 无边框窗口下原生 accelerator 是否生效依平台而定，两处都命中时按 id 去重（250ms） |
+| 快捷键 | 原生 accelerator + `before-input-event` 兜底 | 无边框窗口下原生 accelerator 是否生效依平台而定，两处都命中时按 id 去重（250ms）。唤醒快捷键持久化在 `workspace-state.json` 的 `shortcut` 字段（旧版本写在 settings.json 的 `shortcut` 由 `migrateLegacyThemeAndShortcut()` 一次性迁移） |
 | 窗口模式 | `windowMode: 'normal' \| 'floating'` | floating = 隐藏侧栏（`sidebarView` 收成 0 尺寸）+ 聊天视图占满整宽（`chatViews.setViewMode`），复用同一批 webview，不重新加载对话 |
 | 浮窗最小化 | `mainWindow.on('minimize')` + `titlebar:minimize` | 完整模式最小化到任务栏；浮窗模式最小化改走 `hide()` 隐藏到系统托盘（隐藏的窗口不在任务栏保留按钮），唤醒入口是托盘图标单击 / 双击与全局快捷键（`showMainWindowFromTray`） |
 | 模式切换的异步状态 | `waitForWindowEvent()` + `windowModeSwitching` | 先还原最大化/退出全屏（等 `unmaximize` / `leave-full-screen` 事件落定，1s 超时兜底）再 `setBounds`，否则会被忽略或只改还原尺寸；切换期间用标志位防重入 |
@@ -2444,7 +2474,6 @@ MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 
 | webview 读宿主能力 | `getHostInfo()` 逐字段校验，缺失或非法直接抛错 | `src/webview/webviewEnv.ts` |
 | 取 UI 单例 | `WebViewUI.getInstance()` 未创建直接抛错（替代静默 `undefined`） | `src/host/WebViewUI.ts` |
 | 取启动快照 | `bootstrapSnapshot()` 未执行骨架时抛错 | `src/host/bootstrapCore.ts` |
-| 取「等待用户」判定 | `requireSessionWaitingForUserProvider()` 未注入直接抛错 | `src/core/sessionResources.ts` |
 | 取项目根 / 扩展路径 | `getProjectRoot(sessionId?)`（未登记会话时回退活动工作目录）/ `getExtensionPath()` 未注入直接抛错 | `src/core/history/Config.ts` |
 | 宿主契约成员 | 全部必选，禁止 `host.foo?.()` 静默降级（见 12.2） | `src/host/UIHost.ts` |
 
@@ -2576,4 +2605,18 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 **只列当前仍未定的。** 已经落地的（不论落在哪一章）不保留；定了方向但还没动手的，
 写清「现状」与「待定」。
 
-暂无。新发现的待定项按同样方式记在这里（现状 + 待定）。
+### 13.1 Core 与 UI 分离
+
+规格见 `docs/core-ui-separation.md`。
+
+| 项 | 现状 | 待定 |
+| --- | --- | --- |
+| 全局配置 `~/<CONFIG_DIR_NAME>/settings.json` | core 读；宿主经 `UIHost.updateSettingsJson` 写（第 2 节规则 9） | core 读写 |
+| 项目清单 `<conversations>/<project>/settings.json` | 目录由 core 建；宿主经 `UIHost.ensureProjectSettings` 写 | core 读写 |
+| 部署形态 | core 与 UI 同进程 | core 可独立进程部署，UI 以连接接入 |
+| 连接 | — | 一对一；已有连接时新连接被拒绝并提示 |
+| `request()` 超时 | 不内置计时器（第 3.7 节） | 保持不内置，本地与远程同一口径 |
+
+不在本项范围：连接的序列化与反序列化、流式事件的节流与合并、断线恢复。
+
+新发现的待定项按同样方式记在这里（现状 + 待定）。

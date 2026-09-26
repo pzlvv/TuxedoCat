@@ -259,6 +259,9 @@ export class WebViewUI implements WebViewUiPort {
       compactEnd: (e) => this.onCompactEnd(e.sessionId, e.result),
       commandDispatched: (e) => void this.onCommandSend(e.commandName, e.args, e.sessionId),
       sessionConfigChanged: (e) => this.onSessionConfigChanged(e.sessionId, e.change),
+
+      // ===== 日志 =====
+      log: (e) => this.log(e.message),
     };
   }
 
@@ -572,16 +575,6 @@ export class WebViewUI implements WebViewUiPort {
   /** 某会话当前活动阶段，供 conversationLoaded 恢复 thinking 动画 */
   getActivityPhase(sessionId: string): 'idle' | 'thinking' | 'text' | 'tool' {
     return this.sessionUi.getActivityPhase(sessionId);
-  }
-
-  /** 指定会话是否正在等待用户选择/确认（ask user / 权限确认） */
-  hasPendingUserChoice(sessionId: string): boolean {
-    return this.userChoiceManager.hasPendingChoice(sessionId);
-  }
-
-  /** 当前工作区路径（委托 host.getWorkspacePath()，供 initializeHistory 使用） */
-  getWorkspacePath(): string | undefined {
-    return this.host.getWorkspacePath();
   }
 
   /**

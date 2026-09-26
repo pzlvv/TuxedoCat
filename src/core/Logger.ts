@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { CONFIG_DIR_NAME, ENV_PREFIX, LOG_FILE_NAME } from '../config/project.js';
+import { requireEventBus } from './AssistantEventBus.js';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -11,9 +12,6 @@ const PREFIXES: Record<LogLevel, string> = {
   error: '[ERROR]',
 };
 
-type LogCallback = (message: string) => void;
-
-let logCallback: LogCallback | null = null;
 let logToConsole = false;
 
 /* -------------------------------------------------------------------------- */
@@ -302,12 +300,22 @@ function formatArg(arg: unknown): string {
   }
 }
 
-export function setLogCallback(callback: LogCallback | null): void {
-  logCallback = callback;
-}
-
 export function setLogToConsole(enabled: boolean): void {
   logToConsole = enabled;
+}
+
+/**
+ * 把日志行发给 UI，由 UI 写自己的出口（VS Code 是 OutputChannel，Electron 是 console）。
+ *
+ * 日志出口是宿主差异，core 不持有宿主的输出通道。总线未注册（模块初始化早期）或
+ * UI 尚未注册处理器时静默跳过——与「没有日志出口」同一口径，不影响主流程。
+ */
+function emitLogToUi(message: string): void {
+  try {
+    requireEventBus().emitToUi({ type: 'log', message });
+  } catch {
+    // 总线 / UI 处理器尚未就绪：日志只落盘
+  }
 }
 
 function log(level: LogLevel, component: string, ...args: unknown[]): void {
@@ -330,7 +338,7 @@ function log(level: LogLevel, component: string, ...args: unknown[]): void {
     scheduleFlush();
   }
 
-  logCallback?.(message);
+  emitLogToUi(message);
 }
 
 // 进程退出时兜底落盘，避免缓冲区中的日志丢失

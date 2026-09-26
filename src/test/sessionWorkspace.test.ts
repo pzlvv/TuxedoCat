@@ -16,7 +16,7 @@ import * as path from 'path';
 import { createChecker, runTests } from './helpers/harness';
 import { makeTempDir } from './helpers/fixtures';
 import {
-  setProjectRootProvider,
+  setActiveWorkspace,
   setSessionWorkspace,
   clearSessionWorkspace,
   clearAllSessionWorkspaces,
@@ -38,7 +38,7 @@ runTests('sessionWorkspace', async () => {
   const wsB = makeTempDir('ws-b');
 
   clearAllSessionWorkspaces();
-  setProjectRootProvider(() => wsA);
+  setActiveWorkspace(wsA);
 
   // 默认解析到活动工作目录
   check('getProjectRoot() 解析到活动工作目录', getProjectRoot() === wsA);
@@ -69,12 +69,12 @@ runTests('sessionWorkspace', async () => {
   check('注销后 getSessionWorkspace 返回 undefined', getSessionWorkspace('session_b') === undefined);
 
   // 无活动工作目录时，已登记的会话仍可解析
-  setProjectRootProvider(() => undefined);
+  setActiveWorkspace(null);
   setSessionWorkspace('session_b', wsB);
   check('活动工作目录为空时会话仍可解析', getProjectRoot('session_b') === wsB);
   check('活动工作目录为空时 hasProjectRoot() 为假', hasProjectRoot() === false);
   check('活动工作目录为空时 hasProjectRoot(sessionId) 为真', hasProjectRoot('session_b') === true);
-  setProjectRootProvider(() => wsA);
+  setActiveWorkspace(wsA);
 
   // 对话列表缓存按工作目录分桶
   const dirA = getProjectConversationDir(wsA);
@@ -101,11 +101,11 @@ runTests('sessionWorkspace', async () => {
   check('缓存按工作目录分桶且命中', listA2 === listA && listA2[0].sessionId === 'session_a');
 
   // 无工作目录时返回空列表而不是抛错
-  setProjectRootProvider(() => undefined);
+  setActiveWorkspace(null);
   resetConversationListCache();
   const empty = await loadConversationList();
   check('无工作目录时 loadConversationList 返回空', empty.length === 0);
-  setProjectRootProvider(() => wsA);
+  setActiveWorkspace(wsA);
 
   // 新建对话元数据写入会话自己的工作目录
   setSessionWorkspace('session_c', wsB);

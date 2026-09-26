@@ -8,7 +8,7 @@
 | 宿主集成 | `npm test`（`vscode-test`） | `src/test/vscodeHost/**/*.test.ts` | 真实 VS Code 扩展宿主 |
 
 **为什么单元测试不进宿主**：`src/test/*.test.ts` 里大量用例会注册全局单例
-（`setGlobalEventBus`、`setProjectRootProvider`、`sessionRuntime`、`SubAgentRegistry`…）。
+（`setGlobalEventBus`、`setActiveWorkspace`、`sessionRuntime`、`SubAgentRegistry`…）。
 宿主进程里扩展本体已经激活过一遍，这些单例已被占用，两者撞在同一进程里会直接互相污染——
 例如 `setGlobalEventBus` 重复注册是**抛错**语义，测试当场就挂。所以：
 

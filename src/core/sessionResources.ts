@@ -18,40 +18,9 @@
  *   - VS Code：没有独立视图，只释放引擎 / 消息缓存 / MCP 引用
  */
 
-/** 宿主注入的「会话是否正在等待用户输入」判定（ask user / 权限确认） */
-let waitingForUserProvider: ((sessionId: string) => boolean) | null = null;
-
 /** 临时会话 key（新建对话尚未上报正式 sessionId 前使用），不参与资源管理 */
 function isTemporarySessionId(sessionId: string): boolean {
   return sessionId.startsWith('new-');
-}
-
-/** 注册「会话是否正在等待用户输入」判定 */
-export function setSessionWaitingForUserProvider(
-  fn: ((sessionId: string) => boolean) | null
-): void {
-  waitingForUserProvider = fn;
-}
-
-/**
- * 取「会话是否正在等待用户输入」判定；未注入时抛错。
- *
- * 接线缺失属于启动错误（bootstrap 必定注入），不用可选链静默降级成「没有等待用户」——
- * 那会让等待用户确认的会话被判定为空闲。
- */
-export function requireSessionWaitingForUserProvider(): (sessionId: string) => boolean {
-  if (!waitingForUserProvider) {
-    throw new Error(
-      'Session waiting-for-user provider is not configured. ' +
-      'Call setSessionWaitingForUserProvider() during bootstrap.'
-    );
-  }
-  return waitingForUserProvider;
-}
-
-/** 「会话是否正在等待用户输入」判定是否已注入（启动自检用） */
-export function hasSessionWaitingForUserProvider(): boolean {
-  return waitingForUserProvider !== null;
 }
 
 /**
@@ -67,8 +36,8 @@ export function hasSessionWaitingForUserProvider(): boolean {
  * - 引擎消费循环在运行
  *
  * 只读：不修改任何状态。引擎状态无法判定时保守返回 false（视为非空闲）。
- * 前置条件：「等待用户」读取器由共享骨架注入（`requireSessionWaitingForUserProvider`），
- * 未注入时直接抛错——接线缺失属于启动错误，不静默降级成「没有等待用户」。
+ * 各来源的事实都在 core 内：等待用户读 `sessionRuntime`（第 8.7 节），
+ * 不再由宿主注入判定闭包。
  */
 export async function isSessionIdle(sessionId: string, visited: Set<string> = new Set()): Promise<boolean> {
   if (!sessionId || visited.has(sessionId)) return true;
@@ -82,10 +51,11 @@ export async function isSessionIdle(sessionId: string, visited: Set<string> = ne
     // 判定失败继续走后面的检查
   }
 
-  // 等待用户：接线缺失属于启动错误，直接抛（不吞掉）；判定本身异常才按「不忙」继续
-  const waitingForUser = requireSessionWaitingForUserProvider();
+  // 等待用户（ask user / 权限确认）：core 自己的事实（入队由 Integration 标记，
+  // 弹出 / 应答由 UiEvent.userChoicePendingChanged 标记），读 sessionRuntime
   try {
-    if (waitingForUser(sessionId)) return false;
+    const { isSessionWaiting } = await import('./sessionRuntime.js');
+    if (isSessionWaiting(sessionId)) return false;
   } catch {
     // 判定失败按「不忙」处理，交给后面的检查
   }

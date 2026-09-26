@@ -1,7 +1,7 @@
 /**
  * initializeCoreEvents - core 侧 UiEvent 订阅的注册入口（阶段 2 全量版）
  *
- * 与 initializeHistory 同属 bootstrap 序列，在 setGlobalEventBus(bus) 之后调用一次。
+ * 属 bootstrap 序列，在 setGlobalEventBus(bus) 之后调用一次。
  *
  * 按 core 模块分注册函数（Integration / history / sessionResources / mcp），
  * 每个模块订阅自己关心的少数几个事件（DEVELOPMENT.md 第 3.6 / 4.3 节）。
@@ -13,8 +13,60 @@
  */
 
 import type { AssistantEventBus } from './AssistantEventBus.js';
-import { logger } from './Logger.js';
+import { logger, setLogToConsole } from './Logger.js';
 import { requireEventBus } from './AssistantEventBus.js';
+import { setCoreLocale, setCoreUiLanguage } from './i18n.js';
+import { readUiLanguageSync, setActiveWorkspace, setExtensionPath } from './history/Config.js';
+import { markSessionWaiting } from './sessionRuntime.js';
+
+// ==================== 宿主环境 / 活动工作目录 ====================
+
+/**
+ * 宿主环境：连接建立后由 UI 发一次。
+ *
+ * **必须同步注册**：调用方紧接着就 `emitToCore`，异步注册（动态 import）会让这条
+ * 一次性事件在处理器就位前到达，被总线按「暂无订阅者」静默丢弃。
+ */
+function registerHostEnvironmentUiEvents(bus: AssistantEventBus): void {
+  bus.onUiEvent('hostEnvironmentProvided', ({ locale, extensionPath, logToConsole }) => {
+    setCoreLocale(locale);
+    setExtensionPath(extensionPath);
+    setLogToConsole(logToConsole);
+  });
+}
+
+/**
+ * 活动工作目录：宿主在订阅时立即回调一次当前值，之后打开 / 切换 / 关闭再回调。
+ *
+ * **必须同步注册**：`host.onDidChangeWorkspace` 订阅时立即回调，异步注册会让初始值丢失。
+ * 到达后以新路径预热系统动态信息（缓存按工作目录分桶，不同目录不互相命中）。
+ */
+function registerWorkspaceUiEvents(bus: AssistantEventBus): void {
+  bus.onUiEvent('workspaceChanged', ({ workspacePath }) => {
+    setActiveWorkspace(workspacePath);
+    if (!workspacePath) return;
+    void (async () => {
+      try {
+        const { warmupSystemDynamicInfo } = await import('./prompt/SystemEnvironment.js');
+        await warmupSystemDynamicInfo(workspacePath);
+      } catch (err) {
+        logger.warn('bootstrap', `Failed to warm up system info for workspace: ${err}`);
+      }
+    })();
+  });
+}
+
+/**
+ * 用户选择：宿主在 webview 里弹出 / 应答时上报，core 据此维护 `sessionRuntime.waiting`。
+ *
+ * 同步注册：与另外两条宿主事件同理——事件由宿主在任意时刻发出，注册晚于第一次上报
+ * 就会丢掉那次状态变更。
+ */
+function registerUserChoiceUiEvents(bus: AssistantEventBus): void {
+  bus.onUiEvent('userChoicePendingChanged', ({ sessionId, pending }) => {
+    markSessionWaiting(sessionId, pending);
+  });
+}
 
 // ==================== Integration：消息 / 压缩 / 配置 / 生命周期 ====================
 
@@ -290,6 +342,14 @@ async function registerMcpUiEvents(bus: AssistantEventBus): Promise<void> {
  * 注册 core 侧全部 UiEvent 订阅。由 bootstrap 在 setGlobalEventBus 之后调用一次。
  */
 export function initializeCoreEvents(bus: AssistantEventBus): void {
+  // UI 语言取自 core 自己的 settings.json，不经总线
+  setCoreUiLanguage(readUiLanguageSync());
+
+  // 宿主事件：同步注册，避免事件在处理器就位前到达、被总线按「暂无订阅者」丢弃
+  registerHostEnvironmentUiEvents(bus);
+  registerWorkspaceUiEvents(bus);
+  registerUserChoiceUiEvents(bus);
+
   void registerIntegrationUiEvents(bus);
   void registerHistoryUiEvents(bus);
   void registerSessionResourcesUiEvents(bus);

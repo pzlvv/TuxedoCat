@@ -85,6 +85,7 @@ export function makeTestBus(options: TestBusOptions = {}): TestBus {
     compactEnd: (e) => record('compactEnd', e),
     commandDispatched: (e) => record('commandDispatched', e),
     sessionConfigChanged: (e) => record('sessionConfigChanged', e),
+    log: (e) => record('log', e),
   };
 
   const bus = createEventBus();

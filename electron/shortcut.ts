@@ -1,13 +1,16 @@
 /**
- * 全局快捷键工具
+ * 全局快捷键工具（Electron 宿主本地）
  *
- * settings.json 中保存 Electron accelerator 形式（如 Ctrl+Alt+X），
+ * 唤醒快捷键以 Electron accelerator 形式保存（如 Ctrl+Alt+X），
  * 界面上按 Windows 习惯显示为 Ctrl+Alt+X。
  *
+ * 持久化落在宿主本地状态（`userData/workspace-state.json` 的 `shortcut` 字段），
+ * core 不读不写。
+ *
  * 供三处复用：
- *  - Electron 主进程：读取 settings.json 并注册 globalShortcut
- *  - 设置面板：显示当前快捷键、捕获用户按下的新快捷键
- *  - 消息处理：校验并持久化用户修改
+ *  - Electron 主进程：读取偏好并注册 globalShortcut
+ *  - 设置对话框：显示当前快捷键、捕获用户按下的新快捷键
+ *  - 保存路径：校验并持久化用户修改
  */
 
 /** 默认唤醒快捷键（Electron accelerator 形式） */

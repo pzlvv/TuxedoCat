@@ -6,12 +6,12 @@
  * 本模块位于 host/ 层，不 import `vscode` / `electron`。
  *
  * 顺序（不可调换，理由见 DEVELOPMENT.md 第 3.5、8.6 节）：
- *   locale / UI 语言 / 扩展路径 / 日志出口
- *   → 创建总线并注册 → 注册 core 侧 UiEvent 订阅
+ *   创建总线并注册 → 注册 core 侧 UiEvent 订阅
+ *   → 发「宿主环境」事件（locale / 扩展路径 / 日志出口开关）
  *   → 创建 WebViewUI（其构造函数注册 CoreEvent / CoreRequest 处理器）
- *   → 历史系统 / 会话队列 / 等待用户读取器
- *   → 工作区订阅（宿主推送当前值 + 后续变化；启动期不主动读取）
- *   → 异步收尾：配置目录 / 系统环境预热 / MCP 残留清理
+ *   → 会话队列
+ *   → 工作区订阅（宿主推送当前值 + 后续变化，翻译为 workspaceChanged 事件）
+ *   → 异步收尾：配置目录 / MCP 残留清理
  *
  * 顺序错误在启动期暴露：`setGlobalEventBus` 重复注册抛错，
  * `emitToUi` 在 `WebViewUI.create` 之前抛错（DEVELOPMENT.md 第 3.5、3.7 节）。
@@ -20,22 +20,15 @@
 import type { AssistantEventBus } from '../core/AssistantEventBus.js';
 import { requireEventBus, setGlobalEventBus } from '../core/AssistantEventBus.js';
 import { initializeCoreEvents } from '../core/initializeCoreEvents.js';
-import { initializeHistory, initializeSessionQueue } from '../core/Integration.js';
+import { initializeSessionQueue } from '../core/Integration.js';
 import { sessionQueue } from '../core/SessionQueue.js';
 import {
   ensureConfigDirs,
-  hasExtensionPathProvider,
-  hasProjectRootProvider,
+  hasActiveWorkspaceProvided,
+  hasExtensionPath,
   readUiLanguageSync,
-  setExtensionPathProvider,
 } from '../core/history/index.js';
-import { setCoreLocale, setCoreUiLanguage } from '../core/i18n.js';
-import { setLogCallback, setLogToConsole } from '../core/Logger.js';
 import { getMCPHost } from '../core/mcp/MCPHost.js';
-import {
-  hasSessionWaitingForUserProvider,
-  setSessionWaitingForUserProvider,
-} from '../core/sessionResources.js';
 import { createEventBus } from './EventBus.js';
 import { WebViewUI } from './WebViewUI.js';
 import { UserChoiceManager } from './ui/userChoice.js';
@@ -67,10 +60,9 @@ export interface BootstrapSnapshot {
   uiLanguage: 'auto' | 'zh' | 'en';
   eventBusRegistered: boolean;
   uiCreated: boolean;
-  projectRootProviderInjected: boolean;
-  extensionPathProviderInjected: boolean;
+  activeWorkspaceProvided: boolean;
+  extensionPathProvided: boolean;
   sessionQueueInitialized: boolean;
-  waitingForUserInjected: boolean;
   logToConsole: boolean;
 }
 
@@ -93,17 +85,20 @@ export function bootstrapCore(
 ): CoreBootstrapResult {
   const log = options.log;
 
-  // ── 1. core 全局状态：locale / UI 语言 / 扩展路径 / 日志 ──
-  setCoreLocale(options.locale);
-  setCoreUiLanguage(readUiLanguageSync());
-  setExtensionPathProvider(() => options.extensionPath);
-  setLogToConsole(options.logToConsole);
-  setLogCallback((message: string) => log(message));
-
-  // ── 2. 总线：注册全局总线 → 注册 core 侧 UiEvent 订阅 ──
+  // ── 1. 总线：注册全局总线 → 注册 core 侧 UiEvent 订阅 ──
+  // initializeCoreEvents 内**同步**注册「宿主环境」与「活动工作目录」两条事件的处理器，
+  // 因此紧接着的 emitToCore 一定能被接住。
   const bus = createEventBus();
   setGlobalEventBus(bus);
   initializeCoreEvents(bus);
+
+  // ── 2. 宿主环境：经总线交给 core（core 侧没有对应的注入入口）──
+  bus.emitToCore({
+    type: 'hostEnvironmentProvided',
+    locale: options.locale,
+    extensionPath: options.extensionPath,
+    logToConsole: options.logToConsole,
+  });
 
   // ── 3. UI：构造函数注册 CoreEvent / CoreRequest 处理器 ──
   const ui = WebViewUI.create(host, bus, spinDesign, conversations, {
@@ -122,26 +117,15 @@ export function bootstrapCore(
   });
 
   // ── 4. 依赖 WebViewUI 实例的接线 ──
-  // 工作区 provider 由宿主实现（UIHost 继承 WorkspaceProvider）：这里只登记
-  // 惰性读取入口（core 取项目根时向宿主读取），启动期不主动取值。
-  initializeHistory(host);
   initializeSessionQueue();
-  setSessionWaitingForUserProvider((sessionId) => ui.hasPendingUserChoice(sessionId));
 
   // ── 5. 工作区订阅：当前值与变化都经订阅获得，启动期不主动读取 ──
-  // 契约保证订阅时立即回调一次当前值，因此初始预热也走这条路径；
+  // 宿主保证订阅时立即回调一次当前值，因此初始预热也走这条路径；
   // Electron 的工作区由菜单设置（晚于 bootstrap），VS Code 可切换工作区。
+  // 宿主只负责发事件；写活动工作目录与预热系统动态信息都在 core 侧的事件处理器里。
   disposeWorkspaceSubscription?.();
   disposeWorkspaceSubscription = host.onDidChangeWorkspace((workspacePath) => {
-    if (!workspacePath) return;
-    void (async () => {
-      try {
-        const { warmupSystemDynamicInfo } = await import('../core/prompt/SystemEnvironment.js');
-        await warmupSystemDynamicInfo(workspacePath);
-      } catch (error) {
-        log(`[bootstrap] Failed to warm up system info for workspace: ${error}`);
-      }
-    })();
+    bus.emitToCore({ type: 'workspaceChanged', workspacePath: workspacePath ?? null });
   });
 
   // ── 6. 异步收尾：不阻塞启动，失败只记日志 ──
@@ -203,10 +187,9 @@ function readSnapshot(options: CoreBootstrapOptions): BootstrapSnapshot {
     uiLanguage: readUiLanguageSync(),
     eventBusRegistered,
     uiCreated,
-    projectRootProviderInjected: hasProjectRootProvider(),
-    extensionPathProviderInjected: hasExtensionPathProvider(),
+    activeWorkspaceProvided: hasActiveWorkspaceProvided(),
+    extensionPathProvided: hasExtensionPath(),
     sessionQueueInitialized: sessionQueue.hasCallbacks(),
-    waitingForUserInjected: hasSessionWaitingForUserProvider(),
     logToConsole: options.logToConsole,
   };
 }
