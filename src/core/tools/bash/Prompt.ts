@@ -3,6 +3,7 @@
  */
 
 import type { BashToolInput } from './Types.js';
+import { surrogateSafeHeadEnd } from '../../utils/stringUtils.js';
 
 /**
  * 获取工具描述
@@ -92,7 +93,7 @@ export function getToolUseSummary(input: BashToolInput): string | null {
   if (input.command.length <= maxLength) {
     return input.command;
   }
-  return input.command.substring(0, maxLength) + '...';
+  return input.command.substring(0, surrogateSafeHeadEnd(input.command, maxLength)) + '...';
 }
 
 /**

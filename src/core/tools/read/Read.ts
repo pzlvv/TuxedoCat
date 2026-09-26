@@ -19,6 +19,7 @@ import { buildTool, MAX_RESULT_SIZE_CHARS } from '../Tool.js';
 import type { ReadInput, ReadOutput } from './Types.js';
 import { TOOL_NAME, DESCRIPTION, getPrompt } from './Prompt.js';
 import { expandPath } from '../../utils/path.js';
+import { surrogateSafeHeadEnd } from '../../utils/stringUtils.js';
 import { getExtensionPath } from '../../history/Config.js';
 import { getToolResultsDir, getToolResultFilePrefix } from '../toolResultStorage.js';
 import {
@@ -60,12 +61,13 @@ interface BoundedWindow {
 }
 
 /**
- * 单行超长截断
+ * 单行超长截断（导出供单测直接覆盖代理对边界）
  */
-function truncateLine(line: string, maxLineLength: number): string {
-  return line.length > maxLineLength
-    ? `${line.substring(0, maxLineLength)}... (line truncated to ${maxLineLength} chars)`
-    : line;
+export function truncateLine(line: string, maxLineLength: number): string {
+  if (line.length <= maxLineLength) return line;
+  // 按代理对边界对齐，避免行尾留下孤立代理项（会污染后续 LLM 请求）
+  const end = surrogateSafeHeadEnd(line, maxLineLength);
+  return `${line.substring(0, end)}... (line truncated to ${maxLineLength} chars)`;
 }
 
 /**

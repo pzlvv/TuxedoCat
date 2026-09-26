@@ -12,6 +12,7 @@ import type { Message } from '../types.js';
 import type { PromptPresetId } from '../prompt/PromptPreset.js';
 import { requireEventBus, type CoreEvent } from '../AssistantEventBus.js';
 import { buildConversationTitle, extractUserContent } from '../utils/contentBlocks.js';
+import { stringifyJsonSafe } from '../utils/stringUtils.js';
 import { deleteSessionToolResults } from '../tools/toolResultStorage.js';
 import { logger } from '../Logger.js';
 import { modelRefOf, type ModelRef } from '../llm/modelRef.js';
@@ -67,11 +68,14 @@ function collectFenceLanguages(message: Message): string[] {
  * 这两个字符在 JSONL（每行一个 JSON）格式中会变成物理换行，导致文件损坏。
  * 参见 ES2019 规范：JSON.stringify 对 U+2028/U+2029 的序列化行为因引擎而异。
  *
+ * 同时修复孤立代理项（`\ude00`）：这种转义语法合法但语义非法，Core（Rust）用
+ * serde_json 严格解析，读到就**整行/整帧失败**。历史文件与帧通道共用这一出口。
+ *
  * @param value - 要序列化的值
  * @returns 安全的 JSON 字符串（不含物理换行符）
  */
 function safeJsonStringify(value: unknown): string {
-  return JSON.stringify(value)
+  return stringifyJsonSafe(value)
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
 }

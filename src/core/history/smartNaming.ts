@@ -5,6 +5,7 @@
  * WebViewUI 的 webviewMessageHandler 版本下次收敛时复用同一签名。
  */
 import { extractLastJsonObject } from '../utils/lastJson.js';
+import { surrogateSafeHeadEnd } from '../utils/stringUtils.js';
 
 /** 取最近多少条用户/助手文本消息作为命名依据 */
 const MAX_CONTENT_MESSAGES = 5;
@@ -33,13 +34,17 @@ export function collectSmartNamingContext(messages: readonly unknown[]): string[
       message?: { content?: unknown };
     };
     if (m.type === 'user' && typeof m.message?.content === 'string') {
-      contentMessages.push(`[用户]: ${m.message.content.substring(0, MAX_CONTENT_CHARS)}`);
+      contentMessages.push(
+        `[用户]: ${m.message.content.substring(0, surrogateSafeHeadEnd(m.message.content, MAX_CONTENT_CHARS))}`,
+      );
       if (contentMessages.length >= MAX_CONTENT_MESSAGES) break;
     } else if (m.type === 'assistant' && Array.isArray(m.message?.content)) {
       for (const block of m.message.content) {
         const b = block as { type?: string; text?: string };
         if (b?.type === 'text' && b.text) {
-          contentMessages.push(`[助手]: ${b.text.substring(0, MAX_CONTENT_CHARS)}`);
+          contentMessages.push(
+            `[助手]: ${b.text.substring(0, surrogateSafeHeadEnd(b.text, MAX_CONTENT_CHARS))}`,
+          );
           if (contentMessages.length >= MAX_CONTENT_MESSAGES) break;
         }
       }

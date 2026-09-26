@@ -28,6 +28,7 @@ import {
   DEFAULT_MAX_REPETITION_RETRIES,
 } from './repetitionDetector.js';
 import { unwrapToolInput } from '../utils/toolInput.js';
+import { stringifyJsonSafe } from '../utils/stringUtils.js';
 import {
   checkAborted,
   recordLLMUsage,
@@ -402,7 +403,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
           headers: requestHeaders,
           // 用看门狗的 signal：外部中断与超时都会中止本次请求
           signal: watchdog.signal,
-          body: JSON.stringify(requestBody),
+          body: stringifyJsonSafe(requestBody),
           dispatcher: getLLMDispatcher(),
         });
       } catch (fetchError) {

@@ -11,6 +11,7 @@ import { join } from 'path';
 import { getProjectConversationDir, getProjectRoot, ensureProjectConversationDir } from '../history/Config.js';
 import { logger } from '../Logger.js';
 import { MAX_RESULT_SIZE_CHARS, PREVIEW_HEAD_CHARS, PREVIEW_TAIL_CHARS } from './Tool.js';
+import { surrogateSafeHeadEnd, surrogateSafeTailStart } from '../utils/stringUtils.js';
 
 /**
  * 持久化输出最大大小（超过此大小会被截断）
@@ -84,9 +85,14 @@ export function generateHeadTailPreview(
     return { preview: content, hasMore: false };
   }
 
-  const head = content.slice(0, headChars);
-  const tail = content.slice(content.length - tailChars);
-  const omitted = content.length - headChars - tailChars;
+  // 按代理对边界对齐：直接 slice 会在 emoji 中间切开，留下孤立代理项，
+  // JSON.stringify 后变成非法的 `"\ude00"`，整轮请求会被网关 400（见真实事故）。
+  const headEnd = surrogateSafeHeadEnd(content, headChars);
+  const tailStart = surrogateSafeTailStart(content, tailChars);
+  const head = content.slice(0, headEnd);
+  const tail = content.slice(tailStart);
+  // 省略数按**实际**切下的边界算，与对齐后的 head/tail 一致
+  const omitted = tailStart - headEnd;
   return {
     preview: `${head}\n... (${omitted} chars omitted) ...\n${tail}`,
     hasMore: true,
@@ -148,10 +154,10 @@ export async function persistLargeOutput(
     const filepath = getToolResultPath(sessionId, taskId, false);
     const originalSize = stdout.length;
 
-    // 如果超过最大持久化大小，截断
+    // 如果超过最大持久化大小，截断（同样按代理对边界对齐）
     let contentToWrite = stdout;
     if (originalSize > MAX_PERSISTED_SIZE) {
-      contentToWrite = stdout.slice(0, MAX_PERSISTED_SIZE);
+      contentToWrite = stdout.slice(0, surrogateSafeHeadEnd(stdout, MAX_PERSISTED_SIZE));
       contentToWrite += `\n... [output truncated to ${Math.round(MAX_PERSISTED_SIZE / 1024 / 1024)}MB]`;
     }
 
