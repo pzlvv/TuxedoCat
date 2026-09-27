@@ -1,9 +1,10 @@
 /**
  * src/host/ui/userChoice.ts - UserChoiceQueue 逻辑
  *
- * 维护全局 FIFO 队列 + per-session 状态。用户请求（ask user 提问 / 权限确认）
- * 不再触发会话切换：请求只在用户当前所在的会话弹出，其它会话的请求保留 pending，
- * 由 UI 提醒用户手动进入（Single View 的历史对话按钮呼吸效果 / Electron 侧栏黄灯）。
+ * 维护 per-session 待答状态，不触发会话切换：请求只投递给「已 open」的会话
+ * （多视图：有聊天视图即可，弹框显示在该会话自己的视图里；单视图：open == active），
+ * 未 open 的会话保留 pending，由 UI 提醒用户（Single View 历史对话按钮呼吸 / Electron
+ * 侧栏黄灯），等会话 open 后由 `onSessionLoaded` 重新投递。
  */
 import type { LogChannel } from '../UIHost.js';
 import { requireEventBus } from '../../core/AssistantEventBus.js';
@@ -28,7 +29,7 @@ export class UserChoiceManager {
   private outputChannel: LogChannel | undefined;
   private postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
   private closePreview: () => void;
-  private getActiveSessionIdInternal: () => string | undefined;
+  private isSessionOpenInternal: (sessionId: string) => boolean;
 
   /** 当前请求的上下文（前） */
   public currentContextBefore: string[] = [];
@@ -61,13 +62,13 @@ export class UserChoiceManager {
     outputChannel: LogChannel | undefined;
     postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
     closePreview: () => void;
-    getActiveSessionIdInternal: () => string | undefined;
+    isSessionOpenInternal: (sessionId: string) => boolean;
     onChoiceShown?: (sessionId: string) => void;
   }) {
     this.outputChannel = deps.outputChannel;
     this.postToWebview = deps.postToWebview;
     this.closePreview = deps.closePreview;
-    this.getActiveSessionIdInternal = deps.getActiveSessionIdInternal;
+    this.isSessionOpenInternal = deps.isSessionOpenInternal;
     this.onChoiceShown = deps.onChoiceShown;
   }
 
@@ -109,6 +110,9 @@ export class UserChoiceManager {
 
   /**
    * 初始化全局 UserChoiceQueue 回调
+   *
+   * `isSessionOpen` 回答「该会话是否 open」（多视图 = 有聊天视图；单视图 = 当前显示的会话），
+   * 队列据此决定是立即投递还是保留 pending 等会话 open 后再投。
    */
   initUserChoiceQueue(): void {
     userChoiceQueue.setCallbacks({
@@ -120,8 +124,8 @@ export class UserChoiceManager {
         this.restoreUserChoiceIfPending(sessionId);
       },
 
-      onGetActiveSessionId: () => {
-        return this.getActiveSessionIdInternal();
+      isSessionOpen: (sessionId: string) => {
+        return this.isSessionOpenInternal(sessionId);
       },
     });
   }
@@ -231,7 +235,7 @@ export class UserChoiceManager {
    *
    * 两个来源都算「等待」：
    * - `pendingUserChoices`：已经在该会话的 webview 里弹出、等用户点选；
-   * - `userChoiceQueue`：已入队但尚未弹出（用户当前不在该会话），请求仍在等待。
+   * - `userChoiceQueue`：已入队但尚未投递（会话尚未 open），请求仍在等待。
    *
    * 供 core 的 `isSessionIdle` 判定「非空闲，不应被空闲回收」。
    */

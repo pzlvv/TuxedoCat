@@ -193,6 +193,24 @@ export class WebViewUI implements WebViewUiPort {
   }
 
   /**
+   * 该会话是否处于 open 状态（UserChoiceQueue 的投递判定）。
+   *
+   * 多视图宿主（Electron）由 `setOpenSessions` 同步「已打开会话」集合；未同步过的
+   * 单视图宿主（VS Code）退化为 open == active == 当前显示的会话。
+   */
+  isSessionOpen(sessionId: string): boolean {
+    return this.webviewMessageHandler.isSessionOpen(sessionId);
+  }
+
+  /**
+   * 宿主同步「已打开会话视图」集合（多视图宿主；视图创建 / 销毁 / LRU 淘汰时调用）。
+   * 单视图宿主不调用：其 open 语义等同于 active。
+   */
+  setOpenSessions(sessionIds: string[]): void {
+    this.webviewMessageHandler.setOpenSessions(sessionIds);
+  }
+
+  /**
    * 宿主切换前台会话时同步「当前活跃 session」。
    *
    * 多视图宿主（Electron）切到已打开的视图不会再触发 loadConversation /

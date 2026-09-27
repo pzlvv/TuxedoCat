@@ -33,7 +33,7 @@ function buildHandler(): { handler: WebviewMessageHandler; received: ContextUpda
     outputChannel: undefined,
     postToWebview: () => undefined,
     closePreview: () => undefined,
-    getActiveSessionIdInternal: () => undefined,
+    isSessionOpenInternal: () => false,
   });
 
   const handler = new WebviewMessageHandler({

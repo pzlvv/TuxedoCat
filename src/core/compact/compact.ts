@@ -6,7 +6,7 @@ import type { Message } from '../types.js';
 import type { CompactionResult } from './types.js';
 import { COMPACT_SYSTEM_PROMPT } from './types.js';
 
-import { generateCompactSummaryPrompt, generateCompactUserMessage, generateCompactBoundaryContent, getUserInputHistory, formatUserInputHistory } from './prompt.js';
+import { generateCompactSummaryPrompt, generateCompactUserMessage, generateCompactBoundaryContent, getUserInputHistory, selectUserInputHistory, formatUserInputHistory } from './prompt.js';
 import { logger } from '../Logger.js';
 import { requireEventBus, type CoreEvent } from '../AssistantEventBus.js';
 import { updateConversationContext, saveCompactArchive, replaceConversationMessages } from '../history/Conversation.js';
@@ -120,9 +120,13 @@ async function compactConversationInner(
 
   // 提取用户输入历史（过滤掉系统自动产生的 reminder / silent / 子代理消息等），
   // 追加为摘要消息中的一个章节，避免压缩后丢失用户真实的原始输入。
-  const userInputHistory = formatUserInputHistory(getUserInputHistory(messagesToSummarize));
+  // 但只保留首尾两端（最多 12 条：最早 4 条 + 最后 8 条），
+  // 否则归档区的全部用户输入都塞进摘要会让摘要无限膨胀，更快再次触发压缩。
+  const rawUserInputHistory = getUserInputHistory(messagesToSummarize);
+  const selectedUserInputHistory = selectUserInputHistory(rawUserInputHistory);
+  const userInputHistory = formatUserInputHistory(selectedUserInputHistory);
   if (userInputHistory) {
-    logger.info('compact', `Collected user input history (${userInputHistory.length} chars)`);
+    logger.info('compact', `Collected user input history (${selectedUserInputHistory.length}/${rawUserInputHistory.length} messages, ${userInputHistory.length} chars)`);
   }
 
   // Step 4: Create boundary marker
@@ -226,6 +230,13 @@ async function generateSummary(messages: Message[], customInstructions: string |
 
   try {
     const { callLLM } = await import('../llm/index.js');
+    const { getSessionThinkingMode } = await import('../Integration.js');
+
+    // 摘要生成沿用用户在会话中设置的 thinking effort；未设置或为 'off' 时回退到 'high'，
+    // 保证压缩质量（'off' 会让摘要模型跳过思考，长上下文压缩效果明显变差）。
+    const sessionThinkingEffort = getSessionThinkingMode(sessionId);
+    const compactThinkingEffort: 'off' | 'low' | 'high' | 'max' =
+      !sessionThinkingEffort || sessionThinkingEffort === 'off' ? 'high' : sessionThinkingEffort;
 
     let summary = '';
     let outputTokens = 0;
@@ -235,6 +246,7 @@ async function generateSummary(messages: Message[], customInstructions: string |
       systemPrompt: COMPACT_SYSTEM_PROMPT,
       tools: [],
       signal: null,
+      thinkingEffort: compactThinkingEffort,
       modelConfig: await getConfig(),
       sessionId,
     })) {

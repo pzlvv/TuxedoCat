@@ -292,11 +292,10 @@ export function createEngine(sessionId: string, title: string, role?: string): Q
  * 请求用户选择 - 供 RunTools 权限确认和 AskUserQuestion 工具调用
  * 权限决策已经算完（RunTools / PermissionPolicy），这里只处理用户确认对话框
  *
- * 该函数会将用户选择请求加入全局队列，而不是直接弹出对话框。
- * UserChoiceQueue 维护一个 FIFO 队列 + per-session 状态：
- * - 只在用户当前所在的会话弹出选择框；其它会话的请求保留 pending，不切换会话
- * - 用户手动进入某个有待答请求的会话时，由 onSessionLoaded 恢复弹出
- * - 用户做出选择后自动消费队列中的下一个
+ * 该函数会把用户选择请求登记到 UserChoiceQueue（per-session 状态），而不是直接弹出对话框：
+ * - 会话已 open 时立即投递，由该会话自己的视图 / webview 弹出（多视图下即使该视图
+ *   未被选中也会显示在那里，切过去即可看到；单视图下 open == 当前会话）
+ * - 会话未 open 时保留 pending，不切换会话；等该会话 open 后由 onSessionLoaded 重新投递
  *
  * 入队即把该会话标记为「等待用户」（sessionRuntime.waiting）：UI 据此提醒用户
  * （Single View 历史对话按钮呼吸效果 / Electron 侧栏黄灯 / 托盘状态点）。
@@ -324,18 +323,18 @@ export async function requestUserChoice(
   };
 
   // 未初始化 UserChoiceQueue 时（宿主未注册队列回调），退化为直接发总线请求，
-  // 避免入队后没有回调消费队列导致 Promise 永远不会 resolve。
+  // 避免登记 pending 后没有回调投递导致 Promise 永远不会 resolve。
   // 该路径由 UserChoiceManager.requestUserChoice 标记 waiting（弹出时才标记）。
   if (!userChoiceQueue.isInitialized()) {
     return requireEventBus().request({ type: 'userChoice', sessionId: sessionID, options });
   }
 
-  // 入队即视为「该会话等待用户」：即使请求尚未在 UI 里弹出（用户不在该会话），
-  // 会话运行时状态也立即变 waiting，供 UI 提醒用户（不再自动切换会话）。
+  // 入队即视为「该会话等待用户」：即使请求尚未投递（会话未 open），
+  // 会话运行时状态也立即变 waiting，供 UI 提醒用户（不自动切换会话）。
   // 用户响应后由 UserChoiceManager 的 resolve 回调解除。
   markSessionWaiting(sessionID, true);
 
-  // 将请求加入全局队列，返回的 Promise 会在用户做出选择后 resolve
+  // 登记请求；返回的 Promise 会在用户做出选择后 resolve
   const userChoice = await userChoiceQueue.enqueue(sessionID, options);
 
   return userChoice;

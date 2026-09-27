@@ -133,6 +133,12 @@ export class WebviewMessageHandler {
    * 空闲巡检（宿主层 ConversationManager）需要时通过注入的 provider 查询。
    */
   private trackedActiveSessionId: string | undefined;
+  /**
+   * 宿主同步的「已打开会话」集合（多视图宿主注入；未注入 = 单视图宿主）。
+   * open 与 active 是两个概念：多视图下可以同时 open 多个会话，只有一个是 active/selected；
+   * UserChoiceQueue 用 `isSessionOpen` 判定请求能否投递到该会话自己的视图里。
+   */
+  private openSessionIds: Set<string> | null = null;
 
   /** 消息类型 -> 处理器分发表（构造函数中构建一次） */
   private messageHandlers: Map<string, (msg: any, ctx: WebviewRequestContext) => Promise<void> | void>;
@@ -187,6 +193,28 @@ export class WebviewMessageHandler {
    */
   setActiveSessionId(sessionId: string | undefined): void {
     this.trackedActiveSessionId = sessionId || undefined;
+  }
+
+  /**
+   * 宿主同步「已打开会话视图」集合（多视图宿主；视图创建 / 销毁 / LRU 淘汰时调用）。
+   *
+   * 单视图宿主（VS Code）不调用本方法，`isSessionOpen` 退化为 open == active。
+   */
+  setOpenSessions(sessionIds: string[]): void {
+    this.openSessionIds = new Set(sessionIds);
+  }
+
+  /**
+   * 该会话是否处于 open 状态（UserChoiceQueue 的投递判定）。
+   *
+   * - 多视图宿主（Electron）：有聊天视图即 open（可以多个，只有一个 active/selected）
+   * - 单视图宿主（VS Code）：open == active == 当前 webview 里显示的会话
+   */
+  isSessionOpen(sessionId: string): boolean {
+    if (this.openSessionIds) {
+      return this.openSessionIds.has(sessionId);
+    }
+    return this.trackedActiveSessionId === sessionId;
   }
 
   /**

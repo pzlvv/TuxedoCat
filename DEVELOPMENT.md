@@ -1416,7 +1416,7 @@ thinking / text / tool 动画）。
 
 | 模块 | 文件 | 职责 |
 | --- | --- | --- |
-| `UserChoiceManager` | `src/host/ui/userChoice.ts` | 全局 FIFO 用户选择队列的展示与恢复、`waiting` 标记、diff 快照暂存 |
+| `UserChoiceManager` | `src/host/ui/userChoice.ts` | per-session 待答选择的投递与恢复（会话 open 即投递）、`waiting` 标记、diff 快照暂存 |
 | `ToolHandler` | `src/host/ui/toolHandler.ts` | 工具卡片的展示与状态更新（**不含权限规则**） |
 | `WebviewMessageHandler` | `src/host/ui/webviewMessageHandler.ts` | webview 协议消息的解析与分发（解析 + 翻译） |
 
@@ -1449,16 +1449,16 @@ thinking / text / tool 动画）。
 | `outputChannel` | 日志（`LogChannel` 形状） |
 | `postToWebview(sessionId, message)` | 回推 `requestUserChoice` / `showThinkingAnimation` |
 | `closePreview()` | 用户响应后关闭宿主预览（`UIHost.closePreview`） |
-| `getActiveSessionIdInternal()` | 回答 core `UserChoiceQueue` 的「当前前台会话」查询 |
+| `isSessionOpenInternal(sessionId)` | 回答 core `UserChoiceQueue` 的「该会话是否 open」查询（多视图：有聊天视图；单视图：open == active） |
 | `onChoiceShown?(sessionId)` | 选择框弹出后的可选回调（当前无人传入；waiting 由 core 的 `sessionRuntimeChanged` 推给侧栏与托盘） |
 
 成员：
 
 | 成员 | 语义 |
 | --- | --- |
-| `initUserChoiceQueue()` | 把 core `UserChoiceQueue` 的 3 个回调接到本类：`onShowUserChoice` / `onSessionLoaded` → 恢复该会话的待答选择；`onGetActiveSessionId` → 上面注入的读取器。**不注册会话切换**：用户请求只在当前会话弹出，其它会话的请求保留 pending，由 UI 提醒用户手动进入 |
+| `initUserChoiceQueue()` | 把 core `UserChoiceQueue` 的 3 个回调接到本类：`onShowUserChoice` / `onSessionLoaded` → 恢复该会话的待答选择；`isSessionOpen` → 上面注入的读取器。**不注册会话切换**：会话已 open 时请求直接投递到该会话自己的视图（多视图下未选中的视图也会显示，切过去即可看到）；未 open 的请求保留 pending，由 UI 提醒用户 |
 | `requestUserChoice(sessionId, options)` | ① 保存 diff 快照（`beforeContent` / `afterContent` / 上下文 / 起止行）② 投递 `requestUserChoice` ③ 发 `UiEvent.userChoicePendingChanged(pending: true)`（`idle` / `waiting` 归 core，见第 4.5 节；入队时 `Integration.requestUserChoice` 已提前标记，此处幂等）④ 返回 Promise，`resolve` 时 `closePreview()` + 发 `userChoicePendingChanged(pending: false)` |
-| `hasPendingChoice(sessionId)` | 该会话是否有待答选择：`pendingUserChoices`（已弹出）或 `userChoiceQueue`（已入队未弹出）任一命中即为真。供 core `isSessionIdle` 判定「非空闲，不回收」 |
+| `hasPendingChoice(sessionId)` | 该会话是否有待答选择：`pendingUserChoices`（已弹出）或 `userChoiceQueue`（已入队未投递，会话尚未 open）任一命中即为真。供 core `isSessionIdle` 判定「非空闲，不回收」 |
 | `saveDiffSnapshot(sessionId, snapshot)` | 写入 diff 快照（`beforeContent` / `afterContent` / 上下文 / 起止行）并登记归属会话。`ToolHandler.requestToolPermission` 调用（`requestUserChoice` 也直接写同一份快照） |
 | `dropSession(sessionId)` | 会话 UI 侧状态释放：清掉该会话的 `pendingUserChoices` 回调，并在 diff 快照归属该会话时清空快照。由 `WebViewUI.dropSession` fan-out 调用（第 10.5 节） |
 | `pendingUserChoices: Map<choiceId, {sessionId, resolve}>` | 待答选择表；`WebviewMessageHandler.handleRespondUserChoice` 按 `choiceId` 取出并 resolve |
@@ -1480,7 +1480,7 @@ diff 快照——**确认框不在这里弹**（见下）。
 
 **不做权限判断**：`permResult` 已由 core 按 agentMode 规则加工完（`allow` / `deny` / `ask`，
 见第 4.2 节）。`ask` 的确认框由 core 的 `RunTools` → `Integration.requestUserChoice`
-（全局 `UserChoiceQueue`，支持多会话排队，不自动切换会话）触发，UI 侧提前弹框会造成双重确认。
+（`UserChoiceQueue`：会话已 open 即投递到该会话自己的视图，未 open 保留 pending，不自动切换会话）触发，UI 侧提前弹框会造成双重确认。
 
 **diff 的显示规则**（Edit / Write 的改动）
 
@@ -2570,7 +2570,8 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 | webview 渲染阶段（thinking / text / tool） | `SessionUiState`（宿主侧渲染投影，第 10 节） | 渲染与 abort 按钮（不参与 abort 判定） |
 | 对话列表 | 磁盘（`loadConversationList`） | `ConversationManager.refresh()` 分发并留快照，`sidebar:get-conversations` 读快照（第 5.4 节） |
 | 对话树删除闭包 | 纯函数 `collectConversationClosure`（`src/core/history/Conversation.ts`） | core `deleteConversation` 与 Electron 宿主都调它，不各写一份（第 11.1 节） |
-| 「哪个会话在前台」 | UI（VS Code：`SingleWebViewConversationManager` 的 `activeSessionProvider`；Electron：`ChatViewManager.getActiveSessionId`） | 空闲回收的「前台会话不关」、MCP 面板取数、`UserChoiceQueue` 判断「当前会话的请求是否可直接弹出」（不再用它切换会话）。core **不保存**这份状态（曾经在 `Config` 里缓存过一份） |
+| 「哪个会话在前台」 | UI（VS Code：`SingleWebViewConversationManager` 的 `activeSessionProvider`；Electron：`ChatViewManager.getActiveSessionId`） | 空闲回收的「前台会话不关」、MCP 面板取数。core **不保存**这份状态（曾经在 `Config` 里缓存过一份） |
+| 「哪些会话 open」 | UI（Electron：`ChatViewManager.getLoadedSessionIds` → `WebViewUI.setOpenSessions`；VS Code：单视图下 open == active） | `UserChoiceQueue` 判断待答请求能否投递到该会话自己的视图（第 7.1 节）。core **不保存**这份状态 |
 | 视图 ↔ 会话 ID 的绑定 | Electron `ChatViewManager`（`registerSession`） | 由 webview 上报的 `startNewConversation` / `loadConversation` 驱动（这两条消息才表达「这个视图当前属于哪个会话」） |
 
 **禁止从投影反推事实**：`WebViewUI.onSessionRuntimeChanged` 只把 core 的状态转给

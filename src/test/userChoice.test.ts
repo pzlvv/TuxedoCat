@@ -22,7 +22,7 @@ async function run(): Promise<void> {
     outputChannel: undefined,
     postToWebview: () => undefined,
     closePreview: () => undefined,
-    getActiveSessionIdInternal: () => undefined,
+    isSessionOpenInternal: () => false,
   });
 
   // 两个会话各挂一个待答选择回调；s1 拥有 diff 快照

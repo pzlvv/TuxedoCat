@@ -54,7 +54,7 @@ export function pushToolProgress(
 
 /**
  * 设置子会话的 agent mode。
- * 子代理默认使用 risk 模式，仅当父会话为 auto 时继承 auto（auto > risk > manual）。
+ * 完整继承父会话的 manual / risk / auto；父会话无记录时回退 risk。
  */
 export function inheritAgentMode(
   sessionAgentModes: Map<string, 'manual' | 'risk' | 'auto'>,
@@ -62,5 +62,5 @@ export function inheritAgentMode(
   childSessionId: string,
 ): void {
   const parentMode = sessionAgentModes.get(parentSessionId);
-  sessionAgentModes.set(childSessionId, parentMode === 'auto' ? 'auto' : 'risk');
+  sessionAgentModes.set(childSessionId, parentMode ?? 'risk');
 }

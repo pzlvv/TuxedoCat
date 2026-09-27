@@ -685,6 +685,9 @@ function createMainWindow(): void {
     onLoadedChanged: (sessionIds) => {
       // 视图层「已打开会话」集合单独推送（不并入对话列表流），见 DEVELOPMENT.md 第 5.4 节
       sidebarView?.webContents.send('sidebar:session-loaded-changed', sessionIds);
+      // 同步 UI 侧的「已打开会话」集合：UserChoiceQueue 据此判定待答请求能否投递
+      // （open 即投递到该会话自己的视图；open 与 active/selected 是两个概念）
+      webviewUi?.setOpenSessions(sessionIds);
     },
     onViewCreated: (view) => {
       // 无边框窗口下原生菜单栏不再绘制，菜单快捷键用 before-input-event 兜底
@@ -3154,6 +3157,9 @@ function initCore(): void {
   host.setWorkspacePath(workspacePath);
   webviewUi = ui;
   uiHost = host;
+  // 初始同步「已打开会话」集合（此刻通常为空）：让 UserChoiceQueue 的 open 判定
+  // 从一开始就走多视图语义，而不是退化成「open == active」的单视图语义
+  webviewUi.setOpenSessions(chatViews?.getLoadedSessionIds() ?? []);
   // 视图销毁序列（closeView / LRU trim / disposeAll）在销毁视图前只卸内存：
   // 指向 WebViewUI.releaseConversation（不回调 closeConversationView，避免与视图销毁互相回调成环）
   chatViews!.closeConversation = (sessionId: string) => ui.releaseConversation(sessionId);

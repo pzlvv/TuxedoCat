@@ -160,6 +160,30 @@ export function getUserInputHistory(messages: Message[]): UserMessage[] {
   return history;
 }
 
+/** 摘要中「用户输入历史」章节最多保留的条数 */
+export const USER_INPUT_HISTORY_MAX = 12;
+/** 超限时保留的最早条数 */
+export const USER_INPUT_HISTORY_HEAD = 4;
+/** 超限时保留的最后条数（与 HEAD 相加不超过 MAX） */
+export const USER_INPUT_HISTORY_TAIL = 8;
+
+/**
+ * 限制「用户输入历史」的条数：超过上限时只保留最早 HEAD 条与最后 TAIL 条。
+ *
+ * 压缩时若把归档区的全部用户输入都塞进摘要消息，摘要会随对话增长无限膨胀，
+ * 反而更快再次触发压缩。这里只保留首尾两端：最早几条保留任务初始意图，
+ * 最后几条保留最近上下文，中间省略。
+ */
+export function selectUserInputHistory(
+  messages: UserMessage[],
+  max: number = USER_INPUT_HISTORY_MAX,
+  head: number = USER_INPUT_HISTORY_HEAD,
+  tail: number = USER_INPUT_HISTORY_TAIL,
+): UserMessage[] {
+  if (messages.length <= max) return messages;
+  return [...messages.slice(0, head), ...messages.slice(-tail)];
+}
+
 /**
  * Format user input history as a numbered list.
  */

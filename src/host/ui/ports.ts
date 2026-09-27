@@ -74,6 +74,14 @@ export interface WebViewUiPort {
   getActiveSessionId(): string | undefined;
 
   /**
+   * 该会话是否处于 open 状态（UserChoiceQueue 的投递判定）。
+   *
+   * - 多视图宿主（Electron）：有聊天视图即为 open（可以多个，只有一个 active/selected）
+   * - 单视图宿主（VS Code）：open == active == 当前 webview 里显示的会话
+   */
+  isSessionOpen(sessionId: string): boolean;
+
+  /**
    * 打开 Spin 设计器（转调 SpinDesign.open）。
    * 子模块不直接持有 SpinDesign，保持「只认 UIHost + WebViewUiPort」的约定。
    */

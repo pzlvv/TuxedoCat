@@ -106,7 +106,7 @@ export function bootstrapCore(
         outputChannel: { appendLine: (line: string) => log(line) },
         postToWebview: post,
         closePreview,
-        getActiveSessionIdInternal: () => uiPort.getActiveSessionId(),
+        isSessionOpenInternal: (sessionId: string) => uiPort.isSessionOpen(sessionId),
       }),
   });
 

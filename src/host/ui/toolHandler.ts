@@ -123,8 +123,8 @@ export class ToolHandler {
     }
 
     // ask：不在这里弹确认框。RunTools 在拿到 'ask' 结果后会走
-    // Integration.requestUserChoice（全局 UserChoiceQueue，多会话排队，不自动切换会话），
-    // 这里提前弹框会造成双重确认。
+    // Integration.requestUserChoice（UserChoiceQueue：会话 open 即投递到该会话自己的视图，
+    // 未 open 则保留 pending，不自动切换会话），这里提前弹框会造成双重确认。
     return permResult;
   }
 

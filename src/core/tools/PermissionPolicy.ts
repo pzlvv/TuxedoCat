@@ -70,17 +70,20 @@ export function getSessionAgentMode(sessionId: string): AgentMode {
   return 'risk';
 }
 
-/** 子会话继承父会话的询问模式（auto > risk > manual：子代理默认 risk，父为 auto 时继承 auto） */
+/**
+ * 子会话继承父会话的询问模式。
+ *
+ * 完整继承主对话的 manual / risk / auto：子代理只是主对话的执行延伸，
+ * 权限策略必须与主对话一致，否则会出现「主对话 manual 逐条确认、子代理却
+ * 自动放行非危险操作」这类越权行为。父会话在内存中无记录时回退 risk。
+ */
 export function inheritAgentMode(parentSessionId: string, childSessionId: string): void {
-  const parentMode = sessionAgentModes.get(parentSessionId);
-  const inherited: AgentMode = parentMode === 'auto' ? 'auto' : 'risk';
-  sessionAgentModes.set(childSessionId, inherited);
+  inheritAgentModeFrom(sessionAgentModes.get(parentSessionId), childSessionId);
 }
 
 /** 子会话继承父会话的询问模式（带显式父值；供没有 Map 记录时的 fallback） */
 export function inheritAgentModeFrom(parentMode: AgentMode | undefined, childSessionId: string): void {
-  const inherited: AgentMode = parentMode === 'auto' ? 'auto' : 'risk';
-  sessionAgentModes.set(childSessionId, inherited);
+  sessionAgentModes.set(childSessionId, parentMode ?? 'risk');
 }
 
 /**

@@ -379,10 +379,21 @@ Important guidelines:
     // 注册到全局注册表
     subAgentRegistry.register(subSessionID, subEngine, context, creatorSessionId);
 
-    // 继承父会话的 agent mode（agentMode 归 core；子代理默认 risk，父为 auto 时继承 auto）
+    // 继承父会话的 agent mode（agentMode 归 core）：完整继承主对话的 manual / risk / auto。
+    // 优先取父会话的内存记录；内存无记录（例如刚恢复的历史会话还没收到带 agentMode 的
+    // 用户消息）时回退到 settings.json 的默认值，避免子代理权限策略与主对话不一致。
     try {
-      const { inheritAgentMode } = await import('../PermissionPolicy.js');
-      inheritAgentMode(creatorSessionId, subSessionID);
+      const { getStoredSessionAgentMode, inheritAgentModeFrom } = await import('../PermissionPolicy.js');
+      let parentAgentMode = getStoredSessionAgentMode(creatorSessionId);
+      if (!parentAgentMode) {
+        const { getDefaultAgentMode } = await import('../../llm/config.js');
+        parentAgentMode = await getDefaultAgentMode();
+      }
+      inheritAgentModeFrom(parentAgentMode, subSessionID);
+      // 同步落盘到子会话 meta.json：重启后重新打开子会话，UI 仍显示继承自主对话的模式
+      const { updateConversationContext } = await import('../../history/Conversation.js');
+      await updateConversationContext(subSessionID, { agentMode: parentAgentMode });
+      logger.info('AgentTool', `Sub-agent ${subSessionID} inherited agent mode "${parentAgentMode}" from ${creatorSessionId}`);
     } catch (err) {
       logger.warn('AgentTool', `inheritAgentMode failed: ${err}`);
     }
