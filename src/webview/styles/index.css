@@ -687,6 +687,14 @@ textarea::-webkit-scrollbar-thumb:hover {
 .agent-mode-menu {
   background-color: var(--primary-frame) !important;
 }
+/* 让菜单项内容能随面板宽度收缩：
+   antd 的 title-content 是 flex:auto 但默认 min-width:auto，长名字（二级/三级）
+   会把菜单项撑宽。置 0 后交给行内的 minWidth:0 + HoverScrollText，超长名字改为
+   「省略号 + 悬停滚动」，面板宽度由一级内容决定、不随二/三级内容变化。 */
+.agent-mode-menu .ant-dropdown-menu-title-content,
+.model-list-submenu .ant-dropdown-menu-title-content {
+  min-width: 0;
+}
 .agent-mode-menu .ant-dropdown-menu-item {
   font-size: 12px !important;
   color: var(--text-secondary) !important;
@@ -711,6 +719,10 @@ textarea::-webkit-scrollbar-thumb:hover {
 .agent-mode-menu .ant-dropdown-menu-item-active {
   background-color: rgba(99, 102, 241, 0.2) !important;
 }
+
+/* 层级背景色只在「内联展开」时出现，且由 InputArea 的行内 style 直接控制
+   （一级展开时才显示、二级一直显示、三级不加），所以这里不再需要
+   .menu-item-selected-* 这类全局类；非内联飞出模式只用圆点表示选中。 */
 
 /* 子菜单展开箭头 — 与文字颜色一致。
    子菜单弹层是独立挂载的浮层（不在 .agent-mode-menu 内），因此 provider 级箭头

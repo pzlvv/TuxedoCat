@@ -27,7 +27,7 @@ body {
   background: #16161b;
   /* 标签条底边线：与「选中标签」同色，直接画在标题栏底边上，
      这样它能拉满整个窗口宽度（而不是只在标签条那一小段）。 */
-  border-bottom: 2px solid #2f2f37;
+  border-bottom: 4px solid #2f2f37;
   -webkit-app-region: drag;
 }
 

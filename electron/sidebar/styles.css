@@ -378,10 +378,10 @@ body {
    prefers-color-scheme；这里只做颜色覆盖，深色样式（上方）保持不变。
    强调色（#6366f1 / #818cf8）、状态色（绿点 / 红色危险）两种主题下通用，不覆盖。 */
 @media (prefers-color-scheme: light) {
-  /* 侧栏用纯白，与 webview 的浅灰（#f4f4f5）拉开分界；
+  /* 侧栏用浅灰 #EDEDED（比 webview 的 #f4f4f5 略深一档），与对话区拉开分界；
      右侧补一条细边框，让两块的边界更明确（浅色下仅靠明度差不够利落）。 */
   body {
-    background: #ffffff;
+    background: #ededed;
     color: #3f3f46;
     border-right: 1px solid #e4e4e7;
   }

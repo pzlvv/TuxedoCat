@@ -10,18 +10,46 @@ function emitToUi(event: CoreEvent): void {
   requireEventBus().emitToUi(event);
 }
 
-type ToolResultInfo = { content: string; exitCode: number };
+/**
+ * tool_result 里除文本输出外、只服务 diff 展示的字段。
+ *
+ * Edit / Write 的 beforeContent / afterContent 会随工具结果一起落盘（见
+ * `mapToolResultToToolResultBlockParam`）。它们不在 tool_use 的 `_meta` 里时
+ * （例如压缩时内存里的 `_meta` 未同步、或旧版本会话），仍可从 tool_result 读回，
+ * 避免压缩 / 展开归档后 Edit 预览丢失。
+ */
+type ToolResultDiffFields = {
+  beforeContent?: string | null;
+  afterContent?: string;
+  contextBefore?: string[];
+  contextAfter?: string[];
+  startLine?: number;
+  endLine?: number;
+};
+
+type ToolResultInfo = { content: string; exitCode: number } & ToolResultDiffFields;
 
 export function buildToolResultMap(messages: readonly Message[]): Map<string, ToolResultInfo> {
   const map = new Map<string, ToolResultInfo>();
   for (const msg of messages) {
     if (msg.type !== 'user' || !Array.isArray(msg.message.content)) continue;
     for (const block of msg.message.content) {
-      const result = block as { type?: string; tool_use_id?: string; is_canceled?: boolean; content?: string | unknown[]; exit_code?: number };
+      const result = block as {
+        type?: string; tool_use_id?: string; is_canceled?: boolean; content?: string | unknown[]; exit_code?: number;
+        beforeContent?: string | null; afterContent?: string;
+        contextBefore?: string[]; contextAfter?: string[];
+        startLine?: number; endLine?: number;
+      };
       if (result.type === 'tool_result' && result.tool_use_id && result.is_canceled !== true) {
         map.set(result.tool_use_id, {
           content: Array.isArray(result.content) ? '[Image]' : (result.content || ''),
           exitCode: result.exit_code ?? 0,
+          beforeContent: result.beforeContent,
+          afterContent: result.afterContent,
+          contextBefore: result.contextBefore,
+          contextAfter: result.contextAfter,
+          startLine: result.startLine,
+          endLine: result.endLine,
         });
       }
     }
@@ -105,19 +133,52 @@ export function buildReplayMessageData(messages: readonly Message[]): MessageDat
           const toolArgs: Record<string, unknown> = b.input ? { ...b.input } : {};
           const blockMeta = b._meta;
 
-          if (b.name === 'Edit' && typeof blockMeta?.beforeContent === 'string' && typeof blockMeta?.afterContent === 'string') {
+          // diff 内容优先取 tool_use 的 `_meta`（新版本写入），缺失时回退到
+          // tool_result 的 before/after（压缩时 `_meta` 未同步到内存 / 旧版本会话）。
+          const metaBefore = typeof blockMeta?.beforeContent === 'string' ? blockMeta.beforeContent : undefined;
+          const metaAfter = typeof blockMeta?.afterContent === 'string' ? blockMeta.afterContent : undefined;
+          const resultBefore = typeof result?.beforeContent === 'string' ? result.beforeContent : undefined;
+          const resultAfter = typeof result?.afterContent === 'string' ? result.afterContent : undefined;
+          const beforeContent = metaBefore ?? resultBefore;
+          const afterContent = metaAfter ?? resultAfter;
+          const startLine = (blockMeta?.startLine as number | undefined) ?? result?.startLine;
+          const endLine = (blockMeta?.endLine as number | undefined) ?? result?.endLine;
+          const contextBefore = (blockMeta?.contextBefore as string[] | undefined) ?? result?.contextBefore;
+          const contextAfter = (blockMeta?.contextAfter as string[] | undefined) ?? result?.contextAfter;
+
+          if (b.name === 'Edit' && typeof beforeContent === 'string' && typeof afterContent === 'string') {
             // Edit 只发送 diff 相关行
-            toolArgs.diffHunks = buildEditDiffHunks({
-              beforeContent: blockMeta.beforeContent,
-              afterContent: blockMeta.afterContent,
-              startLine: blockMeta.startLine as number | undefined,
-              endLine: blockMeta.endLine as number | undefined,
+            const diffHunks = buildEditDiffHunks({
+              beforeContent,
+              afterContent,
+              startLine,
+              endLine,
               replaceAll: Boolean(b.input?.replace_all),
             });
-          } else if (blockMeta?.beforeContent !== undefined || blockMeta?.afterContent !== undefined) {
+            toolArgs.diffHunks = diffHunks;
+            toolArgs.contextBefore = contextBefore || [];
+            toolArgs.contextAfter = contextAfter || [];
+            toolArgs.startLine = startLine;
+            toolArgs.endLine = endLine;
+            if (diffHunks.length === 0) {
+              // 紧凑 diff 为空（内容为空 / 无实际改动）时退回完整 before/after，
+              // 让 EditFile 自行计算；两者都为空才按需向宿主拉取 `_meta`。
+              toolArgs.beforeContent = beforeContent;
+              toolArgs.afterContent = afterContent;
+              if (!beforeContent && !afterContent) {
+                toolArgs._needsMeta = true;
+                toolArgs._toolUseId = toolUseId;
+              }
+            }
+          } else if (b.name === 'Edit') {
+            // 没有任何 diff 数据：让 webview 按需向宿主拉取 `_meta`
+            // （压缩后重建 / 展开归档都会走这条路径，避免 Edit 预览丢失）
+            toolArgs._needsMeta = true;
+            toolArgs._toolUseId = toolUseId;
+          } else if (blockMeta?.beforeContent !== undefined || blockMeta?.afterContent !== undefined || result?.beforeContent !== undefined || result?.afterContent !== undefined) {
             // Write 等工具保留原有 before/after 字段
-            toolArgs.beforeContent = blockMeta.beforeContent;
-            toolArgs.afterContent = blockMeta.afterContent;
+            toolArgs.beforeContent = blockMeta?.beforeContent ?? result?.beforeContent;
+            toolArgs.afterContent = blockMeta?.afterContent ?? result?.afterContent;
           }
 
           out.push({
