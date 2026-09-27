@@ -16,10 +16,10 @@ import type { AssistantEventBus } from './AssistantEventBus.js';
 import { logger, setLogToConsole } from './Logger.js';
 import { requireEventBus } from './AssistantEventBus.js';
 import { setCoreLocale, setCoreUiLanguage } from './i18n.js';
-import { readUiLanguageSync, setActiveWorkspace, setExtensionPath } from './history/Config.js';
+import { readUiLanguageSync, setExtensionPath } from './history/Config.js';
 import { markSessionWaiting } from './sessionRuntime.js';
 
-// ==================== 宿主环境 / 活动工作目录 ====================
+// ==================== 宿主环境 ====================
 
 /**
  * 宿主环境：连接建立后由 UI 发一次。
@@ -32,27 +32,6 @@ function registerHostEnvironmentUiEvents(bus: AssistantEventBus): void {
     setCoreLocale(locale);
     setExtensionPath(extensionPath);
     setLogToConsole(logToConsole);
-  });
-}
-
-/**
- * 活动工作目录：宿主在订阅时立即回调一次当前值，之后打开 / 切换 / 关闭再回调。
- *
- * **必须同步注册**：`host.onDidChangeWorkspace` 订阅时立即回调，异步注册会让初始值丢失。
- * 到达后以新路径预热系统动态信息（缓存按工作目录分桶，不同目录不互相命中）。
- */
-function registerWorkspaceUiEvents(bus: AssistantEventBus): void {
-  bus.onUiEvent('workspaceChanged', ({ workspacePath }) => {
-    setActiveWorkspace(workspacePath);
-    if (!workspacePath) return;
-    void (async () => {
-      try {
-        const { warmupSystemDynamicInfo } = await import('./prompt/SystemEnvironment.js');
-        await warmupSystemDynamicInfo(workspacePath);
-      } catch (err) {
-        logger.warn('bootstrap', `Failed to warm up system info for workspace: ${err}`);
-      }
-    })();
   });
 }
 
@@ -347,7 +326,6 @@ export function initializeCoreEvents(bus: AssistantEventBus): void {
 
   // 宿主事件：同步注册，避免事件在处理器就位前到达、被总线按「暂无订阅者」丢弃
   registerHostEnvironmentUiEvents(bus);
-  registerWorkspaceUiEvents(bus);
   registerUserChoiceUiEvents(bus);
 
   void registerIntegrationUiEvents(bus);

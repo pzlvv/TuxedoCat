@@ -142,11 +142,6 @@ export function createTestHost(overrides: Partial<UIHost> = {}): TestHost {
     // 环境
     log: () => undefined,
     getWorkspacePath: () => undefined,
-    onDidChangeWorkspace: (listener) => {
-      // 契约：订阅时立即回调一次当前值
-      listener(undefined);
-      return () => undefined;
-    },
     isDarkTheme: () => false,
     getLocale: () => 'en',
     // 面板 / 窗口

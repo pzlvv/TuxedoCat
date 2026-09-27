@@ -16,7 +16,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { createEventBus } from '../host/EventBus';
 import { setGlobalEventBus, resetGlobalEventBus } from '../core/AssistantEventBus';
-import { setActiveWorkspace, setSessionWorkspace, getProjectConversationDir } from '../core/history/Config';
+import { setSessionWorkspace, getProjectConversationDir } from '../core/history/Config';
 import { initializeCoreEvents } from '../core/initializeCoreEvents';
 import { WebviewMessageHandler } from '../host/ui/webviewMessageHandler';
 import { createChecker, runTests } from './helpers/harness';
@@ -83,9 +83,10 @@ async function run(): Promise<void> {
   process.env.USERPROFILE = tmpHome;
   process.env.HOME = tmpHome;
   await fs.mkdir(projectRoot, { recursive: true });
-  setActiveWorkspace(projectRoot);
 
   const sessionId = 'sess-rollback';
+  // 会话工作目录：core 按会话解析目录（测试直接扮演宿主登记）
+  setSessionWorkspace(sessionId, projectRoot);
   const targetFile = path.join(projectRoot, 'target.txt');
   await fs.writeFile(targetFile, 'NEW CONTENT\n', 'utf-8');
   await writeEditConversation(projectRoot, sessionId, targetFile);

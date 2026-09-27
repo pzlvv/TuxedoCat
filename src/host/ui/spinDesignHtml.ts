@@ -2570,9 +2570,22 @@ function __spinT(key, params) {
             renderVariables();
           }
         }
-      } else if (skillSelectorNodeId !== null) {
-        // 即使没有可用的 spin.json，也刷新技能选择器列表
-        renderSkillSelector();
+      } else {
+        // 目标工作目录没有 spin.json（data 为 null）：必须清空画布，
+        // 否则切换到无 spin.json 的目录后，面板里残留的还是上一个目录的设计。
+        nodes = [];
+        edges = [];
+        meta = {};
+        variables = [];
+        nextNodeId = 1;
+        selectedNodeId = null;
+        closeSkillSelector();
+        closeNodeMenu();
+        persistState();
+        renderAll();
+        if (!document.getElementById('variables-sidebar').classList.contains('hidden')) {
+          renderVariables();
+        }
       }
     }
   });

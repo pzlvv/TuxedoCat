@@ -2234,11 +2234,14 @@ function addWorkspaces(paths: readonly string[]): void {
     const p = normalizeWorkspacePath(raw);
     // 按去重键判断是否已在打开集合中（同一目录的不同表示视为同一个）
     const existing = openWorkspaces.find((w) => sameWorkspace(w, p));
-    if (!existing) openWorkspaces.push(p);
+    if (!existing) {
+      openWorkspaces.push(p);
+    }
     rememberRecentWorkspace(p);
     added.push(existing ?? p);
   }
   if (added.length === 0) return;
+  // 最后一项成为活动项；每个目录的会话工作目录在各自会话被 core 解析目录前登记。
   activateWorkspace(added[added.length - 1]);
 }
 

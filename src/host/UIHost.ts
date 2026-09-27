@@ -81,28 +81,16 @@ export class WebviewViewHandle {
 /**
  * WorkspaceProvider - 工作区路径契约（宿主实现）。
  *
- * 工作区是**进程级环境事实**，不属于任何 UI surface：单独成契约，
- * 供只需要工作区的消费方（如 Spin 设计器）依赖。
+ * 工作区是**宿主侧的进程级环境事实**，不属于任何 UI surface：单独成契约，
+ * 供只需要工作区的消费方（Spin 设计器、对话列表）依赖。
  *
- * 消费方式：共享骨架（`bootstrapCore`）不调用 `getWorkspacePath()` 取值，而由
- * `onDidChangeWorkspace` 订阅，把回调翻译为 `UiEvent.workspaceChanged` 交给 core
- * ——宿主在订阅时立即回调一次当前值（初始快照），之后工作区打开 / 切换 / 关闭
- * 再回调。该时序覆盖「订阅时尚无工作区、稍后才打开」的场景（Electron 的工作区
- * 由菜单设置，晚于 bootstrap）。
+ * 这是**宿主内部**的事实来源：core 不感知「当前工作目录是谁」——会话的工作目录
+ * 是会话自己的属性，由宿主在会话首次被 core 解析目录之前登记（见
+ * `setSessionWorkspace`）。因此本契约不产生任何总线事件。
  */
 export interface WorkspaceProvider {
   /** 当前工作区路径；未打开工作区返回 undefined（绝不退回 process.cwd()） */
   getWorkspacePath(): string | undefined;
-
-  /**
-   * 订阅工作区变化。
-   *
-   * 契约要求：**订阅时立即以当前值回调一次**，之后每次变化再回调。
-   * 回调参数为当前工作区路径；未打开 / 已关闭时为 `undefined`。
-   *
-   * @returns 取消订阅函数
-   */
-  onDidChangeWorkspace(listener: (path: string | undefined) => void): () => void;
 }
 
 export interface UIHost extends WorkspaceProvider {
@@ -149,8 +137,7 @@ export interface UIHost extends WorkspaceProvider {
   /** 日志输出（VS Code: OutputChannel；Electron: console） */
   log(...args: unknown[]): void;
 
-  // 工作区路径（getWorkspacePath）与变化订阅（onDidChangeWorkspace）
-  // 由 WorkspaceProvider 提供，UIHost 继承该契约。
+  // 当前工作区路径（getWorkspacePath）由 WorkspaceProvider 提供，UIHost 继承该契约。
 
   /** 当前是否为深色主题 */
   isDarkTheme(): boolean;

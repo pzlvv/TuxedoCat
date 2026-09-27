@@ -30,7 +30,7 @@ const availableCommandsPromise: Promise<string[] | undefined> = detectAvailableC
  * 每个会话的 system prompt 都要读自己目录的 git 信息 / 技能清单。此前用单个
  * 全局缓存，只要预热过活动目录，其它目录的会话就会命中活动目录的结果（串目录）。
  *
- * 由 warmupSystemDynamicInfo 在扩展激活 / 工作区切换时预热活动目录；
+ * 由 warmupSystemDynamicInfo 在引擎创建时预热该会话的工作目录；
  * getSystemDynamicInfo 命中同 cwd 的条目才复用，否则现算并写入。
  */
 const cachedSystemDynamicInfo = new Map<string, SystemDynamicInfo>();

@@ -212,7 +212,7 @@ export class WebViewUI implements WebViewUiPort {
 
   /**
    * 按会话解析其工作目录（Spin 设计器归属：spin.json / 技能都跟会话走）。
-   * 未登记时回退活动工作目录；无工作目录时返回 undefined。
+   * 会话未登记工作目录时返回 undefined。
    */
   private async workspaceForSession(sessionId: string | undefined): Promise<string | undefined> {
     const { getProjectRoot, hasProjectRoot } = await import('../core/history/Config.js');

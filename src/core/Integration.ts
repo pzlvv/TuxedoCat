@@ -226,6 +226,27 @@ export function setSessionModel(sessionId: string, ref: ModelRef): void {
 }
 
 /**
+ * 预热会话工作目录的系统动态信息（git 信息 / 技能清单等）。
+ *
+ * 缓存按 cwd 分桶，同一目录的多个会话只算一次；预热只是性能优化——失败只记日志，
+ * 未预热时 `getSystemDynamicInfo` 会在使用时现算。
+ */
+function warmupSessionWorkspace(sessionId: string): void {
+  let cwd: string;
+  try {
+    cwd = getProjectRoot(sessionId);
+  } catch {
+    // 会话尚未登记工作目录：无从预热（此时也不会创建引擎）
+    return;
+  }
+  void import('./prompt/SystemEnvironment.js')
+    .then(({ warmupSystemDynamicInfo }) => warmupSystemDynamicInfo(cwd))
+    .catch((err: unknown) => {
+      logger.warn('Integration', `Failed to warm up system info for ${cwd}: ${err}`);
+    });
+}
+
+/**
  * 为指定会话创建 QueryEngine（预初始化）
  *
  * 在用户发消息前预先创建 engine，确保：
@@ -246,6 +267,7 @@ export function createEngine(sessionId: string, title: string, role?: string): Q
   void getMCPHost().onSessionOpened(sessionId).catch((err: unknown) => {
     logger.warn('Integration', `MCP onSessionOpened failed: ${err}`);
   });
+  warmupSessionWorkspace(sessionId);
 
   const engine = new QueryEngine(sessionId, {
     cwd: getProjectRoot(sessionId),
@@ -332,6 +354,7 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
   void getMCPHost().onSessionOpened(sessionID).catch((err: unknown) => {
     logger.warn('Integration', `MCP onSessionOpened failed: ${err}`);
   });
+  warmupSessionWorkspace(sessionID);
 
   // 如果调用方没有传入 role，尝试从 meta 中读取
   let conversation: any = undefined;

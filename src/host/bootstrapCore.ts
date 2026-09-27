@@ -10,7 +10,6 @@
  *   → 发「宿主环境」事件（locale / 扩展路径 / 日志出口开关）
  *   → 创建 WebViewUI（其构造函数注册 CoreEvent / CoreRequest 处理器）
  *   → 会话队列
- *   → 工作区订阅（宿主推送当前值 + 后续变化，翻译为 workspaceChanged 事件）
  *   → 异步收尾：配置目录 / MCP 残留清理
  *
  * 顺序错误在启动期暴露：`setGlobalEventBus` 重复注册抛错，
@@ -24,7 +23,6 @@ import { initializeSessionQueue } from '../core/Integration.js';
 import { sessionQueue } from '../core/SessionQueue.js';
 import {
   ensureConfigDirs,
-  hasActiveWorkspaceProvided,
   hasExtensionPath,
   readUiLanguageSync,
 } from '../core/history/index.js';
@@ -60,16 +58,12 @@ export interface BootstrapSnapshot {
   uiLanguage: 'auto' | 'zh' | 'en';
   eventBusRegistered: boolean;
   uiCreated: boolean;
-  activeWorkspaceProvided: boolean;
   extensionPathProvided: boolean;
   sessionQueueInitialized: boolean;
   logToConsole: boolean;
 }
 
 let snapshot: BootstrapSnapshot | null = null;
-
-/** 工作区订阅的取消函数（宿主退出 / 重复 bootstrap 时释放） */
-let disposeWorkspaceSubscription: (() => void) | null = null;
 
 /**
  * 执行共享启动接线。
@@ -119,16 +113,7 @@ export function bootstrapCore(
   // ── 4. 依赖 WebViewUI 实例的接线 ──
   initializeSessionQueue();
 
-  // ── 5. 工作区订阅：当前值与变化都经订阅获得，启动期不主动读取 ──
-  // 宿主保证订阅时立即回调一次当前值，因此初始预热也走这条路径；
-  // Electron 的工作区由菜单设置（晚于 bootstrap），VS Code 可切换工作区。
-  // 宿主只负责发事件；写活动工作目录与预热系统动态信息都在 core 侧的事件处理器里。
-  disposeWorkspaceSubscription?.();
-  disposeWorkspaceSubscription = host.onDidChangeWorkspace((workspacePath) => {
-    bus.emitToCore({ type: 'workspaceChanged', workspacePath: workspacePath ?? null });
-  });
-
-  // ── 6. 异步收尾：不阻塞启动，失败只记日志 ──
+  // ── 5. 异步收尾：不阻塞启动，失败只记日志 ──
   void ensureConfigDirs().catch((error: Error) => {
     log(`[bootstrap] Failed to initialize config directories: ${error.message}`);
   });
@@ -147,8 +132,6 @@ export function bootstrapCore(
 
 /** 释放 core 侧的进程级资源（MCP 子进程）；宿主退出钩子调用一次 */
 export function shutdownCore(): void {
-  disposeWorkspaceSubscription?.();
-  disposeWorkspaceSubscription = null;
   try {
     getMCPHost().shutdown();
   } catch {
@@ -187,7 +170,6 @@ function readSnapshot(options: CoreBootstrapOptions): BootstrapSnapshot {
     uiLanguage: readUiLanguageSync(),
     eventBusRegistered,
     uiCreated,
-    activeWorkspaceProvided: hasActiveWorkspaceProvided(),
     extensionPathProvided: hasExtensionPath(),
     sessionQueueInitialized: sessionQueue.hasCallbacks(),
     logToConsole: options.logToConsole,

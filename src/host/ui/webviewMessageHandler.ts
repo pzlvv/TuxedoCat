@@ -18,7 +18,7 @@ import { buildEditDiffHunks } from '../../core/utils/editDiff.js';
 import { buildReplayMessageData } from '../../core/utils/replayMessages.js';
 import { buildUserContent, extractUserContent } from '../../core/utils/contentBlocks.js';
 import { normalizeModelTokenLimits, getContextWindow, type ModelTokenLimits, type ApiType } from '../../core/utils/modelConfig.js';
-import { readModelContextSync } from '../../core/history/Config.js';
+import { readModelContextSync, getSessionWorkspace, setSessionWorkspace } from '../../core/history/Config.js';
 import { modelRefOf, sameModelRef, type ModelRef } from '../../core/llm/modelRef.js';
 import type { LLMConfig } from '../../core/llm/config.js';
 import { getConversationModelRef } from '../../core/history/Conversation.js';
@@ -627,30 +627,71 @@ export class WebviewMessageHandler {
 
     (async () => {
       try {
+        // 按会话读盘前先确保会话工作目录已登记（core 不再有活动目录兜底）
+        this.ensureSessionWorkspace(targetSessionId);
         const { loadConversation } = await import('../../core/history/index.js');
         const conversation = await loadConversation(targetSessionId);
         const result: Record<string, any> = {};
+
+        // tool_result 里也带着 Edit / Write 的 before/after（旧版本会话或 `_meta`
+        // 未落盘时的兜底）。按 tool_use_id 索引，供 `_meta` 缺字段时回退。
+        const resultDiff = new Map<string, Record<string, unknown>>();
+        for (const msg of conversation.messages) {
+          if (msg.type === 'user' && Array.isArray(msg.message?.content)) {
+            for (const block of msg.message.content) {
+              const r = block as { type?: string; tool_use_id?: string;[key: string]: unknown };
+              if (r.type === 'tool_result' && typeof r.tool_use_id === 'string') {
+                resultDiff.set(r.tool_use_id, r as Record<string, unknown>);
+              }
+            }
+          }
+        }
 
         for (const msg of conversation.messages) {
           if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
             for (const block of msg.message.content) {
               const b = block as { type: string; id?: string; name?: string; input?: any;[key: string]: unknown };
-              if (b.type === 'tool_use' && toolUseIds.includes(b.id) && b._meta) {
-                const meta = b._meta as Record<string, unknown>;
-                if (b.name === 'Edit' && typeof meta.beforeContent === 'string' && typeof meta.afterContent === 'string') {
-                  // 按需加载也返回紧凑 diff，避免把完整文件内容发给 webview
-                  result[b.id!] = {
-                    diffHunks: buildEditDiffHunks({
-                      beforeContent: meta.beforeContent,
-                      afterContent: meta.afterContent,
-                      startLine: meta.startLine as number | undefined,
-                      endLine: meta.endLine as number | undefined,
-                      replaceAll: Boolean(b.input?.replace_all),
-                    }),
-                  };
-                } else {
-                  result[b.id!] = meta;
-                }
+              if (b.type !== 'tool_use' || !toolUseIds.includes(b.id)) continue;
+              const meta = (b._meta as Record<string, unknown> | undefined) || {};
+              const fallback = resultDiff.get(b.id!);
+              const beforeContent = typeof meta.beforeContent === 'string'
+                ? meta.beforeContent
+                : (typeof fallback?.beforeContent === 'string' ? fallback.beforeContent : undefined);
+              const afterContent = typeof meta.afterContent === 'string'
+                ? meta.afterContent
+                : (typeof fallback?.afterContent === 'string' ? fallback.afterContent : undefined);
+              const startLine = (meta.startLine as number | undefined) ?? (fallback?.startLine as number | undefined);
+              const endLine = (meta.endLine as number | undefined) ?? (fallback?.endLine as number | undefined);
+              const contextBefore = (meta.contextBefore as string[] | undefined) ?? (fallback?.contextBefore as string[] | undefined);
+              const contextAfter = (meta.contextAfter as string[] | undefined) ?? (fallback?.contextAfter as string[] | undefined);
+
+              if (b.name === 'Edit' && typeof beforeContent === 'string' && typeof afterContent === 'string') {
+                // 按需加载也返回紧凑 diff，避免把完整文件内容发给 webview
+                result[b.id!] = {
+                  diffHunks: buildEditDiffHunks({
+                    beforeContent,
+                    afterContent,
+                    startLine,
+                    endLine,
+                    replaceAll: Boolean(b.input?.replace_all),
+                  }),
+                  contextBefore: contextBefore || [],
+                  contextAfter: contextAfter || [],
+                  startLine,
+                  endLine,
+                };
+              } else if (b.name === 'Edit' || b.name === 'Write') {
+                result[b.id!] = {
+                  ...meta,
+                  beforeContent: beforeContent ?? meta.beforeContent ?? null,
+                  afterContent: afterContent ?? meta.afterContent ?? '',
+                  contextBefore: contextBefore || [],
+                  contextAfter: contextAfter || [],
+                  startLine,
+                  endLine,
+                };
+              } else if (Object.keys(meta).length > 0) {
+                result[b.id!] = meta;
               }
             }
           }
@@ -688,7 +729,7 @@ export class WebviewMessageHandler {
       return;
     }
     const { loadConversationList } = await import('../../core/history/index.js');
-    const conversations = await loadConversationList();
+    const conversations = await loadConversationList(this.host.getWorkspacePath());
     this.host.sendToWebview({
       type: 'conversationsData',
       conversations,
@@ -725,6 +766,8 @@ export class WebviewMessageHandler {
 
     const { loadConversation } = await import('../../core/history/index.js');
     const { restoreConversationEngine } = await import('../../core/Integration.js');
+    // 先登记该会话的工作目录：loadConversation 要按它定位 meta.json / jsonl
+    this.ensureSessionWorkspace(message.sessionId);
     const conversation = await loadConversation(message.sessionId);
     if (isStaleLoad()) {
       this.log(`[WebviewMessageHandler] loadConversation stale after disk load, abort: ${message.sessionId}`);
@@ -881,10 +924,25 @@ export class WebviewMessageHandler {
     await this.emitUiEvent({ type: 'conversationContextUpdated', sessionId: message.sessionId, changes });
   }
 
+  /**
+   * 登记会话的工作目录（core 按会话解析目录的唯一来源）。
+   *
+   * 多视图宿主（Electron）在把消息交给本 handler 之前已按来源视图登记，
+   * 此时以其为准；单目录宿主（VS Code）没有这一步，用宿主当前工作目录登记。
+   * 必须在 core 首次按会话解析目录（loadConversation / createEngine）之前调用。
+   */
+  private ensureSessionWorkspace(sessionId: string): void {
+    if (getSessionWorkspace(sessionId)) return;
+    const workspacePath = this.host.getWorkspacePath();
+    if (workspacePath) setSessionWorkspace(sessionId, workspacePath);
+  }
+
   private async handleStartNewConversation(message: any): Promise<void> {
     const newSessionId = message.sessionId;
     // 「哪个会话在前台」由 UI 自己维护（第 12.7 节）
     this.trackedActiveSessionId = newSessionId;
+    // 先登记该会话的工作目录：core 收到 conversationStarted 后要按会话解析目录建引擎
+    this.ensureSessionWorkspace(newSessionId);
     // UI → core：报告「用户新建了对话」（core 预创建引擎）
     await this.emitUiEvent({ type: 'conversationStarted', sessionId: newSessionId });
     // 新建对话：开始空闲关闭计时（空闲回收只在 VS Code 生效）
@@ -1451,6 +1509,8 @@ export class WebviewMessageHandler {
     const sessionId = message.sessionId;
     (async () => {
       try {
+        // 会话可能只出现在对话树里、尚未加载：先按会话登记工作目录再读盘
+        this.ensureSessionWorkspace(sessionId);
         const { loadConversation } = await import('../../core/history/index.js');
         const conversation = await loadConversation(sessionId);
         const msgs = conversation.messages || [];
@@ -1549,6 +1609,7 @@ export class WebviewMessageHandler {
       {
         const summaryCount = originalMessages.filter(m => m.type === 'user' && m.isCompactSummary === true).length;
         try {
+          this.ensureSessionWorkspace(message.sessionId);
           const { loadConversation } = await import('../../core/history/index.js');
           const conversation = await loadConversation(message.sessionId);
           const compressedSummaries = conversation.messages.filter((m) =>
@@ -1810,6 +1871,7 @@ export class WebviewMessageHandler {
           let storedRef = modelRefOf(requestedCurrentProvider, requestedCurrentModel);
           if (!storedRef) {
             try {
+              this.ensureSessionWorkspace(currentSessionId);
               const { loadConversation } = await import('../../core/history/index.js');
               const conversation = await loadConversation(currentSessionId);
               storedRef = getConversationModelRef(conversation?.metadata);

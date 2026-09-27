@@ -5,15 +5,14 @@
 
 import * as path from 'path';
 import * as os from 'os';
-import { getProjectRoot } from '../history/Config.js';
 
 /**
  * 展开路径（支持 ~、相对路径等）
  * @param filePath 要展开的路径
- * @param baseDir 相对路径的基准目录（会话自己的工作目录）。省略时回退到进程级项目根目录。
+ * @param baseDir 相对路径的基准目录（会话自己的工作目录）
  * @returns 展开后的绝对路径
  */
-export function expandPath(filePath: string, baseDir?: string): string {
+export function expandPath(filePath: string, baseDir: string): string {
   if (typeof filePath !== 'string') {
     throw new TypeError(`Path must be a string, received ${typeof filePath}`);
   }
@@ -22,7 +21,7 @@ export function expandPath(filePath: string, baseDir?: string): string {
 
   // 空路径，返回基准目录（会话工作目录）
   if (!trimmedPath) {
-    return baseDir ?? getProjectRoot();
+    return baseDir;
   }
 
   // 处理 ~ （主目录）
@@ -63,8 +62,7 @@ export function expandPath(filePath: string, baseDir?: string): string {
   }
 
   // 相对路径：基于基准目录（会话工作目录）解析并规范化
-  const projectRoot = baseDir ?? getProjectRoot();
-  const resolvedPath = path.normalize(path.resolve(projectRoot, trimmedPath));
+  const resolvedPath = path.normalize(path.resolve(baseDir, trimmedPath));
 
   return resolvedPath;
 }

@@ -2,7 +2,8 @@
 
 本规格描述 Core 与 UI 的分离形态。Core 与 UI 之间只有一条边——事件总线；Core 持有会话
 状态、配置读写与工具执行，可独立进程部署；UI 以连接的方式接入 Core。宿主环境差异
-（工作目录、扩展路径、locale、日志出口）与配置文件读写都收敛到这条边上。
+（扩展路径、locale、日志出口）与配置文件读写都收敛到这条边上；会话的工作目录是对话的
+属性，由 UI 在会话首次被 Core 解析目录之前登记。
 
 参考 `DEVELOPMENT.md` 第 2 节（分层与依赖规则）、第 3 节（核心契约：AssistantEventBus）、
 第 4 节（事件列表）、第 5.1 节（UIHost）、第 8.6 节（宿主接线）、第 8.7 节（注入点与读取器）、
@@ -13,7 +14,7 @@
 ## 1. 能力
 
 1. **唯一的边**：Core 与 UI 之间只有事件总线一条通信路径。两侧不互相引用，也不共享行为。
-2. **宿主环境差异经总线传递**：工作目录、扩展路径、locale、日志出口由 UI 经总线交给 Core。
+2. **宿主环境差异经总线传递**：扩展路径、locale、日志出口由 UI 经总线交给 Core。
 3. **配置读写归 Core**：全局配置文件与项目对话目录清单文件的读与写都由 Core 承担。
 4. **Core 独立进程部署**：Core 不依赖 UI 所在进程；工具在 Core 所在机器上执行。
 5. **连接一对一**：一个 Core 同一时刻只服务一个 UI 连接；已有连接时新连接被拒绝并得到提示。
@@ -29,7 +30,8 @@
 | UI | 宿主（VS Code 扩展 / Electron）与 webview | host |
 | 总线 | `AssistantEventBus`：Core 与 UI 之间唯一的事件契约 | 契约由 core 定义 |
 | 连接 | UI 与 Core 之间承载总线事件的一条通道 | 传输层 |
-| 宿主环境 | 工作目录、扩展路径、locale、日志出口 | UI 提供，Core 消费 |
+| 宿主环境 | 扩展路径、locale、日志出口 | UI 提供，Core 消费 |
+| 会话工作目录 | 对话所属工作目录（对话的属性） | UI 在会话首次被 Core 解析目录之前登记 |
 | 全局配置 | `~/<CONFIG_DIR_NAME>/settings.json` | core |
 | 项目清单 | `<conversations>/<project>/settings.json` | core |
 
@@ -53,16 +55,17 @@
 
 | 事实 | 性质 | 传递 | Core 侧读取入口 |
 | --- | --- | --- | --- |
-| 工作目录 | 动态 | 连接建立后一次；此后每次打开 / 切换 / 关闭各一次 | `getProjectRoot()` |
 | 扩展路径 | 静态 | 连接建立后一次 | `getExtensionPath()` |
 | locale | 静态 | 连接建立后一次 | `getCoreLocale()` |
 | 日志出口开关 | 静态 | 连接建立后一次 | — |
 
-- 工作目录到达时，Core 更新项目根，并以新路径预热系统动态信息（`SystemEnvironment`
-  的缓存按工作目录分桶；不同工作目录不互相命中）。
 - 静态事实在连接建立后传递一次。
 - Core 侧的读取入口在对应事实到达前抛错，与 `requireEventBus()` 同一口径。
-- 会话工作目录表（`sessionId` → 路径）由 Core 自行维护，不经总线。
+- **工作目录不是宿主环境差异，而是对话的属性**：Core 持有会话工作目录表
+  （`sessionId` → 路径），由 UI 在会话首次被 Core 解析目录之前登记（`setSessionWorkspace`），
+  不经总线。Core 不感知「当前工作目录是谁」。
+- 会话工作目录登记后，Core 以该路径预热系统动态信息（`SystemEnvironment` 的缓存按
+  工作目录分桶；不同工作目录不互相命中）。
 
 ### 3.3 宿主状态上报
 
@@ -147,7 +150,7 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
 ## 9. 验收要点
 
 1. Core 与 UI 之间只有总线一条通信路径。
-2. 工作目录变更后，新路径的系统动态信息被预热；不同工作目录的会话各自命中自己的缓存。
+2. 会话工作目录登记后，该路径的系统动态信息被预热；不同工作目录的会话各自命中自己的缓存。
 3. 扩展路径 / locale / 日志出口开关在连接建立后传递一次；Core 侧读取入口在此之前抛错。
 4. 全局配置与项目清单的写入只有 Core 一处。
 5. 第二个连接到达时被拒绝并得到提示。
@@ -162,7 +165,7 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
 | --- | --- |
 | 总线契约与词汇表 | `src/core/AssistantEventBus.ts` |
 | 内存实现 | `src/host/EventBus.ts` |
-| 工作目录传递与预热 | `src/core/initializeCoreEvents.ts`、`src/core/prompt/SystemEnvironment.ts` |
+| 会话工作目录登记与预热 | `src/core/history/Config.ts`、`src/core/Integration.ts`、`src/core/prompt/SystemEnvironment.ts` |
 | 用户选择等待状态 | `src/host/ui/userChoice.ts`（上报）、`src/core/sessionRuntime.ts`（落地与读取） |
 | 项目根 / 扩展路径 | `src/core/history/Config.ts` |
 | locale | `src/core/i18n.ts` |

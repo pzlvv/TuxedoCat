@@ -1129,9 +1129,10 @@ export class QueryEngine {
     registerSessionEngine(sessionID, this);
 
     // ========== 在构造函数中后台预加载系统动态信息 ==========
-    // 系统动态信息已由 bootstrapCore 的工作区订阅通过 warmupSystemDynamicInfo() 前置预热，
-    // 此处仅做模块预热 import 触发模块级代码（detectAvailableCommandsStart、preloadStaticInfo），
-    // 不额外调用 getSystemDynamicInfo，直接由 messageConsumer 读取模块级缓存。
+    // 系统动态信息由引擎创建路径（Integration.createEngine / restoreConversationEngine）
+    // 通过 warmupSystemDynamicInfo() 前置预热；此处仅做模块预热 import 触发模块级代码
+    // （detectAvailableCommandsStart、preloadStaticInfo），不额外调用 getSystemDynamicInfo，
+    // 直接由 messageConsumer 读取模块级缓存。
     this._warmupSystemEnv = import('./prompt/SystemEnvironment.js').catch(() => { });
   }
 

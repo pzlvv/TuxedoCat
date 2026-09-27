@@ -614,29 +614,28 @@ resetGlobalEventBus();    // 测试用：清空全局总线
 ```
 1.  createEventBus() → setGlobalEventBus(bus)
 2.  initializeCoreEvents(bus)
-    - 同步注册「宿主环境」与「活动工作目录」两条事件的处理器
+    - 同步注册「宿主环境」事件的处理器
     - 读取 core 自己的 settings.json 设置 UI 语言
 3.  bus.emitToCore({ type: 'hostEnvironmentProvided', locale, extensionPath, logToConsole })
 4.  WebViewUI.create(host, bus, spinDesign, conversations, { log, createUserChoiceManager })
 5.  initializeSessionQueue()
-6.  host.onDidChangeWorkspace(...) 订阅：回调翻译为 `workspaceChanged` 事件
-7.  ensureConfigDirs()（异步，失败记日志）
-8.  getMCPHost().prune()（异步，失败记日志）
+6.  ensureConfigDirs()（异步，失败记日志）
+7.  getMCPHost().prune()（异步，失败记日志）
 ```
 
 顺序约束：
 
 - 第 1–2 步在任何 core 模块被使用之前完成；
-- 第 2 步必须**同步**注册第 3 / 7 步要发的两条事件：异步注册会让事件在处理器就位前
+- 第 2 步必须**同步**注册第 3 步要发的事件：异步注册会让事件在处理器就位前
   到达，被总线按「暂无订阅者」静默丢弃；
 - 第 3 步只写 core 自己的状态，不 emit 到 UI，因此可以在 `WebViewUI.create` 之前；
 - 第 4 步必须在 core 第一次 `emitToUi` 之前完成，否则总线抛错（第 3.7 节）；
 - 第 5 步依赖第 4 步产出的实例；
-- 第 6 步的订阅在订阅时立即回调一次当前值（初始快照）；
-- 第 7–8 步是异步收尾，不阻塞启动，失败只记日志。
+- 第 6–7 步是异步收尾，不阻塞启动，失败只记日志。
 
-宿主环境差异（locale / 扩展路径 / 日志出口开关）与活动工作目录都经总线传递，
-core 侧没有对应的直接注入入口（第 8.7 节）。
+宿主环境差异（locale / 扩展路径 / 日志出口开关）经总线传递，core 侧没有对应的直接注入入口。
+会话的工作目录**不经总线**：它是对话的属性，由宿主在会话首次被 core 解析目录之前登记
+（第 8.7 节）。
 
 core 模块随 bundle 加载，**模块顶层不能订阅**（加载时总线还不存在）；订阅统一收敛到
 `initializeCoreEvents`（第 3.6 节）。接线项归属、注入点与读取器、启动自检与退出路径见
@@ -654,7 +653,6 @@ export function initializeCoreEvents(bus: AssistantEventBus): void {
   setCoreUiLanguage(readUiLanguageSync());     // UI 语言取自 core 自己的 settings.json
 
   registerHostEnvironmentUiEvents(bus);        // hostEnvironmentProvided（同步注册）
-  registerWorkspaceUiEvents(bus);              // workspaceChanged（同步注册）
   registerUserChoiceUiEvents(bus);             // userChoicePendingChanged（同步注册）
 
   void registerIntegrationUiEvents(bus);       // 消息 / 压缩 / 配置 / 会话生命周期
@@ -666,10 +664,9 @@ export function initializeCoreEvents(bus: AssistantEventBus): void {
 
 要点：
 
-- **前三个注册函数同步执行**：`hostEnvironmentProvided` 由调用方在 `initializeCoreEvents`
-  之后立刻发出，`workspaceChanged` 由 `host.onDidChangeWorkspace` 在订阅时立刻回调一次，
-  `userChoicePendingChanged` 由宿主在任意时刻发出；异步注册会让事件在处理器就位前到达，
-  被总线按「暂无订阅者」静默丢弃。
+- **前两个注册函数同步执行**：`hostEnvironmentProvided` 由调用方在 `initializeCoreEvents`
+  之后立刻发出，`userChoicePendingChanged` 由宿主在任意时刻发出；异步注册会让事件在处理器
+  就位前到达，被总线按「暂无订阅者」静默丢弃。
 - 事件 handler 内部**不直接持有跨模块状态**：只调用对应模块自己的导出函数
   （`abortCurrentQuery` / `updateConversationContext` / `releaseSessionResources` …），
   保持与直接函数调用相同的内聚度。
@@ -762,15 +759,15 @@ wire message（若该事件会产生 webview 协议消息）。
 结果类型的映射写在 `CoreRequestResultMap`（第 3.1 节），保证 handler 返回类型与请求一一对应。
 超时口径见第 3.7 节。
 
-**没有 `uiDynamicInfo` 这类请求**：活动工作目录经 `UiEvent.workspaceChanged` 获得，
-不经过请求-响应。`bootstrapCore` 以 `host.onDidChangeWorkspace(...)` 订阅宿主的
-`WorkspaceProvider`，回调只负责发事件；写活动工作目录（`setActiveWorkspace`）与以新路径
-预热系统环境信息都在 core 侧的 `workspaceChanged` 处理器里。
+**没有 `uiDynamicInfo` 这类请求**：宿主当前工作目录不经过总线——它是宿主侧的环境事实，
+由 `WorkspaceProvider.getWorkspacePath()` 提供，消费方是宿主自己的界面（对话列表、
+Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有对应的事件，也没有对应的请求。
 
-工作目录是**对话的属性**：core 另有一份会话工作目录表（`Config.setSessionWorkspace` /
-`getSessionWorkspace`），登记时机为新建对话（宿主提供活动工作目录）、加载对话（元数据
-`project`）、子对话（继承父对话）。`getProjectRoot(sessionId?)` 优先按会话解析，
-未登记或未传 `sessionId` 时回退到活动工作目录。core 里需要工作目录的地方
+工作目录是**对话的属性**：core 持有一份会话工作目录表（`Config.setSessionWorkspace` /
+`getSessionWorkspace`），登记时机为宿主在会话首次被 core 解析目录之前提供（新建 / 加载
+对话，见第 8.7 节）、加载对话读到元数据 `project` 后校正、子对话继承父对话。
+`getProjectRoot(sessionId)` 只按会话解析，未登记时抛错；`hasProjectRoot(sessionId)`
+供「没有工作目录时降级」的调用点做前置守卫。core 里需要工作目录的地方
 （history / mcp / tools / spin / prompt）都按会话解析，不读单一全局值；
 工具侧一律以 `ToolUseContext.cwd`（引擎的 `config.cwd`）为基准展开相对路径，
 不需要总线参与。
@@ -784,7 +781,7 @@ wire message（若该事件会产生 webview 协议消息）。
 | --- | --- | --- | --- | --- |
 | 24 | `abortRequested` | `sessionId` | `abort` 消息（webview 的 abort 按钮由 `sessionRuntimeStates` 的 `idle` 推导，见第 10.4 节） | `Integration.abortCurrentQuery`（整棵工作树：该会话引擎 `interrupt()` + 该会话后台 Bash + 递归子代理，三条路径都走，幂等） |
 | 25 | `compactRequested` | `sessionId` | `requestCompress` | `Integration.requestCompact` |
-| 26 | `conversationStarted` | `sessionId` | `startNewConversation` | `Integration.createEngine`（预创建引擎 + MCP 引用） |
+| 26 | `conversationStarted` | `sessionId` | `startNewConversation`（handler 先登记会话工作目录，再发事件） | `Integration.createEngine`（预创建引擎 + MCP 引用 + 预热该会话工作目录的系统信息） |
 | 27 | `conversationOpened` | `sessionId` | **无发送方**：`loadConversation` 直接调 `restoreConversationEngine` | **无订阅者** |
 | 28 | `conversationClosed` | `sessionId` | `WebViewUI.releaseConversation`（关闭按钮 / 侧栏关闭 / VS Code 空闲回收 / Electron 视图销毁序列 `ChatViewManager.closeConversation`） | `sessionResources.releaseSessionResources`（卸内存 + 拒绝该会话挂起的 user choice；磁盘不动） |
 | 29 | `conversationRenamed` | `sessionId`, `title` | `renameConversation`、智能命名、Electron 侧栏 | `history.updateConversationMetadataTitle` → `titleChanged` + `conversationListChanged` |
@@ -800,8 +797,7 @@ wire message（若该事件会产生 webview 协议消息）。
 | 39 | `editRolledBack` | `sessionId`, `toolUseId`, `direction`, `filePath?` | `rollbackEdit` | `history/rollback.rollbackEdit`（`filePath` 作为 `input.file_path` 缺失时的兜底路径） |
 | 40 | `llmConfigSaved` | `config` | `saveLLMConfig` | `llm/config.clearConfigCache` |
 | 41 | `hostEnvironmentProvided` | `locale`, `extensionPath`, `logToConsole` | `bootstrapCore`（总线建好、core 侧订阅注册完毕后发一次） | `initializeCoreEvents` 的 `registerHostEnvironmentUiEvents` → `setCoreLocale` / `setExtensionPath` / `setLogToConsole` |
-| 42 | `workspaceChanged` | `workspacePath: string \| null` | `bootstrapCore` 的 `host.onDidChangeWorkspace(...)` 订阅（订阅时立即回调一次当前值，之后打开 / 切换 / 关闭再回调） | `initializeCoreEvents` 的 `registerWorkspaceUiEvents` → `setActiveWorkspace` + 以新路径预热系统动态信息 |
-| 43 | `userChoicePendingChanged` | `sessionId`, `pending: boolean` | `UserChoiceManager`（webview 弹出选择、用户应答、`dropSession` 释放视图时） | `initializeCoreEvents` 的 `registerUserChoiceUiEvents` → `markSessionWaiting`（`sessionRuntime` 的 `waiting` 来源，供 `isSessionIdle` 判定） |
+| 42 | `userChoicePendingChanged` | `sessionId`, `pending: boolean` | `UserChoiceManager`（webview 弹出选择、用户应答、`dropSession` 释放视图时） | `initializeCoreEvents` 的 `registerUserChoiceUiEvents` → `markSessionWaiting`（`sessionRuntime` 的 `waiting` 来源，供 `isSessionIdle` 判定） |
 
 **`changes` 数组而不是可选字段**：`history.updateConversationContext` 是**部分合并**语义
 （未列出的字段保持原值），用数组而不是一组可选字段，是为了同时满足「一次可带多个字段」
@@ -929,7 +925,7 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | 入参显式 | 可选语义用 `null`，而不是省略参数 |
 | 返回值统一 `Promise<void>` | 不用 `void \| Promise<void>` 联合 |
 
-成员清单（全部必选，共 19 个：`UIHost` 自身 17 个 + 继承 `WorkspaceProvider` 的 2 个）：
+成员清单（全部必选，共 18 个：`UIHost` 自身 17 个 + 继承 `WorkspaceProvider` 的 1 个）：
 
 | 分组 | 成员 | 语义 |
 | --- | --- | --- |
@@ -940,8 +936,7 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | 环境 | `log(...args: unknown[]): void` | 日志输出（VS Code：`OutputChannel`；Electron：`console`） |
 | | `isDarkTheme(): boolean` | 当前是否深色主题 |
 | | `getLocale(): string` | UI 语言（如 `zh` / `en`） |
-| 工作目录（继承 `WorkspaceProvider`） | `getWorkspacePath(): string \| undefined` | 当前**活动**工作目录路径；打开集合为空返回 `undefined`（不退回 `process.cwd()`） |
-| | `onDidChangeWorkspace(listener: (path: string \| undefined) => void): () => void` | 订阅活动工作目录变化；**订阅时立即回调一次当前值**，返回取消订阅函数 |
+| 工作目录（继承 `WorkspaceProvider`） | `getWorkspacePath(): string \| undefined` | 宿主当前工作目录路径；打开集合为空返回 `undefined`（不退回 `process.cwd()`） |
 | 面板 / 窗口 | `openFile(filePath: string, target: LineSelection \| null): Promise<void>` | 打开文件并定位到行；不需要定位时传 `null` |
 | | `showVirtualDocument(content: string, title: string): Promise<void>` | 显示虚拟文档（内容预览） |
 | | `showDiff(options: ShowDiffOptions): Promise<void>` | 显示一次改动的 before / after（仅 manual 模式，见下） |
@@ -953,11 +948,13 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | 配置文件 | `updateSettingsJson(mutator: (cfg: Record<string, any>) => void \| Record<string, any>): Promise<void>` | 串行化「读-改-写」全局 `settings.json` |
 | | `ensureProjectSettings(projectDir: string, workspacePath: string): Promise<void>` | 写项目对话目录清单的 `workspacePath` |
 
-`WorkspaceProvider`（同文件）是工作目录契约，表达的是**活动工作目录**：core 通过
-`onDidChangeWorkspace` **订阅**当前值与变化；启动期不调用 `getWorkspacePath()` 取值。
-两个宿主实现：VS Code 由 `onDidChangeWorkspaceFolders` 驱动（单一工作目录）；
-Electron 由 `setWorkspacePath` 驱动，切换活动标签页时更新它。**对话自己的工作目录**
-不经该契约表达，由 core 的会话工作目录表按 `sessionId` 解析（见第 4.2 节）。
+`WorkspaceProvider`（同文件）是**宿主侧**的工作目录契约：只有 `getWorkspacePath()` 一个成员，
+表达「宿主当前工作目录」。它是宿主内部的事实来源——消费方是宿主自己的界面（对话列表
+`ConversationManager`、Spin 设计器），core 不读取它。
+
+**对话自己的工作目录**不经该契约表达：它是对话的属性，由 core 的会话工作目录表按
+`sessionId` 解析（见第 4.2 节）。宿主在会话首次被 core 解析目录之前把目录登记进去
+（`WebviewMessageHandler.ensureSessionWorkspace`，见第 8.7 节）。
 
 `WebviewViewHandle` 是名义类型（必须是该类实例，任意对象无法冒充）：多视图宿主用它包裹自己的
 视图对象，单视图宿主的 `sendToWebviewView` 等价于 `sendToWebview`（句柄不参与路由）。句柄的产出
@@ -1005,14 +1002,14 @@ Electron 里是 `BrowserWindow`。它有自己的生命周期（打开 → 复�
 与 `UIHost` 分开的理由：
 
 1. 独立面板 / 窗口，生命周期与消息协议都与对话 webview 无关；
-2. `UIHost` 已承载 15 个成员，再混进 Spin 专属成员会让「宿主能力」失真；
+2. `UIHost` 已承载 17 个成员，再混进 Spin 专属成员会让「宿主能力」失真；
 3. 拆出后 Spin 的整块（HTML 生成 + 导出 + 面板管理）可整体替换或搬走。
 
 接口只有两个成员：
 
 | 成员 | 语义 |
 | --- | --- |
-| `open(workspacePath?)` | 打开设计器；已打开则复用（**目录不同则切到新目录的数据**）。`workspacePath` 是发起方会话的工作目录——`spin.json` 与技能清单都归属它；不传时回退宿主的活动工作目录（兼容旧调用 / 无会话场景） |
+| `open(workspacePath?)` | 打开设计器；已打开则复用（**目录不同则切到新目录的数据**）。`workspacePath` 是发起方会话的工作目录——`spin.json` 与技能清单都归属它；不传时回退宿主当前工作目录（兼容旧调用 / 无会话场景） |
 | `refresh()` | 从磁盘重读 `spin.json` + Skill 列表推给已打开的设计器；未打开时 no-op |
 
 `refresh` 的必要性：SpinLoop 执行过程中会直接更新磁盘 meta，若设计器仍持有旧缓存，
@@ -1623,7 +1620,7 @@ export class ElectronUIHost implements UIHost {
   setMainWindow(win: BrowserWindow): void;
   setSidebarView(view: WebContentsView): void;
   setChatViewManager(m: ChatViewManager): void;    // 记录视图管理器，并注入 activatePrewarmedView 出口
-  setWorkspacePath(p: string | undefined): void;   // 记录活动工作目录
+  setWorkspacePath(p: string | undefined): void;   // 记录宿主当前工作目录
   webviewHandleFor(source: WebContents): WebviewViewHandle;   // 来源视图包成句柄
 
   // ===== UIHost 实现 =====
@@ -1639,9 +1636,10 @@ export class ElectronUIHost implements UIHost {
 - `webviewHandleFor(source)` 把来源 `WebContents` 包成 `WebviewViewHandle`，供
   `sendToWebviewView` / `onThemeChanged` 定向投递，并作为 `ctx.sender` 传给
   `WebViewUI.handleWebviewMessage`（第 7.3 节）。
-- `setWorkspacePath` 记录**活动工作目录**并通知 `onDidChangeWorkspace` 订阅者（`bootstrapCore`
-  以新路径预热系统环境信息）；侧栏的 `sidebar:workspaces-changed`（打开集合 + 活动项 + 最近
-  工作目录）由 `main.ts` 的 `broadcastWorkspaces()` 单独推送。
+- `setWorkspacePath` 记录宿主当前工作目录（`getWorkspacePath()` 的返回值）；侧栏的
+  `sidebar:workspaces-changed`（打开集合 + 活动项 + 最近工作目录）由 `main.ts` 的
+  `broadcastWorkspaces()` 单独推送。会话的工作目录与它无关：由 `main.ts` 在会话被 core
+  解析目录之前按来源视图登记（`registerCoreSessionWorkspace`）。
 - 私有辅助：`sendToRenderer`（按 `sessionId` 定向，未命中回退活动视图）、`openImagePreview`、
   `openMonacoWindow`、`openMermaidWindow`。
 
@@ -1654,8 +1652,7 @@ export class ElectronUIHost implements UIHost {
 | `sendToWebviewView(view, message)` | `sendToWebview(message)`（句柄不参与路由） | 句柄解包为 `WebContents` 后 `webContents.send('webview-message', message)` |
 | `onThemeChanged(view)` | `sendToWebview(message)`（句柄不参与路由；值取 `isDarkTheme()`） | `view` 为 `null` → `chatViews.broadcast`；指定句柄 → 解包直发（值取 `isDarkTheme()`） |
 | `log(...args)` | `outputChannel.appendLine(...)` | `console.log('[ElectronUIHost] ...')` |
-| `getWorkspacePath()` | `vscode.workspace.workspaceFolders?.[0]?.uri.fsPath` | `this.workspacePath`（活动工作目录；由标签页切换 / 添加 / 关闭驱动） |
-| `onDidChangeWorkspace(listener)` | 订阅时立即回调当前值；`vscode.workspace.onDidChangeWorkspaceFolders` 驱动后续回调；返回 `dispose` | 订阅时立即回调当前值；`setWorkspacePath` 驱动后续回调；返回取消函数 |
+| `getWorkspacePath()` | `vscode.workspace.workspaceFolders?.[0]?.uri.fsPath` | `this.workspacePath`（宿主当前工作目录；由标签页切换 / 添加 / 关闭驱动） |
 | `isDarkTheme()` | `vscode.window.activeColorTheme.kind`（Dark / HighContrast） | `nativeTheme.shouldUseDarkColors` |
 | `getLocale()` | `vscode.env.language` | `app.getLocale()`（原始 BCP-47，不做归一化；消费方按 `startsWith('zh')` 判断） |
 | `openFile(filePath, target)` | 图片 → `vscode.open`；文本 → `openTextDocument` + `showTextDocument` + 选区定位；`openTextDocument` 抛错（二进制）→ 回退 `vscode.open` | 图片 → `openImagePreview`；其余 → `openMonacoWindow({ mode: 'view' })` 并定位到行 |
@@ -1717,7 +1714,7 @@ export class ElectronUIHost implements UIHost {
 
 本节覆盖进程启动阶段（VS Code 的 `activate` / Electron 的 `main()`）完成的接线：core 全局
 单例与宿主能力提供者的注册、事件总线的创建与订阅、`WebViewUI` 的创建与子模块接线、
-历史系统 / 会话队列 / 配置目录 / 系统环境预热 / MCP 残留清理，以及退出路径对 core 资源的
+历史系统 / 会话队列 / 配置目录 / MCP 残留清理，以及退出路径对 core 资源的
 释放。窗口 / 面板 / 菜单 / 托盘 / 快捷键等宿主界面构造与 webview 内容注入属于宿主实现层，
 不在本节范围。
 
@@ -1757,7 +1754,6 @@ bootstrapCore(host, spinDesign, conversations, options): { bus, ui }
 | `WebViewUI.create` 与 `UserChoiceManager` 工厂 | 工厂在骨架内构造，日志出口取自 `options.log`；宿主不提供该工厂 |
 | 宿主环境事件（`hostEnvironmentProvided`） | 总线建好、core 侧订阅注册完毕后由骨架发一次：locale / 扩展路径 / 日志出口开关。core 侧没有对应的直接注入入口 |
 | `initializeSessionQueue` | 依赖 `WebViewUI` 实例；由骨架调用一次 |
-| 工作区订阅（`host.onDidChangeWorkspace`） | 工作区当前值与变化经订阅获得，启动期不主动读取；订阅时宿主立即回调当前值，之后打开 / 切换 / 关闭再回调；骨架把回调翻译为 `workspaceChanged` 事件，写活动工作目录与以新路径预热系统动态信息（`SystemEnvironment` 的缓存**按 cwd 分桶**；不同工作目录不能互相命中，否则另一个目录的会话会在 system prompt 里拿到活动目录的 git 信息 / 技能清单）都在 core 侧处理器里 |
 | 配置目录 / MCP 残留清理 | 异步收尾，不阻塞启动 |
 
 **宿主参数**：
@@ -1837,7 +1833,7 @@ const { ui } = bootstrapCore(host, spinDesign, conversations, {
 host.setMainWindow(mainWindow);      // 宿主句柄在骨架之后注入
 host.setSidebarView(sidebarView);
 host.setChatViewManager(chatViews);
-host.setWorkspacePath(workspacePath);   // 活动工作目录（打开集合中的一项）
+host.setWorkspacePath(workspacePath);   // 宿主当前工作目录（打开集合中的一项）
 
 chatViews.closeConversation = (sid) => ui.releaseConversation(sid);   // 视图销毁序列只卸内存
 // chatViews 的 onLoadedChanged → sidebar:session-loaded-changed（视图层状态，独立成流）
@@ -1884,7 +1880,7 @@ Electron 的视图句柄：`ElectronUIHost.webviewHandleFor(source)` 把来源 `
 
 core 的启动期状态按来源分两类。
 
-**A. 经总线传入**（宿主环境差异 + 活动工作目录）：core 侧没有直接注入入口，
+**A. 经总线传入**（宿主环境差异）：core 侧没有直接注入入口，
 唯一写入路径是 `UiEvent`，落地函数由 `initializeCoreEvents` 的订阅调用。
 
 | 状态 | 来源（`UiEvent`） | 落地函数 | 读取入口 | 未到达时 |
@@ -1892,10 +1888,10 @@ core 的启动期状态按来源分两类。
 | 宿主 locale | `hostEnvironmentProvided.locale` | `setCoreLocale` | `getCoreLocale()` | 返回默认值 `en`（可接受） |
 | 扩展路径 | `hostEnvironmentProvided.extensionPath` | `setExtensionPath` | `getExtensionPath()` | 抛错 |
 | 日志出口开关 | `hostEnvironmentProvided.logToConsole` | `setLogToConsole` | — | 静默丢弃（可接受） |
-| 活动工作目录（项目根默认值） | `workspaceChanged.workspacePath` | `setActiveWorkspace` | `getProjectRoot()` / `hasProjectRoot()` | 抛错 |
 
 会话工作目录表（`setSessionWorkspace(sessionId, path)` → `getSessionWorkspace(sessionId)`）是
-core 自己的对话属性，不来自宿主、也不经总线；未登记时回退到活动工作目录。
+core 的对话属性：目录由宿主在会话首次被 core 解析目录之前登记，不经总线；未登记时
+`getProjectRoot(sessionId)` 抛错，`hasProjectRoot(sessionId)` 为假。
 
 **B. 进程内注入**（不跨进程，仍由骨架直接接线）：
 
@@ -1909,8 +1905,7 @@ core 自己的对话属性，不来自宿主、也不经总线；未登记时回
 - 消费点调用读取入口，不使用可选链静默降级。
 - 允许默认值的项（locale / UI 语言 / 日志出口开关）以「缺失不构成错误」为前提：
   其取值不影响跨端一致性，且无业务分支依赖「是否已到达」。
-- 抛错的项（总线 / 扩展路径 / 活动工作目录）在启动接线内保证写入，
-  因此启动完成后不存在未写入状态。
+- 抛错的项（总线 / 扩展路径）在启动接线内保证写入，因此启动完成后不存在未写入状态。
 - 语言变化用 `onCoreLocaleChanged(listener)` 通知订阅者（Electron 原生菜单据此重建）；
   只在**有效语言**真正变化时触发，单个订阅者抛错不影响其它订阅者。
 
@@ -1927,7 +1922,6 @@ export interface BootstrapSnapshot {
   uiLanguage: 'auto' | 'zh' | 'en';
   eventBusRegistered: boolean;
   uiCreated: boolean;
-  activeWorkspaceProvided: boolean;
   extensionPathProvided: boolean;
   sessionQueueInitialized: boolean;
   logToConsole: boolean;
@@ -1938,8 +1932,8 @@ export function bootstrapSnapshot(): BootstrapSnapshot;
 ```
 
 - 快照在 `bootstrapCore` 返回前写入；未执行骨架时调用抛错。
-- 布尔字段由 core 的读取入口实际查询得出（总线 / UI 单例 / 项目根 provider /
-  扩展路径 provider / 会话队列回调 / 等待用户 provider），不是骨架的自报值。
+- 布尔字段由 core 的读取入口实际查询得出（总线 / UI 单例 / 扩展路径 provider /
+  会话队列回调），不是骨架的自报值。
 - 两个宿主的 bootstrap 在骨架返回后各输出一行快照日志：
   VS Code 写 `OutputChannel`，Electron 写 `console`。
 - 快照用于双端对照：两端日志的字段差异即漂移点。
@@ -1972,7 +1966,7 @@ export function shutdownCore(): void;
 
 1. 骨架执行完毕后，`bootstrapSnapshot()` 的每个布尔字段为 `true`；
 2. 快照的 `locale` 保留宿主传入的原始值（不做收敛后再上报）；
-3. `hasActiveWorkspaceProvided()` 与 `hasExtensionPath()` 为真；
+3. `hasExtensionPath()` 为真；
 4. `requireEventBus()` 可调用（不抛错），`sessionQueue.hasCallbacks()` 为真；
 5. 静态扫描 `src/core/**/*.ts` 中导出的 `set*` / `initialize*` 名字，每个名字出现在
    启动接线（`bootstrapCore.ts` 或 `initializeCoreEvents.ts`）或白名单中。
@@ -2318,7 +2312,7 @@ dropSession(sessionId: string): void {
 | `sendToWebviewView` | `sendToWebview`（句柄不参与路由） | 句柄解包为 `WebContents` 后直发 |
 | `onThemeChanged` | `sendToWebview`（单 webview；值取 `isDarkTheme()`） | `null` → `chatViews.broadcast`；指定句柄 → 直发（值取 `isDarkTheme()`） |
 | `log` | `OutputChannel.appendLine` | `console.log`（`[ElectronUIHost]` 前缀） |
-| `getWorkspacePath` | `workspaceFolders[0].uri.fsPath`（单一工作目录） | 主进程持有的 `workspacePath`（**活动工作目录**：打开集合中的一项，由标题栏标签页切换 / 添加 / 关闭驱动） |
+| `getWorkspacePath` | `workspaceFolders[0].uri.fsPath`（单一工作目录） | 主进程持有的 `workspacePath`（宿主当前工作目录：打开集合中的一项，由标题栏标签页切换 / 添加 / 关闭驱动） |
 | `isDarkTheme` | `activeColorTheme` 为 Dark 或 HighContrast | `nativeTheme.shouldUseDarkColors` |
 | `getLocale` | `vscode.env.language`（BCP-47，如 `zh-cn`） | `app.getLocale()`（BCP-47，如 `zh-CN`）——与 VS Code 同一值域，不做归一化 |
 | `openFile` | 编辑器打开并选中行；图片 / 二进制退到 `vscode.open` | 图片开内置预览窗口；其余开 Monaco 窗口（`mode: 'view'`） |
@@ -2474,7 +2468,7 @@ MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 
 | webview 读宿主能力 | `getHostInfo()` 逐字段校验，缺失或非法直接抛错 | `src/webview/webviewEnv.ts` |
 | 取 UI 单例 | `WebViewUI.getInstance()` 未创建直接抛错（替代静默 `undefined`） | `src/host/WebViewUI.ts` |
 | 取启动快照 | `bootstrapSnapshot()` 未执行骨架时抛错 | `src/host/bootstrapCore.ts` |
-| 取项目根 / 扩展路径 | `getProjectRoot(sessionId?)`（未登记会话时回退活动工作目录）/ `getExtensionPath()` 未注入直接抛错 | `src/core/history/Config.ts` |
+| 取项目根 / 扩展路径 | `getProjectRoot(sessionId)`（未登记会话时抛错；`hasProjectRoot(sessionId)` 供降级守卫）/ `getExtensionPath()` 未注入直接抛错 | `src/core/history/Config.ts` |
 | 宿主契约成员 | 全部必选，禁止 `host.foo?.()` 静默降级（见 12.2） | `src/host/UIHost.ts` |
 
 允许 no-op 的只有**合法瞬时状态**，且必须注释说明理由：

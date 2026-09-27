@@ -66,16 +66,17 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 
 | 时机 | 来源 |
 | --- | --- |
-| 新建对话 | 宿主提供当时的活动工作目录 |
-| 加载对话 | 对话元数据的 `project` |
+| 新建 / 加载对话 | 宿主在会话首次被 core 解析目录之前登记（Electron 主进程按来源视图解析，见 4.3；VS Code 用宿主当前工作目录） |
+| 加载对话（读盘后校正） | 对话元数据的 `project` |
 | 子对话 / 子代理 | 继承父对话的工作目录 |
 
-解析规则：core 内所有需要工作目录的调用按 `sessionId` 查表；未登记时回退到活动工作目录；
-两者皆无时按「未打开工作目录」处理（不退回进程启动目录）。
+解析规则：core 内所有需要工作目录的调用按 `sessionId` 查表；未登记时
+`getProjectRoot(sessionId)` 抛错、`hasProjectRoot(sessionId)` 为假（按「无工作目录」降级，
+不退回进程启动目录）。core 没有「活动工作目录」这一进程级概念——「哪个对话在前台」
+是 UI 自己的状态。
 
 对话列表缓存按工作目录分桶：每个工作目录各有一份磁盘列表缓存，切换活动项不互相清空。
-按工作目录读取列表的入口接收显式工作目录参数（现有 `readProjectConversationMetadata` 已是
-该形态）。
+读取列表的入口接收显式工作目录参数（`loadConversationList(workspacePath)`）。
 
 ### 4.3 宿主会话工作目录索引（Electron 主进程）
 
@@ -90,6 +91,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 用途：
 
 - 打开某个对话时，为该对话的聊天视图注入它自己的工作目录（`--workspace=`），而非活动工作目录；
+- 在会话被 core 解析目录之前登记到 core（`registerCoreSessionWorkspace`）；
 - 关闭工作目录时判断哪些对话视图属于该目录。
 
 ### 4.4 按会话解析的消费点
@@ -269,8 +271,8 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | 侧栏对话列表 | `electron/sidebar/main.ts` 的 `render`、`sidebar:conversations-updated` 流 |
 | 对话列表加载 | `src/core/history/Conversation.ts` 的 `loadConversationList` / `readProjectConversationMetadata` |
 | 对话元数据 | `src/core/history/Conversation.ts` 的 `ConversationMetadata.project` |
-| 项目根解析 | `src/core/history/Config.ts` 的 `getProjectRoot` / `setActiveWorkspace` |
-| 宿主工作目录传递 | `src/host/bootstrapCore.ts` 的 `host.onDidChangeWorkspace` 订阅 → `UiEvent.workspaceChanged`；`src/host/UIHost.ts` 的 `WorkspaceProvider` |
+| 项目根解析 | `src/core/history/Config.ts` 的 `getProjectRoot` / `setSessionWorkspace`（会话工作目录表：目录是对话的属性） |
+| 宿主工作目录传递 | `src/host/ui/webviewMessageHandler.ts` 的 `ensureSessionWorkspace`：新建 / 加载对话时按来源视图登记会话工作目录；`src/host/UIHost.ts` 的 `WorkspaceProvider.getWorkspacePath` 提供宿主当前目录（对话列表、Spin 设计器消费） |
 | 聊天视图工作目录 | `electron/ChatViewManager.ts` 的 `createView`（`--workspace=` 参数） |
 | 工具工作目录 | `src/core/tools/Tool.ts` 的 `ToolUseContext.cwd` |
 | 引擎 cwd | `src/core/QueryEngine.ts` 的 `config.cwd` / `getCwd` |

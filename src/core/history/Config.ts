@@ -162,34 +162,15 @@ export async function ensureConfigDirs(): Promise<void> {
 }
 
 /**
- * 活动工作目录（宿主当前打开的工作目录）。
- *
- * 由 `UiEvent.workspaceChanged` 写入；未收到事件前为 undefined。
- * 存的是路径字符串而不是惰性读取入口：远程部署时宿主与 core 不在同一进程，
- * core 无法反向调用宿主取值。
- */
-let activeWorkspacePath: string | undefined;
-
-/** 活动工作目录是否已上报（启动自检用；不看当前是否打开了目录） */
-let activeWorkspaceProvided = false;
-
-/**
- * 记录活动工作目录（未打开 / 已关闭时传 null）。
- *
- * 唯一写入入口是 `initializeCoreEvents` 的 `workspaceChanged` 订阅。
- */
-export function setActiveWorkspace(workspacePath: string | null): void {
-  activeWorkspacePath =
-    typeof workspacePath === 'string' && workspacePath ? workspacePath : undefined;
-  activeWorkspaceProvided = true;
-}
-
-/**
  * 会话工作目录表（sessionId → 工作目录绝对路径）。
  *
- * 工作目录是对话的属性：同一进程内可同时存在归属不同工作目录的对话。
- * 需要工作目录的 core 调用按 sessionId 查表；未登记时回退到活动工作目录
- * （`UiEvent.workspaceChanged` 写入）。
+ * 工作目录是对话的属性：同一进程内可同时存在归属不同工作目录的对话
+ * （Electron 多标签）。core 按 sessionId 查表解析目录，不存在「活动工作目录」
+ * 这类进程级概念——「哪个对话在前台」是 UI 自己的状态。
+ *
+ * 登记时机：会话首次被 core 解析目录之前（宿主在新建 / 加载对话时登记），
+ * 或 core 读到落盘元数据后按 `project` 校正（loadConversation）；
+ * 子对话继承父对话的工作目录。
  */
 const sessionWorkspaces = new Map<string, string>();
 
@@ -217,51 +198,34 @@ export function getSessionWorkspace(sessionId: string | null | undefined): strin
 }
 
 /**
- * 活动工作目录是否已上报（启动自检用）。
- *
- * 与 hasProjectRoot() 的区别：只看"事件有没有到过"，不看当前有没有目录。
- * 未打开工作目录时事件已经到过（值为 null），属于合法的启动完成状态。
- */
-export function hasActiveWorkspaceProvided(): boolean {
-  return activeWorkspaceProvided;
-}
-
-/**
- * 当前是否有可用的项目根目录（宿主已打开工作目录）
+ * 该会话是否已有可用的项目根目录。
  *
  * 与 getProjectRoot() 的区别：只判断、不取值也不抛错，
- * 供"没有工作目录时降级"的调用点做前置守卫：
+ * 供「没有工作目录时降级」的调用点做前置守卫：
  *
- *   if (!hasProjectRoot()) return [];
- *   const root = getProjectRoot();
- *
- * 传入 sessionId 时按该会话自己的工作目录判断（会话工作目录表优先）。
+ *   if (!hasProjectRoot(sessionId)) return [];
+ *   const root = getProjectRoot(sessionId);
  */
 export function hasProjectRoot(sessionId?: string | null): boolean {
-  if (getSessionWorkspace(sessionId)) return true;
-  return !!activeWorkspacePath;
+  return !!getSessionWorkspace(sessionId);
 }
 
 /**
- * 获取项目根目录（绝对路径）
+ * 获取会话的项目根目录（绝对路径）。
  *
- * 传入 sessionId 时优先取该会话自己的工作目录（会话工作目录表）；
- * 未登记或未传时回退到活动工作目录（`UiEvent.workspaceChanged` 写入）。
- * 两者皆无时抛错，让"没有工作目录"这类问题在调用点显式暴露，
- * 而不是静默拿到一个错误路径。需要降级处理的调用点，先用 hasProjectRoot() 守卫。
+ * 目录是会话的属性，只从会话工作目录表取；未登记时抛错，让「会话缺工作目录」
+ * 这类接线问题在调用点显式暴露，而不是静默拿到一个错误路径。
+ * 需要降级处理的调用点，先用 hasProjectRoot(sessionId) 守卫。
  */
 export function getProjectRoot(sessionId?: string | null): string {
   const scoped = getSessionWorkspace(sessionId);
   if (scoped) {
     return scoped;
   }
-  if (activeWorkspacePath) {
-    return activeWorkspacePath;
-  }
   throw new Error(
-    'Project root is not configured. ' +
-    'The active workspace is written by UiEvent.workspaceChanged; ' +
-    'getProjectRoot() is called before that event arrived.'
+    `Project root is not configured for session ${sessionId ?? '(none)'}. ` +
+    'The session workspace is registered by the host before core resolves a ' +
+    'session directory (see setSessionWorkspace).'
   );
 }
 

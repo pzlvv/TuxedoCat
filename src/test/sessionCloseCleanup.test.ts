@@ -16,16 +16,16 @@ import {
   resetSessionRuntime,
 } from '../core/sessionRuntime';
 import { releaseSessionResources } from '../core/sessionResources';
-import { setActiveWorkspace } from '../core/history/index';
+import { setSessionWorkspace } from '../core/history/index';
 import { createChecker, runTests } from './helpers/harness';
 import { makeTempDir, makeTestBus } from './helpers/fixtures';
 
 async function run(): Promise<void> {
   const { check, finish } = createChecker();
 
-  // 需要一个可写的工作区，deleteConversation 会读写项目对话目录
+  // 需要一个可写的工作区，deleteConversation 会读写项目对话目录（按会话解析）
   const projectRoot = makeTempDir('session-cleanup');
-  setActiveWorkspace(projectRoot);
+  setSessionWorkspace('s2', projectRoot);
 
   setGlobalEventBus(makeTestBus().bus);
   resetSessionRuntime();

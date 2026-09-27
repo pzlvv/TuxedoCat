@@ -16,7 +16,6 @@ import * as path from 'path';
 import { bootstrapCore, bootstrapSnapshot } from '../host/bootstrapCore';
 import { requireEventBus } from '../core/AssistantEventBus';
 import {
-  hasActiveWorkspaceProvided,
   hasExtensionPath,
 } from '../core/history/Config';
 import { sessionQueue } from '../core/SessionQueue';
@@ -82,7 +81,6 @@ function run(): void {
   check('snapshot.locale 保留宿主原始值', snapshot.locale === 'zh-CN');
   check('snapshot.eventBusRegistered', snapshot.eventBusRegistered === true);
   check('snapshot.uiCreated', snapshot.uiCreated === true);
-  check('snapshot.activeWorkspaceProvided', snapshot.activeWorkspaceProvided === true);
   check('snapshot.extensionPathProvided', snapshot.extensionPathProvided === true);
   check('snapshot.sessionQueueInitialized', snapshot.sessionQueueInitialized === true);
   check('snapshot.logToConsole 保留宿主取值', snapshot.logToConsole === false);
@@ -91,7 +89,6 @@ function run(): void {
   check('requireEventBus() 可用', (() => {
     try { requireEventBus(); return true; } catch { return false; }
   })());
-  check('hasActiveWorkspaceProvided() 为真', hasActiveWorkspaceProvided());
   check('hasExtensionPath() 为真', hasExtensionPath());
   check('sessionQueue.hasCallbacks() 为真', sessionQueue.hasCallbacks());
 

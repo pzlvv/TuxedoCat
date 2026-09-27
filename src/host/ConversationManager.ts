@@ -51,10 +51,10 @@ export abstract class ConversationManager {
     await this.dispatchList(list);
   }
 
-  /** 读磁盘对话列表（source of truth，两端一致） */
+  /** 读磁盘对话列表（source of truth，两端一致；目录由宿主给出） */
   protected async load(): Promise<ConversationMetadata[]> {
     const { loadConversationList } = await import('../core/history/index.js');
-    return loadConversationList();
+    return loadConversationList(this.host.getWorkspacePath());
   }
 
   /** 把纯磁盘列表分发给该宿主的界面 */

@@ -7,7 +7,7 @@ import { appendFile, writeFile, readFile, readdir, stat, unlink } from 'fs/promi
 import type { AgentMode } from '../types.js';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
-import { getProjectConversationDir, getProjectRoot, hasProjectRoot, getConversationDir, ensureProjectConversationDir, ensureProjectConversationDirSync, setSessionWorkspace, clearSessionWorkspace } from './Config.js';
+import { getProjectConversationDir, getProjectRoot, getConversationDir, ensureProjectConversationDir, ensureProjectConversationDirSync, setSessionWorkspace, clearSessionWorkspace } from './Config.js';
 import type { Message } from '../types.js';
 import type { PromptPresetId } from '../prompt/PromptPreset.js';
 import { requireEventBus, type CoreEvent } from '../AssistantEventBus.js';
@@ -142,7 +142,7 @@ export { pendingToolMetas };
 /**
  * 对话列表缓存（工作目录 → 列表）
  * 调用 loadConversationList() 后缓存结果，当任何对话发生变更时增量更新。
- * 每个工作目录各持一份，切换活动工作目录时互不清空（切回时无需重新读盘）。
+ * 每个工作目录各持一份，切换目录时互不清空（切回时无需重新读盘）。
  */
 const conversationListCaches = new Map<string, ConversationMetadata[]>();
 
@@ -153,7 +153,7 @@ function getConversationListCache(projectPath: string): ConversationMetadata[] |
 
 /**
  * 按会话解析其工作目录，再取该目录的对话列表缓存。
- * 会话工作目录无法解析（未登记且宿主未打开工作目录）时返回 null。
+ * 会话工作目录未登记（无法解析）时返回 null。
  */
 function getConversationListCacheForSession(sessionId: string): ConversationMetadata[] | null {
   try {
@@ -856,22 +856,17 @@ export function createConversationMetadataSync(
 /**
  * 加载对话列表。
  *
- * 传入 workspacePath 时加载该工作目录的列表；未传时用宿主当前的活动工作目录。
- * 每个工作目录各有一份缓存，切换活动工作目录不清空其它目录的缓存。
+ * 列表是「按工作目录」的，目录由调用方（宿主）显式给出。
+ * 每个工作目录各有一份缓存，切换目录不清空其它目录的缓存。
  */
-export async function loadConversationList(workspacePath?: string): Promise<ConversationMetadata[]> {
+export async function loadConversationList(workspacePath: string | undefined): Promise<ConversationMetadata[]> {
   // 宿主未打开工作目录时（如 VS Code 扩展开发宿主窗口、用户尚未选择文件夹）
   // 没有项目对话目录，返回空列表而不是抛错：异常会一路冒泡到 webview 消息回调，
   // 变成 "rejected promise not handled within 1 second"。
-  let currentProject: string;
-  if (workspacePath) {
-    currentProject = workspacePath;
-  } else {
-    if (!hasProjectRoot()) {
-      return [];
-    }
-    currentProject = getProjectRoot();
+  if (!workspacePath) {
+    return [];
   }
+  const currentProject = workspacePath;
 
   // 检查缓存
   const cached = getConversationListCache(currentProject);

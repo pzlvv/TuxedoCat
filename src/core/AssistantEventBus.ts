@@ -266,14 +266,6 @@ export type UiEvent =
       /** core 日志是否同时输出到控制台 */
       logToConsole: boolean;
     }
-  /**
-   * 活动工作目录变化。
-   *
-   * 宿主在订阅时立即回调一次当前值（初始快照），之后打开 / 切换 / 关闭再回调；
-   * 未打开 / 已关闭时为 `null`。
-   */
-  | { type: 'workspaceChanged'; workspacePath: string | null }
-
   // ===== 用户选择 =====
   /**
    * 某个会话的用户选择（ask user / 权限确认）在 webview 里弹出 / 被应答。
