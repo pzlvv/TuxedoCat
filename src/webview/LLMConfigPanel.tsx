@@ -1006,9 +1006,22 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
         zIndex: 100,
         display: 'flex',
         flexDirection: 'column',
+        // 内容列居中：窗口比主输入框宽时，设置页两侧留白，不再被拉宽
+        alignItems: 'center',
         backgroundColor: colors.bg,
       }}
     >
+      {/* 限宽内容列：与主输入框同宽（680px），再宽时居中 */}
+      <div
+        style={{
+          width: '100%',
+          maxWidth: '680px',
+          flex: '1 1 auto',
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
       {/* Header */}
       <div
         className="px-4 py-3 border-b flex items-center justify-between"
@@ -1699,6 +1712,8 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
           {saving ? t('llmConfig.saving') : t('llmConfig.save')}
         </button>
       </div>
+      </div>
+      {/* /限宽内容列 */}
 
       {/* 自动检测 API 类型确认（模型列表已拉取，但存在未设置协议的模型） */}
       {pendingDetection && (

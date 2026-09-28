@@ -252,7 +252,9 @@ body {
    不能 hover 一下就变成孤立一个加号。 */
 
 /* ── 标签页运行指示：该目录下非 idle 会话（蓝=运行中 / 黄=等待用户，黄优先） ──
-   与侧栏 / webview 对话列表的 running-bar 同一套配色，只是改成标签页左侧的短条。
+   与侧栏 / webview 对话列表的 running-bar 同一套配色，做成标签页左侧的竖条。
+   竖条撑满标签页整个高度（top/bottom 均为 0）：渐变两端本身是透明的，
+   因此顶到标签页圆角处也不会露出突兀的色块。
    两种状态的动效不同（与对话列表保持一致）：
    - 运行中：蓝色「流水灯」——渐变背景上下滚动。
    - 等待用户：黄色「呼吸」——只有明暗脉动，不滚动（对话列表用同一条单一动画）。 */
@@ -268,8 +270,9 @@ body {
   display: none;
   position: absolute;
   left: 2px;
-  top: 4px;
-  bottom: 4px;
+  /* 撑满标签页整个高度 */
+  top: 0;
+  bottom: 0;
   width: 3px;
   border-radius: 2px;
   background-size: 100% 200%;
