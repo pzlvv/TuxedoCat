@@ -20,6 +20,12 @@ const profileTag = '[Profile]';
 const warnedUnknownMessageTypes = new Set<string>();
 
 /**
+ * 工具卡片状态优先级：success/fail > running > normal。
+ * 用于「恢复的历史卡片」与「实时状态更新」合并时，避免把已经推进的状态降级回去。
+ */
+const TOOL_STATUS_PRIORITY: Record<string, number> = { success: 3, fail: 3, running: 2, normal: 1 };
+
+/**
  * 解析 conversationLoaded 携带的历史消息为当前 Message 格式（纯函数，不依赖 props）：
  * - toolResultMap：tool_use_id -> tool_result（含时间戳）；
  * - canceledToolResults：被取消的工具 ID -> 提示内容（渲染为失败状态）；
@@ -157,6 +163,12 @@ function restoreMessagesFromConversation(msg: Extract<WebviewMessage, { type: 'c
       }
       const blocks = convMsg.message?.content || [];
 
+      // 同一 assistant 消息内是否已出现「等待用户确认」的 tool_use。
+      // 工具按顺序逐个授权，一个工具在等用户确认时，它后面的 tool_use 都还没轮到，
+      // 恢复时不能提前渲染（否则一次会看到多个待确认工具）。等它们真正被授权时，
+      // 由实时 addMessage 建卡片。
+      let sawPendingToolUse = false;
+
       // 按照 blocks 的原始顺序处理
       for (const block of blocks) {
         if ((block as any).type === 'thinking') {
@@ -197,6 +209,12 @@ function restoreMessagesFromConversation(msg: Extract<WebviewMessage, { type: 'c
           const result = toolResultMap.get(toolUseId);
           const hasResult = result !== undefined;
           const isPending = (msg.pendingToolUseIds || []).includes(toolUseId);
+
+          // 排在前一个「等待确认」工具之后的 tool_use 还没轮到授权：本次恢复不渲染，
+          // 避免同一批的多个工具同时出现在界面上（确认完前一个，后一个被授权时才建卡片）。
+          if (sawPendingToolUse && !hasResult) {
+            continue;
+          }
 
           // 根据保存的状态判断工具执行结果
           // 没有 result 且在 pendingToolUseIds 中 = 正在等待用户授权，显示 normal
@@ -295,6 +313,11 @@ function restoreMessagesFromConversation(msg: Extract<WebviewMessage, { type: 'c
             timestamp: msgTimestamp,
             toolResultTimestamp: result?.timestamp,
           });
+
+          // 这个工具确实在等用户确认（还没出结果）：它之后的 tool_use 都还没轮到授权
+          if (isPending && !hasResult) {
+            sawPendingToolUse = true;
+          }
         }
       }
     }
@@ -321,7 +344,7 @@ function replayBufferedToolStatusIntoMessages(
   }>>,
 ): void {
   if (bufferedToolStatusRef.current.size === 0) return;
-  const statusPriority: Record<string, number> = { success: 3, fail: 3, running: 2, normal: 1 };
+  const statusPriority = TOOL_STATUS_PRIORITY;
   for (let i = 0; i < restoredMessages.length; i++) {
     const m = restoredMessages[i];
     if (m.role !== 'toolcall' || !m.toolCallId) continue;
@@ -778,6 +801,31 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             });
           } else {
             props.setMessages((prev) => {
+              // 工具卡片按 toolCallId 去重：历史恢复（conversationLoaded）已经用 tool_use
+              // block 建过卡片的场景下，实时 addMessage 不能再追加一张，否则同一个工具会
+              // 渲染两次。命中已有卡片时就地更新，并保留历史恢复时的时间戳。
+              if (msg.role === 'toolcall' && newMessage.toolCallId) {
+                const idx = prev.findIndex(
+                  (m) => m.role === 'toolcall' && m.toolCallId === newMessage.toolCallId,
+                );
+                if (idx >= 0) {
+                  const existing = prev[idx];
+                  const next = [...prev];
+                  next[idx] = {
+                    ...existing,
+                    ...newMessage,
+                    timestamp: existing.timestamp,
+                    // 不把已经推进到 success/fail 的卡片降级回 normal/running
+                    status: (TOOL_STATUS_PRIORITY[newMessage.status || ''] ?? 0)
+                      >= (TOOL_STATUS_PRIORITY[existing.status || ''] ?? 0)
+                      ? newMessage.status
+                      : existing.status,
+                    toolArgs: { ...(existing.toolArgs || {}), ...(newMessage.toolArgs || {}) },
+                  };
+                  profileLog(`[Webview] addMessage toolcall DEDUP: ${newMessage.toolCallId} | msgs.length ${prev.length}`);
+                  return next;
+                }
+              }
               const next = [...prev, newMessage];
               profileLog(`[Webview] addMessage APPEND: role=${msg.role} origin=${msg.origin || 'user'} | msgs.length ${prev.length}->${next.length} | contentStart=${(msg.content || '').substring(0, 50)}`);
               return next;

@@ -11,7 +11,11 @@
  * v2 规则：
  * - 非并发安全工具（Edit/Write/TodoWrite）：完整走完「preview(授权) → finish(执行) → result」后再处理下一个，
  *   保证 preview 始终基于最新文件状态，且任一工具被拒时，前面的工具都已有完整结果。
- * - 并发安全工具（Read/Grep/Glob/Agent/Reply/只读 Bash）：收集连续的工具成批并行执行，保留并行优化。
+ * - 并发安全工具（Read/Grep/Glob/Agent/Reply/只读 Bash）：**批准一个就立即启动一个**，
+ *   连续的工具因此仍然并行执行（保留并行优化），但不会「等整批都授权完才开始」：
+ *   - 用户确认（ask）一个 Agent 后它立刻开跑，不必等后面还在等确认的工具；
+ *   - 后面某个工具被拒时，只会取消尚未启动的工具，已启动的继续执行并回收结果，
+ *     不会把前面已批准的工具一起取消。
  */
 
 import { randomUUID } from 'crypto';
@@ -66,6 +70,15 @@ interface ApprovedToolItem {
   parsedInput: Record<string, unknown>;
   toolUseContext: ToolUseContext;
   childAbortController?: AbortController; // 每个并行工具独立的子 AbortController
+}
+
+/**
+ * 已启动（执行中）的工具条目：promise 是 executeSingleTool 的未决结果，
+ * 由 drainStartedItems 按批准顺序回收。
+ */
+interface StartedToolItem {
+  item: ApprovedToolItem;
+  promise: Promise<unknown>;
 }
 
 /**
@@ -227,8 +240,18 @@ export async function* runTools(
       continue;
     }
 
-    // ---- 并发安全工具：收集后续连续的并发安全工具成批并行执行 ----
-    const batch: ApprovedToolItem[] = [item];
+    // ---- 并发安全工具：批准一个就立即启动一个 ----
+    // 启动（而不是先收集完再统一执行）是本轮的关键：用户确认一个工具后它立刻开跑，
+    // 不必等后面还在等用户确认的工具；后面某个工具被拒时，也不会连累已启动的工具。
+    const started: StartedToolItem[] = [];
+    if (signal?.aborted) {
+      logger.warn('runTools', 'Signal already aborted, skipping execution');
+      yield* cancelApprovedItems(sessionID, [item], 'Command was aborted before execution');
+      yield { shouldPreventContinuation: true };
+      return;
+    }
+    started.push({ item, promise: startApprovedItem(sessionID, item, signal) });
+
     let j = i + 1;
     let shouldStop = false;
     let stopFlag: boolean | undefined;
@@ -242,8 +265,8 @@ export async function* runTools(
       }
       const nextAuth = yield* authorizeOne(sessionID, nextUse, nextTool, toolUseContext, blocks, j);
       if (nextAuth.action === 'stop') {
-        // 后续工具被拒：为当前 batch 中已批准但尚未执行的工具补发取消结果，避免孤儿 tool_use
-        yield* cancelApprovedItems(sessionID, batch);
+        // 后续工具被拒：已启动的工具继续执行（下面统一回收结果，不会留下孤儿 tool_use）；
+        // 本批次没有「已批准但未启动」的工具，无需补取消结果。
         stopFlag = nextAuth.shouldPreventContinuation;
         shouldStop = true;
         break;
@@ -252,9 +275,12 @@ export async function* runTools(
         j++;
         continue;
       }
-      batch.push(nextAuth.item);
+      started.push({ item: nextAuth.item, promise: startApprovedItem(sessionID, nextAuth.item, signal) });
       j++;
     }
+
+    // 回收本批已启动工具的结果（按批准顺序产出 tool_result）
+    yield* drainStartedItems(sessionID, started, signal);
 
     if (shouldStop) {
       if (stopFlag) {
@@ -263,8 +289,6 @@ export async function* runTools(
       return;
     }
 
-    // 并行执行本批次
-    yield* executeParallelBatch(sessionID, batch, signal);
     i = j;
   }
 }
@@ -507,82 +531,84 @@ async function* authorizeOne(
 }
 
 /**
- * 并行执行一批已批准的工具（并发安全工具）
+ * 启动一个已批准的工具：上架 running 卡片（写 confirmTimestamp）、准备独立的子
+ * AbortController，然后立即开始执行，返回未决的执行结果 Promise。
+ *
+ * 刻意不在这里 await 执行结果：调用方拿到 Promise 后可以继续授权后续工具，
+ * 让「已批准的工具」立刻开跑，而不必等整批都授权完（见 runTools 的并发安全分支）。
  */
-async function* executeParallelBatch(
+function startApprovedItem(
   sessionID: string,
-  batch: ApprovedToolItem[],
+  item: ApprovedToolItem,
+  signal?: AbortSignal | null,
+): Promise<unknown> {
+  const confirmNow = Date.now();
+  // 直接修改内存中的 block._meta，确保 mutableMessages 同步后能读到 confirmTimestamp
+  // （此时 assistant 消息尚未 push 到 mutableMessages，updateToolUseMeta 无法回填内存）
+  if (!(item.toolUse as any)._meta || typeof (item.toolUse as any)._meta !== 'object') {
+    (item.toolUse as any)._meta = {};
+  }
+  (item.toolUse as any)._meta.confirmTimestamp = confirmNow;
+
+  const inp = item.parsedInput;
+  const metaReady = inp && typeof inp === 'object'
+    ? import('../history/index.js').then(({ updateToolUseMeta }) =>
+      updateToolUseMeta(sessionID, item.toolUse.id, { confirmTimestamp: confirmNow }))
+    : Promise.resolve();
+
+  // 每个工具独立的子 AbortController，隔离各自的 abort 信号：
+  // 父 signal 被 abort 时只同步 abort 自己的子 controller。
+  item.childAbortController = new AbortController();
+  signal?.addEventListener('abort', () => {
+    item.childAbortController?.abort(signal.reason);
+  }, { once: true });
+
+  // 通知 UI 该工具开始运行
+  emitToUi({ type: 'toolCall', sessionId: sessionID, toolUseId: item.toolUse.id, toolName: item.toolUse.name });
+
+  return metaReady.then(() => executeSingleTool(sessionID, item));
+}
+
+/**
+ * 回收一批已启动工具的结果：等待所有 Promise 落定，再按启动顺序产出 tool_result。
+ */
+async function* drainStartedItems(
+  sessionID: string,
+  started: StartedToolItem[],
   signal?: AbortSignal | null,
 ): AsyncGenerator<ToolExecutionUpdate, void, unknown> {
-  // 如果信号已经中止，直接返回取消结果
-  if (signal?.aborted) {
-    logger.warn('executeParallelBatch', 'Signal already aborted, skipping execution');
-    yield* cancelApprovedItems(sessionID, batch, 'Command was aborted before execution');
-    yield { shouldPreventContinuation: true };
-    return;
-  }
+  const batchStart = Date.now();
+  logger.info('drainStartedItems', `Promise.allSettled START for ${started.length} tools [${started.map(s => `${s.item.toolUse.name}(${s.item.toolUse.id})`).join(', ')}]`);
+  const results = await Promise.allSettled(started.map(s => s.promise));
+  logger.info('drainStartedItems', `Promise.allSettled END for ${started.length} tools, elapsed=${Date.now() - batchStart}ms`);
 
-  // 通知 UI 本批次的所有工具开始运行
-  for (const b of batch) {
-    const confirmNow = Date.now();
-    // 直接修改内存中的 block._meta，确保 mutableMessages 同步后能读到 confirmTimestamp
-    // （此时 assistant 消息尚未 push 到 mutableMessages，updateToolUseMeta 无法回填内存）
-    if (!(b.toolUse as any)._meta || typeof (b.toolUse as any)._meta !== 'object') {
-      (b.toolUse as any)._meta = {};
-    }
-    (b.toolUse as any)._meta.confirmTimestamp = confirmNow;
-    const inp = b.parsedInput;
-    if (inp && typeof inp === 'object') {
-      const { updateToolUseMeta } = await import('../history/index.js');
-      await updateToolUseMeta(sessionID, b.toolUse.id, { confirmTimestamp: confirmNow });
-    }
-    emitToUi({ type: 'toolCall', sessionId: sessionID, toolUseId: b.toolUse.id, toolName: b.toolUse.name });
-  }
-
-  // 为每个工具创建子 AbortController，隔离各自的 abort 信号
-  for (const b of batch) {
-    b.childAbortController = new AbortController();
-    // 父 signal 被 abort 时，同步 abort 所有子 controller
-    signal?.addEventListener('abort', () => {
-      b.childAbortController?.abort(signal.reason);
-    }, { once: true });
-  }
-
-  // 并行执行
-  const parallelStart = Date.now();
-  logger.info('executeParallelBatch', `Promise.allSettled START for ${batch.length} tools [${batch.map(b => `${b.toolUse.name}(${b.toolUse.id})`).join(', ')}]`);
-  const results = await Promise.allSettled(
-    batch.map(b => executeSingleTool(sessionID, b))
-  );
-  logger.info('executeParallelBatch', `Promise.allSettled END for ${batch.length} tools, elapsed=${Date.now() - parallelStart}ms`);
-
-  // 按原顺序 yield 结果
+  // 按启动顺序 yield 结果
   let hasAborted = false;
-  for (let k = 0; k < batch.length; k++) {
-    const b = batch[k];
+  for (let k = 0; k < started.length; k++) {
+    const item = started[k].item;
     const result = results[k];
 
     // 如果信号已中止，后续未处理的工具结果标记为取消（不执行的实际跳过）
     if (hasAborted) {
-      yield* cancelApprovedItems(sessionID, [b], 'Tool was canceled due to abort');
+      yield* cancelApprovedItems(sessionID, [item], 'Tool was canceled due to abort');
       continue;
     }
 
     if (result.status === 'fulfilled') {
-      yield* formatAndEmitResult(sessionID, b, result.value, signal);
+      yield* formatAndEmitResult(sessionID, item, result.value, signal);
       if (signal?.aborted && !hasAborted) {
         hasAborted = true;
       }
     } else {
       // Promise rejected
       const errorMessage = result.reason instanceof Error ? result.reason.message : String(result.reason);
-      logger.error('executeParallelBatch', `Tool ${b.toolUse.name} failed: ${errorMessage}`);
-      emitToolResultError(sessionID, b.toolUse.id, b.toolUse.name, errorMessage);
+      logger.error('drainStartedItems', `Tool ${item.toolUse.name} failed: ${errorMessage}`);
+      emitToolResultError(sessionID, item.toolUse.id, item.toolUse.name, errorMessage);
 
       yield {
         message: buildToolResultMessage(
-          b.toolUse.id,
-          `Error executing ${b.toolUse.name}: ${errorMessage}`,
+          item.toolUse.id,
+          `Error executing ${item.toolUse.name}: ${errorMessage}`,
           -1,
           false,
         ),
@@ -591,9 +617,8 @@ async function* executeParallelBatch(
   }
 
   if (hasAborted) {
-    logger.warn('executeParallelBatch', 'Signal was aborted during parallel execution');
+    logger.warn('drainStartedItems', 'Signal was aborted during parallel execution');
     yield { shouldPreventContinuation: true };
-    return;
   }
 }
 

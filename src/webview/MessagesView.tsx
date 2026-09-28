@@ -1427,8 +1427,14 @@ const SegmentTimeline = memo(function SegmentTimeline({
         key: message.toolCallId || `msg-${segmentIndex}-${msgIndex}`,
         color: statusColor,
         // 状态点类型：普通圆点与运行中风扇由 CSS 伪元素绘制（不占 DOM 节点），
-        // 只有 thinking 涟漪动画需要真实 DOM（见 buildThinkingItem）
-        dotKind: message.role === 'toolcall' && message.status === 'running' ? 'running' : 'plain',
+        // 只有 thinking 涟漪动画需要真实 DOM（见 buildThinkingItem）。
+        // 'normal'（等待用户授权）与 'running'（执行中）都属于「工具还没结束」，
+        // 都显示旋转的 loading 风扇：否则从历史恢复的待确认工具（restore 时标成
+        // 'normal'）会显示普通圆点，与实时确认时的表现不一致。
+        dotKind: message.role === 'toolcall'
+          && (message.status === 'running' || message.status === 'normal')
+          ? 'running'
+          : 'plain',
         children: <MessageItem message={message} colors={colors} isDark={isDark} onNavigate={onNavigate} onThinkingToggle={onThinkingToggle} onExpandToggle={onExpandToggle} onBeforePreviewRender={onBeforePreviewRender} />,
       };
     });
