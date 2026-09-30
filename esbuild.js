@@ -16,6 +16,8 @@ const config = {
   sourcemap: !production,
   minify: production,
   tsconfig: 'tsconfig.json',
+  // 构建期把 Core 实现（TUXEDO_CAT_CORE）烧进产物，见 src/host/coreKind.ts
+  define: { __TUXEDO_CAT_CORE_KIND__: JSON.stringify(project.coreKind) },
 };
 
 async function main() {

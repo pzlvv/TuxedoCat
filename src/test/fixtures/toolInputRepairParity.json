@@ -1,0 +1,402 @@
+{
+  "note": "工具入参修复对照表（RunTools.fixToolInput）。两侧共用：src/test/toolInputRepairParity.test.ts 断言 Embedded fixToolInput 产出该表，core-rs 的 fix_tool_input_parity_tests 断言 Rust engine::fix_tool_input 产出同结果（output 与 input 深度相等表示「未修复」）。由 scripts/gen-tool-input-repair-parity.mjs 生成。",
+  "cases": [
+    {
+      "name": "top-string-object",
+      "input": "{\"a\": 1}",
+      "output": {
+        "a": 1
+      }
+    },
+    {
+      "name": "top-string-nested",
+      "input": "\"{\\\"a\\\": 1}\"",
+      "output": {
+        "a": 1
+      }
+    },
+    {
+      "name": "top-string-array",
+      "input": "[1, 2]",
+      "output": [
+        1,
+        2
+      ]
+    },
+    {
+      "name": "top-string-plain",
+      "input": "hello",
+      "output": "hello"
+    },
+    {
+      "name": "top-string-number",
+      "input": "123",
+      "output": "123"
+    },
+    {
+      "name": "top-string-empty",
+      "input": "",
+      "output": ""
+    },
+    {
+      "name": "top-string-broken",
+      "input": "{\"a\": ",
+      "output": "{\"a\": "
+    },
+    {
+      "name": "field-object-json",
+      "input": {
+        "a": "{\"x\": 1}"
+      },
+      "output": {
+        "a": {
+          "x": 1
+        }
+      }
+    },
+    {
+      "name": "field-array-json",
+      "input": {
+        "a": "[1, 2]"
+      },
+      "output": {
+        "a": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "field-string-json",
+      "input": {
+        "a": "\"hello\""
+      },
+      "output": {
+        "a": "\"hello\""
+      }
+    },
+    {
+      "name": "field-number-json",
+      "input": {
+        "a": "123"
+      },
+      "output": {
+        "a": "123"
+      }
+    },
+    {
+      "name": "field-null-json",
+      "input": {
+        "a": "null"
+      },
+      "output": {
+        "a": "null"
+      }
+    },
+    {
+      "name": "field-bool-json",
+      "input": {
+        "a": "true"
+      },
+      "output": {
+        "a": "true"
+      }
+    },
+    {
+      "name": "field-broken-json",
+      "input": {
+        "a": "{oops"
+      },
+      "output": {
+        "a": "{oops"
+      }
+    },
+    {
+      "name": "field-array-missing-quotes",
+      "input": {
+        "a": "[xx: abc, yy: def]"
+      },
+      "output": {
+        "a": [
+          {
+            "xx": "abc"
+          },
+          {
+            "yy": "def"
+          }
+        ]
+      }
+    },
+    {
+      "name": "field-array-key-quoted",
+      "input": {
+        "a": "[\"xx\": \"abc\"]"
+      },
+      "output": {
+        "a": [
+          {
+            "xx": "abc"
+          }
+        ]
+      }
+    },
+    {
+      "name": "field-array-single-quotes",
+      "input": {
+        "a": "['a', 'b']"
+      },
+      "output": {
+        "a": [
+          "a",
+          "b"
+        ]
+      }
+    },
+    {
+      "name": "field-array-plain-items",
+      "input": {
+        "a": "[a, b]"
+      },
+      "output": {
+        "a": [
+          "a",
+          "b"
+        ]
+      }
+    },
+    {
+      "name": "field-array-mixed-items",
+      "input": {
+        "a": "[a, xx: b]"
+      },
+      "output": {
+        "a": [
+          "a",
+          "xx: b"
+        ]
+      }
+    },
+    {
+      "name": "field-array-nested-object",
+      "input": {
+        "a": "[{xx: 1}]"
+      },
+      "output": {
+        "a": [
+          {
+            "xx": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "field-array-nested-brackets",
+      "input": {
+        "a": "[a, [b, c]]"
+      },
+      "output": {
+        "a": [
+          "a",
+          "[b, c]"
+        ]
+      }
+    },
+    {
+      "name": "field-array-empty",
+      "input": {
+        "a": "[]"
+      },
+      "output": {
+        "a": []
+      }
+    },
+    {
+      "name": "field-array-only-comma",
+      "input": {
+        "a": "[,]"
+      },
+      "output": {
+        "a": [
+          ""
+        ]
+      }
+    },
+    {
+      "name": "field-array-trailing-comma",
+      "input": {
+        "a": "[a,]"
+      },
+      "output": {
+        "a": [
+          "a"
+        ]
+      }
+    },
+    {
+      "name": "field-array-value-with-colon",
+      "input": {
+        "a": "[key: a:b:c]"
+      },
+      "output": {
+        "a": [
+          {
+            "key": "a:b:c"
+          }
+        ]
+      }
+    },
+    {
+      "name": "field-array-quoted-comma",
+      "input": {
+        "a": "[\"a,b\", c]"
+      },
+      "output": {
+        "a": [
+          "a,b",
+          "c"
+        ]
+      }
+    },
+    {
+      "name": "field-array-single-quoted-key",
+      "input": {
+        "a": "['xx': 'abc']"
+      },
+      "output": {
+        "a": [
+          {
+            "xx": "abc"
+          }
+        ]
+      }
+    },
+    {
+      "name": "field-array-newline",
+      "input": {
+        "a": "[xx: a\n yy: b]"
+      },
+      "output": {
+        "a": [
+          {
+            "xx": "a\n yy: b"
+          }
+        ]
+      }
+    },
+    {
+      "name": "field-object-missing-quotes",
+      "input": {
+        "a": "{xx: abc, yy: def}"
+      },
+      "output": {
+        "a": "{xx: abc, yy: def}"
+      }
+    },
+    {
+      "name": "field-object-single-quoted-key",
+      "input": {
+        "a": "{'xx': 1}"
+      },
+      "output": {
+        "a": {
+          "xx": 1
+        }
+      }
+    },
+    {
+      "name": "field-object-single-quoted-value",
+      "input": {
+        "a": "{xx: 'a'}"
+      },
+      "output": {
+        "a": "{xx: 'a'}"
+      }
+    },
+    {
+      "name": "field-object-spaces",
+      "input": {
+        "a": "{ xx : 1 }"
+      },
+      "output": {
+        "a": {
+          "xx": 1
+        }
+      }
+    },
+    {
+      "name": "field-object-broken",
+      "input": {
+        "a": "{xx 1}"
+      },
+      "output": {
+        "a": "{xx 1}"
+      }
+    },
+    {
+      "name": "field-multiple",
+      "input": {
+        "a": "[xx: 1]",
+        "b": "{yy: 2}",
+        "c": "plain"
+      },
+      "output": {
+        "a": [
+          {
+            "xx": "1"
+          }
+        ],
+        "b": {
+          "yy": 2
+        },
+        "c": "plain"
+      }
+    },
+    {
+      "name": "field-non-string",
+      "input": {
+        "a": 1,
+        "b": null,
+        "c": true,
+        "d": [
+          1
+        ]
+      },
+      "output": {
+        "a": 1,
+        "b": null,
+        "c": true,
+        "d": [
+          1
+        ]
+      }
+    },
+    {
+      "name": "input-array",
+      "input": [
+        "[xx: 1]"
+      ],
+      "output": {
+        "0": [
+          {
+            "xx": "1"
+          }
+        ]
+      }
+    },
+    {
+      "name": "input-number",
+      "input": 42,
+      "output": 42
+    },
+    {
+      "name": "input-null",
+      "input": null,
+      "output": null
+    },
+    {
+      "name": "input-bool",
+      "input": false,
+      "output": false
+    }
+  ]
+}

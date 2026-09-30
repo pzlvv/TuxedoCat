@@ -20,18 +20,22 @@ import { buildUserContent, extractUserContent } from '../../core/utils/contentBl
 import { normalizeModelTokenLimits, getContextWindow, type ModelTokenLimits, type ApiType } from '../../core/utils/modelConfig.js';
 import { readModelContextSync, getSessionWorkspace, setSessionWorkspace } from '../../core/history/Config.js';
 import { modelRefOf, sameModelRef, type ModelRef } from '../../core/llm/modelRef.js';
-import type { LLMConfig } from '../../core/llm/config.js';
 import { getConversationModelRef } from '../../core/history/Conversation.js';
-import { extractLastJsonObject } from '../../core/utils/lastJson.js';
 import { userChoiceQueue } from '../../core/UserChoiceQueue.js';
-import { getSessionRuntimeStates } from '../../core/sessionRuntime.js';
-import { isCompacting } from '../../core/compact/state.js';
 import type { WebviewMessage } from '../../core/webviewTypes.js';
-import type { UiEvent } from '../../core/AssistantEventBus.js';
+import type { SessionRuntimeState, UiEvent } from '../../core/AssistantEventBus.js';
 import { requireEventBus } from '../../core/AssistantEventBus.js';
-import type { UserMessage, Message } from '../../core/types.js';
 import type { UserChoiceManager } from './userChoice.js';
 import type { LLMConfigPanelTrigger } from './ports.js';
+import { resolveCoreKind } from '../coreKind.js';
+import {
+  loadConversationListForHost,
+  readUiLanguage,
+  requestBalance,
+  requestCompactArchive,
+  requestLlmConfigSave,
+  requestSmartNaming,
+} from '../coreFacts.js';
 
 /**
  * 自动获取模型时，协议探测的并发上限（按「模型」计，每个模型内部再并发 3 个协议）。
@@ -51,9 +55,6 @@ const API_TYPE_PROBE_RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 
 /**
  * WebviewMessageHandler - 处理 webview 发来的各类消息
- *
- * extractLastJsonObject - 从字符串中提取最后一个完整的 JSON 对象。
- * 从字符串末尾反向查找，避免被思考过程中的花括号干扰，只取最终输出。
  */
 
 /**
@@ -110,6 +111,8 @@ export class WebviewMessageHandler {
     noteSessionActivity(sessionId: string): void;
     /** 打开 LLM 配置面板（core 给配置，WebViewUI 组装 wire message） */
     showLLMConfigPanel(trigger: LLMConfigPanelTrigger, sessionId: string | null): Promise<void>;
+    /** 最近一次会话运行时状态快照（Standalone 下拉取不能用进程内 sessionRuntime） */
+    getSessionRuntimeStatesSnapshot(): readonly SessionRuntimeState[];
   };
   private postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
   private postConversationLoaded: (sessionId: string, conversation: any, extra: {
@@ -427,182 +430,57 @@ export class WebviewMessageHandler {
     // 用户主动发消息：刷新该会话的空闲关闭计时（空闲回收只在 VS Code 生效）
     this.uiPort?.noteSessionActivity(sessionId);
 
-    try {
-      const { getSessionEngine } = await import('../../core/QueryEngine.js');
-      let engine = getSessionEngine(sessionId);
-      if (!engine) {
-        // 会话尚未预创建引擎：按新会话建立（幂等），使用户消息只有一条入队路径。
-        const { createEngine } = await import('../../core/Integration.js');
-        engine = createEngine(sessionId, '');
+    const selectedLines = message.fileSelectedLines;
+    const filePath = typeof message.filePath === 'string' ? message.filePath : undefined;
+    const uuid = `user_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+    // Embedded 下的命令消息（`/xxx`）不做乐观回显：内置命令就地执行、不落盘，
+    // 立刻画气泡会留下一个刷新后消失的「幽灵」用户消息。交给 QueryEngine 在
+    // 消息真正进入上下文时补发（Skill 命令）或干脆不发（内置命令）。
+    // Standalone 没有命令解析，命令按普通文本落盘，因此仍然乐观回显。
+    const deferEcho = content.trim().startsWith('/') && resolveCoreKind() === 'embedded';
+
+    if (!deferEcho) {
+      // 立即回显用户气泡（乐观渲染）：core 落盘时沿用同一个 uuid，
+      // 因此不需要在消息真正进入上下文时再补发一次 addMessage。
+      const uiContent = buildUserContent(content, images);
+      const { text: uiText, images: uiImages } = extractUserContent(uiContent);
+      const uiMeta: Record<string, unknown> = {};
+      if (filePath && !message.fileHidden) {
+        const fileName = filePath.split(/[/\\]/).pop();
+        uiMeta.filePath = filePath;
+        uiMeta.param = `${fileName}${selectedLines ? `:${selectedLines.start}${selectedLines.start !== selectedLines.end ? `~${selectedLines.end}` : ''}` : ''}`;
       }
-
-      if (message.agentMode) {
-        // agentMode 归 core（取代原 UI 层 Map）；随消息路径同步进 core 存储
-        const { setSessionAgentMode } = await import('../../core/tools/PermissionPolicy.js');
-        setSessionAgentMode(sessionId, message.agentMode);
-      }
-
-      // 入队到 QueryEngine：消息在"下一次 LLM 请求"时被带上，即使当前 query 正处于
-      // 多轮工具调用循环中也不会中断；命令消息在轮次边界解析。
-      // 这里根据 webview 传入的当前 thinking 模式显式设置，
-      // 未传入时回退到引擎当前的 thinking effort（当前对话正在使用的值）。
-      const thinkingEffort = message.thinkingMode || engine.thinkingModeOverride;
-      engine.thinkingModeOverride = thinkingEffort;
-
-      // 应用消息携带的模型身份：避免「切换模型后立刻发消息」时因 setModel 尚未处理
-      // 而用错 provider。身份与当前一致时跳过，省掉一次配置读取。
-      const sendRef = this.messageModelRef(message);
-      if (sendRef && (engine.modelRefOverride?.provider !== sendRef.provider || engine.modelRefOverride?.model !== sendRef.model)) {
-        try {
-          engine.modelRefOverride = sendRef;
-          engine.updateModelConfig({ model: sendRef.model } as LLMConfig);
-          const { getConfigForProvider } = await import('../../core/llm/config.js');
-          const config = await getConfigForProvider(sendRef);
-          engine.updateModelConfig(config);
-          const { updateConversationContext } = await import('../../core/history/index.js');
-          await updateConversationContext(sessionId, { model: sendRef.model, provider: sendRef.provider });
-        } catch (e) {
-          logger.warn('WebviewMessageHandler', `Failed to apply model "${sendRef.model}" for session ${sessionId}: ${e}`);
-        }
-      }
-
-      // 应用会话关联的 Web Search 开关
-      if (typeof message.webSearch === 'boolean') {
-        engine.updateWebSearch(message.webSearch);
-      }
-
-      // 应用会话关联的提示词预设（仅内存）
-      const { isPromptPresetId } = await import('../../core/prompt/PromptPreset.js');
-      if (isPromptPresetId(message.promptMode)) {
-        engine.setPromptPreset(message.promptMode);
-      }
-
-      // 等待之前的持久化完成，确保新消息在消息链中按顺序持久化
-      await engine.flush().catch((e: any) => {
-        logger.error('WebviewMessageHandler', `Queued message flush failed: ${e}`);
-      });
-
-      const selectedLines = message.selectedLines || message.fileSelectedLines;
-      // 区分“引擎忙碌 / 命令消息”与“引擎空闲的普通消息”：
-      // - 引擎仍在消费（或压缩中）：先只显示在输入框上方的 queue 中，
-      //   等下一次 LLM 请求真正消费该消息时再由 QueryEngine 补发到 MessagesView。
-      // - 引擎空闲的普通消息：立即回显到 MessagesView。
-      // - 命令消息（/xxx）：延迟回显，由 QueryEngine 出队解析，只有真正进入
-      //   LLM 上下文（Skill 命令）时才补发用户气泡；内置命令（如 /spin）执行后不进入
-      //   上下文，因此不该留下一个不会被持久化的用户气泡。
-      const isCommandMessage = content.trim().startsWith('/');
-      const isQueueMessage = engine.isConsumerRunning || isCompacting(sessionId);
-      const deferUserBubble = isQueueMessage || isCommandMessage;
-
-      // 构造用户消息对象（暂存，不立即 push 到 mutableMessages）。
-      // 由 flushQueuedMessagesIntoContext 在处理 pendingUserMessage 时用该对象现场追加，
-      // 确保消息在"下一次 LLM 请求"时立刻进入上下文，
-      // 同时保留 filePath / fileSelectedLines 等元数据。
-      const userContent = buildUserContent(content, images);
-      const { text: uiText, images: uiImages } = extractUserContent(userContent);
-      // 落盘格式：文件信息同时写入顶层字段与 _meta，
-      // 避免只带顶层字段导致历史加载/压缩展开时无法还原文件标签。
-      const persistMeta: Record<string, unknown> = {};
-      if (message.filePath) {
-        persistMeta.filePath = message.filePath;
-        persistMeta.param = `${message.filePath.split(/[/\\]/).pop()}${selectedLines ? `:${selectedLines.start}${selectedLines.start !== selectedLines.end ? `~${selectedLines.end}` : ''}` : ''}`;
-      }
-      if (selectedLines) {
-        persistMeta.fileSelectedLines = selectedLines;
-      }
-
-      const userMsg: UserMessage = {
-        type: 'user',
-        message: { role: 'user', content: userContent },
-        uuid: `user_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
-        timestamp: Date.now(),
-        ...(message.filePath && { filePath: message.filePath }),
-        ...(selectedLines && { fileSelectedLines: selectedLines }),
-        ...(message.fileHidden && { fileHidden: true }),
-      };
-      if (Object.keys(persistMeta).length > 0) {
-        userMsg._meta = persistMeta;
-      }
-
-      // 标记为"用户主动发送"的消息（含排队消息）：只有这类消息才更新
-      // meta.json 的 updatedAt，使对话列表按最后一条用户消息排序。
-      userMsg._userInitiated = true;
-
-      // 将图片宽高随消息一起持久化，供 meta.json 标题生成使用（不进入 LLM content）
-      const imageSizes = (images ?? []).map((img) => ({
-        width: img.width,
-        height: img.height,
-      }));
-      if (imageSizes.some((s) => s.width && s.height)) {
-        userMsg.imageSizes = imageSizes;
-      }
-
-      if (deferUserBubble) {
-        // 延迟回显：QueryEngine 真正把它追加进 LLM 上下文时，
-        // 通过 _needsUINotification 补发 addMessage（携带 messageUuid）。
-        // （命令若被就地执行、未进入上下文，则不会补发用户气泡，由宿主在
-        //   commandDispatched 时清除排队项。）
-        userMsg._needsUINotification = true;
-        if (isQueueMessage) {
-          // 仍在排队：先在输入框上方显示队列状态（带 uuid，供按消息精确清除）
-          this.postToWebview(sessionId, {
-            type: 'queuedMessage',
-            sessionId,
-            uuid: userMsg.uuid,
-            content,
-            images: uiImages,
-            filePath: message.filePath,
-            selectedLines: selectedLines || undefined,
-            fileHidden: !!message.fileHidden,
-          } as Record<string, unknown>);
-        }
-      } else {
-        // 引擎空闲的普通消息：立即显示到 UI
-        const uiMeta: Record<string, unknown> = {};
-        if (message.filePath && !message.fileHidden) {
-          uiMeta.filePath = message.filePath;
-          uiMeta.param = `${message.filePath.split(/[/\\]/).pop()}${selectedLines ? `:${selectedLines.start}${selectedLines.start !== selectedLines.end ? `~${selectedLines.end}` : ''}` : ''}`;
-        }
-        this.postToWebview(sessionId, {
-          type: 'addMessage',
-          role: 'user',
-          messageUuid: userMsg.uuid,
-          content: uiText,
-          images: uiImages.length > 0 ? uiImages : undefined,
-          filePath: message.fileHidden ? undefined : message.filePath,
-          fileSelectedLines: message.fileHidden ? undefined : selectedLines,
-          meta: Object.keys(uiMeta).length > 0 ? uiMeta : undefined,
-        } as Record<string, unknown>);
-      }
-
-      // 提交到引擎队列：设置 pendingUserMessage，使消息在下次 LLM 请求时被带上。
-      // 若 consumer 正在运行，submitMessage 会等待其退出（消息已被现有 consumer
-      // 在 while 循环中消费）；若已退出，则启动新的 consumer 处理该消息。
-      // manageQueryUI=true：查询开始 / 结束状态由消费循环发出（与 enqueueAgentMessage 一致）。
-      void (async () => {
-        try {
-          for await (const _ of engine.submitMessage(content, 'user', undefined, {
-            manageQueryUI: true,
-            // 消息未 push 到 mutableMessages，consumer 处理时用此对象现场追加
-            userMsgData: userMsg,
-          })) {
-            // 回复由现有/新 consumer 通过正常路径推送，无需在此转发
-            void _;
-          }
-        } catch (e) {
-          logger.error('WebviewMessageHandler', `Error processing user message: ${e}`);
-        }
-      })();
-    } catch (err) {
-      this.log(`[WebviewMessageHandler] Failed to enqueue user message: ${err}`);
-      // 入队失败时通知 webview 显示排队状态，由 webview 在 queryEnd 后重新投递
-      this.host.sendToWebview({
-        type: 'queuedMessage',
-        sessionId,
-        content,
-        images,
-      } as WebviewMessage);
+      this.postToWebview(sessionId, {
+        type: 'addMessage',
+        role: 'user',
+        messageUuid: uuid,
+        content: uiText,
+        images: uiImages.length > 0 ? uiImages : undefined,
+        filePath: message.fileHidden ? undefined : filePath,
+        fileSelectedLines: message.fileHidden ? undefined : selectedLines,
+        meta: Object.keys(uiMeta).length > 0 ? uiMeta : undefined,
+      } as Record<string, unknown>);
     }
+
+    // 进入 core 的唯一路径：组装载荷后发 UiEvent。取 / 建引擎、应用会话覆盖、
+    // 入队、命令解析与轮次边界消费都在 core 侧（见 docs/user-message-pipeline.md）。
+    await this.emitUiEvent({
+      type: 'userMessageSubmitted',
+      sessionId,
+      content,
+      uuid,
+      images,
+      filePath,
+      fileSelectedLines: selectedLines,
+      fileHidden: message.fileHidden || undefined,
+      agentMode: message.agentMode,
+      thinkingMode: message.thinkingMode,
+      model: this.messageModelRef(message),
+      webSearch: typeof message.webSearch === 'boolean' ? message.webSearch : undefined,
+      workspacePath: this.host.getWorkspacePath(),
+      deferEcho: deferEcho || undefined,
+    });
   }
 
   /**
@@ -756,8 +634,7 @@ export class WebviewMessageHandler {
       await this.uiPort.refreshConversations();
       return;
     }
-    const { loadConversationList } = await import('../../core/history/index.js');
-    const conversations = await loadConversationList(this.host.getWorkspacePath());
+    const conversations = await loadConversationListForHost(this.host.getWorkspacePath() ?? undefined);
     this.host.sendToWebview({
       type: 'conversationsData',
       conversations,
@@ -804,6 +681,8 @@ export class WebviewMessageHandler {
 
     this.trackedActiveSessionId = message.sessionId;
     this.log(`Tracked active session: ${message.sessionId}`);
+    // Standalone 下 core 以本事件载入会话；同时登记到 openSessions，Core 重启后重放。
+    await this.emitUiEvent({ type: 'conversationOpened', sessionId: message.sessionId });
     // 加载对话时查询余额
     this.fetchBalanceAndSend(message.sessionId);
 
@@ -812,7 +691,10 @@ export class WebviewMessageHandler {
     // 但菜单里的列表是按会话展示的：webview 在 currentSessionId 变化时会先把列表
     // 清空为该会话的缓存，必须回推一次该会话的配置，否则菜单会一直显示「未配置」
     //（设置面板走 readMcpServersForDefaults 重新读盘，与本路径无关，所以那里正常）。
-    void this.pushMcpServers(message.sessionId);
+    // Standalone 下 MCP 尚未迁入，且 UI 进程不应触碰 MCPHost，跳过回推。
+    if (resolveCoreKind() === 'embedded') {
+      void this.pushMcpServers(message.sessionId);
+    }
 
     const hasHistory = conversation.messages && conversation.messages.length > 0;
     this.log(`[WebviewMessageHandler] Conversation has history: ${hasHistory}`);
@@ -925,7 +807,9 @@ export class WebviewMessageHandler {
 
     userChoiceQueue.onSessionLoaded(message.sessionId);
 
-    if (hasHistory) {
+    // Standalone 下会话引擎归 Core 进程所有：UI 进程不建引擎（core 已由
+    // conversationOpened 载入历史），只负责把消息渲染给 webview。
+    if (hasHistory && resolveCoreKind() === 'embedded') {
       this.log(`[WebviewMessageHandler] Restoring conversation engine with ${conversation.messages.length} history messages`);
       restoreConversationEngine(message.sessionId, conversation.messages, conversation.metadata.role).catch(err => {
         this.log(`[WebviewMessageHandler] Error restoring engine: ${err}`);
@@ -960,9 +844,13 @@ export class WebviewMessageHandler {
    * 必须在 core 首次按会话解析目录（loadConversation / createEngine）之前调用。
    */
   private ensureSessionWorkspace(sessionId: string): void {
-    if (getSessionWorkspace(sessionId)) return;
     const workspacePath = this.host.getWorkspacePath();
-    if (workspacePath) setSessionWorkspace(sessionId, workspacePath);
+    if (!workspacePath) return;
+    // Embedded：同一进程、同一张表，直接写（幂等）。
+    if (!getSessionWorkspace(sessionId)) setSessionWorkspace(sessionId, workspacePath);
+    // Standalone：会话工作目录表在 Core 进程内，只有事件能过去（Embedded 的事件
+    // 处理器转调同一个函数，重复写等价）。
+    requireEventBus().emitToCore({ type: 'sessionWorkspaceAssigned', sessionId, workspacePath });
   }
 
   private async handleStartNewConversation(message: any): Promise<void> {
@@ -973,6 +861,8 @@ export class WebviewMessageHandler {
     this.ensureSessionWorkspace(newSessionId);
     // UI → core：报告「用户新建了对话」（core 预创建引擎）
     await this.emitUiEvent({ type: 'conversationStarted', sessionId: newSessionId });
+    // 登记为「已打开会话」：Standalone 下 Core 重启后据此重放 conversationOpened。
+    await this.emitUiEvent({ type: 'conversationOpened', sessionId: newSessionId });
     // 新建对话：开始空闲关闭计时（空闲回收只在 VS Code 生效）
     this.uiPort?.noteSessionActivity(newSessionId);
     this.setTitle(newSessionId, defaultTitle());
@@ -981,8 +871,10 @@ export class WebviewMessageHandler {
 
     // MCP：新对话打开即建立引用——由 core 的 createEngine（conversationStarted
     // 事件消费）→ MCPHost.onSessionOpened 驱动，UI 不再触发 acquire。
-    // 同 loadConversation：回推该会话的 MCP 列表，避免菜单被清空后显示「未配置」。
-    void this.pushMcpServers(newSessionId);
+    // Standalone 下 MCP 尚未迁入，且 UI 进程不应触碰 MCPHost，跳过回推。
+    if (resolveCoreKind() === 'embedded') {
+      void this.pushMcpServers(newSessionId);
+    }
 
     // 从 settings.json 读取新对话的默认 model、thinking_effort、agentMode 和 webSearch 并发送给 webview 立即应用。
     // 注意：不再写入 meta.json（meta.json 只在发第一条消息时由 appendMessage 创建），
@@ -1016,11 +908,16 @@ export class WebviewMessageHandler {
   }
 
   /**
-   * 获取 DeepSeek 账户余额并发送到 webview
+   * 获取 DeepSeek 账户余额并发送到 webview。
+   *
+   * 余额要按 `settings.json` 里 `api.deepseek.com` 这个 provider 的 apiKey 查
+   * （与 active provider 无关），因此 Standalone 下由 Core 查、宿主取结果——
+   * 宿主不读 core 的配置文件。
    */
   private fetchBalanceAndSend(sessionID: string): void {
-    import('../../core/utils/balance.js').then(({ fetchBalance }) => {
-      fetchBalance().then(balanceInfo => {
+    void (async () => {
+      try {
+        const balanceInfo = await requestBalance();
         if (balanceInfo) {
           this.postToWebview(sessionID, {
             type: 'balanceUpdate',
@@ -1039,12 +936,10 @@ export class WebviewMessageHandler {
             fetchedAt: Date.now(),
           });
         }
-      }).catch((err: unknown) => {
+      } catch (err: unknown) {
         this.log(`Failed to fetch balance: ${err}`);
-      });
-    }).catch((err: unknown) => {
-      this.log(`Failed to import balance module: ${err}`);
-    });
+      }
+    })();
   }
 
   private async handleRespondUserChoice(message: any): Promise<void> {
@@ -1100,9 +995,12 @@ export class WebviewMessageHandler {
    */
   private pushSessionRuntimeStates(sender: WebviewRequestContext['sender']): void {
     try {
+      // 状态源是 core 推送的 sessionRuntimeChanged 快照（经 ConversationManager 缓存）。
+      // 不能用进程内的 getSessionRuntimeStates()：Standalone 下该模块不被写入，恒为空。
+      const states = this.uiPort?.getSessionRuntimeStatesSnapshot() ?? [];
       const message: WebviewMessage = {
         type: 'sessionRuntimeStates',
-        states: getSessionRuntimeStates(),
+        states,
       };
       if (sender) {
         this.host.sendToWebviewView(sender, message);
@@ -1532,138 +1430,48 @@ export class WebviewMessageHandler {
     }
   }
 
+  /**
+   * 智能命名：读会话消息 → 调 LLM → 解析标题。
+   *
+   * Standalone 下会话消息与 LLM 配置都在 Core 侧，整段生成过程经
+   * `UiRequest.smartNamingRequested` 交给 Core；两种装配下本方法的后半段相同。
+   */
   private async handleRequestSmartNaming(message: any): Promise<void> {
-    this.log(`[WebviewMessageHandler] requestSmartNaming: ${message.sessionId}`);
     const sessionId = message.sessionId;
-    (async () => {
-      try {
-        // 会话可能只出现在对话树里、尚未加载：先按会话登记工作目录再读盘
-        this.ensureSessionWorkspace(sessionId);
-        const { loadConversation } = await import('../../core/history/index.js');
-        const conversation = await loadConversation(sessionId);
-        const msgs = conversation.messages || [];
-        const contentMessages: string[] = [];
-        for (const msg of msgs) {
-          if (msg.type === 'user' && typeof msg.message.content === 'string') {
-            contentMessages.push(`[用户]: ${msg.message.content.substring(0, 500)}`);
-            if (contentMessages.length >= 5) break;
-          } else if (msg.type === 'assistant' && Array.isArray(msg.message.content)) {
-            for (const block of msg.message.content) {
-              const b = block as Record<string, unknown>;
-              if (b.type === 'text' && typeof b.text === 'string') {
-                contentMessages.push(`[助手]: ${b.text.substring(0, 500)}`);
-                if (contentMessages.length >= 5) break;
-              }
-            }
-            if (contentMessages.length >= 5) break;
-          }
-        }
-        const { callLLM } = await import('../../core/llm/index.js');
-        const { getConfig } = await import('../../core/llm/config.js');
-        const systemPrompt = '你是一个对话标题生成器。\n\n'
-          + '示例1:\n对话内容：[用户]: 帮我写一个Python排序函数\n[助手]: 以下是冒泡排序实现...\n'
-          + '输出：{"title": "Python排序函数"}\n\n'
-          + '示例2:\n对话内容：[用户]: 今天天气怎么样\n[助手]: 今天北京晴转多云...\n'
-          + '输出：{"title": "查询天气"}\n\n'
-          + '现在请为以下对话生成标题（不超过20个字），只输出 JSON：';
-        const modelConfig = await getConfig();
-        let rawResult = '';
-        for await (const event of callLLM({
-          messages: [
-            { role: 'user' as const, content: `${systemPrompt}\n\n对话内容：\n${contentMessages.join('\n\n')}` },
-          ],
-          tools: [],
-          signal: null,
-          modelConfig,
-          sessionId,
-        })) {
-          if (event.type === 'text_delta') {
-            rawResult += event.text;
-          } else if (event.type === 'assistant') {
-            const ct = event.message?.content;
-            if (Array.isArray(ct)) {
-              for (const block of ct) {
-                if (block.type === 'text' && block.text) {
-                  rawResult = block.text;
-                }
-              }
-            }
-          }
-        }
-        const jsonStr = extractLastJsonObject(rawResult);
-        let title = '';
-        if (jsonStr) {
-          try { const parsed = JSON.parse(jsonStr); title = parsed.title || ''; } catch { /* ignore */ }
-        }
-        if (!title) {
-          // 从任意 { "title": "..." } 模式中提取
-          const tMatch = rawResult.match(/\{\s*"title"\s*:\s*"([^"]+)"\s*\}/);
-          if (tMatch) { title = tMatch[1]; }
-          else {
-            const lines = rawResult.split('\n').filter(l => l.trim());
-            title = lines[lines.length - 1]?.trim()?.substring(0, 50) || '智能命名';
-          }
-        }
-        this.log(`[WebviewMessageHandler] smartNaming raw response: ${rawResult.substring(0, 500)}`);
-        this.log(`[WebviewMessageHandler] smartNaming extracted jsonStr: ${jsonStr || '(null)'}`);
-        this.log(`[WebviewMessageHandler] smartNaming result for ${sessionId}: "${title}"`);
-        this.setTitle(sessionId, title);
-        this.host.sendToWebview({ type: 'smartNamingResult', sessionId, title });
-        // UI → core：标题写盘走总线（core 落盘 + 广播 titleChanged / conversationListChanged）；
-        // 列表刷新由 conversationListChanged → ConversationManager.refresh() 统一驱动，
-        // 这里不再直接落盘、也不直接推 conversationsData。
-        await this.emitUiEvent({ type: 'conversationRenamed', sessionId, title });
-      } catch (error: any) {
-        this.log(`[WebviewMessageHandler] smartNaming error: ${error.message}`);
-      }
-    })();
+    // 会话可能只出现在对话树里、尚未加载：先按会话登记工作目录再交给 core 解析
+    this.ensureSessionWorkspace(sessionId);
+    this.log(`[WebviewMessageHandler] requestSmartNaming: ${sessionId}`);
+    try {
+      const title = await requestSmartNaming(sessionId);
+      this.log(`[WebviewMessageHandler] smartNaming result for ${sessionId}: "${title}"`);
+      this.setTitle(sessionId, title);
+      this.host.sendToWebview({ type: 'smartNamingResult', sessionId, title });
+      // UI → core：标题写盘走总线（core 落盘 + 广播 titleChanged / conversationListChanged）；
+      // 列表刷新由 conversationListChanged → ConversationManager.refresh() 统一驱动，
+      // 这里不再直接落盘、也不直接推 conversationsData。
+      await this.emitUiEvent({ type: 'conversationRenamed', sessionId, title });
+    } catch (error: any) {
+      this.log(`[WebviewMessageHandler] smartNaming error: ${error.message}`);
+    }
   }
 
+  /**
+   * 展开压缩归档：把「归档消息 + 当前未压缩部分」整批替换 webview 的显示。
+   *
+   * Standalone 下归档与主 JSONL 都在 Core 侧，合并口径也在 Core 侧实现
+   * （`compact_archive_display`），宿主只负责转换与下发。
+   */
   private async handleExpandCompact(message: any): Promise<void> {
     this.log(`[WebviewMessageHandler] expandCompact requested: ${message.sessionId}`);
     try {
-      const { loadCompactArchive } = await import('../../core/history/Conversation.js');
-
-      const originalMessages = await loadCompactArchive(message.sessionId);
-      if (!originalMessages || originalMessages.length === 0) {
+      const messagesToDisplay = await requestCompactArchive(message.sessionId);
+      if (!messagesToDisplay || messagesToDisplay.length === 0) {
         this.log(`[WebviewMessageHandler] No compact archive found for ${message.sessionId}`);
         return;
       }
-
-      this.log(`[WebviewMessageHandler] Expanding compact: ${originalMessages.length} messages from archive`);
-
-      // 从压缩后的主 JSONL 读取 summary 和保留的最近消息
-      let messagesToDisplay: Message[] = originalMessages;
-      {
-        const summaryCount = originalMessages.filter(m => m.type === 'user' && m.isCompactSummary === true).length;
-        try {
-          this.ensureSessionWorkspace(message.sessionId);
-          const { loadConversation } = await import('../../core/history/index.js');
-          const conversation = await loadConversation(message.sessionId);
-          const compressedSummaries = conversation.messages.filter((m) =>
-            m.type === 'user' && m.isCompactSummary === true
-          );
-          // 从压缩后消息中提取"当前未被压缩部分"（保留的最近消息）
-          // 只保留 user / assistant 且非压缩摘要的消息；compact_boundary 是 system 消息，
-          // 已被类型条件排除，无需再判 subtype。
-          const retainedMessages = conversation.messages.filter((m) =>
-            (m.type === 'user' || m.type === 'assistant')
-            && !(m.type === 'user' && m.isCompactSummary)
-          );
-          this.log(`[WebviewMessageHandler] Archive=${originalMessages.length} (summaries=${summaryCount}), compressed summaries=${compressedSummaries.length}, retained=${retainedMessages.length}`);
-          // 顺序：被压缩归档消息 -> 摘要 -> 当前未被压缩部分
-          if (summaryCount === 0 && compressedSummaries.length > 0) {
-            // 旧归档：从主 JSONL 取 summary
-            messagesToDisplay = [...originalMessages, ...compressedSummaries, ...retainedMessages];
-          } else {
-            // 新归档：归档中已有 summary，只需补充 retainedMessages
-            messagesToDisplay = [...originalMessages, ...retainedMessages];
-          }
-          this.log(`[WebviewMessageHandler] Built display: archive=${originalMessages.length} + retained=${retainedMessages.length}`);
-        } catch (err) {
-          this.log(`[WebviewMessageHandler] Failed to load data from compressed messages: ${err}`);
-        }
-      }
+      this.log(
+        `[WebviewMessageHandler] Expanding compact: ${messagesToDisplay.length} messages`,
+      );
 
       // 整批替换 webview 当前显示：转换逻辑与 core 的压缩后重建共用同一个纯函数
       // （`buildReplayMessageData`），不再在这里复制一份裁剪 / diffHunks 逻辑。
@@ -1707,10 +1515,15 @@ export class WebviewMessageHandler {
     this.log(`[WebviewMessageHandler] saveLLMConfig: webSearch=${!!webSearch}, thinkingEffort=${thinkingEffort}, defaultAgentMode=${defaultAgentMode}, defaultPromptMode=${defaultPromptMode}, language=${language}, saveProviders=${!!saveProviders}, providers=${Array.isArray(providers) ? providers.length : 0}, activeProvider=${requestedActiveProvider || ''}, closeAfterSave=${!!closeAfterSave}, sessionId=${requestedSessionId || ''}, currentModel=${requestedCurrentModel || ''}`);
 
     try {
-      // 写 settings.json 是宿主能力（core 只读不写，第 2 节规则 9）：
-      // host.updateSettingsJson 内部串行化，避免与其他写入口并发写坏文件
+      // Embedded 下写 settings.json 是宿主能力（core 只读不写，第 2 节规则 9）；
+      // Standalone 下全局配置的唯一写入点是 Core（规格第 8 节），整段 mutation
+      // （provider 表 + modelConfigs 补齐 + 顶层默认值 + MCP 默认列表）经
+      // `UiRequest.llmConfigSaveRequested` 交给 Core，宿主不写盘。
+      const coreKind = resolveCoreKind();
+      const standaloneSave =
+        coreKind === 'standalone' ? await requestLlmConfigSave(message) : null;
       const keyOf = providerKeyFromBaseURL;
-      await this.host.updateSettingsJson((cfg: Record<string, any>) => {
+      if (coreKind !== 'standalone') await this.host.updateSettingsJson((cfg: Record<string, any>) => {
         if (!cfg.llm) cfg.llm = {};
 
         // 有 provider 变更（如编辑模型列表/API 配置）或显式选择「使用此 Provider」时，
@@ -1817,9 +1630,10 @@ export class WebviewMessageHandler {
         }
       });
 
-      // 同步更新 core 层界面语言，使 Spin 等核心流程文案跟随设置
+      // 同步更新 core 层界面语言，使 Spin 等核心流程文案跟随设置。
+      // Standalone 下 Core 在 `apply_llm_config_save` 里自己收敛，宿主不重复做。
       try {
-        if (language === 'zh' || language === 'en' || language === 'auto') {
+        if (coreKind !== 'standalone' && (language === 'zh' || language === 'en' || language === 'auto')) {
           const { setCoreUiLanguage } = await import('../../core/i18n.js');
           setCoreUiLanguage(language);
         }
@@ -1829,10 +1643,14 @@ export class WebviewMessageHandler {
       // 只改全局默认；各会话在菜单里的勾选存在各自 meta.json，不受影响。
       if (Array.isArray(message.mcpServers)) {
         try {
-          const { mcpDefaultsMutator } = await import('../../core/mcp/Config.js');
-          await this.host.updateSettingsJson(mcpDefaultsMutator(
-            (message.mcpServers as unknown[]).filter((n): n is string => typeof n === 'string'),
-          ));
+          // Standalone 下 `mcp.enabled` 已随同一次 `llmConfigSaveRequested` 落盘，
+          // 这里只负责回推状态与让 Core 重同步连接。
+          if (coreKind !== 'standalone') {
+            const { mcpDefaultsMutator } = await import('../../core/mcp/Config.js');
+            await this.host.updateSettingsJson(mcpDefaultsMutator(
+              (message.mcpServers as unknown[]).filter((n): n is string => typeof n === 'string'),
+            ));
+          }
           const mcpSessionId = await this.getActiveMcpSessionId(requestedSessionId);
           // 先回推一次：默认值已落盘，连接尚未开始 → webview 显示「连接中」。
           // 这样设置面板保存不会被 MCP 启动阻塞，可以立即返回 llmConfigSaved。
@@ -1856,10 +1674,12 @@ export class WebviewMessageHandler {
 
       // 清除 config.ts 中的缓存，下次 getConfig 能读到新配置
       // （host.updateSettingsJson 写盘后已清除 Config.ts 的 cachedSettings）
-      try {
-        const { clearConfigCache } = await import('../../core/llm/config.js');
-        clearConfigCache();
-      } catch {}
+      if (coreKind !== 'standalone') {
+        try {
+          const { clearConfigCache } = await import('../../core/llm/config.js');
+          clearConfigCache();
+        } catch {}
+      }
 
       // 读取保存后的实际默认值，随 llmConfigSaved 回传给 webview，
       // webview 据此更新本地的默认值并应用到当前对话（如默认工作模式）
@@ -1870,28 +1690,46 @@ export class WebviewMessageHandler {
       let savedWebSearch = false;
       let savedActiveProvider = '';
       let savedProviderGroups: Array<{ key: string; models: string[] }> = [];
-      try {
-        const { getActiveModelRef, getDefaultThinkingEffort, getDefaultAgentMode, getDefaultPromptMode, getDefaultWebSearch, getLLMConfigPanelPayload } = await import('../../core/llm/config.js');
-        let savedModelRef: ModelRef | undefined;
-        [savedModelRef, savedThinkingEffort, savedAgentMode, savedPromptMode, savedWebSearch] = await Promise.all([
-          getActiveModelRef(),
-          getDefaultThinkingEffort(),
-          getDefaultAgentMode(),
-          getDefaultPromptMode(),
-          getDefaultWebSearch(),
-        ]);
-        savedModel = savedModelRef?.model ?? '';
-        const payload = await getLLMConfigPanelPayload();
-        savedActiveProvider = payload.activeProvider;
-        savedProviderGroups = payload.providers.map((p) => ({ key: p.key, models: p.models }));
-      } catch {}
+      if (standaloneSave) {
+        // Standalone：直接用 Core 返回的保存结果，不再读盘
+        savedModel = standaloneSave.model;
+        savedActiveProvider = standaloneSave.activeProvider;
+        savedThinkingEffort = standaloneSave.thinkingEffort;
+        savedAgentMode = standaloneSave.agentMode;
+        savedPromptMode = standaloneSave.promptMode;
+        savedWebSearch = standaloneSave.webSearch;
+        savedProviderGroups = standaloneSave.providers.map((p) => ({
+          key: p.key,
+          models: [...p.models],
+        }));
+      } else {
+        try {
+          const { getActiveModelRef, getDefaultThinkingEffort, getDefaultAgentMode, getDefaultPromptMode, getDefaultWebSearch, getLLMConfigPanelPayload } = await import('../../core/llm/config.js');
+          let savedModelRef: ModelRef | undefined;
+          [savedModelRef, savedThinkingEffort, savedAgentMode, savedPromptMode, savedWebSearch] = await Promise.all([
+            getActiveModelRef(),
+            getDefaultThinkingEffort(),
+            getDefaultAgentMode(),
+            getDefaultPromptMode(),
+            getDefaultWebSearch(),
+          ]);
+          savedModel = savedModelRef?.model ?? '';
+          const payload = await getLLMConfigPanelPayload();
+          savedActiveProvider = payload.activeProvider;
+          savedProviderGroups = payload.providers.map((p) => ({ key: p.key, models: p.models }));
+        } catch {}
+      }
 
       // 保存后校验当前会话的模型身份：provider 或模型失效时解析出可用身份，
       // 并持久化到会话 meta.json、同步引擎配置。返回给 webview 的
       // activeModel / activeModelProvider 用于刷新当前对话的模型选择（含已有消息的对话）。
       let activeModel = '';
       let activeModelProvider = '';
-      try {
+      if (standaloneSave) {
+        // Standalone：Core 在保存时已解析并（必要时）写回会话 meta.json
+        activeModel = standaloneSave.activeModel;
+        activeModelProvider = standaloneSave.activeModelProvider;
+      } else try {
         const currentSessionId = (typeof requestedSessionId === 'string' && requestedSessionId) || this.trackedActiveSessionId;
         if (currentSessionId && currentSessionId !== 'undefined') {
           // 优先使用 webview 回传的当前模型身份（最贴近界面显示），
@@ -2009,8 +1847,7 @@ export class WebviewMessageHandler {
   /** 从 settings.json 读取 UI 语言（同步，供消息回传使用） */
   private getUiLanguageFromSettings(): 'auto' | 'zh' | 'en' {
     try {
-      const { readUiLanguageSync } = require('../../core/history/Config.js') as typeof import('../../core/history/Config.js');
-      return readUiLanguageSync();
+      return readUiLanguage();
     } catch {
       return 'auto';
     }

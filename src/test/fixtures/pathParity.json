@@ -1,0 +1,262 @@
+{
+  "note": "路径展开对照表（Embedded `utils/path.ts::expandPath` ↔ Standalone `core-rs/src/tools.rs::expand_path`）。输入 / 期望里的 `__CWD__` / `__HOME__` 是占位符，分隔符统一为 `/`。`platform` 标出只在对应平台成立的用例。",
+  "cases": [
+    {
+      "name": "empty",
+      "why": "空串是假值：回退到会话工作目录（不是主目录）",
+      "input": "",
+      "expected": "__CWD__"
+    },
+    {
+      "name": "blank-spaces",
+      "why": "纯空格 trim 后为空：回退工作目录",
+      "input": "   ",
+      "expected": "__CWD__"
+    },
+    {
+      "name": "js-whitespace-u0085",
+      "why": "U+0085 在 ECMAScript 里**不是**空白：trim 不生效，按相对路径拼接",
+      "input": "",
+      "expected": "__CWD__/"
+    },
+    {
+      "name": "js-whitespace-ufeff",
+      "why": "U+FEFF 在 ECMAScript 里是空白：trim 后为空，回退工作目录",
+      "input": "﻿",
+      "expected": "__CWD__"
+    },
+    {
+      "name": "tilde",
+      "why": "单独 `~` 展开为主目录（不做规范化）",
+      "input": "~",
+      "expected": "__HOME__"
+    },
+    {
+      "name": "tilde-slash",
+      "why": "`~/x` 拼到主目录下",
+      "input": "~/sub/dir",
+      "expected": "__HOME__/sub/dir"
+    },
+    {
+      "name": "tilde-slash-trailing",
+      "why": "`~/x/` 走 `path.join`，与 `path.normalize` 一样保留尾随分隔符",
+      "input": "~/sub/",
+      "expected": "__HOME__/sub/"
+    },
+    {
+      "name": "tilde-slash-dotdot",
+      "why": "`~/x/../y` 先规范化再保留尾随分隔符（无尾随分隔符时不补）",
+      "input": "~/sub/../other",
+      "expected": "__HOME__/other"
+    },
+    {
+      "name": "tilde-other",
+      "why": "`~foo` 不是主目录写法，按相对路径处理",
+      "input": "~foo",
+      "expected": "__CWD__/~foo"
+    },
+    {
+      "name": "tilde-backslash",
+      "why": "`~\\x` 同样不匹配 `~/` 前缀，按相对路径处理（Windows 上 `\\` 也是分隔符）",
+      "input": "~\\sub",
+      "expected": "__CWD__/~/sub"
+    },
+    {
+      "name": "relative-file",
+      "why": "普通相对路径按工作目录解析",
+      "input": "a.txt",
+      "expected": "__CWD__/a.txt"
+    },
+    {
+      "name": "dot",
+      "why": "`.` 规范化成工作目录本身",
+      "input": ".",
+      "expected": "__CWD__"
+    },
+    {
+      "name": "nested-normalize",
+      "why": "`..` 与重复分隔符一起做词法规范化",
+      "input": "a/../b//c",
+      "expected": "__CWD__/b/c"
+    },
+    {
+      "name": "multibyte-relative",
+      "why": "多字节相对路径（中文）按工作目录解析",
+      "input": "目录/文件.txt",
+      "expected": "__CWD__/目录/文件.txt"
+    },
+    {
+      "name": "multibyte-short-prefix",
+      "why": "回归：9 字节的纯中文路径曾让 WSL 分支按字节切片比较 `/mnt/` 时 panic",
+      "input": "你你你",
+      "expected": "__CWD__/你你你"
+    },
+    {
+      "name": "multibyte-absolute",
+      "why": "多字节绝对路径规范化",
+      "input": "__CWD__/目录/文件.txt",
+      "expected": "__CWD__/目录/文件.txt"
+    },
+    {
+      "name": "trailing-slash",
+      "why": "尾随分隔符被去掉",
+      "input": "sub/",
+      "expected": "__CWD__/sub"
+    },
+    {
+      "name": "dot-segments",
+      "why": "`.` 段被去掉、尾随分隔符被去掉",
+      "input": "a/./b/",
+      "expected": "__CWD__/a/b"
+    },
+    {
+      "name": "absolute-from-cwd",
+      "why": "绝对路径直接规范化，不再拼工作目录",
+      "input": "__CWD__/x",
+      "expected": "__CWD__/x"
+    },
+    {
+      "name": "absolute-normalize",
+      "why": "绝对路径里的 `..` 也做词法规范化",
+      "input": "__CWD__/a/../b",
+      "expected": "__CWD__/b"
+    },
+    {
+      "name": "absolute-trailing-slash",
+      "why": "Node `path.normalize` 保留绝对路径的尾随分隔符（`path.resolve` 才去掉）",
+      "input": "__CWD__/sub/",
+      "expected": "__CWD__/sub/"
+    },
+    {
+      "name": "absolute-trailing-collapse",
+      "why": "多个尾随分隔符折叠成一个并保留",
+      "input": "__CWD__/sub//",
+      "expected": "__CWD__/sub/"
+    },
+    {
+      "name": "absolute-trailing-after-dotdot",
+      "why": "`..` 规范化后仍保留尾随分隔符",
+      "input": "__CWD__/a/../b/",
+      "expected": "__CWD__/b/"
+    },
+    {
+      "name": "win-mnt",
+      "why": "Windows 专属：WSL `/mnt/d/...` 映射成 `D:\\...`（盘符大写）",
+      "input": "/mnt/d/git/proj",
+      "platform": "win32",
+      "expected": "D:/git/proj"
+    },
+    {
+      "name": "win-mnt-bare",
+      "why": "Windows 专属：`/mnt/d` 无尾随斜杠映射成 `D:\\`",
+      "input": "/mnt/d",
+      "platform": "win32",
+      "expected": "D:/"
+    },
+    {
+      "name": "win-drive-slash-lower",
+      "why": "Windows 专属：`/c/Users/x` 映射成 `c:\\Users\\x`（盘符大小写原样保留）",
+      "input": "/c/Users/x",
+      "platform": "win32",
+      "expected": "c:/Users/x"
+    },
+    {
+      "name": "win-drive-slash-upper",
+      "why": "Windows 专属：`/C/Users/x` 盘符大小写原样保留",
+      "input": "/C/Users/x",
+      "platform": "win32",
+      "expected": "C:/Users/x"
+    },
+    {
+      "name": "win-drive-absolute",
+      "why": "Windows 专属：盘符绝对路径的 `..` 规范化",
+      "input": "C:\\a\\..\\b",
+      "platform": "win32",
+      "expected": "C:/b"
+    },
+    {
+      "name": "win-drive-trailing",
+      "why": "Windows 专属：盘符绝对路径保留尾随分隔符",
+      "input": "C:\\a\\b\\",
+      "platform": "win32",
+      "expected": "C:/a/b/"
+    },
+    {
+      "name": "win-mnt-trailing",
+      "why": "Windows 专属：WSL 映射后同样保留尾随分隔符",
+      "input": "/mnt/d/git/",
+      "platform": "win32",
+      "expected": "D:/git/"
+    },
+    {
+      "name": "win-rooted-trailing",
+      "why": "Windows 专属：当前盘根路径保留尾随分隔符",
+      "input": "/tmp/x/",
+      "platform": "win32",
+      "expected": "/tmp/x/"
+    },
+    {
+      "name": "win-rooted-only",
+      "why": "Windows 专属：只有根分隔符时规范化为 `\\`",
+      "input": "/",
+      "platform": "win32",
+      "expected": "/"
+    },
+    {
+      "name": "win-incomplete-unc",
+      "why": "Windows 专属：`//tmp` 没有 share，不是 UNC，退化成当前盘根路径 `\\tmp`",
+      "input": "//tmp",
+      "platform": "win32",
+      "expected": "/tmp"
+    },
+    {
+      "name": "win-incomplete-unc-trailing",
+      "why": "Windows 专属：`//tmp/` 同样退化成 `\\tmp\\`",
+      "input": "//tmp/",
+      "platform": "win32",
+      "expected": "/tmp/"
+    },
+    {
+      "name": "win-triple-slash",
+      "why": "Windows 专属：多余的分隔符折叠成一个（`///a` → `\\a`）",
+      "input": "///a",
+      "platform": "win32",
+      "expected": "/a"
+    },
+    {
+      "name": "win-unc-bare",
+      "why": "Windows 专属：UNC 只到 share 时 Node 补一个尾随分隔符",
+      "input": "\\\\server\\share",
+      "platform": "win32",
+      "expected": "//server/share/"
+    },
+    {
+      "name": "win-unc",
+      "why": "Windows 专属：UNC 路径原样规范化",
+      "input": "\\\\server\\share\\x",
+      "platform": "win32",
+      "expected": "//server/share/x"
+    },
+    {
+      "name": "win-rooted-slash",
+      "why": "Windows 专属：Node 的 `path.isAbsolute(\"/tmp/x\")` 为真（当前盘根路径），`path.normalize` 得到 `\\tmp\\x`——**不**拼会话工作目录",
+      "input": "/tmp/x",
+      "platform": "win32",
+      "expected": "/tmp/x"
+    },
+    {
+      "name": "win-rooted-backslash",
+      "why": "Windows 专属：`\\tmp\\x` 同样是当前盘根路径",
+      "input": "\\tmp\\x",
+      "platform": "win32",
+      "expected": "/tmp/x"
+    },
+    {
+      "name": "win-rooted-normalize",
+      "why": "Windows 专属：当前盘根路径里的 `..` 不会越过根",
+      "input": "/xy/../b",
+      "platform": "win32",
+      "expected": "/b"
+    }
+  ]
+}

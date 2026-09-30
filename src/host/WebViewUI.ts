@@ -29,7 +29,8 @@ import { WebviewMessageHandler, type WebviewRequestContext } from './ui/webviewM
 import { fetchBalanceAndPush } from '../core/history/balancePush.js';
 import { pushToolProgress } from './queryActivity.js';
 import { buildConversationLoadedPayload } from './conversationPayload.js';
-import { readUiLanguageSync } from '../core/history/Config.js';
+import { readUiLanguage } from './coreFacts.js';
+import { resolveCoreKind } from './coreKind.js';
 import type { WebviewMessage } from '../core/webviewTypes.js';
 import type { WebViewUiPort, ConversationLoadedExtra, WebviewPoster, LLMConfigPanelTrigger } from './ui/ports.js';
 
@@ -240,6 +241,11 @@ export class WebViewUI implements WebViewUiPort {
   /** 重新读取并分发对话列表（转调 ConversationManager.refresh） */
   refreshConversations(): Promise<void> {
     return this.conversations.refresh();
+  }
+
+  /** 最近一次会话运行时状态快照（Standalone 下拉取不能用进程内的 sessionRuntime） */
+  getSessionRuntimeStatesSnapshot(): readonly SessionRuntimeState[] {
+    return this.conversations.getSessionStatesSnapshot();
   }
 
   /** 记录会话活动，重置该会话的空闲关闭计时（空闲回收是 VS Code 专属，见第 5.4 节） */
@@ -456,21 +462,26 @@ export class WebViewUI implements WebViewUiPort {
   }
 
   /**
-   * 消息里出现了新的高亮语言 → 并入 settings.json 的 highlightLanguages 字段。
-   * core 只报告事实，字段名 / 去重 / 上限在 core 的 `highlightLanguagesMutator`，
-   * 写盘由宿主承担（core 只读不写 settings.json）。
-   */
-  /**
-   * 项目对话目录已就绪 → 让宿主写入其中的 settings.json（记录 workspacePath）。
-   * core 只报告事实，写盘归宿主（core 只读不写 settings.json）。
+   * 项目对话目录已就绪 → 写入其中的 settings.json（记录 workspacePath）。
+   *
+   * Embedded 下 core 只报告事实，写盘归宿主；Standalone 下清单文件由 Core 自己写
+   * （`docs/standalone-core.md` 第 8 节），宿主不再重复写。
    */
   onProjectConversationDirReady(projectDir: string, workspacePath: string): void {
+    if (resolveCoreKind() === 'standalone') return;
     void this.host.ensureProjectSettings(projectDir, workspacePath).catch((err: unknown) => {
       this.log(`Failed to write project settings.json for ${projectDir}: ${err}`);
     });
   }
 
+  /**
+   * 消息里出现了新的高亮语言 → 并入 settings.json 的 highlightLanguages 字段。
+   *
+   * Embedded 下字段名 / 去重 / 上限在 core 的 `highlightLanguagesMutator`，写盘归宿主；
+   * Standalone 下 Core 自己落盘（`config::merge_highlight_languages`），宿主不再写。
+   */
   onHighlightLanguagesUsed(languages: readonly string[]): void {
+    if (resolveCoreKind() === 'standalone') return;
     void import('../core/history/Config.js').then(({ highlightLanguagesMutator }) =>
       this.host.updateSettingsJson(highlightLanguagesMutator(languages))
     ).catch((err: unknown) => {
@@ -625,7 +636,7 @@ export class WebViewUI implements WebViewUiPort {
         type: 'showLLMConfig',
         ...payload,
         mcpServers: await readMcpServersForDefaults(),
-        language: readUiLanguageSync(),
+        language: readUiLanguage(),
       };
     } catch (err) {
       this.log(`[WebViewUI] Failed to read LLM config: ${err}`);
@@ -641,7 +652,7 @@ export class WebViewUI implements WebViewUiPort {
         apiKey: '',
         providers: [],
         activeProvider: '',
-        language: readUiLanguageSync(),
+        language: readUiLanguage(),
         mcpServers: [],
       };
     }

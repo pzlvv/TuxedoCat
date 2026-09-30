@@ -1,0 +1,3 @@
+# Standalone Core 的构建目标由 scripts/build-core.mjs 通过 `--target` 指定，
+# 这里不写死默认目标：平台矩阵（Windows / Linux × x64 / arm64）里的每个组合
+# 都应能直接构建。见 docs/standalone-core.md 第 4.1 节。

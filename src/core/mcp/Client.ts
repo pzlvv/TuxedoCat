@@ -155,7 +155,7 @@ export function normalizeMcpCallResult(result: unknown): McpCallResult {
  * Node 在 shell:true 时把参数直接拼接后交给 cmd.exe，含空格的路径（如
  * C:\Program Files\...）必须自行加引号，否则会被拆成多个参数。
  */
-function quoteWindowsArg(value: string): string {
+export function quoteWindowsArg(value: string): string {
   if (value === '') return '""';
   if (!/[\s"&|<>^()]/.test(value)) return value;
   return `"${value.replace(/"/g, '""')}"`;

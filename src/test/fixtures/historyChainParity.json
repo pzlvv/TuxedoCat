@@ -1,0 +1,113 @@
+{
+  "description": "历史链重建对照表（Embedded loadConversation ↔ Standalone history::parse_messages）：行序 → parentUuid BFS 后的消息顺序。每条 message 带 marker 字段用于断言顺序；lines 里的字符串按原始行写入 jsonl（用于损坏行用例）。",
+  "cases": [
+    {
+      "name": "乱序行按 parentUuid 链重排",
+      "lines": [
+        { "uuid": "b", "parentUuid": "a", "timestamp": 2, "message": { "type": "assistant", "marker": "b", "message": { "role": "assistant", "content": [] } } },
+        { "uuid": "a", "parentUuid": null, "timestamp": 1, "message": { "type": "user", "marker": "a", "message": { "role": "user", "content": [] } } },
+        { "uuid": "c", "parentUuid": "b", "timestamp": 3, "message": { "type": "user", "marker": "c", "message": { "role": "user", "content": [] } } }
+      ],
+      "expected": ["a", "b", "c"]
+    },
+    {
+      "name": "同层兄弟按 timestamp 稳定排序（BFS）",
+      "lines": [
+        { "uuid": "a", "parentUuid": null, "timestamp": 1, "message": { "type": "user", "marker": "a", "message": { "role": "user", "content": [] } } },
+        { "uuid": "c", "parentUuid": "a", "timestamp": 3, "message": { "type": "assistant", "marker": "c", "message": { "role": "assistant", "content": [] } } },
+        { "uuid": "b", "parentUuid": "a", "timestamp": 2, "message": { "type": "assistant", "marker": "b", "message": { "role": "assistant", "content": [] } } },
+        { "uuid": "d", "parentUuid": "b", "timestamp": 4, "message": { "type": "user", "marker": "d", "message": { "role": "user", "content": [] } } }
+      ],
+      "expected": ["a", "b", "c", "d"]
+    },
+    {
+      "name": "父节点缺失退化为根节点，子树仍完整加载",
+      "lines": [
+        { "uuid": "a", "parentUuid": null, "timestamp": 1, "message": { "type": "user", "marker": "a", "message": { "role": "user", "content": [] } } },
+        { "uuid": "x", "parentUuid": "ghost", "timestamp": 2, "message": { "type": "assistant", "marker": "x", "message": { "role": "assistant", "content": [] } } },
+        { "uuid": "b", "parentUuid": "x", "timestamp": 3, "message": { "type": "user", "marker": "b", "message": { "role": "user", "content": [] } } }
+      ],
+      "expected": ["a", "x", "b"]
+    },
+    {
+      "name": "自引用 parentUuid 的恢复消息重新挂到包含 tool_use 的 assistant",
+      "lines": [
+        {
+          "uuid": "a1",
+          "parentUuid": null,
+          "timestamp": 1,
+          "message": {
+            "type": "assistant",
+            "marker": "a1",
+            "message": {
+              "role": "assistant",
+              "content": [{ "type": "tool_use", "id": "call_1", "name": "Bash", "input": { "command": "ls" } }]
+            }
+          }
+        },
+        {
+          "uuid": "r1",
+          "parentUuid": "r1",
+          "timestamp": 2,
+          "message": {
+            "type": "user",
+            "marker": "r1",
+            "message": {
+              "role": "user",
+              "content": [{ "type": "tool_result", "tool_use_id": "call_1", "content": "ok" }]
+            }
+          }
+        }
+      ],
+      "expected": ["a1", "r1"]
+    },
+    {
+      "name": "自引用且找不到对应 assistant 时退化为根节点",
+      "lines": [
+        {
+          "uuid": "r9",
+          "parentUuid": "r9",
+          "timestamp": 1,
+          "message": {
+            "type": "user",
+            "marker": "r9",
+            "message": {
+              "role": "user",
+              "content": [{ "type": "tool_result", "tool_use_id": "missing", "content": "ok" }]
+            }
+          }
+        }
+      ],
+      "expected": ["r9"]
+    },
+    {
+      "name": "重复 uuid 后写覆盖先写，但保留首次出现的顺序位置",
+      "lines": [
+        { "uuid": "a", "parentUuid": null, "timestamp": 1, "message": { "type": "user", "marker": "a-old", "message": { "role": "user", "content": [] } } },
+        { "uuid": "b", "parentUuid": "a", "timestamp": 2, "message": { "type": "assistant", "marker": "b", "message": { "role": "assistant", "content": [] } } },
+        { "uuid": "a", "parentUuid": null, "timestamp": 3, "message": { "type": "user", "marker": "a-new", "message": { "role": "user", "content": [] } } }
+      ],
+      "expected": ["a-new", "b"]
+    },
+    {
+      "name": "损坏行与缺 uuid 的行被跳过",
+      "lines": [
+        { "uuid": "a", "parentUuid": null, "timestamp": 1, "message": { "type": "user", "marker": "a", "message": { "role": "user", "content": [] } } },
+        "not json",
+        { "parentUuid": null, "timestamp": 2, "message": { "type": "user", "marker": "no-uuid", "message": { "role": "user", "content": [] } } },
+        { "uuid": "b", "parentUuid": "a", "timestamp": 3, "message": { "type": "assistant", "marker": "b", "message": { "role": "assistant", "content": [] } } }
+      ],
+      "expected": ["a", "b"]
+    },
+    {
+      "name": "行过滤用 JS 空白口径（U+FEFF 视为空白、U+0085 不视为空白）",
+      "lines": [
+        "\uFEFF{\"uuid\":\"a\",\"parentUuid\":null,\"timestamp\":1,\"message\":{\"type\":\"user\",\"marker\":\"a\",\"message\":{\"role\":\"user\",\"content\":[]}}}",
+        "\u0085",
+        "   ",
+        "{\"uuid\":\"b\",\"parentUuid\":\"a\",\"timestamp\":2,\"message\":{\"type\":\"assistant\",\"marker\":\"b\",\"message\":{\"role\":\"assistant\",\"content\":[]}}}"
+      ],
+      "expected": ["b"]
+    }
+  ]
+}

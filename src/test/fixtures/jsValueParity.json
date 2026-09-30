@@ -1,0 +1,162 @@
+{
+  "note": "JS 语义对照表（parseDataUrl 正则 / String() 兜底）。两侧共用：src/test/jsValueParity.test.ts 与 core-rs 的 js_value_parity_tests。",
+  "dataUrls": [
+    {
+      "input": "data:image/png;base64,AAAA",
+      "mediaType": "image/png",
+      "data": "AAAA"
+    },
+    {
+      "input": "data:image/jpeg;base64,BBBB",
+      "mediaType": "image/jpeg",
+      "data": "BBBB"
+    },
+    {
+      "input": "data:;base64,CCCC",
+      "mediaType": "image/png",
+      "data": "data:;base64,CCCC"
+    },
+    {
+      "input": "data:image/png;charset=utf-8;base64,DDDD",
+      "mediaType": "image/png",
+      "data": "data:image/png;charset=utf-8;base64,DDDD"
+    },
+    {
+      "input": "data:image/png;base64,",
+      "mediaType": "image/png",
+      "data": ""
+    },
+    {
+      "input": "data:image/png;base64,AAA\nBBB",
+      "mediaType": "image/png",
+      "data": "AAA\nBBB"
+    },
+    {
+      "input": "data:image/png;base64,AAA;base64,BBB",
+      "mediaType": "image/png",
+      "data": "AAA;base64,BBB"
+    },
+    {
+      "input": "DATA:image/png;base64,EEEE",
+      "mediaType": "image/png",
+      "data": "DATA:image/png;base64,EEEE"
+    },
+    {
+      "input": "foo;base64,FFFF",
+      "mediaType": "image/png",
+      "data": "foo;base64,FFFF"
+    },
+    {
+      "input": "plainbase64GGGG",
+      "mediaType": "image/png",
+      "data": "plainbase64GGGG"
+    },
+    {
+      "input": "data:text/plain,HHHH",
+      "mediaType": "image/png",
+      "data": "data:text/plain,HHHH"
+    },
+    {
+      "input": "data:image/svg+xml;base64,IIII",
+      "mediaType": "image/svg+xml",
+      "data": "IIII"
+    },
+    {
+      "input": "data:image/png;base64,  spaced  ",
+      "mediaType": "image/png",
+      "data": "  spaced  "
+    },
+    {
+      "input": "",
+      "mediaType": "image/png",
+      "data": ""
+    }
+  ],
+  "stringify": [
+    {
+      "input": null,
+      "expected": "null"
+    },
+    {
+      "input": true,
+      "expected": "true"
+    },
+    {
+      "input": false,
+      "expected": "false"
+    },
+    {
+      "input": 0,
+      "expected": "0"
+    },
+    {
+      "input": 1,
+      "expected": "1"
+    },
+    {
+      "input": 1.5,
+      "expected": "1.5"
+    },
+    {
+      "input": 1.0,
+      "expected": "1"
+    },
+    {
+      "input": 100.0,
+      "expected": "100"
+    },
+    {
+      "input": 1e21,
+      "expected": "1e+21"
+    },
+    {
+      "input": 1e-7,
+      "expected": "1e-7"
+    },
+    {
+      "input": -3,
+      "expected": "-3"
+    },
+    {
+      "input": "text",
+      "expected": "text"
+    },
+    {
+      "input": "",
+      "expected": ""
+    },
+    {
+      "input": [
+        1,
+        2
+      ],
+      "expected": "1,2"
+    },
+    {
+      "input": [],
+      "expected": ""
+    },
+    {
+      "input": [1, null, 2],
+      "expected": "1,,2"
+    },
+    {
+      "input": [null],
+      "expected": ""
+    },
+    {
+      "input": [1, [2, null]],
+      "expected": "1,2,"
+    },
+    {
+      "input": {
+        "a": 1
+      },
+      "expected": "[object Object]"
+    },
+    {
+      "input": 9007199254740991,
+      "expected": "9007199254740991"
+    }
+  ]
+}

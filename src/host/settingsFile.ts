@@ -1,9 +1,14 @@
 /**
- * settings.json 的宿主侧写入口。
+ * settings.json 的宿主侧写入口（**Embedded 装配**）。
  *
- * 全局配置文件（~/<CONFIG_DIR_NAME>/settings.json）的**写**是宿主能力：
+ * Embedded 下全局配置文件（~/<CONFIG_DIR_NAME>/settings.json）的**写**是宿主能力：
  * core 只读它，不写（DEVELOPMENT.md 第 2 节规则 9）。两个宿主共用这份实现——
  * 串行化「读-改-写」，避免多个写入口并发造成文件截断或字段丢失。
+ *
+ * Standalone 下这份写能力归 Core（`docs/standalone-core.md` 第 8 节）：全局配置经
+ * `UiEvent.settingsJsonUpdateRequested` 交给 Core（`config::update_settings_json`），
+ * 项目清单由 Core 建目录时自己写（`config::write_project_settings`），宿主侧的两个
+ * 处理器在 standalone 下直接返回（见 `WebViewUI`）。
  *
  * 写盘后调用 core 的 `resetSettingsCache()` 让 core 的读缓存失效
  * （只清内存缓存，不写盘），下次读取拿到新值。
@@ -11,7 +16,8 @@
 
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
-import { getConfigHomeDir, resetSettingsCache } from '../core/history/Config.js';
+import { resetSettingsCache } from '../core/history/Config.js';
+import { readConfigHomeDir } from './coreFacts.js';
 
 /** settings.json 修改器：同步改 cfg；返回非 undefined 时作为新的完整配置写回 */
 export type SettingsJsonMutator = (cfg: Record<string, any>) => void | Record<string, any>;
@@ -27,8 +33,9 @@ let writeChain: Promise<void> = Promise.resolve();
 /**
  * 写项目对话目录的 settings.json（记录该目录对应的 workspacePath）。
  *
- * 与全局 settings.json 一样：**写**归宿主，core 只读。目录已由 core 建好，
+ * Embedded 下**写**归宿主，core 只读。目录已由 core 建好，
  * 这里只在 workspacePath 变化时重写（幂等，避免重复写盘）。
+ * Standalone 下这份清单由 Core 写（`config::write_project_settings`），本函数不参与。
  */
 export async function writeProjectSettings(projectDir: string, workspacePath: string): Promise<void> {
   const settingsPath = join(projectDir, 'settings.json');
@@ -55,7 +62,7 @@ export async function writeProjectSettings(projectDir: string, workspacePath: st
  */
 export function writeSettingsJson(mutator: SettingsJsonMutator): Promise<void> {
   const run = async (): Promise<void> => {
-    const configHomeDir = getConfigHomeDir();
+    const configHomeDir = readConfigHomeDir();
     const settingsPath = join(configHomeDir, 'settings.json');
     let cfg: Record<string, any> = {};
     try {

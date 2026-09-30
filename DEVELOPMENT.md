@@ -108,7 +108,14 @@ HOST .up.> CORE : 事件类型 / 只读函数
 | `src/core/AssistantEventBus.ts` | 事件类型（`CoreEvent` / `CoreRequest` / `UiEvent`）、处理器映射类型、总线接口、全局注册（`setGlobalEventBus` / `requireEventBus` / `resetGlobalEventBus`） |
 | `src/host/EventBus.ts` | 总线实现 `createEventBus()`，纯内存发布订阅，无宿主依赖 |
 | `src/core/initializeCoreEvents.ts` | core 侧 `UiEvent` 订阅的唯一注册入口，由 bootstrap 在 `setGlobalEventBus` 之后调用一次 |
-| `src/host/bootstrapCore.ts` | 共享启动接线骨架：locale / 日志 / 扩展路径 / 总线与 core 侧订阅 / `WebViewUI.create` / 历史 / 会话队列 / 等待用户读取器 / 异步收尾；导出 `bootstrapSnapshot()`（启动自检）与 `shutdownCore()`（退出清理） |
+| `src/host/bootstrapCore.ts` | 共享启动接线骨架：locale / 日志 / 扩展路径 / 总线与 core 侧订阅 / `WebViewUI.create` / 历史 / 会话队列 / 等待用户读取器 / 异步收尾；按 `CORE_KIND` 装配 embedded / standalone（第 13.2 节）；导出 `bootstrapSnapshot()`（启动自检）与 `shutdownCore()`（退出清理） |
+| `src/host/coreKind.ts` | Core 实现的选择变量：`CORE_KIND`（默认 `standalone`，打包时由 esbuild 按 `TUXEDO_CAT_CORE` 注入构建期取值）与 `TUXEDO_CAT_CORE` 运行期覆盖入口，`resolveCoreKind()` |
+| `src/host/standalone/protocol.ts` | Standalone 帧协议：帧类型、编解码、换行分隔 JSON 解码器 |
+| `src/host/standalone/coreBinary.ts` | Standalone Core 产物定位：平台 / 架构 → `resources/core/<arch>-<platform>/` |
+| `src/host/standalone/CoreProcess.ts` | Standalone Core 进程管理：启动 / 握手 / 帧收发 / 背压 / 崩溃重启 / 关闭 |
+| `src/host/standalone/StandaloneEventBus.ts` | `AssistantEventBus` 的帧通道实现：就绪前排队、连接态重放、`CoreRequest` 应答 |
+| `core-rs/` | Standalone Core 的 Rust 包（帧协议、Core 侧总线、进程入口） |
+| `scripts/build-core.mjs` | Standalone Core 构建脚本：按目标三元组 `cargo build` 并落到 `resources/core/` |
 | `src/core/sessionRuntime.ts` | 会话运行时状态（`idle` / `waiting`）的唯一 owner，`sessionRuntimeChanged` 的生产者 |
 | `src/core/tools/PermissionPolicy.ts` | 权限规则加工（agentMode → `resolveToolPermission`）与会话级 agentMode 存储 |
 | `src/core/mcp/MCPHost.ts` | MCP 会话引用生命周期的唯一入口。它不是宿主契约，仅有一个 core 侧单例 |
@@ -480,13 +487,13 @@ UI 可以被替换，也可以只订阅自己关心的事件。
 
 ### 3.1 事件定义
 
-三组词汇表，共 46 个事件：
+三组词汇表，共 47 个事件：
 
 | 词汇表 | 方向 | 语义 | 数量 |
 | --- | --- | --- | --- |
 | `CoreEvent` | core → UI | 单向事实通知 | 24 |
 | `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 2 |
-| `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 20 |
+| `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 21 |
 
 逐事件的载荷 / 触发点 / 处理方见第 4 章。
 
@@ -704,7 +711,7 @@ wire message（若该事件会产生 webview 协议消息）。
 | --- | --- | --- | --- |
 | `CoreEvent` | core → UI | 24 | `WebViewUI`（`onCoreEvents` 映射表） |
 | `CoreRequest` | core → UI | 2 | `WebViewUI`（`onCoreRequests` 映射表） |
-| `UiEvent` | UI → core | 20 | core 侧订阅者（`initializeCoreEvents`） |
+| `UiEvent` | UI → core | 21 | core 侧订阅者（`initializeCoreEvents`） |
 
 命名规则见第 3.4 节。
 
@@ -798,6 +805,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 40 | `llmConfigSaved` | `config` | `saveLLMConfig` | `llm/config.clearConfigCache` |
 | 41 | `hostEnvironmentProvided` | `locale`, `extensionPath`, `logToConsole` | `bootstrapCore`（总线建好、core 侧订阅注册完毕后发一次） | `initializeCoreEvents` 的 `registerHostEnvironmentUiEvents` → `setCoreLocale` / `setExtensionPath` / `setLogToConsole` |
 | 42 | `userChoicePendingChanged` | `sessionId`, `pending: boolean` | `UserChoiceManager`（webview 弹出选择、用户应答、`dropSession` 释放视图时） | `initializeCoreEvents` 的 `registerUserChoiceUiEvents` → `markSessionWaiting`（`sessionRuntime` 的 `waiting` 来源，供 `isSessionIdle` 判定） |
+| 43 | `sessionWorkspaceAssigned` | `sessionId`, `workspacePath: string \| null` | `WebviewMessageHandler.ensureSessionWorkspace`（会话首次被 core 解析目录之前）、`electron/main.ts` 的 `registerCoreSessionWorkspace`（多工作目录宿主按来源视图登记） | `initializeCoreEvents` 的 `registerSessionWorkspaceUiEvents` → `setSessionWorkspace` / `clearSessionWorkspace`（Standalone 下同一处理器在 Core 进程内） |
 
 **`changes` 数组而不是可选字段**：`history.updateConversationContext` 是**部分合并**语义
 （未列出的字段保持原值），用数组而不是一组可选字段，是为了同时满足「一次可带多个字段」
@@ -2613,5 +2621,33 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 | `request()` 超时 | 不内置计时器（第 3.7 节） | 保持不内置，本地与远程同一口径 |
 
 不在本项范围：连接的序列化与反序列化、流式事件的节流与合并、断线恢复。
+
+### 13.2 Standalone Core（Rust）
+
+规格见 `docs/standalone-core.md`，落地清单见 `TODO.md`。
+
+Core 的两种实现由选择变量 `CORE_KIND` 装配：`embedded` 为 `src/core` 的 TypeScript 实现
+（与 UI 同进程），`standalone` 为 `core-rs/` 的 Rust 实现（独立进程）。两种实现对 UI 呈现
+同一份 `CoreEvent` / `CoreRequest` / `UiEvent` 词汇表，落盘格式一致。
+
+每个宿主实例拥有一个 Core 进程；Core 崩溃后由宿主重启并恢复接线。当前产出 Windows x64，
+目标矩阵预留 Windows / Linux × x64 / arm64。
+
+| 项 | 现状 | 待定 |
+| --- | --- | --- |
+| 选择变量 / 帧协议 / 进程管理 / 崩溃重启 | 已落地（落点见第 1.3 节） | — |
+| 事件投递 | `emitToCore` 只写帧；Standalone 下进程内不注册 core 侧订阅（规格第 1.1 节） | — |
+| 用户消息入口 | `UiEvent.userMessageSubmitted`；`WebviewMessageHandler` 不再直接调用引擎 | — |
+| 会话引擎 / 内置工具 / 会话落盘 / 配置读写 | 已在 `core-rs/` 内实现（查询循环、Bash（含 `run_in_background` 与自动转后台）/ Read（含 doc/docx/ppt/pptx/xlsx）/ Write / Edit / Grep / Glob / TodoWrite / Agent / Reply / AskUserQuestion / Skill、并行工具批、meta.json + jsonl、settings.json 读写） | 与 Embedded 的逐项对等（`TODO.md` M2–M4） |
+| 子代理 | `Agent` 建 `sub_*` 子会话并后台跑，`Reply` 把回复作为 `origin='agent'` 的 user 消息投回创建者；`sessionRuntime.idle` 递归到子代理 | — |
+| 技能 / 斜杠命令 | 已在 `core-rs/` 内实现（`skills.rs` 的 frontmatter 解析 / 变量替换 / 目录扫描 / 内置注册，`commands.rs` 的 `CommandDispatcher` 与内置命令注册表，技能清单注入系统提示环境段，`Skill` 工具末位不变式）；**已知缺口**：内置 `spin` 命令只有 `design` 分支可用（依赖 Spin 引擎） | `skillsParity.json` / `systemPromptParity.json` / `toolSchemaParity.json` 三份对照表覆盖 |
+| 对话压缩 | 已在 `core-rs/` 内实现（`compact.rs` 的阈值 / 触发 / 摘要 prompt / 归档，`replay.rs` 的历史消息 → UI 消息转换，`messagesReplaced` 整批重放）；自动压缩在 `aiBegin` 前、手动压缩经 `UiEvent.compactRequested`（非空闲时延后） | `compactParity.json` 对照表 + `compact_engine_tests.rs` 端到端 |
+| Responses API | 已在 `core-rs/responses.rs` 内实现（`apiType='Responses'`：URL / 工具 / 消息转换、SSE 事件循环、status 与 usage 口径、`response.output` 权威校准）；内置 `web_search` 工具未迁入 | `responsesParity.json` 对照表 + `responses_stream_tests.rs` 端到端 |
+| MCP | 已在 `core-rs/mcp.rs` / `mcp_http.rs` / `mcp_config.rs` 内实现（stdio + Streamable HTTP + 旧版 SSE、连接池与会话引用、`mcp__*` 工具注入与按会话启用过滤） | `mcpParity.json` 对照表 + `mcp_tests.rs` 的真实子进程端到端 |
+| Spin 引擎 | 已在 `core-rs/spin.rs` / `spin_host.rs` 内实现（`spin.json` 读写、拓扑排序、子代理执行、验收判定、`/spin` 命令） | `spinParity.json` 对照表 + `spin_tests.rs` 的假 `SpinHost` 端到端 + `spin_host_tests.rs` 的 `/spin` 分支 |
+| UI → core 请求 | 已实现（协议版本 2）：`UiRequest` 七个请求由 UI 发起、Core 应答，宿主不再直接读 core 的磁盘数据 | `src/host/coreFacts.ts` 是宿主侧统一入口；`standaloneBus.test.ts` 覆盖请求往返 / 失败 / 断连 |
+| 对等测试 / 端到端 | 已实现：同一串 `UiEvent` 在两种实现下产出同一组 `CoreEvent`；重启续读端到端 | `coreEventParity.test.ts` / `standaloneCoreRestart.test.ts` |
+| 宿主侧的 core 事实读取 | 宿主直接 import core 的只读函数（第 2 节规则 9）；同机部署下读写同一份磁盘格式 | 经总线（规格第 10 节，`TODO.md` M7） |
+| 目标平台 | 产出 Windows x64 | Windows / Linux × x64 / arm64 |
 
 新发现的待定项按同样方式记在这里（现状 + 待定）。

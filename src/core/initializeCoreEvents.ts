@@ -16,7 +16,12 @@ import type { AssistantEventBus } from './AssistantEventBus.js';
 import { logger, setLogToConsole } from './Logger.js';
 import { requireEventBus } from './AssistantEventBus.js';
 import { setCoreLocale, setCoreUiLanguage } from './i18n.js';
-import { readUiLanguageSync, setExtensionPath } from './history/Config.js';
+import {
+  readUiLanguageSync,
+  setExtensionPath,
+  setSessionWorkspace,
+  clearSessionWorkspace,
+} from './history/Config.js';
 import { markSessionWaiting } from './sessionRuntime.js';
 
 // ==================== 宿主环境 ====================
@@ -32,6 +37,22 @@ function registerHostEnvironmentUiEvents(bus: AssistantEventBus): void {
     setCoreLocale(locale);
     setExtensionPath(extensionPath);
     setLogToConsole(logToConsole);
+  });
+}
+
+/**
+ * 会话工作目录：多工作目录宿主在打开 / 切换 / 重命名会话时登记。
+ *
+ * Embedded 下宿主本来可以直接调 `setSessionWorkspace()`（同一张表、同一进程），
+ * 这里保留事件通路是为了两种装配共用同一套宿主代码：Standalone 下这张表在 Core
+ * 进程内，只有事件能过去。
+ */
+function registerSessionWorkspaceUiEvents(bus: AssistantEventBus): void {
+  bus.onUiEvent('sessionWorkspaceAssigned', ({ sessionId, workspacePath }) => {
+    // 清除（null / 空串）走 clearSessionWorkspace：setSessionWorkspace 对空值
+    // 是 no-op，留着旧值会让后续解析用到已经关闭的工作目录。
+    if (!workspacePath) clearSessionWorkspace(sessionId);
+    else setSessionWorkspace(sessionId, workspacePath);
   });
 }
 
@@ -67,6 +88,15 @@ async function registerIntegrationUiEvents(bus: AssistantEventBus): Promise<void
 
   bus.onUiEvent('abortRequested', ({ sessionId }) => {
     abortCurrentQuery(sessionId);
+  });
+
+  // ===== 用户消息 =====
+  // 宿主只发 userMessageSubmitted；取 / 建引擎、应用会话覆盖、入队都在 core 侧完成。
+  const { submitUserMessage } = await import('./Integration.js');
+  bus.onUiEvent('userMessageSubmitted', (payload) => {
+    void submitUserMessage(payload).catch((error: unknown) => {
+      logger.error('initializeCoreEvents', `submitUserMessage failed: ${String(error)}`);
+    });
   });
 
   // ===== 压缩 =====
@@ -326,6 +356,7 @@ export function initializeCoreEvents(bus: AssistantEventBus): void {
 
   // 宿主事件：同步注册，避免事件在处理器就位前到达、被总线按「暂无订阅者」丢弃
   registerHostEnvironmentUiEvents(bus);
+  registerSessionWorkspaceUiEvents(bus);
   registerUserChoiceUiEvents(bus);
 
   void registerIntegrationUiEvents(bus);

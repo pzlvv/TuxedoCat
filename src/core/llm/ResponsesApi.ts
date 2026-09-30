@@ -131,6 +131,10 @@ export function shouldSkipUsageForContext(params: {
   return { skip: false, reason: '' };
 }
 
+// 下面这组纯函数（URL / 工具 / 消息转换 / status / usage / output 校准）导出只为
+// 「Responses API 对等对照表」（`scripts/gen-responses-parity.mjs`）能从编译产物调用，
+// 运行时调用方仍在模块内部。
+
 /**
  * 构建 Responses API 请求 URL
  * OpenAI SDK 约定：baseURL 为根路径（如 https://api.deepseek.com）时请求 /responses，
@@ -142,7 +146,7 @@ export function shouldSkipUsageForContext(params: {
  *   - baseURL 已以 /v1 结尾 → `${baseURL}/responses`
  *   - 否则 → `${baseURL}/v1/responses`（多数 OpenAI 兼容服务同时接受此路径）
  */
-function buildResponsesUrl(baseURL: string): string {
+export function buildResponsesUrl(baseURL: string): string {
   return joinV1Path(baseURL, 'responses');
 }
 
@@ -154,7 +158,7 @@ function buildResponsesUrl(baseURL: string): string {
  * 注意：非 function 类型的工具（如 Responses API 内置的 web_search）原样透传，
  * 不做转换，保证 { type: 'web_search', ... } 这类工具能直接使用。
  */
-function convertToolsToResponsesFormat(tools: unknown[]): unknown[] {
+export function convertToolsToResponsesFormat(tools: unknown[]): unknown[] {
   return (tools || []).map((tool: any) => {
     // 非 function 工具（如 web_search / computer 等内置工具）原样透传
     if (tool && typeof tool === 'object' && typeof tool.type === 'string' && tool.type !== 'function') {
@@ -192,7 +196,7 @@ function convertToolsToResponsesFormat(tools: unknown[]): unknown[] {
  * 正确做法是转换为顶层的 `{ type: 'reasoning', content: [{ type: 'reasoning_text', text }] }` item。
  * 空的 thinking block（Query.ts 为 Anthropic 端点补齐的空占位）不满足该要求，应跳过。
  */
-function convertMessagesToResponsesInput(messages: Array<{ role: string; content: string | unknown[] }>): unknown[] {
+export function convertMessagesToResponsesInput(messages: Array<{ role: string; content: string | unknown[] }>): unknown[] {
   const items: unknown[] = [];
 
   for (const msg of messages) {
@@ -306,7 +310,7 @@ function convertMessagesToResponsesInput(messages: Array<{ role: string; content
 /**
  * 将 Responses API 的 status / incomplete_details 映射为内部 stop_reason
  */
-function mapResponsesStatus(status: string | undefined, incompleteDetails?: { reason?: string }): string {
+export function mapResponsesStatus(status: string | undefined, incompleteDetails?: { reason?: string }): string {
   if (status === 'completed') return 'end_turn';
   if (status === 'incomplete') {
     if (incompleteDetails?.reason === 'max_output_tokens') return 'max_tokens';
@@ -327,7 +331,7 @@ function mapResponsesStatus(status: string | undefined, incompleteDetails?: { re
  * 字段提取逻辑与 OpenAiApi 的 extractChatUsage 逐字相同（仅字段名不同），
  * 参数化收敛到 shared.ts 的 extractUsageFields。
  */
-function extractUsage(respUsage: Record<string, unknown> | undefined): InternalUsage | undefined {
+export function extractUsage(respUsage: Record<string, unknown> | undefined): InternalUsage | undefined {
   return extractUsageFields(respUsage, {
     inputTokens: 'input_tokens',
     outputTokens: 'output_tokens',
@@ -345,7 +349,7 @@ function extractUsage(respUsage: Record<string, unknown> | undefined): InternalU
  * 用 response.completed 中权威的 response.output 校准 content blocks，
  * 避免增量事件缺失导致最终消息不完整。
  */
-function syncContentBlocksFromOutput(contentBlocks: any[], output: unknown[] | undefined): void {
+export function syncContentBlocksFromOutput(contentBlocks: any[], output: unknown[] | undefined): void {
   if (!Array.isArray(output) || output.length === 0) return;
   const newBlocks: any[] = [];
   for (const item of output as any[]) {

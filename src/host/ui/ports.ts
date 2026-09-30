@@ -11,6 +11,8 @@
  * 投递器：把 (sessionId, 部分消息体) 补全后交给宿主。
  * 由 WebViewUI 内部统一使用，避免多处各写一份合并逻辑。
  */
+import type { SessionRuntimeState } from '../../core/AssistantEventBus.js';
+
 export type WebviewPoster = (sessionId: string, message: Record<string, unknown>) => void;
 
 /**
@@ -89,6 +91,12 @@ export interface WebViewUiPort {
 
   /** 重新读取并分发对话列表（转调 ConversationManager.refresh） */
   refreshConversations(): Promise<void>;
+
+  /**
+   * 最近一次会话运行时状态快照（转调 ConversationManager.getSessionStatesSnapshot）。
+   * Standalone 下进程内 `sessionRuntime` 不被写入，拉取必须走这份缓存。
+   */
+  getSessionRuntimeStatesSnapshot(): readonly SessionRuntimeState[];
 
   /**
    * 记录会话活动（打开 / 新建 / 用户发消息时调用），重置空闲关闭计时。

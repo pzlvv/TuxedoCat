@@ -1,0 +1,1295 @@
+{
+  "note": "Spin Design 引擎纯函数对照表（Embedded `spin/Engine.ts` / `spin/SpinJudger.ts` ↔ Standalone `core-rs/src/spin.rs`）。只覆盖未赋值变量 / 结构问题分类 / 拓扑排序 / 下一个节点 / rollout 归一化 / For Each 分行 / 子代理 prompt 拼装 / 变量替换 / 验收 JSON 提取 / 迭代进度计算；真正跑子代理与文件读写的流程由 Rust 侧假 SpinHost 单测覆盖。",
+  "variablesWithoutValue": [
+    {
+      "name": "缺少 variables",
+      "config": {},
+      "result": []
+    },
+    {
+      "name": "空对象",
+      "config": {
+        "variables": {}
+      },
+      "result": []
+    },
+    {
+      "name": "全部有值",
+      "config": {
+        "variables": {
+          "A": "x"
+        }
+      },
+      "result": []
+    },
+    {
+      "name": "空串",
+      "config": {
+        "variables": {
+          "A": ""
+        }
+      },
+      "result": [
+        "A"
+      ]
+    },
+    {
+      "name": "仅空白",
+      "config": {
+        "variables": {
+          "A": "   "
+        }
+      },
+      "result": [
+        "A"
+      ]
+    },
+    {
+      "name": "null 值",
+      "config": {
+        "variables": {
+          "A": null
+        }
+      },
+      "result": [
+        "A"
+      ]
+    },
+    {
+      "name": "数字值",
+      "config": {
+        "variables": {
+          "A": 1
+        }
+      },
+      "result": [
+        "A"
+      ]
+    },
+    {
+      "name": "布尔值",
+      "config": {
+        "variables": {
+          "A": 0,
+          "B": false
+        }
+      },
+      "result": [
+        "A",
+        "B"
+      ]
+    },
+    {
+      "name": "跳过内置变量",
+      "config": {
+        "variables": {
+          "ROLLOUT_ID": "",
+          "LINE": "  "
+        }
+      },
+      "result": []
+    },
+    {
+      "name": "跳过空键",
+      "config": {
+        "variables": {
+          "": "x"
+        }
+      },
+      "result": []
+    },
+    {
+      "name": "混合顺序",
+      "config": {
+        "variables": {
+          "A": "x",
+          "B": "",
+          "C": "z",
+          "D": " "
+        }
+      },
+      "result": [
+        "B",
+        "D"
+      ]
+    },
+    {
+      "name": "variables 是数组",
+      "config": {
+        "variables": []
+      },
+      "result": []
+    },
+    {
+      "name": "variables 是字符串",
+      "config": {
+        "variables": "str"
+      },
+      "result": []
+    }
+  ],
+  "designIssues": [
+    {
+      "name": "null",
+      "config": null,
+      "issue": "invalid"
+    },
+    {
+      "name": "数组",
+      "config": [],
+      "issue": "empty-node"
+    },
+    {
+      "name": "空对象",
+      "config": {},
+      "issue": "empty-node"
+    },
+    {
+      "name": "nodes 为空",
+      "config": {
+        "nodes": []
+      },
+      "issue": "empty-node"
+    },
+    {
+      "name": "node 为 null",
+      "config": {
+        "nodes": [
+          null
+        ]
+      },
+      "issue": "invalid"
+    },
+    {
+      "name": "node 缺 task",
+      "config": {
+        "nodes": [
+          {
+            "id": 1
+          }
+        ]
+      },
+      "issue": "empty-node"
+    },
+    {
+      "name": "task 仅空白",
+      "config": {
+        "nodes": [
+          {
+            "id": 1,
+            "task": "   "
+          }
+        ]
+      },
+      "issue": "empty-node"
+    },
+    {
+      "name": "id 是字符串",
+      "config": {
+        "nodes": [
+          {
+            "id": "1",
+            "task": "x"
+          }
+        ]
+      },
+      "issue": "invalid"
+    },
+    {
+      "name": "合法单节点",
+      "config": {
+        "nodes": [
+          {
+            "id": 1,
+            "task": "x"
+          }
+        ]
+      },
+      "issue": null
+    },
+    {
+      "name": "合法两节点连线",
+      "config": {
+        "nodes": [
+          {
+            "id": 1,
+            "task": "x"
+          },
+          {
+            "id": 2,
+            "task": "y"
+          }
+        ],
+        "edges": [
+          {
+            "from": 1,
+            "to": 2
+          }
+        ]
+      },
+      "issue": null
+    },
+    {
+      "name": "存在未赋值变量",
+      "config": {
+        "nodes": [
+          {
+            "id": 1,
+            "task": "x"
+          }
+        ],
+        "variables": {
+          "K": ""
+        }
+      },
+      "issue": "variable-no-value"
+    },
+    {
+      "name": "内置变量空值不算问题",
+      "config": {
+        "nodes": [
+          {
+            "id": 1,
+            "task": "x"
+          }
+        ],
+        "variables": {
+          "K": "v",
+          "ROLLOUT_ID": ""
+        }
+      },
+      "issue": null
+    },
+    {
+      "name": "未赋值变量优先于非法 edges",
+      "config": {
+        "nodes": [
+          {
+            "id": 1,
+            "task": "x"
+          }
+        ],
+        "variables": {
+          "K": ""
+        },
+        "edges": "nope"
+      },
+      "issue": "variable-no-value"
+    },
+    {
+      "name": "edges 非数组",
+      "config": {
+        "nodes": [
+          {
+            "id": 1,
+            "task": "x"
+          }
+        ],
+        "edges": "nope"
+      },
+      "issue": "invalid"
+    },
+    {
+      "name": "edges 为 null",
+      "config": {
+        "nodes": [
+          {
+            "id": 1,
+            "task": "x"
+          }
+        ],
+        "edges": null
+      },
+      "issue": "invalid"
+    },
+    {
+      "name": "variables 是数组",
+      "config": {
+        "nodes": [
+          {
+            "id": 1,
+            "task": "x"
+          }
+        ],
+        "variables": [
+          1,
+          2
+        ]
+      },
+      "issue": null
+    },
+    {
+      "name": "有环",
+      "config": {
+        "nodes": [
+          {
+            "id": 1,
+            "task": "x"
+          },
+          {
+            "id": 2,
+            "task": "y"
+          }
+        ],
+        "edges": [
+          {
+            "from": 1,
+            "to": 2
+          },
+          {
+            "from": 2,
+            "to": 1
+          }
+        ]
+      },
+      "issue": "not-dag"
+    }
+  ],
+  "topoSort": [
+    {
+      "name": "线性 1->2->3",
+      "nodes": [
+        {
+          "id": 1
+        },
+        {
+          "id": 2
+        },
+        {
+          "id": 3
+        }
+      ],
+      "edges": [
+        {
+          "from": 1,
+          "to": 2
+        },
+        {
+          "from": 2,
+          "to": 3
+        }
+      ],
+      "order": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "name": "菱形",
+      "nodes": [
+        {
+          "id": 1
+        },
+        {
+          "id": 2
+        },
+        {
+          "id": 3
+        },
+        {
+          "id": 4
+        }
+      ],
+      "edges": [
+        {
+          "from": 1,
+          "to": 2
+        },
+        {
+          "from": 1,
+          "to": 3
+        },
+        {
+          "from": 2,
+          "to": 4
+        },
+        {
+          "from": 3,
+          "to": 4
+        }
+      ],
+      "order": [
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "name": "孤立节点按输入顺序",
+      "nodes": [
+        {
+          "id": 5
+        },
+        {
+          "id": 1
+        },
+        {
+          "id": 3
+        }
+      ],
+      "edges": [],
+      "order": [
+        5,
+        1,
+        3
+      ]
+    },
+    {
+      "name": "有环只输出入度为 0 的节点",
+      "nodes": [
+        {
+          "id": 1
+        },
+        {
+          "id": 2
+        },
+        {
+          "id": 3
+        }
+      ],
+      "edges": [
+        {
+          "from": 1,
+          "to": 2
+        },
+        {
+          "from": 2,
+          "to": 1
+        }
+      ],
+      "order": [
+        3
+      ]
+    },
+    {
+      "name": "边引用不存在的节点",
+      "nodes": [
+        {
+          "id": 1
+        },
+        {
+          "id": 2
+        }
+      ],
+      "edges": [
+        {
+          "from": 1,
+          "to": 9
+        },
+        {
+          "from": 9,
+          "to": 2
+        }
+      ],
+      "order": [
+        1,
+        2
+      ]
+    },
+    {
+      "name": "空 nodes",
+      "nodes": [],
+      "edges": [],
+      "order": []
+    },
+    {
+      "name": "重复边",
+      "nodes": [
+        {
+          "id": 1
+        },
+        {
+          "id": 2
+        }
+      ],
+      "edges": [
+        {
+          "from": 1,
+          "to": 2
+        },
+        {
+          "from": 1,
+          "to": 2
+        }
+      ],
+      "order": [
+        1,
+        2
+      ]
+    },
+    {
+      "name": "重复 node id",
+      "nodes": [
+        {
+          "id": 1
+        },
+        {
+          "id": 1
+        }
+      ],
+      "edges": [],
+      "order": [
+        1,
+        1
+      ]
+    }
+  ],
+  "nextNode": [
+    {
+      "name": "空 meta 取拓扑序第一个",
+      "config": {
+        "nodes": [
+          {
+            "id": 1,
+            "task": "a"
+          },
+          {
+            "id": 2,
+            "task": "b"
+          }
+        ],
+        "edges": [
+          {
+            "from": 1,
+            "to": 2
+          }
+        ],
+        "meta": {}
+      },
+      "nextNodeId": 1
+    },
+    {
+      "name": "第一个已完成",
+      "config": {
+        "nodes": [
+          {
+            "id": 1,
+            "task": "a"
+          },
+          {
+            "id": 2,
+            "task": "b"
+          }
+        ],
+        "edges": [
+          {
+            "from": 1,
+            "to": 2
+          }
+        ],
+        "meta": {
+          "1": {
+            "passed": true,
+            "note": ""
+          }
+        }
+      },
+      "nextNodeId": 2
+    },
+    {
+      "name": "全部完成",
+      "config": {
+        "nodes": [
+          {
+            "id": 1,
+            "task": "a"
+          },
+          {
+            "id": 2,
+            "task": "b"
+          }
+        ],
+        "edges": [
+          {
+            "from": 1,
+            "to": 2
+          }
+        ],
+        "meta": {
+          "1": {
+            "passed": true,
+            "note": ""
+          },
+          "2": {
+            "passed": true,
+            "note": ""
+          }
+        }
+      },
+      "nextNodeId": null
+    },
+    {
+      "name": "rolloutPassed 但不 passed 仍要执行",
+      "config": {
+        "nodes": [
+          {
+            "id": 1,
+            "task": "a"
+          }
+        ],
+        "edges": [],
+        "meta": {
+          "1": {
+            "passed": false,
+            "note": "",
+            "rolloutPassed": 2
+          }
+        }
+      },
+      "nextNodeId": 1
+    },
+    {
+      "name": "有环时无入度节点",
+      "config": {
+        "nodes": [
+          {
+            "id": 1,
+            "task": "a"
+          },
+          {
+            "id": 2,
+            "task": "b"
+          }
+        ],
+        "edges": [
+          {
+            "from": 1,
+            "to": 2
+          },
+          {
+            "from": 2,
+            "to": 1
+          }
+        ],
+        "meta": {}
+      },
+      "nextNodeId": null
+    }
+  ],
+  "rolloutCount": [
+    {
+      "name": "null",
+      "value": null,
+      "result": 1
+    },
+    {
+      "name": "0",
+      "value": 0,
+      "result": 1
+    },
+    {
+      "name": "1",
+      "value": 1,
+      "result": 1
+    },
+    {
+      "name": "3",
+      "value": 3,
+      "result": 3
+    },
+    {
+      "name": "-2",
+      "value": -2,
+      "result": 1
+    },
+    {
+      "name": "1.5",
+      "value": 1.5,
+      "result": 1
+    },
+    {
+      "name": "3",
+      "value": 3,
+      "result": 3
+    },
+    {
+      "name": "\"2\"",
+      "value": "2",
+      "result": 1
+    },
+    {
+      "name": "true",
+      "value": true,
+      "result": 1
+    }
+  ],
+  "rolloutPassed": [
+    {
+      "name": "null",
+      "value": null,
+      "result": 0
+    },
+    {
+      "name": "0",
+      "value": 0,
+      "result": 0
+    },
+    {
+      "name": "2",
+      "value": 2,
+      "result": 2
+    },
+    {
+      "name": "-1",
+      "value": -1,
+      "result": 0
+    },
+    {
+      "name": "1.5",
+      "value": 1.5,
+      "result": 0
+    },
+    {
+      "name": "\"1\"",
+      "value": "1",
+      "result": 0
+    },
+    {
+      "name": "true",
+      "value": true,
+      "result": 0
+    }
+  ],
+  "forEachRows": [
+    {
+      "name": "null",
+      "value": null,
+      "rows": []
+    },
+    {
+      "name": "\"\"",
+      "value": "",
+      "rows": []
+    },
+    {
+      "name": "\"  \"",
+      "value": "  ",
+      "rows": []
+    },
+    {
+      "name": "\"a\\nb\"",
+      "value": "a\nb",
+      "rows": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "name": "\"a\\r\\nb\\rc\"",
+      "value": "a\r\nb\rc",
+      "rows": [
+        "a",
+        "b",
+        "c"
+      ]
+    },
+    {
+      "name": "\" a \\n\\n b \"",
+      "value": " a \n\n b ",
+      "rows": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "name": "42",
+      "value": 42,
+      "rows": [
+        "42"
+      ]
+    },
+    {
+      "name": "true",
+      "value": true,
+      "rows": [
+        "true"
+      ]
+    },
+    {
+      "name": "{}",
+      "value": {},
+      "rows": [
+        "[object Object]"
+      ]
+    },
+    {
+      "name": "[1,2]",
+      "value": [
+        1,
+        2
+      ],
+      "rows": [
+        "1,2"
+      ]
+    }
+  ],
+  "runPrompts": [
+    {
+      "name": "有验收条件",
+      "node": {
+        "id": 1,
+        "task": "实现登录",
+        "criteria": [
+          "支持邮箱",
+          "支持手机号"
+        ]
+      },
+      "note": null,
+      "skillsPrompt": null,
+      "result": "## 子任务: 实现登录\n\n### 验收条件\n- [ ] 支持邮箱\n- [ ] 支持手机号\n\n\n### 你的工作方式\n\n1. 先阅读当前项目代码，了解现有结构\n2. 实现该任务的所有功能\n3. 确保所有验收条件都满足\n\n### 重要\n\n- 只实现当前这一个子任务，不要做额外的功能\n- 完成后用 `Reply` 工具发送执行反馈，针对每一条验收标准，描述下完成的程度，若未完成说明下遇到的问题。\n- 如果遇到阻塞或未解决的问题，在反馈中说明原因\n- Reply 消息中只包含反馈内容，不要包含其他文字或 markdown 标记"
+    },
+    {
+      "name": "带上一轮反馈与 Skills",
+      "node": {
+        "id": 2,
+        "task": "修复 bug",
+        "criteria": [
+          "不报错"
+        ]
+      },
+      "note": "上一轮缺少边界检查",
+      "skillsPrompt": "### commit\n按规范提交",
+      "result": "## 子任务: 修复 bug\n\n### 验收条件\n- [ ] 不报错\n\n### 已加载的 Skills\n### commit\n按规范提交\n\n\n### 上一轮反馈\n上一轮缺少边界检查\n\n### 你的工作方式\n\n1. 先阅读当前项目代码，了解现有结构\n2. 实现该任务的所有功能\n3. 确保所有验收条件都满足\n\n### 重要\n\n- 只实现当前这一个子任务，不要做额外的功能\n- 完成后用 `Reply` 工具发送执行反馈，针对每一条验收标准，描述下完成的程度，若未完成说明下遇到的问题。\n- 如果遇到阻塞或未解决的问题，在反馈中说明原因\n- Reply 消息中只包含反馈内容，不要包含其他文字或 markdown 标记"
+    },
+    {
+      "name": "无验收条件",
+      "node": {
+        "id": 3,
+        "task": "写文档",
+        "criteria": []
+      },
+      "note": null,
+      "skillsPrompt": null,
+      "result": "## 子任务: 写文档\n\n### 验收条件\n\n\n\n### 你的工作方式\n\n1. 先阅读当前项目代码，了解现有结构\n2. 实现该任务的所有功能\n3. 确保所有验收条件都满足\n\n### 重要\n\n- 只实现当前这一个子任务，不要做额外的功能\n- 完成后用 `Reply` 工具发送执行反馈，针对每一条验收标准，描述下完成的程度，若未完成说明下遇到的问题。\n- 如果遇到阻塞或未解决的问题，在反馈中说明原因\n- Reply 消息中只包含反馈内容，不要包含其他文字或 markdown 标记"
+    },
+    {
+      "name": "note 为空串",
+      "node": {
+        "id": 4,
+        "task": "A",
+        "criteria": [
+          "c"
+        ]
+      },
+      "note": "",
+      "skillsPrompt": "",
+      "result": "## 子任务: A\n\n### 验收条件\n- [ ] c\n\n\n### 你的工作方式\n\n1. 先阅读当前项目代码，了解现有结构\n2. 实现该任务的所有功能\n3. 确保所有验收条件都满足\n\n### 重要\n\n- 只实现当前这一个子任务，不要做额外的功能\n- 完成后用 `Reply` 工具发送执行反馈，针对每一条验收标准，描述下完成的程度，若未完成说明下遇到的问题。\n- 如果遇到阻塞或未解决的问题，在反馈中说明原因\n- Reply 消息中只包含反馈内容，不要包含其他文字或 markdown 标记"
+    },
+    {
+      "name": "skillsPrompt 仅空白",
+      "node": {
+        "id": 5,
+        "task": "A",
+        "criteria": [
+          "c"
+        ]
+      },
+      "note": "n",
+      "skillsPrompt": "   ",
+      "result": "## 子任务: A\n\n### 验收条件\n- [ ] c\n\n\n### 上一轮反馈\nn\n\n### 你的工作方式\n\n1. 先阅读当前项目代码，了解现有结构\n2. 实现该任务的所有功能\n3. 确保所有验收条件都满足\n\n### 重要\n\n- 只实现当前这一个子任务，不要做额外的功能\n- 完成后用 `Reply` 工具发送执行反馈，针对每一条验收标准，描述下完成的程度，若未完成说明下遇到的问题。\n- 如果遇到阻塞或未解决的问题，在反馈中说明原因\n- Reply 消息中只包含反馈内容，不要包含其他文字或 markdown 标记"
+    }
+  ],
+  "substitutions": [
+    {
+      "name": "基本替换",
+      "text": "你好 ${NAME}",
+      "variables": {
+        "NAME": "世界"
+      },
+      "result": "你好 世界"
+    },
+    {
+      "name": "未定义变量保持原样",
+      "text": "${MISSING}",
+      "variables": {
+        "NAME": "x"
+      },
+      "result": "${MISSING}"
+    },
+    {
+      "name": "无 variables",
+      "text": "你好 ${NAME}",
+      "variables": null,
+      "result": "你好 ${NAME}"
+    },
+    {
+      "name": "$$ 转义",
+      "text": "$${NAME}",
+      "variables": {
+        "NAME": "x"
+      },
+      "result": "${NAME}"
+    },
+    {
+      "name": "单独 $",
+      "text": "价格 $5",
+      "variables": {
+        "NAME": "x"
+      },
+      "result": "价格 $5"
+    },
+    {
+      "name": "长键优先",
+      "text": "${LONG}",
+      "variables": {
+        "A": "x",
+        "LONG": "${A}"
+      },
+      "result": "x"
+    },
+    {
+      "name": "非法键名跳过",
+      "text": "${1BAD}",
+      "variables": {
+        "1BAD": "x"
+      },
+      "result": "${1BAD}"
+    },
+    {
+      "name": "空文本",
+      "text": "",
+      "variables": {
+        "A": "x"
+      },
+      "result": ""
+    },
+    {
+      "name": "值里带 $",
+      "text": "${A}",
+      "variables": {
+        "A": "a$b"
+      },
+      "result": "a$b"
+    },
+    {
+      "name": "多次出现",
+      "text": "${A}-${A}",
+      "variables": {
+        "A": "x"
+      },
+      "result": "x-x"
+    },
+    {
+      "name": "值为 null",
+      "text": "${A}",
+      "variables": {
+        "A": null
+      },
+      "result": ""
+    }
+  ],
+  "judgeParse": [
+    {
+      "name": "\"{\\\"accept\\\": true}\"",
+      "reply": "{\"accept\": true}",
+      "accept": true
+    },
+    {
+      "name": "\"{\\\"accept\\\": false}\"",
+      "reply": "{\"accept\": false}",
+      "accept": false
+    },
+    {
+      "name": "\"```json\\n{\\\"accept\\\": true}\\n```\"",
+      "reply": "```json\n{\"accept\": true}\n```",
+      "accept": true
+    },
+    {
+      "name": "\"判定结果：{\\\"accept\\\": true}，请查收\"",
+      "reply": "判定结果：{\"accept\": true}，请查收",
+      "accept": true
+    },
+    {
+      "name": "\"{\\\"accept\\\": 1}\"",
+      "reply": "{\"accept\": 1}",
+      "accept": false
+    },
+    {
+      "name": "\"true\"",
+      "reply": "true",
+      "accept": false
+    },
+    {
+      "name": "\"false\"",
+      "reply": "false",
+      "accept": false
+    },
+    {
+      "name": "\"True\"",
+      "reply": "True",
+      "accept": true
+    },
+    {
+      "name": "\"FALSE\"",
+      "reply": "FALSE",
+      "accept": false
+    },
+    {
+      "name": "\"随便写点什么\"",
+      "reply": "随便写点什么",
+      "accept": false
+    },
+    {
+      "name": "\"\"",
+      "reply": "",
+      "accept": false
+    },
+    {
+      "name": "\"{\\\"note\\\":\\\"a}b\\\"}\"",
+      "reply": "{\"note\":\"a}b\"}",
+      "accept": false
+    },
+    {
+      "name": "\"  {\\\"accept\\\":true}  \"",
+      "reply": "  {\"accept\":true}  ",
+      "accept": true
+    },
+    {
+      "name": "\"{\\\"foo\\\":1}\"",
+      "reply": "{\"foo\":1}",
+      "accept": false
+    },
+    {
+      "name": "\"{\\\"accept\\\": true\"",
+      "reply": "{\"accept\": true",
+      "accept": false
+    },
+    {
+      "name": "\"The answer is false\"",
+      "reply": "The answer is false",
+      "accept": false
+    },
+    {
+      "name": "\"{\\\"accept\\\":true} extra {\\\"accept\\\":false}\"",
+      "reply": "{\"accept\":true} extra {\"accept\":false}",
+      "accept": true
+    },
+    {
+      "name": "\"{\\\"accept\\\": \\\"true\\\"}\"",
+      "reply": "{\"accept\": \"true\"}",
+      "accept": false
+    },
+    {
+      "name": "\"前缀 {\\\"note\\\":\\\"a}b\\\",\\\"accept\\\":true} 后缀\"",
+      "reply": "前缀 {\"note\":\"a}b\",\"accept\":true} 后缀",
+      "accept": false
+    },
+    {
+      "name": "\"{\\\"a\\\":{\\\"accept\\\":true}}\"",
+      "reply": "{\"a\":{\"accept\":true}}",
+      "accept": false
+    }
+  ],
+  "progress": [
+    {
+      "name": "单行单 rollout",
+      "node": {
+        "id": 1,
+        "task": "a"
+      },
+      "variables": {},
+      "meta": {},
+      "result": {
+        "rolloutCount": 1,
+        "forEachVar": "",
+        "forEachRows": [
+          ""
+        ],
+        "totalIterations": 1,
+        "completedIterations": 0,
+        "currentRowIndex": 0,
+        "rolloutId": 0,
+        "currentRowValue": "",
+        "iterationLabel": ""
+      }
+    },
+    {
+      "name": "单行 rollout 3 已完成 1",
+      "node": {
+        "id": 1,
+        "task": "a",
+        "rollout": 3
+      },
+      "variables": {},
+      "meta": {
+        "1": {
+          "rolloutPassed": 1
+        }
+      },
+      "result": {
+        "rolloutCount": 3,
+        "forEachVar": "",
+        "forEachRows": [
+          ""
+        ],
+        "totalIterations": 3,
+        "completedIterations": 1,
+        "currentRowIndex": 0,
+        "rolloutId": 1,
+        "currentRowValue": "",
+        "iterationLabel": " [rollout 2/3]"
+      }
+    },
+    {
+      "name": "For Each 两行",
+      "node": {
+        "id": 1,
+        "task": "a",
+        "forEach": "ITEMS"
+      },
+      "variables": {
+        "ITEMS": "a\nb"
+      },
+      "meta": {},
+      "result": {
+        "rolloutCount": 1,
+        "forEachVar": "ITEMS",
+        "forEachRows": [
+          "a",
+          "b"
+        ],
+        "totalIterations": 2,
+        "completedIterations": 0,
+        "currentRowIndex": 0,
+        "rolloutId": 0,
+        "currentRowValue": "a",
+        "iterationLabel": " [row 1/2]"
+      }
+    },
+    {
+      "name": "For Each + rollout 已完成 1",
+      "node": {
+        "id": 1,
+        "task": "a",
+        "forEach": "ITEMS",
+        "rollout": 2
+      },
+      "variables": {
+        "ITEMS": "a\nb"
+      },
+      "meta": {
+        "1": {
+          "rolloutPassed": 1
+        }
+      },
+      "result": {
+        "rolloutCount": 2,
+        "forEachVar": "ITEMS",
+        "forEachRows": [
+          "a",
+          "b"
+        ],
+        "totalIterations": 4,
+        "completedIterations": 1,
+        "currentRowIndex": 0,
+        "rolloutId": 1,
+        "currentRowValue": "a",
+        "iterationLabel": " [row 1/2, rollout 2/2]"
+      }
+    },
+    {
+      "name": "For Each + rollout 进入第二行",
+      "node": {
+        "id": 1,
+        "task": "a",
+        "forEach": "ITEMS",
+        "rollout": 2
+      },
+      "variables": {
+        "ITEMS": "a\nb"
+      },
+      "meta": {
+        "1": {
+          "rolloutPassed": 2
+        }
+      },
+      "result": {
+        "rolloutCount": 2,
+        "forEachVar": "ITEMS",
+        "forEachRows": [
+          "a",
+          "b"
+        ],
+        "totalIterations": 4,
+        "completedIterations": 2,
+        "currentRowIndex": 1,
+        "rolloutId": 0,
+        "currentRowValue": "b",
+        "iterationLabel": " [row 2/2, rollout 1/2]"
+      }
+    },
+    {
+      "name": "For Each 变量不存在",
+      "node": {
+        "id": 1,
+        "task": "a",
+        "forEach": "MISSING"
+      },
+      "variables": {},
+      "meta": {},
+      "result": {
+        "rolloutCount": 1,
+        "forEachVar": "MISSING",
+        "forEachRows": [],
+        "totalIterations": 0,
+        "completedIterations": 0,
+        "currentRowIndex": 0,
+        "rolloutId": 0,
+        "currentRowValue": "",
+        "iterationLabel": ""
+      }
+    },
+    {
+      "name": "For Each 变量为空串",
+      "node": {
+        "id": 1,
+        "task": "a",
+        "forEach": "ITEMS"
+      },
+      "variables": {
+        "ITEMS": ""
+      },
+      "meta": {},
+      "result": {
+        "rolloutCount": 1,
+        "forEachVar": "ITEMS",
+        "forEachRows": [],
+        "totalIterations": 0,
+        "completedIterations": 0,
+        "currentRowIndex": 0,
+        "rolloutId": 0,
+        "currentRowValue": "",
+        "iterationLabel": ""
+      }
+    },
+    {
+      "name": "rolloutPassed 超出总数",
+      "node": {
+        "id": 1,
+        "task": "a",
+        "rollout": 3
+      },
+      "variables": {},
+      "meta": {
+        "1": {
+          "rolloutPassed": 5
+        }
+      },
+      "result": {
+        "rolloutCount": 3,
+        "forEachVar": "",
+        "forEachRows": [
+          ""
+        ],
+        "totalIterations": 3,
+        "completedIterations": 5,
+        "currentRowIndex": 1,
+        "rolloutId": 2,
+        "currentRowValue": "",
+        "iterationLabel": " [rollout 3/3]"
+      }
+    }
+  ]
+}

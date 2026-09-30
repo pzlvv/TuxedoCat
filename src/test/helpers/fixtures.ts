@@ -47,13 +47,23 @@ export interface TestBusOptions {
   userChoice?: CoreRequestHandlers['userChoice'];
 }
 
+export interface RecordingCoreEventHandlers {
+  handlers: MutableCoreEventHandlers;
+  /** 某个 core→UI 事件收到的全部事件对象（按到达顺序） */
+  received<T extends CoreEvent['type']>(type: T): Array<Extract<CoreEvent, { type: T }>>;
+  /** 某个事件的最后一条；没收到则为 undefined */
+  last<T extends CoreEvent['type']>(type: T): Extract<CoreEvent, { type: T }> | undefined;
+  /** 某个事件收到的条数 */
+  count(type: CoreEvent['type']): number;
+}
+
 /**
- * 创建一个「只记录、不做副作用」的总线。
+ * 创建一个「只记录、不做副作用」的 CoreEvent 处理器表。
  *
- * 默认所有事件处理器只把事件记进 `received()`，请求一律放行 / 选第 0 项，
- * 这样测试只关心自己要断言的那条路径。
+ * `CoreEventHandlers` 是穷尽映射类型，总线加一个事件就要改一处；
+ * 这里与 `makeTestBus` 共用同一份定义。
  */
-export function makeTestBus(options: TestBusOptions = {}): TestBus {
+export function createRecordingCoreEventHandlers(): RecordingCoreEventHandlers {
   const recorded = new Map<string, unknown[]>();
   const record = (type: string, event: unknown): void => {
     const list = recorded.get(type);
@@ -88,23 +98,39 @@ export function makeTestBus(options: TestBusOptions = {}): TestBus {
     log: (e) => record('log', e),
   };
 
+  const list = <T extends CoreEvent['type']>(type: T): Array<Extract<CoreEvent, { type: T }>> =>
+    (recorded.get(type) ?? []) as Array<Extract<CoreEvent, { type: T }>>;
+
+  return {
+    handlers,
+    received: list,
+    last: <T extends CoreEvent['type']>(type: T) => list(type).at(-1),
+    count: (type) => list(type).length,
+  };
+}
+
+/**
+ * 创建一个「只记录、不做副作用」的总线。
+ *
+ * 默认所有事件处理器只把事件记进 `received()`，请求一律放行 / 选第 0 项，
+ * 这样测试只关心自己要断言的那条路径。
+ */
+export function makeTestBus(options: TestBusOptions = {}): TestBus {
+  const recording = createRecordingCoreEventHandlers();
   const bus = createEventBus();
-  const unsubscribeCoreEvents = bus.onCoreEvents(handlers);
+  const unsubscribeCoreEvents = bus.onCoreEvents(recording.handlers);
   bus.onCoreRequests({
     toolPermissionRequested:
       options.toolPermissionRequested ?? (async () => ({ behavior: 'allow' })),
     userChoice: options.userChoice ?? (async () => ({ index: 0 })),
   });
 
-  const list = <T extends CoreEvent['type']>(type: T): Array<Extract<CoreEvent, { type: T }>> =>
-    (recorded.get(type) ?? []) as Array<Extract<CoreEvent, { type: T }>>;
-
   return {
     bus,
-    handlers,
-    received: list,
-    last: <T extends CoreEvent['type']>(type: T) => list(type).at(-1),
-    count: (type) => list(type).length,
+    handlers: recording.handlers,
+    received: recording.received,
+    last: recording.last,
+    count: recording.count,
     unsubscribeCoreEvents,
   };
 }

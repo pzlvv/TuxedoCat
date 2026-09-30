@@ -1,0 +1,1969 @@
+{
+  "note": "Embedded（src/core/tools/PermissionPolicy.ts resolveToolPermission）与 Standalone（core-rs/src/permission.rs resolve_tool_permission）的权限加工对照表。TS 侧测试断言 resolveToolPermission 的真实输出等于本表；Rust 侧测试断言 resolve_tool_permission 的输出等于本表。路径用 __CWD__ 占位，两侧测试运行时替换为会话工作目录。displayArgs.diffHunks 在两侧比较前统一剔除：Standalone 不预计算该键，webview 会用同一份 beforeContent/afterContent 调 buildEditDiffHunks 得到一致渲染。",
+  "cases": [
+    {
+      "name": "edit-single-line",
+      "why": "整行替换：permResult 带 before/after/上下文/行号，displayArgs 展开绝对路径与 diff 字段",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {
+        "a.txt": "alpha\nbeta\ngamma\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "old_string": "beta",
+        "new_string": "BETA"
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求编辑文件：a.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "应用编辑"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": "alpha\nbeta\ngamma\n",
+        "afterContent": "alpha\nBETA\ngamma\n",
+        "contextBefore": [
+          "alpha"
+        ],
+        "contextAfter": [
+          "gamma"
+        ],
+        "lineEndings": "LF",
+        "startLine": 2,
+        "endLine": 2
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "beta",
+        "new_string": "BETA",
+        "replace_all": false,
+        "contextBefore": [
+          "alpha"
+        ],
+        "contextAfter": [
+          "gamma"
+        ],
+        "diffHunks": [
+          {
+            "lines": [
+              {
+                "lineNumber": 1,
+                "content": "alpha",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 2,
+                "content": "beta",
+                "type": "removed",
+                "wordDiff": [
+                  {
+                    "text": "beta",
+                    "type": "removed"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 2,
+                "content": "BETA",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "BETA",
+                    "type": "added"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 3,
+                "content": "gamma",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 4,
+                "content": "",
+                "type": "unchanged"
+              }
+            ]
+          }
+        ],
+        "startLine": 2,
+        "endLine": 2
+      }
+    },
+    {
+      "name": "edit-context-window",
+      "why": "上下文最多取匹配前后各 4 个非空行",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {
+        "a.txt": "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "old_string": "l5\nl6",
+        "new_string": "L5\nL6"
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求编辑文件：a.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "应用编辑"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\n",
+        "afterContent": "l1\nl2\nl3\nl4\nL5\nL6\nl7\nl8\nl9\n",
+        "contextBefore": [
+          "l1",
+          "l2",
+          "l3",
+          "l4"
+        ],
+        "contextAfter": [
+          "l7",
+          "l8",
+          "l9"
+        ],
+        "lineEndings": "LF",
+        "startLine": 5,
+        "endLine": 6
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "l5\nl6",
+        "new_string": "L5\nL6",
+        "replace_all": false,
+        "contextBefore": [
+          "l1",
+          "l2",
+          "l3",
+          "l4"
+        ],
+        "contextAfter": [
+          "l7",
+          "l8",
+          "l9"
+        ],
+        "diffHunks": [
+          {
+            "lines": [
+              {
+                "lineNumber": 3,
+                "content": "l3",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 4,
+                "content": "l4",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 5,
+                "content": "l5",
+                "type": "removed",
+                "wordDiff": [
+                  {
+                    "text": "l5",
+                    "type": "removed"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 6,
+                "content": "l6",
+                "type": "removed",
+                "wordDiff": [
+                  {
+                    "text": "l6",
+                    "type": "removed"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 5,
+                "content": "L5",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "L5",
+                    "type": "added"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 6,
+                "content": "L6",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "L6",
+                    "type": "added"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 7,
+                "content": "l7",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 8,
+                "content": "l8",
+                "type": "unchanged"
+              }
+            ]
+          }
+        ],
+        "startLine": 5,
+        "endLine": 6
+      }
+    },
+    {
+      "name": "edit-mid-line",
+      "why": "匹配在行中间：上下文第一段是匹配位置之前的半个逻辑行",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {
+        "a.txt": "const foo = 1;\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "old_string": "1",
+        "new_string": "2"
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求编辑文件：a.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "应用编辑"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": "const foo = 1;\n",
+        "afterContent": "const foo = 2;\n",
+        "contextBefore": [
+          "const foo = "
+        ],
+        "contextAfter": [
+          ";"
+        ],
+        "lineEndings": "LF",
+        "startLine": 1,
+        "endLine": 1
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "1",
+        "new_string": "2",
+        "replace_all": false,
+        "contextBefore": [
+          "const foo = "
+        ],
+        "contextAfter": [
+          ";"
+        ],
+        "diffHunks": [
+          {
+            "lines": [
+              {
+                "lineNumber": 1,
+                "content": "const foo = 1;",
+                "type": "removed",
+                "wordDiff": [
+                  {
+                    "text": "const foo = ",
+                    "type": "unchanged"
+                  },
+                  {
+                    "text": "1",
+                    "type": "removed"
+                  },
+                  {
+                    "text": ";",
+                    "type": "unchanged"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 1,
+                "content": "const foo = 2;",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "const foo = ",
+                    "type": "unchanged"
+                  },
+                  {
+                    "text": "2",
+                    "type": "added"
+                  },
+                  {
+                    "text": ";",
+                    "type": "unchanged"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 2,
+                "content": "",
+                "type": "unchanged"
+              }
+            ]
+          }
+        ],
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "name": "edit-replace-all",
+      "why": "replace_all：三处匹配全部替换",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {
+        "a.txt": "x\nx\nx\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": true
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求编辑文件：a.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "应用编辑"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": "x\nx\nx\n",
+        "afterContent": "y\ny\ny\n",
+        "contextBefore": [],
+        "contextAfter": [
+          "x",
+          "x"
+        ],
+        "lineEndings": "LF",
+        "startLine": 1,
+        "endLine": 1
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": true,
+        "contextBefore": [],
+        "contextAfter": [
+          "x",
+          "x"
+        ],
+        "diffHunks": [
+          {
+            "lines": [
+              {
+                "lineNumber": 1,
+                "content": "x",
+                "type": "removed",
+                "wordDiff": [
+                  {
+                    "text": "x",
+                    "type": "removed"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 2,
+                "content": "x",
+                "type": "removed",
+                "wordDiff": [
+                  {
+                    "text": "x",
+                    "type": "removed"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 3,
+                "content": "x",
+                "type": "removed",
+                "wordDiff": [
+                  {
+                    "text": "x",
+                    "type": "removed"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 1,
+                "content": "y",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "y",
+                    "type": "added"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 2,
+                "content": "y",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "y",
+                    "type": "added"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 3,
+                "content": "y",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "y",
+                    "type": "added"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 4,
+                "content": "",
+                "type": "unchanged"
+              }
+            ]
+          }
+        ],
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "name": "edit-replace-all-string-false",
+      "why": "replace_all 传字符串 \"false\"：匹配按 false 处理，多处匹配直接 deny，displayArgs 原样保留字符串",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {
+        "a.txt": "x\nx\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": "false"
+      },
+      "expectPermResult": {
+        "behavior": "deny",
+        "message": "The old_string matches 2 locations within the search range. When replace_all is false, old_string must match exactly once. Please include more surrounding context to make old_string unique, or set replace_all to true."
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": "false"
+      }
+    },
+    {
+      "name": "edit-crlf",
+      "why": "CRLF 文件：beforeContent 规范化为 LF，afterContent 还原 CRLF，lineEndings=CRLF",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {
+        "a.txt": "alpha\r\nbeta\r\ngamma\r\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "old_string": "beta",
+        "new_string": "BETA"
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求编辑文件：a.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "应用编辑"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": "alpha\nbeta\ngamma\n",
+        "afterContent": "alpha\r\nBETA\r\ngamma\r\n",
+        "contextBefore": [
+          "alpha"
+        ],
+        "contextAfter": [
+          "gamma"
+        ],
+        "lineEndings": "CRLF",
+        "startLine": 2,
+        "endLine": 2
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "beta",
+        "new_string": "BETA",
+        "replace_all": false,
+        "contextBefore": [
+          "alpha"
+        ],
+        "contextAfter": [
+          "gamma"
+        ],
+        "diffHunks": [
+          {
+            "lines": [
+              {
+                "lineNumber": 1,
+                "content": "alpha",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 2,
+                "content": "beta",
+                "type": "removed",
+                "wordDiff": [
+                  {
+                    "text": "beta",
+                    "type": "removed"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 2,
+                "content": "BETA",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "BETA",
+                    "type": "added"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 3,
+                "content": "gamma",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 4,
+                "content": "",
+                "type": "unchanged"
+              }
+            ]
+          }
+        ],
+        "startLine": 2,
+        "endLine": 2
+      }
+    },
+    {
+      "name": "edit-insert-empty-old",
+      "why": "old_string 为空串：插入语义，firstMatchIndex=0",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {
+        "a.txt": "a\nb\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "old_string": "",
+        "new_string": "x\n"
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求编辑文件：a.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "应用编辑"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": "a\nb\n",
+        "afterContent": "x\na\nb\n",
+        "contextBefore": [],
+        "contextAfter": [
+          "a",
+          "b"
+        ],
+        "lineEndings": "LF",
+        "startLine": 1,
+        "endLine": 1
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "",
+        "new_string": "x\n",
+        "replace_all": false,
+        "contextBefore": [],
+        "contextAfter": [
+          "a",
+          "b"
+        ],
+        "diffHunks": [
+          {
+            "lines": [
+              {
+                "lineNumber": 1,
+                "content": "x",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "x",
+                    "type": "added"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 2,
+                "content": "a",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 3,
+                "content": "b",
+                "type": "unchanged"
+              }
+            ]
+          }
+        ],
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "name": "edit-empty-file-insert",
+      "why": "空文件插入：displayArgs 的 beforeContent 空串归一为 null",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {
+        "a.txt": ""
+      },
+      "args": {
+        "file_path": "a.txt",
+        "old_string": "",
+        "new_string": "hello\n"
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求编辑文件：a.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "应用编辑"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": "",
+        "afterContent": "hello\n",
+        "contextBefore": [],
+        "contextAfter": [],
+        "lineEndings": "LF",
+        "startLine": 1,
+        "endLine": 1
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "",
+        "new_string": "hello\n",
+        "replace_all": false,
+        "contextBefore": [],
+        "contextAfter": [],
+        "diffHunks": [],
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "name": "edit-offset-limit",
+      "why": "offset/limit 搜索窗口内的匹配与行号",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {
+        "a.txt": "l1\nl2\nl3\nl4\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "old_string": "l3",
+        "new_string": "L3",
+        "offset": 2,
+        "limit": 2
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求编辑文件：a.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "应用编辑"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": "l1\nl2\nl3\nl4\n",
+        "afterContent": "l1\nl2\nL3\nl4\n",
+        "contextBefore": [
+          "l1",
+          "l2"
+        ],
+        "contextAfter": [
+          "l4"
+        ],
+        "lineEndings": "LF",
+        "startLine": 3,
+        "endLine": 3
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "l3",
+        "new_string": "L3",
+        "offset": 2,
+        "limit": 2,
+        "replace_all": false,
+        "contextBefore": [
+          "l1",
+          "l2"
+        ],
+        "contextAfter": [
+          "l4"
+        ],
+        "diffHunks": [
+          {
+            "lines": [
+              {
+                "lineNumber": 1,
+                "content": "l1",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 2,
+                "content": "l2",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 3,
+                "content": "l3",
+                "type": "removed",
+                "wordDiff": [
+                  {
+                    "text": "l3",
+                    "type": "removed"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 3,
+                "content": "L3",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "L3",
+                    "type": "added"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 4,
+                "content": "l4",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 5,
+                "content": "",
+                "type": "unchanged"
+              }
+            ]
+          }
+        ],
+        "startLine": 3,
+        "endLine": 3
+      }
+    },
+    {
+      "name": "edit-not-found",
+      "why": "old_string 找不到：checkPermissions 直接 deny，不带 diff 字段",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {
+        "a.txt": "alpha\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "old_string": "zzz",
+        "new_string": "y"
+      },
+      "expectPermResult": {
+        "behavior": "deny",
+        "message": "The specified old_string was not found in the file. Please read the file first and use the exact text.\nNote: Read output uses | as separator between line number and content. Make sure NOT to include the line number and the separator | in old_string."
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "zzz",
+        "new_string": "y",
+        "replace_all": false
+      }
+    },
+    {
+      "name": "edit-multi-match",
+      "why": "未 replace_all 的多处匹配：直接 deny，不带 diff 字段",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {
+        "a.txt": "x\nx\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "old_string": "x",
+        "new_string": "y"
+      },
+      "expectPermResult": {
+        "behavior": "deny",
+        "message": "The old_string matches 2 locations within the search range. When replace_all is false, old_string must match exactly once. Please include more surrounding context to make old_string unique, or set replace_all to true."
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": false
+      }
+    },
+    {
+      "name": "edit-missing-file",
+      "why": "目标文件不存在：deny 文案与 Embedded 一致",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {},
+      "args": {
+        "file_path": "missing.txt",
+        "old_string": "a",
+        "new_string": "b"
+      },
+      "expectPermResult": {
+        "behavior": "deny",
+        "message": "File does not exist: missing.txt. Use Write tool to create new files."
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\missing.txt",
+        "old_string": "a",
+        "new_string": "b",
+        "replace_all": false
+      }
+    },
+    {
+      "name": "edit-auto-mode",
+      "why": "auto 模式：ask 自动放行为 allow，diff 字段仍保留在 permResult 与 displayArgs",
+      "tool": "Edit",
+      "mode": "auto",
+      "files": {
+        "a.txt": "alpha\nbeta\ngamma\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "old_string": "beta",
+        "new_string": "BETA"
+      },
+      "expectPermResult": {
+        "behavior": "allow",
+        "beforeContent": "alpha\nbeta\ngamma\n",
+        "afterContent": "alpha\nBETA\ngamma\n",
+        "contextBefore": [
+          "alpha"
+        ],
+        "contextAfter": [
+          "gamma"
+        ],
+        "startLine": 2,
+        "endLine": 2,
+        "lineEndings": "LF"
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "beta",
+        "new_string": "BETA",
+        "replace_all": false,
+        "contextBefore": [
+          "alpha"
+        ],
+        "contextAfter": [
+          "gamma"
+        ],
+        "diffHunks": [
+          {
+            "lines": [
+              {
+                "lineNumber": 1,
+                "content": "alpha",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 2,
+                "content": "beta",
+                "type": "removed",
+                "wordDiff": [
+                  {
+                    "text": "beta",
+                    "type": "removed"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 2,
+                "content": "BETA",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "BETA",
+                    "type": "added"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 3,
+                "content": "gamma",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 4,
+                "content": "",
+                "type": "unchanged"
+              }
+            ]
+          }
+        ],
+        "startLine": 2,
+        "endLine": 2
+      }
+    },
+    {
+      "name": "edit-risk-mode",
+      "why": "risk 模式对普通 Edit 自动放行并保留 diff 字段",
+      "tool": "Edit",
+      "mode": "risk",
+      "files": {
+        "a.txt": "alpha\nbeta\ngamma\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "old_string": "beta",
+        "new_string": "BETA"
+      },
+      "expectPermResult": {
+        "behavior": "allow",
+        "beforeContent": "alpha\nbeta\ngamma\n",
+        "afterContent": "alpha\nBETA\ngamma\n",
+        "contextBefore": [
+          "alpha"
+        ],
+        "contextAfter": [
+          "gamma"
+        ],
+        "startLine": 2,
+        "endLine": 2,
+        "lineEndings": "LF"
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "beta",
+        "new_string": "BETA",
+        "replace_all": false,
+        "contextBefore": [
+          "alpha"
+        ],
+        "contextAfter": [
+          "gamma"
+        ],
+        "diffHunks": [
+          {
+            "lines": [
+              {
+                "lineNumber": 1,
+                "content": "alpha",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 2,
+                "content": "beta",
+                "type": "removed",
+                "wordDiff": [
+                  {
+                    "text": "beta",
+                    "type": "removed"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 2,
+                "content": "BETA",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "BETA",
+                    "type": "added"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 3,
+                "content": "gamma",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 4,
+                "content": "",
+                "type": "unchanged"
+              }
+            ]
+          }
+        ],
+        "startLine": 2,
+        "endLine": 2
+      }
+    },
+    {
+      "name": "edit-double-encoded-args",
+      "why": "整个入参被 double-encode 成字符串：normalizeToolArgs 解析后照常展开",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {
+        "a.txt": "alpha\nbeta\ngamma\n"
+      },
+      "args": "{\"file_path\":\"a.txt\",\"old_string\":\"beta\",\"new_string\":\"BETA\"}",
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求编辑文件：a.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "应用编辑"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": "alpha\nbeta\ngamma\n",
+        "afterContent": "alpha\nBETA\ngamma\n",
+        "contextBefore": [
+          "alpha"
+        ],
+        "contextAfter": [
+          "gamma"
+        ],
+        "lineEndings": "LF",
+        "startLine": 2,
+        "endLine": 2
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "beta",
+        "new_string": "BETA",
+        "replace_all": false,
+        "contextBefore": [
+          "alpha"
+        ],
+        "contextAfter": [
+          "gamma"
+        ],
+        "diffHunks": [
+          {
+            "lines": [
+              {
+                "lineNumber": 1,
+                "content": "alpha",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 2,
+                "content": "beta",
+                "type": "removed",
+                "wordDiff": [
+                  {
+                    "text": "beta",
+                    "type": "removed"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 2,
+                "content": "BETA",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "BETA",
+                    "type": "added"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 3,
+                "content": "gamma",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 4,
+                "content": "",
+                "type": "unchanged"
+              }
+            ]
+          }
+        ],
+        "startLine": 2,
+        "endLine": 2
+      }
+    },
+    {
+      "name": "write-create",
+      "why": "新建文件：beforeContent=null，displayArgs 带 content/contentPreview/totalLines",
+      "tool": "Write",
+      "mode": "manual",
+      "files": {},
+      "args": {
+        "file_path": "new.txt",
+        "content": "hello\nworld"
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求创建新文件：new.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "创建文件"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": null,
+        "afterContent": "hello\nworld"
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\new.txt",
+        "content": "hello\nworld",
+        "contentPreview": "hello\nworld",
+        "totalLines": 2,
+        "isTruncated": false,
+        "beforeContent": null,
+        "afterContent": "hello\nworld"
+      }
+    },
+    {
+      "name": "write-overwrite",
+      "why": "覆盖文件：beforeContent 为旧内容",
+      "tool": "Write",
+      "mode": "manual",
+      "files": {
+        "a.txt": "old\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "content": "new\n"
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求覆盖现有文件：a.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "覆盖文件"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": "old\n",
+        "afterContent": "new\n"
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "content": "new\n",
+        "contentPreview": "new\n",
+        "totalLines": 2,
+        "isTruncated": false,
+        "beforeContent": "old\n",
+        "afterContent": "new\n"
+      }
+    },
+    {
+      "name": "write-empty-content",
+      "why": "content 为空串（假值）：displayArgs 不追加 Write 预览字段",
+      "tool": "Write",
+      "mode": "manual",
+      "files": {},
+      "args": {
+        "file_path": "empty.txt",
+        "content": ""
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求创建新文件：empty.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "创建文件"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": null,
+        "afterContent": ""
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\empty.txt",
+        "content": ""
+      }
+    },
+    {
+      "name": "write-auto-mode",
+      "why": "auto 模式 Write：allow + diff 字段",
+      "tool": "Write",
+      "mode": "auto",
+      "files": {},
+      "args": {
+        "file_path": "auto.txt",
+        "content": "auto\n"
+      },
+      "expectPermResult": {
+        "behavior": "allow",
+        "beforeContent": null,
+        "afterContent": "auto\n"
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\auto.txt",
+        "content": "auto\n",
+        "contentPreview": "auto\n",
+        "totalLines": 2,
+        "isTruncated": false,
+        "beforeContent": null,
+        "afterContent": "auto\n"
+      }
+    },
+    {
+      "name": "read-allow",
+      "why": "只读工具：permResult allow，displayArgs 仅做路径展开",
+      "tool": "Read",
+      "mode": "manual",
+      "files": {
+        "a.txt": "alpha\n"
+      },
+      "args": {
+        "file_path": "a.txt"
+      },
+      "expectPermResult": {
+        "behavior": "allow",
+        "updatedInput": {
+          "file_path": "a.txt"
+        }
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt"
+      }
+    },
+    {
+      "name": "read-path-field",
+      "why": "Read 用 path 字段时同样展开为 file_path",
+      "tool": "Read",
+      "mode": "manual",
+      "files": {
+        "a.txt": "alpha\n"
+      },
+      "args": {
+        "path": "a.txt"
+      },
+      "expectPermResult": {
+        "behavior": "allow",
+        "updatedInput": {
+          "path": "a.txt"
+        }
+      },
+      "expectDisplayArgs": {
+        "path": "a.txt",
+        "file_path": "__CWD__\\a.txt"
+      }
+    },
+    {
+      "name": "bash-readonly",
+      "why": "只读 Bash：allow，displayArgs 原样",
+      "tool": "Bash",
+      "mode": "manual",
+      "files": {},
+      "args": {
+        "command": "ls -la"
+      },
+      "expectPermResult": {
+        "behavior": "allow",
+        "updatedInput": {
+          "command": "ls -la"
+        }
+      },
+      "expectDisplayArgs": {
+        "command": "ls -la"
+      }
+    },
+    {
+      "name": "bash-ask-manual",
+      "why": "普通写命令 manual：ask 文案与选项",
+      "tool": "Bash",
+      "mode": "manual",
+      "files": {},
+      "args": {
+        "command": "rm -rf build"
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求执行：rm -rf build",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "执行此命令"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消此操作"
+          }
+        ]
+      },
+      "expectDisplayArgs": {
+        "command": "rm -rf build"
+      }
+    },
+    {
+      "name": "bash-ask-auto",
+      "why": "普通写命令 auto：ask → allow，message/choices 丢弃",
+      "tool": "Bash",
+      "mode": "auto",
+      "files": {},
+      "args": {
+        "command": "rm -rf build"
+      },
+      "expectPermResult": {
+        "behavior": "allow"
+      },
+      "expectDisplayArgs": {
+        "command": "rm -rf build"
+      }
+    },
+    {
+      "name": "bash-ask-risk",
+      "why": "普通写命令 risk：自动放行",
+      "tool": "Bash",
+      "mode": "risk",
+      "files": {},
+      "args": {
+        "command": "rm -rf build"
+      },
+      "expectPermResult": {
+        "behavior": "allow"
+      },
+      "expectDisplayArgs": {
+        "command": "rm -rf build"
+      }
+    },
+    {
+      "name": "bash-destructive-risk",
+      "why": "破坏性命令 risk：保持 ask（危险操作仍弹框）",
+      "tool": "Bash",
+      "mode": "risk",
+      "files": {},
+      "args": {
+        "command": "dd if=/dev/zero of=x"
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "⚠️ 请求执行：dd if=/dev/zero of=x",
+        "choices": [
+          {
+            "label": "允许执行",
+            "description": "我知道这个命令的风险，继续执行"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消此操作"
+          }
+        ]
+      },
+      "expectDisplayArgs": {
+        "command": "dd if=/dev/zero of=x"
+      }
+    },
+    {
+      "name": "bash-destructive-auto",
+      "why": "破坏性命令 auto：自动放行",
+      "tool": "Bash",
+      "mode": "auto",
+      "files": {},
+      "args": {
+        "command": "dd if=/dev/zero of=x"
+      },
+      "expectPermResult": {
+        "behavior": "allow"
+      },
+      "expectDisplayArgs": {
+        "command": "dd if=/dev/zero of=x"
+      }
+    },
+    {
+      "name": "bash-git-reset-risk",
+      "why": "git reset 在 risk 模式视为危险操作，保持 ask",
+      "tool": "Bash",
+      "mode": "risk",
+      "files": {},
+      "args": {
+        "command": "git reset --hard HEAD"
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求执行：git reset --hard HEAD",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "执行此命令"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消此操作"
+          }
+        ]
+      },
+      "expectDisplayArgs": {
+        "command": "git reset --hard HEAD"
+      }
+    },
+    {
+      "name": "edit-context-skips-blank-lines",
+      "why": "上下文行过滤空行与 undefined（最多各 4 行）",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {
+        "a.txt": "a\n\n\nb\nc\nd\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "old_string": "c",
+        "new_string": "C"
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求编辑文件：a.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "应用编辑"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": "a\n\n\nb\nc\nd\n",
+        "afterContent": "a\n\n\nb\nC\nd\n",
+        "contextBefore": [
+          "a",
+          "b"
+        ],
+        "contextAfter": [
+          "d"
+        ],
+        "lineEndings": "LF",
+        "startLine": 5,
+        "endLine": 5
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "c",
+        "new_string": "C",
+        "replace_all": false,
+        "contextBefore": [
+          "a",
+          "b"
+        ],
+        "contextAfter": [
+          "d"
+        ],
+        "diffHunks": [
+          {
+            "lines": [
+              {
+                "lineNumber": 3,
+                "content": "",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 4,
+                "content": "b",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 5,
+                "content": "c",
+                "type": "removed",
+                "wordDiff": [
+                  {
+                    "text": "c",
+                    "type": "removed"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 5,
+                "content": "C",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "C",
+                    "type": "added"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 6,
+                "content": "d",
+                "type": "unchanged"
+              },
+              {
+                "lineNumber": 7,
+                "content": "",
+                "type": "unchanged"
+              }
+            ]
+          }
+        ],
+        "startLine": 5,
+        "endLine": 5
+      }
+    },
+    {
+      "name": "edit-replace-all-number-one",
+      "why": "replace_all 传数字 1：displayArgs 原样保留数字",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {
+        "a.txt": "x\nx\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": 1
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求编辑文件：a.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "应用编辑"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": "x\nx\n",
+        "afterContent": "y\ny\n",
+        "contextBefore": [],
+        "contextAfter": [
+          "x"
+        ],
+        "lineEndings": "LF",
+        "startLine": 1,
+        "endLine": 1
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": 1,
+        "contextBefore": [],
+        "contextAfter": [
+          "x"
+        ],
+        "diffHunks": [
+          {
+            "lines": [
+              {
+                "lineNumber": 1,
+                "content": "x",
+                "type": "removed",
+                "wordDiff": [
+                  {
+                    "text": "x",
+                    "type": "removed"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 2,
+                "content": "x",
+                "type": "removed",
+                "wordDiff": [
+                  {
+                    "text": "x",
+                    "type": "removed"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 1,
+                "content": "y",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "y",
+                    "type": "added"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 2,
+                "content": "y",
+                "type": "added",
+                "wordDiff": [
+                  {
+                    "text": "y",
+                    "type": "added"
+                  }
+                ]
+              },
+              {
+                "lineNumber": 3,
+                "content": "",
+                "type": "unchanged"
+              }
+            ]
+          }
+        ],
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "name": "unknown-tool",
+      "why": "工具不存在（tool=null）：permResult 恒为 allow，displayArgs 仍按工具名展开路径",
+      "tool": "Read",
+      "noTool": true,
+      "mode": "manual",
+      "files": {
+        "a.txt": "alpha\n"
+      },
+      "args": {
+        "file_path": "a.txt"
+      },
+      "expectPermResult": {
+        "behavior": "allow"
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt"
+      }
+    },
+    {
+      "name": "write-invalid-path",
+      "why": "Write 缺 file_path：checkPermissions 直接 deny；displayArgs 仍展开 content 预览字段（beforeContent=null）",
+      "tool": "Write",
+      "mode": "manual",
+      "files": {},
+      "args": {
+        "content": "x"
+      },
+      "expectPermResult": {
+        "behavior": "deny",
+        "message": "Invalid file path: file_path is required and must be a string"
+      },
+      "expectDisplayArgs": {
+        "content": "x",
+        "contentPreview": "x",
+        "totalLines": 1,
+        "isTruncated": false,
+        "beforeContent": null,
+        "afterContent": "x"
+      }
+    },
+    {
+      "name": "write-invalid-content",
+      "why": "Write 缺 content：deny，displayArgs 只展开路径",
+      "tool": "Write",
+      "mode": "manual",
+      "files": {},
+      "args": {
+        "file_path": "a.txt"
+      },
+      "expectPermResult": {
+        "behavior": "deny",
+        "message": "Invalid content: content is required"
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt"
+      }
+    },
+    {
+      "name": "edit-invalid-old-string",
+      "why": "Edit 缺 old_string：deny；displayArgs 仍带 old_string='' / new_string / replace_all",
+      "tool": "Edit",
+      "mode": "manual",
+      "files": {},
+      "args": {
+        "file_path": "a.txt",
+        "new_string": "b"
+      },
+      "expectPermResult": {
+        "behavior": "deny",
+        "message": "Invalid old_string: old_string is required"
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "new_string": "b",
+        "old_string": "",
+        "replace_all": false
+      }
+    },
+    {
+      "name": "write-non-string-content-zero",
+      "why": "content 传数字 0：permResult.afterContent 原样保留类型（不 stringify）；displayArgs 因 content 为假值不追加 Write 预览字段",
+      "tool": "Write",
+      "mode": "manual",
+      "files": {
+        "a.txt": "old\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "content": 0
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求覆盖现有文件：a.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "覆盖文件"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": "old\n",
+        "afterContent": 0
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "content": 0
+      }
+    },
+    {
+      "name": "write-object-content",
+      "why": "content 传对象：permResult.afterContent 保留对象，displayArgs 的预览字段用 String() 文本化",
+      "tool": "Write",
+      "mode": "manual",
+      "files": {
+        "a.txt": "old\n"
+      },
+      "args": {
+        "file_path": "a.txt",
+        "content": {
+          "x": 1
+        }
+      },
+      "expectPermResult": {
+        "behavior": "ask",
+        "message": "请求覆盖现有文件：a.txt",
+        "choices": [
+          {
+            "label": "允许",
+            "description": "覆盖文件"
+          },
+          {
+            "label": "拒绝",
+            "description": "取消操作"
+          }
+        ],
+        "beforeContent": "old\n",
+        "afterContent": {
+          "x": 1
+        }
+      },
+      "expectDisplayArgs": {
+        "file_path": "__CWD__\\a.txt",
+        "content": {
+          "x": 1
+        },
+        "contentPreview": "[object Object]",
+        "totalLines": 1,
+        "isTruncated": false,
+        "beforeContent": "old\n",
+        "afterContent": "[object Object]"
+      }
+    },
+    {
+      "name": "agent-ask",
+      "why": "AgentTool.checkPermissions 返回 { behavior: 'ask' }（无 message / choices）：manual 下保持 ask，displayArgs 是原样入参",
+      "tool": "Agent",
+      "mode": "manual",
+      "args": {
+        "prompt": "do it",
+        "agentRole": "Master"
+      },
+      "expectPermResult": {
+        "behavior": "ask"
+      },
+      "expectDisplayArgs": {
+        "prompt": "do it",
+        "agentRole": "Master"
+      }
+    },
+    {
+      "name": "agent-nested-deny",
+      "why": "子代理会话（id 以 sub_ 开头）里调用 Agent 直接 deny 并 shouldTerminate",
+      "tool": "Agent",
+      "mode": "manual",
+      "sessionId": "sub_1",
+      "args": {
+        "prompt": "do it",
+        "agentRole": "Master"
+      },
+      "expectPermResult": {
+        "behavior": "deny",
+        "message": "The Agent tool does not support nested calls within sub-agents. The current session \"sub_1\" is already a sub-agent and cannot create new sub-agents. Please complete the task directly within the current sub-agent.",
+        "shouldTerminate": true
+      },
+      "expectDisplayArgs": {
+        "prompt": "do it",
+        "agentRole": "Master"
+      }
+    },
+    {
+      "name": "agent-empty-prompt-deny",
+      "why": "prompt 为纯空白时 deny（shouldTerminate=false）",
+      "tool": "Agent",
+      "mode": "manual",
+      "args": {
+        "prompt": "   ",
+        "agentRole": "Master"
+      },
+      "expectPermResult": {
+        "behavior": "deny",
+        "message": "Agent 工具需要提供任务描述(prompt)。",
+        "shouldTerminate": false
+      },
+      "expectDisplayArgs": {
+        "prompt": "   ",
+        "agentRole": "Master"
+      }
+    },
+    {
+      "name": "agent-prompt-zwsp-deny",
+      "why": "prompt 为 U+FEFF（ZWNBSP）时 JS trim 视为空白 → deny；Rust 必须用 JS 空白口径（Rust str::trim 不去 U+FEFF）",
+      "tool": "Agent",
+      "mode": "manual",
+      "args": {
+        "prompt": "\uFEFF",
+        "agentRole": "Master"
+      },
+      "expectPermResult": {
+        "behavior": "deny",
+        "message": "Agent 工具需要提供任务描述(prompt)。",
+        "shouldTerminate": false
+      },
+      "expectDisplayArgs": {
+        "prompt": "\uFEFF",
+        "agentRole": "Master"
+      }
+    },
+    {
+      "name": "agent-prompt-nel-ask",
+      "why": "prompt 为 U+0085（NEL）时 JS trim 不视为空白 → 保持 ask；Rust str::trim 会误判为空白而 deny",
+      "tool": "Agent",
+      "mode": "manual",
+      "args": {
+        "prompt": "\u0085",
+        "agentRole": "Master"
+      },
+      "expectPermResult": {
+        "behavior": "ask"
+      },
+      "expectDisplayArgs": {
+        "prompt": "\u0085",
+        "agentRole": "Master"
+      }
+    },
+    {
+      "name": "reply-allow",
+      "why": "ReplyTool 没有自定义 checkPermissions → buildTool 默认实现（allow + updatedInput）",
+      "tool": "Reply",
+      "mode": "manual",
+      "args": {
+        "message": "hi"
+      },
+      "expectPermResult": {
+        "behavior": "allow",
+        "updatedInput": {
+          "message": "hi"
+        }
+      },
+      "expectDisplayArgs": {
+        "message": "hi"
+      }
+    },
+    {
+      "name": "ask-user-question-allow",
+      "why": "AskUserQuestion 的 checkPermissions 直接放行：permResult 只有 behavior（不带 updatedInput），displayArgs 原样透传",
+      "tool": "AskUserQuestion",
+      "mode": "manual",
+      "args": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": "A"
+          }
+        ]
+      },
+      "expectPermResult": {
+        "behavior": "allow"
+      },
+      "expectDisplayArgs": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": "A"
+          }
+        ]
+      }
+    }
+  ]
+}

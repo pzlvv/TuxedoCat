@@ -68,7 +68,7 @@ export function getVariablesWithoutValue(config: Partial<SpinDesign>): string[] 
  * - not-dag: 不是有效的无环有向图（DAG）
  * - variable-no-value: 存在未赋值的用户变量
  */
-function getSpinDesignIssue(config: unknown): SpinDesignIssue | null {
+export function getSpinDesignIssue(config: unknown): SpinDesignIssue | null {
   if (!config || typeof config !== 'object') return 'invalid';
 
   const spin = config as Partial<SpinDesign>;

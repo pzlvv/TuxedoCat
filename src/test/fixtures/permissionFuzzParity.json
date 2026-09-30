@@ -1,0 +1,3366 @@
+{
+  "note": "Bash 权限决策随机对等对照表（固定种子生成）：Embedded `resolveToolPermission` ↔ Standalone `core-rs/src/permission.rs::decide`。",
+  "seed": "0x5eedc0de",
+  "cases": [
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  git commit --short"
+      },
+      "expect": "ask",
+      "why": "fuzz #0"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  git commit --short"
+      },
+      "expect": "allow",
+      "why": "fuzz #0"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  git commit --short"
+      },
+      "expect": "allow",
+      "why": "fuzz #0"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  mkdir file.txt﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #1"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  mkdir file.txt﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #1"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  mkdir file.txt﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #1"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " docker \"a|b\"﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #2"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " docker \"a|b\"﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #2"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " docker \"a|b\"﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #2"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  git status -la"
+      },
+      "expect": "allow",
+      "why": "fuzz #3"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  git status -la"
+      },
+      "expect": "allow",
+      "why": "fuzz #3"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  git status -la"
+      },
+      "expect": "allow",
+      "why": "fuzz #3"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿cat \"a|b\""
+      },
+      "expect": "allow",
+      "why": "fuzz #4"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿cat \"a|b\""
+      },
+      "expect": "allow",
+      "why": "fuzz #4"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿cat \"a|b\""
+      },
+      "expect": "allow",
+      "why": "fuzz #4"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "FOO='a b' sed --short && dd --short && FOO=1 sort file.txt && FOO='a b' jq -rf /﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #5"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "FOO='a b' sed --short && dd --short && FOO=1 sort file.txt && FOO='a b' jq -rf /﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #5"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "FOO='a b' sed --short && dd --short && FOO=1 sort file.txt && FOO='a b' jq -rf /﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #5"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "'grep file.txt'\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #6"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "'grep file.txt'\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #6"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "'grep file.txt'\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #6"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " git config  "
+      },
+      "expect": "allow",
+      "why": "fuzz #7"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " git config  "
+      },
+      "expect": "allow",
+      "why": "fuzz #7"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " git config  "
+      },
+      "expect": "allow",
+      "why": "fuzz #7"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " pwd \\|﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #8"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " pwd \\|﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #8"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " pwd \\|﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #8"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\"date 'x;y'\"  "
+      },
+      "expect": "ask",
+      "why": "fuzz #9"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\"date 'x;y'\"  "
+      },
+      "expect": "allow",
+      "why": "fuzz #9"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\"date 'x;y'\"  "
+      },
+      "expect": "allow",
+      "why": "fuzz #9"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "curl --short "
+      },
+      "expect": "ask",
+      "why": "fuzz #10"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "curl --short "
+      },
+      "expect": "allow",
+      "why": "fuzz #10"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "curl --short "
+      },
+      "expect": "allow",
+      "why": "fuzz #10"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "FOO=\"a b\" grep 'x;y'\nA_B= mkdir \"a|b\" "
+      },
+      "expect": "ask",
+      "why": "fuzz #11"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "FOO=\"a b\" grep 'x;y'\nA_B= mkdir \"a|b\" "
+      },
+      "expect": "allow",
+      "why": "fuzz #11"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "FOO=\"a b\" grep 'x;y'\nA_B= mkdir \"a|b\" "
+      },
+      "expect": "allow",
+      "why": "fuzz #11"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  \"npm \\|\" "
+      },
+      "expect": "ask",
+      "why": "fuzz #12"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  \"npm \\|\" "
+      },
+      "expect": "allow",
+      "why": "fuzz #12"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  \"npm \\|\" "
+      },
+      "expect": "allow",
+      "why": "fuzz #12"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿kill \\|﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #13"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿kill \\|﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #13"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿kill \\|﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #13"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " \"git checkout \"a|b\"\" "
+      },
+      "expect": "ask",
+      "why": "fuzz #14"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " \"git checkout \"a|b\"\" "
+      },
+      "expect": "allow",
+      "why": "fuzz #14"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " \"git checkout \"a|b\"\" "
+      },
+      "expect": "ask",
+      "why": "fuzz #14"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  kill \"a|b\" "
+      },
+      "expect": "ask",
+      "why": "fuzz #15"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  kill \"a|b\" "
+      },
+      "expect": "allow",
+      "why": "fuzz #15"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  kill \"a|b\" "
+      },
+      "expect": "allow",
+      "why": "fuzz #15"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\tmkdir \"a|b\"﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #16"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\tmkdir \"a|b\"﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #16"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\tmkdir \"a|b\"﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #16"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " head \\|"
+      },
+      "expect": "allow",
+      "why": "fuzz #17"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " head \\|"
+      },
+      "expect": "allow",
+      "why": "fuzz #17"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " head \\|"
+      },
+      "expect": "allow",
+      "why": "fuzz #17"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "docker"
+      },
+      "expect": "ask",
+      "why": "fuzz #18"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "docker"
+      },
+      "expect": "allow",
+      "why": "fuzz #18"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "docker"
+      },
+      "expect": "allow",
+      "why": "fuzz #18"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "'mkfs -la' "
+      },
+      "expect": "ask",
+      "why": "fuzz #19"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "'mkfs -la' "
+      },
+      "expect": "allow",
+      "why": "fuzz #19"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "'mkfs -la' "
+      },
+      "expect": "allow",
+      "why": "fuzz #19"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #20"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #20"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #20"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\"A_B= sort file.txt;sort \\|\"\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #21"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\"A_B= sort file.txt;sort \\|\"\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #21"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\"A_B= sort file.txt;sort \\|\"\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #21"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  git branch -rf / "
+      },
+      "expect": "allow",
+      "why": "fuzz #22"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  git branch -rf / "
+      },
+      "expect": "allow",
+      "why": "fuzz #22"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  git branch -rf / "
+      },
+      "expect": "allow",
+      "why": "fuzz #22"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿fdisk file.txt  "
+      },
+      "expect": "ask",
+      "why": "fuzz #23"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿fdisk file.txt  "
+      },
+      "expect": "allow",
+      "why": "fuzz #23"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿fdisk file.txt  "
+      },
+      "expect": "ask",
+      "why": "fuzz #23"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\"node file.txt\"  "
+      },
+      "expect": "ask",
+      "why": "fuzz #24"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\"node file.txt\"  "
+      },
+      "expect": "allow",
+      "why": "fuzz #24"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\"node file.txt\"  "
+      },
+      "expect": "allow",
+      "why": "fuzz #24"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " git branch \\| "
+      },
+      "expect": "allow",
+      "why": "fuzz #25"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " git branch \\| "
+      },
+      "expect": "allow",
+      "why": "fuzz #25"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " git branch \\| "
+      },
+      "expect": "allow",
+      "why": "fuzz #25"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿cp -la  "
+      },
+      "expect": "ask",
+      "why": "fuzz #26"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿cp -la  "
+      },
+      "expect": "allow",
+      "why": "fuzz #26"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿cp -la  "
+      },
+      "expect": "allow",
+      "why": "fuzz #26"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "git stash list file.txt "
+      },
+      "expect": "ask",
+      "why": "fuzz #27"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "git stash list file.txt "
+      },
+      "expect": "allow",
+      "why": "fuzz #27"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "git stash list file.txt "
+      },
+      "expect": "allow",
+      "why": "fuzz #27"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " head -rf /\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #28"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " head -rf /\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #28"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " head -rf /\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #28"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\t\"kill $(echo hi)\"\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #29"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\t\"kill $(echo hi)\"\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #29"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\t\"kill $(echo hi)\"\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #29"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\"git config -rf /\"\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #30"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\"git config -rf /\"\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #30"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\"git config -rf /\"\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #30"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " wipe"
+      },
+      "expect": "ask",
+      "why": "fuzz #31"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " wipe"
+      },
+      "expect": "allow",
+      "why": "fuzz #31"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " wipe"
+      },
+      "expect": "allow",
+      "why": "fuzz #31"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\tFOO=1 echo --short\nFOO='a b' find -rf /\nA_B= cat\nFOO='a b' find -la﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #32"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\tFOO=1 echo --short\nFOO='a b' find -rf /\nA_B= cat\nFOO='a b' find -la﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #32"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\tFOO=1 echo --short\nFOO='a b' find -rf /\nA_B= cat\nFOO='a b' find -la﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #32"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "date \"a|b\" | FOO=\"a b\" cd 'x;y'"
+      },
+      "expect": "ask",
+      "why": "fuzz #33"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "date \"a|b\" | FOO=\"a b\" cd 'x;y'"
+      },
+      "expect": "allow",
+      "why": "fuzz #33"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "date \"a|b\" | FOO=\"a b\" cd 'x;y'"
+      },
+      "expect": "allow",
+      "why": "fuzz #33"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿\" \"  "
+      },
+      "expect": "ask",
+      "why": "fuzz #34"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿\" \"  "
+      },
+      "expect": "allow",
+      "why": "fuzz #34"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿\" \"  "
+      },
+      "expect": "allow",
+      "why": "fuzz #34"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\tFOO=1 find \\| && FOO=1 grep && FOO=\"a b\" npm -la && FOO=\"a b\" pwd file.txt "
+      },
+      "expect": "ask",
+      "why": "fuzz #35"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\tFOO=1 find \\| && FOO=1 grep && FOO=\"a b\" npm -la && FOO=\"a b\" pwd file.txt "
+      },
+      "expect": "allow",
+      "why": "fuzz #35"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\tFOO=1 find \\| && FOO=1 grep && FOO=\"a b\" npm -la && FOO=\"a b\" pwd file.txt "
+      },
+      "expect": "allow",
+      "why": "fuzz #35"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\"wipe \\|\"  "
+      },
+      "expect": "ask",
+      "why": "fuzz #36"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\"wipe \\|\"  "
+      },
+      "expect": "allow",
+      "why": "fuzz #36"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\"wipe \\|\"  "
+      },
+      "expect": "allow",
+      "why": "fuzz #36"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿git config 'x;y'﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #37"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿git config 'x;y'﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #37"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿git config 'x;y'﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #37"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\"\t\""
+      },
+      "expect": "ask",
+      "why": "fuzz #38"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\"\t\""
+      },
+      "expect": "allow",
+      "why": "fuzz #38"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\"\t\""
+      },
+      "expect": "allow",
+      "why": "fuzz #38"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿\"format \"a|b\" | FOO=1 cat | FOO='a b' cat \\| | pwd 'x;y'\""
+      },
+      "expect": "ask",
+      "why": "fuzz #39"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿\"format \"a|b\" | FOO=1 cat | FOO='a b' cat \\| | pwd 'x;y'\""
+      },
+      "expect": "allow",
+      "why": "fuzz #39"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿\"format \"a|b\" | FOO=1 cat | FOO='a b' cat \\| | pwd 'x;y'\""
+      },
+      "expect": "allow",
+      "why": "fuzz #39"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " git branch file.txt\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #40"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " git branch file.txt\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #40"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " git branch file.txt\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #40"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "git status file.txt\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #41"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "git status file.txt\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #41"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "git status file.txt\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #41"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " ﻿ "
+      },
+      "expect": "ask",
+      "why": "fuzz #42"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " ﻿ "
+      },
+      "expect": "allow",
+      "why": "fuzz #42"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " ﻿ "
+      },
+      "expect": "allow",
+      "why": "fuzz #42"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "git stash list \\|\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #43"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "git stash list \\|\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #43"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "git stash list \\|\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #43"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "shred --short"
+      },
+      "expect": "ask",
+      "why": "fuzz #44"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "shred --short"
+      },
+      "expect": "allow",
+      "why": "fuzz #44"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "shred --short"
+      },
+      "expect": "allow",
+      "why": "fuzz #44"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  FOO=1 cat \"a|b\" && FOO=1 mv 'x;y' && FOO=\"a b\" find && A_B= date file.txt "
+      },
+      "expect": "ask",
+      "why": "fuzz #45"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  FOO=1 cat \"a|b\" && FOO=1 mv 'x;y' && FOO=\"a b\" find && A_B= date file.txt "
+      },
+      "expect": "allow",
+      "why": "fuzz #45"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  FOO=1 cat \"a|b\" && FOO=1 mv 'x;y' && FOO=\"a b\" find && A_B= date file.txt "
+      },
+      "expect": "allow",
+      "why": "fuzz #45"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿ls -rf /  "
+      },
+      "expect": "allow",
+      "why": "fuzz #46"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿ls -rf /  "
+      },
+      "expect": "allow",
+      "why": "fuzz #46"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿ls -rf /  "
+      },
+      "expect": "allow",
+      "why": "fuzz #46"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\t'mv \"a|b\"' "
+      },
+      "expect": "ask",
+      "why": "fuzz #47"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\t'mv \"a|b\"' "
+      },
+      "expect": "allow",
+      "why": "fuzz #47"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\t'mv \"a|b\"' "
+      },
+      "expect": "allow",
+      "why": "fuzz #47"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "'A_B= dd \"a|b\" || FOO=1 sed --short'  "
+      },
+      "expect": "ask",
+      "why": "fuzz #48"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "'A_B= dd \"a|b\" || FOO=1 sed --short'  "
+      },
+      "expect": "allow",
+      "why": "fuzz #48"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "'A_B= dd \"a|b\" || FOO=1 sed --short'  "
+      },
+      "expect": "allow",
+      "why": "fuzz #48"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  sort -la\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #49"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  sort -la\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #49"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  sort -la\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #49"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\t\"\""
+      },
+      "expect": "ask",
+      "why": "fuzz #50"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\t\"\""
+      },
+      "expect": "allow",
+      "why": "fuzz #50"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\t\"\""
+      },
+      "expect": "allow",
+      "why": "fuzz #50"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " ' '"
+      },
+      "expect": "ask",
+      "why": "fuzz #51"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " ' '"
+      },
+      "expect": "allow",
+      "why": "fuzz #51"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " ' '"
+      },
+      "expect": "allow",
+      "why": "fuzz #51"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "'ls -rf /'\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #52"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "'ls -rf /'\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #52"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "'ls -rf /'\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #52"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿'git stash list file.txt' "
+      },
+      "expect": "ask",
+      "why": "fuzz #53"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿'git stash list file.txt' "
+      },
+      "expect": "allow",
+      "why": "fuzz #53"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿'git stash list file.txt' "
+      },
+      "expect": "allow",
+      "why": "fuzz #53"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  FOO='a b' head $(echo hi)&&FOO=1 rm file.txt&&FOO=\"a b\" shred 'x;y'&&A_B= echo $(echo hi)﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #54"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  FOO='a b' head $(echo hi)&&FOO=1 rm file.txt&&FOO=\"a b\" shred 'x;y'&&A_B= echo $(echo hi)﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #54"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  FOO='a b' head $(echo hi)&&FOO=1 rm file.txt&&FOO=\"a b\" shred 'x;y'&&A_B= echo $(echo hi)﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #54"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  "
+      },
+      "expect": "ask",
+      "why": "fuzz #55"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  "
+      },
+      "expect": "allow",
+      "why": "fuzz #55"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  "
+      },
+      "expect": "allow",
+      "why": "fuzz #55"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "A_B= cat&&pwd \"a|b\"&&FOO='a b' node -rf /&&A_B= cd --short\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #56"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "A_B= cat&&pwd \"a|b\"&&FOO='a b' node -rf /&&A_B= cd --short\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #56"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "A_B= cat&&pwd \"a|b\"&&FOO='a b' node -rf /&&A_B= cd --short\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #56"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  git checkout \"a|b\""
+      },
+      "expect": "ask",
+      "why": "fuzz #57"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  git checkout \"a|b\""
+      },
+      "expect": "allow",
+      "why": "fuzz #57"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  git checkout \"a|b\""
+      },
+      "expect": "ask",
+      "why": "fuzz #57"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿git config -la"
+      },
+      "expect": "allow",
+      "why": "fuzz #58"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿git config -la"
+      },
+      "expect": "allow",
+      "why": "fuzz #58"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿git config -la"
+      },
+      "expect": "allow",
+      "why": "fuzz #58"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  \"FOO='a b' sed --short && A_B= cat \\| && pwd 'x;y'\""
+      },
+      "expect": "ask",
+      "why": "fuzz #59"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  \"FOO='a b' sed --short && A_B= cat \\| && pwd 'x;y'\""
+      },
+      "expect": "allow",
+      "why": "fuzz #59"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  \"FOO='a b' sed --short && A_B= cat \\| && pwd 'x;y'\""
+      },
+      "expect": "allow",
+      "why": "fuzz #59"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  git stash list -la﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #60"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  git stash list -la﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #60"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  git stash list -la﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #60"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "wipe $(echo hi) "
+      },
+      "expect": "ask",
+      "why": "fuzz #61"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "wipe $(echo hi) "
+      },
+      "expect": "allow",
+      "why": "fuzz #61"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "wipe $(echo hi) "
+      },
+      "expect": "allow",
+      "why": "fuzz #61"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿  \t"
+      },
+      "expect": "ask",
+      "why": "fuzz #62"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿  \t"
+      },
+      "expect": "allow",
+      "why": "fuzz #62"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿  \t"
+      },
+      "expect": "allow",
+      "why": "fuzz #62"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  'FOO='a b' pwd \"a|b\"\nFOO='a b' pwd --short' "
+      },
+      "expect": "ask",
+      "why": "fuzz #63"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  'FOO='a b' pwd \"a|b\"\nFOO='a b' pwd --short' "
+      },
+      "expect": "allow",
+      "why": "fuzz #63"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  'FOO='a b' pwd \"a|b\"\nFOO='a b' pwd --short' "
+      },
+      "expect": "allow",
+      "why": "fuzz #63"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿pwd file.txt"
+      },
+      "expect": "allow",
+      "why": "fuzz #64"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿pwd file.txt"
+      },
+      "expect": "allow",
+      "why": "fuzz #64"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿pwd file.txt"
+      },
+      "expect": "allow",
+      "why": "fuzz #64"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "echo -rf /\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #65"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "echo -rf /\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #65"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "echo -rf /\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #65"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\tgit reset \"a|b\" "
+      },
+      "expect": "ask",
+      "why": "fuzz #66"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\tgit reset \"a|b\" "
+      },
+      "expect": "allow",
+      "why": "fuzz #66"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\tgit reset \"a|b\" "
+      },
+      "expect": "ask",
+      "why": "fuzz #66"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " git branch file.txt﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #67"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " git branch file.txt﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #67"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " git branch file.txt﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #67"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "fdisk --short  "
+      },
+      "expect": "ask",
+      "why": "fuzz #68"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "fdisk --short  "
+      },
+      "expect": "allow",
+      "why": "fuzz #68"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "fdisk --short  "
+      },
+      "expect": "ask",
+      "why": "fuzz #68"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  "
+      },
+      "expect": "ask",
+      "why": "fuzz #69"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  "
+      },
+      "expect": "allow",
+      "why": "fuzz #69"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  "
+      },
+      "expect": "allow",
+      "why": "fuzz #69"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " \"git branch file.txt\" "
+      },
+      "expect": "ask",
+      "why": "fuzz #70"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " \"git branch file.txt\" "
+      },
+      "expect": "allow",
+      "why": "fuzz #70"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " \"git branch file.txt\" "
+      },
+      "expect": "allow",
+      "why": "fuzz #70"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " "
+      },
+      "expect": "ask",
+      "why": "fuzz #71"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " "
+      },
+      "expect": "allow",
+      "why": "fuzz #71"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " "
+      },
+      "expect": "allow",
+      "why": "fuzz #71"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\tdd -la "
+      },
+      "expect": "ask",
+      "why": "fuzz #72"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\tdd -la "
+      },
+      "expect": "allow",
+      "why": "fuzz #72"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\tdd -la "
+      },
+      "expect": "ask",
+      "why": "fuzz #72"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " date --short"
+      },
+      "expect": "allow",
+      "why": "fuzz #73"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " date --short"
+      },
+      "expect": "allow",
+      "why": "fuzz #73"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " date --short"
+      },
+      "expect": "allow",
+      "why": "fuzz #73"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\tfind"
+      },
+      "expect": "ask",
+      "why": "fuzz #74"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\tfind"
+      },
+      "expect": "allow",
+      "why": "fuzz #74"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\tfind"
+      },
+      "expect": "allow",
+      "why": "fuzz #74"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "grep 'x;y'"
+      },
+      "expect": "allow",
+      "why": "fuzz #75"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "grep 'x;y'"
+      },
+      "expect": "allow",
+      "why": "fuzz #75"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "grep 'x;y'"
+      },
+      "expect": "allow",
+      "why": "fuzz #75"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿git log \\|﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #76"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿git log \\|﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #76"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿git log \\|﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #76"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\tfdisk -rf /"
+      },
+      "expect": "ask",
+      "why": "fuzz #77"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\tfdisk -rf /"
+      },
+      "expect": "allow",
+      "why": "fuzz #77"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\tfdisk -rf /"
+      },
+      "expect": "ask",
+      "why": "fuzz #77"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "'sort 'x;y'' "
+      },
+      "expect": "ask",
+      "why": "fuzz #78"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "'sort 'x;y'' "
+      },
+      "expect": "allow",
+      "why": "fuzz #78"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "'sort 'x;y'' "
+      },
+      "expect": "allow",
+      "why": "fuzz #78"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "'git branch -la' "
+      },
+      "expect": "ask",
+      "why": "fuzz #79"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "'git branch -la' "
+      },
+      "expect": "allow",
+      "why": "fuzz #79"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "'git branch -la' "
+      },
+      "expect": "allow",
+      "why": "fuzz #79"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "git status \"a|b\"\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #80"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "git status \"a|b\"\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #80"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "git status \"a|b\"\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #80"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\"wipe \"a|b\"\"﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #81"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\"wipe \"a|b\"\"﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #81"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\"wipe \"a|b\"\"﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #81"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\trm -la  "
+      },
+      "expect": "ask",
+      "why": "fuzz #82"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\trm -la  "
+      },
+      "expect": "allow",
+      "why": "fuzz #82"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\trm -la  "
+      },
+      "expect": "allow",
+      "why": "fuzz #82"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " A_B= sort -rf / && A_B= date --short "
+      },
+      "expect": "ask",
+      "why": "fuzz #83"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " A_B= sort -rf / && A_B= date --short "
+      },
+      "expect": "allow",
+      "why": "fuzz #83"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " A_B= sort -rf / && A_B= date --short "
+      },
+      "expect": "allow",
+      "why": "fuzz #83"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " git checkout -rf /\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #84"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " git checkout -rf /\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #84"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " git checkout -rf /\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #84"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "'ls file.txt'\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #85"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "'ls file.txt'\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #85"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "'ls file.txt'\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #85"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  git checkout file.txt"
+      },
+      "expect": "ask",
+      "why": "fuzz #86"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  git checkout file.txt"
+      },
+      "expect": "allow",
+      "why": "fuzz #86"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  git checkout file.txt"
+      },
+      "expect": "ask",
+      "why": "fuzz #86"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿''\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #87"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿''\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #87"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿''\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #87"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  'date $(echo hi)'\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #88"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  'date $(echo hi)'\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #88"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  'date $(echo hi)'\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #88"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿\"\t\" "
+      },
+      "expect": "ask",
+      "why": "fuzz #89"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿\"\t\" "
+      },
+      "expect": "allow",
+      "why": "fuzz #89"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿\"\t\" "
+      },
+      "expect": "allow",
+      "why": "fuzz #89"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  find\nA_B= head --short "
+      },
+      "expect": "allow",
+      "why": "fuzz #90"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  find\nA_B= head --short "
+      },
+      "expect": "allow",
+      "why": "fuzz #90"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  find\nA_B= head --short "
+      },
+      "expect": "allow",
+      "why": "fuzz #90"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\tgit stash show file.txt\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #91"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\tgit stash show file.txt\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #91"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\tgit stash show file.txt\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #91"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "wipe \"a|b\" "
+      },
+      "expect": "ask",
+      "why": "fuzz #92"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "wipe \"a|b\" "
+      },
+      "expect": "allow",
+      "why": "fuzz #92"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "wipe \"a|b\" "
+      },
+      "expect": "allow",
+      "why": "fuzz #92"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\"FOO=1 ls \"a|b\";grep $(echo hi)\""
+      },
+      "expect": "ask",
+      "why": "fuzz #93"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\"FOO=1 ls \"a|b\";grep $(echo hi)\""
+      },
+      "expect": "allow",
+      "why": "fuzz #93"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\"FOO=1 ls \"a|b\";grep $(echo hi)\""
+      },
+      "expect": "allow",
+      "why": "fuzz #93"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  wipe 'x;y' "
+      },
+      "expect": "ask",
+      "why": "fuzz #94"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  wipe 'x;y' "
+      },
+      "expect": "allow",
+      "why": "fuzz #94"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  wipe 'x;y' "
+      },
+      "expect": "ask",
+      "why": "fuzz #94"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " A_B= find \"a|b\" && FOO=\"a b\" ls file.txt && A_B= head \"a|b\" && FOO=1 echo 'x;y'"
+      },
+      "expect": "ask",
+      "why": "fuzz #95"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " A_B= find \"a|b\" && FOO=\"a b\" ls file.txt && A_B= head \"a|b\" && FOO=1 echo 'x;y'"
+      },
+      "expect": "allow",
+      "why": "fuzz #95"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " A_B= find \"a|b\" && FOO=\"a b\" ls file.txt && A_B= head \"a|b\" && FOO=1 echo 'x;y'"
+      },
+      "expect": "allow",
+      "why": "fuzz #95"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\tnode file.txt"
+      },
+      "expect": "ask",
+      "why": "fuzz #96"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\tnode file.txt"
+      },
+      "expect": "allow",
+      "why": "fuzz #96"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\tnode file.txt"
+      },
+      "expect": "allow",
+      "why": "fuzz #96"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿head \"a|b\"﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #97"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿head \"a|b\"﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #97"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿head \"a|b\"﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #97"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  ls \\| "
+      },
+      "expect": "allow",
+      "why": "fuzz #98"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  ls \\| "
+      },
+      "expect": "allow",
+      "why": "fuzz #98"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  ls \\| "
+      },
+      "expect": "allow",
+      "why": "fuzz #98"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  FOO=\"a b\" dd --short;A_B= node --short;FOO=\"a b\" jq -la;FOO=\"a b\" fdisk --short "
+      },
+      "expect": "ask",
+      "why": "fuzz #99"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  FOO=\"a b\" dd --short;A_B= node --short;FOO=\"a b\" jq -la;FOO=\"a b\" fdisk --short "
+      },
+      "expect": "allow",
+      "why": "fuzz #99"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  FOO=\"a b\" dd --short;A_B= node --short;FOO=\"a b\" jq -la;FOO=\"a b\" fdisk --short "
+      },
+      "expect": "allow",
+      "why": "fuzz #99"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  FOO=\"a b\" date --short && A_B= jq && FOO=\"a b\" cd file.txt && FOO='a b' sort \"a|b\""
+      },
+      "expect": "ask",
+      "why": "fuzz #100"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  FOO=\"a b\" date --short && A_B= jq && FOO=\"a b\" cd file.txt && FOO='a b' sort \"a|b\""
+      },
+      "expect": "allow",
+      "why": "fuzz #100"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  FOO=\"a b\" date --short && A_B= jq && FOO=\"a b\" cd file.txt && FOO='a b' sort \"a|b\""
+      },
+      "expect": "allow",
+      "why": "fuzz #100"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\tgit config file.txt  "
+      },
+      "expect": "allow",
+      "why": "fuzz #101"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\tgit config file.txt  "
+      },
+      "expect": "allow",
+      "why": "fuzz #101"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\tgit config file.txt  "
+      },
+      "expect": "allow",
+      "why": "fuzz #101"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  git config -rf / "
+      },
+      "expect": "allow",
+      "why": "fuzz #102"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  git config -rf / "
+      },
+      "expect": "allow",
+      "why": "fuzz #102"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  git config -rf / "
+      },
+      "expect": "allow",
+      "why": "fuzz #102"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\t'dd 'x;y''  "
+      },
+      "expect": "ask",
+      "why": "fuzz #103"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\t'dd 'x;y''  "
+      },
+      "expect": "allow",
+      "why": "fuzz #103"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\t'dd 'x;y''  "
+      },
+      "expect": "allow",
+      "why": "fuzz #103"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\t'fdisk $(echo hi)'"
+      },
+      "expect": "ask",
+      "why": "fuzz #104"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\t'fdisk $(echo hi)'"
+      },
+      "expect": "allow",
+      "why": "fuzz #104"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\t'fdisk $(echo hi)'"
+      },
+      "expect": "allow",
+      "why": "fuzz #104"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " pwd --short"
+      },
+      "expect": "allow",
+      "why": "fuzz #105"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " pwd --short"
+      },
+      "expect": "allow",
+      "why": "fuzz #105"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " pwd --short"
+      },
+      "expect": "allow",
+      "why": "fuzz #105"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\"mkfs \\|\""
+      },
+      "expect": "ask",
+      "why": "fuzz #106"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\"mkfs \\|\""
+      },
+      "expect": "allow",
+      "why": "fuzz #106"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\"mkfs \\|\""
+      },
+      "expect": "allow",
+      "why": "fuzz #106"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  \"git config\""
+      },
+      "expect": "ask",
+      "why": "fuzz #107"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  \"git config\""
+      },
+      "expect": "allow",
+      "why": "fuzz #107"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  \"git config\""
+      },
+      "expect": "allow",
+      "why": "fuzz #107"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿git config --short"
+      },
+      "expect": "allow",
+      "why": "fuzz #108"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿git config --short"
+      },
+      "expect": "allow",
+      "why": "fuzz #108"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿git config --short"
+      },
+      "expect": "allow",
+      "why": "fuzz #108"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\t'FOO='a b' curl -rf / | FOO='a b' grep $(echo hi) | FOO=1 cd'"
+      },
+      "expect": "ask",
+      "why": "fuzz #109"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\t'FOO='a b' curl -rf / | FOO='a b' grep $(echo hi) | FOO=1 cd'"
+      },
+      "expect": "allow",
+      "why": "fuzz #109"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\t'FOO='a b' curl -rf / | FOO='a b' grep $(echo hi) | FOO=1 cd'"
+      },
+      "expect": "allow",
+      "why": "fuzz #109"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  mv $(echo hi)﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #110"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  mv $(echo hi)﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #110"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  mv $(echo hi)﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #110"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  mkfs \"a|b\"  "
+      },
+      "expect": "ask",
+      "why": "fuzz #111"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  mkfs \"a|b\"  "
+      },
+      "expect": "allow",
+      "why": "fuzz #111"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  mkfs \"a|b\"  "
+      },
+      "expect": "ask",
+      "why": "fuzz #111"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " python --short "
+      },
+      "expect": "ask",
+      "why": "fuzz #112"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " python --short "
+      },
+      "expect": "allow",
+      "why": "fuzz #112"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " python --short "
+      },
+      "expect": "allow",
+      "why": "fuzz #112"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿git checkout $(echo hi)"
+      },
+      "expect": "ask",
+      "why": "fuzz #113"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿git checkout $(echo hi)"
+      },
+      "expect": "allow",
+      "why": "fuzz #113"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿git checkout $(echo hi)"
+      },
+      "expect": "ask",
+      "why": "fuzz #113"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " \"A_B= echo file.txt && pwd \\| && FOO='a b' find && A_B= cat file.txt\""
+      },
+      "expect": "ask",
+      "why": "fuzz #114"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " \"A_B= echo file.txt && pwd \\| && FOO='a b' find && A_B= cat file.txt\""
+      },
+      "expect": "allow",
+      "why": "fuzz #114"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " \"A_B= echo file.txt && pwd \\| && FOO='a b' find && A_B= cat file.txt\""
+      },
+      "expect": "allow",
+      "why": "fuzz #114"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " chmod \"a|b\"﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #115"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " chmod \"a|b\"﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #115"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " chmod \"a|b\"﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #115"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " git status \\|\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #116"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " git status \\|\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #116"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " git status \\|\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #116"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  mv \"a|b\"﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #117"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  mv \"a|b\"﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #117"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  mv \"a|b\"﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #117"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿pwd 'x;y'"
+      },
+      "expect": "allow",
+      "why": "fuzz #118"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿pwd 'x;y'"
+      },
+      "expect": "allow",
+      "why": "fuzz #118"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿pwd 'x;y'"
+      },
+      "expect": "allow",
+      "why": "fuzz #118"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " npm \\|﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #119"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " npm \\|﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #119"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " npm \\|﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #119"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "git diff --short "
+      },
+      "expect": "allow",
+      "why": "fuzz #120"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "git diff --short "
+      },
+      "expect": "allow",
+      "why": "fuzz #120"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "git diff --short "
+      },
+      "expect": "allow",
+      "why": "fuzz #120"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "git stash show $(echo hi)﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #121"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "git stash show $(echo hi)﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #121"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "git stash show $(echo hi)﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #121"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "rm file.txt"
+      },
+      "expect": "ask",
+      "why": "fuzz #122"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "rm file.txt"
+      },
+      "expect": "allow",
+      "why": "fuzz #122"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "rm file.txt"
+      },
+      "expect": "allow",
+      "why": "fuzz #122"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "  FOO=\"a b\" date file.txt&&FOO=\"a b\" cat \\|&&FOO=\"a b\" pwd -rf /﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #123"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "  FOO=\"a b\" date file.txt&&FOO=\"a b\" cat \\|&&FOO=\"a b\" pwd -rf /﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #123"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "  FOO=\"a b\" date file.txt&&FOO=\"a b\" cat \\|&&FOO=\"a b\" pwd -rf /﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #123"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "FOO='a b' wipe $(echo hi) && A_B= find \"a|b\" && sort \\|﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #124"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "FOO='a b' wipe $(echo hi) && A_B= find \"a|b\" && sort \\|﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #124"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "FOO='a b' wipe $(echo hi) && A_B= find \"a|b\" && sort \\|﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #124"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\techo --short  "
+      },
+      "expect": "allow",
+      "why": "fuzz #125"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\techo --short  "
+      },
+      "expect": "allow",
+      "why": "fuzz #125"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\techo --short  "
+      },
+      "expect": "allow",
+      "why": "fuzz #125"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " git log -rf /\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #126"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " git log -rf /\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #126"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " git log -rf /\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #126"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": " FOO=\"a b\" grep $(echo hi)\nFOO='a b' grep \\|\nsort \"a|b\"\nFOO='a b' ls -la"
+      },
+      "expect": "ask",
+      "why": "fuzz #127"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": " FOO=\"a b\" grep $(echo hi)\nFOO='a b' grep \\|\nsort \"a|b\"\nFOO='a b' ls -la"
+      },
+      "expect": "allow",
+      "why": "fuzz #127"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": " FOO=\"a b\" grep $(echo hi)\nFOO='a b' grep \\|\nsort \"a|b\"\nFOO='a b' ls -la"
+      },
+      "expect": "allow",
+      "why": "fuzz #127"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\"git reset file.txt\""
+      },
+      "expect": "ask",
+      "why": "fuzz #128"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\"git reset file.txt\""
+      },
+      "expect": "allow",
+      "why": "fuzz #128"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\"git reset file.txt\""
+      },
+      "expect": "ask",
+      "why": "fuzz #128"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\"cp -rf /\""
+      },
+      "expect": "ask",
+      "why": "fuzz #129"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\"cp -rf /\""
+      },
+      "expect": "allow",
+      "why": "fuzz #129"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\"cp -rf /\""
+      },
+      "expect": "allow",
+      "why": "fuzz #129"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "A_B= find --short;FOO=1 grep﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #130"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "A_B= find --short;FOO=1 grep﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #130"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "A_B= find --short;FOO=1 grep﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #130"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿git stash show \\| "
+      },
+      "expect": "ask",
+      "why": "fuzz #131"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿git stash show \\| "
+      },
+      "expect": "allow",
+      "why": "fuzz #131"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿git stash show \\| "
+      },
+      "expect": "allow",
+      "why": "fuzz #131"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "cp"
+      },
+      "expect": "ask",
+      "why": "fuzz #132"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "cp"
+      },
+      "expect": "allow",
+      "why": "fuzz #132"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "cp"
+      },
+      "expect": "allow",
+      "why": "fuzz #132"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "git stash list $(echo hi)"
+      },
+      "expect": "ask",
+      "why": "fuzz #133"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "git stash list $(echo hi)"
+      },
+      "expect": "allow",
+      "why": "fuzz #133"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "git stash list $(echo hi)"
+      },
+      "expect": "allow",
+      "why": "fuzz #133"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿A_B= grep $(echo hi) && A_B= cp -rf / && wipe 'x;y' && FOO=1 mv -la\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #134"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿A_B= grep $(echo hi) && A_B= cp -rf / && wipe 'x;y' && FOO=1 mv -la\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #134"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿A_B= grep $(echo hi) && A_B= cp -rf / && wipe 'x;y' && FOO=1 mv -la\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #134"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\t "
+      },
+      "expect": "ask",
+      "why": "fuzz #135"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\t "
+      },
+      "expect": "allow",
+      "why": "fuzz #135"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\t "
+      },
+      "expect": "allow",
+      "why": "fuzz #135"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "﻿''\t"
+      },
+      "expect": "ask",
+      "why": "fuzz #136"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "﻿''\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #136"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "﻿''\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #136"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\tdate -la\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #137"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\tdate -la\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #137"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\tdate -la\t"
+      },
+      "expect": "allow",
+      "why": "fuzz #137"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "\tchmod  "
+      },
+      "expect": "ask",
+      "why": "fuzz #138"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "\tchmod  "
+      },
+      "expect": "allow",
+      "why": "fuzz #138"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "\tchmod  "
+      },
+      "expect": "allow",
+      "why": "fuzz #138"
+    },
+    {
+      "mode": "manual",
+      "args": {
+        "command": "cd -rf /﻿"
+      },
+      "expect": "ask",
+      "why": "fuzz #139"
+    },
+    {
+      "mode": "auto",
+      "args": {
+        "command": "cd -rf /﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #139"
+    },
+    {
+      "mode": "risk",
+      "args": {
+        "command": "cd -rf /﻿"
+      },
+      "expect": "allow",
+      "why": "fuzz #139"
+    }
+  ]
+}

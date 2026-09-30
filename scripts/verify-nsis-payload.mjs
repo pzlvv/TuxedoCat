@@ -37,7 +37,7 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const project = require('../project.config.cjs');
 const { version } = require('../package.json');
 
-const releaseDir = project.resolve('release');
+const releaseDir = project.releaseDir;
 const prefix = `${project.productName}-${version}-setup-`;
 const productExe = `${project.productName}.exe`;
 
@@ -150,7 +150,7 @@ function describeFilter(token) {
 
 /** 安装包对应的 electron-builder app 目录（x64 用默认名 win-unpacked，其它架构带架构后缀） */
 function appOutDirFor(arch) {
-  return project.resolve('release', arch === 'x64' ? 'win-unpacked' : `win-${arch}-unpacked`);
+  return path.join(project.releaseDir, arch === 'x64' ? 'win-unpacked' : `win-${arch}-unpacked`);
 }
 
 function listFilesRecursively(dir) {

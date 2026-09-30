@@ -274,7 +274,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       agentMode: props.agentMode,
       thinkingMode: props.thinkingMode,
       webSearch: props.webSearch,
-      promptMode: props.promptMode,
+      // promptMode 不随消息下发：由独立的 setPromptMode 消息承载（会话级持久化）
       // 模型身份随消息一起下发：避免 setModel 消息尚未处理时用错 provider。
       // wire 协议保持扁平：拆成 model / provider 两个字段。
       model: props.modelRef?.model,

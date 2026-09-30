@@ -63,8 +63,9 @@ const ensuredProjectDirs = new Set<string>();
  * settings.json 用于记录该编码目录对应的完整 workspacePath，
  * 便于从 conversations 下的子目录反查原始项目路径。
  *
- * 目录本身由 core 创建（core 自己的会话数据）；**settings.json 的写归宿主**
- * （`UIHost.ensureProjectSettings`，见第 2 节规则 9），这里只上报事实。
+ * 目录本身由 core 创建（core 自己的会话数据）；Embedded 下 **settings.json 的写归宿主**
+ * （`UIHost.ensureProjectSettings`，见第 2 节规则 9），core 只上报事实；Standalone 下
+ * 清单文件也归 Core（`config::write_project_settings`，见 `docs/standalone-core.md` 第 8 节）。
  */
 export async function ensureProjectConversationDir(projectPath: string): Promise<string> {
   const projectDir = getProjectConversationDir(projectPath);
@@ -347,8 +348,9 @@ const HIGHLIGHT_LANGUAGES_MAX = 60;
 /**
  * 构造「把 languages 并入 highlightLanguages 字段」的 settings.json 修改器。
  *
- * core 只描述**怎么改**（字段名 / 去重 / 上限都在这里），**写盘由宿主承担**
- * （`UIHost.updateSettingsJson`，见第 2 节规则 9）。
+ * core 只描述**怎么改**（字段名 / 去重 / 上限都在这里）；Embedded 下**写盘由宿主承担**
+ * （`UIHost.updateSettingsJson`，见第 2 节规则 9），Standalone 下由 Core 自己落盘
+ * （`config::merge_highlight_languages`）。
  */
 export function highlightLanguagesMutator(
   languages: readonly string[]

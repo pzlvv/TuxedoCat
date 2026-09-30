@@ -117,6 +117,102 @@ process.on('exit', removeLock);
 process.on('SIGINT', () => process.exit(0));
 process.on('SIGTERM', () => process.exit(0));
 
+// ==================== Rust Core 重建 ====================
+//
+// cargo 没有内置 watch，这里也不引入 `cargo-watch` 依赖：轮询 `core-rs` 下
+// `.rs` / `Cargo.toml` 的 mtime，变化时跑一次 `npm run build:core`
+// （release 构建，产物直接落 `resources/core/<平台>/`，即宿主加载的那份）。
+//
+// 与前端 watcher 解耦：**不**放进 `watchers` 数组——构建失败只打日志，
+// 不会触发「任一 watcher 退出则整体退出」，也不阻塞 F5。
+// 只监听变化、不在启动时构建：源码没动时开 watch 不会白等一次 40s 的 release 构建。
+// 设 `WATCH_CORE=0` 可关闭（只想改前端时省一份 CPU）。
+const CORE_WATCH_ENABLED = process.env.WATCH_CORE !== '0';
+const CORE_DIR = path.join(ROOT, 'core-rs');
+const CORE_SOURCES = ['src', 'Cargo.toml'];
+const CORE_POLL_MS = 1500;
+const CORE_DEBOUNCE_MS = 800;
+
+/** 递归收集 core-rs 下受关注文件的 mtime（相对路径 → mtimeMs） */
+function snapshotCoreMtimes() {
+  const snapshot = new Map();
+  const visit = (target) => {
+    let stat;
+    try {
+      stat = fs.statSync(target);
+    } catch {
+      return;
+    }
+    if (stat.isDirectory()) {
+      let entries;
+      try {
+        entries = fs.readdirSync(target);
+      } catch {
+        return;
+      }
+      for (const entry of entries) visit(path.join(target, entry));
+      return;
+    }
+    if (!target.endsWith('.rs') && !target.endsWith('Cargo.toml')) return;
+    snapshot.set(path.relative(ROOT, target), stat.mtimeMs);
+  };
+  for (const rel of CORE_SOURCES) visit(path.join(CORE_DIR, rel));
+  return snapshot;
+}
+
+function coreSnapshotChanged(previous, next) {
+  if (previous.size !== next.size) return true;
+  for (const [key, mtime] of next) {
+    if (previous.get(key) !== mtime) return true;
+  }
+  return false;
+}
+
+if (CORE_WATCH_ENABLED && fs.existsSync(CORE_DIR)) {
+  let snapshot = snapshotCoreMtimes();
+  let rebuilding = false;
+  let pending = false;
+
+  const rebuild = () => {
+    if (rebuilding) {
+      // 构建期间又改了：等这次结束后再补一次，避免丢掉最后一次修改
+      pending = true;
+      return;
+    }
+    rebuilding = true;
+    console.log('[watch:app] core-rs changed; rebuilding Rust core (npm run build:core)...');
+    const child = spawn('npm run build:core', { cwd: ROOT, stdio: 'inherit', shell: true });
+    child.on('error', (err) => {
+      console.error('[watch:app] core rebuild failed to start:', err);
+    });
+    child.on('exit', (code) => {
+      rebuilding = false;
+      if (code === 0) {
+        console.log('[watch:app] core rebuild done');
+      } else {
+        console.error(`[watch:app] core rebuild exited (${code}); keeping previous binary`);
+      }
+      if (pending) {
+        pending = false;
+        rebuild();
+      }
+    });
+  };
+
+  let debounce = null;
+  setInterval(() => {
+    const next = snapshotCoreMtimes();
+    if (!coreSnapshotChanged(snapshot, next)) return;
+    snapshot = next;
+    // 编辑器保存常常一次触发多个文件（如 rustfmt 重排），去抖后再构建
+    if (debounce) clearTimeout(debounce);
+    debounce = setTimeout(rebuild, CORE_DEBOUNCE_MS);
+    if (debounce.unref) debounce.unref();
+  }, CORE_POLL_MS).unref?.();
+} else if (CORE_WATCH_ENABLED) {
+  console.warn(`[watch:app] ${path.relative(ROOT, CORE_DIR)} not found; skipping Rust core watcher`);
+}
+
 // 轮询初次构建产物，全部就绪后输出 ready
 const startMs = Date.now() - 1500; // 缓冲文件系统时间戳精度
 let readyPrinted = false;

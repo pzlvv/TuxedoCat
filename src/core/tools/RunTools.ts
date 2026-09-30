@@ -895,7 +895,7 @@ async function* formatAndEmitResult(
  *
  * 此函数尝试修复这些常见问题，修复后返回新对象，无法修复则返回原输入。
  */
-function fixToolInput(input: unknown): unknown {
+export function fixToolInput(input: unknown): unknown {
   // 顶层是 JSON 字符串时先解包：模型 / Provider 有时会把整个 input 再 JSON.stringify
   // 一次（double-encode），例如 AskUserQuestion 的入参变成 "{\"question\":...}"。
   // 不处理的话 safeParse 必然失败，后续还会把原始字符串传给 UI 层。

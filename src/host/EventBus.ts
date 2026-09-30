@@ -3,7 +3,8 @@
  *
  * 只做路由，不含任何「事件 → 方法」的映射逻辑，无宿主依赖：
  * - core → UI：emitToUi / request 广播给 onCoreEvents / onCoreRequests 注册的处理器
- * - UI → core：emitToCore 按 type 分发给 onUiEvent 注册的订阅者
+ * - UI → core：emitToCore 按 type 分发给 onUiEvent 注册的订阅者；
+ *   requestCore 调用 onUiRequests 注册的处理器（同进程下退化为一次直接调用）
  *
  * 边界语义（DEVELOPMENT.md 第 3.7 节）：
  * - emitToUi 时处理器未注册 → 抛错（bootstrap 顺序错误，启动期暴露）
@@ -19,12 +20,16 @@ import type {
   CoreRequestHandlers,
   CoreRequestResultMap,
   UiEvent,
+  UiRequest,
+  UiRequestHandlers,
+  UiRequestResultMap,
   Unsubscribe,
 } from '../core/AssistantEventBus.js';
 
 export function createEventBus(): AssistantEventBus {
   let coreEventHandlers: CoreEventHandlers | null = null;
   let coreRequestHandlers: CoreRequestHandlers | null = null;
+  let uiRequestHandlers: UiRequestHandlers | null = null;
   const uiEventHandlers = new Map<string, Set<(event: UiEvent) => void>>();
 
   const bus: AssistantEventBus = {
@@ -80,6 +85,35 @@ export function createEventBus(): AssistantEventBus {
         throw new Error('Core request handlers already registered. onCoreRequests() must be called once.');
       }
       coreRequestHandlers = handlers;
+    },
+
+    requestCore<T extends UiRequest['type']>(
+      request: Extract<UiRequest, { type: T }>,
+    ): Promise<UiRequestResultMap[T]> {
+      if (!uiRequestHandlers) {
+        return Promise.reject(
+          new Error(
+            `No UI request handlers registered before requestCore(${request.type}). ` +
+            'Call onUiRequests() (core bootstrap) before UI sends requests.',
+          ),
+        );
+      }
+      const handler = (uiRequestHandlers as Record<string, (r: UiRequest) => Promise<unknown>>)[
+        request.type
+      ];
+      if (!handler) {
+        return Promise.reject(
+          new Error(`No handler registered for UI request ${request.type}.`),
+        );
+      }
+      return handler(request) as Promise<UiRequestResultMap[T]>;
+    },
+
+    onUiRequests(handlers: UiRequestHandlers): void {
+      if (uiRequestHandlers) {
+        throw new Error('UI request handlers already registered. onUiRequests() must be called once.');
+      }
+      uiRequestHandlers = handlers;
     },
 
     emitToCore(event: UiEvent): void {

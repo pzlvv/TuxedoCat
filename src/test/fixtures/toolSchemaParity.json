@@ -1,0 +1,284 @@
+{
+  "note": "Embedded（src/core/tools/*，经 toolSchema.ts 的 zodToJsonSchema 转换）与 Standalone（core-rs/src/tools.rs 的 definitions()）的 LLM 可见工具定义对照表。TS 侧测试断言本表等于真实转换结果；Rust 侧测试断言除 divergences 列出的已知缺口外逐字段一致。",
+  "tools": [
+    {
+      "name": "Bash",
+      "description": "Execute Bash shell commands",
+      "required": [
+        "command"
+      ],
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "要执行的 shell 命令"
+        },
+        "description": {
+          "type": "string",
+          "description": "Clear, concise description of what this command does in active voice. Never use words like \"complex\" or \"risk\" in the description - just describe what it does.\n\nFor simple commands (git, npm, standard CLI tools), keep it brief (5-10 words):\n- ls → \"List files in current directory\"\n- git status → \"Show working tree status\"\n- npm install → \"Install package dependencies\"\n\nFor commands that are harder to parse at a glance (piped commands, obscure flags, etc.), add enough context to clarify what it does:\n- find . -name \"*.tmp\" -exec rm {} \\; → \"Find and delete all .tmp files recursively\"\n- git reset --hard origin/main → \"Discard all local changes and match remote main\"\n- curl -s url | jq '.data[]' → \"Fetch JSON from URL and extract data array elements\""
+        },
+        "cwd": {
+          "type": "string",
+          "description": "工作目录，默认为当前目录"
+        },
+        "run_in_background": {
+          "type": "boolean",
+          "description": "设置 true 则在后台运行此命令（不会阻塞后续操作）。后台命令完成后会收到通知，无需主动轮询。"
+        }
+      }
+    },
+    {
+      "name": "Read",
+      "description": "Reads a file from the local filesystem.",
+      "required": [
+        "file_path"
+      ],
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "The absolute path to the file to read"
+        },
+        "offset": {
+          "type": "number",
+          "description": "The 1-based line number to start reading from (default: 1). 0 is accepted and treated as 1"
+        },
+        "limit": {
+          "type": "number",
+          "description": "The number of lines to read"
+        },
+        "sheet": {
+          "type": "string",
+          "description": "Sheet name to read from Excel file. Defaults to the first sheet if not specified."
+        }
+      }
+    },
+    {
+      "name": "Write",
+      "description": "Writes content to a file on the local filesystem (creates or overwrites).",
+      "required": [
+        "file_path",
+        "content"
+      ],
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "The absolute path to the file to write"
+        },
+        "content": {
+          "type": "string",
+          "description": "The content to write to the file"
+        }
+      }
+    },
+    {
+      "name": "Edit",
+      "description": "Edits a file by replacing exact text matches. Preferred over Write tool for modifying existing files.",
+      "required": [
+        "file_path",
+        "old_string",
+        "new_string",
+        "replace_all"
+      ],
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "The absolute path to the file to edit"
+        },
+        "old_string": {
+          "type": "string",
+          "description": "The exact string to replace"
+        },
+        "new_string": {
+          "type": "string",
+          "description": "The new string to replace it with"
+        },
+        "replace_all": {
+          "type": "string",
+          "description": "Replace all occurrences within the search range (default: false)"
+        },
+        "offset": {
+          "type": "number",
+          "description": "The 1-based line number where the search range starts (default: 1)"
+        },
+        "limit": {
+          "type": "number",
+          "description": "The number of lines to search within. If provided, old_string must match entirely within lines offset to offset+limit-1 (1-based); if omitted, searches to the end of the file"
+        }
+      }
+    },
+    {
+      "name": "Grep",
+      "description": "Searches for patterns in file contents using ripgrep (rg).",
+      "required": [
+        "pattern"
+      ],
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "The regular expression pattern to search for in file contents"
+        },
+        "path": {
+          "type": "string",
+          "description": "File or directory to search in. Defaults to current working directory"
+        },
+        "glob": {
+          "type": "string",
+          "description": "Glob pattern to filter files (e.g. \"*.js\", \"*.{ts,tsx}\")"
+        },
+        "output_mode": {
+          "type": "string",
+          "description": "Output mode: \"content\" shows matching lines, \"files_with_matches\" shows file paths, \"count\" shows match counts"
+        },
+        "-B": {
+          "type": "number",
+          "description": "Number of lines to show before each match"
+        },
+        "-A": {
+          "type": "number",
+          "description": "Number of lines to show after each match"
+        },
+        "-C": {
+          "type": "number",
+          "description": "Alias for context"
+        },
+        "context": {
+          "type": "number",
+          "description": "Number of lines to show before and after each match"
+        },
+        "-n": {
+          "type": "boolean",
+          "description": "Show line numbers in output"
+        },
+        "-i": {
+          "type": "boolean",
+          "description": "Case insensitive search"
+        },
+        "type": {
+          "type": "string",
+          "description": "File type to search (js, py, rust, go, java, etc.)"
+        },
+        "head_limit": {
+          "type": "number",
+          "description": "Limit output to first N results. Defaults to 250. Pass 0 for unlimited"
+        },
+        "offset": {
+          "type": "number",
+          "description": "Skip first N results before applying head_limit. Defaults to 0"
+        },
+        "multiline": {
+          "type": "boolean",
+          "description": "Enable multiline mode where . matches newlines"
+        }
+      }
+    },
+    {
+      "name": "Glob",
+      "description": "Finds files by name pattern or wildcard using ripgrep.",
+      "required": [
+        "pattern"
+      ],
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "The glob pattern to match files against"
+        },
+        "path": {
+          "type": "string",
+          "description": "The directory to search in. If not specified, the current working directory will be used"
+        }
+      }
+    },
+    {
+      "name": "TodoWrite",
+      "description": "Create and manage a structured task list to track progress and organize complex work.",
+      "required": [
+        "todos"
+      ],
+      "properties": {
+        "todos": {
+          "type": "array",
+          "description": "The updated todo list"
+        }
+      }
+    },
+    {
+      "name": "Agent",
+      "description": "Create a new sub-agent that runs autonomously in the background.",
+      "required": [
+        "prompt",
+        "agentRole"
+      ],
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "The task for the agent to perform"
+        },
+        "description": {
+          "type": "string",
+          "description": "A short (3-5 word) description of the task"
+        },
+        "agentRole": {
+          "type": "string",
+          "description": "The role of the agent to spawn"
+        }
+      }
+    },
+    {
+      "name": "Reply",
+      "description": "Send a message to a target session.",
+      "required": [
+        "message"
+      ],
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "The reply message to send back"
+        },
+        "targetSessionId": {
+          "type": "string",
+          "description": "Target session ID to send the message to. If omitted, sends to the session that created this agent."
+        }
+      }
+    },
+    {
+      "name": "AskUserQuestion",
+      "description": "Ask the user a question and wait for their response.",
+      "required": [
+        "question"
+      ],
+      "properties": {
+        "question": {
+          "type": "string",
+          "description": "The question to ask the user"
+        },
+        "choices": {
+          "type": "array",
+          "description": "Multiple choice options (1-9). If not provided, user can reply with free text."
+        }
+      }
+    },
+    {
+      "name": "Skill",
+      "description": "Execute a skill (slash command)",
+      "required": [
+        "skill"
+      ],
+      "properties": {
+        "skill": {
+          "type": "string",
+          "description": "The skill name. E.g., \"commit\", \"review\", or \"test\""
+        },
+        "args": {
+          "type": "string",
+          "description": "Optional arguments for the skill"
+        }
+      }
+    }
+  ],
+  "divergences": [
+    {
+      "tool": "Edit",
+      "property": "replace_all",
+      "reason": "TS 的 zodToJsonSchema 对 .default() 字段产出 type=string 且列为必填；Rust 按 zod 声明的 boolean/可选实现。此处豁免类型与必填差异。"
+    }
+  ]
+}

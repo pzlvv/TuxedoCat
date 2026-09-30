@@ -15,6 +15,7 @@ Tuxedo Cat 是一个面向 VS Code 与 Electron 的 AI 助手，提供侧边栏�
 ## 技术栈
 
 - TypeScript
+- Rust（Standalone Core，见 `docs/standalone-core.md`）
 - VS Code Extension API
 - Electron + electron-builder
 - React + Vite
@@ -27,8 +28,10 @@ Tuxedo Cat 是一个面向 VS Code 与 Electron 的 AI 助手，提供侧边栏�
 ```text
 .
 ├── assets/                 # 图标等静态资源
+├── core-rs/                # Standalone Core（Rust，独立进程）
 ├── electron/               # Electron 桌面端代码
 ├── resources/              # 运行时二进制资源（Git LFS）
+│   ├── core/               # Standalone Core 各平台可执行文件
 │   └── ripgrep/            # ripgrep 各平台可执行文件
 ├── scripts/                # 开发/打包辅助脚本
 ├── src/
@@ -49,6 +52,7 @@ Tuxedo Cat 是一个面向 VS Code 与 Electron 的 AI 助手，提供侧边栏�
 
 - Node.js 18+
 - npm 9+
+- Rust 工具链（构建 Standalone Core；目标矩阵见 `docs/standalone-core.md` 第 4.1 节）
 - Git LFS（克隆后拉取 `resources/` 下的大文件）
 
 ## 快速开始
@@ -74,6 +78,29 @@ npm run build
 # 构建 Electron 桌面应用
 npm run build:all
 ```
+
+## Standalone Core
+
+Core 有两种实现，由 `src/host/coreKind.ts` 的 `CORE_KIND` 装配（默认 `standalone`）：
+`embedded` 为 `src/core` 的 TypeScript 实现（与 UI 同进程），`standalone` 为 `core-rs/`
+的 Rust 实现（独立进程，经帧通道通信）。规格见 `docs/standalone-core.md`。
+
+```bash
+# 构建 Standalone Core（产物落在 resources/<core.resourceDir>/<arch>-<platform>/）
+npm run build:core
+
+# 开发 / 测试时临时切回进程内实现
+TUXEDO_CAT_CORE=embedded npm run dev:electron
+
+# Rust 侧单测
+cd core-rs && cargo test
+```
+
+`npm run watch:app`（VS Code 的后台任务 / 手动运行）会在前端 watcher 之外额外轮询
+`core-rs/src/**/*.rs` 与 `core-rs/Cargo.toml`：**改动时**自动跑一次 `npm run build:core`
+（release，产物直接落 `resources/<core.resourceDir>/`）。源码没动时不会触发构建，
+构建失败只打日志、不影响前端 watcher。只想改前端时用 `WATCH_CORE=0 npm run watch:app`
+关掉它，Rust 侧改动则手动 `npm run build:core` 重建。
 
 ### PlantUML 架构图
 
@@ -109,6 +136,22 @@ npm run package:ext
 # 打包 Electron 桌面安装包
 npm run package:app
 ```
+
+打包默认装配 Standalone Core（Rust，独立进程）。要产出 Embedded Core
+（`src/core` 的 TypeScript 实现，与 UI 同进程）的变体，加 `:embedded` 后缀：
+
+```bash
+# 同时产出 embedded 的 .vsix 与 Electron 安装包
+npm run package:embedded
+
+# 只产出其中一种
+npm run package:ext:embedded
+npm run package:app:embedded
+```
+
+变体由构建期环境变量 `TUXEDO_CAT_CORE` 选择，产物分开落位、互不覆盖：
+standalone → `release/`，embedded → `release/embedded/`。embedded 变体不构建
+也不打包 Rust Core。
 
 ## Git LFS
 

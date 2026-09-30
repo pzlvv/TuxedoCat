@@ -22,6 +22,7 @@
  */
 
 import type { ConversationMetadata } from '../core/history/Conversation.js';
+import { loadConversationListForHost } from './coreFacts.js';
 import type { SessionRuntimeState } from '../core/AssistantEventBus.js';
 import type { UIHost } from './UIHost.js';
 
@@ -51,10 +52,14 @@ export abstract class ConversationManager {
     await this.dispatchList(list);
   }
 
-  /** 读磁盘对话列表（source of truth，两端一致；目录由宿主给出） */
+  /**
+   * 读对话列表（source of truth，两端一致）。
+   *
+   * Embedded 下直接读盘；Standalone 下经 `UiRequest.conversationListRequested`
+   * 向 Core 索取——宿主不直接读 core 的磁盘数据（规格第 10 节）。
+   */
   protected async load(): Promise<ConversationMetadata[]> {
-    const { loadConversationList } = await import('../core/history/index.js');
-    return loadConversationList(this.host.getWorkspacePath());
+    return loadConversationListForHost(this.host.getWorkspacePath() ?? undefined);
   }
 
   /** 把纯磁盘列表分发给该宿主的界面 */
@@ -84,12 +89,27 @@ export abstract class ConversationManager {
 
   // ===================== 流 2：会话运行时状态 =====================
 
+  /** 最近一次 sessionRuntimeChanged 的全量快照（供新视图主动拉取，见 getSessionStatesSnapshot） */
+  private latestStates: readonly SessionRuntimeState[] = [];
+
   /**
    * 把最新的会话状态分发给该宿主的界面。
    * states 由 core 的全量推送（CoreEvent.sessionRuntimeChanged）提供，不做增量合并。
    */
   updateSessionStates(states: readonly SessionRuntimeState[]): void {
+    this.latestStates = states;
     this.dispatchStates(states);
+  }
+
+  /**
+   * 最近一次会话运行时状态快照。
+   *
+   * 视图创建 / 切换时 webview 会主动拉一次（避免错过只推变化的广播）。
+   * Standalone 下进程内的 `sessionRuntime` 模块不会被写入，必须用这份缓存，
+   * 否则拉取恒为空、流水灯与 abort 按钮失明。
+   */
+  getSessionStatesSnapshot(): readonly SessionRuntimeState[] {
+    return this.latestStates;
   }
 
   /** 把会话状态分发给该宿主的界面 */

@@ -40,6 +40,7 @@ import {
   normalizeAccelerator,
 } from './shortcut.js';
 import { tt, onCoreLocaleChanged } from '../src/core/i18n.js';
+import { requireEventBus } from '../src/core/AssistantEventBus.js';
 import { getShortcutDialogHtml } from './shortcutDialogHtml.js';
 import { resolveSmartTitle } from '../src/core/history/smartNaming.js';
 
@@ -208,7 +209,7 @@ const sessionWorkspaces = new Map<string, string>();
 /** 当前 WebViewUI 实例（initCore 创建；消息路由 / 工作区切换使用） */
 let webviewUi: WebViewUI | undefined;
 /** core 侧进程级资源的释放入口（initCore 从共享骨架取得；will-quit 调用） */
-let coreShutdown: (() => void) | undefined;
+let coreShutdown: (() => Promise<void>) | undefined;
 /** 当前宿主实现（initCore 创建） */
 let uiHost: ElectronUIHost | undefined;
 /**
@@ -416,8 +417,10 @@ async function main(): Promise<void> {
     stopTrayBlink();
     tray?.destroy();
     tray = undefined;
-    // core 侧的进程级资源（MCP 子进程）统一由共享骨架释放
-    coreShutdown?.();
+    // core 侧的进程级资源（MCP 子进程 / Standalone Core 进程）统一由共享骨架释放；
+    // Standalone 下关闭 Core 进程需要一点时间，此处不阻塞退出——Core 也会在
+    // 标准输入关闭（EOF）时自行退出。
+    void coreShutdown?.();
   });
 }
 
@@ -2201,11 +2204,28 @@ async function openWorkspaceDialog(): Promise<void> {
   addWorkspaces(result.filePaths);
 }
 
-/** 把「会话 → 工作目录」登记到 core 的会话工作目录表（core 按会话解析工作目录） */
+/**
+ * 把「会话 → 工作目录」登记到 core 的会话工作目录表（core 按会话解析工作目录）。
+ *
+ * 两件事都做：本地写一份（宿主自己的 `getSessionWorkspace` 消费者，如标签页流水灯），
+ * 再经 `UiEvent.sessionWorkspaceAssigned` 交给 core——Standalone 下这张表在 Core
+ * 进程内，只有事件能过去（Embedded 的事件处理器转调同一个函数，重复写等价）。
+ * bootstrap 之前调用时总线尚未注册，事件被丢弃——这正是期望语义：core 还没起来时
+ * 登记也没有意义，会话打开后宿主会再登记一次。
+ */
 function registerCoreSessionWorkspace(sessionId: string, workspace: string): void {
   try {
     const { setSessionWorkspace } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
     setSessionWorkspace(sessionId, workspace);
+  } catch (err) {
+    console.error('[main] register session workspace error:', err);
+  }
+  try {
+    requireEventBus().emitToCore({
+      type: 'sessionWorkspaceAssigned',
+      sessionId,
+      workspacePath: workspace ?? null,
+    });
   } catch (err) {
     console.error('[main] register session workspace error:', err);
   }

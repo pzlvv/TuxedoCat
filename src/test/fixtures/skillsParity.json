@@ -1,0 +1,896 @@
+{
+  "note": "Skill 系统纯函数对照表（Embedded `skills/*` ↔ Standalone `core-rs/src/skills.rs`）。只覆盖 frontmatter 解析、变量替换与技能清单格式化；目录扫描 / 内置注册由各自单测覆盖。",
+  "frontmatter": [
+    {
+      "content": "plain text, no frontmatter",
+      "frontmatter": {},
+      "body": "plain text, no frontmatter"
+    },
+    {
+      "content": "---\ndescription: A skill\n---\nBody text",
+      "frontmatter": {
+        "description": "A skill"
+      },
+      "body": "Body text"
+    },
+    {
+      "content": "---\n\n---\n\nBody",
+      "frontmatter": {},
+      "body": "Body"
+    },
+    {
+      "content": "---\ndescription: A skill\n",
+      "frontmatter": {},
+      "body": "---\ndescription: A skill\n"
+    },
+    {
+      "content": "---\nname: my-skill\ndescription: \"Quoted desc\"\nwhen_to_use: When X\nversion: 1.2.3\nmodel: inherit\nuser-invocable: false\n---\nBody",
+      "frontmatter": {
+        "name": "my-skill",
+        "description": "Quoted desc",
+        "when_to_use": "When X",
+        "version": "1.2.3",
+        "model": "inherit",
+        "user-invocable": false
+      },
+      "body": "Body"
+    },
+    {
+      "content": "---\ndescription: 'single'\narguments: [a, b]\n---\nBody",
+      "frontmatter": {
+        "description": "single",
+        "arguments": "[a, b]"
+      },
+      "body": "Body"
+    },
+    {
+      "content": "---\ndescription: Multi\nline: |\n  first line\n  second line\nnext: after\n---\nBody",
+      "frontmatter": {
+        "description": "Multi",
+        "line": "first line\n  second line",
+        "next": "after"
+      },
+      "body": "Body"
+    },
+    {
+      "content": "---\ntags:\n  - one\n  - two\ndescription: d\n---\nBody",
+      "frontmatter": {
+        "tags": [
+          "one",
+          "two"
+        ],
+        "description": "d"
+      },
+      "body": "Body"
+    },
+    {
+      "content": "---\ntags:\n  - one\n  - two\n---\nBody",
+      "frontmatter": {
+        "tags": [
+          "one",
+          "two"
+        ]
+      },
+      "body": "Body"
+    },
+    {
+      "content": "---\n# a comment\nflag: true\nother: false\nnum: 42\nfloat: 3.5\nnegative: -7\nnil: ~\nnull2: null\n---\nBody",
+      "frontmatter": {
+        "flag": true,
+        "other": false,
+        "num": 42,
+        "float": 3.5,
+        "negative": -7,
+        "nil": null,
+        "null2": null
+      },
+      "body": "Body"
+    },
+    {
+      "content": "---\nwhole: 1.0\nnegative: -2.0\nfraction: 0.5\n---\nBody",
+      "frontmatter": {
+        "whole": 1,
+        "negative": -2,
+        "fraction": 0.5
+      },
+      "body": "Body"
+    },
+    {
+      "content": "---\nempty:\nafter: x\n---\nBody",
+      "frontmatter": {
+        "empty": [],
+        "after": "x"
+      },
+      "body": "Body"
+    },
+    {
+      "content": "---\n   spaced:   value   \n---\nBody",
+      "frontmatter": {
+        "spaced": "value"
+      },
+      "body": "Body"
+    },
+    {
+      "content": "---\npaths: [src/**/*.ts, docs/**]\n---\nBody",
+      "frontmatter": {
+        "paths": "[src/**/*.ts, docs/**]"
+      },
+      "body": "Body"
+    },
+    {
+      "content": "---\ntrailing: |\n  only line\n---\nBody",
+      "frontmatter": {
+        "trailing": "only line"
+      },
+      "body": "Body"
+    },
+    {
+      "content": "---\ndescription: Multi\nline: |\n  first﻿\n  second\nnext: after\n---\nBody",
+      "frontmatter": {
+        "description": "Multi",
+        "line": "first\n  second",
+        "next": "after"
+      },
+      "body": "Body"
+    },
+    {
+      "content": "---\ntags:\n  - ﻿one\n  - two\n---\nBody",
+      "frontmatter": {
+        "tags": [
+          "one",
+          "two"
+        ]
+      },
+      "body": "Body"
+    },
+    {
+      "content": "---\n﻿spaced:   ﻿value   \n---\nBody",
+      "frontmatter": {
+        "spaced": "value"
+      },
+      "body": "Body"
+    }
+  ],
+  "fields": [
+    {
+      "frontmatter": {},
+      "markdown": "Body text here",
+      "result": {
+        "description": "Body text here",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "userInvocable": true
+      }
+    },
+    {
+      "frontmatter": {
+        "description": "From frontmatter"
+      },
+      "markdown": "Body text here",
+      "result": {
+        "description": "From frontmatter",
+        "hasUserSpecifiedDescription": true,
+        "argumentNames": [],
+        "userInvocable": true
+      }
+    },
+    {
+      "frontmatter": {
+        "description": "   "
+      },
+      "markdown": "# Title\n\nFirst paragraph.",
+      "result": {
+        "description": "First paragraph.",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "userInvocable": true
+      }
+    },
+    {
+      "frontmatter": {
+        "description": 42
+      },
+      "markdown": "Body",
+      "result": {
+        "description": "Body",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "userInvocable": true
+      }
+    },
+    {
+      "frontmatter": {
+        "name": "display",
+        "description": "d"
+      },
+      "markdown": "Body",
+      "result": {
+        "displayName": "display",
+        "description": "d",
+        "hasUserSpecifiedDescription": true,
+        "argumentNames": [],
+        "userInvocable": true
+      }
+    },
+    {
+      "frontmatter": {
+        "name": 7
+      },
+      "markdown": "Body",
+      "result": {
+        "displayName": "7",
+        "description": "Body",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "userInvocable": true
+      }
+    },
+    {
+      "frontmatter": {
+        "user-invocable": false
+      },
+      "markdown": "Body",
+      "result": {
+        "description": "Body",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "userInvocable": false
+      }
+    },
+    {
+      "frontmatter": {
+        "user-invocable": "yes"
+      },
+      "markdown": "Body",
+      "result": {
+        "description": "Body",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "userInvocable": true
+      }
+    },
+    {
+      "frontmatter": {
+        "user-invocable": "no"
+      },
+      "markdown": "Body",
+      "result": {
+        "description": "Body",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "userInvocable": false
+      }
+    },
+    {
+      "frontmatter": {
+        "user-invocable": true
+      },
+      "markdown": "Body",
+      "result": {
+        "description": "Body",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "userInvocable": true
+      }
+    },
+    {
+      "frontmatter": {
+        "model": "inherit"
+      },
+      "markdown": "Body",
+      "result": {
+        "description": "Body",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "userInvocable": true
+      }
+    },
+    {
+      "frontmatter": {
+        "model": "claude-sonnet-4-20250514"
+      },
+      "markdown": "Body",
+      "result": {
+        "description": "Body",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "model": "claude-sonnet-4-20250514",
+        "userInvocable": true
+      }
+    },
+    {
+      "frontmatter": {
+        "model": 5
+      },
+      "markdown": "Body",
+      "result": {
+        "description": "Body",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "userInvocable": true
+      }
+    },
+    {
+      "frontmatter": {
+        "arguments": "single"
+      },
+      "markdown": "Body",
+      "result": {
+        "description": "Body",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [
+          "single"
+        ],
+        "userInvocable": true
+      }
+    },
+    {
+      "frontmatter": {
+        "arguments": [
+          "a",
+          "b"
+        ]
+      },
+      "markdown": "Body",
+      "result": {
+        "description": "Body",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [
+          "a",
+          "b"
+        ],
+        "userInvocable": true
+      }
+    },
+    {
+      "frontmatter": {
+        "when_to_use": "When X",
+        "version": "1.0.0"
+      },
+      "markdown": "Body",
+      "result": {
+        "description": "Body",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "whenToUse": "When X",
+        "version": "1.0.0",
+        "userInvocable": true
+      }
+    },
+    {
+      "frontmatter": {
+        "paths": [
+          "src/**"
+        ]
+      },
+      "markdown": "Body",
+      "result": {
+        "description": "Body",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "userInvocable": true,
+        "paths": [
+          "src/"
+        ]
+      }
+    },
+    {
+      "frontmatter": {
+        "paths": [
+          "**"
+        ]
+      },
+      "markdown": "Body",
+      "result": {
+        "description": "Body",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "userInvocable": true
+      }
+    }
+  ],
+  "descriptions": [
+    {
+      "markdown": "---\ndescription: from fm\n---\nBody",
+      "result": "Body"
+    },
+    {
+      "markdown": "Plain first line\nsecond line",
+      "result": "Plain first line"
+    },
+    {
+      "markdown": "# Heading only\n\n## Another\n\nReal text",
+      "result": "Real text"
+    },
+    {
+      "markdown": "```\ncode fence\n```\n\nAfter fence",
+      "result": "code fence"
+    },
+    {
+      "markdown": "- list item\n> quote\nReal description",
+      "result": "Real description"
+    },
+    {
+      "markdown": "",
+      "result": "Skill: ..."
+    },
+    {
+      "markdown": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "result": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+    },
+    {
+      "markdown": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy tail",
+      "result": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy..."
+    }
+  ],
+  "paths": [
+    {
+      "value": null,
+      "result": null
+    },
+    {
+      "value": null,
+      "result": null
+    },
+    {
+      "value": [],
+      "result": null
+    },
+    {
+      "value": [
+        "**"
+      ],
+      "result": null
+    },
+    {
+      "value": [
+        "*"
+      ],
+      "result": null
+    },
+    {
+      "value": [
+        "**/*"
+      ],
+      "result": [
+        "**/*"
+      ]
+    },
+    {
+      "value": [
+        "src/**"
+      ],
+      "result": [
+        "src/"
+      ]
+    },
+    {
+      "value": [
+        "src/**",
+        "**"
+      ],
+      "result": [
+        "src/"
+      ]
+    },
+    {
+      "value": [
+        "",
+        "src/**"
+      ],
+      "result": [
+        "src/"
+      ]
+    },
+    {
+      "value": [
+        "a",
+        1
+      ],
+      "result": [
+        "a",
+        "1"
+      ]
+    }
+  ],
+  "argumentNames": [
+    {
+      "value": null,
+      "result": []
+    },
+    {
+      "value": null,
+      "result": []
+    },
+    {
+      "value": "one",
+      "result": [
+        "one"
+      ]
+    },
+    {
+      "value": [
+        "a",
+        "b"
+      ],
+      "result": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "value": [],
+      "result": []
+    }
+  ],
+  "booleans": [
+    {
+      "value": null,
+      "result": true
+    },
+    {
+      "value": null,
+      "result": true
+    },
+    {
+      "value": true,
+      "result": true
+    },
+    {
+      "value": false,
+      "result": false
+    },
+    {
+      "value": "true",
+      "result": true
+    },
+    {
+      "value": "false",
+      "result": false
+    },
+    {
+      "value": "yes",
+      "result": true
+    },
+    {
+      "value": "no",
+      "result": false
+    },
+    {
+      "value": "other",
+      "result": true
+    },
+    {
+      "value": 0,
+      "result": true
+    },
+    {
+      "value": 1,
+      "result": true
+    },
+    {
+      "value": {},
+      "result": true
+    }
+  ],
+  "coerce": [
+    {
+      "value": null,
+      "result": null
+    },
+    {
+      "value": null,
+      "result": null
+    },
+    {
+      "value": "",
+      "result": null
+    },
+    {
+      "value": "   ",
+      "result": null
+    },
+    {
+      "value": "text",
+      "result": "text"
+    },
+    {
+      "value": "  padded  ",
+      "result": "padded"
+    },
+    {
+      "value": 42,
+      "result": null
+    },
+    {
+      "value": {},
+      "result": null
+    },
+    {
+      "value": [],
+      "result": null
+    }
+  ],
+  "substituteArguments": [
+    {
+      "content": "no vars",
+      "args": "",
+      "argNames": [],
+      "result": "no vars"
+    },
+    {
+      "content": "Args: $ARGUMENTS",
+      "args": "hello world",
+      "argNames": [],
+      "result": "Args: hello world"
+    },
+    {
+      "content": "Args: $ARGUMENTS",
+      "args": "",
+      "argNames": [],
+      "result": "Args: $ARGUMENTS"
+    },
+    {
+      "content": "First: $0",
+      "args": "alpha beta",
+      "argNames": [],
+      "result": "First: alpha beta"
+    },
+    {
+      "content": "First: $0 / Second: $1",
+      "args": "alpha beta",
+      "argNames": [
+        "first",
+        "second"
+      ],
+      "result": "First: alpha / Second: beta"
+    },
+    {
+      "content": "First: $0 / Second: $1",
+      "args": "only",
+      "argNames": [
+        "first",
+        "second"
+      ],
+      "result": "First: only / Second: "
+    },
+    {
+      "content": "Named: ${first} and $first",
+      "args": "value",
+      "argNames": [
+        "first"
+      ],
+      "result": "Named: value and value"
+    },
+    {
+      "content": "Prefix: $firstname",
+      "args": "value",
+      "argNames": [
+        "first"
+      ],
+      "result": "Prefix: $firstname"
+    },
+    {
+      "content": "Quoted: $0",
+      "args": "\"two words\" rest",
+      "argNames": [
+        "a",
+        "b"
+      ],
+      "result": "Quoted: two words"
+    },
+    {
+      "content": "Escaped: $0",
+      "args": "a\\ b c",
+      "argNames": [
+        "a",
+        "b"
+      ],
+      "result": "Escaped: a b"
+    },
+    {
+      "content": "Single: $0",
+      "args": "'one two' three",
+      "argNames": [
+        "a",
+        "b"
+      ],
+      "result": "Single: one two"
+    },
+    {
+      "content": "Dollar: $0",
+      "args": "$& literal",
+      "argNames": [
+        "a"
+      ],
+      "result": "Dollar: $0"
+    },
+    {
+      "content": "Dollar: $0",
+      "args": "$$",
+      "argNames": [
+        "a"
+      ],
+      "result": "Dollar: $"
+    },
+    {
+      "content": "All: $ARGUMENTS and $0",
+      "args": "x y",
+      "argNames": [
+        "n"
+      ],
+      "result": "All: x y and x"
+    },
+    {
+      "content": "Multi $0\n$1",
+      "args": "a b",
+      "argNames": [
+        "n",
+        "m"
+      ],
+      "result": "Multi a\nb"
+    }
+  ],
+  "positional": [
+    {
+      "args": "",
+      "count": 0,
+      "result": []
+    },
+    {
+      "args": "",
+      "count": 2,
+      "result": [
+        "",
+        ""
+      ]
+    },
+    {
+      "args": "a b c",
+      "count": 3,
+      "result": [
+        "a",
+        "b",
+        "c"
+      ]
+    },
+    {
+      "args": "a b c",
+      "count": 1,
+      "result": [
+        "a"
+      ]
+    },
+    {
+      "args": "a b c",
+      "count": 5,
+      "result": [
+        "a",
+        "b",
+        "c",
+        "",
+        ""
+      ]
+    },
+    {
+      "args": "  leading and trailing  ",
+      "count": 3,
+      "result": [
+        "leading",
+        "and",
+        "trailing"
+      ]
+    },
+    {
+      "args": "\"quoted arg\" plain",
+      "count": 2,
+      "result": [
+        "quoted arg",
+        "plain"
+      ]
+    },
+    {
+      "args": "'single quoted' plain",
+      "count": 2,
+      "result": [
+        "single quoted",
+        "plain"
+      ]
+    },
+    {
+      "args": "back\\ slash",
+      "count": 2,
+      "result": [
+        "back slash",
+        ""
+      ]
+    },
+    {
+      "args": "a\\",
+      "count": 2,
+      "result": [
+        "a",
+        ""
+      ]
+    }
+  ],
+  "builtinVariables": [
+    {
+      "content": "Dir: ${SKILL_DIR}",
+      "skillDir": "/tmp/skill",
+      "sessionId": "sess-1",
+      "result": "Dir: /tmp/skill"
+    },
+    {
+      "content": "Dir: ${SKILL_DIR}",
+      "skillDir": null,
+      "sessionId": "sess-1",
+      "result": "Dir: ${SKILL_DIR}"
+    },
+    {
+      "content": "Session: ${SESSION_ID}",
+      "skillDir": "/tmp/skill",
+      "sessionId": null,
+      "result": "Session: ${SESSION_ID}"
+    },
+    {
+      "content": "Both ${SKILL_DIR} ${SESSION_ID}",
+      "skillDir": "C:\\skills\\x",
+      "sessionId": "s",
+      "result": "Both C:/skills/x s"
+    },
+    {
+      "content": "No placeholders",
+      "skillDir": "/a",
+      "sessionId": "b",
+      "result": "No placeholders"
+    }
+  ],
+  "skillListing": [
+    {
+      "skills": [],
+      "result": ""
+    },
+    {
+      "skills": [
+        {
+          "name": "commit",
+          "description": "Create a git commit",
+          "userInvocable": true,
+          "isHidden": false
+        }
+      ],
+      "result": "- commit: Create a git commit"
+    },
+    {
+      "skills": [
+        {
+          "name": "commit",
+          "description": "Create a git commit",
+          "userInvocable": true,
+          "isHidden": false,
+          "whenToUse": "When asked"
+        },
+        {
+          "name": "hidden",
+          "description": "Hidden one",
+          "userInvocable": true,
+          "isHidden": true
+        },
+        {
+          "name": "manual",
+          "description": "Manual only",
+          "userInvocable": false,
+          "isHidden": false
+        },
+        {
+          "name": "review",
+          "description": "Review code",
+          "userInvocable": true,
+          "isHidden": false
+        }
+      ],
+      "result": "- commit: Create a git commit - When asked\n- review: Review code"
+    }
+  ]
+}

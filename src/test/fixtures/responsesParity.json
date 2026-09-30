@@ -1,0 +1,1115 @@
+{
+  "note": "OpenAI Responses API 纯函数对照表（Embedded `llm/ResponsesApi.ts` ↔ Standalone `core-rs/src/responses.rs`）。覆盖 URL / 工具 / 消息转换、status 映射、usage 提取、本地输入估算、usage 可信度与 output 校准；SSE 事件循环由 Rust 侧假 LLM 端到端用例覆盖。",
+  "urls": [
+    {
+      "baseURL": "https://api.deepseek.com",
+      "result": "https://api.deepseek.com/v1/responses"
+    },
+    {
+      "baseURL": "https://api.deepseek.com/v1",
+      "result": "https://api.deepseek.com/v1/responses"
+    },
+    {
+      "baseURL": "https://api.deepseek.com/v1/",
+      "result": "https://api.deepseek.com/v1/responses"
+    },
+    {
+      "baseURL": "https://api.deepseek.com/",
+      "result": "https://api.deepseek.com/v1/responses"
+    },
+    {
+      "baseURL": "http://127.0.0.1:8080/v1",
+      "result": "http://127.0.0.1:8080/v1/responses"
+    },
+    {
+      "baseURL": "https://opencode.ai/zen/go",
+      "result": "https://opencode.ai/zen/go/v1/responses"
+    }
+  ],
+  "tools": [
+    {
+      "input": [],
+      "result": []
+    },
+    {
+      "input": [
+        {
+          "name": "Bash",
+          "description": "Execute Bash",
+          "input_schema": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      ],
+      "result": [
+        {
+          "type": "function",
+          "name": "Bash",
+          "description": "Execute Bash",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      ]
+    },
+    {
+      "input": [
+        {
+          "name": "Read",
+          "description": "Read",
+          "input_schema": {
+            "type": "object",
+            "required": [
+              "file_path"
+            ]
+          }
+        },
+        {
+          "type": "web_search"
+        },
+        {
+          "type": "function",
+          "name": "Explicit",
+          "description": "d",
+          "parameters": {
+            "type": "object"
+          }
+        }
+      ],
+      "result": [
+        {
+          "type": "function",
+          "name": "Read",
+          "description": "Read",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "file_path"
+            ]
+          }
+        },
+        {
+          "type": "web_search"
+        },
+        {
+          "type": "function",
+          "name": "Explicit",
+          "description": "d",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          }
+        }
+      ]
+    },
+    {
+      "input": [
+        {
+          "description": "no name"
+        }
+      ],
+      "result": [
+        {
+          "type": "function",
+          "name": "unknown",
+          "description": "no name",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          }
+        }
+      ]
+    },
+    {
+      "input": [
+        {
+          "name": "NoSchema"
+        }
+      ],
+      "result": [
+        {
+          "type": "function",
+          "name": "NoSchema",
+          "description": "",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          }
+        }
+      ]
+    }
+  ],
+  "messages": [
+    {
+      "name": "纯字符串 user",
+      "input": [
+        {
+          "role": "user",
+          "content": "hello"
+        }
+      ],
+      "result": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "hello"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "纯字符串 assistant",
+      "input": [
+        {
+          "role": "assistant",
+          "content": "hi"
+        }
+      ],
+      "result": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "hi"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "user 文本块",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "a"
+            },
+            {
+              "type": "input_text",
+              "text": "b"
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "a"
+            },
+            {
+              "type": "input_text",
+              "text": "b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "user 工具结果（字符串）",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": "ok"
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "ok"
+        }
+      ]
+    },
+    {
+      "name": "user 工具结果（数组）",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "nested"
+                },
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "AAA"
+                  }
+                },
+                "plain"
+              ]
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": [
+            {
+              "type": "input_text",
+              "text": "nested"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,AAA",
+              "detail": "auto"
+            },
+            {
+              "type": "input_text",
+              "text": "plain"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "user 工具结果（数组含缺字段的块）",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": [
+                {
+                  "type": "text"
+                },
+                {
+                  "type": "image"
+                },
+                {
+                  "type": "text",
+                  "text": "ok"
+                },
+                42
+              ]
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": [
+            {
+              "type": "input_text",
+              "text": "{\"type\":\"text\"}"
+            },
+            null,
+            {
+              "type": "input_text",
+              "text": "ok"
+            },
+            {
+              "type": "input_text",
+              "text": "42"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "user 工具结果（content 为 null）",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": null
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "\"\""
+        }
+      ]
+    },
+    {
+      "name": "user 工具结果（content 缺失）",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1"
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "\"\""
+        }
+      ]
+    },
+    {
+      "name": "user 工具结果（content 为对象，整数值浮点）",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": {
+                "a": 1,
+                "b": 2.5
+              }
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "{\"a\":1,\"b\":2.5}"
+        }
+      ]
+    },
+    {
+      "name": "user 工具结果 + 文本（顺序：先 output 后 user）",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "看看"
+            },
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_2",
+              "content": "done"
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "type": "function_call_output",
+          "call_id": "call_2",
+          "output": "done"
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "看看"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "user 图片",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/jpeg",
+                "data": "ZZZ"
+              }
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_image",
+              "image_url": "data:image/jpeg;base64,ZZZ",
+              "detail": "auto"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "user 图片缺 source",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image"
+            }
+          ]
+        }
+      ],
+      "result": []
+    },
+    {
+      "name": "assistant 文本 + 思考 + 工具调用",
+      "input": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "想想"
+            },
+            {
+              "type": "text",
+              "text": "好的"
+            },
+            {
+              "type": "tool_use",
+              "id": "call_3",
+              "name": "Bash",
+              "input": {
+                "command": "ls"
+              }
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "type": "reasoning",
+          "content": [
+            {
+              "type": "reasoning_text",
+              "text": "想想"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "好的"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "id": "call_3",
+          "call_id": "call_3",
+          "name": "Bash",
+          "arguments": "{\"command\":\"ls\"}"
+        }
+      ]
+    },
+    {
+      "name": "assistant 空思考被跳过",
+      "input": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": ""
+            },
+            {
+              "type": "text",
+              "text": "x"
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "assistant 工具入参是字符串",
+      "input": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "c",
+              "name": "Bash",
+              "input": "{\"command\":\"ls\"}"
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "type": "function_call",
+          "id": "c",
+          "call_id": "c",
+          "name": "Bash",
+          "arguments": "{\"command\":\"ls\"}"
+        }
+      ]
+    },
+    {
+      "name": "assistant 工具入参缺失",
+      "input": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "c",
+              "name": "Bash"
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "type": "function_call",
+          "id": "c",
+          "call_id": "c",
+          "name": "Bash",
+          "arguments": "{}"
+        }
+      ]
+    },
+    {
+      "name": "多轮完整对话",
+      "input": [
+        {
+          "role": "user",
+          "content": "帮我看看"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "思考中"
+            },
+            {
+              "type": "text",
+              "text": "我先读一下"
+            },
+            {
+              "type": "tool_use",
+              "id": "call_r",
+              "name": "Read",
+              "input": {
+                "file_path": "/tmp/a.ts"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_r",
+              "content": "line"
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "帮我看看"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "content": [
+            {
+              "type": "reasoning_text",
+              "text": "思考中"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "我先读一下"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "id": "call_r",
+          "call_id": "call_r",
+          "name": "Read",
+          "arguments": "{\"file_path\":\"/tmp/a.ts\"}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_r",
+          "output": "line"
+        }
+      ]
+    }
+  ],
+  "statuses": [
+    {
+      "status": "completed",
+      "reason": null,
+      "result": "end_turn"
+    },
+    {
+      "status": "incomplete",
+      "reason": "max_output_tokens",
+      "result": "max_tokens"
+    },
+    {
+      "status": "incomplete",
+      "reason": "other",
+      "result": "incomplete"
+    },
+    {
+      "status": "incomplete",
+      "reason": null,
+      "result": "incomplete"
+    },
+    {
+      "status": "failed",
+      "reason": null,
+      "result": "error"
+    },
+    {
+      "status": "cancelled",
+      "reason": null,
+      "result": "cancelled"
+    },
+    {
+      "status": "queued",
+      "reason": null,
+      "result": "queued"
+    },
+    {
+      "status": null,
+      "reason": null,
+      "result": "end_turn"
+    }
+  ],
+  "usages": [
+    {
+      "input": null,
+      "result": null
+    },
+    {
+      "input": {},
+      "result": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0
+      }
+    },
+    {
+      "input": {
+        "input_tokens": 10,
+        "output_tokens": 5
+      },
+      "result": {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0
+      }
+    },
+    {
+      "input": {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "input_tokens_details": {
+          "cached_tokens": 60
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 8
+        }
+      },
+      "result": {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cache_read_input_tokens": 60,
+        "cache_creation_input_tokens": 0,
+        "reasoning_tokens": 8
+      }
+    },
+    {
+      "input": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "result": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0
+      }
+    },
+    {
+      "input": {
+        "input_tokens_details": {
+          "cached_tokens": 3
+        }
+      },
+      "result": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 3,
+        "cache_creation_input_tokens": 0
+      }
+    }
+  ],
+  "estimates": [
+    {
+      "name": "纯文本",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "abcd"
+            }
+          ]
+        }
+      ],
+      "system": "sys",
+      "tools": [],
+      "result": 18
+    },
+    {
+      "name": "带图片（base64 被剔除）",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "x"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,AAAA"
+            }
+          ]
+        }
+      ],
+      "system": null,
+      "tools": [],
+      "result": 1532
+    },
+    {
+      "name": "带工具",
+      "input": [],
+      "system": "system prompt",
+      "tools": [
+        {
+          "type": "function",
+          "name": "Bash",
+          "description": "d",
+          "parameters": {
+            "type": "object"
+          }
+        }
+      ],
+      "result": 25
+    },
+    {
+      "name": "非 ASCII 系统提示（UTF-16 长度）",
+      "input": [],
+      "system": "中文系统提示 🐱",
+      "tools": [],
+      "result": 4
+    },
+    {
+      "name": "整数值浮点（JSON.stringify 写 1）",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "x"
+            }
+          ],
+          "meta": {
+            "temperature": 1,
+            "top_p": 0.95
+          }
+        }
+      ],
+      "system": null,
+      "tools": [],
+      "result": 26
+    }
+  ],
+  "skipUsage": [
+    {
+      "webSearchUsed": true,
+      "inputTokens": 10,
+      "localInputEstimate": 10,
+      "contextWindow": 100000,
+      "result": {
+        "skip": true,
+        "reason": "web search usage skipped (input=10, localEstimate=10)"
+      }
+    },
+    {
+      "webSearchUsed": false,
+      "inputTokens": 10,
+      "localInputEstimate": 10,
+      "contextWindow": 100000,
+      "result": {
+        "skip": false,
+        "reason": ""
+      }
+    },
+    {
+      "webSearchUsed": false,
+      "inputTokens": 60001,
+      "localInputEstimate": 10,
+      "contextWindow": 100000,
+      "result": {
+        "skip": true,
+        "reason": "input_tokens 60001 exceeds cap 60000"
+      }
+    },
+    {
+      "webSearchUsed": false,
+      "inputTokens": 60000,
+      "localInputEstimate": 10,
+      "contextWindow": 100000,
+      "result": {
+        "skip": false,
+        "reason": ""
+      }
+    },
+    {
+      "webSearchUsed": false,
+      "inputTokens": 0,
+      "localInputEstimate": 0,
+      "contextWindow": 0,
+      "result": {
+        "skip": false,
+        "reason": ""
+      }
+    }
+  ],
+  "syncOutput": [
+    {
+      "name": "空 output",
+      "output": null,
+      "result": []
+    },
+    {
+      "name": "空数组",
+      "output": [],
+      "result": []
+    },
+    {
+      "name": "文本消息",
+      "output": [
+        {
+          "type": "message",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "hi"
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "type": "text",
+          "text": "hi"
+        }
+      ]
+    },
+    {
+      "name": "reasoning（content 优先）",
+      "output": [
+        {
+          "type": "reasoning",
+          "content": [
+            {
+              "type": "reasoning_text",
+              "text": "from-content"
+            }
+          ],
+          "summary": [
+            {
+              "text": "from-summary"
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "type": "thinking",
+          "thinking": "from-content"
+        }
+      ]
+    },
+    {
+      "name": "reasoning（回退 summary）",
+      "output": [
+        {
+          "type": "reasoning",
+          "content": [],
+          "summary": [
+            {
+              "text": "only-summary"
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "type": "thinking",
+          "thinking": "only-summary"
+        }
+      ]
+    },
+    {
+      "name": "function_call",
+      "output": [
+        {
+          "type": "function_call",
+          "call_id": "call_9",
+          "name": "Bash",
+          "arguments": "{\"command\":\"ls\"}"
+        }
+      ],
+      "result": [
+        {
+          "type": "tool_use",
+          "id": "call_9",
+          "name": "Bash",
+          "input": {
+            "command": "ls"
+          }
+        }
+      ]
+    },
+    {
+      "name": "function_call 坏 JSON",
+      "output": [
+        {
+          "type": "function_call",
+          "call_id": "call_9",
+          "name": "Bash",
+          "arguments": "{\"command\":"
+        }
+      ],
+      "result": [
+        {
+          "type": "tool_use",
+          "id": "call_9",
+          "name": "Bash",
+          "input": "{\"command\":"
+        }
+      ]
+    },
+    {
+      "name": "混合（顺序保持）",
+      "output": [
+        {
+          "type": "reasoning",
+          "content": [
+            {
+              "type": "reasoning_text",
+              "text": "r"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "t"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "id": "call_a",
+          "name": "Read",
+          "arguments": "{}"
+        },
+        {
+          "type": "web_search_call"
+        }
+      ],
+      "result": [
+        {
+          "type": "thinking",
+          "thinking": "r"
+        },
+        {
+          "type": "text",
+          "text": "t"
+        },
+        {
+          "type": "tool_use",
+          "id": "call_a",
+          "name": "Read",
+          "input": {}
+        }
+      ]
+    }
+  ]
+}

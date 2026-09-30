@@ -32,6 +32,12 @@ async function run(): Promise<void> {
     { input: '/', result: 'passthrough' },
     { input: '普通消息', result: 'passthrough' },
     { input: '/usr/bin/env', result: 'passthrough' },
+    // JS 空白口径（U+FEFF / U+0085）：`prompt.trim()` 必须与 Embedded 一致
+    { input: '\uFEFF/commit', result: 'skill', skillName: 'commit', args: '' },
+    { input: '\uFEFF/commit \uFEFF修复', result: 'skill', skillName: 'commit', args: '修复' },
+    { input: '/commit\uFEFF', result: 'skill', skillName: 'commit', args: '' },
+    { input: '\u0085/commit', result: 'passthrough' },
+    { input: '\uFEFF\u0085/commit', result: 'passthrough' },
   ];
 
   for (const c of cases) {

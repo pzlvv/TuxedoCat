@@ -67,6 +67,10 @@ function collectCoreSources(dir: string): string[] {
 function run(): void {
   const { check, finish } = createChecker();
 
+  // 本节校验的是**进程内**接线（core 侧 UiEvent 订阅、注入点登记），固定用 embedded 装配；
+  // Standalone 的进程 / 帧通道接线见 `standaloneBus.test.ts`。
+  process.env.TUXEDO_CAT_CORE = 'embedded';
+
   // ── 1. 执行共享骨架并校验自检快照 ──
   const host = createTestHost();
   const conversations = new StubConversationManager(host);
@@ -78,6 +82,7 @@ function run(): void {
   });
 
   const snapshot = bootstrapSnapshot();
+  check('snapshot.coreKind 为 embedded', snapshot.coreKind === 'embedded');
   check('snapshot.locale 保留宿主原始值', snapshot.locale === 'zh-CN');
   check('snapshot.eventBusRegistered', snapshot.eventBusRegistered === true);
   check('snapshot.uiCreated', snapshot.uiCreated === true);

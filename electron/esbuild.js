@@ -23,6 +23,8 @@ const baseConfig = {
   // 标记为 external 避免 esbuild 因解析不到它们而报错。
   external: ['electron', 'bufferutil', 'utf-8-validate'],
   tsconfig: project.resolve('tsconfig.json'),
+  // 构建期把 Core 实现（TUXEDO_CAT_CORE）烧进产物，见 src/host/coreKind.ts
+  define: { __TUXEDO_CAT_CORE_KIND__: JSON.stringify(project.coreKind) },
 };
 
 const entries = [

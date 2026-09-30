@@ -7,11 +7,15 @@
  * 本模块只做编解码与帧校验，不含进程与业务逻辑，无宿主依赖。
  */
 
-import type { CoreEvent, CoreRequest, UiEvent } from '../../core/AssistantEventBus.js';
+import type { CoreEvent, CoreRequest, UiEvent, UiRequest } from '../../core/AssistantEventBus.js';
 import { stringifyJsonSafe } from '../../core/utils/stringUtils.js';
 
-/** 协议版本；握手时由 Core 校验 */
-export const CORE_PROTOCOL_VERSION = 1;
+/**
+ * 协议版本；握手时由 Core 校验。
+ *
+ * 2：新增 UI → core 的请求方向（`UiToCoreFrame.request` / `CoreToUiFrame.response`）。
+ */
+export const CORE_PROTOCOL_VERSION = 2;
 
 // ==================== 帧类型 ====================
 
@@ -21,13 +25,18 @@ export type UiToCoreFrame =
   | { kind: 'response'; id: number; ok: true; result: unknown }
   | { kind: 'response'; id: number; ok: false; error: string }
   | { kind: 'uiEvent'; event: UiEvent }
+  /** UI → core 的请求；Core 以 `response` 帧回同 id */
+  | { kind: 'request'; id: number; request: UiRequest }
   | { kind: 'shutdown' };
 
 /** Core → UI */
 export type CoreToUiFrame =
   | { kind: 'ready' }
   | { kind: 'event'; event: CoreEvent }
-  | { kind: 'request'; id: number; request: CoreRequest };
+  | { kind: 'request'; id: number; request: CoreRequest }
+  /** core → UI 请求的应答；也用于回 UI → core 请求 */
+  | { kind: 'response'; id: number; ok: true; result: unknown }
+  | { kind: 'response'; id: number; ok: false; error: string };
 
 /** 两侧帧的并集（解码器产出、编码器接受） */
 export type Frame = UiToCoreFrame | CoreToUiFrame;
@@ -67,6 +76,8 @@ export function isCoreToUiFrame(value: unknown): value is CoreToUiFrame {
       return isRecord(value['event']);
     case 'request':
       return typeof value['id'] === 'number' && isRecord(value['request']);
+    case 'response':
+      return isResponseFrame(value);
     default:
       return false;
   }
@@ -78,18 +89,25 @@ export function isUiToCoreFrame(value: unknown): value is UiToCoreFrame {
     case 'hello':
       return typeof value['protocol'] === 'number';
     case 'response':
-      return (
-        typeof value['id'] === 'number' &&
-        typeof value['ok'] === 'boolean' &&
-        (value['ok'] === true ? 'result' in value : typeof value['error'] === 'string')
-      );
+      return isResponseFrame(value);
     case 'uiEvent':
       return isRecord(value['event']);
+    case 'request':
+      return typeof value['id'] === 'number' && isRecord(value['request']);
     case 'shutdown':
       return true;
     default:
       return false;
   }
+}
+
+/** `response` 帧的结构校验（两个方向共用） */
+function isResponseFrame(value: Record<string, unknown>): boolean {
+  return (
+    typeof value['id'] === 'number' &&
+    typeof value['ok'] === 'boolean' &&
+    (value['ok'] === true ? 'result' in value : typeof value['error'] === 'string')
+  );
 }
 
 // ==================== 解码 ====================

@@ -1,0 +1,1724 @@
+{
+  "note": "MCP 纯函数对照表（Embedded `mcp/*` ↔ Standalone `core-rs/src/mcp.rs` + `mcp_config.rs`）。只覆盖 `tools/call` 结果展平 / `tools/list` 分页与过滤 / 工具名拼接 / Windows 参数引号 / 传输类型判定 / `mcp.json` 解析与启用状态合并；stdio 子进程与 HTTP 传输由 Rust 侧真实进程 / 假 HTTP 服务器单测覆盖。",
+  "callResults": [
+    {
+      "name": "纯文本",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "hello"
+          }
+        ]
+      },
+      "text": "hello",
+      "isError": false
+    },
+    {
+      "name": "图片（有 / 无 mimeType）",
+      "result": {
+        "content": [
+          {
+            "type": "image",
+            "mimeType": "image/png"
+          },
+          {
+            "type": "image"
+          },
+          {
+            "type": "image",
+            "mimeType": 7
+          }
+        ]
+      },
+      "text": "[image image/png]\n[image unknown]\n[image unknown]",
+      "isError": false
+    },
+    {
+      "name": "resource（text / uri / 都没有）",
+      "result": {
+        "content": [
+          {
+            "type": "resource",
+            "resource": {
+              "uri": "file:///a",
+              "text": "file body"
+            }
+          },
+          {
+            "type": "resource",
+            "resource": {
+              "uri": "file:///b"
+            }
+          },
+          {
+            "type": "resource",
+            "resource": {}
+          },
+          {
+            "type": "resource"
+          }
+        ]
+      },
+      "text": "file body\n[resource file:///b]\n[resource unknown]\n[resource unknown]",
+      "isError": false
+    },
+    {
+      "name": "未知块 JSON.stringify",
+      "result": {
+        "content": [
+          {
+            "type": "custom",
+            "value": 1,
+            "nested": {
+              "a": [
+                1,
+                2
+              ]
+            }
+          },
+          {
+            "type": "text",
+            "text": 5
+          }
+        ]
+      },
+      "text": "{\"type\":\"custom\",\"value\":1,\"nested\":{\"a\":[1,2]}}\n{\"type\":\"text\",\"text\":5}",
+      "isError": false
+    },
+    {
+      "name": "混合 + 顺序",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "a"
+          },
+          {
+            "type": "image",
+            "mimeType": "image/jpeg"
+          },
+          {
+            "type": "text",
+            "text": "b"
+          }
+        ]
+      },
+      "text": "a\n[image image/jpeg]\nb",
+      "isError": false
+    },
+    {
+      "name": "空 content 兜底",
+      "result": {
+        "content": []
+      },
+      "text": "{\"content\":[]}",
+      "isError": false
+    },
+    {
+      "name": "content 不是数组",
+      "result": {
+        "content": "nope"
+      },
+      "text": "{\"content\":\"nope\"}",
+      "isError": false
+    },
+    {
+      "name": "isError 为真",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "bad"
+          }
+        ],
+        "isError": true
+      },
+      "text": "bad",
+      "isError": true
+    },
+    {
+      "name": "isError 非布尔",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "ok"
+          }
+        ],
+        "isError": 1
+      },
+      "text": "ok",
+      "isError": false
+    },
+    {
+      "name": "content 里有非对象项",
+      "result": {
+        "content": [
+          null,
+          "x",
+          3,
+          [
+            1,
+            2
+          ],
+          {
+            "type": "text",
+            "text": "kept"
+          }
+        ]
+      },
+      "text": "[1,2]\nkept",
+      "isError": false
+    },
+    {
+      "name": "null 结果",
+      "result": null,
+      "text": "null",
+      "isError": false
+    },
+    {
+      "name": "数字 / 布尔字段",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "n"
+          }
+        ],
+        "isError": false,
+        "extra": 1
+      },
+      "text": "n",
+      "isError": false
+    }
+  ],
+  "toolLists": [
+    {
+      "name": "两页",
+      "pages": [
+        {
+          "tools": [
+            {
+              "name": "a",
+              "description": "A",
+              "inputSchema": {
+                "type": "object"
+              }
+            },
+            {
+              "name": "b"
+            }
+          ],
+          "nextCursor": "c1"
+        },
+        {
+          "tools": [
+            {
+              "name": "c",
+              "annotations": {
+                "readOnlyHint": true
+              }
+            }
+          ]
+        }
+      ],
+      "calls": [
+        {
+          "method": "tools/list",
+          "params": {}
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "c1"
+          }
+        }
+      ],
+      "tools": [
+        {
+          "name": "a",
+          "description": "A",
+          "inputSchema": {
+            "type": "object"
+          }
+        },
+        {
+          "name": "b"
+        },
+        {
+          "name": "c",
+          "annotations": {
+            "readOnlyHint": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "空 nextCursor 停止",
+      "pages": [
+        {
+          "tools": [
+            {
+              "name": "p1"
+            }
+          ],
+          "nextCursor": "c1"
+        },
+        {
+          "tools": [
+            {
+              "name": "p2"
+            }
+          ],
+          "nextCursor": "c2"
+        },
+        {
+          "tools": [
+            {
+              "name": "p3"
+            }
+          ],
+          "nextCursor": ""
+        }
+      ],
+      "calls": [
+        {
+          "method": "tools/list",
+          "params": {}
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "c1"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "c2"
+          }
+        }
+      ],
+      "tools": [
+        {
+          "name": "p1"
+        },
+        {
+          "name": "p2"
+        },
+        {
+          "name": "p3"
+        }
+      ]
+    },
+    {
+      "name": "环状 cursor 防御",
+      "pages": [
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        },
+        {
+          "tools": [
+            {
+              "name": "loop"
+            }
+          ],
+          "nextCursor": "again"
+        }
+      ],
+      "calls": [
+        {
+          "method": "tools/list",
+          "params": {}
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "again"
+          }
+        }
+      ],
+      "tools": [
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        },
+        {
+          "name": "loop"
+        }
+      ]
+    },
+    {
+      "name": "跳过非法项",
+      "pages": [
+        {
+          "tools": [
+            {
+              "name": "ok",
+              "description": 5,
+              "inputSchema": "nope",
+              "annotations": []
+            },
+            {
+              "name": ""
+            },
+            {
+              "name": 3
+            },
+            "not-an-object",
+            null,
+            {
+              "name": "second",
+              "description": "Second"
+            }
+          ],
+          "nextCursor": "c1"
+        },
+        {
+          "tools": []
+        }
+      ],
+      "calls": [
+        {
+          "method": "tools/list",
+          "params": {}
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "c1"
+          }
+        }
+      ],
+      "tools": [
+        {
+          "name": "ok",
+          "annotations": []
+        },
+        {
+          "name": "second",
+          "description": "Second"
+        }
+      ]
+    },
+    {
+      "name": "tools 非数组",
+      "pages": [
+        {
+          "tools": "nope"
+        },
+        {
+          "tools": [
+            {
+              "name": "after-garbage"
+            }
+          ]
+        }
+      ],
+      "calls": [
+        {
+          "method": "tools/list",
+          "params": {}
+        }
+      ],
+      "tools": []
+    }
+  ],
+  "toolNames": [
+    {
+      "server": "my server",
+      "tool": "do.it",
+      "result": "mcp__my_server__do_it"
+    },
+    {
+      "server": "a-b_c",
+      "tool": "x/y",
+      "result": "mcp__a-b_c__x_y"
+    },
+    {
+      "server": "srv",
+      "tool": "read_file",
+      "result": "mcp__srv__read_file"
+    },
+    {
+      "server": "srv 1",
+      "tool": "tool 2",
+      "result": "mcp__srv_1__tool_2"
+    },
+    {
+      "server": "中文",
+      "tool": "工具",
+      "result": "mcp________"
+    },
+    {
+      "server": "srv",
+      "tool": "a😀b",
+      "result": "mcp__srv__a__b"
+    },
+    {
+      "server": "",
+      "tool": "",
+      "result": "mcp____"
+    }
+  ],
+  "quoteWindowsArgs": [
+    {
+      "input": "",
+      "result": "\"\""
+    },
+    {
+      "input": "node",
+      "result": "node"
+    },
+    {
+      "input": "a b",
+      "result": "\"a b\""
+    },
+    {
+      "input": "a\"b",
+      "result": "\"a\"\"b\""
+    },
+    {
+      "input": "C:\\Program Files\\x",
+      "result": "\"C:\\Program Files\\x\""
+    },
+    {
+      "input": "a&b",
+      "result": "\"a&b\""
+    },
+    {
+      "input": "a|b",
+      "result": "\"a|b\""
+    },
+    {
+      "input": "a<b",
+      "result": "\"a<b\""
+    },
+    {
+      "input": "a>b",
+      "result": "\"a>b\""
+    },
+    {
+      "input": "a^b",
+      "result": "\"a^b\""
+    },
+    {
+      "input": "a(b)",
+      "result": "\"a(b)\""
+    },
+    {
+      "input": "plain/path.exe",
+      "result": "plain/path.exe"
+    },
+    {
+      "input": "tab\there",
+      "result": "\"tab\there\""
+    },
+    {
+      "input": "﻿",
+      "result": "\"﻿\""
+    },
+    {
+      "input": "",
+      "result": ""
+    },
+    {
+      "input": "a﻿b",
+      "result": "\"a﻿b\""
+    },
+    {
+      "input": "ab",
+      "result": "ab"
+    }
+  ],
+  "isRemoteType": [
+    {
+      "type": "remote",
+      "result": true
+    },
+    {
+      "type": "HTTP",
+      "result": true
+    },
+    {
+      "type": " https ",
+      "result": true
+    },
+    {
+      "type": "sse",
+      "result": true
+    },
+    {
+      "type": "http-sse",
+      "result": true
+    },
+    {
+      "type": "streamable",
+      "result": true
+    },
+    {
+      "type": "streamable-http",
+      "result": true
+    },
+    {
+      "type": "streamablehttp",
+      "result": true
+    },
+    {
+      "type": "local",
+      "result": false
+    },
+    {
+      "type": "stdio",
+      "result": false
+    },
+    {
+      "type": "",
+      "result": false
+    }
+  ],
+  "isRemoteServer": [
+    {
+      "type": "remote",
+      "url": "",
+      "command": [],
+      "result": true
+    },
+    {
+      "type": "local",
+      "url": "https://x",
+      "command": [],
+      "result": true
+    },
+    {
+      "type": "local",
+      "url": "https://x",
+      "command": [
+        "npx"
+      ],
+      "result": false
+    },
+    {
+      "type": "local",
+      "url": "",
+      "command": [
+        "npx"
+      ],
+      "result": false
+    },
+    {
+      "type": "stdio",
+      "url": "",
+      "command": [
+        "uvx"
+      ],
+      "result": false
+    },
+    {
+      "type": "http",
+      "url": "https://x",
+      "command": [
+        "npx"
+      ],
+      "result": true
+    },
+    {
+      "type": "local",
+      "url": "  ",
+      "command": [],
+      "result": true
+    }
+  ],
+  "configParse": [
+    {
+      "name": "local + remote + 各种回退",
+      "mcpJson": {
+        "mcp": {
+          "blender": {
+            "type": "local",
+            "command": [
+              "uvx",
+              "blender-mcp"
+            ],
+            "environment": {
+              "BLENDER_HOST": "localhost",
+              "BLENDER_PORT": 9876
+            }
+          },
+          "search": {
+            "type": "remote",
+            "url": "https://search.parallel.ai/mcp",
+            "headers": {
+              "Authorization": "Bearer t"
+            }
+          },
+          "endpointOnly": {
+            "endpoint": "https://a/mcp"
+          },
+          "serverUrlOnly": {
+            "serverUrl": "https://b/mcp"
+          },
+          "envAlias": {
+            "command": "npx",
+            "env": {
+              "TOKEN": 42
+            }
+          },
+          "urlNullFallsThrough": {
+            "url": null,
+            "endpoint": "https://c/mcp"
+          },
+          "stringCommand": {
+            "command": "  uvx  "
+          },
+          "emptyCommand": {
+            "command": "   "
+          },
+          "notObject": 5
+        }
+      },
+      "settingsJson": {
+        "mcp": {
+          "enabled": [
+            "search",
+            "blender"
+          ]
+        }
+      },
+      "servers": [
+        {
+          "name": "blender",
+          "type": "local",
+          "command": [
+            "uvx",
+            "blender-mcp"
+          ],
+          "environment": {
+            "BLENDER_HOST": "localhost",
+            "BLENDER_PORT": "9876"
+          },
+          "url": "",
+          "headers": {},
+          "enabled": true
+        },
+        {
+          "name": "search",
+          "type": "remote",
+          "command": [],
+          "environment": {},
+          "url": "https://search.parallel.ai/mcp",
+          "headers": {
+            "Authorization": "Bearer t"
+          },
+          "enabled": true
+        },
+        {
+          "name": "endpointOnly",
+          "type": "remote",
+          "command": [],
+          "environment": {},
+          "url": "https://a/mcp",
+          "headers": {},
+          "enabled": false
+        },
+        {
+          "name": "serverUrlOnly",
+          "type": "remote",
+          "command": [],
+          "environment": {},
+          "url": "https://b/mcp",
+          "headers": {},
+          "enabled": false
+        },
+        {
+          "name": "envAlias",
+          "type": "local",
+          "command": [
+            "npx"
+          ],
+          "environment": {
+            "TOKEN": "42"
+          },
+          "url": "",
+          "headers": {},
+          "enabled": false
+        },
+        {
+          "name": "urlNullFallsThrough",
+          "type": "remote",
+          "command": [],
+          "environment": {},
+          "url": "https://c/mcp",
+          "headers": {},
+          "enabled": false
+        },
+        {
+          "name": "stringCommand",
+          "type": "local",
+          "command": [
+            "uvx"
+          ],
+          "environment": {},
+          "url": "",
+          "headers": {},
+          "enabled": false
+        },
+        {
+          "name": "emptyCommand",
+          "type": "local",
+          "command": [],
+          "environment": {},
+          "url": "",
+          "headers": {},
+          "enabled": false
+        }
+      ]
+    },
+    {
+      "name": "mcpServers 包裹层",
+      "mcpJson": {
+        "mcpServers": {
+          "a": {
+            "command": "npx"
+          },
+          "b": {
+            "url": "https://b"
+          }
+        }
+      },
+      "settingsJson": {
+        "mcp": {
+          "enabled": [
+            "b"
+          ]
+        }
+      },
+      "servers": [
+        {
+          "name": "a",
+          "type": "local",
+          "command": [
+            "npx"
+          ],
+          "environment": {},
+          "url": "",
+          "headers": {},
+          "enabled": false
+        },
+        {
+          "name": "b",
+          "type": "remote",
+          "command": [],
+          "environment": {},
+          "url": "https://b",
+          "headers": {},
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "name": "根对象直接当映射",
+      "mcpJson": {
+        "a": {
+          "command": [
+            "npx",
+            "a"
+          ]
+        }
+      },
+      "settingsJson": {},
+      "servers": [
+        {
+          "name": "a",
+          "type": "local",
+          "command": [
+            "npx",
+            "a"
+          ],
+          "environment": {},
+          "url": "",
+          "headers": {},
+          "enabled": false
+        }
+      ]
+    },
+    {
+      "name": "mcp 不是对象 → 空",
+      "mcpJson": {
+        "mcp": "nope",
+        "a": {
+          "command": "npx"
+        }
+      },
+      "settingsJson": {
+        "mcp": {
+          "enabled": [
+            "a"
+          ]
+        }
+      },
+      "servers": [
+        {
+          "name": "a",
+          "type": "local",
+          "command": [
+            "npx"
+          ],
+          "environment": {},
+          "url": "",
+          "headers": {},
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "name": "enabled 非数组 → 全部禁用",
+      "mcpJson": {
+        "mcp": {
+          "a": {
+            "command": "npx"
+          }
+        }
+      },
+      "settingsJson": {
+        "mcp": {
+          "enabled": "a"
+        }
+      },
+      "servers": [
+        {
+          "name": "a",
+          "type": "local",
+          "command": [
+            "npx"
+          ],
+          "environment": {},
+          "url": "",
+          "headers": {},
+          "enabled": false
+        }
+      ]
+    }
+  ]
+}

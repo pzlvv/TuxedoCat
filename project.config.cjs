@@ -17,10 +17,36 @@ function resolve(...segments) {
   return path.join(rootDir, ...segments);
 }
 
+/**
+ * 构建期 Core 实现（`TUXEDO_CAT_CORE=embedded|standalone`）。
+ *
+ * 与运行时选择变量（`src/host/coreKind.ts`）同名同取值：打包时由 esbuild `define`
+ * 注入到产物里，构建脚本据此决定要不要 Rust Core、产物落到哪个目录。
+ * 未设置时与源码默认值一致，为 `standalone`。
+ */
+function resolveCoreKind() {
+  const raw = process.env.TUXEDO_CAT_CORE;
+  if (raw === undefined || raw === '') return 'standalone';
+  if (raw !== 'embedded' && raw !== 'standalone') {
+    throw new Error(`Invalid TUXEDO_CAT_CORE="${raw}"; expected "embedded" or "standalone".`);
+  }
+  return raw;
+}
+
+const coreKind = resolveCoreKind();
+
+/**
+ * 打包产物目录。embedded 变体与 standalone 分开落位，互不覆盖：
+ * standalone → `release/`，embedded → `release/embedded/`。
+ */
+const releaseDir = resolve('release', coreKind === 'embedded' ? 'embedded' : '');
+
 module.exports = {
   ...project,
   rootDir,
   resolve,
+  coreKind,
+  releaseDir,
   distDir: resolve(project.build.dist),
   distElectronDir: resolve(project.build.distElectron),
   extensionOut: resolve(project.build.extensionOut),

@@ -16,6 +16,12 @@ export const LOG_FILE_NAME = projectConfig.logFileName;
 export const TMP_TASK_DIR_NAME = projectConfig.tmpTaskDirName;
 export const SETTINGS_FILE_NAME = projectConfig.settingsFileName;
 export const TASK_OWNER = projectConfig.taskOwner;
+/** Standalone Core 可执行文件名（不含平台扩展名） */
+export const CORE_BINARY_NAME = projectConfig.core.binaryName;
+/** Standalone Core 产物目录名（`resources/<CORE_RESOURCE_DIR>/<arch>-<platform>/`） */
+export const CORE_RESOURCE_DIR = projectConfig.core.resourceDir;
+/** Core 实现选择变量的环境变量名（`<ENV_PREFIX>_<CORE_ENV_VAR_SUFFIX>`） */
+export const CORE_ENV_VAR = `${ENV_PREFIX}_${projectConfig.core.envVarSuffix}`;
 export const OUTPUT_CHANNEL_NAME = projectConfig.outputChannelName;
 export const APP_ID = projectConfig.appId;
 export const VIEW_CONTAINER_ID = projectConfig.viewContainerId;

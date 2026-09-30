@@ -6,9 +6,9 @@ import { SingleWebViewConversationManager } from './VSCodeConversationManager.js
 import { WebViewUI } from './host/WebViewUI.js';
 import { bootstrapCore, bootstrapSnapshot, shutdownCore } from './host/bootstrapCore.js';
 import { buildDiffUris } from './VSCodeUIHost/diffUris.js';
-import { readUiLanguageSync, readHighlightLanguagesSync } from './core/history/Config.js';
+import { readHighlightLanguagesSync } from './core/history/Config.js';
+import { readSystemLocale, readUiLanguage } from './host/coreFacts.js';
 import { VSCODE_HOST_INFO } from './host/types.js';
-import { getSystemLocale } from './core/i18n.js';
 import { requireEventBus } from './core/AssistantEventBus.js';
 import {
   COMMAND_PREFIX,
@@ -293,8 +293,8 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
 
     const hasWorkspace = !!(vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0);
     const vscodeLocale = vscode.env.language;
-    const systemLocale = getSystemLocale();
-    const uiLanguage = readUiLanguageSync();
+    const systemLocale = readSystemLocale();
+    const uiLanguage = readUiLanguage();
     // Shiki 语法高亮全部按需加载：注入上次已使用过的语言，webview 启动后后台预热
     const highlightLanguages = JSON.stringify(readHighlightLanguagesSync());
 
@@ -321,6 +321,6 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
 export async function deactivate(): Promise<void> {
   // 停止空闲巡检定时器（计时 owner 是 ConversationManager）
   conversationManager?.stopIdleMonitor();
-  // core 侧的进程级资源（MCP 子进程）统一由共享骨架释放
-  shutdownCore();
+  // core 侧的进程级资源（MCP 子进程 / Standalone Core 进程）统一由共享骨架释放
+  await shutdownCore();
 }

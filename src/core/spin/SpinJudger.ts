@@ -83,7 +83,7 @@ ${criteriaList}
 /**
  * 从 LLM 回复中解析 accept 布尔值
  */
-function parseAccept(text: string): boolean {
+export function parseAccept(text: string): boolean {
   const cleaned = text.trim();
   try {
     const parsed = JSON.parse(cleaned);

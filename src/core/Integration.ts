@@ -9,7 +9,9 @@ import type { Tool } from './tools/Tool.js';
 import type { PromptPresetId } from './prompt/PromptPreset.js';
 import type { LLMConfig } from './llm/config.js';
 import { sameModelRef, type ModelRef } from './llm/modelRef.js';
-import { requireEventBus, type CoreEvent } from './AssistantEventBus.js';
+import { requireEventBus, type CoreEvent, type UiEvent } from './AssistantEventBus.js';
+import type { UserMessage } from './types.js';
+import { buildUserContent } from './utils/contentBlocks.js';
 import { markSessionWaiting } from './sessionRuntime.js';
 import { getMCPHost } from './mcp/MCPHost.js';
 import { logger } from './Logger.js';
@@ -36,6 +38,109 @@ export function initializeSessionQueue(): void {
 /** core → UI 单向事件的发送侧封装（Integration 内统一走它，便于 grep 对照第 4.1 节允许清单） */
 function emitToUi(event: CoreEvent): void {
   requireEventBus().emitToUi(event);
+}
+
+/** `UiEvent.userMessageSubmitted` 的载荷 */
+export type UserMessageSubmission = Extract<UiEvent, { type: 'userMessageSubmitted' }>;
+
+/**
+ * 用户消息进入引擎的唯一入口（core 侧）。
+ *
+ * 宿主只发 `userMessageSubmitted`；这里负责取 / 建引擎、应用本次消息携带的会话覆盖、
+ * 组装待处理消息对象并交给引擎队列。命令解析与 Skill 注入发生在引擎的消费循环
+ * （轮次边界，见 `docs/user-message-pipeline.md`）。
+ */
+export async function submitUserMessage(payload: UserMessageSubmission): Promise<void> {
+  const { sessionId, content, uuid } = payload;
+  const images = payload.images;
+
+  const engine = getSessionEngine(sessionId) ?? createEngine(sessionId, '');
+
+  if (payload.agentMode) {
+    // agentMode 归 core（取代原 UI 层 Map）；随消息路径同步进 core 存储
+    const { setSessionAgentMode } = await import('./tools/PermissionPolicy.js');
+    setSessionAgentMode(sessionId, payload.agentMode);
+  }
+
+  if (payload.thinkingMode) {
+    engine.thinkingModeOverride = payload.thinkingMode;
+  }
+
+  if (payload.model) {
+    const ref = payload.model;
+    if (
+      engine.modelRefOverride?.provider !== ref.provider ||
+      engine.modelRefOverride?.model !== ref.model
+    ) {
+      try {
+        engine.modelRefOverride = ref;
+        engine.updateModelConfig({ model: ref.model } as LLMConfig);
+        const { getConfigForProvider } = await import('./llm/config.js');
+        const config = await getConfigForProvider(ref);
+        engine.updateModelConfig(config);
+        const { updateConversationContext } = await import('./history/index.js');
+        await updateConversationContext(sessionId, { model: ref.model, provider: ref.provider });
+      } catch (error) {
+        logger.warn(
+          'Integration',
+          `Failed to apply model "${ref.model}" for session ${sessionId}: ${error}`,
+        );
+      }
+    }
+  }
+
+  if (typeof payload.webSearch === 'boolean') {
+    engine.updateWebSearch(payload.webSearch);
+  }
+
+  const selectedLines = payload.fileSelectedLines;
+  const userContent = buildUserContent(content, images);
+
+  // 落盘格式：文件信息同时写入顶层字段与 _meta，
+  // 避免只带顶层字段导致历史加载/压缩展开时无法还原文件标签。
+  const persistMeta: Record<string, unknown> = {};
+  if (payload.filePath) {
+    const fileName = payload.filePath.split(/[/\\]/).pop();
+    const range = selectedLines
+      ? `:${selectedLines.start}${selectedLines.start !== selectedLines.end ? `~${selectedLines.end}` : ''}`
+      : '';
+    persistMeta.filePath = payload.filePath;
+    persistMeta.param = `${fileName}${range}`;
+  }
+  if (selectedLines) {
+    persistMeta.fileSelectedLines = selectedLines;
+  }
+
+  const userMsg: UserMessage = {
+    type: 'user',
+    message: { role: 'user', content: userContent },
+    uuid,
+    timestamp: Date.now(),
+    // 只有用户主动发送的消息才更新 meta.json 的 updatedAt（列表按最后一条用户消息排序）
+    _userInitiated: true,
+    ...(payload.filePath && { filePath: payload.filePath }),
+    ...(selectedLines && { fileSelectedLines: selectedLines }),
+    ...(payload.fileHidden && { fileHidden: true }),
+  };
+  if (Object.keys(persistMeta).length > 0) {
+    userMsg._meta = persistMeta;
+  }
+  if (payload.deferEcho) {
+    // 命令消息：宿主不乐观回显，由 QueryEngine 在真正进入上下文时补发 addMessage；
+    // 内置命令就地执行、不进入上下文，因此不会留下幽灵气泡。
+    (userMsg as UserMessage & { _needsUINotification?: boolean })._needsUINotification = true;
+  }
+
+  // 提交到引擎队列：设置 pendingUserMessage，使消息在下次 LLM 请求时被带上。
+  // 若 consumer 正在运行，submitMessage 会等待其退出（消息已被现有 consumer
+  // 在 while 循环中消费）；若已退出，则启动新的 consumer 处理该消息。
+  for await (const _ of engine.submitMessage(content, 'user', undefined, {
+    manageQueryUI: true,
+    // 消息未 push 到 mutableMessages，consumer 处理时用此对象现场追加
+    userMsgData: userMsg,
+  })) {
+    void _;
+  }
 }
 
 /**

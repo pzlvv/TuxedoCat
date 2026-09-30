@@ -16,6 +16,11 @@
   "tmpTaskDirName": "tuxedo-cat-tasks",
   "settingsFileName": "settings.json",
   "taskOwner": "tuxedo-cat-watch",
+  "core": {
+    "binaryName": "tuxedo-cat-core",
+    "resourceDir": "core",
+    "envVarSuffix": "CORE"
+  },
   "schemes": {
     "preview": "tuxedo-cat-preview",
     "diffBefore": "tuxedo-cat-diff-before",

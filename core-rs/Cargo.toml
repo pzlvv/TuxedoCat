@@ -1,0 +1,46 @@
+[package]
+name = "standalone-core"
+version = "0.0.1"
+edition = "2021"
+description = "Standalone Core (out-of-process core implementation)"
+license = "Apache-2.0"
+
+# 包名与二进制名保持中性的 `standalone-core`：对外可执行文件名由
+# `src/config/project.json` 的 `core.binaryName` 决定，构建脚本按它落位，
+# 产品名不出现在 Rust 侧。
+[[bin]]
+name = "standalone-core"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# preserve_order：帧内字段保持写入顺序，与 TypeScript 侧声明的字段顺序一致，
+# 便于人眼比对帧内容与日志。
+serde_json = { version = "1", features = ["preserve_order"] }
+# 阻塞式 HTTP 客户端：查询在各自线程上跑，不需要异步运行时
+reqwest = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls-tls",
+    "gzip",
+] }
+sha2 = "0.10"
+# Read 工具的 doc/docx/ppt/pptx → markdown 走随应用分发的 pandoc 产物（对齐
+# Embedded `Read.ts::convertDocToMd`）；md 缓存文件名带源路径 sha1 前缀。
+sha1 = "0.10"
+# Read 工具的 xlsx/xlsm 读取（对齐 Embedded 的 `xlsx` npm 包 + `readXlsxContent`）。
+calamine = "0.36"
+# ECMAScript `Number.prototype.toString()` 口径的浮点格式化：xlsx 单元格
+# `String(cell)` 与 Embedded 逐字一致（Rust 默认格式化在指数阈值上不同）。
+ryu-js = "1"
+
+[dev-dependencies]
+# 单测里现造最小 xlsx（zip + inline string）作为 Read xlsx 路径的夹具
+zip = "8"
+
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,209 @@
+{
+  "note": "Embedded（src/core/tools/edit/Edit.ts）与 Standalone（core-rs/src/tools.rs run_edit）的 Edit 工具结果对照表。TS 侧测试断言本表等于 EditTool 的真实输出；Rust 侧测试断言 run_edit 的结果等于本表。error 为工具抛出的原始错误文案（Rust 侧 ToolOutcome::Error 的文本）。",
+  "cases": [
+    {
+      "name": "single-line-partial",
+      "why": "整行变化：1 增 1 删",
+      "content": "alpha beta gamma\n",
+      "args": {
+        "old_string": "beta",
+        "new_string": "BETA"
+      },
+      "expected": "Edited file: a.txt\nMade 1 replacement\nEdited line 1\nLines: 2 (+1, -1)",
+      "expectedStartLine": 1,
+      "expectedEndLine": 1
+    },
+    {
+      "name": "multiline-unchanged-first-line",
+      "why": "多行替换但首行未变：diff 只算变化行（1 增 1 删），不是按 old/new 行数",
+      "content": "a\nb\nc\n",
+      "args": {
+        "old_string": "a\nb",
+        "new_string": "a\nB"
+      },
+      "expected": "Edited file: a.txt\nMade 1 replacement\nEdited lines 1-2\nLines: 4 (+1, -1)",
+      "expectedStartLine": 1,
+      "expectedEndLine": 2
+    },
+    {
+      "name": "insert-at-start",
+      "why": "old_string 为空：插入 1 行",
+      "content": "a\nb\n",
+      "args": {
+        "old_string": "",
+        "new_string": "x\n"
+      },
+      "expected": "Edited file: a.txt\nMade 1 replacement\nEdited line 1\nLines: 4 (+1, -0)",
+      "expectedStartLine": 1,
+      "expectedEndLine": 1
+    },
+    {
+      "name": "replace-with-added-lines",
+      "why": "替换时新增一行：1 删 2 增",
+      "content": "a\nb\n",
+      "args": {
+        "old_string": "b",
+        "new_string": "B\nC"
+      },
+      "expected": "Edited file: a.txt\nMade 1 replacement\nEdited line 2\nLines: 4 (+2, -1)",
+      "expectedStartLine": 2,
+      "expectedEndLine": 2
+    },
+    {
+      "name": "replace-all-single-char",
+      "why": "replaceAll 三处单行替换：3 增 3 删",
+      "content": "x\nx\nx\n",
+      "args": {
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": true
+      },
+      "expected": "Edited file: a.txt\nMade 3 replacements\nEdited line 1\nLines: 4 (+3, -3)",
+      "expectedStartLine": 1,
+      "expectedEndLine": 1
+    },
+    {
+      "name": "scoped-offset-limit",
+      "why": "offset/limit 限定搜索窗口",
+      "content": "keep\ntarget\nkeep\n",
+      "args": {
+        "old_string": "target",
+        "new_string": "hit",
+        "offset": 2,
+        "limit": 1
+      },
+      "expected": "Edited file: a.txt\nMade 1 replacement\nEdited line 2\nLines: 4 (+1, -1)",
+      "expectedStartLine": 2,
+      "expectedEndLine": 2
+    },
+    {
+      "name": "delete-a-line",
+      "why": "删除整行",
+      "content": "a\nb\nc\n",
+      "args": {
+        "old_string": "b\n",
+        "new_string": ""
+      },
+      "expected": "Edited file: a.txt\nMade 1 replacement\nEdited lines 2-3\nLines: 3 (+0, -1)",
+      "expectedStartLine": 2,
+      "expectedEndLine": 3
+    },
+    {
+      "name": "shrink-multiline",
+      "why": "多行合并成一行",
+      "content": "l1\nl2\nl3\nl4\n",
+      "args": {
+        "old_string": "l2\nl3",
+        "new_string": "L2"
+      },
+      "expected": "Edited file: a.txt\nMade 1 replacement\nEdited lines 2-3\nLines: 4 (+1, -2)",
+      "expectedStartLine": 2,
+      "expectedEndLine": 3
+    },
+    {
+      "name": "crlf-file",
+      "why": "CRLF 文件：规范化匹配后还原换行",
+      "content": "a\r\nb\r\nc\r\n",
+      "args": {
+        "old_string": "b",
+        "new_string": "B"
+      },
+      "expected": "Edited file: a.txt\nMade 1 replacement\nEdited line 2\nLines: 4 (+3, -3)",
+      "expectedStartLine": 2,
+      "expectedEndLine": 2
+    },
+    {
+      "name": "far-apart-context",
+      "why": "编辑区域前后各 3 行窗口",
+      "content": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n",
+      "args": {
+        "old_string": "2",
+        "new_string": "two"
+      },
+      "expected": "Edited file: a.txt\nMade 1 replacement\nEdited line 2\nLines: 11 (+1, -1)",
+      "expectedStartLine": 2,
+      "expectedEndLine": 2
+    },
+    {
+      "name": "replace-all-multiline",
+      "why": "replaceAll 多行替换",
+      "content": "a\nX\nb\nX\nc\n",
+      "args": {
+        "old_string": "X",
+        "new_string": "Y\nZ",
+        "replace_all": true
+      },
+      "expected": "Edited file: a.txt\nMade 2 replacements\nEdited line 2\nLines: 8 (+4, -2)",
+      "expectedStartLine": 2,
+      "expectedEndLine": 2
+    },
+    {
+      "name": "not-found",
+      "why": "找不到 old_string 的错误文案",
+      "content": "a\nb\n",
+      "args": {
+        "old_string": "zzz",
+        "new_string": "y"
+      },
+      "error": "The specified old_string was not found in the file. Please read the file first and use the exact text.\nNote: Read output uses | as separator between line number and content. Make sure NOT to include the line number and the separator | in old_string."
+    },
+    {
+      "name": "ambiguous",
+      "why": "多处匹配且未 replace_all 的错误文案",
+      "content": "x\nx\n",
+      "args": {
+        "old_string": "x",
+        "new_string": "y"
+      },
+      "error": "The old_string matches 2 locations within the search range. When replace_all is false, old_string must match exactly once. Please include more surrounding context to make old_string unique, or set replace_all to true."
+    },
+    {
+      "name": "replace-all-string-true",
+      "why": "replace_all 传字符串 \"true\" 也要全量替换",
+      "content": "x\nx\n",
+      "args": {
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": "true"
+      },
+      "expected": "Edited file: a.txt\nMade 2 replacements\nEdited line 1\nLines: 3 (+2, -2)",
+      "expectedStartLine": 1,
+      "expectedEndLine": 1
+    },
+    {
+      "name": "replace-all-string-false",
+      "why": "replace_all 传字符串 \"false\" 不得全量替换（应报多处匹配）",
+      "content": "x\nx\n",
+      "args": {
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": "false"
+      },
+      "error": "The old_string matches 2 locations within the search range. When replace_all is false, old_string must match exactly once. Please include more surrounding context to make old_string unique, or set replace_all to true."
+    },
+    {
+      "name": "empty-file-insert",
+      "why": "空文件插入内容",
+      "content": "",
+      "args": {
+        "old_string": "",
+        "new_string": "hello\n"
+      },
+      "expected": "Edited file: a.txt\nMade 1 replacement\nEdited line 1\nLines: 2 (+1, -0)",
+      "expectedStartLine": 1,
+      "expectedEndLine": 1
+    },
+    {
+      "name": "missing-file",
+      "why": "文件不存在：对齐 Node fs.readFile 的 ENOENT 文案，而不是平台相关的 Edit: read failed",
+      "content": "",
+      "file": "missing.txt",
+      "missing": true,
+      "args": {
+        "old_string": "a",
+        "new_string": "b"
+      },
+      "error": "ENOENT: no such file or directory, open '__CWD__/missing.txt'"
+    }
+  ]
+}

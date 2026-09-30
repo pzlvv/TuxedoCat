@@ -1,0 +1,1399 @@
+{
+  "note": "工具入参 schema 校验对照表（Zod safeParse）。两侧共用：src/test/toolInputValidationParity.test.ts 断言 Embedded schema 产出该表，core-rs 的 tool_input_validation_parity_tests 断言 Rust parse_input 产出同结果。由 scripts/gen-tool-input-validation.mjs 生成。",
+  "cases": [
+    {
+      "name": "Read-0",
+      "tool": "Read",
+      "input": {},
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"file_path\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Read-1",
+      "tool": "Read",
+      "input": {
+        "file_path": "a"
+      },
+      "error": null,
+      "parsed": {
+        "file_path": "a"
+      }
+    },
+    {
+      "name": "Read-2",
+      "tool": "Read",
+      "input": {
+        "file_path": 123
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"file_path\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Read-3",
+      "tool": "Read",
+      "input": {
+        "file_path": null
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"file_path\"\n    ],\n    \"message\": \"Invalid input: expected string, received null\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Read-4",
+      "tool": "Read",
+      "input": "x",
+      "error": "[\n  {\n    \"expected\": \"object\",\n    \"code\": \"invalid_type\",\n    \"path\": [],\n    \"message\": \"Invalid input: expected object, received string\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Read-5",
+      "tool": "Read",
+      "input": {
+        "file_path": "a",
+        "extra": 1
+      },
+      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"extra\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"extra\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Read-6",
+      "tool": "Read",
+      "input": {
+        "file_path": "a",
+        "extra": 1,
+        "extra2": 2
+      },
+      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"extra\",\n      \"extra2\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized keys: \\\"extra\\\", \\\"extra2\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Read-7",
+      "tool": "Read",
+      "input": {
+        "file_path": "a",
+        "offset": "3",
+        "limit": "5"
+      },
+      "error": null,
+      "parsed": {
+        "file_path": "a",
+        "offset": 3,
+        "limit": 5
+      }
+    },
+    {
+      "name": "Read-8",
+      "tool": "Read",
+      "input": {
+        "file_path": "a",
+        "offset": "0"
+      },
+      "error": null,
+      "parsed": {
+        "file_path": "a",
+        "offset": 0
+      }
+    },
+    {
+      "name": "Read-9",
+      "tool": "Read",
+      "input": {
+        "file_path": "a",
+        "offset": "-1"
+      },
+      "error": "[\n  {\n    \"origin\": \"number\",\n    \"code\": \"too_small\",\n    \"minimum\": 0,\n    \"inclusive\": true,\n    \"path\": [\n      \"offset\"\n    ],\n    \"message\": \"Too small: expected number to be >=0\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Read-10",
+      "tool": "Read",
+      "input": {
+        "file_path": "a",
+        "offset": 2.5
+      },
+      "error": "[\n  {\n    \"expected\": \"int\",\n    \"format\": \"safeint\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"offset\"\n    ],\n    \"message\": \"Invalid input: expected int, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Read-11",
+      "tool": "Read",
+      "input": {
+        "file_path": "a",
+        "offset": null
+      },
+      "error": null,
+      "parsed": {
+        "file_path": "a",
+        "offset": 0
+      }
+    },
+    {
+      "name": "Read-12",
+      "tool": "Read",
+      "input": {
+        "file_path": "a",
+        "limit": "0"
+      },
+      "error": "[\n  {\n    \"origin\": \"number\",\n    \"code\": \"too_small\",\n    \"minimum\": 0,\n    \"inclusive\": false,\n    \"path\": [\n      \"limit\"\n    ],\n    \"message\": \"Too small: expected number to be >0\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Read-13",
+      "tool": "Read",
+      "input": {
+        "file_path": "a",
+        "limit": "x"
+      },
+      "error": "[\n  {\n    \"expected\": \"number\",\n    \"code\": \"invalid_type\",\n    \"received\": \"NaN\",\n    \"path\": [\n      \"limit\"\n    ],\n    \"message\": \"Invalid input: expected number, received NaN\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Read-14",
+      "tool": "Read",
+      "input": {
+        "file_path": "a",
+        "offset": "-1",
+        "extra": 1
+      },
+      "error": "[\n  {\n    \"origin\": \"number\",\n    \"code\": \"too_small\",\n    \"minimum\": 0,\n    \"inclusive\": true,\n    \"path\": [\n      \"offset\"\n    ],\n    \"message\": \"Too small: expected number to be >=0\"\n  },\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"extra\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"extra\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Read-15",
+      "tool": "Read",
+      "input": {
+        "file_path": "a",
+        "sheet": 5
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"sheet\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Read-16",
+      "tool": "Read",
+      "input": {
+        "file_path": "a",
+        "sheet": "Sheet1"
+      },
+      "error": null,
+      "parsed": {
+        "file_path": "a",
+        "sheet": "Sheet1"
+      }
+    },
+    {
+      "name": "Read-17",
+      "tool": "Read",
+      "input": {
+        "file_path": "a",
+        "sheet": ""
+      },
+      "error": null,
+      "parsed": {
+        "file_path": "a",
+        "sheet": ""
+      }
+    },
+    {
+      "name": "Read-18",
+      "tool": "Read",
+      "input": {
+        "file_path": "a",
+        "sheet": null
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"sheet\"\n    ],\n    \"message\": \"Invalid input: expected string, received null\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Read-19",
+      "tool": "Read",
+      "input": {
+        "file_path": "a",
+        "limit": 100000
+      },
+      "error": null,
+      "parsed": {
+        "file_path": "a",
+        "limit": 100000
+      }
+    },
+    {
+      "name": "Write-20",
+      "tool": "Write",
+      "input": {
+        "file_path": "a",
+        "content": "c"
+      },
+      "error": null,
+      "parsed": {
+        "file_path": "a",
+        "content": "c"
+      }
+    },
+    {
+      "name": "Write-21",
+      "tool": "Write",
+      "input": {},
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"file_path\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"content\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Write-22",
+      "tool": "Write",
+      "input": {
+        "file_path": "a"
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"content\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Write-23",
+      "tool": "Write",
+      "input": {
+        "file_path": "a",
+        "content": 5
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"content\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Write-24",
+      "tool": "Write",
+      "input": {
+        "file_path": "a",
+        "content": "c",
+        "extra": 1
+      },
+      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"extra\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"extra\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Edit-25",
+      "tool": "Edit",
+      "input": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y"
+      },
+      "error": null,
+      "parsed": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": false
+      }
+    },
+    {
+      "name": "Edit-26",
+      "tool": "Edit",
+      "input": {
+        "file_path": "a"
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"old_string\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"new_string\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Edit-27",
+      "tool": "Edit",
+      "input": {
+        "file_path": "a",
+        "old_string": "x"
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"new_string\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Edit-28",
+      "tool": "Edit",
+      "input": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": true
+      },
+      "error": null,
+      "parsed": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": true
+      }
+    },
+    {
+      "name": "Edit-29",
+      "tool": "Edit",
+      "input": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": "true"
+      },
+      "error": null,
+      "parsed": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": true
+      }
+    },
+    {
+      "name": "Edit-30",
+      "tool": "Edit",
+      "input": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": "false"
+      },
+      "error": null,
+      "parsed": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": false
+      }
+    },
+    {
+      "name": "Edit-31",
+      "tool": "Edit",
+      "input": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": ""
+      },
+      "error": null,
+      "parsed": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": false
+      }
+    },
+    {
+      "name": "Edit-32",
+      "tool": "Edit",
+      "input": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": "maybe"
+      },
+      "error": null,
+      "parsed": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": true
+      }
+    },
+    {
+      "name": "Edit-33",
+      "tool": "Edit",
+      "input": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": 1
+      },
+      "error": "[\n  {\n    \"code\": \"invalid_union\",\n    \"errors\": [\n      [\n        {\n          \"expected\": \"boolean\",\n          \"code\": \"invalid_type\",\n          \"path\": [],\n          \"message\": \"Invalid input: expected boolean, received number\"\n        }\n      ],\n      [\n        {\n          \"expected\": \"string\",\n          \"code\": \"invalid_type\",\n          \"path\": [],\n          \"message\": \"Invalid input: expected string, received number\"\n        }\n      ]\n    ],\n    \"path\": [\n      \"replace_all\"\n    ],\n    \"message\": \"Invalid input\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Edit-34",
+      "tool": "Edit",
+      "input": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": null
+      },
+      "error": "[\n  {\n    \"code\": \"invalid_union\",\n    \"errors\": [\n      [\n        {\n          \"expected\": \"boolean\",\n          \"code\": \"invalid_type\",\n          \"path\": [],\n          \"message\": \"Invalid input: expected boolean, received null\"\n        }\n      ],\n      [\n        {\n          \"expected\": \"string\",\n          \"code\": \"invalid_type\",\n          \"path\": [],\n          \"message\": \"Invalid input: expected string, received null\"\n        }\n      ]\n    ],\n    \"path\": [\n      \"replace_all\"\n    ],\n    \"message\": \"Invalid input\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Edit-35",
+      "tool": "Edit",
+      "input": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "offset": "2"
+      },
+      "error": null,
+      "parsed": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": false,
+        "offset": 2
+      }
+    },
+    {
+      "name": "Edit-36",
+      "tool": "Edit",
+      "input": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "offset": 0
+      },
+      "error": "[\n  {\n    \"origin\": \"number\",\n    \"code\": \"too_small\",\n    \"minimum\": 0,\n    \"inclusive\": false,\n    \"path\": [\n      \"offset\"\n    ],\n    \"message\": \"Too small: expected number to be >0\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Edit-37",
+      "tool": "Edit",
+      "input": {
+        "file_path": "a",
+        "old_string": "x",
+        "new_string": "y",
+        "extra": 1
+      },
+      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"extra\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"extra\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Bash-38",
+      "tool": "Bash",
+      "input": {
+        "command": "ls"
+      },
+      "error": null,
+      "parsed": {
+        "command": "ls"
+      }
+    },
+    {
+      "name": "Bash-39",
+      "tool": "Bash",
+      "input": {},
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"command\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Bash-40",
+      "tool": "Bash",
+      "input": {
+        "command": 5
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"command\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Bash-41",
+      "tool": "Bash",
+      "input": {
+        "command": "ls",
+        "description": 5
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"description\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Bash-42",
+      "tool": "Bash",
+      "input": {
+        "command": "ls",
+        "cwd": null
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"cwd\"\n    ],\n    \"message\": \"Invalid input: expected string, received null\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Bash-43",
+      "tool": "Bash",
+      "input": {
+        "command": "ls",
+        "run_in_background": "false"
+      },
+      "error": null,
+      "parsed": {
+        "command": "ls",
+        "run_in_background": true
+      }
+    },
+    {
+      "name": "Bash-44",
+      "tool": "Bash",
+      "input": {
+        "command": "ls",
+        "run_in_background": "true"
+      },
+      "error": null,
+      "parsed": {
+        "command": "ls",
+        "run_in_background": true
+      }
+    },
+    {
+      "name": "Bash-45",
+      "tool": "Bash",
+      "input": {
+        "command": "ls",
+        "run_in_background": 0
+      },
+      "error": null,
+      "parsed": {
+        "command": "ls",
+        "run_in_background": false
+      }
+    },
+    {
+      "name": "Bash-46",
+      "tool": "Bash",
+      "input": {
+        "command": "ls",
+        "run_in_background": null
+      },
+      "error": null,
+      "parsed": {
+        "command": "ls",
+        "run_in_background": false
+      }
+    },
+    {
+      "name": "Bash-47",
+      "tool": "Bash",
+      "input": {
+        "command": "ls",
+        "extra": 1
+      },
+      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"extra\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"extra\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Glob-48",
+      "tool": "Glob",
+      "input": {
+        "pattern": "**/*"
+      },
+      "error": null,
+      "parsed": {
+        "pattern": "**/*"
+      }
+    },
+    {
+      "name": "Glob-49",
+      "tool": "Glob",
+      "input": {},
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"pattern\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Glob-50",
+      "tool": "Glob",
+      "input": {
+        "pattern": 5
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"pattern\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Glob-51",
+      "tool": "Glob",
+      "input": {
+        "pattern": "x",
+        "path": 5
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"path\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Glob-52",
+      "tool": "Glob",
+      "input": {
+        "pattern": "x",
+        "extra": 1
+      },
+      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"extra\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"extra\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Grep-53",
+      "tool": "Grep",
+      "input": {
+        "pattern": "x"
+      },
+      "error": null,
+      "parsed": {
+        "pattern": "x"
+      }
+    },
+    {
+      "name": "Grep-54",
+      "tool": "Grep",
+      "input": {},
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"pattern\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Grep-55",
+      "tool": "Grep",
+      "input": {
+        "pattern": 5
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"pattern\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Grep-56",
+      "tool": "Grep",
+      "input": {
+        "pattern": "x",
+        "output_mode": "bad"
+      },
+      "error": "[\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"content\",\n      \"files_with_matches\",\n      \"count\"\n    ],\n    \"path\": [\n      \"output_mode\"\n    ],\n    \"message\": \"Invalid option: expected one of \\\"content\\\"|\\\"files_with_matches\\\"|\\\"count\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Grep-57",
+      "tool": "Grep",
+      "input": {
+        "pattern": "x",
+        "output_mode": "count"
+      },
+      "error": null,
+      "parsed": {
+        "pattern": "x",
+        "output_mode": "count"
+      }
+    },
+    {
+      "name": "Grep-58",
+      "tool": "Grep",
+      "input": {
+        "pattern": "x",
+        "-A": "3"
+      },
+      "error": null,
+      "parsed": {
+        "pattern": "x",
+        "-A": 3
+      }
+    },
+    {
+      "name": "Grep-59",
+      "tool": "Grep",
+      "input": {
+        "pattern": "x",
+        "-A": "-1"
+      },
+      "error": "[\n  {\n    \"origin\": \"number\",\n    \"code\": \"too_small\",\n    \"minimum\": 0,\n    \"inclusive\": true,\n    \"path\": [\n      \"-A\"\n    ],\n    \"message\": \"Too small: expected number to be >=0\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Grep-60",
+      "tool": "Grep",
+      "input": {
+        "pattern": "x",
+        "-n": "false"
+      },
+      "error": null,
+      "parsed": {
+        "pattern": "x",
+        "-n": true
+      }
+    },
+    {
+      "name": "Grep-61",
+      "tool": "Grep",
+      "input": {
+        "pattern": "x",
+        "-i": null
+      },
+      "error": null,
+      "parsed": {
+        "pattern": "x",
+        "-i": false
+      }
+    },
+    {
+      "name": "Grep-62",
+      "tool": "Grep",
+      "input": {
+        "pattern": "x",
+        "head_limit": "-1"
+      },
+      "error": "[\n  {\n    \"origin\": \"number\",\n    \"code\": \"too_small\",\n    \"minimum\": 0,\n    \"inclusive\": true,\n    \"path\": [\n      \"head_limit\"\n    ],\n    \"message\": \"Too small: expected number to be >=0\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Grep-63",
+      "tool": "Grep",
+      "input": {
+        "pattern": "x",
+        "offset": "2"
+      },
+      "error": null,
+      "parsed": {
+        "pattern": "x",
+        "offset": 2
+      }
+    },
+    {
+      "name": "Grep-64",
+      "tool": "Grep",
+      "input": {
+        "pattern": "x",
+        "multiline": "1"
+      },
+      "error": null,
+      "parsed": {
+        "pattern": "x",
+        "multiline": true
+      }
+    },
+    {
+      "name": "Grep-65",
+      "tool": "Grep",
+      "input": {
+        "pattern": "x",
+        "extra": 1
+      },
+      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"extra\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"extra\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "TodoWrite-66",
+      "tool": "TodoWrite",
+      "input": {
+        "todos": []
+      },
+      "error": null,
+      "parsed": {
+        "todos": []
+      }
+    },
+    {
+      "name": "TodoWrite-67",
+      "tool": "TodoWrite",
+      "input": {},
+      "error": "[\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"todos\"\n    ],\n    \"message\": \"Invalid input: expected array, received undefined\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "TodoWrite-68",
+      "tool": "TodoWrite",
+      "input": {
+        "todos": "x"
+      },
+      "error": "[\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"todos\"\n    ],\n    \"message\": \"Invalid input: expected array, received string\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "TodoWrite-69",
+      "tool": "TodoWrite",
+      "input": {
+        "todos": [
+          {
+            "content": "c",
+            "activeForm": "a"
+          }
+        ]
+      },
+      "error": null,
+      "parsed": {
+        "todos": [
+          {
+            "content": "c",
+            "status": "pending",
+            "activeForm": "a"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TodoWrite-70",
+      "tool": "TodoWrite",
+      "input": {
+        "todos": [
+          {
+            "content": "c"
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"todos\",\n      0,\n      \"activeForm\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "TodoWrite-71",
+      "tool": "TodoWrite",
+      "input": {
+        "todos": [
+          {
+            "content": "",
+            "activeForm": "a"
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"todos\",\n      0,\n      \"content\"\n    ],\n    \"message\": \"Content cannot be empty\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "TodoWrite-72",
+      "tool": "TodoWrite",
+      "input": {
+        "todos": [
+          {
+            "content": "c",
+            "activeForm": ""
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"todos\",\n      0,\n      \"activeForm\"\n    ],\n    \"message\": \"Active form cannot be empty\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "TodoWrite-73",
+      "tool": "TodoWrite",
+      "input": {
+        "todos": [
+          {
+            "content": "c",
+            "activeForm": "a",
+            "status": "bad"
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"pending\",\n      \"in_progress\",\n      \"completed\"\n    ],\n    \"path\": [\n      \"todos\",\n      0,\n      \"status\"\n    ],\n    \"message\": \"Invalid option: expected one of \\\"pending\\\"|\\\"in_progress\\\"|\\\"completed\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "TodoWrite-74",
+      "tool": "TodoWrite",
+      "input": {
+        "todos": [
+          {
+            "content": "c",
+            "activeForm": "a",
+            "status": "in_progress"
+          }
+        ]
+      },
+      "error": null,
+      "parsed": {
+        "todos": [
+          {
+            "content": "c",
+            "status": "in_progress",
+            "activeForm": "a"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TodoWrite-75",
+      "tool": "TodoWrite",
+      "input": {
+        "todos": [
+          {
+            "content": "c",
+            "activeForm": "a",
+            "extra": 1
+          }
+        ]
+      },
+      "error": null,
+      "parsed": {
+        "todos": [
+          {
+            "content": "c",
+            "status": "pending",
+            "activeForm": "a"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TodoWrite-76",
+      "tool": "TodoWrite",
+      "input": {
+        "todos": [
+          {
+            "content": "c"
+          },
+          {
+            "content": "",
+            "activeForm": "a"
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"todos\",\n      0,\n      \"activeForm\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  },\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"todos\",\n      1,\n      \"content\"\n    ],\n    \"message\": \"Content cannot be empty\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "TodoWrite-77",
+      "tool": "TodoWrite",
+      "input": {
+        "todos": [
+          {
+            "content": "c",
+            "activeForm": "a"
+          },
+          "x"
+        ]
+      },
+      "error": "[\n  {\n    \"expected\": \"object\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"todos\",\n      1\n    ],\n    \"message\": \"Invalid input: expected object, received string\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-78",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi"
+      },
+      "error": null,
+      "parsed": {
+        "question": "hi"
+      }
+    },
+    {
+      "name": "AskUserQuestion-79",
+      "tool": "AskUserQuestion",
+      "input": {},
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"question\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-80",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": 5
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"question\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-81",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi",
+        "extra": 1
+      },
+      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"extra\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"extra\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-82",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": "a"
+          }
+        ]
+      },
+      "error": null,
+      "parsed": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": "a"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AskUserQuestion-83",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": "a",
+            "description": "d"
+          }
+        ]
+      },
+      "error": null,
+      "parsed": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": "a",
+            "description": "d"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AskUserQuestion-84",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi",
+        "choices": []
+      },
+      "error": "[\n  {\n    \"origin\": \"array\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"choices\"\n    ],\n    \"message\": \"Too small: expected array to have >=1 items\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-85",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi",
+        "choices": "x"
+      },
+      "error": "[\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\"\n    ],\n    \"message\": \"Invalid input: expected array, received string\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-86",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi",
+        "choices": [
+          5
+        ]
+      },
+      "error": "[\n  {\n    \"expected\": \"object\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      0\n    ],\n    \"message\": \"Invalid input: expected object, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-87",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi",
+        "choices": [
+          {
+            "description": "d"
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      0,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-88",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": 5
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      0,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-89",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": "a",
+            "description": 5
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      0,\n      \"description\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-90",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": "a",
+            "description": null
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      0,\n      \"description\"\n    ],\n    \"message\": \"Invalid input: expected string, received null\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-91",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": "a",
+            "x": 1
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"x\"\n    ],\n    \"path\": [\n      \"choices\",\n      0\n    ],\n    \"message\": \"Unrecognized key: \\\"x\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-92",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": "a"
+          },
+          {
+            "label": "b",
+            "z": 1,
+            "y": 2
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"z\",\n      \"y\"\n    ],\n    \"path\": [\n      \"choices\",\n      1\n    ],\n    \"message\": \"Unrecognized keys: \\\"z\\\", \\\"y\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-93",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": "a"
+          },
+          {
+            "label": 5
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      1,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-94",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": "a"
+          },
+          {
+            "label": "a"
+          },
+          {
+            "label": "a"
+          },
+          {
+            "label": "a"
+          },
+          {
+            "label": "a"
+          },
+          {
+            "label": "a"
+          },
+          {
+            "label": "a"
+          },
+          {
+            "label": "a"
+          },
+          {
+            "label": "a"
+          },
+          {
+            "label": "a"
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"origin\": \"array\",\n    \"code\": \"too_big\",\n    \"maximum\": 9,\n    \"inclusive\": true,\n    \"path\": [\n      \"choices\"\n    ],\n    \"message\": \"Too big: expected array to have <=9 items\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-95",
+      "tool": "AskUserQuestion",
+      "input": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": 5
+          },
+          {
+            "label": 5
+          },
+          {
+            "label": 5
+          },
+          {
+            "label": 5
+          },
+          {
+            "label": 5
+          },
+          {
+            "label": 5
+          },
+          {
+            "label": 5
+          },
+          {
+            "label": 5
+          },
+          {
+            "label": 5
+          },
+          {
+            "label": 5
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      0,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      1,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      2,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      3,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      4,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      5,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      6,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      7,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      8,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      9,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"origin\": \"array\",\n    \"code\": \"too_big\",\n    \"maximum\": 9,\n    \"inclusive\": true,\n    \"path\": [\n      \"choices\"\n    ],\n    \"message\": \"Too big: expected array to have <=9 items\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Agent-96",
+      "tool": "Agent",
+      "input": {
+        "prompt": "do it",
+        "agentRole": "Master"
+      },
+      "error": null,
+      "parsed": {
+        "prompt": "do it",
+        "agentRole": "Master"
+      }
+    },
+    {
+      "name": "Agent-97",
+      "tool": "Agent",
+      "input": {},
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"prompt\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  },\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"Master\"\n    ],\n    \"path\": [\n      \"agentRole\"\n    ],\n    \"message\": \"Invalid input: expected \\\"Master\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Agent-98",
+      "tool": "Agent",
+      "input": {
+        "prompt": "do it"
+      },
+      "error": "[\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"Master\"\n    ],\n    \"path\": [\n      \"agentRole\"\n    ],\n    \"message\": \"Invalid input: expected \\\"Master\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Agent-99",
+      "tool": "Agent",
+      "input": {
+        "agentRole": "Master"
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"prompt\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Agent-100",
+      "tool": "Agent",
+      "input": {
+        "prompt": "do it",
+        "agentRole": "Master",
+        "description": "d"
+      },
+      "error": null,
+      "parsed": {
+        "prompt": "do it",
+        "description": "d",
+        "agentRole": "Master"
+      }
+    },
+    {
+      "name": "Agent-101",
+      "tool": "Agent",
+      "input": {
+        "prompt": "do it",
+        "agentRole": "Master",
+        "extra": 1
+      },
+      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"extra\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"extra\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Agent-102",
+      "tool": "Agent",
+      "input": {
+        "prompt": 5,
+        "agentRole": "Master"
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"prompt\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Agent-103",
+      "tool": "Agent",
+      "input": {
+        "prompt": "do it",
+        "agentRole": 5
+      },
+      "error": "[\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"Master\"\n    ],\n    \"path\": [\n      \"agentRole\"\n    ],\n    \"message\": \"Invalid input: expected \\\"Master\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Agent-104",
+      "tool": "Agent",
+      "input": {
+        "prompt": "do it",
+        "agentRole": "Master",
+        "description": 5
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"description\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Reply-105",
+      "tool": "Reply",
+      "input": {
+        "message": "hi"
+      },
+      "error": null,
+      "parsed": {
+        "message": "hi"
+      }
+    },
+    {
+      "name": "Reply-106",
+      "tool": "Reply",
+      "input": {},
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"message\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Reply-107",
+      "tool": "Reply",
+      "input": {
+        "message": 5
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"message\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Reply-108",
+      "tool": "Reply",
+      "input": {
+        "message": "hi",
+        "targetSessionId": "s1"
+      },
+      "error": null,
+      "parsed": {
+        "message": "hi",
+        "targetSessionId": "s1"
+      }
+    },
+    {
+      "name": "Reply-109",
+      "tool": "Reply",
+      "input": {
+        "message": "hi",
+        "targetSessionId": 5
+      },
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"targetSessionId\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "Reply-110",
+      "tool": "Reply",
+      "input": {
+        "message": "hi",
+        "extra": 1
+      },
+      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"extra\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"extra\\\"\"\n  }\n]",
+      "parsed": null
+    }
+  ]
+}

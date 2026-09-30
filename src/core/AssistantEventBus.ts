@@ -17,11 +17,12 @@
  *   当前两个请求都不设超时，调用点自行决定兜底
  */
 
-import type { MessageData, StreamMessageData, StreamEndData } from './types.js';
+import type { Message, MessageData, StreamMessageData, StreamEndData } from './types.js';
 import type { AgentMode } from './types.js';
 import type { ModelRef } from './llm/modelRef.js';
 import type { PermissionResult, ToolProgressData } from './tools/Tool.js';
 import type { UserChoiceOptions } from './UserChoiceQueue.js';
+import type { ConversationMetadata } from './history/Conversation.js';
 
 // ==================== core → UI：单向事件 ====================
 
@@ -94,16 +95,18 @@ export type CoreEvent =
    * 消息里出现了新的高亮语言（围栏代码块语言），需要并入 settings.json 的
    * highlightLanguages 字段，供下次启动预热 Shiki。
    *
-   * core 只报告事实：字段名 / 去重 / 上限在 `highlightLanguagesMutator`，
-   * 写盘由 UI 侧经 `UIHost.updateSettingsJson` 承担（core 只读不写）。
+   * core 只报告事实：字段名 / 去重 / 上限在 `highlightLanguagesMutator`；
+   * Embedded 下写盘由 UI 侧经 `UIHost.updateSettingsJson` 承担，Standalone 下 Core
+   * 自己在 `config::merge_highlight_languages` 落盘（全局配置的唯一写入点）。
    * 只带尚未记录过的语言，避免每次落盘都触发一次磁盘写。
    */
   | { type: 'highlightLanguagesUsed'; languages: readonly string[] }
   /**
    * 项目对话目录已就绪（目录由 core 创建）。
    *
-   * core 只报告事实：目录里的 settings.json（记录 workspacePath）由 UI 侧经
-   * `UIHost.ensureProjectSettings` 写（core 只读不写 settings.json）。
+   * core 只报告事实：目录里的 settings.json（记录 workspacePath）在 Embedded 下由 UI 侧经
+   * `UIHost.ensureProjectSettings` 写，在 Standalone 下由 Core 自己写
+   * （`config::write_project_settings`，见 `docs/standalone-core.md` 第 8 节）。
    */
   | { type: 'projectConversationDirReady'; projectDir: string; workspacePath: string }
   | { type: 'compactBegin'; sessionId: string }
@@ -198,9 +201,40 @@ export type CoreRequestResult = CoreRequestResultMap[keyof CoreRequestResultMap]
 export type UiEvent =
   // ===== 消息 =====
   /**
-   * 用户消息不经 UiEvent 进入 core：宿主用户消息入口（WebviewMessageHandler.handleUserMessage）
-   * 直接把消息入队到会话引擎（QueryEngine.submitMessage）。
+   * 用户消息进入 core 的唯一入口。
+   *
+   * 宿主只负责组装载荷并发出本条事件；入队、落盘、命令解析、轮次边界消费都在 core 侧。
+   * `uuid` 由宿主生成并回带，用于把 webview 里的排队项与 core 的消息配对。
    */
+  | {
+      type: 'userMessageSubmitted';
+      sessionId: string;
+      /** 纯文本内容（不含文件引用与图片） */
+      content: string;
+      /** 消息 uuid（宿主生成；core 落盘时沿用） */
+      uuid: string;
+      /** 图片（dataUrl 形式，随消息进入 LLM content blocks） */
+      images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
+      /** 引用的文件路径（展示与持久化用，是否发给 LLM 由 fileHidden 决定） */
+      filePath?: string;
+      fileSelectedLines?: { start: number; end: number };
+      fileHidden?: boolean;
+      /** 本次消息携带的会话覆盖（缺省时沿用会话已有取值） */
+      agentMode?: AgentMode;
+      thinkingMode?: 'off' | 'low' | 'high' | 'max';
+      model?: ModelRef;
+      webSearch?: boolean;
+      /** 该会话的工作目录（多工作目录宿主按会话解析后带上） */
+      workspacePath?: string;
+      /**
+       * 是否由 core 在「消息真正进入 LLM 上下文」时补发用户气泡。
+       *
+       * 仅 Embedded 下的命令消息（`/xxx`）置 true：宿主不再乐观回显，
+       * 由 QueryEngine 在出队解析后决定是否补发（内置命令就地执行、不落盘，
+       * 因此不应留下一个不会被持久化的气泡）。Standalone 无此机制，恒为 false。
+       */
+      deferEcho?: boolean;
+    }
   | { type: 'abortRequested'; sessionId: string }
 
   // ===== 压缩 =====
@@ -208,7 +242,13 @@ export type UiEvent =
   | { type: 'compactRequested'; sessionId: string }
 
   // ===== 会话生命周期 =====
-  | { type: 'conversationStarted'; sessionId: string }
+  /**
+   * 新会话建立。
+   *
+   * `workspacePath` 是该会话归属的工作目录（多工作目录宿主按会话解析后带上）；
+   * 缺省时 core 回退到活动工作目录。
+   */
+  | { type: 'conversationStarted'; sessionId: string; workspacePath?: string }
   | { type: 'conversationOpened'; sessionId: string }
   /**
    * 会话被关闭：释放该会话的运行时内存，磁盘数据不动。
@@ -250,6 +290,17 @@ export type UiEvent =
    */
   | { type: 'editRolledBack'; sessionId: string; toolUseId: string; direction: string; filePath?: string }
   | { type: 'llmConfigSaved'; config: unknown }
+  /**
+   * 请求把若干字段并入全局 `settings.json`。
+   *
+   * Embedded 下写盘由宿主承担（`UIHost.updateSettingsJson`，见 DEVELOPMENT.md 第 2 节
+   * 规则 9）；Standalone 下 Core 是全局配置的**唯一写入点**
+   * （`docs/standalone-core.md` 第 8 节），宿主把「要改的字段」交给 Core 完成写盘。
+   *
+   * `patch` 采用 JSON Merge Patch（RFC 7386）语义：对象递归合并、`null` 删除该键、
+   * 数组与标量整体替换。Core 侧串行化「读-改-写」并在写盘后清掉自己的读缓存。
+   */
+  | { type: 'settingsJsonUpdateRequested'; patch: Record<string, unknown> }
 
   // ===== 宿主环境 =====
   /**
@@ -265,6 +316,8 @@ export type UiEvent =
       extensionPath: string;
       /** core 日志是否同时输出到控制台 */
       logToConsole: boolean;
+      /** 配置目录名（`~/<configDirName>`）；产品名不进 core 实现 */
+      configDirName: string;
     }
   // ===== 用户选择 =====
   /**
@@ -274,7 +327,91 @@ export type UiEvent =
    * 供 `isSessionIdle` 判定「非空闲」。入队阶段（尚未弹出）由 core 自己在
    * `Integration.requestUserChoice` 里标记。
    */
-  | { type: 'userChoicePendingChanged'; sessionId: string; pending: boolean };
+  | { type: 'userChoicePendingChanged'; sessionId: string; pending: boolean }
+  /**
+   * 登记「会话 → 工作目录」。
+   *
+   * Embedded 下宿主直接调 `setSessionWorkspace()`（同进程，同一张表）；Standalone 下
+   * 这张表在 Core 进程内，宿主必须经事件交给 Core。多工作目录的宿主在打开 / 切换 /
+   * 重命名会话时用它把会话自己的目录告诉 core，core 据此解析工具的相对路径。
+   */
+  | {
+      type: 'sessionWorkspaceAssigned';
+      sessionId: string;
+      /** `null` 表示清除该会话的登记（回退到活动工作目录） */
+      workspacePath: string | null;
+    };
+
+// ==================== UI → core：请求-响应 ====================
+
+/**
+ * 需要 core 返回结果的请求（`CoreRequest` 的反方向）。
+ *
+ * 宿主不直接读取 core 的磁盘数据（`docs/standalone-core.md` 第 10 节）：需要
+ * 「core 的事实」时由宿主发起请求、core 应答。Embedded 下这些事实本来就在同进程，
+ * 请求退化为一次函数调用，结果一致。
+ *
+ * 边界语义与 `request()` 相同：无内置超时，调用点自行兜底；应答方不存在时
+ * 静默挂起（`StandaloneEventBus` 在 Core 断开时以错误结束挂起的请求）。
+ */
+export type UiRequest =
+  /** 对话列表元数据（`loadConversationList` 的等价物） */
+  | { type: 'conversationListRequested'; workspacePath?: string }
+  /** 界面语言（`readUiLanguageSync` 的等价物）：`settings.json` 的 `uiLanguage` */
+  | { type: 'uiLanguageRequested' }
+  /** 系统语言（`getSystemLocale` 的等价物）：Windows 查 UI 区域，其余读 `LANG` */
+  | { type: 'systemLocaleRequested' }
+  /** 配置目录（`getConfigHomeDir` 的等价物）：`~/<configDirName>` */
+  | { type: 'configHomeDirRequested' }
+  /** 智能命名：读会话消息 + 调 LLM + 解析标题（`history/smartNaming` 的等价物） */
+  | { type: 'smartNamingRequested'; sessionId: string }
+  /** DeepSeek 账户余额（`utils/balance` 的等价物）；未配置 api.deepseek.com 时为 `null` */
+  | { type: 'balanceRequested' }
+  /**
+   * 压缩归档展开：归档消息 + 当前未压缩部分（`loadCompactArchive` + 主 JSONL 的合并）。
+   * 返回 `null` 表示该会话没有归档。
+   */
+  | { type: 'compactArchiveRequested'; sessionId: string }
+  /**
+   * 保存 LLM 全局配置（设置面板）。
+   *
+   * 载荷是 webview 发来的 `saveLLMConfig` 原始消息。整段 mutation（provider 表 +
+   * `modelConfigs` 补齐 + 顶层默认值 + MCP 默认启用列表）在 Core 侧执行：它要读
+   * **磁盘上的旧值**才能保留用户手填的 context/output 限值，还要读内置模型注册表。
+   * Standalone 下全局配置的唯一写入点是 Core（规格第 8 节）。
+   */
+  | { type: 'llmConfigSaveRequested'; payload: Record<string, unknown> };
+
+/** 请求 → 结果的类型映射（判别联合，字段完整） */
+export type UiRequestResultMap = {
+  conversationListRequested: ConversationMetadata[];
+  uiLanguageRequested: 'auto' | 'zh' | 'en';
+  systemLocaleRequested: string;
+  configHomeDirRequested: string;
+  smartNamingRequested: { title: string };
+  balanceRequested: {
+    totalBalance: number;
+    currency: string;
+    isUnlimited: boolean;
+    fetchedAt: number;
+  } | null;
+  compactArchiveRequested: Message[] | null;
+  llmConfigSaveRequested: {
+    /** 保存后的默认模型（active provider 的默认模型） */
+    model: string;
+    modelProvider: string;
+    activeProvider: string;
+    thinkingEffort: 'off' | 'low' | 'high' | 'max';
+    agentMode: 'manual' | 'risk' | 'auto';
+    promptMode: 'normal' | 'minimal' | 'mixed';
+    webSearch: boolean;
+    /** 保存后的 provider 分组（模型下拉列表用） */
+    providers: Array<{ key: string; models: string[] }>;
+    /** 当前会话解析后的模型身份（provider / 模型失效时已回落到可用值） */
+    activeModel: string;
+    activeModelProvider: string;
+  };
+};
 
 // ==================== 会话运行时状态 ====================
 
@@ -352,6 +489,20 @@ export interface AssistantEventBus {
     type: T,
     handler: (event: Extract<UiEvent, { type: T }>) => void,
   ): Unsubscribe;
+
+  // ===================== UI → core 请求 =====================
+
+  /**
+   * UI 侧：发起请求并等待 core 的响应。
+   *
+   * 与 `request()` 对称；Embedded 下退化为一次同进程调用。
+   */
+  requestCore<T extends UiRequest['type']>(
+    request: Extract<UiRequest, { type: T }>,
+  ): Promise<UiRequestResultMap[T]>;
+
+  /** core 侧：一次性注册全部 UI 请求处理器（穷尽检查，重复注册抛错） */
+  onUiRequests(handlers: UiRequestHandlers): void;
 }
 
 /**
@@ -368,6 +519,13 @@ export type CoreRequestHandlers = {
   readonly [K in CoreRequest['type']]: (
     request: Extract<CoreRequest, { type: K }>,
   ) => Promise<CoreRequestResultMap[K]>;
+};
+
+/** UI 请求的处理器表（返回值类型由 `UiRequestResultMap` 约束） */
+export type UiRequestHandlers = {
+  readonly [K in UiRequest['type']]: (
+    request: Extract<UiRequest, { type: K }>,
+  ) => Promise<UiRequestResultMap[K]>;
 };
 
 // ==================== 全局注册 ====================
