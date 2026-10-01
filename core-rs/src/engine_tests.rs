@@ -4332,6 +4332,31 @@ fn slash_skill_command_injects_the_skill_tool_use() {
         "Skill \"commit\" has been loaded. Follow the instructions in the skill content above."
     );
 
+    // UI 上架 Skill 卡片（对齐 Embedded `runTools`）：授权前 / 执行前各发一次 `toolCall`；
+    // 缺了它们，`/<skill>` 在 UI 上没有任何可见的触发痕迹（`toolResult` 只能更新已存在的卡片）。
+    let skill_calls = harness
+        .sink
+        .events_of("toolCall")
+        .into_iter()
+        .filter(|event| event["toolName"] == "Skill")
+        .count();
+    assert_eq!(
+        skill_calls,
+        2,
+        "授权 / 执行各一次 toolCall: {:?}",
+        harness.sink.event_types()
+    );
+    // 卡片由 `toolPermissionRequested` 上架：Skill 的 checkPermissions 恒 allow，
+    // 不弹确认框，但请求本身必须发（携带 displayArgs）。
+    let permission = harness
+        .sink
+        .requests_of("toolPermissionRequested")
+        .into_iter()
+        .find(|request| request["toolName"] == "Skill")
+        .expect("应当发一次 Skill 的 toolPermissionRequested");
+    assert_eq!(permission["permResult"]["behavior"], "allow");
+    assert_eq!(permission["displayArgs"]["skill"], "commit");
+
     // 消费循环跑完（`queryEnd`）后再读盘：注入消息的落盘发生在 toolResult 事件之后，
     // 只等 toolResult 会与落盘赛跑
     assert!(
@@ -4431,6 +4456,98 @@ fn slash_skill_command_injects_the_skill_tool_use() {
         })
         .unwrap();
     assert_eq!(injected_index, result_index + 1, "注入消息应紧随 tool_result");
+
+    crate::skills::reset_registries();
+}
+
+/// `/commit` 延迟回显（`deferEcho`）：命令消息真正进入上下文时补发用户 `message`
+/// （宿主不乐观回显），且 `_needsUINotification` 是 UI 专用标记、不落盘。
+/// 对齐 Embedded `Integration.submitUserMessage` → `QueryEngine.notifyUserMessageToUI`。
+#[test]
+fn deferred_skill_command_reemits_the_user_message() {
+    let sandbox = Sandbox::new("engine-skill-deferred");
+    crate::skills::reset_registries();
+    let llm = FakeLlm::fixed(openai_text_sse(&["好的"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::allow_all();
+    harness.core.on_user_message(&json!({
+        "sessionId": "s1",
+        "content": "/commit",
+        "uuid": "u-deferred",
+        "deferEcho": true,
+    }));
+
+    assert!(
+        harness.wait_for(
+            |sink| !sink.events_of("queryEnd").is_empty(),
+            Duration::from_secs(30),
+        ),
+        "消费循环应当收尾: {:?}",
+        harness.sink.event_types()
+    );
+
+    // 进入上下文 → 补发用户气泡（带同一个 uuid，供 webview 配对排队项）
+    let user_message = harness
+        .sink
+        .events_of("message")
+        .into_iter()
+        .find(|event| {
+            event["data"]["role"] == "user" && event["data"]["messageUuid"] == "u-deferred"
+        })
+        .unwrap_or_else(|| {
+            panic!("应当补发用户气泡: {:?}", harness.sink.event_types());
+        });
+    assert_eq!(user_message["data"]["content"], "/commit");
+
+    // UI 专用标记不落盘
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let messages = crate::history::load_messages("s1", &project);
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.get("_needsUINotification").is_none()),
+        "UI 专用标记不该落盘: {messages:?}"
+    );
+
+    crate::skills::reset_registries();
+}
+
+/// `/spin`（内置命令）即使延迟回显也**不该**补发用户气泡：消息就地执行、被丢弃，
+/// 补发会留下一个刷新后消失的「幽灵」气泡（与 Embedded 不一致）。
+#[test]
+fn deferred_builtin_command_does_not_reemit_the_user_message() {
+    let sandbox = Sandbox::new("engine-builtin-deferred");
+    crate::skills::reset_registries();
+    let llm = FakeLlm::fixed(openai_text_sse(&["好的"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::allow_all();
+    harness.core.on_user_message(&json!({
+        "sessionId": "s1",
+        "content": "/spin",
+        "uuid": "u-spin-deferred",
+        "deferEcho": true,
+    }));
+
+    assert!(
+        harness.wait_for(
+            |sink| !sink.events_of("queryEnd").is_empty(),
+            Duration::from_secs(30),
+        ),
+        "消费循环应当收尾: {:?}",
+        harness.sink.event_types()
+    );
+
+    assert!(
+        !harness
+            .sink
+            .events_of("message")
+            .iter()
+            .any(|event| event["data"]["messageUuid"] == "u-spin-deferred"),
+        "内置命令不该补发用户气泡: {:?}",
+        harness.sink.event_types()
+    );
 
     crate::skills::reset_registries();
 }

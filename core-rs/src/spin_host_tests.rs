@@ -142,7 +142,7 @@ fn not_dag_reports_an_error() {
 }
 
 #[test]
-fn ready_design_renames_the_session_and_refreshes_the_designer() {
+fn ready_design_updates_the_title_and_refreshes_the_designer() {
     let sandbox = Sandbox::new("spin-host-ready");
     write_ready_design(&sandbox, "把 README 补一段说明");
     let harness = EngineHarness::allow_all();
@@ -161,15 +161,15 @@ fn ready_design_renames_the_session_and_refreshes_the_designer() {
     let result = run_spin_command(&harness.core, "s1", &workspace, "auto");
 
     assert!(result.is_none(), "内置命令不该返回 system 消息");
-    // 标题已改（对齐 TS 的 updateConversationMetadataTitle + titleChanged）
-    let titles: Vec<String> = harness
-        .sink
-        .events_of("titleChanged")
-        .iter()
-        .filter_map(|event| event["title"].as_str().map(str::to_string))
-        .collect();
-    // 落盘文本一律英文常量（Core 不感知语言）
-    assert!(titles.iter().any(|title| title == "Spin Design"), "{titles:?}");
+    // 标题已写进 meta.json（落盘文本一律英文常量，Core 不感知语言）；
+    // 对齐 TS `bundled/spin.ts` 的 `updateConversationMetadataTitle`：**不发**事件。
+    let metadata = history::load_metadata("s1", &project).expect("meta.json 应当存在");
+    assert_eq!(metadata["title"], "Spin Design");
+    assert!(
+        harness.sink.events_of("titleChanged").is_empty(),
+        "内部改标题不该广播 titleChanged: {:?}",
+        harness.sink.event_types()
+    );
     // 收尾一定发设计器刷新
     assert_eq!(harness.sink.events_of("spinDesignDataChanged").len(), 1);
     // 结构问题路径不该发这条

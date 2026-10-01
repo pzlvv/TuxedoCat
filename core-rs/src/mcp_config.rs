@@ -402,7 +402,8 @@ pub fn read_enabled_mcps(session_id: Option<&str>) -> Vec<String> {
 ///
 /// 同时更新内存覆盖并尽力写入 `meta.json`；`meta.json` 还不存在时写入静默跳过，
 /// 等查询结束后由 [`flush_session_mcp_to_meta`] 补写。
-#[cfg_attr(not(test), allow(dead_code))]
+///
+/// 入口：`UiEvent.mcpEnabledChanged`（webview 输入框菜单的单个勾选）。
 pub fn set_session_mcp_enabled(session_id: Option<&str>, name: &str, enabled: bool) {
     let Some(session_id) = session_id.filter(|id| !id.is_empty()) else {
         return;

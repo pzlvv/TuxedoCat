@@ -419,6 +419,10 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
         // AskUserQuestion 的 `checkPermissions` 直接放行（提问本身就在 `call()` 里弹框），
         // 且不返回 `updatedInput`（区别于 `buildTool` 默认实现）。
         "AskUserQuestion" => CheckResult::allow_plain(),
+        // `SkillTool.checkPermissions` 直接放行（技能只注入 prompt，无破坏性），
+        // 且不返回 `updatedInput`。落到 `_ => ask` 会让 manual 模式下的 `/skill`
+        // 与模型主动调用 Skill 都弹出确认框，与 Embedded 不一致。
+        "Skill" => CheckResult::allow_plain(),
         "Bash" => {
             // 与 Embedded 的 `Bash.checkPermissions` 一致：只有缺失 / 非字符串 / 空串才非法；
             // 纯空白串是合法输入（会走到 ask）。

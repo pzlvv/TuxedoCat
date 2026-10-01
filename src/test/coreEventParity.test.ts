@@ -49,13 +49,25 @@ const CORE_BINARY = path.join(
   coreBinaryFileName('win32'),
 );
 
+/** 一轮 queryEnd 之后的收集窗口：吸收异步到达的事件（MCP 同步等） */
+const SETTLE_MS = 500;
+
 /**
- * 脚本化的 UiEvent 序列；`sessionId` 用固定值，两边逐项相同。
+ * 脚本化的 UiEvent 序列；`sessionId` 由场景给出（同进程里多个场景必须用不同
+ * sessionId，否则进程内的引擎 / MCP 引用池会命中上一个场景的残留）。
  *
  * `settings` 是配置快照——配置归 UI，Core 侧只消费快照，不读 `settings.json`；
  * 两个实现收到的是同一份，因此必须由本函数显式传入。
+ * `content` / `deferEcho` 与宿主 `handleUserMessage` 的真实载荷一致：`/` 开头的
+ * 命令消息延迟回显（`deferEcho`），普通消息由宿主立即回显。
  */
-function scriptedUiEvents(workspacePath: string, settings: SettingsSnapshot): UiEvent[] {
+function scriptedUiEvents(
+  workspacePath: string,
+  settings: SettingsSnapshot,
+  sessionId: string,
+  content: string,
+  deferEcho: boolean,
+): UiEvent[] {
   return [
     {
       type: 'hostEnvironmentProvided',
@@ -65,15 +77,16 @@ function scriptedUiEvents(workspacePath: string, settings: SettingsSnapshot): Ui
       settings,
       mcpServers: [],
     },
-    { type: 'sessionWorkspaceAssigned', sessionId: 'parity-1', workspacePath },
-    { type: 'conversationStarted', sessionId: 'parity-1', workspacePath },
-    { type: 'conversationOpened', sessionId: 'parity-1' },
+    { type: 'sessionWorkspaceAssigned', sessionId, workspacePath },
+    { type: 'conversationStarted', sessionId, workspacePath },
+    { type: 'conversationOpened', sessionId },
     {
       type: 'userMessageSubmitted',
-      sessionId: 'parity-1',
-      content: '你好',
+      sessionId,
+      content,
       uuid: 'user-parity-1',
       workspacePath,
+      deferEcho: deferEcho || undefined,
     },
   ];
 }
@@ -115,6 +128,30 @@ function lifecycleSubsequence(types: string[]): string[] {
   ]);
   return types.filter((type) => tracked.has(type));
 }
+
+/**
+ * 对等场景：同一条用户消息分别喂给两种实现。
+ *
+ * - `/commit`：命令消息延迟回显（`deferEcho`），进入上下文时由 core 补发用户
+ *   `message`；同时走「注入 Skill tool_use」这条独立路径（`injectSkillToolUse` ↔
+ *   `inject_skill_tool_use`），必须产生同一组 CoreEvent——`toolCall`（授权 / 执行
+ *   各一次）、`toolResult`、用户 `message`，以及每条落盘消息一次的
+ *   `conversationListChanged`。缺 `toolCall` 时 UI 不会上架 Skill 卡片，表现为
+ *   Standalone 下 `/<skill>`「不触发」。
+ * - `/spin`：内置命令就地执行、消息被丢弃，因此**不该**补发用户 `message`（否则
+ *   Standalone 会留下一个刷新后消失的「幽灵」气泡，与 Embedded 不一致）。
+ */
+const SCENARIOS: ReadonlyArray<{
+  id: string;
+  name: string;
+  sessionId: string;
+  content: string;
+  deferEcho: boolean;
+}> = [
+  { id: 'plain', name: '普通消息', sessionId: 'parity-plain', content: '你好', deferEcho: false },
+  { id: 'skill', name: '/commit 技能命令', sessionId: 'parity-skill', content: '/commit', deferEcho: true },
+  { id: 'builtin', name: '/spin 内置命令', sessionId: 'parity-builtin', content: '/spin', deferEcho: true },
+];
 
 // ==================== 假 LLM ====================
 
@@ -225,6 +262,9 @@ async function runEmbedded(home: string, events: UiEvent[]): Promise<CoreEvent[]
     for (const event of events) bus.emitToCore(event);
     // 等这一轮跑完（落盘 + streamEnd）
     await waitFor(() => received.some((event) => event.type === 'queryEnd'), 15_000);
+    // MCP 的 `sessionConfigChanged(mcpEnabled)` 是会话打开后的异步同步产物，
+    // 到达时刻可能晚于 queryEnd；多留一小段收集窗口，避免它变成时序竞态。
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
     resetGlobalEventBus();
     return received;
   });
@@ -249,8 +289,20 @@ async function runStandalone(home: string, events: UiEvent[]): Promise<CoreEvent
         buffer = buffer.slice(index + 1);
         if (line) {
           try {
-            const frame = JSON.parse(line) as { kind: string; event?: CoreEvent };
+            const frame = JSON.parse(line) as {
+              kind: string;
+              id?: number;
+              event?: CoreEvent;
+              request?: { type: string };
+            };
             if (frame.kind === 'event' && frame.event) received.push(frame.event);
+            // Core 的 `toolPermissionRequested`（工具授权 / 上架工具卡片）：
+            // 与 Embedded 侧 `onCoreRequests` 的桩一致，一律回 allow。
+            if (frame.kind === 'request' && typeof frame.id === 'number') {
+              child.stdin.write(
+                `${JSON.stringify({ kind: 'response', id: frame.id, ok: true, result: { behavior: 'allow' } })}\n`,
+              );
+            }
           } catch {
             /* 忽略非法行 */
           }
@@ -268,6 +320,8 @@ async function runStandalone(home: string, events: UiEvent[]): Promise<CoreEvent
     await waitFor(() => received.some((event) => event.type === 'queryBegin' || event.type === 'log'), 5_000);
     for (const event of events) send({ kind: 'uiEvent', event });
     await waitFor(() => received.some((event) => event.type === 'queryEnd'), 15_000);
+    // 与 Embedded 侧同一口径：多留一小段收集窗口，吸收异步的 MCP 同步事件。
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
 
     await new Promise<void>((resolve) => {
       try {
@@ -313,64 +367,82 @@ async function run(): Promise<void> {
   }
 
   const llm = await startFakeLlm();
-  const embeddedHome = makeTempDir('parity-embedded');
-  const standaloneHome = makeTempDir('parity-standalone');
-  const embeddedSettings = writeSettings(embeddedHome, llm.url);
-  const standaloneSettings = writeSettings(standaloneHome, llm.url);
-  const embeddedWorkspace = path.join(embeddedHome, 'workspace');
-  const standaloneWorkspace = path.join(standaloneHome, 'workspace');
-  fs.mkdirSync(embeddedWorkspace, { recursive: true });
-  fs.mkdirSync(standaloneWorkspace, { recursive: true });
 
   try {
-    const embeddedEvents = await runEmbedded(embeddedHome, scriptedUiEvents(embeddedWorkspace, embeddedSettings));
-    const standaloneEvents = await runStandalone(
-      standaloneHome,
-      scriptedUiEvents(standaloneWorkspace, standaloneSettings),
-    );
-    const embedded = contractTypes(embeddedEvents);
-    const standalone = contractTypes(standaloneEvents);
+    for (const scenario of SCENARIOS) {
+      const embeddedHome = makeTempDir(`parity-embedded-${scenario.id}`);
+      const standaloneHome = makeTempDir(`parity-standalone-${scenario.id}`);
+      const embeddedSettings = writeSettings(embeddedHome, llm.url);
+      const standaloneSettings = writeSettings(standaloneHome, llm.url);
+      const embeddedWorkspace = path.join(embeddedHome, 'workspace');
+      const standaloneWorkspace = path.join(standaloneHome, 'workspace');
+      fs.mkdirSync(embeddedWorkspace, { recursive: true });
+      fs.mkdirSync(standaloneWorkspace, { recursive: true });
 
-    check(`Embedded 跑出了完整一轮（${embedded.length} 个事件）`, embedded.length > 0);
-    check(`Standalone 跑出了完整一轮（${standalone.length} 个事件）`, standalone.length > 0);
+      const embeddedEvents = await runEmbedded(
+        embeddedHome,
+        scriptedUiEvents(
+          embeddedWorkspace,
+          embeddedSettings,
+          scenario.sessionId,
+          scenario.content,
+          scenario.deferEcho,
+        ),
+      );
+      const standaloneEvents = await runStandalone(
+        standaloneHome,
+        scriptedUiEvents(
+          standaloneWorkspace,
+          standaloneSettings,
+          scenario.sessionId,
+          scenario.content,
+          scenario.deferEcho,
+        ),
+      );
+      const embedded = contractTypes(embeddedEvents);
+      const standalone = contractTypes(standaloneEvents);
 
-    // 1. 同一串 UiEvent 产生同一**组** CoreEvent（不多不少）。
-    //    快照型事件（`sessionRuntimeChanged`）单列在第 3 条断言里：它推几次取决于
-    //    「内部 diff 的观察点」，多推一次不携带新信息。
-    const embeddedFacts = orderedTypes(embeddedEvents);
-    const standaloneFacts = orderedTypes(standaloneEvents);
-    check(
-      `两种实现产生同一组 CoreEvent\n     embedded  = ${typeMultiset(embeddedFacts)}\n     standalone= ${typeMultiset(standaloneFacts)}`,
-      typeMultiset(embeddedFacts) === typeMultiset(standaloneFacts),
-    );
+      check(`${scenario.name}：Embedded 跑出了完整一轮（${embedded.length} 个事件）`, embedded.length > 0);
+      check(`${scenario.name}：Standalone 跑出了完整一轮（${standalone.length} 个事件）`, standalone.length > 0);
 
-    // 2. 查询生命周期的相对顺序一致
-    check(
-      `查询生命周期顺序一致\n     embedded  = ${JSON.stringify(lifecycleSubsequence(embedded))}\n     standalone= ${JSON.stringify(lifecycleSubsequence(standalone))}`,
-      JSON.stringify(lifecycleSubsequence(embedded)) ===
-        JSON.stringify(lifecycleSubsequence(standalone)),
-    );
+      // 1. 同一串 UiEvent 产生同一**组** CoreEvent（不多不少）。
+      //    快照型事件（`sessionRuntimeChanged`）单列在第 3 条断言里：它推几次取决于
+      //    「内部 diff 的观察点」，多推一次不携带新信息。
+      const embeddedFacts = orderedTypes(embeddedEvents);
+      const standaloneFacts = orderedTypes(standaloneEvents);
+      check(
+        `${scenario.name}：两种实现产生同一组 CoreEvent\n     embedded  = ${typeMultiset(embeddedFacts)}\n     standalone= ${typeMultiset(standaloneFacts)}`,
+        typeMultiset(embeddedFacts) === typeMultiset(standaloneFacts),
+      );
 
-    // 3. 两边都推了会话运行时快照，且收尾时是空闲
-    for (const [label, events] of [
-      ['embedded', embeddedEvents],
-      ['standalone', standaloneEvents],
-    ] as const) {
-      const snapshots = events.filter((event) => event.type === 'sessionRuntimeChanged');
-      check(`${label} 推送了 sessionRuntimeChanged`, snapshots.length > 0);
-      const last = snapshots[snapshots.length - 1] as unknown as {
-        states?: Array<{ sessionId: string; idle: boolean }>;
-      };
-      const mine = last.states?.find((state) => state.sessionId === 'parity-1');
-      check(`${label} 收尾时会话回到空闲`, mine?.idle === true);
+      // 2. 查询生命周期的相对顺序一致
+      check(
+        `${scenario.name}：查询生命周期顺序一致\n     embedded  = ${JSON.stringify(lifecycleSubsequence(embedded))}\n     standalone= ${JSON.stringify(lifecycleSubsequence(standalone))}`,
+        JSON.stringify(lifecycleSubsequence(embedded)) ===
+          JSON.stringify(lifecycleSubsequence(standalone)),
+      );
+
+      // 3. 两边都推了会话运行时快照，且收尾时是空闲
+      for (const [label, events] of [
+        ['embedded', embeddedEvents],
+        ['standalone', standaloneEvents],
+      ] as const) {
+        const snapshots = events.filter((event) => event.type === 'sessionRuntimeChanged');
+        check(`${scenario.name}：${label} 推送了 sessionRuntimeChanged`, snapshots.length > 0);
+        const last = snapshots[snapshots.length - 1] as unknown as {
+          states?: Array<{ sessionId: string; idle: boolean }>;
+        };
+        const mine = last.states?.find((state) => state.sessionId === scenario.sessionId);
+        check(`${scenario.name}：${label} 收尾时会话回到空闲`, mine?.idle === true);
+      }
+
+      // 4. 摘掉快照事件后两边的交错仍然不同：这是已知且有意保留的差异
+      //    （Embedded 的落盘是 fire-and-forget 的 `startPersist`，Rust 在调 LLM
+      //    之前同步落盘，见 DIFF.md 第 3.3 节）。这里显式打印，便于将来对照。
+      console.log(
+        `  · ${scenario.name} 摘掉快照后的序列\n     embedded  = ${JSON.stringify(orderedTypes(embeddedEvents))}\n     standalone= ${JSON.stringify(orderedTypes(standaloneEvents))}`,
+      );
     }
-
-    // 4. 摘掉快照事件后两边的交错仍然不同：这是已知且有意保留的差异
-    //    （Embedded 的落盘是 fire-and-forget 的 `startPersist`，Rust 在调 LLM
-    //    之前同步落盘，见 DIFF.md 第 3.3 节）。这里显式打印，便于将来对照。
-    console.log(
-      `  · 摘掉快照后的序列\n     embedded  = ${JSON.stringify(orderedTypes(embeddedEvents))}\n     standalone= ${JSON.stringify(orderedTypes(standaloneEvents))}`,
-    );
   } finally {
     await llm.close();
   }

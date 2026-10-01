@@ -703,14 +703,17 @@ impl Core {
         self.emit(json!({ "type": "conversationListChanged" }));
     }
 
-    pub fn on_conversation_renamed(&self, session_id: &str, title: &str) {
+    /// 只写 `meta.json` 的标题，不发任何事件（对齐 Embedded
+    /// `history.updateConversationMetadataTitle`）。
+    ///
+    /// `meta.json` 不存在时静默吞掉 ENOENT、不凭空建档。返回 `false` 表示会话没有
+    /// 工作目录（调用方据此决定是否广播）。
+    fn write_conversation_title(&self, session_id: &str, title: &str) -> bool {
         let Ok(project) = self.project_of(session_id) else {
-            return;
+            return false;
         };
-        let title = title.to_string();
-        // meta.json 不存在时 Embedded 的 `updateConversationMetadataTitle` 只是静默
-        // 吞掉 ENOENT（不凭空创建文件），但**仍然**照常广播事件——这里对齐该行为。
         if history::load_metadata(session_id, &project).is_some() {
+            let title = title.to_string();
             let _ = history::update_metadata(
                 session_id,
                 &project,
@@ -719,6 +722,22 @@ impl Core {
                     metadata["title"] = json!(title);
                 },
             );
+        }
+        true
+    }
+
+    /// `/spin` 等「内部改标题」路径：只写 `meta.json`，**不广播事件**
+    /// （对齐 Embedded `bundled/spin.ts` 直接调 `updateConversationMetadataTitle`，
+    /// 而不是走 `conversationRenamed` 那条会广播的 UiEvent）。
+    pub fn update_conversation_title(&self, session_id: &str, title: &str) {
+        self.write_conversation_title(session_id, title);
+    }
+
+    pub fn on_conversation_renamed(&self, session_id: &str, title: &str) {
+        // meta.json 不存在时 Embedded 的 `updateConversationMetadataTitle` 只是静默
+        // 吞掉 ENOENT（不凭空创建文件），但**仍然**照常广播事件——这里对齐该行为。
+        if !self.write_conversation_title(session_id, title) {
+            return;
         }
         // 对齐 `initializeCoreEvents` 的 conversationRenamed：
         // 先广播 titleChanged（宿主据此更新标题栏），再广播列表变化。
@@ -1907,6 +1926,11 @@ fn resolve_pending_command(
 /// 对齐 Embedded `QueryEngine.injectSkillToolUse` → `submitToolUse`：不走 LLM，
 /// 直接构造一条 assistant 消息（单个 tool_use block）并执行 `Skill` 工具，
 /// 把 tool_result 与工具注入的 `newMessages` 落盘 + 进上下文。
+///
+/// 事件序列对齐 Embedded `submitToolUse` → `runTools`：
+/// `toolCall`（授权前）→ `toolPermissionRequested`（UI 借此上架 Skill 卡片并拿
+/// `displayArgs`）→ `toolCall`（执行前）→ `toolResult`；每条落盘消息各发一次
+/// `conversationListChanged`（对齐 `Conversation.appendMessage`）。
 fn inject_skill_tool_use(
     core: &Arc<Core>,
     session_id: &str,
@@ -1941,6 +1965,61 @@ fn inject_skill_tool_use(
         "timestamp": util::now_millis(),
     });
     persist_message(core, session_id, project, state, &assistant_message)?;
+    // 每条落盘消息各发一次 `conversationListChanged` 并计入 `meta.json.messageCount`
+    // （对齐 Embedded `Conversation.appendMessage`：`injectSkillToolUse` 落 3 条）。
+    announce_message_appended(core, session_id, project, false);
+
+    // 对齐 Embedded `runTools.authorizeOne`：授权前先发一次 `toolCall`（UI 上架 running
+    // 卡片），再发一次 `toolPermissionRequested`——UI 的 ToolHandler 借此上架 Skill
+    // 卡片并拿到 `displayArgs`。缺了这一步，Standalone 下 `/<skill>` 在 UI 上没有任何
+    // 可见的触发痕迹（`toolResult` / `toolArgsUpdated` 只能更新**已存在**的卡片）。
+    core.emit(json!({
+        "type": "toolCall",
+        "sessionId": session_id,
+        "toolUseId": tool_use_id,
+        "toolName": "Skill",
+    }));
+    // Skill 的 checkPermissions 恒 allow（见 `permission::base_check`），不会弹确认框；
+    // 这里的往返只为让 UI 上架卡片，与 Embedded `emitToolPermissionRequest` 同序。
+    let agent_mode = state.lock().unwrap().agent_mode.clone();
+    match core.resolve_permission(session_id, &tool_use_id, "Skill", &input, &agent_mode, project) {
+        PermissionOutcome::Allowed { .. } => {
+            // 对齐 `executeSingleItem`：执行前再发一次 `toolCall`（卡片转「执行中」）
+            core.emit(json!({
+                "type": "toolCall",
+                "sessionId": session_id,
+                "toolUseId": tool_use_id,
+                "toolName": "Skill",
+            }));
+        }
+        PermissionOutcome::Denied { message, .. } => {
+            // 对齐 Embedded 的拒绝分支：卡片置 error，补一条 error tool_result，不执行工具
+            core.emit(json!({
+                "type": "toolResult",
+                "sessionId": session_id,
+                "toolUseId": tool_use_id,
+                "toolName": "Skill",
+                "output": message,
+                "status": "error",
+            }));
+            let result_message = json!({
+                "type": "user",
+                "message": { "role": "user", "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": message,
+                    "exit_code": -1,
+                    "is_canceled": false,
+                }] },
+                "uuid": util::unique_id("tool_result"),
+                "timestamp": util::now_millis(),
+            });
+            persist_message(core, session_id, project, state, &result_message)?;
+            emit_highlight_languages(core, &result_message);
+            announce_message_appended(core, session_id, project, false);
+            return Ok(());
+        }
+    }
 
     let outcome = execute_tool(
         core,
@@ -1967,6 +2046,8 @@ fn inject_skill_tool_use(
     for message in new_messages {
         persist_message(core, session_id, project, state, &message)?;
         emit_highlight_languages(core, &message);
+        // 技能正文（`isMeta` 的 user 消息）同样计入 messageCount 并刷新列表
+        announce_message_appended(core, session_id, project, false);
     }
     Ok(())
 }
@@ -2002,9 +2083,22 @@ fn run_turn(
     // 1. 用户消息落盘 + 通知 UI（Reminder 轮次没有用户消息，只跑查询）
     let user_initiated = user_message.is_some();
     if let Some(user_message) = user_message {
+        // 命令消息（`/xxx`）宿主不乐观回显，由这里在「真正进入上下文」时补发气泡。
+        // `_needsUINotification` 只服务这次补发：先摘掉再落盘，避免 UI 专用标记写进
+        // JSONL（对齐 Embedded `notifyUserMessageToUI` 的 `delete`）。
+        let mut stripped = None;
+        if user_message.get("_needsUINotification").and_then(Value::as_bool) == Some(true) {
+            let mut owned = user_message.clone();
+            if let Some(object) = owned.as_object_mut() {
+                object.remove("_needsUINotification");
+            }
+            stripped = Some(owned);
+        }
+        let user_message = stripped.as_ref().unwrap_or(user_message);
+        if stripped.is_some() {
+            emit_user_message_to_ui(core, session_id, user_message);
+        }
         let _ = persist_message(core, session_id, &project, state, user_message)?;
-        // 用户气泡由宿主在发出 userMessageSubmitted 时乐观渲染（同一个 uuid），
-        // Core 侧不重复上报 message 事件，避免气泡出现两次。
         let _ = message_text(user_message);
         emit_highlight_languages(core, user_message);
         // 标题 / `meta.json` 建档必须先于 `touch_metadata`：后者在 meta 缺失时
@@ -2414,8 +2508,24 @@ fn flush_queued_messages(
     state: &Arc<Mutex<SessionState>>,
 ) -> Result<(), String> {
     loop {
-        // 单槽位：一次取走即可（Embedded 的 `pendingUserMessage` 同时只可能有一条）
-        let message = state.lock().unwrap().pending_user_message.take();
+        // 单槽位：一次取走即可（Embedded 的 `pendingUserMessage` 同时只可能有一条）。
+        // 命令消息（`/xxx`）**不在查询中途消费**（对齐 Embedded
+        // `flushQueuedMessagesIntoContext` 的 `includeCommandUserMessage=false`）：
+        // 留在队列里，由消费循环在下一轮开始前解析，避免多步工具调用进行到一半时
+        // 注入 Skill / 执行内置命令。
+        let message = {
+            let mut guard = state.lock().unwrap();
+            let is_command = guard
+                .pending_user_message
+                .as_ref()
+                .map(|message| util::js_trim(&message_text(message)).starts_with('/'))
+                .unwrap_or(false);
+            if is_command {
+                None
+            } else {
+                guard.pending_user_message.take()
+            }
+        };
         let Some(message) = message else {
             break;
         };
@@ -3239,10 +3349,13 @@ fn run_query_loop(
         announce_message_appended(core, session_id, project, false);
 
         // 工具额外注入的消息（Skill 的技能正文）：紧随该批 tool_result 之后落盘 +
-        // 进上下文。`isMeta: true` → UI 不展示（对齐 Embedded `RunTools` 的 yield）。
+        // 进上下文。`isMeta: true` → UI 不展示（对齐 Embedded `RunTools` 的 yield）；
+        // 每条同样计入 `messageCount` 并各发一次 `conversationListChanged`
+        // （对齐 `Conversation.appendMessage`，与 `inject_skill_tool_use` 同一口径）。
         for message in new_messages {
             let _ = persist_message(core, session_id, project, state, &message)?;
             emit_highlight_languages(core, &message);
+            announce_message_appended(core, session_id, project, false);
         }
 
         if cancelled {
@@ -3682,6 +3795,13 @@ fn build_user_message(payload: &Value) -> Value {
     message.insert("uuid".to_string(), json!(uuid));
     message.insert("timestamp".to_string(), json!(util::now_millis()));
     message.insert("_userInitiated".to_string(), json!(true));
+    // 命令消息由宿主延迟回显（`deferEcho`）：真正进入上下文时由
+    // `emit_user_message_to_ui` 补发用户气泡；内置命令就地执行、该消息被丢弃，
+    // 因此不会补发（对齐 Embedded `Integration.submitUserMessage` 的
+    // `_needsUINotification`）。标记只服务这一次补发，落盘前必须摘掉。
+    if payload.get("deferEcho").and_then(Value::as_bool) == Some(true) {
+        message.insert("_needsUINotification".to_string(), json!(true));
+    }
 
     // 对齐 Embedded 的 `...(payload.filePath && { filePath })` / `...(selectedLines && {...})`：
     // 都是 JS 真值判定——空串 filePath 不落盘（也不进 `_meta`）。
@@ -3767,6 +3887,93 @@ fn build_user_message(payload: &Value) -> Value {
         }
     }
     Value::Object(message)
+}
+
+/// 命令消息真正进入上下文时补发用户气泡（对齐 Embedded `QueryEngine.notifyUserMessageToUI`）。
+///
+/// 宿主对 `/` 开头的命令消息不做乐观回显（`deferEcho`）：内置命令就地执行、该消息被
+/// 丢弃，不会走到这里；Skill 命令进入上下文，由调用方在摘掉 `_needsUINotification`
+/// 后调用本函数补发 `message` 事件让气泡出现。普通消息由宿主立即回显、不带该标记，
+/// 调用方不会调用本函数。
+///
+/// 落盘 / 进上下文前调用方必须先摘掉 `_needsUINotification`（Embedded 在 notify 时
+/// `delete`），避免该 UI 专用标记写进 JSONL。
+fn emit_user_message_to_ui(core: &Arc<Core>, session_id: &str, message: &Value) {
+    let Some(object) = message.as_object() else {
+        return;
+    };
+
+    // 文件信息按 `fileHidden` 决定是否展示（对齐 Embedded `fileHidden ? undefined : ...`）
+    let file_hidden = object.get("fileHidden").and_then(Value::as_bool) == Some(true);
+    let file_path = if file_hidden {
+        None
+    } else {
+        object.get("filePath").and_then(Value::as_str).map(str::to_string)
+    };
+    let selected_lines = if file_hidden {
+        None
+    } else {
+        object.get("fileSelectedLines").cloned()
+    };
+
+    // 展示用 `param`：`<文件名>:<start>[~<end>]`（对齐 `notifyUserMessageToUI`）
+    let param = file_path.as_ref().map(|path| {
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+        let Some(lines) = selected_lines.as_ref() else {
+            return name.to_string();
+        };
+        let start = lines.get("start").and_then(Value::as_u64);
+        let end = lines.get("end").and_then(Value::as_u64);
+        match (start, end) {
+            (Some(start), Some(end)) if start != end => format!("{name}:{start}~{end}"),
+            (Some(start), _) => format!("{name}:{start}"),
+            _ => name.to_string(),
+        }
+    });
+
+    // content 可能是字符串，也可能是 text / image block 数组
+    let content = object.get("message").and_then(|inner| inner.get("content"));
+    let (text, images) = crate::replay::extract_user_content(content);
+
+    let mut data = Map::new();
+    data.insert("role".to_string(), json!("user"));
+    data.insert(
+        "messageUuid".to_string(),
+        object.get("uuid").cloned().unwrap_or(Value::Null),
+    );
+    data.insert("content".to_string(), json!(text));
+    if !images.is_empty() {
+        data.insert("images".to_string(), Value::Array(images));
+    }
+    if let Some(param) = &param {
+        data.insert("param".to_string(), json!(param));
+    }
+    if let Some(path) = &file_path {
+        data.insert("filePath".to_string(), json!(path));
+    }
+    if let Some(lines) = &selected_lines {
+        data.insert("fileSelectedLines".to_string(), lines.clone());
+    }
+    // `meta` 与宿主乐观回显同形（`{ filePath, param, fileSelectedLines }`）
+    let mut meta = Map::new();
+    if let Some(path) = &file_path {
+        meta.insert("filePath".to_string(), json!(path));
+        if let Some(param) = &param {
+            meta.insert("param".to_string(), json!(param));
+        }
+    }
+    if let Some(lines) = &selected_lines {
+        meta.insert("fileSelectedLines".to_string(), lines.clone());
+    }
+    if !meta.is_empty() {
+        data.insert("meta".to_string(), Value::Object(meta));
+    }
+
+    core.emit(json!({
+        "type": "message",
+        "sessionId": session_id,
+        "data": Value::Object(data),
+    }));
 }
 
 /// 解析 data URL（对齐 `src/core/utils/contentBlocks.ts` 的 `parseDataUrl`）：

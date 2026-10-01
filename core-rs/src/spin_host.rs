@@ -220,9 +220,11 @@ pub fn run_spin_command(
         return None;
     };
 
-    // 标题改成「Spin 设计」（对齐 TS 的 `updateConversationMetadataTitle` + titleChanged）。
+    // 标题改成「Spin 设计」。对齐 TS `bundled/spin.ts`：直接调
+    // `updateConversationMetadataTitle` 只写 meta.json、**不广播** `titleChanged` /
+    // `conversationListChanged`（TS 里那条 `titleChanged` 在 `if (!engine)` 死分支里）。
     // 落盘文本统一英文（`docs/core-ui-separation.md` 第 4.8 节）。
-    core.on_conversation_renamed(session_id, "Spin Design");
+    core.update_conversation_title(session_id, "Spin Design");
 
     let host = Arc::new(CoreSpinHost::new(Arc::clone(core), session_id));
     let abort = host.abort_flag();

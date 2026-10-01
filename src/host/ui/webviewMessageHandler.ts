@@ -422,11 +422,11 @@ export class WebviewMessageHandler {
     const filePath = typeof message.filePath === 'string' ? message.filePath : undefined;
     const uuid = `user_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
-    // Embedded 下的命令消息（`/xxx`）不做乐观回显：内置命令就地执行、不落盘，
-    // 立刻画气泡会留下一个刷新后消失的「幽灵」用户消息。交给 QueryEngine 在
-    // 消息真正进入上下文时补发（Skill 命令）或干脆不发（内置命令）。
-    // Standalone 没有命令解析，命令按普通文本落盘，因此仍然乐观回显。
-    const deferEcho = content.trim().startsWith('/') && resolveCoreKind() === 'embedded';
+    // 命令消息（`/xxx`）不做乐观回显：内置命令就地执行、不落盘，立刻画气泡会留下
+    // 一个刷新后消失的「幽灵」用户消息。交给引擎在消息真正进入上下文时补发
+    // （Skill 命令）或干脆不发（内置命令）——Embedded 走 `QueryEngine.notifyUserMessageToUI`，
+    // Standalone 走 `engine::emit_user_message_to_ui`，两侧同一契约。
+    const deferEcho = content.trim().startsWith('/');
 
     if (!deferEcho) {
       // 立即回显用户气泡（乐观渲染）：core 落盘时沿用同一个 uuid，

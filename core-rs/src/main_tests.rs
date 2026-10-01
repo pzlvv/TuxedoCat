@@ -416,13 +416,45 @@ fn session_config_events_are_dispatched() {
         assert!(keys.contains(&key.to_string()), "missing {key} in {keys:?}");
     }
 
-    // MCP 尚未迁入：只记录，不广播
-    let before = harness.sink.events().len();
+    // MCP 单开关（对齐 Embedded `Config.setSessionMcpEnabled`）：把这次勾选合并进
+    // 该会话的启用列表并写盘。广播由 MCP 的 `notifyServersChanged` 出口在差量同步
+    // 结束后发出，因此这里断言写盘结果而不是 `sessionConfigChanged`。
     dispatch(
         &harness,
         json!({ "type": "mcpEnabledChanged", "sessionId": "s1", "name": "x", "enabled": true }),
     );
-    assert_eq!(harness.sink.events().len(), before);
+    assert_eq!(
+        crate::mcp_config::read_session_enabled_mcps(Some("s1")),
+        Some(vec!["x".to_string()])
+    );
+    let metadata = history::load_metadata("s1", &workspace).expect("metadata");
+    assert_eq!(metadata["context"]["mcpEnabled"], json!(["x"]));
+
+    // 再次勾选其它 server：差量合并，不清空已有勾选
+    dispatch(
+        &harness,
+        json!({ "type": "mcpEnabledChanged", "sessionId": "s1", "name": "y", "enabled": true }),
+    );
+    assert_eq!(
+        crate::mcp_config::read_session_enabled_mcps(Some("s1")),
+        Some(vec!["x".to_string(), "y".to_string()])
+    );
+
+    // 取消勾选：从列表移除
+    dispatch(
+        &harness,
+        json!({ "type": "mcpEnabledChanged", "sessionId": "s1", "name": "x", "enabled": false }),
+    );
+    assert_eq!(
+        crate::mcp_config::read_session_enabled_mcps(Some("s1")),
+        Some(vec!["y".to_string()])
+    );
+
+    // 会话覆盖与 MCP 管理器都是进程级静态状态，必须清理干净：
+    // 先丢弃管理器（Drop 会 join 工作线程，让排队的差量同步按本沙箱配置跑完），
+    // 再清会话覆盖——顺序不能反：同步任务会从 meta.json 重新读回覆盖并写进缓存。
+    crate::mcp::reset_manager();
+    crate::mcp_config::clear_session_mcp_override("s1");
 }
 
 #[test]

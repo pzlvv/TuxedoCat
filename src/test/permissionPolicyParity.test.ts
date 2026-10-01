@@ -28,6 +28,7 @@ import { EditTool } from '../core/tools/edit/Edit';
 import { AskUserQuestionTool } from '../core/tools/askuser/AskUserQuestion';
 import { AgentTool } from '../core/tools/agent/AgentTool';
 import { ReplyTool } from '../core/tools/agent/ReplyTool';
+import { SkillTool } from '../core/tools/skill/SkillTool';
 import type { Tool } from '../core/tools/Tool';
 import type { AgentMode } from '../core/types';
 import { createChecker, runTests } from './helpers/harness';
@@ -57,6 +58,7 @@ const TOOLS: Record<string, Tool | undefined> = {
   AskUserQuestion: AskUserQuestionTool,
   Agent: AgentTool,
   Reply: ReplyTool,
+  Skill: SkillTool,
 };
 
 const SESSION = 'permission-policy-parity';

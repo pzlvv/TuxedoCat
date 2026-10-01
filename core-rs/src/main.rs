@@ -549,9 +549,15 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
             );
         }
         "mcpEnabledChanged" => {
-            // MCP 尚未迁入（见 TODO.md 已知缺口）：本阶段只记录，不广播，
-            // 避免 UI 触发尚未接线的 MCP 面板刷新。
-            eprintln!("[core] mcpEnabledChanged ignored (MCP not migrated): session={session_id}");
+            // 单开关语义（对齐 Embedded `Config.setSessionMcpEnabled`）：把这次勾选
+            // 合并进该会话的启用列表（内存覆盖 + 尽力写 meta.json），再让 MCPHost
+            // 按新列表做差量同步。同步完成后由 `notifyServersChanged` 出口广播
+            // `sessionConfigChanged(mcpEnabled)`，UI 据此把「连接中」刷新为最终状态，
+            // 因此这里不再单独广播（否则会多发一次未收敛的列表）。
+            let name = event.get("name").and_then(Value::as_str).unwrap_or("");
+            let enabled = event.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+            crate::mcp_config::set_session_mcp_enabled(Some(session_id.as_str()), name, enabled);
+            crate::mcp::on_session_enabled_changed(&session_id);
         }
 
         // ===== 用户选择 =====

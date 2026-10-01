@@ -24,8 +24,8 @@ import type { SpinDesign } from '../host/SpinDesign';
 import type { ConversationMetadata } from '../core/history/Conversation';
 import type { SessionRuntimeState } from '../core/AssistantEventBus';
 import { createChecker, runTests } from './helpers/harness';
-import { createTestHost } from './helpers/fixtures';
-import { getSettingsStore } from '../host/SettingsStore';
+import { createTestHost, makeTempDir } from './helpers/fixtures';
+import { getSettingsStore, resetSettingsStore } from '../host/SettingsStore';
 import { coreReadyCount, isCoreReady } from '../host/coreReadiness';
 
 class StubConversationManager extends ConversationManager {
@@ -72,6 +72,15 @@ async function run(): Promise<void> {
   // 本节校验的是**进程内**接线（core 侧 UiEvent 订阅、注入点登记），固定用 embedded 装配；
   // Standalone 的进程 / 帧通道接线见 `standaloneBus.test.ts`。
   process.env.TUXEDO_CAT_CORE = 'embedded';
+
+  // 配置存储读写宿主自己的 `settings.json`：HOME 指向临时目录，避免污染真实用户配置。
+  // 也必须隔离：用例把 `llm.webSearch` 改成 `false` 来触发订阅，若真实配置已是 `false`
+  // 内容不变、订阅不触发，用例会「自中毒」失败。必须在 `getSettingsStore()` 首次调用
+  // （`bootstrapCore` 内）之前设置 HOME 并丢弃可能已建的共享实例。
+  const home = makeTempDir('bootstrap-wiring-home');
+  process.env.USERPROFILE = home;
+  process.env.HOME = home;
+  resetSettingsStore();
 
   // ── 1. 执行共享骨架并校验自检快照 ──
   const host = createTestHost();

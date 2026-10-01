@@ -1964,6 +1964,23 @@
           }
         ]
       }
+    },
+    {
+      "name": "skill-allow",
+      "why": "Skill 的 checkPermissions 直接放行（技能只注入 prompt）：permResult 只有 behavior（不带 updatedInput），displayArgs 原样透传；manual 模式也不弹确认框",
+      "tool": "Skill",
+      "mode": "manual",
+      "args": {
+        "skill": "commit",
+        "args": "-m 'Fix bug'"
+      },
+      "expectPermResult": {
+        "behavior": "allow"
+      },
+      "expectDisplayArgs": {
+        "skill": "commit",
+        "args": "-m 'Fix bug'"
+      }
     }
   ]
 }
