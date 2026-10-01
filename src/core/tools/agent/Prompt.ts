@@ -3,23 +3,27 @@
  * 子代理工具 - 委托复杂任务给专用子代理
  */
 
-import { generateCoreSystemPrompt } from "../../prompt/SystemPrompt.js";
-
 export const TOOL_NAME = "Agent";
 
 export const DESCRIPTION = `Create a new sub-agent that runs autonomously in the background.`;
 
 /**
- * 获取角色对应的系统提示词
+ * Master 子代理的 `## Communication` 段。
+ *
+ * 子代理的 system prompt = 主对话同款提示词（按继承的预设组装）+ 本段前缀，因此这里
+ * 只产出 Communication 段本身（核心身份 / 工具说明 / 环境由预设组装产出）。
+ * 文本与 Standalone 的 `prompt::sub_agent_communication_section` 逐字对齐
+ * （对照表 `systemPromptParity.json` 锁定）。
  */
-export function getAgentSystemPrompt(role?: string): string {
-  switch (role) {
-    case "Master":
-      return generateCoreSystemPrompt();
+export function buildAgentCommunicationSection(creatorSessionId: string): string {
+  return `## Communication
+You are a sub-agent created by the main conversation. When you complete your task (or need to provide progress updates), use the **Reply** tool to send a message back to the conversation that created you.
 
-    default:
-      throw new Error(`Unknown agent role: ${role}`);
-  }
+Important guidelines:
+- Work autonomously and complete the assigned task
+- Keep the conversation that created you informed of your progress
+- When done, send a clear summary of what you accomplished using the Reply tool
+- When calling the Reply tool, set \`targetSessionId\` to \`${creatorSessionId}\` to ensure the reply reaches the correct session`;
 }
 
 /**

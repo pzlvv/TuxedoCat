@@ -15,9 +15,7 @@
 import { z } from 'zod';
 import type { ToolUseContext, ToolResult, PermissionResult } from '../Tool.js';
 import { buildTool, MAX_RESULT_SIZE_CHARS } from '../Tool.js';
-import { TOOL_NAME, DESCRIPTION, getPrompt } from './Prompt.js';
-import { generateCoreSystemPrompt } from '../../prompt/SystemPrompt.js';
-import { getAvailableCommands } from '../../prompt/SystemEnvironment.js';
+import { TOOL_NAME, DESCRIPTION, getPrompt, buildAgentCommunicationSection } from './Prompt.js';
 import type { AgentToolInput, AgentToolOutput } from './Types.js';
 import { inputSchema, outputSchema } from './Types.js';
 import type { CoreEvent } from '../../AssistantEventBus.js';
@@ -213,49 +211,12 @@ export const AgentTool = buildTool({
 
     logger.info('AgentTool', `Creating sub-agent [role: ${agentRole}]: ${agentDesc}`);
 
-    // ========== 获取系统环境信息（通用，所有角色都需要） ==========
-
-    let environmentInfoSection = '';
-    try {
-      const availableCommands = await getAvailableCommands() || [];
-      if (availableCommands.length > 0) {
-        // 构建 Operating System、Shell 和 CWD 信息
-        const { default: os } = await import('os');
-        const platform = os.platform();
-        const osType = os.type();
-        const osRelease = os.release();
-        const shell = process.env.SHELL || process.env.ComSpec || 'unknown';
-        const cwd = context.cwd;
-
-        environmentInfoSection = `
-	## Environment
-	You are running in the following environment:
-	- **Operating System**: ${platform} (${osType} ${osRelease})
-	- **Shell**: ${shell}
-	- **Working Directory**: ${cwd}
-	- **Git Repository**: Yes (branch: unknown)
-
-	**Available Commands**:
-	- ${availableCommands.join(', ')}
-
-	`;
-        logger.info('AgentTool', `Environment info: ${availableCommands.length} commands detected`);
-      }
-    } catch (e) {
-      logger.warn('AgentTool', `Failed to detect environment commands: ${e}`);
-    }
-
     // ========== 1. 创建子会话 session ==========
 
     const subSessionID = `sub_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
     // 获取创建会话 ID
     const creatorSessionId: string = context.sessionId!;
-
-    // 在环境信息中注入 parent session ID
-    if (environmentInfoSection) {
-      environmentInfoSection += `\n## Parent Session\nThe creator session ID is: ${creatorSessionId}. When calling the Reply tool, set targetSessionId to this value.\n`;
-    }
 
     const subTitle = agentDesc;
 
@@ -304,29 +265,20 @@ export const AgentTool = buildTool({
       parentThinkingEffort = await getDefaultThinkingEffort();
     }
 
-    // 生成子代理身份说明 prompt（作为 staticSystemPrompt 替换默认的核心身份）
-    // 注意：只包含核心身份 + Communication 段，不包含工具描述和系统环境信息，
-    // 因为这些由 QueryEngine.messageConsumer() 内部自动生成并拼接。
-    const subAgentSystemPrompt = `${generateCoreSystemPrompt()}
-
-## Communication
-You are a sub-agent created by the main conversation. When you complete your task (or need to provide progress updates), use the **Reply** tool to send a message back to the conversation that created you.
-
-Important guidelines:
-- Work autonomously and complete the assigned task
-- Keep the conversation that created you informed of your progress
-- When done, send a clear summary of what you accomplished using the Reply tool
-- When calling the Reply tool, set \`targetSessionId\` to \`${creatorSessionId}\` to ensure the reply reaches the correct session`;
-
-    // [SystemPromptDump] 打印子代理的完整 system prompt
-    logger.info('[SystemPromptDump]', `=== SUBAGENT SYSTEM PROMPT START (role=${agentRole}, session=${subSessionID}, chars=${subAgentSystemPrompt.length}) ===`);
-    logger.info('[SystemPromptDump]', subAgentSystemPrompt);
-    logger.info('[SystemPromptDump]', `=== SUBAGENT SYSTEM PROMPT END (role=${agentRole}, session=${subSessionID}) ===`);
-
-    // 继承父会话（query engine）实际生效的模型配置，避免子代理重新读取全局配置而 fallback 到其他模型
+    // 继承父会话（query engine）实际生效的模型配置 / 提示词预设，避免子代理重新读取
+    // 全局配置而 fallback 到其它模型或提示词模式。
     const parentEngine = getSessionEngine(creatorSessionId);
     const modelConfig = parentEngine?.getEffectiveModelConfig();
+    const inheritedPromptPreset = parentEngine?.promptPresetId ?? 'normal';
     logger.info('AgentTool', `Model config for role=${agentRole}: ${modelConfig ? `model=${modelConfig.model}` : 'inherited from parent (no explicit model config, will use same fallback as parent)'}`);
+
+    // 子代理 system prompt = 主对话同款提示词（按继承的预设组装），开头加 `## Communication` 段。
+    // 预设区块（工具说明 / 环境 / AGENTS.md）由 QueryEngine 按预设组装，不在这里拼。
+    const communicationSection = buildAgentCommunicationSection(creatorSessionId);
+
+    logger.info('[SystemPromptDump]', `=== SUBAGENT COMMUNICATION PREFIX (role=${agentRole}, session=${subSessionID}, chars=${communicationSection.length}) ===`);
+    logger.info('[SystemPromptDump]', communicationSection);
+    logger.info('[SystemPromptDump]', `=== SUBAGENT COMMUNICATION PREFIX END (role=${agentRole}, session=${subSessionID}) ===`);
 
     // 子代理归属父会话的工作目录：登记后，子代理的历史读写 / 工具结果等按会话解析
     // 工作目录时与父会话一致，不再回退到活动工作目录。
@@ -348,11 +300,13 @@ Important guidelines:
       initialMessages: [taskMessage as any],
       maxTurns: Number.MAX_SAFE_INTEGER,
       modelConfig,
-      staticSystemPrompt: subAgentSystemPrompt,
+      systemPromptPrefix: communicationSection,
       title: subTitle,
       parentSessionId: creatorSessionId,
     });
 
+    // 继承父对话的提示词预设（normal / minimal / mixed），system prompt 与主对话一致
+    subEngine.setPromptPreset(inheritedPromptPreset);
     // 继承父对话的 thinking effort
     subEngine.thinkingModeOverride = parentThinkingEffort;
     // 继承父对话的模型身份（provider + model；meta.json 也要记录）

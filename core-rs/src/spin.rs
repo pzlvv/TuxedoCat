@@ -975,10 +975,10 @@ pub fn judge_with_provider(
 
 // ==================== Runner.ts ====================
 
-/// Spin 子代理的 Reply 指令（对齐 Runner.ts 追加到子代理 system prompt 的段落）。
+/// Spin 子代理的 Reply 指令（对齐 Runner.ts 的子代理 `## Communication` 前缀段）。
 ///
-/// 注意：Rust 侧 `engine::create_sub_agent` 目前固定用
-/// `prompt::sub_agent_system_prompt`，宿主若要注入这段指令，可把它拼到
+/// 注意：Rust 侧 `engine::create_sub_agent` 固定用通用的
+/// `prompt::sub_agent_communication_section`，宿主若要注入这段 JSON 指令，可把它拼到
 /// [`SpinHost::run_sub_agent`] 收到的 prompt 前，或覆盖子会话的 system prompt。
 #[allow(dead_code)]
 pub const SUB_AGENT_REPLY_INSTRUCTION: &str = "\n## Communication\nWhen you complete your task, use the **Reply** tool to send a JSON result to the conversation that created you.\n\nThe JSON format must be:\n```json\n{\"passes\": true/false, \"note\": \"brief summary of the result\"}\n```\n\n- `passes`: `true` for success, `false` for failure\n- `note`: brief explanation of what was accomplished or why it failed\n- Do not include any other text in the Reply message, only the JSON object without markdown formatting";

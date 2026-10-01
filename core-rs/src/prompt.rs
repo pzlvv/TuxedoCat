@@ -424,15 +424,13 @@ pub fn core_prompt() -> &'static str {
     CORE_PRINCIPLES
 }
 
-/// 子代理的静态系统提示词（对齐 `AgentTool` 的 `staticSystemPrompt`）：
-/// 核心身份 + `## Communication` 段。
+/// Master 子代理的 `## Communication` 段（对齐 `AgentTool` 的 `systemPromptPrefix`）。
 ///
-/// **不含**工具说明 / 环境段——Embedded 里 `fullSystemPrompt = staticSystemPrompt ?? assemble(...)`，
-/// 传了静态提示词就整体替换（工具清单走 `availableTools` 单独下发给 LLM）。
-pub fn sub_agent_system_prompt(creator_session_id: &str) -> String {
+/// 子代理的 system prompt = 主对话同款提示词（按继承的预设组装）+ 本段前缀，
+/// 因此这里**不含**核心身份 / 工具说明 / 环境段——那些由预设组装产出。
+pub fn sub_agent_communication_section(creator_session_id: &str) -> String {
     format!(
-        "{CORE_PRINCIPLES}\n\n\
-         ## Communication\n\
+        "## Communication\n\
          You are a sub-agent created by the main conversation. When you complete your task \
          (or need to provide progress updates), use the **Reply** tool to send a message back \
          to the conversation that created you.\n\n\

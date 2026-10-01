@@ -325,6 +325,19 @@ mod system_prompt_parity_tests {
             "极简预设核心身份与 Embedded 不一致"
         );
 
+        // Master 子代理的 `## Communication` 前缀段（Embedded 走 `systemPromptPrefix`）
+        let expected_communication = fixture
+            .get("subAgentCommunicationSection")
+            .and_then(Value::as_str)
+            .expect("对照表缺少 subAgentCommunicationSection");
+        let actual_communication = sub_agent_communication_section("__CREATOR__");
+        assert_eq!(
+            actual_communication,
+            expected_communication,
+            "子代理 Communication 前缀与 Embedded 不一致：\n{}",
+            describe_difference(expected_communication, &actual_communication)
+        );
+
         // 对照表记录的工具顺序必须与 `tools::definitions()` 一致（顺序会影响提示词前缀）
         let expected_tools: Vec<String> = fixture
             .get("tools")

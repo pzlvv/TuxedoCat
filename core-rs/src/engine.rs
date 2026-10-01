@@ -228,6 +228,9 @@ pub struct SessionState {
     /// 非空时**整体替换**按预设组装的提示词（对齐 Embedded
     /// `fullSystemPrompt = staticSystemPrompt ?? assemble(...)`）。
     pub static_system_prompt: Option<String>,
+    /// system prompt 前缀（`QueryEngine.systemPromptPrefix`）：非空时拼在组装结果开头
+    /// （Master 子代理 = 主对话同款提示词 + 开头 `## Communication` 段）。
+    pub system_prompt_prefix: Option<String>,
     /// 子代理角色（`Master`），落进 `meta.json` 的 `role`。
     pub sub_agent_role: Option<String>,
     /// 待注入的 Skill（`QueryEngine.pendingSkillInjection`）：出队时解析出的
@@ -268,6 +271,7 @@ impl SessionState {
             reminded_background_tasks: HashSet::new(),
             parent_session_id: None,
             static_system_prompt: None,
+            system_prompt_prefix: None,
             sub_agent_role: None,
             pending_skill_injection: None,
         }
@@ -589,8 +593,9 @@ impl Core {
         // manual / risk / auto，子代理只是主对话的执行延伸，权限策略必须与主对话一致，
         // 否则会出现「主对话 manual 逐条确认、子代理却自动放行非危险操作」这类越权行为；
         // 父会话未记录时 `session()` 已按 settings 的 `defaultAgentMode` 兜底）、
-        // model / provider、thinking effort。
-        let (agent_mode, model, provider, thinking_effort) = {
+        // model / provider、thinking effort、提示词预设（`promptMode`；缺省即 normal，
+        // 子代理 system prompt 因此与主对话同款）。
+        let (agent_mode, model, provider, thinking_effort, prompt_mode) = {
             let state = self.session(&creator);
             let state = state.lock().unwrap();
             (
@@ -598,6 +603,7 @@ impl Core {
                 state.model.clone(),
                 state.provider.clone(),
                 state.thinking_effort.clone(),
+                state.prompt_mode.clone(),
             )
         };
 
@@ -609,9 +615,12 @@ impl Core {
             state.model = model.clone();
             state.provider = provider.clone();
             state.thinking_effort = thinking_effort;
+            state.prompt_mode = prompt_mode;
             state.parent_session_id = Some(creator.clone());
             state.sub_agent_role = Some(request.role.clone());
-            state.static_system_prompt = Some(prompt::sub_agent_system_prompt(&creator));
+            // 子代理 system prompt = 主对话同款提示词（按继承的预设组装）+ 开头
+            // `## Communication` 段（对齐 Embedded 的 `systemPromptPrefix`）。
+            state.system_prompt_prefix = Some(prompt::sub_agent_communication_section(&creator));
         }
 
         // 预建 meta.json：parentSessionId / role / model 必须落盘，
@@ -2633,7 +2642,11 @@ fn run_query_loop(
     let max_turns: Option<u64> = None;
     let mut turn_count: u64 = 0;
     loop {
+        // 上一轮工具批收尾之后才到达的中止（对齐 Embedded `Query.ts`：此时循环会进入
+        // 下一轮 LLM 请求，而请求因已 abort 立即抛 AbortError，走 `isAborted` 收尾）。
+        // 这里在发起请求前拦下，同样上报 `*User Interrupted*`，不再进入下一轮。
         if state.lock().unwrap().cancel.load(Ordering::Relaxed) {
+            emit_user_interrupted(core, session_id, project, state)?;
             return Ok(());
         }
         // 排队消息在**下一次 LLM 请求前**并入上下文（对齐 Embedded `Query.ts` 阶段 0.5
@@ -2656,11 +2669,23 @@ fn run_query_loop(
         let preset = prompt::active_preset(prompt_mode.as_deref(), has_assistant_reply);
         // minimal / mixed 只把 Bash / Edit 暴露给 LLM（`PromptPreset.toolNames`）
         let tools = prompt::filter_tools_by_preset(all_tools.clone(), preset);
-        // 子代理会话用创建时定下的静态提示词**整体替换**（对齐 Embedded
-        // `fullSystemPrompt = staticSystemPrompt ?? assemble(...)`）。
-        let static_prompt = state.lock().unwrap().static_system_prompt.clone();
-        let system_prompt = static_prompt
+        // `static_system_prompt` 整体替换组装结果；`system_prompt_prefix` 只在组装结果前
+        // 加一段（对齐 Embedded `fullSystemPrompt = (prefix ? prefix + "\n\n" : "") +
+        // (staticSystemPrompt ?? assemble(...))`）：Master 子代理 = 主对话同款提示词 +
+        // 开头 `## Communication` 段。
+        let (static_prompt, prompt_prefix) = {
+            let state = state.lock().unwrap();
+            (
+                state.static_system_prompt.clone(),
+                state.system_prompt_prefix.clone(),
+            )
+        };
+        let base_prompt = static_prompt
             .unwrap_or_else(|| prompt::build_system_prompt_with_preset(preset, project, &tools));
+        let system_prompt = match prompt_prefix {
+            Some(prefix) => format!("{prefix}\n\n{base_prompt}"),
+            None => base_prompt,
+        };
 
         // Auto compact 检查（含手动触发但被延后的压缩）。
         //

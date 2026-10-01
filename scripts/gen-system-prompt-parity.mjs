@@ -32,6 +32,7 @@ const {
 } = require(join(repoRoot, 'out', 'src', 'core', 'prompt', 'SystemPrompt.js'));
 const { PROMPT_PRESETS } = require(join(repoRoot, 'out', 'src', 'core', 'prompt', 'PromptPreset.js'));
 const { getAllTools } = require(join(repoRoot, 'out', 'src', 'core', 'tools', 'index.js'));
+const { buildAgentCommunicationSection } = require(join(repoRoot, 'out', 'src', 'core', 'tools', 'agent', 'Prompt.js'));
 
 /**
  * 与 `core-rs/src/tools.rs::definitions()` 同一顺序 / 集合（Standalone 已迁入的工具）。
@@ -66,10 +67,12 @@ const minimalPrompt = await assembleSystemPrompt(PROMPT_PRESETS.minimal, {
 const output = {
   note:
     '系统提示词静态部分对照表（Embedded `prompt/*` ↔ Standalone `core-rs/src/prompt.rs`）。' +
-    '只覆盖与环境无关的文本：核心身份、`## Tool Usage` + `## Tool Details`、极简预设。',
+    '只覆盖与环境无关的文本：核心身份、`## Tool Usage` + `## Tool Details`、极简预设、' +
+    'Master 子代理的 `## Communication` 前缀段。',
   corePrompt,
   toolUsage,
   minimalPrompt,
+  subAgentCommunicationSection: buildAgentCommunicationSection('__CREATOR__'),
   tools: BUILTIN_ORDER,
 };
 

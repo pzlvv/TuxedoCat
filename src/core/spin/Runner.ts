@@ -13,7 +13,6 @@ import type { CoreEvent } from '../AssistantEventBus.js';
 import { requireEventBus } from '../AssistantEventBus.js';
 import type { SpinDesign, SpinNode } from './Types.js';
 import { logger } from '../Logger.js';
-import { generateCoreSystemPrompt } from '../prompt/SystemPrompt.js';
 
 /** core → UI 单向事件的发送侧封装（SpinRunner 统一走它） */
 function emitToUi(event: CoreEvent): void {
@@ -38,10 +37,9 @@ export async function createSubAgent(
   const role = 'Master';
   const tools = getAllTools();
 
-	  // 构建子 Agent 的系统提示词 = 主对话的核心系统提示 + Reply 指令
-	  const subAgentSystemPrompt = generateCoreSystemPrompt() + `
-
-## Communication
+	  // 子 Agent 的 system prompt = 主对话同款提示词（按继承的预设组装），
+	  // 开头加 `## Communication` 段（Spin 用 JSON 结果回给创建者）。
+	  const communicationSection = `## Communication
 When you complete your task, use the **Reply** tool to send a JSON result to the conversation that created you.
 
 The JSON format must be:
@@ -65,9 +63,11 @@ The JSON format must be:
 
   const subTitle = `[Spin] Node ${node.id}: ${node.task}`;
 
-  // 继承父会话（query engine）实际生效的模型配置，避免子代理 fallback 到其他模型
+  // 继承父会话（query engine）实际生效的模型配置 / 提示词预设，避免子代理
+  // fallback 到其它模型或提示词模式
   const parentEngine = getSessionEngine(parentSessionId);
   const modelConfig = parentEngine?.getEffectiveModelConfig();
+  const inheritedPromptPreset = parentEngine?.promptPresetId ?? 'normal';
 
   // 子 Agent 继承父会话的工作目录，不要用 process.cwd()（那是宿主进程启动目录）
   const subCwd = parentEngine?.getCwd() ?? getProjectRoot(parentSessionId);
@@ -88,10 +88,13 @@ The JSON format must be:
     initialMessages: [taskMessage],
     maxTurns: Number.MAX_SAFE_INTEGER,
     modelConfig,
-    staticSystemPrompt: subAgentSystemPrompt,
+    systemPromptPrefix: communicationSection,
     title: subTitle,
     parentSessionId,
   });
+
+  // 继承父会话的提示词预设（normal / minimal / mixed），system prompt 与主对话一致
+  subEngine.setPromptPreset(inheritedPromptPreset);
 
   // 继承父会话的模型身份（provider + model；meta.json 也要记录）
   const parentModelRef = parentEngine?.modelRefOverride;

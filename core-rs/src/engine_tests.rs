@@ -4361,6 +4361,128 @@ fn sub_agent_inherits_parent_agent_mode() {
     }
 }
 
+/// 子代理继承主对话的提示词预设：system prompt = 主对话同款（按继承的预设组装）+
+/// 开头 `## Communication` 段；预设仍决定工具白名单（minimal 只有 Bash / Edit）。
+#[test]
+fn sub_agent_inherits_parent_prompt_mode() {
+    let sandbox = Sandbox::new("engine-sub-agent-inherit-prompt");
+    // 与 agent mode 用例同理：用独立 creator id，避免与并行的 Agent 用例互相清空注册表。
+    let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = Arc::clone(&bodies);
+    let llm = FakeLlm::start(move |_index, body| {
+        captured.lock().unwrap().push(body.clone());
+        if is_sub_agent_request(body) {
+            return openai_multi_tool_sse(&[(
+                "call_reply",
+                "Reply",
+                r#"{"message":"子代理已完成任务"}"#,
+            )]);
+        }
+        openai_text_sse(&["好"])
+    });
+    prepare(&sandbox, &llm.base_url, "risk");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let harness = EngineHarness::allow_all();
+    let creator = "s-inherit-prompt";
+    history::create_conversation(creator, &project, json!({ "sessionId": creator })).unwrap();
+
+    for mode in ["minimal", "normal"] {
+        harness.core.session(creator).lock().unwrap().prompt_mode = Some(mode.to_string());
+        let sub_id = harness
+            .core
+            .create_sub_agent(tools::SubAgentRequest {
+                creator_session_id: creator.to_string(),
+                prompt: format!("任务 {mode}"),
+                description: format!("inherit prompt {mode}"),
+                role: "Master".to_string(),
+            })
+            .expect("create sub agent");
+
+        assert_eq!(
+            harness
+                .core
+                .session(&sub_id)
+                .lock()
+                .unwrap()
+                .prompt_mode
+                .as_deref(),
+            Some(mode),
+            "子代理应当原样继承父会话的提示词预设"
+        );
+    }
+
+    assert!(
+        harness.wait_for(
+            |_| {
+                let bodies = bodies.lock().unwrap();
+                let has_normal = bodies.iter().any(|body| {
+                    is_sub_agent_request(body)
+                        && body["messages"][0]["content"]
+                            .as_str()
+                            .map(|system| system.contains("## Core Principles"))
+                            .unwrap_or(false)
+                });
+                let has_minimal = bodies.iter().any(|body| {
+                    is_sub_agent_request(body)
+                        && body["messages"][0]["content"]
+                            .as_str()
+                            .map(|system| !system.contains("## Core Principles"))
+                            .unwrap_or(false)
+                });
+                has_normal && has_minimal
+            },
+            Duration::from_secs(30),
+        ),
+        "两个子代理（minimal / normal）的 LLM 请求都应当到达"
+    );
+
+    let bodies = bodies.lock().unwrap();
+    let mut minimal_prompt: Option<String> = None;
+    let mut normal_prompt: Option<String> = None;
+    let mut minimal_tools: Vec<String> = Vec::new();
+    let mut normal_tools: Vec<String> = Vec::new();
+    for body in bodies.iter().filter(|body| is_sub_agent_request(body)) {
+        let system = body["messages"][0]["content"].as_str().unwrap_or("");
+        // 注意：normal 的核心身份也以 "You are a helpful software engineer assistant." 开头，
+        // 因此先用 `## Core Principles` 区分 normal，再落到 minimal。
+        if system.contains("## Core Principles") {
+            normal_prompt = Some(system.to_string());
+            normal_tools = tool_names(body);
+        } else if system.contains("You are a helpful software engineer assistant.") {
+            minimal_prompt = Some(system.to_string());
+            minimal_tools = tool_names(body);
+        }
+    }
+
+    // minimal：Communication 前缀 + 极简单行核心身份，无工具说明区块；工具仅 Bash / Edit
+    let minimal_prompt = minimal_prompt.expect("应当有 minimal 子代理请求");
+    assert!(
+        minimal_prompt.starts_with("## Communication"),
+        "minimal 子代理 prompt 应当以 Communication 开头: {minimal_prompt}"
+    );
+    assert!(
+        !minimal_prompt.contains("## Tool Usage"),
+        "minimal 子代理 prompt 不应带工具说明: {minimal_prompt}"
+    );
+    assert_eq!(minimal_tools, vec!["Bash".to_string(), "Edit".to_string()]);
+
+    // normal：Communication 前缀 + 完整核心身份 + 工具说明 / 环境区块；工具全量
+    let normal_prompt = normal_prompt.expect("应当有 normal 子代理请求");
+    assert!(
+        normal_prompt.starts_with("## Communication"),
+        "normal 子代理 prompt 应当以 Communication 开头: {normal_prompt}"
+    );
+    assert!(
+        normal_prompt.contains("## Tool Usage"),
+        "normal 子代理 prompt 应当带工具说明: {normal_prompt}"
+    );
+    assert!(
+        normal_prompt.contains("## Environment"),
+        "normal 子代理 prompt 应当带环境区块: {normal_prompt}"
+    );
+    assert!(normal_tools.len() > 2, "normal 子代理应当拿到全量工具");
+}
+
 /// 子代理没调用 `Reply` 时注入 Reminder（最多 3 次），措辞随重试次数递进。
 #[test]
 fn sub_agent_without_reply_gets_reminders() {

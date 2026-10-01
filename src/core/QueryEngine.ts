@@ -67,6 +67,11 @@ export interface QueryEngineConfig {
   modelConfig?: LLMConfig;
   /** 系统提示词，不指定则使用 generateStaticSystemPrompt() 自动生成 */
   staticSystemPrompt?: string;
+  /**
+   * system prompt 前缀：拼在最终 system prompt 开头（如子代理的 `## Communication` 段）。
+   * 与 `staticSystemPrompt` 的区别：后者**整体替换**组装结果，前者只在组装结果前加一段。
+   */
+  systemPromptPrefix?: string;
   /** 会话标题，创建新会话时写入 meta.json */
   title?: string;
   /** 父会话 ID，创建新会话时写入 meta.json */
@@ -413,8 +418,13 @@ export class QueryEngine {
     const { getSystemDynamicInfo } = await import('./prompt/SystemEnvironment.js');
     const systemInfo = await getSystemDynamicInfo(cwd);
 
-    this.fullSystemPrompt = this.config.staticSystemPrompt
+    // `staticSystemPrompt` 整体替换组装结果（如 Spin 子代理）；`systemPromptPrefix` 只在
+    // 组装结果前加一段（Master 子代理 = 主对话同款提示词 + 开头 `## Communication` 段）。
+    const baseSystemPrompt = this.config.staticSystemPrompt
       ?? await assembleSystemPrompt(preset, { tools: presetTools, systemInfo, cwd });
+    this.fullSystemPrompt = this.config.systemPromptPrefix
+      ? `${this.config.systemPromptPrefix}\n\n${baseSystemPrompt}`
+      : baseSystemPrompt;
   }
 
   /**

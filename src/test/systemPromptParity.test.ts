@@ -18,12 +18,14 @@ import * as path from 'path';
 import { assembleSystemPrompt, generateCoreSystemPrompt, generateToolUsagePrompt } from '../core/prompt/SystemPrompt';
 import { PROMPT_PRESETS } from '../core/prompt/PromptPreset';
 import { getAllTools } from '../core/tools/index';
+import { buildAgentCommunicationSection } from '../core/tools/agent/Prompt';
 import { createChecker, runTests } from './helpers/harness';
 
 interface Fixture {
   corePrompt: string;
   toolUsage: string;
   minimalPrompt: string;
+  subAgentCommunicationSection: string;
   tools: string[];
 }
 
@@ -72,6 +74,12 @@ async function run(): Promise<void> {
   check('极简预设只有单行核心身份', minimalPrompt === fixture.minimalPrompt);
   if (minimalPrompt !== fixture.minimalPrompt) {
     console.log(`     期望: ${JSON.stringify(fixture.minimalPrompt)}\n     实际: ${JSON.stringify(minimalPrompt)}`);
+  }
+
+  const subAgentCommunication = buildAgentCommunicationSection('__CREATOR__');
+  check('Master 子代理 Communication 前缀逐字一致', subAgentCommunication === fixture.subAgentCommunicationSection);
+  if (subAgentCommunication !== fixture.subAgentCommunicationSection) {
+    console.log(`     期望: ${JSON.stringify(fixture.subAgentCommunicationSection)}\n     实际: ${JSON.stringify(subAgentCommunication)}`);
   }
 
   finish();
