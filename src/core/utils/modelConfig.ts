@@ -10,8 +10,6 @@
  * 当新增模型时，只需在此文件添加配置即可。
  */
 
-import { ENV_MAX_OUTPUT_TOKENS } from '../../config/project.js';
-
 // ============================================================
 // 第一部分: ModelConfig — 模型配置注册表
 // ============================================================
@@ -166,17 +164,6 @@ export function getModelConfig(
 }
 
 /**
- * 获取模型的上下文窗口大小
- * modelConfigs 为可选的服务商级覆盖（settings.json 的 llm.providers[].modelConfigs）
- */
-export function getContextWindow(
-  modelName: string,
-  modelConfigs?: Record<string, ModelTokenLimits>,
-): number {
-  return getModelConfig(modelName, modelConfigs).contextWindow;
-}
-
-/**
  * 规范化 provider 的模型配置（保存设置时使用）。
  *
  * - 已有且合法的 context/output/apiType 保留，不做覆盖；
@@ -230,64 +217,4 @@ export function normalizeModelTokenLimits(
   }
 
   return result;
-}
-
-// ============================================================
-// 第二部分: max_tokens 输出限制管理
-// ============================================================
-
-// 默认 max_tokens 常量
-const MAX_OUTPUT_TOKENS_DEFAULT = 32_000;
-const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 384 * 1024;
-
-export { ENV_MAX_OUTPUT_TOKENS };
-/**
- * 获取最终有效的 max_tokens
- * 优先级：
- * 1. 环境变量 HARNESS_MAX_OUTPUT_TOKENS（最高优先级）
- * 2. 模型的默认 maxOutputTokens（来自 ModelConfig 注册表）
- * 3. 全局默认值 32K
- * 4. 不能超过上限 384K
- */
-export function getMaxOutputTokens(
-  modelName?: string,
-  modelConfigs?: Record<string, ModelTokenLimits>,
-): number {
-  // 1. 检查环境变量覆盖（最高优先级）
-  const envVal = process.env[ENV_MAX_OUTPUT_TOKENS];
-  if (envVal) {
-    const parsed = parseInt(envVal, 10);
-    if (!isNaN(parsed) && parsed > 0) {
-      return Math.min(parsed, MAX_OUTPUT_TOKENS_UPPER_LIMIT);
-    }
-  }
-
-  // 2. 如果传入了模型名称，尝试从 ModelConfig 获取模型默认值
-  if (modelName) {
-    const modelCfg = getModelConfig(modelName, modelConfigs);
-    if (modelCfg.maxOutputTokens) {
-      return Math.min(modelCfg.maxOutputTokens, MAX_OUTPUT_TOKENS_UPPER_LIMIT);
-    }
-  }
-
-  // 3. 全局默认值
-  return MAX_OUTPUT_TOKENS_DEFAULT;
-}
-
-/**
- * 计算本次请求实际可用的最大输出 token 数：
- *   min(output, contextWindow - currentContextTokens)
- *
- * 输出预留不能超过上下文窗口的剩余空间，否则「输入 + 输出」会超出窗口导致请求失败。
- * currentContextTokens 为当前上下文已占用的 token 数（input + output）。
- */
-export function getAvailableOutputTokens(
-  modelName: string | undefined,
-  modelConfigs: Record<string, ModelTokenLimits> | undefined,
-  currentContextTokens: number,
-): number {
-  const output = getMaxOutputTokens(modelName, modelConfigs);
-  const contextWindow = getContextWindow(modelName || '', modelConfigs);
-  const remaining = contextWindow - Math.max(0, currentContextTokens);
-  return Math.max(1, Math.min(output, remaining));
 }

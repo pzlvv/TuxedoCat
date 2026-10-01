@@ -11,7 +11,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getProjectConversationDir, ensureProjectConversationDir } from '../history/Config.js';
-import { tt } from '../i18n.js';
 import { logger } from '../Logger.js';
 import type { SpinDesign, SpinNode, SpinEdge, SpinNodeMeta } from './Types.js';
 
@@ -97,28 +96,28 @@ export function getSpinDesignIssue(config: unknown): SpinDesignIssue | null {
 /**
  * 校验 spin.json 是否可执行。
  * @returns 错误信息；合法时返回 null
+ *
+ * 返回的文案会进入会话历史（SpinLoop 把它 push 进 mutableMessages 并落盘），
+ * 因此**一律英文**，不走本地化（DEVELOPMENT.md 第 2 节：落盘文本统一英文）。
  */
 export function validateSpinDesign(config: unknown): string | null {
   if (!config || typeof config !== 'object') {
-    return tt('spin.json 不是有效的对象。', 'spin.json is not a valid object.');
+    return 'spin.json is not a valid object.';
   }
 
   const spin = config as Partial<SpinDesign>;
   if (!Array.isArray(spin.nodes)) {
-    return tt('spin.json 缺少 nodes 数组。', 'spin.json is missing the nodes array.');
+    return 'spin.json is missing the nodes array.';
   }
   if (spin.nodes.length === 0) {
-    return tt('spin.json 中没有可执行的节点。', 'spin.json has no executable nodes.');
+    return 'spin.json has no executable nodes.';
   }
 
   // 用户变量不能与内置变量冲突
   if (spin.variables && typeof spin.variables === 'object') {
     for (const key of Object.keys(spin.variables)) {
       if (RESERVED_BUILTIN_VARS.includes(key)) {
-        return tt(
-          `变量 "${key}" 与内置变量冲突，请重命名后重试。`,
-          `Variable "${key}" conflicts with a built-in variable. Please rename it and retry.`,
-        );
+        return `Variable "${key}" conflicts with a built-in variable. Please rename it and retry.`;
       }
     }
   }
@@ -126,22 +125,16 @@ export function validateSpinDesign(config: unknown): string | null {
   // 变量必须已赋值，否则 ${KEY} 会被替换为空字符串
   const noValueVars = getVariablesWithoutValue(spin);
   if (noValueVars.length > 0) {
-    return tt(
-      `存在未赋值的变量（${noValueVars.join(', ')}），请在变量列表中填写变量值后重试。`,
-      `Variables without a value (${noValueVars.join(', ')}), please fill in their values in the variable list and retry.`,
-    );
+    return `Variables without a value (${noValueVars.join(', ')}), please fill in their values in the variable list and retry.`;
   }
 
   for (const node of spin.nodes) {
     if (!node || typeof node !== 'object' || typeof (node as Partial<SpinNode>).id !== 'number') {
-      return tt('spin.json 中存在无效节点。', 'spin.json contains an invalid node.');
+      return 'spin.json contains an invalid node.';
     }
     const task = (node as Partial<SpinNode>).task;
     if (typeof task !== 'string' || task.trim() === '') {
-      return tt(
-        `节点 ${(node as SpinNode).id} 缺少任务描述。`,
-        `Node ${(node as SpinNode).id} is missing a task description.`,
-      );
+      return `Node ${(node as SpinNode).id} is missing a task description.`;
     }
     const forEachVar = typeof (node as Partial<SpinNode>).forEach === 'string'
       ? ((node as Partial<SpinNode>).forEach as string).trim()
@@ -154,23 +147,17 @@ export function validateSpinDesign(config: unknown): string | null {
         || !Object.prototype.hasOwnProperty.call(spin.variables, forEachVar)
       )
     ) {
-      return tt(
-        `节点 ${(node as SpinNode).id} 的 For Each 变量 "${forEachVar}" 不存在。`,
-        `Node ${(node as SpinNode).id}: For Each variable "${forEachVar}" does not exist.`,
-      );
+      return `Node ${(node as SpinNode).id}: For Each variable "${forEachVar}" does not exist.`;
     }
   }
 
   if (spin.edges !== undefined && !Array.isArray(spin.edges)) {
-    return tt('spin.json 缺少 edges 数组。', 'spin.json is missing the edges array.');
+    return 'spin.json is missing the edges array.';
   }
 
   const order = topologicalSort(spin.nodes, Array.isArray(spin.edges) ? spin.edges : []);
   if (order.length !== spin.nodes.length) {
-    return tt(
-      '流程图不是有效的无环有向图（DAG），请检查连线后重试。',
-      'The flow is not a valid directed acyclic graph (DAG), please check the edges and retry.'
-    );
+    return 'The flow is not a valid directed acyclic graph (DAG), please check the edges and retry.';
   }
 
   return null;

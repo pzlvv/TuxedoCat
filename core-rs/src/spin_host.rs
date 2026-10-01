@@ -193,35 +193,36 @@ pub fn run_spin_command(
     match state {
         spin::SpinProjectState::Ready => {}
         spin::SpinProjectState::Init => {
-            emit_spin_message(
+            emit_spin_notice(
                 core,
                 session_id,
-                &crate::i18n::tt(
-                    "未找到 spin.json 设计文件，请先创建并保存 Spin 设计。",
-                    "spin.json design file not found, please create and save a Spin design first.",
-                ),
+                crate::core_text::SPIN_DESIGN_MISSING,
+                json!({}),
+                "warn",
             );
             return None;
         }
         issue => {
-            let message = spin_issue_message(cwd, &issue);
-            emit_spin_message(core, session_id, &message);
+            let (key, params) = spin_issue_notice(cwd, &issue);
+            emit_spin_notice(core, session_id, key, params, "error");
             return None;
         }
     }
 
     let Some(_design) = spin::read_spin_json(cwd) else {
-        emit_spin_message(
+        emit_spin_notice(
             core,
             session_id,
-            &crate::i18n::tt("无法读取 spin.json。", "Cannot read spin.json."),
+            crate::core_text::SPIN_CANNOT_READ,
+            json!({}),
+            "error",
         );
         return None;
     };
 
-    // 标题改成「Spin 设计」（对齐 TS 的 `updateConversationMetadataTitle` + titleChanged）
-    let title = crate::i18n::tt("Spin 设计", "Spin Design");
-    core.on_conversation_renamed(session_id, &title);
+    // 标题改成「Spin 设计」（对齐 TS 的 `updateConversationMetadataTitle` + titleChanged）。
+    // 落盘文本统一英文（`docs/core-ui-separation.md` 第 4.8 节）。
+    core.on_conversation_renamed(session_id, "Spin Design");
 
     let host = Arc::new(CoreSpinHost::new(Arc::clone(core), session_id));
     let abort = host.abort_flag();
@@ -236,41 +237,39 @@ pub fn run_spin_command(
     None
 }
 
-/// 结构问题的用户可读文案（`variable-no-value` 带上具体变量名）
-fn spin_issue_message(cwd: &str, issue: &spin::SpinProjectState) -> String {
+/// 结构问题的文案键与参数（`variable-no-value` 带上具体变量名）
+///
+/// Core 只给「键 + 参数」，翻译在 UI（`docs/core-ui-separation.md` 第 4.9 节）。
+fn spin_issue_notice(cwd: &str, issue: &spin::SpinProjectState) -> (&'static str, Value) {
     match issue {
-        spin::SpinProjectState::EmptyNode => crate::i18n::tt(
-            "存在空节点（缺少任务描述），请完善节点后重试。",
-            "There are empty nodes (missing task descriptions), please complete them and retry.",
-        ),
-        spin::SpinProjectState::NotDag => crate::i18n::tt(
-            "流程图不是有效的无环有向图（DAG），请检查连线后重试。",
-            "The flow is not a valid directed acyclic graph (DAG), please check the edges and retry.",
-        ),
+        spin::SpinProjectState::EmptyNode => (crate::core_text::SPIN_EMPTY_NODE, json!({})),
+        spin::SpinProjectState::NotDag => (crate::core_text::SPIN_NOT_DAG, json!({})),
         spin::SpinProjectState::VariableNoValue => {
             let names = spin::read_spin_json(cwd)
                 .map(|config| spin::get_variables_without_value(&config))
                 .unwrap_or_default();
             if names.is_empty() {
-                crate::i18n::tt(
-                    "存在未赋值的变量，请在 Spin 设计器中填写变量值后重试。",
-                    "There are variables without a value, please fill in their values in the Spin Designer and retry.",
-                )
+                (crate::core_text::SPIN_VARIABLE_NO_VALUE, json!({}))
             } else {
-                let joined = names.join(", ");
-                crate::i18n::tt(
-                    &format!("存在未赋值的变量（{joined}），请在 Spin 设计器中填写变量值后重试。"),
-                    &format!(
-                        "Variables without a value ({joined}), please fill in their values in the Spin Designer and retry."
-                    ),
+                (
+                    crate::core_text::SPIN_VARIABLE_NO_VALUE_WITH_NAMES,
+                    json!({ "names": names.join(", ") }),
                 )
             }
         }
-        _ => crate::i18n::tt(
-            "spin.json 格式不合法，请检查文件内容。",
-            "spin.json is invalid, please check the file content.",
-        ),
+        _ => (crate::core_text::SPIN_INVALID, json!({})),
     }
+}
+
+/// 发一条瞬时提示（键 + 参数，`docs/core-ui-separation.md` 第 4.9 节）
+fn emit_spin_notice(core: &Arc<Core>, session_id: &str, key: &str, params: Value, level: &str) {
+    core.emit(json!({
+        "type": "notice",
+        "sessionId": session_id,
+        "key": key,
+        "params": params,
+        "level": level,
+    }));
 }
 
 /// 发一条 role=user 的会话消息（对齐 TS 里 `emitToUi({type:'message', data:{role:'user'}})`）

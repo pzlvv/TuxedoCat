@@ -20,7 +20,7 @@ import { setSessionWorkspace, getProjectConversationDir } from '../core/history/
 import { initializeCoreEvents } from '../core/initializeCoreEvents';
 import { WebviewMessageHandler } from '../host/ui/webviewMessageHandler';
 import { createChecker, runTests } from './helpers/harness';
-import { makeTempDir } from './helpers/fixtures';
+import { makeTempDir, provideHostEnvironment } from './helpers/fixtures';
 
 /** 写一条最小的、可被 loadConversation 还原的 Edit 会话（input 故意 double-encode 成字符串）。 */
 async function writeEditConversation(
@@ -99,6 +99,8 @@ async function run(): Promise<void> {
   initializeCoreEvents(bus);
   // core 侧订阅在异步 import 完成后才注册，等它就绪再发消息。
   await new Promise((r) => setTimeout(r, 800));
+  // 宿主连接：就绪前只接受 hostEnvironmentProvided（docs/core-ui-separation.md 第 7 节）
+  provideHostEnvironment(bus);
 
   // 1) 翻译层必须把 filePath 带进 UiEvent（漏接线的直接体现）
   let translated: any = null;

@@ -38,7 +38,7 @@ import {
 import { CONFIG_DIR_NAME, CORE_BINARY_NAME, CORE_RESOURCE_DIR } from '../config/project';
 import type { CoreRequestHandlers } from '../core/AssistantEventBus';
 import { createChecker, runTests } from './helpers/harness';
-import { createRecordingCoreEventHandlers, type RecordingCoreEventHandlers } from './helpers/fixtures';
+import { createRecordingCoreEventHandlers, type RecordingCoreEventHandlers, emptySettingsSnapshot } from './helpers/fixtures';
 
 // ==================== 假 Core ====================
 
@@ -111,14 +111,8 @@ rl.on('line', (line) => {
       return;
     }
     const t = frame.request.type;
-    if (t === 'uiLanguageRequested') { send({ kind: 'response', id: frame.id, ok: true, result: 'zh' }); return; }
-    if (t === 'configHomeDirRequested') { send({ kind: 'response', id: frame.id, ok: true, result: 'C:/home/.cfg' }); return; }
     if (t === 'conversationListRequested') {
       send({ kind: 'response', id: frame.id, ok: true, result: [{ sessionId: 'a', project: 'p' }] });
-      return;
-    }
-    if (t === 'llmConfigSaveRequested') {
-      send({ kind: 'response', id: frame.id, ok: true, result: { model: 'saved-model', activeProvider: 'p' } });
       return;
     }
     send({ kind: 'response', id: frame.id, ok: false, error: 'unknown: ' + t });
@@ -276,15 +270,15 @@ async function run(): Promise<void> {
     check('protocol version is 2', CORE_PROTOCOL_VERSION === 2);
     check(
       'uiToCore accepts a request frame',
-      isUiToCoreFrame({ kind: 'request', id: 3, request: { type: 'uiLanguageRequested' } }),
+      isUiToCoreFrame({ kind: 'request', id: 3, request: { type: 'conversationListRequested' } }),
     );
     check(
       'uiToCore rejects a request frame without an id',
-      !isUiToCoreFrame({ kind: 'request', request: { type: 'uiLanguageRequested' } }),
+      !isUiToCoreFrame({ kind: 'request', request: { type: 'conversationListRequested' } }),
     );
     check(
       'coreToUi accepts a success response frame',
-      isCoreToUiFrame({ kind: 'response', id: 3, ok: true, result: 'zh' }),
+      isCoreToUiFrame({ kind: 'response', id: 3, ok: true, result: [] }),
     );
     check(
       'coreToUi rejects a success response frame without a result key',
@@ -348,10 +342,11 @@ async function run(): Promise<void> {
     const core = createFakeCore();
     core.bus.emitToCore({
       type: 'hostEnvironmentProvided',
-      locale: 'zh-cn',
       extensionPath: 'D:/app',
       logToConsole: true,
       configDirName: '.tuxedo-cat',
+      settings: emptySettingsSnapshot(),
+      mcpServers: [],
     });
     await core.bus.whenReady();
     check(
@@ -401,28 +396,11 @@ async function run(): Promise<void> {
     const core = createFakeCore();
     await core.bus.whenReady();
 
-    check(
-      'requestCore resolves with the core result',
-      (await core.bus.requestCore({ type: 'uiLanguageRequested' })) === 'zh',
-    );
-    check(
-      'requestCore carries the config home dir back',
-      (await core.bus.requestCore({ type: 'configHomeDirRequested' })) === 'C:/home/.cfg',
-    );
     const list = await core.bus.requestCore({ type: 'conversationListRequested', workspacePath: '/w' });
     check('requestCore returns the conversation list', list.length === 1 && list[0].sessionId === 'a');
     check(
       'the request reaches the core as a frame',
       logMessages(core.recording).includes('uiRequest:conversationListRequested'),
-    );
-    const save = await core.bus.requestCore({
-      type: 'llmConfigSaveRequested',
-      payload: { webSearch: true },
-    });
-    check('llmConfigSaveRequested returns the saved state', save.model === 'saved-model');
-    check(
-      'the save request carries the payload',
-      logMessages(core.recording).includes('uiRequest:llmConfigSaveRequested'),
     );
     check(
       'ui request ids increase per request',
@@ -437,7 +415,7 @@ async function run(): Promise<void> {
     await core.bus.whenReady();
     let message = '';
     try {
-      await core.bus.requestCore({ type: 'uiLanguageRequested' });
+      await core.bus.requestCore({ type: 'conversationListRequested' });
     } catch (error) {
       message = (error as Error).message;
     }
@@ -451,7 +429,7 @@ async function run(): Promise<void> {
     await core.bus.whenReady();
     let message = '';
     try {
-      await core.bus.requestCore({ type: 'uiLanguageRequested' });
+      await core.bus.requestCore({ type: 'conversationListRequested' });
     } catch (error) {
       message = (error as Error).message;
     }
@@ -466,7 +444,7 @@ async function run(): Promise<void> {
     await core.bus.shutdown();
     let threw = false;
     try {
-      await core.bus.requestCore({ type: 'uiLanguageRequested' });
+      await core.bus.requestCore({ type: 'conversationListRequested' });
     } catch {
       threw = true;
     }
@@ -479,24 +457,20 @@ async function run(): Promise<void> {
     await core.bus.whenReady();
     const handlers = {
       conversationListRequested: async () => [],
-      uiLanguageRequested: async () => 'auto' as const,
-      systemLocaleRequested: async () => 'en-US',
-      configHomeDirRequested: async () => '/home',
       smartNamingRequested: async () => ({ title: 't' }),
       balanceRequested: async () => null,
       compactArchiveRequested: async () => null,
-      llmConfigSaveRequested: async () => ({
-        model: 'm',
-        modelProvider: 'p',
-        activeProvider: 'p',
-        thinkingEffort: 'off' as const,
-        agentMode: 'risk' as const,
-        promptMode: 'normal' as const,
-        webSearch: true,
-        providers: [],
-        activeModel: 'm',
-        activeModelProvider: 'p',
+      mcpServersRequested: async () => [],
+      conversationSpacesRequested: async () => [],
+      flushSessionRequested: async () => null,
+      conversationLoadRequested: async () => ({
+        messages: [],
+        metadata: null,
+        pendingToolUseIds: [],
+        hasCompactArchive: false,
+        agentMode: null,
       }),
+      skillsRequested: async () => ({ skills: [] }),
     };
     core.bus.onUiRequests(handlers);
     check('onUiRequests rejects a second registration', throws(() => core.bus.onUiRequests(handlers)));
@@ -545,10 +519,11 @@ async function run(): Promise<void> {
     const core = createFakeCore({ exitOnAbort: true });
     core.bus.emitToCore({
       type: 'hostEnvironmentProvided',
-      locale: 'zh-cn',
       extensionPath: 'D:/app',
       logToConsole: true,
       configDirName: '.tuxedo-cat',
+      settings: emptySettingsSnapshot(),
+      mcpServers: [],
     });
     core.bus.emitToCore({ type: 'conversationOpened', sessionId: 's1' });
     await core.bus.whenReady();
@@ -647,10 +622,11 @@ async function run(): Promise<void> {
       });
       bus.emitToCore({
         type: 'hostEnvironmentProvided',
-        locale: 'zh-cn',
         extensionPath: repoRoot(),
         logToConsole: false,
         configDirName: CONFIG_DIR_NAME,
+        settings: emptySettingsSnapshot(),
+        mcpServers: [],
       });
       await bus.whenReady();
       check('real core handshake reaches ready', bus.isReady());

@@ -24,7 +24,6 @@ fn host_environment_event_populates_config() {
         &harness,
         json!({
             "type": "hostEnvironmentProvided",
-            "locale": "en-US",
             "extensionPath": "D:/ext",
             "logToConsole": true,
             "configDirName": sandbox.config_dir_name,
@@ -32,7 +31,6 @@ fn host_environment_event_populates_config() {
     );
 
     let env = config::host_environment().expect("host env");
-    assert_eq!(env.locale, "en-US");
     assert_eq!(env.extension_path, "D:/ext");
     assert!(env.log_to_console);
     assert!(config::conversations_root().unwrap().is_dir());
@@ -45,10 +43,119 @@ fn host_environment_defaults_are_used_for_missing_fields() {
     dispatch(&harness, json!({ "type": "hostEnvironmentProvided" }));
 
     let env = config::host_environment().expect("host env");
-    assert_eq!(env.locale, "en");
     assert_eq!(env.extension_path, "");
     assert!(!env.log_to_console);
     assert_eq!(env.config_dir_name, ".tuxedo-cat", "缺省值对齐默认配置目录名");
+}
+
+/// 一份最小的合法快照（与 `settings_tests` 的同名构造同口径）
+fn minimal_snapshot() -> Value {
+    json!({
+        "llm": {
+            "activeProvider": "p",
+            "webSearch": false,
+            "thinkingEffort": "low",
+            "model": "",
+            "maxTokens": 2048,
+            "providers": {
+                "p": {
+                    "baseURL": "https://p",
+                    "apiKey": "sk-p",
+                    "models": ["m1"],
+                    "defaultModel": "m1",
+                    "modelLimits": {},
+                }
+            },
+            "modelLimitsFallback": {
+                "context": 9,
+                "output": 8,
+                "apiType": "OpenAI",
+                "thinkingTokenBudget": 7,
+            }
+        },
+        "mcp": { "enabled": [] },
+        "defaultAgentMode": "auto",
+        "defaultPromptMode": "mixed",
+    })
+}
+
+fn minimal_host_environment(config_dir_name: &str, snapshot: Value) -> Value {
+    json!({
+        "type": "hostEnvironmentProvided",
+        "extensionPath": "D:/ext",
+        "logToConsole": false,
+        "configDirName": config_dir_name,
+        "settings": snapshot,
+        "mcpServers": [],
+    })
+}
+
+#[test]
+fn ui_events_before_the_host_environment_are_rejected() {
+    let _sandbox = Sandbox::new("main-not-ready");
+    let harness = EngineHarness::allow_all();
+    // 沙箱默认注入一份空快照（模拟「宿主已连接」）；这里显式回到「还没连上」的状态。
+    settings::reset_settings_snapshot();
+
+    dispatch(&harness, json!({ "type": "workspaceChanged", "workspacePath": "D:/repo" }));
+
+    // 事件被拒绝：core 侧状态不变，且记一条 log 暴露顺序错误
+    assert!(config::project_root("s1").is_err());
+    assert!(!settings::has_settings_snapshot());
+    let log = harness.sink.event_of("log").expect("log event");
+    let message = log["message"].as_str().unwrap();
+    assert!(message.contains("before the Core is ready"), "{message}");
+}
+
+#[test]
+fn host_environment_emits_core_ready_and_repeats_on_every_push() {
+    let sandbox = Sandbox::new("main-core-ready");
+    let harness = EngineHarness::allow_all();
+    let environment = minimal_host_environment(&sandbox.config_dir_name, minimal_snapshot());
+
+    dispatch(&harness, environment.clone());
+    assert_eq!(harness.sink.events_of("coreReady").len(), 1);
+    assert!(settings::has_settings_snapshot());
+
+    // 配置变更后重推整份快照：就绪状态不变，但再发一次（宿主据此判定「已跟上」）
+    dispatch(&harness, environment);
+    assert_eq!(harness.sink.events_of("coreReady").len(), 2);
+}
+
+#[test]
+fn mcp_defaults_change_resyncs_registered_sessions() {
+    let sandbox = Sandbox::new("main-mcp-defaults");
+    let harness = EngineHarness::allow_all();
+
+    let mut first = minimal_snapshot();
+    first["mcp"]["enabled"] = json!(["a"]);
+    dispatch(&harness, minimal_host_environment(&sandbox.config_dir_name, first));
+
+    // 默认启用列表不变：不重同步（幂等，不产生额外工作）
+    let unchanged = settings::apply_from_host_environment(&minimal_host_environment(
+        &sandbox.config_dir_name,
+        json!({
+            "llm": minimal_snapshot()["llm"].clone(),
+            "mcp": { "enabled": ["a"] },
+            "defaultAgentMode": "auto",
+            "defaultPromptMode": "mixed",
+        }),
+    ))
+    .expect("apply");
+    assert!(!unchanged);
+
+    // 列表变了：报告变化，由调用方让已注册会话重同步连接
+    let changed = settings::apply_from_host_environment(&minimal_host_environment(
+        &sandbox.config_dir_name,
+        json!({
+            "llm": minimal_snapshot()["llm"].clone(),
+            "mcp": { "enabled": ["a", "b"] },
+            "defaultAgentMode": "auto",
+            "defaultPromptMode": "mixed",
+        }),
+    ))
+    .expect("apply");
+    assert!(changed);
 }
 
 #[test]
@@ -396,19 +503,6 @@ fn abort_requested_sets_the_cancel_flag() {
 }
 
 #[test]
-fn llm_config_saved_invalidates_the_settings_cache() {
-    let sandbox = Sandbox::new("main-llm-config-saved");
-    sandbox.write_settings(json!({ "defaultAgentMode": "manual" }));
-    let harness = EngineHarness::allow_all();
-    assert_eq!(config::default_agent_mode(), "manual");
-
-    std::fs::write(config::settings_path().unwrap(), json!({ "defaultAgentMode": "auto" }).to_string())
-        .unwrap();
-    dispatch(&harness, json!({ "type": "llmConfigSaved" }));
-    assert_eq!(config::default_agent_mode(), "auto");
-}
-
-#[test]
 fn user_message_submitted_runs_a_turn() {
     let sandbox = Sandbox::new("main-user-message");
     let workspace = sandbox.workspace.to_string_lossy().to_string();
@@ -462,31 +556,23 @@ fn ui_events_are_counted_on_the_bus() {
 }
 
 #[test]
-fn project_conversation_dir_ready_is_emitted_through_the_bus() {
-    // 对齐 Embedded `ensureProjectConversationDir` → `notifyProjectConversationDirReady`：
-    // core 建目录后上报一次 `projectConversationDirReady`，宿主据此写目录里的 settings.json。
+fn project_conversation_dir_meta_is_written_by_core() {
+    // 对齐 Embedded `ensureProjectConversationDir`：core 建目录后自己写项目清单
+    // `workspace.meta.json`，不再上报事件、宿主不参与写盘。
     let sandbox = Sandbox::new("main-dir-ready");
     let harness = EngineHarness::allow_all();
-    install_project_dir_ready_sink(&harness.bus);
     let project = sandbox.workspace.to_string_lossy().to_string();
 
     config::ensure_project_conversation_dir(&project).unwrap();
-    // 第二次 ensure 不重复上报
+    // 第二次 ensure 幂等（不重复写盘，不产生事件）
     config::ensure_project_conversation_dir(&project).unwrap();
 
-    let events = harness.sink.events_of("projectConversationDirReady");
-    assert_eq!(events.len(), 1, "got {events:?}");
-    assert_eq!(events[0]["workspacePath"], project);
-    assert_eq!(
-        events[0]["projectDir"],
-        config::project_conversation_dir(&project)
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
-    );
-
-    // 清掉出口，避免影响后续测试
-    config::set_project_dir_ready_sink(std::sync::Arc::new(|_, _| {}));
+    let dir = config::project_conversation_dir(&project).unwrap();
+    let meta = std::fs::read_to_string(dir.join("workspace.meta.json")).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&meta).unwrap();
+    assert_eq!(parsed["workspacePath"], project);
+    assert!(!dir.join("settings.json").exists());
+    assert!(harness.sink.events_of("projectConversationDirReady").is_empty());
 }
 
 // ==================== 帧循环 ====================
@@ -647,81 +733,7 @@ fn decode_frame_tolerates_lone_surrogate_escapes() {
     assert!(decode_frame("{oops").is_err());
 }
 
-#[test]
-fn settings_json_update_requested_writes_the_global_config() {
-    // Standalone 下全局 settings.json 的唯一写入点在 Core：宿主把「要改的字段」
-    // 作为 JSON Merge Patch 交过来（`docs/standalone-core.md` 第 8 节）。
-    let sandbox = Sandbox::new("main-settings-update");
-    let harness = EngineHarness::allow_all();
-    sandbox.write_settings(json!({ "llm": { "webSearch": true }, "uiLanguage": "zh" }));
-
-    dispatch(
-        &harness,
-        json!({
-            "type": "settingsJsonUpdateRequested",
-            "patch": { "llm": { "webSearch": false }, "defaultAgentMode": "auto" },
-        }),
-    );
-
-    assert_eq!(
-        sandbox.read_settings(),
-        json!({
-            "llm": { "webSearch": false },
-            "uiLanguage": "zh",
-            "defaultAgentMode": "auto",
-        })
-    );
-    // 写盘后 Core 的读缓存已失效
-    assert_eq!(config::settings_json()["defaultAgentMode"], "auto");
-    // 正常路径不产生日志事件
-    assert!(harness.sink.event_of("log").is_none());
-}
-
-#[test]
-fn settings_json_update_requested_accepts_null_to_delete_a_key() {
-    let sandbox = Sandbox::new("main-settings-delete");
-    let harness = EngineHarness::allow_all();
-    sandbox.write_settings(json!({ "uiLanguage": "en", "defaultAgentMode": "manual" }));
-
-    dispatch(
-        &harness,
-        json!({ "type": "settingsJsonUpdateRequested", "patch": { "uiLanguage": null } }),
-    );
-
-    assert_eq!(sandbox.read_settings(), json!({ "defaultAgentMode": "manual" }));
-}
-
 // ==================== UI → core 请求 ====================
-
-#[test]
-fn ui_request_reports_the_config_home_dir() {
-    let sandbox = Sandbox::new("main-ui-request-home");
-    let home = dispatch_ui_request(&json!({ "type": "configHomeDirRequested" })).unwrap();
-    assert_eq!(
-        home.as_str().unwrap(),
-        sandbox.home.join(&sandbox.config_dir_name).to_string_lossy(),
-    );
-}
-
-#[test]
-fn ui_request_reports_the_ui_language() {
-    let sandbox = Sandbox::new("main-ui-request-language");
-    // 缺省 / 非法值都收敛到 auto
-    assert_eq!(
-        dispatch_ui_request(&json!({ "type": "uiLanguageRequested" })).unwrap(),
-        json!("auto"),
-    );
-    sandbox.write_settings(json!({ "uiLanguage": "zh" }));
-    assert_eq!(
-        dispatch_ui_request(&json!({ "type": "uiLanguageRequested" })).unwrap(),
-        json!("zh"),
-    );
-    sandbox.write_settings(json!({ "uiLanguage": "fr" }));
-    assert_eq!(
-        dispatch_ui_request(&json!({ "type": "uiLanguageRequested" })).unwrap(),
-        json!("auto"),
-    );
-}
 
 #[test]
 fn ui_request_lists_conversations_of_the_requested_workspace() {
@@ -795,6 +807,154 @@ fn ui_request_without_an_archive_returns_null() {
     assert_eq!(
         dispatch_ui_request(&json!({ "type": "compactArchiveRequested", "sessionId": "s1" })).unwrap(),
         Value::Null,
+    );
+}
+
+#[test]
+fn ui_request_mcp_servers_merges_config_and_runtime() {
+    let sandbox = Sandbox::new("main-ui-request-mcp");
+    sandbox.write_settings(json!({ "mcp": { "enabled": ["alpha"] } }));
+    sandbox.write_mcp_json(json!({
+        "mcp": {
+            "alpha": { "type": "local", "command": ["npx", "alpha"] },
+            "beta": { "type": "remote", "url": "https://beta.example" },
+        }
+    }));
+
+    let listed = dispatch_ui_request(&json!({
+        "type": "mcpServersRequested",
+        "sessionId": "s1",
+    }))
+    .unwrap();
+    let servers = listed.as_array().unwrap();
+    assert_eq!(servers.len(), 2);
+
+    let alpha = servers.iter().find(|item| item["name"] == "alpha").unwrap();
+    assert_eq!(alpha["enabled"], true, "全局默认启用列表生效");
+    assert_eq!(alpha["running"], false, "未连接时补运行时缺省值");
+    assert_eq!(alpha["toolCount"], 0);
+    assert!(alpha["error"].is_null());
+    assert_eq!(alpha["refCount"], 0);
+
+    let beta = servers.iter().find(|item| item["name"] == "beta").unwrap();
+    assert_eq!(beta["enabled"], false);
+}
+
+#[test]
+fn ui_request_conversation_spaces_counts_files_and_projects() {
+    let sandbox = Sandbox::new("main-ui-request-spaces");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let dir = config::ensure_project_conversation_dir(&project).unwrap();
+    std::fs::write(dir.join("s1.meta.json"), "{}").unwrap();
+    std::fs::write(dir.join("s1.jsonl"), "{\"uuid\":\"u\"}\n").unwrap();
+
+    let spaces = dispatch_ui_request(&json!({ "type": "conversationSpacesRequested" })).unwrap();
+    let spaces = spaces.as_array().unwrap();
+    assert_eq!(spaces.len(), 1);
+    let space = &spaces[0];
+    let dir_name = config::project_conversation_dir(&project)
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert_eq!(space["dirName"], dir_name);
+    assert_eq!(space["projectPath"], project);
+    assert_eq!(space["conversationCount"], 1, "只数 *.meta.json");
+    assert!(space["sizeBytes"].as_u64().unwrap() > 0);
+    assert!(space["fileCount"].as_u64().unwrap() >= 2);
+}
+
+#[test]
+fn ui_request_flush_session_validates_session_id() {
+    let _sandbox = Sandbox::new("main-ui-request-flush");
+    assert!(dispatch_ui_request(&json!({ "type": "flushSessionRequested" })).is_err());
+    assert_eq!(
+        dispatch_ui_request(&json!({ "type": "flushSessionRequested", "sessionId": "s1" })).unwrap(),
+        Value::Null,
+    );
+}
+
+#[test]
+fn ui_request_conversation_load_returns_messages_metadata_and_facts() {
+    let sandbox = Sandbox::new("main-ui-request-load");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    history::create_conversation(
+        "s1",
+        &project,
+        json!({ "sessionId": "s1", "project": project, "title": "t" }),
+    )
+    .unwrap();
+    history::append_message(
+        "s1",
+        &project,
+        &json!({ "type": "user", "uuid": "u1", "message": { "role": "user", "content": "hi" } }),
+        None,
+    )
+    .unwrap();
+
+    let loaded = dispatch_ui_request(&json!({
+        "type": "conversationLoadRequested",
+        "sessionId": "s1",
+    }))
+    .unwrap();
+    assert_eq!(loaded["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(loaded["messages"][0]["uuid"], "u1");
+    assert_eq!(loaded["metadata"]["title"], "t");
+    assert_eq!(loaded["pendingToolUseIds"], json!([]), "Standalone 恒为空");
+    assert_eq!(loaded["hasCompactArchive"], false);
+    assert!(
+        loaded["agentMode"].is_string(),
+        "agentMode 取 meta.json / 默认值：{}",
+        loaded["agentMode"]
+    );
+
+    // 会话不存在：空消息 + null 元数据，不报错
+    let missing = dispatch_ui_request(&json!({
+        "type": "conversationLoadRequested",
+        "sessionId": "no-such",
+    }))
+    .unwrap();
+    assert_eq!(missing["messages"], json!([]));
+    assert!(missing["metadata"].is_null());
+
+    assert!(dispatch_ui_request(&json!({ "type": "conversationLoadRequested" })).is_err());
+}
+
+#[test]
+fn ui_request_skills_lists_builtins_and_project_skills() {
+    let sandbox = Sandbox::new("main-ui-request-skills");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    // 没有会话工作目录：只列内置命令与内置技能
+    let without_session = dispatch_ui_request(&json!({ "type": "skillsRequested" })).unwrap();
+    let skills = without_session["skills"].as_array().unwrap();
+    assert!(!skills.is_empty());
+    assert!(skills.iter().any(|skill| skill["isBuiltin"] == true));
+    assert!(skills.iter().any(|skill| skill["isBuiltin"] == false));
+    assert!(skills.iter().all(|skill| skill["name"].is_string()));
+
+    // 项目技能目录：`<workspace>/<configDirName>/skills/<name>/SKILL.md`
+    let skill_dir = sandbox
+        .workspace
+        .join(&sandbox.config_dir_name)
+        .join("skills")
+        .join("demo");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: demo\ndescription: demo skill\n---\nbody\n",
+    )
+    .unwrap();
+    config::set_session_workspace("s1", Some(project));
+    let with_session = dispatch_ui_request(&json!({
+        "type": "skillsRequested",
+        "sessionId": "s1",
+    }))
+    .unwrap();
+    let skills = with_session["skills"].as_array().unwrap();
+    assert!(
+        skills.iter().any(|skill| skill["name"] == "demo"),
+        "项目技能应出现在列表里：{skills:?}"
     );
 }
 

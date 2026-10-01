@@ -55,16 +55,16 @@ async function getDirSize(dir: string): Promise<{ sizeBytes: number; fileCount: 
   return { sizeBytes, fileCount };
 }
 
-/** 读取对话空间 settings.json 中的 workspacePath */
+/** 读取对话空间项目清单 `workspace.meta.json` 中的 workspacePath */
 async function readWorkspacePath(dirPath: string): Promise<string> {
   try {
-    const content = await readFile(join(dirPath, 'settings.json'), 'utf8');
+    const content = await readFile(join(dirPath, 'workspace.meta.json'), 'utf8');
     const settings = JSON.parse(content) as { workspacePath?: unknown };
     if (typeof settings.workspacePath === 'string' && settings.workspacePath.trim()) {
       return settings.workspacePath.trim();
     }
   } catch {
-    // settings.json 不存在或解析失败，使用目录名兜底
+    // workspace.meta.json 不存在或解析失败，使用目录名兜底
   }
 
   try {
@@ -108,11 +108,13 @@ export async function getConversationSpaces(): Promise<ConversationSpaceInfo[]> 
   return spaces;
 }
 
-/** 统计对话空间内的会话数 */
+/** 统计对话空间内的会话数（`<sessionId>.meta.json`；空间清单不算会话） */
 async function countConversations(dirPath: string): Promise<number> {
   try {
     const files = await readdir(dirPath);
-    return files.filter((file) => file.endsWith('.meta.json')).length;
+    return files.filter(
+      (file) => file.endsWith('.meta.json') && file !== 'workspace.meta.json',
+    ).length;
   } catch {
     return 0;
   }

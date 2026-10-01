@@ -31,6 +31,7 @@ import { ElectronSpinDesign } from './ElectronSpinDesign.js';
 import { ElectronConversationManager } from './ElectronConversationManager.js';
 import { WebViewUI } from '../src/host/WebViewUI.js';
 import { normalizeWorkspacePath, sameWorkspace, dedupeWorkspacePaths, applyWorkspaceOrder } from '../src/host/workspacePaths.js';
+import { localWorkspaceRef } from '../src/host/workspaceRef.js';
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
 import { PRODUCT_NAME, EXTENSION_NAME, CONFIG_DIR_NAME, SETTINGS_FILE_NAME } from '../src/config/project.js';
 import {
@@ -39,7 +40,7 @@ import {
   formatAcceleratorForDisplay,
   normalizeAccelerator,
 } from './shortcut.js';
-import { tt, onCoreLocaleChanged } from '../src/core/i18n.js';
+import { tt, onHostLocaleChanged } from '../src/host/i18n.js';
 import { requireEventBus } from '../src/core/AssistantEventBus.js';
 import { getShortcutDialogHtml } from './shortcutDialogHtml.js';
 import { resolveSmartTitle } from '../src/core/history/smartNaming.js';
@@ -206,6 +207,20 @@ let openWorkspaces: string[] = [];
 let workspacePath: string | undefined;
 /** 会话 → 工作目录 索引：按对话解析工作目录（打开某个对话时用它注入 --workspace=） */
 const sessionWorkspaces = new Map<string, string>();
+/** 工作区打开 / 关闭 / 激活的订阅者（ElectronUIHost 的 WorkspaceProvider 契约） */
+const workspaceChangeListeners = new Set<(change: { type: 'opened' | 'closed' | 'activated'; ref: import('../src/host/workspaceRef.js').WorkspaceRef }) => void>();
+
+/** 通知工作区变化（Client 据此建立 / 销毁 Connection） */
+function emitWorkspaceChange(type: 'opened' | 'closed' | 'activated', path: string): void {
+  const ref = localWorkspaceRef(path);
+  for (const listener of [...workspaceChangeListeners]) {
+    try {
+      listener({ type, ref });
+    } catch (err) {
+      console.error('[main] workspace change listener error:', err);
+    }
+  }
+}
 /** 当前 WebViewUI 实例（initCore 创建；消息路由 / 工作区切换使用） */
 let webviewUi: WebViewUI | undefined;
 /** core 侧进程级资源的释放入口（initCore 从共享骨架取得；will-quit 调用） */
@@ -371,11 +386,11 @@ async function main(): Promise<void> {
   });
   setupIpc();
   initCore();
-  // 菜单必须等 core 语言初始化之后再建：bootstrapCore（initCore 内）才会
-  // setCoreLocale / setCoreUiLanguage，提前建菜单会用到默认英文，
+  // 菜单必须等宿主语言初始化之后再建：bootstrapCore（initCore 内）才会
+  // setHostLocale / setHostUiLanguage，提前建菜单会用到默认英文，
   // 之后任意一次重建又变成中文，表现为菜单语言「一会儿中文一会儿英文」。
   // 运行期在设置面板改语言不会重建菜单，这里订阅语言变化补一次。
-  onCoreLocaleChanged(() => setupMenu());
+  onHostLocaleChanged(() => setupMenu());
   setupMenu();
   // 注册全局唤醒快捷键（settings.json 中的 shortcut，默认 Ctrl+Alt+X）
   // 注册失败时弹窗提示，避免静默失效
@@ -660,10 +675,12 @@ function createMainWindow(): void {
   let uiLanguage: 'auto' | 'zh' | 'en' = 'auto';
   let highlightLanguages: string[] = [];
   try {
-    const { readUiLanguageSync, readHighlightLanguagesSync } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
-    uiLanguage = readUiLanguageSync();
+    // UI 专属字段（界面语言 / 高亮语言）归宿主：读宿主自己的 settings.json 快照
+    // （`docs/core-ui-separation.md` 第 4.8 / 4.9 节），不问 core。
+    const { getSettingsStore } = require('../src/host/SettingsStore.js') as typeof import('../src/host/SettingsStore.js');
+    uiLanguage = getSettingsStore().readUiLanguage();
     // Shiki 语法高亮全部按需加载：注入上次已使用过的语言，webview 启动后后台预热
-    highlightLanguages = readHighlightLanguagesSync();
+    highlightLanguages = getSettingsStore().readHighlightLanguages();
   } catch { /* 读取失败时使用 auto（跟随系统语言） */ }
   chatViews = new ChatViewManager({
     win: mainWindow,
@@ -1301,7 +1318,7 @@ function openShortcutDialog(): void {
 /** 获取系统 locale（复用 core 的实现） */
 function getSystemLocaleForStartup(): string {
   try {
-    const { getSystemLocale } = require('../src/core/i18n.js');
+    const { getSystemLocale } = require('../src/host/i18n.js');
     return getSystemLocale();
   } catch {
     return app.getLocale();
@@ -2252,6 +2269,7 @@ function syncSessionWorkspaceIndex(): void {
  */
 function addWorkspaces(paths: readonly string[]): void {
   const added: string[] = [];
+  const opened: string[] = [];
   for (const raw of paths) {
     if (!isValidWorkspaceDir(raw)) continue;
     const p = normalizeWorkspacePath(raw);
@@ -2259,11 +2277,14 @@ function addWorkspaces(paths: readonly string[]): void {
     const existing = openWorkspaces.find((w) => sameWorkspace(w, p));
     if (!existing) {
       openWorkspaces.push(p);
+      opened.push(p);
     }
     rememberRecentWorkspace(p);
     added.push(existing ?? p);
   }
   if (added.length === 0) return;
+  // 新打开的工作区通知 Client 建立 Connection（重复打开只激活已有视图）
+  for (const p of opened) emitWorkspaceChange('opened', p);
   // 最后一项成为活动项；每个目录的会话工作目录在各自会话被 core 解析目录前登记。
   activateWorkspace(added[added.length - 1]);
 }
@@ -2307,6 +2328,7 @@ function activateWorkspace(p: string): void {
   // setActiveWorkspace 自己负责更新 opts.workspacePath 并清理属于旧目录的后台预热视图，
   // 这里不要再先调 setWorkspacePath（那会让它内部的「目录已变」判断失效）
   chatViews?.setActiveWorkspace(p);
+  if (changed) emitWorkspaceChange('activated', p);
   setupMenu();
   pushTitlebarModeState();
   syncWindowTitle();
@@ -2352,6 +2374,8 @@ function closeWorkspace(p: string): void {
   } else {
     saveOpenWorkspaces(openWorkspaces, workspacePath);
   }
+  // 通知 Client 销毁该工作区的 Connection（Standalone 下关闭 Core 进程）
+  emitWorkspaceChange('closed', p);
   setupMenu();
   pushTitlebarModeState();
   syncWindowTitle();
@@ -3143,6 +3167,15 @@ function initCore(): void {
   const { bootstrapCore, bootstrapSnapshot, shutdownCore } = require('../src/host/bootstrapCore.js') as typeof import('../src/host/bootstrapCore.js');
 
   const host = new ElectronUIHost();
+  // 工作区事实来源：Client 按打开集合建立 Connection，并订阅打开 / 关闭 / 激活
+  host.setWorkspaceSource({
+    getOpenWorkspacePaths: () => openWorkspaces,
+    getActiveWorkspacePath: () => workspacePath,
+    subscribe: (listener) => {
+      workspaceChangeListeners.add(listener);
+      return () => workspaceChangeListeners.delete(listener);
+    },
+  });
   const spinDesign = new ElectronSpinDesign(host);
   const conversationsMgr = new ElectronConversationManager(
     host,

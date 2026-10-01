@@ -9,8 +9,8 @@
 import * as vscode from 'vscode';
 import type { UIHost } from './host/UIHost.js';
 import type { SpinDesign } from './host/SpinDesign.js';
-import { tt, getSystemLocale } from './core/i18n.js';
-import { readUiLanguageSync } from './core/history/Config.js';
+import { tt, getSystemLocale } from './host/i18n.js';
+import { getSettingsStore } from './host/SettingsStore.js';
 import { SPIN_DESIGN_PANEL_ID } from './config/project.js';
 
 export class VSCodeSpinDesign implements SpinDesign {
@@ -73,7 +73,7 @@ export class VSCodeSpinDesign implements SpinDesign {
       isDark,
       this.host.getLocale(),
       getSystemLocale(),
-      readUiLanguageSync(),
+      getSettingsStore().readUiLanguage(),
       availableSkills,
     );
 

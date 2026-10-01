@@ -14,10 +14,9 @@
 
 import type { AssistantEventBus } from './AssistantEventBus.js';
 import { logger, setLogToConsole } from './Logger.js';
+import { applySettingsSnapshot } from './settings.js';
 import { requireEventBus } from './AssistantEventBus.js';
-import { setCoreLocale, setCoreUiLanguage } from './i18n.js';
 import {
-  readUiLanguageSync,
   setExtensionPath,
   setSessionWorkspace,
   clearSessionWorkspace,
@@ -32,12 +31,47 @@ import { markSessionWaiting } from './sessionRuntime.js';
  * **必须同步注册**：调用方紧接着就 `emitToCore`，异步注册（动态 import）会让这条
  * 一次性事件在处理器就位前到达，被总线按「暂无订阅者」静默丢弃。
  */
+/**
+ * 上一次应用快照时的 MCP 默认启用列表。
+ *
+ * 用来判断「这次快照是否改变了默认启用列表」：只有变了才需要让已注册会话重同步连接。
+ * 首次（`null`）不算变化——会话还没注册，`syncAllSessions()` 本来就没活干。
+ */
+let lastMcpEnabled: readonly string[] | null = null;
+
 function registerHostEnvironmentUiEvents(bus: AssistantEventBus): void {
-  bus.onUiEvent('hostEnvironmentProvided', ({ locale, extensionPath, logToConsole }) => {
-    setCoreLocale(locale);
-    setExtensionPath(extensionPath);
-    setLogToConsole(logToConsole);
-  });
+  bus.onUiEvent(
+    'hostEnvironmentProvided',
+    ({ extensionPath, logToConsole, settings, mcpServers }) => {
+      setExtensionPath(extensionPath);
+      setLogToConsole(logToConsole);
+      // 配置快照（唯一写入入口）：core 侧所有配置读取都从这里取值，
+      // 不再读 `settings.json` / `mcp.json`（`docs/core-ui-separation.md` 第 4.4 节）。
+      applySettingsSnapshot(settings, mcpServers);
+      // 快照就是就绪判据：应用完才算就绪（第 7 节）。宿主据此判定
+      // 「Core 已跟上最新配置」，每次重新推送快照后都会再收到一次。
+      requireEventBus().emitToUi({ type: 'coreReady' });
+
+      // MCP 全局默认启用列表变了：让所有已注册会话按新的默认值重同步连接。
+      // 配置变更只经快照到达 core（第 4.5 节），没有单独的通知事件；
+      // 每个会话自己的勾选存在各自的 meta.json，走 `mcpEnabledChanged`。
+      const enabled = settings.mcp.enabled;
+      const changed = lastMcpEnabled !== null && !sameStringList(lastMcpEnabled, enabled);
+      lastMcpEnabled = enabled;
+      if (changed) {
+        void import('./mcp/Manager.js')
+          .then(({ getMcpManager }) => getMcpManager().syncAllSessions())
+          .catch((error: unknown) => {
+            logger.error('initializeCoreEvents', `Failed to resync MCP sessions: ${String(error)}`);
+          });
+      }
+    },
+  );
+}
+
+/** 两个字符串列表是否逐项相同（顺序有意义：面板按顺序保存） */
+function sameStringList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((item, index) => item === b[index]);
 }
 
 /**
@@ -202,19 +236,6 @@ async function registerIntegrationUiEvents(bus: AssistantEventBus): Promise<void
     })();
   });
 
-  // llmConfigSaved：全局 LLM 配置已保存 → 清除 core 配置缓存，
-  // 下次 getConfig 重新读盘（settings.json 的写入由 UI 侧收编清单承担）。
-  bus.onUiEvent('llmConfigSaved', () => {
-    void (async () => {
-      try {
-        const { clearConfigCache } = await import('./llm/config.js');
-        clearConfigCache();
-      } catch (err) {
-        logger.warn('Integration', `llmConfigSaved handling failed: ${err}`);
-      }
-    })();
-  });
-
   void createConversationMetadataSync;
   void updateConversationMetadataTitle;
 }
@@ -351,8 +372,8 @@ async function registerMcpUiEvents(bus: AssistantEventBus): Promise<void> {
  * 注册 core 侧全部 UiEvent 订阅。由 bootstrap 在 setGlobalEventBus 之后调用一次。
  */
 export function initializeCoreEvents(bus: AssistantEventBus): void {
-  // UI 语言取自 core 自己的 settings.json，不经总线
-  setCoreUiLanguage(readUiLanguageSync());
+  // UI 语言不在这里：`uiLanguage` 是宿主自己的字段，由宿主读 `SettingsStore` 后
+  // 收敛到宿主进程内的 i18n（`src/host/i18n.ts`），core 不感知语言。
 
   // 宿主事件：同步注册，避免事件在处理器就位前到达、被总线按「暂无订阅者」丢弃
   registerHostEnvironmentUiEvents(bus);

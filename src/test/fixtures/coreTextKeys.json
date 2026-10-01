@@ -1,0 +1,12 @@
+[
+  "notice.spin.engineNotWired",
+  "notice.spin.designMissing",
+  "notice.spin.cannotRead",
+  "notice.spin.emptyNode",
+  "notice.spin.notDag",
+  "notice.spin.variableNoValue",
+  "notice.spin.variableNoValueWithNames",
+  "notice.spin.invalid",
+  "notice.spin.allCompleted",
+  "command.spin.description"
+]

@@ -12,13 +12,14 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { pathToFileURL } from 'url';
 import type { ChatViewManager } from './ChatViewManager.js';
-import type { UIHost } from '../src/host/UIHost.js';
+import type { UIHost, WorkspaceChange } from '../src/host/UIHost.js';
 import { WebviewViewHandle } from '../src/host/UIHost.js';
+import { localWorkspaceRef, type WorkspaceRef } from '../src/host/workspaceRef.js';
 import type { WebviewMessage } from '../src/core/webviewTypes.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
 import { isImageFile } from '../src/host/imageFiles.js';
-import { writeProjectSettings, writeSettingsJson } from '../src/host/settingsFile.js';
+import { writeSettingsJson } from '../src/host/settingsFile.js';
 
 /** 项目根目录（dist-electron 的上一级，与 main.ts 的 APP_ROOT 一致） */
 const APP_ROOT = path.resolve(__dirname, '..');
@@ -29,6 +30,17 @@ export class ElectronUIHost implements UIHost {
   private chatViews: ChatViewManager | undefined;
   /** 当前工作区路径（由 main 进程设置，用户通过菜单选择） */
   private workspacePath: string | undefined;
+  /**
+   * 工作区事实来源（main 进程注入）。
+   *
+   * Electron 是多工作区宿主：打开集合 / 活动项由 main 维护，Client 经本契约
+   * 取得引用并订阅变化。未注入时退回 `workspacePath`（单工作区语义）。
+   */
+  private workspaceSource: {
+    getOpenWorkspacePaths: () => readonly string[];
+    getActiveWorkspacePath: () => string | undefined;
+    subscribe: (listener: (change: WorkspaceChange) => void) => () => void;
+  } | null = null;
   /** 复用的 Mermaid 预览窗口（与 VSCodeUIHost 的单面板语义一致） */
   private mermaidWindow: BrowserWindowCtor | undefined;
 
@@ -78,6 +90,19 @@ export class ElectronUIHost implements UIHost {
     this.workspacePath = p;
   }
 
+  /**
+   * 注入工作区事实来源（main 进程的打开集合 / 活动项 / 变化订阅）。
+   *
+   * 必须在 `bootstrapCore` 之前调用：Client 按打开集合建立 Connection。
+   */
+  setWorkspaceSource(source: {
+    getOpenWorkspacePaths: () => readonly string[];
+    getActiveWorkspacePath: () => string | undefined;
+    subscribe: (listener: (change: WorkspaceChange) => void) => () => void;
+  }): void {
+    this.workspaceSource = source;
+  }
+
   /** 推送消息到渲染进程：优先按 sessionId 路由到对应聊天视图，否则发给当前活动视图 */
   private sendToRenderer(message: Record<string, unknown>): void {
     const sessionId = message.sessionId as string | undefined;
@@ -124,7 +149,24 @@ export class ElectronUIHost implements UIHost {
   }
 
   getWorkspacePath(): string | undefined {
-    return this.workspacePath;
+    return this.workspaceSource?.getActiveWorkspacePath() ?? this.workspacePath;
+  }
+
+  /** 当前工作区引用（Electron 只支持本地目录） */
+  getWorkspaceRef(): WorkspaceRef | undefined {
+    const p = this.getWorkspacePath();
+    return p ? localWorkspaceRef(p) : undefined;
+  }
+
+  /** 当前打开的工作区集合（按打开顺序；main 进程维护） */
+  getOpenWorkspaceRefs(): readonly WorkspaceRef[] {
+    const paths = this.workspaceSource?.getOpenWorkspacePaths() ?? [];
+    return paths.map((p) => localWorkspaceRef(p));
+  }
+
+  /** 订阅工作区打开 / 关闭 / 激活（main 进程经 setWorkspaceSource 注入） */
+  onWorkspaceChanged(listener: (change: WorkspaceChange) => void): () => void {
+    return this.workspaceSource?.subscribe(listener) ?? (() => undefined);
   }
 
   isDarkTheme(): boolean {
@@ -222,11 +264,6 @@ export class ElectronUIHost implements UIHost {
   // settings.json 的写入口（core 只读不写；两个宿主共用同一份实现）
   updateSettingsJson(mutator: (cfg: Record<string, any>) => void | Record<string, any>): Promise<void> {
     return writeSettingsJson(mutator);
-  }
-
-  // 项目对话目录的 settings.json（记录 workspacePath）
-  ensureProjectSettings(projectDir: string, workspacePath: string): Promise<void> {
-    return writeProjectSettings(projectDir, workspacePath);
   }
 
   // ===================== Electron 专有：预览窗口 =====================

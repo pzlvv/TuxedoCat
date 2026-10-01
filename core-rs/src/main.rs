@@ -15,12 +15,13 @@ mod bus;
 mod commands;
 mod compact;
 mod config;
+mod core_text;
+mod daemon;
+mod daemon_protocol;
 mod engine;
 mod frame;
 mod history;
-mod i18n;
 mod llm;
-mod llm_config;
 mod mcp;
 mod mcp_config;
 mod mcp_http;
@@ -29,6 +30,7 @@ mod prompt;
 mod replay;
 mod responses;
 mod rollback;
+mod settings;
 mod shell;
 mod skills;
 mod smart_naming;
@@ -53,12 +55,22 @@ use frame::{CoreToUiFrame, UiToCoreFrame, CORE_PROTOCOL_VERSION};
 use util::sanitize_json_surrogates;
 
 fn main() {
+    // 模式选择（`docs/core-daemon.md` 第 3 节）：daemon 与 Core 是同一个可执行文件的
+    // 两个模式；`--serve` 与默认都是单进程 Core（stdio 是帧通道）。
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--daemon") {
+        std::process::exit(daemon::run());
+    }
+    run_core();
+}
+
+/// 单进程 Core 模式：读 `hello` → 回 `ready` → 进入帧循环。
+fn run_core() {
     let stdin = std::io::stdin();
     let reader = BufReader::new(stdin.lock());
     let shared_bus: engine::SharedBus = Arc::new(Mutex::new(CoreBus::<FrameWriter>::new(
         Box::new(std::io::stdout()),
     )));
-    install_project_dir_ready_sink(&shared_bus);
     install_mcp_servers_changed_sink(&shared_bus);
     // MCP：清掉没有任何会话引用的残留进程（上一次 Core 崩溃留下的孤儿）
     crate::mcp::prune();
@@ -92,25 +104,6 @@ fn main() {
 /// （表现为 Core 收不到消息 / 卡住）。这里先清洗再解析。
 fn decode_frame(line: &str) -> Result<UiToCoreFrame, serde_json::Error> {
     serde_json::from_str(&sanitize_json_surrogates(line))
-}
-
-/// 注册「项目对话目录已就绪」上报出口。
-///
-/// 目录本身由 core 创建，其中的 `settings.json`（记录完整 workspacePath）由宿主写，
-/// 因此 core 只在目录首次就绪时上报一次 `CoreEvent.projectConversationDirReady`
-/// （对齐 Embedded `ensureProjectConversationDir` → `notifyProjectConversationDirReady`）。
-fn install_project_dir_ready_sink(shared_bus: &engine::SharedBus) {
-    config::set_project_dir_ready_sink({
-        let bus = Arc::clone(shared_bus);
-        Arc::new(move |project_dir: String, workspace_path: String| {
-            let mut bus = bus.lock().unwrap();
-            bus.emit(json!({
-                "type": "projectConversationDirReady",
-                "projectDir": project_dir,
-                "workspacePath": workspace_path,
-            }));
-        })
-    });
 }
 
 /// 注册 MCP「服务器集合已变化」的上报出口。
@@ -227,12 +220,6 @@ fn dispatch_ui_request(request: &Value) -> Result<Value, String> {
             let workspace = request.get("workspacePath").and_then(Value::as_str);
             Ok(Value::Array(history::load_conversation_list(workspace)))
         }
-        "uiLanguageRequested" => Ok(json!(config::read_ui_language())),
-        // 系统语言是 OS 事实而不是磁盘事实；Standalone 下由 Core 统一探测，
-        // 宿主不再自己起 PowerShell（Embedded 由宿主进程内的 `getSystemLocale()` 提供）。
-        "systemLocaleRequested" => Ok(json!(i18n::get_system_locale())),
-        "configHomeDirRequested" => config::config_home()
-            .map(|path| json!(path.to_string_lossy())),
         "smartNamingRequested" => {
             let session_id = request
                 .get("sessionId")
@@ -241,10 +228,6 @@ fn dispatch_ui_request(request: &Value) -> Result<Value, String> {
             smart_naming::smart_name_session(session_id)
         }
         "balanceRequested" => Ok(balance::fetch_balance().unwrap_or(Value::Null)),
-        "llmConfigSaveRequested" => {
-            let payload = request.get("payload").cloned().unwrap_or_else(|| json!({}));
-            llm_config::apply_llm_config_save(&payload)
-        }
         "compactArchiveRequested" => {
             let session_id = request
                 .get("sessionId")
@@ -252,8 +235,102 @@ fn dispatch_ui_request(request: &Value) -> Result<Value, String> {
                 .ok_or_else(|| "compactArchiveRequested without sessionId".to_string())?;
             Ok(compact_archive_display(session_id))
         }
+        // MCP 面板列表：配置（快照）+ 会话生效的启用状态 + 运行时状态
+        // （对齐 Embedded `pushMcpServers` 的合并口径）。
+        "mcpServersRequested" => {
+            let session_id = request.get("sessionId").and_then(Value::as_str);
+            Ok(Value::Array(crate::mcp::servers_with_runtime(session_id)))
+        }
+        // 对话空间统计：数据在 Core 的数据目录内，宿主不直接读盘。
+        "conversationSpacesRequested" => Ok(Value::Array(history::conversation_spaces())),
+        // 等待某会话的挂起持久化完成。Rust 侧的会话写盘是同步的（写锁串行），
+        // 请求到达时没有「未完成的持久化」，校验字段后直接应答。
+        "flushSessionRequested" => {
+            request
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "flushSessionRequested without sessionId".to_string())?;
+            Ok(Value::Null)
+        }
+        // 会话内容与派生事实：宿主渲染对话 / 工具元数据 / 模型身份用。
+        "conversationLoadRequested" => {
+            let session_id = request
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "conversationLoadRequested without sessionId".to_string())?;
+            Ok(conversation_load_payload(session_id))
+        }
+        // 斜杠命令与技能列表（内置命令 + 内置技能 + 会话工作目录下的技能）。
+        "skillsRequested" => {
+            let session_id = request.get("sessionId").and_then(Value::as_str);
+            let cwd = session_id
+                .and_then(|id| config::project_root(id).ok())
+                .unwrap_or_default();
+            Ok(skills_payload(&cwd))
+        }
         other => Err(format!("unknown UI request type: {other}")),
     }
+}
+
+/// 会话加载结果：消息 + 元数据 + 派生事实（对齐 Embedded `loadConversationForHost`）。
+///
+/// - 会话文件不存在 → 空消息 + `metadata: null`（宿主据此走「新对话」路径）；
+/// - `pendingToolUseIds` 恒为空：Core 加载时已给缺失 tool_result 的 tool_use 补取消
+///   结果（`history::ensure_tool_results`），不存在需要 UI 恢复的进程内待执行表；
+/// - `agentMode` 取 meta.json 的权威值（缺失为 null，由宿主回退默认值）。
+fn conversation_load_payload(session_id: &str) -> Value {
+    let Some(project) = history::project_of_session(session_id) else {
+        return json!({
+            "messages": [],
+            "metadata": Value::Null,
+            "pendingToolUseIds": [],
+            "hasCompactArchive": false,
+            "agentMode": Value::Null,
+        });
+    };
+    let messages = history::load_messages(session_id, &project);
+    let metadata = history::load_metadata(session_id, &project);
+    let has_compact_archive = !history::load_compact_archive(session_id, &project).is_empty();
+    let agent_mode = metadata
+        .as_ref()
+        .map(|metadata| json!(prompt::agent_mode_of(metadata)))
+        .unwrap_or(Value::Null);
+    json!({
+        "messages": messages,
+        "metadata": metadata,
+        "pendingToolUseIds": [],
+        "hasCompactArchive": has_compact_archive,
+        "agentMode": agent_mode,
+    })
+}
+
+/// 斜杠命令与技能列表：内置命令（`isBuiltin=true`）+ 内置技能 + 工作目录下的技能。
+fn skills_payload(cwd: &str) -> Value {
+    let mut skills: Vec<Value> = Vec::new();
+    for command in commands::builtin_commands() {
+        skills.push(json!({
+            "name": command.name,
+            "description": command.description,
+            "isBuiltin": true,
+        }));
+    }
+    for skill in skills::bundled_skills() {
+        skills.push(json!({
+            "name": skill.name,
+            "description": skill.description,
+            "isBuiltin": false,
+        }));
+    }
+    if !cwd.is_empty() {
+        for skill in skills::get_skill_dir_commands(cwd) {
+            skills.push(json!({
+                "name": skill.name,
+                "description": skill.description,
+                "isBuiltin": false,
+            }));
+        }
+    }
+    json!({ "skills": skills })
 }
 
 /// 展开压缩归档时要显示的完整消息序列（对齐 `handleExpandCompact` 的合并口径）。
@@ -311,6 +388,22 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
         bus.handle_ui_event(&event);
     }
 
+    // 就绪前只接受宿主环境与配置快照（`docs/core-ui-separation.md` 第 7 节）：
+    // 其它 UiEvent 说明宿主接线顺序错了，记一条 log 暴露而不是静默生效。
+    // 快照就是 core 的就绪判据（`settings.rs`），不需要额外的状态位。
+    if event_type != "hostEnvironmentProvided" && !settings::has_settings_snapshot() {
+        emit(
+            core,
+            json!({
+                "type": "log",
+                "message": format!(
+                    "UiEvent.{event_type} arrived before the Core is ready;                      the host must send hostEnvironmentProvided first",
+                ),
+            }),
+        );
+        return;
+    }
+
     let session_id = event
         .get("sessionId")
         .and_then(Value::as_str)
@@ -321,11 +414,6 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
         // ===== 宿主环境 =====
         "hostEnvironmentProvided" => {
             core.on_host_environment(config::HostEnvironment {
-                locale: event
-                    .get("locale")
-                    .and_then(Value::as_str)
-                    .unwrap_or("en")
-                    .to_string(),
                 extension_path: event
                     .get("extensionPath")
                     .and_then(Value::as_str)
@@ -341,6 +429,24 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                     .unwrap_or(".tuxedo-cat")
                     .to_string(),
             });
+            // 配置快照：与宿主环境同一条事件一次给齐。缺字段是协议错误，
+            // 记一条 log 事件暴露，不静默回落（`docs/core-ui-separation.md` 第 4.4 节）。
+            match settings::apply_from_host_environment(&event) {
+                Ok(mcp_defaults_changed) => {
+                    // 快照就是就绪判据：应用完才算就绪（第 7 节）。宿主据此判定
+                    // 「Core 已跟上最新配置」，每次重新推送快照后都会再收到一次。
+                    emit(core, json!({ "type": "coreReady" }));
+                    // MCP 全局默认启用列表变了：让所有已注册会话按新的默认值重同步连接。
+                    // 配置变更只经快照到达 core（第 4.5 节），没有单独的通知事件。
+                    if mcp_defaults_changed {
+                        crate::mcp::sync_all_sessions();
+                    }
+                }
+                Err(err) => emit(
+                    core,
+                    json!({ "type": "log", "message": format!("Failed to apply settings snapshot: {err}") }),
+                ),
+            }
         }
         "sessionWorkspaceAssigned" => {
             // 多工作目录宿主登记「会话 → 工作目录」；`null` / 空串表示清除登记。
@@ -350,6 +456,9 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                 .filter(|path| !path.is_empty());
             config::set_session_workspace(&session_id, workspace.map(str::to_string));
         }
+        // 旧多工作目录模型的活动工作目录入口：`UiEvent` 词汇表已无此事件
+        // （工作目录按会话登记，见 `sessionWorkspaceAssigned`）。保留为测试 /
+        // 兜底路径：`conversationListRequested` 不带 workspacePath 时回退到它。
         "workspaceChanged" => {
             core.on_workspace_changed(
                 event
@@ -495,34 +604,6 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                     "data": { "role": "system", "content": content },
                 }),
             );
-        }
-        "llmConfigSaved" => {
-            config::reset_settings_cache();
-        }
-        "settingsJsonUpdateRequested" => {
-            // Standalone 下全局 `settings.json` 的唯一写入点（`docs/standalone-core.md`
-            // 第 8 节）：宿主把「要改的字段」作为 JSON Merge Patch 交过来，Core 串行化
-            // 「读-改-写」并清掉自己的读缓存。
-            let patch = event.get("patch").cloned().unwrap_or_else(|| json!({}));
-            if let Err(err) = config::update_settings_json(&patch) {
-                emit(
-                    core,
-                    json!({
-                        "type": "log",
-                        "message": format!("Failed to update settings.json: {err}"),
-                    }),
-                );
-            }
-            // 语言设置变了就重新收敛 core locale（对齐 Embedded 保存配置后的
-            // `setCoreUiLanguage`）；其它字段不影响。
-            if let Some(language) = patch.get("uiLanguage").and_then(Value::as_str) {
-                core.on_ui_language_changed(language);
-            }
-            // MCP 全局默认启用列表变了：让所有已注册会话按新的默认值重同步连接
-            // （对齐 Embedded `syncAllSessions`）。
-            if patch.get("mcp").is_some() {
-                crate::mcp::sync_all_sessions();
-            }
         }
         other => {
             eprintln!("[core] uiEvent: {other}");

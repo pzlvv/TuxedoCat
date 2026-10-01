@@ -10,13 +10,19 @@ import * as assert from 'assert';
 import { setGlobalEventBus, resetGlobalEventBus } from '../core/AssistantEventBus';
 import { UserChoiceManager } from '../host/ui/userChoice';
 import { createChecker, runTests } from './helpers/harness';
+import { applySettingsSnapshot } from '../core/settings';
+import { resolveSettingsSnapshot } from '../core/settingsSnapshot';
 import { makeTestBus } from './helpers/fixtures';
 
 async function run(): Promise<void> {
   const { check, finish } = createChecker();
 
   // UserChoiceManager 经总线上报「等待用户」状态（dropSession 会解除该状态）
-  setGlobalEventBus(makeTestBus().bus);
+  const testBus = makeTestBus();
+  setGlobalEventBus(testBus.bus);
+  // Core 就绪：就绪前只接受 hostEnvironmentProvided（docs/core-ui-separation.md 第 7 节）。
+  // 本用例的总线没有注册 core 侧订阅，因此直接调 core 侧的唯一写入口置位就绪。
+  applySettingsSnapshot(resolveSettingsSnapshot({}), []);
 
   const manager = new UserChoiceManager({
     outputChannel: undefined,

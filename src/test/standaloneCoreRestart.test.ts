@@ -21,6 +21,7 @@ import { CONFIG_DIR_NAME, CORE_RESOURCE_DIR } from '../config/project';
 import { coreBinaryFileName, corePlatformDir } from '../host/standalone/coreBinary';
 import { CORE_PROTOCOL_VERSION } from '../host/standalone/protocol';
 import { createChecker, runTests } from './helpers/harness';
+import { settingsSnapshotFromHome } from './helpers/fixtures';
 import { makeTempDir } from './helpers/fixtures';
 
 const REPO_ROOT = path.resolve(__dirname, '../../..');
@@ -207,13 +208,14 @@ function emit(core: CoreHandle, event: unknown): void {
   core.send({ kind: 'uiEvent', event });
 }
 
-function hostEnvironment(): unknown {
+function hostEnvironment(homeDir: string): unknown {
   return {
     type: 'hostEnvironmentProvided',
-    locale: 'en-US',
     extensionPath: REPO_ROOT,
     logToConsole: false,
     configDirName: CONFIG_DIR_NAME,
+    settings: settingsSnapshotFromHome(homeDir),
+    mcpServers: [],
   };
 }
 
@@ -245,7 +247,7 @@ async function run(): Promise<void> {
     // ---------- 第一轮：新建会话 + 一条用户消息 ----------
     first = startCore(home);
     check('第一次握手成功', await bootstrap(first));
-    emit(first, hostEnvironment());
+    emit(first, hostEnvironment(home));
     emit(first, { type: 'sessionWorkspaceAssigned', sessionId, workspacePath: workspace });
     emit(first, { type: 'conversationStarted', sessionId, workspacePath: workspace });
     emit(first, { type: 'conversationOpened', sessionId });
@@ -274,7 +276,7 @@ async function run(): Promise<void> {
     // ---------- 第二轮：新进程，同一个 HOME ----------
     second = startCore(home);
     check('重启后握手成功', await bootstrap(second));
-    emit(second, hostEnvironment());
+    emit(second, hostEnvironment(home));
     emit(second, { type: 'sessionWorkspaceAssigned', sessionId, workspacePath: workspace });
 
     // 会话列表里能读到第一轮的会话（对话列表来自磁盘）

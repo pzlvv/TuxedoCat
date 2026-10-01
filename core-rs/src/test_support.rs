@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 use crate::bus::{CoreBus, FrameWriter};
 use crate::config::{self, HostEnvironment};
 use crate::engine::{Core, SharedBus};
+use crate::settings::{self, McpServerDefinition, SettingsSnapshot};
 use crate::util;
 
 /// 触碰全局静态状态的用例串行闸门
@@ -61,12 +62,15 @@ impl Sandbox {
 
         let config_dir_name = ".test-core".to_string();
         config::set_host_environment(HostEnvironment {
-            locale: "zh-CN".to_string(),
             extension_path: root.join("extension").to_string_lossy().to_string(),
             log_to_console: false,
             config_dir_name: config_dir_name.clone(),
         });
-        config::reset_settings_cache();
+        // 沙箱默认「宿主已连接、配置为空」：真实路径上 `hostEnvironmentProvided`
+        // 永远先于任何其它 UiEvent（`docs/core-ui-separation.md` 第 7 节），
+        // 就绪前收到其它事件会被 Core 拒绝。需要「快照尚未到达」状态的用例
+        // 自己调 `settings::reset_settings_snapshot()`。
+        settings::apply_settings_snapshot(build_test_snapshot(&json!({})), Vec::new());
         config::set_active_workspace(None);
         config::reset_session_workspaces();
 
@@ -80,19 +84,66 @@ impl Sandbox {
         }
     }
 
-    /// 写 `settings.json`
+    /// 写 `settings.json` **并**把等价的配置快照注入 Core 侧唯一入口。
+    ///
+    /// 测试里由本函数扮演 **Host** 的角色：UI 读盘后补默认值、规范化，产出一份快照
+    /// 随 `hostEnvironmentProvided` 下发（`docs/core-ui-separation.md` 第 4 节）。
+    /// 因此这里复刻 Host 的规范化口径（白名单回落、缺字段补默认、无 `baseURL` 的
+    /// provider 不进快照）。
+    ///
+    /// `modelLimits` **留空**：注册表归 UI，Core 侧不再做模型名匹配，未命中的模型一律
+    /// 走 `modelLimitsFallback`。需要特定模型限值的用例在 `settings` 里显式写
+    /// `llm.providers.<key>.modelLimits`。
     pub fn write_settings(&self, settings: Value) {
-        let path = config::settings_path().expect("settings path");
+        let path = self.settings_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("create config dir");
         }
         std::fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).expect("write settings");
-        config::reset_settings_cache();
+        self.refresh_settings_snapshot();
+    }
+
+    /// 写 `mcp.json` 并刷新快照（顺序敏感的用例应在 `write_settings` 之后调用）
+    pub fn write_mcp_json(&self, servers: Value) {
+        let path = config::config_home().expect("config home").join("mcp.json");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create config dir");
+        }
+        std::fs::write(&path, serde_json::to_string(&servers).unwrap()).expect("write mcp.json");
+        self.refresh_settings_snapshot();
+    }
+
+    /// 按当前磁盘上的 `settings.json` / `mcp.json` 重新产出快照并注入
+    pub fn refresh_settings_snapshot(&self) {
+        let snapshot = build_test_snapshot(&self.read_settings());
+        settings::apply_settings_snapshot(snapshot, self.read_mcp_servers());
+    }
+
+    /// 读回 `mcp.json`（不存在时返回空对象）
+    pub fn read_mcp_json(&self) -> Value {
+        let path = config::config_home().expect("config home").join("mcp.json");
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_else(|| json!({}))
+    }
+
+    /// 读回 `mcp.json` 并解析为服务器定义（与 Host 的 `parseMcpServerDefinitions` 同口径）
+    fn read_mcp_servers(&self) -> Vec<McpServerDefinition> {
+        crate::mcp_config::parse_mcp_server_definitions(&self.read_mcp_json())
+    }
+
+    /// 全局 `settings.json` 路径。
+    ///
+    /// 生产代码里这个路径归宿主（Core 不感知），测试沙箱里由本函数按沙箱 HOME 现算：
+    /// 测试自己扮演 Host，需要知道往哪写。
+    pub fn settings_path(&self) -> std::path::PathBuf {
+        config::config_home().expect("config home").join("settings.json")
     }
 
     /// 读回 `settings.json`（不存在时返回空对象），用于在原配置上打补丁
     pub fn read_settings(&self) -> Value {
-        let path = config::settings_path().expect("settings path");
+        let path = self.settings_path();
         std::fs::read_to_string(&path)
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
@@ -157,11 +208,175 @@ impl Drop for Sandbox {
                 None => std::env::remove_var(key),
             }
         }
-        config::reset_settings_cache();
+        settings::reset_settings_snapshot();
         config::set_active_workspace(None);
         config::reset_session_workspaces();
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+/// 把磁盘形状的 `provider.modelConfigs` 合并成快照形状的 `modelLimits`。
+///
+/// Host 侧的 `resolveSettingsSnapshot` 会做同一件事：注册表匹配 → 用户 context/output
+/// 覆盖 → 补 apiType。测试快照的注册表等价物就是全局兜底（当前注册表每条与兜底同值），
+/// 因此这里只需要「兜底 + 用户覆盖」两步。
+fn build_test_model_limits(configs: Option<&Value>) -> Value {
+    let mut out = serde_json::Map::new();
+    let Some(map) = configs.and_then(Value::as_object) else {
+        return Value::Object(out);
+    };
+    let fallback = test_fallback_limits();
+    for (model, limits) in map {
+        let context = limits
+            .get("context")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| fallback["context"].as_u64().unwrap_or(0));
+        let output = limits
+            .get("output")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| fallback["output"].as_u64().unwrap_or(0));
+        let api_type = limits
+            .get("apiType")
+            .and_then(Value::as_str)
+            .unwrap_or("OpenAI");
+        out.insert(
+            model.clone(),
+            json!({
+                "context": context,
+                "output": output,
+                "apiType": api_type,
+                "thinkingTokenBudget": fallback["thinkingTokenBudget"],
+            }),
+        );
+    }
+    Value::Object(out)
+}
+
+// ==================== 测试里的「Host」角色 ====================
+
+/// 测试快照的全局兜底限值（与 Host 的 `FALLBACK_MODEL_PARAMS` 同值）。
+///
+/// 生产里这份兜底由 UI 产出；注册表归 UI，Core 侧不再做模型名匹配，因此测试快照的
+/// `modelLimits` 一律留空，所有未显式配置的模型都走这里。
+fn test_fallback_limits() -> Value {
+    json!({
+        "context": 1024 * 1024,
+        "output": 384 * 1024,
+        "apiType": "OpenAI",
+        "thinkingTokenBudget": 192 * 1024,
+    })
+}
+
+/// 测试用：把原始 `settings.json` 规范化成配置快照。
+///
+/// 复刻 `src/core/settingsSnapshot.ts` 的 `resolveSettingsSnapshot`：白名单外的取值回落
+/// 默认、缺字段补默认、没有 `baseURL` 的 provider 不进快照。改动 Host 口径时这里要跟着改。
+fn build_test_snapshot(raw: &Value) -> SettingsSnapshot {
+    let llm = raw.get("llm").cloned().unwrap_or_else(|| json!({}));
+
+    let mut providers = serde_json::Map::new();
+    if let Some(map) = llm.get("providers").and_then(Value::as_object) {
+        for (key, provider) in map {
+            let base_url = provider
+                .get("baseURL")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let models: Vec<String> = provider
+                .get("models")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    let mut out: Vec<String> = Vec::new();
+                    for item in items {
+                        let Some(model) = item.as_str() else { continue };
+                        let model = model.trim();
+                        if model.is_empty() || out.iter().any(|existing| existing == model) {
+                            continue;
+                        }
+                        out.push(model.to_string());
+                    }
+                    out
+                })
+                .unwrap_or_default();
+            let explicit_default = provider
+                .get("defaultModel")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let default_model = if explicit_default.is_empty() {
+                models.first().cloned().unwrap_or_default()
+            } else {
+                explicit_default
+            };
+            providers.insert(
+                key.clone(),
+                json!({
+                    "baseURL": base_url,
+                    "apiKey": provider.get("apiKey").and_then(Value::as_str).unwrap_or(""),
+                    "models": models,
+                    "defaultModel": default_model,
+                    "modelLimits": build_test_model_limits(provider.get("modelConfigs")),
+                }),
+            );
+        }
+    }
+
+    let active_raw = llm.get("activeProvider").and_then(Value::as_str).unwrap_or("");
+    let active_provider = if providers
+        .get(active_raw)
+        .and_then(|provider| provider.get("baseURL"))
+        .and_then(Value::as_str)
+        .map(|value| !value.is_empty())
+        .unwrap_or(false)
+    {
+        active_raw.to_string()
+    } else {
+        String::new()
+    };
+
+    let snapshot = json!({
+        "llm": {
+            "activeProvider": active_provider,
+            "webSearch": llm.get("webSearch").and_then(Value::as_bool).unwrap_or(true),
+            "thinkingEffort": match llm.get("thinking_effort").and_then(Value::as_str) {
+                Some("off") => "off",
+                Some("low") => "low",
+                Some("max") => "max",
+                _ => "high",
+            },
+            "model": llm.get("model").and_then(Value::as_str).unwrap_or("").trim(),
+            "maxTokens": llm
+                .get("maxTokens")
+                .and_then(Value::as_u64)
+                .filter(|value| *value > 0)
+                .unwrap_or(384 * 1024),
+            "enableUsageStats": llm.get("enableUsageStats").and_then(Value::as_bool).unwrap_or(true),
+            "providers": providers,
+            "modelLimitsFallback": test_fallback_limits(),
+        },
+        "mcp": {
+            "enabled": raw
+                .get("mcp")
+                .and_then(|mcp| mcp.get("enabled"))
+                .and_then(Value::as_array)
+                .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        },
+        "defaultAgentMode": match raw.get("defaultAgentMode").and_then(Value::as_str) {
+            Some("manual") => "manual",
+            Some("auto") => "auto",
+            _ => "risk",
+        },
+        "defaultPromptMode": match raw.get("defaultPromptMode").and_then(Value::as_str) {
+            Some("minimal") => "minimal",
+            Some("mixed") => "mixed",
+            _ => "normal",
+        },
+    });
+
+    serde_json::from_value(snapshot).expect("test settings snapshot")
 }
 
 /// 仓库根目录（`core-rs` 的上一级）

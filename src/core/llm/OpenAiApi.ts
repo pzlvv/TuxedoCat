@@ -17,8 +17,8 @@
 
 import type { Message } from '../types.js';
 import { logger } from '../Logger.js';
-import { getConfig, getEnableUsageStats } from './config.js';
-import { getMaxOutputTokens, getContextWindow } from '../utils/modelConfig.js';
+import { getConfig, getEnableUsageStats, limitsOf } from './config.js';
+import { effectiveMaxOutputTokens } from './modelLimits.js';
 import { parseSSELines, buildAssistantMessageFromBlocks, dumpFailedRequest } from './RealApi.js';
 import { getServerSessionId } from './serverSession.js';
 import { fetch as undiciFetch, type Response as UndiciResponse } from 'undici';
@@ -256,9 +256,13 @@ export function extractChatUsage(u: Record<string, unknown> | undefined): Intern
 export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<StreamEvent | Message> {
   const { messages, systemPrompt, tools, signal, thinkingEffort, modelConfig: optionsModelConfig, sessionId } = options;
 
-  // 从配置读取：优先使用传入的 modelConfig，否则读取 settings.json
+  // 从配置读取：优先使用传入的 modelConfig，否则取当前配置快照
   const config = optionsModelConfig ?? await getConfig();
-  const { apiKey, baseURL, model, maxTokens } = config;
+  const { apiKey, baseURL, model } = config;
+  // max_tokens 与上下文窗口都来自配置快照里已解析的模型限值（含 env 覆盖与硬上限）
+  const modelLimits = limitsOf(config, model);
+  const effectiveMaxTokens = effectiveMaxOutputTokens(modelLimits);
+  const contextWindow = (modelLimits ?? config.modelLimitsFallback).context;
   const enableUsageStats = await getEnableUsageStats();
 
   const effectiveThinkingEffort = thinkingEffort;
@@ -293,9 +297,14 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
     const executeRequest = async function* (
       retryCount: number,
     ): AsyncGenerator<StreamEvent | Message> {
-      // 计算 max_tokens：环境变量 > 模型配置 > 全局默认值
-      const effectiveMaxTokens = getMaxOutputTokens(model, config.modelConfigs);
-      const maxTokensValue = maxTokens > 0 ? Math.min(maxTokens, effectiveMaxTokens) : effectiveMaxTokens;
+      // 输出上限：配置级上限（`llm.maxTokens`）与调用方按上下文剩余空间收窄的上限
+      // （`LLMConfig.outputTokenCap`）都要满足
+      const configuredMaxTokens = config.maxTokens > 0
+        ? Math.min(config.maxTokens, effectiveMaxTokens)
+        : effectiveMaxTokens;
+      const maxTokensValue = config.outputTokenCap && config.outputTokenCap > 0
+        ? Math.min(config.outputTokenCap, configuredMaxTokens)
+        : configuredMaxTokens;
 
       const chatMessages = convertMessagesToChatCompletions(messages, systemPrompt);
       const chatTools = convertToolsToChatCompletionsFormat(tools);
@@ -325,8 +334,8 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
       if (retryCount === 0) {
         logger.info('OpenAiAPI', '=== Chat Completions LLM Request (stream) ===');
         logger.info('OpenAiAPI', `Model: ${model}`);
-        logger.info('OpenAiAPI', `Max tokens: ${maxTokensValue} (config: ${maxTokens}, default: ${effectiveMaxTokens})`);
-        logger.info('OpenAiAPI', `Context window: ${getContextWindow(model, config.modelConfigs)} tokens`);
+        logger.info('OpenAiAPI', `Max tokens: ${maxTokensValue}`);
+        logger.info('OpenAiAPI', `Context window: ${contextWindow} tokens`);
         logger.info('OpenAiAPI', `Messages: ${chatMessages.length} items, tools: ${chatTools.length}, system prompt: ${systemPrompt?.length || 0} chars`);
         logger.info('OpenAiAPI', `Thinking effort: ${effectiveThinkingEffort || 'off'}`);
         logger.debug('OpenAiAPI', `Tools: ${chatTools.map((t: any) => t?.function?.name).join(', ')}`);
@@ -755,7 +764,7 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
       },
-      requestBody: requestBody ?? { model, max_tokens: maxTokens, messages },
+      requestBody: requestBody ?? { model, max_tokens: effectiveMaxTokens, messages },
       config,
       error,
     });

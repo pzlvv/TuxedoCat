@@ -302,4 +302,15 @@ export const zhDict: Record<string, string> = {
   'handlers.minutesAgo': '{count} 分钟前',
   'handlers.hoursAgo': '{count} 小时前',
   'handlers.daysAgo': '{count} 天前',
+  /* ── Core 产出的文案键（core 只给键，翻译在这里）─────────── */
+  'command.spin.description': '执行 Spin 任务',
+  'notice.spin.engineNotWired': 'Spin 引擎未接线，无法执行 Spin 任务。',
+  'notice.spin.designMissing': '未找到 spin.json 设计文件，请先创建并保存 Spin 设计。',
+  'notice.spin.cannotRead': '无法读取 spin.json。',
+  'notice.spin.emptyNode': '存在空节点（缺少任务描述），请完善节点后重试。',
+  'notice.spin.notDag': '流程图不是有效的无环有向图（DAG），请检查连线后重试。',
+  'notice.spin.variableNoValue': '存在未赋值的变量，请在 Spin 设计器中填写变量值后重试。',
+  'notice.spin.variableNoValueWithNames': '存在未赋值的变量（{names}），请在 Spin 设计器中填写变量值后重试。',
+  'notice.spin.invalid': 'spin.json 格式不合法，请检查文件内容。',
+  'notice.spin.allCompleted': '所有任务已完成！',
 };

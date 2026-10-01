@@ -12,7 +12,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use crate::config;
 use crate::util;
 
 /// DeepSeek 官方 baseURL（对齐 `DEEPSEEK_BASE_URL`）
@@ -40,22 +39,18 @@ fn base_url_hostname(base_url: &Value) -> String {
 }
 
 /// 「api.deepseek.com」这个 provider 的 API Key；找不到时为 `None`。
+///
+/// provider 表来自配置快照（Core 不读 `settings.json`）。
 pub fn deepseek_provider_api_key() -> Option<String> {
-    let settings = config::settings_json_uncached();
-    let providers = settings.get("llm").and_then(|llm| llm.get("providers"))?;
-    let map = providers.as_object()?;
+    let snapshot = crate::settings::settings_snapshot().ok()?;
     let target = base_url_hostname(&json!(DEEPSEEK_BASE_URL));
-    for (key, provider) in map {
-        let matches = base_url_hostname(provider.get("baseURL").unwrap_or(&Value::Null)) == target
+    for (key, provider) in &snapshot.llm.providers {
+        let matches = base_url_hostname(&json!(provider.base_url)) == target
             || (!util::js_trim(key).is_empty() && util::js_trim(key).to_lowercase() == target);
         if !matches {
             continue;
         }
-        let api_key = provider
-            .get("apiKey")
-            .and_then(Value::as_str)
-            .map(util::js_trim)
-            .unwrap_or("");
+        let api_key = util::js_trim(&provider.api_key);
         if !api_key.is_empty() {
             return Some(api_key.to_string());
         }

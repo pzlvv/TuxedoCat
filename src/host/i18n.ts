@@ -1,23 +1,25 @@
 /**
- * Lightweight i18n for the core layer.
+ * Lightweight i18n for the host layer（`docs/core-ui-separation.md` 第 4.8 节）。
  *
- * The core layer is shared by multiple hosts (VS Code extension / Electron), so
- * it cannot depend on `vscode.env.language` directly. Instead the host sets the
- * locale once at startup via `setCoreLocale()`:
- *   - VS Code extension: `setCoreLocale(vscode.env.language)`
- *   - Electron: `setCoreLocale(app.getLocale())`
+ * i18n 归 UI：翻译表、语言选择与渲染都在 UI 侧。本模块只服务**宿主进程内的原生 UI**
+ * （Electron 原生菜单、Spin 设计器页面等）；Core 不感知语言，面向界面的文本以
+ * 「键 + 参数」表达（`src/core/coreText.ts`），由 webview 的翻译表渲染。
  *
- * `tt()` picks between a Chinese and an English string based on the active
- * core locale. Non-UI strings (logs, prompts that must not be localized)
- * should not use this helper.
+ * 宿主被多个入口共用（VS Code 扩展 / Electron），不能直接依赖 `vscode.env.language`；
+ * 宿主在启动时通过一次调用把 locale 交给本模块：
+ *   - VS Code extension: `setHostLocale(vscode.env.language)`
+ *   - Electron: `setHostLocale(app.getLocale())`
+ *
+ * `tt()` 按当前宿主语言在中文 / 英文之间二选一。非 UI 文案（日志、落盘文本、
+ * 不允许本地化的提示词）不走这里。
  */
 
 import { execSync } from 'child_process';
 
-let coreLocale: 'zh' | 'en' = 'en';
-let coreLocaleSource: string = '';
+let hostLocale: 'zh' | 'en' = 'en';
+let hostLocaleSource: string = '';
 
-export type CoreLocale = 'zh' | 'en';
+export type HostLocale = 'zh' | 'en';
 
 /**
  * 语言变化订阅者（宿主据此刷新已经建好的本地化 UI，如 Electron 的原生菜单）。
@@ -25,15 +27,15 @@ export type CoreLocale = 'zh' | 'en';
  */
 const localeListeners = new Set<() => void>();
 
-/** 订阅核心语言变化；返回取消订阅函数。 */
-export function onCoreLocaleChanged(listener: () => void): () => void {
+/** 订阅宿主语言变化；返回取消订阅函数。 */
+export function onHostLocaleChanged(listener: () => void): () => void {
   localeListeners.add(listener);
   return () => {
     localeListeners.delete(listener);
   };
 }
 
-function notifyCoreLocaleChanged(): void {
+function notifyHostLocaleChanged(): void {
   for (const listener of [...localeListeners]) {
     try {
       listener();
@@ -44,16 +46,16 @@ function notifyCoreLocaleChanged(): void {
 }
 
 /** 更新有效语言并在变化时通知订阅者 */
-function applyCoreLocale(next: 'zh' | 'en'): void {
-  if (next === coreLocale) return;
-  coreLocale = next;
-  notifyCoreLocaleChanged();
+function applyHostLocale(next: 'zh' | 'en'): void {
+  if (next === hostLocale) return;
+  hostLocale = next;
+  notifyHostLocaleChanged();
 }
 
-function refreshCoreLocale(): void {
+function refreshHostLocale(): void {
   const systemLocale = getSystemLocale();
-  applyCoreLocale(
-    (typeof coreLocaleSource === 'string' && coreLocaleSource.toLowerCase().startsWith('zh')) ||
+  applyHostLocale(
+    (typeof hostLocaleSource === 'string' && hostLocaleSource.toLowerCase().startsWith('zh')) ||
     (systemLocale !== '' && systemLocale.toLowerCase().startsWith('zh'))
       ? 'zh'
       : 'en',
@@ -61,41 +63,41 @@ function refreshCoreLocale(): void {
 }
 
 /**
- * Set the active core locale. Any string starting with "zh" is treated as
+ * Set the active host locale. Any string starting with "zh" is treated as
  * Chinese. The OS system language (probed once at startup and cached) is also
  * considered: if either the given locale or the system locale is Chinese,
  * Chinese is used.
  */
-export function setCoreLocale(locale: string | undefined | null): void {
-  coreLocaleSource = locale || '';
-  refreshCoreLocale();
+export function setHostLocale(locale: string | undefined | null): void {
+  hostLocaleSource = locale || '';
+  refreshHostLocale();
 }
 
 /**
- * Set the active core locale from the user's UI language setting.
+ * Set the active host locale from the user's UI language setting.
  * `'zh'` / `'en'` override auto-detection; `'auto'` falls back to the
- * locale passed to `setCoreLocale()` plus the OS system language.
+ * locale passed to `setHostLocale()` plus the OS system language.
  */
-export function setCoreUiLanguage(lang: 'auto' | 'zh' | 'en'): void {
+export function setHostUiLanguage(lang: 'auto' | 'zh' | 'en'): void {
   if (lang === 'zh') {
-    applyCoreLocale('zh');
+    applyHostLocale('zh');
     return;
   }
   if (lang === 'en') {
-    applyCoreLocale('en');
+    applyHostLocale('en');
     return;
   }
-  refreshCoreLocale();
+  refreshHostLocale();
 }
 
-/** Get the active core locale. */
-export function getCoreLocale(): CoreLocale {
-  return coreLocale;
+/** Get the active host locale. */
+export function getHostLocale(): HostLocale {
+  return hostLocale;
 }
 
-/** Pick the Chinese or English text based on the active core locale. */
+/** Pick the Chinese or English text based on the active host locale. */
 export function tt(zh: string, en: string): string {
-  return coreLocale === 'zh' ? zh : en;
+  return hostLocale === 'zh' ? zh : en;
 }
 
 let _cachedSystemLocale: string | undefined;

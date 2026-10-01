@@ -5,13 +5,18 @@
 import { join } from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';
-import { mkdirSync, readFileSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { logger } from '../Logger.js';
-import { requireEventBus } from '../AssistantEventBus.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
-import type { ModelTokenLimits } from '../utils/modelConfig.js';
-import type { ModelRef } from '../llm/modelRef.js';
+
+/**
+ * 项目清单文件名（`docs/core-ui-separation.md` 第 4.1 节）。
+ *
+ * 位于 `<conversations>/<project>/` 下，记录该编码目录对应的完整 workspacePath，
+ * 便于从 conversations 下的子目录反查原始项目路径。读写都归 Core。
+ */
+const WORKSPACE_META_FILE = 'workspace.meta.json';
 
 /**
  * 获取配置目录（CONFIG_DIR_NAME）
@@ -53,19 +58,16 @@ export function getProjectConversationDir(projectPath: string): string {
 }
 
 /**
- * 已确保存在 settings.json 的项目对话目录缓存
- * 避免每次 appendMessage 都重复读 settings.json
+ * 已确保存在项目清单的项目对话目录缓存
+ * 避免每次 appendMessage 都重复读 workspace.meta.json
  */
 const ensuredProjectDirs = new Set<string>();
 
 /**
- * 确保项目对话目录存在，并上报「目录已就绪」。
- * settings.json 用于记录该编码目录对应的完整 workspacePath，
- * 便于从 conversations 下的子目录反查原始项目路径。
+ * 确保项目对话目录存在，并写入项目清单 `workspace.meta.json`。
  *
- * 目录本身由 core 创建（core 自己的会话数据）；Embedded 下 **settings.json 的写归宿主**
- * （`UIHost.ensureProjectSettings`，见第 2 节规则 9），core 只上报事实；Standalone 下
- * 清单文件也归 Core（`config::write_project_settings`，见 `docs/standalone-core.md` 第 8 节）。
+ * 目录与清单都由 Core 创建与写入（Core 自己的会话数据）；清单记录该编码目录对应的
+ * 完整 workspacePath，便于从 conversations 下的子目录反查原始项目路径。宿主不参与写盘。
  */
 export async function ensureProjectConversationDir(projectPath: string): Promise<string> {
   const projectDir = getProjectConversationDir(projectPath);
@@ -73,7 +75,7 @@ export async function ensureProjectConversationDir(projectPath: string): Promise
     return projectDir;
   }
   await fs.mkdir(projectDir, { recursive: true });
-  notifyProjectConversationDirReady(projectDir, projectPath);
+  await writeWorkspaceMeta(projectDir, projectPath);
   ensuredProjectDirs.add(projectDir);
   return projectDir;
 }
@@ -85,19 +87,48 @@ export function ensureProjectConversationDirSync(projectPath: string): string {
   const projectDir = getProjectConversationDir(projectPath);
   if (!ensuredProjectDirs.has(projectDir)) {
     mkdirSync(projectDir, { recursive: true });
-    notifyProjectConversationDirReady(projectDir, projectPath);
+    writeWorkspaceMetaSync(projectDir, projectPath);
     ensuredProjectDirs.add(projectDir);
   }
   return projectDir;
 }
 
-/** 上报「项目对话目录已就绪」：settings.json 由宿主写（core 只读不写） */
-function notifyProjectConversationDirReady(projectDir: string, workspacePath: string): void {
+/** 写项目清单（幂等：workspacePath 未变化时不重复写盘） */
+async function writeWorkspaceMeta(projectDir: string, workspacePath: string): Promise<void> {
+  const metaPath = join(projectDir, WORKSPACE_META_FILE);
+  let meta: Record<string, unknown> = {};
   try {
-    requireEventBus().emitToUi({ type: 'projectConversationDirReady', projectDir, workspacePath });
-  } catch (error) {
-    logger.error('Config', `Failed to report project conversation dir ${projectDir}: ${error}`);
+    const parsed = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      meta = parsed as Record<string, unknown>;
+      if (meta.workspacePath === workspacePath) {
+        return;
+      }
+    }
+  } catch {
+    // 文件不存在或解析失败，按空对象重建
   }
+  meta.workspacePath = workspacePath;
+  await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), { encoding: 'utf8', mode: 0o600 });
+}
+
+/** 写项目清单的同步版本（幂等） */
+function writeWorkspaceMetaSync(projectDir: string, workspacePath: string): void {
+  const metaPath = join(projectDir, WORKSPACE_META_FILE);
+  let meta: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(readFileSync(metaPath, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      meta = parsed as Record<string, unknown>;
+      if (meta.workspacePath === workspacePath) {
+        return;
+      }
+    }
+  } catch {
+    // 文件不存在或解析失败，按空对象重建
+  }
+  meta.workspacePath = workspacePath;
+  writeFileSync(metaPath, JSON.stringify(meta, null, 2), { encoding: 'utf8', mode: 0o600 });
 }
 
 /**
@@ -114,8 +145,7 @@ function decodeProjectDirName(dirName: string): string | null {
 }
 
 /**
- * 为 conversations 下已存在的旧项目目录补上报一次「目录已就绪」，
- * 让宿主补写其中的 settings.json（core 只读不写）
+ * 为 conversations 下已存在的项目目录补写项目清单（Core 自己写）
  */
 async function backfillProjectSettings(): Promise<void> {
   let entries;
@@ -134,7 +164,7 @@ async function backfillProjectSettings(): Promise<void> {
         try {
           await ensureProjectConversationDir(workspacePath);
         } catch (error) {
-          logger.error('Config', `Failed to write settings.json for ${entry.name}: ${error}`);
+          logger.error('Config', `Failed to write workspace meta for ${entry.name}: ${error}`);
         }
       })
   );
@@ -264,167 +294,4 @@ export function getExtensionPath(): string {
     'It is written by UiEvent.hostEnvironmentProvided; ' +
     'getExtensionPath() is called before that event arrived.'
   );
-}
-
-/**
- * settings.json 缓存
- */
-let cachedSettings: Record<string, any> | null = null;
-
-/**
- * 重新读取 settings.json（清除缓存）
- */
-export function resetSettingsCache(): void {
-  cachedSettings = null;
-}
-
-/**
- * 读取 settings.json（~/<CONFIG_DIR_NAME>/settings.json）
- */
-export async function readSettingsJson(): Promise<Record<string, any>> {
-  if (cachedSettings) return cachedSettings;
-  const settingsPath = join(getConfigHomeDir(), 'settings.json');
-
-  let settings: Record<string, any> = {};
-
-  try {
-    const content = await fs.readFile(settingsPath, 'utf-8');
-    settings = JSON.parse(content);
-  } catch {
-    // 文件不存在或解析失败，从空对象开始
-  }
-
-  cachedSettings = settings;
-  return settings;
-}
-
-/**
- * 同步读取 settings.json 中的 UI 语言设置（'auto' | 'zh' | 'en'）。
- * 供各宿主在创建 webview 时同步注入 window.__uiLocale，避免首帧语言闪变。
- * 读取失败或未配置时返回 'auto'。
- */
-export function readUiLanguageSync(): 'auto' | 'zh' | 'en' {
-  try {
-    const { readFileSync } = require('fs') as typeof import('fs');
-    const settingsPath = join(getConfigHomeDir(), 'settings.json');
-    const content = readFileSync(settingsPath, 'utf-8');
-    const cfg = JSON.parse(content);
-    const lang = cfg?.uiLanguage;
-    return lang === 'zh' || lang === 'en' || lang === 'auto' ? lang : 'auto';
-  } catch {
-    return 'auto';
-  }
-}
-
-/**
- * Shiki 已使用语言在 settings.json 中的字段名。
- * webview 侧语法高亮全部改为按需加载，加载过的语言记录在此，
- * 下次启动时宿主据此注入并预热，避免重复的首次加载延迟。
- */
-export const HIGHLIGHT_LANGUAGES_FIELD = 'highlightLanguages';
-
-/**
- * 同步读取 settings.json 中已记录的 Shiki 语言列表。
- * 供各宿主在创建 webview 时同步注入 window.__highlightLanguages。
- * 读取失败、未配置或格式非法时返回空数组。
- */
-export function readHighlightLanguagesSync(): string[] {
-  try {
-    const { readFileSync } = require('fs') as typeof import('fs');
-    const settingsPath = join(getConfigHomeDir(), 'settings.json');
-    const content = readFileSync(settingsPath, 'utf-8');
-    const cfg = JSON.parse(content);
-    const list = cfg?.[HIGHLIGHT_LANGUAGES_FIELD];
-    if (!Array.isArray(list)) return [];
-    return list.filter((v): v is string => typeof v === 'string' && v.length > 0);
-  } catch {
-    return [];
-  }
-}
-
-/** 记录上限：避免长期使用后字段无限增长（只保留最近使用的语言） */
-const HIGHLIGHT_LANGUAGES_MAX = 60;
-
-/**
- * 构造「把 languages 并入 highlightLanguages 字段」的 settings.json 修改器。
- *
- * core 只描述**怎么改**（字段名 / 去重 / 上限都在这里）；Embedded 下**写盘由宿主承担**
- * （`UIHost.updateSettingsJson`，见第 2 节规则 9），Standalone 下由 Core 自己落盘
- * （`config::merge_highlight_languages`）。
- */
-export function highlightLanguagesMutator(
-  languages: readonly string[]
-): (cfg: Record<string, any>) => void {
-  return (cfg) => {
-    const current: unknown = cfg[HIGHLIGHT_LANGUAGES_FIELD];
-    const list: string[] = Array.isArray(current)
-      ? current.filter((v): v is string => typeof v === 'string' && v.length > 0)
-      : [];
-    let changed = false;
-    for (const language of languages) {
-      if (typeof language !== 'string' || !language) continue;
-      if (list.includes(language)) continue;
-      list.push(language);
-      changed = true;
-    }
-    if (!changed) return;
-    // 超出上限时丢弃最早记录，保持字段体积可控
-    cfg[HIGHLIGHT_LANGUAGES_FIELD] = list.length > HIGHLIGHT_LANGUAGES_MAX
-      ? list.slice(list.length - HIGHLIGHT_LANGUAGES_MAX)
-      : list;
-  };
-}
-
-/**
- * 同步读取 settings.json 中指定模型身份（provider + model）的上下文信息，
- * 供各宿主在响应 webview 的 requestContextLimit 时使用。
- *
- * - ref 提供时：只查该 provider 的 modelConfigs，不回退到其它 provider
- *   （provider 不存在时记录日志，仅按内置注册表计算）。
- * - ref 未提供时：按 activeProvider 的默认模型算（视图初始化推送用）。
- * - modelConfigs：provider.modelConfigs，即 settings.json 中每个模型的
- *   context/output 覆盖值。
- *
- * 必须同时返回 modelConfigs：只按内置 MODEL_CONFIGS 注册表计算 context window
- * 会忽略用户在 settings.json 中为各模型配置的 context 覆盖，
- * 表现为「切换模型后 webview 里的 context 不跟随变化」。
- * VSCode 与 Electron 两端共用本函数，避免逻辑再次分叉。
- */
-export function readModelContextSync(ref?: ModelRef): {
-  model: string;
-  modelConfigs: Record<string, ModelTokenLimits>;
-} {
-  let modelName = ref?.model ?? '';
-  let modelConfigs: Record<string, ModelTokenLimits> = {};
-  try {
-    const settingsPath = join(getConfigHomeDir(), 'settings.json');
-    const content = readFileSync(settingsPath, 'utf-8');
-    const cfg = JSON.parse(content);
-    const providers = cfg?.llm?.providers;
-    const activeKey = cfg?.llm?.activeProvider;
-    let chosenKey = '';
-    if (ref) {
-      if (providers?.[ref.provider]?.baseURL) {
-        chosenKey = ref.provider;
-      } else {
-        logger.warn('readModelContextSync', `provider "${ref.provider}" 不存在，仅按内置注册表计算 context`);
-      }
-    } else if (activeKey && providers?.[activeKey]?.baseURL) {
-      chosenKey = activeKey;
-    }
-    const chosenProvider = chosenKey ? providers?.[chosenKey] : undefined;
-    if (chosenProvider?.modelConfigs && typeof chosenProvider.modelConfigs === 'object') {
-      modelConfigs = chosenProvider.modelConfigs;
-    }
-    if (!modelName && chosenProvider) {
-      if (typeof chosenProvider.defaultModel === 'string' && chosenProvider.defaultModel.trim()) {
-        modelName = chosenProvider.defaultModel.trim();
-      } else if (Array.isArray(chosenProvider.models) && chosenProvider.models.length > 0) {
-        modelName = chosenProvider.models[0];
-      }
-    }
-  } catch {
-    // 读取失败：保留传入的模型名，modelConfigs 为空（回退内置注册表）
-  }
-  return { model: modelName, modelConfigs };
 }

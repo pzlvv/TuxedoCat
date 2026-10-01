@@ -18,6 +18,7 @@ import { CONFIG_DIR_NAME, CORE_RESOURCE_DIR } from '../config/project';
 import { coreBinaryFileName, corePlatformDir } from '../host/standalone/coreBinary';
 import { CORE_PROTOCOL_VERSION } from '../host/standalone/protocol';
 import { createChecker, runTests } from './helpers/harness';
+import { settingsSnapshotFromHome } from './helpers/fixtures';
 
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const CORE_BINARY = path.join(
@@ -245,10 +246,11 @@ async function run(): Promise<void> {
       kind: 'uiEvent',
       event: {
         type: 'hostEnvironmentProvided',
-        locale: 'zh-CN',
         extensionPath: REPO_ROOT,
         logToConsole: false,
         configDirName: CONFIG_DIR_NAME,
+        settings: settingsSnapshotFromHome(homeDir),
+        mcpServers: [],
       },
     });
     core.send({
@@ -380,16 +382,17 @@ async function run(): Promise<void> {
       check('标题由首条用户消息生成', metadata.title === '你好');
     }
     if (sessionDir) {
-      // 项目清单由 Core 自己写（docs/standalone-core.md 第 8 节）：宿主不再经
-      // `UIHost.ensureProjectSettings` 写盘。
-      const manifestFile = path.join(sessionDir, 'settings.json');
+      // 项目清单由 Core 自己写（docs/core-ui-separation.md 第 4.1 节）：宿主不参与写盘。
+      const manifestFile = path.join(sessionDir, 'workspace.meta.json');
       const manifest = fs.existsSync(manifestFile)
         ? (JSON.parse(fs.readFileSync(manifestFile, 'utf8')) as { workspacePath?: string })
         : {};
-      check('项目清单 settings.json 由 Core 写入 workspacePath', manifest.workspacePath === workspace);
+      check('项目清单 workspace.meta.json 由 Core 写入 workspacePath', manifest.workspacePath === workspace);
     }
 
-    // ---- 全局 settings.json 的写入归 Core（宿主把 Merge Patch 交给 Core）----
+    // ---- 配置写入归宿主：Core 不写 settings.json，也不接受「改配置」的事件 ----
+    // Core 只消费 `hostEnvironmentProvided` 下发的快照（docs/core-ui-separation.md 第 4 节），
+    // 因此这里断言「Core 没碰过宿主写的全局配置」。
     const globalSettingsFile = path.join(homeDir, CONFIG_DIR_NAME, 'settings.json');
     const readGlobalSettings = (): Record<string, any> => {
       try {
@@ -398,17 +401,17 @@ async function run(): Promise<void> {
         return {};
       }
     };
-    const llmBefore = readGlobalSettings().llm;
+    const settingsBefore = readGlobalSettings();
+    // 契约里已经没有「宿主请 Core 改配置」这条事件（settingsJsonUpdateRequested 已删除）；
+    // 即使发过来，Core 也不认识、不落盘——全局配置的写入口只有宿主。
     core.send({
       kind: 'uiEvent',
-      event: { type: 'settingsJsonUpdateRequested', patch: { uiLanguage: 'en' } },
+      event: { type: 'settingsJsonUpdateRequested', patch: { uiLanguage: 'en', llm: { webSearch: false } } },
     });
+    await new Promise((resolve) => setTimeout(resolve, 300));
     check(
-      'settingsJsonUpdateRequested 由 Core 写盘且不影响既有字段',
-      await core.waitFor(() => {
-        const settings = readGlobalSettings();
-        return settings.uiLanguage === 'en' && JSON.stringify(settings.llm) === JSON.stringify(llmBefore);
-      }),
+      'Core 不写全局 settings.json',
+      JSON.stringify(readGlobalSettings()) === JSON.stringify(settingsBefore),
     );
 
     // ---- 第二轮：历史必须从磁盘载入并进入上下文 ----
@@ -544,10 +547,11 @@ async function run(): Promise<void> {
           kind: 'uiEvent',
           event: {
             type: 'hostEnvironmentProvided',
-            locale: 'zh-CN',
             extensionPath: REPO_ROOT,
             logToConsole: false,
             configDirName: CONFIG_DIR_NAME,
+            settings: settingsSnapshotFromHome(reminderHome),
+            mcpServers: [],
           },
         });
         reminderCore.send({

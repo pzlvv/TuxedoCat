@@ -14,6 +14,7 @@ import type { UserMessage } from './types.js';
 import { buildUserContent } from './utils/contentBlocks.js';
 import { markSessionWaiting } from './sessionRuntime.js';
 import { getMCPHost } from './mcp/MCPHost.js';
+import { getSettings } from './settings.js';
 import { logger } from './Logger.js';
 import { getProjectRoot } from './history/Config.js';
 import { sessionQueue } from './SessionQueue.js';
@@ -309,6 +310,19 @@ function applyPendingModel(sessionId: string, engine: QueryEngine): void {
 }
 
 /**
+ * 当前 active provider 的默认模型身份（core 内部回退用）。
+ *
+ * 只读配置快照：宿主已经把默认值补好，core 不做任何补默认的动作。
+ * 未配置 activeProvider / provider 缺 baseURL 时返回 undefined。
+ */
+function activeModelRefFromSnapshot(): ModelRef | undefined {
+  const llm = getSettings().llm;
+  const provider = llm.activeProvider ? llm.providers[llm.activeProvider] : undefined;
+  if (!provider?.baseURL) return undefined;
+  return { provider: llm.activeProvider, model: provider.defaultModel };
+}
+
+/**
  * 设置指定会话的模型身份（provider + model）
  * 供 core 在收到 setModel 消息时调用；
  * meta.json 的持久化由 core 的会话配置处理负责。
@@ -489,8 +503,8 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
       conversation = await loadConversation(sessionID);
     }
     const { getConversationModelRef } = await import('./history/index.js');
-    const { getActiveModelRef, getConfigForProvider } = await import('./llm/config.js');
-    const ref = getConversationModelRef(conversation?.metadata) ?? await getActiveModelRef();
+    const { getConfigForProvider } = await import('./llm/config.js');
+    const ref = getConversationModelRef(conversation?.metadata) ?? activeModelRefFromSnapshot();
     if (!ref) {
       logger.warn('Integration', `No usable model for restored session ${sessionID} (provider 未配置)`);
     } else {

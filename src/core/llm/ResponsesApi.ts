@@ -17,8 +17,8 @@
 
 import type { Message } from '../types.js';
 import { logger } from '../Logger.js';
-import { getConfig, getEnableUsageStats } from './config.js';
-import { getMaxOutputTokens, getModelConfig, getContextWindow } from '../utils/modelConfig.js';
+import { getConfig, getEnableUsageStats, limitsOf } from './config.js';
+import { effectiveMaxOutputTokens } from './modelLimits.js';
 import { parseSSELines, buildAssistantMessageFromBlocks, dumpFailedRequest } from './RealApi.js';
 import { persistLargeOutput, buildLargeToolResultMessage } from '../tools/toolResultStorage.js';
 import { getServerSessionId, markServerSessionRotate } from './serverSession.js';
@@ -408,9 +408,13 @@ export function syncContentBlocksFromOutput(contentBlocks: any[], output: unknow
 export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<StreamEvent | Message> {
   const { messages, systemPrompt, tools, signal, thinkingEffort, thinkingTokenBudget, modelConfig: optionsModelConfig, sessionId } = options;
 
-  // 从配置读取：优先使用传入的 modelConfig，否则读取 settings.json
+  // 从配置读取：优先使用传入的 modelConfig，否则取当前配置快照
   const config = optionsModelConfig ?? await getConfig();
-  const { apiKey, baseURL, model, maxTokens } = config;
+  const { apiKey, baseURL, model } = config;
+  // max_output_tokens / 上下文窗口 / thinking 预算都来自快照里已解析的模型限值
+  const modelLimits = limitsOf(config, model);
+  const effectiveMaxTokens = effectiveMaxOutputTokens(modelLimits);
+  const contextWindow = (modelLimits ?? config.modelLimitsFallback).context;
   const enableUsageStats = await getEnableUsageStats();
 
   // 使用传入的 thinkingEffort，不从配置文件读取该值
@@ -445,9 +449,14 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
     const executeRequest = async function* (
       retryCount: number,
     ): AsyncGenerator<StreamEvent | Message> {
-      // 计算 max_output_tokens：环境变量 > 模型配置 > 全局默认值
-      const effectiveMaxTokens = getMaxOutputTokens(model, config.modelConfigs);
-      const maxTokensValue = maxTokens > 0 ? Math.min(maxTokens, effectiveMaxTokens) : effectiveMaxTokens;
+      // 输出上限：配置级上限（`llm.maxTokens`）与调用方按上下文剩余空间收窄的上限
+      // （`LLMConfig.outputTokenCap`）都要满足
+      const configuredMaxTokens = config.maxTokens > 0
+        ? Math.min(config.maxTokens, effectiveMaxTokens)
+        : effectiveMaxTokens;
+      const maxTokensValue = config.outputTokenCap && config.outputTokenCap > 0
+        ? Math.min(config.outputTokenCap, configuredMaxTokens)
+        : configuredMaxTokens;
 
       // 转换消息与工具
       const responsesInput = convertMessagesToResponsesInput(messages);
@@ -484,7 +493,8 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       if (effectiveThinkingEffort) {
         const effort = effectiveThinkingEffort === 'off' ? 'none' : effectiveThinkingEffort;
         requestBody.reasoning = { effort };
-        const effectiveThinkingTokenBudget = thinkingTokenBudget ?? getModelConfig(model, config.modelConfigs).thinking_token_budget;
+        const effectiveThinkingTokenBudget = thinkingTokenBudget
+          ?? (modelLimits ?? config.modelLimitsFallback).thinkingTokenBudget;
         logger.debug('ResponsesAPI',
           `Reasoning effort=${effort} (thinking budget ${effectiveThinkingTokenBudget} is not directly supported by Responses API reasoning.effort)`);
       }
@@ -503,7 +513,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       if (retryCount === 0) {
         logger.info('ResponsesAPI', '=== Responses LLM Request (stream) ===');
         logger.info('ResponsesAPI', `Model: ${model}`);
-        logger.info('ResponsesAPI', `Max output tokens: ${maxTokensValue} (config: ${maxTokens}, default: ${effectiveMaxTokens})`);
+        logger.info('ResponsesAPI', `Max output tokens: ${maxTokensValue}`);
         logger.info('ResponsesAPI', `Thinking effort: ${effectiveThinkingEffort || 'off'}`);
         logger.info('ResponsesAPI', `Sampling: temperature=1.0, top_p=0.95`);
         logger.info('ResponsesAPI', `Input items: ${responsesInput.length}, tools: ${responsesTools.length}, system prompt: ${systemPrompt?.length || 0} chars`);
@@ -760,7 +770,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
           webSearchUsed,
           inputTokens: usage.input_tokens,
           localInputEstimate,
-          contextWindow: getContextWindow(model, config.modelConfigs),
+          contextWindow,
         });
         if (skipDecision.skip) {
           markServerSessionRotate(sessionId, skipDecision.reason);
@@ -1347,7 +1357,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
       },
-      requestBody: requestBody ?? { model, max_output_tokens: maxTokens, input: messages },
+      requestBody: requestBody ?? { model, max_output_tokens: effectiveMaxTokens, input: messages },
       config,
       error,
     });

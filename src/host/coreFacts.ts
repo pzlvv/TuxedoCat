@@ -1,79 +1,52 @@
 /**
  * 宿主侧的「core 事实」入口（见 docs/standalone-core.md 第 10 节）。
  *
- * 宿主不直接读取 core 的磁盘数据。以下三项事实在两种装配下的取法不同：
+ * 宿主不直接读取 core 的磁盘数据。以下事实在两种装配下的取法不同：
  *
  * | 事实 | Embedded | Standalone |
  * | --- | --- | --- |
  * | 对话列表元数据 | `loadConversationList()` 直接读盘 | `UiRequest.conversationListRequested` |
- * | 界面语言 | `readUiLanguageSync()` 直接读盘 | `UiRequest.uiLanguageRequested` |
- * | 配置目录 | `getConfigHomeDir()` 计算 | `UiRequest.configHomeDirRequested` |
+ * | 智能命名 / 余额 / 归档展开 | core 模块直接调用 | 同名 `UiRequest` |
  *
- * Standalone 下三项都经 `requestCore` 向 Core 索取：界面语言与配置目录在握手完成
- * 后预热成同步可读的缓存（webview 首帧注入需要同步取值），对话列表按需现取
- * （`conversationListChanged` 驱动的 `ConversationManager.refresh()` 会重新请求）。
+ * 配置类事实（界面语言 / 系统语言 / 高亮语言 / 默认值 / 模型身份 / 原始 settings）
+ * **不在这里**：它们全部归宿主，直接经 `SettingsStore` 读宿主自己的文件与快照
+ * （`docs/core-ui-separation.md` 第 4 节，`settingsRead.ts`），不问 Core。
+ * 系统语言也是宿主自己探测——i18n 归宿主，Core 不感知语言。
  *
  * 调用点统一走本模块，不再直接 import `src/core/history/**` 的读取函数。
  */
 
 import { requireEventBus } from '../core/AssistantEventBus.js';
-import { getConfigHomeDir, readUiLanguageSync } from '../core/history/Config.js';
-import { getSystemLocale, setCoreLocale, setCoreUiLanguage } from '../core/i18n.js';
+import type { LoadedConversation, SkillListItem } from '../core/AssistantEventBus.js';
+import { getSystemLocale, setHostLocale, setHostUiLanguage } from './i18n.js';
 import type { ConversationMetadata } from '../core/history/Conversation.js';
+import type { ConversationSpaceInfo } from '../core/history/ConversationSpace.js';
+import type { McpServerInfo } from '../core/webviewTypes.js';
 import type { Message } from '../core/types.js';
 import { resolveCoreKind, type CoreKind } from './coreKind.js';
+import { getSettingsStore, type UiLanguage } from './SettingsStore.js';
 
-/** 界面语言取值（与 `settings.json` 的 `uiLanguage` 一致） */
-export type UiLanguage = 'auto' | 'zh' | 'en';
-
-let uiLanguage: UiLanguage = 'auto';
-let systemLocale = '';
-let configHomeDir: string | null = null;
-let primed = false;
-
-/** 测试用：清空缓存 */
-export function resetCoreFacts(): void {
-  uiLanguage = 'auto';
-  systemLocale = '';
-  configHomeDir = null;
-  primed = false;
-}
-
-/** 同步读界面语言（webview 首帧注入用） */
-export function readUiLanguage(kind: CoreKind = resolveCoreKind()): UiLanguage {
-  if (kind === 'embedded') return readUiLanguageSync();
-  // 握手完成前回落 'auto'：与 `readUiLanguageSync` 读盘失败时的取值一致，
-  // 是「还没有答案」而不是「答案是英文」。预热在 Core 每次就绪时都会重跑。
-  return uiLanguage;
-}
+export type { UiLanguage };
 
 /**
- * 同步读配置目录。
+ * 同步读界面语言（webview 首帧注入用）。
  *
- * Standalone 下未预热时抛错：配置目录是 core 的事实，猜一个值会让调用方
- * 悄悄写到错误的路径上，属于必须暴露的接线错误。
+ * `uiLanguage` 是宿主自己的字段：两种装配下都读宿主自己的 `settings.json`
+ * （经 `SettingsStore`），不再向 Core 索取。
  */
-export function readConfigHomeDir(kind: CoreKind = resolveCoreKind()): string {
-  if (kind === 'embedded') return getConfigHomeDir();
-  if (configHomeDir === null) {
-    throw new Error(
-      'core facts are not primed yet: the config home directory is a core fact ' +
-      'and is only available after the Standalone Core handshake.',
-    );
-  }
-  return configHomeDir;
+export function readUiLanguage(): UiLanguage {
+  return getSettingsStore().readUiLanguage();
 }
 
 /**
  * 系统语言（`zh-CN` / `en-US` 之类）。
  *
- * Embedded 下宿主自己探测（`getSystemLocale()`，Windows 走 PowerShell）；
- * Standalone 下由 Core 探测并缓存——宿主不再为同一台机器重复起一次 PowerShell。
- * 预热前回落空串（与探测失败同一口径）。
+ * 宿主自己探测（`getSystemLocale()`，Windows 走 PowerShell），两种装配同一条路径：
+ * i18n 归宿主，Core 不感知语言，因此没有「向 Core 要系统语言」这回事。
+ * 结果在 `i18n` 内按进程缓存，只有首次调用真的探测。
  */
-export function readSystemLocale(kind: CoreKind = resolveCoreKind()): string {
-  if (kind === 'embedded') return getSystemLocale();
-  return systemLocale;
+export function readSystemLocale(): string {
+  return getSystemLocale();
 }
 
 /** 对话列表元数据（Embedded 读盘；Standalone 向 Core 请求） */
@@ -110,8 +83,14 @@ export async function requestSmartNaming(
   return title;
 }
 
-/** DeepSeek 账户余额（未配置 api.deepseek.com provider 或查询失败时为 null） */
+/**
+ * DeepSeek 账户余额（未配置 api.deepseek.com provider 或查询失败时为 null）。
+ *
+ * `sessionId` 只用于多 Connection 路由：余额按该 Connection 的配置快照查询；
+ * 缺省时由 Client 落到当前 Connection。
+ */
 export async function requestBalance(
+  sessionId?: string,
   kind: CoreKind = resolveCoreKind(),
 ): Promise<{
   totalBalance: number;
@@ -123,7 +102,7 @@ export async function requestBalance(
     const { fetchBalance } = await import('../core/utils/balance.js');
     return fetchBalance();
   }
-  return requireEventBus().requestCore({ type: 'balanceRequested' });
+  return requireEventBus().requestCore({ type: 'balanceRequested', sessionId });
 }
 
 /**
@@ -161,60 +140,161 @@ export async function requestCompactArchive(
 }
 
 /**
- * 保存 LLM 全局配置（设置面板）。
+ * MCP 面板列表：服务器定义（core 的配置快照）+ 该会话生效的启用状态 + 运行时状态。
  *
- * Standalone 下整段 mutation 在 Core 侧执行（要读磁盘上的旧 `modelConfigs` 与内置
- * 模型注册表）；Embedded 下由宿主写盘，本函数只做「同样的输入 → 同样的输出」的
- * 兜底：不参与（返回 `null`），调用方走原来的宿主写盘路径。
+ * Embedded 下 core 状态在同一进程：直接读 core 的会话配置与 MCP 管理器状态；
+ * Standalone 下这些事实在 Core 进程内，经 `UiRequest.mcpServersRequested` 索取
+ * （宿主不触碰 MCPHost / McpManager）。
  */
-export async function requestLlmConfigSave(
-  payload: Record<string, unknown>,
+export async function requestMcpServers(
+  sessionId: string | undefined,
   kind: CoreKind = resolveCoreKind(),
-): Promise<{
-  model: string;
-  modelProvider: string;
-  activeProvider: string;
-  thinkingEffort: 'off' | 'low' | 'high' | 'max';
-  agentMode: 'manual' | 'risk' | 'auto';
-  promptMode: 'normal' | 'minimal' | 'mixed';
-  webSearch: boolean;
-  providers: Array<{ key: string; models: string[] }>;
-  activeModel: string;
-  activeModelProvider: string;
-} | null> {
-  if (kind === 'embedded') return null;
-  return requireEventBus().requestCore({ type: 'llmConfigSaveRequested', payload });
-}
-
-/** Standalone 下是否已预热（测试与诊断用） */
-export function coreFactsPrimed(): boolean {
-  return primed;
+): Promise<McpServerInfo[]> {
+  if (kind === 'embedded') {
+    const [{ readMcpServers }, { getMcpManager }] = await Promise.all([
+      import('../core/mcp/Config.js'),
+      import('../core/mcp/Manager.js'),
+    ]);
+    const servers = await readMcpServers(sessionId);
+    const status = getMcpManager().getServerStatus();
+    return servers.map((server) => {
+      const runtime = status.get(server.name);
+      return {
+        ...server,
+        running: runtime?.running ?? false,
+        toolCount: runtime?.toolCount ?? 0,
+        error: runtime?.error ?? null,
+        refCount: runtime?.refCount ?? 0,
+      };
+    });
+  }
+  return requireEventBus().requestCore({ type: 'mcpServersRequested', sessionId });
 }
 
 /**
- * Standalone 握手完成后预热同步可读的缓存。
+ * 对话空间统计（各空间的字节数 / 文件数 / 会话数）。
  *
- * 由 `bootstrapCore` 挂在「Core 就绪」回调上：每次握手（含崩溃重启后）都重跑一次，
- * Core 侧换了配置目录或语言也能跟上。失败不抛给调用方——预热失败只影响
- * 同步读取点回落默认值，不该让启动流程失败。
+ * Standalone 下统计对象在 Core 的数据目录内，宿主经 `UiRequest` 索取。
  */
-export async function primeCoreFacts(hostLocale?: string): Promise<void> {
-  const bus = requireEventBus();
-  const [language, home, system] = await Promise.all([
-    bus.requestCore({ type: 'uiLanguageRequested' }),
-    bus.requestCore({ type: 'configHomeDirRequested' }),
-    bus.requestCore({ type: 'systemLocaleRequested' }),
-  ]);
-  uiLanguage = language;
-  configHomeDir = home;
-  systemLocale = system;
-  primed = true;
-
-  // 把 core 的语言收敛结果灌回宿主进程内的 i18n 模块：宿主侧的原生 UI
-  // （Electron 菜单、Spin 设计器页面）用的是同一套 `tt()`，必须与 Core 一致。
-  // 顺序与 Embedded 的 `initializeCoreEvents` → `hostEnvironmentProvided` 相同。
-  if (hostLocale !== undefined) {
-    setCoreUiLanguage(language);
-    setCoreLocale(hostLocale);
+export async function requestConversationSpaces(
+  kind: CoreKind = resolveCoreKind(),
+): Promise<ConversationSpaceInfo[]> {
+  if (kind === 'embedded') {
+    const { getConversationSpaces } = await import('../core/history/ConversationSpace.js');
+    return getConversationSpaces();
   }
+  return requireEventBus().requestCore({ type: 'conversationSpacesRequested' });
+}
+
+/**
+ * 等待某会话的挂起持久化完成（宿主切走会话前的收尾）。
+ *
+ * Embedded 下直接 `flush()` 该会话引擎；Standalone 下引擎在 Core 进程内，
+ * 经 `UiRequest.flushSessionRequested` 让 Core 自己等待落盘完成。
+ */
+export async function requestFlushSession(
+  sessionId: string,
+  kind: CoreKind = resolveCoreKind(),
+): Promise<void> {
+  if (kind === 'embedded') {
+    const { getSessionEngine } = await import('../core/QueryEngine.js');
+    await getSessionEngine(sessionId)?.flush();
+    return;
+  }
+  await requireEventBus().requestCore({ type: 'flushSessionRequested', sessionId });
+}
+
+/**
+ * 加载会话内容与派生事实（宿主渲染对话 / 工具元数据 / 模型身份用）。
+ *
+ * Embedded 下读盘 + 读进程内事实；Standalone 下这些都在 Core 进程内，
+ * 经 `UiRequest.conversationLoadRequested` 一次取齐（宿主不直接读 core 磁盘）。
+ */
+export async function loadConversationForHost(
+  sessionId: string,
+  kind: CoreKind = resolveCoreKind(),
+): Promise<LoadedConversation> {
+  if (kind === 'embedded') {
+    const [{ loadConversation }, { getPendingToolUseIds }, conversationModule, permissionModule] =
+      await Promise.all([
+        import('../core/history/index.js'),
+        import('../core/tools/RunTools.js'),
+        import('../core/history/Conversation.js'),
+        import('../core/tools/PermissionPolicy.js'),
+      ]);
+    const conversation = await loadConversation(sessionId);
+    let hasCompactArchive = false;
+    try {
+      hasCompactArchive = await conversationModule.hasCompactArchive(sessionId);
+    } catch {
+      // 工作目录未登记 / 归档不可读：按「没有归档」处理
+    }
+    let agentMode: LoadedConversation['agentMode'] = null;
+    try {
+      agentMode = permissionModule.getStoredSessionAgentMode(sessionId) ?? null;
+    } catch {
+      // 未记录：由宿主回退 meta.json / settings.json 默认值
+    }
+    return {
+      messages: conversation.messages ?? [],
+      metadata: conversation.metadata ?? null,
+      pendingToolUseIds: [...getPendingToolUseIds()],
+      hasCompactArchive,
+      agentMode,
+    };
+  }
+  return requireEventBus().requestCore({ type: 'conversationLoadRequested', sessionId });
+}
+
+/**
+ * 斜杠命令与技能列表（内置命令 + 内置技能 + 会话工作目录下的技能）。
+ *
+ * Embedded 下直接组装；Standalone 下 Core 侧持有同一份数据（含项目技能目录），
+ * 经 `UiRequest.skillsRequested` 取回。
+ */
+export async function requestSkills(
+  sessionId: string | undefined,
+  kind: CoreKind = resolveCoreKind(),
+): Promise<SkillListItem[]> {
+  if (kind === 'embedded') {
+    const [{ getBundledSkills }, { getSkillDirCommands }, { getBuiltinCommands }, configModule] =
+      await Promise.all([
+        import('../core/skills/bundledSkills.js'),
+        import('../core/skills/loadSkillsDir.js'),
+        import('../core/skills/builtinCommands.js'),
+        import('../core/history/Config.js'),
+      ]);
+    const fileSkills =
+      sessionId && configModule.hasProjectRoot(sessionId)
+        ? await getSkillDirCommands(configModule.getProjectRoot(sessionId))
+        : [];
+    return [
+      ...getBuiltinCommands().map((command) => ({
+        name: command.name,
+        description: command.description,
+        isBuiltin: true,
+      })),
+      ...[...getBundledSkills(), ...fileSkills].map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        isBuiltin: false,
+      })),
+    ];
+  }
+  const { skills } = await requireEventBus().requestCore({ type: 'skillsRequested', sessionId });
+  return skills;
+}
+
+/**
+ * 把语言收敛结果灌回宿主进程内的 i18n 模块。
+ *
+ * 宿主侧的原生 UI（Electron 菜单、Spin 设计器页面）用的是同一套 `tt()`；
+ * 界面语言来自宿主自己的 `settings.json`，宿主 locale 由宿主启动时传入。
+ * Standalone 下挂在「Core 就绪」回调上（每次握手，含崩溃重启后）：Core 进程换了
+ * 一个，但宿主进程内的收敛结果不变，重跑是幂等的。
+ */
+export function primeHostLocale(hostLocale?: string): void {
+  if (hostLocale === undefined) return;
+  setHostUiLanguage(getSettingsStore().readUiLanguage());
+  setHostLocale(hostLocale);
 }

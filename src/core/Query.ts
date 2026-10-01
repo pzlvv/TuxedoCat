@@ -12,7 +12,8 @@ import type { CoreEvent } from './AssistantEventBus.js';
 import { sessionQueue } from './SessionQueue.js';
 import { logger } from './Logger.js';
 import { updateConversationContext } from './history/index.js';
-import { getAvailableOutputTokens } from './utils/modelConfig.js';
+import { limitsOf } from './llm/config.js';
+import { availableOutputTokens } from './llm/modelLimits.js';
 import { estimateRequestTokens } from './utils/tokenEstimate.js';
 import { CONFIG_DIR_NAME } from '../config/project.js';
 
@@ -330,7 +331,13 @@ async function* queryLoop(
       // params.modelConfig 恒为 undefined，会导致 shouldAutoCompact 拿不到模型名而使用默认阈值）。
       const currentModelConfig = getModelConfig();
       const shouldCompact = pendingCompact
-        || await shouldAutoCompact(messages, state.autoCompactTracking, contextTokenCount, currentModelConfig?.model, currentModelConfig?.modelConfigs);
+        || await shouldAutoCompact(
+          messages,
+          state.autoCompactTracking,
+          contextTokenCount,
+          currentModelConfig ? limitsOf(currentModelConfig, currentModelConfig.model) : undefined,
+          currentModelConfig?.modelLimitsFallback,
+        );
 
       if (shouldCompact) {
         if (pendingCompact) {
@@ -442,18 +449,19 @@ async function* queryLoop(
         exactTokenCount ?? 0,
         estimateRequestTokens({ messages: apiMessages, systemPrompt: fullSystemPrompt, tools }),
       );
-      // 仅当能确定模型或已配置 maxTokens 时才覆盖，避免部分配置（如仅 webSearch）
-      // 覆盖掉 callRealLLM 从 settings.json 合并进来的真实 maxTokens。
+      // 输出预留按「当前上下文剩余空间」收窄，避免「输入 + 输出」超出窗口。
+      // 限值来自配置快照；模型未知时 `limitsOf` 返回 undefined，按全局默认处理。
       const baseModelConfig = getModelConfig();
       let requestModelConfig = baseModelConfig;
-      if (baseModelConfig && (baseModelConfig.maxTokens > 0 || baseModelConfig.model)) {
-        const availableOutputTokens = getAvailableOutputTokens(
-          baseModelConfig.model,
-          baseModelConfig.modelConfigs,
+      if (baseModelConfig) {
+        const available = availableOutputTokens(
+          limitsOf(baseModelConfig, baseModelConfig.model),
+          baseModelConfig.modelLimitsFallback,
           requestTokenCount,
         );
-        const configured = baseModelConfig.maxTokens > 0 ? baseModelConfig.maxTokens : availableOutputTokens;
-        requestModelConfig = { ...baseModelConfig, maxTokens: Math.min(configured, availableOutputTokens) };
+        // 配置级上限（`llm.maxTokens`）与上下文余量取更严的那个
+        const configured = baseModelConfig.maxTokens > 0 ? baseModelConfig.maxTokens : available;
+        requestModelConfig = { ...baseModelConfig, outputTokenCap: Math.min(configured, available) };
       }
 
       for await (const event of callLLM({

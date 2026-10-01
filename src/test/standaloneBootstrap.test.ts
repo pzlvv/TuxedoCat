@@ -73,7 +73,7 @@ async function run(): Promise<void> {
   });
   const conversations = new StubConversationManager(host);
 
-  bootstrapCore(host, stubSpinDesign, conversations, {
+  const bootstrapped = bootstrapCore(host, stubSpinDesign, conversations, {
     locale: 'zh-CN',
     log: (...args: unknown[]) => {
       logs.push(args.map((arg) => String(arg)).join(' '));
@@ -110,7 +110,14 @@ async function run(): Promise<void> {
   // 也不建会话队列（这些是 Core 进程的职责）。
   check('进程内不注册 core 侧扩展路径', !hasExtensionPath());
 
+  // 连接模型（docs/client-connection.md）：打开的工作区对应一个 Connection
+  check('启动快照报告 Connection 数', snapshot.connectionCount === 1);
+  const connection = bootstrapped.client.listConnections()[0];
+  check('Connection 已就绪', await waitFor(() => connection?.isReady() === true));
+  check('Connection 归属当前工作区', connection?.workspaceRef.path.replace(/\\/g, '/') === 'D:/repo');
+
   await shutdownCore();
+  check('shutdownCore() 之后 Connection 全部销毁', bootstrapped.client.listConnections().length === 0);
   check('shutdownCore() 之后总线不再就绪', (() => {
     const bus = requireEventBus() as { isReady?: () => boolean };
     return typeof bus.isReady !== 'function' || bus.isReady() === false;

@@ -14,7 +14,6 @@ use serde_json::{json, Map, Value};
 
 use super::*;
 use crate::config;
-use crate::i18n;
 use crate::test_support::{openai_text_sse, FakeLlm, Sandbox};
 
 /// 与 Embedded 共用同一份对照表（`src/test/fixtures/spinParity.json`）。
@@ -48,12 +47,6 @@ fn read_spin(sandbox: &Sandbox) -> Value {
     let path = spin_path(sandbox);
     serde_json::from_str(&std::fs::read_to_string(path).expect("read spin.json"))
         .expect("parse spin.json")
-}
-
-/// 固定成英文，保证 `validateSpinDesign` 的文案断言稳定
-fn force_english() {
-    i18n::set_system_locale_for_test("en-US");
-    i18n::set_core_locale(Some("en-US"));
 }
 
 /// 假 SpinHost：脚本化 Reply / 判定，记录 prompt / 事件 / 调用序号
@@ -428,7 +421,7 @@ mod parity_tests {
 #[test]
 fn validate_spin_design_reports_english_messages() {
     let _sandbox = Sandbox::new("spin-validate");
-    force_english();
+    // 这些文案会落盘，一律英文常量（Core 不感知语言）
 
     assert_eq!(
         validate_spin_design(&json!({ "nodes": [ { "id": 1, "task": "A" } ], "edges": [] })),
@@ -482,6 +475,7 @@ fn validate_spin_design_reports_english_messages() {
                 .to_string()
         )
     );
+
 }
 
 #[test]
@@ -672,11 +666,9 @@ fn spin_loop_passes_all_nodes() {
     assert_eq!(host.judge_count(), 2);
     // 每个节点完成后都刷新一次设计器
     assert!(host.event_count("spinDesignDataChanged") >= 2);
-    // 全部完成发一条 system 消息
-    assert!(host
-        .events()
-        .iter()
-        .any(|event| event["type"] == "message" && event["data"]["role"] == "system"));
+    // 全部完成发一条瞬时提示（notice，键 + 参数）
+    assert!(host.events().iter().any(|event| event["type"] == "notice"
+        && event["key"] == crate::core_text::SPIN_ALL_COMPLETED));
 }
 
 #[test]

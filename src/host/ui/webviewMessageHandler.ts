@@ -12,13 +12,12 @@ import {
   type ApiTypeProbeRequest,
   type ProbeVerdict,
 } from '../../core/llm/apiTypes/index.js';
-import { getPendingToolUseIds } from '../../core/tools/index.js';
-import { providerKeyFromBaseURL } from '../../core/utils/providerKey.js';
 import { buildEditDiffHunks } from '../../core/utils/editDiff.js';
 import { buildReplayMessageData } from '../../core/utils/replayMessages.js';
 import { buildUserContent, extractUserContent } from '../../core/utils/contentBlocks.js';
-import { normalizeModelTokenLimits, getContextWindow, type ModelTokenLimits, type ApiType } from '../../core/utils/modelConfig.js';
-import { readModelContextSync, getSessionWorkspace, setSessionWorkspace } from '../../core/history/Config.js';
+import type { ApiType } from '../../core/utils/modelConfig.js';
+import { getSessionWorkspace, setSessionWorkspace } from '../../core/history/Config.js';
+import { getSettingsStore } from '../SettingsStore.js';
 import { modelRefOf, sameModelRef, type ModelRef } from '../../core/llm/modelRef.js';
 import { getConversationModelRef } from '../../core/history/Conversation.js';
 import { userChoiceQueue } from '../../core/UserChoiceQueue.js';
@@ -29,13 +28,27 @@ import type { UserChoiceManager } from './userChoice.js';
 import type { LLMConfigPanelTrigger } from './ports.js';
 import { resolveCoreKind } from '../coreKind.js';
 import {
+  loadConversationForHost,
   loadConversationListForHost,
   readUiLanguage,
   requestBalance,
   requestCompactArchive,
-  requestLlmConfigSave,
+  requestConversationSpaces,
+  requestFlushSession,
+  requestMcpServers,
+  requestSkills,
   requestSmartNaming,
 } from '../coreFacts.js';
+import { applyLlmConfigSave } from '../llmConfigSave.js';
+import {
+  readActiveModelRef,
+  readDefaultAgentMode,
+  readDefaultPromptMode,
+  readDefaultThinkingEffort,
+  readDefaultWebSearch,
+  readLlmConfigPanelPayload,
+  resolveModelRef,
+} from '../settingsRead.js';
 
 /**
  * 自动获取模型时，协议探测的并发上限（按「模型」计，每个模型内部再并发 3 个协议）。
@@ -372,23 +385,13 @@ export class WebviewMessageHandler {
    */
   async pushMcpServers(sessionId?: string): Promise<void> {
     try {
-      const { readMcpServers } = await import('../../core/mcp/Config.js');
-      const { getMcpManager } = await import('../../core/mcp/Manager.js');
-      const servers = await readMcpServers(sessionId);
-      const status = getMcpManager().getServerStatus();
+      // 配置、启用状态与运行时状态都是 core 的事实（`coreFacts.requestMcpServers`）：
+      // Embedded 下同进程直读，Standalone 下经 `UiRequest.mcpServersRequested` 索取。
+      const servers = await requestMcpServers(sessionId);
       this.host.sendToWebview({
         type: 'setMcpServers',
         sessionId,
-        servers: servers.map((server) => {
-          const runtime = status.get(server.name);
-          return {
-            ...server,
-            running: runtime?.running ?? false,
-            toolCount: runtime?.toolCount ?? 0,
-            error: runtime?.error ?? null,
-            refCount: runtime?.refCount ?? 0,
-          };
-        }),
+        servers,
       });
     } catch (err: any) {
       this.log(`[WebviewMessageHandler] Failed to read MCP servers: ${err.message}`);
@@ -535,8 +538,7 @@ export class WebviewMessageHandler {
       try {
         // 按会话读盘前先确保会话工作目录已登记（core 不再有活动目录兜底）
         this.ensureSessionWorkspace(targetSessionId);
-        const { loadConversation } = await import('../../core/history/index.js');
-        const conversation = await loadConversation(targetSessionId);
+        const conversation = await loadConversationForHost(targetSessionId);
         const result: Record<string, any> = {};
 
         // tool_result 里也带着 Edit / Write 的 before/after（旧版本会话或 `_meta`
@@ -655,25 +657,23 @@ export class WebviewMessageHandler {
 
     // 「哪个会话在前台」是 UI 自己的状态（第 12.7 节）：不再读写 core 的
     // activeSessionId 全局缓存，由本 handler 维护最近一次成功加载的会话。
-    const { getSessionEngine } = await import('../../core/QueryEngine.js');
     const oldSessionId = this.trackedActiveSessionId;
     if (oldSessionId && oldSessionId !== message.sessionId) {
-      const oldEngine = getSessionEngine(oldSessionId);
-      if (oldEngine) {
-        this.log(`[WebviewMessageHandler] Flushing pending persists for old session ${oldSessionId}`);
-        await oldEngine.flush();
-        if (isStaleLoad()) {
-          this.log(`[WebviewMessageHandler] loadConversation stale after flush, abort: ${message.sessionId}`);
-          return;
-        }
+      // 切走前等旧会话的挂起持久化收尾：引擎归 core，宿主只发请求
+      // （Embedded 退化为一次同进程调用，Standalone 由 Core 自己等待落盘）。
+      this.log(`[WebviewMessageHandler] Flushing pending persists for old session ${oldSessionId}`);
+      await requestFlushSession(oldSessionId);
+      if (isStaleLoad()) {
+        this.log(`[WebviewMessageHandler] loadConversation stale after flush, abort: ${message.sessionId}`);
+        return;
       }
     }
 
-    const { loadConversation } = await import('../../core/history/index.js');
-    const { restoreConversationEngine } = await import('../../core/Integration.js');
-    // 先登记该会话的工作目录：loadConversation 要按它定位 meta.json / jsonl
+    // 先登记该会话的工作目录：core 加载要按它定位 meta.json / jsonl
     this.ensureSessionWorkspace(message.sessionId);
-    const conversation = await loadConversation(message.sessionId);
+    // 会话内容与派生事实一次取齐（Embedded 读盘 + 进程内事实；Standalone 经 UiRequest）
+    const loaded = await loadConversationForHost(message.sessionId);
+    const conversation = { messages: loaded.messages, metadata: loaded.metadata ?? undefined };
     if (isStaleLoad()) {
       this.log(`[WebviewMessageHandler] loadConversation stale after disk load, abort: ${message.sessionId}`);
       return;
@@ -686,15 +686,12 @@ export class WebviewMessageHandler {
     // 加载对话时查询余额
     this.fetchBalanceAndSend(message.sessionId);
 
-    // MCP：加载对话即建立该会话的引用——由 core 的 restoreConversationEngine
-    // → MCPHost.onSessionOpened 驱动（幂等，不释放旧会话），UI 不再触发 acquire。
+    // MCP：加载对话即建立该会话的引用——由 core 的 restoreConversationEngine /
+    // conversationOpened 处理器驱动（幂等，不释放旧会话），UI 不再触发 acquire。
     // 但菜单里的列表是按会话展示的：webview 在 currentSessionId 变化时会先把列表
-    // 清空为该会话的缓存，必须回推一次该会话的配置，否则菜单会一直显示「未配置」
-    //（设置面板走 readMcpServersForDefaults 重新读盘，与本路径无关，所以那里正常）。
-    // Standalone 下 MCP 尚未迁入，且 UI 进程不应触碰 MCPHost，跳过回推。
-    if (resolveCoreKind() === 'embedded') {
-      void this.pushMcpServers(message.sessionId);
-    }
+    // 清空为该会话的缓存，必须回推一次该会话的配置，否则菜单会一直显示「未配置」。
+    // 列表内容是 core 的事实（`requestMcpServers`），两种装配同一条路径。
+    void this.pushMcpServers(message.sessionId);
 
     const hasHistory = conversation.messages && conversation.messages.length > 0;
     this.log(`[WebviewMessageHandler] Conversation has history: ${hasHistory}`);
@@ -708,8 +705,10 @@ export class WebviewMessageHandler {
       this.setTitle(message.sessionId, conversation.metadata.title);
     }
 
-    const pendingToolUseIds = Array.from(getPendingToolUseIds());
-    logger.info('handleWebviewMessage', `pendingToolUseIds: ${JSON.stringify(pendingToolUseIds)}`);
+    logger.info(
+      'handleWebviewMessage',
+      `pendingToolUseIds: ${JSON.stringify(loaded.pendingToolUseIds)}`,
+    );
 
     const savedContext = conversation.metadata?.context;
     this.log(`[WebviewMessageHandler] Conversation context: ${JSON.stringify(savedContext)}`);
@@ -720,9 +719,9 @@ export class WebviewMessageHandler {
     let modelRef = getConversationModelRef(conversation.metadata);
     try {
       if (!savedContext?.thinkingMode || typeof savedContext?.webSearch !== 'boolean' || !savedContext?.promptMode) {
-        const { getDefaultThinkingEffort, getDefaultWebSearch } = await import('../../core/llm/config.js');
-        const defaultThinkingEffort = await getDefaultThinkingEffort();
-        const defaultWebSearch = await getDefaultWebSearch();
+        const snapshot = getSettingsStore().getSnapshot();
+        const defaultThinkingEffort = readDefaultThinkingEffort(snapshot);
+        const defaultWebSearch = readDefaultWebSearch(snapshot);
         let nextCtx = effectiveSavedContext;
         if (!nextCtx?.thinkingMode) {
           nextCtx = { ...(nextCtx || {}), thinkingMode: defaultThinkingEffort };
@@ -746,57 +745,48 @@ export class WebviewMessageHandler {
     // - 身份合法 → 原样使用。
     try {
       const stored = modelRef;
-      const { resolveModelRef } = await import('../../core/llm/config.js');
-      const resolved = await resolveModelRef(stored);
+      const resolved = resolveModelRef(getSettingsStore().getSnapshot(), stored);
       modelRef = resolved;
       if (stored && !sameModelRef(stored, resolved)) {
         this.log(`[WebviewMessageHandler] Session model (provider="${stored.provider}", model="${stored.model}") invalid, resolved to (provider="${resolved?.provider ?? ''}", model="${resolved?.model ?? ''}")`);
         if (resolved) {
-          const { updateConversationContext } = await import('../../core/history/index.js');
-          await updateConversationContext(message.sessionId, { model: resolved.model, provider: resolved.provider });
-          const { setSessionModel } = await import('../../core/Integration.js');
-          setSessionModel(message.sessionId, resolved);
+          // 模型身份的落盘与引擎同步都归 core（`UiEvent.modelChanged` 的 core 侧
+          // 处理器写 meta.json + setSessionModel），宿主不直接调用 core 的状态变更函数。
+          await this.emitUiEvent({ type: 'modelChanged', sessionId: message.sessionId, ref: resolved });
         }
       }
     } catch (err: any) {
       this.log(`[WebviewMessageHandler] Failed to resolve model for session: ${err.message}`);
     }
 
-    // 会话询问模式归 core：内存未记录时回退 meta.json / settings.json 默认值。
+    // 会话询问模式归 core：core 的权威取值未记录时回退 meta.json / settings.json 默认值。
     // 权限决策在 PermissionPolicy 中读取，这里只为 conversationLoaded 带上展示值。
-    let effectiveAgentMode: 'manual' | 'risk' | 'auto' | undefined;
-    try {
-      const { getStoredSessionAgentMode } = await import('../../core/tools/PermissionPolicy.js');
-      effectiveAgentMode = getStoredSessionAgentMode(message.sessionId);
-    } catch { /* ignore */ }
+    let effectiveAgentMode: 'manual' | 'risk' | 'auto' | undefined =
+      loaded.agentMode ?? undefined;
     if (!effectiveAgentMode) {
       effectiveAgentMode = (conversation.metadata?.context?.agentMode as 'manual' | 'risk' | 'auto' | undefined) ?? undefined;
     }
     if (!effectiveAgentMode) {
       let defaultAgentMode: 'manual' | 'risk' | 'auto' = 'risk';
       try {
-        const { getDefaultAgentMode } = await import('../../core/llm/config.js');
-        defaultAgentMode = await getDefaultAgentMode();
+        defaultAgentMode = readDefaultAgentMode(getSettingsStore().getSnapshot());
       } catch { /* ignore */ }
       effectiveAgentMode = defaultAgentMode;
       this.log(`[WebviewMessageHandler] No agentMode for session ${message.sessionId}, defaulting to ${defaultAgentMode}`);
     }
 
-    const targetEngine = getSessionEngine(message.sessionId);
-    const hasActiveQuery = targetEngine?.isConsumerRunning === true;
+    // 是否仍在跑查询读 core 推送的会话运行时状态快照（ConversationManager 缓存）：
+    // Standalone 下进程内没有引擎，「非空闲」就是这份快照里的 idle === false。
+    const runtimeState = this.uiPort
+      ?.getSessionRuntimeStatesSnapshot()
+      .find((state) => state.sessionId === message.sessionId);
+    const hasActiveQuery = runtimeState ? runtimeState.idle === false : false;
 
-    // 检查压缩归档
-    let hasCompactArchive = false;
-    try {
-      const isCompacted = conversation.metadata?.context?.isCompacted === true;
-      if (isCompacted) {
-        const { hasCompactArchive: checkArchive } = await import('../../core/history/Conversation.js');
-        hasCompactArchive = await checkArchive(message.sessionId);
-      }
-    } catch { /* ignore */ }
+    // 压缩归档是否存在由 core 判定（随会话加载结果一次返回）
+    const hasCompactArchive = loaded.hasCompactArchive;
 
     this.postConversationLoaded(message.sessionId, conversation, {
-      pendingToolUseIds,
+      pendingToolUseIds: loaded.pendingToolUseIds,
       savedContext: effectiveSavedContext,
       parentSessionId: conversation.metadata?.parentSessionId,
       agentMode: effectiveAgentMode,
@@ -811,7 +801,13 @@ export class WebviewMessageHandler {
     // conversationOpened 载入历史），只负责把消息渲染给 webview。
     if (hasHistory && resolveCoreKind() === 'embedded') {
       this.log(`[WebviewMessageHandler] Restoring conversation engine with ${conversation.messages.length} history messages`);
-      restoreConversationEngine(message.sessionId, conversation.messages, conversation.metadata.role).catch(err => {
+      void import('../../core/Integration.js').then(({ restoreConversationEngine }) =>
+        restoreConversationEngine(
+          message.sessionId,
+          conversation.messages,
+          conversation.metadata?.role,
+        ),
+      ).catch(err => {
         this.log(`[WebviewMessageHandler] Error restoring engine: ${err}`);
       });
     }
@@ -844,10 +840,13 @@ export class WebviewMessageHandler {
    * 必须在 core 首次按会话解析目录（loadConversation / createEngine）之前调用。
    */
   private ensureSessionWorkspace(sessionId: string): void {
-    const workspacePath = this.host.getWorkspacePath();
+    // 会话已有归属时以它为准：多工作区宿主里活动目录可能不是该会话自己的目录
+    // （Electron 按来源视图登记；Client 的路由也以先登记者为先）。
+    const registered = getSessionWorkspace(sessionId);
+    const workspacePath = registered ?? this.host.getWorkspacePath();
     if (!workspacePath) return;
     // Embedded：同一进程、同一张表，直接写（幂等）。
-    if (!getSessionWorkspace(sessionId)) setSessionWorkspace(sessionId, workspacePath);
+    if (!registered) setSessionWorkspace(sessionId, workspacePath);
     // Standalone：会话工作目录表在 Core 进程内，只有事件能过去（Embedded 的事件
     // 处理器转调同一个函数，重复写等价）。
     requireEventBus().emitToCore({ type: 'sessionWorkspaceAssigned', sessionId, workspacePath });
@@ -880,14 +879,12 @@ export class WebviewMessageHandler {
     // 注意：不再写入 meta.json（meta.json 只在发第一条消息时由 appendMessage 创建），
     // 默认值在发送第一条消息后仍可通过 handleSetModel/handleSetThinkingMode/handleSetPromptMode 持久化。
     try {
-      const { getActiveModelRef, getDefaultThinkingEffort, getDefaultAgentMode, getDefaultPromptMode, getDefaultWebSearch } = await import('../../core/llm/config.js');
-      const [defaultModelRef, defaultThinkingEffort, defaultAgentMode, defaultPromptMode, defaultWebSearch] = await Promise.all([
-        getActiveModelRef(),
-        getDefaultThinkingEffort(),
-        getDefaultAgentMode(),
-        getDefaultPromptMode(),
-        getDefaultWebSearch(),
-      ]);
+      const snapshot = getSettingsStore().getSnapshot();
+      const defaultModelRef = readActiveModelRef(snapshot);
+      const defaultThinkingEffort = readDefaultThinkingEffort(snapshot);
+      const defaultAgentMode = readDefaultAgentMode(snapshot);
+      const defaultPromptMode = readDefaultPromptMode(snapshot);
+      const defaultWebSearch = readDefaultWebSearch(snapshot);
       this.postToWebview(newSessionId, {
         type: 'setNewConversationDefaults',
         // wire 协议保持扁平：模型身份拆成 model / provider 两个字段
@@ -917,7 +914,7 @@ export class WebviewMessageHandler {
   private fetchBalanceAndSend(sessionID: string): void {
     void (async () => {
       try {
-        const balanceInfo = await requestBalance();
+        const balanceInfo = await requestBalance(sessionID);
         if (balanceInfo) {
           this.postToWebview(sessionID, {
             type: 'balanceUpdate',
@@ -960,17 +957,16 @@ export class WebviewMessageHandler {
    *
    * 两条路径共用这一份实现：webview 的 `requestContextLimit`（带模型身份），以及
    * 宿主在视图加载完成时的初始化推送（`ref` 为 undefined，按 active provider 默认模型算）。
-   * 读取逻辑为 `readModelContextSync` + `getContextWindow`（含 settings.json
-   * 的 modelConfigs 覆盖）。投递：
+   * 上下文上限取自 `SettingsStore` 的配置快照（已解析的模型限值，
+   * 含内置注册表与用户覆盖的合并结果）。投递：
    * - `sender` 指定句柄：直发该视图（Electron 多视图，预热视图也能收到）；
    * - `sender` 为 null：走默认路由（单视图宿主即唯一 webview）。
    */
   pushContextLimit(sender: WebviewRequestContext['sender'], ref?: ModelRef): void {
     try {
-      const { model: modelName, modelConfigs } = readModelContextSync(ref);
       const message: WebviewMessage = {
         type: 'contextLimitUpdated',
-        maxContextTokens: getContextWindow(modelName || '', modelConfigs),
+        maxContextTokens: getSettingsStore().readContextLimit(ref),
       };
       if (sender) {
         this.host.sendToWebviewView(sender, message);
@@ -1016,8 +1012,7 @@ export class WebviewMessageHandler {
   private async handleRequestModels(_message: any): Promise<void> {
     this.log(`[WebviewMessageHandler] Requesting model list from all providers`);
     try {
-      const { readSettingsJson } = await import('../../core/history/Config.js');
-      const settings = await (readSettingsJson as () => Promise<Record<string, any>>)();
+      const settings = getSettingsStore().getRawSettings();
       const providersMap: Record<string, any> =
         settings?.llm?.providers && typeof settings.llm.providers === 'object'
           ? settings.llm.providers
@@ -1368,34 +1363,14 @@ export class WebviewMessageHandler {
 
   private async handleRequestSkills(ctx: WebviewRequestContext): Promise<void> {
     this.log(`[WebviewMessageHandler] Skills requested`);
-    const { getBundledSkills } = await import('../../core/skills/bundledSkills.js');
-    const { getSkillDirCommands } = await import('../../core/skills/loadSkillsDir.js');
-    const { getBuiltinCommands } = await import('../../core/skills/builtinCommands.js');
-    const bundled = getBundledSkills();
-    // 项目技能必须基于会话自己的工作目录扫描，不能用 process.cwd()。
-    // 会话归属取 `trackedActiveSessionId`——多视图宿主下由宿主在活动视图变化时同步
-    // （见 setActiveSessionId），否则会停在旧视图、扫到别的标签页的技能。
-    // 没有工作目录时（空态视图也会请求技能）跳过项目技能，而不是让 getProjectRoot 抛错
-    const { getProjectRoot, hasProjectRoot } = await import('../../core/history/Config.js');
-    const fileSkills = hasProjectRoot(this.trackedActiveSessionId)
-      ? await getSkillDirCommands(getProjectRoot(this.trackedActiveSessionId))
-      : [];
-    const builtinCmds = getBuiltinCommands();
-    const allSkills = [...bundled, ...fileSkills];
+    // 命令 / 技能是 core 的事实：Embedded 同进程组装，Standalone 经 UiRequest 取回。
+    // 项目技能基于会话自己的工作目录扫描（会话归属取 `trackedActiveSessionId`——
+    // 多视图宿主下由宿主在活动视图变化时同步，否则会扫到别的标签页的技能）；
+    // 没有工作目录时（空态视图也会请求技能）只列内置项。
+    const skills = await requestSkills(this.trackedActiveSessionId);
     const message: WebviewMessage = {
       type: 'setSkills',
-      skills: [
-        ...builtinCmds.map(c => ({
-          name: c.name,
-          description: c.description,
-          isBuiltin: true as const,
-        })),
-        ...allSkills.map(s => ({
-          name: s.name,
-          description: s.description,
-          isBuiltin: false as const,
-        })),
-      ],
+      skills,
     };
     // 按来源视图回包（多视图宿主下请求方不一定是活动视图）
     if (ctx.sender) {
@@ -1500,9 +1475,6 @@ export class WebviewMessageHandler {
    * 默认工作模式和默认提示词模式保存到顶层（defaultAgentMode / defaultPromptMode，与 llm 平级）
    */
   private async handleSaveLLMConfig(message: any): Promise<void> {
-    // UI → core：报告「用户保存了 LLM 全局配置」（core 清除配置缓存，下次 getConfig 重新读盘）。
-    // settings.json 的写由 UIHost 承担（core 只读不写）；本 handler 只组装 mutator + 回推协议消息。
-    await this.emitUiEvent({ type: 'llmConfigSaved', config: message });
     const {
       webSearch, thinkingEffort,
       defaultAgentMode, defaultPromptMode, language,
@@ -1515,221 +1487,63 @@ export class WebviewMessageHandler {
     this.log(`[WebviewMessageHandler] saveLLMConfig: webSearch=${!!webSearch}, thinkingEffort=${thinkingEffort}, defaultAgentMode=${defaultAgentMode}, defaultPromptMode=${defaultPromptMode}, language=${language}, saveProviders=${!!saveProviders}, providers=${Array.isArray(providers) ? providers.length : 0}, activeProvider=${requestedActiveProvider || ''}, closeAfterSave=${!!closeAfterSave}, sessionId=${requestedSessionId || ''}, currentModel=${requestedCurrentModel || ''}`);
 
     try {
-      // Embedded 下写 settings.json 是宿主能力（core 只读不写，第 2 节规则 9）；
-      // Standalone 下全局配置的唯一写入点是 Core（规格第 8 节），整段 mutation
-      // （provider 表 + modelConfigs 补齐 + 顶层默认值 + MCP 默认列表）经
-      // `UiRequest.llmConfigSaveRequested` 交给 Core，宿主不写盘。
-      const coreKind = resolveCoreKind();
-      const standaloneSave =
-        coreKind === 'standalone' ? await requestLlmConfigSave(message) : null;
-      const keyOf = providerKeyFromBaseURL;
-      if (coreKind !== 'standalone') await this.host.updateSettingsJson((cfg: Record<string, any>) => {
-        if (!cfg.llm) cfg.llm = {};
-
-        // 有 provider 变更（如编辑模型列表/API 配置）或显式选择「使用此 Provider」时，
-        // 保存 llm.providers / llm.activeProvider；普通保存只写默认设置，不修改 provider。
-        if (saveProviders && Array.isArray(providers) && providers.length > 0) {
-          const providersMap: Record<string, any> = {};
-          for (const p of providers) {
-            const providerBaseURL = typeof p?.baseURL === 'string' ? p.baseURL.trim() : '';
-            const providerApiKey = typeof p?.apiKey === 'string' ? p.apiKey.trim() : '';
-            if (!providerBaseURL || !providerApiKey) continue;
-            const key = keyOf(providerBaseURL);
-            if (!key) continue;
-            const providerModels = Array.isArray(p?.models)
-              ? Array.from(new Set(
-                  (p.models as unknown[])
-                    .filter((m): m is string => typeof m === 'string' && !!m.trim())
-                    .map((m) => m.trim()),
-                ))
-              : [];
-            // 面板传来的「模型 -> 协议」映射（手动选择或自动探测结果）；
-            // 未出现在映射中的模型保持原状（不写入 apiType），以便下次自动获取时继续探测
-            const apiTypeOverrides: Record<string, 'Responses' | 'OpenAI' | 'Anthropic'> = {};
-            if (p?.modelApiTypes && typeof p.modelApiTypes === 'object' && !Array.isArray(p.modelApiTypes)) {
-              for (const [model, apiType] of Object.entries(p.modelApiTypes as Record<string, unknown>)) {
-                if (apiType === 'Responses' || apiType === 'OpenAI' || apiType === 'Anthropic') {
-                  apiTypeOverrides[model] = apiType;
-                }
-              }
-            }
-            // modelConfigs：保留已有 context/output/apiType，缺失的 context/output
-            // 从内置注册表匹配补齐；apiType 来自面板（手动选择或自动探测结果）
-            const oldProvider = cfg.llm.providers?.[key];
-            const oldModelConfigs: Record<string, ModelTokenLimits> = oldProvider?.modelConfigs
-              && typeof oldProvider.modelConfigs === 'object'
-              ? oldProvider.modelConfigs
-              : {};
-            const modelConfigs = normalizeModelTokenLimits(providerModels, oldModelConfigs, apiTypeOverrides);
-            providersMap[key] = {
-              baseURL: providerBaseURL,
-              apiKey: providerApiKey,
-              models: providerModels,
-              modelConfigs,
-              ...(typeof p?.defaultModel === 'string' && p.defaultModel.trim()
-                ? { defaultModel: p.defaultModel.trim() }
-                : {}),
-            };
-          }
-          const keys = Object.keys(providersMap);
-          if (keys.length > 0) {
-            cfg.llm.providers = providersMap;
-
-            let activeKey = typeof requestedActiveProvider === 'string' ? requestedActiveProvider : '';
-            if (!activeKey || !providersMap[activeKey]) {
-              activeKey = keys[0];
-            }
-            cfg.llm.activeProvider = activeKey;
-          }
-        }
-
-        // 无论本次保存是否修改了 provider，都探测一遍所有 provider 的模型 context/output 配置：
-        // 已有值保留，缺失的字段从内置模型注册表匹配补齐（匹配不到则用兜底配置），
-        // 保证运行时不会因为缺少限值而回退到全局默认值。
-        if (cfg.llm.providers && typeof cfg.llm.providers === 'object') {
-          for (const provider of Object.values(cfg.llm.providers as Record<string, any>)) {
-            if (!provider || typeof provider !== 'object') continue;
-            const models = Array.isArray(provider.models)
-              ? (provider.models as unknown[])
-                  .filter((m): m is string => typeof m === 'string' && !!m.trim())
-                  .map((m) => m.trim())
-              : [];
-            provider.modelConfigs = normalizeModelTokenLimits(models, provider.modelConfigs);
-          }
-        }
-
-        // 预设值只在发生变化（或尚不存在）时写入；如果 settings 中已经有相同值，
-        // 新建/编辑 Provider 时不再重复写入，避免每次保存都覆盖一遍预设字段。
-        if (typeof webSearch === 'boolean' && cfg.llm.webSearch !== webSearch) {
-          cfg.llm.webSearch = webSearch;
-        }
-        if (thinkingEffort && cfg.llm.thinking_effort !== thinkingEffort) {
-          cfg.llm.thinking_effort = thinkingEffort;
-        }
-        // 默认工作模式：顶层字段，与 llm 平级
-        if (defaultAgentMode && cfg.defaultAgentMode !== defaultAgentMode) {
-          cfg.defaultAgentMode = defaultAgentMode;
-        }
-        if ((defaultPromptMode === 'normal' || defaultPromptMode === 'minimal' || defaultPromptMode === 'mixed')
-          && cfg.defaultPromptMode !== defaultPromptMode) {
-          cfg.defaultPromptMode = defaultPromptMode;
-        }
-        // UI 语言（auto | zh | en）：顶层字段
-        if (language === 'zh' || language === 'en' || language === 'auto') {
-          const nextUiLanguage = language;
-          if (cfg.uiLanguage !== nextUiLanguage) {
-            if (nextUiLanguage === 'auto') {
-              // auto 是默认值，若当前没有显式配置则无需写入
-              if (cfg.uiLanguage !== undefined) {
-                delete cfg.uiLanguage;
-              }
-            } else {
-              cfg.uiLanguage = nextUiLanguage;
-            }
-          }
-        }
+      // 写 settings.json 是宿主能力（`docs/core-ui-separation.md` 第 4 节）：整段 mutation
+      // （provider 表 + modelConfigs 补齐 + 顶层默认值 + MCP 默认启用列表）在宿主侧执行，
+      // 两种装配同一条路径。写盘后 `SettingsStore` 重新构造快照并推给已就绪的 Connection，
+      // Core 侧不需要任何「配置已保存」的通知。
+      await this.host.updateSettingsJson((cfg: Record<string, any>) => {
+        applyLlmConfigSave(cfg, message);
       });
 
-      // 同步更新 core 层界面语言，使 Spin 等核心流程文案跟随设置。
-      // Standalone 下 Core 在 `apply_llm_config_save` 里自己收敛，宿主不重复做。
-      try {
-        if (coreKind !== 'standalone' && (language === 'zh' || language === 'en' || language === 'auto')) {
-          const { setCoreUiLanguage } = await import('../../core/i18n.js');
-          setCoreUiLanguage(language);
-        }
-      } catch {}
-
-      // MCP 默认启用列表（设置面板「默认配置」）→ 全局 settings.json 的 mcp.enabled。
-      // 只改全局默认；各会话在菜单里的勾选存在各自 meta.json，不受影响。
-      if (Array.isArray(message.mcpServers)) {
+      // 界面语言只有 UI 消费、不进快照：写盘后把收敛结果灌回宿主进程内的 i18n
+      // （Electron 菜单、Spin 设计器页面用同一套 `tt()`）。
+      if (language === 'zh' || language === 'en' || language === 'auto') {
         try {
-          // Standalone 下 `mcp.enabled` 已随同一次 `llmConfigSaveRequested` 落盘，
-          // 这里只负责回推状态与让 Core 重同步连接。
-          if (coreKind !== 'standalone') {
-            const { mcpDefaultsMutator } = await import('../../core/mcp/Config.js');
-            await this.host.updateSettingsJson(mcpDefaultsMutator(
-              (message.mcpServers as unknown[]).filter((n): n is string => typeof n === 'string'),
-            ));
-          }
-          const mcpSessionId = await this.getActiveMcpSessionId(requestedSessionId);
-          // 先回推一次：默认值已落盘，连接尚未开始 → webview 显示「连接中」。
-          // 这样设置面板保存不会被 MCP 启动阻塞，可以立即返回 llmConfigSaved。
-          await this.pushMcpServers(mcpSessionId);
-          // 默认值变化会影响所有「没有会话覆盖」的已打开会话：
-          // 对所有已注册会话重新对齐引用（MCPHost 拥有生命周期）
-          void import('../../core/mcp/MCPHost.js').then(async ({ getMCPHost }) => {
-            const { getMcpManager } = await import('../../core/mcp/Manager.js');
-            await getMcpManager().syncAllSessions();
-            await getMCPHost().onSessionEnabledChanged(mcpSessionId);
-            await this.pushMcpServers(mcpSessionId);
-          }).catch((err: any) => {
-            this.log(`Failed to sync MCP after default change: ${err.message}`);
-          });
-        } catch (err: any) {
-          this.log(`[WebviewMessageHandler] Failed to save default MCP enabled list: ${err.message}`);
-        }
+          const { setHostUiLanguage } = await import('../i18n.js');
+          setHostUiLanguage(language);
+        } catch { /* 语言收敛失败不影响保存结果 */ }
       }
 
-      this.log(`[WebviewMessageHandler] LLM config saved successfully`);
-
-      // 清除 config.ts 中的缓存，下次 getConfig 能读到新配置
-      // （host.updateSettingsJson 写盘后已清除 Config.ts 的 cachedSettings）
-      if (coreKind !== 'standalone') {
+      // MCP 默认启用列表（设置面板「默认配置」）已随上面那次写盘落盘，
+      // 快照重推后 core 会按新默认值重同步所有已注册会话的连接。
+      // 这里只负责刷新界面：重新读取该会话的 MCP 配置 + 运行时状态回推，
+      // 让 webview 把「连接中」收敛掉。
+      if (Array.isArray(message.mcpServers)) {
         try {
-          const { clearConfigCache } = await import('../../core/llm/config.js');
-          clearConfigCache();
-        } catch {}
+          const mcpSessionId = await this.getActiveMcpSessionId(requestedSessionId);
+          // 先回推一次：默认值已落盘、连接尚未开始 → webview 显示「连接中」。
+          // 这样设置面板保存不会被 MCP 启动阻塞，可以立即返回 llmConfigSaved。
+          await this.pushMcpServers(mcpSessionId);
+          // 差量同步（连接 / 断开）由 core 在收到新快照后自己触发（M9 起
+          // `hostEnvironmentProvided` 的默认列表变化 → core 重同步所有已注册会话），
+          // 完成后 core 广播 `sessionConfigChanged(mcpEnabled)`，UI 据此刷新列表。
+          // 宿主不再调用 core 的状态变更函数（第 2 节规则 9）。
+        } catch (err: any) {
+          this.log(`[WebviewMessageHandler] Failed to refresh MCP after default change: ${err.message}`);
+        }
       }
 
       // 读取保存后的实际默认值，随 llmConfigSaved 回传给 webview，
-      // webview 据此更新本地的默认值并应用到当前对话（如默认工作模式）
-      let savedModel = '';
-      let savedThinkingEffort: 'off' | 'low' | 'high' | 'max' = 'off';
-      let savedAgentMode: 'manual' | 'risk' | 'auto' = 'risk';
-      let savedPromptMode: 'normal' | 'minimal' | 'mixed' = 'normal';
-      let savedWebSearch = false;
-      let savedActiveProvider = '';
-      let savedProviderGroups: Array<{ key: string; models: string[] }> = [];
-      if (standaloneSave) {
-        // Standalone：直接用 Core 返回的保存结果，不再读盘
-        savedModel = standaloneSave.model;
-        savedActiveProvider = standaloneSave.activeProvider;
-        savedThinkingEffort = standaloneSave.thinkingEffort;
-        savedAgentMode = standaloneSave.agentMode;
-        savedPromptMode = standaloneSave.promptMode;
-        savedWebSearch = standaloneSave.webSearch;
-        savedProviderGroups = standaloneSave.providers.map((p) => ({
-          key: p.key,
-          models: [...p.models],
-        }));
-      } else {
-        try {
-          const { getActiveModelRef, getDefaultThinkingEffort, getDefaultAgentMode, getDefaultPromptMode, getDefaultWebSearch, getLLMConfigPanelPayload } = await import('../../core/llm/config.js');
-          let savedModelRef: ModelRef | undefined;
-          [savedModelRef, savedThinkingEffort, savedAgentMode, savedPromptMode, savedWebSearch] = await Promise.all([
-            getActiveModelRef(),
-            getDefaultThinkingEffort(),
-            getDefaultAgentMode(),
-            getDefaultPromptMode(),
-            getDefaultWebSearch(),
-          ]);
-          savedModel = savedModelRef?.model ?? '';
-          const payload = await getLLMConfigPanelPayload();
-          savedActiveProvider = payload.activeProvider;
-          savedProviderGroups = payload.providers.map((p) => ({ key: p.key, models: p.models }));
-        } catch {}
-      }
+      // webview 据此更新本地的默认值并应用到当前对话（如默认工作模式）。
+      // 全部来自宿主自己的快照：Core 不提供默认值、不读配置文件。
+      const snapshot = getSettingsStore().getSnapshot();
+      const payload = readLlmConfigPanelPayload(snapshot);
+      const savedModel = payload.defaultModel;
+      const savedActiveProvider = payload.activeProvider;
+      const savedThinkingEffort = payload.thinkingEffort;
+      const savedAgentMode = payload.defaultAgentMode;
+      const savedPromptMode = payload.defaultPromptMode;
+      const savedWebSearch = payload.webSearch;
+      const savedProviderGroups: Array<{ key: string; models: string[] }> =
+        payload.providers.map((p: { key: string; models: string[] }) => ({ key: p.key, models: [...p.models] }));
 
       // 保存后校验当前会话的模型身份：provider 或模型失效时解析出可用身份，
-      // 并持久化到会话 meta.json、同步引擎配置。返回给 webview 的
+      // 并把结果作为 `modelChanged` 报给 core（core 负责落 meta.json 与同步引擎配置，
+      // 见 `initializeCoreEvents` 的 `modelChanged` 处理器）。返回给 webview 的
       // activeModel / activeModelProvider 用于刷新当前对话的模型选择（含已有消息的对话）。
       let activeModel = '';
       let activeModelProvider = '';
-      if (standaloneSave) {
-        // Standalone：Core 在保存时已解析并（必要时）写回会话 meta.json
-        activeModel = standaloneSave.activeModel;
-        activeModelProvider = standaloneSave.activeModelProvider;
-      } else try {
+      try {
         const currentSessionId = (typeof requestedSessionId === 'string' && requestedSessionId) || this.trackedActiveSessionId;
         if (currentSessionId && currentSessionId !== 'undefined') {
           // 优先使用 webview 回传的当前模型身份（最贴近界面显示），
@@ -1738,23 +1552,21 @@ export class WebviewMessageHandler {
           if (!storedRef) {
             try {
               this.ensureSessionWorkspace(currentSessionId);
-              const { loadConversation } = await import('../../core/history/index.js');
-              const conversation = await loadConversation(currentSessionId);
-              storedRef = getConversationModelRef(conversation?.metadata);
+              const conversation = await loadConversationForHost(currentSessionId);
+              storedRef = getConversationModelRef(conversation.metadata ?? undefined);
             } catch { /* 新对话可能还没有 meta.json */ }
           }
-          const { resolveModelRef } = await import('../../core/llm/config.js');
-          const resolved = await resolveModelRef(storedRef);
+          const resolved = resolveModelRef(snapshot, storedRef);
           if (resolved) {
             activeModel = resolved.model;
             activeModelProvider = resolved.provider;
-            if (storedRef && !sameModelRef(storedRef, resolved)) {
-              this.log(`[WebviewMessageHandler] Current session model (provider="${storedRef.provider}", model="${storedRef.model}") invalid, resolved to (provider="${resolved.provider}", model="${resolved.model}")`);
-              const { updateConversationContext } = await import('../../core/history/index.js');
-              await updateConversationContext(currentSessionId, { model: resolved.model, provider: resolved.provider });
+            if (!storedRef || !sameModelRef(storedRef, resolved)) {
+              if (storedRef) {
+                this.log(`[WebviewMessageHandler] Current session model (provider="${storedRef.provider}", model="${storedRef.model}") invalid, resolved to (provider="${resolved.provider}", model="${resolved.model}")`);
+              }
+              // core 侧落盘 + 同步引擎配置（Embedded 与 Standalone 同一条通路）
+              await this.emitUiEvent({ type: 'modelChanged', sessionId: currentSessionId, ref: resolved });
             }
-            const { setSessionModel } = await import('../../core/Integration.js');
-            setSessionModel(currentSessionId, resolved);
           }
         }
       } catch (err: any) {
@@ -1804,15 +1616,14 @@ export class WebviewMessageHandler {
    */
   private async handleRequestSettingsDefaults(): Promise<void> {
     try {
-      const { getActiveModelRef, getDefaultThinkingEffort, getDefaultAgentMode, getDefaultPromptMode, getDefaultWebSearch, getLLMConfigPanelPayload } = await import('../../core/llm/config.js');
-      const [defaultModelRef, thinkingMode, agentMode, promptMode, webSearch, payload] = await Promise.all([
-        getActiveModelRef(),
-        getDefaultThinkingEffort(),
-        getDefaultAgentMode(),
-        getDefaultPromptMode(),
-        getDefaultWebSearch(),
-        getLLMConfigPanelPayload(),
-      ]);
+      // 全部来自宿主自己的快照：Core 不提供默认值，也不参与设置面板的展示
+      const snapshot = getSettingsStore().getSnapshot();
+      const defaultModelRef = readActiveModelRef(snapshot);
+      const thinkingMode = readDefaultThinkingEffort(snapshot);
+      const agentMode = readDefaultAgentMode(snapshot);
+      const promptMode = readDefaultPromptMode(snapshot);
+      const webSearch = readDefaultWebSearch(snapshot);
+      const payload = readLlmConfigPanelPayload(snapshot);
       const providerConfigured = !!payload.activeProvider && !!payload.apiKey;
       this.host.sendToWebview({
         type: 'settingsDefaults',
@@ -1859,8 +1670,8 @@ export class WebviewMessageHandler {
   private async handleRequestConversationSpaces(): Promise<void> {
     this.log(`[WebviewMessageHandler] requestConversationSpaces`);
     try {
-      const { getConversationSpaces } = await import('../../core/history/ConversationSpace.js');
-      const spaces = await getConversationSpaces();
+      // 统计对象在 core 的数据目录内：Embedded 直读，Standalone 经 UiRequest 索取
+      const spaces = await requestConversationSpaces();
       this.host.sendToWebview({ type: 'conversationSpacesData', spaces });
     } catch (err: any) {
       this.log(`[WebviewMessageHandler] Failed to get conversation spaces: ${err.message}`);

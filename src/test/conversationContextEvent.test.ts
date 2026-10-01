@@ -20,6 +20,8 @@ import type { UIHost } from '../host/UIHost';
 import { UserChoiceManager } from '../host/ui/userChoice';
 import { WebviewMessageHandler } from '../host/ui/webviewMessageHandler';
 import { createChecker, runTests } from './helpers/harness';
+import { applySettingsSnapshot } from '../core/settings';
+import { resolveSettingsSnapshot } from '../core/settingsSnapshot';
 
 type ContextUpdated = Extract<UiEvent, { type: 'conversationContextUpdated' }>;
 
@@ -28,6 +30,9 @@ function buildHandler(): { handler: WebviewMessageHandler; received: ContextUpda
   setGlobalEventBus(bus);
   const received: ContextUpdated[] = [];
   bus.onUiEvent('conversationContextUpdated', (e) => received.push(e));
+  // Core 就绪：就绪前只接受 hostEnvironmentProvided（docs/core-ui-separation.md 第 7 节）。
+  // 本用例的总线没有注册 core 侧订阅，因此直接调 core 侧的唯一写入口置位就绪。
+  applySettingsSnapshot(resolveSettingsSnapshot({}), []);
 
   const userChoiceManager = new UserChoiceManager({
     outputChannel: undefined,

@@ -23,6 +23,10 @@ import type { ModelRef } from './llm/modelRef.js';
 import type { PermissionResult, ToolProgressData } from './tools/Tool.js';
 import type { UserChoiceOptions } from './UserChoiceQueue.js';
 import type { ConversationMetadata } from './history/Conversation.js';
+import type { ConversationSpaceInfo } from './history/ConversationSpace.js';
+import type { McpServerDefinition, SettingsSnapshot } from './settingsSnapshot.js';
+import type { McpServerInfo } from './webviewTypes.js';
+import type { NoticeLevel, NoticeParams } from './coreText.js';
 
 // ==================== core → UI：单向事件 ====================
 
@@ -34,6 +38,13 @@ import type { ConversationMetadata } from './history/Conversation.js';
  * 逐事件的触发点与处理见 DEVELOPMENT.md 第 4 章。
  */
 export type CoreEvent =
+  /**
+   * Core 已就绪（处理完 `hostEnvironmentProvided`，`docs/core-ui-separation.md` 第 7 节）。
+   *
+   * 每次应用配置快照后都发一次（首次握手、以及后续每次重新推送快照），
+   * 宿主据此判定「Core 已跟上最新配置」。Core 侧的就绪状态本身是幂等的。
+   */
+  | { type: 'coreReady' }
   | { type: 'message'; sessionId: string; data: MessageData }
   | { type: 'streamMessage'; sessionId: string; data: StreamMessageData }
   | { type: 'streamEnd'; sessionId: string; data: StreamEndData }
@@ -92,23 +103,14 @@ export type CoreEvent =
     }
   | { type: 'spinDesignDataChanged' }
   /**
-   * 消息里出现了新的高亮语言（围栏代码块语言），需要并入 settings.json 的
-   * highlightLanguages 字段，供下次启动预热 Shiki。
+   * 本条消息里用到了哪些高亮语言（围栏代码块语言）。
    *
-   * core 只报告事实：字段名 / 去重 / 上限在 `highlightLanguagesMutator`；
-   * Embedded 下写盘由 UI 侧经 `UIHost.updateSettingsJson` 承担，Standalone 下 Core
-   * 自己在 `config::merge_highlight_languages` 落盘（全局配置的唯一写入点）。
-   * 只带尚未记录过的语言，避免每次落盘都触发一次磁盘写。
+   * core 只做「从消息里扫出来」这一件事，**不维护已记录集合**：`highlightLanguages`
+   * 是 UI 专属字段（`docs/core-ui-separation.md` 第 4.9 节），去重与上限由宿主的
+   * `highlightLanguagesMutator` 承担，写盘走 `UIHost.updateSettingsJson`。
+   * 因此同一语言可能被重复上报，宿主按幂等处理。
    */
   | { type: 'highlightLanguagesUsed'; languages: readonly string[] }
-  /**
-   * 项目对话目录已就绪（目录由 core 创建）。
-   *
-   * core 只报告事实：目录里的 settings.json（记录 workspacePath）在 Embedded 下由 UI 侧经
-   * `UIHost.ensureProjectSettings` 写，在 Standalone 下由 Core 自己写
-   * （`config::write_project_settings`，见 `docs/standalone-core.md` 第 8 节）。
-   */
-  | { type: 'projectConversationDirReady'; projectDir: string; workspacePath: string }
   | { type: 'compactBegin'; sessionId: string }
   | {
       type: 'compactEnd';
@@ -142,7 +144,20 @@ export type CoreEvent =
    * core 只报告事实：日志出口由 UI 决定（VS Code 写 OutputChannel，Electron 写 console），
    * core 侧没有日志出口的注入入口。
    */
-  | { type: 'log'; message: string };
+  | { type: 'log'; message: string }
+  /**
+   * 瞬时状态提示（`docs/core-ui-separation.md` 第 4.9 节）。
+   *
+   * core 不拼文案：只给「键 + 参数」，翻译与呈现由 UI 承担（键在 `coreText.ts` 登记）。
+   * 提示不进消息流、不落盘；`sessionId` 指出提示归属的会话。
+   */
+  | {
+      type: 'notice';
+      sessionId: string;
+      key: string;
+      params: NoticeParams;
+      level: NoticeLevel;
+    };
 
 // ==================== core → UI：请求-响应 ====================
 
@@ -289,35 +304,30 @@ export type UiEvent =
    * core 取不到 `file_path`，此时用 UI 侧归一化后的 args.file_path 兜底。
    */
   | { type: 'editRolledBack'; sessionId: string; toolUseId: string; direction: string; filePath?: string }
-  | { type: 'llmConfigSaved'; config: unknown }
-  /**
-   * 请求把若干字段并入全局 `settings.json`。
-   *
-   * Embedded 下写盘由宿主承担（`UIHost.updateSettingsJson`，见 DEVELOPMENT.md 第 2 节
-   * 规则 9）；Standalone 下 Core 是全局配置的**唯一写入点**
-   * （`docs/standalone-core.md` 第 8 节），宿主把「要改的字段」交给 Core 完成写盘。
-   *
-   * `patch` 采用 JSON Merge Patch（RFC 7386）语义：对象递归合并、`null` 删除该键、
-   * 数组与标量整体替换。Core 侧串行化「读-改-写」并在写盘后清掉自己的读缓存。
-   */
-  | { type: 'settingsJsonUpdateRequested'; patch: Record<string, unknown> }
 
-  // ===== 宿主环境 =====
+  // ===== 宿主环境与配置 =====
   /**
-   * 宿主环境（连接建立后由 UI 发一次）。
+   * 宿主环境与配置快照（连接建立后由 UI 发一次）。
    *
-   * 三项都是宿主固有差异；core 侧没有对应的注入入口，只认这条事件。
+   * 宿主固有差异 + 配置快照一次给齐（`docs/core-ui-separation.md` 第 3.2 节）：
+   * - 环境三项（extensionPath / logToConsole / configDirName）是宿主固有差异；
+   * - `settings` 是配置快照，`mcpServers` 是 `mcp.json` 的解析结果。
+   *
+   * 配置归 UI：core 不感知 `settings.json` / `mcp.json` 的路径，只消费这里的快照
+   * （`src/core/settings.ts` 是 core 侧唯一入口）。字段全必选，缺字段即协议错误。
    */
   | {
       type: 'hostEnvironmentProvided';
-      /** 宿主 locale 原始值（BCP-47 等）；「是否中文」的收敛由 core 的 setCoreLocale 承担 */
-      locale: string;
       /** 扩展 / 应用根目录（ripgrep、pandoc 等资源的定位基准） */
       extensionPath: string;
       /** core 日志是否同时输出到控制台 */
       logToConsole: boolean;
       /** 配置目录名（`~/<configDirName>`）；产品名不进 core 实现 */
       configDirName: string;
+      /** 配置快照（`settings.json` 规范化后的结果） */
+      settings: SettingsSnapshot;
+      /** MCP 服务器定义（`mcp.json` 规范化后的结果） */
+      mcpServers: readonly McpServerDefinition[];
     }
   // ===== 用户选择 =====
   /**
@@ -357,37 +367,70 @@ export type UiEvent =
 export type UiRequest =
   /** 对话列表元数据（`loadConversationList` 的等价物） */
   | { type: 'conversationListRequested'; workspacePath?: string }
-  /** 界面语言（`readUiLanguageSync` 的等价物）：`settings.json` 的 `uiLanguage` */
-  | { type: 'uiLanguageRequested' }
-  /** 系统语言（`getSystemLocale` 的等价物）：Windows 查 UI 区域，其余读 `LANG` */
-  | { type: 'systemLocaleRequested' }
-  /** 配置目录（`getConfigHomeDir` 的等价物）：`~/<configDirName>` */
-  | { type: 'configHomeDirRequested' }
   /** 智能命名：读会话消息 + 调 LLM + 解析标题（`history/smartNaming` 的等价物） */
   | { type: 'smartNamingRequested'; sessionId: string }
-  /** DeepSeek 账户余额（`utils/balance` 的等价物）；未配置 api.deepseek.com 时为 `null` */
-  | { type: 'balanceRequested' }
+  /**
+   * DeepSeek 账户余额（`utils/balance` 的等价物）；未配置 api.deepseek.com 时为 `null`。
+   * `sessionId` 用于多 Connection 路由（余额按各自 Core 的配置快照查询）。
+   */
+  | { type: 'balanceRequested'; sessionId?: string }
   /**
    * 压缩归档展开：归档消息 + 当前未压缩部分（`loadCompactArchive` + 主 JSONL 的合并）。
    * 返回 `null` 表示该会话没有归档。
    */
   | { type: 'compactArchiveRequested'; sessionId: string }
   /**
-   * 保存 LLM 全局配置（设置面板）。
-   *
-   * 载荷是 webview 发来的 `saveLLMConfig` 原始消息。整段 mutation（provider 表 +
-   * `modelConfigs` 补齐 + 顶层默认值 + MCP 默认启用列表）在 Core 侧执行：它要读
-   * **磁盘上的旧值**才能保留用户手填的 context/output 限值，还要读内置模型注册表。
-   * Standalone 下全局配置的唯一写入点是 Core（规格第 8 节）。
+   * MCP 面板列表：配置（快照里的服务器定义）+ 该会话生效的启用状态 + 运行时状态。
+   * `sessionId` 缺省时只按全局默认启用列表取值。
    */
-  | { type: 'llmConfigSaveRequested'; payload: Record<string, unknown> };
+  | { type: 'mcpServersRequested'; sessionId?: string }
+  /**
+   * 对话空间统计（各空间的字节数 / 文件数 / 会话数）。
+   * 数据在 core 的数据目录内，宿主不直接读盘。
+   */
+  | { type: 'conversationSpacesRequested' }
+  /**
+   * 等待某会话的挂起持久化完成（宿主切走会话前调用，保证磁盘是最新状态）。
+   * 结果无载荷；会话不存在时也算完成（`null`）。
+   */
+  | { type: 'flushSessionRequested'; sessionId: string }
+  /**
+   * 加载会话内容与派生事实（宿主渲染对话、工具元数据、模型身份用）。
+   * 会话文件不存在时返回空消息与 `metadata: null`。
+   */
+  | { type: 'conversationLoadRequested'; sessionId: string }
+  /**
+   * 斜杠命令与技能列表（内置命令 + 内置技能 + 会话工作目录下的技能）。
+   * `sessionId` 决定项目技能扫描的工作目录；缺省时只列内置项。
+   */
+  | { type: 'skillsRequested'; sessionId?: string };
+
+/** 会话加载结果（`UiRequest.conversationLoadRequested`） */
+export interface LoadedConversation {
+  messages: Message[];
+  metadata: ConversationMetadata | null;
+  /**
+   * 仍在等待权限 / 执行的工具调用 id。
+   * Embedded 为进程内事实；Standalone 下由 Core 在加载时合成取消结果，恒为空。
+   */
+  pendingToolUseIds: string[];
+  /** 是否存在压缩归档 */
+  hasCompactArchive: boolean;
+  /** 会话的询问模式（core 的权威取值；无记录为 null） */
+  agentMode: AgentMode | null;
+}
+
+/** 技能 / 命令列表项（`UiRequest.skillsRequested`） */
+export interface SkillListItem {
+  name: string;
+  description: string;
+  /** true = 内置斜杠命令；false = 技能（内置或项目目录） */
+  isBuiltin: boolean;
+}
 
 /** 请求 → 结果的类型映射（判别联合，字段完整） */
 export type UiRequestResultMap = {
   conversationListRequested: ConversationMetadata[];
-  uiLanguageRequested: 'auto' | 'zh' | 'en';
-  systemLocaleRequested: string;
-  configHomeDirRequested: string;
   smartNamingRequested: { title: string };
   balanceRequested: {
     totalBalance: number;
@@ -396,21 +439,11 @@ export type UiRequestResultMap = {
     fetchedAt: number;
   } | null;
   compactArchiveRequested: Message[] | null;
-  llmConfigSaveRequested: {
-    /** 保存后的默认模型（active provider 的默认模型） */
-    model: string;
-    modelProvider: string;
-    activeProvider: string;
-    thinkingEffort: 'off' | 'low' | 'high' | 'max';
-    agentMode: 'manual' | 'risk' | 'auto';
-    promptMode: 'normal' | 'minimal' | 'mixed';
-    webSearch: boolean;
-    /** 保存后的 provider 分组（模型下拉列表用） */
-    providers: Array<{ key: string; models: string[] }>;
-    /** 当前会话解析后的模型身份（provider / 模型失效时已回落到可用值） */
-    activeModel: string;
-    activeModelProvider: string;
-  };
+  mcpServersRequested: McpServerInfo[];
+  conversationSpacesRequested: ConversationSpaceInfo[];
+  flushSessionRequested: null;
+  conversationLoadRequested: LoadedConversation;
+  skillsRequested: { skills: SkillListItem[] };
 };
 
 // ==================== 会话运行时状态 ====================

@@ -19,6 +19,7 @@
  */
 
 import type { WebviewMessage } from '../core/webviewTypes.js';
+import type { WorkspaceRef } from './workspaceRef.js';
 
 /** 极简日志通道（兼容 vscode.OutputChannel 的形状） */
 export interface LogChannel {
@@ -78,19 +79,32 @@ export class WebviewViewHandle {
   ) {}
 }
 
+/** 工作区变化：打开 / 关闭 / 激活（`docs/client-connection.md` 第 5 节） */
+export type WorkspaceChange =
+  | { type: 'opened'; ref: WorkspaceRef }
+  | { type: 'closed'; ref: WorkspaceRef }
+  | { type: 'activated'; ref: WorkspaceRef };
+
 /**
- * WorkspaceProvider - 工作区路径契约（宿主实现）。
+ * WorkspaceProvider - 工作区契约（宿主实现）。
  *
  * 工作区是**宿主侧的进程级环境事实**，不属于任何 UI surface：单独成契约，
- * 供只需要工作区的消费方（Spin 设计器、对话列表）依赖。
+ * 供只需要工作区的消费方（Spin 设计器、对话列表、Client 装配）依赖。
  *
  * 这是**宿主内部**的事实来源：core 不感知「当前工作目录是谁」——会话的工作目录
  * 是会话自己的属性，由宿主在会话首次被 core 解析目录之前登记（见
- * `setSessionWorkspace`）。因此本契约不产生任何总线事件。
+ * `setSessionWorkspace`）。本契约不产生任何总线事件；Client 订阅变化后按
+ * 工作区打开 / 关闭 Connection（`docs/client-connection.md`）。
  */
 export interface WorkspaceProvider {
   /** 当前工作区路径；未打开工作区返回 undefined（绝不退回 process.cwd()） */
   getWorkspacePath(): string | undefined;
+  /** 当前工作区引用（本地 / 远程同构）；未打开工作区返回 undefined */
+  getWorkspaceRef(): WorkspaceRef | undefined;
+  /** 当前打开的工作区集合（按打开顺序）；未打开返回空数组 */
+  getOpenWorkspaceRefs(): readonly WorkspaceRef[];
+  /** 订阅工作区打开 / 关闭 / 激活；返回取消订阅 */
+  onWorkspaceChanged(listener: (change: WorkspaceChange) => void): () => void;
 }
 
 export interface UIHost extends WorkspaceProvider {
@@ -211,13 +225,4 @@ export interface UIHost extends WorkspaceProvider {
    * 两个宿主共用 `src/host/settingsFile.ts` 的实现（串行队列 + 写后清 core 读缓存）。
    */
   updateSettingsJson(mutator: (cfg: Record<string, any>) => void | Record<string, any>): Promise<void>;
-
-  /**
-   * 确保项目对话目录的 settings.json 记录 `workspacePath`
-   * （用于从 conversations 下的子目录反查原始项目路径）。
-   *
-   * 目录本身由 core 创建（core 的会话数据），这份清单文件的**写**归宿主。
-   * 两个宿主共用 `src/host/settingsFile.ts` 的实现。
-   */
-  ensureProjectSettings(projectDir: string, workspacePath: string): Promise<void>;
 }

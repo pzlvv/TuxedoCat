@@ -1,84 +1,24 @@
 /**
- * settings.json 的宿主侧写入口（**Embedded 装配**）。
+ * 全局 `settings.json` 的宿主侧入口。
  *
- * Embedded 下全局配置文件（~/<CONFIG_DIR_NAME>/settings.json）的**写**是宿主能力：
- * core 只读它，不写（DEVELOPMENT.md 第 2 节规则 9）。两个宿主共用这份实现——
- * 串行化「读-改-写」，避免多个写入口并发造成文件截断或字段丢失。
+ * 读写都归宿主（`docs/core-ui-separation.md` 第 4 节）：本模块是宿主侧的唯一入口，
+ * 实现委托给 `SettingsStore`——串行化「读-改-写」、保留未知字段、写后重新解析快照。
+ * Core 侧不感知这个文件的路径，只消费经 `hostEnvironmentProvided` 下发的配置快照。
  *
- * Standalone 下这份写能力归 Core（`docs/standalone-core.md` 第 8 节）：全局配置经
- * `UiEvent.settingsJsonUpdateRequested` 交给 Core（`config::update_settings_json`），
- * 项目清单由 Core 建目录时自己写（`config::write_project_settings`），宿主侧的两个
- * 处理器在 standalone 下直接返回（见 `WebViewUI`）。
- *
- * 写盘后调用 core 的 `resetSettingsCache()` 让 core 的读缓存失效
- * （只清内存缓存，不写盘），下次读取拿到新值。
+ * 项目清单（`<conversations>/<project>/workspace.meta.json`）归 Core 自己写
+ * （第 4.1 节），宿主侧不存在对应的写入口。
  */
 
-import { mkdir, readFile, writeFile } from 'fs/promises';
-import { join } from 'path';
-import { resetSettingsCache } from '../core/history/Config.js';
-import { readConfigHomeDir } from './coreFacts.js';
+import { getSettingsStore, type SettingsJsonMutator } from './SettingsStore.js';
 
-/** settings.json 修改器：同步改 cfg；返回非 undefined 时作为新的完整配置写回 */
-export type SettingsJsonMutator = (cfg: Record<string, any>) => void | Record<string, any>;
+export type { SettingsJsonMutator };
+export { getSettingsStore, resetSettingsStore } from './SettingsStore.js';
 
 /**
- * 写操作串行队列。
- * 所有写操作按调用顺序排队（Promise 链），避免并发写同一文件造成：
- *  - 文件被截断/交错写坏（Windows 下 writeFile 非原子）
- *  - 后写者覆盖先写者的字段（丢失更新）
+ * 串行化执行对 `settings.json` 的读-改-写。
+ * 写盘后由 `SettingsStore` 清掉 core 的读缓存（只清内存，不写盘），
+ * 下次读取拿到新值。
  */
-let writeChain: Promise<void> = Promise.resolve();
-
-/**
- * 写项目对话目录的 settings.json（记录该目录对应的 workspacePath）。
- *
- * Embedded 下**写**归宿主，core 只读。目录已由 core 建好，
- * 这里只在 workspacePath 变化时重写（幂等，避免重复写盘）。
- * Standalone 下这份清单由 Core 写（`config::write_project_settings`），本函数不参与。
- */
-export async function writeProjectSettings(projectDir: string, workspacePath: string): Promise<void> {
-  const settingsPath = join(projectDir, 'settings.json');
-  let settings: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(await readFile(settingsPath, 'utf8'));
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      settings = parsed as Record<string, unknown>;
-      if (settings.workspacePath === workspacePath) {
-        return;
-      }
-    }
-  } catch {
-    // 文件不存在或解析失败，按空对象重建
-  }
-  settings.workspacePath = workspacePath;
-  await mkdir(projectDir, { recursive: true });
-  await writeFile(settingsPath, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
-}
-
-/**
- * 串行化执行对 settings.json 的读-改-写。
- * 单个写操作失败不影响后续队列。
- */
-export function writeSettingsJson(mutator: SettingsJsonMutator): Promise<void> {
-  const run = async (): Promise<void> => {
-    const configHomeDir = readConfigHomeDir();
-    const settingsPath = join(configHomeDir, 'settings.json');
-    let cfg: Record<string, any> = {};
-    try {
-      cfg = JSON.parse(await readFile(settingsPath, 'utf-8'));
-    } catch {
-      // 文件不存在或解析失败，从空对象开始
-    }
-    const result = mutator(cfg);
-    const nextCfg = (result !== undefined ? result : cfg) as Record<string, any>;
-    await mkdir(configHomeDir, { recursive: true });
-    await writeFile(settingsPath, JSON.stringify(nextCfg, null, 2), 'utf-8');
-    // 写盘完成：让 core 的读缓存失效，下次读取重新加载
-    resetSettingsCache();
-  };
-
-  const next = writeChain.then(run, run);
-  writeChain = next.catch(() => {});
-  return next;
+export async function writeSettingsJson(mutator: SettingsJsonMutator): Promise<void> {
+  await getSettingsStore().updateSettings(mutator);
 }

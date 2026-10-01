@@ -230,6 +230,17 @@ export type WebviewMessage = {
   type: 'error';
   message: string;
 } | {
+  /**
+   * 瞬时状态提示（`docs/core-ui-separation.md` 第 4.9 节）。
+   *
+   * core 只给「键 + 参数」，webview 用 `t(key, params)` 翻译后以瞬时提示呈现；
+   * 不进消息流、不落盘。键缺失时显示键本身并记日志。
+   */
+  type: 'notice';
+  key: string;
+  params: Record<string, string | number>;
+  level: 'info' | 'warn' | 'error';
+} | {
   type: 'setAgentMode';
   mode: 'manual' | 'risk' | 'auto';
   sessionId: string;

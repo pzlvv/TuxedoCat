@@ -12,7 +12,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { UIHost } from '../src/host/UIHost.js';
 import type { SpinDesign } from '../src/host/SpinDesign.js';
-import { tt, getSystemLocale } from '../src/core/i18n.js';
+import { tt, getSystemLocale } from '../src/host/i18n.js';
 
 /** 项目根目录（dist-electron 的上一级，与 main.ts 的 APP_ROOT 一致） */
 const APP_ROOT = path.resolve(__dirname, '..');
@@ -61,7 +61,7 @@ export class ElectronSpinDesign implements SpinDesign {
 
     const { getSpinDesignHtml } = await import('../src/host/ui/spinDesignHtml.js');
     const { getAllSkills } = await import('../src/core/skills/loadSkillsDir.js');
-    const { readUiLanguageSync } = await import('../src/core/history/Config.js');
+    const { getSettingsStore } = await import('../src/host/SettingsStore.js');
     // 与 VSCodeSpinDesign 一致：主题 / 语言走 UIHost（不直连 electron API）；
     // 无工作区时不做技能扫描（路径为空，扫相对路径会落到宿主进程目录）
     const availableSkills = (this.workspacePath ? await getAllSkills(this.workspacePath) : [])
@@ -72,7 +72,7 @@ export class ElectronSpinDesign implements SpinDesign {
       this.host.isDarkTheme(),
       this.host.getLocale(),
       getSystemLocale(),
-      readUiLanguageSync(),
+      getSettingsStore().readUiLanguage(),
       availableSkills,
     );
 

@@ -27,13 +27,18 @@ fn write_ready_design(sandbox: &Sandbox, node_task: &str) {
     .unwrap();
 }
 
-/// 取 harness 里 `message` 事件的正文
-fn message_texts(harness: &EngineHarness) -> Vec<String> {
+/// 取 harness 里 `notice` 事件（键 + 参数）
+fn notices(harness: &EngineHarness) -> Vec<(String, Value)> {
     harness
         .sink
-        .events_of("message")
+        .events_of("notice")
         .iter()
-        .filter_map(|event| event["data"]["content"].as_str().map(str::to_string))
+        .map(|event| {
+            (
+                event["key"].as_str().unwrap_or("").to_string(),
+                event["params"].clone(),
+            )
+        })
         .collect()
 }
 
@@ -47,9 +52,9 @@ fn missing_spin_json_reports_an_error() {
     let sandbox = Sandbox::new("spin-host-missing");
     let harness = EngineHarness::allow_all();
     assert!(run(&sandbox, &harness, "auto").is_none());
-    let texts = message_texts(&harness);
-    assert_eq!(texts.len(), 1, "{texts:?}");
-    assert!(texts[0].contains("spin.json"), "{texts:?}");
+    let notices = notices(&harness);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].0, crate::core_text::SPIN_DESIGN_MISSING);
 }
 
 #[test]
@@ -60,9 +65,9 @@ fn invalid_spin_json_reports_an_error() {
     std::fs::write(dir.join("spin.json"), "{ not json").unwrap();
     let harness = EngineHarness::allow_all();
     run(&sandbox, &harness, "auto");
-    let texts = message_texts(&harness);
-    assert_eq!(texts.len(), 1, "{texts:?}");
-    assert!(texts[0].contains("不合法") || texts[0].contains("invalid"), "{texts:?}");
+    let notices = notices(&harness);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].0, crate::core_text::SPIN_INVALID);
 }
 
 #[test]
@@ -82,9 +87,9 @@ fn empty_node_reports_an_error() {
     .unwrap();
     let harness = EngineHarness::allow_all();
     run(&sandbox, &harness, "auto");
-    let texts = message_texts(&harness);
-    assert_eq!(texts.len(), 1, "{texts:?}");
-    assert!(texts[0].contains("空节点") || texts[0].contains("empty nodes"), "{texts:?}");
+    let notices = notices(&harness);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].0, crate::core_text::SPIN_EMPTY_NODE);
 }
 
 #[test]
@@ -105,9 +110,10 @@ fn variable_without_value_names_the_variable() {
     .unwrap();
     let harness = EngineHarness::allow_all();
     run(&sandbox, &harness, "auto");
-    let texts = message_texts(&harness);
-    assert_eq!(texts.len(), 1, "{texts:?}");
-    assert!(texts[0].contains("NAME"), "{texts:?}");
+    let notices = notices(&harness);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].0, crate::core_text::SPIN_VARIABLE_NO_VALUE_WITH_NAMES);
+    assert_eq!(notices[0].1["names"], "NAME");
 }
 
 #[test]
@@ -130,9 +136,9 @@ fn not_dag_reports_an_error() {
     .unwrap();
     let harness = EngineHarness::allow_all();
     run(&sandbox, &harness, "auto");
-    let texts = message_texts(&harness);
-    assert_eq!(texts.len(), 1, "{texts:?}");
-    assert!(texts[0].contains("DAG"), "{texts:?}");
+    let notices = notices(&harness);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].0, crate::core_text::SPIN_NOT_DAG);
 }
 
 #[test]
@@ -162,19 +168,12 @@ fn ready_design_renames_the_session_and_refreshes_the_designer() {
         .iter()
         .filter_map(|event| event["title"].as_str().map(str::to_string))
         .collect();
-    // 文案随 core locale（测试环境默认英文）
-    assert!(
-        titles.iter().any(|title| title == "Spin 设计" || title == "Spin Design"),
-        "{titles:?}",
-    );
+    // 落盘文本一律英文常量（Core 不感知语言）
+    assert!(titles.iter().any(|title| title == "Spin Design"), "{titles:?}");
     // 收尾一定发设计器刷新
     assert_eq!(harness.sink.events_of("spinDesignDataChanged").len(), 1);
     // 结构问题路径不该发这条
-    let messages = message_texts(&harness);
-    assert!(
-        !messages.iter().any(|text| text.contains("不合法") || text.contains("invalid")),
-        "{messages:?}",
-    );
+    assert!(notices(&harness).is_empty(), "{:?}", notices(&harness));
 }
 
 #[test]
@@ -215,20 +214,17 @@ fn spin_command_without_a_hook_reports_that_it_is_not_wired() {
         emit,
         start_spin: None,
     };
-    // 命令本身就地执行（消息不进 LLM 上下文），提示以 message 事件发出
+    // 命令本身就地执行（提示不进 LLM 上下文），提示以 notice 事件发出
     assert_eq!(
         crate::commands::dispatch("/spin auto", &context),
         crate::commands::DispatchOutcome::Handled,
     );
     let events = events.lock().unwrap();
-    // 先发 commandDispatched（UI 据此打开设计器），再发提示消息
-    let content = events
+    // 先发 commandDispatched（UI 据此打开设计器），再发瞬时提示
+    let key = events
         .iter()
-        .find(|event| event["type"] == "message")
-        .and_then(|event| event["data"]["content"].as_str())
-        .unwrap_or_else(|| panic!("no message event in {events:?}"));
-    assert!(
-        content.contains("未接线") || content.contains("not wired"),
-        "{content}",
-    );
+        .find(|event| event["type"] == "notice")
+        .and_then(|event| event["key"].as_str())
+        .unwrap_or_else(|| panic!("no notice event in {events:?}"));
+    assert_eq!(key, crate::core_text::SPIN_ENGINE_NOT_WIRED);
 }

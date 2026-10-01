@@ -411,13 +411,19 @@ fn collect_fence_languages_scans_string_and_block_contents() {
 }
 
 #[test]
-fn highlight_languages_event_only_reports_fresh_languages() {
+fn highlight_languages_reports_every_message_without_deduping_or_writing() {
+    // Core 只上报「本条消息用到了哪些语言」：不维护「已记录」集合、也不写 settings.json。
+    // `highlightLanguages` 是 UI 专属字段，去重与落盘由宿主的 `highlightLanguagesMutator`
+    // 承担（`docs/core-ui-separation.md` 第 4.9 节）。
     let sandbox = Sandbox::new("engine-highlight-languages");
     let llm = FakeLlm::fixed(openai_text_sse(&["好的"]));
     prepare(&sandbox, &llm.base_url, "auto");
 
     let harness = EngineHarness::allow_all();
-    submit(&harness, "s1", "看这段\n```ts\nconst a = 1;\n```", "u-1");
+    submit(&harness, "s1", "看这段
+```ts
+const a = 1;
+```", "u-1");
     assert!(harness.wait_query_end());
 
     let events = harness.sink.events_of("highlightLanguagesUsed");
@@ -425,20 +431,23 @@ fn highlight_languages_event_only_reports_fresh_languages() {
     assert_eq!(events[0]["languages"], json!(["ts"]));
     // 事件不带 sessionId（对齐 AssistantEventBus 的声明）
     assert!(events[0].get("sessionId").is_none(), "got {}", events[0]);
-    // Standalone 下 Core 自己把新语言并入全局 settings.json（唯一写入点）
-    assert_eq!(sandbox.read_settings()["highlightLanguages"], json!(["ts"]));
-
-    // 已在 settings.json 的 highlightLanguages 里记录过的语言不再上报
-    let mut settings = sandbox.read_settings();
-    settings["highlightLanguages"] = json!(["ts"]);
-    sandbox.write_settings(settings);
-    let harness = EngineHarness::allow_all();
-    submit(&harness, "s2", "再看\n```ts\nconst b = 2;\n```", "u-2");
-    assert!(harness.wait_query_end());
+    // Core 不落盘
     assert!(
-        harness.sink.events_of("highlightLanguagesUsed").is_empty(),
-        "已知语言不应重复上报"
+        sandbox.read_settings().get("highlightLanguages").is_none(),
+        "Core 不应写 highlightLanguages：{:?}",
+        sandbox.read_settings()
     );
+
+    // 同一门语言再次出现仍会上报（去重是宿主的事，宿主按幂等处理）
+    let harness = EngineHarness::allow_all();
+    submit(&harness, "s2", "再看
+```ts
+const b = 2;
+```", "u-2");
+    assert!(harness.wait_query_end());
+    let events = harness.sink.events_of("highlightLanguagesUsed");
+    assert_eq!(events.len(), 1, "got {:?}", harness.sink.event_types());
+    assert_eq!(events[0]["languages"], json!(["ts"]));
 }
 
 // ==================== 会话状态 ====================
@@ -513,12 +522,11 @@ fn workspace_and_host_environment_updates_are_recorded() {
     assert_eq!(config::project_root("s1").unwrap(), sandbox.workspace.to_string_lossy());
 
     harness.core.on_host_environment(config::HostEnvironment {
-        locale: "en-US".to_string(),
         extension_path: "D:/ext".to_string(),
         log_to_console: true,
         config_dir_name: sandbox.config_dir_name.clone(),
     });
-    assert_eq!(config::host_environment().unwrap().locale, "en-US");
+    assert_eq!(config::host_environment().unwrap().extension_path, "D:/ext");
     // 会创建 conversations 目录并记一条日志
     assert!(config::conversations_root().unwrap().is_dir());
     let log = harness.sink.event_of("log").expect("log event");
@@ -2849,37 +2857,6 @@ fn field_level_json_string_input_is_unwrapped_and_persisted_as_an_update() {
     assert_eq!(loaded["input"]["todos"][0]["content"], "写测试");
 }
 
-#[test]
-fn highlight_languages_are_not_reported_twice_after_an_uncached_write() {
-    // 不经过 `update_settings_json` 的写盘（Embedded 的宿主写 / 手工编辑）不会清 Core
-    // 的读缓存；上报前必须现读 settings.json（对齐 Embedded 的 `readHighlightLanguagesSync`）。
-    let sandbox = Sandbox::new("engine-highlight-languages-host-write");
-    let llm = FakeLlm::fixed(openai_text_sse(&["好的"]));
-    prepare(&sandbox, &llm.base_url, "auto");
-    // 先填充缓存（内容里没有 highlightLanguages）
-    let _ = config::settings_json();
-
-    let harness = EngineHarness::allow_all();
-    submit(&harness, "s1", "看这段\n```ts\nconst a = 1;\n```", "u-1");
-    assert!(harness.wait_query_end());
-    assert_eq!(harness.sink.events_of("highlightLanguagesUsed").len(), 1);
-
-    // 模拟外部直接写盘：不调用 reset_settings_cache
-    let path = config::settings_path().expect("settings path");
-    let mut settings: Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    settings["highlightLanguages"] = json!(["ts"]);
-    std::fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
-
-    let harness = EngineHarness::allow_all();
-    submit(&harness, "s2", "再看\n```ts\nconst b = 2;\n```", "u-2");
-    assert!(harness.wait_query_end());
-    assert!(
-        harness.sink.events_of("highlightLanguagesUsed").is_empty(),
-        "已记录的语言不应重复上报：{:?}",
-        harness.sink.events_of("highlightLanguagesUsed")
-    );
-}
 
 /// 工具不存在：不发 toolCall、不执行，但仍发一次 toolPermissionRequested
 /// （permResult 默认 allow，对齐 Embedded `authorizeOne` 的 `!tool` 分支），

@@ -18,6 +18,7 @@ import type { ModelRef } from '../core/llm/modelRef';
 import { t } from './i18n';
 import { ConversationTreeItem } from './ConversationTreeItem';
 import { DeleteConfirmDialog } from './components/DeleteConfirmDialog';
+import { NoticeToast, type NoticeItem } from './components/NoticeToast';
 import { getColors } from './colors';
 import { useConversationTree } from './hooks/useConversationTree';
 import { useConversationLoading } from './hooks/useConversationLoading';
@@ -297,6 +298,26 @@ const App = () => {
     title: string;
   } | null>(null);
   const isDeletingRef = useRef(false);
+
+  /**
+   * 瞬时状态提示（`docs/core-ui-separation.md` 第 4.9 节）：core 只给「键 + 参数」，
+   * 这里翻译后以浮层呈现，不进消息流；若干秒后自动消失。
+   */
+  const [notices, setNotices] = useState<NoticeItem[]>([]);
+  const noticeIdRef = useRef(0);
+  const pushNotice = useCallback(
+    (key: string, params: Record<string, string | number>, level: NoticeItem['level']) => {
+      const id = ++noticeIdRef.current;
+      setNotices((prev) => [...prev, { id, key, params, level }]);
+      setTimeout(() => {
+        setNotices((prev) => prev.filter((notice) => notice.id !== id));
+      }, level === 'error' ? 8000 : 5000);
+    },
+    [],
+  );
+  const dismissNotice = useCallback((id: number) => {
+    setNotices((prev) => prev.filter((notice) => notice.id !== id));
+  }, []);
   const currentSessionIdRef = useRef<string | null>(null);
   /** 统一设置当前会话 ID，同时同步 ref 和 window.__currentSessionId */
   const setCurrentSessionIdRef = useCallback((sid: string | null) => {
@@ -429,6 +450,7 @@ const App = () => {
     setSettingsDefaults, settingsDefaults, setLocaleVersion, setLlmConfigLanguage,
     setProviderConfigured,
     setConfigReady,
+    pushNotice,
     messages,
     currentSessionIdRef, sessionStatesRef, sessionRuntimeStatesRef, userChoiceRequestRef, userChoiceInputRef,
     agentModeReadyRef, savedMainInputRef, queuedMessageRef, abortedSessionsRef, mcpServersBySessionRef, cursorPositionRef, choiceCursorPositionRef,
@@ -1273,6 +1295,7 @@ onClick={handleNewConversation}
           />
         )}
         {settingsPanel}
+        <NoticeToast notices={notices} colors={colors} onDismiss={dismissNotice} />
       </div>
 
     </>

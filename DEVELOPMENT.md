@@ -79,8 +79,8 @@ HOST .up.> CORE : 事件类型 / 只读函数
 | 模块 | 位置 | 职责 | 依赖 | 被依赖 |
 | --- | --- | --- | --- | --- |
 | core（业务层） | `src/core/` | 引擎（`QueryEngine` / `Query` / `RunTools`）、历史（`history/`）、工具（`tools/`）、MCP（`mcp/`）、LLM 配置（`llm/`）、压缩（`compact/`）、skills、prompt、spin、会话运行时（`sessionRuntime.ts`）、命令分发（`CommandDispatcher.ts`） | `AssistantEventBus` 的事件类型与 `requireEventBus()` | host/、宿主实现（只读函数与类型） |
-| AssistantEventBus（事件契约） | 类型在 `src/core/AssistantEventBus.ts`，实现在 `src/host/EventBus.ts` | core 与 UI 之间唯一的耦合点；事件词汇表 `CoreEvent` / `CoreRequest` / `UiEvent`；全局注册（`setGlobalEventBus` / `requireEventBus` / `resetGlobalEventBus`） | 无（纯接口 + 纯数据类型） | core、host、宿主实现 |
-| host（UI 层） | `src/host/`，禁止 import `vscode` / `electron` | `WebViewUI`（唯一 UI 实现）；三契约 `UIHost` / `SpinDesign` / `ConversationManager`；总线实现；共享子模块（`ui/toolHandler.ts` / `ui/userChoice.ts` / `ui/webviewMessageHandler.ts`）；`SessionUiState` | core 的事件类型与只读函数 | 宿主实现（implements 三契约） |
+| AssistantEventBus（事件契约） | 类型在 `src/core/AssistantEventBus.ts`，实现在 `src/host/EventBus.ts` | core 与 UI 之间唯一的耦合点；事件词汇表 `CoreEvent` / `CoreRequest` / `UiEvent` / `UiRequest`；全局注册（`setGlobalEventBus` / `requireEventBus` / `resetGlobalEventBus`） | 无（纯接口 + 纯数据类型） | core、host、宿主实现 |
+| host（UI 层） | `src/host/`，禁止 import `vscode` / `electron` | `WebViewUI`（唯一 UI 实现）；三契约 `UIHost` / `SpinDesign` / `ConversationManager`；连接模型 `Client` / `Connection` 与总线实现；共享子模块（`ui/toolHandler.ts` / `ui/userChoice.ts` / `ui/webviewMessageHandler.ts`）；`SessionUiState` | core 的事件类型与只读函数 | 宿主实现（implements 三契约） |
 | 宿主实现 | `src/VSCode*.ts`、`electron/*.ts` | 三契约的 VS Code / Electron 双端实现（`VSCodeUIHost` / `ElectronUIHost`、`VSCodeSpinDesign` / `ElectronSpinDesign`、`SingleWebViewConversationManager` / `ElectronConversationManager`）；bootstrap 接线（`extension.ts` / `main.ts` 调用共享骨架 `host/bootstrapCore.ts`） | host/（三契约、WebViewUI 与 bootstrap 骨架）、core 只读函数、宿主 API | —（顶层） |
 
 #### 模块要点
@@ -88,17 +88,21 @@ HOST .up.> CORE : 事件类型 / 只读函数
 - **core**：不依赖 UI、宿主与渲染。对外只做两件事——通过 `requireEventBus().emitToUi(...)`
   发单向事件、通过 `request(...)` 发请求-响应；对 `UiEvent` 是分散订阅
   （`bus.onUiEvent(type, handler)`，唯一注册入口为 `initializeCoreEvents.ts`）。
-- **host/WebViewUI**：唯一的 UI 实现，不实现任何事件契约。构造时通过
-  `onCoreEvents` / `onCoreRequests` 一次性注册处理器（映射类型强制穷尽检查），
-  需要通知 core 时调用 `emitToCore(UiEvent)`；持有
-  `SessionUiState` / `ToolHandler` / `UserChoiceManager` / `WebviewMessageHandler`，
+- **host/WebViewUI**：唯一的 UI 实现，不实现任何事件契约。构造时经 `Client` 一次性
+  注册处理器（映射类型强制穷尽检查；每个 Connection 建立时把同一份表注册到自己的
+  总线），需要通知 core 时调用 `emitToCore(UiEvent)`（Client 按 `sessionId` 路由）；
+  持有 `SessionUiState` / `ToolHandler` / `UserChoiceManager` / `WebviewMessageHandler`，
   构造注入 `host` / `spinDesign` / `conversations` 三个契约。
+- **host/Client / Connection**：连接模型（`docs/client-connection.md`）。Client 是宿主级
+  唯一实例（工作区 / 会话路由、配置快照推送、就绪门禁）；Connection 是宿主与一个 Core
+  的一对一连接（总线、就绪状态、会话集合）。`standalone` 下每个打开的工作区一个
+  Connection、一个 Core 进程（经 daemon channel）；`embedded` 恒一个。
 - **三契约**：按 UI surface 划分——`UIHost` 服务对话 webview、`SpinDesign` 服务
   Spin 设计器、`ConversationManager` 服务对话列表与会话运行时状态；
   全部由宿主实现层提供，`WebViewUI` 只认契约不认实现。
 - **宿主实现**：唯一允许 import `vscode` / `electron` 的层；同时负责 bootstrap 接线：
-  共享骨架 `host/bootstrapCore.ts`（`createEventBus` → `setGlobalEventBus` →
-  `initializeCoreEvents` → `WebViewUI.create` → 历史 / 会话队列 / 等待用户读取器）+
+  共享骨架 `host/bootstrapCore.ts`（Client 与全局总线 → `WebViewUI.create` →
+  按工作区打开 Connection → 历史 / 会话队列 / 等待用户读取器）+
   各自的宿主专属接线（第 8.6 节）。
 
 ### 1.3 目录布局
@@ -108,13 +112,18 @@ HOST .up.> CORE : 事件类型 / 只读函数
 | `src/core/AssistantEventBus.ts` | 事件类型（`CoreEvent` / `CoreRequest` / `UiEvent`）、处理器映射类型、总线接口、全局注册（`setGlobalEventBus` / `requireEventBus` / `resetGlobalEventBus`） |
 | `src/host/EventBus.ts` | 总线实现 `createEventBus()`，纯内存发布订阅，无宿主依赖 |
 | `src/core/initializeCoreEvents.ts` | core 侧 `UiEvent` 订阅的唯一注册入口，由 bootstrap 在 `setGlobalEventBus` 之后调用一次 |
-| `src/host/bootstrapCore.ts` | 共享启动接线骨架：locale / 日志 / 扩展路径 / 总线与 core 侧订阅 / `WebViewUI.create` / 历史 / 会话队列 / 等待用户读取器 / 异步收尾；按 `CORE_KIND` 装配 embedded / standalone（第 13.2 节）；导出 `bootstrapSnapshot()`（启动自检）与 `shutdownCore()`（退出清理） |
+| `src/host/bootstrapCore.ts` | 共享启动接线骨架：locale / 日志 / 扩展路径 / Client 与全局总线 / `WebViewUI.create` / 按工作区打开 Connection / 历史 / 会话队列 / 等待用户读取器 / 异步收尾；按 `CORE_KIND` 装配 embedded / standalone（第 13.2 节）；导出 `bootstrapSnapshot()`（启动自检）与 `shutdownCore()`（退出清理） |
+| `src/host/Client.ts` | 宿主级唯一实例：工作区 / 会话路由表、配置快照推送、就绪门禁；同时实现 `AssistantEventBus`，作为宿主侧的总线路由器（`emitToCore` / `requestCore` 按会话找归属） |
+| `src/host/Connection.ts` | 宿主与一个 Core 的一对一连接：持有总线、就绪状态机（`connecting → ready → closed`）、该工作区的会话集合；未就绪时排队 `UiEvent` / 挂起 `requestCore` |
+| `src/host/workspaceRef.ts` | 工作区引用 `{ scheme, path, endpoint }` 与去重键；本地 / 远程同构，Core 只见 `path` |
 | `src/host/coreKind.ts` | Core 实现的选择变量：`CORE_KIND`（默认 `standalone`，打包时由 esbuild 按 `TUXEDO_CAT_CORE` 注入构建期取值）与 `TUXEDO_CAT_CORE` 运行期覆盖入口，`resolveCoreKind()` |
 | `src/host/standalone/protocol.ts` | Standalone 帧协议：帧类型、编解码、换行分隔 JSON 解码器 |
 | `src/host/standalone/coreBinary.ts` | Standalone Core 产物定位：平台 / 架构 → `resources/core/<arch>-<platform>/` |
-| `src/host/standalone/CoreProcess.ts` | Standalone Core 进程管理：启动 / 握手 / 帧收发 / 背压 / 崩溃重启 / 关闭 |
-| `src/host/standalone/StandaloneEventBus.ts` | `AssistantEventBus` 的帧通道实现：就绪前排队、连接态重放、`CoreRequest` 应答 |
-| `core-rs/` | Standalone Core 的 Rust 包（帧协议、Core 侧总线、进程入口） |
+| `src/host/standalone/CoreProcess.ts` | 单进程形态的 Core 进程管理：启动 / 握手 / 帧收发 / 背压 / 崩溃重启 / 关闭；实现 `CoreChannelTransport` |
+| `src/host/standalone/CoreDaemon.ts` | Host 侧 daemon 客户端：一个 endpoint 一个 daemon，每个工作区一条 channel；Core 的重启与终止由 daemon 承担；把 `channelReset` 翻译成重新握手 |
+| `src/host/standalone/daemonProtocol.ts` | daemon 控制通道协议：帧类型、`ChannelDescriptor`、编解码与校验 |
+| `src/host/standalone/StandaloneEventBus.ts` | `AssistantEventBus` 的帧通道实现（在 `CoreChannelTransport` 之上）：就绪前排队、连接态重放、`CoreRequest` 应答；传输层可以是单进程或 daemon channel |
+| `core-rs/` | Standalone Core 的 Rust 包（帧协议、Core 侧总线、进程入口、daemon 模式） |
 | `scripts/build-core.mjs` | Standalone Core 构建脚本：按目标三元组 `cargo build` 并落到 `resources/core/` |
 | `src/core/sessionRuntime.ts` | 会话运行时状态（`idle` / `waiting`）的唯一 owner，`sessionRuntimeChanged` 的生产者 |
 | `src/core/tools/PermissionPolicy.ts` | 权限规则加工（agentMode → `resolveToolPermission`）与会话级 agentMode 存储 |
@@ -179,7 +188,7 @@ class UiEvent <<type>> {
   conversationContextUpdated / conversationSpaceCleared
   modelChanged / thinkingEffortChanged / promptModeChanged
   agentModeChanged / webSearchChanged / mcpEnabledChanged
-  editRolledBack / llmConfigSaved
+  editRolledBack
 }
 
 class CoreEventHandlers <<type>> {
@@ -440,13 +449,33 @@ core/  ←  host/  ←  宿主实现（VSCode* / Electron*）
    `readHighlightLanguagesSync`、`ConversationMetadata`），这属于「宿主消费 core 的事实」，
    与「core 不得 import host」共同构成单向依赖：`宿主实现 → host/ → core/`。
    但 host 侧**不得调用 core 的状态变更函数**；改状态的请求一律翻译为 `UiEvent` 走总线。
-  全局配置文件 `~/<CONFIG_DIR_NAME>/settings.json` 是宿主资源：**写**由宿主经
-  `UIHost.updateSettingsJson` 承担，core 只读不写（字段名 / 合并规则由 core 以纯函数给出，
-  见第 5.1 节）。宿主写盘后调 core 的 `resetSettingsCache()` 清读缓存——它只清内存，不写盘。
-  对话目录下的 `<conversations>/<project>/settings.json`（记录 workspacePath）同理：
-  目录由 core 创建，清单文件的写由宿主经 `UIHost.ensureProjectSettings` 承担。
+  全局配置文件 `~/<CONFIG_DIR_NAME>/settings.json` 是宿主资源：**读与写都在宿主**，
+  core 不感知它的路径，只消费经 `UiEvent.hostEnvironmentProvided` 下发的配置快照
+  （`docs/core-ui-separation.md` 第 4 节）。写入口唯一：`SettingsStore.updateSettings`；
+  写盘后由 `bootstrapCore` 里的一次订阅重新构造快照并推给 Connection，调用点不手工触发。
+  对话目录下的 `<conversations>/<project>/workspace.meta.json`（记录 workspacePath）不同：
+  它归 core（在 Core 数据目录内），目录创建与清单读写都在 core，宿主不参与写盘。
   宿主本地偏好（`theme` / `shortcut`）不在这两份文件里：它们只有 Electron 消费，落
   `userData/workspace-state.json`（`electron/main.ts`），core 不读不写（第 11.1 节）。
+
+  **规则 9 的审计结论**（M15 对 `src/host/**` 与宿主实现层的 core import 逐项归类）：
+
+  | 类别 | 判据 | 落点 |
+  | --- | --- | --- |
+  | 纯函数 / 类型 / 常量 | 无副作用、不读进程内状态 | `conversationPayload` / `llmConfigSave` / `settingsRead` / `webviewMessageHandler` 的解析与拼装函数、各模块的类型与常量 |
+  | 受控事实入口 | 按 `CORE_KIND` 分派：Embedded 直读、Standalone 走 `UiRequest` | `src/host/coreFacts.ts`（对话列表 / 智能命名 / 余额 / 归档展开 / MCP 列表 / 对话空间 / 会话加载 / 技能列表 / 挂起持久化） |
+  | Embedded-only 装配 | `CORE_KIND === 'embedded'` 分支内；Standalone 下 core 在进程外自行完成 | `bootstrapCore` 的 `initializeCoreEvents` / `initializeSessionQueue` / `ensureConfigDirs` / `getMCPHost().prune`；`webviewMessageHandler` 的 `restoreConversationEngine` |
+  | UI 侧共享队列 | 状态归 UI，不属于 core 事实 | `src/core/UserChoiceQueue.ts`（宿主侧待答队列；Standalone 下同样由 UI 使用） |
+
+  仍保留的直接读取（Standalone 下与本机 Core 共用同一份磁盘，远程工作区需要迁到
+  `UiRequest`，见 `docs/standalone-core.md` 第 10 节的例外表）：
+
+  - 会话工作目录索引：宿主侧另存一份 `sessionId → workspacePath`
+    （`history/Config.ts` 的 `getSessionWorkspace` / `setSessionWorkspace`）。Standalone 的
+    权威表在 Core 进程内、由 `sessionWorkspaceAssigned` 同步；宿主侧这份只用于
+    「发事件前取会话自己的目录」，不参与 core 的目录解析；
+  - 工具 `_meta` 的 before/after：`ToolHandler` 在权限确认时经 `updateToolUseMeta`
+    追加写入会话 JSONL（与 Core 的写入共用同一份磁盘，本机成立）。
 
 ---
 
@@ -487,11 +516,11 @@ UI 可以被替换，也可以只订阅自己关心的事件。
 
 ### 3.1 事件定义
 
-三组词汇表，共 47 个事件：
+三组词汇表，共 48 个事件：
 
 | 词汇表 | 方向 | 语义 | 数量 |
 | --- | --- | --- | --- |
-| `CoreEvent` | core → UI | 单向事实通知 | 24 |
+| `CoreEvent` | core → UI | 单向事实通知 | 25 |
 | `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 2 |
 | `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 21 |
 
@@ -616,33 +645,46 @@ resetGlobalEventBus();    // 测试用：清空全局总线
 ```
 
 两个宿主的启动接线由**共享骨架**执行（`src/host/bootstrapCore.ts` 的 `bootstrapCore`），
-宿主只提供自身差异（locale / 日志出口 / 资源根目录），因此顺序只有一份：
+宿主只提供自身差异（locale / 日志出口 / 资源根目录），因此顺序只有一份。宿主 locale 只
+服务宿主进程内的原生 UI（`src/host/i18n.ts`），不进总线（`docs/core-ui-separation.md` 第 4.8 节）：
 
 ```
-1.  createEventBus() → setGlobalEventBus(bus)
-2.  initializeCoreEvents(bus)
-    - 同步注册「宿主环境」事件的处理器
-    - 读取 core 自己的 settings.json 设置 UI 语言
-3.  bus.emitToCore({ type: 'hostEnvironmentProvided', locale, extensionPath, logToConsole })
-4.  WebViewUI.create(host, bus, spinDesign, conversations, { log, createUserChoiceManager })
-5.  initializeSessionQueue()
-6.  ensureConfigDirs()（异步，失败记日志）
-7.  getMCPHost().prune()（异步，失败记日志）
+1.  SettingsStore.loadSync()：读宿主自己的 settings.json / mcp.json
+2.  创建 Client：
+    - embedded：createEventBus() → setGlobalEventBus(bus) → initializeCoreEvents(bus)
+      （第 2 步必须同步注册「宿主环境」事件的处理器）
+    - standalone：setGlobalEventBus(client)（Client 是宿主侧路由器）
+3.  SettingsStore.subscribe(() => client.emitToCore(hostEnvironmentProvided))
+    - 配置写盘后重推整份快照；Client 推给所有 Connection
+4.  WebViewUI.create(host, client, spinDesign, conversations, { log, createUserChoiceManager })
+    - 处理器注册在 Client 上；Connection 建立时把同一份表注册到自己的总线
+5.  按 WorkspaceProvider 打开 Connection：client.openWorkspace(ref)
+    - 连接建立即推送 hostEnvironmentProvided（扩展路径 / 日志出口开关 /
+      configDirName / 配置快照 / MCP 服务器表）
+    - core 收到后写配置快照并发 CoreEvent.coreReady；Connection 就绪并冲刷排队事件
+6.  host.onWorkspaceChanged → client.openWorkspace / closeWorkspace / activateWorkspace
+7.  initializeSessionQueue()（embedded）
+8.  ensureConfigDirs() / getMCPHost().prune()（embedded，异步，失败记日志）
 ```
 
 顺序约束：
 
-- 第 1–2 步在任何 core 模块被使用之前完成；
-- 第 2 步必须**同步**注册第 3 步要发的事件：异步注册会让事件在处理器就位前
-  到达，被总线按「暂无订阅者」静默丢弃；
-- 第 3 步只写 core 自己的状态，不 emit 到 UI，因此可以在 `WebViewUI.create` 之前；
-- 第 4 步必须在 core 第一次 `emitToUi` 之前完成，否则总线抛错（第 3.7 节）；
-- 第 5 步依赖第 4 步产出的实例；
-- 第 6–7 步是异步收尾，不阻塞启动，失败只记日志。
+- 第 1–2 步在任何 core 模块被使用之前完成；Embedded 的 `initializeCoreEvents` 必须**同步**
+  注册第 5 步要发的 `hostEnvironmentProvided`：异步注册会让事件在处理器就位前到达，
+  被总线按「暂无订阅者」静默丢弃；
+- 第 4 步必须在 core 第一次 `emitToUi` 之前完成，否则总线抛错（第 3.7 节）；Connection
+  建立（第 5 步）时处理器表必须已登记；
+- 第 5 步的就绪门禁在 Client 侧：未收到 `coreReady` 前不发出任何 `UiEvent`（`UiRequest`
+  同样挂起），Core 侧对应地做硬断言（第 3.7 节）；
+- 第 6 步的订阅在打开 Connection 之后注册：宿主在启动后新开 / 关闭工作区时同步建立 /
+  销毁 Connection；
+- 第 7–8 步是 Embedded 的收尾，不阻塞启动，失败只记日志。
 
-宿主环境差异（locale / 扩展路径 / 日志出口开关）经总线传递，core 侧没有对应的直接注入入口。
-会话的工作目录**不经总线**：它是对话的属性，由宿主在会话首次被 core 解析目录之前登记
-（第 8.7 节）。
+宿主环境差异（扩展路径 / 日志出口开关 / 配置目录名 / 配置快照 / MCP 服务器表）经总线传递，
+core 侧没有对应的直接注入入口；宿主 locale 只在宿主进程内使用，core 不感知语言。
+会话的工作目录是对话的属性：宿主在会话首次被 core 解析目录之前经
+`UiEvent.sessionWorkspaceAssigned` 登记（第 8.7 节），Client 同时据此建立
+`sessionId → Connection` 路由。
 
 core 模块随 bundle 加载，**模块顶层不能订阅**（加载时总线还不存在）；订阅统一收敛到
 `initializeCoreEvents`（第 3.6 节）。接线项归属、注入点与读取器、启动自检与退出路径见
@@ -657,8 +699,6 @@ core 侧**没有处理器契约**，与 UI 侧同理：消费方是分散的模�
 
 ```ts
 export function initializeCoreEvents(bus: AssistantEventBus): void {
-  setCoreUiLanguage(readUiLanguageSync());     // UI 语言取自 core 自己的 settings.json
-
   registerHostEnvironmentUiEvents(bus);        // hostEnvironmentProvided（同步注册）
   registerUserChoiceUiEvents(bus);             // userChoicePendingChanged（同步注册）
 
@@ -709,7 +749,7 @@ wire message（若该事件会产生 webview 协议消息）。
 
 | 组 | 方向 | 数量 | 处理方 |
 | --- | --- | --- | --- |
-| `CoreEvent` | core → UI | 24 | `WebViewUI`（`onCoreEvents` 映射表） |
+| `CoreEvent` | core → UI | 25 | `WebViewUI`（`onCoreEvents` 映射表） |
 | `CoreRequest` | core → UI | 2 | `WebViewUI`（`onCoreRequests` 映射表） |
 | `UiEvent` | UI → core | 21 | core 侧订阅者（`initializeCoreEvents`） |
 
@@ -722,6 +762,7 @@ wire message（若该事件会产生 webview 协议消息）。
 
 | # | `type` | 载荷 | core 侧触发点 | 处理方 | 转成的 wire message |
 | --- | --- | --- | --- | --- | --- |
+| 0 | `coreReady` | 无 | `initializeCoreEvents` 的 `hostEnvironmentProvided` 处理器（应用完配置快照后；每次重推快照都再发一次） | `onCoreReady`（宿主侧闩锁，`host/coreReadiness.ts`） | 无（不投递到 webview） |
 | 1 | `message` | `sessionId`, `data: MessageData` | `Integration`（用户消息 / 命令）、`Query`、`QueryEngine`、`history/rollback`、`spin/Loop`、`initializeCoreEvents`（清空对话空间的系统消息回显）、`utils/replayMessages` | `onMessage` | `addMessage` |
 | 2 | `streamMessage` | `sessionId`, `data: StreamMessageData` | `Query` | `onStreamMessage` | `streamMessage` |
 | 3 | `streamEnd` | `sessionId`, `data: StreamEndData` | `Query` | `onStreamEnd` | `streamEnd` |
@@ -744,8 +785,8 @@ wire message（若该事件会产生 webview 协议消息）。
 | 20 | `commandDispatched` | `sessionId`, `commandName`, `args` | `CommandDispatcher`（命令在引擎消费循环的轮次边界解析时就地执行） | `onCommandSend` | `/spin`：打开设计器；同时清除该会话的排队项（内置命令不进入上下文、不补发用户气泡） |
 | 21 | `sessionConfigChanged` | `sessionId`, `change` | `initializeCoreEvents`（前五个配置 UiEvent 写完 meta.json 后广播；`change.key` 用 `thinkingEffort`，落盘字段仍是 `thinkingMode`）；`MCPHost`（`mcpEnabledChanged` 的差量同步、以及会话首次打开的 `acquire` 连接 / 断开完成后广播，让 UI 拿到最终运行时状态） | `onSessionConfigChanged` | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpServers` |
 | 22 | `highlightLanguagesUsed` | `languages: readonly string[]` | `history/Conversation`（消息落盘时扫描围栏代码块语言，只报未记录过的） | `onHighlightLanguagesUsed` | 写 settings.json 的 `highlightLanguages` 字段（经 `UIHost.updateSettingsJson`，见第 5.1 节） |
-| 23 | `projectConversationDirReady` | `projectDir`, `workspacePath` | `history/Config.ensureProjectConversationDir`（目录由 core 创建后上报一次） | `onProjectConversationDirReady` | 写 `<projectDir>/settings.json` 的 `workspacePath`（经 `UIHost.ensureProjectSettings`） |
-| 24 | `log` | `message`（已格式化的整行） | `Logger`（每写一行日志） | `log` | 写 UI 自己的日志出口（VS Code 是 OutputChannel，Electron 是 console） |
+| 23 | `log` | `message`（已格式化的整行） | `Logger`（每写一行日志） | `log` | 写 UI 自己的日志出口（VS Code 是 OutputChannel，Electron 是 console） |
+| 24 | `notice` | `sessionId`, `key`, `params`, `level` | `skills/bundled/spin`、`spin/Loop`、`spin_host`、`commands`（瞬时状态提示：键 + 参数） | `onNotice` | `notice`（webview 用翻译表渲染成瞬时提示，不进消息流） |
 
 > 第 1–10 项是渲染类 handler，第 11–24 项是控制面与事实通知 handler——这条界线只是 `WebViewUI` 内部的
 > 分区，不是事件类型的分组。
@@ -789,7 +830,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 24 | `abortRequested` | `sessionId` | `abort` 消息（webview 的 abort 按钮由 `sessionRuntimeStates` 的 `idle` 推导，见第 10.4 节） | `Integration.abortCurrentQuery`（整棵工作树：该会话引擎 `interrupt()` + 该会话后台 Bash + 递归子代理，三条路径都走，幂等） |
 | 25 | `compactRequested` | `sessionId` | `requestCompress` | `Integration.requestCompact` |
 | 26 | `conversationStarted` | `sessionId` | `startNewConversation`（handler 先登记会话工作目录，再发事件） | `Integration.createEngine`（预创建引擎 + MCP 引用 + 预热该会话工作目录的系统信息） |
-| 27 | `conversationOpened` | `sessionId` | **无发送方**：`loadConversation` 直接调 `restoreConversationEngine` | **无订阅者** |
+| 27 | `conversationOpened` | `sessionId` | `loadConversation`（handler 先登记会话工作目录，再发事件；Standalone 下 Core 重启后重放） | Standalone：Core 的 `on_conversation_opened`（载入历史 + MCP 引用）；Embedded：无订阅者（宿主直接调 `restoreConversationEngine`） |
 | 28 | `conversationClosed` | `sessionId` | `WebViewUI.releaseConversation`（关闭按钮 / 侧栏关闭 / VS Code 空闲回收 / Electron 视图销毁序列 `ChatViewManager.closeConversation`） | `sessionResources.releaseSessionResources`（卸内存 + 拒绝该会话挂起的 user choice；磁盘不动） |
 | 29 | `conversationRenamed` | `sessionId`, `title` | `renameConversation`、智能命名、Electron 侧栏 | `history.updateConversationMetadataTitle` → `titleChanged` + `conversationListChanged` |
 | 30 | `conversationDeleted` | `sessionId` | `deleteConversation`、Electron 侧栏 | `history.deleteConversation`（**递归删除整棵子树**：自身 + 所有层级的子孙对话）→ `conversationListChanged` |
@@ -802,8 +843,8 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 37 | `webSearchChanged` | `sessionId`, `enabled` | `setWebSearch` | `engine.updateWebSearch` + 写 meta.json → `sessionConfigChanged` |
 | 38 | `mcpEnabledChanged` | `sessionId`, `name`, `enabled` | `setMcpEnabled` | `mcp/Config.setSessionMcpEnabled` + `Manager.syncSession` → `sessionConfigChanged`（差量同步完成后） |
 | 39 | `editRolledBack` | `sessionId`, `toolUseId`, `direction`, `filePath?` | `rollbackEdit` | `history/rollback.rollbackEdit`（`filePath` 作为 `input.file_path` 缺失时的兜底路径） |
-| 40 | `llmConfigSaved` | `config` | `saveLLMConfig` | `llm/config.clearConfigCache` |
-| 41 | `hostEnvironmentProvided` | `locale`, `extensionPath`, `logToConsole` | `bootstrapCore`（总线建好、core 侧订阅注册完毕后发一次） | `initializeCoreEvents` 的 `registerHostEnvironmentUiEvents` → `setCoreLocale` / `setExtensionPath` / `setLogToConsole` |
+| 40 | `hostEnvironmentProvided` | `extensionPath`, `logToConsole`, `configDirName`, `settings`, `mcpServers` | `bootstrapCore`（每个 Connection 建立时推送一次；此后每次配置写盘由 `SettingsStore` 订阅重推整份快照给所有 Connection） | `initializeCoreEvents` 的 `registerHostEnvironmentUiEvents` → `setExtensionPath` / `setLogToConsole` / `applySettingsSnapshot` → `CoreEvent.coreReady` |
+| 41 | `userMessageSubmitted` | `sessionId`, `content`, `uuid`, `images?`, `filePath?`, `fileSelectedLines?`, `fileHidden?`, `agentMode?`, `thinkingMode?`, `model?`, `webSearch?`, `workspacePath?`, `deferEcho?` | `sendMessage` / `queueMessage`（handler 组装载荷；`uuid` 由宿主生成并回带，完整链路见 `docs/user-message-pipeline.md`） | `Integration.submitMessage` → 入队 / 落盘 / 命令解析 / 轮次消费 |
 | 42 | `userChoicePendingChanged` | `sessionId`, `pending: boolean` | `UserChoiceManager`（webview 弹出选择、用户应答、`dropSession` 释放视图时） | `initializeCoreEvents` 的 `registerUserChoiceUiEvents` → `markSessionWaiting`（`sessionRuntime` 的 `waiting` 来源，供 `isSessionIdle` 判定） |
 | 43 | `sessionWorkspaceAssigned` | `sessionId`, `workspacePath: string \| null` | `WebviewMessageHandler.ensureSessionWorkspace`（会话首次被 core 解析目录之前）、`electron/main.ts` 的 `registerCoreSessionWorkspace`（多工作目录宿主按来源视图登记） | `initializeCoreEvents` 的 `registerSessionWorkspaceUiEvents` → `setSessionWorkspace` / `clearSessionWorkspace`（Standalone 下同一处理器在 Core 进程内） |
 
@@ -821,15 +862,16 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | UI 侧动作 | 设空标题、查余额、下发 settings.json 默认配置、必要时弹 LLM 配置引导 | 渲染消息、恢复输入草稿与 session 状态 |
 
 `conversationStarted` 已经走总线：`handleStartNewConversation` → `emitUiEvent`，由 core 的
-订阅调 `Integration.createEngine`（表格 #27）。`conversationOpened` 当前仍无发送方：
-`handleLoadConversation` 直接调 `restoreConversationEngine` 完成加载与恢复，总线上的订阅已就位。
+订阅调 `Integration.createEngine`（表格 #26）。`conversationOpened` 由 `handleLoadConversation`
+发出（表格 #27）：Standalone 下 Core 据此载入历史并建立 MCP 引用；Embedded 下宿主在发完事件后
+直接调 `restoreConversationEngine`，core 侧没有对应订阅。
 
 **仍然留在 `WebviewMessageHandler`（不是 UiEvent）的消息**
 
 | 类别 | 消息 | 为什么不是 UiEvent |
 | --- | --- | --- |
 | 纯宿主操作 | `openFile` / `openMermaidPreview` / `openSpinDesign` / `openUrl` / `showVirtualDocument` / `requestToolMeta` / `debugLog` | 只操作宿主，不涉及 core 业务 |
-| 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestMcpServers` / `requestSkills` / `requestConversationSpaces` / `requestSessionRuntimeStates` / `requestSmartNaming` | 只读，不改变 core 状态；直接调 core 的查询函数即可。其中 `requestMcpServers` / `requestSkills` 是**按会话**解析的（project skills / MCP 启用列表跟会话的工作目录走）：会话归属取 `trackedActiveSessionId`——多视图宿主必须由宿主在活动视图变化时同步（见 7.3 节的 `setActiveSessionId`），否则会取到别的标签页的工作目录；`requestSkills` / `requestSessionRuntimeStates` 的回包按 `ctx.sender` 定向投递 |
+| 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestMcpServers` / `requestSkills` / `requestConversationSpaces` / `requestSessionRuntimeStates` / `requestSmartNaming` | 只读，不改变 core 状态；经 `coreFacts` 取数（Embedded 直读 / Standalone 走 `UiRequest`）。其中 `requestMcpServers` / `requestSkills` 是**按会话**解析的（project skills / MCP 启用列表跟会话的工作目录走）：会话归属取 `trackedActiveSessionId`——多视图宿主必须由宿主在活动视图变化时同步（见 7.3 节的 `setActiveSessionId`），否则会取到别的标签页的工作目录；`requestSkills` / `requestSessionRuntimeStates` 的回包按 `ctx.sender` 定向投递 |
 | 环境查询 | `requestTheme` / `requestContextLimit` | 只读宿主环境并回包，不涉及 core 状态；按 `ctx.sender` 定向投递（`sender` 为 `null` 走默认路由，见第 7.3 节） |
 | 列表查询 | `getConversations` | 走 `WebViewUiPort.refreshConversations()` → `ConversationManager.refresh()`（唯一产出 `conversationsData` 的地方，见第 5.4 节） |
 | 请求响应 | `respondUserChoice` | 走 `CoreRequest.userChoice` 的 Promise 回传 |
@@ -841,10 +883,12 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 2. **定名字**：`CoreEvent` / `CoreRequest` 用 handler 方法名去掉 `on`；`UiEvent` 用过去式（第 3.4 节）。
 3. **定载荷**：字段必填，可选语义用 `null` 或判别联合（如 `compactEnd.result`、`sessionConfigChanged.change`），不用 `?`。
 4. **改代码**：
-   - `src/core/AssistantEventBus.ts` 的三组联合类型；
+   - `src/core/AssistantEventBus.ts` 的三组联合类型；`UiRequest` 还要登记结果映射；
    - `WebViewUI` 的 `onCoreEvents` / `onCoreRequests` 映射表（**漏写会编译报错**）；
    - `UiEvent` 还要两步：core 侧订阅（`initializeCoreEvents` 对应模块的注册函数，第 3.6 节）
-     + `WebviewMessageHandler` 里「协议消息 → 事件」的翻译。
+     + `WebviewMessageHandler` 里「协议消息 → 事件」的翻译；
+   - `UiRequest` 还要两步：两套 Core 的应答（Embedded 的 `coreFacts` 分支 / Rust 的
+     `dispatch_ui_request`）+ 宿主侧统一入口 `coreFacts`。
 5. **更新本章表格**（含「core 侧触发点」列——它是依赖评审的依据）。
 
 ### 4.5 `sessionRuntimeChanged` 的生产者：sessionRuntime
@@ -933,7 +977,7 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | 入参显式 | 可选语义用 `null`，而不是省略参数 |
 | 返回值统一 `Promise<void>` | 不用 `void \| Promise<void>` 联合 |
 
-成员清单（全部必选，共 18 个：`UIHost` 自身 17 个 + 继承 `WorkspaceProvider` 的 1 个）：
+成员清单（全部必选，共 21 个：`UIHost` 自身 17 个 + 继承 `WorkspaceProvider` 的 4 个）：
 
 | 分组 | 成员 | 语义 |
 | --- | --- | --- |
@@ -945,6 +989,9 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | | `isDarkTheme(): boolean` | 当前是否深色主题 |
 | | `getLocale(): string` | UI 语言（如 `zh` / `en`） |
 | 工作目录（继承 `WorkspaceProvider`） | `getWorkspacePath(): string \| undefined` | 宿主当前工作目录路径；打开集合为空返回 `undefined`（不退回 `process.cwd()`） |
+| | `getWorkspaceRef(): WorkspaceRef \| undefined` | 当前工作区引用（`scheme` / `path` / `endpoint`）；未打开返回 `undefined` |
+| | `getOpenWorkspaceRefs(): readonly WorkspaceRef[]` | 当前打开的工作区集合（按打开顺序）；Client 据此建立 Connection |
+| | `onWorkspaceChanged(listener): () => void` | 订阅工作区打开 / 关闭 / 激活；返回取消订阅 |
 | 面板 / 窗口 | `openFile(filePath: string, target: LineSelection \| null): Promise<void>` | 打开文件并定位到行；不需要定位时传 `null` |
 | | `showVirtualDocument(content: string, title: string): Promise<void>` | 显示虚拟文档（内容预览） |
 | | `showDiff(options: ShowDiffOptions): Promise<void>` | 显示一次改动的 before / after（仅 manual 模式，见下） |
@@ -954,11 +1001,11 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | | `saveTextFile(content: string, options: SaveFileOptions): Promise<SaveFileResult>` | 弹出「另存为」对话框并写入文本文件 |
 | 会话 / 状态 | `closeConversationView(sessionId: string): Promise<void>` | 只销毁该会话的 UI 视图（不删磁盘数据、不释放运行时内存） |
 | 配置文件 | `updateSettingsJson(mutator: (cfg: Record<string, any>) => void \| Record<string, any>): Promise<void>` | 串行化「读-改-写」全局 `settings.json` |
-| | `ensureProjectSettings(projectDir: string, workspacePath: string): Promise<void>` | 写项目对话目录清单的 `workspacePath` |
 
-`WorkspaceProvider`（同文件）是**宿主侧**的工作目录契约：只有 `getWorkspacePath()` 一个成员，
-表达「宿主当前工作目录」。它是宿主内部的事实来源——消费方是宿主自己的界面（对话列表
-`ConversationManager`、Spin 设计器），core 不读取它。
+`WorkspaceProvider`（同文件）是**宿主侧**的工作区契约：路径（`getWorkspacePath`）、引用
+（`getWorkspaceRef`）、打开集合（`getOpenWorkspaceRefs`）与变化订阅（`onWorkspaceChanged`）。
+它是宿主内部的事实来源——消费方是宿主自己的界面（对话列表 `ConversationManager`、
+Spin 设计器）与 `Client`（按工作区建立 Connection），core 不读取它。
 
 **对话自己的工作目录**不经该契约表达：它是对话的属性，由 core 的会话工作目录表按
 `sessionId` 解析（见第 4.2 节）。宿主在会话首次被 core 解析目录之前把目录登记进去
@@ -973,24 +1020,30 @@ before/after 两个虚拟文档组成的 diff 标签，Electron 空实现（diff
 **仅 manual 模式调用**——auto / risk 下改动自动放行，不弹原生 diff
 （webview 工具卡片里的 diff 仍然展示）。
 
-两个方法覆盖 core 会读的两份 settings.json，写都归宿主（core 只读不写，第 2 节规则 9）：
+全局配置 `~/<CONFIG_DIR_NAME>/settings.json` 是宿主资源，写入口唯一（第 2 节规则 9）：
 
 | 文件 | 内容 | 写入口 |
 | --- | --- | --- |
 | `~/<CONFIG_DIR_NAME>/settings.json` | 全局配置（llm / mcp / uiLanguage / highlightLanguages / defaultAgentMode / defaultPromptMode…） | `updateSettingsJson` |
-| `<conversations>/<project>/settings.json` | 该目录对应的 `workspacePath`（反查用） | `ensureProjectSettings` |
 
-`theme` / `shortcut` 不属于这两份文件：它们是 Electron 宿主本地偏好，落
+项目对话目录清单 `<conversations>/<project>/workspace.meta.json` **不在这里**：它归 core，
+由 core 在建目录时自己写（Embedded `history/Config.ensureProjectConversationDir`，
+Standalone 的 Rust `config`），宿主不参与写盘。
+
+`theme` / `shortcut` 不属于这份文件：它们是 Electron 宿主本地偏好，落
 `userData/workspace-state.json`（`electron/main.ts`），core 不读不写（第 11.1 节）。
 
-两个宿主共用 `src/host/settingsFile.ts`：`updateSettingsJson` 串行化「读-改-写」（避免并发写坏
-文件或丢字段），写盘后调 core 的 `resetSettingsCache()` 让读缓存失效。
+两个宿主共用 `src/host/settingsFile.ts`：`updateSettingsJson` 委托给
+`SettingsStore.updateSettings`，串行化「读-改-写」（避免并发写坏文件或丢字段），
+写盘后重新解析快照并通知订阅者——`bootstrapCore` 注册的那次订阅会把整份快照推给
+Connection（`docs/core-ui-separation.md` 第 4.6 节）。core 侧没有读缓存，也没有
+`resetSettingsCache()` 这类调用。
 
-字段名与合并规则仍归 core，但以**纯函数**给出（不写盘），例如
-`history/Config.highlightLanguagesMutator`（去重 + 上限 60）、`mcp/Config.mcpDefaultsMutator`。
+字段名与合并规则以**纯函数**给出（不写盘），例如
+`host/highlightLanguages.ts` 的 `highlightLanguagesMutator`（去重 + 上限 60）、
+`host/llmConfigSave.ts` 的 `applyLlmConfigSave`（LLM 配置整段 mutation）。
 调用方把 mutator 交给宿主执行：`WebviewMessageHandler.handleSaveLLMConfig`（LLM 配置）、
-`WebViewUI.onHighlightLanguagesUsed`（高亮语言）；
-项目目录清单则由 `WebViewUI.onProjectConversationDirReady` 交给 `ensureProjectSettings`。
+`WebViewUI.onHighlightLanguagesUsed`（高亮语言）。
 
 `closeConversationView` **只销毁视图**：不删磁盘数据，也不释放运行时内存。两件事归属不同——
 关视图归宿主（本方法），卸内存归 core（`UiEvent.conversationClosed` →
@@ -1222,7 +1275,7 @@ import core 的只读函数与类型（第 2 节规则 9）。
 | 纯宿主操作 | `openFile` / `openMermaidPreview` / `openSpinDesign` / `openUrl` / `showVirtualDocument` / `requestToolMeta` / `debugLog` |
 | 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestMcpServers` / `requestSkills` / `requestConversationSpaces` / `requestSmartNaming` |
 | 纯显示操作 | `expandCompact`（只读归档 + 重放消息到 webview，不改 core 状态） |
-| 配置文件写入 | `UIHost.updateSettingsJson`（LLM 配置 / MCP 默认值 / 高亮语言）与 `UIHost.ensureProjectSettings`（项目目录清单）——写 `settings.json` 是宿主能力，core 只读不写 |
+| 配置文件写入 | `UIHost.updateSettingsJson`（LLM 配置 / MCP 默认值 / 高亮语言）——写全局 `settings.json` 是宿主能力；项目清单 `workspace.meta.json` 归 core，不在宿主 |
 | 宿主本地偏好写入 | `electron/main.ts` 的 `writeThemeMode` / `writeWakeShortcut`（`theme` / `shortcut`）——落 `userData/workspace-state.json`，与 core 的 settings.json 无关 |
 | 载体 / 视图层动作 | Electron 的 `sidebar:new-conversation` / `sidebar:open-conversation` / `sidebar:get-active-session` / `sidebar:active-session-changed`（开视图与视图层状态，随后由新视图自己发 `loadConversation`）；webview 的 `closeWebview` / `openConversation` / `prewarmViewReady` 由 `electron/main.ts` 的消息入口直接消化，不经 `WebviewMessageHandler`、不走总线 |
 | 环境查询（按来源回包） | webview 的 `requestTheme` / `requestContextLimit` 在 `WebviewMessageHandler` 内处理（按 `ctx.sender` 回包），但不走总线——它们只读 core 的配置函数与宿主环境，不改 core 状态。宿主在视图加载时也推同一对消息（`UIHost.onThemeChanged` / `WebViewUI.pushContextLimit`），但那次推送受时序约束（VS Code `resolveWebviewView` 后延时、Electron `did-finish-load`），由 webview 主动拉取才能尽早解除首屏 Loading，也让多视图宿主下的后台预热视图拿到回包 |
@@ -1380,7 +1433,6 @@ closeConversation(sessionId: string): void {
 | `onSessionRuntimeChanged` | `conversations.updateSessionStates(states)`；**只读**，不写回 `sessionUi`（第 4.5 节） |
 | `onSpinDesignDataChanged` | `spinDesign.refresh()`（设计器不在 `UIHost` 上） |
 | `onHighlightLanguagesUsed` | `host.updateSettingsJson(highlightLanguagesMutator(languages))`——core 只报告事实，字段名 / 去重 / 上限在 core，写盘在宿主 |
-| `onProjectConversationDirReady` | `host.ensureProjectSettings(projectDir, workspacePath)`——目录由 core 建，清单文件由宿主写 |
 
 **投递路径**：所有出站消息都经 `postToWebview(sessionId, message)` 补 `sessionId` 后交
 `host.sendToWebview`。`postConversationLoaded` 例外——它经 `buildConversationLoadedPayload`
@@ -1393,7 +1445,7 @@ thinking / text / tool 动画）。
 
 | 表 | 数量 | 内容 |
 | --- | --- | --- |
-| `onCoreEvents` | 23 | 10 个渲染（`message` / `streamMessage` / `streamEnd` / `toolCall` / `toolResult` / `toolArgsUpdated` / `toolProgress` / `aiBegin` / `aiEnd` / `messagesReplaced`）+ 13 个控制面与事实通知（`queryBegin` / `queryEnd` / `titleChanged` / `sessionCreated` / `conversationListChanged` / `sessionRuntimeChanged` / `spinDesignDataChanged` / `highlightLanguagesUsed` / `projectConversationDirReady` / `compactBegin` / `compactEnd` / `commandDispatched` / `sessionConfigChanged`） |
+| `onCoreEvents` | 25 | 10 个渲染（`message` / `streamMessage` / `streamEnd` / `toolCall` / `toolResult` / `toolArgsUpdated` / `toolProgress` / `aiBegin` / `aiEnd` / `messagesReplaced`）+ 15 个控制面与事实通知（`coreReady` / `queryBegin` / `queryEnd` / `titleChanged` / `sessionCreated` / `conversationListChanged` / `sessionRuntimeChanged` / `spinDesignDataChanged` / `highlightLanguagesUsed` / `compactBegin` / `compactEnd` / `commandDispatched` / `sessionConfigChanged` / `log` / `notice`） |
 | `onCoreRequests` | 2 | `toolPermissionRequested` → `requestToolPermission`；`userChoice` → `requestUserChoice` |
 
 映射表把 `CoreEvent` 的 `e` 拆成位置参数后转调同名 handler，handler 自身保持
@@ -1672,7 +1724,6 @@ export class ElectronUIHost implements UIHost {
 | `saveTextFile(content, options)` | `vscode.window.showSaveDialog` + `fs.promises.writeFile` | `dialog.showSaveDialog` + `fs.promises.writeFile` |
 | `closeConversationView(sessionId)` | **空实现**——单视图只有一个 webview，没有「关闭会话视图」这个动作（webview 侧 `canCloseConversation` 为 `false`，不渲染关闭按钮） | `chatViews.closeView(sessionId)`——只销毁视图；abort 与 MCP 释放归 core（`conversationClosed` / `MCPHost`） |
 | `updateSettingsJson(mutator)` | 共用 `src/host/settingsFile.ts` | 同左 |
-| `ensureProjectSettings(projectDir, workspacePath)` | 共用 `src/host/settingsFile.ts` | 同左 |
 
 **能力归属**（避免再往 `UIHost` 里加错东西）：
 
@@ -1681,7 +1732,7 @@ export class ElectronUIHost implements UIHost {
 | Spin 设计器（打开 / 刷新） | `SpinDesign`（8.4） | 独立 surface：独立面板 / 窗口、独立消息协议 |
 | 对话列表 / 会话状态 / 空闲回收 | `ConversationManager`（8.5） | 独立 surface：两条流 + VS Code 专属的计时 |
 | MCP 会话引用生命周期 | core 的 `MCPHost`（5.3） | 驱动信号来自 core 的会话事实，不是宿主视图 |
-| 全局配置 / 项目清单写入 | `UIHost.updateSettingsJson` / `ensureProjectSettings` | 配置文件是宿主资源，core 只读不写（5.1） |
+| 全局配置写入 | `UIHost.updateSettingsJson` | 全局 `settings.json` 是宿主资源；项目清单 `workspace.meta.json` 归 core（5.1） |
 
 ### 8.4 SpinDesign 实现对照表
 
@@ -1701,7 +1752,7 @@ export class ElectronUIHost implements UIHost {
 | 另存为 | `host.saveTextFile`（`showSaveDialog`） | `host.saveTextFile`（`dialog.showSaveDialog`） |
 | 设计器消息 | `panel.webview.onDidReceiveMessage` | `ipcMain.on('spin-design-message')`（preload 转发） |
 | 主题 / 语言 | `host.isDarkTheme()` / `host.getLocale()`（不直连宿主 API） | 同左 |
-| 初始 HTML 入参 | `existingData` / 主题 / 语言 / `getSystemLocale()` / `readUiLanguageSync()` / Skill 列表（打开时扫描，无工作区则跳过） | 同左 |
+| 初始 HTML 入参 | `existingData` / 主题 / 语言 / `getSystemLocale()` / `SettingsStore.readUiLanguage()` / Skill 列表（打开时扫描，无工作区则跳过） | 同左 |
 | 刷新时的数据 | `getAllSkills` + 重读 `spin.json` → `spinDesignData`（含 `skills`） | 同左 |
 | 构造依赖 | `host: UIHost`（`getWorkspacePath` / `isDarkTheme` / `getLocale` / `saveTextFile` / `log`） | `host: UIHost`（同上） |
 
@@ -1732,7 +1783,7 @@ export class ElectronUIHost implements UIHost {
 
 ```ts
 export interface CoreBootstrapOptions {
-  /** 宿主 locale 原始值（BCP-47）；二值收敛由 core 的 setCoreLocale 承担 */
+  /** 宿主 locale 原始值（BCP-47）；二值收敛由宿主 i18n（`src/host/i18n.ts`）承担 */
   locale: string;
   /** 日志出口：core Logger / WebViewUI / UserChoiceManager 共用 */
   log: (...args: unknown[]) => void;
@@ -1740,10 +1791,18 @@ export interface CoreBootstrapOptions {
   logToConsole: boolean;
   /** 扩展 / 应用根目录，用于定位 ripgrep、pandoc 等资源 */
   extensionPath: string;
+  /** 测试注入：Standalone 下为一个工作区打开 Core 通道（默认经 daemon） */
+  openStandaloneChannel?: (ref: WorkspaceRef) => OpenedCoreChannel;
 }
 
-bootstrapCore(host, spinDesign, conversations, options): { bus, ui }
+bootstrapCore(host, spinDesign, conversations, options): { bus, client, ui }
 ```
+
+工作区集合来自 `UIHost` 的 `WorkspaceProvider`（`getWorkspaceRef` / `getOpenWorkspaceRefs` /
+`onWorkspaceChanged`）：骨架为每个打开的工作区打开一个 Connection（Embedded 恒一个），
+并订阅打开 / 关闭 / 激活事件。没有打开的工作区时用一个空引用打开占位 Connection，
+保证宿主环境与空态视图的只读请求（技能列表 / 对话列表等）仍可应答；
+Standalone 下打开第一个真实工作区时占位 Connection 被销毁。
 
 每个接线项有唯一归属，归属只有三种：
 
@@ -1758,11 +1817,13 @@ bootstrapCore(host, spinDesign, conversations, options): { bus, ui }
 | 接线项 | 说明 |
 | --- | --- |
 | locale / UI 语言 / 扩展路径 / 日志出口 | 取值来自宿主参数 |
-| 总线创建与全局注册 / core 侧 UiEvent 订阅 | `createEventBus` → `setGlobalEventBus` → `initializeCoreEvents` |
-| `WebViewUI.create` 与 `UserChoiceManager` 工厂 | 工厂在骨架内构造，日志出口取自 `options.log`；宿主不提供该工厂 |
-| 宿主环境事件（`hostEnvironmentProvided`） | 总线建好、core 侧订阅注册完毕后由骨架发一次：locale / 扩展路径 / 日志出口开关。core 侧没有对应的直接注入入口 |
-| `initializeSessionQueue` | 依赖 `WebViewUI` 实例；由骨架调用一次 |
-| 配置目录 / MCP 残留清理 | 异步收尾，不阻塞启动 |
+| Client 创建与全局总线注册 | Embedded：`createEventBus` → `setGlobalEventBus` → `initializeCoreEvents`；Standalone：`setGlobalEventBus(client)`（Client 是宿主侧路由器） |
+| 配置快照订阅 | `SettingsStore.subscribe` → `client.emitToCore(hostEnvironmentProvided)`，一份快照推给所有 Connection |
+| `WebViewUI.create` 与 `UserChoiceManager` 工厂 | 工厂在骨架内构造，日志出口取自 `options.log`；宿主不提供该工厂。处理器注册在 Client 上，Connection 建立时把同一份表注册到自己的总线 |
+| 按工作区打开 Connection | `client.openWorkspace(ref)`；连接建立时推送 `hostEnvironmentProvided`（扩展路径 / 日志出口开关 / 配置目录名 / 配置快照 / MCP 服务器表）。core 侧没有对应的直接注入入口 |
+| 工作区打开 / 关闭 / 激活订阅 | `host.onWorkspaceChanged` → `client.openWorkspace` / `closeWorkspace` / `activateWorkspace` |
+| `initializeSessionQueue` | 依赖 `WebViewUI` 实例；Embedded 下由骨架调用一次 |
+| 配置目录 / MCP 残留清理 | Embedded 的异步收尾，不阻塞启动 |
 
 **宿主参数**：
 
@@ -1782,7 +1843,7 @@ bootstrapCore(host, spinDesign, conversations, options): { bus, ui }
 | 空闲会话巡检（`setActiveSessionProvider` / `setIdleCloseHandler` / `startIdleMonitor`） | VS Code | 空闲回收只在 VS Code 生效 |
 | 虚拟文档 provider（预览 / diff 三个 scheme） | VS Code | 无对应 Electron 能力 |
 | `registerWebviewViewProvider` / 命令 / 状态栏项 | VS Code | 扩展界面入口 |
-| `host.setMainWindow` / `setSidebarView` / `setChatViewManager` / `setWorkspacePath` | Electron | 主进程句柄注入 |
+| `host.setMainWindow` / `setSidebarView` / `setChatViewManager` / `setWorkspaceSource` | Electron | 主进程句柄注入；`setWorkspaceSource` 提供打开集合 / 活动项 / 变化订阅（Client 据此建立 Connection） |
 | `conversations.setStatusListener` | Electron | 托盘状态点与闪烁提醒 |
 | 侧栏出口（`sendToSidebar`） | Electron | 原生侧栏三条流 |
 | `chatViews.closeConversation = (sid) => ui.releaseConversation(sid)` | Electron | 视图销毁序列只卸内存 |
@@ -1893,9 +1954,11 @@ core 的启动期状态按来源分两类。
 
 | 状态 | 来源（`UiEvent`） | 落地函数 | 读取入口 | 未到达时 |
 | --- | --- | --- | --- | --- |
-| 宿主 locale | `hostEnvironmentProvided.locale` | `setCoreLocale` | `getCoreLocale()` | 返回默认值 `en`（可接受） |
 | 扩展路径 | `hostEnvironmentProvided.extensionPath` | `setExtensionPath` | `getExtensionPath()` | 抛错 |
 | 日志出口开关 | `hostEnvironmentProvided.logToConsole` | `setLogToConsole` | — | 静默丢弃（可接受） |
+
+宿主 locale 不在其中：Core 不感知语言，`hostEnvironmentProvided` 没有 locale 字段
+（`docs/core-ui-separation.md` 第 4.8 节）。
 
 会话工作目录表（`setSessionWorkspace(sessionId, path)` → `getSessionWorkspace(sessionId)`）是
 core 的对话属性：目录由宿主在会话首次被 core 解析目录之前登记，不经总线；未登记时
@@ -1906,16 +1969,20 @@ core 的对话属性：目录由宿主在会话首次被 core 解析目录之前
 | 状态 | 写入入口 | 读取入口 | 未注入时 |
 | --- | --- | --- | --- |
 | 全局事件总线 | `setGlobalEventBus(bus)` | `requireEventBus()` | 抛错 |
-| UI 语言 | `setCoreUiLanguage(lang)` | `getCoreLocale()` | 返回默认值 `en`（可接受） |
+
+UI 语言（`uiLanguage`）是**宿主状态**，不在 core 的启动期状态里：宿主读自己的
+`settings.json` 后收敛到宿主 i18n（`src/host/i18n.ts` 的 `setHostUiLanguage`），
+webview 用自己的翻译表（`src/webview/i18n/`）。
 
 规则：
 
 - 消费点调用读取入口，不使用可选链静默降级。
-- 允许默认值的项（locale / UI 语言 / 日志出口开关）以「缺失不构成错误」为前提：
+- 允许默认值的项（日志出口开关）以「缺失不构成错误」为前提：
   其取值不影响跨端一致性，且无业务分支依赖「是否已到达」。
 - 抛错的项（总线 / 扩展路径）在启动接线内保证写入，因此启动完成后不存在未写入状态。
-- 语言变化用 `onCoreLocaleChanged(listener)` 通知订阅者（Electron 原生菜单据此重建）；
-  只在**有效语言**真正变化时触发，单个订阅者抛错不影响其它订阅者。
+- 宿主语言变化用 `onHostLocaleChanged(listener)`（`src/host/i18n.ts`）通知订阅者
+  （Electron 原生菜单据此重建）；只在**有效语言**真正变化时触发，单个订阅者抛错不影响
+  其它订阅者。
 
 `sessionResources.isSessionIdle` 的「等待用户」来源是 core 自己的 `sessionRuntime`
 （`isSessionWaiting`），没有需要保证注入的读取器（第 4.5 节）。
@@ -1926,6 +1993,7 @@ core 的对话属性：目录由宿主在会话首次被 core 解析目录之前
 
 ```ts
 export interface BootstrapSnapshot {
+  coreKind: 'embedded' | 'standalone';
   locale: string;
   uiLanguage: 'auto' | 'zh' | 'en';
   eventBusRegistered: boolean;
@@ -1933,6 +2001,7 @@ export interface BootstrapSnapshot {
   extensionPathProvided: boolean;
   sessionQueueInitialized: boolean;
   logToConsole: boolean;
+  connectionCount: number;
 }
 
 /** 当前进程的接线快照（只读；用于启动日志与一致性断言） */
@@ -1951,8 +2020,8 @@ export function bootstrapSnapshot(): BootstrapSnapshot;
 core 资源的释放有单一入口：
 
 ```ts
-/** 释放 core 侧进程级资源（当前为 MCP 子进程） */
-export function shutdownCore(): void;
+/** 释放 core 侧进程级资源（Connection / Core 进程 / MCP 子进程） */
+export function shutdownCore(): Promise<void>;
 ```
 
 | 宿主 | 退出钩子 | 调用 |
@@ -1960,8 +2029,9 @@ export function shutdownCore(): void;
 | VS Code | `deactivate()` | `stopIdleMonitor()`（宿主专属）+ `shutdownCore()` |
 | Electron | `app.on('will-quit')` | 宿主专属清理（快捷键 / 托盘 / 定时器）+ `shutdownCore()` |
 
-`shutdownCore` 内部经 `MCPHost.shutdown()` 结束 MCP 子进程；宿主不直接调用
-`McpManager` 的同类方法。
+`shutdownCore` 先 `client.closeAll()` 销毁全部 Connection（Standalone 下逐个关闭
+channel、Core 进程退出），再关闭本地 daemon；Embedded 下经 `MCPHost.shutdown()` 结束
+MCP 子进程。宿主不直接调用 `McpManager` 的同类方法。
 
 ### 8.10 一致性守护
 
@@ -2331,7 +2401,7 @@ dropSession(sessionId: string): void {
 | `openExternalUrl` | `vscode.env.openExternal` | `shell.openExternal` |
 | `saveTextFile` | `vscode.window.showSaveDialog` + `fs.writeFile` | `dialog.showSaveDialog` + `fs.writeFile` |
 | `closeConversationView` | 空实现（单视图没有可关的视图） | `chatViews.closeView(sessionId)` |
-| `updateSettingsJson` / `ensureProjectSettings` | 共用 `src/host/settingsFile.ts`（无差异） | 同左 |
+| `updateSettingsJson` | 共用 `src/host/settingsFile.ts`（无差异） | 同左 |
 
 > `showDiff` / `showVirtualDocument` / `openMermaidPreview` 这几个预览入口体现一条一般分工：
 > **预览类操作归 webview，宿主只在没有页内渲染能力时才开原生窗口**（diff 在 Electron 侧就是空实现）。
@@ -2581,6 +2651,9 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 | 「哪个会话在前台」 | UI（VS Code：`SingleWebViewConversationManager` 的 `activeSessionProvider`；Electron：`ChatViewManager.getActiveSessionId`） | 空闲回收的「前台会话不关」、MCP 面板取数。core **不保存**这份状态（曾经在 `Config` 里缓存过一份） |
 | 「哪些会话 open」 | UI（Electron：`ChatViewManager.getLoadedSessionIds` → `WebViewUI.setOpenSessions`；VS Code：单视图下 open == active） | `UserChoiceQueue` 判断待答请求能否投递到该会话自己的视图（第 7.1 节）。core **不保存**这份状态 |
 | 视图 ↔ 会话 ID 的绑定 | Electron `ChatViewManager`（`registerSession`） | 由 webview 上报的 `startNewConversation` / `loadConversation` 驱动（这两条消息才表达「这个视图当前属于哪个会话」） |
+| 工作区打开集合 / 活动项 | 宿主（VS Code：工作区文件夹；Electron：`main.ts` 的 `openWorkspaces` / `workspacePath`） | `WorkspaceProvider` 的消费方与 `Client`（按工作区建立 Connection，第 8.6 节） |
+| `sessionId → Connection` 归属 | `Client`（`assignSession` 登记，`sessionWorkspaceAssigned` 事件驱动） | 总线路由、`Connection` 的会话集合。`connectionId` 是内部概念，不进任何总线载荷 |
+| Core 进程生命周期 | Standalone：daemon（启动 / 重启 / 终止，第 13.2 节）；Embedded：宿主进程本身 | `Connection` 只消费 `channelReset` / `workspaceClosed` 与 fatal 事件；`CoreProcess.ts` 是单进程形态的传输层实现 |
 
 **禁止从投影反推事实**：`WebViewUI.onSessionRuntimeChanged` 只把 core 的状态转给
 `ConversationManager.updateSessionStates`，不参与计算；`SessionUiState` 不产出
@@ -2610,17 +2683,21 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 
 ### 13.1 Core 与 UI 分离
 
-规格见 `docs/core-ui-separation.md`。
+规格见 `docs/core-ui-separation.md`；连接模型见 `docs/client-connection.md`；
+Core 进程的 daemon 见 `docs/core-daemon.md`。
 
 | 项 | 现状 | 待定 |
 | --- | --- | --- |
-| 全局配置 `~/<CONFIG_DIR_NAME>/settings.json` | core 读；宿主经 `UIHost.updateSettingsJson` 写（第 2 节规则 9） | core 读写 |
-| 项目清单 `<conversations>/<project>/settings.json` | 目录由 core 建；宿主经 `UIHost.ensureProjectSettings` 写 | core 读写 |
-| 部署形态 | core 与 UI 同进程 | core 可独立进程部署，UI 以连接接入 |
-| 连接 | — | 一对一；已有连接时新连接被拒绝并提示 |
+| 部署形态 | 已落地：`standalone` 下一个工作区一个 Core 进程（经 daemon 启动）；`embedded` 与 UI 同进程 | — |
+| 连接 | 已落地：`Client` 一个、每个工作区一个 `Connection`；`embedded` 恒一个；总线作用域收敛到 Connection | — |
 | `request()` 超时 | 不内置计时器（第 3.7 节） | 保持不内置，本地与远程同一口径 |
 
-不在本项范围：连接的序列化与反序列化、流式事件的节流与合并、断线恢复。
+已落地、不再列在本表：全局配置归宿主（M9）、MCP 配置随快照下发（M9）、
+项目清单 `workspace.meta.json` 归 core（M12）、文本语言键化（M11）、
+`coreReady` 就绪门禁（M10）、Client / Connection 拆分（M13）、daemon 进程模型（M14）、
+宿主侧 in-process core 调用清理（M15）。
+
+不在本项范围：连接的序列化与反序列化、流式事件的节流与合并、断线恢复、远程工作区。
 
 ### 13.2 Standalone Core（Rust）
 
@@ -2630,12 +2707,14 @@ Core 的两种实现由选择变量 `CORE_KIND` 装配：`embedded` 为 `src/cor
 （与 UI 同进程），`standalone` 为 `core-rs/` 的 Rust 实现（独立进程）。两种实现对 UI 呈现
 同一份 `CoreEvent` / `CoreRequest` / `UiEvent` 词汇表，落盘格式一致。
 
-每个宿主实例拥有一个 Core 进程；Core 崩溃后由宿主重启并恢复接线。当前产出 Windows x64，
-目标矩阵预留 Windows / Linux × x64 / arm64。
+一个 endpoint 一个 daemon；一个工作区一个 Core 进程（由 daemon 以自身路径加 `--serve`
+启动）。Core 崩溃后由 daemon 在同一 channel 上重启并恢复接线；重启次数超限时 daemon
+关闭 channel 并向宿主报告。当前产出 Windows x64，目标矩阵预留 Windows / Linux × x64 / arm64。
 
 | 项 | 现状 | 待定 |
 | --- | --- | --- |
-| 选择变量 / 帧协议 / 进程管理 / 崩溃重启 | 已落地（落点见第 1.3 节） | — |
+| 选择变量 / 帧协议 / 进程管理 / 崩溃重启 | 已落地（落点见第 1.3 节）；Standalone 的崩溃重启由 daemon 承担（`daemon.rs`），Host 侧只把 `channelReset` 翻译成重新握手 | — |
+| daemon 进程模型 | 已落地：`--daemon` / `--serve` 两种模式、控制通道多路复用、`liveCores` 计数归零 + grace 期退出、控制通道断开清理、重启上限报告（`docs/core-daemon.md`） | — |
 | 事件投递 | `emitToCore` 只写帧；Standalone 下进程内不注册 core 侧订阅（规格第 1.1 节） | — |
 | 用户消息入口 | `UiEvent.userMessageSubmitted`；`WebviewMessageHandler` 不再直接调用引擎 | — |
 | 会话引擎 / 内置工具 / 会话落盘 / 配置读写 | 已在 `core-rs/` 内实现（查询循环、Bash（含 `run_in_background` 与自动转后台）/ Read（含 doc/docx/ppt/pptx/xlsx）/ Write / Edit / Grep / Glob / TodoWrite / Agent / Reply / AskUserQuestion / Skill、并行工具批、meta.json + jsonl、settings.json 读写） | 与 Embedded 的逐项对等（`TODO.md` M2–M4） |
@@ -2645,9 +2724,9 @@ Core 的两种实现由选择变量 `CORE_KIND` 装配：`embedded` 为 `src/cor
 | Responses API | 已在 `core-rs/responses.rs` 内实现（`apiType='Responses'`：URL / 工具 / 消息转换、SSE 事件循环、status 与 usage 口径、`response.output` 权威校准）；内置 `web_search` 工具未迁入 | `responsesParity.json` 对照表 + `responses_stream_tests.rs` 端到端 |
 | MCP | 已在 `core-rs/mcp.rs` / `mcp_http.rs` / `mcp_config.rs` 内实现（stdio + Streamable HTTP + 旧版 SSE、连接池与会话引用、`mcp__*` 工具注入与按会话启用过滤） | `mcpParity.json` 对照表 + `mcp_tests.rs` 的真实子进程端到端 |
 | Spin 引擎 | 已在 `core-rs/spin.rs` / `spin_host.rs` 内实现（`spin.json` 读写、拓扑排序、子代理执行、验收判定、`/spin` 命令） | `spinParity.json` 对照表 + `spin_tests.rs` 的假 `SpinHost` 端到端 + `spin_host_tests.rs` 的 `/spin` 分支 |
-| UI → core 请求 | 已实现（协议版本 2）：`UiRequest` 七个请求由 UI 发起、Core 应答，宿主不再直接读 core 的磁盘数据 | `src/host/coreFacts.ts` 是宿主侧统一入口；`standaloneBus.test.ts` 覆盖请求往返 / 失败 / 断连 |
+| UI → core 请求 | 已实现（协议版本 2）：`UiRequest` 九个请求由 UI 发起、Core 应答（对话列表 / 智能命名 / 余额 / 归档展开 / MCP 列表 / 对话空间 / 挂起持久化 / 会话加载 / 技能列表），宿主不再直接读 core 的磁盘数据 | `src/host/coreFacts.ts` 是宿主侧统一入口；`standaloneBus.test.ts` 覆盖请求往返 / 失败 / 断连 |
 | 对等测试 / 端到端 | 已实现：同一串 `UiEvent` 在两种实现下产出同一组 `CoreEvent`；重启续读端到端 | `coreEventParity.test.ts` / `standaloneCoreRestart.test.ts` |
-| 宿主侧的 core 事实读取 | 宿主直接 import core 的只读函数（第 2 节规则 9）；同机部署下读写同一份磁盘格式 | 经总线（规格第 10 节，`TODO.md` M7） |
+| 宿主侧的 core 事实读取 | 已收口（M15）：宿主经 `coreFacts` 按 `CORE_KIND` 分派，Standalone 下走 `UiRequest`；仍保留的直接读取见第 2 节规则 9 的审计结论与 `docs/standalone-core.md` 第 10 节的例外表 | 远程工作区落地时把例外迁到 `UiRequest` |
 | 目标平台 | 产出 Windows x64 | Windows / Linux × x64 / arm64 |
 
 新发现的待定项按同样方式记在这里（现状 + 待定）。

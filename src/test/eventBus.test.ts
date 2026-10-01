@@ -17,6 +17,8 @@ import {
 } from '../core/AssistantEventBus';
 import { createChecker, runTests } from './helpers/harness';
 import { makeTestBus } from './helpers/fixtures';
+import { applySettingsSnapshot, hasSettingsSnapshot, resetSettingsSnapshot } from '../core/settings';
+import { resolveSettingsSnapshot } from '../core/settingsSnapshot';
 
 function throws(fn: () => void): boolean {
   try {
@@ -37,6 +39,8 @@ async function run(): Promise<void> {
   }));
 
   // ---- 正常分发 ----
+  // 本用例只测总线路由，core 就绪状态直接置位（就绪门禁单独在下面验证）。
+  applySettingsSnapshot(resolveSettingsSnapshot({}), []);
   const { bus, received, unsubscribeCoreEvents } = makeTestBus();
 
   bus.emitToUi({ type: 'message', sessionId: 's1', data: { role: 'user', content: 'hi' } });
@@ -94,6 +98,41 @@ async function run(): Promise<void> {
     options: { toolName: 'Bash', message: 'm', choices: [] },
   });
   check('request(userChoice) returns index', choice.index === 0);
+
+  // ---- 就绪门禁：Core 收到 hostEnvironmentProvided 之前拒绝其它 UiEvent ----
+  // `docs/core-ui-separation.md` 第 7 节：快照就是就绪判据，顺序错误在启动期暴露。
+  {
+    resetSettingsSnapshot();
+    const gated = createEventBus();
+    let reached = false;
+    gated.onUiEvent('abortRequested', () => { reached = true; });
+
+    check('就绪前发其它 UiEvent 抛错', throws(() => {
+      gated.emitToCore({ type: 'abortRequested', sessionId: 's1' });
+    }));
+    check('被拒绝的事件不会到达订阅者', !reached);
+
+    // hostEnvironmentProvided 自身不受门禁限制（它就是让 Core 就绪的那条事件）
+    check('就绪前 hostEnvironmentProvided 不抛错', !throws(() => {
+      gated.emitToCore({
+        type: 'hostEnvironmentProvided',
+        extensionPath: '/ext',
+        logToConsole: false,
+        configDirName: '.tuxedo-cat',
+        settings: resolveSettingsSnapshot({}),
+        mcpServers: [],
+      });
+    }));
+    // 这条总线没有注册 core 侧订阅（没有 initializeCoreEvents），快照不会被应用；
+    // 这里直接调 core 侧的唯一写入口，验证「快照到达 = 就绪」这条判据。
+    applySettingsSnapshot(resolveSettingsSnapshot({}), []);
+    check('应用快照后判定为已就绪', hasSettingsSnapshot());
+
+    check('就绪后其它 UiEvent 正常分发', !throws(() => {
+      gated.emitToCore({ type: 'abortRequested', sessionId: 's2' });
+    }) && reached);
+    resetSettingsSnapshot();
+  }
 
   // ---- 全局注册 ----
   check('requireEventBus throws before set', throws(() => requireEventBus()));

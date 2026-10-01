@@ -574,19 +574,13 @@ export async function appendMessage(message: Message, sessionId: string, parentU
   // 确保项目对话目录存在（目录由 core 建；其中的 settings.json 由宿主写）
   await ensureProjectConversationDir(projectPath);
 
-  // 高亮语言预热集合由 core 扫描并上报（DEVELOPMENT.md 第 7.3 节 2.6）：
-  // 在消息落盘时扫描内容里的围栏代码块语言，只上报**尚未记录过**的语言，
-  // 避免每次落盘都触发一次磁盘写。写盘由 UI 侧经 UIHost.updateSettingsJson
-  // 承担（core 只读不写 settings.json）。
+  // 高亮语言：core 只从消息里扫出**本条消息用到**的语言并上报，不维护「已记录」集合
+  // ——那是 UI 的 `highlightLanguages` 字段，core 不感知、不进配置快照。
+  // 去重与上限由宿主承担，因此同一种语言可能被重复上报，宿主按幂等处理。
   try {
     const langs = collectFenceLanguages(message);
     if (langs.length > 0) {
-      const { readHighlightLanguagesSync } = await import('./Config.js');
-      const known = new Set(readHighlightLanguagesSync());
-      const fresh = langs.filter((lang) => !known.has(lang));
-      if (fresh.length > 0) {
-        emitToUi({ type: 'highlightLanguagesUsed', languages: fresh });
-      }
+      emitToUi({ type: 'highlightLanguagesUsed', languages: langs });
     }
   } catch {
     // 扫描 / 上报失败不影响落盘主流程

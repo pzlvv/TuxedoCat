@@ -25,7 +25,9 @@ import {
   DEFAULT_MAX_REPETITION_RETRIES,
 } from '../core/llm/repetitionDetector';
 import { RETRY_DELAY_MS, MAX_RETRIES, isRetryableStatus } from '../core/llm/shared';
-import { FALLBACK_MODEL_PARAMS, getAvailableOutputTokens, getModelConfig } from '../core/utils/modelConfig';
+import { FALLBACK_MODEL_PARAMS, getModelConfig } from '../core/utils/modelConfig';
+import { availableOutputTokens } from '../core/llm/modelLimits';
+import type { ModelLimits } from '../core/settingsSnapshot';
 import { estimateRequestTokens, estimateTextTokens } from '../core/utils/tokenEstimate';
 import { createChecker, runTests } from './helpers/harness';
 
@@ -167,21 +169,28 @@ async function run(): Promise<void> {
   );
 
   // ===== 上下文余量钳制 =====
+  // 限值改由配置快照提供：这里直接构造 ModelLimits，锁定派生逻辑本身
+  const bigLimits: ModelLimits = {
+    context: FALLBACK_MODEL_PARAMS.contextWindow,
+    output: FALLBACK_MODEL_PARAMS.maxOutputTokens,
+    apiType: 'OpenAI',
+    thinkingTokenBudget: FALLBACK_MODEL_PARAMS.thinking_token_budget,
+  };
   check(
-    'getAvailableOutputTokens 上下文充足',
-    getAvailableOutputTokens('deepseek-v4-pro', undefined, 1000) === 384 * 1024,
+    'availableOutputTokens 上下文充足',
+    availableOutputTokens(bigLimits, bigLimits, 1000) === 384 * 1024,
   );
   check(
-    'getAvailableOutputTokens 剩余空间不足',
-    getAvailableOutputTokens('deepseek-v4-pro', undefined, 1024 * 1024 - 100) === 100,
+    'availableOutputTokens 剩余空间不足',
+    availableOutputTokens(bigLimits, bigLimits, 1024 * 1024 - 100) === 100,
   );
   check(
-    'getAvailableOutputTokens 超窗取下限 1',
-    getAvailableOutputTokens('deepseek-v4-pro', undefined, 1024 * 1024 + 10) === 1,
+    'availableOutputTokens 超窗取下限 1',
+    availableOutputTokens(bigLimits, bigLimits, 1024 * 1024 + 10) === 1,
   );
   check(
-    'getAvailableOutputTokens 读取 modelConfigs.context',
-    getAvailableOutputTokens('m', { m: { context: 1000, output: 4096 } }, 900) === 100,
+    'availableOutputTokens 用限值的 context',
+    availableOutputTokens({ ...bigLimits, context: 1000, output: 4096 }, bigLimits, 900) === 100,
   );
 
   // ===== token 估算表 =====

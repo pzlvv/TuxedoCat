@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 
-use crate::i18n::tt;
+use crate::core_text;
 use crate::skills;
 
 /// 命令执行上下文
@@ -42,34 +42,6 @@ impl CommandContext {
     }
 }
 
-/// 命令描述：静态字符串，或延迟求值的函数（按当前 locale 国际化）
-pub enum Description {
-    /// 静态文案。内置 `spin` 用的是 `Dynamic`（按 locale 选文案），静态分支供
-    /// 后续内置命令与单测使用。
-    #[allow(dead_code)]
-    Static(String),
-    Dynamic(Arc<dyn Fn() -> String + Send + Sync>),
-}
-
-impl Clone for Description {
-    fn clone(&self) -> Self {
-        match self {
-            Description::Static(text) => Description::Static(text.clone()),
-            Description::Dynamic(factory) => Description::Dynamic(Arc::clone(factory)),
-        }
-    }
-}
-
-impl Description {
-    /// 求值（函数形式在此时取当前 locale 的文案）
-    pub fn resolve(&self) -> String {
-        match self {
-            Description::Static(text) => text.clone(),
-            Description::Dynamic(factory) => factory(),
-        }
-    }
-}
-
 /// 命令执行回调：返回 `Some(text)` 时由 dispatch 上报一条 system 消息
 pub type ExecuteFn = Arc<dyn Fn(&str, &CommandContext) -> Option<String> + Send + Sync>;
 
@@ -77,7 +49,8 @@ pub type ExecuteFn = Arc<dyn Fn(&str, &CommandContext) -> Option<String> + Send 
 #[derive(Clone)]
 pub struct BuiltinCommandDefinition {
     pub name: String,
-    pub description: Description,
+    /// 文案键（`core_text.rs`）；Core 不拼文案，翻译在 UI
+    pub description: String,
     pub aliases: Vec<String>,
     pub execute: ExecuteFn,
 }
@@ -86,7 +59,7 @@ pub struct BuiltinCommandDefinition {
 #[derive(Clone)]
 pub struct BuiltinCommand {
     pub name: String,
-    /// 已按当前 locale 求值的文案（斜杠补全列表用；宿主侧消费见 M7）
+    /// 文案键（斜杠补全列表用；宿主侧消费见 M7）
     #[allow(dead_code)]
     pub description: String,
     pub aliases: Vec<String>,
@@ -110,7 +83,7 @@ pub fn register_builtin_command(definition: BuiltinCommandDefinition) {
     BUILTIN_COMMANDS.lock().unwrap().push(definition);
 }
 
-/// 获取所有已注册的内置命令（函数形式的 description 在此时求值）
+/// 获取所有已注册的内置命令
 pub fn builtin_commands() -> Vec<BuiltinCommand> {
     skills::ensure_builtins();
     BUILTIN_COMMANDS
@@ -119,7 +92,7 @@ pub fn builtin_commands() -> Vec<BuiltinCommand> {
         .iter()
         .map(|command| BuiltinCommand {
             name: command.name.clone(),
-            description: command.description.resolve(),
+            description: command.description.clone(),
             aliases: command.aliases.clone(),
             execute: Arc::clone(&command.execute),
         })
@@ -267,7 +240,7 @@ pub fn dispatch(prompt: &str, context: &CommandContext) -> DispatchOutcome {
 pub fn spin_command_definition() -> BuiltinCommandDefinition {
     BuiltinCommandDefinition {
         name: "spin".to_string(),
-        description: Description::Dynamic(Arc::new(|| tt("执行 Spin 任务", "Execute Spin tasks"))),
+        description: core_text::SPIN_COMMAND_DESCRIPTION.to_string(),
         aliases: vec!["sprint".to_string()],
         execute: Arc::new(|args: &str, context: &CommandContext| {
             // 对齐 `bundled/spin.ts` 的 `args.trim() || 'auto'`（JS 空白口径）
@@ -288,15 +261,14 @@ pub fn spin_command_definition() -> BuiltinCommandDefinition {
                 return start(&trimmed);
             }
 
-            // 没有注入钩子（单测 / 未接线的装配）：明确报错而不是静默什么都不做
-            let message = tt(
-                "Spin 引擎未接线，无法执行 Spin 任务。",
-                "The Spin engine is not wired up, so Spin tasks cannot run.",
-            );
+            // 没有注入钩子（单测 / 未接线的装配）：明确报错而不是静默什么都不做。
+            // 瞬时提示只给「键 + 参数」，翻译在 UI（`docs/core-ui-separation.md` 第 4.9 节）。
             context.emit(json!({
-                "type": "message",
+                "type": "notice",
                 "sessionId": context.session_id,
-                "data": { "role": "user", "content": message },
+                "key": core_text::SPIN_ENGINE_NOT_WIRED,
+                "params": {},
+                "level": "error",
             }));
             None
         }),

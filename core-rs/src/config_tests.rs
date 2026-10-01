@@ -1,6 +1,11 @@
-//! `config` 的单元测试：配置目录、settings.json、工作目录表、provider 解析。
+//! `config` 的单元测试：配置目录、项目清单 workspace.meta.json、工作目录表、provider 解析。
 
 use super::*;
+
+// 快照的全局兜底限值（Host 侧 `FALLBACK_MODEL_PARAMS` 的同值）：Core 侧不再持有注册表，
+// 未显式配置模型限值时一律走这里。
+const DEFAULT_MAX_TOKENS: u32 = 384 * 1024;
+const DEFAULT_THINKING_BUDGET: u32 = 192 * 1024;
 use crate::test_support::Sandbox;
 use serde_json::json;
 
@@ -30,52 +35,34 @@ fn decode_project_dir_name_round_trips_percent_encoding() {
 }
 
 #[test]
-fn ensure_project_conversation_dir_announces_once_and_backfills() {
-    // 对齐 Embedded `ensureProjectConversationDir` → `notifyProjectConversationDirReady`：
-    // 每个项目对话目录只上报一次（`ensuredProjectDirs` 缓存），宿主据此写目录里的
-    // settings.json；`ensureConfigDirs` 还会为已存在的旧目录补上报一次。
+fn ensure_project_conversation_dir_writes_meta_once_and_backfills() {
+    // 对齐 Embedded `ensureProjectConversationDir`：Core 自己写项目清单
+    // `workspace.meta.json`（每个目录一次，`ensuredProjectDirs` 缓存），宿主不参与写盘；
+    // `ensureConfigDirs` 还会为已存在的目录补写一次。
     // 注：`Sandbox::new` 内部已持有 `serial()` 锁，这里不能再取（不可重入）。
     let sandbox = Sandbox::new("config-dir-ready");
     let project = sandbox.workspace.to_string_lossy().to_string();
-    let announced: std::sync::Arc<Mutex<Vec<(String, String)>>> =
-        std::sync::Arc::new(Mutex::new(Vec::new()));
-    let sink = std::sync::Arc::clone(&announced);
-    set_project_dir_ready_sink(std::sync::Arc::new(move |dir, workspace| {
-        sink.lock().unwrap().push((dir, workspace));
-    }));
 
-    let hits = || -> Vec<(String, String)> {
-        announced
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(_, workspace)| workspace == &project)
-            .cloned()
-            .collect()
-    };
+    // 同一目录 ensure 两次，清单只写一次且内容正确
+    let dir = ensure_project_conversation_dir(&project).unwrap();
+    let again = ensure_project_conversation_dir(&project).unwrap();
+    assert_eq!(dir, again);
+    let meta_path = dir.join("workspace.meta.json");
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+    assert_eq!(meta["workspacePath"], project);
+    assert!(!dir.join("settings.json").exists());
 
-    // 同一目录 ensure 两次只上报一次
-    ensure_project_conversation_dir(&project).unwrap();
-    ensure_project_conversation_dir(&project).unwrap();
-    let first = hits();
-    assert_eq!(first.len(), 1, "got {first:?}");
-    assert!(!first[0].0.is_empty());
-
-    // 目录名可反解成原始项目路径（宿主 settings.json 的记录口径）
-    let dir_name = std::path::Path::new(&first[0].0)
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
+    // 目录名可反解成原始项目路径（项目清单的记录口径）
+    let dir_name = dir.file_name().unwrap().to_string_lossy().to_string();
     assert_eq!(decode_project_dir_name(&dir_name).as_deref(), Some(project.as_str()));
 
-    // 模拟「目录是旧版本留下的」：清掉已上报集合后 backfill 应补上报一次
+    // 模拟「目录是旧版本留下的」：清掉缓存与清单后 backfill 应补写
+    std::fs::remove_file(&meta_path).unwrap();
     *ANNOUNCED_PROJECT_DIRS.lock().unwrap() = None;
     ensure_config_dirs().unwrap();
-    assert_eq!(hits().len(), 2, "backfill 未补上报");
+    assert!(meta_path.exists(), "backfill 未补写项目清单");
 
-    // 清掉出口，避免影响后续测试
-    *PROJECT_DIR_READY_SINK.lock().unwrap() = None;
     *ANNOUNCED_PROJECT_DIRS.lock().unwrap() = None;
 }
 
@@ -83,7 +70,6 @@ fn ensure_project_conversation_dir_announces_once_and_backfills() {
 fn host_environment_round_trips() {
     let sandbox = Sandbox::new("config-host-env");
     let env = host_environment().expect("host env");
-    assert_eq!(env.locale, "zh-CN");
     assert_eq!(env.config_dir_name, sandbox.config_dir_name);
     assert!(!env.log_to_console);
     assert!(extension_path().is_ok());
@@ -160,48 +146,6 @@ fn empty_workspace_values_are_treated_as_absent() {
 
     set_active_workspace(None);
     assert!(project_root("s1").is_err());
-}
-
-#[test]
-fn settings_json_is_empty_object_when_file_missing() {
-    let _sandbox = Sandbox::new("config-settings-missing");
-    assert_eq!(settings_json(), json!({}));
-    assert_eq!(default_agent_mode(), "risk");
-    assert!(default_model().is_none());
-}
-
-#[test]
-fn settings_json_reads_and_caches_then_reset_reloads() {
-    let sandbox = Sandbox::new("config-settings-cache");
-    sandbox.write_settings(json!({ "defaultAgentMode": "manual", "defaultModel": "gpt-x" }));
-    assert_eq!(settings_json()["defaultAgentMode"], "manual");
-    assert_eq!(default_agent_mode(), "manual");
-    assert_eq!(default_model().as_deref(), Some("gpt-x"));
-
-    // 直接改盘上的文件不会立刻生效（有缓存）
-    std::fs::write(settings_path().unwrap(), json!({ "defaultAgentMode": "auto" }).to_string())
-        .unwrap();
-    assert_eq!(default_agent_mode(), "manual");
-
-    reset_settings_cache();
-    assert_eq!(default_agent_mode(), "auto");
-}
-
-#[test]
-fn invalid_settings_json_falls_back_to_null() {
-    let sandbox = Sandbox::new("config-settings-invalid");
-    sandbox.write_settings(json!({ "defaultAgentMode": "manual" }));
-    std::fs::write(settings_path().unwrap(), "{ not json").unwrap();
-    reset_settings_cache();
-    assert_eq!(settings_json(), json!({}));
-    assert_eq!(default_agent_mode(), "risk");
-}
-
-#[test]
-fn empty_default_model_is_ignored() {
-    let sandbox = Sandbox::new("config-default-model");
-    sandbox.write_settings(json!({ "defaultModel": "" }));
-    assert!(default_model().is_none());
 }
 
 #[test]
@@ -398,8 +342,6 @@ fn config_accessors_fail_before_host_environment_arrives() {
     assert!(config_home().is_err());
     assert!(extension_path().is_err());
     assert!(conversations_root().is_err());
-    assert!(settings_path().is_err());
-    assert_eq!(settings_json(), json!({}));
     assert_eq!(default_agent_mode(), "risk");
     assert!(ensure_config_dirs().is_err());
     assert!(project_conversation_dir("D:/repo").is_err());
@@ -436,110 +378,16 @@ fn home_dir_prefers_userprofile_then_home() {
     }
 }
 
-// ==================== settings.json 写入 ====================
 
 #[test]
-fn merge_json_patch_follows_rfc7386() {
-    // 对象递归合并；`null` 删除该键；数组整体替换
-    let mut target = json!({ "a": { "b": 1, "c": 2 }, "d": [1, 2], "e": "x" });
-    merge_json_patch(&mut target, &json!({ "a": { "b": 9, "z": 3 }, "d": [3], "e": null }));
-    assert_eq!(target, json!({ "a": { "b": 9, "c": 2, "z": 3 }, "d": [3] }));
-
-    // 数组不做元素级合并
-    let mut target = json!({ "list": [1, 2, 3] });
-    merge_json_patch(&mut target, &json!({ "list": [9] }));
-    assert_eq!(target, json!({ "list": [9] }));
-
-    // 目标侧不是对象时整体替换
-    let mut target = json!({ "a": 1 });
-    merge_json_patch(&mut target, &json!({ "a": { "nested": true } }));
-    assert_eq!(target, json!({ "a": { "nested": true } }));
-
-    // 目标本身不是对象：按空对象起底
-    let mut target = json!([1, 2]);
-    merge_json_patch(&mut target, &json!({ "a": 1 }));
-    assert_eq!(target, json!({ "a": 1 }));
-}
-
-#[test]
-fn update_settings_json_merges_and_resets_the_cache() {
-    let sandbox = Sandbox::new("config-settings-write");
-    sandbox.write_settings(json!({ "llm": { "webSearch": true }, "uiLanguage": "zh" }));
-
-    // 预热读缓存
-    assert_eq!(settings_json()["uiLanguage"], "zh");
-
-    let changed = update_settings_json(&json!({
-        "llm": { "webSearch": false, "thinking_effort": "high" },
-        "defaultAgentMode": "auto",
-    }))
-    .unwrap();
-    assert!(changed);
-
-    // 补丁合并进已有字段，未触及的字段保留
-    assert_eq!(
-        sandbox.read_settings(),
-        json!({
-            "llm": { "webSearch": false, "thinking_effort": "high" },
-            "uiLanguage": "zh",
-            "defaultAgentMode": "auto",
-        })
-    );
-    // 写盘后读缓存已失效：`settings_json()` 立刻拿到新值
-    assert_eq!(settings_json()["llm"]["webSearch"].as_bool(), Some(false));
-    assert_eq!(settings_json()["llm"]["thinking_effort"], "high");
-}
-
-#[test]
-fn update_settings_json_skips_a_no_op_patch() {
-    let _sandbox = Sandbox::new("config-settings-noop");
-    let path = settings_path().unwrap();
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    // 故意写一份紧凑格式：若发生重写，格式会变成 pretty（2 空格缩进）
-    std::fs::write(&path, "{\"uiLanguage\":\"zh\"}").unwrap();
-    reset_settings_cache();
-
-    assert!(!update_settings_json(&json!({ "uiLanguage": "zh" })).unwrap());
-    assert!(!update_settings_json(&json!({})).unwrap());
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"uiLanguage\":\"zh\"}");
-
-    // 缺失文件 + 空补丁：不创建文件
-    let empty = std::env::temp_dir().join("standalone-core-no-settings.json");
-    let _ = std::fs::remove_file(&empty);
-}
-
-#[test]
-fn merge_highlight_languages_dedupes_and_caps() {
-    let sandbox = Sandbox::new("config-highlight-languages");
-    assert!(merge_highlight_languages(&["ts".to_string(), "tsx".to_string()]).unwrap());
-    assert_eq!(sandbox.read_settings()["highlightLanguages"], json!(["ts", "tsx"]));
-
-    // 已记录过的语言不重复写入
-    assert!(!merge_highlight_languages(&["ts".to_string()]).unwrap());
-    assert_eq!(sandbox.read_settings()["highlightLanguages"], json!(["ts", "tsx"]));
-
-    // 空串（假值）跳过
-    assert!(!merge_highlight_languages(&["".to_string()]).unwrap());
-
-    // 超过上限（60）时丢弃最早记录
-    let many: Vec<String> = (0..70).map(|index| format!("lang{index}")).collect();
-    assert!(merge_highlight_languages(&many).unwrap());
-    let settings = sandbox.read_settings();
-    let list = settings["highlightLanguages"].as_array().unwrap();
-    assert_eq!(list.len(), 60);
-    assert_eq!(list.first().unwrap(), "lang10");
-    assert_eq!(list.last().unwrap(), "lang69");
-}
-
-#[test]
-fn write_project_settings_is_idempotent_and_readable() {
+fn write_workspace_meta_is_idempotent_and_readable() {
     let sandbox = Sandbox::new("config-project-settings");
     let project = sandbox.workspace.to_string_lossy().to_string();
     let dir = project_conversation_dir(&project).unwrap();
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("settings.json");
+    let path = dir.join("workspace.meta.json");
 
-    write_project_settings(&dir, &project).unwrap();
+    write_workspace_meta(&dir, &project).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.starts_with("{\n  \"workspacePath\""), "got {text}");
     assert_eq!(
@@ -549,19 +397,19 @@ fn write_project_settings_is_idempotent_and_readable() {
 
     // 幂等：workspacePath 未变化时不重写（紧凑格式原样保留）
     std::fs::write(&path, "{\"workspacePath\":\"x\"}").unwrap();
-    write_project_settings(&dir, "x").unwrap();
+    write_workspace_meta(&dir, "x").unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"workspacePath\":\"x\"}");
 
     // 反查
-    assert_eq!(project_settings_workspace_path(&dir).as_deref(), Some("x"));
+    assert_eq!(workspace_meta_workspace_path(&dir).as_deref(), Some("x"));
     assert_eq!(
-        project_settings_workspace_path(std::path::Path::new("no-such-dir")),
+        workspace_meta_workspace_path(std::path::Path::new("no-such-dir")),
         None
     );
 
     // 文件内容不是对象（数组）时按空对象重建（对齐 Embedded 的 `!Array.isArray` 判定）
     std::fs::write(&path, "[1,2]").unwrap();
-    write_project_settings(&dir, "y").unwrap();
+    write_workspace_meta(&dir, "y").unwrap();
     assert_eq!(
         serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).unwrap(),
         json!({ "workspacePath": "y" })
@@ -570,13 +418,13 @@ fn write_project_settings_is_idempotent_and_readable() {
 
 #[test]
 fn ensure_project_conversation_dir_writes_the_manifest() {
-    // Standalone 下项目清单由 Core 写（`docs/standalone-core.md` 第 8 节）
+    // 项目清单由 Core 写（`docs/core-ui-separation.md` 第 4.1 节）
     let sandbox = Sandbox::new("config-dir-manifest");
     let project = sandbox.workspace.to_string_lossy().to_string();
     let dir = ensure_project_conversation_dir(&project).unwrap();
     assert_eq!(
         serde_json::from_str::<Value>(
-            &std::fs::read_to_string(dir.join("settings.json")).unwrap()
+            &std::fs::read_to_string(dir.join("workspace.meta.json")).unwrap()
         )
         .unwrap(),
         json!({ "workspacePath": project })

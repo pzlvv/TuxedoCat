@@ -190,33 +190,6 @@ fn with_enabled_marks_matching_names() {
     );
 }
 
-#[test]
-fn normalize_default_names_dedupes_and_drops_empty() {
-    assert_eq!(
-        normalize_default_names(&[
-            "a".to_string(),
-            "".to_string(),
-            "a".to_string(),
-            "b".to_string()
-        ]),
-        vec!["a".to_string(), "b".to_string()]
-    );
-}
-
-#[test]
-fn apply_mcp_defaults_replaces_enabled_list() {
-    let mut cfg = json!({ "mcp": { "enabled": ["old"], "other": 1 }, "x": 2 });
-    apply_mcp_defaults(&mut cfg, &["new".to_string(), "new".to_string()]);
-    assert_eq!(cfg["mcp"]["enabled"], json!(["new"]));
-    assert_eq!(cfg["mcp"]["other"], json!(1));
-    assert_eq!(cfg["x"], json!(2));
-
-    // mcp 不是对象时替换成对象
-    let mut cfg = json!({ "mcp": "nope" });
-    apply_mcp_defaults(&mut cfg, &["a".to_string()]);
-    assert_eq!(cfg["mcp"], json!({ "enabled": ["a"] }));
-}
-
 // ==================== 读盘 / 会话覆盖 ====================
 
 #[test]

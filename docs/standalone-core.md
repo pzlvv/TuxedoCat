@@ -2,7 +2,9 @@
 
 本规格描述 Core 的第二种实现——Standalone Core。Core 与 UI 的分离形态见
 `docs/core-ui-separation.md`；本规格在其基础上确定 Standalone Core 的进程形态、选择方式、
-传输协议与事实归属。事件词汇表见 `DEVELOPMENT.md` 第 3、4 节。
+传输协议与事实归属。连接模型（Client / Connection / 工作区引用）见
+`docs/client-connection.md`；Core 进程的 daemon 见 `docs/core-daemon.md`。
+事件词汇表见 `DEVELOPMENT.md` 第 3、4 节。
 
 ---
 
@@ -15,14 +17,15 @@
 3. **契约不变**：两种实现对 UI 呈现同一份 `CoreEvent` / `CoreRequest` / `UiEvent` 词汇表，
    载荷字段逐项一致。
 4. **独立进程**：Standalone Core 是独立的可执行文件，承载 core 侧全部职责
-   （引擎、工具、历史、配置、MCP、技能）。
+   （引擎、工具、历史、MCP 子进程、技能）。
 5. **平台范围**：当前产出 Windows x64；目标矩阵预留 Windows / Linux × x64 / arm64。
 6. **一条帧通道**：UI 与 Standalone Core 之间只有一条双向帧通道；UI 为客户端，Core 为服务端。
-7. **一个宿主实例一个 Core 进程**：每个宿主实例 fork 自己的 Core 进程；一个 Core 进程只服务
-   它的宿主实例。
-8. **生命周期归宿主**：Core 进程由宿主启动、终止，并在崩溃后由宿主重启。
-9. **崩溃可恢复**：Core 进程意外退出后宿主重启它并恢复接线；单个宿主实例的 Core 崩溃不
-   影响其它宿主实例。
+7. **一个工作区一个 Core 进程**：每个打开的工作区对应一个 Core 进程；一个 Core 进程只服务
+   它的 Connection（`docs/client-connection.md` 第 5 节）。
+8. **生命周期归 daemon**：Core 进程由 daemon 启动、终止与重启；daemon 见
+   `docs/core-daemon.md`。
+9. **崩溃可恢复**：Core 进程意外退出后由 daemon 重启并恢复接线；单个 Connection 的 Core
+   崩溃不影响其它 Connection。
 
 ### 1.1 落地阶段
 
@@ -30,8 +33,8 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 
 - `UiEvent` 只经帧通道进入 Core 进程；进程内不注册 core 侧订阅，也不建会话队列；
 - 用户消息经 `UiEvent.userMessageSubmitted` 进入 Core，宿主不直接调用引擎；
-- Core 进程承担：握手、帧通道、连接态重放、崩溃重启、日志上报，以及会话引擎、
-  内置工具（含后台 Bash、子代理与 Skill）、会话落盘、配置读写与高亮语言落盘、
+- Core 进程承担：握手、帧通道、连接态重放、日志上报，以及会话引擎、
+  内置工具（含后台 Bash、子代理与 Skill）、会话落盘、项目清单读写、
   技能加载与斜杠命令解析（`CommandDispatcher` + 内置命令 + 技能命令）、
   对话压缩（自动 / 手动触发、摘要生成、归档与 `messagesReplaced` 重放）、
   Responses API（`apiType='Responses'`，含内置 Web Search 的缺口见 `TODO.md`）、
@@ -39,6 +42,8 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
   `mcp__*` 工具注入与按会话启用列表过滤）、
   Spin 引擎（`spin.json` 读写、拓扑排序、子代理执行、验收判定、`/spin` 命令）、
   智能命名 / 压缩归档展开 / DeepSeek 余额推送（都要读 core 的磁盘数据，因此整体在 Core 侧）；
+- 全局配置与 MCP 配置的读写**不在** Core 侧：两者由 UI 持有，经
+  `hostEnvironmentProvided` 的配置快照下发（`docs/core-ui-separation.md` 第 4 节）；
 - 尚未迁入的部分见 `TODO.md`「已知缺口」与 `DIFF.md` 第 3 节。
 
 尚未迁入的能力在 Core 侧表现为明确的提示消息或缺失，不做静默降级。
@@ -59,8 +64,8 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 | 握手 | 通道建立后的协议版本确认 | 传输层 |
 | 会话 | 一段对话的引擎实例与磁盘数据 | core |
 | 宿主实例 | 一个 UI 进程（VS Code 扩展宿主 / Electron 主进程） | UI |
-| Core 实例 | 一个 Standalone Core 进程，归属一个宿主实例 | 宿主启动，Core 自身 |
-| 重启 | Core 实例意外退出后由宿主重新启动并恢复接线 | UI |
+| Core 实例 | 一个 Standalone Core 进程，归属一个工作区的 Connection | daemon 启动，Core 自身 |
+| 重启 | Core 实例意外退出后由 daemon 重新启动并恢复接线 | daemon（`docs/core-daemon.md`） |
 | Core 可执行文件名 | `core.binaryName`（`src/config/project.json`），Windows 加 `.exe` | 工程配置 |
 | Core 产物目录 | `resources/<core.resourceDir>/<arch>-<platform>/` | 工程配置 |
 
@@ -139,7 +144,7 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 | shell 探测 | `shell.rs::detect` | 非 Windows 直接用 `$SHELL`（缺省 `/bin/bash`）；Windows 才走 Git Bash → PowerShell → cmd.exe 的优先级 |
 | 资源定位 | `tools.rs::ripgrep_path` / `get_pandoc_path`、`config.rs::extension_path` | 可执行名按 `cfg!(windows)` 加 `.exe`；产物目录按 `<arch>-<platform>` 解析，矩阵外直接拒绝而不是猜一个目录 |
 | 主目录 | `config.rs::home_dir` | `USERPROFILE` 优先、`HOME` 兜底，两者都缺才报错 |
-| 系统语言 | `i18n.rs::get_system_locale` | 仅 Windows 查 PowerShell `Get-UICulture`；其余平台读 `LANG` / `LC_ALL` |
+| 系统语言 | 宿主：`src/host/i18n.ts::getSystemLocale`（不在 Core 侧） | 仅 Windows 查 PowerShell `Get-UICulture`；其余平台读 `LANG` / `LC_ALL` |
 | 控制台窗口 | `util.rs::hide_console` | 仅 Windows 设 `CREATE_NO_WINDOW`，非 Windows 是空操作 |
 
 矩阵一致性由 `src/test/corePlatformMatrix.test.ts` 锁定：构建脚本的目标登记、
@@ -179,11 +184,17 @@ node scripts/build-core.mjs --target aarch64-pc-windows-msvc
 - 载荷字段名与 TypeScript 类型逐项一致（`camelCase` 原样）。
 - `CoreEvent` 的每个 `type` 在两种实现下语义一致（`DEVELOPMENT.md` 第 4.1 节）。
 - `CoreRequest` 的两个请求（`toolPermissionRequested` / `userChoice`）由 Core 发起、UI 应答。
-- `UiRequest` 的七个请求（`conversationListRequested` / `uiLanguageRequested` /
-  `systemLocaleRequested` / `configHomeDirRequested` / `smartNamingRequested` /
+- `UiRequest` 的四个请求（`conversationListRequested` / `smartNamingRequested` /
   `balanceRequested` / `compactArchiveRequested`）由 UI 发起、Core 应答：
   宿主不直接读 core 的磁盘数据（第 10 节）。未知类型一律回 `ok:false` 的响应，
   不做静默降级。
+- 配置不走请求：Core 不读 `settings.json` / `mcp.json`，也不请求写配置；配置由 UI 经
+  `hostEnvironmentProvided` 的快照下发（`docs/core-ui-separation.md` 第 4 节）。
+  设置面板的整段 mutation（provider 表 + `modelConfigs` 补齐 + 顶层默认值 + MCP
+  默认启用列表）在 UI 侧执行，写盘后重新推整份快照——Core 侧没有「保存配置」这条通路。
+- Core 不感知语言：`hostEnvironmentProvided` 没有 locale 字段，也没有与语言相关的请求。
+  Core 面向界面的文本以「键 + 参数」表达（`CoreEvent.notice`、内置命令描述），
+  翻译在 UI（`docs/core-ui-separation.md` 第 4.8 / 4.9 节）。
 - 边界语义沿用 `docs/core-ui-separation.md` 第 3.5 节，在帧通道上如此落地：
   - UI 侧 `onCoreEvents` 尚未注册时到达的 `CoreEvent` 先缓存，注册后按序补投；
   - 某 `UiEvent` 在 Core 侧无消费者 → 丢弃并记录；
@@ -220,8 +231,14 @@ node scripts/build-core.mjs --target aarch64-pc-windows-msvc
 ### 6.3 握手
 
 1. UI 启动 Core 进程后发送 `hello`。
-2. Core 校验 `protocol`：通过则回 `ready`；不通过则写诊断并退出。
-3. UI 收到 `ready` 后开始发送 `uiEvent` 帧；`ready` 之前的 `uiEvent` 在 UI 侧排队。
+2. Core 校验 `protocol`：通过则回帧 `ready`；不通过则写诊断并退出。
+3. UI 收到帧 `ready` 后，先发 `hostEnvironmentProvided`（含配置快照与 MCP 服务器表），
+   再按原顺序发出排队的其它 `uiEvent`。
+4. Core 处理完 `hostEnvironmentProvided` 后发出 `CoreEvent.coreReady`；在此之前收到任何
+   `UiEvent` 都抛错（`docs/core-ui-separation.md` 第 7 节）。
+
+注意区分帧 `ready`（握手通过）与 `CoreEvent.coreReady`（Core 就绪）：前者是传输层事实，
+后者是 Core 业务状态。
 
 ### 6.4 关闭
 
@@ -242,30 +259,32 @@ node scripts/build-core.mjs --target aarch64-pc-windows-msvc
 
 | 阶段 | 行为 |
 | --- | --- |
-| 启动 | `CORE_KIND = standalone` 时 bootstrap 定位并启动 Core 进程，完成握手 |
-| 就绪前 | UI 侧 `CoreEvent` 处理器已注册；`uiEvent` 帧在 UI 侧排队 |
+| 启动 | 打开工作区时，Client 经 daemon 请求一个 Core 进程；daemon 起进程，完成握手 |
+| 就绪前 | UI 侧 `CoreEvent` 处理器已注册；`uiEvent` 帧在 Client 侧排队，不投递 |
+| 就绪 | Core 处理完 `hostEnvironmentProvided` 后发 `CoreEvent.coreReady`；Client 解除门禁 |
 | 运行 | UI 把 `emitToCore` 写为 `uiEvent` 帧；Core 把 `emitToUi` / `request` 写为帧；`request` 的响应回带 `id` |
-| 实例边界 | 一个宿主实例拥有一个 Core 进程；标准输入关闭即连接结束 |
-| 终止 | UI 发 `shutdown`，等待 Core 退出；超时后强制结束 |
-| 崩溃 | 未决 `request` 全部 reject；宿主重启 Core 进程并恢复接线（第 7.1 节） |
+| 实例边界 | 一个工作区拥有一个 Core 进程；连接结束即标准输入关闭 |
+| 终止 | 关闭工作区时，Client 发 `shutdown`，等待 Core 退出；超时后由 daemon 强制结束 |
+| 崩溃 | 未决 `request` 全部 reject；daemon 重启 Core 进程并恢复接线（第 7.1 节） |
 
 ### 7.1 崩溃与重启
 
 - **触发**：Core 进程在收到 `shutdown` 之前退出，或帧通道意外关闭。
-- **即时处理**：未决 `request` 全部 reject；宿主把受影响会话的在跑工作标记为失败，并写入
+- **即时处理**：未决 `request` 全部 reject；Client 把受影响会话的在跑工作标记为失败，并写入
   一条错误消息。
-- **重启**：宿主以退避策略重启 Core 进程；重启后重新握手，重放 `hostEnvironmentProvided`，
-  并对宿主已打开的会话逐个发 `conversationOpened`（会话工作目录由 Core 读 `meta.json`
-  的 `project` 自行恢复）。
+- **重启**：daemon 以退避策略重启 Core 进程（`docs/core-daemon.md` 第 5 节）；重启后重新
+  握手，重放 `hostEnvironmentProvided`（含配置快照），并对已打开的会话逐个发
+  `conversationOpened`（会话工作目录由 Core 读 `meta.json` 的 `project` 自行恢复）。
 - **恢复**：会话数据在磁盘上，重启后按需重建引擎；进程内未落盘的在跑工作不恢复。
 - **上限**：时间窗口内重启次数超过上限时停止重启并报告，不静默重试。
-- **隔离**：一个宿主实例的 Core 崩溃不影响其它宿主实例；每个宿主实例有自己的 Core 进程。
+- **隔离**：一个 Connection 的 Core 崩溃不影响其它 Connection；每个工作区有自己的 Core 进程。
 
 ### 7.2 连接态重放
 
 - 连接态事件（`hostEnvironmentProvided`）保留最后一次取值，每次握手后重放。
-- 宿主已打开的会话集合由 UI 侧维护；每次握手后逐个重放 `conversationOpened`。
-- 就绪前发出的其它 `UiEvent` 在 UI 侧排队，握手后按原顺序发出。
+- `hostEnvironmentProvided` 的重放排在最前，其余重放（`conversationOpened` 等）在其后。
+- 宿主已打开的会话集合由 Client 侧维护；每次握手后逐个重放 `conversationOpened`。
+- 就绪前发出的其它 `UiEvent` 在 Client 侧排队，握手后按原顺序发出。
 - 重放由总线适配器承担，业务代码不感知重连。
 
 ---
@@ -276,17 +295,21 @@ Standalone Core 下，core 侧事实的归属与 `docs/core-ui-separation.md` �
 
 | 事实 | owner | 说明 |
 | --- | --- | --- |
-| 全局配置 `~/<CONFIG_DIR_NAME>/settings.json` | Core | 读与写都在 Core |
-| 项目清单 `<conversations>/<project>/settings.json` | Core | 读与写都在 Core |
+| 全局配置 `~/<CONFIG_DIR_NAME>/settings.json` | UI | 读与写都在 UI；Core 只消费快照 |
+| MCP 配置 `~/<CONFIG_DIR_NAME>/mcp.json` | UI | 读与写都在 UI；Core 只消费快照 |
+| 配置快照 | UI 提供，Core 消费 | 经 `UiEvent.hostEnvironmentProvided`，一次全量 |
+| 内置模型注册表 | UI | 合并进快照的 `modelLimits`；Core 不持有 |
+| 项目清单 `<conversations>/<project>/workspace.meta.json` | Core | 在 Core 数据目录内，读与写都在 Core |
 | 会话数据（元数据 / 消息 / 归档） | Core | 落盘格式与 Embedded 一致 |
 | 会话工作目录表 | Core | 单目录宿主（VS Code）在会话首次解析目录前经 `UiEvent.sessionWorkspaceAssigned` 登记；多工作目录宿主（Electron）按来源视图登记；加载对话后由 `meta.json` 的 `project` 校正 |
 | 工具执行 | Core | 在 Core 所在机器操作文件系统 |
 | MCP 子进程 | Core | 生命周期由 Core 管理 |
 | ripgrep / pandoc | Core | 随 Core 分发并定位 |
-| 宿主环境（locale / extensionPath / logToConsole） | UI 提供，Core 消费 | 经 `UiEvent.hostEnvironmentProvided` |
+| 宿主环境（extensionPath / logToConsole / configDirName） | UI 提供，Core 消费 | 经 `UiEvent.hostEnvironmentProvided` |
 | 会话工作目录 | UI 提供，Core 消费 | 经 `UiEvent.sessionWorkspaceAssigned` |
 | 日志行 | Core 产生 | 经 `CoreEvent.log` 上报；标准错误仅用于诊断 |
 | 界面表现（diff / Mermaid / 外部链接 / 另存为） | UI | 不进 Core |
+| i18n（翻译表与语言选择） | UI | Core 不感知语言，面向用户的文本以键 + 参数表达 |
 
 ---
 
@@ -298,11 +321,12 @@ Standalone Core 下，core 侧事实的归属与 `docs/core-ui-separation.md` �
 2. 命令在轮次边界解析（内置命令就地执行 / 技能命令注入 Skill tool_use）；
 3. 工具执行与权限策略（含 `Skill` 的末位不变式）；
 4. 会话运行时状态（`idle` / `waiting`）；
-5. 历史落盘格式与目录布局；
-6. 配置读写；
+5. 历史落盘格式与目录布局（含项目清单 `workspace.meta.json`）；
+6. 配置快照的消费（同一份快照 → 同一组行为；两种实现都不读配置文件）；
 7. MCP 会话引用与工具过滤；
 8. 技能加载与注入（frontmatter 解析 / 变量替换 / 目录扫描 / 内置注册）；
-9. 压缩与归档（阈值 / 触发点 / 摘要 prompt / 归档文件 / `messagesReplaced`）。
+9. 压缩与归档（阈值 / 触发点 / 摘要 prompt / 归档文件 / `messagesReplaced`）；
+10. 就绪判据（处理完 `hostEnvironmentProvided` 后发 `coreReady`）与就绪前的 `UiEvent` 抛错。
 
 差异只在进程边界与资源定位，不在契约与磁盘格式。
 
@@ -315,25 +339,36 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 
 | 事实 | Embedded 下的读取 | Standalone 下的来源 |
 | --- | --- | --- |
-| 对话列表元数据 | `loadConversationList` | 已改：`UiRequest.conversationListRequested`（`conversationListChanged` 仍作为「该刷新了」的信号） |
-| 会话运行时状态 | `getSessionRuntimeStates` | 已改：`sessionRuntimeChanged` 的全量推送（宿主缓存快照） |
-| 会话工作目录 | `getSessionWorkspace` | 已改：会话上下文事件（宿主不再读） |
-| UI 语言 | `readUiLanguageSync` | 已改：`UiRequest.uiLanguageRequested`（握手后预热成同步可读的缓存） |
-| 高亮语言 | `readHighlightLanguagesSync` | 已改：`CoreEvent.highlightLanguagesUsed`（Standalone 下 Core 直接并入 `settings.json`） |
-| 配置目录 | `getConfigHomeDir` | 已改：`UiRequest.configHomeDirRequested`（握手后预热；未预热时抛错而不是猜路径） |
-| 项目对话目录 | `getProjectConversationDir` | 已改：`projectConversationDirReady`（Standalone 下 Core 自己写清单） |
+| 对话列表元数据 | `loadConversationList` | `UiRequest.conversationListRequested`（`conversationListChanged` 仍作为「该刷新了」的信号） |
+| 会话运行时状态 | `getSessionRuntimeStates` | `sessionRuntimeChanged` 的全量推送（宿主缓存快照） |
+| 会话工作目录 | `getSessionWorkspace` | 会话上下文事件（宿主不再读） |
+| 压缩归档展开 | core 的归档读取函数 | `UiRequest.compactArchiveRequested` |
+| 会话内容 / 元数据 / 派生事实 | `loadConversation` + `hasCompactArchive` + `getPendingToolUseIds` + `getStoredSessionAgentMode` | `UiRequest.conversationLoadRequested` |
+| 斜杠命令与技能列表 | `getBuiltinCommands` + `getBundledSkills` + `getSkillDirCommands` | `UiRequest.skillsRequested` |
+| MCP 面板列表（配置 + 启用状态 + 运行时状态） | `readMcpServers` + `getMcpManager().getServerStatus()` | `UiRequest.mcpServersRequested` |
+| 对话空间统计 | `getConversationSpaces` | `UiRequest.conversationSpacesRequested` |
+| 会话挂起持久化收尾 | `QueryEngine.flush()` | `UiRequest.flushSessionRequested` |
+| 智能命名 / 余额 | core 模块直接调用 | `UiRequest.smartNamingRequested` / `balanceRequested` |
+| Core 就绪 | — | `CoreEvent.coreReady` |
 
-三项「待改」已全部完成：新增 **UI → core 的请求方向**（协议版本 2），
-`AssistantEventBus` 增加 `UiRequest` / `UiRequestResultMap` / `UiRequestHandlers`
-与 `requestCore()` / `onUiRequests()`，与 `CoreRequest` 完全对称。
+例外（Standalone 下与本机 Core 共用同一份磁盘，远程工作区落地时需要迁到 `UiRequest`）：
 
-Standalone 下宿主侧已不存在对 core 磁盘数据的直接读取。`embedded` 与 `standalone`
-的差异只在进程边界：`coreFacts` 是宿主侧的统一入口，按 `CORE_KIND` 分派
-（Embedded 直接调 core 的只读函数，Standalone 经 `requestCore`）。
+| 事实 | 宿主侧读取 | 说明 |
+| --- | --- | --- |
+| 会话工作目录索引 | `history/Config.ts` 的 `getSessionWorkspace` / `setSessionWorkspace` | 宿主侧另存一份 `sessionId → workspacePath`，只用于「发事件前取会话自己的目录」；权威表在 Core 进程内，由 `sessionWorkspaceAssigned` 同步 |
+| 工具 `_meta` 的 before/after | `ToolHandler` → `updateToolUseMeta` | 权限确认时追加写入会话 JSONL；与 Core 的写入共用同一份磁盘 |
 
-另有两条 UI → core 的请求用于「core 的事实 + 副作用」：`smartNamingRequested`
-（读会话 + 调 LLM + 解析标题）与 `compactArchiveRequested`（归档与主 JSONL 合并），
-以及 `balanceRequested`（按 hostname 找 DeepSeek provider 的 Key 查余额）。
+以下事实已从「core 事实」移出，归 UI 自己：
+
+| 事实 | 现在归谁 |
+| --- | --- |
+| UI 语言 | UI：`uiLanguage` 不进快照，Core 不感知 |
+| 高亮语言 | UI：webview 扫描并上报，Core 不感知 |
+| 配置目录 | UI：`settings.json` / `mcp.json` 的路径由 UI 自己解析，不问 Core |
+| 项目清单 | Core：在 Core 数据目录内，由 Core 自己写，不经总线 |
+
+`coreFacts` 是宿主侧的统一入口，按 `CORE_KIND` 分派；随着 UI 语言 / 高亮语言 / 配置目录
+三项归 UI，它的职责收缩为「按需向 Core 取数」。
 
 ---
 
@@ -343,23 +378,28 @@ Standalone 下宿主侧已不存在对 core 磁盘数据的直接读取。`embed
 - 网络连接断开后的重连（进程崩溃后的重启见第 7.1 节）；
 - 目标矩阵中预留平台的实际产出；
 - UI 侧的界面表现与 webview 协议；
-- `embedded` 实现的改动。
+- `embedded` 实现的改动；
+- daemon 的进程模型与协议（见 `docs/core-daemon.md`）；
+- 远程工作区与 endpoint 传输（见 `docs/client-connection.md` 第 9 节）。
 
 ---
 
 ## 12. 验收要点
 
-1. `CORE_KIND = standalone` 时，bootstrap 启动配置中的 Core 可执行文件并完成握手。
+1. `CORE_KIND = standalone` 时，打开工作区经 daemon 启动配置中的 Core 可执行文件并完成握手。
 2. UI 进程不加载 core 的引擎、工具与历史模块。
 3. 帧载荷字段与 `src/core/AssistantEventBus.ts` 的类型逐项一致。
 4. 用户消息 → 流式回复 → 工具执行的完整回路可用。
 5. 会话数据落盘格式与 Embedded 一致，两实现可互相读取同一目录。
-6. 全局配置与项目清单的写入只在 Core 侧发生。
-7. Core 进程被杀死后，宿主重启它并恢复接线；未决请求 reject，不静默挂起。
-8. 两个宿主实例各自拥有一个 Core 进程；其中一个的 Core 崩溃不影响另一个。
-9. 重启次数超过上限时宿主停止重启并报告。
-10. `CORE_KIND = embedded` 时装配进程内 Core。
-11. 产物目录按平台 / 架构解析，Windows x64 之外的目录为预留。
+6. 全局配置与 MCP 配置的写入只在 UI 侧发生；Core 侧不存在这两个文件的路径与读写。
+7. 项目清单 `workspace.meta.json` 的写入只在 Core 侧发生。
+8. Core 处理完 `hostEnvironmentProvided`（含配置快照）前收到 `UiEvent` 抛错；处理完发出
+   `CoreEvent.coreReady`。
+9. Core 进程被杀死后，daemon 重启它并恢复接线；未决请求 reject，不静默挂起。
+10. 两个工作区各自拥有一个 Core 进程；其中一个的 Core 崩溃不影响另一个。
+11. 重启次数超过上限时 daemon 停止重启并报告。
+12. `CORE_KIND = embedded` 时装配进程内 Core，恒一个 Connection。
+13. 产物目录按平台 / 架构解析，Windows x64 之外的目录为预留。
 
 ---
 
@@ -371,6 +411,8 @@ Standalone 下宿主侧已不存在对 core 磁盘数据的直接读取。`embed
 | 帧协议与编解码 | `src/host/standalone/protocol.ts` |
 | 总线适配器 | `src/host/standalone/StandaloneEventBus.ts` |
 | 进程管理（启动 / 重启 / 终止） | `src/host/standalone/CoreProcess.ts` |
+| daemon 客户端 | `src/host/standalone/CoreDaemon.ts`（新增，见 `docs/core-daemon.md`） |
+| 配置快照 | `src/host/SettingsStore.ts` |
 | 平台产物解析 | `src/host/standalone/coreBinary.ts` |
 | bootstrap 分支 | `src/host/bootstrapCore.ts` |
 | 事件契约 | `src/core/AssistantEventBus.ts` |
@@ -378,7 +420,7 @@ Standalone 下宿主侧已不存在对 core 磁盘数据的直接读取。`embed
 | 构建目标参数化 | `core-rs/.cargo/config.toml`、构建脚本 |
 | 分发产物 | `resources/core/<platform>-<arch>/` |
 
-## 13. 测试与覆盖率
+## 14. 测试与覆盖率
 
 ### 分层
 
@@ -395,10 +437,16 @@ Standalone 下宿主侧已不存在对 core 磁盘数据的直接读取。`embed
 
 - 测试放在独立的 `<模块>_tests.rs`，通过 `#[path]` 挂载；这样 `#[cfg(test)]` 代码不混在
   产品代码里，覆盖率统计也能用文件名精确排除测试自身。
-- `config` / `prompt` / `tools` / `shell` 都有进程级静态缓存（宿主环境、settings、
+- `config` / `prompt` / `tools` / `shell` 都有进程级静态缓存（宿主环境、配置快照、
   工作目录表、git 分支缓存、shell 探测结果、Todo 表）。触碰它们的用例必须：
   1. 用 `test_support::Sandbox` 拿全局串行闸门并建临时主目录 / 工作目录；
   2. 退出时还原环境变量并清缓存（`Sandbox::drop` 已处理）。
+- 配置快照的用例经 `apply_settings_snapshot` 注入。`Sandbox::new` 默认注入一份
+  **空配置**，模拟「宿主已连接、配置为空」；`Sandbox::write_settings` 扮演 Host 的
+  角色（写盘 + 按 Host 口径产出快照并注入），需要「快照尚未到达」状态的用例自己调
+  `settings::reset_settings_snapshot()`。
+- 就绪状态要有独立用例：未收到 `hostEnvironmentProvided` 时其它 `UiEvent` 被拒绝，
+  收到后发 `coreReady`。
 - 需要真实子进程的用例（Bash / Grep / Glob / git 探测）以本机能力为准，缺失时
   `return` 跳过而不是失败。
 - `test_support::FakeLlm` 是一个最小 HTTP/SSE 服务，配合 `EngineHarness`（自动应答

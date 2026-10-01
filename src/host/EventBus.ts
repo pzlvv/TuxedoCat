@@ -8,6 +8,8 @@
  *
  * 边界语义（DEVELOPMENT.md 第 3.7 节）：
  * - emitToUi 时处理器未注册 → 抛错（bootstrap 顺序错误，启动期暴露）
+ * - emitToCore 时就绪前收到 `hostEnvironmentProvided` 以外的 UiEvent → 抛错
+ *   （`docs/core-ui-separation.md` 第 7 节；就绪判据就是配置快照是否到达）
  * - emitToCore 时某 type 无订阅者 → 静默丢弃（合法中间态）
  * - request() 无内置超时（总线保持纯路由）；当前两个请求都不设超时，调用点自行决定兜底
  */
@@ -25,6 +27,7 @@ import type {
   UiRequestResultMap,
   Unsubscribe,
 } from '../core/AssistantEventBus.js';
+import { hasSettingsSnapshot } from '../core/settings.js';
 
 export function createEventBus(): AssistantEventBus {
   let coreEventHandlers: CoreEventHandlers | null = null;
@@ -117,6 +120,15 @@ export function createEventBus(): AssistantEventBus {
     },
 
     emitToCore(event: UiEvent): void {
+      // 就绪前只接受宿主环境与配置快照（`docs/core-ui-separation.md` 第 7 节）：
+      // 其它 UiEvent 说明宿主接线顺序错了，在启动期直接抛错而不是静默生效。
+      // 快照就是 core 的就绪判据（`core/settings.ts`），不需要额外的状态位。
+      if (event.type !== 'hostEnvironmentProvided' && !hasSettingsSnapshot()) {
+        throw new Error(
+          `UiEvent.${event.type} arrived before the Core is ready. ` +
+          'The host must send hostEnvironmentProvided first (docs/core-ui-separation.md §7).',
+        );
+      }
       const handlers = uiEventHandlers.get(event.type);
       if (!handlers) return; // 暂无 core 订阅者：静默丢弃（合法中间态）
       for (const handler of [...handlers]) {

@@ -507,6 +507,8 @@ export interface UseMessageHandlerProps {
   setConversationTitle: (v: string) => void;
   setMaxContextTokens: (v: number | null) => void;
   setSkills: (v: Array<{ name: string; description: string; isBuiltin?: boolean }>) => void;
+  /** 呈现一条 core 产出的瞬时提示（键 + 参数，`docs/core-ui-separation.md` 第 4.9 节） */
+  pushNotice: (key: string, params: Record<string, string | number>, level: 'info' | 'warn' | 'error') => void;
   /** MCP 服务器列表（含启用状态），由 extension 读取 mcp.json + settings.json 后下发 */
   setMcpServers: (v: McpServerInfo[]) => void;
   setConversationDropdownOpen: (v: boolean) => void;
@@ -999,6 +1001,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           break;
         case 'setSkills':
           props.setSkills(msg.skills);
+          break;
+        case 'notice':
+          props.pushNotice(msg.key, msg.params, msg.level);
           break;
         case 'setMcpServers': {
           // MCP 状态按会话区分：异步回推可能晚于会话切换，

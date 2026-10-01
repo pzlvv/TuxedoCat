@@ -8,10 +8,10 @@ import * as path from 'path';
 import * as os from 'os';
 import type { Message } from '../types.js';
 import { logger } from '../Logger.js';
-import { getConfig, getEnableUsageStats, resolveApiTypeForModel } from './config.js';
+import { DEFAULT_API_TYPE, getConfig, getEnableUsageStats, limitsOf } from './config.js';
 import type { LLMConfig } from './config.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
-import { getMaxOutputTokens, getContextWindow, getModelConfig } from '../utils/modelConfig.js';
+import { effectiveMaxOutputTokens } from './modelLimits.js';
 import { fetch as undiciFetch, type Response as UndiciResponse } from 'undici';
 import { getLLMDispatcher } from './httpDispatcher.js';
 import {
@@ -84,9 +84,7 @@ export async function dumpFailedRequest(params: {
     apiKey: string;
     baseURL: string;
     model: string;
-    maxTokens: number;
     thinking_effort?: string;
-    thinking_budget_tokens?: number;
   };
   error: unknown;
   responseStatus?: number;
@@ -245,7 +243,7 @@ export async function* callRealLLM(options: StreamOptions): AsyncGenerator<Strea
 
   // 切换模型（如 setSessionModel 只覆盖 model）后 apiType 必须跟着变，
   // 因此这里按最终生效的 model 重新解析，而不是沿用 baseConfig 里的值。
-  const apiType = resolveApiTypeForModel(config.model, config.modelConfigs);
+  const apiType = limitsOf(config, config.model)?.apiType ?? DEFAULT_API_TYPE;
   config.apiType = apiType;
 
   if (apiType === 'Responses') {
@@ -279,9 +277,13 @@ export async function* callRealLLM(options: StreamOptions): AsyncGenerator<Strea
 async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamEvent | Message> {
   const { messages, systemPrompt, tools, signal, thinkingEffort, thinkingTokenBudget, modelConfig: optionsModelConfig, sessionId } = options;
 
-  // 从配置读取：优先使用传入的 modelConfig，否则读取 settings.json
+  // 从配置读取：优先使用传入的 modelConfig，否则取当前配置快照
   const config = optionsModelConfig ?? await getConfig();
-  const { apiKey, baseURL, model, maxTokens, thinking_budget_tokens } = config;
+  const { apiKey, baseURL, model } = config;
+  // max_tokens / 上下文窗口 / thinking 预算都来自快照里已解析的模型限值
+  const modelLimits = limitsOf(config, model);
+  const effectiveMaxTokens = effectiveMaxOutputTokens(modelLimits);
+  const contextWindow = (modelLimits ?? config.modelLimitsFallback).context;
   const enableUsageStats = await getEnableUsageStats();
 
   // 使用传入的 thinkingEffort，不从配置文件读取该值
@@ -316,9 +318,14 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
     const executeRequest = async function* (
       retryCount: number,
     ): AsyncGenerator<StreamEvent | Message> {
-      // 计算 max_tokens：环境变量 > 模型配置 > 全局默认值
-      const effectiveMaxTokens = getMaxOutputTokens(model, config.modelConfigs);
-      const maxTokensValue = maxTokens > 0 ? Math.min(maxTokens, effectiveMaxTokens) : effectiveMaxTokens;
+      // 输出上限：配置级上限（`llm.maxTokens`）与调用方按上下文剩余空间收窄的上限
+      // （`LLMConfig.outputTokenCap`）都要满足
+      const configuredMaxTokens = config.maxTokens > 0
+        ? Math.min(config.maxTokens, effectiveMaxTokens)
+        : effectiveMaxTokens;
+      const maxTokensValue = config.outputTokenCap && config.outputTokenCap > 0
+        ? Math.min(config.outputTokenCap, configuredMaxTokens)
+        : configuredMaxTokens;
 
       // 构建请求体
       requestBody = {
@@ -331,7 +338,8 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       };
 
       // 确定 thinking_token_budget（提前计算，日志中需要使用）
-      const effectiveThinkingTokenBudget = thinkingTokenBudget ?? getModelConfig(model, config.modelConfigs).thinking_token_budget;
+      const effectiveThinkingTokenBudget = thinkingTokenBudget
+        ?? (modelLimits ?? config.modelLimitsFallback).thinkingTokenBudget;
 
       // 添加 reasoning 配置（chat_template_kwargs 格式）
       if (effectiveThinkingEffort && effectiveThinkingEffort !== 'off') {
@@ -363,10 +371,10 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       if (retryCount === 0) {
         logger.info('RealAPI', '=== LLM Request (stream) ===');
         logger.info('RealAPI', `Model: ${model}`);
-        logger.info('RealAPI', `Max tokens: ${maxTokensValue} (config: ${maxTokens}, default: ${effectiveMaxTokens})`);
-        logger.info('RealAPI', `Context window: ${getContextWindow(model, config.modelConfigs)} tokens`);
+        logger.info('RealAPI', `Max tokens: ${maxTokensValue}`);
+        logger.info('RealAPI', `Context window: ${contextWindow} tokens`);
         logger.info('RealAPI', `Context usage: ${messages.length} messages (${Buffer.byteLength(JSON.stringify(messages), 'utf8')} bytes), system prompt: ${systemPrompt?.length || 0} chars`);
-        logger.info('RealAPI', `Thinking effort: ${effectiveThinkingEffort || 'off'} (budget: ${thinking_budget_tokens || 'default'}, modelConfig budget: ${effectiveThinkingTokenBudget})`);
+        logger.info('RealAPI', `Thinking effort: ${effectiveThinkingEffort || 'off'} (budget: ${effectiveThinkingTokenBudget})`);
         logger.info('RealAPI', `Sampling: temperature=1.0, top_p=0.95`);
         const messagesBytes = Buffer.byteLength(JSON.stringify(messages), 'utf8');
         logger.info('RealAPI', `Messages: ${messages.length} items, ${messagesBytes} bytes`);
@@ -857,7 +865,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
         'Authorization': `Bearer ${apiKey}`,
         'anthropic-version': '2023-06-01',
       },
-      requestBody: requestBody ?? { model, max_tokens: maxTokens, messages },
+      requestBody: requestBody ?? { model, max_tokens: effectiveMaxTokens, messages },
       config,
       error,
     });

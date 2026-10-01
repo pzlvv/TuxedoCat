@@ -41,6 +41,9 @@ use crate::config;
 use crate::history;
 use crate::util;
 
+// 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
+// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+#[allow(dead_code)]
 /// `mcp.json` 路径（与全局 `settings.json` 同目录）
 pub fn mcp_config_path() -> Result<PathBuf, String> {
     Ok(config::config_home()?.join("mcp.json"))
@@ -53,6 +56,9 @@ pub fn is_plain_object(value: &Value) -> bool {
     value.is_object()
 }
 
+// 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
+// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+#[allow(dead_code)]
 /// 从任意 settings 对象里取出 `mcp.enabled`；字段缺失 / 类型不合法时返回 `None`。
 ///
 /// 对齐 `extractEnabledList`：只有 `Array` 才认，元素里非字符串的被过滤掉
@@ -68,6 +74,9 @@ pub fn extract_enabled_list(settings: &Value) -> Option<Vec<String>> {
     )
 }
 
+// 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
+// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+#[allow(dead_code)]
 /// 取出服务器映射：优先 `mcp` / `mcpServers` 包裹层，否则把根对象本身当作映射。
 ///
 /// 对齐 `extractServerMap`（返回引用；非对象时返回根对象本身，由调用方再判对象）。
@@ -81,6 +90,9 @@ pub fn extract_server_map(root: &Value) -> &Value {
     root
 }
 
+// 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
+// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+#[allow(dead_code)]
 /// 把任意 `command` 值规范化为字符串数组（兼容 string / string[]）。
 ///
 /// 对齐 `normalizeCommand`：字符串先 trim，空串得空数组；数组只保留字符串元素
@@ -103,6 +115,9 @@ pub fn normalize_command(value: &Value) -> Vec<String> {
     }
 }
 
+// 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
+// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+#[allow(dead_code)]
 /// 把任意 `environment` / `headers` 值规范化为 `string -> string` 映射。
 ///
 /// 对齐 `normalizeStringMap`：非对象 / 数组得空映射；`null` / `undefined` 值跳过；
@@ -125,6 +140,9 @@ pub fn normalize_string_map(value: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
+// 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
+// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+#[allow(dead_code)]
 /// 把任意 `url` 值规范化为去掉首尾空白的字符串（对齐 `normalizeUrl`）。
 pub fn normalize_url(value: &Value) -> String {
     match value {
@@ -151,6 +169,9 @@ pub fn is_remote_type(type_name: &str) -> bool {
     REMOTE_TYPES.contains(&normalized.as_str())
 }
 
+// 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
+// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+#[allow(dead_code)]
 /// 归一化传输类型（对齐 `normalizeType`）。
 ///
 /// 显式写了 type 即为该值（trim 后原样返回）；未写 type 但有 url 且没有 command
@@ -179,6 +200,9 @@ pub fn is_remote_server(type_name: &str, url: &str, command: &[String]) -> bool 
     !url.is_empty() && command.is_empty()
 }
 
+// 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
+// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+#[allow(dead_code)]
 /// 模拟 JS 的 `a ?? b ?? c`（只在 `null` / `undefined` 时落空；缺失键等同 undefined）。
 fn first_defined(value: &Value, keys: &[&str]) -> Value {
     for key in keys {
@@ -190,17 +214,11 @@ fn first_defined(value: &Value, keys: &[&str]) -> Value {
     Value::Null
 }
 
-/// `mcp.json` 中的单个服务器定义（不含启用状态，对齐 `Omit<McpServerInfo, 'enabled'>`）
-#[derive(Clone, Debug, PartialEq)]
-pub struct McpServerDefinition {
-    pub name: String,
-    /// 传输类型（`normalizeType` 的结果）
-    pub r#type: String,
-    pub command: Vec<String>,
-    pub environment: Vec<(String, String)>,
-    pub url: String,
-    pub headers: Vec<(String, String)>,
-}
+/// `mcp.json` 中的单个服务器定义（不含启用状态，对齐 `Omit<McpServerInfo, 'enabled'>`）。
+///
+/// 类型定义在 `settings`（它是配置契约的一部分，经快照下发）；这里只补一个
+/// 转 UI JSON 的方法。
+pub use crate::settings::McpServerDefinition;
 
 impl McpServerDefinition {
     /// 转成 UI 契约里的 JSON（字段顺序与 `McpServerInfo` 声明一致）
@@ -269,6 +287,9 @@ impl McpServerInfo {
     }
 }
 
+// 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
+// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+#[allow(dead_code)]
 /// 解析 `mcp.json` 的**纯函数**部分（对齐 `readMcpServerDefinitions` 的对象遍历）。
 ///
 /// 非对象根 → 空；每个 value 非对象 → 跳过；按 `Object.entries` 顺序产出定义。
@@ -361,9 +382,12 @@ pub fn read_session_enabled_mcps(session_id: Option<&str>) -> Option<Vec<String>
     Some(list)
 }
 
-/// 全局默认启用列表（`settings.json` 的 `mcp.enabled`）。未配置时返回空数组。
+/// 全局默认启用列表（`settings.json` 的 `mcp.enabled`，经配置快照下发）。
+/// 快照未到达时返回空数组。
 pub fn read_default_enabled_mcps() -> Vec<String> {
-    extract_enabled_list(&config::settings_json()).unwrap_or_default()
+    crate::settings::settings_snapshot()
+        .map(|snapshot| snapshot.mcp.enabled)
+        .unwrap_or_default()
 }
 
 /// 生效的启用列表：会话覆盖优先，其次全局默认（对齐 `readEnabledMcps`）。
@@ -471,74 +495,15 @@ fn persist_session_mcp(session_id: &str, enabled: &[String]) {
     }
 }
 
-/// 归一化「全局默认启用列表」：去重、丢弃空串 / 非字符串（对齐 `mcpDefaultsMutator`）
-pub fn normalize_default_names(names: &[String]) -> Vec<String> {
-    let mut normalized: Vec<String> = Vec::new();
-    for name in names {
-        if name.is_empty() || normalized.iter().any(|existing| existing == name) {
-            continue;
-        }
-        normalized.push(name.clone());
-    }
-    normalized
-}
-
-/// 应用「把全局默认启用列表覆盖为 `names`」的 `settings.json` 修改
-/// （对齐 `mcpDefaultsMutator` 返回的 mutator）。
-///
-/// core 只描述**怎么改**，写盘由宿主承担。
-pub fn apply_mcp_defaults(cfg: &mut Value, names: &[String]) {
-    if !is_plain_object(cfg) {
-        *cfg = Value::Object(Map::new());
-    }
-    let normalized = normalize_default_names(names);
-    if let Some(object) = cfg.as_object_mut() {
-        let mcp = object
-            .entry("mcp".to_string())
-            .or_insert_with(|| Value::Object(Map::new()));
-        if !mcp.is_object() {
-            *mcp = Value::Object(Map::new());
-        }
-        if let Some(mcp) = mcp.as_object_mut() {
-            mcp.insert(
-                "enabled".to_string(),
-                Value::Array(normalized.into_iter().map(Value::String).collect()),
-            );
-        }
-    }
-}
-
 // ==================== 读盘 ====================
 
-/// 读取并解析 `mcp.json` 中的服务器定义（不含启用状态）。
+/// MCP 服务器定义（不含启用状态）。
 ///
-/// 文件不存在是正常情况；其它读取 / 解析失败只记日志并返回空数组（不抛错）。
+/// 来自配置快照：UI 在连接建立时读一次 `mcp.json`、解析后随 `hostEnvironmentProvided`
+/// 下发；Core 不感知文件路径，中途修改不通知（`docs/core-ui-separation.md` 第 4.7 节）。
+/// 快照未到达时返回空数组。
 pub fn read_mcp_server_definitions() -> Vec<McpServerDefinition> {
-    let path = match mcp_config_path() {
-        Ok(path) => path,
-        Err(err) => {
-            eprintln!("[core] mcp: 解析 mcp.json 路径失败: {err}");
-            return Vec::new();
-        }
-    };
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(err) => {
-            // 文件不存在是正常情况（用户尚未配置任何 MCP）
-            if err.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("[core] mcp: 读取 mcp.json 失败: {err}");
-            }
-            return Vec::new();
-        }
-    };
-    let raw: Value = match serde_json::from_str(&util::sanitize_json_surrogates(&text)) {
-        Ok(value) => value,
-        Err(err) => {
-            eprintln!("[core] mcp: 解析 mcp.json 失败: {err}");
-            return Vec::new();
-        }
-    };
-    parse_mcp_server_definitions(&raw)
+    crate::settings::mcp_server_definitions().unwrap_or_default()
 }
 
 /// 读取 `mcp.json`，并合并**生效**的启用状态（会话覆盖优先，其次全局默认）。

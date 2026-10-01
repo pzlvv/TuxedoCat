@@ -425,25 +425,11 @@ impl Core {
     }
 
     pub fn on_host_environment(&self, env: config::HostEnvironment) {
-        let locale = env.locale.clone();
         config::set_host_environment(env);
         let _ = config::ensure_config_dirs();
-        // 语言收敛（对齐 Embedded `initializeCoreEvents`）：
-        // 先用 settings.json 的 `uiLanguage` 覆盖，再用宿主 locale + 系统语言收敛。
-        // 顺序与 Embedded 一致——`setCoreUiLanguage` 在启动期、`setCoreLocale` 在
-        // 宿主环境事件到达时；两者都只影响 core 层文案（命令描述、Spin 提示等）。
-        crate::i18n::set_core_ui_language(&config::read_ui_language());
-        crate::i18n::set_core_locale(Some(&locale));
-        self.log(&format!("Standalone Core ready (locale={locale})."));
-    }
-
-    /// `UiEvent.settingsJsonUpdateRequested`：用户改了 UI 语言时重新收敛 core locale。
-    ///
-    /// 对齐 Embedded `webviewMessageHandler` 里保存 LLM 配置后调用的
-    /// `setCoreUiLanguage(language)`：显式 `zh` / `en` 直接生效，`auto` 回落到
-    /// 宿主 locale + 系统语言。
-    pub fn on_ui_language_changed(&self, language: &str) {
-        crate::i18n::set_core_ui_language(language);
+        // Core 不感知语言（`docs/core-ui-separation.md` 第 4.8 节）：宿主环境里没有
+        // locale 字段，面向界面的文本以「键 + 参数」经 `CoreEvent.notice` 交给 UI 翻译。
+        self.log("Standalone Core ready.");
     }
 
     pub fn on_conversation_opened(&self, session_id: &str) {
@@ -4112,38 +4098,15 @@ fn collect_fence_languages(message: &Value) -> Vec<String> {
 /// 消息落盘后上报「新出现的围栏代码块语言」（对齐 `Conversation.appendMessage`）。
 ///
 /// 只上报 `settings.json` 的 `highlightLanguages` 里尚未记录过的语言，
-/// 避免每次落盘都触发一次宿主侧的 settings 写盘（写盘由宿主承担）。
 fn emit_highlight_languages(core: &Arc<Core>, message: &Value) {
     let languages = collect_fence_languages(message);
     if languages.is_empty() {
         return;
     }
-    // 与 Embedded 的 `readHighlightLanguagesSync` 一致：现读现用（宿主写盘后不会
-    // 每次都发 `llmConfigSaved` 清缓存），否则同一门语言会被反复上报。
-    let known: Vec<String> = config::settings_json_uncached()
-        .get("highlightLanguages")
-        .and_then(Value::as_array)
-        .map(|list| {
-            list.iter()
-                .filter_map(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    let fresh: Vec<String> = languages
-        .into_iter()
-        .filter(|language| !known.contains(language))
-        .collect();
-    if !fresh.is_empty() {
-        // Standalone 下 Core 自己落盘（全局 settings.json 的唯一写入点）；
-        // Embedded 下写盘在宿主（`highlightLanguagesMutator` + `UIHost.updateSettingsJson`）。
-        // 失败只记诊断：这是后台副作用，不影响本轮回复。
-        if let Err(err) = config::merge_highlight_languages(&fresh) {
-            eprintln!("[core] merge highlightLanguages failed: {err}");
-        }
-        core.emit(json!({ "type": "highlightLanguagesUsed", "languages": fresh }));
-    }
+    // core 只上报「本条消息用到了哪些语言」，不维护「已记录」集合：`highlightLanguages`
+    // 是 UI 专属字段，去重与落盘由宿主的 `highlightLanguagesMutator` 承担，因此同一门
+    // 语言可能被重复上报，宿主按幂等处理（`docs/core-ui-separation.md` 第 4.9 节）。
+    core.emit(json!({ "type": "highlightLanguagesUsed", "languages": languages }));
 }
 
 /// 本次请求可用的 max output（对齐 `getAvailableOutputTokens` + `Query.ts` 的 min 口径）。

@@ -25,7 +25,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde_json::{json, Map, Value};
 
 use crate::config;
-use crate::i18n;
 use crate::llm;
 use crate::skills;
 use crate::util;
@@ -240,37 +239,28 @@ pub fn get_spin_design_issue(config: &Value) -> Option<SpinDesignIssue> {
 
 /// 校验 spin.json 是否可执行（对齐 `validateSpinDesign`）。
 ///
+/// 返回的文案会进入会话历史（`push_message` 落盘），因此**一律英文**，
+/// 不走本地化（落盘文本统一英文）。
+///
 /// @returns 错误信息；合法时返回 `None`
 pub fn validate_spin_design(config: &Value) -> Option<String> {
     if !config.is_object() && !config.is_array() {
-        return Some(i18n::tt(
-            "spin.json 不是有效的对象。",
-            "spin.json is not a valid object.",
-        ));
+        return Some("spin.json is not a valid object.".to_string());
     }
 
     let Some(nodes) = config.get("nodes").and_then(Value::as_array) else {
-        return Some(i18n::tt(
-            "spin.json 缺少 nodes 数组。",
-            "spin.json is missing the nodes array.",
-        ));
+        return Some("spin.json is missing the nodes array.".to_string());
     };
     if nodes.is_empty() {
-        return Some(i18n::tt(
-            "spin.json 中没有可执行的节点。",
-            "spin.json has no executable nodes.",
-        ));
+        return Some("spin.json has no executable nodes.".to_string());
     }
 
     // 用户变量不能与内置变量冲突
     if let Some(Value::Object(variables)) = config.get("variables") {
         for key in variables.keys() {
             if RESERVED_BUILTIN_VARS.contains(&key.as_str()) {
-                return Some(i18n::tt(
-                    &format!("变量 \"{key}\" 与内置变量冲突，请重命名后重试。"),
-                    &format!(
-                        "Variable \"{key}\" conflicts with a built-in variable. Please rename it and retry."
-                    ),
+                return Some(format!(
+                    "Variable \"{key}\" conflicts with a built-in variable. Please rename it and retry."
                 ));
             }
         }
@@ -280,32 +270,20 @@ pub fn validate_spin_design(config: &Value) -> Option<String> {
     let no_value_vars = get_variables_without_value(config);
     if !no_value_vars.is_empty() {
         let joined = no_value_vars.join(", ");
-        return Some(i18n::tt(
-            &format!("存在未赋值的变量（{joined}），请在变量列表中填写变量值后重试。"),
-            &format!(
-                "Variables without a value ({joined}), please fill in their values in the variable list and retry."
-            ),
+        return Some(format!(
+            "Variables without a value ({joined}), please fill in their values in the variable list and retry."
         ));
     }
 
     for node in nodes {
         if !node.is_object() {
-            return Some(i18n::tt(
-                "spin.json 中存在无效节点。",
-                "spin.json contains an invalid node.",
-            ));
+            return Some("spin.json contains an invalid node.".to_string());
         }
         let Some(id_value) = node.get("id") else {
-            return Some(i18n::tt(
-                "spin.json 中存在无效节点。",
-                "spin.json contains an invalid node.",
-            ));
+            return Some("spin.json contains an invalid node.".to_string());
         };
         if !id_value.is_number() {
-            return Some(i18n::tt(
-                "spin.json 中存在无效节点。",
-                "spin.json contains an invalid node.",
-            ));
+            return Some("spin.json contains an invalid node.".to_string());
         }
         let id_text = util::js_string(id_value);
         let task_ok = node
@@ -314,10 +292,7 @@ pub fn validate_spin_design(config: &Value) -> Option<String> {
             .map(|task| !util::js_trim(task).is_empty())
             .unwrap_or(false);
         if !task_ok {
-            return Some(i18n::tt(
-                &format!("节点 {id_text} 缺少任务描述。"),
-                &format!("Node {id_text} is missing a task description."),
-            ));
+            return Some(format!("Node {id_text} is missing a task description."));
         }
         let for_each_var = node
             .get("forEach")
@@ -331,11 +306,8 @@ pub fn validate_spin_design(config: &Value) -> Option<String> {
                 .map(|variables| variables.contains_key(for_each_var))
                 .unwrap_or(false);
             if !exists {
-                return Some(i18n::tt(
-                    &format!("节点 {id_text} 的 For Each 变量 \"{for_each_var}\" 不存在。"),
-                    &format!(
-                        "Node {id_text}: For Each variable \"{for_each_var}\" does not exist."
-                    ),
+                return Some(format!(
+                    "Node {id_text}: For Each variable \"{for_each_var}\" does not exist."
                 ));
             }
         }
@@ -343,10 +315,7 @@ pub fn validate_spin_design(config: &Value) -> Option<String> {
 
     if let Some(edges) = config.get("edges") {
         if !edges.is_array() {
-            return Some(i18n::tt(
-                "spin.json 缺少 edges 数组。",
-                "spin.json is missing the edges array.",
-            ));
+            return Some("spin.json is missing the edges array.".to_string());
         }
     }
 
@@ -355,10 +324,10 @@ pub fn validate_spin_design(config: &Value) -> Option<String> {
         &parse_edges(config.get("edges")),
     );
     if order.len() != nodes.len() {
-        return Some(i18n::tt(
-            "流程图不是有效的无环有向图（DAG），请检查连线后重试。",
-            "The flow is not a valid directed acyclic graph (DAG), please check the edges and retry.",
-        ));
+        return Some(
+            "The flow is not a valid directed acyclic graph (DAG), please check the edges and retry."
+                .to_string(),
+        );
     }
 
     None
@@ -734,13 +703,7 @@ pub fn write_spin_json(cwd: &str, config: &Value) -> Result<(), String> {
     write_spin_json_locked(cwd, config)
 }
 
-/// 串行写入 spin.json（`writeSpinJsonQueued` 的等价入口）
-///
-/// 与 [`write_spin_json`] 同语义，保留独立入口以对齐 Embedded 的调用点。
-#[allow(dead_code)]
-pub fn write_spin_json_queued(cwd: &str, config: &Value) -> Result<(), String> {
-    write_spin_json(cwd, config)
-}
+
 
 fn write_spin_json_locked(cwd: &str, config: &Value) -> Result<(), String> {
     // 确保项目对话目录存在（目录由 core 建；其中的 settings.json 由宿主写）
@@ -1071,10 +1034,31 @@ pub trait SpinHost: Send + Sync {
     /// 默认实现只发一条 `message` CoreEvent；宿主覆盖时应同时把消息追加到会话
     /// （对齐 TS 的 `engine.mutableMessages.push` + `appendMessage` 持久化）。
     fn push_message(&self, session_id: &str, role: &str, content: &str) {
+        self.emit_transient_message(session_id, role, content);
+    }
+
+    /// 只上报一条瞬时 `message` CoreEvent，**不落盘**。
+    ///
+    /// 描述状态的通知（如「全部任务已完成」）不进会话历史：TS 侧对应
+    /// `emitToUi` 而不 push `mutableMessages`，两边行为一致。
+    fn emit_transient_message(&self, session_id: &str, role: &str, content: &str) {
         self.emit_event(json!({
             "type": "message",
             "sessionId": session_id,
             "data": { "role": role, "content": content },
+        }));
+    }
+
+    /// 上报一条瞬时提示（键 + 参数，`docs/core-ui-separation.md` 第 4.9 节）。
+    ///
+    /// Core 不拼文案：只给键与参数，翻译与呈现由 UI 承担；提示不进会话历史。
+    fn emit_notice(&self, session_id: &str, key: &str, params: Value, level: &str) {
+        self.emit_event(json!({
+            "type": "notice",
+            "sessionId": session_id,
+            "key": key,
+            "params": params,
+            "level": level,
         }));
     }
 
@@ -1120,7 +1104,7 @@ pub struct SpinLoop {
 }
 
 impl SpinLoop {
-    /// 新建主循环（内部自建 abort 标志，可用 [`SpinLoop::abort_flag`] 取用）
+    /// 新建主循环（内部自建 abort 标志）
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(
         host: Arc<dyn SpinHost>,
@@ -1146,12 +1130,6 @@ impl SpinLoop {
         }
     }
 
-    /// 主循环的 abort 标志
-    #[allow(dead_code)]
-    pub fn abort_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.abort)
-    }
-
     /// 覆盖连续失败上限（默认 [`MAX_ATTEMPTS`]，主要供测试用）
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn set_max_attempts(&mut self, max_attempts: u32) {
@@ -1171,10 +1149,8 @@ impl SpinLoop {
 
             // 1. 读取 spin.json，获取下一个未完成的节点
             let Some(config) = read_spin_json(&self.cwd) else {
-                let message = i18n::tt(
-                    "无法读取 spin.json，文件不存在或 JSON 格式不正确。",
-                    "Cannot read spin.json: file is missing or invalid JSON.",
-                );
+                // 会落盘：文案一律英文，不走本地化（落盘文本统一英文）
+                let message = "Cannot read spin.json: file is missing or invalid JSON.".to_string();
                 self.host.push_message(&self.session_id, "user", &message);
                 return SpinOutcome::Failed(message);
             };
@@ -1185,8 +1161,14 @@ impl SpinLoop {
             }
 
             let Some(next) = get_next_node(&config) else {
-                let message = i18n::tt("所有任务已完成！", "All tasks completed!");
-                self.host.push_message(&self.session_id, "system", &message);
+                // 瞬时状态通知：只上报、不落盘（对齐 TS 侧只 emitToUi 的写法）。
+                // 文案键化，翻译在 UI（`docs/core-ui-separation.md` 第 4.9 节）。
+                self.host.emit_notice(
+                    &self.session_id,
+                    crate::core_text::SPIN_ALL_COMPLETED,
+                    json!({}),
+                    "info",
+                );
                 return SpinOutcome::Completed;
             };
 
@@ -1222,15 +1204,10 @@ impl SpinLoop {
             }
 
             if attempts >= self.max_attempts {
-                let stop_message = i18n::tt(
-                    &format!(
-                        "任务 {current_seq} 连续失败 {} 次，已停止整个 Spin 模式执行",
-                        self.max_attempts
-                    ),
-                    &format!(
-                        "Task {current_seq} failed after {} attempts, stopping the entire Spin mode",
-                        self.max_attempts
-                    ),
+                // 会落盘：文案一律英文，不走本地化（落盘文本统一英文）
+                let stop_message = format!(
+                    "Task {current_seq} failed after {} attempts, stopping the entire Spin mode",
+                    self.max_attempts
                 );
                 self.host.push_message(&self.session_id, "user", &stop_message);
                 update_node_meta(
@@ -1300,15 +1277,10 @@ impl SpinLoop {
                 progress.iteration_label
             );
 
-            let start_message = i18n::tt(
-                &format!(
-                    "{attempt_prefix}{} 开始: 任务 {current_seq} - {resolved_task}",
-                    progress.iteration_label
-                ),
-                &format!(
-                    "{attempt_prefix}{} Starting: Task {current_seq} - {resolved_task}",
-                    progress.iteration_label
-                ),
+            // 会落盘：文案一律英文，不走本地化（落盘文本统一英文）
+            let start_message = format!(
+                "{attempt_prefix}{} Starting: Task {current_seq} - {resolved_task}",
+                progress.iteration_label
             );
             self.host.push_message(&self.session_id, "user", &start_message);
 
@@ -1363,17 +1335,11 @@ impl SpinLoop {
                 Some(&extra),
             );
 
-            let result_message = i18n::tt(
-                &format!(
-                    "{attempt_prefix}{} {}: 任务 {current_seq} - {resolved_task}",
-                    progress.iteration_label,
-                    if accept { "通过" } else { "失败" }
-                ),
-                &format!(
-                    "{attempt_prefix}{} {}: Task {current_seq} - {resolved_task}",
-                    progress.iteration_label,
-                    if accept { "Passed" } else { "Failed" }
-                ),
+            // 会落盘：文案一律英文，不走本地化（落盘文本统一英文）
+            let result_message = format!(
+                "{attempt_prefix}{} {}: Task {current_seq} - {resolved_task}",
+                progress.iteration_label,
+                if accept { "Passed" } else { "Failed" }
             );
             self.host
                 .push_message(&self.session_id, "user", &result_message);
@@ -1413,22 +1379,17 @@ impl SpinLoop {
 }
 
 /// [`SpinLoop::spawn`] 返回的句柄（线程化执行入口暂未接入，见该函数说明）
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct SpinHandle {
     abort: Arc<AtomicBool>,
     join: std::thread::JoinHandle<SpinOutcome>,
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 impl SpinHandle {
     /// 请求中止（主循环会在下一个检查点退出）
     pub fn abort(&self) {
         self.abort.store(true, Ordering::Relaxed);
-    }
-
-    /// 主循环的 abort 标志
-    pub fn abort_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.abort)
     }
 
     /// 阻塞等待主循环结束

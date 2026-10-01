@@ -12,17 +12,27 @@ import type { CommandContext } from '../builtinCommands.js';
 import type { CoreEvent } from '../../AssistantEventBus.js';
 import { requireEventBus } from '../../AssistantEventBus.js';
 import type { MessageData } from '../../types.js';
-import { tt } from '../../i18n.js';
+import { CoreCommandDescriptionKeys, CoreNoticeKeys, type NoticeLevel } from '../../coreText.js';
 
 /** core → UI 单向事件的发送侧封装（spin 命令统一走它） */
 function emitToUi(event: CoreEvent): void {
   requireEventBus().emitToUi(event);
 }
 
+/** 发一条瞬时提示（键 + 参数，由 UI 翻译） */
+function emitNotice(
+  sessionId: string,
+  key: string,
+  level: NoticeLevel,
+  params: Record<string, string> = {},
+): void {
+  emitToUi({ type: 'notice', sessionId, key, params, level });
+}
+
 export function getSpinCommandDefinition(): BuiltinCommandDefinition {
   return {
     name: 'spin',
-    description: () => tt('执行 Spin 任务', 'Execute Spin tasks'),
+    description: () => CoreCommandDescriptionKeys.spin,
     aliases: ['sprint'],
     execute: async (args: string, context: CommandContext) => {
       const { sessionId, cwd } = context;
@@ -37,54 +47,29 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
       const state = await detectProjectState(cwd);
 
       if (state === 'invalid' || state === 'empty-node' || state === 'not-dag' || state === 'variable-no-value') {
-        let errorMsg: string;
         if (state === 'empty-node') {
-          errorMsg = tt(
-            '存在空节点（缺少任务描述），请完善节点后重试。',
-            'There are empty nodes (missing task descriptions), please complete them and retry.'
-          );
+          emitNotice(sessionId, CoreNoticeKeys.spinEmptyNode, 'error');
         } else if (state === 'not-dag') {
-          errorMsg = tt(
-            '流程图不是有效的无环有向图（DAG），请检查连线后重试。',
-            'The flow is not a valid directed acyclic graph (DAG), please check the edges and retry.'
-          );
+          emitNotice(sessionId, CoreNoticeKeys.spinNotDag, 'error');
         } else if (state === 'variable-no-value') {
           const cfgForState = await readSpinJsonForState(cwd);
           const names = cfgForState ? getVariablesWithoutValue(cfgForState) : [];
-          errorMsg = names.length > 0
-            ? tt(
-              `存在未赋值的变量（${names.join(', ')}），请在 Spin 设计器中填写变量值后重试。`,
-              `Variables without a value (${names.join(', ')}), please fill in their values in the Spin Designer and retry.`
-            )
-            : tt(
-              '存在未赋值的变量，请在 Spin 设计器中填写变量值后重试。',
-              'There are variables without a value, please fill in their values in the Spin Designer and retry.'
-            );
+          if (names.length > 0) {
+            emitNotice(sessionId, CoreNoticeKeys.spinVariableNoValueWithNames, 'error', {
+              names: names.join(', '),
+            });
+          } else {
+            emitNotice(sessionId, CoreNoticeKeys.spinVariableNoValue, 'error');
+          }
         } else {
-          errorMsg = tt(
-            'spin.json 格式不合法，请检查文件内容。',
-            'spin.json is invalid, please check the file content.'
-          );
+          emitNotice(sessionId, CoreNoticeKeys.spinInvalid, 'error');
         }
-        emitToUi({
-          type: 'message',
-          sessionId,
-          data: { role: 'user', content: errorMsg } as MessageData,
-        });
         return '';
       }
 
       if (state === 'init') {
         // 没有 spin.json：直接提示用户创建设计文件
-        const errorMsg = tt(
-          '未找到 spin.json 设计文件，请先创建并保存 Spin 设计。',
-          'spin.json design file not found, please create and save a Spin design first.'
-        );
-        emitToUi({
-          type: 'message',
-          sessionId,
-          data: { role: 'user', content: errorMsg } as MessageData,
-        });
+        emitNotice(sessionId, CoreNoticeKeys.spinDesignMissing, 'warn');
         return '';
       }
 
@@ -95,16 +80,12 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
 
       const currentCfg = await readSpinJson(cwd);
       if (!currentCfg) {
-        const errorMsg = tt('无法读取 spin.json。', 'Cannot read spin.json.');
-        emitToUi({
-          type: 'message',
-          sessionId,
-          data: { role: 'user', content: errorMsg } as MessageData,
-        });
+        emitNotice(sessionId, CoreNoticeKeys.spinCannotRead, 'error');
         return '';
       }
 
-      const spinTitle = tt('Spin 设计', 'Spin Design');
+      // 落盘文本统一英文（`docs/core-ui-separation.md` 第 4.8 节）：标题写进 meta.json。
+      const spinTitle = 'Spin Design';
 
       // 创建或获取主 session 的 engine（workMode = spin）
       let engine = getSessionEngine(sessionId);

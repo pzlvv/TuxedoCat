@@ -797,9 +797,8 @@ fn reclaim_grace_ms() -> u64 {
 
 /// 单个 MCP 服务器的运行时状态
 ///
-/// 供 MCP 面板展示（对齐 `pushMcpServers` 的 `mcpServers` 契约）。生产路径
-/// 尚未消费，仅对等测试读取。
-#[cfg_attr(not(test), allow(dead_code))]
+/// 供 MCP 面板展示（对齐 `pushMcpServers` 的 `mcpServers` 契约），
+/// 经 `servers_with_runtime` 应答 `UiRequest.mcpServersRequested`。
 #[derive(Clone, Debug, PartialEq)]
 pub struct McpServerRuntimeStatus {
     pub running: bool,
@@ -1072,7 +1071,6 @@ impl McpManager {
     }
 
     /// 各服务器的运行时状态，供 UI 展示
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn get_server_status(&self) -> Vec<(String, McpServerRuntimeStatus)> {
         let state = self.state.lock().unwrap();
         state
@@ -1706,7 +1704,6 @@ pub fn tools_for_session(session_id: &str) -> Vec<Value> {
 }
 
 /// 各服务器的运行时状态（供 UI 展示）
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn get_server_status() -> Vec<(String, McpServerRuntimeStatus)> {
     manager_if_created()
         .map(|manager| manager.get_server_status())
@@ -1720,8 +1717,7 @@ pub fn sync_all_sessions() {
 
 /// 读 `mcp.json` + 会话启用状态（转发 Config 的读取路径，UI 面板用）。
 ///
-/// MCP 面板尚未迁移，暂无生产调用方；[`servers_with_runtime`] 复用它。
-#[allow(dead_code)]
+/// [`servers_with_runtime`] 复用它。
 pub fn read_servers(session_id: Option<&str>) -> Vec<McpServerInfo> {
     mcp_config::read_mcp_servers(session_id)
 }
@@ -1730,7 +1726,7 @@ pub fn read_servers(session_id: Option<&str>) -> Vec<McpServerInfo> {
 ///
 /// 对齐 `webviewMessageHandler.pushMcpServers`：未连接的服务器补
 /// `running=false / toolCount=0 / error=null / refCount=0`。
-#[cfg_attr(not(test), allow(dead_code))]
+/// 经 `UiRequest.mcpServersRequested` 应答宿主。
 pub fn servers_with_runtime(session_id: Option<&str>) -> Vec<Value> {
     let status: HashMap<String, McpServerRuntimeStatus> =
         get_server_status().into_iter().collect();

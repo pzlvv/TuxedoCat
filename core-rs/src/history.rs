@@ -1186,6 +1186,80 @@ pub fn update_context(
     Ok(())
 }
 
+// ==================== 对话空间统计 ====================
+
+/// 对话空间的项目路径：优先读目录里的 `workspace.meta.json`，
+/// 读不到时退回目录名的百分号解码（对齐 Embedded `readWorkspacePath`）。
+fn read_workspace_path(dir_path: &std::path::Path, dir_name: &str) -> String {
+    if let Ok(content) = std::fs::read_to_string(dir_path.join("workspace.meta.json")) {
+        if let Ok(settings) = serde_json::from_str::<Value>(&content) {
+            if let Some(workspace) = settings.get("workspacePath").and_then(Value::as_str) {
+                let trimmed = workspace.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+    }
+    config::decode_project_dir_name(dir_name).unwrap_or_else(|| dir_name.to_string())
+}
+
+/// 对话空间内的会话数（`<sessionId>.meta.json`；空间清单不算会话）
+///
+/// 对齐 Embedded `countConversations`：`workspace.meta.json` 是空间级清单，
+/// 不是会话。
+fn count_conversations(dir_path: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir_path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            name.ends_with(".meta.json") && name != "workspace.meta.json"
+        })
+        .count() as u64
+}
+
+/// 统计全部对话空间（对齐 Embedded `getConversationSpaces`）：
+/// 每个空间目录的字节数 / 文件数 / 会话数 + 项目路径，按字节数降序。
+pub fn conversation_spaces() -> Vec<Value> {
+    let Ok(root) = config::conversations_root() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    let mut spaces: Vec<(u64, Value)> = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        let dir_path = entry.path();
+        // 既有 `dir_size` 返回 (文件数, 字节数)，这里按统计契约换序
+        let (file_count, size_bytes) = dir_size(&dir_path);
+        let project_path = read_workspace_path(&dir_path, &dir_name);
+        let conversation_count = count_conversations(&dir_path);
+        spaces.push((
+            size_bytes,
+            json!({
+                "dirName": dir_name,
+                "projectPath": project_path,
+                "sizeBytes": size_bytes,
+                "fileCount": file_count,
+                "conversationCount": conversation_count,
+            }),
+        ));
+    }
+    // 与 Embedded 相同：按空间大小降序（数值相等时保持目录读取顺序）
+    spaces.sort_by(|a, b| b.0.cmp(&a.0));
+    spaces.into_iter().map(|(_, value)| value).collect()
+}
+
 #[cfg(test)]
 #[path = "history_tests.rs"]
 mod tests;

@@ -17,6 +17,11 @@
  *
  * core 侧的 UiEvent 消费方在 Core 进程内：本实现不向进程内分发 UiEvent，
  * `request()` 也不由 UI 调用（请求由 Core 发起、UI 应答）。
+ *
+ * 传输层抽象（`CoreChannelTransport`）：
+ * - `CoreProcessTransport`：直接管理一个 Core 进程（单进程形态，测试与回退路径）；
+ * - `DaemonChannelTransport`（`CoreDaemon.ts`）：经 daemon 控制通道上的一条 channel。
+ * 总线逻辑对两者完全一致。
  */
 
 import type {
@@ -60,10 +65,53 @@ export interface StandaloneCoreBus extends AssistantEventBus {
   shutdown(): Promise<void>;
 }
 
+// ==================== 传输层抽象 ====================
+
+/**
+ * 帧通道生命周期钩子。
+ *
+ * 与 `CoreProcessHooks` 同口径：`ready` 帧由传输层消费（握手完成 → `onReady`），
+ * 其余帧交给 `onFrame`。
+ */
+export interface CoreChannelHooks {
+  /** 收到一帧合法 Core → UI 帧（`ready` 由传输层消费，不转发） */
+  onFrame(frame: CoreToUiFrame): void;
+  /** 握手成功（首次连接与每次重置后都会触发） */
+  onReady(): void;
+  /** 已就绪的连接断开 */
+  onNotReady(): void;
+  /** 通道终止（不再重启） */
+  onExit(info: CoreExitInfo): void;
+  /** 诊断输出：标准错误、非法帧、启动失败 */
+  onDiagnostic(line: string): void;
+  /** 无法恢复（重启次数超限 / 通道关闭且不再重启） */
+  onFatal(error: Error): void;
+}
+
+/** 一条 Core 帧通道的传输层实现 */
+export interface CoreChannelTransport {
+  /** 总线在 `start()` 之前赋值 */
+  hooks: CoreChannelHooks;
+  start(): void;
+  send(frame: UiToCoreFrame): void;
+  stop(): Promise<void>;
+  isReady(): boolean;
+  isStopped(): boolean;
+}
+
+/** 空钩子（总线赋值前到达的事件只记录诊断） */
+export const NOOP_CORE_CHANNEL_HOOKS: CoreChannelHooks = {
+  onFrame: () => undefined,
+  onReady: () => undefined,
+  onNotReady: () => undefined,
+  onExit: () => undefined,
+  onDiagnostic: () => undefined,
+  onFatal: () => undefined,
+};
+
 export interface StandaloneCoreBusOptions {
   /** Standalone Core 可执行文件路径 */
   binaryPath: string;
-  /** 诊断出口 */
   log: (...args: unknown[]) => void;
   restartPolicy?: RestartPolicy;
   /** 额外命令行参数；测试用来跑假 Core */
@@ -76,11 +124,69 @@ export interface StandaloneCoreBusOptions {
   now?: () => number;
 }
 
+/** 直接管理一个 Core 进程的传输层（单进程形态） */
+class CoreProcessTransport implements CoreChannelTransport {
+  hooks: CoreChannelHooks = NOOP_CORE_CHANNEL_HOOKS;
+  private readonly process: CoreProcess;
+
+  constructor(options: StandaloneCoreBusOptions) {
+    this.process = new CoreProcess({
+      binaryPath: options.binaryPath,
+      spawnArgs: options.spawnArgs,
+      restartPolicy: options.restartPolicy,
+      shutdownTimeoutMs: options.shutdownTimeoutMs,
+      handshakeTimeoutMs: options.handshakeTimeoutMs,
+      spawn: options.spawn,
+      now: options.now,
+      hooks: {
+        onFrame: (frame) => this.hooks.onFrame(frame),
+        onReady: () => this.hooks.onReady(),
+        onNotReady: () => this.hooks.onNotReady(),
+        onExit: (info) => this.hooks.onExit(info),
+        onDiagnostic: (line) => this.hooks.onDiagnostic(line),
+        onFatal: (error) => this.hooks.onFatal(error),
+      },
+    });
+  }
+
+  start(): void {
+    this.process.start();
+  }
+
+  send(frame: UiToCoreFrame): void {
+    this.process.send(frame);
+  }
+
+  stop(): Promise<void> {
+    return this.process.stop();
+  }
+
+  isReady(): boolean {
+    return this.process.isReady();
+  }
+
+  isStopped(): boolean {
+    return this.process.isStopped();
+  }
+}
+
+/** 创建「一个 Core 进程 + 帧通道总线」（单进程形态） */
 export function createStandaloneCoreBus(
   options: StandaloneCoreBusOptions,
 ): StandaloneCoreBus {
-  const log = options.log;
+  return createCoreChannelBus(new CoreProcessTransport(options), options.log);
+}
 
+/**
+ * 在任意传输层上装配帧通道总线。
+ *
+ * 两种装配（单进程 / daemon channel）共用同一套排队、重放、请求应答逻辑；
+ * 差异只在 `CoreChannelTransport` 的实现上。
+ */
+export function createCoreChannelBus(
+  transport: CoreChannelTransport,
+  log: (...args: unknown[]) => void,
+): StandaloneCoreBus {
   let coreEventHandlers: CoreEventHandlers | null = null;
   let coreRequestHandlers: CoreRequestHandlers | null = null;
   /** Core 侧的 UI 请求处理器；Standalone 下请求经帧通道发往 Core，本表只作登记 */
@@ -122,49 +228,40 @@ export function createStandaloneCoreBus(
    */
   let connectionEpoch = 0;
 
-  const coreProcess = new CoreProcess({
-    binaryPath: options.binaryPath,
-    spawnArgs: options.spawnArgs,
-    restartPolicy: options.restartPolicy,
-    shutdownTimeoutMs: options.shutdownTimeoutMs,
-    handshakeTimeoutMs: options.handshakeTimeoutMs,
-    spawn: options.spawn,
-    now: options.now,
-    hooks: {
-      onFrame: (frame) => handleFrame(frame),
-      onReady: () => handleReady(),
-      onNotReady: () => {
-        ready = false;
-        // 旧连接上未决的 CoreRequest 应答全部作废
-        connectionEpoch += 1;
-        // 旧连接上未决的 UI → core 请求同样作废（Core 重启会丢掉请求上下文）
-        failPendingUiRequests(new Error('Standalone Core connection lost before responding.'));
-        log('[core] connection lost');
-      },
-      onExit: (info) => {
-        for (const listener of [...exitListeners]) {
-          try {
-            listener(info);
-          } catch (error) {
-            log(`[core] exit listener error: ${String(error)}`);
-          }
-        }
-      },
-      onDiagnostic: (line) => log(line),
-      onFatal: (error) => {
-        log(`[core] fatal: ${error.message}`);
-        failPendingReady(error);
-        failPendingUiRequests(error);
-        for (const listener of [...fatalListeners]) {
-          try {
-            listener(error);
-          } catch (listenerError) {
-            log(`[core] fatal listener error: ${String(listenerError)}`);
-          }
-        }
-      },
+  transport.hooks = {
+    onFrame: (frame) => handleFrame(frame),
+    onReady: () => handleReady(),
+    onNotReady: () => {
+      ready = false;
+      // 旧连接上未决的 CoreRequest 应答全部作废
+      connectionEpoch += 1;
+      // 旧连接上未决的 UI → core 请求同样作废（Core 重启会丢掉请求上下文）
+      failPendingUiRequests(new Error('Standalone Core connection lost before responding.'));
+      log('[core] connection lost');
     },
-  });
+    onExit: (info) => {
+      for (const listener of [...exitListeners]) {
+        try {
+          listener(info);
+        } catch (error) {
+          log(`[core] exit listener error: ${String(error)}`);
+        }
+      }
+    },
+    onDiagnostic: (line) => log(line),
+    onFatal: (error) => {
+      log(`[core] fatal: ${error.message}`);
+      failPendingReady(error);
+      failPendingUiRequests(error);
+      for (const listener of [...fatalListeners]) {
+        try {
+          listener(error);
+        } catch (listenerError) {
+          log(`[core] fatal listener error: ${String(listenerError)}`);
+        }
+      }
+    },
+  };
 
   // ==================== Core → UI ====================
 
@@ -313,14 +410,12 @@ export function createStandaloneCoreBus(
       log(`[core] dropped ${frame.kind} frame: bus is shut down`);
       return;
     }
-    coreProcess.send(frame);
+    transport.send(frame);
   }
 
   function sendUiEvent(event: UiEvent): void {
     sendFrame({ kind: 'uiEvent', event });
   }
-
-
 
   // ==================== 总线接口 ====================
 
@@ -475,10 +570,10 @@ export function createStandaloneCoreBus(
       const shutdownError = new Error('Standalone Core bus has been shut down.');
       failPendingReady(shutdownError);
       failPendingUiRequests(shutdownError);
-      await coreProcess.stop();
+      await transport.stop();
     },
   };
 
-  coreProcess.start();
+  transport.start();
   return bus;
 }

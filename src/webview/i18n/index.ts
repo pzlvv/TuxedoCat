@@ -94,11 +94,16 @@ export function getDict(): Dict {
 /** Fallback dictionary used when a key is missing from the active one. */
 const FALLBACK_DICT: Dict = enDict;
 
+/** 已经记过日志的缺失键，避免同一键反复刷屏 */
+const loggedMissingKeys = new Set<string>();
+
 /**
  * Look up a translation by key.
  *
  * Placeholders like `{name}` in the resource are replaced with the values
- * given in `params`. Missing keys fall back to English, then to the key itself.
+ * given in `params`. Missing keys fall back to English, then to the key itself
+ * （缺失时记一条日志：键由 core 产出，缺失即对等约束被破坏，
+ * `docs/core-ui-separation.md` 第 4.8 节）。
  */
 export function t(key: string, params?: Record<string, string | number>): string {
   const dict = getDict();
@@ -107,6 +112,10 @@ export function t(key: string, params?: Record<string, string | number>): string
     value = FALLBACK_DICT[key];
   }
   if (value === undefined) {
+    if (!loggedMissingKeys.has(key)) {
+      loggedMissingKeys.add(key);
+      console.warn(`[i18n] missing translation key: ${key}`);
+    }
     return key;
   }
   if (params) {

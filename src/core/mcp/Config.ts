@@ -44,35 +44,23 @@
  * 由 flushSessionMcpToMeta() 补写进 meta.json。
  */
 
-import { join } from 'path';
 import * as fs from 'fs/promises';
 import { logger } from '../Logger.js';
-import { getConfigHomeDir, readSettingsJson, getProjectRoot, hasProjectRoot } from '../history/Config.js';
+import { getProjectRoot, hasProjectRoot } from '../history/Config.js';
 import { getMetadataPath, updateConversationContext } from '../history/Conversation.js';
+import { getMcpServerDefinitions, getSettings } from '../settings.js';
 import type { McpServerInfo } from '../webviewTypes.js';
+import { isPlainObject, type McpServerDefinition } from './parse.js';
 
-/** mcp.json 路径（与全局 settings.json 同目录） */
-export function getMcpConfigPath(): string {
-  return join(getConfigHomeDir(), 'mcp.json');
-}
-
-/** 从任意 settings 对象里取出 mcp.enabled；字段缺失/类型不合法时返回 null */
-function extractEnabledList(settings: unknown): string[] | null {
-  const enabled = (settings as { mcp?: { enabled?: unknown } } | null | undefined)?.mcp?.enabled;
-  if (!Array.isArray(enabled)) return null;
-  return enabled.filter((name): name is string => typeof name === 'string');
-}
+// 纯解析与判定住在 `parse.ts`：UI 侧读盘后调同一个解析器，Core 侧从配置快照读结果。
+export { isRemoteServer, isRemoteType } from './parse.js';
 
 /**
- * 全局默认启用列表（~/<CONFIG_DIR_NAME>/settings.json 的 mcp.enabled）。
+ * 全局默认启用列表（`settings.json` 的 `mcp.enabled`，经配置快照下发）。
  * 未配置时返回空数组。
  */
 export async function readDefaultEnabledMcps(): Promise<string[]> {
-  try {
-    return extractEnabledList(await readSettingsJson()) ?? [];
-  } catch {
-    return [];
-  }
+  return getSettings().mcp.enabled;
 }
 
 /**
@@ -182,122 +170,20 @@ export function mcpDefaultsMutator(names: readonly string[]): (cfg: Record<strin
   };
 }
 
-/** 把任意 command 值规范化为字符串数组（兼容 string / string[]） */
-function normalizeCommand(value: unknown): string[] {
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed ? [trimmed] : [];
-  }
-  if (Array.isArray(value)) {
-    return value.filter((item): item is string => typeof item === 'string');
-  }
-  return [];
-}
-
-/** 把任意 environment / headers 值规范化为 string -> string 映射 */
-function normalizeStringMap(value: unknown): Record<string, string> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  const out: Record<string, string> = {};
-  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-    if (val === null || val === undefined) continue;
-    out[key] = typeof val === 'string' ? val : String(val);
-  }
-  return out;
-}
-
-/** 把任意 url 值规范化为去掉首尾空白的字符串 */
-function normalizeUrl(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-/** 远程传输的 type 取值集合（大小写不敏感） */
-const REMOTE_TYPES = new Set([
-  'remote',
-  'http',
-  'https',
-  'sse',
-  'http-sse',
-  'streamable',
-  'streamable-http',
-  'streamablehttp',
-]);
-
-/** 该 type 是否表示远程传输 */
-export function isRemoteType(type: string): boolean {
-  return REMOTE_TYPES.has(type.trim().toLowerCase());
-}
-
 /**
- * 归一化传输类型。
- * 显式写了远程 type 即为远程；未写 type 但有 url 且没有 command 时也按远程处理。
+ * MCP 服务器定义（不含启用状态）。
+ *
+ * 来自配置快照：UI 在连接建立时读一次 `mcp.json`、解析后随
+ * `hostEnvironmentProvided` 下发；Core 不感知文件路径，中途修改不通知
+ * （`docs/core-ui-separation.md` 第 4.7 节）。
  */
-function normalizeType(value: unknown, url: string, command: string[]): string {
-  const raw = typeof value === 'string' ? value.trim() : '';
-  if (raw) return raw;
-  if (url && command.length === 0) return 'remote';
-  return 'local';
-}
-
-/**
- * 判断某个服务器定义是否使用远程传输。
- * 兼容 `type: "local"` + `url` 这类书写错误：只要没有 command 且有 url 就走远程。
- */
-export function isRemoteServer(server: Pick<McpServerInfo, 'type' | 'url' | 'command'>): boolean {
-  if (isRemoteType(server.type)) return true;
-  return !!server.url && server.command.length === 0;
-}
-
-/** 判断是否为普通对象（排除 null / 数组） */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-/**
- * 取出服务器映射：优先 mcp / mcpServers 包裹层，否则把根对象本身当作映射。
- */
-function extractServerMap(root: Record<string, unknown>): Record<string, unknown> {
-  if (isPlainObject(root.mcp)) return root.mcp;
-  if (isPlainObject(root.mcpServers)) return root.mcpServers;
-  return root;
-}
-
-/** 读取并解析 mcp.json 中的服务器定义（不含启用状态） */
-async function readMcpServerDefinitions(): Promise<Omit<McpServerInfo, 'enabled'>[]> {
-  let raw: unknown;
-  try {
-    const content = await fs.readFile(getMcpConfigPath(), 'utf-8');
-    raw = JSON.parse(content);
-  } catch (err: any) {
-    // 文件不存在是正常情况（用户尚未配置任何 MCP）
-    if (err?.code !== 'ENOENT') {
-      logger.error('McpConfig', `读取 mcp.json 失败: ${err}`);
-    }
-    return [];
-  }
-
-  if (!isPlainObject(raw)) return [];
-  const serverMap = extractServerMap(raw);
-
-  const servers: Omit<McpServerInfo, 'enabled'>[] = [];
-  for (const [name, value] of Object.entries(serverMap)) {
-    if (!isPlainObject(value)) continue;
-    const command = normalizeCommand(value.command);
-    const url = normalizeUrl(value.url ?? value.endpoint ?? value.serverUrl);
-    servers.push({
-      name,
-      type: normalizeType(value.type, url, command),
-      command,
-      environment: normalizeStringMap(value.environment ?? value.env),
-      url,
-      headers: normalizeStringMap(value.headers),
-    });
-  }
-  return servers;
+function readMcpServerDefinitions(): readonly McpServerDefinition[] {
+  return getMcpServerDefinitions();
 }
 
 /** 按给定的启用名列表给服务器定义打上 enabled 标记 */
 function withEnabled(
-  servers: Omit<McpServerInfo, 'enabled'>[],
+  servers: readonly McpServerDefinition[],
   enabledNames: string[],
 ): McpServerInfo[] {
   const enabledSet = new Set(enabledNames);

@@ -6,12 +6,12 @@
  */
 
 import { logger } from '../Logger.js';
-import { tt } from '../i18n.js';
 import type { QueryEngine } from '../QueryEngine.js';
 import type { CoreEvent } from '../AssistantEventBus.js';
 import { requireEventBus } from '../AssistantEventBus.js';
 import type { MessageData } from '../types.js';
 import { getMessageOrigin } from '../utils/messageOrigin.js';
+import { CoreNoticeKeys } from '../coreText.js';
 
 /** core → UI 单向事件的发送侧封装（SpinLoop 统一走它） */
 function emitToUi(event: CoreEvent): void {
@@ -266,10 +266,8 @@ export async function spinLoop(
     // 1. 读取 spin.json，获取下一个未完成的节点
     const config = await readSpinJson(cwd);
     if (!config) {
-      const errorMsg = tt(
-        '无法读取 spin.json，文件不存在或 JSON 格式不正确。',
-        'Cannot read spin.json: file is missing or invalid JSON.'
-      );
+      // 会落盘：文案一律英文，不走本地化（落盘文本统一英文）
+      const errorMsg = 'Cannot read spin.json: file is missing or invalid JSON.';
       logger.warn('SpinLoop', errorMsg);
       emitToUi({ type: 'message', sessionId, data: {
         role: 'user',
@@ -309,10 +307,15 @@ export async function spinLoop(
     const next = getNextNode(config);
     if (!next) {
       logger.info('SpinLoop', 'All nodes completed');
-      emitToUi({ type: 'message', sessionId, data: {
-        role: 'system',
-        content: tt('所有任务已完成！', 'All tasks completed!'),
-      } as MessageData });
+      // 瞬时状态通知：只发 UI、不落盘（不 push mutableMessages）。
+      // 文案键化，由 UI 翻译（`docs/core-ui-separation.md` 第 4.9 节）。
+      emitToUi({
+        type: 'notice',
+        sessionId,
+        key: CoreNoticeKeys.spinAllCompleted,
+        params: {},
+        level: 'info',
+      });
       break;
     }
 
@@ -359,10 +362,9 @@ export async function spinLoop(
 
     if (attempts >= MAX_ATTEMPTS) {
       logger.info('SpinLoop', `Task ${currentSeq}${iterationLabel} failed after ${MAX_ATTEMPTS} attempts, stopping spin mode`);
-      const stopMsgContent = tt(
-        `任务 ${currentSeq} 连续失败 ${MAX_ATTEMPTS} 次，已停止整个 Spin 模式执行`,
-        `Task ${currentSeq} failed after ${MAX_ATTEMPTS} attempts, stopping the entire Spin mode`
-      );
+      // 会落盘：文案一律英文，不走本地化（落盘文本统一英文）
+      const stopMsgContent =
+        `Task ${currentSeq} failed after ${MAX_ATTEMPTS} attempts, stopping the entire Spin mode`;
       emitToUi({ type: 'message', sessionId, data: {
         role: 'user',
         content: stopMsgContent,
@@ -410,10 +412,9 @@ export async function spinLoop(
     const nodePrompt = buildRunPrompt(resolvedNode, prevNote, skillsPrompt);
 
     logger.info('SpinLoop', `Executing Task ${currentSeq}${iterationLabel} - ${resolvedTask}${attemptSuffix}`);
-    const startMsgContent = tt(
-      `${attemptPrefix}${iterationLabel} 开始: 任务 ${currentSeq} - ${resolvedTask}`,
-      `${attemptPrefix}${iterationLabel} Starting: Task ${currentSeq} - ${resolvedTask}`
-    );
+    // 会落盘：文案一律英文，不走本地化（落盘文本统一英文）
+    const startMsgContent =
+      `${attemptPrefix}${iterationLabel} Starting: Task ${currentSeq} - ${resolvedTask}`;
     emitToUi({ type: 'message', sessionId, data: {
       role: 'user',
       content: startMsgContent,
@@ -473,10 +474,9 @@ export async function spinLoop(
     const metaNote = accept && !nodePassed ? '' : reply;
     await updateNodeMeta(cwd, next.id, nodePassed, metaNote, { rolloutPassed: nextCompleted });
 
-    const resultMsgContent = tt(
-      `${attemptPrefix}${iterationLabel} ${accept ? '通过' : '失败'}: 任务 ${currentSeq} - ${resolvedTask}`,
-      `${attemptPrefix}${iterationLabel} ${accept ? 'Passed' : 'Failed'}: Task ${currentSeq} - ${resolvedTask}`
-    );
+    // 会落盘：文案一律英文，不走本地化（落盘文本统一英文）
+    const resultMsgContent =
+      `${attemptPrefix}${iterationLabel} ${accept ? 'Passed' : 'Failed'}: Task ${currentSeq} - ${resolvedTask}`;
     emitToUi({ type: 'message', sessionId, data: {
       role: 'user',
       content: resultMsgContent,

@@ -6,7 +6,7 @@ import { SingleWebViewConversationManager } from './VSCodeConversationManager.js
 import { WebViewUI } from './host/WebViewUI.js';
 import { bootstrapCore, bootstrapSnapshot, shutdownCore } from './host/bootstrapCore.js';
 import { buildDiffUris } from './VSCodeUIHost/diffUris.js';
-import { readHighlightLanguagesSync } from './core/history/Config.js';
+import { getSettingsStore } from './host/SettingsStore.js';
 import { readSystemLocale, readUiLanguage } from './host/coreFacts.js';
 import { VSCODE_HOST_INFO } from './host/types.js';
 import { requireEventBus } from './core/AssistantEventBus.js';
@@ -296,7 +296,7 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
     const systemLocale = readSystemLocale();
     const uiLanguage = readUiLanguage();
     // Shiki 语法高亮全部按需加载：注入上次已使用过的语言，webview 启动后后台预热
-    const highlightLanguages = JSON.stringify(readHighlightLanguagesSync());
+    const highlightLanguages = JSON.stringify(getSettingsStore().readHighlightLanguages());
 
     html = html.replace(
       /(<script type="module"[^>]*>)/,

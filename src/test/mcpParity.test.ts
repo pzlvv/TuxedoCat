@@ -22,8 +22,8 @@ import type { McpCallResult, McpToolDefinition } from '../core/mcp/Client';
 import { buildMcpToolName } from '../core/mcp/McpTool';
 import { isRemoteServer, isRemoteType, readMcpServers } from '../core/mcp/Config';
 import type { McpServerInfo } from '../core/webviewTypes';
-import { resetSettingsCache } from '../core/history/Config';
 import { createChecker, runTests } from './helpers/harness';
+import { applyTestSettings } from './helpers/fixtures';
 
 interface CallResultCase {
   name: string;
@@ -133,7 +133,8 @@ async function run(): Promise<void> {
         path.join(configDir, 'settings.json'),
         JSON.stringify(item.settingsJson, null, 2),
       );
-      resetSettingsCache();
+      // 配置归 UI：core 侧从快照取值，测试注入与文件内容等价的快照
+      applyTestSettings(item.settingsJson, item.mcpJson);
       const servers = await readMcpServers();
       check(
         `readMcpServers: ${item.name}`,

@@ -25,6 +25,8 @@ import type { ConversationMetadata } from '../core/history/Conversation';
 import type { SessionRuntimeState } from '../core/AssistantEventBus';
 import { createChecker, runTests } from './helpers/harness';
 import { createTestHost } from './helpers/fixtures';
+import { getSettingsStore } from '../host/SettingsStore';
+import { coreReadyCount, isCoreReady } from '../host/coreReadiness';
 
 class StubConversationManager extends ConversationManager {
   protected async dispatchList(_list: readonly ConversationMetadata[]): Promise<void> {
@@ -64,7 +66,7 @@ function collectCoreSources(dir: string): string[] {
   return out;
 }
 
-function run(): void {
+async function run(): Promise<void> {
   const { check, finish } = createChecker();
 
   // 本节校验的是**进程内**接线（core 侧 UiEvent 订阅、注入点登记），固定用 embedded 装配；
@@ -96,6 +98,22 @@ function run(): void {
   })());
   check('hasExtensionPath() 为真', hasExtensionPath());
   check('sessionQueue.hasCallbacks() 为真', sessionQueue.hasCallbacks());
+
+  // ── 2b. Core 就绪与配置快照重推（docs/core-ui-separation.md 第 4.6、7 节） ──
+  // `bootstrapCore` 发完 hostEnvironmentProvided 后 core 应用快照并发 coreReady；
+  // 之后每次配置写盘都由 `SettingsStore` 的订阅重推整份快照。
+  check('Core 已就绪（coreReady 已到达）', isCoreReady());
+  check('就绪计数为 1（首次握手）', coreReadyCount() === 1);
+
+  const store = getSettingsStore();
+  let pushes = 0;
+  store.subscribe(() => { pushes += 1; });
+  await store.updateSettings((cfg: Record<string, any>) => {
+    cfg.llm = { webSearch: false };
+  });
+  check('配置写盘触发快照推送', pushes === 1);
+  check('重推快照后 coreReady 再来一次', coreReadyCount() === 2);
+  check('重推后的快照已生效', store.getSnapshot().llm.webSearch === false);
 
   // ── 3. 静态守卫：core 的注入点都在骨架内登记 ──
   const coreDir = path.resolve(__dirname, '../../../src/core');

@@ -20,6 +20,7 @@ import { CONFIG_DIR_NAME, CORE_RESOURCE_DIR } from '../config/project';
 import { coreBinaryFileName, corePlatformDir } from '../host/standalone/coreBinary';
 import { CORE_PROTOCOL_VERSION } from '../host/standalone/protocol';
 import { createChecker, runTests } from './helpers/harness';
+import { settingsSnapshotFromHome } from './helpers/fixtures';
 
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const CORE_BINARY = path.join(
@@ -270,10 +271,11 @@ async function run(): Promise<void> {
       kind: 'uiEvent',
       event: {
         type: 'hostEnvironmentProvided',
-        locale: 'zh-CN',
         extensionPath: REPO_ROOT,
         logToConsole: false,
         configDirName: CONFIG_DIR_NAME,
+        settings: settingsSnapshotFromHome(homeDir),
+        mcpServers: [],
       },
     });
     send({ kind: 'uiEvent', event: { type: 'sessionWorkspaceAssigned', sessionId: 'sess-tools', workspacePath: workspace } });

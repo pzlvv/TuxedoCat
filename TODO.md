@@ -10,10 +10,15 @@ x64 / arm64，见 `docs/standalone-core.md` 第 4.1 节。
 实测记录见 `docs/standalone-core.md` 第 4.3 节）。已知缺口与有意保留的实现差异见
 `DIFF.md`。
 
-进程模型：一个宿主实例一个 Core 进程；崩溃由宿主重启。
+**后续工作不在本清单**：Standalone Core 移植完成后，工作转入「Core / UI 架构重构」，
+分解见文末**第二部分**（M9–M16 已全部完成）。
 
-事件词汇表以 `src/core/AssistantEventBus.ts` 为准（`CoreEvent` 24 / `CoreRequest` 2 /
-`UiEvent` 21）。字段名逐项一致。
+进程模型（M14 后的最终形态）：一个 endpoint 一个 daemon；一个工作区一个 Core 进程，
+由 daemon 启动 / 重启 / 终止。第一部分的单进程形态仍由 `CoreProcess.ts` 保留
+（单进程装配与测试）。
+
+事件词汇表以 `src/core/AssistantEventBus.ts` 为准（`CoreEvent` 25 / `CoreRequest` 2 /
+`UiEvent` 20 / `UiRequest` 9）。字段名逐项一致。
 
 产品名、Core 可执行文件名、产物目录名、选择变量名一律取自 `src/config/project.json`。
 
@@ -361,21 +366,22 @@ Core 进程已接管会话引擎、内置工具、会话落盘与配置读取；
 
 | 能力 | 表现 |
 | --- | --- |
-
-
-| i18n 的宿主侧文案 | `tt()` 只覆盖 core 层文案（命令描述、Spin 提示）；宿主进程内的原生文案（Electron 菜单、设计器页面）用的是宿主自己那份 `src/core/i18n.ts`，由 `primeCoreFacts` 按 core 的收敛结果灌值 |
 | Responses API 的内置 Web Search | `apiType='Responses'` 已可用，但不下发内置 `web_search` 工具，模型不会自动联网搜索（搜索卡片事件 `web_search_call` 也未迁入） |
 | Grep content 模式路径 | 输出里的文件路径口径与 Embedded 不同（有意保留） |
 | Edit `displayArgs.diffHunks` | Embedded 的 `PermissionPolicy` 预计算紧凑 diff hunks；Standalone 不下发该键，改为额外下发 `beforeContent` / `afterContent`，webview 用同一份 `buildEditDiffHunks`（同一算法、同一入参）在 `EditFile.tsx` 回退计算，渲染结果一致。代价是这一帧体积更大（整份内容 vs 紧凑 hunks）；`permResult` 与 tool_use `_meta` 的 diff 字段已与 Embedded 对齐 |
 | Anthropic 流内 `signature_delta` / `error` 事件 | Embedded 的 `RealApi` 两条都没处理（thinking 的 signature 只取 `content_block_start` 初值，SSE `error` 帧被静默忽略）；Standalone 会把 `signature_delta` 累积进 thinking block 的 `signature`、并把 `error` 帧当流错误上报。这是有意保留的更稳健行为（Anthropic 扩展思考要求历史 thinking block 带 signature；静默吞掉流错误会产出空回复） |
 | Anthropic `baseURL` 拼接 | Embedded 的 `RealApi` 直接拼 `${baseURL}/v1/messages`；Standalone 会去掉尾部 `/`、且 `baseURL` 已以 `/v1` 结尾时不再重复拼 `/v1`（与 OpenAI 的 `joinV1Path` 口径统一）。baseURL 带 `/v1` 时 Embedded 会请求 `/v1/v1/messages`，Standalone 请求 `/v1/messages`。这是有意保留的更稳健行为（用户把 baseURL 配成 `.../v1` 时 Standalone 仍可用） |
-| 对话空间统计 | `requestConversationSpaces`（设置面板「对话空间」页的占用统计）**未迁入 Core**：Standalone 下宿主仍 bundle 并执行 `src/core/history/ConversationSpace.ts` 的 `getConversationSpaces`，直接读 `conversations/` 目录。清空路径（`conversationSpaceCleared`）已迁入 Core。同机部署结果一致，跨机器部署需补一条 UI → core 请求通道。详见 `DIFF.md` 第 3.0 节 |
+宿主侧的 core 事实读取已收口（M15）：对话列表 / 智能命名 / 余额 / 归档展开 /
+MCP 列表 / 对话空间统计 / 会话加载 / 技能列表 / 挂起持久化都经 UI → core 请求通道
+（协议 v2）向 Core 索取；配置类事实归宿主自己的快照；高亮语言与项目对话目录走 Core
+的推送事件。**例外**（同机部署下与本机 Core 共用同一份磁盘，跨机器部署时必须改为
+总线事实，规格第 11 节把跨机器列为不覆盖范围）：
 
-宿主侧已无对 core 磁盘数据的直接读取：对话列表 / UI 语言 / 配置目录都经新增的
-UI → core 请求通道（协议 v2）向 Core 索取，高亮语言与项目对话目录走 Core 的推送事件。
-**例外**：对话空间统计（见上表）仍由宿主直接读盘。
-同机部署下 Core 与宿主读写同一份磁盘格式，跨机器部署时这些读取必须改为总线事实
-（规格第 11 节把跨机器列为不覆盖范围）。
+- 会话工作目录的宿主侧索引（`history/Config.ts` 的 `getSessionWorkspace` /
+  `setSessionWorkspace`）：只用于「发事件前取会话自己的目录」，权威表在 Core 进程内；
+- 工具 `_meta` 的 before/after 写入（`ToolHandler` → `updateToolUseMeta`）。
+
+详见 `DEVELOPMENT.md` 第 2 节规则 9 的审计结论与 `docs/standalone-core.md` 第 10 节。
 
 ---
 
@@ -402,3 +408,222 @@ UI → core 请求通道（协议 v2）向 Core 索取，高亮语言与项目�
       契约与磁盘格式都不需要改动；真正的未定项是**传输形态本身**（帧通道目前假定
       本机 stdin/stdout，没有认证、没有重连、没有多宿主复用），这属于产品决策而非
       移植工作。
+
+---
+
+# 第二部分：Core / UI 架构重构
+
+本部分是 `docs/core-ui-separation.md` / `docs/client-connection.md` /
+`docs/core-daemon.md` 三份规格的落地分解。第一部分的产物（两套 Core 实现 + 帧通道 +
+对等测试基线）是这一部分的起点。
+
+主线：**配置归 UI、Core 只消费快照** → **一个 Host 多个 Core** → **daemon 复用进程**。
+
+## 进度
+
+| 里程碑 | 内容 | 状态 |
+| --- | --- | --- |
+| M9 | 配置归 UI（快照机制） | 已完成 |
+| M10 | 契约清理（死请求 / 死事件、就绪门禁） | 已完成 |
+| M11 | i18n 与 Core 解耦（方案 b） | 已完成 |
+| M12 | 项目清单改名 `workspace.meta.json` | 已完成 |
+| M13 | Client / Connection 拆分 | 已完成 |
+| M14 | daemon 进程模型（方案 A） | 已完成 |
+| M15 | 宿主侧 in-process core 调用清理 | 已完成 |
+| M16 | 收尾（DIFF / 文档 / dead_code 审计） | 已完成 |
+
+M11 / M12 与 M13 / M14 互相独立，可以并行；M15 是 M13 的前置——先让宿主侧不再依赖
+「core 在同一进程」这个隐含假设，Connection 拆分才不会被这些调用点缠住。
+
+---
+
+## M9 配置归 UI（已完成）
+
+规格：`docs/core-ui-separation.md` 第 3.2、4 节。
+
+- [x] 归属：全局 `settings.json` / `mcp.json` 的读与写都在 UI；Core 不感知两者路径。
+- [x] `src/host/SettingsStore.ts`：读盘 → 补默认值 → 规范化 → 产出快照；写操作串行化（读-改-写）、
+      未知字段保留 + warning、写盘后重新解析并通知订阅者。
+- [x] `src/core/settingsSnapshot.ts`：`resolveSettingsSnapshot` 纯函数（默认值补齐、白名单校验、
+      `modelLimits` 预解析、MCP 定义规范化）。
+- [x] `src/core/settings.ts` / `core-rs/src/settings.rs`：Core 侧唯一入口
+      （`applySettingsSnapshot` / `getSettings` / `getMcpServerDefinitions`），未到达时抛错。
+- [x] 快照并入 `UiEvent.hostEnvironmentProvided`（`settings` + `mcpServers`），字段全必选，缺字段即协议错误。
+- [x] 快照**不含** `uiLanguage` / `highlightLanguages`（UI 专属字段）；`modelLimits` 是预解析结果，
+      内置模型注册表归 UI。
+- [x] 两套 Core 的消费点全部改读快照（`config` / `mcp_config` / `balance` / `engine` / `llm`）；
+      Core 侧不再出现这两个文件的路径与文件读取。
+- [x] 写盘后重推整份快照：`bootstrapCore` 在 `SettingsStore` 上订阅一次，调用点不手工触发。
+- [x] `mcp.json` 只在连接建立时读一次；中途修改不通知 Core（重开工作区生效）。
+- [x] 测试：`settingsSnapshot.test.ts`（解析 / 存储）、`hostSettings.test.ts`（宿主侧读取与保存 mutation）；
+      Rust 侧 `settings_tests.rs` + `Sandbox::write_settings` 扮演 Host 角色。
+
+完成判据：Core 侧零配置文件访问；改一份配置后两套实现的下一次取值都是新值。（已达成）
+
+---
+
+## M10 契约清理（已完成）
+
+- [x] 删 `UiEvent.settingsJsonUpdateRequested`（写盘入口唯一在 UI，Core 不再有写配置的通路）。
+- [x] 删 `UiEvent.llmConfigSaved`（它只用来清 Core 的读缓存，而缓存已不存在）。
+- [x] 删 `UiRequest.uiLanguageRequested` / `systemLocaleRequested` / `configHomeDirRequested`。
+- [x] 删 `UiRequest.llmConfigSaveRequested`。
+- [x] LLM 配置保存的整段 mutation 搬到 `src/host/llmConfigSave.ts`（`applyLlmConfigSave`）：
+      provider 表 + `modelConfigs` 补齐 + 顶层默认值 + MCP 默认启用列表，一次写盘原子完成。
+- [x] 配置读取搬到 `src/host/settingsRead.ts`：面板载荷、默认值、`resolveModelRef`
+      （纯函数，读宿主自己的快照；顺带修掉 Standalone 下「宿主进程没有快照」导致校验静默失效）。
+- [x] 新增 `CoreEvent.coreReady`；就绪前只接受 `hostEnvironmentProvided`
+      （Embedded 在 `host/EventBus.ts` 抛错，Standalone 在 Core 进程内拒绝并记 log）。
+- [x] MCP 默认列表变更后的会话重同步移到 Core 的快照反应（原来靠 `llmConfigSaveRequested` 的副产物）。
+- [x] Rust：删 `llm_config.rs` / `llm_config_tests.rs` 整模块；`config.rs` 删 settings.json 读段与写段，
+      删 `SETTINGS_CACHE` / `reset_settings_cache` / `read_ui_language` / `update_settings_json` /
+      `replace_settings_json` / `merge_highlight_languages`。
+- [x] 修掉 `bootstrapCore` 的接线顺序错误：首次握手必须在 `WebViewUI.create` 之后
+      （`coreReady` 在 `onCoreEvents` 注册前会被总线抛错吞掉）。
+- [x] 测试：新增 `provideHostEnvironment(bus)` 助手；`Sandbox::new` 默认注入空快照
+      （「宿主已连接、配置为空」）；就绪门禁与 `coreReady` 各有独立用例。
+
+---
+
+## M11 i18n 与 Core 解耦（已完成）
+
+规格：`docs/core-ui-separation.md` 第 4.8 / 4.9 节。
+
+- [x] `CoreEvent.notice { sessionId, key, params, level }`：描述瞬时状态的提示
+      （Spin 结构问题、全部完成、内置命令未接线等）由 Core 以「键 + 参数」表达，
+      UI 翻译后以浮层呈现；提示不进消息流、不落盘。宿主侧 `WebViewUI.onNotice` 原样转发，
+      webview 的 `NoticeToast` 渲染（`src/webview/components/NoticeToast.tsx`）。
+- [x] Rust：`core-rs/src/i18n.rs` 删除；落盘文本一律英文常量（进 JSONL / LLM 上下文的那部分），
+      面向界面的瞬时提示以 `core_text.rs` 的键 + 参数发出。
+- [x] Rust：`CoreLocale` / `set_core_locale` / `set_core_ui_language` / `get_system_locale` /
+      `CORE_LOCALE` / `CORE_LOCALE_SOURCE` 与 `run_powershell_ui_culture` 删除。
+- [x] Rust：`hostEnvironmentProvided` 不再携带 `locale`，`config::HostEnvironment` 同步收窄；
+      `engine.on_host_environment` 不做语言收敛。
+- [x] TS：`src/core/i18n.ts` 移到 `src/host/i18n.ts`；`tt()` 只服务宿主进程内的原生 UI。
+- [x] 宿主侧调用点指向新位置：`host/coreFacts.ts` 的 `primeHostLocale`、
+      `host/ui/webviewMessageHandler.ts` 的语言收敛、`src/VSCodeSpinDesign.ts`、
+      `electron/main.ts` 与 `electron/ElectronSpinDesign.ts`。
+- [x] UI 侧翻译表：Core 用到的每个键都存在（`src/webview/i18n/zh.ts` / `en.ts`）；
+      键缺失时显示键本身并记日志（`t()`）。
+- [x] 测试：键完整性（Core 用到的键集合 ⊆ UI 翻译表）由 `coreTextParity.test.ts` ↔
+      `core-rs/src/core_text_tests.rs` 对照 `src/test/fixtures/coreTextKeys.json` 锁定。
+- [x] 复核并删除 `docs/standalone-core.md` 第 5 节与 `docs/core-ui-separation.md` 第 3.2 节的
+      「过渡期例外」说明。
+- [x] `hostEnvironmentProvided` 的字段集合两套实现一致（`locale` 不再出现）：TS 侧由
+      `UiEvent` 类型约束，Rust 侧 `config::HostEnvironment` 同步收窄。
+
+完成判据：`core-rs/src/i18n.rs` 与 `src/core/i18n.ts` 都不存在；两套 Core 的载荷里没有
+`locale`；Core 用到的文案键在 UI 翻译表里全部命中。（已达成）
+
+---
+
+## M12 项目清单改名 `workspace.meta.json`（已完成）
+
+规格：`docs/core-ui-separation.md` 第 4.1 节。**不考虑历史兼容**（不迁移旧文件）。
+
+- [x] 两套 Core：`<projectDir>/settings.json` → `workspace.meta.json`，字段与格式保持一致。
+- [x] TS：`history/Config.ensureProjectConversationDir` 由 Core 自己写清单
+      （不再上报 `projectConversationDirReady` 让宿主写）。
+- [x] Rust：`config::write_project_settings` / `project_settings_workspace_path` 改名与读取口径同步。
+- [x] 删 `CoreEvent.projectConversationDirReady`（含 `WebViewUI.buildCoreEventHandlers` 的条目与
+      `src/test/helpers/fixtures.ts` 的记录项）。
+- [x] 删 `UIHost.ensureProjectSettings`（`src/host/UIHost.ts`、`src/VSCodeUIHost.ts`、Electron 宿主、
+      `src/test/helpers/fixtures.ts`）与 `WebViewUI.onProjectConversationDirReady`。
+- [x] 删 `src/host/settingsFile.ts` 的 `writeProjectSettings`。
+- [x] 测试：`projectConversationDirParity.test.ts` 改为断言「Core 自己写盘、宿主不参与」；
+      Rust 侧 `config_tests.rs` 对应用例改名。
+
+完成判据：宿主侧不再有任何指向 Core 数据目录的写操作。
+
+---
+
+## M13 Client / Connection 拆分
+
+规格：`docs/client-connection.md`（验收要点见该文档第 10 节）。
+
+现状：`bootstrapCore` 直接建一个总线、把整份宿主环境发过去；会话与总线的关系隐含在全局
+单例里（`WebViewUI.getInstance()` / `requireEventBus()`）。
+
+- [x] `src/host/workspaceRef.ts`：工作区引用（scheme + path + endpoint 三元组），本地 / 远程同构。
+- [x] `src/host/Connection.ts`：一个 workspace 一个 Connection，持有总线 + 会话集合 + 连接态；
+      总线作用域收敛到 Connection（`setGlobalEventBus` 的单例语义需要重新设计）。
+- [x] `src/host/Client.ts`：维护 `workspaceRef → Connection` 映射；`connectionId` 自动生成、
+      内部概念、不进任何总线载荷。
+- [x] 就绪门禁上移到 Client：未收到 `coreReady` 前不发出任何 `UiEvent`（Core 侧门禁保留为兜底）。
+- [x] 会话路由：按 `sessionId` 找到归属 Connection；查不到时报错（不静默丢弃）。
+- [x] `bootstrapCore` 改为按 Connection 装配；`embedded` 恒一个 Connection 且与 `standalone` 互斥。
+- [x] 同一 workspace 重复打开 → 激活已有视图，不新建 Connection、不切换。
+- [x] `UIHost` 增加 `WorkspaceProvider`（当前工作区、打开 / 关闭事件）。
+- [x] 一份配置快照推给所有已就绪的 Connection（`SettingsStore` 的订阅改成遍历 Client）。
+- [x] `src/host/standalone/StandaloneEventBus.ts` 的「连接态事件重放 / 就绪前排队」随 Connection
+      收敛（重连仍按规格第 9 节排除在本轮之外，但抽象要留出位置）。
+- [x] 测试：两个 workspace → 两个 Connection、两个 Core 进程；`connectionId` 不出现在载荷里；
+      关闭工作区后 Connection 销毁。
+
+完成判据：`docs/client-connection.md` 第 10 节的 8 条验收要点全部成立。
+
+---
+
+## M14 daemon 进程模型（方案 A）
+
+规格：`docs/core-daemon.md`（验收要点见该文档第 10 节）。前置：M13。
+
+现状：一个 Host 实例一个 Core 进程，崩溃由 Host 重启（`CoreProcess.ts`）。
+
+- [x] `core-rs/src/main.rs`：加 `--daemon` / `--serve` 两种模式（默认仍是单进程 Core）。
+- [x] `core-rs/src/daemon.rs`：channel 管理、`liveCores` 计数、计数归零 + 30s grace 期退出。
+- [x] `core-rs/src/daemon_protocol.rs` + `src/host/standalone/daemonProtocol.ts`：控制通道协议
+      （`ChannelDescriptor` 见规格第 4.1 节）。
+- [x] `src/host/standalone/CoreDaemon.ts`：Host 侧 daemon 客户端；每 endpoint 一个 daemon。
+- [x] 一个 workspace 一个 Core 进程，且**从 daemon fork 出来**。
+- [x] 重启责任从 Host 移到 daemon；`src/host/standalone/CoreProcess.ts` 的进程管理职责随之收缩。
+- [x] 控制通道断开 → 该 Host 的全部 Core 关闭、daemon 退出。
+- [x] 背压：单条 channel 的拥塞不阻塞其它 channel（规格第 7.4 节）。
+- [x] 测试：计数归零 + grace 退出、grace 期内新开工作区继续服务、控制通道断开清理、
+      崩溃后同 channel 重启、超重启上限报告、多 channel 隔离。
+
+完成判据：`docs/core-daemon.md` 第 10 节的 8 条验收要点全部成立。
+
+---
+
+## M15 宿主侧 in-process core 调用清理
+
+规格：`DEVELOPMENT.md` 第 2 节规则 9（宿主不得调用 core 的状态变更函数）。
+Standalone 下这些调用读的是宿主进程里不存在的 core 状态，目前是静默失败或空实现。
+
+- [x] `webviewMessageHandler.pushMcpServers`：`core/mcp/Config.js` 的 `readMcpServers` 改读宿主自己的快照。
+- [x] MCP 运行时状态（`running` / `toolCount` / `error` / `refCount`）需要新的 core 事实通路
+      （`UiRequest` 或 `CoreEvent`），不能由宿主读 `getMcpManager().getServerStatus()`。
+- [x] `getMCPHost().onSessionEnabledChanged()`（core 状态变更）→ 改为 `UiEvent`；
+      `handleSaveLLMConfig` 的 MCP 刷新块随之简化。
+- [x] 对话空间统计 `getConversationSpaces`（`handleRequestConversationSpaces` 直接读 core 磁盘）→ `UiRequest`。
+- [x] `handleLoadConversation` 的 `updateConversationContext` / `setSessionModel` → 统一走
+      `UiEvent.modelChanged`（`handleSaveLLMConfig` 已经这么做了）。
+- [x] `handleUserMessage` / `handleAbort` 等处的 `getSessionEngine()`（core 运行时状态）→ 确认能否
+      改为「Core 自己判定并回报」。
+- [x] 全面审计 `src/host/**` 对 `src/core/**` 的 import，逐项标注「只读事实 / 状态变更」；
+      状态变更的全部改走总线，审计结论写进 `DEVELOPMENT.md` 第 2 节规则 9 的清单。
+
+完成判据：`src/host/**` 里对 `src/core/**` 的 import 只剩纯函数、类型与常量；
+没有一处读 core 的进程内状态。
+
+落地说明：`src/host/coreFacts.ts` 是受控的事实入口——Embedded 分支按 `CORE_KIND`
+同进程直读，Standalone 一律走 `UiRequest`；`bootstrapCore` 与 `WebviewMessageHandler`
+里对 core 装配 / 引擎的调用都在 `CORE_KIND === 'embedded'` 分支内。仍保留的两处
+直接读取（会话工作目录的宿主侧索引、工具 `_meta` 的 before/after 写入）登记在
+`DEVELOPMENT.md` 第 2 节规则 9 的审计结论与 `docs/standalone-core.md` 第 10 节：
+同机部署下与本机 Core 共用同一份磁盘，远程工作区落地时迁到 `UiRequest`。
+
+---
+
+## M16 收尾
+
+- [x] `DIFF.md` 记录本轮新增的实现差异：MCP 默认列表重同步的触发点、模型身份解析的归属、
+      就绪门禁在两种装配下的不同表现。
+- [x] `DEVELOPMENT.md` 第 13 章现状表按当前实现校对（第 4 章的两张事件表已在 M10 更新）。
+- [x] `core-rs` 的 `#[allow(dead_code)]` 全量审计：逐项确认是「测试专用」还是真死代码；
+      `i18n.rs` 的表级 allow 随 M11 消失。
+- [x] `docs/standalone-core.md` 第 10 节「宿主侧已无对 core 磁盘数据的直接读取」的例外表
+      按 M15 结果更新。
+- [x] `docs/core-ui-separation.md` 第 9 节「不覆盖范围」复核（重连是否仍排除、跨机器部署的结论）。
+- [x] 全量收尾：Rust + TS + parity 测试 + 类型 + lint 干净，两套实现的一致性差异全部登记在 `DIFF.md`。

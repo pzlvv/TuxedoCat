@@ -12,14 +12,15 @@
 
 
 import * as vscode from 'vscode';
-import type { UIHost, WebviewViewHandle } from './host/UIHost.js';
+import type { UIHost, WebviewViewHandle, WorkspaceChange } from './host/UIHost.js';
 import type { WebviewMessage } from './core/webviewTypes.js';
+import { sameWorkspaceRef, type WorkspaceRef } from './host/workspaceRef.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from './host/mermaidHtml.js';
 import { MERMAID_PANEL_ID } from './config/project.js';
 import { DocumentManager } from './VSCodeUIHost/documentManager.js';
 import type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent } from './host/ui/types.js';
 import { isImageFile } from './host/imageFiles.js';
-import { writeProjectSettings, writeSettingsJson } from './host/settingsFile.js';
+import { writeSettingsJson } from './host/settingsFile.js';
 
 export type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent };
 
@@ -94,11 +95,50 @@ export class VSCodeUIHost implements UIHost {
   }
 
   getWorkspacePath(): string | undefined {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (workspaceFolders && workspaceFolders.length > 0) {
-      return workspaceFolders[0].uri.fsPath;
-    }
-    return undefined;
+    return this.getWorkspaceRef()?.path;
+  }
+
+  /**
+   * 当前工作区引用：取第一个工作区文件夹的 URI。
+   *
+   * VS Code 的 workspace URI 是取值的来源（`docs/client-connection.md` 第 4 节）：
+   * `scheme` 取 URI 的 scheme，`endpoint` 由 authority 解析，`path` 取 URI 的 path。
+   * 当前只支持本地（file）连接；非 file scheme 的 endpoint 只登记取值，不实现传输。
+   */
+  getWorkspaceRef(): WorkspaceRef | undefined {
+    const uri = vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!uri) return undefined;
+    return {
+      scheme: uri.scheme,
+      path: uri.fsPath,
+      endpoint: uri.scheme === 'file' || !uri.authority
+        ? null
+        : { host: uri.authority, port: null, user: null, auth: null },
+    };
+  }
+
+  /** VS Code 是单工作区宿主：打开集合至多一项 */
+  getOpenWorkspaceRefs(): readonly WorkspaceRef[] {
+    const ref = this.getWorkspaceRef();
+    return ref ? [ref] : [];
+  }
+
+  /** 工作区文件夹变化：第一个文件夹的换入 / 换出映射为 opened / closed */
+  onWorkspaceChanged(listener: (change: WorkspaceChange) => void): () => void {
+    let current = this.getWorkspaceRef();
+    const subscription = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      const next = this.getWorkspaceRef();
+      if (current && (!next || !sameWorkspaceRef(current, next))) {
+        listener({ type: 'closed', ref: current });
+      }
+      if (next && (!current || !sameWorkspaceRef(current, next))) {
+        listener({ type: 'opened', ref: next });
+      } else if (next) {
+        listener({ type: 'activated', ref: next });
+      }
+      current = next;
+    });
+    return () => subscription.dispose();
   }
 
   isDarkTheme(): boolean {
@@ -212,11 +252,6 @@ export class VSCodeUIHost implements UIHost {
   // settings.json 的写入口（core 只读不写；两个宿主共用同一份实现）
   updateSettingsJson(mutator: (cfg: Record<string, any>) => void | Record<string, any>): Promise<void> {
     return writeSettingsJson(mutator);
-  }
-
-  // 项目对话目录的 settings.json（记录 workspacePath）
-  ensureProjectSettings(projectDir: string, workspacePath: string): Promise<void> {
-    return writeProjectSettings(projectDir, workspacePath);
   }
 
   // ===================== VS Code 专有：Mermaid 预览面板 =====================

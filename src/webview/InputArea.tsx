@@ -32,6 +32,14 @@ export interface SkillItem {
   isBuiltin?: boolean;
 }
 
+/**
+ * 技能描述：内置命令的 `description` 是 core 产出的**文案键**（`src/core/coreText.ts`），
+ * 在这里翻译；文件技能的描述是原文，原样展示。
+ */
+function skillDescription(skill: SkillItem): string {
+  return skill.isBuiltin ? t(skill.description) : skill.description;
+}
+
 interface InputAreaProps {
   inputFocused: boolean;
   setInputFocused: (focused: boolean) => void;
@@ -1449,7 +1457,7 @@ const SlashPopup = memo(({
               whiteSpace: 'nowrap',
             }}
           >
-            {skill.description}
+            {skillDescription(skill)}
           </span>
         </div>
       ))}
@@ -1540,9 +1548,10 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     const nameMatches: SkillItem[] = [];
     const descMatches: SkillItem[] = [];
     for (const s of skills) {
+      const description = skillDescription(s).toLowerCase();
       if (s.name.toLowerCase().includes(q)) {
         nameMatches.push(s);
-      } else if (s.description.toLowerCase().includes(q)) {
+      } else if (description.includes(q)) {
         descMatches.push(s);
       }
     }

@@ -38,6 +38,7 @@ import {
 import { initializeCoreEvents } from '../core/initializeCoreEvents';
 import { createChecker, runTests } from './helpers/harness';
 import { makeTempDir } from './helpers/fixtures';
+import { resolveSettingsSnapshot, type SettingsSnapshot } from '../core/settingsSnapshot';
 
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const CORE_BINARY = path.join(
@@ -48,15 +49,21 @@ const CORE_BINARY = path.join(
   coreBinaryFileName('win32'),
 );
 
-/** 脚本化的 UiEvent 序列；`sessionId` 用固定值，两边逐项相同 */
-function scriptedUiEvents(workspacePath: string): UiEvent[] {
+/**
+ * 脚本化的 UiEvent 序列；`sessionId` 用固定值，两边逐项相同。
+ *
+ * `settings` 是配置快照——配置归 UI，Core 侧只消费快照，不读 `settings.json`；
+ * 两个实现收到的是同一份，因此必须由本函数显式传入。
+ */
+function scriptedUiEvents(workspacePath: string, settings: SettingsSnapshot): UiEvent[] {
   return [
     {
       type: 'hostEnvironmentProvided',
-      locale: 'en-US',
       extensionPath: REPO_ROOT,
       logToConsole: false,
       configDirName: CONFIG_DIR_NAME,
+      settings,
+      mcpServers: [],
     },
     { type: 'sessionWorkspaceAssigned', sessionId: 'parity-1', workspacePath },
     { type: 'conversationStarted', sessionId: 'parity-1', workspacePath },
@@ -145,13 +152,10 @@ function startFakeLlm(): Promise<{ url: string; close: () => Promise<void> }> {
 }
 
 /** 在 `<home>/<CONFIG_DIR_NAME>/settings.json` 写一份指向假 LLM 的配置 */
-function writeSettings(homeDir: string, baseUrl: string): void {
+function writeSettings(homeDir: string, baseUrl: string): SettingsSnapshot {
   const configDir = path.join(homeDir, CONFIG_DIR_NAME);
   fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(configDir, 'settings.json'),
-    JSON.stringify(
-      {
+  const raw = {
         llm: {
           maxTokens: 4096,
           activeProvider: 'fake',
@@ -165,12 +169,10 @@ function writeSettings(homeDir: string, baseUrl: string): void {
             },
           },
         },
-      },
-      null,
-      2,
-    ),
-    'utf8',
-  );
+  };
+  fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify(raw, null, 2), 'utf8');
+  // Core 侧从快照取值：由同一份原始配置解析出快照，喂给两个实现
+  return resolveSettingsSnapshot(raw);
 }
 
 /** 临时切换 USERPROFILE / HOME（两侧都靠它定位 settings.json 与对话目录） */
@@ -194,11 +196,6 @@ async function withHome<T>(home: string, fn: () => Promise<T>): Promise<T> {
 /** Embedded：进程内总线，跑完整个序列后返回 CoreEvent 序列 */
 async function runEmbedded(home: string, events: UiEvent[]): Promise<CoreEvent[]> {
   return withHome(home, async () => {
-    const historyConfig = await import('../core/history/Config');
-    historyConfig.resetSettingsCache();
-    const llmConfig = await import('../core/llm/config');
-    llmConfig.clearConfigCache();
-
     resetGlobalEventBus();
     const bus = createEventBus();
     setGlobalEventBus(bus);
@@ -318,18 +315,18 @@ async function run(): Promise<void> {
   const llm = await startFakeLlm();
   const embeddedHome = makeTempDir('parity-embedded');
   const standaloneHome = makeTempDir('parity-standalone');
-  writeSettings(embeddedHome, llm.url);
-  writeSettings(standaloneHome, llm.url);
+  const embeddedSettings = writeSettings(embeddedHome, llm.url);
+  const standaloneSettings = writeSettings(standaloneHome, llm.url);
   const embeddedWorkspace = path.join(embeddedHome, 'workspace');
   const standaloneWorkspace = path.join(standaloneHome, 'workspace');
   fs.mkdirSync(embeddedWorkspace, { recursive: true });
   fs.mkdirSync(standaloneWorkspace, { recursive: true });
 
   try {
-    const embeddedEvents = await runEmbedded(embeddedHome, scriptedUiEvents(embeddedWorkspace));
+    const embeddedEvents = await runEmbedded(embeddedHome, scriptedUiEvents(embeddedWorkspace, embeddedSettings));
     const standaloneEvents = await runStandalone(
       standaloneHome,
-      scriptedUiEvents(standaloneWorkspace),
+      scriptedUiEvents(standaloneWorkspace, standaloneSettings),
     );
     const embedded = contractTypes(embeddedEvents);
     const standalone = contractTypes(standaloneEvents);

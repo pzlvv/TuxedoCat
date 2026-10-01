@@ -219,7 +219,7 @@ fn registered_command_description_is_resolved() {
     clear_builtin_commands();
     register_builtin_command(BuiltinCommandDefinition {
         name: "static".to_string(),
-        description: Description::Static("A static description".to_string()),
+        description: "A static description".to_string(),
         aliases: Vec::new(),
         execute: Arc::new(|_args, _context| None),
     });
@@ -240,7 +240,7 @@ fn command_result_becomes_system_message() {
     clear_builtin_commands();
     register_builtin_command(BuiltinCommandDefinition {
         name: "echo".to_string(),
-        description: Description::Static("echo".to_string()),
+        description: "echo".to_string(),
         aliases: Vec::new(),
         execute: Arc::new(|args, _context| Some(format!("echoed: {args}"))),
     });
@@ -256,7 +256,7 @@ fn command_result_becomes_system_message() {
     let (silent_context, silent_events) = make_context(".");
     register_builtin_command(BuiltinCommandDefinition {
         name: "silent".to_string(),
-        description: Description::Static("silent".to_string()),
+        description: "silent".to_string(),
         aliases: Vec::new(),
         execute: Arc::new(|_args, _context| Some(String::new())),
     });
@@ -272,7 +272,7 @@ fn skill_conflict_detection_uses_name_and_aliases() {
     clear_builtin_commands();
     register_builtin_command(BuiltinCommandDefinition {
         name: "spin".to_string(),
-        description: Description::Static("spin".to_string()),
+        description: "spin".to_string(),
         aliases: vec!["sprint".to_string()],
         execute: Arc::new(|_args, _context| None),
     });
@@ -288,15 +288,13 @@ fn spin_command_reports_missing_engine() {
     crate::skills::reset_registries();
     let definition = spin_command_definition();
     let (context, events) = make_context(".");
-    // `auto` 分支：引擎未迁移 → 发一条 user 消息说明，不返回系统消息
+    // `auto` 分支：引擎未接线 → 发一条 notice（键 + 参数），不返回系统消息
     assert_eq!((definition.execute)("auto", &context), None);
     let events = events.lock().unwrap().clone();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0]["data"]["role"], "user");
-    assert!(events[0]["data"]["content"]
-        .as_str()
-        .unwrap()
-        .contains("Spin"));
+    assert_eq!(events[0]["type"], "notice");
+    assert_eq!(events[0]["key"], crate::core_text::SPIN_ENGINE_NOT_WIRED);
+    assert_eq!(events[0]["level"], "error");
 
     // `design` 分支：不发消息
     let (design_context, design_events) = make_context(".");
@@ -305,14 +303,11 @@ fn spin_command_reports_missing_engine() {
 }
 
 #[test]
-fn spin_description_follows_core_locale() {
+fn spin_description_is_the_shared_text_key() {
     let _guard = serial();
-    crate::i18n::reset_core_locale();
     let definition = spin_command_definition();
-    assert_eq!(definition.description.resolve(), "Execute Spin tasks");
-    crate::i18n::set_core_ui_language("zh");
-    assert_eq!(definition.description.resolve(), "执行 Spin 任务");
-    crate::i18n::reset_core_locale();
+    // Core 只产出文案键，翻译在 UI（`docs/core-ui-separation.md` 第 4.8 节）。
+    assert_eq!(definition.description, crate::core_text::SPIN_COMMAND_DESCRIPTION);
 }
 
 #[test]

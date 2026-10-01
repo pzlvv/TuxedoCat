@@ -180,20 +180,18 @@ Node 的 `error.message` 含完整命令行与 OS 级错误串，Rust 侧无法�
 
 ## 3. 未迁入能力
 
-MCP、Spin 引擎、智能命名 / 归档展开 / 余额推送、UI → core 请求通道、LLM 配置保存
-都已迁入；剩余缺口（内置 Web Search、助手回复的超长落盘兜底、对话空间统计等）
+MCP、Spin 引擎、智能命名 / 归档展开 / 余额推送、UI → core 请求通道、对话空间统计、
+会话加载与技能列表都已迁入；剩余缺口（内置 Web Search、助手回复的超长落盘兜底等）
 见 `TODO.md`「已知缺口（Standalone 下暂不可用）」，本清单只展开需要说明细节的那几条。
 
 ### 3.0 对话空间统计（`requestConversationSpaces`）
 
-| | 行为 |
-| --- | --- |
-| Embedded | `webviewMessageHandler.handleRequestConversationSpaces` 在**同进程内**调 `src/core/history/ConversationSpace.ts::getConversationSpaces` 统计各项目占用；清空走 `conversationSpaceCleared` 总线事件。 |
-| Standalone | 「统计列表」这一半**未迁入 Rust Core**：宿主进程仍 bundle 并执行同一份 TS 实现，直接读 `conversations/` 目录；清空那一半已迁入 Core（`main.rs` 的 `conversationSpaceCleared` 分支）。 |
+统计与清空都在 Core：宿主经 `UiRequest.conversationSpacesRequested` 取列表
+（Embedded 走 `coreFacts` 的同进程分支，Standalone 走 Rust 的
+`history::conversation_spaces`），清空走 `UiEvent.conversationSpaceCleared`。
 
-这是本清单唯一仍由宿主直接读 Core 磁盘数据的通道（`docs/standalone-core.md`
-第 10 节的「宿主不再读 Core 磁盘」对这条尚未成立）。同机部署下结果一致；跨机器
-部署时该功能会读到错误的磁盘，需要补一条 UI → core 请求通道。
+有意保留的差异：会话数只数 `<sessionId>.meta.json`，空间清单 `workspace.meta.json`
+不算会话（M12 改名后两侧同步修正）；排序按字节数降序，两侧同口径。
 
 ### 3.1 MCP
 
@@ -249,35 +247,82 @@ standalone= queryBegin, sessionConfigChanged, projectConversationDirReady,
 
 ### 3.4 模型注册表
 
-`src/core/utils/modelConfig.ts` 的 `MODEL_CONFIGS` 当前三条（`deepseek-flash` /
-`deepseek-v4-flash` / `deepseek-v4-pro`）的参数与 `FALLBACK_MODEL_PARAMS` 完全相同
-（1M 上下文 / 192K thinking / 384K 输出），因此 Rust 侧直接写常量
-（`DEFAULT_CONTEXT_WINDOW` / `DEFAULT_THINKING_BUDGET` / `DEFAULT_MAX_TOKENS`）。
-**将来注册表出现与兜底不同的条目时，Rust 侧必须补一张同名表**，否则上下文窗口
-与压缩阈值会不一致。
+模型注册表（`src/core/utils/modelConfig.ts` 的 `MODEL_CONFIGS`）归 UI：宿主按注册表
+把 `modelLimits` 预解析进配置快照（`docs/core-ui-separation.md` 第 4 节），Core 只消费
+`modelLimits` / `modelLimitsFallback`，两侧不存在需要各自维护的第二张表。Rust 侧没有
+按模型名匹配的注册表，命中逻辑与快照逐项一致。
 
 ### 3.5 LLM 配置保存
 
 `handleSaveLLMConfig` 的 mutation（provider 表重建 / `modelConfigs` 保留与补齐 /
-顶层默认值 / MCP 默认启用列表）整体搬到了 Core（`llm_config.rs`），宿主经
-`UiRequest.llmConfigSaveRequested` 取保存结果。有意保留的差异：
-
-- `providerKeyFromBaseURL` 用 `reqwest::Url` 解析：TS 用 `new URL()`。两者对
-  「合法 URL」的判定一致；退化分支（非法 URL 时「去协议 → 第一个 `/` 之前 → 去端口」）
-  手写实现，已由 `llm_config_tests.rs` 覆盖。
-- **模型注册表**：见第 3.4 节——`MODEL_CONFIGS` 当前三条与兜底参数完全相同，Rust
-  侧直接用兜底常量。
-- 保存后的「读回」在 Standalone 下用 Core 返回的结果，不再读盘；Embedded 路径
-  保持不变（宿主读自己的盘）。因此**返回值形状**是两边共用的契约，字段名逐项一致。
+顶层默认值 / MCP 默认启用列表）归宿主（`src/host/llmConfigSave.ts`，M9）：写盘后
+`SettingsStore` 重新构造整份快照并推给所有 Connection，Core 不感知 `settings.json`
+路径，也没有保存请求。两侧的差异只剩快照内容本身：字段名、默认值、白名单由
+`settingsSnapshot.test.ts` 与 `coreEventParity.test.ts` 锁定。
 
 ### 3.6 i18n
 
-- `getSystemLocale` 在 Windows 上查 PowerShell 的 `Get-UICulture` / `Get-Culture`
-  （对齐 Embedded）；PowerShell 失败时 Embedded 会退到
-  `Intl.DateTimeFormat().resolvedOptions().locale`，Rust 没有等价的 ICU 查询，
-  直接退到 `LANG` / `LC_ALL`（Windows 上通常为空）。
-- Standalone 下宿主不再自己探测系统语言：`UiRequest.systemLocaleRequested` 由 Core
-  探测一次并缓存，宿主读缓存（预热前为空串，与探测失败同一口径）。
+Core 不再产出文案：提示类输出经 `CoreEvent.notice` 携带「键 + 参数 + 级别」，键表由
+`coreTextParity` 对照锁定（M11）；系统语言探测归宿主（`src/host/i18n.ts`），Core
+不感知语言，也没有 `systemLocaleRequested` 请求。Rust 侧只保留键与参数，不再有
+`i18n.rs`。
+
+### 3.7 MCP 默认列表重同步的触发点
+
+两侧都在 `hostEnvironmentProvided` 应用完快照后比较 `mcp.enabled` 的差异，变化时重同步
+所有已注册会话（Embedded：`initializeCoreEvents` → `getMcpManager().syncAllSessions()`；
+Standalone：`settings::apply_from_host_environment` 返回 `mcp_defaults_changed` →
+`mcp::sync_all_sessions()`）。宿主不再触发重同步：`getMCPHost().onSessionEnabledChanged()`
+这条直接调用已删除（M15）。同步完成后 Core 广播 `sessionConfigChanged(mcpEnabled)`，
+UI 据此经 `UiRequest.mcpServersRequested` 重读列表。
+
+### 3.8 模型身份解析的归属
+
+`meta.json` 里的 `model` / `provider` 是会话事实，落盘与引擎同步都归 Core：加载会话时
+宿主把解析出的可用身份经 `UiEvent.modelChanged` 交给 Core（Core 写 meta.json + 同步
+引擎配置），宿主不再直接调 `updateConversationContext` / `setSessionModel`（M15）。
+宿主只做「按快照校验身份」这一步纯计算（`resolveModelRef`）。
+
+### 3.9 就绪门禁在两种装配下的表现
+
+- Embedded：总线在 `emitToCore` 时硬断言（快照未到达前收到其它 `UiEvent` 抛错），
+  `coreReady` 只是诊断信号；
+- Standalone：Core 同样在就绪前拒绝 `UiEvent`（记 log 并丢弃），Host 侧另有 Client
+  门禁——Connection 未就绪时 `UiEvent` 排队、`requestCore` 挂起，收到 `coreReady`
+  后按序冲刷。
+
+两边的共同点：`coreReady` 是「Core 已应用配置快照」的判据，每次快照重推都会再发一次。
+
+### 3.10 daemon 与重启责任
+
+Standalone 下 Core 的启动、重启（退避 + 上限）与终止由 daemon 承担（`daemon.rs`）；
+Host 侧只把 `channelReset` 翻译成「连接重置」（重新 `hello`、重放连接态事件与已打开
+会话），把 `workspaceClosed(failed)` 翻译成 fatal。Embedded 没有进程，也就没有这一层。
+`CoreProcess.ts` 保留为单进程形态的传输层实现（测试与回退路径），生产装配走
+`CoreDaemon.ts`。
+
+### 3.11 宿主侧 core 事实读取的例外
+
+`coreFacts` 是宿主侧统一入口（Embedded 直读 / Standalone 走 `UiRequest`）。仍保留的
+直接读取见 `DEVELOPMENT.md` 第 2 节规则 9 的审计结论：会话工作目录的宿主侧索引、
+工具 `_meta` 的 before/after 写入。两者在 Standalone 下与本机 Core 共用同一份磁盘；
+远程工作区落地时需要迁到 `UiRequest`（`docs/client-connection.md` 第 9 节把远程列为
+不覆盖范围）。
+
+### 3.12 额外接受的旧事件
+
+Rust 的 `dispatch_ui_event` 额外接受 `workspaceChanged`（`UiEvent` 词汇表已无此事件）：
+它是旧多工作目录模型的活动工作目录入口，现仅作为测试 / 兜底路径设置活动工作目录
+（`conversationListRequested` 不带 `workspacePath` 时回退到它）。未知事件类型仍按契约
+记录并丢弃。
+
+### 3.13 会话加载的派生事实
+
+`UiRequest.conversationLoadRequested` 一次返回消息、元数据与派生事实。两侧的差异只在
+`pendingToolUseIds`：Embedded 返回进程内「仍在等待权限 / 执行」的工具调用 id；
+Standalone 恒为空（Core 加载时已给缺失 `tool_result` 的 `tool_use` 补取消结果，不存在
+需要 UI 恢复的待执行表）。`agentMode` 两侧都取 meta.json 的权威值，缺失为 `null`，
+由宿主回退 `settings.json` 默认值。
 
 AskUserQuestion 已迁入（定义 / schema / 权限直接放行 / `CoreRequest.userChoice`
 往返 / 结果文案），对等面见第 4 节。
@@ -395,3 +440,18 @@ SSE 事件循环覆盖文本 / 思考 / 工具调用 / 终止 / 失败与截断�
 
 对照表的生成脚本在 `scripts/gen-*.mjs`，改动任一侧实现后重跑生成脚本并跑
 `npm run test:all` 与 `npm run test:core` 即可确认没有漂移。
+
+---
+
+## 5. `#[allow(dead_code)]` 审计（M16）
+
+`core-rs` 的 allow 逐项归类（`cargo check` 与 `cargo check --tests` 均无 dead_code 警告）：
+
+- `#[cfg_attr(not(test), allow(dead_code))]`：测试专用入口——parity 测试、夹具与
+  对等断言直接调用，生产路径不走（如 `write_spin_json` / `parse_mcp_server_definitions` /
+  `truncate_bytes` 等）；
+- `#[allow(dead_code)]`：wire / 数据契约字段或预留入口——serde 反序列化字段、与
+  Embedded 类型逐项对齐的字段、协议预留变体（`ChannelDescriptor::Direct` /
+  `WorkspaceCloseReason::Crashed`），每处都有注释说明用途；
+- 真死代码已删除：`write_spin_json_queued`、`SpinLoop::abort_flag`、
+  `SpinHandle::abort_flag`（无任何调用方，含测试）。

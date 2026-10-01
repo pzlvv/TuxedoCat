@@ -16,7 +16,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import { makeTempDir } from './helpers/fixtures';
+import { applyTestSettings, makeTempDir } from './helpers/fixtures';
 import { runCases } from './helpers/harness';
 
 const CONFIG_DIR = '.tuxedo-cat';
@@ -44,9 +44,8 @@ async function withHome<T>(
   process.env.HOME = home;
   try {
     const configMod = await import('../core/llm/config');
-    configMod.clearConfigCache();
-    const historyConfig = await import('../core/history/Config');
-    historyConfig.resetSettingsCache();
+    // 配置归 UI：core 侧从快照取值，测试直接把同一份配置注入快照
+    applyTestSettings(settings);
     return await fn(configMod);
   } finally {
     if (prevProfile === undefined) delete process.env.USERPROFILE;

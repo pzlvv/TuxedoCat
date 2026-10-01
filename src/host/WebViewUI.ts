@@ -22,15 +22,22 @@ import type { SpinDesign } from './SpinDesign.js';
 import type { ConversationManager } from './ConversationManager.js';
 import type { UserChoiceOptions } from '../core/UserChoiceQueue.js';
 import type { SessionRuntimeState } from '../core/AssistantEventBus.js';
+import type { NoticeLevel, NoticeParams } from '../core/coreText.js';
 import { SessionUiState } from './SessionUiState.js';
 import { UserChoiceManager } from './ui/userChoice.js';
 import { ToolHandler } from './ui/toolHandler.js';
 import { WebviewMessageHandler, type WebviewRequestContext } from './ui/webviewMessageHandler.js';
-import { fetchBalanceAndPush } from '../core/history/balancePush.js';
+
 import { pushToolProgress } from './queryActivity.js';
 import { buildConversationLoadedPayload } from './conversationPayload.js';
-import { readUiLanguage } from './coreFacts.js';
-import { resolveCoreKind } from './coreKind.js';
+import { readUiLanguage, requestBalance } from './coreFacts.js';
+import { markCoreReady } from './coreReadiness.js';
+import {
+  readHasActiveProviderSetting,
+  readLlmConfigPanelPayload,
+  readMcpServersForDefaults,
+} from './settingsRead.js';
+import { getSettingsStore } from './SettingsStore.js';
 import type { WebviewMessage } from '../core/webviewTypes.js';
 import type { WebViewUiPort, ConversationLoadedExtra, WebviewPoster, LLMConfigPanelTrigger } from './ui/ports.js';
 
@@ -257,6 +264,11 @@ export class WebViewUI implements WebViewUiPort {
 
   private buildCoreEventHandlers(): CoreEventHandlers {
     return {
+      // ===== 连接生命周期 =====
+      // Core 处理完宿主环境与配置快照（`docs/core-ui-separation.md` 第 7 节）。
+      // 每次重新推送快照后都会再来一次；宿主侧只记录闩锁状态，不触发渲染。
+      coreReady: () => markCoreReady(),
+
       // ===== 渲染 =====
       message: (e) => this.onMessage(e.sessionId, e.data),
       streamMessage: (e) => this.onStreamMessage(e.sessionId, e.data),
@@ -278,11 +290,13 @@ export class WebViewUI implements WebViewUiPort {
       sessionRuntimeChanged: (e) => this.onSessionRuntimeChanged(e.states),
       spinDesignDataChanged: () => this.onSpinDesignDataChanged(),
       highlightLanguagesUsed: (e) => this.onHighlightLanguagesUsed(e.languages),
-      projectConversationDirReady: (e) => this.onProjectConversationDirReady(e.projectDir, e.workspacePath),
       compactBegin: (e) => this.onCompactBegin(e.sessionId),
       compactEnd: (e) => this.onCompactEnd(e.sessionId, e.result),
       commandDispatched: (e) => void this.onCommandSend(e.commandName, e.args, e.sessionId),
       sessionConfigChanged: (e) => this.onSessionConfigChanged(e.sessionId, e.change),
+
+      // ===== 瞬时提示 =====
+      notice: (e) => this.onNotice(e.sessionId, e.key, e.params, e.level),
 
       // ===== 日志 =====
       log: (e) => this.log(e.message),
@@ -462,27 +476,23 @@ export class WebViewUI implements WebViewUiPort {
   }
 
   /**
-   * 项目对话目录已就绪 → 写入其中的 settings.json（记录 workspacePath）。
+   * 瞬时状态提示（`docs/core-ui-separation.md` 第 4.9 节）。
    *
-   * Embedded 下 core 只报告事实，写盘归宿主；Standalone 下清单文件由 Core 自己写
-   * （`docs/standalone-core.md` 第 8 节），宿主不再重复写。
+   * core 只给「键 + 参数」，翻译与呈现由 webview 承担：原样转发，不进消息流、
+   * 不落盘。键缺失时 webview 显示键本身并记日志。
    */
-  onProjectConversationDirReady(projectDir: string, workspacePath: string): void {
-    if (resolveCoreKind() === 'standalone') return;
-    void this.host.ensureProjectSettings(projectDir, workspacePath).catch((err: unknown) => {
-      this.log(`Failed to write project settings.json for ${projectDir}: ${err}`);
-    });
+  onNotice(sessionId: string, key: string, params: NoticeParams, level: NoticeLevel): void {
+    this.postToWebview(sessionId, { type: 'notice', key, params, level });
   }
 
   /**
    * 消息里出现了新的高亮语言 → 并入 settings.json 的 highlightLanguages 字段。
    *
-   * Embedded 下字段名 / 去重 / 上限在 core 的 `highlightLanguagesMutator`，写盘归宿主；
-   * Standalone 下 Core 自己落盘（`config::merge_highlight_languages`），宿主不再写。
+   * 字段名 / 去重 / 上限在宿主的 `highlightLanguagesMutator`（UI 专属字段，
+   * Core 不感知）；写盘走 `UIHost.updateSettingsJson`。
    */
   onHighlightLanguagesUsed(languages: readonly string[]): void {
-    if (resolveCoreKind() === 'standalone') return;
-    void import('../core/history/Config.js').then(({ highlightLanguagesMutator }) =>
+    void import('./highlightLanguages.js').then(({ highlightLanguagesMutator }) =>
       this.host.updateSettingsJson(highlightLanguagesMutator(languages))
     ).catch((err: unknown) => {
       this.log(`Failed to record highlight languages: ${err}`);
@@ -609,7 +619,7 @@ export class WebViewUI implements WebViewUiPort {
   /**
    * 打开 LLM 配置面板。
    *
-   * core 只提供配置事实（`getLLMConfigPanelPayload` / `hasActiveProviderSetting` /
+   * 配置事实来自宿主自己的快照与 `settings.json`（`settingsRead.ts` /
    * `readMcpServersForDefaults`）；wire message 的组装与投递在 UI 层完成（第 12.6 节）。
    *
    * `trigger` 决定是否弹：
@@ -622,20 +632,20 @@ export class WebViewUI implements WebViewUiPort {
   async showLLMConfigPanel(trigger: LLMConfigPanelTrigger, sessionId: string | null): Promise<void> {
     let message: Extract<WebviewMessage, { type: 'showLLMConfig' }>;
     try {
-      const { getLLMConfigPanelPayload, hasActiveProviderSetting } = await import('../core/llm/config.js');
-      const [payload, hasActiveProvider] = await Promise.all([
-        getLLMConfigPanelPayload(),
-        hasActiveProviderSetting(),
-      ]);
+      // 面板载荷与「是否已配置 provider」都来自宿主自己的快照
+      // （配置归宿主，见 `settingsRead.ts`），不问 Core。
+      const snapshot = getSettingsStore().getSnapshot();
+      const payload = readLlmConfigPanelPayload(snapshot);
+      const hasActiveProvider = readHasActiveProviderSetting(snapshot);
       // 补弹只在「有 provider 缺 key」时触发；新对话引导只在配置不完整时触发
       if (trigger === 'startup' && (!hasActiveProvider || !!payload.apiKey)) return;
       if (trigger === 'new-conversation' && hasActiveProvider && !!payload.apiKey) return;
-      // 三条路径共用同一份面板载荷（含 MCP 默认启用列表），不因触发场景裁剪
-      const { readMcpServersForDefaults } = await import('../core/mcp/Config.js');
+      // 三条路径共用同一份面板载荷（含 MCP 默认启用列表），不因触发场景裁剪。
+      // MCP 默认列表来自宿主自己的快照（定义 + 全局启用列表），不问 Core。
       message = {
         type: 'showLLMConfig',
         ...payload,
-        mcpServers: await readMcpServersForDefaults(),
+        mcpServers: readMcpServersForDefaults(snapshot, getSettingsStore().getMcpServers()),
         language: readUiLanguage(),
       };
     } catch (err) {
@@ -679,11 +689,37 @@ export class WebViewUI implements WebViewUiPort {
     void this.host.closeConversationView(sessionId); // 宿主销毁视图（VS Code 空）
   }
 
-  /** 获取 DeepSeek 账户余额并发送到 webview（统一走 host.log，11.1 #13） */
+  /**
+   * 获取 DeepSeek 账户余额并发送到 webview（统一走 host.log，11.1 #13）。
+   *
+   * 余额是 core 的事实（按 provider 的 apiKey 查询）：Embedded 直接查，
+   * Standalone 经 `UiRequest.balanceRequested` 让 Core 查，宿主不读 core 的配置。
+   */
   private fetchAndSendBalance(sessionId: string): void {
-    fetchBalanceAndPush(
-      (message) => this.postToWebview(sessionId, message),
-      (line) => this.log(line),
-    );
+    void (async () => {
+      try {
+        const balanceInfo = await requestBalance(sessionId);
+        if (balanceInfo) {
+          this.postToWebview(sessionId, {
+            type: 'balanceUpdate',
+            totalBalance: balanceInfo.totalBalance,
+            currency: balanceInfo.currency,
+            isUnlimited: balanceInfo.isUnlimited,
+            fetchedAt: balanceInfo.fetchedAt,
+          });
+        } else {
+          // 获取余额失败时清空余额，避免 webview 继续显示旧值
+          this.postToWebview(sessionId, {
+            type: 'balanceUpdate',
+            totalBalance: null,
+            currency: null,
+            isUnlimited: null,
+            fetchedAt: Date.now(),
+          });
+        }
+      } catch (err) {
+        this.log(`Failed to fetch balance: ${String(err)}`);
+      }
+    })();
   }
 }

@@ -302,4 +302,15 @@ export const enDict: Record<string, string> = {
   'handlers.minutesAgo': '{count} minutes ago',
   'handlers.hoursAgo': '{count} hours ago',
   'handlers.daysAgo': '{count} days ago',
+  /* ── Text keys produced by core (core only emits keys) ───── */
+  'command.spin.description': 'Execute Spin tasks',
+  'notice.spin.engineNotWired': 'The Spin engine is not wired up, so Spin tasks cannot run.',
+  'notice.spin.designMissing': 'spin.json design file not found, please create and save a Spin design first.',
+  'notice.spin.cannotRead': 'Cannot read spin.json.',
+  'notice.spin.emptyNode': 'There are empty nodes (missing task descriptions), please complete them and retry.',
+  'notice.spin.notDag': 'The flow is not a valid directed acyclic graph (DAG), please check the edges and retry.',
+  'notice.spin.variableNoValue': 'There are variables without a value, please fill in their values in the Spin Designer and retry.',
+  'notice.spin.variableNoValueWithNames': 'Variables without a value ({names}), please fill in their values in the Spin Designer and retry.',
+  'notice.spin.invalid': 'spin.json is invalid, please check the file content.',
+  'notice.spin.allCompleted': 'All tasks completed!',
 };
