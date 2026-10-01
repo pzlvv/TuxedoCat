@@ -738,7 +738,9 @@ export function initializeCoreEvents(bus: AssistantEventBus): void {
   没有合理的上界；设短了会把「正在看 diff 的用户」误杀。只有请求本身失败
   （无订阅者 / 处理器异常）才按 `deny` 兜底——那是调用链坏了，不是用户还在犹豫。
 - `userChoice`：靠 `UserChoiceQueue` 的 pending 补偿（webview 重建后重新弹出），不额外加超时；
-  会话关闭时由 `releaseSessionResources` 调 `userChoiceQueue.rejectPending` 拒绝，避免等待方永久挂起。
+  会话关闭时拒绝该会话的 pending，避免等待方永久挂起——Embedded 由 `releaseSessionResources`
+  调 `userChoiceQueue.rejectPending`，Standalone 的 Core 进程不持有宿主队列，由宿主
+  `UserChoiceManager.dropSession` 补同一刀。
 
 ---
 
@@ -1438,7 +1440,11 @@ closeConversation(sessionId: string): void {
 **投递路径**：所有出站消息都经 `postToWebview(sessionId, message)` 补 `sessionId` 后交
 `host.sendToWebview`。`postConversationLoaded` 例外——它经 `buildConversationLoadedPayload`
 组装，并注入 `activityPhase: this.getActivityPhase(sessionId)`（webview 靠它恢复
-thinking / text / tool 动画）。
+thinking / text / tool 动画）。`ConversationLoadedExtra.hasActiveQuery` 由
+`WebviewMessageHandler.handleLoadConversation` 用 `WebViewUiPort.isQueryActive(sessionId)`
+（`SessionUiState` 的本会话查询计数）填，**不读 `sessionRuntime.idle`**：后者是「会话非空闲」
+口径，含后台子代理 / 后台 Bash / 压缩，会把「父会话空闲、后台子代理在等用户」误判成
+父会话有活跃查询，重新加载父会话时误恢复 thinking 动画（第 10 节）。
 
 ### 6.3 总线注册
 
@@ -1461,6 +1467,7 @@ thinking / text / tool 动画）。
 | `handleWebviewMessage(message, ctx?)` | 宿主 webview 的 `onDidReceiveMessage`（`extension.ts` / `electron/main.ts`）。`ctx.sender` 为来源视图句柄：Electron 用 `webviewHandleFor(sender)` 传入；单视图宿主 / 宿主主动推送省略（见第 7.3 节） |
 | `getActiveSessionId()` | `host.getActiveSessionId` 接线（VS Code 空闲巡检的 `activeSessionProvider`、MCP 面板取当前会话）、`extension.ts` 的 `persistCurrentFileContext` |
 | `getActivityPhase(sessionId)` | `postConversationLoaded` 内部；`conversationLoaded` 的 `activityPhase` 字段来源 |
+| `isQueryActive(sessionId)` | `WebviewMessageHandler.handleLoadConversation` 内部；`conversationLoaded` 的 `hasActiveQuery` 字段来源（只认本会话自己的查询计数，见第 10 节） |
 | `closeConversation(sessionId)` | VS Code 空闲回收的 `idleCloseHandler`；Electron 关闭按钮 / 侧栏「关闭」、删除对话流程 |
 | `releaseConversation(sessionId)` | `ChatViewManager.closeConversation`（视图销毁序列） |
 | `onTitleChanged(sessionId, title)` | 子模块注入的 `setTitle` 回调 |
@@ -1518,10 +1525,11 @@ thinking / text / tool 动画）。
 | 成员 | 语义 |
 | --- | --- |
 | `initUserChoiceQueue()` | 把 core `UserChoiceQueue` 的 3 个回调接到本类：`onShowUserChoice` / `onSessionLoaded` → 恢复该会话的待答选择；`isSessionOpen` → 上面注入的读取器。**不注册会话切换**：会话已 open 时请求直接投递到该会话自己的视图（多视图下未选中的视图也会显示，切过去即可看到）；未 open 的请求保留 pending，由 UI 提醒用户 |
-| `requestUserChoice(sessionId, options)` | ① 保存 diff 快照（`beforeContent` / `afterContent` / 上下文 / 起止行）② 投递 `requestUserChoice` ③ 发 `UiEvent.userChoicePendingChanged(pending: true)`（`idle` / `waiting` 归 core，见第 4.5 节；入队时 `Integration.requestUserChoice` 已提前标记，此处幂等）④ 返回 Promise，`resolve` 时 `closePreview()` + 发 `userChoicePendingChanged(pending: false)` |
+| `requestUserChoice(sessionId, options)` | `CoreRequest.userChoice` 的入口：按会话入 `UserChoiceQueue`（不直接弹框），由 `isSessionOpen` 决定立即投递还是保留 pending；队列回调未注册（宿主未接线）时退化为直接 `showUserChoice` |
+| `showUserChoice(sessionId, options)` | 弹出选择框并等待应答（队列投递与未接线兜底的共同落点）：① 保存 diff 快照（`beforeContent` / `afterContent` / 上下文 / 起止行）② 投递 `requestUserChoice` ③ 发 `UiEvent.userChoicePendingChanged(pending: true)`（`idle` / `waiting` 归 core，见第 4.5 节；Embedded 入队时 `Integration.requestUserChoice` 已提前标记、Standalone 由 Core 的 `waiting_request` 标记，此处幂等）④ 返回 Promise，`resolve` 时 `closePreview()` + 发 `userChoicePendingChanged(pending: false)` |
 | `hasPendingChoice(sessionId)` | 该会话是否有待答选择：`pendingUserChoices`（已弹出）或 `userChoiceQueue`（已入队未投递，会话尚未 open）任一命中即为真。供 core `isSessionIdle` 判定「非空闲，不回收」 |
-| `saveDiffSnapshot(sessionId, snapshot)` | 写入 diff 快照（`beforeContent` / `afterContent` / 上下文 / 起止行）并登记归属会话。`ToolHandler.requestToolPermission` 调用（`requestUserChoice` 也直接写同一份快照） |
-| `dropSession(sessionId)` | 会话 UI 侧状态释放：清掉该会话的 `pendingUserChoices` 回调，并在 diff 快照归属该会话时清空快照。由 `WebViewUI.dropSession` fan-out 调用（第 10.5 节） |
+| `saveDiffSnapshot(sessionId, snapshot)` | 写入 diff 快照（`beforeContent` / `afterContent` / 上下文 / 起止行）并登记归属会话。`ToolHandler.requestToolPermission` 调用（`showUserChoice` 也直接写同一份快照） |
+| `dropSession(sessionId)` | 会话 UI 侧状态释放：拒绝该会话在 `UserChoiceQueue` 里尚未投递的请求（Standalone 的 Core 进程不持有宿主队列，Embedded 由 core 的 `releaseSessionResources` 负责，此处幂等），清掉该会话的 `pendingUserChoices` 回调，并在 diff 快照归属该会话时清空快照。由 `WebViewUI.dropSession` fan-out 调用（第 10.5 节） |
 | `pendingUserChoices: Map<choiceId, {sessionId, resolve}>` | 待答选择表；`WebviewMessageHandler.handleRespondUserChoice` 按 `choiceId` 取出并 resolve |
 | `currentBeforeContent` / `currentAfterContent` / `currentContextBefore` / `currentContextAfter` / `currentStartLine` / `currentEndLine` | 当前 diff 快照，**与 `ToolHandler` 共享**（`ToolHandler` 经 `saveDiffSnapshot` 写入，两边都读）；`diffSnapshotSessionId` 记录归属会话，供 `dropSession` 精确清理 |
 
@@ -1540,8 +1548,10 @@ diff 快照——**确认框不在这里弹**（见下）。
 | `onToolResult(sessionId, toolUseId, toolName, output, status)` | Edit 失败时清空卡片上的 diff；成功时补 `contextBefore` / `contextAfter` / 起止行；最后投递 `updateToolStatus`（`success` / `fail` + `output`） |
 
 **不做权限判断**：`permResult` 已由 core 按 agentMode 规则加工完（`allow` / `deny` / `ask`，
-见第 4.2 节）。`ask` 的确认框由 core 的 `RunTools` → `Integration.requestUserChoice`
-（`UserChoiceQueue`：会话已 open 即投递到该会话自己的视图，未 open 保留 pending，不自动切换会话）触发，UI 侧提前弹框会造成双重确认。
+见第 4.2 节）。`ask` 的确认框由 core 侧发起（Embedded：`RunTools` → `Integration.requestUserChoice`；
+Standalone：Core 发 `CoreRequest.userChoice`），宿主统一经 `UserChoiceManager.requestUserChoice`
+入 `UserChoiceQueue`（会话已 open 即投递到该会话自己的视图，未 open 保留 pending，不自动切换会话），
+UI 侧提前弹框会造成双重确认。
 
 **diff 的显示规则**（Edit / Write 的改动）
 
@@ -1622,6 +1632,8 @@ diff 快照——**确认框不在这里弹**（见下）。
 | `getActiveSessionId()` | 当前前台会话 |
 | `openSpinDesign()` | 打开 Spin 设计器（子模块不直接持有 `SpinDesign`，见第 5.2 节） |
 | `refreshConversations()` | 重新读取并分发对话列表 |
+| `getSessionRuntimeStatesSnapshot()` | 最近一次会话运行时状态快照（`ConversationManager` 缓存）；Standalone 下进程内 `sessionRuntime` 不被写入，拉取必须走这份缓存 |
+| `isQueryActive(sessionId)` | 该会话**自己的**查询是否在跑（`SessionUiState.isQueryActive`）；`conversationLoaded.hasActiveQuery` 的来源，**不用** `sessionRuntime.idle`（后者含后台子代理 / 后台 Bash / 压缩，见第 10 节） |
 | `noteSessionActivity(sessionId)` | 记录会话活动（重置空闲计时；空闲回收只在 VS Code 生效，见第 5.4 节） |
 | `showLLMConfigPanel(trigger, sessionId)` | 打开 LLM 配置面板：core 给配置事实，`WebViewUI` 组装 `showLLMConfig` 并投递（`trigger` 见下） |
 
@@ -1631,7 +1643,7 @@ diff 快照——**确认框不在这里弹**（见下）。
 | --- | --- |
 | `LLMConfigPanelTrigger` | `'startup'` / `'new-conversation'` / `'request'`：决定是否弹（补弹 / 引导 / 无条件） |
 | `WebviewPoster` | `(sessionId, 消息体) => void`：补全后投递的投递器，`WebViewUI` 内部统一用它 |
-| `ConversationLoadedExtra` | `conversationLoaded` 的附加信息（`pendingToolUseIds` / `savedContext` / `parentSessionId` / `agentMode` / `hasActiveQuery` / `hasCompactArchive` / `model`），由 `WebviewMessageHandler` 提供，`WebViewUI` 再补 `activityPhase` |
+| `ConversationLoadedExtra` | `conversationLoaded` 的附加信息（`pendingToolUseIds` / `savedContext` / `parentSessionId` / `agentMode` / `hasActiveQuery` / `hasCompactArchive` / `model`），由 `WebviewMessageHandler` 提供，`WebViewUI` 再补 `activityPhase`。`hasActiveQuery` 只表示本会话自己的查询在跑（`isQueryActive`），不是 `sessionRuntime` 的「会话非空闲」 |
 
 ---
 
@@ -2261,6 +2273,8 @@ export class SessionUiState {
   beginQuery(sessionId: string): boolean;
   /** 返回 true 表示这是该会话本轮的最后一个 end */
   endQuery(sessionId: string): boolean;
+  /** 该会话自己的查询是否在跑（收到 queryBegin、尚未收到 queryEnd；跨轮次恒为 true） */
+  isQueryActive(sessionId: string): boolean;
 
   // ===== 生命周期 =====
   /** 会话关闭 / 删除：移除该会话的全部 per-session 状态（防长期运行累积） */
@@ -2274,7 +2288,7 @@ export class SessionUiState {
 | --- | --- | --- | --- | --- |
 | `activityPhases` | sessionId → `SessionActivityPhase` | `markThinking` / `markText` / `markIdle` / `beginToolPhase` / `markToolPhase` / `endToolPhase` | `getActivityPhase` | 渲染阶段，跨会话切换恢复动画 |
 | `activeToolCounts` | sessionId → number | `beginToolPhase` / `endToolPhase` | `endToolPhase`（判定归零） | 工具并发计数 |
-| `queryActiveCounts` | sessionId → number | `beginQuery` / `endQuery` | `endQuery`（去重） | 查询计数（`queryBegin` / `queryEnd` 只发一次） |
+| `queryActiveCounts` | sessionId → number | `beginQuery` / `endQuery` | `endQuery`（去重）、`isQueryActive`（`> 0`） | 查询计数（`queryBegin` / `queryEnd` 只发一次）；`isQueryActive` 是 `conversationLoaded.hasActiveQuery` 的唯一来源 |
 
 三张表都不做「会话是否存在」的兜底：未记录即视为 `idle` / 计数 0。写入方是
 `WebViewUI` 的渲染 handler 与控制面 handler（第 6.2 节），`SessionUiState` 自己不订阅事件。
@@ -2315,8 +2329,9 @@ export class SessionUiState {
 ### 10.4 abort 按钮：读 core 的 `sessionRuntime`，不由这里判定
 
 abort 按钮的可用性是**「会话非空闲」**，事实 owner 是 core 的 `sessionRuntime`
-（第 4.5 节）——所以它不属于 `SessionUiState`，`queryActiveCounts` 只用于 `queryBegin` /
-`queryEnd` 的去重。
+（第 4.5 节）——所以它不属于 `SessionUiState`。`queryActiveCounts` 只服务两件事：
+`queryBegin` / `queryEnd` 去重，以及 `isQueryActive`（`conversationLoaded.hasActiveQuery` 的
+来源，见 10.1 / 第 6.2 节）。
 
 链路（没有宿主推送，全是状态）：
 

@@ -103,6 +103,21 @@ export class SessionUiState {
     return true;
   }
 
+  /**
+   * 该会话**自己的**查询是否在跑（收到 `queryBegin`、尚未收到 `queryEnd`）。
+   *
+   * 与 `getActivityPhase` 的区别：活动阶段在轮次之间会短暂回到 `idle`（每轮 `aiEnd`
+   * 之后、下一次 `aiBegin` / 工具阶段之前），本方法在整个查询生命周期内恒为 true。
+   *
+   * 供宿主回答 `conversationLoaded.hasActiveQuery`（webview 据此恢复 thinking 动画）。
+   * 不能用 core 的 `sessionRuntime.idle`——那是「会话非空闲」口径，包含后台子代理 /
+   * 后台 Bash / 压缩，后台子代理在等用户时会让父会话 `idle=false`，重新加载父会话会
+   * 误恢复出 thinking 动画（DEVELOPMENT.md 第 10 节）。
+   */
+  isQueryActive(sessionId: string): boolean {
+    return (this.queryActiveCounts.get(sessionId) ?? 0) > 0;
+  }
+
   // ===================== 生命周期 =====================
 
   /**

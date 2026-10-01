@@ -107,6 +107,15 @@ export interface WebViewUiPort {
   getSessionRuntimeStatesSnapshot(): readonly SessionRuntimeState[];
 
   /**
+   * 该会话**自己的**查询是否在跑（转调 SessionUiState.isQueryActive）。
+   *
+   * `conversationLoaded.hasActiveQuery` 的来源：只认本会话自己的消费循环，不认
+   * `sessionRuntime.idle`（后者含后台子代理 / 后台 Bash / 压缩，会把「父会话空闲、
+   * 后台子代理在等用户」误判成父会话有活跃查询）。
+   */
+  isQueryActive(sessionId: string): boolean;
+
+  /**
    * 记录会话活动（打开 / 新建 / 用户发消息时调用），重置空闲关闭计时。
    * 空闲计时的 owner 是 VS Code 的 SingleWebViewConversationManager
    * （core 不参与计时；Electron 不做空闲回收，收到后无操作）。

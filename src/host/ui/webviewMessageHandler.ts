@@ -127,6 +127,8 @@ export class WebviewMessageHandler {
     showLLMConfigPanel(trigger: LLMConfigPanelTrigger, sessionId: string | null): Promise<void>;
     /** 最近一次会话运行时状态快照（Standalone 下拉取不能用进程内 sessionRuntime） */
     getSessionRuntimeStatesSnapshot(): readonly SessionRuntimeState[];
+    /** 该会话自己的查询是否在跑（`conversationLoaded.hasActiveQuery` 的来源） */
+    isQueryActive(sessionId: string): boolean;
     /** 登记 / 清除该会话的排队项（`null` = 清除） */
     onQueuedMessage(sessionId: string, queued: QueuedMessageState | null): void;
   };
@@ -791,12 +793,12 @@ export class WebviewMessageHandler {
       }
     }
 
-    // 是否仍在跑查询读 core 推送的会话运行时状态快照（ConversationManager 缓存）：
-    // Standalone 下进程内没有引擎，「非空闲」就是这份快照里的 idle === false。
-    const runtimeState = this.uiPort
-      ?.getSessionRuntimeStatesSnapshot()
-      .find((state) => state.sessionId === message.sessionId);
-    const hasActiveQuery = runtimeState ? runtimeState.idle === false : false;
+    // 该会话**自己的**查询是否在跑（`SessionUiState` 的查询计数，跨 Embedded / Standalone）：
+    // webview 重新加载会话时据此恢复 thinking 动画。
+    // 不能用 `sessionRuntime.idle === false`：那是「会话非空闲」口径，包含后台子代理 /
+    // 后台 Bash / 压缩；后台子代理在等用户时父会话会 idle=false，重新加载父会话就会
+    // 误恢复出 thinking 动画（DEVELOPMENT.md 第 10 节）。
+    const hasActiveQuery = this.uiPort?.isQueryActive(message.sessionId) ?? false;
 
     // 压缩归档是否存在由 core 判定（随会话加载结果一次返回）
     const hasCompactArchive = loaded.hasCompactArchive;

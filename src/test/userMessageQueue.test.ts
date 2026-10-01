@@ -77,6 +77,7 @@ function buildHarness(): Harness {
     noteSessionActivity: () => undefined,
     showLLMConfigPanel: async () => undefined,
     getSessionRuntimeStatesSnapshot: () => runtimeStates,
+    isQueryActive: () => false,
     onQueuedMessage: (sessionId, state) => queued.push({ sessionId, queued: state }),
   };
 

@@ -8,7 +8,11 @@
  */
 import type { LogChannel } from '../UIHost.js';
 import { requireEventBus } from '../../core/AssistantEventBus.js';
-import { userChoiceQueue } from '../../core/UserChoiceQueue.js';
+import {
+  userChoiceQueue,
+  type UserChoiceOptions,
+  type UserChoiceResult,
+} from '../../core/UserChoiceQueue.js';
 
 /**
  * 上报「该会话的用户选择是否在 webview 里等待应答」。
@@ -157,16 +161,36 @@ export class UserChoiceManager {
     });
 
     // 显示 user choice
-    this.requestUserChoice(sessionId, pendingOptions).catch(err => {
+    this.showUserChoice(sessionId, pendingOptions).catch(err => {
       this.log(`[UserChoiceManager] restoreUserChoiceIfPending error: ${err}`);
     });
   }
 
   /**
-   * 请求用户选择或确认。
+   * 请求用户选择或确认（`CoreRequest.userChoice` 的入口）。
+   *
+   * 不直接弹框：先按会话入 `UserChoiceQueue`，由 `isSessionOpen` 判定该会话是否 open
+   * （单视图下 open == 当前显示的会话，多视图下有视图即可）。open 时队列立即回调
+   * `restoreUserChoiceIfPending` → `showUserChoice` 弹出；未 open（如子代理会话不在前台）
+   * 时保留 pending，等用户切到该会话由 `onSessionLoaded` 重新投递。
+   *
+   * Embedded 下 `Integration.requestUserChoice` 已走同一队列，本方法只服务 Standalone
+   * 的 `CoreRequest.userChoice`；两侧都不绕过队列，避免把请求投给当前显示的会话后，
+   * 切到真正发起请求的会话反而看不到选择框。
+   */
+  requestUserChoice(sessionId: string, options: UserChoiceOptions): Promise<UserChoiceResult> {
+    // 队列回调未注册（宿主未接线）：退化为直接弹框，避免登记 pending 后无人投递。
+    if (!userChoiceQueue.isInitialized()) {
+      return this.showUserChoice(sessionId, options);
+    }
+    return userChoiceQueue.enqueue(sessionId, options);
+  }
+
+  /**
+   * 弹出用户选择框并等待应答（队列投递与未接线兜底的共同落点）。
    * beforeContent 允许 null：Write 新建文件时无原文，diff 预览需要区分「空串」与「无原文件」。
    */
-  async requestUserChoice(sessionID: string, options: {
+  private async showUserChoice(sessionID: string, options: {
     toolName: string;
     message: string;
     choices?: Array<{ label: string; description?: string }>;
@@ -259,6 +283,13 @@ export class UserChoiceManager {
    * - diff 快照只有在归属该会话时才清空，避免误伤其它会话正在进行的 Edit / Write。
    */
   dropSession(sessionId: string): void {
+    // 队列里尚未投递的请求同样要拒绝：会话已释放，等待方不应继续挂起
+    // （Embedded 由 core 的 releaseSessionResources 负责，Standalone 的 Core 进程
+    //   不持有宿主队列，由这里补齐；rejectPending 对不存在的会话是 no-op）。
+    userChoiceQueue.rejectPending(
+      sessionId,
+      new Error(`Session ${sessionId} closed before user choice was answered`),
+    );
     let hadPending = false;
     for (const [choiceId, entry] of this.pendingUserChoices) {
       if (entry.sessionId === sessionId) {

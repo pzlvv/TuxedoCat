@@ -263,6 +263,17 @@ export class WebViewUI implements WebViewUiPort {
     return this.conversations.getSessionStatesSnapshot();
   }
 
+  /**
+   * 该会话自己的查询是否在跑（`conversationLoaded.hasActiveQuery` 的来源）。
+   *
+   * 只读 `SessionUiState` 的查询计数（本会话自己的消费循环），不读 `sessionRuntime.idle`
+   * ——后者含后台子代理 / 后台 Bash / 压缩，会把「父会话空闲、后台子代理在等用户」
+   * 误判成父会话有活跃查询（DEVELOPMENT.md 第 10 节）。
+   */
+  isQueryActive(sessionId: string): boolean {
+    return this.sessionUi.isQueryActive(sessionId);
+  }
+
   /** 记录会话活动，重置该会话的空闲关闭计时（空闲回收是 VS Code 专属，见第 5.4 节） */
   noteSessionActivity(sessionId: string): void {
     this.conversations.noteSessionActivity(sessionId);
