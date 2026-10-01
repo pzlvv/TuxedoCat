@@ -1,0 +1,40 @@
+/**
+ * Electron 原生 UI 的统一滚动条（侧栏 / 标题栏菜单 / 远程目录选择器共用）。
+ *
+ * 这几个页面各自 vite 构建、样式不共享，滚动条是唯一一处「跨页面必须长得一样」的东西，
+ * 所以单独抽出来：颜色按 prefers-color-scheme 走（主进程的 themeSource 驱动这个媒体查询），
+ * 宽度 / 圆角 / 悬停态只有这一份定义。
+ *
+ * 聊天 webview（`src/webview/`）不引用这里：它的滚动条跟随聊天主题的 harness 色，
+ * 与系统深浅色无关（见 `src/webview/styles/index.css`）。
+ */
+
+:root {
+  --scrollbar-thumb: #3a3a44;
+  --scrollbar-thumb-hover: #4a4a55;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --scrollbar-thumb: #c9c9d1;
+    --scrollbar-thumb-hover: #aeaeb9;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}

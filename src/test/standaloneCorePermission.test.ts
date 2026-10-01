@@ -156,7 +156,7 @@ async function runScenario(scenario: Scenario): Promise<ScenarioResult> {
   const llm = await startFakeLlm(scenario.command);
   writeSettings(homeDir, llm.url, scenario.mode);
 
-  const child = spawn(CORE_BINARY, [], {
+  const child = spawn(CORE_BINARY, ['stdio'], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, USERPROFILE: homeDir, HOME: homeDir },
     windowsHide: true,

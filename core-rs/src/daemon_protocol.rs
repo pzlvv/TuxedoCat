@@ -29,6 +29,16 @@ pub enum HostToDaemonFrame {
     Frame { channel: u64, frame: Value },
     /// 列出远端目录（远程目录选择器用）；`path` 为 `null` 时从主目录开始
     ListDirectories { id: u64, path: Option<String> },
+    /// 新建远端目录（远程目录选择器用）；父目录不存在时一并创建
+    CreateDirectory { id: u64, path: String },
+    /// 重命名远端目录（远程目录选择器用）；只改同一父目录下的名字，不是移动
+    RenameDirectory { id: u64, path: String, name: String },
+    /// 删除远端目录（远程目录选择器用）；`recursive` 为 `false` 时只接受空目录
+    DeleteDirectory {
+        id: u64,
+        path: String,
+        recursive: bool,
+    },
     /// 关闭全部 channel 并退出
     Shutdown,
 }
@@ -65,8 +75,31 @@ pub enum DaemonToHostFrame {
         parent: Option<String>,
         entries: Vec<DirectoryEntry>,
     },
-    /// 目录列举失败（路径不存在 / 无权限等）
-    DirectoriesFailed { id: u64, error: String },
+    /// 目录已新建
+    DirectoryCreated { id: u64, path: String },
+    /// 目录已重命名（`path` 是改名后的新路径）
+    DirectoryRenamed { id: u64, path: String },
+    /// 目录已删除
+    DirectoryDeleted { id: u64, path: String },
+    /// 目录操作失败（列举 / 新建 / 删除共用；按 `id` 对应请求）
+    DirectoryFailed {
+        id: u64,
+        error: String,
+        reason: DirectoryFailureReason,
+    },
+}
+
+/// 目录操作失败的原因。
+///
+/// `NotEmpty` 单独拎出来：Host 据此把删除按钮升成「目录非空，确认连同内容一起删除？」，
+/// 而不是让用户对着一段错误文本猜该不该重试。
+#[derive(Debug, Serialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum DirectoryFailureReason {
+    /// 目录非空，且本次请求没有要求递归删除
+    NotEmpty,
+    /// 其它失败（路径不存在 / 无权限 / 相对路径等）
+    Other,
 }
 
 /// 目录列举的一项（只列子目录）

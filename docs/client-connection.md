@@ -74,7 +74,7 @@ Connection 持有：
 | | `embedded` | `standalone` |
 | --- | --- | --- |
 | Connection 数量 | 恒 1 | 每个打开的工作区 1 个 |
-| Core | 进程内，`initializeCoreEvents` | 独立进程：本地同机直接以 `serve` 起；远程经 daemon 起 |
+| Core | 进程内，`initializeCoreEvents` | 独立进程：本地同机直接以 `stdio` 起；远程经 daemon 起 |
 | 工作区 | 会话的属性（沿用现状） | Connection 的归属 |
 | 配置快照 | 同一份，进程内传递 | 同一份，帧通道传递 |
 
@@ -86,14 +86,17 @@ Connection 持有：
 
 | 字段 | 含义 | 本地取值 | 远程取值 |
 | --- | --- | --- | --- |
-| `scheme` | 这类工作区怎么接 | `file` | `tcp`（直连监听中的 Core endpoint）；`ssh` / `wsl` / `container` 预留 |
+| `scheme` | 这类工作区怎么接 | `file` | `tcp`（直连监听中的 Core endpoint）；`ssh`（全部通信走 SSH 端口）；`wsl` / `container` 预留 |
 | `endpoint` | 接哪台机器、用什么凭证 | `null` | `{ host, port, user, auth }` |
 | `path` | 那台机器上的目录 | `d:\git\TuxedoCat` | `/home/alice/src/tuxedo-cat` |
 
 - `(scheme, endpoint)` 决定 Connection 的目标；`path` 是 Core 的会话工作目录。
 - **Core 只见 `path`**：endpoint 与凭证不下发到 Core，也不进入配置快照。
-- `tcp` 的 `auth` 是 `{ token: string }`；token 由远端 `start` 打印
-  （`docs/core-daemon.md` 第 12 节）。
+- `auth` 是判别联合，`kind` 唯一决定控制通道怎么建（`docs/core-daemon.md` 第 12 节）：
+  `{ kind: 'token' }`（`tcp`，token 由远端 `start` 打印）/
+  `{ kind: 'sshPassword' }`（`ssh`，口令只用于建 SSH 连接）。
+- `ssh` 下 `host` / `port` 是 SSH 的地址与端口，daemon 的端口由引导流程从远端状态文件
+  取得，不写进引用。
 - `workspaceEndpointKey` 取 `(scheme, user, host, port)`：同一 endpoint 的多个工作区共用
   一个 daemon。
 - VS Code 的 workspace URI（`scheme://authority/path`）是取值的来源：`scheme` 取 URI 的
@@ -110,11 +113,18 @@ Connection 持有：
 
 ### 4.2 远程打开流程（Electron）
 
-1. 菜单 / 标题栏加号选「打开远程 Workspace」，输入远端 `IP:端口` 与 token；
-2. Host 建立该 endpoint 的 daemon 连接（TCP + `auth`），**连接成功后立刻**列出远端主目录，
-   弹出远端目录选择器（`docs/core-daemon.md` 第 12.4 节）；
-3. 选定目录后按 `remoteWorkspaceRef` 加入打开集合：`(scheme=tcp, endpoint, path)`；
+1. 菜单 / 标题栏加号选「打开远程工作区」，两种接入方式二选一：
+   - **连接串**：粘贴 `start` 打印的 `<IP>:<端口>#<token>`（daemon 端口可达时）；
+   - **SSH**：填 IP / 端口 / 用户 / 口令（只开放 SSH 端口时，Host 自动部署并启动
+     远端 Core，见 `docs/core-daemon.md` 第 12.8 节）；
+2. Host 把输入收敛成同一个 `endpoint`（凭证种类决定建链方式），**连接成功后立刻**
+   列出远端主目录，弹出远端目录选择器（`docs/core-daemon.md` 第 12.6 节）；
+3. 选定目录后按 `remoteWorkspaceRef` 加入打开集合：`(scheme, endpoint, path)`；
 4. 打开该工作区时复用同一条控制通道发 `openWorkspace`。
+
+- `scheme` 由 `auth.kind` 决定：`token` → `tcp`，`sshPassword` → `ssh`
+  （`src/host/workspaceRef.ts::remoteWorkspaceRef`）。
+- SSH 接入下「连接」这一步包含部署与启动，可能比 TCP 直连慢；窗口在此期间显示进度提示。
 
 ---
 
@@ -122,7 +132,7 @@ Connection 持有：
 
 | 事件 | 行为 |
 | --- | --- |
-| 打开工作区 | 建立 Connection；`standalone` 本地同机直接以 `serve` 起一个 Core 进程，远程经 daemon 起；`embedded` 下复用进程内 Core |
+| 打开工作区 | 建立 Connection；`standalone` 本地同机直接以 `stdio` 起一个 Core 进程，远程经 daemon 起；`embedded` 下复用进程内 Core |
 | 重复打开同一工作区 | 不新建 Connection；激活已有视图 |
 | 关闭工作区 | 销毁 Connection；`standalone` 下关闭 Core 进程（daemon 计数递减） |
 | 宿主退出 | 销毁全部 Connection；`standalone` 下关闭所有 Core |
@@ -146,6 +156,9 @@ Connection 持有：
   仍查不到则报错。
 - Connection 收到的 `CoreEvent` / `CoreRequest` 交给 Client；Client 按 `sessionId` 分发。
   总线载荷不带 `connectionId`。
+- 宿主按工作区路径登记会话归属（`sessionWorkspaceAssigned`）时，**本地路径按宿主口径判等、
+  远程路径逐字比较**（远程路径是目标机器上的字符串，跑本地规范化会把它变成
+  `D:\home\pz\proj` 这种错误值，两个 Connection 并存时会直接路由失败）。
 - 删除 / 重命名 / 会话配置变更等按 `sessionId` 路由到对应 Connection。
 
 ---
@@ -164,7 +177,7 @@ Connection 持有：
 - **门禁在 Client 侧**：未就绪期间的 `UiEvent` 一律不发出。Core 侧对应地做硬断言：
   就绪前收到任何 `UiEvent` 直接抛错，把顺序错误变成启动期错误（`DEVELOPMENT.md` 第 12 章）。
 - 一个 Connection 未就绪不影响其它 Connection。
-- 重连不在本规格范围内（第 9 节）。
+- 重连不在本规格范围内（第 10 节）。
 
 ---
 
@@ -177,18 +190,44 @@ Connection 持有：
 
 ---
 
-## 9. 不覆盖范围
+## 9. 落盘与恢复（宿主侧）
 
-- 远程凭证的持久化与安全存储（token 只在本次会话内有效，不写 `workspace-state.json`）；
-- 远程传输的加密与隧道（`tcp` 是明文直连）；
-- 远程 daemon 的部署（由用户在目标机器上手动 `start`；`start` 只负责把本机的 daemon 拉起来）；
-- 断线重连；
-- 多 Connection 的界面呈现（归属标识、切换入口）；
-- 远程工作区的落盘恢复（重启后需要重新连接）。
+打开集合与最近列表由宿主落盘在 `userData/workspace-state.json`，本地项与远程项同格式
+（序列化实现见 `src/host/workspaceState.ts`）：
+
+| 字段 | 内容 |
+| --- | --- |
+| `openWorkspaces` | 打开集合（按标签页顺序）：本地项是路径字符串，远程项是 `{ scheme, path, endpoint }` |
+| `activeWorkspaceKey` | 活动项的去重键（`workspaceRefKey`） |
+| `recentWorkspaces` | 最近打开的工作区（最多 10 个，最近的在最前），与 `openWorkspaces` 同格式 |
+
+- **远程凭证明文落盘**：`endpoint.auth`（`token` / `sshPassword`）随引用一起写进
+  `workspace-state.json`。这是「重启后直接恢复并打开已连接过的工作区」的前提；
+  该文件属于宿主本地状态，不进 core、不进配置快照、不参与会话数据。
+- **启动恢复**：读出的每个引用（含远程）都交给 `Client.openWorkspace` 建立 Connection；
+  远程项按落盘凭证重新走一遍接入流程（`tcp` 直连 / SSH 引导，见
+  `docs/core-daemon.md` 第 12.8 节）。连不上不影响其它工作区，失败按「Connection 丢失」
+  处理。
+- **最近列表**：本地项在读取时过滤掉已不存在的目录；远程项无法本地检查，原样保留。
+  关闭标签页只从打开集合移除，不抹掉最近列表里的凭证。
+- 读取口径：形状不合法（缺 host、端口越界、认不出的凭证种类等）的项整项丢弃，
+  不猜、不补默认值（`DEVELOPMENT.md` 第 12 章）。
 
 ---
 
-## 10. 验收要点
+## 10. 不覆盖范围
+
+- 远程凭证的加密存储与钥匙串集成（当前是明文落盘，见第 9 节）；
+- `tcp` 传输的加密与隧道（明文直连；`ssh` 接入由 SSH 自己加密）；
+- SSH 的密钥 / agent 认证（当前只有口令）；
+- `tcp` 接入下远程 daemon 的部署（由用户在目标机器上手动 `start`；`start` 只负责把本机的
+  daemon 拉起来）；`ssh` 接入下由 Host 自动部署并启动（`docs/core-daemon.md` 第 12.8 节）；
+- 断线重连（含远程工作区在重启后连不上时的自动重试）；
+- 多 Connection 的界面呈现（归属标识、切换入口）。
+
+---
+
+## 11. 验收要点
 
 1. 打开一个工作区建立一个 Connection；重复打开只激活已有视图。
 2. 两个工作区对应两个 Connection、两个 Core 进程（standalone）。
@@ -200,10 +239,13 @@ Connection 持有：
 8. 会话按 `sessionId` 路由到正确 Connection；查不到归属时报错。
 9. 同一 endpoint 的多个工作区共用一个 daemon；不同 endpoint 各自独立。
 10. 远程连接鉴权失败时报错，不建立 Connection。
+11. 关闭并重启宿主后，打开集合里的本地与远程项都被恢复；远程项按落盘凭证重新接入。
+12. 最近列表同时包含本地与远程项；远程项按 id 打开（同一路径在不同机器上是两项）。
+13. 状态文件里形状不合法的项被丢弃，不影响其余项的恢复。
 
 ---
 
-## 11. 落点对照
+## 12. 落点对照
 
 | 规格项 | 落点 |
 | --- | --- |
@@ -211,6 +253,7 @@ Connection 持有：
 | Connection | `src/host/Connection.ts` |
 | 配置快照 | `src/host/SettingsStore.ts` |
 | 工作区引用 | `src/host/workspaceRef.ts`、`src/host/UIHost.ts`（`WorkspaceProvider`） |
+| 打开集合 / 最近列表的落盘与恢复 | `src/host/workspaceState.ts`、`electron/main.ts`（`workspace-state.json`） |
 | 就绪门禁与会话路由 | `src/host/Client.ts` |
 | 启动接线 / endpoint → daemon 注册表 | `src/host/bootstrapCore.ts` |
-| 远程连接与目录选择 UI | `electron/main.ts`、`electron/remoteWorkspaceDialogHtml.ts` |
+| 远程连接与目录选择 UI | `electron/main.ts`、`electron/remoteWorkspace/`（vite 页面）、`electron/remoteWorkspacePreload.ts` |

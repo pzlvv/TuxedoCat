@@ -1,7 +1,7 @@
 //! 远程 Core 服务（见 `docs/core-daemon.md` 第 12 节）。
 //!
 //! 两个角色：
-//! - `start`（启动器，用户可见）：确保后台 daemon 在跑，把「可达 IP:端口」与 token
+//! - `start`（启动器，用户可见）：确保后台 daemon 在跑，把「连接串」（`IP:端口#token`）
 //!   打印出来，随后自己退出；没有 daemon 就用 `start-daemon` 拉一个到后台。
 //! - `start-daemon`（daemon 实体，启动器的内部实现）：绑定端口、把实际 endpoint 与
 //!   生效的 token 落盘（`~/<configDir>/core-daemon.json`），然后常驻 accept。
@@ -12,7 +12,7 @@
 //! 在连接后立刻弹出远端目录选择器。
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -23,8 +23,9 @@ use crate::daemon_protocol::{DaemonToHostFrame, DirectoryEntry, HostToDaemonFram
 
 /// 默认监听端口。取一个高位、非常用服务的端口；冲突时从它开始逐个 +1 重试。
 pub const DEFAULT_PORT: u16 = 10975;
-/// 默认监听地址：只绑回环（本地 daemon 由 Host 拉起；跨机接入时显式传 `--host 0.0.0.0`）。
-pub const DEFAULT_HOST: &str = "127.0.0.1";
+/// 默认监听地址：绑全部网卡（跨机接入开箱可用，token 是访问控制的唯一凭证）；
+/// 只在本机自测时显式传 `--host 127.0.0.1`。
+pub const DEFAULT_HOST: &str = "0.0.0.0";
 /// 生成的 token 长度（十六进制字符数），128 位。
 pub const TOKEN_HEX_LEN: usize = 32;
 /// 端口冲突时最多再试多少个（默认端口起逐个 +1）。
@@ -33,7 +34,7 @@ pub const PORT_RETRY_LIMIT: u16 = 20;
 /// 远程服务的运行参数（`start` / `start-daemon` 共用）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct RemoteOptions {
-    /// 绑定地址（默认 `127.0.0.1`）
+    /// 绑定地址（默认 `0.0.0.0`）
     pub host: String,
     /// 绑定端口（默认 `10975`；被占用时逐个 +1 重试）
     pub port: u16,
@@ -53,7 +54,7 @@ impl Default for RemoteOptions {
 
 impl RemoteOptions {
     /// 解析命令行里的远程选项：`--host <addr>`、`--port <n>`、`--token <token>`。
-    /// 未给出的项用默认值（`127.0.0.1:10975`）。
+    /// 未给出的项用默认值（`0.0.0.0:10975`）。
     pub fn from_args(args: &[String]) -> Self {
         let mut options = Self::default();
         let mut index = 0;
@@ -123,32 +124,63 @@ pub fn token_matches(expected: &str, actual: &str) -> bool {
     diff == 0
 }
 
-// ==================== 启动横幅 ====================
+// ==================== 连接串 ====================
 
-/// 启动横幅：两行，分别给出可达的 `IP:端口` 与 token（用户手抄给 Host）。
-pub fn banner(endpoint: &str, token: &str) -> String {
-    format!("[core] remote endpoint: {endpoint}\n[core] remote token: {token}")
+/// 连接串：`<IP>:<端口>#<token>`（`docs/core-daemon.md` 第 12.3 节）。
+///
+/// 桌面端「打开远程工作区」只有一个输入框，粘贴整串即可接入；字段之间不留空格，
+/// 用户双击就能整行选中。
+pub fn connection_string(host: &str, port: u16, token: &str) -> String {
+    format!("{host}:{port}#{token}")
 }
 
-/// 绑定地址是通配地址时，探测本机对外可达的 IPv4（UDP connect 不发包，只问路由）。
-pub fn local_ipv4() -> Option<Ipv4Addr> {
-    let socket = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
-    socket.connect((Ipv4Addr::new(8, 8, 8, 8), 80)).ok()?;
-    match socket.local_addr().ok()?.ip() {
-        IpAddr::V4(ip) if !ip.is_unspecified() => Some(ip),
-        _ => None,
-    }
-}
-
-/// 横幅里展示的主机：具体绑定地址原样返回（默认的 `127.0.0.1` 就展示回环），
-/// 只有通配地址（`0.0.0.0` / `::`）才探测本机对外 IPv4，探测不到回退 `127.0.0.1`。
-fn display_host(bind_host: &str) -> String {
+/// 连接串里要列出的主机：绑具体地址时就是它本身，绑通配地址时列出本机全部网卡 IPv4。
+pub fn connection_hosts(bind_host: &str) -> Vec<String> {
     if bind_host != "0.0.0.0" && bind_host != "::" {
-        return bind_host.to_string();
+        return vec![bind_host.to_string()];
     }
-    local_ipv4()
+    local_ipv4s()
+        .into_iter()
         .map(|ip| ip.to_string())
-        .unwrap_or_else(|| Ipv4Addr::LOCALHOST.to_string())
+        .collect()
+}
+
+/// 启动输出：一行说明 + 每个可达主机一条连接串。
+///
+/// 连接串单独占一行、不带前缀，用户双击即可整行复制（`docs/core-daemon.md` 第 12.3 节）。
+pub fn ready_message(bind_host: &str, port: u16, token: &str) -> String {
+    let mut text = String::from(
+        "[core] 远程服务已就绪，在桌面端「打开远程工作区」粘贴下面任一连接串：\n",
+    );
+    for host in connection_hosts(bind_host) {
+        text.push_str(&connection_string(&host, port, token));
+        text.push('\n');
+    }
+    text.trim_end().to_string()
+}
+
+/// 本机全部网卡的非回环 IPv4（按网卡顺序去重，去掉 `169.254.*` 这类链路本地地址），
+/// 末尾固定补一条回环。
+///
+/// 只探测默认路由那一个 IP 会漏掉多网卡（有线 + 无线 + 虚拟网卡）里的可达地址，
+/// 所以这里逐个网卡取。枚举失败时只剩回环——绑通配地址的 daemon 必然在回环上可达，
+/// 所以这个结果仍然可用。
+pub fn local_ipv4s() -> Vec<Ipv4Addr> {
+    let mut ips: Vec<Ipv4Addr> = Vec::new();
+    if let Ok(interfaces) = if_addrs::get_if_addrs() {
+        for interface in interfaces {
+            if let if_addrs::IfAddr::V4(address) = interface.addr {
+                if address.ip.is_loopback() || address.ip.is_link_local() {
+                    continue;
+                }
+                if !ips.contains(&address.ip) {
+                    ips.push(address.ip);
+                }
+            }
+        }
+    }
+    ips.push(Ipv4Addr::LOCALHOST);
+    ips
 }
 
 // ==================== 目录列举 ====================
@@ -179,18 +211,23 @@ pub fn home_dir() -> Option<PathBuf> {
     None
 }
 
+/// 把请求路径收成绝对路径。相对路径直接拒绝：Host 拿到的目录名要能直接当工作区路径用。
+fn absolute_path(value: &str) -> Result<PathBuf, String> {
+    let target = PathBuf::from(value);
+    if !target.is_absolute() {
+        return Err(format!("path must be absolute: {}", target.display()));
+    }
+    Ok(target)
+}
+
 /// 列举一个目录下的子目录。
 ///
 /// `path` 为 `None` / 空串时从主目录开始（远程选择器的入口）。
-/// 路径必须是绝对路径：远程 Host 拿到的目录名要能直接当工作区路径用。
 pub fn list_directories(path: Option<&str>) -> Result<DirectoryListing, String> {
     let requested = match path {
-        Some(value) if !value.trim().is_empty() => PathBuf::from(value),
+        Some(value) if !value.trim().is_empty() => absolute_path(value)?,
         _ => home_dir().ok_or_else(|| "cannot resolve home directory".to_string())?,
     };
-    if !requested.is_absolute() {
-        return Err(format!("path must be absolute: {}", requested.display()));
-    }
     let mut entries: Vec<DirectoryEntry> = Vec::new();
     let read = std::fs::read_dir(&requested)
         .map_err(|error| format!("cannot read {}: {error}", requested.display()))?;
@@ -216,6 +253,86 @@ pub fn list_directories(path: Option<&str>) -> Result<DirectoryListing, String> 
         parent: requested.parent().map(Path::to_string_lossy).map(|p| p.to_string()),
         entries,
     })
+}
+
+/// 新建一个目录（父目录不存在时一并创建），返回实际路径。
+pub fn create_directory(path: &str) -> Result<String, String> {
+    let target = absolute_path(path)?;
+    std::fs::create_dir_all(&target)
+        .map_err(|error| format!("cannot create {}: {error}", target.display()))?;
+    Ok(target.to_string_lossy().to_string())
+}
+
+/// 重命名一个目录：只换同一父目录下的名字，返回新路径。
+///
+/// 只接受**纯名字**（不含分隔符、不是 `.` / `..`）：改名与移动是两件事，开放移动等于
+/// 让一条控制通道能把目录搬到任意位置，没必要。目标已存在时拒绝，不覆盖。
+pub fn rename_directory(path: &str, name: &str) -> Result<String, String> {
+    let source = absolute_path(path)?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("new name must not be empty".to_string());
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err(format!("new name must not contain a path separator: {name}"));
+    }
+    if name == "." || name == ".." {
+        return Err(format!("new name must not be a path traversal: {name}"));
+    }
+    let parent = source
+        .parent()
+        .ok_or_else(|| format!("refusing to rename a filesystem root: {}", source.display()))?;
+    let target = parent.join(name);
+    if target.exists() {
+        return Err(format!("target already exists: {}", target.display()));
+    }
+    std::fs::rename(&source, &target)
+        .map_err(|error| format!("cannot rename {}: {error}", source.display()))?;
+    Ok(target.to_string_lossy().to_string())
+}
+
+/// `delete_directory` 的失败原因：`NotEmpty` 单独拎出来，Host 据此提示「递归删除」。
+#[derive(Debug, PartialEq)]
+pub enum DeleteDirectoryError {
+    /// 目录非空，且本次没有要求递归删除
+    NotEmpty(String),
+    /// 其它失败
+    Failed(String),
+}
+
+/// 删除一个目录，返回实际路径。
+///
+/// `recursive` 为 `false` 时只接受空目录：非空返回 [`DeleteDirectoryError::NotEmpty`]，
+/// 让 Host 先问一次用户「要不要连里面的内容一起删」。为 `true` 时整棵子树删除。
+///
+/// 无论哪种模式都拒绝文件系统根：删根几乎一定是操作失误，不是「清理刚建错的目录」。
+pub fn delete_directory(path: &str, recursive: bool) -> Result<String, DeleteDirectoryError> {
+    let target = absolute_path(path).map_err(DeleteDirectoryError::Failed)?;
+    if target.parent().is_none() {
+        return Err(DeleteDirectoryError::Failed(format!(
+            "refusing to delete a filesystem root: {}",
+            target.display()
+        )));
+    }
+    if recursive {
+        std::fs::remove_dir_all(&target).map_err(|error| {
+            DeleteDirectoryError::Failed(format!("cannot remove {}: {error}", target.display()))
+        })?;
+        return Ok(target.to_string_lossy().to_string());
+    }
+    let mut entries = std::fs::read_dir(&target).map_err(|error| {
+        DeleteDirectoryError::Failed(format!("cannot read {}: {error}", target.display()))
+    })?;
+    if entries.next().is_some() {
+        return Err(DeleteDirectoryError::NotEmpty(format!(
+            "directory is not empty: {}",
+            target.display()
+        )));
+    }
+    std::fs::remove_dir(&target).map_err(|error| {
+        DeleteDirectoryError::Failed(format!("cannot remove {}: {error}", target.display()))
+    })?;
+    Ok(target.to_string_lossy().to_string())
 }
 
 // ==================== 控制通道 ====================
@@ -362,6 +479,9 @@ pub fn bind_listener(host: &str, port: u16) -> std::io::Result<TcpListener> {
 pub const DAEMON_STATE_FILE_NAME: &str = "core-daemon.json";
 /// daemon 后台日志文件名（同目录）：daemon 脱离终端后诊断只能落在这里。
 pub const DAEMON_LOG_FILE_NAME: &str = "core-daemon.log";
+/// token 文件名（同目录）：与状态文件分开存，`kill` 删掉状态文件后 token 仍然留着，
+/// 下次 `start` 直接复用它（用户不必每次重新抄连接串）。
+pub const DAEMON_TOKEN_FILE_NAME: &str = "core-daemon.token";
 /// 启动器等待 daemon 落盘的时长上限。
 pub const LAUNCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// 探测「daemon 是否还活着」的连接超时。
@@ -399,6 +519,11 @@ pub fn daemon_state_path() -> Result<PathBuf, String> {
 /// 后台日志路径（与状态文件同目录）。
 pub fn daemon_log_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join(DAEMON_LOG_FILE_NAME))
+}
+
+/// token 文件路径（与状态文件、会话数据同目录）。
+pub fn daemon_token_path() -> Result<PathBuf, String> {
+    Ok(config_dir()?.join(DAEMON_TOKEN_FILE_NAME))
 }
 
 /// 读状态文件：不存在 / 读不出 / 解析失败都当作「没有 daemon」。
@@ -444,15 +569,29 @@ fn write_private(path: &Path, contents: &str) -> Result<(), String> {
 
 /// 启动参数的规范化键：判断在跑的 daemon 是不是本次请求的那个。
 fn requested_key(options: &RemoteOptions) -> String {
-    format!("{}:{}", options.host, options.port)
+    address_text(&options.host, options.port)
+}
+
+/// `host:port` 文本：IPv6 主机加方括号（`[::]:10975`），IPv4 / 主机名原样。
+/// 端口按最后一个 `:` 解析（`connectable` / `print_ready` 都依赖这一点）。
+fn address_text(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
 }
 
 /// 连 endpoint（`host:port`）；解析不出或连不上都返回 `Err`。
+///
+/// 通配地址（`0.0.0.0` / `::`）先换成回环：绑通配地址的 daemon 一定在回环上可达，
+/// 而直接连 `0.0.0.0` 在 Windows 上会失败（状态文件里存的是绑定的通配地址）。
 fn connect_endpoint(endpoint: &str) -> Result<TcpStream, String> {
     use std::net::ToSocketAddrs;
-    let addrs = endpoint
+    let target = connectable(endpoint);
+    let addrs = target
         .to_socket_addrs()
-        .map_err(|error| format!("cannot resolve {endpoint}: {error}"))?;
+        .map_err(|error| format!("cannot resolve {target}: {error}"))?;
     let mut last: Option<std::io::Error> = None;
     for addr in addrs {
         match TcpStream::connect_timeout(&addr, PROBE_TIMEOUT) {
@@ -461,10 +600,21 @@ fn connect_endpoint(endpoint: &str) -> Result<TcpStream, String> {
         }
     }
     Err(format!(
-        "cannot connect {endpoint}: {}",
+        "cannot connect {target}: {}",
         last.map(|error| error.to_string())
             .unwrap_or_else(|| "no address resolved".to_string())
     ))
+}
+
+/// 把 `host:port` 里的通配主机换成回环，其余原样返回。
+fn connectable(endpoint: &str) -> String {
+    let Some((host, port)) = endpoint.rsplit_once(':') else {
+        return endpoint.to_string();
+    };
+    match host {
+        "0.0.0.0" | "::" | "[::]" => format!("{}:{port}", Ipv4Addr::LOCALHOST),
+        _ => endpoint.to_string(),
+    }
 }
 
 /// 探测 endpoint 上是否真有东西在监听（`host:port` 解析失败即视为没有）。
@@ -473,6 +623,21 @@ fn probe_endpoint(endpoint: &str) -> bool {
 }
 
 // ==================== 启动器（`start`）====================
+
+/// 打印连接串：端口取 daemon 状态文件里**实际**监听的那个（`--port 0` 或 +1 重试后
+/// 与请求值不同）。状态文件里的 endpoint 解析不出端口时按损坏处理，报错不猜。
+fn print_ready(bind_host: &str, state: &DaemonState) -> bool {
+    let Some(port) = state
+        .endpoint
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+    else {
+        eprintln!("[core] remote: malformed endpoint in state file: {}", state.endpoint);
+        return false;
+    };
+    println!("{}", ready_message(bind_host, port, &state.token));
+    true
+}
 
 /// 状态文件里的 daemon 与本次请求的关系。
 #[derive(Debug, PartialEq)]
@@ -528,7 +693,9 @@ pub fn run_start(options: RemoteOptions) -> i32 {
 
     match existing_daemon(&state_path, &options) {
         ExistingDaemon::Running(state) => {
-            println!("{}", banner(&state.endpoint, &state.token));
+            if !print_ready(&options.host, &state) {
+                return 1;
+            }
             return 0;
         }
         ExistingDaemon::Mismatch(message) => {
@@ -551,7 +718,9 @@ pub fn run_start(options: RemoteOptions) -> i32 {
     }
     match wait_for_daemon(&state_path, &requested) {
         Some(state) => {
-            println!("{}", banner(&state.endpoint, &state.token));
+            if !print_ready(&options.host, &state) {
+                return 1;
+            }
             0
         }
         None => {
@@ -728,17 +897,48 @@ fn detach(command: &mut Command) {
 
 // ==================== daemon 实体（`start-daemon`）====================
 
-/// 本次启动用哪个 token：`--token` > 状态文件里的 > 新随机。
+/// 本次启动用哪个 token：`--token` > token 文件里的 > 新随机。
 ///
-/// 只有 daemon 走这条路径：状态文件是它的落盘结果，读到的就是上次生效的那个。
-fn resolve_token(options: &RemoteOptions, state_path: &Path) -> String {
-    if !options.token.trim().is_empty() {
-        return options.token.clone();
+/// token 单独存一份文件（`~/<configDir>/core-daemon.token`，与会话数据同目录），而不是只
+/// 依赖状态文件：`kill` 会删掉状态文件，token 却应该留着——否则每次重启 daemon 都要重新
+/// 抄一遍连接串。
+///
+/// 落盘失败只是警告：token 已经生效，文件没写成不该让 daemon 起不来。
+fn resolve_token(options: &RemoteOptions, token_path: &Path) -> String {
+    let token = if !options.token.trim().is_empty() {
+        options.token.clone()
+    } else {
+        read_token_file(token_path).unwrap_or_else(generate_token)
+    };
+    if let Err(error) = write_token_file(token_path, &token) {
+        eprintln!("[core] remote: cannot persist token: {error}");
     }
-    read_daemon_state_at(state_path)
-        .map(|state| state.token)
-        .filter(|token| !token.trim().is_empty())
-        .unwrap_or_else(generate_token)
+    token
+}
+
+/// 读 token 文件；缺失 / 读不出 / 空内容都当作「没有」。
+fn read_token_file(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let token = text.trim();
+    if token.is_empty() {
+        return None;
+    }
+    Some(token.to_string())
+}
+
+/// 原子写 token 文件（Unix 上 `0600`：token 是访问控制的唯一凭证）。
+fn write_token_file(path: &Path, token: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("mkdir {} failed: {error}", parent.display()))?;
+    }
+    let temp = path.with_extension(format!("tmp{}", std::process::id()));
+    write_private(&temp, token)?;
+    if let Err(error) = std::fs::rename(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("rename to {} failed: {error}", path.display()));
+    }
+    Ok(())
 }
 
 /// daemon 实体：绑定端口、把 `{requested, endpoint, token}` 落盘，然后常驻服务。
@@ -752,7 +952,14 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
             return 1;
         }
     };
-    let token = resolve_token(&options, &state_path);
+    let token_path = match daemon_token_path() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("[core] remote: {error}");
+            return 1;
+        }
+    };
+    let token = resolve_token(&options, &token_path);
     let listener = match bind_listener(&options.host, options.port) {
         Ok(listener) => listener,
         Err(error) => {
@@ -770,7 +977,9 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
             return 1;
         }
     };
-    let endpoint = format!("{}:{}", display_host(&options.host), local.port());
+    // endpoint 存**绑定的**主机与实际端口（通配地址原样保留）：连接串按实际端口生成，
+    // 连它时由 `connectable()` 把通配主机换成回环。
+    let endpoint = address_text(&options.host, local.port());
     let state = DaemonState {
         requested: requested_key(&options),
         endpoint: endpoint.clone(),
@@ -781,8 +990,8 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
         eprintln!("[core] remote: cannot write {}: {error}", state_path.display());
         return 1;
     }
-    println!("{}", banner(&endpoint, &token));
-    // 标准输出可能被缓冲；启动器 / 用户读 banner 才能拿到端口与 token，立即冲刷。
+    println!("{}", ready_message(&options.host, local.port(), &token));
+    // 标准输出可能被缓冲；启动器 / 用户读连接串才能拿到端口与 token，立即冲刷。
     let _ = std::io::stdout().flush();
 
     let mut stopping = false;

@@ -6,7 +6,8 @@
  * 2. 注册 IPC（webview-message）并委托给 WebViewUI（复用同一份 WebviewMessageHandler）
  * 3. 侧栏 IPC：对话列表读写、打开/新建对话、列表变化推送
  * 4. 初始化 core（bootstrapCore：总线 / core 侧订阅 / 宿主环境与工作目录经总线传递）
- * 5. 提供单一图标菜单（添加工作目录 / 添加最近的工作目录 / 快捷键 / 开发者工具 / 关于 / 退出）
+ * 5. 提供单一图标菜单（添加工作区 / 添加最近的工作区 / 快捷键 / 开发者工具 / 关于 / 退出）；
+ *    标题栏「加号」菜单同样带「打开最近的工作区」
  * 6. 多工作目录：打开集合 + 活动项，标题栏标签页，按对话解析工作目录
  *
  * 与 VS Code 扩展的差异点（extension.ts）：
@@ -15,6 +16,7 @@
  * - 文件打开/虚拟文档/Mermaid/Spin 由 UIHost 提供 Electron 实现
  */
 
+import { fileLogger } from '../src/core/Logger.js';
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents, globalShortcut, Tray, nativeImage, screen, type NativeImage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -31,6 +33,8 @@ import { ElectronSpinDesign } from './ElectronSpinDesign.js';
 import { ElectronConversationManager } from './ElectronConversationManager.js';
 import { WebViewUI } from '../src/host/WebViewUI.js';
 import { normalizeWorkspacePath, sameWorkspace, dedupeWorkspacePaths } from '../src/host/workspacePaths.js';
+import { buildRemoteEndpoint, type RemoteConnectError } from '../src/host/connectionString.js';
+import { DirectoryOperationError } from '../src/host/standalone/CoreDaemon.js';
 import {
   localWorkspaceRef,
   remoteWorkspaceRef,
@@ -40,6 +44,11 @@ import {
   type WorkspaceEndpoint,
   type WorkspaceRef,
 } from '../src/host/workspaceRef.js';
+import {
+  parseWorkspaceEntry as parseWorkspaceEntryShared,
+  serializeWorkspaceRef as serializeWorkspaceRefShared,
+  type SerializedWorkspaceRef,
+} from '../src/host/workspaceState.js';
 
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
 import { PRODUCT_NAME, EXTENSION_NAME, SETTINGS_FILE_NAME } from '../src/config/project.js';
@@ -50,10 +59,9 @@ import {
   formatAcceleratorForDisplay,
   normalizeAccelerator,
 } from './shortcut.js';
-import { tt, onHostLocaleChanged } from '../src/host/i18n.js';
+import { tt, onHostLocaleChanged, getHostLocale } from '../src/host/i18n.js';
 import { requireEventBus } from '../src/core/AssistantEventBus.js';
 import { getShortcutDialogHtml } from './shortcutDialogHtml.js';
-import { getRemoteWorkspaceDialogHtml } from './remoteWorkspaceDialogHtml.js';
 import { resolveSmartTitle } from '../src/core/history/smartNaming.js';
 
 /**
@@ -243,6 +251,23 @@ function findWorkspace(ref: WorkspaceRef): WorkspaceRef | undefined {
   return openWorkspaces.find((candidate) => sameWorkspaceRef(candidate, ref));
 }
 
+/**
+ * 工作目录的规范化口径（`docs/client-connection.md` 第 4 节）。
+ *
+ * 本地路径按宿主口径规范化（大小写 / 尾分隔符）；**远程路径是目标机器上的字符串，
+ * 原样保留**——对 `/home/pz/proj` 跑本地规范化会得到 `D:\home\pz\proj`，之后按路径
+ * 找 Connection、注入 `--workspace=` 全都对不上（表现为远端工作区发消息没有响应）。
+ */
+function canonicalWorkspacePath(target: string): string {
+  const remote = openWorkspaces.find((ref) => ref.endpoint !== null && ref.path === target);
+  return remote ? remote.path : normalizeWorkspacePath(target);
+}
+
+/** 工作目录路径是否属于该引用（本地按宿主口径判等，远程逐字比较） */
+function workspacePathMatches(ref: WorkspaceRef, target: string): boolean {
+  return ref.endpoint ? ref.path === target : sameWorkspace(ref.path, target);
+}
+
 /** 两个可能为空的工作区引用是否指向同一项（都为空视为相同） */
 function sameRef(a: WorkspaceRef | undefined, b: WorkspaceRef | undefined): boolean {
   if (!a || !b) return a === b;
@@ -402,7 +427,7 @@ async function main(): Promise<void> {
       const existing = findWorkspace(ref);
       if (!existing) openWorkspaces.push(ref);
       workspacePath = existing ?? ref;
-      rememberRecentWorkspace(ref.path);
+      rememberRecentWorkspace(ref);
       saveOpenWorkspaces(openWorkspaces, workspacePath);
     }
   }
@@ -1645,8 +1670,9 @@ function collectWorkspaceActivity(): Record<string, WorkspaceActivityLevel> {
       if (state.idle && !state.waiting) continue;
       const workspace = getSessionWorkspace(state.sessionId);
       if (!workspace) continue;
-      // 会话登记的目录与打开集合可能写法不同（大小写 / 分隔符 / 尾斜杠），按去重键匹配
-      const target = openWorkspaces.find((candidate) => sameWorkspace(candidate.path, workspace));
+      // 会话登记的目录与打开集合可能写法不同（本地：大小写 / 分隔符 / 尾斜杠；
+      // 远程路径逐字比较），统一按引用口径匹配
+      const target = openWorkspaces.find((candidate) => workspacePathMatches(candidate, workspace));
       if (!target) continue;
       const key = refKey(target);
       if (state.waiting) result[key] = 'waiting';
@@ -1681,6 +1707,16 @@ function workspaceTabState(ref: WorkspaceRef): { id: string; path: string; name:
     name: workspaceDisplayNameOf(ref),
     remote: ref.endpoint !== null,
   };
+}
+
+/**
+ * 侧栏「最近打开」列表：与标签页同一形态。
+ *
+ * 下发 id 而不是路径：远程项按路径没法唯一定位（同一路径可以在多台机器上），
+ * 点开时由主进程按 id 回查引用（连同落盘的凭证一起）。
+ */
+function recentWorkspaceTabs(): Array<ReturnType<typeof workspaceTabState>> {
+  return readRecentWorkspaces().map((ref) => workspaceTabState(ref));
 }
 
 /** 完整模式默认窗口：固定宽度 + 主屏工作区高度的 80% */
@@ -1802,23 +1838,23 @@ function buildMenuSections(): MenuSectionDef[] {
     });
   }
 
-  // 添加工作目录：Electron 专属能力（VS Code 从 workspaceFolders 获取）
+  // 添加工作区：Electron 专属能力（VS Code 从 workspaceFolders 获取）
   const addWorkspaceItem: MenuItemDef = {
     id: 'main.addWorkspace',
-    label: tt('打开本地目录...', 'Open Local Folder...'),
+    label: tt('打开本地工作区...', 'Open Local Workspace...'),
     accelerator: 'CmdOrCtrl+O',
     run: () => { void openWorkspaceDialog(); },
   };
-  // 打开远程 Workspace：连接远端 Core（ip:端口 + token），随后弹出远端目录选择
+  // 打开远程工作区：连接远端 Core（ip:端口 + token），随后弹出远端目录选择
   const addRemoteWorkspaceItem: MenuItemDef = {
     id: 'main.addRemoteWorkspace',
-    label: tt('打开远程 Workspace...', 'Open Remote Workspace...'),
+    label: tt('打开远程工作区...', 'Open Remote Workspace...'),
     accelerator: 'CmdOrCtrl+Shift+O',
     run: () => { openRemoteWorkspaceDialog(); },
   };
   const recentWorkspaceItem: MenuItemDef = {
     id: 'main.recent',
-    label: tt('添加最近的工作目录', 'Add Recent Workspace'),
+    label: tt('添加最近的工作区', 'Add Recent Workspace'),
     submenu: buildRecentWorkspacesMenu(),
   };
   // 主题：跟随系统 / 浅色 / 深色（二级菜单，单选；持久化在 settings.json 的 theme 字段）
@@ -1908,16 +1944,21 @@ function buildThemeMenu(): MenuItemDef[] {
   }));
 }
 
-/** 构建「添加最近的工作目录」子菜单项（目录已不存在时自动过滤） */
+/**
+ * 构建「添加最近的工作区」子菜单项。
+ *
+ * 本地项已不存在的目录会被过滤掉；远程项无法本地检查，原样列出（连同凭证一起落盘，
+ * 点开即重新连接）。
+ */
 function buildRecentWorkspacesMenu(): MenuItemDef[] {
   const recents = readRecentWorkspaces();
   if (recents.length === 0) {
-    return [{ id: 'main.recent.none', label: tt('无最近的工作目录', 'No Recent Workspaces'), enabled: false }];
+    return [{ id: 'main.recent.none', label: tt('无最近的工作区', 'No Recent Workspaces'), enabled: false }];
   }
-  return recents.map((p, index) => ({
+  return recents.map((ref, index) => ({
     id: `main.recent.${index}`,
-    label: p,
-    run: () => addWorkspaces([p]),
+    label: refDisplay(ref),
+    run: () => { addWorkspaceRefs([ref]); },
   }));
 }
 
@@ -2279,7 +2320,7 @@ function invalidateTitlebarMenuCache(): void {
 async function openWorkspaceDialog(): Promise<void> {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: '选择工作目录',
+    title: tt('选择工作区目录', 'Select Workspace Folder'),
     properties: ['openDirectory', 'multiSelections'],
   });
   if (result.canceled || result.filePaths.length === 0) return;
@@ -2287,39 +2328,90 @@ async function openWorkspaceDialog(): Promise<void> {
 }
 
 /**
- * 标题栏「加号」的添加工作区菜单：打开本地目录 / 打开远程 Workspace。
+ * 标题栏「加号」的添加工作区菜单：打开本地工作区 / 打开远程工作区 / 打开最近的工作区。
  *
+ * 最近列表本地与远程同形态，点开即打开（远程项按落盘的凭证重新连接）。
  * 用原生菜单在当前鼠标位置弹出；标题栏页面只发一条 IPC，不自己渲染菜单。
  */
 function popupWorkspaceMenu(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  const recents = readRecentWorkspaces();
+  const recentItems: Electron.MenuItemConstructorOptions[] = recents.length === 0
+    ? [{ label: tt('无最近的工作区', 'No Recent Workspaces'), enabled: false }]
+    : recents.map((ref) => ({
+        label: refDisplay(ref),
+        click: () => { addWorkspaceRefs([ref]); },
+      }));
   const menu = Menu.buildFromTemplate([
     {
-      label: tt('打开本地目录...', 'Open Local Folder...'),
+      label: tt('打开本地工作区...', 'Open Local Workspace...'),
       click: () => { void openWorkspaceDialog(); },
     },
     {
-      label: tt('打开远程 Workspace...', 'Open Remote Workspace...'),
+      label: tt('打开远程工作区...', 'Open Remote Workspace...'),
       click: () => { openRemoteWorkspaceDialog(); },
+    },
+    { type: 'separator' },
+    {
+      label: tt('打开最近的工作区', 'Open Recent Workspace'),
+      submenu: recentItems,
     },
   ]);
   menu.popup({ window: mainWindow });
 }
 
-/** 「打开远程 Workspace」对话框（连接远端 daemon → 选择远端目录） */
+/** 「打开远程工作区」窗口（连接远端 daemon → 选择远端目录） */
 let remoteWorkspaceWindow: BrowserWindow | undefined;
+
+/**
+ * 两步各自的窗口尺寸（内容区，`useContentSize`）。
+ * 第一步只有一个输入框，窗口就按它定；连接成功后换成选目录的尺寸。
+ */
+// 接入那一步有两个页签（连接串 / SSH 表单）：窗口按较高的那个（SSH）定高，
+// 否则切到 SSH 页签时底部按钮会被挤出去
+const CONNECT_SIZE = { width: 520, height: 440 };
+const PICKER_SIZE = { width: 760, height: 560 };
+const PICKER_MIN_SIZE = { width: 560, height: 380 };
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 /**
- * 打开「打开远程 Workspace」对话框。
+ * 把「打开远程工作区」窗口的接入请求翻成 `WorkspaceEndpoint`（`docs/core-daemon.md` 第 12 节）。
+ *
+ * 形状校验与「凭证种类 → 接入方式」的收敛在 host 层（`buildRemoteEndpoint`）；这里只把
+ * 原因码翻成本地化文案——i18n 只存在于宿主实现，不进 host 层。
+ */
+function parseRemoteConnectRequest(
+  raw: unknown,
+): { ok: true; value: WorkspaceEndpoint } | { ok: false; error: string } {
+  const parsed = buildRemoteEndpoint(raw);
+  if (parsed.ok) return parsed;
+  const messages: Record<RemoteConnectError, string> = {
+    request: tt('接入请求格式不对', 'Malformed connect request'),
+    connectionString: tt(
+      '连接串格式不对，应为 IP:端口#token',
+      'Malformed connection string; expected IP:port#token',
+    ),
+    host: tt('请填写 SSH 主机地址', 'SSH host is required'),
+    port: tt('SSH 端口必须是 1-65535 之间的数字', 'SSH port must be a number between 1 and 65535'),
+    user: tt('请填写 SSH 登录用户', 'SSH login user is required'),
+    password: tt('请填写 SSH 登录密码', 'SSH password is required'),
+  };
+  return { ok: false, error: messages[parsed.error] };
+}
+
+/**
+ * 打开「打开远程工作区」窗口。
  *
  * 流程（`docs/core-daemon.md` 第 12 节）：
- * 1. 输入远端 `IP:端口` 与 token；
- * 2. 连接成功后**立刻**列出远端主目录，进入目录选择；
+ * 1. 粘贴 `start` 打印的连接串；
+ * 2. 连接成功后**立刻**列出远端主目录，进入目录选择（可进上级 / 新建 / 删除）；
  * 3. 选定目录后加为工作区（同一个 daemon 连接随后用于打开该工作区）。
+ *
+ * 窗口按当前这一步的内容定尺寸：第一步只有一个输入框，用紧凑窗口；连接成功后换成
+ * 选目录的尺寸（`PICKER_SIZE`），避免「大窗口里一个小输入框」。
  */
 function openRemoteWorkspaceDialog(): void {
   if (remoteWorkspaceWindow && !remoteWorkspaceWindow.isDestroyed()) {
@@ -2327,18 +2419,19 @@ function openRemoteWorkspaceDialog(): void {
     return;
   }
   // 延迟 require：bootstrapCore 会引入 core 侧模块，必须在 app ready（initCore）之后加载
-  const { listRemoteDirectories } = require('../src/host/bootstrapCore.js') as typeof import('../src/host/bootstrapCore.js');
+  const { listRemoteDirectories, createRemoteDirectory, renameRemoteDirectory, deleteRemoteDirectory } =
+    require('../src/host/bootstrapCore.js') as typeof import('../src/host/bootstrapCore.js');
   const parent = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() ? mainWindow : undefined;
   const win = new BrowserWindow({
-    width: 560,
-    height: 560,
+    ...CONNECT_SIZE,
+    useContentSize: true,
     ...(parent ? { parent } : {}),
-    resizable: true,
+    resizable: false,
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
     show: false,
-    title: tt('打开远程 Workspace', 'Open Remote Workspace'),
+    title: tt('打开远程工作区', 'Open Remote Workspace'),
     icon: path.join(APP_ROOT, 'assets', 'logo.png'),
     autoHideMenuBar: true,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#1a1a1f' : '#ffffff',
@@ -2351,7 +2444,7 @@ function openRemoteWorkspaceDialog(): void {
   });
   remoteWorkspaceWindow = win;
 
-  /** 已连接成功的 endpoint；未连接时为 null（后续 list / open 都要求它） */
+  /** 已连接成功的 endpoint；未连接时为 null（后续 list / create / delete / open 都要求它） */
   let connected: WorkspaceEndpoint | null = null;
   const isSender = (sender: Electron.WebContents): boolean =>
     !win.isDestroyed() && sender === win.webContents;
@@ -2361,20 +2454,24 @@ function openRemoteWorkspaceDialog(): void {
 
   ipcMain.handle('remote-workspace:connect', async (event, raw: unknown) => {
     if (!isSender(event.sender)) return { ok: false, error: 'invalid sender' };
-    const input = (raw ?? {}) as { host?: unknown; port?: unknown; token?: unknown };
-    const host = typeof input.host === 'string' ? input.host.trim() : '';
-    const port = typeof input.port === 'number' ? input.port : Number.NaN;
-    const token = typeof input.token === 'string' ? input.token.trim() : '';
-    if (!host) return { ok: false, error: tt('请填写 IP / 主机', 'Host is required') };
-    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-      return { ok: false, error: tt('端口必须在 1-65535 之间', 'Port must be 1-65535') };
-    }
-    if (!token) return { ok: false, error: tt('请填写 token', 'Token is required') };
-    const endpoint: WorkspaceEndpoint = { host, port, user: null, auth: { token } };
+    const request = parseRemoteConnectRequest(raw);
+    if (!request.ok) return { ok: false, error: request.error };
+    const endpoint = request.value;
     try {
+      // SSH 接入时这一步会完成「发现 / 部署 / 启动」，可能要几秒
       const listing = await listRemoteDirectories(endpoint, null);
       connected = endpoint;
-      return { ok: true, listing };
+      // 进目录选择这一步：换尺寸并允许调整大小
+      win.setResizable(true);
+      win.setMinimumSize(PICKER_MIN_SIZE.width, PICKER_MIN_SIZE.height);
+      win.setContentSize(PICKER_SIZE.width, PICKER_SIZE.height);
+      win.center();
+      // 凭证不下发到页面：标题只需要知道连的是哪台机器
+      return {
+        ok: true,
+        listing,
+        endpoint: { host: endpoint.host, port: endpoint.port ?? 0, user: endpoint.user },
+      };
     } catch (error) {
       return { ok: false, error: describeError(error) };
     }
@@ -2392,13 +2489,64 @@ function openRemoteWorkspaceDialog(): void {
     }
   });
 
+  ipcMain.handle('remote-workspace:create', async (event, target: unknown) => {
+    if (!isSender(event.sender)) return { ok: false, error: 'invalid sender' };
+    if (!connected) return { ok: false, error: 'not connected' };
+    if (typeof target !== 'string' || target.length === 0) {
+      return { ok: false, error: 'invalid path' };
+    }
+    try {
+      return { ok: true, path: await createRemoteDirectory(connected, target) };
+    } catch (error) {
+      return { ok: false, error: describeError(error) };
+    }
+  });
+
+  ipcMain.handle('remote-workspace:rename', async (event, target: unknown, name: unknown) => {
+    if (!isSender(event.sender)) return { ok: false, error: 'invalid sender' };
+    if (!connected) return { ok: false, error: 'not connected' };
+    if (typeof target !== 'string' || target.length === 0) {
+      return { ok: false, error: 'invalid path' };
+    }
+    if (typeof name !== 'string' || name.length === 0) return { ok: false, error: 'invalid name' };
+    try {
+      return { ok: true, path: await renameRemoteDirectory(connected, target, name) };
+    } catch (error) {
+      return { ok: false, error: describeError(error) };
+    }
+  });
+
+  ipcMain.handle('remote-workspace:delete', async (event, target: unknown, recursive: unknown) => {
+    if (!isSender(event.sender)) return { ok: false, error: 'invalid sender' };
+    if (!connected) return { ok: false, error: 'not connected' };
+    if (typeof target !== 'string' || target.length === 0) {
+      return { ok: false, error: 'invalid path' };
+    }
+    if (typeof recursive !== 'boolean') return { ok: false, error: 'invalid recursive flag' };
+    try {
+      return { ok: true, path: await deleteRemoteDirectory(connected, target, recursive) };
+    } catch (error) {
+      // 非空是「还能继续」的失败：把 reason 带回页面，让它升成递归删除的二次确认
+      return {
+        ok: false,
+        error: describeError(error),
+        reason: error instanceof DirectoryOperationError ? error.reason : 'other',
+      };
+    }
+  });
+
   ipcMain.handle('remote-workspace:open', (event, target: unknown) => {
     if (!isSender(event.sender)) return { ok: false, error: 'invalid sender' };
     if (!connected) return { ok: false, error: 'not connected' };
     if (typeof target !== 'string' || target.length === 0) {
       return { ok: false, error: 'invalid path' };
     }
-    addRemoteWorkspace(connected, target);
+    try {
+      addRemoteWorkspace(connected, target);
+    } catch (error) {
+      // 打开失败必须把原因回给页面：否则窗口停在「忙」状态、按钮全灰，看起来像卡死
+      return { ok: false, error: describeError(error) };
+    }
     close();
     return { ok: true };
   });
@@ -2410,17 +2558,23 @@ function openRemoteWorkspaceDialog(): void {
   win.on('closed', () => {
     ipcMain.removeHandler('remote-workspace:connect');
     ipcMain.removeHandler('remote-workspace:list');
+    ipcMain.removeHandler('remote-workspace:create');
+    ipcMain.removeHandler('remote-workspace:rename');
+    ipcMain.removeHandler('remote-workspace:delete');
     ipcMain.removeHandler('remote-workspace:open');
     ipcMain.removeListener('remote-workspace:cancel', onCancel);
     if (remoteWorkspaceWindow === win) remoteWorkspaceWindow = undefined;
   });
 
   win.once('ready-to-show', () => win.show());
-  const html = getRemoteWorkspaceDialogHtml({
-    isDark: nativeTheme.shouldUseDarkColors,
-    locale: app.getLocale().startsWith('zh') ? 'zh' : 'en',
-  });
-  void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  // 文案语言走宿主语言（与原生菜单同一份事实），页面按 query 选字典
+  void win
+    .loadFile(path.join(APP_ROOT, 'dist', 'remoteWorkspace', 'index.html'), {
+      query: { locale: getHostLocale() },
+    })
+    .catch((err) => {
+      console.error('[remote-workspace] loadFile rejected; run `npm run build:remoteWorkspace`:', err);
+    });
 }
 
 /**
@@ -2460,7 +2614,7 @@ function syncSessionWorkspaceIndex(): void {
   for (const c of list as ReadonlyArray<{ sessionId?: string; project?: string }>) {
     if (c && typeof c.sessionId === 'string' && typeof c.project === 'string' && c.project) {
       // 统一规范化：视图按这个值注入 --workspace=，关闭工作目录时按同一表示匹配
-      sessionWorkspaces.set(c.sessionId, normalizeWorkspacePath(c.project));
+      sessionWorkspaces.set(c.sessionId, canonicalWorkspacePath(c.project));
     }
   }
 }
@@ -2473,9 +2627,7 @@ function addWorkspaces(paths: readonly string[]): void {
   const refs: WorkspaceRef[] = [];
   for (const raw of paths) {
     if (!isValidWorkspaceDir(raw)) continue;
-    const ref = localWorkspaceRef(raw);
-    rememberRecentWorkspace(ref.path);
-    refs.push(ref);
+    refs.push(localWorkspaceRef(raw));
   }
   addWorkspaceRefs(refs);
 }
@@ -2490,6 +2642,8 @@ function addWorkspaceRefs(refs: readonly WorkspaceRef[]): void {
   const added: WorkspaceRef[] = [];
   const opened: WorkspaceRef[] = [];
   for (const ref of refs) {
+    // 本地与远程同一口径：只要加入打开集合就进最近列表（远程项连同凭证一起落盘）
+    rememberRecentWorkspace(ref);
     const existing = findWorkspace(ref);
     if (!existing) {
       openWorkspaces.push(ref);
@@ -2568,7 +2722,7 @@ function activateWorkspace(target: WorkspaceRef | string): void {
  */
 function activateWorkspaceForPath(workspace: string | undefined): void {
   if (!workspace) return;
-  const ref = openWorkspaces.find((candidate) => sameWorkspace(candidate.path, workspace));
+  const ref = openWorkspaces.find((candidate) => workspacePathMatches(candidate, workspace));
   if (ref && !(workspacePath && sameWorkspaceRef(ref, workspacePath))) {
     activateWorkspace(ref);
   }
@@ -2589,7 +2743,7 @@ function closeWorkspace(target: WorkspaceRef | string): void {
   openWorkspaces.splice(idx, 1);
   chatViews?.closeWorkspace(ref.path);
   for (const [sid, ws] of [...sessionWorkspaces]) {
-    if (sameWorkspace(ws, ref.path)) sessionWorkspaces.delete(sid);
+    if (workspacePathMatches(ref, ws)) sessionWorkspaces.delete(sid);
   }
   const wasActive = sameRef(workspacePath, ref);
   if (wasActive) {
@@ -2627,7 +2781,7 @@ function broadcastWorkspaces(): void {
   sidebarView?.webContents.send('sidebar:workspaces-changed', {
     workspaces: openWorkspaces.map((ref) => workspaceTabState(ref)),
     active: workspacePath ? refKey(workspacePath) : null,
-    recent: readRecentWorkspaces(),
+    recent: recentWorkspaceTabs(),
   });
 }
 
@@ -2641,9 +2795,9 @@ function broadcastWorkspaces(): void {
  * theme / shortcut 是只有 Electron 消费的宿主本地偏好，core 不读不写。
  * 文件格式：
  * {
- *   "openWorkspaces": ["C:\\path\\to\\ws", "C:\\path\\to\\ws2"],
+ *   "openWorkspaces": ["C:\\path\\to\\ws", { "scheme": "ssh", "path": "/home/pz", "endpoint": {...} }],
  *   "activeWorkspace": "C:\\path\\to\\ws2",
- *   "recentWorkspaces": ["C:\\path\\to\\ws2", "C:\\path\\to\\ws", ...],
+ *   "recentWorkspaces": ["C:\\path\\to\\ws2", { "scheme": "tcp", "path": "/srv", "endpoint": {...} }],
  *   "windowSize": { "x": 320, "y": 180, "width": 1280, "height": 860 },
  *   "floatingWindowSize": { "x": 1500, "y": 120, "width": 480, "height": 780 },
  *   "windowMode": "floating",
@@ -2651,6 +2805,10 @@ function broadcastWorkspaces(): void {
  *   "theme": "system",
  *   "shortcut": "Ctrl+Alt+X"
  * }
+ *
+ * 本地项写字符串（旧版本格式，读取时按本地引用迁移），远程项写 `SerializedWorkspaceRef`。
+ * **远程凭证（token / SSH 口令）随 endpoint 一起明文落盘**：重启后要能直接恢复并打开
+ * 已连接过的工作区（`docs/client-connection.md` 第 9 节）。
  *
  * 读取口径：字段缺失或非法即按「没有」处理，不做任何跨字段回退
  * （例如 openWorkspaces 缺失就是没有打开任何工作目录）。
@@ -2665,16 +2823,9 @@ interface WindowRect {
   height?: number;
 }
 
-/** 落盘的工作区引用（`WorkspaceRef` 的序列化形态） */
-interface SerializedWorkspaceRef {
-  scheme: string;
-  path: string;
-  endpoint: WorkspaceEndpoint | null;
-}
-
 interface WorkspaceState {
   /**
-   * 打开集合：按标签页顺序排列。新版本写 `SerializedWorkspaceRef`；
+   * 打开集合：按标签页顺序排列。新版本写 `SerializedWorkspaceRef`（含远程项）；
    * 旧版本写本地路径字符串，读取时按本地引用迁移。
    */
   openWorkspaces?: Array<string | SerializedWorkspaceRef>;
@@ -2682,7 +2833,8 @@ interface WorkspaceState {
   activeWorkspaceKey?: string | null;
   /** 旧版本的活动工作目录（本地路径）；读取时按本地引用迁移 */
   activeWorkspace?: string | null;
-  recentWorkspaces?: string[];
+  /** 最近打开的工作区：与 `openWorkspaces` 同格式（字符串 = 本地路径） */
+  recentWorkspaces?: Array<string | SerializedWorkspaceRef>;
   /** 完整模式窗口位置与大小（字段名沿用 windowSize，现在同时存位置） */
   windowSize?: WindowRect;
   /** 悬浮窗模式窗口位置与大小；与完整模式独立存储 */
@@ -2873,29 +3025,18 @@ function isValidWorkspaceDir(p: unknown): p is string {
   }
 }
 
-/** 序列化一个工作区引用 */
+/** 序列化一个工作区引用（落盘形态见 `src/host/workspaceState.ts`） */
 function serializeWorkspaceRef(ref: WorkspaceRef): SerializedWorkspaceRef {
-  return { scheme: ref.scheme, path: ref.path, endpoint: ref.endpoint };
+  return serializeWorkspaceRefShared(ref);
 }
 
-/** 反序列化：字符串按本地路径迁移；远程项不检查本地是否存在（路径在目标机器上） */
+/** 反序列化一条落盘项；本地项要求目录仍存在 */
 function parseWorkspaceEntry(entry: unknown): WorkspaceRef | null {
-  if (typeof entry === 'string') {
-    return isValidWorkspaceDir(entry) ? localWorkspaceRef(entry) : null;
-  }
-  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-  const { scheme, path: refPath, endpoint } = entry as Partial<SerializedWorkspaceRef>;
-  if (typeof scheme !== 'string' || typeof refPath !== 'string' || refPath.length === 0) return null;
-  if (endpoint === null || endpoint === undefined) {
-    return isValidWorkspaceDir(refPath) ? localWorkspaceRef(refPath) : null;
-  }
-  const parsed = endpoint as WorkspaceEndpoint;
-  if (typeof parsed.host !== 'string' || parsed.host.length === 0) return null;
-  return { scheme, path: refPath, endpoint: parsed };
+  return parseWorkspaceEntryShared(entry, isValidWorkspaceDir);
 }
 
 /**
- * 读取打开集合（本地项仅保留仍存在的目录，按引用去重）。
+ * 读取打开集合（本地项仅保留仍存在的目录；远程项原样保留，按引用去重）。
  * `openWorkspaces` 缺失 / 非法即视为「没有打开任何工作目录」，不回退到其它字段。
  */
 function readOpenWorkspaces(): WorkspaceRef[] {
@@ -2906,8 +3047,6 @@ function readOpenWorkspaces(): WorkspaceRef[] {
   for (const entry of openWorkspaces) {
     const ref = parseWorkspaceEntry(entry);
     if (!ref) continue;
-    // 远程工作区不落盘（凭证不进本地状态文件）；忽略历史 / 手改文件里的远程项
-    if (ref.endpoint !== null) continue;
     const key = refKey(ref);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -2936,42 +3075,51 @@ function readActiveWorkspace(open: readonly WorkspaceRef[]): WorkspaceRef | unde
 /**
  * 保存打开集合与活动项（顺带清掉旧版本遗留的 lastWorkspace 字段）。
  *
- * **远程工作区不落盘**：endpoint 的 `auth.token` 是凭证，不进宿主本地状态文件；
- * 远程打开项只在本次会话内有效，重启后需要重新连接（见 `docs/client-connection.md` 第 9 节）。
+ * 远程项与本地项一起落盘：endpoint 连同凭证（token / SSH 口令）写进宿主本地状态文件，
+ * 重启后直接恢复并重新连接（见 `docs/client-connection.md` 第 9 节）。
  */
 function saveOpenWorkspaces(open: readonly WorkspaceRef[], active: WorkspaceRef | undefined): void {
   const prev = readWorkspaceState() as WorkspaceState & { lastWorkspace?: unknown };
   const { lastWorkspace: _legacy, ...rest } = prev;
-  const persisted = open.filter((ref) => ref.endpoint === null);
   writeWorkspaceState({
     ...rest,
-    openWorkspaces: persisted.map((ref) => serializeWorkspaceRef(ref)),
+    openWorkspaces: open.map((ref) => serializeWorkspaceRef(ref)),
     // 无活动项时写 null（而不是 undefined：JSON.stringify 会省略该键，与规格 §11 不符）
-    activeWorkspaceKey: active && active.endpoint === null ? refKey(active) : null,
+    activeWorkspaceKey: active ? refKey(active) : null,
     // 旧字段：只在活动项是本地目录时保留，方便旧版本读取
     activeWorkspace: active && active.endpoint === null ? active.path : null,
   });
 }
 
 /**
- * 读取最近打开的工作目录列表（仅保留仍存在的目录，按去重键去重，最多 10 个，最近的在最前）。
+ * 读取最近打开的工作区（本地项过滤掉已不存在的目录，远程项无法检查、原样保留），
+ * 按去重键去重，最多 10 个，最近的在最前。
  * 同一目录的不同表示（尾部分隔符 / 大小写 / 符号链接等）只保留最靠前的一条。
  */
-function readRecentWorkspaces(): string[] {
+function readRecentWorkspaces(): WorkspaceRef[] {
   const { recentWorkspaces } = readWorkspaceState();
   if (!Array.isArray(recentWorkspaces)) return [];
-  const valid = recentWorkspaces.filter((ws): ws is string => isValidWorkspaceDir(ws));
-  return dedupeWorkspacePaths(valid).slice(0, MAX_RECENT_WORKSPACES);
+  const refs: WorkspaceRef[] = [];
+  const seen = new Set<string>();
+  for (const entry of recentWorkspaces) {
+    const ref = parseWorkspaceEntry(entry);
+    if (!ref) continue;
+    const key = refKey(ref);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push(ref);
+  }
+  return refs.slice(0, MAX_RECENT_WORKSPACES);
 }
 
-/** 把目录置顶写入最近工作目录列表（按去重键去重、最多 10 个） */
-function rememberRecentWorkspace(p: string): void {
+/** 把工作区置顶写入最近列表（按去重键去重、最多 10 个） */
+function rememberRecentWorkspace(ref: WorkspaceRef): void {
   const prev = readWorkspaceState();
-  // 先按类型过滤再判等：状态文件被手改坏（数组里混入非字符串）时
-  // sameWorkspace → path.resolve 会抛 TypeError
-  const prevRecents = (Array.isArray(prev.recentWorkspaces) ? prev.recentWorkspaces : [])
-    .filter((ws): ws is string => typeof ws === 'string' && ws.trim().length > 0);
-  const recentWorkspaces = [p, ...prevRecents.filter((ws) => !sameWorkspace(ws, p))]
+  const key = refKey(ref);
+  const prevRecents = readRecentWorkspaces();
+  const recentWorkspaces = [serializeWorkspaceRef(ref), ...prevRecents
+    .filter((candidate) => refKey(candidate) !== key)
+    .map((candidate) => serializeWorkspaceRef(candidate))]
     .slice(0, MAX_RECENT_WORKSPACES);
   writeWorkspaceState({ ...prev, recentWorkspaces });
 }
@@ -3103,7 +3251,7 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: a
       chatViews?.registerSession(sender, sessionId);
       const resolved = workspace ?? chatViews?.getWorkspaceForKey(sessionId);
       if (resolved) {
-        const p = normalizeWorkspacePath(resolved);
+        const p = canonicalWorkspacePath(resolved);
         sessionWorkspaces.set(sessionId, p);
         void registerCoreSessionWorkspace(sessionId, p);
       }
@@ -3159,7 +3307,7 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: a
     return;
   }
 
-  // webview 内“打开工作目录”按钮（未设置工作区时的引导）
+  // webview 内“打开工作区”按钮（未设置工作区时的引导）
   if (message.type === 'openWorkspace') {
     void openWorkspaceDialog();
     return;
@@ -3241,7 +3389,7 @@ function setupIpc(): void {
     void openWorkspaceDialog();
   });
 
-  // 加号按钮：弹出「打开本地目录 / 打开远程 Workspace」菜单
+  // 加号按钮：弹出「打开本地工作区 / 打开远程工作区」菜单
   ipcMain.on('titlebar:workspace-menu', (event) => {
     if (!isTitlebarSender(event.sender)) return;
     popupWorkspaceMenu();
@@ -3349,7 +3497,7 @@ function setupIpc(): void {
   ipcMain.handle('sidebar:get-workspaces', () => ({
     workspaces: openWorkspaces.map((ref) => workspaceTabState(ref)),
     active: workspacePath ? refKey(workspacePath) : null,
-    recent: readRecentWorkspaces(),
+    recent: recentWorkspaceTabs(),
   }));
 
   ipcMain.on('sidebar:add-workspaces', (_event, paths?: unknown) => {
@@ -3358,6 +3506,16 @@ function setupIpc(): void {
     } else {
       void openWorkspaceDialog();
     }
+  });
+
+  // 侧栏「最近打开」点击：按 id 回查引用后打开。
+  // 打开集合里已有就激活（addWorkspaceRefs 只激活不新建），没有则按落盘的凭证重连。
+  ipcMain.on('sidebar:open-workspace', (_event, id?: unknown) => {
+    if (typeof id !== 'string' || id.length === 0) return;
+    const target = openWorkspaces.find((ref) => refKey(ref) === id)
+      ?? readRecentWorkspaces().find((ref) => refKey(ref) === id);
+    if (!target) return;
+    addWorkspaceRefs([target]);
   });
 
   ipcMain.on('sidebar:activate-workspace', (_event, p: unknown) => {
@@ -3373,8 +3531,8 @@ function setupIpc(): void {
       if (typeof project === 'string' && project) {
         // 只接受仍处于打开集合中的目录：陈旧列表项（工作目录已关闭）不得把
         // 会话重新登记到已关闭目录，否则会打开一张没有对应标签页的视图
-        const projectPath = normalizeWorkspacePath(project);
-        if (!openWorkspaces.some((ref) => sameWorkspace(ref.path, projectPath))) {
+        const projectPath = canonicalWorkspacePath(project);
+        if (!openWorkspaces.some((ref) => workspacePathMatches(ref, projectPath))) {
           console.warn('[main] ignore open-conversation for closed workspace:', projectPath);
           return;
         }
@@ -3529,7 +3687,11 @@ function initCore(): void {
   const { ui } = bootstrapCore(host, spinDesign, conversationsMgr, {
     locale: app.getLocale(),
     log: (...args: unknown[]) => {
-      console.log('[WebViewUI]', args.map(a => String(a)).join(' '));
+      const line = args.map(a => String(a)).join(' ');
+      console.log('[WebViewUI]', line);
+      // 宿主诊断（[ssh] / [client] / [bootstrap] / [core] …）同时落盘：
+      // 只打 console 时，远端工作区这类问题在日志文件里完全看不到
+      fileLogger.info('host', line);
     },
     logToConsole: true,
     extensionPath: APP_ROOT,

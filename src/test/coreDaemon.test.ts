@@ -19,7 +19,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawn, type ChildProcessByStdio } from 'child_process';
 import type { Readable } from 'stream';
-import { CoreDaemon } from '../host/standalone/CoreDaemon';
+import { CoreDaemon, tcpDaemonOpener } from '../host/standalone/CoreDaemon';
 import {
   encodeDaemonFrame,
   isDaemonToHostFrame,
@@ -215,7 +215,7 @@ async function startFakeDaemon(options: FakeDaemonOptions = {}): Promise<FakeDae
 /** 建一条连到假 daemon 的 CoreDaemon */
 function connectFakeDaemon(port: number): CoreDaemon {
   return new CoreDaemon({
-    transport: { host: '127.0.0.1', port, token: 'secret' },
+    transport: tcpDaemonOpener({ host: '127.0.0.1', port, token: 'secret' }),
     log: () => undefined,
     handshakeTimeoutMs: 2_000,
     shutdownTimeoutMs: 1_000,
@@ -270,22 +270,26 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<boo
 // ==================== 真实产物 smoke ====================
 
 /**
- * 读真实 daemon 启动横幅里的 `IP:端口`（读不到就在超时后 reject）。
+ * 读真实 daemon 启动输出里的连接串（`<IP>:<端口>#<token>`；读不到就在超时后 reject）。
+ *
+ * 连接串单独占一行，提示行里不含该形态，按行匹配即可。
  *
  * 子进程以 `stdio: ['ignore', 'pipe', 'pipe']` 启动（daemon 不读 stdin），
  * 因此类型是 `ChildProcessByStdio<null, Readable, Readable>` 而不是 `ChildProcessWithoutNullStreams`。
  */
-function readEndpointBanner(child: ChildProcessByStdio<null, Readable, Readable>): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
+function readConnectionString(
+  child: ChildProcessByStdio<null, Readable, Readable>,
+): Promise<{ host: string; port: number; token: string }> {
+  return new Promise((resolve, reject) => {
     let text = '';
-    const timer = setTimeout(() => reject(new Error(`banner timeout: ${text}`)), 20_000);
+    const timer = setTimeout(() => reject(new Error(`connection string timeout: ${text}`)), 20_000);
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
       text += chunk;
-      const match = /remote endpoint: (\S+)/.exec(text);
+      const match = /^([^#\s]+):(\d+)#(\S+)$/m.exec(text);
       if (match) {
         clearTimeout(timer);
-        resolve(match[1]);
+        resolve({ host: match[1], port: Number(match[2]), token: match[3] });
       }
     });
     child.on('error', (error) => {
@@ -336,7 +340,7 @@ async function run(): Promise<void> {
   {
     const fake = await startFakeDaemon();
     const daemon = new CoreDaemon({
-      transport: { host: '127.0.0.1', port: fake.port, token: 'wrong' },
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port, token: 'wrong' }),
       log: () => undefined,
       handshakeTimeoutMs: 2_000,
       shutdownTimeoutMs: 1_000,
@@ -508,13 +512,17 @@ async function run(): Promise<void> {
         },
       );
       try {
-        const endpoint = await readEndpointBanner(child);
-        check(`真实 daemon 打印启动横幅 ${endpoint}`, /^127\.0\.0\.1:\d+$/.test(endpoint));
-        const port = Number(endpoint.split(':')[1]);
+        const connection = await readConnectionString(child);
+        check(
+          `真实 daemon 打印连接串 ${connection.host}:${connection.port}`,
+          connection.host === '127.0.0.1' && connection.port > 0,
+        );
+        check('连接串带上生效的 token', connection.token === 'smoke-token');
+        const port = connection.port;
         check('真实 daemon 落盘状态文件', fs.existsSync(path.join(home, '.tuxedo-cat', 'core-daemon.json')));
 
         const daemon = new CoreDaemon({
-          transport: { host: '127.0.0.1', port, token: 'smoke-token' },
+          transport: tcpDaemonOpener({ host: '127.0.0.1', port, token: 'smoke-token' }),
           log: () => undefined,
           handshakeTimeoutMs: 15_000,
           shutdownTimeoutMs: 5_000,

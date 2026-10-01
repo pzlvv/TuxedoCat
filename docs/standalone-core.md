@@ -102,8 +102,8 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 - 源码位置：`core-rs/`（Cargo 包，包名与二进制名保持中性；对外文件名由构建脚本按配置落位）。
 - 进程属性：由宿主启动时不显示窗口；标准输入 / 标准输出为帧通道，标准错误为诊断输出。
   远程服务（`start` 动作）让 daemon 把控制通道换成 TCP（`docs/core-daemon.md` 第 12 节）。
-- 可独立运行：`--help` / `--version` 打印用法与版本；没有动作且 stdin 是终端时打印用法，
-  否则按 `serve` 启动（`docs/core-daemon.md` 第 3 节）。
+- 可独立运行：`--help` / `--version` 打印用法与版本；没有动作时按 `start` 处理
+  （`docs/core-daemon.md` 第 3 节）。
 - 进程工作目录不作为业务事实；会话目录取自 `UiEvent`。
 - Core 进程创建的所有子进程（shell、ripgrep、git 等）都不显示控制台窗口；
   每次查询都不产生可见的窗口闪烁。
@@ -128,8 +128,8 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 | --- | --- | --- | --- | --- |
 | Windows | x64 | `x86_64-pc-windows-msvc` | `resources/core/x64-win32/` | 产出 |
 | Windows | arm64 | `aarch64-pc-windows-msvc` | `resources/core/arm64-win32/` | 预留 |
-| Linux | x64 | `x86_64-unknown-linux-gnu` | `resources/core/x64-linux/` | 产出（在 Linux / WSL 内构建） |
-| Linux | arm64 | `aarch64-unknown-linux-gnu` | `resources/core/arm64-linux/` | 预留 |
+| Linux | x64 | `x86_64-unknown-linux-musl` | `resources/core/x64-linux/` | 产出（静态 musl；Windows 上交叉编译，见第 4.3 节） |
+| Linux | arm64 | `aarch64-unknown-linux-musl` | `resources/core/arm64-linux/` | 预留 |
 
 产物目录命名与 `resources/ripgrep/` 一致。宿主按运行平台的平台名 / 架构名解析产物目录，
 不写死单一平台。
@@ -138,8 +138,8 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 
 - Core 侧不依赖 Windows 专有 API；平台差异收敛在少量模块：进程管理、路径处理、
   shell 探测、资源定位。
-- 构建脚本按目标三元组参数化；当前产出 Windows x64 与 Linux x64
-  （Linux 产物在 Linux / WSL 内原生构建，Windows 侧不做 GNU 交叉链接）。
+- 构建脚本按目标三元组参数化；当前产出 Windows x64 与 Linux x64（musl 静态）。
+  Linux 目标在 Windows 上直接交叉编译（rust-lld + zig，见第 4.3 节），不需要 Linux 环境。
 - 宿主侧的启动、帧通道与契约不随平台变化。
 - 新增平台时只补产物目录与构建目标，不改契约与磁盘格式。
 
@@ -158,32 +158,53 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 矩阵一致性由 `src/test/corePlatformMatrix.test.ts` 锁定：构建脚本的目标登记、
 运行时的目录解析、产物落位三处必须两两一致，矩阵外的平台组合必须被拒绝。
 
-### 4.3 产出预留平台
+### 4.3 构建与目标平台
 
-目标三元组已登记，装好对应 target 与链接器即可产出：
+Linux 产物一律用 **musl**：静态链接、不依赖目标机器的 glibc 版本。这个 core 要拷到别人的
+远端机器上跑，发行版未知，gnu 目标很容易撞上 glibc 太旧。
+
+| 目标 | 三元组 | 产物目录 |
+| --- | --- | --- |
+| Windows x64 | `x86_64-pc-windows-msvc` | `resources/core/x64-win32/` |
+| Linux x64 | `x86_64-unknown-linux-musl` | `resources/core/x64-linux/` |
+| Windows arm64 | `aarch64-pc-windows-msvc` | `resources/core/arm64-win32/` |
+| Linux arm64 | `aarch64-unknown-linux-musl` | `resources/core/arm64-linux/` |
 
 ```bash
-rustup target add aarch64-pc-windows-msvc
-node scripts/build-core.mjs --target aarch64-pc-windows-msvc
+npm run build:core            # 打包要携带的全部目标（Windows x64 + Linux x64）
+npm run build:core:host       # 只建当前平台 / 架构（本地调试用）
+npm run build:core:linux-x64  # 只建 Linux x64（Windows 上就是交叉编译，不需要 WSL）
 ```
 
-Linux x64 在 Linux / WSL 内原生构建（不依赖 Windows 侧的 GNU 交叉链接器）：
+`build-core.mjs` 的目标分三档：不带参数时构建 `PACKAGE_DIRS`（打包要携带的 Windows x64 +
+Linux x64，本机构建不了的组合跳过并说明）；`--host` 只建当前平台 / 架构；`--target <三元组>`
+只建指定目标。本地调试（`dev:electron`、`watch:app` 的 Rust 重建）走 `--host`，不白编 Linux 那份。
 
-```bash
-# 在 WSL 的仓库目录里执行；产物落到 resources/core/x64-linux/
-npm run build:core:linux-x64
-```
+交叉编译到 Linux 需要两样东西，**都在本机解决，不用 Linux 环境**：
 
-已知阻塞（实测记录）：
+1. **Rust 目标与链接器**：`rustup target add x86_64-unknown-linux-musl`。链接器用 rustup
+   自带的 `rust-lld` + self-contained 的 musl crt / libc（配在 `core-rs/.cargo/config.toml`），
+   不需要系统上的交叉链接器。
+2. **C 编译器**：`ring`（`reqwest` 的 `rustls-tls` 依赖）里有 C + 汇编，cc-rs 需要一个能产出
+   该目标文件的 C 编译器。用 [zig](https://ziglang.org/)：它自带 clang 与 musl 头文件 / libc，
+   一个可执行文件就够。装好保证 `zig` 在 PATH 上即可（装在别处用环境变量 `ZIG` 指定）；
+   构建脚本会注入 `CC` / `CFLAGS` / `AR`，缺 zig 时直接报错、不静默降级。
 
-- **Windows arm64**：`rustup target add` 之后构建会停在 `ring`（`reqwest` 的
-  `rustls-tls` 依赖）的自定义构建脚本上，报
-  `failed to find tool "clang"`。`ring` 含 ARM64 汇编，交叉编译需要 LLVM/clang
-  与 ARM64 的 MSVC 链接器；只装 Rust target 不够。
-- **Linux arm64**：需要 `aarch64-unknown-linux-gnu` 目标与对应的交叉链接器
-  （GNU 工具链）。
+打包（`npm run package:ext` / `package:app`）会校验要携带的 Core 产物
+（`scripts/verify-core-artifacts.mjs`）：产物缺失、比 `core-rs/src/**` 旧、或没同步进
+`dist/resources/` 都直接报错。平台列表取自构建脚本的 `PACKAGE_DIRS`，两处不各写一份。
+`build:core` 默认就构建这两个平台，所以打包链不会再漏掉 Linux 那份；校验仍然拦住
+「改了 Rust 源码没重编」与「`copy-assets` 没跑」——那两种情况会把上一次的旧产物
+静默打进 vsix / 安装包。
 
-这两项目前只有「目录与构建目标已登记、矩阵一致性有测试锁定」，没有实际产物；
+**预留平台**：Windows arm64 / Linux arm64 已登记目标与产物目录（矩阵一致性由
+`src/test/corePlatformMatrix.test.ts` 锁定），但还没有实际产物。已实测的阻塞：
+
+- **Windows arm64**：构建会停在 `ring` 的自定义构建脚本上，报 `failed to find tool "clang"`。
+  `ring` 含 ARM64 汇编，交叉编译需要 clang 与 ARM64 的 MSVC 链接器；只装 Rust target 不够。
+- **Linux arm64**：同理需要 `aarch64-unknown-linux-musl` 的 C 交叉工具链（zig 支持
+  `aarch64-linux-musl`，但 `ring` 的 ARM64 汇编路径尚未实测）。
+
 这与第 11 节「目标矩阵中预留平台的实际产出」不属于覆盖范围一致。
 
 ---
@@ -427,7 +448,8 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | 帧协议与编解码 | `src/host/standalone/protocol.ts` |
 | 总线适配器 | `src/host/standalone/StandaloneEventBus.ts` |
 | 进程管理（启动 / 重启 / 终止） | `src/host/standalone/CoreProcess.ts` |
-| daemon 客户端 | `src/host/standalone/CoreDaemon.ts`（新增，见 `docs/core-daemon.md`） |
+| daemon 客户端 | `src/host/standalone/CoreDaemon.ts`（建链器抽象，见 `docs/core-daemon.md`） |
+| SSH 接入（客户端 / 引导 / 建链） | `src/host/standalone/sshClient.ts`、`sshDaemonBootstrap.ts`、`sshTransport.ts`（见 `docs/core-daemon.md` 第 12.8 节） |
 | 配置快照 | `src/host/SettingsStore.ts` |
 | 平台产物解析 | `src/host/standalone/coreBinary.ts` |
 | bootstrap 分支 | `src/host/bootstrapCore.ts` |
@@ -435,7 +457,7 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | Rust 包 | `core-rs/` |
 | 命令行（`--help` / `--version` / 模式） | `core-rs/src/cli.rs` |
 | 远程监听 / token / 目录列举 | `core-rs/src/remote.rs`（见 `docs/core-daemon.md` 第 12 节） |
-| 构建目标参数化 | `core-rs/.cargo/config.toml`、构建脚本（`build:core:linux-x64`） |
+| 构建目标参数化 | `core-rs/.cargo/config.toml`、`scripts/build-core.mjs`（平台矩阵 `TARGETS`、打包集 `PACKAGE_DIRS`） |
 | 分发产物 | `resources/core/<platform>-<arch>/` |
 
 ## 14. 测试与覆盖率

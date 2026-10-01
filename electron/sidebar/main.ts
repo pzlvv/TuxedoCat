@@ -20,7 +20,7 @@
  *   - closeWorkspace(path)      关闭工作目录
  *   - onWorkspacesChanged()     主进程推送打开集合变化
  * 侧栏头部为「搜索框 + 新对话」：搜索框按标题过滤当前活动工作目录的对话列表；
- * 打开集合为空时空态展示「添加工作目录」+ 最近工作目录（点击即添加）。
+ * 打开集合为空时空态展示「打开本地工作区」+ 最近工作区（点击即添加）。
  *
  * 三条流各自单一 owner（DEVELOPMENT.md 第 5.4 节规则 8）：
  *   列表（磁盘元数据）+ 运行时状态（core sessionRuntime）+ loaded（ChatViewManager 视图层），
@@ -61,11 +61,11 @@ interface WorkspaceTab {
   remote: boolean;
 }
 
-/** 打开集合 + 活动项（id）+ 最近工作目录 */
+/** 打开集合 + 活动项（id）+ 最近工作区（与标签页同形态：本地与远程都能点开） */
 interface WorkspacesState {
   workspaces: WorkspaceTab[];
   active: string | null;
-  recent: string[];
+  recent: WorkspaceTab[];
 }
 
 /** 会话运行时状态（与 core 的 SessionRuntimeState 同构，见 DEVELOPMENT.md 第 3.1 节） */
@@ -85,6 +85,8 @@ interface SidebarAPI {
   getActiveSession: () => Promise<string | null>;
   getWorkspaces: () => Promise<WorkspacesState>;
   addWorkspaces: (paths?: string[]) => void;
+  /** 打开（或激活）工作区；`id` 是下发项里的稳定身份（远程项也能定位） */
+  openWorkspace: (id: string) => void;
   activateWorkspace: (path: string) => void;
   closeWorkspace: (path: string) => void;
   openConversation: (sessionId: string, project?: string) => void;
@@ -195,36 +197,31 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-/** 路径的目录名（空目录名时退回原路径） */
-function basenameOf(p: string): string {
-  return p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
-}
-
 /**
- * 无工作目录空态：显示「添加工作目录」按钮，下方列出最近工作目录（点击即添加）。
+ * 无工作区空态：显示「打开本地工作区」按钮，下方列出最近工作区（点击即打开 / 重连）。
  * 聊天区保持纯提示，不提供添加入口。
  */
 function renderEmptyState(): void {
   resetList();
   const recents = workspacesState.recent;
   const recentHtml = recents.length
-    ? `<div class="recent-title">最近打开的工作目录</div>
+    ? `<div class="recent-title">最近打开的工作区</div>
        <div class="recent-list">
          ${recents
            .map(
-             (p) =>
-               `<button class="recent-item" data-path="${escapeHtml(p)}" title="${escapeHtml(p)}">` +
-               `<span class="recent-name">${escapeHtml(basenameOf(p))}</span>` +
-               `<span class="recent-path">${escapeHtml(p)}</span></button>`,
+             (item) =>
+               `<button class="recent-item" data-id="${escapeHtml(item.id)}" title="${escapeHtml(item.path)}">` +
+               `<span class="recent-name">${escapeHtml(item.name)}</span>` +
+               `<span class="recent-path">${escapeHtml(item.path)}</span></button>`,
            )
            .join('')}
        </div>`
     : '';
   listEl.innerHTML = `
     <div class="workspace-placeholder">
-      <div class="workspace-title">尚未打开工作目录</div>
-      <div class="workspace-desc">添加一个工作目录后即可开始使用 ${PRODUCT_NAME}</div>
-      <button class="workspace-btn" id="addWorkspaceBtn">打开本地目录</button>
+      <div class="workspace-title">尚未打开工作区</div>
+      <div class="workspace-desc">添加一个工作区后即可开始使用 ${PRODUCT_NAME}</div>
+      <button class="workspace-btn" id="addWorkspaceBtn">打开本地工作区</button>
       ${recentHtml}
     </div>`;
   footerEl.textContent = '';
@@ -235,8 +232,8 @@ function renderEmptyState(): void {
   });
   listEl.querySelectorAll<HTMLElement>('.recent-item').forEach((el) => {
     el.addEventListener('click', () => {
-      const p = el.dataset.path;
-      if (p) window.sidebarAPI?.addWorkspaces([p]);
+      const id = el.dataset.id;
+      if (id) window.sidebarAPI?.openWorkspace(id);
     });
   });
   setActive(null);
@@ -273,7 +270,7 @@ function createItemElement(html: string): HTMLElement {
  *   - 顺序变化用 insertBefore 移动，已删除的项单独移除。
  */
 function render(): void {
-  // 打开集合为空：显示添加工作目录引导 + 最近工作目录
+  // 打开集合为空：显示打开本地工作区引导 + 最近工作区
   if (workspacesState.workspaces.length === 0) {
     renderEmptyState();
     return;

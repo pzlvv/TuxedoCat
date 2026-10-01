@@ -106,7 +106,7 @@ export class ElectronSpinDesign implements SpinDesign {
       const workspacePath = this.workspacePath || this.host.getWorkspacePath();
       const projectDir = this.getProjectConversationDir(workspacePath);
       if (!workspacePath || !projectDir) {
-        win.webContents.send('spin-design-message', { type: 'spinSaveResult', success: false, error: tt('没有打开的工作目录', 'No workspace folder is open') });
+        win.webContents.send('spin-design-message', { type: 'spinSaveResult', success: false, error: tt('没有打开的工作区', 'No workspace is open') });
         return;
       }
       const fullData = { ...data, meta: data.meta || {} };

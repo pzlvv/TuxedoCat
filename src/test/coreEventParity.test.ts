@@ -273,7 +273,7 @@ async function runEmbedded(home: string, events: UiEvent[]): Promise<CoreEvent[]
 /** Standalone：真实 Rust 产物 + 帧通道 */
 async function runStandalone(home: string, events: UiEvent[]): Promise<CoreEvent[]> {
   return withHome(home, async () => {
-    const child = spawn(CORE_BINARY, [], {
+    const child = spawn(CORE_BINARY, ['stdio'], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env },
       windowsHide: true,

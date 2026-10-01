@@ -13,16 +13,29 @@
 
 import { normalizeWorkspacePath, sameWorkspace } from './workspacePaths.js';
 
-/** 远程 endpoint（本地为 null）；字段按 `docs/client-connection.md` 第 4 节预留 */
+/**
+ * 远程凭证（`docs/core-daemon.md` 第 12 节）。
+ *
+ * 判别联合而不是可选字段：`kind` 唯一决定控制通道怎么建，「没有凭证」在远程引用上
+ * 是错误状态，由调用方在建立引用时保证（`DEVELOPMENT.md` 第 12 章）。
+ * 凭证不进总线载荷、不下发 Core；宿主侧的落盘与恢复见 `workspaceState.ts`。
+ */
+export type WorkspaceAuth =
+  /** TCP 直连监听中的 daemon：第一帧 `auth` 用 token 鉴权 */
+  | { kind: 'token'; token: string }
+  /** SSH 接入：SSH 完成机器级鉴权，daemon 的 token 由引导流程从远端状态文件取得 */
+  | { kind: 'sshPassword'; password: string };
+
+/** 远程 endpoint（本地为 null） */
 export interface WorkspaceEndpoint {
-  /** 主机名 / 容器名 */
+  /** 主机名 / 容器名；`ssh` 下是 SSH 主机 */
   host: string;
-  /** 端口；未指定为 null */
+  /** 端口；`tcp` 下是 daemon 端口，`ssh` 下是 SSH 端口，未指定为 null */
   port: number | null;
-  /** 登录用户；未指定为 null */
+  /** 登录用户；`ssh` 下必填，未指定为 null */
   user: string | null;
-  /** 凭证；本地不落盘、不进总线载荷（传输层实现细节，预留） */
-  auth: unknown | null;
+  /** 凭证；本地为 null（传输层实现细节，见 `WorkspaceAuth`） */
+  auth: WorkspaceAuth | null;
 }
 
 /** 工作区引用（本地 / 远程同构） */
@@ -50,12 +63,21 @@ export function localWorkspaceRef(path: string): WorkspaceRef {
  */
 export const TCP_WORKSPACE_SCHEME = 'tcp';
 
-/** 远程工作区引用：路径是目标机器上的绝对路径 */
+/**
+ * SSH 接入（`docs/core-daemon.md` 第 12 节）：全部通信走 SSH 端口，
+ * 不要求目标机器把 daemon 端口映射出来。
+ */
+export const SSH_WORKSPACE_SCHEME = 'ssh';
+
+/** 远程工作区引用：接入方式由凭证种类决定（SSH 口令 → `ssh`，token → `tcp`） */
 export function remoteWorkspaceRef(
   endpoint: WorkspaceEndpoint,
   path: string,
 ): WorkspaceRef {
-  return { scheme: TCP_WORKSPACE_SCHEME, path, endpoint };
+  const scheme = endpoint.auth?.kind === 'sshPassword'
+    ? SSH_WORKSPACE_SCHEME
+    : TCP_WORKSPACE_SCHEME;
+  return { scheme, path, endpoint };
 }
 
 /**
@@ -104,11 +126,12 @@ export function sameWorkspaceRef(a: WorkspaceRef, b: WorkspaceRef): boolean {
     : a.path === b.path;
 }
 
-/** 展示用路径：远程带上 `scheme://host` 前缀，本地就是路径本身 */
+/** 展示用路径：远程带上 `scheme://[user@]host` 前缀，本地就是路径本身 */
 export function workspaceRefDisplayPath(ref: WorkspaceRef): string {
   if (!ref.endpoint) return ref.path;
-  const host = ref.endpoint.host;
-  return `${ref.scheme}://${host}${ref.path}`;
+  const { host, user } = ref.endpoint;
+  const authority = user ? `${user}@${host}` : host;
+  return `${ref.scheme}://${authority}${ref.path}`;
 }
 
 /** 空工作区引用（宿主未打开任何目录时的占位；path 为空串） */

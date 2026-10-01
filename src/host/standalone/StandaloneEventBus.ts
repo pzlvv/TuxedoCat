@@ -114,8 +114,8 @@ export interface StandaloneCoreBusOptions {
   binaryPath: string;
   log: (...args: unknown[]) => void;
   restartPolicy?: RestartPolicy;
-  /** 额外命令行参数；测试用来跑假 Core */
-  spawnArgs?: readonly string[];
+  /** 命令行参数（必给：动作是裸词，漏掉就会落到缺省动作上；测试用它跑假 Core） */
+  spawnArgs: readonly string[];
   /** 测试注入的 spawn */
   spawn?: CoreSpawnFunction;
   shutdownTimeoutMs?: number;

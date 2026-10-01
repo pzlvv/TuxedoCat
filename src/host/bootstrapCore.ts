@@ -26,6 +26,7 @@
  * （DEVELOPMENT.md 第 3.5、3.7 节）。
  */
 
+import { createHash } from 'crypto';
 import type { AssistantEventBus, UiEvent } from '../core/AssistantEventBus.js';
 import { requireEventBus, setGlobalEventBus } from '../core/AssistantEventBus.js';
 import { initializeCoreEvents } from '../core/initializeCoreEvents.js';
@@ -44,7 +45,8 @@ import { primeHostLocale, readUiLanguage } from './coreFacts.js';
 import { getSettingsStore, type SettingsStore } from './SettingsStore.js';
 import { resolveCoreKind, type CoreKind } from './coreKind.js';
 import { resolveCoreBinary } from './standalone/coreBinary.js';
-import { CoreDaemon } from './standalone/CoreDaemon.js';
+import { CoreDaemon, SSH_DAEMON_LINK_TIMEOUT_MS, tcpDaemonOpener, type CoreDaemonLinkOpener } from './standalone/CoreDaemon.js';
+import { createSshDaemonOpener } from './standalone/sshTransport.js';
 import { createCoreChannelBus, createStandaloneCoreBus } from './standalone/StandaloneEventBus.js';
 import { WebViewUI } from './WebViewUI.js';
 import { UserChoiceManager } from './ui/userChoice.js';
@@ -279,7 +281,7 @@ const workspaceUnsubscribers = new Set<() => void>();
 /**
  * Standalone 默认通道。
  *
- * - 本地同机（`endpoint === null`）：Host 直接以 `serve` 动作起一个 Core 进程，stdio 是帧通道
+ * - 本地同机（`endpoint === null`）：Host 直接以 `stdio` 动作起一个 Core 进程，stdio 是帧通道
  *   （不监听端口、不需要 token）；
  * - 远程：连该 endpoint 的 daemon 控制通道（TCP + `auth`），每个工作区一条 channel
  *   （`docs/core-daemon.md` 第 12 节）。
@@ -294,8 +296,8 @@ function openStandaloneChannel(
   if (!ref.endpoint) {
     const bus = createStandaloneCoreBus({
       binaryPath: resolveCoreBinary(options.extensionPath),
-      // 显式 `serve`（裸词动作，`docs/core-daemon.md` 第 3 节）：单进程 Core，stdio 帧通道
-      spawnArgs: ['serve'],
+      // 显式 `stdio`（裸词动作，`docs/core-daemon.md` 第 3 节）：单进程 Core，stdio 帧通道
+      spawnArgs: ['stdio'],
       log,
     });
     return {
@@ -328,11 +330,9 @@ function remoteDaemonForEndpoint(ref: WorkspaceRef, options: CoreBootstrapOption
     throw new Error('remoteDaemonForEndpoint requires a remote workspace ref.');
   }
   const daemon = new CoreDaemon({
-    transport: {
-      host: endpoint.host,
-      port: endpoint.port ?? 0,
-      token: remoteTokenOf(endpoint),
-    },
+    transport: daemonOpenerFor(endpoint, options),
+    // SSH 建链含「上传产物 + 启动 daemon」，沿用 TCP 的 10s 会误杀首次接入
+    linkTimeoutMs: endpoint.auth?.kind === 'sshPassword' ? SSH_DAEMON_LINK_TIMEOUT_MS : undefined,
     log: (...args: unknown[]) => options.log(...args),
   });
   standaloneDaemons.set(key, daemon);
@@ -340,28 +340,71 @@ function remoteDaemonForEndpoint(ref: WorkspaceRef, options: CoreBootstrapOption
 }
 
 /**
+ * 按凭证种类选建链方式（`docs/core-daemon.md` 第 12 节）。
+ *
+ * - `token`：TCP 直连监听中的 daemon；
+ * - `sshPassword`：全部通信走 SSH 端口，daemon 的 endpoint 与 token 由引导流程取得
+ *   （`sshDaemonBootstrap.ts`），因此这里不需要端口。
+ */
+function daemonOpenerFor(
+  endpoint: WorkspaceEndpoint,
+  options: CoreBootstrapOptions,
+): CoreDaemonLinkOpener {
+  const auth = endpoint.auth;
+  if (!auth) {
+    throw new Error(`Remote endpoint ${endpoint.host} has no credentials.`);
+  }
+  switch (auth.kind) {
+    case 'token':
+      return tcpDaemonOpener({
+        host: endpoint.host,
+        port: endpoint.port ?? 0,
+        token: auth.token,
+      });
+    case 'sshPassword': {
+      const user = endpoint.user;
+      if (!user) {
+        throw new Error(`SSH endpoint ${endpoint.host} has no login user.`);
+      }
+      return createSshDaemonOpener(
+        {
+          target: {
+            host: endpoint.host,
+            port: endpoint.port ?? 22,
+            user,
+            password: auth.password,
+          },
+          extensionPath: options.extensionPath,
+        },
+        options.log,
+      );
+    }
+  }
+}
+
+/**
  * 远程 daemon 注册表键。
  *
- * 连接目标是 `workspaceEndpointKey`，额外带上 token：token 是连接参数，
- * 换一个 token 必须换一条连接（否则「第一次输错 token，改对后重试」会复用旧连接、
- * 继续用错的 token 鉴权）。
+ * 连接目标是 `workspaceEndpointKey`，额外带上**凭证指纹**：凭证是连接参数，
+ * 换一个凭证必须换一条连接（否则「第一次输错口令 / token，改对后重试」会复用旧连接、
+ * 继续用错的凭证鉴权）。指纹不进日志。
  */
 function daemonRegistryKey(ref: WorkspaceRef): string {
   const endpoint = ref.endpoint;
   if (!endpoint) {
     throw new Error('remote daemon registry requires an endpoint.');
   }
-  return `${workspaceEndpointKey(ref)}#${remoteTokenOf(endpoint)}`;
+  return `${workspaceEndpointKey(ref)}#${authFingerprint(endpoint)}`;
 }
 
-/** endpoint 里的 token；缺失即抛错（远程连接不允许无凭证的静默降级） */
-function remoteTokenOf(endpoint: WorkspaceEndpoint): string {
+/** 凭证指纹；缺失即抛错（远程连接不允许无凭证的静默降级） */
+function authFingerprint(endpoint: WorkspaceEndpoint): string {
   const auth = endpoint.auth;
-  if (auth && typeof auth === 'object' && 'token' in auth) {
-    const token = (auth as { token: unknown }).token;
-    if (typeof token === 'string' && token.length > 0) return token;
+  if (!auth) {
+    throw new Error(`Remote endpoint ${endpoint.host}:${endpoint.port ?? ''} has no credentials.`);
   }
-  throw new Error(`Remote endpoint ${endpoint.host}:${endpoint.port ?? ''} has no token.`);
+  if (auth.kind === 'token') return `token:${auth.token}`;
+  return `ssh:${createHash('sha256').update(auth.password).digest('hex')}`;
 }
 
 /**
@@ -374,11 +417,56 @@ export async function listRemoteDirectories(
   endpoint: WorkspaceEndpoint,
   path: string | null,
 ): Promise<DirectoryListing> {
+  const daemon = remoteDaemonFor(endpoint);
+  return daemon.listDirectories(path);
+}
+
+/**
+ * 在远程 endpoint 上新建目录（父目录不存在时一并创建），返回实际路径。
+ *
+ * 与 `listRemoteDirectories` 走同一个 daemon：目录选择期间的连接随后就用来打开工作区。
+ */
+export async function createRemoteDirectory(
+  endpoint: WorkspaceEndpoint,
+  path: string,
+): Promise<string> {
+  const daemon = remoteDaemonFor(endpoint);
+  return daemon.createDirectory(path);
+}
+
+/**
+ * 重命名远程 endpoint 上的目录（只改同一父目录下的名字），返回新路径。
+ */
+export async function renameRemoteDirectory(
+  endpoint: WorkspaceEndpoint,
+  path: string,
+  name: string,
+): Promise<string> {
+  const daemon = remoteDaemonFor(endpoint);
+  return daemon.renameDirectory(path, name);
+}
+
+/**
+ * 删除远程 endpoint 上的目录，返回实际路径。
+ *
+ * `recursive` 为 `false` 时只接受空目录：非空会以 `DirectoryOperationError`
+ * （`reason === 'notEmpty'`）失败，调用方据此提示「连同内容一起删除」。
+ */
+export async function deleteRemoteDirectory(
+  endpoint: WorkspaceEndpoint,
+  path: string,
+  recursive: boolean,
+): Promise<string> {
+  const daemon = remoteDaemonFor(endpoint);
+  return daemon.deleteDirectory(path, recursive);
+}
+
+/** 取（或建立）该 endpoint 的 daemon 客户端 */
+function remoteDaemonFor(endpoint: WorkspaceEndpoint): CoreDaemon {
   const options = activeOptions;
   if (!options) throw new Error('bootstrapCore() has not run; no remote daemon available.');
   // 与随后打开该目录时用的引用同构：scheme 一致，注册表键才一致
-  const daemon = remoteDaemonForEndpoint(remoteWorkspaceRef(endpoint, ''), options);
-  return daemon.listDirectories(path);
+  return remoteDaemonForEndpoint(remoteWorkspaceRef(endpoint, ''), options);
 }
 
 /** 远程 endpoint → daemon（宿主退出时全部关闭） */

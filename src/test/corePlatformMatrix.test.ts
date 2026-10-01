@@ -47,6 +47,15 @@ function parseTargets(): TargetEntry[] {
   return entries;
 }
 
+/** 从构建脚本里解析出打包要携带的产物目录（`PACKAGE_DIRS`，与 verify-core-artifacts 同源） */
+function parsePackageDirs(): string[] {
+  const scriptPath = path.join(repoRoot(), 'scripts', 'build-core.mjs');
+  const source = fs.readFileSync(scriptPath, 'utf8');
+  const list = /export const PACKAGE_DIRS = \[([^\]]*)\]/.exec(source);
+  if (!list) return [];
+  return [...list[1].matchAll(/'([^']+)'/g)].map((item) => item[1]);
+}
+
 /** 仓库根目录（编译产物在 out/src/test/） */
 function repoRoot(): string {
   return path.resolve(__dirname, '../../..');
@@ -56,8 +65,9 @@ function repoRoot(): string {
 const EXPECTED: ReadonlyArray<{ platform: string; arch: string; triple: string }> = [
   { platform: 'win32', arch: 'x64', triple: 'x86_64-pc-windows-msvc' },
   { platform: 'win32', arch: 'arm64', triple: 'aarch64-pc-windows-msvc' },
-  { platform: 'linux', arch: 'x64', triple: 'x86_64-unknown-linux-gnu' },
-  { platform: 'linux', arch: 'arm64', triple: 'aarch64-unknown-linux-gnu' },
+  // Linux 一律 musl（静态，不依赖目标机器的 glibc），见 docs/standalone-core.md 第 4.3 节
+  { platform: 'linux', arch: 'x64', triple: 'x86_64-unknown-linux-musl' },
+  { platform: 'linux', arch: 'arm64', triple: 'aarch64-unknown-linux-musl' },
 ];
 
 async function run(): Promise<void> {
@@ -81,6 +91,19 @@ async function run(): Promise<void> {
       entry.ext === (expected.platform === 'win32' ? '.exe' : ''),
     );
   }
+
+  // ---------- 打包要携带的平台必须在矩阵内 ----------
+  // 这份列表是构建与校验共用的唯一来源（verify-core-artifacts.mjs 直接 import 它），
+  // 这里只断言它没写到矩阵外、且覆盖两个实际产出的平台。
+  const packageDirs = parsePackageDirs();
+  check(`build-core.mjs 登记了打包要携带的平台（实际 ${packageDirs.length}）`, packageDirs.length > 0);
+  for (const dir of packageDirs) {
+    check(`打包平台 ${dir} 在平台矩阵内`, targets.some((entry) => entry.dir === dir));
+  }
+  check(
+    '打包平台含 Windows x64 与 Linux x64',
+    packageDirs.includes('x64-win32') && packageDirs.includes('x64-linux'),
+  );
 
   // ---------- 运行时定位：与构建脚本同一份口径 ----------
   for (const expected of EXPECTED) {
@@ -114,18 +137,22 @@ async function run(): Promise<void> {
     coreBinaryCandidates('/ext', 'darwin' as NodeJS.Platform, 'x64').length === 0,
   );
 
-  // ---------- 产物落位目录：已产出的必须在，预留的允许为空 ----------
-  const produced = new Set(['x64-win32']);
+  // ---------- 产物落位目录 ----------
+  // x64-win32 是开发机一定能构建的那个，必须在；x64-linux 也属于打包要携带的平台
+  // （`npm run build:core` 默认会一起编，见 docs/standalone-core.md 第 4.3 节），但交叉
+  // 编译需要 zig，没装时允许为空；arm64 还只是预留。「允许为空」不等于允许半成品：
+  // 目录在就必须有产物。「打包要带的产物齐不齐」由 scripts/verify-core-artifacts.mjs 把关。
+  const alwaysBuilt = new Set(['x64-win32']);
   for (const entry of targets) {
     const dir = path.join(repoRoot(), 'resources', CORE_RESOURCE_DIR, entry.dir);
     const binary = path.join(dir, `${CORE_BINARY_NAME}${entry.ext}`);
-    if (produced.has(entry.dir)) {
+    if (alwaysBuilt.has(entry.dir)) {
       check(`${entry.dir} 已产出 ${CORE_BINARY_NAME}${entry.ext}`, fs.existsSync(binary));
     } else {
       // 预留平台：目录不存在是预期状态，这里只断言「没有半成品」（有目录就必须有产物）
       const hasDir = fs.existsSync(dir);
       check(
-        `${entry.dir}（预留）没有半成品产物`,
+        `${entry.dir}（按需构建）没有半成品产物`,
         !hasDir || fs.existsSync(binary),
       );
     }

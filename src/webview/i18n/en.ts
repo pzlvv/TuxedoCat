@@ -18,7 +18,7 @@ export const enDict: Record<string, string> = {
   'app.backToParent': 'Back to parent conversation',
   'app.newChat': 'New Chat',
   'app.closeChat': 'Close this conversation (release resources)',
-  'app.openWorkspaceHint': 'Open a workspace folder to continue',
+  'app.openWorkspaceHint': 'Open a workspace to continue',
 
   /* ── DeleteConfirmDialog.tsx ─────────────────────────────── */
   'deleteConfirm.confirm': 'Are you sure you want to delete "{title}"?',

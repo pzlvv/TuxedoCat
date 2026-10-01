@@ -28,7 +28,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::daemon_protocol::{
-    ChannelDescriptor, DaemonToHostFrame, HostToDaemonFrame, WorkspaceCloseReason,
+    ChannelDescriptor, DaemonToHostFrame, DirectoryFailureReason, HostToDaemonFrame,
+    WorkspaceCloseReason,
 };
 
 /// 一条控制通道上的 daemon 会话结束原因。
@@ -173,7 +174,7 @@ impl CoreEventSink for ChannelSink {
 
 // ==================== 真实进程实现 ====================
 
-/// 以自身路径加 `serve` 动作启动 Core 进程（不定位第二个可执行文件）。
+/// 以自身路径加 `stdio` 动作启动 Core 进程（不定位第二个可执行文件）。
 pub struct SystemCoreSpawner {
     binary: PathBuf,
 }
@@ -196,9 +197,9 @@ impl CoreSpawner for SystemCoreSpawner {
         sink: Arc<dyn CoreEventSink>,
     ) -> std::io::Result<Box<dyn CoreProcessHandle>> {
         let mut command = Command::new(&self.binary);
-        // 动作是**裸词**（`docs/core-daemon.md` 第 3 节）：`--serve` 会被当成未知选项报错退出。
+        // 动作是**裸词**（`docs/core-daemon.md` 第 3 节）：`--stdio` 会被当成未知选项报错退出。
         command
-            .arg("serve")
+            .arg("stdio")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -347,6 +348,19 @@ fn send_to_host(out: &dyn FrameOutput, frame: &DaemonToHostFrame) {
     }
 }
 
+/// 回一帧目录操作失败（列举 / 新建 / 删除共用；`reason` 让 Host 区分「非空」这类可继续的失败）
+fn send_directory_failed(
+    out: &dyn FrameOutput,
+    id: u64,
+    error: String,
+    reason: DirectoryFailureReason,
+) {
+    send_to_host(
+        out,
+        &DaemonToHostFrame::DirectoryFailed { id, error, reason },
+    );
+}
+
 /// 运行 daemon 主循环；返回进程退出码。
 ///
 /// 事件从 `events` 汇聚（控制通道行、子进程输出与退出、Host 断开）；
@@ -452,10 +466,40 @@ pub fn run_daemon(
                                     entries: listing.entries,
                                 },
                             ),
-                            Err(error) => send_to_host(
+                            Err(error) => send_directory_failed(out.as_ref(), id, error, DirectoryFailureReason::Other),
+                        }
+                    }
+                    HostToDaemonFrame::CreateDirectory { id, path } => {
+                        match crate::remote::create_directory(&path) {
+                            Ok(created) => send_to_host(
                                 out.as_ref(),
-                                &DaemonToHostFrame::DirectoriesFailed { id, error },
+                                &DaemonToHostFrame::DirectoryCreated { id, path: created },
                             ),
+                            Err(error) => send_directory_failed(out.as_ref(), id, error, DirectoryFailureReason::Other),
+                        }
+                    }
+                    HostToDaemonFrame::RenameDirectory { id, path, name } => {
+                        match crate::remote::rename_directory(&path, &name) {
+                            Ok(renamed) => send_to_host(
+                                out.as_ref(),
+                                &DaemonToHostFrame::DirectoryRenamed { id, path: renamed },
+                            ),
+                            Err(error) => send_directory_failed(out.as_ref(), id, error, DirectoryFailureReason::Other),
+                        }
+                    }
+                    HostToDaemonFrame::DeleteDirectory { id, path, recursive } => {
+                        match crate::remote::delete_directory(&path, recursive) {
+                            Ok(removed) => send_to_host(
+                                out.as_ref(),
+                                &DaemonToHostFrame::DirectoryDeleted { id, path: removed },
+                            ),
+                            // 非空是「还能继续」的失败：Host 据此提示递归删除
+                            Err(crate::remote::DeleteDirectoryError::NotEmpty(error)) => {
+                                send_directory_failed(out.as_ref(), id, error, DirectoryFailureReason::NotEmpty)
+                            }
+                            Err(crate::remote::DeleteDirectoryError::Failed(error)) => {
+                                send_directory_failed(out.as_ref(), id, error, DirectoryFailureReason::Other)
+                            }
                         }
                     }
                     HostToDaemonFrame::Shutdown => {

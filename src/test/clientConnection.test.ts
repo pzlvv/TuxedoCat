@@ -1,5 +1,5 @@
 /**
- * 单测：Client / Connection 连接模型（`docs/client-connection.md` 第 10 节）。
+ * 单测：Client / Connection 连接模型（`docs/client-connection.md` 第 11 节）。
  *
  * 覆盖验收要点：
  * 1. 打开一个工作区建立一个 Connection；重复打开只激活已有；
@@ -21,7 +21,7 @@ import { createChecker, runTests } from './helpers/harness';
 import { bootstrapCore, bootstrapSnapshot, shutdownCore } from '../host/bootstrapCore';
 import { Client } from '../host/Client';
 import type { Connection } from '../host/Connection';
-import { emptyWorkspaceRef, localWorkspaceRef, type WorkspaceRef } from '../host/workspaceRef';
+import { emptyWorkspaceRef, localWorkspaceRef, remoteWorkspaceRef, type WorkspaceRef } from '../host/workspaceRef';
 import { createStandaloneCoreBus } from '../host/standalone/StandaloneEventBus';
 import { ConversationManager } from '../host/ConversationManager';
 import type { SpinDesign } from '../host/SpinDesign';
@@ -316,6 +316,51 @@ async function run(): Promise<void> {
       threw = true;
     }
     check('未知会话报错，不静默丢弃', threw);
+    await harness.client.closeAll();
+  }
+
+  // ── 5b. 远程工作区：按工作区路径登记归属（file-only 匹配会漏掉远程） ──
+  {
+    const harness = createClientHarness();
+    const remoteRef = remoteWorkspaceRef(
+      { host: '10.0.0.7', port: 22, user: 'pz', auth: { kind: 'sshPassword', password: 'pw' } },
+      '/home/pz/proj',
+    );
+    harness.client.openWorkspace(WS_A);
+    harness.client.openWorkspace(remoteRef);
+    harness.readyAll();
+    // 宿主按来源视图登记会话归属：远程路径必须能命中远程 Connection，
+    // 否则两个 Connection 下 `userMessageSubmitted` 会因「查不到归属」直接抛错。
+    harness.client.emitToCore({
+      type: 'sessionWorkspaceAssigned',
+      sessionId: 's-remote',
+      workspacePath: '/home/pz/proj',
+    });
+    harness.client.emitToCore({
+      type: 'userMessageSubmitted',
+      sessionId: 's-remote',
+      content: 'hi',
+      uuid: 'u-remote',
+      workspacePath: '/home/pz/proj',
+    });
+    check(
+      '远程会话的 UiEvent 路由到远程 Connection',
+      harness.channels[1].uiEvents.some((e) => e.type === 'userMessageSubmitted'),
+    );
+    check(
+      '远程会话的 UiEvent 不落到本地 Connection',
+      !harness.channels[0].uiEvents.some((e) => e.type === 'userMessageSubmitted'),
+    );
+    // 远程路径逐字比较：大小写不同的另一个目录不是同一个工作区
+    check(
+      '远程路径大小写不同不匹配',
+      harness.client.connectionForWorkspace(
+        remoteWorkspaceRef(
+          { host: '10.0.0.7', port: 22, user: 'pz', auth: { kind: 'sshPassword', password: 'pw' } },
+          '/home/pz/Proj',
+        ),
+      ) === undefined,
+    );
     await harness.client.closeAll();
   }
 

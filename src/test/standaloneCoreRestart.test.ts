@@ -125,7 +125,7 @@ interface CoreHandle {
 }
 
 function startCore(homeDir: string): CoreHandle {
-  const child = spawn(CORE_BINARY, [], {
+  const child = spawn(CORE_BINARY, ['stdio'], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, USERPROFILE: homeDir, HOME: homeDir },
     windowsHide: true,

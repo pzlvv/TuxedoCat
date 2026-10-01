@@ -42,22 +42,21 @@ Standalone Core 的进程形态与帧协议见 `docs/standalone-core.md`；连�
 
 - daemon 与 Core 是同一个可执行文件（`core.binaryName`），用**动作**（子命令，裸词）选择
   做什么，`--host` / `--port` 这类**选项**才带 `--`：
-  - `serve`（缺省）：Core 模式，stdio 是帧通道（`docs/standalone-core.md` 第 4 节）；
-  - `start`：远程服务的启动器——确保后台 daemon 在跑（没有就拉起），打印连接信息后退出
-    （第 12 节）；
+  - `stdio`：Core 模式，stdio 是帧通道（`docs/standalone-core.md` 第 4 节）；
+  - `start`（缺省）：远程服务的启动器——确保后台 daemon 在跑（没有就拉起），打印连接串后
+    退出（第 12 节）；
   - `kill`：结束在跑的 daemon（第 12 节）；
   - `start-daemon`：daemon 实体本身，由 `start` 拉起；内部动作，不出现在 `--help` 里。
-- daemon 起 Core 时不再定位第二个可执行文件：以自身路径加 `serve` 启动。
+- daemon 起 Core 时不再定位第二个可执行文件：以自身路径加 `stdio` 启动。
 - daemon 创建的子进程（Core 进程）不显示控制台窗口，与 Core 侧同一条规则。
-- **本地同机工作区不走 daemon**：Host 直接用 `serve` 起一个 Core 进程，stdio 是帧通道
+- **本地同机工作区不走 daemon**：Host 直接用 `stdio` 起一个 Core 进程，stdio 是帧通道
   （不监听端口、不需要 token）。daemon 只服务远程 endpoint。
-- **远程 daemon 由用户在目标机器上启动**：`start` 打印可达的 `IP:端口` 与 token；
-  Host 用它们建立 TCP 控制通道（第 12 节）。
+- **远程 daemon 由用户在目标机器上启动**：`start` 打印连接串（`IP:端口#token`）；
+  Host 用它建立 TCP 控制通道（第 12 节）。
 - **可独立运行**：`--help` / `-h` 打印用法，`--version` / `-V` 打印版本，未知动作 / 未知选项
-  报错并提示 `--help`（退出码 2）。没有动作时：stdin 是终端（用户直接运行）打印用法；
-  stdin 不是终端（宿主经管道接入）按 `serve` 启动。可执行文件保留控制台子系统，
-  这样帮助与 `start` 横幅在终端里可见；宿主与 daemon 起本进程时用
-  `windowsHide` / `CREATE_NO_WINDOW` 隐藏控制台窗口。
+  报错并提示 `--help`（退出码 2）。没有动作时按 `start` 处理（直接运行即启动远程服务）。
+  可执行文件保留控制台子系统，这样帮助与 `start` 的连接串在终端里可见；宿主与 daemon 起
+  本进程时用 `windowsHide` / `CREATE_NO_WINDOW` 隐藏控制台窗口。
 
 ---
 
@@ -147,11 +146,18 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 | 双向 | `frame` | `{ kind: 'frame', channel: number, frame: <内层帧> }` |
 | Host → daemon | `listDirectories` | `{ kind: 'listDirectories', id: number, path: string \| null }`（`null` 从主目录开始） |
 | daemon → Host | `directoriesListed` | `{ kind: 'directoriesListed', id: number, path: string, parent: string \| null, entries: Array<{ name: string, path: string }> }` |
-| daemon → Host | `directoriesFailed` | `{ kind: 'directoriesFailed', id: number, error: string }` |
+| Host → daemon | `createDirectory` | `{ kind: 'createDirectory', id: number, path: string }`（父目录不存在时一并创建） |
+| daemon → Host | `directoryCreated` | `{ kind: 'directoryCreated', id: number, path: string }` |
+| Host → daemon | `renameDirectory` | `{ kind: 'renameDirectory', id: number, path: string, name: string }`（只改同一父目录下的名字，不是移动） |
+| daemon → Host | `directoryRenamed` | `{ kind: 'directoryRenamed', id: number, path: string }`（`path` 是改名后的新路径） |
+| Host → daemon | `deleteDirectory` | `{ kind: 'deleteDirectory', id: number, path: string, recursive: boolean }`（`recursive` 为 `false` 时只接受空目录） |
+| daemon → Host | `directoryDeleted` | `{ kind: 'directoryDeleted', id: number, path: string }` |
+| daemon → Host | `directoryFailed` | `{ kind: 'directoryFailed', id: number, error: string, reason: 'notEmpty' \| 'other' }`（列举 / 新建 / 删除共用） |
 | Host → daemon | `shutdown` | `{ kind: 'shutdown' }` |
 
 - `id` 由 Host 生成，在单条控制通道内唯一；`workspaceOpened` / `workspaceFailed` /
-  `directoriesListed` / `directoriesFailed` 回带同一个 `id`。
+  `directoriesListed` / `directoryCreated` / `directoryRenamed` / `directoryDeleted` /
+  `directoryFailed` 回带同一个 `id`。
 - 内层帧是 `docs/standalone-core.md` 第 6.2 节的帧集合，原样嵌套在 `frame.frame` 里。
 - 未知类型一律丢弃并记录，不做静默降级。
 
@@ -174,7 +180,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 ## 8. 与 Connection 的关系
 
-- 打开工作区：本地同机不走 daemon（Host 直接以 `serve` 起 Core）；远程取该 endpoint 的
+- 打开工作区：本地同机不走 daemon（Host 直接以 `stdio` 起 Core）；远程取该 endpoint 的
   daemon（没有则先建立 TCP 控制通道并鉴权），发 `openWorkspace`；拿到 `descriptor` 后建立
   Connection（`docs/client-connection.md` 第 5 节）。
 - 关闭工作区：Client 发 `closeWorkspace`，Connection 销毁。
@@ -186,8 +192,11 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 ## 9. 不覆盖范围
 
-- 远程凭证的持久化与安全存储（token 只活在会话内，见 `docs/client-connection.md` 第 9 节）；
-- 远程传输的加密（明文 TCP；跨不可信网络需要外层隧道）；
+- 远程凭证的加密存储（宿主把 token / SSH 口令明文写进 `workspace-state.json`，
+  见 `docs/client-connection.md` 第 9 节；钥匙串集成不在范围内）；
+- `tcp` 传输的加密（明文直连；跨不可信网络改用 `ssh` 接入，见第 12.8 节）；
+- SSH 的密钥 / agent 认证（当前只有口令一种凭证）；
+- 断线重连（SSH 断开与 TCP 断开同口径：连接结束即该 endpoint 上全部 Core 关闭）；
 - `{ kind: 'direct' }` 描述符对应的直连形态；
 - Host 断开后 Core 的存活与重连；
 - daemon 自身的监督（daemon 崩溃时其上所有 Core 一起死，这是接受的语义）；
@@ -205,14 +214,17 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 6. Core 崩溃后 daemon 在同一 channel 上重启它；超过重启上限时关闭 channel 并报告。
 7. 内层帧与 `docs/standalone-core.md` 第 6.2 节逐项一致，daemon 不解读内层帧。
 8. 单条 channel 的拥塞不阻塞其它 channel。
-9. `start` 缺省绑 `127.0.0.1:10975`；端口被占用时从该端口起逐个 +1，横幅给实际端口；
+9. `start` 缺省绑 `0.0.0.0:10975`；端口被占用时从该端口起逐个 +1，连接串给实际端口；
    `--token` 未给出时用操作系统随机数生成。
 10. TCP 控制通道第一帧 token 不匹配时回 `authFailed` 并断开，匹配时回 `authOk`；
     鉴权通过后 `listDirectories` 返回目标机器上的子目录（连接后即可弹出远端目录选择）。
-11. 本地同机工作区由 Host 直接用 `serve` 起 Core（stdio，无端口、无 token），不经过
+11. 本地同机工作区由 Host 直接用 `stdio` 起 Core（stdio 帧通道，无端口、无 token），不经过
     daemon。
+12. `ssh` 接入下全部通信走 SSH 端口：daemon 端口不需要对外映射，`~/.local/bin` 里没有
+    可执行文件时自动部署、没有在跑时自动启动，已在跑时直接复用；
+13. SSH 主机密钥首次连接记录、之后不一致即报错；`start` 失败时把远端 stderr 带回宿主。
 12. 可执行文件可独立运行：`--help` / `--version` 直接输出，未知动作 / 未知选项报错并提示
-    `--help`；没有动作且 stdin 是终端时打印用法，stdin 不是终端时按 `serve` 启动。
+    `--help`；没有动作时按 `start` 处理。
 
 ---
 
@@ -220,14 +232,16 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 | 规格项 | 落点 |
 | --- | --- |
-| 动作分派 | `core-rs/src/main.rs`（`serve` / `start` / `start-daemon` / `kill`） |
+| 动作分派 | `core-rs/src/main.rs`（`stdio` / `start` / `start-daemon` / `kill`） |
 | daemon 进程与 channel 管理 | `core-rs/src/daemon.rs` |
 | 远程服务（后台 daemon、状态文件、目录列举） | `core-rs/src/remote.rs` |
 | 控制通道协议 | `core-rs/src/daemon_protocol.rs`、`src/host/standalone/daemonProtocol.ts` |
-| Host 侧 daemon 客户端 | `src/host/standalone/CoreDaemon.ts`（TCP 控制通道） |
-| 本地单进程 Core | `src/host/standalone/StandaloneEventBus.ts`（`createStandaloneCoreBus`，`serve`） |
+| Host 侧 daemon 客户端 | `src/host/standalone/CoreDaemon.ts`（建链器：`tcpDaemonOpener`） |
+| SSH 客户端 | `src/host/standalone/sshClient.ts`（`ssh2` 库，不依赖系统 OpenSSH） |
+| SSH 接入建链与远端引导 | `src/host/standalone/sshTransport.ts`、`sshDaemonBootstrap.ts` |
+| 本地单进程 Core | `src/host/standalone/StandaloneEventBus.ts`（`createStandaloneCoreBus`，`stdio`） |
 | endpoint → daemon 注册表 | `src/host/bootstrapCore.ts`（`daemonForEndpoint` / `listRemoteDirectories`） |
-| 远程连接与目录选择 UI | `electron/main.ts`、`electron/remoteWorkspaceDialogHtml.ts`、`electron/remoteWorkspacePreload.ts` |
+| 远程连接与目录选择 UI | `electron/main.ts`、`electron/remoteWorkspace/`（vite 页面）、`electron/remoteWorkspacePreload.ts` |
 | 帧编解码（内层） | `src/host/standalone/protocol.ts`（不变） |
 | 总线适配器 | `src/host/standalone/StandaloneEventBus.ts` |
 | 进程管理（重启策略） | `core-rs/src/daemon.rs` |
@@ -238,8 +252,8 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 ### 12.1 动作
 
-- `start`：确保后台 daemon 在跑，把连接信息打印到标准输出后**自己退出**（daemon 常驻）。
-  - 已有 daemon 在跑（状态文件里的 endpoint 连得上）→ 直接复用它的连接信息；
+- `start`：确保后台 daemon 在跑，把连接串打印到标准输出后**自己退出**（daemon 常驻）。
+  - 已有 daemon 在跑（状态文件里的 endpoint 连得上）→ 直接复用它的连接串；
   - 没有 → 以 `start-daemon` 拉起一个后台进程（脱离终端与进程组、stdin 置空、诊断追加到
     `~/<configDir>/core-daemon.log`），等它落盘后打印；
   - 本次参数与在跑的 daemon 不一致（`--host` / `--port` / `--token`）→ 报错退出，
@@ -248,16 +262,18 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
   幂等：没有状态文件、或文件里的 daemon 已经不在，都算目标状态已达成（退出码 0）；
   只有「连上了但 token 对不上」才报错。
 - `start-daemon` 是启动器的内部实现，不出现在 `--help` 里；也可以直接运行（调试用）。
+- 没有动作时按 `start` 处理。
 
 ### 12.2 选项
 
-- `--host <addr>`：绑定地址，默认 `127.0.0.1`（只绑回环；跨机接入显式传 `0.0.0.0`）；
+- `--host <addr>`：绑定地址，默认 `0.0.0.0`（绑全部网卡，跨机接入开箱可用；只在本机自测时
+  传 `127.0.0.1`）；
 - `--port <n>`：绑定端口，默认 `10975`；被占用时从该端口起**逐个 +1 重试**
   （最多 20 次；`--port 0` 交给内核，不重试）；
-- `--token <token>`：token，给出时覆盖状态文件里的；缺省时优先复用状态文件里的，
+- `--token <token>`：token，给出时用它（并写回 token 文件）；缺省时优先复用 token 文件里的，
   没有才用**操作系统安全随机数**生成（128 位十六进制）。
 
-### 12.3 状态文件与横幅
+### 12.3 状态文件与连接串
 
 - 状态文件 `~/<configDir>/core-daemon.json`（与 `settings.json` 同目录），字段：
   `requested`（启动时请求的 `host:port`）、`endpoint`（实际监听的 `IP:端口`）、`token`。
@@ -265,8 +281,17 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
   Unix 上权限 `0600`（token 是凭证）。`kill` 只在文件内容仍是该 daemon 那份时删除它
   （期间可能有新 daemon 覆盖过）。
 - 状态文件缺失、或里面的 endpoint 连不上，都按「没有 daemon」处理（`start` 会拉起新的）。
-- 横幅是两行：实际监听的 `IP:端口` 与 token。绑定地址是通配地址时，IP 取本机对外可达的
-  IPv4（探测不到回退 `127.0.0.1`）。端口 +1 重试后横幅给的是**实际**端口。
+- 连接串是**一行一条**的 `<IP>:<端口>#<token>`：桌面端只有一个输入框，整行粘贴即可接入。
+  端口是**实际**监听的那个（`--port 0` 或 +1 重试后与请求值不同）。
+- 绑定地址是通配地址时**遍历全部网卡**：每个非回环 IPv4 一条连接串，末尾固定补一条回环
+  （绑通配地址的 daemon 必然在回环上可达）；绑具体地址时只列它本身。
+- endpoint 存的是**绑定的**主机（通配地址原样保留）：状态文件里的通配主机在探测 / `kill`
+  时先换成回环，因为直接连 `0.0.0.0` 在 Windows 上会失败。
+- token 另存一份 `~/<configDir>/core-daemon.token`（与会话数据同目录，Unix 上 `0600`）：
+  状态文件是**本次 daemon** 的落盘结果、`kill` 会删掉它，token 却应该跨重启保留——
+  否则每次重启 daemon 都得重新抄一遍连接串。取值顺序是
+  `--token` > token 文件 > 新随机，三者都会把结果写回该文件。
+- token 文件写不进去只打警告：token 已经生效，文件没写成不该让 daemon 起不来。
 
 ### 12.4 鉴权
 
@@ -288,12 +313,60 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 - `listDirectories { path }`：`path` 为 `null` / 空串时从目标机器的主目录开始；
   返回该目录的子目录（按名字排序）与上级目录。
-- 路径必须是绝对路径：Host 拿到的目录名要能直接当工作区路径用。
+- `createDirectory { path }`：新建目录，父目录不存在时一并创建；返回实际路径。
+- `renameDirectory { path, name }`：重命名目录，只换同一父目录下的名字。`name` 必须是纯名字
+  （不含分隔符、不是 `.` / `..`），目标已存在时拒绝、不覆盖；改名与移动是两件事，不开放移动。
+- `deleteDirectory { path, recursive }`：删除目录。`recursive` 为 `false` 时只接受空目录，
+  非空回 `directoryFailed` 且 `reason = 'notEmpty'`；Host 据此把删除升成「目录非空，
+  连同其中的全部内容一起删除？」的**第二次确认**，确认后才带 `recursive = true` 重发。
+- 无论哪种模式都拒绝文件系统根（`/`、`C:\`）：删根几乎一定是操作失误。
+- 三个动作的路径都必须是绝对路径：Host 拿到的目录名要能直接当工作区路径用。
 - 只列子目录，不列文件；Host 在鉴权通过后立刻请求一次，据此弹出远端目录选择器。
+- 选择器页面是 `electron/remoteWorkspace/`（vite 产物，加载 `dist/remoteWorkspace/index.html`）：
+  路径可编辑、列表首行是 `..`（上级）、工具栏可新建文件夹。破坏性操作不进常显 UI：
+  右键目录行弹出「重命名 / 删除」菜单，选中后在该行内联编辑（重命名直接改名字；
+  删除空目录一次确认、非空目录二次确认后递归删除）。
+- 路径输入停顿 250ms 后刷新列表（`electron/remoteWorkspace/pathInput.ts` 负责拆分）：
+  输入是**存在的目录**就展开它的内容；不是就把最后一段当**前缀过滤词**，列父目录再筛
+  （`/workspace/a` 只留 `a` 开头的目录）。末尾带分隔符表示「这一级敲完了」，列它自己。
+  过滤只作用于目录名——daemon 的目录列举本来就只回目录、不含文件。
+- 列表按输入**预览**，不回写输入框（用户还在敲）；回车才是正式跳转，失败会给明确错误。
 
 ### 12.7 本地同机不走 daemon
 
-- 本地同机的工作区由 Host 直接用 `serve` 起一个 Core 进程（`createStandaloneCoreBus`），
+- 本地同机的工作区由 Host 直接用 `stdio` 起一个 Core 进程（`createStandaloneCoreBus`），
   stdio 是帧通道：不监听端口、不需要 token，也不经过 daemon。
-- daemon 只服务远程 endpoint（`tcp` 传输）。因此 token / 端口 / 端口 +1 重试
+- daemon 只服务远程 endpoint（`tcp` / `ssh` 传输）。因此 token / 端口 / 端口 +1 重试
   只对远程接入有意义。
+
+### 12.8 SSH 接入（`ssh` scheme）
+
+目标机器只开放 SSH 端口、daemon 端口映射不出来时，用 `ssh` 接入：**全部通信走 SSH 端口**，
+不需要端口映射，也不需要目标机器预装任何东西（Host 侧用 `ssh2` 库实现 SSH 客户端，
+不依赖系统 OpenSSH）。
+
+建链（`src/host/standalone/sshTransport.ts`）：
+
+1. 按 SSH 的 host / port / user / 口令建立连接（口令鉴权；主机密钥首次记录、之后不一致
+   即报错，指纹存 `~/<configDir>/known-hosts.json`）；
+2. 引导远端 daemon（`sshDaemonBootstrap.ts`，见下）；
+3. 在远端开一条 `direct-tcpip` 转发通道到该 daemon（等价于 `ssh -W`），它就是要用的
+   控制通道；随后第一帧发 `auth`，之后与 `tcp` 接入完全同构。
+
+引导的三条分支（按顺序判断）：
+
+| 情况 | 判据 | 行为 |
+| --- | --- | --- |
+| 已经在跑 | 状态文件里的 endpoint 探得通 | 直接复用，不动远端 |
+| 已部署未启动 | 可执行文件在、探测不通 | 执行 `<可执行文件> start`（幂等），再读状态文件 |
+| 未部署 | `~/.local/bin` 下没有可执行文件 | 上传本机携带的对应平台产物（按远端 `uname -sm` 选平台）后 `start` |
+
+- 可执行文件固定落在 `~/.local/bin`（远端 Linux；产物按 `arch-platform` 目录从
+  `resources/core/` 取，见 `docs/standalone-core.md` 第 4.1 节）。
+- daemon 的端口与 token **以远端状态文件为准**（第 12.3 节）：Host 读
+  `~/<configDir>/core-daemon.json`，把通配地址换成回环后转发。
+- 状态文件缺失 / 损坏 / 连不上都按「没有在跑」处理，与 `start` 自己的判据同口径。
+- 任何一步失败都直接报错（`start` 的退出码与 stderr 一并带回宿主），不回退到「先连上
+  再说」。
+- SSH 连接的生命周期就是控制通道的生命周期：SSH 断开等于控制通道断开，该 endpoint 上
+  的全部 Core 一并关闭。

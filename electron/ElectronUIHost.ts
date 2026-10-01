@@ -19,6 +19,7 @@ import type { WebviewMessage } from '../src/core/webviewTypes.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
 import { isImageFile } from '../src/host/imageFiles.js';
+import { fileLogger } from '../src/core/Logger.js';
 import { writeSettingsJson } from '../src/host/settingsFile.js';
 
 /** 项目根目录（dist-electron 的上一级，与 main.ts 的 APP_ROOT 一致） */
@@ -44,10 +45,12 @@ export class ElectronUIHost implements UIHost {
   /** 复用的 Mermaid 预览窗口（与 VSCodeUIHost 的单面板语义一致） */
   private mermaidWindow: BrowserWindowCtor | undefined;
 
-  /** 内部日志实现（console 前缀） */
+  /** 内部日志实现（console 前缀 + 落盘：宿主诊断不进日志文件就查不到问题） */
   private writeLog(...args: unknown[]): void {
     const line = args.map(a => String(a)).join(' ');
     console.log(`[ElectronUIHost] ${line}`);
+    // fileLogger 只落盘、不回推 UI，避免 logger → emitToUi → 本出口 的自环
+    fileLogger.info('host', line);
   }
 
   // ===================== bootstrap 专用接线（不属于 UIHost）=====================

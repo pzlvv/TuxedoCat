@@ -569,6 +569,7 @@ async function run(): Promise<void> {
     let fatal: Error | null = null;
     const bus = createStandaloneCoreBus({
       binaryPath: path.join(repoRoot(), 'no', 'such', 'core-binary-xyz'),
+      spawnArgs: ['stdio'],
       log: () => undefined,
       restartPolicy: FAST_RESTART,
       shutdownTimeoutMs: 1_000,
@@ -612,6 +613,7 @@ async function run(): Promise<void> {
       const recording = createRecordingCoreEventHandlers();
       const bus = createStandaloneCoreBus({
         binaryPath,
+        spawnArgs: ['stdio'],
         log: () => undefined,
         shutdownTimeoutMs: 2_000,
       });

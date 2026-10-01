@@ -38,6 +38,7 @@
     "monacoOut": "dist/monaco",
     "sidebarOut": "dist/sidebar",
     "titlebarOut": "dist/titlebar",
+    "remoteWorkspaceOut": "dist/remoteWorkspace",
     "electronMainOut": "dist-electron/main.cjs",
     "electronPreloadOut": "dist-electron/preload.cjs",
     "electronSpinPreloadOut": "dist-electron/spinPreload.cjs",

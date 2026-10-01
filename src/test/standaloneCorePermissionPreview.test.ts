@@ -146,7 +146,7 @@ async function run(): Promise<void> {
   ]);
   writeSettings(homeDir, llm.url);
 
-  const child = spawn(CORE_BINARY, [], {
+  const child = spawn(CORE_BINARY, ['stdio'], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, USERPROFILE: homeDir, HOME: homeDir },
     windowsHide: true,

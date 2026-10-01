@@ -1,5 +1,5 @@
 //! 远程监听模式用例（`docs/core-daemon.md` 第 12 节）：
-//! token 生成与定长比较、启动横幅、命令行解析、目录列举，以及一条真实 TCP
+//! token 生成与定长比较、连接串、命令行解析、目录列举，以及一条真实 TCP
 //! 控制通道上的「错误 token 被拒 / 正确 token 通过后能列目录」端到端路径。
 
 use super::*;
@@ -55,20 +55,64 @@ fn token_compare_is_exact() {
 }
 
 #[test]
-fn banner_reports_endpoint_and_token() {
-    let text = banner("172.20.1.5:17321", "deadbeef");
-    assert!(text.contains("172.20.1.5:17321"), "{text}");
-    assert!(text.contains("deadbeef"), "{text}");
+fn connection_string_carries_host_port_and_token() {
+    let text = connection_string("172.20.1.5", 17321, "deadbeef");
+    assert_eq!(text, "172.20.1.5:17321#deadbeef");
 }
 
 #[test]
-fn banner_host_keeps_concrete_addresses() {
-    // 默认回环不能被换成对外 IPv4：Host 会按横幅地址连接
-    assert_eq!(display_host(DEFAULT_HOST), DEFAULT_HOST);
-    assert_eq!(display_host("127.0.0.1"), "127.0.0.1");
-    assert_eq!(display_host("192.168.1.5"), "192.168.1.5");
-    // 通配地址才探测；探测不到回退回环，至少不是 0.0.0.0
-    assert_ne!(display_host("0.0.0.0"), "0.0.0.0");
+fn connection_hosts_keep_concrete_addresses() {
+    // 绑具体地址时只列它本身：Host 会按连接串里的地址连
+    assert_eq!(connection_hosts("127.0.0.1"), vec!["127.0.0.1".to_string()]);
+    assert_eq!(connection_hosts("192.168.1.5"), vec!["192.168.1.5".to_string()]);
+}
+
+#[test]
+fn connection_hosts_expand_wildcard_to_every_interface() {
+    // 通配地址：列出本机网卡，且一定含回环（绑通配地址的 daemon 在回环上必然可达）
+    let hosts = connection_hosts("0.0.0.0");
+    assert!(!hosts.is_empty(), "至少要有回环");
+    assert!(
+        hosts.iter().any(|host| host == "127.0.0.1"),
+        "通配地址必须列出回环：{hosts:?}"
+    );
+    assert!(
+        !hosts.iter().any(|host| host == "0.0.0.0"),
+        "连接串里不能出现通配地址：{hosts:?}"
+    );
+    // 去重
+    let mut sorted = hosts.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(sorted.len(), hosts.len(), "主机不应重复：{hosts:?}");
+}
+
+#[test]
+fn ready_message_lists_one_connection_string_per_line() {
+    let text = ready_message("192.168.1.5", 10975, "abc");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    assert!(lines[0].contains("连接串"), "{text}");
+    // 连接串单独占一行、不带前缀，双击即可整行选中
+    assert_eq!(lines[1], "192.168.1.5:10975#abc");
+}
+
+#[test]
+fn wildcard_endpoints_are_probed_on_loopback() {
+    // 状态文件里存的是绑定的通配地址；直接连 0.0.0.0 在 Windows 上会失败
+    assert_eq!(connectable("0.0.0.0:10975"), "127.0.0.1:10975");
+    assert_eq!(connectable("[::]:10975"), "127.0.0.1:10975");
+    assert_eq!(connectable("192.168.1.5:10975"), "192.168.1.5:10975");
+    assert_eq!(connectable("127.0.0.1:10975"), "127.0.0.1:10975");
+}
+
+#[test]
+fn ipv6_hosts_get_brackets_in_endpoint_text() {
+    assert_eq!(address_text("0.0.0.0", 10975), "0.0.0.0:10975");
+    assert_eq!(address_text("192.168.1.5", 10975), "192.168.1.5:10975");
+    assert_eq!(address_text("::", 10975), "[::]:10975");
+    // 端口按最后一个 `:` 取：加方括号后仍能解析
+    assert_eq!(address_text("::", 10975).rsplit_once(':').unwrap().1, "10975");
 }
 
 // ==================== 命令行 ====================
@@ -93,7 +137,7 @@ fn parses_start_options() {
     assert_eq!(options.port, 9000);
     assert_eq!(options.token, "t");
 
-    // 缺省：回环地址 + 默认端口 + token 留空（由 daemon 生成或复用状态文件里的）
+    // 缺省：通配地址 + 默认端口 + token 留空（由 daemon 生成或复用状态文件里的）
     let options = RemoteOptions::from_args(&["start".to_string()]);
     assert_eq!(options.host, DEFAULT_HOST);
     assert_eq!(options.port, DEFAULT_PORT);
@@ -132,6 +176,149 @@ fn empty_path_starts_at_home() {
     };
     let listing = list_directories(None).expect("home listing");
     assert_eq!(PathBuf::from(&listing.path), home);
+}
+
+// ==================== 新建 / 删除目录 ====================
+
+#[test]
+fn creates_directory_and_missing_parents() {
+    let dir = temp_dir("mkdir");
+    let target = dir.join("nested").join("leaf");
+
+    let created = create_directory(target.to_string_lossy().as_ref()).expect("create");
+    assert!(PathBuf::from(&created).is_dir(), "应真的建出目录：{created}");
+    // 父目录不存在时一并创建
+    assert!(dir.join("nested").is_dir());
+
+    // 已存在时不报错（幂等）
+    create_directory(target.to_string_lossy().as_ref()).expect("create twice");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn create_directory_rejects_relative_path() {
+    let error = create_directory("relative/dir").expect_err("相对路径应被拒绝");
+    assert!(error.contains("absolute"), "{error}");
+}
+
+#[test]
+fn deletes_empty_directory_only() {
+    let dir = temp_dir("rmdir");
+    let target = dir.join("empty");
+    std::fs::create_dir_all(&target).unwrap();
+
+    let removed = delete_directory(target.to_string_lossy().as_ref(), false).expect("delete");
+    assert_eq!(PathBuf::from(&removed), target);
+    assert!(!target.exists(), "空目录应被删掉");
+
+    // 非空目录在非递归模式下拒绝删除，且目录原样保留
+    let full = dir.join("full");
+    std::fs::create_dir_all(&full).unwrap();
+    std::fs::write(full.join("note.txt"), b"x").unwrap();
+    let error = delete_directory(full.to_string_lossy().as_ref(), false).expect_err("非空应被拒绝");
+    assert_eq!(
+        error,
+        DeleteDirectoryError::NotEmpty(format!("directory is not empty: {}", full.display())),
+        "非空要单独归类，Host 据此提示递归删除"
+    );
+    assert!(full.exists(), "非空目录必须原样保留");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn deletes_non_empty_directory_recursively() {
+    let dir = temp_dir("rmdir-r");
+    let target = dir.join("tree");
+    std::fs::create_dir_all(target.join("nested").join("deeper")).unwrap();
+    std::fs::write(target.join("nested").join("note.txt"), b"x").unwrap();
+
+    let removed = delete_directory(target.to_string_lossy().as_ref(), true).expect("recursive delete");
+    assert_eq!(PathBuf::from(&removed), target);
+    assert!(!target.exists(), "整棵子树应被删掉");
+    assert!(dir.exists(), "只删目标目录，不动它的父目录");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn refuses_to_delete_a_filesystem_root() {
+    // 递归删除不该有「把整块盘删掉」的能力：根目录一律拒绝
+    let root = if cfg!(windows) { "C:\\" } else { "/" };
+    let error = delete_directory(root, true).expect_err("根目录应被拒绝");
+    assert_eq!(
+        error,
+        DeleteDirectoryError::Failed(format!("refusing to delete a filesystem root: {root}"))
+    );
+    assert!(PathBuf::from(root).exists(), "根目录当然还在");
+}
+
+#[test]
+fn delete_directory_rejects_relative_path() {
+    let error = delete_directory("relative/dir", false).expect_err("相对路径应被拒绝");
+    assert_eq!(
+        error,
+        DeleteDirectoryError::Failed("path must be absolute: relative/dir".to_string())
+    );
+}
+
+// ==================== 重命名目录 ====================
+
+#[test]
+fn renames_directory_in_place() {
+    let dir = temp_dir("rename");
+    let target = dir.join("before");
+    std::fs::create_dir_all(target.join("nested")).unwrap();
+
+    let renamed = rename_directory(target.to_string_lossy().as_ref(), "after").expect("rename");
+    assert_eq!(PathBuf::from(&renamed), dir.join("after"));
+    assert!(!target.exists(), "旧名字不该还在");
+    assert!(dir.join("after").join("nested").is_dir(), "内容原样保留");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn rename_rejects_names_that_are_not_plain_names() {
+    let dir = temp_dir("rename-bad");
+    let target = dir.join("dir");
+    std::fs::create_dir_all(&target).unwrap();
+    let path = target.to_string_lossy().to_string();
+
+    // 空名字
+    assert!(rename_directory(&path, "   ").expect_err("空名字应被拒绝").contains("empty"));
+    // 带分隔符（等于移动，不开放）
+    assert!(rename_directory(&path, "a/b").expect_err("分隔符应被拒绝").contains("separator"));
+    assert!(rename_directory(&path, "a\\b").expect_err("分隔符应被拒绝").contains("separator"));
+    // 路径穿越
+    assert!(rename_directory(&path, "..").expect_err(".. 应被拒绝").contains("traversal"));
+    assert!(rename_directory(&path, ".").expect_err(". 应被拒绝").contains("traversal"));
+    assert!(target.is_dir(), "拒绝后目录原样保留");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn rename_refuses_existing_target() {
+    let dir = temp_dir("rename-exists");
+    let source = dir.join("source");
+    let taken = dir.join("taken");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::create_dir_all(&taken).unwrap();
+
+    let error = rename_directory(source.to_string_lossy().as_ref(), "taken").expect_err("已存在应被拒绝");
+    assert!(error.contains("already exists"), "{error}");
+    assert!(source.is_dir(), "源目录原样保留");
+    assert!(taken.is_dir(), "目标目录不能被覆盖");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn rename_rejects_relative_path() {
+    let error = rename_directory("relative/dir", "x").expect_err("相对路径应被拒绝");
+    assert!(error.contains("absolute"), "{error}");
 }
 
 // ==================== 端口重试 ====================
@@ -209,6 +396,72 @@ fn accepts_token_then_lists_directories() {
     assert!(listed.contains("\"id\":7"), "{listed}");
     assert!(listed.contains("work"), "{listed}");
 
+    // 新建目录：父目录不存在时一并创建
+    let created_path = dir.join("made").join("leaf");
+    let request = format!(
+        "{{\"kind\":\"createDirectory\",\"id\":8,\"path\":{}}}\n",
+        serde_json::to_string(&created_path.to_string_lossy().to_string()).unwrap()
+    );
+    client.write_all(request.as_bytes()).unwrap();
+    let created = read_line(&mut reader);
+    assert!(created.contains("\"directoryCreated\""), "{created}");
+    assert!(created.contains("\"id\":8"), "{created}");
+    assert!(created_path.is_dir(), "应真的建出目录");
+
+    // 重命名：只改同一父目录下的名字
+    let renamed_path = dir.join("made").join("renamed");
+    let request = format!(
+        "{{\"kind\":\"renameDirectory\",\"id\":12,\"path\":{},\"name\":\"renamed\"}}\n",
+        serde_json::to_string(&created_path.to_string_lossy().to_string()).unwrap()
+    );
+    client.write_all(request.as_bytes()).unwrap();
+    let renamed = read_line(&mut reader);
+    assert!(renamed.contains("\"directoryRenamed\""), "{renamed}");
+    assert!(renamed.contains("\"id\":12"), "{renamed}");
+    assert!(renamed_path.is_dir(), "新名字应存在");
+    assert!(!created_path.exists(), "旧名字不该还在");
+
+    // 再改回来，后面的删除用例仍按原路径断言
+    let request = format!(
+        "{{\"kind\":\"renameDirectory\",\"id\":13,\"path\":{},\"name\":\"leaf\"}}\n",
+        serde_json::to_string(&renamed_path.to_string_lossy().to_string()).unwrap()
+    );
+    client.write_all(request.as_bytes()).unwrap();
+    assert!(read_line(&mut reader).contains("\"directoryRenamed\""));
+
+    // 删除空目录
+    let request = format!(
+        "{{\"kind\":\"deleteDirectory\",\"id\":9,\"path\":{},\"recursive\":false}}\n",
+        serde_json::to_string(&created_path.to_string_lossy().to_string()).unwrap()
+    );
+    client.write_all(request.as_bytes()).unwrap();
+    let deleted = read_line(&mut reader);
+    assert!(deleted.contains("\"directoryDeleted\""), "{deleted}");
+    assert!(!created_path.exists(), "空目录应被删掉");
+
+    // 非递归删非空目录：回 directoryFailed 且 reason=notEmpty，目录原样保留
+    let request = format!(
+        "{{\"kind\":\"deleteDirectory\",\"id\":10,\"path\":{},\"recursive\":false}}\n",
+        serde_json::to_string(&dir.to_string_lossy().to_string()).unwrap()
+    );
+    client.write_all(request.as_bytes()).unwrap();
+    let failed = read_line(&mut reader);
+    assert!(failed.contains("\"directoryFailed\""), "{failed}");
+    assert!(failed.contains("\"id\":10"), "{failed}");
+    assert!(failed.contains("\"reason\":\"notEmpty\""), "{failed}");
+    assert!(dir.exists(), "非空目录必须原样保留");
+
+    // 递归删除：整棵子树消失
+    let request = format!(
+        "{{\"kind\":\"deleteDirectory\",\"id\":11,\"path\":{},\"recursive\":true}}\n",
+        serde_json::to_string(&dir.to_string_lossy().to_string()).unwrap()
+    );
+    client.write_all(request.as_bytes()).unwrap();
+    let removed = read_line(&mut reader);
+    assert!(removed.contains("\"directoryDeleted\""), "{removed}");
+    assert!(removed.contains("\"id\":11"), "{removed}");
+    assert!(!dir.exists(), "递归删除应清掉整棵子树");
+
     // shutdown：daemon 主循环退出，serve_connection 报告「结束 daemon」
     client.write_all(b"{\"kind\":\"shutdown\"}\n").unwrap();
     drop(reader);
@@ -283,45 +536,59 @@ fn daemon_state_read_tolerates_garbage() {
 
 // ==================== token 取值 ====================
 
-/// `--token` > 状态文件里的 > 新随机。
+/// `--token` > token 文件里的 > 新随机；三种情况都把结果写回 token 文件。
 #[test]
-fn token_prefers_argument_then_state_then_random() {
+fn token_prefers_argument_then_file_then_random() {
     let dir = temp_dir("token");
-    let path = dir.join(DAEMON_STATE_FILE_NAME);
+    let path = dir.join(DAEMON_TOKEN_FILE_NAME);
     let mut options = RemoteOptions::default();
 
-    // 都没有：新随机（32 位十六进制）
+    // 都没有：新随机（32 位十六进制），并落盘
     let generated = resolve_token(&options, &path);
     assert!(is_hex(&generated), "应生成 32 位十六进制：{generated}");
+    assert_eq!(read_token_file(&path).as_deref(), Some(generated.as_str()));
 
-    // 有状态文件：复用文件里的
-    write_daemon_state(
-        &path,
-        &DaemonState {
-            requested: "127.0.0.1:10975".to_string(),
-            endpoint: "127.0.0.1:10975".to_string(),
-            token: "from-file".to_string(),
-        },
-    )
-    .unwrap();
+    // 已有 token 文件：复用文件里的（即使内容被手工改过）
+    std::fs::write(&path, "from-file\n").unwrap();
     assert_eq!(resolve_token(&options, &path), "from-file");
 
-    // 显式给了 --token：用它（并覆盖文件里的）
+    // 显式给了 --token：用它，并覆盖文件里的
     options.token = "from-arg".to_string();
     assert_eq!(resolve_token(&options, &path), "from-arg");
+    assert_eq!(read_token_file(&path).as_deref(), Some("from-arg"));
 
-    // 状态文件里的 token 是空串：视同没有，重新生成
+    // 文件是空内容：视同没有，重新生成
+    std::fs::write(&path, "   \n").unwrap();
+    options.token = String::new();
+    let regenerated = resolve_token(&options, &path);
+    assert!(is_hex(&regenerated), "空文件应触发重新生成：{regenerated}");
+    assert_eq!(read_token_file(&path).as_deref(), Some(regenerated.as_str()));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// token 文件与状态文件分开：`kill` 删状态文件后 token 仍在，重启不必重新抄连接串。
+#[test]
+fn token_survives_state_file_removal() {
+    let dir = temp_dir("token-survives");
+    let token_path = dir.join(DAEMON_TOKEN_FILE_NAME);
+    let state_path = dir.join(DAEMON_STATE_FILE_NAME);
+    let options = RemoteOptions::default();
+
+    let first = resolve_token(&options, &token_path);
     write_daemon_state(
-        &path,
+        &state_path,
         &DaemonState {
             requested: "127.0.0.1:10975".to_string(),
             endpoint: "127.0.0.1:10975".to_string(),
-            token: String::new(),
+            token: first.clone(),
         },
     )
     .unwrap();
-    options.token = String::new();
-    assert!(is_hex(&resolve_token(&options, &path)));
+    // kill 只删状态文件
+    std::fs::remove_file(&state_path).unwrap();
+
+    assert_eq!(resolve_token(&options, &token_path), first, "token 应跨 kill 保留");
 
     std::fs::remove_dir_all(&dir).ok();
 }

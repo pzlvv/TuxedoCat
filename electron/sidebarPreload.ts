@@ -14,6 +14,10 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
   addWorkspaces: (paths?: string[]): void => {
     ipcRenderer.send('sidebar:add-workspaces', paths);
   },
+  /** 打开（或激活）一个工作区；`id` 来自 getWorkspaces / onWorkspacesChanged 下发的项 */
+  openWorkspace: (id: string): void => {
+    ipcRenderer.send('sidebar:open-workspace', id);
+  },
   activateWorkspace: (path: string): void => {
     ipcRenderer.send('sidebar:activate-workspace', path);
   },

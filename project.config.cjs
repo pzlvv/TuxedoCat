@@ -54,6 +54,7 @@ module.exports = {
   monacoOut: resolve(project.build.monacoOut),
   sidebarOut: resolve(project.build.sidebarOut),
   titlebarOut: resolve(project.build.titlebarOut),
+  remoteWorkspaceOut: resolve(project.build.remoteWorkspaceOut),
   electronMainOut: resolve(project.build.electronMainOut),
   electronPreloadOut: resolve(project.build.electronPreloadOut),
   electronSpinPreloadOut: resolve(project.build.electronSpinPreloadOut),

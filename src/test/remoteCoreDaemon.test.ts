@@ -10,7 +10,7 @@
  */
 
 import { createServer, type Server, type Socket } from 'net';
-import { CoreDaemon } from '../host/standalone/CoreDaemon';
+import { CoreDaemon, DirectoryOperationError, tcpDaemonOpener } from '../host/standalone/CoreDaemon';
 import { isDaemonToHostFrame } from '../host/standalone/daemonProtocol';
 import { createCoreChannelBus } from '../host/standalone/StandaloneEventBus';
 import { remoteWorkspaceRef } from '../host/workspaceRef';
@@ -84,6 +84,32 @@ function startFakeRemote(token: string): Promise<FakeRemote> {
             parent: '/home',
             entries: [{ name: 'repo', path: '/home/dev/repo' }],
           });
+          continue;
+        }
+        if (frame['kind'] === 'createDirectory') {
+          send({ kind: 'directoryCreated', id: frame['id'], path: frame['path'] });
+          continue;
+        }
+        if (frame['kind'] === 'renameDirectory') {
+          send({
+            kind: 'directoryRenamed',
+            id: frame['id'],
+            path: String(frame['path']).replace(/[^/]+$/, String(frame['name'])),
+          });
+          continue;
+        }
+        if (frame['kind'] === 'deleteDirectory') {
+          // 与真实 daemon 同口径：非空且没要求递归时回 directoryFailed + reason
+          if (String(frame['path']).endsWith('/full') && frame['recursive'] !== true) {
+            send({
+              kind: 'directoryFailed',
+              id: frame['id'],
+              error: 'directory is not empty',
+              reason: 'notEmpty',
+            });
+          } else {
+            send({ kind: 'directoryDeleted', id: frame['id'], path: frame['path'] });
+          }
           continue;
         }
         if (frame['kind'] === 'openWorkspace') {
@@ -166,7 +192,30 @@ async function run(): Promise<void> {
       'directoriesListed 缺 entries 字段被拒绝',
       !isDaemonToHostFrame({ kind: 'directoriesListed', id: 1, path: '/home', parent: null }),
     );
-    check('directoriesFailed 通过校验', isDaemonToHostFrame({ kind: 'directoriesFailed', id: 1, error: 'x' }));
+    check(
+      'directoryFailed 通过校验',
+      isDaemonToHostFrame({ kind: 'directoryFailed', id: 1, error: 'x', reason: 'notEmpty' }),
+    );
+    check(
+      'directoryFailed 缺 reason 被拒绝',
+      !isDaemonToHostFrame({ kind: 'directoryFailed', id: 1, error: 'x' }),
+    );
+    check(
+      'directoryCreated 通过校验',
+      isDaemonToHostFrame({ kind: 'directoryCreated', id: 1, path: '/home/new' }),
+    );
+    check(
+      'directoryDeleted 通过校验',
+      isDaemonToHostFrame({ kind: 'directoryDeleted', id: 1, path: '/home/old' }),
+    );
+    check(
+      'directoryRenamed 通过校验',
+      isDaemonToHostFrame({ kind: 'directoryRenamed', id: 1, path: '/home/new' }),
+    );
+    check(
+      'directoryCreated 缺 path 字段被拒绝',
+      !isDaemonToHostFrame({ kind: 'directoryCreated', id: 1 }),
+    );
   }
 
   // ---------- 正确 token：列目录 + 打开工作区 ----------
@@ -176,7 +225,7 @@ async function run(): Promise<void> {
       log: () => undefined,
       handshakeTimeoutMs: 2_000,
       shutdownTimeoutMs: 1_000,
-      transport: { host: '127.0.0.1', port: fake.port, token: 'secret' },
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port, token: 'secret' }),
     });
     const listing = await daemon.listDirectories(null);
     check('列目录返回远端路径', listing.path === '/home/dev');
@@ -185,8 +234,29 @@ async function run(): Promise<void> {
     const first = fake.received()[0] ?? '';
     check('第一帧是 auth', first.includes('"kind":"auth"') && first.includes('"token":"secret"'));
 
+    check('新建目录返回实际路径', (await daemon.createDirectory('/home/dev/new')) === '/home/dev/new');
+    check(
+      '重命名返回新路径',
+      (await daemon.renameDirectory('/home/dev/old', 'new')) === '/home/dev/new',
+    );
+    check(
+      '删除空目录返回实际路径',
+      (await daemon.deleteDirectory('/home/dev/new', false)) === '/home/dev/new',
+    );
+    let notEmpty = '';
+    try {
+      await daemon.deleteDirectory('/home/dev/full', false);
+    } catch (error) {
+      notEmpty = error instanceof DirectoryOperationError ? error.reason : 'not-a-directory-error';
+    }
+    check('非空目录回 reason=notEmpty', notEmpty === 'notEmpty');
+    check(
+      '递归删除非空目录成功',
+      (await daemon.deleteDirectory('/home/dev/full', true)) === '/home/dev/full',
+    );
+
     const ref = remoteWorkspaceRef(
-      { host: '127.0.0.1', port: fake.port, user: null, auth: { token: 'secret' } },
+      { host: '127.0.0.1', port: fake.port, user: null, auth: { kind: 'token', token: 'secret' } },
       '/home/dev/repo',
     );
     const bus = createCoreChannelBus(daemon.openChannel(ref), () => undefined);
@@ -206,7 +276,7 @@ async function run(): Promise<void> {
       log: () => undefined,
       handshakeTimeoutMs: 2_000,
       shutdownTimeoutMs: 1_000,
-      transport: { host: '127.0.0.1', port: fake.port, token: 'wrong' },
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port, token: 'wrong' }),
     });
     let message = '';
     try {
@@ -226,7 +296,7 @@ async function run(): Promise<void> {
       log: () => undefined,
       handshakeTimeoutMs: 2_000,
       shutdownTimeoutMs: 500,
-      transport: { host: '127.0.0.1', port: 1, token: 't' },
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: 1, token: 't' }),
     });
     let failed = false;
     try {

@@ -2,7 +2,7 @@
 """Fix Unix executable permissions in .vsix (zip) files.
 
 VSIX packages built on Windows lose Unix executable permissions.
-This script restores +x for rg binaries in the package.
+This script restores +x for the bundled Linux executables (ripgrep / Standalone Core).
 """
 
 import zipfile
@@ -13,6 +13,7 @@ import shutil
 TARGET_FILES = [
     # 打包时仅包含 dist/resources（.vscodeignore 已排除顶层 resources/）
     "extension/dist/resources/ripgrep/x64-linux/rg",
+    "extension/dist/resources/core/x64-linux/tuxedo-cat-core",
     # Add more linux/macos binaries here if needed
     # "extension/dist/resources/ripgrep/arm64-linux/rg",
     # "extension/dist/resources/ripgrep/x64-darwin/rg",

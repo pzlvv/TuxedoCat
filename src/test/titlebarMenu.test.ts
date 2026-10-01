@@ -4,7 +4,7 @@
  * 症状：飞出面板是 body 的绝对定位子元素，而 body 只按主面板 .menu 的自然高度撑开，
  * 于是 body 上的 overflow: hidden 会把超出主面板的那截飞出面板整段裁掉。更糟的是
  * 飞出面板自身 scrollHeight == clientHeight（不会出现滚动条），后半截条目既看不到
- * 也滚不到——「添加最近的工作目录」有十来条时就是这个表现。
+ * 也滚不到——「添加最近的工作区」有十来条时就是这个表现。
  *
  * 修法：body 的 min-height 取菜单可用高度上限（maxHeight）。飞出面板底边由
  * positionFlyout 限制在 maxHeight 以内，所以 body 撑到 maxHeight 后一定装得下。
@@ -22,11 +22,11 @@ const MAX_HEIGHT = 700;
 function menuWithRecents(count: number, maxHeight?: number): string {
   return getTitlebarMenuHtml({
     items: [
-      { type: 'item', id: 'main.addWorkspace', label: '添加工作目录...' },
+      { type: 'item', id: 'main.addWorkspace', label: '打开本地工作区...' },
       {
         type: 'submenu',
         id: 'main.recent',
-        label: '添加最近的工作目录',
+        label: '添加最近的工作区',
         items: Array.from({ length: count }, (_, i) => ({
           type: 'item',
           id: `main.recent.${i}`,

@@ -144,7 +144,9 @@ export function getTitlebarMenuHtml(options: TitlebarMenuHtmlOptions): string {
   const groupColor = options.isDark ? '#7a7a85' : '#9a9aa2';
   const sepColor = options.isDark ? '#2e2e37' : '#ececf1';
   const danger = '#f87171';
+  // 滚动条配色 / 尺寸与 electron/ui/scrollbar.css 保持一致（本页是 data URL，引不了那个文件）
   const scrollThumb = options.isDark ? '#3a3a44' : '#c9c9d1';
+  const scrollThumbHover = options.isDark ? '#4a4a55' : '#aeaeb9';
   const maxHeight = options.maxHeight && options.maxHeight > 0 ? Math.round(options.maxHeight) : 0;
   const availableRight = Number.isFinite(options.availableRight) ? Math.round(options.availableRight as number) : -1;
   // nonce 由主进程用 base64 生成（不含引号），但仍过滤一次避免拼进属性时破坏 HTML
@@ -201,7 +203,9 @@ export function getTitlebarMenuHtml(options: TitlebarMenuHtmlOptions): string {
   }
   .flyout.open { display: block; }
   .menu::-webkit-scrollbar, .flyout::-webkit-scrollbar { width: 6px; }
+  .menu::-webkit-scrollbar-track, .flyout::-webkit-scrollbar-track { background: transparent; }
   .menu::-webkit-scrollbar-thumb, .flyout::-webkit-scrollbar-thumb { background: ${scrollThumb}; border-radius: 3px; }
+  .menu::-webkit-scrollbar-thumb:hover, .flyout::-webkit-scrollbar-thumb:hover { background: ${scrollThumbHover}; }
   .item {
     display: flex;
     align-items: center;

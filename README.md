@@ -87,6 +87,7 @@ Core 有两种实现，由 `src/host/coreKind.ts` 的 `CORE_KIND` 装配（默�
 
 ```bash
 # 构建 Standalone Core（产物落在 resources/<core.resourceDir>/<arch>-<platform>/）
+# 默认构建打包要携带的 Windows x64 + Linux x64；只建当前平台用 npm run build:core:host
 npm run build:core
 
 # 独立运行（帮助 / 版本 / 远程模式）
@@ -100,31 +101,34 @@ TUXEDO_CAT_CORE=embedded npm run dev:electron
 cd core-rs && cargo test
 ```
 
-### 远程 Workspace（Electron）
+### 远程工作区（Electron）
 
 Standalone Core 用 `start` 动作启动远程服务：它确保后台 daemon 在跑（没有就拉起），
-打印可达的 `IP:端口` 与一个 token 后自己退出，桌面端用它们直连
-（`docs/core-daemon.md` 第 12 节）。
+打印连接串（`<IP>:<端口>#<token>`）后自己退出，桌面端整行粘贴即可直连
+（`docs/core-daemon.md` 第 12 节）。不带动作直接运行可执行文件同样按 `start` 处理。
 
 ```bash
-# 目标机器（例如 WSL / Linux）上构建并启动
-npm run build:core:linux-x64     # 在 Linux / WSL 内执行
-./resources/core/x64-linux/tuxedo-cat-core start --host 0.0.0.0
-# [core] remote endpoint: 172.20.1.5:10975
-# [core] remote token: <32 位十六进制>
+# 在开发机上交叉编译出 Linux core（Windows / Linux 同一条命令，产物是静态 musl）
+npm run build:core:linux-x64
+# 把产物拷到目标机器后启动
+./resources/core/x64-linux/tuxedo-cat-core start
+# [core] 远程服务已就绪，在桌面端「打开远程工作区」粘贴下面任一连接串：
+# 172.20.1.5:10975#<32 位十六进制>
+# 127.0.0.1:10975#<32 位十六进制>
 ```
 
-`start` 的默认值是 `127.0.0.1:10975`（只绑回环）；端口被占用时从该端口起逐个 +1
-重试，横幅里给的是实际端口。token 用 `--token` 指定（覆盖已落盘的那个）；缺省时优先复用
-`~/<configDir>/core-daemon.json` 里的，没有才用操作系统安全随机数生成。跨机接入时显式传
-`--host 0.0.0.0`。再执行一次 `start` 会复用同一个 daemon，打印同一份连接信息；
-`tuxedo-cat-core kill` 结束它。
+`start` 默认绑 `0.0.0.0:10975`（全部网卡）；端口被占用时从该端口起逐个 +1 重试，
+连接串里给的是实际端口。绑定通配地址时按网卡逐个打一条连接串，末尾固定有一条回环。
+token 用 `--token` 指定；缺省时优先复用 `~/<configDir>/core-daemon.token` 里的，没有才用
+操作系统安全随机数生成。token 单独存一份文件（与会话数据同目录），所以 `kill` 掉 daemon 再
+`start` 还是同一个 token，不用重新抄连接串。只在本机自测时传 `--host 127.0.0.1`。
+再执行一次 `start` 会复用同一个 daemon，打印同一份连接串；`tuxedo-cat-core kill` 结束它。
 
-在 Electron 里选「打开远程 Workspace...」（或标题栏加号菜单 →「打开远程 Workspace」），
-填入上面的 `IP`、端口与 token：连接成功后**立刻**弹出远端目录选择器，选定目录即作为
-远程工作区打开。token 只用于本次连接，不写入本地状态文件。
+在 Electron 里选「打开远程工作区...」（或标题栏加号菜单 →「打开远程工作区」），
+把上面任意一条连接串整行粘进唯一的输入框：连接成功后**立刻**弹出远端目录选择器，
+选定目录即作为远程工作区打开。token 只用于本次连接，不写入本地状态文件。
 
-WSL 端到端验证（在 WSL 里构建 Linux core、启动服务、从 Windows 连上去鉴权并列目录）：
+WSL 端到端验证（用交叉编译出的 Linux core，在 WSL 里启动服务、从 Windows 连上去鉴权并列目录）：
 
 ```bash
 node scripts/verify-remote-wsl.mjs
@@ -186,6 +190,19 @@ npm run package:app:embedded
 变体由构建期环境变量 `TUXEDO_CAT_CORE` 选择，产物分开落位、互不覆盖：
 standalone → `release/`，embedded → `release/embedded/`。embedded 变体不构建
 也不打包 Rust Core。
+
+Standalone 变体的包里要同时有 Windows 与 Linux 两个 core，而 `build:core` 只编当前
+平台，所以 Linux core 要先单独构建：
+
+```bash
+# Windows 上直接交叉编译（需要 zig，见 docs/standalone-core.md 第 4.3 节）
+npm run build:core:linux-x64
+
+npm run package
+```
+
+打包前会校验这两个 core 产物（`scripts/verify-core-artifacts.mjs`）：缺失、比 Rust 源码旧、
+或没同步进 `dist/` 都直接报错，不会把旧 core 静默打进包。
 
 ## Git LFS
 

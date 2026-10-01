@@ -224,7 +224,12 @@ function emitLogToUi(message: string): void {
   }
 }
 
-function log(level: LogLevel, component: string, ...args: unknown[]): void {
+function log(
+  level: LogLevel,
+  component: string,
+  args: readonly unknown[],
+  emitToUi = true,
+): void {
   const timestamp = new Date().toISOString();
   const prefix = `${PREFIXES[level]} [pid:${PID}] [${component}]`;
   const message = `${prefix} ${timestamp} ${args.map(formatArg).join(' ')}`;
@@ -244,7 +249,7 @@ function log(level: LogLevel, component: string, ...args: unknown[]): void {
     scheduleFlush();
   }
 
-  emitLogToUi(message);
+  if (emitToUi) emitLogToUi(message);
 }
 
 // 进程退出时兜底落盘，避免缓冲区中的日志丢失
@@ -252,8 +257,22 @@ process.once('exit', flush);
 process.once('beforeExit', flush);
 
 export const logger = {
-  debug: (component: string, ...args: unknown[]) => log('debug', component, ...args),
-  info: (component: string, ...args: unknown[]) => log('info', component, ...args),
-  warn: (component: string, ...args: unknown[]) => log('warn', component, ...args),
-  error: (component: string, ...args: unknown[]) => log('error', component, ...args),
+  debug: (component: string, ...args: unknown[]) => log('debug', component, args),
+  info: (component: string, ...args: unknown[]) => log('info', component, args),
+  warn: (component: string, ...args: unknown[]) => log('warn', component, args),
+  error: (component: string, ...args: unknown[]) => log('error', component, args),
+};
+
+/**
+ * 宿主自身诊断：**只落盘，不回推 UI**。
+ *
+ * 宿主日志出口（Electron 的 console、VS Code 的 OutputChannel）同时是 UI 侧
+ * `CoreEvent.log` 的处理终点；宿主记录诊断时若再走 `logger`，就形成
+ * `logger → emitToUi(log) → 宿主日志出口 → logger` 的自环。
+ */
+export const fileLogger = {
+  debug: (component: string, ...args: unknown[]) => log('debug', component, args, false),
+  info: (component: string, ...args: unknown[]) => log('info', component, args, false),
+  warn: (component: string, ...args: unknown[]) => log('warn', component, args, false),
+  error: (component: string, ...args: unknown[]) => log('error', component, args, false),
 };

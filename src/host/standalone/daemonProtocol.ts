@@ -12,8 +12,28 @@ import type { WorkspaceRef } from '../workspaceRef.js';
 import type { CoreToUiFrame, UiToCoreFrame } from './protocol.js';
 import { stringifyJsonSafe } from '../../core/utils/stringUtils.js';
 
-// ==================== 通道描述符 ====================
+// ==================== 远端 daemon 状态文件 ====================
 
+/**
+ * 远端 daemon 的状态文件名（`docs/core-daemon.md` 第 12.3 节）。
+ *
+ * 与 `settings.json` 同目录（`~/<configDir>/`），**只有 daemon 写它**；Host 侧读取它
+ * 来拿到实际监听端口与生效 token（SSH 接入时 daemon 端口不对外映射，只能这样发现）。
+ * 与 `core-rs/src/remote.rs::DAEMON_STATE_FILE_NAME` 同名，改动必须同步两侧。
+ */
+export const DAEMON_STATE_FILE_NAME = 'core-daemon.json';
+
+/** 状态文件内容（字段与 `core-rs/src/remote.rs::DaemonState` 一一对应） */
+export interface DaemonStateFile {
+  /** 启动时请求的 `host:port` */
+  requested: string;
+  /** 实际监听的 `IP:端口`（端口 +1 重试后与请求值不同） */
+  endpoint: string;
+  /** 控制通道 token */
+  token: string;
+}
+
+// ==================== 通道描述符 ====================
 /** ChannelDescriptor（`docs/core-daemon.md` 第 4.1 节） */
 export type ChannelDescriptor =
   /** 走当前控制通道的该 channel（本规格实现） */
@@ -31,6 +51,9 @@ export type HostToDaemonFrame =
   | { kind: 'closeWorkspace'; channel: number }
   | { kind: 'frame'; channel: number; frame: UiToCoreFrame }
   | { kind: 'listDirectories'; id: number; path: string | null }
+  | { kind: 'createDirectory'; id: number; path: string }
+  | { kind: 'renameDirectory'; id: number; path: string; name: string }
+  | { kind: 'deleteDirectory'; id: number; path: string; recursive: boolean }
   | { kind: 'shutdown' };
 
 /** channel 关闭原因 */
@@ -64,7 +87,20 @@ export type DaemonToHostFrame =
   | { kind: 'channelReset'; channel: number; reason: string }
   | { kind: 'frame'; channel: number; frame: CoreToUiFrame }
   | { kind: 'directoriesListed'; id: number; path: string; parent: string | null; entries: DirectoryEntry[] }
-  | { kind: 'directoriesFailed'; id: number; error: string };
+  | { kind: 'directoryCreated'; id: number; path: string }
+  /** 目录已重命名；`path` 是改名后的新路径 */
+  | { kind: 'directoryRenamed'; id: number; path: string }
+  | { kind: 'directoryDeleted'; id: number; path: string }
+  /** 目录操作失败（列举 / 新建 / 删除共用；按 `id` 对应请求） */
+  | { kind: 'directoryFailed'; id: number; error: string; reason: DirectoryFailureReason };
+
+/**
+ * 目录操作失败的原因。
+ *
+ * `notEmpty` 单独拎出来：调用方据此把删除升成「目录非空，确认连同内容一起删除？」，
+ * 而不是让用户对着一句错误文本猜该不该重试。
+ */
+export type DirectoryFailureReason = 'notEmpty' | 'other';
 
 // ==================== 编码 ====================
 
@@ -115,8 +151,16 @@ export function isDaemonToHostFrame(value: unknown): value is DaemonToHostFrame 
         && (value['parent'] === null || typeof value['parent'] === 'string')
         && isDirectoryEntries(value['entries'])
       );
-    case 'directoriesFailed':
-      return typeof value['id'] === 'number' && typeof value['error'] === 'string';
+    case 'directoryCreated':
+    case 'directoryRenamed':
+    case 'directoryDeleted':
+      return typeof value['id'] === 'number' && typeof value['path'] === 'string';
+    case 'directoryFailed':
+      return (
+        typeof value['id'] === 'number'
+        && typeof value['error'] === 'string'
+        && (value['reason'] === 'notEmpty' || value['reason'] === 'other')
+      );
     case 'workspaceOpened':
       return (
         typeof value['id'] === 'number'

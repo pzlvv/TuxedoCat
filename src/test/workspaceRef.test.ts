@@ -19,7 +19,7 @@ import {
 import { createChecker, runTests } from './helpers/harness';
 
 function endpoint(host: string, port: number, token = 't'): WorkspaceEndpoint {
-  return { host, port, user: null, auth: { token } };
+  return { host, port, user: null, auth: { kind: 'token', token } };
 }
 
 async function run(): Promise<void> {

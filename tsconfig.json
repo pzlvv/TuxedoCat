@@ -18,6 +18,7 @@
 		"vite.monaco.config.ts",
 		"vite.sidebar.config.ts",
 		"vite.titlebar.config.ts",
+		"vite.remoteWorkspace.config.ts",
 		"src/webview/**/*",
 		"src/test/**/*",
 		"test/**/*",

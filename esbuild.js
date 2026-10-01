@@ -9,7 +9,10 @@ const config = {
   entryPoints: [project.resolve('src', 'extension.ts')],
   bundle: true,
   outfile: project.extensionOut,
-  external: ['vscode'],
+  // ssh2（SSH 接入，见 docs/core-daemon.md 第 12 节）的可选原生加速模块：
+  // `cpu-features` 与 `*.node` 运行时缺失也能正常工作，标记 external 避免 esbuild
+  // 因解析不到 `.node` 而构建失败（与 electron/esbuild.js 同一口径）。
+  external: ['vscode', 'cpu-features', '*.node'],
   format: 'cjs',
   platform: 'node',
   target: 'node16',

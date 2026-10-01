@@ -21,7 +21,9 @@ const baseConfig = {
   minify: production,
   // bufferutil / utf-8-validate 是 ws 的可选原生加速模块，运行时缺失也能正常工作；
   // 标记为 external 避免 esbuild 因解析不到它们而报错。
-  external: ['electron', 'bufferutil', 'utf-8-validate'],
+  // cpu-features / *.node 同理：ssh2（SSH 接入，docs/core-daemon.md 第 12 节）的
+  // 可选原生加速，缺失时 ssh2 自己退化到纯 JS 实现。
+  external: ['electron', 'bufferutil', 'utf-8-validate', 'cpu-features', '*.node'],
   tsconfig: project.resolve('tsconfig.json'),
   // 构建期把 Core 实现（TUXEDO_CAT_CORE）烧进产物，见 src/host/coreKind.ts
   define: { __TUXEDO_CAT_CORE_KIND__: JSON.stringify(project.coreKind) },

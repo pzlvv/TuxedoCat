@@ -35,6 +35,10 @@ calamine = "0.36"
 ryu-js = "1"
 # 远程控制通道的 token 用操作系统随机数生成（`--token` 未给出时）。
 getrandom = "0.2"
+# 绑定通配地址时枚举本机网卡 IPv4（`start` 给每个网卡打一条连接串，见
+# `docs/core-daemon.md` 第 12.3 节）。std 没有跨平台的网卡枚举，故引入这个只做
+# 这一件事的小 crate。
+if-addrs = "0.15"
 
 [dev-dependencies]
 # 单测里现造最小 xlsx（zip + inline string）作为 Read xlsx 路径的夹具

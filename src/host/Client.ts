@@ -461,11 +461,18 @@ export class Client implements AssistantEventBus {
     return this.connectionForSession(sessionId);
   }
 
-  /** 按 file scheme 的路径找 Connection（未打开返回 undefined） */
+  /**
+   * 按工作区路径找 Connection（未打开返回 undefined）。
+   *
+   * 本地路径按宿主口径判等（大小写 / 尾分隔符）；远程路径是**目标机器上的字符串**，
+   * 逐字比较——对远程路径跑本地规范化会把 `/home/pz/a` 变成 `D:\home\pz\a`，
+   * 也可能把大小写不同的两个目录误判成同一个（`docs/client-connection.md` 第 4 节）。
+   */
   private connectionForWorkspacePath(path: string): Connection | undefined {
     for (const connection of this.connections.values()) {
       const ref = connection.workspaceRef;
-      if (ref.scheme === 'file' && ref.path && sameWorkspace(ref.path, path)) {
+      if (!ref.path) continue;
+      if (ref.scheme === 'file' ? sameWorkspace(ref.path, path) : ref.path === path) {
         return connection;
       }
     }

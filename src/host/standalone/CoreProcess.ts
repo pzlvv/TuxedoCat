@@ -74,8 +74,8 @@ export interface CoreProcessOptions {
   /** Standalone Core 可执行文件路径 */
   binaryPath: string;
   hooks: CoreProcessHooks;
-  /** 额外命令行参数；默认空（开发期可用来跑假 Core） */
-  spawnArgs?: readonly string[];
+  /** 命令行参数（必给：动作是裸词，漏掉就会落到缺省动作上；测试用它跑假 Core） */
+  spawnArgs: readonly string[];
   restartPolicy?: RestartPolicy;
   /** 关闭等待上限（毫秒）；超时后强制结束 */
   shutdownTimeoutMs?: number;
@@ -172,7 +172,7 @@ export class CoreProcess {
     const spawnFn = this.options.spawn ?? defaultSpawn;
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawnFn(this.options.binaryPath, this.options.spawnArgs ?? [], {
+      child = spawnFn(this.options.binaryPath, this.options.spawnArgs, {
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
       });

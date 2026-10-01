@@ -1,7 +1,6 @@
 //! 命令行解析用例（动作 / `--help` / `--version` / 未知选项 / 未知动作 / 动作互斥）。
 
 use super::*;
-use std::io::IsTerminal;
 
 use crate::remote::{DEFAULT_HOST, DEFAULT_PORT};
 
@@ -25,7 +24,7 @@ fn version_flag() {
 
 #[test]
 fn parses_actions() {
-    assert_eq!(parse(&args(&["serve"])), Command::Serve);
+    assert_eq!(parse(&args(&["stdio"])), Command::Stdio);
     assert!(matches!(parse(&args(&["start"])), Command::Start(_)));
     assert_eq!(parse(&args(&["kill"])), Command::Kill);
     // daemon 实体是启动器的内部实现，不出现在帮助里，但要能解析
@@ -45,8 +44,8 @@ fn rejects_unknown_action() {
 
 #[test]
 fn rejects_removed_flag_style_actions() {
-    // 动作是裸词：`--serve` 这类写法不再接受（旧写法直接报未知选项）
-    match parse(&args(&["--serve"])) {
+    // 动作是裸词：`--stdio` 这类写法不再接受（旧写法直接报未知选项）
+    match parse(&args(&["--stdio"])) {
         Command::Error(message) => assert!(message.contains("未知选项"), "{message}"),
         other => panic!("expected error, got {other:?}"),
     }
@@ -100,18 +99,23 @@ fn rejects_conflicting_modes() {
 #[test]
 fn usage_lists_all_modes_and_flags() {
     let text = usage();
-    for needle in ["serve", "start", "kill", "--host", "--port", "--token", "--help"] {
+    for needle in ["stdio", "start", "kill", "--host", "--port", "--token", "--help"] {
         assert!(text.contains(needle), "usage 缺少 {needle}：{text}");
     }
     // daemon 实体是内部实现：不出现在帮助里
     assert!(!text.contains("start-daemon"), "usage 不该出现 start-daemon：{text}");
+    // 默认值只有 `remote` 一处来源：帮助里写的必须是真正生效的默认值
+    assert!(text.contains(DEFAULT_HOST), "usage 缺少默认地址 {DEFAULT_HOST}：{text}");
+    assert!(
+        text.contains(&DEFAULT_PORT.to_string()),
+        "usage 缺少默认端口 {DEFAULT_PORT}：{text}"
+    );
 }
 
 #[test]
-fn no_mode_falls_back_to_serve_when_stdin_is_not_a_terminal() {
-    // cargo test 的 stdin 不是终端：没有模式时按 --serve 启动（宿主经管道接入）
-    if std::io::stdin().is_terminal() {
-        return;
-    }
-    assert_eq!(parse(&[]), Command::Serve);
+fn no_action_defaults_to_start() {
+    // 没有动作时按 start 处理：用户直接运行可执行文件即启动远程服务
+    assert!(matches!(parse(&[]), Command::Start(_)));
+    // 只有选项、没有动作也一样
+    assert!(matches!(parse(&args(&["--port", "8080"])), Command::Start(_)));
 }

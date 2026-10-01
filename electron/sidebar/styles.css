@@ -1,3 +1,5 @@
+@import '../ui/scrollbar.css';
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { height: 100%; overflow: hidden; }
 body {
@@ -43,8 +45,6 @@ body {
 }
 .new-chat-btn:hover { background: #7c7ff5; }
 .list { flex: 1; overflow-y: auto; padding: 6px; }
-.list::-webkit-scrollbar { width: 4px; }
-.list::-webkit-scrollbar-thumb { background: #3a3a42; border-radius: 2px; }
 .item {
   display: flex;
   flex-direction: row;
@@ -393,8 +393,6 @@ body {
     color: #27272a;
   }
   .search-input::placeholder { color: #9ca3af; }
-
-  .list::-webkit-scrollbar-thumb { background: #d4d4d8; }
 
   .item:hover { background: #f4f4f5; }
   /* 同深色主题：选中行用不透明底色，操作条才能靠 background: inherit 完全贴合。

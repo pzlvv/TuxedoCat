@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Remote Workspace</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <!-- 第一步：接入远端（连接串 / SSH 两种方式，窗口按这一步的内容高度建，紧凑一屏） -->
+    <section class="view" id="connectView">
+      <h1 class="view-title" id="connectTitle"></h1>
+      <div class="tabs" role="tablist">
+        <button id="tabConnectionString" class="tab" type="button" role="tab"></button>
+        <button id="tabSsh" class="tab" type="button" role="tab"></button>
+      </div>
+
+      <div class="pane" id="paneConnectionString">
+        <p class="hint" id="connectHint"></p>
+        <label class="field" for="connection">
+          <span class="field-label" id="connectionLabel"></span>
+        </label>
+        <input
+          id="connection"
+          class="text-input"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+        />
+      </div>
+
+      <div class="pane hidden" id="paneSsh">
+        <p class="hint" id="sshHint"></p>
+        <div class="form-grid">
+          <label class="field" for="sshHost">
+            <span class="field-label" id="sshHostLabel"></span>
+            <input id="sshHost" class="text-input" type="text" spellcheck="false" autocomplete="off" />
+          </label>
+          <label class="field" for="sshPort">
+            <span class="field-label" id="sshPortLabel"></span>
+            <input id="sshPort" class="text-input" type="text" spellcheck="false" autocomplete="off" />
+          </label>
+          <label class="field" for="sshUser">
+            <span class="field-label" id="sshUserLabel"></span>
+            <input id="sshUser" class="text-input" type="text" spellcheck="false" autocomplete="off" />
+          </label>
+          <label class="field" for="sshPassword">
+            <span class="field-label" id="sshPasswordLabel"></span>
+            <input id="sshPassword" class="text-input" type="password" autocomplete="off" />
+          </label>
+        </div>
+      </div>
+
+      <p class="status" id="connectStatus"></p>
+      <p class="error" id="connectError"></p>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button id="cancelConnect" type="button"></button>
+        <button id="connect" class="primary" type="button"></button>
+      </div>
+    </section>
+
+    <!-- 第二步：选远端目录（连接成功后窗口放大到这一步的尺寸） -->
+    <section class="view hidden" id="pickerView">
+      <header class="picker-head">
+        <h1 class="view-title" id="pickerTitle"></h1>
+        <p class="hint" id="pickerSubtitle"></p>
+      </header>
+      <div class="path-row">
+        <input
+          id="pathInput"
+          class="text-input mono"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+        />
+        <button id="up" class="icon-btn" type="button"></button>
+      </div>
+      <div class="list" id="entries"></div>
+      <p class="error" id="pickerError"></p>
+      <div class="actions">
+        <button id="newFolder" type="button"></button>
+        <span class="spacer"></span>
+        <button id="cancelPicker" type="button"></button>
+        <button id="open" class="primary" type="button"></button>
+      </div>
+    </section>
+
+    <!-- 目录行的右键菜单：重命名 / 删除 -->
+    <div class="context-menu hidden" id="contextMenu">
+      <button id="menuRename" type="button"></button>
+      <button id="menuDelete" type="button"></button>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

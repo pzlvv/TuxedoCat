@@ -1,7 +1,7 @@
 /**
  * 后台 watch 构建器（npm run watch:app / VS Code 后台任务）
  *
- * 并行启动 webview / monaco / sidebar / titlebar / electron 的 watch 构建，
+ * 并行启动 webview / monaco / sidebar / titlebar / remoteWorkspace / electron 的 watch 构建，
  * 初次构建完成后输出 "watch:app: ready"（供 VS Code 后台任务问题匹配器识别）。
  * 之后源码变化会在后台自动重建，按 F5 启动时无需再全量构建，大幅加速。
  *
@@ -21,6 +21,7 @@ const READY_TARGETS = [
   'dist/monaco/index.html',
   'dist/sidebar/index.html',
   'dist/titlebar/index.html',
+  'dist/remoteWorkspace/index.html',
   'dist-electron/main.cjs',
 ];
 
@@ -84,6 +85,7 @@ const watchers = [
   { name: 'monaco', command: 'npm run watch:monaco' },
   { name: 'sidebar', command: 'npm run watch:sidebar' },
   { name: 'titlebar', command: 'npm run watch:titlebar' },
+  { name: 'remoteWorkspace', command: 'npm run watch:remoteWorkspace' },
   { name: 'electron', command: 'npm run watch:electron' },
 ];
 
@@ -120,7 +122,7 @@ process.on('SIGTERM', () => process.exit(0));
 // ==================== Rust Core 重建 ====================
 //
 // cargo 没有内置 watch，这里也不引入 `cargo-watch` 依赖：轮询 `core-rs` 下
-// `.rs` / `Cargo.toml` 的 mtime，变化时跑一次 `npm run build:core`
+// `.rs` / `Cargo.toml` 的 mtime，变化时跑一次 `npm run build:core:host`
 // （release 构建，产物直接落 `resources/core/<平台>/`，即宿主加载的那份）。
 //
 // 与前端 watcher 解耦：**不**放进 `watchers` 数组——构建失败只打日志，
@@ -180,8 +182,10 @@ if (CORE_WATCH_ENABLED && fs.existsSync(CORE_DIR)) {
       return;
     }
     rebuilding = true;
-    console.log('[watch:app] core-rs changed; rebuilding Rust core (npm run build:core)...');
-    const child = spawn('npm run build:core', { cwd: ROOT, stdio: 'inherit', shell: true });
+    // 只重建当前平台：`npm run build:core` 会连 Linux 那份一起编（打包要携带的全部平台），
+    // 本地调试用不上，还平白要求装 zig。见 docs/standalone-core.md 第 4.3 节。
+    console.log('[watch:app] core-rs changed; rebuilding Rust core (npm run build:core:host)...');
+    const child = spawn('npm run build:core:host', { cwd: ROOT, stdio: 'inherit', shell: true });
     child.on('error', (err) => {
       console.error('[watch:app] core rebuild failed to start:', err);
     });

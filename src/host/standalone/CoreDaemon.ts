@@ -15,7 +15,7 @@
  * 越过软水位只记录诊断，不丢帧、不合并帧。
  */
 
-import { connect as netConnect, type Socket } from 'net';
+import { connect as netConnect } from 'net';
 import {
   CORE_PROTOCOL_VERSION,
   FrameDecoder,
@@ -27,6 +27,7 @@ import {
   encodeDaemonFrame,
   isDaemonToHostFrame,
   type ChannelDescriptor,
+  type DirectoryFailureReason,
   type DirectoryListing,
   type WorkspaceCloseReason,
 } from './daemonProtocol.js';
@@ -41,61 +42,141 @@ import type { WorkspaceRef } from '../workspaceRef.js';
 const OUTBOX_WARN_THRESHOLD = 10_000;
 /** 握手超时默认值（Core 进程启动后未回 `ready` 视为失败） */
 export const DEFAULT_DAEMON_HANDSHAKE_TIMEOUT_MS = 10_000;
+/** 控制通道就绪超时默认值（连不上 / 鉴权无应答） */
+export const DEFAULT_DAEMON_LINK_TIMEOUT_MS = 10_000;
+/**
+ * SSH 接入的建链超时。
+ *
+ * SSH 建链包含「连 SSH → 探测 / 上传产物 → 启动 daemon → 转发」，首次接入比 TCP
+ * 直连慢一个量级（6MB 产物 + 启动等待），不能沿用 10s。
+ */
+export const SSH_DAEMON_LINK_TIMEOUT_MS = 120_000;
 /** 关闭 channel / daemon 的等待上限 */
 export const DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS = 5_000;
+
+/**
+ * 目录操作（列举 / 新建 / 删除）失败。
+ *
+ * 除了错误文本还带上 daemon 给的 `reason`：`notEmpty` 是可继续的失败——调用方据此
+ * 提示「目录非空，连同内容一起删除？」。靠匹配错误文本分支会在改文案时静默失效。
+ */
+export class DirectoryOperationError extends Error {
+  constructor(
+    message: string,
+    readonly reason: DirectoryFailureReason,
+  ) {
+    super(message);
+    this.name = 'DirectoryOperationError';
+  }
+}
 
 /**
  * 控制通道：连接一个已经在监听的 daemon（`docs/core-daemon.md` 第 12 节）。
  *
  * 第一帧是 `auth`，`authOk` 之前不出站业务帧。
- * 本地同机工作区不走 daemon：`bootstrapCore` 直接用 `serve` 动作起单进程 Core
+ * 本地同机工作区不走 daemon：`bootstrapCore` 直接用 `stdio` 动作起单进程 Core
  * （stdio 帧通道，无端口、无 token，见 `createStandaloneCoreBus`）。
  */
-export interface CoreDaemonTransport {
+/**
+ * 控制通道的链路（Host 侧）。
+ *
+ * `write` 返回 false 表示背压（数据已被接受，等 `drain` 再继续）；
+ * `end` 是 shutdown 帧之后的优雅关闭，`kill` 是超时强杀。
+ * 入站数据与链路结束都用订阅式接口：建链是异步的，`authOk` 也走 `onData`。
+ */
+export interface CoreDaemonLink {
+  write(line: string): boolean;
+  onceDrain(listener: () => void): void;
+  end(): void;
+  kill(): void;
+  /** 订阅入站数据（建链完成后立即挂上，不丢帧） */
+  onData(listener: (chunk: string) => void): void;
+  /** 订阅链路结束（正常断开 / 出错 / 被杀） */
+  onClose(listener: () => void): void;
+}
+
+/**
+ * 控制通道建链器（`docs/core-daemon.md` 第 12 节）。
+ *
+ * 两种接入方式各一个实现：
+ * - `tcpDaemonOpener`：直连监听中的 daemon（`host:port` + token）；
+ * - `createSshDaemonOpener`（`sshTransport.ts`）：全部通信走 SSH 端口，token 由远端
+ *   状态文件取得（`sshDaemonBootstrap.ts`）。
+ *
+ * `open()` 负责把 `auth` 第一帧发出去——远程控制通道的第一帧必须是它。
+ * 失败时 reject：直接上报，不做「先连上再说」的降级（`DEVELOPMENT.md` 第 12 章）。
+ */
+export interface CoreDaemonLinkOpener {
+  open(): Promise<CoreDaemonLink>;
+  /** 释放底层资源（SSH 连接等）；幂等 */
+  dispose(): void;
+}
+
+/** TCP 直连参数 */
+export interface TcpDaemonTransport {
   host: string;
   port: number;
   token: string;
 }
 
 export interface CoreDaemonOptions {
-  transport: CoreDaemonTransport;
+  transport: CoreDaemonLinkOpener;
   log: (...args: unknown[]) => void;
   handshakeTimeoutMs?: number;
+  /** 控制通道就绪超时；缺省用 `DEFAULT_DAEMON_LINK_TIMEOUT_MS`（SSH 接入要放宽） */
+  linkTimeoutMs?: number;
   shutdownTimeoutMs?: number;
 }
 
-/**
- * 控制通道的写出端。
- *
- * `write` 返回 false 表示背压（数据已被接受，等 `drain` 再继续）；
- * `end` 是 shutdown 帧之后的优雅关闭，`kill` 是超时强杀。
- */
-interface ControlWriter {
-  write(line: string): boolean;
-  onceDrain(listener: () => void): void;
-  end(): void;
-  kill(): void;
+/** TCP 直连建链器：socket 连上后立刻发 `auth` */
+export function tcpDaemonOpener(transport: TcpDaemonTransport): CoreDaemonLinkOpener {
+  return {
+    open: () => openTcpLink(transport),
+    dispose: () => undefined,
+  };
 }
 
-/** 远程 TCP socket */
-class SocketWriter implements ControlWriter {
-  constructor(private readonly socket: Socket) {}
-
-  write(line: string): boolean {
-    return this.socket.write(line);
-  }
-
-  onceDrain(listener: () => void): void {
-    this.socket.once('drain', listener);
-  }
-
-  end(): void {
-    this.socket.end();
-  }
-
-  kill(): void {
-    this.socket.destroy();
-  }
+/** 建一条 TCP 控制通道链路；`connect` 之前失败即 reject */
+function openTcpLink(transport: TcpDaemonTransport): Promise<CoreDaemonLink> {
+  return new Promise<CoreDaemonLink>((resolve, reject) => {
+    const socket = netConnect({ host: transport.host, port: transport.port });
+    socket.setEncoding('utf8');
+    let connected = false;
+    const link: CoreDaemonLink = {
+      write: (line) => socket.write(line),
+      onceDrain: (listener) => {
+        socket.once('drain', listener);
+      },
+      end: () => {
+        socket.end();
+      },
+      kill: () => {
+        socket.destroy();
+      },
+      onData: (listener) => {
+        socket.on('data', (chunk: string | Buffer) => {
+          listener(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+        });
+      },
+      onClose: (listener) => {
+        socket.on('close', listener);
+      },
+    };
+    socket.once('connect', () => {
+      connected = true;
+      try {
+        socket.write(encodeDaemonFrame({ kind: 'auth', token: transport.token }));
+      } catch (error) {
+        reject(toError(error));
+        return;
+      }
+      resolve(link);
+    });
+    socket.once('error', (error: Error) => {
+      // 连接失败：等待者不能永远挂着（连上之后的错误由 `close` 收尾）
+      if (!connected) reject(error);
+    });
+  });
 }
 
 /** 一条 daemon channel 的传输层实现（Host 侧） */
@@ -298,8 +379,14 @@ class DaemonChannel implements CoreChannelTransport {
  * `openChannel` 同步返回；控制通道在第一次需要时连接。
  */
 export class CoreDaemon {
-  private socket: Socket | null = null;
-  private writer: ControlWriter | null = null;
+  private writer: CoreDaemonLink | null = null;
+  /** 建链中（`open()` 尚未 settle）：重复调用 `ensureStarted` 不再发起新的建链 */
+  private opening = false;
+  /**
+   * 建链代次：每次建链自增。超时 / 关闭时再自增一次，作废在途的 `open()`——
+   * 否则慢连接会在已经上报失败之后又把链路挂回来。
+   */
+  private linkAttempt = 0;
   /** 控制通道是否可写出：`authOk` 之后才可写（此前只发 `auth`） */
   private linkReady = false;
   private readonly decoder: FrameDecoder;
@@ -316,10 +403,10 @@ export class CoreDaemon {
   private readonly channels = new Map<number, DaemonChannel>();
   /** 已发出、尚未收到应答的 openWorkspace：requestId → transport */
   private readonly openingRequests = new Map<number, DaemonChannel>();
-  /** 已发出、尚未收到应答的 listDirectories：requestId → 等待者 */
-  private readonly listRequests = new Map<
+  /** 已发出、尚未收到应答的目录操作（列举 / 新建 / 删除）：requestId → 等待者 */
+  private readonly directoryRequests = new Map<
     number,
-    { resolve: (listing: DirectoryListing) => void; reject: (error: Error) => void }
+    { resolve: (value: unknown) => void; reject: (error: Error) => void }
   >();
   /** 远程鉴权完成前的等待者 */
   private authWaiters: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
@@ -356,12 +443,69 @@ export class CoreDaemon {
   /** 列出目标机器上的子目录（远程目录选择器用；`path` 为 null 时从主目录开始） */
   async listDirectories(path: string | null): Promise<DirectoryListing> {
     await this.ensureConnected();
-    const id = this.nextRequestId;
-    this.nextRequestId += 1;
     return new Promise<DirectoryListing>((resolve, reject) => {
-      this.listRequests.set(id, { resolve, reject });
+      const id = this.nextDirectoryRequestId();
+      this.directoryRequests.set(id, {
+        resolve: (value) => resolve(value as DirectoryListing),
+        reject,
+      });
       this.enqueue(encodeDaemonFrame({ kind: 'listDirectories', id, path }));
     });
+  }
+
+  /** 在目标机器上新建目录（父目录不存在时一并创建），返回实际路径 */
+  async createDirectory(path: string): Promise<string> {
+    await this.ensureConnected();
+    return new Promise<string>((resolve, reject) => {
+      const id = this.nextDirectoryRequestId();
+      this.directoryRequests.set(id, {
+        resolve: (value) => resolve((value as { path: string }).path),
+        reject,
+      });
+      this.enqueue(encodeDaemonFrame({ kind: 'createDirectory', id, path }));
+    });
+  }
+
+  /**
+   * 重命名目标机器上的目录（只改同一父目录下的名字），返回新路径。
+   *
+   * `name` 是纯名字：daemon 会拒绝带分隔符 / `.` / `..` 的名字，以及已存在的目标。
+   */
+  async renameDirectory(path: string, name: string): Promise<string> {
+    await this.ensureConnected();
+    return new Promise<string>((resolve, reject) => {
+      const id = this.nextDirectoryRequestId();
+      this.directoryRequests.set(id, {
+        resolve: (value) => resolve((value as { path: string }).path),
+        reject,
+      });
+      this.enqueue(encodeDaemonFrame({ kind: 'renameDirectory', id, path, name }));
+    });
+  }
+
+  /**
+   * 删除目标机器上的目录，返回实际路径。
+   *
+   * `recursive` 为 `false` 时只接受空目录：非空会以 `DirectoryOperationError`
+   * （`reason === 'notEmpty'`）失败，调用方据此提示「连同内容一起删除」。
+   */
+  async deleteDirectory(path: string, recursive: boolean): Promise<string> {
+    await this.ensureConnected();
+    return new Promise<string>((resolve, reject) => {
+      const id = this.nextDirectoryRequestId();
+      this.directoryRequests.set(id, {
+        resolve: (value) => resolve((value as { path: string }).path),
+        reject,
+      });
+      this.enqueue(encodeDaemonFrame({ kind: 'deleteDirectory', id, path, recursive }));
+    });
+  }
+
+  /** 取下一个目录操作请求 id */
+  private nextDirectoryRequestId(): number {
+    const id = this.nextRequestId;
+    this.nextRequestId += 1;
+    return id;
   }
 
   /** 打开一个 channel（同步返回；内部异步连接 daemon 并起 Core） */
@@ -400,12 +544,17 @@ export class CoreDaemon {
     await channel.waitClosed(this.options.shutdownTimeoutMs ?? DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS);
   }
 
-  /** 关闭控制通道：`shutdown` 帧 → 等 socket 退出 → 超时强制断开 */
+  /** 关闭控制通道：`shutdown` 帧 → 等链路退出 → 超时强制断开 */
   async shutdown(): Promise<void> {
-    if (this.stopped) return;
+    if (this.stopped) {
+      this.options.transport.dispose();
+      return;
+    }
     this.stopped = true;
     this.shuttingDown = true;
     this.clearLinkTimeout();
+    // 建链还没回来：作废它，避免关闭后又挂上一条链路
+    this.linkAttempt += 1;
     const writer = this.writer;
     if (writer) {
       try {
@@ -413,16 +562,18 @@ export class CoreDaemon {
       } catch {
         // 已退出：无需再发
       }
-      // 主动结束 socket，否则对端会一直等下一帧
+      // 主动结束链路，否则对端会一直等下一帧
       writer.end();
       await this.waitForExit(this.options.shutdownTimeoutMs ?? DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS);
     }
-    // 优雅关闭未生效 / 连接尚未建立时，也不留悬挂的 socket
+    // 优雅关闭未生效 / 连接尚未建立时，也不留悬挂的链路
     try {
       writer?.kill();
     } catch {
       // 已断开
     }
+    // SSH 接入：控制通道只是这条 SSH 连接上的一条转发通道，一并释放
+    this.options.transport.dispose();
     // daemon 退出后仍未收到 workspaceClosed 的 channel：一起失败
     const leftovers = [...this.channels.values()];
     this.channels.clear();
@@ -437,47 +588,51 @@ export class CoreDaemon {
   /** 确保控制通道已建立；返回 false 表示失败（失败已通过 fatalAll 上报） */
   private ensureStarted(): boolean {
     if (this.stopped) return false;
-    if (this.socket) return true;
-    const transport = this.options.transport;
-    this.openRemoteSocket(transport.host, transport.port, transport.token);
+    if (this.writer || this.opening) return true;
+    this.opening = true;
+    const attempt = ++this.linkAttempt;
     this.armLinkTimeout('Core daemon connection');
+    this.options.transport.open().then(
+      (link) => {
+        if (attempt !== this.linkAttempt || this.stopped) {
+          // 已经超时 / 关闭：这条链路来晚了，直接放掉
+          link.kill();
+          return;
+        }
+        this.opening = false;
+        // 上一次链路已经结束过：这次是新链路，退出要重新算一次
+        this.exitHandled = false;
+        this.writer = link;
+        link.onData((chunk) => this.decoder.push(chunk));
+        link.onClose(() => this.handleExit());
+        // `auth` 已由建链器发出，这里只把排队的帧放出去（等 `authOk`）
+        this.flushOutbox();
+      },
+      (error: unknown) => {
+        if (attempt !== this.linkAttempt) return;
+        this.opening = false;
+        this.failPendingLink(toError(error));
+      },
+    );
     return true;
-  }
-
-  /** 建立 TCP 控制通道并完成 `auth` 握手（`authOk` 前不出站业务帧） */
-  private openRemoteSocket(host: string, port: number, token: string): void {
-    const socket = netConnect({ host, port });
-    this.socket = socket;
-    this.writer = new SocketWriter(socket);
-    this.linkReady = false;
-    socket.setEncoding('utf8');
-    socket.on('connect', () => {
-      try {
-        socket.write(encodeDaemonFrame({ kind: 'auth', token }));
-      } catch (error) {
-        this.log(`[daemon] auth write failed: ${toError(error).message}`);
-      }
-    });
-    socket.on('data', (chunk: string) => this.decoder.push(chunk));
-    socket.on('error', (error) => {
-      this.log(`[daemon] socket error: ${error.message}`);
-    });
-    socket.on('close', () => this.handleExit());
   }
 
   /**
    * 控制通道就绪超时（连不上 / 鉴权无应答）。
    *
-   * 超时后把等待者与已登记 channel 一起失败，并断开 socket，不静默挂起。
+   * 超时后把等待者与已登记 channel 一起失败，并断开链路，不静默挂起。
    */
   private armLinkTimeout(label: string): void {
     this.clearLinkTimeout();
-    const timeoutMs = this.handshakeTimeoutMs();
+    const timeoutMs = this.options.linkTimeoutMs ?? DEFAULT_DAEMON_LINK_TIMEOUT_MS;
     this.linkTimer = setTimeout(() => {
       this.linkTimer = null;
       if (this.linkReady || this.exitHandled) return;
       const error = new Error(`${label} timed out after ${timeoutMs}ms.`);
       this.log(`[daemon] ${error.message}`);
+      // 作废在途建链：慢连接不能在失败上报之后又把链路挂回来
+      this.linkAttempt += 1;
+      this.opening = false;
       this.failPendingLink(error);
       this.writer?.kill();
     }, timeoutMs);
@@ -496,9 +651,9 @@ export class CoreDaemon {
     const authWaiters = this.authWaiters;
     this.authWaiters = [];
     for (const waiter of authWaiters) waiter.reject(error);
-    const listRequests = [...this.listRequests.values()];
-    this.listRequests.clear();
-    for (const request of listRequests) request.reject(error);
+    const directoryRequests = [...this.directoryRequests.values()];
+    this.directoryRequests.clear();
+    for (const request of directoryRequests) request.reject(error);
     this.fatalAll(error);
   }
 
@@ -506,7 +661,7 @@ export class CoreDaemon {
     if (this.exitHandled) return; // close 只处理一次
     this.exitHandled = true;
     this.clearLinkTimeout();
-    this.socket = null;
+    this.opening = false;
     this.writer = null;
     this.linkReady = false;
     this.waitingDrain = false;
@@ -517,9 +672,9 @@ export class CoreDaemon {
     const authWaiters = this.authWaiters;
     this.authWaiters = [];
     for (const waiter of authWaiters) waiter.reject(new Error('Core daemon exited.'));
-    const listRequests = [...this.listRequests.values()];
-    this.listRequests.clear();
-    for (const request of listRequests) request.reject(new Error('Core daemon exited.'));
+    const directoryRequests = [...this.directoryRequests.values()];
+    this.directoryRequests.clear();
+    for (const request of directoryRequests) request.reject(new Error('Core daemon exited.'));
 
     if (this.shuttingDown || this.stopped) return;
     this.log('[daemon] exited unexpectedly');
@@ -586,15 +741,23 @@ export class CoreDaemon {
         return;
       }
       case 'directoriesListed': {
-        const request = this.listRequests.get(value.id);
-        this.listRequests.delete(value.id);
+        const request = this.directoryRequests.get(value.id);
+        this.directoryRequests.delete(value.id);
         request?.resolve({ path: value.path, parent: value.parent, entries: value.entries });
         return;
       }
-      case 'directoriesFailed': {
-        const request = this.listRequests.get(value.id);
-        this.listRequests.delete(value.id);
-        request?.reject(new Error(value.error));
+      case 'directoryCreated':
+      case 'directoryRenamed':
+      case 'directoryDeleted': {
+        const request = this.directoryRequests.get(value.id);
+        this.directoryRequests.delete(value.id);
+        request?.resolve({ path: value.path });
+        return;
+      }
+      case 'directoryFailed': {
+        const request = this.directoryRequests.get(value.id);
+        this.directoryRequests.delete(value.id);
+        request?.reject(new DirectoryOperationError(value.error, value.reason));
         return;
       }
       case 'workspaceOpened': {
