@@ -4126,6 +4126,57 @@ fn agent_tool_spawns_a_sub_agent_that_replies_to_the_creator() {
     crate::subagent::reset_for_test();
 }
 
+/// 子代理完整继承主对话的 agent mode：manual / risk / auto 一律照搬（对齐 Embedded
+/// `inheritAgentMode`，不能把 manual 降级成 risk 造成越权），并落盘到子会话
+/// meta.json 的 context，重启后重开子会话仍显示继承来的模式。
+#[test]
+fn sub_agent_inherits_parent_agent_mode() {
+    let sandbox = Sandbox::new("engine-sub-agent-inherit-mode");
+    // 不调用 `subagent::reset_for_test()`：注册表是进程级全局状态，本用例改用独立的
+    // creator id，避免与并行的 Agent 用例互相清空 / 误判 `list_for_creator`。
+    let llm = FakeLlm::start(|_index, body| {
+        if is_sub_agent_request(body) {
+            return openai_multi_tool_sse(&[(
+                "call_reply",
+                "Reply",
+                r#"{"message":"子代理已完成任务"}"#,
+            )]);
+        }
+        openai_text_sse(&["好"])
+    });
+    // 默认 risk：子代理取到的应是父会话的值，而不是 settings 的默认值
+    prepare(&sandbox, &llm.base_url, "risk");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let harness = EngineHarness::allow_all();
+    let creator = "s-inherit";
+    history::create_conversation(creator, &project, json!({ "sessionId": creator })).unwrap();
+
+    for mode in ["manual", "risk", "auto"] {
+        let parent = harness.core.session(creator);
+        parent.lock().unwrap().agent_mode = mode.to_string();
+        let sub_id = harness
+            .core
+            .create_sub_agent(tools::SubAgentRequest {
+                creator_session_id: creator.to_string(),
+                prompt: format!("任务 {mode}"),
+                description: format!("inherit {mode}"),
+                role: "Master".to_string(),
+            })
+            .expect("create sub agent");
+
+        assert_eq!(
+            harness.core.session(&sub_id).lock().unwrap().agent_mode,
+            mode,
+            "子代理应当原样继承父会话的 agent mode"
+        );
+        let metadata = history::load_metadata(&sub_id, &project).expect("子会话 meta.json");
+        assert_eq!(
+            metadata["context"]["agentMode"], mode,
+            "继承来的 agent mode 应当落盘到子会话 meta.json"
+        );
+    }
+}
+
 /// 子代理没调用 `Reply` 时注入 Reminder（最多 3 次），措辞随重试次数递进。
 #[test]
 fn sub_agent_without_reply_gets_reminders() {

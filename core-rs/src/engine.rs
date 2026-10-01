@@ -585,17 +585,16 @@ impl Core {
         let sub_session_id = crate::subagent::generate_sub_session_id();
         config::set_session_workspace(&sub_session_id, Some(project.clone()));
 
-        // 继承创建者的会话级配置：agent mode（`inheritAgentMode`：父 auto → auto，
-        // 其余一律 risk）、model / provider、thinking effort。
+        // 继承创建者的会话级配置：agent mode（`inheritAgentMode`：完整继承父会话的
+        // manual / risk / auto，子代理只是主对话的执行延伸，权限策略必须与主对话一致，
+        // 否则会出现「主对话 manual 逐条确认、子代理却自动放行非危险操作」这类越权行为；
+        // 父会话未记录时 `session()` 已按 settings 的 `defaultAgentMode` 兜底）、
+        // model / provider、thinking effort。
         let (agent_mode, model, provider, thinking_effort) = {
             let state = self.session(&creator);
             let state = state.lock().unwrap();
             (
-                if state.agent_mode == "auto" {
-                    "auto".to_string()
-                } else {
-                    "risk".to_string()
-                },
+                state.agent_mode.clone(),
                 state.model.clone(),
                 state.provider.clone(),
                 state.thinking_effort.clone(),
@@ -606,7 +605,7 @@ impl Core {
         {
             let mut state = sub_state.lock().unwrap();
             state.project = Some(project.clone());
-            state.agent_mode = agent_mode;
+            state.agent_mode = agent_mode.clone();
             state.model = model.clone();
             state.provider = provider.clone();
             state.thinking_effort = thinking_effort;
@@ -626,6 +625,10 @@ impl Core {
             model.as_deref(),
             provider.as_deref(),
         );
+        // 同步把继承来的 agent mode 落进子会话 meta.json 的 context：
+        // 重启后重新打开子会话，UI 仍显示继承自主对话的模式（对齐 Embedded 的
+        // `updateConversationContext(subSessionID, { agentMode })`）。
+        self.persist_context(&sub_session_id, json!({ "key": "agentMode", "value": agent_mode }));
 
         crate::subagent::register(&sub_session_id, &creator);
         self.emit_runtime();

@@ -685,37 +685,84 @@ fn stream_error_message(error: &Value) -> String {
     crate::util::js_json_stringify(error)
 }
 
-/// `stringifyToolResultContent`：tool_result 的 content（字符串 / 内容块数组）压平成文本
-/// （对齐 `OpenAiApi.ts` 的同名函数）。
-fn stringify_tool_result_content(raw: &Value) -> String {
+/// `toImagePart`：内部 image block → Chat Completions 的 `image_url` part。
+/// `source.data` 为真值时才产出，否则返回 None（对齐 `OpenAiApi.ts` 的同名逻辑）。
+fn to_image_part(block: &Value) -> Option<Value> {
+    let source = block.get("source")?;
+    let data = source
+        .get("data")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())?;
+    let media_type = source
+        .get("media_type")
+        .and_then(Value::as_str)
+        .unwrap_or("image/png");
+    Some(json!({
+        "type": "image_url",
+        "image_url": { "url": format!("data:{media_type};base64,{data}") }
+    }))
+}
+
+/// `convertToolResultContent`：tool_result 的 content（字符串 / 内容块数组）转成
+/// Chat Completions 的 tool 消息 content（对齐 `OpenAiApi.ts` 的同名函数）。
+///
+/// 纯文本（字符串 / 只含 text 的数组）压平成字符串以兼容更多服务商；含图片时保留为
+/// content parts 数组（`text` / `image_url`），使 Read 等工具返回的图片真正送达模型，
+/// 而不是被替换成 `[image]` 占位符。
+fn convert_tool_result_content(raw: &Value) -> Value {
     match raw {
-        Value::String(text) => text.clone(),
-        Value::Array(parts) => parts
-            .iter()
-            .map(|part| match part {
-                Value::String(text) => text.clone(),
-                Value::Object(_) => {
-                    let kind = part.get("type").and_then(Value::as_str).unwrap_or("");
-                    if kind == "text" {
-                        if let Some(text) = part.get("text").and_then(Value::as_str) {
-                            return text.to_string();
+        Value::String(text) => Value::String(text.clone()),
+        Value::Array(parts) => {
+            let mut out: Vec<Value> = Vec::new();
+            for part in parts {
+                match part {
+                    Value::String(text) => out.push(json!({ "type": "text", "text": text })),
+                    Value::Object(_) => {
+                        let kind = part.get("type").and_then(Value::as_str).unwrap_or("");
+                        if kind == "text" {
+                            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                                out.push(json!({ "type": "text", "text": text }));
+                                continue;
+                            }
                         }
+                        if kind == "image" {
+                            if let Some(image) = to_image_part(part) {
+                                out.push(image);
+                            }
+                            continue;
+                        }
+                        // `JSON.stringify(part ?? '')`：数字走 JS 口径
+                        out.push(json!({
+                            "type": "text",
+                            "text": crate::util::js_json_stringify(part),
+                        }));
                     }
-                    if kind == "image" {
-                        return "[image]".to_string();
-                    }
-                    // `JSON.stringify(part ?? '')`：数字走 JS 口径
-                    crate::util::js_json_stringify(part)
+                    // `JSON.stringify(null ?? '')` === '""'
+                    Value::Null => out.push(json!({ "type": "text", "text": "\"\"" })),
+                    other => out.push(json!({
+                        "type": "text",
+                        "text": crate::util::js_json_stringify(other),
+                    })),
                 }
-                // `JSON.stringify(null ?? '')` === '""'
-                Value::Null => "\"\"".to_string(),
-                other => crate::util::js_json_stringify(other),
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+            }
+            // 纯文本时退化为字符串形式（与旧行为一致）
+            let only_text = out
+                .iter()
+                .all(|part| part.get("type").and_then(Value::as_str) == Some("text"));
+            if only_text {
+                let joined = out
+                    .iter()
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Value::String(joined)
+            } else {
+                Value::Array(out)
+            }
+        }
         // `JSON.stringify(raw ?? '')`
-        Value::Null => "\"\"".to_string(),
-        other => crate::util::js_json_stringify(other),
+        Value::Null => Value::String("\"\"".to_string()),
+        other => Value::String(crate::util::js_json_stringify(other)),
     }
 }
 
@@ -756,7 +803,7 @@ pub fn to_chat_messages(messages: &[Value]) -> Vec<Value> {
                             out.push(json!({
                                 "role": "tool",
                                 "tool_call_id": call_id,
-                                "content": stringify_tool_result_content(
+                                "content": convert_tool_result_content(
                                     block.get("content").unwrap_or(&Value::Null),
                                 ),
                             }));
@@ -767,22 +814,8 @@ pub fn to_chat_messages(messages: &[Value]) -> Vec<Value> {
                             }
                         }
                         "image" => {
-                            // `toImagePart`：source.data 为真值时才产出 image_url
-                            if let Some(source) = block.get("source") {
-                                if let Some(data) = source
-                                    .get("data")
-                                    .and_then(Value::as_str)
-                                    .filter(|value| !value.is_empty())
-                                {
-                                    let media_type = source
-                                        .get("media_type")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("image/png");
-                                    user_parts.push(json!({
-                                        "type": "image_url",
-                                        "image_url": { "url": format!("data:{media_type};base64,{data}") }
-                                    }));
-                                }
+                            if let Some(image) = to_image_part(block) {
+                                user_parts.push(image);
                             }
                         }
                         _ => {}

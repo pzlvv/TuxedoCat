@@ -71,20 +71,41 @@ function toImagePart(block: any): unknown {
   return { type: 'image_url', image_url: { url: `data:${mediaType};base64,${source.data}` } };
 }
 
-/** 把 tool_result 的 content（字符串 / 内容块数组）压平成文本 */
-function stringifyToolResultContent(raw: unknown): string {
+/**
+ * 把 tool_result 的 content（字符串 / 内容块数组）转成 Chat Completions 的 tool
+ * 消息 content：
+ * - 纯文本（字符串 / 只含 text 的数组）压平成字符串，兼容更多服务商；
+ * - 含图片时保留为 content parts 数组（`text` / `image_url`），使 Read 等工具
+ *   返回的图片能真正送达模型，而不是被替换成 `[image]` 占位符。
+ */
+function convertToolResultContent(raw: unknown): string | unknown[] {
   if (typeof raw === 'string') return raw;
-  if (Array.isArray(raw)) {
-    return raw
-      .map((part: any) => {
-        if (typeof part === 'string') return part;
-        if (part?.type === 'text' && typeof part.text === 'string') return part.text;
-        if (part?.type === 'image') return '[image]';
-        return JSON.stringify(part ?? '');
-      })
-      .join('\n');
+  if (!Array.isArray(raw)) return JSON.stringify(raw ?? '');
+
+  const parts: unknown[] = [];
+  for (const part of raw as any[]) {
+    if (typeof part === 'string') {
+      parts.push({ type: 'text', text: part });
+      continue;
+    }
+    if (part?.type === 'text' && typeof part.text === 'string') {
+      parts.push({ type: 'text', text: part.text });
+      continue;
+    }
+    if (part?.type === 'image') {
+      const imagePart = toImagePart(part);
+      if (imagePart) parts.push(imagePart);
+      continue;
+    }
+    parts.push({ type: 'text', text: JSON.stringify(part ?? '') });
   }
-  return JSON.stringify(raw ?? '');
+
+  // 纯文本时退化为字符串形式（与旧行为一致）
+  const onlyText = parts.every((part: any) => part.type === 'text');
+  if (onlyText) {
+    return parts.map((part: any) => part.text).join('\n');
+  }
+  return parts;
 }
 
 /**
@@ -100,6 +121,7 @@ function stringifyToolResultContent(raw: unknown): string {
  *   - assistant 文本      → { role: 'assistant', content }
  *   - assistant tool_use → { role: 'assistant', content, tool_calls: [{ id, type:'function', function:{ name, arguments } }] }
  *   - user tool_result   → { role: 'tool', tool_call_id, content }
+ *     （content 为字符串；tool_result 里带图片时是 `text` / `image_url` parts 数组）
  *
  * 注意：tool 消息必须紧跟在携带 tool_calls 的 assistant 消息之后，因此遇到
  * 「tool_result + 文本」混合的 user 消息时，先输出全部 tool 消息，再输出 user 消息。
@@ -131,7 +153,7 @@ export function convertMessagesToChatCompletions(
           toolMessages.push({
             role: 'tool',
             tool_call_id: callId,
-            content: stringifyToolResultContent(block.content),
+            content: convertToolResultContent(block.content),
           });
         } else if (block.type === 'text' && typeof block.text === 'string') {
           userParts.push({ type: 'text', text: block.text });

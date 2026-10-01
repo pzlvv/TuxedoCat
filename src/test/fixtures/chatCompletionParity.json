@@ -288,7 +288,138 @@
         {
           "role": "tool",
           "tool_call_id": "t1",
-          "content": "out\n[image]"
+          "content": [
+            {
+              "type": "text",
+              "text": "out"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/png;base64,x"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "user-tool-result-image-only",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "t1",
+              "content": [
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "AAAA"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "output": [
+        {
+          "role": "tool",
+          "tool_call_id": "t1",
+          "content": [
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/png;base64,AAAA"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "user-tool-result-image-empty-data",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "t1",
+              "content": [
+                {
+                  "type": "image",
+                  "source": {
+                    "data": ""
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "output": [
+        {
+          "role": "tool",
+          "tool_call_id": "t1",
+          "content": ""
+        }
+      ]
+    },
+    {
+      "name": "user-tool-result-image-between-text",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "t1",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "a"
+                },
+                {
+                  "type": "image",
+                  "source": {
+                    "media_type": "image/jpeg",
+                    "data": "BBBB"
+                  }
+                },
+                {
+                  "type": "text",
+                  "text": "b"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "output": [
+        {
+          "role": "tool",
+          "tool_call_id": "t1",
+          "content": [
+            {
+              "type": "text",
+              "text": "a"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/jpeg;base64,BBBB"
+              }
+            },
+            {
+              "type": "text",
+              "text": "b"
+            }
+          ]
         }
       ]
     },
