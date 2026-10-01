@@ -10,9 +10,9 @@ import { createSessionState } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
-import { postMessage, getHasWorkspace, getInjectedSessionId, LOGO_CLASS_NAME, getEffectiveHostInfo, onViewModeChanged, navigateToConversation, getIsPrewarmView, getInitialTheme } from './webviewEnv';
+import { postMessage, getHasWorkspace, getInjectedSessionId, LOGO_CLASS_NAME, getEffectiveHostInfo, onConversationListOwnerChanged, navigateToConversation, getIsPrewarmView, getInitialTheme } from './webviewEnv';
 import { getPlaceholderLogoUri, rotatePlaceholderLogo } from './placeholderLogo';
-import { canCloseConversation, openConversationModeOf, rendersConversationListInWebview, type HostInfo } from '../host/types';
+import { canCloseConversation, newConversationEntryOf, openConversationModeOf, rendersConversationListInWebview, type HostInfo } from '../host/types';
 import type { McpServerInfo, ProviderModels } from '../core/webviewTypes';
 import type { ModelRef } from '../core/llm/modelRef';
 import { t } from './i18n';
@@ -44,19 +44,19 @@ const App = () => {
   // 检查是否已打开工作目录（由 extension 在 HTML 注入）
   const noWorkspace = getHasWorkspace() === false;
   // 宿主能力声明：决定对话列表 / 新建对话 / 关闭按钮等由谁渲染。
-  // 视图模式可在运行期切换（Electron 悬浮窗 → 单视图，列表移到顶栏），故放进 state 订阅。
+  // 对话列表渲染方可在运行期切换（Electron 悬浮窗隐藏原生侧栏 → 列表移到顶栏），故放进 state 订阅。
   const [hostInfo, setHostInfo] = useState<HostInfo>(() => getEffectiveHostInfo());
-  useEffect(() => onViewModeChanged((mode) => {
+  useEffect(() => onConversationListOwnerChanged((owner) => {
     setHostInfo(getEffectiveHostInfo());
-    // 模式切换会卸载 / 重挂「历史对话」下拉（只有 single 渲染它）：残留的 open 状态
-    // 会让它切回 single 时自动弹出，而且不触发 onOpenChange → 列表不刷新。
-    // 删除确认弹层同理，切模式时一并收起。
+    // 渲染方切换会卸载 / 重挂「历史对话」下拉（只有 webview 渲染列表时才有它）：残留的 open 状态
+    // 会让它切回 webview 时自动弹出，而且不触发 onOpenChange → 列表不刷新。
+    // 删除确认弹层同理，切渲染方时一并收起。
     setConversationDropdownOpen(false);
     setDeleteConfirm(null);
-    // 切到单视图（Electron 浮窗 / VS Code）：对话列表改由顶栏渲染，且「历史提醒」
+    // 切到 webview 渲染列表（Electron 浮窗 / VS Code）：对话列表改由顶栏渲染，且「历史提醒」
     // 要判断本 workspace 的 waiting。本视图此前可能长期不是活动视图，conversations 与
     // 运行时状态都可能是旧的（列表只推给活动视图、状态只在变化时推），主动拉一次。
-    if (mode === 'single') {
+    if (owner === 'webview') {
       postMessage({ type: 'getConversations' });
       postMessage({ type: 'requestSessionRuntimeStates' });
     }
@@ -407,12 +407,12 @@ const App = () => {
     [currentSessionId, sessionIdleVersion],
   );
 
-  // Single View 才有内嵌的历史对话按钮（对话列表由 webview 渲染）。
+  // 只有对话列表由 webview 渲染（`rendersConversationListInWebview`）时才有内嵌的历史对话按钮。
   // 当「本工作目录的其它会话」正在等待用户输入（ask user / 权限确认）时，用户请求不再
   // 自动切换会话，因此在历史对话按钮上加黄色呼吸效果提醒用户：去那个会话处理待答请求。
   // 数据源与流水灯一致（core sessionRuntimeStates.waiting），但只认本视图对话列表里的会话：
   // 列表本身就是当前工作目录的（每条带 project 归属），其它工作目录的 waiting 不在这里
-  // 提醒——浮窗（单视图）只能看到 / 切换到本目录的对话，提醒了也过不去。
+  // 提醒——浮窗顶栏的列表只能看到 / 切换到本目录的对话，提醒了也过不去。
   const historyButtonAttention = useMemo(() => {
     if (!rendersConversationListInWebview(hostInfo)) return false;
     const localSessionIds = new Set<string>(conversations.map((c) => c.sessionId));
@@ -567,7 +567,7 @@ const App = () => {
     setMessages([]);
     setQueuedMessage(null);
     navigateToConversation(sessionId);
-  }, [stashNewChatDraft, hostInfo.conversationList, beginConversationLoad]);
+  }, [stashNewChatDraft, hostInfo.conversationView, beginConversationLoad]);
 
   /**
    * 新建对话（顶部"+"按钮）：
@@ -1155,8 +1155,8 @@ const App = () => {
               </button>
             </Dropdown>
             )}
-            {/* 新对话按钮（Electron 模式下由侧栏"新建"接管） */}
-            {hostInfo.newConversation === 'webview' && (
+            {/* 新对话按钮（Electron 完整模式下由侧栏"新建"接管） */}
+            {newConversationEntryOf(hostInfo) === 'webview' && (
             <button
 onClick={handleNewConversation}
               className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"

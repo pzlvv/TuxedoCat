@@ -108,12 +108,12 @@ export type WebviewMessage = {
   theme: 'dark' | 'light';
 } | {
   /**
-   * 运行期切换视图模式（宿主 → webview）。
-   * Electron 悬浮窗隐藏原生侧栏后，对话列表改由 webview 顶栏渲染（single），
-   * 同时隐藏「关闭当前会话」、把「新建对话」入口移到顶栏。
+   * 运行期切换对话列表渲染方（宿主 → webview）。
+   * Electron 悬浮窗隐藏原生侧栏后，对话列表改由 webview 顶栏渲染（owner = webview），
+   * 「新建对话」入口随之移到顶栏；视图模式不变（仍是多视图，切换会话复用 / 另开视图）。
    */
-  type: 'setConversationListMode';
-  mode: 'single' | 'multi';
+  type: 'setConversationListOwner';
+  owner: 'host' | 'webview';
 } | {
   type: 'setCurrentFile';
   filePath?: string;

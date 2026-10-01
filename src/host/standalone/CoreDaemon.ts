@@ -499,12 +499,17 @@ export class CoreDaemon {
     if (!child || this.waitingDrain) return;
     while (this.outbox.length > 0) {
       const line = this.outbox[0];
-      let accepted = false;
+      let accepted: boolean;
       try {
         accepted = child.stdin.write(line);
       } catch {
-        accepted = false;
+        // 子进程已退出：队列由 handleExit 清空
+        return;
       }
+      // `write` 返回 false 只表示「内部缓冲越过软水位」，数据已经被接受、稍后照常写出；
+      // 因此必须先出队再决定是否等 drain。留在队列里会被 drain 回调反复重写同一帧
+      // （帧被无限复制），且排在它后面的帧永远写不出去——控制通道上表现为对端卡死。
+      this.outbox.shift();
       if (!accepted) {
         this.waitingDrain = true;
         child.stdin.once('drain', () => {
@@ -513,7 +518,6 @@ export class CoreDaemon {
         });
         return;
       }
-      this.outbox.shift();
     }
   }
 }

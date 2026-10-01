@@ -9,7 +9,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
-import { ELECTRON_HOST_INFO, hostInfoForViewMode } from '../src/host/types.js';
+import { ELECTRON_HOST_INFO, hostInfoForConversationListOwner } from '../src/host/types.js';
 
 // 收集启动参数（由 main 在创建窗口前通过 additionalArguments 传入）
 const getStartArg = (key: string): string | undefined => {
@@ -27,8 +27,8 @@ const sessionId = getStartArg('session') || '';
 // 不申请主题/模型等），等被切到前台时由宿主发 activatePrewarmedView 触发。
 // 详见 electron/ChatViewManager.ts 的 spareKey。
 const prewarm = getStartArg('prewarm') === '1';
-// 视图模式：悬浮窗（单视图）为 single，完整模式（原生侧栏）为 multi
-const viewMode = getStartArg('viewMode') || 'multi';
+// 对话列表渲染方：悬浮窗（原生侧栏隐藏）为 webview，完整模式（原生侧栏）为 host
+const conversationListOwner = getStartArg('conversationListOwner') === 'webview' ? 'webview' : 'host';
 // 首帧主题：由主进程按当前 nativeTheme 注入，webview 在 React 渲染前就选对背景色，
 // 避免浅色主题下先闪一帧深色 loading（后续主题变化仍走 setTheme 消息）。
 const initialTheme = getStartArg('theme') === 'light' ? 'light' : 'dark';
@@ -67,12 +67,13 @@ contextBridge.exposeInMainWorld('logoUri', './logo1.png');
 contextBridge.exposeInMainWorld('__sessionId', sessionId);
 // 是否为后台预热视图（见 ChatViewManager.spareKey）：webview 据此跳过启动初始化
 contextBridge.exposeInMainWorld('__prewarm', prewarm);
-// 宿主能力声明：对话列表/新建对话由原生侧栏接管，支持关闭 webview，打开会话走 openConversation。
-// 悬浮窗（单视图）模式下侧栏被隐藏，能力声明随之推导为 single：列表移到 webview 顶栏、
-// 隐藏关闭按钮、新建入口也在顶栏（运行期切换由 setConversationListMode 消息补齐）。
+// 宿主能力声明：多视图（每会话一个 webview），支持关闭 webview，打开会话走 openConversation。
+// 完整模式下对话列表 / 新建对话由原生侧栏接管；悬浮窗模式下侧栏被隐藏，列表移到 webview 顶栏、
+// 新建入口也在顶栏（运行期切换由 setConversationListOwner 消息补齐）。
+// 视图模式不随悬浮窗变化，始终是 multi：切换会话照旧复用 / 另开视图，不原地重载。
 contextBridge.exposeInMainWorld(
   '__hostInfo',
-  hostInfoForViewMode(ELECTRON_HOST_INFO, viewMode === 'single' ? 'single' : 'multi'),
+  hostInfoForConversationListOwner(ELECTRON_HOST_INFO, conversationListOwner),
 );
 
 // main -> webview 消息桥接：ipcRenderer 事件转发为 window message 事件

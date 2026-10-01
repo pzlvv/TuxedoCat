@@ -62,12 +62,15 @@ export interface ChatViewManagerOptions {
    */
   topInset?: number;
   /**
-   * 视图模式，随 `--viewMode=` 注入 webview 的 `__hostInfo`：
-   * - `multi`（默认）：对话列表由宿主原生侧栏渲染，顶栏保留「关闭当前会话」
-   * - `single`：悬浮窗单视图，宿主隐藏侧栏，列表改由 webview 顶栏渲染（历史对话入口）
-   * 运行期可用 setViewMode 切换。
+   * 对话列表渲染方，随 `--conversationListOwner=` 注入 webview 的 `__hostInfo`：
+   * - `host`（默认）：完整模式，对话列表由宿主原生侧栏渲染，顶栏保留「关闭当前会话」
+   * - `webview`：悬浮窗，宿主隐藏侧栏，列表改由 webview 顶栏渲染（历史对话入口）
+   * 运行期可用 setConversationListOwner 切换。
+   *
+   * 视图模式（`HostInfo.conversationView`）不在这里：Electron 恒为 `multi`（每会话一个
+   * webview），悬浮窗只把列表搬进顶栏，不改变「切换会话复用 / 另开视图」的行为。
    */
-  viewMode?: 'single' | 'multi';
+  conversationListOwner?: 'host' | 'webview';
   onActiveSessionChanged: (sessionId: string | null) => void;
   onViewCreated?: (view: WebContentsView) => void;
   /**
@@ -154,8 +157,8 @@ export class ChatViewManager {
    * 首次启动会连续为多个工作目录预加载视图，仅用 `Date.now()` 会撞 key。
    */
   private newKeySeq = 0;
-  /** 单视图模式（悬浮窗）：侧栏隐藏，聊天视图占满整宽（由 viewMode 派生） */
-  private singleView: boolean;
+  /** 原生侧栏是否隐藏（悬浮窗）：聊天视图占满整宽（由 conversationListOwner 派生） */
+  private sidebarHidden: boolean;
   private readonly opts: ChatViewManagerOptions;
 
   /**
@@ -166,8 +169,8 @@ export class ChatViewManager {
 
   constructor(opts: ChatViewManagerOptions) {
     this.opts = opts;
-    // 与 viewMode 保持一致：以悬浮窗启动时首帧布局就是单视图，无需调用方再补一次
-    this.singleView = opts.viewMode === 'single';
+    // 与 conversationListOwner 保持一致：以悬浮窗启动时首帧布局就没有侧栏，无需调用方再补一次
+    this.sidebarHidden = opts.conversationListOwner === 'webview';
   }
 
   /** 更新活动工作目录（新建视图携带它作为 --workspace= 默认值） */
@@ -253,48 +256,48 @@ export class ChatViewManager {
   }
 
   /**
-   * 切换视图模式（宿主能力声明里的 conversationList）。
+   * 切换对话列表渲染方（宿主能力声明里的 conversationListOwner）。
    *
-   * 悬浮窗隐藏原生侧栏后，对话列表必须改由 webview 顶栏渲染（单视图形态），
-   * 否则用户既看不到列表、也无法新建对话。已打开的视图发消息就地切换，
-   * 之后新建的视图直接用新的 `--viewMode=` 启动参数，避免顶栏闪一下。
+   * 悬浮窗隐藏原生侧栏后，对话列表必须改由 webview 顶栏渲染，否则用户既看不到列表、
+   * 也无法新建对话。已打开的视图发消息就地切换，之后新建的视图直接用新的
+   * `--conversationListOwner=` 启动参数，避免顶栏闪一下。
    *
-   * 布局（singleView）与能力声明在同一个入口里同步更新：分成两个方法靠调用方自觉配对，
+   * 布局（sidebarHidden）与能力声明在同一个入口里同步更新：分成两个方法靠调用方自觉配对，
    * 一旦只调其一就会出现「侧栏隐藏了但顶栏仍显示关闭按钮 / 没有历史列表」这类错配。
    * 只改布局、不重建视图——当前对话的 webview 原样复用，不会重新加载。
    */
-  setViewMode(mode: 'single' | 'multi'): void {
-    const changed = (this.opts.viewMode ?? 'multi') !== mode;
-    this.opts.viewMode = mode;
-    const single = mode === 'single';
-    if (this.singleView !== single) {
-      this.singleView = single;
+  setConversationListOwner(owner: 'host' | 'webview'): void {
+    const changed = (this.opts.conversationListOwner ?? 'host') !== owner;
+    this.opts.conversationListOwner = owner;
+    const hidden = owner === 'webview';
+    if (this.sidebarHidden !== hidden) {
+      this.sidebarHidden = hidden;
       this.layout();
     }
     if (!changed) return;
     for (const view of this.views.values()) {
       if (!view.webContents.isDestroyed()) {
-        view.webContents.send('webview-message', this.viewModeMessage(mode));
+        view.webContents.send('webview-message', this.conversationListOwnerMessage(owner));
       }
     }
   }
 
   /**
-   * 视图模式切换消息。
+   * 对话列表渲染方切换消息。
    *
    * 标注为 WebviewMessage：channel 与 payload 都走同一个联合类型，
-   * 拼错 type / mode 会在编译期暴露（webContents.send 本身不做校验）。
+   * 拼错 type / owner 会在编译期暴露（webContents.send 本身不做校验）。
    */
-  private viewModeMessage(mode: 'single' | 'multi'): WebviewMessage {
-    return { type: 'setConversationListMode', mode };
+  private conversationListOwnerMessage(owner: 'host' | 'webview'): WebviewMessage {
+    return { type: 'setConversationListOwner', owner };
   }
 
   private chatBounds(): Rectangle {
     const [w, h] = this.opts.win.getContentSize();
     const top = this.opts.topInset ?? 0;
-    // 单视图模式：左侧不留侧栏宽度；窄窗下不再强撑 320（否则会被窗口裁掉）
-    const left = this.singleView ? 0 : SIDEBAR_WIDTH;
-    const width = this.singleView ? Math.max(0, w - left) : Math.max(320, w - left);
+    // 侧栏隐藏（悬浮窗）：左侧不留侧栏宽度；窄窗下不再强撑 320（否则会被窗口裁掉）
+    const left = this.sidebarHidden ? 0 : SIDEBAR_WIDTH;
+    const width = this.sidebarHidden ? Math.max(0, w - left) : Math.max(320, w - left);
     return { x: left, y: top, width, height: Math.max(0, h - top) };
   }
 
@@ -818,7 +821,7 @@ export class ChatViewManager {
           `--systemLocale=${this.opts.systemLocale}`,
           `--uiLanguage=${this.opts.uiLanguage || 'auto'}`,
           `--highlightLanguages=${(this.opts.highlightLanguages || []).join(',')}`,
-          `--viewMode=${this.opts.viewMode ?? 'multi'}`,
+          `--conversationListOwner=${this.opts.conversationListOwner ?? 'host'}`,
           `--theme=${initialTheme}`,
           ...(sessionId ? [`--session=${sessionId}`] : []),
           // 预热视图：页面照常加载，但跳过启动初始化，等被切到前台再补做
@@ -832,14 +835,14 @@ export class ChatViewManager {
       ? `file://${indexPath.replace(/\\/g, '/')}?session=${encodeURIComponent(sessionId)}`
       : `file://${indexPath.replace(/\\/g, '/')}`;
     view.setBackgroundColor(chatViewBackgroundColor()); // 加载期间铺主题底色，避免闪烁
-    // 页面加载完成后补发当前视图模式。
+    // 页面加载完成后补发当前对话列表渲染方。
     // 页面就绪前 send 会丢（webview 的 message 监听器还没注册，见 activatePrewarmedView
-    // 的同类处理）：若视图创建后、加载完成前用户切了悬浮窗，它就会停在 multi 形态
-    // （无历史列表、无「+」、有关闭按钮）。补发一次保证与当前模式一致；模式未变时
-    // webview 侧的 setViewMode 是空操作，不会产生多余重渲染。
+    // 的同类处理）：若视图创建后、加载完成前用户切了悬浮窗，它就会停在 host 形态
+    // （无历史列表、无「+」、有关闭按钮）。补发一次保证与当前渲染方一致；渲染方未变时
+    // webview 侧的 setConversationListOwner 是空操作，不会产生多余重渲染。
     view.webContents.on('did-finish-load', () => {
       if (view.webContents.isDestroyed()) return;
-      view.webContents.send('webview-message', this.viewModeMessage(this.opts.viewMode ?? 'multi'));
+      view.webContents.send('webview-message', this.conversationListOwnerMessage(this.opts.conversationListOwner ?? 'host'));
     });
     void view.webContents.loadURL(url);
 

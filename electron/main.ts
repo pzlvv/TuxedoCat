@@ -698,8 +698,9 @@ function createMainWindow(): void {
     highlightLanguages,
     // 聊天视图整体下移，给顶部自绘标题栏让位
     topInset: TITLEBAR_HEIGHT,
-    // 视图模式随窗口模式推导：悬浮窗隐藏原生侧栏，列表改由 webview 顶栏渲染
-    viewMode: windowMode === 'floating' ? 'single' : 'multi',
+    // 对话列表渲染方随窗口模式推导：悬浮窗隐藏原生侧栏，列表改由 webview 顶栏渲染
+    // （视图模式不变，Electron 恒为多视图）
+    conversationListOwner: windowMode === 'floating' ? 'webview' : 'host',
     onActiveSessionChanged: (sessionId) => {
       sidebarView?.webContents.send('sidebar:active-session-changed', sessionId);
       // 同步 UI 侧的「当前活跃会话」：切到已打开的视图不会再走 loadConversation /
@@ -737,7 +738,7 @@ function createMainWindow(): void {
     },
   });
 
-  // 布局模式已由构造参数 viewMode 决定（浮窗启动即单视图），无需再补一次
+  // 布局模式已由构造参数 conversationListOwner 决定（浮窗启动即隐藏侧栏），无需再补一次
 
   // 初始打开活动工作目录下的一个新对话（无工作目录时打开空态视图）
   chatViews.openNewConversation(workspacePath ?? '');
@@ -1517,9 +1518,10 @@ async function applyWindowMode(mode: WindowMode): Promise<void> {
       applyAlwaysOnTop(false);
     }
 
-    // 悬浮窗隐藏原生侧栏：webview 顶栏接管对话列表（历史对话入口）并隐藏关闭按钮。
+    // 悬浮窗隐藏原生侧栏：webview 顶栏接管对话列表（历史对话入口）。
     // 该调用同时负责布局（聊天视图左边距）与能力声明，不要再单独改布局开关。
-    chatViews?.setViewMode(mode === 'floating' ? 'single' : 'multi');
+    // 视图模式不随之变化：切换会话照旧复用 / 另开视图，不原地重载。
+    chatViews?.setConversationListOwner(mode === 'floating' ? 'webview' : 'host');
     // 记录模式供下次启动恢复；浮窗模式下标题显示当前工作目录
     saveLastWindowMode(mode);
     syncWindowTitle();

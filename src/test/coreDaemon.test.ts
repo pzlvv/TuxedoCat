@@ -15,6 +15,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'child_process';
 import { CoreDaemon } from '../host/standalone/CoreDaemon';
 import {
@@ -281,6 +283,130 @@ async function run(): Promise<void> {
     check('打开失败报告 fatal', await waitFor(() => fatal !== null));
     check('fatal 带上 daemon 的错误信息', (fatal as unknown as Error)?.message.includes('spawn failed'));
     await harness.daemon.shutdown();
+  }
+
+  // ---------- 控制通道背压：write 返回 false 的帧必须出队，不能反复重写 ----------
+  //
+  // `net.Socket.write` 对**超过 highWaterMark** 的帧恒返回 false（数据仍被接受、稍后照常写出）。
+  // 若此时不把该帧移出出站队列，drain 回调会把同一帧一遍遍重写：帧被无限复制，且排在它
+  // 后面的帧永远写不出去——表现为对端（Core）收不到后续应答而卡死（Edit 的 permResult
+  // 携带整份文件内容，帧体积远超水位，最容易触发）。
+  {
+    const BIG_FRAME_CHARS = 20_000;
+    const written: string[] = [];
+    const stdinEmitter = new EventEmitter();
+    const childEmitter = new EventEmitter();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    // 只放行一次 drain：修复后足够把排在后面的帧写出去；未修复时同一帧会被重写第二次，
+    // 断言随之失败（而不是陷入无界重写）。
+    let drainBudget = 1;
+    // 冒充 daemon：内层帧原样回应握手，其余帧只记录
+    const respond = (line: string): void => {
+      let frame: { kind?: string; id?: number; channel?: number; frame?: { kind?: string } };
+      try {
+        frame = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (frame.kind === 'openWorkspace') {
+        stdout.write(
+          `${JSON.stringify({ kind: 'workspaceOpened', id: frame.id, channel: 1, descriptor: { kind: 'multiplexed', channel: 1 } })}\n`,
+        );
+      } else if (frame.kind === 'frame' && frame.frame?.kind === 'hello') {
+        stdout.write(`${JSON.stringify({ kind: 'frame', channel: 1, frame: { kind: 'ready' } })}\n`);
+      } else if (frame.kind === 'closeWorkspace') {
+        stdout.write(
+          `${JSON.stringify({ kind: 'workspaceClosed', channel: frame.channel, reason: 'closed' })}\n`,
+        );
+      }
+    };
+    const childState = { exitCode: null as number | null };
+    const emitExit = (): void => {
+      childState.exitCode = 0;
+      childEmitter.emit('exit');
+      childEmitter.emit('close');
+    };
+    const fakeChild = {
+      pid: 4242,
+      get exitCode(): number | null {
+        return childState.exitCode;
+      },
+      signalCode: null,
+      stdin: {
+        write(chunk: string): boolean {
+          written.push(chunk);
+          // 真 daemon 的应答经管道异步到达；同步应答会在 flushOutbox 内部重入
+          setImmediate(() => respond(chunk));
+          if (chunk.includes('"kind":"shutdown"')) {
+            setImmediate(emitExit);
+            return true;
+          }
+          // 超过水位：返回 false，但数据已被接受
+          const accepted = chunk.length < BIG_FRAME_CHARS;
+          if (!accepted && drainBudget > 0) {
+            drainBudget -= 1;
+            setImmediate(() => stdinEmitter.emit('drain'));
+          }
+          return accepted;
+        },
+        on: (event: string, listener: (...args: unknown[]) => void) => stdinEmitter.on(event, listener),
+        once: (event: string, listener: (...args: unknown[]) => void) => stdinEmitter.once(event, listener),
+      },
+      stdout,
+      stderr,
+      on: (event: string, listener: (...args: unknown[]) => void) => childEmitter.on(event, listener),
+      kill: emitExit,
+    };
+    const daemon = new CoreDaemon({
+      binaryPath: 'fake',
+      spawn: () => fakeChild as unknown as ChildProcessWithoutNullStreams,
+      log: () => undefined,
+      handshakeTimeoutMs: 2_000,
+      // 关闭等待上限压到最小，避免假 daemon 的应答延迟拖慢用例
+      shutdownTimeoutMs: 200,
+    });
+    const transport = daemon.openChannel(localWorkspaceRef('D:/repo/a'));
+    const bus = createCoreChannelBus(transport, () => undefined);
+    bus.onCoreEvents(createRecordingCoreEventHandlers().handlers);
+    bus.onCoreRequests({
+      toolPermissionRequested: async () => ({ behavior: 'allow' }),
+      userChoice: async () => ({ index: 0 }),
+    });
+    check('背压用例完成握手', await waitFor(() => bus.isReady()));
+    const bigEvent = { type: 'abortRequested', sessionId: 's1', padding: 'x'.repeat(BIG_FRAME_CHARS) };
+    const smallEvent = { type: 'abortRequested', sessionId: 's2' };
+    transport.send({ kind: 'uiEvent', event: bigEvent } as never);
+    transport.send({ kind: 'uiEvent', event: smallEvent } as never);
+    const innerFrames = (): Array<{ kind?: string; event?: { sessionId?: string } }> =>
+      written
+        .map((line) => {
+          try {
+            return JSON.parse(line) as { kind?: string; frame?: { kind?: string; event?: { sessionId?: string } } };
+          } catch {
+            return {};
+          }
+        })
+        .filter((frame) => frame.kind === 'frame')
+        .map((frame) => frame.frame ?? {});
+    check(
+      '背压下大帧之后的帧仍能写出',
+      await waitFor(() => innerFrames().some((frame) => frame.event?.sessionId === 's2')),
+    );
+    check(
+      '背压下大帧只写一次（不因 drain 反复重写）',
+      innerFrames().filter((frame) => frame.event?.sessionId === 's1').length === 1,
+    );
+    // 关闭也设上限：未修复时出站队列卡死会让 shutdown 的等待计时器（unref）永不触发，
+    // 进程会「无 pending handle」静默退出、丢掉失败退出码。
+    const settle = async (promise: Promise<void>): Promise<void> => {
+      await Promise.race([
+        promise.catch(() => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, 500)),
+      ]);
+    };
+    await settle(bus.shutdown());
+    await settle(daemon.shutdown());
   }
 
   // ---------- 真实 Core 产物 smoke（存在时）----------

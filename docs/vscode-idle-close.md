@@ -1,6 +1,6 @@
 # 规格：VS Code 单视图宿主的空闲对话回收
 
-本规格描述 VS Code 单视图宿主（`HostInfo.conversationList === 'single'`）对空闲对话的
+本规格描述 VS Code 单视图宿主（`HostInfo.conversationView === 'single'`）对空闲对话的
 回收能力。回收只释放运行时内存，不删除磁盘上的对话数据；被回收的对话再次打开时从磁盘重建。
 
 ---

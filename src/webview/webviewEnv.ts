@@ -9,7 +9,7 @@
  * 宿主差异（app / 插件）统一由 __hostInfo 能力声明驱动，webview 不做宿主嗅探。
  */
 
-import { hostInfoForViewMode, openConversationModeOf, type HostInfo } from '../host/types';
+import { hostInfoForConversationListOwner, openConversationModeOf, type HostInfo } from '../host/types';
 
 /**
  * 宿主消息通道的最小契约：VS Code 的 `acquireVsCodeApi()` 与 Electron preload 暴露的
@@ -24,15 +24,18 @@ let _logoUri: string | null = null;
 let _hasWorkspace: boolean | undefined;
 let _hostInfo: HostInfo | null = null;
 /**
- * 运行期视图模式。宿主注入的 `__hostInfo.conversationList` 只是启动时的初始值；
- * Electron 悬浮窗模式会隐藏原生侧栏，此时列表改由 webview 顶栏渲染（单视图），
- * 宿主通过 `setConversationListMode` 消息在运行期切换（见 App.tsx 的订阅）。
+ * 运行期「对话列表渲染方」。宿主注入的 `__hostInfo.conversationListOwner` 只是启动时的
+ * 初始值；Electron 悬浮窗会隐藏原生侧栏，此时列表改由 webview 顶栏渲染，
+ * 宿主通过 `setConversationListOwner` 消息在运行期切换（见 App.tsx 的订阅）。
+ *
+ * 视图模式（`conversationView`）是宿主的静态能力，不参与运行期切换——它只决定
+ * 「打开会话」是另开视图还是原地重载（见 src/host/types.ts 的 openConversationModeOf）。
  */
-let _viewMode: HostInfo['conversationList'] | null = null;
-const _viewModeListeners = new Set<(mode: HostInfo['conversationList']) => void>();
-/** getEffectiveHostInfo 的派生缓存（按模式失效），保证同模式下引用稳定 */
+let _conversationListOwner: HostInfo['conversationListOwner'] | null = null;
+const _conversationListOwnerListeners = new Set<(owner: HostInfo['conversationListOwner']) => void>();
+/** getEffectiveHostInfo 的派生缓存（按渲染方失效），保证同渲染方下引用稳定 */
 let _effectiveHostInfo: HostInfo | null = null;
-let _effectiveHostInfoMode: HostInfo['conversationList'] | null = null;
+let _effectiveHostInfoOwner: HostInfo['conversationListOwner'] | null = null;
 
 /**
  * 解析宿主消息通道。
@@ -86,11 +89,11 @@ export function getHostInfo(): HostInfo {
     throw new Error('window.__hostInfo 未注入：宿主必须在 webview 启动前声明能力（见 src/host/types.ts）。');
   }
   const problems: string[] = [];
-  if (injected.conversationList !== 'single' && injected.conversationList !== 'multi') {
-    problems.push(`conversationList=${String(injected.conversationList)}`);
+  if (injected.conversationView !== 'single' && injected.conversationView !== 'multi') {
+    problems.push(`conversationView=${String(injected.conversationView)}`);
   }
-  if (injected.newConversation !== 'host' && injected.newConversation !== 'webview') {
-    problems.push(`newConversation=${String(injected.newConversation)}`);
+  if (injected.conversationListOwner !== 'host' && injected.conversationListOwner !== 'webview') {
+    problems.push(`conversationListOwner=${String(injected.conversationListOwner)}`);
   }
   if (problems.length > 0) {
     throw new Error(`window.__hostInfo 字段非法或缺失：${problems.join(', ')}（见 src/host/types.ts 的 HostInfo）。`);
@@ -99,50 +102,52 @@ export function getHostInfo(): HostInfo {
   return _hostInfo;
 }
 
-/** 当前视图模式（未收到过运行期切换时即宿主注入的初始值） */
-export function getViewMode(): HostInfo['conversationList'] {
-  if (_viewMode) return _viewMode;
-  _viewMode = getHostInfo().conversationList;
-  return _viewMode;
+/** 当前对话列表渲染方（未收到过运行期切换时即宿主注入的初始值） */
+export function getConversationListOwner(): HostInfo['conversationListOwner'] {
+  if (_conversationListOwner) return _conversationListOwner;
+  _conversationListOwner = getHostInfo().conversationListOwner;
+  return _conversationListOwner;
 }
 
 /**
- * 按当前视图模式推导的宿主能力：UI 渲染与「打开会话」行为都读它，不直接读 getHostInfo()。
+ * 按当前对话列表渲染方推导的宿主能力：UI 渲染与「打开会话」行为都读它，不直接读 getHostInfo()。
  *
- * 派生结果按模式缓存：同一个模式下多次调用返回**同一个对象引用**，否则
- * `hostInfoForViewMode` 在「注入模式 ≠ 当前模式」时每次都会新建对象，
+ * 派生结果按渲染方缓存：同一个渲染方下多次调用返回**同一个对象引用**，否则
+ * `hostInfoForConversationListOwner` 在「注入渲染方 ≠ 当前渲染方」时每次都会新建对象，
  * 放进 useMemo/useCallback 依赖里会造成无谓重建。
  */
 export function getEffectiveHostInfo(): HostInfo {
-  const mode = getViewMode();
-  if (!_effectiveHostInfo || _effectiveHostInfoMode !== mode) {
-    _effectiveHostInfo = hostInfoForViewMode(getHostInfo(), mode);
-    _effectiveHostInfoMode = mode;
+  const owner = getConversationListOwner();
+  if (!_effectiveHostInfo || _effectiveHostInfoOwner !== owner) {
+    _effectiveHostInfo = hostInfoForConversationListOwner(getHostInfo(), owner);
+    _effectiveHostInfoOwner = owner;
   }
   return _effectiveHostInfo;
 }
 
 /**
- * 运行期切换视图模式（宿主消息 `setConversationListMode` 驱动）。
- * 模式未变化时不通知，避免无意义的重渲染。
+ * 运行期切换对话列表渲染方（宿主消息 `setConversationListOwner` 驱动）。
+ * 渲染方未变化时不通知，避免无意义的重渲染。
  */
-export function setViewMode(mode: HostInfo['conversationList']): void {
-  if (getViewMode() === mode) return;
-  _viewMode = mode;
+export function setConversationListOwner(owner: HostInfo['conversationListOwner']): void {
+  if (getConversationListOwner() === owner) return;
+  _conversationListOwner = owner;
   // 隔离单个订阅者的异常：否则一个组件抛错会中断其余订阅者的重渲染
-  for (const listener of _viewModeListeners) {
+  for (const listener of _conversationListOwnerListeners) {
     try {
-      listener(mode);
+      listener(owner);
     } catch (err) {
-      console.error('[webviewEnv] view mode listener failed:', err);
+      console.error('[webviewEnv] conversation list owner listener failed:', err);
     }
   }
 }
 
-/** 订阅视图模式变化，返回取消订阅函数（供 React 组件在 useEffect 中调用） */
-export function onViewModeChanged(listener: (mode: HostInfo['conversationList']) => void): () => void {
-  _viewModeListeners.add(listener);
-  return () => { _viewModeListeners.delete(listener); };
+/** 订阅对话列表渲染方变化，返回取消订阅函数（供 React 组件在 useEffect 中调用） */
+export function onConversationListOwnerChanged(
+  listener: (owner: HostInfo['conversationListOwner']) => void,
+): () => void {
+  _conversationListOwnerListeners.add(listener);
+  return () => { _conversationListOwnerListeners.delete(listener); };
 }
 
 export function getLogoUri(): string {
@@ -233,7 +238,8 @@ export function postMessage(msg: unknown): boolean {
 /**
  * 会话跳转的**底层原语**：只负责按视图模式把跳转消息发给宿主。
  *
- * 打开方式由视图模式推导（见 src/host/types.ts 的 openConversationModeOf）：
+ * 打开方式由视图模式推导（见 src/host/types.ts 的 openConversationModeOf）——
+ * 与对话列表由谁渲染无关（`conversationListOwner` 只决定列表 / 新建入口在哪）：
  *   - 单视图（VS Code 插件）：当前 webview 内重新加载对话（loadConversation）
  *   - 多视图（Electron App）：新起一个 webview 加载对话（openConversation，由主进程创建/切换聊天视图）
  *

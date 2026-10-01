@@ -7,7 +7,7 @@ import { normalizeToolInput } from '../../core/utils/toolInput';
 import { modelRefOf, sameModelRef, type ModelRef } from '../../core/llm/modelRef';
 import type { DiffHunk } from '../../core/utils/editDiff';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, LlmConfigPanelPayload } from '../types';
-import { postMessage, setViewMode } from '../webviewEnv';
+import { postMessage, setConversationListOwner } from '../webviewEnv';
 import { createSessionState, ensureSessionStateWithUsage, accumulateUsageToState } from '../sessionState';
 import { profileLog } from '../debug';
 import { resolveTitle, setUiLanguage, type UiLanguage } from '../i18n';
@@ -940,13 +940,13 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           props.setThemeInitialized(true);
           profileLog(`${profileTag} setTheme 收到 | 从挂载到收到=${(performance.now() - props._appMountTime.current!).toFixed(2)}ms`);
           break;
-        // 视图模式运行期切换（Electron 悬浮窗：隐藏原生侧栏后列表改由顶栏渲染）。
-        // App 订阅了 webviewEnv 的模式变化，这里只需写进 store。
-        case 'setConversationListMode':
-          // 运行时校验：非法值直接忽略，不能静默当 multi —— 那会把悬浮窗顶栏切成
+        // 对话列表渲染方运行期切换（Electron 悬浮窗：隐藏原生侧栏后列表改由顶栏渲染）。
+        // App 订阅了 webviewEnv 的渲染方变化，这里只需写进 store。
+        case 'setConversationListOwner':
+          // 运行时校验：非法值直接忽略，不能静默当 host —— 那会把悬浮窗顶栏切成
           // 「无历史列表、无新建、有关闭按钮」的错误形态。
-          if (msg.mode === 'single' || msg.mode === 'multi') setViewMode(msg.mode);
-          else console.warn('[webview] setConversationListMode: 非法 mode', msg.mode);
+          if (msg.owner === 'host' || msg.owner === 'webview') setConversationListOwner(msg.owner);
+          else console.warn('[webview] setConversationListOwner: 非法 owner', msg.owner);
           break;
         case 'setCurrentFile':
           props.setCurrentFile(msg.filePath || '');

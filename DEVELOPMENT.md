@@ -1849,7 +1849,7 @@ Standalone 下打开第一个真实工作区时占位 Connection 被销毁。
 | `chatViews.closeConversation = (sid) => ui.releaseConversation(sid)` | Electron | 视图销毁序列只卸内存 |
 | 菜单 / 托盘 / 全局唤醒快捷键 / 单实例锁 | Electron | 桌面端集成 |
 | 自绘标题栏（`titlebarView` + 菜单视图 + `titlebar:*` / `titlebar-menu:*` IPC） | Electron | 无边框窗口下替代系统标题栏与菜单栏；菜单定义与原生菜单同源（`buildMenuSections`），无边框窗口下原生 accelerator 是否生效依平台而定，故另挂 `before-input-event` 兜底并按 id 去重 |
-| 窗口模式（`applyWindowMode` / `floatingWindowSize` / `chatViews.setViewMode`） | Electron | 完整模式（侧栏 + 聊天视图）↔ 悬浮窗模式（隐藏侧栏、单视图、可置顶）；两种模式尺寸独立落盘。布局开关与能力声明由 `setViewMode` 一起更新，不再单独暴露 `setSingleView` |
+| 窗口模式（`applyWindowMode` / `floatingWindowSize` / `chatViews.setConversationListOwner`） | Electron | 完整模式（侧栏 + 聊天视图）↔ 悬浮窗模式（隐藏侧栏、列表移到 webview 顶栏、可置顶）；两种模式尺寸独立落盘。布局开关与能力声明由 `setConversationListOwner` 一起更新，不再单独暴露侧栏开关 |
 
 ```ts
 // src/extension.ts
@@ -2076,40 +2076,50 @@ MCP 子进程。宿主不直接调用 `McpManager` 的同类方法。
 
 `HostInfo` 是**宿主能力声明**：宿主在 webview 启动前把自己「是什么、哪些 UI 由谁渲染」写进
 `window.__hostInfo`，webview 据此渲染。它是 webview 感知**宿主能力差异**的唯一入口——
-「对话列表归谁渲染 / 新建对话由谁触发 / 打开会话用哪种方式」都只读这张表，不做宿主嗅探
+「对话列表归谁渲染 / 新建对话入口在哪 / 打开会话用哪种方式」都只读这张表，不做宿主嗅探
 （嗅探只能回答「有没有 Electron preload」，无法表达这类能力差异）。
 
 ```ts
 // src/host/types.ts
 export interface HostInfo {
   /**
-   * 对话视图模式。它是一整组宿主行为的根，其余差异都由它推导：
-   * - single：单视图。没有原生侧栏，对话列表由 webview 顶栏渲染；切换会话在当前
-   *   webview 内重新加载（loadConversation）；没有独立视图可关，因而不提供关闭按钮。
-   * - multi：多视图。每个会话一个独立 webview，对话列表由宿主原生侧栏渲染；
-   *   切换会话由宿主另开视图（openConversation），并提供关闭按钮销毁当前视图。
+   * 会话视图模式：每个会话是否有独立的 webview。它是「切换会话 / 关闭会话」这一组
+   * 行为的根，由宿主在启动时注入，运行期不变：
+   * - multi：多视图。每会话一个独立 webview；切换会话由宿主另开 / 切换视图
+   *   （openConversation），并提供关闭按钮销毁当前视图。
+   * - single：单视图。一个 webview 承载全部会话；切换会话在当前 webview 内原地加载
+   *   （loadConversation）；没有独立视图可关，因而不提供关闭按钮。
    */
-  conversationList: 'single' | 'multi';
-  /** 新建对话由谁触发：host（Electron 原生侧栏按钮）或 webview（VS Code 顶部按钮） */
-  newConversation: 'host' | 'webview';
+  conversationView: 'single' | 'multi';
+  /**
+   * 对话列表的渲染方（唯一 owner），可在运行期切换：
+   * - host：宿主原生侧栏（Electron 完整模式）
+   * - webview：webview 顶栏下拉（VS Code / Electron 悬浮窗）
+   */
+  conversationListOwner: 'host' | 'webview';
 }
 ```
 
-接口只保留 `conversationList` 与 `newConversation` 两个字段；**其余差异由 `conversationList` 推导**，
-收敛成 `src/host/types.ts` 里的三个纯函数，避免各处重复写 `=== 'multi'`：
+两个字段正交：`conversationView` 是宿主的静态能力，`conversationListOwner` 只表达「列表与新建
+入口画在哪里」。**其余差异由这两个字段推导**，收敛成 `src/host/types.ts` 里的四个纯函数，
+避免各处重复写 `=== 'multi'`：
 
 | 派生函数 | 语义 |
 | --- | --- |
-| `rendersConversationListInWebview(info)` | `single` 时列表内嵌在 webview 顶栏；`multi` 时由宿主原生侧栏渲染 |
+| `rendersConversationListInWebview(info)` | `conversationListOwner` 为 `webview` 时列表内嵌在 webview 顶栏；`host` 时由宿主原生侧栏渲染 |
+| `newConversationEntryOf(info)` | 新建对话入口跟列表走：列表在原生侧栏时按钮也在侧栏，列表搬到顶栏后入口跟着搬 |
 | `openConversationModeOf(info)` | `multi` → `openConversation`（另开视图）；`single` → `loadConversation`（原地重载） |
 | `canCloseConversation(info)` | 仅 `multi` 为 `true`：只有多视图有可销毁的独立视图 |
 
 两个常量是同一接口的两份取值：
 
-| 常量 | 使用方 | `conversationList` | `newConversation` | 派生：列表渲染 | 派生：打开方式 | 派生：关闭按钮 |
+| 常量 | 使用方 | `conversationView` | `conversationListOwner`（初始值） | 派生：列表渲染 | 派生：打开方式 | 派生：关闭按钮 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `VSCODE_HOST_INFO` | VS Code 扩展 | `single` | `webview` | webview 顶栏 | `loadConversation` | 无 |
 | `ELECTRON_HOST_INFO` | Electron 桌面窗口（`preload.ts`） | `multi` | `host` | 原生侧栏 | `openConversation` | 有 |
+
+Electron 悬浮窗只把 `conversationListOwner` 切到 `webview`（原生侧栏没有位置可放），
+`conversationView` 恒为 `multi`：切换会话照旧复用 / 另开视图，不原地重载。
 
 ### 9.1 注入
 
@@ -2117,7 +2127,7 @@ export interface HostInfo {
 
 | 事实 | 读取方 | VS Code（`src/extension.ts` 的 `getWebviewContent()` 内联脚本） | Electron（`electron/preload.ts`） |
 | --- | --- | --- | --- |
-| 宿主能力 `HostInfo` | `getHostInfo()` | `window.__hostInfo = ${JSON.stringify(VSCODE_HOST_INFO)}` | `contextBridge.exposeInMainWorld('__hostInfo', ELECTRON_HOST_INFO)` |
+| 宿主能力 `HostInfo` | `getHostInfo()` | `window.__hostInfo = ${JSON.stringify(VSCODE_HOST_INFO)}` | `contextBridge.exposeInMainWorld('__hostInfo', hostInfoForConversationListOwner(ELECTRON_HOST_INFO, conversationListOwner))`；`conversationListOwner` 取自 `--conversationListOwner=`（悬浮窗为 `webview`，完整模式为 `host`，见 9.3.2） |
 | 界面语言 | `i18n` 的 `readInitialUiLanguage()` | `window.__uiLocale = "${uiLanguage}"`（宿主 `settings.json` 的 `uiLanguage`） | `exposeInMainWorld('__uiLocale', uiLanguage)` |
 | 首帧主题 | `getInitialTheme()` | `window.__initialTheme`（`activeColorTheme.kind === Light` → `'light'`，否则 `'dark'`） | `exposeInMainWorld('__initialTheme', initialTheme)` |
 
@@ -2131,7 +2141,7 @@ export interface HostInfo {
 export function getHostInfo(): HostInfo;
 ```
 
-- 首次调用读 `window.__hostInfo`，**逐字段校验**（`conversationList` / `newConversation` 的取值），
+- 首次调用读 `window.__hostInfo`，**逐字段校验**（`conversationView` / `conversationListOwner` 的取值），
   任一缺失或非法直接抛错；不做默认值兜底——「新宿主忘记声明能力」在启动期暴露。
 - 校验通过后缓存到模块级 `_hostInfo`，后续调用直接返回。
 - 全局类型声明在 `src/webview/declarations.d.ts`（`Window.__hostInfo?: HostInfo`）。
@@ -2145,11 +2155,11 @@ webview 只按能力渲染，不判断宿主类型：
 | 消费点 | 读取 | 行为 |
 | --- | --- | --- |
 | `App.tsx` 顶栏 | `rendersConversationListInWebview(hostInfo)` | `true` 时渲染对话历史下拉（`Dropdown`）；`false` 时由 Electron 原生侧栏接管，webview 不渲染 |
-| `App.tsx` 历史对话按钮提醒 | `sessionRuntimeStatesRef` 的 `waiting` + 本视图 `conversations` 的 `sessionId` 集合 | 单视图（VS Code / Electron 悬浮窗）下，**本视图对话列表里**有「其它会话」在等待用户操作（ask user / 权限确认）时给历史按钮加黄色呼吸提醒（`history-btn--attention`）。只认本视图列表里的会话：列表按工作目录读盘（`loadConversationList(workspace)`），因此其它工作目录的 `waiting` 不提醒——浮窗只能看 / 切到本目录的对话，提醒了也过不去。列表与运行时状态都是**视图本地缓存**：列表只推给活动视图、状态只在变化时推，所以切到单视图时 `App.tsx` 会主动补发 `getConversations` + `requestSessionRuntimeStates`，避免「之前不是活动视图」的浮窗用旧数据判断（第 4.5 节） |
-| `App.tsx` 顶栏 | `newConversation === 'webview'` | 渲染「新建对话」按钮；`'host'` 时由侧栏按钮触发 |
+| `App.tsx` 历史对话按钮提醒 | `sessionRuntimeStatesRef` 的 `waiting` + 本视图 `conversations` 的 `sessionId` 集合 | 对话列表由 webview 渲染（VS Code / Electron 悬浮窗）时，**本视图对话列表里**有「其它会话」在等待用户操作（ask user / 权限确认）时给历史按钮加黄色呼吸提醒（`history-btn--attention`）。只认本视图列表里的会话：列表按工作目录读盘（`loadConversationList(workspace)`），因此其它工作目录的 `waiting` 不提醒——浮窗顶栏只能看 / 切到本目录的对话，提醒了也过不去。列表与运行时状态都是**视图本地缓存**：列表只推给活动视图、状态只在变化时推，所以切到 webview 渲染列表时 `App.tsx` 会主动补发 `getConversations` + `requestSessionRuntimeStates`，避免「之前不是活动视图」的浮窗用旧数据判断（第 4.5 节） |
+| `App.tsx` 顶栏 | `newConversationEntryOf(hostInfo) === 'webview'` | 渲染「新建对话」按钮；`'host'` 时由侧栏按钮触发 |
 | `App.tsx` 顶栏 | `canCloseConversation(hostInfo)` | `true` 时渲染关闭按钮，发 `{ type: 'closeWebview' }`（销毁 webview，释放渲染进程） |
 | `App.tsx.navigateToSession()`（会话跳转的唯一 UI 入口，内部委托 `webviewEnv.navigateToConversation()`） | `openConversationModeOf(hostInfo)` | 对话列表 / 对话树 / 子代理 From 链接 / 返回父会话跳转时：`openConversation` 只发消息交给宿主另开视图；`loadConversation` 在当前视图内原地加载。任何入口都不得直连 `navigateToConversation`，否则会绕过 loading（统一入口见 9.3.1） |
-| `Main.tsx` | 是否注入 `window.electronAPI` | 独立宿主（Electron）给 `<html>` 加 `standalone-host` class（深色背景 CSS）；VS Code 扩展不加。**不要用 `conversationList` 判定**：悬浮窗注入的是 `single`，但它仍是独立窗口，一样需要深色兜底 |
+| `Main.tsx` | 是否注入 `window.electronAPI` | 独立宿主（Electron）给 `<html>` 加 `standalone-host` class（深色背景 CSS）；VS Code 扩展不加。**不要用 `conversationListOwner` 判定**：悬浮窗注入的是 `webview`，但它仍是独立窗口，一样需要深色兜底 |
 
 #### 9.3.1 会话跳转的唯一入口
 
@@ -2163,12 +2173,21 @@ webview 只按能力渲染，不判断宿主类型：
 有的直接换内容」的双路径不一致（直连路径还会让旧会话内容在 `conversationLoaded` 到达前
 继续显示，且失败时没有超时兜底）。新增跳转入口时必须走 `navigateToSession()`。
 
-**运行期切换**：`conversationList` 不只由注入值决定。Electron 悬浮窗模式会隐藏原生侧栏，
-此时宿主发 `{ type: 'setConversationListMode', mode }` 消息，`webviewEnv` 写进模块级模式
-并通知订阅者；`App.tsx` 用 `useState` + `onViewModeChanged` 重渲染，其余消费点统一读
-`getEffectiveHostInfo()`（= `hostInfoForViewMode(getHostInfo(), 当前模式)`），不再直接读
-`getHostInfo()`。`Main.tsx` 的 `standalone-host` 不看视图模式，改用 `window.electronAPI` 判定
-宿主类型（见 9.3 表格）：视图模式会随悬浮窗变化，而「是否独立窗口」不会。
+#### 9.3.2 渲染方的运行期切换
+
+`conversationListOwner` 不只由注入值决定。Electron 悬浮窗会隐藏原生侧栏，此时宿主发
+`{ type: 'setConversationListOwner', owner }` 消息，`webviewEnv` 写进模块级渲染方
+并通知订阅者；`App.tsx` 用 `useState` + `onConversationListOwnerChanged` 重渲染，其余消费点统一读
+`getEffectiveHostInfo()`（= `hostInfoForConversationListOwner(getHostInfo(), 当前渲染方)`），
+不再直接读 `getHostInfo()`。
+
+宿主侧同一个入口负责「布局 + 能力声明」：`ChatViewManager.setConversationListOwner(owner)`
+同步更新原生侧栏的显隐与 `--conversationListOwner=` 启动参数，已打开的视图收
+`setConversationListOwner` 消息就地切换，新建视图直接带新参数（避免顶栏闪一下）。
+
+`conversationView` 不参与运行期切换：Electron 悬浮窗仍是多视图，切换会话照旧复用 / 另开视图。
+`Main.tsx` 的 `standalone-host` 不看渲染方，改用 `window.electronAPI` 判定宿主类型
+（见 9.3 表格）：渲染方会随悬浮窗变化，而「是否独立窗口」不会。
 
 ### 9.4 消息通道
 
@@ -2513,7 +2532,7 @@ MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 
 | 菜单关闭 | 侧栏/聊天视图 focus + 窗口 blur/hide/move/resize + 点标题栏空白 + Esc | **不要用标题栏 blur 关菜单**：显示菜单视图会让焦点重新计算（可能变成「无焦点视图」），据此关菜单会让菜单刚弹出就被自己关掉（已踩过）。打开时把焦点交给菜单视图（Esc/方向键依赖它），关闭时还给打开前的视图 |
 | 菜单置顶 | `addChildView` 重新入栈 | 聊天视图是动态 `addChildView` 的，会盖住菜单视图；显示菜单时再 `addChildView` 一次即可提到最上层。**不要先 `removeChildView`**——那会把焦点掉成「无视图」，菜单随即被关掉 |
 | 快捷键 | 原生 accelerator + `before-input-event` 兜底 | 无边框窗口下原生 accelerator 是否生效依平台而定，两处都命中时按 id 去重（250ms）。唤醒快捷键持久化在 `workspace-state.json` 的 `shortcut` 字段（旧版本写在 settings.json 的 `shortcut` 由 `migrateLegacyThemeAndShortcut()` 一次性迁移） |
-| 窗口模式 | `windowMode: 'normal' \| 'floating'` | floating = 隐藏侧栏（`sidebarView` 收成 0 尺寸）+ 聊天视图占满整宽（`chatViews.setViewMode`），复用同一批 webview，不重新加载对话 |
+| 窗口模式 | `windowMode: 'normal' \| 'floating'` | floating = 隐藏侧栏（`sidebarView` 收成 0 尺寸）+ 聊天视图占满整宽（`chatViews.setConversationListOwner('webview')`），复用同一批 webview，不重新加载对话 |
 | 浮窗最小化 | `mainWindow.on('minimize')` + `titlebar:minimize` | 完整模式最小化到任务栏；浮窗模式最小化改走 `hide()` 隐藏到系统托盘（隐藏的窗口不在任务栏保留按钮），唤醒入口是托盘图标单击 / 双击与全局快捷键（`showMainWindowFromTray`） |
 | 模式切换的异步状态 | `waitForWindowEvent()` + `windowModeSwitching` | 先还原最大化/退出全屏（等 `unmaximize` / `leave-full-screen` 事件落定，1s 超时兜底）再 `setBounds`，否则会被忽略或只改还原尺寸；切换期间用标志位防重入 |
 | 模式切换条件 | `canToggleWindowMode()` | 打开集合为空时禁用（浮窗隐藏侧栏，切换后无法再选工作目录） |
@@ -2521,7 +2540,7 @@ MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 
 | 模式持久化 | `windowMode` + `readLastWindowMode()` | 切换模式时落盘；启动时优先按上次的模式建窗口（尺寸/位置也取该模式的记录）。**上次是浮窗但本次没有工作区时退回完整模式**（浮窗隐藏侧栏，没有工作区就没法再选） |
 | 置顶持久化 | `floatingPinned` + `readLastFloatingPinned()` | 点钉住按钮时落盘（默认 `true`），启动时按它恢复浮窗的「总在最前」；缺失/非法值一律按默认开启处理 |
 | 浮窗标题 | `windowTitleForCurrentState()` + `workspaceDisplayName()` + 标题栏品牌位 | 浮窗模式下**窗口标题**（任务栏 / Alt-Tab）与**自绘标题栏的品牌位**都显示当前工作目录的**目录名（basename）**，其余情况显示产品名。取目录名而非完整路径：浮窗标题栏只有 480px 宽、任务栏标签也从右侧截断，而路径里最有信息量的恰好是尾部目录名。窗口是无边框的，光设 OS 标题在窗口里看不到，所以两处都要跟着变；目录名随 `titlebar:mode-state` / `titlebar:get-state` 的 `workspaceName` 下发，切模式与切工作区时同步 |
-| 悬浮窗的顶栏形态 | `chatViews.setViewMode()` + `setConversationListMode` 消息 | 悬浮窗隐藏原生侧栏，视图模式必须切到 `single`：列表改由 webview 顶栏渲染（历史对话入口）、隐藏「关闭当前对话」、新建入口移到顶栏。已打开视图就地切换，新建视图走 `--viewMode=` 启动参数 |
+| 悬浮窗的顶栏形态 | `chatViews.setConversationListOwner()` + `setConversationListOwner` 消息 | 悬浮窗隐藏原生侧栏，对话列表渲染方切到 `webview`：列表改由 webview 顶栏渲染（历史对话入口）、新建入口移到顶栏。视图模式不变（仍是 `multi`：每会话一个 webview、提供关闭当前会话），切换会话照旧复用 / 另开视图。已打开视图就地切换，新建视图走 `--conversationListOwner=` 启动参数 |
 | 置顶 | `applyAlwaysOnTop()` | Electron 44 在部分 Windows 环境下 `setAlwaysOnTop(true)` 不落下 `WS_EX_TOPMOST`，按「默认层级 → `pop-up-menu` → 先取消再设」三级兜底 |
 
 ### 11.2 尚未收敛的分叉点
@@ -2670,9 +2689,10 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 
 契约里冗余的字段迟早会和根字段对不上（漏改一处就长期不一致）。所以：
 
-- **只留根字段**：`HostInfo` 只有 `conversationList: 'single' | 'multi'` 与
-  `newConversation`，其余能力（`rendersConversationListInWebview` /
-  `openConversationModeOf` / `canCloseConversation`）由纯函数从根字段推导（第 9 节）。
+- **只留根字段**：`HostInfo` 只有 `conversationView: 'single' | 'multi'` 与
+  `conversationListOwner: 'host' | 'webview'`，其余能力（`rendersConversationListInWebview` /
+  `newConversationEntryOf` / `openConversationModeOf` / `canCloseConversation`）由纯函数从
+  根字段推导（第 9 节）。
 - **校验只校验根字段**：`getHostInfo()` 只检查这两个字段的取值合法性；推导出来的
   能力没有「单独填错」的可能。
 - **派生逻辑只有一份**：推导写在 `src/host/types.ts` 的纯函数里，宿主与 webview
