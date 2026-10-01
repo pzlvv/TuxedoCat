@@ -6,6 +6,7 @@
  * - `applyLlmConfigSave`：设置面板整段 mutation（provider 表 / `modelConfigs` 补齐 /
  *   顶层默认值 / MCP 默认启用列表）；
  * - `SettingsStore.subscribe`：写盘后重新解析快照并通知（宿主据此重推快照）；
+ * - `SettingsStore` 的写保护：读不出来就拒绝覆盖、内容未变不落盘、写入原子；
  * - 就绪门禁：Core 收到 `hostEnvironmentProvided` 之前拒绝其它 `UiEvent`，
  *   收到后发 `coreReady`。
  *
@@ -357,6 +358,96 @@ runTests('hostSettings', async () => {
 
     store.refreshFromDisk();
     check('再次 refresh 不重复通知', seen.length === 1);
+  }
+
+  // ==================== 写保护：读不出来就绝不覆盖 ====================
+  // 多个宿主进程共写同一份 settings.json，写者可能读到「别人正在写」的半截文件。
+  // 把解析失败当成空配置继续写，会用 {} + 本次改动覆盖掉用户的全部配置。
+
+  {
+    const dir = makeTempDir('host-settings-corrupt');
+    const settingsPath = path.join(dir, 'settings.json');
+    const broken = '{ "llm": { "activeProvider": "x" },,, BROKEN';
+    fs.writeFileSync(settingsPath, broken, 'utf8');
+
+    const store = new SettingsStore({ configDir: dir });
+    const snapshot = store.loadSync();
+    check('解析失败时 loadSync 不抛错', !!snapshot);
+    check('解析失败时快照按未配置处理', snapshot.llm.activeProvider === '');
+
+    let rejected = false;
+    try {
+      await store.updateSettings((cfg) => {
+        cfg.highlightLanguages = ['ts'];
+      });
+    } catch {
+      rejected = true;
+    }
+    check('解析失败时拒绝写入', rejected);
+    check('磁盘内容原样保留（未被清空）', fs.readFileSync(settingsPath, 'utf8') === broken);
+
+    // 文件被修好后可以正常写入
+    fs.writeFileSync(settingsPath, JSON.stringify({ llm: { activeProvider: 'p' } }), 'utf8');
+    await store.updateSettings((cfg) => {
+      cfg.highlightLanguages = ['ts'];
+    });
+    const repaired = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    check('文件修好后可写入且保留已有字段', repaired.llm.activeProvider === 'p');
+  }
+
+  // ==================== 内容未变化时不落盘 ====================
+
+  {
+    const dir = makeTempDir('host-settings-noop');
+    const settingsPath = path.join(dir, 'settings.json');
+    // 先落一份已有配置：只有「文件已存在且内容没变」才该跳过写入
+    fs.writeFileSync(settingsPath, JSON.stringify({ llm: { activeProvider: 'p' } }, null, 2), 'utf8');
+
+    const store = new SettingsStore({ configDir: dir });
+    store.loadSync();
+
+    const seen: number[] = [];
+    store.subscribe(() => seen.push(1));
+
+    await store.updateSettings((cfg) => {
+      // 不改任何字段
+      void cfg;
+    });
+    check('空改动不通知订阅者', seen.length === 0);
+
+    await store.updateSettings((cfg) => {
+      cfg.highlightLanguages = ['ts'];
+    });
+    check('真实改动通知一次', seen.length === 1);
+
+    const before = fs.readFileSync(settingsPath, 'utf8');
+    await store.updateSettings((cfg) => {
+      // 重复写入同一份内容
+      cfg.highlightLanguages = ['ts'];
+    });
+    check('重复写入同一内容不再通知', seen.length === 1);
+    check('重复写入同一内容不改变文件', fs.readFileSync(settingsPath, 'utf8') === before);
+  }
+
+  // ==================== 写入原子性：不留临时文件 / 锁文件 ====================
+
+  {
+    const dir = makeTempDir('host-settings-atomic');
+    const store = new SettingsStore({ configDir: dir });
+    store.loadSync();
+    await store.updateSettings((cfg) => {
+      cfg.uiLanguage = 'zh';
+    });
+    check('写入后没有残留 .tmp', !fs.existsSync(path.join(dir, 'settings.json.tmp')));
+    check('写入后没有残留 .lock', !fs.existsSync(path.join(dir, 'settings.json.lock')));
+    check('写入内容是完整 JSON', (() => {
+      try {
+        JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
+        return true;
+      } catch {
+        return false;
+      }
+    })());
   }
 
   finish();

@@ -2551,6 +2551,7 @@ MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 
 | 取启动快照 | `bootstrapSnapshot()` 未执行骨架时抛错 | `src/host/bootstrapCore.ts` |
 | 取项目根 / 扩展路径 | `getProjectRoot(sessionId)`（未登记会话时抛错；`hasProjectRoot(sessionId)` 供降级守卫）/ `getExtensionPath()` 未注入直接抛错 | `src/core/history/Config.ts` |
 | 宿主契约成员 | 全部必选，禁止 `host.foo?.()` 静默降级（见 12.2） | `src/host/UIHost.ts` |
+| 共享文件读不出来 | 区分「不存在」与「解析失败」；后者**拒绝写入**并抛错，绝不按空内容覆盖 | `src/host/SettingsStore.ts`（第 12.11 节） |
 
 允许 no-op 的只有**合法瞬时状态**，且必须注释说明理由：
 
@@ -2658,6 +2659,8 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 | `sessionId → Connection` 归属 | `Client`（`assignSession` 登记，`sessionWorkspaceAssigned` 事件驱动） | 总线路由、`Connection` 的会话集合。`connectionId` 是内部概念，不进任何总线载荷 |
 | Core 进程生命周期 | Standalone：daemon（启动 / 重启 / 终止，第 13.2 节）；Embedded：宿主进程本身 | `Connection` 只消费 `channelReset` / `workspaceClosed` 与 fatal 事件；`CoreProcess.ts` 是单进程形态的传输层实现 |
 | 家目录 / 全局配置目录 | `src/config/configDir.ts` 的 `resolveHomeDir()` / `resolveConfigDir()`（口径 `USERPROFILE` → `HOME` → `os.homedir()`，与 `core-rs/src/config.rs` 的 `home_dir()` 同序） | `SettingsStore` / `Logger` / skills 目录 / `RealApi` 失败转储 / Electron 旧字段迁移都调它，不各自 `os.homedir()` 或读 `HOME` |
+| 全局 `settings.json` 的写入 | `SettingsStore.updateSettings`（宿主侧唯一写入口） | 写前必须拿跨进程锁、拒绝覆盖读不出来的文件、原子落盘（第 12.11 节） |
+| 跨进程文件锁 | `src/core/utils/fileLock.ts` | `SettingsStore` 用异步入口，`Logger` 的轮转用同步入口；不各自实现一套 |
 
 **禁止从投影反推事实**：`WebViewUI.onSessionRuntimeChanged` 只把 core 的状态转给
 `ConversationManager.updateSessionStates`，不参与计算；`SessionUiState` 不产出
@@ -2728,6 +2731,29 @@ webview 渲染所需的每一项事实都由宿主决定。**webview 不持有�
   全部必选；宿主读不到配置时不打开面板（不补默认值、不误导用户重配）。
 
 判据：**这个取值是宿主说的，还是 webview 猜的？** 猜的一律删掉，改成等待态。
+
+### 12.11 共享文件的写安全
+
+`~/<CONFIG_DIR_NAME>/settings.json` 是**同一台机器上多个宿主进程共写**的文件：VS Code
+扩展宿主与多个 Electron 实例都会读写它。这类文件上的「读-改-写」必须满足四条，
+缺一条就可能**销毁用户配置**（`docs/core-ui-separation.md` 第 4.6 节）：
+
+| 规则 | 落点 | 不做会怎样 |
+| --- | --- | --- |
+| 读-改-写整体在跨进程锁内 | `src/core/utils/fileLock.ts` 的 `withFileLock` | 两个宿主的读-改-写交错，后写者丢掉先写者的改动 |
+| 读不出来就拒绝写入 | `SettingsStore.updateSettings` 抛错 | 并发下的半截文件被解析失败 → 当成空配置 → 用 `{}` 覆盖全部配置 |
+| 写入原子（临时文件 + `rename`） | `writeFileAtomic` | `writeFile` 先截断再写，读者看到空文件/半截内容 |
+| 内容未变化不落盘 | `SettingsStore.updateSettings` | 高频调用反复重写磁盘，放大竞争窗口 |
+
+两条判据：
+
+- **「文件不存在」与「文件读不出来」必须分开**：前者等价于「用户还没配置过」，按空内容
+  继续；后者说明磁盘上有我们没读懂的内容，只能保持上一次的良好快照并记日志。
+- **凡是要「读-改-写」共享文件的地方，先问有没有锁**：进程内串行（Promise 链）挡不住
+  另一个进程；原子写挡不住丢失更新。两者都要。
+
+`Logger` 的日志轮转用同一份锁的同步入口（`acquireLockSync` / `releaseLockSync`）——
+它的落盘路径无法异步化。锁只保证**协作进程**之间的互斥，写入本身仍必须原子。
 
 这条同样适用于本文档：**只写现状**。已收敛的历史差异不列（第 11 章），
 还没定的事进第 13 章，不写「计划会怎样」。

@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ENV_PREFIX, LOG_FILE_NAME } from '../config/project.js';
+import { acquireLockSync, releaseLockSync } from './utils/fileLock.js';
 import { resolveConfigDir } from '../config/configDir.js';
 import { requireEventBus } from './AssistantEventBus.js';
 
@@ -43,11 +44,6 @@ const FLUSH_THRESHOLD_BYTES = 8 * 1024;
 /** 定时落盘间隔，避免低频日志长时间滞留内存 */
 const FLUSH_INTERVAL_MS = 100;
 
-/** 锁文件超过该时长未更新视为陈旧锁（持有者可能已崩溃） */
-const LOCK_STALE_MS = 15_000;
-const LOCK_MAX_ATTEMPTS = 10;
-const LOCK_RETRY_DELAY_MS = 10;
-
 /** 进程标识，写入每行日志，便于区分同时写同一文件的多个实例 */
 const PID = process.pid;
 
@@ -82,94 +78,6 @@ function scheduleFlush(): void {
   }, FLUSH_INTERVAL_MS);
   // 不因等待日志落盘而阻止进程退出，退出时由 exit 钩子兜底
   flushTimer.unref?.();
-}
-
-/* -------------------------------------------------------------------------- */
-/*                                跨进程锁                                     */
-/* -------------------------------------------------------------------------- */
-
-function isProcessAlive(pid: number): boolean {
-  if (!Number.isFinite(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    // EPERM 表示进程存在但没有权限发信号
-    return (err as NodeJS.ErrnoException)?.code === 'EPERM';
-  }
-}
-
-function isLockStale(): boolean {
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(LOCK_FILE);
-  } catch {
-    // 锁已不存在，可立即重试
-    return true;
-  }
-  if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) return true;
-
-  try {
-    const raw = fs.readFileSync(LOCK_FILE, 'utf8');
-    const pid = Number.parseInt(raw.trim().split(/\s+/)[0] ?? '', 10);
-    if (Number.isFinite(pid) && pid > 0 && !isProcessAlive(pid)) return true;
-  } catch {
-    // 读取失败（例如锁刚创建还未写入内容），交给 mtime 判断
-  }
-  return false;
-}
-
-function sleepSync(ms: number): void {
-  try {
-    // 主线程可用的同步休眠（Node 环境支持）
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-  } catch {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {
-      /* 退化方案：忙等 */
-    }
-  }
-}
-
-/**
- * 获取轮转锁。
- *
- * 使用 `wx`（O_CREAT | O_EXCL）打开锁文件，该操作在操作系统层面是原子的，
- * 因此同一时刻只有一个进程能成功创建，其余进程会收到 EEXIST。
- * 若锁持有者已崩溃（mtime 过旧或 pid 已不存在），则抢占该陈旧锁。
- */
-function acquireRotationLock(): boolean {
-  for (let attempt = 0; attempt < LOCK_MAX_ATTEMPTS; attempt++) {
-    try {
-      const fd = fs.openSync(LOCK_FILE, 'wx');
-      try {
-        fs.writeSync(fd, `${PID} ${Date.now()}`);
-      } finally {
-        fs.closeSync(fd);
-      }
-      return true;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') return false;
-      if (isLockStale()) {
-        try {
-          fs.unlinkSync(LOCK_FILE);
-        } catch {
-          // 其他进程可能已抢先清理，忽略
-        }
-        continue;
-      }
-      if (attempt < LOCK_MAX_ATTEMPTS - 1) sleepSync(LOCK_RETRY_DELAY_MS);
-    }
-  }
-  return false;
-}
-
-function releaseRotationLock(): void {
-  try {
-    fs.unlinkSync(LOCK_FILE);
-  } catch {
-    // 锁可能已被判定为陈旧并被清理，忽略
-  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -216,7 +124,7 @@ function rotateIfNeeded(pendingSize: number): void {
   }
   if (size + pendingSize <= MAX_FILE_SIZE) return;
 
-  if (!acquireRotationLock()) {
+  if (!acquireLockSync(LOCK_FILE)) {
     // 其他实例正在轮转：直接追加即可，下次落盘再评估
     return;
   }
@@ -230,7 +138,7 @@ function rotateIfNeeded(pendingSize: number): void {
     if (actual + pendingSize <= MAX_FILE_SIZE) return;
     rotateLogFiles();
   } finally {
-    releaseRotationLock();
+    releaseLockSync(LOCK_FILE);
   }
 }
 
