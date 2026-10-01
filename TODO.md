@@ -131,7 +131,7 @@ x64 / arm64，见 `docs/standalone-core.md` 第 4.1 节。
 - [x] `Edit` / `Write` 的 diff 预览字段与回滚：tool_result 携带 `beforeContent`（Edit 另带 `startLine` / `endLine`），请求载荷经 `NON_LLM_BLOCK_FIELDS` 剔除。
 - [x] `Edit` 的权限阶段匹配校验：`checkPermissions` 读文件后先跑 `computeEdit` 的「old_string 找不到 / 多处匹配且未 replace_all」检查，命中即 deny（不弹确认框，`auto` / `risk` 也不放行），与 `run_edit` 共用 `tools::edit_match_error`；对照表 `permissionParity.json` 新增 3 条用例（两侧同表）。
 - [x] `editRolledBack` 回滚：`core-rs/src/rollback.rs` 对齐 `history/rollback.ts`——按消息顺序收集 Edit / Write tool_use，`_meta.beforeContent` 缺失时回退 `tool_result.beforeContent`；`before` / `after` 两个方向写回目标文件，并把目标之后对其它文件的修改恢复到各自第一次 Edit 前的状态；`beforeContent` 为 `null` 时删除文件；相对路径按**会话自己的工作目录**解析（`tools::expand_path`）；结果作为 system 消息回传（文案逐字对齐）。用例 `rollback_tests.rs`（10 条）。
-- [x] `Grep` / `Glob`：复用随应用分发的 ripgrep 产物。
+- [x] `Grep` / `Glob`：复用随 Core 分发的 ripgrep 产物（与 Core 可执行文件同级的 `ripgrep/`）。
 - [x] `TodoWrite`。
 - [x] `Agent` / `Reply` / `SubAgentRegistry`：`core-rs/src/subagent.rs` 是注册表（子会话 → 创建者，对齐 `SubAgentRegistry.ts`；与 Embedded 一致只注册不注销），`tools.rs::run_agent` / `run_reply` + `engine::run_sub_agent` 承担完整链路。
   - `Agent`：权限层对齐 `AgentTool.checkPermissions`（prompt 空 → deny `Agent 工具需要提供任务描述(prompt)。`；缺 agentRole → deny；会话 id 以 `sub_` 开头 → deny 且 `shouldTerminate: true`；其余返回裸 `{ behavior: 'ask' }`）；`call` 建 `sub_<millis>_<rand>` 子会话、预写 `meta.json`（parentSessionId / role / model，对齐 `createConversationMetadataSync`）、完整继承父会话的 agent mode（manual / risk / auto 一律照搬并落盘子会话 `meta.json`，无记录时取 settings 的 `defaultAgentMode`）/ model / thinking effort、登记注册表、起后台线程，立刻返回 `✓ Agent [Master] created` 的结果文案。
@@ -152,7 +152,7 @@ x64 / arm64，见 `docs/standalone-core.md` 第 4.1 节。
 - [x] 工具进度事件：`toolProgress`：Bash 的 stdout / stderr 按块上报 `bash_progress`（`output` / `fullOutput`（4K 预览）/ `elapsedTimeSeconds` / `totalLines` / `totalBytes` / `timeoutMs`）。
 - [x] 子进程不闪窗：所有 spawn 走 `util::hide_console`（`CREATE_NO_WINDOW`），
       git 状态按工作目录缓存；`standaloneCoreEngine.test.ts` 有静态守卫。
-- [x] 资源定位：ripgrep 产物。
+- [x] 资源定位：ripgrep 产物（Core 以自身可执行文件目录为基准定位自带的 `ripgrep/`；宿主 `extensionPath` 只作本机开发期兜底）。
 - [x] 文档读取：doc/docx/ppt/pptx 经随应用分发的 pandoc 转 markdown（缓存到 `tool-results/<sessionId>__<stem>_<sha1>.md`）；xlsx/xlsm 用 `calamine` 读成对齐列宽的行文本（`sheet` 选表、`offset`/`limit` 窗口、每行 `String(cell)` 走 ECMAScript 口径）。`Read` schema 补 `sheet`，`toolSchemaParity` 的 `Read.sheet` 缺口移除；`toolResultParity` 新增 4 条 xlsx 用例（共用提交入库的 `src/test/fixtures/xlsx/people.xlsx`）。
 
 完成判据：默认工具集在 Core 侧可执行，权限确认与用户问答经帧通道往返。

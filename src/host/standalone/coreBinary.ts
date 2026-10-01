@@ -9,6 +9,10 @@
  *
  * 目录名与可执行文件名取自 `src/config/project.json`（`core.resourceDir` /
  * `core.binaryName`），本模块不写死产品名。
+ *
+ * 同一个产物目录里还有 Core **自带**的 `ripgrep/`（Grep / Glob 用的 `rg`）：Core 以
+ * 自己的可执行文件目录为基准定位它，Host 只负责把整份产物搬到位（本地直接起进程、
+ * 远端 SSH 引导上传），见 `docs/standalone-core.md` 第 4 节。
  */
 
 import * as fs from 'fs';
@@ -31,6 +35,32 @@ export function corePlatformDir(
 /** 可执行文件名；Windows 带 `.exe` */
 export function coreBinaryFileName(platform: NodeJS.Platform = process.platform): string {
   return platform === 'win32' ? `${CORE_BINARY_NAME}.exe` : CORE_BINARY_NAME;
+}
+
+/**
+ * Core 自带工具的目录名（与 Core 可执行文件同级）。
+ *
+ * Core 以**自己的可执行文件所在目录**为基准定位自带资源（`core-rs/src/tools.rs` 的
+ * `ripgrep_path`，见 `docs/standalone-core.md` 第 4 节）：Grep / Glob 用的 `rg` 就放在
+ * 这个目录里，本地由 `npm run build:core` 落位，远端由 SSH 引导原样上传。
+ */
+export const CORE_RIPGREP_DIR = 'ripgrep';
+
+/** 自带 ripgrep 的文件名；Windows 带 `.exe` */
+export function bundledRipgrepFileName(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? 'rg.exe' : 'rg';
+}
+
+/** 自带 ripgrep 的本地路径（给定 Core 可执行文件路径） */
+export function bundledRipgrepPath(
+  coreBinary: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return path.join(
+    path.dirname(coreBinary),
+    CORE_RIPGREP_DIR,
+    bundledRipgrepFileName(platform),
+  );
 }
 
 /** 候选路径（按优先级）；目录不在矩阵内时返回空数组 */

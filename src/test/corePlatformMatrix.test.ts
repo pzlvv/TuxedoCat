@@ -14,7 +14,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { coreBinaryCandidates, coreBinaryFileName, corePlatformDir } from '../host/standalone/coreBinary';
+import { bundledRipgrepFileName, bundledRipgrepPath, coreBinaryCandidates, coreBinaryFileName, corePlatformDir } from '../host/standalone/coreBinary';
 import { CORE_BINARY_NAME, CORE_RESOURCE_DIR } from '../config/project';
 import { createChecker, runTests } from './helpers/harness';
 
@@ -127,6 +127,13 @@ async function run(): Promise<void> {
       candidates[1] ===
         path.join('/ext', 'resources', CORE_RESOURCE_DIR, `${expected.arch}-${expected.platform}`, name),
     );
+    // Core 自带的 ripgrep 与可执行文件同级：`<产物目录>/ripgrep/<rg 名>`
+    const productDir = path.join('/ext', 'resources', CORE_RESOURCE_DIR, `${expected.arch}-${expected.platform}`);
+    check(
+      `${label} 自带 ripgrep 落在 <产物目录>/ripgrep/ 下`,
+      bundledRipgrepPath(path.join(productDir, name), expected.platform as NodeJS.Platform) ===
+        path.join(productDir, 'ripgrep', bundledRipgrepFileName(expected.platform as NodeJS.Platform)),
+    );
   }
 
   // ---------- 矩阵之外的组合必须被拒绝，而不是猜一个目录 ----------
@@ -146,14 +153,17 @@ async function run(): Promise<void> {
   for (const entry of targets) {
     const dir = path.join(repoRoot(), 'resources', CORE_RESOURCE_DIR, entry.dir);
     const binary = path.join(dir, `${CORE_BINARY_NAME}${entry.ext}`);
+    // Core 自带的 ripgrep：与可执行文件同级（`tools.rs::ripgrep_path` 的定位基准）
+    const ripgrep = bundledRipgrepPath(binary, entry.platform as NodeJS.Platform);
     if (alwaysBuilt.has(entry.dir)) {
       check(`${entry.dir} 已产出 ${CORE_BINARY_NAME}${entry.ext}`, fs.existsSync(binary));
+      check(`${entry.dir} 已产出自带的 ripgrep`, fs.existsSync(ripgrep));
     } else {
       // 预留平台：目录不存在是预期状态，这里只断言「没有半成品」（有目录就必须有产物）
       const hasDir = fs.existsSync(dir);
       check(
         `${entry.dir}（按需构建）没有半成品产物`,
-        !hasDir || fs.existsSync(binary),
+        !hasDir || (fs.existsSync(binary) && fs.existsSync(ripgrep)),
       );
     }
   }

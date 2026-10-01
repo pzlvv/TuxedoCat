@@ -12,9 +12,11 @@
  * 新动作 / 新协议的 core。
  *
  * 本脚本卡三件事：
- *   1. `resources/core/<平台>/` 里有可执行文件（缺失即报错，附带该平台的重建命令）；
+ *   1. `resources/core/<平台>/` 里有可执行文件与自带的 `ripgrep/`（缺失即报错，附带该
+ *      平台的重建命令）；
  *   2. 它的修改时间不早于 `core-rs/src/**`、`core-rs/Cargo.toml`、`core-rs/Cargo.lock`
- *      里最新的一个（早于就是「源码改了但没重编」）；
+ *      里最新的一个（早于就是「源码改了但没重编」）；`#[cfg(test)]` 专属文件不算
+ *      （cargo 不会为它们重链产物）；
  *   3. `dist/resources/core/` 里的副本与 `resources/` 里的**字节一致**（打包真正吃的是
  *      dist 里那份；`copy-assets` 漏跑过，或跑在重建之前就会不一致）。
  *
@@ -53,12 +55,14 @@ const REQUIRED_CORES = PACKAGE_DIRS.map((dir) => {
   return {
     dir,
     file: `${project.core.binaryName}${target.ext}`,
+    // 自带 ripgrep：与可执行文件同级（`tools.rs::ripgrep_path` 的定位基准）
+    ripgrep: `ripgrep/${target.platform === 'win32' ? 'rg.exe' : 'rg'}`,
     rebuild: 'npm run build:core',
   };
 });
 
-/** 目录（或文件）树里最新的修改时间；不存在的路径返回 0 */
-function newestMtime(target) {
+/** 目录（或文件）树里最新的修改时间；不存在的路径返回 0。`include` 过滤文件名 */
+function newestMtime(target, include = () => true) {
   if (!existsSync(target)) return 0;
   const stat = statSync(target);
   if (!stat.isDirectory()) return stat.mtimeMs;
@@ -70,12 +74,22 @@ function newestMtime(target) {
       const full = join(current, entry.name);
       if (entry.isDirectory()) {
         stack.push(full);
-      } else {
+      } else if (include(entry.name)) {
         newest = Math.max(newest, statSync(full).mtimeMs);
       }
     }
   }
   return newest;
+}
+
+/**
+ * 参与「产物是否比源码新」判定的 Rust 源。
+ *
+ * `#[cfg(test)]` 专属文件（`*_tests.rs`、`test_support.rs`）不算：它们不进产物，
+ * cargo 不会为它们的改动重链可执行文件，算进来会让校验永远失败。
+ */
+function isProductSource(fileName) {
+  return !fileName.endsWith('_tests.rs') && fileName !== 'test_support.rs';
 }
 
 /** 展示用相对路径 */
@@ -94,13 +108,17 @@ function main() {
     return;
   }
 
-  const sourceMtime = Math.max(...RUST_SOURCES.map((entry) => newestMtime(join(repoRoot, entry))));
+  const sourceMtime = Math.max(
+    ...RUST_SOURCES.map((entry) => newestMtime(join(repoRoot, entry), isProductSource)),
+  );
   const problems = [];
   const checked = [];
 
   for (const core of REQUIRED_CORES) {
-    const built = join(repoRoot, 'resources', project.core.resourceDir, core.dir, core.file);
-    const shipped = join(repoRoot, 'dist', 'resources', project.core.resourceDir, core.dir, core.file);
+    const builtDir = join(repoRoot, 'resources', project.core.resourceDir, core.dir);
+    const shippedDir = join(repoRoot, 'dist', 'resources', project.core.resourceDir, core.dir);
+    const built = join(builtDir, core.file);
+    const shipped = join(shippedDir, core.file);
 
     if (!existsSync(built)) {
       problems.push(`${show(built)} 不存在；先构建：${core.rebuild}`);
@@ -114,6 +132,12 @@ function main() {
       );
       continue;
     }
+    // Core 自带的 ripgrep：与可执行文件同级（Grep / Glob 在本地与远端都靠它）
+    const builtRipgrep = join(builtDir, core.ripgrep);
+    if (!existsSync(builtRipgrep)) {
+      problems.push(`${show(builtRipgrep)} 不存在（Core 自带 ripgrep）；重新构建：${core.rebuild}`);
+      continue;
+    }
     if (!existsSync(shipped)) {
       problems.push(`${show(shipped)} 不存在；先跑：npm run copy-assets`);
       continue;
@@ -122,6 +146,17 @@ function main() {
       problems.push(
         `${show(shipped)} 与 ${show(built)} 内容不一致（copy-assets 没跑，或跑在重建之前）；` +
           '先跑：npm run copy-assets',
+      );
+      continue;
+    }
+    const shippedRipgrep = join(shippedDir, core.ripgrep);
+    if (!existsSync(shippedRipgrep)) {
+      problems.push(`${show(shippedRipgrep)} 不存在；先跑：npm run copy-assets`);
+      continue;
+    }
+    if (fileDigest(shippedRipgrep) !== fileDigest(builtRipgrep)) {
+      problems.push(
+        `${show(shippedRipgrep)} 与 ${show(builtRipgrep)} 内容不一致；先跑：npm run copy-assets`,
       );
       continue;
     }

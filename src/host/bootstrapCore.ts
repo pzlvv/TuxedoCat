@@ -71,7 +71,12 @@ export interface CoreBootstrapOptions {
   log: (...args: unknown[]) => void;
   /** core 日志是否同时输出到控制台 */
   logToConsole: boolean;
-  /** 扩展 / 应用根目录（ripgrep、pandoc 等资源的定位基准） */
+  /**
+   * 扩展 / 应用根目录。
+   *
+   * Standalone 用它定位 Core 产物目录（`resources/core/<arch-platform>/`，其中已含
+   * Core 自带的 `ripgrep/`）；Embedded Core 用它定位随宿主分发的 ripgrep / pandoc。
+   */
   extensionPath: string;
   /**
    * 测试注入：Standalone 下为一个工作区打开 Core 通道。

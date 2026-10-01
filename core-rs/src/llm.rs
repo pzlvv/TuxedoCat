@@ -220,6 +220,13 @@ pub fn stream(req: &LlmRequest, emit: &mut dyn FnMut(LlmEvent)) -> Result<(), St
     // （对齐 `OpenAiApi` 闭包变量 `includeStreamUsage`）。
     let mut include_stream_usage = true;
     loop {
+        // 用户已请求取消（abort）：不再发起新的请求 / 重试，直接把失败交给上层。
+        // 上层（`engine::run_query_loop`）据 `cancel` 走「用户中断」收尾，不当作
+        // LLM 故障回显（对齐 Embedded `executeRequest` 开头 `checkAborted` 抛
+        // AbortError 的路径）。
+        if req.cancel.load(Ordering::Relaxed) {
+            return Err("LLM request aborted".to_string());
+        }
         let outcome = match req.provider.api_type.as_str() {
             "Anthropic" => stream_anthropic(req, emit),
             // OpenAI Responses API（`POST {baseURL}/v1/responses`）

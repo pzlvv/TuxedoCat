@@ -357,12 +357,19 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 | 情况 | 判据 | 行为 |
 | --- | --- | --- |
-| 已经在跑 | 状态文件里的 endpoint 探得通 | 直接复用，不动远端 |
-| 已部署未启动 | 可执行文件在、探测不通 | 执行 `<可执行文件> start`（幂等），再读状态文件 |
+| 已经在跑 | 状态文件里的 endpoint 探得通 | 直接复用：不重启 daemon、不覆盖可执行文件；只在缺自带 `ripgrep/` 时补传它 |
+| 已部署未启动 | 可执行文件在、探测不通 | 补齐缺的自带 `ripgrep/`（若缺），执行 `<可执行文件> start`（幂等），再读状态文件 |
 | 未部署 | `~/.local/bin` 下没有可执行文件 | 上传本机携带的对应平台产物（按远端 `uname -sm` 选平台）后 `start` |
 
-- 可执行文件固定落在 `~/.local/bin`（远端 Linux；产物按 `arch-platform` 目录从
-  `resources/core/` 取，见 `docs/standalone-core.md` 第 4.1 节）。
+- 产物固定落在 `~/.local/bin`（远端 Linux；产物按 `arch-platform` 目录从
+  `resources/core/` 取，见 `docs/standalone-core.md` 第 4.1 节）：可执行文件
+  `~/.local/bin/<core.binaryName>`，自带的 ripgrep 在
+  `~/.local/bin/ripgrep/rg`——Core 以**自己的可执行文件目录**为基准定位自带资源，
+  远端机器不需要预装 `rg`。
+- 上传按「缺哪个补哪个」：可执行文件在但自带 `ripgrep/` 不在（旧版本部署过）时只补
+  ripgrep；这条对「已经在跑」同样生效——daemon 是常驻进程，不在这里补就再没有补的
+  时机（除非用户 `kill` 掉它）。本机产物里没有这份 ripgrep 属于构建不完整，直接报错，
+  不静默降级。
 - daemon 的端口与 token **以远端状态文件为准**（第 12.3 节）：Host 读
   `~/<configDir>/core-daemon.json`，把通配地址换成回环后转发。
 - 状态文件缺失 / 损坏 / 连不上都按「没有在跑」处理，与 `start` 自己的判据同口径。

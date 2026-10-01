@@ -31,8 +31,8 @@ Tuxedo Cat 是一个面向 VS Code 与 Electron 的 AI 助手，提供侧边栏�
 ├── core-rs/                # Standalone Core（Rust，独立进程）
 ├── electron/               # Electron 桌面端代码
 ├── resources/              # 运行时二进制资源（Git LFS）
-│   ├── core/               # Standalone Core 各平台可执行文件
-│   └── ripgrep/            # ripgrep 各平台可执行文件
+│   ├── core/               # Standalone Core 各平台产物目录（可执行文件 + 自带的 ripgrep/）
+│   └── ripgrep/            # ripgrep 各平台可执行文件（Embedded Core 用；也是上一条的来源）
 ├── scripts/                # 开发/打包辅助脚本
 ├── src/
 │   ├── config/             # 工程配置

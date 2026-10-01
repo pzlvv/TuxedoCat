@@ -2233,6 +2233,58 @@ fn abort_with_pending_tool_uses_backfills_tool_results_and_reports_interruption(
 }
 
 #[test]
+fn abort_during_responses_stream_reports_interruption_not_api_error() {
+    // 远程 Core 走 Responses API 时，用户 abort 会让本端提前掐断流，服务端不会补
+    // `response.completed`。这属于「用户中断」，不得按 LLM 故障回显
+    // （对齐 Embedded `Query.ts` 捕获 AbortError 的 `isAborted` 分支）。
+    let sandbox = Sandbox::new("engine-abort-responses");
+    let slot: Arc<Mutex<Option<Arc<Core>>>> = Arc::new(Mutex::new(None));
+    let aborter = Arc::clone(&slot);
+    // 分段写：先写一个未完成的 output_item，在两次写之间 abort，最后写 [DONE]。
+    let llm = FakeLlm::start_gated(
+        |_, _| {
+            let first = format!(
+                "data: {}\n\n",
+                json!({
+                    "type": "response.output_item.added",
+                    "item": { "type": "reasoning", "id": "rs_1", "summary": [] },
+                })
+            );
+            let second = "data: [DONE]\n\n".to_string();
+            (first, second)
+        },
+        move || {
+            if let Some(core) = aborter.lock().unwrap().as_ref() {
+                core.on_abort("s1");
+            }
+        },
+    );
+    sandbox.write_llm_settings_with_api_type(&llm.base_url, "auto", "Responses");
+    config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
+
+    let harness = EngineHarness::allow_all();
+    *slot.lock().unwrap() = Some(Arc::clone(&harness.core));
+    submit(&harness, "s1", "你好", "u-1");
+    assert!(harness.wait_query_end());
+
+    let messages = harness.sink.events_of("message");
+    assert!(
+        !messages.iter().any(|event| event["data"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("LLM API Error")),
+        "abort 不得按 LLM 故障回显：{messages:?}"
+    );
+    assert!(
+        messages.iter().any(|event| {
+            event["data"]["role"] == "system"
+                && event["data"]["content"] == "*User Interrupted*"
+        }),
+        "应当上报 *User Interrupted*：{messages:?}"
+    );
+}
+
+#[test]
 fn bash_streams_tool_progress_frames() {
     // 对齐 Embedded `RunTools.executeSingleTool` 的 onProgress：
     // Bash 的流式输出经 `toolProgress` 帧实时推给 UI（而不是等命令结束）。

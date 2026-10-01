@@ -11,7 +11,8 @@ use crate::llm::{
     DEFAULT_STREAM_IDLE_TIMEOUT_MS,
 };
 use crate::test_support::{responses_text_sse, responses_thinking_tool_sse, FakeLlm};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 fn provider() -> ProviderConfig {
     ProviderConfig {
@@ -324,4 +325,55 @@ fn responses_request_maps_off_to_none() {
     assert_eq!(body["reasoning"]["effort"], "none");
     assert!(body.get("instructions").is_none());
     assert!(body.get("tools").is_none());
+}
+
+/// 用户主动取消（abort）：流是本端提前掐断的，服务端不会补终止事件——这不是
+/// 「截断」，不得走重试 / 报错路径，也不得补发 `message_delta`
+/// （对齐 Embedded `checkAborted` 抛 AbortError 的路径）。
+#[test]
+fn responses_stream_abort_is_not_a_truncation_error() {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let canceller = Arc::clone(&cancel);
+    // 分段写：先写一个未完成的 output_item，在两次写之间置位 cancel（模拟用户点
+    // abort），再写后续事件——此时服务端永远不会补 `response.completed`。
+    let llm = FakeLlm::start_gated(
+        |_index, _body| {
+            let first = format!(
+                "data: {}\n\n",
+                json!({
+                    "type": "response.output_item.added",
+                    "item": { "type": "reasoning", "id": "rs_1", "summary": [] },
+                })
+            );
+            let second = format!(
+                "data: {}\n\ndata: [DONE]\n\n",
+                json!({ "type": "response.output_text.delta", "delta": "取消后不应到达" })
+            );
+            (first, second)
+        },
+        move || canceller.store(true, Ordering::Relaxed),
+    );
+    let mut provider = provider();
+    provider.base_url = llm.base_url.clone();
+    let request = LlmRequest {
+        provider: &provider,
+        system_prompt: "你是助手",
+        messages: &[json!({ "role": "user", "content": "hi" })],
+        tools: &[],
+        session_id: "sess-abort",
+        thinking_enabled: true,
+        cancel: &cancel,
+        first_byte_timeout_ms: DEFAULT_FIRST_BYTE_TIMEOUT_MS,
+        idle_timeout_ms: DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+    };
+    let mut events: Vec<LlmEvent> = Vec::new();
+    let result = stream(&request, &mut |event| events.push(event));
+    assert!(result.is_ok(), "取消不应报错：{result:?}");
+    assert!(text_of(&events).is_empty(), "取消后不应再产出内容：{events:?}");
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, LlmEvent::MessageDelta)),
+        "取消时不得补发 message_delta：{events:?}"
+    );
 }

@@ -3,7 +3,11 @@
  *
  * 目标环境只有 SSH 端口、daemon 端口映射不出来时，Host 经 SSH 完成三件事：
  * 1. **发现**：远端状态文件里的 daemon 探得通就直接复用（用户已经手工 `start` 过）；
- * 2. **部署**：`~/.local/bin` 里没有可执行文件就上传一份本机携带的对应平台产物；
+ * 2. **部署**：`~/.local/bin` 里没有可执行文件就上传一份本机携带的对应平台产物，
+ *    并补齐 Core 自带的 `ripgrep/`（Grep / Glob 用的 `rg`，与可执行文件同级——
+ *    Core 以**自己的可执行文件目录**为基准定位自带资源，见
+ *    `docs/standalone-core.md` 第 4 节）；「已经在跑」也照样补缺的 ripgrep，
+ *    但不动可执行文件、不重启 daemon；
  * 3. **启动**：执行 `<远端可执行文件> start`（幂等：已在跑就复用），再读状态文件。
  *
  * 三条分支都以「读到状态文件里的 endpoint + token」收尾；任何一步失败都直接报错，
@@ -13,8 +17,15 @@
  * `src/test/sshDaemonBootstrap.test.ts`）。
  */
 
+import { existsSync } from 'node:fs';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
-import { coreBinaryFileName, resolveCoreBinary } from './coreBinary.js';
+import {
+  CORE_RIPGREP_DIR,
+  bundledRipgrepFileName,
+  bundledRipgrepPath,
+  coreBinaryFileName,
+  resolveCoreBinary,
+} from './coreBinary.js';
 import { DAEMON_STATE_FILE_NAME, type DaemonStateFile } from './daemonProtocol.js';
 import type { SshExecResult, SshFileInfo } from './sshClient.js';
 
@@ -69,9 +80,14 @@ export async function ensureRemoteDaemon(
   const home = await ssh.homeDir();
   const statePath = posixJoin(home, CONFIG_DIR_NAME, DAEMON_STATE_FILE_NAME);
 
-  // 1. 已经启动：状态文件里的 daemon 探得通就直接复用，不动远端任何东西
+  // 1. 已经启动：状态文件里的 daemon 探得通就直接复用——不重启、不覆盖可执行文件。
+  //    但「在跑」不等于产物齐全：老版本部署过的远端只有可执行文件、没有自带的
+  //    ripgrep，而 daemon 是常驻进程，不在这里补就再没有补的时机（除非用户 kill 它）。
   const running = await probeRunningDaemon(ssh, statePath, options.log);
-  if (running) return running;
+  if (running) {
+    await ensureRemoteRipgrep(ssh, options, home);
+    return running;
+  }
 
   // 2. 平台不一致时产物不同：先问远端，再决定上传哪一份
   const target = await detectRemoteTarget(ssh);
@@ -86,7 +102,10 @@ export async function ensureRemoteDaemon(
     options.log(`[ssh] deployed ${remoteBinary} (${target.platform}-${target.arch})`);
   }
 
-  // 4. 启动：`start` 自己保证幂等（已在跑就只打印连接信息）
+  // 4. Core 自带的 ripgrep：与可执行文件同级，缺了就补上
+  await ensureRemoteRipgrep(ssh, options, home);
+
+  // 5. 启动：`start` 自己保证幂等（已在跑就只打印连接信息）
   const started = await ssh.exec(`${shellQuote(remoteBinary)} start`);
   if (started.code !== 0) {
     throw new Error(
@@ -95,7 +114,7 @@ export async function ensureRemoteDaemon(
     );
   }
 
-  // 5. 状态文件是唯一事实来源：daemon 实际监听的端口与生效 token 都在这里
+  // 6. 状态文件是唯一事实来源：daemon 实际监听的端口与生效 token 都在这里
   const state = await readDaemonState(ssh, statePath);
   if (!state) {
     throw new Error(
@@ -104,6 +123,41 @@ export async function ensureRemoteDaemon(
     );
   }
   return state;
+}
+
+/**
+ * 确保远端有 Core 自带的 ripgrep（与远端可执行文件同级）。
+ *
+ * 远端机器不一定装过 `rg`，而 Grep / Glob 是核心工具：缺了它，远端的工具只能
+ * `spawn rg ENOENT`。**缺了才传**——远端路径与平台无关（远端只支持 Linux，
+ * 文件名恒为 `rg`），先按这个名字 stat；真要上传时才 `uname -sm` 挑本机对应平台的产物。
+ * 本机产物里没有这份 rg 属于构建不完整，直接报错（`DEVELOPMENT.md` 第 12 章）。
+ */
+async function ensureRemoteRipgrep(
+  ssh: RemoteSsh,
+  options: RemoteBootstrapOptions,
+  home: string,
+): Promise<void> {
+  const remoteRipgrep = posixJoin(
+    home,
+    REMOTE_BIN_DIR,
+    CORE_RIPGREP_DIR,
+    bundledRipgrepFileName('linux'),
+  );
+  if ((await ssh.stat(remoteRipgrep)).exists) return;
+
+  const target = await detectRemoteTarget(ssh);
+  const localBinary = resolveCoreBinary(options.extensionPath, target.platform, target.arch);
+  const localRipgrep = bundledRipgrepPath(localBinary, target.platform);
+  if (!existsSync(localRipgrep)) {
+    throw new Error(
+      `bundled ripgrep is missing from the local Core product: ${localRipgrep}; `
+        + 'run "npm run build:core" first.',
+    );
+  }
+  await ssh.exec(`mkdir -p ${shellQuote(posixDirname(remoteRipgrep))}`);
+  await ssh.upload(localRipgrep, remoteRipgrep, 0o755);
+  options.log(`[ssh] deployed ${remoteRipgrep} (${target.platform}-${target.arch})`);
 }
 
 /** 读远端状态文件；缺失 / 内容不合法 / endpoint 解析不出都返回 null（由调用方决定怎么办） */

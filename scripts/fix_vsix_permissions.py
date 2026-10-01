@@ -14,8 +14,12 @@ TARGET_FILES = [
     # 打包时仅包含 dist/resources（.vscodeignore 已排除顶层 resources/）
     "extension/dist/resources/ripgrep/x64-linux/rg",
     "extension/dist/resources/core/x64-linux/tuxedo-cat-core",
+    # Core 自带的 ripgrep（与 Core 可执行文件同级，Grep / Glob 靠它）
+    "extension/dist/resources/core/x64-linux/ripgrep/rg",
     # Add more linux/macos binaries here if needed
     # "extension/dist/resources/ripgrep/arm64-linux/rg",
+    # "extension/dist/resources/core/arm64-linux/tuxedo-cat-core",
+    # "extension/dist/resources/core/arm64-linux/ripgrep/rg",
     # "extension/dist/resources/ripgrep/x64-darwin/rg",
     # "extension/dist/resources/ripgrep/arm64-darwin/rg",
 ]

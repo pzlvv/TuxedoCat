@@ -72,7 +72,7 @@ Core 就绪前传递一次。
 
 | 事实 | 性质 | 说明 |
 | --- | --- | --- |
-| `extensionPath` | 静态 | Core 定位 ripgrep / pandoc 等随 Core 分发的资源 |
+| `extensionPath` | 静态 | 扩展 / 应用根目录；Core 自带资源（ripgrep / pandoc）以**自己的可执行文件目录**为基准定位，这里只作本机开发期的兜底 |
 | `logToConsole` | 静态 | 日志是否同时输出到控制台 |
 | `configDirName` | 静态 | Core 数据目录名（`~/<configDirName>`） |
 | `settings` | 静态 | 配置快照（第 4.3 节） |

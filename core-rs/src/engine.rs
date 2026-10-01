@@ -2986,6 +2986,13 @@ fn run_query_loop(
 
         if let Some(error) = error {
             core.emit(json!({ "type": "aiEnd", "sessionId": session_id }));
+            // 用户主动取消（abort）导致的失败不是 LLM 故障：对齐 Embedded `Query.ts`
+            // 捕获 AbortError 的 `isAborted` 分支——上报 `*User Interrupted*` 并正常
+            // 结束本轮，而不是把错误文案当 API 失败回显给用户。
+            if state.lock().unwrap().cancel.load(Ordering::Relaxed) {
+                emit_user_interrupted(core, session_id, project, state)?;
+                return Ok(());
+            }
             return Err(error);
         }
         let cancelled = state.lock().unwrap().cancel.load(Ordering::Relaxed);

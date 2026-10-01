@@ -1,7 +1,8 @@
 //! 内置工具：定义、路径展开与执行。
 //!
 //! 与 Embedded Core 对齐的部分：工具名、输入 schema 字段、Read 的行号格式、
-//! 工具结果上限（前 2K + 后 2K）。搜索类工具复用随应用分发的 ripgrep 产物。
+//! 工具结果上限（前 2K + 后 2K）。搜索类工具复用随 Core 分发的 ripgrep 产物
+//! （与 Core 可执行文件同级的 `ripgrep/` 目录，见 `ripgrep_path`）。
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -3053,31 +3054,73 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
 
 // ==================== ripgrep ====================
 
-/// 解析随应用分发的 ripgrep 产物；缺失时回退到 PATH 中的 `rg`
-pub fn ripgrep_path() -> String {
+/// 当前平台 / 架构的产物目录名（`<arch>-<platform>`，与 `resources/ripgrep/` 一致）
+fn platform_dir() -> String {
     let platform = if cfg!(windows) { "win32" } else { "linux" };
     let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
-    let sub_dir = format!("{arch}-{platform}");
-    let exe_name = if cfg!(windows) { "rg.exe" } else { "rg" };
-    if let Ok(extension_path) = config::extension_path() {
+    format!("{arch}-{platform}")
+}
+
+/// 可执行文件名（Windows 加 `.exe`）
+fn exe_name(stem: &str) -> String {
+    if cfg!(windows) {
+        format!("{stem}.exe")
+    } else {
+        stem.to_string()
+    }
+}
+
+/// Core 可执行文件所在目录：Core 自带资源的定位基准。
+///
+/// 本地与远端是同一个部署单元——「Core 可执行文件 + 与它同级的 `ripgrep/` 目录」
+/// （`npm run build:core` 落位，Host 的 SSH 引导原样上传，见 `docs/standalone-core.md`
+/// 第 4 节）。Core 因此不依赖宿主的 `extensionPath` 定位自己的产物。
+fn core_executable_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+}
+
+/// ripgrep 的候选路径，按优先级排列（纯函数，便于用例锁死顺序）：
+/// 1. Core 自带（`<Core 可执行文件目录>/ripgrep/`）；
+/// 2. 宿主 `extensionPath`（本机开发期兜底：直接用 `cargo run` / `cargo test`
+///    的 Core 进程、或从仓库里跑宿主时，产物在 `resources/` / `dist/resources/`）。
+fn ripgrep_candidates(core_dir: Option<&Path>, extension_path: Option<&str>) -> Vec<PathBuf> {
+    let exe = exe_name("rg");
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = core_dir {
+        candidates.push(dir.join("ripgrep").join(&exe));
+    }
+    if let Some(extension_path) = extension_path {
         // 逐段 join（不要用 `"dist/resources/ripgrep"` 这种含 `/` 的单段字符串）：
         // Windows 上 `path.join` 产出的是反斜杠，错误文案里的命令行才能与
         // Embedded 的 `path.join(...)` 完全一致。
-        let base = Path::new(&extension_path);
-        for candidate in [
+        let sub_dir = platform_dir();
+        let base = Path::new(extension_path);
+        candidates.push(
             base.join("dist")
                 .join("resources")
                 .join("ripgrep")
                 .join(&sub_dir)
-                .join(exe_name),
+                .join(&exe),
+        );
+        candidates.push(
             base.join("resources")
                 .join("ripgrep")
                 .join(&sub_dir)
-                .join(exe_name),
-        ] {
-            if candidate.exists() {
-                return candidate.to_string_lossy().to_string();
-            }
+                .join(&exe),
+        );
+    }
+    candidates
+}
+
+/// 解析随 Core 分发的 ripgrep 产物；缺失时回退到宿主产物与 PATH 中的 `rg`。
+pub fn ripgrep_path() -> String {
+    let core_dir = core_executable_dir();
+    let extension_path = config::extension_path().ok();
+    for candidate in ripgrep_candidates(core_dir.as_deref(), extension_path.as_deref()) {
+        if candidate.exists() {
+            return candidate.to_string_lossy().to_string();
         }
     }
     "rg".to_string()

@@ -2154,6 +2154,31 @@ fn ripgrep_path_prefers_the_bundled_binary() {
     assert_ne!(resolved, "rg");
 }
 
+/// ripgrep 的候选顺序：Core 自带（与 Core 可执行文件同级的 `ripgrep/`）优先，
+/// 宿主 `extensionPath` 只作本机开发期兜底（`docs/standalone-core.md` 第 4 节）。
+///
+/// 用纯函数锁顺序：`ripgrep_path()` 的定位基准是进程自己的可执行文件目录，
+/// 用例进程在 `core-rs/target/...`，没法在它旁边放产物。
+#[test]
+fn ripgrep_candidates_prefer_the_core_bundle() {
+    let exe = if cfg!(windows) { "rg.exe" } else { "rg" };
+    let core_dir = Path::new("/core/bin");
+    let candidates = ripgrep_candidates(Some(core_dir), Some("/host/root"));
+    assert_eq!(candidates.len(), 3, "got {candidates:?}");
+    // 1. Core 自带：`<Core 可执行文件目录>/ripgrep/rg[.exe]`
+    assert!(candidates[0].starts_with(core_dir), "got {:?}", candidates[0]);
+    assert!(candidates[0].ends_with(Path::new("ripgrep").join(exe)));
+    // 2/3. 宿主 extensionPath：`dist/resources` 优先，其次仓库里的 `resources`
+    assert!(candidates[1].starts_with(Path::new("/host/root")), "got {:?}", candidates[1]);
+    assert!(candidates[1].ends_with(Path::new("ripgrep").join(platform_dir()).join(exe)));
+    assert!(candidates[2].starts_with(Path::new("/host/root")), "got {:?}", candidates[2]);
+    assert!(candidates[2].ends_with(Path::new("ripgrep").join(platform_dir()).join(exe)));
+    // 宿主环境未下发（独立运行的 Core）时只剩自带那条
+    assert_eq!(ripgrep_candidates(Some(core_dir), None).len(), 1);
+    // 两个来源都没有时回退 PATH 里的 `rg`（`ripgrep_path` 的返回值）
+    assert!(ripgrep_candidates(None, None).is_empty());
+}
+
 #[test]
 fn ripgrep_exit_code_one_means_no_matches() {
     if !ripgrep_available() {

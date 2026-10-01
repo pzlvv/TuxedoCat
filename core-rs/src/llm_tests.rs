@@ -3,7 +3,7 @@
 use super::*;
 use crate::test_support::{anthropic_sse, openai_text_sse, openai_thinking_sse, openai_tool_sse, FakeLlm};
 use serde_json::json;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 fn provider(base_url: &str, api_type: &str) -> ProviderConfig {
@@ -1507,4 +1507,34 @@ fn openai_tool_calls_get_their_own_block() {
         block_boundaries(&events),
         vec!["start:tool_use", "stop", "message_delta"]
     );
+}
+
+/// 用户已取消（abort）的请求不再发起 HTTP 调用（对齐 Embedded `executeRequest`
+/// 开头的 `checkAborted(signal)`）；失败交给引擎按「用户中断」收尾。
+#[test]
+fn stream_does_not_send_when_already_cancelled() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&hits);
+    let llm = FakeLlm::start(move |_index, _body| {
+        counter.fetch_add(1, Ordering::Relaxed);
+        openai_text_sse(&["不应到达"])
+    });
+    let provider = provider(&llm.base_url, "OpenAI");
+    let cancel = AtomicBool::new(true);
+    let request = LlmRequest {
+        provider: &provider,
+        system_prompt: "你是助手",
+        messages: &[json!({ "role": "user", "content": "hi" })],
+        tools: &[],
+        session_id: "sess-cancel",
+        thinking_enabled: false,
+        cancel: &cancel,
+        first_byte_timeout_ms: DEFAULT_FIRST_BYTE_TIMEOUT_MS,
+        idle_timeout_ms: DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+    };
+    let mut events: Vec<LlmEvent> = Vec::new();
+    let result = stream(&request, &mut |event| events.push(event));
+    assert!(result.is_err(), "取消后应直接失败，不发起请求：{result:?}");
+    assert!(events.is_empty(), "取消后不应产出任何事件：{events:?}");
+    assert_eq!(hits.load(Ordering::Relaxed), 0, "取消后不应发起请求");
 }

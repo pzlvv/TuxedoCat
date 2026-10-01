@@ -10,6 +10,8 @@
  *
  * 产物落位：resources/<core.resourceDir>/<arch>-<platform>/<core.binaryName>[.exe]
  * 目录命名与 resources/ripgrep/ 一致；copy-assets 会把它带进 dist/resources。
+ * 同一目录下还会落一份自带的 `ripgrep/rg[.exe]`（Grep / Glob 用的 rg）：
+ * Core 以**自己的可执行文件目录**为基准定位自带资源，本地与远端都是这一个位置。
  *
  * 产品名与产物名一律取自 src/config/project.json（`core.binaryName` /
  * `core.resourceDir`），本脚本不写死。Rust 侧的包名固定为中性的 `standalone-core`，
@@ -245,6 +247,32 @@ function buildTarget(target, options) {
   const outPath = join(outDir, `${BINARY_NAME}${target.ext}`);
   copyFileSync(built, outPath);
   console.log(`[build-core] ${target.triple} → ${outPath}`);
+
+  copyBundledRipgrep(target, outDir);
+}
+
+/**
+ * 把 ripgrep 可执行文件复制到 Core 可执行文件同级。
+ *
+ * Core 自带资源的定位基准是**自己的可执行文件所在目录**（`tools.rs::ripgrep_path`）：
+ * 本地由宿主从 `resources/<core.resourceDir>/<dir>/` 起进程，远端由 Host 的 SSH 引导
+ * 上传同一个位置（`src/host/standalone/sshDaemonBootstrap.ts`）。因此 Core 与它的
+ * `ripgrep/rg[.exe]` 必须落在一起——少了它 Grep / Glob 只能靠目标机器 PATH 上的 `rg`。
+ */
+function copyBundledRipgrep(target, outDir) {
+  const name = target.platform === 'win32' ? 'rg.exe' : 'rg';
+  const source = join(repoRoot, 'resources', 'ripgrep', target.dir, name);
+  if (!existsSync(source)) {
+    console.error(
+      `[build-core] 缺少该平台的 ripgrep 产物：${source}\n` +
+        `             Core 自带的 ripgrep 必须与可执行文件一起落位（docs/standalone-core.md 第 4 节）。`,
+    );
+    process.exit(1);
+  }
+  const dest = join(outDir, 'ripgrep');
+  mkdirSync(dest, { recursive: true });
+  copyFileSync(source, join(dest, name));
+  console.log(`[build-core] ${target.dir} 自带 ripgrep → ${join(dest, name)}`);
 }
 
 function main() {

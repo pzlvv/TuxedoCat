@@ -98,7 +98,8 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 ## 4. Standalone Core 形态
 
 - 语言与工具链：Rust（edition 2021），Cargo 构建。
-- 产物：单文件可执行；文件名为 `core.binaryName`（Windows 加 `.exe`）。
+- 产物：`core.binaryName`（Windows 加 `.exe`）单文件可执行，外加同级的自带工具目录
+  （`ripgrep/`）；**部署单元是整个产物目录**，见第 4.1 节。
 - 源码位置：`core-rs/`（Cargo 包，包名与二进制名保持中性；对外文件名由构建脚本按配置落位）。
 - 进程属性：由宿主启动时不显示窗口；标准输入 / 标准输出为帧通道，标准错误为诊断输出。
   远程服务（`start` 动作）让 daemon 把控制通道换成 TCP（`docs/core-daemon.md` 第 12 节）。
@@ -134,6 +135,16 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 产物目录命名与 `resources/ripgrep/` 一致。宿主按运行平台的平台名 / 架构名解析产物目录，
 不写死单一平台。
 
+**部署单元**：一个产物目录 = 一个自包含单元，除可执行文件外还有 Core 自带的工具目录
+（当前只有 `ripgrep/rg[.exe]`）。Core 以**自己的可执行文件所在目录**为基准
+定位自带资源（`tools.rs::ripgrep_path`），因此本地起进程与远端上传用的都是这一个位置，
+不依赖宿主提供 `extensionPath`：
+
+```
+resources/core/x64-win32/tuxedo-cat-core.exe
+resources/core/x64-win32/ripgrep/rg.exe
+```
+
 ### 4.2 跨平台预留约束
 
 - Core 侧不依赖 Windows 专有 API；平台差异收敛在少量模块：进程管理、路径处理、
@@ -150,7 +161,7 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 | 进程管理 | `bash_task.rs::kill_tree`、`mcp.rs` 的子进程终止 | `#[cfg(windows)]` 走 `taskkill /T /F`；非 Windows 走 `Child::kill`，与 Embedded（Node `detached: true` + `childProcess.kill()`，同样只杀直接子进程）逐字对齐 |
 | 路径处理 | `util.rs` 的 `normalize_path` / `expand_path`、`config.rs` 的 `encodeURIComponent` 等价物 | 盘符与 UNC 的换算都在 `cfg!(windows)` 分支内；非 Windows 走 POSIX 分支，多字节路径按字节比较 |
 | shell 探测 | `shell.rs::detect` | 非 Windows 直接用 `$SHELL`（缺省 `/bin/bash`）；Windows 才走 Git Bash → PowerShell → cmd.exe 的优先级 |
-| 资源定位 | `tools.rs::ripgrep_path` / `get_pandoc_path`、`config.rs::extension_path` | 可执行名按 `cfg!(windows)` 加 `.exe`；产物目录按 `<arch>-<platform>` 解析，矩阵外直接拒绝而不是猜一个目录 |
+| 资源定位 | `tools.rs::ripgrep_path` / `get_pandoc_path`、`config.rs::extension_path` | Core 自带产物以**自己的可执行文件目录**为基准（`<exe 目录>/ripgrep/rg[.exe]`），宿主 `extensionPath` 只作本机开发期的兜底、最后回退 PATH；可执行名按 `cfg!(windows)` 加 `.exe`；产物目录按 `<arch>-<platform>` 解析，矩阵外直接拒绝而不是猜一个目录 |
 | 主目录 | `config.rs::home_dir` | `USERPROFILE` 优先、`HOME` 兜底，两者都缺才报错 |
 | 系统语言 | 宿主：`src/host/i18n.ts::getSystemLocale`（不在 Core 侧） | 仅 Windows 查 PowerShell `Get-UICulture`；其余平台读 `LANG` / `LC_ALL` |
 | 控制台窗口 | `util.rs::hide_console` | 仅 Windows 设 `CREATE_NO_WINDOW`，非 Windows 是空操作 |
@@ -340,7 +351,7 @@ Standalone Core 下，core 侧事实的归属与 `docs/core-ui-separation.md` �
 | 会话工作目录表 | Core | 单目录宿主（VS Code）在会话首次解析目录前经 `UiEvent.sessionWorkspaceAssigned` 登记；多工作目录宿主（Electron）按来源视图登记；加载对话后由 `meta.json` 的 `project` 校正 |
 | 工具执行 | Core | 在 Core 所在机器操作文件系统 |
 | MCP 子进程 | Core | 生命周期由 Core 管理 |
-| ripgrep / pandoc | Core | 随 Core 分发并定位 |
+| ripgrep / pandoc | Core | 随 Core 分发并定位：与 Core 可执行文件同级（`<exe 目录>/ripgrep/`），本地起进程与远端上传的是同一个目录 |
 | 宿主环境（extensionPath / logToConsole / configDirName） | UI 提供，Core 消费 | 经 `UiEvent.hostEnvironmentProvided` |
 | 会话工作目录 | UI 提供，Core 消费 | 经 `UiEvent.sessionWorkspaceAssigned` |
 | 日志行 | Core 产生 | 经 `CoreEvent.log` 上报；标准错误仅用于诊断 |
@@ -451,14 +462,14 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | daemon 客户端 | `src/host/standalone/CoreDaemon.ts`（建链器抽象，见 `docs/core-daemon.md`） |
 | SSH 接入（客户端 / 引导 / 建链） | `src/host/standalone/sshClient.ts`、`sshDaemonBootstrap.ts`、`sshTransport.ts`（见 `docs/core-daemon.md` 第 12.8 节） |
 | 配置快照 | `src/host/SettingsStore.ts` |
-| 平台产物解析 | `src/host/standalone/coreBinary.ts` |
+| 平台产物解析 | `src/host/standalone/coreBinary.ts`（产物目录 + 自带的 `ripgrep/`） |
 | bootstrap 分支 | `src/host/bootstrapCore.ts` |
 | 事件契约 | `src/core/AssistantEventBus.ts` |
 | Rust 包 | `core-rs/` |
 | 命令行（`--help` / `--version` / 模式） | `core-rs/src/cli.rs` |
 | 远程监听 / token / 目录列举 | `core-rs/src/remote.rs`（见 `docs/core-daemon.md` 第 12 节） |
 | 构建目标参数化 | `core-rs/.cargo/config.toml`、`scripts/build-core.mjs`（平台矩阵 `TARGETS`、打包集 `PACKAGE_DIRS`） |
-| 分发产物 | `resources/core/<platform>-<arch>/` |
+| 分发产物 | `resources/core/<platform>-<arch>/`（可执行文件 + 自带的 `ripgrep/`） |
 
 ## 14. 测试与覆盖率
 

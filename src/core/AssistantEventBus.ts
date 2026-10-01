@@ -318,7 +318,13 @@ export type UiEvent =
    */
   | {
       type: 'hostEnvironmentProvided';
-      /** 扩展 / 应用根目录（ripgrep、pandoc 等资源的定位基准） */
+      /**
+       * 扩展 / 应用根目录。
+       *
+       * Embedded Core 用它定位随宿主分发的 ripgrep / pandoc（`utils/ripgrep.ts`）；
+       * Standalone Core 的自带资源以**自己的可执行文件目录**为基准（与可执行文件同级的
+       * `ripgrep/`），这里只作本机开发期的兜底（`docs/standalone-core.md` 第 4 节）。
+       */
       extensionPath: string;
       /** core 日志是否同时输出到控制台 */
       logToConsole: boolean;

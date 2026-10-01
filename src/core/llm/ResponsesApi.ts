@@ -1194,6 +1194,11 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       // 这种场景不应重试，否则 UI 会先收到第一份完整流式内容，再收到重试后的
       // 第二份完整内容，出现重复 thinking / text 消息。
       if (stopReason === undefined) {
+        // 用户主动取消（abort）：流是本端提前掐断的，服务端不会补终止事件，
+        // 因此「无终止事件」不是截断——不重试、也不补 message_delta，直接抛
+        // AbortError 交给 Query.ts 走「用户中断」收尾（与 Standalone 侧
+        // `responses.rs` 的 `cancel` 判定同一口径）。
+        checkAborted(signal);
         const allOutputItemsDone =
           outputItemAddedCount > 0 &&
           outputItemDoneCount >= outputItemAddedCount &&

@@ -12,6 +12,7 @@
 //! 窗口 60%」那道闸门）。
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 
 use serde_json::{json, Map, Value};
 
@@ -869,6 +870,13 @@ pub fn stream_responses(
 
     // ===== 截断检测：流结束但未收到终止事件 =====
     if stop_reason.is_none() {
+        // 用户主动取消（abort）：流是本端提前掐断的，服务端不会补终止事件，
+        // 因此「无终止事件」不是截断，不重试、也不补 `message_delta` / `stop_reason`。
+        // 对齐 Embedded `checkAborted` 抛 AbortError 的路径，也与 Chat Completions
+        // 适配器的 `!req.cancel` 判定同一口径；引擎据 `cancel` 走「用户中断」收尾。
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         let all_items_done = output_item_added > 0
             && output_item_done >= output_item_added
             && current_kind.is_none();

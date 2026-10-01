@@ -369,7 +369,9 @@ Read 的 doc/docx/ppt/pptx（pandoc 转 markdown）与 xlsx/xlsm（`calamine` �
 
 Responses API 已迁入（`core-rs/src/responses.rs`）：URL / 工具 / 消息转换、status 映射、
 usage 提取、本地输入估算、usage 可信度判定与 `response.output` 权威校准都逐字对齐；
-SSE 事件循环覆盖文本 / 思考 / 工具调用 / 终止 / 失败与截断检测。
+SSE 事件循环覆盖文本 / 思考 / 工具调用 / 终止 / 失败与截断检测；用户 abort 时两侧同样
+豁免截断重试（`ResponsesApi.ts` 的 `checkAborted` ↔ `responses.rs` 的 `cancel` 判定），
+由引擎按「用户中断」收尾（`Query.ts` 的 `isAborted` ↔ `engine.rs` 的 `cancel` 判定）。
 
 已知缺口（Responses）：内置 `web_search` 工具与搜索卡片事件
 （`web_search_call` / `web_search_call_update` / `web_search_call_done`）尚未迁入——

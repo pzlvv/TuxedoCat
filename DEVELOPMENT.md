@@ -1790,7 +1790,7 @@ export interface CoreBootstrapOptions {
   log: (...args: unknown[]) => void;
   /** core 日志是否同时输出到控制台 */
   logToConsole: boolean;
-  /** 扩展 / 应用根目录，用于定位 ripgrep、pandoc 等资源 */
+  /** 扩展 / 应用根目录；Core 自带资源以自身可执行文件目录为基准，这里只作本机开发期兜底 */
   extensionPath: string;
   /** 测试注入：Standalone 下为一个工作区打开 Core 通道（默认经 daemon） */
   openStandaloneChannel?: (ref: WorkspaceRef) => OpenedCoreChannel;

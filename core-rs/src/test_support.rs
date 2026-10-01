@@ -181,7 +181,8 @@ impl Sandbox {
     }
 
     /// 把宿主扩展目录指到仓库根：`ripgrep_path()` 因此能解析到
-    /// `dist/resources/ripgrep/<arch>-<platform>/rg.exe`
+    /// `dist/resources/ripgrep/<arch>-<platform>/rg.exe`（用例进程的可执行文件在
+    /// `core-rs/target/` 下，旁边没有 Core 自带的 `ripgrep/`）
     pub fn point_extension_at_repo(&self) {
         let current = config::host_environment().expect("host env");
         config::set_host_environment(HostEnvironment {
