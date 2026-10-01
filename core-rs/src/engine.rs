@@ -1598,6 +1598,13 @@ fn flush_pending_batch(
             }
         }
     }
+    // 整批执行完成后会话才被中止（对齐 Embedded `drainStartedItems` 的
+    // `hasAborted` 分支）：本批收尾后不再回到 LLM，由调用方的
+    // `terminate_after_batch` 分支上报 `*User Interrupted*`。
+    // 中止若在整批开始**之前**到达，已由上面的取消分支处理，不会走到这里。
+    if state.lock().unwrap().cancel.load(Ordering::Relaxed) {
+        *terminate_after_batch = true;
+    }
 }
 
 /// 执行一个已批准的工具（对齐 Embedded `RunTools.executeSingleTool`）。
@@ -3431,6 +3438,13 @@ fn run_query_loop(
                 &tool_name,
                 &outcome,
             ));
+            // 工具执行完成后会话才被中止（对齐 Embedded `executeSingleItem` 执行后的
+            // `signal?.aborted` 分支）：本批收尾后不再回到 LLM，由下面的
+            // `terminate_after_batch` 分支上报 `*User Interrupted*`。
+            // 中止若在执行**之前**到达，已由上面的取消分支处理，不会走到这里。
+            if state.lock().unwrap().cancel.load(Ordering::Relaxed) {
+                terminate_after_batch = true;
+            }
             index += 1;
         }
         // 批末收尾：把最后一段并发安全工具跑完

@@ -2459,6 +2459,61 @@ fn abort_during_the_tool_loop_skips_the_next_llm_round() {
     assert_eq!(system["data"]["content"], "*User Interrupted*");
 }
 
+#[test]
+fn abort_during_tool_execution_reports_interruption() {
+    // 工具**已开始执行**后才中止：Bash 子进程被杀 → tool_result 为
+    // `Command was interrupted`，且本轮收尾必须上报 `*User Interrupted*`
+    // （对齐 Embedded `executeSingleItem` 执行后的 `signal?.aborted` 分支 →
+    // `shouldPreventContinuation`；`drainStartedItems` 的 `hasAborted` 同理）。
+    let sandbox = Sandbox::new("engine-abort-mid-execution");
+    // 先建标记文件证明工具已开跑，再长睡等待 abort（cwd 即 workspace）。
+    let llm = FakeLlm::start(|index, _| {
+        if index == 0 {
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"touch started.marker && sleep 30"}"#,
+            )
+        } else {
+            openai_text_sse(&["不应到达第二轮"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::allow_all();
+    submit(&harness, "s1", "跑一下", "u-1");
+
+    // 等工具真的开始执行再中止，确保命中「执行中到达」的窗口
+    let marker = sandbox.workspace.join("started.marker");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !marker.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(marker.exists(), "工具未开始执行，无法复现执行中中止");
+    harness.core.on_abort("s1");
+
+    assert!(harness.wait_query_end());
+
+    let results = harness.sink.events_of("toolResult");
+    assert_eq!(results.len(), 1, "got {results:?}");
+    assert_eq!(results[0]["status"], "error");
+    assert!(
+        results[0]["output"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Command was interrupted"),
+        "got {results:?}"
+    );
+    // 中止后不再回到 LLM
+    let system = harness
+        .sink
+        .events_of("message")
+        .into_iter()
+        .find(|event| event["data"]["role"] == "system")
+        .expect("interrupted system message");
+    assert_eq!(system["data"]["content"], "*User Interrupted*");
+}
+
 // ==================== 权限请求：允许路径也要上架卡片 ====================
 
 /// 对齐 Embedded `RunTools.authorizeOne`：**允许**的工具也要发一次
