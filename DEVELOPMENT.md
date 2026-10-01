@@ -925,7 +925,8 @@ webview 对话树的运行标记、两端 abort 按钮），生产者是 `src/co
   `sessionResources.isSessionIdle` 经 `isSessionWaiting(sessionId)` 读同一份事实。
 - 读全量：`getSessionRuntimeStates()`。
 - 分发有**推**和**拉**两条：推是常态（变化时经 `CoreEvent.sessionRuntimeChanged` 全量推给已存在的视图）；
-  视图创建 / 激活时可能错过推送（当时视图还不存在），因此 webview 启动、或切到单视图时发
+  视图创建 / 激活时可能错过推送（当时视图还不存在），因此 webview 启动、或对话列表渲染方切到
+  `webview`（Electron 悬浮窗：视图此前可能长期不是活动视图）时发
   `requestSessionRuntimeStates` 主动拉一次快照——`WebviewMessageHandler.pushSessionRuntimeStates`
   调 `getSessionRuntimeStates()` 并按**来源视图**回包（多视图宿主下请求方不一定是活动视图）。
   否则新视图的对话树流水灯 / abort 按钮 / 历史提醒会"失明"到下一次状态变化。
@@ -1263,7 +1264,7 @@ import core 的只读函数与类型（第 2 节规则 9）。
 | 关闭会话 / 空闲回收（仅 VS Code） | `WebViewUI.closeConversation` → `releaseConversation` | `conversationClosed` |
 | 编辑器上下文 | `extension.ts` 的 `persistCurrentFileContext` | `conversationContextUpdated` |
 | Electron 侧栏：关闭 | `sidebar:close-conversation` | `WebViewUI.closeConversation(sid)`（= `conversationClosed` + 关视图） |
-| Electron 侧栏：删除 | `sidebar:delete-conversation` | 先用 core 的 `collectConversationClosure` 求受影响闭包（自身 + 所有层级子孙，与 `deleteConversation` 同一条规则），逐个 `closeConversation`，再对 root 发 `conversationDeleted`（core 递归删盘） |
+| Electron 侧栏 / webview 顶栏：删除 | `sidebar:delete-conversation` / `deleteConversationWithViews`（webview 的 `deleteConversation` 在多视图宿主由 `electron/main.ts` 接管） | 两条入口共用 `deleteConversationWithViews`：先用 core 的 `collectConversationClosure` 求受影响闭包（自身 + 所有层级子孙，与 `deleteConversation` 同一条规则），逐个 `closeConversation`，再对 root 发 `conversationDeleted`（core 递归删盘） |
 | Electron 侧栏：重命名 | `sidebar:rename-conversation` | `conversationRenamed` |
 | Electron 侧栏：智能命名 | `sidebar:smart-name-conversation` | LLM 起名后发 `conversationRenamed` |
 | Electron 菜单：唤醒快捷键 | File - Shortcut... 对话框（`electron/main.ts`） | 写宿主本地状态（`workspace-state.json` 的 `shortcut` 字段），不经总线 |
@@ -1277,7 +1278,7 @@ import core 的只读函数与类型（第 2 节规则 9）。
 | 纯显示操作 | `expandCompact`（只读归档 + 重放消息到 webview，不改 core 状态） |
 | 配置文件写入 | `UIHost.updateSettingsJson`（LLM 配置 / MCP 默认值 / 高亮语言）——写全局 `settings.json` 是宿主能力；项目清单 `workspace.meta.json` 归 core，不在宿主 |
 | 宿主本地偏好写入 | `electron/main.ts` 的 `writeThemeMode` / `writeWakeShortcut`（`theme` / `shortcut`）——落 `userData/workspace-state.json`，与 core 的 settings.json 无关 |
-| 载体 / 视图层动作 | Electron 的 `sidebar:new-conversation` / `sidebar:open-conversation` / `sidebar:get-active-session` / `sidebar:active-session-changed`（开视图与视图层状态，随后由新视图自己发 `loadConversation`）；webview 的 `closeWebview` / `openConversation` / `prewarmViewReady` 由 `electron/main.ts` 的消息入口直接消化，不经 `WebviewMessageHandler`、不走总线 |
+| 载体 / 视图层动作 | Electron 的 `sidebar:new-conversation` / `sidebar:open-conversation` / `sidebar:get-active-session` / `sidebar:active-session-changed`（开视图与视图层状态，随后由新视图自己发 `loadConversation`）；webview 的 `closeWebview` / `openConversation` / `openNewConversation` / `prewarmViewReady` 由 `electron/main.ts` 的消息入口直接消化，不经 `WebviewMessageHandler`、不走总线。`deleteConversation` 在多视图宿主（Electron）由同一入口接管：先关该会话的视图（含子会话闭包，与侧栏删除共用 `deleteConversationWithViews`），再发 `conversationDeleted`；单视图宿主没有可关的视图，仍走 `WebviewMessageHandler` 的 UiEvent 翻译 |
 | 环境查询（按来源回包） | webview 的 `requestTheme` / `requestContextLimit` 在 `WebviewMessageHandler` 内处理（按 `ctx.sender` 回包），但不走总线——它们只读 core 的配置函数与宿主环境，不改 core 状态。宿主在视图加载时也推同一对消息（`UIHost.onThemeChanged` / `WebViewUI.pushContextLimit`），但那次推送受时序约束（VS Code `resolveWebviewView` 后延时、Electron `did-finish-load`），由 webview 主动拉取才能尽早解除首屏 Loading，也让多视图宿主下的后台预热视图拿到回包 |
 
 **唤醒快捷键对话框**（Electron 专属，File - Shortcut...）
@@ -1584,7 +1585,7 @@ diff 快照——**确认框不在这里弹**（见下）。
 | 环境查询 | `requestTheme`（→ `host.onThemeChanged(ctx.sender)`）/ `requestContextLimit`（→ `pushContextLimit(ctx.sender, modelRefOf(msg.provider, msg.model))`：读该模型身份（provider + model）的上下文配置，经 `sendToWebviewView` / `sendToWebview` 回包 `contextLimitUpdated`；`ref` 为 `undefined` 时按 active provider 的默认模型算，视图加载初始化推送即走这条）；`pushContextLimit` 也是 `WebViewUI` 的对外方法，供宿主在视图加载时主动推同一份内容 |
 | 请求响应 / 显示 | `respondUserChoice` / `expandCompact` / `rollbackEdit`（→ `UiEvent`） |
 | 消息 / 压缩 / 中止 | `sendMessage`（→ `handleUserMessage`：取 / 建引擎后入队，不走 `UiEvent`）/ `abort` / `requestCompress`（后两者 → `UiEvent`） |
-| 会话生命周期 | `loadConversation` / `startNewConversation` / `deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace`（`deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace` → `UiEvent`） |
+| 会话生命周期 | `loadConversation` / `startNewConversation` / `deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace`（`deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace` → `UiEvent`；多视图宿主的 `deleteConversation` 由宿主消息入口先接管，见第 5.5 节「载体 / 视图层动作」） |
 | 会话配置 | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpEnabled`（全部 → `UiEvent`，core 处理后广播 `sessionConfigChanged` 回推多端）。`setModel` 的 wire 载荷是扁平的 `model` + `provider`，在 handler 入口组装成 `ModelRef`（provider 空串非法：记录日志并忽略，不回退到其它 provider） |
 | 其它 | `saveLLMConfig` / `requestSmartNaming` |
 
@@ -2156,7 +2157,8 @@ webview 只按能力渲染，不判断宿主类型：
 | --- | --- | --- |
 | `App.tsx` 顶栏 | `rendersConversationListInWebview(hostInfo)` | `true` 时渲染对话历史下拉（`Dropdown`）；`false` 时由 Electron 原生侧栏接管，webview 不渲染 |
 | `App.tsx` 历史对话按钮提醒 | `sessionRuntimeStatesRef` 的 `waiting` + 本视图 `conversations` 的 `sessionId` 集合 | 对话列表由 webview 渲染（VS Code / Electron 悬浮窗）时，**本视图对话列表里**有「其它会话」在等待用户操作（ask user / 权限确认）时给历史按钮加黄色呼吸提醒（`history-btn--attention`）。只认本视图列表里的会话：列表按工作目录读盘（`loadConversationList(workspace)`），因此其它工作目录的 `waiting` 不提醒——浮窗顶栏只能看 / 切到本目录的对话，提醒了也过不去。列表与运行时状态都是**视图本地缓存**：列表只推给活动视图、状态只在变化时推，所以切到 webview 渲染列表时 `App.tsx` 会主动补发 `getConversations` + `requestSessionRuntimeStates`，避免「之前不是活动视图」的浮窗用旧数据判断（第 4.5 节） |
-| `App.tsx` 顶栏 | `newConversationEntryOf(hostInfo) === 'webview'` | 渲染「新建对话」按钮；`'host'` 时由侧栏按钮触发 |
+| `App.tsx` 顶栏 | `newConversationEntryOf(hostInfo) === 'webview'` | 渲染「新建对话」按钮；`'host'` 时由侧栏按钮触发。点击后按 `openConversationModeOf(hostInfo)` 分支：`openConversation`（多视图）只发 `{ type: 'openNewConversation' }` 交给宿主另开 / 复用「未发送的新对话」视图，本视图不改自己的会话状态；`loadConversation`（单视图）在当前视图内原地新建（发 `startNewConversation`） |
+| `App.tsx` 历史对话下拉的删除 | `openConversationModeOf(hostInfo)` | 删除当前对话后：`openConversation`（多视图）由宿主连同该会话的视图一起关（`deleteConversationWithViews`），关掉当前视图后由 `switchAwayFromClosedSession` 另开一个新对话视图，webview 不再自己新建；`loadConversation`（单视图）在当前视图内原地新建 |
 | `App.tsx` 顶栏 | `canCloseConversation(hostInfo)` | `true` 时渲染关闭按钮，发 `{ type: 'closeWebview' }`（销毁 webview，释放渲染进程） |
 | `App.tsx.navigateToSession()`（会话跳转的唯一 UI 入口，内部委托 `webviewEnv.navigateToConversation()`） | `openConversationModeOf(hostInfo)` | 对话列表 / 对话树 / 子代理 From 链接 / 返回父会话跳转时：`openConversation` 只发消息交给宿主另开视图；`loadConversation` 在当前视图内原地加载。任何入口都不得直连 `navigateToConversation`，否则会绕过 loading（统一入口见 9.3.1） |
 | `Main.tsx` | 是否注入 `window.electronAPI` | 独立宿主（Electron）给 `<html>` 加 `standalone-host` class（深色背景 CSS）；VS Code 扩展不加。**不要用 `conversationListOwner` 判定**：悬浮窗注入的是 `webview`，但它仍是独立窗口，一样需要深色兜底 |
@@ -2540,7 +2542,7 @@ MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 
 | 模式持久化 | `windowMode` + `readLastWindowMode()` | 切换模式时落盘；启动时优先按上次的模式建窗口（尺寸/位置也取该模式的记录）。**上次是浮窗但本次没有工作区时退回完整模式**（浮窗隐藏侧栏，没有工作区就没法再选） |
 | 置顶持久化 | `floatingPinned` + `readLastFloatingPinned()` | 点钉住按钮时落盘（默认 `true`），启动时按它恢复浮窗的「总在最前」；缺失/非法值一律按默认开启处理 |
 | 浮窗标题 | `windowTitleForCurrentState()` + `workspaceDisplayName()` + 标题栏品牌位 | 浮窗模式下**窗口标题**（任务栏 / Alt-Tab）与**自绘标题栏的品牌位**都显示当前工作目录的**目录名（basename）**，其余情况显示产品名。取目录名而非完整路径：浮窗标题栏只有 480px 宽、任务栏标签也从右侧截断，而路径里最有信息量的恰好是尾部目录名。窗口是无边框的，光设 OS 标题在窗口里看不到，所以两处都要跟着变；目录名随 `titlebar:mode-state` / `titlebar:get-state` 的 `workspaceName` 下发，切模式与切工作区时同步 |
-| 悬浮窗的顶栏形态 | `chatViews.setConversationListOwner()` + `setConversationListOwner` 消息 | 悬浮窗隐藏原生侧栏，对话列表渲染方切到 `webview`：列表改由 webview 顶栏渲染（历史对话入口）、新建入口移到顶栏。视图模式不变（仍是 `multi`：每会话一个 webview、提供关闭当前会话），切换会话照旧复用 / 另开视图。已打开视图就地切换，新建视图走 `--conversationListOwner=` 启动参数 |
+| 悬浮窗的顶栏形态 | `chatViews.setConversationListOwner()` + `setConversationListOwner` 消息 | 悬浮窗隐藏原生侧栏，对话列表渲染方切到 `webview`：列表改由 webview 顶栏渲染（历史对话入口）、新建入口移到顶栏。视图模式不变（仍是 `multi`：每会话一个 webview、提供关闭当前会话），切换会话照旧复用 / 另开视图。已打开视图就地切换，新建视图走 `--conversationListOwner=` 启动参数；顶栏「+」发 `{ type: 'openNewConversation' }`，由宿主另开 / 复用「未发送的新对话」视图（不原地重载） |
 | 置顶 | `applyAlwaysOnTop()` | Electron 44 在部分 Windows 环境下 `setAlwaysOnTop(true)` 不落下 `WS_EX_TOPMOST`，按「默认层级 → `pop-up-menu` → 先取消再设」三级兜底 |
 
 ### 11.2 尚未收敛的分叉点

@@ -190,8 +190,10 @@ const recentMenuActionAt = new Map<string, number>();
 
 /**
  * 窗口模式：
- * - normal：完整模式，左侧多对话侧栏 + 右侧聊天视图
- * - floating：悬浮窗模式，隐藏侧栏、只显示当前对话（单视图），可置顶
+ * - normal：完整模式，左侧多对话侧栏 + 右侧聊天视图，对话列表由原生侧栏渲染
+ * - floating：悬浮窗模式，隐藏侧栏、对话列表移到 webview 顶栏，可置顶
+ * 视图模式不随窗口模式变化：Electron 恒为多视图（每会话一个 webview），浮窗只换
+ * 列表 / 新建入口的渲染方（见 src/host/types.ts 的 HostInfo）。
  * 两种模式的位置与尺寸各自独立存储（见 readSavedWindowRect / saveWindowRect）。
  */
 type WindowMode = 'normal' | 'floating';
@@ -1333,7 +1335,7 @@ function getSystemLocaleForStartup(): string {
 
 /**
  * 整体布局：侧栏固定左侧，聊天视图占右侧剩余空间。
- * 浮窗（单视图）模式下隐藏侧栏，聊天视图占满整宽。
+ * 浮窗模式下隐藏侧栏，聊天视图占满整宽。
  * 依赖均为模块级变量，因此可提升为模块级函数供 repaintAllViews 复用。
  */
 function layout(): void {
@@ -1343,7 +1345,7 @@ function layout(): void {
   titlebarView?.setBounds({ x: 0, y: 0, width: w, height: TITLEBAR_HEIGHT });
   const contentHeight = Math.max(0, h - TITLEBAR_HEIGHT);
   if (windowMode === 'floating') {
-    // 单视图模式：侧栏收成 0 尺寸，聊天视图占满整宽。
+    // 浮窗模式：侧栏收成 0 尺寸，聊天视图占满整宽。
     // 刻意用 0×0 bounds 而不是 setVisible(false)：本仓库已知 WebContentsView 被标记隐藏后
     // 重新显示时可能丢合成表面（整页空白，需 resize 才恢复），收成 0 尺寸不触发那条路径。
     sidebarView?.setBounds({ x: 0, y: TITLEBAR_HEIGHT, width: 0, height: 0 });
@@ -1473,7 +1475,7 @@ function waitForWindowEvent(
  * 切换窗口模式。
  *
  * - normal → floating：记录完整模式尺寸 → 收窄到浮窗尺寸（默认 480 宽 / 工作区 80% 高）、
- *   隐藏侧栏（单视图）、按钉住状态置顶
+ *   隐藏侧栏（列表改由 webview 顶栏渲染）、按钉住状态置顶
  * - floating → normal：记录浮窗尺寸 → 恢复到完整模式尺寸、显示侧栏、取消置顶
  *
  * 尺寸按模式独立存储；切换过程中复用同一个窗口与聊天 webview，不重新加载对话。
@@ -2746,6 +2748,43 @@ function defaultFloatingWindowRect(): { width: number; height: number } {
 }
 
 /**
+ * 删除一个对话（含子会话闭包）：宿主关视图 + core 删盘。
+ *
+ * 侧栏「删除」与 webview 顶栏「删除」共用这一个入口——两条入口只是触发位置不同，
+ * 「关掉该会话的视图、再删盘」这条序列必须一致。
+ *
+ * 宿主只负责「关视图」：对受影响闭包逐个调 WebViewUI.closeConversation（卸内存 +
+ * 销毁视图，5.5 节约定顺序）。闭包由 core 的 collectConversationClosure 算出——
+ * 与 deleteConversation 同一条规则，不再在宿主里重写一遍；删盘与列表广播由 core 的
+ * conversationDeleted 订阅（deleteConversation → conversationListChanged）承担。
+ * 删掉的是当前视图时，关视图后的善后（另开一个新对话视图）由
+ * ChatViewManager.switchAwayFromClosedSession 完成。
+ */
+async function deleteConversationWithViews(sessionId: string): Promise<void> {
+  // 先刷新会话工作目录索引：下面按该会话自己的工作目录读列表
+  syncSessionWorkspaceIndex();
+  // 登记该会话的工作目录：core 的 deleteConversation 按 sessionId 解析工作目录，
+  // 未登记时会回退到活动工作目录，导致删错目录（与 rename / smart-name 同口径）。
+  // 必须在下面删除索引条目之前取，否则 root 自身的映射已被移除。
+  const deleteWs = sessionWorkspaces.get(sessionId);
+  if (deleteWs) void registerCoreSessionWorkspace(sessionId, deleteWs);
+  const { loadConversationList, collectConversationClosure } = await import('../src/core/history/index.js');
+  // 按该会话自己的工作目录读列表：删除的对话可能不在当前活动工作目录
+  const affected = collectConversationClosure(
+    sessionId,
+    await loadConversationList(sessionWorkspaces.get(sessionId)),
+  );
+  for (const sid of affected) {
+    webviewUi?.closeConversation(sid);
+    // 宿主索引同步清理：会话已删除，避免陈旧 sessionId → 目录 条目长期残留
+    sessionWorkspaces.delete(sid);
+  }
+  // 删盘（core 消费方：算闭包已由宿主完成，这里只发 root）
+  const { requireEventBus } = await import('../src/core/AssistantEventBus.js');
+  requireEventBus().emitToCore({ type: 'conversationDeleted', sessionId });
+}
+
+/**
  * 处理一条来自 webview（原生聊天视图）的消息。
  * 与 extension.ts AssistantViewProvider 的专用消息处理保持一致，
  * 其余消息统一委托给 WebViewUI（复用同一份 WebviewMessageHandler）。
@@ -2793,6 +2832,26 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: a
         activateWorkspace(workspace);
       }
       chatViews?.openConversation(sessionId, workspace);
+    }
+    return;
+  }
+
+  // webview 顶栏「+」（浮窗没有原生侧栏，新建入口搬到顶栏）：新起一个 webview 新建对话。
+  // 单视图宿主不会发这条消息——webview 按 openConversationModeOf 分支，原地新建走
+  // startNewConversation。工作目录取来源视图自己的工作目录，新对话与它同目录。
+  if (message.type === 'openNewConversation') {
+    chatViews?.openNewConversation(chatViews?.getWorkspaceForWebContents(sender));
+    return;
+  }
+
+  // 删除对话：视图生命周期归宿主——多视图宿主删除时要连同该会话的视图（含子会话闭包）
+  // 一起关，再删盘；关掉当前视图后由 switchAwayFromClosedSession 补一个新对话视图。
+  // 单视图宿主没有可关的视图，删除仍走 WebviewMessageHandler 的 UiEvent 翻译。
+  if (message.type === 'deleteConversation') {
+    if (sessionId) {
+      void deleteConversationWithViews(sessionId).catch((err) => {
+        console.error('[main] deleteConversation (webview) error:', err);
+      });
     }
     return;
   }
@@ -3054,32 +3113,7 @@ function setupIpc(): void {
   // ── 侧栏对话操作：删除 / 重命名 / 智能命名 ──
   ipcMain.handle('sidebar:delete-conversation', async (_event, sessionId: string) => {
     try {
-      // 先刷新会话工作目录索引：下面按该会话自己的工作目录读列表
-      syncSessionWorkspaceIndex();
-      // 登记该会话的工作目录：core 的 deleteConversation 按 sessionId 解析工作目录，
-      // 未登记时会回退到活动工作目录，导致删错目录（与 rename / smart-name 同口径）。
-      // 必须在下面删除索引条目之前取，否则 root 自身的映射已被移除。
-      const deleteWs = sessionWorkspaces.get(sessionId);
-      if (deleteWs) void registerCoreSessionWorkspace(sessionId, deleteWs);
-      // 宿主只负责「关视图」：对受影响闭包逐个调 WebViewUI.closeConversation
-      // （卸内存 + 销毁视图，5.5 节约定顺序）。闭包由 core 的
-      // collectConversationClosure 算出——与 deleteConversation 同一条规则，
-      // 不再在宿主里重写一遍；删盘与列表广播由 core 的 conversationDeleted
-      // 订阅（deleteConversation → conversationListChanged）承担。
-      const { loadConversationList, collectConversationClosure } = await import('../src/core/history/index.js');
-      // 按该会话自己的工作目录读列表：删除的对话可能不在当前活动工作目录
-      const affected = collectConversationClosure(
-        sessionId,
-        await loadConversationList(sessionWorkspaces.get(sessionId)),
-      );
-      for (const sid of affected) {
-        webviewUi?.closeConversation(sid);
-        // 宿主索引同步清理：会话已删除，避免陈旧 sessionId → 目录 条目长期残留
-        sessionWorkspaces.delete(sid);
-      }
-      // 删盘（core 消费方：算闭包已由宿主完成，这里只发 root）
-      const { requireEventBus } = await import('../src/core/AssistantEventBus.js');
-      requireEventBus().emitToCore({ type: 'conversationDeleted', sessionId });
+      await deleteConversationWithViews(sessionId);
       return { ok: true };
     } catch (err) {
       console.error('[main] sidebar:delete-conversation error:', err);

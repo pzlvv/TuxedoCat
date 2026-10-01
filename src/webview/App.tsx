@@ -570,15 +570,25 @@ const App = () => {
   }, [stashNewChatDraft, hostInfo.conversationView, beginConversationLoad]);
 
   /**
-   * 新建对话（顶部"+"按钮）：
-   * - 保存当前会话快照并持久化上下文；
-   * - 暂存"新对话"草稿（未发送过的对话切走时草稿由 stashNewChatDraft 保存）；
-   * - 轮换空状态背景图（每次新对话换一张，不与上一次重复）；
-   * - 生成新 sessionId，重置全部 UI 状态到 settings.json 默认值；
-   * - 把上一个"新对话"里没发出去的草稿带过来，避免切换会话后再新建时内容丢失。
+   * 新建对话（顶部"+"按钮）。
+   *
+   * 先按 `openConversationModeOf` 分支：
+   * - 多视图宿主：新对话是另一个视图，只发 `openNewConversation` 交给宿主另开 / 复用视图；
+   * - 单视图宿主：在当前视图内原地新建，依次完成——
+   *   保存当前会话快照并持久化上下文；暂存"新对话"草稿（未发送过的对话切走时草稿由
+   *   stashNewChatDraft 保存）；轮换空状态背景图（每次新对话换一张，不与上一次重复）；
+   *   生成新 sessionId，重置全部 UI 状态到 settings.json 默认值；把上一个"新对话"里
+   *   没发出去的草稿带过来，避免切换会话后再新建时内容丢失。
    * 自按钮 onClick 内联约 90 行抽出，行为不变。
    */
   const handleNewConversation = useCallback(() => {
+    // 多视图宿主：新对话是另一个视图，本视图不参与新建——只把请求交给宿主
+    // （宿主复用「未发送的新对话」视图，保住那边的草稿）。与 navigateToSession 同一分工：
+    // 本视图不改自己的会话状态，否则切回本视图会看到空消息或永远转圈的 loading。
+    if (openConversationModeOf(hostInfo) === 'openConversation') {
+      postMessage({ type: 'openNewConversation' });
+      return;
+    }
     // Save current session state before switching
     saveCurrentSessionSnapshot();
     // 当前若是"新建但还没发消息"的对话，先把草稿暂存，稍后带到新对话
@@ -644,7 +654,7 @@ const App = () => {
       mainInputRef.current?.setSelectionRange(draftCursor, draftCursor);
     }, 0);
     // 依赖与 saveCurrentSessionSnapshot 相同（值类型快照来源）；ref 不进依赖数组
-  }, [saveCurrentSessionSnapshot, stashNewChatDraft, resetConversationLoad, settingsDefaults, agentMode, thinkingMode, webSearch, modelRef, promptMode]);
+  }, [hostInfo, saveCurrentSessionSnapshot, stashNewChatDraft, resetConversationLoad, settingsDefaults, agentMode, thinkingMode, webSearch, modelRef, promptMode]);
 
   const handleOpenSettings = useCallback(() => {
     postMessage({ type: 'requestLLMConfig' });
@@ -1274,10 +1284,7 @@ onClick={handleNewConversation}
             colors={colors}
             onCancel={() => setDeleteConfirm(null)}
             onConfirm={(sessionId) => {
-              // 删除的是当前打开的对话（单视图宿主才有 webview 侧删除入口）：
-              // 跳过「删除中保持面板打开」的标记，直接新建对话，
-              // 完成「关闭当前对话 + 跳转到新对话页」（多视图宿主由原生侧栏
-              // 删除并逐个关视图，不走这里）。
+              // 删除的是当前打开的对话时，跳过「删除中保持面板打开」的标记。
               const isCurrent = sessionId === currentSessionIdRef.current;
               if (!isCurrent) {
                 isDeletingRef.current = true;
@@ -1286,7 +1293,13 @@ onClick={handleNewConversation}
               setDeleteConfirm(null);
               if (isCurrent) {
                 setConversationDropdownOpen(false);
-                handleNewConversation();
+                // 多视图宿主：删除由宿主连同该会话的视图一起关（见 electron/main.ts 的
+                // deleteConversationWithViews），关掉当前视图后宿主会另开一个新对话视图，
+                // 本视图随即被销毁，不能再自己新建（会多开一个视图）。
+                // 单视图宿主没有可关的视图，在当前视图内原地新建即可。
+                if (openConversationModeOf(hostInfo) === 'loadConversation') {
+                  handleNewConversation();
+                }
               }
             }}
           />

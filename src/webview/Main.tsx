@@ -28,7 +28,8 @@ if (typeof (window as { electronAPI?: unknown }).electronAPI !== 'undefined') {
 setupAppViewportHeight();
 
 // 空状态背景图轮换：没有绑定会话的视图启动后就是「新对话」，先换一张（不与上次重复）。
-// 放在渲染前是为了首帧就画对，避免先画出上一张再跳变；单视图内点「+」新建由 App 负责。
+// 放在渲染前是为了首帧就画对，避免先画出上一张再跳变；单视图宿主内点「+」新建由 App 负责
+// （多视图宿主由宿主另开视图，新视图在这里轮换）。
 if (!getInjectedSessionId()) {
   rotatePlaceholderLogo();
 }

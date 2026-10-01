@@ -10,7 +10,8 @@
  * 轮换时机（只在这些明确时机调用，不要放进会反复执行的渲染路径）：
  *   - 页面加载：没有绑定会话的视图就是「新对话」视图（Electron 每个新会话一个视图，
  *     后台预热视图也在这里轮换），见 Main.tsx；
- *   - 单视图内点「+」新建对话：见 App.tsx 的 handleNewConversation；
+ *   - 单视图宿主内点「+」新建对话（多视图宿主由宿主另开视图，新视图在页面加载时轮换）：
+ *     见 App.tsx 的 handleNewConversation；
  *   - 切换/打开会话时的 loading 动画出现：见 ConversationLoading（每个挂载周期轮换一张，
  *     让 loading 动画与随后露出的空状态背景图都是随机且一致的那张）。
  *
