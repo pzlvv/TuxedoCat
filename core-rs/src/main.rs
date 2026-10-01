@@ -6,12 +6,14 @@
 //! 启动顺序：读 `hello` 帧 → 校验协议版本 → 回 `ready` → 进入帧循环。
 //! 退出：收到 `shutdown` 帧或标准输入 EOF（宿主退出）。
 
-// 发布构建在 Windows 上不弹控制台；调试构建保留控制台便于诊断。
-#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
-
+// 保留控制台子系统：这样 `tuxedo-cat-core --help` / `start` 的横幅在终端里可见
+// （独立运行的前提）。宿主与 daemon 起本进程时分别用 `windowsHide` / `CREATE_NO_WINDOW`
+// 隐藏控制台窗口（`src/host/standalone/CoreDaemon.ts`、`util::hide_console`），
+// 因此不会出现窗口闪烁。
 mod balance;
 mod bash_task;
 mod bus;
+mod cli;
 mod commands;
 mod compact;
 mod config;
@@ -27,6 +29,7 @@ mod mcp_config;
 mod mcp_http;
 mod permission;
 mod prompt;
+mod remote;
 mod replay;
 mod responses;
 mod rollback;
@@ -55,13 +58,28 @@ use frame::{CoreToUiFrame, UiToCoreFrame, CORE_PROTOCOL_VERSION};
 use util::sanitize_json_surrogates;
 
 fn main() {
-    // 模式选择（`docs/core-daemon.md` 第 3 节）：daemon 与 Core 是同一个可执行文件的
-    // 两个模式；`--serve` 与默认都是单进程 Core（stdio 是帧通道）。
+    // 动作选择（`docs/core-daemon.md` 第 3 节）：`serve` 与默认都是单进程 Core
+    // （stdio 是帧通道）；`start` 是远程服务的启动器（确保后台 daemon 在跑、
+    // 打印连接信息后退出），`kill` 结束它，daemon 实体走隐藏动作 `start-daemon`
+    // （`docs/core-daemon.md` 第 12 节）。
+    // `--help` / `--version` 与参数错误都在 `cli::parse` 里收口。
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|arg| arg == "--daemon") {
-        std::process::exit(daemon::run());
+    match cli::parse(&args) {
+        cli::Command::Help => print!("{}", cli::usage()),
+        cli::Command::Version => println!("{}", cli::version()),
+        cli::Command::Error(message) => {
+            let program = cli::program_name();
+            eprintln!("{program}: {message}");
+            eprintln!("用 `{program} --help` 查看用法。");
+            std::process::exit(2);
+        }
+        cli::Command::Start(options) => std::process::exit(remote::run_start(options)),
+        cli::Command::StartDaemon(options) => {
+            std::process::exit(remote::run_start_daemon(options))
+        }
+        cli::Command::Kill => std::process::exit(remote::run_kill()),
+        cli::Command::Serve => run_core(),
     }
-    run_core();
 }
 
 /// 单进程 Core 模式：读 `hello` → 回 `ready` → 进入帧循环。
@@ -426,7 +444,7 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                 config_dir_name: event
                     .get("configDirName")
                     .and_then(Value::as_str)
-                    .unwrap_or(".tuxedo-cat")
+                    .unwrap_or(config::DEFAULT_CONFIG_DIR_NAME)
                     .to_string(),
             });
             // 配置快照：与宿主环境同一条事件一次给齐。缺字段是协议错误，

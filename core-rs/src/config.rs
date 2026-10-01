@@ -47,6 +47,11 @@ pub fn extension_path() -> Result<String, String> {
         .ok_or_else(|| "extension path is not provided yet (hostEnvironmentProvided)".to_string())
 }
 
+/// 配置目录名的兜底值：宿主还没下发 `hostEnvironmentProvided` 时用。
+///
+/// 与 `src/config/project.json` 的 `configDir` 一致（独立运行 / 启动期读盘时用得上）。
+pub const DEFAULT_CONFIG_DIR_NAME: &str = ".tuxedo-cat";
+
 /// 用户主目录（Windows 优先 `USERPROFILE`，其余用 `HOME`）
 fn home_dir() -> Result<PathBuf, String> {
     if let Ok(profile) = std::env::var("USERPROFILE") {
@@ -329,7 +334,7 @@ const ENV_MAX_OUTPUT_TOKENS: &str = "TUXEDO_CAT_MAX_OUTPUT_TOKENS";
 fn missing_api_key_message() -> String {
     let config_dir = host_environment()
         .map(|env| env.config_dir_name)
-        .unwrap_or_else(|| ".tuxedo-cat".to_string());
+        .unwrap_or_else(|| DEFAULT_CONFIG_DIR_NAME.to_string());
     format!(
         "API Key 未配置，无法调用 LLM。\n请在「设置 → LLM 配置」中填写 API Key，\n或编辑 ~/{config_dir}/settings.json 中对应 provider 的 apiKey 字段。"
     )

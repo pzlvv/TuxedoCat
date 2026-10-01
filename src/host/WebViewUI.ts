@@ -39,7 +39,13 @@ import {
 } from './settingsRead.js';
 import { getSettingsStore } from './SettingsStore.js';
 import type { WebviewMessage } from '../core/webviewTypes.js';
-import type { WebViewUiPort, ConversationLoadedExtra, WebviewPoster, LLMConfigPanelTrigger } from './ui/ports.js';
+import type {
+  WebViewUiPort,
+  ConversationLoadedExtra,
+  WebviewPoster,
+  LLMConfigPanelTrigger,
+  QueuedMessageState,
+} from './ui/ports.js';
 
 export class WebViewUI implements WebViewUiPort {
   private static instance: WebViewUI | undefined;
@@ -173,26 +179,28 @@ export class WebViewUI implements WebViewUiPort {
     this.sessionUi.dropSession(sessionId);                  // 阶段 / 工具计数 / 查询计数
     this.userChoiceManager.dropSession(sessionId);          // 挂起的选择回调 + diff 快照
     this.webviewMessageHandler.dropTrackedSession(sessionId); // tracked active session
+    this.onQueuedMessage(sessionId, null);                  // 会话释放 → 清排队项（第 5.2 节）
   }
 
-  /** 通知 UI 显示或清除排队消息状态（从 AssistantUI 移来） */
-  onQueuedMessage(
-    sessionId: string,
-    content: string | null,
-    images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>,
-    fileInfo?: { filePath?: string; selectedLines?: { start: number; end: number }; fileHidden?: boolean },
-  ): void {
-    this.postToWebview(sessionId, content
-      ? {
+  /**
+   * 登记 / 清除该会话的排队项（`queued === null` 表示清除）。
+   *
+   * 登记时带上 `uuid`：core 把消息并入 LLM 上下文后补发 `addMessage`（含 `messageUuid`），
+   * webview 按 uuid 清除排队项（见 `docs/user-message-pipeline.md` 第 5 节）。
+   */
+  onQueuedMessage(sessionId: string, queued: QueuedMessageState | null): void {
+    this.postToWebview(sessionId, queued === null
+      ? { type: 'clearQueuedMessage', sessionId }
+      : {
         type: 'queuedMessage',
         sessionId,
-        content,
-        images,
-        filePath: fileInfo?.filePath,
-        selectedLines: fileInfo?.selectedLines,
-        fileHidden: fileInfo?.fileHidden,
-      }
-      : { type: 'clearQueuedMessage', sessionId });
+        uuid: queued.uuid,
+        content: queued.content,
+        images: queued.images,
+        filePath: queued.filePath,
+        selectedLines: queued.selectedLines,
+        fileHidden: queued.fileHidden,
+      });
   }
 
   /** 当前活跃 session ID（委托 WebviewMessageHandler 维护的 UI 状态） */

@@ -14,6 +14,9 @@ use serde_json::Value;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum HostToDaemonFrame {
+    /// 远程控制通道的第一帧：校验 token（`docs/core-daemon.md` 第 12 节）。
+    /// 本地 stdio 通道不发送本帧。
+    Auth { token: String },
     /// 打开一个工作区：daemon 启动 Core 进程、分配 channel、回 `workspaceOpened`
     OpenWorkspace {
         id: u64,
@@ -24,6 +27,8 @@ pub enum HostToDaemonFrame {
     CloseWorkspace { channel: u64 },
     /// 转发一帧内层帧（Host → Core）
     Frame { channel: u64, frame: Value },
+    /// 列出远端目录（远程目录选择器用）；`path` 为 `null` 时从主目录开始
+    ListDirectories { id: u64, path: Option<String> },
     /// 关闭全部 channel 并退出
     Shutdown,
 }
@@ -32,6 +37,10 @@ pub enum HostToDaemonFrame {
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum DaemonToHostFrame {
+    /// token 校验通过
+    AuthOk,
+    /// token 校验失败：连接随后关闭
+    AuthFailed { error: String },
     /// 工作区已打开：回带 Host 的请求 id 与 channel / 描述符
     WorkspaceOpened {
         id: u64,
@@ -49,6 +58,25 @@ pub enum DaemonToHostFrame {
     ChannelReset { channel: u64, reason: String },
     /// 转发一帧内层帧（Core → Host）
     Frame { channel: u64, frame: Value },
+    /// 目录列举结果
+    DirectoriesListed {
+        id: u64,
+        path: String,
+        parent: Option<String>,
+        entries: Vec<DirectoryEntry>,
+    },
+    /// 目录列举失败（路径不存在 / 无权限等）
+    DirectoriesFailed { id: u64, error: String },
+}
+
+/// 目录列举的一项（只列子目录）
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryEntry {
+    /// 目录名（basename）
+    pub name: String,
+    /// 绝对路径
+    pub path: String,
 }
 
 /// ChannelDescriptor（`docs/core-daemon.md` 第 4.1 节）：

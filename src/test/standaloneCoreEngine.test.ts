@@ -205,6 +205,8 @@ async function run(): Promise<void> {
 
   // ---------- 静态守卫：Core 侧每个子进程都要隐藏控制台窗口 ----------
   // 不加 CREATE_NO_WINDOW 时，每次查询 spawn git / bash / rg 都会闪一个窗口。
+  // 两条合法写法：`util::hide_console`（只设 CREATE_NO_WINDOW）与
+  // `util::hide_console_with`（与额外标志位一次给全，如 daemon 的脱离终端）。
   // 只扫产品代码：`*_tests.rs` 与 `test_support.rs` 不进产物，它们 spawn 的
   // git / cmd 属于测试自身的环境准备。
   {
@@ -216,12 +218,12 @@ async function run(): Promise<void> {
       .map((name) => ({ name, text: fs.readFileSync(path.join(srcDir, name), 'utf8') }))
       .filter(({ text }) => {
         const spawns = text.match(/Command::new\(/g)?.length ?? 0;
-        const hidden = text.match(/hide_console\(/g)?.length ?? 0;
+        const hidden = text.match(/hide_console(_with)?\(/g)?.length ?? 0;
         return spawns > hidden;
       })
       .map(({ name }) => name);
     check(
-      `Core 侧每个 spawn 都调用 hide_console（未覆盖：${offenders.join(', ') || '无'}）`,
+      `Core 侧每个 spawn 都隐藏控制台窗口（hide_console / hide_console_with）（未覆盖：${offenders.join(', ') || '无'}）`,
       offenders.length === 0,
     );
   }

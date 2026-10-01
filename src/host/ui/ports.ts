@@ -33,6 +33,21 @@ export type LLMConfigPanelTrigger = 'startup' | 'new-conversation' | 'request';
 import type { ConversationLoadedExtra } from '../conversationPayload.js';
 export type { ConversationLoadedExtra };
 
+/**
+ * 排队项内容（`docs/user-message-pipeline.md` 第 5 节）。
+ *
+ * `uuid` 是宿主为该消息生成的 uuid，core 把消息并入 LLM 上下文时补发的
+ * `addMessage.messageUuid` 与它配对，webview 据此清除排队项（不按文本匹配）。
+ */
+export interface QueuedMessageState {
+  uuid: string;
+  content: string;
+  images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
+  filePath?: string;
+  selectedLines?: { start: number; end: number };
+  fileHidden?: boolean;
+}
+
 export interface WebViewUiPort {
   /** 补 sessionId 后投递到宿主 webview */
   postToWebview(sessionId: string, message: Record<string, unknown>): void;
@@ -56,19 +71,14 @@ export interface WebViewUiPort {
   dropSession(sessionId: string): void;
 
   /**
-   * 通知 UI 显示或清除排队消息状态。
-   * 从原 AssistantUI 移来（唯一调用者是 WebviewMessageHandler，不是 core）。
+   * 通知 UI 登记 / 清除该会话的排队项（`null` = 清除）。
+   *
+   * 登记：引擎忙碌、消息尚未进入 LLM 上下文时（`docs/user-message-pipeline.md` 第 5.1 节）；
+   * 清除：内置命令就地执行时由宿主显式清除（`onCommandSend`），
+   * 进入上下文的用户消息由 core 补发的 `addMessage`（带 `messageUuid`）清除。
+   * 唯一调用者是 WebviewMessageHandler，不是 core。
    */
-  onQueuedMessage(
-    sessionId: string,
-    content: string | null,
-    images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>,
-    fileInfo?: {
-      filePath?: string;
-      selectedLines?: { start: number; end: number };
-      fileHidden?: boolean;
-    },
-  ): void;
+  onQueuedMessage(sessionId: string, queued: QueuedMessageState | null): void;
 
   /** 当前活跃 session ID（UI 自己的状态，与宿主无关） */
   getActiveSessionId(): string | undefined;

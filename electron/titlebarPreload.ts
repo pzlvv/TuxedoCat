@@ -31,19 +31,19 @@ contextBridge.exposeInMainWorld('titlebarAPI', {
   togglePin: (): void => {
     ipcRenderer.send('titlebar:toggle-pin');
   },
-  /** 打开集合（标签页区）：切换活动项 / 关闭某项 / 添加 / 拖拽排序 */
-  activateWorkspace: (path: string): void => {
-    ipcRenderer.send('titlebar:activate-workspace', path);
+  /** 打开集合（标签页区）：切换活动项 / 关闭某项 / 打开添加菜单 / 拖拽排序 */
+  activateWorkspace: (id: string): void => {
+    ipcRenderer.send('titlebar:activate-workspace', id);
   },
-  closeWorkspace: (path: string): void => {
-    ipcRenderer.send('titlebar:close-workspace', path);
+  closeWorkspace: (id: string): void => {
+    ipcRenderer.send('titlebar:close-workspace', id);
   },
-  addWorkspace: (): void => {
-    ipcRenderer.send('titlebar:add-workspace');
+  showWorkspaceMenu: (): void => {
+    ipcRenderer.send('titlebar:workspace-menu');
   },
-  /** 拖拽排序后提交新的打开集合顺序（完整排列，主进程校验） */
-  reorderWorkspaces: (paths: string[]): void => {
-    ipcRenderer.send('titlebar:reorder-workspaces', paths);
+  /** 拖拽排序后提交新的打开集合顺序（完整排列，主进程按 id 校验） */
+  reorderWorkspaces: (ids: string[]): void => {
+    ipcRenderer.send('titlebar:reorder-workspaces', ids);
   },
   onWindowState: (callback: (state: unknown) => void): void => {
     ipcRenderer.on('titlebar:window-state', (_event, state) => callback(state));

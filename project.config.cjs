@@ -62,4 +62,5 @@ module.exports = {
   electronShortcutPreloadOut: resolve(project.build.electronShortcutPreloadOut),
   electronTitlebarPreloadOut: resolve(project.build.electronTitlebarPreloadOut),
   electronTitlebarMenuPreloadOut: resolve(project.build.electronTitlebarMenuPreloadOut),
+  electronRemoteWorkspacePreloadOut: resolve(project.build.electronRemoteWorkspacePreloadOut),
 };

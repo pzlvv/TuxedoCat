@@ -1290,20 +1290,6 @@ enum PermissionOutcome {
 
 // ==================== 消费循环 ====================
 
-/// 消费循环的一步：Reminder（可并入排队的用户消息）、一条排队的用户消息，
-/// 或一批自动消息（后台 Bash 完成通知；同样可并入一条用户消息）。
-enum ConsumerStep {
-    Reminder {
-        content: String,
-        user_message: Option<Value>,
-    },
-    Message(Value),
-    AutoMessages {
-        messages: Vec<AgentMessage>,
-        user_message: Option<Value>,
-    },
-}
-
 fn run_consumer(core: Arc<Core>, session_id: String) {
     run_consumer_with_ui(core, session_id, true);
 }
@@ -1346,50 +1332,36 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
             CommandResolution::Skill => {}
             CommandResolution::None => {}
         }
-        let step = {
-            let mut state = state.lock().unwrap();
-            if state.cancel.load(Ordering::Relaxed) {
-                state.pending_user_message = None;
-                state.pending_reminder = None;
-                state.agent_messages.clear();
-                state.running = false;
-                None
-            } else if let Some(content) = state.pending_reminder.take() {
-                // Reminder 优先（对齐 `consumeQueuedOnce` 的消费优先级）。
-                // 若同时有待处理的用户消息，并入同一轮（reminder 在前、用户消息在末尾），
-                // 避免「reminder 一轮 + 用户消息一轮」把用户消息响应两次。
-                let user_message = state.pending_user_message.take();
-                Some(ConsumerStep::Reminder {
-                    content,
-                    user_message,
-                })
-            } else if state.pending_user_message.is_some() && !state.agent_messages.is_empty() {
-                // 合并场景（对齐 `consumeQueuedOnce` 的「用户 + Agent」分支）：自动消息
-                // 先追加、用户消息放末尾，保证同一轮 LLM 按序看到。
-                let user_message = state.pending_user_message.take();
-                let messages = state.agent_messages.drain(..).collect();
-                Some(ConsumerStep::AutoMessages {
-                    messages,
-                    user_message,
-                })
-            } else if let Some(message) = state.pending_user_message.take() {
-                Some(ConsumerStep::Message(message))
-            } else if !state.agent_messages.is_empty() {
-                let messages = state.agent_messages.drain(..).collect();
-                Some(ConsumerStep::AutoMessages {
-                    messages,
-                    user_message: None,
-                })
-            } else if let Some(content) = background_reminder(&session_id, &mut state) {
-                // 队列即将排空、但本会话仍有未提醒过的后台任务：补一条 reminder 再跑一轮
-                // （对齐 `finalizeIdle` → `maybeRemindBackgroundTasks`）。
-                Some(ConsumerStep::Reminder {
-                    content,
-                    user_message: None,
-                })
-            } else {
-                state.running = false;
-                None
+        // 取消（`abortRequested`）：清空队列并退出消费循环（对齐 Embedded `cancelQueued`）。
+        {
+            let mut guard = state.lock().unwrap();
+            if guard.cancel.load(Ordering::Relaxed) {
+                guard.pending_user_message = None;
+                guard.pending_reminder = None;
+                guard.agent_messages.clear();
+                guard.running = false;
+                break;
+            }
+        }
+        // 取一批排队消息：优先级与 `flush_queued_messages` 共用同一实现
+        // （对齐 Embedded：消费循环与 `flushQueuedMessagesIntoContext` 都走 `consumeQueuedOnce`）。
+        // 轮次边界消费命令消息（`include_command_user_message = true`）。
+        let step = match take_queued_batch(&state, true) {
+            Some(batch) => Some(batch),
+            None => {
+                let mut guard = state.lock().unwrap();
+                match background_reminder(&session_id, &mut guard) {
+                    // 队列即将排空、但本会话仍有未提醒过的后台任务：补一条 reminder 再跑一轮
+                    // （对齐 `finalizeIdle` → `maybeRemindBackgroundTasks`）。
+                    Some(content) => Some(QueuedBatch::Reminder {
+                        content,
+                        user_message: None,
+                    }),
+                    None => {
+                        guard.running = false;
+                        None
+                    }
+                }
             }
         };
         let Some(step) = step else {
@@ -1401,7 +1373,7 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
         let skill_injection = state.lock().unwrap().pending_skill_injection.take();
 
         let result = match step {
-            ConsumerStep::Reminder {
+            QueuedBatch::Reminder {
                 content,
                 user_message,
             } => {
@@ -1409,27 +1381,7 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
                 // `flushQueuedMessagesIntoContext` → `persistUnpersistedMessages`）：
                 // 它是一条 `silent` / `origin=agent` 的 user 消息，UI 不展示，但会写进
                 // `<sid>.jsonl`、计入 `meta.json` 的 `messageCount`，并刷新对话列表。
-                let reminder = build_reminder_message(&content);
-                match core.project_of(&session_id) {
-                    Ok(project) => {
-                        match persist_message(&core, &session_id, &project, &state, &reminder) {
-                            Ok(_) => {
-                                emit_highlight_languages(&core, &reminder);
-                                // 系统自动消息：不刷新 `updatedAt`
-                                announce_message_appended(&core, &session_id, &project, false);
-                            }
-                            Err(error) => {
-                                // 落盘失败不阻塞本轮：仍然进内存上下文
-                                state.lock().unwrap().messages.push(reminder);
-                                eprintln!("[core] persist reminder failed: {error}");
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        state.lock().unwrap().messages.push(reminder);
-                        eprintln!("[core] resolve project for reminder failed: {error}");
-                    }
-                }
+                persist_reminder(&core, &session_id, &state, &content);
                 run_turn(
                     &core,
                     &session_id,
@@ -1438,59 +1390,19 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
                     skill_injection,
                 )
             }
-            ConsumerStep::Message(message) => run_turn(
+            QueuedBatch::Message(message) => run_turn(
                 &core,
                 &session_id,
                 &state,
                 Some(&message),
                 skill_injection,
             ),
-            ConsumerStep::AutoMessages {
+            QueuedBatch::AutoMessages {
                 messages,
                 user_message,
             } => {
                 for item in &messages {
-                    let message = build_auto_message(item);
-                    match core.project_of(&session_id) {
-                        Ok(project) => {
-                            match persist_message(&core, &session_id, &project, &state, &message) {
-                                Ok(_) => {
-                                    emit_highlight_languages(&core, &message);
-                                    // 系统自动消息：不刷新 `updatedAt`
-                                    announce_message_appended(&core, &session_id, &project, false);
-                                }
-                                Err(error) => {
-                                    // 落盘失败不阻塞本轮：仍然进内存上下文
-                                    state.lock().unwrap().messages.push(message);
-                                    eprintln!("[core] persist agent message failed: {error}");
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            state.lock().unwrap().messages.push(message);
-                            eprintln!("[core] resolve project for agent message failed: {error}");
-                        }
-                    }
-                    // UI 上报（对齐 `QueryEngine.notifyAgentReplyToUI`）：
-                    // - `bash`：纯文本（含 ANSI 颜色），不渲染 markdown；
-                    // - `agent`：markdown + From 头（`param` 是 `host:agent:<id>`）。
-                    let data = if item.origin == "bash" {
-                        json!({ "role": "user", "content": item.content, "origin": "bash" })
-                    } else {
-                        let source = agent_source_info(&item.from_session_id);
-                        json!({
-                            "role": "user",
-                            "content": item.content,
-                            "param": source,
-                            "origin": "agent",
-                            "meta": { "param": source, "type": "from" },
-                        })
-                    };
-                    core.emit(json!({
-                        "type": "message",
-                        "sessionId": session_id,
-                        "data": data,
-                    }));
+                    persist_auto_message(&core, &session_id, &state, item);
                 }
                 run_turn(
                     &core,
@@ -2084,30 +1996,8 @@ fn run_turn(
     }
 
     // 1. 用户消息落盘 + 通知 UI（Reminder 轮次没有用户消息，只跑查询）
-    let user_initiated = user_message.is_some();
     if let Some(user_message) = user_message {
-        // 命令消息（`/xxx`）宿主不乐观回显，由这里在「真正进入上下文」时补发气泡。
-        // `_needsUINotification` 只服务这次补发：先摘掉再落盘，避免 UI 专用标记写进
-        // JSONL（对齐 Embedded `notifyUserMessageToUI` 的 `delete`）。
-        let mut stripped = None;
-        if user_message.get("_needsUINotification").and_then(Value::as_bool) == Some(true) {
-            let mut owned = user_message.clone();
-            if let Some(object) = owned.as_object_mut() {
-                object.remove("_needsUINotification");
-            }
-            stripped = Some(owned);
-        }
-        let user_message = stripped.as_ref().unwrap_or(user_message);
-        if stripped.is_some() {
-            emit_user_message_to_ui(core, session_id, user_message);
-        }
-        let _ = persist_message(core, session_id, &project, state, user_message)?;
-        let _ = message_text(user_message);
-        emit_highlight_languages(core, user_message);
-        // 标题 / `meta.json` 建档必须先于 `touch_metadata`：后者在 meta 缺失时
-        // 会用不含 title 的兜底对象建档，抢先建档会让首条消息的标题丢失。
-        update_title_if_needed(core, session_id, &project);
-        announce_message_appended(core, session_id, &project, user_initiated);
+        persist_user_message(core, session_id, &project, state, user_message, true)?;
     }
 
     // 1.5 Skill 注入：`/skill` 命令的用户消息已进上下文，紧接着注入 Skill tool_use
@@ -2367,7 +2257,7 @@ fn llm_error_message(error: &str) -> String {
     // 否则文案里的路径会缺前导点（`~tuxedo-cat/settings.json`）。
     let config_dir = config::host_environment()
         .map(|env| env.config_dir_name)
-        .unwrap_or_else(|| ".tuxedo-cat".to_string());
+        .unwrap_or_else(|| config::DEFAULT_CONFIG_DIR_NAME.to_string());
     format!(
         "❌ **LLM API Error**\n\n```\n{error}\n```\n\nPlease check your API configuration in `~/{config_dir}/settings.json`."
     )
@@ -2498,44 +2388,226 @@ fn announce_message_appended(
     core.emit(json!({ "type": "conversationListChanged" }));
 }
 
-/// 把排队中的用户消息并入上下文（对齐 Embedded `QueryEngine.flushQueuedMessagesIntoContext`）。
+/// 落盘一条用户消息（对齐 Embedded `consumePendingUserMessage` 的落盘口径）。
+///
+/// 命令消息（`/xxx`）宿主不乐观回显，由这里在「真正进入上下文」时补发气泡；
+/// `_needsUINotification` 只服务这次补发，先摘掉再落盘，避免 UI 专用标记写进 JSONL
+/// （对齐 Embedded `notifyUserMessageToUI` 的 `delete`）。
+fn persist_user_message(
+    core: &Arc<Core>,
+    session_id: &str,
+    project: &str,
+    state: &Arc<Mutex<SessionState>>,
+    user_message: &Value,
+    user_initiated: bool,
+) -> Result<(), String> {
+    let mut stripped = None;
+    if user_message.get("_needsUINotification").and_then(Value::as_bool) == Some(true) {
+        let mut owned = user_message.clone();
+        if let Some(object) = owned.as_object_mut() {
+            object.remove("_needsUINotification");
+        }
+        stripped = Some(owned);
+    }
+    let user_message = stripped.as_ref().unwrap_or(user_message);
+    if stripped.is_some() {
+        emit_user_message_to_ui(core, session_id, user_message);
+    }
+    persist_message(core, session_id, project, state, user_message)?;
+    emit_highlight_languages(core, user_message);
+    // 标题 / `meta.json` 建档必须先于 `touch_metadata`：后者在 meta 缺失时
+    // 会用不含 title 的兜底对象建档，抢先建档会让首条消息的标题丢失。
+    update_title_if_needed(core, session_id, project);
+    announce_message_appended(core, session_id, project, user_initiated);
+    Ok(())
+}
+
+/// 落盘一条 Reminder（silent / `origin=agent` 的自动消息，对齐 Embedded
+/// `flushReminder` + `persistUnpersistedMessages` 的口径）。
+///
+/// 落盘失败不阻塞本轮：仍然进内存上下文。
+fn persist_reminder(
+    core: &Arc<Core>,
+    session_id: &str,
+    state: &Arc<Mutex<SessionState>>,
+    content: &str,
+) {
+    let reminder = build_reminder_message(content);
+    match core.project_of(session_id) {
+        Ok(project) => match persist_message(core, session_id, &project, state, &reminder) {
+            Ok(_) => {
+                emit_highlight_languages(core, &reminder);
+                // 系统自动消息：不刷新 `updatedAt`
+                announce_message_appended(core, session_id, &project, false);
+            }
+            Err(error) => {
+                state.lock().unwrap().messages.push(reminder);
+                eprintln!("[core] persist reminder failed: {error}");
+            }
+        },
+        Err(error) => {
+            state.lock().unwrap().messages.push(reminder);
+            eprintln!("[core] resolve project for reminder failed: {error}");
+        }
+    }
+}
+
+/// 落盘一条自动消息（子代理 Reply / 后台 Bash 完成通知）并上报 UI
+/// （对齐 Embedded `notifyAgentReplyToUI`）。
+///
+/// 落盘失败不阻塞本轮：仍然进内存上下文。
+fn persist_auto_message(
+    core: &Arc<Core>,
+    session_id: &str,
+    state: &Arc<Mutex<SessionState>>,
+    item: &AgentMessage,
+) {
+    let message = build_auto_message(item);
+    match core.project_of(session_id) {
+        Ok(project) => match persist_message(core, session_id, &project, state, &message) {
+            Ok(_) => {
+                emit_highlight_languages(core, &message);
+                // 系统自动消息：不刷新 `updatedAt`
+                announce_message_appended(core, session_id, &project, false);
+            }
+            Err(error) => {
+                state.lock().unwrap().messages.push(message);
+                eprintln!("[core] persist agent message failed: {error}");
+            }
+        },
+        Err(error) => {
+            state.lock().unwrap().messages.push(message);
+            eprintln!("[core] resolve project for agent message failed: {error}");
+        }
+    }
+    // UI 上报（对齐 `QueryEngine.notifyAgentReplyToUI`）：
+    // - `bash`：纯文本（含 ANSI 颜色），不渲染 markdown；
+    // - `agent`：markdown + From 头（`param` 是 `host:agent:<id>`）。
+    let data = if item.origin == "bash" {
+        json!({ "role": "user", "content": item.content, "origin": "bash" })
+    } else {
+        let source = agent_source_info(&item.from_session_id);
+        json!({
+            "role": "user",
+            "content": item.content,
+            "param": source,
+            "origin": "agent",
+            "meta": { "param": source, "type": "from" },
+        })
+    };
+    core.emit(json!({ "type": "message", "sessionId": session_id, "data": data }));
+}
+
+/// 一批排队消息（对齐 Embedded `QueryEngine.consumeQueuedOnce` 的四种消费形态）。
+enum QueuedBatch {
+    /// Reminder 优先；同时有待处理用户消息时并入同一轮（reminder 在前、用户消息在末尾）。
+    Reminder {
+        content: String,
+        user_message: Option<Value>,
+    },
+    /// 自动消息（子代理 Reply / 后台 Bash 通知）+ 用户消息合并：自动消息先追加、
+    /// 用户消息放末尾，保证同一轮 LLM 按序看到。
+    AutoMessages {
+        messages: Vec<AgentMessage>,
+        user_message: Option<Value>,
+    },
+    /// 纯用户消息。
+    Message(Value),
+}
+
+/// 从队列取一批待消费消息（消费优先级对齐 Embedded `QueryEngine.consumeQueuedOnce`）：
+/// Reminder > (Agent + 用户合并) > 纯用户 > 纯 Agent。
+///
+/// `include_command_user_message = false`（查询中途 flush）时不消费命令消息（`/xxx`）：
+/// 命令只在轮次边界生效，不能在多步工具调用进行到一半时注入 Skill / 执行内置命令。
+fn take_queued_batch(
+    state: &Arc<Mutex<SessionState>>,
+    include_command_user_message: bool,
+) -> Option<QueuedBatch> {
+    let mut guard = state.lock().unwrap();
+    let has_user_message = guard
+        .pending_user_message
+        .as_ref()
+        .map(|message| {
+            include_command_user_message || !util::js_trim(&message_text(message)).starts_with('/')
+        })
+        .unwrap_or(false);
+    let has_agent_messages = !guard.agent_messages.is_empty();
+
+    if let Some(content) = guard.pending_reminder.take() {
+        // 若同时有待处理的用户消息，并入同一轮（reminder 在前、用户消息在末尾）：
+        // 只 flush reminder 会让这一轮 LLM 已经带上用户消息并响应一次，随后用户消息
+        // 又被移到末尾单独跑一轮 → 用户消息被重复响应（对齐 Embedded 的同段注释）。
+        let user_message = if has_user_message {
+            guard.pending_user_message.take()
+        } else {
+            None
+        };
+        return Some(QueuedBatch::Reminder {
+            content,
+            user_message,
+        });
+    }
+    if has_user_message && has_agent_messages {
+        let user_message = guard.pending_user_message.take();
+        let messages = guard.agent_messages.drain(..).collect();
+        return Some(QueuedBatch::AutoMessages {
+            messages,
+            user_message,
+        });
+    }
+    if has_user_message {
+        return guard.pending_user_message.take().map(QueuedBatch::Message);
+    }
+    if has_agent_messages {
+        let messages = guard.agent_messages.drain(..).collect();
+        return Some(QueuedBatch::AutoMessages {
+            messages,
+            user_message: None,
+        });
+    }
+    None
+}
+
+/// 把排队中的消息并入上下文（对齐 Embedded `QueryEngine.flushQueuedMessagesIntoContext`）。
 ///
 /// Embedded 在**每次 LLM 请求前**（`Query.ts` 阶段 0.5）都会 flush 排队消息：多轮工具
-/// 调用期间到达的用户消息，会在生成下一个 tool_use 之前进入 `mutableMessages`，而不是
-/// 等整轮结束再单独起一轮。被 flush 的消息同步落盘（`persistUnpersistedMessages`），
-/// 因此这里逐条走与普通用户消息相同的落盘 / 标题 / 列表刷新路径（`_userInitiated` 为真）。
+/// 调用期间到达的用户消息 / 子代理回复 / Reminder，会在生成下一个 tool_use 之前进入
+/// `mutableMessages`，而不是等整轮结束再单独起一轮。被 flush 的消息同步落盘
+/// （`persistUnpersistedMessages`），因此这里逐条走与普通消息相同的落盘 / 标题 / 列表刷新路径
+/// （用户消息的 `_userInitiated` 为真）。
 fn flush_queued_messages(
     core: &Arc<Core>,
     session_id: &str,
     project: &str,
     state: &Arc<Mutex<SessionState>>,
 ) -> Result<(), String> {
-    loop {
-        // 单槽位：一次取走即可（Embedded 的 `pendingUserMessage` 同时只可能有一条）。
-        // 命令消息（`/xxx`）**不在查询中途消费**（对齐 Embedded
-        // `flushQueuedMessagesIntoContext` 的 `includeCommandUserMessage=false`）：
-        // 留在队列里，由消费循环在下一轮开始前解析，避免多步工具调用进行到一半时
-        // 注入 Skill / 执行内置命令。
-        let message = {
-            let mut guard = state.lock().unwrap();
-            let is_command = guard
-                .pending_user_message
-                .as_ref()
-                .map(|message| util::js_trim(&message_text(message)).starts_with('/'))
-                .unwrap_or(false);
-            if is_command {
-                None
-            } else {
-                guard.pending_user_message.take()
+    while let Some(batch) = take_queued_batch(state, false) {
+        match batch {
+            QueuedBatch::Reminder {
+                content,
+                user_message,
+            } => {
+                persist_reminder(core, session_id, state, &content);
+                if let Some(user_message) = user_message {
+                    persist_user_message(core, session_id, project, state, &user_message, true)?;
+                }
             }
-        };
-        let Some(message) = message else {
-            break;
-        };
-        persist_message(core, session_id, project, state, &message)?;
-        emit_highlight_languages(core, &message);
-        update_title_if_needed(core, session_id, project);
-        announce_message_appended(core, session_id, project, true);
+            QueuedBatch::AutoMessages {
+                messages,
+                user_message,
+            } => {
+                for item in &messages {
+                    persist_auto_message(core, session_id, state, item);
+                }
+                if let Some(user_message) = user_message {
+                    persist_user_message(core, session_id, project, state, &user_message, true)?;
+                }
+            }
+            QueuedBatch::Message(user_message) => {
+                persist_user_message(core, session_id, project, state, &user_message, true)?;
+            }
+        }
     }
     Ok(())
 }

@@ -72,10 +72,16 @@ interface TitlebarMenuAnchor {
   anchorX: number;
 }
 
-/** 工作目录标签页：path 为绝对路径，name 为主进程取好的目录名 */
+/**
+ * 工作区标签页：`id` 是稳定身份（主进程的 workspaceRefKey），
+ * `path` 是展示路径（远程带 `tcp://host` 前缀），`name` 是目录名。
+ */
 interface TitlebarWorkspace {
+  id: string;
   path: string;
   name: string;
+  /** 是否远程工作区（标签页上加标记） */
+  remote: boolean;
 }
 
 /** 标签页流水灯的聚合状态：waiting（黄，优先）> running（蓝） */
@@ -101,11 +107,12 @@ interface TitlebarAPI {
   closeMenu: () => void;
   toggleMode: () => void;
   togglePin: () => void;
-  activateWorkspace: (path: string) => void;
-  closeWorkspace: (path: string) => void;
-  addWorkspace: () => void;
-  /** 拖拽排序：提交完整的打开集合顺序（主进程按去重键校验） */
-  reorderWorkspaces: (paths: string[]) => void;
+  activateWorkspace: (id: string) => void;
+  closeWorkspace: (id: string) => void;
+  /** 打开「添加工作区」菜单（打开本地目录 / 打开远程目录） */
+  showWorkspaceMenu: () => void;
+  /** 拖拽排序：提交完整的打开集合顺序（主进程按 id 校验） */
+  reorderWorkspaces: (ids: string[]) => void;
   onWindowState: (callback: (state: { maximized: boolean }) => void) => void;
   onMenuState: (callback: (state: { openId: string | null }) => void) => void;
   onModelChanged: (callback: (state: { sections: TitlebarSection[] }) => void) => void;
@@ -210,7 +217,7 @@ function renderMenubar(sections: TitlebarSection[]): void {
 /** 当前渲染的打开集合（拖拽排序时据此计算新顺序） */
 let renderedWorkspaces: TitlebarWorkspace[] = [];
 /** 正在被拖拽的标签页路径（null = 没有拖拽） */
-let draggingPath: string | null = null;
+let draggingId: string | null = null;
 /** 拖拽刚结束的一小段时间内抑制 click，避免「拖完误触发切换标签页」 */
 let suppressTabClickUntil = 0;
 /** 当前标签页流水灯状态（工作目录路径 -> waiting / running） */
@@ -241,8 +248,8 @@ function applyTabActivity(tab: HTMLElement, level: WorkspaceActivityLevel | unde
 function applyWorkspaceActivity(activity: unknown): void {
   workspaceActivity = normalizeWorkspaceActivity(activity);
   tabsEl.querySelectorAll<HTMLElement>('.ws-tab').forEach((tab) => {
-    const path = tab.dataset.path;
-    applyTabActivity(tab, path ? workspaceActivity[path] : undefined);
+    const id = tab.dataset.id;
+    applyTabActivity(tab, id ? workspaceActivity[id] : undefined);
   });
 }
 
@@ -252,19 +259,19 @@ function clearDropIndicators(): void {
 }
 
 /**
- * 计算把 fromPath 移到 toPath 前 / 后的新顺序。
+ * 计算把 fromId 移到 toId 前 / 后的新顺序（按工作区 id，不按展示路径）。
  * 返回 null 表示顺序未变化或参数非法（调用方据此不发提交）。
  */
-function computeReorderedPaths(fromPath: string, toPath: string, after: boolean): string[] | null {
-  const order = renderedWorkspaces.map((w) => w.path);
-  const fromIdx = order.indexOf(fromPath);
+function computeReorderedIds(fromId: string, toId: string, after: boolean): string[] | null {
+  const order = renderedWorkspaces.map((w) => w.id);
+  const fromIdx = order.indexOf(fromId);
   if (fromIdx < 0) return null;
   order.splice(fromIdx, 1);
-  let toIdx = order.indexOf(toPath);
+  let toIdx = order.indexOf(toId);
   if (toIdx < 0) return null;
   if (after) toIdx += 1;
-  order.splice(toIdx, 0, fromPath);
-  if (order.every((p, i) => p === renderedWorkspaces[i].path)) return null;
+  order.splice(toIdx, 0, fromId);
+  if (order.every((id, i) => id === renderedWorkspaces[i].id)) return null;
   return order;
 }
 
@@ -279,21 +286,21 @@ function renderWorkspaces(
   activity?: WorkspaceActivity,
 ): void {
   renderedWorkspaces = workspaces;
-  draggingPath = null;
+  draggingId = null;
   if (activity !== undefined) workspaceActivity = normalizeWorkspaceActivity(activity);
   tabsEl.textContent = '';
   // 打开集合为空时不渲染标签页区域（规格 §5）：添加目录入口在侧栏空态与菜单里
   if (workspaces.length === 0) return;
 
   for (const ws of workspaces) {
-    const isActive = ws.path === active;
+    const isActive = ws.id === active;
     // 键盘可达：tab 可聚焦，Enter / Space 切换；关闭按钮是真实 button，
     // 通过 :focus-within 在聚焦时显现（否则 visibility: hidden 不可聚焦）
     const tab = document.createElement('div');
-    tab.className = 'ws-tab' + (isActive ? ' active' : '');
+    tab.className = 'ws-tab' + (isActive ? ' active' : '') + (ws.remote ? ' remote' : '');
     // 流水灯：非 idle 点亮（黄 waiting 优先，蓝 running 次之）
-    applyTabActivity(tab, workspaceActivity[ws.path]);
-    tab.dataset.path = ws.path;
+    applyTabActivity(tab, workspaceActivity[ws.id]);
+    tab.dataset.id = ws.id;
     tab.title = ws.path;
     tab.setAttribute('role', 'tab');
     tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
@@ -319,7 +326,7 @@ function renderWorkspaces(
     closeBtn.addEventListener('mousedown', (event) => event.stopPropagation());
     closeBtn.addEventListener('click', (event) => {
       event.stopPropagation();
-      api?.closeWorkspace(ws.path);
+      api?.closeWorkspace(ws.id);
     });
     tab.appendChild(closeBtn);
 
@@ -328,12 +335,12 @@ function renderWorkspaces(
       event.stopPropagation();
       // 刚拖拽排序完：抑制这次 click，避免顺带切换标签页
       if (Date.now() < suppressTabClickUntil) return;
-      if (!isActive) api?.activateWorkspace(ws.path);
+      if (!isActive) api?.activateWorkspace(ws.id);
     });
     tab.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
-      if (!isActive) api?.activateWorkspace(ws.path);
+      if (!isActive) api?.activateWorkspace(ws.id);
     });
 
     // ── 拖拽排序 ──
@@ -344,19 +351,19 @@ function renderWorkspaces(
         event.preventDefault();
         return;
       }
-      draggingPath = ws.path;
+      draggingId = ws.id;
       tab.classList.add('dragging');
-      event.dataTransfer?.setData('text/plain', ws.path);
+      event.dataTransfer?.setData('text/plain', ws.id);
       if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
     });
     tab.addEventListener('dragend', () => {
-      draggingPath = null;
+      draggingId = null;
       suppressTabClickUntil = Date.now() + 250;
       tab.classList.remove('dragging');
       clearDropIndicators();
     });
     tab.addEventListener('dragover', (event) => {
-      if (!draggingPath || draggingPath === ws.path) return;
+      if (!draggingId || draggingId === ws.id) return;
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
       // 越过中线即视为插到目标之后，否则插到之前
@@ -370,12 +377,12 @@ function renderWorkspaces(
     });
     tab.addEventListener('drop', (event) => {
       event.preventDefault();
-      const from = draggingPath;
+      const from = draggingId;
       clearDropIndicators();
-      if (!from || from === ws.path) return;
+      if (!from || from === ws.id) return;
       const rect = tab.getBoundingClientRect();
       const after = event.clientX > rect.left + rect.width / 2;
-      const next = computeReorderedPaths(from, ws.path, after);
+      const next = computeReorderedIds(from, ws.id, after);
       if (next) api?.reorderWorkspaces(next);
     });
 
@@ -391,7 +398,8 @@ function renderWorkspaces(
   addBtn.addEventListener('mousedown', (event) => event.stopPropagation());
   addBtn.addEventListener('click', (event) => {
     event.stopPropagation();
-    api?.addWorkspace();
+    // 加号改成菜单：打开本地目录 / 打开远程目录（由主进程弹原生菜单）
+    api?.showWorkspaceMenu();
   });
   tabsEl.appendChild(addBtn);
 }

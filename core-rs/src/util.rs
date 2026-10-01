@@ -12,15 +12,24 @@ use serde_json::{Map, Value};
 /// 不加这个标志时，每次 spawn 控制台程序（git / bash / rg / cmd）都会闪出一个窗口；
 /// Core 进程自身由宿主以 `windowsHide` 启动，但它的**子进程**需要各自带上标志。
 pub fn hide_console(command: &mut Command) {
+    hide_console_with(command, 0);
+}
+
+/// 隐藏子进程控制台窗口，并附加额外的 `creation_flags`（如脱离终端用的
+/// `DETACHED_PROCESS` / `CREATE_NEW_PROCESS_GROUP`）。
+///
+/// `CommandExt::creation_flags` 是**覆盖**语义：额外标志位必须与 `CREATE_NO_WINDOW`
+/// 一次给全，分成两次调用会互相清掉。
+pub fn hide_console_with(command: &mut Command, extra_flags: u32) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
+        command.creation_flags(CREATE_NO_WINDOW | extra_flags);
     }
     #[cfg(not(windows))]
     {
-        let _ = command;
+        let _ = (command, extra_flags);
     }
 }
 

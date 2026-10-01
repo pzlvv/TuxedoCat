@@ -14,7 +14,7 @@ import { pathToFileURL } from 'url';
 import type { ChatViewManager } from './ChatViewManager.js';
 import type { UIHost, WorkspaceChange } from '../src/host/UIHost.js';
 import { WebviewViewHandle } from '../src/host/UIHost.js';
-import { localWorkspaceRef, type WorkspaceRef } from '../src/host/workspaceRef.js';
+import type { WorkspaceRef } from '../src/host/workspaceRef.js';
 import type { WebviewMessage } from '../src/core/webviewTypes.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
@@ -28,17 +28,17 @@ export class ElectronUIHost implements UIHost {
   private mainWindow: BrowserWindow | undefined;
   private sidebarView: WebContentsView | undefined;
   private chatViews: ChatViewManager | undefined;
-  /** 当前工作区路径（由 main 进程设置，用户通过菜单选择） */
-  private workspacePath: string | undefined;
+  /** 当前工作区引用（由 main 进程设置，用户通过菜单 / 标签页选择） */
+  private workspaceRef: WorkspaceRef | undefined;
   /**
    * 工作区事实来源（main 进程注入）。
    *
    * Electron 是多工作区宿主：打开集合 / 活动项由 main 维护，Client 经本契约
-   * 取得引用并订阅变化。未注入时退回 `workspacePath`（单工作区语义）。
+   * 取得引用并订阅变化。未注入时退回 `workspaceRef`（单工作区语义）。
    */
   private workspaceSource: {
-    getOpenWorkspacePaths: () => readonly string[];
-    getActiveWorkspacePath: () => string | undefined;
+    getOpenWorkspaceRefs: () => readonly WorkspaceRef[];
+    getActiveWorkspaceRef: () => WorkspaceRef | undefined;
     subscribe: (listener: (change: WorkspaceChange) => void) => () => void;
   } | null = null;
   /** 复用的 Mermaid 预览窗口（与 VSCodeUIHost 的单面板语义一致） */
@@ -85,9 +85,9 @@ export class ElectronUIHost implements UIHost {
    * 只更新 `getWorkspacePath()` 的返回值：会话的工作目录由宿主在会话被 core
    * 解析目录之前按来源视图登记（见 main 的 registerCoreSessionWorkspace）。
    */
-  setWorkspacePath(p: string | undefined): void {
-    if (this.workspacePath === p) return;
-    this.workspacePath = p;
+  setWorkspacePath(ref: WorkspaceRef | undefined): void {
+    if (this.workspaceRef === ref) return;
+    this.workspaceRef = ref;
   }
 
   /**
@@ -96,8 +96,8 @@ export class ElectronUIHost implements UIHost {
    * 必须在 `bootstrapCore` 之前调用：Client 按打开集合建立 Connection。
    */
   setWorkspaceSource(source: {
-    getOpenWorkspacePaths: () => readonly string[];
-    getActiveWorkspacePath: () => string | undefined;
+    getOpenWorkspaceRefs: () => readonly WorkspaceRef[];
+    getActiveWorkspaceRef: () => WorkspaceRef | undefined;
     subscribe: (listener: (change: WorkspaceChange) => void) => () => void;
   }): void {
     this.workspaceSource = source;
@@ -148,20 +148,19 @@ export class ElectronUIHost implements UIHost {
     this.writeLog(...args);
   }
 
+  /** 当前工作区的 core 侧路径（本地路径 / 远程路径；未打开返回 undefined） */
   getWorkspacePath(): string | undefined {
-    return this.workspaceSource?.getActiveWorkspacePath() ?? this.workspacePath;
+    return this.getWorkspaceRef()?.path;
   }
 
-  /** 当前工作区引用（Electron 只支持本地目录） */
+  /** 当前工作区引用（本地 / 远程同构） */
   getWorkspaceRef(): WorkspaceRef | undefined {
-    const p = this.getWorkspacePath();
-    return p ? localWorkspaceRef(p) : undefined;
+    return this.workspaceSource?.getActiveWorkspaceRef() ?? this.workspaceRef;
   }
 
   /** 当前打开的工作区集合（按打开顺序；main 进程维护） */
   getOpenWorkspaceRefs(): readonly WorkspaceRef[] {
-    const paths = this.workspaceSource?.getOpenWorkspacePaths() ?? [];
-    return paths.map((p) => localWorkspaceRef(p));
+    return this.workspaceSource?.getOpenWorkspaceRefs() ?? [];
   }
 
   /** 订阅工作区打开 / 关闭 / 激活（main 进程经 setWorkspaceSource 注入） */

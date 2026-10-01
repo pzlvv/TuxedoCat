@@ -45,14 +45,21 @@ import { getSettingsStore, type SettingsStore } from './SettingsStore.js';
 import { resolveCoreKind, type CoreKind } from './coreKind.js';
 import { resolveCoreBinary } from './standalone/coreBinary.js';
 import { CoreDaemon } from './standalone/CoreDaemon.js';
-import { createCoreChannelBus } from './standalone/StandaloneEventBus.js';
+import { createCoreChannelBus, createStandaloneCoreBus } from './standalone/StandaloneEventBus.js';
 import { WebViewUI } from './WebViewUI.js';
 import { UserChoiceManager } from './ui/userChoice.js';
 import type { UIHost } from './UIHost.js';
 import type { SpinDesign } from './SpinDesign.js';
 import type { ConversationManager } from './ConversationManager.js';
 import type { WebViewUiPort, WebviewPoster } from './ui/ports.js';
-import { emptyWorkspaceRef, type WorkspaceRef } from './workspaceRef.js';
+import {
+  emptyWorkspaceRef,
+  remoteWorkspaceRef,
+  workspaceEndpointKey,
+  type WorkspaceEndpoint,
+  type WorkspaceRef,
+} from './workspaceRef.js';
+import type { DirectoryListing } from './standalone/daemonProtocol.js';
 
 /** 宿主提供的启动差异（全部必选：缺失即编译错误） */
 export interface CoreBootstrapOptions {
@@ -99,6 +106,8 @@ let snapshot: BootstrapSnapshot | null = null;
 /** 本次装配的 Client；宿主退出时由 `shutdownCore` 关闭全部 Connection */
 let activeClient: Client | null = null;
 let activeCoreKind: CoreKind | null = null;
+/** 本次装配的启动参数；远程目录选择器在打开工作区之前就要用它连 daemon */
+let activeOptions: CoreBootstrapOptions | null = null;
 
 /**
  * 执行共享启动接线。
@@ -259,6 +268,7 @@ export function bootstrapCore(
 
   activeClient = client;
   activeCoreKind = coreKind;
+  activeOptions = options;
   snapshot = readSnapshot(coreKind, options, client);
   return { bus: embeddedBus ?? client, client, ui };
 }
@@ -267,31 +277,112 @@ export function bootstrapCore(
 const workspaceUnsubscribers = new Set<() => void>();
 
 /**
- * Standalone 默认通道：每个工作区经 daemon 打开一条 channel
- * （`docs/core-daemon.md`：一个 endpoint 一个 daemon，一个工作区一个 Core 进程）。
+ * Standalone 默认通道。
  *
- * 两种通道形态（单进程 / daemon）对 Connection 暴露同一个 `AssistantEventBus`。
+ * - 本地同机（`endpoint === null`）：Host 直接以 `serve` 动作起一个 Core 进程，stdio 是帧通道
+ *   （不监听端口、不需要 token）；
+ * - 远程：连该 endpoint 的 daemon 控制通道（TCP + `auth`），每个工作区一条 channel
+ *   （`docs/core-daemon.md` 第 12 节）。
+ *
+ * 两种形态对 Connection 暴露同一个 `AssistantEventBus`。
  */
 function openStandaloneChannel(
   ref: WorkspaceRef,
   options: CoreBootstrapOptions,
 ): OpenedCoreChannel {
-  if (!standaloneDaemon) {
-    standaloneDaemon = new CoreDaemon({
+  const log = (...args: unknown[]) => options.log(...args);
+  if (!ref.endpoint) {
+    const bus = createStandaloneCoreBus({
       binaryPath: resolveCoreBinary(options.extensionPath),
-      log: (...args: unknown[]) => options.log(...args),
+      // 显式 `serve`（裸词动作，`docs/core-daemon.md` 第 3 节）：单进程 Core，stdio 帧通道
+      spawnArgs: ['serve'],
+      log,
     });
+    return {
+      bus,
+      dispose: () => bus.shutdown(),
+    };
   }
-  const transport = standaloneDaemon.openChannel(ref);
-  const bus = createCoreChannelBus(transport, (...args: unknown[]) => options.log(...args));
+  const daemon = remoteDaemonForEndpoint(ref, options);
+  const transport = daemon.openChannel(ref);
+  const bus = createCoreChannelBus(transport, log);
   return {
     bus,
     dispose: () => bus.shutdown(),
   };
 }
 
-/** 本地 daemon 单例（一个 endpoint 一个 daemon；宿主退出时关闭） */
-let standaloneDaemon: CoreDaemon | null = null;
+/**
+ * 取该远程工作区 endpoint 的 daemon（一个 endpoint 一个 daemon；宿主退出时统一关闭）。
+ *
+ * 连 `endpoint.host:port` 的 TCP 控制通道，第一帧用 `endpoint.auth.token` 鉴权
+ * （`docs/core-daemon.md` 第 12 节）。
+ */
+function remoteDaemonForEndpoint(ref: WorkspaceRef, options: CoreBootstrapOptions): CoreDaemon {
+  const key = daemonRegistryKey(ref);
+  const existing = standaloneDaemons.get(key);
+  if (existing) return existing;
+  const endpoint = ref.endpoint;
+  if (!endpoint) {
+    // 调用点已保证：只有远程引用才建 daemon
+    throw new Error('remoteDaemonForEndpoint requires a remote workspace ref.');
+  }
+  const daemon = new CoreDaemon({
+    transport: {
+      host: endpoint.host,
+      port: endpoint.port ?? 0,
+      token: remoteTokenOf(endpoint),
+    },
+    log: (...args: unknown[]) => options.log(...args),
+  });
+  standaloneDaemons.set(key, daemon);
+  return daemon;
+}
+
+/**
+ * 远程 daemon 注册表键。
+ *
+ * 连接目标是 `workspaceEndpointKey`，额外带上 token：token 是连接参数，
+ * 换一个 token 必须换一条连接（否则「第一次输错 token，改对后重试」会复用旧连接、
+ * 继续用错的 token 鉴权）。
+ */
+function daemonRegistryKey(ref: WorkspaceRef): string {
+  const endpoint = ref.endpoint;
+  if (!endpoint) {
+    throw new Error('remote daemon registry requires an endpoint.');
+  }
+  return `${workspaceEndpointKey(ref)}#${remoteTokenOf(endpoint)}`;
+}
+
+/** endpoint 里的 token；缺失即抛错（远程连接不允许无凭证的静默降级） */
+function remoteTokenOf(endpoint: WorkspaceEndpoint): string {
+  const auth = endpoint.auth;
+  if (auth && typeof auth === 'object' && 'token' in auth) {
+    const token = (auth as { token: unknown }).token;
+    if (typeof token === 'string' && token.length > 0) return token;
+  }
+  throw new Error(`Remote endpoint ${endpoint.host}:${endpoint.port ?? ''} has no token.`);
+}
+
+/**
+ * 列出远程 endpoint 上的子目录（远程目录选择器用）。
+ *
+ * 复用 `openStandaloneChannel` 的 daemon 注册表：选择目录时建立的连接，随后打开该目录
+ * 时仍是同一个 daemon、同一条控制通道。`path` 为 null 时从远端主目录开始。
+ */
+export async function listRemoteDirectories(
+  endpoint: WorkspaceEndpoint,
+  path: string | null,
+): Promise<DirectoryListing> {
+  const options = activeOptions;
+  if (!options) throw new Error('bootstrapCore() has not run; no remote daemon available.');
+  // 与随后打开该目录时用的引用同构：scheme 一致，注册表键才一致
+  const daemon = remoteDaemonForEndpoint(remoteWorkspaceRef(endpoint, ''), options);
+  return daemon.listDirectories(path);
+}
+
+/** 远程 endpoint → daemon（宿主退出时全部关闭） */
+const standaloneDaemons = new Map<string, CoreDaemon>();
 
 /**
  * Core 非预期退出 / 无法恢复：把该 Connection 上受影响的「忙」会话标记为失败。
@@ -348,9 +439,9 @@ export function shutdownCore(): Promise<void> {
   const tasks: Array<Promise<void>> = [];
   if (client) tasks.push(client.closeAll());
   // channel 全部关闭后再关 daemon：daemon 收到 shutdown 立即退出，不留 grace 期进程
-  const daemon = standaloneDaemon;
-  standaloneDaemon = null;
-  if (daemon) tasks.push(daemon.shutdown());
+  const daemons = [...standaloneDaemons.values()];
+  standaloneDaemons.clear();
+  for (const daemon of daemons) tasks.push(daemon.shutdown());
   if (activeCoreKind === 'embedded') {
     try {
       getMCPHost().shutdown();
@@ -359,6 +450,7 @@ export function shutdownCore(): Promise<void> {
     }
   }
   activeCoreKind = null;
+  activeOptions = null;
   return Promise.all(tasks).then(() => undefined);
 }
 

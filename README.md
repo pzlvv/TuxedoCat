@@ -89,11 +89,45 @@ Core 有两种实现，由 `src/host/coreKind.ts` 的 `CORE_KIND` 装配（默�
 # 构建 Standalone Core（产物落在 resources/<core.resourceDir>/<arch>-<platform>/）
 npm run build:core
 
+# 独立运行（帮助 / 版本 / 远程模式）
+./resources/core/x64-win32/tuxedo-cat-core.exe --help
+./resources/core/x64-win32/tuxedo-cat-core.exe --version
+
 # 开发 / 测试时临时切回进程内实现
 TUXEDO_CAT_CORE=embedded npm run dev:electron
 
 # Rust 侧单测
 cd core-rs && cargo test
+```
+
+### 远程 Workspace（Electron）
+
+Standalone Core 用 `start` 动作启动远程服务：它确保后台 daemon 在跑（没有就拉起），
+打印可达的 `IP:端口` 与一个 token 后自己退出，桌面端用它们直连
+（`docs/core-daemon.md` 第 12 节）。
+
+```bash
+# 目标机器（例如 WSL / Linux）上构建并启动
+npm run build:core:linux-x64     # 在 Linux / WSL 内执行
+./resources/core/x64-linux/tuxedo-cat-core start --host 0.0.0.0
+# [core] remote endpoint: 172.20.1.5:10975
+# [core] remote token: <32 位十六进制>
+```
+
+`start` 的默认值是 `127.0.0.1:10975`（只绑回环）；端口被占用时从该端口起逐个 +1
+重试，横幅里给的是实际端口。token 用 `--token` 指定（覆盖已落盘的那个）；缺省时优先复用
+`~/<configDir>/core-daemon.json` 里的，没有才用操作系统安全随机数生成。跨机接入时显式传
+`--host 0.0.0.0`。再执行一次 `start` 会复用同一个 daemon，打印同一份连接信息；
+`tuxedo-cat-core kill` 结束它。
+
+在 Electron 里选「打开远程 Workspace...」（或标题栏加号菜单 →「打开远程 Workspace」），
+填入上面的 `IP`、端口与 token：连接成功后**立刻**弹出远端目录选择器，选定目录即作为
+远程工作区打开。token 只用于本次连接，不写入本地状态文件。
+
+WSL 端到端验证（在 WSL 里构建 Linux core、启动服务、从 Windows 连上去鉴权并列目录）：
+
+```bash
+node scripts/verify-remote-wsl.mjs
 ```
 
 `npm run watch:app`（VS Code 的后台任务 / 手动运行）会在前端 watcher 之外额外轮询

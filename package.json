@@ -77,6 +77,8 @@
     "test:coverage": "npm run compile-tests && c8 --reporter=text --reporter=html node scripts/run-tests.mjs",
     "build:core": "node scripts/build-core.mjs",
     "build:core:debug": "node scripts/build-core.mjs --debug",
+    "build:core:linux-x64": "node scripts/build-core.mjs --target x86_64-unknown-linux-gnu",
+    "build:core:linux-arm64": "node scripts/build-core.mjs --target aarch64-unknown-linux-gnu",
     "test:core": "cargo test --manifest-path core-rs/Cargo.toml",
     "coverage:core": "node scripts/coverage-core.mjs",
     "coverage:core:html": "node scripts/coverage-core.mjs --html",

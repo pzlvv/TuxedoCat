@@ -213,6 +213,8 @@ where
 ///
 /// Node 在 `shell: true` 时把参数直接拼接后交给 cmd.exe，含空格的路径
 /// （如 `C:\Program Files\...`）必须自行加引号，否则会被拆成多个参数。
+/// 非 Windows 的产品路径用不到它，但单测（parity 对照）在所有平台都跑，因此保留定义。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn quote_windows_arg(value: &str) -> String {
     if value.is_empty() {
         return "\"\"".to_string();

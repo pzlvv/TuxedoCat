@@ -74,7 +74,7 @@ Connection 持有：
 | | `embedded` | `standalone` |
 | --- | --- | --- |
 | Connection 数量 | 恒 1 | 每个打开的工作区 1 个 |
-| Core | 进程内，`initializeCoreEvents` | 独立进程，经 daemon 起 |
+| Core | 进程内，`initializeCoreEvents` | 独立进程：本地同机直接以 `serve` 起；远程经 daemon 起 |
 | 工作区 | 会话的属性（沿用现状） | Connection 的归属 |
 | 配置快照 | 同一份，进程内传递 | 同一份，帧通道传递 |
 
@@ -86,16 +86,19 @@ Connection 持有：
 
 | 字段 | 含义 | 本地取值 | 远程取值 |
 | --- | --- | --- | --- |
-| `scheme` | 这类工作区怎么接 | `file` | `ssh` / `wsl` / `container`（预留） |
+| `scheme` | 这类工作区怎么接 | `file` | `tcp`（直连监听中的 Core endpoint）；`ssh` / `wsl` / `container` 预留 |
 | `endpoint` | 接哪台机器、用什么凭证 | `null` | `{ host, port, user, auth }` |
 | `path` | 那台机器上的目录 | `d:\git\TuxedoCat` | `/home/alice/src/tuxedo-cat` |
 
 - `(scheme, endpoint)` 决定 Connection 的目标；`path` 是 Core 的会话工作目录。
 - **Core 只见 `path`**：endpoint 与凭证不下发到 Core，也不进入配置快照。
+- `tcp` 的 `auth` 是 `{ token: string }`；token 由远端 `start` 打印
+  （`docs/core-daemon.md` 第 12 节）。
+- `workspaceEndpointKey` 取 `(scheme, user, host, port)`：同一 endpoint 的多个工作区共用
+  一个 daemon。
 - VS Code 的 workspace URI（`scheme://authority/path`）是取值的来源：`scheme` 取 URI 的
   scheme，`endpoint` 由 authority 解析，`path` 取 URI 的 path。当前实现只取了
   `uri.fsPath`（`src/VSCodeUIHost.ts`），本规格要求把 scheme 与 authority 一并保留。
-- 远程连接本规格不实现，但取值与传递路径按上表固定，实现时不得另立形态。
 
 ### 4.1 与 Core 数据目录的关系
 
@@ -105,13 +108,21 @@ Connection 持有：
   不同机器上的相同路径落在各自 Core 的数据目录里，不会相撞。
 - `meta.json` 的 `project` 字段仍存 `path`。
 
+### 4.2 远程打开流程（Electron）
+
+1. 菜单 / 标题栏加号选「打开远程 Workspace」，输入远端 `IP:端口` 与 token；
+2. Host 建立该 endpoint 的 daemon 连接（TCP + `auth`），**连接成功后立刻**列出远端主目录，
+   弹出远端目录选择器（`docs/core-daemon.md` 第 12.4 节）；
+3. 选定目录后按 `remoteWorkspaceRef` 加入打开集合：`(scheme=tcp, endpoint, path)`；
+4. 打开该工作区时复用同一条控制通道发 `openWorkspace`。
+
 ---
 
 ## 5. Connection 生命周期
 
 | 事件 | 行为 |
 | --- | --- |
-| 打开工作区 | 建立 Connection；`standalone` 下经 daemon 起一个 Core 进程；`embedded` 下复用进程内 Core |
+| 打开工作区 | 建立 Connection；`standalone` 本地同机直接以 `serve` 起一个 Core 进程，远程经 daemon 起；`embedded` 下复用进程内 Core |
 | 重复打开同一工作区 | 不新建 Connection；激活已有视图 |
 | 关闭工作区 | 销毁 Connection；`standalone` 下关闭 Core 进程（daemon 计数递减） |
 | 宿主退出 | 销毁全部 Connection；`standalone` 下关闭所有 Core |
@@ -168,10 +179,12 @@ Connection 持有：
 
 ## 9. 不覆盖范围
 
-- 远程工作区的实现（传输、凭证存储、远程 daemon 部署）；
+- 远程凭证的持久化与安全存储（token 只在本次会话内有效，不写 `workspace-state.json`）；
+- 远程传输的加密与隧道（`tcp` 是明文直连）；
+- 远程 daemon 的部署（由用户在目标机器上手动 `start`；`start` 只负责把本机的 daemon 拉起来）；
 - 断线重连；
 - 多 Connection 的界面呈现（归属标识、切换入口）；
-- 连接目标的存储格式与配置入口。
+- 远程工作区的落盘恢复（重启后需要重新连接）。
 
 ---
 
@@ -185,6 +198,8 @@ Connection 持有：
 6. `connectionId` 不出现在任何总线载荷中。
 7. 关闭工作区后 Connection 销毁；daemon 计数递减，归零后按 `docs/core-daemon.md` 退出。
 8. 会话按 `sessionId` 路由到正确 Connection；查不到归属时报错。
+9. 同一 endpoint 的多个工作区共用一个 daemon；不同 endpoint 各自独立。
+10. 远程连接鉴权失败时报错，不建立 Connection。
 
 ---
 
@@ -192,9 +207,10 @@ Connection 持有：
 
 | 规格项 | 落点 |
 | --- | --- |
-| Client | `src/host/Client.ts`（新增） |
-| Connection | `src/host/Connection.ts`（新增） |
-| 配置快照 | `src/host/SettingsStore.ts`（新增） |
-| 工作区引用 | `src/host/workspaceRef.ts`（新增）、`src/host/UIHost.ts`（`WorkspaceProvider`） |
+| Client | `src/host/Client.ts` |
+| Connection | `src/host/Connection.ts` |
+| 配置快照 | `src/host/SettingsStore.ts` |
+| 工作区引用 | `src/host/workspaceRef.ts`、`src/host/UIHost.ts`（`WorkspaceProvider`） |
 | 就绪门禁与会话路由 | `src/host/Client.ts` |
-| 启动接线 | `src/host/bootstrapCore.ts` |
+| 启动接线 / endpoint → daemon 注册表 | `src/host/bootstrapCore.ts` |
+| 远程连接与目录选择 UI | `electron/main.ts`、`electron/remoteWorkspaceDialogHtml.ts` |

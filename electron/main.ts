@@ -30,8 +30,17 @@ import { ElectronUIHost } from './ElectronUIHost.js';
 import { ElectronSpinDesign } from './ElectronSpinDesign.js';
 import { ElectronConversationManager } from './ElectronConversationManager.js';
 import { WebViewUI } from '../src/host/WebViewUI.js';
-import { normalizeWorkspacePath, sameWorkspace, dedupeWorkspacePaths, applyWorkspaceOrder } from '../src/host/workspacePaths.js';
-import { localWorkspaceRef } from '../src/host/workspaceRef.js';
+import { normalizeWorkspacePath, sameWorkspace, dedupeWorkspacePaths } from '../src/host/workspacePaths.js';
+import {
+  localWorkspaceRef,
+  remoteWorkspaceRef,
+  sameWorkspaceRef,
+  workspaceRefDisplayPath,
+  workspaceRefKey,
+  type WorkspaceEndpoint,
+  type WorkspaceRef,
+} from '../src/host/workspaceRef.js';
+
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
 import { PRODUCT_NAME, EXTENSION_NAME, SETTINGS_FILE_NAME } from '../src/config/project.js';
 import { resolveConfigDir } from '../src/config/configDir.js';
@@ -44,6 +53,7 @@ import {
 import { tt, onHostLocaleChanged } from '../src/host/i18n.js';
 import { requireEventBus } from '../src/core/AssistantEventBus.js';
 import { getShortcutDialogHtml } from './shortcutDialogHtml.js';
+import { getRemoteWorkspaceDialogHtml } from './remoteWorkspaceDialogHtml.js';
 import { resolveSmartTitle } from '../src/core/history/smartNaming.js';
 
 /**
@@ -204,18 +214,43 @@ let floatingPinned = true;
 let windowModeSwitching = false;
 /** 对话列表的读取与分发（bootstrap 创建；sidebar:get-conversations 读它的列表快照） */
 let conversations: ElectronConversationManager | undefined;
-/** 打开集合：已打开的工作目录，按标签页顺序排列（进程内事实） */
-let openWorkspaces: string[] = [];
-/** 活动工作目录（打开集合中的一项；集合为空时 undefined） */
-let workspacePath: string | undefined;
+/**
+ * 打开集合：已打开的工作区引用，按标签页顺序排列（进程内事实）。
+ *
+ * 本地与远程同构（`docs/client-connection.md` 第 4 节）：本地 `endpoint === null`，
+ * 远程带 `{ host, port, user, auth }`。标签页 / 侧栏用 `workspaceRefKey` 作稳定 id。
+ */
+let openWorkspaces: WorkspaceRef[] = [];
+/** 活动工作区（打开集合中的一项；集合为空时 undefined） */
+let workspacePath: WorkspaceRef | undefined;
 /** 会话 → 工作目录 索引：按对话解析工作目录（打开某个对话时用它注入 --workspace=） */
 const sessionWorkspaces = new Map<string, string>();
 /** 工作区打开 / 关闭 / 激活的订阅者（ElectronUIHost 的 WorkspaceProvider 契约） */
-const workspaceChangeListeners = new Set<(change: { type: 'opened' | 'closed' | 'activated'; ref: import('../src/host/workspaceRef.js').WorkspaceRef }) => void>();
+const workspaceChangeListeners = new Set<(change: { type: 'opened' | 'closed' | 'activated'; ref: WorkspaceRef }) => void>();
+
+/** 工作区引用的稳定 id（跨进程 IPC 与标签页身份用） */
+function refKey(ref: WorkspaceRef): string {
+  return workspaceRefKey(ref);
+}
+
+/** 工作区引用的展示路径（本地即路径，远程带 `tcp://host` 前缀） */
+function refDisplay(ref: WorkspaceRef): string {
+  return workspaceRefDisplayPath(ref);
+}
+
+/** 在打开集合里按引用判等查找（同一目标的同一目录视为同一项） */
+function findWorkspace(ref: WorkspaceRef): WorkspaceRef | undefined {
+  return openWorkspaces.find((candidate) => sameWorkspaceRef(candidate, ref));
+}
+
+/** 两个可能为空的工作区引用是否指向同一项（都为空视为相同） */
+function sameRef(a: WorkspaceRef | undefined, b: WorkspaceRef | undefined): boolean {
+  if (!a || !b) return a === b;
+  return sameWorkspaceRef(a, b);
+}
 
 /** 通知工作区变化（Client 据此建立 / 销毁 Connection） */
-function emitWorkspaceChange(type: 'opened' | 'closed' | 'activated', path: string): void {
-  const ref = localWorkspaceRef(path);
+function emitWorkspaceChange(type: 'opened' | 'closed' | 'activated', ref: WorkspaceRef): void {
   for (const listener of [...workspaceChangeListeners]) {
     try {
       listener({ type, ref });
@@ -363,11 +398,11 @@ async function main(): Promise<void> {
     if (isValidWorkspaceDir(cliPath)) {
       // 与 addWorkspaces 同一口径：规范化 + 按去重键判等，避免同一目录的不同写法
       // 变成两张标签页（也避免原始路径与视图登记值不一致导致切标签时找不到视图）
-      const normalized = normalizeWorkspacePath(cliPath);
-      const existing = openWorkspaces.find((w) => sameWorkspace(w, normalized));
-      if (!existing) openWorkspaces.push(normalized);
-      workspacePath = existing ?? normalized;
-      rememberRecentWorkspace(workspacePath);
+      const ref = localWorkspaceRef(cliPath);
+      const existing = findWorkspace(ref);
+      if (!existing) openWorkspaces.push(ref);
+      workspacePath = existing ?? ref;
+      rememberRecentWorkspace(ref.path);
       saveOpenWorkspaces(openWorkspaces, workspacePath);
     }
   }
@@ -693,7 +728,7 @@ function createMainWindow(): void {
     win: mainWindow,
     appRoot: APP_ROOT,
     preloadPath: path.join(__dirname, 'preload.cjs'),
-    workspacePath: workspacePath || '',
+    workspacePath: workspacePath?.path ?? '',
     locale: app.getLocale(),
     systemLocale: getSystemLocaleForStartup(),
     uiLanguage,
@@ -743,17 +778,17 @@ function createMainWindow(): void {
   // 布局模式已由构造参数 conversationListOwner 决定（浮窗启动即隐藏侧栏），无需再补一次
 
   // 初始打开活动工作目录下的一个新对话（无工作目录时打开空态视图）
-  chatViews.openNewConversation(workspacePath ?? '');
+  chatViews.openNewConversation(workspacePath?.path ?? '');
 
   // 首次启动：为非活动的工作目录各预加载一个聊天视图，点标签页时直接 show()，
   // 不再现建视图 + 等页面加载（消除首次切换的闪烁）。
   // 错开创建，避免启动瞬间同时拉起多个渲染进程造成卡顿。
   openWorkspaces
-    .filter((ws) => !sameWorkspace(ws, workspacePath))
-    .forEach((ws, index) => {
+    .filter((ref) => !(workspacePath && sameWorkspaceRef(ref, workspacePath)))
+    .forEach((ref, index) => {
       setTimeout(() => {
         // 定时器触发时该目录可能已被关闭：仍在打开集合里才预加载
-        if (openWorkspaces.some((w) => sameWorkspace(w, ws))) chatViews?.preloadWorkspace(ws);
+        if (findWorkspace(ref)) chatViews?.preloadWorkspace(ref.path);
       }, 400 + index * 250);
     });
 
@@ -1577,11 +1612,12 @@ function workspaceDisplayName(): string {
   return workspaceDisplayNameOf(workspacePath);
 }
 
-/** 指定工作目录的显示名（标题栏标签页 / 浮窗品牌位用） */
-function workspaceDisplayNameOf(p: string | undefined): string {
-  if (!p) return '';
-  const trimmed = p.replace(/[\\/]+$/, '');
-  return path.basename(trimmed) || p;
+/** 指定工作区的显示名（标题栏标签页 / 浮窗品牌位用）；远程带上主机名区分同名目录 */
+function workspaceDisplayNameOf(ref: WorkspaceRef | undefined): string {
+  if (!ref) return '';
+  const trimmed = ref.path.replace(/[\\/]+$/, '');
+  const base = path.basename(trimmed) || ref.path;
+  return ref.endpoint ? `${ref.endpoint.host}:${base}` : base;
 }
 
 /** 把窗口标题同步到当前模式 / 工作区 */
@@ -1610,10 +1646,11 @@ function collectWorkspaceActivity(): Record<string, WorkspaceActivityLevel> {
       const workspace = getSessionWorkspace(state.sessionId);
       if (!workspace) continue;
       // 会话登记的目录与打开集合可能写法不同（大小写 / 分隔符 / 尾斜杠），按去重键匹配
-      const target = openWorkspaces.find((w) => sameWorkspace(w, workspace));
+      const target = openWorkspaces.find((candidate) => sameWorkspace(candidate.path, workspace));
       if (!target) continue;
-      if (state.waiting) result[target] = 'waiting';
-      else if (result[target] !== 'waiting') result[target] = 'running';
+      const key = refKey(target);
+      if (state.waiting) result[key] = 'waiting';
+      else if (result[key] !== 'waiting') result[key] = 'running';
     }
   } catch (err) {
     console.error('[main] collect workspace activity error:', err);
@@ -1629,11 +1666,21 @@ function syncTitlebarActivity(): void {
 /** 把打开集合与活动项推给标题栏（标签页区渲染；字段名与 get-state 统一为 activeWorkspace） */
 function syncTitlebarWorkspaces(): void {
   sendToTitlebar('titlebar:workspaces', {
-    workspaces: openWorkspaces.map((p) => ({ path: p, name: workspaceDisplayNameOf(p) })),
-    activeWorkspace: workspacePath ?? null,
+    workspaces: openWorkspaces.map((ref) => workspaceTabState(ref)),
+    activeWorkspace: workspacePath ? refKey(workspacePath) : null,
     // 重建标签页时带上当前流水灯状态，避免重建后指示灯短暂消失
     activity: collectWorkspaceActivity(),
   });
+}
+
+/** 标题栏 / 侧栏用的工作区项：id 是稳定身份，path 是展示路径 */
+function workspaceTabState(ref: WorkspaceRef): { id: string; path: string; name: string; remote: boolean } {
+  return {
+    id: refKey(ref),
+    path: refDisplay(ref),
+    name: workspaceDisplayNameOf(ref),
+    remote: ref.endpoint !== null,
+  };
 }
 
 /** 完整模式默认窗口：固定宽度 + 主屏工作区高度的 80% */
@@ -1758,9 +1805,16 @@ function buildMenuSections(): MenuSectionDef[] {
   // 添加工作目录：Electron 专属能力（VS Code 从 workspaceFolders 获取）
   const addWorkspaceItem: MenuItemDef = {
     id: 'main.addWorkspace',
-    label: tt('添加工作目录...', 'Add Workspace Folder...'),
+    label: tt('打开本地目录...', 'Open Local Folder...'),
     accelerator: 'CmdOrCtrl+O',
     run: () => { void openWorkspaceDialog(); },
+  };
+  // 打开远程 Workspace：连接远端 Core（ip:端口 + token），随后弹出远端目录选择
+  const addRemoteWorkspaceItem: MenuItemDef = {
+    id: 'main.addRemoteWorkspace',
+    label: tt('打开远程 Workspace...', 'Open Remote Workspace...'),
+    accelerator: 'CmdOrCtrl+Shift+O',
+    run: () => { openRemoteWorkspaceDialog(); },
   };
   const recentWorkspaceItem: MenuItemDef = {
     id: 'main.recent',
@@ -1798,6 +1852,7 @@ function buildMenuSections(): MenuSectionDef[] {
       label: 'File',
       items: [
         addWorkspaceItem,
+        addRemoteWorkspaceItem,
         recentWorkspaceItem,
         { type: 'separator' },
         themeItem,
@@ -1817,6 +1872,7 @@ function buildMenuSections(): MenuSectionDef[] {
     label: PRODUCT_NAME,
     items: [
       addWorkspaceItem,
+      addRemoteWorkspaceItem,
       recentWorkspaceItem,
       { type: 'separator' },
       themeItem,
@@ -2231,6 +2287,143 @@ async function openWorkspaceDialog(): Promise<void> {
 }
 
 /**
+ * 标题栏「加号」的添加工作区菜单：打开本地目录 / 打开远程 Workspace。
+ *
+ * 用原生菜单在当前鼠标位置弹出；标题栏页面只发一条 IPC，不自己渲染菜单。
+ */
+function popupWorkspaceMenu(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const menu = Menu.buildFromTemplate([
+    {
+      label: tt('打开本地目录...', 'Open Local Folder...'),
+      click: () => { void openWorkspaceDialog(); },
+    },
+    {
+      label: tt('打开远程 Workspace...', 'Open Remote Workspace...'),
+      click: () => { openRemoteWorkspaceDialog(); },
+    },
+  ]);
+  menu.popup({ window: mainWindow });
+}
+
+/** 「打开远程 Workspace」对话框（连接远端 daemon → 选择远端目录） */
+let remoteWorkspaceWindow: BrowserWindow | undefined;
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * 打开「打开远程 Workspace」对话框。
+ *
+ * 流程（`docs/core-daemon.md` 第 12 节）：
+ * 1. 输入远端 `IP:端口` 与 token；
+ * 2. 连接成功后**立刻**列出远端主目录，进入目录选择；
+ * 3. 选定目录后加为工作区（同一个 daemon 连接随后用于打开该工作区）。
+ */
+function openRemoteWorkspaceDialog(): void {
+  if (remoteWorkspaceWindow && !remoteWorkspaceWindow.isDestroyed()) {
+    remoteWorkspaceWindow.focus();
+    return;
+  }
+  // 延迟 require：bootstrapCore 会引入 core 侧模块，必须在 app ready（initCore）之后加载
+  const { listRemoteDirectories } = require('../src/host/bootstrapCore.js') as typeof import('../src/host/bootstrapCore.js');
+  const parent = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() ? mainWindow : undefined;
+  const win = new BrowserWindow({
+    width: 560,
+    height: 560,
+    ...(parent ? { parent } : {}),
+    resizable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    show: false,
+    title: tt('打开远程 Workspace', 'Open Remote Workspace'),
+    icon: path.join(APP_ROOT, 'assets', 'logo.png'),
+    autoHideMenuBar: true,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1a1a1f' : '#ffffff',
+    webPreferences: {
+      sandbox: false,
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'remoteWorkspacePreload.cjs'),
+    },
+  });
+  remoteWorkspaceWindow = win;
+
+  /** 已连接成功的 endpoint；未连接时为 null（后续 list / open 都要求它） */
+  let connected: WorkspaceEndpoint | null = null;
+  const isSender = (sender: Electron.WebContents): boolean =>
+    !win.isDestroyed() && sender === win.webContents;
+  const close = (): void => {
+    if (!win.isDestroyed()) win.close();
+  };
+
+  ipcMain.handle('remote-workspace:connect', async (event, raw: unknown) => {
+    if (!isSender(event.sender)) return { ok: false, error: 'invalid sender' };
+    const input = (raw ?? {}) as { host?: unknown; port?: unknown; token?: unknown };
+    const host = typeof input.host === 'string' ? input.host.trim() : '';
+    const port = typeof input.port === 'number' ? input.port : Number.NaN;
+    const token = typeof input.token === 'string' ? input.token.trim() : '';
+    if (!host) return { ok: false, error: tt('请填写 IP / 主机', 'Host is required') };
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+      return { ok: false, error: tt('端口必须在 1-65535 之间', 'Port must be 1-65535') };
+    }
+    if (!token) return { ok: false, error: tt('请填写 token', 'Token is required') };
+    const endpoint: WorkspaceEndpoint = { host, port, user: null, auth: { token } };
+    try {
+      const listing = await listRemoteDirectories(endpoint, null);
+      connected = endpoint;
+      return { ok: true, listing };
+    } catch (error) {
+      return { ok: false, error: describeError(error) };
+    }
+  });
+
+  ipcMain.handle('remote-workspace:list', async (event, target: unknown) => {
+    if (!isSender(event.sender)) return { ok: false, error: 'invalid sender' };
+    if (!connected) return { ok: false, error: 'not connected' };
+    if (target !== null && typeof target !== 'string') return { ok: false, error: 'invalid path' };
+    try {
+      const listing = await listRemoteDirectories(connected, target);
+      return { ok: true, listing };
+    } catch (error) {
+      return { ok: false, error: describeError(error) };
+    }
+  });
+
+  ipcMain.handle('remote-workspace:open', (event, target: unknown) => {
+    if (!isSender(event.sender)) return { ok: false, error: 'invalid sender' };
+    if (!connected) return { ok: false, error: 'not connected' };
+    if (typeof target !== 'string' || target.length === 0) {
+      return { ok: false, error: 'invalid path' };
+    }
+    addRemoteWorkspace(connected, target);
+    close();
+    return { ok: true };
+  });
+
+  const onCancel = (event: Electron.IpcMainEvent): void => {
+    if (isSender(event.sender)) close();
+  };
+  ipcMain.on('remote-workspace:cancel', onCancel);
+  win.on('closed', () => {
+    ipcMain.removeHandler('remote-workspace:connect');
+    ipcMain.removeHandler('remote-workspace:list');
+    ipcMain.removeHandler('remote-workspace:open');
+    ipcMain.removeListener('remote-workspace:cancel', onCancel);
+    if (remoteWorkspaceWindow === win) remoteWorkspaceWindow = undefined;
+  });
+
+  win.once('ready-to-show', () => win.show());
+  const html = getRemoteWorkspaceDialogHtml({
+    isDark: nativeTheme.shouldUseDarkColors,
+    locale: app.getLocale().startsWith('zh') ? 'zh' : 'en',
+  });
+  void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+}
+
+/**
  * 把「会话 → 工作目录」登记到 core 的会话工作目录表（core 按会话解析工作目录）。
  *
  * 两件事都做：本地写一份（宿主自己的 `getSessionWorkspace` 消费者，如标签页流水灯），
@@ -2277,23 +2470,36 @@ function syncSessionWorkspaceIndex(): void {
  * 已在集合中的目录不重复加入，直接置为活动项；每个目录都写入最近列表。
  */
 function addWorkspaces(paths: readonly string[]): void {
-  const added: string[] = [];
-  const opened: string[] = [];
+  const refs: WorkspaceRef[] = [];
   for (const raw of paths) {
     if (!isValidWorkspaceDir(raw)) continue;
-    const p = normalizeWorkspacePath(raw);
-    // 按去重键判断是否已在打开集合中（同一目录的不同表示视为同一个）
-    const existing = openWorkspaces.find((w) => sameWorkspace(w, p));
+    const ref = localWorkspaceRef(raw);
+    rememberRecentWorkspace(ref.path);
+    refs.push(ref);
+  }
+  addWorkspaceRefs(refs);
+}
+
+/** 加入一个远程工作区（远程目录选择器确认后调用） */
+function addRemoteWorkspace(endpoint: WorkspaceEndpoint, remotePath: string): void {
+  addWorkspaceRefs([remoteWorkspaceRef(endpoint, remotePath)]);
+}
+
+/** 按顺序加入打开集合，最后一项成为活动项；重复项只激活不新建 */
+function addWorkspaceRefs(refs: readonly WorkspaceRef[]): void {
+  const added: WorkspaceRef[] = [];
+  const opened: WorkspaceRef[] = [];
+  for (const ref of refs) {
+    const existing = findWorkspace(ref);
     if (!existing) {
-      openWorkspaces.push(p);
-      opened.push(p);
+      openWorkspaces.push(ref);
+      opened.push(ref);
     }
-    rememberRecentWorkspace(p);
-    added.push(existing ?? p);
+    added.push(existing ?? ref);
   }
   if (added.length === 0) return;
   // 新打开的工作区通知 Client 建立 Connection（重复打开只激活已有视图）
-  for (const p of opened) emitWorkspaceChange('opened', p);
+  for (const ref of opened) emitWorkspaceChange('opened', ref);
   // 最后一项成为活动项；每个目录的会话工作目录在各自会话被 core 解析目录前登记。
   activateWorkspace(added[added.length - 1]);
 }
@@ -2301,33 +2507,44 @@ function addWorkspaces(paths: readonly string[]): void {
 /**
  * 重排打开集合（标题栏标签页拖拽排序）。
  *
- * 只接受「与当前打开集合同一组目录」的完整排列（按去重键校验），
- * 长度不符 / 含未知目录 / 有重复一律忽略整次提交。
+ * 只接受「与当前打开集合同一组工作区」的完整排列（按 id 校验），
+ * 长度不符 / 含未知 id / 有重复一律忽略整次提交。
  * 活动项与各目录下已打开的对话视图不受顺序影响。
  */
-function reorderWorkspaces(paths: readonly string[]): void {
-  const next = applyWorkspaceOrder(openWorkspaces, paths);
-  if (!next) return; // 非法排列：整次忽略
-  if (next.every((p, i) => p === openWorkspaces[i])) return; // 顺序未变
+function reorderWorkspaces(ids: readonly string[]): void {
+  const current = openWorkspaces.map((ref) => refKey(ref));
+  if (ids.length !== current.length) return;
+  const unique = new Set(ids);
+  if (unique.size !== ids.length) return;
+  const byKey = new Map(openWorkspaces.map((ref) => [refKey(ref), ref]));
+  const next: WorkspaceRef[] = [];
+  for (const id of ids) {
+    const ref = byKey.get(id);
+    if (!ref) return; // 含未知 id：整次忽略
+    next.push(ref);
+  }
+  if (next.every((ref, index) => ref === openWorkspaces[index])) return; // 顺序未变
   openWorkspaces = next;
   saveOpenWorkspaces(openWorkspaces, workspacePath);
   syncTitlebarWorkspaces();
 }
 
 /**
- * 切换活动工作目录：更新宿主 / 聊天视图 / 侧栏 / 标题栏，并记住打开集合与活动项。
+ * 切换活动工作区：更新宿主 / 聊天视图 / 侧栏 / 标题栏，并记住打开集合与活动项。
  *
+ * 入参可以是引用本身，也可以是标签页 / 侧栏传回的 id。
  * 聊天视图按对话自己的工作目录保留，切换活动项不销毁任何视图。
  */
-function activateWorkspace(p: string): void {
+function activateWorkspace(target: WorkspaceRef | string): void {
   // 按去重键匹配打开集合中的项，传入不同表示也能定位到同一张标签页
-  const target = openWorkspaces.find((w) => sameWorkspace(w, p));
-  if (!target) return;
-  p = target;
+  const ref = typeof target === 'string'
+    ? openWorkspaces.find((candidate) => refKey(candidate) === target)
+    : findWorkspace(target);
+  if (!ref) return;
   const prev = workspacePath;
-  const changed = !sameWorkspace(prev, p);
-  workspacePath = p;
-  uiHost?.setWorkspacePath(workspacePath);
+  const changed = !sameRef(prev, ref);
+  workspacePath = ref;
+  uiHost?.setWorkspacePath(ref);
   if (changed) {
     saveOpenWorkspaces(openWorkspaces, workspacePath);
     conversations?.invalidateCachedList();
@@ -2336,8 +2553,8 @@ function activateWorkspace(p: string): void {
   }
   // setActiveWorkspace 自己负责更新 opts.workspacePath 并清理属于旧目录的后台预热视图，
   // 这里不要再先调 setWorkspacePath（那会让它内部的「目录已变」判断失效）
-  chatViews?.setActiveWorkspace(p);
-  if (changed) emitWorkspaceChange('activated', p);
+  chatViews?.setActiveWorkspace(ref.path);
+  if (changed) emitWorkspaceChange('activated', ref);
   setupMenu();
   pushTitlebarModeState();
   syncWindowTitle();
@@ -2346,22 +2563,35 @@ function activateWorkspace(p: string): void {
 }
 
 /**
+ * 对话属于已打开但不是活动的目录时，先把该目录切为活动项
+ * （保持「活动标签页 = 活动对话」一致）。按 core 侧的工作目录路径匹配引用。
+ */
+function activateWorkspaceForPath(workspace: string | undefined): void {
+  if (!workspace) return;
+  const ref = openWorkspaces.find((candidate) => sameWorkspace(candidate.path, workspace));
+  if (ref && !(workspacePath && sameWorkspaceRef(ref, workspacePath))) {
+    activateWorkspace(ref);
+  }
+}
+
+/**
  * 关闭工作目录：移出打开集合，销毁该目录下所有对话视图并中止运行中查询；
  * 关闭的是活动项时把活动权移交相邻项。
  */
-function closeWorkspace(p: string): void {
+function closeWorkspace(target: WorkspaceRef | string): void {
   // 按去重键匹配打开集合中的项
-  const target = openWorkspaces.find((w) => sameWorkspace(w, p));
-  if (!target) return;
-  p = target;
-  const idx = openWorkspaces.indexOf(p);
+  const ref = typeof target === 'string'
+    ? openWorkspaces.find((candidate) => refKey(candidate) === target)
+    : findWorkspace(target);
+  if (!ref) return;
+  const idx = openWorkspaces.indexOf(ref);
   if (idx < 0) return;
   openWorkspaces.splice(idx, 1);
-  chatViews?.closeWorkspace(p);
+  chatViews?.closeWorkspace(ref.path);
   for (const [sid, ws] of [...sessionWorkspaces]) {
-    if (sameWorkspace(ws, p)) sessionWorkspaces.delete(sid);
+    if (sameWorkspace(ws, ref.path)) sessionWorkspaces.delete(sid);
   }
-  const wasActive = sameWorkspace(workspacePath, p);
+  const wasActive = sameRef(workspacePath, ref);
   if (wasActive) {
     const next = openWorkspaces[Math.min(idx, openWorkspaces.length - 1)];
     workspacePath = next;
@@ -2370,7 +2600,7 @@ function closeWorkspace(p: string): void {
     conversations?.invalidateCachedList();
     if (next) {
       // setActiveWorkspace 负责更新 opts.workspacePath 并清理旧目录的预热视图
-      chatViews?.setActiveWorkspace(next);
+      chatViews?.setActiveWorkspace(next.path);
     } else {
       // 打开集合为空：聊天区回到「无工作目录」空态
       chatViews?.setWorkspacePath('');
@@ -2384,7 +2614,7 @@ function closeWorkspace(p: string): void {
     saveOpenWorkspaces(openWorkspaces, workspacePath);
   }
   // 通知 Client 销毁该工作区的 Connection（Standalone 下关闭 Core 进程）
-  emitWorkspaceChange('closed', p);
+  emitWorkspaceChange('closed', ref);
   setupMenu();
   pushTitlebarModeState();
   syncWindowTitle();
@@ -2395,8 +2625,8 @@ function closeWorkspace(p: string): void {
 /** 推送打开集合与活动项到侧栏 */
 function broadcastWorkspaces(): void {
   sidebarView?.webContents.send('sidebar:workspaces-changed', {
-    workspaces: openWorkspaces.map((p) => ({ path: p, name: workspaceDisplayNameOf(p) })),
-    active: workspacePath ?? null,
+    workspaces: openWorkspaces.map((ref) => workspaceTabState(ref)),
+    active: workspacePath ? refKey(workspacePath) : null,
     recent: readRecentWorkspaces(),
   });
 }
@@ -2435,10 +2665,22 @@ interface WindowRect {
   height?: number;
 }
 
+/** 落盘的工作区引用（`WorkspaceRef` 的序列化形态） */
+interface SerializedWorkspaceRef {
+  scheme: string;
+  path: string;
+  endpoint: WorkspaceEndpoint | null;
+}
+
 interface WorkspaceState {
-  /** 打开集合：按标签页顺序排列的已打开工作目录 */
-  openWorkspaces?: string[];
-  /** 活动工作目录（打开集合中的一项）；无活动项时为 null */
+  /**
+   * 打开集合：按标签页顺序排列。新版本写 `SerializedWorkspaceRef`；
+   * 旧版本写本地路径字符串，读取时按本地引用迁移。
+   */
+  openWorkspaces?: Array<string | SerializedWorkspaceRef>;
+  /** 活动工作区 id（`workspaceRefKey`）；无活动项时为 null */
+  activeWorkspaceKey?: string | null;
+  /** 旧版本的活动工作目录（本地路径）；读取时按本地引用迁移 */
   activeWorkspace?: string | null;
   recentWorkspaces?: string[];
   /** 完整模式窗口位置与大小（字段名沿用 windowSize，现在同时存位置） */
@@ -2631,36 +2873,83 @@ function isValidWorkspaceDir(p: unknown): p is string {
   }
 }
 
-/**
- * 读取打开集合（仅保留仍存在的目录，按去重键去重）。
- * `openWorkspaces` 缺失 / 非法即视为「没有打开任何工作目录」，不回退到其它字段。
- */
-function readOpenWorkspaces(): string[] {
-  const { openWorkspaces } = readWorkspaceState();
-  if (!Array.isArray(openWorkspaces)) return [];
-  const valid = openWorkspaces.filter((ws): ws is string => isValidWorkspaceDir(ws));
-  return dedupeWorkspacePaths(valid);
+/** 序列化一个工作区引用 */
+function serializeWorkspaceRef(ref: WorkspaceRef): SerializedWorkspaceRef {
+  return { scheme: ref.scheme, path: ref.path, endpoint: ref.endpoint };
 }
 
-/** 读取活动工作目录（必须属于打开集合；字段缺失 / 不在集合中时取最后一项） */
-function readActiveWorkspace(open: readonly string[]): string | undefined {
-  const { activeWorkspace } = readWorkspaceState();
+/** 反序列化：字符串按本地路径迁移；远程项不检查本地是否存在（路径在目标机器上） */
+function parseWorkspaceEntry(entry: unknown): WorkspaceRef | null {
+  if (typeof entry === 'string') {
+    return isValidWorkspaceDir(entry) ? localWorkspaceRef(entry) : null;
+  }
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const { scheme, path: refPath, endpoint } = entry as Partial<SerializedWorkspaceRef>;
+  if (typeof scheme !== 'string' || typeof refPath !== 'string' || refPath.length === 0) return null;
+  if (endpoint === null || endpoint === undefined) {
+    return isValidWorkspaceDir(refPath) ? localWorkspaceRef(refPath) : null;
+  }
+  const parsed = endpoint as WorkspaceEndpoint;
+  if (typeof parsed.host !== 'string' || parsed.host.length === 0) return null;
+  return { scheme, path: refPath, endpoint: parsed };
+}
+
+/**
+ * 读取打开集合（本地项仅保留仍存在的目录，按引用去重）。
+ * `openWorkspaces` 缺失 / 非法即视为「没有打开任何工作目录」，不回退到其它字段。
+ */
+function readOpenWorkspaces(): WorkspaceRef[] {
+  const { openWorkspaces } = readWorkspaceState();
+  if (!Array.isArray(openWorkspaces)) return [];
+  const refs: WorkspaceRef[] = [];
+  const seen = new Set<string>();
+  for (const entry of openWorkspaces) {
+    const ref = parseWorkspaceEntry(entry);
+    if (!ref) continue;
+    // 远程工作区不落盘（凭证不进本地状态文件）；忽略历史 / 手改文件里的远程项
+    if (ref.endpoint !== null) continue;
+    const key = refKey(ref);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push(ref);
+  }
+  return refs;
+}
+
+/** 读取活动工作区（必须属于打开集合；字段缺失 / 不在集合中时取最后一项） */
+function readActiveWorkspace(open: readonly WorkspaceRef[]): WorkspaceRef | undefined {
+  const { activeWorkspaceKey, activeWorkspace } = readWorkspaceState();
+  if (typeof activeWorkspaceKey === 'string' && activeWorkspaceKey) {
+    const found = open.find((ref) => refKey(ref) === activeWorkspaceKey);
+    if (found) return found;
+  }
+  // 旧版本只记本地路径
   if (typeof activeWorkspace === 'string' && activeWorkspace) {
-    const found = open.find((w) => sameWorkspace(w, activeWorkspace));
+    const found = open.find(
+      (ref) => ref.endpoint === null && sameWorkspace(ref.path, activeWorkspace),
+    );
     if (found) return found;
   }
   return open.length > 0 ? open[open.length - 1] : undefined;
 }
 
-/** 保存打开集合与活动项（顺带清掉旧版本遗留的 lastWorkspace 字段） */
-function saveOpenWorkspaces(open: readonly string[], active: string | undefined): void {
+/**
+ * 保存打开集合与活动项（顺带清掉旧版本遗留的 lastWorkspace 字段）。
+ *
+ * **远程工作区不落盘**：endpoint 的 `auth.token` 是凭证，不进宿主本地状态文件；
+ * 远程打开项只在本次会话内有效，重启后需要重新连接（见 `docs/client-connection.md` 第 9 节）。
+ */
+function saveOpenWorkspaces(open: readonly WorkspaceRef[], active: WorkspaceRef | undefined): void {
   const prev = readWorkspaceState() as WorkspaceState & { lastWorkspace?: unknown };
   const { lastWorkspace: _legacy, ...rest } = prev;
+  const persisted = open.filter((ref) => ref.endpoint === null);
   writeWorkspaceState({
     ...rest,
-    openWorkspaces: [...open],
+    openWorkspaces: persisted.map((ref) => serializeWorkspaceRef(ref)),
     // 无活动项时写 null（而不是 undefined：JSON.stringify 会省略该键，与规格 §11 不符）
-    activeWorkspace: active ?? null,
+    activeWorkspaceKey: active && active.endpoint === null ? refKey(active) : null,
+    // 旧字段：只在活动项是本地目录时保留，方便旧版本读取
+    activeWorkspace: active && active.endpoint === null ? active.path : null,
   });
 }
 
@@ -2827,10 +3116,7 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: a
       syncSessionWorkspaceIndex();
       const workspace = sessionWorkspaces.get(sessionId);
       if (workspace) void registerCoreSessionWorkspace(sessionId, workspace);
-      // 对话属于已打开但不是活动的目录：先切活动项，保持「活动标签页 = 活动对话」一致
-      if (workspace && !sameWorkspace(workspace, workspacePath) && openWorkspaces.some((w) => sameWorkspace(w, workspace))) {
-        activateWorkspace(workspace);
-      }
+      activateWorkspaceForPath(workspace);
       chatViews?.openConversation(sessionId, workspace);
     }
     return;
@@ -2907,8 +3193,8 @@ function setupIpc(): void {
       // 浮窗没有侧栏，品牌位改显示当前工作目录名（浮窗标题栏的唯一上下文）
       workspaceName: workspaceDisplayName() || null,
       // 打开集合（标题栏标签页区渲染）与活动项
-      workspaces: openWorkspaces.map((p) => ({ path: p, name: workspaceDisplayNameOf(p) })),
-      activeWorkspace: workspacePath ?? null,
+      workspaces: openWorkspaces.map((ref) => workspaceTabState(ref)),
+      activeWorkspace: workspacePath ? refKey(workspacePath) : null,
       // 标签页流水灯：每个工作目录的聚合运行时状态（waiting 优先，其次 running）
       activity: collectWorkspaceActivity(),
       // 标题栏是独立页面，拿不到 core 的 i18n 上下文：文案由主进程按当前语言下发，
@@ -2923,8 +3209,8 @@ function setupIpc(): void {
         toggleToFloating: tt('切换到悬浮窗模式', 'Switch to floating window'),
         toggleToFull: tt('切换到完整模式', 'Switch to full mode'),
         modeDisabled: tt('未打开工作区，无法切换', 'Open a workspace first to switch mode'),
-        addWorkspace: tt('添加工作目录', 'Add workspace folder'),
-        closeWorkspace: tt('关闭工作目录', 'Close workspace folder'),
+        addWorkspace: tt('添加工作区', 'Add workspace'),
+        closeWorkspace: tt('关闭工作区', 'Close workspace'),
       },
     };
   });
@@ -2953,6 +3239,12 @@ function setupIpc(): void {
   ipcMain.on('titlebar:add-workspace', (event) => {
     if (!isTitlebarSender(event.sender)) return;
     void openWorkspaceDialog();
+  });
+
+  // 加号按钮：弹出「打开本地目录 / 打开远程 Workspace」菜单
+  ipcMain.on('titlebar:workspace-menu', (event) => {
+    if (!isTitlebarSender(event.sender)) return;
+    popupWorkspaceMenu();
   });
 
   ipcMain.on('titlebar:reorder-workspaces', (event, paths: unknown) => {
@@ -3055,8 +3347,8 @@ function setupIpc(): void {
 
   // 工作目录流：打开集合 + 活动项 + 最近列表
   ipcMain.handle('sidebar:get-workspaces', () => ({
-    workspaces: openWorkspaces.map((p) => ({ path: p, name: workspaceDisplayNameOf(p) })),
-    active: workspacePath ?? null,
+    workspaces: openWorkspaces.map((ref) => workspaceTabState(ref)),
+    active: workspacePath ? refKey(workspacePath) : null,
     recent: readRecentWorkspaces(),
   }));
 
@@ -3082,7 +3374,7 @@ function setupIpc(): void {
         // 只接受仍处于打开集合中的目录：陈旧列表项（工作目录已关闭）不得把
         // 会话重新登记到已关闭目录，否则会打开一张没有对应标签页的视图
         const projectPath = normalizeWorkspacePath(project);
-        if (!openWorkspaces.some((w) => sameWorkspace(w, projectPath))) {
+        if (!openWorkspaces.some((ref) => sameWorkspace(ref.path, projectPath))) {
           console.warn('[main] ignore open-conversation for closed workspace:', projectPath);
           return;
         }
@@ -3090,16 +3382,13 @@ function setupIpc(): void {
       }
       const workspace = sessionWorkspaces.get(sessionId);
       if (workspace) void registerCoreSessionWorkspace(sessionId, workspace);
-      // 对话属于已打开但不是活动的目录：先切活动项，保持「活动标签页 = 活动对话」一致
-      if (workspace && !sameWorkspace(workspace, workspacePath) && openWorkspaces.some((w) => sameWorkspace(w, workspace))) {
-        activateWorkspace(workspace);
-      }
+      activateWorkspaceForPath(workspace);
       chatViews?.openConversation(sessionId, workspace);
     }
   });
 
   ipcMain.on('sidebar:new-conversation', () => {
-    chatViews?.openNewConversation(workspacePath);
+    chatViews?.openNewConversation(workspacePath?.path ?? '');
   });
 
   // 关闭指定会话（UI → core 走 WebViewUI.closeConversation：
@@ -3211,8 +3500,8 @@ function initCore(): void {
   const host = new ElectronUIHost();
   // 工作区事实来源：Client 按打开集合建立 Connection，并订阅打开 / 关闭 / 激活
   host.setWorkspaceSource({
-    getOpenWorkspacePaths: () => openWorkspaces,
-    getActiveWorkspacePath: () => workspacePath,
+    getOpenWorkspaceRefs: () => openWorkspaces,
+    getActiveWorkspaceRef: () => workspacePath,
     subscribe: (listener) => {
       workspaceChangeListeners.add(listener);
       return () => workspaceChangeListeners.delete(listener);

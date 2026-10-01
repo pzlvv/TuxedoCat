@@ -25,7 +25,7 @@ import type { WebviewMessage } from '../../core/webviewTypes.js';
 import type { SessionRuntimeState, UiEvent } from '../../core/AssistantEventBus.js';
 import { requireEventBus } from '../../core/AssistantEventBus.js';
 import type { UserChoiceManager } from './userChoice.js';
-import type { LLMConfigPanelTrigger } from './ports.js';
+import type { LLMConfigPanelTrigger, QueuedMessageState } from './ports.js';
 import type { ConversationLoadedExtra } from '../conversationPayload.js';
 import { resolveCoreKind } from '../coreKind.js';
 import {
@@ -127,6 +127,8 @@ export class WebviewMessageHandler {
     showLLMConfigPanel(trigger: LLMConfigPanelTrigger, sessionId: string | null): Promise<void>;
     /** 最近一次会话运行时状态快照（Standalone 下拉取不能用进程内 sessionRuntime） */
     getSessionRuntimeStatesSnapshot(): readonly SessionRuntimeState[];
+    /** 登记 / 清除该会话的排队项（`null` = 清除） */
+    onQueuedMessage(sessionId: string, queued: QueuedMessageState | null): void;
   };
   private postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
   private postConversationLoaded: (sessionId: string, conversation: any, extra: ConversationLoadedExtra) => void;
@@ -418,7 +420,10 @@ export class WebviewMessageHandler {
     // 用户主动发消息：刷新该会话的空闲关闭计时（空闲回收只在 VS Code 生效）
     this.uiPort?.noteSessionActivity(sessionId);
 
-    const selectedLines = message.fileSelectedLines;
+    // wire 字段名是 `selectedLines`（与 `updateConversationContext` 同一口径）；
+    // 进 core 的载荷字段名是 `fileSelectedLines`（`UiEvent.userMessageSubmitted` 的契约名，
+    // 见 DEVELOPMENT.md 第 4.3 节 #41），两者在这一层做翻译。
+    const selectedLines = message.selectedLines;
     const filePath = typeof message.filePath === 'string' ? message.filePath : undefined;
     const uuid = `user_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
@@ -426,7 +431,30 @@ export class WebviewMessageHandler {
     // 一个刷新后消失的「幽灵」用户消息。交给引擎在消息真正进入上下文时补发
     // （Skill 命令）或干脆不发（内置命令）——Embedded 走 `QueryEngine.notifyUserMessageToUI`，
     // Standalone 走 `engine::emit_user_message_to_ui`，两侧同一契约。
-    const deferEcho = content.trim().startsWith('/');
+    const isCommandMessage = content.trim().startsWith('/');
+
+    // 引擎是否仍在忙：读 core 推送的会话运行时状态快照（`sessionRuntimeChanged`，
+    // ConversationManager 缓存）。Standalone 下进程内没有引擎，这份快照是宿主唯一
+    // 能拿到的「忙碌」事实（`idle === false` 覆盖消费循环运行中与压缩中）。
+    // 忙碌时该消息要等下一次 LLM 请求才进入上下文：不在发送侧乐观回显，改为在输入框
+    // 上方登记排队项（`docs/user-message-pipeline.md` 第 5.1 节），并置 `deferEcho`
+    // 让 core 真正并入上下文时补发用户气泡（第 5.2 节，webview 按 uuid 清除排队项）。
+    const runtimeState = this.uiPort
+      ?.getSessionRuntimeStatesSnapshot()
+      .find((state) => state.sessionId === sessionId);
+    const isQueued = runtimeState !== undefined && runtimeState.idle === false;
+    const deferEcho = isQueued || isCommandMessage;
+
+    if (isQueued) {
+      this.uiPort?.onQueuedMessage(sessionId, {
+        uuid,
+        content,
+        images,
+        filePath,
+        selectedLines,
+        fileHidden: message.fileHidden === true,
+      });
+    }
 
     if (!deferEcho) {
       // 立即回显用户气泡（乐观渲染）：core 落盘时沿用同一个 uuid，

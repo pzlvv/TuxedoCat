@@ -52,20 +52,21 @@ webview 的用户消息经宿主 `WebviewMessageHandler` 的一个处理器进�
 - 协议中用户消息的类型是 `sendMessage`；`queueMessage` 不作为独立类型存在。
 - 处理器不区分「新消息」与「排队消息」：是否排队由引擎的忙碌状态决定，不由消息类型决定。
 
-### 3.2 入队前的登记
+### 3.2 入口做的事
 
-处理器在入队前完成与会话状态无关的登记：
+处理器只做「宿主侧」的事，然后发 `UiEvent.userMessageSubmitted`：
 
 | 步骤 | 内容 |
 | --- | --- |
-| 取引擎 | `getSessionEngine(sessionId)`；不存在时以 `Integration.createEngine(sessionId, '')` 建立（幂等） |
-| 会话覆盖 | `agentMode` / `thinkingMode` / `webSearch` / `promptMode` / 模型身份（provider + model） |
 | 活动计时 | `noteSessionActivity(sessionId)`（空闲回收只在 VS Code 生效，见 `DEVELOPMENT.md` 第 5.4 节） |
-| 消息对象 | 内容块（文本 + 图片）、`uuid`、文件信息、图片宽高、`_userInitiated` |
-| 入队 | `engine.submitMessage(content, 'user', { manageQueryUI: true, userMsgData })` |
+| 消息身份 | 生成 `uuid` 并回带进 `UiEvent`；core 落盘沿用同一个 uuid，UI 按它配对排队项与用户气泡 |
+| 排队判定 | 读 core 的会话运行时快照：该会话 `idle === false` 时登记排队项并置 `deferEcho`，否则乐观回显用户气泡（第 5 节） |
+| 字段翻译 | wire 的 `selectedLines` 翻译成 `UiEvent` 的 `fileSelectedLines`（`DEVELOPMENT.md` 第 4.3 节 #41） |
+| 会话覆盖 | `agentMode` / `thinkingMode` / `webSearch` / 模型身份（provider + model）随 `UiEvent` 下发；`promptMode` 由独立的 `setPromptMode` 消息承载 |
+| 入队 | 发 `UiEvent.userMessageSubmitted`：取 / 建引擎、应用会话覆盖、入队、命令解析都在 core 侧（第 4 节） |
 
 - 引擎创建不预置用户消息：`initialMessages` 为空，首条消息与后续消息同路径。
-- 查询开始 / 结束状态由引擎在消费循环中发出（`manageQueryUI: true`，见 `DEVELOPMENT.md`
+- 查询开始 / 结束状态由 core 在消费循环里发（`queryBegin` / `queryEnd`，见 `DEVELOPMENT.md`
   第 10.3 节）。
 - 无工作目录的会话不进入管线：webview 显示引导，不发送消息。
 
@@ -123,8 +124,14 @@ Skill 命令的注入内容是一条 assistant `tool_use`（`name: 'Skill'`）�
 
 ### 5.1 登记
 
-引擎处于忙碌（消费循环运行中或压缩中）时，宿主向 webview 回推 `queuedMessage`，webview 按会话
-登记排队项。排队项携带该用户消息的 `uuid`。
+宿主按 core 推送的会话运行时快照判断忙碌：该会话 `idle === false`（消费循环运行中 / 压缩中 /
+有后台任务或子代理）时，消息要等下一次 LLM 请求才进入上下文，因此宿主
+
+- 向 webview 回推 `queuedMessage`（携带该用户消息的 `uuid` 与选中的文件信息），webview 按会话
+  登记排队项，不做发送侧乐观回显；
+- 给 `UiEvent.userMessageSubmitted` 带上 `deferEcho`，由 core 在消息真正进入上下文时补发用户气泡。
+
+空闲（`idle === true`，或快照里没有该会话）时仍是发送侧乐观回显，不登记排队项。
 
 ### 5.2 清除
 

@@ -89,7 +89,7 @@ struct Harness {
     tx: Sender<DaemonEvent>,
     out_rx: Receiver<String>,
     spawner: Arc<FakeSpawner>,
-    join: Option<thread::JoinHandle<i32>>,
+    join: Option<thread::JoinHandle<ChannelExit>>,
 }
 
 impl Harness {
@@ -153,7 +153,7 @@ impl Harness {
         }
     }
 
-    fn shutdown(&mut self) -> i32 {
+    fn shutdown(&mut self) -> ChannelExit {
         self.command(json!({ "kind": "shutdown" }));
         self.join.take().expect("daemon thread").join().expect("daemon join")
     }
@@ -191,7 +191,7 @@ fn open_workspace_spawns_a_core_and_returns_a_descriptor() {
     let lines = harness.wait_for_lines(0, 1);
     assert_eq!(lines[0], "{\"kind\":\"hello\",\"protocol\":2}");
 
-    assert_eq!(harness.shutdown(), 0);
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
 }
 
 #[test]
@@ -214,7 +214,7 @@ fn two_workspaces_get_isolated_channels() {
     );
     assert_eq!(harness.spawner.lines_of(1).len(), 1);
 
-    assert_eq!(harness.shutdown(), 0);
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn close_workspace_shuts_down_the_core_and_reports_closed() {
     assert_eq!(closed["channel"], 1);
     assert_eq!(closed["reason"], "closed");
 
-    assert_eq!(harness.shutdown(), 0);
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
 }
 
 #[test]
@@ -249,8 +249,20 @@ fn grace_period_exits_after_the_last_core_closes() {
     assert_eq!(harness.next_frame()["kind"], "workspaceClosed");
 
     // 没有新工作区：grace 期到点后 daemon 自行退出
-    let code = harness.join.take().expect("daemon thread").join().expect("daemon join");
-    assert_eq!(code, 0);
+    let exit = harness.join.take().expect("daemon thread").join().expect("daemon join");
+    assert_eq!(exit, ChannelExit::Stop);
+}
+
+#[test]
+fn idle_exit_false_keeps_the_daemon_alive_without_cores() {
+    // 远程 daemon 的语义：控制通道在，daemon 就在；没有工作区也不 grace 退出
+    let mut harness = Harness::new(DaemonOptions {
+        grace_period: Duration::from_millis(50),
+        idle_exit: false,
+        ..Harness::fast_options()
+    });
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
 }
 
 impl Harness {
@@ -264,6 +276,7 @@ impl Harness {
                 base_delay: Duration::from_millis(10),
                 max_delay: Duration::from_millis(20),
             },
+            idle_exit: true,
         }
     }
 }
@@ -288,7 +301,7 @@ fn opening_a_workspace_during_grace_keeps_the_daemon_alive() {
 
     thread::sleep(Duration::from_millis(200));
     assert_eq!(harness.spawner.spawns.load(Ordering::SeqCst), 2, "daemon must stay alive");
-    assert_eq!(harness.shutdown(), 0);
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
 }
 
 #[test]
@@ -313,7 +326,7 @@ fn crashed_core_restarts_on_the_same_channel_and_flushes_queued_frames() {
     assert_eq!(lines[0], "{\"kind\":\"hello\",\"protocol\":2}");
     assert_eq!(harness.spawner.spawns.load(Ordering::SeqCst), 2, "same channel restart");
 
-    assert_eq!(harness.shutdown(), 0);
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
 }
 
 #[test]
@@ -327,6 +340,7 @@ fn restart_limit_closes_the_channel_and_reports_failure() {
             base_delay: Duration::from_millis(5),
             max_delay: Duration::from_millis(10),
         },
+        idle_exit: true,
     });
     harness.command(open(1, "D:/repo/a"));
     harness.next_frame();
@@ -349,8 +363,8 @@ fn restart_limit_closes_the_channel_and_reports_failure() {
     assert_eq!(closed["reason"], "failed");
 
     // 没有 channel 了：grace 期后 daemon 退出
-    let code = harness.join.take().expect("daemon thread").join().expect("daemon join");
-    assert_eq!(code, 0);
+    let exit = harness.join.take().expect("daemon thread").join().expect("daemon join");
+    assert_eq!(exit, ChannelExit::Stop);
 }
 
 #[test]
@@ -362,8 +376,9 @@ fn host_disconnect_closes_all_cores_and_exits() {
     harness.next_frame();
 
     harness.tx.send(DaemonEvent::HostDisconnected).expect("disconnect");
-    let code = harness.join.take().expect("daemon thread").join().expect("daemon join");
-    assert_eq!(code, 0);
+    // 只是这条控制通道断了：远程 daemon 回到 accept，进程不退出
+    let exit = harness.join.take().expect("daemon thread").join().expect("daemon join");
+    assert_eq!(exit, ChannelExit::Continue);
     assert!(harness.spawner.child(0).killed.load(Ordering::SeqCst));
     assert!(harness.spawner.child(1).killed.load(Ordering::SeqCst));
 }
@@ -379,5 +394,5 @@ fn workspace_failure_is_reported_without_a_channel() {
     assert!(failed["error"].as_str().unwrap().contains("spawn failed"));
     assert_eq!(harness.spawner.spawns.load(Ordering::SeqCst), 0);
 
-    assert_eq!(harness.shutdown(), 0);
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
 }

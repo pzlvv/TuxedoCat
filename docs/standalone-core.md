@@ -100,7 +100,10 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 - 语言与工具链：Rust（edition 2021），Cargo 构建。
 - 产物：单文件可执行；文件名为 `core.binaryName`（Windows 加 `.exe`）。
 - 源码位置：`core-rs/`（Cargo 包，包名与二进制名保持中性；对外文件名由构建脚本按配置落位）。
-- 进程属性：无窗口、无控制台；标准输入 / 标准输出为帧通道，标准错误为诊断输出。
+- 进程属性：由宿主启动时不显示窗口；标准输入 / 标准输出为帧通道，标准错误为诊断输出。
+  远程服务（`start` 动作）让 daemon 把控制通道换成 TCP（`docs/core-daemon.md` 第 12 节）。
+- 可独立运行：`--help` / `--version` 打印用法与版本；没有动作且 stdin 是终端时打印用法，
+  否则按 `serve` 启动（`docs/core-daemon.md` 第 3 节）。
 - 进程工作目录不作为业务事实；会话目录取自 `UiEvent`。
 - Core 进程创建的所有子进程（shell、ripgrep、git 等）都不显示控制台窗口；
   每次查询都不产生可见的窗口闪烁。
@@ -114,6 +117,10 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
   `tools/bash/TaskOutput.ts` 的 file mode）；任务完成后 Core 把一条
   `origin='bash'` 的完成通知作为 user 消息注入该会话并唤醒消费循环，
   会话关闭 / 中止时终止该会话的全部后台任务。
+- 前台 Bash 的超时与中止判定不依赖子进程是否已退出：子进程退出后还要等管道 EOF
+  （孙进程可能继承了管道写端，例如 `start` 拉起的 detached daemon），这段时间里
+  前台超时照常转后台、abort 照常按中断收尾——对齐 `src/core/tools/bash/Exec.ts`
+  的定时器与 abort 监听，二者都与子进程状态无关。
 
 ### 4.1 平台矩阵
 
@@ -121,7 +128,7 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 | --- | --- | --- | --- | --- |
 | Windows | x64 | `x86_64-pc-windows-msvc` | `resources/core/x64-win32/` | 产出 |
 | Windows | arm64 | `aarch64-pc-windows-msvc` | `resources/core/arm64-win32/` | 预留 |
-| Linux | x64 | `x86_64-unknown-linux-gnu` | `resources/core/x64-linux/` | 预留 |
+| Linux | x64 | `x86_64-unknown-linux-gnu` | `resources/core/x64-linux/` | 产出（在 Linux / WSL 内构建） |
 | Linux | arm64 | `aarch64-unknown-linux-gnu` | `resources/core/arm64-linux/` | 预留 |
 
 产物目录命名与 `resources/ripgrep/` 一致。宿主按运行平台的平台名 / 架构名解析产物目录，
@@ -131,7 +138,8 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 
 - Core 侧不依赖 Windows 专有 API；平台差异收敛在少量模块：进程管理、路径处理、
   shell 探测、资源定位。
-- 构建脚本按目标三元组参数化；当前只构建 Windows x64。
+- 构建脚本按目标三元组参数化；当前产出 Windows x64 与 Linux x64
+  （Linux 产物在 Linux / WSL 内原生构建，Windows 侧不做 GNU 交叉链接）。
 - 宿主侧的启动、帧通道与契约不随平台变化。
 - 新增平台时只补产物目录与构建目标，不改契约与磁盘格式。
 
@@ -159,16 +167,23 @@ rustup target add aarch64-pc-windows-msvc
 node scripts/build-core.mjs --target aarch64-pc-windows-msvc
 ```
 
+Linux x64 在 Linux / WSL 内原生构建（不依赖 Windows 侧的 GNU 交叉链接器）：
+
+```bash
+# 在 WSL 的仓库目录里执行；产物落到 resources/core/x64-linux/
+npm run build:core:linux-x64
+```
+
 已知阻塞（实测记录）：
 
 - **Windows arm64**：`rustup target add` 之后构建会停在 `ring`（`reqwest` 的
   `rustls-tls` 依赖）的自定义构建脚本上，报
   `failed to find tool "clang"`。`ring` 含 ARM64 汇编，交叉编译需要 LLVM/clang
   与 ARM64 的 MSVC 链接器；只装 Rust target 不够。
-- **Linux x64 / arm64**：需要 `x86_64-unknown-linux-gnu` / `aarch64-unknown-linux-gnu`
-  目标与对应的交叉链接器（GNU 工具链），当前环境未安装。
+- **Linux arm64**：需要 `aarch64-unknown-linux-gnu` 目标与对应的交叉链接器
+  （GNU 工具链）。
 
-因此这三项目前只有「目录与构建目标已登记、矩阵一致性有测试锁定」，没有实际产物；
+这两项目前只有「目录与构建目标已登记、矩阵一致性有测试锁定」，没有实际产物；
 这与第 11 节「目标矩阵中预留平台的实际产出」不属于覆盖范围一致。
 
 ---
@@ -399,7 +414,8 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 10. 两个工作区各自拥有一个 Core 进程；其中一个的 Core 崩溃不影响另一个。
 11. 重启次数超过上限时 daemon 停止重启并报告。
 12. `CORE_KIND = embedded` 时装配进程内 Core，恒一个 Connection。
-13. 产物目录按平台 / 架构解析，Windows x64 之外的目录为预留。
+13. 产物目录按平台 / 架构解析，Windows x64 与 Linux x64 有实际产物，其余为预留。
+14. `start` 打印 `IP:端口` 与 token（daemon 留在后台）；token 不匹配的连接被拒绝。
 
 ---
 
@@ -417,7 +433,9 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | bootstrap 分支 | `src/host/bootstrapCore.ts` |
 | 事件契约 | `src/core/AssistantEventBus.ts` |
 | Rust 包 | `core-rs/` |
-| 构建目标参数化 | `core-rs/.cargo/config.toml`、构建脚本 |
+| 命令行（`--help` / `--version` / 模式） | `core-rs/src/cli.rs` |
+| 远程监听 / token / 目录列举 | `core-rs/src/remote.rs`（见 `docs/core-daemon.md` 第 12 节） |
+| 构建目标参数化 | `core-rs/.cargo/config.toml`、构建脚本（`build:core:linux-x64`） |
 | 分发产物 | `resources/core/<platform>-<arch>/` |
 
 ## 14. 测试与覆盖率
@@ -431,6 +449,7 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | 协议冒烟（真实产物） | `src/test/standaloneBootstrap.test.ts`、`standaloneCoreEngine.test.ts` | `npm run test:all` |
 | 工具与权限（真实产物） | `src/test/standaloneCoreTools.test.ts`、`standaloneCorePermission.test.ts` | `npm run test:all` |
 | 两种实现对等 | `src/test/permissionParity.test.ts` + `core-rs` 单测读同一份 fixture | `npm run test:all` |
+| 远程 daemon（真实 TCP） | `core-rs/src/remote_tests.rs`（服务端）、`src/test/remoteCoreDaemon.test.ts`（Host 侧） | `npm run test:core` / `npm run test:all` |
 | 真实宿主 | `src/test/suite/` | `npm test`（VS Code）/ Electron 手测 |
 
 ### 约定

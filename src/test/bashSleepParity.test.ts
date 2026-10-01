@@ -8,6 +8,13 @@
  * `core-rs/src/tools_tests.rs` 的 `contains_sleep_command_splits_on_separators` 与
  * `bash_sleep_commands_have_no_foreground_timeout`。
  *
+ * 超时的**判定时机**同样对等：Embedded 的定时器是 spawn 后立刻挂上的 `setTimeout`，
+ * 与子进程是否已退出无关；Standalone 的 `run_bash` 在「等子进程退出」与「等管道 EOF」
+ * 两个阶段共用同一套判定。对应用例见 `core-rs/src/tools_tests.rs` 的
+ * `bash_timeout_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe` 与
+ * `bash_abort_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe`
+ * （孙进程持有管道时，子进程退出后 `close` 不会触发）。
+ *
  * 本文件断言 Embedded 侧仍然给出同一个「拆分 + sleep 判定 + timeoutMs」口径，
  * 任一侧偏离即失败。
  *
@@ -18,6 +25,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { BashTool } from '../core/tools/bash/Bash';
+import { execCommand } from '../core/tools/bash/Exec';
+import { abortBackgroundTasksForSession } from '../core/tools/bash/LocalShellTask';
 import { containsSleepCommand } from '../core/tools/bash/SleepDetect';
 import { splitBySeparators } from '../core/tools/bash/TimeoutPolicy';
 import { createChecker, runTests } from './helpers/harness';
@@ -104,6 +113,25 @@ async function run(): Promise<void> {
     check('abort 后退出码为 130', abortedData.exitCode === 130);
     check('abort 前已累积的 stdout 被保留', String(abortedData.stdout).includes('go'));
     check('abort 立刻生效（未等待 sleep 结束）', elapsed < 1_500);
+
+    // ===== 超时判定与子进程是否已退出无关 =====
+    // `sleep 2 &` 让 bash 立刻退出，但后台 `sleep` 继承了管道写端，`close` 事件不会触发。
+    // Embedded 的定时器是独立于子进程状态的 `setTimeout`，到点照常转后台，因此不会卡住。
+    // 对齐 Rust `bash_timeout_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe`。
+    const bgStarted = Date.now();
+    const bg = await execCommand({
+      command: 'echo started; sleep 2 &',
+      timeout: 300,
+      cwd: dir,
+      signal: new AbortController().signal,
+      description: 'Grandchild holds the pipe',
+      sessionID: 's1',
+    });
+    const bgElapsed = Date.now() - bgStarted;
+    check('孙进程持有管道时前台超时照样转后台', bg.assistantAutoBackgrounded === true);
+    check('转入后台前的已累积输出被保留', String(bg.stdout).includes('started'));
+    check('超时未等孙进程自然退出', bgElapsed < 1_200);
+    abortBackgroundTasksForSession('s1');
   } finally {
     // Windows 上杀掉 shell 不会带走孙进程（`sleep`），它仍持有 cwd / 管道，
     // 立刻删目录会 EPERM；清理失败不影响用例结论，临时目录交给系统回收。

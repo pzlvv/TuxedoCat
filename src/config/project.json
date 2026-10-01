@@ -45,6 +45,7 @@
     "electronSidebarPreloadOut": "dist-electron/sidebarPreload.cjs",
     "electronShortcutPreloadOut": "dist-electron/shortcutPreload.cjs",
     "electronTitlebarPreloadOut": "dist-electron/titlebarPreload.cjs",
-    "electronTitlebarMenuPreloadOut": "dist-electron/titlebarMenuPreload.cjs"
+    "electronTitlebarMenuPreloadOut": "dist-electron/titlebarMenuPreload.cjs",
+    "electronRemoteWorkspacePreloadOut": "dist-electron/remoteWorkspacePreload.cjs"
   }
 }

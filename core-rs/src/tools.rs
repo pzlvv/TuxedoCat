@@ -680,6 +680,7 @@ pub fn is_absolute_like_node(path: &str) -> bool {
 }
 
 /// Windows：`/mnt/d/xxx` → `D:\xxx`；`/mnt/d` → `D:\`
+#[cfg(windows)]
 fn wsl_mnt_path(path: &str) -> Option<String> {
     let bytes = path.as_bytes();
     // 用字节比较而不是 `path[..5]`：路径可能含多字节字符，按字节下标切片会 panic
@@ -710,6 +711,7 @@ fn wsl_mnt_path(path: &str) -> Option<String> {
 /// 与 `expandPath` 的 `/^\/[a-z]\//i` 分支一致：**保留**盘符原始大小写
 /// （`path.normalize('c:\\/Users') === 'c:\\Users'`），不做大写化。
 /// 只有 WSL 的 `/mnt/d/...` 分支才把盘符大写。
+#[cfg(windows)]
 fn drive_slash_path(path: &str) -> Option<String> {
     let bytes = path.as_bytes();
     if bytes.len() < 3 || bytes[0] != b'/' || !(bytes[1] as char).is_ascii_alphabetic() || bytes[2] != b'/' {
@@ -740,7 +742,11 @@ pub fn expand_path(cwd: &str, path: &str) -> PathBuf {
         let trailing = rest.ends_with('/') || (cfg!(windows) && rest.ends_with('\\'));
         return with_trailing_separator(normalize_path(&home_dir().join(rest)), trailing);
     }
-    if cfg!(windows) {
+    // Windows 专属展开（WSL `/mnt/d` 与 `/c/` 写法、当前盘根路径）：
+    // 必须用 `#[cfg(windows)]` 而不是 `cfg!(windows)`——后者在非 Windows 上也会编译
+    // 这段代码，而 `windows_rooted_path` 只在 Windows 下定义。
+    #[cfg(windows)]
+    {
         if let Some(converted) = wsl_mnt_path(trimmed) {
             return normalize_absolute_path(&converted);
         }
@@ -857,6 +863,38 @@ fn contains_sleep_command(command: &str) -> bool {
     crate::permission::split_by_separators(command)
         .iter()
         .any(|segment| extract_command_name(segment) == "sleep")
+}
+
+/// 会话是否已请求中止（`abortRequested` 置位）。
+fn cancel_requested(cancel: &Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) -> bool {
+    cancel
+        .as_ref()
+        .map(|flag| flag.load(Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
+/// 前台超时是否已到（`timeout_ms == 0` 表示不设超时，此时 `deadline` 为 `None`）。
+fn deadline_passed(deadline: Option<std::time::Instant>) -> bool {
+    deadline
+        .map(|deadline| std::time::Instant::now() >= deadline)
+        .unwrap_or(false)
+}
+
+/// 通知驱动的自动转后台判定（对齐 Embedded `Exec.execForeground` 的两个监听）：
+/// - 普通命令：有后台任务完成、且本命令已运行 ≥ `AUTO_BG_MIN_RUNNING_MS` → 转后台；
+/// - sleep 命令（不设前台超时）：本会话的后台任务完成 → **立刻**转后台。
+fn should_auto_background(
+    timeout_ms: u64,
+    session_completed: &std::sync::atomic::AtomicBool,
+    bg_completed: &std::sync::atomic::AtomicBool,
+    started: std::time::Instant,
+) -> bool {
+    if timeout_ms == 0 {
+        session_completed.load(Ordering::Relaxed)
+    } else {
+        bg_completed.load(Ordering::Relaxed)
+            && started.elapsed().as_millis() as u64 >= AUTO_BG_MIN_RUNNING_MS
+    }
 }
 
 fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
@@ -979,72 +1017,69 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     };
     let cancel = ctx.cancel.clone();
     let mut cancelled = false;
+    // 子进程退出不等于管道到达 EOF：孙进程可能继承了管道写端（Windows 上 detached 的常驻
+    // 进程就是这样——`tuxedo-cat-core start` 拉起的 daemon 即一例；此时读线程会一直阻塞在
+    // `read`，直到孙进程退出）。因此「等子进程退出」与「等管道 EOF」共用同一套判定：
+    // 中止、前台超时、通知驱动转后台都不依赖子进程是否还活着。只在前一阶段判定的话，
+    // 一条已经退出的命令会让 abort 与前台超时全部失效
+    // （对齐 Embedded `Exec.ts`：定时器与 abort 监听在 spawn 后立刻挂上，与子进程状态无关）。
     loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) => {
-                // 会话被中止（`abortRequested`）：立刻杀掉子进程，按「被中断」收尾
-                // （对齐 Embedded 的 abort → `onAbort` → kill → exitCode 130）。
-                // 没有这一步时，不设超时的 `sleep` 会让 abort 失效。
-                if cancel
-                    .as_ref()
-                    .map(|flag| flag.load(Ordering::Relaxed))
-                    .unwrap_or(false)
-                {
-                    let _ = child.kill();
-                    stop_readers.store(true, Ordering::Relaxed);
-                    cancelled = true;
-                    break;
-                }
-                if deadline.map(|deadline| std::time::Instant::now() >= deadline).unwrap_or(false) {
-                    crate::bash_task::off_task_completed(bg_subscription);
-                crate::subagent::off_reply_delivered(reply_subscription);
-                    return auto_background_command(
-                        child,
-                        &command,
-                        &description_of(input, &command),
-                        ctx,
-                        &full_output,
-                        started,
-                    );
-                }
-                // 通知驱动的转后台：sleep 立刻转，普通命令要跑够 3s
-                let elapsed = started.elapsed().as_millis() as u64;
-                let should_background = if timeout_ms == 0 {
-                    session_completed.load(Ordering::Relaxed)
-                } else {
-                    bg_completed.load(Ordering::Relaxed) && elapsed >= AUTO_BG_MIN_RUNNING_MS
-                };
-                if should_background {
-                    crate::bash_task::off_task_completed(bg_subscription);
-                crate::subagent::off_reply_delivered(reply_subscription);
-                    return auto_background_command(
-                        child,
-                        &command,
-                        &description_of(input, &command),
-                        ctx,
-                        &full_output,
-                        started,
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(30));
-            }
+        let child_exited = match child.try_wait() {
+            Ok(status) => status.is_some(),
             Err(err) => {
                 let _ = child.kill();
                 crate::bash_task::off_task_completed(bg_subscription);
                 crate::subagent::off_reply_delivered(reply_subscription);
                 return ToolOutcome::Error(format!("Bash: wait failed: {err}"));
             }
+        };
+        let readers_done = stdout_handle
+            .as_ref()
+            .map(|handle| handle.is_finished())
+            .unwrap_or(true)
+            && stderr_handle
+                .as_ref()
+                .map(|handle| handle.is_finished())
+                .unwrap_or(true);
+        if child_exited && readers_done {
+            break;
         }
+        // 会话被中止（`abortRequested`）：按「被中断」收尾
+        // （对齐 Embedded 的 abort → `onAbort` → kill → exitCode 130）。
+        // 子进程还活着就杀掉；子进程已退出、只是孙进程仍持有管道时，停掉读线程、
+        // 用已累积输出收尾——两种情形都要能让 abort 立刻生效。
+        if cancel_requested(&cancel) {
+            if !child_exited {
+                let _ = child.kill();
+            }
+            stop_readers.store(true, Ordering::Relaxed);
+            cancelled = true;
+            break;
+        }
+        if deadline_passed(deadline)
+            || should_auto_background(timeout_ms, &session_completed, &bg_completed, started)
+        {
+            crate::bash_task::off_task_completed(bg_subscription);
+            crate::subagent::off_reply_delivered(reply_subscription);
+            return auto_background_command(
+                child,
+                &command,
+                &description_of(input, &command),
+                ctx,
+                &full_output,
+                started,
+            );
+        }
+        std::thread::sleep(Duration::from_millis(30));
     }
     crate::bash_task::off_task_completed(bg_subscription);
     crate::subagent::off_reply_delivered(reply_subscription);
 
     let status = child.wait().ok().and_then(|value| value.code()).unwrap_or(-1);
-    // 被中止 / 超时：**不等**管道读完。被杀的子进程可能留下仍持有管道的孙进程
+    // 被中止：**不等**管道读完。被杀的子进程可能留下仍持有管道的孙进程
     // （Windows 上 `bash -c "sleep 30"` 的 `sleep` 就是孙进程），等待会一直阻塞到
     // 孙进程自己退出——abort 会因此「看起来没生效」。这里用已累积的共享输出快照收尾，
-    // 与 Embedded 的 abort / 超时路径一致（直接 resolve 已累积的 `fullOutput`）。
+    // 与 Embedded 的 abort 路径一致（直接 resolve 已累积的 `fullOutput`）。
     let (stdout, stderr) = if cancelled {
         (full_output.lock().unwrap().full.clone(), String::new())
     } else {

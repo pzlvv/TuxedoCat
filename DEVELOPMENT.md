@@ -844,7 +844,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 38 | `mcpEnabledChanged` | `sessionId`, `name`, `enabled` | `setMcpEnabled` | `mcp/Config.setSessionMcpEnabled` + `Manager.syncSession` → `sessionConfigChanged`（差量同步完成后） |
 | 39 | `editRolledBack` | `sessionId`, `toolUseId`, `direction`, `filePath?` | `rollbackEdit` | `history/rollback.rollbackEdit`（`filePath` 作为 `input.file_path` 缺失时的兜底路径） |
 | 40 | `hostEnvironmentProvided` | `extensionPath`, `logToConsole`, `configDirName`, `settings`, `mcpServers` | `bootstrapCore`（每个 Connection 建立时推送一次；此后每次配置写盘由 `SettingsStore` 订阅重推整份快照给所有 Connection） | `initializeCoreEvents` 的 `registerHostEnvironmentUiEvents` → `setExtensionPath` / `setLogToConsole` / `applySettingsSnapshot` → `CoreEvent.coreReady` |
-| 41 | `userMessageSubmitted` | `sessionId`, `content`, `uuid`, `images?`, `filePath?`, `fileSelectedLines?`, `fileHidden?`, `agentMode?`, `thinkingMode?`, `model?`, `webSearch?`, `workspacePath?`, `deferEcho?` | `sendMessage` / `queueMessage`（handler 组装载荷；`uuid` 由宿主生成并回带，完整链路见 `docs/user-message-pipeline.md`） | `Integration.submitMessage` → 入队 / 落盘 / 命令解析 / 轮次消费 |
+| 41 | `userMessageSubmitted` | `sessionId`, `content`, `uuid`, `images?`, `filePath?`, `fileSelectedLines?`, `fileHidden?`, `agentMode?`, `thinkingMode?`, `model?`, `webSearch?`, `workspacePath?`, `deferEcho?` | `sendMessage`（handler 组装载荷：wire 的 `selectedLines` 翻译成 `fileSelectedLines`；`uuid` 由宿主生成并回带，完整链路见 `docs/user-message-pipeline.md`） | `Integration.submitMessage` → 入队 / 落盘 / 命令解析 / 轮次消费 |
 | 42 | `userChoicePendingChanged` | `sessionId`, `pending: boolean` | `UserChoiceManager`（webview 弹出选择、用户应答、`dropSession` 释放视图时） | `initializeCoreEvents` 的 `registerUserChoiceUiEvents` → `markSessionWaiting`（`sessionRuntime` 的 `waiting` 来源，供 `isSessionIdle` 判定） |
 | 43 | `sessionWorkspaceAssigned` | `sessionId`, `workspacePath: string \| null` | `WebviewMessageHandler.ensureSessionWorkspace`（会话首次被 core 解析目录之前）、`electron/main.ts` 的 `registerCoreSessionWorkspace`（多工作目录宿主按来源视图登记） | `initializeCoreEvents` 的 `registerSessionWorkspaceUiEvents` → `setSessionWorkspace` / `clearSessionWorkspace`（Standalone 下同一处理器在 Core 进程内） |
 
@@ -1574,7 +1574,7 @@ diff 快照——**确认框不在这里弹**（见下）。
 | `setActiveSessionId(sessionId)` | 宿主切换前台会话时同步「当前活跃会话」。多视图宿主（Electron）切到**已打开**的视图不会再走 `loadConversation` / `startNewConversation`，必须由宿主在活动视图变化时显式同步（`ChatViewManager.show` → `onActiveSessionChanged` → `WebViewUI.setActiveSessionId`）；否则 `trackedActiveSessionId` 停在旧视图，按会话解析的数据（project skills / MCP 启用列表）会取到别的标签页的工作目录 |
 | `dropTrackedSession(sessionId)` | 会话关闭 / 删除时清掉 `trackedActiveSessionId`（若指向该会话） |
 | `emitUiEvent(event)` | `requireEventBus().emitToCore(event)`——**改 core 状态的唯一出口** |
-| `buildMessageHandlers()` | 39 个消息类型 → 处理器（见下）；其中 `sendMessage` 是用户消息的唯一入口（`handleUserMessage`），不区分「新消息 / 排队消息」 |
+| `buildMessageHandlers()` | 39 个消息类型 → 处理器（见下）；其中 `sendMessage` 是用户消息的唯一入口（`handleUserMessage`），wire 类型不区分「新消息 / 排队消息」：是否登记排队项由宿主按 core 的会话运行时快照决定（第 7.4 节 `onQueuedMessage`） |
 
 **消息分发表**（`buildMessageHandlers`，按代码注释分区）：
 
@@ -1584,7 +1584,7 @@ diff 快照——**确认框不在这里弹**（见下）。
 | 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestSkills` / `requestConversationSpaces` / `requestMcpServers` / `requestSessionRuntimeStates` / `getConversations` |
 | 环境查询 | `requestTheme`（→ `host.onThemeChanged(ctx.sender)`）/ `requestContextLimit`（→ `pushContextLimit(ctx.sender, modelRefOf(msg.provider, msg.model))`：读该模型身份（provider + model）的上下文配置，经 `sendToWebviewView` / `sendToWebview` 回包 `contextLimitUpdated`；`ref` 为 `undefined` 时按 active provider 的默认模型算，视图加载初始化推送即走这条）；`pushContextLimit` 也是 `WebViewUI` 的对外方法，供宿主在视图加载时主动推同一份内容 |
 | 请求响应 / 显示 | `respondUserChoice` / `expandCompact` / `rollbackEdit`（→ `UiEvent`） |
-| 消息 / 压缩 / 中止 | `sendMessage`（→ `handleUserMessage`：取 / 建引擎后入队，不走 `UiEvent`）/ `abort` / `requestCompress`（后两者 → `UiEvent`） |
+| 消息 / 压缩 / 中止 | `sendMessage`（→ `handleUserMessage`：登记排队项 / 乐观回显后发 `UiEvent.userMessageSubmitted`）/ `abort` / `requestCompress`（后两者 → `UiEvent`） |
 | 会话生命周期 | `loadConversation` / `startNewConversation` / `deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace`（`deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace` → `UiEvent`；多视图宿主的 `deleteConversation` 由宿主消息入口先接管，见第 5.5 节「载体 / 视图层动作」） |
 | 会话配置 | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpEnabled`（全部 → `UiEvent`，core 处理后广播 `sessionConfigChanged` 回推多端）。`setModel` 的 wire 载荷是扁平的 `model` + `provider`，在 handler 入口组装成 `ModelRef`（provider 空串非法：记录日志并忽略，不回退到其它 provider） |
 | 其它 | `saveLLMConfig` / `requestSmartNaming` |
@@ -1618,7 +1618,7 @@ diff 快照——**确认框不在这里弹**（见下）。
 | `postConversationLoaded(sessionId, conversation, extra)` | 推送 `conversationLoaded`（含 `activityPhase`，见第 6.2 节） |
 | `onTitleChanged(sessionId, title)` | 会话标题变化（`WebviewMessageHandler` 的 `setTitle` 回调走它） |
 | `dropSession(sessionId)` | 该会话的 UI 侧状态已释放 |
-| `onQueuedMessage(sessionId, content, images?, fileInfo?)` | 显示 / 清除排队消息状态（`content` 为 `null` 表示清除）。清除调用点：内置命令就地执行（`onCommandSend`）；进入上下文的用户消息由补发的 `addMessage`（带 `messageUuid`）清除 |
+| `onQueuedMessage(sessionId, queued)` | 登记 / 清除该会话的排队项（`queued` 为 `null` 表示清除，载荷类型 `QueuedMessageState`）。登记调用点：`WebviewMessageHandler.handleUserMessage`（会话运行时快照 `idle === false` 时，见 `docs/user-message-pipeline.md` 第 5.1 节）；清除调用点：内置命令就地执行（`onCommandSend`）、会话释放（`dropSession`）、进入上下文的用户消息由补发的 `addMessage`（带 `messageUuid`）清除 |
 | `getActiveSessionId()` | 当前前台会话 |
 | `openSpinDesign()` | 打开 Spin 设计器（子模块不直接持有 `SpinDesign`，见第 5.2 节） |
 | `refreshConversations()` | 重新读取并分发对话列表 |
@@ -2031,8 +2031,8 @@ export function shutdownCore(): Promise<void>;
 | Electron | `app.on('will-quit')` | 宿主专属清理（快捷键 / 托盘 / 定时器）+ `shutdownCore()` |
 
 `shutdownCore` 先 `client.closeAll()` 销毁全部 Connection（Standalone 下逐个关闭
-channel、Core 进程退出），再关闭本地 daemon；Embedded 下经 `MCPHost.shutdown()` 结束
-MCP 子进程。宿主不直接调用 `McpManager` 的同类方法。
+channel / 本地 `serve` Core 进程），再关闭远程 daemon；Embedded 下经 `MCPHost.shutdown()`
+结束 MCP 子进程。宿主不直接调用 `McpManager` 的同类方法。
 
 ### 8.10 一致性守护
 
@@ -2437,21 +2437,23 @@ dropSession(sessionId: string): void {
 
 | 方面 | 现状 |
 | --- | --- |
-| 打开集合 | `openWorkspaces: string[]`（主进程进程内事实，按标签页顺序）；活动项 `workspacePath`（打开集合中的一项） |
-| 标签页 | 标题栏（原菜单栏区域）：`titlebar:workspaces` 下发 `{ workspaces: [{path,name}], activeWorkspace, activity }`（与 `titlebar:get-state` 同字段名），标题栏渲染标签页（活动项高亮、每项可关闭、键盘可切换、可拖拽排序）+「添加」按钮；宽度够时每张固定 192px，总宽超出时逐张收窄到 56px 下限后横向滚动；打开集合为空时不渲染标签页区域（添加入口在侧栏空态与菜单）；浮窗模式隐藏菜单图标与标签页 |
+| 打开集合 | `openWorkspaces: WorkspaceRef[]`（主进程进程内事实，按标签页顺序；本地 / 远程同构）；活动项 `workspacePath`（打开集合中的一项） |
+| 标签页 | 标题栏（原菜单栏区域）：`titlebar:workspaces` 下发 `{ workspaces: [{id,path,name,remote}], activeWorkspace, activity }`（与 `titlebar:get-state` 同字段名），标题栏按 `id`（`workspaceRefKey`）作身份渲染标签页（活动项高亮、每项可关闭、键盘可切换、可拖拽排序）+「添加」按钮；宽度够时每张固定 192px，总宽超出时逐张收窄到 56px 下限后横向滚动；打开集合为空时不渲染标签页区域（添加入口在侧栏空态与菜单）；浮窗模式隐藏菜单图标与标签页 |
 | 标签页运行指示 | 每个工作目录的聚合运行时状态（`activity`：路径 → `waiting` / `running`），由主进程 `collectWorkspaceActivity()` 读 core `sessionRuntime` + 会话工作目录表按会话归并：该目录下任一会话在等待用户操作 → `waiting`（黄，优先），否则任一非 idle → `running`（蓝）。状态流每次变化（`setStatusListener` 里）另推 `titlebar:workspace-activity`，渲染层就地切换 class 不重建标签页（重建会打断动画、丢 hover / 焦点 / 拖拽状态）。动效与对话列表 `running-bar` 对齐：运行中＝蓝色流水（渐变滚动），等待用户＝黄色呼吸（只脉动不滚动）——对话列表的黄色同样是呼吸（`.running-bar--waiting` 的 `background` 简写把 `background-size` 复位成 `auto`，流水不产生位移） |
 | 标签页拖拽排序 | 渲染层用 HTML5 drag 事件（`dragstart` / `dragover` / `drop` / `dragend`）：越过目标中线决定插到其前 / 后，`drop-before` / `drop-after` 伪元素画放置指示线；提交完整排列经 `titlebar:reorder-workspaces` → `reorderWorkspaces()`，主进程按去重键校验「同组目录的排列」后才写入打开集合并落盘，非法排列整次忽略；活动项与已打开视图不受顺序影响 |
 | 非活动标签页预加载 | 首次启动（`createMainWindow` 打开活动目录的新对话之后）对打开集合里**非活动**的每个目录调用 `chatViews.preloadWorkspace(ws)`（错开 400ms + 250ms×i，避免启动瞬间同时拉起多个渲染进程）；实现复用后台预热机制（`--prewarm=1` 后台加载渲染、跳过会话初始化），切到该目录时 `setActiveWorkspace` 命中它直接 `show()` + 补发激活消息，不再现建视图 + 等页面加载。`new-` 临时 key 带自增序号，避免同毫秒连续创建撞 key；`setActiveWorkspace` 不再销毁其它目录的预热视图（它们是那些标签页的预加载视图，关闭目录 / 窗口时统一销毁） |
-| 菜单 | Windows / Linux 全部收编为单一分区 `main`，标题栏用一个图标按钮表示；条目：添加工作目录 / 添加最近的工作目录 ▸ / 主题 ▸ / 快捷键 / 开发者工具 / 关于 / 退出。macOS 沿用系统菜单栏分区 |
+| 菜单 | Windows / Linux 全部收编为单一分区 `main`，标题栏用一个图标按钮表示；条目：打开本地目录 / 打开远程 Workspace / 添加最近的工作目录 ▸ / 主题 ▸ / 快捷键 / 开发者工具 / 关于 / 退出。macOS 沿用系统菜单栏分区 |
+| 加号菜单 | 标题栏末尾「加号」改为菜单入口（`titlebar:workspace-menu`），主进程用原生 `Menu.popup` 弹出「打开本地目录 / 打开远程 Workspace」两项 |
+| 打开远程 Workspace | `openRemoteWorkspaceDialog()`：输入远端 `IP:端口` + token → 经 `listRemoteDirectories()` 连 TCP 控制通道并鉴权 → **连接成功后立刻**列出远端主目录，弹出远端目录选择器（`electron/remoteWorkspaceDialogHtml.ts`）；选定目录后 `addRemoteWorkspace(endpoint, path)` 加入打开集合（`scheme=tcp`） |
 | 侧栏头部 | 「搜索框 + 新对话」：搜索框按标题过滤当前活动工作目录的对话列表 |
 | 空态 | 打开集合为空时，侧栏显示「添加工作目录」+ 最近工作目录（点击即添加）；聊天区保持纯提示 |
-| 添加 | `openWorkspaceDialog()` 支持多选，`addWorkspaces(paths)` 按顺序加入打开集合、末项置为活动项；已在集合中的目录直接切为活动项 |
+| 添加 | `openWorkspaceDialog()` 支持多选，`addWorkspaces(paths)` 按顺序加入打开集合、末项置为活动项；已在集合中的目录直接切为活动项。远程目录经 `addRemoteWorkspace(endpoint, path)` 加入 |
 | 路径去重 | `src/host/workspacePaths.ts`：`normalizeWorkspacePath`（resolve）+ `workspaceKey`（realpath + Windows 大小写不敏感）+ `sameWorkspace` / `dedupeWorkspacePaths`。打开集合、最近工作目录、会话索引都按去重键判等，同一目录的不同表示（尾部分隔符 / 相对路径 / 分隔符风格 / 大小写 / 符号链接 / 8.3 短名）不重复入集合、不重复写最近列表 |
-| 关闭 | `closeWorkspace(p)`：移出打开集合、`chatViews.closeWorkspace(p)` 销毁该目录下所有对话视图并中止运行中查询、清 `sessionWorkspaces` 中该目录的条目；关闭活动项后活动权移交相邻项，集合为空时回到空态 |
-| 切换 | `activateWorkspace(p)`：更新 provider（`uiHost.setWorkspacePath`）、`chatViews.setActiveWorkspace(p)`（切到该目录最近使用的对话，没有则新建）、刷新侧栏列表与标题栏 |
+| 关闭 | `closeWorkspace(ref \| id)`：移出打开集合、`chatViews.closeWorkspace(ref.path)` 销毁该目录下所有对话视图并中止运行中查询、清 `sessionWorkspaces` 中该目录的条目；关闭活动项后活动权移交相邻项，集合为空时回到空态 |
+| 切换 | `activateWorkspace(ref \| id)`：更新 provider（`uiHost.setWorkspacePath(ref)`）、`chatViews.setActiveWorkspace(ref.path)`（切到该目录最近使用的对话，没有则新建）、刷新侧栏列表与标题栏 |
 | 宿主会话工作目录索引 | `sessionWorkspaces: Map<sessionId, path>`：来源为各工作目录对话列表的 `project` 字段 + 视图自己的目录（`ChatViewManager.getWorkspaceForWebContents`）；打开对话时据此注入 `--workspace=` |
 | 聊天视图 | `ChatViewManager` 按视图记录所属工作目录（`viewWorkspaces`）；`openConversation(id, workspace)` / `openNewConversation(workspace)` 注入对应 `--workspace=`；切换活动目录不销毁视图 |
-| 持久化 | `workspace-state.json` 的 `openWorkspaces` / `activeWorkspace`（无活动项写 `null`）；启动恢复打开集合与活动项，已不存在的目录剔除。字段缺失或非法即按「没有」处理，不做跨字段回退；升级路径由 `migrateLegacyWorkspaceState()` 一次性迁移（旧 userData 目录 + 旧 `lastWorkspace` 字段 → `openWorkspaces` / `activeWorkspace`），迁移后不再回退读旧字段 |
+| 持久化 | `workspace-state.json` 的 `openWorkspaces`（`SerializedWorkspaceRef`）/ `activeWorkspaceKey`（无活动项写 `null`）；启动恢复打开集合与活动项，已不存在的本地目录剔除。**远程工作区不落盘**（token 是凭证，不进本地状态文件）。字段缺失或非法即按「没有」处理，不做跨字段回退；旧版本写的是路径字符串 + `activeWorkspace`，读取时按本地引用迁移；升级路径由 `migrateLegacyWorkspaceState()` 一次性迁移（旧 userData 目录 + 旧 `lastWorkspace` 字段），迁移后不再回退读旧字段 |
 | userData 目录 | `electron/main.ts` 启动最早期用 `app.setPath('userData', appData + <配置里的应用目录名>)` 显式指定：开发态（`electron dist-electron/main.cjs`）默认名是 `Electron`、打包态是 `productName`，不指定会落到不同目录；指定后两态读写同一份工作目录状态 / 窗口位置 / 缓存。目录名取自 `src/config/project.json` 的 `extensionName`，不硬编码 |
 | 浮窗模式 | 以当前活动工作目录（即活动对话的工作目录）为窗口上下文；品牌位显示活动目录名 |
 
@@ -2803,7 +2805,7 @@ Core 进程的 daemon 见 `docs/core-daemon.md`。
 `coreReady` 就绪门禁（M10）、Client / Connection 拆分（M13）、daemon 进程模型（M14）、
 宿主侧 in-process core 调用清理（M15）。
 
-不在本项范围：连接的序列化与反序列化、流式事件的节流与合并、断线恢复、远程工作区。
+不在本项范围：连接的序列化与反序列化、流式事件的节流与合并、断线恢复。
 
 ### 13.2 Standalone Core（Rust）
 
@@ -2813,14 +2815,18 @@ Core 的两种实现由选择变量 `CORE_KIND` 装配：`embedded` 为 `src/cor
 （与 UI 同进程），`standalone` 为 `core-rs/` 的 Rust 实现（独立进程）。两种实现对 UI 呈现
 同一份 `CoreEvent` / `CoreRequest` / `UiEvent` 词汇表，落盘格式一致。
 
-一个 endpoint 一个 daemon；一个工作区一个 Core 进程（由 daemon 以自身路径加 `--serve`
+一个 endpoint 一个 daemon；一个工作区一个 Core 进程（由 daemon 以自身路径加 `serve`
 启动）。Core 崩溃后由 daemon 在同一 channel 上重启并恢复接线；重启次数超限时 daemon
-关闭 channel 并向宿主报告。当前产出 Windows x64，目标矩阵预留 Windows / Linux × x64 / arm64。
+关闭 channel 并向宿主报告。远程服务（`start` 动作）把控制通道换成 TCP，启动时打印
+`IP:端口` 与 token，第一帧 `auth` 校验通过后才服务（`docs/core-daemon.md` 第 12 节）。
+当前产出 Windows x64 与 Linux x64，目标矩阵预留 Windows arm64 / Linux arm64。
 
 | 项 | 现状 | 待定 |
 | --- | --- | --- |
 | 选择变量 / 帧协议 / 进程管理 / 崩溃重启 | 已落地（落点见第 1.3 节）；Standalone 的崩溃重启由 daemon 承担（`daemon.rs`），Host 侧只把 `channelReset` 翻译成重新握手 | — |
-| daemon 进程模型 | 已落地：`--daemon` / `--serve` 两种模式、控制通道多路复用、`liveCores` 计数归零 + grace 期退出、控制通道断开清理、重启上限报告（`docs/core-daemon.md`） | — |
+| daemon 进程模型 | 已落地：动作 `serve` / `start` / `kill`（daemon 实体走内部动作 `start-daemon`）、`--help` / `--version` 与参数校验（`cli.rs`）、控制通道多路复用、`liveCores` 计数归零 + grace 期退出、控制通道断开清理、重启上限报告（`docs/core-daemon.md`） | — |
+| 远程服务 | 已落地：`start` 把 daemon 拉到后台（脱离终端）并打印连接信息，`kill` 结束它；默认绑 `127.0.0.1:10975`（冲突 +1 重试），token 落盘在 `~/<configDir>/core-daemon.json`（`--token` 覆盖，缺省复用文件里的，没有才随机生成），第一帧 `auth` 定长比较校验；`listDirectories` 供 Host 连接后立刻弹出远端目录选择（`core-rs/src/remote.rs`、`src/host/standalone/CoreDaemon.ts`、`electron/remoteWorkspaceDialogHtml.ts`） | 传输加密 / 断线重连 / 远程工作区落盘恢复 |
+| 本地 Core 启动 | 已落地：本地同机工作区由 Host 直接用 `serve` 起单进程 Core（`createStandaloneCoreBus`，stdio 帧通道，无端口 / token），不经过 daemon；daemon 只服务远程 endpoint | — |
 | 事件投递 | `emitToCore` 只写帧；Standalone 下进程内不注册 core 侧订阅（规格第 1.1 节） | — |
 | 用户消息入口 | `UiEvent.userMessageSubmitted`；`WebviewMessageHandler` 不再直接调用引擎 | — |
 | 会话引擎 / 内置工具 / 会话落盘 / 配置读写 | 已在 `core-rs/` 内实现（查询循环、Bash（含 `run_in_background` 与自动转后台）/ Read（含 doc/docx/ppt/pptx/xlsx）/ Write / Edit / Grep / Glob / TodoWrite / Agent / Reply / AskUserQuestion / Skill、并行工具批、meta.json + jsonl、settings.json 读写） | 与 Embedded 的逐项对等（`TODO.md` M2–M4） |
@@ -2833,6 +2839,6 @@ Core 的两种实现由选择变量 `CORE_KIND` 装配：`embedded` 为 `src/cor
 | UI → core 请求 | 已实现（协议版本 2）：`UiRequest` 九个请求由 UI 发起、Core 应答（对话列表 / 智能命名 / 余额 / 归档展开 / MCP 列表 / 对话空间 / 挂起持久化 / 会话加载 / 技能列表），宿主不再直接读 core 的磁盘数据 | `src/host/coreFacts.ts` 是宿主侧统一入口；`standaloneBus.test.ts` 覆盖请求往返 / 失败 / 断连 |
 | 对等测试 / 端到端 | 已实现：同一串 `UiEvent` 在两种实现下产出同一组 `CoreEvent`；重启续读端到端 | `coreEventParity.test.ts` / `standaloneCoreRestart.test.ts` |
 | 宿主侧的 core 事实读取 | 已收口（M15）：宿主经 `coreFacts` 按 `CORE_KIND` 分派，Standalone 下走 `UiRequest`；仍保留的直接读取见第 2 节规则 9 的审计结论与 `docs/standalone-core.md` 第 10 节的例外表 | 远程工作区落地时把例外迁到 `UiRequest` |
-| 目标平台 | 产出 Windows x64 | Windows / Linux × x64 / arm64 |
+| 目标平台 | 产出 Windows x64 与 Linux x64（Linux 在 WSL / Linux 内原生构建，`npm run build:core:linux-x64`） | Windows arm64 / Linux arm64 |
 
 新发现的待定项按同样方式记在这里（现状 + 待定）。

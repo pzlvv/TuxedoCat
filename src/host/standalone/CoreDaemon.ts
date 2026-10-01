@@ -1,20 +1,21 @@
 /**
  * CoreDaemon - Host 侧的 daemon 客户端（`docs/core-daemon.md`）。
  *
- * 一个 endpoint 一个 daemon：本地 daemon 由 Host 启动，控制通道走 stdio。
+ * 一个 endpoint 一个 daemon：daemon 是目标机器上的常驻服务（由 `start` 拉起），
+ * Host 连它的 TCP 控制通道，第一帧用 token 鉴权。
  * 每个工作区对应控制通道上的一条逻辑 channel；`openChannel` 同步返回传输层对象，
- * 内部异步完成「启动 daemon → openWorkspace → channel 建立」，
+ * 内部异步完成「连上 daemon → 鉴权 → openWorkspace → channel 建立」，
  * 建立之前发出的帧按序排队（daemon 侧在 Core 进程起来前也会排队）。
  *
  * 重启责任在 daemon：Core 崩溃后 daemon 在同一 channel 上重启并回 `channelReset`；
  * 本模块把它翻译成「连接重置」——重新发 `hello`、等 `ready`、再通知总线。
  * 重启次数超限时 daemon 回 `workspaceClosed(reason=failed)`，本模块报告 fatal。
  *
- * 背压：控制通道的出站帧进有序队列，stdin 返回 false 时等 `drain`；
+ * 背压：控制通道的出站帧进有序队列，socket 返回 false 时等 `drain`；
  * 越过软水位只记录诊断，不丢帧、不合并帧。
  */
 
-import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'child_process';
+import { connect as netConnect, type Socket } from 'net';
 import {
   CORE_PROTOCOL_VERSION,
   FrameDecoder,
@@ -26,6 +27,7 @@ import {
   encodeDaemonFrame,
   isDaemonToHostFrame,
   type ChannelDescriptor,
+  type DirectoryListing,
   type WorkspaceCloseReason,
 } from './daemonProtocol.js';
 import {
@@ -42,26 +44,59 @@ export const DEFAULT_DAEMON_HANDSHAKE_TIMEOUT_MS = 10_000;
 /** 关闭 channel / daemon 的等待上限 */
 export const DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS = 5_000;
 
-/** spawn 的测试注入点 */
-export type DaemonSpawnFunction = (
-  command: string,
-  args: readonly string[],
-  options: SpawnOptions,
-) => ChildProcessWithoutNullStreams;
+/**
+ * 控制通道：连接一个已经在监听的 daemon（`docs/core-daemon.md` 第 12 节）。
+ *
+ * 第一帧是 `auth`，`authOk` 之前不出站业务帧。
+ * 本地同机工作区不走 daemon：`bootstrapCore` 直接用 `serve` 动作起单进程 Core
+ * （stdio 帧通道，无端口、无 token，见 `createStandaloneCoreBus`）。
+ */
+export interface CoreDaemonTransport {
+  host: string;
+  port: number;
+  token: string;
+}
 
 export interface CoreDaemonOptions {
-  /** Core 可执行文件路径（daemon 与 Core 是同一个文件） */
-  binaryPath: string;
+  transport: CoreDaemonTransport;
   log: (...args: unknown[]) => void;
-  /** 额外命令行参数；默认 `--daemon`，测试用来跑假 daemon */
-  spawnArgs?: readonly string[];
-  spawn?: DaemonSpawnFunction;
   handshakeTimeoutMs?: number;
   shutdownTimeoutMs?: number;
 }
 
-const defaultSpawn: DaemonSpawnFunction = (command, args, options) =>
-  nodeSpawn(command, [...args], options) as ChildProcessWithoutNullStreams;
+/**
+ * 控制通道的写出端。
+ *
+ * `write` 返回 false 表示背压（数据已被接受，等 `drain` 再继续）；
+ * `end` 是 shutdown 帧之后的优雅关闭，`kill` 是超时强杀。
+ */
+interface ControlWriter {
+  write(line: string): boolean;
+  onceDrain(listener: () => void): void;
+  end(): void;
+  kill(): void;
+}
+
+/** 远程 TCP socket */
+class SocketWriter implements ControlWriter {
+  constructor(private readonly socket: Socket) {}
+
+  write(line: string): boolean {
+    return this.socket.write(line);
+  }
+
+  onceDrain(listener: () => void): void {
+    this.socket.once('drain', listener);
+  }
+
+  end(): void {
+    this.socket.end();
+  }
+
+  kill(): void {
+    this.socket.destroy();
+  }
+}
 
 /** 一条 daemon channel 的传输层实现（Host 侧） */
 class DaemonChannel implements CoreChannelTransport {
@@ -260,25 +295,37 @@ class DaemonChannel implements CoreChannelTransport {
 /**
  * Host 侧 daemon 客户端。
  *
- * `openChannel` 同步返回；daemon 进程在第一次打开工作区时启动。
+ * `openChannel` 同步返回；控制通道在第一次需要时连接。
  */
 export class CoreDaemon {
-  private child: ChildProcessWithoutNullStreams | null = null;
+  private socket: Socket | null = null;
+  private writer: ControlWriter | null = null;
+  /** 控制通道是否可写出：`authOk` 之后才可写（此前只发 `auth`） */
+  private linkReady = false;
   private readonly decoder: FrameDecoder;
   private readonly log: (...args: unknown[]) => void;
   private stopped = false;
   private shuttingDown = false;
-  /** daemon 进程退出是否已处理（exit + close 双事件去重） */
+  /** socket 退出是否已处理（`close` 只处理一次） */
   private exitHandled = false;
   private nextRequestId = 1;
-  /** 出站帧队列（stdin 未就绪 / 背压时排队） */
+  /** 出站帧队列（控制通道未就绪 / 背压时排队） */
   private readonly outbox: string[] = [];
   private waitingDrain = false;
   /** 已建立 channel：channelId → transport */
   private readonly channels = new Map<number, DaemonChannel>();
   /** 已发出、尚未收到应答的 openWorkspace：requestId → transport */
   private readonly openingRequests = new Map<number, DaemonChannel>();
+  /** 已发出、尚未收到应答的 listDirectories：requestId → 等待者 */
+  private readonly listRequests = new Map<
+    number,
+    { resolve: (listing: DirectoryListing) => void; reject: (error: Error) => void }
+  >();
+  /** 远程鉴权完成前的等待者 */
+  private authWaiters: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
   private exitWaiters: Array<() => void> = [];
+  /** 控制通道就绪超时（进程启动 / 连接 / 鉴权） */
+  private linkTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly options: CoreDaemonOptions) {
     this.log = options.log;
@@ -292,7 +339,32 @@ export class CoreDaemon {
     return this.options.handshakeTimeoutMs ?? DEFAULT_DAEMON_HANDSHAKE_TIMEOUT_MS;
   }
 
-  /** 打开一个 channel（同步返回；内部异步启动 daemon 与 Core） */
+  /**
+   * 建立控制通道并等待可写出（`authOk`）。
+   *
+   * 远程目录选择器在打开任何工作区之前就要连接，因此单独暴露这个入口。
+   */
+  async ensureConnected(): Promise<void> {
+    if (this.stopped) throw new Error('Core daemon has been shut down.');
+    if (!this.ensureStarted()) throw new Error('Core daemon failed to connect.');
+    if (this.linkReady) return;
+    return new Promise<void>((resolve, reject) => {
+      this.authWaiters.push({ resolve, reject });
+    });
+  }
+
+  /** 列出目标机器上的子目录（远程目录选择器用；`path` 为 null 时从主目录开始） */
+  async listDirectories(path: string | null): Promise<DirectoryListing> {
+    await this.ensureConnected();
+    const id = this.nextRequestId;
+    this.nextRequestId += 1;
+    return new Promise<DirectoryListing>((resolve, reject) => {
+      this.listRequests.set(id, { resolve, reject });
+      this.enqueue(encodeDaemonFrame({ kind: 'listDirectories', id, path }));
+    });
+  }
+
+  /** 打开一个 channel（同步返回；内部异步连接 daemon 并起 Core） */
   openChannel(ref: WorkspaceRef): CoreChannelTransport {
     if (this.stopped) throw new Error('Core daemon has been shut down.');
     return new DaemonChannel(this, ref);
@@ -304,11 +376,11 @@ export class CoreDaemon {
       channel.handleOpenFailed(new Error('Core daemon has been shut down.'));
       return;
     }
-    // 先登记再启动：daemon 进程起不来时 `fatalAll` 能把失败回给这条 channel
+    // 先登记再连接：连不上 daemon 时 `fatalAll` 能把失败回给这条 channel
     const id = this.nextRequestId;
     this.nextRequestId += 1;
     this.openingRequests.set(id, channel);
-    if (!this.ensureStarted()) return; // 启动失败：已由 fatalAll 结束
+    if (!this.ensureStarted()) return; // 连接失败：已由 fatalAll 结束
     this.enqueue(
       encodeDaemonFrame({ kind: 'openWorkspace', id, workspaceRef: channel.workspaceRef }),
     );
@@ -328,19 +400,29 @@ export class CoreDaemon {
     await channel.waitClosed(this.options.shutdownTimeoutMs ?? DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS);
   }
 
-  /** 关闭 daemon：`shutdown` 帧 → 等进程退出 → 超时强制结束 */
+  /** 关闭控制通道：`shutdown` 帧 → 等 socket 退出 → 超时强制断开 */
   async shutdown(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
     this.shuttingDown = true;
-    const child = this.child;
-    if (!child) return;
-    try {
-      child.stdin.write(encodeDaemonFrame({ kind: 'shutdown' }));
-    } catch {
-      // 进程已退出：无需再发
+    this.clearLinkTimeout();
+    const writer = this.writer;
+    if (writer) {
+      try {
+        writer.write(encodeDaemonFrame({ kind: 'shutdown' }));
+      } catch {
+        // 已退出：无需再发
+      }
+      // 主动结束 socket，否则对端会一直等下一帧
+      writer.end();
+      await this.waitForExit(this.options.shutdownTimeoutMs ?? DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS);
     }
-    await this.waitForExit(child, this.options.shutdownTimeoutMs ?? DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS);
+    // 优雅关闭未生效 / 连接尚未建立时，也不留悬挂的 socket
+    try {
+      writer?.kill();
+    } catch {
+      // 已断开
+    }
     // daemon 退出后仍未收到 workspaceClosed 的 channel：一起失败
     const leftovers = [...this.channels.values()];
     this.channels.clear();
@@ -350,63 +432,102 @@ export class CoreDaemon {
     }
   }
 
-  // ===================== 内部：进程 =====================
+  // ===================== 内部：控制通道 =====================
 
-  /** 确保 daemon 进程已启动；返回 false 表示启动失败（失败已通过 fatalAll 上报） */
+  /** 确保控制通道已建立；返回 false 表示失败（失败已通过 fatalAll 上报） */
   private ensureStarted(): boolean {
     if (this.stopped) return false;
-    if (this.child) return true;
-    const spawnFn = this.options.spawn ?? defaultSpawn;
-    let child: ChildProcessWithoutNullStreams;
-    try {
-      child = spawnFn(this.options.binaryPath, this.options.spawnArgs ?? ['--daemon'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true,
-      });
-    } catch (error) {
-      this.fatalAll(toError(error));
-      return false;
-    }
-    this.child = child;
-    this.exitHandled = false;
-
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => this.decoder.push(chunk));
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk: string) => {
-      const line = chunk.trimEnd();
-      if (line.length > 0) this.log(line);
-    });
-    child.stdin.on('error', () => {
-      // 进程退出过程中的 EPIPE：由 exit / close 处理
-    });
-    child.on('error', (error) => {
-      this.log(`[daemon] process error: ${error.message}`);
-      if (child.pid === undefined) this.handleExit();
-    });
-    child.on('exit', () => this.handleExit());
-    child.on('close', () => this.handleExit());
-
-    this.flushOutbox();
+    if (this.socket) return true;
+    const transport = this.options.transport;
+    this.openRemoteSocket(transport.host, transport.port, transport.token);
+    this.armLinkTimeout('Core daemon connection');
     return true;
   }
 
+  /** 建立 TCP 控制通道并完成 `auth` 握手（`authOk` 前不出站业务帧） */
+  private openRemoteSocket(host: string, port: number, token: string): void {
+    const socket = netConnect({ host, port });
+    this.socket = socket;
+    this.writer = new SocketWriter(socket);
+    this.linkReady = false;
+    socket.setEncoding('utf8');
+    socket.on('connect', () => {
+      try {
+        socket.write(encodeDaemonFrame({ kind: 'auth', token }));
+      } catch (error) {
+        this.log(`[daemon] auth write failed: ${toError(error).message}`);
+      }
+    });
+    socket.on('data', (chunk: string) => this.decoder.push(chunk));
+    socket.on('error', (error) => {
+      this.log(`[daemon] socket error: ${error.message}`);
+    });
+    socket.on('close', () => this.handleExit());
+  }
+
+  /**
+   * 控制通道就绪超时（连不上 / 鉴权无应答）。
+   *
+   * 超时后把等待者与已登记 channel 一起失败，并断开 socket，不静默挂起。
+   */
+  private armLinkTimeout(label: string): void {
+    this.clearLinkTimeout();
+    const timeoutMs = this.handshakeTimeoutMs();
+    this.linkTimer = setTimeout(() => {
+      this.linkTimer = null;
+      if (this.linkReady || this.exitHandled) return;
+      const error = new Error(`${label} timed out after ${timeoutMs}ms.`);
+      this.log(`[daemon] ${error.message}`);
+      this.failPendingLink(error);
+      this.writer?.kill();
+    }, timeoutMs);
+    this.linkTimer.unref();
+  }
+
+  private clearLinkTimeout(): void {
+    if (this.linkTimer) {
+      clearTimeout(this.linkTimer);
+      this.linkTimer = null;
+    }
+  }
+
+  /** 连接建立失败：拒绝未决的鉴权 / 目录请求，并把已登记的 channel 一起失败 */
+  private failPendingLink(error: Error): void {
+    const authWaiters = this.authWaiters;
+    this.authWaiters = [];
+    for (const waiter of authWaiters) waiter.reject(error);
+    const listRequests = [...this.listRequests.values()];
+    this.listRequests.clear();
+    for (const request of listRequests) request.reject(error);
+    this.fatalAll(error);
+  }
+
   private handleExit(): void {
-    if (this.exitHandled) return; // exit + close 双事件只处理一次
+    if (this.exitHandled) return; // close 只处理一次
     this.exitHandled = true;
-    this.child = null;
+    this.clearLinkTimeout();
+    this.socket = null;
+    this.writer = null;
+    this.linkReady = false;
     this.waitingDrain = false;
     const waiters = this.exitWaiters;
     this.exitWaiters = [];
     for (const waiter of waiters) waiter();
+    // 未完成的鉴权 / 目录请求：连接没了，一律失败
+    const authWaiters = this.authWaiters;
+    this.authWaiters = [];
+    for (const waiter of authWaiters) waiter.reject(new Error('Core daemon exited.'));
+    const listRequests = [...this.listRequests.values()];
+    this.listRequests.clear();
+    for (const request of listRequests) request.reject(new Error('Core daemon exited.'));
 
     if (this.shuttingDown || this.stopped) return;
     this.log('[daemon] exited unexpectedly');
     this.fatalAll(new Error('Core daemon exited unexpectedly.'));
   }
 
-  private waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<void> {
-    if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  private waitForExit(timeoutMs: number): Promise<void> {
+    if (this.exitHandled) return Promise.resolve();
     return new Promise<void>((resolve) => {
       let settled = false;
       const finish = (): void => {
@@ -418,11 +539,7 @@ export class CoreDaemon {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        try {
-          child.kill();
-        } catch {
-          // 已经退出
-        }
+        this.writer?.kill();
         resolve();
       }, timeoutMs);
       timer.unref();
@@ -447,6 +564,39 @@ export class CoreDaemon {
       return;
     }
     switch (value.kind) {
+      case 'authOk': {
+        if (this.linkReady) return;
+        this.clearLinkTimeout();
+        this.linkReady = true;
+        const waiters = this.authWaiters;
+        this.authWaiters = [];
+        for (const waiter of waiters) waiter.resolve();
+        this.flushOutbox();
+        return;
+      }
+      case 'authFailed': {
+        this.clearLinkTimeout();
+        const error = new Error(`Remote Core authentication failed: ${value.error}`);
+        const waiters = this.authWaiters;
+        this.authWaiters = [];
+        for (const waiter of waiters) waiter.reject(error);
+        this.log(`[daemon] ${error.message}`);
+        this.fatalAll(error);
+        this.writer?.kill();
+        return;
+      }
+      case 'directoriesListed': {
+        const request = this.listRequests.get(value.id);
+        this.listRequests.delete(value.id);
+        request?.resolve({ path: value.path, parent: value.parent, entries: value.entries });
+        return;
+      }
+      case 'directoriesFailed': {
+        const request = this.listRequests.get(value.id);
+        this.listRequests.delete(value.id);
+        request?.reject(new Error(value.error));
+        return;
+      }
       case 'workspaceOpened': {
         const channel = this.openingRequests.get(value.id);
         this.openingRequests.delete(value.id);
@@ -495,15 +645,16 @@ export class CoreDaemon {
   }
 
   private flushOutbox(): void {
-    const child = this.child;
-    if (!child || this.waitingDrain) return;
+    const writer = this.writer;
+    // 远程：authOk 之前不写业务帧（否则会被对端当作非法帧丢弃）
+    if (!writer || !this.linkReady || this.waitingDrain) return;
     while (this.outbox.length > 0) {
       const line = this.outbox[0];
       let accepted: boolean;
       try {
-        accepted = child.stdin.write(line);
+        accepted = writer.write(line);
       } catch {
-        // 子进程已退出：队列由 handleExit 清空
+        // 控制通道已退出：队列由 handleExit 清空
         return;
       }
       // `write` 返回 false 只表示「内部缓冲越过软水位」，数据已经被接受、稍后照常写出；
@@ -512,7 +663,7 @@ export class CoreDaemon {
       this.outbox.shift();
       if (!accepted) {
         this.waitingDrain = true;
-        child.stdin.once('drain', () => {
+        writer.onceDrain(() => {
           this.waitingDrain = false;
           this.flushOutbox();
         });

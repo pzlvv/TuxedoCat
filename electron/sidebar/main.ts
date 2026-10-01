@@ -52,13 +52,16 @@ interface ConversationMeta {
   project?: string;
 }
 
-/** 工作目录标签页（主进程取好目录名下发） */
+/** 工作区项（主进程取好目录名下发；id 是稳定身份，path 是展示路径） */
 interface WorkspaceTab {
+  id: string;
   path: string;
   name: string;
+  /** 是否远程工作区 */
+  remote: boolean;
 }
 
-/** 打开集合 + 活动项 + 最近工作目录 */
+/** 打开集合 + 活动项（id）+ 最近工作目录 */
 interface WorkspacesState {
   workspaces: WorkspaceTab[];
   active: string | null;
@@ -221,7 +224,7 @@ function renderEmptyState(): void {
     <div class="workspace-placeholder">
       <div class="workspace-title">尚未打开工作目录</div>
       <div class="workspace-desc">添加一个工作目录后即可开始使用 ${PRODUCT_NAME}</div>
-      <button class="workspace-btn" id="addWorkspaceBtn">添加工作目录</button>
+      <button class="workspace-btn" id="addWorkspaceBtn">打开本地目录</button>
       ${recentHtml}
     </div>`;
   footerEl.textContent = '';

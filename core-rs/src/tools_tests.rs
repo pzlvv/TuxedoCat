@@ -516,6 +516,79 @@ fn bash_abort_kills_a_sleep_command_without_a_timeout() {
 }
 
 #[test]
+fn bash_timeout_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe() {
+    // 子进程退出不等于管道到达 EOF：`sleep 3 &` 让 bash 立刻退出，但后台 `sleep` 继承了
+    // 管道写端，读线程会一直阻塞到它退出（Windows 上 `tuxedo-cat-core start` 拉起的
+    // detached daemon 是同一形态，而且永不退出）。
+    // 对齐 Embedded `Exec.ts`：前台超时与子进程是否已退出无关，到点就转后台。
+    let sandbox = Sandbox::new("tools-bash-timeout-grandchild-pipe");
+    let previous = point_tmpdir_at(&sandbox.root.join("tmp"));
+    crate::bash_task::reset_for_test();
+
+    let started = std::time::Instant::now();
+    let outcome = execute(
+        "Bash",
+        &json!({
+            "command": "echo started; sleep 3 &",
+            "timeout": 300,
+            "description": "Grandchild holds the pipe",
+        }),
+        &context(&sandbox),
+    );
+    let elapsed = started.elapsed();
+    let body = text(&outcome);
+
+    assert!(!outcome.is_error(), "自动转后台不算工具失败: {body}");
+    assert_eq!(outcome.exit_code(), 0);
+    assert!(body.contains("Task ID: bg-auto-"), "got {body}");
+    assert!(body.contains("started"), "转入后台前的已累积输出要带过去: {body}");
+    assert!(
+        elapsed < std::time::Duration::from_millis(2000),
+        "超时后不该等孙进程（sleep 3）自然退出，实际 {elapsed:?}"
+    );
+
+    crate::bash_task::abort_tasks_for_session("s-tools");
+    restore_tmpdir(previous);
+    crate::bash_task::reset_for_test();
+}
+
+#[test]
+fn bash_abort_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe() {
+    // 同上：子进程已退出、孙进程仍持有管道时，abort 也必须立刻收尾
+    // （对齐 Embedded 的 abort → `onAbort` → exitCode 130 + `Command was interrupted`）。
+    let sandbox = Sandbox::new("tools-bash-abort-grandchild-pipe");
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ctx = ToolContext {
+        session_id: "s-abort-grandchild".to_string(),
+        cwd: sandbox.workspace.to_string_lossy().to_string(),
+        on_progress: None,
+        cancel: Some(std::sync::Arc::clone(&cancel)),
+        user_choice: None,
+        background: None,
+        subagent: None,
+    };
+    let flag = std::sync::Arc::clone(&cancel);
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    let started = std::time::Instant::now();
+    let outcome = execute("Bash", &json!({ "command": "echo started; sleep 3 &" }), &ctx);
+    let elapsed = started.elapsed();
+    let body = text(&outcome);
+
+    assert!(outcome.is_status_error(), "got {body}");
+    assert_eq!(outcome.exit_code(), 130);
+    assert!(body.contains("Command was interrupted"), "got {body}");
+    assert!(body.contains("started"), "已累积输出要保留: {body}");
+    assert!(
+        elapsed < std::time::Duration::from_millis(2000),
+        "abort 未生效，耗时 {elapsed:?}"
+    );
+}
+
+#[test]
 fn bash_passes_cwd_through_without_expansion() {
     // 对齐 Embedded `Bash.call` 的 `const cwd = input.cwd || context.cwd`：
     // cwd 原样交给子进程，相对路径按 **Core 进程** cwd 解析（不是会话工作目录），

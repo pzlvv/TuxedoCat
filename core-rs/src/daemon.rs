@@ -4,14 +4,15 @@
 //! - 一个 endpoint 一个 daemon；一个工作区一个 Core 进程（daemon 持有其 stdio）；
 //! - 控制通道上的多路复用：每个 Core 的帧通道是它上面的一条逻辑 channel；
 //! - Core 的启动、重启（退避 + 上限）、终止都由 daemon 承担；
-//! - 活着的 Core 计数归零后经 grace 期退出；控制通道断开时关闭全部 Core 并退出。
+//! - 控制通道断开时关闭全部 Core 并退出；`idle_exit` 为真时，活着的 Core 计数归零
+//!   后还经 grace 期退出（远程监听不设，见 `remote::remote_daemon_options`）。
 //!
 //! 线程模型：
 //! - 主循环只做状态机与转发，输入事件经 `DaemonEvent` 通道汇聚；
 //! - 每个 Core 进程各有一个 stdout 读线程、stderr 诊断线程、stdin 写线程与退出监视
 //!   线程：单条 channel 的阻塞不会拖住其它 channel（规格第 7.4 节背压）；
-//! - 控制通道出站经 `FrameOutput`：生产实现是有序队列 + 写线程，越过软水位只记录
-//!   诊断，不丢帧。
+//! - 控制通道出站经 `FrameOutput`：远程实现是加锁串行的 socket 写，越过软水位只
+//!   记录诊断，不丢帧。
 //!
 //! 进程工厂（`CoreSpawner`）与事件汇（`CoreEventSink`）都做了抽象：
 //! 单元测试注入假进程，不需要真实可执行文件。
@@ -20,7 +21,6 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel as mpsc_channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -30,6 +30,18 @@ use serde_json::Value;
 use crate::daemon_protocol::{
     ChannelDescriptor, DaemonToHostFrame, HostToDaemonFrame, WorkspaceCloseReason,
 };
+
+/// 一条控制通道上的 daemon 会话结束原因。
+///
+/// 远程 daemon 是常驻 server：只有 `Stop` 才结束进程，`Continue` 表示回到 accept
+/// 等下一条连接（`remote::run_start_daemon`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelExit {
+    /// 结束 daemon：对端发 `shutdown`、空闲到 grace 期，或内部错误
+    Stop,
+    /// 只是这条控制通道断了：daemon 继续
+    Continue,
+}
 
 // ==================== 参数 ====================
 
@@ -65,6 +77,13 @@ pub struct DaemonOptions {
     /// 关闭工作区时等待 Core 优雅退出的上限
     pub shutdown_timeout: Duration,
     pub restart_policy: RestartPolicy,
+    /// 计数归零后是否经 grace 期退出。
+    ///
+    /// - 本地 stdio：`true`。Host 连接着但一个工作区都没开时，daemon 最终退出，
+    ///   避免空转进程；
+    /// - 远程 daemon：`false`。控制通道本身是生命周期边界：连接在，daemon 就在
+    ///   （目录选择期间可能长时间没有工作区）；连接断开走 `HostDisconnected` 退出。
+    pub idle_exit: bool,
 }
 
 impl Default for DaemonOptions {
@@ -73,6 +92,7 @@ impl Default for DaemonOptions {
             grace_period: Duration::from_secs(30),
             shutdown_timeout: Duration::from_secs(5),
             restart_policy: RestartPolicy::default(),
+            idle_exit: true,
         }
     }
 }
@@ -136,43 +156,6 @@ impl FrameOutput for ChannelOutput {
     }
 }
 
-/// 标准输出出站口：有序队列 + 写线程；越过软水位只记录诊断。
-pub struct StdoutOutput {
-    tx: Sender<String>,
-    pending: Arc<AtomicUsize>,
-}
-
-impl StdoutOutput {
-    pub fn new() -> StdoutOutput {
-        let (tx, rx) = mpsc_channel::<String>();
-        let pending = Arc::new(AtomicUsize::new(0));
-        let writer_pending = Arc::clone(&pending);
-        std::thread::spawn(move || {
-            let mut stdout = std::io::stdout();
-            while let Ok(line) = rx.recv() {
-                if stdout.write_all(line.as_bytes()).and_then(|()| stdout.flush()).is_err() {
-                    eprintln!("[daemon] failed to write control frame");
-                    break;
-                }
-                writer_pending.fetch_sub(1, Ordering::SeqCst);
-            }
-        });
-        StdoutOutput { tx, pending }
-    }
-}
-
-impl FrameOutput for StdoutOutput {
-    fn write_line(&self, line: String) {
-        let backlog = self.pending.fetch_add(1, Ordering::SeqCst) + 1;
-        if backlog > OUTBOX_WARN_THRESHOLD {
-            eprintln!("[daemon] outbound queue backlog {backlog}; host is slow");
-        }
-        if self.tx.send(line).is_err() {
-            eprintln!("[daemon] control channel writer is gone");
-        }
-    }
-}
-
 /// 把 `DaemonEvent` 转成事件通道的汇（真实进程的读线程用）。
 pub struct ChannelSink {
     pub tx: Sender<DaemonEvent>,
@@ -190,7 +173,7 @@ impl CoreEventSink for ChannelSink {
 
 // ==================== 真实进程实现 ====================
 
-/// 以自身路径加 `--serve` 启动 Core 进程（不定位第二个可执行文件）。
+/// 以自身路径加 `serve` 动作启动 Core 进程（不定位第二个可执行文件）。
 pub struct SystemCoreSpawner {
     binary: PathBuf,
 }
@@ -213,8 +196,9 @@ impl CoreSpawner for SystemCoreSpawner {
         sink: Arc<dyn CoreEventSink>,
     ) -> std::io::Result<Box<dyn CoreProcessHandle>> {
         let mut command = Command::new(&self.binary);
+        // 动作是**裸词**（`docs/core-daemon.md` 第 3 节）：`--serve` 会被当成未知选项报错退出。
         command
-            .arg("--serve")
+            .arg("serve")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -366,14 +350,14 @@ fn send_to_host(out: &dyn FrameOutput, frame: &DaemonToHostFrame) {
 /// 运行 daemon 主循环；返回进程退出码。
 ///
 /// 事件从 `events` 汇聚（控制通道行、子进程输出与退出、Host 断开）；
-/// 出站帧写入 `out`。函数返回即 daemon 退出。
+/// 出站帧写入 `out`。函数返回即这条控制通道的 daemon 会话结束。
 pub fn run_daemon(
     events: Receiver<DaemonEvent>,
     out: Arc<dyn FrameOutput>,
     sink: Arc<dyn CoreEventSink>,
     spawner: Arc<dyn CoreSpawner>,
     options: DaemonOptions,
-) -> i32 {
+) -> ChannelExit {
     let mut channels: HashMap<u64, ChannelState> = HashMap::new();
     let mut next_channel: u64 = 1;
     let mut grace_deadline: Option<Instant> = None;
@@ -385,7 +369,7 @@ pub fn run_daemon(
         if let Some(deadline) = grace_deadline {
             if now >= deadline {
                 eprintln!("[daemon] no live cores after grace period; exiting");
-                return 0;
+                return ChannelExit::Stop;
             }
         }
 
@@ -457,16 +441,37 @@ pub fn run_daemon(
                     HostToDaemonFrame::Frame { channel, frame } => {
                         forward_to_core(&mut channels, channel, &frame);
                     }
+                    HostToDaemonFrame::ListDirectories { id, path } => {
+                        match crate::remote::list_directories(path.as_deref()) {
+                            Ok(listing) => send_to_host(
+                                out.as_ref(),
+                                &DaemonToHostFrame::DirectoriesListed {
+                                    id,
+                                    path: listing.path,
+                                    parent: listing.parent,
+                                    entries: listing.entries,
+                                },
+                            ),
+                            Err(error) => send_to_host(
+                                out.as_ref(),
+                                &DaemonToHostFrame::DirectoriesFailed { id, error },
+                            ),
+                        }
+                    }
                     HostToDaemonFrame::Shutdown => {
                         close_all(&channels, &out);
-                        return 0;
+                        return ChannelExit::Stop;
+                    }
+                    // 本地 stdio 通道没有鉴权阶段：收到 auth 只记诊断，不改变状态。
+                    HostToDaemonFrame::Auth { .. } => {
+                        eprintln!("[daemon] unexpected auth frame on a non-remote channel; ignored");
                     }
                 }
             }
             Ok(DaemonEvent::HostDisconnected) => {
                 eprintln!("[daemon] control channel disconnected; closing all cores");
                 close_all(&channels, &out);
-                return 0;
+                return ChannelExit::Continue;
             }
             Ok(DaemonEvent::FrameLine { channel, line }) => {
                 match serde_json::from_str::<Value>(&line) {
@@ -487,7 +492,7 @@ pub fn run_daemon(
             Err(RecvTimeoutError::Disconnected) => {
                 // 事件源关闭（进程内部错误）：按 Host 断开处理
                 close_all(&channels, &out);
-                return 0;
+                return ChannelExit::Continue;
             }
         }
     }
@@ -515,6 +520,10 @@ fn maybe_start_grace(
     grace_deadline: &mut Option<Instant>,
     options: &DaemonOptions,
 ) {
+    // 远程 daemon：连接在就继续服务，不因没有工作区而退出
+    if !options.idle_exit {
+        return;
+    }
     if channels.is_empty() && grace_deadline.is_none() {
         eprintln!(
             "[daemon] no live cores; exiting in {}s unless a workspace opens",
@@ -768,14 +777,25 @@ fn close_all(channels: &HashMap<u64, ChannelState>, out: &Arc<dyn FrameOutput>) 
 
 // ==================== 真实模式入口 ====================
 
-/// daemon 模式：控制通道走标准输入 / 标准输出，stderr 是诊断输出。
-pub fn run() -> i32 {
+/// 在一条控制通道上跑 daemon 主循环：读线程把行送入事件通道，返回 daemon 退出码。
+///
+/// 生产入口是远程 TCP（`remote::serve_connection`，`start-daemon`）；测试注入
+/// 内存 reader / `ChannelOutput`。reader 由 `make_reader` 在读线程里创建。
+pub fn run_control_channel<R, F>(
+    make_reader: F,
+    out: Arc<dyn FrameOutput>,
+    options: DaemonOptions,
+) -> ChannelExit
+where
+    R: BufRead,
+    F: FnOnce() -> R + Send + 'static,
+{
     let (tx, rx) = mpsc_channel::<DaemonEvent>();
     let sink: Arc<dyn CoreEventSink> = Arc::new(ChannelSink { tx: tx.clone() });
 
     // 控制通道读线程：按行解析成 Command；EOF 视为 Host 断开
     std::thread::spawn(move || {
-        let reader = BufReader::new(std::io::stdin().lock());
+        let reader = make_reader();
         for line in reader.lines() {
             match line {
                 Ok(line) => {
@@ -784,7 +804,7 @@ pub fn run() -> i32 {
                     }
                 }
                 Err(err) => {
-                    eprintln!("[daemon] stdin error: {err}");
+                    eprintln!("[daemon] control channel read error: {err}");
                     break;
                 }
             }
@@ -796,11 +816,10 @@ pub fn run() -> i32 {
         Ok(spawner) => Arc::new(spawner),
         Err(err) => {
             eprintln!("[daemon] cannot resolve own executable: {err}");
-            return 1;
+            return ChannelExit::Stop;
         }
     };
-    let out: Arc<dyn FrameOutput> = Arc::new(StdoutOutput::new());
-    run_daemon(rx, out, sink, spawner, DaemonOptions::default())
+    run_daemon(rx, out, sink, spawner, options)
 }
 
 #[cfg(test)]

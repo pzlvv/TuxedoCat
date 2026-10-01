@@ -1272,6 +1272,7 @@ name = "standalone-core"
 version = "0.0.1"
 dependencies = [
  "calamine",
+ "getrandom 0.2.17",
  "reqwest",
  "ryu-js",
  "serde",

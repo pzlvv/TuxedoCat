@@ -1961,6 +1961,138 @@ fn queued_message_is_flushed_before_the_next_llm_round() {
 }
 
 #[test]
+fn agent_reply_is_flushed_before_the_next_llm_round() {
+    // 子代理 Reply（UI 上的 From 消息）与用户消息同一口径：多轮工具调用期间到达的
+    // 自动消息必须在**下一次 LLM 请求前**进入上下文（对齐 Embedded `Query.ts` 阶段 0.5
+    // 的 `engine.flushQueuedMessagesIntoContext()` → `consumeQueuedOnce`），
+    // 而不是等整轮结束再单独起一轮。
+    let sandbox = Sandbox::new("engine-agent-queue");
+    let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = Arc::clone(&bodies);
+    let slot: Arc<Mutex<Option<Arc<Core>>>> = Arc::new(Mutex::new(None));
+    let submitter = Arc::clone(&slot);
+    let llm = FakeLlm::start(move |index, body| {
+        captured.lock().unwrap().push(body.clone());
+        if index == 0 {
+            if let Some(core) = submitter.lock().unwrap().as_ref() {
+                core.enqueue_agent_message("s1", "子代理回复", "agent", "sub-1");
+            }
+            openai_tool_sse("call_1", "Bash", r#"{"command":"echo hi"}"#)
+        } else {
+            openai_text_sse(&["收到"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::allow_all();
+    *slot.lock().unwrap() = Some(Arc::clone(&harness.core));
+    submit(&harness, "s1", "第一条", "u-1");
+
+    assert!(
+        harness.wait_for(
+            |sink| sink.events_of("queryEnd").len() >= 1,
+            std::time::Duration::from_secs(30),
+        ),
+        "轮次应当跑完: {:?}",
+        harness.sink.event_types()
+    );
+
+    let requests = bodies.lock().unwrap();
+    assert_eq!(
+        requests.len(),
+        2,
+        "自动消息应并入第一轮的第二次请求，而不是另起一轮"
+    );
+    let second = requests[1]["messages"].as_array().unwrap();
+    let agent_index = second
+        .iter()
+        .position(|message| message["role"] == "user" && message["content"] == "子代理回复")
+        .unwrap_or_else(|| panic!("第二次请求缺少子代理回复: {second:?}"));
+    // 自动消息在 tool_result 之后（下一次请求的末尾），与 Embedded 的插入位置一致
+    assert!(
+        second
+            .iter()
+            .take(agent_index)
+            .any(|message| message["role"] == "tool"),
+        "子代理回复应排在 tool_result 之后: {second:?}"
+    );
+    drop(requests);
+
+    // 落盘顺序：用户 → assistant(tool_use) → tool_result → 子代理回复 → assistant
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    let messages = history::load_messages("s1", &workspace);
+    assert_eq!(messages[0]["uuid"], "u-1");
+    assert_eq!(messages[1]["type"], "assistant");
+    assert_eq!(messages[2]["type"], "user");
+    assert_eq!(messages[3]["origin"], "agent");
+    assert_eq!(messages[4]["type"], "assistant");
+}
+
+#[test]
+fn queued_user_message_merges_with_agent_replies_in_one_round() {
+    // 用户消息与自动消息同时排队时并入同一轮（对齐 `consumeQueuedOnce` 的
+    // 「Agent + 用户合并」分支）：自动消息先追加、用户消息放末尾。
+    let sandbox = Sandbox::new("engine-queue-merge");
+    let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = Arc::clone(&bodies);
+    let slot: Arc<Mutex<Option<Arc<Core>>>> = Arc::new(Mutex::new(None));
+    let submitter = Arc::clone(&slot);
+    let llm = FakeLlm::start(move |index, body| {
+        captured.lock().unwrap().push(body.clone());
+        if index == 0 {
+            if let Some(core) = submitter.lock().unwrap().as_ref() {
+                core.enqueue_agent_message("s1", "子代理回复", "agent", "sub-1");
+                core.on_user_message(&json!({
+                    "sessionId": "s1",
+                    "content": "第二条",
+                    "uuid": "u-2",
+                    "workspacePath": null,
+                }));
+            }
+            openai_tool_sse("call_1", "Bash", r#"{"command":"echo hi"}"#)
+        } else {
+            openai_text_sse(&["收到"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::allow_all();
+    *slot.lock().unwrap() = Some(Arc::clone(&harness.core));
+    submit(&harness, "s1", "第一条", "u-1");
+
+    assert!(
+        harness.wait_for(
+            |sink| sink.events_of("queryEnd").len() >= 1,
+            std::time::Duration::from_secs(30),
+        ),
+        "轮次应当跑完: {:?}",
+        harness.sink.event_types()
+    );
+
+    let requests = bodies.lock().unwrap();
+    assert_eq!(requests.len(), 2, "两条排队消息应并入同一轮，而不是各自起一轮");
+    let second = requests[1]["messages"].as_array().unwrap();
+    // 两条都是 user 角色、且相邻，请求组装时被 `merge_consecutive_same_role` 合并成
+    // 一条 user 消息（与 Embedded 的请求组装口径一致）：自动消息在前、用户消息在末尾。
+    let merged = second
+        .iter()
+        .filter_map(|message| message["content"].as_str())
+        .find(|content| content.contains("子代理回复") && content.contains("第二条"))
+        .unwrap_or_else(|| panic!("第二次请求缺少合并后的排队消息: {second:?}"));
+    assert!(
+        merged.find("子代理回复") < merged.find("第二条"),
+        "自动消息应排在排队用户消息之前: {merged}"
+    );
+    drop(requests);
+
+    // 落盘顺序：用户 → assistant(tool_use) → tool_result → 子代理回复 → 排队用户 → assistant
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    let messages = history::load_messages("s1", &workspace);
+    assert_eq!(messages[3]["origin"], "agent");
+    assert_eq!(messages[4]["uuid"], "u-2");
+}
+
+#[test]
 fn message_submitted_after_a_turn_starts_a_new_turn() {
     let sandbox = Sandbox::new("engine-queue-sequential");
     let llm = FakeLlm::fixed(openai_text_sse(&["收到"]));

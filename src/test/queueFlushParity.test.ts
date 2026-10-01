@@ -1,7 +1,7 @@
 /**
  * 排队消息 flush 对等测试（Embedded ↔ Standalone）。
  *
- * 本文件断言 Embedded 侧（真值）`QueryEngine.flushQueuedMessagesIntoContext()` 的两条口径，
+ * 本文件断言 Embedded 侧（真值）`QueryEngine.flushQueuedMessagesIntoContext()` 的三条口径，
  * Standalone 侧在 `core-rs/src/engine.rs` 用同名用例断言同一行为：
  *
  * 1. 查询中途排队的用户消息，会在**下一次 LLM 请求前**并入上下文并落盘
@@ -12,6 +12,11 @@
  *    计入 `meta.json` 的 `messageCount`、每条各发一次 `conversationListChanged`；
  *    它仍是 `silent` / `origin=agent` 的自动消息。对应用例
  *    `core-rs/src/engine_tests.rs::assistant_reply_ending_with_a_colon_triggers_a_silent_reminder_follow_up`。
+ * 3. 自动消息（子代理 Reply / 后台 Bash 通知）与用户消息同优先级、同一轮消费：
+ *    查询中途到达的自动消息同样在下一次 LLM 请求前并入上下文；与用户消息同时排队时
+ *    自动消息在前、用户消息在末尾（`consumeQueuedOnce` 的「Agent + 用户合并」分支）。
+ *    对应用例 `core-rs/src/engine_tests.rs::agent_reply_is_flushed_before_the_next_llm_round`
+ *    与 `core-rs/src/engine_tests.rs::queued_user_message_merges_with_agent_replies_in_one_round`。
  *
  * 运行方式：npm run test:all -- queue-flush-parity
  */
@@ -82,6 +87,23 @@ async function run(): Promise<void> {
       'reminder 落盘发一次 conversationListChanged',
       recording.count('conversationListChanged') === 1,
     );
+
+    // ===== 3. 自动消息（From）与用户消息合并进同一轮 =====
+    // 自动消息同样在下一次 LLM 请求前并入上下文；与用户消息同时排队时自动消息在前、
+    // 用户消息在末尾（`consumeQueuedOnce` 的「Agent + 用户合并」分支）。
+    const internals = engine as unknown as {
+      pendingUserMessage: string | null;
+      agentMessageQueue: Array<{ content: string; agentId: string; source: string }>;
+    };
+    internals.agentMessageQueue.push({ content: '子代理回复', agentId: 'sub-1', source: 'subagent' });
+    internals.pendingUserMessage = '合并用户消息';
+    const flushedMerge = engine.flushQueuedMessagesIntoContext();
+    check('自动消息 + 用户消息合并为同一轮（返回 2）', flushedMerge === 2);
+    await engine.flush();
+    const agentAt = mutable.findIndex((m) => m.message?.content === '子代理回复');
+    const userAt = mutable.findIndex((m) => m.message?.content === '合并用户消息');
+    check('自动消息进入上下文', agentAt !== -1);
+    check('自动消息排在用户消息之前', agentAt !== -1 && userAt !== -1 && agentAt < userAt);
   } finally {
     resetGlobalEventBus();
   }

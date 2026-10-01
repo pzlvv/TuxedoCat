@@ -6,18 +6,19 @@
  * - Core 崩溃 → channelReset → 同一 channel 重新握手；
  * - 重启超限 → workspaceClosed(failed) → fatal；
  * - 关闭工作区 → workspaceClosed(closed) → 通道退出；
- * - daemon 崩溃 → 该 daemon 上全部 channel fatal；
- * - 真实 Core 产物 smoke（存在时）：daemon 起 Core、握手、hostEnvironmentProvided → coreReady。
+ * - daemon 断开 → 该 daemon 上全部 channel fatal；
+ * - 真实 Core 产物 smoke（存在时）：连真实 daemon、起 Core、握手、coreReady。
  *
- * 用 Node 脚本冒充 daemon（`process.execPath -e <script>`），跑真实管道与真实进程。
+ * 冒充 daemon 的是本进程里的真实 TCP server：跑真实 socket 与真实帧编解码。
  * 运行方式：npm run test:all -- core-daemon
  */
 
 import * as fs from 'fs';
+import * as net from 'net';
+import * as os from 'os';
 import * as path from 'path';
-import { EventEmitter } from 'events';
-import { PassThrough } from 'stream';
-import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'child_process';
+import { spawn, type ChildProcessByStdio } from 'child_process';
+import type { Readable } from 'stream';
 import { CoreDaemon } from '../host/standalone/CoreDaemon';
 import {
   encodeDaemonFrame,
@@ -31,113 +32,199 @@ import { createChecker, runTests } from './helpers/harness';
 import { createRecordingCoreEventHandlers, emptySettingsSnapshot } from './helpers/fixtures';
 import type { CoreRequestHandlers } from '../core/AssistantEventBus';
 
-// ==================== 假 daemon ====================
+// ==================== 假 daemon（真实 TCP server）====================
+
+/** 控制帧（假 daemon 只按用到的字段取值） */
+type ControlFrame = Record<string, any>;
 
 interface FakeDaemonOptions {
   /** openWorkspace 一律回 workspaceFailed */
   failOpen?: boolean;
-  /** 收到 hello 不回 ready */
-  neverReady?: boolean;
   /** 收到 abortRequested 时回 channelReset（模拟 Core 崩溃重启） */
   resetOnAbort?: boolean;
-  /** 收到 abortRequested 时进程退出（模拟 daemon 崩溃） */
-  exitOnAbort?: boolean;
+  /** 收到 abortRequested 时断开连接（模拟 daemon 崩溃） */
+  dropOnAbort?: boolean;
   /** 收到 abortRequested 时回 channelReset + workspaceClosed(failed)（模拟重启超限） */
   failAfterAbort?: boolean;
   /** 收到 uiEvent 就回一条同 type 的 log 事件（断言帧确实到了 daemon） */
   echoUiEvents?: boolean;
 }
 
+interface FakeDaemon {
+  port: number;
+  /** 收到的全部控制帧（含第一帧 `auth`） */
+  readonly received: ControlFrame[];
+  /** 关掉 server 与全部连接 */
+  close(): Promise<void>;
+}
+
+interface ChannelState {
+  alive: boolean;
+  resetOnce: boolean;
+}
+
 /**
- * 生成冒充 daemon 的 Node 脚本。
+ * 起一个冒充 daemon 的 TCP server。
  *
  * 不真的起子进程：每个 channel 用一个内存状态模拟 Core 的 hello → ready 行为，
- * 其余内层帧按选项回应。
+ * 其余内层帧按选项回应。第一帧必须是 `auth`，token 是 `secret`。
  */
-function fakeDaemonScript(options: FakeDaemonOptions = {}): string {
-  return `
-const readline = require('readline');
-const rl = readline.createInterface({ input: process.stdin });
-const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\\n');
-let nextChannel = 1;
-const channels = new Map();
+async function startFakeDaemon(options: FakeDaemonOptions = {}): Promise<FakeDaemon> {
+  const expectedToken = 'secret';
+  const received: ControlFrame[] = [];
+  const sockets = new Set<net.Socket>();
 
-function openWorkspace(frame) {
-  if (${options.failOpen ? 'true' : 'false'}) {
-    send({ kind: 'workspaceFailed', id: frame.id, error: 'spawn failed' });
-    return;
-  }
-  const channel = nextChannel++;
-  channels.set(channel, { alive: true });
-  send({ kind: 'workspaceOpened', id: frame.id, channel, descriptor: { kind: 'multiplexed', channel } });
-}
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.setEncoding('utf8');
+    socket.on('error', () => undefined);
+    socket.on('close', () => sockets.delete(socket));
 
-function forwardInner(channel, inner) {
-  const state = channels.get(channel);
-  if (!state || !state.alive) return;
-  if (inner.kind === 'hello') {
-    if (!${options.neverReady ? 'true' : 'false'}) {
-      send({ kind: 'frame', channel, frame: { kind: 'ready' } });
-    }
-    return;
-  }
-  if (inner.kind === 'shutdown') {
-    state.alive = false;
-    send({ kind: 'workspaceClosed', channel, reason: 'closed' });
-    return;
-  }
-  if (inner.kind === 'uiEvent') {
-    const type = inner.event && inner.event.type;
-    if (type === 'abortRequested') {
-      ${options.exitOnAbort ? 'process.exit(7);' : ''}
-      ${
-        options.resetOnAbort
-          ? "if (!state.resetOnce) { state.resetOnce = true; send({ kind: 'channelReset', channel, reason: 'crashed' }); state.alive = true; return; }"
-          : ''
+    let authed = false;
+    let buffer = '';
+    let nextChannel = 1;
+    const channels = new Map<number, ChannelState>();
+    const send = (frame: unknown): void => {
+      socket.write(`${JSON.stringify(frame)}\n`);
+    };
+
+    const openWorkspace = (frame: ControlFrame): void => {
+      if (options.failOpen) {
+        send({ kind: 'workspaceFailed', id: frame.id, error: 'spawn failed' });
+        return;
       }
-      ${options.failAfterAbort ? "send({ kind: 'channelReset', channel, reason: 'restart limit exceeded' }); send({ kind: 'workspaceClosed', channel, reason: 'failed' }); state.alive = false; return;" : ''}
-    }
-    if (${options.echoUiEvents ? 'true' : 'false'}) {
-      send({ kind: 'frame', channel, frame: { kind: 'event', event: { type: 'log', message: 'ui:' + type } } });
-    }
-  }
+      const channel = nextChannel;
+      nextChannel += 1;
+      channels.set(channel, { alive: true, resetOnce: false });
+      send({
+        kind: 'workspaceOpened',
+        id: frame.id,
+        channel,
+        descriptor: { kind: 'multiplexed', channel },
+      });
+    };
+
+    const forwardInner = (channel: number, inner: ControlFrame): void => {
+      const state = channels.get(channel);
+      if (!state || !state.alive) return;
+      if (inner.kind === 'hello') {
+        send({ kind: 'frame', channel, frame: { kind: 'ready' } });
+        return;
+      }
+      if (inner.kind === 'shutdown') {
+        state.alive = false;
+        send({ kind: 'workspaceClosed', channel, reason: 'closed' });
+        return;
+      }
+      if (inner.kind === 'uiEvent') {
+        const type = inner.event?.type;
+        if (type === 'abortRequested') {
+          if (options.dropOnAbort) {
+            socket.destroy();
+            return;
+          }
+          if (options.resetOnAbort && !state.resetOnce) {
+            state.resetOnce = true;
+            send({ kind: 'channelReset', channel, reason: 'crashed' });
+            return;
+          }
+          if (options.failAfterAbort) {
+            send({ kind: 'channelReset', channel, reason: 'restart limit exceeded' });
+            send({ kind: 'workspaceClosed', channel, reason: 'failed' });
+            state.alive = false;
+            return;
+          }
+        }
+        if (options.echoUiEvents) {
+          send({
+            kind: 'frame',
+            channel,
+            frame: { kind: 'event', event: { type: 'log', message: `ui:${type}` } },
+          });
+        }
+      }
+    };
+
+    const handle = (frame: ControlFrame): void => {
+      switch (frame.kind) {
+        case 'openWorkspace':
+          openWorkspace(frame);
+          return;
+        case 'closeWorkspace': {
+          const state = channels.get(frame.channel);
+          if (state) state.alive = false;
+          send({ kind: 'workspaceClosed', channel: frame.channel, reason: 'closed' });
+          return;
+        }
+        case 'frame':
+          forwardInner(frame.channel, frame.frame);
+          return;
+        case 'shutdown':
+          // 对端发完 shutdown 就 half-close；这里跟着关，客户端才会收到 close
+          socket.end();
+          return;
+        default:
+          return;
+      }
+    };
+
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      let index = buffer.indexOf('\n');
+      while (index >= 0) {
+        const line = buffer.slice(0, index);
+        buffer = buffer.slice(index + 1);
+        index = buffer.indexOf('\n');
+        if (line.trim().length === 0) continue;
+        let frame: ControlFrame;
+        try {
+          frame = JSON.parse(line) as ControlFrame;
+        } catch {
+          continue;
+        }
+        received.push(frame);
+        if (!authed) {
+          if (frame.kind === 'auth' && frame.token === expectedToken) {
+            authed = true;
+            send({ kind: 'authOk' });
+          } else {
+            send({ kind: 'authFailed', error: 'bad token' });
+            socket.end();
+          }
+          continue;
+        }
+        handle(frame);
+      }
+    });
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as net.AddressInfo;
+  return {
+    port: address.port,
+    received,
+    close: () =>
+      new Promise<void>((resolve) => {
+        for (const socket of sockets) socket.destroy();
+        sockets.clear();
+        server.close(() => resolve());
+      }),
+  };
 }
 
-rl.on('line', (line) => {
-  let frame;
-  try { frame = JSON.parse(line); } catch { return; }
-  if (frame.kind === 'openWorkspace') return openWorkspace(frame);
-  if (frame.kind === 'closeWorkspace') {
-    const state = channels.get(frame.channel);
-    if (state) state.alive = false;
-    send({ kind: 'workspaceClosed', channel: frame.channel, reason: 'closed' });
-    return;
-  }
-  if (frame.kind === 'frame') return forwardInner(frame.channel, frame.frame);
-  if (frame.kind === 'shutdown') { process.exit(0); }
-});
-`;
-}
-
-interface Harness {
-  daemon: CoreDaemon;
-  transport: ReturnType<CoreDaemon['openChannel']>;
-  bus: ReturnType<typeof createCoreChannelBus>;
-  recording: ReturnType<typeof createRecordingCoreEventHandlers>;
-}
-
-function createHarness(options: FakeDaemonOptions = {}): Harness {
-  const script = fakeDaemonScript(options);
-  const daemon = new CoreDaemon({
-    binaryPath: process.execPath,
-    spawnArgs: ['-e', script],
-    spawn: (command: string, args: readonly string[], spawnOptions: SpawnOptions) =>
-      nodeSpawn(command, [...args], spawnOptions) as ChildProcessWithoutNullStreams,
+/** 建一条连到假 daemon 的 CoreDaemon */
+function connectFakeDaemon(port: number): CoreDaemon {
+  return new CoreDaemon({
+    transport: { host: '127.0.0.1', port, token: 'secret' },
     log: () => undefined,
     handshakeTimeoutMs: 2_000,
     shutdownTimeoutMs: 1_000,
   });
-  const transport = daemon.openChannel(localWorkspaceRef('D:/repo/a'));
+}
+
+/** 给一条 channel 接上总线与请求处理 */
+function openBus(daemon: CoreDaemon, path: string) {
+  const transport = daemon.openChannel(localWorkspaceRef(path));
   const bus = createCoreChannelBus(transport, () => undefined);
   const recording = createRecordingCoreEventHandlers();
   bus.onCoreEvents(recording.handlers);
@@ -146,7 +233,29 @@ function createHarness(options: FakeDaemonOptions = {}): Harness {
     userChoice: async () => ({ index: 0 }),
   };
   bus.onCoreRequests(requestHandlers);
-  return { daemon, transport, bus, recording };
+  return { transport, bus, recording };
+}
+
+interface Harness {
+  daemon: CoreDaemon;
+  fake: FakeDaemon;
+  transport: ReturnType<CoreDaemon['openChannel']>;
+  bus: ReturnType<typeof createCoreChannelBus>;
+  recording: ReturnType<typeof createRecordingCoreEventHandlers>;
+}
+
+async function createHarness(options: FakeDaemonOptions = {}): Promise<Harness> {
+  const fake = await startFakeDaemon(options);
+  const daemon = connectFakeDaemon(fake.port);
+  const { transport, bus, recording } = openBus(daemon, 'D:/repo/a');
+  return { daemon, fake, transport, bus, recording };
+}
+
+/** 一条用例的收尾：关总线、关 daemon、关假 server */
+async function dispose(harness: Harness): Promise<void> {
+  await harness.bus.shutdown();
+  await harness.daemon.shutdown();
+  await harness.fake.close();
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<boolean> {
@@ -156,6 +265,38 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<boo
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   return predicate();
+}
+
+// ==================== 真实产物 smoke ====================
+
+/**
+ * 读真实 daemon 启动横幅里的 `IP:端口`（读不到就在超时后 reject）。
+ *
+ * 子进程以 `stdio: ['ignore', 'pipe', 'pipe']` 启动（daemon 不读 stdin），
+ * 因此类型是 `ChildProcessByStdio<null, Readable, Readable>` 而不是 `ChildProcessWithoutNullStreams`。
+ */
+function readEndpointBanner(child: ChildProcessByStdio<null, Readable, Readable>): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    let text = '';
+    const timer = setTimeout(() => reject(new Error(`banner timeout: ${text}`)), 20_000);
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      text += chunk;
+      const match = /remote endpoint: (\S+)/.exec(text);
+      if (match) {
+        clearTimeout(timer);
+        resolve(match[1]);
+      }
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error(`daemon exited early with code ${code}`));
+    });
+  });
 }
 
 // ==================== 用例 ====================
@@ -180,28 +321,40 @@ async function run(): Promise<void> {
 
   // ---------- 握手与转发 ----------
   {
-    const harness = createHarness({ echoUiEvents: true });
+    const harness = await createHarness({ echoUiEvents: true });
     check('openWorkspace 后通道就绪', await waitFor(() => harness.bus.isReady()));
     check('传输层报告已就绪', harness.transport.isReady());
+    check('控制通道第一帧是 auth', harness.fake.received[0]?.kind === 'auth');
 
     harness.bus.emitToCore({ type: 'abortRequested', sessionId: 's1' });
     check('内层帧到达 daemon 并回传事件', await waitFor(() => harness.recording.count('log') >= 1));
     check('回传的是同一帧', harness.recording.last('log')?.message === 'ui:abortRequested');
-    await harness.bus.shutdown();
-    await harness.daemon.shutdown();
+    await dispose(harness);
+  }
+
+  // ---------- 鉴权失败 → 连接不可用 ----------
+  {
+    const fake = await startFakeDaemon();
+    const daemon = new CoreDaemon({
+      transport: { host: '127.0.0.1', port: fake.port, token: 'wrong' },
+      log: () => undefined,
+      handshakeTimeoutMs: 2_000,
+      shutdownTimeoutMs: 1_000,
+    });
+    const { bus } = openBus(daemon, 'D:/repo/a');
+    let fatal: Error | null = null;
+    bus.onFatal((error) => {
+      fatal = error;
+    });
+    check('错误 token 报告 fatal', await waitFor(() => fatal !== null));
+    await daemon.shutdown();
+    await fake.close();
   }
 
   // ---------- 两个 channel 互不影响 ----------
   {
-    const script = fakeDaemonScript({ echoUiEvents: true });
-    const daemon = new CoreDaemon({
-      binaryPath: process.execPath,
-      spawnArgs: ['-e', script],
-      spawn: (command, args, spawnOptions) =>
-        nodeSpawn(command, [...args], spawnOptions) as ChildProcessWithoutNullStreams,
-      log: () => undefined,
-      handshakeTimeoutMs: 2_000,
-    });
+    const fake = await startFakeDaemon({ echoUiEvents: true });
+    const daemon = connectFakeDaemon(fake.port);
     const busA = createCoreChannelBus(daemon.openChannel(localWorkspaceRef('D:/repo/a')), () => undefined);
     const busB = createCoreChannelBus(daemon.openChannel(localWorkspaceRef('D:/repo/b')), () => undefined);
     const recordingA = createRecordingCoreEventHandlers();
@@ -218,24 +371,24 @@ async function run(): Promise<void> {
     await busA.shutdown();
     await busB.shutdown();
     await daemon.shutdown();
+    await fake.close();
   }
 
   // ---------- Core 崩溃 → channelReset → 同一 channel 重新握手 ----------
   {
-    const harness = createHarness({ resetOnAbort: true, echoUiEvents: true });
+    const harness = await createHarness({ resetOnAbort: true, echoUiEvents: true });
     await waitFor(() => harness.bus.isReady());
     harness.bus.emitToCore({ type: 'abortRequested', sessionId: 's1' });
     // 重置后自动重新握手（hello → ready），总线重新就绪
     check('channelReset 后重新握手成功', await waitFor(() => harness.bus.isReady()));
     harness.bus.emitToCore({ type: 'abortRequested', sessionId: 's1' });
     check('重置后仍可收发', await waitFor(() => harness.recording.count('log') >= 1));
-    await harness.bus.shutdown();
-    await harness.daemon.shutdown();
+    await dispose(harness);
   }
 
   // ---------- 重启超限 → workspaceClosed(failed) → fatal ----------
   {
-    const harness = createHarness({ failAfterAbort: true });
+    const harness = await createHarness({ failAfterAbort: true });
     await waitFor(() => harness.bus.isReady());
     let fatal: Error | null = null;
     harness.bus.onFatal((error) => {
@@ -244,12 +397,12 @@ async function run(): Promise<void> {
     harness.bus.emitToCore({ type: 'abortRequested', sessionId: 's1' });
     check('重启超限报告 fatal', await waitFor(() => fatal !== null));
     check('fatal 原因来自 channel 关闭', (fatal as unknown as Error)?.message.includes('failed'));
-    await harness.daemon.shutdown();
+    await dispose(harness);
   }
 
   // ---------- 关闭工作区 → workspaceClosed(closed) → 通道退出 ----------
   {
-    const harness = createHarness();
+    const harness = await createHarness();
     await waitFor(() => harness.bus.isReady());
     let exited = false;
     harness.bus.onExit(() => {
@@ -258,12 +411,12 @@ async function run(): Promise<void> {
     await harness.bus.shutdown();
     check('关闭后通道报告退出', exited);
     check('关闭后传输层不再就绪', !harness.transport.isReady());
-    await harness.daemon.shutdown();
+    await dispose(harness);
   }
 
   // ---------- daemon 崩溃 → 全部 channel fatal ----------
   {
-    const harness = createHarness({ exitOnAbort: true });
+    const harness = await createHarness({ dropOnAbort: true });
     await waitFor(() => harness.bus.isReady());
     let fatal: Error | null = null;
     harness.bus.onFatal((error) => {
@@ -271,18 +424,20 @@ async function run(): Promise<void> {
     });
     harness.bus.emitToCore({ type: 'abortRequested', sessionId: 's1' });
     check('daemon 崩溃报告 fatal', await waitFor(() => fatal !== null));
+    await harness.daemon.shutdown();
+    await harness.fake.close();
   }
 
   // ---------- openWorkspace 失败 → fatal ----------
   {
-    const harness = createHarness({ failOpen: true });
+    const harness = await createHarness({ failOpen: true });
     let fatal: Error | null = null;
     harness.bus.onFatal((error) => {
       fatal = error;
     });
     check('打开失败报告 fatal', await waitFor(() => fatal !== null));
     check('fatal 带上 daemon 的错误信息', (fatal as unknown as Error)?.message.includes('spawn failed'));
-    await harness.daemon.shutdown();
+    await dispose(harness);
   }
 
   // ---------- 控制通道背压：write 返回 false 的帧必须出队，不能反复重写 ----------
@@ -292,103 +447,21 @@ async function run(): Promise<void> {
   // 后面的帧永远写不出去——表现为对端（Core）收不到后续应答而卡死（Edit 的 permResult
   // 携带整份文件内容，帧体积远超水位，最容易触发）。
   {
-    const BIG_FRAME_CHARS = 20_000;
-    const written: string[] = [];
-    const stdinEmitter = new EventEmitter();
-    const childEmitter = new EventEmitter();
-    const stdout = new PassThrough();
-    const stderr = new PassThrough();
-    // 只放行一次 drain：修复后足够把排在后面的帧写出去；未修复时同一帧会被重写第二次，
-    // 断言随之失败（而不是陷入无界重写）。
-    let drainBudget = 1;
-    // 冒充 daemon：内层帧原样回应握手，其余帧只记录
-    const respond = (line: string): void => {
-      let frame: { kind?: string; id?: number; channel?: number; frame?: { kind?: string } };
-      try {
-        frame = JSON.parse(line);
-      } catch {
-        return;
-      }
-      if (frame.kind === 'openWorkspace') {
-        stdout.write(
-          `${JSON.stringify({ kind: 'workspaceOpened', id: frame.id, channel: 1, descriptor: { kind: 'multiplexed', channel: 1 } })}\n`,
-        );
-      } else if (frame.kind === 'frame' && frame.frame?.kind === 'hello') {
-        stdout.write(`${JSON.stringify({ kind: 'frame', channel: 1, frame: { kind: 'ready' } })}\n`);
-      } else if (frame.kind === 'closeWorkspace') {
-        stdout.write(
-          `${JSON.stringify({ kind: 'workspaceClosed', channel: frame.channel, reason: 'closed' })}\n`,
-        );
-      }
-    };
-    const childState = { exitCode: null as number | null };
-    const emitExit = (): void => {
-      childState.exitCode = 0;
-      childEmitter.emit('exit');
-      childEmitter.emit('close');
-    };
-    const fakeChild = {
-      pid: 4242,
-      get exitCode(): number | null {
-        return childState.exitCode;
-      },
-      signalCode: null,
-      stdin: {
-        write(chunk: string): boolean {
-          written.push(chunk);
-          // 真 daemon 的应答经管道异步到达；同步应答会在 flushOutbox 内部重入
-          setImmediate(() => respond(chunk));
-          if (chunk.includes('"kind":"shutdown"')) {
-            setImmediate(emitExit);
-            return true;
-          }
-          // 超过水位：返回 false，但数据已被接受
-          const accepted = chunk.length < BIG_FRAME_CHARS;
-          if (!accepted && drainBudget > 0) {
-            drainBudget -= 1;
-            setImmediate(() => stdinEmitter.emit('drain'));
-          }
-          return accepted;
-        },
-        on: (event: string, listener: (...args: unknown[]) => void) => stdinEmitter.on(event, listener),
-        once: (event: string, listener: (...args: unknown[]) => void) => stdinEmitter.once(event, listener),
-      },
-      stdout,
-      stderr,
-      on: (event: string, listener: (...args: unknown[]) => void) => childEmitter.on(event, listener),
-      kill: emitExit,
-    };
-    const daemon = new CoreDaemon({
-      binaryPath: 'fake',
-      spawn: () => fakeChild as unknown as ChildProcessWithoutNullStreams,
-      log: () => undefined,
-      handshakeTimeoutMs: 2_000,
-      // 关闭等待上限压到最小，避免假 daemon 的应答延迟拖慢用例
-      shutdownTimeoutMs: 200,
-    });
-    const transport = daemon.openChannel(localWorkspaceRef('D:/repo/a'));
-    const bus = createCoreChannelBus(transport, () => undefined);
-    bus.onCoreEvents(createRecordingCoreEventHandlers().handlers);
-    bus.onCoreRequests({
-      toolPermissionRequested: async () => ({ behavior: 'allow' }),
-      userChoice: async () => ({ index: 0 }),
-    });
+    const BIG_FRAME_CHARS = 200_000;
+    const fake = await startFakeDaemon();
+    const daemon = connectFakeDaemon(fake.port);
+    const { transport, bus } = openBus(daemon, 'D:/repo/a');
     check('背压用例完成握手', await waitFor(() => bus.isReady()));
-    const bigEvent = { type: 'abortRequested', sessionId: 's1', padding: 'x'.repeat(BIG_FRAME_CHARS) };
-    const smallEvent = { type: 'abortRequested', sessionId: 's2' };
-    transport.send({ kind: 'uiEvent', event: bigEvent } as never);
-    transport.send({ kind: 'uiEvent', event: smallEvent } as never);
-    const innerFrames = (): Array<{ kind?: string; event?: { sessionId?: string } }> =>
-      written
-        .map((line) => {
-          try {
-            return JSON.parse(line) as { kind?: string; frame?: { kind?: string; event?: { sessionId?: string } } };
-          } catch {
-            return {};
-          }
-        })
-        .filter((frame) => frame.kind === 'frame')
-        .map((frame) => frame.frame ?? {});
+    const innerFrames = (): ControlFrame[] =>
+      fake.received.filter((frame) => frame.kind === 'frame').map((frame) => frame.frame);
+    transport.send({
+      kind: 'uiEvent',
+      event: { type: 'abortRequested', sessionId: 's1', padding: 'x'.repeat(BIG_FRAME_CHARS) },
+    } as never);
+    transport.send({
+      kind: 'uiEvent',
+      event: { type: 'abortRequested', sessionId: 's2' },
+    } as never);
     check(
       '背压下大帧之后的帧仍能写出',
       await waitFor(() => innerFrames().some((frame) => frame.event?.sessionId === 's2')),
@@ -407,6 +480,7 @@ async function run(): Promise<void> {
     };
     await settle(bus.shutdown());
     await settle(daemon.shutdown());
+    await fake.close();
   }
 
   // ---------- 真实 Core 产物 smoke（存在时）----------
@@ -422,28 +496,49 @@ async function run(): Promise<void> {
     if (process.platform !== 'win32' || process.arch !== 'x64' || !fs.existsSync(binary)) {
       console.log(`skip real daemon smoke: ${path.relative(repoRoot, binary)} missing`);
     } else {
-      const daemon = new CoreDaemon({
-        binaryPath: binary,
-        log: () => undefined,
-        handshakeTimeoutMs: 15_000,
-        shutdownTimeoutMs: 5_000,
-      });
-      const bus = createCoreChannelBus(daemon.openChannel(localWorkspaceRef('D:/repo/a')), () => undefined);
-      const recording = createRecordingCoreEventHandlers();
-      bus.onCoreEvents(recording.handlers);
-      bus.onCoreRequests({ toolPermissionRequested: async () => ({ behavior: 'allow' }), userChoice: async () => ({ index: 0 }) });
-      check('真实 daemon 起 Core 并握手', await waitFor(() => bus.isReady(), 20_000));
-      bus.emitToCore({
-        type: 'hostEnvironmentProvided',
-        extensionPath: repoRoot,
-        logToConsole: false,
-        configDirName: '.tuxedo-cat-test',
-        settings: emptySettingsSnapshot(),
-        mcpServers: [],
-      });
-      check('Core 处理快照后回 coreReady', await waitFor(() => recording.count('coreReady') >= 1, 10_000));
-      await bus.shutdown();
-      await daemon.shutdown();
+      // 真实 daemon（`start-daemon`）：状态文件写到临时 HOME，别碰用户自己的 daemon
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-cat-daemon-'));
+      const child = spawn(
+        binary,
+        ['start-daemon', '--host', '127.0.0.1', '--port', '0', '--token', 'smoke-token'],
+        {
+          env: { ...process.env, HOME: home, USERPROFILE: home },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+        },
+      );
+      try {
+        const endpoint = await readEndpointBanner(child);
+        check(`真实 daemon 打印启动横幅 ${endpoint}`, /^127\.0\.0\.1:\d+$/.test(endpoint));
+        const port = Number(endpoint.split(':')[1]);
+        check('真实 daemon 落盘状态文件', fs.existsSync(path.join(home, '.tuxedo-cat', 'core-daemon.json')));
+
+        const daemon = new CoreDaemon({
+          transport: { host: '127.0.0.1', port, token: 'smoke-token' },
+          log: () => undefined,
+          handshakeTimeoutMs: 15_000,
+          shutdownTimeoutMs: 5_000,
+        });
+        const bus = createCoreChannelBus(daemon.openChannel(localWorkspaceRef('D:/repo/a')), () => undefined);
+        const recording = createRecordingCoreEventHandlers();
+        bus.onCoreEvents(recording.handlers);
+        bus.onCoreRequests({ toolPermissionRequested: async () => ({ behavior: 'allow' }), userChoice: async () => ({ index: 0 }) });
+        check('真实 daemon 起 Core 并握手', await waitFor(() => bus.isReady(), 20_000));
+        bus.emitToCore({
+          type: 'hostEnvironmentProvided',
+          extensionPath: repoRoot,
+          logToConsole: false,
+          configDirName: '.tuxedo-cat-test',
+          settings: emptySettingsSnapshot(),
+          mcpServers: [],
+        });
+        check('Core 处理快照后回 coreReady', await waitFor(() => recording.count('coreReady') >= 1, 10_000));
+        await bus.shutdown();
+        await daemon.shutdown();
+      } finally {
+        child.kill();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
     }
   }
 

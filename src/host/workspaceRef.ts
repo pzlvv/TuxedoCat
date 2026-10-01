@@ -45,6 +45,31 @@ export function localWorkspaceRef(path: string): WorkspaceRef {
 }
 
 /**
+ * 直连一个监听中的 Core endpoint（`docs/core-daemon.md` 第 12 节）：
+ * Host 连 `host:port` 的 TCP 控制通道，第一帧用 `auth.token` 鉴权。
+ */
+export const TCP_WORKSPACE_SCHEME = 'tcp';
+
+/** 远程工作区引用：路径是目标机器上的绝对路径 */
+export function remoteWorkspaceRef(
+  endpoint: WorkspaceEndpoint,
+  path: string,
+): WorkspaceRef {
+  return { scheme: TCP_WORKSPACE_SCHEME, path, endpoint };
+}
+
+/**
+ * 连接目标键：`(scheme, endpoint)` 相同的多个工作区共用一个 daemon
+ * （`docs/core-daemon.md`：一个 endpoint 一个 daemon）。本地恒为 `local`。
+ */
+export function workspaceEndpointKey(ref: WorkspaceRef): string {
+  const endpoint = ref.endpoint;
+  if (!endpoint) return 'local';
+  const target = `${endpoint.user ?? ''}@${endpoint.host}:${endpoint.port ?? ''}`;
+  return `${ref.scheme}//${target}`;
+}
+
+/**
  * 工作区引用的去重键。
  *
  * `(scheme, endpoint)` 决定连接目标，`path` 是目标机器上的目录；三者一起唯一确定

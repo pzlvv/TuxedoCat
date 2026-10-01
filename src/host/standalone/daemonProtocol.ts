@@ -25,21 +25,46 @@ export type ChannelDescriptor =
 
 /** Host → daemon */
 export type HostToDaemonFrame =
+  /** 远程控制通道的第一帧（`docs/core-daemon.md` 第 12 节）；本地 stdio 通道不发送 */
+  | { kind: 'auth'; token: string }
   | { kind: 'openWorkspace'; id: number; workspaceRef: WorkspaceRef }
   | { kind: 'closeWorkspace'; channel: number }
   | { kind: 'frame'; channel: number; frame: UiToCoreFrame }
+  | { kind: 'listDirectories'; id: number; path: string | null }
   | { kind: 'shutdown' };
 
 /** channel 关闭原因 */
 export type WorkspaceCloseReason = 'closed' | 'crashed' | 'failed';
 
+/** 目录列举的一项（只列子目录） */
+export interface DirectoryEntry {
+  /** 目录名（basename） */
+  name: string;
+  /** 目标机器上的绝对路径 */
+  path: string;
+}
+
+/** 一次目录列举的结果 */
+export interface DirectoryListing {
+  /** 被列举的目录绝对路径 */
+  path: string;
+  /** 上级目录；已在文件系统根时为 null */
+  parent: string | null;
+  /** 子目录（按名字排序） */
+  entries: DirectoryEntry[];
+}
+
 /** daemon → Host */
 export type DaemonToHostFrame =
+  | { kind: 'authOk' }
+  | { kind: 'authFailed'; error: string }
   | { kind: 'workspaceOpened'; id: number; channel: number; descriptor: ChannelDescriptor }
   | { kind: 'workspaceFailed'; id: number; error: string }
   | { kind: 'workspaceClosed'; channel: number; reason: WorkspaceCloseReason }
   | { kind: 'channelReset'; channel: number; reason: string }
-  | { kind: 'frame'; channel: number; frame: CoreToUiFrame };
+  | { kind: 'frame'; channel: number; frame: CoreToUiFrame }
+  | { kind: 'directoriesListed'; id: number; path: string; parent: string | null; entries: DirectoryEntry[] }
+  | { kind: 'directoriesFailed'; id: number; error: string };
 
 // ==================== 编码 ====================
 
@@ -63,10 +88,35 @@ function isChannelDescriptor(value: unknown): value is ChannelDescriptor {
   return false;
 }
 
+function isDirectoryEntries(value: unknown): value is DirectoryEntry[] {
+  return (
+    Array.isArray(value)
+    && value.every(
+      (entry) =>
+        isRecord(entry)
+        && typeof entry['name'] === 'string'
+        && typeof entry['path'] === 'string',
+    )
+  );
+}
+
 /** 收窄为合法的 daemon → Host 帧（未知类型返回 false，由调用方丢弃并记录） */
 export function isDaemonToHostFrame(value: unknown): value is DaemonToHostFrame {
   if (!isRecord(value)) return false;
   switch (value['kind']) {
+    case 'authOk':
+      return true;
+    case 'authFailed':
+      return typeof value['error'] === 'string';
+    case 'directoriesListed':
+      return (
+        typeof value['id'] === 'number'
+        && typeof value['path'] === 'string'
+        && (value['parent'] === null || typeof value['parent'] === 'string')
+        && isDirectoryEntries(value['entries'])
+      );
+    case 'directoriesFailed':
+      return typeof value['id'] === 'number' && typeof value['error'] === 'string';
     case 'workspaceOpened':
       return (
         typeof value['id'] === 'number'
