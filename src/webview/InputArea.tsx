@@ -51,9 +51,11 @@ interface InputAreaProps {
   maxContextTokens?: number | null;
   /** 会话非空闲 → 可中止（由 core 的 sessionRuntime 推导，见 App.tsx） */
   abortEnabled: boolean;
-  agentMode: AgentMode;
-  /** 是否已收到当前会话/默认的 agentMode；false 时仅显示 loading，不显示具体选项 */
-  agentModeReady: boolean;
+  /**
+   * 会话关联的询问模式。
+   * `undefined` = 尚未从宿主获取到：菜单只显示等待项，不显示具体选项。
+   */
+  agentMode?: AgentMode;
   setAgentMode: (mode: AgentMode) => void;
   /** 会话关联的提示词模式（普通/极简/混合，持久化到 meta.json）；未获取到前为 undefined */
   promptMode?: PromptMode;
@@ -61,14 +63,17 @@ interface InputAreaProps {
   /** 会话关联的思考强度；未获取到前为 undefined */
   thinkingMode?: ThinkingMode;
   setThinkingMode: (mode: ThinkingMode | undefined) => void;
-  /** 会话关联的 Web Search 开关 */
-  webSearch: boolean;
+  /** 会话关联的 Web Search 开关；undefined = 尚未从宿主获取到 */
+  webSearch?: boolean;
   setWebSearch: (webSearch: boolean) => void;
   /** 当前选择的模型身份（provider + model）；undefined = 尚未选择 / 未配置 */
   modelRef?: ModelRef;
   setModelRef: (ref: ModelRef | undefined) => void;
-  /** 全部 provider 及其模型列表（菜单按 provider 建立三级子菜单） */
-  providerModels: ProviderModels[];
+  /**
+   * 全部 provider 及其模型列表（菜单按 provider 建立三级子菜单）。
+   * `undefined` = 尚未收到宿主应答（菜单显示等待项）；空数组 = 宿主答了「没有配置模型」。
+   */
+  providerModels?: ProviderModels[];
   onSend: () => void;
   onAbort: () => void;
   onCompress: () => void;
@@ -423,7 +428,6 @@ const HoverScrollText = memo(({
 });
 
 const ToggleMenu = memo(({
-  agentModeReady,
   agentMode,
   onAgentModeChange,
   modelRef,
@@ -441,19 +445,21 @@ const ToggleMenu = memo(({
   colors,
   isDark,
 }: {
-  agentModeReady: boolean;
-  agentMode: AgentMode;
+  /** 会话关联的询问模式；undefined = 尚未从宿主获取到（菜单显示等待项） */
+  agentMode?: AgentMode;
   onAgentModeChange: (mode: AgentMode) => void;
   /** 当前选择的模型身份（provider + model）；undefined = 尚未选择 */
   modelRef?: ModelRef;
   /** 选择某个 provider 下的模型：整体上报模型身份 */
   onModelChange: (ref: ModelRef) => void;
-  providerModels: ProviderModels[];
+  /** undefined = 尚未收到宿主应答；空数组 = 宿主答了「没有配置模型」 */
+  providerModels?: ProviderModels[];
   promptMode?: PromptMode;
   onPromptModeChange: (mode: PromptMode) => void;
   thinkingMode?: ThinkingMode;
   onThinkingModeChange: (mode: ThinkingMode) => void;
-  webSearch: boolean;
+  /** undefined = 尚未从宿主获取到 */
+  webSearch?: boolean;
   onWebSearchChange: (webSearch: boolean) => void;
   onOpenSettings: () => void;
   mcpServers?: McpServerInfo[];
@@ -534,15 +540,16 @@ const ToggleMenu = memo(({
 
   // 全部 provider 的模型名扁平列表：用于测量最长模型名宽度（隐藏测量层）。
   // 菜单按 provider 分组展示，但宽度需覆盖所有分组里的模型名。
+  // 尚未收到宿主应答时按空列表测量（菜单此时显示等待项）。
   const allModels = useMemo(
-    () => providerModels.flatMap((p) => p.models),
+    () => (providerModels ?? []).flatMap((p) => p.models),
     [providerModels],
   );
 
   // 全部 provider 名：用于测量最长 provider 名宽度（隐藏测量层）。
   // provider 项选中时会加粗（600），用最粗字重量测，保证选中/未选中宽度一致。
   const allProviderNames = useMemo(
-    () => providerModels.map((p) => p.key),
+    () => (providerModels ?? []).map((p) => p.key),
     [providerModels],
   );
 
@@ -745,7 +752,9 @@ const ToggleMenu = memo(({
   // 联网搜索开关（会话关联，位于 Spin 设计之后、模型上方；settings.json 中的 llm.webSearch 只是新对话默认值）
   // 极简模式不使用联网搜索：无论会话/设置中的开关如何，菜单项都置灰禁用。
   const webSearchDisabled = promptMode === 'minimal';
-  const webSearchChecked = webSearch && !webSearchDisabled;
+  // webSearch 未到达时为 undefined：checkbox 按未勾选渲染，且菜单整体处于等待态
+  // （agentMode 未到达时只显示等待项，见 menuItems）。
+  const webSearchChecked = !!webSearch && !webSearchDisabled;
   const webSearchItem = {
     key: 'webSearch',
     label: (
@@ -778,27 +787,33 @@ const ToggleMenu = memo(({
     disabled: true,
   };
 
+  /**
+   * 等待项：事实尚未从宿主到达时的统一表现（`docs/webview-facts.md` 第 4 节）。
+   * 转圈 + 文案，不显示任何猜测值。
+   */
+  const waitingRow = (text: string) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 12px', color: colors.textSystem }}>
+      <span
+        className="animate-spin"
+        style={{
+          width: 10,
+          height: 10,
+          borderRadius: '50%',
+          border: '2px solid transparent',
+          borderTopColor: colors.harness,
+          borderRightColor: colors.harness,
+          display: 'inline-block',
+          flexShrink: 0,
+        }}
+      />
+      <span style={{ fontSize: '12px' }}>{text}</span>
+    </div>
+  );
+
   const loadingMenuItem = {
     key: 'menuLoading',
     disabled: true,
-    label: (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 12px', color: colors.textSystem }}>
-        <span
-          className="animate-spin"
-          style={{
-            width: 10,
-            height: 10,
-            borderRadius: '50%',
-            border: '2px solid transparent',
-            borderTopColor: colors.harness,
-            borderRightColor: colors.harness,
-            display: 'inline-block',
-            flexShrink: 0,
-          }}
-        />
-        <span style={{ fontSize: '12px' }}>{t('inputArea.askModeLoading')}</span>
-      </div>
-    ),
+    label: waitingRow(t('inputArea.askModeLoading')),
   };
 
   // MCP 服务器子菜单：checkbox 形式列出 mcp.json 中声明的全部服务器。
@@ -1030,7 +1045,7 @@ const ToggleMenu = memo(({
         </div>
         {inlineSection === 'model' && (
           <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: '14px', marginTop: 2, minWidth: 0, overflow: 'hidden', contain: 'inline-size' }}>
-            {providerModels.length > 0 ? providerModels.map((p) => (
+            {providerModels === undefined ? waitingRow(t('inputArea.modelLoading')) : providerModels.length > 0 ? providerModels.map((p) => (
               <div key={p.key} style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                 <div
                   style={{ minWidth: 0 }}
@@ -1077,7 +1092,10 @@ const ToggleMenu = memo(({
   };
 
   /** 弹出（非内联）模式：provider → 模型 两级子菜单 */
-  const providerSubmenuItems = providerModels.length > 0
+  const providerSubmenuItems = providerModels === undefined
+    // 尚未收到宿主应答：显示等待项，而不是「（无模型）」
+    ? [{ key: 'modelsLoading', disabled: true, label: waitingRow(t('inputArea.modelLoading')) }]
+    : providerModels.length > 0
     ? providerModels.map((p) => ({
         key: `provider:${p.key}`,
         // hover-scroll-scope 挂在 li 上：整行悬停都能触发长名字滚动。
@@ -1181,7 +1199,8 @@ const ToggleMenu = memo(({
         children: providerSubmenuItems,
       };
 
-  const menuItems = agentModeReady ? [
+  // agentMode 未到达：整个菜单只显示等待项，不展示任何配置选项（不猜默认值）
+  const menuItems = agentMode !== undefined ? [
     settingsItem,
     makeDivider('divider-1'),
     {
@@ -1476,7 +1495,6 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   maxContextTokens,
   abortEnabled,
   agentMode,
-  agentModeReady,
   setAgentMode,
   promptMode,
   setPromptMode,
@@ -2006,7 +2024,6 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
 
         <div className="flex items-center gap-2 flex-shrink-0">
           <ToggleMenu
-            agentModeReady={agentModeReady}
             agentMode={agentMode}
             onAgentModeChange={handleModeChange}
             modelRef={modelRef}

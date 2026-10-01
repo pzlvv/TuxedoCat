@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { postMessage } from './webviewEnv';
 import { providerKeyFromBaseURL } from '../core/utils/providerKey.js';
+// 面板不持有任何配置默认值：入参由宿主给齐（`docs/webview-facts.md` 第 6 节）。
+// 唯一自持的取值是「新增服务商」的预置地址，它是跨层共享的服务地址常量。
+import { DEEPSEEK_BASE_URL as DEFAULT_BASE_URL } from '../core/endpoints.js';
+import { DEFAULT_API_TYPE as DEFAULT_MODEL_API_TYPE } from '../core/utils/modelConfig.js';
 import type { Colors, ThinkingMode, AgentMode, PromptMode } from './types';
 import type { McpServerInfo } from '../core/webviewTypes';
 import { t } from './i18n';
@@ -33,19 +37,25 @@ interface ConversationSpaceItem {
   conversationCount: number;
 }
 
+/**
+ * 面板入参：**全部必选**（`docs/webview-facts.md` 第 6 节）。
+ *
+ * 面板只在宿主的载荷到达后渲染，因此不存在「部分字段缺失」的中间态；webview 不补默认值。
+ */
 interface LLMConfigPanelProps {
   colors: Colors;
+  /** 当前生效的服务地址；未配置服务商时由宿主给预置地址 */
   initialBaseURL: string;
-  initialWebSearch?: boolean;
-  initialThinkingEffort?: ThinkingMode;
-  initialDefaultAgentMode?: AgentMode;
-  initialDefaultPromptMode?: PromptMode;
+  initialWebSearch: boolean;
+  initialThinkingEffort: ThinkingMode;
+  initialDefaultAgentMode: AgentMode;
+  initialDefaultPromptMode: PromptMode;
   /** 已保存的 API Key（从设置中预填，避免每次打开都重新输入） */
-  initialApiKey?: string;
+  initialApiKey: string;
   /** 已保存的界面语言（auto | zh | en） */
-  initialLanguage?: 'auto' | 'zh' | 'en';
+  initialLanguage: 'auto' | 'zh' | 'en';
   /** 已保存的 Provider 列表（settings.json 的 llm.providers，apiType 在 modelConfigs 里） */
-  initialProviders?: Array<{
+  initialProviders: Array<{
     key: string;
     baseURL: string;
     apiKey: string;
@@ -53,10 +63,10 @@ interface LLMConfigPanelProps {
     defaultModel?: string;
     modelConfigs?: Record<string, { context?: number; output?: number; apiType?: string }>;
   }>;
-  /** settings.json 的 llm.activeProvider */
-  initialActiveProvider?: string;
+  /** settings.json 的 llm.activeProvider；未配置时为空串 */
+  initialActiveProvider: string;
   /** 全局默认启用的 MCP 列表（settings.json 的 mcp.enabled + mcp.json 的服务器定义） */
-  initialMcpServers?: McpServerInfo[];
+  initialMcpServers: McpServerInfo[];
   /** 触发设置面板时当前显示的会话 ID（保存时回传，供扩展端校验/回退模型） */
   currentSessionId?: string | null;
   /** 触发设置面板时当前会话使用的模型（保存时回传，供扩展端校验/回退模型） */
@@ -66,12 +76,6 @@ interface LLMConfigPanelProps {
   onClose: () => void;
 }
 
-const DEFAULT_BASE_URL = 'https://api.deepseek.com';
-/**
- * 手动添加的模型默认协议：v1 chat completions（兼容性最广）。
- * 自动获取的模型会由扩展端并发探测后写入真实协议。
- */
-const DEFAULT_MODEL_API_TYPE = 'OpenAI';
 /** 模型协议可选项（顺序即优先级展示顺序） */
 const MODEL_API_TYPE_OPTIONS: Array<{ value: string; labelKey: string }> = [
   { value: 'Responses', labelKey: 'llmConfig.apiTypeResponses' },
@@ -112,7 +116,7 @@ const ApiTypeSelect = React.memo(function ApiTypeSelect({
 }) {
   return (
     <select
-      value={value || DEFAULT_MODEL_API_TYPE}
+      value={value || UNCONFIGURED_MODEL_API_TYPE}
       onChange={(e) => onChange(providerId, index, e.target.value)}
       title={t('llmConfig.modelApiTypeTitle')}
       style={{
@@ -149,12 +153,6 @@ const ApiTypeSelect = React.memo(function ApiTypeSelect({
     </select>
   );
 });
-/** 首次设置（settings.json 为空）时的预置值 */
-const DEFAULT_THINKING_EFFORT: ThinkingMode = 'high';
-const DEFAULT_WEB_SEARCH = true;
-const DEFAULT_AGENT_MODE: AgentMode = 'risk';
-const DEFAULT_PROMPT_MODE: PromptMode = 'normal';
-
 /** 生成一个全新的空 Provider 草稿 */
 const createEmptyProviderDraft = (baseURL: string = ''): ProviderDraft => ({
   id: `provider_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
@@ -172,6 +170,15 @@ const createEmptyProviderDraft = (baseURL: string = ''): ProviderDraft => ({
  */
 const normalizeModelApiType = (value: unknown): string =>
   value === 'Responses' || value === 'Anthropic' || value === 'OpenAI' ? value : '';
+
+/**
+ * 协议下拉框在「该模型尚未配置协议」时的展示值：v1 chat completions（兼容性最广）。
+ *
+ * 这不是配置字段的默认值——协议本身由宿主解析（`initialProviders[].modelConfigs`），
+ * 这里只是「用户正在新增 / 尚未探测」时的预置选项，与 `DEFAULT_BASE_URL` 同类：
+ * 用户不改它就按空值保存，由扩展端下次自动探测后写入真实协议。
+ */
+const UNCONFIGURED_MODEL_API_TYPE = DEFAULT_MODEL_API_TYPE;
 
 /** 规范化扩展端回传的模型列表（去空、去重、trim） */
 const normalizeModelList = (raw: unknown): string[] => {
@@ -363,7 +370,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   onClose,
 }) => {
   const [providers, setProviders] = useState<ProviderDraft[]>(() => {
-    if (initialProviders && initialProviders.length > 0) {
+    if (initialProviders.length > 0) {
       return initialProviders.map((p) => ({
         id: p.key || createEmptyProviderDraft().id,
         baseURL: p.baseURL || '',
@@ -372,15 +379,16 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
         defaultModel: p.defaultModel || '',
       }));
     }
+    // 尚未配置任何服务商：用宿主给的服务地址开一个空草稿
     return [{
       id: createEmptyProviderDraft().id,
-      baseURL: initialBaseURL || DEFAULT_BASE_URL,
-      apiKey: initialApiKey || '',
+      baseURL: initialBaseURL,
+      apiKey: initialApiKey,
       models: [],
       defaultModel: '',
     }];
   });
-  const [activeProviderKey, setActiveProviderKey] = useState<string>(initialActiveProvider || '');
+  const [activeProviderKey, setActiveProviderKey] = useState<string>(initialActiveProvider);
   /** 用户点击「使用此 Provider」后暂存的 key，点击保存时才真正写入 settings.json */
   const [pendingUseProviderKey, setPendingUseProviderKey] = useState<string | null>(() => {
     // 首次配置也是“新增”场景：只有一个服务商且尚未有默认服务商时，默认选中它
@@ -397,13 +405,13 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     }
     return providers[0]?.id ?? '';
   });
-  const [webSearch, setWebSearch] = useState<boolean>(initialWebSearch ?? DEFAULT_WEB_SEARCH);
-  const [thinkingEffort, setThinkingEffort] = useState<ThinkingMode>(initialThinkingEffort || DEFAULT_THINKING_EFFORT);
-  const [defaultAgentMode, setDefaultAgentMode] = useState<AgentMode>(initialDefaultAgentMode || DEFAULT_AGENT_MODE);
-  const [defaultPromptMode, setDefaultPromptMode] = useState<PromptMode>(initialDefaultPromptMode || DEFAULT_PROMPT_MODE);
-  const [language, setLanguage] = useState<'auto' | 'zh' | 'en'>(initialLanguage || 'auto');
+  const [webSearch, setWebSearch] = useState<boolean>(initialWebSearch);
+  const [thinkingEffort, setThinkingEffort] = useState<ThinkingMode>(initialThinkingEffort);
+  const [defaultAgentMode, setDefaultAgentMode] = useState<AgentMode>(initialDefaultAgentMode);
+  const [defaultPromptMode, setDefaultPromptMode] = useState<PromptMode>(initialDefaultPromptMode);
+  const [language, setLanguage] = useState<'auto' | 'zh' | 'en'>(initialLanguage);
   /** MCP 默认启用草稿（保存时把勾选项写回全局 settings.json 的 mcp.enabled） */
-  const [mcpServers, setMcpServers] = useState<McpServerInfo[]>(initialMcpServers ?? []);
+  const [mcpServers, setMcpServers] = useState<McpServerInfo[]>(initialMcpServers);
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
   const [baseURLError, setBaseURLError] = useState<string | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
@@ -472,13 +480,13 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     });
   const isDirty =
     providersChanged ||
-    activeProviderKey !== (initialActiveProvider || '') ||
-    (pendingUseProviderKey !== null && pendingUseProviderKey !== (initialActiveProvider || '')) ||
-    webSearch !== (initialWebSearch ?? DEFAULT_WEB_SEARCH) ||
-    thinkingEffort !== (initialThinkingEffort || DEFAULT_THINKING_EFFORT) ||
-    defaultAgentMode !== (initialDefaultAgentMode || DEFAULT_AGENT_MODE) ||
-    defaultPromptMode !== (initialDefaultPromptMode || DEFAULT_PROMPT_MODE) ||
-    language !== (initialLanguage || 'auto');
+    activeProviderKey !== initialActiveProvider ||
+    (pendingUseProviderKey !== null && pendingUseProviderKey !== initialActiveProvider) ||
+    webSearch !== initialWebSearch ||
+    thinkingEffort !== initialThinkingEffort ||
+    defaultAgentMode !== initialDefaultAgentMode ||
+    defaultPromptMode !== initialDefaultPromptMode ||
+    language !== initialLanguage;
 
   const updateProvider = (id: string, patch: Partial<ProviderDraft>) => {
     setProviders((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
@@ -532,7 +540,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   const handleAddModel = () => {
     if (!activeProvider) return;
     updateProvider(activeProvider.id, {
-      models: [...activeProvider.models, { name: '', apiType: DEFAULT_MODEL_API_TYPE }],
+      models: [...activeProvider.models, { name: '', apiType: UNCONFIGURED_MODEL_API_TYPE }],
     });
     setModelError(null);
   };
@@ -658,19 +666,19 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     const configuredWebSearch = !!webSearch;
     // 预设值只在用户实际修改过时才发送；若与打开面板时的初始值相同，则不重复写入 settings.json
     const presetPayload: Record<string, unknown> = {};
-    if (configuredWebSearch !== (initialWebSearch ?? DEFAULT_WEB_SEARCH)) {
+    if (configuredWebSearch !== initialWebSearch) {
       presetPayload.webSearch = configuredWebSearch;
     }
-    if (thinkingEffort !== (initialThinkingEffort || DEFAULT_THINKING_EFFORT)) {
+    if (thinkingEffort !== initialThinkingEffort) {
       presetPayload.thinkingEffort = thinkingEffort;
     }
-    if (defaultAgentMode !== (initialDefaultAgentMode || DEFAULT_AGENT_MODE)) {
+    if (defaultAgentMode !== initialDefaultAgentMode) {
       presetPayload.defaultAgentMode = defaultAgentMode;
     }
-    if (defaultPromptMode !== (initialDefaultPromptMode || DEFAULT_PROMPT_MODE)) {
+    if (defaultPromptMode !== initialDefaultPromptMode) {
       presetPayload.defaultPromptMode = defaultPromptMode;
     }
-    if (language !== (initialLanguage || 'auto')) {
+    if (language !== initialLanguage) {
       presetPayload.language = language;
     }
     // MCP 默认启用列表：只在用户实际改动过时才发送，避免每次保存都覆盖
@@ -971,10 +979,10 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
    * 协议已下放到模型级，因此不能再按 provider 判断。
    */
   const defaultModelApiType = (() => {
-    if (!activeProvider) return DEFAULT_MODEL_API_TYPE;
+    if (!activeProvider) return UNCONFIGURED_MODEL_API_TYPE;
     const named = activeProvider.models.filter((m) => !!m.name.trim());
     const target = named.find((m) => m.name.trim() === activeProvider.defaultModel.trim()) || named[0];
-    return target?.apiType || DEFAULT_MODEL_API_TYPE;
+    return target?.apiType || UNCONFIGURED_MODEL_API_TYPE;
   })();
   const webSearchDisabled = defaultModelApiType !== 'Responses';
 

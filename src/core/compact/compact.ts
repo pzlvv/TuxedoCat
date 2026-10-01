@@ -8,6 +8,7 @@ import { COMPACT_SYSTEM_PROMPT } from './types.js';
 
 import { generateCompactSummaryPrompt, generateCompactUserMessage, generateCompactBoundaryContent, getUserInputHistory, selectUserInputHistory, formatUserInputHistory } from './prompt.js';
 import { logger } from '../Logger.js';
+import { getSettings } from '../settings.js';
 import { requireEventBus, type CoreEvent } from '../AssistantEventBus.js';
 import { updateConversationContext, saveCompactArchive, replaceConversationMessages } from '../history/Conversation.js';
 import { replayMessagesToUI } from '../utils/replayMessages.js';
@@ -232,11 +233,14 @@ async function generateSummary(messages: Message[], customInstructions: string |
     const { callLLM } = await import('../llm/index.js');
     const { getSessionThinkingMode } = await import('../Integration.js');
 
-    // 摘要生成沿用用户在会话中设置的 thinking effort；未设置或为 'off' 时回退到 'high'，
-    // 保证压缩质量（'off' 会让摘要模型跳过思考，长上下文压缩效果明显变差）。
+    // 摘要生成沿用用户在会话中设置的 thinking effort；未设置或为 'off' 时取配置快照的
+    // 默认强度（默认值的唯一来源，见 `docs/webview-facts.md` 第 2 节），保证压缩质量
+    // （'off' 会让摘要模型跳过思考，长上下文压缩效果明显变差）。
     const sessionThinkingEffort = getSessionThinkingMode(sessionId);
     const compactThinkingEffort: 'off' | 'low' | 'high' | 'max' =
-      !sessionThinkingEffort || sessionThinkingEffort === 'off' ? 'high' : sessionThinkingEffort;
+      !sessionThinkingEffort || sessionThinkingEffort === 'off'
+        ? getSettings().llm.thinkingEffort
+        : sessionThinkingEffort;
 
     let summary = '';
     let outputTokens = 0;

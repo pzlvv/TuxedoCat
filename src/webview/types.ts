@@ -5,6 +5,8 @@
 
 import type { ModelRef } from '../core/llm/modelRef';
 import type { MessageOrigin } from '../core/types';
+import type { McpServerInfo } from '../core/webviewTypes';
+import type { UiLanguage } from './i18n';
 
 export type Theme = 'dark' | 'light';
 export type AgentMode = 'manual' | 'risk' | 'auto';
@@ -35,6 +37,29 @@ export interface ModelConfigEntry {
   output?: number;
   /** 该模型使用的 API 协议（已下放到模型级） */
   apiType?: ApiType;
+}
+
+/**
+ * 设置面板载荷：宿主随 `showLLMConfig` 一次给齐的面板配置事实
+ * （`docs/webview-facts.md` 第 6 节）。
+ *
+ * 字段全部必选：webview 不补默认值，宿主未给齐即协议错误。面板只在载荷到达后打开，
+ * 因此不存在「部分字段缺失」的中间态。
+ */
+export interface LlmConfigPanelPayload {
+  /** 当前生效的服务地址（未配置服务商时由宿主给预置地址） */
+  baseURL: string;
+  webSearch: boolean;
+  thinkingEffort: ThinkingMode;
+  defaultAgentMode: AgentMode;
+  defaultPromptMode: PromptMode;
+  /** 当前生效服务商的 API Key；未配置时为空串 */
+  apiKey: string;
+  language: UiLanguage;
+  providers: ProviderConfig[];
+  /** 当前生效的服务商 key；未配置时为空串 */
+  activeProvider: string;
+  mcpServers: McpServerInfo[];
 }
 
 /** settings.json 中的 provider 配置项 */
@@ -132,12 +157,13 @@ export interface SessionState {
   hasActiveQuery: boolean;
   /** 压缩开始前是否已有活跃查询，用于压缩结束后恢复运行状态 */
   preCompressHasActiveQuery?: boolean;
-  agentMode: AgentMode;
+  /** 会话关联的询问模式（未从宿主获取到前为 undefined） */
+  agentMode?: AgentMode;
   /** 会话关联的提示词模式（普通/极简/混合），持久化到 meta.json */
   promptMode?: PromptMode;
   /** 会话关联的思考强度（未从宿主获取到前为 undefined） */
   thinkingMode?: ThinkingMode;
-  /** 会话关联的 Web Search 开关（未设置时使用 settings.json 默认值） */
+  /** 会话关联的 Web Search 开关（未从宿主获取到前为 undefined） */
   webSearch?: boolean;
   contextLength: number;
   queuedMessage: QueuedMessagePayload | null;

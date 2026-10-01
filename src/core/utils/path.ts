@@ -4,7 +4,7 @@
  */
 
 import * as path from 'path';
-import * as os from 'os';
+import { resolveHomeDir } from '../../config/configDir.js';
 
 /**
  * 展开路径（支持 ~、相对路径等）
@@ -24,14 +24,14 @@ export function expandPath(filePath: string, baseDir: string): string {
     return baseDir;
   }
 
-  // 处理 ~ （主目录）
+  // 处理 ~ （主目录）：家目录口径见 `config/configDir.ts`
   if (trimmedPath === '~') {
-    return os.homedir();
+    return resolveHomeDir();
   }
 
   // 处理 ~/ （主目录下的路径）
   if (trimmedPath.startsWith('~/')) {
-    return path.join(os.homedir(), trimmedPath.slice(2));
+    return path.join(resolveHomeDir(), trimmedPath.slice(2));
   }
 
   // Windows: 处理 WSL 路径 /mnt/d/xxx -> D:\xxx

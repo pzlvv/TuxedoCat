@@ -1,11 +1,8 @@
 /**
  * 查询活动相关 UI 逻辑的宿主共享实现。
  *
- * 原为两个宿主各自逐字重复的部分，收敛于此：
- * - onToolProgress（工具流式进度推送）
- * - onSetAgentMode（子代理 agent mode 继承）
- *
- * 宿主差异（推送通道、日志）通过参数注入。
+ * 收敛两个宿主逐字重复的部分：工具流式进度推送（`onToolProgress`）。
+ * 宿主差异（推送通道）通过参数注入。
  */
 import type { ToolProgressData } from '../core/tools/Tool.js';
 
@@ -52,15 +49,4 @@ export function pushToolProgress(
   });
 }
 
-/**
- * 设置子会话的 agent mode。
- * 完整继承父会话的 manual / risk / auto；父会话无记录时回退 risk。
- */
-export function inheritAgentMode(
-  sessionAgentModes: Map<string, 'manual' | 'risk' | 'auto'>,
-  parentSessionId: string,
-  childSessionId: string,
-): void {
-  const parentMode = sessionAgentModes.get(parentSessionId);
-  sessionAgentModes.set(childSessionId, parentMode ?? 'risk');
-}
+

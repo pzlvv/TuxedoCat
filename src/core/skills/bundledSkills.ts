@@ -14,7 +14,7 @@ import { constants as fsConstants } from 'fs';
 import { dirname } from 'path';
 import type { BundledSkillDefinition, ContentBlock, SkillCommand } from './Types.js';
 import { logger } from '../Logger.js';
-import { CONFIG_DIR_NAME } from '../../config/project.js';
+import { resolveConfigDir } from '../../config/configDir.js';
 import { getCommitSkillDefinition } from './bundled/commit.js';
 import { getSpinCommandDefinition } from './bundled/spin.js';
 import { registerBuiltinCommand, checkSkillConflict } from './builtinCommands.js';
@@ -97,9 +97,8 @@ export function clearBundledSkills(): void {
  * 获取内置 Skill 参考文件的提取目录
  */
 function getBundledSkillExtractDir(skillName: string): string {
-  // 使用 ~/<CONFIG_DIR_NAME>/.skills/ 作为提取根目录
-  const homeDir = process.env.HOME || process.env.USERPROFILE || '';
-  const extractRoot = path.join(homeDir, CONFIG_DIR_NAME, '.skills');
+  // 使用 ~/<CONFIG_DIR_NAME>/.skills/ 作为提取根目录（口径见 config/configDir.ts）
+  const extractRoot = path.join(resolveConfigDir(), '.skills');
   return path.join(extractRoot, skillName);
 }
 

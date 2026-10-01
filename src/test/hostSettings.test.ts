@@ -83,6 +83,24 @@ runTests('hostSettings', async () => {
     panel.defaultModel === 'deepseek-chat' && panel.apiKey === 'sk-deepseek',
   );
 
+  // 各模型的限值与协议随载荷下发：面板只显示，不自己推断
+  // （`docs/webview-facts.md` 第 6 节）。
+  const deepseekInfo = panel.providers.find((p) => p.key === 'api.deepseek.com');
+  check('面板载荷带 provider 的 modelConfigs', !!deepseekInfo?.modelConfigs);
+  check(
+    'modelConfigs 覆盖该 provider 的全部模型',
+    Object.keys(deepseekInfo?.modelConfigs ?? {}).includes('deepseek-chat'),
+  );
+  check(
+    'modelConfigs 的 apiType 是已解析的合法协议',
+    ['Responses', 'OpenAI', 'Anthropic'].includes(deepseekInfo?.modelConfigs['deepseek-chat']?.apiType ?? ''),
+  );
+  check(
+    'modelConfigs 带已解析的 context / output',
+    (deepseekInfo?.modelConfigs['deepseek-chat']?.context ?? 0) > 0
+      && (deepseekInfo?.modelConfigs['deepseek-chat']?.output ?? 0) > 0,
+  );
+
   // 未配置 activeProvider 时按「未配置」处理
   const unconfigured = resolveSettingsSnapshot({});
   check('未配置时没有 active 模型身份', readActiveModelRef(unconfigured) === undefined);
@@ -301,6 +319,44 @@ runTests('hostSettings', async () => {
     });
     check('UI 专属字段写入也触发通知', seen.length === 2);
     check('快照内容不受 UI 专属字段影响', Object.keys(store.getSnapshot().llm.providers).length === 1);
+  }
+
+  // ==================== refreshFromDisk（手工改文件后重读，无需重载窗口） ====================
+
+  {
+    const dir = makeTempDir('host-settings-refresh');
+    const store = new SettingsStore({ configDir: dir });
+    store.loadSync();
+    check('初始快照为未配置', store.getSnapshot().llm.activeProvider === '');
+
+    const seen: string[] = [];
+    store.subscribe((next) => {
+      seen.push(next.llm.activeProvider);
+    });
+
+    store.refreshFromDisk();
+    check('文件未变时不通知订阅者', seen.length === 0);
+
+    // 模拟用户在外部手工写入 / 恢复 settings.json
+    fs.writeFileSync(
+      path.join(dir, 'settings.json'),
+      JSON.stringify({
+        llm: {
+          activeProvider: 'api.deepseek.com',
+          providers: {
+            'api.deepseek.com': { baseURL: 'https://api.deepseek.com', apiKey: 'sk-x' },
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    const refreshed = store.refreshFromDisk();
+    check('refreshFromDisk 读到外部修改', refreshed.llm.activeProvider === 'api.deepseek.com');
+    check('内容变化时通知订阅者一次', seen.length === 1 && seen[0] === 'api.deepseek.com');
+
+    store.refreshFromDisk();
+    check('再次 refresh 不重复通知', seen.length === 1);
   }
 
   finish();

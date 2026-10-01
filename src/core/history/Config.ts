@@ -3,12 +3,11 @@
  */
 
 import { join } from 'path';
-import * as os from 'os';
 import * as fs from 'fs/promises';
 import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { logger } from '../Logger.js';
-import { CONFIG_DIR_NAME } from '../../config/project.js';
+import { resolveConfigDir } from '../../config/configDir.js';
 
 /**
  * 项目清单文件名（`docs/core-ui-separation.md` 第 4.1 节）。
@@ -19,13 +18,12 @@ import { CONFIG_DIR_NAME } from '../../config/project.js';
 const WORKSPACE_META_FILE = 'workspace.meta.json';
 
 /**
- * 获取配置目录（CONFIG_DIR_NAME）
- * Windows: %USERPROFILE%\<CONFIG_DIR_NAME>
- * macOS/Linux: ~/<CONFIG_DIR_NAME>
+ * 获取配置目录（CONFIG_DIR_NAME）。
+ *
+ * 家目录口径统一在 `config/configDir.ts`（与宿主 `SettingsStore` / Core 侧一致）。
  */
 export function getConfigHomeDir(): string {
-  const homeDir = os.homedir();
-  return join(homeDir, CONFIG_DIR_NAME);
+  return resolveConfigDir();
 }
 
 /**

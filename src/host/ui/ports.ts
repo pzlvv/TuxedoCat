@@ -24,16 +24,14 @@ export type WebviewPoster = (sessionId: string, message: Record<string, unknown>
  */
 export type LLMConfigPanelTrigger = 'startup' | 'new-conversation' | 'request';
 
-/** conversationLoaded 的附加信息（由 WebviewMessageHandler 提供） */
-export interface ConversationLoadedExtra {
-  pendingToolUseIds: string[];
-  savedContext?: any;
-  parentSessionId?: string;
-  agentMode: string;
-  hasActiveQuery: boolean;
-  hasCompactArchive?: boolean;
-  model?: string;
-}
+/**
+ * conversationLoaded 的附加信息（由 WebviewMessageHandler 提供）。
+ *
+ * 唯一定义在 `conversationPayload.ts`（wire 消息的组装点），这里只做转出，
+ * 避免同一个载荷形状写两份、迟早对不上。
+ */
+import type { ConversationLoadedExtra } from '../conversationPayload.js';
+export type { ConversationLoadedExtra };
 
 export interface WebViewUiPort {
   /** 补 sessionId 后投递到宿主 webview */

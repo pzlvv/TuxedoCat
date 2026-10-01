@@ -2113,12 +2113,15 @@ export interface HostInfo {
 
 ### 9.1 注入
 
-| 宿主 | 注入位置 | 方式 |
-| --- | --- | --- |
-| VS Code | `src/extension.ts` 的 `getWebviewContent()` | 在 `index.html` 的 `<script type="module">` 之前插一段内联脚本：`window.__hostInfo = ${JSON.stringify(VSCODE_HOST_INFO)}` |
-| Electron 桌面 | `electron/preload.ts` | `contextBridge.exposeInMainWorld('__hostInfo', ELECTRON_HOST_INFO)` |
+同步注入的事实（页面首帧之前写入 `window`，webview 只读，缺失即接线错误，见第 12.10 节）：
 
-两处注入都在 webview 的 module 脚本执行之前完成，`getHostInfo()` 首次调用时一定已就绪。
+| 事实 | 读取方 | VS Code（`src/extension.ts` 的 `getWebviewContent()` 内联脚本） | Electron（`electron/preload.ts`） |
+| --- | --- | --- | --- |
+| 宿主能力 `HostInfo` | `getHostInfo()` | `window.__hostInfo = ${JSON.stringify(VSCODE_HOST_INFO)}` | `contextBridge.exposeInMainWorld('__hostInfo', ELECTRON_HOST_INFO)` |
+| 界面语言 | `i18n` 的 `readInitialUiLanguage()` | `window.__uiLocale = "${uiLanguage}"`（宿主 `settings.json` 的 `uiLanguage`） | `exposeInMainWorld('__uiLocale', uiLanguage)` |
+| 首帧主题 | `getInitialTheme()` | `window.__initialTheme`（`activeColorTheme.kind === Light` → `'light'`，否则 `'dark'`） | `exposeInMainWorld('__initialTheme', initialTheme)` |
+
+注入都在 webview 的 module 脚本执行之前完成，读取方首次调用时一定已就绪。
 
 ### 9.2 读取与校验
 
@@ -2654,6 +2657,7 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 | 工作区打开集合 / 活动项 | 宿主（VS Code：工作区文件夹；Electron：`main.ts` 的 `openWorkspaces` / `workspacePath`） | `WorkspaceProvider` 的消费方与 `Client`（按工作区建立 Connection，第 8.6 节） |
 | `sessionId → Connection` 归属 | `Client`（`assignSession` 登记，`sessionWorkspaceAssigned` 事件驱动） | 总线路由、`Connection` 的会话集合。`connectionId` 是内部概念，不进任何总线载荷 |
 | Core 进程生命周期 | Standalone：daemon（启动 / 重启 / 终止，第 13.2 节）；Embedded：宿主进程本身 | `Connection` 只消费 `channelReset` / `workspaceClosed` 与 fatal 事件；`CoreProcess.ts` 是单进程形态的传输层实现 |
+| 家目录 / 全局配置目录 | `src/config/configDir.ts` 的 `resolveHomeDir()` / `resolveConfigDir()`（口径 `USERPROFILE` → `HOME` → `os.homedir()`，与 `core-rs/src/config.rs` 的 `home_dir()` 同序） | `SettingsStore` / `Logger` / skills 目录 / `RealApi` 失败转储 / Electron 旧字段迁移都调它，不各自 `os.homedir()` 或读 `HOME` |
 
 **禁止从投影反推事实**：`WebViewUI.onSessionRuntimeChanged` 只把 core 的状态转给
 `ConversationManager.updateSessionStates`，不参与计算；`SessionUiState` 不产出
@@ -2670,6 +2674,60 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
   能力没有「单独填错」的可能。
 - **派生逻辑只有一份**：推导写在 `src/host/types.ts` 的纯函数里，宿主与 webview
   都调它，不在各自代码里各写一遍 `if`。
+
+### 12.9 同一字段的默认值只有一处
+
+「磁盘里没有这个字段时取什么值」也必须只有一个答案。默认值散在快照解析、设置面板、
+宿主兜底消息三处时，任何一处单独改动都会让「界面显示的默认值」和「Core 实际用的值」
+悄悄分叉。
+
+- **配置字段默认值的唯一来源是宿主快照解析** `src/core/settingsSnapshot.ts`
+  （webSearch / thinkingEffort / agentMode / promptMode / enableUsageStats）：
+  它是 `settings.json` 的规范化入口，缺字段 / 类型不对 / 取值非法都在这里落默认值。
+- **界面语言的默认值归宿主** `src/host/SettingsStore.ts`（`uiLanguage` 只有 UI 消费、
+  不进快照，因此缺省取值由宿主决定）。
+- **模型注册表默认值**（`DEFAULT_API_TYPE` / `FALLBACK_MODEL_PARAMS`）在
+  `src/core/utils/modelConfig.ts`，不重复到别处。
+- **core 侧需要默认值时读快照**（`getSettings()`），不另声明常量：
+  `PermissionPolicy` 的「会话未记录询问模式」、`Integration` 的提示词预设、
+  `compact` 的摘要思考强度都取 `getSettings()` 的对应字段。
+- **跨层服务地址**（`DEEPSEEK_BASE_URL`）在 `src/core/endpoints.ts`：它不是「字段缺省
+  取值」，而是设置面板「新增服务商」的预置地址、余额查询目标与服务商识别的共同基准。
+  该模块必须**零依赖**（只导出字符串字面量）——webview 也要 import 它。
+- 「读取失败」与「默认值」是两回事：失败路径不要伪装成默认值（例如读不到快照时
+  不该按默认值弹设置面板），否则用户会以为配置丢了。
+
+**已知例外**（跨语言，靠测试锁死，不强行合并）：`DEEPSEEK_BASE_URL` 与
+`MAX_OUTPUT_TOKENS_UPPER_LIMIT` 在 TS 与 Rust 各一份；`modelLimits.ts` 的
+`MAX_OUTPUT_TOKENS_DEFAULT`（模型未知）与 `FALLBACK_MODEL_PARAMS.maxOutputTokens`
+（模型未命中注册表）是两条不同的兜底语义，各自有注释说明适用场景。
+
+### 12.10 webview 不持有事实的默认值
+
+`docs/webview-facts.md` 的架构原则，落点见第 9 节与第 12.6 节。
+
+webview 渲染所需的每一项事实都由宿主决定。**webview 不持有配置默认值**：某个字段
+「还没从宿主拿到」时，界面给出等待态（转圈），而不是显示一个自己猜的值。
+
+- **事实单向流动**：宿主产出事实，webview 消费事实。webview 不产出配置事实。
+- **等待态由「是否到达」决定，不由「值是否为空」决定**：这类事实在 webview 侧用
+  `undefined` 表示尚未到达，空集合 / `false` / `0` / `''` 都是**已到达的取值**。
+  例：模型列表 `undefined` → 等待项；`[]` → 宿主答了「没有配置模型」。
+- **不代宿主决定**：事实未到达时 webview 不下发该字段（`sendMessage` 的会话配置、
+  挂载时的 `setAgentMode` / `setPromptMode` / `setModel` 自动回传都遵循此规则），
+  否则会把 webview 的猜测写进会话的 `meta.json`。
+- **同步注入的事实缺失即接线错误**：`__hostInfo` / `__uiLocale` / `__initialTheme`
+  在页面首帧之前由宿主写入，没有等待窗口；缺失或取值非法直接抛错
+  （与 12.1 的 `getHostInfo()` 同一口径）。两个宿主都必须注入这三项。
+- **等待态的统一表现**：输入区在会话配置未到达时禁用发送并显示转圈
+  （`configLoading`）；输入区菜单只显示等待项（`agentMode` 未到达）；模型子菜单显示
+  等待项（`providerModels` 未到达）。
+- **唯一自持的取值是服务地址常量** `DEEPSEEK_BASE_URL`（12.9），用于「新增服务商」
+  的预置地址；其余字段一律来自宿主。
+- **设置面板载荷全必选**：`showLLMConfig` 一次给齐面板需要的全部配置事实，面板入参
+  全部必选；宿主读不到配置时不打开面板（不补默认值、不误导用户重配）。
+
+判据：**这个取值是宿主说的，还是 webview 猜的？** 猜的一律删掉，改成等待态。
 
 这条同样适用于本文档：**只写现状**。已收敛的历史差异不列（第 11 章），
 还没定的事进第 13 章，不写「计划会怎样」。

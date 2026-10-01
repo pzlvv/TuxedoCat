@@ -25,10 +25,19 @@ function isChineseLocale(value: unknown): boolean {
   return typeof value === 'string' && value.toLowerCase().startsWith('zh');
 }
 
-/** 初始 UI 语言：优先读取宿主注入的 __uiLocale（来自 settings.json），否则 auto */
+/**
+ * 初始 UI 语言：读取宿主注入的 `window.__uiLocale`（来自宿主配置）。
+ *
+ * 这是**同步注入**的事实（`docs/webview-facts.md` 第 3 节）：页面首帧之前由宿主写入，
+ * 不存在「尚未到达」的窗口。缺失或取值非法说明宿主接线不完整，直接抛错，
+ * 与 `getHostInfo()` 同一口径——不猜一个默认语言。
+ */
 function readInitialUiLanguage(): UiLanguage {
   const v = (window as any).__uiLocale;
-  return v === 'zh' || v === 'en' || v === 'auto' ? v : 'auto';
+  if (v === 'zh' || v === 'en' || v === 'auto') return v;
+  throw new Error(
+    `window.__uiLocale 未注入或取值非法（${String(v)}）：宿主必须在 webview 启动前写入界面语言（'auto' | 'zh' | 'en'）。`,
+  );
 }
 
 /** 当前用户显式选择的界面语言（模块内缓存，setUiLanguage 后立即生效） */

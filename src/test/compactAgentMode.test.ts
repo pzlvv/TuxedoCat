@@ -5,7 +5,8 @@
  * - `selectUserInputHistory`（src/core/compact/prompt.ts）：
  *   不超过上限原样返回；超过时只保留最早 HEAD 条 + 最后 TAIL 条（默认 4 + 8 = 12）。
  * - `inheritAgentMode` / `inheritAgentModeFrom`（src/core/tools/PermissionPolicy.ts）：
- *   子会话完整继承父会话的 manual / risk / auto；父值缺失时回退 risk。
+ *   子会话完整继承父会话的 manual / risk / auto；父值缺失时取配置快照的默认值
+ *   （默认值只有一处来源，见 `docs/webview-facts.md` 第 2 节）。
  *
  * 运行方式：npm run test:all -- compactAgentMode
  */
@@ -13,6 +14,7 @@
 import { createChecker, runTests } from './helpers/harness';
 import type { UserMessage } from '../core/types';
 import { selectUserInputHistory } from '../core/compact/prompt';
+import { applyTestSettings } from './helpers/fixtures';
 import {
   inheritAgentMode,
   inheritAgentModeFrom,
@@ -58,6 +60,10 @@ runTests('compactAgentMode', () => {
   check('自定义 head/tail 取值正确', markers(custom) === 'u0,u1,u16,u17,u18,u19');
 
   // ── 子代理 agent mode 继承 ──
+  // 配置快照的 defaultAgentMode 决定「父会话无记录」时的取值：这里给 'auto'，
+  // 断言回退取的是配置值而不是某个写死的常量。
+  applyTestSettings({ defaultAgentMode: 'auto' });
+
   setSessionAgentMode('parent-manual', 'manual');
   inheritAgentMode('parent-manual', 'child-manual');
   check('manual 父会话 → manual 子会话', getStoredSessionAgentMode('child-manual') === 'manual');
@@ -73,11 +79,19 @@ runTests('compactAgentMode', () => {
   inheritAgentModeFrom('manual', 'child-from-manual');
   check('inheritAgentModeFrom 原样复制 manual', getStoredSessionAgentMode('child-from-manual') === 'manual');
 
-  inheritAgentModeFrom(undefined, 'child-from-undefined');
-  check('父值缺失回退 risk', getStoredSessionAgentMode('child-from-undefined') === 'risk');
-
   inheritAgentMode('parent-not-recorded', 'child-not-recorded');
-  check('父会话无记录回退 risk', getStoredSessionAgentMode('child-not-recorded') === 'risk');
+  check(
+    '父会话无记录时取配置快照的 defaultAgentMode',
+    getStoredSessionAgentMode('child-not-recorded') === 'auto',
+  );
+
+  // 配置快照变化后回退值随之变化（证明没有写死的兜底常量）
+  applyTestSettings({ defaultAgentMode: 'risk' });
+  inheritAgentMode('parent-not-recorded-2', 'child-not-recorded-2');
+  check(
+    '配置改为 risk 后回退值同步变化',
+    getStoredSessionAgentMode('child-not-recorded-2') === 'risk',
+  );
 
   finish();
 });

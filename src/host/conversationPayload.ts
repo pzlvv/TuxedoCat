@@ -19,7 +19,8 @@ export interface ConversationLoadedExtra {
   pendingToolUseIds: string[];
   savedContext?: any;
   parentSessionId?: string;
-  agentMode: string;
+  /** 会话询问模式；宿主无法解析时为 undefined，webview 按「尚未到达」处理 */
+  agentMode?: string;
   hasActiveQuery: boolean;
   hasCompactArchive?: boolean;
   /** 模型身份（provider + model）；wire 消息保持扁平的 model / provider 字段 */

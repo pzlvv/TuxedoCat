@@ -559,7 +559,7 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
 
   // 为恢复的对话设置提示词预设：
   // 优先使用 meta.json 中保存的 promptMode（用户在该对话中的显式选择），
-  // 未配置时回退到普通模式。
+  // 未配置时取配置快照的默认值（默认值的唯一来源，见 `docs/webview-facts.md` 第 2 节）。
   try {
     if (!conversation) {
       const { loadConversation } = await import('./history/index.js');
@@ -567,7 +567,9 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
     }
     const perSessionPromptMode = conversation?.metadata?.context?.promptMode as 'normal' | 'minimal' | 'mixed' | undefined;
     const { isPromptPresetId } = await import('./prompt/PromptPreset.js');
-    const effectivePromptMode = isPromptPresetId(perSessionPromptMode) ? perSessionPromptMode : 'normal';
+    const effectivePromptMode = isPromptPresetId(perSessionPromptMode)
+      ? perSessionPromptMode
+      : getSettings().defaultPromptMode;
     engine.setPromptPreset(effectivePromptMode);
   } catch (e) {
     logger.warn('Integration', `Failed to set prompt mode for restored engine: ${e}`);

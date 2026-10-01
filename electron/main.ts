@@ -33,7 +33,8 @@ import { WebViewUI } from '../src/host/WebViewUI.js';
 import { normalizeWorkspacePath, sameWorkspace, dedupeWorkspacePaths, applyWorkspaceOrder } from '../src/host/workspacePaths.js';
 import { localWorkspaceRef } from '../src/host/workspaceRef.js';
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
-import { PRODUCT_NAME, EXTENSION_NAME, CONFIG_DIR_NAME, SETTINGS_FILE_NAME } from '../src/config/project.js';
+import { PRODUCT_NAME, EXTENSION_NAME, SETTINGS_FILE_NAME } from '../src/config/project.js';
+import { resolveConfigDir } from '../src/config/configDir.js';
 import {
   DEFAULT_WAKE_SHORTCUT,
   acceleratorFromKeyboardEvent,
@@ -678,9 +679,13 @@ function createMainWindow(): void {
     // UI 专属字段（界面语言 / 高亮语言）归宿主：读宿主自己的 settings.json 快照
     // （`docs/core-ui-separation.md` 第 4.8 / 4.9 节），不问 core。
     const { getSettingsStore } = require('../src/host/SettingsStore.js') as typeof import('../src/host/SettingsStore.js');
-    uiLanguage = getSettingsStore().readUiLanguage();
+    const settingsStore = getSettingsStore();
+    // createMainWindow 在 initCore 之前：首帧语言 / 高亮语言要先拿到，所以这里先读盘。
+    // initCore 里的 loadSync 会再读一次（幂等），不会漏掉之后的改动。
+    settingsStore.loadSync();
+    uiLanguage = settingsStore.readUiLanguage();
     // Shiki 语法高亮全部按需加载：注入上次已使用过的语言，webview 启动后后台预热
-    highlightLanguages = getSettingsStore().readHighlightLanguages();
+    highlightLanguages = settingsStore.readHighlightLanguages();
   } catch { /* 读取失败时使用 auto（跟随系统语言） */ }
   chatViews = new ChatViewManager({
     win: mainWindow,
@@ -2541,7 +2546,8 @@ function migrateLegacyThemeAndShortcut(): void {
 /** 读取旧版本位于 settings.json 的 theme / shortcut（失败时返回 null） */
 function readLegacySettingsFields(): { theme?: unknown; shortcut?: unknown } | null {
   try {
-    const file = path.join(app.getPath('home'), CONFIG_DIR_NAME, SETTINGS_FILE_NAME);
+    // 与 SettingsStore 同一口径读旧配置，避免 app.getPath('home') 与宿主口径分叉
+    const file = path.join(resolveConfigDir(), SETTINGS_FILE_NAME);
     if (!fs.existsSync(file)) return null;
     const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
     if (!data || typeof data !== 'object') return null;

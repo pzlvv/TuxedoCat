@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { CONFIG_DIR_NAME, ENV_PREFIX, LOG_FILE_NAME } from '../config/project.js';
+import { ENV_PREFIX, LOG_FILE_NAME } from '../config/project.js';
+import { resolveConfigDir } from '../config/configDir.js';
 import { requireEventBus } from './AssistantEventBus.js';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -25,11 +26,8 @@ function readPositiveIntEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-const LOG_DIR = path.join(
-  process.env.HOME || process.env.USERPROFILE || '',
-  CONFIG_DIR_NAME,
-  'logs',
-);
+// 配置目录口径与宿主 `SettingsStore` / Core 侧一致，见 `config/configDir.ts`
+const LOG_DIR = path.join(resolveConfigDir(), 'logs');
 const LOG_FILE = path.join(LOG_DIR, LOG_FILE_NAME);
 /** 轮转互斥锁，保证多实例（VS Code / Electron）不会同时轮转 */
 const LOCK_FILE = `${LOG_FILE}.lock`;

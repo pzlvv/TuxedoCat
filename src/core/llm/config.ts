@@ -12,6 +12,7 @@
 
 import { logger } from '../Logger.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
+import { DEEPSEEK_BASE_URL } from '../endpoints.js';
 import { getSettings } from '../settings.js';
 import type { ModelLimits } from '../settingsSnapshot.js';
 import { limitsFor } from './modelLimits.js';
@@ -26,12 +27,11 @@ import type { AgentMode } from '../types.js';
 
 export type { ApiType };
 export { DEFAULT_API_TYPE, resolveApiTypeForModel };
+/** DeepSeek 官方服务地址的唯一来源（这里只转出，值见 `endpoints.ts`） */
+export { DEEPSEEK_BASE_URL };
 
 /** 思考强度取值 */
 export type ThinkingEffort = 'off' | 'low' | 'high' | 'max';
-
-/** DeepSeek 官方服务地址（兜底用） */
-export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 
 /** 调用 LLM 所需的最终配置 */
 export interface LLMConfig {

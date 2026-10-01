@@ -5,12 +5,11 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import * as os from 'os';
 import type { Message } from '../types.js';
 import { logger } from '../Logger.js';
 import { DEFAULT_API_TYPE, getConfig, getEnableUsageStats, limitsOf } from './config.js';
 import type { LLMConfig } from './config.js';
-import { CONFIG_DIR_NAME } from '../../config/project.js';
+import { resolveConfigDir } from '../../config/configDir.js';
 import { effectiveMaxOutputTokens } from './modelLimits.js';
 import { fetch as undiciFetch, type Response as UndiciResponse } from 'undici';
 import { getLLMDispatcher } from './httpDispatcher.js';
@@ -91,8 +90,7 @@ export async function dumpFailedRequest(params: {
   responseBody?: string;
 }): Promise<string | null> {
   try {
-    const homeDir = os.homedir();
-    const dumpDir = path.join(homeDir, CONFIG_DIR_NAME, 'fail_logs');
+    const dumpDir = path.join(resolveConfigDir(), 'fail_logs');
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const dumpFile = path.join(dumpDir, `llm_fail_${timestamp}.json`);
 

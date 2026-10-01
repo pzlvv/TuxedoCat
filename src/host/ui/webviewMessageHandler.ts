@@ -26,6 +26,7 @@ import type { SessionRuntimeState, UiEvent } from '../../core/AssistantEventBus.
 import { requireEventBus } from '../../core/AssistantEventBus.js';
 import type { UserChoiceManager } from './userChoice.js';
 import type { LLMConfigPanelTrigger } from './ports.js';
+import type { ConversationLoadedExtra } from '../conversationPayload.js';
 import { resolveCoreKind } from '../coreKind.js';
 import {
   loadConversationForHost,
@@ -128,15 +129,7 @@ export class WebviewMessageHandler {
     getSessionRuntimeStatesSnapshot(): readonly SessionRuntimeState[];
   };
   private postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
-  private postConversationLoaded: (sessionId: string, conversation: any, extra: {
-    pendingToolUseIds: string[];
-    savedContext?: any;
-    parentSessionId?: string;
-    agentMode: string;
-    hasActiveQuery: boolean;
-    hasCompactArchive?: boolean;
-    modelRef?: ModelRef;
-  }) => void;
+  private postConversationLoaded: (sessionId: string, conversation: any, extra: ConversationLoadedExtra) => void;
   private setTitle: (sessionID: string, title: string) => void;
   private userChoiceManager: UserChoiceManager;
   /** 用户响应 user choice 后的回调（宿主侧用于刷新侧栏流水灯状态） */
@@ -162,15 +155,7 @@ export class WebviewMessageHandler {
   constructor(deps: {
     host: UIHost;
     postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
-    postConversationLoaded: (sessionId: string, conversation: any, extra: {
-      pendingToolUseIds: string[];
-      savedContext?: any;
-      parentSessionId?: string;
-      agentMode: string;
-      hasActiveQuery: boolean;
-      hasCompactArchive?: boolean;
-      modelRef?: ModelRef;
-    }) => void;
+    postConversationLoaded: (sessionId: string, conversation: any, extra: ConversationLoadedExtra) => void;
     setTitle: (sessionID: string, title: string) => void;
     userChoiceManager: UserChoiceManager;
     onUserChoiceResponded?: (sessionId: string) => void;
@@ -729,9 +714,10 @@ export class WebviewMessageHandler {
         if (typeof nextCtx?.webSearch !== 'boolean') {
           nextCtx = { ...(nextCtx || {}), webSearch: defaultWebSearch };
         }
-        // 加载已有对话时，meta.json 中未保存 promptMode 则回退到普通模式
+        // 加载已有对话时，meta.json 中未保存 promptMode 则用配置快照的默认值
+        // （默认值只有一处来源，见 `docs/webview-facts.md` 第 2 节）
         if (!nextCtx?.promptMode) {
-          nextCtx = { ...(nextCtx || {}), promptMode: 'normal' };
+          nextCtx = { ...(nextCtx || {}), promptMode: readDefaultPromptMode(snapshot) };
         }
         effectiveSavedContext = nextCtx;
       }
@@ -767,12 +753,14 @@ export class WebviewMessageHandler {
       effectiveAgentMode = (conversation.metadata?.context?.agentMode as 'manual' | 'risk' | 'auto' | undefined) ?? undefined;
     }
     if (!effectiveAgentMode) {
-      let defaultAgentMode: 'manual' | 'risk' | 'auto' = 'risk';
+      // 会话未记录询问模式：用配置快照的默认值（默认值只有一处来源）。
+      // 快照读不到属于接线错误，保持未到达（不猜取值），webview 侧显示等待态。
       try {
-        defaultAgentMode = readDefaultAgentMode(getSettingsStore().getSnapshot());
-      } catch { /* ignore */ }
-      effectiveAgentMode = defaultAgentMode;
-      this.log(`[WebviewMessageHandler] No agentMode for session ${message.sessionId}, defaulting to ${defaultAgentMode}`);
+        effectiveAgentMode = readDefaultAgentMode(getSettingsStore().getSnapshot());
+        this.log(`[WebviewMessageHandler] No agentMode for session ${message.sessionId}, using configured default ${effectiveAgentMode}`);
+      } catch (err: any) {
+        this.log(`[WebviewMessageHandler] Failed to read default agentMode: ${err.message}`);
+      }
     }
 
     // 是否仍在跑查询读 core 推送的会话运行时状态快照（ConversationManager 缓存）：
@@ -1616,8 +1604,9 @@ export class WebviewMessageHandler {
    */
   private async handleRequestSettingsDefaults(): Promise<void> {
     try {
-      // 全部来自宿主自己的快照：Core 不提供默认值，也不参与设置面板的展示
-      const snapshot = getSettingsStore().getSnapshot();
+      // 全部来自宿主自己的快照：Core 不提供默认值，也不参与设置面板的展示。
+      // 先重读一次磁盘，避免启动期读到残缺文件后一直停留在旧快照（见 SettingsStore.refreshFromDisk）。
+      const snapshot = getSettingsStore().refreshFromDisk();
       const defaultModelRef = readActiveModelRef(snapshot);
       const thinkingMode = readDefaultThinkingEffort(snapshot);
       const agentMode = readDefaultAgentMode(snapshot);

@@ -212,6 +212,7 @@ UI 推快照的时机只有三处，全部收敛到 `SettingsStore`：
 | Connection 建立 | 打开工作区 | 随 `hostEnvironmentProvided` 一次 |
 | LLM 配置保存 | 设置面板保存 | 整份快照，推给所有已就绪的 Connection |
 | MCP 默认启用列表变更 | 设置面板保存 | 整份快照，推给所有已就绪的 Connection |
+| `settings.json` 外部修改被察觉 | 打开设置面板 / webview 挂载（`refreshFromDisk`） | 内容有变化才重推整份快照 |
 
 明确**不**触发推送的变更：
 
@@ -219,8 +220,10 @@ UI 推快照的时机只有三处，全部收敛到 `SettingsStore`：
 - `highlightLanguages` 变更：该字段不进快照，Core 不感知。
 - `mcp.json` 文件变更：只在 Connection 建立时读一次；中途修改不通知 Core，
   重开工作区生效。
-- `settings.json` 的外部修改（用户手工编辑）：UI 不监听文件；手工编辑后重开工作区生效。
-  设置面板是唯一受支持的写入口。
+- `settings.json` 的外部修改（用户手工编辑）：UI **不监听文件**（不装 watcher）；
+  但打开设置面板 / webview 挂载时会调 `SettingsStore.refreshFromDisk()` 重读一次，
+  内容有变化就按上面的同步点重推快照。启动期读到残缺文件时因此不必重载窗口。
+  设置面板仍是唯一受支持的写入口。
 
 架构约束：快照的构造只发生在 `SettingsStore` 内；Core 侧只有 `applySettingsSnapshot` /
 `getSettings` 两个入口。新增配置字段时必须同时更新快照类型（全必选，缺字段编译或协议

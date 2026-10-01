@@ -6,7 +6,7 @@ import { getMessageOrigin } from '../../core/utils/messageOrigin';
 import { normalizeToolInput } from '../../core/utils/toolInput';
 import { modelRefOf, sameModelRef, type ModelRef } from '../../core/llm/modelRef';
 import type { DiffHunk } from '../../core/utils/editDiff';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, ProviderConfig } from '../types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, LlmConfigPanelPayload } from '../types';
 import { postMessage, setViewMode } from '../webviewEnv';
 import { createSessionState, ensureSessionStateWithUsage, accumulateUsageToState } from '../sessionState';
 import { profileLog } from '../debug';
@@ -368,10 +368,13 @@ interface LoadedConversationCommonContext {
 
 /**
  * conversationLoaded 恢复时两个分支（有/无 savedState）完全相同的 setter 序列：
- * agentMode + agentModeReady、promptMode、thinkingMode（savedState 分支多一层回退，见调用点）、
+ * agentMode、promptMode、thinkingMode（savedState 分支多一层回退，见调用点）、
  * webSearch、model（同上）。
  * thinkingMode / model / webSearch 的回退链在两分支间差一层 savedState，
  * 由调用点传入分支语义：无 savedState 分支传回退基线值（与原实现一致）。
+ *
+ * 回退链的末端是 `undefined`（尚未到达）而不是某个默认值：宿主把 `settings.json` 的
+ * 默认值已经解析进消息里，webview 不再自备兜底（`docs/webview-facts.md` 第 3 节）。
  * 返回解析出的 savedContext 关键字段供调用点继续计算 contextLength / 新建 state。
  */
 function applyLoadedConversationState(
@@ -389,38 +392,63 @@ function applyLoadedConversationState(
   // 优先消息顶层（宿主已按当前 settings 校验过），其次用 savedContext.provider 与消息 model 组合
   // （旧数据兼容），都没有时由调用点继续回退到会话快照 / settings.json 默认值。
   const msgModelRef = modelRefOf((msg as any).provider ?? savedCtxProvider, (msg as any).model);
-  // 优先使用消息中的 agentMode（扩展侧运行时内存值），没有则默认 risk（关键）
-  props.setAgentMode((msg as any).agentMode || 'risk');
-  props.agentModeReadyRef.current = true;
-  props.setAgentModeReady(true);
+  // 询问模式：宿主已解析（会话记录 → settings.json 默认值）；消息未带时保持未到达
+  const msgAgentMode = (msg as any).agentMode as AgentMode | undefined;
+  if (msgAgentMode) props.setAgentMode(msgAgentMode);
   // 会话级配置（model / thinking / prompt）已随对话加载下发：解除发送按钮禁用
   props.setConfigReady(true);
-  // 提示词模式：优先使用 meta.json 中保存的 savedContext.promptMode，为空回退到普通模式
-  props.setPromptMode(savedCtxPromptMode ?? 'normal');
+  // 提示词模式：优先使用 meta.json 中保存的 savedContext.promptMode；未保存时保持未到达
+  if (savedCtxPromptMode) props.setPromptMode(savedCtxPromptMode);
   if (savedState) {
     // savedState 分支：thinkingMode 优先 savedContext，回退 savedState，再回退当前对话 effort
     props.setThinkingMode(savedCtxThinkingMode || savedState.thinkingMode || currentProps.thinkingMode);
-    // webSearch：优先 savedContext，回退 savedState，再回退设置默认值
+    // webSearch：优先 savedContext，回退 savedState，再回退新对话默认值（未到达则为 undefined）
     props.setWebSearch(
       typeof savedCtxWebSearch === 'boolean'
         ? savedCtxWebSearch
-        : (savedState.webSearch ?? currentProps.settingsDefaults.webSearch ?? false)
+        : (savedState.webSearch ?? currentProps.settingsDefaults.webSearch)
     );
     // 模型身份整体恢复：消息顶层 → 会话快照 → settings.json 默认值
     props.setModelRef(msgModelRef ?? savedState.modelRef ?? currentProps.settingsDefaults.modelRef);
   } else {
     // 无 savedState：thinkingMode 没有 savedContext 时继承当前对话 effort
     props.setThinkingMode(savedCtxThinkingMode || currentProps.thinkingMode);
-    // webSearch：优先 savedContext，回退设置默认值
+    // webSearch：优先 savedContext，回退新对话默认值（未到达则为 undefined）
     props.setWebSearch(
       typeof savedCtxWebSearch === 'boolean'
         ? savedCtxWebSearch
-        : (currentProps.settingsDefaults.webSearch ?? false)
+        : currentProps.settingsDefaults.webSearch
     );
     // 模型身份整体恢复：消息顶层 → settings.json 默认值
     props.setModelRef(msgModelRef ?? currentProps.settingsDefaults.modelRef);
   }
   return { savedCtxPromptMode, savedCtxThinkingMode, savedCtxWebSearch, savedCtxToken };
+}
+
+/**
+ * 设置面板载荷的必填字段校验：返回缺失 / 非法的字段名列表。
+ *
+ * 载荷由宿主一次给齐（`docs/webview-facts.md` 第 6 节），缺字段即协议错误；
+ * 此时不打开面板，避免用空值把用户误导去重配。
+ */
+function missingPanelFields(payload: LlmConfigPanelPayload): string[] {
+  const problems: string[] = [];
+  if (payload.thinkingEffort !== 'off' && payload.thinkingEffort !== 'low'
+    && payload.thinkingEffort !== 'high' && payload.thinkingEffort !== 'max') {
+    problems.push('thinkingEffort');
+  }
+  if (payload.defaultAgentMode !== 'manual' && payload.defaultAgentMode !== 'risk'
+    && payload.defaultAgentMode !== 'auto') {
+    problems.push('defaultAgentMode');
+  }
+  if (payload.defaultPromptMode !== 'normal' && payload.defaultPromptMode !== 'minimal'
+    && payload.defaultPromptMode !== 'mixed') {
+    problems.push('defaultPromptMode');
+  }
+  if (payload.language !== 'auto' && payload.language !== 'zh' && payload.language !== 'en') {
+    problems.push('language');
+  }
+  return problems;
 }
 
 /** updateToolStatus 缓冲条目的形状（pendingToolStatusRef / bufferedToolStatusRef 共用） */
@@ -515,11 +543,10 @@ export interface UseMessageHandlerProps {
   setCurrentSessionId: (v: string | null) => void;
   setParentSessionId: (v: string | null) => void;
   setAgentMode: (v: AgentMode) => void;
-  /** agentMode 是否已收到具体值；false 时 UI 只显示 loading 菜单项 */
-  setAgentModeReady: (v: boolean) => void;
   setPromptMode: (v: PromptMode | undefined) => void;
   setThinkingMode: (v: ThinkingMode | undefined) => void;
-  setWebSearch: (v: boolean) => void;
+  /** undefined = 尚未从宿主获取到（保持等待态，不写猜测值） */
+  setWebSearch: (v: boolean | undefined) => void;
   /** 当前选择的模型身份（provider + model）；undefined = 尚未选择 / 未配置 */
   setModelRef: (v: ModelRef | undefined) => void;
   setContextLength: (v: number | ((prev: number) => number)) => void;
@@ -531,24 +558,17 @@ export interface UseMessageHandlerProps {
   /** core 推来会话运行时状态时递增，强制对话列表重渲染以刷新流水灯与 abort 按钮 */
   setSessionIdleVersion: (v: number | ((prev: number) => number)) => void;
   setExpandedSubSessions: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
-  /** 全部 provider 及其模型列表（菜单三级子菜单数据源） */
+  /** 全部 provider 及其模型列表（菜单三级子菜单数据源）；空数组 = 宿主答了「没有配置模型」 */
   setProviderModels: (v: ProviderModels[]) => void;
   setBalance: (v: number | undefined) => void;
   setBalanceCurrency: (v: string | undefined) => void;
   setIsUnlimited: (v: boolean | undefined) => void;
   setCurrentSessionIdRef: (sid: string | null) => void;
-  /** LLM 配置面板 */
-  setShowLLMConfig: (v: boolean) => void;
-  setLlmConfigBaseURL: (v: string) => void;
-  setLlmConfigWebSearch: (v: boolean) => void;
-  setLlmConfigThinkingEffort: (v: ThinkingMode) => void;
-  setLlmConfigDefaultAgentMode: (v: AgentMode) => void;
-  setLlmConfigDefaultPromptMode: (v: PromptMode) => void;
-  setLlmConfigApiKey: (v: string) => void;
-  setLlmConfigProviders: (v: ProviderConfig[]) => void;
-  setLlmConfigActiveProvider: (v: string) => void;
-  /** MCP 默认启用列表（设置面板「默认配置」编辑用） */
-  setLlmConfigMcpServers: (v: McpServerInfo[]) => void;
+  /**
+   * LLM 配置面板载荷：宿主随 `showLLMConfig` 一次给齐；`null` 表示关闭面板。
+   * 载荷到达即面板打开，webview 不补默认值（`docs/webview-facts.md` 第 6 节）。
+   */
+  setLlmConfigPayload: (v: LlmConfigPanelPayload | null) => void;
   /** 服务商配置完成状态：未完成时输入框禁用并引导打开设置；null 表示尚未探测到配置 */
   setProviderConfigured: (v: boolean | null) => void;
   /** 会话配置（模型 / 思考强度 / 提示词模式等）是否已从宿主获取到 */
@@ -557,8 +577,6 @@ export interface UseMessageHandlerProps {
   messages: Message[];
   /** 界面语言变化时递增，App 通过 key 重挂载内容区刷新所有文案 */
   setLocaleVersion: React.Dispatch<React.SetStateAction<number>>;
-  /** 设置面板中显示的界面语言 */
-  setLlmConfigLanguage: (v: UiLanguage) => void;
   /** settings.json 默认值（model / thinkingMode / agentMode / promptMode） */
   setSettingsDefaults: React.Dispatch<React.SetStateAction<SettingsDefaults>>;
   /** settings.json 默认值（当前值，供新会话初始化使用） */
@@ -568,13 +586,13 @@ export interface UseMessageHandlerProps {
   showThinkingAnimation: boolean;
   animationMode: 'thinking' | 'compacting';
   hasActiveQuery: boolean;
-  agentMode: AgentMode;
+  /** 会话询问模式；undefined = 尚未从宿主获取到 */
+  agentMode: AgentMode | undefined;
   promptMode: PromptMode | undefined;
   thinkingMode: ThinkingMode | undefined;
   currentFile: string;
   selectedLines: { start: number; end: number } | null;
   currentSessionIdRef: React.MutableRefObject<string | null>;
-  agentModeReadyRef: React.MutableRefObject<boolean>;
   sessionStatesRef: React.MutableRefObject<Map<string, SessionState>>;
   /** core 推送的会话运行时状态（idle / waiting）：对话树流水灯与 abort 按钮的唯一数据源 */
   sessionRuntimeStatesRef: React.MutableRefObject<Map<string, { idle: boolean; waiting: boolean }>>;
@@ -1432,9 +1450,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               props.setAnimationMode(isCompacting ? 'compacting' : 'thinking');
               // 同步到 session 状态，确保对话列表的流水灯与引擎实时状态一致
               savedState.hasActiveQuery = isCompacting || runtimeActive;
-              // 两分支相同的 setter 序列（agentMode/ready、promptMode、thinkingMode、webSearch、model）收敛到辅助函数
+              // 两分支相同的 setter 序列（agentMode、promptMode、thinkingMode、webSearch、model）收敛到辅助函数
               const common = applyLoadedConversationState(msg, props, propsRef.current, savedState);
-              savedState.promptMode = common.savedCtxPromptMode ?? 'normal';
+              if (common.savedCtxPromptMode) savedState.promptMode = common.savedCtxPromptMode;
               // 优先使用 savedContext.totalContextTokens（meta.json 中持久化的最新值），
               // 回退到 savedState.contextLength（内存中保存的快照值）。
               // 取两者的最大值以处理以下场景：
@@ -1492,8 +1510,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                     && activityPhase !== 'text',
                   animationMode: 'thinking',
                   hasActiveQuery: runtimeActive,
-                  agentMode: (msg as any).agentMode || 'risk',
-                  promptMode: common.savedCtxPromptMode ?? 'normal',
+                  // 询问模式 / 提示词模式：宿主未下发时保持未到达（不写猜测值）
+                  agentMode: (msg as any).agentMode as AgentMode | undefined,
+                  promptMode: common.savedCtxPromptMode,
                   thinkingMode: common.savedCtxThinkingMode || propsRef.current.thinkingMode,
                   webSearch: typeof common.savedCtxWebSearch === 'boolean' ? common.savedCtxWebSearch : propsRef.current.settingsDefaults.webSearch,
                   contextLength: restoredVal,
@@ -2071,8 +2090,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             // 默认工作模式 / 思考强度 / 联网搜索保持原有行为：保存后应用到当前对话
             if (saved.defaultAgentMode) {
               props.setAgentMode(saved.defaultAgentMode);
-              props.agentModeReadyRef.current = true;
-              props.setAgentModeReady(true);
               const curSid = props.currentSessionIdRef.current;
               if (curSid) {
                 const state = props.sessionStatesRef.current.get(curSid);
@@ -2153,8 +2170,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             props.setThinkingMode(defaults.thinkingMode);
             if (defaults.agentMode) {
               props.setAgentMode(defaults.agentMode);
-              props.agentModeReadyRef.current = true;
-              props.setAgentModeReady(true);
             }
             if (defaults.promptMode === 'normal' || defaults.promptMode === 'minimal' || defaults.promptMode === 'mixed') {
               props.setPromptMode(defaults.promptMode);
@@ -2210,20 +2225,39 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           }
           break;
         case 'showLLMConfig': {
-          // 显示 LLM 配置面板（启动时 apiKey 为空或用户点击设置时触发）
-          props.setLlmConfigBaseURL((msg as any).baseURL || '');
-          props.setLlmConfigWebSearch(!!(msg as any).webSearch);
-          props.setLlmConfigThinkingEffort((msg as any).thinkingEffort || 'off');
-          props.setLlmConfigDefaultAgentMode((msg as any).defaultAgentMode || 'risk');
-          props.setLlmConfigDefaultPromptMode((msg as any).defaultPromptMode === 'minimal' || (msg as any).defaultPromptMode === 'mixed' ? (msg as any).defaultPromptMode : 'normal');
-          props.setLlmConfigApiKey((msg as any).apiKey || '');
-          const llmLanguage = (msg as any).language;
-          props.setLlmConfigLanguage(llmLanguage === 'zh' || llmLanguage === 'en' || llmLanguage === 'auto' ? llmLanguage : 'auto');
-          // MCP 默认启用列表（设置面板「默认配置」）
-          const rawMcpServers = (msg as any).mcpServers;
-          props.setLlmConfigMcpServers(
-            Array.isArray(rawMcpServers)
-              ? rawMcpServers.map((s: any) => ({
+          // 显示 LLM 配置面板（启动时 apiKey 为空或用户点击设置时触发）。
+          // 面板载荷由宿主一次给齐，webview 不补默认值（`docs/webview-facts.md` 第 6 节）；
+          // 载荷字段缺失即协议错误，这里逐字段校验后组装，缺字段时不打开面板。
+          const raw = msg as Record<string, any>;
+          const rawProviders = raw.providers;
+          const payload: LlmConfigPanelPayload = {
+            baseURL: String(raw.baseURL ?? ''),
+            webSearch: !!raw.webSearch,
+            thinkingEffort: raw.thinkingEffort,
+            defaultAgentMode: raw.defaultAgentMode,
+            defaultPromptMode: raw.defaultPromptMode,
+            apiKey: String(raw.apiKey ?? ''),
+            language: raw.language,
+            activeProvider: String(raw.activeProvider ?? ''),
+            providers: Array.isArray(rawProviders)
+              ? rawProviders.map((p: any) => ({
+                  key: String(p?.key || ''),
+                  baseURL: String(p?.baseURL || ''),
+                  apiKey: String(p?.apiKey || ''),
+                  models: Array.isArray(p?.models)
+                    ? (p.models as unknown[])
+                        .filter((m): m is string => typeof m === 'string' && !!m.trim())
+                        .map((m) => m.trim())
+                    : [],
+                  defaultModel: String(p?.defaultModel || ''),
+                  // apiType 已下放到模型级：随 modelConfigs 一起回传
+                  modelConfigs: (p?.modelConfigs && typeof p.modelConfigs === 'object' && !Array.isArray(p.modelConfigs))
+                    ? p.modelConfigs
+                    : {},
+                }))
+              : [],
+            mcpServers: Array.isArray(raw.mcpServers)
+              ? raw.mcpServers.map((s: any) => ({
                   name: String(s?.name || ''),
                   type: String(s?.type || 'local'),
                   command: Array.isArray(s?.command) ? (s.command as unknown[]).filter((c): c is string => typeof c === 'string') : [],
@@ -2233,32 +2267,15 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                   enabled: !!s?.enabled,
                 })).filter((s) => !!s.name)
               : [],
-          );
-          const rawProviders = (msg as any).providers;
-          if (Array.isArray(rawProviders)) {
-            props.setLlmConfigProviders(
-              rawProviders.map((p: any) => ({
-                key: String(p?.key || ''),
-                baseURL: String(p?.baseURL || ''),
-                apiKey: String(p?.apiKey || ''),
-                models: Array.isArray(p?.models)
-                  ? (p.models as unknown[])
-                      .filter((m): m is string => typeof m === 'string' && !!m.trim())
-                      .map((m) => m.trim())
-                  : [],
-                defaultModel: String(p?.defaultModel || ''),
-                // apiType 已下放到模型级：随 modelConfigs 一起回传
-                modelConfigs: (p?.modelConfigs && typeof p.modelConfigs === 'object' && !Array.isArray(p.modelConfigs))
-                  ? p.modelConfigs
-                  : {},
-              }))
-            );
-          } else {
-            props.setLlmConfigProviders([]);
+          };
+          const problems = missingPanelFields(payload);
+          if (problems.length > 0) {
+            // 载荷不完整：不打开面板（避免用空值把用户误导去重配），记一条日志
+            console.warn(`[Webview] showLLMConfig 载荷字段缺失：${problems.join(', ')}`);
+            break;
           }
-          props.setLlmConfigActiveProvider(typeof (msg as any).activeProvider === 'string' ? (msg as any).activeProvider : '');
-          props.setProviderConfigured(!!(msg as any).activeProvider && !!((msg as any).apiKey));
-          props.setShowLLMConfig(true);
+          props.setProviderConfigured(!!payload.activeProvider && !!payload.apiKey);
+          props.setLlmConfigPayload(payload);
           break;
         }
         default:

@@ -41,7 +41,7 @@ import { Client, type OpenedCoreChannel } from './Client.js';
 import type { Connection } from './Connection.js';
 import { createEventBus } from './EventBus.js';
 import { primeHostLocale, readUiLanguage } from './coreFacts.js';
-import { getSettingsStore } from './SettingsStore.js';
+import { getSettingsStore, type SettingsStore } from './SettingsStore.js';
 import { resolveCoreKind, type CoreKind } from './coreKind.js';
 import { resolveCoreBinary } from './standalone/coreBinary.js';
 import { CoreDaemon } from './standalone/CoreDaemon.js';
@@ -121,6 +121,9 @@ export function bootstrapCore(
   const settingsStore = getSettingsStore();
   try {
     settingsStore.loadSync();
+    // 启动自检：把「读了哪个文件、读到了什么」打出来。设置页误弹这类问题，
+    // 一眼就能看出是路径不对还是文件内容不对（不再需要靠猜）。
+    log(`[bootstrap] ${describeSettings(settingsStore)}`);
   } catch (error) {
     log(`[bootstrap] Failed to load settings: ${String(error)}`);
   }
@@ -368,6 +371,24 @@ export function bootstrapSnapshot(): BootstrapSnapshot {
     throw new Error('bootstrapCore() has not run; no bootstrap snapshot available.');
   }
   return snapshot;
+}
+
+/**
+ * 启动自检：一行描述「配置读自哪个文件、读到了什么」。
+ *
+ * 「standalone 启动读不到设置、弹设置页」这类问题，靠它可以直接区分是**路径不对**
+ * 还是**文件内容不对**，不必再去猜。只打路径与摘要，不打 apiKey。
+ */
+export function describeSettings(store: SettingsStore): string {
+  const snapshot = store.getSnapshot();
+  const providers = Object.keys(snapshot.llm.providers);
+  const active = snapshot.llm.activeProvider;
+  const apiKey = active ? snapshot.llm.providers[active]?.apiKey : '';
+  return (
+    `settings loaded from ${store.settingsPath} `
+    + `(activeProvider="${active || '(none)'}", apiKey=${apiKey ? 'set' : 'empty'}, `
+    + `providers=[${providers.join(', ')}])`
+  );
 }
 
 function readSnapshot(

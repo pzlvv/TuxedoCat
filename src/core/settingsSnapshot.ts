@@ -106,11 +106,17 @@ export interface SettingsSnapshot {
   defaultPromptMode: PromptPresetId;
 }
 
-/** 默认 Web Search 开关（对齐 `createFallbackConfig().webSearch`） */
+/**
+ * 配置字段的默认值（**唯一来源**，`docs/webview-facts.md` 第 2 节）。
+ *
+ * `settings.json` 缺字段 / 类型不对 / 取值非法时生效的取值只在这里定义：本模块是
+ * `settings.json` 的规范化入口，宿主的其它模块与 core 都读产出的快照，不各自声明常量。
+ * webview 不持有这些取值——事实未到达时它显示等待态（第 3 节）。
+ */
 const DEFAULT_WEB_SEARCH = true;
-/** 默认思考强度（对齐 `createFallbackConfig().thinking_effort`） */
 const DEFAULT_THINKING_EFFORT: ThinkingEffort = 'high';
-/** 是否上报 usage 统计的默认值（对齐 `getEnableUsageStats` 的 `?? true`） */
+const DEFAULT_AGENT_MODE: AgentMode = 'risk';
+const DEFAULT_PROMPT_MODE: PromptPresetId = 'normal';
 const DEFAULT_ENABLE_USAGE_STATS = true;
 
 /**
@@ -230,14 +236,14 @@ function resolveMcpEnabled(raw: unknown): string[] {
   return enabled.filter((name): name is string => typeof name === 'string');
 }
 
-/** 规范化询问模式：白名单外的取值回落到 `risk` */
+/** 规范化询问模式：白名单外的取值回落到默认值 */
 function resolveAgentMode(raw: unknown): AgentMode {
-  return raw === 'manual' || raw === 'auto' ? raw : 'risk';
+  return raw === 'manual' || raw === 'auto' ? raw : DEFAULT_AGENT_MODE;
 }
 
-/** 规范化提示词模式：白名单外的取值回落到 `normal` */
+/** 规范化提示词模式：白名单外的取值回落到默认值 */
 function resolvePromptMode(raw: unknown): PromptPresetId {
-  return raw === 'minimal' || raw === 'mixed' ? raw : 'normal';
+  return raw === 'minimal' || raw === 'mixed' ? raw : DEFAULT_PROMPT_MODE;
 }
 
 /** 规范化思考强度：白名单外的取值回落到 `high` */

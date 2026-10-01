@@ -21,6 +21,7 @@ import { parseFrontmatter, parseSkillFrontmatterFields, parseSkillPaths } from '
 import { substituteArguments, substituteBuiltinVariables } from './variableResolver.js';
 import { logger } from '../Logger.js';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
+import { resolveConfigDir } from '../../config/configDir.js';
 
 /** 内部类型：Skill 与文件路径的关联 */
 interface SkillWithPath {
@@ -36,8 +37,8 @@ interface SkillWithPath {
  * @returns 去重后的 Skill 列表
  */
 export async function getSkillDirCommands(cwd: string): Promise<SkillCommand[]> {
-  const homeDir = process.env.HOME || process.env.USERPROFILE || '';
-  const userSkillsDir = join(homeDir, CONFIG_DIR_NAME, 'skills');
+  // user 目录走统一口径（`config/configDir.ts`）；project 目录相对 cwd
+  const userSkillsDir = join(resolveConfigDir(), 'skills');
   const projectSkillsDir = join(cwd, CONFIG_DIR_NAME, 'skills');
 
   // 同时从 user 和 project 目录加载

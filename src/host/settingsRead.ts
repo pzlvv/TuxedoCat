@@ -13,7 +13,8 @@ import { logger } from '../core/Logger.js';
 import type { AgentMode } from '../core/types.js';
 import type { PromptPresetId } from '../core/prompt/PromptPreset.js';
 import type { ModelRef } from '../core/llm/modelRef.js';
-import { DEEPSEEK_BASE_URL } from '../core/llm/config.js';
+import { DEEPSEEK_BASE_URL } from '../core/endpoints.js';
+import type { ApiType } from '../core/utils/modelConfig.js';
 import type { ThinkingEffort, SettingsSnapshot } from '../core/settingsSnapshot.js';
 import type { McpServerDefinition } from '../core/mcp/parse.js';
 import type { McpServerInfo } from '../core/webviewTypes.js';
@@ -27,6 +28,14 @@ export interface LLMProviderInfo {
   apiKey: string;
   models: string[];
   defaultModel: string;
+  /**
+   * 各模型**已解析**的限值与协议（键为模型名）。
+   *
+   * 取自快照的 `provider.modelLimits`：注册表匹配与用户覆盖的合并由快照解析完成，
+   * 面板只显示结果。面板不自己推断协议——「某个模型用什么协议」是宿主的事实
+   * （`docs/webview-facts.md` 第 3 节）。
+   */
+  modelConfigs: Record<string, { context: number; output: number; apiType: ApiType }>;
 }
 
 /** 设置面板需要的完整 LLM 配置载荷 */
@@ -113,6 +122,13 @@ export function readLlmConfigPanelPayload(snapshot: SettingsSnapshot): LLMConfig
       apiKey: provider.apiKey,
       models: provider.models,
       defaultModel: provider.defaultModel,
+      // 只带面板需要的三项（thinkingTokenBudget 是 core 侧的运行时取值）
+      modelConfigs: Object.fromEntries(
+        Object.entries(provider.modelLimits).map(([model, limits]) => [
+          model,
+          { context: limits.context, output: limits.output, apiType: limits.apiType },
+        ]),
+      ),
     }));
 
   return {

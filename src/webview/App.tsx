@@ -5,7 +5,7 @@ import { Dropdown } from 'antd';
 import InputArea, { InputAreaRef } from './InputArea';
 import MessagesView from './MessagesView';
 import 'antd/dist/reset.css';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, ProviderConfig } from './types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload } from './types';
 import { createSessionState } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
@@ -71,9 +71,6 @@ const App = () => {
   const [animationMode, setAnimationMode] = useState<'thinking' | 'compacting'>('thinking');
   // 界面语言变化版本号：递增后通过 key 重挂载内容区，使所有 t() 文案按新语言重新渲染
   const [localeVersion, setLocaleVersion] = useState(0);
-  // 设置面板中显示的界面语言（来自 settings.json，保存后生效）
-  const [llmConfigLanguage, setLlmConfigLanguage] = useState<'auto' | 'zh' | 'en'>('auto');
-
   // 对话历史状态
   const [conversations, setConversations] = useState<Array<any>>([]);
   const [conversationsLoading, setConversationsLoading] = useState(true);
@@ -104,27 +101,33 @@ const App = () => {
   const [hasActiveQuery, setHasActiveQuery] = useState(false);
   const [contextLength, setContextLength] = useState<number>(0);
   const [maxContextTokens, setMaxContextTokens] = useState<number | null>(null);
-  const [agentMode, setAgentMode] = useState<AgentMode>('risk');
-  /** agentMode 是否已收到会话/默认值；未收到前 UI 显示 loading，不展示具体模式 */
-  const [agentModeReady, setAgentModeReady] = useState(false);
-  const agentModeReadyRef = useRef(false);
+  /**
+   * 会话配置事实（`docs/webview-facts.md` 第 3 节）：全部以 `undefined` 起，
+   * 收到宿主下发的值之前保持「尚未到达」。webview 不设默认值——未到达时输入区显示等待态，
+   * 也不把这些字段当作配置回传给宿主。
+   *
+   * `agentMode` / `webSearch` 的「是否到达」同时是输入区菜单的等待判据。
+   */
+  const [agentMode, setAgentMode] = useState<AgentMode | undefined>(undefined);
   /**
    * 会话关联的提示词模式（普通/极简/混合），持久化到 meta.json。
-   * 不设内置默认值：未从宿主 settings.json 获取到之前保持 undefined，
-   * 发送按钮也会保持禁用（见 configReady）。
+   * 未从宿主获取到之前保持 undefined，发送按钮保持禁用（见 configReady）。
    */
   const [promptMode, setPromptMode] = useState<PromptMode | undefined>(undefined);
   const [thinkingMode, setThinkingMode] = useState<ThinkingMode | undefined>(undefined);
-  const [webSearch, setWebSearch] = useState<boolean>(false);
+  const [webSearch, setWebSearch] = useState<boolean | undefined>(undefined);
   /**
-   * 当前会话选择的模型身份（provider + model）。不设内置默认模型：模型完全由用户配置，
-   * 未获取到之前为 undefined，发送按钮禁用。
+   * 当前会话选择的模型身份（provider + model）。模型完全由用户配置，未获取到之前为
+   * undefined，发送按钮禁用。
    * provider 与 model 必须成对存在（provider 空串非法，不表示「未知」），
    * 因此不拆成两个独立状态，避免二者漂移。
    */
   const [modelRef, setModelRef] = useState<ModelRef | undefined>(undefined);
-  /** 全部 provider 及其模型列表（菜单按 provider 建立三级子菜单） */
-  const [providerModels, setProviderModels] = useState<ProviderModels[]>([]);
+  /**
+   * 全部 provider 及其模型列表（菜单按 provider 建立三级子菜单）。
+   * `undefined` = 尚未收到宿主应答；空数组 = 宿主答了「没有配置模型」。
+   */
+  const [providerModels, setProviderModels] = useState<ProviderModels[] | undefined>(undefined);
   // settings.json 中的默认值（新对话创建时一次性使用，避免先显示 risk 再跳变）。
   // 不内置任何兜底值：未收到宿主回传前字段为 undefined。
   const [settingsDefaults, setSettingsDefaults] = useState<SettingsDefaults>({});
@@ -153,18 +156,12 @@ const App = () => {
   // 正在智能命名的会话 ID 集合
   const [namingSessions, setNamingSessions] = useState<Set<string>>(new Set());
 
-  // LLM 配置面板状态
-  const [showLLMConfig, setShowLLMConfig] = useState(false);
-  const [llmConfigBaseURL, setLlmConfigBaseURL] = useState('');
-  const [llmConfigWebSearch, setLlmConfigWebSearch] = useState(false);
-  const [llmConfigThinkingEffort, setLlmConfigThinkingEffort] = useState<ThinkingMode>('off');
-  const [llmConfigDefaultAgentMode, setLlmConfigDefaultAgentMode] = useState<AgentMode>('risk');
-  const [llmConfigDefaultPromptMode, setLlmConfigDefaultPromptMode] = useState<PromptMode>('normal');
-  const [llmConfigApiKey, setLlmConfigApiKey] = useState('');
-  const [llmConfigProviders, setLlmConfigProviders] = useState<ProviderConfig[]>([]);
-  const [llmConfigActiveProvider, setLlmConfigActiveProvider] = useState('');
-  // 设置面板「默认配置」里的 MCP 默认启用列表（全局 settings.json 的 mcp.enabled）
-  const [llmConfigMcpServers, setLlmConfigMcpServers] = useState<McpServerInfo[]>([]);
+  /**
+   * LLM 配置面板载荷：宿主随 `showLLMConfig` 一次给齐（`docs/webview-facts.md` 第 6 节）。
+   *
+   * `null` = 尚未收到载荷，面板不打开。webview 不补默认值，也不在载荷缺失时打开空面板。
+   */
+  const [llmConfigPayload, setLlmConfigPayload] = useState<LlmConfigPanelPayload | null>(null);
   // 服务商配置是否已完成（activeProvider 存在且 apiKey 非空）；未完成时禁用输入框并引导打开设置。
   // 初始为 null（尚未探测到配置），避免启动时因探测延迟而误显示"请配置模型服务"。
   const [providerConfigured, setProviderConfigured] = useState<boolean | null>(null);
@@ -206,8 +203,10 @@ const App = () => {
   // 当 agentMode 变化时通知 extension（会话级，持久化到 meta.json）。
   // 会话尚未建立时 currentSessionId 为 null：此时不下发，等会话建立后本 effect 会因
   // currentSessionId 变化重跑并补发，避免以 null 作为 sessionId 写入 core 存储 / meta.json。
+  // 未获取到配置前 agentMode 为 undefined：此时不下发，避免用 webview 的猜测
+  // 覆盖会话配置（`docs/webview-facts.md` 第 5 节）。
   useEffect(() => {
-    if (!currentSessionId) return;
+    if (!currentSessionId || !agentMode) return;
     postMessage({ type: 'setAgentMode', mode: agentMode, sessionId: currentSessionId });
   }, [agentMode, currentSessionId]);
 
@@ -439,21 +438,19 @@ const App = () => {
     setVisibleConversationCount, finishConversationLoad, resetConversationLoad,
     setTheme, setThemeInitialized, setCurrentFile, setSelectedLines,
     setConversationTitle, setMaxContextTokens, setSkills, setMcpServers, setConversationDropdownOpen,
-    setCurrentSessionId, setParentSessionId, setAgentMode, setAgentModeReady, setThinkingMode,
+    setCurrentSessionId, setParentSessionId, setAgentMode, setThinkingMode,
     setModelRef, setWebSearch, setContextLength, setQueuedMessage,
     setUserChoiceRequest, setNamingSessions, setStreamingVersion, setForceScrollKey,
     setSessionIdleVersion,
     setExpandedSubSessions, setProviderModels, setBalance, setBalanceCurrency, setIsUnlimited,
-    setCurrentSessionIdRef, setShowLLMConfig, setLlmConfigBaseURL, setLlmConfigWebSearch,
-    setLlmConfigThinkingEffort, setLlmConfigDefaultAgentMode, setLlmConfigDefaultPromptMode, setLlmConfigApiKey,
-    setLlmConfigProviders, setLlmConfigActiveProvider, setLlmConfigMcpServers,
-    setSettingsDefaults, settingsDefaults, setLocaleVersion, setLlmConfigLanguage,
+    setCurrentSessionIdRef, setLlmConfigPayload,
+    setSettingsDefaults, settingsDefaults, setLocaleVersion,
     setProviderConfigured,
     setConfigReady,
     pushNotice,
     messages,
     currentSessionIdRef, sessionStatesRef, sessionRuntimeStatesRef, userChoiceRequestRef, userChoiceInputRef,
-    agentModeReadyRef, savedMainInputRef, queuedMessageRef, abortedSessionsRef, mcpServersBySessionRef, cursorPositionRef, choiceCursorPositionRef,
+    savedMainInputRef, queuedMessageRef, abortedSessionsRef, mcpServersBySessionRef, cursorPositionRef, choiceCursorPositionRef,
     newChatSessionRef,
     mainInputRef, choiceInputRef, messagesContainerRef, userScrolledAwayRef,
     streamRafRef, toolStatusRafRef, pendingStreamRef, pendingToolStatusRef,
@@ -885,24 +882,25 @@ const App = () => {
 
   // LLM 配置面板：以覆盖层形式渲染，打开/关闭时不卸载对话页面，
   // 避免输入框内已输入但未发送的内容被清空。
-  const settingsPanel = showLLMConfig ? (
+  // 载荷未到达时不渲染（webview 不补默认值，也不打开空面板）。
+  const settingsPanel = llmConfigPayload ? (
     <LLMConfigPanel
       colors={colors}
-      initialBaseURL={llmConfigBaseURL}
-      initialWebSearch={llmConfigWebSearch}
-      initialThinkingEffort={llmConfigThinkingEffort}
-      initialDefaultAgentMode={llmConfigDefaultAgentMode}
-      initialDefaultPromptMode={llmConfigDefaultPromptMode}
-      initialApiKey={llmConfigApiKey}
-      initialLanguage={llmConfigLanguage}
-      initialProviders={llmConfigProviders}
-      initialActiveProvider={llmConfigActiveProvider}
-      initialMcpServers={llmConfigMcpServers}
+      initialBaseURL={llmConfigPayload.baseURL}
+      initialWebSearch={llmConfigPayload.webSearch}
+      initialThinkingEffort={llmConfigPayload.thinkingEffort}
+      initialDefaultAgentMode={llmConfigPayload.defaultAgentMode}
+      initialDefaultPromptMode={llmConfigPayload.defaultPromptMode}
+      initialApiKey={llmConfigPayload.apiKey}
+      initialLanguage={llmConfigPayload.language}
+      initialProviders={llmConfigPayload.providers}
+      initialActiveProvider={llmConfigPayload.activeProvider}
+      initialMcpServers={llmConfigPayload.mcpServers}
       currentSessionId={currentSessionId}
       currentModel={modelRef?.model ?? ''}
       currentProvider={modelRef?.provider ?? ''}
       onClose={() => {
-        setShowLLMConfig(false);
+        setLlmConfigPayload(null);
         // 关闭设置后把焦点还给主输入框，继续输入不受影响
         setTimeout(() => mainInputRef.current?.focus(), 0);
       }}
@@ -1233,7 +1231,6 @@ onClick={handleNewConversation}
               maxContextTokens={maxContextTokens}
               abortEnabled={abortEnabled}
               agentMode={agentMode}
-              agentModeReady={agentModeReady}
               setAgentMode={setAgentMode}
               promptMode={promptMode}
               setPromptMode={setPromptMode}

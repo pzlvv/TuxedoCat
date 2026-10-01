@@ -14,9 +14,8 @@
 
 import { mkdir, writeFile } from 'fs/promises';
 import { readFileSync } from 'fs';
-import { homedir } from 'os';
 import { join } from 'path';
-import { CONFIG_DIR_NAME } from '../config/project.js';
+import { resolveConfigDir } from '../config/configDir.js';
 import { logger } from '../core/Logger.js';
 import { HIGHLIGHT_LANGUAGES_FIELD } from './highlightLanguages.js';
 import type { ModelRef } from '../core/llm/modelRef.js';
@@ -32,6 +31,14 @@ export type SettingsJsonMutator = (cfg: Record<string, any>) => void | Record<st
 
 /** 界面语言取值（与 `settings.json` 的 `uiLanguage` 一致） */
 export type UiLanguage = 'auto' | 'zh' | 'en';
+
+/**
+ * 界面语言的默认值（`auto` = 跟随系统）。
+ *
+ * `uiLanguage` 只有 UI 侧消费、不进配置快照，因此它的缺省取值由宿主在这里决定
+ * （`docs/webview-facts.md` 第 2 节：默认值归宿主）。webview 不持有该取值。
+ */
+const DEFAULT_UI_LANGUAGE: UiLanguage = 'auto';
 
 /**
  * 顶层已知字段。
@@ -73,7 +80,7 @@ export class SettingsStore {
   /**
    * 显式配置目录（测试注入）；为 null 时每次按 `~/<CONFIG_DIR_NAME>` 现算。
    *
-   * 现算而不是构造时缓存：`os.homedir()` 读的是环境变量，测试会临时改
+   * 现算而不是构造时缓存：`resolveConfigDir()` 读的是环境变量，测试会临时改
    * `HOME` / `USERPROFILE`（`balanceProviderKey.test.ts` 等），缓存住会读到旧值。
    */
   private readonly configDirOption: string | null;
@@ -92,9 +99,9 @@ export class SettingsStore {
     this.log = options.log ?? (() => {});
   }
 
-  /** 配置目录：`~/<CONFIG_DIR_NAME>`（未显式注入时） */
+  /** 配置目录：`~/<CONFIG_DIR_NAME>`（未显式注入时；口径见 `config/configDir.ts`） */
   get configDir(): string {
-    return this.configDirOption ?? join(homedir(), CONFIG_DIR_NAME);
+    return this.configDirOption ?? resolveConfigDir();
   }
 
   /** settings.json 路径 */
@@ -121,6 +128,36 @@ export class SettingsStore {
     this.warnUnknownKeys(this.rawSettings);
     this.mcpServers = parseMcpServerDefinitions(this.readMcpFile());
     this.snapshot = resolveSettingsSnapshot(this.rawSettings);
+    return this.snapshot;
+  }
+
+  /**
+   * 重新读盘并刷新快照（**打开设置面板 / webview 挂载时调用**）。
+   *
+   * 存在意义：本 store 只在启动期 `loadSync()` 一次，之后不监听文件
+   * （`docs/core-ui-separation.md` 第 4.5 节）。若启动瞬间文件不可用，或用户在外部
+   * 手工恢复 / 编辑了 `settings.json`，进程会一直停留在旧快照上——表现就是
+   * 「设置没被读到、反复弹设置页」。这里给一个显式的重读入口，把手工修改收敛回来。
+   *
+   * 与 `loadSync()` 的差别：
+   * - `mcp.json` 仍只在 `loadSync()` 时读一次（语义不变，重开工作区生效）；
+   * - 只有内容真的变化才 `notify()`（避免每次开面板都向所有 Connection 重推快照）。
+   */
+  refreshFromDisk(): SettingsSnapshot {
+    const raw = this.readSettingsFile();
+    const firstLoad = this.snapshot === null;
+    const changed = firstLoad || JSON.stringify(raw) !== JSON.stringify(this.rawSettings);
+    if (!changed) return this.getSnapshot();
+
+    this.rawSettings = raw;
+    this.warnUnknownKeys(raw);
+    if (firstLoad) {
+      // 尚未 loadSync：mcp.json 一起读（与 loadSync 同口径）
+      this.mcpServers = parseMcpServerDefinitions(this.readMcpFile());
+    }
+    this.snapshot = resolveSettingsSnapshot(raw);
+    // 首次加载没有订阅者；运行期变化才通知（宿主据此重推快照给 Core）
+    if (!firstLoad) this.notify();
     return this.snapshot;
   }
 
@@ -153,7 +190,7 @@ export class SettingsStore {
   /** 界面语言（`settings.json` 的 `uiLanguage`）；只有 UI 消费，不进快照 */
   readUiLanguage(): UiLanguage {
     const lang = this.rawSettings.uiLanguage;
-    return lang === 'zh' || lang === 'en' || lang === 'auto' ? lang : 'auto';
+    return lang === 'zh' || lang === 'en' || lang === 'auto' ? lang : DEFAULT_UI_LANGUAGE;
   }
 
   /** 已记录的 Shiki 语言列表（`settings.json` 的 `highlightLanguages`）；只有 UI 消费，不进快照 */

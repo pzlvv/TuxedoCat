@@ -24,14 +24,15 @@ export interface UseAppHandlersProps {
   hasActiveQuery: boolean;
   contextLength: number;
   maxContextTokens: number | null;
-  agentMode: AgentMode;
+  /** 会话询问模式；undefined = 尚未从宿主获取到（不代宿主决定） */
+  agentMode: AgentMode | undefined;
   thinkingMode: ThinkingMode | undefined;
   /** 会话关联的提示词模式（普通/极简/混合，持久化到 meta.json） */
   promptMode: PromptMode | undefined;
   /** 当前选择的模型身份（provider + model）；undefined = 尚未选择 / 未配置 */
   modelRef: ModelRef | undefined;
-  /** 会话关联的 Web Search 开关 */
-  webSearch: boolean;
+  /** 会话关联的 Web Search 开关；undefined = 尚未从宿主获取到 */
+  webSearch: boolean | undefined;
   /** settings.json 中的默认值（新对话一次性使用） */
   settingsDefaults: SettingsDefaults;
   hasCompactArchive: boolean;
@@ -56,10 +57,11 @@ export interface UseAppHandlersProps {
   setContextLength: (v: number | ((prev: number) => number)) => void;
   setMaxContextTokens: (v: number | null) => void;
   setForceScrollKey: (v: number | ((prev: number) => number)) => void;
-  setAgentMode: (v: AgentMode) => void;
+  /** undefined = 尚未从宿主获取到（保持等待态，不写猜测值） */
+  setAgentMode: (v: AgentMode | undefined) => void;
   setThinkingMode: (v: ThinkingMode | undefined) => void;
   setPromptMode: (v: PromptMode | undefined) => void;
-  setWebSearch: (v: boolean) => void;
+  setWebSearch: (v: boolean | undefined) => void;
   setModelRef: (v: ModelRef | undefined) => void;
   setHasCompactArchive: (v: boolean) => void;
   setIsCompactExpanded: (v: boolean) => void;
@@ -271,6 +273,8 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       filePath: props.currentFile,
       fileHidden: props.fileHidden,
       selectedLines: props.selectedLines,
+      // 会话配置只带「已从宿主获取到」的字段：未到达的字段留空，
+      // 由宿主按自己的配置解析（webview 不代宿主决定，`docs/webview-facts.md` 第 5 节）。
       agentMode: props.agentMode,
       thinkingMode: props.thinkingMode,
       webSearch: props.webSearch,

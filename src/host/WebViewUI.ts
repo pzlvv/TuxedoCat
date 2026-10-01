@@ -632,9 +632,13 @@ export class WebViewUI implements WebViewUiPort {
   async showLLMConfigPanel(trigger: LLMConfigPanelTrigger, sessionId: string | null): Promise<void> {
     let message: Extract<WebviewMessage, { type: 'showLLMConfig' }>;
     try {
+      // 打开面板前先重读一次磁盘：手工恢复 / 编辑 settings.json 后不必重载窗口
+      // （启动期只 loadSync 一次，不监听文件，见 `docs/core-ui-separation.md` 第 4.5 节）。
+      const store = getSettingsStore();
+      store.refreshFromDisk();
       // 面板载荷与「是否已配置 provider」都来自宿主自己的快照
       // （配置归宿主，见 `settingsRead.ts`），不问 Core。
-      const snapshot = getSettingsStore().getSnapshot();
+      const snapshot = store.getSnapshot();
       const payload = readLlmConfigPanelPayload(snapshot);
       const hasActiveProvider = readHasActiveProviderSetting(snapshot);
       // 补弹只在「有 provider 缺 key」时触发；新对话引导只在配置不完整时触发
@@ -649,22 +653,11 @@ export class WebViewUI implements WebViewUiPort {
         language: readUiLanguage(),
       };
     } catch (err) {
-      this.log(`[WebViewUI] Failed to read LLM config: ${err}`);
-      // 读取失败仍打开面板，但不预置任何默认值（避免内置默认被误当成用户配置）
-      message = {
-        type: 'showLLMConfig',
-        baseURL: '',
-        webSearch: false,
-        thinkingEffort: 'off',
-        defaultModel: '',
-        defaultAgentMode: 'risk',
-        defaultPromptMode: 'normal',
-        apiKey: '',
-        providers: [],
-        activeProvider: '',
-        language: readUiLanguage(),
-        mcpServers: [],
-      };
+      // 读取失败无法判断「是否真的未配置」，也无法给出面板载荷。载荷字段全部必选
+      // （`docs/webview-facts.md` 第 6 节），不补默认值：不打开面板，只记日志。
+      // 用一份空面板顶上去会把用户误导去重配，甚至把空值当默认值写回磁盘。
+      this.log(`[WebViewUI] Failed to read LLM config; LLM 配置面板未打开: ${err}`);
+      return;
     }
     this.host.sendToWebview(sessionId ? { ...message, sessionId } : message);
   }

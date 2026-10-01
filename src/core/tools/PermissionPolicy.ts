@@ -15,6 +15,7 @@ import { expandPath } from '../utils/path.js';
 import { getProjectRoot } from '../history/Config.js';
 import { buildEditDiffHunks } from '../utils/editDiff.js';
 import { logger } from '../Logger.js';
+import { getSettings } from '../settings.js';
 import type { PermissionDiffPayload, PermissionResult } from './Tool.js';
 import type { AgentMode } from '../types.js';
 
@@ -41,7 +42,9 @@ function normalizeToolArgs(args: unknown): Record<string, any> {
 
 /**
  * 会话询问模式的存储（core 拥有会话配置）。
- * 会话级覆盖 → settings.json 默认 → risk 兜底。
+ *
+ * 会话级覆盖优先；会话尚未记录时取配置快照的 `defaultAgentMode`——默认值的唯一来源是
+ * 宿主的快照解析（`docs/webview-facts.md` 第 2 节），core 不再自持兜底常量。
  */
 const sessionAgentModes = new Map<string, AgentMode>();
 
@@ -55,19 +58,15 @@ export function getStoredSessionAgentMode(sessionId: string): AgentMode | undefi
   return sessionAgentModes.get(sessionId);
 }
 
-/** 读取会话的询问模式；未记录时回退默认（settings.json 的 defaultAgentMode） */
+/**
+ * 读取会话的询问模式。
+ *
+ * 会话级覆盖优先；未记录时取配置快照的 `defaultAgentMode`。快照未到达时
+ * `getSettings()` 抛错——权限决策发生在查询链路内，此时快照必然已就位，
+ * 缺失属于接线错误，不静默降级。
+ */
 export function getSessionAgentMode(sessionId: string): AgentMode {
-  const inMemory = sessionAgentModes.get(sessionId);
-  if (inMemory) return inMemory;
-  try {
-    const { getDefaultAgentMode } = require('../llm/config.js') as typeof import('../llm/config.js');
-    const cfg = require('../history/Config.js') as typeof import('../history/Config.js');
-    void cfg;
-    // getDefaultAgentMode 是异步的；这里不做异步化（权限决策在 async 链内，调用方再补读）。
-    // 同步路径下先返回 risk 兜底，由调用方传入已解析的 mode 覆盖。
-    void getDefaultAgentMode;
-  } catch { /* ignore */ }
-  return 'risk';
+  return sessionAgentModes.get(sessionId) ?? getSettings().defaultAgentMode;
 }
 
 /**
@@ -75,15 +74,16 @@ export function getSessionAgentMode(sessionId: string): AgentMode {
  *
  * 完整继承主对话的 manual / risk / auto：子代理只是主对话的执行延伸，
  * 权限策略必须与主对话一致，否则会出现「主对话 manual 逐条确认、子代理却
- * 自动放行非危险操作」这类越权行为。父会话在内存中无记录时回退 risk。
+ * 自动放行非危险操作」这类越权行为。父会话在内存中无记录时取配置快照的默认值。
  */
 export function inheritAgentMode(parentSessionId: string, childSessionId: string): void {
-  inheritAgentModeFrom(sessionAgentModes.get(parentSessionId), childSessionId);
+  const parentMode = sessionAgentModes.get(parentSessionId) ?? getSettings().defaultAgentMode;
+  inheritAgentModeFrom(parentMode, childSessionId);
 }
 
-/** 子会话继承父会话的询问模式（带显式父值；供没有 Map 记录时的 fallback） */
-export function inheritAgentModeFrom(parentMode: AgentMode | undefined, childSessionId: string): void {
-  sessionAgentModes.set(childSessionId, parentMode ?? 'risk');
+/** 子会话继承父会话的询问模式（父值由调用方解析后显式传入） */
+export function inheritAgentModeFrom(parentMode: AgentMode, childSessionId: string): void {
+  sessionAgentModes.set(childSessionId, parentMode);
 }
 
 /**

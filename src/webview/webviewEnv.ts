@@ -207,15 +207,20 @@ export function getPreloadedHighlightLanguages(): string[] {
 }
 
 /**
- * 宿主注入的首帧主题（仅 Electron 宿主会注入 window.__initialTheme）。
+ * 宿主注入的首帧主题（`window.__initialTheme`）。
  *
- * 主题的权威值仍由宿主的 `setTheme` 消息下发（VS Code 跟随编辑器主题、
- * Electron 跟随 nativeTheme）；这里只用于 React 渲染前选对兜底背景色，
- * 避免浅色主题下先闪一帧深色 loading。其他宿主 / 未注入时回退 'dark'
- * （与独立宿主的深色兜底一致）。
+ * 主题的权威值由宿主的 `setTheme` 消息下发（VS Code 跟随编辑器主题、Electron 跟随
+ * nativeTheme）；首帧主题是**同步注入**的事实（`docs/webview-facts.md` 第 3 节），
+ * 用于 React 渲染前选对兜底背景色，避免浅色主题下先闪一帧深色 loading。
+ *
+ * 注入缺失或取值非法说明宿主接线不完整，直接抛错——不猜一个主题。
  */
 export function getInitialTheme(): 'dark' | 'light' {
-  return (window as any).__initialTheme === 'light' ? 'light' : 'dark';
+  const v = (window as any).__initialTheme;
+  if (v === 'dark' || v === 'light') return v;
+  throw new Error(
+    `window.__initialTheme 未注入或取值非法（${String(v)}）：宿主必须在 webview 启动前写入首帧主题（'dark' | 'light'）。`,
+  );
 }
 
 /** Post a typed message to host (VS Code extension / Electron main), returns false if no API. */

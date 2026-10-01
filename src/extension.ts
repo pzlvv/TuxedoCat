@@ -295,6 +295,11 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
     const vscodeLocale = vscode.env.language;
     const systemLocale = readSystemLocale();
     const uiLanguage = readUiLanguage();
+    // 首帧主题：webview 在 React 渲染前用它选对兜底背景色（浅色下不闪深色 loading）。
+    // 权威主题仍由 setTheme 消息下发（跟随编辑器主题）。
+    const initialTheme = vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Light
+      ? 'light'
+      : 'dark';
     // Shiki 语法高亮全部按需加载：注入上次已使用过的语言，webview 启动后后台预热
     const highlightLanguages = JSON.stringify(getSettingsStore().readHighlightLanguages());
 
@@ -308,6 +313,7 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
       window.__vscodeLocale = "${vscodeLocale}";
       window.__systemLocale = "${systemLocale}";
       window.__uiLocale = "${uiLanguage}";
+      window.__initialTheme = "${initialTheme}";
       window.__highlightLanguages = ${highlightLanguages};
       window.__hostInfo = ${JSON.stringify(VSCODE_HOST_INFO)};
     </script>

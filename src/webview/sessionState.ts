@@ -32,9 +32,9 @@ export function createSessionState(overrides?: Partial<SessionState>): SessionSt
     animationMode: 'thinking',
     hasActiveQuery: false,
     preCompressHasActiveQuery: undefined,
-    agentMode: 'risk',
-    // promptMode / thinkingMode 不设默认值：未从宿主 settings.json 获取到之前保持
-    // undefined，避免 webview 内置兜底值被误当成用户配置。
+    // 配置事实一律不设默认值：未从宿主获取到之前保持 undefined，
+    // 避免 webview 内置兜底值被误当成用户配置（`docs/webview-facts.md` 第 3 节）。
+    agentMode: undefined,
     promptMode: undefined,
     thinkingMode: undefined,
     webSearch: undefined,
