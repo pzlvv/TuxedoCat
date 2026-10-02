@@ -6,7 +6,7 @@
 | project | 层级 | 驱动对象 | 宿主侧 |
 | --- | --- | --- | --- |
 | `webview-ui` | webview UI | Chromium 加载构建产物 `dist/webview/index.html` | 假宿主（`helpers/fakeHost.ts`）按 `src/host/webviewMessages.ts` 协议应答 |
-| `electron-app` | 整应用 | 真实 Electron 应用（`dist-electron/main.cjs`） | embedded core + 本地 mock LLM SSE 服务器（`helpers/mockLlmServer.ts`） |
+| `electron-app` | 整应用 | 真实 Electron 应用（`dist-electron/main.cjs`） | **standalone core**（Rust，`dist/resources/core/`，先 `npm run build:core`）+ 本地 mock LLM SSE 服务器（`helpers/mockLlmServer.ts`） |
 
 ## 运行
 
@@ -40,8 +40,8 @@ e2e/
 │   │                           #   写入文件 <名> → Write 工具轮；执行命令 <cmd> → Bash 工具轮；
 │   │                           #   慢速回答 → 慢速流（中止场景）；其余 → 文本终轮
 │   └── electronApp.ts          # Electron 启动器：沙箱隔离 + CDP 直连 + 活动视图解析
-├── webview/                    # US-1/2/3/4/5/7/8/9/12/18/19/20/21/22/23/24/26
-└── electron/                   # US-1/2/14/15/18/19/20/21/22/28/30/35
+├── webview/                    # US-1/2/3/4/5/7/8/9/12/18/19/20/21/22/23/24/26（titlebar.spec 为标题栏快照时序，US-36 渲染层）
+└── electron/                   # US-1/2/14/15/18/19/20/21/22/28/30/35/36
 ```
 
 ## 隔离策略（electron-app）
@@ -51,7 +51,9 @@ e2e/
   注意 `APPDATA` 必须一并指向沙箱并预建目录，否则 Electron 解析不出 `appData` 路径。
 - settings.json 预写 mock provider（manual 询问模式让写操作弹权限确认），
   LLM 指向本地 mock SSE 服务器，全程无外网请求。
-- `TUXEDO_CAT_CORE=embedded`：进程内 TS Core，免 Rust 产物依赖。
+- `TUXEDO_CAT_CORE=standalone`（默认）：Rust Core 独立进程，多 Connection / daemon / SSH 链路与
+  产品一致；前置 `npm run build:core`。远程工作区场景只有 standalone 才真实（embedded 单
+  Connection 无 lost 信号、session 路由有「唯一连接」退路，覆盖不了失败链路）。
 - `--multi-instance=<id>` 跳过单实例锁；实例后缀会被 main.ts 截断到 32 字符，
   预置 workspace-state.json 时必须用同样的短 id 规则。
 

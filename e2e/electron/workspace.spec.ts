@@ -1,13 +1,16 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { startMockLlm } from '../helpers/mockLlmServer';
 import { launchApp, makeWorkspace } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
+import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
 
 /**
  * US-30 完整模式与悬浮窗切换 / US-35 多工作区标签页（打开集合恢复 / 切换 / 关闭）
+ * / US-36 远程工作区启动探测失败自动标红
  */
 
 let mockLlm: MockLlm;
@@ -109,4 +112,115 @@ test('US-35 关闭工作区标签页：集合移除、活动权移交相邻项',
 
   await fs.promises.rm(aDir, { recursive: true, force: true }).catch(() => undefined);
   await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);
+});
+
+// 注：electron 场景测试统一跑 standalone core（产品真实形态；embedded 的单一
+// Connection 没有 lost 信号与严格 session 路由，覆盖不了远程工作区的失败链路）。
+
+test('US-36 standalone core：活动项落在连不上的远程工作区，探测标红不受 lost 信号竞态影响', async () => {
+  // Standalone（Rust core + daemon + 真实 SSH 传输）：远程工作区的 Connection 会发出
+  // lost 信号（建链失败 → fatal）——与可达性探测构成两条到达顺序不定的失败信号。
+  // 黑洞端口贴近真实「网络时延后失败」：探测 3 秒超时先标红；SSH 建链 20 秒
+  // readyTimeout 后 lost 晚到，不得把状态拉回黄。
+  const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
+  const aDir = await makeWorkspace({ 'a.md': 'A' }, 'e2e-ws-sa-local');
+  const blackhole = net.createServer((socket) => {
+    socket.on('error', () => undefined);
+  });
+  const blackholePort = await new Promise<number>((resolve, reject) => {
+    blackhole.listen(0, '127.0.0.1', () => resolve((blackhole.address() as net.AddressInfo).port));
+    blackhole.on('error', reject);
+  });
+  const remoteRef: SerializedWorkspaceRef = {
+    scheme: 'ssh',
+    path: '/home/e2e/sa-unreachable',
+    endpoint: {
+      host: '127.0.0.1',
+      port: blackholePort,
+      user: 'e2e',
+      auth: { kind: 'sshPassword', password: 'e2e-not-used' },
+    },
+  };
+  app = await launchApp({
+    repoRoot, mockLlm, workspaceDir: aDir,
+    openWorkspaces: [aDir, remoteRef],
+    activeWorkspace: remoteRef,
+  });
+
+  try {
+    const titlebarPage = await app.titlebarPage();
+    const tabs = titlebarPage.locator('#workspaceTabs [role="tab"]');
+    await expect(tabs).toHaveCount(2, { timeout: 30_000 });
+    const remoteTab = tabs.filter({ hasText: 'sa-unreachable' });
+    await expect(remoteTab).toHaveCount(1);
+
+    // 探测落定（3 秒超时 + 裕量）后不做任何交互：红点出现且黄点消失
+    await expect(remoteTab.locator('.ws-tab-dot')).toBeVisible({ timeout: 20_000 });
+    await expect(remoteTab.locator('.ws-tab-loading')).toHaveCount(0);
+
+    // 活动项落在远程工作区：占位页切到「无法连接远程主机」（不再停留「正在连接」）
+    const placeholder = await app.waitForPage('data:text/html');
+    await expect(placeholder.getByText('无法连接远程主机')).toBeVisible({ timeout: 15_000 });
+    await expect(placeholder.getByText('正在连接')).toHaveCount(0);
+
+    // SSH 建链超时（20 秒 readyTimeout）后 lost 信号晚到：状态保持红点不被拉回
+    await expect(remoteTab.locator('.ws-tab-dot')).toBeVisible({ timeout: 15_000 });
+    await expect(placeholder.getByText('无法连接远程主机')).toBeVisible();
+  } finally {
+    blackhole.close();
+  }
+});
+
+test('US-36 标红推送不被预加载视图清理失败吞掉：非活动远程探测落定后自动变红', async () => {
+  // 精确复刻用户环境的三要素（缺一不复现）：
+  // 1. standalone core：多 Connection 下 Client 的 session 路由严格（无「唯一连接」退路）；
+  // 2. 非活动的远程工作区：启动时它仍是「可用」→ 被预加载一个对话视图（new-* 临时 key）；
+  // 3. 探测失败标红时同步销毁该预加载视图：其会话释放（closeConversation →
+  //    conversationClosed）对无归属的 new-* key 抛「No Connection owns session」——
+  //    抛错点在标红推送之前，把推送整段吞掉：标签页黄点挂到用户点击才刷新。
+  const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
+  const aDir = await makeWorkspace({ 'a.md': 'A' }, 'e2e-ws-multi-a');
+  const bDir = await makeWorkspace({ 'b.md': 'B' }, 'e2e-ws-multi-b');
+  const blackhole = net.createServer((socket) => {
+    socket.on('error', () => undefined);
+  });
+  const blackholePort = await new Promise<number>((resolve, reject) => {
+    blackhole.listen(0, '127.0.0.1', () => resolve((blackhole.address() as net.AddressInfo).port));
+    blackhole.on('error', reject);
+  });
+  const remoteRef: SerializedWorkspaceRef = {
+    scheme: 'ssh',
+    path: '/home/e2e/inactive-unreachable',
+    endpoint: {
+      host: '127.0.0.1',
+      port: blackholePort,
+      user: 'e2e',
+      auth: { kind: 'sshPassword', password: 'e2e-not-used' },
+    },
+  };
+  app = await launchApp({
+    repoRoot, mockLlm, workspaceDir: aDir,
+    openWorkspaces: [aDir, bDir, remoteRef],
+    activeWorkspace: aDir,
+  });
+
+  try {
+    const titlebarPage = await app.titlebarPage();
+    const tabs = titlebarPage.locator('#workspaceTabs [role="tab"]');
+    await expect(tabs).toHaveCount(3, { timeout: 30_000 });
+    const remoteTab = tabs.filter({ hasText: 'inactive-unreachable' });
+    await expect(remoteTab).toHaveCount(1);
+
+    // 探测落定（3 秒超时 + 裕量）后不做任何交互：黄点必须转红点
+    await expect(remoteTab.locator('.ws-tab-dot')).toBeVisible({ timeout: 20_000 });
+    await expect(remoteTab.locator('.ws-tab-loading')).toHaveCount(0);
+
+    // 点击不可用标签页：活动项不变回退，聊天区显示占位页（无法连接 + 重新连接按钮）
+    await remoteTab.click();
+    const placeholder = await app.waitForPage('data:text/html');
+    await expect(placeholder.getByText('无法连接远程主机')).toBeVisible();
+    await expect(placeholder.locator('#reconnectBtn')).toBeVisible();
+  } finally {
+    blackhole.close();
+  }
 });

@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
+import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
+import { workspaceRefKey } from '../../src/host/workspaceRef';
 import type { MockLlm } from './mockLlmServer';
 
 /**
@@ -121,8 +123,11 @@ async function spawnApp(options: {
   repoRoot: string;
   mockLlm: MockLlm;
   workspaceDir: string;
-  openWorkspaces?: string[];
-  activeWorkspace?: string;
+  /** 本地项传路径字符串；远程项传 `SerializedWorkspaceRef`（含 endpoint 与凭证） */
+  openWorkspaces?: Array<string | SerializedWorkspaceRef>;
+  activeWorkspace?: string | SerializedWorkspaceRef;
+  /** Core 实现：默认 standalone（产品真实形态，多 Connection / daemon / SSH 链路） */
+  coreKind?: 'embedded' | 'standalone';
 }): Promise<SpawnedApp> {
   const homeDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tuxedo-e2e-home-'));
   writeSettings(homeDir, options.mockLlm);
@@ -134,12 +139,19 @@ async function spawnApp(options: {
   await fs.promises.mkdir(roamingDir, { recursive: true });
 
   if (options.openWorkspaces && options.openWorkspaces.length > 0) {
-    // 预置打开集合：写隔离 userData 的 workspace-state.json，启动时恢复标签页
+    // 预置打开集合：写隔离 userData 的 workspace-state.json，启动时恢复标签页。
+    // 活动项是引用对象时必须写 activeWorkspaceKey（主进程按去重键回查；旧字段
+    // activeWorkspace 只认本地路径字符串，对象会被忽略）
+    const active = options.activeWorkspace ?? options.openWorkspaces[options.openWorkspaces.length - 1];
+    const activeIsRef = typeof active !== 'string';
     const userDataDir = path.join(roamingDir, 'tuxedo-cat-multi-' + instanceId);
     await fs.promises.mkdir(userDataDir, { recursive: true });
     await fs.promises.writeFile(path.join(userDataDir, 'workspace-state.json'), JSON.stringify({
       openWorkspaces: options.openWorkspaces,
-      activeWorkspace: options.activeWorkspace ?? options.openWorkspaces[options.openWorkspaces.length - 1],
+      activeWorkspaceKey: activeIsRef
+        ? workspaceRefKey(active as SerializedWorkspaceRef as Parameters<typeof workspaceRefKey>[0])
+        : null,
+      activeWorkspace: typeof active === 'string' ? active : null,
       windowMode: 'normal',
       theme: 'dark',
     }));
@@ -150,7 +162,7 @@ async function spawnApp(options: {
     USERPROFILE: homeDir,
     HOME: homeDir,
     APPDATA: roamingDir,
-    TUXEDO_CAT_CORE: 'embedded',
+    TUXEDO_CAT_CORE: options.coreKind ?? 'standalone',
     DISABLE_AUTO_COMPACT: '1',
   };
   delete env.ELECTRON_RUN_AS_NODE;
@@ -218,8 +230,9 @@ export async function launchApp(options: {
   repoRoot: string;
   mockLlm: MockLlm;
   workspaceDir: string;
-  openWorkspaces?: string[];
-  activeWorkspace?: string;
+  openWorkspaces?: Array<string | SerializedWorkspaceRef>;
+  activeWorkspace?: string | SerializedWorkspaceRef;
+  coreKind?: 'embedded' | 'standalone';
 }): Promise<AppHandle> {
   const spawned = await spawnApp(options);
 
@@ -348,9 +361,23 @@ export async function launchApp(options: {
     } finally {
       const pid = spawned.child.pid;
       if (pid) {
-        // Windows 下杀进程树（GPU/渲染器随父进程退出不可靠时兜底）
+        // Windows 下杀进程树（GPU/渲染器随父进程退出不可靠时兜底）。
+        // 必须等进程树真正退出再返回：串行用例下，下一个实例若与垂死的
+        // Electron / core 进程争 CPU，时序敏感的断言会偶发超时（实测回归）
         if (process.platform === 'win32') {
-          execFile('taskkill', ['/pid', String(pid), '/T', '/F'], () => undefined);
+          await new Promise<void>((resolve) => {
+            execFile('taskkill', ['/pid', String(pid), '/T', '/F'], () => resolve());
+          });
+          const deadline = Date.now() + 10_000;
+          while (Date.now() < deadline) {
+            const alive = await new Promise<boolean>((resolve) => {
+              execFile('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], (err, stdout) => {
+                resolve(!err && new RegExp(`^"[^"]*","${pid}"`).test(String(stdout)));
+              });
+            });
+            if (!alive) break;
+            await new Promise((r) => setTimeout(r, 200));
+          }
         } else {
           spawned.child.kill('SIGKILL');
         }

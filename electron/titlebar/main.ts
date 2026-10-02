@@ -69,6 +69,8 @@ interface TitlebarState extends TitlebarModeState {
   activeWorkspace?: string | null;
   /** 标签页流水灯状态（初始渲染用；后续变化走 titlebar:workspace-activity） */
   activity?: WorkspaceActivity;
+  /** 快照版本号（与 TitlebarWorkspacesState 的 version 同源，见 applyWorkspacesSnapshot） */
+  version?: number;
 }
 
 interface TitlebarMenuAnchor {
@@ -106,6 +108,12 @@ interface TitlebarWorkspacesState {
   activeWorkspace: string | null;
   /** 标签页流水灯状态（可缺省：老版本主进程 / 尚无运行时状态） */
   activity?: WorkspaceActivity;
+  /**
+   * 快照版本号（主进程单调递增）：get-state 回包只反映主进程处理 invoke 时刻的状态，
+   * 回包在途期间状态可能已变化并经推送先一步到达。渲染层据此丢弃陈旧快照（见
+   * `applyWorkspacesSnapshot`）；老版本主进程不下发该字段，视为总是最新。
+   */
+  version?: number;
 }
 
 interface TitlebarAPI {
@@ -269,6 +277,22 @@ function applyWorkspaceActivity(activity: unknown): void {
 /** 清掉所有标签页的放置指示线 */
 function clearDropIndicators(): void {
   tabsEl.querySelectorAll('.ws-tab').forEach((el) => el.classList.remove('drop-before', 'drop-after'));
+}
+
+/**
+ * 已渲染的打开集合快照版本（主进程单调递增；null = 尚未渲染过）。
+ * get-state 回包只反映主进程处理 invoke 时刻的状态，回包在途期间状态可能已变化并经
+ * 推送先一步到达——按陈旧回包渲染会把新状态覆盖回旧值（实测竞态：探测失败标红的
+ * 推送被随后到达的 get-state 回包覆盖回黄点，黄点一直挂到用户下次点击标签页）。
+ */
+let renderedWorkspacesVersion: number | null = null;
+
+/** 应用一份打开集合快照：version 更小的陈旧快照直接丢弃（老版本主进程无 version，总是渲染） */
+function applyWorkspacesSnapshot(state: TitlebarWorkspacesState): void {
+  const version = typeof state.version === 'number' ? state.version : null;
+  if (version !== null && renderedWorkspacesVersion !== null && version < renderedWorkspacesVersion) return;
+  if (version !== null) renderedWorkspacesVersion = version;
+  renderWorkspaces(state.workspaces ?? [], state.activeWorkspace ?? null, state.activity);
 }
 
 /**
@@ -533,7 +557,7 @@ async function init(): Promise<void> {
   });
   api.onModelChanged((s) => renderMenubar(s?.sections ?? []));
   api.onModeState((s) => { if (s) applyModeState(s); });
-  api.onWorkspacesChanged((s) => renderWorkspaces(s?.workspaces ?? [], s?.activeWorkspace ?? null, s?.activity));
+  api.onWorkspacesChanged((s) => { if (s) applyWorkspacesSnapshot(s); });
   // 流水灯状态变化：就地更新 class，不重建标签页（重建会打断流水动画）
   api.onWorkspaceActivity((activity) => applyWorkspaceActivity(activity));
 
@@ -563,7 +587,14 @@ async function init(): Promise<void> {
     brandLogoEl.addEventListener('error', () => { brandLogoEl.style.display = 'none'; });
   }
   renderMenubar(state.sections ?? []);
-  renderWorkspaces(state.workspaces ?? [], state.activeWorkspace ?? null, state.activity);
+  // 打开集合走同一份快照入口：get-state 回包与推送可能乱序（回包在途期间标红推送
+  // 先到），陈旧回包由 applyWorkspacesSnapshot 按版本号丢弃，不覆盖新状态
+  applyWorkspacesSnapshot({
+    workspaces: state.workspaces ?? [],
+    activeWorkspace: state.activeWorkspace ?? null,
+    activity: state.activity,
+    version: state.version,
+  });
   applyWindowState(state.maximized);
   applyModeState(state);
 }

@@ -46,6 +46,7 @@ import {
   type WorkspaceRef,
 } from '../src/host/workspaceRef.js';
 import { getChatPlaceholderHtml } from './chatPlaceholderHtml.js';
+import { WorkspaceAvailabilityState } from './workspaceAvailability.js';
 import {
   parseWorkspaceEntry as parseWorkspaceEntryShared,
   serializeWorkspaceRef as serializeWorkspaceRefShared,
@@ -291,42 +292,26 @@ function emitWorkspaceChange(type: 'opened' | 'closed' | 'activated', ref: Works
 }
 
 /**
- * 启动期判定为不可用的工作区（按去重键）：本地目录已不存在，或远程 endpoint 无法建立连接。
+ * 标签页连接状态机（available / unavailable / connecting 三态，按去重键）。
  *
- * 不可用的工作区**保留在打开集合里**：标签页照常显示并带红点，可以点击激活——
- * 但聊天区不显示对话列表与 webview，改显占位页（`syncChatAreaForActiveWorkspace`），
- * 远程不可连时占位页提供「重新连接」按钮。不为它建立 Connection
- * （`getOpenWorkspaceRefs` 过滤掉）。只在启动期判定——运行期新增的工作区
- * 在添加入口已验证过，默认可用。
+ * 三态流转规则与「落定不可用必须清建链中」的时序不变量见 `workspaceAvailability.ts`
+ * 模块头注释；这里只保留 Electron 侧的使用口径：
+ * - 不可用的工作区**保留在打开集合里**：标签页照常显示并带红点，可以点击激活——
+ *   但聊天区不显示对话列表与 webview，改显占位页（`syncChatAreaForActiveWorkspace`），
+ *   远程不可连时占位页提供「重新连接」按钮。不为它建立 Connection
+ *   （`getOpenWorkspaceRefs` 过滤掉）。只在启动期判定——运行期新增的工作区
+ *   在添加入口已验证过，默认可用。
  */
-const unavailableWorkspaces = new Set<string>();
+const workspaceAvailabilityState = new WorkspaceAvailabilityState();
 
 /** 工作区当前是否可用（未在启动期被判定为不可用） */
 function isWorkspaceAvailable(ref: WorkspaceRef): boolean {
-  return !unavailableWorkspaces.has(refKey(ref));
+  return workspaceAvailabilityState.isAvailable(refKey(ref));
 }
-
-/**
- * 建链进行中的工作区（按去重键）：启动恢复的远程项在探测落定前、点击「重新连接」
- * 期间都处于此状态——标签页红点位置显示黄色呼吸点，聊天区显示「正在连接」占位页。
- * 探测成功移出（恢复可选），失败移出并转入 `unavailableWorkspaces`（红点）。
- */
-const connectingWorkspaces = new Set<string>();
-
-/**
- * 连接曾就绪过的工作区（按去重键）。
- *
- * 区分「建连失败」与「运行期 Core 退出」：前者（从未就绪）把工作区标记为不可用，
- * 后者由总线的重启策略自动恢复，不标红。Connection 每次重新打开时清空
- * （新的一次建连从「未就绪」算起），关闭时一并清理。
- */
-const workspaceConnectionsReady = new Set<string>();
 
 /** 标签页连接状态：available 可用 / unavailable 不可用（红点）/ connecting 建链中（黄色呼吸点） */
 function workspaceAvailability(ref: WorkspaceRef): 'available' | 'unavailable' | 'connecting' {
-  const key = refKey(ref);
-  if (connectingWorkspaces.has(key)) return 'connecting';
-  return isWorkspaceAvailable(ref) ? 'available' : 'unavailable';
+  return workspaceAvailabilityState.availabilityOf(refKey(ref));
 }
 
 /**
@@ -337,9 +322,9 @@ function workspaceAvailability(ref: WorkspaceRef): 'available' | 'unavailable' |
  */
 function reviveWorkspaceIfRecovered(ref: WorkspaceRef): boolean {
   const key = refKey(ref);
-  if (!unavailableWorkspaces.has(key)) return false;
+  if (workspaceAvailabilityState.availabilityOf(key) !== 'unavailable') return false;
   if (ref.endpoint === null && !isValidWorkspaceDir(ref.path)) return false;
-  unavailableWorkspaces.delete(key);
+  workspaceAvailabilityState.revokeUnavailable(key);
   return true;
 }
 /** 当前 WebViewUI 实例（initCore 创建；消息路由 / 工作区切换使用） */
@@ -485,7 +470,7 @@ async function main(): Promise<void> {
   openWorkspaces = readOpenWorkspaces();
   // 远程工作区从启动起进入建链中（黄色呼吸点）：可达性由 initCore 之后的探测落定
   for (const ref of openWorkspaces) {
-    if (ref.endpoint) connectingWorkspaces.add(refKey(ref));
+    if (ref.endpoint) workspaceAvailabilityState.markConnecting(refKey(ref));
   }
   workspacePath = readActiveWorkspace(openWorkspaces);
   const cliWorkspace = process.argv.find((a) => a.startsWith('--workspace='));
@@ -1812,14 +1797,37 @@ function syncTitlebarActivity(): void {
   sendToTitlebar('titlebar:workspace-activity', collectWorkspaceActivity());
 }
 
+/**
+ * 打开集合快照的单调版本号：每次推送 +1，get-state 响应带上当前值。
+ *
+ * 标题栏的 get-state 回包只反映主进程处理 invoke 时刻的状态，回包在途期间状态可能
+ * 已变化并经推送先一步到达；渲染层按版本号丢弃陈旧回包，避免把新状态覆盖回旧值
+ * （实测竞态：探测失败标红的推送被随后到达的 get-state 回包覆盖回黄点）。
+ */
+let workspaceStateVersion = 0;
+
 /** 把打开集合与活动项推给标题栏（标签页区渲染；字段名与 get-state 统一为 activeWorkspace） */
 function syncTitlebarWorkspaces(): void {
-  sendToTitlebar('titlebar:workspaces', {
+  workspaceStateVersion += 1;
+  const payload = {
+    version: workspaceStateVersion,
     workspaces: openWorkspaces.map((ref) => workspaceTabState(ref)),
     activeWorkspace: workspacePath ? refKey(workspacePath) : null,
     // 重建标签页时带上当前流水灯状态，避免重建后指示灯短暂消失
     activity: collectWorkspaceActivity(),
-  });
+  };
+  sendToTitlebar('titlebar:workspaces', payload);
+  // 诊断（远程可用性排查）：推送的快照内容 + 标题栏页面当时是否加载完成——
+  // 页面加载完成前 webContents.send 的消息会丢失，这条日志直接区分「没推」与「推了没收到」
+  fileLogger.info(
+    'workspace-tab',
+    `push v${payload.version}: `
+      + payload.workspaces.map((w) => `${w.name}=${w.availability}`).join(', ')
+      + `, active=${payload.activeWorkspace ?? '-'}`
+      + (titlebarView && !titlebarView.webContents.isDestroyed()
+        ? ` (titlebar loading=${titlebarView.webContents.isLoading()})`
+        : ' (no titlebar)'),
+  );
 }
 
 /** 标题栏 / 侧栏用的工作区项：id 是稳定身份，path 是展示路径，availability 是连接状态 */
@@ -2783,7 +2791,7 @@ function addWorkspaceRefs(refs: readonly WorkspaceRef[]): void {
   // 新打开的工作区通知 Client 建立 Connection（重复打开只激活已有视图）；
   // 重新打开是全新的一次建连，清掉上一世的就绪标记
   for (const ref of opened) {
-    workspaceConnectionsReady.delete(refKey(ref));
+    workspaceAvailabilityState.clearReady(refKey(ref));
     emitWorkspaceChange('opened', ref);
   }
   // 最后一项成为活动项；每个目录的会话工作目录在各自会话被 core 解析目录前登记。
@@ -2873,9 +2881,7 @@ function closeWorkspace(target: WorkspaceRef | string): void {
   if (idx < 0) return;
   openWorkspaces.splice(idx, 1);
   // 标签页关闭即丢弃启动期的不可用判定 / 建链状态：之后经「最近打开」重新添加按全新打开处理
-  unavailableWorkspaces.delete(refKey(ref));
-  connectingWorkspaces.delete(refKey(ref));
-  workspaceConnectionsReady.delete(refKey(ref));
+  workspaceAvailabilityState.clearAll(refKey(ref));
   chatViews?.closeWorkspace(ref.path);
   for (const [sid, ws] of [...sessionWorkspaces]) {
     if (workspacePathMatches(ref, ws)) sessionWorkspaces.delete(sid);
@@ -2914,23 +2920,35 @@ function closeWorkspace(target: WorkspaceRef | string): void {
  */
 function markWorkspaceUnavailable(ref: WorkspaceRef, reason: string): void {
   const key = refKey(ref);
-  if (unavailableWorkspaces.has(key)) return;
-  // Connection 已就绪过 = 工作区事实上可用（探测与建链竞态的输家不该否定赢家）
-  if (workspaceConnectionsReady.has(key)) return;
-  unavailableWorkspaces.add(key);
+  // 状态机先落定（含清掉建链中）：曾就绪过 = 工作区事实上可用（探测与建链竞态的
+  // 输家不该否定赢家）；重复标记同样返回 false。两条守卫下副作用都不重复执行
+  const changed = workspaceAvailabilityState.markUnavailable(key);
+  fileLogger.info(
+    'workspace-tab',
+    `markUnavailable ${refDisplay(ref)}: changed=${changed}, now=${workspaceAvailabilityState.availabilityOf(key)} (${reason})`,
+  );
+  if (!changed) return;
   console.warn(`[main] workspace unavailable: ${refDisplay(ref)} (${reason})`);
+  workspaceAvailabilityState.clearReady(key);
+  // 状态已落定，**先推送再清理**：推送是标签页红点 / 侧栏状态的唯一来源，不能排在
+  // 可能抛错的清理步骤后面——实测回归：销毁该目录的预加载对话视图抛错（standalone
+  // 会话释放路径）吞掉了整段推送，标签页黄点一直挂到用户点击标签页才刷新
+  syncTitlebarWorkspaces();
+  broadcastWorkspaces();
   // 该工作区的 Connection 已无法建立：让 Client 销毁（含仍在长超时里挂着的建链尝试），
   // 不留半开的死连接（尚未建立 Connection 的项是空操作）
-  workspaceConnectionsReady.delete(key);
   emitWorkspaceChange('closed', ref);
   // 该目录下的对话视图一并销毁：会话所属的 Core 已不存在，视图内容不再有效
   // （侧栏「已打开会话」与活动会话随之清空，由 ChatViewManager 推送）
-  chatViews?.closeWorkspace(ref.path);
+  try {
+    chatViews?.closeWorkspace(ref.path);
+  } catch (err) {
+    // 清理失败不阻断状态收敛（上面已推送）；只留诊断日志
+    fileLogger.error('workspace-tab', `closeWorkspace(${refDisplay(ref)}) failed: ${String(err)}`);
+  }
   if (sameRef(workspacePath, ref)) {
     syncChatAreaForActiveWorkspace();
   }
-  syncTitlebarWorkspaces();
-  broadcastWorkspaces();
 }
 
 /**
@@ -2943,7 +2961,7 @@ async function reconnectWorkspace(id: string): Promise<void> {
   const ref = openWorkspaces.find((candidate) => refKey(candidate) === id);
   if (!ref || workspaceAvailability(ref) !== 'unavailable') return;
   const key = refKey(ref);
-  connectingWorkspaces.add(key);
+  workspaceAvailabilityState.markConnecting(key);
   syncTitlebarWorkspaces();
   if (sameRef(workspacePath, ref)) syncChatAreaForActiveWorkspace();
   try {
@@ -2955,9 +2973,7 @@ async function reconnectWorkspace(id: string): Promise<void> {
     }
     // 等待期间标签页可能已被关闭：不再补建 Connection
     if (!openWorkspaces.some((candidate) => refKey(candidate) === key)) return;
-    unavailableWorkspaces.delete(key);
-    connectingWorkspaces.delete(key);
-    workspaceConnectionsReady.delete(key);
+    workspaceAvailabilityState.clearAll(key);
     emitWorkspaceChange('opened', ref);
     activateWorkspace(ref);
   } catch (err) {
@@ -2965,7 +2981,7 @@ async function reconnectWorkspace(id: string): Promise<void> {
   } finally {
     // 先落定状态再刷新：成功 → 可用；失败 → 回到红点。
     // 占位页必须与标签页同批刷新，否则会停留在「正在连接」（tab 已是红点）
-    connectingWorkspaces.delete(key);
+    workspaceAvailabilityState.clearConnecting(key);
     syncTitlebarWorkspaces();
     if (sameRef(workspacePath, ref)) syncChatAreaForActiveWorkspace();
   }
@@ -3031,7 +3047,7 @@ function probeStartupRemoteWorkspaces(): void {
   const groups = new Map<string, { endpoint: WorkspaceEndpoint; display: string; refs: WorkspaceRef[] }>();
   for (const ref of openWorkspaces) {
     const endpoint = ref.endpoint;
-    if (!endpoint || !connectingWorkspaces.has(refKey(ref))) continue;
+    if (!endpoint || !workspaceAvailabilityState.hasConnecting(refKey(ref))) continue;
     const key = JSON.stringify(endpoint);
     const group = groups.get(key);
     if (group) {
@@ -3047,10 +3063,10 @@ function probeStartupRemoteWorkspaces(): void {
         for (const ref of group.refs) {
           const key = refKey(ref);
           if (!openWorkspaces.some((candidate) => refKey(candidate) === key)) continue;
-          connectingWorkspaces.delete(key);
+          workspaceAvailabilityState.clearConnecting(key);
           // 探测期间 Connection 先死了一步（lost → 已标红）：endpoint 事实上可达，恢复并补建
-          if (unavailableWorkspaces.delete(key)) {
-            workspaceConnectionsReady.delete(key);
+          if (workspaceAvailabilityState.revokeUnavailable(key)) {
+            workspaceAvailabilityState.clearReady(key);
             emitWorkspaceChange('opened', ref);
           }
         }
@@ -3059,11 +3075,17 @@ function probeStartupRemoteWorkspaces(): void {
         syncChatAreaForActiveWorkspace();
       })
       .catch((err: unknown) => {
+        fileLogger.info('workspace-tab', `probe failed (${group.display}): ${String(err)}`);
         console.error(`[main] remote workspace unreachable (${group.display}):`, err);
         for (const ref of group.refs) {
-          connectingWorkspaces.delete(refKey(ref));
+          workspaceAvailabilityState.clearConnecting(refKey(ref));
+          // 已标红过（lost 信号先到）时 markWorkspaceUnavailable 内部不再重复刷新：
+          // 探测落定是「黄点必须收场」的最后时限，这里与成功分支对称地显式刷一次，
+          // 保证标题栏与聊天区一定画出落定后的状态（红点 / 占位页）
           markWorkspaceUnavailable(ref, String(err));
         }
+        syncTitlebarWorkspaces();
+        syncChatAreaForActiveWorkspace();
       });
   }
 }
@@ -3345,7 +3367,7 @@ function parseWorkspaceEntry(entry: unknown): WorkspaceRef | null {
 
 /**
  * 读取打开集合（按引用去重）。本地项**保留**目录已不存在的条目并标记为不可用
- * （标签页显示红点并禁选，见 `unavailableWorkspaces`）；远程项原样保留，可达性由
+ * （标签页显示红点并禁选，见 `workspaceAvailability` 状态机）；远程项原样保留，可达性由
  * 启动探测（`probeStartupRemoteWorkspaces`）异步判定。
  * `openWorkspaces` 缺失 / 非法即视为「没有打开任何工作目录」，不回退到其它字段。
  */
@@ -3363,7 +3385,7 @@ function readOpenWorkspaces(): WorkspaceRef[] {
     if (seen.has(key)) continue;
     seen.add(key);
     if (ref.endpoint === null && !isValidWorkspaceDir(ref.path)) {
-      unavailableWorkspaces.add(key);
+      workspaceAvailabilityState.markUnavailable(key);
     }
     refs.push(ref);
   }
@@ -3652,6 +3674,10 @@ function setupIpc(): void {
   // 这些通道能退出应用、切换工作区、改窗口模式，必须校验来源（只接受标题栏 / 菜单视图）。
   ipcMain.handle('titlebar:get-state', (event) => {
     if (!isTitlebarSender(event.sender)) throw new Error('unauthorized: titlebar:get-state');
+    fileLogger.info(
+      'workspace-tab',
+      `get-state v${workspaceStateVersion}: ${openWorkspaces.map((ref) => `${workspaceDisplayNameOf(ref)}=${workspaceAvailability(ref)}`).join(', ') || '(none)'}`,
+    );
     return {
       platform: process.platform,
       productName: PRODUCT_NAME,
@@ -3662,7 +3688,8 @@ function setupIpc(): void {
       canToggleMode: canToggleWindowMode(),
       // 浮窗没有侧栏，品牌位改显示当前工作目录名（浮窗标题栏的唯一上下文）
       workspaceName: workspaceDisplayName() || null,
-      // 打开集合（标题栏标签页区渲染）与活动项
+      // 打开集合（标题栏标签页区渲染）与活动项；version 供渲染层丢弃陈旧回包
+      version: workspaceStateVersion,
       workspaces: openWorkspaces.map((ref) => workspaceTabState(ref)),
       activeWorkspace: workspacePath ? refKey(workspacePath) : null,
       // 标签页流水灯：每个工作目录的聚合运行时状态（waiting 优先，其次 running）
@@ -4046,9 +4073,13 @@ function initCore(): void {
     const key = refKey(ref);
     // 空引用占位 Connection 不属于任何标签页
     if (!openWorkspaces.some((candidate) => refKey(candidate) === key)) return;
+    fileLogger.info('workspace-tab', `connection ${state}: ${refDisplay(ref)} (${reason || 'ready'})`);
     if (state === 'ready') {
-      workspaceConnectionsReady.add(key);
-    } else if (ref.endpoint && !workspaceConnectionsReady.has(key)) {
+      workspaceAvailabilityState.markReady(key);
+    } else if (ref.endpoint) {
+      // 从未就绪的建链失败落成不可用；曾就绪过的不标红（markUnavailable 内部守卫，
+      // 与「Connection 已就绪的判定优先于探测失败」同一口径）。
+      // 落定时顺带清掉建链中：否则这次标红推送的仍是黄态，黄点要等下一次全量刷新才消失
       markWorkspaceUnavailable(ref, reason);
     }
   });

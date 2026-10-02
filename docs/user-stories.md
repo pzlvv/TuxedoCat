@@ -404,7 +404,8 @@
 
 1. 连接串/SSH 两步流：连接成功后立即弹出远端目录选择器（路径可编辑、前缀补全、
    新建/重命名/删除，删除有两阶段确认）。
-2. 建链中标签页显示呼吸点；失败显示红点与聊天区占位页（带重新连接按钮）。
+2. 建链中标签页显示呼吸点；失败显示红点与聊天区占位页（带重新连接按钮）。失败落定
+   （建链失败信号与可达性探测二者的到达顺序不定）后标签页自动转红点，无需用户交互。
 3. 远程工作区与本地工作区在标签页/侧栏/对话上同构。
 
 ### US-37 最近工作区
@@ -469,7 +470,7 @@
 | `e2e/webview/inputMenu.spec.ts` | US-5、US-8、US-9 | webview UI |
 | `e2e/electron/assistant.spec.ts` | US-1、US-2、US-14、US-15、US-18、US-28 | Electron 整应用 |
 | `e2e/electron/sessions.spec.ts` | US-19、US-20、US-21、US-22 | Electron 整应用 |
-| `e2e/electron/workspace.spec.ts` | US-30、US-35 | Electron 整应用 |
+| `e2e/electron/workspace.spec.ts` | US-30、US-35、US-36 | Electron 整应用 |
 
 未覆盖 e2e 的 US（US-6 图片粘贴、US-10/11 状态条瞬时值、US-13/16/17 消息呈现细节、
 US-25 对话空间、US-27 技能、US-29 MCP、US-31/32/33/34 桌面端窗口与托盘、

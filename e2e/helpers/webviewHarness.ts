@@ -78,32 +78,48 @@ async function acquireServer(root: string): Promise<{ url: string; release: () =
 }
 
 /**
- * 打开一个装配好假宿主的 webview 页面。
+ * 打开一个静态伺服页面并注入初始化脚本（通用装配；webview 假宿主装配是它的特例）。
  * 每个用例独立 BrowserContext（隔离 clipboard 权限与存储），静态服务器进程内共享。
  */
-export async function openWebviewView(browser: Browser, repoRoot: string): Promise<WebviewHandle> {
-  const { url, release } = await acquireServer(path.join(repoRoot, 'dist', 'webview'));
+export async function openStaticPage(
+  browser: Browser,
+  root: string,
+  initScript?: string,
+): Promise<{ page: Page; close: () => Promise<void> }> {
+  const { url, release } = await acquireServer(root);
   const context = await browser.newContext({
     viewport: { width: 1280, height: 900 },
     permissions: ['clipboard-read', 'clipboard-write'],
   });
   const page = await context.newPage();
-  // 排查辅助：webview 运行期错误转发到测试输出
+  // 排查辅助：页面运行期错误转发到测试输出
   page.on('console', (msg) => {
     if (msg.type() === 'error') {
-      console.error('[webview-console]', msg.text());
+      console.error('[page-console]', msg.text());
     }
   });
-  await page.addInitScript(FAKE_HOST_INIT);
+  if (initScript) await page.addInitScript(initScript);
   await page.goto(`${url}/index.html`);
+  return {
+    page,
+    close: async () => {
+      await context.close();
+      release();
+    },
+  };
+}
+
+/**
+ * 打开一个装配好假宿主的 webview 页面。
+ * 每个用例独立 BrowserContext（隔离 clipboard 权限与存储），静态服务器进程内共享。
+ */
+export async function openWebviewView(browser: Browser, repoRoot: string): Promise<WebviewHandle> {
+  const { page, close } = await openStaticPage(browser, path.join(repoRoot, 'dist', 'webview'), FAKE_HOST_INIT);
   const host = new FakeHostDriver(page);
   await host.waitReady();
   return {
     page,
     host,
-    close: async () => {
-      await context.close();
-      release();
-    },
+    close,
   };
 }

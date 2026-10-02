@@ -113,8 +113,10 @@ test('US-2 中止慢速流式回复回到空闲态', async () => {
   await expect(chatPage.getByText(/慢速流式输出/).first()).toBeVisible();
   await abortButton.click();
 
-  // 中止后按钮回到禁用态（空闲），输入框可用
-  await expect(abortButton).toBeDisabled({ timeout: 15_000 });
+  // 中止后按钮回到禁用态（空闲），输入框可用。
+  // 30 秒：standalone 下中止要穿过 core 进程（abort → 状态回推），全量负载下比
+  // 单跑慢，15 秒的默认裕量实测会偶发超时
+  await expect(abortButton).toBeDisabled({ timeout: 30_000 });
   await expect(chatPage.locator('textarea.input-textarea')).toBeEnabled();
 });
 
