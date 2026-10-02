@@ -2702,19 +2702,13 @@ function openRemoteWorkspaceDialog(): void {
 /**
  * 把「会话 → 工作目录」登记到 core 的会话工作目录表（core 按会话解析工作目录）。
  *
- * 两件事都做：本地写一份（宿主自己的 `getSessionWorkspace` 消费者，如标签页流水灯），
- * 再经 `UiEvent.sessionWorkspaceAssigned` 交给 core——Standalone 下这张表在 Core
- * 进程内，只有事件能过去（Embedded 的事件处理器转调同一个函数，重复写等价）。
+ * 唯一写入通路是 `UiEvent.sessionWorkspaceAssigned`（core 侧 initializeCoreEvents
+ * 转调 setSessionWorkspace / clearSessionWorkspace）：Embedded 下同进程同表，
+ * Standalone 下只有事件能过帧通道——不再绕过事件直写 core 的表。
  * bootstrap 之前调用时总线尚未注册，事件被丢弃——这正是期望语义：core 还没起来时
  * 登记也没有意义，会话打开后宿主会再登记一次。
  */
 function registerCoreSessionWorkspace(sessionId: string, workspace: string): void {
-  try {
-    const { setSessionWorkspace } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
-    setSessionWorkspace(sessionId, workspace);
-  } catch (err) {
-    console.error('[main] register session workspace error:', err);
-  }
   try {
     requireEventBus().emitToCore({
       type: 'sessionWorkspaceAssigned',

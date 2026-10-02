@@ -18,7 +18,6 @@ import { requireEventBus } from '../core/AssistantEventBus';
 import {
   hasExtensionPath,
 } from '../core/history/Config';
-import { sessionQueue } from '../core/SessionQueue';
 import { ConversationManager } from '../host/ConversationManager';
 import type { SpinDesign } from '../host/SpinDesign';
 import type { ConversationMetadata } from '../core/history/Conversation';
@@ -99,7 +98,6 @@ async function run(): Promise<void> {
   check('snapshot.eventBusRegistered', snapshot.eventBusRegistered === true);
   check('snapshot.uiCreated', snapshot.uiCreated === true);
   check('snapshot.extensionPathProvided', snapshot.extensionPathProvided === true);
-  check('snapshot.sessionQueueInitialized', snapshot.sessionQueueInitialized === true);
   check('snapshot.logToConsole 保留宿主取值', snapshot.logToConsole === false);
 
   // 宿主语言在骨架内**同步**收敛：不依赖 Connection 就绪事件（Embedded 没有该事件，
@@ -111,7 +109,6 @@ async function run(): Promise<void> {
     try { requireEventBus(); return true; } catch { return false; }
   })());
   check('hasExtensionPath() 为真', hasExtensionPath());
-  check('sessionQueue.hasCallbacks() 为真', sessionQueue.hasCallbacks());
 
   // ── 2b. Core 就绪与配置快照重推（docs/core-ui-separation.md 第 4.6、7 节） ──
   // `bootstrapCore` 发完 hostEnvironmentProvided 后 core 应用快照并发 coreReady；

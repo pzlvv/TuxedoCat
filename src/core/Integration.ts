@@ -4,7 +4,7 @@
 
 import { QueryEngine, getSessionEngine } from './QueryEngine.js';
 import { getAllTools } from './tools/index.js';
-import type { Message, MessageData } from './types.js';
+import type { Message } from './types.js';
 import type { Tool } from './tools/Tool.js';
 import type { PromptPresetId } from './prompt/PromptPreset.js';
 import type { LLMConfig } from './llm/config.js';
@@ -17,24 +17,8 @@ import { getMCPHost } from './mcp/MCPHost.js';
 import { getSettings } from './settings.js';
 import { logger } from './Logger.js';
 import { getProjectRoot } from './history/Config.js';
-import { sessionQueue } from './SessionQueue.js';
 import { userChoiceQueue } from './UserChoiceQueue.js';
 import { isCompacting, isPendingCompact, markPendingCompact, unmarkPendingCompact } from './compact/state.js';
-
-/**
- * 初始化会话队列回调
- * 必须在扩展激活时调用一次
- */
-export function initializeSessionQueue(): void {
-  sessionQueue.setCallbacks({
-    onDisplayMessage: (sessionId: string, data: MessageData) => {
-      emitToUi({ type: 'message', sessionId, data });
-    },
-    onProcessUserMessage: async () => {
-      // 由 sendMessage 路径处理
-    },
-  });
-}
 
 /** core → UI 单向事件的发送侧封装（Integration 内统一走它，便于 grep 对照第 4.1 节允许清单） */
 function emitToUi(event: CoreEvent): void {

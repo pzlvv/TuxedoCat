@@ -30,8 +30,6 @@ import { createHash } from 'crypto';
 import type { AssistantEventBus, UiEvent } from '../core/AssistantEventBus.js';
 import { requireEventBus, setGlobalEventBus } from '../core/AssistantEventBus.js';
 import { initializeCoreEvents } from '../core/initializeCoreEvents.js';
-import { initializeSessionQueue } from '../core/Integration.js';
-import { sessionQueue } from '../core/SessionQueue.js';
 import {
   ensureConfigDirs,
   hasExtensionPath,
@@ -102,7 +100,6 @@ export interface BootstrapSnapshot {
   eventBusRegistered: boolean;
   uiCreated: boolean;
   extensionPathProvided: boolean;
-  sessionQueueInitialized: boolean;
   logToConsole: boolean;
   /** 已建立的 Connection 数（Standalone 下每个打开的工作区一个） */
   connectionCount: number;
@@ -257,11 +254,6 @@ export function bootstrapCore(
     }
   });
   workspaceUnsubscribers.add(unsubscribeWorkspace);
-
-  // ── 5. 依赖 WebViewUI 实例的接线（仅 embedded：队列在 Core 进程内）──
-  if (coreKind === 'embedded') {
-    initializeSessionQueue();
-  }
 
   // ── 6. 异步收尾（仅 embedded：core 自己的资源由 Core 进程管理）──
   if (coreKind === 'embedded') {
@@ -687,13 +679,11 @@ function readSnapshot(
     return {
       ...base,
       extensionPathProvided: true,
-      sessionQueueInitialized: true,
     };
   }
 
   return {
     ...base,
     extensionPathProvided: hasExtensionPath(),
-    sessionQueueInitialized: sessionQueue.hasCallbacks(),
   };
 }

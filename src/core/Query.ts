@@ -9,7 +9,6 @@ import type { LLMConfig } from './llm/config.js';
 import type { Tool } from './tools/Tool.js';
 import type { AutoCompactTrackingState } from './compact/types.js';
 import type { CoreEvent } from './AssistantEventBus.js';
-import { sessionQueue } from './SessionQueue.js';
 import { logger } from './Logger.js';
 import { updateConversationContext } from './history/index.js';
 import { limitsOf } from './llm/config.js';
@@ -767,8 +766,6 @@ async function* queryLoop(
       activeWebSearchCalls.clear();
 
       if (isAborted) {
-        sessionQueue.cancelQueued(params.sessionID);
-
         // 静默中止（业务主动结束，如 spin 子代理首次 Reply 后停止自身）：
         // 不向 UI 回显中断消息，直接结束本轮查询。
         if (params.silentAbort?.()) {
@@ -851,8 +848,6 @@ async function* queryLoop(
     }
 
     if (shouldPreventContinuation) {
-      sessionQueue.cancelQueued(params.sessionID);
-
       const completedToolIds = new Set<string>();
       for (const result of toolResults) {
         if (result.type === 'user' && Array.isArray(result.message.content)) {

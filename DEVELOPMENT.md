@@ -466,7 +466,7 @@ core/  ←  host/  ←  宿主实现（VSCode* / Electron*）
   | --- | --- | --- |
   | 纯函数 / 类型 / 常量 | 无副作用、不读进程内状态 | `conversationPayload` / `llmConfigSave` / `settingsRead` / `webviewMessageHandler` 的解析与拼装函数、各模块的类型与常量 |
   | 受控事实入口 | 按 `CORE_KIND` 分派：Embedded 直读、Standalone 走 `UiRequest` | `src/host/coreFacts.ts`（对话列表 / 智能命名 / 余额 / 归档展开 / MCP 列表 / 对话空间 / 会话加载 / 技能列表 / 挂起持久化） |
-  | Embedded-only 装配 | `CORE_KIND === 'embedded'` 分支内；Standalone 下 core 在进程外自行完成 | `bootstrapCore` 的 `initializeCoreEvents` / `initializeSessionQueue` / `ensureConfigDirs` / `getMCPHost().prune`；`webviewMessageHandler` 的 `restoreConversationEngine` |
+  | Embedded-only 装配 | `CORE_KIND === 'embedded'` 分支内；Standalone 下 core 在进程外自行完成 | `bootstrapCore` 的 `initializeCoreEvents` / `ensureConfigDirs` / `getMCPHost().prune`；`webviewMessageHandler` 的 `restoreConversationEngine` |
   | UI 侧共享队列 | 状态归 UI，不属于 core 事实 | `src/core/UserChoiceQueue.ts`（宿主侧待答队列；Standalone 下同样由 UI 使用） |
 
   仍保留的直接读取（Standalone 下与本机 Core 共用同一份磁盘，远程工作区需要迁到
@@ -665,8 +665,7 @@ resetGlobalEventBus();    // 测试用：清空全局总线
       configDirName / 配置快照 / MCP 服务器表）
     - core 收到后写配置快照并发 CoreEvent.coreReady；Connection 就绪并冲刷排队事件
 6.  host.onWorkspaceChanged → client.openWorkspace / closeWorkspace / activateWorkspace
-7.  initializeSessionQueue()（embedded）
-8.  ensureConfigDirs() / getMCPHost().prune()（embedded，异步，失败记日志）
+7.  ensureConfigDirs() / getMCPHost().prune()（embedded，异步，失败记日志）
 ```
 
 顺序约束：
@@ -1837,7 +1836,6 @@ Standalone 下打开第一个真实工作区时占位 Connection 被销毁。
 | `WebViewUI.create` 与 `UserChoiceManager` 工厂 | 工厂在骨架内构造，日志出口取自 `options.log`；宿主不提供该工厂。处理器注册在 Client 上，Connection 建立时把同一份表注册到自己的总线 |
 | 按工作区打开 Connection | `client.openWorkspace(ref)`；连接建立时推送 `hostEnvironmentProvided`（扩展路径 / 日志出口开关 / 配置目录名 / 配置快照 / MCP 服务器表）。core 侧没有对应的直接注入入口 |
 | 工作区打开 / 关闭 / 激活订阅 | `host.onWorkspaceChanged` → `client.openWorkspace` / `closeWorkspace` / `activateWorkspace` |
-| `initializeSessionQueue` | 依赖 `WebViewUI` 实例；Embedded 下由骨架调用一次 |
 | 配置目录 / MCP 残留清理 | Embedded 的异步收尾，不阻塞启动 |
 
 **宿主参数**：
@@ -2021,7 +2019,6 @@ export interface BootstrapSnapshot {
   eventBusRegistered: boolean;
   uiCreated: boolean;
   extensionPathProvided: boolean;
-  sessionQueueInitialized: boolean;
   logToConsole: boolean;
   connectionCount: number;
 }
@@ -2067,7 +2064,7 @@ channel / 本地 `stdio` Core 进程），再关闭远程 daemon；Embedded 下�
 1. 骨架执行完毕后，`bootstrapSnapshot()` 的每个布尔字段为 `true`；
 2. 快照的 `locale` 保留宿主传入的原始值（不做收敛后再上报）；
 3. `hasExtensionPath()` 为真；
-4. `requireEventBus()` 可调用（不抛错），`sessionQueue.hasCallbacks()` 为真；
+4. `requireEventBus()` 可调用（不抛错）；
 5. 静态扫描 `src/core/**/*.ts` 中导出的 `set*` / `initialize*` 名字，每个名字出现在
    启动接线（`bootstrapCore.ts` 或 `initializeCoreEvents.ts`）或白名单中。
    白名单只含会话级运行时 setter（`setSession*`）。
