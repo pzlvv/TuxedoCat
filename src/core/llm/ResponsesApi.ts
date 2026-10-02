@@ -19,11 +19,10 @@ import type { Message } from '../types.js';
 import { logger } from '../Logger.js';
 import { getConfig, getEnableUsageStats, limitsOf } from './config.js';
 import { effectiveMaxOutputTokens } from './modelLimits.js';
-import { parseSSELines, buildAssistantMessageFromBlocks, dumpFailedRequest } from './RealApi.js';
+import { parseSSELines, buildAssistantMessageFromBlocks } from './RealApi.js';
 import { persistLargeOutput, buildLargeToolResultMessage } from '../tools/toolResultStorage.js';
 import { getServerSessionId, markServerSessionRotate } from './serverSession.js';
-import { fetch as undiciFetch, type Response as UndiciResponse } from 'undici';
-import { getLLMDispatcher } from './httpDispatcher.js';
+import type { Response as UndiciResponse } from 'undici';
 import {
   createStreamWatchdog,
   isProgressEvent,
@@ -38,15 +37,21 @@ import {
   DEFAULT_MAX_REPETITION_RETRIES,
 } from './repetitionDetector.js';
 import { unwrapToolInput } from '../utils/toolInput.js';
-import { stringifyJsonSafe } from '../utils/stringUtils.js';
+import {
+  computeMaxOutputTokens,
+  newStreamMessageId,
+  fetchStreamingResponse,
+  TransportRetry,
+  dumpFailedRequest,
+  SAMPLING_TEMPERATURE,
+  SAMPLING_TOP_P,
+} from './streaming.js';
 import {
   checkAborted,
   recordLLMUsage,
   logRawOutput,
   joinV1Path,
   extractUsageFields,
-  isRetryableStatus,
-  isNetworkFetchError,
   formatErrorChain,
   sleep,
   RETRY_DELAY_MS,
@@ -439,24 +444,19 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
     component: 'ResponsesAPI',
   });
   // 超时重试计数（单次 callResponsesLLM 内共享，跨重试不重置）
-  let timeoutRetryCount = 0;
+  const timeoutRetryState = { count: 0 };
   // 退化重复重试计数（与超时/网络错误分开计数）
   let repetitionRetryCount = 0;
 
   try {
-    // 将核心请求+流读取逻辑提取为内部函数，支持重试
-    // （重试配置 RETRY_DELAY_MS / MAX_RETRIES / isRetryableStatus 见 shared.ts）
-    const executeRequest = async function* (
+    // 请求构建 + 流读取提取为内部函数以支持重试；传输层重试见 streaming.ts 的
+    // fetchStreamingResponse（重试配置 RETRY_DELAY_MS / MAX_RETRIES 在 shared.ts）
+    const runAttempt = async function* (
       retryCount: number,
     ): AsyncGenerator<StreamEvent | Message> {
       // 输出上限：配置级上限（`llm.maxTokens`）与调用方按上下文剩余空间收窄的上限
       // （`LLMConfig.outputTokenCap`）都要满足
-      const configuredMaxTokens = config.maxTokens > 0
-        ? Math.min(config.maxTokens, effectiveMaxTokens)
-        : effectiveMaxTokens;
-      const maxTokensValue = config.outputTokenCap && config.outputTokenCap > 0
-        ? Math.min(config.outputTokenCap, configuredMaxTokens)
-        : configuredMaxTokens;
+      const maxTokensValue = computeMaxOutputTokens(config, effectiveMaxTokens);
 
       // 转换消息与工具
       const responsesInput = convertMessagesToResponsesInput(messages);
@@ -479,8 +479,8 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
         input: responsesInput,
         stream: true,
         max_output_tokens: maxTokensValue,
-        temperature: 1.0,
-        top_p: 0.95,
+        temperature: SAMPLING_TEMPERATURE,
+        top_p: SAMPLING_TOP_P,
       };
 
       // 确定 reasoning 配置。
@@ -538,83 +538,25 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       logger.debug('ResponsesAPI', `Request URL: ${responsesUrl}`);
       logger.debug('ResponsesAPI', `Request headers: ${JSON.stringify(requestHeaders)}`);
 
-      // 每次尝试都重新武装看门狗（重试时首字节计时重新开始）
-      watchdog.restart();
-
-      // 发送请求。网络层错误（如 TypeError: fetch failed）通常是服务器/网络瞬时问题，重试数次
+      // 传输层（发送 / 超时 / 网络错误 / 502·503 / 适配器级重试 / 失败转储）收敛在骨架，
+      // 可重试失败以 TransportRetry 抛出，这里发起下一次完整尝试
       let response: UndiciResponse;
       try {
-        response = await undiciFetch(responsesUrl, {
-          method: 'POST',
-          headers: requestHeaders,
-          // 用看门狗的 signal：外部中断与超时都会中止本次请求
-          signal: watchdog.signal,
-          body: stringifyJsonSafe(requestBody),
-          dispatcher: getLLMDispatcher(),
-        });
+        response = await fetchStreamingResponse(
+          { component: 'ResponsesAPI', signal, watchdog, config, timeoutRetryState },
+          {
+            url: responsesUrl,
+            headers: requestHeaders,
+            body: requestBody,
+          },
+          retryCount,
+        );
       } catch (fetchError) {
-        // 看门狗超时（网关静默不响应）：单独处理，不按 TypeError 判定
-        const timeoutError = watchdog.timeoutError();
-        if (timeoutError) {
-          if (timeoutRetryCount < DEFAULT_MAX_TIMEOUT_RETRIES) {
-            timeoutRetryCount++;
-            logger.warn('ResponsesAPI',
-              `${timeoutError.message}，丢弃本次请求并重试 (${timeoutRetryCount}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-            await sleep(RETRY_DELAY_MS);
-            checkAborted(signal);
-            yield* executeRequest(retryCount + 1);
-            return;
-          }
-          throw timeoutError;
-        }
-        // 对网络层错误（fetch failed / ECONNRESET 等）重试数次
-        if (retryCount < MAX_RETRIES && isNetworkFetchError(fetchError)) {
-          logger.warn('ResponsesAPI', `Network error while fetching (${formatErrorChain(fetchError)}), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
-          await sleep(RETRY_DELAY_MS);
-          checkAborted(signal);
-          yield* executeRequest(retryCount + 1);
+        if (fetchError instanceof TransportRetry) {
+          yield* runAttempt(retryCount + 1);
           return;
         }
         throw fetchError;
-      }
-
-      // 502/503 重试逻辑：遇到服务端瞬时错误（502/503），等待 1s 后重试
-      if (isRetryableStatus(response.status) && retryCount < MAX_RETRIES) {
-        logger.warn('ResponsesAPI', `API request got ${response.status}, retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
-        // 释放未消费的响应体，避免连接被占用
-        response.body?.cancel().catch(() => { });
-        await sleep(RETRY_DELAY_MS);
-        checkAborted(signal);
-        yield* executeRequest(retryCount + 1);
-        return;
-      }
-
-      if (!response.ok) {
-        let errorText: string;
-        try {
-          errorText = await response.text();
-        } catch (error) {
-          // 读取错误响应体失败（如 abort）时也释放 body，避免连接泄漏
-          response.body?.cancel().catch(() => { });
-          throw error;
-        }
-        logger.error('ResponsesAPI', `API request failed: ${response.status} ${errorText}`);
-
-        await dumpFailedRequest({
-          url: responsesUrl,
-          method: 'POST',
-          requestHeaders: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-          },
-          requestBody,
-          config,
-          error: new Error(`HTTP ${response.status}: ${response.statusText}`),
-          responseStatus: response.status,
-          responseBody: errorText,
-        });
-
-        throw new Error(`API request failed: ${response.status} ${response.statusText}\n${errorText}`);
       }
 
       // ========== 流式读取 SSE 响应 ==========
@@ -623,13 +565,13 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       let buffer = '';
       const contentBlocks: any[] = [];
       let stopReason: string | undefined;
-      let usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; reasoning_tokens?: number } | undefined;
+      let usage: InternalUsage | undefined;
       // 统计 output_item.added / done，用于判断“流结束但没收到终止事件”时
       // 所有输出块是否其实已经完整返回（服务端可能漏发 response.completed）。
       let outputItemAddedCount = 0;
       let outputItemDoneCount = 0;
       // 每次 LLM 调用分配唯一 ID，所有流事件共用，确保 WebView 端能精确配对不同次响应
-      const streamMessageId = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      const streamMessageId = newStreamMessageId();
 
       // 当前正在累积的 output item 状态
       let currentItemState: {
@@ -803,13 +745,13 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
           const timeoutError = watchdog.timeoutError();
           if (timeoutError) {
             closeReader();
-            if (timeoutRetryCount < DEFAULT_MAX_TIMEOUT_RETRIES) {
-              timeoutRetryCount++;
+            if (timeoutRetryState.count < DEFAULT_MAX_TIMEOUT_RETRIES) {
+              timeoutRetryState.count++;
               logger.warn('ResponsesAPI',
-                `${timeoutError.message}，丢弃本次响应并重试 (${timeoutRetryCount}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
+                `${timeoutError.message}，丢弃本次响应并重试 (${timeoutRetryState.count}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
               await sleep(RETRY_DELAY_MS);
               checkAborted(signal);
-              yield* executeRequest(retryCount + 1);
+              yield* runAttempt(retryCount + 1);
               return;
             }
             throw timeoutError;
@@ -821,7 +763,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
             closeReader();
             await sleep(RETRY_DELAY_MS);
             checkAborted(signal);
-            yield* executeRequest(retryCount + 1);
+            yield* runAttempt(retryCount + 1);
             return;
           }
           throw readError;
@@ -1141,14 +1083,14 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
             `${loopError.message}，丢弃本次响应并重试 (${repetitionRetryCount}/${DEFAULT_MAX_REPETITION_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
           await sleep(RETRY_DELAY_MS);
           checkAborted(signal);
-          yield* executeRequest(retryCount + 1);
+          yield* runAttempt(retryCount + 1);
           return;
         }
         throw loopError;
       } finally {
         closeReader();
         // 读取阶段已结束（正常读完或已超时），停表避免收尾阶段误报超时。
-        // 重试时新的 executeRequest 会重新 restart()。
+        // 重试时新的 runAttempt 会重新 restart()。
         watchdog.stop();
       }
 
@@ -1217,7 +1159,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
             `discarding partial output and retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
           await sleep(RETRY_DELAY_MS);
           checkAborted(signal);
-          yield* executeRequest(retryCount + 1);
+          yield* runAttempt(retryCount + 1);
           return;
         } else {
           logger.error('ResponsesAPI',
@@ -1344,7 +1286,7 @@ export async function* callResponsesLLM(options: StreamOptions): AsyncGenerator<
       }
     };
 
-    yield* executeRequest(0);
+    yield* runAttempt(0);
 
   } catch (error) {
     // 排除 AbortError - 不转储用户主动取消的请求

@@ -202,6 +202,22 @@ pub(crate) fn http_client() -> Result<reqwest::blocking::Client, String> {
         .map_err(|err| format!("build http client failed: {err}"))
 }
 
+/// 按 api_type 选出流式实现（单点分发：新增 provider 只改这里）。
+///
+/// 统一签名以适配 `stream_openai` 的重试状态参数；不使用这两个参数的实现经
+/// 闭包转发忽略（与 Embedded `RealApi.ts` 的 if/else 分发同一批判据：
+/// Anthropic Messages / OpenAI Responses / 其余按 Chat Completions 兼容兜底）。
+fn stream_fn(
+    api_type: &str,
+) -> fn(&LlmRequest, &mut dyn FnMut(LlmEvent), &mut u32, &mut bool) -> Result<(), StreamFailure> {
+    match api_type {
+        "Anthropic" => |req, emit, _, _| stream_anthropic(req, emit),
+        // OpenAI Responses API（`POST {baseURL}/v1/responses`）
+        "Responses" => |req, emit, _, _| crate::responses::stream_responses(req, emit),
+        _ => stream_openai,
+    }
+}
+
 /// 发起一次流式请求；每个增量经 `emit` 回调。
 ///
 /// 重试口径逐项对齐 Embedded：
@@ -227,12 +243,12 @@ pub fn stream(req: &LlmRequest, emit: &mut dyn FnMut(LlmEvent)) -> Result<(), St
         if req.cancel.load(Ordering::Relaxed) {
             return Err("LLM request aborted".to_string());
         }
-        let outcome = match req.provider.api_type.as_str() {
-            "Anthropic" => stream_anthropic(req, emit),
-            // OpenAI Responses API（`POST {baseURL}/v1/responses`）
-            "Responses" => crate::responses::stream_responses(req, emit),
-            _ => stream_openai(req, emit, &mut retry_count, &mut include_stream_usage),
-        };
+        let outcome = stream_fn(req.provider.api_type.as_str())(
+            req,
+            emit,
+            &mut retry_count,
+            &mut include_stream_usage,
+        );
         match outcome {
             Ok(()) => return Ok(()),
             Err(StreamFailure::Repetition(message)) => {
@@ -694,6 +710,10 @@ fn stream_error_message(error: &Value) -> String {
 
 /// `toImagePart`：内部 image block → Chat Completions 的 `image_url` part。
 /// `source.data` 为真值时才产出，否则返回 None（对齐 `OpenAiApi.ts` 的同名逻辑）。
+/// Chat Completions 侧的图片 part（`image_url` 包一层对象；空 data 返回 None 整体省略）。
+/// 注意与 `responses.rs::to_image_part` 不是同一份逻辑的两份拷贝：Responses 协议的
+/// `input_image` 是平铺字段且空 data 继续下发，二者形状与空值语义都不同（对齐
+/// `OpenAiApi.ts` / `ResponsesApi.ts` 各自的 `toImagePart`），不做合并。
 fn to_image_part(block: &Value) -> Option<Value> {
     let source = block.get("source")?;
     let data = source

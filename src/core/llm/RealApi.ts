@@ -3,16 +3,12 @@
  * 支持流式（SSE）模式
  */
 
-import * as fs from 'fs/promises';
-import * as path from 'path';
 import type { Message } from '../types.js';
 import { logger } from '../Logger.js';
 import { DEFAULT_API_TYPE, getConfig, getEnableUsageStats, limitsOf } from './config.js';
 import type { LLMConfig } from './config.js';
-import { resolveConfigDir } from '../../config/configDir.js';
 import { effectiveMaxOutputTokens } from './modelLimits.js';
-import { fetch as undiciFetch, type Response as UndiciResponse } from 'undici';
-import { getLLMDispatcher } from './httpDispatcher.js';
+import type { Response as UndiciResponse } from 'undici';
 import {
   createStreamWatchdog,
   isProgressEvent,
@@ -27,17 +23,23 @@ import {
   DEFAULT_MAX_REPETITION_RETRIES,
 } from './repetitionDetector.js';
 import { unwrapToolInput } from '../utils/toolInput.js';
-import { stringifyJsonSafe } from '../utils/stringUtils.js';
+import {
+  computeMaxOutputTokens,
+  newStreamMessageId,
+  fetchStreamingResponse,
+  TransportRetry,
+  dumpFailedRequest,
+  SAMPLING_TEMPERATURE,
+  SAMPLING_TOP_P,
+} from './streaming.js';
+import type { InternalUsage } from './shared.js';
 import {
   checkAborted,
   recordLLMUsage,
   logRawOutput,
   RETRY_DELAY_MS,
   MAX_RETRIES,
-  isRetryableStatus,
-  isNetworkFetchError,
   formatErrorChain,
-  serializeError,
   sleep,
 } from './shared.js';
 
@@ -70,73 +72,6 @@ export type StreamEvent =
   | { type: 'web_search_call_update'; callId: string; action?: string; queries?: string[]; url?: string; messageId?: string }
   | { type: 'web_search_call_done'; callId: string; messageId?: string };
 
-/**
- * 在 ~/<CONFIG_DIR_NAME>/ 下创建 LLM 请求失败转储文件
- * 记录完整的请求参数，便于排查问题
- */
-export async function dumpFailedRequest(params: {
-  url: string;
-  method: string;
-  requestHeaders: Record<string, string>;
-  requestBody: Record<string, unknown>;
-  config: {
-    apiKey: string;
-    baseURL: string;
-    model: string;
-    thinking_effort?: string;
-  };
-  error: unknown;
-  responseStatus?: number;
-  responseBody?: string;
-}): Promise<string | null> {
-  try {
-    const dumpDir = path.join(resolveConfigDir(), 'fail_logs');
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const dumpFile = path.join(dumpDir, `llm_fail_${timestamp}.json`);
-
-    // 确保目录存在
-    await fs.mkdir(dumpDir, { recursive: true });
-
-    // 构建转储内容（脱敏处理 apiKey 与所有常见凭证头）
-    const redactHeaders = (headers: Record<string, unknown>): Record<string, unknown> => {
-      const out: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(headers || {})) {
-        const lower = key.toLowerCase();
-        if (lower === 'authorization') {
-          out[key] = 'Bearer <REDACTED>';
-        } else if (lower === 'x-api-key' || lower === 'api-key' || lower === 'x-goog-api-key' || lower === 'cookie' || lower === 'proxy-authorization') {
-          out[key] = '<REDACTED>';
-        } else {
-          out[key] = value;
-        }
-      }
-      return out;
-    };
-    const dump = {
-      timestamp: new Date().toISOString(),
-      url: params.url,
-      method: params.method,
-      responseStatus: params.responseStatus,
-      config: {
-        ...params.config,
-        apiKey: params.config.apiKey ? `${params.config.apiKey.slice(0, 8)}...` : '',
-      },
-      requestHeaders: redactHeaders(params.requestHeaders),
-      requestBody: params.requestBody,
-      // 保留完整 cause 链与系统错误码：undici 的 `fetch failed` 只是外壳，
-      // 根因（ECONNRESET / ENOTFOUND / UND_ERR_CONNECT_TIMEOUT ...）在 cause 上。
-      error: serializeError(params.error),
-      responseBody: params.responseBody,
-    };
-
-    await fs.writeFile(dumpFile, JSON.stringify(dump, null, 2), 'utf-8');
-    logger.info('RealAPI', `Failed request dumped to: ${dumpFile}`);
-    return dumpFile;
-  } catch (dumpError) {
-    logger.warn('RealAPI', `Failed to dump request: ${dumpError}`);
-    return null;
-  }
-}
 
 /**
  * 解析 SSE 中的 data: 行，提取 JSON 对象
@@ -306,24 +241,19 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
     component: 'RealAPI',
   });
   // 超时重试计数（单次 callAnthropicLLM 内共享，跨重试不重置）
-  let timeoutRetryCount = 0;
+  const timeoutRetryState = { count: 0 };
   // 退化重复重试计数（与超时/网络错误分开计数）
   let repetitionRetryCount = 0;
 
   try {
-    // 将核心请求+流读取逻辑提取为内部函数，支持重试
-    // （重试配置 RETRY_DELAY_MS / MAX_RETRIES / isRetryableStatus 见 shared.ts）
-    const executeRequest = async function* (
+    // 请求构建 + 流读取提取为内部函数以支持重试；传输层重试见 streaming.ts 的
+    // fetchStreamingResponse（重试配置 RETRY_DELAY_MS / MAX_RETRIES 在 shared.ts）
+    const runAttempt = async function* (
       retryCount: number,
     ): AsyncGenerator<StreamEvent | Message> {
       // 输出上限：配置级上限（`llm.maxTokens`）与调用方按上下文剩余空间收窄的上限
       // （`LLMConfig.outputTokenCap`）都要满足
-      const configuredMaxTokens = config.maxTokens > 0
-        ? Math.min(config.maxTokens, effectiveMaxTokens)
-        : effectiveMaxTokens;
-      const maxTokensValue = config.outputTokenCap && config.outputTokenCap > 0
-        ? Math.min(config.outputTokenCap, configuredMaxTokens)
-        : configuredMaxTokens;
+      const maxTokensValue = computeMaxOutputTokens(config, effectiveMaxTokens);
 
       // 构建请求体
       requestBody = {
@@ -331,8 +261,8 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
         max_tokens: maxTokensValue,
         messages,
         stream: true,
-        temperature: 1.0,
-        top_p: 0.95,
+        temperature: SAMPLING_TEMPERATURE,
+        top_p: SAMPLING_TOP_P,
       };
 
       // 确定 thinking_token_budget（提前计算，日志中需要使用）
@@ -398,85 +328,25 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       logger.debug('RealAPI', `Request headers: ${JSON.stringify(requestHeaders)}`);
       logger.debug('RealAPI', `Request URL: ${baseURL}/v1/messages`);
 
-      // 每次尝试都重新武装看门狗（重试时首字节计时重新开始）
-      watchdog.restart();
-
-      // 发送请求。网络层错误（如 TypeError: fetch failed）通常是服务器/网络瞬时问题，重试数次
+      // 传输层（发送 / 超时 / 网络错误 / 502·503 / 适配器级重试 / 失败转储）收敛在骨架，
+      // 可重试失败以 TransportRetry 抛出，这里发起下一次完整尝试
       let response: UndiciResponse;
       try {
-        response = await undiciFetch(`${baseURL}/v1/messages`, {
-          method: 'POST',
-          headers: requestHeaders,
-          // 用看门狗的 signal：外部中断与超时都会中止本次请求
-          signal: watchdog.signal,
-          body: stringifyJsonSafe(requestBody),
-          dispatcher: getLLMDispatcher(),
-        });
+        response = await fetchStreamingResponse(
+          { component: 'RealAPI', signal, watchdog, config, timeoutRetryState },
+          {
+            url: `${baseURL}/v1/messages`,
+            headers: requestHeaders,
+            body: requestBody,
+          },
+          retryCount,
+        );
       } catch (fetchError) {
-        // 看门狗超时（网关静默不响应）：单独处理，不按 TypeError 判定
-        const timeoutError = watchdog.timeoutError();
-        if (timeoutError) {
-          if (timeoutRetryCount < DEFAULT_MAX_TIMEOUT_RETRIES) {
-            timeoutRetryCount++;
-            logger.warn('RealAPI',
-              `${timeoutError.message}，丢弃本次请求并重试 (${timeoutRetryCount}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-            await sleep(RETRY_DELAY_MS);
-            checkAborted(signal);
-            yield* executeRequest(retryCount + 1);
-            return;
-          }
-          throw timeoutError;
-        }
-        // 对网络层错误（fetch failed / ECONNRESET 等）重试数次
-        if (retryCount < MAX_RETRIES && isNetworkFetchError(fetchError)) {
-          logger.warn('RealAPI', `Network error while fetching (${formatErrorChain(fetchError)}), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
-          await sleep(RETRY_DELAY_MS);
-          checkAborted(signal);
-          yield* executeRequest(retryCount + 1);
+        if (fetchError instanceof TransportRetry) {
+          yield* runAttempt(retryCount + 1);
           return;
         }
         throw fetchError;
-      }
-
-      // 502/503 重试逻辑：遇到服务端瞬时错误（502/503），等待 1s 后重试
-      if (isRetryableStatus(response.status) && retryCount < MAX_RETRIES) {
-        logger.warn('RealAPI', `API request got ${response.status}, retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
-        // 释放未消费的响应体，避免连接被占用
-        response.body?.cancel().catch(() => { });
-        await sleep(RETRY_DELAY_MS);
-        checkAborted(signal);
-        yield* executeRequest(retryCount + 1);
-        return;
-      }
-
-      if (!response.ok) {
-        let errorText: string;
-        try {
-          errorText = await response.text();
-        } catch (error) {
-          // 读取错误响应体失败（如 abort）时也释放 body，避免连接泄漏
-          response.body?.cancel().catch(() => { });
-          throw error;
-        }
-        logger.error('RealAPI', `API request failed: ${response.status} ${errorText}`);
-
-        await dumpFailedRequest({
-          url: `${baseURL}/v1/messages`,
-          method: 'POST',
-          requestHeaders: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'Authorization': `Bearer ${apiKey}`,
-            'anthropic-version': '2023-06-01',
-          },
-          requestBody,
-          config,
-          error: new Error(`HTTP ${response.status}: ${response.statusText}`),
-          responseStatus: response.status,
-          responseBody: errorText,
-        });
-
-        throw new Error(`API request failed: ${response.status} ${response.statusText}\n${errorText}`);
       }
 
       // ========== 流式读取 SSE 响应 ==========
@@ -492,10 +362,10 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       const textRepetition = new RepetitionDetector();
       const thinkingRepetition = new RepetitionDetector();
       let stopReason: string | undefined;
-      let usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; reasoning_tokens?: number } | undefined;
+      let usage: InternalUsage | undefined;
       // 每次 LLM 调用分配唯一 ID，所有流事件共用，确保 WebView 端能精确配对不同次响应
       // 不依赖 message_start 中的 id 字段（部分模型不返回）
-      const streamMessageId = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      const streamMessageId = newStreamMessageId();
 
       // ---- 主循环与流结束后 buffer 兜底段共用的解析逻辑 ----
 
@@ -558,13 +428,13 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
           const timeoutError = watchdog.timeoutError();
           if (timeoutError) {
             closeReader();
-            if (timeoutRetryCount < DEFAULT_MAX_TIMEOUT_RETRIES) {
-              timeoutRetryCount++;
+            if (timeoutRetryState.count < DEFAULT_MAX_TIMEOUT_RETRIES) {
+              timeoutRetryState.count++;
               logger.warn('RealAPI',
-                `${timeoutError.message}，丢弃本次响应并重试 (${timeoutRetryCount}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
+                `${timeoutError.message}，丢弃本次响应并重试 (${timeoutRetryState.count}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
               await sleep(RETRY_DELAY_MS);
               checkAborted(signal);
-              yield* executeRequest(retryCount + 1);
+              yield* runAttempt(retryCount + 1);
               return;
             }
             throw timeoutError;
@@ -576,7 +446,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
             closeReader();
             await sleep(RETRY_DELAY_MS);
             checkAborted(signal);
-            yield* executeRequest(retryCount + 1);
+            yield* runAttempt(retryCount + 1);
             return;
           }
           throw readError;
@@ -745,14 +615,14 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
             `${loopError.message}，丢弃本次响应并重试 (${repetitionRetryCount}/${DEFAULT_MAX_REPETITION_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
           await sleep(RETRY_DELAY_MS);
           checkAborted(signal);
-          yield* executeRequest(retryCount + 1);
+          yield* runAttempt(retryCount + 1);
           return;
         }
         throw loopError;
       } finally {
         closeReader();
         // 读取阶段已结束（正常读完或已超时），停表避免收尾阶段误报超时。
-        // 重试时新的 executeRequest 会重新 restart()。
+        // 重试时新的 runAttempt 会重新 restart()。
         watchdog.stop();
       }
 
@@ -843,7 +713,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       }
     };
 
-    yield* executeRequest(0);
+    yield* runAttempt(0);
 
   } catch (error) {
     // 排除 AbortError - 不转储用户主动取消的请求

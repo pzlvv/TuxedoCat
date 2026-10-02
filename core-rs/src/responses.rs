@@ -35,9 +35,6 @@ pub fn assistant_max_text_chars() -> usize {
     ASSISTANT_MAX_TEXT_CHARS
 }
 
-/// 估算本地输入 token 时每张图片的固定成本（见 `estimate_local_input_tokens`）
-const IMAGE_TOKEN_ESTIMATE: u64 = 1_500;
-
 // ==================== 纯函数（对等面） ====================
 
 /// `{base}/v1/responses`；base 已以 `/v1` 结尾时用 `{base}/responses`（`joinV1Path`）
@@ -348,7 +345,7 @@ pub fn estimate_local_input_tokens(
     let total = util::utf16_len(&input_json)
         + system_prompt.map(util::utf16_len).unwrap_or(0)
         + util::utf16_len(&tools_json);
-    (total as f64 / 4.0).ceil() as u64 + image_count * IMAGE_TOKEN_ESTIMATE
+    (total as f64 / 4.0).ceil() as u64 + image_count * util::IMAGE_TOKEN_ESTIMATE
 }
 
 /// 递归替换 `image_url` 里的 data URL 为占位符（对齐 `JSON.stringify` 的 replacer）

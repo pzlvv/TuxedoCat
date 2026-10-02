@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 
 use super::*;
+    use crate::util::IMAGE_TOKEN_ESTIMATE;
 
 /// 与 Embedded 共用同一份对照表（`src/test/fixtures/responsesParity.json`）。
 const FIXTURE: &str = include_str!("../../src/test/fixtures/responsesParity.json");
