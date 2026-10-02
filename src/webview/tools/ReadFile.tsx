@@ -45,7 +45,11 @@ export const ReadFile: React.FC<ToolCallProps> = ({ args, colors }) => {
   const handleOpenFile = () => {
     // 点击打开时，将 WSL 路径转换为 Windows 路径
     const resolvedPath = wslToWindowsPath(filePath);
-    const message: any = {
+    const message: {
+      type: 'openFile';
+      filePath: string;
+      selectedLines?: { start: number; end: number };
+    } = {
       type: 'openFile',
       filePath: resolvedPath,
     };

@@ -4,10 +4,14 @@
  * 收敛两个宿主逐字重复的部分：工具流式进度推送（`onToolProgress`）。
  * 宿主差异（推送通道）通过参数注入。
  */
+import type { HostToWebviewMessageWithoutSessionId } from './webviewMessages.js';
 import type { ToolProgressData } from '../core/tools/Tool.js';
 
 /** 宿主推送通道（UIHost.sendToWebview） */
-export type HostPush = (sessionId: string, message: Record<string, unknown>) => void;
+/**
+ * 进度推送回调：消息形状是 wire 协议的宿主→webview 方向（sessionId 由投递点补全）。
+ */
+export type HostPush = (sessionId: string, message: HostToWebviewMessageWithoutSessionId) => void;
 
 /** 宿主日志通道（UIHost.log） */
 export type HostLog = (message: string) => void;

@@ -68,10 +68,11 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, status, isDark
   );
 
   useEffect(() => {
-    if (needsMeta && !metaLoaded && toolUseId) {
+    const sid = getWindowSessionId();
+    if (needsMeta && !metaLoaded && toolUseId && sid) {
       postMessage({
         type: 'requestToolMeta',
-        sessionId: getWindowSessionId(),
+        sessionId: sid,
         toolUseIds: [toolUseId],
       });
     }

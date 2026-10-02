@@ -16,7 +16,7 @@ import { CONFIG_DIR_NAME } from '../../config/project';
 import { createEventBus } from '../../host/EventBus';
 import type { UIHost } from '../../host/UIHost';
 import { localWorkspaceRef } from '../../host/workspaceRef';
-import type { WebviewMessage } from '../../core/webviewTypes';
+import type { WebviewMessage } from '../../host/webviewMessages';
 import {
   resolveSettingsSnapshot,
   type McpServerDefinition,

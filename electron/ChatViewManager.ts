@@ -13,7 +13,7 @@
 
 import { BrowserWindow, WebContents, WebContentsView, Rectangle, nativeTheme, shell } from 'electron';
 import * as path from 'path';
-import type { WebviewMessage } from '../src/core/webviewTypes.js';
+import type { WebviewMessage } from '../src/host/webviewMessages.js';
 import { sameWorkspace } from '../src/host/workspacePaths.js';
 
 export const SIDEBAR_WIDTH = 280;

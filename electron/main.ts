@@ -32,6 +32,7 @@ import { ElectronUIHost } from './ElectronUIHost.js';
 import { ElectronSpinDesign } from './ElectronSpinDesign.js';
 import { ElectronConversationManager } from './ElectronConversationManager.js';
 import { WebViewUI } from '../src/host/WebViewUI.js';
+import type { WebviewToHostMessage } from '../src/host/webviewMessages.js';
 import { normalizeWorkspacePath, sameWorkspace, dedupeWorkspacePaths } from '../src/host/workspacePaths.js';
 import { buildRemoteEndpoint, type RemoteConnectError } from '../src/host/connectionString.js';
 import { DirectoryOperationError } from '../src/host/standalone/CoreDaemon.js';
@@ -3538,16 +3539,18 @@ async function deleteConversationWithViews(sessionId: string): Promise<void> {
  * 与 extension.ts AssistantViewProvider 的专用消息处理保持一致，
  * 其余消息统一委托给 WebViewUI（复用同一份 WebviewMessageHandler）。
  */
-function handleWebviewMessageFromSource(sender: Electron.WebContents, message: any): void {
+function handleWebviewMessageFromSource(sender: Electron.WebContents, message: WebviewToHostMessage): void {
   if (!message || typeof message.type !== 'string') return;
 
   const ui = webviewUi;
   if (!ui) return;
-  const sessionId = typeof message.sessionId === 'string' ? message.sessionId : undefined;
+  // IPC 边界：sessionId 是否随消息携带因 type 而异，运行时探测（wire 无类型）
+  const rawSessionId = (message as { sessionId?: unknown }).sessionId;
+  const sessionId = typeof rawSessionId === 'string' ? rawSessionId : undefined;
 
   // 用户发出了新对话的第一条消息：该会话开始落盘，不再是「新建但还没发过消息」的对话。
   // 清除该标记后，下次点侧栏「新建」才会创建新的聊天视图，而不是复用这个已有内容的对话。
-  if ((message.type === 'sendMessage' || message.type === 'queueMessage') && sessionId) {
+  if (message.type === 'sendMessage' && sessionId) {
     chatViews?.markSessionUsed(sessionId);
   }
 

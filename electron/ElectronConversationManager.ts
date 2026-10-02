@@ -12,7 +12,7 @@
 
 import type { ConversationMetadata } from '../src/core/history/Conversation.js';
 import type { SessionRuntimeState } from '../src/core/AssistantEventBus.js';
-import type { WebviewMessage } from '../src/core/webviewTypes.js';
+import type { WebviewMessage } from '../src/host/webviewMessages.js';
 import type { UIHost } from '../src/host/UIHost.js';
 import { ConversationManager } from '../src/host/ConversationManager.js';
 
@@ -37,8 +37,15 @@ export class ElectronConversationManager extends ConversationManager {
     // ② webview 内部列表（子对话树等）
     this.host.sendToWebview({
       type: 'conversationsData',
-      conversations: list,
-    } as unknown as WebviewMessage);
+      conversations: list.map((c) => ({
+        sessionId: c.sessionId,
+        title: c.title,
+        createdAt: c.createdAt,
+        updatedAt: c.updatedAt,
+        messageCount: c.messageCount,
+        parentSessionId: c.parentSessionId,
+      })),
+    });
     this.host.log(`Conversation list refreshed (${list.length} conversations)`);
   }
 

@@ -21,7 +21,12 @@ import { getSettingsStore } from '../SettingsStore.js';
 import { modelRefOf, sameModelRef, type ModelRef } from '../../core/llm/modelRef.js';
 import { getConversationModelRef } from '../../core/history/Conversation.js';
 import { userChoiceQueue } from '../../core/UserChoiceQueue.js';
-import type { WebviewMessage } from '../../core/webviewTypes.js';
+import type {
+  HostToWebviewMessage,
+  HostToWebviewMessageWithoutSessionId,
+  WebviewMessage,
+  WebviewToHostMessage,
+} from '../webviewMessages.js';
 import type { SessionRuntimeState, UiEvent } from '../../core/AssistantEventBus.js';
 import { requireEventBus } from '../../core/AssistantEventBus.js';
 import type { UserChoiceManager } from './userChoice.js';
@@ -66,6 +71,20 @@ const API_TYPE_PROBE_RETRY_BASE_DELAY_MS = 500;
 const API_TYPE_PROBE_MAX_RETRY_DELAY_MS = 5_000;
 /** 需要重试的探测状态码：限流 + 瞬时故障 */
 const API_TYPE_PROBE_RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
+
+/**
+ * 分发表登记器：按消息 type 收窄载荷类型。
+ *
+ * `Extract<WebviewToHostMessage, { type: T }>` 让每个处理器只见到自己那条消息的
+ * 精确形状；收窄后的函数不能直接赋给「接受全联合」的表项（参数逆变），
+ * 因此在运行时分发只可能以同 type 消息调用的保证下，收敛为这一处受控断言。
+ */
+function entry<T extends WebviewToHostMessage['type']>(
+  type: T,
+  handler: (msg: Extract<WebviewToHostMessage, { type: T }>, ctx: WebviewRequestContext) => Promise<void> | void,
+): [string, (msg: WebviewToHostMessage, ctx: WebviewRequestContext) => Promise<void> | void] {
+  return [type, handler as (msg: WebviewToHostMessage, ctx: WebviewRequestContext) => Promise<void> | void];
+}
 
 /**
  * WebviewMessageHandler - 处理 webview 发来的各类消息
@@ -132,7 +151,7 @@ export class WebviewMessageHandler {
     /** 登记 / 清除该会话的排队项（`null` = 清除） */
     onQueuedMessage(sessionId: string, queued: QueuedMessageState | null): void;
   };
-  private postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
+  private postToWebview: (sessionId: string, message: HostToWebviewMessageWithoutSessionId) => void;
   private postConversationLoaded: (sessionId: string, conversation: any, extra: ConversationLoadedExtra) => void;
   private setTitle: (sessionID: string, title: string) => void;
   private userChoiceManager: UserChoiceManager;
@@ -154,11 +173,11 @@ export class WebviewMessageHandler {
   private openSessionIds: Set<string> | null = null;
 
   /** 消息类型 -> 处理器分发表（构造函数中构建一次） */
-  private messageHandlers: Map<string, (msg: any, ctx: WebviewRequestContext) => Promise<void> | void>;
+  private messageHandlers: Map<string, (msg: WebviewToHostMessage, ctx: WebviewRequestContext) => Promise<void> | void>;
 
   constructor(deps: {
     host: UIHost;
-    postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
+    postToWebview: (sessionId: string, message: HostToWebviewMessageWithoutSessionId) => void;
     postConversationLoaded: (sessionId: string, conversation: any, extra: ConversationLoadedExtra) => void;
     setTitle: (sessionID: string, title: string) => void;
     userChoiceManager: UserChoiceManager;
@@ -239,78 +258,78 @@ export class WebviewMessageHandler {
    * requestConversationSpaces / getConversations）包装为忽略参数的形式；
    * debugLog 是同步日志分支，包一层同步 lambda。
    */
-  private buildMessageHandlers(): Map<string, (msg: any, ctx: WebviewRequestContext) => Promise<void> | void> {
-    return new Map<string, (msg: any, ctx: WebviewRequestContext) => Promise<void> | void>([
+  private buildMessageHandlers(): Map<string, (msg: WebviewToHostMessage, ctx: WebviewRequestContext) => Promise<void> | void> {
+    return new Map<string, (msg: WebviewToHostMessage, ctx: WebviewRequestContext) => Promise<void> | void>([
       // ===== 纯宿主操作（留在 handler 内直接调 UIHost，见第 4.3 节保留清单）=====
-      ['openFile', (msg) => this.handleOpenFile(msg)],
-      ['requestToolMeta', (msg) => this.handleRequestToolMeta(msg)],
-      ['showVirtualDocument', (msg) => this.handleShowVirtualDocument(msg)],
-      ['openMermaidPreview', (msg) => this.handleOpenMermaidPreview(msg)],
-      ['openSpinDesign', () => this.handleOpenSpinDesign()],
-      ['openUrl', (msg) => this.handleOpenUrl(msg)],
-      ['debugLog', async (msg) => {
+      entry('openFile', (msg) => this.handleOpenFile(msg)),
+      entry('requestToolMeta', (msg) => this.handleRequestToolMeta(msg)),
+      entry('showVirtualDocument', (msg) => this.handleShowVirtualDocument(msg)),
+      entry('openMermaidPreview', (msg) => this.handleOpenMermaidPreview(msg)),
+      entry('openSpinDesign', () => this.handleOpenSpinDesign()),
+      entry('openUrl', (msg) => this.handleOpenUrl(msg)),
+      entry('debugLog', async (msg) => {
         // 来自 webview 的诊断日志
-        this.log(`[Webview Debug] ${msg.message}`);
-      }],
+        this.log(`[Webview Debug] ${(msg as { message?: string }).message ?? ''}`);
+      }),
 
       // ===== 无副作用查询（直接调 core 查询函数并回推）=====
-      ['requestModels', (msg) => this.handleRequestModels(msg)],
-      ['fetchProviderModels', (msg) => this.handleFetchProviderModels(msg)],
-      ['detectProviderModelApiTypes', (msg) => this.handleDetectProviderModelApiTypes(msg)],
-      ['requestLLMConfig', (msg) => this.handleRequestLLMConfig(msg)],
-      ['requestSettingsDefaults', () => this.handleRequestSettingsDefaults()],
-      ['requestSkills', (_msg, ctx) => this.handleRequestSkills(ctx)],
-      ['requestConversationSpaces', () => this.handleRequestConversationSpaces()],
-      ['requestMcpServers', (msg) => this.handleRequestMcpServers(msg)],
-      ['getConversations', () => this.handleGetConversations()],
+      entry('requestModels', () => this.handleRequestModels()),
+      entry('fetchProviderModels', (msg) => this.handleFetchProviderModels(msg)),
+      entry('detectProviderModelApiTypes', (msg) => this.handleDetectProviderModelApiTypes(msg)),
+      entry('requestLLMConfig', (msg) => this.handleRequestLLMConfig(msg)),
+      entry('requestSettingsDefaults', () => this.handleRequestSettingsDefaults()),
+      entry('requestSkills', (_msg, ctx) => this.handleRequestSkills(ctx)),
+      entry('requestConversationSpaces', () => this.handleRequestConversationSpaces()),
+      entry('requestMcpServers', (msg) => this.handleRequestMcpServers(msg)),
+      entry('getConversations', () => this.handleGetConversations()),
       // 会话运行时状态全量快照：状态流只在「变化」时推，视图创建 / 激活不会补发，
       // 新视图会错过广播；webview 启动 / 切到单视图时主动拉一次（按来源回包）。
-      ['requestSessionRuntimeStates', (_msg, ctx) => this.pushSessionRuntimeStates(ctx.sender)],
+      entry('requestSessionRuntimeStates', (_msg, ctx) => this.pushSessionRuntimeStates(ctx.sender)),
 
       // ===== 环境查询（按来源视图直发回包；此前由两宿主在消息入口各自拦截实现）=====
-      ['requestTheme', (msg, ctx) => {
+      entry('requestTheme', (_msg, ctx) => {
         // sender 为 null（单视图宿主 / 宿主主动推送）时广播语义，由 UIHost 实现决定；
         // 指定句柄时只发该视图（Electron 多视图下预热视图也能收到回包）。
         this.host.onThemeChanged(ctx.sender);
-      }],
-      ['requestContextLimit', (msg, ctx) => this.pushContextLimit(ctx.sender, modelRefOf(msg.provider, msg.model))],
+      }),
+      entry('requestContextLimit', (msg, ctx) => this.pushContextLimit(ctx.sender, modelRefOf(msg.provider, msg.model))),
 
       // ===== 请求响应 / 显示 =====
-      ['respondUserChoice', (msg) => this.handleRespondUserChoice(msg)],
-      ['expandCompact', (msg) => this.handleExpandCompact(msg)],
-      ['rollbackEdit', (msg) => this.emitUiEvent({ type: 'editRolledBack', sessionId: msg.sessionId, toolUseId: msg.toolUseId, direction: msg.direction, filePath: msg.filePath })],
+      entry('respondUserChoice', (msg) => this.handleRespondUserChoice(msg)),
+      entry('expandCompact', (msg) => this.handleExpandCompact(msg)),
+      entry('rollbackEdit', (msg) => this.emitUiEvent({ type: 'editRolledBack', sessionId: msg.sessionId, toolUseId: msg.toolUseId, direction: msg.direction, filePath: msg.filePath })),
 
       // ===== 消息 / 压缩 / 中止（UiEvent 翻译）=====
-      ['requestCompress', (msg) => this.emitUiEvent({ type: 'compactRequested', sessionId: msg.sessionId })],
-      ['sendMessage', (msg) => this.handleUserMessage(msg)],
-      ['abort', (msg) => this.handleAbort(msg)],
+      entry('requestCompress', (msg) => this.emitUiEvent({ type: 'compactRequested', sessionId: msg.sessionId })),
+      entry('sendMessage', (msg) => this.handleUserMessage(msg)),
+      entry('abort', (msg) => this.handleAbort(msg)),
 
       // ===== 会话生命周期（UiEvent 翻译）=====
-      ['loadConversation', (msg) => this.handleLoadConversation(msg)],
-      ['startNewConversation', (msg) => this.handleStartNewConversation(msg)],
-      ['deleteConversation', (msg) => this.emitUiEvent({ type: 'conversationDeleted', sessionId: msg.sessionId })],
-      ['renameConversation', (msg) => this.emitUiEvent({ type: 'conversationRenamed', sessionId: msg.sessionId, title: msg.title })],
-      ['updateConversationContext', (msg) => this.handleUpdateConversationContext(msg)],
-      ['clearConversationSpace', (msg) => this.emitUiEvent({ type: 'conversationSpaceCleared', sessionId: msg.dirName })],
+      entry('loadConversation', (msg) => this.handleLoadConversation(msg)),
+      entry('startNewConversation', (msg) => this.handleStartNewConversation(msg)),
+      entry('deleteConversation', (msg) => this.emitUiEvent({ type: 'conversationDeleted', sessionId: msg.sessionId })),
+      entry('renameConversation', (msg) => this.emitUiEvent({ type: 'conversationRenamed', sessionId: msg.sessionId, title: msg.title })),
+      entry('updateConversationContext', (msg) => this.handleUpdateConversationContext(msg)),
+      entry('clearConversationSpace', (msg) => this.emitUiEvent({ type: 'conversationSpaceCleared', sessionId: msg.dirName })),
 
       // ===== 会话配置（UiEvent 翻译：core 处理并广播 sessionConfigChanged）=====
-      ['setModel', (msg) => this.handleSetModel(msg)],
-      ['setThinkingMode', (msg) => this.emitUiEvent({ type: 'thinkingEffortChanged', sessionId: msg.sessionId, mode: msg.mode })],
-      ['setPromptMode', (msg) => this.emitUiEvent({ type: 'promptModeChanged', sessionId: msg.sessionId, mode: msg.mode })],
-      ['setAgentMode', (msg) => this.emitUiEvent({ type: 'agentModeChanged', sessionId: msg.sessionId, mode: msg.mode })],
-      ['setWebSearch', (msg) => this.emitUiEvent({ type: 'webSearchChanged', sessionId: msg.sessionId, enabled: !!msg.webSearch })],
-      ['setMcpEnabled', (msg) => this.emitUiEvent({ type: 'mcpEnabledChanged', sessionId: msg.sessionId, name: msg.name, enabled: !!msg.enabled })],
+      entry('setModel', (msg) => this.handleSetModel(msg)),
+      entry('setThinkingMode', (msg) => this.emitUiEvent({ type: 'thinkingEffortChanged', sessionId: msg.sessionId, mode: msg.mode })),
+      entry('setPromptMode', (msg) => this.emitUiEvent({ type: 'promptModeChanged', sessionId: msg.sessionId, mode: msg.mode })),
+      entry('setAgentMode', (msg) => this.emitUiEvent({ type: 'agentModeChanged', sessionId: msg.sessionId, mode: msg.mode })),
+      entry('setWebSearch', (msg) => this.emitUiEvent({ type: 'webSearchChanged', sessionId: msg.sessionId, enabled: !!msg.webSearch })),
+      entry('setMcpEnabled', (msg) => this.handleSetMcpEnabled(msg)),
 
       // ===== 其它（UiEvent 翻译）=====
-      ['saveLLMConfig', (msg) => this.handleSaveLLMConfig(msg)],
-      ['requestSmartNaming', (msg) => this.handleRequestSmartNaming(msg)],
+      entry('saveLLMConfig', (msg) => this.handleSaveLLMConfig(msg)),
+      entry('requestSmartNaming', (msg) => this.handleRequestSmartNaming(msg)),
     ]);
   }
 
   /**
    * 按消息类型分发到具体处理器，由 handleWebviewMessage() 统一兜底异常。
    */
-  private async dispatchWebviewMessage(message: any, ctx: WebviewRequestContext): Promise<void> {
+  private async dispatchWebviewMessage(message: WebviewToHostMessage, ctx: WebviewRequestContext): Promise<void> {
     logger.info("handleWebviewMessage", `Received from webview: ${message.type}`);
 
     const handler = this.messageHandlers.get(message.type);
@@ -331,15 +350,21 @@ export class WebviewMessageHandler {
    * `ctx.sender` 标识消息来源视图（多视图宿主传入，单视图宿主 / 宿主主动推送为 null），
    * 需要「按来源回包」的消息（requestTheme / requestContextLimit）依赖它定向投递。
    */
-  async handleWebviewMessage(message: any, ctx: WebviewRequestContext = DEFAULT_REQUEST_CONTEXT): Promise<void> {
+  async handleWebviewMessage(message: unknown, ctx: WebviewRequestContext = DEFAULT_REQUEST_CONTEXT): Promise<void> {
+    // wire 数据在运行时无类型：先验「有字符串 type」再按协议窄化（过窄化交分发表）
+    if (!message || typeof message !== 'object' || typeof (message as { type?: unknown }).type !== 'string') {
+      this.log(`[WebviewMessageHandler] Malformed webview message: ${String(message)}`);
+      return;
+    }
+    const messageType = (message as { type: string }).type;
     try {
-      await this.dispatchWebviewMessage(message, ctx);
+      await this.dispatchWebviewMessage(message as WebviewToHostMessage, ctx);
     } catch (err) {
       // 单条消息处理失败不应变成未处理的 rejection：
       // VS Code 会打印 "rejected promise not handled within 1 second"，
       // 且整条消息链路静默失败、难以定位。
       const detail = err instanceof Error ? (err.stack || err.message) : String(err);
-      this.log(`[WebviewMessageHandler] handleWebviewMessage failed for type=${message?.type}: ${detail}`);
+      this.log(`[WebviewMessageHandler] handleWebviewMessage failed for type=${messageType}: ${detail}`);
     }
   }
 
@@ -357,7 +382,7 @@ export class WebviewMessageHandler {
   /**
    * 读取 mcp.json + 当前会话的启用状态，并合并运行时状态后推送给 webview。
    */
-  private async handleRequestMcpServers(message?: any): Promise<void> {
+  private async handleRequestMcpServers(message: Extract<WebviewToHostMessage, { type: 'requestMcpServers' }>): Promise<void> {
     const sessionId = await this.getActiveMcpSessionId(message?.sessionId);
     this.log(`MCP servers requested (session=${sessionId ?? '-'})`);
     // 只读展示：引用的建立在 core 的会话生命周期（createEngine / restoreConversationEngine
@@ -391,7 +416,7 @@ export class WebviewMessageHandler {
    * 打开外部链接（使用系统默认浏览器）
    * webview 中点击 markdown 链接时调用
    */
-  private async handleOpenUrl(message: any): Promise<void> {
+  private async handleOpenUrl(message: Extract<WebviewToHostMessage, { type: 'openUrl' }>): Promise<void> {
     const url = typeof message.url === 'string' ? message.url : '';
     if (!url) return;
     this.log(`[WebviewMessageHandler] Open URL externally: ${url}`);
@@ -409,7 +434,7 @@ export class WebviewMessageHandler {
    * QueryEngine.resolvePendingCommand）。入口不做这些事，因此查询进行中不会被立刻
    * 注入 Skill / 执行内置命令。
    */
-  private async handleUserMessage(message: any): Promise<void> {
+  private async handleUserMessage(message: Extract<WebviewToHostMessage, { type: 'sendMessage' }>): Promise<void> {
     const { sessionId, content } = message;
     const images: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }> | undefined = Array.isArray(message.images)
       ? message.images
@@ -478,7 +503,7 @@ export class WebviewMessageHandler {
         filePath: message.fileHidden ? undefined : filePath,
         fileSelectedLines: message.fileHidden ? undefined : selectedLines,
         meta: Object.keys(uiMeta).length > 0 ? uiMeta : undefined,
-      } as Record<string, unknown>);
+      });
     }
 
     // 进入 core 的唯一路径：组装载荷后发 UiEvent。取 / 建引擎、应用会话覆盖、
@@ -507,7 +532,7 @@ export class WebviewMessageHandler {
    * webview 侧模型身份是 (provider, model) 整体：provider 缺失或为空串即非法，
    * 记录日志并忽略，不再猜测/回退到其它 provider。
    */
-  private async handleSetModel(message: any): Promise<void> {
+  private async handleSetModel(message: Extract<WebviewToHostMessage, { type: 'setModel' }>): Promise<void> {
     const ref = modelRefOf(message?.provider, message?.model);
     if (!ref) {
       this.log(`[WebviewMessageHandler] setModel: provider 为空（非法），忽略 model="${message?.model ?? ''}"`);
@@ -523,7 +548,7 @@ export class WebviewMessageHandler {
    * （provider 空串不表示「未知」），记录日志并按「未携带模型」处理，
    * 由 Integration 沿用会话已选模型。
    */
-  private messageModelRef(message: any): ModelRef | undefined {
+  private messageModelRef(message: Extract<WebviewToHostMessage, { type: 'sendMessage' }>): ModelRef | undefined {
     const hasModel = typeof message?.model === 'string' && message.model.trim().length > 0;
     const ref = modelRefOf(message?.provider, message?.model);
     if (hasModel && !ref) {
@@ -532,7 +557,7 @@ export class WebviewMessageHandler {
     return ref;
   }
 
-  private async handleOpenFile(message: any): Promise<void> {
+  private async handleOpenFile(message: Extract<WebviewToHostMessage, { type: 'openFile' }>): Promise<void> {
     const { filePath, selectedLines } = message;
     this.log(`[WebviewMessageHandler] openFile: ${filePath} ${JSON.stringify(selectedLines)}`);
 
@@ -545,7 +570,7 @@ export class WebviewMessageHandler {
     }
   }
 
-  private async handleRequestToolMeta(message: any): Promise<void> {
+  private async handleRequestToolMeta(message: Extract<WebviewToHostMessage, { type: 'requestToolMeta' }>): Promise<void> {
     const { sessionId: targetSessionId, toolUseIds } = message;
     this.log(`[WebviewMessageHandler] requestToolMeta: ${targetSessionId}, ids: ${JSON.stringify(toolUseIds)}`);
 
@@ -574,9 +599,9 @@ export class WebviewMessageHandler {
           if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
             for (const block of msg.message.content) {
               const b = block as { type: string; id?: string; name?: string; input?: any;[key: string]: unknown };
-              if (b.type !== 'tool_use' || !toolUseIds.includes(b.id)) continue;
+              if (b.type !== 'tool_use' || typeof b.id !== 'string' || !toolUseIds.includes(b.id)) continue;
               const meta = (b._meta as Record<string, unknown> | undefined) || {};
-              const fallback = resultDiff.get(b.id!);
+              const fallback = resultDiff.get(b.id);
               const beforeContent = typeof meta.beforeContent === 'string'
                 ? meta.beforeContent
                 : (typeof fallback?.beforeContent === 'string' ? fallback.beforeContent : undefined);
@@ -590,7 +615,7 @@ export class WebviewMessageHandler {
 
               if (b.name === 'Edit' && typeof beforeContent === 'string' && typeof afterContent === 'string') {
                 // 按需加载也返回紧凑 diff，避免把完整文件内容发给 webview
-                result[b.id!] = {
+                result[b.id] = {
                   diffHunks: buildEditDiffHunks({
                     beforeContent,
                     afterContent,
@@ -604,7 +629,7 @@ export class WebviewMessageHandler {
                   endLine,
                 };
               } else if (b.name === 'Edit' || b.name === 'Write') {
-                result[b.id!] = {
+                result[b.id] = {
                   ...meta,
                   beforeContent: beforeContent ?? meta.beforeContent ?? null,
                   afterContent: afterContent ?? meta.afterContent ?? '',
@@ -614,7 +639,7 @@ export class WebviewMessageHandler {
                   endLine,
                 };
               } else if (Object.keys(meta).length > 0) {
-                result[b.id!] = meta;
+                result[b.id] = meta;
               }
             }
           }
@@ -631,13 +656,25 @@ export class WebviewMessageHandler {
     })();
   }
 
-  private async handleShowVirtualDocument(message: any): Promise<void> {
+  private async handleShowVirtualDocument(message: Extract<WebviewToHostMessage, { type: 'showVirtualDocument' }>): Promise<void> {
     const { content, title } = message;
     this.log(`[WebviewMessageHandler] showVirtualDocument: ${title}`);
     await this.host.showVirtualDocument(content, title);
   }
 
-  private async handleAbort(message: any): Promise<void> {
+  private async handleSetMcpEnabled(message: Extract<WebviewToHostMessage, { type: 'setMcpEnabled' }>): Promise<void> {
+    if (!message.sessionId) {
+      this.log(`[WebviewMessageHandler] setMcpEnabled without sessionId (name=${message.name}), ignored`);
+      return;
+    }
+    await this.emitUiEvent({ type: 'mcpEnabledChanged', sessionId: message.sessionId, name: message.name, enabled: !!message.enabled });
+  }
+
+  private async handleAbort(message: Extract<WebviewToHostMessage, { type: 'abort' }>): Promise<void> {
+    if (!message.sessionId) {
+      this.log('[WebviewMessageHandler] abort without sessionId, ignored');
+      return;
+    }
     this.log(`Abort requested from webview, sessionId: ${message.sessionId}`);
     // UI → core：中止请求走总线（core 侧由 Integration.abortCurrentQuery 消费）
     await this.emitUiEvent({ type: 'abortRequested', sessionId: message.sessionId });
@@ -655,10 +692,10 @@ export class WebviewMessageHandler {
     this.host.sendToWebview({
       type: 'conversationsData',
       conversations,
-    } as WebviewMessage);
+    });
   }
 
-  private async handleLoadConversation(message: any): Promise<void> {
+  private async handleLoadConversation(message: Extract<WebviewToHostMessage, { type: 'loadConversation' }>): Promise<void> {
     this.log(`[WebviewMessageHandler] loadConversation requested: ${message.sessionId}`);
     // 打开对话：刷新该会话的空闲关闭计时（空闲回收只在 VS Code 生效）
     this.uiPort?.noteSessionActivity(message.sessionId);
@@ -831,7 +868,7 @@ export class WebviewMessageHandler {
     }
   }
 
-  private async handleUpdateConversationContext(message: any): Promise<void> {
+  private async handleUpdateConversationContext(message: Extract<WebviewToHostMessage, { type: 'updateConversationContext' }>): Promise<void> {
     this.log(`[WebviewMessageHandler] updateConversationContext: ${message.sessionId}`);
     // 写 meta.json 的请求翻译成 UiEvent.conversationContextUpdated 走总线
     // （core 侧消费方 initializeCoreEvents → history.updateConversationContext）。
@@ -870,7 +907,7 @@ export class WebviewMessageHandler {
     requireEventBus().emitToCore({ type: 'sessionWorkspaceAssigned', sessionId, workspacePath });
   }
 
-  private async handleStartNewConversation(message: any): Promise<void> {
+  private async handleStartNewConversation(message: Extract<WebviewToHostMessage, { type: 'startNewConversation' }>): Promise<void> {
     const newSessionId = message.sessionId;
     // 「哪个会话在前台」由 UI 自己维护（第 12.7 节）
     this.trackedActiveSessionId = newSessionId;
@@ -957,7 +994,7 @@ export class WebviewMessageHandler {
     })();
   }
 
-  private async handleRespondUserChoice(message: any): Promise<void> {
+  private async handleRespondUserChoice(message: Extract<WebviewToHostMessage, { type: 'respondUserChoice' }>): Promise<void> {
     this.log(`[WebviewMessageHandler] User choice response: ${message.choiceId}, index: ${message.index}`);
     const pending = this.userChoiceManager.pendingUserChoices.get(message.choiceId);
     if (pending) {
@@ -982,7 +1019,7 @@ export class WebviewMessageHandler {
    */
   pushContextLimit(sender: WebviewRequestContext['sender'], ref?: ModelRef): void {
     try {
-      const message: WebviewMessage = {
+      const message: Extract<HostToWebviewMessage, { type: 'contextLimitUpdated' }> = {
         type: 'contextLimitUpdated',
         maxContextTokens: getSettingsStore().readContextLimit(ref),
       };
@@ -1012,7 +1049,7 @@ export class WebviewMessageHandler {
       // 状态源是 core 推送的 sessionRuntimeChanged 快照（经 ConversationManager 缓存）。
       // 不能用进程内的 getSessionRuntimeStates()：Standalone 下该模块不被写入，恒为空。
       const states = this.uiPort?.getSessionRuntimeStatesSnapshot() ?? [];
-      const message: WebviewMessage = {
+      const message: Extract<HostToWebviewMessage, { type: 'sessionRuntimeStates' }> = {
         type: 'sessionRuntimeStates',
         states,
       };
@@ -1027,7 +1064,7 @@ export class WebviewMessageHandler {
     }
   }
 
-  private async handleRequestModels(_message: any): Promise<void> {
+  private async handleRequestModels(): Promise<void> {
     this.log(`[WebviewMessageHandler] Requesting model list from all providers`);
     try {
       const settings = getSettingsStore().getRawSettings();
@@ -1116,7 +1153,7 @@ export class WebviewMessageHandler {
    * 因此这里只把「哪些模型还没有协议」回传给面板，由用户确认后再执行探测
    * （见 handleDetectProviderModelApiTypes）。
    */
-  private async handleFetchProviderModels(message: any): Promise<void> {
+  private async handleFetchProviderModels(message: Extract<WebviewToHostMessage, { type: 'fetchProviderModels' }>): Promise<void> {
     const baseURL = typeof message?.baseURL === 'string' ? message.baseURL.trim() : '';
     const apiKey = typeof message?.apiKey === 'string' ? message.apiKey.trim() : '';
     // 面板已知的模型协议：已有值的不需要再探测
@@ -1147,7 +1184,7 @@ export class WebviewMessageHandler {
    * 处理设置页的「确认后自动检测模型协议」请求 —— 阶段二。
    * 面板已就「可能消耗少量 token」征得用户同意，这里才真正发起探测。
    */
-  private async handleDetectProviderModelApiTypes(message: any): Promise<void> {
+  private async handleDetectProviderModelApiTypes(message: Extract<WebviewToHostMessage, { type: 'detectProviderModelApiTypes' }>): Promise<void> {
     const baseURL = typeof message?.baseURL === 'string' ? message.baseURL.trim() : '';
     const apiKey = typeof message?.apiKey === 'string' ? message.apiKey.trim() : '';
     const models = Array.isArray(message?.models)
@@ -1402,7 +1439,7 @@ export class WebviewMessageHandler {
     }
   }
 
-  private async handleOpenMermaidPreview(message: any): Promise<void> {
+  private async handleOpenMermaidPreview(message: Extract<WebviewToHostMessage, { type: 'openMermaidPreview' }>): Promise<void> {
     const code: string = message.code || '';
     if (!code.trim()) return;
 
@@ -1433,7 +1470,7 @@ export class WebviewMessageHandler {
    * Standalone 下会话消息与 LLM 配置都在 Core 侧，整段生成过程经
    * `UiRequest.smartNamingRequested` 交给 Core；两种装配下本方法的后半段相同。
    */
-  private async handleRequestSmartNaming(message: any): Promise<void> {
+  private async handleRequestSmartNaming(message: Extract<WebviewToHostMessage, { type: 'requestSmartNaming' }>): Promise<void> {
     const sessionId = message.sessionId;
     // 会话可能只出现在对话树里、尚未加载：先按会话登记工作目录再交给 core 解析
     this.ensureSessionWorkspace(sessionId);
@@ -1458,7 +1495,7 @@ export class WebviewMessageHandler {
    * Standalone 下归档与主 JSONL 都在 Core 侧，合并口径也在 Core 侧实现
    * （`compact_archive_display`），宿主只负责转换与下发。
    */
-  private async handleExpandCompact(message: any): Promise<void> {
+  private async handleExpandCompact(message: Extract<WebviewToHostMessage, { type: 'expandCompact' }>): Promise<void> {
     this.log(`[WebviewMessageHandler] expandCompact requested: ${message.sessionId}`);
     try {
       const messagesToDisplay = await requestCompactArchive(message.sessionId);
@@ -1496,7 +1533,7 @@ export class WebviewMessageHandler {
    * 默认 thinking_effort 保存到 llm.thinking_effort；
    * 默认工作模式和默认提示词模式保存到顶层（defaultAgentMode / defaultPromptMode，与 llm 平级）
    */
-  private async handleSaveLLMConfig(message: any): Promise<void> {
+  private async handleSaveLLMConfig(message: Extract<WebviewToHostMessage, { type: 'saveLLMConfig' }>): Promise<void> {
     const {
       webSearch, thinkingEffort,
       defaultAgentMode, defaultPromptMode, language,
@@ -1721,7 +1758,7 @@ export class WebviewMessageHandler {
    * 处理来自 webview 的 LLM 配置读取请求（用户点击设置按钮时触发）。
    * core 只提供配置事实，消息组装与投递在 WebViewUI。
    */
-  private async handleRequestLLMConfig(message: any): Promise<void> {
+  private async handleRequestLLMConfig(message: Extract<WebviewToHostMessage, { type: 'requestLLMConfig' }>): Promise<void> {
     // 定向会话：多视图宿主据此把设置面板只弹到发起端（同一会话的其它视图不同步弹）
     const sessionId: string | undefined = message?.sessionId;
     await this.uiPort?.showLLMConfigPanel('request', sessionId ?? null);

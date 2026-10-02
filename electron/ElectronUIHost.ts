@@ -15,7 +15,7 @@ import type { ChatViewManager } from './ChatViewManager.js';
 import type { UIHost, WorkspaceChange } from '../src/host/UIHost.js';
 import { WebviewViewHandle } from '../src/host/UIHost.js';
 import type { WorkspaceRef } from '../src/host/workspaceRef.js';
-import type { WebviewMessage } from '../src/core/webviewTypes.js';
+import type { WebviewMessage } from '../src/host/webviewMessages.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
 import { isImageFile } from '../src/host/imageFiles.js';

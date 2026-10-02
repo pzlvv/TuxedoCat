@@ -263,5 +263,5 @@ Skill 命令的注入内容是一条 assistant `tool_use`（`name: 'Skill'`）�
 | 系统环境信息缓存 | `src/core/prompt/SystemEnvironment.ts` 的 `getSystemDynamicInfo` / `warmupSystemDynamicInfo` |
 | 斜杠补全 | `src/webview/InputArea.tsx` 的 `handleInputChange` / `commitSlash` |
 | 活动指示动效 | `src/webview/styles/index.css` 的 `.running-bar` / `.running-bar--waiting`；`electron/titlebar/styles.css` 的 `.ws-tab-activity` |
-| 消息类型 | `src/core/webviewTypes.ts` 的 `WebviewMessage` |
+| 消息类型 | `src/host/webviewMessages.ts` 的 `WebviewToHostMessage` / `HostToWebviewMessage` |
 | 环境查询分发 | `src/host/ui/webviewMessageHandler.ts` 的 `requestSessionRuntimeStates` / `pushSessionRuntimeStates` |

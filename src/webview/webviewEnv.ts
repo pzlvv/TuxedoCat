@@ -10,6 +10,7 @@
  */
 
 import { hostInfoForConversationListOwner, openConversationModeOf, type HostInfo } from '../host/types';
+import type { WebviewToHostMessage } from '../host/webviewMessages';
 
 /**
  * 宿主消息通道的最小契约：VS Code 的 `acquireVsCodeApi()` 与 Electron preload 暴露的
@@ -229,7 +230,7 @@ export function getInitialTheme(): 'dark' | 'light' {
 }
 
 /** Post a typed message to host (VS Code extension / Electron main), returns false if no API. */
-export function postMessage(msg: unknown): boolean {
+export function postMessage(msg: WebviewToHostMessage): boolean {
   if (!hasHostMessageApi()) return false;
   getHostMessageApi().postMessage(msg);
   return true;

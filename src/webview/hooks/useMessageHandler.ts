@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
-import type { WebviewMessage, McpServerInfo, ProviderModels } from '../../core/webviewTypes';
+import type { McpServerInfo, ProviderModels } from '../../core/webviewTypes';
+import type { HostToWebviewMessage, HostToWebviewWire } from '../../host/webviewMessages';
 import type { MessageData } from '../../core/types';
 import { extractUserContent } from '../../core/utils/contentBlocks';
 import { getMessageOrigin } from '../../core/utils/messageOrigin';
@@ -33,7 +34,7 @@ const TOOL_STATUS_PRIORITY: Record<string, number> = { success: 3, fail: 3, runn
  * - 用户消息 _meta/顶层 filePath 双来源兼容、fileHidden 语义保留；
  * - tool_use 消息从 toolMetaMap 回填裁剪掉的 diff/_meta 大字段。
  */
-function restoreMessagesFromConversation(msg: Extract<WebviewMessage, { type: 'conversationLoaded' }>): Message[] {
+function restoreMessagesFromConversation(msg: Extract<HostToWebviewMessage, { type: 'conversationLoaded' }>): Message[] {
   // 首先扫描所有消息，建立 tool_use_id 到 tool_result 的映射（含时间戳）
   const toolResultMap = new Map<string, { content: string; exitCode: number; timestamp?: number }>();
   // 记录被取消的工具 ID 及其提示内容（未执行被取消的工具需要渲染为失败状态）
@@ -378,7 +379,7 @@ interface LoadedConversationCommonContext {
  * 返回解析出的 savedContext 关键字段供调用点继续计算 contextLength / 新建 state。
  */
 function applyLoadedConversationState(
-  msg: Extract<WebviewMessage, { type: 'conversationLoaded' }>,
+  msg: Extract<HostToWebviewMessage, { type: 'conversationLoaded' }>,
   props: UseMessageHandlerProps,
   currentProps: UseMessageHandlerProps,
   savedState: SessionState | undefined,
@@ -762,16 +763,20 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
       }
     };
 
-    const handleMessage = (event: MessageEvent<WebviewMessage>) => {
-      const msg = event.data as WebviewMessage;
+    const handleMessage = (event: MessageEvent<HostToWebviewWire>) => {
+      // wire 数据在运行时无类型：只验「有字符串 type」即按协议窄化（分发靠 switch 判别）
+      const data: unknown = event.data;
+      if (!data || typeof data !== 'object' || typeof (data as { type?: unknown }).type !== 'string') return;
+      const msg = data as HostToWebviewWire;
       const sessionId = props.currentSessionIdRef.current;
       // 会话级同步消息（setModel / setAgentMode 等）只作用于当前展示的会话
-      const hostSessionId = (msg as any).sessionId as string | undefined;
+      const hostSessionId = msg.sessionId;
       const fromCurrentSession = !hostSessionId || hostSessionId === sessionId;
-      profileLog(`[Webview] handleMessage: type=${msg.type} sessionId=${((msg as any).sessionId || '').substring(0, 20)} currentSessionId=${(sessionId || '').substring(0, 20)}`);
+      profileLog(`[Webview] handleMessage: type=${msg.type} sessionId=${hostSessionId?.substring(0, 20) ?? ''} currentSessionId=${(sessionId || '').substring(0, 20)}`);
 
       switch (msg.type) {
-        case 'addMessage':
+        case 'addMessage': {
+          const wire = msg;
           profileLog(`[Webview] addMessage: role=${msg.role} toolName=${msg.toolName || '-'} sessionMatch=${msg.sessionId === sessionId} origin=${msg.origin || 'user'} isCompactSummary=${!!msg.isCompactSummary} contentStart=${(msg.content || '').substring(0, 50)}`);
           // 排队消息被后端真正消费并显示后，清除该会话的排队状态：
           // 入队消息已进入引擎队列，会在下次 LLM 请求时被带上，
@@ -870,12 +875,12 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             // contextLength = API 返回的 input_tokens（当前对话的输入 token 数）
             // outputTokens  = API 返回的 output_tokens（本次 LLM 输出的 token 数）
             // totalTokens   = input + output（当前对话累计到此刻的总 token 数）
-            const inputTokens = (msg as any).contextLength || 0;
-            const outputTokens = (msg as any).outputTokens || 0;
+            const inputTokens = wire.contextLength || 0;
+            const outputTokens = wire.outputTokens || 0;
             const totalTokens = inputTokens + outputTokens;
-            const cacheReadTokens = (msg as any).cacheReadInputTokens || 0;
-            const cacheCreationTokens = (msg as any).cacheCreationInputTokens || 0;
-            profileLog(`[TokenDebug] addMessage: role=${msg.role} contextLength=${(msg as any).contextLength} outputTokens=${(msg as any).outputTokens} totalTokens=${totalTokens} cacheRead=${cacheReadTokens} cacheCreation=${cacheCreationTokens}`);
+            const cacheReadTokens = wire.cacheReadInputTokens || 0;
+            const cacheCreationTokens = wire.cacheCreationInputTokens || 0;
+            profileLog(`[TokenDebug] addMessage: role=${msg.role} contextLength=${wire.contextLength} outputTokens=${wire.outputTokens} totalTokens=${totalTokens} cacheRead=${cacheReadTokens} cacheCreation=${cacheCreationTokens}`);
             if (totalTokens > 0) {
               // 直接使用服务端返回的 input+output，不取 max；压缩后服务端会返回更小的数值，
               // 如果继续 max 会导致压缩后的 context 显示仍然停留在压缩前的旧值。
@@ -910,6 +915,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             props.setShowThinkingAnimation(false);
           }
           break;
+        }
         case 'showThinkingAnimation':
           // 存储到当前 session 的状态中
           if (msg.sessionId && props.sessionStatesRef.current.has(msg.sessionId)) {
@@ -924,17 +930,19 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             props.setAnimationMode('thinking');
           }
           break;
-        case 'initSessionState':
+        case 'initSessionState': {
+          const wire = msg;
           // 预初始化 session 状态（子代理创建时调用，使后续 thinking 动画能正确显示）
           if (msg.sessionId && !props.sessionStatesRef.current.has(msg.sessionId)) {
             props.sessionStatesRef.current.set(msg.sessionId, createSessionState({
               animationMode: 'thinking',
               promptMode: propsRef.current.settingsDefaults.promptMode,
               // wire 消息是扁平的 model / provider，组装成模型身份
-              modelRef: modelRefOf((msg as any).provider, (msg as any).model),
+              modelRef: modelRefOf(wire.provider, wire.model),
             }));
           }
           break;
+        }
         case 'setTheme':
           props.setTheme(msg.theme);
           props.setThemeInitialized(true);
@@ -955,34 +963,43 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
         // 会话级设置的多端同步：同一会话在其它端被修改时同步本端 UI。
         // 值相同时 React 会跳过更新，不会再次上报，因此不会形成回环。
         case 'setModel': {
+          const wire = msg;
           // 多端同步：wire 消息是扁平的 model / provider，这里组装成模型身份。
           // provider 缺失（空串非法）时忽略本次同步，避免只改一半造成漂移。
-          const ref = modelRefOf((msg as any).provider, (msg as any).model);
+          const ref = modelRefOf(wire.provider, wire.model);
           if (fromCurrentSession && ref) {
             props.setModelRef(ref);
           }
           break;
         }
-        case 'setAgentMode':
-          if (fromCurrentSession && (msg as any).mode) {
-            props.setAgentMode((msg as any).mode);
+        case 'setAgentMode': {
+          const wire = msg;
+          if (fromCurrentSession && wire.mode) {
+            props.setAgentMode(wire.mode);
           }
           break;
-        case 'setThinkingMode':
-          if (fromCurrentSession && (msg as any).mode) {
-            props.setThinkingMode((msg as any).mode);
+        }
+        case 'setThinkingMode': {
+          const wire = msg;
+          if (fromCurrentSession && wire.mode) {
+            props.setThinkingMode(wire.mode);
           }
           break;
-        case 'setWebSearch':
+        }
+        case 'setWebSearch': {
+          const wire = msg;
           if (fromCurrentSession) {
-            props.setWebSearch(!!(msg as any).webSearch);
+            props.setWebSearch(!!wire.webSearch);
           }
           break;
-        case 'setPromptMode':
-          if (fromCurrentSession && (msg as any).mode) {
-            props.setPromptMode((msg as any).mode);
+        }
+        case 'setPromptMode': {
+          const wire = msg;
+          if (fromCurrentSession && wire.mode) {
+            props.setPromptMode(wire.mode);
           }
           break;
+        }
         case 'focusInput': {
           // 全局唤醒快捷键把窗口唤到前台后，聚焦输入框，用户可直接开始输入。
           // 等待一帧：窗口刚显示时 DOM 焦点可能还在同步中，立即 focus 会被覆盖。
@@ -1024,9 +1041,10 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           props.pushNotice(msg.key, msg.params, msg.level);
           break;
         case 'setMcpServers': {
+          const wire = msg;
           // MCP 状态按会话区分：异步回推可能晚于会话切换，
           // 因此先写入该会话的缓存，只有属于当前会话时才更新可见状态。
-          const targetSessionId = (msg as any).sessionId as string | undefined;
+          const targetSessionId = wire.sessionId as string | undefined;
           if (targetSessionId) {
             props.mcpServersBySessionRef.current.set(targetSessionId, msg.servers);
             if (targetSessionId !== props.currentSessionIdRef.current) break;
@@ -1389,6 +1407,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           break;
         }
         case 'conversationLoaded': {
+          const wire = msg;
           const _t_convLoaded = performance.now();
           const _convLoadedSessionId = msg.conversation?.metadata?.sessionId;
           profileLog(`[Profile] conversationLoaded收到 | session=${(_convLoadedSessionId || '').substring(0, 20)} | t=${_t_convLoaded.toFixed(2)}ms`);
@@ -1402,10 +1421,10 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             // 恢复该会话的排队消息横幅（若有）
             props.setQueuedMessage(props.queuedMessageRef.current.get(loadedSessionId) ?? null);
             // 设置压缩状态
-            props.setHasCompactArchive((msg as any).hasCompactArchive === true);
+            props.setHasCompactArchive(wire.hasCompactArchive === true);
             props.setIsCompactExpanded(false);
             // 记录父会话 ID（子对话时有值）
-            props.setParentSessionId((msg as any).parentSessionId || null);
+            props.setParentSessionId(wire.parentSessionId || null);
             // 恢复该会话的 UI 状态（input, userChoiceRequest, userChoiceInput, showThinkingAnimation）
             const savedState = props.sessionStatesRef.current.get(loadedSessionId);
             if (savedState) {
@@ -1430,14 +1449,14 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               // activityPhase 精确表示当前是 thinking / text / tool / idle，不能仅凭 hasActiveQuery 推断。
               // 压缩是独立于 QueryEngine 的异步任务，hasActiveQuery 可能为 false，
               // 因此压缩中必须优先使用 savedState 的 compacting 状态来恢复动画和流水灯。
-              const activityPhase = (msg as any).activityPhase as string | undefined;
+              const activityPhase = wire.activityPhase as string | undefined;
               const isCompacting = savedState.animationMode === 'compacting' && savedState.showThinkingAnimation === true;
               // 除了扩展端上报的 hasActiveQuery/activityPhase，本地 savedState 中记录的
               // showThinkingAnimation 也是可靠来源（后台查询/子代理场景可能未同步 hasActiveQuery）。
               // 只要不是 tool/text 阶段，恢复会话后应立刻显示 thinking 动画。
               const savedAnimating = savedState.showThinkingAnimation === true;
               const phaseActive = activityPhase === 'thinking' || activityPhase === 'text' || activityPhase === 'tool';
-              const runtimeActive = savedAnimating || (msg as any).hasActiveQuery === true || phaseActive;
+              const runtimeActive = savedAnimating || wire.hasActiveQuery === true || phaseActive;
               const showThinking = isCompacting || (
                 runtimeActive &&
                 (activityPhase
@@ -1486,9 +1505,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
               props.savedMainInputRef.current = '';
               // showThinkingAnimation 和 hasActiveQuery 由扩展端根据引擎实时状态提供
               // activityPhase 精确表示当前是 thinking / text / tool / idle，不能仅凭 hasActiveQuery 推断。
-              const activityPhase = (msg as any).activityPhase as string | undefined;
+              const activityPhase = wire.activityPhase as string | undefined;
               const phaseActive = activityPhase === 'thinking' || activityPhase === 'text' || activityPhase === 'tool';
-              const runtimeActive = (msg as any).hasActiveQuery === true || phaseActive;
+              const runtimeActive = wire.hasActiveQuery === true || phaseActive;
               props.setShowThinkingAnimation(
                 runtimeActive && activityPhase !== 'tool' && activityPhase !== 'text'
               );
@@ -1511,13 +1530,13 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                   animationMode: 'thinking',
                   hasActiveQuery: runtimeActive,
                   // 询问模式 / 提示词模式：宿主未下发时保持未到达（不写猜测值）
-                  agentMode: (msg as any).agentMode as AgentMode | undefined,
+                  agentMode: wire.agentMode as AgentMode | undefined,
                   promptMode: common.savedCtxPromptMode,
                   thinkingMode: common.savedCtxThinkingMode || propsRef.current.thinkingMode,
                   webSearch: typeof common.savedCtxWebSearch === 'boolean' ? common.savedCtxWebSearch : propsRef.current.settingsDefaults.webSearch,
                   contextLength: restoredVal,
                   // 模型身份：消息顶层（扁平字段组装）→ settings.json 默认值
-                  modelRef: modelRefOf((msg as any).provider ?? (msg as any).savedContext?.provider, (msg as any).model)
+                  modelRef: modelRefOf(wire.provider ?? wire.savedContext?.provider, wire.model)
                     ?? propsRef.current.settingsDefaults.modelRef,
                 }));
               }
@@ -1563,7 +1582,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 // 旧版本消息没有 activityPhase 时，退化为从恢复的消息内容推断当前阶段。
                 // 不能用 hasActiveQuery 直接推断 thinking：查询进行中可能正处于
                 // 工具执行/文本流式输出阶段，此时应显示工具卡片或文本而不是 thinking 动画。
-                const activityPhase = (msg as any).activityPhase as string | undefined;
+                const activityPhase = wire.activityPhase as string | undefined;
                 const hasRunningTool = restoredMessages.some(m =>
                   m.role === 'toolcall' && m.status === 'running'
                 );
@@ -1578,7 +1597,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
                 // 但本地 savedState.showThinkingAnimation / activityPhase 仍记录了“该会话正在运行”。
                 const savedAnimating = loadedState?.showThinkingAnimation === true;
                 const phaseActive = activityPhase === 'thinking' || activityPhase === 'text' || activityPhase === 'tool';
-                const runtimeActive = savedAnimating || (msg as any).hasActiveQuery === true || phaseActive;
+                const runtimeActive = savedAnimating || wire.hasActiveQuery === true || phaseActive;
                 const shouldShowThinking =
                   isCompacting ||
                   (runtimeActive &&
@@ -1714,17 +1733,18 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           }
           break;
         }
-        case 'queuedMessage':
+        case 'queuedMessage': {
+          const wire = msg;
           // 按会话存储排队消息（绑定 sessionId），切换会话后仍能正确归属
           if (msg.sessionId) {
             const payload: QueuedMessagePayload = {
               sessionId: msg.sessionId,
-              uuid: (msg as any).uuid,
+              uuid: wire.uuid,
               content: msg.content,
               images: msg.images,
-              filePath: (msg as any).filePath,
-              selectedLines: (msg as any).selectedLines || (msg as any).fileSelectedLines,
-              fileHidden: (msg as any).fileHidden,
+              filePath: wire.filePath,
+              selectedLines: wire.selectedLines,
+              fileHidden: wire.fileHidden,
             };
             props.queuedMessageRef.current.set(msg.sessionId, payload);
             if (msg.sessionId === sessionId) {
@@ -1734,6 +1754,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             }
           }
           break;
+        }
         case 'clearQueuedMessage':
           // 仅清除指定会话的排队消息，不影响其他会话的排队项
           if (msg.sessionId) {
@@ -1745,12 +1766,13 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             }
           }
           break;
-        case 'smartNamingResult':
+        case 'smartNamingResult': {
+          const wire = msg;
           profileLog('[App] smartNamingResult received', msg);
           // 更新命名中状态
           {
-            const namingSessionId = (msg as any).sessionId;
-            const newTitle = (msg as any).title;
+            const namingSessionId = wire.sessionId;
+            const newTitle = wire.title;
             props.setNamingSessions(prev => {
               const next = new Set(prev);
               next.delete(namingSessionId);
@@ -1766,9 +1788,11 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             ));
           }
           break;
+        }
         case 'streamMessage': {
+          const wire = msg;
           // streamId 由 RealApi.ts 保证每次 LLM 调用生成唯一 ID，不会为 undefined
-          const streamId = (msg as any).streamId!;
+          const streamId = wire.streamId!;
           const accumulated = msg.accumulated;
           const role = msg.role;
           const msgSessionId = msg.sessionId || sessionId || '';
@@ -1855,16 +1879,17 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           break;
         }
         case 'streamEnd': {
+          const wire = msg;
           // 更新 token 用量：即使 sessionId 不匹配也要累加到对应 session 的 state 中，
           // 否则子代理（Agent Tool）在后台运行时，其 cache token 数据会丢失，
           // 导致切换到子代理后 Cache 命中率不显示。
           const streamEndSessionId = msg.sessionId || sessionId;
           // 全局流式统计：所有会话都结束（非当前会话切换走后也要收敛）
-          const streamEndStreamId = (msg as any).streamId;
+          const streamEndStreamId = wire.streamId;
           if (streamEndStreamId) {
             endStream(streamEndStreamId, {
-              outputTokens: (msg as any).usage?.output_tokens,
-              reasoningTokens: (msg as any).usage?.reasoning_tokens,
+              outputTokens: wire.usage?.output_tokens,
+              reasoningTokens: wire.usage?.reasoning_tokens,
             });
           }
           // 记录活动时间：下一个 thinking block 从这次结束算起
@@ -1874,8 +1899,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           if (streamEndSessionId !== sessionId) {
             profileLog(`[TokenDebug] streamEnd: session mismatch, updating session state for ${(streamEndSessionId || '').substring(0,20)} (current=${(sessionId || '').substring(0,20)})`);
             // 仍然更新非当前 session 的 cache token 数据到 sessionStatesRef
-            if (streamEndSessionId && (msg as any).usage) {
-              const usage = (msg as any).usage;
+            if (streamEndSessionId && wire.usage) {
+              const usage = wire.usage;
               const cacheReadTokens = usage.cache_read_input_tokens || 0;
               const cacheCreationTokens = usage.cache_creation_input_tokens || 0;
               const inputTokens = usage.input_tokens || 0;
@@ -1901,11 +1926,11 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             }
             break;
           }
-          const streamId = (msg as any).streamId!;
+          const streamId = wire.streamId!;
           const accumulated = msg.accumulated;
           const role = msg.role;
           const mapKey = streamId + ':' + role;
-          profileLog(`[TokenDebug] streamEnd: role=${role} streamId=${streamId} hasUsage=${!!(msg as any).usage} usage=${JSON.stringify((msg as any).usage)}`);
+          profileLog(`[TokenDebug] streamEnd: role=${role} streamId=${streamId} hasUsage=${!!wire.usage} usage=${JSON.stringify(wire.usage)}`);
           // 取出缓冲中的目标 stream（streamId+role 精确匹配）参与本次收尾；
           // 其它仍在流式的 stream（如 thinking 与 text 并发）留在缓冲里，
           // 等它们自己的 rAF/streamEnd 处理，否则会被提前标记为 isStreaming:false 造成闪烁。
@@ -1925,8 +1950,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             // 完成后显示真实 token（流式期间只有字符数可用）。
             // - output_tokens：本次调用的总输出 token（thinking + 正文）
             // - reasoning_tokens：其中思考部分（Responses API 才有），优先用于 thinking 消息
-            const usageOutputTokens = (msg as any).usage?.output_tokens;
-            const usageReasoningTokens = (msg as any).usage?.reasoning_tokens;
+            const usageOutputTokens = wire.usage?.output_tokens;
+            const usageReasoningTokens = wire.usage?.reasoning_tokens;
             props.setMessages(prev => {
               let next = prev;
               for (const [, { role: r, accumulated: acc, streamId: sid }] of finalBuffer) {
@@ -1957,8 +1982,8 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             props.setStreamingVersion(v => v + 1);
           }
           // 更新 token 用量（累加 output_tokens，不替换）
-          if ((msg as any).usage) {
-            const usage = (msg as any).usage;
+          if (wire.usage) {
+            const usage = wire.usage;
             const outputTokens = usage.output_tokens || 0;
             const inputTokens = usage.input_tokens || 0;
             const totalTokens = inputTokens + outputTokens;
@@ -2000,12 +2025,14 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           props.setHasCompactArchive(false);
           props.setIsCompactExpanded(true);
           break;
-        case 'setModels':
+        case 'setModels': {
+          const wire = msg;
           // 全量 provider 分组列表（三级子菜单数据源）；模型名与 provider 分开，不拼接
-          if (Array.isArray((msg as any).providers)) {
-            props.setProviderModels((msg as any).providers);
+          if (Array.isArray(wire.providers)) {
+            props.setProviderModels(wire.providers);
           }
           break;
+        }
         case 'providerModelsResult':
           // 由 LLMConfigPanel 内部监听处理，这里只需要避免 Unknown message 日志
           break;
@@ -2213,17 +2240,19 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
             props.setStreamingVersion((prev) => prev + 1);
           });
           break;
-        case 'balanceUpdate':
+        case 'balanceUpdate': {
+          const wire = msg;
           // 更新全局余额信息（与会话无关）；获取失败时消息字段为 null，此时清空余额隐藏显示
           {
-            const totalBalance = (msg as any).totalBalance;
-            const currency = (msg as any).currency;
-            const unlimited = (msg as any).isUnlimited;
+            const totalBalance = wire.totalBalance;
+            const currency = wire.currency;
+            const unlimited = wire.isUnlimited;
             props.setBalance(typeof totalBalance === 'number' ? totalBalance : undefined);
             props.setBalanceCurrency(typeof currency === 'string' ? currency : undefined);
             props.setIsUnlimited(typeof unlimited === 'boolean' ? unlimited : undefined);
           }
           break;
+        }
         case 'showLLMConfig': {
           // 显示 LLM 配置面板（启动时 apiKey 为空或用户点击设置时触发）。
           // 面板载荷由宿主一次给齐，webview 不补默认值（`docs/webview-facts.md` 第 6 节）；

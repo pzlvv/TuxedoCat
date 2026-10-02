@@ -15,7 +15,6 @@
 
 import type { ConversationMetadata } from './core/history/Conversation.js';
 import type { SessionRuntimeState } from './core/AssistantEventBus.js';
-import type { WebviewMessage } from './core/webviewTypes.js';
 import type { UIHost } from './host/UIHost.js';
 import { ConversationManager } from './host/ConversationManager.js';
 import { isSessionIdle } from './core/sessionResources.js';
@@ -40,8 +39,15 @@ export class SingleWebViewConversationManager extends ConversationManager {
   protected async dispatchList(list: readonly ConversationMetadata[]): Promise<void> {
     this.host.sendToWebview({
       type: 'conversationsData',
-      conversations: list,
-    } as unknown as WebviewMessage);
+      conversations: list.map((c) => ({
+        sessionId: c.sessionId,
+        title: c.title,
+        createdAt: c.createdAt,
+        updatedAt: c.updatedAt,
+        messageCount: c.messageCount,
+        parentSessionId: c.parentSessionId,
+      })),
+    });
   }
 
   /**

@@ -18,7 +18,7 @@
  * core 经订阅获得当前工作区与变化，启动期不主动读取。
  */
 
-import type { WebviewMessage } from '../core/webviewTypes.js';
+import type { HostToWebviewMessage } from './webviewMessages.js';
 import type { WorkspaceRef } from './workspaceRef.js';
 
 /** 极简日志通道（兼容 vscode.OutputChannel 的形状） */
@@ -114,7 +114,7 @@ export interface UIHost extends WorkspaceProvider {
    * 推送消息到 webview。
    * 消息体由调用方组装（含 sessionId 等字段）；多视图宿主据此按 sessionId 路由。
    */
-  sendToWebview(message: WebviewMessage): void;
+  sendToWebview(message: HostToWebviewMessage): void;
 
   /**
    * 广播消息到所有对话视图。
@@ -122,7 +122,7 @@ export interface UIHost extends WorkspaceProvider {
    * 多视图宿主（Electron）发给每个已打开的聊天视图；单视图宿主（VS Code）等价于
    * `sendToWebview`。用于与具体会话无关的全局变更（如系统主题）。
    */
-  broadcastToWebviews(message: WebviewMessage): void;
+  broadcastToWebviews(message: HostToWebviewMessage): void;
 
   /**
    * 直发某个对话视图（预热视图初始化、按来源回包）。
@@ -131,7 +131,7 @@ export interface UIHost extends WorkspaceProvider {
    * （Electron 为 `WebviewViewHandle` 包裹 `WebContents`，见第 8.6 节）；单视图宿主
    * （VS Code）等价于 `sendToWebview`，句柄不参与路由。
    */
-  sendToWebviewView(view: WebviewViewHandle, message: WebviewMessage): void;
+  sendToWebviewView(view: WebviewViewHandle, message: HostToWebviewMessage): void;
 
   /**
    * 把当前主题下发给对话 webview。

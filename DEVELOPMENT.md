@@ -110,6 +110,8 @@ HOST .up.> CORE : 事件类型 / 只读函数
 | 路径 | 职责 |
 | --- | --- |
 | `src/core/AssistantEventBus.ts` | 事件类型（`CoreEvent` / `CoreRequest` / `UiEvent`）、处理器映射类型、总线接口、全局注册（`setGlobalEventBus` / `requireEventBus` / `resetGlobalEventBus`） |
+| `src/host/webviewMessages.ts` | webview ↔ host 消息协议（wire 联合类型，按方向拆分：`HostToWebviewMessage` / `WebviewToHostMessage` / 双向成员），两端唯一的协议类型来源 |
+| `src/core/webviewTypes.ts` | core 侧的展示事实类型（`McpServerInfo` / `ProviderModels` 等），core 产出、host 组装进消息载荷 |
 | `src/host/EventBus.ts` | 总线实现 `createEventBus()`，纯内存发布订阅，无宿主依赖 |
 | `src/core/initializeCoreEvents.ts` | core 侧 `UiEvent` 订阅的唯一注册入口，由 bootstrap 在 `setGlobalEventBus` 之后调用一次 |
 | `src/host/bootstrapCore.ts` | 共享启动接线骨架：locale / 日志 / 扩展路径 / Client 与全局总线 / `WebViewUI.create` / 按工作区打开 Connection / 历史 / 会话队列 / 等待用户读取器 / 异步收尾；按 `CORE_KIND` 装配 embedded / standalone（第 13.2 节）；导出 `bootstrapSnapshot()`（启动自检）与 `shutdownCore()`（退出清理） |
@@ -634,7 +636,7 @@ bus.onCoreRequests(this.buildCoreRequestHandlers());
 - 全小写驼峰，不带 `on` 前缀。
 - **wire protocol 命名不受此约定约束**：协议消息名描述「接收方要做什么」，因此
   `titleChanged` 事件最终仍发 `{ type: 'setTitle' }`；`thinkingEffort` 事件落盘字段仍是
-  `thinkingMode`。改协议名要同时动 `webviewTypes.ts` / handler / webview，收益为零，不做。
+  `thinkingMode`。改协议名要同时动 `webviewMessages.ts` / handler / webview，收益为零，不做。
 
 ### 3.5 全局注册与 bootstrap 顺序
 

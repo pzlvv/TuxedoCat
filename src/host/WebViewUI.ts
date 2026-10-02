@@ -38,7 +38,7 @@ import {
   readMcpServersForDefaults,
 } from './settingsRead.js';
 import { getSettingsStore } from './SettingsStore.js';
-import type { WebviewMessage } from '../core/webviewTypes.js';
+import type { HostToWebviewMessage, HostToWebviewMessageWithoutSessionId } from './webviewMessages.js';
 import type {
   WebViewUiPort,
   ConversationLoadedExtra,
@@ -143,9 +143,13 @@ export class WebViewUI implements WebViewUiPort {
 
   // ===================== WebViewUiPort（子模块端口）=====================
 
-  /** 补 sessionId 后投递到宿主 webview */
-  postToWebview(sessionId: string, message: Record<string, unknown>): void {
-    this.host.sendToWebview({ ...message, sessionId } as never);
+  /**
+   * 补 sessionId 后投递到宿主 webview。
+   * sessionId 由本函数统一补全；部分广播类消息的 wire 类型不含 sessionId 字段，
+   * 多余字段经 postMessage 通道无害，故合并点收敛为一次受控断言。
+   */
+  postToWebview(sessionId: string, message: HostToWebviewMessageWithoutSessionId): void {
+    this.host.sendToWebview({ ...message, sessionId } as HostToWebviewMessage);
   }
 
   /** 推送 conversationLoaded（含宿主注入的 activityPhase） */
@@ -158,7 +162,7 @@ export class WebViewUI implements WebViewUiPort {
       // 统一传（11.1 #2）：webview 依赖该字段恢复 thinking/text/tool 动画
       activityPhase: this.getActivityPhase(sessionId),
     });
-    this.host.sendToWebview(payload as never);
+    this.host.sendToWebview(payload);
   }
 
   /** 会话标题变化通知（转调 onTitleChanged） */
@@ -190,10 +194,9 @@ export class WebViewUI implements WebViewUiPort {
    */
   onQueuedMessage(sessionId: string, queued: QueuedMessageState | null): void {
     this.postToWebview(sessionId, queued === null
-      ? { type: 'clearQueuedMessage', sessionId }
+      ? { type: 'clearQueuedMessage' }
       : {
         type: 'queuedMessage',
-        sessionId,
         uuid: queued.uuid,
         content: queued.content,
         images: queued.images,
@@ -412,7 +415,7 @@ export class WebViewUI implements WebViewUiPort {
 
   /** 整批替换该会话显示的消息（core 的 messagesReplaced：压缩后重建 / 展开归档） */
   onMessagesReplaced(sessionId: string, messages: readonly MessageData[]): void {
-    this.postToWebview(sessionId, { type: 'messagesReplaced', messages });
+    this.postToWebview(sessionId, { type: 'messagesReplaced', messages: [...messages] });
   }
 
   // --- 控制面 handler ---
@@ -649,7 +652,7 @@ export class WebViewUI implements WebViewUiPort {
    * `sessionId` 为定向视图；`null` 表示单视图宿主的唯一 webview。
    */
   async showLLMConfigPanel(trigger: LLMConfigPanelTrigger, sessionId: string | null): Promise<void> {
-    let message: Extract<WebviewMessage, { type: 'showLLMConfig' }>;
+    let message: Extract<HostToWebviewMessage, { type: 'showLLMConfig' }>;
     try {
       // 打开面板前先重读一次磁盘：手工恢复 / 编辑 settings.json 后不必重载窗口
       // （启动期只 loadSync 一次，不监听文件，见 `docs/core-ui-separation.md` 第 4.5 节）。

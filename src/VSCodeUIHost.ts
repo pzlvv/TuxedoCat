@@ -13,7 +13,7 @@
 
 import * as vscode from 'vscode';
 import type { UIHost, WebviewViewHandle, WorkspaceChange } from './host/UIHost.js';
-import type { WebviewMessage } from './core/webviewTypes.js';
+import type { WebviewMessage } from './host/webviewMessages.js';
 import { sameWorkspaceRef, type WorkspaceRef } from './host/workspaceRef.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from './host/mermaidHtml.js';
 import { MERMAID_PANEL_ID } from './config/project.js';

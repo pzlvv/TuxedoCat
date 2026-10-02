@@ -6,6 +6,7 @@
  * 未 open 的会话保留 pending，由 UI 提醒用户（Single View 历史对话按钮呼吸 / Electron
  * 侧栏黄灯），等会话 open 后由 `onSessionLoaded` 重新投递。
  */
+import type { WebviewPoster } from './ports.js';
 import type { LogChannel } from '../UIHost.js';
 import { requireEventBus } from '../../core/AssistantEventBus.js';
 import {
@@ -31,7 +32,7 @@ function emitUserChoicePending(sessionId: string, pending: boolean): void {
  */
 export class UserChoiceManager {
   private outputChannel: LogChannel | undefined;
-  private postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
+  private postToWebview: WebviewPoster;
   private closePreview: () => void;
   private isSessionOpenInternal: (sessionId: string) => boolean;
 
@@ -64,7 +65,7 @@ export class UserChoiceManager {
 
   constructor(deps: {
     outputChannel: LogChannel | undefined;
-    postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
+    postToWebview: WebviewPoster;
     closePreview: () => void;
     isSessionOpenInternal: (sessionId: string) => boolean;
     onChoiceShown?: (sessionId: string) => void;
@@ -156,7 +157,6 @@ export class UserChoiceManager {
     // 先重置该 session 的 UI 状态
     this.postToWebview(sessionId, {
       type: 'showThinkingAnimation',
-      sessionId,
       show: false,
     });
 
@@ -222,20 +222,15 @@ export class UserChoiceManager {
 
     this.log(`[UserChoiceManager] Saved beforeContent (${this.currentBeforeContent.length} chars) and afterContent (${this.currentAfterContent.length} chars)`);
 
-    const postData: Record<string, unknown> = {
+    // previewContent / previewTitle 曾随消息下发，但 webview 从未读取（预览实际走
+    // updateToolArgs 与 showDiff 通路），不再上 wire。
+    this.postToWebview(sessionID, {
       type: 'requestUserChoice',
       choiceId,
       toolName: options.toolName,
       message: options.message,
       choices: options.choices,
-    };
-    if (options.previewContent) {
-      postData.previewContent = options.previewContent;
-    }
-    if (options.previewTitle) {
-      postData.previewTitle = options.previewTitle;
-    }
-    this.postToWebview(sessionID, postData);
+    });
 
     // 会话运行时状态：等待用户操作（ask user / 权限确认）→ 侧栏黄灯 / 托盘状态点
     emitUserChoicePending(sessionID, true);

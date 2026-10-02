@@ -536,7 +536,7 @@ const App = () => {
       type: 'updateConversationContext',
       sessionId: sid,
       currentFile,
-      selectedLines,
+      selectedLines: selectedLines ?? undefined,
       totalContextTokens: contextLength,
     });
   }, [userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, promptMode, thinkingMode, contextLength, modelRef, currentFile, selectedLines]);
@@ -1144,7 +1144,6 @@ const App = () => {
                             postMessage({
                               type: 'requestSmartNaming',
                               sessionId,
-                              messages: [],
                             });
                           }}
                           namingSessions={namingSessions}

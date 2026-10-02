@@ -11,16 +11,20 @@
 import { buildEditDiffHunks } from '../core/utils/editDiff.js';
 import type { ModelRef } from '../core/llm/modelRef.js';
 import { getConversationModelRef } from '../core/history/Conversation.js';
+import type { HostToWebviewMessage, HostToWebviewMessageWithoutSessionId } from './webviewMessages.js';
 
-/** conversationLoaded 消息中除核心字段外的宿主专属字段 */
-export type ConversationLoadedExtraFields = Record<string, unknown>;
+/** conversationLoaded 的 wire 消息形状（含 sessionId） */
+type ConversationLoadedMessage = Extract<HostToWebviewMessage, { type: 'conversationLoaded' }>;
+
+/** conversationLoaded 消息中除核心字段外的宿主专属字段（受 wire 类型约束） */
+export type ConversationLoadedExtraFields = Partial<Extract<HostToWebviewMessageWithoutSessionId, { type: 'conversationLoaded' }>>;
 
 export interface ConversationLoadedExtra {
   pendingToolUseIds: string[];
   savedContext?: any;
   parentSessionId?: string;
   /** 会话询问模式；宿主无法解析时为 undefined，webview 按「尚未到达」处理 */
-  agentMode?: string;
+  agentMode?: 'manual' | 'risk' | 'auto';
   hasActiveQuery: boolean;
   hasCompactArchive?: boolean;
   /** 模型身份（provider + model）；wire 消息保持扁平的 model / provider 字段 */
@@ -95,7 +99,7 @@ export function buildConversationLoadedPayload(
   conversation: any,
   extra: ConversationLoadedExtra,
   extraFields?: ConversationLoadedExtraFields,
-): Record<string, unknown> {
+): ConversationLoadedMessage {
   const { conversation: trimmed, toolMetaMap } = trimConversationForWebview(conversation);
 
   // 模型身份：优先用调用方解析好的（已按当前 settings 校验），

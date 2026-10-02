@@ -9,6 +9,7 @@
  * - 工具卡片的运行/失败状态更新
  * - Edit / Write 的 diff 信息暂存（供工具卡片展示与权限确认框复用）
  */
+import type { WebviewPoster } from './ports.js';
 import type { UIHost } from '../UIHost.js';
 import { logger } from '../../core/Logger.js';
 
@@ -22,12 +23,12 @@ import type { UserChoiceManager } from './userChoice.js';
  */
 export class ToolHandler {
   private host: UIHost;
-  private postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
+  private postToWebview: WebviewPoster;
   private userChoiceManager: UserChoiceManager;
 
   constructor(deps: {
     host: UIHost;
-    postToWebview: (sessionId: string, message: Record<string, unknown>) => void;
+    postToWebview: WebviewPoster;
     userChoiceManager: UserChoiceManager;
   }) {
     this.host = deps.host;

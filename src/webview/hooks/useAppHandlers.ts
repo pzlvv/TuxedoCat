@@ -272,7 +272,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       images: pastedImages.length > 0 ? pastedImages : undefined,
       filePath: props.currentFile,
       fileHidden: props.fileHidden,
-      selectedLines: props.selectedLines,
+      selectedLines: props.selectedLines ?? undefined,
       // 会话配置只带「已从宿主获取到」的字段：未到达的字段留空，
       // 由宿主按自己的配置解析（webview 不代宿主决定，`docs/webview-facts.md` 第 5 节）。
       agentMode: props.agentMode,
@@ -341,7 +341,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
 
     postMessage({
       type: 'abort',
-      sessionId,
+      sessionId: sessionId ?? undefined,
     });
   }, []);
 

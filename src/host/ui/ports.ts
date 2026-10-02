@@ -7,13 +7,16 @@
  * 由 WebViewUI 实现；子模块只依赖这个窄接口。成员全部必选。
  */
 
+import type { SessionRuntimeState } from '../../core/AssistantEventBus.js';
+
+import type { HostToWebviewMessageWithoutSessionId } from '../webviewMessages.js';
+
 /**
  * 投递器：把 (sessionId, 部分消息体) 补全后交给宿主。
  * 由 WebViewUI 内部统一使用，避免多处各写一份合并逻辑。
+ * 消息形状是 wire 协议的宿主→webview 方向（sessionId 由投递点补全）。
  */
-import type { SessionRuntimeState } from '../../core/AssistantEventBus.js';
-
-export type WebviewPoster = (sessionId: string, message: Record<string, unknown>) => void;
+export type WebviewPoster = (sessionId: string, message: HostToWebviewMessageWithoutSessionId) => void;
 
 /**
  * LLM 配置面板的触发场景。
@@ -50,7 +53,7 @@ export interface QueuedMessageState {
 
 export interface WebViewUiPort {
   /** 补 sessionId 后投递到宿主 webview */
-  postToWebview(sessionId: string, message: Record<string, unknown>): void;
+  postToWebview(sessionId: string, message: HostToWebviewMessageWithoutSessionId): void;
 
   /** 推送 conversationLoaded（含宿主注入的 activityPhase） */
   postConversationLoaded(
