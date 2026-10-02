@@ -754,8 +754,10 @@ function createMainWindow(): void {
     console.error(`[sidebar] render-process-gone: reason=${details.reason}, exitCode=${details.exitCode}`);
     if (details.reason === 'crashed' || details.reason === 'oom' || details.reason === 'killed') {
       setTimeout(() => {
-        if (sidebarView?.webContents.isDestroyed()) return;
-        if (sidebarView?.webContents.isCrashed()) sidebarView.webContents.reload();
+        // webContents 可能已随视图销毁变为 undefined（同 ChatViewManager 的视图销毁竞态）
+        const wc = sidebarView?.webContents as Electron.WebContents | undefined;
+        if (!wc || wc.isDestroyed()) return;
+        if (wc.isCrashed()) wc.reload();
       }, 500);
     }
   });
@@ -872,8 +874,14 @@ function createMainWindow(): void {
           // 后台预热视图仍在后台时不弹设置页：它被切到前台时会走
           // handleStartNewConversation 的同一段逻辑（那时也才真正需要配置面板）。
           // 否则面板会在预热视图里悄悄打开，用户配置完成后仍残留。
-          if (chatViews?.isPrewarmWebContents(view.webContents)) return;
-          void checkAndSendLLMConfig(view.webContents);
+          // 视图可能在这 1 秒内被销毁（关闭对话 / 切工作区销毁预热视图）：
+          // webContents.close() 后 WebContentsView.webContents 变为 undefined
+          // （类型标注已不反映运行时），配置检查对死视图无意义，直接跳过——
+          // 设计允许的瞬时状态，同一会话之后新建的视图有自己的本定时器兜底。
+          const wc = view.webContents as Electron.WebContents | undefined;
+          if (!wc || wc.isDestroyed()) return;
+          if (chatViews?.isPrewarmWebContents(wc)) return;
+          void checkAndSendLLMConfig(wc);
         }, 1000);
       });
     },

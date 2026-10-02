@@ -963,8 +963,12 @@ export class ChatViewManager {
       console.error(`[chat-view] render-process-gone: reason=${details.reason}, exitCode=${details.exitCode}`);
       if (details.reason === 'crashed' || details.reason === 'oom' || details.reason === 'killed') {
         setTimeout(() => {
-          if (view.webContents.isDestroyed()) return;
-          if (view.webContents.isCrashed()) view.webContents.reload();
+          // 视图可能在等待期间被销毁（删除 / 切工作区）：webContents.close() 后
+          // WebContentsView.webContents 变为 undefined（类型标注已不反映运行时），
+          // 崩溃重载对死视图无意义，直接跳过
+          const wc = view.webContents as WebContents | undefined;
+          if (!wc || wc.isDestroyed()) return;
+          if (wc.isCrashed()) wc.reload();
         }, 500);
       }
     });
