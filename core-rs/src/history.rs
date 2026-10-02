@@ -89,7 +89,9 @@ pub fn load_conversation_list(workspace_path: Option<&str>) -> Vec<Value> {
     let mut conversations: Vec<Value> = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".meta.json") {
+        // 工作区清单（workspace.meta.json）也以 .meta.json 结尾，但它不是会话，
+        // 混进列表会渲染成幽灵条目，必须排除（对齐 Embedded loadConversationList）。
+        if !name.ends_with(".meta.json") || name == "workspace.meta.json" {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(entry.path()) else {
@@ -265,6 +267,10 @@ fn conversation_closure_in(dir: &std::path::Path, session_id: &str) -> Vec<Strin
             let Some(name) = name.to_str() else {
                 continue;
             };
+            // 工作区清单不是会话，不进闭包输入（对齐 Embedded readProjectConversationMetadata）
+            if name == "workspace.meta.json" {
+                continue;
+            }
             let Some(id) = name.strip_suffix(".meta.json") else {
                 continue;
             };

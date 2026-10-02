@@ -72,13 +72,3 @@ e2e/
    （交互交给内部控件），Playwright 的可点击性检查会拒绝，需要 `click({ force: true })`。
 4. **会话条目操作按钮 hover 才显示**（纯 CSS `group-hover`）：悬停要用条目根
    （`.group`），且同名按钮在每条根会话上都存在，定位必须按行作用域化。
-
-## 已知产品问题（e2e 实证，待修复）
-
-1. **侧栏幽灵条目**：会话目录里的 `workspace.meta.json`（工作区清单）被
-   `loadConversationList` / `readProjectConversationMetadata` 当作会话元数据列出，
-   Electron 侧栏渲染为「(未命名对话) NaN/NaN/NaN undefined 条」。用例按
-   `data-session-id^="session_"` 前缀过滤规避（`e2e/electron/sessions.spec.ts`）。
-2. **删除会话后侧栏不刷新**：`conversationDeleted` 的磁盘删除已执行，但后续的
-   `conversationListChanged` → 列表刷新链路未生效，侧栏条目残留（webview 内
-   对话树同源）。US-22 用例因此只断言数据层删除与视图切换。

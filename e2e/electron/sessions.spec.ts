@@ -9,10 +9,10 @@ import type { MockLlm } from '../helpers/mockLlmServer';
 /**
  * US-19 侧栏对话列表 / US-20 新建对话 / US-21 重命名 / US-22 删除（Electron 原生侧栏）
  *
- * 注：会话目录里的 workspace.meta.json（工作区清单）当前也会被侧栏当条目渲染
- * （sessionId 为 undefined 的幽灵行），因此条目断言一律用 session_ 前缀过滤。
+ * 条目断言不带前缀过滤：会话目录里的 workspace.meta.json（工作区清单）不是会话，
+ * 混进列表是幽灵条目（回归即此处 toHaveCount 失败）。
  */
-const REAL_ITEM = '#list .item[data-session-id^="session_"]';
+const SIDEBAR_ITEM = '#list .item[data-session-id]';
 
 let mockLlm: MockLlm;
 let app: AppHandle;
@@ -47,7 +47,7 @@ async function sendMessage(text: string): Promise<void> {
 }
 
 function items(page: Page): Locator {
-  return page.locator(REAL_ITEM);
+  return page.locator(SIDEBAR_ITEM);
 }
 
 test('US-19 发送消息后侧栏出现会话条目并显示消息数', async () => {
@@ -55,6 +55,8 @@ test('US-19 发送消息后侧栏出现会话条目并显示消息数', async ()
   await sendMessage('创建第一个会话');
   await expect(items(sb).first()).toBeVisible({ timeout: 30_000 });
   await expect(items(sb).first()).toContainText('2 条');
+  // 只有一个会话：清单混进列表（幽灵条目）会在这里多出一条
+  await expect(items(sb)).toHaveCount(1);
 
   // 对话在磁盘上落盘（meta + jsonl）
   const conversationsRoot = path.join(app.homeDir, '.tuxedo-cat', 'conversations');
@@ -129,8 +131,8 @@ test('US-22 侧栏删除会话带二次确认，确认后数据删除', async ()
       .filter((f) => f.startsWith('session_')).length,
     { timeout: 15_000 },
   ).toBe(0);
-  // 注：侧栏条目在删除后不自动消失（列表刷新事件未到，见 e2e/README 已知问题），
-  // 因此这里只断言数据层删除与视图切换。
+  // 侧栏条目随 conversationListChanged 自动消失（列表刷新链路回归即此处失败）
+  await expect(items(sb)).toHaveCount(0, { timeout: 15_000 });
 });
 
 test('US-19 侧栏搜索框按标题过滤对话', async () => {

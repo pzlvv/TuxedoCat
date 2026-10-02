@@ -15,7 +15,7 @@ import { resolveConfigDir } from '../../config/configDir.js';
  * 位于 `<conversations>/<project>/` 下，记录该编码目录对应的完整 workspacePath，
  * 便于从 conversations 下的子目录反查原始项目路径。读写都归 Core。
  */
-const WORKSPACE_META_FILE = 'workspace.meta.json';
+export const WORKSPACE_META_FILE = 'workspace.meta.json';
 
 /**
  * 获取配置目录（CONFIG_DIR_NAME）。

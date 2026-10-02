@@ -7,7 +7,7 @@ import { appendFile, writeFile, readFile, readdir, stat, unlink } from 'fs/promi
 import type { AgentMode } from '../types.js';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
-import { getProjectConversationDir, getProjectRoot, getConversationDir, ensureProjectConversationDir, ensureProjectConversationDirSync, setSessionWorkspace, clearSessionWorkspace } from './Config.js';
+import { getProjectConversationDir, getProjectRoot, getConversationDir, ensureProjectConversationDir, ensureProjectConversationDirSync, setSessionWorkspace, clearSessionWorkspace, WORKSPACE_META_FILE } from './Config.js';
 import type { Message } from '../types.js';
 import type { PromptPresetId } from '../prompt/PromptPreset.js';
 import { requireEventBus, type CoreEvent } from '../AssistantEventBus.js';
@@ -877,7 +877,9 @@ export async function loadConversationList(workspacePath: string | undefined): P
     const conversations: ConversationMetadata[] = [];
 
     for (const file of files) {
-      if (!file.endsWith('.meta.json')) {
+      // 工作区清单（workspace.meta.json）也以 .meta.json 结尾，但它不是会话：
+      // 混进列表会渲染成「(未命名对话) NaN/NaN/NaN」的幽灵条目，必须排除。
+      if (!file.endsWith('.meta.json') || file === WORKSPACE_META_FILE) {
         continue;
       }
 
@@ -1443,7 +1445,8 @@ export async function readProjectConversationMetadata(currentProject: string): P
   try {
     const files = await readdir(projectDir);
     for (const file of files) {
-      if (!file.endsWith('.meta.json')) continue;
+      // 工作区清单不是会话（同 loadConversationList 的排除规则）
+      if (!file.endsWith('.meta.json') || file === WORKSPACE_META_FILE) continue;
       try {
         const content = await readFile(join(projectDir, file), 'utf8');
         result.push(JSON.parse(content) as ConversationMetadata);
@@ -1556,8 +1559,11 @@ async function deleteSingleConversation(sessionId: string, currentProject: strin
     logger.error('Conversation', `清理会话引擎失败: ${e}`);
   }
 
-  // 增量更新对话列表缓存（移除已删除的对话）
-  const listCache = getConversationListCacheForSession(sessionId);
+  // 增量更新对话列表缓存（移除已删除的对话）。
+  // 用参数 currentProject 而不是按会话重解析（getConversationListCacheForSession）：
+  // 上面的 clearSessionWorkspace 已注销本会话的工作目录，按会话解析会抛错被吞掉，
+  // 缓存静默不更新——conversationListChanged → refresh() 读到脏缓存，侧栏条目残留。
+  const listCache = getConversationListCache(currentProject);
   if (listCache) {
     const idx = listCache.findIndex((c) => c.sessionId === sessionId);
     if (idx >= 0) listCache.splice(idx, 1);
@@ -1642,7 +1648,9 @@ export async function cleanupOldConversations(cutoffDate: Date): Promise<void> {
     const files = await readdir(projectPath);
 
     for (const file of files) {
-      if (!file.endsWith('.meta.json')) {
+      // 工作区清单（workspace.meta.json）也以 .meta.json 结尾，但它不是会话：
+      // 混进列表会渲染成「(未命名对话) NaN/NaN/NaN」的幽灵条目，必须排除。
+      if (!file.endsWith('.meta.json') || file === WORKSPACE_META_FILE) {
         continue;
       }
 

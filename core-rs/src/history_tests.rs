@@ -936,3 +936,34 @@ fn load_metadata_reads_files_with_lone_surrogate_escapes() {
     assert_eq!(metadata["sessionId"], "s1");
     assert_eq!(metadata["title"], "带 emoji \u{FFFD} 的标题");
 }
+
+#[test]
+fn conversation_list_excludes_workspace_manifest() {
+    // 对齐 Embedded loadConversationList：工作区清单（workspace.meta.json）不是会话，
+    // 混进列表会渲染成「(未命名对话) NaN/NaN/NaN」的幽灵条目
+    let sandbox = Sandbox::new("history-list-manifest");
+    let dir = sandbox.conversation_dir(PROJECT); // ensure 时写入 workspace.meta.json
+    create_conversation("s1", PROJECT, json!({ "sessionId": "s1", "title": "s1" })).unwrap();
+    append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
+    // messageCount 由引擎在 append 后刷新（append_message 本身不写 meta）；
+    // messageCount == 0 的空对话不进列表
+    touch_metadata("s1", PROJECT, true, None).unwrap();
+
+    let list = load_conversation_list(Some(PROJECT));
+    assert_eq!(list.len(), 1, "清单不能混进会话列表：{list:?}");
+    assert_eq!(list[0]["sessionId"], "s1");
+}
+
+#[test]
+fn delete_conversation_keeps_workspace_manifest() {
+    // 对齐 Embedded readProjectConversationMetadata：闭包输入不含工作区清单——
+    // 它没有 sessionId，混进闭包只会被当成名为 "workspace" 的会话删掉
+    let sandbox = Sandbox::new("history-delete-manifest");
+    let dir = sandbox.conversation_dir(PROJECT);
+    create_conversation("s1", PROJECT, json!({ "sessionId": "s1" })).unwrap();
+    append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
+
+    delete_conversation("s1", PROJECT).unwrap();
+    assert!(!dir.join("s1.meta.json").exists());
+    assert!(dir.join("workspace.meta.json").exists(), "清单不是会话，不能被删");
+}
