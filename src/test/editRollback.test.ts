@@ -129,7 +129,7 @@ async function run(): Promise<void> {
   check('兜底路径生效：文件回滚到修改前', restored === 'OLD CONTENT\n');
   check(
     '回滚结果以系统消息回传',
-    emitted.some((e) => e.type === 'message' && typeof e.data?.content === 'string' && e.data.content.includes('已回滚')),
+    emitted.some((e) => e.type === 'message' && typeof e.data?.content === 'string' && e.data.content.includes('Rolled back')),
   );
 
   // 3) 多工作目录：相对路径必须以「会话自己的工作目录」为基准，而不是当前活动目录。

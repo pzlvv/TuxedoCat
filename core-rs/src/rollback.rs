@@ -40,7 +40,7 @@ pub fn rollback_edit(
 ) -> String {
     match rollback_inner(session_id, tool_use_id, direction, fallback_file_path) {
         Ok(content) => content,
-        Err(message) => format!("回滚失败：{message}"),
+        Err(message) => format!("Rollback failed: {message}"),
     }
 }
 
@@ -110,7 +110,7 @@ fn rollback_inner(
     }
 
     let Some(target_index) = calls.iter().position(|call| call.id == tool_use_id) else {
-        return Ok("未找到指定的编辑操作，可能历史记录已被压缩".to_string());
+        return Ok("Edit operation not found; the history may have been compacted".to_string());
     };
 
     // 先从 `_meta` 读，缺失时从 tool_result 的 beforeContent 读
@@ -127,7 +127,7 @@ fn rollback_inner(
         _ => fallback_file_path.unwrap_or("").to_string(),
     };
     if target_file_path.is_empty() {
-        return Ok("目标编辑操作缺少文件路径，无法回滚".to_string());
+        return Ok("Target edit has no file_path; cannot roll back".to_string());
     }
 
     if direction == "before" {
@@ -138,7 +138,7 @@ fn rollback_inner(
             Some(None) => false,
         };
         if missing {
-            return Ok("目标编辑操作缺少备份内容（beforeContent），无法回滚".to_string());
+            return Ok("Target edit has no beforeContent backup; cannot roll back".to_string());
         }
     }
     if direction == "after" {
@@ -147,7 +147,7 @@ fn rollback_inner(
             Some(Some(text)) => text.is_empty(),
         };
         if missing {
-            return Ok("目标编辑操作缺少备份内容（afterContent），无法回滚到修改后".to_string());
+            return Ok("Target edit has no afterContent backup; cannot roll back to post-edit state".to_string());
         }
     }
 
@@ -201,12 +201,12 @@ fn rollback_inner(
     }
 
     let detail = if restored > 0 {
-        format!("恢复了 {restored} 个文件")
+        format!("restored {restored} file(s)")
     } else {
-        "没有文件需要恢复".to_string()
+        "no files to restore".to_string()
     };
-    let label = if direction == "before" { "前" } else { "后" };
-    Ok(format!("已回滚到目标修改{label}：{detail}"))
+    let label = if direction == "before" { "before" } else { "after" };
+    Ok(format!("Rolled back to {label} the target edit: {detail}"))
 }
 
 #[cfg(test)]

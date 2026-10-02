@@ -515,7 +515,7 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                             "sessionId": session_id,
                             "data": {
                                 "role": "system",
-                                "content": format!("对话空间已清空（{removed_files} 个文件）"),
+                                "content": format!("Conversation space cleared ({removed_files} files removed)"),
                             },
                         }),
                     );

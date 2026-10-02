@@ -676,7 +676,7 @@ export async function requestCompact(sessionId: string): Promise<void> {
     const lastMsg = messages[messages.length - 1];
     const lastUuid = lastMsg && 'uuid' in lastMsg ? (lastMsg as any).uuid : null;
     if (lastUuid) {
-      engine.lastPersistedMessageUuid = lastUuid;
+      engine.setLastPersistedMessageUuid(lastUuid);
     }
 
   } catch (error) {

@@ -76,7 +76,7 @@ export async function rollbackEdit(
     const targetIndex = allToolUses.findIndex(t => t.id === toolUseId);
     if (targetIndex === -1) {
       logger.warn('editRollback', `toolUseId ${toolUseId} not found among ${allToolUses.length} tool calls`);
-      emit({ role: 'system', content: '未找到指定的编辑操作，可能历史记录已被压缩' });
+      emit({ role: 'system', content: 'Edit operation not found; the history may have been compacted' });
       return;
     }
 
@@ -92,18 +92,18 @@ export async function rollbackEdit(
     const targetFilePath = typeof target.input.file_path === 'string' ? target.input.file_path : (fallbackFilePath || '');
     if (!targetFilePath) {
       logger.warn('editRollback', 'target Edit has no file_path');
-      emit({ role: 'system', content: '目标编辑操作缺少文件路径，无法回滚' });
+      emit({ role: 'system', content: 'Target edit has no file_path; cannot roll back' });
       return;
     }
 
     if (direction === 'before' && (targetBeforeContent === undefined || targetBeforeContent === '')) {
       logger.warn('editRollback', 'target Edit has no beforeContent in _meta');
-      emit({ role: 'system', content: '目标编辑操作缺少备份内容（beforeContent），无法回滚' });
+      emit({ role: 'system', content: 'Target edit has no beforeContent backup; cannot roll back' });
       return;
     }
     if (direction === 'after' && !targetAfterContent) {
       logger.warn('editRollback', 'target Edit has no afterContent in _meta');
-      emit({ role: 'system', content: '目标编辑操作缺少备份内容（afterContent），无法回滚到修改后' });
+      emit({ role: 'system', content: 'Target edit has no afterContent backup; cannot roll back to post-edit state' });
       return;
     }
 
@@ -166,10 +166,10 @@ export async function rollbackEdit(
 
     emit({
       role: 'system',
-      content: `已回滚到目标修改${direction === 'before' ? '前' : '后'}：${restoredCount > 0 ? `恢复了 ${restoredCount} 个文件` : '没有文件需要恢复'}`,
+      content: `Rolled back to ${direction === 'before' ? 'before' : 'after'} the target edit: ${restoredCount > 0 ? `restored ${restoredCount} file(s)` : 'no files to restore'}`,
     });
   } catch (err: any) {
     logger.error('editRollback', `rollback failed: ${err.message}`);
-    emit({ role: 'system', content: `回滚失败：${err.message}` });
+    emit({ role: 'system', content: `Rollback failed: ${err.message}` });
   }
 }

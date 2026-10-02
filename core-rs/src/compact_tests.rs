@@ -245,10 +245,10 @@ mod unit_tests {
         let text = generate_compact_boundary_content("auto", 0, Some("u-9"), "2024-01-02T03:04:05.006Z");
         assert_eq!(
             text,
-            "[自动压缩边界] 2024-01-02T03:04:05.006Z | 压缩前约 0 tokens | 最后消息: u-9"
+            "[Auto compaction boundary] 2024-01-02T03:04:05.006Z | ~0 tokens before compaction | last message: u-9"
         );
         let manual = generate_compact_boundary_content("manual", 1234, None, "2024-01-02T03:04:05.006Z");
-        assert_eq!(manual, "[手动压缩边界] 2024-01-02T03:04:05.006Z | 压缩前约 1234 tokens");
+        assert_eq!(manual, "[Manual compaction boundary] 2024-01-02T03:04:05.006Z | ~1234 tokens before compaction");
     }
 
     #[test]

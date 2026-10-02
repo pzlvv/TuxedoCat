@@ -277,8 +277,8 @@ export function generateCompactBoundaryContent(
   preCompactTokenCount: number,
   lastMessageUuid?: string
 ): string {
-  const triggerText = trigger === 'auto' ? '自动' : '手动';
+  const triggerText = trigger === 'auto' ? 'Auto' : 'Manual';
   const date = new Date().toISOString();
 
-  return `[${triggerText}压缩边界] ${date} | 压缩前约 ${preCompactTokenCount} tokens${lastMessageUuid ? ` | 最后消息: ${lastMessageUuid}` : ''}`;
+  return `[${triggerText} compaction boundary] ${date} | ~${preCompactTokenCount} tokens before compaction${lastMessageUuid ? ` | last message: ${lastMessageUuid}` : ''}`;
 }

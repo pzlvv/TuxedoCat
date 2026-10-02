@@ -131,7 +131,10 @@ async function run(): Promise<void> {
   // ===== 模型身份 =====
   // 注册一个普通引擎（promptPresetId 缺省 normal）：`updateMetadataForNewMessage`
   // 会按 `if (!metadata.context?.promptMode)` 从引擎补写 promptMode。
-  sessionEngines.set('s7', { promptPresetId: 'normal' } as never);
+  // 引擎桩按 getMetaSnapshot 契约提供（历史层只经该方法读引擎元数据）
+  sessionEngines.set('s7', {
+    getMetaSnapshot: () => ({ promptPresetId: 'normal' }),
+  } as never);
   let plainMeta: Record<string, unknown>;
   try {
     plainMeta = await metaAfterAppend(root, 's7', {
@@ -151,7 +154,10 @@ async function run(): Promise<void> {
 
   // 会话已有模型身份（engine.modelRefOverride）：meta.json 记录 model + provider
   sessionEngines.set('s8', {
-    modelRefOverride: { provider: 'fake', model: 'other-model' },
+    getMetaSnapshot: () => ({
+      promptPresetId: 'normal',
+      modelRefOverride: { provider: 'fake', model: 'other-model' },
+    }),
   } as never);
   try {
     const chosenMeta = await metaAfterAppend(root, 's8', {

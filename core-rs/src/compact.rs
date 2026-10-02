@@ -434,12 +434,12 @@ pub fn generate_compact_boundary_content(
     last_message_uuid: Option<&str>,
     date: &str,
 ) -> String {
-    let trigger_text = if trigger == "auto" { "自动" } else { "手动" };
+    let trigger_text = if trigger == "auto" { "Auto" } else { "Manual" };
     let suffix = match last_message_uuid {
-        Some(uuid) => format!(" | 最后消息: {uuid}"),
+        Some(uuid) => format!(" | last message: {uuid}"),
         None => String::new(),
     };
-    format!("[{trigger_text}压缩边界] {date} | 压缩前约 {pre_compact_token_count} tokens{suffix}")
+    format!("[{trigger_text} compaction boundary] {date} | ~{pre_compact_token_count} tokens before compaction{suffix}")
 }
 
 // ==================== compact.ts ====================

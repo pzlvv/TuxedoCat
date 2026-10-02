@@ -319,7 +319,7 @@ async function registerHistoryUiEvents(bus: AssistantEventBus): Promise<void> {
           sessionId,
           data: {
             role: 'system',
-            content: `对话空间已清空（${result.removedFiles} 个文件）`,
+            content: `Conversation space cleared (${result.removedFiles} files removed)`,
           },
         });
         const spaces = await getConversationSpaces();

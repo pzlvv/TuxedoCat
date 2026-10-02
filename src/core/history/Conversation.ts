@@ -401,9 +401,10 @@ async function ensureToolResults(messages: Message[], _sessionId: string): Promi
 }
 
 /**
- * 将 tool_use 更新应用到一组消息上（内存缓存 / mutableMessages 共用）
+ * 将 tool_use 更新应用到一组消息上（内存缓存 / 引擎 mutableMessages 共用；
+ * 引擎侧经 QueryEngine.applyToolUseUpdate 调用）
  */
-function applyToolUseUpdateToMessages(
+export function applyToolUseUpdateToMessages(
   messages: Message[],
   toolUseId: string,
   update: { input?: Record<string, unknown>; meta?: Record<string, unknown> },
@@ -470,15 +471,15 @@ async function appendToolUseUpdate(
     applyToolUseUpdateToMessages(cached.messages, toolUseId, update);
   }
 
-  // 同步更新 QueryEngine 的 mutableMessages（异步导入避免循环依赖）
+  // 同步更新 QueryEngine 的 mutableMessages：消息数组 owner 是引擎，这里请求应用
+  // （异步导入避免循环依赖）
   try {
     const { getSessionEngine } = await import('../QueryEngine.js');
     const engine = getSessionEngine(sessionId);
     if (engine) {
-      const mutableMessages = engine.getMessages();
-      const updatedCount = applyToolUseUpdateToMessages(mutableMessages, toolUseId, update);
+      const updatedCount = await engine.applyToolUseUpdate(toolUseId, update);
       if (updatedCount === 0) {
-        logger.warn('Conversation', `${logLabel} mutableMessages NOT FOUND for toolUseId=${toolUseId} | session=${sessionId.substring(0,20)} | mutableMsgsLen=${mutableMessages.length}`);
+        logger.warn('Conversation', `${logLabel} mutableMessages NOT FOUND for toolUseId=${toolUseId} | session=${sessionId.substring(0,20)}`);
       }
     } else {
       logger.info('Conversation', `${logLabel} No engine found for session=${sessionId.substring(0,20)}`);
@@ -721,10 +722,11 @@ async function updateMetadataForNewMessage(
           const { getSessionEngine } = await import('../QueryEngine.js');
           const engine = getSessionEngine(sessionId);
           if (engine) {
-            parentSessionId = (engine as any).parentSessionId;
-            role = (engine as any).role;
+            const meta = engine.getMetaSnapshot();
+            parentSessionId = meta.parentSessionId;
+            role = meta.role;
             // 模型身份由会话运行时记录（provider + model 一起才能完整表征一个模型）
-            modelRef = engine.modelRefOverride;
+            modelRef = meta.modelRefOverride;
           }
         } catch { /* ignore */ }
 
@@ -760,7 +762,7 @@ async function updateMetadataForNewMessage(
       try {
         const { getSessionEngine } = await import('../QueryEngine.js');
         const engine = getSessionEngine(sessionId);
-        const promptMode = (engine as any)?.promptPresetId as PromptPresetId | undefined;
+        const promptMode = engine?.getMetaSnapshot().promptPresetId;
         if (promptMode === 'normal' || promptMode === 'minimal' || promptMode === 'mixed') {
           metadata.context = { ...(metadata.context ?? {}), promptMode };
         }
@@ -1545,29 +1547,13 @@ async function deleteSingleConversation(sessionId: string, currentProject: strin
     }
   }
 
-  // 清理 QueryEngine 引擎池中对应的引擎
+  // 引擎 + 外围引用（MCP 引用计数 / sessionRuntime）一起交给引擎池清理：
+  // 编排归 destroySessionEngine（owner），历史层只请求销毁
   try {
-    const { sessionEngines } = await import('../QueryEngine.js');
-    sessionEngines.delete(sessionId);
+    const { destroySessionEngine } = await import('../QueryEngine.js');
+    await destroySessionEngine(sessionId);
   } catch (e) {
-    logger.error('Conversation', `清理 QueryEngine 引擎池失败: ${e}`);
-  }
-
-  // 释放 MCP 引用（MCPHost.onSessionClosed；删除对话即会话关闭）
-  try {
-    const { getMCPHost } = await import('../mcp/MCPHost.js');
-    await getMCPHost().onSessionClosed(sessionId);
-  } catch (e) {
-    logger.warn('Conversation', `释放 MCP 引用失败: ${e}`);
-  }
-
-  // 丢弃 sessionRuntime 状态（idle / waiting）：删除对话即会话关闭，
-  // 侧栏黄灯 / 托盘状态点不应残留（幂等，对不存在的会话无副作用）。
-  try {
-    const { dropSessionRuntime } = await import('../sessionRuntime.js');
-    dropSessionRuntime(sessionId);
-  } catch (e) {
-    logger.warn('Conversation', `清理 sessionRuntime 失败: ${e}`);
+    logger.error('Conversation', `清理会话引擎失败: ${e}`);
   }
 
   // 增量更新对话列表缓存（移除已删除的对话）

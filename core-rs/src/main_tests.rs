@@ -522,7 +522,7 @@ fn edit_rolled_back_dispatches_to_rollback() {
             "direction": "before",
         }),
     );
-    assert!(system_message(&harness).contains("未找到指定的编辑操作"));
+    assert!(system_message(&harness).contains("Edit operation not found"));
 }
 
 #[test]

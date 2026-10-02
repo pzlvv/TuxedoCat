@@ -217,16 +217,54 @@ export class QueryEngine {
   /** 正在进行的持久化操作列表，供 flush() 等待 */
   private pendingPersists: Promise<void>[] = [];
   /** 追踪最后一条持久化到磁盘的消息 uuid，用于在 appendMessage 时正确设置 parentUuid */
-  lastPersistedMessageUuid: string | null = null;
+  private lastPersistedMessageUuid: string | null = null;
 
   /** 内部应用状态（用于存储 TodoWrite 等工具的状态数据） */
   private internalAppState: Record<string, unknown> = {};
 
   /**
-   * 设置 lastPersistedMessageUuid（用于从磁盘恢复对话时初始化）
+   * 设置 lastPersistedMessageUuid（持久化游标是引擎私有状态，外部一律走本方法：
+   * 磁盘恢复初始化、压缩重建后重定位到新末尾消息）。
    */
   setLastPersistedMessageUuid(uuid: string): void {
     this.lastPersistedMessageUuid = uuid;
+  }
+
+  /** 读取持久化游标（如 Spin 主循环追加消息时需要 parentUuid） */
+  getLastPersistedMessageUuid(): string | null {
+    return this.lastPersistedMessageUuid;
+  }
+
+  /**
+   * 会话元数据快照（历史层写 meta.json 时取引擎的关联信息：
+   * 子代理的 parentSessionId / role、提示词预设、模型身份）。
+   * 历史层不再逐个掏引擎字段。
+   */
+  getMetaSnapshot(): {
+    parentSessionId?: string;
+    role?: string;
+    promptPresetId: PromptPresetId;
+    modelRefOverride?: ModelRef;
+  } {
+    return {
+      parentSessionId: this.parentSessionId,
+      role: this.role,
+      promptPresetId: this.promptPresetId,
+      modelRefOverride: this.modelRefOverride,
+    };
+  }
+
+  /**
+   * 历史层回放 tool_use 更新（checkPermissions 产出 beforeContent/afterContent 后）时
+   * 同步 mutableMessages。消息数组的 owner 是引擎：历史层请求应用而不是拿
+   * getMessages() 原地修改。返回更新的 block 数（0 = 未找到）。
+   */
+  async applyToolUseUpdate(
+    toolUseId: string,
+    update: { input?: Record<string, unknown>; meta?: Record<string, unknown> },
+  ): Promise<number> {
+    const { applyToolUseUpdateToMessages } = await import('./history/Conversation.js');
+    return applyToolUseUpdateToMessages(this.mutableMessages, toolUseId, update);
   }
 
   /**
@@ -1735,4 +1773,20 @@ export class QueryEngine {
       }
     })();
   }
+}
+
+
+/**
+ * 销毁会话引擎并释放其外围引用（MCP 引用计数 / sessionRuntime 状态）。
+ *
+ * 「删会话 = 引擎 + 外围引用一起清」的编排归引擎池（owner）；历史层的删除流程
+ * 只调用本函数，不再直接操作 sessionEngines 表 / MCPHost / sessionRuntime
+ * （原先由 Conversation 反向动态 import 三处各自清理）。
+ */
+export async function destroySessionEngine(sessionId: string): Promise<void> {
+  sessionEngines.delete(sessionId);
+  const { getMCPHost } = await import('./mcp/MCPHost.js');
+  await getMCPHost().onSessionClosed(sessionId);
+  const { dropSessionRuntime } = await import('./sessionRuntime.js');
+  dropSessionRuntime(sessionId);
 }

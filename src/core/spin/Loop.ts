@@ -493,7 +493,7 @@ export async function spinLoop(
       // 最后一个 Task 完成后不会再有下一次 submitToolUse，如果不持久化会丢失
       try {
         const { appendMessage } = await import('../history/Conversation.js');
-        await appendMessage(resultMsg, sessionId, (engine as any).lastPersistedMessageUuid);
+        await appendMessage(resultMsg, sessionId, engine.getLastPersistedMessageUuid() ?? undefined);
       } catch {}
     }
 

@@ -358,7 +358,7 @@ async function* queryLoop(
           const engine = getSessionEngine(params.sessionID);
           const lastMsg = messages[messages.length - 1];
           if (engine && lastMsg && 'uuid' in lastMsg && (lastMsg as any).uuid) {
-            engine.lastPersistedMessageUuid = (lastMsg as any).uuid;
+            engine.setLastPersistedMessageUuid((lastMsg as any).uuid);
           }
 
           // 压缩后上下文已大幅缩短，旧的 exactTokenCount 不再代表当前上下文，

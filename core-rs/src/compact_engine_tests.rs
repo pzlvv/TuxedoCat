@@ -96,7 +96,7 @@ fn manual_compact_rewrites_the_conversation_and_archives_the_rest() {
     assert!(messages[0]["content"]
         .as_str()
         .unwrap()
-        .starts_with("[手动压缩边界] "));
+        .starts_with("[Manual compaction boundary] "));
     assert_eq!(messages[1]["isCompactSummary"], true);
     let summary = messages[1]["message"]["content"].as_str().unwrap();
     assert!(summary.starts_with("以下是之前对话的摘要：\n\n## 对话摘要"));
@@ -203,7 +203,7 @@ fn auto_compact_triggers_when_the_context_exceeds_the_threshold() {
     assert!(messages[0]["content"]
         .as_str()
         .unwrap()
-        .starts_with("[自动压缩边界] "));
+        .starts_with("[Auto compaction boundary] "));
 
     // 等本轮收尾，再看请求顺序
     assert!(
