@@ -6,7 +6,7 @@ import InputArea, { InputAreaRef } from './InputArea';
 import MessagesView from './MessagesView';
 import 'antd/dist/reset.css';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload } from './types';
-import { createSessionState } from './sessionState';
+import { createSessionState, SessionStatesStore } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
@@ -324,7 +324,8 @@ const App = () => {
     (window as any).__currentSessionId = sid;
   }, []);
   // Per-session state: input, userChoiceRequest, userChoiceInput
-  const sessionStatesRef = useRef<Map<string, SessionState>>(new Map());
+  // 会话级 UI 状态的唯一容器（组件生命周期内持久；写入口径收敛在 store）
+  const [sessionStates] = useState(() => new SessionStatesStore());
   // core 推送的会话运行时状态（idle / waiting）：对话树流水灯与 abort 按钮的唯一数据源
   const sessionRuntimeStatesRef = useRef<Map<string, { idle: boolean; waiting: boolean }>>(new Map());
   // Per-session command history (most recent first)
@@ -344,7 +345,7 @@ const App = () => {
 
   // ── "新对话"草稿：避免"新建 → 输入 → 切走 → 再新建"时内容丢失 ──────────
   // 会话还没发过任何消息时（webview 刚打开，或点了顶部"+"新建），输入框里的内容不属于
-  // 任何已落盘的会话：切换会话时它不会被 sessionStatesRef 保存下来，再点"新建"就丢了。
+  // 任何已落盘的会话：切换会话时它不会被 sessionStates 保存下来，再点"新建"就丢了。
   // 这里单独暂存一份，新建对话时恢复。
   /**
    * 由顶部"+"新建、且尚未发送过消息的会话 id。
@@ -449,7 +450,7 @@ const App = () => {
     setConfigReady,
     pushNotice,
     messages,
-    currentSessionIdRef, sessionStatesRef, sessionRuntimeStatesRef, userChoiceRequestRef, userChoiceInputRef,
+    currentSessionIdRef, sessionStates, sessionRuntimeStatesRef, userChoiceRequestRef, userChoiceInputRef,
     savedMainInputRef, queuedMessageRef, abortedSessionsRef, mcpServersBySessionRef, cursorPositionRef, choiceCursorPositionRef,
     newChatSessionRef,
     mainInputRef, choiceInputRef, messagesContainerRef, userScrolledAwayRef,
@@ -480,7 +481,7 @@ const App = () => {
     setModelRef, setWebSearch, setHasCompactArchive, setIsCompactExpanded, setQueuedMessage,
     setDeleteConfirm, setMessages, setUserChoiceRequest,
     setShowThinkingAnimation, setExpandedSubSessions, setNamingSessions,
-    currentSessionIdRef, sessionStatesRef, commandHistoryRef, cursorPositionRef,
+    currentSessionIdRef, sessionStates, commandHistoryRef, cursorPositionRef,
     choiceCursorPositionRef, userChoiceRequestRef, userChoiceInputRef,
     savedMainInputRef, queuedMessageRef, abortedSessionsRef, mainInputRef, choiceInputRef,
     newChatSessionRef, newChatDraftRef,
@@ -506,15 +507,15 @@ const App = () => {
   // 打开设置（LLM 配置）页面：先向扩展请求当前配置值，
   // 扩展回传 showLLMConfig 后由 useMessageHandler 填充配置面板并打开
   /**
-   * 保存当前会话快照到 sessionStatesRef，并立即持久化上下文到 meta.json。
+   * 保存当前会话快照到 sessionStates，并立即持久化上下文到 meta.json。
    * 收敛 ConversationTreeItem onSelect / 新对话按钮等会话切换入口的保存动作。
    * 值类型状态（userChoiceRequest / showThinkingAnimation 等）直接读渲染闭包值。
    */
   const saveCurrentSessionSnapshot = useCallback(() => {
     const sid = currentSessionIdRef.current;
     if (!sid) return;
-    const existing = sessionStatesRef.current.get(sid);
-    sessionStatesRef.current.set(sid, createSessionState({
+    const existing = sessionStates.get(sid);
+    sessionStates.set(sid, createSessionState({
       input: inputAreaRef.current?.getValue() ?? '',
       pastedImages: inputAreaRef.current?.getPastedImages?.() ?? [],
       inputCursorPosition: mainInputRef.current?.selectionStart ?? 0,
@@ -636,7 +637,7 @@ const App = () => {
     setCurrentSessionId(newSessionId);
     setCurrentSessionIdRef(newSessionId);
     // 为新对话创建默认 state
-    sessionStatesRef.current.set(newSessionId, createSessionState({
+    sessionStates.set(newSessionId, createSessionState({
       input: draftInput,
       pastedImages: draftImages.length > 0 ? draftImages : undefined,
       inputCursorPosition: draftCursor,
@@ -1266,9 +1267,9 @@ onClick={handleNewConversation}
               balance={balance}
               balanceCurrency={balanceCurrency}
               isUnlimited={isUnlimited}
-              totalCacheReadInputTokens={sessionStatesRef.current.get(currentSessionIdRef.current ?? '')?.totalCacheReadInputTokens}
-              totalCacheCreationInputTokens={sessionStatesRef.current.get(currentSessionIdRef.current ?? '')?.totalCacheCreationInputTokens}
-              totalInputTokens={sessionStatesRef.current.get(currentSessionIdRef.current ?? '')?.totalInputTokens}
+              totalCacheReadInputTokens={sessionStates.get(currentSessionIdRef.current ?? '')?.totalCacheReadInputTokens}
+              totalCacheCreationInputTokens={sessionStates.get(currentSessionIdRef.current ?? '')?.totalCacheCreationInputTokens}
+              totalInputTokens={sessionStates.get(currentSessionIdRef.current ?? '')?.totalInputTokens}
               onOpenSettings={handleOpenSettings}
               isProviderConfigured={providerConfigured}
               isSubAgent={!!parentSessionId}

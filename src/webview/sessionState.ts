@@ -17,8 +17,44 @@
  * - promptMode / thinkingMode 同样默认 undefined：webview 不再内置兜底值，
  *   未从宿主 settings.json 获取到之前保持未设置，避免被误当成用户配置。
  */
-import type { MutableRefObject } from 'react';
 import type { SessionState } from './types';
+
+/**
+ * 会话级 UI 状态的唯一容器（每 webview 一个实例）。
+ *
+ * 此前是裸 Map（App 的 useRef 持有、经 props 透传），App 与消息 handler 双方
+ * 原地 get/set/has；收敛成 store 后 Map 与其写入口径只有这一份，读写全部
+ * 走显式方法（getOrCreate 兜住「首次使用即创建」的样板）。
+ */
+export class SessionStatesStore {
+  private readonly states = new Map<string, SessionState>();
+
+  get(sessionId: string): SessionState | undefined {
+    return this.states.get(sessionId);
+  }
+
+  set(sessionId: string, state: SessionState): void {
+    this.states.set(sessionId, state);
+  }
+
+  has(sessionId: string): boolean {
+    return this.states.has(sessionId);
+  }
+
+  delete(sessionId: string): void {
+    this.states.delete(sessionId);
+  }
+
+  /** 取或创建（切换会话 / 首次写入时的统一入口，避免 has+get+set 三连散落各处） */
+  getOrCreate(sessionId: string): SessionState {
+    let state = this.states.get(sessionId);
+    if (!state) {
+      state = createSessionState();
+      this.states.set(sessionId, state);
+    }
+    return state;
+  }
+}
 
 export function createSessionState(overrides?: Partial<SessionState>): SessionState {
   return {
@@ -79,7 +115,7 @@ export function accumulateUsageToState(
  *   整份重建初始 state，缓存 token 按本次用量初始化（不是累加，避免从 0 变成本次值再翻倍）。
  */
 export function ensureSessionStateWithUsage(
-  sessionStatesRef: MutableRefObject<Map<string, SessionState>>,
+  sessionStates: SessionStatesStore,
   sessionId: string,
   role: string,
   totalTokens: number,
@@ -88,7 +124,7 @@ export function ensureSessionStateWithUsage(
   cacheCreationTokens: number,
   overrides?: Partial<SessionState>,
 ): SessionState {
-  const existing = sessionStatesRef.current.get(sessionId);
+  const existing = sessionStates.get(sessionId);
   if (existing) {
     accumulateUsageToState(existing, role, totalTokens, inputTokens, cacheReadTokens, cacheCreationTokens);
     return existing;
@@ -100,6 +136,6 @@ export function ensureSessionStateWithUsage(
     totalCacheCreationInputTokens: role === 'assistant' ? cacheCreationTokens : 0,
     totalInputTokens: role === 'assistant' ? Math.max(0, inputTokens - cacheReadTokens - cacheCreationTokens) : 0,
   });
-  sessionStatesRef.current.set(sessionId, initial);
+  sessionStates.set(sessionId, initial);
   return initial;
 }

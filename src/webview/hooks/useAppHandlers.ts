@@ -2,7 +2,7 @@ import { useCallback, useRef } from 'react';
 import { hasHostMessageApi, postMessage } from '../webviewEnv';
 import { profileLog } from '../debug';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults } from '../types';
-import { createSessionState } from '../sessionState';
+import { createSessionState, type SessionStatesStore } from '../sessionState';
 import { ensureImageSize } from '../imageSize';
 import { buildConversationTitle } from '../../core/utils/contentBlocks';
 import type { ModelRef } from '../../core/llm/modelRef';
@@ -74,7 +74,7 @@ export interface UseAppHandlersProps {
   setNamingSessions: React.Dispatch<React.SetStateAction<Set<string>>>;
   // refs
   currentSessionIdRef: React.MutableRefObject<string | null>;
-  sessionStatesRef: React.MutableRefObject<Map<string, SessionState>>;
+  sessionStates: SessionStatesStore;
   commandHistoryRef: React.MutableRefObject<Map<string, string[]>>;
   cursorPositionRef: React.MutableRefObject<number | null>;
   choiceCursorPositionRef: React.MutableRefObject<number | null>;
@@ -187,7 +187,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     props.setModelRef(nextModelRef);
     props.setPromptMode(nextPromptMode);
     // 为新对话创建默认 state
-    props.sessionStatesRef.current.set(newSessionId, createSessionState({
+    props.sessionStates.set(newSessionId, createSessionState({
       agentMode: nextAgentMode,
       promptMode: nextPromptMode,
       thinkingMode: nextThinkingMode,
@@ -251,7 +251,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       props.setModelRef(nextModelRef);
       props.setPromptMode(nextPromptMode);
       // 为新对话创建默认 state
-      props.sessionStatesRef.current.set(sessionId, createSessionState({
+      props.sessionStates.set(sessionId, createSessionState({
         agentMode: nextAgentMode,
         promptMode: nextPromptMode,
         thinkingMode: nextThinkingMode,
@@ -379,8 +379,8 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     props.userChoiceInputRef.current = '';
     props.setUserChoiceRequest(null);
     // 同步清除 session 状态，避免切换对话后再次弹出
-    if (props.currentSessionIdRef.current && props.sessionStatesRef.current.has(props.currentSessionIdRef.current)) {
-      props.sessionStatesRef.current.get(props.currentSessionIdRef.current)!.userChoiceRequest = null;
+    if (props.currentSessionIdRef.current && props.sessionStates.has(props.currentSessionIdRef.current)) {
+      props.sessionStates.get(props.currentSessionIdRef.current)!.userChoiceRequest = null;
     }
     // 恢复主输入框焦点和光标位置
     setTimeout(() => {
@@ -408,8 +408,8 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     props.userChoiceInputRef.current = '';
     props.setUserChoiceRequest(null);
     // 同步清除 session 状态，避免切换对话后再次弹出
-    if (props.currentSessionIdRef.current && props.sessionStatesRef.current.has(props.currentSessionIdRef.current)) {
-      props.sessionStatesRef.current.get(props.currentSessionIdRef.current)!.userChoiceRequest = null;
+    if (props.currentSessionIdRef.current && props.sessionStates.has(props.currentSessionIdRef.current)) {
+      props.sessionStates.get(props.currentSessionIdRef.current)!.userChoiceRequest = null;
     }
     // 恢复主输入框焦点和光标位置
     setTimeout(() => {
