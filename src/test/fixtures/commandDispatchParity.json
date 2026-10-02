@@ -1,0 +1,19 @@
+{
+  "comment": "命令分发判定对照表：TS CommandDispatcher.dispatch 与 Rust commands::dispatch 共读。覆盖 skill 匹配（含多行参数）、passthrough 兜底与 JS 空白口径（U+FEFF 是 JS 空白、U+0085 不是）。",
+  "cases": [
+    { "input": "/commit", "result": "skill", "skillName": "commit", "args": "" },
+    { "input": "/commit 修复登录问题", "result": "skill", "skillName": "commit", "args": "修复登录问题" },
+    { "input": "/commit 修复 A\n再修 B", "result": "skill", "skillName": "commit", "args": "修复 A\n再修 B" },
+    { "input": "/commit\nfoo", "result": "skill", "skillName": "commit", "args": "foo" },
+    { "input": "  /commit  多行\n第二行  ", "result": "skill", "skillName": "commit", "args": "多行\n第二行" },
+    { "input": "/not-a-skill 多行\n参数", "result": "passthrough" },
+    { "input": "/", "result": "passthrough" },
+    { "input": "普通消息", "result": "passthrough" },
+    { "input": "/usr/bin/env", "result": "passthrough" },
+    { "input": "﻿/commit", "result": "skill", "skillName": "commit", "args": "" },
+    { "input": "﻿/commit ﻿修复", "result": "skill", "skillName": "commit", "args": "修复" },
+    { "input": "/commit﻿", "result": "skill", "skillName": "commit", "args": "" },
+    { "input": "\u0085/commit", "result": "passthrough" },
+    { "input": "﻿\u0085/commit", "result": "passthrough" }
+  ]
+}

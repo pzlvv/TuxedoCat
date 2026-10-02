@@ -1037,3 +1037,30 @@ fn session_workspace_assigned_registers_and_clears() {
     );
     assert_eq!(config::session_workspace("s1"), None);
 }
+
+/// 事件词汇对照： 的 match 必须给  里的
+/// 每个 UiEvent type 一个显式分支（TS 侧 eventTypeParity.test.ts 以编译期穷尽检查
+/// 锁 AssistantEventBus 的联合类型；Rust 侧事件载荷是裸 Value，只能在分发点锁
+/// 「每个 type 都有分支」，防止联合新增成员后 Rust 侧静默落入  兜底）。
+/// 局限：这是对源码文本的断言——match 重写为别的分发结构时，本测试要跟着改。
+#[test]
+fn dispatch_ui_event_covers_every_ui_event_type() {
+    let fixture: serde_json::Value = serde_json::from_str(
+        include_str!("../../src/test/fixtures/eventTypesParity.json"),
+    )
+    .expect("parse eventTypesParity.json");
+
+    let src = include_str!("main.rs");
+    let start = src.find("fn dispatch_ui_event").expect("dispatch_ui_event in main.rs");
+    let end = src[start..].find("fn emit").expect("fn emit after dispatch_ui_event") + start;
+    let dispatch_src = &src[start..end];
+
+    for event_type in fixture["uiEvents"].as_array().expect("uiEvents") {
+        let t = event_type.as_str().expect("type string");
+        let branch = format!("\"{t}\" =>");
+        assert!(
+            dispatch_src.contains(&branch),
+            "dispatch_ui_event 缺少 UiEvent 分支: {t}"
+        );
+    }
+}

@@ -130,77 +130,23 @@ fn dispatch_matches_the_shared_command_table() {
     crate::skills::reset_registries();
     let (context, _events) = make_context(&sandbox.workspace.to_string_lossy());
 
-    let cases: Vec<(&str, DispatchOutcome)> = vec![
-        (
-            "/commit",
-            DispatchOutcome::Skill {
-                skill_name: "commit".to_string(),
-                skill_args: String::new(),
-            },
-        ),
-        (
-            "/commit 修复登录问题",
-            DispatchOutcome::Skill {
-                skill_name: "commit".to_string(),
-                skill_args: "修复登录问题".to_string(),
-            },
-        ),
-        (
-            "/commit 修复 A\n再修 B",
-            DispatchOutcome::Skill {
-                skill_name: "commit".to_string(),
-                skill_args: "修复 A\n再修 B".to_string(),
-            },
-        ),
-        (
-            "/commit\nfoo",
-            DispatchOutcome::Skill {
-                skill_name: "commit".to_string(),
-                skill_args: "foo".to_string(),
-            },
-        ),
-        (
-            "  /commit  多行\n第二行  ",
-            DispatchOutcome::Skill {
-                skill_name: "commit".to_string(),
-                skill_args: "多行\n第二行".to_string(),
-            },
-        ),
-        ("/not-a-skill 多行\n参数", DispatchOutcome::Passthrough),
-        ("/", DispatchOutcome::Passthrough),
-        ("普通消息", DispatchOutcome::Passthrough),
-        ("/usr/bin/env", DispatchOutcome::Passthrough),
-        // JS 空白口径（U+FEFF / U+0085）：`prompt.trim()` 必须与 Embedded 一致
-        (
-            "\u{FEFF}/commit",
-            DispatchOutcome::Skill {
-                skill_name: "commit".to_string(),
-                skill_args: String::new(),
-            },
-        ),
-        (
-            "\u{FEFF}/commit \u{FEFF}修复",
-            DispatchOutcome::Skill {
-                skill_name: "commit".to_string(),
-                skill_args: "修复".to_string(),
-            },
-        ),
-        (
-            "/commit\u{FEFF}",
-            DispatchOutcome::Skill {
-                skill_name: "commit".to_string(),
-                skill_args: String::new(),
-            },
-        ),
-        ("\u{0085}/commit", DispatchOutcome::Passthrough),
-        ("\u{FEFF}\u{0085}/commit", DispatchOutcome::Passthrough),
-    ];
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../src/test/fixtures/commandDispatchParity.json"))
+            .expect("parse commandDispatchParity.json");
+    let cases = fixture["cases"].as_array().expect("cases array").clone();
 
-    for (input, expected) in cases {
+    for case in &cases {
+        let input = case["input"].as_str().expect("input");
+        let expected = match case["result"].as_str().expect("result") {
+            "skill" => DispatchOutcome::Skill {
+                skill_name: case["skillName"].as_str().expect("skillName").to_string(),
+                skill_args: case["args"].as_str().unwrap_or("").to_string(),
+            },
+            "passthrough" => DispatchOutcome::Passthrough,
+            other => panic!("unknown result kind: {other}"),
+        };
         assert_eq!(dispatch(input, &context), expected, "输入: {input:?}");
     }
-
-    crate::skills::reset_registries();
 }
 
 #[test]
