@@ -1,0 +1,109 @@
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import type { Browser, Page } from '@playwright/test';
+import { FAKE_HOST_INIT, FakeHostDriver } from './fakeHost';
+
+/**
+ * webview UI 级测试的页面装配：静态伺服构建产物 `dist/webview/`，
+ * 以假宿主初始化脚本打开真实 webview bundle。
+ */
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+};
+
+export interface WebviewHandle {
+  page: Page;
+  host: FakeHostDriver;
+  close(): Promise<void>;
+}
+
+/** 起一个只伺服 dist/webview 的静态服务器（监听回环随机端口） */
+function startStaticServer(root: string): Promise<{ url: string; close: () => void }> {
+  const server = http.createServer((req, res) => {
+    const urlPath = decodeURIComponent(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
+    const rel = urlPath === '/' || urlPath.endsWith('/') ? path.join(urlPath, 'index.html') : urlPath;
+    const file = path.normalize(path.join(root, rel));
+    if (!file.startsWith(path.normalize(root))) {
+      res.writeHead(403).end();
+      return;
+    }
+    fs.readFile(file, (err, data) => {
+      if (err) {
+        res.writeHead(404).end();
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': MIME[path.extname(file)] ?? 'application/octet-stream',
+        'Cache-Control': 'no-store',
+      });
+      res.end(data);
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address() as { port: number };
+      resolve({
+        url: `http://127.0.0.1:${addr.port}`,
+        close: () => server.close(),
+      });
+    });
+  });
+}
+
+let cachedServer: { url: string; close: () => void; refcount: number } | null = null;
+
+async function acquireServer(root: string): Promise<{ url: string; release: () => void }> {
+  if (!cachedServer) {
+    cachedServer = { ...(await startStaticServer(root)), refcount: 0 };
+  }
+  cachedServer.refcount += 1;
+  return { url: cachedServer.url, release: () => {
+    if (!cachedServer) return;
+    cachedServer.refcount -= 1;
+    if (cachedServer.refcount <= 0) {
+      cachedServer.close();
+      cachedServer = null;
+    }
+  } };
+}
+
+/**
+ * 打开一个装配好假宿主的 webview 页面。
+ * 每个用例独立 BrowserContext（隔离 clipboard 权限与存储），静态服务器进程内共享。
+ */
+export async function openWebviewView(browser: Browser, repoRoot: string): Promise<WebviewHandle> {
+  const { url, release } = await acquireServer(path.join(repoRoot, 'dist', 'webview'));
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+    permissions: ['clipboard-read', 'clipboard-write'],
+  });
+  const page = await context.newPage();
+  // 排查辅助：webview 运行期错误转发到测试输出
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') {
+      console.error('[webview-console]', msg.text());
+    }
+  });
+  await page.addInitScript(FAKE_HOST_INIT);
+  await page.goto(`${url}/index.html`);
+  const host = new FakeHostDriver(page);
+  await host.waitReady();
+  return {
+    page,
+    host,
+    close: async () => {
+      await context.close();
+      release();
+    },
+  };
+}

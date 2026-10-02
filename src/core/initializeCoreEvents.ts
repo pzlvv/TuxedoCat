@@ -370,8 +370,13 @@ async function registerMcpUiEvents(bus: AssistantEventBus): Promise<void> {
 
 /**
  * 注册 core 侧全部 UiEvent 订阅。由 bootstrap 在 setGlobalEventBus 之后调用一次。
+ *
+ * 返回「全部订阅就位」的 Promise：Integration / history / sessionResources / mcp
+ * 四组经动态 import 异步注册，真实宿主有进程延迟自然掩盖这个窗口，测试进程没有——
+ * 在 Promise 完成前发事件会被总线按「暂无订阅者」静默丢弃。需要同步发首条事件的
+ * 调用方（场景测试 / 诊断）应先 await 本函数再 emitToCore。
  */
-export function initializeCoreEvents(bus: AssistantEventBus): void {
+export async function initializeCoreEvents(bus: AssistantEventBus): Promise<void> {
   // UI 语言不在这里：`uiLanguage` 是宿主自己的字段，由宿主读 `SettingsStore` 后
   // 收敛到宿主进程内的 i18n（`src/host/i18n.ts`），core 不感知语言。
 
@@ -380,8 +385,10 @@ export function initializeCoreEvents(bus: AssistantEventBus): void {
   registerSessionWorkspaceUiEvents(bus);
   registerUserChoiceUiEvents(bus);
 
-  void registerIntegrationUiEvents(bus);
-  void registerHistoryUiEvents(bus);
-  void registerSessionResourcesUiEvents(bus);
-  void registerMcpUiEvents(bus);
+  await Promise.all([
+    registerIntegrationUiEvents(bus),
+    registerHistoryUiEvents(bus),
+    registerSessionResourcesUiEvents(bus),
+    registerMcpUiEvents(bus),
+  ]);
 }

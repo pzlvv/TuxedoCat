@@ -54,10 +54,10 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
 | 会话配置（模型 / 思考强度 / 询问模式 / 提示词模式 / 联网搜索） | `conversationLoaded`、`setNewConversationDefaults`、`settingsDefaults` | 输入框禁用 + 转圈 | `src/webview/App.tsx`、`src/webview/InputArea.tsx` |
 | 新对话默认值 | `settingsDefaults` | 输入区菜单显示等待项 | `src/webview/InputArea.tsx` |
 | 服务商配置是否完成 | `settingsDefaults.providerConfigured` | 未知：不显示「请配置服务商」 | `src/webview/App.tsx` |
-| 模型列表 | `providerModelsResult` | 模型菜单显示等待项 | `src/webview/InputArea.tsx` |
-| MCP 服务器列表 | `mcpServersData` | 菜单显示连接中 | `src/webview/InputArea.tsx` |
-| 上下文上限 | `contextLimit` | 不渲染用量进度条 | `src/webview/InputArea.tsx` |
-| 账户余额 | `balanceData` | 不渲染余额 | `src/webview/InputArea.tsx` |
+| 模型列表 | `setModels` | 模型菜单显示等待项 | `src/webview/InputArea.tsx` |
+| MCP 服务器列表 | `setMcpServers` | 菜单显示连接中 | `src/webview/InputArea.tsx` |
+| 上下文上限 | `contextLimitUpdated` | 不渲染用量进度条 | `src/webview/InputArea.tsx` |
+| 账户余额 | `balanceUpdate` | 不渲染余额 | `src/webview/InputArea.tsx` |
 | 对话列表 | `conversationsData` | 列表显示加载中 | `src/webview/App.tsx` |
 | 会话运行时状态 | `sessionRuntimeStates` | 流水灯按未运行渲染 | `src/webview/App.tsx` |
 | 设置面板载荷 | `showLLMConfig` | 不打开面板（见第 6 节） | `src/host/WebViewUI.ts` |

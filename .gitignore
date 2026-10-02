@@ -17,3 +17,7 @@ coverage/
 
 # 本地实验脚本与截图（CDP 探针 / 渲染预览），不属于产品代码
 exp/
+
+# Playwright e2e 产物（trace / 失败上下文快照）
+test-results/
+playwright-report/

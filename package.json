@@ -102,9 +102,14 @@
     "package:app": "npm run build:core && npm run build:webview && npm run copy-assets && node scripts/verify-core-artifacts.mjs && npm run build:electron:prod && electron-builder --config electron-builder.config.js && node scripts/verify-nsis-payload.mjs",
     "package:app:embedded": "node scripts/run-with-core-kind.mjs embedded run package:app",
     "package:electron": "npm run package:app",
-    "demo": "tsc -p tsconfig.test.json && node out/test/vscode-diff-demo.js"
+    "demo": "tsc -p tsconfig.test.json && node out/test/vscode-diff-demo.js",
+    "test:e2e": "playwright test -c e2e/playwright.config.ts",
+    "test:e2e:webview": "playwright test -c e2e/playwright.config.ts --project=webview-ui",
+    "test:e2e:electron": "playwright test -c e2e/playwright.config.ts --project=electron-app",
+    "check-types:e2e": "tsc --noEmit -p e2e/tsconfig.json"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/diff": "^7.0.2",
     "@types/mocha": "^10.0.10",
     "@types/node": "^22.19.17",

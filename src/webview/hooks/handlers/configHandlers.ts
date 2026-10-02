@@ -109,6 +109,18 @@ export function handleConfigSetMcpServers(
           return;
 }
 
+export function handleConfigSetModels(
+  msg: Extract<HostToWebviewWire, { type: 'setModels' }>,
+  ctx: HandlerContext,
+): void {
+  const { props } = ctx;
+  // 全量 provider 分组列表（菜单三级子菜单数据源）；模型名与 provider 分开，不拼接。
+  // providers 未到达时 App 保持 undefined（菜单显示等待项），这里只在合法应答时写入。
+  if (Array.isArray(msg.providers)) {
+    props.setProviderModels(msg.providers);
+  }
+}
+
 export function handleConfigSetSkills(
   msg: Extract<HostToWebviewWire, { type: 'setSkills' }>,
   ctx: HandlerContext,

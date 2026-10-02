@@ -47,9 +47,11 @@ const stubSpinDesign: SpinDesign = {
  * 白名单：不需要出现在启动接线（`bootstrapCore.ts` 或 `initializeCoreEvents.ts`）的注入点。
  *
  * - `setSession*`：会话级运行时 setter，由 UiEvent 驱动，不属于启动接线。
+ * - `setCallLlmOverride`：场景测试专用注入点，刻意只在测试里调用
+ *   （`src/test/helpers/scenario.ts`），bootstrap 调它反而会劫持真实 LLM。
  */
 function isAllowedOutsideBootstrap(name: string): boolean {
-  return name.startsWith('setSession');
+  return name.startsWith('setSession') || name === 'setCallLlmOverride';
 }
 
 /** 递归收集 src/core 下所有 .ts 文件路径 */

@@ -8,7 +8,7 @@ import { profileLog } from '../debug';
 import { handleStreamShowThinkingAnimation, handleStreamAiEnd, handleStreamQueryBegin, handleStreamQueryEnd, handleStreamStreamMessage, handleStreamStreamEnd, handleStreamCompressProgress } from './handlers/streamHandlers';
 import { handleToolAddMessage, handleToolUpdateToolArgs, handleToolUpdateToolStatus, handleToolToolProgress, handleToolRequestUserChoice, handleToolToolMetaData } from './handlers/toolHandlers';
 import { handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
-import { handleConfigSetTheme, handleConfigSetModel, handleConfigSetAgentMode, handleConfigSetPromptMode, handleConfigSetThinkingMode, handleConfigSetWebSearch, handleConfigSetMcpServers, handleConfigSetSkills, handleConfigContextLimitUpdated, handleConfigNotice, handleConfigSettingsDefaults, handleConfigProviderModelsResult, handleConfigSetNewConversationDefaults, handleConfigLlmConfigSaved, handleConfigShowLLMConfig, handleConfigBalanceUpdate, handleConfigFocusInput, handleConfigActivatePrewarmedView } from './handlers/configHandlers';
+import { handleConfigSetTheme, handleConfigSetModel, handleConfigSetAgentMode, handleConfigSetPromptMode, handleConfigSetThinkingMode, handleConfigSetWebSearch, handleConfigSetMcpServers, handleConfigSetModels, handleConfigSetSkills, handleConfigContextLimitUpdated, handleConfigNotice, handleConfigSettingsDefaults, handleConfigProviderModelsResult, handleConfigSetNewConversationDefaults, handleConfigLlmConfigSaved, handleConfigShowLLMConfig, handleConfigBalanceUpdate, handleConfigFocusInput, handleConfigActivatePrewarmedView } from './handlers/configHandlers';
 import type { HandlerContext } from './handlers/handlerContext';
 
 // Profiling helper
@@ -16,6 +16,20 @@ import type { HandlerContext } from './handlers/handlerContext';
 
 /** 已提示过的未知消息类型：避免宿主重复发送时把控制台刷爆（同类只提示一次） */
 const warnedUnknownMessageTypes = new Set<string>();
+
+/**
+ * 下行消息中「中央分发显式不消费」的 type 全集：
+ * `providerModelsFetched` / `llmConfigSaveError` / `conversationSpaces*` 由
+ * LLMConfigPanel 自己的 message 监听消费（面板打开期间才有意义）。
+ *
+ * 与 default 分支的穷尽守卫配套：switch 收窄后的剩余类型若超出本清单
+ * （= 新增下行消息漏写 case），编译期报错，而不是运行期靠一次性
+ * Unknown 警告（`setModels` 漏 case 导致模型菜单永远「加载中」的教训）。
+ */
+type WebviewIgnoredDownlinkType = Extract<
+  HostToWebviewWire,
+  { type: 'providerModelsFetched' | 'llmConfigSaveError' | 'conversationSpacesData' | 'conversationSpacesError' | 'conversationSpaceCleared' }
+>;
 
 
 export interface UseMessageHandlerProps {
@@ -297,6 +311,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
         case 'showThinkingAnimation':
           handleStreamShowThinkingAnimation(msg, ctx);
           break;
+        case 'aiBegin':
         case 'aiEnd':
           handleStreamAiEnd(msg, ctx);
           break;
@@ -390,6 +405,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
         case 'setMcpServers':
           handleConfigSetMcpServers(msg, ctx);
           break;
+        case 'setModels':
+          handleConfigSetModels(msg, ctx);
+          break;
         case 'setSkills':
           handleConfigSetSkills(msg, ctx);
           break;
@@ -423,13 +441,18 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
         case 'activatePrewarmedView':
           handleConfigActivatePrewarmedView(msg, ctx);
           break;
-        default:
-          // 未知消息类型只提示一次：宿主可能在每轮/每次流式事件里都发同一条消息，
-          // 逐条 console.warn 会瞬间刷满控制台，掩盖真正有价值的日志。
+        default: {
+          // 穷尽守卫：下行消息（HostToWebviewWire）每条都必须有显式去向——
+          // switch 里有 case，或登记进 WebviewIgnoredDownlinkType。收窄后剩余
+          // 类型超出清单时本行编译报错（新增消息漏接在此暴露，不靠运行期警告）。
+          const ignored: WebviewIgnoredDownlinkType = msg;
+          void ignored;
+          // 运行期仍可能有清单外的 type（跨版本宿主 / wire 数据未校验），保留提示
           if (!warnedUnknownMessageTypes.has(msg.type)) {
             warnedUnknownMessageTypes.add(msg.type);
             console.warn(`[Webview] Unknown message type: ${msg.type}（同类消息仅提示一次）`);
           }
+        }
       }
     };
 

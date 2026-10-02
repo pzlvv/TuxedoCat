@@ -41,15 +41,37 @@ export interface StreamOptions {
 export type { StreamEvent } from './RealApi.js';
 
 /**
+ * callLLM 的实现注入点（场景测试 / 诊断专用）。
+ *
+ * 为什么需要：Query / compact / smartNaming / SpinJudger 都从本模块取 `callLLM`，
+ * 真实 API 会发网络请求，写死的 `callModelStub` 又只有固定三轮脚本；场景级测试
+ * （事件序列、权限、中止、落盘）需要按场景编排 LLM 应答。注入只影响本分发点，
+ * 不改变任何调用方行为。测试结束必须 `setCallLlmOverride(null)` 还原，
+ * 否则后续真实调用会被吞掉。
+ */
+export type CallLlmImplementation = (
+  options: StreamOptions,
+) => AsyncGenerator<unknown, void, void>;
+
+let callLlmOverride: CallLlmImplementation | null = null;
+
+/** 注入 callLLM 实现；传 null 还原默认分发（USE_STUB ? 桩 : 真实 API） */
+export function setCallLlmOverride(impl: CallLlmImplementation | null): void {
+  callLlmOverride = impl;
+}
+
+/**
  * 统一的 LLM 调用接口
- * 根据 USE_STUB 变量自动选择实现
+ * 优先级：注入实现 → USE_STUB 变量 → 真实 API
  *
  * yield 的事件类型：
  * - StreamEvent: 细粒度的流式事件（block_start, thinking_delta, text_delta, block_stop, message_delta）
  * - Message: 完整的 assistant 消息（用于持久化）
  */
 export async function* callLLM(options: StreamOptions): AsyncGenerator<any> {
-  if (USE_STUB) {
+  if (callLlmOverride) {
+    yield* callLlmOverride(options);
+  } else if (USE_STUB) {
     // 使用桩实现
     yield* callModelStub(options);
   } else {
