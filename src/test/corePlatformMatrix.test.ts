@@ -136,6 +136,38 @@ async function run(): Promise<void> {
     );
   }
 
+  // ---------- Electron 打包：asar 内路径必须派生 app.asar.unpacked 变体并优先 ----------
+  // spawn 不能从 asar 里启动可执行文件（fs 补丁不覆盖 child_process.spawn），
+  // 所以打包后（extensionPath 以 app.asar 结尾）每条候选都要有解包目录副本且排在前面。
+  {
+    const asarRoot = path.join('/', 'programs', 'app', 'resources', 'app.asar');
+    const candidates = coreBinaryCandidates(asarRoot, 'win32', 'x64');
+    const coreDir = 'x64-win32';
+    const exe = `${CORE_BINARY_NAME}.exe`;
+    const rel = (...segments: string[]): string =>
+      path.join(asarRoot, ...segments, CORE_RESOURCE_DIR, coreDir, exe);
+    // 解包副本 = 同一条候选路径把 app.asar 改写为 app.asar.unpacked
+    const unpacked = (candidate: string): string =>
+      candidate.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked');
+    check('asar 根目录下候选路径有 4 条（dist/resources 各派生解包 + 原路径）', candidates.length === 4);
+    check(
+      '优先 app.asar.unpacked 下的 dist/resources 产物',
+      candidates[0] === unpacked(rel('dist', 'resources')),
+    );
+    check(
+      '其次 asar 内 dist/resources（存在但 spawn 不了）',
+      candidates[1] === rel('dist', 'resources'),
+    );
+    check(
+      '再次 app.asar.unpacked 下的 resources 产物',
+      candidates[2] === unpacked(rel('resources')),
+    );
+    check(
+      '最后 asar 内 resources',
+      candidates[3] === rel('resources'),
+    );
+  }
+
   // ---------- 矩阵之外的组合必须被拒绝，而不是猜一个目录 ----------
   check('darwin/x64 不在矩阵内', corePlatformDir('darwin' as NodeJS.Platform, 'x64') === null);
   check('win32/ia32 不在矩阵内', corePlatformDir('win32', 'ia32') === null);

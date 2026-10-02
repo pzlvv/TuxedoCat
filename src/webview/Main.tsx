@@ -1,5 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { ConfigProvider } from 'antd';
 import App from './App';
 import { getInjectedSessionId } from './webviewEnv';
 import { rotatePlaceholderLogo } from './placeholderLogo';
@@ -36,6 +37,15 @@ if (!getInjectedSessionId()) {
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    {/* 全局把 antd 动效压到 0.01s：Dropdown 及其子菜单浮层的打开动画都消费
+        motionDurationMid（默认 0.2s），是「菜单点击到可见」感知延迟的大头；
+        antd 动效只做过渡、不承载信息，压短不影响可用性。
+        不能设为 0s：rc-motion 靠 transitionend 判定动效结束，零时长过渡浏览器
+        不触发该事件且 antd 无 motionDeadline 兜底，浮层关闭 / 卸载会卡住；
+        0.01s 能真实触发事件，视觉上与 0 无差别。
+        ToggleMenu 内的嵌套 ConfigProvider 会继承这里的 token（antd 主题浅合并）。 */}
+    <ConfigProvider theme={{ token: { motionDurationMid: '0.01s' } }}>
+      <App />
+    </ConfigProvider>
   </React.StrictMode>
 );

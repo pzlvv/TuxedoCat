@@ -144,6 +144,17 @@ export function bootstrapCore(
     log(`[bootstrap] Failed to load settings: ${String(error)}`);
   }
 
+  // 宿主语言（界面语言）归宿主：`settings.json` 读进来后立刻收敛进进程内 i18n。
+  // 宿主原生 UI（Electron 菜单 / 托盘、Spin 设计器）用的都是这套 `tt()`，必须在这里
+  // 同步定好——不能等 Connection 就绪事件（Standalone 要拉起 Core 进程、Embedded 根本
+  // 没有这个事件），否则 UI 先按默认英文建好、语言设置看起来「没生效」。
+  // 语言与 Core 装配无关（Core 不感知语言），只读宿主自己的配置。
+  try {
+    primeHostLocale(options.locale);
+  } catch (error) {
+    log(`[bootstrap] Failed to prime host locale: ${String(error)}`);
+  }
+
   // 宿主环境与配置快照：构造与推送收敛到一处。首次连接与后续配置变更走同一条
   // 路径（`docs/core-ui-separation.md` 第 4.5 节：整份快照，没有增量语义）。
   const hostEnvironment = (): Extract<UiEvent, { type: 'hostEnvironmentProvided' }> => ({
@@ -169,20 +180,14 @@ export function bootstrapCore(
       : undefined,
     // Core 崩溃 / 无法重启（规格第 7.1 节）：把该连接上受影响的「忙」会话标记为失败，
     // 补发错误消息与 queryEnd，并把运行时状态复位为 idle —— 不静默挂起。
+    // 同时把生命周期转发给宿主订阅者（`onWorkspaceConnectionState`）。
     onConnectionLost: (connection, reason) => {
       markConnectionSessionsFailed(connection, conversations, reason, log);
+      notifyWorkspaceConnectionState(log, connection.workspaceRef, 'lost', reason);
     },
-    // Standalone 下把语言收敛结果灌回宿主进程内的 i18n（每次握手，含崩溃重启后）：
-    // Core 进程换了一个，宿主侧的收敛结果是同一份，重跑幂等。
-    onConnectionReady: coreKind === 'standalone'
-      ? () => {
-          try {
-            primeHostLocale(options.locale);
-          } catch (error) {
-            log(`[bootstrap] Failed to prime host locale: ${String(error)}`);
-          }
-        }
-      : undefined,
+    onConnectionReady: (connection) => {
+      notifyWorkspaceConnectionState(log, connection.workspaceRef, 'ready', '');
+    },
   });
   if (embeddedBus) {
     setGlobalEventBus(embeddedBus);
@@ -464,6 +469,78 @@ export async function deleteRemoteDirectory(
 ): Promise<string> {
   const daemon = remoteDaemonFor(endpoint);
   return daemon.deleteDirectory(path, recursive);
+}
+
+/** 工作区 Connection 生命周期通知：就绪，或无法建立 / 终止（附原因） */
+export type WorkspaceConnectionState = 'ready' | 'lost';
+
+/**
+ * 工作区 Connection 状态订阅（宿主启动恢复 / 手动重连用）。
+ *
+ * Client 的 `onConnectionReady` / `onConnectionLost` 在构造时一次性注册给
+ * bootstrapCore 内部使用（快照重推、忙会话失败标记）；宿主（Electron main）拿不到
+ * Client 实例，从这里订阅同一份信号。注意 `lost` 含运行期 Core 退出的场景
+ * （总线会按重启策略自动恢复），是否判定「不可用」由订阅方按「是否曾就绪」自行决定。
+ */
+const workspaceConnectionStateListeners = new Set<
+  (ref: WorkspaceRef, state: WorkspaceConnectionState, reason: string) => void
+>();
+
+export function onWorkspaceConnectionState(
+  listener: (ref: WorkspaceRef, state: WorkspaceConnectionState, reason: string) => void,
+): () => void {
+  workspaceConnectionStateListeners.add(listener);
+  return () => workspaceConnectionStateListeners.delete(listener);
+}
+
+function notifyWorkspaceConnectionState(
+  log: (...args: unknown[]) => void,
+  ref: WorkspaceRef,
+  state: WorkspaceConnectionState,
+  reason: string,
+): void {
+  for (const listener of [...workspaceConnectionStateListeners]) {
+    try {
+      listener(ref, state, reason);
+    } catch (error) {
+      log(`[bootstrap] workspace connection state listener error: ${String(error)}`);
+    }
+  }
+}
+
+/**
+ * 探测远程 endpoint 是否可连（宿主启动恢复 / 点击重连用）。
+ *
+ * 直接走传输层建链（TCP 连接 + auth 第一帧；SSH 为完整引导流程），**不经过 daemon
+ * 注册表**：正式连接的建链超时是长超时（SSH 首次引导 `SSH_DAEMON_LINK_TIMEOUT_MS`），
+ * 探测需要自己的短超时（`timeoutMs`），复用注册表 daemon 会把失败信号拖到两分钟后。
+ * 探测拿到链路立即断开——不发 `shutdown` 帧，远端 daemon 的生命周期不受影响；
+ * 超时后迟到的链路同样就地杀掉，不留悬挂 socket / SSH 进程。
+ */
+export async function probeRemoteEndpoint(endpoint: WorkspaceEndpoint, timeoutMs: number): Promise<void> {
+  const options = activeOptions;
+  if (!options) {
+    throw new Error('bootstrapCore() has not run; no remote opener available.');
+  }
+  const opening = daemonOpenerFor(endpoint, options).open();
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const link = await Promise.race([
+      opening,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`远程连接超时（${Math.round(timeoutMs / 1000)} 秒）`)),
+          timeoutMs,
+        );
+        timer.unref();
+      }),
+    ]);
+    link.kill();
+  } finally {
+    if (timer) clearTimeout(timer);
+    // 超时后迟到的链路：就地杀掉（已 settle 的路径上这是无害的重复 kill）
+    void opening.then((link) => link.kill(), () => undefined);
+  }
 }
 
 /** 取（或建立）该 endpoint 的 daemon 客户端 */

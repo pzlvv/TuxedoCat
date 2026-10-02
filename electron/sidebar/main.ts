@@ -115,8 +115,14 @@ const searchInputEl = document.getElementById('searchInput') as HTMLInputElement
 
 let conversations: ConversationMeta[] = [];
 let activeSessionId: string | null = null;
-/** 打开集合 + 活动项 + 最近工作目录（来自 `sidebar:workspaces-changed` / getWorkspaces） */
-let workspacesState: WorkspacesState = { workspaces: [], active: null, recent: [] };
+/**
+ * 打开集合 + 活动项 + 最近工作目录（来自 `sidebar:workspaces-changed` / getWorkspaces）。
+ *
+ * `null` = 尚未从宿主取到：这是**等待态**，不是「没有工作区」。工作区状态是宿主
+ * 本地事实、不依赖 core；对话列表却要等 core 连接就绪（远程工作区连不上时会一直等）。
+ * 用 `null` 把两者分开，避免 core 未就绪时把侧栏错渲染成「尚未打开工作区」。
+ */
+let workspacesState: WorkspacesState | null = null;
 /** 搜索框内容：按标题过滤当前活动工作目录的对话列表 */
 let searchQuery = '';
 /**
@@ -202,8 +208,11 @@ function escapeHtml(s: string): string {
  * 聊天区保持纯提示，不提供添加入口。
  */
 function renderEmptyState(): void {
+  // 调用方 render() 已保证状态已到达；这里再取一次局部变量做类型收窄
+  const state = workspacesState;
+  if (!state) return;
   resetList();
-  const recents = workspacesState.recent;
+  const recents = state.recent;
   const recentHtml = recents.length
     ? `<div class="recent-title">最近打开的工作区</div>
        <div class="recent-list">
@@ -270,8 +279,13 @@ function createItemElement(html: string): HTMLElement {
  *   - 顺序变化用 insertBefore 移动，已删除的项单独移除。
  */
 function render(): void {
+  // 工作区状态尚未从宿主取到：保持等待态（不渲染空态）。
+  // 列表 / 状态推送可能先于 getWorkspaces 回包到达，此时按默认空集合渲染会错报
+  // 「尚未打开工作区」——这正是启动期（core 未就绪）一直显示空态的根因。
+  const state = workspacesState;
+  if (!state) return;
   // 打开集合为空：显示打开本地工作区引导 + 最近工作区
-  if (workspacesState.workspaces.length === 0) {
+  if (state.workspaces.length === 0) {
     renderEmptyState();
     return;
   }
@@ -668,7 +682,7 @@ function subscribe(): void {
   window.sidebarAPI.onWorkspacesChanged((state) => {
     const next = state ?? { workspaces: [], active: null, recent: [] };
     // 活动工作目录是否变化：决定要不要丢掉旧目录的列表 / 搜索关键字
-    const activeChanged = workspacesState.active !== next.active;
+    const activeChanged = workspacesState?.active !== next.active;
     workspacesState = next;
     // 代次 +1：此前发出的 getConversations 回包已属于旧目录，回来时必须丢弃
     listGeneration += 1;
@@ -739,11 +753,28 @@ async function init(): Promise<void> {
   });
 
   const generation = listGeneration;
+
+  // 工作区状态先取：它是宿主本地事实，不依赖 core。对话列表（getConversations）要等
+  // core 连接就绪，远程工作区连不上 / core 启动慢时会一直等；若和它一起 await，
+  // 打开集合 / 空态就永远画不出来，侧栏会一直停在「尚未打开工作区」。
   try {
-    const [list, active, workspaces, loaded, states] = await Promise.all([
+    const workspaces = await window.sidebarAPI.getWorkspaces();
+    // 初始化期间用户已切换工作目录（workspaces-changed 已把状态更新并重新拉取）：
+    // 这批结果属于旧状态，丢弃，避免覆盖新目录的状态
+    if (generation !== listGeneration) return;
+    workspacesState = workspaces ?? { workspaces: [], active: null, recent: [] };
+    render();
+  } catch (err) {
+    listEl.innerHTML = `<div class="empty">加载失败: ${escapeHtml(String(err))}</div>`;
+    return;
+  }
+
+  // 其余数据依赖 core，可能较慢或挂起：工作区 UI 已经渲染，这里失败 / 挂起都不再
+  // 影响打开集合的展示。
+  try {
+    const [list, active, loaded, states] = await Promise.all([
       window.sidebarAPI.getConversations(),
       window.sidebarAPI.getActiveSession(),
-      window.sidebarAPI.getWorkspaces(),
       window.sidebarAPI.getLoadedSessions(),
       window.sidebarAPI.getSessionStates(),
     ]);
@@ -752,7 +783,6 @@ async function init(): Promise<void> {
     if (generation !== listGeneration) return;
     conversations = list;
     activeSessionId = active;
-    workspacesState = workspaces ?? { workspaces: [], active: null, recent: [] };
     loadedSessions = normalizeLoadedSessions(loaded);
     // 播种运行时状态：状态流只在变化时推，若推送早于侧栏就绪（或侧栏刚重载），
     // 不主动拉一次就会永远缺这份快照，流水灯 / 等待标记不亮。
@@ -760,7 +790,8 @@ async function init(): Promise<void> {
     if (sessionStates.size === 0) sessionStates = normalizeSessionStates(states);
     render();
   } catch (err) {
-    listEl.innerHTML = `<div class="empty">加载失败: ${escapeHtml(String(err))}</div>`;
+    // 对话列表拉取失败不覆盖已经渲染好的工作区 UI，只记日志
+    console.error('[sidebar] load conversations failed:', err);
   }
 }
 

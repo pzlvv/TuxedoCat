@@ -4,7 +4,7 @@ use super::*;
 
 // 快照的全局兜底限值（Host 侧 `FALLBACK_MODEL_PARAMS` 的同值）：Core 侧不再持有注册表，
 // 未显式配置模型限值时一律走这里。
-const DEFAULT_MAX_TOKENS: u32 = 384 * 1024;
+const DEFAULT_MAX_TOKENS: u32 = 128 * 1024;
 const DEFAULT_THINKING_BUDGET: u32 = 192 * 1024;
 use crate::test_support::Sandbox;
 use serde_json::json;

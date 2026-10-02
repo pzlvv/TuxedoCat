@@ -98,7 +98,7 @@ export function resolveApiTypeForModel(
 export const FALLBACK_MODEL_PARAMS: ModelParams = {
   contextWindow: 1024 * 1024,
   thinking_token_budget: 192 * 1024,
-  maxOutputTokens: 384 * 1024,
+  maxOutputTokens: 128 * 1024,
   supportsThinking: true,
 };
 

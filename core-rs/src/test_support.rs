@@ -262,7 +262,7 @@ fn build_test_model_limits(configs: Option<&Value>) -> Value {
 fn test_fallback_limits() -> Value {
     json!({
         "context": 1024 * 1024,
-        "output": 384 * 1024,
+        "output": 128 * 1024,
         "apiType": "OpenAI",
         "thinkingTokenBudget": 192 * 1024,
     })
@@ -352,7 +352,7 @@ fn build_test_snapshot(raw: &Value) -> SettingsSnapshot {
                 .get("maxTokens")
                 .and_then(Value::as_u64)
                 .filter(|value| *value > 0)
-                .unwrap_or(384 * 1024),
+                .unwrap_or(128 * 1024),
             "enableUsageStats": llm.get("enableUsageStats").and_then(Value::as_bool).unwrap_or(true),
             "providers": providers,
             "modelLimitsFallback": test_fallback_limits(),

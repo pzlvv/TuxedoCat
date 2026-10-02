@@ -309,6 +309,31 @@ body {
   animation: wsTabWaitingBreathing 1.6s ease-in-out infinite;
 }
 
+/* ── 不可用工作区标签页（本地目录不存在 / 远程连不上）──
+   文字前挂红点标记，文字弱化一档；点击同样切换活动项
+   （聊天区显示占位页：目录不存在 / 无法连接 + 重连按钮）。 */
+.ws-tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f87171;
+  flex-shrink: 0;
+}
+.ws-tab.unavailable .ws-tab-label {
+  opacity: 0.55;
+}
+/* 建链中（启动恢复的远程项 / 点击重连）：红点换成同位置的黄色呼吸点——
+   与标签页等待指示 / 对话列表的黄色呼吸同一动效语言（黄 = 进行中）。
+   此态同样不可选中。 */
+.ws-tab-loading {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #facc15;
+  flex-shrink: 0;
+  animation: wsTabWaitingBreathing 1.6s ease-in-out infinite;
+}
+
 /* ── 拖拽排序 ── */
 .ws-tab.dragging {
   opacity: 0.45;
@@ -525,6 +550,14 @@ body.platform-darwin .titlebar {
   .ws-tab:where(:not(.active)) + .ws-tab:where(:not(.active))::before,
   .ws-tab:where(:not(.active)) + .ws-add::before {
     background: #a8a8b0;
+  }
+
+  /* 不可用标记红点：浅色下加深一档才看得清；建链中黄点同理加深 */
+  .ws-tab-dot {
+    background: #dc2626;
+  }
+  .ws-tab-loading {
+    background: #ca8a04;
   }
 
   .ws-add { color: #3f3f46; }

@@ -1985,7 +1985,14 @@ core 的对话属性：目录由宿主在会话首次被 core 解析目录之前
 
 UI 语言（`uiLanguage`）是**宿主状态**，不在 core 的启动期状态里：宿主读自己的
 `settings.json` 后收敛到宿主 i18n（`src/host/i18n.ts` 的 `setHostUiLanguage`），
-webview 用自己的翻译表（`src/webview/i18n/`）。
+webview 用自己的翻译表（`src/webview/i18n/`）。收敛入口是 `coreFacts.primeHostLocale(hostLocale)`
+（读 `settings.json` 的 `uiLanguage` + 宿主 locale），由共享骨架 `bootstrapCore` 在
+**启动接线内同步调用**——不依赖 Connection 就绪事件（Standalone 要等 Core 进程握手、
+Embedded 没有该事件），因此宿主原生 UI（Electron 菜单 / 托盘、Spin 设计器）从构建起
+就用对语言。收敛顺序是「先记录宿主 locale，再按 `uiLanguage` 收敛」：显式 `zh` / `en`
+覆盖宿主 / 系统语言，`auto` 才回落到宿主 locale / 系统语言（顺序写反会把显式 `en` 覆盖
+回中文）。Electron 主进程还会在创建托盘 / 菜单之前提前调用一次同一步：托盘早于
+`bootstrapCore` 创建，不提前收敛就会先按默认英文建好。
 
 规则：
 
@@ -1994,8 +2001,8 @@ webview 用自己的翻译表（`src/webview/i18n/`）。
   其取值不影响跨端一致性，且无业务分支依赖「是否已到达」。
 - 抛错的项（总线 / 扩展路径）在启动接线内保证写入，因此启动完成后不存在未写入状态。
 - 宿主语言变化用 `onHostLocaleChanged(listener)`（`src/host/i18n.ts`）通知订阅者
-  （Electron 原生菜单据此重建）；只在**有效语言**真正变化时触发，单个订阅者抛错不影响
-  其它订阅者。
+  （Electron 原生菜单与托盘右键菜单据此重建）；只在**有效语言**真正变化时触发，
+  单个订阅者抛错不影响其它订阅者。
 
 `sessionResources.isSessionIdle` 的「等待用户」来源是 core 自己的 `sessionRuntime`
 （`isSessionWaiting`），没有需要保证注入的读取器（第 4.5 节）。
@@ -2453,22 +2460,24 @@ dropSession(sessionId: string): void {
 | 方面 | 现状 |
 | --- | --- |
 | 打开集合 | `openWorkspaces: WorkspaceRef[]`（主进程进程内事实，按标签页顺序；本地 / 远程同构）；活动项 `workspacePath`（打开集合中的一项） |
-| 标签页 | 标题栏（原菜单栏区域）：`titlebar:workspaces` 下发 `{ workspaces: [{id,path,name,remote}], activeWorkspace, activity }`（与 `titlebar:get-state` 同字段名），标题栏按 `id`（`workspaceRefKey`）作身份渲染标签页（活动项高亮、每项可关闭、键盘可切换、可拖拽排序）+「添加」按钮；宽度够时每张固定 192px，总宽超出时逐张收窄到 56px 下限后横向滚动；打开集合为空时不渲染标签页区域（添加入口在侧栏空态与菜单）；浮窗模式隐藏菜单图标与标签页 |
+| 标签页 | 标题栏（原菜单栏区域）：`titlebar:workspaces` 下发 `{ workspaces: [{id,path,name,remote,availability}], activeWorkspace, activity }`（与 `titlebar:get-state` 同字段名；`availability` ∈ `available` / `unavailable` / `connecting`），标题栏按 `id`（`workspaceRefKey`）作身份渲染标签页（活动项高亮、每项可关闭、键盘可切换、可拖拽排序，建链中 / 不可用项同样可激活）+「添加」按钮；宽度够时每张固定 192px，总宽超出时逐张收窄到 56px 下限后横向滚动；打开集合为空时不渲染标签页区域（添加入口在侧栏空态与菜单）；浮窗模式隐藏菜单图标与标签页 |
+| 不可用工作区 | 启动期判定（`unavailableWorkspaces`，按去重键）：本地目录已不存在（恢复时 `isValidWorkspaceDir` 检查），或远程建连失败。**远程标签页从启动起即 connecting**（文字前黄色呼吸点），由 `probeStartupRemoteWorkspaces` 经 `bootstrapCore.probeRemoteEndpoint` 逐 endpoint 探测落定（传输层直连，**3 秒超时**，同一 endpoint 只探测一次；正式连接的长超时如 SSH 120 秒不适用于此）：成功恢复可选，失败转红点。daemon 存活但工作区 channel 建失败（远端 core 起不来）等形态由 `onWorkspaceConnectionState` 的 lost 信号兜底（只对**从未就绪**的远程 Connection 标记；曾就绪过的 Core 退出走重启策略，不标红；Connection 已就绪的判定优先于探测失败）。不可用项**保留在打开集合里且可正常激活**（标签页文字前挂红点，悬停说明原因；不建立 Connection——`getOpenWorkspaceRefs` 过滤，不预加载视图）；活动项落在其上时**不回退**，聊天区由 `syncChatAreaForActiveWorkspace` 改显占位页（不显示对话列表与 webview，侧栏对话列表清空）：目录不存在 → 「目录不存在」+ 路径；远程不可连 → 「无法连接远程主机」+ 路径 + **「重新连接」按钮**（占位页经 `chat:reconnect-workspace` 触发 `reconnectWorkspace`：转 connecting，同一 3 秒探测，成功撤销判定、补建 Connection 并切回对话视图，失败回到红点）；建链中 → 「正在连接」。打开对话 / 新建对话的入口在建链中与不可用目录上一律忽略。经目录选择器 / CLI 重新提交已验证的目标时同样撤销判定并补建 Connection（`reviveWorkspaceIfRecovered`）；关闭标签页即丢弃判定 |
 | 标签页运行指示 | 每个工作目录的聚合运行时状态（`activity`：路径 → `waiting` / `running`），由主进程 `collectWorkspaceActivity()` 读 core `sessionRuntime` + 会话工作目录表按会话归并：该目录下任一会话在等待用户操作 → `waiting`（黄，优先），否则任一非 idle → `running`（蓝）。状态流每次变化（`setStatusListener` 里）另推 `titlebar:workspace-activity`，渲染层就地切换 class 不重建标签页（重建会打断动画、丢 hover / 焦点 / 拖拽状态）。动效与对话列表 `running-bar` 对齐：运行中＝蓝色流水（渐变滚动），等待用户＝黄色呼吸（只脉动不滚动）——对话列表的黄色同样是呼吸（`.running-bar--waiting` 的 `background` 简写把 `background-size` 复位成 `auto`，流水不产生位移） |
 | 标签页拖拽排序 | 渲染层用 HTML5 drag 事件（`dragstart` / `dragover` / `drop` / `dragend`）：越过目标中线决定插到其前 / 后，`drop-before` / `drop-after` 伪元素画放置指示线；提交完整排列经 `titlebar:reorder-workspaces` → `reorderWorkspaces()`，主进程按去重键校验「同组目录的排列」后才写入打开集合并落盘，非法排列整次忽略；活动项与已打开视图不受顺序影响 |
-| 非活动标签页预加载 | 首次启动（`createMainWindow` 打开活动目录的新对话之后）对打开集合里**非活动**的每个目录调用 `chatViews.preloadWorkspace(ws)`（错开 400ms + 250ms×i，避免启动瞬间同时拉起多个渲染进程）；实现复用后台预热机制（`--prewarm=1` 后台加载渲染、跳过会话初始化），切到该目录时 `setActiveWorkspace` 命中它直接 `show()` + 补发激活消息，不再现建视图 + 等页面加载。`new-` 临时 key 带自增序号，避免同毫秒连续创建撞 key；`setActiveWorkspace` 不再销毁其它目录的预热视图（它们是那些标签页的预加载视图，关闭目录 / 窗口时统一销毁） |
+| 非活动标签页预加载 | 首次启动（`createMainWindow` 打开活动目录的新对话之后）对打开集合里**非活动且可用**的每个目录调用 `chatViews.preloadWorkspace(ws)`（错开 400ms + 250ms×i，避免启动瞬间同时拉起多个渲染进程；不可用工作区跳过）；实现复用后台预热机制（`--prewarm=1` 后台加载渲染、跳过会话初始化），切到该目录时 `setActiveWorkspace` 命中它直接 `show()` + 补发激活消息，不再现建视图 + 等页面加载。`new-` 临时 key 带自增序号，避免同毫秒连续创建撞 key；`setActiveWorkspace` 不再销毁其它目录的预热视图（它们是那些标签页的预加载视图，关闭目录 / 窗口时统一销毁） |
 | 菜单 | Windows / Linux 全部收编为单一分区 `main`，标题栏用一个图标按钮表示；条目：打开本地工作区 / 打开远程工作区 / 添加最近的工作区 ▸ / 主题 ▸ / 快捷键 / 开发者工具 / 关于 / 退出。macOS 沿用系统菜单栏分区 |
 | 加号菜单 | 标题栏末尾「加号」改为菜单入口（`titlebar:workspace-menu`），主进程用原生 `Menu.popup` 弹出「打开本地工作区 / 打开远程工作区」两项 |
 | 打开远程工作区 | `openRemoteWorkspaceDialog()`：粘贴连接串 → 经 `listRemoteDirectories()` 连 TCP 控制通道并鉴权 → **连接成功后立刻**列出远端主目录，弹出远端目录选择器（`electron/remoteWorkspace/`）；选择器可改路径、进上级（`..`）、新建与删除空目录（`createRemoteDirectory` / `deleteRemoteDirectory`）；选定目录后 `addRemoteWorkspace(endpoint, path)` 加入打开集合（`scheme=tcp`） |
 | 侧栏头部 | 「搜索框 + 新对话」：搜索框按标题过滤当前活动工作目录的对话列表 |
-| 空态 | 打开集合为空时，侧栏显示「打开本地工作区」+ 最近工作区（点击即添加）；聊天区保持纯提示 |
+| 空态 | 打开集合为空时，侧栏显示「打开本地工作区」+ 最近工作区（点击即添加）；聊天区保持纯提示。活动工作区建链中 / 不可用时侧栏对话列表清空（不显示对话列表） |
+| 启动等待态 | 侧栏初始化**先取工作区状态**（`sidebar:get-workspaces`，宿主本地事实）并渲染，之后才拉对话列表（要等 core 连接就绪；远程工作区连不上 / core 启动慢时会一直等）。工作区状态未到达前侧栏的 `workspacesState` 为 `null`，`render()` 保持等待态、不画空态——否则 core 未就绪期间会把「尚未取到工作区」错报成「尚未打开工作区」 |
 | 添加 | `openWorkspaceDialog()` 支持多选，`addWorkspaces(paths)` 按顺序加入打开集合、末项置为活动项；已在集合中的目录直接切为活动项。远程目录经 `addRemoteWorkspace(endpoint, path)` 加入 |
 | 路径去重 | `src/host/workspacePaths.ts`：`normalizeWorkspacePath`（resolve）+ `workspaceKey`（realpath + Windows 大小写不敏感）+ `sameWorkspace` / `dedupeWorkspacePaths`。打开集合、最近工作目录、会话索引都按去重键判等，同一目录的不同表示（尾部分隔符 / 相对路径 / 分隔符风格 / 大小写 / 符号链接 / 8.3 短名）不重复入集合、不重复写最近列表 |
-| 关闭 | `closeWorkspace(ref \| id)`：移出打开集合、`chatViews.closeWorkspace(ref.path)` 销毁该目录下所有对话视图并中止运行中查询、清 `sessionWorkspaces` 中该目录的条目；关闭活动项后活动权移交相邻项，集合为空时回到空态 |
+| 关闭 | `closeWorkspace(ref | id)`：移出打开集合、`chatViews.closeWorkspace(ref.path)` 销毁该目录下所有对话视图并中止运行中查询、清 `sessionWorkspaces` 中该目录的条目（顺带丢弃该标签页的不可用 / 建链判定）；关闭活动项后活动权移交相邻项（先右邻再回绕），聊天区由 `syncChatAreaForActiveWorkspace` 对齐（相邻项不可用时显示占位页），集合为空时回到空态 |
 | 切换 | `activateWorkspace(ref \| id)`：更新 provider（`uiHost.setWorkspacePath(ref)`）、`chatViews.setActiveWorkspace(ref.path)`（切到该目录最近使用的对话，没有则新建）、刷新侧栏列表与标题栏 |
 | 宿主会话工作目录索引 | `sessionWorkspaces: Map<sessionId, path>`：来源为各工作目录对话列表的 `project` 字段 + 视图自己的目录（`ChatViewManager.getWorkspaceForWebContents`）；打开对话时据此注入 `--workspace=` |
 | 聊天视图 | `ChatViewManager` 按视图记录所属工作目录（`viewWorkspaces`）；`openConversation(id, workspace)` / `openNewConversation(workspace)` 注入对应 `--workspace=`；切换活动目录不销毁视图 |
-| 持久化 | `workspace-state.json` 的 `openWorkspaces`（`SerializedWorkspaceRef`）/ `activeWorkspaceKey`（无活动项写 `null`）；启动恢复打开集合与活动项，已不存在的本地目录剔除。**远程工作区不落盘**（token 是凭证，不进本地状态文件）。字段缺失或非法即按「没有」处理，不做跨字段回退；旧版本写的是路径字符串 + `activeWorkspace`，读取时按本地引用迁移；升级路径由 `migrateLegacyWorkspaceState()` 一次性迁移（旧 userData 目录 + 旧 `lastWorkspace` 字段），迁移后不再回退读旧字段 |
+| 持久化 | `workspace-state.json` 的 `openWorkspaces`（`SerializedWorkspaceRef`）/ `activeWorkspaceKey`（无活动项写 `null`）；启动恢复打开集合与活动项，已不存在的本地目录**保留并标记为不可用**（红点 + 占位页，见「不可用工作区」），保存的活动项保持为活动项。**远程工作区同样落盘**：`endpoint` 连同凭证（token / SSH 口令，明文）写进宿主本地状态文件，重启后据此重新接入（`docs/client-connection.md` 第 9 节）。字段缺失或非法即按「没有」处理，不做跨字段回退；旧版本写的是路径字符串 + `activeWorkspace`，读取时按本地引用迁移；升级路径由 `migrateLegacyWorkspaceState()` 一次性迁移（旧 userData 目录 + 旧 `lastWorkspace` 字段），迁移后不再回退读旧字段 |
 | userData 目录 | `electron/main.ts` 启动最早期用 `app.setPath('userData', appData + <配置里的应用目录名>)` 显式指定：开发态（`electron dist-electron/main.cjs`）默认名是 `Electron`、打包态是 `productName`，不指定会落到不同目录；指定后两态读写同一份工作目录状态 / 窗口位置 / 缓存。目录名取自 `src/config/project.json` 的 `extensionName`，不硬编码 |
 | 浮窗模式 | 以当前活动工作目录（即活动对话的工作目录）为窗口上下文；品牌位显示活动目录名 |
 
@@ -2524,6 +2533,10 @@ Electron 的 `sidebar:get-conversations` 直接读它，不重复读盘；工作
 **托盘状态点与「任务结束」闪烁提醒**属于 `statusListener` 这条流：它吃的是**会话状态流**
 （`deriveTrayStatusFromStates(states)`：`waiting` > `running`（`idle === false`）> `idle`），
 挂在 `ElectronConversationManager.setStatusListener` 上（`electron/main.ts`）。
+
+托盘右键菜单（`buildTrayMenu()`）与托盘提示（`trayTooltip()`）是系统级 UI，文案与主菜单
+同源、走 `tt()` 按宿主语言取词；宿主语言在运行期变化时由 `onHostLocaleChanged` 订阅
+`refreshTrayLocale()` 重建（与 `setupMenu()` 一起），不能只在创建时定一次。
 
 **不要为它加 `onQueryEnd` 之类的事件**——托盘是**聚合**状态，单会话事件驱动不了它：
 

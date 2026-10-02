@@ -40,6 +40,16 @@ function skillDescription(skill: SkillItem): string {
   return skill.isBuiltin ? t(skill.description) : skill.description;
 }
 
+/**
+ * 余额货币符号：DeepSeek 余额接口（`api.deepseek.com/user/balance`）按充值渠道返回
+ * `CNY` 或 `USD`。未识别的币种不给符号，只显示数字。
+ */
+function currencySymbol(currency?: string): string {
+  if (currency === 'USD') return '$';
+  if (currency === 'CNY') return '￥';
+  return '';
+}
+
 interface InputAreaProps {
   inputFocused: boolean;
   setInputFocused: (focused: boolean) => void;
@@ -1320,6 +1330,9 @@ const ToggleMenu = memo(({
         items: menuItems,
         className: 'agent-mode-menu',
         openKeys: submenuOpenKeys,
+        // 子菜单（MCP / 模型）悬停展开延迟：rc-menu 默认 0.1s，压到 0.01s 让二 / 三级跟手；
+        // 浮层动画时长由 Main.tsx 的全局 motionDurationMid 控制
+        subMenuOpenDelay: 0.01,
         onOpenChange: (keys) => {
           // 勾选 MCP 触发的自动收起：忽略，保持二级菜单展开
           if (Date.now() < suppressCloseUntilRef.current) return;
@@ -1988,8 +2001,12 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
                 style={{ color: colors.textSystem }}
               >
                 {(balance !== undefined || isUnlimited) && (
-                  <span title={isUnlimited ? t('inputArea.unlimitedBalanceTitle') : t('inputArea.balanceTitle', { amount: Number(balance ?? 0), currency: balanceCurrency || 'CNY' })}>
-                    {isUnlimited ? t('inputArea.unlimitedBalance') : t('inputArea.balanceAmount', { amount: (balance ?? 0).toFixed(2) })}
+                  <span title={isUnlimited
+                    ? t('inputArea.unlimitedBalanceTitle')
+                    : balanceCurrency
+                      ? t('inputArea.balanceTitle', { amount: Number(balance ?? 0), currency: balanceCurrency })
+                      : t('inputArea.balanceTitleNoCurrency', { amount: Number(balance ?? 0) })}>
+                    {isUnlimited ? t('inputArea.unlimitedBalance') : t('inputArea.balanceAmount', { amount: (balance ?? 0).toFixed(2), symbol: currencySymbol(balanceCurrency) })}
                   </span>
                 )}
                 {(totalCacheReadInputTokens !== undefined && totalCacheReadInputTokens > 0) && (

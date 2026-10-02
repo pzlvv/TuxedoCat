@@ -52,6 +52,11 @@ interface TitlebarLabels {
   modeDisabled: string;
   addWorkspace: string;
   closeWorkspace: string;
+  /** 不可用标签页（红点）的悬停说明：本地目录不存在 / 远程连不上 */
+  unavailableLocal: string;
+  unavailableRemote: string;
+  /** 建链中标签页（loading）的悬停说明 */
+  connecting: string;
 }
 
 interface TitlebarState extends TitlebarModeState {
@@ -72,6 +77,9 @@ interface TitlebarMenuAnchor {
   anchorX: number;
 }
 
+/** 标签页连接状态：available 可用 / unavailable 不可用（红点）/ connecting 建链中（黄色呼吸点） */
+type WorkspaceAvailability = 'available' | 'unavailable' | 'connecting';
+
 /**
  * 工作区标签页：`id` 是稳定身份（主进程的 workspaceRefKey），
  * `path` 是展示路径（远程带 `tcp://host` 前缀），`name` 是目录名。
@@ -82,6 +90,8 @@ interface TitlebarWorkspace {
   name: string;
   /** 是否远程工作区（标签页上加标记） */
   remote: boolean;
+  /** 连接状态（启动期判定 + 点击重连） */
+  availability: WorkspaceAvailability;
 }
 
 /** 标签页流水灯的聚合状态：waiting（黄，优先）> running（蓝） */
@@ -163,6 +173,9 @@ let labels: TitlebarLabels = {
   modeDisabled: 'Open a workspace first to switch mode',
   addWorkspace: 'Add workspace folder',
   closeWorkspace: 'Close workspace folder',
+  unavailableLocal: 'Local folder not found',
+  unavailableRemote: 'Cannot reach remote host',
+  connecting: 'Connecting',
 };
 
 /** 三点图标（单一顶层菜单入口） */
@@ -294,16 +307,31 @@ function renderWorkspaces(
 
   for (const ws of workspaces) {
     const isActive = ws.id === active;
+    // 跨进程边界做一次防御性归一：老版本主进程不下发该字段，按可用处理
+    const availability: WorkspaceAvailability = ws.availability ?? 'available';
+    const unavailable = availability === 'unavailable';
+    const connecting = availability === 'connecting';
     // 键盘可达：tab 可聚焦，Enter / Space 切换；关闭按钮是真实 button，
     // 通过 :focus-within 在聚焦时显现（否则 visibility: hidden 不可聚焦）
     const tab = document.createElement('div');
-    tab.className = 'ws-tab' + (isActive ? ' active' : '') + (ws.remote ? ' remote' : '');
+    tab.className = 'ws-tab'
+      + (isActive ? ' active' : '')
+      + (ws.remote ? ' remote' : '')
+      + (unavailable ? ' unavailable' : '')
+      + (connecting ? ' connecting' : '');
     // 流水灯：非 idle 点亮（黄 waiting 优先，蓝 running 次之）
     applyTabActivity(tab, workspaceActivity[ws.id]);
     tab.dataset.id = ws.id;
-    tab.title = ws.path;
+    // 不可用 / 建链中的标签页在悬停说明里给出状态（本地看目录，远程看连接）；
+    // 点击它们同样切换活动项，聊天区会显示对应的占位页
+    tab.title = unavailable
+      ? `${ws.remote ? labels.unavailableRemote : labels.unavailableLocal}：${ws.path}`
+      : connecting
+        ? `${labels.connecting}：${ws.path}`
+        : ws.path;
     tab.setAttribute('role', 'tab');
     tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    if (connecting) tab.setAttribute('aria-busy', 'true');
     tab.tabIndex = 0;
 
     // 流水灯条（绝对定位在标签页左侧；按状态显示蓝 / 黄）
@@ -311,6 +339,14 @@ function renderWorkspaces(
     activityBar.className = 'ws-tab-activity';
     activityBar.setAttribute('aria-hidden', 'true');
     tab.appendChild(activityBar);
+
+    // 状态标记（文字前）：不可用 = 红点（目录不存在 / 远程连不上），建链中 = 黄色呼吸点
+    if (unavailable || connecting) {
+      const marker = document.createElement('span');
+      marker.className = connecting ? 'ws-tab-loading' : 'ws-tab-dot';
+      marker.setAttribute('aria-hidden', 'true');
+      tab.appendChild(marker);
+    }
 
     const label = document.createElement('span');
     label.className = 'ws-tab-label';
@@ -331,9 +367,10 @@ function renderWorkspaces(
     tab.appendChild(closeBtn);
 
     tab.addEventListener('mousedown', (event) => event.stopPropagation());
+    // 点击 / 键盘切换活动项（建链中 / 不可用的标签页同样可激活，聊天区显示占位页）。
+    // 刚拖拽排序完抑制 click，避免顺带切换标签页
     tab.addEventListener('click', (event) => {
       event.stopPropagation();
-      // 刚拖拽排序完：抑制这次 click，避免顺带切换标签页
       if (Date.now() < suppressTabClickUntil) return;
       if (!isActive) api?.activateWorkspace(ws.id);
     });

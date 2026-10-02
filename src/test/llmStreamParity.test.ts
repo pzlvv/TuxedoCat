@@ -178,7 +178,7 @@ async function run(): Promise<void> {
   };
   check(
     'availableOutputTokens 上下文充足',
-    availableOutputTokens(bigLimits, bigLimits, 1000) === 384 * 1024,
+    availableOutputTokens(bigLimits, bigLimits, 1000) === FALLBACK_MODEL_PARAMS.maxOutputTokens,
   );
   check(
     'availableOutputTokens 剩余空间不足',

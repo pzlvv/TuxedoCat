@@ -135,6 +135,11 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 产物目录命名与 `resources/ripgrep/` 一致。宿主按运行平台的平台名 / 架构名解析产物目录，
 不写死单一平台。
 
+Electron 打包后产物落在 `app.asar` 内的 `dist/resources/`，但可执行文件必须从磁盘启动：
+`electron-builder.config.js` 的 `asarUnpack: ['dist/resources/**']` 把整份产物解包到
+`app.asar.unpacked/`，宿主定位候选路径时把 `app.asar` 改写为 `app.asar.unpacked` 并优先取用
+（`child_process.spawn` 不做 Electron 的 asar 重定向，直接 spawn asar 内路径必 ENOENT）。
+
 **部署单元**：一个产物目录 = 一个自包含单元，除可执行文件外还有 Core 自带的工具目录
 （当前只有 `ripgrep/rg[.exe]`）。Core 以**自己的可执行文件所在目录**为基准
 定位自带资源（`tools.rs::ripgrep_path`），因此本地起进程与远端上传用的都是这一个位置，

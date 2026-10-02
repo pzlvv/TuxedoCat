@@ -1189,7 +1189,7 @@ export class WebviewMessageHandler {
     }
   }
 
-  /** 从服务商拉取模型列表（兼容 /v1/models 与 /models，兼容 data[].id / data[].model / string） */
+  /** 从服务商拉取模型列表（兼容 /v1/models 与 /models，兼容 data[].id / data[].model / data[].slug / string） */
   private async fetchModelsFromProvider(baseURL: string, apiKey: string): Promise<string[]> {
     const trimmed = baseURL.replace(/\/+$/, '');
     const probeSessionId = `probe-${Date.now()}`;
@@ -1219,7 +1219,11 @@ export class WebviewMessageHandler {
             if (typeof item === 'string') return item.trim();
             if (item && typeof item === 'object') {
               const record = item as Record<string, unknown>;
-              const id = typeof record.id === 'string' ? record.id : (typeof record.model === 'string' ? record.model : '');
+              // 智谱 /api/v1（Responses 网关）的条目名在 slug，既无 id 也无 model
+              const id = typeof record.id === 'string' ? record.id
+                : typeof record.model === 'string' ? record.model
+                : typeof record.slug === 'string' ? record.slug
+                : '';
               return id.trim();
             }
             return '';
@@ -1512,6 +1516,15 @@ export class WebviewMessageHandler {
       await this.host.updateSettingsJson((cfg: Record<string, any>) => {
         applyLlmConfigSave(cfg, message);
       });
+
+      // 保存可能改了 api.deepseek.com 的 apiKey：写盘后 SettingsStore 已把新快照推给
+      // Core（`SettingsStore.updateSettings` 的 `notify()`），这里立刻重查一次余额，
+      // 让界面上的余额与币种跟上新配置，而不是等下一轮 LLM 调用才刷新。
+      const balanceSessionId = (typeof requestedSessionId === 'string' && requestedSessionId)
+        || this.trackedActiveSessionId;
+      if (balanceSessionId) {
+        this.fetchBalanceAndSend(balanceSessionId);
+      }
 
       // 界面语言只有 UI 消费、不进快照：写盘后把收敛结果灌回宿主进程内的 i18n
       // （Electron 菜单、Spin 设计器页面用同一套 `tt()`）。

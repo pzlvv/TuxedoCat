@@ -264,6 +264,12 @@ UI 推快照的时机只有三处，全部收敛到 `SettingsStore`：
 
 - **Core 不感知语言**：Core 不读 `uiLanguage`，不持有 locale，不输出本地化文案。
 - i18n 归 UI：翻译表、语言选择与渲染都在 UI 侧（`src/host/i18n.ts`）。
+- 宿主语言收敛：宿主读自己的 `settings.json`（`uiLanguage`）与宿主 locale，经
+  `coreFacts.primeHostLocale()` 收敛到 `src/host/i18n.ts`；共享启动骨架 `bootstrapCore`
+  在启动接线内**同步**调用（不等 Connection 就绪，Embedded 也没有该事件），Electron 另在
+  创建托盘 / 菜单之前提前调用一次。显式 `uiLanguage`（zh / en）覆盖宿主 / 系统语言，
+  `auto` 才回落。运行期语言变化由 `onHostLocaleChanged` 通知订阅者（原生菜单 / 托盘菜单
+  据此重建）。
 - Core 面向用户的文本以「键 + 参数」表达，由 UI 翻译；键缺失时 UI 显示键本身并记日志。
 - 对等约束：Core 用到的每个键必须在 UI 的翻译表里存在，由测试锁定。
 - **LLM prompt 与 UI 语言无关**：prompt 是 Core 的内部实现，不随语言变化，不参与键化。

@@ -49,6 +49,8 @@ export interface ChatViewManagerOptions {
   win: BrowserWindow;
   appRoot: string;
   preloadPath: string;
+  /** 聊天区占位页的 preload（活动工作区建链中 / 不可用时替代对话视图，见 showChatPlaceholder） */
+  chatPlaceholderPreloadPath: string;
   workspacePath: string;
   locale: string;
   systemLocale: string;
@@ -160,6 +162,13 @@ export class ChatViewManager {
   /** 原生侧栏是否隐藏（悬浮窗）：聊天视图占满整宽（由 conversationListOwner 派生） */
   private sidebarHidden: boolean;
   private readonly opts: ChatViewManagerOptions;
+  /**
+   * 聊天区占位页：活动工作区建链中 / 不可用时替代对话视图展示
+   * （不显示对话列表与 webview，见 showChatPlaceholder）。null = 未展示。
+   */
+  private placeholderView: WebContentsView | null = null;
+  /** 占位页当前渲染的 HTML：内容未变时不重复 loadURL，避免闪烁 */
+  private placeholderHtml: string | null = null;
 
   /**
    * 视图 key（正式 sessionId 或 `new-` 临时 key）→ 该视图所属的工作目录。
@@ -253,6 +262,64 @@ export class ChatViewManager {
   private isViewAlive(key: string): boolean {
     const view = this.views.get(key);
     return !!view && !view.webContents.isDestroyed();
+  }
+
+  /**
+   * 聊天区占位页：活动工作区建链中 / 不可用时替代对话视图展示（不显示对话列表与 webview）。
+   *
+   * HTML 由宿主生成（`chatPlaceholderHtml.ts`，文案与重连按钮随状态不同）；
+   * 内容未变时不重复 loadURL。`null` 收起占位页，恢复正常对话视图的展示
+   * （由宿主随后调 setActiveWorkspace / openNewConversation）。
+   */
+  showChatPlaceholder(html: string | null): void {
+    if (html === null) {
+      if (this.placeholderView) {
+        this.opts.win.contentView.removeChildView(this.placeholderView);
+        if (!this.placeholderView.webContents.isDestroyed()) {
+          this.placeholderView.webContents.close();
+        }
+        this.placeholderView = null;
+        this.placeholderHtml = null;
+      }
+      return;
+    }
+    // 隐藏当前对话视图（不销毁：其它工作区的视图不受影响，切回时由 show() 重新挂回）
+    if (this.currentSessionId) {
+      const current = this.views.get(this.currentSessionId);
+      if (current && !current.webContents.isDestroyed()) {
+        this.opts.win.contentView.removeChildView(current);
+      }
+      this.currentSessionId = null;
+      this.opts.onActiveSessionChanged(null);
+    }
+    if (!this.placeholderView) {
+      this.placeholderView = new WebContentsView({
+        webPreferences: {
+          preload: this.opts.chatPlaceholderPreloadPath,
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+          backgroundThrottling: false,
+        },
+      });
+    }
+    this.opts.win.contentView.addChildView(this.placeholderView);
+    this.placeholderView.setBounds(this.chatBounds());
+    this.placeholderView.setBackgroundColor(chatViewBackgroundColor());
+    if (this.placeholderHtml !== html) {
+      this.placeholderHtml = html;
+      void this.placeholderView.webContents
+        .loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+        .catch((err) => {
+          console.error('[chat-placeholder] loadURL failed:', err);
+        });
+    }
+  }
+
+  /** 该 webContents 是否为聊天区占位页（重连按钮 IPC 的来源校验） */
+  isChatPlaceholderWebContents(webContents: WebContents): boolean {
+    const view = this.placeholderView;
+    return !!view && !view.webContents.isDestroyed() && view.webContents.id === webContents.id;
   }
 
   /**
@@ -453,6 +520,8 @@ export class ChatViewManager {
    * 已有未发送的新对话（可见或后台）时不重复创建；重复调用会被去重。
    */
   private schedulePrewarmNewConversation(): void {
+    // 占位页展示期间不预热：当前活动工作区没有可用的对话视图
+    if (this.placeholderView) return;
     if (this.prewarmTimer) return;
     this.prewarmTimer = setTimeout(() => {
       this.prewarmTimer = null;
@@ -468,6 +537,8 @@ export class ChatViewManager {
   }
 
   private prewarmNewConversation(): void {
+    // 占位页展示期间不预热：当前活动工作区没有可用的对话视图
+    if (this.placeholderView) return;
     this.prewarmForWorkspace(this.opts.workspacePath);
   }
 
@@ -638,6 +709,9 @@ export class ChatViewManager {
    * 已加载完成的页面会盖住这层底色，但预热视图 / 下次加载仍会用到。
    */
   setBackgroundColor(color: string): void {
+    if (this.placeholderView && !this.placeholderView.webContents.isDestroyed()) {
+      this.placeholderView.setBackgroundColor(color);
+    }
     for (const view of this.views.values()) {
       if (!view.webContents.isDestroyed()) {
         view.setBackgroundColor(color);
@@ -647,6 +721,9 @@ export class ChatViewManager {
 
   /** 窗口尺寸变化时更新当前视图布局 */
   layout(): void {
+    if (this.placeholderView && !this.placeholderView.webContents.isDestroyed()) {
+      this.placeholderView.setBounds(this.chatBounds());
+    }
     const active = this.currentSessionId ? this.views.get(this.currentSessionId) : undefined;
     if (active && !active.webContents.isDestroyed()) {
       active.setBounds(this.chatBounds());
@@ -661,6 +738,11 @@ export class ChatViewManager {
   dispose(): void {
     this.cancelPrewarm();
     this.prewarmKey = null;
+    if (this.placeholderView && !this.placeholderView.webContents.isDestroyed()) {
+      this.placeholderView.webContents.close();
+    }
+    this.placeholderView = null;
+    this.placeholderHtml = null;
     for (const key of [...this.prewarmKeys]) {
       const view = this.views.get(key);
       this.views.delete(key);

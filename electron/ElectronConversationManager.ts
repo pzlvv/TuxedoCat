@@ -50,4 +50,12 @@ export class ElectronConversationManager extends ConversationManager {
     // 广播而非按 sessionId 单发：每个视图都持有全量快照，自己挑自己那份。
     this.host.broadcastToWebviews({ type: 'sessionRuntimeStates', states });
   }
+
+  /**
+   * 清空侧栏对话列表（活动工作区建链中 / 不可用时调用）：
+   * 该目录没有可用的 Core，上一目录的列表不再适用，侧栏不显示对话列表。
+   */
+  clearConversationList(): void {
+    void this.dispatchList([]);
+  }
 }

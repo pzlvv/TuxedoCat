@@ -6,6 +6,8 @@
  *
  * 定位基准是应用 / 扩展根目录，不用会话工作目录：
  * 优先 `dist/resources`（打包产物），其次 `resources`（开发期未 build）。
+ * Electron 打包后根目录在 `app.asar` 内：spawn 不能从 asar 里启动可执行文件，
+ * 所以每条候选都先取 `app.asar.unpacked` 下的解包副本（见 `asarUnpackedVariant`）。
  *
  * 目录名与可执行文件名取自 `src/config/project.json`（`core.resourceDir` /
  * `core.binaryName`），本模块不写死产品名。
@@ -63,6 +65,19 @@ export function bundledRipgrepPath(
   );
 }
 
+/**
+ * 把 asar 内路径改写到解包目录。
+ *
+ * Electron 的 fs 补丁让 `fs.existsSync`「看得到」asar 内的文件，但
+ * `child_process.spawn` 不做这层重定向，直接 spawn asar 内路径必然 ENOENT；
+ * 可执行文件必须落在磁盘上（`electron-builder.config.js` 的 `asarUnpack` 把
+ * `dist/resources/**` 解包到 `app.asar.unpacked/`），因此候选路径要显式指向解包目录。
+ * 路径不含 `app.asar`（开发期 / VS Code 扩展）时改写结果与原路径相同。
+ */
+function asarUnpackedVariant(candidate: string): string {
+  return candidate.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked');
+}
+
 /** 候选路径（按优先级）；目录不在矩阵内时返回空数组 */
 export function coreBinaryCandidates(
   extensionPath: string,
@@ -72,10 +87,18 @@ export function coreBinaryCandidates(
   const dir = corePlatformDir(platform, arch);
   if (!dir) return [];
   const name = coreBinaryFileName(platform);
-  return [
+  const bases = [
     path.join(extensionPath, 'dist', 'resources', CORE_RESOURCE_DIR, dir, name),
     path.join(extensionPath, 'resources', CORE_RESOURCE_DIR, dir, name),
   ];
+  // 解包目录排在 asar 内路径之前：后者即使存在也 spawn 不了
+  const candidates: string[] = [];
+  for (const base of bases) {
+    const unpacked = asarUnpackedVariant(base);
+    if (unpacked !== base) candidates.push(unpacked);
+    candidates.push(base);
+  }
+  return candidates;
 }
 
 /**

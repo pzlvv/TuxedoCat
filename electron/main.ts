@@ -44,6 +44,7 @@ import {
   type WorkspaceEndpoint,
   type WorkspaceRef,
 } from '../src/host/workspaceRef.js';
+import { getChatPlaceholderHtml } from './chatPlaceholderHtml.js';
 import {
   parseWorkspaceEntry as parseWorkspaceEntryShared,
   serializeWorkspaceRef as serializeWorkspaceRefShared,
@@ -241,6 +242,9 @@ function refKey(ref: WorkspaceRef): string {
   return workspaceRefKey(ref);
 }
 
+/** 建链探测超时（启动恢复与重新连接共用）：用户等待失败信号的上限 */
+const CONNECT_PROBE_TIMEOUT_MS = 3_000;
+
 /** 工作区引用的展示路径（本地即路径，远程带 `tcp://host` 前缀） */
 function refDisplay(ref: WorkspaceRef): string {
   return workspaceRefDisplayPath(ref);
@@ -283,6 +287,59 @@ function emitWorkspaceChange(type: 'opened' | 'closed' | 'activated', ref: Works
       console.error('[main] workspace change listener error:', err);
     }
   }
+}
+
+/**
+ * 启动期判定为不可用的工作区（按去重键）：本地目录已不存在，或远程 endpoint 无法建立连接。
+ *
+ * 不可用的工作区**保留在打开集合里**：标签页照常显示并带红点，可以点击激活——
+ * 但聊天区不显示对话列表与 webview，改显占位页（`syncChatAreaForActiveWorkspace`），
+ * 远程不可连时占位页提供「重新连接」按钮。不为它建立 Connection
+ * （`getOpenWorkspaceRefs` 过滤掉）。只在启动期判定——运行期新增的工作区
+ * 在添加入口已验证过，默认可用。
+ */
+const unavailableWorkspaces = new Set<string>();
+
+/** 工作区当前是否可用（未在启动期被判定为不可用） */
+function isWorkspaceAvailable(ref: WorkspaceRef): boolean {
+  return !unavailableWorkspaces.has(refKey(ref));
+}
+
+/**
+ * 建链进行中的工作区（按去重键）：启动恢复的远程项在探测落定前、点击「重新连接」
+ * 期间都处于此状态——标签页红点位置显示黄色呼吸点，聊天区显示「正在连接」占位页。
+ * 探测成功移出（恢复可选），失败移出并转入 `unavailableWorkspaces`（红点）。
+ */
+const connectingWorkspaces = new Set<string>();
+
+/**
+ * 连接曾就绪过的工作区（按去重键）。
+ *
+ * 区分「建连失败」与「运行期 Core 退出」：前者（从未就绪）把工作区标记为不可用，
+ * 后者由总线的重启策略自动恢复，不标红。Connection 每次重新打开时清空
+ * （新的一次建连从「未就绪」算起），关闭时一并清理。
+ */
+const workspaceConnectionsReady = new Set<string>();
+
+/** 标签页连接状态：available 可用 / unavailable 不可用（红点）/ connecting 建链中（黄色呼吸点） */
+function workspaceAvailability(ref: WorkspaceRef): 'available' | 'unavailable' | 'connecting' {
+  const key = refKey(ref);
+  if (connectingWorkspaces.has(key)) return 'connecting';
+  return isWorkspaceAvailable(ref) ? 'available' : 'unavailable';
+}
+
+/**
+ * 启动期判定为不可用的工作区，若不可用的原因已消失则恢复可用并返回 true。
+ * 本地目录重新存在即恢复；远程的可达性由调用入口验证（本地 / 远程目录选择器都
+ * 只提交已验证的目标，「最近打开」点击没有验证、不恢复）。恢复后由调用方补发
+ * opened 建立 Connection，否则激活后是一个没有 Core 的空壳工作区。
+ */
+function reviveWorkspaceIfRecovered(ref: WorkspaceRef): boolean {
+  const key = refKey(ref);
+  if (!unavailableWorkspaces.has(key)) return false;
+  if (ref.endpoint === null && !isValidWorkspaceDir(ref.path)) return false;
+  unavailableWorkspaces.delete(key);
+  return true;
 }
 /** 当前 WebViewUI 实例（initCore 创建；消息路由 / 工作区切换使用） */
 let webviewUi: WebViewUI | undefined;
@@ -404,6 +461,12 @@ async function main(): Promise<void> {
   migrateLegacyWorkspaceState();
   migrateLegacyThemeAndShortcut();
 
+  // ── 宿主语言 ──
+  // 在创建任何原生 UI（托盘 / 菜单 / 标题栏）之前先把界面语言收敛进进程内 i18n。
+  // 共享骨架 bootstrapCore 里也会做同一步，但它在 initCore() 时才跑，而托盘在
+  // initCore() 之前就已创建；提前到这里，托盘 / 菜单从第一帧就用对语言。
+  primeHostLocaleForStartup();
+
   // ── 主题 ──
   // 读取宿主本地偏好（workspace-state.json 的 theme 字段，默认跟随系统）并应用。
   // themeSource 同时驱动原生配色与所有渲染进程的 prefers-color-scheme，
@@ -415,7 +478,14 @@ async function main(): Promise<void> {
   // ── 工作目录 ──
   // 不默认使用当前工作目录：恢复上次打开的打开集合与活动项；
   // 命令行 --workspace= 作为额外的一项加入打开集合并置为活动项。
+  // 保存的活动项不可用（本地目录不存在）或建链中（远程探测未落定）时**保持为活动项**：
+  // 聊天区由 `syncChatAreaForActiveWorkspace` 改显占位页，不回退到别的标签页
+  // （远程可达性由 initCore 之后的探测异步判定，10 秒超时）。
   openWorkspaces = readOpenWorkspaces();
+  // 远程工作区从启动起进入建链中（黄色呼吸点）：可达性由 initCore 之后的探测落定
+  for (const ref of openWorkspaces) {
+    if (ref.endpoint) connectingWorkspaces.add(refKey(ref));
+  }
   workspacePath = readActiveWorkspace(openWorkspaces);
   const cliWorkspace = process.argv.find((a) => a.startsWith('--workspace='));
   if (cliWorkspace) {
@@ -425,6 +495,8 @@ async function main(): Promise<void> {
       // 变成两张标签页（也避免原始路径与视图登记值不一致导致切标签时找不到视图）
       const ref = localWorkspaceRef(cliPath);
       const existing = findWorkspace(ref);
+      // CLI 显式指定且目录存在：启动期对它的不可用判定作废（若此前有过）
+      if (existing) reviveWorkspaceIfRecovered(existing);
       if (!existing) openWorkspaces.push(ref);
       workspacePath = existing ?? ref;
       rememberRecentWorkspace(ref);
@@ -449,11 +521,16 @@ async function main(): Promise<void> {
   });
   setupIpc();
   initCore();
-  // 菜单必须等宿主语言初始化之后再建：bootstrapCore（initCore 内）才会
-  // setHostLocale / setHostUiLanguage，提前建菜单会用到默认英文，
-  // 之后任意一次重建又变成中文，表现为菜单语言「一会儿中文一会儿英文」。
-  // 运行期在设置面板改语言不会重建菜单，这里订阅语言变化补一次。
-  onHostLocaleChanged(() => setupMenu());
+  // 启动探测上一次打开的远程工作区可达性（连接已在 initCore 里发起，这里等结果）；
+  // 连不上的 endpoint 对应标签页标红点并禁选，活动项随之回退
+  probeStartupRemoteWorkspaces();
+  // 宿主语言已在 main 开头（primeHostLocaleForStartup）与 bootstrapCore 里收敛好，
+  // 这里建菜单一定拿到正确语言。运行期在设置面板改语言不会自动重建，订阅语言变化补一次：
+  // 主菜单与托盘右键菜单（系统菜单）都要跟着换语言。
+  onHostLocaleChanged(() => {
+    setupMenu();
+    refreshTrayLocale();
+  });
   setupMenu();
   // 注册全局唤醒快捷键（settings.json 中的 shortcut，默认 Ctrl+Alt+X）
   // 注册失败时弹窗提示，避免静默失效
@@ -753,6 +830,7 @@ function createMainWindow(): void {
     win: mainWindow,
     appRoot: APP_ROOT,
     preloadPath: path.join(__dirname, 'preload.cjs'),
+    chatPlaceholderPreloadPath: path.join(__dirname, 'chatPlaceholderPreload.cjs'),
     workspacePath: workspacePath?.path ?? '',
     locale: app.getLocale(),
     systemLocale: getSystemLocaleForStartup(),
@@ -802,14 +880,16 @@ function createMainWindow(): void {
 
   // 布局模式已由构造参数 conversationListOwner 决定（浮窗启动即隐藏侧栏），无需再补一次
 
-  // 初始打开活动工作目录下的一个新对话（无工作目录时打开空态视图）
-  chatViews.openNewConversation(workspacePath?.path ?? '');
+  // 初始对齐聊天区：活动工作区可用 → 打开新对话（无工作目录时空态视图）；
+  // 建链中 / 不可用 → 占位页（远程建链 10 秒超时后转「无法连接」+ 重连按钮）
+  syncChatAreaForActiveWorkspace();
 
   // 首次启动：为非活动的工作目录各预加载一个聊天视图，点标签页时直接 show()，
   // 不再现建视图 + 等页面加载（消除首次切换的闪烁）。
   // 错开创建，避免启动瞬间同时拉起多个渲染进程造成卡顿。
   openWorkspaces
-    .filter((ref) => !(workspacePath && sameWorkspaceRef(ref, workspacePath)))
+    .filter((ref) => isWorkspaceAvailable(ref)
+      && !(workspacePath && sameWorkspaceRef(ref, workspacePath)))
     .forEach((ref, index) => {
       setTimeout(() => {
         // 定时器触发时该目录可能已被关闭：仍在打开集合里才预加载
@@ -1001,7 +1081,7 @@ const TRAY_ICON_PATH = path.join(APP_ROOT, 'assets', 'logo.png');
 /** 托盘当前展示的状态，避免状态未变化时重复重建图标 */
 let trayStatus: TrayStatus | null = null;
 
-/** 托盘提示文案（按系统语言输出中/英文） */
+/** 托盘提示文案（按当前宿主语言输出中/英文） */
 const TRAY_STATUS_LABEL: Record<TrayStatus, { zh: string; en: string }> = {
   idle: { zh: '全部任务空闲', en: 'All tasks idle' },
   running: { zh: '有任务运行中', en: 'Task running' },
@@ -1009,9 +1089,35 @@ const TRAY_STATUS_LABEL: Record<TrayStatus, { zh: string; en: string }> = {
 };
 
 function trayTooltip(status: TrayStatus): string {
-  const isZh = app.getLocale().toLowerCase().startsWith('zh');
   const label = TRAY_STATUS_LABEL[status];
-  return `${PRODUCT_NAME} · ${isZh ? label.zh : label.en}`;
+  return `${PRODUCT_NAME} · ${tt(label.zh, label.en)}`;
+}
+
+/**
+ * 托盘右键菜单（系统菜单）。
+ *
+ * 文案与主菜单同源，走 `tt()` 按宿主语言取词；语言在运行期变化时由
+ * `onHostLocaleChanged` 订阅重建（见 main 的接线），不能只在创建时定一次。
+ */
+function buildTrayMenu(): Electron.Menu {
+  return Menu.buildFromTemplate([
+    {
+      label: tt(`显示 ${PRODUCT_NAME}`, `Show ${PRODUCT_NAME}`),
+      click: () => showMainWindowFromTray(),
+    },
+    { type: 'separator' },
+    {
+      label: tt('退出', 'Quit'),
+      click: () => app.quit(),
+    },
+  ]);
+}
+
+/** 按当前宿主语言刷新托盘提示与右键菜单（语言变化时调用） */
+function refreshTrayLocale(): void {
+  if (!tray) return;
+  tray.setContextMenu(buildTrayMenu());
+  if (trayStatus) tray.setToolTip(trayTooltip(trayStatus));
 }
 
 /** 提醒（托盘图标）闪烁的间隔（毫秒） */
@@ -1156,17 +1262,7 @@ function setupTray(): void {
     tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image);
     trayStatus = 'idle';
     tray.setToolTip(trayTooltip('idle'));
-    tray.setContextMenu(Menu.buildFromTemplate([
-      {
-        label: `Show ${PRODUCT_NAME}`,
-        click: () => showMainWindowFromTray(),
-      },
-      { type: 'separator' },
-      {
-        label: 'Quit',
-        click: () => app.quit(),
-      },
-    ]));
+    tray.setContextMenu(buildTrayMenu());
     tray.on('click', () => showMainWindowFromTray());
     tray.on('double-click', () => showMainWindowFromTray());
   } catch (err) {
@@ -1391,6 +1487,24 @@ function getSystemLocaleForStartup(): string {
   } catch {
     return app.getLocale();
   }
+}
+
+/**
+ * 在创建原生 UI 之前收敛宿主语言（`DEVELOPMENT.md` 第 8.7 节）。
+ *
+ * 界面语言是宿主自己的 `settings.json` 字段：先 `loadSync()` 读盘，再交给
+ * `primeHostLocale()`（读 `uiLanguage` + 宿主 locale，收敛到进程内 i18n）。
+ * 必须早于托盘 / 菜单 / 标题栏的创建，否则它们会按默认英文建好、之后才被改成中文。
+ */
+function primeHostLocaleForStartup(): void {
+  try {
+    const { getSettingsStore } = require('../src/host/SettingsStore.js') as typeof import('../src/host/SettingsStore.js');
+    getSettingsStore().loadSync();
+  } catch (err) {
+    console.error('[main] Failed to load settings before priming host locale:', err);
+  }
+  const { primeHostLocale } = require('../src/host/coreFacts.js') as typeof import('../src/host/coreFacts.js');
+  primeHostLocale(app.getLocale());
 }
 
 /**
@@ -1699,13 +1813,20 @@ function syncTitlebarWorkspaces(): void {
   });
 }
 
-/** 标题栏 / 侧栏用的工作区项：id 是稳定身份，path 是展示路径 */
-function workspaceTabState(ref: WorkspaceRef): { id: string; path: string; name: string; remote: boolean } {
+/** 标题栏 / 侧栏用的工作区项：id 是稳定身份，path 是展示路径，availability 是连接状态 */
+function workspaceTabState(ref: WorkspaceRef): {
+  id: string;
+  path: string;
+  name: string;
+  remote: boolean;
+  availability: 'available' | 'unavailable' | 'connecting';
+} {
   return {
     id: refKey(ref),
     path: refDisplay(ref),
     name: workspaceDisplayNameOf(ref),
     remote: ref.endpoint !== null,
+    availability: workspaceAvailability(ref),
   };
 }
 
@@ -2648,12 +2769,20 @@ function addWorkspaceRefs(refs: readonly WorkspaceRef[]): void {
     if (!existing) {
       openWorkspaces.push(ref);
       opened.push(ref);
+    } else if (reviveWorkspaceIfRecovered(existing)) {
+      // 启动期被判定不可用、现已恢复（目录重新出现 / 选择器验证过可达）：
+      // 重新加入 opened 补建 Connection，否则激活后是一个没有 Core 的空壳
+      opened.push(existing);
     }
     added.push(existing ?? ref);
   }
   if (added.length === 0) return;
-  // 新打开的工作区通知 Client 建立 Connection（重复打开只激活已有视图）
-  for (const ref of opened) emitWorkspaceChange('opened', ref);
+  // 新打开的工作区通知 Client 建立 Connection（重复打开只激活已有视图）；
+  // 重新打开是全新的一次建连，清掉上一世的就绪标记
+  for (const ref of opened) {
+    workspaceConnectionsReady.delete(refKey(ref));
+    emitWorkspaceChange('opened', ref);
+  }
   // 最后一项成为活动项；每个目录的会话工作目录在各自会话被 core 解析目录前登记。
   activateWorkspace(added[added.length - 1]);
 }
@@ -2705,9 +2834,8 @@ function activateWorkspace(target: WorkspaceRef | string): void {
     // 从「无工作目录」进入：销毁空态视图（--workspace= 为空），避免残留
     if (!prev) chatViews?.closeWorkspace('');
   }
-  // setActiveWorkspace 自己负责更新 opts.workspacePath 并清理属于旧目录的后台预热视图，
-  // 这里不要再先调 setWorkspacePath（那会让它内部的「目录已变」判断失效）
-  chatViews?.setActiveWorkspace(ref.path);
+  // 建链中 / 不可用的目录不展示对话视图，聊天区由这里对齐（占位页或对话视图）
+  syncChatAreaForActiveWorkspace();
   if (changed) emitWorkspaceChange('activated', ref);
   setupMenu();
   pushTitlebarModeState();
@@ -2741,29 +2869,28 @@ function closeWorkspace(target: WorkspaceRef | string): void {
   const idx = openWorkspaces.indexOf(ref);
   if (idx < 0) return;
   openWorkspaces.splice(idx, 1);
+  // 标签页关闭即丢弃启动期的不可用判定 / 建链状态：之后经「最近打开」重新添加按全新打开处理
+  unavailableWorkspaces.delete(refKey(ref));
+  connectingWorkspaces.delete(refKey(ref));
+  workspaceConnectionsReady.delete(refKey(ref));
   chatViews?.closeWorkspace(ref.path);
   for (const [sid, ws] of [...sessionWorkspaces]) {
     if (workspacePathMatches(ref, ws)) sessionWorkspaces.delete(sid);
   }
   const wasActive = sameRef(workspacePath, ref);
   if (wasActive) {
+    // 活动权移交相邻项；相邻项不可用 / 建链中时聊天区由 syncChatAreaForActiveWorkspace
+    // 改显占位页（不回退到更远的可用项）
     const next = openWorkspaces[Math.min(idx, openWorkspaces.length - 1)];
     workspacePath = next;
     saveOpenWorkspaces(openWorkspaces, workspacePath);
     uiHost?.setWorkspacePath(workspacePath);
     conversations?.invalidateCachedList();
-    if (next) {
-      // setActiveWorkspace 负责更新 opts.workspacePath 并清理旧目录的预热视图
-      chatViews?.setActiveWorkspace(next.path);
-    } else {
-      // 打开集合为空：聊天区回到「无工作目录」空态
-      chatViews?.setWorkspacePath('');
-      chatViews?.disposeAll();
-      chatViews?.openNewConversation('');
-      // 浮窗隐藏侧栏与标签页，没有可添加目录的入口：集合清空时退回完整模式
-      // （规格 §10：打开集合为空时不允许处于浮窗模式）
-      if (windowMode === 'floating') void applyWindowMode('normal');
+    if (!next && windowMode === 'floating') {
+      // 打开集合为空：浮窗没有添加目录的入口，退回完整模式（规格 §10）
+      void applyWindowMode('normal');
     }
+    syncChatAreaForActiveWorkspace();
   } else {
     saveOpenWorkspaces(openWorkspaces, workspacePath);
   }
@@ -2776,13 +2903,187 @@ function closeWorkspace(target: WorkspaceRef | string): void {
   broadcastWorkspaces();
 }
 
+/**
+ * 判定一个工作区不可用（本地目录不存在 / 远程建连失败）：标记后销毁它的死
+ * Connection 与对话视图。**活动项不变**（不回退到别的标签页）：活动项落在其上时，
+ * 聊天区由 `syncChatAreaForActiveWorkspace` 改显占位页。标签页保留在打开集合里
+ * （红点），可以点击激活，远程不可连时占位页提供「重新连接」按钮。
+ */
+function markWorkspaceUnavailable(ref: WorkspaceRef, reason: string): void {
+  const key = refKey(ref);
+  if (unavailableWorkspaces.has(key)) return;
+  // Connection 已就绪过 = 工作区事实上可用（探测与建链竞态的输家不该否定赢家）
+  if (workspaceConnectionsReady.has(key)) return;
+  unavailableWorkspaces.add(key);
+  console.warn(`[main] workspace unavailable: ${refDisplay(ref)} (${reason})`);
+  // 该工作区的 Connection 已无法建立：让 Client 销毁（含仍在长超时里挂着的建链尝试），
+  // 不留半开的死连接（尚未建立 Connection 的项是空操作）
+  workspaceConnectionsReady.delete(key);
+  emitWorkspaceChange('closed', ref);
+  // 该目录下的对话视图一并销毁：会话所属的 Core 已不存在，视图内容不再有效
+  // （侧栏「已打开会话」与活动会话随之清空，由 ChatViewManager 推送）
+  chatViews?.closeWorkspace(ref.path);
+  if (sameRef(workspacePath, ref)) {
+    syncChatAreaForActiveWorkspace();
+  }
+  syncTitlebarWorkspaces();
+  broadcastWorkspaces();
+}
+
+/**
+ * 重连一个不可用的工作区（占位页「重新连接」按钮触发）：红点先变黄色呼吸点
+ * （建链中），经 `probeRemoteEndpoint`（10 秒超时）重新建链——成功则撤销不可用
+ * 判定、重新走 opened 建立 Connection 并把聊天区切回对话视图；失败回到红点。
+ * 本地项的重试只校验目录是否重新存在。建链中重复触发忽略；标签页被关闭则中止。
+ */
+async function reconnectWorkspace(id: string): Promise<void> {
+  const ref = openWorkspaces.find((candidate) => refKey(candidate) === id);
+  if (!ref || workspaceAvailability(ref) !== 'unavailable') return;
+  const key = refKey(ref);
+  connectingWorkspaces.add(key);
+  syncTitlebarWorkspaces();
+  if (sameRef(workspacePath, ref)) syncChatAreaForActiveWorkspace();
+  try {
+    if (ref.endpoint) {
+      const { probeRemoteEndpoint } = require('../src/host/bootstrapCore.js') as typeof import('../src/host/bootstrapCore.js');
+      await probeRemoteEndpoint(ref.endpoint, CONNECT_PROBE_TIMEOUT_MS);
+    } else if (!isValidWorkspaceDir(ref.path)) {
+      throw new Error(`本地目录仍不存在：${ref.path}`);
+    }
+    // 等待期间标签页可能已被关闭：不再补建 Connection
+    if (!openWorkspaces.some((candidate) => refKey(candidate) === key)) return;
+    unavailableWorkspaces.delete(key);
+    connectingWorkspaces.delete(key);
+    workspaceConnectionsReady.delete(key);
+    emitWorkspaceChange('opened', ref);
+    activateWorkspace(ref);
+  } catch (err) {
+    console.warn(`[main] workspace reconnect failed: ${refDisplay(ref)}:`, err);
+  } finally {
+    // 先落定状态再刷新：成功 → 可用；失败 → 回到红点。
+    // 占位页必须与标签页同批刷新，否则会停留在「正在连接」（tab 已是红点）
+    connectingWorkspaces.delete(key);
+    syncTitlebarWorkspaces();
+    if (sameRef(workspacePath, ref)) syncChatAreaForActiveWorkspace();
+  }
+}
+
+/** 会话所属工作区是否可打开对话视图（建链中 / 不可用的目录只显占位页，不开视图） */
+function isWorkspaceUsableForConversation(workspace: string | undefined): boolean {
+  if (!workspace) return true;
+  const ref = openWorkspaces.find((candidate) => workspacePathMatches(candidate, workspace));
+  return !ref || workspaceAvailability(ref) === 'available';
+}
+
+/**
+ * 把聊天区对齐当前活动工作区（活动项变化 / 可用性变化时调用）：
+ * - 可用 → 正常显示该目录的对话视图；
+ * - 建链中 / 不可用 → **不显示对话列表与 webview**，改显占位页
+ *   （连接中 / 目录不存在 / 无法连接远程主机 + 「重新连接」按钮）；
+ * - 未打开工作区 → 原有空态视图（含「打开本地工作区」入口）。
+ */
+function syncChatAreaForActiveWorkspace(): void {
+  if (!chatViews) return;
+  if (!workspacePath) {
+    chatViews.showChatPlaceholder(null);
+    chatViews.setWorkspacePath('');
+    chatViews.disposeAll();
+    chatViews.openNewConversation('');
+    return;
+  }
+  const availability = workspaceAvailability(workspacePath);
+  if (availability === 'available') {
+    chatViews.showChatPlaceholder(null);
+    // setActiveWorkspace 负责更新 opts.workspacePath 并清理旧目录的预热视图
+    chatViews.setActiveWorkspace(workspacePath.path);
+    return;
+  }
+  // 该目录的对话不可用：清空侧栏对话列表（上一目录的列表不再适用）
+  conversations?.clearConversationList();
+  chatViews.setWorkspacePath(workspacePath.path);
+  chatViews.showChatPlaceholder(
+    getChatPlaceholderHtml({
+      kind: availability === 'connecting'
+        ? 'connecting'
+        : workspacePath.endpoint
+          ? 'remoteUnreachable'
+          : 'dirMissing',
+      path: refDisplay(workspacePath),
+    }),
+  );
+}
+
+/**
+ * 启动期探测上一次打开的远程工作区（`probeRemoteEndpoint`，10 秒超时）。
+ *
+ * 远程标签页从启动起就处于 connecting（黄色呼吸点），聊天区显示「正在连接」占位页；
+ * 探测落定后二选一：成功 → 恢复可选，活动项落在其上时占位页切回对话视图；
+ * 失败 → 红点 + 占位页换「无法连接远程主机」（活动项不变）。探测直接走传输层短
+ * 超时——正式连接的建链超时（SSH 120 秒）远超用户等待阈值，失败信号必须由探测先
+ * 给出。daemon 存活但工作区 channel 建失败等形态由 `onWorkspaceConnectionState`
+ * 的 lost 信号兜底（见 initCore 的订阅）。
+ */
+function probeStartupRemoteWorkspaces(): void {
+  // 同一 endpoint（host/port/user + 凭证，凭证不同即不同 daemon）只探测一次
+  const groups = new Map<string, { endpoint: WorkspaceEndpoint; display: string; refs: WorkspaceRef[] }>();
+  for (const ref of openWorkspaces) {
+    const endpoint = ref.endpoint;
+    if (!endpoint || !connectingWorkspaces.has(refKey(ref))) continue;
+    const key = JSON.stringify(endpoint);
+    const group = groups.get(key);
+    if (group) {
+      group.refs.push(ref);
+    } else {
+      groups.set(key, { endpoint, display: refDisplay(ref), refs: [ref] });
+    }
+  }
+  const { probeRemoteEndpoint } = require('../src/host/bootstrapCore.js') as typeof import('../src/host/bootstrapCore.js');
+  for (const group of groups.values()) {
+    void probeRemoteEndpoint(group.endpoint, CONNECT_PROBE_TIMEOUT_MS)
+      .then(() => {
+        for (const ref of group.refs) {
+          const key = refKey(ref);
+          if (!openWorkspaces.some((candidate) => refKey(candidate) === key)) continue;
+          connectingWorkspaces.delete(key);
+          // 探测期间 Connection 先死了一步（lost → 已标红）：endpoint 事实上可达，恢复并补建
+          if (unavailableWorkspaces.delete(key)) {
+            workspaceConnectionsReady.delete(key);
+            emitWorkspaceChange('opened', ref);
+          }
+        }
+        // loading → 可用（红点撤销同理）：标题栏重渲染；活动项落在其上时占位页切回对话视图
+        syncTitlebarWorkspaces();
+        syncChatAreaForActiveWorkspace();
+      })
+      .catch((err: unknown) => {
+        console.error(`[main] remote workspace unreachable (${group.display}):`, err);
+        for (const ref of group.refs) {
+          connectingWorkspaces.delete(refKey(ref));
+          markWorkspaceUnavailable(ref, String(err));
+        }
+      });
+  }
+}
+
 /** 推送打开集合与活动项到侧栏 */
 function broadcastWorkspaces(): void {
-  sidebarView?.webContents.send('sidebar:workspaces-changed', {
+  sidebarView?.webContents.send('sidebar:workspaces-changed', sidebarWorkspaceState());
+}
+
+/**
+ * 侧栏的工作区状态：全量打开集合 + 活动项 + 最近列表
+ * （建链中 / 不可用的标签页同样是打开集合的一员，侧栏只以列表空态反映「无对话」）。
+ */
+function sidebarWorkspaceState(): {
+  workspaces: Array<ReturnType<typeof workspaceTabState>>;
+  active: string | null;
+  recent: Array<ReturnType<typeof workspaceTabState>>;
+} {
+  return {
     workspaces: openWorkspaces.map((ref) => workspaceTabState(ref)),
     active: workspacePath ? refKey(workspacePath) : null,
     recent: recentWorkspaceTabs(),
-  });
+  };
 }
 
 /**
@@ -2982,8 +3283,12 @@ function migrateLegacyWorkspaceState(): void {
         if (!raw || typeof raw !== 'object') continue;
 
         const { lastWorkspace, ...rest } = raw;
+        // 只做形状过滤、不按「目录存在」过滤：迁移后的读取路径（readOpenWorkspaces）
+        // 会把目录已不存在的本地项标记为不可用（红点 + 禁选），不在这里静默丢弃
         const legacyOpen = Array.isArray(raw.openWorkspaces)
-          ? raw.openWorkspaces.filter((ws): ws is string => isValidWorkspaceDir(ws))
+          ? raw.openWorkspaces.filter(
+              (ws): ws is string => typeof ws === 'string' && ws.trim().length > 0,
+            )
           : [];
         const legacyLast = isValidWorkspaceDir(lastWorkspace) ? normalizeWorkspacePath(lastWorkspace) : undefined;
         const open = dedupeWorkspacePaths(legacyOpen.length > 0 ? legacyOpen : legacyLast ? [legacyLast] : []);
@@ -3036,7 +3341,9 @@ function parseWorkspaceEntry(entry: unknown): WorkspaceRef | null {
 }
 
 /**
- * 读取打开集合（本地项仅保留仍存在的目录；远程项原样保留，按引用去重）。
+ * 读取打开集合（按引用去重）。本地项**保留**目录已不存在的条目并标记为不可用
+ * （标签页显示红点并禁选，见 `unavailableWorkspaces`）；远程项原样保留，可达性由
+ * 启动探测（`probeStartupRemoteWorkspaces`）异步判定。
  * `openWorkspaces` 缺失 / 非法即视为「没有打开任何工作目录」，不回退到其它字段。
  */
 function readOpenWorkspaces(): WorkspaceRef[] {
@@ -3045,11 +3352,16 @@ function readOpenWorkspaces(): WorkspaceRef[] {
   const refs: WorkspaceRef[] = [];
   const seen = new Set<string>();
   for (const entry of openWorkspaces) {
-    const ref = parseWorkspaceEntry(entry);
-    if (!ref) continue;
+    // 本地项不在这里按「目录存在」过滤（与最近列表的口径不同）：上次打开过的目录
+    // 该由用户决定何时关闭标签页，宿主只负责标记不可用，不做静默丢弃
+    const ref = parseWorkspaceEntryShared(entry, () => true);
+    if (!ref || ref.path.length === 0) continue;
     const key = refKey(ref);
     if (seen.has(key)) continue;
     seen.add(key);
+    if (ref.endpoint === null && !isValidWorkspaceDir(ref.path)) {
+      unavailableWorkspaces.add(key);
+    }
     refs.push(ref);
   }
   return refs;
@@ -3263,6 +3575,11 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: a
     if (sessionId) {
       syncSessionWorkspaceIndex();
       const workspace = sessionWorkspaces.get(sessionId);
+      // 会话所属目录建链中 / 不可用：不开对话视图（聊天区由占位页占据）
+      if (!isWorkspaceUsableForConversation(workspace)) {
+        console.warn('[main] ignore open-conversation for non-available workspace:', workspace);
+        return;
+      }
       if (workspace) void registerCoreSessionWorkspace(sessionId, workspace);
       activateWorkspaceForPath(workspace);
       chatViews?.openConversation(sessionId, workspace);
@@ -3359,6 +3676,11 @@ function setupIpc(): void {
         modeDisabled: tt('未打开工作区，无法切换', 'Open a workspace first to switch mode'),
         addWorkspace: tt('添加工作区', 'Add workspace'),
         closeWorkspace: tt('关闭工作区', 'Close workspace'),
+        // 不可用标签页（红点）的悬停说明：远程看连接，本地看目录
+        unavailableLocal: tt('本地目录不存在', 'Local folder not found'),
+        unavailableRemote: tt('无法连接远程主机', 'Cannot reach remote host'),
+        // 建链中标签页（loading）的悬停说明
+        connecting: tt('正在连接', 'Connecting'),
       },
     };
   });
@@ -3476,6 +3798,13 @@ function setupIpc(): void {
     }
   });
 
+  // ── 聊天区占位页 ──
+  // 「重新连接」按钮（占位页仅远程不可连时提供）：重试当前活动工作区的建链
+  ipcMain.on('chat:reconnect-workspace', (event) => {
+    if (!chatViews?.isChatPlaceholderWebContents(event.sender)) return;
+    if (workspacePath) void reconnectWorkspace(refKey(workspacePath));
+  });
+
   // 视图流：已打开会话集合（owner 是 ChatViewManager）
   ipcMain.handle('sidebar:get-loaded-sessions', () => {
     return chatViews?.getLoadedSessionIds() ?? [];
@@ -3493,12 +3822,8 @@ function setupIpc(): void {
     return chatViews?.getActiveSessionId() ?? null;
   });
 
-  // 工作目录流：打开集合 + 活动项 + 最近列表
-  ipcMain.handle('sidebar:get-workspaces', () => ({
-    workspaces: openWorkspaces.map((ref) => workspaceTabState(ref)),
-    active: workspacePath ? refKey(workspacePath) : null,
-    recent: recentWorkspaceTabs(),
-  }));
+  // 工作目录流：打开集合 + 活动项 + 最近列表（可用子集，与侧栏推送同一形态）
+  ipcMain.handle('sidebar:get-workspaces', () => sidebarWorkspaceState());
 
   ipcMain.on('sidebar:add-workspaces', (_event, paths?: unknown) => {
     if (Array.isArray(paths) && paths.every((p) => typeof p === 'string')) {
@@ -3536,6 +3861,11 @@ function setupIpc(): void {
           console.warn('[main] ignore open-conversation for closed workspace:', projectPath);
           return;
         }
+        // 目录建链中 / 不可用：不开对话视图（聊天区由占位页占据）
+        if (!isWorkspaceUsableForConversation(projectPath)) {
+          console.warn('[main] ignore open-conversation for non-available workspace:', projectPath);
+          return;
+        }
         sessionWorkspaces.set(sessionId, projectPath);
       }
       const workspace = sessionWorkspaces.get(sessionId);
@@ -3546,6 +3876,11 @@ function setupIpc(): void {
   });
 
   ipcMain.on('sidebar:new-conversation', () => {
+    // 活动工作区建链中 / 不可用：没有可用的对话视图，占位页期间忽略新建
+    if (workspacePath && workspaceAvailability(workspacePath) !== 'available') {
+      console.warn('[main] ignore new-conversation for non-available workspace:', refDisplay(workspacePath));
+      return;
+    }
     chatViews?.openNewConversation(workspacePath?.path ?? '');
   });
 
@@ -3653,12 +3988,13 @@ async function checkAndSendLLMConfig(target?: Electron.WebContents): Promise<voi
 
 /** 初始化 core 层（与 extension.ts activate 对应） */
 function initCore(): void {
-  const { bootstrapCore, bootstrapSnapshot, shutdownCore } = require('../src/host/bootstrapCore.js') as typeof import('../src/host/bootstrapCore.js');
+  const { bootstrapCore, bootstrapSnapshot, shutdownCore, onWorkspaceConnectionState } = require('../src/host/bootstrapCore.js') as typeof import('../src/host/bootstrapCore.js');
 
   const host = new ElectronUIHost();
   // 工作区事实来源：Client 按打开集合建立 Connection，并订阅打开 / 关闭 / 激活
   host.setWorkspaceSource({
-    getOpenWorkspaceRefs: () => openWorkspaces,
+    // 启动期判定不可用的工作区不建立 Connection（本地目录缺失 / 远程已标记连不上）
+    getOpenWorkspaceRefs: () => openWorkspaces.filter(isWorkspaceAvailable),
     getActiveWorkspaceRef: () => workspacePath,
     subscribe: (listener) => {
       workspaceChangeListeners.add(listener);
@@ -3695,6 +4031,21 @@ function initCore(): void {
     },
     logToConsole: true,
     extensionPath: APP_ROOT,
+  });
+
+  // 订阅 Connection 生命周期：启动恢复 / 手动重连的建连失败（从未就绪）在此落成
+  // 「不可用」——endpoint 探测只覆盖「连不上 daemon」，daemon 存活但工作区 channel
+  // 建失败（远端 core 起不来）等失败形态只能从这里得知。运行期 Core 退出（曾就绪过）
+  // 由总线的重启策略恢复，不标红。
+  onWorkspaceConnectionState((ref, state, reason) => {
+    const key = refKey(ref);
+    // 空引用占位 Connection 不属于任何标签页
+    if (!openWorkspaces.some((candidate) => refKey(candidate) === key)) return;
+    if (state === 'ready') {
+      workspaceConnectionsReady.add(key);
+    } else if (ref.endpoint && !workspaceConnectionsReady.has(key)) {
+      markWorkspaceUnavailable(ref, reason);
+    }
   });
 
   host.setMainWindow(mainWindow!);

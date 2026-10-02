@@ -288,13 +288,17 @@ export async function requestSkills(
 /**
  * 把语言收敛结果灌回宿主进程内的 i18n 模块。
  *
- * 宿主侧的原生 UI（Electron 菜单、Spin 设计器页面）用的是同一套 `tt()`；
+ * 宿主侧的原生 UI（Electron 菜单 / 托盘、Spin 设计器页面）用的是同一套 `tt()`；
  * 界面语言来自宿主自己的 `settings.json`，宿主 locale 由宿主启动时传入。
- * Standalone 下挂在「Core 就绪」回调上（每次握手，含崩溃重启后）：Core 进程换了
- * 一个，但宿主进程内的收敛结果不变，重跑是幂等的。
+ * 由共享骨架 `bootstrapCore` 在启动接线内同步调用（不依赖 Connection 就绪事件）；
+ * Electron 还会在创建托盘 / 菜单之前提前调用一次。收敛结果只依赖宿主自己的配置，
+ * 重跑幂等。
  */
 export function primeHostLocale(hostLocale?: string): void {
   if (hostLocale === undefined) return;
-  setHostUiLanguage(getSettingsStore().readUiLanguage());
+  // 顺序不能反：先记录宿主 locale（`auto` 的兜底），再按 `uiLanguage` 收敛。
+  // `setHostLocale` 内部按「宿主 locale 或系统语言是中文就用中文」重算，
+  // 放在 `setHostUiLanguage` 之后会把显式选择的 en 覆盖回 zh。
   setHostLocale(hostLocale);
+  setHostUiLanguage(getSettingsStore().readUiLanguage());
 }

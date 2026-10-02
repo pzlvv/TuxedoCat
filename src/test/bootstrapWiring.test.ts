@@ -26,6 +26,7 @@ import type { SessionRuntimeState } from '../core/AssistantEventBus';
 import { createChecker, runTests } from './helpers/harness';
 import { createTestHost, makeTempDir } from './helpers/fixtures';
 import { getSettingsStore, resetSettingsStore } from '../host/SettingsStore';
+import { getHostLocale } from '../host/i18n';
 import { coreReadyCount, isCoreReady } from '../host/coreReadiness';
 
 class StubConversationManager extends ConversationManager {
@@ -100,6 +101,10 @@ async function run(): Promise<void> {
   check('snapshot.extensionPathProvided', snapshot.extensionPathProvided === true);
   check('snapshot.sessionQueueInitialized', snapshot.sessionQueueInitialized === true);
   check('snapshot.logToConsole 保留宿主取值', snapshot.logToConsole === false);
+
+  // 宿主语言在骨架内**同步**收敛：不依赖 Connection 就绪事件（Embedded 没有该事件，
+  // Standalone 要等 Core 进程握手）。locale='zh-CN' + 未配置 uiLanguage（auto）→ 中文。
+  check('宿主语言已在 bootstrapCore 内同步收敛', getHostLocale() === 'zh');
 
   // ── 2. 读取入口在骨架执行完毕后可用（未注入即抛错的项） ──
   check('requireEventBus() 可用', (() => {
