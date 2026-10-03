@@ -31,6 +31,7 @@ const CORE_EVENT_TYPES = [
   'titleChanged',
   'sessionCreated',
   'conversationListChanged',
+  'conversationSpaceCleared',
   'sessionRuntimeChanged',
   'spinDesignDataChanged',
   'highlightLanguagesUsed',

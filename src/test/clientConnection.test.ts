@@ -166,6 +166,7 @@ function createClientHarness(coreKind: 'standalone' | 'embedded' = 'standalone')
     titleChanged: () => undefined,
     sessionCreated: () => undefined,
     conversationListChanged: () => undefined,
+    conversationSpaceCleared: () => undefined,
     sessionRuntimeChanged: () => undefined,
     spinDesignDataChanged: () => undefined,
     highlightLanguagesUsed: () => undefined,

@@ -399,6 +399,7 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | 斜杠命令与技能列表 | `getBuiltinCommands` + `getBundledSkills` + `getSkillDirCommands` | `UiRequest.skillsRequested` |
 | MCP 面板列表（配置 + 启用状态 + 运行时状态） | `readMcpServers` + `getMcpManager().getServerStatus()` | `UiRequest.mcpServersRequested` |
 | 对话空间统计 | `getConversationSpaces` | `UiRequest.conversationSpacesRequested` |
+| 对话空间清空（含完成 / 失败回执） | `clearConversationSpace` | `UiEvent.conversationSpaceCleared` → `CoreEvent.conversationSpaceCleared`（判别联合回执）+ `conversationListChanged` |
 | 会话挂起持久化收尾 | `QueryEngine.flush()` | `UiRequest.flushSessionRequested` |
 | 智能命名 / 余额 | core 模块直接调用 | `UiRequest.smartNamingRequested` / `balanceRequested` |
 | Core 就绪 | — | `CoreEvent.coreReady` |

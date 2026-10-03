@@ -37,6 +37,7 @@ async function run(): Promise<void> {
 
   // ── 对话空间统计：只数会话 meta，空间清单（workspace.meta.json）不算会话 ──
   const project = path.join(home, 'workspace');
+  fs.mkdirSync(project, { recursive: true });
   const spaceDir = path.join(getConversationDir(), encodeURIComponent(project));
   fs.mkdirSync(path.join(spaceDir, 'tool-results'), { recursive: true });
   fs.writeFileSync(path.join(spaceDir, 'workspace.meta.json'), JSON.stringify({ workspacePath: project }));
@@ -44,14 +45,24 @@ async function run(): Promise<void> {
   fs.writeFileSync(path.join(spaceDir, 's1.jsonl'), '{"uuid":"u"}\n');
   fs.writeFileSync(path.join(spaceDir, 'tool-results', 't1.txt'), 'tool output');
 
+  // 项目目录已删除的空间：统计顺带核实「目录不存在」这个事实
+  const goneProject = path.join(home, 'gone-workspace');
+  const goneSpaceDir = path.join(getConversationDir(), encodeURIComponent(goneProject));
+  fs.mkdirSync(goneSpaceDir, { recursive: true });
+  fs.writeFileSync(path.join(goneSpaceDir, 'workspace.meta.json'), JSON.stringify({ workspacePath: goneProject }));
+  fs.writeFileSync(path.join(goneSpaceDir, 's9.meta.json'), '{}');
+
   const spaces = await requestConversationSpaces('embedded');
-  check('统计出一个对话空间', spaces.length === 1);
-  const space = spaces[0];
+  check('统计出两个对话空间', spaces.length === 2);
+  const space = spaces.find((candidate) => candidate.projectPath === project);
   check('空间目录名正确', space?.dirName === encodeURIComponent(project));
   check('项目路径取自 workspace.meta.json', space?.projectPath === project);
   check('会话数只数 *.meta.json（不含空间清单）', space?.conversationCount === 1);
   check('文件数包含子目录文件', (space?.fileCount ?? 0) >= 3);
   check('字节数大于 0', (space?.sizeBytes ?? 0) > 0);
+  check('存在的项目目录不标记缺失', space?.workspaceMissing === false);
+  const goneSpace = spaces.find((candidate) => candidate.projectPath === goneProject);
+  check('已删除的项目目录标记缺失', goneSpace?.workspaceMissing === true);
 
   // ── MCP 面板列表：快照里的定义 + 全局默认启用 + 运行时缺省值 ──
   applyTestSettings(

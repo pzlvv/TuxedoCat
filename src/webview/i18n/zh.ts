@@ -118,6 +118,11 @@ export const zhDict: Record<string, string> = {
   'llmConfig.conversationSpaceError': '对话空间操作失败',
   'llmConfig.conversationSpaceClearTitle': '清空对话空间？',
   'llmConfig.conversationSpaceClearMessage': '确定要清空该对话空间吗？将删除其中的对话数据：\n{path}',
+  'llmConfig.conversationSpaceMissingTitle': '以下目录已不存在，是否清除相关历史。',
+  'llmConfig.conversationSpaceClearHistory': '清除历史',
+  'llmConfig.conversationSpaceRemove': '移除',
+  'llmConfig.conversationSpaceRemoveTitle': '移除对话空间？',
+  'llmConfig.conversationSpaceRemoveMessage': '将删除该空间的对话历史与工作目录相关配置（不会影响工作目录本身）：\n{path}',
 
   /* ── InputArea.tsx ───────────────────────────────────────── */
   'inputArea.placeholder': '输入消息，Shift+Enter 换行',

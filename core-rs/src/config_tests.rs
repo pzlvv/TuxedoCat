@@ -97,6 +97,18 @@ fn project_conversation_dir_encodes_the_path() {
     assert!(created.is_dir());
 }
 
+#[cfg(windows)]
+#[test]
+fn project_conversation_dir_merges_separator_variants() {
+    let _sandbox = Sandbox::new("config-project-dir-separators");
+    // Windows 下同一目录的 \ 与 / 写法解析到同一份对话数据，不再裂成两个空间
+    let backslash = project_conversation_dir(r"D:\parity-merge\demo").unwrap();
+    std::fs::create_dir_all(&backslash).unwrap();
+    let forward = project_conversation_dir("D:/parity-merge/demo").unwrap();
+    assert_eq!(forward, backslash, "两种分隔符写法应解析到同一目录");
+    assert_eq!(project_conversation_dir(r"D:\parity-merge\demo").unwrap(), backslash);
+}
+
 #[test]
 fn project_conversation_dir_hashes_overlong_names() {
     let _sandbox = Sandbox::new("config-project-long");

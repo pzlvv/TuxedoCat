@@ -646,6 +646,11 @@ export type WebviewToHostMessage = {
 } | {
   type: 'clearConversationSpace';
   dirName: string;
+  /**
+   * 清理深度：`clear` 清内容保留空间目录（workspace 还在）；
+   * `remove` 整目录删除（workspace 已不存在，删除后列表不再显示）。
+   */
+  mode: 'clear' | 'remove';
 } | {
   /** 会话上下文落盘请求（当前文件 / 选中行 / 上下文 token 数） */
   type: 'updateConversationContext';

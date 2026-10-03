@@ -254,7 +254,10 @@ async function registerHistoryUiEvents(bus: AssistantEventBus): Promise<void> {
   const {
     releaseSessionResources,
   } = await import('./sessionResources.js');
-  const { clearConversationSpace, getConversationSpaces } = await import('./history/ConversationSpace.js');
+  const {
+    clearConversationSpace,
+    removeConversationSpace,
+  } = await import('./history/ConversationSpace.js');
 
   bus.onUiEvent('conversationRenamed', ({ sessionId, title }) => {
     void (async () => {
@@ -310,22 +313,28 @@ async function registerHistoryUiEvents(bus: AssistantEventBus): Promise<void> {
     })();
   });
 
-  bus.onUiEvent('conversationSpaceCleared', ({ sessionId }) => {
+  bus.onUiEvent('conversationSpaceCleared', ({ sessionId, mode }) => {
     void (async () => {
       try {
-        const result = await clearConversationSpace(sessionId);
+        // mode 决定清理深度：clear 保留空间目录（项目映射还在用），
+        // remove 整目录删除（项目已不存在，清掉后列表不再显示）
+        const result = mode === 'remove'
+          ? await removeConversationSpace(sessionId)
+          : await clearConversationSpace(sessionId);
+        // 执行回执：webview 设置面板的「删除中」靠它解除（成功与失败都必须发，
+        // UiEvent 是 fire-and-forget，这是唯一的完成信号）
         requireEventBus().emitToUi({
-          type: 'message',
+          type: 'conversationSpaceCleared',
           sessionId,
-          data: {
-            role: 'system',
-            content: `Conversation space cleared (${result.removedFiles} files removed)`,
-          },
+          result: { status: 'complete', removedFiles: result.removedFiles, removedBytes: result.removedBytes },
         });
-        const spaces = await getConversationSpaces();
-        void spaces;
         requireEventBus().emitToUi({ type: 'conversationListChanged' });
       } catch (err) {
+        requireEventBus().emitToUi({
+          type: 'conversationSpaceCleared',
+          sessionId,
+          result: { status: 'error', message: err instanceof Error ? err.message : String(err) },
+        });
         logger.warn('history', `conversationSpaceCleared handling failed: ${err}`);
       }
     })();

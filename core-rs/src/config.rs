@@ -99,19 +99,49 @@ fn encode_uri_component(input: &str) -> String {
 ///
 /// 单级目录名超过 255 字符（Windows NTFS 限制）时改用
 /// `sha256 前 16 位 + "_" + 末级路径编码前 32 字符`。
+///
+/// Windows 下同一目录的分隔符两种写法（`D:\a\b` 与 `D:/a/b`）会各自编码成不同的
+/// 对话空间目录；归一成反斜杠后再编码，且按历史写法编码的目录已存在时沿用
+/// （两种写法解析到同一份对话数据，不再裂成两个空间）。对齐 Embedded
+/// `getProjectConversationDir` 的 `normalizeWorkspacePath` + 回退解析。
+#[cfg(windows)]
+fn normalize_workspace_path(project_path: &str) -> String {
+    project_path.replace('/', "\\")
+}
+
+#[cfg(not(windows))]
+fn normalize_workspace_path(project_path: &str) -> String {
+    project_path.to_string()
+}
+
 pub fn project_conversation_dir(project_path: &str) -> Result<PathBuf, String> {
-    let encoded = encode_uri_component(project_path);
+    let normalized = normalize_workspace_path(project_path);
+    let root = conversations_root()?;
+    let mut candidates = vec![normalized.clone()];
+    if project_path != normalized {
+        candidates.push(project_path.to_string());
+    }
+    for candidate in &candidates {
+        let encoded = encode_uri_component(candidate);
+        if encoded.chars().count() <= 255 {
+            let dir = root.join(&encoded);
+            if dir.is_dir() {
+                return Ok(dir);
+            }
+        }
+    }
+    let encoded = encode_uri_component(&normalized);
     if encoded.chars().count() <= 255 {
-        return Ok(conversations_root()?.join(encoded));
+        return Ok(root.join(encoded));
     }
     let mut hasher = Sha256::new();
-    hasher.update(project_path.as_bytes());
+    hasher.update(normalized.as_bytes());
     let digest = hasher.finalize();
     let hash: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
-    let trimmed = project_path.trim_end_matches(['\\', '/']);
+    let trimmed = normalized.trim_end_matches(['\\', '/']);
     let last = trimmed.rsplit(['\\', '/']).next().unwrap_or("");
     let encoded_last: String = encode_uri_component(last).chars().take(32).collect();
-    Ok(conversations_root()?.join(format!("{hash}_{encoded_last}")))
+    Ok(root.join(format!("{hash}_{encoded_last}")))
 }
 
 /// 确保项目对话目录存在，返回其路径

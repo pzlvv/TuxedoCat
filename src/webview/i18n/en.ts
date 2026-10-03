@@ -118,6 +118,11 @@ export const enDict: Record<string, string> = {
   'llmConfig.conversationSpaceError': 'Conversation space operation failed',
   'llmConfig.conversationSpaceClearTitle': 'Clear conversation space?',
   'llmConfig.conversationSpaceClearMessage': 'This will clear conversation data in this directory:\n{path}',
+  'llmConfig.conversationSpaceMissingTitle': 'The following directories no longer exist. Clear their conversation history?',
+  'llmConfig.conversationSpaceClearHistory': 'Clear history',
+  'llmConfig.conversationSpaceRemove': 'Remove',
+  'llmConfig.conversationSpaceRemoveTitle': 'Remove conversation space?',
+  'llmConfig.conversationSpaceRemoveMessage': 'This deletes the conversation history and workspace-related config of this space (the workspace directory itself is not affected):\n{path}',
 
   /* ── InputArea.tsx ───────────────────────────────────────── */
   'inputArea.placeholder': 'Type your message, Shift+Enter for new line',

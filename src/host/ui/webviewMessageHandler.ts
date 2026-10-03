@@ -137,6 +137,15 @@ const DEFAULT_REQUEST_CONTEXT: WebviewRequestContext = { sender: null };
 
 export class WebviewMessageHandler {
   private host: UIHost;
+  /**
+   * 在途的对话空间统计请求。
+   *
+   * 统计在 Standalone 下是 core 的一次**全目录树扫描**，而 core 的帧循环是顺序处理：
+   * 并发请求会把后续所有帧（含清空 / 移除的完成回执）压在队列后面，UI 表现为
+   * 「删除中」卡住数分钟。webview 端可能瞬时产生大量统计请求（回执触发的自动刷新
+   * 叠加多视图），这里把在途请求合并成一次——后到者共享首次请求的回复。
+   */
+  private inFlightSpacesRequest: Promise<void> | null = null;
   /** WebViewUI 端口（阶段 4 正式化；当前由宿主注入） */
   uiPort?: {
     openSpinDesign(): Promise<void>;
@@ -310,7 +319,7 @@ export class WebviewMessageHandler {
       entry('deleteConversation', (msg) => this.emitUiEvent({ type: 'conversationDeleted', sessionId: msg.sessionId })),
       entry('renameConversation', (msg) => this.emitUiEvent({ type: 'conversationRenamed', sessionId: msg.sessionId, title: msg.title })),
       entry('updateConversationContext', (msg) => this.handleUpdateConversationContext(msg)),
-      entry('clearConversationSpace', (msg) => this.emitUiEvent({ type: 'conversationSpaceCleared', sessionId: msg.dirName })),
+      entry('clearConversationSpace', (msg) => this.emitUiEvent({ type: 'conversationSpaceCleared', sessionId: msg.dirName, mode: msg.mode })),
 
       // ===== 会话配置（UiEvent 翻译：core 处理并广播 sessionConfigChanged）=====
       entry('setModel', (msg) => this.handleSetModel(msg)),
@@ -1734,21 +1743,33 @@ export class WebviewMessageHandler {
   }
 
   /**
-   * 处理来自 webview 的对话空间统计请求
+   * 处理来自 webview 的对话空间统计请求。
+   *
+   * 在途请求合并（见 inFlightSpacesRequest）：回复经 sendToWebview 广播到发起方视图，
+   * 后到者不再触发第二次 core 扫描。
    */
   private async handleRequestConversationSpaces(): Promise<void> {
     this.log(`[WebviewMessageHandler] requestConversationSpaces`);
-    try {
-      // 统计对象在 core 的数据目录内：Embedded 直读，Standalone 经 UiRequest 索取
-      const spaces = await requestConversationSpaces();
-      this.host.sendToWebview({ type: 'conversationSpacesData', spaces });
-    } catch (err: any) {
-      this.log(`[WebviewMessageHandler] Failed to get conversation spaces: ${err.message}`);
-      this.host.sendToWebview({
-        type: 'conversationSpacesError',
-        error: `统计对话空间失败: ${err.message}`,
-      });
+    if (this.inFlightSpacesRequest) {
+      await this.inFlightSpacesRequest;
+      return;
     }
+    this.inFlightSpacesRequest = (async () => {
+      try {
+        // 统计对象在 core 的数据目录内：Embedded 直读，Standalone 经 UiRequest 索取
+        const spaces = await requestConversationSpaces();
+        this.host.sendToWebview({ type: 'conversationSpacesData', spaces });
+      } catch (err: any) {
+        this.log(`[WebviewMessageHandler] Failed to get conversation spaces: ${err.message}`);
+        this.host.sendToWebview({
+          type: 'conversationSpacesError',
+          error: `统计对话空间失败: ${err.message}`,
+        });
+      } finally {
+        this.inFlightSpacesRequest = null;
+      }
+    })();
+    await this.inFlightSpacesRequest;
   }
 
   /**

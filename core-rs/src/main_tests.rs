@@ -363,7 +363,44 @@ fn conversation_space_cleared_removes_space_files_and_resets_state() {
     assert!(history::load_messages("s1", &workspace).is_empty());
     assert!(history::load_metadata("s1", &workspace).is_none());
     assert!(harness.sink.event_of("conversationListChanged").is_some());
-    assert!(harness.sink.event_of("message").is_some(), "应上报清空提示");
+
+    // 完成回执：webview 的「删除中」按钮靠它解除（此前只发 conversationListChanged，
+    // 面板不知道何时完成）。回执带判别联合结果与删除统计。
+    let receipt = harness
+        .sink
+        .event_of("conversationSpaceCleared")
+        .expect("应发 conversationSpaceCleared 回执");
+    assert_eq!(receipt["sessionId"], dir_name);
+    assert_eq!(receipt["result"]["status"], "complete");
+    let removed_files = receipt["result"]["removedFiles"].as_u64().expect("removedFiles");
+    assert!(removed_files >= 2, "至少删掉 .jsonl 与 .meta.json：{removed_files}");
+    assert!(receipt["result"]["removedBytes"].as_u64().expect("removedBytes") > 0);
+    // 完成事实走专用回执：不再向「空间目录名」这个非会话 id 发 phantom message
+    assert!(
+        harness.sink.event_of("message").is_none(),
+        "清空提示应走 conversationSpaceCleared 回执，而不是 phantom message"
+    );
+}
+
+#[test]
+fn conversation_space_cleared_reports_error_for_missing_space() {
+    let _sandbox = Sandbox::new("main-space-cleared-missing");
+    let harness = EngineHarness::allow_all();
+
+    dispatch(
+        &harness,
+        json!({ "type": "conversationSpaceCleared", "sessionId": "no-such-space" }),
+    );
+
+    let receipt = harness
+        .sink
+        .event_of("conversationSpaceCleared")
+        .expect("失败也必须回执，否则设置面板的「删除中」永远无法解除");
+    assert_eq!(receipt["sessionId"], "no-such-space");
+    assert_eq!(receipt["result"]["status"], "error");
+    assert!(receipt["result"]["message"].as_str().is_some());
+    // 没有任何东西被删：不发 conversationListChanged
+    assert!(harness.sink.event_of("conversationListChanged").is_none());
 }
 
 #[test]
@@ -878,12 +915,25 @@ fn ui_request_conversation_spaces_counts_files_and_projects() {
     let project = sandbox.workspace.to_string_lossy().to_string();
     let dir = config::ensure_project_conversation_dir(&project).unwrap();
     std::fs::write(dir.join("s1.meta.json"), "{}").unwrap();
-    std::fs::write(dir.join("s1.jsonl"), "{\"uuid\":\"u\"}\n").unwrap();
+    std::fs::write(dir.join("s1.jsonl"), "{\"uuid\":\"u\"}
+").unwrap();
+
+    // 项目目录已删除的空间：统计顺带核实「目录不存在」这个事实
+    let gone_dir = config::conversations_root().unwrap().join("gone-ws");
+    std::fs::create_dir_all(&gone_dir).unwrap();
+    std::fs::write(
+        gone_dir.join("workspace.meta.json"),
+        json!({ "workspacePath": "/nonexistent/workspace" }).to_string(),
+    )
+    .unwrap();
 
     let spaces = dispatch_ui_request(&json!({ "type": "conversationSpacesRequested" })).unwrap();
     let spaces = spaces.as_array().unwrap();
-    assert_eq!(spaces.len(), 1);
-    let space = &spaces[0];
+    assert_eq!(spaces.len(), 2);
+    let space = spaces
+        .iter()
+        .find(|space| space["projectPath"] == project.as_str())
+        .expect("existing space");
     let dir_name = config::project_conversation_dir(&project)
         .unwrap()
         .file_name()
@@ -895,6 +945,63 @@ fn ui_request_conversation_spaces_counts_files_and_projects() {
     assert_eq!(space["conversationCount"], 1, "只数 *.meta.json");
     assert!(space["sizeBytes"].as_u64().unwrap() > 0);
     assert!(space["fileCount"].as_u64().unwrap() >= 2);
+    assert_eq!(space["workspaceMissing"], false, "存在的项目目录不标记缺失");
+
+    let gone = spaces
+        .iter()
+        .find(|space| space["projectPath"] == "/nonexistent/workspace")
+        .expect("missing workspace space");
+    assert_eq!(gone["workspaceMissing"], true, "已删除的项目目录标记缺失");
+}
+
+#[test]
+fn conversation_space_cleared_remove_mode_deletes_the_directory() {
+    let sandbox = Sandbox::new("main-space-removed");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(workspace.clone()));
+    history::create_conversation("s1", &workspace, json!({ "sessionId": "s1" })).unwrap();
+    let dir_name = config::project_conversation_dir(&workspace)
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let dir = config::conversations_root().unwrap().join(&dir_name);
+    assert!(dir.is_dir());
+
+    let harness = EngineHarness::allow_all();
+    dispatch(
+        &harness,
+        json!({ "type": "conversationSpaceCleared", "sessionId": dir_name, "mode": "remove" }),
+    );
+
+    // 整目录删除：workspace.meta.json 也一并消失，列表不再显示该空间
+    assert!(!dir.exists(), "空间目录应整体删除");
+    let receipt = harness.sink.event_of("conversationSpaceCleared").expect("回执");
+    assert_eq!(receipt["result"]["status"], "complete");
+    assert!(harness.sink.event_of("conversationListChanged").is_some());
+}
+
+#[test]
+fn conversation_space_cleared_without_mode_defaults_to_clear() {
+    let sandbox = Sandbox::new("main-space-default-clear");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(workspace.clone()));
+    history::create_conversation("s1", &workspace, json!({ "sessionId": "s1" })).unwrap();
+    let dir_name = config::project_conversation_dir(&workspace)
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let dir = config::conversations_root().unwrap().join(&dir_name);
+
+    let harness = EngineHarness::allow_all();
+    // 旧宿主不带 mode：按 clear 处理（跨版本窗口期兜底，与 Embedded 同口径）
+    dispatch(&harness, json!({ "type": "conversationSpaceCleared", "sessionId": dir_name }));
+
+    assert!(dir.is_dir(), "clear 模式保留空间目录");
+    assert!(history::load_metadata("s1", &workspace).is_none(), "对话数据被清空");
 }
 
 #[test]

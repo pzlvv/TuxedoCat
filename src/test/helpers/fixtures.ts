@@ -97,6 +97,7 @@ export function createRecordingCoreEventHandlers(): RecordingCoreEventHandlers {
     titleChanged: (e) => record('titleChanged', e),
     sessionCreated: (e) => record('sessionCreated', e),
     conversationListChanged: (e) => record('conversationListChanged', e),
+    conversationSpaceCleared: (e) => record('conversationSpaceCleared', e),
     sessionRuntimeChanged: (e) => record('sessionRuntimeChanged', e),
     spinDesignDataChanged: (e) => record('spinDesignDataChanged', e),
     highlightLanguagesUsed: (e) => record('highlightLanguagesUsed', e),

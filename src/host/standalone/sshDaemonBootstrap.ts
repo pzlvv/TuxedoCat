@@ -1,23 +1,28 @@
 /**
  * 远端 Core 的 SSH 引导（`docs/core-daemon.md` 第 12 节）。
  *
- * 目标环境只有 SSH 端口、daemon 端口映射不出来时，Host 经 SSH 完成三件事：
- * 1. **发现**：远端状态文件里的 daemon 探得通就直接复用（用户已经手工 `start` 过）；
- * 2. **部署**：`~/.local/bin` 里没有可执行文件就上传一份本机携带的对应平台产物，
- *    并补齐 Core 自带的 `ripgrep/`（Grep / Glob 用的 `rg`，与可执行文件同级——
- *    Core 以**自己的可执行文件目录**为基准定位自带资源，见
- *    `docs/standalone-core.md` 第 4 节）；「已经在跑」也照样补缺的 ripgrep，
- *    但不动可执行文件、不重启 daemon；
- * 3. **启动**：执行 `<远端可执行文件> start`（幂等：已在跑就复用），再读状态文件。
+ * 目标环境只有 SSH 端口、daemon 端口映射不出来时，Host 经 SSH 完成四件事：
+ * 1. **发现**：远端状态文件里的 daemon 探得通**且远端可执行文件与本机携带产物一致**
+ *    （sha256 比对）才复用——daemon 是常驻进程，旧版本应用留下的 daemon 会一直用旧
+ *    产物拉起 Core（帧协议兼容、行为缺失：新增契约事件不发，如对话空间清空回执，
+ *    宿主侧表现为设置面板永远停在「删除中」），版本不一致必须换血；
+ * 2. **部署**：`~/.local/bin` 里没有可执行文件、或与本机携带产物不一致（含哈希读不出
+ *    的保守情形）就覆盖上传，并补齐 Core 自带的 `ripgrep/`（Grep / Glob 用的 `rg`，
+ *    与可执行文件同级——Core 以**自己的可执行文件目录**为基准定位自带资源，见
+ *    `docs/standalone-core.md` 第 4 节）；覆盖只发生在 daemon 未运行（或已被结束）之后；
+ * 3. **换血**：在跑的 daemon 版本过期时先 `<可执行文件> kill`（幂等）再部署再启动；
+ * 4. **启动**：执行 `<远端可执行文件> start`（幂等：已在跑就复用），再读状态文件。
  *
- * 三条分支都以「读到状态文件里的 endpoint + token」收尾；任何一步失败都直接报错，
+ * 各分支都以「读到状态文件里的 endpoint + token」收尾；任何一步失败都直接报错，
  * 不回退到「先连上再说」（`DEVELOPMENT.md` 第 12 章）。
  *
  * 本模块是 host 层：不 import `vscode` / `electron`，可脱离宿主单测（见
  * `src/test/sshDaemonBootstrap.test.ts`）。
  */
 
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
 import {
   CORE_RIPGREP_DIR,
@@ -80,25 +85,38 @@ export async function ensureRemoteDaemon(
   const home = await ssh.homeDir();
   const statePath = posixJoin(home, CONFIG_DIR_NAME, DAEMON_STATE_FILE_NAME);
 
-  // 1. 已经启动：状态文件里的 daemon 探得通就直接复用——不重启、不覆盖可执行文件。
-  //    但「在跑」不等于产物齐全：老版本部署过的远端只有可执行文件、没有自带的
-  //    ripgrep，而 daemon 是常驻进程，不在这里补就再没有补的时机（除非用户 kill 它）。
-  const running = await probeRunningDaemon(ssh, statePath, options.log);
-  if (running) {
-    await ensureRemoteRipgrep(ssh, options, home);
-    return running;
-  }
-
-  // 2. 平台不一致时产物不同：先问远端，再决定上传哪一份
+  // 平台先行：版本比对与产物落位都按远端平台挑本机携带的对应产物
   const target = await detectRemoteTarget(ssh);
   const localBinary = resolveCoreBinary(options.extensionPath, target.platform, target.arch);
   const remoteBinary = posixJoin(home, REMOTE_BIN_DIR, coreBinaryFileName(target.platform));
 
-  // 3. 没部署就部署（已有可执行文件时原样使用，不覆盖用户自己放的那份）
-  const existing = await ssh.stat(remoteBinary);
-  if (!existing.exists) {
-    await ssh.exec(`mkdir -p ${shellQuote(posixDirname(remoteBinary))}`);
-    await ssh.upload(localBinary, remoteBinary, 0o755);
+  // 1. 已经启动且远端可执行文件与本机携带产物一致：直接复用——不重启、不覆盖。
+  //    「在跑」不再无条件复用：版本判定用可执行文件哈希，过期的 daemon 走下面的换血。
+  const running = await probeRunningDaemon(ssh, statePath, options.log);
+  if (running && (await remoteBinaryMatches(ssh, localBinary, remoteBinary))) {
+    // 「在跑且版本一致」不等于产物齐全：老版本部署过的远端可能缺自带的 ripgrep，
+    // 而 daemon 是常驻进程，不在这里补就再没有补的时机（除非用户 kill 它）。
+    await ensureRemoteRipgrep(ssh, options, home);
+    return running;
+  }
+
+  // 2. 在跑但版本过期（或不一致 / 哈希读不出）：先结束旧 daemon 再覆盖——它还在用
+  //    旧产物给新接入的 Core 服务，换血从停止它开始（kill 幂等；下面的覆盖本身对
+  //    执行中的文件也是安全的——走临时名 + rename，见 ensureRemoteBinary）。
+  if (running) {
+    options.log('[ssh] remote daemon is running an outdated core binary; restarting it');
+    const killed = await ssh.exec(`${shellQuote(remoteBinary)} kill`);
+    if (killed.code !== 0) {
+      throw new Error(
+        `remote "${remoteBinary} kill" failed (exit ${killed.code ?? 'null'}): `
+        + `${(killed.stderr || killed.stdout).trim() || 'no output'}`,
+      );
+    }
+  }
+
+  // 3. 部署：缺失或与本机携带版本不一致就覆盖上传。这条同时是「未启动的过期产物」
+  //    的换血时机——否则 start 会拉起旧版 daemon，之后每次接入都复用它（回到第 2 步）。
+  if (await ensureRemoteBinary(ssh, localBinary, remoteBinary)) {
     options.log(`[ssh] deployed ${remoteBinary} (${target.platform}-${target.arch})`);
   }
 
@@ -123,6 +141,66 @@ export async function ensureRemoteDaemon(
     );
   }
   return state;
+}
+
+/**
+ * 远端可执行文件是否与本机携带产物一致（sha256 摘要比对）。
+ *
+ * 哈希命令不可用 / 读不出按「不一致」处理：宁可多一次覆盖重启，也不复用可能过期的
+ * 旧 daemon——旧 daemon 的危害（一直拉起行为缺失的旧 Core）远大于一次多余的重启。
+ */
+async function remoteBinaryMatches(
+  ssh: RemoteSsh,
+  localBinary: string,
+  remoteBinary: string,
+): Promise<boolean> {
+  const [localHash, remoteHash] = await Promise.all([
+    fileSha256(localBinary),
+    remoteFileSha256(ssh, remoteBinary),
+  ]);
+  return localHash !== null && localHash === remoteHash;
+}
+
+/** 本地文件 sha256；读不出返回 null */
+async function fileSha256(path: string): Promise<string | null> {
+  try {
+    return createHash('sha256').update(await readFile(path)).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+/** 远端 `sha256sum` 的摘要；命令不可用或输出不合法返回 null */
+async function remoteFileSha256(ssh: RemoteSsh, target: string): Promise<string | null> {
+  const result = await ssh.exec(`sha256sum ${shellQuote(target)}`);
+  if (result.code !== 0) return null;
+  const hash = result.stdout.trim().split(/\s+/)[0] ?? '';
+  return /^[0-9a-f]{64}$/.test(hash) ? hash : null;
+}
+
+/**
+ * 确保远端可执行文件与本机携带产物一致：缺失 / 哈希不一致 / 哈希读不出都覆盖上传。
+ *
+ * 覆盖走「上传临时名 + `mv` 原子换名」：目标可能正被一个在跑的 daemon 执行（它的
+ * 状态文件可能已丢失，我们无从得知它在跑），对执行中的文件直接覆盖写是 `ETXTBSY`
+ * （SFTP 层报 `Failure`）；`mv` 是 rename，只换目录项，运行中的进程继续用旧 inode。
+ * 返回是否发生了上传（调用方据此打部署日志）。
+ */
+async function ensureRemoteBinary(
+  ssh: RemoteSsh,
+  localBinary: string,
+  remoteBinary: string,
+): Promise<boolean> {
+  const existing = await ssh.stat(remoteBinary);
+  const matches = existing.exists
+    ? await remoteBinaryMatches(ssh, localBinary, remoteBinary)
+    : false;
+  if (matches) return false;
+  await ssh.exec(`mkdir -p ${shellQuote(posixDirname(remoteBinary))}`);
+  const staging = `${remoteBinary}.new`;
+  await ssh.upload(localBinary, staging, 0o755);
+  await ssh.exec(`mv -f ${shellQuote(staging)} ${shellQuote(remoteBinary)}`);
+  return true;
 }
 
 /**
@@ -194,7 +272,13 @@ async function probeRunningDaemon(
   log: (...args: unknown[]) => void,
 ): Promise<RemoteDaemonEndpoint | null> {
   const state = await readDaemonState(ssh, statePath);
-  if (!state) return null;
+  if (!state) {
+    // 状态文件缺失 / 损坏不等于没有 daemon（文件可能被外部清掉而进程还在跑）：
+    // 这里只记录事实，由调用方决定「按没有处理」之后的路径（版本门禁 / start 的
+    // 端口重试都会兜住）。不打这行，故障现场就一条 ssh 日志都没有。
+    log('[ssh] daemon state file missing or unreadable; treating as no daemon');
+    return null;
+  }
   try {
     const channel = await ssh.openTcpForward(state.host, state.port);
     // 只探测：转发通道由建链方重新开一条，这里立刻放掉

@@ -41,15 +41,26 @@ export abstract class ConversationManager {
    */
   private cachedListWorkspace: string | undefined;
 
-  /** 重新读取对话列表并分发给该宿主所有需要它的界面 */
+  /**
+   * 重新读取对话列表并分发给该宿主所有需要它的界面。
+   *
+   * 失败自持（只记日志）：调用方多是 fire-and-forget（`void refresh()`），而读列表
+   * 走的 UiRequest 会在连接关闭 / Core 重启窗口被总线就地拒绝（第 3.7 节）——这里若
+   * 把失败抛出去，就会变成未处理 rejection 按进程级错误崩掉宿主。刷新本来就是
+   * 「尽力而为」：失败后下一次 conversationListChanged 会再触发。
+   */
   async refresh(): Promise<void> {
-    const workspace = this.host.getWorkspacePath();
-    const list = await this.load();
-    // 读盘期间活动工作目录已切换：丢弃过期结果，等新目录自己的 refresh()
-    if (this.host.getWorkspacePath() !== workspace) return;
-    this.cachedList = list;
-    this.cachedListWorkspace = workspace;
-    await this.dispatchList(list);
+    try {
+      const workspace = this.host.getWorkspacePath();
+      const list = await this.load();
+      // 读盘期间活动工作目录已切换：丢弃过期结果，等新目录自己的 refresh()
+      if (this.host.getWorkspacePath() !== workspace) return;
+      this.cachedList = list;
+      this.cachedListWorkspace = workspace;
+      await this.dispatchList(list);
+    } catch (error) {
+      this.host.log(`[conversations] refresh failed: ${String(error)}`);
+    }
   }
 
   /**

@@ -395,7 +395,10 @@ pub fn clear_conversation_space(dir_name: &str) -> Result<(u64, u64), String> {
         let name = entry.file_name().to_string_lossy().to_string();
         let is_tool_results = name == "tool-results";
         let is_jsonl = path.is_file() && name.ends_with(".jsonl");
-        let is_meta = path.is_file() && name.ends_with(".meta.json");
+        // workspace.meta.json 也以 .meta.json 结尾，但它是空间级配置（保留，
+        // 与 Embedded `clearConversationSpace` 同口径；对齐 conversation_spaces 的计数口径）
+        let is_meta =
+            path.is_file() && name.ends_with(".meta.json") && name != "workspace.meta.json";
         if !is_tool_results && !is_jsonl && !is_meta {
             continue;
         }
@@ -414,6 +417,28 @@ pub fn clear_conversation_space(dir_name: &str) -> Result<(u64, u64), String> {
         }
     }
     Ok((removed_files, removed_bytes))
+}
+
+/// 删除整个对话空间目录（连 `workspace.meta.json` 一起）。
+///
+/// 对齐 Embedded `removeConversationSpace`：项目目录已不存在时空间级配置再无意义，
+/// 只有把目录整个删掉，列表才不会再显示它。删除前先统计（回执要带删除量）。
+pub fn remove_conversation_space(dir_name: &str) -> Result<(u64, u64), String> {
+    let safe_base = std::path::Path::new(dir_name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    if dir_name.is_empty() || safe_base != dir_name || dir_name == "." || dir_name == ".." {
+        return Err("Invalid conversation space directory name".to_string());
+    }
+    let dir = config::conversations_root()?.join(dir_name);
+    if !dir.is_dir() {
+        return Err(format!("Conversation space not found: {dir_name}"));
+    }
+    let (files, bytes) = dir_size(&dir);
+    std::fs::remove_dir_all(&dir)
+        .map_err(|err| format!("failed to remove conversation space {dir_name}: {err}"))?;
+    Ok((files, bytes))
 }
 
 // ==================== 消息 ====================
@@ -1250,6 +1275,10 @@ pub fn conversation_spaces() -> Vec<Value> {
         let (file_count, size_bytes) = dir_size(&dir_path);
         let project_path = read_workspace_path(&dir_path, &dir_name);
         let conversation_count = count_conversations(&dir_path);
+        // 项目目录已不存在（project_path 为空时无从判定，恒 false）：
+        // 对齐 Embedded `getConversationSpaces`，事实在 core 侧核实
+        let workspace_missing =
+            !project_path.is_empty() && !std::path::Path::new(&project_path).exists();
         spaces.push((
             size_bytes,
             json!({
@@ -1258,6 +1287,7 @@ pub fn conversation_spaces() -> Vec<Value> {
                 "sizeBytes": size_bytes,
                 "fileCount": file_count,
                 "conversationCount": conversation_count,
+                "workspaceMissing": workspace_missing,
             }),
         ));
     }

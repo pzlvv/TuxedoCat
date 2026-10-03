@@ -2,7 +2,11 @@
  * 单测：SSH 远端引导（`src/host/standalone/sshDaemonBootstrap.ts`）。
  *
  * 覆盖 `docs/core-daemon.md` 第 12 节的三条分支与它们的失败路径：
- * - 已经在跑 → 直接复用，不重启 daemon（缺 Core 自带的 `ripgrep/` 时仍补传它）；
+ * - 已经在跑 → 可执行文件与本机携带产物一致时直接复用，不重启 daemon
+ *   （缺 Core 自带的 `ripgrep/` 时仍补传它）；
+ * - 已经在跑但远端可执行文件是**旧版本产物**（哈希不一致 / 读不出）→ kill + 覆盖上传
+ *   + start：daemon 是常驻进程，旧版本应用留下的 daemon 会一直拉起旧 Core
+ *   （协议不变、行为缺失——新增的 CoreEvent 事件不发），必须换血；
  * - 已部署未启动 → 只跑 `start`（缺自带 `ripgrep/` 时补传它）；
  * - 未部署 → 上传产物（Core 可执行文件 + 同级的自带 `ripgrep/`）+ `start`；
  * - `start` 失败 / 状态文件读不出来 / 本机产物缺自带 ripgrep → 报错，不静默降级。
@@ -44,6 +48,10 @@ class FakeSsh implements RemoteSsh {
   uname = 'Linux x86_64';
   startExit = 0;
   startStderr = '';
+  /** `sha256sum <远端可执行文件>` 的应答；null 表示命令不可用（返回非 0） */
+  remoteBinarySha256: string | null = null;
+  /** 执行过的 `kill` 次数 */
+  killCount = 0;
   /** `start` 之后不落状态文件（模拟 daemon 没起来） */
   skipState = false;
   private endpoint = '0.0.0.0:10975';
@@ -83,6 +91,19 @@ class FakeSsh implements RemoteSsh {
     this.commands.push(command);
     if (command === 'uname -sm') return { code: 0, stdout: `${this.uname}\n`, stderr: '' };
     if (command.startsWith('mkdir -p ')) return { code: 0, stdout: '', stderr: '' };
+    if (command.startsWith('mv -f ')) return { code: 0, stdout: '', stderr: '' };
+    if (command.startsWith('sha256sum ')) {
+      if (this.remoteBinarySha256 === null) {
+        return { code: 1, stdout: '', stderr: 'sha256sum: command not found' };
+      }
+      const target = command.slice('sha256sum '.length).replace(/^'/, '').replace(/'$/, '');
+      return { code: 0, stdout: `${this.remoteBinarySha256}  ${target}
+`, stderr: '' };
+    }
+    if (command.endsWith(' kill')) {
+      this.killCount += 1;
+      return { code: 0, stdout: 'daemon stopped', stderr: '' };
+    }
     if (command.endsWith(' start')) {
       if (this.startExit === 0 && !this.skipState) {
         this.startCount += 1;
@@ -177,11 +198,42 @@ runTests('sshDaemonBootstrap', async () => {
     fake.writeState('0.0.0.0:10975', 'tok-running');
     fake.reachable.add('127.0.0.1:10975');
     fake.executables.add(RIPGREP_PATH);
+    fake.executables.add(BINARY_PATH);
+    fake.remoteBinarySha256 = 'bc35ec7bb516df0febed3638f841da8073f2563a7ddc2d35debed9f3e3ffc320';
     const daemon = await ensureRemoteDaemon(fake, options);
     check('复用运行中的 daemon（回环地址）', daemon.host === '127.0.0.1' && daemon.port === 10975);
     check('复用运行中的 daemon（token）', daemon.token === 'tok-running');
-    check('复用时不执行任何远端命令', fake.commands.length === 0);
+    check('复用时不重启 daemon', fake.killCount === 0 && !fake.commands.some((command) => command.endsWith(' start')));
     check('复用时不部署产物', fake.uploads.length === 0);
+  }
+
+  // ---------- 已经在跑但远端是旧版本产物：kill + 覆盖上传 + start ----------
+
+  {
+    const fake = new FakeSsh();
+    fake.writeState('0.0.0.0:10975', 'tok-old');
+    fake.reachable.add('127.0.0.1:10975');
+    fake.executables.add(RIPGREP_PATH);
+    fake.remoteBinarySha256 = 'deadbeef-previous-build';
+    const daemon = await ensureRemoteDaemon(fake, options);
+    check('旧版本 daemon 被结束', fake.killCount === 1);
+    check('旧版本产物经临时名换血（不直接写执行中的文件）', fake.uploads.some(
+      (upload) => upload.remote === `${BINARY_PATH}.new` && upload.local === binary,
+    ) && fake.commands.includes(`mv -f '${BINARY_PATH}.new' '${BINARY_PATH}'`));
+    check('换血后重新 start', fake.commands.includes(`'${BINARY_PATH}' start`));
+    check('换血后返回新 daemon 的 token', daemon.token === 'tok-1');
+  }
+
+  // ---------- 已经在跑但远端读不出哈希：按过期处理（安全方向） ----------
+
+  {
+    const fake = new FakeSsh();
+    fake.writeState('0.0.0.0:10975', 'tok-old');
+    fake.reachable.add('127.0.0.1:10975');
+    fake.executables.add(RIPGREP_PATH);
+    fake.remoteBinarySha256 = null;
+    const daemon = await ensureRemoteDaemon(fake, options);
+    check('哈希读不出时同样换血', fake.killCount === 1 && daemon.token === 'tok-1');
   }
 
   // ---------- 已在跑但缺自带 ripgrep：补 rg，不重启 daemon ----------
@@ -190,6 +242,7 @@ runTests('sshDaemonBootstrap', async () => {
     const fake = new FakeSsh();
     fake.writeState('0.0.0.0:10975', 'tok-running');
     fake.reachable.add('127.0.0.1:10975');
+    fake.remoteBinarySha256 = 'bc35ec7bb516df0febed3638f841da8073f2563a7ddc2d35debed9f3e3ffc320';
     const daemon = await ensureRemoteDaemon(fake, options);
     check('补 rg 后仍复用同一个 daemon', daemon.token === 'tok-running');
     check('已在跑时补传自带 ripgrep', fake.uploads.length === 1
@@ -203,12 +256,28 @@ runTests('sshDaemonBootstrap', async () => {
     const fake = new FakeSsh();
     fake.executables.add(BINARY_PATH);
     fake.executables.add(RIPGREP_PATH);
+    fake.remoteBinarySha256 = 'bc35ec7bb516df0febed3638f841da8073f2563a7ddc2d35debed9f3e3ffc320';
     const daemon = await ensureRemoteDaemon(fake, options);
     check('已部署时返回状态文件里的 token', daemon.token === 'tok-1');
-    check('已部署时不重新上传', fake.uploads.length === 0);
+    check('产物一致时不重新上传', fake.uploads.length === 0);
     check('已部署时执行 start', fake.commands.includes(`'${BINARY_PATH}' start`));
     // 远端可执行文件名的平台后缀要先问 `uname`，因此这一步一定会发生
     check('先问远端平台', fake.commands.includes('uname -sm'));
+  }
+
+  // ---------- 已部署未启动但产物过期：覆盖上传后 start ----------
+
+  {
+    const fake = new FakeSsh();
+    fake.executables.add(BINARY_PATH);
+    fake.executables.add(RIPGREP_PATH);
+    fake.remoteBinarySha256 = 'deadbeef-previous-build';
+    const daemon = await ensureRemoteDaemon(fake, options);
+    check('未启动的过期产物同样经临时名覆盖', fake.uploads.some(
+      (upload) => upload.remote === `${BINARY_PATH}.new` && upload.local === binary,
+    ) && fake.commands.includes(`mv -f '${BINARY_PATH}.new' '${BINARY_PATH}'`));
+    check('覆盖上传后执行 start', fake.commands.includes(`'${BINARY_PATH}' start`));
+    check('返回新 daemon 的 token', daemon.token === 'tok-1');
   }
 
   // ---------- 旧部署缺自带 ripgrep：只补 rg，不重传可执行文件 ----------
@@ -217,10 +286,14 @@ runTests('sshDaemonBootstrap', async () => {
     const fake = new FakeSsh();
     fake.executables.add(BINARY_PATH);
     await ensureRemoteDaemon(fake, options);
-    check('缺自带 ripgrep 时补传', fake.uploads.length === 1
-      && fake.uploads[0]?.remote === RIPGREP_PATH);
-    check('补传的是本机携带的 rg', fake.uploads[0]?.local === ripgrep);
-    check('补传的 rg 置可执行权限', fake.uploads[0]?.mode === 0o755);
+    // 哈希读不出（本测试桩没给 sha256sum 应答）按「产物未知」处理：连可执行文件一起覆盖
+    check('哈希读不出时连可执行文件一起覆盖', fake.uploads.some(
+      (upload) => upload.remote === `${BINARY_PATH}.new` && upload.local === binary,
+    ));
+    check('缺自带 ripgrep 时补传', fake.uploads.some(
+      (upload) => upload.remote === RIPGREP_PATH && upload.local === ripgrep,
+    ));
+    check('补传的 rg 置可执行权限', fake.uploads.find((upload) => upload.remote === RIPGREP_PATH)?.mode === 0o755);
     check('补传前建好目录', fake.commands.includes(`mkdir -p '${HOME}/.local/bin/ripgrep'`));
   }
 
@@ -229,9 +302,12 @@ runTests('sshDaemonBootstrap', async () => {
   {
     const fake = new FakeSsh();
     const daemon = await ensureRemoteDaemon(fake, options);
-    check('未部署时上传到 ~/.local/bin', fake.uploads.length === 2
-      && fake.uploads[0]?.remote === BINARY_PATH);
+    check('未部署时上传到 ~/.local/bin（经临时名 + mv 原子换名）', fake.uploads.length === 2
+      && fake.uploads[0]?.remote === `${BINARY_PATH}.new`
+      && fake.commands.includes(`mv -f '${BINARY_PATH}.new' '${BINARY_PATH}'`));
     check('上传的是本机携带的对应平台产物', fake.uploads[0]?.local === binary);
+    check('目标文件本身永不直接覆盖写（执行中的 daemon 是 ETXTBSY）',
+      !fake.uploads.some((upload) => upload.remote === BINARY_PATH));
     check('上传后置可执行权限', fake.uploads[0]?.mode === 0o755);
     check('未部署时一并上传自带 ripgrep', fake.uploads[1]?.remote === RIPGREP_PATH
       && fake.uploads[1]?.local === ripgrep);

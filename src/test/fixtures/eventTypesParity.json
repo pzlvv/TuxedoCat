@@ -17,6 +17,7 @@
     "titleChanged",
     "sessionCreated",
     "conversationListChanged",
+    "conversationSpaceCleared",
     "sessionRuntimeChanged",
     "spinDesignDataChanged",
     "highlightLanguagesUsed",

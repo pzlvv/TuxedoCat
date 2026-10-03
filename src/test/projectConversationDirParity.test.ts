@@ -25,6 +25,7 @@ import {
 async function run(): Promise<void> {
   const { check, finish } = createChecker();
   const root = makeTempDir('project-dir-ready-parity');
+  checkSeparatorVariants();
 
   try {
     const dir = await ensureProjectConversationDir(root);
@@ -42,6 +43,19 @@ async function run(): Promise<void> {
   } finally {
     finish();
   }
+}
+
+/** 分隔符写法归一（Windows）：同一目录的 \ 与 / 写法解析到同一份对话数据，
+ * 不再为写法差异裂成两个对话空间（实测缺陷：d:/git/X 与 d:\git\X 各出一个空间）。 */
+function checkSeparatorVariants(): void {
+  if (process.platform !== 'win32') return;
+  const { check } = createChecker();
+  const backslash = 'D:\\parity-merge\\demo';
+  const forward = 'D:/parity-merge/demo';
+  const backslashDir = getProjectConversationDir(backslash);
+  fs.mkdirSync(backslashDir, { recursive: true });
+  check('正斜杠写法解析到已存在的反斜杠目录', getProjectConversationDir(forward) === backslashDir);
+  check('反斜杠写法保持稳定', getProjectConversationDir(backslash) === backslashDir);
 }
 
 runTests('project-conversation-dir-parity', run);

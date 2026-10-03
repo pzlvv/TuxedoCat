@@ -12,7 +12,7 @@
  * （不拆 WebViewNotifier / WebViewController，见第 3.3 节）。
  */
 
-import type { AssistantEventBus, CoreEventHandlers, CoreRequestHandlers } from '../core/AssistantEventBus.js';
+import type { AssistantEventBus, CoreEvent, CoreEventHandlers, CoreRequestHandlers } from '../core/AssistantEventBus.js';
 import { requireEventBus } from '../core/AssistantEventBus.js';
 import type { AgentMode, MessageData, StreamMessageData, StreamEndData } from '../core/types.js';
 import type { ModelRef } from '../core/llm/modelRef.js';
@@ -309,6 +309,7 @@ export class WebViewUI implements WebViewUiPort {
       titleChanged: (e) => this.onTitleChanged(e.sessionId, e.title),
       sessionCreated: (e) => this.onSessionCreated(e.sessionId),
       conversationListChanged: () => this.onConversationListChanged(),
+      conversationSpaceCleared: (e) => this.onConversationSpaceCleared(e.sessionId, e.result),
       sessionRuntimeChanged: (e) => this.onSessionRuntimeChanged(e.states),
       spinDesignDataChanged: () => this.onSpinDesignDataChanged(),
       highlightLanguagesUsed: (e) => this.onHighlightLanguagesUsed(e.languages),
@@ -482,6 +483,34 @@ export class WebViewUI implements WebViewUiPort {
    */
   onConversationListChanged(): void {
     void this.conversations.refresh();
+  }
+
+  /**
+   * 对话空间清空回执 → 设置面板的完成 / 失败通知。
+   *
+   * 这条下行消息是 LLMConfigPanel 的删除按钮从「删除中」恢复的**唯一**信号
+   * （webviewMessages 的 `conversationSpaceCleared` / `conversationSpacesError`）：
+   * UiEvent 是 fire-and-forget，core 的回执丢了面板就会永远停在「删除中」，
+   * 因此成功与失败都必须转发，不做静默丢弃。
+   */
+  private onConversationSpaceCleared(
+    dirName: string,
+    result: Extract<CoreEvent, { type: 'conversationSpaceCleared' }>['result'],
+  ): void {
+    if (result.status === 'complete') {
+      this.host.sendToWebview({
+        type: 'conversationSpaceCleared',
+        dirName,
+        removedFiles: result.removedFiles,
+        removedBytes: result.removedBytes,
+      });
+    } else {
+      // 与 handleRequestConversationSpaces 的错误文案同口径：原文 + 中文前缀
+      this.host.sendToWebview({
+        type: 'conversationSpacesError',
+        error: `清空对话空间失败: ${result.message}`,
+      });
+    }
   }
 
   /**

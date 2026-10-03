@@ -4,7 +4,7 @@
 
 import { join } from 'path';
 import * as fs from 'fs/promises';
-import { mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { logger } from '../Logger.js';
 import { resolveConfigDir } from '../../config/configDir.js';
@@ -34,25 +34,50 @@ export function getConversationDir(): string {
 }
 
 /**
+ * Windows 下同一目录的分隔符两种写法（`D:\a\b` 与 `D:/a/b`）会各自编码成不同的
+ * 对话空间目录，同一项目裂成两条统计。统一成反斜杠（与资源管理器一致）后再编码；
+ * 非 Windows 平台分隔符就是 `/`，原样保留（远程 Linux core 的路径不动）。
+ */
+function normalizeWorkspacePath(projectPath: string): string {
+  return process.platform === 'win32' ? projectPath.replace(/\//g, '\\') : projectPath;
+}
+
+/**
  * 获取特定项目的对话目录路径
  * @param projectPath - 项目路径
  * @returns 编码后的项目对话目录
+ *
+ * 归一形态优先；按历史写法编码的目录已存在时沿用（新旧写法解析到同一份对话数据，
+ * 不再为分隔符写法的差异新建第二个空间）。
  */
 export function getProjectConversationDir(projectPath: string): string {
+  const normalized = normalizeWorkspacePath(projectPath);
+  const candidates = normalized === projectPath ? [normalized] : [normalized, projectPath];
+  for (const candidate of candidates) {
+    const existing = join(getConversationDir(), encodeURIComponent(candidate));
+    if (existsSync(existing) && encodedPathLength(candidate) <= 255) {
+      return existing;
+    }
+  }
   // URL 编码项目路径（Windows 路径中的 \ 会被编码为 %5C）
-  const encodedPath = encodeURIComponent(projectPath);
+  const encodedPath = encodeURIComponent(candidates[0]);
   // 单级目录名不能超过 255 字符（Windows NTFS 限制），超长则使用哈希
   if (encodedPath.length <= 255) {
     return join(getConversationDir(), encodedPath);
   }
   // 超长路径：SHA256 哈希前 16 位 + 路径最后一级的简短编码名称（取前 32 字符），
   // 组合后约 49 字符，远低于 255 限制
-  const hash = createHash('sha256').update(projectPath).digest('hex').substring(0, 16);
+  const hash = createHash('sha256').update(candidates[0]).digest('hex').substring(0, 16);
   // 提取最后一级路径组件（如 "CA_TA"），便于人眼识别
-  const normalizedPath = projectPath.replace(/[\\/]+$/, '');
+  const normalizedPath = candidates[0].replace(/[\\/]+$/, '');
   const lastSegment = normalizedPath.split(/[\\/]/).pop() || '';
   const encodedLast = encodeURIComponent(lastSegment).substring(0, 32);
   return join(getConversationDir(), `${hash}_${encodedLast}`);
+}
+
+/** 编码后目录名的长度（候选目录的 255 限制判据） */
+function encodedPathLength(projectPath: string): number {
+  return encodeURIComponent(projectPath).length;
 }
 
 /**

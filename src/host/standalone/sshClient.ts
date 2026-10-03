@@ -191,7 +191,8 @@ export class SshClient {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
-          reject(error);
+          // ssh2 的通道打开失败只有一句「Failure」：不带命令名，日志里完全无法定位
+          reject(new Error(`SSH exec failed (${command}): ${error.message}`));
           return;
         }
         let stdout = '';
@@ -209,7 +210,7 @@ export class SshClient {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
-          reject(channelError);
+          reject(new Error(`SSH exec failed (${command}): ${channelError.message}`));
         });
       });
     });
@@ -220,7 +221,7 @@ export class SshClient {
     const sftp = await this.requireSftp();
     return new Promise<string>((resolve, reject) => {
       sftp.realpath('.', (error, absPath) => {
-        if (error) reject(error);
+        if (error) reject(new Error(`SFTP realpath failed: ${error.message}`));
         else resolve(absPath);
       });
     });
@@ -251,7 +252,7 @@ export class SshClient {
     const sftp = await this.requireSftp();
     return new Promise<string>((resolve, reject) => {
       sftp.readFile(target, { encoding: 'utf8' }, (error, data) => {
-        if (error) reject(error);
+        if (error) reject(new Error(`SFTP read failed (${target}): ${error.message}`));
         else resolve(String(data));
       });
     });
@@ -262,8 +263,11 @@ export class SshClient {
     const sftp = await this.requireSftp();
     return new Promise<void>((resolve, reject) => {
       sftp.fastPut(localPath, remotePath, { mode }, (error) => {
-        if (error) reject(error);
-        else resolve();
+        // 目标正被执行（ETXTBSY）、权限不足等都折叠成 SFTP 的「Failure」：
+        // 带上两端路径才定位得了
+        if (error) {
+          reject(new Error(`SFTP upload ${localPath} -> ${remotePath} failed: ${error.message}`));
+        } else resolve();
       });
     });
   }
@@ -271,14 +275,16 @@ export class SshClient {
   /**
    * 打开一条 `direct-tcpip` 通道（等价于 `ssh -W host:port`）。
    *
-   * 目标地址由**远端 sshd** 解析：传回环地址即「远端本机上的端口」。
+   * 目标地址由**远端 sshd** 解析：传回环地址即「远端本机上的端口」。目标端口没人
+   * 听（如 daemon 已死）时 sshd 拒绝开通道，ssh2 只报一句「Failure」——带上目标。
    */
   async openTcpForward(host: string, port: number): Promise<ClientChannel> {
     const client = this.requireClient();
     return new Promise<ClientChannel>((resolve, reject) => {
       client.forwardOut('127.0.0.1', 0, host, port, (error, channel) => {
-        if (error) reject(error);
-        else resolve(channel);
+        if (error) {
+          reject(new Error(`SSH port forward to ${host}:${port} failed: ${error.message}`));
+        } else resolve(channel);
       });
     });
   }
@@ -325,7 +331,7 @@ export class SshClient {
     if (this.sftpSession) return this.sftpSession;
     const session = await new Promise<SFTPWrapper>((resolve, reject) => {
       client.sftp((error, sftp) => {
-        if (error) reject(error);
+        if (error) reject(new Error(`SFTP subsystem open failed: ${error.message}`));
         else resolve(sftp);
       });
     });

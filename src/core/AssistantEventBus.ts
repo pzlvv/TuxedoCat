@@ -88,6 +88,20 @@ export type CoreEvent =
   /** 对话列表（磁盘元数据）发生变化：落盘 / 改名 / 删除 / 新建 */
   | { type: 'conversationListChanged' }
   /**
+   * 对话空间清空完成（`UiEvent.conversationSpaceCleared` 的执行回执）。
+   *
+   * `sessionId` 是对话空间目录名（与同名 UiEvent 同语义）。结果是判别联合：
+   * 成功带删除统计，失败带原因。webview 设置面板靠这条回执解除「删除中」，
+   * 成功与失败都必须发出（UiEvent 是 fire-and-forget，这是唯一的完成信号）。
+   */
+  | {
+      type: 'conversationSpaceCleared';
+      sessionId: string;
+      result:
+        | { status: 'complete'; removedFiles: number; removedBytes: number }
+        | { status: 'error'; message: string };
+    }
+  /**
    * 会话运行时状态变化（有活跃查询 / 正在等待用户操作）。
    *
    * 推全量（所有已知会话的状态）而不是增量：会话数量是几十的量级，
@@ -285,7 +299,18 @@ export type UiEvent =
         | { key: 'totalContextTokens'; value: number }
       >;
     }
-  | { type: 'conversationSpaceCleared'; sessionId: string }
+  /**
+   * 清理对话空间：`mode` 选择清理深度（互斥语义用字面量联合，不用可选字段）。
+   *
+   * - `clear`：清空空间内容（对话 / 工具结果），保留空间目录与
+   *   `workspace.meta.json`（workspace 还在时用，项目映射要留着）；
+   * - `remove`：整个空间目录一并删除（workspace 已不存在时用，
+   *   清掉后列表不再显示该空间）。
+   *
+   * `sessionId` 是对话空间目录名（不是会话 id）。执行结果经
+   * `CoreEvent.conversationSpaceCleared` 回执。
+   */
+  | { type: 'conversationSpaceCleared'; sessionId: string; mode: 'clear' | 'remove' }
 
   // ===== 会话配置 =====
   | { type: 'modelChanged'; sessionId: string; ref: ModelRef }

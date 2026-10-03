@@ -28,9 +28,10 @@ export const FAKE_HOST_INIT = `
   );
 
   const state = {
-    // conversationsData / sessionRuntimeStates 的应答数据（测试可改写）
+    // conversationsData / sessionRuntimeStates / conversationSpacesData 的应答数据（测试可改写）
     conversations: [],
     runtimeStates: [],
+    conversationSpaces: [],
     // 脚本化助手轮次：每次 sendMessage 使用当时的值
     turn: { thinking: '', text: '', chunkDelayMs: 40 },
     // 引擎忙碌时再来一条 sendMessage 是否回 queuedMessage（排队语义）
@@ -140,6 +141,14 @@ export const FAKE_HOST_INIT = `
         break;
       case 'requestSessionRuntimeStates':
         send({ type: 'sessionRuntimeStates', states: state.runtimeStates });
+        break;
+      case 'requestConversationSpaces':
+        send({ type: 'conversationSpacesData', spaces: state.conversationSpaces });
+        break;
+      case 'clearConversationSpace':
+        // 与真实链路同口径：清空后回执；面板收到回执自行重取统计
+        state.conversationSpaces = state.conversationSpaces.filter((s) => s.dirName !== msg.dirName);
+        send({ type: 'conversationSpaceCleared', dirName: msg.dirName, removedFiles: 3, removedBytes: 456 });
         break;
       case 'requestLLMConfig':
         // provider key 必须与 baseURL 主机名一致（面板按此推导，不一致会判定「未选择服务商」）
@@ -284,6 +293,16 @@ export class FakeHostDriver {
     await this.page.evaluate(
       (list) => { (window as any).__fakeHost.state.conversations = list; },
       conversations,
+    );
+  }
+
+  /** 改写对话空间统计应答数据 */
+  async setConversationSpaces(
+    spaces: Array<Record<string, unknown>>,
+  ): Promise<void> {
+    await this.page.evaluate(
+      (list) => { (window as any).__fakeHost.state.conversationSpaces = list; },
+      spaces,
     );
   }
 

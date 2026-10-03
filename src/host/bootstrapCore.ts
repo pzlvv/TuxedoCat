@@ -17,6 +17,7 @@
  *   创建 Client 并注册全局总线 → 注册 core 侧 UiEvent 订阅（仅 embedded）
  *   → 创建 WebViewUI（其构造函数注册 CoreEvent / CoreRequest 处理器）
  *   → 按工作区打开 Connection（连接建立时推送宿主环境与配置快照）
+ *   → 对齐活动 Connection 到宿主当前工作区（打开顺序 ≠ 活动项）
  *   → 订阅工作区打开 / 关闭
  *   → 会话队列（仅 embedded）
  *   → 异步收尾：配置目录 / MCP 残留清理（仅 embedded）
@@ -225,19 +226,29 @@ export function bootstrapCore(
     : currentRef
       ? [currentRef]
       : [emptyWorkspaceRef()];
-  const openWorkspace = (ref: WorkspaceRef): void => {
+  const openWorkspace = (ref: WorkspaceRef): Promise<void> => {
     try {
       const opened = client.openWorkspace(ref);
       if (opened instanceof Promise) {
-        void opened.catch((error) => {
-          log(`[bootstrap] Failed to open workspace ${ref.path}: ${String(error)}`);
-        });
+        return opened.then(
+          () => undefined,
+          (error) => {
+            log(`[bootstrap] Failed to open workspace ${ref.path}: ${String(error)}`);
+          },
+        );
       }
     } catch (error) {
       log(`[bootstrap] Failed to open workspace ${ref.path}: ${String(error)}`);
     }
+    return Promise.resolve();
   };
-  for (const ref of refs) openWorkspace(ref);
+  void Promise.all(refs.map(openWorkspace)).then(() => {
+    // 启动期的活动连接以宿主为准：Connection 按打开集合顺序建立，「最后建立的」
+    // 不一定是宿主正显示的活动工作区（恢复标签页不触发 activated 事件——状态没变）。
+    // 不对齐的话，统计 / 清空这类「跟当前连接走」的请求会落到别的连接上：远程标签页
+    // 显示本地数据。对已打开的引用 activateWorkspace 是纯激活；未打开时为 no-op。
+    if (currentRef) client.activateWorkspace(currentRef);
+  });
 
   // 工作区打开 / 关闭 / 激活：Connection 随之建立 / 销毁 / 切换活动项
   const unsubscribeWorkspace = host.onWorkspaceChanged((change) => {

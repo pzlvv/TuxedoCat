@@ -6,7 +6,7 @@
 
 import { readdir, readFile, stat, rm, unlink } from 'fs/promises';
 import { join, basename } from 'path';
-import { getConversationDir } from './Config.js';
+import { getConversationDir, WORKSPACE_META_FILE } from './Config.js';
 import { resetConversationCache, resetConversationListCache } from './Conversation.js';
 
 /** 单个对话空间的统计信息 */
@@ -21,6 +21,12 @@ export interface ConversationSpaceInfo {
   fileCount: number;
   /** 该空间内的会话数 */
   conversationCount: number;
+  /**
+   * 项目目录是否已不存在（`projectPath` 为空时恒为 false，无从判定不提示）。
+   * core 的统计顺带核实这个事实（统计在 core 侧机器上跑，本地 / 远程口径一致）；
+   * 「要不要提示清理」由 UI 决定。
+   */
+  workspaceMissing: boolean;
 }
 
 /** 递归计算目录大小和文件数 */
@@ -74,6 +80,16 @@ async function readWorkspacePath(dirPath: string): Promise<string> {
   }
 }
 
+/** 项目目录是否还存在（读失败按不存在处理） */
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await stat(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** 统计 conversations 下所有对话空间 */
 export async function getConversationSpaces(): Promise<ConversationSpaceInfo[]> {
   const conversationDir = getConversationDir();
@@ -100,6 +116,7 @@ export async function getConversationSpaces(): Promise<ConversationSpaceInfo[]> 
           sizeBytes: size.sizeBytes,
           fileCount: size.fileCount,
           conversationCount,
+          workspaceMissing: projectPath !== '' && !(await pathExists(projectPath)),
         };
       }),
   );
@@ -150,7 +167,10 @@ export async function clearConversationSpace(
     const fullPath = join(dirPath, entry.name);
     const isToolResults = entry.name === 'tool-results';
     const isJsonl = entry.isFile() && entry.name.endsWith('.jsonl');
-    const isMeta = entry.isFile() && entry.name.endsWith('.meta.json');
+    // workspace.meta.json 也以 .meta.json 结尾，但它是空间级配置（保留，
+    // 与 Rust 侧 clear_conversation_space 同口径）
+    const isMeta =
+      entry.isFile() && entry.name.endsWith('.meta.json') && entry.name !== WORKSPACE_META_FILE;
 
     if (!isToolResults && !isJsonl && !isMeta) {
       continue;
@@ -183,4 +203,34 @@ export async function clearConversationSpace(
   resetConversationListCache();
 
   return { removedFiles, removedBytes };
+}
+
+/**
+ * 删除整个对话空间目录（连 `workspace.meta.json` 一起）。
+ *
+ * 与 `clearConversationSpace` 的区别：项目目录已不存在时空间级配置再无意义，
+ * 只有把目录整个删掉，列表才不会再显示它。删除前先统计（回执要带删除量）。
+ */
+export async function removeConversationSpace(
+  dirName: string,
+): Promise<{ removedFiles: number; removedBytes: number }> {
+  const conversationDir = getConversationDir();
+  const safeBase = basename(dirName);
+  if (!dirName || safeBase !== dirName || dirName === '.' || dirName === '..') {
+    throw new Error('Invalid conversation space directory name');
+  }
+
+  const dirPath = join(conversationDir, dirName);
+  if (!(await pathExists(dirPath))) {
+    throw new Error(`Conversation space not found: ${dirName}`);
+  }
+
+  const size = await getDirSize(dirPath);
+  await rm(dirPath, { recursive: true, force: true });
+
+  // 清理内存缓存，避免 UI 继续显示已删除的会话/列表
+  resetConversationCache();
+  resetConversationListCache();
+
+  return { removedFiles: size.fileCount, removedBytes: size.sizeBytes };
 }

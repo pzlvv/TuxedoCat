@@ -173,7 +173,7 @@ class CoreEvent <<type>> {
   toolCall / toolResult / toolArgsUpdated / toolProgress
   aiBegin / aiEnd / messagesReplaced
   queryBegin / queryEnd / titleChanged / sessionCreated
-  conversationListChanged / sessionRuntimeChanged
+  conversationListChanged / conversationSpaceCleared / sessionRuntimeChanged
   spinDesignDataChanged / compactBegin / compactEnd
   commandDispatched / sessionConfigChanged
 }
@@ -766,7 +766,7 @@ wire message（若该事件会产生 webview 协议消息）。
 | # | `type` | 载荷 | core 侧触发点 | 处理方 | 转成的 wire message |
 | --- | --- | --- | --- | --- | --- |
 | 0 | `coreReady` | 无 | `initializeCoreEvents` 的 `hostEnvironmentProvided` 处理器（应用完配置快照后；每次重推快照都再发一次） | `onCoreReady`（宿主侧闩锁，`host/coreReadiness.ts`） | 无（不投递到 webview） |
-| 1 | `message` | `sessionId`, `data: MessageData` | `Integration`（用户消息 / 命令）、`Query`、`QueryEngine`、`history/rollback`、`spin/Loop`、`initializeCoreEvents`（清空对话空间的系统消息回显）、`utils/replayMessages` | `onMessage` | `addMessage` |
+| 1 | `message` | `sessionId`, `data: MessageData` | `Integration`（用户消息 / 命令）、`Query`、`QueryEngine`、`history/rollback`、`spin/Loop`、`utils/replayMessages` | `onMessage` | `addMessage` |
 | 2 | `streamMessage` | `sessionId`, `data: StreamMessageData` | `Query` | `onStreamMessage` | `streamMessage` |
 | 3 | `streamEnd` | `sessionId`, `data: StreamEndData` | `Query` | `onStreamEnd` | `streamEnd` |
 | 4 | `toolCall` | `sessionId`, `toolUseId`, `toolName` | `tools/RunTools` | `onToolCall` | `updateToolStatus`（`running`） |
@@ -790,6 +790,7 @@ wire message（若该事件会产生 webview 协议消息）。
 | 22 | `highlightLanguagesUsed` | `languages: readonly string[]` | `history/Conversation`（消息落盘时扫描围栏代码块语言，只报未记录过的） | `onHighlightLanguagesUsed` | 写 settings.json 的 `highlightLanguages` 字段（经 `UIHost.updateSettingsJson`，见第 5.1 节） |
 | 23 | `log` | `message`（已格式化的整行） | `Logger`（每写一行日志） | `log` | 写 UI 自己的日志出口（VS Code 是 OutputChannel，Electron 是 console） |
 | 24 | `notice` | `sessionId`, `key`, `params`, `level` | `skills/bundled/spin`、`spin/Loop`、`spin_host`、`commands`（瞬时状态提示：键 + 参数） | `onNotice` | `notice`（webview 用翻译表渲染成瞬时提示，不进消息流） |
+| 25 | `conversationSpaceCleared` | `sessionId`（对话空间目录名）, `result`（`complete` 带删除统计 / `error` 带原因） | `initializeCoreEvents`（`conversationSpaceCleared` UiEvent 清空完成 / 失败后的执行回执） | `onConversationSpaceCleared` | `conversationSpaceCleared`（`complete`）/ `conversationSpacesError`（`error`）——设置面板解除「删除中」的唯一信号 |
 
 > 第 1–10 项是渲染类 handler，第 11–24 项是控制面与事实通知 handler——这条界线只是 `WebViewUI` 内部的
 > 分区，不是事件类型的分组。
@@ -838,7 +839,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 29 | `conversationRenamed` | `sessionId`, `title` | `renameConversation`、智能命名、Electron 侧栏 | `history.updateConversationMetadataTitle` → `titleChanged` + `conversationListChanged` |
 | 30 | `conversationDeleted` | `sessionId` | `deleteConversation`、Electron 侧栏 | `history.deleteConversation`（**递归删除整棵子树**：自身 + 所有层级的子孙对话）→ `conversationListChanged` |
 | 31 | `conversationContextUpdated` | `sessionId`, `changes` | `updateConversationContext` 消息、`extension.ts`（编辑器上下文） | `history.updateConversationContext`（合并语义） |
-| 32 | `conversationSpaceCleared` | `sessionId` | `clearConversationSpace` | `history/ConversationSpace.clearConversationSpace` → `message` + `conversationListChanged` |
+| 32 | `conversationSpaceCleared` | `sessionId`（**对话空间目录名**，不是会话 id）, `mode`（`clear` 清内容保留空间目录 / `remove` 整目录删除——workspace 已不存在时用） | `clearConversationSpace`（单行「清除历史」= clear；「移除」与无效目录批量清理 = remove） | `history/ConversationSpace.clearConversationSpace` / `removeConversationSpace` → `conversationSpaceCleared`（回执，判别联合：`complete` / `error`）+ `conversationListChanged`；多连接宿主按**当前活动连接**路由（与空间统计同源），不走会话路由 |
 | 33 | `modelChanged` | `sessionId`, `ref`（`ModelRef` = provider + model） | `setModel`（wire 是扁平的 `model` / `provider`，handler 入口组装成 `ModelRef`；provider 为空即非法，记录日志并忽略） | `setSessionModel` + 写 meta.json（**保持扁平字段** `model` / `provider`）→ `sessionConfigChanged` |
 | 34 | `thinkingEffortChanged` | `sessionId`, `mode` | `setThinkingMode` | `setSessionThinkingMode` + 写 meta.json（字段名仍是 `thinkingMode`）→ `sessionConfigChanged` |
 | 35 | `promptModeChanged` | `sessionId`, `mode` | `setPromptMode` | `setSessionPromptPreset` + 写 meta.json → `sessionConfigChanged` |
@@ -1814,7 +1815,9 @@ bootstrapCore(host, spinDesign, conversations, options): { bus, client, ui }
 
 工作区集合来自 `UIHost` 的 `WorkspaceProvider`（`getWorkspaceRef` / `getOpenWorkspaceRefs` /
 `onWorkspaceChanged`）：骨架为每个打开的工作区打开一个 Connection（Embedded 恒一个），
-并订阅打开 / 关闭 / 激活事件。没有打开的工作区时用一个空引用打开占位 Connection，
+全部登记后把**活动 Connection 对齐到宿主当前工作区**（Connection 按打开集合顺序建立，
+「最后建立的」不等于「正显示的活动标签页」；恢复标签页不触发 activated 事件——状态没变。
+不对齐的话，统计 / 清空这类「跟当前连接走」的请求会落到别的连接上），并订阅打开 / 关闭 / 激活事件。没有打开的工作区时用一个空引用打开占位 Connection，
 保证宿主环境与空态视图的只读请求（技能列表 / 对话列表等）仍可应答；
 Standalone 下打开第一个真实工作区时占位 Connection 被销毁。
 
@@ -2854,7 +2857,7 @@ Core 的两种实现由选择变量 `CORE_KIND` 装配：`embedded` 为 `src/cor
 | daemon 进程模型 | 已落地：动作 `stdio` / `start` / `kill`（daemon 实体走内部动作 `start-daemon`，没有动作时按 `start`）、`--help` / `--version` 与参数校验（`cli.rs`）、控制通道多路复用、`liveCores` 计数归零 + grace 期退出、控制通道断开清理、重启上限报告（`docs/core-daemon.md`） | — |
 | 远程服务 | 已落地：`start` 把 daemon 拉到后台（脱离终端）并打印连接串，`kill` 结束它；默认绑 `0.0.0.0:10975`（全部网卡，冲突 +1 重试），绑通配地址时遍历网卡逐条打印连接串，token 落盘在 `~/<configDir>/core-daemon.token`（与会话数据同目录，跨 `kill` 保留；`--token` 覆盖，缺省复用文件里的，没有才随机生成），第一帧 `auth` 定长比较校验；`listDirectories` 供 Host 连接后立刻弹出远端目录选择（`core-rs/src/remote.rs`、`src/host/standalone/CoreDaemon.ts`、`src/host/connectionString.ts`、`electron/remoteWorkspace/`） | 断线重连 |
 | 远程工作区落盘与恢复 | 已落地：打开集合与最近列表（含远程项与凭证）写 `userData/workspace-state.json`，启动时按落盘凭证重新接入；最近列表同时含本地与远程项，标题栏「加号」菜单可打开最近工作区（`src/host/workspaceState.ts`、`electron/main.ts`、`electron/sidebar/`） | 凭证的加密存储与钥匙串集成 |
-| SSH 接入 | 已落地：`ssh` scheme 下全部通信走 SSH 端口（`ssh2` 库，不依赖系统 OpenSSH），建链时自动完成「发现 / 部署 / 启动」远端 daemon，凭证只活在会话内，主机密钥按 TOFU 记在 `~/<configDir>/known-hosts.json`（`src/host/standalone/sshClient.ts`、`sshDaemonBootstrap.ts`、`sshTransport.ts`、`electron/remoteWorkspace/`） | SSH 密钥 / agent 认证 / 断线重连 |
+| SSH 接入 | 已落地：`ssh` scheme 下全部通信走 SSH 端口（`ssh2` 库，不依赖系统 OpenSSH），建链时自动完成「发现 / 部署 / 启动」远端 daemon（远端可执行文件与本机携带产物 sha256 一致才复用在跑的 daemon，过期自动 kill + 覆盖 + 重启，见 `docs/core-daemon.md` 第 12.8 节），凭证只活在会话内，主机密钥按 TOFU 记在 `~/<configDir>/known-hosts.json`（`src/host/standalone/sshClient.ts`、`sshDaemonBootstrap.ts`、`sshTransport.ts`、`electron/remoteWorkspace/`） | SSH 密钥 / agent 认证 / 断线重连 |
 | 本地 Core 启动 | 已落地：本地同机工作区由 Host 直接用 `stdio` 起单进程 Core（`createStandaloneCoreBus`，stdio 帧通道，无端口 / token），不经过 daemon；daemon 只服务远程 endpoint | — |
 | 事件投递 | `emitToCore` 只写帧；Standalone 下进程内不注册 core 侧订阅（规格第 1.1 节） | — |
 | 用户消息入口 | `UiEvent.userMessageSubmitted`；`WebviewMessageHandler` 不再直接调用引擎 | — |

@@ -35,6 +35,8 @@ interface ConversationSpaceItem {
   sizeBytes: number;
   fileCount: number;
   conversationCount: number;
+  /** 项目目录已不存在（统计时 core 侧核实） */
+  workspaceMissing: boolean;
 }
 
 /**
@@ -432,7 +434,21 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   const [conversationSpacesLoading, setConversationSpacesLoading] = useState(false);
   const [conversationSpacesError, setConversationSpacesError] = useState<string | null>(null);
   const [confirmClearSpaceDirName, setConfirmClearSpaceDirName] = useState<string | null>(null);
+  /** 移除整个空间目录的确认弹窗（告知会删掉工作目录相关配置、不影响目录本身） */
+  const [confirmRemoveSpaceDirName, setConfirmRemoveSpaceDirName] = useState<string | null>(null);
   const [clearingSpaceDirName, setClearingSpaceDirName] = useState<string | null>(null);
+  /** 进行中的清理动作：行内对应按钮显示「删除中」，另一个按钮只禁用 */
+  const [clearingAction, setClearingAction] = useState<'clear' | 'remove' | null>(null);
+  /** 项目目录已不存在的空间：统计后弹「是否清除相关历史」 */
+  const [missingSpacesPrompt, setMissingSpacesPrompt] = useState<ConversationSpaceItem[] | null>(null);
+  /**
+   * 只在用户主动点「统计」时提示缺失目录；清除回执触发的自动刷新不再重复弹。
+   * 用 ref：下行消息监听只注册一次（useEffect []），闭包拿不到最新 state。
+   */
+  const promptMissingOnNextStats = useRef(false);
+  /** 统计请求在途标记 + trailing 合并（原理同上，防回执风暴放大成 core 全树扫描风暴） */
+  const statsInFlightRef = useRef(false);
+  const statsRefreshTrailingRef = useRef(false);
 
   const activeProvider = providers.find((p) => p.id === activeTabId) || providers[0];
 
@@ -954,16 +970,44 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     const handler = (event: MessageEvent) => {
       const msg = event.data;
       if (msg.type === 'conversationSpacesData') {
-        setConversationSpaces(Array.isArray(msg.spaces) ? msg.spaces : []);
+        const spaces = (Array.isArray(msg.spaces) ? msg.spaces : []) as ConversationSpaceItem[];
+        setConversationSpaces(spaces);
         setConversationSpacesLoading(false);
         setConversationSpacesError(null);
+        // 用户主动点「统计」时才提示缺失目录：清除回执触发的自动刷新不再重复弹
+        if (promptMissingOnNextStats.current) {
+          promptMissingOnNextStats.current = false;
+          const missing = spaces.filter((space) => space.workspaceMissing);
+          if (missing.length > 0) setMissingSpacesPrompt(missing);
+        }
+        // trailing：在途期间的刷新请求合并成数据到达后的一次补取
+        if (statsRefreshTrailingRef.current) {
+          statsRefreshTrailingRef.current = false;
+          postMessage({ type: 'requestConversationSpaces' });
+        } else {
+          statsInFlightRef.current = false;
+        }
       } else if (msg.type === 'conversationSpacesError') {
         setConversationSpacesLoading(false);
         setClearingSpaceDirName(null);
+        setClearingAction(null);
+        statsInFlightRef.current = false;
+        statsRefreshTrailingRef.current = false;
         setConversationSpacesError(msg.error || t('llmConfig.conversationSpaceError'));
       } else if (msg.type === 'conversationSpaceCleared') {
         setClearingSpaceDirName(null);
+        setClearingAction(null);
         setConfirmClearSpaceDirName(null);
+        setConfirmRemoveSpaceDirName(null);
+        // 清空完成：静默重取统计，列表立即反映删除后的占用（不等用户再点「统计」）。
+        // 已有在途请求时只标记 trailing——批量清理的 N 条回执若各发一次统计，
+        // 每条在 Standalone 下都是一次 core 全树扫描，会把回执队列堵死（「删除中」卡住）。
+        if (statsInFlightRef.current) {
+          statsRefreshTrailingRef.current = true;
+        } else {
+          statsInFlightRef.current = true;
+          postMessage({ type: 'requestConversationSpaces' });
+        }
       }
     };
     window.addEventListener('message', handler);
@@ -996,14 +1040,39 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   const handleRefreshConversationSpaces = () => {
     setConversationSpacesLoading(true);
     setConversationSpacesError(null);
+    promptMissingOnNextStats.current = true;
+    statsInFlightRef.current = true;
     postMessage({ type: 'requestConversationSpaces' });
   };
 
   const handleConfirmClearConversationSpace = () => {
     if (!confirmClearSpaceDirName) return;
     setClearingSpaceDirName(confirmClearSpaceDirName);
+    setClearingAction('clear');
     setConfirmClearSpaceDirName(null);
-    postMessage({ type: 'clearConversationSpace', dirName: confirmClearSpaceDirName });
+    postMessage({ type: 'clearConversationSpace', dirName: confirmClearSpaceDirName, mode: 'clear' });
+  };
+
+  /** 移除整个空间目录（连工作目录相关配置一起；不影响工作目录本身） */
+  const handleConfirmRemoveConversationSpace = () => {
+    if (!confirmRemoveSpaceDirName) return;
+    setClearingSpaceDirName(confirmRemoveSpaceDirName);
+    setClearingAction('remove');
+    setConfirmRemoveSpaceDirName(null);
+    postMessage({ type: 'clearConversationSpace', dirName: confirmRemoveSpaceDirName, mode: 'remove' });
+  };
+
+  /**
+   * 确认清理已删除目录的空间：这里本身就是确认弹窗，直接逐个整目录移除，
+   * 不再二次弹窗；回执各自刷新统计。
+   */
+  const handleConfirmClearMissingSpaces = () => {
+    const prompt = missingSpacesPrompt;
+    setMissingSpacesPrompt(null);
+    if (!prompt || prompt.length === 0) return;
+    for (const space of prompt) {
+      postMessage({ type: 'clearConversationSpace', dirName: space.dirName, mode: 'remove' });
+    }
   };
 
   return (
@@ -1671,18 +1740,39 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                       flexShrink: 0,
                       padding: '4px 10px',
                       borderRadius: '6px',
-                      border: `1px solid ${clearingSpaceDirName === space.dirName ? colors.textSystem : '#ef4444'}`,
+                      border: `1px solid ${clearingSpaceDirName === space.dirName && clearingAction === 'clear' ? colors.textSystem : '#f59e0b'}`,
                       backgroundColor: 'transparent',
-                      color: clearingSpaceDirName === space.dirName ? colors.textSystem : '#ef4444',
+                      color: clearingSpaceDirName === space.dirName && clearingAction === 'clear' ? colors.textSystem : '#f59e0b',
                       fontSize: '11px',
                       cursor: clearingSpaceDirName !== null ? 'not-allowed' : 'pointer',
                       opacity: clearingSpaceDirName !== null ? 0.6 : 1,
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {clearingSpaceDirName === space.dirName
+                    {clearingSpaceDirName === space.dirName && clearingAction === 'clear'
                       ? t('llmConfig.conversationSpaceClearing')
-                      : t('llmConfig.conversationSpaceDelete')}
+                      : t('llmConfig.conversationSpaceClearHistory')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmRemoveSpaceDirName(space.dirName)}
+                    disabled={clearingSpaceDirName !== null}
+                    style={{
+                      flexShrink: 0,
+                      padding: '4px 10px',
+                      borderRadius: '6px',
+                      border: `1px solid ${clearingSpaceDirName === space.dirName && clearingAction === 'remove' ? colors.textSystem : '#ef4444'}`,
+                      backgroundColor: 'transparent',
+                      color: clearingSpaceDirName === space.dirName && clearingAction === 'remove' ? colors.textSystem : '#ef4444',
+                      fontSize: '11px',
+                      cursor: clearingSpaceDirName !== null ? 'not-allowed' : 'pointer',
+                      opacity: clearingSpaceDirName !== null ? 0.6 : 1,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {clearingSpaceDirName === space.dirName && clearingAction === 'remove'
+                      ? t('llmConfig.conversationSpaceClearing')
+                      : t('llmConfig.conversationSpaceRemove')}
                   </button>
                 </div>
               ))}
@@ -1899,6 +1989,133 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               </button>
               <button
                 onClick={handleConfirmClearConversationSpace}
+                className="px-3 py-1.5 rounded text-[12px] text-white transition-colors"
+                style={{ backgroundColor: '#f59e0b' }}
+              >
+                {t('llmConfig.conversationSpaceDelete')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 移除整个空间目录的确认：告知删的是对话历史 + 工作目录相关配置，不动目录本身 */}
+      {confirmRemoveSpaceDirName && (
+        <div
+          className="fixed inset-0 z-[101]"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: 'rgba(0, 0, 0, 0.45)',
+          }}
+          onClick={() => setConfirmRemoveSpaceDirName(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: colors.bgSecondary,
+              border: `1px solid ${colors.border}`,
+              borderRadius: '8px',
+              padding: '16px',
+              maxWidth: '380px',
+              width: 'calc(100% - 32px)',
+              boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
+            }}
+          >
+            <div className="text-[13px] font-semibold mb-2" style={{ color: colors.textPrimary }}>
+              {t('llmConfig.conversationSpaceRemoveTitle')}
+            </div>
+            <div
+              className="text-[12px] mb-4 leading-snug break-all"
+              style={{ color: colors.textSystem, whiteSpace: 'pre-line' }}
+            >
+              {t('llmConfig.conversationSpaceRemoveMessage', {
+                path: conversationSpaces?.find((s) => s.dirName === confirmRemoveSpaceDirName)?.projectPath || confirmRemoveSpaceDirName,
+              })}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmRemoveSpaceDirName(null)}
+                className="px-3 py-1.5 rounded text-[12px] transition-colors"
+                style={{
+                  backgroundColor: 'transparent',
+                  color: colors.textSystem,
+                  border: `1px solid ${colors.border}`,
+                }}
+              >
+                {t('llmConfig.cancel')}
+              </button>
+              <button
+                onClick={handleConfirmRemoveConversationSpace}
+                className="px-3 py-1.5 rounded text-[12px] text-white transition-colors"
+                style={{ backgroundColor: '#ef4444' }}
+              >
+                {t('llmConfig.conversationSpaceRemove')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 项目目录已不存在的空间：统计后提示批量清除 */}
+      {missingSpacesPrompt && (
+        <div
+          className="fixed inset-0 z-[101]"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: 'rgba(0, 0, 0, 0.45)',
+          }}
+          onClick={() => setMissingSpacesPrompt(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: colors.bgSecondary,
+              border: `1px solid ${colors.border}`,
+              borderRadius: '8px',
+              padding: '16px',
+              // 宽度按最长路径自适应（fit-content），下限保证短列表不局促，
+              // 上限 80% webview 宽：更长的路径在列表内换行（break-all）
+              width: 'fit-content',
+              minWidth: '380px',
+              maxWidth: '80%',
+              boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
+            }}
+          >
+            <div className="text-[13px] font-semibold mb-2" style={{ color: colors.textPrimary }}>
+              {t('llmConfig.conversationSpaceMissingTitle')}
+            </div>
+            {/* 目录多时列表自身滚动；按钮在滚动区外，始终可见可点 */}
+            <div
+              className="text-[12px] mb-4 leading-snug break-all"
+              style={{
+                color: colors.textSystem,
+                whiteSpace: 'pre-line',
+                maxHeight: '40vh',
+                overflowY: 'auto',
+              }}
+            >
+              {missingSpacesPrompt
+                .map((space) => space.projectPath || space.dirName)
+                .join('\n')}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setMissingSpacesPrompt(null)}
+                className="px-3 py-1.5 rounded text-[12px] transition-colors"
+                style={{
+                  backgroundColor: 'transparent',
+                  color: colors.textSystem,
+                  border: `1px solid ${colors.border}`,
+                }}
+              >
+                {t('llmConfig.cancel')}
+              </button>
+              <button
+                onClick={handleConfirmClearMissingSpaces}
                 className="px-3 py-1.5 rounded text-[12px] text-white transition-colors"
                 style={{ backgroundColor: '#ef4444' }}
               >
