@@ -365,6 +365,22 @@ body {
   font-size: 12px;
   color: #71717a;
 }
+
+/* 列表等待态：对话列表尚未从主进程取到（启动 / 刚切换工作区）。
+   与「暂无对话」（.empty，列表已取到且为空）分开——core 未就绪时列表未知，不猜空。 */
+.list-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 32px 12px;
+  font-size: 12px;
+  color: #71717a;
+}
+.list-loading .spinner {
+  width: 18px;
+  height: 18px;
+}
 .footer {
   padding: 8px 12px;
   border-top: 1px solid #26262c;

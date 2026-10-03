@@ -57,6 +57,8 @@ export interface AppHandle {
   waitForPage(urlIncludes: string, timeout?: number): Promise<Page>;
   /** 结束应用并断开连接 */
   close(): Promise<void>;
+  /** 在主进程执行表达式（Node inspector 直连；注入测试钩子用） */
+  evaluateInMain(expression: string): Promise<unknown>;
   /** 临时目录（USERPROFILE 沙箱），用例可直接检查会话落盘 */
   homeDir: string;
   workspaceDir: string;
@@ -398,6 +400,7 @@ export async function launchApp(options: {
     sidebarPage: () => waitForPage('dist/sidebar/index.html'),
     waitForPage,
     close,
+    evaluateInMain: (expression: string) => evaluateInMain(spawned.nodeWs, expression),
     homeDir: spawned.homeDir,
     workspaceDir: options.workspaceDir,
   };

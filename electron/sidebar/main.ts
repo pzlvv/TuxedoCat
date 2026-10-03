@@ -21,6 +21,9 @@
  *   - onWorkspacesChanged()     主进程推送打开集合变化
  * 侧栏头部为「搜索框 + 新对话」：搜索框按标题过滤当前活动工作目录的对话列表；
  * 打开集合为空时空态展示「打开本地工作区」+ 最近工作区（点击即添加）。
+ * 对话列表有独立的等待态：列表尚未取到（启动 / 刚切换活动目录）时留白，超过
+ * 100ms（LOADING_SHOW_DELAY_MS）仍未取到才显示「加载中」——快速切换的列表毫秒级
+ * 回包，转圈闪现像闪烁；「暂无对话」只表示列表已取到且为空，不能把未知猜成空。
  *
  * 三条流各自单一 owner（DEVELOPMENT.md 第 5.4 节规则 8）：
  *   列表（磁盘元数据）+ 运行时状态（core sessionRuntime）+ loaded（ChatViewManager 视图层），
@@ -113,7 +116,16 @@ const footerEl = document.getElementById('footer')!;
 const newChatBtn = document.getElementById('newChat') as HTMLButtonElement;
 const searchInputEl = document.getElementById('searchInput') as HTMLInputElement;
 
-let conversations: ConversationMeta[] = [];
+/**
+ * 活动工作目录的对话列表。
+ *
+ * `null` = 当前目录的列表尚未取到（启动 / 刚切换活动目录）：这是**等待态**，
+ * 不是「没有对话」。与 workspacesState 的 null 同一语义（DEVELOPMENT.md 第 12 章
+ * 规则 7：事实未到达表示等待态，不猜值）——列表要等 core 连接就绪才能读到，
+ * 用 `[]` 占位会把「未知」错渲染成「暂无对话」；取到列表后 `null` 不再出现，
+ * 「确实为空」由非 null 的空数组表达。
+ */
+let conversations: ConversationMeta[] | null = null;
 let activeSessionId: string | null = null;
 /**
  * 打开集合 + 活动项 + 最近工作目录（来自 `sidebar:workspaces-changed` / getWorkspaces）。
@@ -269,6 +281,26 @@ function createItemElement(html: string): HTMLElement {
 }
 
 /**
+ * 等待态转圈的显示延时：进入等待态后 100ms 内只留白，超过仍没等到列表才画「加载中」。
+ * 正常切换工作区时列表毫秒级回包（core 已就绪，请求即刻回），转圈闪现十几毫秒
+ * 看起来像闪烁；真正需要转圈的是首次启动拉起 core、远程建链这类长等待。
+ */
+const LOADING_SHOW_DELAY_MS = 100;
+/** 转圈显示延时的定时器；触发时置回 null 并登记 loadingSpinnerShown */
+let loadingShowTimer: ReturnType<typeof setTimeout> | null = null;
+/** 转圈是否已画出（定时器已触发过）：区分「延时未到」与「已过延时仍在等待」 */
+let loadingSpinnerShown = false;
+
+/** 离开等待态：清掉定时器与转圈标记（转圈从未画出就当没等待过） */
+function clearLoadingWait(): void {
+  if (loadingShowTimer !== null) {
+    clearTimeout(loadingShowTimer);
+    loadingShowTimer = null;
+  }
+  loadingSpinnerShown = false;
+}
+
+/**
  * 增量渲染：按 sessionId 复用已有 DOM 元素，只重建内容发生变化的项。
  *
  * 此前每次都整体替换 listEl.innerHTML：打开对话（只有 loaded 标记变化）也会
@@ -286,16 +318,44 @@ function render(): void {
   if (!state) return;
   // 打开集合为空：显示打开本地工作区引导 + 最近工作区
   if (state.workspaces.length === 0) {
+    clearLoadingWait();
     renderEmptyState();
     return;
   }
   newChatBtn.style.display = '';
   searchInputEl.style.display = '';
 
+  // 列表尚未取到：等待态。延时未到只留白，超过 LOADING_SHOW_DELAY_MS 才画转圈；
+  // 始终不渲染「暂无对话」（见 conversations 的注释）。
+  if (!conversations) {
+    if (loadingShowTimer === null && !loadingSpinnerShown) {
+      // 刚进入等待态：起显示延时的定时器，触发后重渲染补画转圈
+      loadingShowTimer = setTimeout(() => {
+        loadingShowTimer = null;
+        loadingSpinnerShown = true;
+        // 触发时可能已取到列表：只在仍在等待时才需要转圈
+        if (conversations === null) render();
+      }, LOADING_SHOW_DELAY_MS);
+    }
+    footerEl.textContent = '';
+    if (loadingShowTimer !== null) {
+      // 延时未到：留白（快速切换时列表很快到达，转圈从未画出）
+      resetList();
+    } else if (!listEl.querySelector('.list-loading')) {
+      // 已过延时：显示转圈（幂等，状态推送反复触发 render 时不重播动画）
+      resetList();
+      listEl.innerHTML =
+        '<div class="list-loading"><span class="spinner"></span><span>加载中…</span></div>';
+    }
+    return;
+  }
+  clearLoadingWait();
+  const list = conversations;
+
   // 搜索框按标题过滤当前活动工作目录的对话列表
   const filtered = searchQuery
-    ? conversations.filter((c) => (c.title || '').toLowerCase().includes(searchQuery))
-    : conversations;
+    ? list.filter((c) => (c.title || '').toLowerCase().includes(searchQuery))
+    : list;
 
   if (!filtered.length) {
     resetList();
@@ -401,7 +461,7 @@ function render(): void {
   }
 
   footerEl.textContent = searchQuery
-    ? `${filtered.length} / ${conversations.length} 个对话`
+    ? `${filtered.length} / ${list.length} 个对话`
     : `${filtered.length} 个对话`;
 
   // 重建 DOM 后重新应用当前活跃会话高亮
@@ -508,7 +568,8 @@ function toggleSubSession(sessionId: string): void {
   const subtreeHasActive = (id: string, depth = 0): boolean => {
     if (depth > 20) return false;
     if (id === activeSessionId) return true;
-    return conversations
+    // 列表在等待态时没有可点的条目，这里不可达；`?? []` 只为类型收窄
+    return (conversations ?? [])
       .filter((k) => k.parentSessionId === id)
       .some((k) => subtreeHasActive(k.sessionId, depth + 1));
   };
@@ -522,7 +583,7 @@ function toggleSubSession(sessionId: string): void {
 /* ── 交互逻辑 ── */
 
 function startRename(sessionId: string): void {
-  const c = conversations.find((x) => x.sessionId === sessionId);
+  const c = conversations?.find((x) => x.sessionId === sessionId);
   renamingSessionId = sessionId;
   renameValue = c?.title || '';
   confirmDeleteId = null;
@@ -628,7 +689,7 @@ function bindListEvents(): void {
     const sessionId = item?.dataset.sessionId;
     if (!item || !sessionId) return;
     // 回传该对话自己的工作目录：主进程据此给聊天视图注入正确的 --workspace=
-    const project = conversations.find((c) => c.sessionId === sessionId)?.project;
+    const project = conversations?.find((c) => c.sessionId === sessionId)?.project;
     window.sidebarAPI?.openConversation(sessionId, project);
     setActive(sessionId);
   });
@@ -693,8 +754,9 @@ function subscribe(): void {
     // 流水灯就会在切换标签页 / 切到别目录的对话后一直不亮。
     loadedSessions = new Set();
     if (activeChanged) {
-      // 旧目录的列表不能继续展示（否则切换后一瞬间还能看到/点开上一个目录的对话）
-      conversations = [];
+      // 旧目录的列表不能继续展示（否则切换后一瞬间还能看到/点开上一个目录的对话）；
+      // 新目录的列表尚未取到，置回等待态（null）：延时内留白，超过 100ms 显示「加载中」
+      conversations = null;
       // 搜索关键字属于上一个目录：清空，避免新目录被旧关键字过滤成空列表
       searchQuery = '';
       searchInputEl.value = '';

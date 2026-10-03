@@ -3811,6 +3811,13 @@ function setupIpc(): void {
   // ── 侧栏 IPC ──
   // 列表流：纯磁盘元数据（单一来源 loadConversationList；loaded / running / waiting 走各自通道）
   ipcMain.handle('sidebar:get-conversations', async () => {
+    // e2e 专用：注入列表拉取延迟，驱动侧栏等待态「转圈延时显示」的慢路径
+    // （e2e/electron/sessions.spec.ts 的「等待超过 200ms 才显示加载中」用例）。
+    // 同 --multi-instance：隐藏开关，不对外公开；未设置时无开销。
+    const e2eSlowListMs = Number(process.env.TUXEDO_CAT_E2E_SLOW_LIST_MS);
+    if (e2eSlowListMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, e2eSlowListMs));
+    }
     // 优先返回最近一次推送的列表快照（ConversationManager.getCachedList），
     // 不再每次拉取都重读磁盘——列表变化本来就会经 conversationListChanged 推送并更新快照。
     const cached = conversations?.getCachedList();

@@ -146,3 +146,73 @@ test('US-19 侧栏搜索框按标题过滤对话', async () => {
   await sb.locator('#searchInput').fill('独特关键词');
   await expect(items(sb)).toHaveCount(1, { timeout: 10_000 });
 });
+
+test('US-19 列表等待超过 100ms 才显示加载中，快速切换不闪转圈', async () => {
+  const sb = await sidebar();
+  // 记录 #list 的内容变化序列（loading / item / empty 的去重序列）：
+  // - 慢拉取（主进程钩子注入 800ms 延迟）：切换工作区等待超过 100ms，必须出现「加载中」；
+  // - 快拉取（撤销注入，毫秒级回包）：切换工作区不得闪转圈——否则 tab 页间切换闪烁。
+  // 延时阈值 100ms（sidebar 的 LOADING_SHOW_DELAY_MS）；拉取延迟钩子是主进程的
+  // TUXEDO_CAT_E2E_SLOW_LIST_MS（隐藏开关；页面侧 window.sidebarAPI 不可写）。
+  const dir2 = await makeWorkspace({}, 'e2e-ws-second');
+  try {
+    await sb.evaluate(() => {
+      const w = window as unknown as { __listContentLog?: string[]; __resetListLog?: () => void };
+      const list = document.getElementById('list')!;
+      w.__listContentLog = [];
+      let prev: string | null = null;
+      new MutationObserver(() => {
+        const cur = list.querySelector('.list-loading') ? 'loading'
+          : list.querySelector('.item') ? 'item'
+          : (list.textContent || '').includes('暂无对话') ? 'empty' : null;
+        if (cur && cur !== prev) {
+          prev = cur;
+          w.__listContentLog!.push(cur);
+        }
+      }).observe(list, { childList: true });
+      w.__resetListLog = () => { w.__listContentLog = []; prev = null; };
+    });
+
+    // 慢路径：加第二个工作区并切为活动项，拉取被延迟 800ms，等待超过 100ms 必出转圈
+    await app.evaluateInMain("process.env.TUXEDO_CAT_E2E_SLOW_LIST_MS = '800'");
+    await sb.evaluate((dir) =>
+      (window as unknown as { sidebarAPI?: { addWorkspaces: (paths: string[]) => void } })
+        .sidebarAPI!.addWorkspaces([dir as string]), dir2);
+    await expect.poll(
+      () => sb.evaluate(() => {
+        const log = (window as unknown as { __listContentLog?: string[] }).__listContentLog ?? [];
+        return log.includes('loading') && log[log.length - 1] === 'empty';
+      }),
+      { timeout: 30_000 },
+    ).toBe(true);
+
+    // 快路径：撤销注入，按 id 切回第一个工作区（activate-workspace 的字符串参数是
+    // refKey 不是路径），列表毫秒级回包，不得出现转圈
+    await app.evaluateInMain('delete process.env.TUXEDO_CAT_E2E_SLOW_LIST_MS');
+    await sb.evaluate(async (wsPath) => {
+      const w = window as unknown as {
+        sidebarAPI?: {
+          getWorkspaces: () => Promise<{ workspaces: Array<{ id: string; path: string }> }>;
+          openWorkspace: (id: string) => void;
+        };
+        __resetListLog?: () => void;
+      };
+      w.__resetListLog!();
+      const state = await w.sidebarAPI!.getWorkspaces();
+      const target = state.workspaces.find((t) => t.path === (wsPath as string));
+      if (target) w.sidebarAPI!.openWorkspace(target.id);
+    }, app.workspaceDir);
+    await expect.poll(
+      () => sb.evaluate(() => {
+        const log = (window as unknown as { __listContentLog?: string[] }).__listContentLog ?? [];
+        return log.length > 0 && log[log.length - 1] === 'empty';
+      }),
+      { timeout: 30_000 },
+    ).toBe(true);
+    const fastSeq = await sb.evaluate(() =>
+      (window as unknown as { __listContentLog?: string[] }).__listContentLog);
+    expect(fastSeq).not.toContain('loading');
+  } finally {
+    await fs.promises.rm(dir2, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
