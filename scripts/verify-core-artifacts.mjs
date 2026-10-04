@@ -11,13 +11,16 @@
  * 上一次的旧产物一起打进 vsix 与安装包：打包一路绿灯，Linux 用户却拿到一个认不出
  * 新动作 / 新协议的 core。
  *
- * 本脚本卡三件事：
+ * 本脚本卡四件事：
  *   1. `resources/core/<平台>/` 里有可执行文件与自带的 `ripgrep/`（缺失即报错，附带该
  *      平台的重建命令）；
  *   2. 它的修改时间不早于 `core-rs/src/**`、`core-rs/Cargo.toml`、`core-rs/Cargo.lock`
  *      里最新的一个（早于就是「源码改了但没重编」）；`#[cfg(test)]` 专属文件不算
  *      （cargo 不会为它们重链产物）；
- *   3. `dist/resources/core/` 里的副本与 `resources/` 里的**字节一致**（打包真正吃的是
+ *   3. 构建指纹文件存在、且与按当前源码重算的指纹一致（`build-core.mjs` 的
+ *      `computeFingerprint`，见 docs/standalone-core.md 第 4.4 节）：指纹缺失或对不上
+ *      意味着产物是旧构建或老版本脚本产的，SSH 部署会按错误的槽位落位；
+ *   4. `dist/resources/core/` 里的副本与 `resources/` 里的**字节一致**（打包真正吃的是
  *      dist 里那份；`copy-assets` 漏跑过，或跑在重建之前就会不一致）。
  *
  * `resources/core/` 在 .gitignore 里：产物不入库，所以修改时间可以放心当判据。
@@ -31,7 +34,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { PACKAGE_DIRS, TARGETS } from './build-core.mjs';
+import { PACKAGE_DIRS, TARGETS, computeFingerprint, FINGERPRINT_FILE_NAME } from './build-core.mjs';
 
 const require = createRequire(import.meta.url);
 const project = require('../project.config.cjs');
@@ -54,6 +57,7 @@ const REQUIRED_CORES = PACKAGE_DIRS.map((dir) => {
   }
   return {
     dir,
+    triple: target.triple,
     file: `${project.core.binaryName}${target.ext}`,
     // 自带 ripgrep：与可执行文件同级（`tools.rs::ripgrep_path` 的定位基准）
     ripgrep: `ripgrep/${target.platform === 'win32' ? 'rg.exe' : 'rg'}`,
@@ -138,6 +142,21 @@ function main() {
       problems.push(`${show(builtRipgrep)} 不存在（Core 自带 ripgrep）；重新构建：${core.rebuild}`);
       continue;
     }
+    // 构建指纹：缺失说明是老脚本产的产物；与重算值不一致说明产物之后源码又改了。
+    // 重算固定按 release：打包链（package:app / package:ext）只吃 release 构建。
+    const builtFingerprintPath = join(builtDir, FINGERPRINT_FILE_NAME);
+    if (!existsSync(builtFingerprintPath)) {
+      problems.push(`${show(builtFingerprintPath)} 不存在（构建指纹）；重新构建：${core.rebuild}`);
+      continue;
+    }
+    const builtFingerprint = readFileSync(builtFingerprintPath, 'utf8').trim();
+    if (builtFingerprint !== computeFingerprint(core.triple, 'release')) {
+      problems.push(
+        `${show(builtFingerprintPath)} 与当前 Rust 源码不一致（旧构建或源码已改）；` +
+          `重新构建：${core.rebuild}`,
+      );
+      continue;
+    }
     if (!existsSync(shipped)) {
       problems.push(`${show(shipped)} 不存在；先跑：npm run copy-assets`);
       continue;
@@ -157,6 +176,18 @@ function main() {
     if (fileDigest(shippedRipgrep) !== fileDigest(builtRipgrep)) {
       problems.push(
         `${show(shippedRipgrep)} 与 ${show(builtRipgrep)} 内容不一致；先跑：npm run copy-assets`,
+      );
+      continue;
+    }
+    const shippedFingerprint = join(shippedDir, FINGERPRINT_FILE_NAME);
+    if (!existsSync(shippedFingerprint)) {
+      problems.push(`${show(shippedFingerprint)} 不存在；先跑：npm run copy-assets`);
+      continue;
+    }
+    if (fileDigest(shippedFingerprint) !== fileDigest(builtFingerprintPath)) {
+      problems.push(
+        `${show(shippedFingerprint)} 与 ${show(builtFingerprintPath)} 内容不一致；` +
+          '先跑：npm run copy-assets',
       );
       continue;
     }

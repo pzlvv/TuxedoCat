@@ -21,12 +21,17 @@ import { spawn, type ChildProcessByStdio } from 'child_process';
 import type { Readable } from 'stream';
 import { CoreDaemon, tcpDaemonOpener } from '../host/standalone/CoreDaemon';
 import {
+  daemonStateFileName,
   encodeDaemonFrame,
   isDaemonToHostFrame,
 } from '../host/standalone/daemonProtocol';
 import { createCoreChannelBus } from '../host/standalone/StandaloneEventBus';
 import { localWorkspaceRef } from '../host/workspaceRef';
-import { coreBinaryFileName, corePlatformDir } from '../host/standalone/coreBinary';
+import {
+  CORE_FINGERPRINT_FILE_NAME,
+  coreBinaryFileName,
+  corePlatformDir,
+} from '../host/standalone/coreBinary';
 import { CORE_RESOURCE_DIR } from '../config/project';
 import { createChecker, runTests } from './helpers/harness';
 import { createRecordingCoreEventHandlers, emptySettingsSnapshot } from './helpers/fixtures';
@@ -515,15 +520,23 @@ async function run(): Promise<void> {
   // ---------- 真实 Core 产物 smoke（存在时）----------
   {
     const repoRoot = path.resolve(__dirname, '../../..');
-    const binary = path.join(
+    const productDir = path.join(
       repoRoot,
       'resources',
       CORE_RESOURCE_DIR,
       corePlatformDir('win32', 'x64')!,
-      coreBinaryFileName('win32'),
     );
-    if (process.platform !== 'win32' || process.arch !== 'x64' || !fs.existsSync(binary)) {
-      console.log(`skip real daemon smoke: ${path.relative(repoRoot, binary)} missing`);
+    const binary = path.join(productDir, coreBinaryFileName('win32'));
+    // 构建指纹与可执行文件同级（`build-core.mjs` 落位，docs/standalone-core.md 第 4.4 节）：
+    // daemon 的状态文件按它命名，这里读真实产物的指纹来断言两侧命名规则一致
+    const fingerprintPath = path.join(productDir, CORE_FINGERPRINT_FILE_NAME);
+    if (
+      process.platform !== 'win32'
+      || process.arch !== 'x64'
+      || !fs.existsSync(binary)
+      || !fs.existsSync(fingerprintPath)
+    ) {
+      console.log(`skip real daemon smoke: ${path.relative(repoRoot, binary)} or fingerprint missing`);
     } else {
       // 真实 daemon（`start-daemon`）：状态文件写到临时 HOME，别碰用户自己的 daemon
       const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-cat-daemon-'));
@@ -544,7 +557,12 @@ async function run(): Promise<void> {
         );
         check('连接串带上生效的 token', connection.token === 'smoke-token');
         const port = connection.port;
-        check('真实 daemon 落盘状态文件', fs.existsSync(path.join(home, '.tuxedo-cat', 'core-daemon.json')));
+        const statePath = path.join(
+          home,
+          '.tuxedo-cat',
+          daemonStateFileName(fs.readFileSync(fingerprintPath, 'utf8').trim()),
+        );
+        check('真实 daemon 按指纹落盘状态文件', fs.existsSync(statePath));
 
         const daemon = new CoreDaemon({
           transport: tcpDaemonOpener({ host: '127.0.0.1', port, token: 'smoke-token' }),

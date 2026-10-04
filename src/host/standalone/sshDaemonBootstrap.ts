@@ -1,23 +1,27 @@
 /**
- * 远端 Core 的 SSH 引导（`docs/core-daemon.md` 第 12 节）。
+ * 远端 Core 的 SSH 引导（`docs/core-daemon.md` 第 12.8 节）。
  *
- * 目标环境只有 SSH 端口、daemon 端口映射不出来时，Host 经 SSH 完成四件事：
- * 1. **发现**：远端状态文件里的 daemon 探得通**且远端可执行文件与本机携带产物一致**
- *    （sha256 比对）才复用——daemon 是常驻进程，旧版本应用留下的 daemon 会一直用旧
- *    产物拉起 Core（帧协议兼容、行为缺失：新增契约事件不发，如对话空间清空回执，
- *    宿主侧表现为设置面板永远停在「删除中」），版本不一致必须换血；
- * 2. **部署**：`~/.local/bin` 里没有可执行文件、或与本机携带产物不一致（含哈希读不出
- *    的保守情形）就覆盖上传，并补齐 Core 自带的 `ripgrep/`（Grep / Glob 用的 `rg`，
- *    与可执行文件同级——Core 以**自己的可执行文件目录**为基准定位自带资源，见
- *    `docs/standalone-core.md` 第 4 节）；覆盖走临时名 + rename，对执行中的 daemon
- *    也安全（`mv` 只换目录项）；
- * 3. **换血**：在跑的 daemon 版本过期时**先部署再 kill 再启动**——`kill` 跑的是
- *    远端二进制里的代码，被死连接占死的旧 daemon 对协议帧永远不应答，只有新版的
- *    kill（协议超时后按进程兜底强杀）才结束得了它；
- * 4. **启动**：执行 `<远端可执行文件> start --host 127.0.0.1`（幂等：已在跑就复用），
- *    再读状态文件。绑回环是因为转发连接从远端本机发起，daemon 端口不出机器；
- *    直连 `tcp` 的连接串模式不受影响（`start` 缺省仍绑 `0.0.0.0`，见
- *    `docs/core-daemon.md` 第 12.2 节）。
+ * 目标环境只有 SSH 端口、daemon 端口映射不出来时，Host 经 SSH 完成：
+ *
+ * 1. **发现**：部署槽位由本机携带产物的**构建指纹**决定（`docs/standalone-core.md`
+ *    第 4.4 节）——远端目录 `~/.local/bin/<指纹>/`，状态文件
+ *    `~/<configDir>/core-daemon-<指纹>.json`。状态文件里的 daemon 探得通就是
+ *    本版本（同一指纹）的 daemon 在跑，直接复用：不重启、不覆盖。
+ *    多版本 Core 在同一台远端机器上各占一个槽位、各跑一个 daemon——不同版本
+ *    的客户端同时接入同一台机器不再互相换血；同版本的多个客户端并发接同一个
+ *    daemon 由 daemon 侧的多连接支持（`docs/core-daemon.md` 第 12.5 节）。
+ * 2. **部署**：指纹目录里缺可执行文件或自带 `ripgrep/rg` 才上传（临时名 + rename，
+ *    对可能仍在执行的旧 inode 安全）；**指纹目录存在即视为同版本**，不做产物
+ *    哈希比对——指纹只由源码内容与编译器身份决定，同一版本不该因字节差异互相
+ *    覆盖（在跑的旧 daemon 会一直拉起旧 Core 的换血逻辑随指纹槽位一起消失：
+ *    新版本天然落在新槽位，旧 daemon 原样留给旧版本的客户端）。
+ * 3. **启动**：`start --host 127.0.0.1 --port 0`（幂等：已在跑就复用），再读状态文件。
+ *    绑回环是因为转发连接从远端本机发起，daemon 端口不出机器；端口交给内核分配
+ *    （`--port 0`，`docs/core-daemon.md` 第 12.2 节）——多版本 Core 各占一个槽位、
+ *    各跑一个 daemon，随机端口使 SSH 模式下端口冲突从构造上不可能发生，`+1` 重试
+ *    在这条路径上不再有触发时机；实际端口以按指纹的状态文件为准（本模块唯一事实
+ *    来源）。直连 `tcp` 的连接串模式不受影响（`start` 缺省仍绑 `0.0.0.0:10975`，
+ *    那里的端口要写进用户可见的连接串，必须可预测）。
  *
  * 各分支都以「读到状态文件里的 endpoint + token」收尾；任何一步失败都直接报错，
  * 不回退到「先连上再说」（`DEVELOPMENT.md` 第 12 章）。
@@ -26,18 +30,17 @@
  * `src/test/sshDaemonBootstrap.test.ts`）。
  */
 
-import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
 import {
   CORE_RIPGREP_DIR,
   bundledRipgrepFileName,
   bundledRipgrepPath,
   coreBinaryFileName,
+  readCoreFingerprint,
   resolveCoreBinary,
 } from './coreBinary.js';
-import { DAEMON_STATE_FILE_NAME, type DaemonStateFile } from './daemonProtocol.js';
+import { daemonLogFileName, daemonStateFileName, type DaemonStateFile } from './daemonProtocol.js';
 import type { SshExecResult, SshFileInfo } from './sshClient.js';
 
 /**
@@ -55,8 +58,20 @@ export interface RemoteSsh {
   openTcpForward(host: string, port: number): Promise<{ destroy(): void }>;
 }
 
-/** 远端可执行文件落位目录（相对远端主目录） */
+/** 远端部署槽位的父目录（相对远端主目录）；实际落位是其下的 `<指纹>/` 子目录 */
 export const REMOTE_BIN_DIR = '.local/bin';
+
+/**
+ * SSH 引导拉起的 daemon 的空闲退出秒数（`start --idle-exit`，`docs/core-daemon.md`
+ * 第 12.5 节）。
+ *
+ * 客户端异常退出（crash / 断电 / 网络消失）后，该连接的 Core 随连接断开（EOF 或
+ * 心跳超时）被 daemon 关闭，daemon 本体在**最后一条控制连接断开 30s**后自行退出——
+ * 多客户端下其他客户端还连着就不退，最后一个走后才清场，远端不留常驻进程。
+ * 30s 的宽限同时吸收网络闪断后的快速重连（复用在跑的 daemon，不用重新 start）；
+ * 「拉起后无人接入」的孤儿 daemon 也由同一条规则兜底。
+ */
+export const REMOTE_DAEMON_IDLE_EXIT_SECONDS = 30;
 
 /** 引导完成后拿到的 daemon 接入信息（host 恒为远端回环） */
 export interface RemoteDaemonEndpoint {
@@ -89,59 +104,41 @@ export async function ensureRemoteDaemon(
   options: RemoteBootstrapOptions,
 ): Promise<RemoteDaemonEndpoint> {
   const home = await ssh.homeDir();
-  const statePath = posixJoin(home, CONFIG_DIR_NAME, DAEMON_STATE_FILE_NAME);
 
-  // 平台先行：版本比对与产物落位都按远端平台挑本机携带的对应产物
+  // 平台先行：版本判定与产物落位都按远端平台挑本机携带的对应产物
   const target = await detectRemoteTarget(ssh);
   const localBinary = resolveCoreBinary(options.extensionPath, target.platform, target.arch);
-  const remoteBinary = posixJoin(home, REMOTE_BIN_DIR, coreBinaryFileName(target.platform));
+  const fingerprint = readCoreFingerprint(options.extensionPath, target.platform, target.arch);
+  const remoteBinary = posixJoin(
+    home,
+    REMOTE_BIN_DIR,
+    fingerprint,
+    coreBinaryFileName(target.platform),
+  );
+  const statePath = posixJoin(home, CONFIG_DIR_NAME, daemonStateFileName(fingerprint));
 
-  // 1. 已经启动且远端可执行文件与本机携带产物一致：直接复用——不重启、不覆盖。
-  //    「在跑」不再无条件复用：版本判定用可执行文件哈希，过期的 daemon 走下面的换血。
+  // 1. 该指纹的 daemon 在跑 → 直接复用。状态文件本身按指纹命名，探得通的一定是
+  //    本版本的 daemon，无需再做任何版本比对。
   const running = await probeRunningDaemon(ssh, statePath, options.log);
-  if (running && (await remoteBinaryMatches(ssh, localBinary, remoteBinary))) {
-    // 「在跑且版本一致」不等于产物齐全：老版本部署过的远端可能缺自带的 ripgrep，
-    // 而 daemon 是常驻进程，不在这里补就再没有补的时机（除非用户 kill 它）。
-    await ensureRemoteRipgrep(ssh, options, home);
-    return running;
-  }
 
-  // 2. 在跑但版本过期（或不一致 / 哈希读不出）：先部署新产物，再结束旧 daemon。
-  //    `kill` 跑的是**远端二进制里**的代码：被死连接占死的旧 daemon 对协议帧永远
-  //    不应答（Host 侧表现为探测「连得上」、auth 无应答），只有新版的 kill（协议
-  //    超时后按 /proc 兜底强杀）才结束得了它——覆盖必须先于 kill。覆盖走临时名 +
-  //    rename，对执行中的旧 daemon 安全（`mv` 只换目录项，见 ensureRemoteBinary；
-  //    `docs/core-daemon.md` 第 12.8 节）。
-  let deployed = false;
-  if (running) {
-    options.log('[ssh] remote daemon is running an outdated core binary; restarting it');
-    deployed = await ensureRemoteBinary(ssh, localBinary, remoteBinary);
-    if (deployed) {
-      options.log(`[ssh] deployed ${remoteBinary} (${target.platform}-${target.arch})`);
-    }
-    const killed = await ssh.exec(`${shellQuote(remoteBinary)} kill`);
-    if (killed.code !== 0) {
-      throw new Error(
-        `remote "${remoteBinary} kill" failed (exit ${killed.code ?? 'null'}): `
-        + `${(killed.stderr || killed.stdout).trim() || 'no output'}`,
-      );
-    }
-  }
-
-  // 3. 部署：缺失或与本机携带版本不一致就覆盖上传（上面的换血路径已经覆盖过就跳过）。
-  //    这条同时是「未启动的过期产物」的换血时机——否则 start 会拉起旧版 daemon，
-  //    之后每次接入都复用它（回到第 2 步）。
-  if (!deployed && (await ensureRemoteBinary(ssh, localBinary, remoteBinary))) {
+  // 2. 产物齐全：缺了才传。「在跑」不等于产物齐全——指纹目录被外部清掉时进程
+  //    仍在跑（inode 未释放），不在这里补，daemon 一死这份产物就彻底没了。
+  if (await ensureRemoteBinary(ssh, localBinary, remoteBinary)) {
     options.log(`[ssh] deployed ${remoteBinary} (${target.platform}-${target.arch})`);
   }
+  await ensureRemoteRipgrep(ssh, options, localBinary, remoteBinary, target);
 
-  // 4. Core 自带的 ripgrep：与可执行文件同级，缺了就补上
-  await ensureRemoteRipgrep(ssh, options, home);
+  // 3. 在跑的 daemon 原样返回；否则 start（幂等：已在跑就只打印连接信息）。换血
+  //    路径已随指纹槽位消失——没有任何场景需要在启动前结束别的 daemon。端口交给
+  //    内核分配（`--port 0`）：多版本 daemon 并存时互不抢固定端口，实际端口随状态
+  //    文件读回；`--idle-exit` 让 daemon 在最后一条连接断开后自行退出（客户端
+  //    crash 不留常驻进程，`docs/core-daemon.md` 第 12.5 节）。
+  if (running) return running;
 
-  // 5. 启动：`start` 自己保证幂等（已在跑就只打印连接信息）。绑回环——SSH 转发的
-  //    连接从远端本机发起，daemon 端口不需要、也不应该对外暴露；换血路径已先结束
-  //    在跑的 daemon，所以这条 start 只在「没有 daemon」时真正拉起进程。
-  const started = await ssh.exec(`${shellQuote(remoteBinary)} start --host 127.0.0.1`);
+  const started = await ssh.exec(
+    `${shellQuote(remoteBinary)} start --host 127.0.0.1 --port 0 `
+    + `--idle-exit ${REMOTE_DAEMON_IDLE_EXIT_SECONDS}`,
+  );
   if (started.code !== 0) {
     throw new Error(
       `remote "${remoteBinary} start" failed (exit ${started.code ?? 'null'}): `
@@ -149,70 +146,33 @@ export async function ensureRemoteDaemon(
     );
   }
 
-  // 6. 状态文件是唯一事实来源：daemon 实际监听的端口与生效 token 都在这里
+  // 4. 状态文件是唯一事实来源：daemon 实际监听的端口与生效 token 都在这里
   const state = await readDaemonState(ssh, statePath);
   if (!state) {
     throw new Error(
       `remote daemon started but ${statePath} is missing or malformed; `
-      + 'see the remote core-daemon.log for details.',
+      + `see the remote ${daemonLogFileName(fingerprint)} for details.`,
     );
   }
   return state;
 }
 
 /**
- * 远端可执行文件是否与本机携带产物一致（sha256 摘要比对）。
+ * 确保远端指纹目录里有可执行文件：缺失才上传，存在即同版本。
  *
- * 哈希命令不可用 / 读不出按「不一致」处理：宁可多一次覆盖重启，也不复用可能过期的
- * 旧 daemon——旧 daemon 的危害（一直拉起行为缺失的旧 Core）远大于一次多余的重启。
- */
-async function remoteBinaryMatches(
-  ssh: RemoteSsh,
-  localBinary: string,
-  remoteBinary: string,
-): Promise<boolean> {
-  const [localHash, remoteHash] = await Promise.all([
-    fileSha256(localBinary),
-    remoteFileSha256(ssh, remoteBinary),
-  ]);
-  return localHash !== null && localHash === remoteHash;
-}
-
-/** 本地文件 sha256；读不出返回 null */
-async function fileSha256(path: string): Promise<string | null> {
-  try {
-    return createHash('sha256').update(await readFile(path)).digest('hex');
-  } catch {
-    return null;
-  }
-}
-
-/** 远端 `sha256sum` 的摘要；命令不可用或输出不合法返回 null */
-async function remoteFileSha256(ssh: RemoteSsh, target: string): Promise<string | null> {
-  const result = await ssh.exec(`sha256sum ${shellQuote(target)}`);
-  if (result.code !== 0) return null;
-  const hash = result.stdout.trim().split(/\s+/)[0] ?? '';
-  return /^[0-9a-f]{64}$/.test(hash) ? hash : null;
-}
-
-/**
- * 确保远端可执行文件与本机携带产物一致：缺失 / 哈希不一致 / 哈希读不出都覆盖上传。
- *
- * 覆盖走「上传临时名 + `mv` 原子换名」：目标可能正被一个在跑的 daemon 执行（它的
- * 状态文件可能已丢失，我们无从得知它在跑），对执行中的文件直接覆盖写是 `ETXTBSY`
- * （SFTP 层报 `Failure`）；`mv` 是 rename，只换目录项，运行中的进程继续用旧 inode。
- * 返回是否发生了上传（调用方据此打部署日志）。
+ * 指纹只由源码内容与编译器身份决定（`docs/standalone-core.md` 第 4.4 节），同一
+ * 指纹的两个构建产物行为一致，因此存在就不再上传——不同构建机 / 不同客户端的
+ * 同版本产物互不覆盖。上传走「临时名 + `mv` 原子换名」：目标可能正被一个在跑的
+ * daemon 执行（它的指纹目录被清过、状态文件丢失时我们无从得知它在跑），对执行中
+ * 的文件直接覆盖写是 `ETXTBSY`（SFTP 层报 `Failure`）；`mv` 是 rename，只换目录项，
+ * 运行中的进程继续用旧 inode。返回是否发生了上传（调用方据此打部署日志）。
  */
 async function ensureRemoteBinary(
   ssh: RemoteSsh,
   localBinary: string,
   remoteBinary: string,
 ): Promise<boolean> {
-  const existing = await ssh.stat(remoteBinary);
-  const matches = existing.exists
-    ? await remoteBinaryMatches(ssh, localBinary, remoteBinary)
-    : false;
-  if (matches) return false;
+  if ((await ssh.stat(remoteBinary)).exists) return false;
   await ssh.exec(`mkdir -p ${shellQuote(posixDirname(remoteBinary))}`);
   const staging = `${remoteBinary}.new`;
   await ssh.upload(localBinary, staging, 0o755);
@@ -225,24 +185,23 @@ async function ensureRemoteBinary(
  *
  * 远端机器不一定装过 `rg`，而 Grep / Glob 是核心工具：缺了它，远端的工具只能
  * `spawn rg ENOENT`。**缺了才传**——远端路径与平台无关（远端只支持 Linux，
- * 文件名恒为 `rg`），先按这个名字 stat；真要上传时才 `uname -sm` 挑本机对应平台的产物。
- * 本机产物里没有这份 rg 属于构建不完整，直接报错（`DEVELOPMENT.md` 第 12 章）。
+ * 文件名恒为 `rg`），先按这个名字 stat。本机产物里没有这份 rg 属于构建不完整，
+ * 直接报错（`DEVELOPMENT.md` 第 12 章）。
  */
 async function ensureRemoteRipgrep(
   ssh: RemoteSsh,
   options: RemoteBootstrapOptions,
-  home: string,
+  localBinary: string,
+  remoteBinary: string,
+  target: RemoteTarget,
 ): Promise<void> {
   const remoteRipgrep = posixJoin(
-    home,
-    REMOTE_BIN_DIR,
+    posixDirname(remoteBinary),
     CORE_RIPGREP_DIR,
     bundledRipgrepFileName('linux'),
   );
   if ((await ssh.stat(remoteRipgrep)).exists) return;
 
-  const target = await detectRemoteTarget(ssh);
-  const localBinary = resolveCoreBinary(options.extensionPath, target.platform, target.arch);
   const localRipgrep = bundledRipgrepPath(localBinary, target.platform);
   if (!existsSync(localRipgrep)) {
     throw new Error(
@@ -291,8 +250,8 @@ async function probeRunningDaemon(
   const state = await readDaemonState(ssh, statePath);
   if (!state) {
     // 状态文件缺失 / 损坏不等于没有 daemon（文件可能被外部清掉而进程还在跑）：
-    // 这里只记录事实，由调用方决定「按没有处理」之后的路径（版本门禁 / start 的
-    // 端口重试都会兜住）。不打这行，故障现场就一条 ssh 日志都没有。
+    // 这里只记录事实，由调用方决定「按没有处理」之后的路径（start 的端口重试会
+    // 兜住）。不打这行，故障现场就一条 ssh 日志都没有。
     log('[ssh] daemon state file missing or unreadable; treating as no daemon');
     return null;
   }

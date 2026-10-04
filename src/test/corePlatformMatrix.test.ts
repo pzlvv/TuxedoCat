@@ -14,7 +14,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { bundledRipgrepFileName, bundledRipgrepPath, coreBinaryCandidates, coreBinaryFileName, corePlatformDir } from '../host/standalone/coreBinary';
+import { CORE_FINGERPRINT_FILE_NAME, bundledRipgrepFileName, bundledRipgrepPath, coreBinaryCandidates, coreBinaryFileName, corePlatformDir } from '../host/standalone/coreBinary';
 import { CORE_BINARY_NAME, CORE_RESOURCE_DIR } from '../config/project';
 import { createChecker, runTests } from './helpers/harness';
 
@@ -190,15 +190,18 @@ async function run(): Promise<void> {
     const binary = path.join(dir, `${CORE_BINARY_NAME}${entry.ext}`);
     // Core 自带的 ripgrep：与可执行文件同级（`tools.rs::ripgrep_path` 的定位基准）
     const ripgrep = bundledRipgrepPath(binary, entry.platform as NodeJS.Platform);
+    // 构建指纹：与可执行文件同级（`build-core.mjs` 落位，docs/standalone-core.md 第 4.4 节）
+    const fingerprint = path.join(dir, CORE_FINGERPRINT_FILE_NAME);
     if (alwaysBuilt.has(entry.dir)) {
       check(`${entry.dir} 已产出 ${CORE_BINARY_NAME}${entry.ext}`, fs.existsSync(binary));
       check(`${entry.dir} 已产出自带的 ripgrep`, fs.existsSync(ripgrep));
+      check(`${entry.dir} 已产出构建指纹`, fs.existsSync(fingerprint));
     } else {
       // 预留平台：目录不存在是预期状态，这里只断言「没有半成品」（有目录就必须有产物）
       const hasDir = fs.existsSync(dir);
       check(
         `${entry.dir}（按需构建）没有半成品产物`,
-        !hasDir || (fs.existsSync(binary) && fs.existsSync(ripgrep)),
+        !hasDir || (fs.existsSync(binary) && fs.existsSync(ripgrep) && fs.existsSync(fingerprint)),
       );
     }
   }

@@ -1,12 +1,17 @@
 //! 远程监听模式用例（`docs/core-daemon.md` 第 12 节）：
 //! token 生成与定长比较、连接串、命令行解析、目录列举，以及一条真实 TCP
-//! 控制通道上的「错误 token 被拒 / 正确 token 通过后能列目录」端到端路径。
+//! 控制通道上的「错误 token 被拒 / 正确 token 通过后能列目录」端到端路径；
+//! 另有多客户端并发用例（双连接鉴权 / 独立 Core / 断开隔离 / shutdown 全局生效 /
+//! 探活连接不阻塞接入），Core 进程用假工厂，不依赖真实可执行文件。
 
 use super::*;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde_json::json;
 
 // ==================== 工具 ====================
 
@@ -344,13 +349,29 @@ fn bind_listener_retries_next_port_on_conflict() {
 
 // ==================== 控制通道鉴权 ====================
 
+/// 真实 Core 进程工厂（单连接用例不开工作区，工厂不会被真正调用）
+fn system_spawner() -> Arc<dyn CoreSpawner> {
+    Arc::new(daemon::SystemCoreSpawner::current_exe().expect("current exe"))
+}
+
+/// 单连接用例的空事件源：调用方拿到 `Sender` 后直接丢弃（不需要停机广播注入）
+fn detached_events() -> (Sender<DaemonEvent>, Receiver<DaemonEvent>) {
+    mpsc::channel()
+}
+
 fn start_server(token: &str) -> (std::net::SocketAddr, thread::JoinHandle<ChannelExit>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
     let address = listener.local_addr().expect("addr");
     let token = token.to_string();
     let handle = thread::spawn(move || {
         let (stream, _) = listener.accept().expect("accept");
-        serve_connection(stream, &token, remote_daemon_options())
+        serve_connection(
+            stream,
+            &token,
+            remote_daemon_options(),
+            system_spawner(),
+            detached_events(),
+        )
     });
     (address, handle)
 }
@@ -477,7 +498,7 @@ fn accepts_token_then_lists_directories() {
 #[test]
 fn daemon_state_round_trip() {
     let dir = temp_dir("state");
-    let path = dir.join(DAEMON_STATE_FILE_NAME);
+    let path = dir.join(daemon_state_file_name());
     let state = DaemonState {
         requested: "127.0.0.1:10975".to_string(),
         endpoint: "127.0.0.1:10976".to_string(),
@@ -495,7 +516,7 @@ fn daemon_state_round_trip() {
         .unwrap()
         .flatten()
         .map(|entry| entry.file_name().to_string_lossy().to_string())
-        .filter(|name| name != DAEMON_STATE_FILE_NAME)
+        .filter(|name| *name != daemon_state_file_name())
         .collect();
     assert!(leftovers.is_empty(), "落盘后残留临时文件：{leftovers:?}");
 
@@ -508,7 +529,7 @@ fn daemon_state_round_trip() {
 fn daemon_state_file_is_owner_only() {
     use std::os::unix::fs::PermissionsExt;
     let dir = temp_dir("state-mode");
-    let path = dir.join(DAEMON_STATE_FILE_NAME);
+    let path = dir.join(daemon_state_file_name());
     write_daemon_state(
         &path,
         &DaemonState {
@@ -527,7 +548,7 @@ fn daemon_state_file_is_owner_only() {
 #[test]
 fn daemon_state_read_tolerates_garbage() {
     let dir = temp_dir("state-garbage");
-    let path = dir.join(DAEMON_STATE_FILE_NAME);
+    let path = dir.join(daemon_state_file_name());
     assert_eq!(read_daemon_state_at(&path), None, "文件不存在时返回 None");
     std::fs::write(&path, "not json").unwrap();
     assert_eq!(read_daemon_state_at(&path), None);
@@ -540,7 +561,7 @@ fn daemon_state_read_tolerates_garbage() {
 #[test]
 fn token_prefers_argument_then_file_then_random() {
     let dir = temp_dir("token");
-    let path = dir.join(DAEMON_TOKEN_FILE_NAME);
+    let path = dir.join(daemon_token_file_name());
     let mut options = RemoteOptions::default();
 
     // 都没有：新随机（32 位十六进制），并落盘
@@ -571,8 +592,8 @@ fn token_prefers_argument_then_file_then_random() {
 #[test]
 fn token_survives_state_file_removal() {
     let dir = temp_dir("token-survives");
-    let token_path = dir.join(DAEMON_TOKEN_FILE_NAME);
-    let state_path = dir.join(DAEMON_STATE_FILE_NAME);
+    let token_path = dir.join(daemon_token_file_name());
+    let state_path = dir.join(daemon_state_file_name());
     let options = RemoteOptions::default();
 
     let first = resolve_token(&options, &token_path);
@@ -599,7 +620,7 @@ fn token_survives_state_file_removal() {
 #[test]
 fn existing_daemon_is_none_without_a_live_listener() {
     let dir = temp_dir("existing-none");
-    let path = dir.join(DAEMON_STATE_FILE_NAME);
+    let path = dir.join(daemon_state_file_name());
     let options = RemoteOptions::default();
     assert_eq!(existing_daemon(&path, &options), ExistingDaemon::None);
 
@@ -626,7 +647,7 @@ fn existing_daemon_is_none_without_a_live_listener() {
 #[test]
 fn existing_daemon_reuses_or_rejects_by_request() {
     let dir = temp_dir("existing-live");
-    let path = dir.join(DAEMON_STATE_FILE_NAME);
+    let path = dir.join(daemon_state_file_name());
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let endpoint = listener.local_addr().unwrap().to_string();
     let options = RemoteOptions::default();
@@ -808,6 +829,8 @@ fn silent_connection_is_dropped_after_auth_timeout() {
                 auth_timeout: Duration::from_millis(200),
                 ..remote_daemon_options()
             },
+            system_spawner(),
+            detached_events(),
         )
     });
     let client = TcpStream::connect(address).expect("connect");
@@ -834,6 +857,8 @@ fn heartbeat_silence_ends_the_connection() {
                 heartbeat_timeout: Some(Duration::from_millis(300)),
                 ..remote_daemon_options()
             },
+            system_spawner(),
+            detached_events(),
         )
     });
     let mut client = TcpStream::connect(address).expect("connect");
@@ -860,7 +885,7 @@ fn heartbeat_silence_ends_the_connection() {
 #[test]
 fn state_file_is_removed_only_when_unchanged() {
     let dir = temp_dir("remove-state");
-    let path = dir.join(DAEMON_STATE_FILE_NAME);
+    let path = dir.join(daemon_state_file_name());
     let state = DaemonState {
         requested: "127.0.0.1:10975".to_string(),
         endpoint: "127.0.0.1:10975".to_string(),
@@ -883,4 +908,435 @@ fn state_file_is_removed_only_when_unchanged() {
     assert_eq!(read_daemon_state_at(&path), None);
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+// ==================== 多客户端并发 ====================
+
+/// 假 Core 进程：记录收到的行与 kill（与 `daemon_tests` 的同名夹具同形）
+#[derive(Default)]
+struct FakeChild {
+    /// 收到的内层帧行（不含换行）
+    lines: Mutex<Vec<String>>,
+    killed: AtomicBool,
+}
+
+struct FakeHandle {
+    child: Arc<FakeChild>,
+}
+
+impl daemon::CoreProcessHandle for FakeHandle {
+    fn send_line(&self, line: &str) -> std::io::Result<()> {
+        self.child.lines.lock().unwrap().push(line.to_string());
+        Ok(())
+    }
+
+    fn kill(&self) {
+        self.child.killed.store(true, Ordering::SeqCst);
+    }
+}
+
+/// 假 Core 进程工厂：每次 spawn 记一个新孩子（多客户端用例不依赖真实可执行文件）
+#[derive(Default)]
+struct FakeSpawner {
+    children: Mutex<Vec<Arc<FakeChild>>>,
+    spawns: AtomicUsize,
+}
+
+impl CoreSpawner for FakeSpawner {
+    fn spawn(
+        &self,
+        _channel: u64,
+        _sink: Arc<dyn daemon::CoreEventSink>,
+    ) -> std::io::Result<Box<dyn daemon::CoreProcessHandle>> {
+        self.spawns.fetch_add(1, Ordering::SeqCst);
+        let child = Arc::new(FakeChild::default());
+        self.children.lock().unwrap().push(Arc::clone(&child));
+        Ok(Box::new(FakeHandle { child }))
+    }
+}
+
+/// 常驻 daemon 夹具：真实 TCP listener + `accept_loop` 线程 + 假 Core 工厂。
+///
+/// `run_start_daemon` 的主线程角色（等停机、等收尾）由用例自己扮演
+/// （`expect_stop_and_drain`）；真实入口里它等的是同一组运行时方法。
+struct TestDaemon {
+    address: std::net::SocketAddr,
+    runtime: Arc<DaemonRuntime>,
+    spawner: Arc<FakeSpawner>,
+}
+
+impl TestDaemon {
+    fn start(token: &str, options: DaemonOptions) -> TestDaemon {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let runtime = Arc::new(DaemonRuntime::new());
+        let spawner: Arc<FakeSpawner> = Arc::new(FakeSpawner::default());
+        {
+            let runtime = Arc::clone(&runtime);
+            let spawner = Arc::clone(&spawner) as Arc<dyn CoreSpawner>;
+            let token = token.to_string();
+            thread::spawn(move || accept_loop(listener, &token, options, runtime, spawner));
+        }
+        TestDaemon {
+            address,
+            runtime,
+            spawner,
+        }
+    }
+
+    /// 建链并鉴权，返回可继续操作的客户端
+    fn connect(&self, token: &str) -> TestClient {
+        TestClient::connect(self.address, token)
+    }
+
+    /// 第 index 次 spawn 出的假 Core 进程
+    fn child(&self, index: usize) -> Arc<FakeChild> {
+        self.spawner.children.lock().unwrap()[index].clone()
+    }
+
+    fn spawn_count(&self) -> usize {
+        self.spawner.spawns.load(Ordering::SeqCst)
+    }
+
+    /// 轮询直到第 index 个孩子收到 `expected` 行（或超时）
+    fn wait_for_lines(&self, index: usize, expected: usize) -> Vec<String> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let lines = self.child(index).lines.lock().unwrap().clone();
+            if lines.len() >= expected {
+                return lines;
+            }
+            assert!(Instant::now() < deadline, "core did not receive frames in time");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// 轮询直到第 index 个孩子被 kill
+    fn wait_killed(&self, index: usize) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !self.child(index).killed.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "core was not killed in time");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// 扮演 `run_start_daemon` 的主线程：等停机置位、等全部连接收尾（返回即
+    /// 全部连接的 Core 已被各自的会话关闭，进程此刻会退出）。
+    fn expect_stop_and_drain(&self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !self.runtime.is_stopping() {
+            assert!(
+                Instant::now() < deadline,
+                "shutdown was not requested in time"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        self.runtime.wait_until_drained(Duration::from_secs(2));
+    }
+}
+
+impl Drop for TestDaemon {
+    fn drop(&mut self) {
+        // 用例结束即停机：掐断全部连接与 accept 线程，不留悬挂线程到下一个用例
+        self.runtime.begin_stop();
+    }
+}
+
+/// 测试客户端：一条已鉴权的控制连接
+struct TestClient {
+    stream: TcpStream,
+    reader: BufReader<TcpStream>,
+}
+
+impl TestClient {
+    fn connect(address: std::net::SocketAddr, token: &str) -> TestClient {
+        let mut stream = TcpStream::connect(address).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let request = format!(
+            "{{\"kind\":\"auth\",\"token\":{}}}\n",
+            serde_json::to_string(token).unwrap()
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let line = read_line(&mut reader);
+        assert!(line.contains("\"authOk\""), "鉴权应通过：{line}");
+        TestClient { stream, reader }
+    }
+
+    fn send(&mut self, value: &serde_json::Value) {
+        self.stream
+            .write_all(format!("{value}\n").as_bytes())
+            .expect("send frame");
+    }
+
+    fn next_frame(&mut self) -> serde_json::Value {
+        let line = read_line(&mut self.reader);
+        serde_json::from_str(line.trim_end()).expect("valid daemon frame")
+    }
+
+    /// 打开一个工作区，返回 daemon 分配的 channel
+    fn open_workspace(&mut self, id: u64, path: &str) -> u64 {
+        self.send(&json!({
+            "kind": "openWorkspace",
+            "id": id,
+            "workspaceRef": { "scheme": "file", "path": path, "endpoint": null },
+        }));
+        let opened = self.next_frame();
+        assert_eq!(opened["kind"], "workspaceOpened", "{opened}");
+        assert_eq!(opened["id"], id, "{opened}");
+        opened["channel"].as_u64().expect("channel id")
+    }
+
+    /// 断言 `duration` 内没有任何入站帧（channel 不 reset、Core 不重启的观察面）
+    fn assert_no_frame_within(&mut self, duration: Duration) {
+        // 超时必须设到真正执行读的句柄上：Windows 上克隆 socket 句柄各自持有选项
+        // 快照，改原句柄不影响已建克隆的读
+        self.reader.get_ref().set_read_timeout(Some(duration)).unwrap();
+        let mut line = String::new();
+        match self.reader.read_line(&mut line) {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut => {}
+            other => panic!("expected silence, got {other:?} / {line:?}"),
+        }
+        self.reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+    }
+}
+
+/// 两条并发连接各自鉴权、各自得到自己的应答：客户端身份是鉴权成功的连接，
+/// 同一时刻可同时服务多条。
+#[test]
+fn two_connections_serve_concurrently() {
+    let daemon = TestDaemon::start("secret", remote_daemon_options());
+    let dir = temp_dir("multi");
+    std::fs::create_dir_all(dir.join("alpha")).unwrap();
+    std::fs::create_dir_all(dir.join("beta")).unwrap();
+
+    let mut first = daemon.connect("secret");
+    let mut second = daemon.connect("secret");
+
+    // 各自列自己的目录：应答只回各自的连接（id 相同也不串线）
+    for (client, id, marker) in [
+        (&mut first, 1u64, "alpha"),
+        (&mut second, 2u64, "beta"),
+    ] {
+        let request = json!({
+            "kind": "listDirectories",
+            "id": id,
+            "path": dir.to_string_lossy(),
+        });
+        client.send(&request);
+        let listed = client.next_frame();
+        assert_eq!(listed["kind"], "directoriesListed", "{listed}");
+        assert_eq!(listed["id"], id, "{listed}");
+        let text = listed.to_string();
+        assert!(text.contains(marker), "应列出本连接请求的目录：{text}");
+    }
+
+    drop(first);
+    drop(second);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 两条连接各自 openWorkspace：channel id 按连接独立分配，两个 Core 进程互相独立，
+/// 内层帧各走各的进程。
+#[test]
+fn two_connections_get_independent_channels_and_cores() {
+    let daemon = TestDaemon::start("secret", remote_daemon_options());
+    let mut first = daemon.connect("secret");
+    let mut second = daemon.connect("secret");
+
+    // 同一个工作区路径：两个客户端各得一个独立 Core（对齐本地多窗口语义）
+    let channel_a = first.open_workspace(1, "D:/repo/shared");
+    let channel_b = second.open_workspace(1, "D:/repo/shared");
+    assert_eq!(channel_a, 1, "channel id 按连接独立分配，从 1 起");
+    assert_eq!(channel_b, 1);
+    assert_eq!(daemon.spawn_count(), 2, "两个互相独立的 Core 进程");
+
+    // 内层帧各走各的 Core
+    first.send(&json!({
+        "kind": "frame", "channel": channel_a,
+        "frame": { "kind": "hello", "protocol": 2 },
+    }));
+    second.send(&json!({
+        "kind": "frame", "channel": channel_b,
+        "frame": { "kind": "hello", "protocol": 3 },
+    }));
+    assert_eq!(
+        daemon.wait_for_lines(0, 1)[0],
+        "{\"kind\":\"hello\",\"protocol\":2}"
+    );
+    assert_eq!(
+        daemon.wait_for_lines(1, 1)[0],
+        "{\"kind\":\"hello\",\"protocol\":3}"
+    );
+}
+
+/// 一端断开：它的 Core 收到 shutdown 并被关闭；另一端的 channel 不 reset、
+/// Core 不重启、连接继续可用。
+#[test]
+fn disconnecting_one_connection_leaves_the_other_untouched() {
+    let daemon = TestDaemon::start("secret", remote_daemon_options());
+    let mut first = daemon.connect("secret");
+    let mut second = daemon.connect("secret");
+    let channel_a = first.open_workspace(1, "D:/repo/a");
+    let channel_b = second.open_workspace(2, "D:/repo/b");
+    assert_eq!(channel_a, 1);
+    assert_eq!(channel_b, 1);
+    assert_eq!(daemon.spawn_count(), 2);
+
+    // 一端断开：它的 Core 收到 shutdown 行并被 kill
+    drop(first);
+    daemon.wait_killed(0);
+    let lines = daemon.child(0).lines.lock().unwrap().clone();
+    assert_eq!(
+        lines.last().map(String::as_str),
+        Some("{\"kind\":\"shutdown\"}"),
+        "断开应收尾关闭该连接的 Core：{lines:?}"
+    );
+
+    // 另一端不受影响：没有 channelReset / workspaceClosed，Core 不重启
+    assert_eq!(daemon.spawn_count(), 2, "另一端的 Core 不得重启");
+    assert!(!daemon.child(1).killed.load(Ordering::SeqCst));
+    second.assert_no_frame_within(Duration::from_millis(300));
+    // 且还能继续服务
+    second.send(&json!({ "kind": "ping" }));
+    let pong = second.next_frame();
+    assert_eq!(pong["kind"], "pong", "{pong}");
+}
+
+/// 任一连接发 `shutdown` → 结束整个 daemon：全部连接的 Core 都被关闭，收尾后退出。
+#[test]
+fn shutdown_from_one_connection_ends_the_whole_daemon() {
+    let daemon = TestDaemon::start("secret", remote_daemon_options());
+    let mut first = daemon.connect("secret");
+    let mut second = daemon.connect("secret");
+    first.open_workspace(1, "D:/repo/a");
+    second.open_workspace(2, "D:/repo/b");
+    assert_eq!(daemon.spawn_count(), 2);
+
+    // shutdown 是全局生效的 kill 语义：另一条连接的 Core 也一并关闭
+    first.send(&json!({ "kind": "shutdown" }));
+    daemon.expect_stop_and_drain();
+
+    // 两端 Core 都被各自的会话收尾关闭（第二连接经停机广播 → Host 断开路径）
+    daemon.wait_killed(0);
+    daemon.wait_killed(1);
+}
+
+/// 连上后不发 `auth` 的探活连接不再阻塞后续接入：第二条连接在第一条的鉴权
+/// 超时窗口（默认 10s）内就能完成鉴权并得到服务。
+#[test]
+fn probe_connection_does_not_block_the_next_one() {
+    let daemon = TestDaemon::start("secret", remote_daemon_options());
+    // 探活：连上后什么都不发
+    let _probe = TcpStream::connect(daemon.address).expect("probe connect");
+    let connected_at = Instant::now();
+
+    // 第二条连接立刻接入并完成鉴权（远在第一条的 10s 鉴权超时窗口之内）
+    let mut second = daemon.connect("secret");
+    assert!(
+        connected_at.elapsed() < Duration::from_secs(9),
+        "第二条应在第一条的鉴权超时窗口内完成鉴权"
+    );
+    // daemon 已在并发服务第二条连接
+    second.send(&json!({ "kind": "ping" }));
+    let pong = second.next_frame();
+    assert_eq!(pong["kind"], "pong", "{pong}");
+
+    // 探活连接自己的超时回收由 `silent_connection_is_dropped_after_auth_timeout`
+    // 覆盖（短上限版），这里不等 10s。
+}
+
+// ==================== 空闲退出（`--idle-exit`，`docs/core-daemon.md` 第 12.5 节）====================
+//
+// 客户端异常退出（crash / 断电）后远端不留常驻进程：daemon 在没有任何控制连接持续
+// `--idle-exit` 秒后自行退出。这里直接测 `wait_for_stop_or_idle` 的时序语义。
+
+use std::sync::Arc;
+
+/// 造一个可登记的连接登记项（事件通道的 rx 即刻丢弃：广播 send 失败无需处理）
+fn idle_entry() -> ConnectionEntry {
+    let (events, _rx) = mpsc::channel::<DaemonEvent>();
+    ConnectionEntry {
+        events,
+        socket: None,
+    }
+}
+
+#[test]
+fn idle_exit_fires_when_no_connection_ever_arrives() {
+    let runtime = Arc::new(DaemonRuntime::new());
+    let (done_tx, done_rx) = mpsc::channel();
+    {
+        let runtime = Arc::clone(&runtime);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(runtime.wait_for_stop_or_idle(Some(Duration::from_millis(80))));
+        });
+    }
+    // 启动后一直没有连接：死线从启动起算，到期走空闲退出（返回 false = 非 shutdown）
+    let stopped = done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("idle waiter should return at the deadline");
+    assert!(!stopped, "到期应报空闲退出，而不是 shutdown");
+    // 收尾置停机位后，迟到的连接被拒绝，不会接在一个将死的 daemon 上
+    runtime.begin_stop();
+    assert!(runtime.register(idle_entry()).is_none(), "停机位应拒绝新连接");
+}
+
+#[test]
+fn idle_exit_counts_from_the_last_connection_drop() {
+    let runtime = Arc::new(DaemonRuntime::new());
+    let (done_tx, done_rx) = mpsc::channel();
+    {
+        let runtime = Arc::clone(&runtime);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(runtime.wait_for_stop_or_idle(Some(Duration::from_millis(120))));
+        });
+    }
+    // 有连接期间不计时：等过整个 idle 窗口再加余量，等待者必须还活着
+    let id = runtime
+        .register(idle_entry())
+        .expect("register while not stopping");
+    std::thread::sleep(Duration::from_millis(250));
+    assert!(
+        done_rx.try_recv().is_err(),
+        "有连接时空闲退出不应触发"
+    );
+    // 最后一条连接断开：死线从断开时刻重新起算
+    let started = std::time::Instant::now();
+    runtime.unregister(id);
+    let stopped = done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("idle waiter should return after the disconnect");
+    assert!(!stopped);
+    assert!(
+        started.elapsed() >= Duration::from_millis(100),
+        "idle 应从最后一条连接断开起算（实际 {:?}）",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn shutdown_wins_over_idle_exit() {
+    let runtime = Arc::new(DaemonRuntime::new());
+    let (done_tx, done_rx) = mpsc::channel();
+    {
+        let runtime = Arc::clone(&runtime);
+        std::thread::spawn(move || {
+            // idle 远未到期：shutdown 必须先行
+            let _ = done_tx.send(runtime.wait_for_stop_or_idle(Some(Duration::from_secs(30))));
+        });
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    runtime.begin_stop();
+    let stopped = done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("waiter should return on shutdown");
+    assert!(stopped, "shutdown 先到应报停机，而不是空闲退出");
 }

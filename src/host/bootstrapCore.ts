@@ -519,16 +519,29 @@ function notifyWorkspaceConnectionState(
  * 探测需要自己的短超时（`timeoutMs`），复用注册表 daemon 会把失败信号拖到两分钟后。
  * 探测拿到链路立即断开——不发 `shutdown` 帧，远端 daemon 的生命周期不受影响；
  * 超时后迟到的链路同样就地杀掉，不留悬挂 socket / SSH 进程。
+ *
+ * **远端引导不计入 `timeoutMs`**：opener 有 `prepare`（SSH 为发现 / 部署 / 启动
+ * daemon）时先跑它——冷部署要上传产物再拉起 daemon，远超探测预算；`timeoutMs`
+ * 只管「daemon 就绪之后的建链」。同一 endpoint 的并发引导已被 `sshTransport` 按
+ * SSH 目标去重，这里的引导不会与正式连接的重复部署。
  */
 export async function probeRemoteEndpoint(endpoint: WorkspaceEndpoint, timeoutMs: number): Promise<void> {
   const options = activeOptions;
   if (!options) {
     throw new Error('bootstrapCore() has not run; no remote opener available.');
   }
-  const opening = daemonOpenerFor(endpoint, options).open();
+  const opener = daemonOpenerFor(endpoint, options);
+  if (opener.prepare) await opener.prepare();
+  const opening = opener.open();
+  // 探测的 opener 是临时建的（每次 probe 一个，不复用注册表 daemon 的）：链路落定后
+  // 关掉底层 SSH 连接。挂在 `opening` 之后而不是探测的 return / 超时点——探测超时
+  // 只是调用方放弃，建链（含引导）继续走完，socket 与 SSH 连接届时才收。
+  void opening
+    .then((link) => link.kill(), () => undefined)
+    .finally(() => opener.dispose());
   let timer: NodeJS.Timeout | undefined;
   try {
-    const link = await Promise.race([
+    await Promise.race([
       opening,
       new Promise<never>((_, reject) => {
         timer = setTimeout(
@@ -538,7 +551,6 @@ export async function probeRemoteEndpoint(endpoint: WorkspaceEndpoint, timeoutMs
         timer.unref();
       }),
     ]);
-    link.kill();
   } finally {
     if (timer) clearTimeout(timer);
     // 超时后迟到的链路：就地杀掉（已 settle 的路径上这是无害的重复 kill）

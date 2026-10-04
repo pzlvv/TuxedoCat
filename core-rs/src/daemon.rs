@@ -1,18 +1,21 @@
 //! daemon 进程模型（见 `docs/core-daemon.md`）。
 //!
 //! 职责：
-//! - 一个 endpoint 一个 daemon；一个工作区一个 Core 进程（daemon 持有其 stdio）；
+//! - 一个 endpoint 一个 daemon；每（连接, 工作区）一个 Core 进程（daemon 持有其 stdio）；
 //! - 控制通道上的多路复用：每个 Core 的帧通道是它上面的一条逻辑 channel；
 //! - Core 的启动、重启（退避 + 上限）、终止都由 daemon 承担；
-//! - 控制通道断开时关闭全部 Core 并退出；`idle_exit` 为真时，活着的 Core 计数归零
-//!   后还经 grace 期退出（远程监听不设，见 `remote::remote_daemon_options`）。
+//! - 控制连接断开时关闭该连接的全部 Core 并结束这条会话（远程 daemon 继续服务其它
+//!   连接，见 `remote::accept_loop`）；`idle_exit` 为真时，活着的 Core 计数归零后还经
+//!   grace 期退出（远程监听不设，见 `remote::remote_daemon_options`）。
 //!
 //! 线程模型：
 //! - 主循环只做状态机与转发，输入事件经 `DaemonEvent` 通道汇聚；
 //! - 每个 Core 进程各有一个 stdout 读线程、stderr 诊断线程、stdin 写线程与退出监视
 //!   线程：单条 channel 的阻塞不会拖住其它 channel（规格第 7.4 节背压）；
 //! - 控制通道出站经 `FrameOutput`：远程实现是加锁串行的 socket 写，越过软水位只
-//!   记录诊断，不丢帧。
+//!   记录诊断，不丢帧；
+//! - 一次 `run_daemon` 调用是一条控制连接的全部状态（channel 表、计数、grace、心跳），
+//!   连接之间互不共享（`docs/core-daemon.md` 第 12.5 节）。
 //!
 //! 进程工厂（`CoreSpawner`）与事件汇（`CoreEventSink`）都做了抽象：
 //! 单元测试注入假进程，不需要真实可执行文件。
@@ -31,16 +34,19 @@ use crate::daemon_protocol::{
     ChannelDescriptor, DaemonToHostFrame, DirectoryFailureReason, HostToDaemonFrame,
     WorkspaceCloseReason,
 };
+use crate::util::diag;
 
 /// 一条控制通道上的 daemon 会话结束原因。
 ///
-/// 远程 daemon 是常驻 server：只有 `Stop` 才结束进程，`Continue` 表示回到 accept
-/// 等下一条连接（`remote::run_start_daemon`）。
+/// 远程 daemon 是常驻 server，同时服务多条控制连接：`Continue` 表示这条连接的会话
+/// 结束、服务线程退出，daemon 继续服务其它连接；只有 `Stop` 才由该连接的服务线程
+/// 触发整个 daemon 的停机（`remote::DaemonRuntime::begin_stop`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelExit {
-    /// 结束 daemon：对端发 `shutdown`、空闲到 grace 期，或内部错误
+    /// 结束整个 daemon：对端发 `shutdown`（`kill` 发的，全局生效）、空闲到 grace 期，
+    /// 或内部错误
     Stop,
-    /// 只是这条控制通道断了：daemon 继续
+    /// 只是这条控制连接断了：服务线程退出，daemon 继续
     Continue,
 }
 
@@ -87,13 +93,14 @@ pub struct DaemonOptions {
     pub idle_exit: bool,
     /// 第一帧 `auth` 的等待上限（远程控制通道；`docs/core-daemon.md` 第 12.4 节）。
     ///
-    /// accept 循环是同步单连接：连接后不发 `auth` 的探活连接 / 端口扫描占着它，
-    /// 后续接入全部饿死。超时即关闭这条连接。
+    /// 连接后不发 `auth` 的探活连接 / 端口扫描占用的是它自己那条连接的服务线程
+    /// （每条连接一个线程，互不阻塞，`docs/core-daemon.md` 第 12.5 节），上限把
+    /// 这部分占用封顶；超时即关闭这条连接。
     pub auth_timeout: Duration,
     /// 心跳空闲超时（远程控制通道；`docs/core-daemon.md` 第 12.5 节）。
     ///
     /// 见过首个 `ping` 后启用：这么长时间没再收到任何控制帧，按 Host 断开处理
-    /// （close_all + 回到 accept）。Host 消失而 TCP 未断（断网 / 休眠 / 进程冻结）
+    /// （close_all + 本条会话结束）。Host 消失而 TCP 未断（断网 / 休眠 / 进程冻结）
     /// 时这是唯一的回收手段。`None` = 不启用（本地 stdio 没有 ping；旧版 Host
     /// 也不发 ping，保持原有行为）。
     pub heartbeat_timeout: Option<Duration>,
@@ -258,7 +265,7 @@ impl CoreSpawner for SystemCoreSpawner {
         std::thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
-                eprintln!("[core:{channel}] {line}");
+                diag!("[core:{channel}] {line}");
             }
         });
 
@@ -362,7 +369,7 @@ fn inner_line(frame: &Value) -> Option<String> {
 fn send_to_host(out: &dyn FrameOutput, frame: &DaemonToHostFrame) {
     match frame.encode() {
         Ok(line) => out.write_line(line),
-        Err(err) => eprintln!("[daemon] failed to encode frame: {err}"),
+        Err(err) => diag!("[daemon] failed to encode frame: {err}"),
     }
 }
 
@@ -402,7 +409,7 @@ pub fn run_daemon(
         // 1. grace 期到期：退出
         if let Some(deadline) = grace_deadline {
             if now >= deadline {
-                eprintln!("[daemon] no live cores after grace period; exiting");
+                diag!("[daemon] no live cores after grace period; exiting");
                 return ChannelExit::Stop;
             }
         }
@@ -427,7 +434,7 @@ pub fn run_daemon(
         for channel in force_kill {
             if let Some(state) = channels.get(&channel) {
                 if let Some(handle) = &state.handle {
-                    eprintln!("[daemon] channel {channel}: shutdown timed out; killing core");
+                    diag!("[daemon] channel {channel}: shutdown timed out; killing core");
                     handle.kill();
                 }
             }
@@ -458,7 +465,7 @@ pub fn run_daemon(
                 let frame = match serde_json::from_str::<HostToDaemonFrame>(&line) {
                     Ok(frame) => frame,
                     Err(err) => {
-                        eprintln!("[daemon] malformed control frame: {err}; dropped");
+                        diag!("[daemon] malformed control frame: {err}; dropped");
                         continue;
                     }
                 };
@@ -544,12 +551,12 @@ pub fn run_daemon(
                     }
                     // 本地 stdio 通道没有鉴权阶段：收到 auth 只记诊断，不改变状态。
                     HostToDaemonFrame::Auth { .. } => {
-                        eprintln!("[daemon] unexpected auth frame on a non-remote channel; ignored");
+                        diag!("[daemon] unexpected auth frame on a non-remote channel; ignored");
                     }
                 }
             }
             Ok(DaemonEvent::HostDisconnected) => {
-                eprintln!("[daemon] control channel disconnected; closing all cores");
+                diag!("[daemon] control channel disconnected; closing all cores");
                 close_all(&channels, &out);
                 return ChannelExit::Continue;
             }
@@ -560,7 +567,7 @@ pub fn run_daemon(
                         &DaemonToHostFrame::Frame { channel, frame },
                     ),
                     Err(err) => {
-                        eprintln!("[daemon] channel {channel}: malformed inner frame: {err}; dropped")
+                        diag!("[daemon] channel {channel}: malformed inner frame: {err}; dropped")
                     }
                 }
             }
@@ -573,7 +580,7 @@ pub fn run_daemon(
                 // 永远等不到 EOF，只能按沉默判定断开——同 `HostDisconnected` 口径
                 if let Some(deadline) = heartbeat_deadline {
                     if Instant::now() >= deadline {
-                        eprintln!("[daemon] control channel heartbeat timed out; closing all cores");
+                        diag!("[daemon] control channel heartbeat timed out; closing all cores");
                         close_all(&channels, &out);
                         return ChannelExit::Continue;
                     }
@@ -622,7 +629,7 @@ fn maybe_start_grace(
         return;
     }
     if channels.is_empty() && grace_deadline.is_none() {
-        eprintln!(
+        diag!(
             "[daemon] no live cores; exiting in {}s unless a workspace opens",
             options.grace_period.as_secs()
         );
@@ -650,7 +657,7 @@ fn open_workspace(
                 .get("path")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            eprintln!("[daemon] channel {channel} opened (workspace={workspace})");
+            diag!("[daemon] channel {channel} opened (workspace={workspace})");
             send_to_host(
                 out.as_ref(),
                 &DaemonToHostFrame::WorkspaceOpened {
@@ -661,7 +668,7 @@ fn open_workspace(
             );
         }
         Err(err) => {
-            eprintln!("[daemon] failed to start core for workspace request {id}: {err}");
+            diag!("[daemon] failed to start core for workspace request {id}: {err}");
             send_to_host(
                 out.as_ref(),
                 &DaemonToHostFrame::WorkspaceFailed {
@@ -679,7 +686,7 @@ fn begin_close(
     options: &DaemonOptions,
 ) {
     let Some(state) = channels.get_mut(&channel) else {
-        eprintln!("[daemon] closeWorkspace for unknown channel {channel}");
+        diag!("[daemon] closeWorkspace for unknown channel {channel}");
         return;
     };
     if state.closing {
@@ -695,26 +702,26 @@ fn begin_close(
 /// Host → Core：把内层帧转发给该 channel 的进程；重启窗口内先排队
 fn forward_to_core(channels: &mut HashMap<u64, ChannelState>, channel: u64, frame: &Value) {
     let Some(state) = channels.get_mut(&channel) else {
-        eprintln!("[daemon] frame for unknown channel {channel}; dropped");
+        diag!("[daemon] frame for unknown channel {channel}; dropped");
         return;
     };
     if state.closing {
-        eprintln!("[daemon] channel {channel} is closing; frame dropped");
+        diag!("[daemon] channel {channel} is closing; frame dropped");
         return;
     }
     let Some(line) = inner_line(frame) else {
-        eprintln!("[daemon] channel {channel}: failed to encode inner frame; dropped");
+        diag!("[daemon] channel {channel}: failed to encode inner frame; dropped");
         return;
     };
     match &state.handle {
         Some(handle) => {
             if let Err(err) = handle.send_line(&line) {
-                eprintln!("[daemon] channel {channel}: core stdin write failed: {err}");
+                diag!("[daemon] channel {channel}: core stdin write failed: {err}");
             }
         }
         None => {
             if state.pending.len() > OUTBOX_WARN_THRESHOLD {
-                eprintln!(
+                diag!(
                     "[daemon] channel {channel}: {} frames queued while core is restarting",
                     state.pending.len()
                 );
@@ -734,13 +741,13 @@ fn handle_core_exit(
     options: &DaemonOptions,
 ) {
     let Some(mut state) = channels.remove(&channel) else {
-        eprintln!("[daemon] exit event for unknown channel {channel}");
+        diag!("[daemon] exit event for unknown channel {channel}");
         return;
     };
     state.handle = None;
 
     if state.closing {
-        eprintln!("[daemon] channel {channel} closed (core exited)");
+        diag!("[daemon] channel {channel} closed (core exited)");
         send_to_host(
             out.as_ref(),
             &DaemonToHostFrame::WorkspaceClosed {
@@ -751,7 +758,7 @@ fn handle_core_exit(
         return;
     }
 
-    eprintln!("[daemon] channel {channel} core exited unexpectedly (code={code:?})");
+    diag!("[daemon] channel {channel} core exited unexpectedly (code={code:?})");
     if schedule_restart(&mut state, out, options) {
         channels.insert(channel, state);
     }
@@ -772,7 +779,7 @@ fn schedule_restart(
         .restart_timestamps
         .retain(|timestamp| now.duration_since(*timestamp) < policy.window);
     if state.restart_timestamps.len() >= policy.max_attempts {
-        eprintln!(
+        diag!(
             "[daemon] channel {}: {} restarts within {}s; giving up",
             state.channel,
             state.restart_timestamps.len(),
@@ -831,20 +838,20 @@ fn respawn_core(
     match spawner.spawn(channel, Arc::clone(sink)) {
         Ok(handle) => {
             state.handle = Some(handle);
-            eprintln!("[daemon] channel {channel} restarted on the same channel");
+            diag!("[daemon] channel {channel} restarted on the same channel");
             // 重启期间排队的帧（含 Host 的重新握手 hello）按序冲刷
             let pending = std::mem::take(&mut state.pending);
             if let Some(handle) = &state.handle {
                 for line in pending {
                     if let Err(err) = handle.send_line(&line) {
-                        eprintln!("[daemon] channel {channel}: flush failed: {err}");
+                        diag!("[daemon] channel {channel}: flush failed: {err}");
                         break;
                     }
                 }
             }
         }
         Err(err) => {
-            eprintln!("[daemon] channel {channel}: failed to restart core: {err}");
+            diag!("[daemon] channel {channel}: failed to restart core: {err}");
             if !schedule_restart(state, out, options) {
                 // 放弃重启：channel 已关闭，从表中移除（计数随之递减）
                 channels.remove(&channel);
@@ -874,21 +881,30 @@ fn close_all(channels: &HashMap<u64, ChannelState>, out: &Arc<dyn FrameOutput>) 
 
 // ==================== 真实模式入口 ====================
 
-/// 在一条控制通道上跑 daemon 主循环：读线程把行送入事件通道，返回 daemon 退出码。
+/// 在一条控制通道上跑 daemon 主循环：读线程把行送入事件通道，返回会话结束原因。
 ///
-/// 生产入口是远程 TCP（`remote::serve_connection`，`start-daemon`）；测试注入
-/// 内存 reader / `ChannelOutput`。reader 由 `make_reader` 在读线程里创建。
+/// 生产入口是远程 TCP（`remote::serve_connection`，`start-daemon`，每条连接一次）；
+/// 测试注入内存 reader / `ChannelOutput` / 假进程工厂。reader 由 `make_reader` 在
+/// 读线程里创建。
+///
+/// 事件通道由调用方创建并传入：调用方（每条连接的服务线程）持有 `Sender` 的克隆，
+/// 可在会话外注入 `DaemonEvent::HostDisconnected`——停机广播用它让会话自己走
+/// 「Host 断开」收尾（关闭自己的全部 Core），不依赖 socket shutdown 唤醒阻塞中的
+/// 读线程（Windows 上对自身 socket 的 shutdown 不会取消进行中的 read）。测试不需要
+/// 注入：把 `Sender` 直接丢弃即可。
 pub fn run_control_channel<R, F>(
     make_reader: F,
     out: Arc<dyn FrameOutput>,
+    spawner: Arc<dyn CoreSpawner>,
     options: DaemonOptions,
+    events: Sender<DaemonEvent>,
+    event_rx: Receiver<DaemonEvent>,
 ) -> ChannelExit
 where
     R: BufRead,
     F: FnOnce() -> R + Send + 'static,
 {
-    let (tx, rx) = mpsc_channel::<DaemonEvent>();
-    let sink: Arc<dyn CoreEventSink> = Arc::new(ChannelSink { tx: tx.clone() });
+    let sink: Arc<dyn CoreEventSink> = Arc::new(ChannelSink { tx: events.clone() });
 
     // 控制通道读线程：按行解析成 Command；EOF 视为 Host 断开
     std::thread::spawn(move || {
@@ -896,27 +912,20 @@ where
         for line in reader.lines() {
             match line {
                 Ok(line) => {
-                    if tx.send(DaemonEvent::Command(line)).is_err() {
+                    if events.send(DaemonEvent::Command(line)).is_err() {
                         return;
                     }
                 }
                 Err(err) => {
-                    eprintln!("[daemon] control channel read error: {err}");
+                    diag!("[daemon] control channel read error: {err}");
                     break;
                 }
             }
         }
-        let _ = tx.send(DaemonEvent::HostDisconnected);
+        let _ = events.send(DaemonEvent::HostDisconnected);
     });
 
-    let spawner: Arc<dyn CoreSpawner> = match SystemCoreSpawner::current_exe() {
-        Ok(spawner) => Arc::new(spawner),
-        Err(err) => {
-            eprintln!("[daemon] cannot resolve own executable: {err}");
-            return ChannelExit::Stop;
-        }
-    };
-    run_daemon(rx, out, sink, spawner, options)
+    run_daemon(event_rx, out, sink, spawner, options)
 }
 
 #[cfg(test)]

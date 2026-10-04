@@ -140,6 +140,14 @@ export interface CoreDaemonLink {
  */
 export interface CoreDaemonLinkOpener {
   open(): Promise<CoreDaemonLink>;
+  /**
+   * 建链前的准备（可选；SSH 实现为引导远端 daemon——发现 / 部署 / 启动）。
+   *
+   * 探测方（`probeRemoteEndpoint`）先跑它再开始计时：部署可能远超探测的短超时，
+   * 计时只该覆盖「daemon 就绪之后的建链」。实现必须幂等——`open()` 自己会再走一遍
+   * 引导，此时 daemon 已就绪，是快路径。没有准备阶段的实现（TCP 直连）不提供。
+   */
+  prepare?(): Promise<void>;
   /** 释放底层资源（SSH 连接等）；幂等 */
   dispose(): void;
 }

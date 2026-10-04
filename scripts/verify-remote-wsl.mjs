@@ -103,14 +103,23 @@ function connectOnce(host, port, timeoutMs = 5_000) {
   });
 }
 
-/** 连接远端；连接串给出的 WSL IP 连不上时回退 Windows 的 localhost 转发 */
-async function connectTo(host, port) {
+/** 连接远端并完成一次 auth 握手；候选地址逐个回退，链路错误（连上即断等）换下一个 */
+async function connectAndExchange(host, port, frame, label, timeoutMs = 10_000) {
   const candidates = host === '127.0.0.1' ? [host] : [host, '127.0.0.1'];
   let lastError;
   for (const candidate of candidates) {
+    let socket;
     try {
-      return await connectOnce(candidate, port);
+      socket = await connectOnce(candidate, port);
     } catch (error) {
+      lastError = error;
+      continue;
+    }
+    try {
+      const reader = createInterface({ input: socket });
+      return { socket, reader, reply: await exchange(socket, reader, frame, timeoutMs, label) };
+    } catch (error) {
+      socket.destroy();
       lastError = error;
     }
   }
@@ -120,15 +129,34 @@ async function connectTo(host, port) {
 /** 发一帧并等下一帧 */
 function exchange(socket, reader, frame, timeoutMs, label) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`等待 ${label} 超时`)), timeoutMs);
-    reader.once('line', (line) => {
-      clearTimeout(timer);
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`等待 ${label} 超时`));
+    }, timeoutMs);
+    const onLine = (line) => {
+      cleanup();
       try {
         resolve(JSON.parse(line));
       } catch (error) {
         reject(new Error(`${label} 返回的不是 JSON：${line}`));
       }
-    });
+    };
+    // 连接被重置（ECONNRESET）等 socket 层错误必须接住：候选地址（WSL NAT 网关等）
+    // 可能「连上即断」，不接会让未处理的 error 事件把整个验证进程崩掉，
+    // 走不到调用方的下一个候选地址回退。
+    const onError = (error) => {
+      cleanup();
+      reject(new Error(`${label} 链路错误：${error.message}`));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      reader.off('line', onLine);
+      reader.off('error', onError);
+      socket.off('error', onError);
+    };
+    reader.once('line', onLine);
+    reader.once('error', onError);
+    socket.once('error', onError);
     socket.write(`${JSON.stringify(frame)}\n`);
   });
 }
@@ -178,20 +206,23 @@ async function main() {
     const { host, port } = connection;
     console.log(`[verify] 从 Windows 连接 ${host}:${port}`);
 
-    // 先验证错误 token：daemon 同时只服务一条控制通道，
-    // 必须在上面的「好连接」之前做，否则它只能排在 accept 队列里等。
-    const bad = await connectTo(host, port);
-    const badReader = createInterface({ input: bad });
-    const rejected = await exchange(bad, badReader, { kind: 'auth', token: 'wrong' }, 10_000, 'authFailed');
-    if (rejected.kind !== 'authFailed') throw new Error(`错误 token 未被拒绝：${JSON.stringify(rejected)}`);
+    // 先验证错误 token：daemon 并发服务多条控制通道，顺序无关紧要；把错误路径放在
+    // 好连接之前只是让断言更直观。候选地址连上即断（WSL NAT 网关等）时自动回退
+    // localhost 转发。
+    const bad = await connectAndExchange(
+      host,
+      port,
+      { kind: 'auth', token: 'wrong' },
+      'authFailed',
+    );
+    if (bad.reply.kind !== 'authFailed') throw new Error(`错误 token 未被拒绝：${JSON.stringify(bad.reply)}`);
+    bad.socket.destroy();
     console.log('[verify] 错误 token 被拒绝');
-    bad.destroy();
 
-    socket = await connectTo(host, port);
-    const reader = createInterface({ input: socket });
-
-    const authOk = await exchange(socket, reader, { kind: 'auth', token }, 10_000, 'authOk');
-    if (authOk.kind !== 'authOk') throw new Error(`鉴权失败：${JSON.stringify(authOk)}`);
+    const good = await connectAndExchange(host, port, { kind: 'auth', token }, 'authOk');
+    if (good.reply.kind !== 'authOk') throw new Error(`鉴权失败：${JSON.stringify(good.reply)}`);
+    socket = good.socket;
+    const reader = good.reader;
     console.log('[verify] authOk');
 
     const listing = await exchange(

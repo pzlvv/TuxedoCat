@@ -48,6 +48,15 @@ export function coreBinaryFileName(platform: NodeJS.Platform = process.platform)
  */
 export const CORE_RIPGREP_DIR = 'ripgrep';
 
+/**
+ * 构建指纹文件名（与可执行文件同级，`build-core.mjs` 落位）。
+ *
+ * 指纹只由源码内容与编译器身份决定（docs/standalone-core.md 第 4.4 节）：SSH 部署按
+ * 它落位远端目录 `~/.local/bin/<指纹>/`，多版本 Core 在同一台远端机器上各占一个
+ * 槽位互不干扰；Electron / vsix 打包把它与产物一起携带，宿主运行时读取。
+ */
+export const CORE_FINGERPRINT_FILE_NAME = 'fingerprint';
+
 /** 自带 ripgrep 的文件名；Windows 带 `.exe` */
 export function bundledRipgrepFileName(platform: NodeJS.Platform = process.platform): string {
   return platform === 'win32' ? 'rg.exe' : 'rg';
@@ -126,4 +135,39 @@ export function resolveCoreBinary(
     `Standalone Core binary not found. Looked in: ${candidates.join(', ')}. ` +
     'Run "npm run build:core" first.',
   );
+}
+
+/**
+ * 读取 Standalone Core 的构建指纹（可执行文件同级的 `fingerprint` 文件）。
+ *
+ * 指纹是 SSH 部署的槽位标识：宿主据此确定远端目录 `~/.local/bin/<指纹>/` 与该指纹
+ * 专属的 daemon 状态文件（`docs/core-daemon.md` 第 12.3 节）。
+ * 文件缺失 / 内容不是 64 位小写 hex 都抛错：产物不完整属于构建期错误，静默猜一个
+ * 指纹会部署到错误的槽位（`DEVELOPMENT.md` 第 12 章）。
+ */
+export function readCoreFingerprint(
+  extensionPath: string,
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string {
+  const fingerprintPath = path.join(
+    path.dirname(resolveCoreBinary(extensionPath, platform, arch)),
+    CORE_FINGERPRINT_FILE_NAME,
+  );
+  let text: string;
+  try {
+    text = fs.readFileSync(fingerprintPath, 'utf8').trim();
+  } catch {
+    throw new Error(
+      `Standalone Core fingerprint file not found: ${fingerprintPath}. ` +
+      'Run "npm run build:core" first.',
+    );
+  }
+  if (!/^[0-9a-f]{64}$/.test(text)) {
+    throw new Error(
+      `Standalone Core fingerprint is malformed: ${fingerprintPath} does not hold ` +
+      'a 64-hex-character fingerprint. Run "npm run build:core" first.',
+    );
+  }
+  return text;
 }

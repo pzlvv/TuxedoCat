@@ -38,7 +38,7 @@ const ACTIONS: [&str; 4] = ["stdio", "start", "start-daemon", "kill"];
 
 /// 吃掉下一个参数的选项（`--host 127.0.0.1` 形式）。
 fn takes_value(arg: &str) -> bool {
-    matches!(arg, "--host" | "--port" | "--token")
+    matches!(arg, "--host" | "--port" | "--token" | "--idle-exit")
 }
 
 /// 程序名：取可执行文件名（打包后是 `tuxedo-cat-core`，开发期是 `standalone-core`）。
@@ -55,9 +55,11 @@ pub fn program_name() -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_NAME").to_string())
 }
 
-/// 版本行。
+/// 版本行：版本号后附构建指纹（`docs/standalone-core.md` 第 4.4 节）——远端 daemon
+/// 手工排查「这是哪个版本」时，指纹是版本身份的唯一凭据（`--version` 由
+/// `remote.rs::build_fingerprint` 同源的编译期环境提供）。
 pub fn version() -> String {
-    format!("{} {}", program_name(), env!("CARGO_PKG_VERSION"))
+    format!("{} {} (fingerprint {})", program_name(), env!("CARGO_PKG_VERSION"), super::remote::build_fingerprint())
 }
 
 /// 帮助文本。
@@ -83,6 +85,9 @@ start 选项：
   --port <n>          绑定端口（默认 10975；被占用时从该值起逐个递增重试，
                       最多 20 次；0 表示由内核分配）。
   --token <token>     访问凭证；缺省时复用已保存的 token，缺失则随机生成。
+  --idle-exit <秒>    空闲退出：没有任何控制连接持续该秒数后 daemon 自行退出
+                      （SSH 引导传 30，客户端退出后远端不留常驻进程）。缺省
+                      常驻，只有 kill 结束。
 
 通用选项：
   -h, --help          显示本帮助。
@@ -97,8 +102,8 @@ start 选项：
 fn is_known_flag(arg: &str) -> bool {
     matches!(
         arg,
-        "--host" | "--port" | "--token" | "--help" | "-h" | "--version" | "-V"
-    ) || ["--host=", "--port=", "--token="]
+        "--host" | "--port" | "--token" | "--idle-exit" | "--help" | "-h" | "--version" | "-V"
+    ) || ["--host=", "--port=", "--token=", "--idle-exit="]
         .iter()
         .any(|prefix| arg.starts_with(prefix))
 }

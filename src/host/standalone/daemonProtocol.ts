@@ -15,13 +15,30 @@ import { stringifyJsonSafe } from '../../core/utils/stringUtils.js';
 // ==================== 远端 daemon 状态文件 ====================
 
 /**
- * 远端 daemon 的状态文件名（`docs/core-daemon.md` 第 12.3 节）。
+ * 远端 daemon 的状态 / token / 日志文件名（`docs/core-daemon.md` 第 12.3 节）。
  *
- * 与 `settings.json` 同目录（`~/<configDir>/`），**只有 daemon 写它**；Host 侧读取它
- * 来拿到实际监听端口与生效 token（SSH 接入时 daemon 端口不对外映射，只能这样发现）。
- * 与 `core-rs/src/remote.rs::DAEMON_STATE_FILE_NAME` 同名，改动必须同步两侧。
+ * 文件名按**构建指纹**区分：`core-daemon-<指纹>.json` 等。一个指纹一个 daemon、
+ * 一份状态文件——多版本 Core 在同一台远端机器上并存时，各自的 `start` / `kill` /
+ * 探测只作用于自己指纹的 daemon，互不踩踏（`docs/standalone-core.md` 第 4.4 节）。
+ * 与 `settings.json` 同目录（`~/<configDir>/`），**只有 daemon 写它们**；Host 侧读取
+ * 状态文件来拿到实际监听端口与生效 token（SSH 接入时 daemon 端口不对外映射，只能
+ * 这样发现）。命名规则与 `core-rs/src/remote.rs` 的
+ * `DAEMON_STATE_FILE_NAME` / `DAEMON_TOKEN_FILE_NAME` / `DAEMON_LOG_FILE_NAME`
+ * （按指纹拼接）保持一致，改动必须同步两侧。
  */
-export const DAEMON_STATE_FILE_NAME = 'core-daemon.json';
+export function daemonStateFileName(fingerprint: string): string {
+  return `core-daemon-${fingerprint}.json`;
+}
+
+/** token 文件名；取值顺序 `--token` > token 文件 > 新随机，跨 daemon 重启保留 */
+export function daemonTokenFileName(fingerprint: string): string {
+  return `core-daemon-${fingerprint}.token`;
+}
+
+/** 诊断日志文件名；`start` 拉起的 daemon 把 stderr/stdout 追加到这里 */
+export function daemonLogFileName(fingerprint: string): string {
+  return `core-daemon-${fingerprint}.log`;
+}
 
 /** 状态文件内容（字段与 `core-rs/src/remote.rs::DaemonState` 一一对应） */
 export interface DaemonStateFile {

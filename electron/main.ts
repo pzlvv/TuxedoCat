@@ -2997,9 +2997,9 @@ function markWorkspaceUnavailable(ref: WorkspaceRef, reason: string, mode: 'buil
 
 /**
  * 重连一个不可用的工作区（占位页「重新连接」按钮触发）：红点先变黄色呼吸点
- * （建链中），经 `probeRemoteEndpoint`（10 秒超时）重新建链——成功则撤销不可用
- * 判定、重新走 opened 建立 Connection 并把聊天区切回对话视图；失败回到红点。
- * 本地项的重试只校验目录是否重新存在。建链中重复触发忽略；标签页被关闭则中止。
+ * （建链中），经 `probeRemoteEndpoint`（3 秒建链超时，远端引导不计入）重新建链——
+ * 成功则撤销不可用判定、重新走 opened 建立 Connection 并把聊天区切回对话视图；
+ * 失败回到红点。本地项的重试只校验目录是否重新存在。建链中重复触发忽略；标签页被关闭则中止。
  */
 async function reconnectWorkspace(id: string): Promise<void> {
   const ref = openWorkspaces.find((candidate) => refKey(candidate) === id);
@@ -3077,7 +3077,8 @@ function syncChatAreaForActiveWorkspace(): void {
 }
 
 /**
- * 启动期探测上一次打开的远程工作区（`probeRemoteEndpoint`，10 秒超时）。
+ * 启动期探测上一次打开的远程工作区（`probeRemoteEndpoint`，3 秒建链超时，远端
+ * 引导不计入——冷部署上传产物可能远超 3 秒）。
  *
  * 远程标签页从启动起就处于 connecting（黄色呼吸点），聊天区显示「正在连接」占位页；
  * 探测落定后二选一：成功 → 恢复可选，活动项落在其上时占位页切回对话视图；

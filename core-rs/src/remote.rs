@@ -4,30 +4,39 @@
 //! - `start`（启动器，用户可见）：确保后台 daemon 在跑，把「连接串」（`IP:端口#token`）
 //!   打印出来，随后自己退出；没有 daemon 就用 `start-daemon` 拉一个到后台。
 //! - `start-daemon`（daemon 实体，启动器的内部实现）：绑定端口、把实际 endpoint 与
-//!   生效的 token 落盘（`~/<configDir>/core-daemon.json`），然后常驻 accept。
+//!   生效的 token 落盘（`~/<configDir>/core-daemon-<指纹>.json`，按构建指纹区分——
+//!   `docs/standalone-core.md` 第 4.4 节），然后常驻 accept。
 //!
-//! Host 连上来后第一帧必须是 `auth`，校验通过才进入 daemon 主循环。一个 endpoint 一条
-//! 控制通道：同一时刻只服务一条连接（accept 循环里同步处理），连接断开后回到 accept
-//! 等待下一次接入。远程目录列举（`listDirectories`）也在这条控制通道上完成，Host 据此
-//! 在连接后立刻弹出远端目录选择器。
+//! Host 连上来后第一帧必须是 `auth`，校验通过才进入 daemon 主循环。daemon 同时服务
+//! 多条控制通道：accept 循环每接受一条连接就交一个线程去服务（thread-per-connection，
+//! 同步阻塞模型，不引入 async runtime），随即回到 accept。客户端身份是一条通过 token
+//! 鉴权成功的控制连接，不是来源 IP；连接之间互不阻塞（`docs/core-daemon.md`
+//! 第 12.5 节）。远程目录列举（`listDirectories`）也在控制通道上完成，Host 据此在
+//! 连接后立刻弹出远端目录选择器。
 //!
 //! 「断开」有两条路径：TCP 层的 EOF / 错误，和心跳空闲超时——Host 消失而 TCP 未断
 //! （断网 / 休眠 / 进程冻结）时读线程永远等不到 EOF，靠 Host 定期 `ping` 的有无判定
-//! （沉默即断开，`docs/core-daemon.md` 第 12.5 节）。同步 accept 循环被一条连接占住时，
-//! 后续接入全部堆在内核 backlog 里：TCP 探测照样「连得上」，但 `auth` 永远得不到
-//! 应答——这就是 Host 侧「复用在跑 daemon 却 120s 建链超时」的根因，心跳超时把它
-//! 限制在最多一个超时窗口内。
+//! （沉默即断开，`docs/core-daemon.md` 第 12.5 节）。断开只结束该连接及其全部 Core，
+//! 服务线程退出，daemon 继续接受下一条连接；只有任一连接发 `shutdown`（`kill` 发的）
+//! 才结束整个 daemon 进程——停机广播经 [`DaemonRuntime`] 向每条在途连接的会话注入
+//! 「Host 断开」事件，各连接走自己的收尾路径（关闭各自的全部 Core）。
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use socket2::{SockRef, TcpKeepalive};
 
-use crate::daemon::{self, ChannelExit, DaemonOptions, FrameOutput, HEARTBEAT_TIMEOUT};
+use crate::daemon::{
+    self, ChannelExit, CoreSpawner, DaemonEvent, DaemonOptions, FrameOutput, HEARTBEAT_TIMEOUT,
+};
+use crate::util::diag;
 use crate::daemon_protocol::{DaemonToHostFrame, DirectoryEntry, HostToDaemonFrame};
 
 /// 默认监听端口。取一个高位、非常用服务的端口；冲突时从它开始逐个 +1 重试。
@@ -49,6 +58,11 @@ pub struct RemoteOptions {
     pub port: u16,
     /// token；为空串时用操作系统随机数生成一个
     pub token: String,
+    /// 空闲退出（`--idle-exit <秒>`）：没有任何控制连接持续该时长后 daemon 自行退出。
+    /// SSH 引导传 30 秒——客户端异常退出（crash / 断电 / 网络消失）后远端不留常驻进程；
+    /// 手工 / 直连 tcp 启动不给这个选项，daemon 常驻，只有 `shutdown`（`kill`）结束
+    /// （`docs/core-daemon.md` 第 12.5 节）。
+    pub idle_exit: Option<Duration>,
 }
 
 impl Default for RemoteOptions {
@@ -57,6 +71,7 @@ impl Default for RemoteOptions {
             host: DEFAULT_HOST.to_string(),
             port: DEFAULT_PORT,
             token: String::new(),
+            idle_exit: None,
         }
     }
 }
@@ -86,7 +101,7 @@ impl RemoteOptions {
             if let Some(value) = take_value("--port") {
                 match value.parse::<u16>() {
                     Ok(port) => options.port = port,
-                    Err(_) => eprintln!("[core] remote: invalid --port value {value:?}; ignored"),
+                    Err(_) => diag!("[core] remote: invalid --port value {value:?}; ignored"),
                 }
                 index += if arg == "--port" { 2 } else { 1 };
                 continue;
@@ -94,6 +109,15 @@ impl RemoteOptions {
             if let Some(value) = take_value("--token") {
                 options.token = value;
                 index += if arg == "--token" { 2 } else { 1 };
+                continue;
+            }
+            if let Some(value) = take_value("--idle-exit") {
+                match value.parse::<u64>() {
+                    // 0 会让 daemon 在宿主接入前就退出，视为没给
+                    Ok(seconds) if seconds > 0 => options.idle_exit = Some(Duration::from_secs(seconds)),
+                    _ => diag!("[core] remote: invalid --idle-exit value {value:?}; ignored"),
+                }
+                index += if arg == "--idle-exit" { 2 } else { 1 };
                 continue;
             }
             index += 1;
@@ -366,7 +390,7 @@ impl FrameOutput for SocketOutput {
             Err(poisoned) => poisoned.into_inner(),
         };
         if let Err(error) = stream.write_all(line.as_bytes()).and_then(|_| stream.flush()) {
-            eprintln!("[core] remote control write failed: {error}");
+            diag!("[core] remote control write failed: {error}");
         }
     }
 }
@@ -383,14 +407,21 @@ pub fn remote_daemon_options() -> DaemonOptions {
     }
 }
 
-/// 校验第一帧 `auth`，通过后把控制通道交给 daemon 主循环。返回即连接结束。
+/// 校验第一帧 `auth`，通过后把控制通道交给 daemon 主循环。返回即这条连接结束。
 ///
-/// 返回值告诉调用方（远程 accept 循环）该不该结束整个 daemon：对端发 `shutdown`
-/// 才是结束，普通断线只是这条控制通道用完。
+/// 由每条已接受连接自己的服务线程调用（thread-per-connection，
+/// `docs/core-daemon.md` 第 12.5 节）。返回值在线程内处理（`serve_accepted`）：
+/// `Stop`（对端发 `shutdown`，或本连接内部错误）→ 触发整个 daemon 的停机广播；
+/// `Continue`（普通断线 / 鉴权失败）→ 线程自然结束，daemon 继续服务其它连接。
+///
+/// `session_events` 是这条会话的事件通道（调用方创建，发送端已登记进注册表供停机
+/// 广播注入），原样转交 `run_control_channel`。
 pub fn serve_connection(
     stream: TcpStream,
     token: &str,
     options: DaemonOptions,
+    spawner: Arc<dyn CoreSpawner>,
+    session_events: (Sender<DaemonEvent>, Receiver<DaemonEvent>),
 ) -> ChannelExit {
     // 死对端探测（`docs/core-daemon.md` 第 12.5 节）：SSH 接入时对端是本机 sshd，
     // 探活无意义但无害；直连 `tcp` 模式下 daemon 不主动发帧、读不到 EOF，对端
@@ -403,25 +434,32 @@ pub fn serve_connection(
     let write_stream = match stream.try_clone() {
         Ok(clone) => clone,
         Err(error) => {
-            eprintln!("[core] remote: cannot clone control stream for {peer}: {error}");
+            diag!("[core] remote: cannot clone control stream for {peer}: {error}");
             return ChannelExit::Continue;
         }
     };
     let out = Arc::new(SocketOutput::new(write_stream));
-    // 心跳超时提前返回时，读线程仍阻塞在这条 socket 上：留一个句柄，
+    // 心跳超时 / 停机广播提前返回时，读线程仍阻塞在这条 socket 上：留一个句柄，
     // 返回前 shutdown 强制它的 read 失败退出，连接与线程都不悬挂
     let shutdown = stream.try_clone().ok();
     let reader = BufReader::new(stream);
 
     let exit = match authenticate(reader, out.as_ref(), token, options.auth_timeout) {
         Some(reader) => {
-            eprintln!("[core] remote: {peer} authenticated");
-            let exit = daemon::run_control_channel(move || reader, out, options);
-            eprintln!("[core] remote: {peer} disconnected");
+            diag!("[core] remote: {peer} authenticated");
+            let exit = daemon::run_control_channel(
+                move || reader,
+                out,
+                spawner,
+                options,
+                session_events.0,
+                session_events.1,
+            );
+            diag!("[core] remote: {peer} disconnected");
             exit
         }
         None => {
-            eprintln!("[core] remote: {peer} rejected (bad token)");
+            diag!("[core] remote: {peer} rejected (bad token)");
             ChannelExit::Continue
         }
     };
@@ -449,8 +487,9 @@ fn authenticate(
     token: &str,
     auth_timeout: Duration,
 ) -> Option<BufReader<TcpStream>> {
-    // 第一帧的等待上限：不发 `auth` 的探活连接 / 端口扫描不能长期占住同步的
-    // accept 循环。超时只在鉴权阶段生效——通过后立刻清除，控制通道此后可以
+    // 第一帧的等待上限：不发 `auth` 的探活连接 / 端口扫描占用的是它自己那条连接的
+    // 服务线程（每条连接一个线程，互不阻塞，`docs/core-daemon.md` 第 12.4 节），
+    // 上限把这部分占用封顶。只在鉴权阶段生效——通过后立刻清除，控制通道此后可以
     // 无限期空闲（心跳空闲由 `run_daemon` 的心跳超时管，两者不重叠）。
     let _ = reader
         .get_ref()
@@ -462,7 +501,7 @@ fn authenticate(
         Ok(0) => return None,
         Ok(_) => {}
         Err(error) => {
-            eprintln!("[core] remote: control read failed: {error}");
+            diag!("[core] remote: control read failed: {error}");
             return None;
         }
     }
@@ -487,7 +526,7 @@ fn authenticate(
 fn send(out: &dyn FrameOutput, frame: &DaemonToHostFrame) {
     match frame.encode() {
         Ok(line) => out.write_line(line),
-        Err(error) => eprintln!("[core] remote: failed to encode frame: {error}"),
+        Err(error) => diag!("[core] remote: failed to encode frame: {error}"),
     }
 }
 
@@ -505,7 +544,7 @@ pub fn bind_listener(host: &str, port: u16) -> std::io::Result<TcpListener> {
                     && retries < PORT_RETRY_LIMIT
                     && error.kind() == std::io::ErrorKind::AddrInUse =>
             {
-                eprintln!(
+                diag!(
                     "[core] remote: port {candidate} is in use; trying {}",
                     candidate.saturating_add(1)
                 );
@@ -519,26 +558,66 @@ pub fn bind_listener(host: &str, port: u16) -> std::io::Result<TcpListener> {
 
 // ==================== daemon 状态文件 ====================
 
-/// daemon 状态文件名：与 `settings.json` 同目录（`~/<configDir>/`）。
-pub const DAEMON_STATE_FILE_NAME: &str = "core-daemon.json";
-/// daemon 后台日志文件名（同目录）：daemon 脱离终端后诊断只能落在这里。
-pub const DAEMON_LOG_FILE_NAME: &str = "core-daemon.log";
+/// daemon 落盘文件名的前缀：实际文件按构建指纹区分——
+/// `core-daemon-<指纹>.json` / `.token` / `.log`。
+///
+/// 一个指纹一个 daemon、一份落盘文件：多版本 Core 在同一台远端机器上各占一个槽位、
+/// 各跑一个 daemon 时，各自的 `start` / `kill` / 探测只作用于自己指纹的 daemon，
+/// 互不踩踏（`docs/standalone-core.md` 第 4.4 节、`docs/core-daemon.md` 第 12.3 节）。
+/// 命名规则与 `src/host/standalone/daemonProtocol.ts` 的 `daemonStateFileName` /
+/// `daemonTokenFileName` / `daemonLogFileName` 一致，改动必须同步两侧。
+pub const DAEMON_FILE_STEM: &str = "core-daemon";
+
+/// 本二进制的构建指纹（`docs/standalone-core.md` 第 4.4 节）。
+///
+/// `scripts/build-core.mjs` 在调用 cargo 时设置 `CORE_FINGERPRINT`，`build.rs` 把它
+/// 烧进编译期环境；指纹只由源码内容与编译器身份决定，daemon 以它区分自己的落盘
+/// 文件并对接宿主的按指纹部署。绕过构建脚本直接 `cargo build`（`cargo test` /
+/// `clippy` 走同一路径）没有这个环境变量，取固定标记 `manual-build`：发布产物必经
+/// 构建脚本（指纹文件与烧入值同源同值），这个占位值只出现在本机手动构建里，不存在
+/// 「拿错误指纹部署到错误槽位」的路径——因此允许缺省占位，不属于静默降级。
+pub fn build_fingerprint() -> &'static str {
+    match option_env!("CORE_FINGERPRINT") {
+        Some(fingerprint) if !fingerprint.is_empty() => fingerprint,
+        _ => "manual-build",
+    }
+}
+
+/// 按构建指纹拼出 daemon 的落盘文件名（状态 `.json` / token `.token` / 日志 `.log`）。
+fn daemon_file_name(extension: &str) -> String {
+    format!("{}-{}.{}", DAEMON_FILE_STEM, build_fingerprint(), extension)
+}
+
+/// 状态文件名（`~/<configDir>/` 下）；宿主侧同名规则见 `daemonProtocol.ts::daemonStateFileName`
+pub fn daemon_state_file_name() -> String {
+    daemon_file_name("json")
+}
+
+/// 后台日志文件名（同目录）：daemon 脱离终端后诊断只能落在这里。
+pub fn daemon_log_file_name() -> String {
+    daemon_file_name("log")
+}
+
 /// token 文件名（同目录）：与状态文件分开存，`kill` 删掉状态文件后 token 仍然留着，
 /// 下次 `start` 直接复用它（用户不必每次重新抄连接串）。
-pub const DAEMON_TOKEN_FILE_NAME: &str = "core-daemon.token";
+pub fn daemon_token_file_name() -> String {
+    daemon_file_name("token")
+}
+
 /// 启动器等待 daemon 落盘的时长上限。
 pub const LAUNCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// 探测「daemon 是否还活着」的连接超时。
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
-/// daemon 落盘的状态（`~/<configDir>/core-daemon.json`）。
+/// daemon 落盘的状态（`~/<configDir>/core-daemon-<指纹>.json`）。
 ///
 /// 只有 daemon 自己写这个文件（单一写入点）：它同时知道实际绑定的端口与生效的 token。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DaemonState {
     /// 启动时请求的 `host:port`；用来判断在跑的 daemon 是不是本次请求的那个
+    /// （`--port 0` 时请求值就是 `:0`，同参数的两次 `start` 由此互相识别、幂等复用）
     pub requested: String,
-    /// 实际监听的 `IP:端口`（端口 +1 重试后是实际端口）
+    /// 实际监听的 `IP:端口`（端口 +1 重试或 `--port 0` 交给内核分配后是实际端口）
     pub endpoint: String,
     /// 控制通道 token
     pub token: String,
@@ -557,17 +636,17 @@ fn config_dir() -> Result<PathBuf, String> {
 
 /// 状态文件路径；配置目录解析不出来时返回 `Err`（调用方直接报错，不静默降级）。
 pub fn daemon_state_path() -> Result<PathBuf, String> {
-    Ok(config_dir()?.join(DAEMON_STATE_FILE_NAME))
+    Ok(config_dir()?.join(daemon_state_file_name()))
 }
 
 /// 后台日志路径（与状态文件同目录）。
 pub fn daemon_log_path() -> Result<PathBuf, String> {
-    Ok(config_dir()?.join(DAEMON_LOG_FILE_NAME))
+    Ok(config_dir()?.join(daemon_log_file_name()))
 }
 
 /// token 文件路径（与状态文件、会话数据同目录）。
 pub fn daemon_token_path() -> Result<PathBuf, String> {
-    Ok(config_dir()?.join(DAEMON_TOKEN_FILE_NAME))
+    Ok(config_dir()?.join(daemon_token_file_name()))
 }
 
 /// 读状态文件：不存在 / 读不出 / 解析失败都当作「没有 daemon」。
@@ -676,7 +755,7 @@ fn print_ready(bind_host: &str, state: &DaemonState) -> bool {
         .rsplit_once(':')
         .and_then(|(_, port)| port.parse::<u16>().ok())
     else {
-        eprintln!("[core] remote: malformed endpoint in state file: {}", state.endpoint);
+        diag!("[core] remote: malformed endpoint in state file: {}", state.endpoint);
         return false;
     };
     println!("{}", ready_message(bind_host, port, &state.token));
@@ -729,7 +808,7 @@ pub fn run_start(options: RemoteOptions) -> i32 {
     let state_path = match daemon_state_path() {
         Ok(path) => path,
         Err(error) => {
-            eprintln!("[core] remote: {error}");
+            diag!("[core] remote: {error}");
             return 1;
         }
     };
@@ -743,7 +822,7 @@ pub fn run_start(options: RemoteOptions) -> i32 {
             return 0;
         }
         ExistingDaemon::Mismatch(message) => {
-            eprintln!("[core] remote: {message}");
+            diag!("[core] remote: {message}");
             return 1;
         }
         ExistingDaemon::None => {}
@@ -752,12 +831,12 @@ pub fn run_start(options: RemoteOptions) -> i32 {
     let log_path = match daemon_log_path() {
         Ok(path) => path,
         Err(error) => {
-            eprintln!("[core] remote: {error}");
+            diag!("[core] remote: {error}");
             return 1;
         }
     };
     if let Err(error) = spawn_daemon(&options, &log_path) {
-        eprintln!("[core] remote: cannot start daemon: {error}");
+        diag!("[core] remote: cannot start daemon: {error}");
         return 1;
     }
     match wait_for_daemon(&state_path, &requested) {
@@ -768,7 +847,7 @@ pub fn run_start(options: RemoteOptions) -> i32 {
             0
         }
         None => {
-            eprintln!(
+            diag!(
                 "[core] remote: daemon did not listen within {}s; see {}",
                 LAUNCH_TIMEOUT.as_secs(),
                 log_path.display()
@@ -791,7 +870,7 @@ pub fn run_kill() -> i32 {
     let state_path = match daemon_state_path() {
         Ok(path) => path,
         Err(error) => {
-            eprintln!("[core] remote: {error}");
+            diag!("[core] remote: {error}");
             return 1;
         }
     };
@@ -807,7 +886,7 @@ pub fn run_kill() -> i32 {
         }
         StopOutcome::Unreachable => {
             // 进程已经没了（崩溃 / 机器重启过）：过期状态文件清掉即可
-            eprintln!("[core] remote: daemon is not running ({})", state.endpoint);
+            diag!("[core] remote: daemon is not running ({})", state.endpoint);
             remove_state_if_unchanged(&state_path, &state);
             0
         }
@@ -815,17 +894,17 @@ pub fn run_kill() -> i32 {
             // 连上了但协议无应答：accept 循环被一条死连接占住（旧版 daemon 没有
             // 心跳自愈，只会永远卡下去）。协议路径走不通，按进程兜底强杀——
             // 只匹配本可执行文件 + `start-daemon`，不会误伤别的进程。
-            eprintln!("[core] remote: daemon at {} is not answering; killing the process", state.endpoint);
+            diag!("[core] remote: daemon at {} is not answering; killing the process", state.endpoint);
             let exe = match std::env::current_exe() {
                 Ok(exe) => exe,
                 Err(error) => {
-                    eprintln!("[core] remote: cannot resolve the current executable: {error}");
+                    diag!("[core] remote: cannot resolve the current executable: {error}");
                     return 1;
                 }
             };
             let pids = find_daemon_pids(Path::new("/proc"), &exe);
             if pids.is_empty() {
-                eprintln!(
+                diag!(
                     "[core] remote: no daemon process found; remove {} manually",
                     state_path.display()
                 );
@@ -838,7 +917,7 @@ pub fn run_kill() -> i32 {
                 }
             }
             if killed == 0 {
-                eprintln!("[core] remote: cannot kill daemon process(es) {pids:?}");
+                diag!("[core] remote: cannot kill daemon process(es) {pids:?}");
                 return 1;
             }
             remove_state_if_unchanged(&state_path, &state);
@@ -846,7 +925,7 @@ pub fn run_kill() -> i32 {
             0
         }
         StopOutcome::Refused(error) => {
-            eprintln!("[core] remote: {error}");
+            diag!("[core] remote: {error}");
             1
         }
     }
@@ -862,7 +941,9 @@ enum StopOutcome {
     Stopped,
     /// endpoint 连不上：进程已经没了（崩溃 / 机器重启过）
     Unreachable,
-    /// 连上了但协议无应答：daemon 在，但 accept 循环被死连接占住（wedged）
+    /// 连上了但协议无应答：daemon 在但没有应答（旧版 daemon 的同步 accept 循环被
+    /// 死连接占住会永远如此；新版也可能整体卡死）。协议路径走不通时 `kill` 据此
+    /// 兜底强杀进程。
     Unresponsive,
     /// 鉴权失败等：daemon 活着但不是我们该动的那个，不能强杀
     Refused(String),
@@ -892,7 +973,7 @@ fn stop_daemon(state: &DaemonState, wait: Duration) -> StopOutcome {
         };
     }
     let mut line = String::new();
-    // 连上了却等不到应答（超时 / 连接被掐断 / 直接断开）：accept 循环没有在处理这条连接
+    // 连上了却等不到应答（超时 / 连接被掐断 / 直接断开）：daemon 没有在处理这条连接
     match reader.read_line(&mut line) {
         Ok(0) => return StopOutcome::Unresponsive,
         Ok(_) => {}
@@ -1012,6 +1093,10 @@ fn spawn_daemon(options: &RemoteOptions, log_path: &Path) -> Result<(), String> 
     if !options.token.trim().is_empty() {
         command.arg("--token").arg(&options.token);
     }
+    // 空闲退出只在显式给了才转发（SSH 引导传 30s；手工 / 直连 tcp 启动不设限）。
+    if let Some(idle) = options.idle_exit {
+        command.arg("--idle-exit").arg(idle.as_secs().to_string());
+    }
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("mkdir {} failed: {error}", parent.display()))?;
@@ -1069,7 +1154,7 @@ fn resolve_token(options: &RemoteOptions, token_path: &Path) -> String {
         read_token_file(token_path).unwrap_or_else(generate_token)
     };
     if let Err(error) = write_token_file(token_path, &token) {
-        eprintln!("[core] remote: cannot persist token: {error}");
+        diag!("[core] remote: cannot persist token: {error}");
     }
     token
 }
@@ -1099,6 +1184,208 @@ fn write_token_file(path: &Path, token: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ==================== daemon 运行时（连接注册表与停机）====================
+
+/// daemon 进程的全局运行时：连接注册表 + 停机标记（`docs/core-daemon.md` 第 12.5 节）。
+///
+/// daemon 同时服务多条控制连接，每条连接一个服务线程；线程之间唯一的共享是这个
+/// 运行时。登记与停机广播在同一把锁下进行，保证 shutdown 广播不漏掉任何一条在途
+/// 连接（先于广播登记的连接收到事件注入与 socket 掐断，晚于广播登记的连接看到
+/// 停机位后被直接拒绝）。
+struct DaemonRuntime {
+    /// 每条在途连接的登记项：停机广播用它让各会话走自己的「Host 断开」收尾
+    /// （关闭各自的全部 Core），Core 的归属不变，仍然只有它所在的会话关闭它。
+    connections: Mutex<ConnectionTable>,
+    /// 停机信号：任一连接发 `shutdown`（或 accept 循环终止）时置位
+    stopping: AtomicBool,
+    /// 停机 / 连接收尾的信号：主线程等「已停机且全部连接线程退出」后清状态文件
+    drained: Condvar,
+}
+
+/// 连接表：分配连接 id 并保存每条在途连接的登记项
+#[derive(Default)]
+struct ConnectionTable {
+    next_id: u64,
+    entries: HashMap<u64, ConnectionEntry>,
+}
+
+/// 一条在途连接的登记项
+struct ConnectionEntry {
+    /// 会话事件通道的发送端：停机广播注入 `HostDisconnected`，该会话的 `run_daemon`
+    /// 随即自己走收尾路径。这是停机的**主机制**——Windows 上对自身 socket 的
+    /// shutdown 不会取消进行中的 read，只有事件注入能可靠唤醒会话主循环。
+    events: Sender<DaemonEvent>,
+    /// socket 副本：广播时顺手掐断（Unix 上让阻塞中的读线程立即退出；Windows 上
+    /// 阻塞中的 read 不受影响，随进程退出消亡）
+    socket: Option<TcpStream>,
+}
+
+impl DaemonRuntime {
+    fn new() -> DaemonRuntime {
+        DaemonRuntime {
+            connections: Mutex::new(ConnectionTable::default()),
+            stopping: AtomicBool::new(false),
+            drained: Condvar::new(),
+        }
+    }
+
+    /// 登记一条连接；停机已开始时拒绝（返回 `None`），调用方直接关闭这条连接。
+    fn register(&self, entry: ConnectionEntry) -> Option<u64> {
+        let mut table = self.connections.lock().unwrap();
+        if self.stopping.load(Ordering::SeqCst) {
+            return None;
+        }
+        table.next_id += 1;
+        let id = table.next_id;
+        table.entries.insert(id, entry);
+        Some(id)
+    }
+
+    /// 注销一条连接：它的会话已收尾（`run_daemon` 返回，自己的 Core 已被关闭）。
+    fn unregister(&self, id: u64) {
+        let mut table = self.connections.lock().unwrap();
+        table.entries.remove(&id);
+        drop(table);
+        self.drained.notify_all();
+    }
+
+    /// 开始停机：置位并广播——向每条在途连接的会话注入 `HostDisconnected`（各会话的
+    /// `run_daemon` 走自己的收尾：关闭自己的全部 Core 后线程退出），并顺手掐断各连接
+    /// 的 socket。
+    fn begin_stop(&self) {
+        let table = self.connections.lock().unwrap();
+        // 置位必须在持锁期间：与 `register` 互斥，广播不会漏掉任何一条连接
+        self.stopping.store(true, Ordering::SeqCst);
+        for entry in table.entries.values() {
+            // mpsc send 不阻塞；rx 已随会话结束被丢弃时 send 失败，无需处理
+            let _ = entry.events.send(DaemonEvent::HostDisconnected);
+            if let Some(socket) = &entry.socket {
+                let _ = socket.shutdown(Shutdown::Both);
+            }
+        }
+        drop(table);
+        self.drained.notify_all();
+    }
+
+    fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::SeqCst)
+    }
+
+    /// 主线程：等停机信号，或（给了 `idle_exit` 时）等空闲死线。
+    ///
+    /// 空闲 = 没有任何控制连接：死线在**首次观察到空表**时起算（daemon 刚启动 /
+    /// 最后一条连接刚断开），任何一条连接登记即取消，断开后重新起算。到期返回
+    /// `false`，调用方走停机收尾；`shutdown` 先到返回 `true`。同一把锁下判定，
+    /// 「到期」与「新连接登记」不会交错——到期后 `begin_stop` 置位，迟到的连接
+    /// 会被 `register` 拒绝。
+    fn wait_for_stop_or_idle(&self, idle_exit: Option<Duration>) -> bool {
+        let mut table = self.connections.lock().unwrap();
+        let mut idle_deadline: Option<Instant> = None;
+        while !self.stopping.load(Ordering::SeqCst) {
+            if table.entries.is_empty() {
+                if let Some(idle) = idle_exit {
+                    let deadline = *idle_deadline.get_or_insert_with(|| Instant::now() + idle);
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return false;
+                    }
+                    let (guard, _) = self.drained.wait_timeout(table, remaining).unwrap();
+                    table = guard;
+                    continue;
+                }
+            } else {
+                // 有连接：取消空闲计时，等最后一条断开再重新起算
+                idle_deadline = None;
+            }
+            table = self.drained.wait(table).unwrap();
+        }
+        true
+    }
+
+    /// 主线程：等全部连接线程收尾——各自的 `run_daemon` 已把该连接的 Core 全部关闭。
+    /// 有等待上限：到点仍有连接没收尾就带着诊断退出，不让一条收不动的连接挂死
+    /// `kill`（Core 还有 stdin EOF 的兜底：daemon 进程退出后各 Core 读到 EOF 自行退出）。
+    fn wait_until_drained(&self, limit: Duration) {
+        let deadline = Instant::now() + limit;
+        let mut table = self.connections.lock().unwrap();
+        while !table.entries.is_empty() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                diag!(
+                    "[core] remote: {} connection(s) still closing at the shutdown deadline",
+                    table.entries.len()
+                );
+                return;
+            }
+            let (guard, _) = self.drained.wait_timeout(table, remaining).unwrap();
+            table = guard;
+        }
+    }
+}
+
+/// accept 循环：每条连接一个服务线程，立即回到 accept——任何一条连接（包括不发
+/// `auth` 的探活连接）都不阻塞后续接入（`docs/core-daemon.md` 第 12.5 节）。
+fn accept_loop(
+    listener: TcpListener,
+    token: &str,
+    options: DaemonOptions,
+    runtime: Arc<DaemonRuntime>,
+    spawner: Arc<dyn CoreSpawner>,
+) {
+    for stream in listener.incoming() {
+        if runtime.is_stopping() {
+            break;
+        }
+        match stream {
+            Ok(stream) => {
+                let runtime = Arc::clone(&runtime);
+                let spawner = Arc::clone(&spawner);
+                let token = token.to_string();
+                let options = options.clone();
+                std::thread::spawn(move || {
+                    serve_accepted(stream, &token, options, &runtime, spawner)
+                });
+            }
+            Err(error) => diag!("[core] remote: accept failed: {error}"),
+        }
+    }
+    // accept 不再可用而停机位未置（监听异常等）：补一次停机，避免主线程空等
+    if !runtime.is_stopping() {
+        diag!("[core] remote: accept loop ended; stopping the daemon");
+        runtime.begin_stop();
+    }
+}
+
+/// 一条已接受连接的完整生命周期：登记 → 服务 → 注销；`shutdown` 帧在这里转成
+/// 「结束整个 daemon」。
+fn serve_accepted(
+    stream: TcpStream,
+    token: &str,
+    options: DaemonOptions,
+    runtime: &DaemonRuntime,
+    spawner: Arc<dyn CoreSpawner>,
+) {
+    // 会话事件通道在这里创建：本线程持有 `Sender` 克隆（登记进注册表），停机广播
+    // 据此向会话注入 `HostDisconnected`（Windows 上对自身 socket 的 shutdown 不会
+    // 取消进行中的 read，事件注入是唯一可靠的唤醒手段）
+    let (events, event_rx) = mpsc::channel::<DaemonEvent>();
+    // 登记先于服务：停机广播与登记在同一把锁下，不会漏掉任何一条在途连接
+    let Some(id) = runtime.register(ConnectionEntry {
+        events: events.clone(),
+        socket: stream.try_clone().ok(),
+    }) else {
+        // 停机窗口内新接受的连接不再服务，直接关闭——shutdown 是全局生效的
+        // kill 语义，不再受理新客户端（设计允许的瞬时状态）
+        diag!("[core] remote: connection dropped; the daemon is stopping");
+        return;
+    };
+    let exit = serve_connection(stream, token, options, spawner, (events, event_rx));
+    runtime.unregister(id);
+    if exit == ChannelExit::Stop {
+        runtime.begin_stop();
+    }
+}
+
 /// daemon 实体：绑定端口、把 `{requested, endpoint, token}` 落盘，然后常驻服务。
 ///
 /// 由 `start` 拉起，也可以直接运行（调试用）。给了 `--token` 就用它并覆盖状态文件。
@@ -1106,14 +1393,14 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     let state_path = match daemon_state_path() {
         Ok(path) => path,
         Err(error) => {
-            eprintln!("[core] remote: {error}");
+            diag!("[core] remote: {error}");
             return 1;
         }
     };
     let token_path = match daemon_token_path() {
         Ok(path) => path,
         Err(error) => {
-            eprintln!("[core] remote: {error}");
+            diag!("[core] remote: {error}");
             return 1;
         }
     };
@@ -1121,7 +1408,7 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     let listener = match bind_listener(&options.host, options.port) {
         Ok(listener) => listener,
         Err(error) => {
-            eprintln!(
+            diag!(
                 "[core] remote: cannot bind {}:{}: {error}",
                 options.host, options.port
             );
@@ -1131,7 +1418,7 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     let local = match listener.local_addr() {
         Ok(address) => address,
         Err(error) => {
-            eprintln!("[core] remote: cannot resolve local address: {error}");
+            diag!("[core] remote: cannot resolve local address: {error}");
             return 1;
         }
     };
@@ -1145,29 +1432,53 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     };
     // 落盘先于 accept：启动器按「状态文件可读 + endpoint 连得上」判断就绪。
     if let Err(error) = write_daemon_state(&state_path, &state) {
-        eprintln!("[core] remote: cannot write {}: {error}", state_path.display());
+        diag!("[core] remote: cannot write {}: {error}", state_path.display());
         return 1;
     }
     println!("{}", ready_message(&options.host, local.port(), &token));
     // 标准输出可能被缓冲；启动器 / 用户读连接串才能拿到端口与 token，立即冲刷。
     let _ = std::io::stdout().flush();
 
-    let mut stopping = false;
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                if serve_connection(stream, &token, remote_daemon_options()) == ChannelExit::Stop {
-                    stopping = true;
-                    break;
-                }
-            }
-            Err(error) => eprintln!("[core] remote: accept failed: {error}"),
+    // Core 进程工厂启动时解析一次：解析不出直接失败，不等到第一条连接才暴露
+    let spawner: Arc<dyn CoreSpawner> = match daemon::SystemCoreSpawner::current_exe() {
+        Ok(spawner) => Arc::new(spawner),
+        Err(error) => {
+            diag!("[core] remote: cannot resolve own executable: {error}");
+            return 1;
         }
+    };
+    // accept 在自己的线程上跑（每条连接再各一个服务线程）；主线程等停机信号，
+    // 收到后无需解除 accept 的阻塞——进程随主线程返回而结束。
+    let runtime = Arc::new(DaemonRuntime::new());
+    {
+        let runtime = Arc::clone(&runtime);
+        let token = token.clone();
+        let spawner = Arc::clone(&spawner);
+        std::thread::spawn(move || {
+            accept_loop(listener, &token, remote_daemon_options(), runtime, spawner)
+        });
     }
-    if stopping {
-        // 只删自己写的那份：期间可能有新 daemon 覆盖过状态文件
-        remove_state_if_unchanged(&state_path, &state);
+
+    // 空闲退出（`--idle-exit`，SSH 引导传 30s）：没有任何控制连接持续该时长（含启动
+    // 后一直没有连接——兜住拉起后无人接入的孤儿 daemon）就自行退出，远端不留常驻
+    // 进程；未给该选项（手工 / 直连 tcp）则常驻，只有 `shutdown`（`kill` 发的）结束
+    // （`docs/core-daemon.md` 第 12.5 节）。
+    let stopped = runtime.wait_for_stop_or_idle(options.idle_exit);
+    if !stopped {
+        diag!(
+            "[core] remote: no control connections for {}s; the idle daemon exits",
+            options.idle_exit.map(|idle| idle.as_secs()).unwrap_or_default()
+        );
+        // 置停机位：死线判定与连接登记在同一把锁下，但主线程从等待返回到进程退出
+        // 之间仍有窗口，置位让迟到的连接被 `register` 拒绝，不会接在一个将死的
+        // daemon 上。
+        runtime.begin_stop();
     }
+    // 等全部连接线程收尾：各自的 `run_daemon` 已把该连接的全部 Core 关闭（空闲退出
+    // 时没有连接，立即通过）。
+    runtime.wait_until_drained(STOP_TIMEOUT);
+    // 只删自己写的那份：期间可能有新 daemon 覆盖过状态文件
+    remove_state_if_unchanged(&state_path, &state);
     0
 }
 

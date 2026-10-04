@@ -207,8 +207,9 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
    构建脚本会注入 `CC` / `CFLAGS` / `AR`，缺 zig 时直接报错、不静默降级。
 
 打包（`npm run package:ext` / `package:app`）会校验要携带的 Core 产物
-（`scripts/verify-core-artifacts.mjs`）：产物缺失、比 `core-rs/src/**` 旧、或没同步进
-`dist/resources/` 都直接报错。平台列表取自构建脚本的 `PACKAGE_DIRS`，两处不各写一份。
+（`scripts/verify-core-artifacts.mjs`）：产物缺失、比 `core-rs/src/**` 旧、构建指纹与
+源码不一致、或没同步进 `dist/resources/` 都直接报错。平台列表取自构建脚本的
+`PACKAGE_DIRS`，两处不各写一份。
 `build:core` 默认就构建这三个平台，所以打包链不会再漏掉 Linux 那两份；校验仍然拦住
 「改了 Rust 源码没重编」与「`copy-assets` 没跑」——那两种情况会把上一次的旧产物
 静默打进 vsix / 安装包。
@@ -224,6 +225,29 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
   `ring` 含 ARM64 汇编，交叉编译需要 clang 与 ARM64 的 MSVC 链接器；只装 Rust target 不够。
 
 这与第 11 节「目标矩阵中预留平台的实际产出」不属于覆盖范围一致。
+
+### 4.4 构建指纹
+
+每个产物目录带一份**构建指纹**（`scripts/build-core.mjs` 的 `computeFingerprint`）：
+产物同级落一个 `fingerprint` 文件（一行 64 位小写 hex），同时经 `CORE_FINGERPRINT`
+环境变量由 `core-rs/build.rs` 烧进二进制（`env!("CORE_FINGERPRINT")`，daemon 以它区分
+自己的状态 / token / 日志文件）。指纹只由**源码内容与编译器身份**决定，与构建时间、
+构建路径无关：同一编译器对同一份源码的两次构建得到同一指纹。
+
+- **输入集**：`core-rs/` 工作树全部文件（排除 `target/`，遍历工作树而非
+  `git ls-files`——未提交的新文件也必须改变指纹；`Cargo.lock` 与 `.cargo/config.toml`
+  在目录内自然被覆盖），行尾归一（`\r\n` → `\n`，避免 `autocrlf` 不同的构建机分裂
+  指纹）；`rustc -vV` 的 release / commit-hash / commit-date（**不含 host 行**，Windows
+  与 Linux 构建机上是同一个编译器）；目标三元组与 profile（release / debug）。
+- **不混入** zig / C 工具链版本：指纹是「版本身份」不是「字节一致」，同源码同 rustc
+  下 C 部分的工具链差异不构成版本差异；指纹相同的两个构建产物行为一致。
+- **用途**：SSH 部署按指纹落位远端目录 `~/.local/bin/<指纹>/`（可执行文件 + 自带的
+  `ripgrep/` 同级），daemon 的状态 / token / 日志文件按指纹命名
+  （`core-daemon-<指纹>.*`，`docs/core-daemon.md` 第 12.3 节）。多版本 Core 在同一台
+  远端机器上各占一个槽位、各跑一个 daemon，互不覆盖、互不换血；部署以「指纹目录
+  存在即同版本」为准，**不做产物哈希比对**——指纹目录存在就不再上传，缺失才部署
+  并拉起。Electron / vsix 打包把 `fingerprint` 文件与产物一起携带，宿主运行时经
+  `readCoreFingerprint` 读取（缺失 / 格式非法抛错，不猜）。
 
 ---
 

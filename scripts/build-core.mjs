@@ -12,6 +12,9 @@
  * 目录命名与 resources/ripgrep/ 一致；copy-assets 会把它带进 dist/resources。
  * 同一目录下还会落一份自带的 `ripgrep/rg[.exe]`（Grep / Glob 用的 rg）：
  * Core 以**自己的可执行文件目录**为基准定位自带资源，本地与远端都是这一个位置。
+ * 同目录还有一份 `fingerprint` 构建指纹（见 computeFingerprint 与
+ * docs/standalone-core.md 第 4.4 节）：SSH 部署按指纹落位远端目录
+ * `~/.local/bin/<指纹>/`，多版本 Core 在同一台远端机器上各占一个槽位互不干扰。
  *
  * 产品名与产物名一律取自 src/config/project.json（`core.binaryName` /
  * `core.resourceDir`），本脚本不写死。Rust 侧的包名固定为中性的 `standalone-core`，
@@ -23,13 +26,16 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import project from '../project.config.cjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = join(repoRoot, 'core-rs', 'Cargo.toml');
+/** core-rs/ 目录：构建指纹的源码树根（computeFingerprint） */
+const manifestDir = dirname(manifestPath);
 
 /** Rust 侧的包 / 二进制名；产品名不进入 Rust 侧 */
 const CRATE_BIN_NAME = 'standalone-core';
@@ -58,6 +64,113 @@ export const TARGETS = [
  * 不再各写一遍，免得「构建的」与「校验的」漂移（docs/standalone-core.md 第 4.3 节）。
  */
 export const PACKAGE_DIRS = ['x64-win32', 'x64-linux', 'arm64-linux'];
+
+// ==================== 构建指纹（docs/standalone-core.md 第 4.4 节）====================
+
+/**
+ * 指纹算法版本标签：参与哈希输入，输入集或归一规则变化时递增，避免新旧指纹意外同槽。
+ */
+const FINGERPRINT_ALGO = 'core-fingerprint-v1';
+
+/** 产物目录里指纹文件的文件名 */
+export const FINGERPRINT_FILE_NAME = 'fingerprint';
+
+/**
+ * 构建指纹：只依赖**源码内容 + 编译器身份**，与构建时间、构建路径无关——
+ * 同一编译器对同一份源码的两次构建必须得到同一指纹，这样不同构建机 /
+ * 不同客户端实例产出的同一版本 Core 才会共享同一个远端部署槽位。
+ *
+ * 语义上是「版本身份」而不是「字节一致」：指纹相同不保证二进制逐字节相同
+ * （rustc 可能嵌入绝对路径、C 工具链可能有差异），只保证同一源码 + 同一
+ * 编译器；因此远端部署以「指纹目录存在」为准，不再做产物哈希比对。
+ *
+ * 输入集：
+ * - `core-rs/` 工作树全部文件（排除 `target/`），按 POSIX 相对路径排序后哈希
+ *   (路径 + '\0' + 内容)。遍历**工作树**而不是 `git ls-files`：未提交的新文件
+ *   也必须改变指纹，否则两个不同版本会共用一个远端槽位；`Cargo.lock` 与
+ *   `.cargo/config.toml` 都在目录内，依赖版本与链接器配置自然被覆盖。
+ * - 行尾归一（`\r\n` → `\n`）：`.gitattributes` 只管 `resources/**`，
+ *   `autocrlf` 设置不同的构建机对同一 commit 会检出不同行尾，不归一会分裂指纹。
+ * - rustc 身份：`rustc -vV` 的 release / commit-hash / commit-date 三行。
+ *   **不含 host 行**：Windows 与 Linux 构建机上是「同一个编译器」，不该分裂指纹。
+ * - 目标三元组与 profile（release / debug）：产物语义随它们变化，不同 profile
+ *   不共享远端槽位。
+ * - 不混入 zig / C 工具链版本：同源码同 rustc 下 C 部分的工具链差异不构成
+ *   版本差异，混入只会让不同构建机分裂槽位（这正是要避免的）。
+ */
+
+/** 递归收集 core-rs 工作树的文件（排除 target/），返回按 POSIX 相对路径排序的列表 */
+function collectCoreSourceFiles() {
+  const files = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === 'target') continue;
+        walk(full);
+      } else if (entry.isFile()) {
+        files.push(relative(manifestDir, full).split('\\').join('/'));
+      }
+    }
+  };
+  walk(dirname(manifestPath));
+  files.sort();
+  return files;
+}
+
+/** `rustc -vV` 的编译器身份（release / commit-hash / commit-date 三行，不含 host） */
+function rustcIdentity() {
+  const result = spawnSync('rustc', ['-vV'], { encoding: 'utf8' });
+  if (result.error || result.status !== 0) {
+    console.error('[build-core] 无法读取 rustc 版本（rustc -vV 失败）：指纹计算依赖编译器身份。');
+    process.exit(1);
+  }
+  const wanted = new Set(['release', 'commit-hash', 'commit-date']);
+  const lines = result.stdout
+    .split(/\r?\n/)
+    .filter((line) => wanted.has(line.slice(0, line.indexOf(':')).trim()));
+  if (lines.length === 0) {
+    console.error('[build-core] `rustc -vV` 输出里没有 release / commit-hash / commit-date。');
+    process.exit(1);
+  }
+  return lines.join('\n');
+}
+
+let cachedTreeHash = null;
+
+/** core-rs 源码树的内容哈希（进程内缓存：一次构建跑多个目标只算一遍） */
+function coreSourceTreeHash() {
+  if (cachedTreeHash === null) {
+    const hash = createHash('sha256');
+    for (const relPath of collectCoreSourceFiles()) {
+      // 行尾归一见 computeFingerprint 的说明；Cargo.lock 等都是文本，统一按此处理
+      const content = readFileSync(join(manifestDir, relPath), 'utf8')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n');
+      hash.update(relPath);
+      hash.update('\0');
+      hash.update(content);
+      hash.update('\0');
+    }
+    cachedTreeHash = hash.digest('hex');
+  }
+  return cachedTreeHash;
+}
+
+/** 计算一个构建目标的指纹（64 位小写 hex） */
+export function computeFingerprint(triple, profile) {
+  const hash = createHash('sha256');
+  hash.update(FINGERPRINT_ALGO);
+  hash.update('\0');
+  hash.update(rustcIdentity());
+  hash.update('\0');
+  hash.update(triple);
+  hash.update('\0');
+  hash.update(profile);
+  hash.update('\0');
+  hash.update(coreSourceTreeHash());
+  return hash.digest('hex');
+}
 
 /**
  * 本机能否直接构建该目标。
@@ -203,11 +316,16 @@ function resolveTargets(options) {
 function buildTarget(target, options) {
   const profile = options.debug ? 'debug' : 'release';
 
+  // 指纹在构建前计算：它只依赖源码与编译器身份，不依赖产物；
+  // 同时经 CORE_FINGERPRINT 传给 cargo，由 core-rs 的 build.rs 烧进二进制
+  // （daemon 以它区分自己的状态文件，docs/standalone-core.md 第 4.4 节）。
+  const fingerprint = computeFingerprint(target.triple, profile);
+
   const cargoArgs = ['build', '--manifest-path', manifestPath, '--target', target.triple];
   if (!options.debug) cargoArgs.push('--release');
 
-  console.log(`[build-core] cargo ${cargoArgs.join(' ')}`);
-  const env = { ...process.env, ...crossToolchainEnv(target) };
+  console.log(`[build-core] cargo ${cargoArgs.join(' ')} (fingerprint ${fingerprint})`);
+  const env = { ...process.env, ...crossToolchainEnv(target), CORE_FINGERPRINT: fingerprint };
   // cwd 必须是 crate 目录：cargo 只从**当前目录**往上找 `.cargo/config.toml`，
   // 而 musl 的链接器（rust-lld）就配在 `core-rs/.cargo/config.toml` 里。
   // target 目录不受影响（由 manifest 所在的 workspace 决定）。
@@ -247,6 +365,12 @@ function buildTarget(target, options) {
   const outPath = join(outDir, `${BINARY_NAME}${target.ext}`);
   copyFileSync(built, outPath);
   console.log(`[build-core] ${target.triple} → ${outPath}`);
+
+  // 指纹文件与可执行文件同级落位：宿主运行时读它确定远端部署槽位
+  // `~/.local/bin/<指纹>/`；随 copy-assets 进入打包产物（Electron / vsix 携带）。
+  const fingerprintPath = join(outDir, FINGERPRINT_FILE_NAME);
+  writeFileSync(fingerprintPath, `${computeFingerprint(target.triple, profile)}\n`);
+  console.log(`[build-core] ${target.dir} 指纹 → ${fingerprintPath}`);
 
   copyBundledRipgrep(target, outDir);
 }

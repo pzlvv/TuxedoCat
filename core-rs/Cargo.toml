@@ -4,6 +4,8 @@ version = "0.0.1"
 edition = "2021"
 description = "Standalone Core (out-of-process core implementation)"
 license = "Apache-2.0"
+# 构建脚本把 build-core.mjs 的构建指纹烧进编译期环境（docs/standalone-core.md 第 4.4 节）
+build = "build.rs"
 
 # 包名与二进制名保持中性的 `standalone-core`：对外可执行文件名由
 # `src/config/project.json` 的 `core.binaryName` 决定，构建脚本按它落位，
