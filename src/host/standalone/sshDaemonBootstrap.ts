@@ -11,7 +11,10 @@
  *    与可执行文件同级——Core 以**自己的可执行文件目录**为基准定位自带资源，见
  *    `docs/standalone-core.md` 第 4 节）；覆盖只发生在 daemon 未运行（或已被结束）之后；
  * 3. **换血**：在跑的 daemon 版本过期时先 `<可执行文件> kill`（幂等）再部署再启动；
- * 4. **启动**：执行 `<远端可执行文件> start`（幂等：已在跑就复用），再读状态文件。
+ * 4. **启动**：执行 `<远端可执行文件> start --host 127.0.0.1`（幂等：已在跑就复用），
+ *    再读状态文件。绑回环是因为转发连接从远端本机发起，daemon 端口不出机器；
+ *    直连 `tcp` 的连接串模式不受影响（`start` 缺省仍绑 `0.0.0.0`，见
+ *    `docs/core-daemon.md` 第 12.2 节）。
  *
  * 各分支都以「读到状态文件里的 endpoint + token」收尾；任何一步失败都直接报错，
  * 不回退到「先连上再说」（`DEVELOPMENT.md` 第 12 章）。
@@ -123,8 +126,10 @@ export async function ensureRemoteDaemon(
   // 4. Core 自带的 ripgrep：与可执行文件同级，缺了就补上
   await ensureRemoteRipgrep(ssh, options, home);
 
-  // 5. 启动：`start` 自己保证幂等（已在跑就只打印连接信息）
-  const started = await ssh.exec(`${shellQuote(remoteBinary)} start`);
+  // 5. 启动：`start` 自己保证幂等（已在跑就只打印连接信息）。绑回环——SSH 转发的
+  //    连接从远端本机发起，daemon 端口不需要、也不应该对外暴露；换血路径已先结束
+  //    在跑的 daemon，所以这条 start 只在「没有 daemon」时真正拉起进程。
+  const started = await ssh.exec(`${shellQuote(remoteBinary)} start --host 127.0.0.1`);
   if (started.code !== 0) {
     throw new Error(
       `remote "${remoteBinary} start" failed (exit ${started.code ?? 'null'}): `

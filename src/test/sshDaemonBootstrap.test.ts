@@ -7,8 +7,8 @@
  * - 已经在跑但远端可执行文件是**旧版本产物**（哈希不一致 / 读不出）→ kill + 覆盖上传
  *   + start：daemon 是常驻进程，旧版本应用留下的 daemon 会一直拉起旧 Core
  *   （协议不变、行为缺失——新增的 CoreEvent 事件不发），必须换血；
- * - 已部署未启动 → 只跑 `start`（缺自带 `ripgrep/` 时补传它）；
- * - 未部署 → 上传产物（Core 可执行文件 + 同级的自带 `ripgrep/`）+ `start`；
+ * - 已部署未启动 → 只跑 `start --host 127.0.0.1`（缺自带 `ripgrep/` 时补传它）；
+ * - 未部署 → 上传产物（Core 可执行文件 + 同级的自带 `ripgrep/`）+ `start --host 127.0.0.1`；
  * - `start` 失败 / 状态文件读不出来 / 本机产物缺自带 ripgrep → 报错，不静默降级。
  *
  * 用假 SSH 实现（`RemoteSsh`）跑，不需要真实机器；真实链路由 `sshClient` 的
@@ -34,6 +34,11 @@ const STATE_PATH = `${HOME}/.tuxedo-cat/core-daemon.json`;
 const BINARY_PATH = `${HOME}/.local/bin/tuxedo-cat-core`;
 /** Core 自带的 ripgrep：与远端可执行文件同级（`docs/standalone-core.md` 第 4 节） */
 const RIPGREP_PATH = `${HOME}/.local/bin/ripgrep/rg`;
+/**
+ * 引导执行的启动命令：SSH 接入绑回环（转发连接从远端本机发起，端口不出机器），
+ * 见 `docs/core-daemon.md` 第 12.8 节。
+ */
+const START_COMMAND = `'${BINARY_PATH}' start --host 127.0.0.1`;
 
 /** 假的远端 SSH：文件系统、可执行文件与转发可达性都可控 */
 class FakeSsh implements RemoteSsh {
@@ -104,7 +109,7 @@ class FakeSsh implements RemoteSsh {
       this.killCount += 1;
       return { code: 0, stdout: 'daemon stopped', stderr: '' };
     }
-    if (command.endsWith(' start')) {
+    if (command === START_COMMAND) {
       if (this.startExit === 0 && !this.skipState) {
         this.startCount += 1;
         this.writeState(this.endpoint, `tok-${this.startCount}`);
@@ -203,7 +208,7 @@ runTests('sshDaemonBootstrap', async () => {
     const daemon = await ensureRemoteDaemon(fake, options);
     check('复用运行中的 daemon（回环地址）', daemon.host === '127.0.0.1' && daemon.port === 10975);
     check('复用运行中的 daemon（token）', daemon.token === 'tok-running');
-    check('复用时不重启 daemon', fake.killCount === 0 && !fake.commands.some((command) => command.endsWith(' start')));
+    check('复用时不重启 daemon', fake.killCount === 0 && !fake.commands.includes(START_COMMAND));
     check('复用时不部署产物', fake.uploads.length === 0);
   }
 
@@ -220,7 +225,7 @@ runTests('sshDaemonBootstrap', async () => {
     check('旧版本产物经临时名换血（不直接写执行中的文件）', fake.uploads.some(
       (upload) => upload.remote === `${BINARY_PATH}.new` && upload.local === binary,
     ) && fake.commands.includes(`mv -f '${BINARY_PATH}.new' '${BINARY_PATH}'`));
-    check('换血后重新 start', fake.commands.includes(`'${BINARY_PATH}' start`));
+    check('换血后重新 start（绑回环）', fake.commands.includes(START_COMMAND));
     check('换血后返回新 daemon 的 token', daemon.token === 'tok-1');
   }
 
@@ -247,7 +252,7 @@ runTests('sshDaemonBootstrap', async () => {
     check('补 rg 后仍复用同一个 daemon', daemon.token === 'tok-running');
     check('已在跑时补传自带 ripgrep', fake.uploads.length === 1
       && fake.uploads[0]?.remote === RIPGREP_PATH && fake.uploads[0]?.local === ripgrep);
-    check('已在跑时不重跑 start', !fake.commands.some((command) => command.endsWith(' start')));
+    check('已在跑时不重跑 start', !fake.commands.includes(START_COMMAND));
   }
 
   // ---------- 已部署未启动：只跑 start ----------
@@ -260,7 +265,7 @@ runTests('sshDaemonBootstrap', async () => {
     const daemon = await ensureRemoteDaemon(fake, options);
     check('已部署时返回状态文件里的 token', daemon.token === 'tok-1');
     check('产物一致时不重新上传', fake.uploads.length === 0);
-    check('已部署时执行 start', fake.commands.includes(`'${BINARY_PATH}' start`));
+    check('已部署时执行 start（绑回环）', fake.commands.includes(START_COMMAND));
     // 远端可执行文件名的平台后缀要先问 `uname`，因此这一步一定会发生
     check('先问远端平台', fake.commands.includes('uname -sm'));
   }
@@ -276,7 +281,7 @@ runTests('sshDaemonBootstrap', async () => {
     check('未启动的过期产物同样经临时名覆盖', fake.uploads.some(
       (upload) => upload.remote === `${BINARY_PATH}.new` && upload.local === binary,
     ) && fake.commands.includes(`mv -f '${BINARY_PATH}.new' '${BINARY_PATH}'`));
-    check('覆盖上传后执行 start', fake.commands.includes(`'${BINARY_PATH}' start`));
+    check('覆盖上传后执行 start（绑回环）', fake.commands.includes(START_COMMAND));
     check('返回新 daemon 的 token', daemon.token === 'tok-1');
   }
 
@@ -312,7 +317,7 @@ runTests('sshDaemonBootstrap', async () => {
     check('未部署时一并上传自带 ripgrep', fake.uploads[1]?.remote === RIPGREP_PATH
       && fake.uploads[1]?.local === ripgrep);
     check('上传前建好目录', fake.commands.includes(`mkdir -p '${HOME}/.local/bin'`));
-    check('上传后执行 start', fake.commands.includes(`'${BINARY_PATH}' start`));
+    check('上传后执行 start（绑回环）', fake.commands.includes(START_COMMAND));
     check('返回 daemon endpoint', daemon.host === '127.0.0.1' && daemon.port === 10975);
   }
 
@@ -323,7 +328,7 @@ runTests('sshDaemonBootstrap', async () => {
     fake.writeState('0.0.0.0:10975', 'tok-stale');
     fake.executables.add(BINARY_PATH);
     const daemon = await ensureRemoteDaemon(fake, options);
-    check('探测失败后重新启动', fake.commands.includes(`'${BINARY_PATH}' start`));
+    check('探测失败后重新启动', fake.commands.includes(START_COMMAND));
     check('重新启动后返回新 token', daemon.token === 'tok-1');
   }
 
@@ -334,7 +339,7 @@ runTests('sshDaemonBootstrap', async () => {
     fake.files.set(STATE_PATH, '{ not json');
     fake.executables.add(BINARY_PATH);
     const daemon = await ensureRemoteDaemon(fake, options);
-    check('损坏的状态文件被忽略', fake.commands.includes(`'${BINARY_PATH}' start`));
+    check('损坏的状态文件被忽略', fake.commands.includes(START_COMMAND));
     check('损坏的状态文件不阻止接入', daemon.token === 'tok-1');
   }
 
@@ -385,7 +390,7 @@ runTests('sshDaemonBootstrap', async () => {
       message = error instanceof Error ? error.message : String(error);
     }
     check('本机产物缺自带 ripgrep 时报错', message.includes('bundled ripgrep'));
-    check('缺 ripgrep 时不启动远端 daemon', !fake.commands.includes(`'${BINARY_PATH}' start`));
+    check('缺 ripgrep 时不启动远端 daemon', !fake.commands.includes(START_COMMAND));
     cleanup(bare);
   }
 
