@@ -39,6 +39,9 @@ getrandom = "0.2"
 # `docs/core-daemon.md` 第 12.3 节）。std 没有跨平台的网卡枚举，故引入这个只做
 # 这一件事的小 crate。
 if-addrs = "0.15"
+# 控制连接的 TCP keepalive 参数（`docs/core-daemon.md` 第 12.5 节）：std 的
+# keepalive 参数配置尚未稳定（`tcp_keepalive` feature），用 socket2 设置。
+socket2 = "0.6"
 
 [dev-dependencies]
 # 单测里现造最小 xlsx（zip + inline string）作为 Read xlsx 路径的夹具

@@ -41,6 +41,10 @@ pub enum HostToDaemonFrame {
     },
     /// 关闭全部 channel 并退出
     Shutdown,
+    /// 心跳（`docs/core-daemon.md` 第 12.5 节）：Host 定期发送，daemon 收到即证明
+    /// 这条控制通道的 Host 还活着；daemon 不回帧，死活判定只看「最近一次收到控制帧」
+    /// 的时间。旧版 Host 不发本帧：daemon 只在见过首个 `ping` 后才启用空闲回收。
+    Ping,
 }
 
 /// daemon → Host 的控制帧。

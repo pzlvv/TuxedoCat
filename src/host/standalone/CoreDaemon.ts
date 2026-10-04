@@ -11,6 +11,10 @@
  * 本模块把它翻译成「连接重置」——重新发 `hello`、等 `ready`、再通知总线。
  * 重启次数超限时 daemon 回 `workspaceClosed(reason=failed)`，本模块报告 fatal。
  *
+ * 链路心跳（`docs/core-daemon.md` 第 12.5 节）：`authOk` 之后定期发 `ping`。
+ * Host 消失而 TCP 未断（断网 / 休眠 / 进程冻结）时 daemon 读不到 EOF，只能靠
+ * 控制帧的沉默判死；Host 定期发帧，daemon 才能区分「活着的静默」与「已死」。
+ *
  * 背压：控制通道的出站帧进有序队列，socket 返回 false 时等 `drain`；
  * 越过软水位只记录诊断，不丢帧、不合并帧。
  */
@@ -40,6 +44,14 @@ import type { WorkspaceRef } from '../workspaceRef.js';
 
 /** 出站队列软水位：越过只记录诊断，不丢帧 */
 const OUTBOX_WARN_THRESHOLD = 10_000;
+/**
+ * 链路心跳间隔（`docs/core-daemon.md` 第 12.5 节）。
+ *
+ * daemon 以「最近一次收到控制帧」判定链路死活（60s 空闲回收）：daemon 自己不发帧，
+ * Host 不定期发心跳的话，它没有任何手段区分「活着的静默」与「已死而 TCP 未断」。
+ * `authOk` 之后才开始发，未就绪不发。
+ */
+const DAEMON_HEARTBEAT_INTERVAL_MS = 15_000;
 /** 握手超时默认值（Core 进程启动后未回 `ready` 视为失败） */
 export const DEFAULT_DAEMON_HANDSHAKE_TIMEOUT_MS = 10_000;
 /** 控制通道就绪超时默认值（连不上 / 鉴权无应答） */
@@ -126,6 +138,8 @@ export interface CoreDaemonOptions {
   /** 控制通道就绪超时；缺省用 `DEFAULT_DAEMON_LINK_TIMEOUT_MS`（SSH 接入要放宽） */
   linkTimeoutMs?: number;
   shutdownTimeoutMs?: number;
+  /** 链路心跳间隔；缺省 `DAEMON_HEARTBEAT_INTERVAL_MS`（测试注入更短的间隔） */
+  heartbeatIntervalMs?: number;
 }
 
 /** TCP 直连建链器：socket 连上后立刻发 `auth` */
@@ -413,6 +427,8 @@ export class CoreDaemon {
   private exitWaiters: Array<() => void> = [];
   /** 控制通道就绪超时（进程启动 / 连接 / 鉴权） */
   private linkTimer: NodeJS.Timeout | null = null;
+  /** 链路心跳定时器（`authOk` 后启动，链路退出即停） */
+  private heartbeatTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly options: CoreDaemonOptions) {
     this.log = options.log;
@@ -553,6 +569,7 @@ export class CoreDaemon {
     this.stopped = true;
     this.shuttingDown = true;
     this.clearLinkTimeout();
+    this.stopHeartbeat();
     // 建链还没回来：作废它，避免关闭后又挂上一条链路
     this.linkAttempt += 1;
     const writer = this.writer;
@@ -628,12 +645,19 @@ export class CoreDaemon {
     this.linkTimer = setTimeout(() => {
       this.linkTimer = null;
       if (this.linkReady || this.exitHandled) return;
-      const error = new Error(`${label} timed out after ${timeoutMs}ms.`);
+      const error = new Error(
+        `${label} timed out after ${timeoutMs}ms. `
+        + 'The remote daemon may still be held by a stale connection; '
+        + 'retry in a minute, or stop it on the remote machine and reconnect.',
+      );
       this.log(`[daemon] ${error.message}`);
       // 作废在途建链：慢连接不能在失败上报之后又把链路挂回来
       this.linkAttempt += 1;
       this.opening = false;
       this.failPendingLink(error);
+      // 随后的 kill 会触发链路 close：那是超时的预期结果，不要让它以
+      // 「exited unexpectedly」盖掉真正的失败原因
+      this.exitHandled = true;
       this.writer?.kill();
     }, timeoutMs);
     this.linkTimer.unref();
@@ -643,6 +667,31 @@ export class CoreDaemon {
     if (this.linkTimer) {
       clearTimeout(this.linkTimer);
       this.linkTimer = null;
+    }
+  }
+
+  // ===================== 内部：链路心跳 =====================
+
+  /**
+   * 启动链路心跳（`authOk` 之后）：定期发 `ping`，daemon 以「最近一次收到控制帧」
+   * 判定链路死活，沉默超过它的心跳超时即按断开处理并回收全部 Core
+   * （`docs/core-daemon.md` 第 12.5 节）。帧走 `enqueue`，与业务帧同序。
+   */
+  private startHeartbeat(): void {
+    if (this.heartbeatTimer) return;
+    const interval = this.options.heartbeatIntervalMs ?? DAEMON_HEARTBEAT_INTERVAL_MS;
+    const timer = setInterval(() => {
+      if (this.stopped || !this.linkReady) return;
+      this.enqueue(encodeDaemonFrame({ kind: 'ping' }));
+    }, interval);
+    timer.unref();
+    this.heartbeatTimer = timer;
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
     }
   }
 
@@ -661,6 +710,7 @@ export class CoreDaemon {
     if (this.exitHandled) return; // close 只处理一次
     this.exitHandled = true;
     this.clearLinkTimeout();
+    this.stopHeartbeat();
     this.opening = false;
     this.writer = null;
     this.linkReady = false;
@@ -723,6 +773,7 @@ export class CoreDaemon {
         if (this.linkReady) return;
         this.clearLinkTimeout();
         this.linkReady = true;
+        this.startHeartbeat();
         const waiters = this.authWaiters;
         this.authWaiters = [];
         for (const waiter of waiters) waiter.resolve();

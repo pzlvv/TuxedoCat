@@ -54,7 +54,14 @@ export type HostToDaemonFrame =
   | { kind: 'createDirectory'; id: number; path: string }
   | { kind: 'renameDirectory'; id: number; path: string; name: string }
   | { kind: 'deleteDirectory'; id: number; path: string; recursive: boolean }
-  | { kind: 'shutdown' };
+  | { kind: 'shutdown' }
+  /**
+   * 链路心跳（`docs/core-daemon.md` 第 12.5 节）：链路就绪后定期发送，daemon 收到
+   * 即证明这条控制通道的 Host 还活着。Host 消失而 TCP 未断（断网 / 休眠 / 进程
+   * 冻结）时，daemon 的读线程永远等不到 EOF，沉默是它唯一的断开依据——同步
+   * accept 循环被死连接占住，后续接入全部饿死（探测「连得上」、auth 无应答）。
+   */
+  | { kind: 'ping' };
 
 /** channel 关闭原因 */
 export type WorkspaceCloseReason = 'closed' | 'crashed' | 'failed';

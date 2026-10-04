@@ -277,6 +277,8 @@ impl Harness {
                 max_delay: Duration::from_millis(20),
             },
             idle_exit: true,
+            auth_timeout: Duration::from_secs(10),
+            heartbeat_timeout: None,
         }
     }
 }
@@ -340,6 +342,8 @@ fn restart_limit_closes_the_channel_and_reports_failure() {
             base_delay: Duration::from_millis(5),
             max_delay: Duration::from_millis(10),
         },
+        auth_timeout: Duration::from_secs(10),
+        heartbeat_timeout: None,
         idle_exit: true,
     });
     harness.command(open(1, "D:/repo/a"));
@@ -381,6 +385,61 @@ fn host_disconnect_closes_all_cores_and_exits() {
     assert_eq!(exit, ChannelExit::Continue);
     assert!(harness.spawner.child(0).killed.load(Ordering::SeqCst));
     assert!(harness.spawner.child(1).killed.load(Ordering::SeqCst));
+}
+
+#[test]
+fn heartbeat_silence_closes_all_cores_and_continues() {
+    // 远程序列：控制通道在但 Host 沉默——TCP 没断（读不到 EOF），靠心跳超时回收
+    let mut harness = Harness::new(DaemonOptions {
+        idle_exit: false,
+        heartbeat_timeout: Some(Duration::from_millis(200)),
+        ..Harness::fast_options()
+    });
+    harness.command(open(1, "D:/repo/a"));
+    harness.next_frame();
+
+    // 首个 ping 武装超时；此后沉默超过时限按 Host 断开处理
+    harness.command(json!({ "kind": "ping" }));
+    let exit = harness.join.take().expect("daemon thread").join().expect("daemon join");
+    assert_eq!(exit, ChannelExit::Continue);
+    assert!(harness.spawner.child(0).killed.load(Ordering::SeqCst));
+}
+
+#[test]
+fn heartbeat_without_ping_does_not_expire() {
+    // 旧版 Host 不发 ping：心跳永不武装，沉默多久都不回收（shutdown 前的沉默
+    // 覆盖了几个超时窗，daemon 仍活着）
+    let mut harness = Harness::new(DaemonOptions {
+        idle_exit: false,
+        heartbeat_timeout: Some(Duration::from_millis(200)),
+        ..Harness::fast_options()
+    });
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
+}
+
+#[test]
+fn heartbeat_is_refreshed_by_control_traffic() {
+    // 任何控制帧都顺延心跳：第二次 ping 把到期时刻推后一个窗口
+    let mut harness = Harness::new(DaemonOptions {
+        idle_exit: false,
+        heartbeat_timeout: Some(Duration::from_millis(300)),
+        ..Harness::fast_options()
+    });
+    harness.command(open(1, "D:/repo/a"));
+    harness.next_frame();
+    harness.command(json!({ "kind": "ping" }));
+    thread::sleep(Duration::from_millis(200));
+    harness.command(json!({ "kind": "ping" }));
+    thread::sleep(Duration::from_millis(200)); // 距首个 ping 已 400ms > 300ms 窗口
+    // 未经顺延此刻已经回收：daemon 还活着说明控制帧确实顺延了心跳
+    harness.command(json!({
+        "kind": "frame",
+        "channel": 1,
+        "frame": { "kind": "hello", "protocol": 2 },
+    }));
+    harness.wait_for_lines(0, 1);
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
 }
 
 #[test]

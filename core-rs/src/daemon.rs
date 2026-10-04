@@ -85,7 +85,22 @@ pub struct DaemonOptions {
     /// - 远程 daemon：`false`。控制通道本身是生命周期边界：连接在，daemon 就在
     ///   （目录选择期间可能长时间没有工作区）；连接断开走 `HostDisconnected` 退出。
     pub idle_exit: bool,
+    /// 第一帧 `auth` 的等待上限（远程控制通道；`docs/core-daemon.md` 第 12.4 节）。
+    ///
+    /// accept 循环是同步单连接：连接后不发 `auth` 的探活连接 / 端口扫描占着它，
+    /// 后续接入全部饿死。超时即关闭这条连接。
+    pub auth_timeout: Duration,
+    /// 心跳空闲超时（远程控制通道；`docs/core-daemon.md` 第 12.5 节）。
+    ///
+    /// 见过首个 `ping` 后启用：这么长时间没再收到任何控制帧，按 Host 断开处理
+    /// （close_all + 回到 accept）。Host 消失而 TCP 未断（断网 / 休眠 / 进程冻结）
+    /// 时这是唯一的回收手段。`None` = 不启用（本地 stdio 没有 ping；旧版 Host
+    /// 也不发 ping，保持原有行为）。
+    pub heartbeat_timeout: Option<Duration>,
 }
+
+/// 远程控制通道的心跳空闲超时：Host 每 15s 发一次 `ping`，容 3 次丢失。
+pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl Default for DaemonOptions {
     fn default() -> Self {
@@ -94,6 +109,8 @@ impl Default for DaemonOptions {
             shutdown_timeout: Duration::from_secs(5),
             restart_policy: RestartPolicy::default(),
             idle_exit: true,
+            auth_timeout: Duration::from_secs(10),
+            heartbeat_timeout: None,
         }
     }
 }
@@ -375,6 +392,8 @@ pub fn run_daemon(
     let mut channels: HashMap<u64, ChannelState> = HashMap::new();
     let mut next_channel: u64 = 1;
     let mut grace_deadline: Option<Instant> = None;
+    // 心跳空闲超时的到期时刻：`None` = 尚未武装（没见过 ping 或未启用心跳）
+    let mut heartbeat_deadline: Option<Instant> = None;
 
     loop {
         let now = Instant::now();
@@ -419,7 +438,7 @@ pub fn run_daemon(
         maybe_start_grace(&channels, &mut grace_deadline, &options);
 
         // 3. 等待下一个事件 / 定时器
-        let timeout = next_deadline(&channels, grace_deadline)
+        let timeout = next_deadline(&channels, grace_deadline, heartbeat_deadline)
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
             .map(|remaining| remaining.max(Duration::from_millis(1)));
         let event = match timeout {
@@ -428,6 +447,13 @@ pub fn run_daemon(
         };
         match event {
             Ok(DaemonEvent::Command(line)) => {
+                // 收到任何控制帧都证明 Host 活着：心跳已武装就顺延（超时只在
+                // 心跳启用后才有意义，未武装的连接不因沉默被回收）
+                if let Some(timeout) = options.heartbeat_timeout {
+                    if heartbeat_deadline.is_some() {
+                        heartbeat_deadline = Some(Instant::now() + timeout);
+                    }
+                }
                 let frame = match serde_json::from_str::<HostToDaemonFrame>(&line) {
                     Ok(frame) => frame,
                     Err(err) => {
@@ -506,6 +532,13 @@ pub fn run_daemon(
                         close_all(&channels, &out);
                         return ChannelExit::Stop;
                     }
+                    HostToDaemonFrame::Ping => {
+                        // 心跳：首个 ping 武装空闲超时，此后由 Command 分支顺延
+                        // （docs/core-daemon.md 第 12.5 节；旧版 Host 不发 ping，永不武装）
+                        if let Some(timeout) = options.heartbeat_timeout {
+                            heartbeat_deadline = Some(Instant::now() + timeout);
+                        }
+                    }
                     // 本地 stdio 通道没有鉴权阶段：收到 auth 只记诊断，不改变状态。
                     HostToDaemonFrame::Auth { .. } => {
                         eprintln!("[daemon] unexpected auth frame on a non-remote channel; ignored");
@@ -532,7 +565,17 @@ pub fn run_daemon(
                 handle_core_exit(&mut channels, channel, code, &spawner, &sink, &out, &options);
                 maybe_start_grace(&channels, &mut grace_deadline, &options);
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                // 心跳到期：Host 消失而 TCP 未断（断网 / 休眠 / 进程冻结）时读线程
+                // 永远等不到 EOF，只能按沉默判定断开——同 `HostDisconnected` 口径
+                if let Some(deadline) = heartbeat_deadline {
+                    if Instant::now() >= deadline {
+                        eprintln!("[daemon] control channel heartbeat timed out; closing all cores");
+                        close_all(&channels, &out);
+                        return ChannelExit::Continue;
+                    }
+                }
+            }
             Err(RecvTimeoutError::Disconnected) => {
                 // 事件源关闭（进程内部错误）：按 Host 断开处理
                 close_all(&channels, &out);
@@ -542,12 +585,19 @@ pub fn run_daemon(
     }
 }
 
-/// 最近一个定时器时刻（grace / 重启 / 强制结束）
+/// 最近一个定时器时刻（grace / 重启 / 强制结束 / 心跳空闲）
 fn next_deadline(
     channels: &HashMap<u64, ChannelState>,
     grace: Option<Instant>,
+    heartbeat: Option<Instant>,
 ) -> Option<Instant> {
     let mut next = grace;
+    if let Some(deadline) = heartbeat {
+        next = Some(match next {
+            Some(current) => current.min(deadline),
+            None => deadline,
+        });
+    }
     for state in channels.values() {
         for deadline in [state.restart_at, state.kill_deadline].into_iter().flatten() {
             next = Some(match next {

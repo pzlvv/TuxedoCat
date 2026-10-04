@@ -487,6 +487,31 @@ async function run(): Promise<void> {
     await fake.close();
   }
 
+  // ---------- 链路心跳：authOk 后定期发 ping ----------
+  //
+  // daemon 靠「最近一次收到控制帧」判定链路死活（心跳空闲回收，docs/core-daemon.md
+  // 第 12.5 节）：Host 必须定期发 `ping`，沉默的连接会在 daemon 侧被误判断开。
+  {
+    const fake = await startFakeDaemon();
+    const daemon = new CoreDaemon({
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port, token: 'secret' }),
+      log: () => undefined,
+      handshakeTimeoutMs: 2_000,
+      shutdownTimeoutMs: 1_000,
+      heartbeatIntervalMs: 20,
+    });
+    const { bus } = openBus(daemon, 'D:/repo/a');
+    check('心跳用例完成握手', await waitFor(() => bus.isReady()));
+    const pings = (): ControlFrame[] => fake.received.filter((frame) => frame.kind === 'ping');
+    check('authOk 后开始发送 ping', await waitFor(() => pings().length >= 1));
+    const count = pings().length;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    check('ping 按间隔持续发送', pings().length > count);
+    await bus.shutdown();
+    await daemon.shutdown();
+    await fake.close();
+  }
+
   // ---------- 真实 Core 产物 smoke（存在时）----------
   {
     const repoRoot = path.resolve(__dirname, '../../..');

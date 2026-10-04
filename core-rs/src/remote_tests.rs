@@ -705,11 +705,11 @@ fn stop_daemon_shuts_the_server_down() {
         endpoint: address.to_string(),
         token: "secret".to_string(),
     };
-    stop_daemon(&state).expect("stop daemon");
+    assert_eq!(stop_daemon(&state, STOP_TIMEOUT), StopOutcome::Stopped);
     assert_eq!(server.join().expect("server thread"), ChannelExit::Stop);
 }
 
-/// token 对不上：报错，不假装停掉了（也不能把状态文件当成已清理）。
+/// token 对不上：报「拒绝」，不假装停掉了（也不能把状态文件当成已清理）。
 #[test]
 fn stop_daemon_refuses_on_token_mismatch() {
     let (address, server) = start_server("secret");
@@ -718,8 +718,12 @@ fn stop_daemon_refuses_on_token_mismatch() {
         endpoint: address.to_string(),
         token: "another".to_string(),
     };
-    let error = stop_daemon(&state).expect_err("token 不匹配应报错");
-    assert!(error.contains("rejected the stored token"), "{error}");
+    match stop_daemon(&state, STOP_TIMEOUT) {
+        StopOutcome::Refused(error) => {
+            assert!(error.contains("rejected the stored token"), "{error}");
+        }
+        outcome => panic!("token 不匹配应报 Refused，实际是 {outcome:?}"),
+    }
     server.join().expect("server thread");
 }
 
@@ -735,10 +739,118 @@ fn stop_daemon_reports_unreachable() {
         endpoint: format!("127.0.0.1:{port}"),
         token: "secret".to_string(),
     };
+    assert_eq!(stop_daemon(&state, STOP_TIMEOUT), StopOutcome::Unreachable);
+}
+
+/// 对端连得上但协议无应答（accept 循环被死连接占住的 wedged daemon）：
+/// 报「无响应」，`kill` 据此走进程兜底，而不是把超时当成失败挂起。
+#[test]
+fn stop_daemon_reports_unresponsive_when_the_server_never_answers() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    // 假 daemon：只 accept，从不读——写进来的 auth 永远没人处理
+    let holder = thread::spawn(move || {
+        let (_stream, _) = listener.accept().expect("accept");
+        thread::sleep(Duration::from_secs(10));
+    });
+    let state = DaemonState {
+        requested: requested_key(&RemoteOptions::default()),
+        endpoint: address.to_string(),
+        token: "secret".to_string(),
+    };
     assert_eq!(
-        stop_daemon(&state).expect_err("没有 daemon 应报错"),
-        STOP_UNREACHABLE
+        stop_daemon(&state, Duration::from_millis(300)),
+        StopOutcome::Unresponsive
     );
+    holder.join().expect("holder thread");
+}
+
+/// 兜底强杀只匹配「本可执行文件 + `start-daemon`」的进程，其它一律放过。
+#[test]
+fn find_daemon_pids_matches_only_the_start_daemon_cmdline() {
+    let root = temp_dir("proc");
+    let exe = std::env::current_exe().unwrap();
+    let exe_text = exe.to_string_lossy().to_string();
+    let nul = char::from_u32(0).unwrap();
+    let write = |pid: &str, argv: &[&str]| {
+        let dir = root.join(pid);
+        std::fs::create_dir_all(&dir).unwrap();
+        let joined: Vec<String> = argv.iter().map(|arg| arg.to_string()).collect();
+        std::fs::write(dir.join("cmdline"), joined.join(&nul.to_string())).unwrap();
+    };
+    write("101", &[&exe_text, "start-daemon", "--host", "127.0.0.1"]);
+    write("102", &[&exe_text, "kill"]);
+    write("103", &["/bin/other", "start-daemon"]);
+    write("104", &[&exe_text, "start"]);
+    // 自己的 pid 即使 cmdline 匹配也必须跳过
+    let self_pid = std::process::id().to_string();
+    write(&self_pid, &[&exe_text, "start-daemon"]);
+
+    let pids = find_daemon_pids(&root, &exe);
+    assert_eq!(pids, vec![101], "只该匹配 101 号进程，实际 {pids:?}");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+// ==================== 鉴权超时与心跳（端到端）====================
+
+/// 连接后不发 `auth` 的探活连接 / 端口扫描不能长期占住 accept 循环：
+/// auth 超时后服务端关闭连接（客户端读到 EOF），daemon 回到 accept。
+#[test]
+fn silent_connection_is_dropped_after_auth_timeout() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+    let address = listener.local_addr().expect("addr");
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept");
+        serve_connection(
+            stream,
+            "secret",
+            DaemonOptions {
+                auth_timeout: Duration::from_millis(200),
+                ..remote_daemon_options()
+            },
+        )
+    });
+    let client = TcpStream::connect(address).expect("connect");
+    client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    // 什么都不发：超时后服务端关闭连接，读到 EOF
+    let mut reader = BufReader::new(client.try_clone().unwrap());
+    let mut line = String::new();
+    let read = reader.read_line(&mut line).expect("read after auth timeout");
+    assert_eq!(read, 0, "探活连接应在超时后被关闭");
+    assert_eq!(server.join().expect("server thread"), ChannelExit::Continue);
+}
+
+/// 心跳端到端：`ping` 之后沉默，daemon 在心跳超时后按断开处理（回到 accept）。
+#[test]
+fn heartbeat_silence_ends_the_connection() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+    let address = listener.local_addr().expect("addr");
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept");
+        serve_connection(
+            stream,
+            "secret",
+            DaemonOptions {
+                heartbeat_timeout: Some(Duration::from_millis(300)),
+                ..remote_daemon_options()
+            },
+        )
+    });
+    let mut client = TcpStream::connect(address).expect("connect");
+    client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(client.try_clone().unwrap());
+    client
+        .write_all(b"{\"kind\":\"auth\",\"token\":\"secret\"}\n")
+        .unwrap();
+    assert!(read_line(&mut reader).contains("\"authOk\""));
+    client.write_all(b"{\"kind\":\"ping\"}\n").unwrap();
+    // 此后沉默：心跳超时（300ms）后 daemon 关闭连接，读到 EOF
+    let mut line = String::new();
+    let read = reader
+        .read_line(&mut line)
+        .expect("read after heartbeat timeout");
+    assert_eq!(read, 0, "心跳沉默后连接应被 daemon 关闭");
+    assert_eq!(server.join().expect("server thread"), ChannelExit::Continue);
 }
 
 /// 状态文件只在内容仍是自己那份时才删（新 daemon 可能已经覆盖过它）。

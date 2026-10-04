@@ -154,6 +154,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 | daemon → Host | `directoryDeleted` | `{ kind: 'directoryDeleted', id: number, path: string }` |
 | daemon → Host | `directoryFailed` | `{ kind: 'directoryFailed', id: number, error: string, reason: 'notEmpty' \| 'other' }`（列举 / 新建 / 删除共用） |
 | Host → daemon | `shutdown` | `{ kind: 'shutdown' }` |
+| Host → daemon | `ping` | `{ kind: 'ping' }`（链路心跳，第 12.5 节；`authOk` 之后定期发送） |
 
 - `id` 由 Host 生成，在单条控制通道内唯一；`workspaceOpened` / `workspaceFailed` /
   `directoriesListed` / `directoryCreated` / `directoryRenamed` / `directoryDeleted` /
@@ -261,6 +262,10 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 - `kill`：结束在跑的 daemon——连上它、`auth`、发 `shutdown`，随后清掉状态文件。
   幂等：没有状态文件、或文件里的 daemon 已经不在，都算目标状态已达成（退出码 0）；
   只有「连上了但 token 对不上」才报错。
+  连上了但协议无应答（endpoint 探得通、`auth` 等不到应答——accept 循环被死连接占住的
+  旧版 daemon）时按进程兜底强杀：扫描 `/proc` 找「本可执行文件 + `start-daemon`」的
+  进程 SIGKILL（精确匹配 `argv[0]` 与 `argv[1]`，不靠名字模式，不会误伤别的进程），
+  然后同样清掉状态文件；找不到匹配进程才报错。
 - `start-daemon` 是启动器的内部实现，不出现在 `--help` 里；也可以直接运行（调试用）。
 - 没有动作时按 `start` 处理。
 
@@ -297,17 +302,32 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 - TCP 控制通道的第一帧必须是 `auth`；daemon 用定长比较校验 token。
 - 校验通过回 `authOk`，随后才接受其余控制帧；不通过回 `authFailed` 并关闭连接。
+- 第一帧有等待上限（10s）：accept 循环是同步单连接，连接后不发 `auth` 的探活连接 /
+  端口扫描占着它，后续接入全部饿死。超时即关闭这条连接；上限只在鉴权阶段生效，
+  通过后立刻清除，控制通道此后可以无限期空闲。
 
 ### 12.5 连接与生命周期
 
 - 一个 endpoint 同时只服务一条控制通道：daemon 同步处理一条连接，断开后回到 accept
   等待下一次接入。
 - 连接断开时，该连接上的全部 Core 进程被关闭；daemon 进程继续监听。
+- 「断开」有两条判定路径：
+  - TCP 层的 EOF / 读错误（Host 正常退出、socket 被关闭）；
+  - **心跳空闲超时**（60s）：Host 每 15s 发一帧 `ping`，daemon 见到首个 `ping` 后
+    武装空闲计时，此后任何控制帧都顺延它；超时仍无帧即按断开处理。Host 消失而
+    TCP 未断（断网 / 休眠 / 进程冻结）时读线程永远等不到 EOF，沉默是 daemon 唯一
+    的断开依据——同步 accept 循环被死连接占住时，后续接入全部堆在 backlog 里：
+    TCP 探测照样「连得上」，`auth` 却永远得不到应答（Host 侧表现为建链超时）。
+    旧版 Host 不发 `ping`，daemon 不武装计时，行为与原来一致；daemon 收到未知帧
+    一律丢弃并记录，不因此断开。
 - 每条连接上的 daemon 状态（channel 表、计数、grace）独立。
 - 控制通道**不因没有工作区而 grace 退出**（`DaemonOptions.idle_exit = false`）：控制通道
   本身是生命周期边界，目录选择期间可以长时间没有工作区。
 - 远程 daemon 是常驻 server：一条连接结束后回到 accept 继续等待下一条；只有 `shutdown`
   帧（`kill` 发的）才结束进程。
+- 控制连接开启 TCP keepalive（空闲 45s 起、每 10s 探、3 次无应答判死）：SSH 接入时
+  对端是本机 sshd，探活无意义但无害；直连 `tcp` 模式下 daemon 不主动发帧、读不到
+  EOF，这是对端消失后唯一的回收手段。
 
 ### 12.6 远端目录选择
 

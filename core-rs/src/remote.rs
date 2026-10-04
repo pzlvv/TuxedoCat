@@ -10,15 +10,24 @@
 //! 控制通道：同一时刻只服务一条连接（accept 循环里同步处理），连接断开后回到 accept
 //! 等待下一次接入。远程目录列举（`listDirectories`）也在这条控制通道上完成，Host 据此
 //! 在连接后立刻弹出远端目录选择器。
+//!
+//! 「断开」有两条路径：TCP 层的 EOF / 错误，和心跳空闲超时——Host 消失而 TCP 未断
+//! （断网 / 休眠 / 进程冻结）时读线程永远等不到 EOF，靠 Host 定期 `ping` 的有无判定
+//! （沉默即断开，`docs/core-daemon.md` 第 12.5 节）。同步 accept 循环被一条连接占住时，
+//! 后续接入全部堆在内核 backlog 里：TCP 探测照样「连得上」，但 `auth` 永远得不到
+//! 应答——这就是 Host 侧「复用在跑 daemon 却 120s 建链超时」的根因，心跳超时把它
+//! 限制在最多一个超时窗口内。
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::daemon::{self, ChannelExit, DaemonOptions, FrameOutput};
+use socket2::{SockRef, TcpKeepalive};
+
+use crate::daemon::{self, ChannelExit, DaemonOptions, FrameOutput, HEARTBEAT_TIMEOUT};
 use crate::daemon_protocol::{DaemonToHostFrame, DirectoryEntry, HostToDaemonFrame};
 
 /// 默认监听端口。取一个高位、非常用服务的端口；冲突时从它开始逐个 +1 重试。
@@ -363,9 +372,13 @@ impl FrameOutput for SocketOutput {
 }
 
 /// 远程连接的 daemon 参数：控制通道在，daemon 就在（不因没有工作区而 grace 退出）。
+///
+/// 心跳空闲回收只在远程启用：Host 定期发 `ping`，沉默即断开
+/// （`docs/core-daemon.md` 第 12.5 节）。
 pub fn remote_daemon_options() -> DaemonOptions {
     DaemonOptions {
         idle_exit: false,
+        heartbeat_timeout: Some(HEARTBEAT_TIMEOUT),
         ..DaemonOptions::default()
     }
 }
@@ -379,6 +392,10 @@ pub fn serve_connection(
     token: &str,
     options: DaemonOptions,
 ) -> ChannelExit {
+    // 死对端探测（`docs/core-daemon.md` 第 12.5 节）：SSH 接入时对端是本机 sshd，
+    // 探活无意义但无害；直连 `tcp` 模式下 daemon 不主动发帧、读不到 EOF，对端
+    // 消失后这是唯一的回收手段。
+    enable_keepalive(&stream);
     let peer = stream
         .peer_addr()
         .map(|address| address.to_string())
@@ -391,9 +408,12 @@ pub fn serve_connection(
         }
     };
     let out = Arc::new(SocketOutput::new(write_stream));
+    // 心跳超时提前返回时，读线程仍阻塞在这条 socket 上：留一个句柄，
+    // 返回前 shutdown 强制它的 read 失败退出，连接与线程都不悬挂
+    let shutdown = stream.try_clone().ok();
     let reader = BufReader::new(stream);
 
-    match authenticate(reader, out.as_ref(), token) {
+    let exit = match authenticate(reader, out.as_ref(), token, options.auth_timeout) {
         Some(reader) => {
             eprintln!("[core] remote: {peer} authenticated");
             let exit = daemon::run_control_channel(move || reader, out, options);
@@ -404,7 +424,22 @@ pub fn serve_connection(
             eprintln!("[core] remote: {peer} rejected (bad token)");
             ChannelExit::Continue
         }
+    };
+    if let Some(handle) = shutdown {
+        let _ = handle.shutdown(Shutdown::Both);
     }
+    exit
+}
+
+/// 控制连接的 TCP keepalive：空闲 45s 起探，每 10s 一次，3 次无应答判死
+/// （约 75s 发现死对端；interval / retries 在个别平台没有内核对应项，
+/// socket2 会静默忽略，探活仍以系统默认参数发生）。
+fn enable_keepalive(stream: &TcpStream) {
+    let keepalive = TcpKeepalive::new()
+        .with_time(Duration::from_secs(45))
+        .with_interval(Duration::from_secs(10))
+        .with_retries(3);
+    let _ = SockRef::from(stream).set_tcp_keepalive(&keepalive);
 }
 
 /// 读取并校验第一帧；通过返回仍可继续读的 reader，失败时回 `authFailed` 并返回 `None`。
@@ -412,9 +447,18 @@ fn authenticate(
     mut reader: BufReader<TcpStream>,
     out: &dyn FrameOutput,
     token: &str,
+    auth_timeout: Duration,
 ) -> Option<BufReader<TcpStream>> {
+    // 第一帧的等待上限：不发 `auth` 的探活连接 / 端口扫描不能长期占住同步的
+    // accept 循环。超时只在鉴权阶段生效——通过后立刻清除，控制通道此后可以
+    // 无限期空闲（心跳空闲由 `run_daemon` 的心跳超时管，两者不重叠）。
+    let _ = reader
+        .get_ref()
+        .set_read_timeout(Some(auth_timeout));
     let mut line = String::new();
-    match reader.read_line(&mut line) {
+    let received = reader.read_line(&mut line);
+    let _ = reader.get_ref().set_read_timeout(None);
+    match received {
         Ok(0) => return None,
         Ok(_) => {}
         Err(error) => {
@@ -755,64 +799,178 @@ pub fn run_kill() -> i32 {
         println!("[core] remote: no daemon is running");
         return 0;
     };
-    match stop_daemon(&state) {
-        Ok(()) => {
+    match stop_daemon(&state, STOP_TIMEOUT) {
+        StopOutcome::Stopped => {
             remove_state_if_unchanged(&state_path, &state);
             println!("[core] remote: daemon stopped ({})", state.endpoint);
             0
         }
-        Err(error) if error == STOP_UNREACHABLE => {
+        StopOutcome::Unreachable => {
             // 进程已经没了（崩溃 / 机器重启过）：过期状态文件清掉即可
             eprintln!("[core] remote: daemon is not running ({})", state.endpoint);
             remove_state_if_unchanged(&state_path, &state);
             0
         }
-        Err(error) => {
+        StopOutcome::Unresponsive => {
+            // 连上了但协议无应答：accept 循环被一条死连接占住（旧版 daemon 没有
+            // 心跳自愈，只会永远卡下去）。协议路径走不通，按进程兜底强杀——
+            // 只匹配本可执行文件 + `start-daemon`，不会误伤别的进程。
+            eprintln!("[core] remote: daemon at {} is not answering; killing the process", state.endpoint);
+            let exe = match std::env::current_exe() {
+                Ok(exe) => exe,
+                Err(error) => {
+                    eprintln!("[core] remote: cannot resolve the current executable: {error}");
+                    return 1;
+                }
+            };
+            let pids = find_daemon_pids(Path::new("/proc"), &exe);
+            if pids.is_empty() {
+                eprintln!(
+                    "[core] remote: no daemon process found; remove {} manually",
+                    state_path.display()
+                );
+                return 1;
+            }
+            let mut killed = 0;
+            for pid in &pids {
+                if kill_process(*pid) {
+                    killed += 1;
+                }
+            }
+            if killed == 0 {
+                eprintln!("[core] remote: cannot kill daemon process(es) {pids:?}");
+                return 1;
+            }
+            remove_state_if_unchanged(&state_path, &state);
+            println!("[core] remote: daemon process killed ({killed}); state file removed");
+            0
+        }
+        StopOutcome::Refused(error) => {
             eprintln!("[core] remote: {error}");
             1
         }
     }
 }
 
-/// `stop_daemon` 在连不上时的错误标记（与「鉴权失败」区分开）。
-const STOP_UNREACHABLE: &str = "unreachable";
 /// 结束 daemon 时读写控制通道的等待上限。
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// 连上 daemon，`auth` → `shutdown`，等它关掉连接。
-fn stop_daemon(state: &DaemonState) -> Result<(), String> {
-    let stream = connect_endpoint(&state.endpoint).map_err(|_| STOP_UNREACHABLE.to_string())?;
-    stream.set_read_timeout(Some(STOP_TIMEOUT)).ok();
-    stream.set_write_timeout(Some(STOP_TIMEOUT)).ok();
-    let mut reader = BufReader::new(
-        stream
-            .try_clone()
-            .map_err(|error| format!("cannot clone control stream: {error}"))?,
-    );
+/// `stop_daemon` 的结果分类：`kill` 按类别决定收尾动作。
+#[derive(Debug, PartialEq, Eq)]
+enum StopOutcome {
+    /// 已发送 `shutdown`，daemon 结束
+    Stopped,
+    /// endpoint 连不上：进程已经没了（崩溃 / 机器重启过）
+    Unreachable,
+    /// 连上了但协议无应答：daemon 在，但 accept 循环被死连接占住（wedged）
+    Unresponsive,
+    /// 鉴权失败等：daemon 活着但不是我们该动的那个，不能强杀
+    Refused(String),
+}
+
+/// 连上 daemon，`auth` → `shutdown`，等它关掉连接。`wait` 是读写应答的等待上限。
+fn stop_daemon(state: &DaemonState, wait: Duration) -> StopOutcome {
+    let stream = match connect_endpoint(&state.endpoint) {
+        Ok(stream) => stream,
+        Err(_) => return StopOutcome::Unreachable,
+    };
+    stream.set_read_timeout(Some(wait)).ok();
+    stream.set_write_timeout(Some(wait)).ok();
+    let mut reader = match stream.try_clone() {
+        Ok(clone) => BufReader::new(clone),
+        Err(error) => return StopOutcome::Refused(format!("cannot clone control stream: {error}")),
+    };
     let mut stream = stream;
 
     let auth = serde_json::json!({ "kind": "auth", "token": state.token }).to_string();
-    stream
-        .write_all(format!("{auth}\n").as_bytes())
-        .map_err(|error| format!("cannot send auth: {error}"))?;
+    if let Err(error) = stream.write_all(format!("{auth}\n").as_bytes()) {
+        // 写都写不进去：连接刚建立就断了，按「进程不在了」处理
+        return if is_connection_lost(&error) {
+            StopOutcome::Unreachable
+        } else {
+            StopOutcome::Refused(format!("cannot send auth: {error}"))
+        };
+    }
     let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .map_err(|error| format!("cannot read auth reply: {error}"))?;
+    // 连上了却等不到应答（超时 / 连接被掐断 / 直接断开）：accept 循环没有在处理这条连接
+    match reader.read_line(&mut line) {
+        Ok(0) => return StopOutcome::Unresponsive,
+        Ok(_) => {}
+        Err(_) => return StopOutcome::Unresponsive,
+    }
     if !line.contains("authOk") {
-        return Err(format!(
+        return StopOutcome::Refused(format!(
             "daemon at {} rejected the stored token; not stopping it",
             state.endpoint
         ));
     }
 
-    stream
-        .write_all(b"{\"kind\":\"shutdown\"}\n")
-        .map_err(|error| format!("cannot send shutdown: {error}"))?;
+    if let Err(error) = stream.write_all(b"{\"kind\":\"shutdown\"}\n") {
+        return StopOutcome::Refused(format!("cannot send shutdown: {error}"));
+    }
     // daemon 收到 shutdown 后关连接；读到 EOF（或超时）即视为已停
     line.clear();
     let _ = reader.read_line(&mut line);
-    Ok(())
+    StopOutcome::Stopped
+}
+
+/// 连接层失效（对端没了 / 网络断），区别于协议层的拒绝。
+fn is_connection_lost(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::UnexpectedEof
+    )
+}
+
+/// 扫描 `proc_root`（生产环境是 `/proc`），找出「本可执行文件 + `start-daemon`」的
+/// 进程号。daemon 是唯一以这对参数启动的进程（CLI 其它动作都是短命的），精确匹配
+/// `argv[0]` 与 `argv[1]`，不靠名字模式，不会误杀。
+fn find_daemon_pids(proc_root: &Path, exe: &Path) -> Vec<u32> {
+    let entries = match std::fs::read_dir(proc_root) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    let mut pids = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        if pid == std::process::id() {
+            continue;
+        }
+        if matches_daemon_cmdline(&read_cmdline(proc_root, pid), exe) {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
+/// `argv[0] == exe && argv[1] == "start-daemon"`（见 `find_daemon_pids`）。
+fn matches_daemon_cmdline(argv: &[String], exe: &Path) -> bool {
+    argv.len() >= 2 && Path::new(&argv[0]) == exe && argv[1] == "start-daemon"
+}
+
+/// 读 `/proc/<pid>/cmdline`（NUL 分隔）；读不出按空处理。
+fn read_cmdline(proc_root: &Path, pid: u32) -> Vec<String> {
+    let raw = std::fs::read_to_string(proc_root.join(pid.to_string()).join("cmdline"))
+        .unwrap_or_default();
+    raw.split('\0')
+        .filter(|arg| !arg.is_empty())
+        .map(|arg| arg.to_string())
+        .collect()
+}
+
+/// 结束一个进程（`kill -9`）；失败返回 false。
+fn kill_process(pid: u32) -> bool {
+    let mut command = Command::new("kill");
+    command.arg("-9").arg(pid.to_string());
+    crate::util::hide_console(&mut command);
+    command.status().map(|status| status.success()).unwrap_or(false)
 }
 
 /// 等 daemon 把状态文件写成「本次请求的那个 endpoint 且连得上」。
