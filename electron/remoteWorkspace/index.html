@@ -10,31 +10,18 @@
     <section class="view" id="connectView">
       <h1 class="view-title" id="connectTitle"></h1>
       <div class="tabs" role="tablist">
-        <button id="tabConnectionString" class="tab" type="button" role="tab"></button>
         <button id="tabSsh" class="tab" type="button" role="tab"></button>
+        <button id="tabConnectionString" class="tab" type="button" role="tab"></button>
       </div>
 
-      <div class="pane" id="paneConnectionString">
-        <p class="hint" id="connectHint"></p>
-        <label class="field" for="connection">
-          <span class="field-label" id="connectionLabel"></span>
-        </label>
-        <input
-          id="connection"
-          class="text-input"
-          type="text"
-          spellcheck="false"
-          autocomplete="off"
-        />
-      </div>
-
-      <div class="pane hidden" id="paneSsh">
-        <p class="hint" id="sshHint"></p>
+      <div class="pane" id="paneSsh">
         <div class="form-grid">
-          <label class="field" for="sshHost">
-            <span class="field-label" id="sshHostLabel"></span>
+          <div class="field host-field">
+            <label class="field-label" for="sshHost" id="sshHostLabel"></label>
             <input id="sshHost" class="text-input" type="text" spellcheck="false" autocomplete="off" />
-          </label>
+            <!-- 连接历史候选：host 聚焦时弹出，覆盖下方字段（不占布局） -->
+            <div class="suggestions hidden" id="sshSuggestions"></div>
+          </div>
           <label class="field" for="sshPort">
             <span class="field-label" id="sshPortLabel"></span>
             <input id="sshPort" class="text-input" type="text" spellcheck="false" autocomplete="off" />
@@ -48,6 +35,20 @@
             <input id="sshPassword" class="text-input" type="password" autocomplete="off" />
           </label>
         </div>
+      </div>
+
+      <div class="pane hidden" id="paneConnectionString">
+        <p class="hint" id="connectHint"></p>
+        <label class="field" for="connection">
+          <span class="field-label" id="connectionLabel"></span>
+        </label>
+        <input
+          id="connection"
+          class="text-input"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+        />
       </div>
 
       <p class="status" id="connectStatus"></p>

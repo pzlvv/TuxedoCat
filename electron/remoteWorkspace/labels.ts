@@ -14,8 +14,6 @@ export interface RemoteWorkspaceLabels {
   connectHint: string;
   connectionLabel: string;
   connectionPlaceholder: string;
-  /** SSH 页签的说明（部署 / 启动都在这一步自动完成） */
-  sshHint: string;
   sshHostLabel: string;
   sshHostPlaceholder: string;
   sshPortLabel: string;
@@ -28,6 +26,8 @@ export interface RemoteWorkspaceLabels {
   connecting: string;
   connect: string;
   cancel: string;
+  /** SSH 候选行的删除按钮（清掉这条连接历史） */
+  sshHistoryRemove: string;
   pickerTitle: string;
   /** 已连接的远端，形如 `192.168.1.5:10975` / `pz@192.168.1.5:22` */
   pickerSubtitle: string;
@@ -58,7 +58,6 @@ const ZH: RemoteWorkspaceLabels = {
   connectHint: '在远端机器上执行 tuxedo-cat-core start，把打印出来的连接串整行粘贴到下面。',
   connectionLabel: '连接串',
   connectionPlaceholder: '192.168.1.5:10975#token',
-  sshHint: '只开放 SSH 端口时用这个方式：会自动在 ~/.local/bin 部署 Core、启动并接入。',
   sshHostLabel: '主机 / IP',
   sshHostPlaceholder: '192.168.1.5',
   sshPortLabel: 'SSH 端口',
@@ -70,6 +69,7 @@ const ZH: RemoteWorkspaceLabels = {
   connecting: '正在连接远端并准备 Core…',
   connect: '连接',
   cancel: '取消',
+  sshHistoryRemove: '删除这条连接历史',
   pickerTitle: '选择远端目录',
   pickerSubtitle: '已连接 {endpoint}',
   pathPlaceholder: '输入绝对路径后回车',
@@ -98,8 +98,6 @@ const EN: RemoteWorkspaceLabels = {
     'Run `tuxedo-cat-core start` on the remote machine, then paste one of the printed connection strings below.',
   connectionLabel: 'Connection String',
   connectionPlaceholder: '192.168.1.5:10975#token',
-  sshHint:
-    'Use this when only the SSH port is open: the Core is deployed to ~/.local/bin, started, and connected automatically.',
   sshHostLabel: 'Host / IP',
   sshHostPlaceholder: '192.168.1.5',
   sshPortLabel: 'SSH Port',
@@ -111,6 +109,7 @@ const EN: RemoteWorkspaceLabels = {
   connecting: 'Connecting and preparing the remote Core…',
   connect: 'Connect',
   cancel: 'Cancel',
+  sshHistoryRemove: 'Remove this connection from history',
   pickerTitle: 'Pick a Remote Folder',
   pickerSubtitle: 'Connected to {endpoint}',
   pathPlaceholder: 'Type an absolute path and press Enter',

@@ -113,10 +113,10 @@ Connection 持有：
 
 ### 4.2 远程打开流程（Electron）
 
-1. 菜单 / 标题栏加号选「打开远程工作区」，两种接入方式二选一：
-   - **连接串**：粘贴 `start` 打印的 `<IP>:<端口>#<token>`（daemon 端口可达时）；
+1. 菜单 / 标题栏加号选「打开远程工作区」，两种接入方式二选一（SSH 页签在前、默认选中）：
    - **SSH**：填 IP / 端口 / 用户 / 口令（只开放 SSH 端口时，Host 自动部署并启动
      远端 Core，见 `docs/core-daemon.md` 第 12.8 节）；
+   - **连接串**：粘贴 `start` 打印的 `<IP>:<端口>#<token>`（daemon 端口可达时）；
 2. Host 把输入收敛成同一个 `endpoint`（凭证种类决定建链方式），**连接成功后立刻**
    列出远端主目录，弹出远端目录选择器（`docs/core-daemon.md` 第 12.6 节）；
 3. 选定目录后按 `remoteWorkspaceRef` 加入打开集合：`(scheme, endpoint, path)`；
@@ -125,6 +125,12 @@ Connection 持有：
 - `scheme` 由 `auth.kind` 决定：`token` → `tcp`，`sshPassword` → `ssh`
   （`src/host/workspaceRef.ts::remoteWorkspaceRef`）。
 - SSH 接入下「连接」这一步包含部署与启动，可能比 TCP 直连慢；窗口在此期间显示进度提示。
+- **SSH 连接历史**（`src/host/sshHistory.ts`）：SSH 接入**连上即**记入
+  `recentSshConnections`（以「连上」为准，不是「选完目录」——用户可能停在目录选择
+  这一步，下次仍要一键回填）。host 输入框聚焦时弹出最多 6 条候选，文案
+  `<user>@<host>(:port)`（端口 22 不显示）；关键字对 `user@host` / `user@host:port` /
+  裸 `host` 匹配，**前缀匹配排在非前缀匹配之前**、同级按最近连接在前；选定候选回填
+  整表单（含口令）；候选行右侧的删除按钮清掉这条历史。
 
 ---
 
@@ -200,10 +206,12 @@ Connection 持有：
 | `openWorkspaces` | 打开集合（按标签页顺序）：本地项是路径字符串，远程项是 `{ scheme, path, endpoint }` |
 | `activeWorkspaceKey` | 活动项的去重键（`workspaceRefKey`） |
 | `recentWorkspaces` | 最近打开的工作区（最多 10 个，最近的在最前），与 `openWorkspaces` 同格式 |
+| `recentSshConnections` | SSH 连接历史（最多 20 条，最近连接在前）：`{ host, port, user, password }`，同一 `user@host:port` 只留最新一条；口令明文，供「打开远程工作区」的表单回填与候选（第 4.2 节） |
 
 - **远程凭证明文落盘**：`endpoint.auth`（`token` / `sshPassword`）随引用一起写进
-  `workspace-state.json`。这是「重启后直接恢复并打开已连接过的工作区」的前提；
-  该文件属于宿主本地状态，不进 core、不进配置快照、不参与会话数据。
+  `workspace-state.json`，SSH 连接历史里的口令同一条规则。这是「重启后直接恢复并打开
+  已连接过的工作区」的前提；该文件属于宿主本地状态，不进 core、不进配置快照、不参与
+  会话数据。
 - **启动恢复与可用性判定**：本地项在恢复时检查目录是否存在，不存在的**保留在打开集合里**
   并标记为不可用；远程项从启动起处于建链中，由宿主经 `probeRemoteEndpoint` 逐 endpoint
   探测落定（传输层直连，**3 秒超时**，同一 endpoint 只探测一次；正式连接的长超时不适用

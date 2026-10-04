@@ -62,6 +62,8 @@ export interface AppHandle {
   /** 临时目录（USERPROFILE 沙箱），用例可直接检查会话落盘 */
   homeDir: string;
   workspaceDir: string;
+  /** 隔离 userData 里的 workspace-state.json（预置 / 断言宿主落盘状态用） */
+  stateFile: string;
 }
 
 function writeSettings(homeDir: string, mockLlm: MockLlm): void {
@@ -97,6 +99,8 @@ interface SpawnedApp {
   nodeWs: string;
   devtoolsWs: string;
   homeDir: string;
+  /** 隔离 userData 里的 workspace-state.json（预置 / 断言宿主落盘状态用） */
+  stateFile: string;
 }
 
 /** 等待子进程输出里出现某行（stderr + stdout 合并监听） */
@@ -128,6 +132,11 @@ async function spawnApp(options: {
   /** 本地项传路径字符串；远程项传 `SerializedWorkspaceRef`（含 endpoint 与凭证） */
   openWorkspaces?: Array<string | SerializedWorkspaceRef>;
   activeWorkspace?: string | SerializedWorkspaceRef;
+  /**
+   * 预置 workspace-state.json 的其余字段（如 recentSshConnections）。
+   * 只预置字段不开工作区时照常走 `--workspace=` 启动，字段由主进程读盘带上。
+   */
+  stateOverrides?: Record<string, unknown>;
   /** Core 实现：默认 standalone（产品真实形态，多 Connection / daemon / SSH 链路） */
   coreKind?: 'embedded' | 'standalone';
 }): Promise<SpawnedApp> {
@@ -139,23 +148,25 @@ async function spawnApp(options: {
   const instanceId = randomUUID().replace(/-/g, '').slice(0, 12);
   const roamingDir = path.join(homeDir, 'AppData', 'Roaming');
   await fs.promises.mkdir(roamingDir, { recursive: true });
+  const userDataDir = path.join(roamingDir, 'tuxedo-cat-multi-' + instanceId);
+  const stateFile = path.join(userDataDir, 'workspace-state.json');
 
-  if (options.openWorkspaces && options.openWorkspaces.length > 0) {
-    // 预置打开集合：写隔离 userData 的 workspace-state.json，启动时恢复标签页。
+  if ((options.openWorkspaces && options.openWorkspaces.length > 0) || options.stateOverrides) {
+    // 预置打开集合 / 额外字段：写隔离 userData 的 workspace-state.json，启动时恢复标签页。
     // 活动项是引用对象时必须写 activeWorkspaceKey（主进程按去重键回查；旧字段
     // activeWorkspace 只认本地路径字符串，对象会被忽略）
-    const active = options.activeWorkspace ?? options.openWorkspaces[options.openWorkspaces.length - 1];
-    const activeIsRef = typeof active !== 'string';
-    const userDataDir = path.join(roamingDir, 'tuxedo-cat-multi-' + instanceId);
+    const active = options.activeWorkspace ?? options.openWorkspaces?.[options.openWorkspaces.length - 1];
+    const activeIsRef = typeof active === 'object' && active !== null;
     await fs.promises.mkdir(userDataDir, { recursive: true });
-    await fs.promises.writeFile(path.join(userDataDir, 'workspace-state.json'), JSON.stringify({
-      openWorkspaces: options.openWorkspaces,
+    await fs.promises.writeFile(stateFile, JSON.stringify({
+      windowMode: 'normal',
+      theme: 'dark',
+      ...options.stateOverrides,
+      openWorkspaces: options.openWorkspaces ?? [],
       activeWorkspaceKey: activeIsRef
         ? workspaceRefKey(active as SerializedWorkspaceRef as Parameters<typeof workspaceRefKey>[0])
         : null,
       activeWorkspace: typeof active === 'string' ? active : null,
-      windowMode: 'normal',
-      theme: 'dark',
     }));
   }
 
@@ -198,7 +209,7 @@ async function spawnApp(options: {
 
   const nodeWs = await waitForOutput(child, /Debugger listening on (ws:\/\/\S+)/, 30_000);
   const devtoolsWs = await waitForOutput(child, /DevTools listening on (ws:\/\/\S+)/, 30_000);
-  return { child, nodeWs, devtoolsWs, homeDir };
+  return { child, nodeWs, devtoolsWs, homeDir, stateFile };
 }
 
 /** 经 Node inspector 在主进程执行表达式（拉起主窗口渲染器） */
@@ -234,6 +245,7 @@ export async function launchApp(options: {
   workspaceDir: string;
   openWorkspaces?: Array<string | SerializedWorkspaceRef>;
   activeWorkspace?: string | SerializedWorkspaceRef;
+  stateOverrides?: Record<string, unknown>;
   coreKind?: 'embedded' | 'standalone';
 }): Promise<AppHandle> {
   const spawned = await spawnApp(options);
@@ -403,6 +415,7 @@ export async function launchApp(options: {
     evaluateInMain: (expression: string) => evaluateInMain(spawned.nodeWs, expression),
     homeDir: spawned.homeDir,
     workspaceDir: options.workspaceDir,
+    stateFile: spawned.stateFile,
   };
 }
 

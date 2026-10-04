@@ -35,6 +35,12 @@ import { WebViewUI } from '../src/host/WebViewUI.js';
 import type { WebviewToHostMessage } from '../src/host/webviewMessages.js';
 import { normalizeWorkspacePath, sameWorkspace, dedupeWorkspacePaths } from '../src/host/workspacePaths.js';
 import { buildRemoteEndpoint, type RemoteConnectError } from '../src/host/connectionString.js';
+import {
+  parseSshHistory,
+  rememberSshEntry,
+  removeSshEntry,
+  type SshHistoryEntry,
+} from '../src/host/sshHistory.js';
 import { DirectoryOperationError } from '../src/host/standalone/CoreDaemon.js';
 import {
   localWorkspaceRef,
@@ -2599,6 +2605,17 @@ function openRemoteWorkspaceDialog(): void {
       // SSH 接入时这一步会完成「发现 / 部署 / 启动」，可能要几秒
       const listing = await listRemoteDirectories(endpoint, null);
       connected = endpoint;
+      // SSH 接入成功即记入连接历史：以「连上」为准，不是「选完目录」——
+      // 用户可能停在目录选择这一步，下次仍希望一键回填表单
+      const auth = endpoint.auth;
+      if (auth !== null && auth.kind === 'sshPassword') {
+        rememberSshConnection({
+          host: endpoint.host,
+          port: endpoint.port ?? 22,
+          user: endpoint.user ?? '',
+          password: auth.password,
+        });
+      }
       // 进目录选择这一步：换尺寸并允许调整大小
       win.setResizable(true);
       win.setMinimumSize(PICKER_MIN_SIZE.width, PICKER_MIN_SIZE.height);
@@ -2689,6 +2706,21 @@ function openRemoteWorkspaceDialog(): void {
     return { ok: true };
   });
 
+  // SSH 连接历史：条目带着口令下发——选定候选要整表单回填（含口令），只发进这个窗口，
+  // 与 connect 的「凭证不下发到页面」（标题不需要口令）不冲突
+  ipcMain.handle('remote-workspace:ssh-history', (event) => {
+    if (!isSender(event.sender)) return [];
+    return readSshHistory();
+  });
+
+  ipcMain.handle('remote-workspace:ssh-history-remove', (event, key: unknown) => {
+    if (!isSender(event.sender)) return readSshHistory();
+    if (typeof key !== 'string') return readSshHistory();
+    const next = removeSshEntry(readSshHistory(), key);
+    writeWorkspaceState({ ...readWorkspaceState(), recentSshConnections: next });
+    return next;
+  });
+
   const onCancel = (event: Electron.IpcMainEvent): void => {
     if (isSender(event.sender)) close();
   };
@@ -2700,6 +2732,8 @@ function openRemoteWorkspaceDialog(): void {
     ipcMain.removeHandler('remote-workspace:rename');
     ipcMain.removeHandler('remote-workspace:delete');
     ipcMain.removeHandler('remote-workspace:open');
+    ipcMain.removeHandler('remote-workspace:ssh-history');
+    ipcMain.removeHandler('remote-workspace:ssh-history-remove');
     ipcMain.removeListener('remote-workspace:cancel', onCancel);
     if (remoteWorkspaceWindow === win) remoteWorkspaceWindow = undefined;
   });
@@ -3124,6 +3158,7 @@ function sidebarWorkspaceState(): {
  *   "openWorkspaces": ["C:\\path\\to\\ws", { "scheme": "ssh", "path": "/home/pz", "endpoint": {...} }],
  *   "activeWorkspace": "C:\\path\\to\\ws2",
  *   "recentWorkspaces": ["C:\\path\\to\\ws2", { "scheme": "tcp", "path": "/srv", "endpoint": {...} }],
+ *   "recentSshConnections": [{ "host": "192.168.1.5", "port": 22, "user": "root", "password": "…" }],
  *   "windowSize": { "x": 320, "y": 180, "width": 1280, "height": 860 },
  *   "floatingWindowSize": { "x": 1500, "y": 120, "width": 480, "height": 780 },
  *   "windowMode": "floating",
@@ -3161,6 +3196,11 @@ interface WorkspaceState {
   activeWorkspace?: string | null;
   /** 最近打开的工作区：与 `openWorkspaces` 同格式（字符串 = 本地路径） */
   recentWorkspaces?: Array<string | SerializedWorkspaceRef>;
+  /**
+   * SSH 连接历史（`docs/client-connection.md` 第 9 节）：最近连接在前，最多 20 条。
+   * **口令明文落盘**——历史的作用就是下次一键回填表单（host / 端口 / 用户 / 口令）。
+   */
+  recentSshConnections?: SshHistoryEntry[];
   /** 完整模式窗口位置与大小（字段名沿用 windowSize，现在同时存位置） */
   windowSize?: WindowRect;
   /** 悬浮窗模式窗口位置与大小；与完整模式独立存储 */
@@ -3459,6 +3499,21 @@ function rememberRecentWorkspace(ref: WorkspaceRef): void {
     .map((candidate) => serializeWorkspaceRef(candidate))]
     .slice(0, MAX_RECENT_WORKSPACES);
   writeWorkspaceState({ ...prev, recentWorkspaces });
+}
+
+// ==================== SSH 连接历史（「打开远程工作区」表单回填） ====================
+
+/** 读取 SSH 连接历史（最近连接在前；形状不合法的项整项丢弃，见 `parseSshHistory`） */
+function readSshHistory(): SshHistoryEntry[] {
+  return parseSshHistory(readWorkspaceState().recentSshConnections);
+}
+
+/** SSH 接入成功后写入历史：同一 user@host:port 顶到最前并更新口令 */
+function rememberSshConnection(entry: SshHistoryEntry): void {
+  writeWorkspaceState({
+    ...readWorkspaceState(),
+    recentSshConnections: rememberSshEntry(readSshHistory(), entry),
+  });
 }
 
 /** 各模式的最小窗口尺寸（读取历史尺寸时用于过滤非法值） */

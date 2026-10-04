@@ -1,7 +1,7 @@
 /**
  * 「打开远程工作区」窗口的页面逻辑（`docs/core-daemon.md` 第 12 节）。
  *
- * 两步：粘贴连接串 → 选远端目录。选目录这一步按目录选择器的习惯做：
+ * 两步：接入远端（SSH 表单 / 粘贴连接串）→ 选远端目录。选目录这一步按目录选择器的习惯做：
  *   - 路径可编辑，回车即跳转（`..` 那一行也能回上一级）；
  *   - 列表只列子目录，单击进入；
  *   - 工具栏提供「新建文件夹」（列表顶部内联输入）与逐行「删除」（行内二次确认）。
@@ -12,6 +12,13 @@
 
 import { formatLabel, getRemoteWorkspaceLabels } from './labels.js';
 import { splitPathInput } from './pathInput.js';
+import {
+  formatSshEntry,
+  matchSshEntries,
+  sshHistoryKey,
+  SSH_SUGGESTION_LIMIT,
+  type SshHistoryEntry,
+} from '../../src/host/sshHistory.js';
 import type {
   DirectoryEntry,
   DirectoryListing,
@@ -79,8 +86,8 @@ function main(): void {
   let listing: DirectoryListing | null = null;
   let editing: InlineEdit | null = null;
   let busy = false;
-  /** 当前接入方式页签（`connectionString` = 粘贴连接串，`ssh` = SSH 表单） */
-  let activeTab: RemoteConnectRequest['kind'] = 'connectionString';
+  /** 当前接入方式页签（`ssh` = SSH 表单，`connectionString` = 粘贴连接串） */
+  let activeTab: RemoteConnectRequest['kind'] = 'ssh';
 
   // ---------- 文案 ----------
 
@@ -90,7 +97,6 @@ function main(): void {
   element<HTMLElement>('connectHint').textContent = labels.connectHint;
   element<HTMLElement>('connectionLabel').textContent = labels.connectionLabel;
   connectionInput.placeholder = labels.connectionPlaceholder;
-  element<HTMLElement>('sshHint').textContent = labels.sshHint;
   element<HTMLElement>('sshHostLabel').textContent = labels.sshHostLabel;
   sshHostInput.placeholder = labels.sshHostPlaceholder;
   element<HTMLElement>('sshPortLabel').textContent = labels.sshPortLabel;
@@ -213,6 +219,77 @@ function main(): void {
       if (event.key === 'Enter') connect();
     });
   }
+
+  // ---------- SSH 连接历史候选 ----------
+
+  const sshSuggestions = element<HTMLElement>('sshSuggestions');
+  /** 页面持有的历史快照：每次聚焦从主进程取最新（落盘是唯一事实），删除后就地更新 */
+  let sshHistory: SshHistoryEntry[] = [];
+
+  function hideSuggestions(): void {
+    sshSuggestions.classList.add('hidden');
+  }
+
+  /** 聚焦 / 输入时重画候选。排序在 `matchSshEntries`：前缀匹配 > 非前缀，同级按时间 */
+  function refreshSuggestions(): void {
+    // 忙时不弹：连接进行中不该再改表单（候选行的按钮也躲开全局禁用逻辑）
+    if (busy || document.activeElement !== sshHostInput) {
+      hideSuggestions();
+      return;
+    }
+    const matched = matchSshEntries(sshHistory, sshHostInput.value, SSH_SUGGESTION_LIMIT);
+    if (matched.length === 0) {
+      hideSuggestions();
+      return;
+    }
+    sshSuggestions.textContent = '';
+    for (const entry of matched) {
+      const row = document.createElement('div');
+      row.className = 'suggestion';
+      const text = document.createElement('span');
+      text.className = 'suggestion-text';
+      text.textContent = formatSshEntry(entry);
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'suggestion-remove';
+      remove.textContent = '×';
+      remove.title = labels.sshHistoryRemove;
+      remove.setAttribute('aria-label', labels.sshHistoryRemove);
+      remove.addEventListener('click', (event) => {
+        event.stopPropagation();
+        void api.removeSshHistoryEntry(sshHistoryKey(entry)).then((entries) => {
+          sshHistory = entries;
+          refreshSuggestions();
+        });
+      });
+      row.append(text, remove);
+      // 选定即整表单回填（含口令——历史存口令就是为了这一步）
+      row.addEventListener('click', () => {
+        sshHostInput.value = entry.host;
+        sshPortInput.value = String(entry.port);
+        sshUserInput.value = entry.user;
+        sshPasswordInput.value = entry.password;
+        hideSuggestions();
+      });
+      sshSuggestions.appendChild(row);
+    }
+    sshSuggestions.classList.remove('hidden');
+  }
+
+  sshHostInput.addEventListener('focus', () => {
+    // 每次聚焦取最新：上个会话里别处写入的历史也能立刻看到
+    void api.sshHistory().then((entries) => {
+      sshHistory = entries;
+      refreshSuggestions();
+    });
+  });
+  sshHostInput.addEventListener('input', refreshSuggestions);
+  sshHostInput.addEventListener('blur', hideSuggestions);
+  // 候选区按下鼠标时保住输入框焦点：blur 会先于 click 收起候选，点就落空了
+  sshSuggestions.addEventListener('mousedown', (event) => event.preventDefault());
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') hideSuggestions();
+  });
 
   // ---------- 第二步：选目录 ----------
 
@@ -645,7 +722,7 @@ function main(): void {
   });
   element<HTMLButtonElement>('cancelPicker').addEventListener('click', () => api.cancel());
 
-  selectTab('connectionString');
+  selectTab('ssh');
 }
 
 main();

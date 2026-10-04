@@ -10,6 +10,8 @@ import type { RemoteWorkspaceAPI } from './remoteWorkspace/types.js';
 
 const api: RemoteWorkspaceAPI = {
   connect: (request) => ipcRenderer.invoke('remote-workspace:connect', request),
+  sshHistory: () => ipcRenderer.invoke('remote-workspace:ssh-history'),
+  removeSshHistoryEntry: (key) => ipcRenderer.invoke('remote-workspace:ssh-history-remove', key),
   list: (path) => ipcRenderer.invoke('remote-workspace:list', path),
   create: (path) => ipcRenderer.invoke('remote-workspace:create', path),
   rename: (path, name) => ipcRenderer.invoke('remote-workspace:rename', path, name),

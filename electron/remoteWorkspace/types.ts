@@ -10,8 +10,10 @@ import type {
   DirectoryListing,
 } from '../../src/host/standalone/daemonProtocol.js';
 import type { RemoteConnectRequest } from '../../src/host/connectionString.js';
+import type { SshHistoryEntry } from '../../src/host/sshHistory.js';
 
 export type { DirectoryEntry, DirectoryFailureReason, DirectoryListing };
+export type { SshHistoryEntry };
 
 /** 连接结果：成功时带回远端主机（**不含任何凭证**，只用于标题展示） */
 export type RemoteConnectResult =
@@ -54,6 +56,13 @@ export type RemoteDeleteResult =
 export interface RemoteWorkspaceAPI {
   /** 连远端 daemon（连接串或 SSH 表单），成功即返回主目录列表 */
   connect(request: RemoteConnectRequest): Promise<RemoteConnectResult>;
+  /**
+   * 取 SSH 连接历史（最近连接在前）。条目含口令：选定候选要回填整个表单，
+   * 口令只在这条通路与 connect 请求之间流动
+   */
+  sshHistory(): Promise<SshHistoryEntry[]>;
+  /** 删除一条 SSH 连接历史（按 `sshHistoryKey` 的键），返回删除后的列表 */
+  removeSshHistoryEntry(key: string): Promise<SshHistoryEntry[]>;
   /** 列某个远端目录的子目录 */
   list(path: string): Promise<RemoteListResult>;
   /** 在远端新建目录（父目录不存在时一并创建） */

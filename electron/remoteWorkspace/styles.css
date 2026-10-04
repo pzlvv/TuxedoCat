@@ -225,6 +225,70 @@ body {
   min-width: 0;
 }
 
+/* host 输入框的包裹层：连接历史候选以它为定位基准 */
+.host-field {
+  position: relative;
+}
+
+/* SSH 连接历史候选：贴在 host 输入框下方弹出，覆盖下面的字段（不占布局） */
+.suggestions {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  /* 允许比 host 列宽（等宽字体下的 user@host:port 往往超出半栏），但不许顶出窗口 */
+  min-width: 100%;
+  width: max-content;
+  max-width: 300px;
+  padding: 4px;
+  background: var(--box-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 35%);
+}
+
+.suggestion {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.suggestion:hover {
+  background: var(--hover);
+}
+
+.suggestion-text {
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+}
+
+.suggestion-remove {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+}
+
+.suggestion-remove:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--hover);
+}
+
 /* 目录行的右键菜单：贴着光标弹出，样式向原生菜单靠 */
 .context-menu {
   position: fixed;
