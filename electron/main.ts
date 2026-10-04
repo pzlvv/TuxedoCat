@@ -1775,28 +1775,29 @@ type WorkspaceActivityLevel = 'waiting' | 'running';
  * 汇总每个打开的工作目录的运行时状态，供标题栏标签页流水灯使用：
  * 该目录下任一会话在等待用户操作（ask user / 权限确认）→ `waiting`（黄，优先）；
  * 否则任一会话非 idle（查询 / 压缩 / 后台 Bash / 子代理）→ `running`（蓝）。
- * 按会话自己的工作目录归并（core 的会话工作目录表，见 history/Config.ts）。
+ *
+ * 两份输入都取宿主自己的投影，不 require `src/core` 的进程内状态（第 12.6 节
+ * 「core 描述事实，UI 决定表现」）：
+ * - 状态：`ConversationManager` 缓存的全量快照——core 的 `sessionRuntimeChanged`
+ *   经 Connection 推到宿主后存在这里。Standalone（产品形态）下 core 在独立进程，
+ *   主进程里的 `src/core/sessionRuntime` 永远是空的，读它流水灯恒不亮；
+ * - 归属：宿主的「会话 → 工作目录」索引（打开 / 加载对话时登记，见
+ *   `syncSessionWorkspaceIndex`），即 core 那张表在本进程的投影。
  */
 function collectWorkspaceActivity(): Record<string, WorkspaceActivityLevel> {
   const result: Record<string, WorkspaceActivityLevel> = {};
-  try {
-    const { getSessionRuntimeStates } = require('../src/core/sessionRuntime.js') as typeof import('../src/core/sessionRuntime.js');
-    const { getSessionWorkspace } = require('../src/core/history/Config.js') as typeof import('../src/core/history/Config.js');
-    for (const state of getSessionRuntimeStates()) {
-      // idle 且非 waiting = 空闲，不点亮
-      if (state.idle && !state.waiting) continue;
-      const workspace = getSessionWorkspace(state.sessionId);
-      if (!workspace) continue;
-      // 会话登记的目录与打开集合可能写法不同（本地：大小写 / 分隔符 / 尾斜杠；
-      // 远程路径逐字比较），统一按引用口径匹配
-      const target = openWorkspaces.find((candidate) => workspacePathMatches(candidate, workspace));
-      if (!target) continue;
-      const key = refKey(target);
-      if (state.waiting) result[key] = 'waiting';
-      else if (result[key] !== 'waiting') result[key] = 'running';
-    }
-  } catch (err) {
-    console.error('[main] collect workspace activity error:', err);
+  for (const state of conversations?.getSessionStatesSnapshot() ?? []) {
+    // idle 且非 waiting = 空闲，不点亮
+    if (state.idle && !state.waiting) continue;
+    const workspace = sessionWorkspaces.get(state.sessionId);
+    if (!workspace) continue;
+    // 会话登记的目录与打开集合可能写法不同（本地：大小写 / 分隔符 / 尾斜杠；
+    // 远程路径逐字比较），统一按引用口径匹配
+    const target = openWorkspaces.find((candidate) => workspacePathMatches(candidate, workspace));
+    if (!target) continue;
+    const key = refKey(target);
+    if (state.waiting) result[key] = 'waiting';
+    else if (result[key] !== 'waiting') result[key] = 'running';
   }
   return result;
 }
@@ -1815,19 +1816,13 @@ function workspaceHasBusySession(ref: WorkspaceRef): boolean {
 }
 
 /**
- * 该对话当前是否非 idle：读 core 的会话运行时快照（第 10 节），与
- * `sessionResources.isSessionIdle` / 标签页流水灯同源。未登记任何事实
- * （含新建中的 `new-` 临时 key）＝ 空闲。
+ * 该对话当前是否非 idle：读宿主缓存的会话运行时快照（与 `collectWorkspaceActivity`
+ * 同一份事实、同一条来源），未登记任何事实（含新建中的 `new-` 临时 key）＝ 空闲。
  */
 function sessionIsBusy(sessionId: string): boolean {
-  try {
-    const { getSessionRuntimeState } = require('../src/core/sessionRuntime.js') as typeof import('../src/core/sessionRuntime.js');
-    const state = getSessionRuntimeState(sessionId);
-    return state !== null && !state.idle;
-  } catch (err) {
-    console.error('[main] session busy check error:', err);
-    return false;
-  }
+  const states = conversations?.getSessionStatesSnapshot() ?? [];
+  const state = states.find((candidate) => candidate.sessionId === sessionId);
+  return state !== undefined && !state.idle;
 }
 
 /**
@@ -3977,12 +3972,13 @@ function setupIpc(): void {
     return chatViews?.getLoadedSessionIds() ?? [];
   });
 
-  // 运行时状态流：core sessionRuntime 的当前全量快照（owner 是 core 的 sessionRuntime）。
-  // 状态流是「变化时才推」的：侧栏初始化 / 重载时主动拉一次，补上「推送早于侧栏就绪」
-  // 造成的空档，否则流水灯 / 等待标记会一直不亮。
+  // 运行时状态流：最近一次全量快照（owner 是 core 的 sessionRuntime，宿主缓存的是它
+  // 经 Connection 推来的投影）。状态流是「变化时才推」的：侧栏初始化 / 重载时主动拉
+  // 一次，补上「推送早于侧栏就绪」造成的空档，否则流水灯 / 等待标记会一直不亮。
+  // Standalone（产品形态）下 core 在独立进程，进程内 `src/core/sessionRuntime` 是空的，
+  // 必须走这份缓存（第 12.6 节）。
   ipcMain.handle('sidebar:get-session-states', () => {
-    const { getSessionRuntimeStates } = require('../src/core/sessionRuntime.js') as typeof import('../src/core/sessionRuntime.js');
-    return getSessionRuntimeStates();
+    return conversations?.getSessionStatesSnapshot() ?? [];
   });
 
   ipcMain.handle('sidebar:get-active-session', () => {

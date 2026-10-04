@@ -449,20 +449,24 @@ export interface MessageBoxStub {
  *
  * Playwright 点不到原生模态，用例只能这样注入：桩记录每次调用的文案，并按
  * `setResponse` 设置的下标返回，从而驱动「确认 / 取消」两条分支。
+ * 未设置时按对话框自己的 `defaultId` 返回——用户不点按钮、直接回车 / Esc 时
+ * 原生对话框给的就是这个下标，桩必须与之一致，否则「默认取消」这类断言会测成
+ * 「默认确认」。
  * 注入失败（主进程拿不到 electron 模块）直接抛错，避免误判成业务行为。
  */
 export async function stubMainMessageBox(app: AppHandle): Promise<MessageBoxStub> {
   const injected = await mainEval<string>(app, `(function(){try{
     const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
     globalThis.__messageBoxCalls = [];
-    globalThis.__messageBoxResponse = 0;
+    globalThis.__messageBoxResponse = null;
     e.dialog.showMessageBox = async (win, opts) => {
       globalThis.__messageBoxCalls.push({
         message: String(opts && opts.message || ''),
         detail: String(opts && opts.detail || ''),
         buttons: (opts && opts.buttons) || [],
       });
-      return { response: globalThis.__messageBoxResponse, checkboxChecked: false };
+      const fallback = opts && typeof opts.defaultId === 'number' ? opts.defaultId : 0;
+      return { response: globalThis.__messageBoxResponse ?? fallback, checkboxChecked: false };
     };
     return 'ok';
   } catch (err) { return 'ERR ' + err.message; }})()`);

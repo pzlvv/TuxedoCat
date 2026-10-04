@@ -120,6 +120,43 @@ test('US-2 中止慢速流式回复回到空闲态', async () => {
   await expect(chatPage.locator('textarea.input-textarea')).toBeEnabled();
 });
 
+test('US-2 首包到达前中止后，下一条消息仍进入本轮上下文并拿到回答', async () => {
+  // 首包前中止会留下一条「已进上下文、但没有回复」的用户消息：中止标记
+  // `*User Interrupted*` 是 system 消息（不进 API 载荷），下一条用户消息因此与它
+  // 相邻，按 `mergeConsecutiveSameRole` 归一化成同一个 user turn（Anthropic 要求严格
+  // user / assistant 交替，Embedded 同一口径）。所以断言写成「两条文本都在这一轮里
+  // 被回答」，而不是断言两条独立消息——前者才是「消息不丢」这条不变量。
+  mockLlm.setHandler((req) => {
+    const text = lastUserText(req.body.messages);
+    if (text.includes('再来一条')) return { kind: 'text', text: '好的，收到第二条。' };
+    return { kind: 'slow', text: '这是一段慢速流式输出，逐字到达，适合验证中止操作。', chunkDelayMs: 700 };
+  });
+
+  const chatPage = await app.chatPage();
+  await chatPage.fill('textarea.input-textarea', '慢速回答一段长内容');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+
+  // 按钮一可用就中止：请求通常还没发出，中止落在消费循环的轮次边界上（首包前）
+  const abortButton = chatPage.locator('button[title="终止"]');
+  await expect(abortButton).toBeEnabled({ timeout: 30_000 });
+  await abortButton.click();
+  await expect(abortButton).toBeDisabled({ timeout: 30_000 });
+
+  // 重发：消息必须真的进上下文并被回答（回归：曾把它误判成「消息被吞」）
+  await chatPage.fill('textarea.input-textarea', '再来一条');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.getByText('好的，收到第二条。').first()).toBeVisible({ timeout: 30_000 });
+  await expect(abortButton).toBeDisabled({ timeout: 30_000 });
+
+  const sent = lastUserText(mockLlm.requests[mockLlm.requests.length - 1].body.messages);
+  expect(sent).toContain('再来一条');
+  // 首包前中止时两条文本合并在同一个 user turn 里（这条同时锁住「合并是归一化，
+  // 不是丢消息」）；若中止落在请求发出之后，第一条会作为独立 turn 存在，不再合并。
+  if (mockLlm.requests.length === 1) {
+    expect(sent).toContain('慢速回答一段长内容');
+  }
+});
+
 test('US-2 两阶段中止：前台结束后按钮转黄，再次点击才停后台任务', async () => {
   const chatPage = await app.chatPage();
   // 第一轮：Bash 后台任务（sleep 30）；工具结果回传后给终轮答复；

@@ -138,6 +138,60 @@ test('US-35 鼠标中键关闭工作区标签页', async () => {
   await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);
 });
 
+test('US-35 标签页流水灯：按工作目录归并会话运行时状态（运行蓝 / 等待黄 / 空闲不点亮）', async () => {
+  const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
+  const aDir = await makeWorkspace({}, 'e2e-ws-light-a');
+  const bDir = await makeWorkspace({}, 'e2e-ws-light-b');
+  app = await launchApp({
+    repoRoot, mockLlm, workspaceDir: aDir,
+    openWorkspaces: [aDir, bDir],
+    activeWorkspace: aDir,
+  });
+
+  const tabs = (await app.titlebarPage()).locator('#workspaceTabs [role="tab"]');
+  await expect(tabs).toHaveCount(2, { timeout: 20_000 });
+  const tabA = tabs.filter({ hasText: 'e2e-ws-light-a' });
+  const tabB = tabs.filter({ hasText: 'e2e-ws-light-b' });
+
+  // 空闲：两张标签都不点亮——流水灯读的是会话运行时状态，不是「这个目录有会话」
+  await expect(tabA).not.toHaveClass(/activity-running|activity-waiting/);
+  await expect(tabB).not.toHaveClass(/activity-running|activity-waiting/);
+
+  const chatPage = await app.chatPage();
+
+  // 等待用户（黄）：manual 询问模式下的写操作弹权限确认，该会话转为「等待用户操作」，
+  // 它所属的标签转黄。B 目录没有会话参与，不受影响。
+  await chatPage.fill('textarea.input-textarea', '写入文件 light.md');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  const overlay = chatPage.locator('.user-choice-overlay');
+  await expect(overlay).toBeVisible({ timeout: 30_000 });
+  await expect(tabA).toHaveClass(/activity-waiting/, { timeout: 30_000 });
+  await expect(tabB).not.toHaveClass(/activity-running|activity-waiting/);
+
+  // 放行 → 工具执行 → 终轮收尾：等待态结束，标签回到不点亮
+  await overlay.getByRole('button', { name: /允许/ }).first().click();
+  await expect(chatPage.getByText('这是最终答复').first()).toBeVisible({ timeout: 30_000 });
+  await expect(tabA).not.toHaveClass(/activity-running|activity-waiting/, { timeout: 30_000 });
+
+  // 运行中（蓝）：慢速查询让该目录进入非 idle，只有 A 亮蓝灯——状态按会话归属的
+  // 工作目录归并（core 只报 sessionId），归属错了这里就会两张一起亮。
+  await chatPage.fill('textarea.input-textarea', '慢速回答一段长内容');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  const abortButton = chatPage.locator('button[title="终止"]');
+  await expect(abortButton).toBeEnabled({ timeout: 30_000 });
+  await expect(tabA).toHaveClass(/activity-running/, { timeout: 30_000 });
+  await expect(tabB).not.toHaveClass(/activity-running|activity-waiting/);
+
+  // 中止回到空闲：蓝灯熄灭（状态流回推 idle 后就地摘 class，不重建标签页）
+  await expect(chatPage.getByText(/慢速流式输出/).first()).toBeVisible();
+  await abortButton.click();
+  await expect(abortButton).toBeDisabled({ timeout: 30_000 });
+  await expect(tabA).not.toHaveClass(/activity-running|activity-waiting/, { timeout: 30_000 });
+
+  await fs.promises.rm(aDir, { recursive: true, force: true }).catch(() => undefined);
+  await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);
+});
+
 test('US-35 标签页内有对话非 idle 时关闭标签页需二次确认', async () => {
   const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
   const aDir = await makeWorkspace({}, 'e2e-ws-busy-a');
