@@ -66,6 +66,17 @@ export class WorkspaceAvailabilityState {
     return true;
   }
 
+  /**
+   * 落定「运行期致命」不可用（曾就绪过、且 Host 侧无法自动恢复）：撤销就绪豁免后
+   * 按 `markUnavailable` 落定。远程 daemon / 链路死亡属于此类——重启策略在 daemon
+   * 手里，Host 侧不会自己恢复，红点 + 占位页「重新连接」是唯一出路；本地 Core 退出
+   * 由 Host 侧重启策略恢复（恢复后 coreReady 重新 markReady），不走这里。
+   */
+  markRuntimeFatal(key: string): boolean {
+    this.ready.delete(key);
+    return this.markUnavailable(key);
+  }
+
   /** 撤销不可用判定（探测成功恢复 / 目录重新存在）。返回是否真的撤销过（曾标红时调用方要补建 Connection） */
   revokeUnavailable(key: string): boolean {
     return this.unavailable.delete(key);

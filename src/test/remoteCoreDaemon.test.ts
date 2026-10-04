@@ -3,7 +3,9 @@
  * - TCP 控制通道第一帧必须是 `auth`，错误 token 回 `authFailed` 并拒绝请求；
  * - 正确 token 回 `authOk` 后才允许业务帧出站；
  * - `listDirectories` 走同一条控制通道，返回远端目录列表（连接后立刻弹选择器的基础）；
- * - 远程 channel 与本地同构：openWorkspace → hello → ready。
+ * - 远程 channel 与本地同构：openWorkspace → hello → ready；
+ * - 沉默判定：pong 武装、沉默判死（daemon / 链路死亡 3s 内感知的宿主侧机制），
+ *   旧版 daemon（不回 pong）不武装、不误杀。
  *
  * 用进程内 `net` 假 daemon 冒充远端，跑真实 socket。
  * 运行方式：npm run test:all -- remote-core-daemon
@@ -12,7 +14,7 @@
 import { createServer, type Server, type Socket } from 'net';
 import { CoreDaemon, DirectoryOperationError, tcpDaemonOpener } from '../host/standalone/CoreDaemon';
 import { isDaemonToHostFrame } from '../host/standalone/daemonProtocol';
-import { createCoreChannelBus } from '../host/standalone/StandaloneEventBus';
+import { createCoreChannelBus, NOOP_CORE_CHANNEL_HOOKS } from '../host/standalone/StandaloneEventBus';
 import { remoteWorkspaceRef } from '../host/workspaceRef';
 import { createChecker, runTests } from './helpers/harness';
 import { createRecordingCoreEventHandlers } from './helpers/fixtures';
@@ -24,14 +26,20 @@ interface FakeRemote {
   port: number;
   /** 建立过的连接数 */
   connections: () => number;
+  /** 已关闭的连接数（沉默判死会 kill 链路，这里用于确认链路真的被断开） */
+  closed: () => number;
   /** 收到的控制帧（按到达顺序） */
   received: () => string[];
+  /** 开 / 关 pong 应答（模拟 daemon 卡死 / 半开断连：socket 不断，帧不再回来） */
+  setPong: (enabled: boolean) => void;
   close: () => Promise<void>;
 }
 
 /** 进程内假远端：单条控制通道，按 daemon 协议应答 */
-function startFakeRemote(token: string): Promise<FakeRemote> {
+function startFakeRemote(token: string, options: { pong?: boolean } = {}): Promise<FakeRemote> {
   let connections = 0;
+  let closedCount = 0;
+  let pong = options.pong === true;
   const received: string[] = [];
   let nextChannel = 1;
   const sockets = new Set<Socket>();
@@ -45,7 +53,10 @@ function startFakeRemote(token: string): Promise<FakeRemote> {
     const send = (frame: unknown): void => {
       socket.write(`${JSON.stringify(frame)}\n`);
     };
-    socket.on('close', () => sockets.delete(socket));
+    socket.on('close', () => {
+      sockets.delete(socket);
+      closedCount += 1;
+    });
     socket.on('data', (chunk: string) => {
       buffer += chunk;
       for (;;) {
@@ -74,6 +85,11 @@ function startFakeRemote(token: string): Promise<FakeRemote> {
         if (!authed) {
           send({ kind: 'authFailed', error: 'auth required' });
           socket.end();
+          continue;
+        }
+        if (frame['kind'] === 'ping') {
+          // 真实 daemon 对每个 ping 回 pong（Host 靠它武装沉默判定）
+          if (pong) send({ kind: 'pong' });
           continue;
         }
         if (frame['kind'] === 'listDirectories') {
@@ -144,7 +160,11 @@ function startFakeRemote(token: string): Promise<FakeRemote> {
       resolve({
         port,
         connections: () => connections,
+        closed: () => closedCount,
         received: () => [...received],
+        setPong: (enabled: boolean) => {
+          pong = enabled;
+        },
         close: () =>
           new Promise<void>((done) => {
             for (const socket of sockets) socket.destroy();
@@ -162,6 +182,10 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<boo
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   return predicate();
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 const requestHandlers: CoreRequestHandlers = {
@@ -306,6 +330,107 @@ async function run(): Promise<void> {
     }
     check('连不上远端时请求失败', failed);
     await daemon.shutdown();
+  }
+
+  // ---------- 沉默判定：pong 武装、沉默判死 ----------
+  {
+    const fake = await startFakeRemote('secret', { pong: true });
+    const daemon = new CoreDaemon({
+      log: () => undefined,
+      handshakeTimeoutMs: 2_000,
+      shutdownTimeoutMs: 1_000,
+      // 注入短节奏：机制与默认 1s / 2.5s / 400ms 等价，只把时钟拨快约 25 倍
+      heartbeatIntervalMs: 20,
+      silenceDeadlineMs: 60,
+      silenceRecheckMs: 40,
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port, token: 'secret' }),
+    });
+    const ref = remoteWorkspaceRef(
+      { host: '127.0.0.1', port: fake.port, user: null, auth: { kind: 'token', token: 'secret' } },
+      '/home/dev/repo',
+    );
+    const transport = daemon.openChannel(ref);
+    // fatal 在回调里赋值：用持有对象绕开 TS 对「仅回调赋值变量」的收窄失效
+    const failure: { error: Error | null } = { error: null };
+    transport.hooks = {
+      ...NOOP_CORE_CHANNEL_HOOKS,
+      onFatal: (error: Error) => {
+        failure.error = error;
+      },
+    };
+    transport.start();
+    check('pong 流量下链路就绪且保持存活', await waitFor(() => transport.isReady()));
+    // 等 pong 真正武装沉默判定：至少一个 ping 已发出、再过一个心跳周期让 pong 落地
+    // （ready 是 hello 的应答，会先于首个 pong 到达——直接静默会赶上武装之前）
+    check('心跳 ping 已发出', await waitFor(() => fake.received().some((line) => line.includes('"kind":"ping"'))));
+    await sleep(100);
+    const silenceAt = Date.now();
+    // 模拟 daemon 死 / 网络半开：socket 不断（等不到 EOF/RST），帧不再回来
+    fake.setPong(false);
+    const fatalArrived = await waitFor(() => failure.error !== null, 2_000);
+    check('沉默超过死线 + 宽限后判死 fatal', fatalArrived && failure.error !== null);
+    check('fatal 文案指明沉默判死', failure.error !== null && /silent for/.test(failure.error.message));
+    check('判死在死线 + 宽限的量级内完成', Date.now() - silenceAt < 1_000);
+    check('判死确实断开了链路', fake.closed() >= 1);
+    await daemon.shutdown();
+    await fake.close();
+  }
+
+  // ---------- 默认常数下的判死时限（断连 3s 内感知的端到端锚点） ----------
+  {
+    const fake = await startFakeRemote('secret', { pong: true });
+    const daemon = new CoreDaemon({
+      log: () => undefined,
+      handshakeTimeoutMs: 2_000,
+      shutdownTimeoutMs: 1_000,
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port, token: 'secret' }),
+    });
+    const ref = remoteWorkspaceRef(
+      { host: '127.0.0.1', port: fake.port, user: null, auth: { kind: 'token', token: 'secret' } },
+      '/home/dev/repo',
+    );
+    const transport = daemon.openChannel(ref);
+    const failure: { error: Error | null } = { error: null };
+    transport.hooks = {
+      ...NOOP_CORE_CHANNEL_HOOKS,
+      onFatal: (error: Error) => {
+        failure.error = error;
+      },
+    };
+    transport.start();
+    check('默认常数：链路就绪', await waitFor(() => transport.isReady()));
+    // 等首个 ping 发出 + 一个心跳周期（1s）让 pong 落地武装沉默判定
+    check('心跳 ping 已发出', await waitFor(() => fake.received().some((line) => line.includes('"kind":"ping"'))));
+    await sleep(1_200);
+    const silenceAt = Date.now();
+    fake.setPong(false);
+    const fatalArrived = await waitFor(() => failure.error !== null, 4_000);
+    // 判死上限 = 死线 2.5s + 宽限 0.4s，加定时器松弛后必须落在 3s 量级内
+    check('默认常数下沉默判死发生', fatalArrived && failure.error !== null
+      && /silent for/.test(failure.error.message));
+    check('默认常数判死 ≤ 3.5s（3s 指标 + 定时器松弛）', Date.now() - silenceAt < 3_500);
+    await daemon.shutdown();
+    await fake.close();
+  }
+
+  // ---------- 旧版 daemon（不回 pong）：沉默判定不武装，长静默不误杀 ----------
+  {
+    const fake = await startFakeRemote('secret'); // 无 pong：对等旧版 daemon
+    const daemon = new CoreDaemon({
+      log: () => undefined,
+      handshakeTimeoutMs: 2_000,
+      shutdownTimeoutMs: 1_000,
+      heartbeatIntervalMs: 20,
+      silenceDeadlineMs: 60,
+      silenceRecheckMs: 40,
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port, token: 'secret' }),
+    });
+    check('旧 daemon：建链后列目录可用', (await daemon.listDirectories(null)).path === '/home/dev');
+    await sleep(400); // 远超注入的判死上限（死线 + 宽限 = 100ms）
+    check('旧 daemon 长静默不误杀：请求仍可用', (await daemon.listDirectories(null)).path === '/home/dev');
+    check('旧 daemon 沉默期间链路未被斩断', fake.closed() === 0);
+    await daemon.shutdown();
+    await fake.close();
   }
 
   finish();

@@ -15,6 +15,12 @@
  * Host 消失而 TCP 未断（断网 / 休眠 / 进程冻结）时 daemon 读不到 EOF，只能靠
  * 控制帧的沉默判死；Host 定期发帧，daemon 才能区分「活着的静默」与「已死」。
  *
+ * 沉默判定是同一件事的对称面：daemon 回 `pong`，Host 见到首个 pong 武装沉默死线——
+ * 这么长时间没有任何入站帧即补发探针 ping 再宽限一次，仍无入站就断开链路并按
+ * fatal 上报。daemon 死而 socket 未断（对端断电 / 网络分区）时 socket 层没有任何
+ * 信号，这是 Host 在 3s 内感知断连的唯一手段；旧版 daemon 不回 pong，不武装、
+ * 不误杀。
+ *
  * 背压：控制通道的出站帧进有序队列，socket 返回 false 时等 `drain`；
  * 越过软水位只记录诊断，不丢帧、不合并帧。
  */
@@ -49,9 +55,23 @@ const OUTBOX_WARN_THRESHOLD = 10_000;
  *
  * daemon 以「最近一次收到控制帧」判定链路死活（60s 空闲回收）：daemon 自己不发帧，
  * Host 不定期发心跳的话，它没有任何手段区分「活着的静默」与「已死而 TCP 未断」。
- * `authOk` 之后才开始发，未就绪不发。
+ * `authOk` 之后才开始发，未就绪不发。间隔取 1s：Host 侧的沉默判定要求断连在 3s 内
+ * 落成 fatal（见 `LINK_SILENCE_DEADLINE_MS`），探针与 pong 都按这个节奏往返。
  */
-const DAEMON_HEARTBEAT_INTERVAL_MS = 15_000;
+const DAEMON_HEARTBEAT_INTERVAL_MS = 1_000;
+/**
+ * Host 侧沉默判定（`docs/core-daemon.md` 第 12.5 节）：链路上这么长时间没有任何
+ * 入站帧即疑似断连。daemon 死而 socket 未断（对端断电 / 网络分区，等不到 EOF/RST）、
+ * daemon 进程卡死，socket 层都没有任何信号，唯一依据是 pong 的有无。
+ *
+ * 见过首个 `pong` 才武装：旧版 daemon 不回 pong（直连接入的远端可能还跑着旧产物），
+ * 沉默判定不得把它们误杀。到期不直接判死：补发一帧探针 ping，再等
+ * `LINK_SILENCE_RECHECK_MS`，期间任何入站帧都算活——本进程卡顿（定时器迟到、
+ * 入站帧积压在内核缓冲）不误杀活链路。判死上限 = 死线 + 宽限 ≤ 3s。
+ */
+const LINK_SILENCE_DEADLINE_MS = 2_500;
+/** 沉默探针的宽限：探针 ping 发出后等这么久，仍无入站帧才判死 */
+const LINK_SILENCE_RECHECK_MS = 400;
 /** 握手超时默认值（Core 进程启动后未回 `ready` 视为失败） */
 export const DEFAULT_DAEMON_HANDSHAKE_TIMEOUT_MS = 10_000;
 /** 控制通道就绪超时默认值（连不上 / 鉴权无应答） */
@@ -140,6 +160,10 @@ export interface CoreDaemonOptions {
   shutdownTimeoutMs?: number;
   /** 链路心跳间隔；缺省 `DAEMON_HEARTBEAT_INTERVAL_MS`（测试注入更短的间隔） */
   heartbeatIntervalMs?: number;
+  /** 沉默判定死线（毫秒）；缺省 `LINK_SILENCE_DEADLINE_MS`（测试注入更短的死线） */
+  silenceDeadlineMs?: number;
+  /** 沉默探针宽限（毫秒）；缺省 `LINK_SILENCE_RECHECK_MS` */
+  silenceRecheckMs?: number;
 }
 
 /** TCP 直连建链器：socket 连上后立刻发 `auth` */
@@ -429,6 +453,14 @@ export class CoreDaemon {
   private linkTimer: NodeJS.Timeout | null = null;
   /** 链路心跳定时器（`authOk` 后启动，链路退出即停） */
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  /** 最近一次入站控制帧的时刻（沉默判定的时间基准） */
+  private lastInboundAt: number | null = null;
+  /** 沉默判定是否已武装（见到首个 pong 才武装；旧 daemon 不回 pong，永不武装） */
+  private silenceArmed = false;
+  private silenceTimer: NodeJS.Timeout | null = null;
+  private recheckTimer: NodeJS.Timeout | null = null;
+  /** 沉默判死的原因：看门狗 kill 链路后由 handleExit 用它替换默认 fatal 文案 */
+  private silenceFatal: Error | null = null;
 
   constructor(private readonly options: CoreDaemonOptions) {
     this.log = options.log;
@@ -570,6 +602,8 @@ export class CoreDaemon {
     this.shuttingDown = true;
     this.clearLinkTimeout();
     this.stopHeartbeat();
+    this.stopLinkWatchdog();
+    this.silenceFatal = null;
     // 建链还没回来：作废它，避免关闭后又挂上一条链路
     this.linkAttempt += 1;
     const writer = this.writer;
@@ -695,6 +729,99 @@ export class CoreDaemon {
     }
   }
 
+  // ===================== 内部：沉默判定 =====================
+
+  /**
+   * 任何入站控制帧都证明链路活着：前移沉默判定的时间基准。
+   * 探针宽限期内（`silenceTimer` 为 null，控制权在 recheck）不重排常规检查，
+   * 由 `finishSilenceRecheck` 统一收口。
+   */
+  private noteInbound(): void {
+    this.lastInboundAt = Date.now();
+    if (this.silenceArmed && this.silenceTimer) this.scheduleSilenceCheck();
+  }
+
+  /** 武装沉默判定（首个 pong 到达时）；时间基准由 `noteInbound` 刚前移过 */
+  private armSilenceWatchdog(): void {
+    if (this.silenceArmed) return;
+    this.silenceArmed = true;
+    this.scheduleSilenceCheck();
+  }
+
+  /** 按最近入站时刻排沉默检查；时间基准每次前移都重排 */
+  private scheduleSilenceCheck(): void {
+    if (this.silenceTimer) {
+      clearTimeout(this.silenceTimer);
+      this.silenceTimer = null;
+    }
+    if (!this.silenceArmed || this.lastInboundAt === null) return;
+    const deadlineMs = this.options.silenceDeadlineMs ?? LINK_SILENCE_DEADLINE_MS;
+    const remaining = this.lastInboundAt + deadlineMs - Date.now();
+    if (remaining <= 0) {
+      this.beginSilenceRecheck();
+      return;
+    }
+    const timer = setTimeout(() => this.beginSilenceRecheck(), remaining);
+    timer.unref();
+    this.silenceTimer = timer;
+  }
+
+  /**
+   * 沉默到期：补发一帧探针 ping，宽限 `silenceRecheckMs` 后再判。
+   * 链路活着的话 pong 在一个 RTT 内回来；不宽限直接判死，会把本进程卡顿
+   * （定时器迟到、入站帧积压在内核缓冲等先于定时器入队）误报成断连。
+   */
+  private beginSilenceRecheck(): void {
+    if (this.stopped || !this.linkReady || !this.silenceArmed) return;
+    if (this.silenceTimer) {
+      clearTimeout(this.silenceTimer);
+      this.silenceTimer = null;
+    }
+    this.enqueue(encodeDaemonFrame({ kind: 'ping' }));
+    if (this.recheckTimer) clearTimeout(this.recheckTimer);
+    const recheckMs = this.options.silenceRecheckMs ?? LINK_SILENCE_RECHECK_MS;
+    const timer = setTimeout(() => this.finishSilenceRecheck(recheckMs), recheckMs);
+    timer.unref();
+    this.recheckTimer = timer;
+  }
+
+  /**
+   * 宽限期收口：期间来过任何帧（探针的 pong / 业务帧）就算活，回到常规沉默检查；
+   * 仍无入站即判死。kill 触发链路 close，handleExit 以 `silenceFatal` 上报 fatal，
+   * 不落在「exited unexpectedly」的默认文案上。
+   */
+  private finishSilenceRecheck(recheckMs: number): void {
+    if (this.stopped || !this.linkReady || !this.silenceArmed) return;
+    const silentFor = this.lastInboundAt === null
+      ? Number.POSITIVE_INFINITY
+      : Date.now() - this.lastInboundAt;
+    if (silentFor < recheckMs) {
+      this.scheduleSilenceCheck();
+      return;
+    }
+    const deadlineMs = this.options.silenceDeadlineMs ?? LINK_SILENCE_DEADLINE_MS;
+    this.silenceFatal = new Error(
+      `Remote Core link has been silent for ${deadlineMs + recheckMs}ms (no pong); `
+      + 'declaring it dead. The remote daemon or the network path is gone.',
+    );
+    this.log(`[daemon] ${this.silenceFatal.message}`);
+    this.stopLinkWatchdog();
+    this.writer?.kill();
+  }
+
+  /** 停掉沉默判定（链路退出 / 关闭时）；下次建链后由 pong 重新武装 */
+  private stopLinkWatchdog(): void {
+    if (this.silenceTimer) {
+      clearTimeout(this.silenceTimer);
+      this.silenceTimer = null;
+    }
+    if (this.recheckTimer) {
+      clearTimeout(this.recheckTimer);
+      this.recheckTimer = null;
+    }
+    this.silenceArmed = false;
+  }
+
   /** 连接建立失败：拒绝未决的鉴权 / 目录请求，并把已登记的 channel 一起失败 */
   private failPendingLink(error: Error): void {
     const authWaiters = this.authWaiters;
@@ -711,6 +838,7 @@ export class CoreDaemon {
     this.exitHandled = true;
     this.clearLinkTimeout();
     this.stopHeartbeat();
+    this.stopLinkWatchdog();
     this.opening = false;
     this.writer = null;
     this.linkReady = false;
@@ -727,6 +855,13 @@ export class CoreDaemon {
     for (const request of directoryRequests) request.reject(new Error('Core daemon exited.'));
 
     if (this.shuttingDown || this.stopped) return;
+    if (this.silenceFatal) {
+      // 沉默判死的 kill：原因已在看门狗处记录，不再以「exited unexpectedly」盖掉
+      const fatal = this.silenceFatal;
+      this.silenceFatal = null;
+      this.fatalAll(fatal);
+      return;
+    }
     this.log('[daemon] exited unexpectedly');
     this.fatalAll(new Error('Core daemon exited unexpectedly.'));
   }
@@ -768,6 +903,8 @@ export class CoreDaemon {
       this.log(`[daemon] unknown or malformed frame: ${JSON.stringify(value)}`);
       return;
     }
+    // 任何合法入站帧都证明链路活着：前移沉默判定的时间基准
+    this.noteInbound();
     switch (value.kind) {
       case 'authOk': {
         if (this.linkReady) return;
@@ -778,6 +915,12 @@ export class CoreDaemon {
         this.authWaiters = [];
         for (const waiter of waiters) waiter.resolve();
         this.flushOutbox();
+        return;
+      }
+      case 'pong': {
+        // 心跳应答：首个 pong 武装沉默判定（`docs/core-daemon.md` 第 12.5 节）。
+        // 旧版 daemon 不回 pong——不武装、不误杀，判死退回 TCP 层的节奏。
+        if (!this.silenceArmed) this.armSilenceWatchdog();
         return;
       }
       case 'authFailed': {

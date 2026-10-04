@@ -31,18 +31,19 @@ export abstract class ConversationManager {
 
   // ===================== 流 1：对话列表 =====================
 
-  /** 最近一次 refresh() 分发的列表快照（见 getCachedList） */
-  private cachedList: readonly ConversationMetadata[] | null = null;
-
   /**
-   * 快照对应的活动工作目录。
-   * 列表是「按目录」的：读盘期间用户可能切换活动目录，此时旧目录的列表既不进
-   * 快照、也不推给界面（否则侧栏/子对话树会显示上一个目录的对话）。
+   * 每个工作目录一份列表快照（`list`）+ 是否可能落后于磁盘（`dirty`）。
+   *
+   * 多工作目录宿主（Electron）切换标签页时直接命中目标目录的快照，不再每次完整
+   * 读盘 / 走 `conversationListRequested` 网络往返（与 Embedded core 自己的
+   * `conversationListCaches` 同一策略：缓存只被本进程的落盘事件驱动更新）。
+   * `dirty` 见 `onConversationListChanged`。
    */
-  private cachedListWorkspace: string | undefined;
+  private readonly listSnapshots = new Map<string, { list: readonly ConversationMetadata[]; dirty: boolean }>();
 
   /**
-   * 重新读取对话列表并分发给该宿主所有需要它的界面。
+   * 重新读取**当前活动目录**的对话列表并分发给该宿主所有需要它的界面，
+   * 顺带把结果存成该目录的快照（标记为干净）。
    *
    * 失败自持（只记日志）：调用方多是 fire-and-forget（`void refresh()`），而读列表
    * 走的 UiRequest 会在连接关闭 / Core 重启窗口被总线就地拒绝（第 3.7 节）——这里若
@@ -55,12 +56,28 @@ export abstract class ConversationManager {
       const list = await this.load();
       // 读盘期间活动工作目录已切换：丢弃过期结果，等新目录自己的 refresh()
       if (this.host.getWorkspacePath() !== workspace) return;
-      this.cachedList = list;
-      this.cachedListWorkspace = workspace;
+      this.listSnapshots.set(workspace ?? '', { list, dirty: false });
       await this.dispatchList(list);
     } catch (error) {
       this.host.log(`[conversations] refresh failed: ${String(error)}`);
     }
+  }
+
+  /**
+   * `conversationListChanged`（磁盘列表变了）的入口：活动目录立即重读，
+   * 其余目录的快照标记脏。返回活动目录的重读完成（fire-and-forget 调用加 `void`）。
+   *
+   * 事件不带目录信息：变化多半发生在活动目录（重读已覆盖）；但后台目录的对话
+   * 视图仍在落盘（多视图宿主里切走 ≠ 停止运行），无法排除，只能标记脏——
+   * 下次切到该目录时先返回快照、后台重新读盘补推（stale-while-revalidate）。
+   * 尚无快照的目录无需标脏：无缓存可命中，拉取本来就会完整读盘。
+   */
+  onConversationListChanged(): Promise<void> {
+    const active = this.host.getWorkspacePath() ?? '';
+    for (const [workspace, snapshot] of this.listSnapshots) {
+      if (workspace !== active) snapshot.dirty = true;
+    }
+    return this.refresh();
   }
 
   /**
@@ -77,25 +94,30 @@ export abstract class ConversationManager {
   protected abstract dispatchList(list: readonly ConversationMetadata[]): Promise<void>;
 
   /**
-   * 最近一次分发的对话列表快照（从未分发过时为 null）。
+   * 当前活动工作目录最近一次分发的对话列表快照（没有快照时为 null）。
    *
    * 宿主用它响应「拉取列表」请求——Electron 的 `sidebar:get-conversations`
    * 优先读这份快照，不必再读一次盘；列表变化本来就会经 `conversationListChanged`
-   * → `refresh()` 更新快照并推送。
-   *
-   * 活动工作目录与快照不一致时返回 null（等价于「未缓存」），
-   * 调用方会重新 refresh 拿到当前目录的列表。
+   * → `onConversationListChanged()` 更新快照并推送。每个目录各留一份快照，
+   * 切换目录后旧目录的快照仍在，切回来继续命中。
    */
   getCachedList(): readonly ConversationMetadata[] | null {
-    if (this.cachedList === null) return null;
-    if (this.cachedListWorkspace !== this.host.getWorkspacePath()) return null;
-    return this.cachedList;
+    return this.listSnapshots.get(this.host.getWorkspacePath() ?? '')?.list ?? null;
   }
 
-  /** 丢弃列表快照（工作区切换等场景），下次拉取时重新读盘 */
-  invalidateCachedList(): void {
-    this.cachedList = null;
-    this.cachedListWorkspace = undefined;
+  /**
+   * 当前活动工作目录的快照是否可能落后于磁盘（没有快照时谈不上过期，返回 false）。
+   *
+   * 调用方命中脏快照时的约定：先返回快照让界面即时渲染，再后台 `refresh()`
+   * 重新读盘，读到后经 `dispatchList` 推送更新。
+   */
+  isCachedListStale(): boolean {
+    return this.listSnapshots.get(this.host.getWorkspacePath() ?? '')?.dirty ?? false;
+  }
+
+  /** 丢弃指定工作目录的列表快照（关闭工作目录等场景），下次拉取时重新读盘 */
+  invalidateCachedList(workspace: string): void {
+    this.listSnapshots.delete(workspace);
   }
 
   // ===================== 流 2：会话运行时状态 =====================

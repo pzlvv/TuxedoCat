@@ -18,7 +18,7 @@
    载荷字段逐项一致。
 4. **独立进程**：Standalone Core 是独立的可执行文件，承载 core 侧全部职责
    （引擎、工具、历史、MCP 子进程、技能）。
-5. **平台范围**：当前产出 Windows x64；目标矩阵预留 Windows / Linux × x64 / arm64。
+5. **平台范围**：当前产出 Windows x64 与 Linux x64 / arm64；目标矩阵预留 Windows arm64。
 6. **一条帧通道**：UI 与 Standalone Core 之间只有一条双向帧通道；UI 为客户端，Core 为服务端。
 7. **一个工作区一个 Core 进程**：每个打开的工作区对应一个 Core 进程；一个 Core 进程只服务
    它的 Connection（`docs/client-connection.md` 第 5 节）。
@@ -130,7 +130,7 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 | Windows | x64 | `x86_64-pc-windows-msvc` | `resources/core/x64-win32/` | 产出 |
 | Windows | arm64 | `aarch64-pc-windows-msvc` | `resources/core/arm64-win32/` | 预留 |
 | Linux | x64 | `x86_64-unknown-linux-musl` | `resources/core/x64-linux/` | 产出（静态 musl；Windows 上交叉编译，见第 4.3 节） |
-| Linux | arm64 | `aarch64-unknown-linux-musl` | `resources/core/arm64-linux/` | 预留 |
+| Linux | arm64 | `aarch64-unknown-linux-musl` | `resources/core/arm64-linux/` | 产出（静态 musl；Windows 上交叉编译，见第 4.3 节） |
 
 产物目录命名与 `resources/ripgrep/` 一致。宿主按运行平台的平台名 / 架构名解析产物目录，
 不写死单一平台。
@@ -154,7 +154,7 @@ resources/core/x64-win32/ripgrep/rg.exe
 
 - Core 侧不依赖 Windows 专有 API；平台差异收敛在少量模块：进程管理、路径处理、
   shell 探测、资源定位。
-- 构建脚本按目标三元组参数化；当前产出 Windows x64 与 Linux x64（musl 静态）。
+- 构建脚本按目标三元组参数化；当前产出 Windows x64 与 Linux x64 / arm64（musl 静态）。
   Linux 目标在 Windows 上直接交叉编译（rust-lld + zig，见第 4.3 节），不需要 Linux 环境。
 - 宿主侧的启动、帧通道与契约不随平台变化。
 - 新增平台时只补产物目录与构建目标，不改契约与磁盘格式。
@@ -187,13 +187,13 @@ Linux 产物一律用 **musl**：静态链接、不依赖目标机器的 glibc �
 | Linux arm64 | `aarch64-unknown-linux-musl` | `resources/core/arm64-linux/` |
 
 ```bash
-npm run build:core            # 打包要携带的全部目标（Windows x64 + Linux x64）
+npm run build:core            # 打包要携带的全部目标（Windows x64 + Linux x64 / arm64）
 npm run build:core:host       # 只建当前平台 / 架构（本地调试用）
 npm run build:core:linux-x64  # 只建 Linux x64（Windows 上就是交叉编译，不需要 WSL）
 ```
 
 `build-core.mjs` 的目标分三档：不带参数时构建 `PACKAGE_DIRS`（打包要携带的 Windows x64 +
-Linux x64，本机构建不了的组合跳过并说明）；`--host` 只建当前平台 / 架构；`--target <三元组>`
+Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只建当前平台 / 架构；`--target <三元组>`
 只建指定目标。本地调试（`dev:electron`、`watch:app` 的 Rust 重建）走 `--host`，不白编 Linux 那份。
 
 交叉编译到 Linux 需要两样东西，**都在本机解决，不用 Linux 环境**：
@@ -209,17 +209,19 @@ Linux x64，本机构建不了的组合跳过并说明）；`--host` 只建当�
 打包（`npm run package:ext` / `package:app`）会校验要携带的 Core 产物
 （`scripts/verify-core-artifacts.mjs`）：产物缺失、比 `core-rs/src/**` 旧、或没同步进
 `dist/resources/` 都直接报错。平台列表取自构建脚本的 `PACKAGE_DIRS`，两处不各写一份。
-`build:core` 默认就构建这两个平台，所以打包链不会再漏掉 Linux 那份；校验仍然拦住
+`build:core` 默认就构建这三个平台，所以打包链不会再漏掉 Linux 那两份；校验仍然拦住
 「改了 Rust 源码没重编」与「`copy-assets` 没跑」——那两种情况会把上一次的旧产物
 静默打进 vsix / 安装包。
 
-**预留平台**：Windows arm64 / Linux arm64 已登记目标与产物目录（矩阵一致性由
+预编译 ripgrep（`resources/ripgrep/<arch>-<platform>/`）四个平台取自同一版本的 ripgrep
+官方发布物（15.2.0；Linux 两份为 `unknown-linux-musl` 静态链接），入库前按官方 `.sha256`
+逐份校验。
+
+**预留平台**：Windows arm64 已登记目标与产物目录（矩阵一致性由
 `src/test/corePlatformMatrix.test.ts` 锁定），但还没有实际产物。已实测的阻塞：
 
 - **Windows arm64**：构建会停在 `ring` 的自定义构建脚本上，报 `failed to find tool "clang"`。
   `ring` 含 ARM64 汇编，交叉编译需要 clang 与 ARM64 的 MSVC 链接器；只装 Rust target 不够。
-- **Linux arm64**：同理需要 `aarch64-unknown-linux-musl` 的 C 交叉工具链（zig 支持
-  `aarch64-linux-musl`，但 `ring` 的 ARM64 汇编路径尚未实测）。
 
 这与第 11 节「目标矩阵中预留平台的实际产出」不属于覆盖范围一致。
 
@@ -429,7 +431,7 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 
 - 跨机器部署与网络传输；
 - 网络连接断开后的重连（进程崩溃后的重启见第 7.1 节）；
-- 目标矩阵中预留平台的实际产出；
+- 目标矩阵中预留平台（Windows arm64）的实际产出；
 - UI 侧的界面表现与 webview 协议；
 - `embedded` 实现的改动；
 - daemon 的进程模型与协议（见 `docs/core-daemon.md`）；
@@ -452,7 +454,7 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 10. 两个工作区各自拥有一个 Core 进程；其中一个的 Core 崩溃不影响另一个。
 11. 重启次数超过上限时 daemon 停止重启并报告。
 12. `CORE_KIND = embedded` 时装配进程内 Core，恒一个 Connection。
-13. 产物目录按平台 / 架构解析，Windows x64 与 Linux x64 有实际产物，其余为预留。
+13. 产物目录按平台 / 架构解析，Windows x64 与 Linux x64 / arm64 有实际产物，Windows arm64 为预留。
 14. `start` 打印 `IP:端口` 与 token（daemon 留在后台）；token 不匹配的连接被拒绝。
 
 ---

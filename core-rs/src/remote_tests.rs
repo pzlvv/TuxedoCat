@@ -844,7 +844,10 @@ fn heartbeat_silence_ends_the_connection() {
         .unwrap();
     assert!(read_line(&mut reader).contains("\"authOk\""));
     client.write_all(b"{\"kind\":\"ping\"}\n").unwrap();
-    // 此后沉默：心跳超时（300ms）后 daemon 关闭连接，读到 EOF
+    // daemon 对 ping 回 pong（Host 靠它武装沉默判定）；此后沉默：心跳超时（300ms）
+    // 后 daemon 关闭连接，读到 EOF
+    let pong = read_line(&mut reader);
+    assert!(pong.contains("\"pong\""), "ping 应得到 pong 应答");
     let mut line = String::new();
     let read = reader
         .read_line(&mut line)

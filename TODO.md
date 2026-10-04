@@ -3,10 +3,10 @@
 本清单是 `docs/standalone-core.md` 的落地分解。原 Embedded Core（`src/core`）保留不动，
 Standalone Core 是 Core 的第二套实现。
 
-当前产出：Windows x64（`x86_64-pc-windows-msvc`）。目标矩阵预留 Windows / Linux ×
-x64 / arm64，见 `docs/standalone-core.md` 第 4.1 节。
+当前产出：Windows x64（`x86_64-pc-windows-msvc`）与 Linux x64 / arm64（musl 静态）。
+目标矩阵预留 Windows arm64，见 `docs/standalone-core.md` 第 4.1 节。
 
-**状态**：本清单 143 项全部完成；三项预留平台的**实际产物**未产出（缺交叉工具链，
+**状态**：本清单 143 项全部完成；预留平台 Windows arm64 的**实际产物**未产出（缺交叉工具链，
 实测记录见 `docs/standalone-core.md` 第 4.3 节）。已知缺口与有意保留的实现差异见
 `DIFF.md`。
 
@@ -34,7 +34,7 @@ x64 / arm64，见 `docs/standalone-core.md` 第 4.1 节。
 | M5 | MCP 与技能 | 已完成 |
 | M6 | Spin / i18n / 会话运行时 | 已完成 |
 | M7 | 宿主侧收敛 | 已完成 |
-| M8 | 构建、打包与验证 | 已完成（三项预留平台的产物未产出，见「预留」一节） |
+| M8 | 构建、打包与验证 | 已完成（预留平台 Windows arm64 的产物未产出，见「预留」一节） |
 
 ---
 
@@ -387,10 +387,10 @@ MCP 列表 / 对话空间统计 / 会话加载 / 技能列表 / 挂起持久化�
 
 ## 预留（构建目标与产物目录已登记，产物未产出）
 
-- [x] Windows arm64（`aarch64-pc-windows-msvc`）：产物目录 `resources/core/arm64-win32/` 与构建目标已登记（`scripts/build-core.mjs` 的 `TARGETS`），运行时按 `<arch>-<platform>` 解析，矩阵一致性由 `src/test/corePlatformMatrix.test.ts`（44 条断言）锁定。
+- [x] Windows arm64（`aarch64-pc-windows-msvc`）：产物目录 `resources/core/arm64-win32/` 与构建目标已登记（`scripts/build-core.mjs` 的 `TARGETS`），运行时按 `<arch>-<platform>` 解析，矩阵一致性由 `src/test/corePlatformMatrix.test.ts` 锁定。
       **实际未产出**：`rustup target add aarch64-pc-windows-msvc` 之后构建会停在 `ring`（`reqwest` 的 `rustls-tls` 依赖）的自定义构建脚本上，报 `failed to find tool "clang"`——`ring` 含 ARM64 汇编，交叉编译需要 LLVM/clang 与 ARM64 的 MSVC 链接器。详见 `docs/standalone-core.md` 第 4.3 节。
-- [x] Linux x64（`x86_64-unknown-linux-gnu`）：产物目录 `resources/core/x64-linux/` 与构建目标已登记并由矩阵测试锁定。**实际未产出**：当前环境未安装该 GNU 目标与对应的交叉链接器（详见 `docs/standalone-core.md` 第 4.3 节）。
-- [x] Linux arm64（`aarch64-unknown-linux-gnu`）：产物目录 `resources/core/arm64-linux/` 与构建目标已登记并由矩阵测试锁定。**实际未产出**：同上（详见 `docs/standalone-core.md` 第 4.3 节）。
+- [x] Linux x64（`x86_64-unknown-linux-gnu` → 改用 `x86_64-unknown-linux-musl`）：产物目录 `resources/core/x64-linux/`。**已产出**：musl 静态，Windows 上经 zig 交叉编译，见 `docs/standalone-core.md` 第 4.3 节。
+- [x] Linux arm64（`aarch64-unknown-linux-gnu` → 改用 `aarch64-unknown-linux-musl`）：产物目录 `resources/core/arm64-linux/`。**已产出**：musl 静态，Windows 上经 zig 交叉编译，见 `docs/standalone-core.md` 第 4.3 节。
 - [x] 平台差异模块审查：逐项核对进程管理 / 路径处理 / shell 探测 / 资源定位，结论与落点已列表登记在 `docs/standalone-core.md` 第 4.2 节。要点：
       - 进程管理：`bash_task::kill_tree` 与 `mcp.rs` 的子进程终止都用 `#[cfg(windows)]` 走 `taskkill /T /F`；**非 Windows 分支只杀直接子进程，与 Embedded 逐字对齐**（Node 的 `detached: true` + `childProcess.kill()` 同样不覆盖孙进程）——不是缺口，是刻意的行为对等；
       - 路径处理：盘符 / UNC 换算都在 `cfg!(windows)` 分支内，非 Windows 走 POSIX 分支（多字节路径按字节比较，见 M3 的 `expand_path` 修复）；

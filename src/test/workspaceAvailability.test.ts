@@ -72,6 +72,21 @@ async function run(): Promise<void> {
   check('关闭标签页丢弃判定后回到 available', startup.availabilityOf(KEY) === 'available');
   check('丢弃后可重新判定', startup.markUnavailable(KEY) === true);
 
+  // ── 场景 7：运行期致命（远程 daemon / 链路死亡）：曾就绪过也要标红 ──
+  // markUnavailable 的就绪豁免只服务「探测与建链竞态」：远程运行期 lost 不可自动
+  // 恢复（重启策略在 daemon 手里），必须撤销豁免落成 unavailable
+  const runtimeFatal = new WorkspaceAvailabilityState();
+  runtimeFatal.markReady(KEY);
+  check('曾就绪过的运行期致命：撤销豁免并标红', runtimeFatal.markRuntimeFatal(KEY) === true);
+  check('运行期致命后状态为 unavailable', runtimeFatal.availabilityOf(KEY) === 'unavailable');
+  check('运行期致命重复标记返回 false（副作用不重复）', runtimeFatal.markRuntimeFatal(KEY) === false);
+  // 建链中 + 运行期致命：与 markUnavailable 同口径，落定时清掉建链中
+  const fatalWhileConnecting = new WorkspaceAvailabilityState();
+  fatalWhileConnecting.markConnecting(KEY);
+  fatalWhileConnecting.markReady(KEY);
+  check('建链中收到运行期致命：标红并清掉黄点', fatalWhileConnecting.markRuntimeFatal(KEY) === true);
+  check('运行期致命落定后状态为 unavailable', fatalWhileConnecting.availabilityOf(KEY) === 'unavailable');
+
   // 可建 Connection 的口径：只排除不可用，建链中的项同样要建（建链正是它的目的）
   const connectable = new WorkspaceAvailabilityState();
   connectable.markConnecting(KEY);

@@ -99,7 +99,8 @@ pub struct DaemonOptions {
     pub heartbeat_timeout: Option<Duration>,
 }
 
-/// 远程控制通道的心跳空闲超时：Host 每 15s 发一次 `ping`，容 3 次丢失。
+/// 远程控制通道的心跳空闲超时：Host 每 1s 发一次 `ping`（daemon 回 `pong`），
+/// 沉默 60s 按 Host 断开处理（容大段丢帧与阻塞）。
 pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl Default for DaemonOptions {
@@ -533,8 +534,10 @@ pub fn run_daemon(
                         return ChannelExit::Stop;
                     }
                     HostToDaemonFrame::Ping => {
-                        // 心跳：首个 ping 武装空闲超时，此后由 Command 分支顺延
-                        // （docs/core-daemon.md 第 12.5 节；旧版 Host 不发 ping，永不武装）
+                        // 心跳：回 pong（Host 据此武装沉默判定，`docs/core-daemon.md`
+                        // 第 12.5 节），并把空闲超时武装 / 顺延（旧版 Host 不发 ping，
+                        // 永不武装）
+                        send_to_host(out.as_ref(), &DaemonToHostFrame::Pong);
                         if let Some(timeout) = options.heartbeat_timeout {
                             heartbeat_deadline = Some(Instant::now() + timeout);
                         }

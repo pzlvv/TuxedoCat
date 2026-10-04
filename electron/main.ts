@@ -2878,7 +2878,8 @@ function activateWorkspace(target: WorkspaceRef | string): void {
   uiHost?.setWorkspacePath(ref);
   if (changed) {
     saveOpenWorkspaces(openWorkspaces, workspacePath);
-    conversations?.invalidateCachedList();
+    // 列表快照按目录各存一份：切换标签页不丢快照，侧栏直接命中（脏快照由
+    // get-conversations 后台补读，见 sidebar:get-conversations）
     // 从「无工作目录」进入：销毁空态视图（--workspace= 为空），避免残留
     if (!prev) chatViews?.closeWorkspace('');
   }
@@ -2920,6 +2921,9 @@ function closeWorkspace(target: WorkspaceRef | string): void {
   // 标签页关闭即丢弃启动期的不可用判定 / 建链状态：之后经「最近打开」重新添加按全新打开处理
   workspaceAvailabilityState.clearAll(refKey(ref));
   chatViews?.closeWorkspace(ref.path);
+  // 该目录的列表快照一并丢弃：关闭期间盘上内容可能变化（另一实例 / daemon 侧），
+  // 重新打开时按首次打开处理（无快照 → 完整读一次盘）。其它目录的快照不受影响。
+  conversations?.invalidateCachedList(ref.path);
   for (const [sid, ws] of [...sessionWorkspaces]) {
     if (workspacePathMatches(ref, ws)) sessionWorkspaces.delete(sid);
   }
@@ -2931,7 +2935,6 @@ function closeWorkspace(target: WorkspaceRef | string): void {
     workspacePath = next;
     saveOpenWorkspaces(openWorkspaces, workspacePath);
     uiHost?.setWorkspacePath(workspacePath);
-    conversations?.invalidateCachedList();
     if (!next && windowMode === 'floating') {
       // 打开集合为空：浮窗没有添加目录的入口，退回完整模式（规格 §10）
       void applyWindowMode('normal');
@@ -2955,11 +2958,15 @@ function closeWorkspace(target: WorkspaceRef | string): void {
  * 聊天区由 `syncChatAreaForActiveWorkspace` 改显占位页。标签页保留在打开集合里
  * （红点），可以点击激活，远程不可连时占位页提供「重新连接」按钮。
  */
-function markWorkspaceUnavailable(ref: WorkspaceRef, reason: string): void {
+function markWorkspaceUnavailable(ref: WorkspaceRef, reason: string, mode: 'build' | 'runtime' = 'build'): void {
   const key = refKey(ref);
   // 状态机先落定（含清掉建链中）：曾就绪过 = 工作区事实上可用（探测与建链竞态的
-  // 输家不该否定赢家）；重复标记同样返回 false。两条守卫下副作用都不重复执行
-  const changed = workspaceAvailabilityState.markUnavailable(key);
+  // 输家不该否定赢家）；重复标记同样返回 false。两条守卫下副作用都不重复执行。
+  // runtime（运行期致命，仅远程 lost）：撤销就绪豁免后落定——daemon / 链路死亡
+  // 在 Host 侧无法自动恢复，与建链失败同样标红
+  const changed = mode === 'runtime'
+    ? workspaceAvailabilityState.markRuntimeFatal(key)
+    : workspaceAvailabilityState.markUnavailable(key);
   fileLogger.info(
     'workspace-tab',
     `markUnavailable ${refDisplay(ref)}: changed=${changed}, now=${workspaceAvailabilityState.availabilityOf(key)} (${reason})`,
@@ -3876,14 +3883,18 @@ function setupIpc(): void {
     if (e2eSlowListMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, e2eSlowListMs));
     }
-    // 优先返回最近一次推送的列表快照（ConversationManager.getCachedList），
-    // 不再每次拉取都重读磁盘——列表变化本来就会经 conversationListChanged 推送并更新快照。
+    // 优先返回该目录的列表快照（ConversationManager.getCachedList，每个目录各一份），
+    // 切换标签页不再每次完整读盘 / 走网络往返——列表变化本来就会经
+    // conversationListChanged 推送并更新快照。
     const cached = conversations?.getCachedList();
-    if (cached) {
+    if (conversations && cached) {
+      // 快照可能过期（后台目录的对话视图落盘变化把快照标脏）：先返回快照让侧栏
+      // 即时渲染，后台重新读盘，读到后经 sidebar:conversations-updated 补推。
+      if (conversations.isCachedListStale()) void conversations.refresh();
       syncSessionWorkspaceIndex();
       return cached;
     }
-    // 尚无快照（刚启动 / 刚切换工作区）：读一次盘（refresh 顺带推送给侧栏并填充快照）
+    // 尚无快照（首次打开该目录）：读一次盘（refresh 顺带推送给侧栏并填充快照）
     if (!conversations) return [];
     try {
       await conversations.refresh();
@@ -4132,8 +4143,10 @@ function initCore(): void {
 
   // 订阅 Connection 生命周期：启动恢复 / 手动重连的建连失败（从未就绪）在此落成
   // 「不可用」——endpoint 探测只覆盖「连不上 daemon」，daemon 存活但工作区 channel
-  // 建失败（远端 core 起不来）等失败形态只能从这里得知。运行期 Core 退出（曾就绪过）
-  // 由总线的重启策略恢复，不标红。
+  // 建失败（远端 core 起不来）等失败形态只能从这里得知。远程的运行期 lost（daemon /
+  // 链路死亡、Core 重启超限）同样在这里落成不可用：重启策略在 daemon 手里，Host 侧
+  // 无法自动恢复，曾就绪过也必须标红（沉默判定最迟 3s 内把 fatal 送到这里）。本地项
+  // 保持豁免：Core 由 Host 侧重启策略恢复，恢复后 coreReady 会重新 markReady。
   onWorkspaceConnectionState((ref, state, reason) => {
     const key = refKey(ref);
     // 空引用占位 Connection 不属于任何标签页
@@ -4142,10 +4155,9 @@ function initCore(): void {
     if (state === 'ready') {
       workspaceAvailabilityState.markReady(key);
     } else if (ref.endpoint) {
-      // 从未就绪的建链失败落成不可用；曾就绪过的不标红（markUnavailable 内部守卫，
-      // 与「Connection 已就绪的判定优先于探测失败」同一口径）。
+      // 运行期致命走 runtime 落定（撤销就绪豁免）；从未就绪的建链失败走默认守卫。
       // 落定时顺带清掉建链中：否则这次标红推送的仍是黄态，黄点要等下一次全量刷新才消失
-      markWorkspaceUnavailable(ref, reason);
+      markWorkspaceUnavailable(ref, reason, 'runtime');
     }
   });
 

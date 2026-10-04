@@ -19,7 +19,7 @@
  *
  * 默认构建的是**打包要携带的全部目标**（`PACKAGE_DIRS`），不是只建当前平台：
  * 只建当前平台时，打包会静默带上一次构建的旧 Linux 产物（docs/standalone-core.md
- * 第 4.3 节）。矩阵里其余两项为预留：目标三元组已登记，装好对应 target 即可构建。
+ * 第 4.3 节）。矩阵里其余一项为预留：目标三元组已登记，装好对应 target 即可构建。
  */
 
 import { spawnSync } from 'node:child_process';
@@ -57,7 +57,7 @@ export const TARGETS = [
  * 这是**唯一一份**平台列表：`scripts/verify-core-artifacts.mjs` 直接 import 它，
  * 不再各写一遍，免得「构建的」与「校验的」漂移（docs/standalone-core.md 第 4.3 节）。
  */
-export const PACKAGE_DIRS = ['x64-win32', 'x64-linux'];
+export const PACKAGE_DIRS = ['x64-win32', 'x64-linux', 'arm64-linux'];
 
 /**
  * 本机能否直接构建该目标。

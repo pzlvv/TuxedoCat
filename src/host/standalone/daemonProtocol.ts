@@ -56,10 +56,10 @@ export type HostToDaemonFrame =
   | { kind: 'deleteDirectory'; id: number; path: string; recursive: boolean }
   | { kind: 'shutdown' }
   /**
-   * 链路心跳（`docs/core-daemon.md` 第 12.5 节）：链路就绪后定期发送，daemon 收到
-   * 即证明这条控制通道的 Host 还活着。Host 消失而 TCP 未断（断网 / 休眠 / 进程
-   * 冻结）时，daemon 的读线程永远等不到 EOF，沉默是它唯一的断开依据——同步
-   * accept 循环被死连接占住，后续接入全部饿死（探测「连得上」、auth 无应答）。
+   * 链路心跳（`docs/core-daemon.md` 第 12.5 节）：链路就绪后定期发送，daemon 回
+   * `pong` 并以「最近一次收到控制帧」判定 Host 死活——Host 消失而 TCP 未断（断网 /
+   * 休眠 / 进程冻结）时，daemon 的读线程永远等不到 EOF，沉默是它唯一的断开依据
+   * （同步 accept 循环被死连接占住，后续接入全部饿死：探测「连得上」、auth 无应答）。
    */
   | { kind: 'ping' };
 
@@ -87,6 +87,8 @@ export interface DirectoryListing {
 /** daemon → Host */
 export type DaemonToHostFrame =
   | { kind: 'authOk' }
+  /** 心跳应答：对 `ping` 的回应；Host 见首个 pong 武装沉默判定（第 12.5 节） */
+  | { kind: 'pong' }
   | { kind: 'authFailed'; error: string }
   | { kind: 'workspaceOpened'; id: number; channel: number; descriptor: ChannelDescriptor }
   | { kind: 'workspaceFailed'; id: number; error: string }
@@ -148,6 +150,7 @@ export function isDaemonToHostFrame(value: unknown): value is DaemonToHostFrame 
   if (!isRecord(value)) return false;
   switch (value['kind']) {
     case 'authOk':
+    case 'pong':
       return true;
     case 'authFailed':
       return typeof value['error'] === 'string';

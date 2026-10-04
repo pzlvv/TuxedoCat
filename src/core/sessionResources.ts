@@ -19,7 +19,7 @@
  */
 
 /** 临时会话 key（新建对话尚未上报正式 sessionId 前使用），不参与资源管理 */
-function isTemporarySessionId(sessionId: string): boolean {
+export function isTemporarySessionId(sessionId: string): boolean {
   return sessionId.startsWith('new-');
 }
 

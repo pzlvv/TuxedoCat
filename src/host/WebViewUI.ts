@@ -32,6 +32,7 @@ import { pushToolProgress } from './queryActivity.js';
 import { buildConversationLoadedPayload } from './conversationPayload.js';
 import { readUiLanguage, readUiFontSize, requestBalance } from './coreFacts.js';
 import { markCoreReady } from './coreReadiness.js';
+import { isTemporarySessionId } from '../core/sessionResources.js';
 import {
   readHasActiveProviderSetting,
   readLlmConfigPanelPayload,
@@ -478,11 +479,12 @@ export class WebViewUI implements WebViewUiPort {
   }
 
   /**
-   * 对话列表数据变化（磁盘元数据）→ conversations.refresh()。
+   * 对话列表数据变化（磁盘元数据）→ ConversationManager.onConversationListChanged。
+   * 活动目录立即重读、其余目录的快照标记脏（切换标签页命中脏快照时后台补读）。
    * 「立即还是节流、推给哪些界面」由 ConversationManager 决定，core 不参与。
    */
   onConversationListChanged(): void {
-    void this.conversations.refresh();
+    void this.conversations.onConversationListChanged();
   }
 
   /**
@@ -720,9 +722,16 @@ export class WebViewUI implements WebViewUiPort {
    * 这是 ChatViewManager 的「卸内存」入口（视图销毁序列在它内部自行完成，
    * 见 electron/ChatViewManager.destroyViewEntry），避免「关闭视图」与
    * 「卸内存」互相回调形成环。
+   *
+   * 临时 `new-` key 尚未对应正式会话（core 侧 releaseSessionResources 对它本就是
+   * no-op，`src/core/sessionResources.ts`），不发 `conversationClosed`：
+   * 会话从未登记过归属，多连接下 Client 按会话路由查不到归属会直接抛错
+   * （`docs/client-connection.md` 第 6 节）。
    */
   releaseConversation(sessionId: string): void {
-    requireEventBus().emitToCore({ type: 'conversationClosed', sessionId }); // core 卸内存
+    if (!isTemporarySessionId(sessionId)) {
+      requireEventBus().emitToCore({ type: 'conversationClosed', sessionId }); // core 卸内存
+    }
     this.dropSession(sessionId); // 清 UI 侧 per-session 状态（fan-out，见 dropSession）
   }
 

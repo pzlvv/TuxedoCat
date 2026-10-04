@@ -835,7 +835,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 25 | `compactRequested` | `sessionId` | `requestCompress` | `Integration.requestCompact` |
 | 26 | `conversationStarted` | `sessionId` | `startNewConversation`（handler 先登记会话工作目录，再发事件） | `Integration.createEngine`（预创建引擎 + MCP 引用 + 预热该会话工作目录的系统信息） |
 | 27 | `conversationOpened` | `sessionId` | `loadConversation`（handler 先登记会话工作目录，再发事件；Standalone 下 Core 重启后重放） | Standalone：Core 的 `on_conversation_opened`（载入历史 + MCP 引用）；Embedded：无订阅者（宿主直接调 `restoreConversationEngine`） |
-| 28 | `conversationClosed` | `sessionId` | `WebViewUI.releaseConversation`（关闭按钮 / 侧栏关闭 / VS Code 空闲回收 / Electron 视图销毁序列 `ChatViewManager.closeConversation`） | `sessionResources.releaseSessionResources`（卸内存 + 拒绝该会话挂起的 user choice；磁盘不动） |
+| 28 | `conversationClosed` | `sessionId` | `WebViewUI.releaseConversation`（关闭按钮 / 侧栏关闭 / VS Code 空闲回收 / Electron 视图销毁序列 `ChatViewManager.closeConversation`；临时 `new-` key 不发，第 6.1 节） | `sessionResources.releaseSessionResources`（卸内存 + 拒绝该会话挂起的 user choice；磁盘不动） |
 | 29 | `conversationRenamed` | `sessionId`, `title` | `renameConversation`、智能命名、Electron 侧栏 | `history.updateConversationMetadataTitle` → `titleChanged` + `conversationListChanged` |
 | 30 | `conversationDeleted` | `sessionId` | `deleteConversation`、Electron 侧栏 | `history.deleteConversation`（**递归删除整棵子树**：自身 + 所有层级的子孙对话）→ `conversationListChanged` |
 | 31 | `conversationContextUpdated` | `sessionId`, `changes` | `updateConversationContext` 消息、`extension.ts`（编辑器上下文） | `history.updateConversationContext`（合并语义） |
@@ -1189,11 +1189,13 @@ webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接�
 
 | 成员 | 语义 |
 | --- | --- |
-| `refresh()` | 重新读取对话列表并分发给该宿主所有需要它的界面（顺带把列表存成快照） |
+| `refresh()` | 重新读取**当前活动目录**的对话列表并分发给该宿主所有需要它的界面（顺带存成该目录的快照） |
 | `load()`（protected） | 读磁盘对话列表（source of truth，两端一致） |
 | `dispatchList(list)`（abstract） | 把纯磁盘列表分发给该宿主的界面 |
-| `getCachedList()` | 最近一次分发的列表快照（未分发过时为 `null`）。Electron 的 `sidebar:get-conversations` 读它，避免重复读盘 |
-| `invalidateCachedList()` | 丢弃列表快照（工作区切换等场景），下次拉取重新读盘 |
+| `onConversationListChanged()` | 列表变化入口：活动目录立即重读，**已有快照**的其它目录标脏（返回重读完成；fire-and-forget 调用加 `void`） |
+| `getCachedList()` | 当前活动目录的列表快照（没有快照时为 `null`）。每个目录各留一份：多工作目录宿主（Electron）切换标签页直接命中，不再每次完整读盘 / 走 `conversationListRequested` 网络往返。Electron 的 `sidebar:get-conversations` 读它 |
+| `isCachedListStale()` | 当前目录的快照是否可能落后于磁盘（`onConversationListChanged` 标脏）。命中脏快照的约定：先返回快照让界面即时渲染，后台 `refresh()` 补读并经 `dispatchList` 推送（stale-while-revalidate） |
+| `invalidateCachedList(workspace)` | 丢弃指定目录的快照（关闭工作目录等场景），下次拉取重新读盘；其它目录不受影响 |
 | `updateSessionStates(states)` | 把最新的会话状态分发出去（VS Code 实现还在这里刷新空闲计时，见下） |
 | `dispatchStates(states)`（abstract） | 把会话状态分发给该宿主的界面 |
 | `setStatusListener(fn)` | 注册会话状态回调（Electron 托盘用；VS Code 不注册） |
@@ -1372,7 +1374,12 @@ userChoiceManager }`，构造完成后回填 `uiPort = this`。
 ```ts
 /** 只卸内存，不销毁宿主视图 */
 releaseConversation(sessionId: string): void {
-  requireEventBus().emitToCore({ type: 'conversationClosed', sessionId }); // core 卸内存
+  // 临时 `new-` key 尚未对应正式会话（core 侧 releaseSessionResources 对它本就是
+  // no-op），不发 conversationClosed：会话从未登记归属，多连接下 Client 按会话
+  // 路由查不到归属会直接抛错（`docs/client-connection.md` 第 6 节）。
+  if (!isTemporarySessionId(sessionId)) {
+    requireEventBus().emitToCore({ type: 'conversationClosed', sessionId }); // core 卸内存
+  }
   this.dropSession(sessionId);                                            // UI 侧 per-session 状态 fan-out
 }
 
@@ -2363,8 +2370,11 @@ abort 按钮的可用性是**「会话非空闲」**，事实 owner 是 core 的
 
 ```ts
 releaseConversation(sessionId: string): void {
-  requireEventBus().emitToCore({ type: 'conversationClosed', sessionId }); // core 卸内存
-  this.dropSession(sessionId);                                            // UI 侧 fan-out
+  // 临时 `new-` key 不发 conversationClosed（第 6.1 节）
+  if (!isTemporarySessionId(sessionId)) {
+    requireEventBus().emitToCore({ type: 'conversationClosed', sessionId }); // core 卸内存
+  }
+  this.dropSession(sessionId); // UI 侧 fan-out
 }
 
 /** fan-out 给所有持有 per-session 状态的子模块 */
@@ -2505,9 +2515,11 @@ dropSession(sessionId: string): void {
 VS Code 推给 webview（`sessionRuntimeStates`），Electron 推给侧栏，webview 的流水灯只读这份状态，不从
 `queryBegin` / `queryEnd` 自行推导 idle。
 
-列表流也有一份快照：基类 `refresh()` 把最近一次列表存进 `getCachedList()`，
-Electron 的 `sidebar:get-conversations` 直接读它，不重复读盘；工作区切换时
-`invalidateCachedList()` 丢弃快照，下次拉取重新读。
+列表流每个工作目录各留一份快照：基类 `refresh()` 把活动目录的列表存进 `getCachedList()`，
+Electron 的 `sidebar:get-conversations` 直接读它，切换标签页不再每次完整读盘 / 走
+`conversationListRequested` 网络往返；列表变化经 `onConversationListChanged()` 重读活动目录、
+其余目录标脏（命中脏快照先返回快照、后台补读）；关闭工作目录时
+`invalidateCachedList(目录)` 丢掉该目录的快照，重新打开按首次打开处理。
 
 状态流是「变化时才推」的，没有快照：侧栏初始化 / 重载时用 `sidebar:get-session-states`
 拉一次 core `sessionRuntime` 的当前全量（`getSessionRuntimeStates()`）播种，补上推送
@@ -2852,7 +2864,7 @@ Core 的两种实现由选择变量 `CORE_KIND` 装配：`embedded` 为 `src/cor
 启动）。Core 崩溃后由 daemon 在同一 channel 上重启并恢复接线；重启次数超限时 daemon
 关闭 channel 并向宿主报告。远程服务（`start` 动作）把控制通道换成 TCP，启动时打印
 连接串（`IP:端口#token`），第一帧 `auth` 校验通过后才服务（`docs/core-daemon.md` 第 12 节）。
-当前产出 Windows x64 与 Linux x64，目标矩阵预留 Windows arm64 / Linux arm64。
+当前产出 Windows x64 与 Linux x64 / arm64，目标矩阵预留 Windows arm64。
 
 | 项 | 现状 | 待定 |
 | --- | --- | --- |
@@ -2874,6 +2886,6 @@ Core 的两种实现由选择变量 `CORE_KIND` 装配：`embedded` 为 `src/cor
 | UI → core 请求 | 已实现（协议版本 2）：`UiRequest` 九个请求由 UI 发起、Core 应答（对话列表 / 智能命名 / 余额 / 归档展开 / MCP 列表 / 对话空间 / 挂起持久化 / 会话加载 / 技能列表），宿主不再直接读 core 的磁盘数据 | `src/host/coreFacts.ts` 是宿主侧统一入口；`standaloneBus.test.ts` 覆盖请求往返 / 失败 / 断连 |
 | 对等测试 / 端到端 | 已实现：同一串 `UiEvent` 在两种实现下产出同一组 `CoreEvent`；重启续读端到端 | `coreEventParity.test.ts` / `standaloneCoreRestart.test.ts` |
 | 宿主侧的 core 事实读取 | 已收口（M15）：宿主经 `coreFacts` 按 `CORE_KIND` 分派，Standalone 下走 `UiRequest`；仍保留的直接读取见第 2 节规则 9 的审计结论与 `docs/standalone-core.md` 第 10 节的例外表 | 远程工作区落地时把例外迁到 `UiRequest` |
-| 目标平台 | 产出 Windows x64 与 Linux x64（Linux 为 musl 静态；在 Windows 上直接交叉编译，不需要 WSL）。`npm run build:core` 构建打包要携带的这两个平台，`--host` 只建当前平台 | Windows arm64 / Linux arm64 |
+| 目标平台 | 产出 Windows x64 与 Linux x64 / arm64（Linux 为 musl 静态；在 Windows 上直接交叉编译，不需要 WSL）。`npm run build:core` 构建打包要携带的这三个平台，`--host` 只建当前平台 | Windows arm64 |
 
 新发现的待定项按同样方式记在这里（现状 + 待定）。

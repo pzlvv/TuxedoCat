@@ -443,6 +443,17 @@ fn heartbeat_is_refreshed_by_control_traffic() {
 }
 
 #[test]
+fn ping_gets_a_pong_reply() {
+    // Host 靠 pong 武装沉默判定（`docs/core-daemon.md` 第 12.5 节）：daemon 对
+    // 每个 ping 都回一帧 pong，沉默判定与心跳空闲回收互不干扰
+    let mut harness = Harness::fast();
+    harness.command(json!({ "kind": "ping" }));
+    let pong = harness.next_frame();
+    assert_eq!(pong["kind"], "pong");
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
+}
+
+#[test]
 fn workspace_failure_is_reported_without_a_channel() {
     let mut harness = Harness::fast();
     harness.spawner.fail_next.store(true, Ordering::SeqCst);

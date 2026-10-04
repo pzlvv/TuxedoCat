@@ -9,8 +9,11 @@
  * 2. **部署**：`~/.local/bin` 里没有可执行文件、或与本机携带产物不一致（含哈希读不出
  *    的保守情形）就覆盖上传，并补齐 Core 自带的 `ripgrep/`（Grep / Glob 用的 `rg`，
  *    与可执行文件同级——Core 以**自己的可执行文件目录**为基准定位自带资源，见
- *    `docs/standalone-core.md` 第 4 节）；覆盖只发生在 daemon 未运行（或已被结束）之后；
- * 3. **换血**：在跑的 daemon 版本过期时先 `<可执行文件> kill`（幂等）再部署再启动；
+ *    `docs/standalone-core.md` 第 4 节）；覆盖走临时名 + rename，对执行中的 daemon
+ *    也安全（`mv` 只换目录项）；
+ * 3. **换血**：在跑的 daemon 版本过期时**先部署再 kill 再启动**——`kill` 跑的是
+ *    远端二进制里的代码，被死连接占死的旧 daemon 对协议帧永远不应答，只有新版的
+ *    kill（协议超时后按进程兜底强杀）才结束得了它；
  * 4. **启动**：执行 `<远端可执行文件> start --host 127.0.0.1`（幂等：已在跑就复用），
  *    再读状态文件。绑回环是因为转发连接从远端本机发起，daemon 端口不出机器；
  *    直连 `tcp` 的连接串模式不受影响（`start` 缺省仍绑 `0.0.0.0`，见
@@ -103,11 +106,19 @@ export async function ensureRemoteDaemon(
     return running;
   }
 
-  // 2. 在跑但版本过期（或不一致 / 哈希读不出）：先结束旧 daemon 再覆盖——它还在用
-  //    旧产物给新接入的 Core 服务，换血从停止它开始（kill 幂等；下面的覆盖本身对
-  //    执行中的文件也是安全的——走临时名 + rename，见 ensureRemoteBinary）。
+  // 2. 在跑但版本过期（或不一致 / 哈希读不出）：先部署新产物，再结束旧 daemon。
+  //    `kill` 跑的是**远端二进制里**的代码：被死连接占死的旧 daemon 对协议帧永远
+  //    不应答（Host 侧表现为探测「连得上」、auth 无应答），只有新版的 kill（协议
+  //    超时后按 /proc 兜底强杀）才结束得了它——覆盖必须先于 kill。覆盖走临时名 +
+  //    rename，对执行中的旧 daemon 安全（`mv` 只换目录项，见 ensureRemoteBinary；
+  //    `docs/core-daemon.md` 第 12.8 节）。
+  let deployed = false;
   if (running) {
     options.log('[ssh] remote daemon is running an outdated core binary; restarting it');
+    deployed = await ensureRemoteBinary(ssh, localBinary, remoteBinary);
+    if (deployed) {
+      options.log(`[ssh] deployed ${remoteBinary} (${target.platform}-${target.arch})`);
+    }
     const killed = await ssh.exec(`${shellQuote(remoteBinary)} kill`);
     if (killed.code !== 0) {
       throw new Error(
@@ -117,9 +128,10 @@ export async function ensureRemoteDaemon(
     }
   }
 
-  // 3. 部署：缺失或与本机携带版本不一致就覆盖上传。这条同时是「未启动的过期产物」
-  //    的换血时机——否则 start 会拉起旧版 daemon，之后每次接入都复用它（回到第 2 步）。
-  if (await ensureRemoteBinary(ssh, localBinary, remoteBinary)) {
+  // 3. 部署：缺失或与本机携带版本不一致就覆盖上传（上面的换血路径已经覆盖过就跳过）。
+  //    这条同时是「未启动的过期产物」的换血时机——否则 start 会拉起旧版 daemon，
+  //    之后每次接入都复用它（回到第 2 步）。
+  if (!deployed && (await ensureRemoteBinary(ssh, localBinary, remoteBinary))) {
     options.log(`[ssh] deployed ${remoteBinary} (${target.platform}-${target.arch})`);
   }
 

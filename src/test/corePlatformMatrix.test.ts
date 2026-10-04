@@ -94,15 +94,17 @@ async function run(): Promise<void> {
 
   // ---------- 打包要携带的平台必须在矩阵内 ----------
   // 这份列表是构建与校验共用的唯一来源（verify-core-artifacts.mjs 直接 import 它），
-  // 这里只断言它没写到矩阵外、且覆盖两个实际产出的平台。
+  // 这里只断言它没写到矩阵外、且覆盖实际产出的三个平台。
   const packageDirs = parsePackageDirs();
   check(`build-core.mjs 登记了打包要携带的平台（实际 ${packageDirs.length}）`, packageDirs.length > 0);
   for (const dir of packageDirs) {
     check(`打包平台 ${dir} 在平台矩阵内`, targets.some((entry) => entry.dir === dir));
   }
   check(
-    '打包平台含 Windows x64 与 Linux x64',
-    packageDirs.includes('x64-win32') && packageDirs.includes('x64-linux'),
+    '打包平台含 Windows x64 与 Linux x64 / arm64',
+    packageDirs.includes('x64-win32') &&
+      packageDirs.includes('x64-linux') &&
+      packageDirs.includes('arm64-linux'),
   );
 
   // ---------- 运行时定位：与构建脚本同一份口径 ----------
@@ -177,10 +179,11 @@ async function run(): Promise<void> {
   );
 
   // ---------- 产物落位目录 ----------
-  // x64-win32 是开发机一定能构建的那个，必须在；x64-linux 也属于打包要携带的平台
-  // （`npm run build:core` 默认会一起编，见 docs/standalone-core.md 第 4.3 节），但交叉
-  // 编译需要 zig，没装时允许为空；arm64 还只是预留。「允许为空」不等于允许半成品：
-  // 目录在就必须有产物。「打包要带的产物齐不齐」由 scripts/verify-core-artifacts.mjs 把关。
+  // x64-win32 是开发机一定能构建的那个，必须在；x64-linux 与 arm64-linux 也属于打包
+  // 要携带的平台（`npm run build:core` 默认会一起编，见 docs/standalone-core.md 第 4.3 节），
+  // 但交叉编译需要 zig，没装时允许为空；arm64-win32 是预留。「允许为空」不等于允许
+  // 半成品：目录在就必须有产物。「打包要带的产物齐不齐」由 scripts/verify-core-artifacts.mjs
+  // 把关。
   const alwaysBuilt = new Set(['x64-win32']);
   for (const entry of targets) {
     const dir = path.join(repoRoot(), 'resources', CORE_RESOURCE_DIR, entry.dir);

@@ -17,18 +17,13 @@ import type { ConversationMetadata } from './core/history/Conversation.js';
 import type { SessionRuntimeState } from './core/AssistantEventBus.js';
 import type { UIHost } from './host/UIHost.js';
 import { ConversationManager } from './host/ConversationManager.js';
-import { isSessionIdle } from './core/sessionResources.js';
+import { isSessionIdle, isTemporarySessionId } from './core/sessionResources.js';
 
 /** 非激活对话空闲多久后自动关闭（2 小时） */
 export const SESSION_IDLE_CLOSE_MS = 2 * 60 * 60 * 1000;
 
 /** 空闲巡检间隔（1 分钟） */
 export const SESSION_IDLE_CHECK_INTERVAL_MS = 60 * 1000;
-
-/** 临时会话 key（新建对话尚未上报正式 sessionId 前使用），不参与空闲关闭 */
-function isTemporarySessionId(sessionId: string): boolean {
-  return sessionId.startsWith('new-');
-}
 
 export class SingleWebViewConversationManager extends ConversationManager {
   constructor(host: UIHost) {

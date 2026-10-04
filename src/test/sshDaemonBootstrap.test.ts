@@ -4,9 +4,11 @@
  * 覆盖 `docs/core-daemon.md` 第 12 节的三条分支与它们的失败路径：
  * - 已经在跑 → 可执行文件与本机携带产物一致时直接复用，不重启 daemon
  *   （缺 Core 自带的 `ripgrep/` 时仍补传它）；
- * - 已经在跑但远端可执行文件是**旧版本产物**（哈希不一致 / 读不出）→ kill + 覆盖上传
+ * - 已经在跑但远端可执行文件是**旧版本产物**（哈希不一致 / 读不出）→ 覆盖上传 + kill
  *   + start：daemon 是常驻进程，旧版本应用留下的 daemon 会一直拉起旧 Core
- *   （协议不变、行为缺失——新增的 CoreEvent 事件不发），必须换血；
+ *   （协议不变、行为缺失——新增的 CoreEvent 事件不发），必须换血；**先覆盖再 kill**——
+ *   kill 跑的是远端二进制里的代码，被死连接占死的旧 daemon 只有新版的 kill（带进程
+ *   兜底强杀）才结束得了；
  * - 已部署未启动 → 只跑 `start --host 127.0.0.1`（缺自带 `ripgrep/` 时补传它）；
  * - 未部署 → 上传产物（Core 可执行文件 + 同级的自带 `ripgrep/`）+ `start --host 127.0.0.1`；
  * - `start` 失败 / 状态文件读不出来 / 本机产物缺自带 ripgrep → 报错，不静默降级。
@@ -44,6 +46,8 @@ const START_COMMAND = `'${BINARY_PATH}' start --host 127.0.0.1`;
 class FakeSsh implements RemoteSsh {
   readonly commands: string[] = [];
   readonly uploads: Array<{ local: string; remote: string; mode: number }> = [];
+  /** 按发生顺序记录的动作（`upload:<路径>` / `exec:<命令>`），用于断言先后 */
+  readonly events: string[] = [];
   /** 远端普通文件：路径 → 内容 */
   readonly files = new Map<string, string>();
   /** 远端存在的可执行文件 */
@@ -57,6 +61,10 @@ class FakeSsh implements RemoteSsh {
   remoteBinarySha256: string | null = null;
   /** 执行过的 `kill` 次数 */
   killCount = 0;
+  /** `kill` 的退出码（按次序取用，取完保持最后一个）；缺省恒 0 */
+  killExitCodes: number[] = [];
+  /** `kill` 失败时附带的 stderr */
+  killStderr = '';
   /** `start` 之后不落状态文件（模拟 daemon 没起来） */
   skipState = false;
   private endpoint = '0.0.0.0:10975';
@@ -82,6 +90,7 @@ class FakeSsh implements RemoteSsh {
 
   async upload(localPath: string, remotePath: string, mode: number): Promise<void> {
     this.uploads.push({ local: localPath, remote: remotePath, mode });
+    this.events.push(`upload:${remotePath}`);
     this.executables.add(remotePath);
   }
 
@@ -94,6 +103,7 @@ class FakeSsh implements RemoteSsh {
 
   async exec(command: string): Promise<SshExecResult> {
     this.commands.push(command);
+    this.events.push(`exec:${command}`);
     if (command === 'uname -sm') return { code: 0, stdout: `${this.uname}\n`, stderr: '' };
     if (command.startsWith('mkdir -p ')) return { code: 0, stdout: '', stderr: '' };
     if (command.startsWith('mv -f ')) return { code: 0, stdout: '', stderr: '' };
@@ -106,8 +116,10 @@ class FakeSsh implements RemoteSsh {
 `, stderr: '' };
     }
     if (command.endsWith(' kill')) {
+      const index = Math.min(this.killCount, this.killExitCodes.length - 1);
+      const code = this.killExitCodes.length > 0 ? this.killExitCodes[index]! : 0;
       this.killCount += 1;
-      return { code: 0, stdout: 'daemon stopped', stderr: '' };
+      return { code, stdout: code === 0 ? 'daemon stopped' : '', stderr: code === 0 ? '' : this.killStderr };
     }
     if (command === START_COMMAND) {
       if (this.startExit === 0 && !this.skipState) {

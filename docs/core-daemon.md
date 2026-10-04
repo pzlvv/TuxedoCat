@@ -155,6 +155,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 | daemon → Host | `directoryFailed` | `{ kind: 'directoryFailed', id: number, error: string, reason: 'notEmpty' \| 'other' }`（列举 / 新建 / 删除共用） |
 | Host → daemon | `shutdown` | `{ kind: 'shutdown' }` |
 | Host → daemon | `ping` | `{ kind: 'ping' }`（链路心跳，第 12.5 节；`authOk` 之后定期发送） |
+| daemon → Host | `pong` | `{ kind: 'pong' }`（对 `ping` 的应答，第 12.5 节） |
 
 - `id` 由 Host 生成，在单条控制通道内唯一；`workspaceOpened` / `workspaceFailed` /
   `directoriesListed` / `directoryCreated` / `directoryRenamed` / `directoryDeleted` /
@@ -311,15 +312,22 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 - 一个 endpoint 同时只服务一条控制通道：daemon 同步处理一条连接，断开后回到 accept
   等待下一次接入。
 - 连接断开时，该连接上的全部 Core 进程被关闭；daemon 进程继续监听。
-- 「断开」有两条判定路径：
+- 「断开」有三条判定路径：
   - TCP 层的 EOF / 读错误（Host 正常退出、socket 被关闭）；
-  - **心跳空闲超时**（60s）：Host 每 15s 发一帧 `ping`，daemon 见到首个 `ping` 后
-    武装空闲计时，此后任何控制帧都顺延它；超时仍无帧即按断开处理。Host 消失而
-    TCP 未断（断网 / 休眠 / 进程冻结）时读线程永远等不到 EOF，沉默是 daemon 唯一
-    的断开依据——同步 accept 循环被死连接占住时，后续接入全部堆在 backlog 里：
-    TCP 探测照样「连得上」，`auth` 却永远得不到应答（Host 侧表现为建链超时）。
-    旧版 Host 不发 `ping`，daemon 不武装计时，行为与原来一致；daemon 收到未知帧
-    一律丢弃并记录，不因此断开。
+  - **心跳空闲超时**（60s，daemon 判 Host）：Host 每 1s 发一帧 `ping`，daemon 每帧
+    回 `pong`，并在见到首个 `ping` 后武装空闲计时，此后任何控制帧都顺延它；超时仍
+    无帧即按断开处理。Host 消失而 TCP 未断（断网 / 休眠 / 进程冻结）时读线程永远
+    等不到 EOF，沉默是 daemon 唯一的断开依据——同步 accept 循环被死连接占住时，
+    后续接入全部堆在 backlog 里：TCP 探测照样「连得上」，`auth` 却永远得不到应答
+    （Host 侧表现为建链超时）。旧版 Host 不发 `ping`，daemon 不武装计时，行为与
+    原来一致；daemon 收到未知帧一律丢弃并记录，不因此断开。
+  - **Host 侧沉默判定**（≤ 3s，Host 判 daemon）：daemon 死而 socket 未断（对端
+    断电 / 网络分区）与 daemon 卡死，在 socket 层都没有任何信号，唯一依据是
+    `pong` 的有无。Host 见到首个 `pong` 后武装沉默死线（2.5s）——链路上这么久
+    没有任何入站帧即补发一帧探针 `ping`，再宽限 400ms，仍无任何入站帧就 kill
+    链路并按 fatal 上报。探针宽限吸收本进程卡顿（定时器迟到、入站帧积压在内核
+    缓冲），不误杀活链路；判死上限 = 死线 + 宽限 ≤ 3s。旧版 daemon 不回 `pong`：
+    Host 不武装沉默判定（不误杀），判死退回 TCP 层的节奏。
 - 每条连接上的 daemon 状态（channel 表、计数、grace）独立。
 - 控制通道**不因没有工作区而 grace 退出**（`DaemonOptions.idle_exit = false`）：控制通道
   本身是生命周期边界，目录选择期间可以长时间没有工作区。

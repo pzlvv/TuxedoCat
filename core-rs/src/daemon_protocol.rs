@@ -41,9 +41,9 @@ pub enum HostToDaemonFrame {
     },
     /// 关闭全部 channel 并退出
     Shutdown,
-    /// 心跳（`docs/core-daemon.md` 第 12.5 节）：Host 定期发送，daemon 收到即证明
-    /// 这条控制通道的 Host 还活着；daemon 不回帧，死活判定只看「最近一次收到控制帧」
-    /// 的时间。旧版 Host 不发本帧：daemon 只在见过首个 `ping` 后才启用空闲回收。
+    /// 心跳（`docs/core-daemon.md` 第 12.5 节）：Host 定期发送，daemon 回 `pong`
+    /// 并以「最近一次收到控制帧」判定 Host 死活。旧版 Host 不发本帧：daemon 只在
+    /// 见过首个 `ping` 后才启用空闲回收。
     Ping,
 }
 
@@ -53,6 +53,10 @@ pub enum HostToDaemonFrame {
 pub enum DaemonToHostFrame {
     /// token 校验通过
     AuthOk,
+    /// 心跳应答（`docs/core-daemon.md` 第 12.5 节）：对 `ping` 的回应。Host 见到
+    /// 首个 `pong` 即武装「沉默判定」——此后长时间无任何入站帧按断开处理。旧版
+    /// daemon 不回本帧：Host 不武装沉默判定，保持原有行为（只靠 TCP 层判死）。
+    Pong,
     /// token 校验失败：连接随后关闭
     AuthFailed { error: String },
     /// 工作区已打开：回带 Host 的请求 id 与 channel / 描述符
