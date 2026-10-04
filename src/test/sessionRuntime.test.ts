@@ -15,8 +15,11 @@ import {
 } from '../core/AssistantEventBus';
 import {
   markQueryRunning,
+  markSessionBackground,
+  markSessionCompacting,
   markSessionWaiting,
   dropSessionRuntime,
+  getSessionRuntimeState,
   getSessionRuntimeStates,
   resetSessionRuntime,
   isSessionWaiting,
@@ -43,6 +46,11 @@ async function run(): Promise<void> {
   assert.equal(states[0].sessionId, 's1');
   assert.equal(states[0].idle, false);
   assert.equal(states[0].waiting, false);
+  // 根事实随派生 idle 一起进快照（docs/abort-button.md 第 1.1 节）
+  assert.equal(states[0].queryRunning, true);
+  assert.equal(states[0].compacting, false);
+  assert.equal(states[0].backgroundRunning, false);
+  assert.equal(states[0].subAgentRunning, false);
   check('query running pushes idle=false snapshot', true);
 
   // 同值重复标记不推事件（diff 后才发）
@@ -93,16 +101,37 @@ async function run(): Promise<void> {
   subAgentRegistry.register('child-1', {} as never, {} as never, 'parent-1');
   let parent = getSessionRuntimeStates().find((s) => s.sessionId === 'parent-1');
   assert.equal(parent?.idle, true, 'registered but idle sub-agent keeps parent idle');
+  assert.equal(parent?.subAgentRunning, false, 'registered but idle sub-agent is not running');
   markQueryRunning('child-1', true);
   parent = getSessionRuntimeStates().find((s) => s.sessionId === 'parent-1');
   assert.equal(parent?.idle, false, 'running sub-agent makes parent non-idle');
+  assert.equal(parent?.subAgentRunning, true, 'running sub-agent is reported as running');
+  assert.equal(parent?.queryRunning, false, 'parent own query stays idle');
   markQueryRunning('child-1', false);
   parent = getSessionRuntimeStates().find((s) => s.sessionId === 'parent-1');
   assert.equal(parent?.idle, true, 'sub-agent back to idle → parent idle');
+  assert.equal(parent?.subAgentRunning, false, 'idle sub-agent is not running');
   subAgentRegistry.unregister('child-1');
   parent = getSessionRuntimeStates().find((s) => s.sessionId === 'parent-1');
   assert.equal(parent?.idle, true, 'unregistered sub-agent keeps parent idle');
   check('recursive sub-agent idle', true);
+
+  // 根事实按来源分列：压缩 / 后台任务各自驱动 idle，且不影响 queryRunning
+  markQueryRunning('s-facts', true);
+  markSessionCompacting('s-facts', true);
+  let facts = getSessionRuntimeState('s-facts');
+  assert.equal(facts?.queryRunning, true);
+  assert.equal(facts?.compacting, true);
+  markSessionCompacting('s-facts', false);
+  markSessionBackground('s-facts', true);
+  facts = getSessionRuntimeState('s-facts');
+  assert.equal(facts?.backgroundRunning, true);
+  assert.equal(facts?.queryRunning, true, '后台任务不影响 query 来源');
+  markSessionBackground('s-facts', false);
+  markQueryRunning('s-facts', false);
+  facts = getSessionRuntimeState('s-facts');
+  assert.equal(facts?.idle, true, '来源全部归零后回到空闲');
+  check('根事实按来源分列', true);
 
   // 清空全部
   resetSessionRuntime();

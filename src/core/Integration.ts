@@ -12,7 +12,7 @@ import { sameModelRef, type ModelRef } from './llm/modelRef.js';
 import { requireEventBus, type CoreEvent, type UiEvent } from './AssistantEventBus.js';
 import type { UserMessage } from './types.js';
 import { buildUserContent } from './utils/contentBlocks.js';
-import { markSessionWaiting } from './sessionRuntime.js';
+import { markSessionWaiting, getSessionRuntimeState } from './sessionRuntime.js';
 import { getMCPHost } from './mcp/MCPHost.js';
 import { getSettings } from './settings.js';
 import { logger } from './Logger.js';
@@ -129,19 +129,59 @@ export async function submitUserMessage(payload: UserMessageSubmission): Promise
 }
 
 /**
- * 中止指定会话的整棵工作树（引擎 + 后台 Bash + 递归子代理）。
+ * 中止指定会话：按该会话当前的运行时事实分两阶段（`docs/abort-button.md` 第 1.2 节）。
+ *
+ * - 前台有工作（`queryRunning` / `compacting`）→ 只中止前台查询，后台 Bash 任务与
+ *   子代理保持运行，等待用户再次点击。
+ * - 前台空闲但仍有后台 Bash 任务或子代理 → 中止它们（含递归子代理）。
+ * - 都为空 → 不做任何事（幂等）。
+ *
+ * 阶段判定读 `sessionRuntime` 的同一份事实（`getSessionRuntimeState`），与 UI 上按钮
+ * 三态同源，因此「按钮显示黄色」与「这次点击命中后台阶段」不会分叉。
+ *
  * @param sessionId - 要中止的会话 ID
  */
 export function abortCurrentQuery(sessionId: string): void {
+  const state = getSessionRuntimeState(sessionId);
+  // 会话已登记且完全空闲：无事可做（按钮此时为灰色，这里只兜住渲染到点击之间的竞态）。
+  if (state && state.idle) return;
+  if (state && (state.queryRunning || state.compacting)) {
+    abortForegroundQuery(sessionId);
+    return;
+  }
   void abortSessionScope(sessionId, new Set<string>());
 }
 
 /**
- * 中止一个会话及其递归子代理的运行中工作。
+ * 中止指定会话的整棵工作树（引擎 + 后台 Bash + 递归子代理），**不分阶段**。
  *
- * abort 按钮的可用性是「会话非空闲」（见 `isSessionIdle`），而不是「引擎在消费」——
- * 所以这里必须递归覆盖三类残留工作，任一类还在都能被立刻停掉（幂等）：
- * - 引擎在池里 → `engine.interrupt()`（内部已递归中止子对话的后台 Bash 与子代理）
+ * 供会话关闭 / 删除的清理路径使用（`sessionResources.releaseSessionResources`）：
+ * 这些路径的目标是「会话不再留下任何在跑的工作」，不能像 abort 按钮那样只停前台。
+ */
+export function abortSessionTree(sessionId: string): void {
+  void abortSessionScope(sessionId, new Set<string>());
+}
+
+/**
+ * 只中止某会话的前台查询（abort 第一阶段）。
+ *
+ * 引擎不在池里（会话已释放 / 尚未创建）时无事可做：前台工作随引擎一起消失，
+ * 残留的后台 Bash 任务与子代理由第二阶段处理。
+ */
+function abortForegroundQuery(sessionId: string): void {
+  const engine = getSessionEngine(sessionId);
+  if (engine) {
+    engine.interruptForeground();
+  } else {
+    logger.warn('Integration', `No query engine found for session ${sessionId} to abort foreground`);
+  }
+}
+
+/**
+ * 中止一个会话及其递归子代理的运行中工作（abort 第二阶段）。
+ *
+ * 覆盖三类残留工作，任一类还在都能被立刻停掉（幂等）：
+ * - 引擎在池里 → `engine.interrupt()`（内部已递归中止子对话的前台查询、后台 Bash 与子代理）
  * - 该会话的后台 Bash 任务 → 无论引擎在不在都直接中止（引擎已释放时只有这条路）
  * - 子代理 → 递归 `abortSessionScope`（父引擎已释放但子代理还在跑时兜底）
  */

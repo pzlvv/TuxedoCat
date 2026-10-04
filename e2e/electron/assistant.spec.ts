@@ -120,6 +120,44 @@ test('US-2 中止慢速流式回复回到空闲态', async () => {
   await expect(chatPage.locator('textarea.input-textarea')).toBeEnabled();
 });
 
+test('US-2 两阶段中止：前台结束后按钮转黄，再次点击才停后台任务', async () => {
+  const chatPage = await app.chatPage();
+  // 第一轮：Bash 后台任务（sleep 30）；工具结果回传后给终轮答复；
+  // 之后 core 会补一条「仍有后台任务在跑」的 reminder，按普通文本收尾。
+  mockLlm.setHandler((req) => {
+    const last = req.body.messages[req.body.messages.length - 1];
+    if (last?.role === 'tool') return { kind: 'text', text: '后台任务已启动。' };
+    const text = lastUserText(req.body.messages);
+    if (text.includes('启动一个后台任务')) {
+      return {
+        kind: 'tool',
+        name: 'Bash',
+        args: { command: 'sleep 30', run_in_background: true, description: 'Sleep' },
+      };
+    }
+    return { kind: 'text', text: '好的，等待后台任务完成。' };
+  });
+
+  await chatPage.fill('textarea.input-textarea', '启动一个后台任务');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+
+  // manual 模式：Bash 需要权限确认
+  const overlay = chatPage.locator('.user-choice-overlay');
+  await expect(overlay).toBeVisible({ timeout: 30_000 });
+  await overlay.getByRole('button', { name: /允许/ }).first().click();
+
+  // 工具结果与 reminder 追问都跑完：前台查询停下，但后台任务仍在
+  await expect(chatPage.getByText(/后台任务已启动/).first()).toBeVisible({ timeout: 30_000 });
+  const abortButton = chatPage.locator('button[data-abort-state]');
+  await expect(abortButton).toHaveAttribute('data-abort-state', 'background', { timeout: 30_000 });
+  await expect(abortButton).toBeEnabled();
+
+  // 第二次点击才命中后台阶段：中止后台任务后回到空闲（灰）
+  await abortButton.click();
+  await expect(abortButton).toHaveAttribute('data-abort-state', 'none', { timeout: 30_000 });
+  await expect(abortButton).toBeDisabled();
+});
+
 test('US-14+US-15 Edit 卡片的回滚确认框', async () => {
   const chatPage = await app.chatPage();
   // 先写一个文件（允许权限），再走 Edit 场景

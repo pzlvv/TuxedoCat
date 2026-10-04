@@ -173,6 +173,7 @@ export const enDict: Record<string, string> = {
   'inputArea.fileHiddenTitle': 'Click to restore, file info will be sent to LLM',
   'inputArea.fileShownTitle': 'Click to hide, file info will not be sent to LLM',
   'inputArea.abort': 'Abort',
+  'inputArea.abortBackground': 'Stop background tasks and sub-agents',
   'inputArea.removeImage': 'Remove image',
   'inputArea.spinDesign': 'Spin Design',
   'inputArea.model': 'Model',

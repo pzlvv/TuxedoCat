@@ -41,6 +41,19 @@ interface Harness {
   logs: string[];
 }
 
+/** 构造一份运行时快照（用例只关心 idle，其余根事实按「忙 = queryRunning」填） */
+function runtimeState(sessionId: string, idle: boolean): SessionRuntimeState {
+  return {
+    sessionId,
+    idle,
+    waiting: false,
+    queryRunning: !idle,
+    compacting: false,
+    backgroundRunning: false,
+    subAgentRunning: false,
+  };
+}
+
 function buildHarness(): Harness {
   const bus = createEventBus();
   setGlobalEventBus(bus);
@@ -90,7 +103,7 @@ async function run(): Promise<void> {
   // ===== 引擎忙碌：登记排队项 + deferEcho，不做乐观回显 =====
   {
     const { handler, posted, submitted, queued, runtimeStates, logs } = buildHarness();
-    runtimeStates.push({ sessionId: 's1', idle: false, waiting: false });
+    runtimeStates.push(runtimeState('s1', false));
 
     await handler.handleWebviewMessage({ type: 'sendMessage', sessionId: 's1', content: '排队一下' });
 
@@ -114,7 +127,7 @@ async function run(): Promise<void> {
   // ===== wire 的文件行范围：`selectedLines` → `fileSelectedLines` =====
   {
     const { handler, submitted, queued, runtimeStates } = buildHarness();
-    runtimeStates.push({ sessionId: 's5', idle: false, waiting: false });
+    runtimeStates.push(runtimeState('s5', false));
 
     await handler.handleWebviewMessage({
       type: 'sendMessage',
@@ -139,7 +152,7 @@ async function run(): Promise<void> {
   // ===== 引擎空闲：乐观回显，不登记排队项、不带 deferEcho =====
   {
     const { handler, posted, submitted, queued, runtimeStates } = buildHarness();
-    runtimeStates.push({ sessionId: 's2', idle: true, waiting: false });
+    runtimeStates.push(runtimeState('s2', true));
 
     await handler.handleWebviewMessage({ type: 'sendMessage', sessionId: 's2', content: '直接发' });
 
@@ -154,7 +167,7 @@ async function run(): Promise<void> {
   // ===== 命令消息：一律延迟回显；忙碌时同样登记排队项 =====
   {
     const { handler, posted, submitted, queued, runtimeStates } = buildHarness();
-    runtimeStates.push({ sessionId: 's3', idle: false, waiting: false });
+    runtimeStates.push(runtimeState('s3', false));
 
     await handler.handleWebviewMessage({ type: 'sendMessage', sessionId: 's3', content: '/commit 修一下' });
 

@@ -552,6 +552,11 @@ fn emit_runtime_reports_idle_and_waiting_flags() {
     assert_eq!(runtime["states"][0]["sessionId"], "s1");
     assert_eq!(runtime["states"][0]["idle"], true);
     assert_eq!(runtime["states"][0]["waiting"], false);
+    // 根事实与派生 idle 一起进快照（对齐 Embedded `SessionRuntimeState`）
+    assert_eq!(runtime["states"][0]["queryRunning"], false);
+    assert_eq!(runtime["states"][0]["compacting"], false);
+    assert_eq!(runtime["states"][0]["backgroundRunning"], false);
+    assert_eq!(runtime["states"][0]["subAgentRunning"], false);
 
     state.lock().unwrap().waiting = true;
     harness.sink.clear();
@@ -559,6 +564,130 @@ fn emit_runtime_reports_idle_and_waiting_flags() {
     let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
     assert_eq!(runtime["states"][0]["idle"], false);
     assert_eq!(runtime["states"][0]["waiting"], true);
+}
+
+/// 快照按根事实分列：查询 / 压缩各自驱动 `idle`，子代理非 idle 时父会话的
+/// `subAgentRunning` 为真（`docs/abort-button.md` 第 1.1 节）。
+#[test]
+fn emit_runtime_reports_root_facts_and_busy_subagents() {
+    let sandbox = Sandbox::new("engine-runtime-facts");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(workspace));
+    crate::subagent::reset_for_test();
+    let harness = EngineHarness::allow_all();
+
+    let parent = harness.core.session("p1");
+    parent.lock().unwrap().running = true;
+    harness.core.emit_runtime();
+    let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
+    let entry = &runtime["states"][0];
+    assert_eq!(entry["queryRunning"], true);
+    assert_eq!(entry["compacting"], false);
+    assert_eq!(entry["backgroundRunning"], false);
+    assert_eq!(entry["subAgentRunning"], false);
+    assert_eq!(entry["idle"], false);
+
+    // 父自身停下，只留一个非 idle 子代理：queryRunning=false、subAgentRunning=true
+    parent.lock().unwrap().running = false;
+    let child = harness.core.session("c1");
+    child.lock().unwrap().running = true;
+    crate::subagent::register("c1", "p1");
+    harness.sink.clear();
+    harness.core.emit_runtime();
+    let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
+    let states = runtime["states"].as_array().unwrap();
+    let parent_entry = states
+        .iter()
+        .find(|state| state["sessionId"] == "p1")
+        .expect("parent entry");
+    assert_eq!(parent_entry["queryRunning"], false);
+    assert_eq!(parent_entry["subAgentRunning"], true);
+    assert_eq!(parent_entry["idle"], false);
+
+    // 子代理空闲后父会话回到空闲（登记仍在，不算「有子代理在跑」）
+    child.lock().unwrap().running = false;
+    harness.sink.clear();
+    harness.core.emit_runtime();
+    let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
+    let states = runtime["states"].as_array().unwrap();
+    let parent_entry = states
+        .iter()
+        .find(|state| state["sessionId"] == "p1")
+        .expect("parent entry");
+    assert_eq!(parent_entry["subAgentRunning"], false);
+    assert_eq!(parent_entry["idle"], true);
+
+    crate::subagent::reset_for_test();
+}
+
+/// abort 两阶段（对齐 Embedded `Integration.abortCurrentQuery`）：
+/// 前台有工作时只置 `cancel`，后台 Bash 任务保留；前台停下后再次 abort 才中止后台。
+#[test]
+fn abort_request_stops_foreground_before_background() {
+    let sandbox = Sandbox::new("engine-abort-phases");
+    let previous_tmpdir = std::env::var("TMPDIR").ok();
+    std::env::set_var("TMPDIR", sandbox.root.join("tmp"));
+    let llm = FakeLlm::start(|_index, _body| openai_text_sse(&["ok"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    crate::bash_task::reset_for_test();
+
+    let harness = EngineHarness::allow_all();
+    let core = Arc::clone(&harness.core);
+    // 先建会话，`sync_background` 钩子才找得到它（对齐真实链路：会话先被打开）
+    core.session("s1");
+    let _task_id = crate::bash_task::spawn_background(
+        "sleep 30",
+        &sandbox.workspace.to_string_lossy(),
+        "Sleep",
+        "s1",
+        Some(core.background_hooks()),
+    )
+    .expect("spawn background");
+    assert!(
+        harness.wait_for(
+            |sink| sink
+                .events_of("sessionRuntimeChanged")
+                .last()
+                .map(|event| event["states"][0]["backgroundRunning"] == json!(true))
+                .unwrap_or(false),
+            Duration::from_secs(10),
+        ),
+        "后台任务应进入快照: {:?}",
+        harness.sink.events_of("sessionRuntimeChanged")
+    );
+
+    // 前台有工作：第一次 abort 只中止前台，后台任务保留
+    core.session("s1").lock().unwrap().running = true;
+    core.on_abort("s1");
+    assert!(
+        core.session("s1").lock().unwrap().cancel.load(Ordering::Relaxed),
+        "第一阶段应置 cancel"
+    );
+    assert_eq!(
+        crate::bash_task::running_count_for_session("s1"),
+        1,
+        "第一阶段不应中止后台任务"
+    );
+
+    // 前台停下：第二次 abort 命中后台阶段
+    {
+        let state = core.session("s1");
+        let mut state = state.lock().unwrap();
+        state.running = false;
+        state.cancel.store(false, Ordering::Relaxed);
+    }
+    core.on_abort("s1");
+    assert_eq!(
+        crate::bash_task::running_count_for_session("s1"),
+        0,
+        "第二阶段应中止后台任务"
+    );
+
+    crate::bash_task::reset_for_test();
+    match previous_tmpdir {
+        Some(value) => std::env::set_var("TMPDIR", value),
+        None => std::env::remove_var("TMPDIR"),
+    }
 }
 
 #[test]
@@ -639,7 +768,7 @@ fn deleting_a_conversation_aborts_the_query_and_clears_its_tool_results() {
 
     assert!(
         state.lock().unwrap().cancel.load(Ordering::Relaxed),
-        "删除会话必须先中止在跑的查询（对齐 releaseSessionResources → abortCurrentQuery）"
+        "删除会话必须先中止在跑的查询（对齐 releaseSessionResources → abortSessionTree）"
     );
     assert!(harness.core.session_if_exists("s1").is_none());
     assert!(history::load_metadata("s1", &workspace).is_none());
@@ -2146,6 +2275,12 @@ fn abort_marks_the_session_for_cancellation() {
     let state = harness.core.session("s1");
     assert!(!state.lock().unwrap().cancel.load(Ordering::Relaxed));
 
+    // 完全空闲：按钮为灰，abort 是空操作（只兜住渲染到点击之间的竞态）
+    harness.core.on_abort("s1");
+    assert!(!state.lock().unwrap().cancel.load(Ordering::Relaxed));
+
+    // 前台在跑：第一阶段置 cancel（对齐 `QueryEngine.interruptForeground`）
+    state.lock().unwrap().running = true;
     harness.core.on_abort("s1");
     assert!(state.lock().unwrap().cancel.load(Ordering::Relaxed));
 

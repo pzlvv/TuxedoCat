@@ -71,7 +71,10 @@ interface WorkspacesState {
   recent: WorkspaceTab[];
 }
 
-/** 会话运行时状态（与 core 的 SessionRuntimeState 同构，见 DEVELOPMENT.md 第 3.1 节） */
+/**
+ * 会话运行时状态（core `SessionRuntimeState` 中侧栏消费的字段子集，
+ * 见 DEVELOPMENT.md 第 3.1 节）：侧栏只关心忙不忙，不读 abort 按钮用的根事实。
+ */
 interface SessionRuntimeState {
   sessionId: string;
   /** 会话是否空闲（false = 有活跃查询 / 压缩 / 后台 Bash / 递归子代理） */

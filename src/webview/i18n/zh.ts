@@ -173,6 +173,7 @@ export const zhDict: Record<string, string> = {
   'inputArea.fileHiddenTitle': '点击恢复，文件信息将发给 LLM',
   'inputArea.fileShownTitle': '点击隐藏，文件信息不发给 LLM',
   'inputArea.abort': '终止',
+  'inputArea.abortBackground': '终止后台任务与子代理',
   'inputArea.removeImage': '移除图片',
   'inputArea.spinDesign': 'Spin 设计',
   'inputArea.model': '模型',

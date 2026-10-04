@@ -6,6 +6,7 @@ import type { Colors, QueuedMessagePayload, ThinkingMode, PromptMode, AgentMode 
 import type { McpServerInfo, ProviderModels } from '../core/webviewTypes';
 import type { ModelRef } from '../core/llm/modelRef';
 import { postMessage, getWindowSessionId } from './webviewEnv';
+import type { AbortButtonState } from '../host/abortButtonState';
 import { SegmentControl, CheckboxGlyph } from './components/SegmentControl';
 import { t } from './i18n';
 import { useUiFontOffset, uiFontSizePx } from './fontSize';
@@ -60,8 +61,12 @@ interface InputAreaProps {
   onToggleFileHidden: () => void;
   totalContextTokens: number;
   maxContextTokens?: number | null;
-  /** 会话非空闲 → 可中止（由 core 的 sessionRuntime 推导，见 App.tsx） */
-  abortEnabled: boolean;
+  /**
+   * abort 按钮三态：`query`（红，前台运行中）/ `background`（黄，只剩后台与子代理）/
+   * `none`（灰，空闲不可点）。由 core 的 sessionRuntime 根事实经
+   * `resolveAbortButtonState` 推导（docs/abort-button.md 第 1.1 节）。
+   */
+  abortButtonState: AbortButtonState;
   /**
    * 会话关联的询问模式。
    * `undefined` = 尚未从宿主获取到：菜单只显示等待项，不显示具体选项。
@@ -1598,7 +1603,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   onToggleFileHidden,
   totalContextTokens,
   maxContextTokens,
-  abortEnabled,
+  abortButtonState,
   agentMode,
   setAgentMode,
   promptMode,
@@ -2152,13 +2157,20 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           />
           <button
             onClick={onAbort}
-            disabled={!abortEnabled}
-            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${abortEnabled ? 'hover:brightness-110' : ''}`}
+            disabled={abortButtonState === 'none'}
+            data-abort-state={abortButtonState}
+            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${abortButtonState === 'none' ? '' : 'hover:brightness-110'}`}
             style={{
-              backgroundColor: abortEnabled ? '#ef4444' : colors.border,
-              opacity: abortEnabled ? 1 : 0.5,
+              // 红 = 前台运行中；黄 = 只剩后台任务 / 子代理（docs/abort-button.md 第 1.1 节）
+              backgroundColor:
+                abortButtonState === 'query'
+                  ? '#ef4444'
+                  : abortButtonState === 'background'
+                    ? '#f59e0b'
+                    : colors.border,
+              opacity: abortButtonState === 'none' ? 0.5 : 1,
             }}
-            title={t('inputArea.abort')}
+            title={abortButtonState === 'background' ? t('inputArea.abortBackground') : t('inputArea.abort')}
           >
             <Icon name="square" size={12} className="text-white" />
           </button>

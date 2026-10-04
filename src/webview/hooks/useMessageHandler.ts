@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import type { McpServerInfo, ProviderModels } from '../../core/webviewTypes';
 import type { ModelRef } from '../../core/llm/modelRef';
 import type { HostToWebviewWire } from '../../host/webviewMessages';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, LlmConfigPanelPayload, ApplyDefaultsPrompt } from '../types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, LlmConfigPanelPayload, SessionRuntimeState, ApplyDefaultsPrompt } from '../types';
 import type { SessionStatesStore } from '../sessionState';
 import { profileLog } from '../debug';
 import { handleStreamShowThinkingAnimation, handleStreamAiEnd, handleStreamQueryBegin, handleStreamQueryEnd, handleStreamStreamMessage, handleStreamStreamEnd, handleStreamCompressProgress } from './handlers/streamHandlers';
@@ -120,8 +120,8 @@ export interface UseMessageHandlerProps {
   selectedLines: { start: number; end: number } | null;
   currentSessionIdRef: React.MutableRefObject<string | null>;
   sessionStates: SessionStatesStore;
-  /** core 推送的会话运行时状态（idle / waiting）：对话树流水灯与 abort 按钮的唯一数据源 */
-  sessionRuntimeStatesRef: React.MutableRefObject<Map<string, { idle: boolean; waiting: boolean }>>;
+  /** core 推送的会话运行时状态：对话树流水灯与 abort 按钮的唯一数据源 */
+  sessionRuntimeStatesRef: React.MutableRefObject<Map<string, SessionRuntimeState>>;
   userChoiceRequestRef: React.MutableRefObject<UserChoiceRequest | null>;
   userChoiceInputRef: React.MutableRefObject<string>;
   savedMainInputRef: React.MutableRefObject<string>;

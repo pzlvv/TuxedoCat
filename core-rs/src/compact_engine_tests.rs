@@ -362,10 +362,10 @@ fn runtime_snapshot_reports_compacting() {
         .iter()
         .find(|entry| entry["sessionId"] == "s1")
         .expect("应当有 s1");
-    // 快照只导出 `{ sessionId, idle, waiting }`（对齐 Embedded `toSnapshot`）：
-    // `compacting` 是内部记账位，只通过 `idle` 体现
+    // 快照导出根事实 + 派生 `idle`（对齐 Embedded `toSnapshot`）：
+    // `compacting` 既是根事实，也通过 `idle` 体现
     assert_eq!(entry["idle"], false, "压缩中不算空闲");
-    assert!(entry.get("compacting").is_none(), "compacting 不进快照");
+    assert_eq!(entry["compacting"], true, "compacting 进快照");
 
     state.lock().unwrap().compacting = false;
     harness.core.emit_runtime();

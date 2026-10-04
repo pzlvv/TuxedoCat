@@ -108,10 +108,11 @@ async function flushSession(sessionId: string): Promise<void> {
 export async function releaseSessionResources(sessionId: string): Promise<void> {
   if (!sessionId || isTemporarySessionId(sessionId)) return;
 
-  // 1. 中止：可能仍有后台 Bash 任务 / 子代理在跑（幂等）
+  // 1. 中止整棵工作树：可能仍有前台查询 / 后台 Bash 任务 / 子代理在跑（幂等）。
+  //    这里不分阶段（不是 abort 按钮），必须一次停干净，避免孤儿进程。
   try {
-    const { abortCurrentQuery } = await import('./Integration.js');
-    abortCurrentQuery(sessionId);
+    const { abortSessionTree } = await import('./Integration.js');
+    abortSessionTree(sessionId);
   } catch {
     // 中止失败不阻塞关闭
   }

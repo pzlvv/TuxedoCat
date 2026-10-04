@@ -37,6 +37,9 @@ export const FAKE_HOST_INIT = `
     turn: { thinking: '', text: '', chunkDelayMs: 40 },
     // 引擎忙碌时再来一条 sendMessage 是否回 queuedMessage（排队语义）
     queueWhileBusy: true,
+    // 收到 abort 时回推的运行时快照（null = 回空闲快照）。
+    // abort 三态用例据此模拟「第一次点击只停前台、后台任务仍在跑」。
+    abortRuntimeStates: null,
     // settings.json 默认值（requestSettingsDefaults 应答 + saveLLMConfig 后更新）
     settingsDefaults: {
       model: 'mock-model', provider: 'mock-provider',
@@ -64,10 +67,12 @@ export const FAKE_HOST_INIT = `
     // 用户消息回显（真实链路：core messageAdded → 宿主 addMessage）
     send({ type: 'addMessage', sessionId, role: 'user', content, messageUuid: 'fake-uuid-' + streamSeq });
     send({ type: 'queryBegin', sessionId });
-    send({ type: 'sessionRuntimeStates', states: [{ sessionId, idle: false, waiting: false }] });
+    send({ type: 'sessionRuntimeStates', states: [runningState(sessionId)] });
 
     if (cfg.thinking) {
       for (const chunk of chunkText(cfg.thinking)) {
+        // abort 后 active 已被清掉：立即停流，不再补 idle / queryEnd（由 abort 分支回推）
+        if (!active.has(sessionId)) return;
         send({ type: 'streamMessage', sessionId, role: 'thinking', delta: chunk, accumulated: chunk, streamId });
         await sleep(cfg.chunkDelayMs);
       }
@@ -76,10 +81,12 @@ export const FAKE_HOST_INIT = `
 
     let acc = '';
     for (const chunk of chunkText(cfg.text)) {
+      if (!active.has(sessionId)) return;
       acc += chunk;
       send({ type: 'streamMessage', sessionId, role: 'assistant', delta: chunk, accumulated: acc, streamId });
       await sleep(cfg.chunkDelayMs);
     }
+    if (!active.has(sessionId)) return;
     send({
       type: 'streamEnd', sessionId, role: 'assistant', accumulated: cfg.text, streamId,
       usage: { input_tokens: 100, output_tokens: 20 },
@@ -87,8 +94,24 @@ export const FAKE_HOST_INIT = `
     send({ type: 'addMessage', sessionId, role: 'assistant', content: cfg.text });
 
     active.delete(sessionId);
-    send({ type: 'sessionRuntimeStates', states: [{ sessionId, idle: true, waiting: false }] });
+    send({ type: 'sessionRuntimeStates', states: [idleState(sessionId)] });
     send({ type: 'queryEnd', sessionId });
+  }
+
+  /** 前台查询在跑的运行时快照（abort 按钮红色） */
+  function runningState(sessionId) {
+    return {
+      sessionId, idle: false, waiting: false,
+      queryRunning: true, compacting: false, backgroundRunning: false, subAgentRunning: false,
+    };
+  }
+
+  /** 全空闲的运行时快照（abort 按钮灰色） */
+  function idleState(sessionId) {
+    return {
+      sessionId, idle: true, waiting: false,
+      queryRunning: false, compacting: false, backgroundRunning: false, subAgentRunning: false,
+    };
   }
 
   /** 把文本切成流式 chunk（模拟 token 级增量） */
@@ -225,7 +248,11 @@ export const FAKE_HOST_INIT = `
       case 'abort': {
         if (msg.sessionId) {
           active.delete(msg.sessionId);
-          send({ type: 'sessionRuntimeStates', states: [{ sessionId: msg.sessionId, idle: true, waiting: false }] });
+          // 默认回到空闲；三态用例把 abortRuntimeStates 设成「前台停下、后台仍在跑」的快照
+          send({
+            type: 'sessionRuntimeStates',
+            states: state.abortRuntimeStates ?? [idleState(msg.sessionId)],
+          });
           send({ type: 'queryEnd', sessionId: msg.sessionId });
         }
         break;
@@ -346,6 +373,19 @@ export class FakeHostDriver {
   ): Promise<void> {
     await this.page.evaluate(
       (list) => { (window as any).__fakeHost.state.runtimeStates = list; },
+      states,
+    );
+  }
+
+  /**
+   * 设定收到 abort 时回推的运行时快照（`null` 恢复默认的空闲快照）。
+   * abort 三态用例用它模拟「第一次点击只停前台、后台任务仍在跑」。
+   */
+  async setAbortRuntimeStates(
+    states: Array<Record<string, unknown>> | null,
+  ): Promise<void> {
+    await this.page.evaluate(
+      (list) => { (window as any).__fakeHost.state.abortRuntimeStates = list; },
       states,
     );
   }

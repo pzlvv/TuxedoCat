@@ -5,7 +5,7 @@ import { Dropdown } from 'antd';
 import InputArea, { InputAreaRef } from './InputArea';
 import MessagesView from './MessagesView';
 import 'antd/dist/reset.css';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload, ApplyDefaultsPrompt } from './types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, SessionRuntimeState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload, ApplyDefaultsPrompt } from './types';
 import { createSessionState, SessionStatesStore } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
@@ -13,6 +13,7 @@ import LLMConfigPanel from './LLMConfigPanel';
 import { postMessage, getHasWorkspace, getInjectedSessionId, LOGO_CLASS_NAME, getEffectiveHostInfo, onConversationListOwnerChanged, navigateToConversation, getIsPrewarmView, getInitialTheme } from './webviewEnv';
 import { getPlaceholderLogoUri, rotatePlaceholderLogo } from './placeholderLogo';
 import { canCloseConversation, newConversationEntryOf, openConversationModeOf, rendersConversationListInWebview, type HostInfo } from '../host/types';
+import { resolveAbortButtonState, type AbortButtonState } from '../host/abortButtonState';
 import type { McpServerInfo, ProviderModels } from '../core/webviewTypes';
 import type { ModelRef } from '../core/llm/modelRef';
 import { t } from './i18n';
@@ -331,8 +332,8 @@ const App = () => {
   // Per-session state: input, userChoiceRequest, userChoiceInput
   // 会话级 UI 状态的唯一容器（组件生命周期内持久；写入口径收敛在 store）
   const [sessionStates] = useState(() => new SessionStatesStore());
-  // core 推送的会话运行时状态（idle / waiting）：对话树流水灯与 abort 按钮的唯一数据源
-  const sessionRuntimeStatesRef = useRef<Map<string, { idle: boolean; waiting: boolean }>>(new Map());
+  // core 推送的会话运行时状态：对话树流水灯与 abort 按钮的唯一数据源
+  const sessionRuntimeStatesRef = useRef<Map<string, SessionRuntimeState>>(new Map());
   // Per-session command history (most recent first)
   const commandHistoryRef = useRef<Map<string, string[]>>(new Map());
   const COMMAND_HISTORY_MAX = 50;
@@ -404,14 +405,16 @@ const App = () => {
     return sessionRuntimeStatesRef.current.get(sid)?.waiting ?? false;
   }, []);
 
-  // abort 按钮：会话非空闲即可中止。判定读 core 的 sessionRuntime（idle 已合并
-  // 查询 / 压缩 / 后台 Bash / 子代理，见 core sessionResources.isSessionIdle）——
-  // 引擎没在跑、但后台 Bash 或子代理还在时同样可以中止。
-  const abortEnabled = useMemo(
-    () => (currentSessionId ? !(sessionRuntimeStatesRef.current.get(currentSessionId)?.idle ?? true) : false),
+  // abort 按钮三态（红 / 黄 / 灰）：判定读 core 的 sessionRuntime 根事实，由纯函数
+  // resolveAbortButtonState 推导表现（docs/abort-button.md 第 1.1 节）。事实未到达
+  // （当前会话没有快照）按空闲处理，按钮置灰不可点。
+  const abortButtonState: AbortButtonState = useMemo(() => {
+    if (!currentSessionId) return 'none';
+    const state = sessionRuntimeStatesRef.current.get(currentSessionId);
+    if (!state) return 'none';
+    return resolveAbortButtonState(state);
     // sessionIdleVersion 是 core 推来新状态时的重渲染信号（ref 本身不触发渲染）
-    [currentSessionId, sessionIdleVersion],
-  );
+  }, [currentSessionId, sessionIdleVersion]);
 
   // 只有对话列表由 webview 渲染（`rendersConversationListInWebview`）时才有内嵌的历史对话按钮。
   // 当「本工作目录的其它会话」正在等待用户输入（ask user / 权限确认）时，用户请求不再
@@ -1281,7 +1284,7 @@ onClick={handleNewConversation}
               onToggleFileHidden={handleToggleFileHidden}
               totalContextTokens={contextLength}
               maxContextTokens={maxContextTokens}
-              abortEnabled={abortEnabled}
+              abortButtonState={abortButtonState}
               agentMode={agentMode}
               setAgentMode={setAgentMode}
               promptMode={promptMode}

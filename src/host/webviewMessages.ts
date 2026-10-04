@@ -205,8 +205,19 @@ export type HostToWebviewMessage = {
    * 对话树的流水灯（idle / waiting）与 abort 按钮只读这份数据，不再从 `queryBegin` / `queryEnd` 推导。
    */
   type: 'sessionRuntimeStates';
-  /** 全量快照；宿主不持有其所有权，调用方只读 */
-  states: ReadonlyArray<{ sessionId: string; idle: boolean; waiting: boolean }>;
+  /**
+   * 全量快照；宿主不持有其所有权，调用方只读。
+   * 字段与 core `SessionRuntimeState` 一致（根事实 + 派生 `idle`，第 4.5 节）。
+   */
+  states: ReadonlyArray<{
+    sessionId: string;
+    idle: boolean;
+    waiting: boolean;
+    queryRunning: boolean;
+    compacting: boolean;
+    backgroundRunning: boolean;
+    subAgentRunning: boolean;
+  }>;
 } | {
   type: 'conversationLoaded';
   sessionId: string;

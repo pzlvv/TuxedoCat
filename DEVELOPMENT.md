@@ -127,7 +127,7 @@ HOST .up.> CORE : 事件类型 / 只读函数
 | `src/host/standalone/StandaloneEventBus.ts` | `AssistantEventBus` 的帧通道实现（在 `CoreChannelTransport` 之上）：就绪前排队、连接态重放、`CoreRequest` 应答；传输层可以是单进程或 daemon channel |
 | `core-rs/` | Standalone Core 的 Rust 包（帧协议、Core 侧总线、进程入口、daemon 模式） |
 | `scripts/build-core.mjs` | Standalone Core 构建脚本：按目标三元组 `cargo build` 并落到 `resources/core/` |
-| `src/core/sessionRuntime.ts` | 会话运行时状态（`idle` / `waiting`）的唯一 owner，`sessionRuntimeChanged` 的生产者 |
+| `src/core/sessionRuntime.ts` | 会话运行时状态（`idle` / `waiting` / 前台与后台来源）的唯一 owner，`sessionRuntimeChanged` 的生产者 |
 | `src/core/tools/PermissionPolicy.ts` | 权限规则加工（agentMode → `resolveToolPermission`）与会话级 agentMode 存储 |
 | `src/core/mcp/MCPHost.ts` | MCP 会话引用生命周期的唯一入口。它不是宿主契约，仅有一个 core 侧单例 |
 | `src/host/WebViewUI.ts` | 唯一的 UI 实现；订阅总线、处理事件、发送 `UiEvent`；实现 `WebViewUiPort` |
@@ -532,7 +532,7 @@ UI 可以被替换，也可以只订阅自己关心的事件。
 
 | | `conversationListChanged` | `sessionRuntimeChanged` |
 | --- | --- | --- |
-| 内容 | 磁盘元数据（title / messageCount / createdAt…） | idle / waiting |
+| 内容 | 磁盘元数据（title / messageCount / createdAt…） | 运行时根事实（idle / waiting / queryRunning / compacting / backgroundRunning / subAgentRunning） |
 | owner | 磁盘（`history`） | core 的 `sessionRuntime`（第 4.5 节） |
 | 变化频率 | 低（落盘 / 改名 / 删除 / 新建） | 高（查询开始结束、等用户、用户响应） |
 | 消费者 | webview 子对话树、Electron 原生侧栏 | VS Code webview 对话树流水灯、Electron 侧栏流水灯、系统托盘状态点、两端的 abort 按钮 |
@@ -547,8 +547,10 @@ UI 可以被替换，也可以只订阅自己关心的事件。
 `userChoice → { index; reply? }`）；`request<T>()` 的泛型签名据此把请求类型与结果类型一一对应，
 调用点不需要手动收窄。
 
-`SessionRuntimeState` 只放 core 能提供的事实（`sessionId` / `idle` / `waiting`）；
-宿主自己的界面状态（如 Electron 的「视图已打开」）由宿主自己维护，不混进来。
+`SessionRuntimeState` 只放 core 能提供的**根事实**（`sessionId` / `idle` / `waiting` /
+`queryRunning` / `compacting` / `backgroundRunning` / `subAgentRunning`）；`idle` 是由其余
+来源合并出的派生字段，颜色 / 可点性等表现由消费者推导（第 12.8 节）。宿主自己的界面
+状态（如 Electron 的「视图已打开」）由宿主自己维护，不混进来。
 
 ### 3.2 AssistantEventBus 接口
 
@@ -831,7 +833,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 
 | # | `type` | 载荷 | UI 侧触发点 | core 侧消费方 |
 | --- | --- | --- | --- | --- |
-| 24 | `abortRequested` | `sessionId` | `abort` 消息（webview 的 abort 按钮由 `sessionRuntimeStates` 的 `idle` 推导，见第 10.4 节） | `Integration.abortCurrentQuery`（整棵工作树：该会话引擎 `interrupt()` + 该会话后台 Bash + 递归子代理，三条路径都走，幂等） |
+| 24 | `abortRequested` | `sessionId` | `abort` 消息（webview 的 abort 按钮由 `sessionRuntimeStates` 的根事实推导，见第 10.4 节与 `docs/abort-button.md`） | `Integration.abortCurrentQuery`（按该会话运行时事实分两阶段：前台有工作只中止前台；前台空闲则中止后台 Bash + 递归子代理。两阶段都幂等） |
 | 25 | `compactRequested` | `sessionId` | `requestCompress` | `Integration.requestCompact` |
 | 26 | `conversationStarted` | `sessionId` | `startNewConversation`（handler 先登记会话工作目录，再发事件） | `Integration.createEngine`（预创建引擎 + MCP 引用 + 预热该会话工作目录的系统信息） |
 | 27 | `conversationOpened` | `sessionId` | `loadConversation`（handler 先登记会话工作目录，再发事件；Standalone 下 Core 重启后重放） | Standalone：Core 的 `on_conversation_opened`（载入历史 + MCP 引用）；Embedded：无订阅者（宿主直接调 `restoreConversationEngine`） |
@@ -899,11 +901,12 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 
 `CoreEvent.sessionRuntimeChanged` 是跨层最常用的一条流（Electron 侧栏流水灯、系统托盘状态点、
 webview 对话树的运行标记、两端 abort 按钮），生产者是 `src/core/sessionRuntime.ts`——会话运行时
-状态（`idle` / `waiting`）的**唯一 owner**。
+状态的**唯一 owner**。
 
 各 core 模块在自己的事实变化点调用（幂等，内部 diff 后才发事件，无变化不发）：
 
-内部按来源分列，对外合并成 `idle`（多个来源会重叠，共用一个布尔位会互相清掉）：
+内部按来源分列（多个来源会重叠，共用一个布尔位会互相清掉），对外同时暴露根事实与由根事实
+合并出的 `idle`：
 
 | 函数 | 来源 | 事实 | 调用点 |
 | --- | --- | --- | --- |
@@ -914,20 +917,29 @@ webview 对话树的运行标记、两端 abort 按钮），生产者是 `src/co
 | `markSessionWaiting(sessionId, waiting)` | `waiting` | 正在等待用户操作 | `Integration`（入队时标记）；`initializeCoreEvents` 的 `userChoicePendingChanged` 订阅（webview 弹出 / 应答时标记） |
 | `dropSessionRuntime(sessionId)` | — | 会话关闭 / 删除时清理该会话的状态 | `sessionResources.releaseSessionResources`、`history.deleteConversation` |
 
-**`idle` 的取值**
+**对外快照的字段**
 
-`idle === false`（会话非空闲）当且仅当下列任一为真：
+| 字段 | 取值 |
+| --- | --- |
+| `sessionId` | 会话 ID |
+| `idle` | 派生字段：自身 `query` / `waiting` / `compacting` / `background` 全为假，且所有已登记子代理都空闲 |
+| `waiting` | `waiting` 来源（正在等待用户操作，流水灯显示黄色） |
+| `queryRunning` | `query` 来源（前台查询 / 引擎在消费） |
+| `compacting` | `compacting` 来源（正在压缩上下文） |
+| `backgroundRunning` | `background` 来源（有运行中的后台 Bash 任务） |
+| `subAgentRunning` | 派生字段：存在非 idle 的已登记子代理（递归到子代理自身的查询 / 压缩 / 后台任务 / 下层子代理） |
 
-- 该会话自身有 `query` / `waiting` / `compacting` / `background` 事实；
-- 该会话的某个已注册子代理非空闲（递归判定；子代理自身也可能有后台 Bash 或更下层子代理）。
+`idle === false`（会话非空闲）当且仅当 `queryRunning` / `waiting` / `compacting` /
+`backgroundRunning` / `subAgentRunning` 任一为真；即 `idle` 是其余字段的合取，消费者
+按需读根字段自行推导表现（abort 按钮三态见 `docs/abort-button.md`，第 12.8 节）。
 
-对外快照里每个会话都递归计算该值，因此子代理的 `query` / `waiting` / `compacting` / `background`
-变化会连带刷新其创建者的 `idle`。`waiting` 字段单独保留，供流水灯显示黄色。
+对外快照里每个会话都递归计算派生值，因此子代理的 `query` / `waiting` / `compacting` / `background`
+变化会连带刷新其创建者的 `idle` / `subAgentRunning`。
 
 - `waiting` 的取值由 `markSessionWaiting` 直接驱动：入队时由 `Integration.requestUserChoice`
   标记，webview 弹出 / 应答时由 `UiEvent.userChoicePendingChanged` 标记。
   `sessionResources.isSessionIdle` 经 `isSessionWaiting(sessionId)` 读同一份事实。
-- 读全量：`getSessionRuntimeStates()`。
+- 读全量：`getSessionRuntimeStates()`；读单会话：`getSessionRuntimeState(sessionId)`。
 - 分发有**推**和**拉**两条：推是常态（变化时经 `CoreEvent.sessionRuntimeChanged` 全量推给已存在的视图）；
   视图创建 / 激活时可能错过推送（当时视图还不存在），因此 webview 启动、或对话列表渲染方切到
   `webview`（Electron 悬浮窗：视图此前可能长期不是活动视图）时发
@@ -1174,7 +1186,7 @@ webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接�
 
 | | 流 1：对话列表 | 流 2：会话运行时状态 |
 | --- | --- | --- |
-| 内容 | 磁盘元数据：`title` / `createdAt` / `messageCount` / `parentSessionId` / `role` | `idle` / `waiting`（`SessionRuntimeState`，第 3.1 节） |
+| 内容 | 磁盘元数据：`title` / `createdAt` / `messageCount` / `parentSessionId` / `role` | 运行时根事实与派生 `idle`（`SessionRuntimeState`，第 3.1 / 4.5 节） |
 | source of truth | 磁盘（core 的 `loadConversationList()`） | core 的 `sessionRuntime`（第 4.5 节） |
 | 变化频率 | 低（落盘 / 改名 / 删除 / 新建） | 高（查询开始结束、等用户、用户响应） |
 | 触发 | `CoreEvent.conversationListChanged` | `CoreEvent.sessionRuntimeChanged` |
@@ -2345,22 +2357,25 @@ export class SessionUiState {
 
 ### 10.4 abort 按钮：读 core 的 `sessionRuntime`，不由这里判定
 
-abort 按钮的可用性是**「会话非空闲」**，事实 owner 是 core 的 `sessionRuntime`
+abort 按钮的三态（红 / 黄 / 灰）与两阶段中止由 core 的 `sessionRuntime` 根事实决定
 （第 4.5 节）——所以它不属于 `SessionUiState`。`queryActiveCounts` 只服务两件事：
 `queryBegin` / `queryEnd` 去重，以及 `isQueryActive`（`conversationLoaded.hasActiveQuery` 的
-来源，见 10.1 / 第 6.2 节）。
+来源，见 10.1 / 第 6.2 节）。完整规格见 `docs/abort-button.md`。
 
 链路（没有宿主推送，全是状态）：
 
 | 环节 | 行为 |
 | --- | --- |
-| core | `sessionRuntime` 合并 `query` / `waiting` / `compacting` / `background`，并递归子代理 → `sessionRuntimeChanged`（每会话的 `idle` / `waiting`） |
+| core | `sessionRuntime` 按来源记账 `query` / `waiting` / `compacting` / `background` 并递归子代理 → `sessionRuntimeChanged`（每会话的 `idle` / `waiting` / `queryRunning` / `compacting` / `backgroundRunning` / `subAgentRunning`） |
 | 宿主 | `ConversationManager.dispatchStates` 把状态快照推给 webview（VS Code 推单视图；Electron 广播给所有聊天视图） |
-| webview | `App.tsx` 从 `sessionRuntimeStates` 里取当前会话的 `idle` → `abortEnabled = !idle`（`InputArea` 的按钮 disabled / 颜色） |
+| webview | `App.tsx` 取当前会话快照 → 纯函数 `resolveAbortButtonState`（`src/host/abortButtonState.ts`）给出 `query` / `background` / `none` → `InputArea` 按状态取红 / 黄 / 灰与可点性 |
 
-好处：引擎没在跑、但后台 Bash 或非 idle 子代理还在时，按钮同样是亮的——那是「非空闲」的真实含义。
-点下按钮后 core 侧 `Integration.abortCurrentQuery` 会中止**整棵工作树**：该会话的引擎（在池里则
-`interrupt()`）、该会话的后台 Bash 任务、以及递归子代理，三条路径都走一遍（幂等）。
+好处：前台查询结束后、但后台 Bash 或非 idle 子代理还在时，按钮保留为可点的黄色——
+那是「会话仍在收尾」的真实含义，点下去中止的是这些残留工作，而不是再次中止已经停下的查询。
+点下按钮后 core 侧 `Integration.abortCurrentQuery` 依据同一份事实决定范围：前台有工作只
+中止前台（引擎 `interruptForeground()`），前台空闲则中止后台 Bash 任务并递归子代理
+（`engine.interrupt()` + `abortBackgroundTasksForSession` + 递归 `abortSessionScope`），
+两阶段都幂等。
 
 ### 10.5 生命周期：dropSession
 
@@ -2412,7 +2427,7 @@ dropSession(sessionId: string): void {
 | | `SessionUiState`（host） | `SessionRuntimeState`（core） |
 | --- | --- | --- |
 | 数据源 | wire 消息（`streamMessage` / `queryBegin` / 工具回调） | core 内部状态（引擎池 / 后台任务 / 子代理 / 压缩 / 待用户输入） |
-| 用途 | 每会话动画阶段（`getActivityPhase`） | `idle` / `waiting` 聚合，进 `CoreEvent`（abort 按钮读它） |
+| 用途 | 每会话动画阶段（`getActivityPhase`） | 运行时根事实（`idle` / `waiting` / `queryRunning` / `compacting` / `backgroundRunning` / `subAgentRunning`），进 `CoreEvent`（abort 按钮读它） |
 | 谁写 | 只有 UI handler | 只有 core |
 | 角色 | 渲染投影 | 唯一事实 owner |
 
@@ -2714,7 +2729,8 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 
 | 事实 | 唯一 owner | 只读消费方 |
 | --- | --- | --- |
-| 会话 `idle` / `waiting` | core `sessionRuntime`（第 4.5 节） | 对话树流水灯、侧栏流水灯、托盘状态点、abort 按钮（都读 `sessionRuntimeChanged`） |
+| 会话运行时事实（`idle` / `waiting` / `queryRunning` / `compacting` / `backgroundRunning` / `subAgentRunning`） | core `sessionRuntime`（第 4.5 节） | 对话树流水灯、侧栏流水灯、托盘状态点、abort 按钮（都读 `sessionRuntimeChanged`） |
+| abort 按钮三态（红 / 黄 / 灰） | 纯函数 `resolveAbortButtonState`（`src/host/abortButtonState.ts`） | `InputArea` 渲染（`docs/abort-button.md`） |
 | webview 渲染阶段（thinking / text / tool） | `SessionUiState`（宿主侧渲染投影，第 10 节） | 渲染与 abort 按钮（不参与 abort 判定） |
 | 对话列表 | 磁盘（`loadConversationList`） | `ConversationManager.refresh()` 分发并留快照，`sidebar:get-conversations` 读快照（第 5.4 节） |
 | 对话树删除闭包 | 纯函数 `collectConversationClosure`（`src/core/history/Conversation.ts`） | core `deleteConversation` 与 Electron 宿主都调它，不各写一份（第 11.1 节） |

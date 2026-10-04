@@ -357,10 +357,15 @@ impl Core {
         bus.log(message);
     }
 
-    /// 推全量会话运行时状态（`idle` / `waiting`）。
+    /// 推全量会话运行时状态（根事实 + 派生 `idle`）。
     ///
     /// 对齐 Embedded `sessionRuntime.pushIfChanged`：状态没变时不发事件；
     /// 有变化时按会话插入序推全量快照（消费者不维护状态表）。
+    ///
+    /// 快照字段与 Embedded `SessionRuntimeState` 一致（第 12.8 节）：暴露
+    /// `queryRunning` / `waiting` / `compacting` / `backgroundRunning` /
+    /// `subAgentRunning` 根事实，`idle` 是它们的合取。流水灯 / 托盘读 `idle`；
+    /// abort 按钮按根事实推导三态（`docs/abort-button.md`）。
     pub fn emit_runtime(&self) {
         let order = self.session_order.lock().unwrap().clone();
         let sessions = self.sessions.lock().unwrap();
@@ -368,17 +373,31 @@ impl Core {
             .iter()
             .filter_map(|session_id| sessions.get(session_id).map(|state| (session_id, state)))
             .map(|(session_id, state)| {
-                let waiting = state.lock().unwrap().waiting;
+                let (running, pending, waiting, compacting, background) = {
+                    let state = state.lock().unwrap();
+                    (
+                        state.running,
+                        state.pending_user_message.is_some(),
+                        state.waiting,
+                        state.compacting,
+                        state.background,
+                    )
+                };
+                // `pending_user_message` 是「已入队、消费循环即将接手」的窗口，与
+                // Embedded 的 `query` 来源等价（Embedded 里入队即 markQueryRunning(true)）。
+                let query_running = running || pending;
+                // 对齐 `sessionRuntime.toSnapshot`：递归判定——自身不忙**且**所有已登记
+                // 子代理都空闲，父会话才算空闲。
+                let idle = Core::is_idle_deep(&sessions, session_id, &mut HashSet::new());
+                let sub_agent_running = Core::has_busy_subagent(&sessions, session_id);
                 json!({
                     "sessionId": session_id,
-                    // 对齐 `sessionRuntime.isIdleInSnapshot`：递归判定——自身不忙
-                    // **且**所有已登记子代理都空闲，父会话才算空闲。
-                    //
-                    // 注意：`compacting` / `background` / `query` / `subagent` 都是**内部**
-                    // 记账位（只参与 `idle` 计算与 diff），**不进**快照——Embedded 的
-                    // `toSnapshot` 只导出 `{ idle, waiting }`。
-                    "idle": Core::is_idle_deep(&sessions, session_id, &mut HashSet::new()),
+                    "idle": idle,
                     "waiting": waiting,
+                    "queryRunning": query_running,
+                    "compacting": compacting,
+                    "backgroundRunning": background,
+                    "subAgentRunning": sub_agent_running,
                 })
             })
             .collect();
@@ -424,6 +443,23 @@ impl Core {
         true
     }
 
+    /// 该会话是否有非 idle 的已登记子代理（递归）。
+    ///
+    /// 对齐 Embedded `sessionRuntime.hasBusySubAgent`：对每个已登记子代理单独判定它
+    /// 自己的子树是否空闲。子代理完成一轮后可能仍留在注册表里等 Reply，此时它空闲，
+    /// 父会话的 `subAgentRunning` 为假（`docs/abort-button.md` 第 1.1 节）。
+    fn has_busy_subagent(
+        sessions: &HashMap<String, Arc<Mutex<SessionState>>>,
+        session_id: &str,
+    ) -> bool {
+        for child in crate::subagent::list_for_creator(session_id) {
+            if !Self::is_idle_deep(sessions, &child, &mut HashSet::new()) {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn on_workspace_changed(&self, workspace: Option<String>) {
         config::set_active_workspace(workspace);
     }
@@ -461,13 +497,10 @@ impl Core {
     }
 
     pub fn on_conversation_closed(&self, session_id: &str) {
-        let state = self.session_if_exists(session_id);
-        if let Some(state) = state {
-            state.lock().unwrap().cancel.store(true, Ordering::Relaxed);
-        }
-        // 对齐 `releaseSessionResources` 的第 1 步（`abortCurrentQuery`）：
-        // 会话关闭时中止其所有后台 Bash 任务，避免孤儿进程继续跑。
-        self.abort_background_tasks(session_id);
+        // 对齐 `releaseSessionResources` 的第 1 步（`Integration.abortSessionTree`）：
+        // 会话关闭时中止整棵工作树（前台查询 + 后台 Bash + 递归子代理），
+        // 避免孤儿进程 / 子代理继续跑。
+        self.abort_session_scope(session_id, &mut HashSet::new());
         self.drop_session(session_id);
         tools::clear_session_todos(session_id);
         // MCP：会话关闭 → 释放该会话的全部引用（归零的 server 进延迟回收）
@@ -475,12 +508,54 @@ impl Core {
         self.emit_runtime();
     }
 
+    /// `UiEvent.abortRequested`：abort 按钮点击（`docs/abort-button.md` 第 1.2 节）。
+    ///
+    /// 对齐 Embedded `Integration.abortCurrentQuery`：按该会话的运行时事实分两阶段——
+    /// - 前台有工作（`running` / `compacting`）→ 只中止前台查询（置 `cancel`），
+    ///   后台 Bash 任务与子代理保持运行，等待用户再次点击；
+    /// - 前台空闲但仍有后台 Bash 任务或子代理 → 中止它们（含递归子代理）。
+    ///
+    /// 阶段判定读与 `sessionRuntimeChanged` 同一批事实，与 UI 按钮三态同源。
     pub fn on_abort(&self, session_id: &str) {
+        // 会话已登记且完全空闲：无事可做（按钮此时为灰色，这里只兜住渲染到点击之间的竞态）。
+        if self.session_if_exists(session_id).is_some() && self.is_session_idle(session_id) {
+            return;
+        }
+        let foreground_busy = self
+            .session_if_exists(session_id)
+            .map(|state| {
+                let state = state.lock().unwrap();
+                state.running || state.compacting || state.pending_user_message.is_some()
+            })
+            .unwrap_or(false);
+        if foreground_busy {
+            self.abort_foreground(session_id);
+        } else {
+            self.abort_session_scope(session_id, &mut HashSet::new());
+        }
+    }
+
+    /// 只中止前台查询（abort 第一阶段）：置 `cancel`，让消费循环清空队列并退出。
+    /// 不动后台 Bash 任务与子代理（对齐 `QueryEngine.interruptForeground`）。
+    fn abort_foreground(&self, session_id: &str) {
         if let Some(state) = self.session_if_exists(session_id) {
             state.lock().unwrap().cancel.store(true, Ordering::Relaxed);
         }
-        // 对齐 `QueryEngine.abortCurrentQuery`：中止本会话所有运行中的后台 Bash 任务
+    }
+
+    /// 中止会话及其递归子代理的运行中工作（abort 第二阶段 / 会话关闭）。
+    ///
+    /// 对齐 Embedded `Integration.abortSessionScope`：前台查询、后台 Bash 任务、
+    /// 子代理三条路径都走，幂等。
+    fn abort_session_scope(&self, session_id: &str, visited: &mut HashSet<String>) {
+        if session_id.is_empty() || !visited.insert(session_id.to_string()) {
+            return;
+        }
+        self.abort_foreground(session_id);
         self.abort_background_tasks(session_id);
+        for child in crate::subagent::list_for_creator(session_id) {
+            self.abort_session_scope(&child, visited);
+        }
     }
 
     /// 中止某会话所有运行中的后台 Bash 任务，并同步 `background` 事实。
@@ -689,7 +764,7 @@ impl Core {
 
     pub fn on_conversation_deleted(&self, session_id: &str) {
         // 与 Embedded 一致（`initializeCoreEvents` 的 conversationDeleted →
-        // 对闭包里每个会话 `releaseSessionResources` → `abortCurrentQuery`）：
+        // 对闭包里每个会话 `releaseSessionResources` → `abortSessionTree`）：
         // **先**中止在跑的查询，再删盘。否则运行中的轮次会在删除后继续
         // `append_message`，把 `<sid>.jsonl` / `<sid>.meta.json` 重新建出来，会话"复活"。
         // 受影响闭包与 `deleteConversation` 相同：会话自身 + 所有层级的子孙对话。
@@ -699,10 +774,7 @@ impl Core {
             .map(|project| history::conversation_closure(session_id, project))
             .unwrap_or_else(|| vec![session_id.to_string()]);
         for id in &closure {
-            if let Some(state) = self.session_if_exists(id) {
-                state.lock().unwrap().cancel.store(true, Ordering::Relaxed);
-            }
-            self.abort_background_tasks(id);
+            self.abort_session_scope(id, &mut HashSet::new());
             self.drop_session(id);
             tools::clear_session_todos(id);
             // MCP：释放引用 + 清掉会话级启用覆盖（对齐 `clearSessionMcpOverride`）

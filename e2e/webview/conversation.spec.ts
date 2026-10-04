@@ -97,6 +97,44 @@ test('US-2 中止进行中的流式回复', async () => {
   await expect(abortButton).toBeDisabled({ timeout: 10_000 });
 });
 
+test('abort 按钮三态：红（前台在跑）→ 黄（只剩后台）→ 灰（空闲）', async () => {
+  const { page, host } = handle;
+  await host.setTurn({ text: '这段回复非常长'.repeat(60), chunkDelayMs: 150 });
+  await page.fill('textarea.input-textarea', '长任务');
+  await page.press('textarea.input-textarea', 'Enter');
+
+  const sent = await host.waitForSent('sendMessage');
+  const sid = sent.sessionId as string;
+  const abortButton = page.locator('button[data-abort-state]');
+
+  // 1) 前台查询在跑：红色可点
+  await expect(abortButton).toHaveAttribute('data-abort-state', 'query', { timeout: 15_000 });
+  await expect(abortButton).toBeEnabled();
+
+  // 2) 第一次点击只中止前台：宿主回推「前台停下、后台任务仍在跑」→ 黄色可点
+  await host.setAbortRuntimeStates([{
+    sessionId: sid, idle: false, waiting: false,
+    queryRunning: false, compacting: false, backgroundRunning: true, subAgentRunning: false,
+  }]);
+  await abortButton.click();
+  await expect(abortButton).toHaveAttribute('data-abort-state', 'background', { timeout: 10_000 });
+  await expect(abortButton).toBeEnabled();
+
+  // 3) 第二次点击中止后台：宿主回推空闲 → 灰色不可点
+  await host.setAbortRuntimeStates([{
+    sessionId: sid, idle: true, waiting: false,
+    queryRunning: false, compacting: false, backgroundRunning: false, subAgentRunning: false,
+  }]);
+  await abortButton.click();
+  await expect(abortButton).toHaveAttribute('data-abort-state', 'none', { timeout: 10_000 });
+  await expect(abortButton).toBeDisabled();
+
+  // 两次点击各发一条 abort（都带当前会话）
+  const aborts = (await host.sentAll()).filter((m) => m.type === 'abort');
+  expect(aborts).toHaveLength(2);
+  expect(aborts.every((m) => m.sessionId === sid)).toBe(true);
+});
+
 test('US-3 引擎忙碌时消息排队，轮末自动重发；中止后回填输入框', async () => {
   const { page, host } = handle;
   await host.setTurn({ text: '第一轮回答。', chunkDelayMs: 150 });

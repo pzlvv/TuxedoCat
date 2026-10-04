@@ -1,20 +1,20 @@
 /**
- * sessionRuntime - 会话运行时状态（idle / waiting）的唯一 owner
+ * sessionRuntime - 会话运行时状态的唯一 owner
  *
- * 变化时推全量 `CoreEvent.sessionRuntimeChanged`（消费者不维护状态表，见第 3.1 节）：
- * - idle（对外）＝ 下面所有来源都为假，即「会话空闲」
- * - waiting：正在等待用户操作（ask user / 权限确认，pending user choice）
+ * 变化时推全量 `CoreEvent.sessionRuntimeChanged`（消费者不维护状态表，见第 3.1 节）。
+ * 快照按第 12.8 节暴露**根事实**：`queryRunning` / `waiting` / `compacting` /
+ * `backgroundRunning` / `subAgentRunning`，`idle` 是它们的合取（派生字段）。
+ * 流水灯 / 托盘读 `idle`；abort 按钮按根事实推导三态（`docs/abort-button.md`）。
  *
- * 对外只暴露 `idle`（= !非空闲），流水灯与 abort 按钮都读它。内部按来源分开记账：
- * 多个来源会重叠（自动压缩发生在一轮查询中间、后台 Bash 常在一轮查询结束后继续跑），
- * 若共用一个布尔位，任一来源结束就会把其他来源的状态一起清掉。
+ * 内部按来源分开记账：多个来源会重叠（自动压缩发生在一轮查询中间、后台 Bash 常在
+ * 一轮查询结束后继续跑），若共用一个布尔位，任一来源结束就会把其他来源的状态一起清掉。
  *
  * | 来源 | 事实 | 设置方 |
  * | --- | --- | --- |
  * | query | 引擎在消费消息 / 有活跃查询 | Integration、QueryEngine |
  * | compacting | 正在压缩上下文（会整体替换消息数组） | compact/compact.ts |
  * | background | 有运行中的后台 Bash 任务 | tools/bash/LocalShellTask |
- * | subagent | 已注册子代理（仅作变更信号；idle 递归看子代理是否非 idle） | tools/agent/SubAgentRegistry |
+ * | subagent | 已注册子代理（仅作变更信号；idle / subAgentRunning 递归看子代理是否非 idle） | tools/agent/SubAgentRegistry |
  * | waiting | 正在等待用户操作（ask user / 权限确认） | Integration（入队）、`UiEvent.userChoicePendingChanged`（弹出 / 应答） |
  *
  * 与 sessionResources.isSessionIdle 的关系：后者是宿主侧（空闲回收 / 手动压缩是否延后）
@@ -89,11 +89,40 @@ function isIdleInSnapshot(sessionId: string, visiting: Set<string>): boolean {
   return true;
 }
 
-/** 对外快照：自身事实 + 递归子代理合并成 idle（消费者只关心「闲不闲」） */
-function toSnapshot(sessionId: string, entry: Entry): { idle: boolean; waiting: boolean } {
+/**
+ * 该会话是否有非 idle 的已登记子代理（递归）。
+ *
+ * 与 `isIdleInSnapshot` 同源：对每个已登记子代理单独判定它自己的子树是否空闲。
+ * 子代理完成一轮后可能仍留在注册表里等 Reply，此时它空闲，父会话的
+ * `subAgentRunning` 为假。
+ */
+function hasBusySubAgent(sessionId: string): boolean {
+  for (const childId of listSubAgentIds(sessionId)) {
+    if (!isIdleInSnapshot(childId, new Set<string>())) return true;
+  }
+  return false;
+}
+
+/**
+ * 对外快照：各来源的根事实 + 由它们合取出的 `idle`。
+ *
+ * `idle` 与 `subAgentRunning` 都递归到子代理，但语义不同：前者回答「整棵子树是否
+ * 都闲着」，后者回答「有没有子代理在跑」。消费者按需取（第 12.8 节）。
+ */
+function toSnapshot(sessionId: string, entry: Entry): Omit<SessionRuntimeState, 'sessionId'> {
+  const subAgentRunning = hasBusySubAgent(sessionId);
   return {
-    idle: isIdleInSnapshot(sessionId, new Set<string>()),
+    idle:
+      !entry.query &&
+      !entry.waiting &&
+      !entry.compacting &&
+      !entry.background &&
+      !subAgentRunning,
     waiting: entry.waiting,
+    queryRunning: entry.query,
+    compacting: entry.compacting,
+    backgroundRunning: entry.background,
+    subAgentRunning,
   };
 }
 
@@ -213,6 +242,18 @@ export function getSessionRuntimeStates(): readonly SessionRuntimeState[] {
     sessionId,
     ...toSnapshot(sessionId, entry),
   }));
+}
+
+/**
+ * 读单个会话的对外快照；该会话没有登记任何事实时返回 `null`。
+ *
+ * 供 `Integration.abortCurrentQuery` 判定中止阶段（前台有工作 / 只剩后台与子代理），
+ * 与推送给 UI 的快照同源（第 12.7 节：一份事实只有一个写入点）。
+ */
+export function getSessionRuntimeState(sessionId: string): SessionRuntimeState | null {
+  const entry = states.get(sessionId);
+  if (!entry) return null;
+  return { sessionId, ...toSnapshot(sessionId, entry) };
 }
 
 /** 清空全部状态（工作区切换 / 测试用） */

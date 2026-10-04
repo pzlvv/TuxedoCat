@@ -596,7 +596,19 @@ function markConnectionSessionsFailed(
       const busyIds = new Set(busy.map((state) => state.sessionId));
       conversations.updateSessionStates(
         states.map((state) =>
-          busyIds.has(state.sessionId) ? { ...state, idle: true, waiting: false } : state,
+          busyIds.has(state.sessionId)
+            ? {
+                ...state,
+                // Core 已失联：会话的所有运行时来源一并归零，避免留下
+                // 「idle 但 queryRunning」这类自相矛盾的快照（第 12.8 节）。
+                idle: true,
+                waiting: false,
+                queryRunning: false,
+                compacting: false,
+                backgroundRunning: false,
+                subAgentRunning: false,
+              }
+            : state,
         ),
       );
     }

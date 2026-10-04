@@ -1691,12 +1691,23 @@ export class QueryEngine {
   }
 
   /**
-   * 递归中止当前会话及其所有子对话。
-   * 子对话的后台 Bash 任务同样会被中止，结果直接丢弃。
+   * 只中止本会话的前台查询（abort 按钮第一阶段）。
+   *
+   * 置中止标记、丢弃尚未消费的排队消息 / 后台任务通知 / 过期 reminder、中止当前
+   * LLM 请求；**不动**后台 Bash 任务与子代理——它们由第二阶段
+   * （`interrupt()` / `Integration.abortSessionScope`）负责。
    */
-  private interruptRecursive(visited: Set<string>): void {
-    if (visited.has(this.sessionID)) return;
-    visited.add(this.sessionID);
+  interruptForeground(): void {
+    this.abortForegroundQuery();
+  }
+
+  /**
+   * 中止前台查询的共用实现（`interruptForeground` 与 `interruptRecursive` 都走它）。
+   *
+   * 中止标记必须在这里置位（而不是只在 abort controller 上）：中止可能落在两次
+   * 查询之间，`createAbortController` 据此让后续新建的 controller 直接处于 aborted。
+   */
+  private abortForegroundQuery(): void {
     this.abortRequested = true;
 
     // 1. 丢弃已排队但未消费的后台任务完成通知
@@ -1708,13 +1719,11 @@ export class QueryEngine {
     if (this.pendingUserMessage !== null && (this.pendingUserMsgData as any)?._needsUINotification) {
       this.clearPendingUserMessage();
     }
-    // 1.6 丢弃尚未消费的 reminder：abort 会同时中止后台任务，之前排队的
-    //     「后台任务仍在运行」提醒已经过期，不应在下一轮再发给 LLM。
+    // 1.6 丢弃尚未消费的 reminder：abort 后之前排队的「后台任务仍在运行」提醒
+    //     已经过期，不应在下一轮再发给 LLM。
     this.pendingReminder = null;
-    // 2. 中止本会话的后台 Bash 任务
-    this.abortBackgroundTasksForCurrentSession();
 
-    // 3. 中止当前查询
+    // 2. 中止当前查询
     if (this.activeAbortController) {
       this.activeAbortController.abort();
     } else {
@@ -1726,8 +1735,22 @@ export class QueryEngine {
         this.externalAbortController.abort();
       }
     }
+  }
 
-    // 4. 递归中止子对话（包括其后台任务）
+  /**
+   * 递归中止当前会话及其所有子对话（abort 按钮第二阶段 / 释放会话资源）。
+   * 子对话的前台查询与后台 Bash 任务同样会被中止，结果直接丢弃。
+   */
+  private interruptRecursive(visited: Set<string>): void {
+    if (visited.has(this.sessionID)) return;
+    visited.add(this.sessionID);
+
+    // 1. 前台查询 + 排队的消息 / 通知 / reminder
+    this.abortForegroundQuery();
+    // 2. 中止本会话的后台 Bash 任务
+    this.abortBackgroundTasksForCurrentSession();
+
+    // 3. 递归中止子对话（包括其前台查询与后台任务）
     try {
       const { subAgentRegistry } = require('./tools/agent/SubAgentRegistry.js') as typeof import('./tools/agent/SubAgentRegistry.js');
       for (const childId of subAgentRegistry.listForCreator(this.sessionID)) {

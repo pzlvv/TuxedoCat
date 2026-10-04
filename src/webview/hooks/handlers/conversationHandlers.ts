@@ -4,7 +4,7 @@ import { HostToWebviewWire } from '../../../host/webviewMessages';
 import { profileLog } from '../../debug';
 import { resolveTitle } from '../../i18n';
 import { createSessionState } from '../../sessionState';
-import { AgentMode, QueuedMessagePayload } from '../../types';
+import { AgentMode, QueuedMessagePayload, SessionRuntimeState } from '../../types';
 import { setConversationListOwner } from '../../webviewEnv';
 import { applyLoadedConversationState, replayBufferedToolStatusIntoMessages, restoreMessagesFromConversation, toUiMessage } from './shared';
 
@@ -109,11 +109,18 @@ export function handleConversationSessionRuntimeStates(
   ctx: HandlerContext,
 ): void {
   const { props } = ctx;
-          // core 的会话运行时状态（idle / waiting）全量推送：
-          // 这是对话树流水灯与 abort 按钮的唯一数据源（不再从 queryBegin / queryEnd 推导）。
-          const runtime = new Map<string, { idle: boolean; waiting: boolean }>();
+          // core 的会话运行时状态全量推送：对话树流水灯与 abort 按钮的唯一数据源
+          // （不再从 queryBegin / queryEnd 推导）。根事实原样透传，表现由消费者推导。
+          const runtime = new Map<string, SessionRuntimeState>();
           for (const s of msg.states || []) {
-            if (s?.sessionId) runtime.set(s.sessionId, { idle: s.idle !== false, waiting: !!s.waiting });
+            if (s?.sessionId) runtime.set(s.sessionId, {
+              idle: s.idle !== false,
+              waiting: !!s.waiting,
+              queryRunning: !!s.queryRunning,
+              compacting: !!s.compacting,
+              backgroundRunning: !!s.backgroundRunning,
+              subAgentRunning: !!s.subAgentRunning,
+            });
           }
           props.sessionRuntimeStatesRef.current = runtime;
           // 强制对话列表重渲染，使流水灯即时出现 / 消失 / 变黄

@@ -567,6 +567,8 @@ fn abort_requested_sets_the_cancel_flag() {
     let _sandbox = Sandbox::new("main-abort");
     let harness = EngineHarness::allow_all();
     let state = harness.core.session("s1");
+    // 前台在跑：第一阶段置 cancel（对齐 `Integration.abortCurrentQuery`）
+    state.lock().unwrap().running = true;
     dispatch(&harness, json!({ "type": "abortRequested", "sessionId": "s1" }));
     assert!(state.lock().unwrap().cancel.load(std::sync::atomic::Ordering::Relaxed));
 }
