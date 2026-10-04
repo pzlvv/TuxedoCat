@@ -44,7 +44,7 @@ import { primeHostLocale, readUiLanguage } from './coreFacts.js';
 import { getSettingsStore, type SettingsStore } from './SettingsStore.js';
 import { resolveCoreKind, type CoreKind } from './coreKind.js';
 import { resolveCoreBinary } from './standalone/coreBinary.js';
-import { CoreDaemon, SSH_DAEMON_LINK_TIMEOUT_MS, tcpDaemonOpener, type CoreDaemonLinkOpener } from './standalone/CoreDaemon.js';
+import { CoreDaemon, SSH_DAEMON_LINK_TIMEOUT_MS, type CoreDaemonLinkOpener } from './standalone/CoreDaemon.js';
 import { createSshDaemonOpener } from './standalone/sshTransport.js';
 import { createCoreChannelBus, createStandaloneCoreBus } from './standalone/StandaloneEventBus.js';
 import { WebViewUI } from './WebViewUI.js';
@@ -330,8 +330,7 @@ function openStandaloneChannel(
 /**
  * 取该远程工作区 endpoint 的 daemon（一个 endpoint 一个 daemon；宿主退出时统一关闭）。
  *
- * 连 `endpoint.host:port` 的 TCP 控制通道，第一帧用 `endpoint.auth.token` 鉴权
- * （`docs/core-daemon.md` 第 12 节）。
+ * 全部通信走 SSH 端口（`docs/core-daemon.md` 第 12 节）。
  */
 function remoteDaemonForEndpoint(ref: WorkspaceRef, options: CoreBootstrapOptions): CoreDaemon {
   const key = daemonRegistryKey(ref);
@@ -344,8 +343,8 @@ function remoteDaemonForEndpoint(ref: WorkspaceRef, options: CoreBootstrapOption
   }
   const daemon = new CoreDaemon({
     transport: daemonOpenerFor(endpoint, options),
-    // SSH 建链含「上传产物 + 启动 daemon」，沿用 TCP 的 10s 会误杀首次接入
-    linkTimeoutMs: endpoint.auth?.kind === 'sshPassword' ? SSH_DAEMON_LINK_TIMEOUT_MS : undefined,
+    // SSH 建链含「上传产物 + 启动 daemon」，沿用默认的 10s 会误杀首次接入
+    linkTimeoutMs: SSH_DAEMON_LINK_TIMEOUT_MS,
     log: (...args: unknown[]) => options.log(...args),
   });
   standaloneDaemons.set(key, daemon);
@@ -353,11 +352,8 @@ function remoteDaemonForEndpoint(ref: WorkspaceRef, options: CoreBootstrapOption
 }
 
 /**
- * 按凭证种类选建链方式（`docs/core-daemon.md` 第 12 节）。
- *
- * - `token`：TCP 直连监听中的 daemon；
- * - `sshPassword`：全部通信走 SSH 端口，daemon 的 endpoint 与 token 由引导流程取得
- *   （`sshDaemonBootstrap.ts`），因此这里不需要端口。
+ * 建链方式（`docs/core-daemon.md` 第 12 节）：全部通信走 SSH 端口，daemon 的
+ * endpoint 与 token 由引导流程取得（`sshDaemonBootstrap.ts`）。
  */
 function daemonOpenerFor(
   endpoint: WorkspaceEndpoint,
@@ -367,32 +363,22 @@ function daemonOpenerFor(
   if (!auth) {
     throw new Error(`Remote endpoint ${endpoint.host} has no credentials.`);
   }
-  switch (auth.kind) {
-    case 'token':
-      return tcpDaemonOpener({
-        host: endpoint.host,
-        port: endpoint.port ?? 0,
-        token: auth.token,
-      });
-    case 'sshPassword': {
-      const user = endpoint.user;
-      if (!user) {
-        throw new Error(`SSH endpoint ${endpoint.host} has no login user.`);
-      }
-      return createSshDaemonOpener(
-        {
-          target: {
-            host: endpoint.host,
-            port: endpoint.port ?? 22,
-            user,
-            password: auth.password,
-          },
-          extensionPath: options.extensionPath,
-        },
-        options.log,
-      );
-    }
+  const user = endpoint.user;
+  if (!user) {
+    throw new Error(`SSH endpoint ${endpoint.host} has no login user.`);
   }
+  return createSshDaemonOpener(
+    {
+      target: {
+        host: endpoint.host,
+        port: endpoint.port ?? 22,
+        user,
+        password: auth.password,
+      },
+      extensionPath: options.extensionPath,
+    },
+    options.log,
+  );
 }
 
 /**
@@ -416,7 +402,6 @@ function authFingerprint(endpoint: WorkspaceEndpoint): string {
   if (!auth) {
     throw new Error(`Remote endpoint ${endpoint.host}:${endpoint.port ?? ''} has no credentials.`);
   }
-  if (auth.kind === 'token') return `token:${auth.token}`;
   return `ssh:${createHash('sha256').update(auth.password).digest('hex')}`;
 }
 

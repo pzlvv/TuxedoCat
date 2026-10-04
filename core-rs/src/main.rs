@@ -6,7 +6,7 @@
 //! 启动顺序：读 `hello` 帧 → 校验协议版本 → 回 `ready` → 进入帧循环。
 //! 退出：收到 `shutdown` 帧或标准输入 EOF（宿主退出）。
 
-// 保留控制台子系统：这样 `tuxedo-cat-core --help` / `start` 的连接串在终端里可见
+// 保留控制台子系统：这样 `tuxedo-cat-core --help` / `start` 的输出在终端里可见
 // （独立运行的前提）。宿主与 daemon 起本进程时分别用 `windowsHide` / `CREATE_NO_WINDOW`
 // 隐藏控制台窗口（`src/host/standalone/CoreDaemon.ts`、`util::hide_console`），
 // 因此不会出现窗口闪烁。
@@ -59,7 +59,7 @@ use util::sanitize_json_surrogates;
 
 fn main() {
     // 动作选择（`docs/core-daemon.md` 第 3 节）：`stdio` 是单进程 Core（stdio 是帧通道）；
-    // `start`（缺省）是远程服务的启动器（确保后台 daemon 在跑、打印连接串后退出），
+    // `start`（缺省）是远程服务的启动器（确保后台 daemon 在跑、打印就绪信息后退出），
     // `kill` 结束它，daemon 实体走隐藏动作 `start-daemon`（`docs/core-daemon.md` 第 12 节）。
     // `--help` / `--version` 与参数错误都在 `cli::parse` 里收口。
     let args: Vec<String> = std::env::args().skip(1).collect();

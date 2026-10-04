@@ -86,15 +86,14 @@ Connection 持有：
 
 | 字段 | 含义 | 本地取值 | 远程取值 |
 | --- | --- | --- | --- |
-| `scheme` | 这类工作区怎么接 | `file` | `tcp`（直连监听中的 Core endpoint）；`ssh`（全部通信走 SSH 端口）；`wsl` / `container` 预留 |
+| `scheme` | 这类工作区怎么接 | `file` | `ssh`（全部通信走 SSH 端口）；`wsl` / `container` 预留 |
 | `endpoint` | 接哪台机器、用什么凭证 | `null` | `{ host, port, user, auth }` |
 | `path` | 那台机器上的目录 | `d:\git\TuxedoCat` | `/home/alice/src/tuxedo-cat` |
 
 - `(scheme, endpoint)` 决定 Connection 的目标；`path` 是 Core 的会话工作目录。
 - **Core 只见 `path`**：endpoint 与凭证不下发到 Core，也不进入配置快照。
 - `auth` 是判别联合，`kind` 唯一决定控制通道怎么建（`docs/core-daemon.md` 第 12 节）：
-  `{ kind: 'token' }`（`tcp`，token 由远端 `start` 打印）/
-  `{ kind: 'sshPassword' }`（`ssh`，口令只用于建 SSH 连接）。
+  只有 `{ kind: 'sshPassword' }`（`ssh`，口令只用于建 SSH 连接）。
 - `ssh` 下 `host` / `port` 是 SSH 的地址与端口，daemon 的端口由引导流程从远端状态文件
   取得，不写进引用。
 - `workspaceEndpointKey` 取 `(scheme, user, host, port)`：同一 endpoint 的多个工作区共用
@@ -113,18 +112,15 @@ Connection 持有：
 
 ### 4.2 远程打开流程（Electron）
 
-1. 菜单 / 标题栏加号选「打开远程工作区」，两种接入方式二选一（SSH 页签在前、默认选中）：
-   - **SSH**：填 IP / 端口 / 用户 / 口令（只开放 SSH 端口时，Host 自动部署并启动
-     远端 Core，见 `docs/core-daemon.md` 第 12.8 节）；
-   - **连接串**：粘贴 `start` 打印的 `<IP>:<端口>#<token>`（daemon 端口可达时）；
-2. Host 把输入收敛成同一个 `endpoint`（凭证种类决定建链方式），**连接成功后立刻**
-   列出远端主目录，弹出远端目录选择器（`docs/core-daemon.md` 第 12.6 节）；
+1. 菜单 / 标题栏加号选「打开远程工作区」，填 SSH 表单（IP / 端口 / 用户 / 口令）；
+   Host 自动部署并启动远端 Core（`docs/core-daemon.md` 第 12.8 节）；
+2. Host 把输入收敛成 `endpoint`，**连接成功后立刻**列出远端主目录，弹出远端目录选择器
+   （`docs/core-daemon.md` 第 12.6 节）；
 3. 选定目录后按 `remoteWorkspaceRef` 加入打开集合：`(scheme, endpoint, path)`；
 4. 打开该工作区时复用同一条控制通道发 `openWorkspace`。
 
-- `scheme` 由 `auth.kind` 决定：`token` → `tcp`，`sshPassword` → `ssh`
-  （`src/host/workspaceRef.ts::remoteWorkspaceRef`）。
-- SSH 接入下「连接」这一步包含部署与启动，可能比 TCP 直连慢；窗口在此期间显示进度提示。
+- `scheme` 恒为 `ssh`（`src/host/workspaceRef.ts::remoteWorkspaceRef`）。
+- 「连接」这一步包含部署与启动，可能较慢；窗口在此期间显示进度提示。
 - **SSH 连接历史**（`src/host/sshHistory.ts`）：SSH 接入**连上即**记入
   `recentSshConnections`（以「连上」为准，不是「选完目录」——用户可能停在目录选择
   这一步，下次仍要一键回填）。host 输入框聚焦时弹出最多 6 条候选，文案
@@ -208,13 +204,13 @@ Connection 持有：
 | `recentWorkspaces` | 最近打开的工作区（最多 10 个，最近的在最前），与 `openWorkspaces` 同格式 |
 | `recentSshConnections` | SSH 连接历史（最多 20 条，最近连接在前）：`{ host, port, user, password }`，同一 `user@host:port` 只留最新一条；口令明文，供「打开远程工作区」的表单回填与候选（第 4.2 节） |
 
-- **远程凭证明文落盘**：`endpoint.auth`（`token` / `sshPassword`）随引用一起写进
+- **远程凭证明文落盘**：`endpoint.auth`（`sshPassword`）随引用一起写进
   `workspace-state.json`，SSH 连接历史里的口令同一条规则。这是「重启后直接恢复并打开
   已连接过的工作区」的前提；该文件属于宿主本地状态，不进 core、不进配置快照、不参与
   会话数据。
 - **启动恢复与可用性判定**：本地项在恢复时检查目录是否存在，不存在的**保留在打开集合里**
   并标记为不可用；远程项从启动起处于建链中，由宿主经 `probeRemoteEndpoint` 逐 endpoint
-  探测落定（传输层直连，**3 秒建链超时，远端引导不计入**——opener 的 `prepare` 先完成
+  探测落定（传输层建链，**3 秒建链超时，远端引导不计入**——opener 的 `prepare` 先完成
   发现 / 部署 / 启动（冷部署上传产物可能远超 3 秒），3 秒只管 daemon 就绪后的建链；同一
   endpoint 只探测一次，SSH 引导按目标去重，探测与正式连接不重复部署；正式连接的长超时
   不适用于此），daemon 存活但工作区 channel 建失败等形态由 `onWorkspaceConnectionState` 的
@@ -224,8 +220,8 @@ Connection 持有：
   （重连期间转建链中，同一 3 秒建链超时；成功撤销判定、补建 Connection 并切回对话视图）。
   活动项
   不因不可用而回退；可用的引用（含远程）交给 `Client.openWorkspace` 建立 Connection，
-  远程项按落盘凭证重新走一遍接入流程（`tcp` 直连 / SSH 引导，见
-  `docs/core-daemon.md` 第 12.8 节）。连不上不影响其它工作区。
+  远程项按落盘凭证重新走一遍 SSH 引导（`docs/core-daemon.md` 第 12.8 节）。连不上不影响
+  其它工作区。
 - **最近列表**：本地项在读取时过滤掉已不存在的目录；远程项无法本地检查，原样保留。
   关闭标签页只从打开集合移除，不抹掉最近列表里的凭证。
 - 读取口径：形状不合法（缺 host、端口越界、认不出的凭证种类等）的项整项丢弃，
@@ -236,10 +232,8 @@ Connection 持有：
 ## 10. 不覆盖范围
 
 - 远程凭证的加密存储与钥匙串集成（当前是明文落盘，见第 9 节）；
-- `tcp` 传输的加密与隧道（明文直连；`ssh` 接入由 SSH 自己加密）；
 - SSH 的密钥 / agent 认证（当前只有口令）；
-- `tcp` 接入下远程 daemon 的部署（由用户在目标机器上手动 `start`；`start` 只负责把本机的
-  daemon 拉起来）；`ssh` 接入下由 Host 自动部署并启动（`docs/core-daemon.md` 第 12.8 节）；
+- 远程 daemon 的部署由 Host 自动完成（`docs/core-daemon.md` 第 12.8 节）；
 - 断线重连（含远程工作区在重启后连不上时的自动重试）；
 - 多 Connection 的界面呈现（归属标识、切换入口）。
 
@@ -256,7 +250,7 @@ Connection 持有：
 7. 关闭工作区后 Connection 销毁；daemon 计数递减，归零后按 `docs/core-daemon.md` 退出。
 8. 会话按 `sessionId` 路由到正确 Connection；查不到归属时报错。
 9. 同一 endpoint 的多个工作区共用一个 daemon；不同 endpoint 各自独立。
-10. 远程连接鉴权失败时报错，不建立 Connection。
+10. 远程连接失败时报错，不建立 Connection。
 11. 关闭并重启宿主后，打开集合里的本地与远程项都被恢复；远程项按落盘凭证重新接入。
 12. 最近列表同时包含本地与远程项；远程项按 id 打开（同一路径在不同机器上是两项）。
 13. 状态文件里形状不合法的项被丢弃，不影响其余项的恢复。

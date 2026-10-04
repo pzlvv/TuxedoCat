@@ -50,7 +50,6 @@
   },
   "scripts": {
     "gen:icons": "node scripts/gen-icons.mjs",
-    "plantuml:server": "node scripts/plantuml-server.js",
     "vscode:prepublish": "npm run check-types && npm run lint && node esbuild.js --production && npm run build:webview && npm run build:core && npm run copy-assets",
     "compile": "npm run check-types && npm run lint && node esbuild.js",
     "watch": "npm-run-all -p watch:esbuild watch:tsc watch:webview watch:monaco watch:sidebar watch:titlebar watch:remoteWorkspace watch:electron",

@@ -103,36 +103,31 @@ cd core-rs && cargo test
 
 ### 远程工作区（Electron）
 
-Standalone Core 用 `start` 动作启动远程服务：它确保后台 daemon 在跑（没有就拉起），
-打印连接串（`<IP>:<端口>#<token>`）后自己退出，桌面端整行粘贴即可直连
-（`docs/core-daemon.md` 第 12 节）。不带动作直接运行可执行文件同样按 `start` 处理。
+远程接入只有一条路径：**SSH**。在 Electron 里选「打开远程工作区...」（或标题栏加号
+菜单 →「打开远程工作区」），填目标的 SSH 主机 / 端口 / 用户 / 口令即可：
+
+- 目标机器不需要映射 daemon 端口，也不需要预装 Core——Host 按本机产物的构建指纹把
+  对应平台的产物经 SFTP 部署到 `~/.local/bin/<指纹>/`，再用 SSH 转发通道接入；
+- daemon 只监听目标机器的回环地址、端口交给内核分配，用户不需要填任何连接信息；
+- 连接成功后**立刻**弹出远端目录选择器，选定目录即作为远程工作区打开。
+
+细节见 `docs/core-daemon.md` 第 12 节。
+
+Standalone Core 的 `start` / `kill` 仍是可用的命令行入口：`start` 确保后台 daemon 在跑
+（没有就拉起）并打印就绪信息后自己退出，`kill` 结束它。不带动作直接运行可执行文件同样
+按 `start` 处理。
 
 ```bash
 # 在开发机上交叉编译出 Linux core（Windows / Linux 同一条命令，产物是静态 musl）
 npm run build:core:linux-x64
-# 把产物拷到目标机器后启动
+# 把产物拷到目标机器后启动（也可由 Host 经 SSH 自动部署）
 ./resources/core/x64-linux/tuxedo-cat-core start
-# [core] 远程服务已就绪，在桌面端「打开远程工作区」粘贴下面任一连接串：
-# 172.20.1.5:10975#<32 位十六进制>
-# 127.0.0.1:10975#<32 位十六进制>
+# [core] 远程服务已就绪，监听 127.0.0.1:<内核分配端口>（Host 经 SSH 转发接入）
 ```
 
-`start` 默认绑 `0.0.0.0:10975`（全部网卡）；端口被占用时从该端口起逐个 +1 重试，
-连接串里给的是实际端口。绑定通配地址时按网卡逐个打一条连接串，末尾固定有一条回环。
-token 用 `--token` 指定；缺省时优先复用 `~/<configDir>/core-daemon.token` 里的，没有才用
-操作系统安全随机数生成。token 单独存一份文件（与会话数据同目录），所以 `kill` 掉 daemon 再
-`start` 还是同一个 token，不用重新抄连接串。只在本机自测时传 `--host 127.0.0.1`。
-再执行一次 `start` 会复用同一个 daemon，打印同一份连接串；`tuxedo-cat-core kill` 结束它。
-
-在 Electron 里选「打开远程工作区...」（或标题栏加号菜单 →「打开远程工作区」），
-把上面任意一条连接串整行粘进唯一的输入框：连接成功后**立刻**弹出远端目录选择器，
-选定目录即作为远程工作区打开。token 只用于本次连接，不写入本地状态文件。
-
-WSL 端到端验证（用交叉编译出的 Linux core，在 WSL 里启动服务、从 Windows 连上去鉴权并列目录）：
-
-```bash
-node scripts/verify-remote-wsl.mjs
-```
+daemon 只监听回环，访问边界就是承载它的 SSH 通道：不需要凭证、不需要端口映射，也不
+需要用户填任何连接信息。再执行一次 `start` 会复用同一个 daemon；`tuxedo-cat-core kill`
+结束它。
 
 `npm run watch:app`（VS Code 的后台任务 / 手动运行）会在前端 watcher 之外额外轮询
 `core-rs/src/**/*.rs` 与 `core-rs/Cargo.toml`：**改动时**自动跑一次 `npm run build:core`
@@ -140,30 +135,14 @@ node scripts/verify-remote-wsl.mjs
 构建失败只打日志、不影响前端 watcher。只想改前端时用 `WATCH_CORE=0 npm run watch:app`
 关掉它，Rust 侧改动则手动 `npm run build:core` 重建。
 
-### PlantUML 架构图
+### 架构图（Mermaid）
 
-`DEVELOPMENT.md` 里的架构图用 PlantUML 渲染，两种场景走的是**不同**的渲染路径：
+`DEVELOPMENT.md` 里的架构图用 Mermaid 渲染：VS Code 内置的 Markdown 预览、GitHub 等
+支持 Mermaid 的渲染器都直接识别 `mermaid` 代码块，不需要装扩展、起本地服务或额外
+安装 JDK。
 
-- **编辑 `.puml` 文件**：用扩展自带的本地渲染（`.vscode/settings.json` 中 `plantuml.render: Local`）。
-  只需要 JDK，不需要装 Graphviz（jar 内置 vizjs / Smetana）。
-- **Markdown 预览**：PlantUML 扩展的 markdown-it 插件**只支持 HTTP 服务器渲染**，会忽略
-  `plantuml.render`，`plantuml.server` 为空时报错
-  `No PlantUML server, specify one with "plantuml.server".`。
-
-因此 `.vscode/settings.json` 把 `plantuml.server` 指向 `http://127.0.0.1:8090`，
-该服务由 `npm run plantuml:server` 启动——用扩展自带的 `plantuml.jar` 起 PicoWeb，
-只监听回环地址，架构图源码不会发往公网。`.vscode/tasks.json` 已把它配置成
-打开文件夹时自动启动（后台任务，端口上已有服务则直接复用）。
-
-> **首次查看需要一步手动设置**：VS Code 内置 Markdown 预览默认是 Strict 安全级别，
-> 会拦截 `http://` 图片，预览顶部会出现「Some content has been disabled in this document」。
-> 点击预览右上角的盾牌图标（或命令面板执行 *Markdown: Change Preview Security Settings*），
-> 选择 **Allow insecure local content** 即可。该选择按工作区持久化，只需设置一次。
->
-> 另外首次打开文件夹时 VS Code 会弹一次「Allow Automatic Tasks in Folder」，需要点允许，
-> 否则 `plantuml:server` 不会自动启动——此时手动执行 `npm run plantuml:server` 也一样。
-> 端口可用 `PLANTUML_PORT` 环境变量调整（需同步修改 `plantuml.server`）；
-> 若不想自动启动，删掉 `tasks.json` 里 `plantuml:server` 任务的 `runOptions` 即可。
+> 助手回复里的 mermaid 代码块走的是另一条路径（webview 内「预览」按钮 → 宿主原生
+> 窗口），见 `docs/user-stories.md`。
 
 ## 打包
 

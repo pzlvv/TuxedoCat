@@ -1,7 +1,7 @@
 /**
  * 「打开远程工作区」窗口的页面逻辑（`docs/core-daemon.md` 第 12 节）。
  *
- * 两步：接入远端（SSH 表单 / 粘贴连接串）→ 选远端目录。选目录这一步按目录选择器的习惯做：
+ * 两步：接入远端（SSH 表单）→ 选远端目录。选目录这一步按目录选择器的习惯做：
  *   - 路径可编辑，回车即跳转（`..` 那一行也能回上一级）；
  *   - 列表只列子目录，单击进入；
  *   - 工具栏提供「新建文件夹」（列表顶部内联输入）与逐行「删除」（行内二次确认）。
@@ -61,13 +61,8 @@ function main(): void {
 
   const connectView = element<HTMLElement>('connectView');
   const pickerView = element<HTMLElement>('pickerView');
-  const connectionInput = element<HTMLInputElement>('connection');
   const connectError = element<HTMLElement>('connectError');
   const connectStatus = element<HTMLElement>('connectStatus');
-  const tabConnectionString = element<HTMLButtonElement>('tabConnectionString');
-  const tabSsh = element<HTMLButtonElement>('tabSsh');
-  const paneConnectionString = element<HTMLElement>('paneConnectionString');
-  const paneSsh = element<HTMLElement>('paneSsh');
   const sshHostInput = element<HTMLInputElement>('sshHost');
   const sshPortInput = element<HTMLInputElement>('sshPort');
   const sshUserInput = element<HTMLInputElement>('sshUser');
@@ -86,17 +81,10 @@ function main(): void {
   let listing: DirectoryListing | null = null;
   let editing: InlineEdit | null = null;
   let busy = false;
-  /** 当前接入方式页签（`ssh` = SSH 表单，`connectionString` = 粘贴连接串） */
-  let activeTab: RemoteConnectRequest['kind'] = 'ssh';
 
   // ---------- 文案 ----------
 
   element<HTMLElement>('connectTitle').textContent = labels.connectTitle;
-  tabConnectionString.textContent = labels.tabConnectionString;
-  tabSsh.textContent = labels.tabSsh;
-  element<HTMLElement>('connectHint').textContent = labels.connectHint;
-  element<HTMLElement>('connectionLabel').textContent = labels.connectionLabel;
-  connectionInput.placeholder = labels.connectionPlaceholder;
   element<HTMLElement>('sshHostLabel').textContent = labels.sshHostLabel;
   sshHostInput.placeholder = labels.sshHostPlaceholder;
   element<HTMLElement>('sshPortLabel').textContent = labels.sshPortLabel;
@@ -145,33 +133,16 @@ function main(): void {
     return dir.endsWith(separator) ? `${dir}${name}` : `${dir}${separator}${name}`;
   }
 
-  // ---------- 第一步：接入方式 ----------
+  // ---------- 第一步：接入方式（SSH 表单） ----------
 
-  /** 切页签：只换显示与焦点，不清空另一页已填的内容 */
-  function selectTab(tab: RemoteConnectRequest['kind']): void {
-    if (busy) return;
-    activeTab = tab;
-    const byString = tab === 'connectionString';
-    tabConnectionString.setAttribute('aria-selected', String(byString));
-    tabSsh.setAttribute('aria-selected', String(!byString));
-    paneConnectionString.classList.toggle('hidden', !byString);
-    paneSsh.classList.toggle('hidden', byString);
-    connectError.textContent = '';
-    (byString ? connectionInput : sshHostInput).focus();
-  }
-
-  /** 组装当前页签的接入请求；形状校验在主进程（`buildRemoteEndpoint`） */
+  /** 组装接入请求；形状校验在主进程（`buildRemoteEndpoint`） */
   function currentRequest(): RemoteConnectRequest {
-    if (activeTab === 'ssh') {
-      return {
-        kind: 'ssh',
-        host: sshHostInput.value,
-        port: sshPortInput.value,
-        user: sshUserInput.value,
-        password: sshPasswordInput.value,
-      };
-    }
-    return { kind: 'connectionString', value: connectionInput.value };
+    return {
+      host: sshHostInput.value,
+      port: sshPortInput.value,
+      user: sshUserInput.value,
+      password: sshPasswordInput.value,
+    };
   }
 
   function connect(): void {
@@ -207,13 +178,8 @@ function main(): void {
       });
   }
 
-  tabConnectionString.addEventListener('click', () => selectTab('connectionString'));
-  tabSsh.addEventListener('click', () => selectTab('ssh'));
   element<HTMLButtonElement>('connect').addEventListener('click', connect);
   element<HTMLButtonElement>('cancelConnect').addEventListener('click', () => api.cancel());
-  connectionInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') connect();
-  });
   for (const input of [sshHostInput, sshPortInput, sshUserInput, sshPasswordInput]) {
     input.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') connect();
@@ -722,7 +688,7 @@ function main(): void {
   });
   element<HTMLButtonElement>('cancelPicker').addEventListener('click', () => api.cancel());
 
-  selectTab('ssh');
+  // 接入面板不抢输入框焦点：窗口打开时保持「未选中任何字段」，由用户点进要填的那一项
 }
 
 main();

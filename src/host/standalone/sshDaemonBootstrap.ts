@@ -8,22 +8,19 @@
  *    `~/<configDir>/core-daemon-<指纹>.json`。状态文件里的 daemon 探得通就是
  *    本版本（同一指纹）的 daemon 在跑，直接复用：不重启、不覆盖。
  *    多版本 Core 在同一台远端机器上各占一个槽位、各跑一个 daemon——不同版本
- *    的客户端同时接入同一台机器不再互相换血；同版本的多个客户端并发接同一个
+ *    的客户端同时接入同一台机器互不干扰；同版本的多个客户端并发接同一个
  *    daemon 由 daemon 侧的多连接支持（`docs/core-daemon.md` 第 12.5 节）。
  * 2. **部署**：指纹目录里缺可执行文件或自带 `ripgrep/rg` 才上传（临时名 + rename，
  *    对可能仍在执行的旧 inode 安全）；**指纹目录存在即视为同版本**，不做产物
  *    哈希比对——指纹只由源码内容与编译器身份决定，同一版本不该因字节差异互相
- *    覆盖（在跑的旧 daemon 会一直拉起旧 Core 的换血逻辑随指纹槽位一起消失：
- *    新版本天然落在新槽位，旧 daemon 原样留给旧版本的客户端）。
- * 3. **启动**：`start --host 127.0.0.1 --port 0`（幂等：已在跑就复用），再读状态文件。
- *    绑回环是因为转发连接从远端本机发起，daemon 端口不出机器；端口交给内核分配
- *    （`--port 0`，`docs/core-daemon.md` 第 12.2 节）——多版本 Core 各占一个槽位、
- *    各跑一个 daemon，随机端口使 SSH 模式下端口冲突从构造上不可能发生，`+1` 重试
- *    在这条路径上不再有触发时机；实际端口以按指纹的状态文件为准（本模块唯一事实
- *    来源）。直连 `tcp` 的连接串模式不受影响（`start` 缺省仍绑 `0.0.0.0:10975`，
- *    那里的端口要写进用户可见的连接串，必须可预测）。
+ *    覆盖：新版本天然落在新槽位，旧 daemon 原样留给旧版本的客户端。
+ * 3. **启动**：`start --idle-exit 30`（幂等：已在跑就复用），再读状态文件。
+ *    daemon 恒绑回环、端口交给内核分配（`docs/core-daemon.md` 第 12.2 节）：转发连接
+ *    从远端本机发起，daemon 端口不出机器；多版本 Core 各占一个槽位、各跑一个 daemon，
+ *    内核分配端口使端口冲突从构造上不可能发生。实际端口以按指纹的状态文件为准
+ *    （本模块唯一事实来源）。
  *
- * 各分支都以「读到状态文件里的 endpoint + token」收尾；任何一步失败都直接报错，
+ * 各分支都以「读到状态文件里的 endpoint」收尾；任何一步失败都直接报错，
  * 不回退到「先连上再说」（`DEVELOPMENT.md` 第 12 章）。
  *
  * 本模块是 host 层：不 import `vscode` / `electron`，可脱离宿主单测（见
@@ -75,10 +72,9 @@ export const REMOTE_DAEMON_IDLE_EXIT_SECONDS = 30;
 
 /** 引导完成后拿到的 daemon 接入信息（host 恒为远端回环） */
 export interface RemoteDaemonEndpoint {
-  /** 从远端 sshd 视角可达的主机（通配地址已换成回环） */
+  /** 从远端 sshd 视角可达的主机 */
   host: string;
   port: number;
-  token: string;
 }
 
 /** 引导参数 */
@@ -95,7 +91,7 @@ export interface RemoteTarget {
 }
 
 /**
- * 确保远端 daemon 在跑，返回可直接转发的 endpoint 与 token。
+ * 确保远端 daemon 在跑，返回可直接转发的 endpoint。
  *
  * 调用方随后用 `ssh.openTcpForward(host, port)` 拿到控制通道——daemon 端口全程不出 SSH。
  */
@@ -128,16 +124,15 @@ export async function ensureRemoteDaemon(
   }
   await ensureRemoteRipgrep(ssh, options, localBinary, remoteBinary, target);
 
-  // 3. 在跑的 daemon 原样返回；否则 start（幂等：已在跑就只打印连接信息）。换血
-  //    路径已随指纹槽位消失——没有任何场景需要在启动前结束别的 daemon。端口交给
-  //    内核分配（`--port 0`）：多版本 daemon 并存时互不抢固定端口，实际端口随状态
-  //    文件读回；`--idle-exit` 让 daemon 在最后一条连接断开后自行退出（客户端
-  //    crash 不留常驻进程，`docs/core-daemon.md` 第 12.5 节）。
+  // 3. 在跑的 daemon 原样返回；否则 start（幂等：已在跑就只打印就绪信息）。启动前
+  //    不结束别的 daemon：daemon 恒绑回环、端口交给内核分配，多版本 daemon 并存时
+  //    互不抢固定端口，实际端口随状态文件读回；`--idle-exit` 让 daemon 在最后一条
+  //    连接断开后自行退出（客户端 crash 不留常驻进程，`docs/core-daemon.md`
+  //    第 12.5 节）。
   if (running) return running;
 
   const started = await ssh.exec(
-    `${shellQuote(remoteBinary)} start --host 127.0.0.1 --port 0 `
-    + `--idle-exit ${REMOTE_DAEMON_IDLE_EXIT_SECONDS}`,
+    `${shellQuote(remoteBinary)} start --idle-exit ${REMOTE_DAEMON_IDLE_EXIT_SECONDS}`,
   );
   if (started.code !== 0) {
     throw new Error(
@@ -146,7 +141,7 @@ export async function ensureRemoteDaemon(
     );
   }
 
-  // 4. 状态文件是唯一事实来源：daemon 实际监听的端口与生效 token 都在这里
+  // 4. 状态文件是唯一事实来源：daemon 实际监听的端口在这里
   const state = await readDaemonState(ssh, statePath);
   if (!state) {
     throw new Error(
@@ -229,11 +224,10 @@ async function readDaemonState(
   }
   if (parsed === null || typeof parsed !== 'object') return null;
   const state = parsed as Partial<DaemonStateFile>;
-  if (typeof state.endpoint !== 'string' || typeof state.token !== 'string') return null;
-  if (state.token.length === 0) return null;
+  if (typeof state.endpoint !== 'string') return null;
   const target = splitEndpoint(state.endpoint);
   if (!target) return null;
-  return { host: target.host, port: target.port, token: state.token };
+  return { host: target.host, port: target.port };
 }
 
 /**
@@ -278,7 +272,7 @@ export async function detectRemoteTarget(ssh: RemoteSsh): Promise<RemoteTarget> 
   if (!platform) {
     throw new Error(
       `remote platform "${system ?? 'unknown'}" is not supported by the bundled Core; `
-      + 'deploy the Core on the target machine manually, or use the connection string instead.',
+      + 'deploy the Core on the target machine manually.',
     );
   }
   const arch = machine === 'x86_64' || machine === 'amd64'
@@ -295,33 +289,20 @@ export async function detectRemoteTarget(ssh: RemoteSsh): Promise<RemoteTarget> 
 }
 
 /**
- * 拆 `IP:端口`（IPv6 带方括号，`[::]:10975`）。
+ * 拆 `IP:端口`。状态文件里的 endpoint 恒为回环 IPv4（daemon 只绑回环）。
  *
- * 通配地址换成回环：绑 `0.0.0.0` 的 daemon 一定在回环上可达，而直接转发到 `0.0.0.0`
- * 在部分平台上会失败（与 `core-rs/src/remote.rs::connectable` 同口径）。
+ * 端口按最后一个 `:` 取；主机为空或端口非法都返回 null（调用方按状态文件损坏处理）。
  */
 export function splitEndpoint(endpoint: string): { host: string; port: number } | null {
   const trimmed = endpoint.trim();
-  let host: string;
-  let portText: string;
-  if (trimmed.startsWith('[')) {
-    const close = trimmed.indexOf(']');
-    if (close < 0) return null;
-    host = trimmed.slice(1, close);
-    const rest = trimmed.slice(close + 1);
-    if (!rest.startsWith(':')) return null;
-    portText = rest.slice(1);
-  } else {
-    const colon = trimmed.lastIndexOf(':');
-    if (colon <= 0) return null;
-    host = trimmed.slice(0, colon);
-    portText = trimmed.slice(colon + 1);
-  }
-  if (!/^\d+$/.test(portText)) return null;
+  const colon = trimmed.lastIndexOf(':');
+  if (colon <= 0) return null;
+  const host = trimmed.slice(0, colon);
+  const portText = trimmed.slice(colon + 1);
+  if (host.length === 0 || !/^\d+$/.test(portText)) return null;
   const port = Number(portText);
   if (port <= 0 || port > 65535) return null;
-  const loopback = host === '0.0.0.0' || host === '::' || host === '' ? '127.0.0.1' : host;
-  return { host: loopback, port };
+  return { host, port };
 }
 
 /** POSIX 路径拼接：远端是 Linux，分隔符恒为 `/` */

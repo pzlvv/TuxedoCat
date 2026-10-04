@@ -34,7 +34,7 @@ import { ElectronConversationManager } from './ElectronConversationManager.js';
 import { WebViewUI } from '../src/host/WebViewUI.js';
 import type { WebviewToHostMessage } from '../src/host/webviewMessages.js';
 import { normalizeWorkspacePath, sameWorkspace, dedupeWorkspacePaths } from '../src/host/workspacePaths.js';
-import { buildRemoteEndpoint, type RemoteConnectError } from '../src/host/connectionString.js';
+import { buildRemoteEndpoint, type RemoteConnectError } from '../src/host/remoteConnect.js';
 import {
   parseSshHistory,
   rememberSshEntry,
@@ -2512,11 +2512,9 @@ let remoteWorkspaceWindow: BrowserWindow | undefined;
 
 /**
  * 两步各自的窗口尺寸（内容区，`useContentSize`）。
- * 第一步只有一个输入框，窗口就按它定；连接成功后换成选目录的尺寸。
+ * 第一步是 SSH 表单，窗口就按它定；连接成功后换成选目录的尺寸。
  */
-// 接入那一步有两个页签（连接串 / SSH 表单）：窗口按较高的那个（SSH）定高，
-// 否则切到 SSH 页签时底部按钮会被挤出去
-const CONNECT_SIZE = { width: 520, height: 440 };
+const CONNECT_SIZE = { width: 520, height: 400 };
 const PICKER_SIZE = { width: 760, height: 560 };
 const PICKER_MIN_SIZE = { width: 560, height: 380 };
 
@@ -2537,10 +2535,6 @@ function parseRemoteConnectRequest(
   if (parsed.ok) return parsed;
   const messages: Record<RemoteConnectError, string> = {
     request: tt('接入请求格式不对', 'Malformed connect request'),
-    connectionString: tt(
-      '连接串格式不对，应为 IP:端口#token',
-      'Malformed connection string; expected IP:port#token',
-    ),
     host: tt('请填写 SSH 主机地址', 'SSH host is required'),
     port: tt('SSH 端口必须是 1-65535 之间的数字', 'SSH port must be a number between 1 and 65535'),
     user: tt('请填写 SSH 登录用户', 'SSH login user is required'),
@@ -2553,12 +2547,12 @@ function parseRemoteConnectRequest(
  * 打开「打开远程工作区」窗口。
  *
  * 流程（`docs/core-daemon.md` 第 12 节）：
- * 1. 粘贴 `start` 打印的连接串；
+ * 1. 填 SSH 表单（主机 / 端口 / 用户 / 口令）；
  * 2. 连接成功后**立刻**列出远端主目录，进入目录选择（可进上级 / 新建 / 删除）；
  * 3. 选定目录后加为工作区（同一个 daemon 连接随后用于打开该工作区）。
  *
- * 窗口按当前这一步的内容定尺寸：第一步只有一个输入框，用紧凑窗口；连接成功后换成
- * 选目录的尺寸（`PICKER_SIZE`），避免「大窗口里一个小输入框」。
+ * 窗口按当前这一步的内容定尺寸：第一步是紧凑的 SSH 表单；连接成功后换成选目录的
+ * 尺寸（`PICKER_SIZE`），避免「大窗口里一个小表单」。
  */
 function openRemoteWorkspaceDialog(): void {
   if (remoteWorkspaceWindow && !remoteWorkspaceWindow.isDestroyed()) {

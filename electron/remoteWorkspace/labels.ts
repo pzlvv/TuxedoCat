@@ -8,12 +8,6 @@
 /** 页面用到的全部文案 */
 export interface RemoteWorkspaceLabels {
   connectTitle: string;
-  /** 接入方式的页签 */
-  tabConnectionString: string;
-  tabSsh: string;
-  connectHint: string;
-  connectionLabel: string;
-  connectionPlaceholder: string;
   sshHostLabel: string;
   sshHostPlaceholder: string;
   sshPortLabel: string;
@@ -53,11 +47,6 @@ export interface RemoteWorkspaceLabels {
 
 const ZH: RemoteWorkspaceLabels = {
   connectTitle: '打开远程工作区',
-  tabConnectionString: '连接串',
-  tabSsh: 'SSH',
-  connectHint: '在远端机器上执行 tuxedo-cat-core start，把打印出来的连接串整行粘贴到下面。',
-  connectionLabel: '连接串',
-  connectionPlaceholder: '192.168.1.5:10975#token',
   sshHostLabel: '主机 / IP',
   sshHostPlaceholder: '192.168.1.5',
   sshPortLabel: 'SSH 端口',
@@ -92,12 +81,6 @@ const ZH: RemoteWorkspaceLabels = {
 
 const EN: RemoteWorkspaceLabels = {
   connectTitle: 'Open Remote Workspace',
-  tabConnectionString: 'Connection String',
-  tabSsh: 'SSH',
-  connectHint:
-    'Run `tuxedo-cat-core start` on the remote machine, then paste one of the printed connection strings below.',
-  connectionLabel: 'Connection String',
-  connectionPlaceholder: '192.168.1.5:10975#token',
   sshHostLabel: 'Host / IP',
   sshHostPlaceholder: '192.168.1.5',
   sshPortLabel: 'SSH Port',

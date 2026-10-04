@@ -2,8 +2,6 @@
 
 use super::*;
 
-use crate::remote::{DEFAULT_HOST, DEFAULT_PORT};
-
 fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| value.to_string()).collect()
 }
@@ -53,26 +51,21 @@ fn rejects_removed_flag_style_actions() {
 
 #[test]
 fn parses_start_with_options() {
-    // 默认：回环地址 + 高位端口，token 留空（由 daemon 生成或复用状态文件里的）
+    // 默认：不设空闲退出（常驻）
     let Command::Start(options) = parse(&args(&["start"])) else {
         panic!("expected start action");
     };
-    assert_eq!(options.host, DEFAULT_HOST);
-    assert_eq!(options.port, DEFAULT_PORT);
-    assert!(options.token.is_empty());
+    assert_eq!(options.idle_exit, None);
 
-    let Command::Start(options) = parse(&args(&["start", "--port", "8080"])) else {
+    let Command::Start(options) = parse(&args(&["start", "--idle-exit", "30"])) else {
         panic!("expected start action");
     };
-    assert_eq!(options.port, 8080);
+    assert_eq!(options.idle_exit, Some(std::time::Duration::from_secs(30)));
 
-    let Command::Start(options) =
-        parse(&args(&["start", "--host=0.0.0.0", "--token=abc"]))
-    else {
+    let Command::Start(options) = parse(&args(&["start", "--idle-exit=5"])) else {
         panic!("expected start action");
     };
-    assert_eq!(options.host, "0.0.0.0");
-    assert_eq!(options.token, "abc");
+    assert_eq!(options.idle_exit, Some(std::time::Duration::from_secs(5)));
 }
 
 #[test]
@@ -81,9 +74,9 @@ fn rejects_unknown_option() {
         Command::Error(message) => assert!(message.contains("--nope"), "{message}"),
         other => panic!("expected error, got {other:?}"),
     }
-    // 选项值不是动作：`--host 127.0.0.1` 里的值不该被当成未知动作
+    // 选项值不是动作：`--idle-exit 30` 里的值不该被当成未知动作
     assert!(matches!(
-        parse(&args(&["start", "--host", "127.0.0.1"])),
+        parse(&args(&["start", "--idle-exit", "30"])),
         Command::Start(_)
     ));
 }
@@ -99,17 +92,16 @@ fn rejects_conflicting_modes() {
 #[test]
 fn usage_lists_all_modes_and_flags() {
     let text = usage();
-    for needle in ["stdio", "start", "kill", "--host", "--port", "--token", "--help"] {
+    for needle in ["stdio", "start", "kill", "--idle-exit", "--help"] {
         assert!(text.contains(needle), "usage 缺少 {needle}：{text}");
     }
     // daemon 实体是内部实现：不出现在帮助里
     assert!(!text.contains("start-daemon"), "usage 不该出现 start-daemon：{text}");
-    // 默认值只有 `remote` 一处来源：帮助里写的必须是真正生效的默认值
-    assert!(text.contains(DEFAULT_HOST), "usage 缺少默认地址 {DEFAULT_HOST}：{text}");
-    assert!(
-        text.contains(&DEFAULT_PORT.to_string()),
-        "usage 缺少默认端口 {DEFAULT_PORT}：{text}"
-    );
+    // daemon 恒绑回环：帮助里不出现绑定地址 / 凭证 / 连接串
+    assert!(!text.contains("--host"), "usage 不该出现 --host：{text}");
+    assert!(!text.contains("--port"), "usage 不该出现 --port：{text}");
+    assert!(!text.contains("--token"), "usage 不该出现 --token：{text}");
+    assert!(!text.contains("连接串"), "usage 不该出现连接串：{text}");
 }
 
 #[test]
@@ -117,5 +109,5 @@ fn no_action_defaults_to_start() {
     // 没有动作时按 start 处理：用户直接运行可执行文件即启动远程服务
     assert!(matches!(parse(&[]), Command::Start(_)));
     // 只有选项、没有动作也一样
-    assert!(matches!(parse(&args(&["--port", "8080"])), Command::Start(_)));
+    assert!(matches!(parse(&args(&["--idle-exit", "30"])), Command::Start(_)));
 }

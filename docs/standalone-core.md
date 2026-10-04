@@ -231,7 +231,7 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 每个产物目录带一份**构建指纹**（`scripts/build-core.mjs` 的 `computeFingerprint`）：
 产物同级落一个 `fingerprint` 文件（一行 64 位小写 hex），同时经 `CORE_FINGERPRINT`
 环境变量由 `core-rs/build.rs` 烧进二进制（`env!("CORE_FINGERPRINT")`，daemon 以它区分
-自己的状态 / token / 日志文件）。指纹只由**源码内容与编译器身份**决定，与构建时间、
+自己的状态 / 日志文件）。指纹只由**源码内容与编译器身份**决定，与构建时间、
 构建路径无关：同一编译器对同一份源码的两次构建得到同一指纹。
 
 - **输入集**：`core-rs/` 工作树全部文件（排除 `target/`，遍历工作树而非
@@ -242,7 +242,7 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 - **不混入** zig / C 工具链版本：指纹是「版本身份」不是「字节一致」，同源码同 rustc
   下 C 部分的工具链差异不构成版本差异；指纹相同的两个构建产物行为一致。
 - **用途**：SSH 部署按指纹落位远端目录 `~/.local/bin/<指纹>/`（可执行文件 + 自带的
-  `ripgrep/` 同级），daemon 的状态 / token / 日志文件按指纹命名
+  `ripgrep/` 同级），daemon 的状态 / 日志文件按指纹命名
   （`core-daemon-<指纹>.*`，`docs/core-daemon.md` 第 12.3 节）。多版本 Core 在同一台
   远端机器上各占一个槽位、各跑一个 daemon，互不覆盖、互不换血；部署以「指纹目录
   存在即同版本」为准，**不做产物哈希比对**——指纹目录存在就不再上传，缺失才部署
@@ -479,7 +479,7 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 11. 重启次数超过上限时 daemon 停止重启并报告。
 12. `CORE_KIND = embedded` 时装配进程内 Core，恒一个 Connection。
 13. 产物目录按平台 / 架构解析，Windows x64 与 Linux x64 / arm64 有实际产物，Windows arm64 为预留。
-14. `start` 打印 `IP:端口` 与 token（daemon 留在后台）；token 不匹配的连接被拒绝。
+14. `start` 打印监听端口（daemon 留在后台）。
 
 ---
 
@@ -499,7 +499,7 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | 事件契约 | `src/core/AssistantEventBus.ts` |
 | Rust 包 | `core-rs/` |
 | 命令行（`--help` / `--version` / 模式） | `core-rs/src/cli.rs` |
-| 远程监听 / token / 目录列举 | `core-rs/src/remote.rs`（见 `docs/core-daemon.md` 第 12 节） |
+| 远程监听 / 目录列举 | `core-rs/src/remote.rs`（见 `docs/core-daemon.md` 第 12 节） |
 | 构建目标参数化 | `core-rs/.cargo/config.toml`、`scripts/build-core.mjs`（平台矩阵 `TARGETS`、打包集 `PACKAGE_DIRS`） |
 | 分发产物 | `resources/core/<platform>-<arch>/`（可执行文件 + 自带的 `ripgrep/`） |
 

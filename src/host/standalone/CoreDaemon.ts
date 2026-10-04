@@ -2,30 +2,28 @@
  * CoreDaemon - Host 侧的 daemon 客户端（`docs/core-daemon.md`）。
  *
  * 一个 endpoint 一个 daemon：daemon 是目标机器上的常驻服务（由 `start` 拉起），
- * Host 连它的 TCP 控制通道，第一帧用 token 鉴权。
+ * 只监听目标机器的回环地址，Host 经 SSH 转发连它的 TCP 控制通道。
  * 每个工作区对应控制通道上的一条逻辑 channel；`openChannel` 同步返回传输层对象，
- * 内部异步完成「连上 daemon → 鉴权 → openWorkspace → channel 建立」，
+ * 内部异步完成「连上 daemon → openWorkspace → channel 建立」，
  * 建立之前发出的帧按序排队（daemon 侧在 Core 进程起来前也会排队）。
  *
  * 重启责任在 daemon：Core 崩溃后 daemon 在同一 channel 上重启并回 `channelReset`；
  * 本模块把它翻译成「连接重置」——重新发 `hello`、等 `ready`、再通知总线。
  * 重启次数超限时 daemon 回 `workspaceClosed(reason=failed)`，本模块报告 fatal。
  *
- * 链路心跳（`docs/core-daemon.md` 第 12.5 节）：`authOk` 之后定期发 `ping`。
+ * 链路心跳（`docs/core-daemon.md` 第 12.5 节）：链路就绪后定期发 `ping`。
  * Host 消失而 TCP 未断（断网 / 休眠 / 进程冻结）时 daemon 读不到 EOF，只能靠
  * 控制帧的沉默判死；Host 定期发帧，daemon 才能区分「活着的静默」与「已死」。
  *
  * 沉默判定是同一件事的对称面：daemon 回 `pong`，Host 见到首个 pong 武装沉默死线——
  * 这么长时间没有任何入站帧即补发探针 ping 再宽限一次，仍无入站就断开链路并按
  * fatal 上报。daemon 死而 socket 未断（对端断电 / 网络分区）时 socket 层没有任何
- * 信号，这是 Host 在 3s 内感知断连的唯一手段；旧版 daemon 不回 pong，不武装、
- * 不误杀。
+ * 信号，这是 Host 在 3s 内感知断连的唯一手段。
  *
  * 背压：控制通道的出站帧进有序队列，socket 返回 false 时等 `drain`；
  * 越过软水位只记录诊断，不丢帧、不合并帧。
  */
 
-import { connect as netConnect } from 'net';
 import {
   CORE_PROTOCOL_VERSION,
   FrameDecoder,
@@ -55,7 +53,7 @@ const OUTBOX_WARN_THRESHOLD = 10_000;
  *
  * daemon 以「最近一次收到控制帧」判定链路死活（60s 空闲回收）：daemon 自己不发帧，
  * Host 不定期发心跳的话，它没有任何手段区分「活着的静默」与「已死而 TCP 未断」。
- * `authOk` 之后才开始发，未就绪不发。间隔取 1s：Host 侧的沉默判定要求断连在 3s 内
+ * 链路就绪后开始发，未就绪不发。间隔取 1s：Host 侧的沉默判定要求断连在 3s 内
  * 落成 fatal（见 `LINK_SILENCE_DEADLINE_MS`），探针与 pong 都按这个节奏往返。
  */
 const DAEMON_HEARTBEAT_INTERVAL_MS = 1_000;
@@ -64,8 +62,8 @@ const DAEMON_HEARTBEAT_INTERVAL_MS = 1_000;
  * 入站帧即疑似断连。daemon 死而 socket 未断（对端断电 / 网络分区，等不到 EOF/RST）、
  * daemon 进程卡死，socket 层都没有任何信号，唯一依据是 pong 的有无。
  *
- * 见过首个 `pong` 才武装：旧版 daemon 不回 pong（直连接入的远端可能还跑着旧产物），
- * 沉默判定不得把它们误杀。到期不直接判死：补发一帧探针 ping，再等
+ * 见过首个 `pong` 才武装：链路刚建立时还没有任何入站帧，武装时机放在首个 pong
+ * 之后。到期不直接判死：补发一帧探针 ping，再等
  * `LINK_SILENCE_RECHECK_MS`，期间任何入站帧都算活——本进程卡顿（定时器迟到、
  * 入站帧积压在内核缓冲）不误杀活链路。判死上限 = 死线 + 宽限 ≤ 3s。
  */
@@ -74,13 +72,13 @@ const LINK_SILENCE_DEADLINE_MS = 2_500;
 const LINK_SILENCE_RECHECK_MS = 400;
 /** 握手超时默认值（Core 进程启动后未回 `ready` 视为失败） */
 export const DEFAULT_DAEMON_HANDSHAKE_TIMEOUT_MS = 10_000;
-/** 控制通道就绪超时默认值（连不上 / 鉴权无应答） */
+/** 控制通道就绪超时默认值（连不上 / daemon 无应答） */
 export const DEFAULT_DAEMON_LINK_TIMEOUT_MS = 10_000;
 /**
  * SSH 接入的建链超时。
  *
- * SSH 建链包含「连 SSH → 探测 / 上传产物 → 启动 daemon → 转发」，首次接入比 TCP
- * 直连慢一个量级（6MB 产物 + 启动等待），不能沿用 10s。
+ * SSH 建链包含「连 SSH → 探测 / 上传产物 → 启动 daemon → 转发」，首次接入要上传
+ * 产物并等 daemon 启动，比后续接入慢一个量级，不能沿用 10s。
  */
 export const SSH_DAEMON_LINK_TIMEOUT_MS = 120_000;
 /** 关闭 channel / daemon 的等待上限 */
@@ -103,18 +101,15 @@ export class DirectoryOperationError extends Error {
 }
 
 /**
- * 控制通道：连接一个已经在监听的 daemon（`docs/core-daemon.md` 第 12 节）。
- *
- * 第一帧是 `auth`，`authOk` 之前不出站业务帧。
- * 本地同机工作区不走 daemon：`bootstrapCore` 直接用 `stdio` 动作起单进程 Core
- * （stdio 帧通道，无端口、无 token，见 `createStandaloneCoreBus`）。
- */
-/**
  * 控制通道的链路（Host 侧）。
+ *
+ * 连接一个已经在监听的 daemon（`docs/core-daemon.md` 第 12 节）；本地同机工作区
+ * 不走 daemon：`bootstrapCore` 直接用 `stdio` 动作起单进程 Core（stdio 帧通道，
+ * 无端口，见 `createStandaloneCoreBus`）。
  *
  * `write` 返回 false 表示背压（数据已被接受，等 `drain` 再继续）；
  * `end` 是 shutdown 帧之后的优雅关闭，`kill` 是超时强杀。
- * 入站数据与链路结束都用订阅式接口：建链是异步的，`authOk` 也走 `onData`。
+ * 入站数据与链路结束都用订阅式接口：建链是异步的，入站帧也走 `onData`。
  */
 export interface CoreDaemonLink {
   write(line: string): boolean;
@@ -130,33 +125,23 @@ export interface CoreDaemonLink {
 /**
  * 控制通道建链器（`docs/core-daemon.md` 第 12 节）。
  *
- * 两种接入方式各一个实现：
- * - `tcpDaemonOpener`：直连监听中的 daemon（`host:port` + token）；
- * - `createSshDaemonOpener`（`sshTransport.ts`）：全部通信走 SSH 端口，token 由远端
- *   状态文件取得（`sshDaemonBootstrap.ts`）。
+ * 唯一实现是 `createSshDaemonOpener`（`sshTransport.ts`）：全部通信走 SSH 端口，
+ * 远端 daemon 的 endpoint 由引导流程从远端状态文件取得（`sshDaemonBootstrap.ts`）。
  *
- * `open()` 负责把 `auth` 第一帧发出去——远程控制通道的第一帧必须是它。
  * 失败时 reject：直接上报，不做「先连上再说」的降级（`DEVELOPMENT.md` 第 12 章）。
  */
 export interface CoreDaemonLinkOpener {
   open(): Promise<CoreDaemonLink>;
   /**
-   * 建链前的准备（可选；SSH 实现为引导远端 daemon——发现 / 部署 / 启动）。
+   * 建链前的准备（SSH 实现为引导远端 daemon——发现 / 部署 / 启动）。
    *
    * 探测方（`probeRemoteEndpoint`）先跑它再开始计时：部署可能远超探测的短超时，
    * 计时只该覆盖「daemon 就绪之后的建链」。实现必须幂等——`open()` 自己会再走一遍
-   * 引导，此时 daemon 已就绪，是快路径。没有准备阶段的实现（TCP 直连）不提供。
+   * 引导，此时 daemon 已就绪，是快路径。
    */
   prepare?(): Promise<void>;
   /** 释放底层资源（SSH 连接等）；幂等 */
   dispose(): void;
-}
-
-/** TCP 直连参数 */
-export interface TcpDaemonTransport {
-  host: string;
-  port: number;
-  token: string;
 }
 
 export interface CoreDaemonOptions {
@@ -172,57 +157,6 @@ export interface CoreDaemonOptions {
   silenceDeadlineMs?: number;
   /** 沉默探针宽限（毫秒）；缺省 `LINK_SILENCE_RECHECK_MS` */
   silenceRecheckMs?: number;
-}
-
-/** TCP 直连建链器：socket 连上后立刻发 `auth` */
-export function tcpDaemonOpener(transport: TcpDaemonTransport): CoreDaemonLinkOpener {
-  return {
-    open: () => openTcpLink(transport),
-    dispose: () => undefined,
-  };
-}
-
-/** 建一条 TCP 控制通道链路；`connect` 之前失败即 reject */
-function openTcpLink(transport: TcpDaemonTransport): Promise<CoreDaemonLink> {
-  return new Promise<CoreDaemonLink>((resolve, reject) => {
-    const socket = netConnect({ host: transport.host, port: transport.port });
-    socket.setEncoding('utf8');
-    let connected = false;
-    const link: CoreDaemonLink = {
-      write: (line) => socket.write(line),
-      onceDrain: (listener) => {
-        socket.once('drain', listener);
-      },
-      end: () => {
-        socket.end();
-      },
-      kill: () => {
-        socket.destroy();
-      },
-      onData: (listener) => {
-        socket.on('data', (chunk: string | Buffer) => {
-          listener(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
-        });
-      },
-      onClose: (listener) => {
-        socket.on('close', listener);
-      },
-    };
-    socket.once('connect', () => {
-      connected = true;
-      try {
-        socket.write(encodeDaemonFrame({ kind: 'auth', token: transport.token }));
-      } catch (error) {
-        reject(toError(error));
-        return;
-      }
-      resolve(link);
-    });
-    socket.once('error', (error: Error) => {
-      // 连接失败：等待者不能永远挂着（连上之后的错误由 `close` 收尾）
-      if (!connected) reject(error);
-    });
-  });
 }
 
 /** 一条 daemon channel 的传输层实现（Host 侧） */
@@ -433,7 +367,7 @@ export class CoreDaemon {
    * 否则慢连接会在已经上报失败之后又把链路挂回来。
    */
   private linkAttempt = 0;
-  /** 控制通道是否可写出：`authOk` 之后才可写（此前只发 `auth`） */
+  /** 控制通道是否可写出：链路建立即可写 */
   private linkReady = false;
   private readonly decoder: FrameDecoder;
   private readonly log: (...args: unknown[]) => void;
@@ -454,16 +388,16 @@ export class CoreDaemon {
     number,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
   >();
-  /** 远程鉴权完成前的等待者 */
-  private authWaiters: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+  /** 控制通道建立前的等待者 */
+  private linkWaiters: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
   private exitWaiters: Array<() => void> = [];
-  /** 控制通道就绪超时（进程启动 / 连接 / 鉴权） */
+  /** 控制通道就绪超时（连接 / daemon 应答） */
   private linkTimer: NodeJS.Timeout | null = null;
-  /** 链路心跳定时器（`authOk` 后启动，链路退出即停） */
+  /** 链路心跳定时器（链路就绪后启动，链路退出即停） */
   private heartbeatTimer: NodeJS.Timeout | null = null;
   /** 最近一次入站控制帧的时刻（沉默判定的时间基准） */
   private lastInboundAt: number | null = null;
-  /** 沉默判定是否已武装（见到首个 pong 才武装；旧 daemon 不回 pong，永不武装） */
+  /** 沉默判定是否已武装（见到首个 pong 才武装） */
   private silenceArmed = false;
   private silenceTimer: NodeJS.Timeout | null = null;
   private recheckTimer: NodeJS.Timeout | null = null;
@@ -483,7 +417,7 @@ export class CoreDaemon {
   }
 
   /**
-   * 建立控制通道并等待可写出（`authOk`）。
+   * 建立控制通道并等待可写出。
    *
    * 远程目录选择器在打开任何工作区之前就要连接，因此单独暴露这个入口。
    */
@@ -492,7 +426,7 @@ export class CoreDaemon {
     if (!this.ensureStarted()) throw new Error('Core daemon failed to connect.');
     if (this.linkReady) return;
     return new Promise<void>((resolve, reject) => {
-      this.authWaiters.push({ resolve, reject });
+      this.linkWaiters.push({ resolve, reject });
     });
   }
 
@@ -664,7 +598,13 @@ export class CoreDaemon {
         this.writer = link;
         link.onData((chunk) => this.decoder.push(chunk));
         link.onClose(() => this.handleExit());
-        // `auth` 已由建链器发出，这里只把排队的帧放出去（等 `authOk`）
+        // 链路建立即可写：清掉就绪超时、开始心跳，放行排队的帧
+        this.clearLinkTimeout();
+        this.linkReady = true;
+        this.startHeartbeat();
+        const waiters = this.linkWaiters;
+        this.linkWaiters = [];
+        for (const waiter of waiters) waiter.resolve();
         this.flushOutbox();
       },
       (error: unknown) => {
@@ -677,7 +617,7 @@ export class CoreDaemon {
   }
 
   /**
-   * 控制通道就绪超时（连不上 / 鉴权无应答）。
+   * 控制通道就绪超时（连不上 / daemon 无应答）。
    *
    * 超时后把等待者与已登记 channel 一起失败，并断开链路，不静默挂起。
    */
@@ -715,7 +655,7 @@ export class CoreDaemon {
   // ===================== 内部：链路心跳 =====================
 
   /**
-   * 启动链路心跳（`authOk` 之后）：定期发 `ping`，daemon 以「最近一次收到控制帧」
+   * 启动链路心跳（链路就绪后）：定期发 `ping`，daemon 以「最近一次收到控制帧」
    * 判定链路死活，沉默超过它的心跳超时即按断开处理并回收全部 Core
    * （`docs/core-daemon.md` 第 12.5 节）。帧走 `enqueue`，与业务帧同序。
    */
@@ -830,11 +770,11 @@ export class CoreDaemon {
     this.silenceArmed = false;
   }
 
-  /** 连接建立失败：拒绝未决的鉴权 / 目录请求，并把已登记的 channel 一起失败 */
+  /** 连接建立失败：拒绝未决的建链 / 目录请求，并把已登记的 channel 一起失败 */
   private failPendingLink(error: Error): void {
-    const authWaiters = this.authWaiters;
-    this.authWaiters = [];
-    for (const waiter of authWaiters) waiter.reject(error);
+    const linkWaiters = this.linkWaiters;
+    this.linkWaiters = [];
+    for (const waiter of linkWaiters) waiter.reject(error);
     const directoryRequests = [...this.directoryRequests.values()];
     this.directoryRequests.clear();
     for (const request of directoryRequests) request.reject(error);
@@ -854,10 +794,10 @@ export class CoreDaemon {
     const waiters = this.exitWaiters;
     this.exitWaiters = [];
     for (const waiter of waiters) waiter();
-    // 未完成的鉴权 / 目录请求：连接没了，一律失败
-    const authWaiters = this.authWaiters;
-    this.authWaiters = [];
-    for (const waiter of authWaiters) waiter.reject(new Error('Core daemon exited.'));
+    // 未完成的建链 / 目录请求：连接没了，一律失败
+    const linkWaiters = this.linkWaiters;
+    this.linkWaiters = [];
+    for (const waiter of linkWaiters) waiter.reject(new Error('Core daemon exited.'));
     const directoryRequests = [...this.directoryRequests.values()];
     this.directoryRequests.clear();
     for (const request of directoryRequests) request.reject(new Error('Core daemon exited.'));
@@ -914,32 +854,9 @@ export class CoreDaemon {
     // 任何合法入站帧都证明链路活着：前移沉默判定的时间基准
     this.noteInbound();
     switch (value.kind) {
-      case 'authOk': {
-        if (this.linkReady) return;
-        this.clearLinkTimeout();
-        this.linkReady = true;
-        this.startHeartbeat();
-        const waiters = this.authWaiters;
-        this.authWaiters = [];
-        for (const waiter of waiters) waiter.resolve();
-        this.flushOutbox();
-        return;
-      }
       case 'pong': {
-        // 心跳应答：首个 pong 武装沉默判定（`docs/core-daemon.md` 第 12.5 节）。
-        // 旧版 daemon 不回 pong——不武装、不误杀，判死退回 TCP 层的节奏。
+        // 心跳应答：首个 pong 武装沉默判定（`docs/core-daemon.md` 第 12.5 节）
         if (!this.silenceArmed) this.armSilenceWatchdog();
-        return;
-      }
-      case 'authFailed': {
-        this.clearLinkTimeout();
-        const error = new Error(`Remote Core authentication failed: ${value.error}`);
-        const waiters = this.authWaiters;
-        this.authWaiters = [];
-        for (const waiter of waiters) waiter.reject(error);
-        this.log(`[daemon] ${error.message}`);
-        this.fatalAll(error);
-        this.writer?.kill();
         return;
       }
       case 'directoriesListed': {
@@ -1011,7 +928,7 @@ export class CoreDaemon {
 
   private flushOutbox(): void {
     const writer = this.writer;
-    // 远程：authOk 之前不写业务帧（否则会被对端当作非法帧丢弃）
+    // 链路未就绪不写：daemon 还没开始读这条连接
     if (!writer || !this.linkReady || this.waitingDrain) return;
     while (this.outbox.length > 0) {
       const line = this.outbox[0];

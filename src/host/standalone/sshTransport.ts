@@ -3,16 +3,15 @@
  *
  * 目标环境只开放 SSH 端口时，Host 的全部通信都走这条 SSH 连接：
  * 1. `SshClient` 建立 SSH 连接（口令鉴权 + 主机密钥 TOFU 校验）；
- * 2. `ensureRemoteDaemon` 完成「发现 / 部署 / 启动」并拿回 daemon 的 endpoint 与 token；
+ * 2. `ensureRemoteDaemon` 完成「发现 / 部署 / 启动」并拿回 daemon 的 endpoint；
  * 3. `forwardOut` 在远端开一条到该 endpoint 的转发通道——它就是控制通道；
- * 4. 第一帧发 `auth`，其余交给 `CoreDaemon`（背压、channel 复用、目录操作全部复用）。
+ * 4. 其余交给 `CoreDaemon`（背压、channel 复用、目录操作全部复用）。
  *
  * 本模块是 host 层：不 import `vscode` / `electron`。
  */
 
 import type { ClientChannel } from 'ssh2';
 import { SSH_DAEMON_LINK_TIMEOUT_MS, type CoreDaemonLink, type CoreDaemonLinkOpener } from './CoreDaemon.js';
-import { encodeDaemonFrame } from './daemonProtocol.js';
 import { ensureRemoteDaemon, type RemoteBootstrapOptions, type RemoteDaemonEndpoint, type RemoteSsh } from './sshDaemonBootstrap.js';
 import { SshClient, type SshTarget } from './sshClient.js';
 
@@ -29,7 +28,7 @@ export interface SshDaemonTransport {
  *
  * 启动期「可达性探测」与「正式连接」会同时为同一 endpoint 各跑一遍
  * `ensureRemoteDaemon`：不去重时两边都会全量上传产物（约 11MB，把探测的建链预算
- * 挤爆），两条 `start --port 0` 还会各拉起一个 daemon——内核分配端口互不冲突，
+ * 挤爆），两条 `start` 还会各拉起一个 daemon——内核分配端口互不冲突，
  * 多出来的那个成孤儿常驻远端。in-flight 的引导 promise 按目标共享，后到者直接
  * 复用；settle（成功或失败）后移除，之后的调用各自走常规的幂等快路径。
  */
@@ -111,20 +110,15 @@ export function createSshDaemonOpener(
       await ssh.connect();
       const daemon = await bootstrap();
       const channel = await ssh.openTcpForward(daemon.host, daemon.port);
-      return openSshChannelLink(channel, daemon.token, log);
+      return openSshChannelLink(channel, log);
     },
     dispose: () => ssh.dispose(),
   };
 }
 
-/**
- * 把一条 SSH 转发通道包成控制通道链路，并发出 `auth` 第一帧。
- *
- * 远端 daemon 的 token 不出现在任何 UI / 日志里：它只在这一次 `auth` 中使用。
- */
+/** 把一条 SSH 转发通道包成控制通道链路 */
 function openSshChannelLink(
   channel: ClientChannel,
-  token: string,
   log: (...args: unknown[]) => void,
 ): CoreDaemonLink {
   channel.setEncoding('utf8');
@@ -151,6 +145,5 @@ function openSshChannelLink(
       channel.on('close', () => listener());
     },
   };
-  channel.write(encodeDaemonFrame({ kind: 'auth', token }));
   return link;
 }

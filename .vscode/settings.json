@@ -9,12 +9,5 @@
         "dist": true // set this to false to include "dist" folder in search results
     },
     // Turn off tsc task auto detection since we have the necessary tasks as npm scripts
-    "typescript.tsc.autoDetect": "off",
-    // PlantUML：DEVELOPMENT.md 里的架构图
-    // 编辑 .puml 用扩展自带的本地渲染（需 java，无需 graphviz）
-    "plantuml.render": "Local",
-    "plantuml.java": "java",
-    // Markdown 预览这条路径只认 HTTP 服务器，不支持 Local 渲染，
-    // 所以指向 npm run plantuml:server 起的本地 PicoWeb（见 tasks.json 自动启动）
-    "plantuml.server": "http://127.0.0.1:8090"
+    "typescript.tsc.autoDetect": "off"
 }

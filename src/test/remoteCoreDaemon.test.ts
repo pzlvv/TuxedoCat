@@ -1,18 +1,17 @@
 /**
  * 远程 Core daemon 用例（`docs/core-daemon.md` 第 12 节）：
- * - TCP 控制通道第一帧必须是 `auth`，错误 token 回 `authFailed` 并拒绝请求；
- * - 正确 token 回 `authOk` 后才允许业务帧出站；
- * - `listDirectories` 走同一条控制通道，返回远端目录列表（连接后立刻弹选择器的基础）；
+ * - `listDirectories` 走控制通道，返回远端目录列表（连接后立刻弹选择器的基础）；
  * - 远程 channel 与本地同构：openWorkspace → hello → ready；
  * - 沉默判定：pong 武装、沉默判死（daemon / 链路死亡 3s 内感知的宿主侧机制），
- *   旧版 daemon（不回 pong）不武装、不误杀。
+ *   不回 pong 的对端不武装、不误杀。
  *
  * 用进程内 `net` 假 daemon 冒充远端，跑真实 socket。
  * 运行方式：npm run test:all -- remote-core-daemon
  */
 
 import { createServer, type Server, type Socket } from 'net';
-import { CoreDaemon, DirectoryOperationError, tcpDaemonOpener } from '../host/standalone/CoreDaemon';
+import { CoreDaemon, DirectoryOperationError } from '../host/standalone/CoreDaemon';
+import { tcpDaemonOpener } from './helpers/tcpDaemonLink';
 import { isDaemonToHostFrame } from '../host/standalone/daemonProtocol';
 import { createCoreChannelBus, NOOP_CORE_CHANNEL_HOOKS } from '../host/standalone/StandaloneEventBus';
 import { remoteWorkspaceRef } from '../host/workspaceRef';
@@ -36,7 +35,7 @@ interface FakeRemote {
 }
 
 /** 进程内假远端：单条控制通道，按 daemon 协议应答 */
-function startFakeRemote(token: string, options: { pong?: boolean } = {}): Promise<FakeRemote> {
+function startFakeRemote(options: { pong?: boolean } = {}): Promise<FakeRemote> {
   let connections = 0;
   let closedCount = 0;
   let pong = options.pong === true;
@@ -49,7 +48,6 @@ function startFakeRemote(token: string, options: { pong?: boolean } = {}): Promi
     sockets.add(socket);
     socket.setEncoding('utf8');
     let buffer = '';
-    let authed = false;
     const send = (frame: unknown): void => {
       socket.write(`${JSON.stringify(frame)}\n`);
     };
@@ -70,21 +68,6 @@ function startFakeRemote(token: string, options: { pong?: boolean } = {}): Promi
         try {
           frame = JSON.parse(line) as Record<string, unknown>;
         } catch {
-          continue;
-        }
-        if (frame['kind'] === 'auth') {
-          if (frame['token'] === token) {
-            authed = true;
-            send({ kind: 'authOk' });
-          } else {
-            send({ kind: 'authFailed', error: 'invalid token' });
-            socket.end();
-          }
-          continue;
-        }
-        if (!authed) {
-          send({ kind: 'authFailed', error: 'auth required' });
-          socket.end();
           continue;
         }
         if (frame['kind'] === 'ping') {
@@ -198,10 +181,9 @@ const requestHandlers: CoreRequestHandlers = {
 async function run(): Promise<void> {
   const { check, finish } = createChecker();
 
-  // ---------- 协议校验：新增帧 ----------
+  // ---------- 协议校验 ----------
   {
-    check('authOk 通过校验', isDaemonToHostFrame({ kind: 'authOk' }));
-    check('authFailed 通过校验', isDaemonToHostFrame({ kind: 'authFailed', error: 'x' }));
+    check('pong 通过校验', isDaemonToHostFrame({ kind: 'pong' }));
     check(
       'directoriesListed 通过校验',
       isDaemonToHostFrame({
@@ -242,21 +224,21 @@ async function run(): Promise<void> {
     );
   }
 
-  // ---------- 正确 token：列目录 + 打开工作区 ----------
+  // ---------- 列目录 + 打开工作区 ----------
   {
-    const fake = await startFakeRemote('secret');
+    const fake = await startFakeRemote();
     const daemon = new CoreDaemon({
       log: () => undefined,
       handshakeTimeoutMs: 2_000,
       shutdownTimeoutMs: 1_000,
-      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port, token: 'secret' }),
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port }),
     });
     const listing = await daemon.listDirectories(null);
     check('列目录返回远端路径', listing.path === '/home/dev');
     check('列目录返回父目录', listing.parent === '/home');
     check('列目录返回子目录', listing.entries.length === 1 && listing.entries[0]?.name === 'repo');
     const first = fake.received()[0] ?? '';
-    check('第一帧是 auth', first.includes('"kind":"auth"') && first.includes('"token":"secret"'));
+    check('第一帧是 listDirectories', first.includes('"kind":"listDirectories"'));
 
     check('新建目录返回实际路径', (await daemon.createDirectory('/home/dev/new')) === '/home/dev/new');
     check(
@@ -280,7 +262,7 @@ async function run(): Promise<void> {
     );
 
     const ref = remoteWorkspaceRef(
-      { host: '127.0.0.1', port: fake.port, user: null, auth: { kind: 'token', token: 'secret' } },
+      { host: '127.0.0.1', port: fake.port, user: 'root', auth: { kind: 'sshPassword', password: 'secret' } },
       '/home/dev/repo',
     );
     const bus = createCoreChannelBus(daemon.openChannel(ref), () => undefined);
@@ -293,34 +275,13 @@ async function run(): Promise<void> {
     await fake.close();
   }
 
-  // ---------- 错误 token：拒绝并报错 ----------
-  {
-    const fake = await startFakeRemote('secret');
-    const daemon = new CoreDaemon({
-      log: () => undefined,
-      handshakeTimeoutMs: 2_000,
-      shutdownTimeoutMs: 1_000,
-      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port, token: 'wrong' }),
-    });
-    let message = '';
-    try {
-      await daemon.listDirectories(null);
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
-    }
-    check('错误 token 的列目录请求失败', message.includes('authentication failed'));
-    check('错误 token 时服务端确实收到过 auth', fake.received().some((line) => line.includes('"kind":"auth"')));
-    await daemon.shutdown();
-    await fake.close();
-  }
-
   // ---------- 连接被拒：明确失败，不静默挂起 ----------
   {
     const daemon = new CoreDaemon({
       log: () => undefined,
       handshakeTimeoutMs: 2_000,
       shutdownTimeoutMs: 500,
-      transport: tcpDaemonOpener({ host: '127.0.0.1', port: 1, token: 't' }),
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: 1 }),
     });
     let failed = false;
     try {
@@ -334,7 +295,7 @@ async function run(): Promise<void> {
 
   // ---------- 沉默判定：pong 武装、沉默判死 ----------
   {
-    const fake = await startFakeRemote('secret', { pong: true });
+    const fake = await startFakeRemote({ pong: true });
     const daemon = new CoreDaemon({
       log: () => undefined,
       handshakeTimeoutMs: 2_000,
@@ -343,10 +304,10 @@ async function run(): Promise<void> {
       heartbeatIntervalMs: 20,
       silenceDeadlineMs: 60,
       silenceRecheckMs: 40,
-      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port, token: 'secret' }),
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port }),
     });
     const ref = remoteWorkspaceRef(
-      { host: '127.0.0.1', port: fake.port, user: null, auth: { kind: 'token', token: 'secret' } },
+      { host: '127.0.0.1', port: fake.port, user: 'root', auth: { kind: 'sshPassword', password: 'secret' } },
       '/home/dev/repo',
     );
     const transport = daemon.openChannel(ref);
@@ -378,15 +339,15 @@ async function run(): Promise<void> {
 
   // ---------- 默认常数下的判死时限（断连 3s 内感知的端到端锚点） ----------
   {
-    const fake = await startFakeRemote('secret', { pong: true });
+    const fake = await startFakeRemote({ pong: true });
     const daemon = new CoreDaemon({
       log: () => undefined,
       handshakeTimeoutMs: 2_000,
       shutdownTimeoutMs: 1_000,
-      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port, token: 'secret' }),
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port }),
     });
     const ref = remoteWorkspaceRef(
-      { host: '127.0.0.1', port: fake.port, user: null, auth: { kind: 'token', token: 'secret' } },
+      { host: '127.0.0.1', port: fake.port, user: 'root', auth: { kind: 'sshPassword', password: 'secret' } },
       '/home/dev/repo',
     );
     const transport = daemon.openChannel(ref);
@@ -413,9 +374,9 @@ async function run(): Promise<void> {
     await fake.close();
   }
 
-  // ---------- 旧版 daemon（不回 pong）：沉默判定不武装，长静默不误杀 ----------
+  // ---------- daemon 不回 pong：沉默判定不武装，长静默不误杀 ----------
   {
-    const fake = await startFakeRemote('secret'); // 无 pong：对等旧版 daemon
+    const fake = await startFakeRemote(); // 不回 pong
     const daemon = new CoreDaemon({
       log: () => undefined,
       handshakeTimeoutMs: 2_000,
@@ -423,12 +384,12 @@ async function run(): Promise<void> {
       heartbeatIntervalMs: 20,
       silenceDeadlineMs: 60,
       silenceRecheckMs: 40,
-      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port, token: 'secret' }),
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port }),
     });
-    check('旧 daemon：建链后列目录可用', (await daemon.listDirectories(null)).path === '/home/dev');
+    check('不回 pong：建链后列目录可用', (await daemon.listDirectories(null)).path === '/home/dev');
     await sleep(400); // 远超注入的判死上限（死线 + 宽限 = 100ms）
-    check('旧 daemon 长静默不误杀：请求仍可用', (await daemon.listDirectories(null)).path === '/home/dev');
-    check('旧 daemon 沉默期间链路未被斩断', fake.closed() === 0);
+    check('长静默不误杀：请求仍可用', (await daemon.listDirectories(null)).path === '/home/dev');
+    check('沉默期间链路未被斩断', fake.closed() === 0);
     await daemon.shutdown();
     await fake.close();
   }

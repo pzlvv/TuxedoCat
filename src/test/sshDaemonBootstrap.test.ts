@@ -4,13 +4,12 @@
  * 覆盖 `docs/core-daemon.md` 第 12.8 节按指纹落位后的三条分支与失败路径：
  * - 该指纹的 daemon 在跑 → 直接复用，不重启、不覆盖（缺可执行文件或自带
  *   `ripgrep/` 时仍补传——「在跑」不等于产物齐全）；
- * - 已部署未启动 → 只跑 `start --host 127.0.0.1 --port 0`，产物在就不重传（指纹目录
+ * - 已部署未启动 → 只跑 `start --idle-exit 30`，产物在就不重传（指纹目录
  *   存在即视为同版本，不做字节比对——「不无脑覆盖」）；
- * - 未部署 → 上传产物（临时名 + `mv` 原子换名）+ `start --host 127.0.0.1 --port 0`；
+ * - 未部署 → 上传产物（临时名 + `mv` 原子换名）+ `start --idle-exit 30`；
  * - `start` 失败 / 状态文件读不出 / 本机产物缺指纹或缺自带 ripgrep → 报错，不静默降级。
  *
- * 旧版「版本过期换血」（kill + 覆盖 + 重启）随指纹槽位消失：新版本天然落在新
- * 槽位，旧 daemon 原样留给旧版本的客户端——没有可覆盖的路径。
+ * 多版本各占一个指纹槽位：新版本天然落在新槽位，旧 daemon 原样留给旧版本的客户端。
  *
  * 用假 SSH 实现（`RemoteSsh`）跑，不需要真实机器；真实链路由 `sshClient` 的
  * 端到端用例（手工 / Electron）覆盖。
@@ -38,12 +37,12 @@ const BINARY_PATH = `${HOME}/.local/bin/${FINGERPRINT}/tuxedo-cat-core`;
 /** Core 自带的 ripgrep：与远端可执行文件同级（`docs/standalone-core.md` 第 4 节） */
 const RIPGREP_PATH = `${HOME}/.local/bin/${FINGERPRINT}/ripgrep/rg`;
 /**
- * 引导执行的启动命令：SSH 接入绑回环（转发连接从远端本机发起，端口不出机器）；
- * 端口交给内核分配（`--port 0`）——多版本 daemon 并存互不抢固定端口，实际端口随
- * 状态文件读回；`--idle-exit 30` 让 daemon 在最后一条连接断开后自行退出（客户端
- * crash 不留常驻进程），见 `docs/core-daemon.md` 第 12.2 / 12.5 / 12.8 节。
+ * 引导执行的启动命令：daemon 恒绑回环（转发连接从远端本机发起，端口不出机器）；
+ * 端口交给内核分配——多版本 daemon 并存互不抢固定端口，实际端口随状态文件读回；
+ * `--idle-exit 30` 让 daemon 在最后一条连接断开后自行退出（客户端 crash 不留常驻
+ * 进程），见 `docs/core-daemon.md` 第 12.2 / 12.5 / 12.8 节。
  */
-const START_COMMAND = `'${BINARY_PATH}' start --host 127.0.0.1 --port 0 --idle-exit 30`;
+const START_COMMAND = `'${BINARY_PATH}' start --idle-exit 30`;
 
 /** 假的远端 SSH：文件系统、可执行文件与转发可达性都可控 */
 class FakeSsh implements RemoteSsh {
@@ -62,9 +61,9 @@ class FakeSsh implements RemoteSsh {
   startStderr = '';
   /** `start` 之后不落状态文件（模拟 daemon 没起来） */
   skipState = false;
-  private endpoint = '0.0.0.0:10975';
-  /** 每次 `start` 换一个 token：用来区分「复用旧 daemon」与「新起了 daemon」 */
-  private startCount = 0;
+  private endpoint = '127.0.0.1:10975';
+  /** 每次 `start` 换一个端口：用来区分「复用旧 daemon」与「新起了 daemon」 */
+  startCount = 0;
 
   async homeDir(): Promise<string> {
     return HOME;
@@ -105,19 +104,16 @@ class FakeSsh implements RemoteSsh {
     if (command === START_COMMAND) {
       if (this.startExit === 0 && !this.skipState) {
         this.startCount += 1;
-        this.writeState(this.endpoint, `tok-${this.startCount}`);
+        this.writeState(`127.0.0.1:${10975 + this.startCount}`);
       }
       return { code: this.startExit, stdout: '', stderr: this.startStderr };
     }
     throw new Error(`unexpected remote command: ${command}`);
   }
 
-  writeState(endpoint: string, token: string): void {
+  writeState(endpoint: string): void {
     this.endpoint = endpoint;
-    this.files.set(
-      STATE_PATH,
-      JSON.stringify({ requested: '0.0.0.0:10975', endpoint, token }),
-    );
+    this.files.set(STATE_PATH, JSON.stringify({ endpoint }));
   }
 }
 
@@ -147,12 +143,13 @@ runTests('sshDaemonBootstrap', async () => {
 
   // ---------- endpoint 解析 ----------
 
-  check('通配地址换成回环', splitEndpoint('0.0.0.0:10975')?.host === '127.0.0.1');
-  check('IPv6 通配地址换成回环', splitEndpoint('[::]:10975')?.host === '127.0.0.1');
-  check('具体地址原样保留', splitEndpoint('192.168.1.5:10975')?.host === '192.168.1.5');
-  check('端口解析正确', splitEndpoint('192.168.1.5:10975')?.port === 10975);
-  check('缺端口返回 null', splitEndpoint('192.168.1.5') === null);
-  check('端口非法返回 null', splitEndpoint('192.168.1.5:abc') === null);
+  check('解析主机', splitEndpoint('127.0.0.1:10975')?.host === '127.0.0.1');
+  check('主机名原样保留', splitEndpoint('build-box:10975')?.host === 'build-box');
+  check('端口解析正确', splitEndpoint('127.0.0.1:10975')?.port === 10975);
+  check('缺端口返回 null', splitEndpoint('127.0.0.1') === null);
+  check('缺主机返回 null', splitEndpoint(':10975') === null);
+  check('端口非法返回 null', splitEndpoint('127.0.0.1:abc') === null);
+  check('端口越界返回 null', splitEndpoint('127.0.0.1:70000') === null);
   check('空串返回 null', splitEndpoint('') === null);
 
   // ---------- 远端平台识别 ----------
@@ -195,13 +192,13 @@ runTests('sshDaemonBootstrap', async () => {
 
   {
     const fake = new FakeSsh();
-    fake.writeState('0.0.0.0:10975', 'tok-running');
+    fake.writeState('127.0.0.1:10975');
     fake.reachable.add('127.0.0.1:10975');
     fake.executables.add(BINARY_PATH);
     fake.executables.add(RIPGREP_PATH);
     const daemon = await ensureRemoteDaemon(fake, options);
     check('复用运行中的 daemon（回环地址）', daemon.host === '127.0.0.1' && daemon.port === 10975);
-    check('复用运行中的 daemon（token）', daemon.token === 'tok-running');
+    check('复用运行中的 daemon（端口取自状态文件）', daemon.port === 10975);
     check('复用时不重启 daemon', !fake.commands.includes(START_COMMAND));
     check('复用时不部署产物', fake.uploads.length === 0);
   }
@@ -210,11 +207,11 @@ runTests('sshDaemonBootstrap', async () => {
 
   {
     const fake = new FakeSsh();
-    fake.writeState('0.0.0.0:10975', 'tok-running');
+    fake.writeState('127.0.0.1:10975');
     fake.reachable.add('127.0.0.1:10975');
     fake.executables.add(BINARY_PATH);
     const daemon = await ensureRemoteDaemon(fake, options);
-    check('补 rg 后仍复用同一个 daemon', daemon.token === 'tok-running');
+    check('补 rg 后仍复用同一个 daemon', daemon.port === 10975 && fake.startCount === 0);
     check('已在跑时补传自带 ripgrep', fake.uploads.length === 1
       && fake.uploads[0]?.remote === RIPGREP_PATH && fake.uploads[0]?.local === ripgrep);
     check('已在跑时不重跑 start', !fake.commands.includes(START_COMMAND));
@@ -224,7 +221,7 @@ runTests('sshDaemonBootstrap', async () => {
 
   {
     const fake = new FakeSsh();
-    fake.writeState('0.0.0.0:10975', 'tok-running');
+    fake.writeState('127.0.0.1:10975');
     fake.reachable.add('127.0.0.1:10975');
     const daemon = await ensureRemoteDaemon(fake, options);
     check('目录被清时补传可执行文件（经临时名 + mv）', fake.uploads.some(
@@ -233,7 +230,7 @@ runTests('sshDaemonBootstrap', async () => {
     check('补传的自带 ripgrep 落在指纹目录里', fake.uploads.some(
       (upload) => upload.remote === RIPGREP_PATH,
     ));
-    check('补传后仍复用运行中的 daemon', daemon.token === 'tok-running'
+    check('补传后仍复用运行中的 daemon', daemon.port === 10975
       && !fake.commands.includes(START_COMMAND));
     check('目标文件本身永不直接覆盖写（执行中的 daemon 是 ETXTBSY）',
       !fake.uploads.some((upload) => upload.remote === BINARY_PATH));
@@ -246,7 +243,7 @@ runTests('sshDaemonBootstrap', async () => {
     fake.executables.add(BINARY_PATH);
     fake.executables.add(RIPGREP_PATH);
     const daemon = await ensureRemoteDaemon(fake, options);
-    check('已部署时返回状态文件里的 token', daemon.token === 'tok-1');
+    check('已部署时返回状态文件里的端口', daemon.port === 10976);
     check('指纹目录存在时不重新上传（不做字节比对）', fake.uploads.length === 0);
     check('已部署时执行 start（绑回环）', fake.commands.includes(START_COMMAND));
     // 远端可执行文件名要先问 `uname`，因此这一步一定会发生
@@ -267,19 +264,19 @@ runTests('sshDaemonBootstrap', async () => {
       && fake.uploads[1]?.local === ripgrep);
     check('上传前建好指纹目录', fake.commands.includes(`mkdir -p '${HOME}/.local/bin/${FINGERPRINT}'`));
     check('上传后执行 start（绑回环，端口交给内核分配）', fake.commands.includes(START_COMMAND));
-    check('返回 daemon endpoint', daemon.host === '127.0.0.1' && daemon.port === 10975);
+    check('返回 daemon endpoint', daemon.host === '127.0.0.1' && daemon.port === 10976);
   }
 
   // ---------- 状态文件在但连不上：按「没在跑」处理 ----------
 
   {
     const fake = new FakeSsh();
-    fake.writeState('0.0.0.0:10975', 'tok-stale');
+    fake.writeState('127.0.0.1:10975');
     fake.executables.add(BINARY_PATH);
     fake.executables.add(RIPGREP_PATH);
     const daemon = await ensureRemoteDaemon(fake, options);
     check('探测失败后重新启动', fake.commands.includes(START_COMMAND));
-    check('重新启动后返回新 token', daemon.token === 'tok-1');
+    check('重新启动后返回新端口', daemon.port === 10976);
   }
 
   // ---------- 状态文件损坏：按「没在跑」处理 ----------
@@ -291,7 +288,7 @@ runTests('sshDaemonBootstrap', async () => {
     fake.executables.add(RIPGREP_PATH);
     const daemon = await ensureRemoteDaemon(fake, options);
     check('损坏的状态文件被忽略', fake.commands.includes(START_COMMAND));
-    check('损坏的状态文件不阻止接入', daemon.token === 'tok-1');
+    check('损坏的状态文件不阻止接入', daemon.port === 10976);
   }
 
   // ---------- start 失败：把远端 stderr 带回来 ----------
@@ -301,7 +298,7 @@ runTests('sshDaemonBootstrap', async () => {
     fake.executables.add(BINARY_PATH);
     fake.executables.add(RIPGREP_PATH);
     fake.startExit = 1;
-    fake.startStderr = 'port already in use';
+    fake.startStderr = 'cannot bind 127.0.0.1';
     let message = '';
     try {
       await ensureRemoteDaemon(fake, options);
@@ -309,7 +306,7 @@ runTests('sshDaemonBootstrap', async () => {
       message = error instanceof Error ? error.message : String(error);
     }
     check('start 失败时报错', message.includes('start') && message.includes('exit 1'));
-    check('start 失败时带上远端 stderr', message.includes('port already in use'));
+    check('start 失败时带上远端 stderr', message.includes('cannot bind 127.0.0.1'));
   }
 
   // ---------- start 成功但没落状态文件：报错 ----------

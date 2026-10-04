@@ -3,7 +3,7 @@
  *
  * 锁住三件事（`docs/client-connection.md` 第 4 节、第 9 节）：
  * - 本地项：旧版本的路径字符串按本地引用迁移，目录已不存在即丢弃；
- * - 远程项：`scheme` / `path` / endpoint 与**凭证**（token、SSH 口令）逐项往返；
+ * - 远程项：`scheme` / `path` / endpoint 与**凭证**（SSH 口令）逐项往返；
  * - 形状不合法（缺字段 / 端口越界 / 认不出的凭证种类）一律丢弃，不猜、不补默认值。
  *
  * 运行方式：npm run test:all -- workspace-state
@@ -69,24 +69,6 @@ runTests('workspaceState', () => {
   );
   check('远程项不检查本地目录', probedLocal === 0);
 
-  // ---------- 远程项：token ----------
-
-  const tcp: WorkspaceRef = {
-    scheme: 'tcp',
-    path: '/srv/repo',
-    endpoint: {
-      host: '10.0.0.7',
-      port: 10975,
-      user: null,
-      auth: { kind: 'token', token: 'deadbeef' },
-    },
-  };
-  const tcpRoundTrip = roundTrip(tcp);
-  check('TCP 项往返保留 scheme', tcpRoundTrip?.scheme === 'tcp');
-  check('TCP 项往返保留 token', tcpRoundTrip?.endpoint?.auth?.kind === 'token'
-    && tcpRoundTrip.endpoint.auth.token === 'deadbeef');
-  check('TCP 项往返保留 null 用户', tcpRoundTrip?.endpoint?.user === null);
-
   // ---------- 形状不合法：整项丢弃 ----------
 
   check('非对象非字符串丢弃', parseWorkspaceEntry(42, () => true) === null);
@@ -96,38 +78,36 @@ runTests('workspaceState', () => {
   check('空 scheme 丢弃', parseWorkspaceEntry({ scheme: '', path: '/a' }, () => true) === null);
 
   check('endpoint 非对象丢弃', parseSerializedEndpoint('nope') === null);
-  check('endpoint 缺主机丢弃', parseSerializedEndpoint({ port: 22, auth: { kind: 'token', token: 't' } }) === null);
+  check('endpoint 缺主机丢弃', parseSerializedEndpoint({ port: 22, auth: { kind: 'sshPassword', password: 't' } }) === null);
   check(
     'endpoint 端口非数字丢弃',
-    parseSerializedEndpoint({ host: 'h', port: '22', auth: { kind: 'token', token: 't' } }) === null,
+    parseSerializedEndpoint({ host: 'h', port: '22', auth: { kind: 'sshPassword', password: 't' } }) === null,
   );
   check(
     'endpoint 端口越界丢弃',
-    parseSerializedEndpoint({ host: 'h', port: 70000, auth: { kind: 'token', token: 't' } }) === null,
+    parseSerializedEndpoint({ host: 'h', port: 70000, auth: { kind: 'sshPassword', password: 't' } }) === null,
   );
   check(
     'endpoint 端口 0 丢弃',
-    parseSerializedEndpoint({ host: 'h', port: 0, auth: { kind: 'token', token: 't' } }) === null,
+    parseSerializedEndpoint({ host: 'h', port: 0, auth: { kind: 'sshPassword', password: 't' } }) === null,
   );
   check(
     'endpoint 允许 port/user 为 null',
-    parseSerializedEndpoint({ host: 'h', port: null, user: null, auth: { kind: 'token', token: 't' } })
+    parseSerializedEndpoint({ host: 'h', port: null, user: null, auth: { kind: 'sshPassword', password: 't' } })
       ?.port === null,
   );
   check(
     'endpoint 用户类型不对丢弃',
-    parseSerializedEndpoint({ host: 'h', port: 22, user: 7, auth: { kind: 'token', token: 't' } }) === null,
+    parseSerializedEndpoint({ host: 'h', port: 22, user: 7, auth: { kind: 'sshPassword', password: 't' } }) === null,
   );
 
   check('认不出的凭证种类丢弃', parseSerializedAuth({ kind: 'password', password: 'x' }) === null);
   check('缺凭证丢弃', parseSerializedAuth(null) === null);
-  check('空 token 丢弃', parseSerializedAuth({ kind: 'token', token: '' }) === null);
   check('空口令丢弃', parseSerializedAuth({ kind: 'sshPassword', password: '' }) === null);
-  check('token 凭证解析', parseSerializedAuth({ kind: 'token', token: 't' })?.kind === 'token');
   check('口令凭证解析', parseSerializedAuth({ kind: 'sshPassword', password: 'p' })?.kind === 'sshPassword');
   check(
     '凭证带额外字段不影响解析',
-    parseSerializedAuth({ kind: 'token', token: 't', extra: 1 })?.kind === 'token',
+    parseSerializedAuth({ kind: 'sshPassword', password: 'p', extra: 1 })?.kind === 'sshPassword',
   );
 
   finish();

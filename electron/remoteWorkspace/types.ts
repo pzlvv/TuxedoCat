@@ -9,7 +9,7 @@ import type {
   DirectoryFailureReason,
   DirectoryListing,
 } from '../../src/host/standalone/daemonProtocol.js';
-import type { RemoteConnectRequest } from '../../src/host/connectionString.js';
+import type { RemoteConnectRequest } from '../../src/host/remoteConnect.js';
 import type { SshHistoryEntry } from '../../src/host/sshHistory.js';
 
 export type { DirectoryEntry, DirectoryFailureReason, DirectoryListing };
@@ -20,15 +20,15 @@ export type RemoteConnectResult =
   | {
       ok: true;
       listing: DirectoryListing;
-      /** 已连上的目标；`user` 只对 SSH 接入有值 */
+      /** 已连上的目标 */
       endpoint: { host: string; port: number; user: string | null };
     }
   | { ok: false; error: string };
 
 /**
- * 连接请求：两种接入方式（`docs/core-daemon.md` 第 12 节）。
+ * 连接请求：SSH 表单（`docs/core-daemon.md` 第 12 节）。
  *
- * 形状定义在 host 层（`src/host/connectionString.ts`）：主进程用同一份类型做校验，
+ * 形状定义在 host 层（`src/host/remoteConnect.ts`）：主进程用同一份类型做校验，
  * 页面只负责收集输入，不自己解释格式。
  */
 export type { RemoteConnectRequest };
@@ -54,7 +54,7 @@ export type RemoteDeleteResult =
 
 /** preload 暴露给页面的接口（`window.remoteWorkspaceAPI`） */
 export interface RemoteWorkspaceAPI {
-  /** 连远端 daemon（连接串或 SSH 表单），成功即返回主目录列表 */
+  /** 经 SSH 连远端 daemon，成功即返回主目录列表 */
   connect(request: RemoteConnectRequest): Promise<RemoteConnectResult>;
   /**
    * 取 SSH 连接历史（最近连接在前）。条目含口令：选定候选要回填整个表单，

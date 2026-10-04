@@ -15,24 +15,18 @@ import { stringifyJsonSafe } from '../../core/utils/stringUtils.js';
 // ==================== 远端 daemon 状态文件 ====================
 
 /**
- * 远端 daemon 的状态 / token / 日志文件名（`docs/core-daemon.md` 第 12.3 节）。
+ * 远端 daemon 的状态 / 日志文件名（`docs/core-daemon.md` 第 12.3 节）。
  *
  * 文件名按**构建指纹**区分：`core-daemon-<指纹>.json` 等。一个指纹一个 daemon、
  * 一份状态文件——多版本 Core 在同一台远端机器上并存时，各自的 `start` / `kill` /
  * 探测只作用于自己指纹的 daemon，互不踩踏（`docs/standalone-core.md` 第 4.4 节）。
  * 与 `settings.json` 同目录（`~/<configDir>/`），**只有 daemon 写它们**；Host 侧读取
- * 状态文件来拿到实际监听端口与生效 token（SSH 接入时 daemon 端口不对外映射，只能
- * 这样发现）。命名规则与 `core-rs/src/remote.rs` 的
- * `DAEMON_STATE_FILE_NAME` / `DAEMON_TOKEN_FILE_NAME` / `DAEMON_LOG_FILE_NAME`
- * （按指纹拼接）保持一致，改动必须同步两侧。
+ * 状态文件来拿到实际监听端口（SSH 接入时 daemon 端口不对外映射，只能这样发现）。
+ * 命名规则与 `core-rs/src/remote.rs` 的 `DAEMON_STATE_FILE_NAME` /
+ * `DAEMON_LOG_FILE_NAME`（按指纹拼接）保持一致，改动必须同步两侧。
  */
 export function daemonStateFileName(fingerprint: string): string {
   return `core-daemon-${fingerprint}.json`;
-}
-
-/** token 文件名；取值顺序 `--token` > token 文件 > 新随机，跨 daemon 重启保留 */
-export function daemonTokenFileName(fingerprint: string): string {
-  return `core-daemon-${fingerprint}.token`;
 }
 
 /** 诊断日志文件名；`start` 拉起的 daemon 把 stderr/stdout 追加到这里 */
@@ -42,12 +36,8 @@ export function daemonLogFileName(fingerprint: string): string {
 
 /** 状态文件内容（字段与 `core-rs/src/remote.rs::DaemonState` 一一对应） */
 export interface DaemonStateFile {
-  /** 启动时请求的 `host:port` */
-  requested: string;
-  /** 实际监听的 `IP:端口`（端口 +1 重试后与请求值不同） */
+  /** 实际监听的 `IP:端口`（daemon 恒绑回环，端口由内核分配） */
   endpoint: string;
-  /** 控制通道 token */
-  token: string;
 }
 
 // ==================== 通道描述符 ====================
@@ -62,8 +52,6 @@ export type ChannelDescriptor =
 
 /** Host → daemon */
 export type HostToDaemonFrame =
-  /** 远程控制通道的第一帧（`docs/core-daemon.md` 第 12 节）；本地 stdio 通道不发送 */
-  | { kind: 'auth'; token: string }
   | { kind: 'openWorkspace'; id: number; workspaceRef: WorkspaceRef }
   | { kind: 'closeWorkspace'; channel: number }
   | { kind: 'frame'; channel: number; frame: UiToCoreFrame }
@@ -103,10 +91,8 @@ export interface DirectoryListing {
 
 /** daemon → Host */
 export type DaemonToHostFrame =
-  | { kind: 'authOk' }
   /** 心跳应答：对 `ping` 的回应；Host 见首个 pong 武装沉默判定（第 12.5 节） */
   | { kind: 'pong' }
-  | { kind: 'authFailed'; error: string }
   | { kind: 'workspaceOpened'; id: number; channel: number; descriptor: ChannelDescriptor }
   | { kind: 'workspaceFailed'; id: number; error: string }
   | { kind: 'workspaceClosed'; channel: number; reason: WorkspaceCloseReason }
@@ -166,11 +152,8 @@ function isDirectoryEntries(value: unknown): value is DirectoryEntry[] {
 export function isDaemonToHostFrame(value: unknown): value is DaemonToHostFrame {
   if (!isRecord(value)) return false;
   switch (value['kind']) {
-    case 'authOk':
     case 'pong':
       return true;
-    case 'authFailed':
-      return typeof value['error'] === 'string';
     case 'directoriesListed':
       return (
         typeof value['id'] === 'number'

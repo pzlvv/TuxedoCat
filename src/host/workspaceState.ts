@@ -5,7 +5,7 @@
  * （见 `docs/client-connection.md` 第 4 节、第 9 节）。
  *
  * 本地项与远程项同格式：本地项的 `endpoint` 为 `null`，远程项带 host / port / user 与
- * **凭证**（token / SSH 口令，明文落盘，重启后据此恢复连接）。旧版本只写本地路径字符串，
+ * **凭证**（SSH 口令，明文落盘，重启后据此恢复连接）。旧版本只写本地路径字符串，
  * 读取时按本地引用迁移。
  */
 
@@ -73,16 +73,9 @@ export function parseSerializedEndpoint(value: unknown): WorkspaceEndpoint | nul
 /** 校验落盘的凭证；认不出的 `kind` 一律丢弃（不做「有就用」的降级） */
 export function parseSerializedAuth(value: unknown): WorkspaceAuth | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const auth = value as { kind?: unknown; token?: unknown; password?: unknown };
-  if (auth.kind === 'token') {
-    return typeof auth.token === 'string' && auth.token.length > 0
-      ? { kind: 'token', token: auth.token }
-      : null;
-  }
-  if (auth.kind === 'sshPassword') {
-    return typeof auth.password === 'string' && auth.password.length > 0
-      ? { kind: 'sshPassword', password: auth.password }
-      : null;
-  }
-  return null;
+  const auth = value as { kind?: unknown; password?: unknown };
+  if (auth.kind !== 'sshPassword') return null;
+  return typeof auth.password === 'string' && auth.password.length > 0
+    ? { kind: 'sshPassword', password: auth.password }
+    : null;
 }

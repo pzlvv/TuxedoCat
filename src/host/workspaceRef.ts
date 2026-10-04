@@ -16,21 +16,17 @@ import { normalizeWorkspacePath, sameWorkspace } from './workspacePaths.js';
 /**
  * 远程凭证（`docs/core-daemon.md` 第 12 节）。
  *
- * 判别联合而不是可选字段：`kind` 唯一决定控制通道怎么建，「没有凭证」在远程引用上
- * 是错误状态，由调用方在建立引用时保证（`DEVELOPMENT.md` 第 12 章）。
+ * 只有 SSH 口令一种：SSH 完成机器级鉴权，daemon 的 token 由引导流程从远端状态文件
+ * 取得、只在控制通道第一帧使用。`kind` 判别字段保留，便于后续新增凭证种类。
  * 凭证不进总线载荷、不下发 Core；宿主侧的落盘与恢复见 `workspaceState.ts`。
  */
-export type WorkspaceAuth =
-  /** TCP 直连监听中的 daemon：第一帧 `auth` 用 token 鉴权 */
-  | { kind: 'token'; token: string }
-  /** SSH 接入：SSH 完成机器级鉴权，daemon 的 token 由引导流程从远端状态文件取得 */
-  | { kind: 'sshPassword'; password: string };
+export type WorkspaceAuth = { kind: 'sshPassword'; password: string };
 
 /** 远程 endpoint（本地为 null） */
 export interface WorkspaceEndpoint {
   /** 主机名 / 容器名；`ssh` 下是 SSH 主机 */
   host: string;
-  /** 端口；`tcp` 下是 daemon 端口，`ssh` 下是 SSH 端口，未指定为 null */
+  /** 端口；`ssh` 下是 SSH 端口，未指定为 null */
   port: number | null;
   /** 登录用户；`ssh` 下必填，未指定为 null */
   user: string | null;
@@ -58,26 +54,17 @@ export function localWorkspaceRef(path: string): WorkspaceRef {
 }
 
 /**
- * 直连一个监听中的 Core endpoint（`docs/core-daemon.md` 第 12 节）：
- * Host 连 `host:port` 的 TCP 控制通道，第一帧用 `auth.token` 鉴权。
- */
-export const TCP_WORKSPACE_SCHEME = 'tcp';
-
-/**
  * SSH 接入（`docs/core-daemon.md` 第 12 节）：全部通信走 SSH 端口，
  * 不要求目标机器把 daemon 端口映射出来。
  */
 export const SSH_WORKSPACE_SCHEME = 'ssh';
 
-/** 远程工作区引用：接入方式由凭证种类决定（SSH 口令 → `ssh`，token → `tcp`） */
+/** 远程工作区引用：接入方式恒为 SSH */
 export function remoteWorkspaceRef(
   endpoint: WorkspaceEndpoint,
   path: string,
 ): WorkspaceRef {
-  const scheme = endpoint.auth?.kind === 'sshPassword'
-    ? SSH_WORKSPACE_SCHEME
-    : TCP_WORKSPACE_SCHEME;
-  return { scheme, path, endpoint };
+  return { scheme: SSH_WORKSPACE_SCHEME, path, endpoint };
 }
 
 /**

@@ -6,13 +6,9 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <!-- 第一步：接入远端（连接串 / SSH 两种方式，窗口按这一步的内容高度建，紧凑一屏） -->
+    <!-- 第一步：接入远端（SSH 表单，窗口按这一步的内容高度建，紧凑一屏） -->
     <section class="view" id="connectView">
       <h1 class="view-title" id="connectTitle"></h1>
-      <div class="tabs" role="tablist">
-        <button id="tabSsh" class="tab" type="button" role="tab"></button>
-        <button id="tabConnectionString" class="tab" type="button" role="tab"></button>
-      </div>
 
       <div class="pane" id="paneSsh">
         <div class="form-grid">
@@ -35,20 +31,6 @@
             <input id="sshPassword" class="text-input" type="password" autocomplete="off" />
           </label>
         </div>
-      </div>
-
-      <div class="pane hidden" id="paneConnectionString">
-        <p class="hint" id="connectHint"></p>
-        <label class="field" for="connection">
-          <span class="field-label" id="connectionLabel"></span>
-        </label>
-        <input
-          id="connection"
-          class="text-input"
-          type="text"
-          spellcheck="false"
-          autocomplete="off"
-        />
       </div>
 
       <p class="status" id="connectStatus"></p>

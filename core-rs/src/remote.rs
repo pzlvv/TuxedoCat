@@ -1,18 +1,19 @@
 //! 远程 Core 服务（见 `docs/core-daemon.md` 第 12 节）。
 //!
 //! 两个角色：
-//! - `start`（启动器，用户可见）：确保后台 daemon 在跑，把「连接串」（`IP:端口#token`）
-//!   打印出来，随后自己退出；没有 daemon 就用 `start-daemon` 拉一个到后台。
-//! - `start-daemon`（daemon 实体，启动器的内部实现）：绑定端口、把实际 endpoint 与
-//!   生效的 token 落盘（`~/<configDir>/core-daemon-<指纹>.json`，按构建指纹区分——
+//! - `start`（启动器，用户可见）：确保后台 daemon 在跑，打印就绪信息后自己退出；
+//!   没有 daemon 就用 `start-daemon` 拉一个到后台。
+//! - `start-daemon`（daemon 实体，启动器的内部实现）：绑回环端口、把实际 endpoint
+//!   落盘（`~/<configDir>/core-daemon-<指纹>.json`，按构建指纹区分——
 //!   `docs/standalone-core.md` 第 4.4 节），然后常驻 accept。
 //!
-//! Host 连上来后第一帧必须是 `auth`，校验通过才进入 daemon 主循环。daemon 同时服务
-//! 多条控制通道：accept 循环每接受一条连接就交一个线程去服务（thread-per-connection，
-//! 同步阻塞模型，不引入 async runtime），随即回到 accept。客户端身份是一条通过 token
-//! 鉴权成功的控制连接，不是来源 IP；连接之间互不阻塞（`docs/core-daemon.md`
-//! 第 12.5 节）。远程目录列举（`listDirectories`）也在控制通道上完成，Host 据此在
-//! 连接后立刻弹出远端目录选择器。
+//! daemon 只监听目标机器的回环地址，端口由内核分配：Host 经 SSH 转发接入，端口不出
+//! 机器，也不需要用户手工填任何连接信息。回环地址就是访问边界。
+//!
+//! daemon 同时服务多条控制通道：accept 循环每接受一条连接就交一个线程去服务
+//! （thread-per-connection，同步阻塞模型，不引入 async runtime），随即回到 accept；
+//! 连接之间互不阻塞（`docs/core-daemon.md` 第 12.5 节）。远程目录列举
+//! （`listDirectories`）也在控制通道上完成，Host 据此在连接后立刻弹出远端目录选择器。
 //!
 //! 「断开」有两条路径：TCP 层的 EOF / 错误，和心跳空闲超时——Host 消失而 TCP 未断
 //! （断网 / 休眠 / 进程冻结）时读线程永远等不到 EOF，靠 Host 定期 `ping` 的有无判定
@@ -37,48 +38,20 @@ use crate::daemon::{
     self, ChannelExit, CoreSpawner, DaemonEvent, DaemonOptions, FrameOutput, HEARTBEAT_TIMEOUT,
 };
 use crate::util::diag;
-use crate::daemon_protocol::{DaemonToHostFrame, DirectoryEntry, HostToDaemonFrame};
-
-/// 默认监听端口。取一个高位、非常用服务的端口；冲突时从它开始逐个 +1 重试。
-pub const DEFAULT_PORT: u16 = 10975;
-/// 默认监听地址：绑全部网卡（跨机接入开箱可用，token 是访问控制的唯一凭证）；
-/// 只在本机自测时显式传 `--host 127.0.0.1`。
-pub const DEFAULT_HOST: &str = "0.0.0.0";
-/// 生成的 token 长度（十六进制字符数），128 位。
-pub const TOKEN_HEX_LEN: usize = 32;
-/// 端口冲突时最多再试多少个（默认端口起逐个 +1）。
-pub const PORT_RETRY_LIMIT: u16 = 20;
+use crate::daemon_protocol::DirectoryEntry;
 
 /// 远程服务的运行参数（`start` / `start-daemon` 共用）。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct RemoteOptions {
-    /// 绑定地址（默认 `0.0.0.0`）
-    pub host: String,
-    /// 绑定端口（默认 `10975`；被占用时逐个 +1 重试）
-    pub port: u16,
-    /// token；为空串时用操作系统随机数生成一个
-    pub token: String,
     /// 空闲退出（`--idle-exit <秒>`）：没有任何控制连接持续该时长后 daemon 自行退出。
     /// SSH 引导传 30 秒——客户端异常退出（crash / 断电 / 网络消失）后远端不留常驻进程；
-    /// 手工 / 直连 tcp 启动不给这个选项，daemon 常驻，只有 `shutdown`（`kill`）结束
+    /// 不给这个选项时 daemon 常驻，只有 `shutdown`（`kill`）结束
     /// （`docs/core-daemon.md` 第 12.5 节）。
     pub idle_exit: Option<Duration>,
 }
 
-impl Default for RemoteOptions {
-    fn default() -> Self {
-        Self {
-            host: DEFAULT_HOST.to_string(),
-            port: DEFAULT_PORT,
-            token: String::new(),
-            idle_exit: None,
-        }
-    }
-}
-
 impl RemoteOptions {
-    /// 解析命令行里的远程选项：`--host <addr>`、`--port <n>`、`--token <token>`。
-    /// 未给出的项用默认值（`0.0.0.0:10975`）。
+    /// 解析命令行里的远程选项：`--idle-exit <秒>`。
     pub fn from_args(args: &[String]) -> Self {
         let mut options = Self::default();
         let mut index = 0;
@@ -93,24 +66,6 @@ impl RemoteOptions {
                 }
                 None
             };
-            if let Some(value) = take_value("--host") {
-                options.host = value;
-                index += if arg == "--host" { 2 } else { 1 };
-                continue;
-            }
-            if let Some(value) = take_value("--port") {
-                match value.parse::<u16>() {
-                    Ok(port) => options.port = port,
-                    Err(_) => diag!("[core] remote: invalid --port value {value:?}; ignored"),
-                }
-                index += if arg == "--port" { 2 } else { 1 };
-                continue;
-            }
-            if let Some(value) = take_value("--token") {
-                options.token = value;
-                index += if arg == "--token" { 2 } else { 1 };
-                continue;
-            }
             if let Some(value) = take_value("--idle-exit") {
                 match value.parse::<u64>() {
                     // 0 会让 daemon 在宿主接入前就退出，视为没给
@@ -126,94 +81,13 @@ impl RemoteOptions {
     }
 }
 
-// ==================== token ====================
+// ==================== 启动输出 ====================
 
-/// 生成一个 128 位 token（十六进制）。
+/// 启动输出：daemon 已就绪，并给出它实际监听的端口。
 ///
-/// 熵来自操作系统的安全随机数（`getrandom`）。取不到随机数时直接失败，
-/// 不做「时间 + 进程 id」这类可预测的降级——token 是访问控制的唯一凭证。
-pub fn generate_token() -> String {
-    let mut bytes = [0u8; TOKEN_HEX_LEN / 2];
-    getrandom::getrandom(&mut bytes)
-        .expect("OS randomness unavailable; cannot generate a control-channel token");
-    let mut token = String::with_capacity(TOKEN_HEX_LEN);
-    for byte in bytes.iter() {
-        token.push_str(&format!("{byte:02x}"));
-    }
-    token
-}
-
-/// 定长比较，避免 token 校验在长度 / 前缀上泄漏时序信息。
-pub fn token_matches(expected: &str, actual: &str) -> bool {
-    let expected = expected.as_bytes();
-    let actual = actual.as_bytes();
-    if expected.len() != actual.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (left, right) in expected.iter().zip(actual.iter()) {
-        diff |= left ^ right;
-    }
-    diff == 0
-}
-
-// ==================== 连接串 ====================
-
-/// 连接串：`<IP>:<端口>#<token>`（`docs/core-daemon.md` 第 12.3 节）。
-///
-/// 桌面端「打开远程工作区」只有一个输入框，粘贴整串即可接入；字段之间不留空格，
-/// 用户双击就能整行选中。
-pub fn connection_string(host: &str, port: u16, token: &str) -> String {
-    format!("{host}:{port}#{token}")
-}
-
-/// 连接串里要列出的主机：绑具体地址时就是它本身，绑通配地址时列出本机全部网卡 IPv4。
-pub fn connection_hosts(bind_host: &str) -> Vec<String> {
-    if bind_host != "0.0.0.0" && bind_host != "::" {
-        return vec![bind_host.to_string()];
-    }
-    local_ipv4s()
-        .into_iter()
-        .map(|ip| ip.to_string())
-        .collect()
-}
-
-/// 启动输出：一行说明 + 每个可达主机一条连接串。
-///
-/// 连接串单独占一行、不带前缀，用户双击即可整行复制（`docs/core-daemon.md` 第 12.3 节）。
-pub fn ready_message(bind_host: &str, port: u16, token: &str) -> String {
-    let mut text = String::from(
-        "[core] 远程服务已就绪，在桌面端「打开远程工作区」粘贴下面任一连接串：\n",
-    );
-    for host in connection_hosts(bind_host) {
-        text.push_str(&connection_string(&host, port, token));
-        text.push('\n');
-    }
-    text.trim_end().to_string()
-}
-
-/// 本机全部网卡的非回环 IPv4（按网卡顺序去重，去掉 `169.254.*` 这类链路本地地址），
-/// 末尾固定补一条回环。
-///
-/// 只探测默认路由那一个 IP 会漏掉多网卡（有线 + 无线 + 虚拟网卡）里的可达地址，
-/// 所以这里逐个网卡取。枚举失败时只剩回环——绑通配地址的 daemon 必然在回环上可达，
-/// 所以这个结果仍然可用。
-pub fn local_ipv4s() -> Vec<Ipv4Addr> {
-    let mut ips: Vec<Ipv4Addr> = Vec::new();
-    if let Ok(interfaces) = if_addrs::get_if_addrs() {
-        for interface in interfaces {
-            if let if_addrs::IfAddr::V4(address) = interface.addr {
-                if address.ip.is_loopback() || address.ip.is_link_local() {
-                    continue;
-                }
-                if !ips.contains(&address.ip) {
-                    ips.push(address.ip);
-                }
-            }
-        }
-    }
-    ips.push(Ipv4Addr::LOCALHOST);
-    ips
+/// daemon 只监听回环，Host 经 SSH 转发接入——这里只打印诊断信息。
+pub fn ready_message(port: u16) -> String {
+    format!("[core] 远程服务已就绪，监听 127.0.0.1:{port}（Host 经 SSH 转发接入）")
 }
 
 // ==================== 目录列举 ====================
@@ -407,25 +281,23 @@ pub fn remote_daemon_options() -> DaemonOptions {
     }
 }
 
-/// 校验第一帧 `auth`，通过后把控制通道交给 daemon 主循环。返回即这条连接结束。
+/// 把控制通道交给 daemon 主循环。返回即这条连接结束。
 ///
 /// 由每条已接受连接自己的服务线程调用（thread-per-connection，
 /// `docs/core-daemon.md` 第 12.5 节）。返回值在线程内处理（`serve_accepted`）：
 /// `Stop`（对端发 `shutdown`，或本连接内部错误）→ 触发整个 daemon 的停机广播；
-/// `Continue`（普通断线 / 鉴权失败）→ 线程自然结束，daemon 继续服务其它连接。
+/// `Continue`（普通断线）→ 线程自然结束，daemon 继续服务其它连接。
 ///
 /// `session_events` 是这条会话的事件通道（调用方创建，发送端已登记进注册表供停机
 /// 广播注入），原样转交 `run_control_channel`。
 pub fn serve_connection(
     stream: TcpStream,
-    token: &str,
     options: DaemonOptions,
     spawner: Arc<dyn CoreSpawner>,
     session_events: (Sender<DaemonEvent>, Receiver<DaemonEvent>),
 ) -> ChannelExit {
-    // 死对端探测（`docs/core-daemon.md` 第 12.5 节）：SSH 接入时对端是本机 sshd，
-    // 探活无意义但无害；直连 `tcp` 模式下 daemon 不主动发帧、读不到 EOF，对端
-    // 消失后这是唯一的回收手段。
+    // 死对端探测（`docs/core-daemon.md` 第 12.5 节）：对端消失后读线程等不到 EOF
+    // 时，keepalive 是 socket 层的回收手段（心跳超时兜底控制帧层的沉默）。
     enable_keepalive(&stream);
     let peer = stream
         .peer_addr()
@@ -444,25 +316,15 @@ pub fn serve_connection(
     let shutdown = stream.try_clone().ok();
     let reader = BufReader::new(stream);
 
-    let exit = match authenticate(reader, out.as_ref(), token, options.auth_timeout) {
-        Some(reader) => {
-            diag!("[core] remote: {peer} authenticated");
-            let exit = daemon::run_control_channel(
-                move || reader,
-                out,
-                spawner,
-                options,
-                session_events.0,
-                session_events.1,
-            );
-            diag!("[core] remote: {peer} disconnected");
-            exit
-        }
-        None => {
-            diag!("[core] remote: {peer} rejected (bad token)");
-            ChannelExit::Continue
-        }
-    };
+    let exit = daemon::run_control_channel(
+        move || reader,
+        out,
+        spawner,
+        options,
+        session_events.0,
+        session_events.1,
+    );
+    diag!("[core] remote: {peer} disconnected");
     if let Some(handle) = shutdown {
         let _ = handle.shutdown(Shutdown::Both);
     }
@@ -480,92 +342,26 @@ fn enable_keepalive(stream: &TcpStream) {
     let _ = SockRef::from(stream).set_tcp_keepalive(&keepalive);
 }
 
-/// 读取并校验第一帧；通过返回仍可继续读的 reader，失败时回 `authFailed` 并返回 `None`。
-fn authenticate(
-    mut reader: BufReader<TcpStream>,
-    out: &dyn FrameOutput,
-    token: &str,
-    auth_timeout: Duration,
-) -> Option<BufReader<TcpStream>> {
-    // 第一帧的等待上限：不发 `auth` 的探活连接 / 端口扫描占用的是它自己那条连接的
-    // 服务线程（每条连接一个线程，互不阻塞，`docs/core-daemon.md` 第 12.4 节），
-    // 上限把这部分占用封顶。只在鉴权阶段生效——通过后立刻清除，控制通道此后可以
-    // 无限期空闲（心跳空闲由 `run_daemon` 的心跳超时管，两者不重叠）。
-    let _ = reader
-        .get_ref()
-        .set_read_timeout(Some(auth_timeout));
-    let mut line = String::new();
-    let received = reader.read_line(&mut line);
-    let _ = reader.get_ref().set_read_timeout(None);
-    match received {
-        Ok(0) => return None,
-        Ok(_) => {}
-        Err(error) => {
-            diag!("[core] remote: control read failed: {error}");
-            return None;
-        }
-    }
-    let accepted = match serde_json::from_str::<HostToDaemonFrame>(line.trim_end()) {
-        Ok(HostToDaemonFrame::Auth { token: actual }) => token_matches(token, &actual),
-        _ => false,
-    };
-    if accepted {
-        send(out, &DaemonToHostFrame::AuthOk);
-        Some(reader)
-    } else {
-        send(
-            out,
-            &DaemonToHostFrame::AuthFailed {
-                error: "invalid token".to_string(),
-            },
-        );
-        None
-    }
-}
-
-fn send(out: &dyn FrameOutput, frame: &DaemonToHostFrame) {
-    match frame.encode() {
-        Ok(line) => out.write_line(line),
-        Err(error) => diag!("[core] remote: failed to encode frame: {error}"),
-    }
-}
-
 // ==================== 监听入口 ====================
 
-/// 绑定端口；端口被占用时从该端口起逐个 +1 重试（`--port 0` 交给内核，不重试）。
-pub fn bind_listener(host: &str, port: u16) -> std::io::Result<TcpListener> {
-    let mut candidate = port;
-    let mut retries = 0u16;
-    loop {
-        match TcpListener::bind((host, candidate)) {
-            Ok(listener) => return Ok(listener),
-            Err(error)
-                if port != 0
-                    && retries < PORT_RETRY_LIMIT
-                    && error.kind() == std::io::ErrorKind::AddrInUse =>
-            {
-                diag!(
-                    "[core] remote: port {candidate} is in use; trying {}",
-                    candidate.saturating_add(1)
-                );
-                candidate = candidate.saturating_add(1);
-                retries += 1;
-            }
-            Err(error) => return Err(error),
-        }
-    }
+/// 绑定回环地址 + 内核分配的端口（`docs/core-daemon.md` 第 12.2 节）。
+///
+/// daemon 端口不出目标机器：Host 经 SSH 转发接入，连接从远端本机发起。端口交给内核
+/// 分配，多版本 daemon 在同一台机器上并存时互不抢固定端口；实际端口落盘在状态文件里。
+pub fn bind_listener() -> std::io::Result<TcpListener> {
+    TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
 }
 
 // ==================== daemon 状态文件 ====================
 
 /// daemon 落盘文件名的前缀：实际文件按构建指纹区分——
-/// `core-daemon-<指纹>.json` / `.token` / `.log`。
+/// `core-daemon-<指纹>.json` / `.log`。
 ///
 /// 一个指纹一个 daemon、一份落盘文件：多版本 Core 在同一台远端机器上各占一个槽位、
 /// 各跑一个 daemon 时，各自的 `start` / `kill` / 探测只作用于自己指纹的 daemon，
 /// 互不踩踏（`docs/standalone-core.md` 第 4.4 节、`docs/core-daemon.md` 第 12.3 节）。
 /// 命名规则与 `src/host/standalone/daemonProtocol.ts` 的 `daemonStateFileName` /
-/// `daemonTokenFileName` / `daemonLogFileName` 一致，改动必须同步两侧。
+/// `daemonLogFileName` 一致，改动必须同步两侧。
 pub const DAEMON_FILE_STEM: &str = "core-daemon";
 
 /// 本二进制的构建指纹（`docs/standalone-core.md` 第 4.4 节）。
@@ -583,7 +379,7 @@ pub fn build_fingerprint() -> &'static str {
     }
 }
 
-/// 按构建指纹拼出 daemon 的落盘文件名（状态 `.json` / token `.token` / 日志 `.log`）。
+/// 按构建指纹拼出 daemon 的落盘文件名（状态 `.json` / 日志 `.log`）。
 fn daemon_file_name(extension: &str) -> String {
     format!("{}-{}.{}", DAEMON_FILE_STEM, build_fingerprint(), extension)
 }
@@ -598,12 +394,6 @@ pub fn daemon_log_file_name() -> String {
     daemon_file_name("log")
 }
 
-/// token 文件名（同目录）：与状态文件分开存，`kill` 删掉状态文件后 token 仍然留着，
-/// 下次 `start` 直接复用它（用户不必每次重新抄连接串）。
-pub fn daemon_token_file_name() -> String {
-    daemon_file_name("token")
-}
-
 /// 启动器等待 daemon 落盘的时长上限。
 pub const LAUNCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// 探测「daemon 是否还活着」的连接超时。
@@ -611,16 +401,11 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// daemon 落盘的状态（`~/<configDir>/core-daemon-<指纹>.json`）。
 ///
-/// 只有 daemon 自己写这个文件（单一写入点）：它同时知道实际绑定的端口与生效的 token。
+/// 只有 daemon 自己写这个文件（单一写入点）：它知道实际绑定的端口。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DaemonState {
-    /// 启动时请求的 `host:port`；用来判断在跑的 daemon 是不是本次请求的那个
-    /// （`--port 0` 时请求值就是 `:0`，同参数的两次 `start` 由此互相识别、幂等复用）
-    pub requested: String,
-    /// 实际监听的 `IP:端口`（端口 +1 重试或 `--port 0` 交给内核分配后是实际端口）
+    /// 实际监听的 `IP:端口`（端口由内核分配，这里存实际值）
     pub endpoint: String,
-    /// 控制通道 token
-    pub token: String,
 }
 
 /// 配置目录：与 `settings.json` 同目录（`~/<configDir>/`）。
@@ -644,18 +429,13 @@ pub fn daemon_log_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join(daemon_log_file_name()))
 }
 
-/// token 文件路径（与状态文件、会话数据同目录）。
-pub fn daemon_token_path() -> Result<PathBuf, String> {
-    Ok(config_dir()?.join(daemon_token_file_name()))
-}
-
 /// 读状态文件：不存在 / 读不出 / 解析失败都当作「没有 daemon」。
 pub fn read_daemon_state_at(path: &Path) -> Option<DaemonState> {
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str::<DaemonState>(&text).ok()
 }
 
-/// 原子落盘状态文件；Unix 上把权限收到 `0600`（token 是凭证）。
+/// 原子落盘状态文件；Unix 上把权限收到 `0600`。
 pub fn write_daemon_state(path: &Path, state: &DaemonState) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -690,31 +470,14 @@ fn write_private(path: &Path, contents: &str) -> Result<(), String> {
         .map_err(|error| format!("write {} failed: {error}", path.display()))
 }
 
-/// 启动参数的规范化键：判断在跑的 daemon 是不是本次请求的那个。
-fn requested_key(options: &RemoteOptions) -> String {
-    address_text(&options.host, options.port)
-}
-
-/// `host:port` 文本：IPv6 主机加方括号（`[::]:10975`），IPv4 / 主机名原样。
-/// 端口按最后一个 `:` 解析（`connectable` / `print_ready` 都依赖这一点）。
-fn address_text(host: &str, port: u16) -> String {
-    if host.contains(':') {
-        format!("[{host}]:{port}")
-    } else {
-        format!("{host}:{port}")
-    }
-}
-
-/// 连 endpoint（`host:port`）；解析不出或连不上都返回 `Err`。
+/// 连 endpoint（`IP:端口`）；解析不出或连不上都返回 `Err`。
 ///
-/// 通配地址（`0.0.0.0` / `::`）先换成回环：绑通配地址的 daemon 一定在回环上可达，
-/// 而直接连 `0.0.0.0` 在 Windows 上会失败（状态文件里存的是绑定的通配地址）。
+/// endpoint 恒为回环地址（daemon 只绑回环），这里不做通配地址替换。
 fn connect_endpoint(endpoint: &str) -> Result<TcpStream, String> {
     use std::net::ToSocketAddrs;
-    let target = connectable(endpoint);
-    let addrs = target
+    let addrs = endpoint
         .to_socket_addrs()
-        .map_err(|error| format!("cannot resolve {target}: {error}"))?;
+        .map_err(|error| format!("cannot resolve {endpoint}: {error}"))?;
     let mut last: Option<std::io::Error> = None;
     for addr in addrs {
         match TcpStream::connect_timeout(&addr, PROBE_TIMEOUT) {
@@ -723,21 +486,10 @@ fn connect_endpoint(endpoint: &str) -> Result<TcpStream, String> {
         }
     }
     Err(format!(
-        "cannot connect {target}: {}",
+        "cannot connect {endpoint}: {}",
         last.map(|error| error.to_string())
             .unwrap_or_else(|| "no address resolved".to_string())
     ))
-}
-
-/// 把 `host:port` 里的通配主机换成回环，其余原样返回。
-fn connectable(endpoint: &str) -> String {
-    let Some((host, port)) = endpoint.rsplit_once(':') else {
-        return endpoint.to_string();
-    };
-    match host {
-        "0.0.0.0" | "::" | "[::]" => format!("{}:{port}", Ipv4Addr::LOCALHOST),
-        _ => endpoint.to_string(),
-    }
 }
 
 /// 探测 endpoint 上是否真有东西在监听（`host:port` 解析失败即视为没有）。
@@ -747,9 +499,9 @@ fn probe_endpoint(endpoint: &str) -> bool {
 
 // ==================== 启动器（`start`）====================
 
-/// 打印连接串：端口取 daemon 状态文件里**实际**监听的那个（`--port 0` 或 +1 重试后
-/// 与请求值不同）。状态文件里的 endpoint 解析不出端口时按损坏处理，报错不猜。
-fn print_ready(bind_host: &str, state: &DaemonState) -> bool {
+/// 打印就绪信息：端口取 daemon 状态文件里**实际**监听的那个（内核分配）。
+/// 状态文件里的 endpoint 解析不出端口时按损坏处理，报错不猜。
+fn print_ready(state: &DaemonState) -> bool {
     let Some(port) = state
         .endpoint
         .rsplit_once(':')
@@ -758,23 +510,21 @@ fn print_ready(bind_host: &str, state: &DaemonState) -> bool {
         diag!("[core] remote: malformed endpoint in state file: {}", state.endpoint);
         return false;
     };
-    println!("{}", ready_message(bind_host, port, &state.token));
+    println!("{}", ready_message(port));
     true
 }
 
 /// 状态文件里的 daemon 与本次请求的关系。
 #[derive(Debug, PartialEq)]
 enum ExistingDaemon {
-    /// 在跑，且参数一致：直接复用它的连接信息
+    /// 在跑：直接复用
     Running(DaemonState),
-    /// 在跑，但本次参数与它的不同：报错，不静默忽略用户给的参数
-    Mismatch(String),
     /// 没有在跑的 daemon（文件缺失 / 已死）
     None,
 }
 
-/// 判断状态文件里的 daemon 是否还在跑，以及本次参数能不能复用它。
-fn existing_daemon(state_path: &Path, options: &RemoteOptions) -> ExistingDaemon {
+/// 判断状态文件里的 daemon 是否还在跑。
+fn existing_daemon(state_path: &Path) -> ExistingDaemon {
     let Some(state) = read_daemon_state_at(state_path) else {
         return ExistingDaemon::None;
     };
@@ -782,24 +532,10 @@ fn existing_daemon(state_path: &Path, options: &RemoteOptions) -> ExistingDaemon
     if !probe_endpoint(&state.endpoint) {
         return ExistingDaemon::None;
     }
-    if state.requested != requested_key(options) {
-        return ExistingDaemon::Mismatch(format!(
-            "daemon already listening on {} (started with {}); \
-             stop it before changing --host / --port",
-            state.endpoint, state.requested
-        ));
-    }
-    if !options.token.trim().is_empty() && options.token != state.token {
-        return ExistingDaemon::Mismatch(format!(
-            "daemon already listening on {} with another token; \
-             stop it before passing --token",
-            state.endpoint
-        ));
-    }
     ExistingDaemon::Running(state)
 }
 
-/// `start`：确保后台 daemon 在跑，把连接信息打印出来。
+/// `start`：确保后台 daemon 在跑，把就绪信息打印出来。
 ///
 /// 已有 daemon 在跑（状态文件里的 endpoint 连得上）就直接复用；否则把 daemon 拉到
 /// 后台（`start-daemon`，脱离终端、诊断进日志），等它落盘后再打印。本进程随即退出，
@@ -812,18 +548,13 @@ pub fn run_start(options: RemoteOptions) -> i32 {
             return 1;
         }
     };
-    let requested = requested_key(&options);
 
-    match existing_daemon(&state_path, &options) {
+    match existing_daemon(&state_path) {
         ExistingDaemon::Running(state) => {
-            if !print_ready(&options.host, &state) {
+            if !print_ready(&state) {
                 return 1;
             }
             return 0;
-        }
-        ExistingDaemon::Mismatch(message) => {
-            diag!("[core] remote: {message}");
-            return 1;
         }
         ExistingDaemon::None => {}
     }
@@ -839,9 +570,9 @@ pub fn run_start(options: RemoteOptions) -> i32 {
         diag!("[core] remote: cannot start daemon: {error}");
         return 1;
     }
-    match wait_for_daemon(&state_path, &requested) {
+    match wait_for_daemon(&state_path) {
         Some(state) => {
-            if !print_ready(&options.host, &state) {
+            if !print_ready(&state) {
                 return 1;
             }
             0
@@ -862,10 +593,9 @@ pub fn run_start(options: RemoteOptions) -> i32 {
 
 // ==================== 结束 daemon（`kill`）====================
 
-/// `kill`：结束在跑的 daemon（连上它、`auth`、发 `shutdown`），并清掉状态文件。
+/// `kill`：结束在跑的 daemon（连上它、发 `shutdown`），并清掉状态文件。
 ///
 /// 幂等：没有状态文件、或文件里的 daemon 已经不在了，都算「目标状态已达成」。
-/// 只有「连上了但鉴权失败」才报错——那说明状态文件与实际 daemon 对不上。
 pub fn run_kill() -> i32 {
     let state_path = match daemon_state_path() {
         Ok(path) => path,
@@ -891,9 +621,9 @@ pub fn run_kill() -> i32 {
             0
         }
         StopOutcome::Unresponsive => {
-            // 连上了但协议无应答：accept 循环被一条死连接占住（旧版 daemon 没有
-            // 心跳自愈，只会永远卡下去）。协议路径走不通，按进程兜底强杀——
-            // 只匹配本可执行文件 + `start-daemon`，不会误伤别的进程。
+            // 连上了但 `ping` 等不到 `pong`：daemon 进程还在，但整体卡死了。
+            // 协议路径走不通，按进程兜底强杀——只匹配本可执行文件 + `start-daemon`，
+            // 不会误伤别的进程。
             diag!("[core] remote: daemon at {} is not answering; killing the process", state.endpoint);
             let exe = match std::env::current_exe() {
                 Ok(exe) => exe,
@@ -941,15 +671,15 @@ enum StopOutcome {
     Stopped,
     /// endpoint 连不上：进程已经没了（崩溃 / 机器重启过）
     Unreachable,
-    /// 连上了但协议无应答：daemon 在但没有应答（旧版 daemon 的同步 accept 循环被
-    /// 死连接占住会永远如此；新版也可能整体卡死）。协议路径走不通时 `kill` 据此
-    /// 兜底强杀进程。
+    /// 连上了但协议无应答：daemon 进程还在（端口有人监听）但整体卡死，`ping`
+    /// 等不到 `pong`。协议路径走不通时 `kill` 据此兜底强杀进程。
     Unresponsive,
-    /// 鉴权失败等：daemon 活着但不是我们该动的那个，不能强杀
+    /// 协议层拒绝（克隆控制流 / 写帧失败 / 应答不是 `pong`）：不能强杀
     Refused(String),
 }
 
-/// 连上 daemon，`auth` → `shutdown`，等它关掉连接。`wait` 是读写应答的等待上限。
+/// 连上 daemon，`ping` → `pong` 探活，再发 `shutdown`，等它关掉连接。
+/// `wait` 是读写应答的等待上限。
 fn stop_daemon(state: &DaemonState, wait: Duration) -> StopOutcome {
     let stream = match connect_endpoint(&state.endpoint) {
         Ok(stream) => stream,
@@ -963,13 +693,12 @@ fn stop_daemon(state: &DaemonState, wait: Duration) -> StopOutcome {
     };
     let mut stream = stream;
 
-    let auth = serde_json::json!({ "kind": "auth", "token": state.token }).to_string();
-    if let Err(error) = stream.write_all(format!("{auth}\n").as_bytes()) {
+    if let Err(error) = stream.write_all(b"{\"kind\":\"ping\"}\n") {
         // 写都写不进去：连接刚建立就断了，按「进程不在了」处理
         return if is_connection_lost(&error) {
             StopOutcome::Unreachable
         } else {
-            StopOutcome::Refused(format!("cannot send auth: {error}"))
+            StopOutcome::Refused(format!("cannot send ping: {error}"))
         };
     }
     let mut line = String::new();
@@ -979,9 +708,9 @@ fn stop_daemon(state: &DaemonState, wait: Duration) -> StopOutcome {
         Ok(_) => {}
         Err(_) => return StopOutcome::Unresponsive,
     }
-    if !line.contains("authOk") {
+    if !line.contains("pong") {
         return StopOutcome::Refused(format!(
-            "daemon at {} rejected the stored token; not stopping it",
+            "daemon at {} answered an unexpected frame; not stopping it",
             state.endpoint
         ));
     }
@@ -1054,12 +783,12 @@ fn kill_process(pid: u32) -> bool {
     command.status().map(|status| status.success()).unwrap_or(false)
 }
 
-/// 等 daemon 把状态文件写成「本次请求的那个 endpoint 且连得上」。
-fn wait_for_daemon(state_path: &Path, requested: &str) -> Option<DaemonState> {
+/// 等 daemon 把状态文件写成「endpoint 连得上」。
+fn wait_for_daemon(state_path: &Path) -> Option<DaemonState> {
     let deadline = Instant::now() + LAUNCH_TIMEOUT;
     loop {
         if let Some(state) = read_daemon_state_at(state_path) {
-            if state.requested == requested && probe_endpoint(&state.endpoint) {
+            if probe_endpoint(&state.endpoint) {
                 return Some(state);
             }
         }
@@ -1083,17 +812,8 @@ fn spawn_daemon(options: &RemoteOptions, log_path: &Path) -> Result<(), String> 
     let exe = std::env::current_exe()
         .map_err(|error| format!("cannot resolve the current executable: {error}"))?;
     let mut command = Command::new(exe);
-    command
-        .arg("start-daemon")
-        .arg("--host")
-        .arg(&options.host)
-        .arg("--port")
-        .arg(options.port.to_string());
-    // token 只在用户显式给了才转发：否则由 daemon 按「文件 > 随机」自己定。
-    if !options.token.trim().is_empty() {
-        command.arg("--token").arg(&options.token);
-    }
-    // 空闲退出只在显式给了才转发（SSH 引导传 30s；手工 / 直连 tcp 启动不设限）。
+    command.arg("start-daemon");
+    // 空闲退出只在显式给了才转发（SSH 引导传 30s；不给则常驻）。
     if let Some(idle) = options.idle_exit {
         command.arg("--idle-exit").arg(idle.as_secs().to_string());
     }
@@ -1139,50 +859,6 @@ fn detach(command: &mut Command) {
 }
 
 // ==================== daemon 实体（`start-daemon`）====================
-
-/// 本次启动用哪个 token：`--token` > token 文件里的 > 新随机。
-///
-/// token 单独存一份文件（`~/<configDir>/core-daemon.token`，与会话数据同目录），而不是只
-/// 依赖状态文件：`kill` 会删掉状态文件，token 却应该留着——否则每次重启 daemon 都要重新
-/// 抄一遍连接串。
-///
-/// 落盘失败只是警告：token 已经生效，文件没写成不该让 daemon 起不来。
-fn resolve_token(options: &RemoteOptions, token_path: &Path) -> String {
-    let token = if !options.token.trim().is_empty() {
-        options.token.clone()
-    } else {
-        read_token_file(token_path).unwrap_or_else(generate_token)
-    };
-    if let Err(error) = write_token_file(token_path, &token) {
-        diag!("[core] remote: cannot persist token: {error}");
-    }
-    token
-}
-
-/// 读 token 文件；缺失 / 读不出 / 空内容都当作「没有」。
-fn read_token_file(path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let token = text.trim();
-    if token.is_empty() {
-        return None;
-    }
-    Some(token.to_string())
-}
-
-/// 原子写 token 文件（Unix 上 `0600`：token 是访问控制的唯一凭证）。
-fn write_token_file(path: &Path, token: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("mkdir {} failed: {error}", parent.display()))?;
-    }
-    let temp = path.with_extension(format!("tmp{}", std::process::id()));
-    write_private(&temp, token)?;
-    if let Err(error) = std::fs::rename(&temp, path) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(format!("rename to {} failed: {error}", path.display()));
-    }
-    Ok(())
-}
 
 // ==================== daemon 运行时（连接注册表与停机）====================
 
@@ -1323,11 +999,10 @@ impl DaemonRuntime {
     }
 }
 
-/// accept 循环：每条连接一个服务线程，立即回到 accept——任何一条连接（包括不发
-/// `auth` 的探活连接）都不阻塞后续接入（`docs/core-daemon.md` 第 12.5 节）。
+/// accept 循环：每条连接一个服务线程，立即回到 accept——任何一条连接（包括连上后
+/// 一直不发帧的探活连接）都不阻塞后续接入（`docs/core-daemon.md` 第 12.5 节）。
 fn accept_loop(
     listener: TcpListener,
-    token: &str,
     options: DaemonOptions,
     runtime: Arc<DaemonRuntime>,
     spawner: Arc<dyn CoreSpawner>,
@@ -1340,11 +1015,8 @@ fn accept_loop(
             Ok(stream) => {
                 let runtime = Arc::clone(&runtime);
                 let spawner = Arc::clone(&spawner);
-                let token = token.to_string();
                 let options = options.clone();
-                std::thread::spawn(move || {
-                    serve_accepted(stream, &token, options, &runtime, spawner)
-                });
+                std::thread::spawn(move || serve_accepted(stream, options, &runtime, spawner));
             }
             Err(error) => diag!("[core] remote: accept failed: {error}"),
         }
@@ -1360,7 +1032,6 @@ fn accept_loop(
 /// 「结束整个 daemon」。
 fn serve_accepted(
     stream: TcpStream,
-    token: &str,
     options: DaemonOptions,
     runtime: &DaemonRuntime,
     spawner: Arc<dyn CoreSpawner>,
@@ -1379,16 +1050,16 @@ fn serve_accepted(
         diag!("[core] remote: connection dropped; the daemon is stopping");
         return;
     };
-    let exit = serve_connection(stream, token, options, spawner, (events, event_rx));
+    let exit = serve_connection(stream, options, spawner, (events, event_rx));
     runtime.unregister(id);
     if exit == ChannelExit::Stop {
         runtime.begin_stop();
     }
 }
 
-/// daemon 实体：绑定端口、把 `{requested, endpoint, token}` 落盘，然后常驻服务。
+/// daemon 实体：绑回环端口、把 `endpoint` 落盘，然后常驻服务。
 ///
-/// 由 `start` 拉起，也可以直接运行（调试用）。给了 `--token` 就用它并覆盖状态文件。
+/// 由 `start` 拉起，也可以直接运行（调试用）。
 pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     let state_path = match daemon_state_path() {
         Ok(path) => path,
@@ -1397,21 +1068,10 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
             return 1;
         }
     };
-    let token_path = match daemon_token_path() {
-        Ok(path) => path,
-        Err(error) => {
-            diag!("[core] remote: {error}");
-            return 1;
-        }
-    };
-    let token = resolve_token(&options, &token_path);
-    let listener = match bind_listener(&options.host, options.port) {
+    let listener = match bind_listener() {
         Ok(listener) => listener,
         Err(error) => {
-            diag!(
-                "[core] remote: cannot bind {}:{}: {error}",
-                options.host, options.port
-            );
+            diag!("[core] remote: cannot bind 127.0.0.1: {error}");
             return 1;
         }
     };
@@ -1422,21 +1082,16 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
             return 1;
         }
     };
-    // endpoint 存**绑定的**主机与实际端口（通配地址原样保留）：连接串按实际端口生成，
-    // 连它时由 `connectable()` 把通配主机换成回环。
-    let endpoint = address_text(&options.host, local.port());
-    let state = DaemonState {
-        requested: requested_key(&options),
-        endpoint: endpoint.clone(),
-        token: token.clone(),
-    };
+    // endpoint 存回环地址与内核分配的实际端口；Host 读它开 SSH 转发通道。
+    let endpoint = format!("{}:{}", Ipv4Addr::LOCALHOST, local.port());
+    let state = DaemonState { endpoint };
     // 落盘先于 accept：启动器按「状态文件可读 + endpoint 连得上」判断就绪。
     if let Err(error) = write_daemon_state(&state_path, &state) {
         diag!("[core] remote: cannot write {}: {error}", state_path.display());
         return 1;
     }
-    println!("{}", ready_message(&options.host, local.port(), &token));
-    // 标准输出可能被缓冲；启动器 / 用户读连接串才能拿到端口与 token，立即冲刷。
+    println!("{}", ready_message(local.port()));
+    // 标准输出可能被缓冲；启动器 / 用户要立刻看到就绪行，立即冲刷。
     let _ = std::io::stdout().flush();
 
     // Core 进程工厂启动时解析一次：解析不出直接失败，不等到第一条连接才暴露
@@ -1452,16 +1107,15 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     let runtime = Arc::new(DaemonRuntime::new());
     {
         let runtime = Arc::clone(&runtime);
-        let token = token.clone();
         let spawner = Arc::clone(&spawner);
         std::thread::spawn(move || {
-            accept_loop(listener, &token, remote_daemon_options(), runtime, spawner)
+            accept_loop(listener, remote_daemon_options(), runtime, spawner)
         });
     }
 
     // 空闲退出（`--idle-exit`，SSH 引导传 30s）：没有任何控制连接持续该时长（含启动
     // 后一直没有连接——兜住拉起后无人接入的孤儿 daemon）就自行退出，远端不留常驻
-    // 进程；未给该选项（手工 / 直连 tcp）则常驻，只有 `shutdown`（`kill` 发的）结束
+    // 进程；未给该选项则常驻，只有 `shutdown`（`kill` 发的）结束
     // （`docs/core-daemon.md` 第 12.5 节）。
     let stopped = runtime.wait_for_stop_or_idle(options.idle_exit);
     if !stopped {

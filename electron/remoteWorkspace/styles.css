@@ -82,28 +82,7 @@ body {
   font-size: 12px;
 }
 
-/* 接入方式页签（连接串 / SSH）：选中的那个用下划线高亮 */
-.tabs {
-  flex: 0 0 auto;
-  display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--border);
-}
-
-.tab {
-  padding: 6px 12px;
-  border: none;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  color: var(--muted);
-}
-
-.tab[aria-selected='true'] {
-  color: var(--fg);
-  border-bottom-color: var(--accent);
-}
-
-/* 页签内容区：自己占满剩余高度，切换时按钮位置不跳 */
+/* 接入表单区：自己占满剩余高度 */
 .pane {
   flex: 1 1 auto;
   min-height: 0;

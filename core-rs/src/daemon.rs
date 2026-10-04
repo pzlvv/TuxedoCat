@@ -91,18 +91,12 @@ pub struct DaemonOptions {
     /// - 远程 daemon：`false`。控制通道本身是生命周期边界：连接在，daemon 就在
     ///   （目录选择期间可能长时间没有工作区）；连接断开走 `HostDisconnected` 退出。
     pub idle_exit: bool,
-    /// 第一帧 `auth` 的等待上限（远程控制通道；`docs/core-daemon.md` 第 12.4 节）。
-    ///
-    /// 连接后不发 `auth` 的探活连接 / 端口扫描占用的是它自己那条连接的服务线程
-    /// （每条连接一个线程，互不阻塞，`docs/core-daemon.md` 第 12.5 节），上限把
-    /// 这部分占用封顶；超时即关闭这条连接。
-    pub auth_timeout: Duration,
     /// 心跳空闲超时（远程控制通道；`docs/core-daemon.md` 第 12.5 节）。
     ///
-    /// 见过首个 `ping` 后启用：这么长时间没再收到任何控制帧，按 Host 断开处理
+    /// 控制通道建立即武装：这么长时间没收到任何控制帧，按 Host 断开处理
     /// （close_all + 本条会话结束）。Host 消失而 TCP 未断（断网 / 休眠 / 进程冻结）
-    /// 时这是唯一的回收手段。`None` = 不启用（本地 stdio 没有 ping；旧版 Host
-    /// 也不发 ping，保持原有行为）。
+    /// 时这是唯一的回收手段，也顺带回收连上后一直不发帧的连接。`None` = 不启用
+    /// （本地 stdio 没有 ping）。
     pub heartbeat_timeout: Option<Duration>,
 }
 
@@ -117,7 +111,6 @@ impl Default for DaemonOptions {
             shutdown_timeout: Duration::from_secs(5),
             restart_policy: RestartPolicy::default(),
             idle_exit: true,
-            auth_timeout: Duration::from_secs(10),
             heartbeat_timeout: None,
         }
     }
@@ -400,8 +393,10 @@ pub fn run_daemon(
     let mut channels: HashMap<u64, ChannelState> = HashMap::new();
     let mut next_channel: u64 = 1;
     let mut grace_deadline: Option<Instant> = None;
-    // 心跳空闲超时的到期时刻：`None` = 尚未武装（没见过 ping 或未启用心跳）
-    let mut heartbeat_deadline: Option<Instant> = None;
+    // 心跳空闲超时的到期时刻：启用心跳（远程控制通道）时从连接建立即武装，
+    // 收到任何控制帧都顺延；`None` = 不启用（本地 stdio）
+    let mut heartbeat_deadline: Option<Instant> =
+        options.heartbeat_timeout.map(|timeout| Instant::now() + timeout);
 
     loop {
         let now = Instant::now();
@@ -455,12 +450,9 @@ pub fn run_daemon(
         };
         match event {
             Ok(DaemonEvent::Command(line)) => {
-                // 收到任何控制帧都证明 Host 活着：心跳已武装就顺延（超时只在
-                // 心跳启用后才有意义，未武装的连接不因沉默被回收）
+                // 收到任何控制帧都证明 Host 活着：顺延心跳死线
                 if let Some(timeout) = options.heartbeat_timeout {
-                    if heartbeat_deadline.is_some() {
-                        heartbeat_deadline = Some(Instant::now() + timeout);
-                    }
+                    heartbeat_deadline = Some(Instant::now() + timeout);
                 }
                 let frame = match serde_json::from_str::<HostToDaemonFrame>(&line) {
                     Ok(frame) => frame,
@@ -542,16 +534,8 @@ pub fn run_daemon(
                     }
                     HostToDaemonFrame::Ping => {
                         // 心跳：回 pong（Host 据此武装沉默判定，`docs/core-daemon.md`
-                        // 第 12.5 节），并把空闲超时武装 / 顺延（旧版 Host 不发 ping，
-                        // 永不武装）
+                        // 第 12.5 节）；本帧的空闲顺延由上面「收到控制帧」统一处理
                         send_to_host(out.as_ref(), &DaemonToHostFrame::Pong);
-                        if let Some(timeout) = options.heartbeat_timeout {
-                            heartbeat_deadline = Some(Instant::now() + timeout);
-                        }
-                    }
-                    // 本地 stdio 通道没有鉴权阶段：收到 auth 只记诊断，不改变状态。
-                    HostToDaemonFrame::Auth { .. } => {
-                        diag!("[daemon] unexpected auth frame on a non-remote channel; ignored");
                     }
                 }
             }

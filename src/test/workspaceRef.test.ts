@@ -18,8 +18,8 @@ import {
 } from '../host/workspaceRef';
 import { createChecker, runTests } from './helpers/harness';
 
-function endpoint(host: string, port: number, token = 't'): WorkspaceEndpoint {
-  return { host, port, user: null, auth: { kind: 'token', token } };
+function endpoint(host: string, port: number, password = 'pw'): WorkspaceEndpoint {
+  return { host, port, user: 'root', auth: { kind: 'sshPassword', password } };
 }
 
 async function run(): Promise<void> {
@@ -29,33 +29,33 @@ async function run(): Promise<void> {
   check('本地引用 scheme 为 file', local.scheme === 'file');
   check('本地引用没有 endpoint', local.endpoint === null);
 
-  const remote = remoteWorkspaceRef(endpoint('172.20.1.5', 17321), '/home/dev/repo');
-  check('远程引用 scheme 为 tcp', remote.scheme === 'tcp');
+  const remote = remoteWorkspaceRef(endpoint('172.20.1.5', 22), '/home/dev/repo');
+  check('远程引用 scheme 为 ssh', remote.scheme === 'ssh');
   check('远程引用保留 endpoint', remote.endpoint?.host === '172.20.1.5');
   check('远程引用保留远端路径', remote.path === '/home/dev/repo');
 
   // 连接目标键：同一 endpoint 的多个工作区共用一个 daemon
-  const remoteSibling = remoteWorkspaceRef(endpoint('172.20.1.5', 17321, 'other'), '/home/dev/other');
+  const remoteSibling = remoteWorkspaceRef(endpoint('172.20.1.5', 22, 'other'), '/home/dev/other');
   check('同一 endpoint 的键相同', workspaceEndpointKey(remote) === workspaceEndpointKey(remoteSibling));
   check('本地键恒为 local', workspaceEndpointKey(local) === 'local');
   check(
     '不同端口是不同 endpoint',
-    workspaceEndpointKey(remote) !== workspaceEndpointKey(remoteWorkspaceRef(endpoint('172.20.1.5', 1), '/x')),
+    workspaceEndpointKey(remote) !== workspaceEndpointKey(remoteWorkspaceRef(endpoint('172.20.1.5', 2222), '/x')),
   );
   check(
     '不同主机是不同 endpoint',
-    workspaceEndpointKey(remote) !== workspaceEndpointKey(remoteWorkspaceRef(endpoint('10.0.0.1', 17321), '/x')),
+    workspaceEndpointKey(remote) !== workspaceEndpointKey(remoteWorkspaceRef(endpoint('10.0.0.1', 22), '/x')),
   );
 
   // 引用键与判等：endpoint 不同即不同；auth 不参与判等
-  check('远程引用键区分 endpoint', workspaceRefKey(remote) !== workspaceRefKey(remoteSibling));
-  check('同一 endpoint + 同一路径判等', sameWorkspaceRef(remote, remoteWorkspaceRef(endpoint('172.20.1.5', 17321, 'x'), '/home/dev/repo')));
+  check('远程引用键区分路径', workspaceRefKey(remote) !== workspaceRefKey(remoteSibling));
+  check('同一 endpoint + 同一路径判等', sameWorkspaceRef(remote, remoteWorkspaceRef(endpoint('172.20.1.5', 22, 'x'), '/home/dev/repo')));
   check('同一 endpoint + 不同路径不等', !sameWorkspaceRef(remote, remoteSibling));
-  check('本地与远程不等', !sameWorkspaceRef(local, remoteWorkspaceRef(endpoint('172.20.1.5', 17321), 'D:/repo')));
+  check('本地与远程不等', !sameWorkspaceRef(local, remoteWorkspaceRef(endpoint('172.20.1.5', 22), 'D:/repo')));
 
   // 展示路径
   check('本地展示路径就是路径', workspaceRefDisplayPath(local) === 'D:/repo' || workspaceRefDisplayPath(local).endsWith('repo'));
-  check('远程展示路径带 scheme://host', workspaceRefDisplayPath(remote) === 'tcp://172.20.1.5/home/dev/repo');
+  check('远程展示路径带 scheme://user@host', workspaceRefDisplayPath(remote) === 'ssh://root@172.20.1.5/home/dev/repo');
 
   // 空引用
   check('空引用判空', isEmptyWorkspaceRef(emptyWorkspaceRef()));

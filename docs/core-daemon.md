@@ -1,9 +1,9 @@
 # 规格：Core daemon
 
 本规格描述 Core 进程的 daemon：Standalone Core 进程由 daemon 启动、监督与终止，帧通道
-在 daemon 上多路复用。一个 endpoint 对应一个 daemon，同时服务多条控制连接（每条通过
-token 鉴权成功的连接是一个客户端）；每（连接, 工作区）一个 Core 进程。一条连接断开只
-结束该连接的全部 Core，任一连接发 `shutdown` 才结束整个 daemon（第 12.5 节）。
+在 daemon 上多路复用。一个 endpoint 对应一个 daemon，同时服务多条控制连接（每条连接
+是一个客户端）；每（连接, 工作区）一个 Core 进程。一条连接断开只结束该连接的全部 Core，
+任一连接发 `shutdown` 才结束整个 daemon（第 12.5 节）。
 
 Standalone Core 的进程形态与帧协议见 `docs/standalone-core.md`；连接模型见
 `docs/client-connection.md`；Core 与 UI 的分离形态见 `docs/core-ui-separation.md`。
@@ -14,17 +14,16 @@ Standalone Core 的进程形态与帧协议见 `docs/standalone-core.md`；连�
 
 1. **一个 endpoint 一个 daemon**：本地一个；每个远程 endpoint 一个（`{ scheme, host, port }`
    相同即同一 endpoint，见第 12 节）。
-2. **多客户端并发**：daemon 同时服务多条控制通道，连接之间互不阻塞；客户端身份是
-   一条通过 token 鉴权成功的控制连接，不是来源 IP（同一来源 IP 的多条连接就是多个
-   客户端）。
+2. **多客户端并发**：daemon 同时服务多条控制通道，连接之间互不阻塞；客户端身份就是
+   那条控制连接本身，不是来源 IP（同一来源 IP 的多条连接就是多个客户端）。
 3. **每（连接, 工作区）一个 Core 进程**：由 daemon 启动，daemon 持有其 stdio；两个
    客户端打开同一工作区得到两个互相独立的 Core 进程（对齐本地多窗口语义，不做跨
    客户端共享）。
 4. **多路复用**：每个 Host 与 daemon 之间一条控制通道；每个 Core 的帧通道是它上面的
    一条逻辑 channel。
 5. **生命周期归 daemon**：Core 的启动、重启、终止都由 daemon 承担，Host 不直接管理进程。
-6. **状态按连接隔离**：channel 表、channel id 序列、计数、grace、心跳（ping/pong）与
-   鉴权都按连接持有；一条连接断开只结束该连接及其全部 Core，其余连接不受影响。
+6. **状态按连接隔离**：channel 表、channel id 序列、计数、grace 与心跳（ping/pong）
+   都按连接持有；一条连接断开只结束该连接及其全部 Core，其余连接不受影响。
 7. **帧语义不变**：daemon 只加一层信封，不改 `docs/standalone-core.md` 第 6.2 节的帧集合。
 8. **同一二进制**：daemon 与 Core 是同一个可执行文件的两个模式，版本天然一致。
 9. **通道描述符**：daemon 返回 `ChannelDescriptor`，今天表达「走这条控制通道、channel N」，
@@ -37,7 +36,7 @@ Standalone Core 的进程形态与帧协议见 `docs/standalone-core.md`；连�
 | 术语 | 含义 | owner |
 | --- | --- | --- |
 | daemon | 每个 endpoint 一个的 Core 进程管理者 | host |
-| 客户端 | 一条通过 token 鉴权成功的控制连接；daemon 同时服务多个 | daemon |
+| 客户端 | 一条控制连接；daemon 同时服务多个 | daemon |
 | 控制通道 | Host 与 daemon 之间的双向帧通道 | 传输层 |
 | channel | 控制通道上承载一个 Core 帧通道的逻辑通道 | 传输层 |
 | ChannelDescriptor | 描述如何获得某个 channel 的帧通道 | 传输层 |
@@ -49,21 +48,21 @@ Standalone Core 的进程形态与帧协议见 `docs/standalone-core.md`；连�
 ## 3. 进程形态
 
 - daemon 与 Core 是同一个可执行文件（`core.binaryName`），用**动作**（子命令，裸词）选择
-  做什么，`--host` / `--port` 这类**选项**才带 `--`：
+  做什么，`--idle-exit` 这类**选项**才带 `--`：
   - `stdio`：Core 模式，stdio 是帧通道（`docs/standalone-core.md` 第 4 节）；
-  - `start`（缺省）：远程服务的启动器——确保后台 daemon 在跑（没有就拉起），打印连接串后
-    退出（第 12 节）；
+  - `start`（缺省）：远程服务的启动器——确保后台 daemon 在跑（没有就拉起），打印就绪
+    信息后退出（第 12 节）；
   - `kill`：结束在跑的 daemon（第 12 节）；
   - `start-daemon`：daemon 实体本身，由 `start` 拉起；内部动作，不出现在 `--help` 里。
 - daemon 起 Core 时不再定位第二个可执行文件：以自身路径加 `stdio` 启动。
 - daemon 创建的子进程（Core 进程）不显示控制台窗口，与 Core 侧同一条规则。
 - **本地同机工作区不走 daemon**：Host 直接用 `stdio` 起一个 Core 进程，stdio 是帧通道
-  （不监听端口、不需要 token）。daemon 只服务远程 endpoint。
-- **远程 daemon 由用户在目标机器上启动**：`start` 打印连接串（`IP:端口#token`）；
-  Host 用它建立 TCP 控制通道（第 12 节）。
+  （不监听端口）。daemon 只服务远程 endpoint。
+- **远程 daemon 只监听目标机器的回环地址，端口由内核分配**：Host 经 SSH 部署 / 启动
+  daemon，再用 SSH 转发通道接入（第 12 节）；端口不出机器，用户不需要填任何连接信息。
 - **可独立运行**：`--help` / `-h` 打印用法，`--version` / `-V` 打印版本，未知动作 / 未知选项
   报错并提示 `--help`（退出码 2）。没有动作时按 `start` 处理（直接运行即启动远程服务）。
-  可执行文件保留控制台子系统，这样帮助与 `start` 的连接串在终端里可见；宿主与 daemon 起
+  可执行文件保留控制台子系统，这样帮助与 `start` 的输出在终端里可见；宿主与 daemon 起
   本进程时用 `windowsHide` / `CREATE_NO_WINDOW` 隐藏控制台窗口。
 
 ---
@@ -77,7 +76,7 @@ Host B ── 控制通道 ──┘           └── Core B1（B 连接的 c
 ```
 
 - 每个 Host 与 daemon 之间一条控制通道；daemon 同时服务多条，每条连接一个服务线程，
-  一条连接里的任何等待（鉴权、目录列举、Core 重启）不阻塞其它连接。
+  一条连接里的任何等待（目录列举、Core 重启）不阻塞其它连接。
 - 每条 channel 上跑的帧与 `docs/standalone-core.md` 第 6.2 节完全一致；daemon 不解读
   内层帧，只按 channel 转发。
 - channel id 由 daemon 分配，在**一条控制通道内**唯一且**稳定**：Core 崩溃重启后沿用
@@ -146,9 +145,6 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 | 方向 | 帧 | 载荷 |
 | --- | --- | --- |
-| Host → daemon | `auth` | `{ kind: 'auth', token: string }`（仅远程控制通道的第一帧，第 12 节） |
-| daemon → Host | `authOk` | `{ kind: 'authOk' }` |
-| daemon → Host | `authFailed` | `{ kind: 'authFailed', error: string }` |
 | Host → daemon | `openWorkspace` | `{ kind: 'openWorkspace', id: number, workspaceRef }` |
 | daemon → Host | `workspaceOpened` | `{ kind: 'workspaceOpened', id: number, channel: number, descriptor: ChannelDescriptor }` |
 | daemon → Host | `workspaceFailed` | `{ kind: 'workspaceFailed', id: number, error: string }` |
@@ -166,7 +162,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 | daemon → Host | `directoryDeleted` | `{ kind: 'directoryDeleted', id: number, path: string }` |
 | daemon → Host | `directoryFailed` | `{ kind: 'directoryFailed', id: number, error: string, reason: 'notEmpty' \| 'other' }`（列举 / 新建 / 删除共用） |
 | Host → daemon | `shutdown` | `{ kind: 'shutdown' }` |
-| Host → daemon | `ping` | `{ kind: 'ping' }`（链路心跳，第 12.5 节；`authOk` 之后定期发送） |
+| Host → daemon | `ping` | `{ kind: 'ping' }`（链路心跳，第 12.5 节；链路就绪后定期发送） |
 | daemon → Host | `pong` | `{ kind: 'pong' }`（对 `ping` 的应答，第 12.5 节） |
 
 - `id` 由 Host 生成，在单条控制通道内唯一；`workspaceOpened` / `workspaceFailed` /
@@ -181,9 +177,6 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 之间的协议版本校验仍在各自 channel 的 `hello` / `ready` 上完成
 （`docs/standalone-core.md` 第 6.3 节）。
 
-远程控制通道多一步 token 鉴权（第 12 节）：`auth` 必须是第一帧，daemon 回 `authOk` 之后
-才接受其余帧；本地 stdio 通道没有这一步。
-
 ### 7.4 背压
 
 - 控制通道是所有 channel 的公共路径：单条 channel 的拥塞不得阻塞其它 channel。
@@ -196,7 +189,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 ## 8. 与 Connection 的关系
 
 - 打开工作区：本地同机不走 daemon（Host 直接以 `stdio` 起 Core）；远程取该 endpoint 的
-  daemon（没有则先建立 TCP 控制通道并鉴权），发 `openWorkspace`；拿到 `descriptor` 后建立
+  daemon（没有则先建立控制通道），发 `openWorkspace`；拿到 `descriptor` 后建立
   Connection（`docs/client-connection.md` 第 5 节）。
 - 关闭工作区：Client 发 `closeWorkspace`，Connection 销毁。
 - Core 崩溃：daemon 重启后在同一 channel 上重置；Client 走第 6 节的恢复路径。
@@ -207,9 +200,8 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 ## 9. 不覆盖范围
 
-- 远程凭证的加密存储（宿主把 token / SSH 口令明文写进 `workspace-state.json`，
+- 远程凭证的加密存储（宿主把 SSH 口令明文写进 `workspace-state.json`，
   见 `docs/client-connection.md` 第 9 节；钥匙串集成不在范围内）；
-- `tcp` 传输的加密（明文直连；跨不可信网络改用 `ssh` 接入，见第 12.8 节）；
 - SSH 的密钥 / agent 认证（当前只有口令一种凭证）；
 - 断线重连（SSH 断开与 TCP 断开同口径：一条连接结束即关闭它自己的全部 Core，其余
   连接不受影响）；
@@ -230,11 +222,9 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 6. Core 崩溃后 daemon 在同一 channel 上重启它；超过重启上限时关闭 channel 并报告。
 7. 内层帧与 `docs/standalone-core.md` 第 6.2 节逐项一致，daemon 不解读内层帧。
 8. 单条 channel 的拥塞不阻塞其它 channel；一条连接的等待不阻塞其它连接。
-9. `start` 缺省绑 `0.0.0.0:10975`；端口被占用时从该端口起逐个 +1，连接串给实际端口；
-   `--token` 未给出时用操作系统随机数生成。
-10. TCP 控制通道第一帧 token 不匹配时回 `authFailed` 并断开，匹配时回 `authOk`；
-    鉴权通过后 `listDirectories` 返回目标机器上的子目录（连接后即可弹出远端目录选择）。
-11. 本地同机工作区由 Host 直接用 `stdio` 起 Core（stdio 帧通道，无端口、无 token），不经过
+9. daemon 恒绑 `127.0.0.1`、端口交给内核分配。
+10. 控制通道上的 `listDirectories` 返回目标机器上的子目录（连接后即可弹出远端目录选择）。
+11. 本地同机工作区由 Host 直接用 `stdio` 起 Core（stdio 帧通道，无端口），不经过
     daemon。
 12. `ssh` 接入下全部通信走 SSH 端口：daemon 端口不需要对外映射，`~/.local/bin/<指纹>/`
     里没有可执行文件时自动部署、该指纹的 daemon 没有在跑时自动启动（端口交给内核
@@ -242,11 +232,10 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 13. SSH 主机密钥首次连接记录、之后不一致即报错；`start` 失败时把远端 stderr 带回宿主。
 14. 可执行文件可独立运行：`--help` / `--version` 直接输出，未知动作 / 未知选项报错并提示
     `--help`；没有动作时按 `start` 处理。
-15. 多客户端并发：两条连接各自完成鉴权、各自打开同一工作区，得到两个互相独立的 Core
-    进程（channel id 按连接独立分配）；一端断开只关闭它自己的 Core 与 channel，另一端
+15. 多客户端并发：两条连接各自打开同一工作区，得到两个互相独立的 Core 进程
+    （channel id 按连接独立分配）；一端断开只关闭它自己的 Core 与 channel，另一端
     不受影响（channel 不 reset、Core 不重启）。
-16. 探活连接（连上后不发 `auth`）不阻塞后续接入：下一条连接在其鉴权超时窗口内即可完成
-    鉴权并得到服务。
+16. 连上后一直不发帧的探活连接不阻塞后续接入：下一条连接立即得到服务。
 17. 任一连接发 `shutdown` 即结束整个 daemon 进程：结束前该 daemon 上全部连接的 Core 都
     被各自的会话关闭。
 18. 空闲退出（`--idle-exit 30`，SSH 引导）：daemon 启动后一直没有连接、或最后一条连接
@@ -263,7 +252,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 | daemon 进程与 channel 管理 | `core-rs/src/daemon.rs` |
 | 远程服务（后台 daemon、状态文件、目录列举） | `core-rs/src/remote.rs` |
 | 控制通道协议 | `core-rs/src/daemon_protocol.rs`、`src/host/standalone/daemonProtocol.ts` |
-| Host 侧 daemon 客户端 | `src/host/standalone/CoreDaemon.ts`（建链器：`tcpDaemonOpener`） |
+| Host 侧 daemon 客户端 | `src/host/standalone/CoreDaemon.ts` |
 | SSH 客户端 | `src/host/standalone/sshClient.ts`（`ssh2` 库，不依赖系统 OpenSSH） |
 | SSH 接入建链与远端引导 | `src/host/standalone/sshTransport.ts`、`sshDaemonBootstrap.ts` |
 | 本地单进程 Core | `src/host/standalone/StandaloneEventBus.ts`（`createStandaloneCoreBus`，`stdio`） |
@@ -279,98 +268,74 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 ### 12.1 动作
 
-- `start`：确保后台 daemon 在跑，把连接串打印到标准输出后**自己退出**（daemon 常驻）。
-  - 已有 daemon 在跑（状态文件里的 endpoint 连得上）→ 直接复用它的连接串；
+- `start`：确保后台 daemon 在跑，把就绪信息打印到标准输出后**自己退出**（daemon 常驻）。
+  - 已有 daemon 在跑（状态文件里的 endpoint 连得上）→ 直接复用它，打印它的实际端口；
   - 没有 → 以 `start-daemon` 拉起一个后台进程（脱离终端与进程组、stdin 置空、诊断追加到
-    `~/<configDir>/core-daemon-<指纹>.log`，按指纹区分见 12.3），等它落盘后打印；
-  - 本次参数与在跑的 daemon 不一致（`--host` / `--port` / `--token`）→ 报错退出，
-    不静默忽略用户给的参数。
-- `kill`：结束在跑的 daemon——连上它、`auth`、发 `shutdown`，随后清掉状态文件。
-  幂等：没有状态文件、或文件里的 daemon 已经不在，都算目标状态已达成（退出码 0）；
-  只有「连上了但 token 对不上」才报错。
-  连上了但协议无应答（endpoint 探得通、`auth` 等不到应答——accept 循环被死连接占住的
-  旧版 daemon）时按进程兜底强杀：扫描 `/proc` 找「本可执行文件 + `start-daemon`」的
-  进程 SIGKILL（精确匹配 `argv[0]` 与 `argv[1]`，不靠名字模式，不会误伤别的进程），
-  然后同样清掉状态文件；找不到匹配进程才报错。
+    `~/<configDir>/core-daemon-<指纹>.log`，按指纹区分见 12.3），等它落盘后打印。
+- `kill`：结束在跑的 daemon——连上它、`ping` 探活、发 `shutdown`，随后清掉状态文件。
+  幂等：没有状态文件、或文件里的 daemon 已经不在，都算目标状态已达成（退出码 0）。
+  连上了但 `ping` 等不到 `pong`（daemon 进程卡死）时按进程兜底强杀：扫描 `/proc` 找
+  「本可执行文件 + `start-daemon`」的进程 SIGKILL（精确匹配 `argv[0]` 与 `argv[1]`，
+  不靠名字模式，不会误伤别的进程），然后同样清掉状态文件；找不到匹配进程才报错。
 - `start-daemon` 是启动器的内部实现，不出现在 `--help` 里；也可以直接运行（调试用）。
 - 没有动作时按 `start` 处理。
 
 ### 12.2 选项
 
-- `--host <addr>`：绑定地址，默认 `0.0.0.0`（绑全部网卡，跨机接入开箱可用；SSH 引导与
-  本机自测传 `127.0.0.1`，SSH 见 12.8）；
-- `--port <n>`：绑定端口，默认 `10975`；被占用时从该端口起**逐个 +1 重试**
-  （最多 20 次；`--port 0` 交给内核，不重试）。SSH 引导固定传 `--port 0`（见 12.8）：
-  多版本 daemon 并存时互不抢固定端口；
-- `--token <token>`：token，给出时用它（并写回 token 文件）；缺省时优先复用 token 文件里的，
-  没有才用**操作系统安全随机数**生成（128 位十六进制）。
 - `--idle-exit <秒>`：空闲退出——没有任何控制连接持续该秒数后 daemon 自行退出（0 视为
   没给）。SSH 引导固定传 30（见 12.8）：客户端异常退出（crash / 断电）后远端不留常驻
-  进程。缺省不设：手工 / 直连 tcp 启动的 daemon 常驻，只有 `shutdown`（`kill`）结束。
+  进程。缺省不设：daemon 常驻，只有 `shutdown`（`kill`）结束。
+- 没有绑定地址 / 端口 / 凭证选项：daemon 恒绑 `127.0.0.1`、端口交给内核分配（见 12.3）。
 
-### 12.3 状态文件与连接串
+### 12.3 状态文件
 
 - 落盘文件按**构建指纹**区分（`docs/standalone-core.md` 第 4.4 节；与 `settings.json`
-  同目录）：状态文件 `~/<configDir>/core-daemon-<指纹>.json`、token 文件
-  `core-daemon-<指纹>.token`、诊断日志 `core-daemon-<指纹>.log`。一个指纹一个 daemon、
-  一份落盘文件：多版本 Core 在同一台远端机器上各占一个槽位时，各自的 `start` / `kill` /
-  探测只作用于自己指纹的 daemon，互不踩踏。命名规则与
-  `src/host/standalone/daemonProtocol.ts` 的 `daemonStateFileName` / `daemonTokenFileName` /
-  `daemonLogFileName` 一致，改动必须同步两侧。
-- 状态文件字段：`requested`（启动时请求的 `host:port`）、`endpoint`（实际监听的
-  `IP:端口`）、`token`。
-- **只有 daemon 写它**：daemon 同时知道实际绑定的端口与生效的 token。原子落盘；
-  Unix 上权限 `0600`（token 是凭证）。`kill` 只在文件内容仍是该 daemon 那份时删除它
-  （期间可能有新 daemon 覆盖过）。
+  同目录）：状态文件 `~/<configDir>/core-daemon-<指纹>.json`、诊断日志
+  `core-daemon-<指纹>.log`。一个指纹一个 daemon、一份落盘文件：多版本 Core 在同一台
+  远端机器上各占一个槽位时，各自的 `start` / `kill` / 探测只作用于自己指纹的 daemon，
+  互不踩踏。命名规则与 `src/host/standalone/daemonProtocol.ts` 的
+  `daemonStateFileName` / `daemonLogFileName` 一致，改动必须同步两侧。
+- 状态文件字段：`endpoint`（实际监听的 `127.0.0.1:<端口>`）。
+- **只有 daemon 写它**：daemon 知道实际绑定的端口。原子落盘；Unix 上权限 `0600`。
+  `kill` 只在文件内容仍是该 daemon 那份时删除它（期间可能有新 daemon 覆盖过）。
 - 状态文件缺失、或里面的 endpoint 连不上，都按「没有 daemon」处理（`start` 会拉起新的）。
-- 连接串是**一行一条**的 `<IP>:<端口>#<token>`：桌面端只有一个输入框，整行粘贴即可接入。
-  端口是**实际**监听的那个（`--port 0` 或 +1 重试后与请求值不同）。
-- 绑定地址是通配地址时**遍历全部网卡**：每个非回环 IPv4 一条连接串，末尾固定补一条回环
-  （绑通配地址的 daemon 必然在回环上可达）；绑具体地址时只列它本身。
-- endpoint 存的是**绑定的**主机（通配地址原样保留）：状态文件里的通配主机在探测 / `kill`
-  时先换成回环，因为直接连 `0.0.0.0` 在 Windows 上会失败。
-- token 另存一份 `~/<configDir>/core-daemon-<指纹>.token`（与会话数据同目录，Unix 上
-  `0600`）：状态文件是**本次 daemon** 的落盘结果、`kill` 会删掉它，token 却应该跨重启
-  保留——否则每次重启 daemon 都得重新抄一遍连接串。取值顺序是
-  `--token` > token 文件 > 新随机，三者都会把结果写回该文件。
-- token 文件写不进去只打警告：token 已经生效，文件没写成不该让 daemon 起不来。
+- endpoint 恒为 `127.0.0.1:<端口>`：daemon 只绑回环，端口由内核分配，多版本 daemon 并存
+  时互不抢固定端口。Host 读它开 SSH 转发通道（第 12.8 节），端口不出目标机器。
 
-### 12.4 鉴权
+### 12.4 接入边界
 
-- TCP 控制通道的第一帧必须是 `auth`；daemon 用定长比较校验 token。
-- 校验通过回 `authOk`，随后才接受其余控制帧；不通过回 `authFailed` 并关闭连接。
-- 第一帧有等待上限（10s）：连接后不发 `auth` 的探活连接 / 端口扫描占用的是它自己
-  那条连接的服务线程（每条连接一个线程，互不阻塞，见 12.5），上限把这部分占用
-  封顶，超时即关闭这条连接。上限只在鉴权阶段生效，通过后立刻清除，控制通道此后
-  可以无限期空闲。
+- daemon 只监听 `127.0.0.1`：控制通道不可从网络直接到达，访问边界就是承载它的 SSH 通道
+  （第 12.8 节）。
+- 控制通道上没有单独的鉴权帧：能连上回环端口的进程已经在目标机器上，SSH 已完成机器级
+  认证。
+- 连上后一直不发帧的连接由心跳空闲回收兜底（第 12.5 节）：控制通道建立即武装心跳死线，
+  沉默超过 `heartbeat_timeout` 即关闭这条连接，不长期占用服务线程。
 
 ### 12.5 连接与生命周期
 
 - 一个 endpoint 的 daemon 同时服务多条控制通道：accept 循环每接受一条连接就交一个
   线程去服务（thread-per-connection，同步阻塞模型，不引入 async runtime），随即回到
-  accept。客户端身份是一条通过 token 鉴权成功的控制连接，不是来源 IP：同一来源 IP
-  的多条连接就是多个客户端。一条连接里的任何等待（鉴权、目录列举、Core 重启）都
-  不阻塞其它连接。
-- 每（连接, 工作区）一个 Core 进程：channel 表、channel id 序列、计数、grace、心跳
-  （ping/pong）与鉴权状态都按连接持有，互相隔离；两个客户端打开同一工作区得到两
-  个互相独立的 Core 进程（对齐本地多窗口语义，不做跨客户端共享）。
+  accept。客户端身份就是那条控制连接，不是来源 IP：同一来源 IP 的多条连接就是多个
+  客户端。一条连接里的任何等待（目录列举、Core 重启）都不阻塞其它连接。
+- 每（连接, 工作区）一个 Core 进程：channel 表、channel id 序列、计数、grace 与心跳
+  （ping/pong）都按连接持有，互相隔离；两个客户端打开同一工作区得到两个互相独立的
+  Core 进程（对齐本地多窗口语义，不做跨客户端共享）。
 - 连接断开时，该连接上的全部 Core 进程被关闭；服务线程结束，daemon 进程继续监听并
   服务其它连接。
 - 「断开」有三条判定路径：
   - TCP 层的 EOF / 读错误（Host 正常退出、socket 被关闭）；
   - **心跳空闲超时**（60s，daemon 判 Host）：Host 每 1s 发一帧 `ping`，daemon 每帧
-    回 `pong`，并在见到首个 `ping` 后武装空闲计时，此后任何控制帧都顺延它；超时仍
-    无帧即按断开处理。Host 消失而 TCP 未断（断网 / 休眠 / 进程冻结）时读线程永远
-    等不到 EOF，沉默是 daemon 唯一的断开依据。心跳计时按连接独立武装与顺延；
-    旧版 Host 不发 `ping`，该连接不武装计时，行为与原来一致；daemon 收到未知帧
-    一律丢弃并记录，不因此断开。
+    回 `pong`；心跳计时在控制通道建立时武装，此后任何控制帧都顺延它，超时仍无帧
+    即按断开处理（连上后一直不发帧的连接也由此回收）。Host 消失而 TCP 未断（断网 /
+    休眠 / 进程冻结）时读线程永远等不到 EOF，沉默是 daemon 唯一的断开依据。心跳
+    计时按连接独立武装与顺延；daemon 收到未知帧一律丢弃并记录，不因此断开。
   - **Host 侧沉默判定**（≤ 3s，Host 判 daemon）：daemon 死而 socket 未断（对端
     断电 / 网络分区）与 daemon 卡死，在 socket 层都没有任何信号，唯一依据是
     `pong` 的有无。Host 见到首个 `pong` 后武装沉默死线（2.5s）——链路上这么久
     没有任何入站帧即补发一帧探针 `ping`，再宽限 400ms，仍无任何入站帧就 kill
     链路并按 fatal 上报。探针宽限吸收本进程卡顿（定时器迟到、入站帧积压在内核
-    缓冲），不误杀活链路；判死上限 = 死线 + 宽限 ≤ 3s。旧版 daemon 不回 `pong`：
-    Host 不武装沉默判定（不误杀），判死退回 TCP 层的节奏。
+    缓冲），不误杀活链路；判死上限 = 死线 + 宽限 ≤ 3s。对端不回 `pong` 时 Host 不
+    武装沉默判定（不误杀），判死退回 TCP 层的节奏。
 - 控制通道**不因没有工作区而 grace 退出**（`DaemonOptions.idle_exit = false`）：控制通道
   本身是生命周期边界，目录选择期间可以长时间没有工作区。
 - 远程 daemon 是常驻 server：一条连接结束后继续等待下一条；只有 `shutdown` 帧
@@ -392,8 +357,8 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
   连接挂死 `kill`。Core 还有 stdin EOF 的兜底：daemon 进程退出后各 Core 读到 EOF
   自行退出。
 - 控制连接开启 TCP keepalive（空闲 45s 起、每 10s 探、3 次无应答判死）：SSH 接入时
-  对端是本机 sshd，探活无意义但无害；直连 `tcp` 模式下 daemon 不主动发帧、读不到
-  EOF，这是对端消失后唯一的回收手段。
+  对端是本机 sshd，探活无意义但无害；对端消失后读线程等不到 EOF 时，keepalive 是
+  socket 层的回收手段（心跳超时兜底控制帧层的沉默）。
 - daemon 的诊断按行原子追加到 `core-daemon.log`（`start` 以追加模式把 stderr 重定向
   到它）：全部诊断先整行格式化再一次写入（stderr 锁内），多线程并发不丢行、不交错
   半行；追加模式（O_APPEND）保证每次 write 原子落到文件尾。
@@ -410,7 +375,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
   连同其中的全部内容一起删除？」的**第二次确认**，确认后才带 `recursive = true` 重发。
 - 无论哪种模式都拒绝文件系统根（`/`、`C:\`）：删根几乎一定是操作失误。
 - 三个动作的路径都必须是绝对路径：Host 拿到的目录名要能直接当工作区路径用。
-- 只列子目录，不列文件；Host 在鉴权通过后立刻请求一次，据此弹出远端目录选择器。
+- 只列子目录，不列文件；Host 在控制通道建立后立刻请求一次，据此弹出远端目录选择器。
 - 选择器页面是 `electron/remoteWorkspace/`（vite 产物，加载 `dist/remoteWorkspace/index.html`）：
   路径可编辑、列表首行是 `..`（上级）、工具栏可新建文件夹。破坏性操作不进常显 UI：
   右键目录行弹出「重命名 / 删除」菜单，选中后在该行内联编辑（重命名直接改名字；
@@ -424,9 +389,8 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 ### 12.7 本地同机不走 daemon
 
 - 本地同机的工作区由 Host 直接用 `stdio` 起一个 Core 进程（`createStandaloneCoreBus`），
-  stdio 是帧通道：不监听端口、不需要 token，也不经过 daemon。
-- daemon 只服务远程 endpoint（`tcp` / `ssh` 传输）。因此 token / 端口 / 端口 +1 重试
-  只对远程接入有意义。
+  stdio 是帧通道：不监听端口，也不经过 daemon。
+- daemon 只服务远程 endpoint（`ssh` 接入）。因此端口只对远程接入有意义。
 
 ### 12.8 SSH 接入（`ssh` scheme）
 
@@ -440,45 +404,42 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
    即报错，指纹存 `~/<configDir>/known-hosts.json`）；
 2. 引导远端 daemon（`sshDaemonBootstrap.ts`，见下）；
 3. 在远端开一条 `direct-tcpip` 转发通道到该 daemon（等价于 `ssh -W`），它就是要用的
-   控制通道；随后第一帧发 `auth`，之后与 `tcp` 接入完全同构。
+   控制通道；控制帧与 `docs/standalone-core.md` 第 6.2 节完全一致。
 
 引导的分支（按顺序判断）：
 
 | 情况 | 判据 | 行为 |
 | --- | --- | --- |
 | 该指纹的 daemon 在跑 | 该指纹的状态文件 `core-daemon-<指纹>.json` 里的 endpoint 探得通 | 直接复用：不重启 daemon、不覆盖产物；缺可执行文件或自带 `ripgrep/` 时补传（「在跑」不等于产物齐全——指纹目录被外部清过时进程仍在跑） |
-| 已部署未启动 | `~/.local/bin/<指纹>/` 里有可执行文件、探测不通 | 补齐缺的自带 `ripgrep/`（若缺），执行 `<可执行文件> start --host 127.0.0.1 --port 0 --idle-exit 30`（幂等），再读状态文件 |
-| 未部署 | `~/.local/bin/<指纹>/` 里没有可执行文件 | 上传本机携带的对应平台产物（按远端 `uname -sm` 选平台）后 `start --host 127.0.0.1 --port 0 --idle-exit 30` |
+| 已部署未启动 | `~/.local/bin/<指纹>/` 里有可执行文件、探测不通 | 补齐缺的自带 `ripgrep/`（若缺），执行 `<可执行文件> start --idle-exit 30`（幂等），再读状态文件 |
+| 未部署 | `~/.local/bin/<指纹>/` 里没有可执行文件 | 上传本机携带的对应平台产物（按远端 `uname -sm` 选平台）后 `start --idle-exit 30` |
 
 - 部署槽位由本机携带产物的**构建指纹**决定（`docs/standalone-core.md` 第 4.4 节）：
   产物落 `~/.local/bin/<指纹>/`（可执行文件 + 同级的自带 `ripgrep/rg`——Core 以自己的
-  可执行文件目录为基准定位自带资源，远端机器不需要预装 `rg`），状态 / token / 日志
-  文件按指纹命名（第 12.3 节）。多版本 Core 在同一台远端机器上各占一个槽位、各跑
-  一个 daemon——不同版本的客户端同时接入互不干扰，旧版「版本过期换血」（kill +
-  覆盖 + 重启）随之消失：新版本天然落在新槽位，旧 daemon 原样留给旧版本的客户端。
+  可执行文件目录为基准定位自带资源，远端机器不需要预装 `rg`），状态 / 日志文件按
+  指纹命名（第 12.3 节）。多版本 Core 在同一台远端机器上各占一个槽位、各跑
+  一个 daemon——不同版本的客户端同时接入互不干扰：新版本天然落在新槽位，旧 daemon
+  原样留给旧版本的客户端。
 - 「指纹目录存在即视为同版本」：指纹只由源码内容与编译器身份决定，同一指纹的产物
   行为一致，因此可执行文件存在就不再上传，**不做产物哈希比对**——缺失才部署，
   不无脑覆盖。
-- SSH 引导以 `start --host 127.0.0.1 --port 0 --idle-exit 30` 启动 daemon：转发连接从远端本机发起，
-  绑回环使端口不出机器；端口交给内核分配（第 12.2 节 `--port 0`）——多版本 daemon
-  并存时互不抢固定端口，`+1` 重试在这条路径上没有触发时机，实际端口随状态文件读回。
+- SSH 引导以 `start --idle-exit 30` 启动 daemon：daemon 恒绑 `127.0.0.1`、端口交给内核
+  分配（第 12.2 / 12.3 节）——转发连接从远端本机发起，端口不出机器；多版本 daemon
+  并存时互不抢固定端口，实际端口随状态文件读回。
   `--idle-exit 30` 让 daemon 在最后一条控制连接断开后自行退出（第 12.5 节）：客户端
   crash / 断电后远端不留常驻进程，「拉起后无人接入」的孤儿 daemon 也由同一条规则兜底。
-  直连 `tcp` 的连接串模式不受影响（`start` 缺省仍绑 `0.0.0.0:10975`，那里的端口要写
-  进用户可见的连接串，必须可预测；daemon 常驻，只有 `kill` 结束）。
 - 上传走**临时名 + `mv` 原子换名**：目标可能正被一个在跑的 daemon 执行（它的指纹目录
   被清过、状态文件丢失时宿主无从得知它在跑），对执行中的文件直接覆盖写是 `ETXTBSY`
   （SFTP 报 `Failure`）；`mv` 只换目录项，运行中的进程继续用旧 inode。
 - 状态文件缺失时按「没有 daemon」处理（与 `start` 同口径）：若该指纹的 daemon 实际
   仍在跑并占着端口，重新 `start` 的 daemon 由内核分配新端口并在新的状态文件里登记，
-  宿主跟着状态文件接入——旧 daemon 成为无状态文件的残留（只拒绝 token 不匹配的
-  连接），需要时用该指纹的二进制 `kill` 清理（`/proc` 兜底按可执行文件路径精确匹配，
-  只命中本指纹的 daemon）。
+  宿主跟着状态文件接入——旧 daemon 成为无状态文件的残留，需要时用该指纹的二进制
+  `kill` 清理（`/proc` 兜底按可执行文件路径精确匹配，只命中本指纹的 daemon）。
 - 指纹槽位**不做磁盘回收**：多版本累积（每个槽位约 11MB）是接受的语义，需要清理时
   在远端手工删除——先确认该指纹的 daemon 不在跑（状态文件探得通的就是在跑的）。
 - 本机产物里没有指纹文件或缺自带的 ripgrep 属于构建不完整，直接报错，不静默降级。
-- daemon 的端口与 token **以远端状态文件为准**（第 12.3 节）：Host 读
-  `~/<configDir>/core-daemon-<指纹>.json`，把通配地址换成回环后转发。
+- daemon 的端口 **以远端状态文件为准**（第 12.3 节）：Host 读
+  `~/<configDir>/core-daemon-<指纹>.json`，按里面的 `127.0.0.1:<端口>` 开转发通道。
 - 状态文件缺失 / 损坏 / 连不上都按「没有在跑」处理，与 `start` 自己的判据同口径。
 - 任何一步失败都直接报错（`start` 的退出码与 stderr 一并带回宿主），不回退到「先连上
   再说」。

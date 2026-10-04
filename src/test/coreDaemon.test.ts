@@ -19,7 +19,8 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawn, type ChildProcessByStdio } from 'child_process';
 import type { Readable } from 'stream';
-import { CoreDaemon, tcpDaemonOpener } from '../host/standalone/CoreDaemon';
+import { CoreDaemon } from '../host/standalone/CoreDaemon';
+import { tcpDaemonOpener } from './helpers/tcpDaemonLink';
 import {
   daemonStateFileName,
   encodeDaemonFrame,
@@ -57,7 +58,7 @@ interface FakeDaemonOptions {
 
 interface FakeDaemon {
   port: number;
-  /** 收到的全部控制帧（含第一帧 `auth`） */
+  /** 收到的全部控制帧 */
   readonly received: ControlFrame[];
   /** 关掉 server 与全部连接 */
   close(): Promise<void>;
@@ -72,10 +73,9 @@ interface ChannelState {
  * 起一个冒充 daemon 的 TCP server。
  *
  * 不真的起子进程：每个 channel 用一个内存状态模拟 Core 的 hello → ready 行为，
- * 其余内层帧按选项回应。第一帧必须是 `auth`，token 是 `secret`。
+ * 其余内层帧按选项回应。
  */
 async function startFakeDaemon(options: FakeDaemonOptions = {}): Promise<FakeDaemon> {
-  const expectedToken = 'secret';
   const received: ControlFrame[] = [];
   const sockets = new Set<net.Socket>();
 
@@ -85,7 +85,6 @@ async function startFakeDaemon(options: FakeDaemonOptions = {}): Promise<FakeDae
     socket.on('error', () => undefined);
     socket.on('close', () => sockets.delete(socket));
 
-    let authed = false;
     let buffer = '';
     let nextChannel = 1;
     const channels = new Map<number, ChannelState>();
@@ -188,16 +187,6 @@ async function startFakeDaemon(options: FakeDaemonOptions = {}): Promise<FakeDae
           continue;
         }
         received.push(frame);
-        if (!authed) {
-          if (frame.kind === 'auth' && frame.token === expectedToken) {
-            authed = true;
-            send({ kind: 'authOk' });
-          } else {
-            send({ kind: 'authFailed', error: 'bad token' });
-            socket.end();
-          }
-          continue;
-        }
         handle(frame);
       }
     });
@@ -220,7 +209,7 @@ async function startFakeDaemon(options: FakeDaemonOptions = {}): Promise<FakeDae
 /** 建一条连到假 daemon 的 CoreDaemon */
 function connectFakeDaemon(port: number): CoreDaemon {
   return new CoreDaemon({
-    transport: tcpDaemonOpener({ host: '127.0.0.1', port, token: 'secret' }),
+    transport: tcpDaemonOpener({ host: '127.0.0.1', port }),
     log: () => undefined,
     handshakeTimeoutMs: 2_000,
     shutdownTimeoutMs: 1_000,
@@ -275,26 +264,26 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<boo
 // ==================== 真实产物 smoke ====================
 
 /**
- * 读真实 daemon 启动输出里的连接串（`<IP>:<端口>#<token>`；读不到就在超时后 reject）。
+ * 读真实 daemon 的启动输出，取它实际监听的回环端口（读不到就在超时后 reject）。
  *
- * 连接串单独占一行，提示行里不含该形态，按行匹配即可。
+ * `start-daemon` 就绪后打印一行诊断信息，里面带 `127.0.0.1:<端口>`。
  *
  * 子进程以 `stdio: ['ignore', 'pipe', 'pipe']` 启动（daemon 不读 stdin），
  * 因此类型是 `ChildProcessByStdio<null, Readable, Readable>` 而不是 `ChildProcessWithoutNullStreams`。
  */
-function readConnectionString(
+function readReadyEndpoint(
   child: ChildProcessByStdio<null, Readable, Readable>,
-): Promise<{ host: string; port: number; token: string }> {
+): Promise<{ host: string; port: number }> {
   return new Promise((resolve, reject) => {
     let text = '';
-    const timer = setTimeout(() => reject(new Error(`connection string timeout: ${text}`)), 20_000);
+    const timer = setTimeout(() => reject(new Error(`daemon ready timeout: ${text}`)), 20_000);
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
       text += chunk;
-      const match = /^([^#\s]+):(\d+)#(\S+)$/m.exec(text);
+      const match = /127\.0\.0\.1:(\d+)/.exec(text);
       if (match) {
         clearTimeout(timer);
-        resolve({ host: match[1], port: Number(match[2]), token: match[3] });
+        resolve({ host: '127.0.0.1', port: Number(match[1]) });
       }
     });
     child.on('error', (error) => {
@@ -333,31 +322,12 @@ async function run(): Promise<void> {
     const harness = await createHarness({ echoUiEvents: true });
     check('openWorkspace 后通道就绪', await waitFor(() => harness.bus.isReady()));
     check('传输层报告已就绪', harness.transport.isReady());
-    check('控制通道第一帧是 auth', harness.fake.received[0]?.kind === 'auth');
+    check('控制通道首帧是 openWorkspace', harness.fake.received[0]?.kind === 'openWorkspace');
 
     harness.bus.emitToCore({ type: 'abortRequested', sessionId: 's1' });
     check('内层帧到达 daemon 并回传事件', await waitFor(() => harness.recording.count('log') >= 1));
     check('回传的是同一帧', harness.recording.last('log')?.message === 'ui:abortRequested');
     await dispose(harness);
-  }
-
-  // ---------- 鉴权失败 → 连接不可用 ----------
-  {
-    const fake = await startFakeDaemon();
-    const daemon = new CoreDaemon({
-      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port, token: 'wrong' }),
-      log: () => undefined,
-      handshakeTimeoutMs: 2_000,
-      shutdownTimeoutMs: 1_000,
-    });
-    const { bus } = openBus(daemon, 'D:/repo/a');
-    let fatal: Error | null = null;
-    bus.onFatal((error) => {
-      fatal = error;
-    });
-    check('错误 token 报告 fatal', await waitFor(() => fatal !== null));
-    await daemon.shutdown();
-    await fake.close();
   }
 
   // ---------- 两个 channel 互不影响 ----------
@@ -492,14 +462,14 @@ async function run(): Promise<void> {
     await fake.close();
   }
 
-  // ---------- 链路心跳：authOk 后定期发 ping ----------
+  // ---------- 链路心跳：链路就绪后定期发 ping ----------
   //
   // daemon 靠「最近一次收到控制帧」判定链路死活（心跳空闲回收，docs/core-daemon.md
   // 第 12.5 节）：Host 必须定期发 `ping`，沉默的连接会在 daemon 侧被误判断开。
   {
     const fake = await startFakeDaemon();
     const daemon = new CoreDaemon({
-      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port, token: 'secret' }),
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port }),
       log: () => undefined,
       handshakeTimeoutMs: 2_000,
       shutdownTimeoutMs: 1_000,
@@ -508,7 +478,7 @@ async function run(): Promise<void> {
     const { bus } = openBus(daemon, 'D:/repo/a');
     check('心跳用例完成握手', await waitFor(() => bus.isReady()));
     const pings = (): ControlFrame[] => fake.received.filter((frame) => frame.kind === 'ping');
-    check('authOk 后开始发送 ping', await waitFor(() => pings().length >= 1));
+    check('链路就绪后开始发送 ping', await waitFor(() => pings().length >= 1));
     const count = pings().length;
     await new Promise((resolve) => setTimeout(resolve, 80));
     check('ping 按间隔持续发送', pings().length > count);
@@ -542,7 +512,7 @@ async function run(): Promise<void> {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-cat-daemon-'));
       const child = spawn(
         binary,
-        ['start-daemon', '--host', '127.0.0.1', '--port', '0', '--token', 'smoke-token'],
+        ['start-daemon'],
         {
           env: { ...process.env, HOME: home, USERPROFILE: home },
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -550,13 +520,12 @@ async function run(): Promise<void> {
         },
       );
       try {
-        const connection = await readConnectionString(child);
+        const endpoint = await readReadyEndpoint(child);
         check(
-          `真实 daemon 打印连接串 ${connection.host}:${connection.port}`,
-          connection.host === '127.0.0.1' && connection.port > 0,
+          `真实 daemon 监听回环端口 ${endpoint.host}:${endpoint.port}`,
+          endpoint.host === '127.0.0.1' && endpoint.port > 0,
         );
-        check('连接串带上生效的 token', connection.token === 'smoke-token');
-        const port = connection.port;
+        const port = endpoint.port;
         const statePath = path.join(
           home,
           '.tuxedo-cat',
@@ -565,7 +534,7 @@ async function run(): Promise<void> {
         check('真实 daemon 按指纹落盘状态文件', fs.existsSync(statePath));
 
         const daemon = new CoreDaemon({
-          transport: tcpDaemonOpener({ host: '127.0.0.1', port, token: 'smoke-token' }),
+          transport: tcpDaemonOpener({ host: '127.0.0.1', port }),
           log: () => undefined,
           handshakeTimeoutMs: 15_000,
           shutdownTimeoutMs: 5_000,

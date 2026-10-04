@@ -24,7 +24,8 @@ import type { Server, Socket } from 'net';
 import { CONFIG_DIR_NAME, CORE_RESOURCE_DIR } from '../config/project';
 import { coreBinaryFileName, corePlatformDir } from '../host/standalone/coreBinary';
 import { CORE_PROTOCOL_VERSION } from '../host/standalone/protocol';
-import { CoreDaemon, tcpDaemonOpener } from '../host/standalone/CoreDaemon';
+import { CoreDaemon } from '../host/standalone/CoreDaemon';
+import { tcpDaemonOpener } from './helpers/tcpDaemonLink';
 import { createCoreChannelBus } from '../host/standalone/StandaloneEventBus';
 import { remoteWorkspaceRef, type WorkspaceEndpoint } from '../host/workspaceRef';
 import { createEventBus } from '../host/EventBus';
@@ -258,7 +259,6 @@ interface FakeRemoteDaemon {
  * `spawnCore()` 返回的 Core 进程 stdio——远程形态下的 Core 与本地完全同一份。
  */
 function startBridgingFakeRemote(
-  token: string,
   spawnCore: () => CoreChild,
 ): Promise<FakeRemoteDaemon> {
   let nextChannel = 1;
@@ -298,7 +298,6 @@ function startBridgingFakeRemote(
     sockets.add(socket);
     socket.setEncoding('utf8');
     let buffer = '';
-    let authed = false;
     const send = (frame: unknown): void => {
       socket.write(`${JSON.stringify(frame)}\n`);
     };
@@ -315,21 +314,6 @@ function startBridgingFakeRemote(
         try {
           frame = JSON.parse(line) as Record<string, unknown>;
         } catch {
-          continue;
-        }
-        if (frame['kind'] === 'auth') {
-          if (frame['token'] === token) {
-            authed = true;
-            send({ kind: 'authOk' });
-          } else {
-            send({ kind: 'authFailed', error: 'invalid token' });
-            socket.end();
-          }
-          continue;
-        }
-        if (!authed) {
-          send({ kind: 'authFailed', error: 'auth required' });
-          socket.end();
           continue;
         }
         if (frame['kind'] === 'openWorkspace') {
@@ -385,19 +369,19 @@ async function runStandaloneRemote(home: string, dirName: string, mode: 'clear' 
       env: { ...process.env, USERPROFILE: home, HOME: home },
       windowsHide: true,
     });
-  const fake = await startBridgingFakeRemote('parity-token', spawnCore);
+  const fake = await startBridgingFakeRemote(spawnCore);
   try {
     const endpoint: WorkspaceEndpoint = {
       host: '127.0.0.1',
       port: fake.port,
-      user: null,
-      auth: { kind: 'token', token: 'parity-token' },
+      user: 'root',
+      auth: { kind: 'sshPassword', password: 'parity-token' },
     };
     const daemon = new CoreDaemon({
       log: () => undefined,
       handshakeTimeoutMs: 5_000,
       shutdownTimeoutMs: 1_000,
-      transport: tcpDaemonOpener({ host: endpoint.host, port: fake.port, token: 'parity-token' }),
+      transport: tcpDaemonOpener({ host: endpoint.host, port: fake.port }),
     });
     const ref = remoteWorkspaceRef(endpoint, '/parity-remote');
     const bus = createCoreChannelBus(daemon.openChannel(ref), () => undefined);

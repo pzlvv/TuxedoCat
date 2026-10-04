@@ -14,9 +14,6 @@ use serde_json::Value;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum HostToDaemonFrame {
-    /// 远程控制通道的第一帧：校验 token（`docs/core-daemon.md` 第 12 节）。
-    /// 本地 stdio 通道不发送本帧。
-    Auth { token: String },
     /// 打开一个工作区：daemon 启动 Core 进程、分配 channel、回 `workspaceOpened`
     OpenWorkspace {
         id: u64,
@@ -42,8 +39,7 @@ pub enum HostToDaemonFrame {
     /// 关闭全部 channel 并退出
     Shutdown,
     /// 心跳（`docs/core-daemon.md` 第 12.5 节）：Host 定期发送，daemon 回 `pong`
-    /// 并以「最近一次收到控制帧」判定 Host 死活。旧版 Host 不发本帧：daemon 只在
-    /// 见过首个 `ping` 后才启用空闲回收。
+    /// 并以「最近一次收到控制帧」判定 Host 死活。
     Ping,
 }
 
@@ -51,14 +47,9 @@ pub enum HostToDaemonFrame {
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum DaemonToHostFrame {
-    /// token 校验通过
-    AuthOk,
     /// 心跳应答（`docs/core-daemon.md` 第 12.5 节）：对 `ping` 的回应。Host 见到
-    /// 首个 `pong` 即武装「沉默判定」——此后长时间无任何入站帧按断开处理。旧版
-    /// daemon 不回本帧：Host 不武装沉默判定，保持原有行为（只靠 TCP 层判死）。
+    /// 首个 `pong` 即武装「沉默判定」——此后长时间无任何入站帧按断开处理。
     Pong,
-    /// token 校验失败：连接随后关闭
-    AuthFailed { error: String },
     /// 工作区已打开：回带 Host 的请求 id 与 channel / 描述符
     WorkspaceOpened {
         id: u64,

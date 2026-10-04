@@ -3,7 +3,7 @@
  *
  * 背景（实测回归）：启动期「可达性探测」与「正式连接」同时为同一 endpoint 各跑一遍
  * `ensureRemoteDaemon`——没有去重时两边都全量上传产物（把探测的建链预算挤爆），
- * 两条 `start --port 0` 还会各拉起一个 daemon，多出来的那个成孤儿常驻。本组用例锁定
+ * 两条 `start` 还会各拉起一个 daemon，多出来的那个成孤儿常驻。本组用例锁定
  * `ensureRemoteDaemonShared` 的共享语义：同目标的并发调用复用同一次引导（后到者的
  * SSH 连接完全不参与），settle 之后的新调用走自己的常规路径（成功或失败都不残留）。
  *
@@ -25,7 +25,7 @@ const FINGERPRINT = 'a'.repeat(64);
 const STATE_PATH = `${HOME}/.tuxedo-cat/core-daemon-${FINGERPRINT}.json`;
 const BINARY_PATH = `${HOME}/.local/bin/${FINGERPRINT}/tuxedo-cat-core`;
 const RIPGREP_PATH = `${HOME}/.local/bin/${FINGERPRINT}/ripgrep/rg`;
-const START_COMMAND = `'${BINARY_PATH}' start --host 127.0.0.1 --port 0 --idle-exit 30`;
+const START_COMMAND = `'${BINARY_PATH}' start --idle-exit 30`;
 const TARGET = { host: '203.0.113.7', port: 22, user: 'dev', password: 'secret' };
 
 /** 假的远端 SSH：文件系统、可执行文件与转发可达性都可控；记录 start / 上传次数 */
@@ -80,18 +80,15 @@ class FakeSsh implements RemoteSsh {
       if (this.startExit !== 0) {
         return { code: this.startExit, stdout: '', stderr: this.startStderr };
       }
-      this.writeState(`0.0.0.0:${10975 + this.startCount}`, 'tok-shared');
+      this.writeState(`127.0.0.1:${10975 + this.startCount}`);
       this.reachable.add(`127.0.0.1:${10975 + this.startCount}`);
       return { code: 0, stdout: '', stderr: '' };
     }
     throw new Error(`unexpected remote command: ${command}`);
   }
 
-  private writeState(endpoint: string, token: string): void {
-    this.files.set(
-      STATE_PATH,
-      JSON.stringify({ requested: '127.0.0.1:0', endpoint, token }),
-    );
+  private writeState(endpoint: string): void {
+    this.files.set(STATE_PATH, JSON.stringify({ endpoint }));
   }
 }
 
@@ -125,7 +122,6 @@ runTests('sshTransport', async () => {
       ensureRemoteDaemonShared(TARGET, second, options),
     ]);
     check('两个并发调用拿到同一个 daemon endpoint', a.host === b.host && a.port === b.port);
-    check('两个并发调用拿到同一个 token', a.token === b.token);
     check('引导只在第一个调用者的 SSH 上执行（start 一次）', first.startCount === 1);
     check('后到者的 SSH 连接完全不参与（零上传、零命令）', second.uploadCount === 0);
   }
@@ -137,7 +133,7 @@ runTests('sshTransport', async () => {
     // 预置「已部署且在跑」的远端：状态文件 + 可达 endpoint + 齐全产物
     warm.files.set(
       STATE_PATH,
-      JSON.stringify({ requested: '127.0.0.1:0', endpoint: '0.0.0.0:10999', token: 'tok-warm' }),
+      JSON.stringify({ endpoint: '127.0.0.1:10999' }),
     );
     warm.reachable.add('127.0.0.1:10999');
     warm.executables.add(BINARY_PATH);
@@ -177,7 +173,7 @@ runTests('sshTransport', async () => {
     // 失败 settle 后，in-flight 表已移除：新调用重新尝试（这次成功）
     const retry = new FakeSsh();
     const daemon = await ensureRemoteDaemonShared({ ...TARGET, user: 'failing' }, retry, options);
-    check('失败后的新调用重新引导并成功', daemon.token === 'tok-shared' && retry.startCount === 1);
+    check('失败后的新调用重新引导并成功', daemon.port === 10976 && retry.startCount === 1);
   }
 
   cleanup(extensionPath);

@@ -29,7 +29,8 @@ import type { Socket } from 'net';
 import { bootstrapCore, shutdownCore } from '../host/bootstrapCore';
 import type { Connection } from '../host/Connection';
 import { createCoreChannelBus, createStandaloneCoreBus } from '../host/standalone/StandaloneEventBus';
-import { CoreDaemon, tcpDaemonOpener } from '../host/standalone/CoreDaemon';
+import { CoreDaemon } from '../host/standalone/CoreDaemon';
+import { tcpDaemonOpener } from './helpers/tcpDaemonLink';
 import { ConversationManager } from '../host/ConversationManager';
 import type { SpinDesign } from '../host/SpinDesign';
 import type { ConversationMetadata } from '../core/history/Conversation';
@@ -123,7 +124,7 @@ interface FakeRemote {
 }
 
 /** channel 帧桥接到假 Core 进程的进程内假远端 */
-function startBridgingFakeRemote(token: string): Promise<FakeRemote> {
+function startBridgingFakeRemote(): Promise<FakeRemote> {
   let nextChannel = 1;
   const cores = new Set<child_process.ChildProcessWithoutNullStreams>();
   const sockets = new Set<Socket>();
@@ -132,7 +133,6 @@ function startBridgingFakeRemote(token: string): Promise<FakeRemote> {
     sockets.add(socket);
     socket.setEncoding('utf8');
     let buffer = '';
-    let authed = false;
     const send = (frame: unknown): void => {
       socket.write(`${JSON.stringify(frame)}\n`);
     };
@@ -149,21 +149,6 @@ function startBridgingFakeRemote(token: string): Promise<FakeRemote> {
         try {
           frame = JSON.parse(line) as Record<string, unknown>;
         } catch {
-          continue;
-        }
-        if (frame['kind'] === 'auth') {
-          if (frame['token'] === token) {
-            authed = true;
-            send({ kind: 'authOk' });
-          } else {
-            send({ kind: 'authFailed', error: 'invalid token' });
-            socket.end();
-          }
-          continue;
-        }
-        if (!authed) {
-          send({ kind: 'authFailed', error: 'auth required' });
-          socket.end();
           continue;
         }
         if (frame['kind'] === 'openWorkspace') {
@@ -269,18 +254,18 @@ async function run(): Promise<void> {
   process.env.HOME = home;
   process.env.TUXEDO_CAT_CORE = 'standalone';
 
-  const fake = await startBridgingFakeRemote('host-token');
+  const fake = await startBridgingFakeRemote();
   const remoteEndpoint: WorkspaceEndpoint = {
     host: '127.0.0.1',
     port: fake.port,
-    user: null,
-    auth: { kind: 'token', token: 'host-token' },
+    user: 'root',
+    auth: { kind: 'sshPassword', password: 'host-token' },
   };
   const remoteDaemon = new CoreDaemon({
     log: () => undefined,
     handshakeTimeoutMs: 5_000,
     shutdownTimeoutMs: 1_000,
-    transport: tcpDaemonOpener({ host: remoteEndpoint.host, port: fake.port, token: 'host-token' }),
+    transport: tcpDaemonOpener({ host: remoteEndpoint.host, port: fake.port }),
   });
   const localRef = localWorkspaceRef('D:/parity-local');
   const remoteRef = remoteWorkspaceRef(remoteEndpoint, '/parity-remote');

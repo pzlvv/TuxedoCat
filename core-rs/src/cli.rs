@@ -1,10 +1,9 @@
 //! 命令行解析（`docs/core-daemon.md` 第 3 节）。
 //!
-//! Standalone Core 用**动作**（子命令，裸词）选择做什么，`--host` / `--port` 这类
-//! **选项**才带 `--`：
+//! Standalone Core 用**动作**（子命令，裸词）选择做什么，`--idle-exit` 这类**选项**才带 `--`：
 //! - `stdio`：单进程 Core，stdio 是帧通道（供宿主接入本地工作区）；
 //! - `start`（缺省）：远程服务的启动器——确保后台 daemon 运行（不存在则创建），
-//!   输出连接串后退出；
+//!   输出就绪信息后退出；
 //! - `kill`：终止当前 daemon 及其全部工作区。
 //!
 //! `start` 是**启动器**：daemon 实体本身由隐藏动作 `start-daemon` 进入，那是启动器的
@@ -19,7 +18,7 @@ use crate::remote::RemoteOptions;
 pub enum Command {
     /// `stdio`：单进程 Core，stdio 是帧通道（宿主默认模式）
     Stdio,
-    /// `start`：确保后台 daemon 在跑，打印连接串后退出
+    /// `start`：确保后台 daemon 在跑，打印就绪信息后退出
     Start(RemoteOptions),
     /// `start-daemon`（隐藏动作，由 `start` 拉起）：TCP 是控制通道，绑定后常驻
     StartDaemon(RemoteOptions),
@@ -36,9 +35,9 @@ pub enum Command {
 /// 全部动作（子命令）；`start-daemon` 是内部动作，不出现在帮助里。
 const ACTIONS: [&str; 4] = ["stdio", "start", "start-daemon", "kill"];
 
-/// 吃掉下一个参数的选项（`--host 127.0.0.1` 形式）。
+/// 吃掉下一个参数的选项（`--idle-exit <秒>` 形式）。
 fn takes_value(arg: &str) -> bool {
-    matches!(arg, "--host" | "--port" | "--token" | "--idle-exit")
+    matches!(arg, "--idle-exit")
 }
 
 /// 程序名：取可执行文件名（打包后是 `tuxedo-cat-core`，开发期是 `standalone-core`）。
@@ -75,16 +74,11 @@ Tuxedo Cat 的 Standalone Core（独立进程）。
 
 动作（缺省 start）：
   stdio               单进程 Core：stdio 是帧通道（供宿主接入本地工作区）。
-  start               确保后台 daemon 运行（不存在则创建），输出连接串后退出；
-                      供桌面端接入远程工作区。
+  start               确保后台 daemon 运行（不存在则创建），输出就绪信息后退出；
+                      daemon 只监听本机回环，供桌面端经 SSH 转发接入。
   kill                终止当前 daemon 及其全部工作区。
 
 start 选项：
-  --host <addr>       绑定地址（默认 0.0.0.0，即全部网卡；仅限本机访问时用
-                      127.0.0.1）。
-  --port <n>          绑定端口（默认 10975；被占用时从该值起逐个递增重试，
-                      最多 20 次；0 表示由内核分配）。
-  --token <token>     访问凭证；缺省时复用已保存的 token，缺失则随机生成。
   --idle-exit <秒>    空闲退出：没有任何控制连接持续该秒数后 daemon 自行退出
                       （SSH 引导传 30，客户端退出后远端不留常驻进程）。缺省
                       常驻，只有 kill 结束。
@@ -100,12 +94,8 @@ start 选项：
 
 /// 已知的选项名（含 `--name=value` 形式）。
 fn is_known_flag(arg: &str) -> bool {
-    matches!(
-        arg,
-        "--host" | "--port" | "--token" | "--idle-exit" | "--help" | "-h" | "--version" | "-V"
-    ) || ["--host=", "--port=", "--token=", "--idle-exit="]
-        .iter()
-        .any(|prefix| arg.starts_with(prefix))
+    matches!(arg, "--idle-exit" | "--help" | "-h" | "--version" | "-V")
+        || arg.starts_with("--idle-exit=")
 }
 
 /// 解析命令行。`args` 不含程序名。
@@ -118,7 +108,7 @@ pub fn parse(args: &[String]) -> Command {
     }
 
     // 动作是裸词、选项带 `--`：逐个走一遍，顺手校验「未知动作 / 未知选项」。
-    // 带值的选项要连它的值一起跳过，否则 `--host 127.0.0.1` 的值会被当成动作。
+    // 带值的选项要连它的值一起跳过，否则 `--idle-exit 30` 的值会被当成动作。
     let mut actions: Vec<&str> = Vec::new();
     let mut index = 0;
     while index < args.len() {

@@ -8,7 +8,7 @@ import type { MockLlm } from '../helpers/mockLlmServer';
 /**
  * 「打开远程工作区」对话框（`electron/remoteWorkspace/`，规格 `docs/client-connection.md`
  * 第 4.2 节）：
- * - SSH 页签排在连接串之前且默认选中；SSH 页没有说明文案（sshHint 已删）；
+ * - 接入方式只有 SSH 表单，打开不聚焦任何输入框；
  * - SSH 连接历史候选：host 聚焦弹出（最多 6 条）、文案 `<user>@<host>(:port)`
  *   （端口 22 不显示）、关键字前缀匹配排在非前缀匹配之前（同级按时间）、
  *   选定候选回填整表单（含口令）、候选行右侧删除按钮清历史并落盘。
@@ -58,7 +58,7 @@ function suggestionTexts(page: Page): Promise<string[]> {
   return page.locator('#sshSuggestions .suggestion-text').allTextContents();
 }
 
-test('SSH 页签排在连接串之前并默认选中，SSH 页无说明文案', async () => {
+test('接入方式只有 SSH 表单且打开不聚焦输入框，无历史时不弹候选', async () => {
   app = await launchApp({
     repoRoot: process.cwd().replace(/[\\/]e2e$/, ''),
     mockLlm,
@@ -66,20 +66,21 @@ test('SSH 页签排在连接串之前并默认选中，SSH 页无说明文案', 
   });
   const dialog = await openDialog(app);
 
-  await expect(dialog.locator('#tabSsh')).toHaveAttribute('aria-selected', 'true');
-  await expect(dialog.locator('#tabConnectionString')).toHaveAttribute('aria-selected', 'false');
-  // 页签顺序：SSH 在连接串左边
-  const sshBox = await dialog.locator('#tabSsh').boundingBox();
-  const csBox = await dialog.locator('#tabConnectionString').boundingBox();
-  expect(sshBox && csBox && sshBox.x < csBox.x).toBe(true);
-  // 默认落在 SSH 表单上（host 聚焦），连接串页隐藏
+  // 接入方式只有 SSH 表单：没有连接串页签
+  await expect(dialog.locator('#tabConnectionString')).toHaveCount(0);
+  await expect(dialog.locator('#tabSsh')).toHaveCount(0);
+  await expect(dialog.locator('#paneConnectionString')).toHaveCount(0);
+  // 打开不抢输入框焦点：activeElement 停在 body（不是任何一个输入框）
   await expect(dialog.locator('#paneSsh')).toBeVisible();
-  await expect(dialog.locator('#paneConnectionString')).toBeHidden();
+  await expect
+    .poll(() => dialog.evaluate(() => document.activeElement?.tagName ?? ''))
+    .not.toBe('INPUT');
+  // 用户点进 host 才聚焦
+  await dialog.locator('#sshHost').click();
   await expect
     .poll(() => dialog.evaluate(() => document.activeElement?.id ?? ''))
     .toBe('sshHost');
-  // sshHint 已删；无历史时不弹候选
-  await expect(dialog.locator('#sshHint')).toHaveCount(0);
+  // 无历史时不弹候选
   await expect(dialog.locator('#sshSuggestions')).toBeHidden();
 });
 
@@ -92,7 +93,8 @@ test('host 聚焦弹出最近 6 条候选，端口 22 不显示、非 22 追加 
   });
   const dialog = await openDialog(app);
 
-  // 打开即聚焦 host：候选自动弹出，最多 6 条、按时间序
+  // 点进 host 才聚焦：候选自动弹出，最多 6 条、按时间序
+  await dialog.locator('#sshHost').click();
   await expect(dialog.locator('#sshSuggestions .suggestion')).toHaveCount(6);
   await expect(dialog.locator('#sshSuggestions .suggestion-text')).toHaveText([
     'root@10.0.0.1',
@@ -114,6 +116,7 @@ test('关键字筛选：前缀匹配排在更近的非前缀匹配之前，无�
     stateOverrides: { recentSshConnections: HISTORY },
   });
   const dialog = await openDialog(app);
+  await dialog.locator('#sshHost').click();
   await dialog.waitForSelector('#sshSuggestions .suggestion');
 
   // 'ro'：三条 root@ 是前缀匹配；carol 只是子串包含（ca-ro-l），
@@ -164,6 +167,7 @@ test('候选行删除按钮清掉这条历史并同步落盘', async () => {
     stateOverrides: { recentSshConnections: HISTORY },
   });
   const dialog = await openDialog(app);
+  await dialog.locator('#sshHost').click();
   await dialog.waitForSelector('#sshSuggestions .suggestion');
 
   await dialog

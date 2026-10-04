@@ -277,7 +277,6 @@ impl Harness {
                 max_delay: Duration::from_millis(20),
             },
             idle_exit: true,
-            auth_timeout: Duration::from_secs(10),
             heartbeat_timeout: None,
         }
     }
@@ -342,7 +341,6 @@ fn restart_limit_closes_the_channel_and_reports_failure() {
             base_delay: Duration::from_millis(5),
             max_delay: Duration::from_millis(10),
         },
-        auth_timeout: Duration::from_secs(10),
         heartbeat_timeout: None,
         idle_exit: true,
     });
@@ -398,7 +396,7 @@ fn heartbeat_silence_closes_all_cores_and_continues() {
     harness.command(open(1, "D:/repo/a"));
     harness.next_frame();
 
-    // 首个 ping 武装超时；此后沉默超过时限按 Host 断开处理
+    // 心跳在连接建立时已武装；此后沉默超过时限按 Host 断开处理
     harness.command(json!({ "kind": "ping" }));
     let exit = harness.join.take().expect("daemon thread").join().expect("daemon join");
     assert_eq!(exit, ChannelExit::Continue);
@@ -406,16 +404,15 @@ fn heartbeat_silence_closes_all_cores_and_continues() {
 }
 
 #[test]
-fn heartbeat_without_ping_does_not_expire() {
-    // 旧版 Host 不发 ping：心跳永不武装，沉默多久都不回收（shutdown 前的沉默
-    // 覆盖了几个超时窗，daemon 仍活着）
+fn heartbeat_expires_a_silent_connection() {
+    // 控制通道建立即武装心跳：连上后一直不发帧，沉默超过时限按 Host 断开处理
     let mut harness = Harness::new(DaemonOptions {
         idle_exit: false,
         heartbeat_timeout: Some(Duration::from_millis(200)),
         ..Harness::fast_options()
     });
-    thread::sleep(Duration::from_millis(500));
-    assert_eq!(harness.shutdown(), ChannelExit::Stop);
+    let exit = harness.join.take().expect("daemon thread").join().expect("daemon join");
+    assert_eq!(exit, ChannelExit::Continue);
 }
 
 #[test]

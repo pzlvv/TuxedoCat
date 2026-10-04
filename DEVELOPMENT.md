@@ -49,29 +49,20 @@ core 与 UI 之间不存在直接引用，二者仅通过 `AssistantEventBus` �
 以模块为单位组织：三个分层模块（core / host / 宿主实现）加一个横跨 core 与 UI 的事件契约。
 依赖方向单向：`宿主实现 → host/ → core/`，core 与 UI 之间唯一的边是 `AssistantEventBus`。
 
-```plantuml
-@startuml
-skinparam shadowing false
-skinparam componentStyle rectangle
-skinparam rectangle {
-  BackgroundColor LightYellow
-  BorderColor Goldenrod
-  FontStyle bold
-}
+```mermaid
+flowchart TB
+  CORE["core/（业务层）<br/>引擎 / 历史 / 工具 / MCP / LLM / 压缩 / skills"]
+  HOST["host/（UI 层）<br/>WebViewUI / 三契约 / 共享子模块"]
+  IMPL["宿主实现<br/>VSCode* / Electron*"]
+  BUS["AssistantEventBus：core 与 UI 唯一的耦合点<br/>CoreEvent / CoreRequest / UiEvent"]
 
-component "core/（业务层）\n引擎 / 历史 / 工具 / MCP / LLM / 压缩 / skills" as CORE
-component "host/（UI 层）\nWebViewUI / 三契约 / 共享子模块" as HOST
-component "宿主实现\nVSCode* / Electron*" as IMPL
-rectangle " ──────── AssistantEventBus：core 与 UI 唯一的耦合点 ────────　\n　CoreEvent / CoreRequest / UiEvent　" as BUS
+  CORE -->|"emitToUi(CoreEvent) / request(CoreRequest)"| BUS
+  BUS -->|"路由至 onCoreEvents / onCoreRequests"| HOST
+  HOST -->|"emitToCore(UiEvent)"| BUS
+  BUS -->|"回调 onUiEvent(type, handler)"| CORE
 
-CORE -down-> BUS : emitToUi(CoreEvent)\nrequest(CoreRequest)
-BUS -down-> HOST : 路由至\nonCoreEvents / onCoreRequests
-HOST -up-> BUS : emitToCore(UiEvent)
-BUS -up-> CORE : 回调\nonUiEvent(type, handler)
-
-IMPL -up-> HOST : implements 三契约
-HOST .up.> CORE : 事件类型 / 只读函数
-@enduml
+  IMPL -->|"implements 三契约"| HOST
+  HOST -.->|"事件类型 / 只读函数"| CORE
 ```
 
 #### 模块一览
@@ -161,230 +152,238 @@ HOST .up.> CORE : 事件类型 / 只读函数
 
 ### 1.4 类图
 
-```plantuml
-@startuml
-skinparam shadowing false
-skinparam classAttributeIconSize 0
-left to right direction
+```mermaid
+classDiagram
+  direction LR
 
-' ==================== 事件契约（core 与 UI 之间唯一的耦合点）====================
-class CoreEvent <<type>> {
-  message / streamMessage / streamEnd
-  toolCall / toolResult / toolArgsUpdated / toolProgress
-  aiBegin / aiEnd / messagesReplaced
-  queryBegin / queryEnd / titleChanged / sessionCreated
-  conversationListChanged / conversationSpaceCleared / sessionRuntimeChanged
-  spinDesignDataChanged / compactBegin / compactEnd
-  commandDispatched / sessionConfigChanged
-}
+  %% ==================== 事件契约（core 与 UI 之间唯一的耦合点）====================
+  class CoreEvent {
+    <<type>>
+    message / streamMessage / streamEnd
+    toolCall / toolResult / toolArgsUpdated / toolProgress
+    aiBegin / aiEnd / messagesReplaced
+    queryBegin / queryEnd / titleChanged / sessionCreated
+    conversationListChanged / conversationSpaceCleared / sessionRuntimeChanged
+    spinDesignDataChanged / compactBegin / compactEnd
+    commandDispatched / sessionConfigChanged
+  }
 
-class CoreRequest <<type>> {
-  toolPermissionRequested
-  userChoice
-}
+  class CoreRequest {
+    <<type>>
+    toolPermissionRequested
+    userChoice
+  }
 
-class UiEvent <<type>> {
-  abortRequested / compactRequested
-  conversationStarted / Opened / Closed
-  conversationRenamed / Deleted
-  conversationContextUpdated / conversationSpaceCleared
-  modelChanged / thinkingEffortChanged / promptModeChanged
-  agentModeChanged / webSearchChanged / mcpEnabledChanged
-  editRolledBack
-}
+  class UiEvent {
+    <<type>>
+    abortRequested / compactRequested
+    conversationStarted / Opened / Closed
+    conversationRenamed / Deleted
+    conversationContextUpdated / conversationSpaceCleared
+    modelChanged / thinkingEffortChanged / promptModeChanged
+    agentModeChanged / webSearchChanged / mcpEnabledChanged
+    editRolledBack
+  }
 
-class CoreEventHandlers <<type>> {
-  穷尽 CoreEvent 的全部 type
-}
+  class CoreEventHandlers {
+    <<type>>
+    穷尽 CoreEvent 的全部 type
+  }
 
-class CoreRequestHandlers <<type>> {
-  穷尽 CoreRequest 的全部 type
-}
+  class CoreRequestHandlers {
+    <<type>>
+    穷尽 CoreRequest 的全部 type
+  }
 
-interface AssistantEventBus {
-  +emitToUi(event)
-  +request(request)
-  +onCoreEvents(handlers)
-  +onCoreRequests(handlers)
-  +emitToCore(event)
-  +onUiEvent(type, handler)
-}
+  class AssistantEventBus {
+    <<interface>>
+    +emitToUi(event)
+    +request(request)
+    +onCoreEvents(handlers)
+    +onCoreRequests(handlers)
+    +emitToCore(event)
+    +onUiEvent(type, handler)
+  }
 
-class EventBusModule <<module>> {
-  +setGlobalEventBus(bus)
-  +requireEventBus()
-  +resetGlobalEventBus()
-}
+  class EventBusModule {
+    <<module>>
+    +setGlobalEventBus(bus)
+    +requireEventBus()
+    +resetGlobalEventBus()
+  }
 
-' ==================== 启动接线（宿主无关）====================
-class BootstrapCore <<module>> {
-  +bootstrapCore(host, spinDesign, conversations, options)
-  +bootstrapSnapshot()
-  +shutdownCore()
-}
+  %% ==================== 启动接线（宿主无关）====================
+  class BootstrapCore {
+    <<module>>
+    +bootstrapCore(host, spinDesign, conversations, options)
+    +bootstrapSnapshot()
+    +shutdownCore()
+  }
 
-' ==================== UI 实现 ====================
-class WebViewUI {
-  唯一的 UI 实现，不实现事件契约
-  +create(host, bus, spinDesign, conversations, deps)
-  +getInstance()
-  +handleWebviewMessage(message, ctx?)
-  +releaseConversation(sessionId)
-  +closeConversation(sessionId)
-  +getActivityPhase(sessionId)
-}
+  %% ==================== UI 实现 ====================
+  class WebViewUI {
+    唯一的 UI 实现，不实现事件契约
+    +create(host, bus, spinDesign, conversations, deps)
+    +getInstance()
+    +handleWebviewMessage(message, ctx?)
+    +releaseConversation(sessionId)
+    +closeConversation(sessionId)
+    +getActivityPhase(sessionId)
+  }
 
-interface WebViewUiPort {
-  +postToWebview(sessionId, message)
-  +postConversationLoaded(sessionId, conversation, extra)
-  +onTitleChanged(sessionId, title)
-  +onQueuedMessage(sessionId, content, images, fileInfo)
-  +dropSession(sessionId)
-  +getActiveSessionId()
-  +openSpinDesign()
-  +refreshConversations()
-}
+  class WebViewUiPort {
+    <<interface>>
+    +postToWebview(sessionId, message)
+    +postConversationLoaded(sessionId, conversation, extra)
+    +onTitleChanged(sessionId, title)
+    +onQueuedMessage(sessionId, content, images, fileInfo)
+    +dropSession(sessionId)
+    +getActiveSessionId()
+    +openSpinDesign()
+    +refreshConversations()
+  }
 
-class WebviewPoster <<type>> {
-  投递函数 (sessionId, message)
-}
+  class WebviewPoster {
+    <<type>>
+    投递函数 (sessionId, message)
+  }
 
-' ==================== 共享子模块 ====================
-class SessionUiState {
-  活动阶段与计数
-}
-class ToolHandler {
-  工具卡片生命周期
-}
-class UserChoiceManager {
-  用户选择队列与预览
-}
-class WebviewMessageHandler {
-  webview 消息分发，翻译为 UiEvent
-}
+  %% ==================== 共享子模块 ====================
+  class SessionUiState {
+    活动阶段与计数
+  }
+  class ToolHandler {
+    工具卡片生命周期
+  }
+  class UserChoiceManager {
+    用户选择队列与预览
+  }
+  class WebviewMessageHandler {
+    webview 消息分发，翻译为 UiEvent
+  }
 
-' ==================== 宿主 ====================
-interface UIHost {
-  对话 webview 的宿主能力
-}
-class VSCodeUIHost
-class ElectronUIHost
-class DocumentManager
-class ChatViewManager
+  %% ==================== 宿主 ====================
+  class UIHost {
+    <<interface>>
+    对话 webview 的宿主能力
+  }
+  class VSCodeUIHost
+  class ElectronUIHost
+  class DocumentManager
+  class ChatViewManager
 
-interface SpinDesign {
-  +open()
-  +refresh()
-}
-class VSCodeSpinDesign
-class ElectronSpinDesign
+  class SpinDesign {
+    <<interface>>
+    +open()
+    +refresh()
+  }
+  class VSCodeSpinDesign
+  class ElectronSpinDesign
 
-abstract class ConversationManager {
-  两条流：对话列表与会话运行时状态
-  +refresh()
-  +updateSessionStates(states)
-  #load()
-  #dispatchList(list)
-  #dispatchStates(states)
-  +setStatusListener(fn)
-  +setSidebarOutlet(fn)
-  +noteSessionActivity(sessionId)
-}
-class SingleWebViewConversationManager {
-  空闲会话回收（计时 / 巡检 / 关闭动作分发）
-  +setActiveSessionProvider(fn)
-  +setIdleCloseHandler(fn)
-  +startIdleMonitor()
-  +stopIdleMonitor()
-  +sweepIdleSessions(now)
-}
-class ElectronConversationManager
+  class ConversationManager {
+    <<abstract>>
+    两条流：对话列表与会话运行时状态
+    +refresh()
+    +updateSessionStates(states)
+    #load()
+    #dispatchList(list)
+    #dispatchStates(states)
+    +setStatusListener(fn)
+    +setSidebarOutlet(fn)
+    +noteSessionActivity(sessionId)
+  }
+  class SingleWebViewConversationManager {
+    空闲会话回收（计时 / 巡检 / 关闭动作分发）
+    +setActiveSessionProvider(fn)
+    +setIdleCloseHandler(fn)
+    +startIdleMonitor()
+    +stopIdleMonitor()
+    +sweepIdleSessions(now)
+  }
+  class ElectronConversationManager
 
-' ==================== 关系 ====================
-AssistantEventBus ..> CoreEvent : 路由
-AssistantEventBus ..> CoreRequest : 路由
-AssistantEventBus ..> UiEvent : 路由
-AssistantEventBus ..> CoreEventHandlers : 批量注册
-AssistantEventBus ..> CoreRequestHandlers : 批量注册
+  %% ==================== 关系 ====================
+  AssistantEventBus ..> CoreEvent : 路由
+  AssistantEventBus ..> CoreRequest : 路由
+  AssistantEventBus ..> UiEvent : 路由
+  AssistantEventBus ..> CoreEventHandlers : 批量注册
+  AssistantEventBus ..> CoreRequestHandlers : 批量注册
 
-WebViewUI ..> AssistantEventBus : onCoreEvents / onCoreRequests / emitToCore
-WebViewUI ..|> WebViewUiPort
-WebViewUI o-- SessionUiState
-WebViewUI o-- ToolHandler
-WebViewUI o-- UserChoiceManager
-WebViewUI o-- WebviewMessageHandler
-WebViewUI o-- WebviewPoster
-WebViewUI ..> UIHost : 构造注入
-WebViewUI ..> SpinDesign : 构造注入
-WebViewUI ..> ConversationManager : 构造注入
+  WebViewUI ..> AssistantEventBus : onCoreEvents / onCoreRequests / emitToCore
+  WebViewUI ..|> WebViewUiPort
+  WebViewUI o-- SessionUiState
+  WebViewUI o-- ToolHandler
+  WebViewUI o-- UserChoiceManager
+  WebViewUI o-- WebviewMessageHandler
+  WebViewUI o-- WebviewPoster
+  WebViewUI ..> UIHost : 构造注入
+  WebViewUI ..> SpinDesign : 构造注入
+  WebViewUI ..> ConversationManager : 构造注入
 
-ToolHandler ..> UIHost : 构造注入
-ToolHandler ..> UserChoiceManager : 共享 diff 快照
-UserChoiceManager ..> UIHost : 注入的回调（closePreview / outputChannel）
-UserChoiceManager ..> WebViewUiPort : 注入的回调（getActiveSessionId）
-WebviewMessageHandler ..> UIHost : 构造注入
-WebviewMessageHandler ..> WebViewUiPort : uiPort（构造后回填）
-WebviewMessageHandler ..> AssistantEventBus : 翻译 UiEvent
-WebviewMessageHandler ..> UserChoiceManager : 共享 pending 队列
+  ToolHandler ..> UIHost : 构造注入
+  ToolHandler ..> UserChoiceManager : 共享 diff 快照
+  UserChoiceManager ..> UIHost : 注入的回调（closePreview / outputChannel）
+  UserChoiceManager ..> WebViewUiPort : 注入的回调（getActiveSessionId）
+  WebviewMessageHandler ..> UIHost : 构造注入
+  WebviewMessageHandler ..> WebViewUiPort : uiPort（构造后回填）
+  WebviewMessageHandler ..> AssistantEventBus : 翻译 UiEvent
+  WebviewMessageHandler ..> UserChoiceManager : 共享 pending 队列
 
-UIHost <|.. VSCodeUIHost
-UIHost <|.. ElectronUIHost
-VSCodeUIHost o-- DocumentManager
-ElectronUIHost o-- ChatViewManager
+  UIHost <|.. VSCodeUIHost
+  UIHost <|.. ElectronUIHost
+  VSCodeUIHost o-- DocumentManager
+  ElectronUIHost o-- ChatViewManager
 
-SpinDesign <|.. VSCodeSpinDesign
-SpinDesign <|.. ElectronSpinDesign
-VSCodeSpinDesign ..> UIHost : 宿主环境（路径 / 主题 / 语言 / 保存 / 日志）
-ElectronSpinDesign ..> UIHost : 同上
+  SpinDesign <|.. VSCodeSpinDesign
+  SpinDesign <|.. ElectronSpinDesign
+  VSCodeSpinDesign ..> UIHost : 宿主环境（路径 / 主题 / 语言 / 保存 / 日志）
+  ElectronSpinDesign ..> UIHost : 同上
 
-ConversationManager <|-- SingleWebViewConversationManager
-ConversationManager <|-- ElectronConversationManager
-ConversationManager ..> UIHost : dispatchList 时使用 sendToWebview
-ElectronConversationManager ..> ChatViewManager : 订阅 loaded（视图开关）
+  ConversationManager <|-- SingleWebViewConversationManager
+  ConversationManager <|-- ElectronConversationManager
+  ConversationManager ..> UIHost : dispatchList 时使用 sendToWebview
+  ElectronConversationManager ..> ChatViewManager : 订阅 loaded（视图开关）
 
-EventBusModule ..> AssistantEventBus : 注册与获取
-BootstrapCore ..> EventBusModule : createEventBus / setGlobalEventBus
-BootstrapCore ..> WebViewUI : create
-BootstrapCore ..> UIHost : 构造注入
-BootstrapCore ..> SpinDesign : 构造注入
-BootstrapCore ..> ConversationManager : 构造注入
-@enduml
+  EventBusModule ..> AssistantEventBus : 注册与获取
+  BootstrapCore ..> EventBusModule : createEventBus / setGlobalEventBus
+  BootstrapCore ..> WebViewUI : create
+  BootstrapCore ..> UIHost : 构造注入
+  BootstrapCore ..> SpinDesign : 构造注入
+  BootstrapCore ..> ConversationManager : 构造注入
 ```
 
 core 侧与总线的交互：
 
-```plantuml
-@startuml
-skinparam shadowing false
-skinparam classAttributeIconSize 0
-left to right direction
+```mermaid
+classDiagram
+  direction LR
 
-class QueryEngine
-class Query
-class RunTools
-class Integration
-class CommandDispatcher
-class compact
-class Conversation
-class AgentTool
-class sessionRuntime
+  class QueryEngine
+  class Query
+  class RunTools
+  class Integration
+  class CommandDispatcher
+  class compact
+  class Conversation
+  class AgentTool
+  class sessionRuntime
 
-interface AssistantEventBus {
-  +emitToUi(event)
-  +request(request)
-  +onUiEvent(type, handler)
-}
+  class AssistantEventBus {
+    <<interface>>
+    +emitToUi(event)
+    +request(request)
+    +onUiEvent(type, handler)
+  }
 
-QueryEngine ..> AssistantEventBus : emitToUi 与 request
-Query ..> AssistantEventBus : emitToUi
-RunTools ..> AssistantEventBus : emitToUi 与 request
-Integration ..> AssistantEventBus : emitToUi 与 request
-CommandDispatcher ..> AssistantEventBus : emitToUi
-compact ..> AssistantEventBus : emitToUi
-Conversation ..> AssistantEventBus : emitToUi
-AgentTool ..> AssistantEventBus : emitToUi
-sessionRuntime ..> AssistantEventBus : emitToUi
-@enduml
+  QueryEngine ..> AssistantEventBus : emitToUi 与 request
+  Query ..> AssistantEventBus : emitToUi
+  RunTools ..> AssistantEventBus : emitToUi 与 request
+  Integration ..> AssistantEventBus : emitToUi 与 request
+  CommandDispatcher ..> AssistantEventBus : emitToUi
+  compact ..> AssistantEventBus : emitToUi
+  Conversation ..> AssistantEventBus : emitToUi
+  AgentTool ..> AssistantEventBus : emitToUi
+  sessionRuntime ..> AssistantEventBus : emitToUi
 ```
 
 ### 1.5 图注说明
@@ -487,25 +486,21 @@ core/  ←  host/  ←  宿主实现（VSCode* / Electron*）
 
 core 与 UI **不互相引用**，只通过总线上的事件耦合。事件类型是两边唯一的公共词汇表。
 
-```plantuml
-@startuml
-skinparam shadowing false
-skinparam componentStyle rectangle
+```mermaid
+flowchart LR
+  CORE["core"]
+  UI["WebViewUI"]
+  subgraph BUS["AssistantEventBus"]
+    SEND["emitToUi / request"]
+    RECV["onCoreEvents / onCoreRequests"]
+    SUB["onUiEvent"]
+  end
 
-component "core" as CORE
-component "WebViewUI" as UI
-rectangle "AssistantEventBus" as BUS {
-  rectangle "emitToUi / request" as SEND
-  rectangle "onCoreEvents / onCoreRequests" as RECV
-  rectangle "onUiEvent" as SUB
-}
-
-CORE -right-> SEND : CoreEvent（单向）\nCoreRequest（等响应）
-SEND -right-> RECV : 路由
-RECV -right-> UI : 回调已注册的处理器
-UI -left-> SUB : UiEvent
-SUB -left-> CORE : 回调 core 侧订阅者
-@enduml
+  CORE -->|"CoreEvent（单向）<br/>CoreRequest（等响应）"| SEND
+  SEND -->|"路由"| RECV
+  RECV -->|"回调已注册的处理器"| UI
+  UI -->|"UiEvent"| SUB
+  SUB -->|"回调 core 侧订阅者"| CORE
 ```
 
 **总线是 core 与 UI 之间唯一的边**：两边共享的只有**数据**（事件类型），不共享**行为**
@@ -2495,7 +2490,7 @@ dropSession(sessionId: string): void {
 | 非活动标签页预加载 | 首次启动（`createMainWindow` 打开活动目录的新对话之后）对打开集合里**非活动且可用**的每个目录调用 `chatViews.preloadWorkspace(ws)`（错开 400ms + 250ms×i，避免启动瞬间同时拉起多个渲染进程；不可用工作区跳过）；实现复用后台预热机制（`--prewarm=1` 后台加载渲染、跳过会话初始化），切到该目录时 `setActiveWorkspace` 命中它直接 `show()` + 补发激活消息，不再现建视图 + 等页面加载。`new-` 临时 key 带自增序号，避免同毫秒连续创建撞 key；`setActiveWorkspace` 不再销毁其它目录的预热视图（它们是那些标签页的预加载视图，关闭目录 / 窗口时统一销毁） |
 | 菜单 | Windows / Linux 全部收编为单一分区 `main`，标题栏用一个图标按钮表示；条目：打开本地工作区 / 打开远程工作区 / 添加最近的工作区 ▸ / 主题 ▸ / 快捷键 / 开发者工具 / 关于 / 退出。macOS 沿用系统菜单栏分区 |
 | 加号菜单 | 标题栏末尾「加号」改为菜单入口（`titlebar:workspace-menu`），主进程用原生 `Menu.popup` 弹出「打开本地工作区 / 打开远程工作区」两项 |
-| 打开远程工作区 | `openRemoteWorkspaceDialog()`：粘贴连接串 → 经 `listRemoteDirectories()` 连 TCP 控制通道并鉴权 → **连接成功后立刻**列出远端主目录，弹出远端目录选择器（`electron/remoteWorkspace/`）；选择器可改路径、进上级（`..`）、新建与删除空目录（`createRemoteDirectory` / `deleteRemoteDirectory`）；选定目录后 `addRemoteWorkspace(endpoint, path)` 加入打开集合（`scheme=tcp`） |
+| 打开远程工作区 | `openRemoteWorkspaceDialog()`：填 SSH 表单 → 经 `listRemoteDirectories()` 完成 SSH 引导并鉴权 → **连接成功后立刻**列出远端主目录，弹出远端目录选择器（`electron/remoteWorkspace/`）；选择器可改路径、进上级（`..`）、新建与删除空目录（`createRemoteDirectory` / `deleteRemoteDirectory`）；选定目录后 `addRemoteWorkspace(endpoint, path)` 加入打开集合（`scheme=ssh`） |
 | 侧栏头部 | 「搜索框 + 新对话」：搜索框按标题过滤当前活动工作目录的对话列表 |
 | 空态 | 打开集合为空时，侧栏显示「打开本地工作区」+ 最近工作区（点击即添加）；聊天区保持纯提示。活动工作区建链中 / 不可用时侧栏对话列表清空（不显示对话列表） |
 | 启动等待态 | 侧栏初始化**先取工作区状态**（`sidebar:get-workspaces`，宿主本地事实）并渲染，之后才拉对话列表（要等 core 连接就绪；远程工作区连不上 / core 启动慢时会一直等）。工作区状态未到达前侧栏的 `workspacesState` 为 `null`，`render()` 保持等待态、不画空态——否则 core 未就绪期间会把「尚未取到工作区」错报成「尚未打开工作区」 |
@@ -2505,7 +2500,7 @@ dropSession(sessionId: string): void {
 | 切换 | `activateWorkspace(ref \| id)`：更新 provider（`uiHost.setWorkspacePath(ref)`）、`chatViews.setActiveWorkspace(ref.path)`（切到该目录最近使用的对话，没有则新建）、刷新侧栏列表与标题栏 |
 | 宿主会话工作目录索引 | `sessionWorkspaces: Map<sessionId, path>`：来源为各工作目录对话列表的 `project` 字段 + 视图自己的目录（`ChatViewManager.getWorkspaceForWebContents`）；打开对话时据此注入 `--workspace=` |
 | 聊天视图 | `ChatViewManager` 按视图记录所属工作目录（`viewWorkspaces`）；`openConversation(id, workspace)` / `openNewConversation(workspace)` 注入对应 `--workspace=`；切换活动目录不销毁视图 |
-| 持久化 | `workspace-state.json` 的 `openWorkspaces`（`SerializedWorkspaceRef`）/ `activeWorkspaceKey`（无活动项写 `null`）；启动恢复打开集合与活动项，已不存在的本地目录**保留并标记为不可用**（红点 + 占位页，见「不可用工作区」），保存的活动项保持为活动项。**远程工作区同样落盘**：`endpoint` 连同凭证（token / SSH 口令，明文）写进宿主本地状态文件，重启后据此重新接入（`docs/client-connection.md` 第 9 节）。字段缺失或非法即按「没有」处理，不做跨字段回退；旧版本写的是路径字符串 + `activeWorkspace`，读取时按本地引用迁移；升级路径由 `migrateLegacyWorkspaceState()` 一次性迁移（旧 userData 目录 + 旧 `lastWorkspace` 字段），迁移后不再回退读旧字段 |
+| 持久化 | `workspace-state.json` 的 `openWorkspaces`（`SerializedWorkspaceRef`）/ `activeWorkspaceKey`（无活动项写 `null`）；启动恢复打开集合与活动项，已不存在的本地目录**保留并标记为不可用**（红点 + 占位页，见「不可用工作区」），保存的活动项保持为活动项。**远程工作区同样落盘**：`endpoint` 连同凭证（SSH 口令，明文）写进宿主本地状态文件，重启后据此重新接入（`docs/client-connection.md` 第 9 节）。字段缺失或非法即按「没有」处理，不做跨字段回退；旧版本写的是路径字符串 + `activeWorkspace`，读取时按本地引用迁移；升级路径由 `migrateLegacyWorkspaceState()` 一次性迁移（旧 userData 目录 + 旧 `lastWorkspace` 字段），迁移后不再回退读旧字段 |
 | userData 目录 | `electron/main.ts` 启动最早期用 `app.setPath('userData', appData + <配置里的应用目录名>)` 显式指定：开发态（`electron dist-electron/main.cjs`）默认名是 `Electron`、打包态是 `productName`，不指定会落到不同目录；指定后两态读写同一份工作目录状态 / 窗口位置 / 缓存。目录名取自 `src/config/project.json` 的 `extensionName`，不硬编码 |
 | 浮窗模式 | 以当前活动工作目录（即活动对话的工作目录）为窗口上下文；品牌位显示活动目录名 |
 
@@ -2878,18 +2873,19 @@ Core 的两种实现由选择变量 `CORE_KIND` 装配：`embedded` 为 `src/cor
 
 一个 endpoint 一个 daemon；一个工作区一个 Core 进程（由 daemon 以自身路径加 `stdio`
 启动）。Core 崩溃后由 daemon 在同一 channel 上重启并恢复接线；重启次数超限时 daemon
-关闭 channel 并向宿主报告。远程服务（`start` 动作）把控制通道换成 TCP，启动时打印
-连接串（`IP:端口#token`），第一帧 `auth` 校验通过后才服务（`docs/core-daemon.md` 第 12 节）。
+关闭 channel 并向宿主报告。远程服务（`start` 动作）把控制通道换成 TCP（daemon 只绑
+回环，Host 经 SSH 转发接入），启动时打印就绪信息，第一帧 `auth` 校验通过后才服务
+（`docs/core-daemon.md` 第 12 节）。
 当前产出 Windows x64 与 Linux x64 / arm64，目标矩阵预留 Windows arm64。
 
 | 项 | 现状 | 待定 |
 | --- | --- | --- |
 | 选择变量 / 帧协议 / 进程管理 / 崩溃重启 | 已落地（落点见第 1.3 节）；Standalone 的崩溃重启由 daemon 承担（`daemon.rs`），Host 侧只把 `channelReset` 翻译成重新握手 | — |
 | daemon 进程模型 | 已落地：动作 `stdio` / `start` / `kill`（daemon 实体走内部动作 `start-daemon`，没有动作时按 `start`）、`--help` / `--version` 与参数校验（`cli.rs`，版本行附构建指纹）、控制通道多路复用、多客户端并发（thread-per-connection，客户端身份是鉴权成功的连接，按连接隔离 channel / 心跳 / 计数；`shutdown` 全局生效）、空闲退出（`--idle-exit <秒>`：无任何控制连接持续该时长即自行退出并清状态文件，SSH 引导固定传 30——客户端 crash 后远端不留常驻进程；缺省常驻只有 `kill` 结束）、`liveCores` 计数归零 + grace 期退出、连接断开清理、重启上限报告（`docs/core-daemon.md`） | — |
-| 远程服务 | 已落地：`start` 把 daemon 拉到后台（脱离终端）并打印连接串，`kill` 结束它；默认绑 `0.0.0.0:10975`（全部网卡，冲突 +1 重试；SSH 引导传 `--port 0` 交内核分配），绑通配地址时遍历网卡逐条打印连接串，状态 / token / 诊断日志按构建指纹分文件落盘在 `~/<configDir>/core-daemon-<指纹>.*`（与会话数据同目录，跨 `kill` 保留 token；`--token` 覆盖，缺省复用文件里的，没有才随机生成），第一帧 `auth` 定长比较校验；`listDirectories` 供 Host 连接后立刻弹出远端目录选择（`core-rs/src/remote.rs`、`src/host/standalone/CoreDaemon.ts`、`src/host/connectionString.ts`、`electron/remoteWorkspace/`） | 断线重连 |
+| 远程服务 | 已落地：`start` 把 daemon 拉到后台（脱离终端）并打印就绪信息，`kill` 结束它；daemon 恒绑 `127.0.0.1`、端口交内核分配，状态 / 诊断日志按构建指纹分文件落盘在 `~/<configDir>/core-daemon-<指纹>.*`（与会话数据同目录）；回环地址就是访问边界，控制通道上没有单独的鉴权帧；`listDirectories` 供 Host 连接后立刻弹出远端目录选择（`core-rs/src/remote.rs`、`src/host/standalone/CoreDaemon.ts`、`src/host/remoteConnect.ts`、`electron/remoteWorkspace/`） | 断线重连 |
 | 远程工作区落盘与恢复 | 已落地：打开集合与最近列表（含远程项与凭证）写 `userData/workspace-state.json`，启动时按落盘凭证重新接入；最近列表同时含本地与远程项，标题栏「加号」菜单可打开最近工作区（`src/host/workspaceState.ts`、`electron/main.ts`、`electron/sidebar/`） | 凭证的加密存储与钥匙串集成 |
-| SSH 接入 | 已落地：`ssh` scheme 下全部通信走 SSH 端口（`ssh2` 库，不依赖系统 OpenSSH），建链时自动完成「发现 / 部署 / 启动」远端 daemon——部署按构建指纹落位 `~/.local/bin/<指纹>/`（指纹目录存在即同版本，缺失才部署，不做产物哈希比对；状态 / token / 日志按指纹分文件），启动传 `--host 127.0.0.1 --port 0`（绑回环、端口交内核分配），多版本 Core 在同一台远端机器上各占一个槽位、各跑一个 daemon 互不干扰（见 `docs/core-daemon.md` 第 12.8 节），凭证只活在会话内，主机密钥按 TOFU 记在 `~/<configDir>/known-hosts.json`（`src/host/standalone/sshClient.ts`、`sshDaemonBootstrap.ts`、`sshTransport.ts`、`electron/remoteWorkspace/`） | SSH 密钥 / agent 认证 / 断线重连 |
-| 本地 Core 启动 | 已落地：本地同机工作区由 Host 直接用 `stdio` 起单进程 Core（`createStandaloneCoreBus`，stdio 帧通道，无端口 / token），不经过 daemon；daemon 只服务远程 endpoint | — |
+| SSH 接入 | 已落地：`ssh` scheme 下全部通信走 SSH 端口（`ssh2` 库，不依赖系统 OpenSSH），建链时自动完成「发现 / 部署 / 启动」远端 daemon——部署按构建指纹落位 `~/.local/bin/<指纹>/`（指纹目录存在即同版本，缺失才部署，不做产物哈希比对；状态 / 日志按指纹分文件），启动传 `--idle-exit 30`（daemon 绑回环、端口交内核分配），多版本 Core 在同一台远端机器上各占一个槽位、各跑一个 daemon 互不干扰（见 `docs/core-daemon.md` 第 12.8 节），凭证只活在会话内，主机密钥按 TOFU 记在 `~/<configDir>/known-hosts.json`（`src/host/standalone/sshClient.ts`、`sshDaemonBootstrap.ts`、`sshTransport.ts`、`electron/remoteWorkspace/`） | SSH 密钥 / agent 认证 / 断线重连 |
+| 本地 Core 启动 | 已落地：本地同机工作区由 Host 直接用 `stdio` 起单进程 Core（`createStandaloneCoreBus`，stdio 帧通道，无端口），不经过 daemon；daemon 只服务远程 endpoint | — |
 | 事件投递 | `emitToCore` 只写帧；Standalone 下进程内不注册 core 侧订阅（规格第 1.1 节） | — |
 | 用户消息入口 | `UiEvent.userMessageSubmitted`；`WebviewMessageHandler` 不再直接调用引擎 | — |
 | 会话引擎 / 内置工具 / 会话落盘 / 配置读写 | 已在 `core-rs/` 内实现（查询循环、Bash（含 `run_in_background` 与自动转后台）/ Read（含 doc/docx/ppt/pptx/xlsx）/ Write / Edit / Grep / Glob / TodoWrite / Agent / Reply / AskUserQuestion / Skill、并行工具批、meta.json + jsonl、settings.json 读写） | 与 Embedded 的逐项对等（`TODO.md` M2–M4） |

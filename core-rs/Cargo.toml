@@ -35,12 +35,6 @@ calamine = "0.36"
 # ECMAScript `Number.prototype.toString()` 口径的浮点格式化：xlsx 单元格
 # `String(cell)` 与 Embedded 逐字一致（Rust 默认格式化在指数阈值上不同）。
 ryu-js = "1"
-# 远程控制通道的 token 用操作系统随机数生成（`--token` 未给出时）。
-getrandom = "0.2"
-# 绑定通配地址时枚举本机网卡 IPv4（`start` 给每个网卡打一条连接串，见
-# `docs/core-daemon.md` 第 12.3 节）。std 没有跨平台的网卡枚举，故引入这个只做
-# 这一件事的小 crate。
-if-addrs = "0.15"
 # 控制连接的 TCP keepalive 参数（`docs/core-daemon.md` 第 12.5 节）：std 的
 # keepalive 参数配置尚未稳定（`tcp_keepalive` feature），用 socket2 设置。
 socket2 = "0.6"
