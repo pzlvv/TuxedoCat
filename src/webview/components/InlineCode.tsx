@@ -38,7 +38,7 @@ const InlineCode = memo(function InlineCode({ children, colors }: InlineCodeProp
   return (
     <code
       ref={ref}
-      className="text-[12px]"
+      className="ui-fs-12"
       style={{
         backgroundColor: colors.bgSecondary,
         color: colors.textPrimary,

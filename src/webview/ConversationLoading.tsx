@@ -48,7 +48,7 @@ export const ConversationLoading: React.FC<ConversationLoadingProps> = ({ colors
         <span className="conversation-loading-dot" style={{ backgroundColor: colors.harness }} />
       </div>
 
-      <div className="text-[13px]" style={{ color: colors.textSystem }}>
+      <div className="ui-fs-13" style={{ color: colors.textSystem }}>
         {t('app.loadingConversation')}
       </div>
     </div>

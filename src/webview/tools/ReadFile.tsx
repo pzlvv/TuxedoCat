@@ -30,7 +30,7 @@ export const ReadFile: React.FC<ToolCallProps> = ({ args, colors }) => {
   if (!filePath) {
     return (
       <div
-        className="inline-flex items-center gap-2 px-2 py-1 rounded text-[12px]"
+        className="inline-flex items-center gap-2 px-2 py-1 rounded ui-fs-12"
         style={{
           color: colors.textPrimary,
         }}

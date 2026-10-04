@@ -56,6 +56,8 @@ export interface ChatViewManagerOptions {
   systemLocale: string;
   /** 用户显式选择的界面语言（'auto' | 'zh' | 'en'），随 --uiLanguage 注入 webview */
   uiLanguage?: 'auto' | 'zh' | 'en';
+  /** 界面字号档位（'medium' | 'large' | 'xlarge'），随 --uiFontSize 注入 webview */
+  uiFontSize?: 'medium' | 'large' | 'xlarge';
   /** 上次已使用过的 Shiki 语言（来自 settings.json），随 --highlightLanguages 注入供 webview 预热 */
   highlightLanguages?: string[];
   /**
@@ -902,6 +904,7 @@ export class ChatViewManager {
           `--locale=${this.opts.locale}`,
           `--systemLocale=${this.opts.systemLocale}`,
           `--uiLanguage=${this.opts.uiLanguage || 'auto'}`,
+          `--uiFontSize=${this.opts.uiFontSize || 'medium'}`,
           `--highlightLanguages=${(this.opts.highlightLanguages || []).join(',')}`,
           `--conversationListOwner=${this.opts.conversationListOwner ?? 'host'}`,
           `--theme=${initialTheme}`,

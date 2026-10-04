@@ -3,6 +3,7 @@ import { modelRefOf, sameModelRef } from '../../../core/llm/modelRef';
 import { HostToWebviewWire } from '../../../host/webviewMessages';
 import { profileLog } from '../../debug';
 import { UiLanguage, setUiLanguage } from '../../i18n';
+import { setUiFontSize, type UiFontSize } from '../../fontSize';
 import { LlmConfigPanelPayload, PromptMode } from '../../types';
 import { postMessage } from '../../webviewEnv';
 import { missingPanelFields } from './shared';
@@ -158,10 +159,10 @@ export function handleConfigSettingsDefaults(
           // 从扩展端接收 settings.json 中的默认值（model / thinkingMode / agentMode / promptMode），
           // 供新对话创建时一次性使用，避免先显示 manual 再跳变
           {
-            const defaults = msg as { model?: string; provider?: string; thinkingMode?: 'off' | 'low' | 'high' | 'max'; agentMode?: 'manual' | 'risk' | 'auto'; promptMode?: PromptMode; webSearch?: boolean; language?: UiLanguage; providerConfigured?: boolean };
+            const defaults = msg as { model?: string; provider?: string; thinkingMode?: 'off' | 'low' | 'high' | 'max'; agentMode?: 'manual' | 'risk' | 'auto'; promptMode?: PromptMode; webSearch?: boolean; language?: UiLanguage; fontSize?: UiFontSize; providerConfigured?: boolean };
             // wire 消息是扁平的 model / provider，这里组装成模型身份（provider 为空 → undefined = 未配置）
             const defaultsModelRef = modelRefOf(defaults.provider, defaults.model);
-            profileLog(`[Webview] settingsDefaults received: model=${defaults.model}, provider=${defaults.provider}, thinkingMode=${defaults.thinkingMode}, agentMode=${defaults.agentMode}, promptMode=${defaults.promptMode}, webSearch=${defaults.webSearch}, language=${defaults.language}, providerConfigured=${defaults.providerConfigured}`);
+            profileLog(`[Webview] settingsDefaults received: model=${defaults.model}, provider=${defaults.provider}, thinkingMode=${defaults.thinkingMode}, agentMode=${defaults.agentMode}, promptMode=${defaults.promptMode}, webSearch=${defaults.webSearch}, language=${defaults.language}, fontSize=${defaults.fontSize}, providerConfigured=${defaults.providerConfigured}`);
             props.setSettingsDefaults({
               modelRef: defaultsModelRef,
               thinkingMode: defaults.thinkingMode,
@@ -208,6 +209,10 @@ export function handleConfigSettingsDefaults(
               if (changed) {
                 props.setLocaleVersion((v) => v + 1);
               }
+            }
+            // 应用界面字号（与 HTML 注入的 __uiFontSize 一致，仅在极少数不一致时触发重渲染）
+            if (defaults.fontSize === 'medium' || defaults.fontSize === 'large' || defaults.fontSize === 'xlarge') {
+              setUiFontSize(defaults.fontSize);
             }
           }
 }
@@ -361,6 +366,11 @@ export function handleConfigLlmConfigSaved(
                 props.setLocaleVersion((v) => v + 1);
               }
             }
+            // 应用界面字号：写根元素 CSS 变量（`ui-fs-*` 即时生效）并通知 antd token 消费方重渲染
+            const savedFontSize = (saved as { fontSize?: UiFontSize }).fontSize;
+            if (savedFontSize === 'medium' || savedFontSize === 'large' || savedFontSize === 'xlarge') {
+              setUiFontSize(savedFontSize);
+            }
           }
 }
 
@@ -382,6 +392,7 @@ export function handleConfigShowLLMConfig(
             defaultPromptMode: raw.defaultPromptMode,
             apiKey: String(raw.apiKey ?? ''),
             language: raw.language,
+            fontSize: raw.fontSize,
             activeProvider: String(raw.activeProvider ?? ''),
             providers: Array.isArray(rawProviders)
               ? rawProviders.map((p: any) => ({

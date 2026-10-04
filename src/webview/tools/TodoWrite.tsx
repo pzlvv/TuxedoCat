@@ -91,7 +91,7 @@ export const TodoWrite: React.FC<ToolCallProps> = ({ args, colors, status }) => 
         {todos.map((todo, index) => (
           <div
             key={index}
-            className="flex items-start gap-2 px-3 py-1.5 text-[12px]"
+            className="flex items-start gap-2 px-3 py-1.5 ui-fs-12"
             style={{
               borderBottom: index < totalTodos - 1 ? `1px solid ${colors.timelineLine}` : 'none',
               backgroundColor: todo.status === 'in_progress'
@@ -129,7 +129,7 @@ export const TodoWrite: React.FC<ToolCallProps> = ({ args, colors, status }) => 
               {/* 显示 activeForm 用于 in_progress 的任务 */}
               {todo.status === 'in_progress' && todo.activeForm && (
                 <span
-                  className="block text-[11px] mt-0.5 italic"
+                  className="block ui-fs-11 mt-0.5 italic"
                   style={{ color: STATUS_COLOR.in_progress.text }}
                 >
                   {todo.activeForm}

@@ -8,6 +8,7 @@ import { DEFAULT_API_TYPE as DEFAULT_MODEL_API_TYPE } from '../core/utils/modelC
 import type { Colors, ThinkingMode, AgentMode, PromptMode } from './types';
 import type { McpServerInfo } from '../core/webviewTypes';
 import { t } from './i18n';
+import { uiFontSizePx, type UiFontSize } from './fontSize';
 
 /** 一个模型的草稿（模型名 + 该模型使用的 API 协议） */
 interface ModelDraft {
@@ -56,6 +57,8 @@ interface LLMConfigPanelProps {
   initialApiKey: string;
   /** 已保存的界面语言（auto | zh | en） */
   initialLanguage: 'auto' | 'zh' | 'en';
+  /** 已保存的界面字号档位（medium | large | xlarge） */
+  initialFontSize: UiFontSize;
   /** 已保存的 Provider 列表（settings.json 的 llm.providers，apiType 在 modelConfigs 里） */
   initialProviders: Array<{
     key: string;
@@ -129,7 +132,7 @@ const ApiTypeSelect = React.memo(function ApiTypeSelect({
         border: `1px solid ${colors.border}`,
         backgroundColor: isDark ? '#2a2a30' : '#ffffff',
         color: colors.textPrimary,
-        fontSize: '12px',
+        fontSize: uiFontSizePx(12),
         outline: 'none',
         cursor: 'pointer',
         appearance: 'none',
@@ -280,7 +283,7 @@ const SectionGroup = ({
       style={{ borderColor: colors.border, backgroundColor: 'transparent' }}
     >
       <div
-        className="text-[11px] font-semibold uppercase tracking-wider mb-3"
+        className="ui-fs-11 font-semibold uppercase tracking-wider mb-3"
         style={{ color: colors.textSystem }}
       >
         {title}
@@ -298,7 +301,7 @@ const getInputStyle = (colors: Colors, isDark: boolean): React.CSSProperties => 
   border: `1px solid ${colors.border}`,
   backgroundColor: isDark ? '#2a2a30' : '#ffffff',
   color: colors.textPrimary,
-  fontSize: '13px',
+  fontSize: uiFontSizePx(13),
   outline: 'none',
   boxSizing: 'border-box',
 });
@@ -334,7 +337,7 @@ const SegmentControl = <T extends string>({
             onClick={() => onChange(seg.key)}
             style={{
               flex: 1,
-              fontSize: '12px',
+              fontSize: uiFontSizePx(12),
               padding: '6px 8px',
               border: 'none',
               borderLeft: idx > 0 ? `1px solid ${colors.border}` : 'none',
@@ -363,6 +366,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   initialDefaultPromptMode,
   initialApiKey,
   initialLanguage,
+  initialFontSize,
   initialProviders,
   initialActiveProvider,
   initialMcpServers,
@@ -412,6 +416,8 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   const [defaultAgentMode, setDefaultAgentMode] = useState<AgentMode>(initialDefaultAgentMode);
   const [defaultPromptMode, setDefaultPromptMode] = useState<PromptMode>(initialDefaultPromptMode);
   const [language, setLanguage] = useState<'auto' | 'zh' | 'en'>(initialLanguage);
+  /** 界面字号档位（保存时写回全局 settings.json 的 uiFontSize） */
+  const [fontSize, setFontSize] = useState<UiFontSize>(initialFontSize);
   /** MCP 默认启用草稿（保存时把勾选项写回全局 settings.json 的 mcp.enabled） */
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>(initialMcpServers);
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
@@ -502,7 +508,8 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     thinkingEffort !== initialThinkingEffort ||
     defaultAgentMode !== initialDefaultAgentMode ||
     defaultPromptMode !== initialDefaultPromptMode ||
-    language !== initialLanguage;
+    language !== initialLanguage ||
+    fontSize !== initialFontSize;
 
   const updateProvider = (id: string, patch: Partial<ProviderDraft>) => {
     setProviders((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
@@ -696,6 +703,9 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     }
     if (language !== initialLanguage) {
       presetPayload.language = language;
+    }
+    if (fontSize !== initialFontSize) {
+      presetPayload.fontSize = fontSize;
     }
     // MCP 默认启用列表：只在用户实际改动过时才发送，避免每次保存都覆盖
     const enabledNamesKey = (list: McpServerInfo[]): string =>
@@ -1104,7 +1114,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
         className="px-4 py-3 border-b flex items-center justify-between"
         style={{ borderColor: colors.border, backgroundColor: 'transparent' }}
       >
-        <h1 className="text-[13px] font-semibold" style={{ color: colors.textPrimary }}>
+        <h1 className="ui-fs-13 font-semibold" style={{ color: colors.textPrimary }}>
           {t('llmConfig.title')}
         </h1>
         <button
@@ -1169,7 +1179,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                     title={t('llmConfig.useThisProviderHint')}
                     style={{
                       padding: '8px 4px 8px 14px',
-                      fontSize: '12px',
+                      fontSize: uiFontSizePx(12),
                       border: 'none',
                       background: 'transparent',
                       color: isActiveTab ? colors.textPrimary : colors.textSystem,
@@ -1189,7 +1199,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                         title={isPendingUse
                           ? t('llmConfig.useThisProviderSelected')
                           : t('llmConfig.providerInUse')}
-                        style={{ color: colors.success, fontSize: '14px', lineHeight: 1 }}
+                        style={{ color: colors.success, fontSize: uiFontSizePx(14), lineHeight: 1 }}
                       >
                         ●
                       </span>
@@ -1205,7 +1215,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                       : 'opacity-0 group-hover:opacity-100 transition-opacity'}
                     style={{
                       padding: '8px 14px 8px 2px',
-                      fontSize: '12px',
+                      fontSize: uiFontSizePx(12),
                       border: 'none',
                       background: 'transparent',
                       color: colors.textSystem,
@@ -1226,7 +1236,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               className="bg-transparent hover:bg-white/10 transition-colors shrink-0"
               style={{
                 padding: '8px 12px',
-                fontSize: '12px',
+                fontSize: uiFontSizePx(12),
                 border: 'none',
                 borderLeft: providers.length > 0 ? `1px solid ${colors.border}` : 'none',
                 color: colors.harness,
@@ -1241,7 +1251,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
           </div>
 
           {/* 服务商名称操作说明 */}
-          <div className="text-[11px] mt-1 mb-3" style={{ color: colors.textSystem }}>
+          <div className="ui-fs-11 mt-1 mb-3" style={{ color: colors.textSystem }}>
             <strong style={{ color: colors.textPrimary, fontWeight: 700 }}>{t('llmConfig.useThisProviderHintBold')}</strong>
             {t('llmConfig.useThisProviderHintRest')}
           </div>
@@ -1251,7 +1261,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               {/* Base URL */}
               <div className="mb-4">
                 <label
-                  className="block text-[12px] font-medium mb-1.5"
+                  className="block ui-fs-12 font-medium mb-1.5"
                   style={{ color: colors.textSystem }}
                 >
                   {t('llmConfig.baseUrlLabel')}
@@ -1269,11 +1279,11 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                   onBlur={(e) => { if (!activeBaseURLError) e.target.style.borderColor = colors.border; }}
                 />
                 {activeBaseURLError && (
-                  <div className="text-[11px] mt-1" style={{ color: '#ef4444' }}>
+                  <div className="ui-fs-11 mt-1" style={{ color: '#ef4444' }}>
                     {activeBaseURLError}
                   </div>
                 )}
-                <div className="text-[11px] mt-1" style={{ color: colors.textSystem }}>
+                <div className="ui-fs-11 mt-1" style={{ color: colors.textSystem }}>
                   {t('llmConfig.baseUrlHint')}
                 </div>
               </div>
@@ -1281,7 +1291,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               {/* API Key */}
               <div className="mb-4">
                 <label
-                  className="block text-[12px] font-medium mb-1.5"
+                  className="block ui-fs-12 font-medium mb-1.5"
                   style={{ color: colors.textSystem }}
                 >
                   API Key
@@ -1299,11 +1309,11 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                   onBlur={(e) => { if (!apiKeyError) e.target.style.borderColor = colors.border; }}
                 />
                 {apiKeyError && (
-                  <div className="text-[11px] mt-1" style={{ color: '#ef4444' }}>
+                  <div className="ui-fs-11 mt-1" style={{ color: '#ef4444' }}>
                     {apiKeyError}
                   </div>
                 )}
-                <div className="text-[11px] mt-1" style={{ color: colors.textSystem }}>
+                <div className="ui-fs-11 mt-1" style={{ color: colors.textSystem }}>
                   {t('llmConfig.obtainKey')}
                 </div>
               </div>
@@ -1312,7 +1322,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-1.5">
                   <label
-                    className="block text-[12px] font-medium"
+                    className="block ui-fs-12 font-medium"
                     style={{ color: colors.textSystem }}
                   >
                     {t('llmConfig.modelsLabel')}
@@ -1327,7 +1337,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                       border: `1px solid ${colors.harness}`,
                       backgroundColor: 'transparent',
                       color: colors.harness,
-                      fontSize: '11px',
+                      fontSize: uiFontSizePx(11),
                       cursor: (fetchingProviderId !== null || !activeProvider?.baseURL.trim() || !activeProvider?.apiKey.trim()) ? 'not-allowed' : 'pointer',
                       opacity: (fetchingProviderId !== null || !activeProvider?.baseURL.trim() || !activeProvider?.apiKey.trim()) ? 0.6 : 1,
                       whiteSpace: 'nowrap',
@@ -1373,7 +1383,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                             />
                             {isDefault && (
                               <span
-                                className="text-[11px]"
+                                className="ui-fs-11"
                                 style={{
                                   position: 'absolute',
                                   right: 8,
@@ -1409,7 +1419,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                               border: `1px solid ${colors.border}`,
                               backgroundColor: 'transparent',
                               color: colors.textSystem,
-                              fontSize: '11px',
+                              fontSize: uiFontSizePx(11),
                               cursor: !modelName.trim() ? 'not-allowed' : 'pointer',
                               opacity: !modelName.trim() ? 0.5 : 1,
                               whiteSpace: 'nowrap',
@@ -1428,7 +1438,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                               border: `1px solid ${colors.border}`,
                               backgroundColor: 'transparent',
                               color: colors.textSystem,
-                              fontSize: '11px',
+                              fontSize: uiFontSizePx(11),
                               cursor: 'pointer',
                               whiteSpace: 'nowrap',
                             }}
@@ -1444,7 +1454,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                     onClick={handleAddModel}
                     style={{
                       padding: '6px 10px',
-                      fontSize: '12px',
+                      fontSize: uiFontSizePx(12),
                       borderRadius: '6px',
                       border: `1px dashed ${colors.border}`,
                       backgroundColor: 'transparent',
@@ -1456,16 +1466,16 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                   </button>
                 </div>
                 {fetchModelsError && (
-                  <div className="text-[11px] mt-1" style={{ color: '#ef4444' }}>
+                  <div className="ui-fs-11 mt-1" style={{ color: '#ef4444' }}>
                     {fetchModelsError}
                   </div>
                 )}
                 {modelError && (
-                  <div className="text-[11px] mt-1" style={{ color: '#ef4444' }}>
+                  <div className="ui-fs-11 mt-1" style={{ color: '#ef4444' }}>
                     {modelError}
                   </div>
                 )}
-                <div className="text-[11px] mt-1" style={{ color: colors.textSystem }}>
+                <div className="ui-fs-11 mt-1" style={{ color: colors.textSystem }}>
                   {!activeProvider?.baseURL.trim() || !activeProvider?.apiKey.trim()
                     ? t('llmConfig.fetchModelsRequireUrlKey')
                     : t('llmConfig.modelsHint')}
@@ -1481,7 +1491,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
           {/* 默认 Thinking Effort */}
           <div className="mb-4">
             <label
-              className="block text-[12px] font-medium mb-1.5"
+              className="block ui-fs-12 font-medium mb-1.5"
               style={{ color: colors.textSystem }}
             >
               {t('llmConfig.defaultThinkingEffortLabel')}
@@ -1497,7 +1507,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               onChange={setThinkingEffort}
               colors={colors}
             />
-            <div className="text-[11px] mt-1" style={{ color: colors.textSystem }}>
+            <div className="ui-fs-11 mt-1" style={{ color: colors.textSystem }}>
               {t('llmConfig.defaultThinkingEffortHint')}
             </div>
           </div>
@@ -1505,7 +1515,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
           {/* 默认询问模式 */}
           <div className="mb-4">
             <label
-              className="block text-[12px] font-medium mb-1.5"
+              className="block ui-fs-12 font-medium mb-1.5"
               style={{ color: colors.textSystem }}
             >
               {t('llmConfig.defaultAskModeLabel')}
@@ -1520,7 +1530,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               onChange={setDefaultAgentMode}
               colors={colors}
             />
-            <div className="mt-1.5 flex flex-col gap-1 text-[11px]">
+            <div className="mt-1.5 flex flex-col gap-1 ui-fs-11">
               {[
                 { key: 'manual' as const, label: t('inputArea.askModeAlways'), desc: t('llmConfig.askModeAlwaysDesc') },
                 { key: 'risk' as const, label: t('inputArea.askModeCritical'), desc: t('llmConfig.askModeCriticalDesc') },
@@ -1539,7 +1549,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                 );
               })}
             </div>
-            <div className="text-[11px] mt-1" style={{ color: colors.textSystem }}>
+            <div className="ui-fs-11 mt-1" style={{ color: colors.textSystem }}>
               {t('llmConfig.defaultAskModeHint')}
             </div>
           </div>
@@ -1547,7 +1557,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
           {/* 默认提示词模式 */}
           <div className="mb-4">
             <label
-              className="block text-[12px] font-medium mb-1.5"
+              className="block ui-fs-12 font-medium mb-1.5"
               style={{ color: colors.textSystem }}
             >
               {t('llmConfig.defaultPromptModeLabel')}
@@ -1562,7 +1572,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               onChange={setDefaultPromptMode}
               colors={colors}
             />
-            <div className="text-[11px] mt-1" style={{ color: colors.textSystem }}>
+            <div className="ui-fs-11 mt-1" style={{ color: colors.textSystem }}>
               {t('llmConfig.defaultPromptModeHint')}
             </div>
           </div>
@@ -1572,7 +1582,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
             <label
               className="flex items-center gap-2"
               style={{
-                fontSize: '12px',
+                fontSize: uiFontSizePx(12),
                 color: colors.textSystem,
                 cursor: webSearchDisabled ? 'not-allowed' : 'pointer',
               }}
@@ -1586,7 +1596,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               />
               {t('llmConfig.webSearchLabel')}
             </label>
-            <div className="text-[11px] mt-1" style={{ color: colors.textSystem }}>
+            <div className="ui-fs-11 mt-1" style={{ color: colors.textSystem }}>
               {webSearchDisabled
                 ? t('llmConfig.webSearchDisabledHint')
                 : t('llmConfig.webSearchHint')}
@@ -1596,7 +1606,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
           {/* 默认启用的 MCP（写入全局 settings.json 的 mcp.enabled，作为新对话默认值） */}
           <div className="mt-4">
             <label
-              className="block text-[12px] font-medium mb-1.5"
+              className="block ui-fs-12 font-medium mb-1.5"
               style={{ color: colors.textSystem }}
             >
               {t('llmConfig.mcpLabel')}
@@ -1607,7 +1617,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                   <label
                     key={server.name}
                     className="flex items-center gap-2"
-                    style={{ fontSize: '12px', color: colors.textSystem, cursor: 'pointer' }}
+                    style={{ fontSize: uiFontSizePx(12), color: colors.textSystem, cursor: 'pointer' }}
                   >
                     <input
                       type="checkbox"
@@ -1625,11 +1635,11 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                 ))}
               </div>
             ) : (
-              <div className="text-[11px]" style={{ color: colors.textSystem }}>
+              <div className="ui-fs-11" style={{ color: colors.textSystem }}>
                 {t('llmConfig.mcpEmpty')}
               </div>
             )}
-            <div className="text-[11px] mt-1" style={{ color: colors.textSystem }}>
+            <div className="ui-fs-11 mt-1" style={{ color: colors.textSystem }}>
               {t('llmConfig.mcpHint')}
             </div>
           </div>
@@ -1640,7 +1650,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
           {/* 界面语言 */}
           <div>
             <label
-              className="block text-[12px] font-medium mb-1.5"
+              className="block ui-fs-12 font-medium mb-1.5"
               style={{ color: colors.textSystem }}
             >
               {t('llmConfig.languageLabel')}
@@ -1655,8 +1665,31 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               onChange={setLanguage}
               colors={colors}
             />
-            <div className="text-[11px] mt-1" style={{ color: colors.textSystem }}>
+            <div className="ui-fs-11 mt-1" style={{ color: colors.textSystem }}>
               {t('llmConfig.languageHint')}
+            </div>
+          </div>
+
+          {/* 界面字号 */}
+          <div className="mt-4">
+            <label
+              className="block ui-fs-12 font-medium mb-1.5"
+              style={{ color: colors.textSystem }}
+            >
+              {t('llmConfig.fontSizeLabel')}
+            </label>
+            <SegmentControl
+              segments={[
+                { key: 'medium' as const, label: t('llmConfig.fontSizeMedium') },
+                { key: 'large' as const, label: t('llmConfig.fontSizeLarge') },
+                { key: 'xlarge' as const, label: t('llmConfig.fontSizeXLarge') },
+              ]}
+              value={fontSize}
+              onChange={setFontSize}
+              colors={colors}
+            />
+            <div className="ui-fs-11 mt-1" style={{ color: colors.textSystem }}>
+              {t('llmConfig.fontSizeHint')}
             </div>
           </div>
         </SectionGroup>
@@ -1664,7 +1697,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
         {/* ── 分组四：对话空间管理 ── */}
         <SectionGroup title={t('llmConfig.sectionConversationSpace')} colors={colors}>
           <div className="flex items-center justify-between gap-2 mb-3">
-            <div className="text-[11px] leading-snug" style={{ color: colors.textSystem }}>
+            <div className="ui-fs-11 leading-snug" style={{ color: colors.textSystem }}>
               {t('llmConfig.conversationSpaceHint')}
             </div>
             <button
@@ -1678,7 +1711,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                 border: `1px solid ${colors.harness}`,
                 backgroundColor: 'transparent',
                 color: colors.harness,
-                fontSize: '11px',
+                fontSize: uiFontSizePx(11),
                 cursor: conversationSpacesLoading ? 'not-allowed' : 'pointer',
                 opacity: conversationSpacesLoading ? 0.6 : 1,
                 whiteSpace: 'nowrap',
@@ -1689,17 +1722,17 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
           </div>
 
           {conversationSpacesError && (
-            <div className="text-[11px] mb-2" style={{ color: '#ef4444' }}>
+            <div className="ui-fs-11 mb-2" style={{ color: '#ef4444' }}>
               {conversationSpacesError}
             </div>
           )}
 
           {conversationSpaces === null ? (
-            <div className="text-[12px]" style={{ color: colors.textSystem }}>
+            <div className="ui-fs-12" style={{ color: colors.textSystem }}>
               {t('llmConfig.conversationSpaceNoStats')}
             </div>
           ) : conversationSpaces.length === 0 ? (
-            <div className="text-[12px]" style={{ color: colors.textSystem }}>
+            <div className="ui-fs-12" style={{ color: colors.textSystem }}>
               {t('llmConfig.conversationSpaceEmpty')}
             </div>
           ) : (
@@ -1718,13 +1751,13 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                 >
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div
-                      className="text-[12px] font-medium truncate"
+                      className="ui-fs-12 font-medium truncate"
                       style={{ color: colors.textPrimary }}
                       title={space.projectPath || space.dirName}
                     >
                       {space.projectPath || space.dirName}
                     </div>
-                    <div className="text-[11px] mt-0.5" style={{ color: colors.textSystem }}>
+                    <div className="ui-fs-11 mt-0.5" style={{ color: colors.textSystem }}>
                       {formatBytes(space.sizeBytes)}
                       {' · '}
                       {t('llmConfig.conversationSpaceFiles', { count: space.fileCount })}
@@ -1743,7 +1776,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                       border: `1px solid ${clearingSpaceDirName === space.dirName && clearingAction === 'clear' ? colors.textSystem : '#f59e0b'}`,
                       backgroundColor: 'transparent',
                       color: clearingSpaceDirName === space.dirName && clearingAction === 'clear' ? colors.textSystem : '#f59e0b',
-                      fontSize: '11px',
+                      fontSize: uiFontSizePx(11),
                       cursor: clearingSpaceDirName !== null ? 'not-allowed' : 'pointer',
                       opacity: clearingSpaceDirName !== null ? 0.6 : 1,
                       whiteSpace: 'nowrap',
@@ -1764,7 +1797,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                       border: `1px solid ${clearingSpaceDirName === space.dirName && clearingAction === 'remove' ? colors.textSystem : '#ef4444'}`,
                       backgroundColor: 'transparent',
                       color: clearingSpaceDirName === space.dirName && clearingAction === 'remove' ? colors.textSystem : '#ef4444',
-                      fontSize: '11px',
+                      fontSize: uiFontSizePx(11),
                       cursor: clearingSpaceDirName !== null ? 'not-allowed' : 'pointer',
                       opacity: clearingSpaceDirName !== null ? 0.6 : 1,
                       whiteSpace: 'nowrap',
@@ -1788,7 +1821,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       >
         <button
           onClick={handleRequestClose}
-          className="px-4 py-1.5 rounded text-[13px] transition-colors"
+          className="px-4 py-1.5 rounded ui-fs-13 transition-colors"
           style={{
             backgroundColor: 'transparent',
             color: colors.textSystem,
@@ -1800,7 +1833,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
         <button
           onClick={handleSave}
           disabled={saving}
-          className="px-4 py-1.5 rounded text-[13px] text-white transition-colors"
+          className="px-4 py-1.5 rounded ui-fs-13 text-white transition-colors"
           style={{
             backgroundColor: saving ? colors.textSystem : colors.harness,
             opacity: saving ? 0.6 : 1,
@@ -1840,20 +1873,20 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
             }}
           >
-            <div className="text-[13px] font-semibold mb-2" style={{ color: colors.textPrimary }}>
+            <div className="ui-fs-13 font-semibold mb-2" style={{ color: colors.textPrimary }}>
               {t('llmConfig.detectApiTypeTitle')}
             </div>
-            <div className="text-[12px] mb-2 leading-snug" style={{ color: colors.textPrimary }}>
+            <div className="ui-fs-12 mb-2 leading-snug" style={{ color: colors.textPrimary }}>
               {t('llmConfig.detectApiTypeConfirm', { count: pendingDetection.needDetect.length })}
             </div>
-            <div className="text-[12px] mb-4 leading-snug" style={{ color: colors.textSystem }}>
+            <div className="ui-fs-12 mb-4 leading-snug" style={{ color: colors.textSystem }}>
               {t('llmConfig.detectApiTypeWarning')}
             </div>
             <div className="flex justify-end gap-2">
               <button
                 type="button"
                 onClick={handleSkipDetectApiType}
-                className="px-3 py-1.5 rounded text-[12px] transition-colors"
+                className="px-3 py-1.5 rounded ui-fs-12 transition-colors"
                 style={{
                   backgroundColor: 'transparent',
                   color: colors.textSystem,
@@ -1865,7 +1898,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               <button
                 type="button"
                 onClick={handleConfirmDetectApiType}
-                className="px-3 py-1.5 rounded text-[12px] text-white transition-colors"
+                className="px-3 py-1.5 rounded ui-fs-12 text-white transition-colors"
                 style={{
                   backgroundColor: colors.harness,
                 }}
@@ -1903,16 +1936,16 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
             }}
           >
-            <div className="text-[13px] font-semibold mb-2" style={{ color: colors.textPrimary }}>
+            <div className="ui-fs-13 font-semibold mb-2" style={{ color: colors.textPrimary }}>
               {t('llmConfig.discardConfirmTitle')}
             </div>
-            <div className="text-[12px] mb-4 leading-snug" style={{ color: colors.textSystem }}>
+            <div className="ui-fs-12 mb-4 leading-snug" style={{ color: colors.textSystem }}>
               {t('llmConfig.discardConfirmMessage')}
             </div>
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => setShowDiscardConfirm(false)}
-                className="px-3 py-1.5 rounded text-[12px] transition-colors"
+                className="px-3 py-1.5 rounded ui-fs-12 transition-colors"
                 style={{
                   backgroundColor: 'transparent',
                   color: colors.textSystem,
@@ -1926,7 +1959,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                   setShowDiscardConfirm(false);
                   onClose();
                 }}
-                className="px-3 py-1.5 rounded text-[12px] text-white transition-colors"
+                className="px-3 py-1.5 rounded ui-fs-12 text-white transition-colors"
                 style={{
                   backgroundColor: colors.harness,
                 }}
@@ -1964,11 +1997,11 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
             }}
           >
-            <div className="text-[13px] font-semibold mb-2" style={{ color: colors.textPrimary }}>
+            <div className="ui-fs-13 font-semibold mb-2" style={{ color: colors.textPrimary }}>
               {t('llmConfig.conversationSpaceClearTitle')}
             </div>
             <div
-              className="text-[12px] mb-4 leading-snug break-all"
+              className="ui-fs-12 mb-4 leading-snug break-all"
               style={{ color: colors.textSystem, whiteSpace: 'pre-line' }}
             >
               {t('llmConfig.conversationSpaceClearMessage', {
@@ -1978,7 +2011,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => setConfirmClearSpaceDirName(null)}
-                className="px-3 py-1.5 rounded text-[12px] transition-colors"
+                className="px-3 py-1.5 rounded ui-fs-12 transition-colors"
                 style={{
                   backgroundColor: 'transparent',
                   color: colors.textSystem,
@@ -1989,7 +2022,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               </button>
               <button
                 onClick={handleConfirmClearConversationSpace}
-                className="px-3 py-1.5 rounded text-[12px] text-white transition-colors"
+                className="px-3 py-1.5 rounded ui-fs-12 text-white transition-colors"
                 style={{ backgroundColor: '#f59e0b' }}
               >
                 {t('llmConfig.conversationSpaceDelete')}
@@ -2023,11 +2056,11 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
             }}
           >
-            <div className="text-[13px] font-semibold mb-2" style={{ color: colors.textPrimary }}>
+            <div className="ui-fs-13 font-semibold mb-2" style={{ color: colors.textPrimary }}>
               {t('llmConfig.conversationSpaceRemoveTitle')}
             </div>
             <div
-              className="text-[12px] mb-4 leading-snug break-all"
+              className="ui-fs-12 mb-4 leading-snug break-all"
               style={{ color: colors.textSystem, whiteSpace: 'pre-line' }}
             >
               {t('llmConfig.conversationSpaceRemoveMessage', {
@@ -2037,7 +2070,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => setConfirmRemoveSpaceDirName(null)}
-                className="px-3 py-1.5 rounded text-[12px] transition-colors"
+                className="px-3 py-1.5 rounded ui-fs-12 transition-colors"
                 style={{
                   backgroundColor: 'transparent',
                   color: colors.textSystem,
@@ -2048,7 +2081,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               </button>
               <button
                 onClick={handleConfirmRemoveConversationSpace}
-                className="px-3 py-1.5 rounded text-[12px] text-white transition-colors"
+                className="px-3 py-1.5 rounded ui-fs-12 text-white transition-colors"
                 style={{ backgroundColor: '#ef4444' }}
               >
                 {t('llmConfig.conversationSpaceRemove')}
@@ -2085,12 +2118,12 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
             }}
           >
-            <div className="text-[13px] font-semibold mb-2" style={{ color: colors.textPrimary }}>
+            <div className="ui-fs-13 font-semibold mb-2" style={{ color: colors.textPrimary }}>
               {t('llmConfig.conversationSpaceMissingTitle')}
             </div>
             {/* 目录多时列表自身滚动；按钮在滚动区外，始终可见可点 */}
             <div
-              className="text-[12px] mb-4 leading-snug break-all"
+              className="ui-fs-12 mb-4 leading-snug break-all"
               style={{
                 color: colors.textSystem,
                 whiteSpace: 'pre-line',
@@ -2105,7 +2138,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => setMissingSpacesPrompt(null)}
-                className="px-3 py-1.5 rounded text-[12px] transition-colors"
+                className="px-3 py-1.5 rounded ui-fs-12 transition-colors"
                 style={{
                   backgroundColor: 'transparent',
                   color: colors.textSystem,
@@ -2116,7 +2149,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               </button>
               <button
                 onClick={handleConfirmClearMissingSpaces}
-                className="px-3 py-1.5 rounded text-[12px] text-white transition-colors"
+                className="px-3 py-1.5 rounded ui-fs-12 text-white transition-colors"
                 style={{ backgroundColor: '#ef4444' }}
               >
                 {t('llmConfig.conversationSpaceDelete')}

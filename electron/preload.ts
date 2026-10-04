@@ -22,6 +22,7 @@ const workspacePath = getStartArg('workspace') || '';
 const vscodeLocale = getStartArg('locale') || 'en';
 const systemLocale = getStartArg('systemLocale') || 'en';
 const uiLanguage = getStartArg('uiLanguage') || 'auto';
+const uiFontSize = getStartArg('uiFontSize') || 'medium';
 const sessionId = getStartArg('session') || '';
 // 后台预热的「新对话」视图：页面照常加载，但跳过启动初始化（不生成 session、
 // 不申请主题/模型等），等被切到前台时由宿主发 activatePrewarmedView 触发。
@@ -59,6 +60,7 @@ contextBridge.exposeInMainWorld('__hasWorkspace', workspacePath.length > 0);
 contextBridge.exposeInMainWorld('__vscodeLocale', vscodeLocale);
 contextBridge.exposeInMainWorld('__systemLocale', systemLocale);
 contextBridge.exposeInMainWorld('__uiLocale', uiLanguage);
+contextBridge.exposeInMainWorld('__uiFontSize', uiFontSize);
 contextBridge.exposeInMainWorld('__highlightLanguages', highlightLanguages);
 // 首帧主题（'dark' | 'light'）：供 webview 在 React 渲染前选对兜底背景色
 contextBridge.exposeInMainWorld('__initialTheme', initialTheme);

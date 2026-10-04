@@ -18,6 +18,7 @@ import { getPlaceholderLogoUri } from './placeholderLogo';
 import { profileLog } from './debug';
 import { t } from './i18n';
 import { StreamStatsLabel } from './StreamStatsLabel';
+import { uiFontSizePx } from './fontSize';
 import { isAutoMessageOrigin as isAutoOrigin } from '../core/utils/messageOrigin';
 
 /**
@@ -212,7 +213,7 @@ const ToolCallMessage = memo(function ToolCallMessage({
       className="inline-flex items-center"
       style={{
         color: colors.textSystem,
-        fontSize: '12.5px',
+        fontSize: uiFontSizePx(12.5),
         minHeight: '32px',
         marginTop: '-3.5px',
       }}
@@ -222,7 +223,7 @@ const ToolCallMessage = memo(function ToolCallMessage({
       <span
         style={{
           fontWeight: 700,
-          fontSize: '12.5px',
+          fontSize: uiFontSizePx(12.5),
           color: colors.toolName,
           whiteSpace: 'nowrap',
           flexShrink: 0,
@@ -322,7 +323,7 @@ const UserMessage = memo(function UserMessage({
         <InlineCode colors={colors}>{children}</InlineCode>
       ) : (
         <div className="my-2 rounded-md overflow-hidden" style={{ border: `1px solid ${colors.border}`, backgroundColor: colors.bgSecondary }}>
-          <pre className="p-3 overflow-x-auto text-[12.5px] leading-relaxed" style={{ margin: 0, backgroundColor: 'transparent' }}>
+          <pre className="p-3 overflow-x-auto ui-fs-12-5 leading-relaxed" style={{ margin: 0, backgroundColor: 'transparent' }}>
             <code>{typeof children === 'string' && hasAnsi(children) ? <AnsiText text={children} /> : children}</code>
           </pre>
         </div>
@@ -380,7 +381,7 @@ const UserMessage = memo(function UserMessage({
         }}
       >
         <div
-          className="flex items-center gap-1 text-[12px] mb-1.5 pb-1 border-b"
+          className="flex items-center gap-1 ui-fs-12 mb-1.5 pb-1 border-b"
           style={{ borderColor: colors.border, color: colors.textSystem, fontWeight: 600, fontStyle: 'italic' }}
         >
           <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
@@ -389,7 +390,7 @@ const UserMessage = memo(function UserMessage({
           <span>{t('messagesView.compactSummary')}</span>
         </div>
         <p
-          className="whitespace-pre-wrap text-[13px] leading-relaxed"
+          className="whitespace-pre-wrap ui-fs-13 leading-relaxed"
           style={{ color: colors.textSecondary, overflowWrap: 'break-word', wordBreak: 'break-word' }}
         >
           {compactContent}
@@ -433,7 +434,7 @@ const UserMessage = memo(function UserMessage({
         <>
           {isFromMessage ? (
             <div
-              className="flex items-center gap-1 text-[11px] mb-0.5 pb-0.5 border-b cursor-pointer"
+              className="flex items-center gap-1 ui-fs-11 mb-0.5 pb-0.5 border-b cursor-pointer"
               style={{ borderColor: colors.border, fontWeight: 500 }}
               onClick={handleAgentClick}
               title={t('messagesView.openConversation', { id: agentSessionId ?? '' })}
@@ -451,14 +452,14 @@ const UserMessage = memo(function UserMessage({
             </div>
           ) : isToMessage ? (
             <div
-              className="flex items-center gap-1 text-[11px] mb-0.5 pb-0.5 border-b"
+              className="flex items-center gap-1 ui-fs-11 mb-0.5 pb-0.5 border-b"
               style={{ borderColor: colors.border, color: colors.textSystem, fontWeight: 500 }}
             >
               <span>{metaParam}</span>
             </div>
           ) : isFileMessage ? (
             <div
-              className="flex items-center gap-1 text-[12px] mb-0.5 pb-0.5 border-b cursor-pointer hover:underline"
+              className="flex items-center gap-1 ui-fs-12 mb-0.5 pb-0.5 border-b cursor-pointer hover:underline"
               style={{ borderColor: colors.border, color: colors.textSystem, fontWeight: 500 }}
               onClick={handleFileClick}
               // 点击文件标签是「打开文件」，置顶时不应同时触发跳转
@@ -469,7 +470,7 @@ const UserMessage = memo(function UserMessage({
             </div>
           ) : displayParam ? (
             <div
-              className="flex items-center gap-1 text-[11px] mb-0.5 pb-0.5 border-b"
+              className="flex items-center gap-1 ui-fs-11 mb-0.5 pb-0.5 border-b"
               style={{ borderColor: colors.border, color: colors.textSystem, fontWeight: 500 }}
             >
               <span>{displayParam}</span>
@@ -485,7 +486,7 @@ const UserMessage = memo(function UserMessage({
         }}
       >
         {message.origin === 'agent' ? (
-          <div className="markdown-body text-[13px] leading-snug" style={{ lineHeight: '1.4' }}>
+          <div className="markdown-body ui-fs-13 leading-snug" style={{ lineHeight: '1.4' }}>
             {userMarkdownElement}
           </div>
         ) : (
@@ -504,7 +505,7 @@ const UserMessage = memo(function UserMessage({
               </div>
             )}
             {message.content && (
-              <p className="whitespace-pre-wrap text-[13px] leading-relaxed" style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}>
+              <p className="whitespace-pre-wrap ui-fs-13 leading-relaxed" style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}>
                 {/* 后台 Bash 任务通知：还原 stdout 里的 ANSI 颜色，与 bash 工具结果保持一致 */}
                 {message.origin === 'bash' ? <AnsiText text={message.content} /> : message.content}
               </p>
@@ -527,7 +528,7 @@ const UserMessage = memo(function UserMessage({
       )}
       {isTruncated && !expanded && (
         <div
-          className="flex items-center gap-1 mt-1 text-[11px] cursor-pointer hover:underline"
+          className="flex items-center gap-1 mt-1 ui-fs-11 cursor-pointer hover:underline"
           onClick={handleToggleExpand}
           data-no-jump=""
           // 置顶时点「展开」：先跳回消息原位再展开（见 handlePinnedMessageClickCapture）
@@ -542,7 +543,7 @@ const UserMessage = memo(function UserMessage({
       )}
       {isTruncated && expanded && (
         <div
-          className="flex items-center gap-1 mt-1 text-[11px] cursor-pointer hover:underline"
+          className="flex items-center gap-1 mt-1 ui-fs-11 cursor-pointer hover:underline"
           onClick={handleToggleExpand}
           data-no-jump=""
           style={{ color: colors.textSystem, opacity: 0.7 }}
@@ -578,7 +579,7 @@ const ThinkingMessage = memo(function ThinkingMessage({
 
   return (
     <details
-      className="text-[13px] group"
+      className="ui-fs-13 group"
       style={{ color: colors.textSystem }}
       open={isOpen}
       onToggle={(e) => {
@@ -631,7 +632,7 @@ const SystemMessage = memo(function SystemMessage({
       style={{ minHeight: '32px', overflowWrap: 'break-word', wordBreak: 'break-word' }}
     >
       <Icon name="info" size={12} style={{ color: colors.textSystem, flexShrink: 0 }} />
-      <p className="text-[13px] italic font-semibold ml-2" style={{ color: colors.textSystem, overflowWrap: 'break-word', wordBreak: 'break-word' }}>
+      <p className="ui-fs-13 italic font-semibold ml-2" style={{ color: colors.textSystem, overflowWrap: 'break-word', wordBreak: 'break-word' }}>
         {message.content}
       </p>
     </div>
@@ -685,7 +686,7 @@ const CodeBlock = memo(function CodeBlock({
         {isMermaid && (
           <button
             onClick={handlePreview}
-            className="flex items-center gap-1 px-2 py-1 rounded text-[11px]"
+            className="flex items-center gap-1 px-2 py-1 rounded ui-fs-11"
             style={{
               backgroundColor: colors.bgSecondary,
               border: `1px solid ${colors.border}`,
@@ -702,7 +703,7 @@ const CodeBlock = memo(function CodeBlock({
         )}
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1 px-2 py-1 rounded text-[11px]"
+          className="flex items-center gap-1 px-2 py-1 rounded ui-fs-11"
           style={{
             backgroundColor: colors.bgSecondary,
             border: `1px solid ${colors.border}`,
@@ -714,7 +715,7 @@ const CodeBlock = memo(function CodeBlock({
           <span>{copied ? t('messagesView.copied') : t('messagesView.copy')}</span>
         </button>
       </div>
-      <pre className="p-3 overflow-x-auto text-[12px] leading-tight" style={{ margin: 0, backgroundColor: 'transparent' }}>
+      <pre className="p-3 overflow-x-auto ui-fs-12 leading-tight" style={{ margin: 0, backgroundColor: 'transparent' }}>
         <code className={className} style={{ backgroundColor: 'transparent' }}>
           {hasAnsi(codeText) ? <AnsiText text={codeText} /> : children}
         </code>
@@ -826,7 +827,7 @@ const AssistantMessage = memo(function AssistantMessage({
         ...borderStyle,
       }}
     >
-      <div className="markdown-body text-[13px] leading-snug">
+      <div className="markdown-body ui-fs-13 leading-snug">
         {markdownElement}
       </div>
     </div>
@@ -2148,7 +2149,7 @@ const MessagesView = memo(({
           {showThinkingAnimation ? (
             <div
               className="thinking-animation-wrapper"
-              style={{ color: colors.textSystem, fontSize: '13px' }}
+              style={{ color: colors.textSystem, fontSize: uiFontSizePx(13) }}
             >
               <ThinkingAnimation isVisible={showThinkingAnimation} isDark={isDark} mode={animationMode} />
             </div>
@@ -2181,7 +2182,7 @@ const MessagesView = memo(({
                   handleContentToggle(true);
                   onExpandCompact?.();
                 }}
-                className="flex items-center gap-2 px-5 py-2 rounded-lg text-[13px] font-medium transition-all duration-200 hover:scale-105 active:scale-95"
+                className="flex items-center gap-2 px-5 py-2 rounded-lg ui-fs-13 font-medium transition-all duration-200 hover:scale-105 active:scale-95"
                 style={{
                   backgroundColor: colors.harness + '18',
                   border: `1px dashed ${colors.harness}`,

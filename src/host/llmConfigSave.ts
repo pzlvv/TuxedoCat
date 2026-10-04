@@ -28,6 +28,8 @@ export interface LlmConfigSavePayload {
   defaultPromptMode?: unknown;
   /** 界面语言（顶层 `uiLanguage`）；只有 UI 消费，不进配置快照 */
   language?: unknown;
+  /** 界面字号（顶层 `uiFontSize`）；只有 UI 消费，不进配置快照 */
+  fontSize?: unknown;
   /** 是否写入 provider 表（编辑模型列表 / API 配置 / 显式选择 provider 时为 true） */
   saveProviders?: unknown;
   /** provider 表（`saveProviders` 为 true 时使用） */
@@ -50,6 +52,7 @@ interface PanelProvider {
 const API_TYPES = new Set(['Responses', 'OpenAI', 'Anthropic']);
 const PROMPT_MODES = new Set(['normal', 'minimal', 'mixed']);
 const UI_LANGUAGES = new Set(['auto', 'zh', 'en']);
+const UI_FONT_SIZES = new Set(['medium', 'large', 'xlarge']);
 
 /**
  * 把设置面板的一次保存并入 `settings.json` 的内存对象。
@@ -160,6 +163,15 @@ export function applyLlmConfigSave(cfg: Record<string, any>, payload: LlmConfigS
       delete cfg.uiLanguage;
     } else {
       cfg.uiLanguage = payload.language;
+    }
+  }
+  if (typeof payload.fontSize === 'string' && UI_FONT_SIZES.has(payload.fontSize)
+    && cfg.uiFontSize !== payload.fontSize) {
+    if (payload.fontSize === 'medium') {
+      // medium 是默认值：显式配置过才需要删掉
+      delete cfg.uiFontSize;
+    } else {
+      cfg.uiFontSize = payload.fontSize;
     }
   }
 

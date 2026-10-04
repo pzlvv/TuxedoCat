@@ -88,6 +88,23 @@ test('US-24 默认设置与界面语言随保存提交', async () => {
   expect(saved.language).toBe('en');
 });
 
+test('US-24 界面字号档位随保存提交，宿主回传后即时生效', async () => {
+  const { page, host } = handle;
+  await openSettings(page);
+
+  // 面板里切到「大」
+  await page.getByText('界面字号').locator('..').getByRole('button', { name: '大', exact: true }).click();
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  const saved = await host.waitForSent('saveLLMConfig', 15_000);
+  expect(saved.fontSize).toBe('large');
+
+  // 宿主保存成功回传后，根元素 CSS 变量即时切到「特大」档（+2px），字号由 CSS 变量统一驱动
+  await host.send({ type: 'llmConfigSaved', fontSize: 'xlarge' });
+  await expect.poll(() => page.evaluate(
+    () => document.documentElement.style.getPropertyValue('--ui-font-offset'),
+  )).toBe('2px');
+});
+
 test('US-26 有脏改动时关闭需确认，可选择继续编辑或放弃', async () => {
   const { page, host } = handle;
   await openSettings(page);

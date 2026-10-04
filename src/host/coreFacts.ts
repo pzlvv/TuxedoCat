@@ -24,9 +24,9 @@ import type { ConversationSpaceInfo } from '../core/history/ConversationSpace.js
 import type { McpServerInfo } from '../core/webviewTypes.js';
 import type { Message } from '../core/types.js';
 import { resolveCoreKind, type CoreKind } from './coreKind.js';
-import { getSettingsStore, type UiLanguage } from './SettingsStore.js';
+import { getSettingsStore, type UiLanguage, type UiFontSize } from './SettingsStore.js';
 
-export type { UiLanguage };
+export type { UiLanguage, UiFontSize };
 
 /**
  * 同步读界面语言（webview 首帧注入用）。
@@ -36,6 +36,16 @@ export type { UiLanguage };
  */
 export function readUiLanguage(): UiLanguage {
   return getSettingsStore().readUiLanguage();
+}
+
+/**
+ * 同步读界面字号（webview 首帧注入用）。
+ *
+ * 与 `uiLanguage` 同口径：只有 UI 消费、不进快照，两种装配都读宿主自己的
+ * `settings.json`（经 `SettingsStore`）。
+ */
+export function readUiFontSize(): UiFontSize {
+  return getSettingsStore().readUiFontSize();
 }
 
 /**

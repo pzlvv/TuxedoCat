@@ -5,6 +5,7 @@ import App from './App';
 import { getInjectedSessionId } from './webviewEnv';
 import { rotatePlaceholderLogo } from './placeholderLogo';
 import { setupAppViewportHeight } from './viewport';
+import { applyUiFontOffset } from './fontSize';
 import './styles/index.css';
 // CSS mask 图标形状表（由 scripts/gen-icons.mjs 从 lucide 生成）
 import './styles/icons.css';
@@ -27,6 +28,9 @@ if (typeof (window as { electronAPI?: unknown }).electronAPI !== 'undefined') {
 
 // 移动端视口高度适配（地址栏显隐由 CSS dvh 处理；软键盘遮挡在此兜底）
 setupAppViewportHeight();
+
+// 界面字号档位：把宿主注入的 `__uiFontSize` 写成根元素 CSS 变量，首帧即按档位渲染
+applyUiFontOffset();
 
 // 空状态背景图轮换：没有绑定会话的视图启动后就是「新对话」，先换一张（不与上次重复）。
 // 放在渲染前是为了首帧就画对，避免先画出上一张再跳变；单视图宿主内点「+」新建由 App 负责

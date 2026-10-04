@@ -30,7 +30,7 @@ import { WebviewMessageHandler, type WebviewRequestContext } from './ui/webviewM
 
 import { pushToolProgress } from './queryActivity.js';
 import { buildConversationLoadedPayload } from './conversationPayload.js';
-import { readUiLanguage, requestBalance } from './coreFacts.js';
+import { readUiLanguage, readUiFontSize, requestBalance } from './coreFacts.js';
 import { markCoreReady } from './coreReadiness.js';
 import {
   readHasActiveProviderSetting,
@@ -702,6 +702,7 @@ export class WebViewUI implements WebViewUiPort {
         ...payload,
         mcpServers: readMcpServersForDefaults(snapshot, getSettingsStore().getMcpServers()),
         language: readUiLanguage(),
+        fontSize: readUiFontSize(),
       };
     } catch (err) {
       // 读取失败无法判断「是否真的未配置」，也无法给出面板载荷。载荷字段全部必选

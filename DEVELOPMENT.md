@@ -1029,7 +1029,7 @@ before/after 两个虚拟文档组成的 diff 标签，Electron 空实现（diff
 
 | 文件 | 内容 | 写入口 |
 | --- | --- | --- |
-| `~/<CONFIG_DIR_NAME>/settings.json` | 全局配置（llm / mcp / uiLanguage / highlightLanguages / defaultAgentMode / defaultPromptMode…） | `updateSettingsJson` |
+| `~/<CONFIG_DIR_NAME>/settings.json` | 全局配置（llm / mcp / uiLanguage / uiFontSize / highlightLanguages / defaultAgentMode / defaultPromptMode…） | `updateSettingsJson` |
 
 项目对话目录清单 `<conversations>/<project>/workspace.meta.json` **不在这里**：它归 core，
 由 core 在建目录时自己写（Embedded `history/Config.ensureProjectConversationDir`，
@@ -2151,6 +2151,7 @@ Electron 悬浮窗只把 `conversationListOwner` 切到 `webview`（原生侧栏
 | --- | --- | --- | --- |
 | 宿主能力 `HostInfo` | `getHostInfo()` | `window.__hostInfo = ${JSON.stringify(VSCODE_HOST_INFO)}` | `contextBridge.exposeInMainWorld('__hostInfo', hostInfoForConversationListOwner(ELECTRON_HOST_INFO, conversationListOwner))`；`conversationListOwner` 取自 `--conversationListOwner=`（悬浮窗为 `webview`，完整模式为 `host`，见 9.3.2） |
 | 界面语言 | `i18n` 的 `readInitialUiLanguage()` | `window.__uiLocale = "${uiLanguage}"`（宿主 `settings.json` 的 `uiLanguage`） | `exposeInMainWorld('__uiLocale', uiLanguage)` |
+| 界面字号 | `fontSize` 的 `readInitialUiFontSize()` | `window.__uiFontSize = "${uiFontSize}"`（宿主 `settings.json` 的 `uiFontSize`） | `exposeInMainWorld('__uiFontSize', uiFontSize)`（取自 `--uiFontSize=`） |
 | 首帧主题 | `getInitialTheme()` | `window.__initialTheme`（`activeColorTheme.kind === Light` → `'light'`，否则 `'dark'`） | `exposeInMainWorld('__initialTheme', initialTheme)` |
 
 注入都在 webview 的 module 脚本执行之前完成，读取方首次调用时一定已就绪。
@@ -2743,6 +2744,8 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
   它是 `settings.json` 的规范化入口，缺字段 / 类型不对 / 取值非法都在这里落默认值。
 - **界面语言的默认值归宿主** `src/host/SettingsStore.ts`（`uiLanguage` 只有 UI 消费、
   不进快照，因此缺省取值由宿主决定）。
+- **界面字号的默认值归宿主** `src/host/SettingsStore.ts`（`uiFontSize` 只有 UI 消费、
+  不进快照；缺省 `medium`，webview 折算为 `--ui-font-offset` 后由 CSS 消费）。
 - **模型注册表默认值**（`DEFAULT_API_TYPE` / `FALLBACK_MODEL_PARAMS`）在
   `src/core/utils/modelConfig.ts`，不重复到别处。
 - **core 侧需要默认值时读快照**（`getSettings()`），不另声明常量：
@@ -2773,9 +2776,9 @@ webview 渲染所需的每一项事实都由宿主决定。**webview 不持有�
 - **不代宿主决定**：事实未到达时 webview 不下发该字段（`sendMessage` 的会话配置、
   挂载时的 `setAgentMode` / `setPromptMode` / `setModel` 自动回传都遵循此规则），
   否则会把 webview 的猜测写进会话的 `meta.json`。
-- **同步注入的事实缺失即接线错误**：`__hostInfo` / `__uiLocale` / `__initialTheme`
-  在页面首帧之前由宿主写入，没有等待窗口；缺失或取值非法直接抛错
-  （与 12.1 的 `getHostInfo()` 同一口径）。两个宿主都必须注入这三项。
+- **同步注入的事实缺失即接线错误**：`__hostInfo` / `__uiLocale` / `__uiFontSize` /
+  `__initialTheme` 在页面首帧之前由宿主写入，没有等待窗口；缺失或取值非法直接抛错
+  （与 12.1 的 `getHostInfo()` 同一口径）。两个宿主都必须注入这四项。
 - **等待态的统一表现**：输入区在会话配置未到达时禁用发送并显示转圈
   （`configLoading`）；输入区菜单只显示等待项（`agentMode` 未到达）；模型子菜单显示
   等待项（`providerModels` 未到达）。

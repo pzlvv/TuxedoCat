@@ -21,6 +21,7 @@ export const FAKE_HOST_INIT = `
   window.__hostInfo = { conversationView: 'single', conversationListOwner: 'webview' };
   window.__initialTheme = 'dark';
   window.__uiLocale = 'zh';
+  window.__uiFontSize = 'medium';
   window.__hasWorkspace = true;
   window.__highlightLanguages = [];
   window.logoUri = 'data:image/svg+xml;utf8,' + encodeURIComponent(
@@ -133,6 +134,7 @@ export const FAKE_HOST_INIT = `
           promptMode: 'normal',
           webSearch: false,
           language: 'zh',
+          fontSize: 'medium',
           providerConfigured: true,
         });
         break;
@@ -168,6 +170,7 @@ export const FAKE_HOST_INIT = `
           defaultPromptMode: 'normal',
           webSearch: false,
           language: 'zh',
+          fontSize: 'medium',
           mcpServers: [],
         });
         break;

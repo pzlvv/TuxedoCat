@@ -11,6 +11,7 @@ import React, { memo, useState, useRef, useCallback, useEffect } from 'react';
 import type { Colors } from './types';
 import { postMessage } from './webviewEnv';
 import { t, resolveTitle } from './i18n';
+import { uiFontSizePx } from './fontSize';
 
 /* ------------------------------------------------------------------ */
 /*  Props                                                              */
@@ -239,7 +240,7 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start gap-1">
                     {!isRoot && (
-                      <span className="text-[10px] px-1 rounded mt-px shrink-0" style={{ color: colors.textSystem, backgroundColor: colors.bgSecondary }}>
+                      <span className="ui-fs-10 px-1 rounded mt-px shrink-0" style={{ color: colors.textSystem, backgroundColor: colors.bgSecondary }}>
                         sub
                       </span>
                     )}
@@ -247,14 +248,14 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
                       {/* 命名中状态 */}
                       {isNaming ? (
                         <div className="flex items-center gap-1">
-                          <span className="text-[13px] font-medium" style={{ color: colors.textPrimary, fontWeight: isActive ? 600 : 500 }}>
+                          <span className="ui-fs-13 font-medium" style={{ color: colors.textPrimary, fontWeight: isActive ? 600 : 500 }}>
                             {displayTitle}
                           </span>
-                          <span className="text-[11px] italic" style={{ color: colors.harness }}>{t('conversationTree.namingInProgress')}</span>
+                          <span className="ui-fs-11 italic" style={{ color: colors.harness }}>{t('conversationTree.namingInProgress')}</span>
                         </div>
                       ) : !isRenaming ? (
                         <div
-                          className="text-[13px] font-medium min-w-0"
+                          className="ui-fs-13 font-medium min-w-0"
                           style={{
                             color: colors.textPrimary,
                             fontWeight: isActive ? 600 : 500,
@@ -283,7 +284,7 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
                             border: `1px solid ${colors.harness}`,
                             borderRadius: '4px',
                             padding: '2px 6px',
-                            fontSize: '13px',
+                            fontSize: uiFontSizePx(13),
                             outline: 'none',
                           }}
                         />
@@ -291,7 +292,7 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
                     </div>
                   </div>
                 </div>
-                <div className={`flex flex-col items-end shrink-0 gap-0.5 text-[11px] ${isRoot ? 'group-hover:invisible' : ''}`} style={{ color: colors.textSystem }}>
+                <div className={`flex flex-col items-end shrink-0 gap-0.5 ui-fs-11 ${isRoot ? 'group-hover:invisible' : ''}`} style={{ color: colors.textSystem }}>
                   <span>{formatRelativeTime(item.updatedAt ?? item.createdAt)}</span>
                   <span>{t('conversationTree.messageCount', { count: item.messageCount })}</span>
                 </div>

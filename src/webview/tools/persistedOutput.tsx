@@ -107,7 +107,7 @@ export const PersistedOutputBox: React.FC<{
 
   return (
     <div
-      className="px-3 py-2 text-[11px] font-mono"
+      className="px-3 py-2 ui-fs-11 font-mono"
       style={{
         backgroundColor: colors.bgSecondary,
         color: colors.textSystem,
@@ -118,7 +118,7 @@ export const PersistedOutputBox: React.FC<{
     >
       {/* 大小提示栏：仅保留“完整输出”按钮 */}
       <div
-        className="flex items-center justify-end mb-2 pb-1.5 text-[11px]"
+        className="flex items-center justify-end mb-2 pb-1.5 ui-fs-11"
         style={{
           borderBottom: `1px solid ${colors.border}`,
           color: colors.textSystem,

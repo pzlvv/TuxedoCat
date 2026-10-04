@@ -4,6 +4,7 @@ import { ToolCallProps } from './Types';
 import { ToolHeader } from './ToolHeader';
 import { postMessage } from '../webviewEnv';
 import { t } from '../i18n';
+import { uiFontSizePx } from '../fontSize';
 import { AnsiText } from '../ansi';
 import { formatSize, parsePersistedOutput } from './persistedOutput';
 
@@ -78,7 +79,7 @@ export const RemoteBash: React.FC<ToolCallProps> = ({ args, output, colors, tool
 
       return (
         <div
-          className="px-3 py-2 text-[11px] font-mono"
+          className="px-3 py-2 ui-fs-11 font-mono"
           style={{
             backgroundColor: colors.bgSecondary,
             color: colors.textSystem,
@@ -86,7 +87,7 @@ export const RemoteBash: React.FC<ToolCallProps> = ({ args, output, colors, tool
         >
           {/* 大小提示栏：仅保留“完整输出”按钮 */}
           <div
-            className="flex items-center justify-end mb-2 pb-1.5 text-[11px]"
+            className="flex items-center justify-end mb-2 pb-1.5 ui-fs-11"
             style={{
               borderBottom: `1px solid ${colors.border}`,
               color: colors.textSystem,
@@ -140,7 +141,7 @@ export const RemoteBash: React.FC<ToolCallProps> = ({ args, output, colors, tool
 
     return (
       <div
-        className="px-3 py-2 text-[11px] font-mono cursor-pointer overflow-auto"
+        className="px-3 py-2 ui-fs-11 font-mono cursor-pointer overflow-auto"
         style={{
           backgroundColor: colors.bgSecondary,
           color: colors.textSystem,
@@ -178,7 +179,7 @@ export const RemoteBash: React.FC<ToolCallProps> = ({ args, output, colors, tool
           <span
             style={{
               color: colors.toolName,
-              fontSize: '11px',
+              fontSize: uiFontSizePx(11),
               fontFamily: 'monospace',
               whiteSpace: 'nowrap',
               opacity: 0.8,
@@ -210,7 +211,7 @@ export const RemoteBash: React.FC<ToolCallProps> = ({ args, output, colors, tool
           <div className="flex-1 min-w-0">
             <button
               onClick={handleCommandClick}
-              className="text-[12px] font-mono truncate cursor-pointer text-left w-full"
+              className="ui-fs-12 font-mono truncate cursor-pointer text-left w-full"
               style={{
                 color: colors.textPrimary,
                 background: 'none',

@@ -6,6 +6,7 @@ import InlineCode from '../components/InlineCode';
 import { ToolCallProps } from './Types';
 import { ToolHeader } from './ToolHeader';
 import { t } from '../i18n';
+import { uiFontSizePx } from '../fontSize';
 
 export const ReplyTool: React.FC<ToolCallProps> = ({ args, colors, status, onNavigate }) => {
   // 目标会话标识：优先使用 args.targetSessionId，没有则使用 args.hostname 识别远程
@@ -52,7 +53,7 @@ export const ReplyTool: React.FC<ToolCallProps> = ({ args, colors, status, onNav
             cursor: canNavigate ? 'pointer' : 'default',
             textDecoration: canNavigate ? 'underline' : 'none',
             textDecorationStyle: 'dotted',
-            fontSize: '11px',
+            fontSize: uiFontSizePx(11),
             whiteSpace: 'nowrap',
           }}
           title={canNavigate ? t('tool.reply.navigateTitle') : undefined}
@@ -63,7 +64,7 @@ export const ReplyTool: React.FC<ToolCallProps> = ({ args, colors, status, onNav
       {/* 只有成功时才渲染 markdown 内容，失败时不显示无用文本 */}
       {status === 'success' && message && (
         <div
-          className="max-w-full text-left markdown-body text-[13px] leading-snug"
+          className="max-w-full text-left markdown-body ui-fs-13 leading-snug"
           style={{
             color: colors.textPrimary,
             overflowWrap: 'break-word',

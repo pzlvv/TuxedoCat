@@ -268,6 +268,39 @@ runTests('hostSettings', async () => {
     check('非法语言不写入', cfg.uiLanguage === undefined);
   }
 
+  // uiFontSize：只有 UI 消费，不进快照
+  {
+    const cfg: Record<string, any> = {};
+    applyLlmConfigSave(cfg, { fontSize: 'large' });
+    check('显式字号写入 uiFontSize', cfg.uiFontSize === 'large');
+    applyLlmConfigSave(cfg, { fontSize: 'xlarge' });
+    check('特大字号写入 uiFontSize', cfg.uiFontSize === 'xlarge');
+    applyLlmConfigSave(cfg, { fontSize: 'medium' });
+    check('medium 删除 uiFontSize（回落默认）', cfg.uiFontSize === undefined);
+    applyLlmConfigSave(cfg, { fontSize: 'huge' });
+    check('非法字号不写入', cfg.uiFontSize === undefined);
+  }
+
+  // SettingsStore 读字号：缺省与非法取值都回落到 medium
+  {
+    const dir = makeTempDir('host-settings-font-size');
+    const settingsPath = path.join(dir, 'settings.json');
+    fs.writeFileSync(settingsPath, JSON.stringify({ uiFontSize: 'xlarge' }, null, 2), 'utf8');
+    const store = new SettingsStore({ configDir: dir });
+    store.loadSync();
+    check('读盘读到显式字号', store.readUiFontSize() === 'xlarge');
+
+    fs.writeFileSync(settingsPath, JSON.stringify({ uiFontSize: 'huge' }, null, 2), 'utf8');
+    const store2 = new SettingsStore({ configDir: dir });
+    store2.loadSync();
+    check('非法字号回落到 medium', store2.readUiFontSize() === 'medium');
+
+    fs.writeFileSync(settingsPath, JSON.stringify({}, null, 2), 'utf8');
+    const store3 = new SettingsStore({ configDir: dir });
+    store3.loadSync();
+    check('缺省字号为 medium', store3.readUiFontSize() === 'medium');
+  }
+
   // MCP 默认启用列表
   {
     const cfg: Record<string, any> = { mcp: { enabled: ['old'], other: 1 }, x: 2 };

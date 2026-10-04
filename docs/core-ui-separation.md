@@ -189,8 +189,8 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
 - 兜底是全局常量、与 provider 无关，因此放在 `llm` 级而不是每个 provider 一份。
 - `provider.baseURL` **允许为空串**：快照原样携带 provider 表，是否可用由消费方各自判定
   （调 LLM 要求非空；余额查询按 provider key / hostname 匹配，允许没有 baseURL）。
-- 快照**不含** `uiLanguage` 与 `highlightLanguages`：这两个字段只有 UI 消费（第 4.8、
-  4.9 节）。
+- 快照**不含** `uiLanguage`、`uiFontSize` 与 `highlightLanguages`：这三个字段只有 UI 消费
+  （第 4.8、4.10 节）。
 - 快照**不含** endpoint 与凭证：那是 Connection 的配置，不是 Core 的
   （`docs/client-connection.md` 第 4 节）。
 
@@ -217,6 +217,7 @@ UI 推快照的时机只有三处，全部收敛到 `SettingsStore`：
 明确**不**触发推送的变更：
 
 - `uiLanguage` 变更：该字段不进快照，Core 不感知。
+- `uiFontSize` 变更：该字段不进快照，Core 不感知。
 - `highlightLanguages` 变更：该字段不进快照，Core 不感知。
 - `mcp.json` 文件变更：只在 Connection 建立时读一次；中途修改不通知 Core，
   重开工作区生效。
@@ -289,6 +290,17 @@ CoreEvent.notice { sessionId, key, params, level }
 - 消息流（`CoreEvent.message` / `streamMessage` / `messagesReplaced`）只承载对话内容。
 - 高亮语言由 webview 扫描并上报 UI（`highlightLanguages` 只有 UI 消费），Core 不参与；
   UI 启动时把已知列表注入 webview。
+
+### 4.10 界面字号
+
+- **Core 不感知字号**：`uiFontSize` 只有 UI 消费，不进配置快照，不影响任何 Core 事实。
+- 取值 `medium` / `large` / `xlarge`，默认 `medium`；缺省取值由宿主决定
+  （`SettingsStore.readUiFontSize()`），webview 不持有该取值。
+- 宿主把档位同步注入 webview（`window.__uiFontSize`，与 `__uiLocale` 同一路径）；
+  webview 侧 `src/webview/fontSize.ts` 把它折算为根元素 CSS 变量 `--ui-font-offset`
+  （0 / 1 / 2 px），受影响的字号统一写成 `calc(<基准>px + var(--ui-font-offset))`
+  （`src/webview/styles/index.css` 的 `ui-fs-*`）。运行期变更经设置面板保存回传后即时生效。
+- 影响范围：输入框、输入框 context 用量、MessagesView、菜单项、历史对话项、设置面板、标题。
 
 ---
 

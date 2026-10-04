@@ -276,6 +276,8 @@ export type HostToWebviewMessage = {
   promptMode?: 'normal' | 'minimal' | 'mixed';
   webSearch: boolean;
   language?: 'auto' | 'zh' | 'en';
+  /** 界面字号档位（顶层 `uiFontSize`）；只有 UI 消费 */
+  fontSize?: 'medium' | 'large' | 'xlarge';
   /** 是否已完成服务商配置（activeProvider 存在且 apiKey 非空） */
   providerConfigured?: boolean;
 } | {
@@ -384,6 +386,8 @@ export type HostToWebviewMessage = {
   defaultPromptMode?: 'normal' | 'minimal' | 'mixed';
   webSearch?: boolean;
   language?: 'auto' | 'zh' | 'en';
+  /** 界面字号（顶层 `uiFontSize`）；只有 UI 消费 */
+  fontSize?: 'medium' | 'large' | 'xlarge';
   activeProvider?: string;
   closeAfterSave?: boolean;
 } | {
@@ -406,6 +410,8 @@ export type HostToWebviewMessage = {
   defaultPromptMode?: 'normal' | 'minimal' | 'mixed';
   apiKey?: string;
   language?: 'auto' | 'zh' | 'en';
+  /** 界面字号（顶层 `uiFontSize`）；只有 UI 消费 */
+  fontSize?: 'medium' | 'large' | 'xlarge';
   /** 新结构：settings.json 的 llm.providers 列表（apiType 已下放到 modelConfigs[model].apiType） */
   providers?: Array<{
     key: string;
@@ -606,6 +612,8 @@ export type WebviewToHostMessage = {
   defaultAgentMode?: 'manual' | 'risk' | 'auto';
   defaultPromptMode?: 'normal' | 'minimal' | 'mixed';
   language?: 'auto' | 'zh' | 'en';
+  /** 界面字号（顶层 `uiFontSize`）；只有 UI 消费 */
+  fontSize?: 'medium' | 'large' | 'xlarge';
   /** MCP 默认启用列表（设置面板「默认配置」，服务器名数组） */
   mcpServers?: string[];
   closeAfterSave?: boolean;

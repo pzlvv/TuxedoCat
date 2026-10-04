@@ -807,16 +807,18 @@ function createMainWindow(): void {
 
   // ── 右侧聊天视图管理器 ──
   let uiLanguage: 'auto' | 'zh' | 'en' = 'auto';
+  let uiFontSize: 'medium' | 'large' | 'xlarge' = 'medium';
   let highlightLanguages: string[] = [];
   try {
-    // UI 专属字段（界面语言 / 高亮语言）归宿主：读宿主自己的 settings.json 快照
+    // UI 专属字段（界面语言 / 界面字号 / 高亮语言）归宿主：读宿主自己的 settings.json 快照
     // （`docs/core-ui-separation.md` 第 4.8 / 4.9 节），不问 core。
     const { getSettingsStore } = require('../src/host/SettingsStore.js') as typeof import('../src/host/SettingsStore.js');
     const settingsStore = getSettingsStore();
-    // createMainWindow 在 initCore 之前：首帧语言 / 高亮语言要先拿到，所以这里先读盘。
+    // createMainWindow 在 initCore 之前：首帧语言 / 字号 / 高亮语言要先拿到，所以这里先读盘。
     // initCore 里的 loadSync 会再读一次（幂等），不会漏掉之后的改动。
     settingsStore.loadSync();
     uiLanguage = settingsStore.readUiLanguage();
+    uiFontSize = settingsStore.readUiFontSize();
     // Shiki 语法高亮全部按需加载：注入上次已使用过的语言，webview 启动后后台预热
     highlightLanguages = settingsStore.readHighlightLanguages();
   } catch { /* 读取失败时使用 auto（跟随系统语言） */ }
@@ -829,6 +831,7 @@ function createMainWindow(): void {
     locale: app.getLocale(),
     systemLocale: getSystemLocaleForStartup(),
     uiLanguage,
+    uiFontSize,
     highlightLanguages,
     // 聊天视图整体下移，给顶部自绘标题栏让位
     topInset: TITLEBAR_HEIGHT,

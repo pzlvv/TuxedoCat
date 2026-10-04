@@ -37,6 +37,7 @@ import {
   loadConversationForHost,
   loadConversationListForHost,
   readUiLanguage,
+  readUiFontSize,
   requestBalance,
   requestCompactArchive,
   requestConversationSpaces,
@@ -1545,14 +1546,14 @@ export class WebviewMessageHandler {
   private async handleSaveLLMConfig(message: Extract<WebviewToHostMessage, { type: 'saveLLMConfig' }>): Promise<void> {
     const {
       webSearch, thinkingEffort,
-      defaultAgentMode, defaultPromptMode, language,
+      defaultAgentMode, defaultPromptMode, language, fontSize,
       providers, activeProvider: requestedActiveProvider, closeAfterSave,
       saveProviders,
       sessionId: requestedSessionId, currentModel: requestedCurrentModel,
       currentProvider: requestedCurrentProvider,
     } = message;
 
-    this.log(`[WebviewMessageHandler] saveLLMConfig: webSearch=${!!webSearch}, thinkingEffort=${thinkingEffort}, defaultAgentMode=${defaultAgentMode}, defaultPromptMode=${defaultPromptMode}, language=${language}, saveProviders=${!!saveProviders}, providers=${Array.isArray(providers) ? providers.length : 0}, activeProvider=${requestedActiveProvider || ''}, closeAfterSave=${!!closeAfterSave}, sessionId=${requestedSessionId || ''}, currentModel=${requestedCurrentModel || ''}`);
+    this.log(`[WebviewMessageHandler] saveLLMConfig: webSearch=${!!webSearch}, thinkingEffort=${thinkingEffort}, defaultAgentMode=${defaultAgentMode}, defaultPromptMode=${defaultPromptMode}, language=${language}, fontSize=${fontSize}, saveProviders=${!!saveProviders}, providers=${Array.isArray(providers) ? providers.length : 0}, activeProvider=${requestedActiveProvider || ''}, closeAfterSave=${!!closeAfterSave}, sessionId=${requestedSessionId || ''}, currentModel=${requestedCurrentModel || ''}`);
 
     try {
       // 写 settings.json 是宿主能力（`docs/core-ui-separation.md` 第 4 节）：整段 mutation
@@ -1674,6 +1675,7 @@ export class WebviewMessageHandler {
         defaultPromptMode: savedPromptMode,
         webSearch: savedWebSearch,
         ...(language === 'zh' || language === 'en' || language === 'auto' ? { language } : {}),
+        ...(fontSize === 'medium' || fontSize === 'large' || fontSize === 'xlarge' ? { fontSize } : {}),
         activeProvider: savedActiveProvider,
         closeAfterSave: !!closeAfterSave,
       });
@@ -1713,6 +1715,7 @@ export class WebviewMessageHandler {
         promptMode,
         webSearch,
         language: this.getUiLanguageFromSettings(),
+        fontSize: this.getUiFontSizeFromSettings(),
         providerConfigured,
       });
       this.log(`[WebviewMessageHandler] Sent settings defaults: model=${defaultModelRef?.model ?? ''}, provider=${defaultModelRef?.provider ?? ''}, thinkingMode=${thinkingMode}, agentMode=${agentMode}, promptMode=${promptMode}, webSearch=${webSearch}, providerConfigured=${providerConfigured}`);
@@ -1728,6 +1731,7 @@ export class WebviewMessageHandler {
         promptMode: undefined,
         webSearch: false,
         language: this.getUiLanguageFromSettings(),
+        fontSize: this.getUiFontSizeFromSettings(),
         providerConfigured: false,
       });
     }
@@ -1739,6 +1743,15 @@ export class WebviewMessageHandler {
       return readUiLanguage();
     } catch {
       return 'auto';
+    }
+  }
+
+  /** 从 settings.json 读取界面字号（同步，供消息回传使用） */
+  private getUiFontSizeFromSettings(): 'medium' | 'large' | 'xlarge' {
+    try {
+      return readUiFontSize();
+    } catch {
+      return 'medium';
     }
   }
 

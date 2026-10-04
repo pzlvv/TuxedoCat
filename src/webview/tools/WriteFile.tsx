@@ -7,6 +7,7 @@ import { ToolHeader } from './ToolHeader';
 import { usePreviewLimit, PreviewMoreHint, PREVIEW_LINES, PREVIEW_BOX_HEIGHT, PREVIEW_LINE_HEIGHT } from './previewLimit';
 import { postMessage, getWindowSessionId } from '../webviewEnv';
 import { t } from '../i18n';
+import { uiFontSizePx } from '../fontSize';
 
 /** 在 Shiki 高亮结果可用前，先转义原始文件内容，避免把文件里的 <style>/<link> 等当作真实 HTML 注入页面。 */
 function escapeHtml(s: string): string {
@@ -290,7 +291,7 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
               ref={previewContentRef}
               className="code-preview"
               style={{
-                fontSize: '12px',
+                fontSize: uiFontSizePx(12),
                 lineHeight: `${PREVIEW_LINE_HEIGHT}px`,
                 fontFamily: 'Consolas, Monaco, "Courier New", monospace',
                 whiteSpace: 'pre-wrap',
@@ -341,7 +342,7 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
               className="flex items-center justify-between px-5 py-3 border-b"
               style={{ borderColor: colors.border }}
             >
-              <span className="text-[15px] font-semibold">{t('tool.editFile.rollback')}</span>
+              <span className="ui-fs-15 font-semibold">{t('tool.editFile.rollback')}</span>
               <button
                 onClick={handleRollbackCancel}
                 className="w-7 h-7 rounded-lg flex items-center justify-center hover:brightness-110 transition-all"
@@ -354,12 +355,12 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
             </div>
 
             <div className="px-5 py-4">
-              <div className="text-[13px]" style={{ color: colors.textSystem }}>
+              <div className="ui-fs-13" style={{ color: colors.textSystem }}>
                 {t('tool.editFile.chooseRollback')}
               </div>
               <div className="flex gap-3 mt-3" style={{ color: colors.textPrimary }}>
                 <button
-                  className="flex-1 py-3 px-4 rounded-lg text-[13px] font-semibold transition-all cursor-pointer"
+                  className="flex-1 py-3 px-4 rounded-lg ui-fs-13 font-semibold transition-all cursor-pointer"
                   style={{
                     border: `1px solid ${rollbackDirection === 'before' ? colors.harness : colors.border}`,
                     backgroundColor: rollbackDirection === 'before' ? `${colors.harness}15` : 'transparent',
@@ -367,13 +368,13 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
                   }}
                   onClick={() => setRollbackDirection('before')}
                 >
-                  <div className="text-[13px]" style={{ color: colors.textPrimary }}>{t('tool.editFile.beforeChange')}</div>
-                  <div className="text-[11px] font-normal mt-1" style={{ color: colors.textPrimary, opacity: 0.7 }}>
+                  <div className="ui-fs-13" style={{ color: colors.textPrimary }}>{t('tool.editFile.beforeChange')}</div>
+                  <div className="ui-fs-11 font-normal mt-1" style={{ color: colors.textPrimary, opacity: 0.7 }}>
                     {t('tool.editFile.undoAllChanges')}
                   </div>
                 </button>
                 <button
-                  className="flex-1 py-3 px-4 rounded-lg text-[13px] font-semibold transition-all cursor-pointer"
+                  className="flex-1 py-3 px-4 rounded-lg ui-fs-13 font-semibold transition-all cursor-pointer"
                   style={{
                     border: `1px solid ${rollbackDirection === 'after' ? colors.harness : colors.border}`,
                     backgroundColor: rollbackDirection === 'after' ? `${colors.harness}15` : 'transparent',
@@ -381,8 +382,8 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
                   }}
                   onClick={() => setRollbackDirection('after')}
                 >
-                  <div className="text-[13px]" style={{ color: colors.textPrimary }}>{t('tool.editFile.afterChange')}</div>
-                  <div className="text-[11px] font-normal mt-1" style={{ color: colors.textPrimary, opacity: 0.7 }}>
+                  <div className="ui-fs-13" style={{ color: colors.textPrimary }}>{t('tool.editFile.afterChange')}</div>
+                  <div className="ui-fs-11 font-normal mt-1" style={{ color: colors.textPrimary, opacity: 0.7 }}>
                     {t('tool.editFile.keepThisUndoLater')}
                   </div>
                 </button>
@@ -394,7 +395,7 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
               style={{ borderColor: colors.border }}
             >
               <button
-                className="px-4 py-1.5 rounded-lg text-[13px] transition-all cursor-pointer"
+                className="px-4 py-1.5 rounded-lg ui-fs-13 transition-all cursor-pointer"
                 style={{
                   border: `1px solid ${colors.border}`,
                   color: colors.textSystem,
@@ -405,7 +406,7 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
                 {t('tool.editFile.cancel')}
               </button>
               <button
-                className="px-4 py-1.5 rounded-lg text-[13px] transition-all cursor-pointer"
+                className="px-4 py-1.5 rounded-lg ui-fs-13 transition-all cursor-pointer"
                 style={{
                   border: `1px solid ${colors.harness}`,
                   backgroundColor: colors.harness,
@@ -423,7 +424,7 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
       {/* 回滚结果提示 */}
       {rollbackResult && (
         <div
-          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg shadow-lg text-[13px]"
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg shadow-lg ui-fs-13"
           style={{
             backgroundColor: colors.harness,
             color: colors.textPrimary,

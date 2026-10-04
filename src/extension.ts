@@ -7,7 +7,7 @@ import { WebViewUI } from './host/WebViewUI.js';
 import { bootstrapCore, bootstrapSnapshot, shutdownCore } from './host/bootstrapCore.js';
 import { buildDiffUris } from './VSCodeUIHost/diffUris.js';
 import { getSettingsStore } from './host/SettingsStore.js';
-import { readSystemLocale, readUiLanguage } from './host/coreFacts.js';
+import { readSystemLocale, readUiLanguage, readUiFontSize } from './host/coreFacts.js';
 import { VSCODE_HOST_INFO } from './host/types.js';
 import { requireEventBus } from './core/AssistantEventBus.js';
 import {
@@ -295,6 +295,7 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
     const vscodeLocale = vscode.env.language;
     const systemLocale = readSystemLocale();
     const uiLanguage = readUiLanguage();
+    const uiFontSize = readUiFontSize();
     // 首帧主题：webview 在 React 渲染前用它选对兜底背景色（浅色下不闪深色 loading）。
     // 权威主题仍由 setTheme 消息下发（跟随编辑器主题）。
     const initialTheme = vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Light
@@ -313,6 +314,7 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
       window.__vscodeLocale = "${vscodeLocale}";
       window.__systemLocale = "${systemLocale}";
       window.__uiLocale = "${uiLanguage}";
+      window.__uiFontSize = "${uiFontSize}";
       window.__initialTheme = "${initialTheme}";
       window.__highlightLanguages = ${highlightLanguages};
       window.__hostInfo = ${JSON.stringify(VSCODE_HOST_INFO)};

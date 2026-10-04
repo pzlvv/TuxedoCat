@@ -8,6 +8,7 @@ import type { ModelRef } from '../core/llm/modelRef';
 import { postMessage, getWindowSessionId } from './webviewEnv';
 import { SegmentControl, CheckboxGlyph } from './components/SegmentControl';
 import { t } from './i18n';
+import { useUiFontOffset, uiFontSizePx } from './fontSize';
 
 export interface PastedImage {
   dataUrl: string;
@@ -167,7 +168,7 @@ const ContextProgressBar = React.memo(({ totalContextTokens, maxContextTokens, o
 
   return (
     <span
-      className="flex flex-col gap-0 text-[11px] whitespace-nowrap"
+      className="flex flex-col gap-0 ui-fs-11 whitespace-nowrap"
       // 宽度取「文本宽度」与「进度条宽度」的较大值（max-content），
       // 这样上方文本过长时不会越过右侧的分割线和命中率信息；
       // 分割线、命中率信息的位置都同时受文本与进度条两者约束。
@@ -477,6 +478,8 @@ const ToggleMenu = memo(({
   colors: Colors;
   isDark: boolean;
 }) => {
+  // 菜单项字号随界面字号档位缩放：antd 的 fontSize 是 JS token，必须订阅档位变化重渲染。
+  const fontOffset = useUiFontOffset();
   // Dropdown / 二级菜单的展开状态改为受控：Ant 在 submenu 子项被点击后会自动收起弹层，
   // 受控后才能把「勾选 MCP」这一次收起请求忽略掉（见 suppressCloseUntilRef）。
   const [menuOpen, setMenuOpen] = useState(false);
@@ -663,7 +666,7 @@ const ToggleMenu = memo(({
         className={inline ? 'hover-scroll-scope' : undefined}
         onClick={inline ? opts?.onToggle : undefined}
         style={{
-          fontSize: '12px',
+          fontSize: uiFontSizePx(12),
           display: 'flex',
           alignItems: 'center',
           // 二级：内联模式下只要一级展开就一直有底色（选中与否都显示），
@@ -710,7 +713,7 @@ const ToggleMenu = memo(({
       <span
         className={inline ? 'hover-scroll-scope' : undefined}
         style={{
-          fontSize: '12px',
+          fontSize: uiFontSizePx(12),
           display: 'flex',
           alignItems: 'center',
           // 选中态只改字体颜色之外的表现（三级模型行不加背景，仅圆点）
@@ -747,7 +750,7 @@ const ToggleMenu = memo(({
         }}
       >
         <span style={{ width: '14px', flexShrink: 0 }} />
-        <span style={{ color: colors.textPrimary, userSelect: 'none', fontSize: '12px', marginLeft: '12px' }}>
+        <span style={{ color: colors.textPrimary, userSelect: 'none', fontSize: uiFontSizePx(12), marginLeft: '12px' }}>
           {t('inputArea.settings')}
         </span>
       </div>
@@ -788,7 +791,7 @@ const ToggleMenu = memo(({
           <CheckboxGlyph checked={webSearchChecked} colors={colors} />
         </span>
         {/* 勾选只改变 checkbox 自身，文字颜色保持不变，避免整行变色 */}
-        <span style={{ color: colors.textPrimary, userSelect: 'none', fontSize: '12px', marginLeft: '12px' }}>
+        <span style={{ color: colors.textPrimary, userSelect: 'none', fontSize: uiFontSizePx(12), marginLeft: '12px' }}>
           {t('inputArea.webSearch')}
         </span>
       </div>
@@ -816,7 +819,7 @@ const ToggleMenu = memo(({
           flexShrink: 0,
         }}
       />
-      <span style={{ fontSize: '12px' }}>{text}</span>
+      <span style={{ fontSize: uiFontSizePx(12) }}>{text}</span>
     </div>
   );
 
@@ -905,14 +908,14 @@ const ToggleMenu = memo(({
                 display: 'flex',
                 flex: '1 1 0',
                 minWidth: 0,
-                fontSize: '12px',
+                fontSize: uiFontSizePx(12),
                 color: server.enabled ? colors.harness : colors.textPrimary,
               }}
             />
           ) : (
             <span
               style={{
-                fontSize: '12px',
+                fontSize: uiFontSizePx(12),
                 color: server.enabled ? colors.harness : colors.textPrimary,
                 maxWidth: '220px',
                 overflow: 'hidden',
@@ -924,7 +927,7 @@ const ToggleMenu = memo(({
             </span>
           )}
           {statusText && (
-            <span style={{ fontSize: '10px', color: server.error ? '#ef4444' : colors.textSystem }}>
+            <span style={{ fontSize: uiFontSizePx(10), color: server.error ? '#ef4444' : colors.textSystem }}>
               {statusText}
             </span>
           )}
@@ -935,7 +938,7 @@ const ToggleMenu = memo(({
 
   /** MCP 为空时的占位行（内联 / 非内联共用） */
   const renderMcpEmptyLabel = (inline: boolean) => (
-    <div style={{ padding: inline ? '3px 6px' : '3px 0', fontSize: '12px', color: colors.textSystem }}>
+    <div style={{ padding: inline ? '3px 6px' : '3px 0', fontSize: uiFontSizePx(12), color: colors.textSystem }}>
       {t('inputArea.mcpEmpty')}
     </div>
   );
@@ -985,7 +988,7 @@ const ToggleMenu = memo(({
           }}
         >
           <span style={{ width: '14px', flexShrink: 0 }} />
-          <span style={{ fontSize: '12px', color: colors.textPrimary, userSelect: 'none', marginLeft: '12px', flex: '1 1 0' }}>
+          <span style={{ fontSize: uiFontSizePx(12), color: colors.textPrimary, userSelect: 'none', marginLeft: '12px', flex: '1 1 0' }}>
             {t('inputArea.mcp')}
           </span>
           {inlineChevron(inlineSection === 'mcp')}
@@ -1039,7 +1042,7 @@ const ToggleMenu = memo(({
               flex: '1 1 0',
             }}
           >
-            <span style={{ fontSize: '12px', color: colors.textPrimary, marginLeft: '12px' }}>
+            <span style={{ fontSize: uiFontSizePx(12), color: colors.textPrimary, marginLeft: '12px' }}>
               {t('inputArea.model')}
             </span>
             {modelRef?.model && (
@@ -1047,7 +1050,7 @@ const ToggleMenu = memo(({
                 prefix={t('inputArea.modelCurrent')}
                 text={modelRef.model}
                 width={null}
-                style={{ display: 'flex', fontSize: '10px', color: colors.textSystem, maxWidth: '100%' }}
+                style={{ display: 'flex', fontSize: uiFontSizePx(10), color: colors.textSystem, maxWidth: '100%' }}
               />
             )}
           </span>
@@ -1082,7 +1085,7 @@ const ToggleMenu = memo(({
                         {renderModelLabel(p, m, { inline: true })}
                       </div>
                     )) : (
-                      <span style={{ fontSize: '12px', color: colors.textSystem, padding: '4px 6px' }}>
+                      <span style={{ fontSize: uiFontSizePx(12), color: colors.textSystem, padding: '4px 6px' }}>
                         {t('inputArea.modelEmpty')}
                       </span>
                     )}
@@ -1090,7 +1093,7 @@ const ToggleMenu = memo(({
                 )}
               </div>
             )) : (
-              <span style={{ fontSize: '12px', color: colors.textSystem, padding: '4px 6px' }}>
+              <span style={{ fontSize: uiFontSizePx(12), color: colors.textSystem, padding: '4px 6px' }}>
                 {t('inputArea.modelEmpty')}
               </span>
             )}
@@ -1131,7 +1134,7 @@ const ToggleMenu = memo(({
           : [{
               key: `${p.key}::__empty`,
               label: (
-                <span style={{ fontSize: '12px', color: colors.textSystem }}>
+                <span style={{ fontSize: uiFontSizePx(12), color: colors.textSystem }}>
                   {t('inputArea.modelEmpty')}
                 </span>
               ),
@@ -1141,7 +1144,7 @@ const ToggleMenu = memo(({
     : [{
         key: 'modelEmpty',
         label: (
-          <span style={{ fontSize: '12px', color: colors.textSystem }}>
+          <span style={{ fontSize: uiFontSizePx(12), color: colors.textSystem }}>
             {t('inputArea.modelEmpty')}
           </span>
         ),
@@ -1156,7 +1159,7 @@ const ToggleMenu = memo(({
         label: (
           <div style={{ display: 'flex', alignItems: 'center' }}>
             <span style={{ width: '14px', flexShrink: 0 }} />
-            <span style={{ fontSize: '12px', color: colors.textPrimary, userSelect: 'none', marginLeft: '12px' }}>{t('inputArea.mcp')}</span>
+            <span style={{ fontSize: uiFontSizePx(12), color: colors.textPrimary, userSelect: 'none', marginLeft: '12px' }}>{t('inputArea.mcp')}</span>
           </div>
         ),
         type: 'submenu' as const,
@@ -1189,7 +1192,7 @@ const ToggleMenu = memo(({
                 minWidth: 0,
               }}
             >
-              <span style={{ fontSize: '12px', color: colors.textPrimary, marginLeft: '12px' }}>{t('inputArea.model')}</span>
+              <span style={{ fontSize: uiFontSizePx(12), color: colors.textPrimary, marginLeft: '12px' }}>{t('inputArea.model')}</span>
               {modelRef?.model && (
                 // 宽度为打开菜单时冻结的「当前: + 当前模型」宽度（与上一版本一致）；
                 // 展开期间选中更长的模型时这里会溢出，靠悬停单向循环滚动查看全名，
@@ -1199,7 +1202,7 @@ const ToggleMenu = memo(({
                   prefix={t('inputArea.modelCurrent')}
                   text={modelRef.model}
                   width={currentModelWidth}
-                  style={{ fontSize: '10px', color: colors.textSystem }}
+                  style={{ fontSize: uiFontSizePx(10), color: colors.textSystem }}
                 />
               )}
             </span>
@@ -1225,7 +1228,7 @@ const ToggleMenu = memo(({
         >
           {/* checkbox 占位符，保持文字对齐 */}
           <span style={{ width: '14px', flexShrink: 0 }} />
-          <span style={{ color: colors.textPrimary, userSelect: 'none', fontSize: '12px', marginLeft: '12px' }}>
+          <span style={{ color: colors.textPrimary, userSelect: 'none', fontSize: uiFontSizePx(12), marginLeft: '12px' }}>
             {t('inputArea.spinDesign')}
           </span>
         </div>
@@ -1252,7 +1255,7 @@ const ToggleMenu = memo(({
           <div style={{ display: 'flex', alignItems: 'center' }}>
             {/* checkbox 占位符，保持文字对齐 */}
             <span style={{ width: '14px', flexShrink: 0 }} />
-            <span style={{ fontSize: '12px', color: colors.textPrimary, userSelect: 'none', fontWeight: 500, marginLeft: '12px' }}>
+            <span style={{ fontSize: uiFontSizePx(12), color: colors.textPrimary, userSelect: 'none', fontWeight: 500, marginLeft: '12px' }}>
               {t('inputArea.promptMode')}
             </span>
           </div>
@@ -1274,7 +1277,7 @@ const ToggleMenu = memo(({
           <div style={{ display: 'flex', alignItems: 'center' }}>
             {/* checkbox 占位符，保持文字对齐 */}
             <span style={{ width: '14px', flexShrink: 0 }} />
-            <span style={{ fontSize: '12px', color: colors.textPrimary, userSelect: 'none', fontWeight: 500, marginLeft: '12px' }}>
+            <span style={{ fontSize: uiFontSizePx(12), color: colors.textPrimary, userSelect: 'none', fontWeight: 500, marginLeft: '12px' }}>
               {t('inputArea.askMode')}
             </span>
           </div>
@@ -1296,7 +1299,7 @@ const ToggleMenu = memo(({
           <div style={{ display: 'flex', alignItems: 'center' }}>
             {/* checkbox 占位符，保持文字对齐 */}
             <span style={{ width: '14px', flexShrink: 0 }} />
-            <span style={{ fontSize: '12px', color: colors.textPrimary, userSelect: 'none', fontWeight: 500, marginLeft: '12px' }}>
+            <span style={{ fontSize: uiFontSizePx(12), color: colors.textPrimary, userSelect: 'none', fontWeight: 500, marginLeft: '12px' }}>
               {t('inputArea.thinkingEffort')}
             </span>
           </div>
@@ -1320,7 +1323,7 @@ const ToggleMenu = memo(({
             colorText: colors.textSystem,
             controlItemBgHover: isDark ? 'rgba(99, 102, 241, 0.12)' : 'rgba(99, 102, 241, 0.06)',
             controlItemBgActive: isDark ? 'rgba(99, 102, 241, 0.2)' : 'rgba(99, 102, 241, 0.12)',
-            fontSize: 12,
+            fontSize: 12 + fontOffset,
           },
         },
       }}
@@ -1393,16 +1396,16 @@ const ToggleMenu = memo(({
           使菜单宽度取决于当前模型而不是最长的模型名。 */}
     <div ref={modelNameMeasureRef} aria-hidden="true" style={HIDDEN_MEASURE_STYLE}>
       {allModels.map((m, i) => (
-        <span key={`${i}::${m}`} style={{ display: 'inline-block', fontSize: '12px', fontWeight: 600 }}>{m}</span>
+        <span key={`${i}::${m}`} style={{ display: 'inline-block', fontSize: uiFontSizePx(12), fontWeight: 600 }}>{m}</span>
       ))}
     </div>
     <div ref={providerNameMeasureRef} aria-hidden="true" style={HIDDEN_MEASURE_STYLE}>
       {allProviderNames.map((name, i) => (
-        <span key={`${i}::${name}`} style={{ display: 'inline-block', fontSize: '12px', fontWeight: 600 }}>{name}</span>
+        <span key={`${i}::${name}`} style={{ display: 'inline-block', fontSize: uiFontSizePx(12), fontWeight: 600 }}>{name}</span>
       ))}
     </div>
     <div aria-hidden="true" style={HIDDEN_MEASURE_STYLE}>
-      <span ref={currentModelMeasureRef} style={{ display: 'inline-block', fontSize: '10px' }}>
+      <span ref={currentModelMeasureRef} style={{ display: 'inline-block', fontSize: uiFontSizePx(10) }}>
         {t('inputArea.modelCurrent')}{modelRef?.model ?? ''}
       </span>
     </div>
@@ -1459,7 +1462,7 @@ const SlashPopup = memo(({
         <div
           key={skill.name}
           ref={(el) => { itemRefs.current[i] = el; }}
-          className="flex items-center gap-2 px-3 py-2 cursor-pointer text-[13px] transition-colors"
+          className="flex items-center gap-2 px-3 py-2 cursor-pointer ui-fs-13 transition-colors"
           style={{
             backgroundColor: i === selectedIndex ? (isDark ? 'rgba(99,102,241,0.15)' : 'rgba(99,102,241,0.08)') : 'transparent',
             color: colors.textPrimary,
@@ -1471,7 +1474,7 @@ const SlashPopup = memo(({
             <span
               style={{
                 color: colors.harness,
-                fontSize: '10px',
+                fontSize: uiFontSizePx(10),
                 flexShrink: 0,
                 marginLeft: '2px',
                 opacity: 0.7,
@@ -1483,7 +1486,7 @@ const SlashPopup = memo(({
           <span
             style={{
               color: colors.textSystem,
-              fontSize: '12px',
+              fontSize: uiFontSizePx(12),
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
@@ -1873,7 +1876,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
       {/* Sub-agent Warning Banner */}
       {isSubAgent && (
         <div
-          className="px-3 py-1.5 flex items-center gap-2 text-[12px] border-b"
+          className="px-3 py-1.5 flex items-center gap-2 ui-fs-12 border-b"
           style={{
             backgroundColor: 'rgba(239, 68, 68, 0.12)',
             borderColor: 'rgba(239, 68, 68, 0.3)',
@@ -1891,7 +1894,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
       {/* Queued Message Banner */}
       {queuedMessage && (
         <div
-          className="px-3 py-1.5 flex items-center gap-2 text-[12px] border-b"
+          className="px-3 py-1.5 flex items-center gap-2 ui-fs-12 border-b"
           style={{
             backgroundColor: isDark ? 'rgba(99, 102, 241, 0.12)' : 'rgba(99, 102, 241, 0.08)',
             borderColor: colors.border,
@@ -1906,7 +1909,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
               <span style={{ opacity: 0.7 }}>{t('inputArea.waitingImages', { count: queuedMessage.images.length })}</span>
             )}
           </span>
-          <span className="text-[11px] whitespace-nowrap" style={{ color: colors.placeholder }}>
+          <span className="ui-fs-11 whitespace-nowrap" style={{ color: colors.placeholder }}>
             {t('inputArea.resubmitToEdit')}
           </span>
         </div>
@@ -1926,7 +1929,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
                 <button
                   type="button"
                   onClick={() => setPastedImages((prev) => prev.filter((_, i) => i !== idx))}
-                  className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center text-[10px] leading-none opacity-0 group-hover:opacity-100 transition-opacity"
+                  className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center ui-fs-10 leading-none opacity-0 group-hover:opacity-100 transition-opacity"
                   style={{ backgroundColor: '#ef4444', color: '#fff' }}
                   title={t('inputArea.removeImage')}
                 >
@@ -1955,7 +1958,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           onBlur={handleBlur}
           onMouseUp={handleMouseUp}
           placeholder={isInputDisabled ? '' : t('inputArea.placeholder')}
-          className="w-full resize-none focus:outline-none max-h-[200px] text-[13px] input-textarea"
+          className="w-full resize-none focus:outline-none max-h-[200px] ui-fs-13 input-textarea"
           style={{
             backgroundColor: 'transparent',
             color: isInputDisabled ? colors.placeholder : colors.textPrimary,
@@ -1973,7 +1976,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             onClick={() => onOpenSettings?.()}
             title={t('inputArea.placeholderNeedConfigTitle')}
           >
-            <span className="text-[13px] pointer-events-none">
+            <span className="ui-fs-13 pointer-events-none">
               {t('inputArea.placeholderNeedConfigPrefix')}
               <span style={{ color: colors.harness, textDecoration: 'underline' }}>
                 {t('inputArea.placeholderNeedConfigClick')}
@@ -1994,10 +1997,10 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           {(balance !== undefined || isUnlimited || (totalCacheReadInputTokens !== undefined && totalCacheReadInputTokens > 0)) && (
             <>
               {(balance !== undefined || isUnlimited) && (
-                <span className="text-[11px]" style={{ color: colors.border }}>|</span>
+                <span className="ui-fs-11" style={{ color: colors.border }}>|</span>
               )}
               <span
-                className="flex flex-col gap-0 text-[11px] leading-[1.3] whitespace-nowrap"
+                className="flex flex-col gap-0 ui-fs-11 leading-[1.3] whitespace-nowrap"
                 style={{ color: colors.textSystem }}
               >
                 {(balance !== undefined || isUnlimited) && (
@@ -2020,9 +2023,9 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
 
           {currentFile && (
             <>
-              <span className="text-[11px]" style={{ color: colors.border }}>|</span>
+              <span className="ui-fs-11" style={{ color: colors.border }}>|</span>
               <span
-                className="flex items-center gap-1 text-[11px] truncate cursor-pointer hover:opacity-80 transition-all"
+                className="flex items-center gap-1 ui-fs-11 truncate cursor-pointer hover:opacity-80 transition-all"
                 style={{
                   color: colors.textSystem,
                   fontWeight: 600,

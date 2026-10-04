@@ -47,12 +47,28 @@ type SettingsReadResult =
 export type UiLanguage = 'auto' | 'zh' | 'en';
 
 /**
+ * 界面字号档位（与 `settings.json` 的 `uiFontSize` 一致）。
+ *
+ * 只影响 webview 的展示字号，不影响任何 Core 事实；`medium` 是当前基准，
+ * `large` / `xlarge` 在基准上分别 +1px / +2px（`src/webview/fontSize.ts`）。
+ */
+export type UiFontSize = 'medium' | 'large' | 'xlarge';
+
+/**
  * 界面语言的默认值（`auto` = 跟随系统）。
  *
  * `uiLanguage` 只有 UI 侧消费、不进配置快照，因此它的缺省取值由宿主在这里决定
  * （`docs/webview-facts.md` 第 2 节：默认值归宿主）。webview 不持有该取值。
  */
 const DEFAULT_UI_LANGUAGE: UiLanguage = 'auto';
+
+/**
+ * 界面字号的默认值（`medium` = 当前基准）。
+ *
+ * 与 `uiLanguage` 同理：只有 UI 侧消费、不进配置快照，缺省取值由宿主决定，
+ * webview 不持有该取值。
+ */
+const DEFAULT_UI_FONT_SIZE: UiFontSize = 'medium';
 
 /**
  * 顶层已知字段。
@@ -68,6 +84,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   'defaultPromptMode',
   // UI 专属字段（不进快照，但属于本文件）
   'uiLanguage',
+  'uiFontSize',
   'highlightLanguages',
   // 历史遗留字段：保留在文件里，Core 与快照都不读
   'theme',
@@ -141,8 +158,9 @@ export class SettingsStore {
   /**
    * 读盘并产出快照（**同步**）。
    *
-   * 同步是有意的：webview 首帧注入界面语言、注入高亮语言都要求同步取值
-   * （`readUiLanguage` / `readHighlightLanguages`）。文件只有几 KB，启动期读一次。
+   * 同步是有意的：webview 首帧注入界面语言、界面字号、注入高亮语言都要求同步取值
+   * （`readUiLanguage` / `readUiFontSize` / `readHighlightLanguages`）。文件只有几 KB，
+   * 启动期读一次。
    *
    * `mcp.json` 只在这里读一次：之后 `updateSettings` 不会重读它，
    * 因此中途修改 `mcp.json` 不会进入快照（重开工作区生效）。
@@ -233,6 +251,12 @@ export class SettingsStore {
   readUiLanguage(): UiLanguage {
     const lang = this.rawSettings.uiLanguage;
     return lang === 'zh' || lang === 'en' || lang === 'auto' ? lang : DEFAULT_UI_LANGUAGE;
+  }
+
+  /** 界面字号（`settings.json` 的 `uiFontSize`）；只有 UI 消费，不进快照 */
+  readUiFontSize(): UiFontSize {
+    const size = this.rawSettings.uiFontSize;
+    return size === 'medium' || size === 'large' || size === 'xlarge' ? size : DEFAULT_UI_FONT_SIZE;
   }
 
   /** 已记录的 Shiki 语言列表（`settings.json` 的 `highlightLanguages`）；只有 UI 消费，不进快照 */

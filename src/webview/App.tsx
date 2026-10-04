@@ -904,6 +904,7 @@ const App = () => {
       initialDefaultPromptMode={llmConfigPayload.defaultPromptMode}
       initialApiKey={llmConfigPayload.apiKey}
       initialLanguage={llmConfigPayload.language}
+      initialFontSize={llmConfigPayload.fontSize}
       initialProviders={llmConfigPayload.providers}
       initialActiveProvider={llmConfigPayload.activeProvider}
       initialMcpServers={llmConfigPayload.mcpServers}
@@ -1022,7 +1023,7 @@ const App = () => {
                 </svg>
               </button>
             )}
-            <h1 className="text-[13px] font-semibold truncate" style={{ color: colors.textPrimary }}>{conversationTitle}</h1>
+            <h1 className="ui-fs-13 font-semibold truncate" style={{ color: colors.textPrimary }}>{conversationTitle}</h1>
           </div>
           <div className="flex items-center gap-2">
             {rendersConversationListInWebview(hostInfo) && (
@@ -1059,7 +1060,7 @@ const App = () => {
                 >
                   <div className="p-2">
                     <div
-                      className="text-[13px] font-semibold mb-2"
+                      className="ui-fs-13 font-semibold mb-2"
                       style={{ color: colors.textPrimary }}
                     >
                       {t('app.conversationHistory')}
@@ -1080,11 +1081,11 @@ const App = () => {
                             borderRightColor: colors.harness,
                           }}
                         />
-                        <span className="text-[12px]">{t('app.loadingConversations')}</span>
+                        <span className="ui-fs-12">{t('app.loadingConversations')}</span>
                       </div>
                     ) : conversations.length === 0 ? (
                       <div
-                        className="text-[12px] p-4 text-center"
+                        className="ui-fs-12 p-4 text-center"
                         style={{ color: colors.textSystem }}
                       >
                         {t('app.noConversationHistory')}

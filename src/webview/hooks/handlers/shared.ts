@@ -445,6 +445,9 @@ export function missingPanelFields(payload: LlmConfigPanelPayload): string[] {
   if (payload.language !== 'auto' && payload.language !== 'zh' && payload.language !== 'en') {
     problems.push('language');
   }
+  if (payload.fontSize !== 'medium' && payload.fontSize !== 'large' && payload.fontSize !== 'xlarge') {
+    problems.push('fontSize');
+  }
   return problems;
 }
 

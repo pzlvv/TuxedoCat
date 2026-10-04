@@ -6,6 +6,40 @@
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
+/*
+ * 界面字号档位偏移（`settings.json` 的 `uiFontSize`）。
+ *
+ * `src/webview/fontSize.ts` 在启动期与档位变更时把它写到根元素：
+ * medium = 0px / large = 1px / xlarge = 2px。下面 `ui-fs-*` 的字号都写成
+ * `calc(<基准>px + var(--ui-font-offset))`，因此改档位只需重设这一个变量。
+ * 基准值就是各区域的当前字号（medium 档表现不变）。
+ */
+:root {
+  --ui-font-offset: 0px;
+}
+
+.ui-fs-10 {
+  font-size: calc(10px + var(--ui-font-offset));
+}
+.ui-fs-11 {
+  font-size: calc(11px + var(--ui-font-offset));
+}
+.ui-fs-12 {
+  font-size: calc(12px + var(--ui-font-offset));
+}
+.ui-fs-12-5 {
+  font-size: calc(12.5px + var(--ui-font-offset));
+}
+.ui-fs-13 {
+  font-size: calc(13px + var(--ui-font-offset));
+}
+.ui-fs-14 {
+  font-size: calc(14px + var(--ui-font-offset));
+}
+.ui-fs-15 {
+  font-size: calc(15px + var(--ui-font-offset));
+}
+
 /* 为亮色和暗色主题提供全局 CSS 变量，
    确保 Ant Design 和其他第三方组件能响应主题切换 */
 .light {
@@ -513,7 +547,7 @@ textarea::-webkit-scrollbar-thumb:hover {
   white-space: nowrap;
   /* 注意：monospace 必须放在中文字体之后，否则中文会回退到系统默认等宽字体（Windows 上即宋体 SimSun） */
   font-family: 'Consolas', 'Courier New', 'Microsoft YaHei', '微软雅黑', monospace, sans-serif;
-  font-size: 13px;
+  font-size: calc(13px + var(--ui-font-offset));
   line-height: 1.2;
   font-weight: 600;
 }
@@ -646,7 +680,7 @@ textarea::-webkit-scrollbar-thumb:hover {
 .code-preview,
 .code-preview pre,
 .code-preview code {
-  font-size: 12px !important;
+  font-size: calc(12px + var(--ui-font-offset)) !important;
 }
 
 /* KaTeX 公式样式 - 确保在暗色和亮色主题下均正常显示 */
@@ -696,7 +730,7 @@ textarea::-webkit-scrollbar-thumb:hover {
   min-width: 0;
 }
 .agent-mode-menu .ant-dropdown-menu-item {
-  font-size: 12px !important;
+  font-size: calc(12px + var(--ui-font-offset)) !important;
   color: var(--text-secondary) !important;
 }
 .agent-mode-menu .ant-dropdown-menu-item-selected {

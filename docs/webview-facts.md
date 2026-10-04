@@ -109,13 +109,15 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
   用户误导去重配，甚至把空值当默认值写回磁盘。
 - 打开面板前宿主重读一次磁盘，使用户在外部修改 `settings.json` 后不必重载窗口
   （`docs/core-ui-separation.md` 第 4.5 节）。
+- 界面语言 / 界面字号随载荷下发（`language` / `fontSize`）；webview 不补默认值，
+  保存回传后即时生效（`docs/core-ui-separation.md` 第 4.8 / 4.10 节）。
 
 ---
 
 ## 7. 不允许的做法
 
 1. 在 webview 里写死配置字段的取值（`webSearch` / `thinkingEffort` / `agentMode` /
-   `promptMode` / `enableUsageStats` / `uiLanguage`）。
+   `promptMode` / `enableUsageStats` / `uiLanguage` / `uiFontSize`）。
 2. 把「尚未收到」当成某个取值下发（会话配置随消息下发、挂载时的自动回传）。
 3. 用「读取失败」冒充「未配置」：失败不引导用户重配。
 4. 在 webview 里做模型名 / 服务商名匹配、模型限值推导、默认模型选择、模型协议推断——
@@ -134,7 +136,7 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
 3. 模型列表未收到与「收到但为空」表现不同：前者等待，后者显示空列表。
 4. `settings.json` 缺字段时，界面显示的取值与 core 实际使用的取值同源（都来自宿主快照）。
 5. 宿主读取配置失败时不弹设置面板。
-6. 两个宿主都注入 `__initialTheme` / `__uiLocale` / `__hostInfo`；缺失即启动期报错。
+6. 两个宿主都注入 `__initialTheme` / `__uiLocale` / `__uiFontSize` / `__hostInfo`；缺失即启动期报错。
 
 ---
 
@@ -147,7 +149,8 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
 | 会话配置状态（`undefined` 起） | `src/webview/App.tsx`、`src/webview/sessionState.ts` |
 | 等待态渲染 | `src/webview/InputArea.tsx` |
 | 面板载荷入参（全必选） | `src/webview/LLMConfigPanel.tsx`、`src/host/WebViewUI.ts` |
-| 同步注入（主题 / 语言 / 能力） | `src/extension.ts`、`electron/preload.ts`、`src/webview/webviewEnv.ts`、`src/webview/i18n/index.ts` |
+| 同步注入（主题 / 语言 / 字号 / 能力） | `src/extension.ts`、`electron/preload.ts`、`src/webview/webviewEnv.ts`、`src/webview/i18n/index.ts`、`src/webview/fontSize.ts` |
 | 宿主侧配置派生纯函数 | `src/host/settingsRead.ts` |
 | 界面语言默认值（宿主） | `src/host/SettingsStore.ts` |
+| 界面字号档位（宿主默认 + webview 折算） | `src/host/SettingsStore.ts`、`src/webview/fontSize.ts`、`src/webview/styles/index.css` |
 | 静态守护（无默认值 / 无越权 import / 初值为 undefined） | `src/test/webviewFacts.test.ts` |

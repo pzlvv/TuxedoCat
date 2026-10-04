@@ -1,5 +1,6 @@
 import React from 'react';
 import type { Colors } from '../types';
+import { uiFontSizePx } from '../fontSize';
 
 /**
  * 泛型分段选择控件：AskMode / Thinking / PromptMode 三个分段选择器的容器样式、
@@ -39,7 +40,7 @@ export function SegmentControl<T extends string>({
             onClick={(e) => { e.stopPropagation(); onChange(seg.key); }}
             style={{
               flex: 1,
-              fontSize: '11px',
+              fontSize: uiFontSizePx(11),
               padding: '3px 6px',
               border: 'none',
               borderLeft: idx > 0 ? `1px solid ${colors.border}` : 'none',

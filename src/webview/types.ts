@@ -7,6 +7,7 @@ import type { ModelRef } from '../core/llm/modelRef';
 import type { MessageOrigin } from '../core/types';
 import type { McpServerInfo } from '../core/webviewTypes';
 import type { UiLanguage } from './i18n';
+import type { UiFontSize } from './fontSize';
 
 export type Theme = 'dark' | 'light';
 export type AgentMode = 'manual' | 'risk' | 'auto';
@@ -56,6 +57,8 @@ export interface LlmConfigPanelPayload {
   /** 当前生效服务商的 API Key；未配置时为空串 */
   apiKey: string;
   language: UiLanguage;
+  /** 界面字号档位（顶层 `uiFontSize`） */
+  fontSize: UiFontSize;
   providers: ProviderConfig[];
   /** 当前生效的服务商 key；未配置时为空串 */
   activeProvider: string;

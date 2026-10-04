@@ -2,6 +2,7 @@ import React from 'react';
 import { ToolCallProps } from './Types';
 import { ToolHeader } from './ToolHeader';
 import { t } from '../i18n';
+import { uiFontSizePx } from '../fontSize';
 
 export const Agent: React.FC<ToolCallProps> = ({ args, colors, output, onNavigate }) => {
   const prompt = args?.prompt || '';
@@ -29,7 +30,7 @@ export const Agent: React.FC<ToolCallProps> = ({ args, colors, output, onNavigat
   return (
     <ToolHeader icon="Bot" name="Agent" colors={colors}>
       {role && (
-        <span style={{ color: colors.toolName, marginRight: '6px', fontSize: '11px', opacity: 0.8 }}>
+        <span style={{ color: colors.toolName, marginRight: '6px', fontSize: uiFontSizePx(11), opacity: 0.8 }}>
           [{role}]
         </span>
       )}
@@ -42,7 +43,7 @@ export const Agent: React.FC<ToolCallProps> = ({ args, colors, output, onNavigat
             cursor: 'pointer',
             textDecoration: 'underline',
             textDecorationStyle: 'dotted',
-            fontSize: '11px',
+            fontSize: uiFontSizePx(11),
             whiteSpace: 'nowrap',
           }}
           title={t('tool.agent.navigateTitle')}

@@ -1,6 +1,7 @@
 import React, { memo } from 'react';
 import type { Colors } from './types';
 import { t } from './i18n';
+import { uiFontSizePx } from './fontSize';
 import { useStreamStats, formatCount } from './hooks/useStreamStats';
 
 interface StreamStatsLabelProps {
@@ -43,7 +44,7 @@ export const StreamStatsLabel: React.FC<StreamStatsLabelProps> = memo(({ streamI
   return (
     <span
       className="ml-2 whitespace-nowrap"
-      style={{ color: colors.textSystem, opacity: 0.7, fontSize: '12px', fontVariantNumeric: 'tabular-nums' }}
+      style={{ color: colors.textSystem, opacity: 0.7, fontSize: uiFontSizePx(12), fontVariantNumeric: 'tabular-nums' }}
     >
       {text}
     </span>

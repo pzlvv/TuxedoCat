@@ -165,7 +165,7 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
     if (isStreaming && status === 'running') {
       return (
         <div
-          className="px-3 py-2 text-[11px] font-mono"
+          className="px-3 py-2 ui-fs-11 font-mono"
           style={{
             backgroundColor: colors.bgSecondary,
             color: colors.textSystem,
@@ -197,7 +197,7 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
 
       return (
         <div
-          className="px-3 py-2 text-[11px] font-mono"
+          className="px-3 py-2 ui-fs-11 font-mono"
           style={{
             backgroundColor: colors.bgSecondary,
             color: colors.textSystem,
@@ -205,7 +205,7 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
         >
           {/* 大小提示栏：仅保留“完整输出”按钮 */}
           <div
-            className="flex items-center justify-end mb-2 pb-1.5 text-[11px]"
+            className="flex items-center justify-end mb-2 pb-1.5 ui-fs-11"
             style={{
               borderBottom: `1px solid ${colors.border}`,
               color: colors.textSystem,
@@ -250,7 +250,7 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
     // 普通输出：与流式显示共用同一滚动结构，完成后高度与流式保持一致
     return (
       <div
-        className="px-3 py-2 text-[11px] font-mono"
+        className="px-3 py-2 ui-fs-11 font-mono"
         style={{
           backgroundColor: colors.bgSecondary,
           color: colors.textSystem,
@@ -299,7 +299,7 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
           <div className="flex-1 min-w-0">
             <button
               onClick={handleCommandClick}
-              className="text-[12px] font-mono truncate cursor-pointer text-left w-full"
+              className="ui-fs-12 font-mono truncate cursor-pointer text-left w-full"
               style={{
                 color: colors.textPrimary,
                 background: 'none',
