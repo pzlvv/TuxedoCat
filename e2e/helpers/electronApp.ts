@@ -419,6 +419,64 @@ export async function launchApp(options: {
   };
 }
 
+/** 主进程求值并取回返回值（`evaluateInMain` 回的是 CDP 原始消息） */
+export async function mainEval<T>(app: AppHandle, expression: string): Promise<T> {
+  const raw = await app.evaluateInMain(expression) as {
+    result?: { result?: { value?: T }; exceptionDetails?: { text?: string } };
+  };
+  if (raw?.result?.exceptionDetails) {
+    throw new Error(`主进程求值抛错：${expression}（${raw.result.exceptionDetails.text ?? ''}）`);
+  }
+  return raw?.result?.result?.value as T;
+}
+
+/** 已记录的一次原生消息框调用 */
+export interface MessageBoxCall {
+  message: string;
+  detail: string;
+  buttons: string[];
+}
+
+export interface MessageBoxStub {
+  /** 设置后续调用返回的按钮下标（0 = 第一个按钮） */
+  setResponse(index: number): Promise<void>;
+  /** 已记录的全部调用 */
+  calls(): Promise<MessageBoxCall[]>;
+}
+
+/**
+ * 替换主进程的原生消息框（`dialog.showMessageBox`）。
+ *
+ * Playwright 点不到原生模态，用例只能这样注入：桩记录每次调用的文案，并按
+ * `setResponse` 设置的下标返回，从而驱动「确认 / 取消」两条分支。
+ * 注入失败（主进程拿不到 electron 模块）直接抛错，避免误判成业务行为。
+ */
+export async function stubMainMessageBox(app: AppHandle): Promise<MessageBoxStub> {
+  const injected = await mainEval<string>(app, `(function(){try{
+    const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
+    globalThis.__messageBoxCalls = [];
+    globalThis.__messageBoxResponse = 0;
+    e.dialog.showMessageBox = async (win, opts) => {
+      globalThis.__messageBoxCalls.push({
+        message: String(opts && opts.message || ''),
+        detail: String(opts && opts.detail || ''),
+        buttons: (opts && opts.buttons) || [],
+      });
+      return { response: globalThis.__messageBoxResponse, checkboxChecked: false };
+    };
+    return 'ok';
+  } catch (err) { return 'ERR ' + err.message; }})()`);
+  if (injected !== 'ok') throw new Error(`原生消息框注入失败：${injected}`);
+  return {
+    setResponse: async (index: number) => {
+      await app.evaluateInMain(`globalThis.__messageBoxResponse = ${index}`);
+    },
+    calls: async () => JSON.parse(
+      await mainEval<string>(app, 'JSON.stringify(globalThis.__messageBoxCalls)'),
+    ) as MessageBoxCall[],
+  };
+}
+
 /** 造一个临时工作区；name 用于固定目录名（工作区标签页显示目录名） */
 export async function makeWorkspace(files: Record<string, string> = {}, name?: string): Promise<string> {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tuxedo-e2e-ws-'));

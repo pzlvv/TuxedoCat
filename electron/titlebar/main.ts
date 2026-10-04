@@ -314,7 +314,8 @@ function computeReorderedIds(fromId: string, toId: string, after: boolean): stri
 
 /**
  * 渲染工作目录标签页（打开集合变化时重建）。
- * 标签页占用原菜单栏区域；活动项高亮；每张标签页带关闭按钮、可拖拽排序；末尾是「添加」按钮。
+ * 标签页占用原菜单栏区域；活动项高亮；每张标签页带关闭按钮（鼠标中键同样关闭）、
+ * 可拖拽排序；末尾是「添加」按钮。
  * `activity` 缺省时沿用已缓存的流水灯状态（状态变化走 applyWorkspaceActivity 就地更新）。
  */
 function renderWorkspaces(
@@ -390,7 +391,18 @@ function renderWorkspaces(
     });
     tab.appendChild(closeBtn);
 
-    tab.addEventListener('mousedown', (event) => event.stopPropagation());
+    tab.addEventListener('mousedown', (event) => {
+      event.stopPropagation();
+      // 中键关标签页：抑制 Chromium 的「中键自动滚动」（否则页面会进入滚动模式）
+      if (event.button === 1) event.preventDefault();
+    });
+    // 鼠标中键：关闭这张标签页（与关闭按钮同一入口；是否二次确认由主进程决定）
+    tab.addEventListener('auxclick', (event) => {
+      if (event.button !== 1) return;
+      event.preventDefault();
+      event.stopPropagation();
+      api?.closeWorkspace(ws.id);
+    });
     // 点击 / 键盘切换活动项（建链中 / 不可用的标签页同样可激活，聊天区显示占位页）。
     // 刚拖拽排序完抑制 click，避免顺带切换标签页
     tab.addEventListener('click', (event) => {

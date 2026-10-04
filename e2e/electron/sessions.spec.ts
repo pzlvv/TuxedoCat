@@ -2,7 +2,7 @@ import { test, expect, type Locator, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { startMockLlm } from '../helpers/mockLlmServer';
-import { launchApp, makeWorkspace } from '../helpers/electronApp';
+import { launchApp, makeWorkspace, stubMainMessageBox } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
 
@@ -133,6 +133,34 @@ test('US-22 侧栏删除会话带二次确认，确认后数据删除', async ()
   ).toBe(0);
   // 侧栏条目随 conversationListChanged 自动消失（列表刷新链路回归即此处失败）
   await expect(items(sb)).toHaveCount(0, { timeout: 15_000 });
+});
+
+test('US-19 关闭非 idle 对话需二次确认', async () => {
+  const sb = await sidebar();
+  await sendMessage('慢速回答一段长内容');
+  const item = items(sb).first();
+  await expect(item).toBeVisible({ timeout: 30_000 });
+  // 慢速查询在跑：条目标记非 idle（流水灯），且该对话的视图已打开
+  await expect(item.locator('.running-bar')).toBeVisible({ timeout: 30_000 });
+  await expect(item.locator('.loaded-dot')).toBeVisible();
+
+  const messageBox = await stubMainMessageBox(app);
+
+  // 取消（默认返回下标 1）：视图与运行都保留
+  await item.hover();
+  await item.locator('[data-action="close"]').click();
+  await expect.poll(() => messageBox.calls()).toHaveLength(1);
+  expect((await messageBox.calls())[0].message).toBe('该对话正在运行');
+  await expect(item.locator('.loaded-dot')).toBeVisible();
+  await expect(item.locator('.running-bar')).toBeVisible();
+
+  // 确认：视图销毁（已打开标记消失）、运行中止（流水灯消失）
+  await messageBox.setResponse(0);
+  await item.hover();
+  await item.locator('[data-action="close"]').click();
+  await expect.poll(() => messageBox.calls()).toHaveLength(2);
+  await expect(item.locator('.loaded-dot')).toHaveCount(0, { timeout: 30_000 });
+  await expect(item.locator('.running-bar')).toHaveCount(0, { timeout: 30_000 });
 });
 
 test('US-19 侧栏搜索框按标题过滤对话', async () => {

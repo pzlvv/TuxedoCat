@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { startMockLlm } from '../helpers/mockLlmServer';
-import { launchApp, makeWorkspace } from '../helpers/electronApp';
+import { launchApp, makeWorkspace, stubMainMessageBox } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
@@ -109,6 +109,71 @@ test('US-35 关闭工作区标签页：集合移除、活动权移交相邻项',
   await expect(tabs).toHaveCount(1, { timeout: 20_000 });
   await expect(tabs.first()).toContainText('e2e-ws-close-b');
   await expect((await app.chatPage()).locator('textarea.input-textarea')).toBeEnabled({ timeout: 30_000 });
+
+  await fs.promises.rm(aDir, { recursive: true, force: true }).catch(() => undefined);
+  await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);
+});
+
+test('US-35 鼠标中键关闭工作区标签页', async () => {
+  const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
+  const aDir = await makeWorkspace({}, 'e2e-ws-mid-a');
+  const bDir = await makeWorkspace({}, 'e2e-ws-mid-b');
+  app = await launchApp({
+    repoRoot, mockLlm, workspaceDir: aDir,
+    openWorkspaces: [aDir, bDir],
+    activeWorkspace: aDir,
+  });
+
+  const tabs = (await app.titlebarPage()).locator('#workspaceTabs [role="tab"]');
+  await expect(tabs).toHaveCount(2, { timeout: 20_000 });
+
+  // 中键点非活动标签 B：只关它，活动项仍是 A（聊天区不跟着切）
+  await tabs.nth(1).click({ button: 'middle' });
+  await expect(tabs).toHaveCount(1, { timeout: 20_000 });
+  await expect(tabs.first()).toContainText('e2e-ws-mid-a');
+  await expect(tabs.first()).toHaveClass(/active/);
+  await expect((await app.chatPage()).locator('textarea.input-textarea')).toBeEnabled({ timeout: 30_000 });
+
+  await fs.promises.rm(aDir, { recursive: true, force: true }).catch(() => undefined);
+  await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);
+});
+
+test('US-35 标签页内有对话非 idle 时关闭标签页需二次确认', async () => {
+  const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
+  const aDir = await makeWorkspace({}, 'e2e-ws-busy-a');
+  const bDir = await makeWorkspace({}, 'e2e-ws-busy-b');
+  app = await launchApp({
+    repoRoot, mockLlm, workspaceDir: aDir,
+    openWorkspaces: [aDir, bDir],
+    activeWorkspace: aDir,
+  });
+
+  // A 里跑一个慢速查询：该标签页进入非 idle（流水灯亮、查询未结束）
+  const chatPage = await app.chatPage();
+  await chatPage.fill('textarea.input-textarea', '慢速回答一段长内容');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.locator('button[title="终止"]')).toBeEnabled({ timeout: 30_000 });
+
+  const messageBox = await stubMainMessageBox(app);
+  const tabs = (await app.titlebarPage()).locator('#workspaceTabs [role="tab"]');
+  await expect(tabs).toHaveCount(2, { timeout: 20_000 });
+  // 标签页流水灯亮 = 该目录下确实有非 idle 对话（与宿主的关闭前判定同一份事实）
+  await expect(tabs.first()).toHaveClass(/activity-running/, { timeout: 20_000 });
+
+  // 取消（默认返回下标 1）：标签页保留，查询继续跑
+  await tabs.first().hover();
+  await tabs.first().locator('.ws-tab-close').click();
+  await expect.poll(() => messageBox.calls()).toHaveLength(1);
+  expect((await messageBox.calls())[0].message).toContain('e2e-ws-busy-a');
+  await expect(tabs).toHaveCount(2);
+  await expect(chatPage.locator('button[title="终止"]')).toBeEnabled();
+
+  // 确认：标签页关闭，运行中的查询随视图销毁中止
+  await messageBox.setResponse(0);
+  await tabs.first().hover();
+  await tabs.first().locator('.ws-tab-close').click();
+  await expect.poll(() => messageBox.calls()).toHaveLength(2);
+  await expect(tabs).toHaveCount(1, { timeout: 20_000 });
 
   await fs.promises.rm(aDir, { recursive: true, force: true }).catch(() => undefined);
   await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);

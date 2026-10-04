@@ -1807,6 +1807,48 @@ function syncTitlebarActivity(): void {
 }
 
 /**
+ * 该工作目录下是否有非 idle 的对话（与标签页流水灯读同一份事实，见 collectWorkspaceActivity）。
+ * 关闭标签页前用它判定要不要让用户二次确认。
+ */
+function workspaceHasBusySession(ref: WorkspaceRef): boolean {
+  return collectWorkspaceActivity()[refKey(ref)] !== undefined;
+}
+
+/**
+ * 该对话当前是否非 idle：读 core 的会话运行时快照（第 10 节），与
+ * `sessionResources.isSessionIdle` / 标签页流水灯同源。未登记任何事实
+ * （含新建中的 `new-` 临时 key）＝ 空闲。
+ */
+function sessionIsBusy(sessionId: string): boolean {
+  try {
+    const { getSessionRuntimeState } = require('../src/core/sessionRuntime.js') as typeof import('../src/core/sessionRuntime.js');
+    const state = getSessionRuntimeState(sessionId);
+    return state !== null && !state.idle;
+  } catch (err) {
+    console.error('[main] session busy check error:', err);
+    return false;
+  }
+}
+
+/**
+ * 关闭前的二次确认（原生模态对话框）：返回 true 表示用户确认关闭。
+ * 窗口不可用时没有可确认的对象，按「继续关闭」处理（与无确认路径同行为）。
+ */
+async function confirmCloseBusy(message: string, detail: string): Promise<boolean> {
+  if (!mainWindow || mainWindow.isDestroyed()) return true;
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: [tt('仍然关闭', 'Close Anyway'), tt('取消', 'Cancel')],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+    message,
+    detail,
+  });
+  return response === 0;
+}
+
+/**
  * 打开集合快照的单调版本号：每次推送 +1，get-state 响应带上当前值。
  *
  * 标题栏的 get-state 回包只反映主进程处理 invoke 时刻的状态，回包在途期间状态可能
@@ -2902,13 +2944,20 @@ function activateWorkspaceForPath(workspace: string | undefined): void {
 /**
  * 关闭工作目录：移出打开集合，销毁该目录下所有对话视图并中止运行中查询；
  * 关闭的是活动项时把活动权移交相邻项。
+ *
+ * 该目录下还有非 idle 的对话时先让用户二次确认（关闭会中止它们的运行）：
+ * 确认期间集合可能被其它入口改动，确认后重新定位，已不在集合里就什么都不做。
  */
-function closeWorkspace(target: WorkspaceRef | string): void {
+async function closeWorkspace(target: WorkspaceRef | string): Promise<void> {
   // 按去重键匹配打开集合中的项
   const ref = typeof target === 'string'
     ? openWorkspaces.find((candidate) => refKey(candidate) === target)
     : findWorkspace(target);
-  if (!ref) return;
+  if (!ref || !openWorkspaces.includes(ref)) return;
+  if (workspaceHasBusySession(ref) && !(await confirmCloseBusy(
+    tt(`「${refDisplay(ref)}」下仍有对话在运行`, `Conversations in "${refDisplay(ref)}" are still running`),
+    tt('关闭工作区会中止这些对话的运行。确定关闭？', 'Closing the workspace stops them. Close anyway?'),
+  ))) return;
   const idx = openWorkspaces.indexOf(ref);
   if (idx < 0) return;
   openWorkspaces.splice(idx, 1);
@@ -3582,6 +3631,22 @@ function defaultFloatingWindowRect(): { width: number; height: number } {
 }
 
 /**
+ * 关闭一个对话：卸运行时内存 + 销毁聊天视图。
+ *
+ * 侧栏「关闭」与聊天视图顶栏关闭按钮共用这一个入口——两条入口只是触发位置不同，
+ * 「非 idle 先二次确认、再走 WebViewUI.closeConversation」这条序列必须一致。
+ * 非 idle（查询 / 压缩 / 后台 Bash / 子代理 / 等待用户）时关闭会中止这些运行，
+ * 所以先问一次；`new-` 临时 key 未登记运行时事实，视为空闲、不问。
+ */
+async function closeConversationWithConfirm(sessionId: string): Promise<void> {
+  if (sessionIsBusy(sessionId) && !(await confirmCloseBusy(
+    tt('该对话正在运行', 'This conversation is still running'),
+    tt('关闭后正在进行的运行会被中止。确定关闭？', 'Closing stops the running work. Close anyway?'),
+  ))) return;
+  webviewUi?.closeConversation(sessionId);
+}
+
+/**
  * 删除一个对话（含子会话闭包）：宿主关视图 + core 删盘。
  *
  * 侧栏「删除」与 webview 顶栏「删除」共用这一个入口——两条入口只是触发位置不同，
@@ -3694,13 +3759,12 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: W
     return;
   }
 
-  // 关闭按钮：卸内存 + 销毁视图走 WebViewUI.closeConversation（与侧栏「关闭」同一入口）。
+  // 关闭按钮：卸内存 + 销毁视图走 WebViewUI.closeConversation（与侧栏「关闭」同一入口，
+  // 含非 idle 时的二次确认）。会话 id 在关视图前反查——视图关掉后就查不到了。
   // loaded 变化由 ChatViewManager 单独推给侧栏，列表变化由 core 的 conversationListChanged 推。
   if (message.type === 'closeWebview') {
-    const closedSessionId = chatViews?.closeViewByWebContents(sender);
-    if (closedSessionId) {
-      webviewUi?.closeConversation(closedSessionId);
-    }
+    const key = chatViews?.getKeyByWebContents(sender);
+    if (key) void closeConversationWithConfirm(key);
     return;
   }
 
@@ -3795,7 +3859,7 @@ function setupIpc(): void {
 
   ipcMain.on('titlebar:close-workspace', (event, p: unknown) => {
     if (!isTitlebarSender(event.sender)) return;
-    if (typeof p === 'string' && p) closeWorkspace(p);
+    if (typeof p === 'string' && p) void closeWorkspace(p);
   });
 
   ipcMain.on('titlebar:add-workspace', (event) => {
@@ -3951,7 +4015,7 @@ function setupIpc(): void {
   });
 
   ipcMain.on('sidebar:close-workspace', (_event, p: unknown) => {
-    if (typeof p === 'string' && p) closeWorkspace(p);
+    if (typeof p === 'string' && p) void closeWorkspace(p);
   });
 
   ipcMain.on('sidebar:open-conversation', (_event, sessionId: string, project?: string) => {
@@ -3988,10 +4052,11 @@ function setupIpc(): void {
   });
 
   // 关闭指定会话（UI → core 走 WebViewUI.closeConversation：
-  // 发 UiEvent.conversationClosed 卸内存 + 宿主销毁视图；列表刷新走 conversationListChanged 流）
+  // 发 UiEvent.conversationClosed 卸内存 + 宿主销毁视图；列表刷新走 conversationListChanged 流）。
+  // 该对话非 idle 时先让用户二次确认，见 closeConversationWithConfirm。
   ipcMain.on('sidebar:close-conversation', (_event, sessionId: string) => {
     if (typeof sessionId === 'string' && sessionId) {
-      webviewUi?.closeConversation(sessionId);
+      void closeConversationWithConfirm(sessionId);
     }
   });
 

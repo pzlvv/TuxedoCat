@@ -820,20 +820,6 @@ export class ChatViewManager {
     if (this.prewarmKey === key) this.prewarmKey = null;
   }
 
-  /**
-   * 根据来源 webContents 关闭对应聊天视图（webview 右上角关闭按钮触发）。
-   * 销毁渲染进程并释放资源；返回被关闭的 sessionId，找不到时返回 null。
-   */
-  closeViewByWebContents(webContents: WebContents): string | null {
-    const sessionId = [...this.views.keys()].find((key) => {
-      const view = this.views.get(key);
-      return view && !view.webContents.isDestroyed() && view.webContents.id === webContents.id;
-    });
-    if (!sessionId) return null;
-    this.closeView(sessionId);
-    return sessionId;
-  }
-
   /** 销毁指定会话的聊天视图（移除 ChildView + 关闭 webContents，释放渲染进程资源） */
   closeView(sessionId: string): void {
     // 关闭视图 = abort -> 释放 MCP 引用 -> 销毁视图（序列在 destroyViewEntry 内：
