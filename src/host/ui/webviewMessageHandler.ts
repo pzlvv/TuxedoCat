@@ -1074,7 +1074,14 @@ export class WebviewMessageHandler {
     }
   }
 
-  private async handleRequestModels(): Promise<void> {
+  /**
+   * 主界面模型菜单的数据源：只读 `settings.json`，不访问网关。
+   *
+   * 菜单顺序即 `settings.json` 中 `llm.providers` 的书写顺序与各 provider `models`
+   * 数组的书写顺序；网关的最新模型列表只在设置面板里按需拉取
+   * （`fetchProviderModels` / `detectProviderModelApiTypes`），不参与菜单排序。
+   */
+  private handleRequestModels(): void {
     this.log(`[WebviewMessageHandler] Requesting model list from all providers`);
     try {
       const settings = getSettingsStore().getRawSettings();
@@ -1105,41 +1112,18 @@ export class WebviewMessageHandler {
             ? p.defaultModel.trim()
             : models[0];
           const unique = Array.from(new Set(models.filter((m) => !!m.trim())));
+          // 默认模型被用户从 models 里删掉时补回列表头部，保证当前选中项在菜单里可见
           if (defaultModel && !unique.includes(defaultModel)) unique.unshift(defaultModel);
-          return {
-            key,
-            baseURL: typeof p?.baseURL === 'string' ? p.baseURL.trim() : '',
-            apiKey: typeof p?.apiKey === 'string' ? p.apiKey.trim() : '',
-            defaultModel,
-            models: unique,
-          };
+          return { key, models: unique };
         });
-
-      // 仅 active provider 尝试从 API 拉取最新模型并合并（其它 provider 直接用已保存列表）。
-      const activeGroup = groups.find((g) => g.key === activeKey);
-      if (activeGroup && activeGroup.baseURL && activeGroup.apiKey) {
-        try {
-          const fetched = await this.fetchModelsFromProvider(activeGroup.baseURL, activeGroup.apiKey);
-          if (fetched.length > 0) {
-            this.log(`[WebviewMessageHandler] Fetched ${fetched.length} models from API for ${activeGroup.key}`);
-            activeGroup.models = Array.from(new Set(
-              [activeGroup.defaultModel, ...fetched, ...activeGroup.models].filter((m) => !!m && !!m.trim()),
-            ));
-          } else {
-            this.log(`[WebviewMessageHandler] API returned no models for ${activeGroup.key}, using saved models`);
-          }
-        } catch (err: any) {
-          this.log(`[WebviewMessageHandler] Failed to fetch models for ${activeGroup.key}: ${err?.message || err}`);
-        }
-      }
 
       this.host.sendToWebview({
         type: 'setModels',
-        providers: groups.map((g) => ({ key: g.key, models: g.models })),
+        providers: groups,
         activeProvider: activeKey,
       });
     } catch (err: any) {
-      this.log(`[WebviewMessageHandler] Failed to fetch models: ${err.message}`);
+      this.log(`[WebviewMessageHandler] Failed to read models from settings: ${err.message}`);
       this.host.sendToWebview({ type: 'setModels', providers: [], activeProvider: '' });
     }
   }
