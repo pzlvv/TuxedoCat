@@ -111,6 +111,11 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
   （`docs/core-ui-separation.md` 第 4.5 节）。
 - 界面语言 / 界面字号随载荷下发（`language` / `fontSize`）；webview 不补默认值，
   保存回传后即时生效（`docs/core-ui-separation.md` 第 4.8 / 4.10 节）。
+- 保存成功后宿主回传保存后的默认值，以及**只有宿主知道**的两项事实：当前对话所用
+  服务商的默认模型（`currentProviderDefaultModel`）与它相对保存前是否变化
+  （`currentProviderDefaultModelChanged`）——webview 只有默认服务商的默认模型，
+  判断不了另一个 provider 的默认模型变化。是否弹「应用到当前对话」确认框由 webview
+  决定：某项默认值相对保存前有变化、且与当前对话的值不一致时才问；宿主只给事实。
 
 ---
 

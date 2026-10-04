@@ -66,6 +66,8 @@ export const zhDict: Record<string, string> = {
   'llmConfig.useThisProviderHintBold': '双击',
   'llmConfig.useThisProviderHintRest': '服务商名称可将其设为当前使用，保存后生效',
   'llmConfig.obtainKey': '前往 LLM 服务商控制台获取',
+  'llmConfig.showApiKey': '显示 API Key',
+  'llmConfig.hideApiKey': '隐藏 API Key',
   'llmConfig.apiKeyMustStartSk': 'API Key 必须以 "sk-" 开头',
   'llmConfig.enterApiKey': '请输入 API Key',
   'llmConfig.modelsLabel': '模型列表',
@@ -314,6 +316,21 @@ export const zhDict: Record<string, string> = {
   'handlers.minutesAgo': '{count} 分钟前',
   'handlers.hoursAgo': '{count} 小时前',
   'handlers.daysAgo': '{count} 天前',
+
+  /* ── components/ApplyDefaultsDialog.tsx ──────────────────── */
+  'applyDefaults.title': '默认配置已修改',
+  'applyDefaults.message': '以下默认配置与当前对话不一致，是否应用到当前对话？',
+  'applyDefaults.changeProvider': '默认服务商',
+  'applyDefaults.changeModel': '默认模型',
+  'applyDefaults.changePromptMode': '提示词模式',
+  'applyDefaults.changeThinkingEffort': 'Thinking effort',
+  'applyDefaults.changeAgentMode': '询问模式',
+  'applyDefaults.changeWebSearch': '联网搜索',
+  'applyDefaults.on': '开',
+  'applyDefaults.off': '关',
+  'applyDefaults.apply': '应用到当前对话',
+  'applyDefaults.dismiss': '暂不应用',
+
   /* ── Core 产出的文案键（core 只给键，翻译在这里）─────────── */
   'command.spin.description': '执行 Spin 任务',
   'notice.spin.engineNotWired': 'Spin 引擎未接线，无法执行 Spin 任务。',

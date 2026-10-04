@@ -292,11 +292,10 @@ const HIDDEN_MEASURE_STYLE: React.CSSProperties = {
 const MARQUEE_GAP_PX = 28;
 
 /**
- * 主菜单宽度的兜底估算值：只在「首次打开菜单、还没实测到面板宽度」时用于
- * 判断是否切内联（见 computeInlineMode）。之后一律用实测宽度。
- * 实际面板宽度不写死，由内容自然撑开（与上一版本一致）。
+ * provider 名 / 模型名的兜底估算宽度：只在「首次打开菜单、还没实测到名字宽度」
+ * 时用于判断是否切内联（见 computeInlineMode）。正常路径用隐藏测量层的实测值。
  */
-const MENU_PANEL_WIDTH = 200;
+const MENU_NAME_WIDTH_FALLBACK = 120;
 
 /** 选中圆点槽宽（provider / model 行共用，保证「点到文本」间距一致） */
 const MENU_DOT_SLOT_PX = 12;
@@ -304,6 +303,31 @@ const MENU_DOT_SLOT_PX = 12;
 const MENU_DOT_GAP_PX = 8;
 /** 选中圆点直径 */
 const MENU_DOT_SIZE_PX = 7;
+
+/**
+ * 弹层宽度的固定附加部分（用于判断内联展开，见 computeInlineMode）。
+ *
+ * 实测口径（`e2e/webview/inputMenu.spec.ts` 锁定的几何）：
+ * 弹层宽度 = 菜单项左右内边距 + `ul` 左右内边距 + 圆点槽 + 圆点间距 + （provider 行的）
+ * 子菜单箭头。名字宽度由隐藏测量层给出，这里的常量只补这些固定部分。
+ */
+/** 菜单项左右内边距（antd `.ant-dropdown-menu-item` 的 `padding: 5px 12px`） */
+const MENU_ITEM_PADDING_X = 24;
+/** 弹层 `ul` 左右内边距（antd `.ant-dropdown-menu` 的 `padding: 4px`） */
+const MENU_LIST_PADDING_X = 8;
+/** 二级（provider）行右侧的子菜单箭头占位（含与文本的间距） */
+const MENU_ARROW_SLOT_PX = 12;
+/** provider 面板（二级）附加宽度：菜单项 + ul + 圆点槽 + 圆点间距 + 箭头 */
+const PROVIDER_PANEL_CHROME = MENU_ITEM_PADDING_X + MENU_LIST_PADDING_X + MENU_DOT_SLOT_PX + MENU_DOT_GAP_PX + MENU_ARROW_SLOT_PX;
+/** 模型面板（三级）附加宽度：菜单项 + ul + 圆点槽 + 圆点间距（无箭头） */
+const MODEL_PANEL_CHROME = MENU_ITEM_PADDING_X + MENU_LIST_PADDING_X + MENU_DOT_SLOT_PX + MENU_DOT_GAP_PX;
+/** 弹层与 webview 边缘之间保留的最小间距（antd 的溢出调整本身不留边距） */
+const MENU_EDGE_MARGIN_PX = 0;
+/**
+ * 首次打开时主面板宽度还没实测到，按 0 处理（把「左翻放得下」算得更宽松，
+ * 宁可先不内联，再由 layout effect 用实测宽度重新判定，见 ToggleMenu 的测量 effect）。
+ */
+const MENU_MAIN_PANEL_FALLBACK_WIDTH = 0;
 
 /**
  * 层级背景色：**仅内联模式使用**；非内联（飞出弹层）模式只用圆点表示选中，不加底色。
@@ -543,9 +567,11 @@ const ToggleMenu = memo(({
   const modelNameMeasureRef = useRef<HTMLDivElement>(null);
   const providerNameMeasureRef = useRef<HTMLDivElement>(null);
   const currentModelMeasureRef = useRef<HTMLSpanElement>(null);
-  /** 主面板根节点：用来实测内容自适应后的面板宽度，供下次判断是否切内联 */
+  /** 菜单触发按钮：主面板右缘与它对齐（placement=topRight），用它算右侧剩余空间 */
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+  /** 主面板根节点：实测内容自适应后的面板宽度，供二级弹层左翻落位使用 */
   const menuPanelRef = useRef<HTMLDivElement>(null);
-  /** 上一次实际渲染出的主面板宽度（比写死估算更准），null 表示还没量到 */
+  /** 上一次实际渲染出的主面板宽度（内容自适应），null 表示还没量到 */
   const mainPanelWidthRef = useRef<number | null>(null);
   const [modelNameWidth, setModelNameWidth] = useState<number | null>(null);
   const [providerNameWidth, setProviderNameWidth] = useState<number | null>(null);
@@ -594,43 +620,101 @@ const ToggleMenu = memo(({
     setCurrentModelWidth(w > 0 ? Math.ceil(w) : null);
   }, [menuOpen]);
 
-  // 菜单渲染出来后实测主面板宽度（内容自适应），存起来供下次判断是否切内联。
-  // 弹层是异步挂载的（portal），首帧可能还拿不到节点，用 rAF 重试几次。
+  /**
+   * 非内联（飞出弹层）模式下，模型列表展开时把当前选中的模型滚动到列表中间。
+   *
+   * 模型可能很多（如 opencode 有几十个），列表限高滚动（见 .model-list-submenu），
+   * 选中项若落在可视区外，用户展开列表后看不到自己当前用的是哪个。
+   *
+   * 弹层是异步挂载的（portal + 动画），首帧可能还拿不到可见节点，用 rAF 重试几次；
+   * 只有列表真正可见（clientHeight > 0）时才滚动——命中的可能是上一次展开后
+   * 收起的旧弹层（rc-menu 保留 DOM 只加 hidden 类）。
+   */
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!menuOpen || inlineMode) return;
+    let raf = 0;
+    let tries = 0;
+    const scrollSelectedIntoCenter = (): boolean => {
+      const label = document.querySelector<HTMLElement>('.model-list-submenu [data-selected-model="true"]');
+      if (!label) return false;
+      const list = label.closest('.ant-dropdown-menu') as HTMLElement | null;
+      const item = label.closest('li') as HTMLElement | null;
+      if (!list || !item || list.clientHeight === 0) return false;
+      const listRect = list.getBoundingClientRect();
+      const itemRect = item.getBoundingClientRect();
+      // 当前滚动位置 + 选中项相对可视区顶部的偏移 - 居中所需偏移
+      const centered =
+        list.scrollTop + (itemRect.top - listRect.top) - (list.clientHeight - itemRect.height) / 2;
+      const max = list.scrollHeight - list.clientHeight;
+      list.scrollTop = Math.max(0, Math.min(centered, max));
+      return true;
+    };
+    const run = () => {
+      if (scrollSelectedIntoCenter()) return;
+      if (tries++ < 12) raf = requestAnimationFrame(run);
+    };
+    raf = requestAnimationFrame(run);
+    return () => cancelAnimationFrame(raf);
+  }, [menuOpen, inlineMode, submenuOpenKeys]);
+
+  /**
+   * 打开菜单时判断是否切内联展开。
+   *
+   * 菜单按 `placement=topRight` 与触发按钮右缘对齐；二 / 三级弹层优先向右级联，
+   * 右侧放不下时 antd 会把**该层**翻到父级左侧（不是把整条级联一起左移）。
+   * 注意：只有左翻后的可见面积更大时它才会翻——**两侧都放不下时它会留在右侧并被
+   * webview 右缘裁掉**（用户看到的「显示不全」）。所以「右边放不下」不是内联的理由，
+   * 但也只有「左翻后落在 webview 内」才不内联；两侧都放不下时必须内联。
+   *
+   * 逐层模拟实际落位（与 `e2e/webview/inputMenu.spec.ts` 的几何断言一致）：
+   * - provider 面板：右侧放得下 → 左缘 = 按钮右缘；否则翻到主面板左侧；
+   * - 模型面板：provider 面板右侧放得下 → 左缘 = provider 面板右缘；否则翻到它左侧。
+   * 两层左缘都 >= 0 才不内联；任一层左缘 < 0 说明该层两侧都放不下、会被裁掉。
+   *
+   * 名字宽度用隐藏测量层的实测值（最长 provider 名 / 最长模型名）；主面板宽度用实测值，
+   * 首次打开先按 0 估（倾向不内联），由测量 effect 用实测宽度在绘制前重新判定。
+   */
+  const computeInlineMode = useCallback(() => {
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : MENU_MAIN_PANEL_FALLBACK_WIDTH;
+    const anchorRight = menuTriggerRef.current?.getBoundingClientRect().right ?? viewportWidth;
+    const mainPanel = mainPanelWidthRef.current ?? MENU_MAIN_PANEL_FALLBACK_WIDTH;
+    const providerPanel = (providerNameWidth ?? MENU_NAME_WIDTH_FALLBACK) + PROVIDER_PANEL_CHROME;
+    const modelPanel = (modelNameWidth ?? MENU_NAME_WIDTH_FALLBACK) + MODEL_PANEL_CHROME;
+    const rightLimit = viewportWidth - MENU_EDGE_MARGIN_PX;
+    // provider 面板：右侧放得下就向右级联，否则翻到主面板左侧
+    const providerLeft = anchorRight + providerPanel <= rightLimit
+      ? anchorRight
+      : anchorRight - mainPanel - providerPanel;
+    // 模型面板：provider 面板右侧放得下就向右，否则翻到 provider 面板左侧
+    const providerRight = providerLeft + providerPanel;
+    const modelLeft = providerRight + modelPanel <= rightLimit ? providerRight : providerLeft - modelPanel;
+    return Math.min(providerLeft, modelLeft) < MENU_EDGE_MARGIN_PX;
+  }, [providerNameWidth, modelNameWidth]);
+
+  // 菜单渲染出来后实测主面板宽度（内容自适应），存起来供下次判断二级弹层左翻落位。
+  // 首次打开 computeInlineMode 用的是兜底估算值，可能判错：这里用实测宽度在**绘制前**
+  // 重新判定一次，需要内联就补切（layout effect 内 setState 会在浏览器绘制前重渲染，
+  // 用户看不到中间态）。内联态的面板宽度与非内联不同，所以只在非内联时测量。
+  // 弹层是异步挂载的（portal），首帧拿不到节点时用 rAF 重试。
+  useLayoutEffect(() => {
+    if (!menuOpen || inlineMode) return;
     let raf = 0;
     let tries = 0;
     const measure = () => {
       const el = menuPanelRef.current;
       if (el) {
         const w = el.getBoundingClientRect().width;
-        if (w > 0) mainPanelWidthRef.current = Math.ceil(w);
+        if (w > 0) {
+          mainPanelWidthRef.current = Math.ceil(w);
+          if (computeInlineMode()) setInlineMode(true);
+        }
         return;
       }
       if (tries++ < 10) raf = requestAnimationFrame(measure);
     };
-    raf = requestAnimationFrame(measure);
+    measure();
     return () => cancelAnimationFrame(raf);
-  }, [menuOpen]);
-
-  /**
-   * 打开菜单时判断：并排放下「主菜单 + provider 面板」所需的宽度，
-   * 超过 webview 宽度才改用内联展开。
-   *
-   * 模型面板（三级）不计入判断：它是 provider 面板的子菜单，放不下时
-   * antd 会把它左移 / 覆盖在父面板上，不影响「主面板 + 一级子菜单」的可用性；
-   * 把三级宽度也算进来会让阈值明显偏大、宽度够时也被误判成内联。
-   *
-   * 主面板宽度用上一次实测值（内容自适应），还没量到才退回估算值。
-   */
-  const computeInlineMode = useCallback(() => {
-    const available = typeof window !== 'undefined' ? window.innerWidth : MENU_PANEL_WIDTH;
-    // provider 面板的额外宽度：左右内边距 + 圆点槽 + 圆点间距 + 右侧箭头
-    const providerPanel = (providerNameWidth ?? 120) + (24 + MENU_DOT_SLOT_PX + MENU_DOT_GAP_PX + 18);
-    const mainPanel = mainPanelWidthRef.current ?? MENU_PANEL_WIDTH;
-    const needed = mainPanel + providerPanel + 16;
-    return available < needed;
-  }, [providerNameWidth]);
+  }, [menuOpen, inlineMode, computeInlineMode]);
 
   // 构建菜单项（每项之间用分割线隔开）
   const makeDivider = (key: string) => ({
@@ -711,6 +795,9 @@ const ToggleMenu = memo(({
     const inline = opts?.inline === true;
     return (
       <span
+        // 非内联模式：给选中模型打标记，模型列表弹出时据此把选中项滚动到列表中间
+        // （见 scrollSelectedModelIntoCenter）。内联模式没有飞出弹层，标记不起作用。
+        data-selected-model={!inline && selected ? 'true' : undefined}
         className={inline ? 'hover-scroll-scope' : undefined}
         style={{
           fontSize: uiFontSizePx(12),
@@ -1376,6 +1463,7 @@ const ToggleMenu = memo(({
       )}
     >
       <button
+        ref={menuTriggerRef}
         className="w-7 h-7 rounded-lg flex items-center justify-center hover:brightness-110 transition-colors"
         style={{
           backgroundColor: 'transparent',
@@ -1388,20 +1476,21 @@ const ToggleMenu = memo(({
       </button>
     </Dropdown>
     {/* 隐藏测量层，必须始终挂载（不能放进 dropdownRender，否则菜单未展开时量不到）：
-        - 第一层渲染全部模型名（600 粗体），量出最长模型名的宽度，供模型列表项使用，
-          保证列表里每个名字都能完整显示、且切换选中项不改变二级菜单宽度；
-        - 第二层渲染全部 provider 名（600 粗体），量出最长 provider 名的宽度，供 provider
-          列表项使用，保证选中态（加粗）不改变二级菜单宽度；
+        - 第一层渲染全部模型名（与列表项同样的 400 字重与字号），量出最长模型名的宽度，
+          供模型列表项与内联判定使用；
+        - 第二层渲染全部 provider 名（同样 400 字重），量出最长 provider 名的宽度；
         - 第三层只渲染当前模型，菜单打开时读取并冻结，供「当前:」行使用，
-          使菜单宽度取决于当前模型而不是最长的模型名。 */}
+          使菜单宽度取决于当前模型而不是最长的模型名。
+        字重必须与真实列表项一致（选中态用圆点表达、不加粗），否则宽度被高估，
+        内联判定会偏保守。 */}
     <div ref={modelNameMeasureRef} aria-hidden="true" style={HIDDEN_MEASURE_STYLE}>
       {allModels.map((m, i) => (
-        <span key={`${i}::${m}`} style={{ display: 'inline-block', fontSize: uiFontSizePx(12), fontWeight: 600 }}>{m}</span>
+        <span key={`${i}::${m}`} style={{ display: 'inline-block', fontSize: uiFontSizePx(12), fontWeight: 400 }}>{m}</span>
       ))}
     </div>
     <div ref={providerNameMeasureRef} aria-hidden="true" style={HIDDEN_MEASURE_STYLE}>
       {allProviderNames.map((name, i) => (
-        <span key={`${i}::${name}`} style={{ display: 'inline-block', fontSize: uiFontSizePx(12), fontWeight: 600 }}>{name}</span>
+        <span key={`${i}::${name}`} style={{ display: 'inline-block', fontSize: uiFontSizePx(12), fontWeight: 400 }}>{name}</span>
       ))}
     </div>
     <div aria-hidden="true" style={HIDDEN_MEASURE_STYLE}>

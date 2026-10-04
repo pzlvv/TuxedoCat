@@ -5,7 +5,7 @@ import { Dropdown } from 'antd';
 import InputArea, { InputAreaRef } from './InputArea';
 import MessagesView from './MessagesView';
 import 'antd/dist/reset.css';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload } from './types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload, ApplyDefaultsPrompt } from './types';
 import { createSessionState, SessionStatesStore } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
@@ -18,6 +18,7 @@ import type { ModelRef } from '../core/llm/modelRef';
 import { t } from './i18n';
 import { ConversationTreeItem } from './ConversationTreeItem';
 import { DeleteConfirmDialog } from './components/DeleteConfirmDialog';
+import { ApplyDefaultsDialog } from './components/ApplyDefaultsDialog';
 import { NoticeToast, type NoticeItem } from './components/NoticeToast';
 import { getColors } from './colors';
 import { useConversationTree } from './hooks/useConversationTree';
@@ -298,6 +299,10 @@ const App = () => {
   } | null>(null);
   const isDeletingRef = useRef(false);
 
+  // 「默认配置已修改，是否应用到当前对话」待确认项（由 config handler 在
+  // llmConfigSaved 时写入，见 handleConfigLlmConfigSaved）。
+  const [applyDefaultsPrompt, setApplyDefaultsPrompt] = useState<ApplyDefaultsPrompt | null>(null);
+
   /**
    * 瞬时状态提示（`docs/core-ui-separation.md` 第 4.9 节）：core 只给「键 + 参数」，
    * 这里翻译后以浮层呈现，不进消息流；若干秒后自动消失。
@@ -446,6 +451,7 @@ const App = () => {
     setExpandedSubSessions, setProviderModels, setBalance, setBalanceCurrency, setIsUnlimited,
     setCurrentSessionIdRef, setLlmConfigPayload,
     setSettingsDefaults, settingsDefaults, setLocaleVersion,
+    setApplyDefaultsPrompt,
     setProviderConfigured,
     setConfigReady,
     pushNotice,
@@ -461,9 +467,9 @@ const App = () => {
     inputAreaRef,
     // 当前会话实时状态（切换会话保存快照时使用）
     userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode,
-    promptMode, setPromptMode,
+    promptMode, setPromptMode, webSearch,
     currentFile, selectedLines,
-  }), [modelRef, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, promptMode, currentFile, selectedLines, messages]);
+  }), [modelRef, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, promptMode, webSearch, currentFile, selectedLines, messages]);
   useMessageHandler(handlerProps);
 
   const appHandlerProps = useMemo(() => ({
@@ -660,6 +666,41 @@ const App = () => {
   const handleOpenSettings = useCallback(() => {
     postMessage({ type: 'requestLLMConfig' });
   }, []);
+
+  /**
+   * 确认把新默认配置应用到当前对话。
+   *
+   * 只写 pending 里确实需要变的字段（模型身份 / 提示词模式 / thinking effort /
+   * 询问模式 / 联网搜索），并同步当前会话的内存状态；下发到宿主由各字段自己的
+   * effect 完成（见 setModelRef / setPromptMode / ... 的 useEffect）。
+   */
+  const handleApplyDefaults = useCallback(() => {
+    const pending = applyDefaultsPrompt;
+    setApplyDefaultsPrompt(null);
+    if (!pending) return;
+    const sid = currentSessionIdRef.current;
+    const state = sid ? sessionStates.get(sid) : undefined;
+    if (pending.modelRef) {
+      setModelRef(pending.modelRef);
+      if (state) state.modelRef = pending.modelRef;
+    }
+    if (pending.promptMode) {
+      setPromptMode(pending.promptMode);
+      if (state) state.promptMode = pending.promptMode;
+    }
+    if (pending.thinkingMode) {
+      setThinkingMode(pending.thinkingMode);
+      if (state) state.thinkingMode = pending.thinkingMode;
+    }
+    if (pending.agentMode) {
+      setAgentMode(pending.agentMode);
+      if (state) state.agentMode = pending.agentMode;
+    }
+    if (typeof pending.webSearch === 'boolean') {
+      setWebSearch(pending.webSearch);
+      if (state) state.webSearch = pending.webSearch;
+    }
+  }, [applyDefaultsPrompt, sessionStates]);
 
   // 勾选/取消某个 MCP：交给 extension 写入当前会话 meta.json，
   // 成功后 extension 回推最新列表（setMcpServers）刷新 UI。这里先乐观更新，
@@ -1303,6 +1344,14 @@ onClick={handleNewConversation}
                 }
               }
             }}
+          />
+        )}
+        {applyDefaultsPrompt && (
+          <ApplyDefaultsDialog
+            prompt={applyDefaultsPrompt}
+            colors={colors}
+            onDismiss={() => setApplyDefaultsPrompt(null)}
+            onApply={handleApplyDefaults}
           />
         )}
         {settingsPanel}

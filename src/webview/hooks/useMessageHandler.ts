@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import type { McpServerInfo, ProviderModels } from '../../core/webviewTypes';
 import type { ModelRef } from '../../core/llm/modelRef';
 import type { HostToWebviewWire } from '../../host/webviewMessages';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, LlmConfigPanelPayload } from '../types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, LlmConfigPanelPayload, ApplyDefaultsPrompt } from '../types';
 import type { SessionStatesStore } from '../sessionState';
 import { profileLog } from '../debug';
 import { handleStreamShowThinkingAnimation, handleStreamAiEnd, handleStreamQueryBegin, handleStreamQueryEnd, handleStreamStreamMessage, handleStreamStreamEnd, handleStreamCompressProgress } from './handlers/streamHandlers';
@@ -100,6 +100,11 @@ export interface UseMessageHandlerProps {
   setSettingsDefaults: React.Dispatch<React.SetStateAction<SettingsDefaults>>;
   /** settings.json 默认值（当前值，供新会话初始化使用） */
   settingsDefaults: SettingsDefaults;
+  /**
+   * 「默认配置已修改，是否应用到当前对话」的待确认请求；null = 无待确认项。
+   * 由 config handler 在默认值变化且与当前对话不一致时写入，App 渲染确认对话框。
+   */
+  setApplyDefaultsPrompt: React.Dispatch<React.SetStateAction<ApplyDefaultsPrompt | null>>;
   /** 当前会话的实时状态值（切换会话保存快照时使用） */
   userChoiceRequest: UserChoiceRequest | null;
   showThinkingAnimation: boolean;
@@ -109,6 +114,8 @@ export interface UseMessageHandlerProps {
   agentMode: AgentMode | undefined;
   promptMode: PromptMode | undefined;
   thinkingMode: ThinkingMode | undefined;
+  /** 会话联网搜索开关；undefined = 尚未从宿主获取到 */
+  webSearch: boolean | undefined;
   currentFile: string;
   selectedLines: { start: number; end: number } | null;
   currentSessionIdRef: React.MutableRefObject<string | null>;

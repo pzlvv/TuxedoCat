@@ -37,6 +37,11 @@ export const FAKE_HOST_INIT = `
     turn: { thinking: '', text: '', chunkDelayMs: 40 },
     // 引擎忙碌时再来一条 sendMessage 是否回 queuedMessage（排队语义）
     queueWhileBusy: true,
+    // settings.json 默认值（requestSettingsDefaults 应答 + saveLLMConfig 后更新）
+    settingsDefaults: {
+      model: 'mock-model', provider: 'mock-provider',
+      thinkingMode: 'high', agentMode: 'risk', promptMode: 'normal', webSearch: false,
+    },
   };
 
   // webview → 宿主 的全部上行消息（追加写，测试轮询断言）
@@ -127,17 +132,44 @@ export const FAKE_HOST_INIT = `
       case 'requestSettingsDefaults':
         send({
           type: 'settingsDefaults',
-          model: 'mock-model',
-          provider: 'mock-provider',
-          thinkingMode: 'high',
-          agentMode: 'risk',
-          promptMode: 'normal',
-          webSearch: false,
+          ...state.settingsDefaults,
           language: 'zh',
           fontSize: 'medium',
           providerConfigured: true,
         });
         break;
+      case 'saveLLMConfig': {
+        // 与真实宿主同口径：保存成功后回 llmConfigSaved，webview 据此更新新对话默认值、
+        // 并在默认值与当前对话不一致时弹「是否应用到当前对话」对话框。
+        const before = { ...state.settingsDefaults };
+        if (typeof msg.thinkingEffort === 'string') state.settingsDefaults.thinkingMode = msg.thinkingEffort;
+        if (typeof msg.defaultAgentMode === 'string') state.settingsDefaults.agentMode = msg.defaultAgentMode;
+        if (typeof msg.defaultPromptMode === 'string') state.settingsDefaults.promptMode = msg.defaultPromptMode;
+        if (typeof msg.webSearch === 'boolean') state.settingsDefaults.webSearch = msg.webSearch;
+        if (Array.isArray(msg.providers) && msg.providers.length > 0) {
+          const activeKey = msg.activeProvider || before.provider;
+          const active = msg.providers.find((p) => p.key === activeKey) || msg.providers[0];
+          state.settingsDefaults.provider = active.key;
+          state.settingsDefaults.model = active.defaultModel || (active.models && active.models[0]) || before.model;
+        }
+        const next = state.settingsDefaults;
+        send({
+          type: 'llmConfigSaved',
+          defaultModel: next.model,
+          defaultModelProvider: next.provider,
+          activeModel: next.model,
+          activeModelProvider: next.provider,
+          thinkingEffort: next.thinkingMode,
+          defaultAgentMode: next.agentMode,
+          defaultPromptMode: next.promptMode,
+          webSearch: next.webSearch,
+          currentProviderDefaultModel: next.model,
+          currentProviderDefaultModelChanged: next.model !== before.model,
+          activeProvider: next.provider,
+          closeAfterSave: !!msg.closeAfterSave,
+        });
+        break;
+      }
       case 'getConversations':
         send({ type: 'conversationsData', conversations: state.conversations });
         break;

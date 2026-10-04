@@ -73,6 +73,22 @@ test('US-23 新增模型行与新增服务商', async () => {
   expect(saved.providers.map((p: any) => p.baseURL)).toContain('http://gamma.local:6007/v1');
 });
 
+test('US-23 API Key 支持明文 / 掩码切换', async () => {
+  const { page } = handle;
+  await openSettings(page);
+
+  const apiKey = page.locator('input[placeholder="sk-"]');
+  await expect(apiKey).toHaveAttribute('type', 'password');
+
+  // 显示：明文
+  await page.getByRole('button', { name: '显示 API Key' }).click();
+  await expect(apiKey).toHaveAttribute('type', 'text');
+
+  // 隐藏：恢复掩码
+  await page.getByRole('button', { name: '隐藏 API Key' }).click();
+  await expect(apiKey).toHaveAttribute('type', 'password');
+});
+
 test('US-24 默认设置与界面语言随保存提交', async () => {
   const { page, host } = handle;
   await openSettings(page);
@@ -86,6 +102,50 @@ test('US-24 默认设置与界面语言随保存提交', async () => {
   const saved = await host.waitForSent('saveLLMConfig', 15_000);
   expect(saved.thinkingEffort).toBe('max');
   expect(saved.language).toBe('en');
+});
+
+test('US-24 默认配置变化且与当前对话不一致时询问是否应用', async () => {
+  const { page, host } = handle;
+  await openSettings(page);
+
+  // 默认思考强度从 high 切到 max（当前对话是 high）
+  await page.getByText('默认思考强度').locator('..').getByRole('button', { name: '最高' }).click();
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await host.waitForSent('saveLLMConfig', 15_000);
+
+  // 弹出确认对话框，逐条列出「变更前 → 变更后」
+  const dialog = page.getByText('默认配置已修改').locator('..');
+  await expect(page.getByText('默认配置已修改')).toBeVisible();
+  await expect(dialog.getByText('Thinking effort')).toBeVisible();
+  await expect(dialog.getByText('高', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('最高', { exact: true })).toBeVisible();
+
+  // 应用到当前对话：对话框关闭，输入区菜单里的选中项切到「最高」
+  await page.getByRole('button', { name: '应用到当前对话' }).click();
+  await expect(page.getByText('默认配置已修改')).toHaveCount(0);
+  await page.locator('button[title="功能开关"]').click();
+  const menu = page.locator('ul.agent-mode-menu');
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('button', { name: '最高' })).toHaveCSS('font-weight', '600');
+});
+
+test('US-24 默认配置变化时可选「暂不应用」，当前对话保持不变', async () => {
+  const { page, host } = handle;
+  await openSettings(page);
+
+  await page.getByText('默认思考强度').locator('..').getByRole('button', { name: '最高' }).click();
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await host.waitForSent('saveLLMConfig', 15_000);
+
+  await expect(page.getByText('默认配置已修改')).toBeVisible();
+  await page.getByRole('button', { name: '暂不应用' }).click();
+  await expect(page.getByText('默认配置已修改')).toHaveCount(0);
+
+  // 当前对话仍是 high：输入区菜单里「高」保持选中
+  await page.locator('button[title="功能开关"]').click();
+  const menu = page.locator('ul.agent-mode-menu');
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('button', { name: '高', exact: true })).toHaveCSS('font-weight', '600');
 });
 
 test('US-24 界面字号档位随保存提交，宿主回传后即时生效', async () => {

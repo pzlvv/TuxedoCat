@@ -2,9 +2,9 @@ import type { HandlerContext } from './handlerContext';
 import { modelRefOf, sameModelRef } from '../../../core/llm/modelRef';
 import { HostToWebviewWire } from '../../../host/webviewMessages';
 import { profileLog } from '../../debug';
-import { UiLanguage, setUiLanguage } from '../../i18n';
+import { UiLanguage, setUiLanguage, t } from '../../i18n';
 import { setUiFontSize, type UiFontSize } from '../../fontSize';
-import { LlmConfigPanelPayload, PromptMode } from '../../types';
+import { AgentMode, ApplyDefaultsPrompt, LlmConfigPanelPayload, PromptMode, ThinkingMode } from '../../types';
 import { postMessage } from '../../webviewEnv';
 import { missingPanelFields } from './shared';
 
@@ -279,99 +279,161 @@ export function handleConfigSetNewConversationDefaults(
           }
 }
 
+/** 默认配置项在确认对话框里的本地化显示值（'—' = 未知 / 未到达） */
+function promptModeText(mode: PromptMode | undefined): string {
+  if (mode === 'normal') return t('inputArea.promptModeNormal');
+  if (mode === 'minimal') return t('inputArea.promptModeMinimal');
+  if (mode === 'mixed') return t('inputArea.promptModeMixed');
+  return '—';
+}
+
+function agentModeText(mode: AgentMode | undefined): string {
+  if (mode === 'manual') return t('inputArea.askModeAlways');
+  if (mode === 'risk') return t('inputArea.askModeCritical');
+  if (mode === 'auto') return t('inputArea.askModeNever');
+  return '—';
+}
+
+function thinkingModeText(mode: ThinkingMode | undefined): string {
+  if (mode === 'off') return t('inputArea.thinkingOff');
+  if (mode === 'low') return t('inputArea.thinkingLow');
+  if (mode === 'high') return t('inputArea.thinkingHigh');
+  if (mode === 'max') return t('inputArea.thinkingMax');
+  return '—';
+}
+
+function webSearchText(value: boolean | undefined): string {
+  if (value === undefined) return '—';
+  return value ? t('applyDefaults.on') : t('applyDefaults.off');
+}
+
 export function handleConfigLlmConfigSaved(
   msg: Extract<HostToWebviewWire, { type: 'llmConfigSaved' }>,
   ctx: HandlerContext,
 ): void {
-  const { props, propsRef, messagesRef } = ctx;
-          // LLM 配置保存成功：更新本地默认值。
-          // 如果当前对话是未发送消息的新对话，则模型/提示词模式等默认值也立刻生效；
-          // 工作模式/思考强度/联网搜索保持原有“保存后应用到当前对话”的行为。
-          {
-            const saved = msg as { defaultModel?: string; defaultModelProvider?: string; activeModel?: string; activeModelProvider?: string; thinkingEffort?: 'off' | 'low' | 'high' | 'max'; defaultAgentMode?: 'manual' | 'risk' | 'auto'; defaultPromptMode?: PromptMode; webSearch?: boolean };
-            // 保存成功即说明至少有一个可用的服务商
-            props.setProviderConfigured(true);
-            // 配置已可用：解除发送按钮禁用
-            props.setConfigReady(true);
-            if (saved.defaultModel || saved.thinkingEffort || saved.defaultAgentMode || saved.defaultPromptMode || typeof saved.webSearch === 'boolean') {
-              // wire 消息是扁平的 defaultModel / defaultModelProvider，组装成模型身份整体更新
-              const nextDefaultModelRef = modelRefOf(saved.defaultModelProvider, saved.defaultModel) ?? propsRef.current.settingsDefaults.modelRef;
-              props.setSettingsDefaults(prev => ({
-                modelRef: nextDefaultModelRef,
-                thinkingMode: saved.thinkingEffort || prev.thinkingMode,
-                agentMode: saved.defaultAgentMode || prev.agentMode,
-                promptMode: saved.defaultPromptMode || prev.promptMode,
-                webSearch: typeof saved.webSearch === 'boolean' ? saved.webSearch : prev.webSearch,
-              }));
-            }
-            // 默认工作模式 / 思考强度 / 联网搜索保持原有行为：保存后应用到当前对话
-            if (saved.defaultAgentMode) {
-              props.setAgentMode(saved.defaultAgentMode);
-              const curSid = props.currentSessionIdRef.current;
-              if (curSid) {
-                const state = props.sessionStates.get(curSid);
-                if (state) {
-                  state.agentMode = saved.defaultAgentMode;
-                }
-              }
-            }
-            if (saved.thinkingEffort) {
-              props.setThinkingMode(saved.thinkingEffort);
-              const curSid = props.currentSessionIdRef.current;
-              if (curSid) {
-                const state = props.sessionStates.get(curSid);
-                if (state) {
-                  state.thinkingMode = saved.thinkingEffort;
-                }
-              }
-            }
-            if (typeof saved.webSearch === 'boolean') {
-              props.setWebSearch(saved.webSearch);
-              const curSid = props.currentSessionIdRef.current;
-              if (curSid) {
-                const state = props.sessionStates.get(curSid);
-                if (state) {
-                  state.webSearch = saved.webSearch;
-                }
-              }
-            }
-            // 切换 provider 后，扩展端会返回当前对话应使用的模型 activeModel
-            // （已校验是否属于新 provider 的模型列表，不在列表中则回退到 provider 默认模型）。
-            // 该值对已有消息的对话同样生效，避免当前对话保留新 provider 不支持的模型。
-            const curSid = props.currentSessionIdRef.current;
-            const state = curSid ? props.sessionStates.get(curSid) : undefined;
-            // wire 消息是扁平字段（activeModel/activeModelProvider 等），组装成模型身份整体更新
-            const activeModelRef = modelRefOf(saved.activeModelProvider, saved.activeModel);
-            if (activeModelRef) {
-              props.setModelRef(activeModelRef);
-              if (state) state.modelRef = activeModelRef;
-            }
-            // 当前对话是未发送消息的新对话时，模型与提示词模式也立即使用新默认值
-            if (messagesRef.current.length === 0) {
-              const defaultModelRef = modelRefOf(saved.defaultModelProvider, saved.defaultModel);
-              if (!activeModelRef && defaultModelRef) {
-                props.setModelRef(defaultModelRef);
-                if (state) state.modelRef = defaultModelRef;
-              }
-              if (saved.defaultPromptMode) {
-                props.setPromptMode(saved.defaultPromptMode);
-                if (state) state.promptMode = saved.defaultPromptMode;
-              }
-            }
-            // 应用界面语言：变更时递增 localeVersion 重挂载内容区，所有文案立即按新语言渲染
-            const savedLanguage = (saved as { language?: UiLanguage }).language;
-            if (savedLanguage === 'zh' || savedLanguage === 'en' || savedLanguage === 'auto') {
-              const changed = setUiLanguage(savedLanguage);
-              if (changed) {
-                props.setLocaleVersion((v) => v + 1);
-              }
-            }
-            // 应用界面字号：写根元素 CSS 变量（`ui-fs-*` 即时生效）并通知 antd token 消费方重渲染
-            const savedFontSize = (saved as { fontSize?: UiFontSize }).fontSize;
-            if (savedFontSize === 'medium' || savedFontSize === 'large' || savedFontSize === 'xlarge') {
-              setUiFontSize(savedFontSize);
-            }
-          }
+  const { props, propsRef } = ctx;
+  // 保存成功即说明至少有一个可用的服务商
+  props.setProviderConfigured(true);
+  // 配置已可用：解除发送按钮禁用
+  props.setConfigReady(true);
+
+  const prevProps = propsRef.current;
+  const prevDefaults = prevProps.settingsDefaults;
+  const prevModelRef = prevDefaults.modelRef;
+  const currentSessionId = props.currentSessionIdRef.current;
+  const sessionState = currentSessionId ? props.sessionStates.get(currentSessionId) : undefined;
+
+  // 宿主解析出的当前对话可用模型（provider / 模型失效时的回退）：与「默认配置是否应用」
+  // 无关，必须立即生效，避免当前对话保留不可用模型。
+  const activeModelRef = modelRefOf(msg.activeModelProvider, msg.activeModel);
+  if (activeModelRef) {
+    props.setModelRef(activeModelRef);
+    if (sessionState) sessionState.modelRef = activeModelRef;
+  }
+  // 当前对话实际生效的模型身份：优先用宿主刚解析的 activeModel，否则用本地值。
+  const currentModelRef = activeModelRef ?? prevProps.modelRef;
+
+  // 逐项对比「新默认值」与「保存前的默认值 / 当前对话的值」：只有「相对保存前有变化」
+  // 且「与当前对话不一致」时才需要询问是否应用到当前对话；只影响新对话的变化不进对话框。
+  const pending: ApplyDefaultsPrompt = { changes: [] };
+  const savedProvider = msg.defaultModelProvider;
+  const savedModel = msg.defaultModel;
+
+  if (savedProvider && savedProvider !== prevModelRef?.provider && savedProvider !== currentModelRef?.provider) {
+    // 默认服务商变化，且当前对话用的是另一个服务商 → 询问是否切换
+    const nextModelRef = modelRefOf(savedProvider, savedModel);
+    if (nextModelRef) {
+      pending.changes.push({
+        label: t('applyDefaults.changeProvider'),
+        from: currentModelRef?.provider ?? '—',
+        to: savedProvider,
+      });
+      pending.modelRef = nextModelRef;
+    }
+  } else if (
+    // 当前对话所用服务商的默认模型变化，且与当前对话所用模型不一致 → 询问是否切换。
+    // 「当前对话所用服务商」可能是非默认服务商，其默认模型变化只有宿主知道
+    // （webview 只有默认服务商的默认模型），故用宿主回传的
+    // currentProviderDefaultModel / currentProviderDefaultModelChanged 判断。
+    msg.currentProviderDefaultModelChanged
+    && !!msg.currentProviderDefaultModel
+    && !!currentModelRef?.provider
+    && msg.currentProviderDefaultModel !== currentModelRef.model
+  ) {
+    const nextModelRef = modelRefOf(currentModelRef.provider, msg.currentProviderDefaultModel);
+    if (nextModelRef) {
+      pending.changes.push({
+        label: t('applyDefaults.changeModel'),
+        from: currentModelRef.model,
+        to: msg.currentProviderDefaultModel,
+      });
+      pending.modelRef = nextModelRef;
+    }
+  }
+
+  if (msg.defaultPromptMode && msg.defaultPromptMode !== prevDefaults.promptMode && msg.defaultPromptMode !== prevProps.promptMode) {
+    pending.changes.push({
+      label: t('applyDefaults.changePromptMode'),
+      from: promptModeText(prevProps.promptMode),
+      to: promptModeText(msg.defaultPromptMode),
+    });
+    pending.promptMode = msg.defaultPromptMode;
+  }
+  if (msg.thinkingEffort && msg.thinkingEffort !== prevDefaults.thinkingMode && msg.thinkingEffort !== prevProps.thinkingMode) {
+    pending.changes.push({
+      label: t('applyDefaults.changeThinkingEffort'),
+      from: thinkingModeText(prevProps.thinkingMode),
+      to: thinkingModeText(msg.thinkingEffort),
+    });
+    pending.thinkingMode = msg.thinkingEffort;
+  }
+  if (msg.defaultAgentMode && msg.defaultAgentMode !== prevDefaults.agentMode && msg.defaultAgentMode !== prevProps.agentMode) {
+    pending.changes.push({
+      label: t('applyDefaults.changeAgentMode'),
+      from: agentModeText(prevProps.agentMode),
+      to: agentModeText(msg.defaultAgentMode),
+    });
+    pending.agentMode = msg.defaultAgentMode;
+  }
+  if (typeof msg.webSearch === 'boolean' && msg.webSearch !== prevDefaults.webSearch && msg.webSearch !== prevProps.webSearch) {
+    pending.changes.push({
+      label: t('applyDefaults.changeWebSearch'),
+      from: webSearchText(prevProps.webSearch),
+      to: webSearchText(msg.webSearch),
+    });
+    pending.webSearch = msg.webSearch;
+  }
+
+  // 更新本地默认值（新对话用），与「是否应用到当前对话」无关，始终生效。
+  if (msg.defaultModel || msg.thinkingEffort || msg.defaultAgentMode || msg.defaultPromptMode || typeof msg.webSearch === 'boolean') {
+    // wire 消息是扁平的 defaultModel / defaultModelProvider，组装成模型身份整体更新
+    const nextDefaultModelRef = modelRefOf(msg.defaultModelProvider, msg.defaultModel) ?? prevDefaults.modelRef;
+    props.setSettingsDefaults(prev => ({
+      modelRef: nextDefaultModelRef,
+      thinkingMode: msg.thinkingEffort || prev.thinkingMode,
+      agentMode: msg.defaultAgentMode || prev.agentMode,
+      promptMode: msg.defaultPromptMode || prev.promptMode,
+      webSearch: typeof msg.webSearch === 'boolean' ? msg.webSearch : prev.webSearch,
+    }));
+  }
+
+  // 有需要应用到当前对话的变化：交给 App 弹确认对话框，用户确认后再改当前对话，
+  // 不静默覆盖用户在当前对话里的选择（`docs/core-ui-separation.md` 第 4 节）。
+  if (pending.changes.length > 0) {
+    props.setApplyDefaultsPrompt(pending);
+  }
+
+  // 应用界面语言：变更时递增 localeVersion 重挂载内容区，所有文案立即按新语言渲染
+  if (msg.language === 'zh' || msg.language === 'en' || msg.language === 'auto') {
+    const changed = setUiLanguage(msg.language);
+    if (changed) {
+      props.setLocaleVersion((v) => v + 1);
+    }
+  }
+  // 应用界面字号：写根元素 CSS 变量（`ui-fs-*` 即时生效）并通知 antd token 消费方重渲染
+  if (msg.fontSize === 'medium' || msg.fontSize === 'large' || msg.fontSize === 'xlarge') {
+    setUiFontSize(msg.fontSize);
+  }
 }
 
 export function handleConfigShowLLMConfig(

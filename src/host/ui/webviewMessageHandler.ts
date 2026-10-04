@@ -1556,6 +1556,10 @@ export class WebviewMessageHandler {
     this.log(`[WebviewMessageHandler] saveLLMConfig: webSearch=${!!webSearch}, thinkingEffort=${thinkingEffort}, defaultAgentMode=${defaultAgentMode}, defaultPromptMode=${defaultPromptMode}, language=${language}, fontSize=${fontSize}, saveProviders=${!!saveProviders}, providers=${Array.isArray(providers) ? providers.length : 0}, activeProvider=${requestedActiveProvider || ''}, closeAfterSave=${!!closeAfterSave}, sessionId=${requestedSessionId || ''}, currentModel=${requestedCurrentModel || ''}`);
 
     try {
+      // 保存前快照：保存后回传 llmConfigSaved 时，webview 要判断「哪些默认值发生了变化」
+      // （尤其当前对话所用服务商的默认模型，webview 没有全量 provider 默认模型）。
+      const store = getSettingsStore();
+      const beforeSnapshot = store.getSnapshot();
       // 写 settings.json 是宿主能力（`docs/core-ui-separation.md` 第 4 节）：整段 mutation
       // （provider 表 + modelConfigs 补齐 + 顶层默认值 + MCP 默认启用列表）在宿主侧执行，
       // 两种装配同一条路径。写盘后 `SettingsStore` 重新构造快照并推给已就绪的 Connection，
@@ -1602,9 +1606,9 @@ export class WebviewMessageHandler {
       }
 
       // 读取保存后的实际默认值，随 llmConfigSaved 回传给 webview，
-      // webview 据此更新本地的默认值并应用到当前对话（如默认工作模式）。
+      // webview 据此更新本地的默认值并决定是否询问应用到当前对话。
       // 全部来自宿主自己的快照：Core 不提供默认值、不读配置文件。
-      const snapshot = getSettingsStore().getSnapshot();
+      const snapshot = store.getSnapshot();
       const payload = readLlmConfigPanelPayload(snapshot);
       const savedModel = payload.defaultModel;
       const savedActiveProvider = payload.activeProvider;
@@ -1621,6 +1625,11 @@ export class WebviewMessageHandler {
       // activeModel / activeModelProvider 用于刷新当前对话的模型选择（含已有消息的对话）。
       let activeModel = '';
       let activeModelProvider = '';
+      // 当前对话所用服务商的默认模型（保存后的值），以及它相对保存前是否变化：
+      // webview 只有「默认服务商」的默认模型，判断不了当前对话所用服务商（可能是
+      // 另一个 provider）的默认模型变化，由宿主对比前后快照后一并回传。
+      let currentProviderDefaultModel = '';
+      let currentProviderDefaultModelChanged = false;
       try {
         const currentSessionId = (typeof requestedSessionId === 'string' && requestedSessionId) || this.trackedActiveSessionId;
         if (currentSessionId && currentSessionId !== 'undefined') {
@@ -1633,6 +1642,14 @@ export class WebviewMessageHandler {
               const conversation = await loadConversationForHost(currentSessionId);
               storedRef = getConversationModelRef(conversation.metadata ?? undefined);
             } catch { /* 新对话可能还没有 meta.json */ }
+          }
+          // 当前对话所用服务商：没有记录时按「新的默认服务商」处理（与 resolveModelRef 同口径）。
+          const currentProviderKey = storedRef?.provider || snapshot.llm.activeProvider;
+          const beforeProvider = currentProviderKey ? beforeSnapshot.llm.providers[currentProviderKey] : undefined;
+          const afterProvider = currentProviderKey ? snapshot.llm.providers[currentProviderKey] : undefined;
+          if (afterProvider) {
+            currentProviderDefaultModel = afterProvider.defaultModel ?? '';
+            currentProviderDefaultModelChanged = (beforeProvider?.defaultModel ?? '') !== currentProviderDefaultModel;
           }
           const resolved = resolveModelRef(snapshot, storedRef);
           if (resolved) {
@@ -1674,6 +1691,8 @@ export class WebviewMessageHandler {
         defaultAgentMode: savedAgentMode,
         defaultPromptMode: savedPromptMode,
         webSearch: savedWebSearch,
+        currentProviderDefaultModel,
+        currentProviderDefaultModelChanged,
         ...(language === 'zh' || language === 'en' || language === 'auto' ? { language } : {}),
         ...(fontSize === 'medium' || fontSize === 'large' || fontSize === 'xlarge' ? { fontSize } : {}),
         activeProvider: savedActiveProvider,

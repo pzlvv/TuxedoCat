@@ -385,6 +385,13 @@ export type HostToWebviewMessage = {
   defaultAgentMode?: 'manual' | 'risk' | 'auto';
   defaultPromptMode?: 'normal' | 'minimal' | 'mixed';
   webSearch?: boolean;
+  /**
+   * 当前对话所用服务商在保存后的默认模型。webview 只有默认服务商的默认模型，
+   * 判断不了当前对话所用服务商（可能是另一个 provider）的默认模型变化。
+   */
+  currentProviderDefaultModel?: string;
+  /** 当前对话所用服务商的默认模型相对保存前是否变化（宿主对比前后快照得出） */
+  currentProviderDefaultModelChanged?: boolean;
   language?: 'auto' | 'zh' | 'en';
   /** 界面字号（顶层 `uiFontSize`）；只有 UI 消费 */
   fontSize?: 'medium' | 'large' | 'xlarge';

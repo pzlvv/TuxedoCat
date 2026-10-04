@@ -66,6 +66,8 @@ export const enDict: Record<string, string> = {
   'llmConfig.useThisProviderHintBold': 'Double-click',
   'llmConfig.useThisProviderHintRest': ' a provider name to set it as the active provider (takes effect after saving)',
   'llmConfig.obtainKey': 'Obtain it from your LLM provider console',
+  'llmConfig.showApiKey': 'Show API Key',
+  'llmConfig.hideApiKey': 'Hide API Key',
   'llmConfig.apiKeyMustStartSk': 'API Key must start with "sk-"',
   'llmConfig.enterApiKey': 'Please enter an API Key',
   'llmConfig.modelsLabel': 'Model List',
@@ -314,6 +316,21 @@ export const enDict: Record<string, string> = {
   'handlers.minutesAgo': '{count} minutes ago',
   'handlers.hoursAgo': '{count} hours ago',
   'handlers.daysAgo': '{count} days ago',
+
+  /* ── components/ApplyDefaultsDialog.tsx ──────────────────── */
+  'applyDefaults.title': 'Default settings changed',
+  'applyDefaults.message': 'These defaults differ from the current conversation. Apply them to the current conversation?',
+  'applyDefaults.changeProvider': 'Default provider',
+  'applyDefaults.changeModel': 'Default model',
+  'applyDefaults.changePromptMode': 'Prompt mode',
+  'applyDefaults.changeThinkingEffort': 'Thinking effort',
+  'applyDefaults.changeAgentMode': 'Ask mode',
+  'applyDefaults.changeWebSearch': 'Web search',
+  'applyDefaults.on': 'On',
+  'applyDefaults.off': 'Off',
+  'applyDefaults.apply': 'Apply to current conversation',
+  'applyDefaults.dismiss': 'Not now',
+
   /* ── Text keys produced by core (core only emits keys) ───── */
   'command.spin.description': 'Execute Spin tasks',
   'notice.spin.engineNotWired': 'The Spin engine is not wired up, so Spin tasks cannot run.',

@@ -29,6 +29,40 @@ export interface SettingsDefaults {
   webSearch?: boolean;
 }
 
+/**
+ * 「默认配置已修改」对话框里逐条展示的一项变更。
+ *
+ * label / from / to 都在产出处本地化（config handler 用 `t()` 组装），
+ * 对话框只负责渲染，不再判断字段语义。
+ */
+export interface DefaultsChangeItem {
+  /** 变更项名称（默认服务商 / 默认模型 / 提示词模式 / ...） */
+  label: string;
+  /** 变更前显示值（当前对话的值） */
+  from: string;
+  /** 变更后显示值（新的默认值） */
+  to: string;
+}
+
+/**
+ * 「默认配置已修改，是否应用到当前对话」的待确认请求。
+ *
+ * 由 config handler 在收到 `llmConfigSaved`、且某默认值相对保存前有变化、
+ * 又与当前对话的值不一致时产出（见 `handleConfigLlmConfigSaved`）。
+ * App 渲染确认对话框；用户确认后把这里的字段应用到当前对话，取消则丢弃。
+ * 字段为 undefined 表示该项无需应用（未变化 / 已与当前对话一致）。
+ */
+export interface ApplyDefaultsPrompt {
+  /** 需要切换到的模型身份（provider + model）；undefined = 模型无需切换 */
+  modelRef?: ModelRef;
+  promptMode?: PromptMode;
+  thinkingMode?: ThinkingMode;
+  agentMode?: AgentMode;
+  webSearch?: boolean;
+  /** 对话框里逐条展示的变更 */
+  changes: DefaultsChangeItem[];
+}
+
 /** LLM API 协议类型（模型级配置） */
 export type ApiType = 'Responses' | 'OpenAI' | 'Anthropic';
 

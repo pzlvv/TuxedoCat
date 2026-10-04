@@ -9,6 +9,7 @@ import type { Colors, ThinkingMode, AgentMode, PromptMode } from './types';
 import type { McpServerInfo } from '../core/webviewTypes';
 import { t } from './i18n';
 import { uiFontSizePx, type UiFontSize } from './fontSize';
+import { Icon } from './Icon';
 
 /** 一个模型的草稿（模型名 + 该模型使用的 API 协议） */
 interface ModelDraft {
@@ -421,6 +422,8 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   /** MCP 默认启用草稿（保存时把勾选项写回全局 settings.json 的 mcp.enabled） */
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>(initialMcpServers);
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
+  /** API Key 是否明文显示（默认掩码；纯展示开关，不改动保存的值） */
+  const [apiKeyVisible, setApiKeyVisible] = useState(false);
   const [baseURLError, setBaseURLError] = useState<string | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1296,18 +1299,46 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                 >
                   API Key
                 </label>
-                <input
-                  type="password"
-                  value={activeProvider.apiKey}
-                  onChange={(e) => handleApiKeyChange(e.target.value)}
-                  placeholder="sk-"
-                  style={{
-                    ...inputStyle,
-                    borderColor: apiKeyError ? '#ef4444' : colors.border,
-                  }}
-                  onFocus={(e) => { if (!apiKeyError) e.target.style.borderColor = colors.harness; }}
-                  onBlur={(e) => { if (!apiKeyError) e.target.style.borderColor = colors.border; }}
-                />
+                <div className="relative">
+                  <input
+                    // 明文/掩码只是展示开关，value 与保存内容不受影响
+                    type={apiKeyVisible ? 'text' : 'password'}
+                    value={activeProvider.apiKey}
+                    onChange={(e) => handleApiKeyChange(e.target.value)}
+                    placeholder="sk-"
+                    style={{
+                      ...inputStyle,
+                      // 给右侧的显示/隐藏按钮留位，避免文字被盖住
+                      paddingRight: '34px',
+                      borderColor: apiKeyError ? '#ef4444' : colors.border,
+                    }}
+                    onFocus={(e) => { if (!apiKeyError) e.target.style.borderColor = colors.harness; }}
+                    onBlur={(e) => { if (!apiKeyError) e.target.style.borderColor = colors.border; }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setApiKeyVisible((v) => !v)}
+                    title={apiKeyVisible ? t('llmConfig.hideApiKey') : t('llmConfig.showApiKey')}
+                    aria-label={apiKeyVisible ? t('llmConfig.hideApiKey') : t('llmConfig.showApiKey')}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      right: 0,
+                      height: '100%',
+                      width: '32px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: 'transparent',
+                      border: 'none',
+                      padding: 0,
+                      cursor: 'pointer',
+                      color: colors.textSystem,
+                    }}
+                  >
+                    {apiKeyVisible ? <Icon name="eye-off" size={14} /> : <Icon name="eye" size={14} />}
+                  </button>
+                </div>
                 {apiKeyError && (
                   <div className="ui-fs-11 mt-1" style={{ color: '#ef4444' }}>
                     {apiKeyError}
