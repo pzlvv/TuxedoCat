@@ -599,6 +599,25 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
             crate::mcp_config::set_session_mcp_enabled(Some(session_id.as_str()), name, enabled);
             crate::mcp::on_session_enabled_changed(&session_id);
         }
+        "mcpEnabledListChanged" => {
+            // 整表覆盖语义（对齐 Embedded `Config.setSessionMcpEnabledList`）：`names`
+            // 是该会话启用后的完整列表，直接覆盖（去重、保留首次出现顺序），不做增量。
+            // 内存覆盖同步生效——宿主保存默认配置时先发本事件把当前对话钉住，
+            // 紧接着的配置写盘触发的 `sync_all_sessions` 必须能读到这个覆盖。
+            let names: Vec<String> = event
+                .get("names")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            crate::mcp_config::write_session_enabled(&session_id, &names);
+            crate::mcp::on_session_enabled_changed(&session_id);
+        }
 
         // ===== 用户选择 =====
         // 宿主上报「该会话的用户选择框是否在 webview 里等待应答」

@@ -182,6 +182,7 @@ classDiagram
     conversationContextUpdated / conversationSpaceCleared
     modelChanged / thinkingEffortChanged / promptModeChanged
     agentModeChanged / webSearchChanged / mcpEnabledChanged
+    mcpEnabledListChanged
     editRolledBack
   }
 
@@ -703,7 +704,7 @@ export function initializeCoreEvents(bus: AssistantEventBus): void {
   void registerIntegrationUiEvents(bus);       // 消息 / 压缩 / 配置 / 会话生命周期
   void registerHistoryUiEvents(bus);           // 重命名 / 删除 / 上下文 / 空间
   void registerSessionResourcesUiEvents(bus);  // conversationClosed → releaseSessionResources
-  void registerMcpUiEvents(bus);               // mcpEnabledChanged
+  void registerMcpUiEvents(bus);               // mcpEnabledChanged / mcpEnabledListChanged
 }
 ```
 
@@ -843,11 +844,12 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 36 | `agentModeChanged` | `sessionId`, `mode` | `setAgentMode` | `setSessionAgentMode` + 写 meta.json → `sessionConfigChanged` |
 | 37 | `webSearchChanged` | `sessionId`, `enabled` | `setWebSearch` | `engine.updateWebSearch` + 写 meta.json → `sessionConfigChanged` |
 | 38 | `mcpEnabledChanged` | `sessionId`, `name`, `enabled` | `setMcpEnabled` | `mcp/Config.setSessionMcpEnabled` + `Manager.syncSession` → `sessionConfigChanged`（差量同步完成后） |
-| 39 | `editRolledBack` | `sessionId`, `toolUseId`, `direction`, `filePath?` | `rollbackEdit` | `history/rollback.rollbackEdit`（`filePath` 作为 `input.file_path` 缺失时的兜底路径） |
-| 40 | `hostEnvironmentProvided` | `extensionPath`, `logToConsole`, `configDirName`, `settings`, `mcpServers` | `bootstrapCore`（每个 Connection 建立时推送一次；此后每次配置写盘由 `SettingsStore` 订阅重推整份快照给所有 Connection） | `initializeCoreEvents` 的 `registerHostEnvironmentUiEvents` → `setExtensionPath` / `setLogToConsole` / `applySettingsSnapshot` → `CoreEvent.coreReady` |
-| 41 | `userMessageSubmitted` | `sessionId`, `content`, `uuid`, `images?`, `filePath?`, `fileSelectedLines?`, `fileHidden?`, `agentMode?`, `thinkingMode?`, `model?`, `webSearch?`, `workspacePath?`, `deferEcho?` | `sendMessage`（handler 组装载荷：wire 的 `selectedLines` 翻译成 `fileSelectedLines`；`uuid` 由宿主生成并回带，完整链路见 `docs/user-message-pipeline.md`） | `Integration.submitMessage` → 入队 / 落盘 / 命令解析 / 轮次消费 |
-| 42 | `userChoicePendingChanged` | `sessionId`, `pending: boolean` | `UserChoiceManager`（webview 弹出选择、用户应答、`dropSession` 释放视图时） | `initializeCoreEvents` 的 `registerUserChoiceUiEvents` → `markSessionWaiting`（`sessionRuntime` 的 `waiting` 来源，供 `isSessionIdle` 判定） |
-| 43 | `sessionWorkspaceAssigned` | `sessionId`, `workspacePath: string \| null` | `WebviewMessageHandler.ensureSessionWorkspace`（会话首次被 core 解析目录之前）、`electron/main.ts` 的 `registerCoreSessionWorkspace`（多工作目录宿主按来源视图登记） | `initializeCoreEvents` 的 `registerSessionWorkspaceUiEvents` → `setSessionWorkspace` / `clearSessionWorkspace`（Standalone 下同一处理器在 Core 进程内） |
+| 39 | `mcpEnabledListChanged` | `sessionId`, `names`（**完整启用列表**，去重、保留顺序） | `setMcpEnabledList`（设置面板「应用到当前对话」）；宿主保存默认配置时直接发（写盘前先把当前对话钉在它当前的列表上） | `mcp/Config.setSessionMcpEnabledList` + `Manager.syncSession` → `sessionConfigChanged`（差量同步完成后）；与 `mcpEnabledChanged` 是同一条事实的两个粒度 |
+| 40 | `editRolledBack` | `sessionId`, `toolUseId`, `direction`, `filePath?` | `rollbackEdit` | `history/rollback.rollbackEdit`（`filePath` 作为 `input.file_path` 缺失时的兜底路径） |
+| 41 | `hostEnvironmentProvided` | `extensionPath`, `logToConsole`, `configDirName`, `settings`, `mcpServers` | `bootstrapCore`（每个 Connection 建立时推送一次；此后每次配置写盘由 `SettingsStore` 订阅重推整份快照给所有 Connection） | `initializeCoreEvents` 的 `registerHostEnvironmentUiEvents` → `setExtensionPath` / `setLogToConsole` / `applySettingsSnapshot` → `CoreEvent.coreReady` |
+| 42 | `userMessageSubmitted` | `sessionId`, `content`, `uuid`, `images?`, `filePath?`, `fileSelectedLines?`, `fileHidden?`, `agentMode?`, `thinkingMode?`, `model?`, `webSearch?`, `workspacePath?`, `deferEcho?` | `sendMessage`（handler 组装载荷：wire 的 `selectedLines` 翻译成 `fileSelectedLines`；`uuid` 由宿主生成并回带，完整链路见 `docs/user-message-pipeline.md`） | `Integration.submitMessage` → 入队 / 落盘 / 命令解析 / 轮次消费 |
+| 43 | `userChoicePendingChanged` | `sessionId`, `pending: boolean` | `UserChoiceManager`（webview 弹出选择、用户应答、`dropSession` 释放视图时） | `initializeCoreEvents` 的 `registerUserChoiceUiEvents` → `markSessionWaiting`（`sessionRuntime` 的 `waiting` 来源，供 `isSessionIdle` 判定） |
+| 44 | `sessionWorkspaceAssigned` | `sessionId`, `workspacePath: string \| null` | `WebviewMessageHandler.ensureSessionWorkspace`（会话首次被 core 解析目录之前）、`electron/main.ts` 的 `registerCoreSessionWorkspace`（多工作目录宿主按来源视图登记） | `initializeCoreEvents` 的 `registerSessionWorkspaceUiEvents` → `setSessionWorkspace` / `clearSessionWorkspace`（Standalone 下同一处理器在 Core 进程内） |
 
 **`changes` 数组而不是可选字段**：`history.updateConversationContext` 是**部分合并**语义
 （未列出的字段保持原值），用数组而不是一组可选字段，是为了同时满足「一次可带多个字段」
@@ -1160,7 +1162,16 @@ webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接�
 | --- | --- |
 | `webviewMessageHandler.handleRequestMcpServers` / `pushMcpServers` | 读 `mcp.json` + 会话启用列表 + 运行时状态，推给面板 |
 | `webviewMessageHandler` 的 `setMcpEnabled` 翻译 | 发 `UiEvent.mcpEnabledChanged`；写盘与差量同步由 core 侧处理 |
+| `webviewMessageHandler` 的 `setMcpEnabledList` 翻译 | 发 `UiEvent.mcpEnabledListChanged`（整表覆盖，设置面板「应用到当前对话」）；同上一条链路 |
+| `webviewMessageHandler.handleSaveLLMConfig` 的钉住 | 保存全局默认 MCP 列表前，先读该会话生效的启用列表并发 `mcpEnabledListChanged` 把它钉住：全局默认只改新对话默认值，当前对话是否跟随由 webview 的确认框决定。钉住失败不阻断保存，只回 `mcpPinFailed`，由 webview 给出提示 |
 | webview 侧 MCP 面板 | 纯展示 |
+
+**启用状态的两层与「钉住」**：`mcp/Config` 里生效值 = 会话覆盖（`meta.json` 的
+`context.mcpEnabled`，进程内还有一份内存覆盖）优先，其次全局默认（`settings.json` 的
+`mcp.enabled`，经配置快照下发）。输入框菜单的勾选只写会话覆盖；设置面板「默认配置」只写
+全局默认。全局默认变更会让 core 重同步**其它**已注册会话，但当前对话在写盘前已被宿主钉在
+它当前的列表上（`mcpEnabledListChanged`），因此不会静默跟随——是否跟随由设置面板的
+「应用到当前对话」确认框决定（`docs/webview-facts.md` 第 6 节）。
 
 **按会话暴露 MCP 工具**：MCP 进程是进程级全局的（多个会话可共享同一个 server），但
 「把哪些 MCP 工具发给某个会话的 LLM」必须按该会话的启用列表过滤，否则 A 会话已取消勾选、

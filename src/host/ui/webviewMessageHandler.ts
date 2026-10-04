@@ -102,6 +102,11 @@ function defaultTitle(): string {
 }
 
 
+/** 两个字符串列表是否逐项相同（顺序有意义：MCP 启用列表按面板顺序保存） */
+function sameStringList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((item, index) => item === b[index]);
+}
+
 /** 按并发上限执行异步任务，结果顺序与输入一致 */
 export async function mapWithConcurrency<T, R>(
   items: T[],
@@ -329,6 +334,7 @@ export class WebviewMessageHandler {
       entry('setAgentMode', (msg) => this.emitUiEvent({ type: 'agentModeChanged', sessionId: msg.sessionId, mode: msg.mode })),
       entry('setWebSearch', (msg) => this.emitUiEvent({ type: 'webSearchChanged', sessionId: msg.sessionId, enabled: !!msg.webSearch })),
       entry('setMcpEnabled', (msg) => this.handleSetMcpEnabled(msg)),
+      entry('setMcpEnabledList', (msg) => this.handleSetMcpEnabledList(msg)),
 
       // ===== 其它（UiEvent 翻译）=====
       entry('saveLLMConfig', (msg) => this.handleSaveLLMConfig(msg)),
@@ -678,6 +684,22 @@ export class WebviewMessageHandler {
       return;
     }
     await this.emitUiEvent({ type: 'mcpEnabledChanged', sessionId: message.sessionId, name: message.name, enabled: !!message.enabled });
+  }
+
+  /**
+   * 整表覆盖当前会话的 MCP 启用列表（设置面板「应用到当前对话」）。
+   * 与单开关同一条链路：core 落盘 + 差量同步，完成后广播 `setMcpServers` 刷新界面。
+   */
+  private async handleSetMcpEnabledList(message: Extract<WebviewToHostMessage, { type: 'setMcpEnabledList' }>): Promise<void> {
+    if (!message.sessionId) {
+      this.log(`[WebviewMessageHandler] setMcpEnabledList without sessionId (names=${message.names?.length ?? 0}), ignored`);
+      return;
+    }
+    await this.emitUiEvent({
+      type: 'mcpEnabledListChanged',
+      sessionId: message.sessionId,
+      names: Array.isArray(message.names) ? message.names.filter((n): n is string => typeof n === 'string' && !!n) : [],
+    });
   }
 
   private async handleAbort(message: Extract<WebviewToHostMessage, { type: 'abort' }>): Promise<void> {
@@ -1544,6 +1566,34 @@ export class WebviewMessageHandler {
       // （尤其当前对话所用服务商的默认模型，webview 没有全量 provider 默认模型）。
       const store = getSettingsStore();
       const beforeSnapshot = store.getSnapshot();
+
+      // MCP 全局默认启用列表的变更**不自动改当前对话**：写盘前先把当前对话钉在它当前
+      // 生效的启用列表上（整表覆盖；内存覆盖同步生效，早于写盘触发的 syncAllSessions），
+      // 是否跟随新默认值由 webview 弹确认框、用户决定
+      // （`docs/core-ui-separation.md` 第 4 节）。
+      //
+      // 钉住失败**不阻断保存**：面板保存的是全局默认值，与「当前对话的会话覆盖」是
+      // 两件事。失败只把事实报给 webview（`mcpPinFailed`），由 UI 给出提示
+      // （`docs/webview-facts.md` 第 6 节）。
+      const mcpDefaultsSubmitted = Array.isArray(message.mcpServers);
+      const mcpSessionId = mcpDefaultsSubmitted ? await this.getActiveMcpSessionId(requestedSessionId) : undefined;
+      let currentSessionMcpEnabled: string[] = [];
+      let mcpPinFailed = false;
+      if (mcpSessionId) {
+        try {
+          const servers = await requestMcpServers(mcpSessionId);
+          currentSessionMcpEnabled = servers.filter((server) => server.enabled).map((server) => server.name);
+          await this.emitUiEvent({
+            type: 'mcpEnabledListChanged',
+            sessionId: mcpSessionId,
+            names: currentSessionMcpEnabled,
+          });
+        } catch (err: any) {
+          mcpPinFailed = true;
+          this.log(`[WebviewMessageHandler] Failed to pin session MCP list before save (session=${mcpSessionId}): ${err?.message ?? err}`);
+        }
+      }
+
       // 写 settings.json 是宿主能力（`docs/core-ui-separation.md` 第 4 节）：整段 mutation
       // （provider 表 + modelConfigs 补齐 + 顶层默认值 + MCP 默认启用列表）在宿主侧执行，
       // 两种装配同一条路径。写盘后 `SettingsStore` 重新构造快照并推给已就绪的 Connection，
@@ -1571,12 +1621,11 @@ export class WebviewMessageHandler {
       }
 
       // MCP 默认启用列表（设置面板「默认配置」）已随上面那次写盘落盘，
-      // 快照重推后 core 会按新默认值重同步所有已注册会话的连接。
-      // 这里只负责刷新界面：重新读取该会话的 MCP 配置 + 运行时状态回推，
+      // 快照重推后 core 会按新默认值重同步**其它**已注册会话的连接（当前对话已钉住，
+      // 不受影响）。这里只负责刷新界面：重新读取该会话的 MCP 配置 + 运行时状态回推，
       // 让 webview 把「连接中」收敛掉。
-      if (Array.isArray(message.mcpServers)) {
+      if (mcpDefaultsSubmitted) {
         try {
-          const mcpSessionId = await this.getActiveMcpSessionId(requestedSessionId);
           // 先回推一次：默认值已落盘、连接尚未开始 → webview 显示「连接中」。
           // 这样设置面板保存不会被 MCP 启动阻塞，可以立即返回 llmConfigSaved。
           await this.pushMcpServers(mcpSessionId);
@@ -1602,6 +1651,11 @@ export class WebviewMessageHandler {
       const savedWebSearch = payload.webSearch;
       const savedProviderGroups: Array<{ key: string; models: string[] }> =
         payload.providers.map((p: { key: string; models: string[] }) => ({ key: p.key, models: [...p.models] }));
+      // 保存后的全局默认 MCP 启用列表 + 它相对保存前是否变化；当前对话生效的列表
+      // 在写盘前已读出（并已把该对话钉在上面），三者一起回传，由 webview 决定
+      // 要不要弹「应用到当前对话」。
+      const mcpDefaultEnabled = [...snapshot.mcp.enabled];
+      const mcpDefaultEnabledChanged = !sameStringList(beforeSnapshot.mcp.enabled, mcpDefaultEnabled);
 
       // 保存后校验当前会话的模型身份：provider 或模型失效时解析出可用身份，
       // 并把结果作为 `modelChanged` 报给 core（core 负责落 meta.json 与同步引擎配置，
@@ -1677,6 +1731,14 @@ export class WebviewMessageHandler {
         webSearch: savedWebSearch,
         currentProviderDefaultModel,
         currentProviderDefaultModelChanged,
+        // 当前对话的 MCP 启用列表在写盘前已被钉住：只有确实存在当前对话时才回传，
+        // 否则 webview 无从「应用到当前对话」。钉住失败时只回传失败标志：拿不到可靠的
+        // 「当前对话的值」，webview 不弹确认框、改为给出提示。
+        ...(mcpDefaultsSubmitted && mcpSessionId
+          ? mcpPinFailed
+            ? { mcpPinFailed: true }
+            : { mcpDefaultEnabled, mcpDefaultEnabledChanged, currentSessionMcpEnabled }
+          : {}),
         ...(language === 'zh' || language === 'en' || language === 'auto' ? { language } : {}),
         ...(fontSize === 'medium' || fontSize === 'large' || fontSize === 'xlarge' ? { fontSize } : {}),
         activeProvider: savedActiveProvider,

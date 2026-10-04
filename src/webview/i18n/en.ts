@@ -327,10 +327,15 @@ export const enDict: Record<string, string> = {
   'applyDefaults.changeThinkingEffort': 'Thinking effort',
   'applyDefaults.changeAgentMode': 'Ask mode',
   'applyDefaults.changeWebSearch': 'Web search',
+  'applyDefaults.changeMcp': 'MCP servers',
   'applyDefaults.on': 'On',
   'applyDefaults.off': 'Off',
+  'applyDefaults.mcpNone': '(none)',
   'applyDefaults.apply': 'Apply to current conversation',
   'applyDefaults.dismiss': 'Not now',
+
+  /* ── Text keys produced by host / webview (keys only) ────── */
+  'notice.mcp.pinFailed': 'MCP defaults were saved, but the current conversation\'s MCP state could not be pinned and may now follow the new defaults.',
 
   /* ── Text keys produced by core (core only emits keys) ───── */
   'command.spin.description': 'Execute Spin tasks',

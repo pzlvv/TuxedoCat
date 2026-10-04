@@ -403,6 +403,28 @@ export type HostToWebviewMessage = {
   currentProviderDefaultModel?: string;
   /** 当前对话所用服务商的默认模型相对保存前是否变化（宿主对比前后快照得出） */
   currentProviderDefaultModelChanged?: boolean;
+  /**
+   * 保存后的全局默认 MCP 启用列表（`settings.json` 的 `mcp.enabled`，新对话默认值）。
+   * 只有面板提交了 MCP 默认列表（`saveLLMConfig.mcpServers`）时才带。
+   */
+  mcpDefaultEnabled?: string[];
+  /** 全局默认 MCP 启用列表相对保存前是否变化（宿主对比前后快照得出） */
+  mcpDefaultEnabledChanged?: boolean;
+  /**
+   * 保存前当前对话**生效**的 MCP 启用列表（宿主读 core 事实得出）。
+   *
+   * 宿主在写盘前已把当前对话钉在这个列表上，因此它同时是「当前对话的值」。
+   * webview 的会话状态可能已被写盘后的回推覆盖，判断不了保存前的值。
+   */
+  currentSessionMcpEnabled?: string[];
+  /**
+   * 当前对话的 MCP 启用列表**未能钉住**（读 core 事实 / 下发事件失败）。
+   *
+   * 钉住与保存全局默认值是两件事：宿主已继续保存，只把失败报给 UI。
+   * 此时不回传上面三项事实（拿不到可靠的「当前对话的值」），webview 不弹确认框，
+   * 改为给出一次提示——该对话可能已跟随新的默认值。
+   */
+  mcpPinFailed?: boolean;
   language?: 'auto' | 'zh' | 'en';
   /** 界面字号（顶层 `uiFontSize`）；只有 UI 消费 */
   fontSize?: 'medium' | 'large' | 'xlarge';
@@ -596,6 +618,14 @@ export type WebviewToHostMessage = {
   sessionId?: string;
   name: string;
   enabled: boolean;
+} | {
+  /**
+   * 整表覆盖当前会话的 MCP 启用列表（设置面板「应用到当前对话」用）：
+   * 把该会话的启用状态整体写成给定列表，不做增量。
+   */
+  type: 'setMcpEnabledList';
+  sessionId?: string;
+  names: string[];
 } | {
   type: 'getConversations';
 } | {

@@ -327,10 +327,15 @@ export const zhDict: Record<string, string> = {
   'applyDefaults.changeThinkingEffort': 'Thinking effort',
   'applyDefaults.changeAgentMode': '询问模式',
   'applyDefaults.changeWebSearch': '联网搜索',
+  'applyDefaults.changeMcp': 'MCP 启用列表',
   'applyDefaults.on': '开',
   'applyDefaults.off': '关',
+  'applyDefaults.mcpNone': '（无）',
   'applyDefaults.apply': '应用到当前对话',
   'applyDefaults.dismiss': '暂不应用',
+
+  /* ── 宿主 / webview 产出的提示键（同样只给键，翻译在这里）── */
+  'notice.mcp.pinFailed': 'MCP 默认配置已保存，但当前对话的 MCP 启用状态未能固定，可能已跟随新的默认值。',
 
   /* ── Core 产出的文案键（core 只给键，翻译在这里）─────────── */
   'command.spin.description': '执行 Spin 任务',

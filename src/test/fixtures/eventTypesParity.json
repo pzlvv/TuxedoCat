@@ -49,6 +49,7 @@
     "agentModeChanged",
     "webSearchChanged",
     "mcpEnabledChanged",
+    "mcpEnabledListChanged",
     "editRolledBack",
     "hostEnvironmentProvided",
     "userChoicePendingChanged",

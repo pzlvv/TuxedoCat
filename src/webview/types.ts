@@ -59,6 +59,8 @@ export interface ApplyDefaultsPrompt {
   thinkingMode?: ThinkingMode;
   agentMode?: AgentMode;
   webSearch?: boolean;
+  /** 需要切换到的 MCP 启用列表（整体覆盖当前会话）；undefined = MCP 无需切换 */
+  mcpEnabled?: string[];
   /** 对话框里逐条展示的变更 */
   changes: DefaultsChangeItem[];
 }

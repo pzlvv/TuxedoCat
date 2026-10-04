@@ -116,6 +116,15 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
   （`currentProviderDefaultModelChanged`）——webview 只有默认服务商的默认模型，
   判断不了另一个 provider 的默认模型变化。是否弹「应用到当前对话」确认框由 webview
   决定：某项默认值相对保存前有变化、且与当前对话的值不一致时才问；宿主只给事实。
+- MCP 默认启用列表（`settings.json` 的 `mcp.enabled`）的变更**不自动改当前对话**：
+  宿主在写盘前先把当前对话钉在它当前生效的列表上（`UiEvent.mcpEnabledListChanged`），
+  再把保存后的默认列表（`mcpDefaultEnabled`）、是否变化（`mcpDefaultEnabledChanged`）
+  与当前对话保存前的生效列表（`currentSessionMcpEnabled`）一起回传。webview 的会话状态
+  在写盘后会被回推覆盖，判断不了保存前的值，所以「当前对话的值」也由宿主给。
+  确认后 webview 发 `setMcpEnabledList` 整体覆盖该会话的启用列表。
+- 钉住与保存全局默认值是两件事：宿主钉住失败**不阻断保存**，只回 `mcpPinFailed`。
+  此时不回传上面三项事实（拿不到可靠的「当前对话的值」），webview 不弹确认框，
+  改为给出一次提示——该对话可能已跟随新的默认值。
 
 ---
 

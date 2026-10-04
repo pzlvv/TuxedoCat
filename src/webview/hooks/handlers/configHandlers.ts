@@ -307,6 +307,22 @@ function webSearchText(value: boolean | undefined): string {
   return value ? t('applyDefaults.on') : t('applyDefaults.off');
 }
 
+/** MCP 启用列表在确认对话框里的显示值（空列表 = 全部禁用） */
+function mcpListText(names: readonly string[]): string {
+  return names.length > 0 ? names.join(', ') : t('applyDefaults.mcpNone');
+}
+
+/** 两个启用列表是否等价（顺序无关：面板与 core 的列表顺序不保证一致） */
+function sameMcpList(a: readonly string[], b: readonly string[]): boolean {
+  const setA = new Set(a);
+  const setB = new Set(b);
+  if (setA.size !== setB.size) return false;
+  for (const name of setA) {
+    if (!setB.has(name)) return false;
+  }
+  return true;
+}
+
 export function handleConfigLlmConfigSaved(
   msg: Extract<HostToWebviewWire, { type: 'llmConfigSaved' }>,
   ctx: HandlerContext,
@@ -402,6 +418,28 @@ export function handleConfigLlmConfigSaved(
       to: webSearchText(msg.webSearch),
     });
     pending.webSearch = msg.webSearch;
+  }
+  // 宿主未能把当前对话钉在保存前的 MCP 列表上（钉住失败不阻断保存，见
+  // `docs/webview-facts.md` 第 6 节）：没有可靠的「当前对话的值」，不弹确认框，
+  // 改为一次提示——该对话可能已跟随新的默认值。
+  if (msg.mcpPinFailed) {
+    props.pushNotice('notice.mcp.pinFailed', {}, 'warn');
+  }
+  // MCP 全局默认启用列表：宿主在写盘前已把当前对话钉在保存前的列表上，因此
+  // currentSessionMcpEnabled 就是「当前对话的值」。只有默认值确实变了、且与当前
+  // 对话不一致时才问；顺序无关（两侧列表顺序不保证一致）。
+  if (
+    msg.mcpDefaultEnabledChanged
+    && Array.isArray(msg.mcpDefaultEnabled)
+    && Array.isArray(msg.currentSessionMcpEnabled)
+    && !sameMcpList(msg.mcpDefaultEnabled, msg.currentSessionMcpEnabled)
+  ) {
+    pending.changes.push({
+      label: t('applyDefaults.changeMcp'),
+      from: mcpListText(msg.currentSessionMcpEnabled),
+      to: mcpListText(msg.mcpDefaultEnabled),
+    });
+    pending.mcpEnabled = [...msg.mcpDefaultEnabled];
   }
 
   // 更新本地默认值（新对话用），与「是否应用到当前对话」无关，始终生效。

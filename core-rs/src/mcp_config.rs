@@ -434,10 +434,12 @@ pub fn set_session_mcp_enabled(session_id: Option<&str>, name: &str, enabled: bo
     persist_session_mcp(session_id, &next);
 }
 
-/// 整表覆盖某个会话的启用列表（`UiEvent.sessionConfigChanged(mcpEnabled)` 用）。
+/// 整表覆盖某个会话的启用列表（`UiEvent.mcpEnabledListChanged` 用）。
 ///
 /// 与 [`set_session_mcp_enabled`] 的单开关语义不同：这里拿到的是**完整列表**，
-/// 直接覆盖（去重、保留首次出现顺序），不做增量。
+/// 直接覆盖（去重、保留首次出现顺序），不做增量。内存覆盖同步生效——宿主保存全局
+/// 默认配置前先发本事件把当前对话钉住，紧接着的配置写盘触发的
+/// [`crate::mcp::sync_all_sessions`] 必须能读到这个覆盖。
 pub fn write_session_enabled(session_id: &str, names: &[String]) {
     if session_id.is_empty() {
         return;

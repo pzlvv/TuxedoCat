@@ -319,6 +319,14 @@ export type UiEvent =
   | { type: 'agentModeChanged'; sessionId: string; mode: AgentMode }
   | { type: 'webSearchChanged'; sessionId: string; enabled: boolean }
   | { type: 'mcpEnabledChanged'; sessionId: string; name: string; enabled: boolean }
+  /**
+   * 整表覆盖某个会话的 MCP 启用列表（去重、保留首次出现顺序，不做增量）。
+   *
+   * 与 `mcpEnabledChanged` 的单开关语义相对：输入框菜单的勾选走前者，
+   * 「把当前对话的启用列表整体写成某个已知列表」走这里（设置面板保存默认值时
+   * 先把当前对话钉在它当前的列表上；用户确认应用新默认值后再整体覆盖）。
+   */
+  | { type: 'mcpEnabledListChanged'; sessionId: string; names: string[] }
 
   // ===== 其它 =====
   /**

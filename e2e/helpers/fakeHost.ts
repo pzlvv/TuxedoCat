@@ -45,6 +45,14 @@ export const FAKE_HOST_INIT = `
       model: 'mock-model', provider: 'mock-provider',
       thinkingMode: 'high', agentMode: 'risk', promptMode: 'normal', webSearch: false,
     },
+    // MCP：mcp.json 里的服务器定义（名称列表）
+    mcpServers: [],
+    // settings.json 的 mcp.enabled（全局默认，设置面板编辑）
+    mcpDefaults: [],
+    // 当前会话生效的启用列表（meta.json 的会话覆盖优先，其次全局默认）
+    mcpSessionEnabled: [],
+    // 模拟宿主「钉住当前对话」失败（读 core 事实失败）：保存照常成功，只回失败标志
+    mcpPinFailed: false,
   };
 
   // webview → 宿主 的全部上行消息（追加写，测试轮询断言）
@@ -53,6 +61,15 @@ export const FAKE_HOST_INIT = `
   const active = new Set();
 
   const send = (msg) => window.postMessage(msg, '*');
+
+  /** 按启用列表把服务器定义组装成 McpServerInfo（与宿主读 mcp.json 同形状） */
+  function mcpInfo(enabledNames) {
+    const enabled = new Set(enabledNames);
+    return state.mcpServers.map((name) => ({
+      name, type: 'local', command: ['fake-mcp'], environment: {}, url: '', headers: {},
+      enabled: enabled.has(name), running: enabled.has(name), toolCount: 0, error: null,
+    }));
+  }
 
   let streamSeq = 0;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -143,7 +160,17 @@ export const FAKE_HOST_INIT = `
         });
         break;
       case 'requestMcpServers':
-        send({ type: 'setMcpServers', servers: [] });
+        send({ type: 'setMcpServers', sessionId: msg.sessionId, servers: mcpInfo(state.mcpSessionEnabled) });
+        break;
+      case 'setMcpEnabled':
+        state.mcpSessionEnabled = msg.enabled
+          ? [...new Set([...state.mcpSessionEnabled, msg.name])]
+          : state.mcpSessionEnabled.filter((name) => name !== msg.name);
+        send({ type: 'setMcpServers', sessionId: msg.sessionId, servers: mcpInfo(state.mcpSessionEnabled) });
+        break;
+      case 'setMcpEnabledList':
+        state.mcpSessionEnabled = [...new Set(msg.names)];
+        send({ type: 'setMcpServers', sessionId: msg.sessionId, servers: mcpInfo(state.mcpSessionEnabled) });
         break;
       case 'requestModels':
         send({
@@ -175,6 +202,23 @@ export const FAKE_HOST_INIT = `
           state.settingsDefaults.provider = active.key;
           state.settingsDefaults.model = active.defaultModel || (active.models && active.models[0]) || before.model;
         }
+        // MCP 默认启用列表：真实宿主在写盘前先把当前对话钉在保存前的列表上，
+        // 再把「保存后的默认列表 / 是否变化 / 当前对话保存前的列表」一起回传。
+        let mcpFacts = {};
+        if (Array.isArray(msg.mcpServers)) {
+          const beforeMcpDefaults = [...state.mcpDefaults];
+          const pinned = [...state.mcpSessionEnabled];
+          state.mcpDefaults = [...new Set(msg.mcpServers)];
+          // 钉住失败：真实宿主不回传三项事实，只回失败标志（保存本身照常成功）
+          mcpFacts = state.mcpPinFailed
+            ? { mcpPinFailed: true }
+            : {
+                mcpDefaultEnabled: [...state.mcpDefaults],
+                mcpDefaultEnabledChanged:
+                  JSON.stringify(beforeMcpDefaults) !== JSON.stringify(state.mcpDefaults),
+                currentSessionMcpEnabled: pinned,
+              };
+        }
         const next = state.settingsDefaults;
         send({
           type: 'llmConfigSaved',
@@ -188,6 +232,7 @@ export const FAKE_HOST_INIT = `
           webSearch: next.webSearch,
           currentProviderDefaultModel: next.model,
           currentProviderDefaultModelChanged: next.model !== before.model,
+          ...mcpFacts,
           activeProvider: next.provider,
           closeAfterSave: !!msg.closeAfterSave,
         });
@@ -226,7 +271,8 @@ export const FAKE_HOST_INIT = `
           webSearch: false,
           language: 'zh',
           fontSize: 'medium',
-          mcpServers: [],
+          // 设置面板「默认配置」编辑的是全局默认启用列表
+          mcpServers: mcpInfo(state.mcpDefaults),
         });
         break;
       case 'startNewConversation':
@@ -388,6 +434,27 @@ export class FakeHostDriver {
       (list) => { (window as any).__fakeHost.state.abortRuntimeStates = list; },
       states,
     );
+  }
+
+  /**
+   * 设定 MCP 三份状态：`servers` 是 mcp.json 的服务器定义（名称），
+   * `defaults` 是全局默认启用列表（设置面板编辑的对象），
+   * `sessionEnabled` 是当前会话生效的启用列表（输入框菜单展示的对象）。
+   */
+  async setMcpState(state: {
+    servers: string[];
+    defaults?: string[];
+    sessionEnabled?: string[];
+    /** 模拟宿主钉住当前对话失败（保存仍成功，只回 `mcpPinFailed`） */
+    pinFailed?: boolean;
+  }): Promise<void> {
+    await this.page.evaluate((s) => {
+      const host = (window as any).__fakeHost;
+      host.state.mcpServers = [...s.servers];
+      host.state.mcpDefaults = [...(s.defaults ?? [])];
+      host.state.mcpSessionEnabled = [...(s.sessionEnabled ?? s.defaults ?? [])];
+      host.state.mcpPinFailed = !!s.pinFailed;
+    }, state);
   }
 
   /** 等待 webview 完成启动初始化（主题已下发、输入框可用） */

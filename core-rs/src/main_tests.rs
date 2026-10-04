@@ -487,6 +487,26 @@ fn session_config_events_are_dispatched() {
         Some(vec!["y".to_string()])
     );
 
+    // 整表覆盖（对齐 Embedded `Config.setSessionMcpEnabledList`）：直接覆盖，不做增量；
+    // 宿主保存默认配置前用它在写盘前把当前对话钉住。去重且保留首次出现顺序。
+    dispatch(
+        &harness,
+        json!({ "type": "mcpEnabledListChanged", "sessionId": "s1", "names": ["z", "y", "z"] }),
+    );
+    assert_eq!(
+        crate::mcp_config::read_session_enabled_mcps(Some("s1")),
+        Some(vec!["z".to_string(), "y".to_string()])
+    );
+    let metadata = history::load_metadata("s1", &workspace).expect("metadata");
+    assert_eq!(metadata["context"]["mcpEnabled"], json!(["z", "y"]));
+
+    // 空列表 = 显式「该会话全部禁用」（与「没有覆盖」区分开）
+    dispatch(
+        &harness,
+        json!({ "type": "mcpEnabledListChanged", "sessionId": "s1", "names": [] }),
+    );
+    assert_eq!(crate::mcp_config::read_session_enabled_mcps(Some("s1")), Some(vec![]));
+
     // 会话覆盖与 MCP 管理器都是进程级静态状态，必须清理干净：
     // 先丢弃管理器（Drop 会 join 工作线程，让排队的差量同步按本沙箱配置跑完），
     // 再清会话覆盖——顺序不能反：同步任务会从 meta.json 重新读回覆盖并写进缓存。

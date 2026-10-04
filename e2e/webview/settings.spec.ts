@@ -148,6 +148,66 @@ test('US-24 默认配置变化时可选「暂不应用」，当前对话保持�
   await expect(menu.getByRole('button', { name: '高', exact: true })).toHaveCSS('font-weight', '600');
 });
 
+test('US-24 MCP 默认启用列表变化且与当前对话不一致时询问是否应用', async () => {
+  const { page, host } = handle;
+  // mcp.json 声明两个 server；全局默认只启用 srv-a，当前对话生效列表也是 srv-a
+  await host.setMcpState({ servers: ['srv-a', 'srv-b'], defaults: ['srv-a'], sessionEnabled: ['srv-a'] });
+  await openSettings(page);
+
+  // 默认配置里勾上 srv-b 并保存
+  await page.getByRole('checkbox', { name: 'srv-b' }).check();
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  const saved = await host.waitForSent('saveLLMConfig', 15_000);
+  expect(saved.mcpServers).toEqual(['srv-a', 'srv-b']);
+
+  // 弹出确认对话框，列出 MCP 启用列表的变更
+  await expect(page.getByText('默认配置已修改')).toBeVisible();
+  const dialog = page.getByText('默认配置已修改').locator('..');
+  await expect(dialog.getByText('MCP 启用列表')).toBeVisible();
+  await expect(dialog.getByText('srv-a → srv-a, srv-b')).toBeVisible();
+
+  // 应用到当前对话：整表覆盖该会话的启用列表
+  await page.getByRole('button', { name: '应用到当前对话' }).click();
+  await expect(page.getByText('默认配置已修改')).toHaveCount(0);
+  const applied = await host.waitForSent('setMcpEnabledList', 15_000);
+  expect(applied.names).toEqual(['srv-a', 'srv-b']);
+});
+
+test('US-24 MCP 默认启用列表变化时可选「暂不应用」，当前对话不写覆盖', async () => {
+  const { page, host } = handle;
+  await host.setMcpState({ servers: ['srv-a', 'srv-b'], defaults: ['srv-a'], sessionEnabled: ['srv-a'] });
+  await openSettings(page);
+
+  await page.getByRole('checkbox', { name: 'srv-b' }).check();
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await host.waitForSent('saveLLMConfig', 15_000);
+
+  await expect(page.getByText('默认配置已修改')).toBeVisible();
+  await page.getByRole('button', { name: '暂不应用' }).click();
+  await expect(page.getByText('默认配置已修改')).toHaveCount(0);
+
+  // 取消不改当前对话：不发 setMcpEnabledList（当前对话的启用列表仍是 srv-a）
+  const sent = await host.sentAll();
+  expect(sent.some((m: any) => m.type === 'setMcpEnabledList')).toBe(false);
+});
+
+test('US-24 MCP 钉住失败不阻断保存，界面给出提示且不弹确认框', async () => {
+  const { page, host } = handle;
+  await host.setMcpState({
+    servers: ['srv-a', 'srv-b'], defaults: ['srv-a'], sessionEnabled: ['srv-a'], pinFailed: true,
+  });
+  await openSettings(page);
+
+  await page.getByRole('checkbox', { name: 'srv-b' }).check();
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  const saved = await host.waitForSent('saveLLMConfig', 15_000);
+  expect(saved.mcpServers).toEqual(['srv-a', 'srv-b']);
+
+  // 保存照常成功：不弹「是否应用到当前对话」，改为一条提示
+  await expect(page.getByRole('status').getByText('当前对话的 MCP 启用状态未能固定')).toBeVisible();
+  await expect(page.getByText('默认配置已修改')).toHaveCount(0);
+});
+
 test('US-24 界面字号档位随保存提交，宿主回传后即时生效', async () => {
   const { page, host } = handle;
   await openSettings(page);

@@ -674,8 +674,9 @@ const App = () => {
    * 确认把新默认配置应用到当前对话。
    *
    * 只写 pending 里确实需要变的字段（模型身份 / 提示词模式 / thinking effort /
-   * 询问模式 / 联网搜索），并同步当前会话的内存状态；下发到宿主由各字段自己的
-   * effect 完成（见 setModelRef / setPromptMode / ... 的 useEffect）。
+   * 询问模式 / 联网搜索 / MCP 启用列表），并同步当前会话的内存状态；下发到宿主由
+   * 各字段自己的 effect 完成（见 setModelRef / setPromptMode / ... 的 useEffect），
+   * MCP 列表没有对应的会话字段，直接发 `setMcpEnabledList`。
    */
   const handleApplyDefaults = useCallback(() => {
     const pending = applyDefaultsPrompt;
@@ -702,6 +703,13 @@ const App = () => {
     if (typeof pending.webSearch === 'boolean') {
       setWebSearch(pending.webSearch);
       if (state) state.webSearch = pending.webSearch;
+    }
+    if (pending.mcpEnabled && sid) {
+      // 整体覆盖当前会话的启用列表：先乐观更新可见状态，再交给宿主写入会话覆盖，
+      // 完成后 core 回推 setMcpServers（与输入框菜单勾选同一条链路）。
+      const desired = new Set(pending.mcpEnabled);
+      setMcpServers((prev) => prev.map((server) => ({ ...server, enabled: desired.has(server.name) })));
+      postMessage({ type: 'setMcpEnabledList', sessionId: sid, names: pending.mcpEnabled });
     }
   }, [applyDefaultsPrompt, sessionStates]);
 

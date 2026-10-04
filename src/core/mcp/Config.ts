@@ -132,6 +132,25 @@ export async function setSessionMcpEnabled(
 }
 
 /**
+ * 整表覆盖某个会话的启用列表（`UiEvent.mcpEnabledListChanged`）。
+ *
+ * 与 `setSessionMcpEnabled` 的单开关语义不同：这里拿到的是**完整列表**，直接覆盖，
+ * 不做增量。内存覆盖在返回前同步写入——调用方（宿主保存默认配置时先把当前对话钉在
+ * 它当前的列表上）需要它在同一个 tick 内生效，早于随后的配置写盘与 `syncAllSessions`。
+ * 写 meta.json 仍是尽力而为（新对话的 meta.json 尚未创建时由
+ * `flushSessionMcpToMeta()` 补写）。
+ */
+export function setSessionMcpEnabledList(
+  sessionId: string | undefined,
+  names: readonly string[],
+): Promise<void> {
+  if (!sessionId || sessionId === 'undefined') return Promise.resolve();
+  const next = Array.from(new Set(names.filter((name): name is string => typeof name === 'string' && !!name)));
+  sessionOverrides.set(sessionId, next);
+  return persistSessionMcp(sessionId, next);
+}
+
+/**
  * 把内存中的会话级 MCP 选择补写进 meta.json。
  * 查询结束时调用 —— 此时第一条消息已落盘，meta.json 一定存在。
  */

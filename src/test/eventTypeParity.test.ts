@@ -72,6 +72,7 @@ const UI_EVENT_TYPES = [
   'agentModeChanged',
   'webSearchChanged',
   'mcpEnabledChanged',
+  'mcpEnabledListChanged',
   'editRolledBack',
   'hostEnvironmentProvided',
   'userChoicePendingChanged',

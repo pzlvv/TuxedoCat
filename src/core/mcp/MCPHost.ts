@@ -11,7 +11,8 @@
  * 解法：把「会话生命周期 → MCP 引用」的映射收口到 MCPHost，驱动信号全部来自 core：
  * - 会话打开：Integration.createEngine / restoreConversationEngine
  * - 会话关闭：sessionResources.releaseSessionResources / history.deleteConversation
- * - 启用列表变化：UiEvent.mcpEnabledChanged 的 core 侧处理
+ * - 启用列表变化：UiEvent.mcpEnabledChanged（单开关）/ mcpEnabledListChanged（整表覆盖）
+ *   的 core 侧处理
  * - 宿主退出：bootstrap
  *
  * 与 McpManager 的分工：MCPHost 管「什么时候」，McpManager 管「怎么做」。

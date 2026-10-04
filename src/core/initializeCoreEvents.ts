@@ -357,10 +357,10 @@ async function registerSessionResourcesUiEvents(bus: AssistantEventBus): Promise
   });
 }
 
-// ==================== mcp：mcpEnabledChanged ====================
+// ==================== mcp：mcpEnabledChanged / mcpEnabledListChanged ====================
 
 async function registerMcpUiEvents(bus: AssistantEventBus): Promise<void> {
-  const { setSessionMcpEnabled } = await import('./mcp/Config.js');
+  const { setSessionMcpEnabled, setSessionMcpEnabledList } = await import('./mcp/Config.js');
   const { getMCPHost } = await import('./mcp/MCPHost.js');
 
   bus.onUiEvent('mcpEnabledChanged', ({ sessionId, name, enabled }) => {
@@ -372,6 +372,18 @@ async function registerMcpUiEvents(bus: AssistantEventBus): Promise<void> {
         await getMCPHost().onSessionEnabledChanged(sessionId);
       } catch (err) {
         logger.warn('mcp', `mcpEnabledChanged handling failed: ${err}`);
+      }
+    })();
+  });
+
+  bus.onUiEvent('mcpEnabledListChanged', ({ sessionId, names }) => {
+    void (async () => {
+      try {
+        // 整表覆盖（去重、保留顺序）；内存覆盖同步生效，随后的差量同步与上面同一条路径。
+        await setSessionMcpEnabledList(sessionId, names);
+        await getMCPHost().onSessionEnabledChanged(sessionId);
+      } catch (err) {
+        logger.warn('mcp', `mcpEnabledListChanged handling failed: ${err}`);
       }
     })();
   });
