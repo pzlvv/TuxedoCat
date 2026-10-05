@@ -68,6 +68,7 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 | 重启 | Core 实例意外退出后由 daemon 重新启动并恢复接线 | daemon（`docs/core-daemon.md`） |
 | Core 可执行文件名 | `core.binaryName`（`src/config/project.json`），Windows 加 `.exe` | 工程配置 |
 | Core 产物目录 | `resources/<core.resourceDir>/<arch>-<platform>/` | 工程配置 |
+| Core 部署目录名 | `<core.deployPrefix>_<指纹前 32 位>`（`coreDeployDirName`），SSH 部署槽位名，见第 4.4 节 | 工程配置 |
 
 产品名、可执行文件名与产物目录名一律取自 `src/config/project.json`；代码与 Rust 包名
 不出现产品名。
@@ -241,8 +242,11 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
   与 Linux 构建机上是同一个编译器）；目标三元组与 profile（release / debug）。
 - **不混入** zig / C 工具链版本：指纹是「版本身份」不是「字节一致」，同源码同 rustc
   下 C 部分的工具链差异不构成版本差异；指纹相同的两个构建产物行为一致。
-- **用途**：SSH 部署按指纹落位远端目录 `~/.local/bin/<指纹>/`（可执行文件 + 自带的
-  `ripgrep/` 同级），daemon 的状态 / 日志文件按指纹命名
+- **用途**：SSH 部署按指纹落位远端部署目录 `~/.local/bin/<core.deployPrefix>_<指纹前 32 位>/`
+  （目录名由 `coreDeployDirName` 从 `src/config/project.json` 的 `core.deployPrefix` 与
+  指纹前一半拼出——产品前缀把不同产品的部署槽位分开，指纹取前 32 位使目录名不因完整
+  指纹过长；可执行文件 + 自带的
+  `ripgrep/` 同级），daemon 的状态 / 日志文件按完整指纹命名
   （`core-daemon-<指纹>.*`，`docs/core-daemon.md` 第 12.3 节）。多版本 Core 在同一台
   远端机器上各占一个槽位、各跑一个 daemon，互不覆盖、互不换血；部署以「指纹目录
   存在即同版本」为准，**不做产物哈希比对**——指纹目录存在就不再上传，缺失才部署

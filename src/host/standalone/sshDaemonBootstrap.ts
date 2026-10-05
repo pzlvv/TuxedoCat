@@ -4,8 +4,8 @@
  * 目标环境只有 SSH 端口、daemon 端口映射不出来时，Host 经 SSH 完成：
  *
  * 1. **发现**：部署槽位由本机携带产物的**构建指纹**决定（`docs/standalone-core.md`
- *    第 4.4 节）——远端目录 `~/.local/bin/<指纹>/`，状态文件
- *    `~/<configDir>/core-daemon-<指纹>.json`。状态文件里的 daemon 探得通就是
+ *    第 4.4 节）——远端部署目录 `~/.local/bin/<core.deployPrefix>_<指纹前一半>/`，
+ *    状态文件 `~/<configDir>/core-daemon-<指纹>.json`。状态文件里的 daemon 探得通就是
  *    本版本（同一指纹）的 daemon 在跑，直接复用：不重启、不覆盖。
  *    多版本 Core 在同一台远端机器上各占一个槽位、各跑一个 daemon——不同版本
  *    的客户端同时接入同一台机器互不干扰；同版本的多个客户端并发接同一个
@@ -34,6 +34,7 @@ import {
   bundledRipgrepFileName,
   bundledRipgrepPath,
   coreBinaryFileName,
+  coreDeployDirName,
   readCoreFingerprint,
   resolveCoreBinary,
 } from './coreBinary.js';
@@ -55,7 +56,7 @@ export interface RemoteSsh {
   openTcpForward(host: string, port: number): Promise<{ destroy(): void }>;
 }
 
-/** 远端部署槽位的父目录（相对远端主目录）；实际落位是其下的 `<指纹>/` 子目录 */
+/** 远端部署槽位的父目录（相对远端主目录）；实际落位是其下的 `<core.deployPrefix>_<指纹前一半>/` 子目录 */
 export const REMOTE_BIN_DIR = '.local/bin';
 
 /**
@@ -108,7 +109,7 @@ export async function ensureRemoteDaemon(
   const remoteBinary = posixJoin(
     home,
     REMOTE_BIN_DIR,
-    fingerprint,
+    coreDeployDirName(fingerprint),
     coreBinaryFileName(target.platform),
   );
   const statePath = posixJoin(home, CONFIG_DIR_NAME, daemonStateFileName(fingerprint));

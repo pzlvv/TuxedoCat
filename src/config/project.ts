@@ -22,6 +22,8 @@ export const CORE_BINARY_NAME = projectConfig.core.binaryName;
 export const CORE_RESOURCE_DIR = projectConfig.core.resourceDir;
 /** Core 实现选择变量的环境变量名（`<ENV_PREFIX>_<CORE_ENV_VAR_SUFFIX>`） */
 export const CORE_ENV_VAR = `${ENV_PREFIX}_${projectConfig.core.envVarSuffix}`;
+/** Core 远端部署目录名的产品前缀（部署目录名 = `<CORE_DEPLOY_PREFIX>_<指纹前一半>`） */
+export const CORE_DEPLOY_PREFIX = projectConfig.core.deployPrefix;
 export const OUTPUT_CHANNEL_NAME = projectConfig.outputChannelName;
 export const APP_ID = projectConfig.appId;
 export const VIEW_CONTAINER_ID = projectConfig.viewContainerId;

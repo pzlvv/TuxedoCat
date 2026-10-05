@@ -19,7 +19,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { CORE_BINARY_NAME, CORE_RESOURCE_DIR } from '../../config/project.js';
+import { CORE_BINARY_NAME, CORE_DEPLOY_PREFIX, CORE_RESOURCE_DIR } from '../../config/project.js';
 
 /** 产物目录名；平台 / 架构不在矩阵内时返回 null */
 export function corePlatformDir(
@@ -52,10 +52,26 @@ export const CORE_RIPGREP_DIR = 'ripgrep';
  * 构建指纹文件名（与可执行文件同级，`build-core.mjs` 落位）。
  *
  * 指纹只由源码内容与编译器身份决定（docs/standalone-core.md 第 4.4 节）：SSH 部署按
- * 它落位远端目录 `~/.local/bin/<指纹>/`，多版本 Core 在同一台远端机器上各占一个
- * 槽位互不干扰；Electron / vsix 打包把它与产物一起携带，宿主运行时读取。
+ * 它落位远端部署目录 `~/.local/bin/<core.deployPrefix>_<指纹前一半>/`，多版本 Core
+ * 在同一台远端机器上各占一个槽位互不干扰；Electron / vsix 打包把它与产物一起携带，
+ * 宿主运行时读取。
  */
 export const CORE_FINGERPRINT_FILE_NAME = 'fingerprint';
+
+/** 部署目录名里指纹的截取位数：64 位指纹取前一半，目录名不因完整指纹而过长 */
+const DEPLOY_FINGERPRINT_CHARS = 32;
+
+/**
+ * 远端部署目录名：`<core.deployPrefix>_<指纹前一半>`（纯函数，派生逻辑只有这一份）。
+ *
+ * 产品前缀取自 `src/config/project.json`（`core.deployPrefix`），把不同产品的部署
+ * 槽位在共享机器上分开；指纹取前 32 位作为槽位区分已足够（其余位只让目录名变长），
+ * 完整指纹仍在状态 / 日志文件名与 `--version` 里。入参是 `readCoreFingerprint`
+ * 读出的 64 位指纹。
+ */
+export function coreDeployDirName(fingerprint: string): string {
+  return `${CORE_DEPLOY_PREFIX}_${fingerprint.slice(0, DEPLOY_FINGERPRINT_CHARS)}`;
+}
 
 /** 自带 ripgrep 的文件名；Windows 带 `.exe` */
 export function bundledRipgrepFileName(platform: NodeJS.Platform = process.platform): string {
@@ -140,8 +156,9 @@ export function resolveCoreBinary(
 /**
  * 读取 Standalone Core 的构建指纹（可执行文件同级的 `fingerprint` 文件）。
  *
- * 指纹是 SSH 部署的槽位标识：宿主据此确定远端目录 `~/.local/bin/<指纹>/` 与该指纹
- * 专属的 daemon 状态文件（`docs/core-daemon.md` 第 12.3 节）。
+ * 指纹是 SSH 部署的槽位标识：宿主据此确定远端部署目录
+ * `~/.local/bin/<core.deployPrefix>_<指纹前一半>/` 与该指纹专属的 daemon 状态文件
+ * （`docs/core-daemon.md` 第 12.3 节）。
  * 文件缺失 / 内容不是 64 位小写 hex 都抛错：产物不完整属于构建期错误，静默猜一个
  * 指纹会部署到错误的槽位（`DEVELOPMENT.md` 第 12 章）。
  */

@@ -19,12 +19,17 @@ import { createChecker, runTests } from './helpers/harness';
 import { ensureRemoteDaemonShared } from '../host/standalone/sshTransport';
 import type { SshExecResult, SshFileInfo } from '../host/standalone/sshClient';
 import type { RemoteSsh } from '../host/standalone/sshDaemonBootstrap';
+import { REMOTE_BIN_DIR } from '../host/standalone/sshDaemonBootstrap';
+import { coreBinaryFileName, coreDeployDirName } from '../host/standalone/coreBinary';
+import { CONFIG_DIR_NAME, CORE_RESOURCE_DIR } from '../config/project';
 
 const HOME = '/home/dev';
 const FINGERPRINT = 'a'.repeat(64);
-const STATE_PATH = `${HOME}/.tuxedo-cat/core-daemon-${FINGERPRINT}.json`;
-const BINARY_PATH = `${HOME}/.local/bin/${FINGERPRINT}/tuxedo-cat-core`;
-const RIPGREP_PATH = `${HOME}/.local/bin/${FINGERPRINT}/ripgrep/rg`;
+/** 远端部署目录名：`<core.deployPrefix>_<指纹前一半>`（与实现共用同一份派生纯函数） */
+const DEPLOY_DIR = coreDeployDirName(FINGERPRINT);
+const STATE_PATH = `${HOME}/${CONFIG_DIR_NAME}/core-daemon-${FINGERPRINT}.json`;
+const BINARY_PATH = `${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}/${coreBinaryFileName('linux')}`;
+const RIPGREP_PATH = `${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}/ripgrep/rg`;
 const START_COMMAND = `'${BINARY_PATH}' start --idle-exit 30`;
 const TARGET = { host: '203.0.113.7', port: 22, user: 'dev', password: 'secret' };
 
@@ -95,9 +100,9 @@ class FakeSsh implements RemoteSsh {
 /** 建一份带 Linux 产物目录（含构建指纹与自带 ripgrep）的临时 extensionPath */
 function makeExtensionPath(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-ssh-transport-'));
-  const productDir = path.join(root, 'dist', 'resources', 'core', 'x64-linux');
+  const productDir = path.join(root, 'dist', 'resources', CORE_RESOURCE_DIR, 'x64-linux');
   fs.mkdirSync(path.join(productDir, 'ripgrep'), { recursive: true });
-  fs.writeFileSync(path.join(productDir, 'tuxedo-cat-core'), 'fake-core-binary');
+  fs.writeFileSync(path.join(productDir, coreBinaryFileName('linux')), 'fake-core-binary');
   fs.writeFileSync(path.join(productDir, 'fingerprint'), `${FINGERPRINT}\n`);
   fs.writeFileSync(path.join(productDir, 'ripgrep', 'rg'), 'fake-rg-binary');
   return root;

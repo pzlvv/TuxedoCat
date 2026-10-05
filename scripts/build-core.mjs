@@ -13,8 +13,8 @@
  * 同一目录下还会落一份自带的 `ripgrep/rg[.exe]`（Grep / Glob 用的 rg）：
  * Core 以**自己的可执行文件目录**为基准定位自带资源，本地与远端都是这一个位置。
  * 同目录还有一份 `fingerprint` 构建指纹（见 computeFingerprint 与
- * docs/standalone-core.md 第 4.4 节）：SSH 部署按指纹落位远端目录
- * `~/.local/bin/<指纹>/`，多版本 Core 在同一台远端机器上各占一个槽位互不干扰。
+ * docs/standalone-core.md 第 4.4 节）：SSH 部署按指纹落位远端部署目录
+ * `~/.local/bin/<core.deployPrefix>_<指纹前一半>/`，多版本 Core 在同一台远端机器上各占一个槽位互不干扰。
  *
  * 产品名与产物名一律取自 src/config/project.json（`core.binaryName` /
  * `core.resourceDir`），本脚本不写死。Rust 侧的包名固定为中性的 `standalone-core`，

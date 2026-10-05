@@ -22,20 +22,25 @@ import * as os from 'os';
 import * as path from 'path';
 import { createChecker, runTests } from './helpers/harness';
 import {
+  REMOTE_BIN_DIR,
   detectRemoteTarget,
   ensureRemoteDaemon,
   splitEndpoint,
   type RemoteSsh,
 } from '../host/standalone/sshDaemonBootstrap';
+import { coreBinaryFileName, coreDeployDirName } from '../host/standalone/coreBinary';
+import { CONFIG_DIR_NAME, CORE_RESOURCE_DIR } from '../config/project';
 import type { SshExecResult, SshFileInfo } from '../host/standalone/sshClient';
 
 const HOME = '/home/dev';
 /** 构建指纹：64 位小写 hex，与 `build-core.mjs` 的产物同构 */
 const FINGERPRINT = 'f'.repeat(64);
-const STATE_PATH = `${HOME}/.tuxedo-cat/core-daemon-${FINGERPRINT}.json`;
-const BINARY_PATH = `${HOME}/.local/bin/${FINGERPRINT}/tuxedo-cat-core`;
+/** 远端部署目录名：`<core.deployPrefix>_<指纹前一半>`（与实现共用同一份派生纯函数） */
+const DEPLOY_DIR = coreDeployDirName(FINGERPRINT);
+const STATE_PATH = `${HOME}/${CONFIG_DIR_NAME}/core-daemon-${FINGERPRINT}.json`;
+const BINARY_PATH = `${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}/${coreBinaryFileName('linux')}`;
 /** Core 自带的 ripgrep：与远端可执行文件同级（`docs/standalone-core.md` 第 4 节） */
-const RIPGREP_PATH = `${HOME}/.local/bin/${FINGERPRINT}/ripgrep/rg`;
+const RIPGREP_PATH = `${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}/ripgrep/rg`;
 /**
  * 引导执行的启动命令：daemon 恒绑回环（转发连接从远端本机发起，端口不出机器）；
  * 端口交给内核分配——多版本 daemon 并存互不抢固定端口，实际端口随状态文件读回；
@@ -120,7 +125,9 @@ class FakeSsh implements RemoteSsh {
 /** 建一份带 Linux 产物目录（含构建指纹）的临时 extensionPath，并返回产物路径 */
 function makeExtensionPath(): { root: string; binary: string; ripgrep: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-ssh-bootstrap-'));
-  const binary = path.join(root, 'dist', 'resources', 'core', 'x64-linux', 'tuxedo-cat-core');
+  const binary = path.join(
+    root, 'dist', 'resources', CORE_RESOURCE_DIR, 'x64-linux', coreBinaryFileName('linux'),
+  );
   fs.mkdirSync(path.dirname(binary), { recursive: true });
   fs.writeFileSync(binary, 'fake-core-binary');
   // 构建指纹与可执行文件同级（`npm run build:core` 的落位，docs/standalone-core.md 第 4.4 节）
@@ -255,14 +262,14 @@ runTests('sshDaemonBootstrap', async () => {
   {
     const fake = new FakeSsh();
     const daemon = await ensureRemoteDaemon(fake, options);
-    check('未部署时上传到 ~/.local/bin/<指纹>/（经临时名 + mv 原子换名）', fake.uploads.length === 2
+    check('未部署时上传到 ~/.local/bin/<部署目录>/（经临时名 + mv 原子换名）', fake.uploads.length === 2
       && fake.uploads[0]?.remote === `${BINARY_PATH}.new`
       && fake.commands.includes(`mv -f '${BINARY_PATH}.new' '${BINARY_PATH}'`));
     check('上传的是本机携带的对应平台产物', fake.uploads[0]?.local === binary);
     check('上传后置可执行权限', fake.uploads[0]?.mode === 0o755);
     check('未部署时一并上传自带 ripgrep', fake.uploads[1]?.remote === RIPGREP_PATH
       && fake.uploads[1]?.local === ripgrep);
-    check('上传前建好指纹目录', fake.commands.includes(`mkdir -p '${HOME}/.local/bin/${FINGERPRINT}'`));
+    check('上传前建好部署目录', fake.commands.includes(`mkdir -p '${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}'`));
     check('上传后执行 start（绑回环，端口交给内核分配）', fake.commands.includes(START_COMMAND));
     check('返回 daemon endpoint', daemon.host === '127.0.0.1' && daemon.port === 10976);
   }
@@ -329,7 +336,9 @@ runTests('sshDaemonBootstrap', async () => {
 
   {
     const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-ssh-bootstrap-bare-'));
-    const bareBinary = path.join(bare, 'dist', 'resources', 'core', 'x64-linux', 'tuxedo-cat-core');
+    const bareBinary = path.join(
+      bare, 'dist', 'resources', CORE_RESOURCE_DIR, 'x64-linux', coreBinaryFileName('linux'),
+    );
     fs.mkdirSync(path.dirname(bareBinary), { recursive: true });
     fs.writeFileSync(bareBinary, 'fake-core-binary');
     const fake = new FakeSsh();
@@ -348,7 +357,9 @@ runTests('sshDaemonBootstrap', async () => {
 
   {
     const broken = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-ssh-bootstrap-broken-'));
-    const brokenBinary = path.join(broken, 'dist', 'resources', 'core', 'x64-linux', 'tuxedo-cat-core');
+    const brokenBinary = path.join(
+      broken, 'dist', 'resources', CORE_RESOURCE_DIR, 'x64-linux', coreBinaryFileName('linux'),
+    );
     fs.mkdirSync(path.dirname(brokenBinary), { recursive: true });
     fs.writeFileSync(brokenBinary, 'fake-core-binary');
     fs.writeFileSync(path.join(path.dirname(brokenBinary), 'fingerprint'), 'not-a-fingerprint');
@@ -368,7 +379,9 @@ runTests('sshDaemonBootstrap', async () => {
 
   {
     const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-ssh-bootstrap-bare-'));
-    const bareBinary = path.join(bare, 'dist', 'resources', 'core', 'x64-linux', 'tuxedo-cat-core');
+    const bareBinary = path.join(
+      bare, 'dist', 'resources', CORE_RESOURCE_DIR, 'x64-linux', coreBinaryFileName('linux'),
+    );
     fs.mkdirSync(path.dirname(bareBinary), { recursive: true });
     fs.writeFileSync(bareBinary, 'fake-core-binary');
     fs.writeFileSync(path.join(path.dirname(bareBinary), 'fingerprint'), `${FINGERPRINT}\n`);
