@@ -142,7 +142,7 @@ flowchart TB
 | `electron/shortcutDialogHtml.ts` + `electron/shortcutPreload.ts` | Electron 专属：唤醒快捷键设置对话框（File - Shortcut...，见第 5.5 节） |
 | `electron/titlebar/` + `electron/titlebarPreload.ts` | Electron 专属：自绘标题栏（左侧品牌区 + 单一菜单图标 + 工作目录标签页区；右侧置顶钉 / 模式切换 / 最小化-最大化-关闭，两个图标按钮与窗口按钮同宽同高），替代系统默认标题栏与系统菜单栏 |
 | `electron/titlebarMenuHtml.ts` + `electron/titlebarMenuPreload.ts` | Electron 专属：标题栏下拉菜单。菜单由独立 `WebContentsView` 承载（标题栏视图只有 38px 高，自身 bounds 会裁掉向下展开的菜单），首次打开测量尺寸后缓存，再次打开直接摆位显示；子菜单（「添加最近的工作目录」）渲染成右侧飞出面板，默认收起 |
-| `electron/sidebar/` + `electron/sidebarPreload.ts` | Electron 专属：原生侧栏（头部搜索框 + 新对话按钮；对话列表；空态「添加工作目录」+ 最近工作目录） |
+| `electron/sidebar/` + `electron/sidebarPreload.ts` | Electron 专属：原生侧栏（头部搜索框 + 新对话按钮；对话列表；空态「添加工作目录」+ 最近工作目录；底部可折叠的文件浏览器分区，`electron/sidebarFiles.ts` 提供路径校验与目录读取） |
 | `src/extension.ts` / `electron/main.ts` | 各自的 bootstrap：构造三契约与宿主句柄 → 调用共享骨架 `bootstrapCore` → 执行宿主专属接线（第 8.6 节） |
 
 **硬约束**：`VSCodeUIHost.ts` / `VSCodeSpinDesign.ts` / `VSCodeConversationManager.ts`
@@ -2503,6 +2503,7 @@ dropSession(sessionId: string): void {
 | 加号菜单 | 标题栏末尾「加号」改为菜单入口（`titlebar:workspace-menu`），主进程用原生 `Menu.popup` 弹出「打开本地工作区 / 打开远程工作区」两项 |
 | 打开远程工作区 | `openRemoteWorkspaceDialog()`：填 SSH 表单 → 经 `listRemoteDirectories()` 完成 SSH 引导并鉴权 → **连接成功后立刻**列出远端主目录，弹出远端目录选择器（`electron/remoteWorkspace/`）；选择器可改路径、进上级（`..`）、新建与删除空目录（`createRemoteDirectory` / `deleteRemoteDirectory`）；选定目录后 `addRemoteWorkspace(endpoint, path)` 加入打开集合（`scheme=ssh`） |
 | 侧栏头部 | 「搜索框 + 新对话」：搜索框按标题过滤当前活动工作目录的对话列表 |
+| 侧栏文件浏览器 | 侧栏底部常驻「文件」分区条（默认折叠，展开占侧栏 50% 高度，展开状态落侧栏 localStorage），树展示活动工作目录（目录懒加载：展开哪层读哪层，单击目录即展开 / 折叠，Ctrl / Shift 多选不触发展开；`sidebar:files-list`），分区条带刷新按钮，活动目录切换整树重置；右键菜单「复制完整路径 / 复制相对路径 / 在文件资源管理器中打开 / 删除」（`sidebar:files-copy-paths` / `sidebar:files-reveal` / `sidebar:files-delete`，菜单项不做危险色强调）。删除语义分两端：本地走原生确认框 + `shell.trashItem`（移入回收站，可恢复）；远程走 SSH 的 SFTP 递归删除（目录连同内容，永久），确认框文案标明「无法撤销」。复制语义：本地绝对 / 相对路径都按平台分隔符；远程是远端 POSIX 串、相对路径保持 `/` 分隔（不经本地 path 翻译）。「在文件资源管理器中打开」仅本地工作区提供（远程项在渲染层就不显示该菜单项，主进程对远程同样拒绝）。实现：本地读盘 / 校验在 `electron/sidebarFiles.ts`（`resolveWithinRoot` 带 `posix` 分支，远程路径按 win32 解析会变形）；远程经 `electron/sidebarFilesRemote.ts`——一个 endpoint 一条 SSH 连接（`SshClient`，按完整连接目标缓存，连接进行中并发首连去重），列目录 / 删除走 SFTP（`sshClient.ts` 的 `listDirectory` / `removePath`），连接随工作区关闭与应用退出释放。安全口径：root 由渲染层回传、传的是侧栏工作区项的稳定 id（refKey），主进程按 id 回查「打开集合中的工作区」——不按路径回查（工作区项的 `path` 是展示路径，远程项与真实路径不同、且同一路径可在多台机器出现，与「最近打开」点击按 id 回查同一约定），条目相对路径（'/' 分隔约定格式）经越界校验；这组通道只接受侧栏视图来源（`isSidebarSender`）；文件操作（含 SFTP 连接建立与失败原因）落盘 `fileLogger`（`sidebar-files` 组件），打包态无 console 也可事后排查。打开集合为空不显示分区。选择模型与资源管理器一致（点击 / Ctrl 切换 / Shift 连选 / Ctrl+A / Esc / Delete），定义见 `docs/user-stories.md` US-42 / US-43 |
 | 空态 | 打开集合为空时，侧栏显示「打开本地工作区」+ 最近工作区（点击即添加）；聊天区保持纯提示。活动工作区建链中 / 不可用时侧栏对话列表清空（不显示对话列表） |
 | 启动等待态 | 侧栏初始化**先取工作区状态**（`sidebar:get-workspaces`，宿主本地事实）并渲染，之后才拉对话列表（要等 core 连接就绪；远程工作区连不上 / core 启动慢时会一直等）。工作区状态未到达前侧栏的 `workspacesState` 为 `null`，`render()` 保持等待态、不画空态——否则 core 未就绪期间会把「尚未取到工作区」错报成「尚未打开工作区」 |
 | 添加 | `openWorkspaceDialog()` 支持多选，`addWorkspaces(paths)` 按顺序加入打开集合、末项置为活动项；已在集合中的目录直接切为活动项。远程目录经 `addRemoteWorkspace(endpoint, path)` 加入 |

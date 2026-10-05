@@ -13,6 +13,21 @@
     </div>
     <div class="list" id="list"></div>
     <div class="footer" id="footer"></div>
+    <!-- 文件浏览器（US-42 / US-43）：默认折叠成一条分区条，展开占侧栏 50% 高度。
+         初始隐藏（.hidden），等首个工作区状态到达后由 main.ts 决定显示与否。 -->
+    <div class="files-section hidden" id="filesSection">
+      <div class="files-header" id="filesHeader">
+        <span class="files-chevron" id="filesChevron"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></span>
+        <span class="files-title">文件</span>
+        <span class="files-header-spacer"></span>
+        <button class="files-refresh" id="filesRefresh" title="刷新">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+        </button>
+      </div>
+      <div class="files-body" id="filesBody">
+        <div class="files-tree" id="filesTree" tabindex="0" role="tree" aria-label="工作区文件"></div>
+      </div>
+    </div>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

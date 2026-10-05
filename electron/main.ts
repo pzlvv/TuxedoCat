@@ -17,7 +17,7 @@
  */
 
 import { fileLogger } from '../src/core/Logger.js';
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents, globalShortcut, Tray, nativeImage, screen, type NativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents, globalShortcut, Tray, nativeImage, screen, clipboard, type NativeImage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -60,6 +60,18 @@ import {
 } from '../src/host/workspaceState.js';
 
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
+import {
+  listDirectory,
+  resolveWithinRoot,
+  resolveAllWithinRoot,
+  formatRelativePaths,
+} from './sidebarFiles.js';
+import {
+  listRemoteDirectory,
+  deleteRemotePaths,
+  disposeRemoteFilesClient,
+  disposeAllRemoteFilesClients,
+} from './sidebarFilesRemote.js';
 import { PRODUCT_NAME, EXTENSION_NAME, SETTINGS_FILE_NAME } from '../src/config/project.js';
 import { resolveConfigDir } from '../src/config/configDir.js';
 import {
@@ -564,6 +576,8 @@ async function main(): Promise<void> {
     stopTrayBlink();
     tray?.destroy();
     tray = undefined;
+    // 侧栏文件浏览器的 SSH 连接（远程工作区的 SFTP 会话）一并释放
+    disposeAllRemoteFilesClients();
     // core 侧的进程级资源（MCP 子进程 / Standalone Core 进程）统一由共享骨架释放；
     // Standalone 下关闭 Core 进程需要一点时间，此处不阻塞退出——Core 也会在
     // 标准输入关闭（EOF）时自行退出。
@@ -1578,6 +1592,12 @@ function isTitlebarSender(sender: Electron.WebContents): boolean {
   if (titlebar && !titlebar.isDestroyed() && sender === titlebar) return true;
   const menu = titlebarMenuView?.webContents;
   return !!menu && !menu.isDestroyed() && sender === menu;
+}
+
+/** 该 IPC 是否来自应用自有的侧栏视图：文件浏览通道能删工作区文件，必须校验来源 */
+function isSidebarSender(sender: Electron.WebContents): boolean {
+  const sidebar = sidebarView?.webContents;
+  return !!sidebar && !sidebar.isDestroyed() && sender === sidebar;
 }
 
 /** 把窗口模式 / 置顶状态 / 工作区推给标题栏（按钮高亮、禁用态、浮窗标题） */
@@ -2958,6 +2978,8 @@ async function closeWorkspace(target: WorkspaceRef | string): Promise<void> {
   openWorkspaces.splice(idx, 1);
   // 标签页关闭即丢弃启动期的不可用判定 / 建链状态：之后经「最近打开」重新添加按全新打开处理
   workspaceAvailabilityState.clearAll(refKey(ref));
+  // 文件浏览器的 SSH 连接随工作区一起释放（重开按新连接处理）
+  disposeRemoteFilesClient(ref.endpoint);
   chatViews?.closeWorkspace(ref.path);
   // 该目录的列表快照一并丢弃：关闭期间盘上内容可能变化（另一实例 / daemon 侧），
   // 重新打开时按首次打开处理（无快照 → 完整读一次盘）。其它目录的快照不受影响。
@@ -4105,6 +4127,153 @@ function setupIpc(): void {
       console.error('[main] sidebar:smart-name-conversation error:', err);
       return { ok: false, error: String(err) };
     }
+  });
+
+  // ── 侧栏文件浏览器（US-42 / US-43） ──
+  // root 由渲染层回传、不可信：它是侧栏工作区项的稳定 id（refKey），按 id 回查
+  // 「打开集合中的工作区」——不能按路径回查：远程项的展示路径（ssh://user@host/…）
+  // 与 ref.path（远端真实路径）不同，且同一路径可以在多台机器上出现，只有 id 唯一
+  // （与侧栏「最近打开」点击的回查方式同一约定）。条目相对路径再经 sidebarFiles 的
+  // 越界校验（本地 win32 / 远程 posix），双保险缺一不可。
+  const resolveFilesRef = (root: unknown): WorkspaceRef | null => {
+    if (typeof root !== 'string' || root.length === 0) return null;
+    return openWorkspaces.find((ref) => refKey(ref) === root) ?? null;
+  };
+  /** 公共入参校验：root 合法 + relPaths 是非空字符串数组；不合法时回错误而非抛错（渲染层按 ok:false 显示） */
+  const parseFilesPayload = (
+    payload: unknown,
+  ): { ref: WorkspaceRef; rels: string[] } | { error: string } => {
+    const p = (payload ?? {}) as { root?: unknown; paths?: unknown };
+    const ref = resolveFilesRef(p.root);
+    if (!ref) return { error: 'workspace-unavailable' };
+    if (!Array.isArray(p.paths) || p.paths.length === 0 || !p.paths.every((x) => typeof x === 'string' && x.length > 0)) {
+      return { error: 'invalid-arguments' };
+    }
+    return { ref, rels: p.paths as string[] };
+  };
+  // 文件操作日志落盘（console 在打包态不可见）：远程 SFTP 的连接建立 / 失败原因
+  // 只有在这里才能事后排查（SshClient 的 [ssh] 行也走这个出口）
+  const fileOpLog = (...args: unknown[]): void => {
+    fileLogger.info('sidebar-files', args.map((a) => String(a)).join(' '));
+  };
+
+  ipcMain.handle('sidebar:files-list', async (event, payload: unknown) => {
+    if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-list');
+    const p = (payload ?? {}) as { root?: unknown; dir?: unknown };
+    const ref = resolveFilesRef(p.root);
+    if (!ref) return { ok: false, error: 'workspace-unavailable' };
+    if (typeof p.dir !== 'string') return { ok: false, error: 'invalid-arguments' };
+    if (ref.endpoint) {
+      // 远程（SSH）：SFTP 列目录，路径按远端 POSIX 语义校验
+      try {
+        return { ok: true, entries: await listRemoteDirectory(ref.endpoint, ref.path, p.dir, fileOpLog) };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        fileLogger.warn('sidebar-files', `list failed (${refDisplay(ref)}/${p.dir}): ${message}`);
+        return { ok: false, error: message };
+      }
+    }
+    const abs = resolveWithinRoot(ref.path, p.dir, { allowRoot: true });
+    if (!abs) return { ok: false, error: 'outside-root' };
+    try {
+      return { ok: true, entries: await listDirectory(abs) };
+    } catch (err) {
+      // 目录读不到（被外部删除 / 无权限）原样回给渲染层显示，不猜空列表
+      const message = err instanceof Error ? err.message : String(err);
+      fileLogger.warn('sidebar-files', `list failed (${refDisplay(ref)}/${p.dir}): ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle('sidebar:files-reveal', (event, payload: unknown) => {
+    if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-reveal');
+    const parsed = parseFilesPayload(payload);
+    if ('error' in parsed) return { ok: false, error: parsed.error };
+    const { ref, rels } = parsed;
+    // 「在文件资源管理器中打开」只对本地路径有意义：远程项在渲染层就不显示该菜单项
+    if (ref.endpoint) return { ok: false, error: 'remote-unsupported' };
+    const abs = resolveAllWithinRoot(ref.path, rels.slice(0, 1));
+    if (!abs) return { ok: false, error: 'outside-root' };
+    shell.showItemInFolder(abs[0]);
+    return { ok: true };
+  });
+
+  ipcMain.handle('sidebar:files-copy-paths', (event, payload: unknown) => {
+    if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-copy-paths');
+    const p = (payload ?? {}) as { relative?: unknown };
+    const parsed = parseFilesPayload(payload);
+    if ('error' in parsed) return { ok: false, error: parsed.error };
+    const { ref, rels } = parsed;
+    if (ref.endpoint) {
+      // 远程：绝对路径是远端 POSIX 串（逐项越界校验），相对路径保持 '/' 分隔——
+      // 复制出来的路径要能在远端 shell 里直接用，不经本地 path 翻译
+      const abs = resolveAllWithinRoot(ref.path, rels, { posix: true });
+      if (!abs) return { ok: false, error: 'outside-root' };
+      clipboard.writeText((p.relative === true ? rels : abs).join('\n'));
+      return { ok: true };
+    }
+    const abs = resolveAllWithinRoot(ref.path, rels);
+    if (!abs) return { ok: false, error: 'outside-root' };
+    // 本地：相对路径按平台分隔符输出，与「复制完整路径」同一口径
+    const text = (p.relative === true ? formatRelativePaths(ref.path, rels) : abs).join('\n');
+    clipboard.writeText(text);
+    return { ok: true };
+  });
+
+  ipcMain.handle('sidebar:files-delete', async (event, payload: unknown) => {
+    if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-delete');
+    const parsed = parseFilesPayload(payload);
+    if ('error' in parsed) return { ok: false, error: parsed.error };
+    const { ref, rels } = parsed;
+    if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, error: 'no-window' };
+    // 原生确认框，本地 / 远程分别措辞：本地移入回收站（可恢复），远程永久删除
+    // （目录连同内容，远端没有回收站）。默认与取消都落在「取消」（与 confirmCloseBusy
+    // 同一口径，e2e 用 stubMainMessageBox 驱动确认 / 取消两条分支）。
+    const isRemote = ref.endpoint !== null;
+    const shown = rels.slice(0, 5).join('\n');
+    const detailList = `${shown}${rels.length > 5 ? `\n${tt(`…（共 ${rels.length} 项）`, `… (${rels.length} items in total)`)}` : ''}`;
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      buttons: isRemote
+        ? [tt('永久删除', 'Delete Permanently'), tt('取消', 'Cancel')]
+        : [tt('移入回收站', 'Move to Trash'), tt('取消', 'Cancel')],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+      message: tt(`要删除选中的 ${rels.length} 项吗？`, `Delete ${rels.length} selected item(s)?`),
+      detail: isRemote
+        ? tt('所选项目将被永久删除（目录连同内容），无法撤销：', 'The selected items will be deleted permanently (directories with their contents). This cannot be undone:')
+          + `\n${detailList}`
+        : tt('所选项目将移入系统回收站：', 'The selected items will be moved to the Recycle Bin:')
+          + `\n${detailList}`,
+    });
+    if (response !== 0) return { ok: false, error: 'cancelled' };
+    if (ref.endpoint) {
+      try {
+        await deleteRemotePaths(ref.endpoint, ref.path, rels, fileOpLog);
+      } catch (err) {
+        // 部分失败如实回报（渲染层无论成败都刷新树，残留项会自然显现）
+        const message = err instanceof Error ? err.message : String(err);
+        fileLogger.warn('sidebar-files', `remote delete failed (${refDisplay(ref)}): ${message}`);
+        return { ok: false, error: message };
+      }
+      return { ok: true };
+    }
+    const abs = resolveAllWithinRoot(ref.path, rels);
+    if (!abs) return { ok: false, error: 'outside-root' };
+    const failures: string[] = [];
+    for (let i = 0; i < abs.length; i++) {
+      try {
+        await shell.trashItem(abs[i]);
+      } catch (err) {
+        failures.push(`${rels[i]}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (failures.length > 0) {
+      fileLogger.warn('sidebar-files', `delete failed (${refDisplay(ref)}): ${failures.join('; ')}`);
+      return { ok: false, error: failures.join('\n') };
+    }
+    return { ok: true };
   });
 }
 

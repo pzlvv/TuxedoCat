@@ -1,6 +1,7 @@
 /**
  * Electron preload - 侧栏专用
  * 暴露 sidebarAPI：对话列表读写 + 工作目录（打开集合 / 添加 / 切换 / 关闭）+ 变化推送
+ * + 文件浏览器（US-42 / US-43：列表 / 复制路径 / 资源管理器定位 / 删除）
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
@@ -59,5 +60,23 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
   },
   onWorkspacesChanged: (callback: (state: unknown) => void): void => {
     ipcRenderer.on('sidebar:workspaces-changed', (_event, state) => callback(state));
+  },
+  // ── 文件浏览器（US-42 / US-43） ──
+  // rel 一律是 '/' 分隔的相对路径（约定格式，见 electron/sidebarFiles.ts）；
+  // root 是侧栏工作区项的稳定 id（refKey），主进程按 id 回查打开集合里的工作区引用
+  filesList: (root: string, dir: string): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-list', { root, dir });
+  },
+  /** 在系统文件资源管理器中定位（只作用于单个条目） */
+  filesReveal: (root: string, relPath: string): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-reveal', { root, paths: [relPath] });
+  },
+  /** 复制路径：relative 为 true 时复制相对路径；多项以换行拼接 */
+  filesCopyPaths: (root: string, relPaths: string[], relative: boolean): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-copy-paths', { root, paths: relPaths, relative });
+  },
+  /** 删除（移入回收站）：主进程先弹原生确认框 */
+  filesDelete: (root: string, relPaths: string[]): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-delete', { root, paths: relPaths });
   },
 });

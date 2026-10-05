@@ -44,7 +44,7 @@ body {
   white-space: nowrap;
 }
 .new-chat-btn:hover { background: #7c7ff5; }
-.list { flex: 1; overflow-y: auto; padding: 6px; }
+.list { flex: 1; overflow-y: auto; padding: 6px; min-height: 0; }
 .item {
   display: flex;
   flex-direction: row;
@@ -444,4 +444,203 @@ body {
     border-top-color: #e4e4e7;
     color: #71717a;
   }
+}
+
+/* ═══ 文件浏览器（US-42 / US-43） ═══
+   分区条常驻侧栏底部；展开占侧栏 50% 高度（flex: 0 0 50%），对话列表相应收窄。
+   树行 / 右键菜单的配色与对话列表同一灰阶（#26262c hover、indigo 选中系）。 */
+.files-section {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid #26262c;
+}
+.files-section.hidden { display: none; }
+.files-section .files-body { display: none; }
+.files-section.expanded { flex: 0 0 50%; min-height: 0; }
+.files-section.expanded .files-body {
+  display: block;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.files-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.files-header:hover { background: #26262c; }
+.files-chevron {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #a1a1aa;
+  transition: transform 0.15s ease;
+}
+.files-chevron svg { width: 11px; height: 11px; }
+.files-section.expanded .files-chevron { transform: rotate(90deg); }
+.files-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #c9c9ce;
+  letter-spacing: 0.2px;
+}
+.files-header-spacer { flex: 1; }
+/* 刷新按钮只在展开后有意义：折叠时藏掉，分区条更接近纯「tab」 */
+.files-refresh {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: #a1a1aa;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+}
+.files-section.expanded .files-refresh { display: flex; }
+.files-refresh:hover { background: rgba(255, 255, 255, 0.12); color: #e4e4e7; }
+
+.files-tree {
+  padding: 4px 0 8px;
+  outline: none;
+  min-height: 100%;
+}
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding-right: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.file-row:hover { background: #26262c; }
+/* 选中行不透明底色（与 .item.active 同思路：hover 态直接叠加，不留透明叠色） */
+.file-row.selected { background: #2c2c57; }
+.file-row.selected:hover { background: #343464; }
+.file-chevron {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #8b8b94;
+  transition: transform 0.12s ease;
+}
+.file-chevron svg { width: 10px; height: 10px; }
+.file-chevron.expanded { transform: rotate(90deg); }
+/* 文件没有展开箭头：等宽空位占住，图标与名称在目录 / 文件两层间对齐 */
+.file-chevron.leaf { visibility: hidden; }
+.file-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.file-icon svg { width: 13px; height: 13px; }
+.file-name {
+  font-size: 12px;
+  color: #c1c1c6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 提示行（加载中 / 空目录）：不可选、弱化；错误行可点重试 */
+.file-hint {
+  height: 20px;
+  font-size: 11.5px;
+  color: #6b6b74;
+  cursor: default;
+}
+.file-error {
+  color: #f87171;
+  cursor: pointer;
+}
+.file-error:hover { background: #26262c; }
+
+/* 图标配色（深色）：目录蓝、代码青、JSON/配置黄、文本绿、图片紫、压缩包橙 */
+.ficon-folder, .ficon-folder-open { color: #82aef5; }
+.ficon-code { color: #62b6cf; }
+.ficon-config { color: #d4c05e; }
+.ficon-text { color: #74c2ae; }
+.ficon-image { color: #b795e3; }
+.ficon-archive { color: #d09a68; }
+.ficon-file { color: #9aa0a8; }
+
+/* 右键菜单：自绘（原生 Menu.popup 无法跟随侧栏深浅色与圆角风格） */
+.files-context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 208px;
+  padding: 4px;
+  background: #1f1f25;
+  border: 1px solid #2e2e36;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  display: none;
+}
+.files-context-menu.open { display: block; }
+.files-menu-item {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: #d4d4d8;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+  padding: 5px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.files-menu-item:hover { background: #2e2e36; color: #fff; }
+
+/* ── 文件浏览器：浅色主题覆盖（与上方对话列表浅色块同一灰阶） ── */
+@media (prefers-color-scheme: light) {
+  .files-section { border-top-color: #e4e4e7; }
+  .files-header:hover { background: #f4f4f5; }
+  .files-title { color: #52525b; }
+  .files-chevron { color: #71717a; }
+  .files-refresh { color: #71717a; }
+  .files-refresh:hover { background: rgba(0, 0, 0, 0.06); color: #18181b; }
+
+  .file-row:hover { background: #f4f4f5; }
+  /* #d4d5fd = rgba(99,102,241,0.18) 叠在浅灰侧栏上，与深色同一 indigo 透明度 */
+  .file-row.selected { background: #d4d5fd; }
+  .file-row.selected:hover { background: #c9cbfb; }
+  .file-name { color: #3f3f46; }
+  .file-chevron { color: #71717a; }
+
+  .ficon-folder, .ficon-folder-open { color: #3b74d8; }
+  .ficon-code { color: #257d95; }
+  .ficon-config { color: #8f7d1a; }
+  .ficon-text { color: #2a8a72; }
+  .ficon-image { color: #7d4fc0; }
+  .ficon-archive { color: #a06a2c; }
+  .ficon-file { color: #6b7280; }
+
+  .file-hint { color: #9ca3af; }
+  .file-error { color: #dc2626; }
+  .file-error:hover { background: #f4f4f5; }
+
+  .files-context-menu {
+    background: #ffffff;
+    border-color: #e4e4e7;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  }
+  .files-menu-item { color: #27272a; }
+  .files-menu-item:hover { background: #f4f4f5; color: #18181b; }
 }

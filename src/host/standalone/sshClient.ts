@@ -13,7 +13,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { Client, type ClientChannel, type SFTPWrapper } from 'ssh2';
+import { Client, type ClientChannel, type SFTPWrapper, type FileEntryWithStats } from 'ssh2';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
 
 /** SSH 连接目标 */
@@ -23,6 +23,12 @@ export interface SshTarget {
   port: number;
   user: string;
   password: string;
+}
+
+/** 远端目录项（SFTP readdir 的归类结果，与本地文件树同一形态） */
+export interface SshDirEntry {
+  name: string;
+  kind: 'file' | 'directory';
 }
 
 /** 一次远端命令的执行结果 */
@@ -96,6 +102,12 @@ export class SshDisconnectedError extends Error {
     super(message);
     this.name = 'SshDisconnectedError';
   }
+}
+
+/** ssh2 的 SFTP 错误码是 SFTP 状态码（2 = NO_SUCH_FILE），类型上只声明了 string */
+function isSftpNoSuchFile(error: Error): boolean {
+  const code: unknown = (error as { code?: unknown }).code;
+  return code === 2 || code === '2' || code === 'ENOENT' || /no such file/i.test(error.message);
 }
 
 /**
@@ -225,6 +237,94 @@ export class SshClient {
         else resolve(absPath);
       });
     });
+  }
+
+  /**
+   * 远端路径的类型（跟随符号链接）。
+   *
+   * 返回 `null` 表示目标不存在（与 `stat` 的 `exists: false` 同一判定口径）；
+   * 侧栏文件浏览器据此归类条目、删除前区分 unlink 与递归删目录。
+   */
+  private async statKind(target: string): Promise<'file' | 'directory' | null> {
+    const sftp = await this.requireSftp();
+    return new Promise<'file' | 'directory' | null>((resolve, reject) => {
+      sftp.stat(target, (error, stats) => {
+        if (error) {
+          if (isSftpNoSuchFile(error)) {
+            resolve(null);
+            return;
+          }
+          reject(new Error(`SFTP stat failed (${target}): ${error.message}`));
+          return;
+        }
+        resolve(stats.isDirectory() ? 'directory' : 'file');
+      });
+    });
+  }
+
+  /**
+   * 列出远端目录内容（文件与目录都含；符号链接按目标归类，断链跳过）。
+   *
+   * 排序不在这一层做：调用方（Electron 侧栏）与本地目录列表共用同一份
+   * 「目录优先 + 名称排序」的比较器，避免两套排序规则漂移。
+   */
+  async listDirectory(target: string): Promise<SshDirEntry[]> {
+    const sftp = await this.requireSftp();
+    const list = await new Promise<FileEntryWithStats[]>((resolve, reject) => {
+      sftp.readdir(target, (error, entries) => {
+        if (error) reject(new Error(`SFTP readdir failed (${target}): ${error.message}`));
+        else resolve(entries);
+      });
+    });
+    const entries: SshDirEntry[] = [];
+    for (const entry of list) {
+      if (entry.attrs.isSymbolicLink()) {
+        const kind = await this.statKind(`${target.replace(/\/+$/, '')}/${entry.filename}`);
+        if (kind) entries.push({ name: entry.filename, kind });
+        continue;
+      }
+      entries.push({ name: entry.filename, kind: entry.attrs.isDirectory() ? 'directory' : 'file' });
+    }
+    return entries;
+  }
+
+  /**
+   * 删除远端路径：文件直接 unlink，目录**连同内容递归删除**。
+   *
+   * 远端没有回收站等价物，调用方必须先经确认框（侧栏删除的确认文案要标明
+   * 「无法撤销」）。逐项递归是刻意的：SFTP 没有 rm -r，非空目录只能先清内容再 rmdir。
+   */
+  async removePath(target: string): Promise<void> {
+    const kind = await this.statKind(target);
+    if (kind === null) throw new Error(`remote path does not exist: ${target}`);
+    if (kind === 'file') {
+      await this.unlinkPath(target);
+      return;
+    }
+    const children = await this.listDirectory(target);
+    const base = target.replace(/\/+$/, '');
+    for (const child of children) {
+      await this.removePath(`${base}/${child.name}`);
+    }
+    await this.rmdirPath(target);
+  }
+
+  private unlinkPath(target: string): Promise<void> {
+    return this.requireSftp().then((sftp) => new Promise<void>((resolve, reject) => {
+      sftp.unlink(target, (error) => {
+        if (error) reject(new Error(`SFTP unlink failed (${target}): ${error.message}`));
+        else resolve();
+      });
+    }));
+  }
+
+  private rmdirPath(target: string): Promise<void> {
+    return this.requireSftp().then((sftp) => new Promise<void>((resolve, reject) => {
+      sftp.rmdir(target, (error) => {
+        if (error) reject(new Error(`SFTP rmdir failed (${target}): ${error.message}`));
+        else resolve();
+      });
+    }));
   }
 
   /** 远端路径信息；不存在返回 `exists: false`（其它错误照常抛出） */
