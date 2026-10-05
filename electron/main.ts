@@ -4368,10 +4368,15 @@ function setupIpc(): void {
   });
 
   // ── 双击打开文件（US-42 验收 6） ──
-  // 分流在 electron/fileOpen.ts：文本 → 内置 Monaco 窗口（与「Edit 预览」同一效果）、
+  // 分流在 electron/fileOpen.ts：Markdown → 内置 Markdown 预览窗口（渲染后的只读
+  // HTML）、文本 → 内置 Monaco 窗口（与「Edit 预览」同一效果）、
   // 图片 → 内置图片查看器（滚轮缩放）、其它二进制 → 系统默认应用。
-  // 远程工作区：文本 / 图片走 SFTP 读出进内置窗口；二进制不支持打开。
+  // 远程工作区：Markdown / 文本 / 图片走 SFTP 读出进内置窗口；二进制不支持打开。
   const fileOpenBridge: FileOpenBridge = {
+    openMarkdownViewer: (init) => {
+      if (!uiHost) throw new Error('ui host unavailable');
+      return uiHost.openMarkdownPreviewWindow(init);
+    },
     openImageViewer: (init) => {
       if (!uiHost) throw new Error('ui host unavailable');
       return uiHost.openImagePreviewWindow(init);

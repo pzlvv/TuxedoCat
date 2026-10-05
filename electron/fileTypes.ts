@@ -3,7 +3,8 @@
  *
  * 侧栏文件树的图标着色（`electron/sidebar/main.ts` 的 fileIconFor）与「双击打开」
  * 的分流（`electron/fileOpen.ts` 的 classifyFileForOpen）消费同一份扩展名集合：
- * 图标说是文本的，双击就进内置文本窗口——一份事实一个写入点（DEVELOPMENT.md
+ * 图标说是文本的，双击就进内置文本窗口（Markdown 是例外——着色与文本同类，
+ * 双击进内置 Markdown 预览窗口）——一份事实一个写入点（DEVELOPMENT.md
  * 第 12 章规则 4），扩类型在这里加一处即可。
  */
 
@@ -11,8 +12,10 @@
 export const FILE_IMAGE_EXTS: ReadonlySet<string> = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp', 'avif', 'tiff',
 ]);
+/** Markdown 扩展名（图标着色与文本同类；双击进内置 Markdown 预览窗口，US-42 验收 6） */
+export const FILE_MARKDOWN_EXTS: ReadonlySet<string> = new Set(['md', 'markdown']);
 /** 文本类扩展名（图标着色 + 内置文本查看器打开） */
-export const FILE_TEXT_EXTS: ReadonlySet<string> = new Set(['md', 'txt', 'log', 'rst', 'adoc']);
+export const FILE_TEXT_EXTS: ReadonlySet<string> = new Set(['txt', 'log', 'rst', 'adoc']);
 /** 代码类扩展名（图标着色 + 内置文本查看器打开，Monaco 按扩展名选语法） */
 export const FILE_CODE_EXTS: ReadonlySet<string> = new Set([
   'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'rs', 'go', 'java', 'c', 'h', 'cpp', 'hpp',
@@ -44,13 +47,14 @@ export const FILE_BINARY_EXTS: ReadonlySet<string> = new Set([
 export const REMOTE_BINARY_UNSUPPORTED = 'remote-binary-unsupported';
 
 /** 双击打开的分流结果：sniff = 扩展名不认识，要先嗅探内容再定（文本还是二进制） */
-export type FileOpenKind = 'image' | 'text' | 'binary' | 'sniff';
+export type FileOpenKind = 'image' | 'markdown' | 'text' | 'binary' | 'sniff';
 
 /** 文件名 → 打开分流。识别规则与侧栏图标一致（同一份扩展名集合，只有一份根） */
 export function classifyFileForOpen(fileName: string): FileOpenKind {
   const lower = fileName.toLowerCase();
   const ext = lower.includes('.') ? lower.slice(lower.lastIndexOf('.') + 1) : '';
   if (FILE_IMAGE_EXTS.has(ext)) return 'image';
+  if (FILE_MARKDOWN_EXTS.has(ext)) return 'markdown';
   if (FILE_TEXT_EXTS.has(ext) || FILE_CODE_EXTS.has(ext) || FILE_CONFIG_EXTS.has(ext)) return 'text';
   if (FILE_BINARY_EXTS.has(ext)) return 'binary';
   return 'sniff';

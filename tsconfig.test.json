@@ -11,6 +11,8 @@
   },
   "include": [
     "src/test/**/*.ts",
+    "electron/fileOpen.ts",
+    "electron/fileTypes.ts",
     "electron/sidebarFiles.ts"
   ],
   "exclude": [

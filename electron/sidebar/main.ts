@@ -57,6 +57,7 @@ import {
   FILE_CODE_EXTS,
   FILE_CONFIG_EXTS,
   FILE_IMAGE_EXTS,
+  FILE_MARKDOWN_EXTS,
   FILE_TEXT_EXTS,
   REMOTE_BINARY_UNSUPPORTED,
 } from '../fileTypes.js';
@@ -983,6 +984,8 @@ function fileIconFor(name: string): { cls: string; svg: string } {
   const ext = lower.includes('.') ? lower.slice(lower.lastIndexOf('.') + 1) : '';
   if (FILE_CODE_EXTS.has(ext)) return { cls: 'ficon-code', svg: FICON_FILE_CODE };
   if (FILE_CONFIG_EXTS.has(ext)) return { cls: 'ficon-config', svg: FICON_FILE_JSON };
+  // Markdown 着色与文本同类（双击才分流出 Markdown 预览窗口，图标不另设一档）
+  if (FILE_MARKDOWN_EXTS.has(ext)) return { cls: 'ficon-text', svg: FICON_FILE_TEXT };
   if (FILE_TEXT_EXTS.has(ext)) return { cls: 'ficon-text', svg: FICON_FILE_TEXT };
   if (FILE_IMAGE_EXTS.has(ext)) return { cls: 'ficon-image', svg: FICON_IMAGE };
   if (FILE_ARCHIVE_EXTS.has(ext)) return { cls: 'ficon-archive', svg: FICON_ARCHIVE };

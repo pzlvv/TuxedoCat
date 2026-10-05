@@ -16,6 +16,7 @@ import { WebviewViewHandle } from '../src/host/UIHost.js';
 import type { WorkspaceRef, WorkspaceEndpoint } from '../src/host/workspaceRef.js';
 import type { WebviewMessage } from '../src/host/webviewMessages.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
+import { getMarkdownPreviewHtml } from '../src/host/markdownHtml.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
 import { isImageFile } from '../src/host/imageFiles.js';
 import { fileLogger } from '../src/core/Logger.js';
@@ -377,6 +378,34 @@ export class ElectronUIHost implements UIHost {
     });
     await win.loadFile(indexPath);
     win.webContents.send('imageviewer-init', init);
+  }
+
+  /**
+   * 打开内置 Markdown 预览窗口：侧栏双击 `.md` 文件进渲染视图而非源码文本。
+   *
+   * 与 Mermaid 预览同一模式——主进程纯函数（`src/host/markdownHtml.ts`）生成
+   * 只读 HTML，经 data URL 装进沙箱窗口，页面无 preload、无脚本。内容在生成侧
+   * 就净化（原生 HTML 片段转义、危险协议链接降级为纯文本），渲染器对文件内容
+   * 零信任。
+   */
+  async openMarkdownPreviewWindow(init: { title: string; content: string }): Promise<void> {
+    const isDark = nativeTheme.shouldUseDarkColors;
+    const title = init.title || PRODUCT_NAME;
+    const win = new BrowserWindowCtor({
+      width: 1080,
+      height: 720,
+      title,
+      icon: path.join(APP_ROOT, 'assets', 'logo.png'),
+      autoHideMenuBar: true,
+      // 与 markdownHtml 的暗色底色一致：页面加载完成前不闪另一主题的色块
+      backgroundColor: isDark ? '#1e1e1e' : '#ffffff',
+      webPreferences: { sandbox: true },
+    });
+    const html = await getMarkdownPreviewHtml(init.content, { title, isDark });
+    // base64 而非 encodeURIComponent：CJK 的百分号编码会 9 倍膨胀，轻易顶破
+    // Chromium 对 data URL 的 ~2MB 上限；base64 只放大 4/3（超大文件仍会被
+    // 上限拒之门外，与 Mermaid 预览同一约束）
+    await win.loadURL('data:text/html;charset=utf-8;base64,' + Buffer.from(html, 'utf8').toString('base64'));
   }
 
   /**

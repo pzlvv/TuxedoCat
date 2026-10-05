@@ -3,6 +3,8 @@
  *
  * 打开方式按文件类型分流（类型判定与侧栏图标共用同一份扩展名集合，
  * 根在 `electron/fileTypes.ts`）：
+ * - Markdown（.md / .markdown）→ 内置 Markdown 预览窗口（渲染后的只读 HTML，
+ *   本地 / 远程同样支持，US-42 验收 6）；
  * - 文本（代码 / 配置 / 文本，以及嗅探不出二进制的未知扩展名）→ 内置文本查看器
  *   （Monaco 窗口，与工具卡片点「Edit」预览同一窗口、同一效果）；
  * - 图片 → 内置图片查看器（滚轮缩放，US-38 图片预览窗口的新实现）；
@@ -37,6 +39,8 @@ export async function bytesLookBinary(bytes: Buffer): Promise<boolean> {
 
 /** 宿主能力注入口：窗口打开与系统调用都由 main.ts 提供（本模块不 import electron） */
 export interface FileOpenBridge {
+  /** 内置 Markdown 预览窗口（渲染后的只读 HTML，`src/host/markdownHtml.ts` 生成） */
+  openMarkdownViewer(init: { title: string; content: string }): void | Promise<void>;
   /** 内置图片查看器（滚轮缩放；US-38 图片预览窗口） */
   openImageViewer(init: { title: string; dataUrl: string }): void | Promise<void>;
   /** 内置文本查看器（Monaco view 模式；filePath 只用于语言推断，不读盘） */
@@ -72,6 +76,13 @@ export async function openLocalWorkspaceFile(
     });
     return;
   }
+  if (kind === 'markdown') {
+    await bridge.openMarkdownViewer({
+      title: path.posix.basename(rel),
+      content: await fs.promises.readFile(abs, 'utf-8'),
+    });
+    return;
+  }
   if (kind === 'text') {
     await bridge.openLocalFile(abs);
     return;
@@ -85,7 +96,7 @@ export async function openLocalWorkspaceFile(
   await bridge.openLocalFile(abs);
 }
 
-/** 远程（SSH）工作区双击打开：文本 / 图片经 SFTP 读出进内置窗口；二进制不支持打开 */
+/** 远程（SSH）工作区双击打开：文本 / Markdown / 图片经 SFTP 读出进内置窗口；二进制不支持打开 */
 export async function openRemoteWorkspaceFile(
   bridge: FileOpenBridge,
   reader: RemoteFileReader,
@@ -105,6 +116,10 @@ export async function openRemoteWorkspaceFile(
       title: name,
       dataUrl: `data:${imageMimeFor(rel)};base64,${bytes.toString('base64')}`,
     });
+    return;
+  }
+  if (kind === 'markdown') {
+    await bridge.openMarkdownViewer({ title: name, content: await reader.readText(abs) });
     return;
   }
   if (kind === 'text') {
