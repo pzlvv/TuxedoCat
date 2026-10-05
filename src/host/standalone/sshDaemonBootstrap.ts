@@ -170,10 +170,22 @@ async function ensureRemoteBinary(
 ): Promise<boolean> {
   if ((await ssh.stat(remoteBinary)).exists) return false;
   await ssh.exec(`mkdir -p ${shellQuote(posixDirname(remoteBinary))}`);
-  const staging = `${remoteBinary}.new`;
-  await ssh.upload(localBinary, staging, 0o755);
-  await ssh.exec(`mv -f ${shellQuote(staging)} ${shellQuote(remoteBinary)}`);
+  await uploadAtomically(ssh, localBinary, remoteBinary);
   return true;
+}
+
+/**
+ * 原子上传一个可执行文件：先传临时名，再 `mv` 原子换名到最终路径。
+ *
+ * 目标可能正被执行（daemon 二进制由远端 systemd/init 拉起、ripgrep 由 Core 的
+ * Grep/Glob 每次 spawn——它的部署槽位被外部清过、`stat` 判定不存在时我们无从
+ * 得知有人在用），对执行中的文件直接覆盖写是 `ETXTBSY`（SFTP 层报 `Failure`）；
+ * `mv` 是 rename，只换目录项，运行中的进程继续用旧 inode。两处部署共用这一份。
+ */
+async function uploadAtomically(ssh: RemoteSsh, localPath: string, remotePath: string): Promise<void> {
+  const staging = `${remotePath}.new`;
+  await ssh.upload(localPath, staging, 0o755);
+  await ssh.exec(`mv -f ${shellQuote(staging)} ${shellQuote(remotePath)}`);
 }
 
 /**
@@ -206,7 +218,8 @@ async function ensureRemoteRipgrep(
     );
   }
   await ssh.exec(`mkdir -p ${shellQuote(posixDirname(remoteRipgrep))}`);
-  await ssh.upload(localRipgrep, remoteRipgrep, 0o755);
+  // rg 与 daemon 二进制同样可能正被执行（Grep/Glob 每次 spawn）：同样走原子上传
+  await uploadAtomically(ssh, localRipgrep, remoteRipgrep);
   options.log(`[ssh] deployed ${remoteRipgrep} (${target.platform}-${target.arch})`);
 }
 

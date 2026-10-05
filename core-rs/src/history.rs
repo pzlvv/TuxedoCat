@@ -375,7 +375,7 @@ fn dir_size(path: &std::path::Path) -> (u64, u64) {
 /// `.jsonl` / `.meta.json` 与 `tool-results/`，保留空间级配置。
 ///
 /// 对齐 `clearConversationSpace`：`dir_name` 是对话空间目录名（宿主把
-/// `conversationSpaceCleared.sessionId` 当 dirName 用），返回 (文件数, 字节数)。
+/// `conversationSpaceCleared.dirName` 就是空间目录名），返回 (文件数, 字节数)。
 pub fn clear_conversation_space(dir_name: &str) -> Result<(u64, u64), String> {
     let safe_base = std::path::Path::new(dir_name)
         .file_name()

@@ -16,11 +16,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-/** 目录项（侧栏文件树的一行）：kind 决定图标与可展开性 */
-export interface SidebarFileEntry {
-  name: string;
-  kind: 'file' | 'directory';
-}
+/** 目录项（侧栏文件树的一行）：kind 决定图标与可展开性。
+ *
+ * 与 SSH 层的目录条目是**同一份契约一个名字**（`DirectoryEntry`，此前本文件叫
+ * `DirectoryEntry`、sshClient 叫 `SshDirEntry`，同形异名靠结构化类型隐式互通）。
+ */
+export type { DirectoryEntry } from '../src/host/standalone/sshClient.js';
+import type { DirectoryEntry } from '../src/host/standalone/sshClient.js';
 
 /**
  * 把 '/' 分隔的相对路径解析到 root 内的绝对路径。
@@ -52,7 +54,7 @@ export function resolveWithinRoot(
 /** 排序用的比较器：目录在前，名称按本地语言、数字感知（file2 < file10）、不区分大小写 */
 const entryCollator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
 
-function compareEntries(a: SidebarFileEntry, b: SidebarFileEntry): number {
+function compareEntries(a: DirectoryEntry, b: DirectoryEntry): number {
   if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;
   return entryCollator.compare(a.name, b.name);
 }
@@ -65,9 +67,9 @@ function compareEntries(a: SidebarFileEntry, b: SidebarFileEntry): number {
  * - 读盘失败（ENOENT / EACCES 等）原样抛给调用方：由 IPC 层转成
  *   `{ ok: false, error }` 回给渲染层显示，不做静默空列表。
  */
-export async function listDirectory(absDir: string): Promise<SidebarFileEntry[]> {
+export async function listDirectory(absDir: string): Promise<DirectoryEntry[]> {
   const dirents = await fs.promises.readdir(absDir, { withFileTypes: true });
-  const entries: SidebarFileEntry[] = [];
+  const entries: DirectoryEntry[] = [];
   for (const d of dirents) {
     if (d.isSymbolicLink()) {
       try {
@@ -98,8 +100,30 @@ export function resolveAllWithinRoot(
   return out;
 }
 
+/**
+ * 逐项删除并收集失败：全部成功静默返回；任一失败抛出聚合错误（每行 `rel: message`）。
+ *
+ * 本地（回收站）与远程（SFTP 递归删除）共用这一份「部分失败如实回报」的口径——
+ * 渲染层无论成败都刷新树，残留项自然显现。执行器由调用方注入（本模块不 import
+ * electron，`shell.trashItem` 留在 IPC 处理器里）。
+ */
+export async function deleteEachPath(
+  rels: readonly string[],
+  exec: (rel: string) => Promise<void>,
+): Promise<void> {
+  const failures: string[] = [];
+  for (const rel of rels) {
+    try {
+      await exec(rel);
+    } catch (err) {
+      failures.push(`${rel}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  if (failures.length > 0) throw new Error(failures.join('\n'));
+}
+
 /** 排序入口：本地与远程目录列表共用同一份「目录优先 + 名称排序」（唯一一份派生逻辑） */
-export function sortSidebarEntries(entries: SidebarFileEntry[]): SidebarFileEntry[] {
+export function sortSidebarEntries(entries: DirectoryEntry[]): DirectoryEntry[] {
   return entries.sort(compareEntries);
 }
 

@@ -16,6 +16,7 @@
  */
 
 import { nativeImage, type NativeImage } from 'electron';
+import { sessionBusyLevel } from '../src/core/sessionRuntime.js';
 
 export type TrayStatus = 'idle' | 'running' | 'waiting';
 
@@ -180,16 +181,19 @@ export function createTrayStatusIcon(
 }
 
 /**
- * 从会话运行时状态流聚合托盘状态：
- * waiting > running > idle。托盘是聚合状态，吃的是 SessionRuntimeState[] 全量推送，
- * 不从对话列表（磁盘元数据）推导（DEVELOPMENT.md 第 5.4 节规则 8）。
- * 会话是否「在跑」用 `idle === false` 判定（core 的 isIdle 语义）。
+ * 从会话状态流聚合托盘状态：waiting > running > idle。
+ *
+ * 忙闲判定收敛在 core 的 `sessionBusyLevel`（与标签页流水灯 / 关闭确认同一份派生）；
+ * 这里只做聚合（任一会话 waiting 即托盘 waiting，否则任一非 idle 即 running）。
+ * 托盘是聚合状态，吃 SessionRuntimeState[] 全量推送，不从对话列表（磁盘元数据）
+ * 推导（DEVELOPMENT.md 第 5.4 节规则 8）。
  */
 export function deriveTrayStatusFromStates(states: ReadonlyArray<{ idle?: boolean; waiting?: boolean }>): TrayStatus {
   let running = false;
   for (const item of states) {
-    if (item.waiting === true) return 'waiting';
-    if (item.idle === false) running = true;
+    const level = sessionBusyLevel({ idle: item.idle ?? true, waiting: item.waiting ?? false });
+    if (level === 'waiting') return 'waiting';
+    if (level === 'running') running = true;
   }
   return running ? 'running' : 'idle';
 }

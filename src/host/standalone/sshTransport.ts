@@ -14,6 +14,8 @@ import type { ClientChannel } from 'ssh2';
 import { SSH_DAEMON_LINK_TIMEOUT_MS, type CoreDaemonLink, type CoreDaemonLinkOpener } from './CoreDaemon.js';
 import { ensureRemoteDaemon, type RemoteBootstrapOptions, type RemoteDaemonEndpoint, type RemoteSsh } from './sshDaemonBootstrap.js';
 import { SshClient, type SshTarget } from './sshClient.js';
+import { sshTargetKey } from '../sshTarget.js';
+import { sharedInFlight, withTimeout } from '../../core/utils/asyncUtils.js';
 
 /** SSH 接入参数 */
 export interface SshDaemonTransport {
@@ -34,9 +36,9 @@ export interface SshDaemonTransport {
  */
 const inFlightBootstraps = new Map<string, Promise<RemoteDaemonEndpoint>>();
 
-/** 引导去重的键：同一 SSH 目标（含凭证——凭证不同视为不同的远端身份）共享一次引导 */
+/** 引导去重的键：连接目标的唯一身份键（`sshTargetKey`——端口归一、凭证指纹参与身份） */
 function bootstrapKey(target: SshTarget): string {
-  return JSON.stringify([target.host, target.port, target.user, target.password]);
+  return sshTargetKey(target);
 }
 
 /**
@@ -50,38 +52,8 @@ export function ensureRemoteDaemonShared(
   ssh: RemoteSsh,
   options: RemoteBootstrapOptions,
 ): Promise<RemoteDaemonEndpoint> {
-  const key = bootstrapKey(target);
-  const inFlight = inFlightBootstraps.get(key);
-  if (inFlight) return inFlight;
-  const bootstrap = ensureRemoteDaemon(ssh, options).finally(() => {
-    inFlightBootstraps.delete(key);
-  });
-  inFlightBootstraps.set(key, bootstrap);
-  return bootstrap;
-}
-
-/**
- * 给 promise 套一层超时。超时只让**当前调用者**放弃，底层 promise 继续走
- * （in-flight 去重下，别的等待者与后续 open() 仍会拿到它的结果）。
- */
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
-      timeoutMs,
-    );
-    timer.unref();
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      },
-    );
-  });
+  return sharedInFlight(inFlightBootstraps, bootstrapKey(target), () =>
+    ensureRemoteDaemon(ssh, options));
 }
 
 /**

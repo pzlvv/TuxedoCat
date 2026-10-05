@@ -17,7 +17,7 @@ import {
   matchSshEntries,
   sshHistoryKey,
   SSH_SUGGESTION_LIMIT,
-  type SshHistoryEntry,
+  type SshHistoryCandidate,
 } from '../../src/host/sshHistory.js';
 import type {
   DirectoryEntry,
@@ -189,8 +189,8 @@ function main(): void {
   // ---------- SSH 连接历史候选 ----------
 
   const sshSuggestions = element<HTMLElement>('sshSuggestions');
-  /** 页面持有的历史快照：每次聚焦从主进程取最新（落盘是唯一事实），删除后就地更新 */
-  let sshHistory: SshHistoryEntry[] = [];
+  /** 页面持有的候选快照（不含口令）：每次聚焦从主进程取最新（落盘是唯一事实） */
+  let sshHistory: SshHistoryCandidate[] = [];
 
   function hideSuggestions(): void {
     sshSuggestions.classList.add('hidden');
@@ -229,13 +229,16 @@ function main(): void {
         });
       });
       row.append(text, remove);
-      // 选定即整表单回填（含口令——历史存口令就是为了这一步）
+      // 选定即整表单回填：候选不含口令，按去重键向主进程取整条（含口令）
       row.addEventListener('click', () => {
-        sshHostInput.value = entry.host;
-        sshPortInput.value = String(entry.port);
-        sshUserInput.value = entry.user;
-        sshPasswordInput.value = entry.password;
-        hideSuggestions();
+        void api.sshHistoryEntry(sshHistoryKey(entry)).then((full) => {
+          if (!full) return;
+          sshHostInput.value = full.host;
+          sshPortInput.value = String(full.port);
+          sshUserInput.value = full.user;
+          sshPasswordInput.value = full.password;
+          hideSuggestions();
+        });
       });
       sshSuggestions.appendChild(row);
     }

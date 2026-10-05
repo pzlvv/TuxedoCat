@@ -22,6 +22,7 @@ import {
   clearSessionWorkspace,
 } from './history/Config.js';
 import { markSessionWaiting } from './sessionRuntime.js';
+import { sameMcpEnabledList } from './utils/mcpList.js';
 
 // ==================== 宿主环境 ====================
 
@@ -55,8 +56,9 @@ function registerHostEnvironmentUiEvents(bus: AssistantEventBus): void {
       // MCP 全局默认启用列表变了：让所有已注册会话按新的默认值重同步连接。
       // 配置变更只经快照到达 core（第 4.5 节），没有单独的通知事件；
       // 每个会话自己的勾选存在各自的 meta.json，走 `mcpEnabledChanged`。
+      // 等价判定用唯一实现 sameMcpEnabledList（顺序无关；启用语义与顺序无关）
       const enabled = settings.mcp.enabled;
-      const changed = lastMcpEnabled !== null && !sameStringList(lastMcpEnabled, enabled);
+      const changed = lastMcpEnabled !== null && !sameMcpEnabledList(lastMcpEnabled, enabled);
       lastMcpEnabled = enabled;
       if (changed) {
         void import('./mcp/Manager.js')
@@ -67,11 +69,6 @@ function registerHostEnvironmentUiEvents(bus: AssistantEventBus): void {
       }
     },
   );
-}
-
-/** 两个字符串列表是否逐项相同（顺序有意义：面板按顺序保存） */
-function sameStringList(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((item, index) => item === b[index]);
 }
 
 /**
@@ -313,26 +310,26 @@ async function registerHistoryUiEvents(bus: AssistantEventBus): Promise<void> {
     })();
   });
 
-  bus.onUiEvent('conversationSpaceCleared', ({ sessionId, mode }) => {
+  bus.onUiEvent('conversationSpaceCleared', ({ dirName, mode }) => {
     void (async () => {
       try {
         // mode 决定清理深度：clear 保留空间目录（项目映射还在用），
         // remove 整目录删除（项目已不存在，清掉后列表不再显示）
         const result = mode === 'remove'
-          ? await removeConversationSpace(sessionId)
-          : await clearConversationSpace(sessionId);
+          ? await removeConversationSpace(dirName)
+          : await clearConversationSpace(dirName);
         // 执行回执：webview 设置面板的「删除中」靠它解除（成功与失败都必须发，
         // UiEvent 是 fire-and-forget，这是唯一的完成信号）
         requireEventBus().emitToUi({
           type: 'conversationSpaceCleared',
-          sessionId,
+          dirName,
           result: { status: 'complete', removedFiles: result.removedFiles, removedBytes: result.removedBytes },
         });
         requireEventBus().emitToUi({ type: 'conversationListChanged' });
       } catch (err) {
         requireEventBus().emitToUi({
           type: 'conversationSpaceCleared',
-          sessionId,
+          dirName,
           result: { status: 'error', message: err instanceof Error ? err.message : String(err) },
         });
         logger.warn('history', `conversationSpaceCleared handling failed: ${err}`);

@@ -21,9 +21,9 @@
  *   - onWorkspacesChanged()     主进程推送打开集合变化
  * 文件浏览器（US-42 / US-43，侧栏底部可折叠分区）：
  *   - filesList(root, dir)      读取目录内容（rel 为 '/' 分隔相对路径，懒加载）
- *   - filesReveal(root, rel)    在系统文件资源管理器中定位
+ *   - filesReveal(id, rel)      在系统文件资源管理器中定位（单项语义）
  *   - filesCopyPaths(...)       复制完整 / 相对路径（多项换行拼接）
- *   - filesDelete(root, rels)   删除（移入回收站，主进程先弹原生确认框）
+ *   - filesDelete(id, rels)     删除（移入回收站，主进程先弹原生确认框）
  * 侧栏头部为「搜索框 + 新对话」：搜索框按标题过滤当前活动工作目录的对话列表；
  * 打开集合为空时空态展示「打开本地工作区」+ 最近工作区（点击即添加）。
  * 对话列表有独立的等待态：列表尚未取到（启动 / 刚切换活动目录）时留白，超过
@@ -88,21 +88,14 @@ interface SessionRuntimeState {
   waiting: boolean;
 }
 
-/** 文件树条目（主进程 listDirectory 的产物；kind 决定图标与可展开性） */
-interface SidebarFileEntry {
-  name: string;
-  kind: 'file' | 'directory';
-}
+/** 文件树条目（主进程 listDirectory 的产物；与 SSH 层同一份契约一个名字） */
+type DirectoryEntry = import('../../src/host/standalone/sshClient').DirectoryEntry;
 
-/** 文件操作回执：失败带 error 文案（'cancelled' = 用户在删除确认框点了取消） */
-interface FilesOpResult {
-  ok: boolean;
-  error?: string;
-}
+/** 文件列表回执（判别联合）：失败带 error 文案，成功必带 entries——渲染层不用双重判空 */
+type FilesListResult = { ok: true; entries: DirectoryEntry[] } | { ok: false; error: string };
 
-interface FilesListResult extends FilesOpResult {
-  entries?: SidebarFileEntry[];
-}
+/** 文件操作回执（判别联合）；'cancelled' = 用户在删除确认框点了取消 */
+type FilesOpResult = { ok: true } | { ok: false; error: string };
 
 interface SidebarAPI {
   getConversations: () => Promise<ConversationMeta[]>;
@@ -130,13 +123,13 @@ interface SidebarAPI {
   // ── 文件浏览器（US-42 / US-43） ──
   // rel 一律是 '/' 分隔的相对路径（约定格式，见 electron/sidebarFiles.ts）；
   // root 是侧栏工作区项的稳定 id（refKey），主进程按 id 回查打开集合里的工作区引用
-  filesList: (root: string, dir: string) => Promise<FilesListResult>;
+  filesList: (workspaceId: string, dir: string) => Promise<FilesListResult>;
   /** 在系统文件资源管理器中定位（只作用于单个条目） */
-  filesReveal: (root: string, relPath: string) => Promise<FilesOpResult>;
+  filesReveal: (workspaceId: string, relPath: string) => Promise<FilesOpResult>;
   /** 复制路径：relative 为 true 时复制相对路径；多项以换行拼接 */
-  filesCopyPaths: (root: string, relPaths: string[], relative: boolean) => Promise<FilesOpResult>;
+  filesCopyPaths: (workspaceId: string, relPaths: string[], relative: boolean) => Promise<FilesOpResult>;
   /** 删除（移入回收站）：主进程先弹原生确认框 */
-  filesDelete: (root: string, relPaths: string[]) => Promise<FilesOpResult>;
+  filesDelete: (workspaceId: string, relPaths: string[]) => Promise<FilesOpResult>;
 }
 
 declare global {
@@ -850,7 +843,7 @@ function subscribe(): void {
 /** 单个目录的读取状态：loading（在途）/ loaded / error（读盘失败，点错误行重试） */
 interface DirListing {
   state: 'loading' | 'loaded' | 'error';
-  entries: SidebarFileEntry[];
+  entries: DirectoryEntry[];
   error?: string;
 }
 
@@ -1063,7 +1056,7 @@ function loadDir(workspaceId: string, rel: string): void {
     .then((res) => {
       // 回包时该工作区已关闭（状态丢弃）或已刷新（代次变化）：丢弃
       if (filesStateByWorkspace.get(workspaceId) !== files || files.generation !== generation) return;
-      if (res.ok && res.entries) files.tree.set(rel, { state: 'loaded', entries: res.entries });
+      if (res.ok) files.tree.set(rel, { state: 'loaded', entries: res.entries });
       else files.tree.set(rel, { state: 'error', entries: [], error: res.error || '读取失败' });
       if (workspaceId === activeFilesId) renderFiles();
     })

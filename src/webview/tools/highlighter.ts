@@ -1,6 +1,7 @@
 import type { Highlighter } from 'shiki';
 import { getPreloadedHighlightLanguages } from '../webviewEnv';
 import { profileLog } from '../debug';
+import { sharedInFlight } from '../../core/utils/asyncUtils';
 
 /**
  * 全局共享的 Shiki highlighter 单例（按需加载语言）。
@@ -125,25 +126,18 @@ function reportLanguageUsed(language: string): void {
 export function ensureLanguage(language: string): Promise<void> {
   if (!language || isLanguageReady(language)) return Promise.resolve();
 
-  const existing = pendingLanguages.get(language);
-  if (existing) return existing;
-
-  const task = getHighlighter()
-    .then((h) => h.loadLanguage(language as Parameters<Highlighter['loadLanguage']>[0]))
-    .then(() => {
+  // 并发去重收敛在 sharedInFlight（settle 即删；失败不缓存，下次重试）
+  return sharedInFlight(pendingLanguages, language, async () => {
+    try {
+      const h = await getHighlighter();
+      await h.loadLanguage(language as Parameters<Highlighter['loadLanguage']>[0]);
       loadedLanguages.add(language);
       reportLanguageUsed(language);
-    })
-    .catch((err) => {
+    } catch (err) {
       // 未知语言或加载失败：保持纯文本降级，不向上抛出中断渲染
       profileLog(`[Shiki] 语言按需加载失败 lang=${language} err=${err}`);
-    })
-    .finally(() => {
-      pendingLanguages.delete(language);
-    });
-
-  pendingLanguages.set(language, task);
-  return task;
+    }
+  });
 }
 
 /**

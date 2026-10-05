@@ -27,7 +27,6 @@
  * （DEVELOPMENT.md 第 3.5、3.7 节）。
  */
 
-import { createHash } from 'crypto';
 import type { AssistantEventBus, UiEvent } from '../core/AssistantEventBus.js';
 import { requireEventBus, setGlobalEventBus } from '../core/AssistantEventBus.js';
 import { initializeCoreEvents } from '../core/initializeCoreEvents.js';
@@ -56,10 +55,10 @@ import type { WebViewUiPort, WebviewPoster } from './ui/ports.js';
 import {
   emptyWorkspaceRef,
   remoteWorkspaceRef,
-  workspaceEndpointKey,
   type WorkspaceEndpoint,
   type WorkspaceRef,
 } from './workspaceRef.js';
+import { sshTargetFor, sshTargetKey } from './sshTarget.js';
 import type { DirectoryListing } from './standalone/daemonProtocol.js';
 
 /** 宿主提供的启动差异（全部必选：缺失即编译错误） */
@@ -328,19 +327,20 @@ function openStandaloneChannel(
 }
 
 /**
- * 取该远程工作区 endpoint 的 daemon（一个 endpoint 一个 daemon；宿主退出时统一关闭）。
+ * 取该远程工作区 endpoint 的 daemon（一个 endpoint 一个 daemon；宿主退出只断开自己的
+ * 控制链路，不发 shutdown——daemon 的 idle-exit 自行清场，见 `shutdownCore`）。
  *
  * 全部通信走 SSH 端口（`docs/core-daemon.md` 第 12 节）。
  */
 function remoteDaemonForEndpoint(ref: WorkspaceRef, options: CoreBootstrapOptions): CoreDaemon {
-  const key = daemonRegistryKey(ref);
-  const existing = standaloneDaemons.get(key);
-  if (existing) return existing;
   const endpoint = ref.endpoint;
   if (!endpoint) {
     // 调用点已保证：只有远程引用才建 daemon
     throw new Error('remoteDaemonForEndpoint requires a remote workspace ref.');
   }
+  const key = daemonRegistryKey(endpoint);
+  const existing = standaloneDaemons.get(key);
+  if (existing) return existing;
   const daemon = new CoreDaemon({
     transport: daemonOpenerFor(endpoint, options),
     // SSH 建链含「上传产物 + 启动 daemon」，沿用默认的 10s 会误杀首次接入
@@ -359,22 +359,10 @@ function daemonOpenerFor(
   endpoint: WorkspaceEndpoint,
   options: CoreBootstrapOptions,
 ): CoreDaemonLinkOpener {
-  const auth = endpoint.auth;
-  if (!auth) {
-    throw new Error(`Remote endpoint ${endpoint.host} has no credentials.`);
-  }
-  const user = endpoint.user;
-  if (!user) {
-    throw new Error(`SSH endpoint ${endpoint.host} has no login user.`);
-  }
+  // 凭证 / 用户的校验收敛在 sshTargetFor（缺即抛错，不静默降级）
   return createSshDaemonOpener(
     {
-      target: {
-        host: endpoint.host,
-        port: endpoint.port ?? 22,
-        user,
-        password: auth.password,
-      },
+      target: sshTargetFor(endpoint),
       extensionPath: options.extensionPath,
     },
     options.log,
@@ -382,27 +370,15 @@ function daemonOpenerFor(
 }
 
 /**
- * 远程 daemon 注册表键。
- *
- * 连接目标是 `workspaceEndpointKey`，额外带上**凭证指纹**：凭证是连接参数，
- * 换一个凭证必须换一条连接（否则「第一次输错口令 / token，改对后重试」会复用旧连接、
- * 继续用错的凭证鉴权）。指纹不进日志。
+ * 远程 daemon 注册表键：SSH 连接目标的唯一身份键（`sshTargetKey`——端口缺省归一、
+ * 凭证以指纹参与身份）。换一个凭证必须换一条连接（否则「第一次输错口令，改对后
+ * 重试」会复用旧连接、继续用错的凭证鉴权）；指纹不进日志。
  */
-function daemonRegistryKey(ref: WorkspaceRef): string {
-  const endpoint = ref.endpoint;
+function daemonRegistryKey(endpoint: WorkspaceEndpoint): string {
   if (!endpoint) {
     throw new Error('remote daemon registry requires an endpoint.');
   }
-  return `${workspaceEndpointKey(ref)}#${authFingerprint(endpoint)}`;
-}
-
-/** 凭证指纹；缺失即抛错（远程连接不允许无凭证的静默降级） */
-function authFingerprint(endpoint: WorkspaceEndpoint): string {
-  const auth = endpoint.auth;
-  if (!auth) {
-    throw new Error(`Remote endpoint ${endpoint.host}:${endpoint.port ?? ''} has no credentials.`);
-  }
-  return `ssh:${createHash('sha256').update(auth.password).digest('hex')}`;
+  return sshTargetKey(sshTargetFor(endpoint));
 }
 
 /**
@@ -516,30 +492,37 @@ export async function probeRemoteEndpoint(endpoint: WorkspaceEndpoint, timeoutMs
     throw new Error('bootstrapCore() has not run; no remote opener available.');
   }
   const opener = daemonOpenerFor(endpoint, options);
-  if (opener.prepare) await opener.prepare();
-  const opening = opener.open();
-  // 探测的 opener 是临时建的（每次 probe 一个，不复用注册表 daemon 的）：链路落定后
-  // 关掉底层 SSH 连接。挂在 `opening` 之后而不是探测的 return / 超时点——探测超时
-  // 只是调用方放弃，建链（含引导）继续走完，socket 与 SSH 连接届时才收。
-  void opening
-    .then((link) => link.kill(), () => undefined)
-    .finally(() => opener.dispose());
-  let timer: NodeJS.Timeout | undefined;
+  // dispose 必须覆盖所有失败出口：prepare（SSH 已 connect 后引导失败）抛错时
+  // 不收尾会漏一条挂着 keepalive 的 SSH 连接——每次「重新连接」重试失败净增一条
   try {
-    await Promise.race([
-      opening,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`远程连接超时（${Math.round(timeoutMs / 1000)} 秒）`)),
-          timeoutMs,
-        );
-        timer.unref();
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-    // 超时后迟到的链路：就地杀掉（已 settle 的路径上这是无害的重复 kill）
-    void opening.then((link) => link.kill(), () => undefined);
+    await opener.prepare();
+    const opening = opener.open();
+    // 探测的 opener 是临时建的（每次 probe 一个，不复用注册表 daemon 的）：链路落定后
+    // 关掉底层 SSH 连接。挂在 `opening` 之后而不是探测的 return / 超时点——探测超时
+    // 只是调用方放弃，建链（含引导）继续走完，socket 与 SSH 连接届时才收。
+    void opening
+      .then((link) => link.kill(), () => undefined)
+      .finally(() => opener.dispose());
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        opening,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`远程连接超时（${Math.round(timeoutMs / 1000)} 秒）`)),
+            timeoutMs,
+          );
+          timer.unref();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      // 超时后迟到的链路：就地杀掉（已 settle 的路径上这是无害的重复 kill）
+      void opening.then((link) => link.kill(), () => undefined);
+    }
+  } catch (err) {
+    opener.dispose();
+    throw err;
   }
 }
 
@@ -620,10 +603,12 @@ export function shutdownCore(): Promise<void> {
 
   const tasks: Array<Promise<void>> = [];
   if (client) tasks.push(client.closeAll());
-  // channel 全部关闭后再关 daemon：daemon 收到 shutdown 立即退出，不留 grace 期进程
+  // 远程 daemon：只断开自己的控制链路，**不发 shutdown**——任一连接的 shutdown 在
+  // daemon 侧是全局停机，多客户端接入下会连坐杀掉其它客户端的会话；SSH 引导的
+  // daemon 自带 idle-exit，最后一条链路断开后自行退出并清状态文件
   const daemons = [...standaloneDaemons.values()];
   standaloneDaemons.clear();
-  for (const daemon of daemons) tasks.push(daemon.shutdown());
+  for (const daemon of daemons) tasks.push(daemon.disconnect());
   if (activeCoreKind === 'embedded') {
     try {
       getMCPHost().shutdown();

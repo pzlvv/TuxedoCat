@@ -90,13 +90,13 @@ export type CoreEvent =
   /**
    * 对话空间清空完成（`UiEvent.conversationSpaceCleared` 的执行回执）。
    *
-   * `sessionId` 是对话空间目录名（与同名 UiEvent 同语义）。结果是判别联合：
+   * `dirName` 是对话空间目录名（与同名 UiEvent 同语义）。结果是判别联合：
    * 成功带删除统计，失败带原因。webview 设置面板靠这条回执解除「删除中」，
    * 成功与失败都必须发出（UiEvent 是 fire-and-forget，这是唯一的完成信号）。
    */
   | {
       type: 'conversationSpaceCleared';
-      sessionId: string;
+      dirName: string;
       result:
         | { status: 'complete'; removedFiles: number; removedBytes: number }
         | { status: 'error'; message: string };
@@ -307,10 +307,10 @@ export type UiEvent =
    * - `remove`：整个空间目录一并删除（workspace 已不存在时用，
    *   清掉后列表不再显示该空间）。
    *
-   * `sessionId` 是对话空间目录名（不是会话 id）。执行结果经
+   * `dirName` 是对话空间目录名（不是会话 id）。执行结果经
    * `CoreEvent.conversationSpaceCleared` 回执。
    */
-  | { type: 'conversationSpaceCleared'; sessionId: string; mode: 'clear' | 'remove' }
+  | { type: 'conversationSpaceCleared'; dirName: string; mode: 'clear' | 'remove' }
 
   // ===== 会话配置 =====
   | { type: 'modelChanged'; sessionId: string; ref: ModelRef }

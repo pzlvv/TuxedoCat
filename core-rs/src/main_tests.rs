@@ -344,7 +344,7 @@ fn conversation_space_cleared_removes_space_files_and_resets_state() {
     harness.core.on_conversation_opened("s1");
     assert_eq!(harness.core.session("s1").lock().unwrap().messages.len(), 1);
 
-    // conversationSpaceCleared 的 sessionId 是「对话空间目录名」，不是会话 id
+    // conversationSpaceCleared 的 dirName 是「对话空间目录名」，不是会话 id
     let dir_name = config::project_conversation_dir(&workspace)
         .unwrap()
         .file_name()
@@ -353,7 +353,7 @@ fn conversation_space_cleared_removes_space_files_and_resets_state() {
         .to_string();
     dispatch(
         &harness,
-        json!({ "type": "conversationSpaceCleared", "sessionId": dir_name }),
+        json!({ "type": "conversationSpaceCleared", "dirName": dir_name }),
     );
 
     let state = harness.core.session("s1");
@@ -370,7 +370,7 @@ fn conversation_space_cleared_removes_space_files_and_resets_state() {
         .sink
         .event_of("conversationSpaceCleared")
         .expect("应发 conversationSpaceCleared 回执");
-    assert_eq!(receipt["sessionId"], dir_name);
+    assert_eq!(receipt["dirName"], dir_name);
     assert_eq!(receipt["result"]["status"], "complete");
     let removed_files = receipt["result"]["removedFiles"].as_u64().expect("removedFiles");
     assert!(removed_files >= 2, "至少删掉 .jsonl 与 .meta.json：{removed_files}");
@@ -389,14 +389,14 @@ fn conversation_space_cleared_reports_error_for_missing_space() {
 
     dispatch(
         &harness,
-        json!({ "type": "conversationSpaceCleared", "sessionId": "no-such-space" }),
+        json!({ "type": "conversationSpaceCleared", "dirName": "no-such-space" }),
     );
 
     let receipt = harness
         .sink
         .event_of("conversationSpaceCleared")
         .expect("失败也必须回执，否则设置面板的「删除中」永远无法解除");
-    assert_eq!(receipt["sessionId"], "no-such-space");
+    assert_eq!(receipt["dirName"], "no-such-space");
     assert_eq!(receipt["result"]["status"], "error");
     assert!(receipt["result"]["message"].as_str().is_some());
     // 没有任何东西被删：不发 conversationListChanged

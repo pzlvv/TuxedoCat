@@ -47,6 +47,7 @@ import {
   requestSmartNaming,
 } from '../coreFacts.js';
 import { applyLlmConfigSave } from '../llmConfigSave.js';
+import { sameMcpEnabledList } from '../../core/utils/mcpList.js';
 import {
   readActiveModelRef,
   readDefaultAgentMode,
@@ -101,11 +102,6 @@ function defaultTitle(): string {
   return '';
 }
 
-
-/** 两个字符串列表是否逐项相同（顺序有意义：MCP 启用列表按面板顺序保存） */
-function sameStringList(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((item, index) => item === b[index]);
-}
 
 /** 按并发上限执行异步任务，结果顺序与输入一致 */
 export async function mapWithConcurrency<T, R>(
@@ -325,7 +321,7 @@ export class WebviewMessageHandler {
       entry('deleteConversation', (msg) => this.emitUiEvent({ type: 'conversationDeleted', sessionId: msg.sessionId })),
       entry('renameConversation', (msg) => this.emitUiEvent({ type: 'conversationRenamed', sessionId: msg.sessionId, title: msg.title })),
       entry('updateConversationContext', (msg) => this.handleUpdateConversationContext(msg)),
-      entry('clearConversationSpace', (msg) => this.emitUiEvent({ type: 'conversationSpaceCleared', sessionId: msg.dirName, mode: msg.mode })),
+      entry('clearConversationSpace', (msg) => this.emitUiEvent({ type: 'conversationSpaceCleared', dirName: msg.dirName, mode: msg.mode })),
 
       // ===== 会话配置（UiEvent 翻译：core 处理并广播 sessionConfigChanged）=====
       entry('setModel', (msg) => this.handleSetModel(msg)),
@@ -1655,7 +1651,8 @@ export class WebviewMessageHandler {
       // 在写盘前已读出（并已把该对话钉在上面），三者一起回传，由 webview 决定
       // 要不要弹「应用到当前对话」。
       const mcpDefaultEnabled = [...snapshot.mcp.enabled];
-      const mcpDefaultEnabledChanged = !sameStringList(beforeSnapshot.mcp.enabled, mcpDefaultEnabled);
+      // 等价判定收敛在 core 的 sameMcpEnabledList（顺序无关；与 webview 同一份）
+      const mcpDefaultEnabledChanged = !sameMcpEnabledList(beforeSnapshot.mcp.enabled, mcpDefaultEnabled);
 
       // 保存后校验当前会话的模型身份：provider 或模型失效时解析出可用身份，
       // 并把结果作为 `modelChanged` 报给 core（core 负责落 meta.json 与同步引擎配置，
@@ -1748,7 +1745,9 @@ export class WebviewMessageHandler {
       this.log(`[WebviewMessageHandler] Failed to save LLM config: ${err}`);
       this.host.sendToWebview({
         type: 'llmConfigSaveError',
-        error: `保存失败: ${err instanceof Error ? err.message : String(err)}`,
+        // 只回传原始错误：用户可见文案（含「保存失败」前缀）由 webview 的 i18n 拼
+        // （host 侧不产用户可见文案，AGENTS 第 2 节「用户可见文本走 i18n」）
+        error: err instanceof Error ? err.message : String(err),
       });
     }
   }
@@ -1840,8 +1839,9 @@ export class WebviewMessageHandler {
       } catch (err: any) {
         this.log(`[WebviewMessageHandler] Failed to get conversation spaces: ${err.message}`);
         this.host.sendToWebview({
+          // 只回传原始错误：前缀文案由 webview 的 i18n 拼（用户可见文本走 i18n）
           type: 'conversationSpacesError',
-          error: `统计对话空间失败: ${err.message}`,
+          error: String(err?.message ?? err),
         });
       } finally {
         this.inFlightSpacesRequest = null;

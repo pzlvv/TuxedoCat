@@ -231,8 +231,10 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 
 每个产物目录带一份**构建指纹**（`scripts/build-core.mjs` 的 `computeFingerprint`）：
 产物同级落一个 `fingerprint` 文件（一行 64 位小写 hex），同时经 `CORE_FINGERPRINT`
-环境变量由 `core-rs/build.rs` 烧进二进制（`env!("CORE_FINGERPRINT")`，daemon 以它区分
-自己的状态 / 日志文件）。指纹只由**源码内容与编译器身份**决定，与构建时间、
+环境变量由 `core-rs/build.rs` 烧进二进制（`option_env!("CORE_FINGERPRINT")`，daemon
+以它区分自己的状态 / 日志文件；`cargo test` / `clippy` 等本地工具链没有这个环境变量，
+取固定占位 `manual-build`——发布产物必经 `build-core.mjs`，不会落到占位）。
+指纹只由**源码内容与编译器身份**决定，与构建时间、
 构建路径无关：同一编译器对同一份源码的两次构建得到同一指纹。
 
 - **输入集**：`core-rs/` 工作树全部文件（排除 `target/`，遍历工作树而非

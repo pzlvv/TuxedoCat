@@ -10,10 +10,10 @@ import type {
   DirectoryListing,
 } from '../../src/host/standalone/daemonProtocol.js';
 import type { RemoteConnectRequest } from '../../src/host/remoteConnect.js';
-import type { SshHistoryEntry } from '../../src/host/sshHistory.js';
+import type { SshHistoryCandidate, SshHistoryEntry } from '../../src/host/sshHistory.js';
 
 export type { DirectoryEntry, DirectoryFailureReason, DirectoryListing };
-export type { SshHistoryEntry };
+export type { SshHistoryCandidate, SshHistoryEntry };
 
 /** 连接结果：成功时带回远端主机（**不含任何凭证**，只用于标题展示） */
 export type RemoteConnectResult =
@@ -57,12 +57,14 @@ export interface RemoteWorkspaceAPI {
   /** 经 SSH 连远端 daemon，成功即返回主目录列表 */
   connect(request: RemoteConnectRequest): Promise<RemoteConnectResult>;
   /**
-   * 取 SSH 连接历史（最近连接在前）。条目含口令：选定候选要回填整个表单，
-   * 口令只在这条通路与 connect 请求之间流动
+   * 取 SSH 连接历史（最近连接在前）。候选**不含口令**：展示与筛选只要
+   * host / 端口 / 用户；口令按选定项经 `sshHistoryEntry` 单独取，不随整表常驻页面
    */
-  sshHistory(): Promise<SshHistoryEntry[]>;
-  /** 删除一条 SSH 连接历史（按 `sshHistoryKey` 的键），返回删除后的列表 */
-  removeSshHistoryEntry(key: string): Promise<SshHistoryEntry[]>;
+  sshHistory(): Promise<SshHistoryCandidate[]>;
+  /** 按去重键取一条历史（含口令，回填表单用）；不存在返回 null */
+  sshHistoryEntry(key: string): Promise<SshHistoryEntry | null>;
+  /** 删除一条 SSH 连接历史（按 `sshHistoryKey` 的键），返回删除后的候选列表 */
+  removeSshHistoryEntry(key: string): Promise<SshHistoryCandidate[]>;
   /** 列某个远端目录的子目录 */
   list(path: string): Promise<RemoteListResult>;
   /** 在远端新建目录（父目录不存在时一并创建） */

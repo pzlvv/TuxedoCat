@@ -19,6 +19,8 @@ export interface TcpDaemonTransport {
 export function tcpDaemonOpener(transport: TcpDaemonTransport): CoreDaemonLinkOpener {
   return {
     open: () => openTcpLink(transport),
+    // TCP 直连没有远端准备步骤（socket 连上即就绪）：no-op 是设计允许的形态
+    prepare: async () => undefined,
     dispose: () => undefined,
   };
 }

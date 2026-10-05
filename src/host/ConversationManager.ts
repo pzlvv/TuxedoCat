@@ -56,7 +56,7 @@ export abstract class ConversationManager {
       const list = await this.load();
       // 读盘期间活动工作目录已切换：丢弃过期结果，等新目录自己的 refresh()
       if (this.host.getWorkspacePath() !== workspace) return;
-      this.listSnapshots.set(workspace ?? '', { list, dirty: false });
+      this.listSnapshots.set(this.workspaceCacheKey(), { list, dirty: false });
       await this.dispatchList(list);
     } catch (error) {
       this.host.log(`[conversations] refresh failed: ${String(error)}`);
@@ -102,7 +102,7 @@ export abstract class ConversationManager {
    * 切换目录后旧目录的快照仍在，切回来继续命中。
    */
   getCachedList(): readonly ConversationMetadata[] | null {
-    return this.listSnapshots.get(this.host.getWorkspacePath() ?? '')?.list ?? null;
+    return this.listSnapshots.get(this.workspaceCacheKey())?.list ?? null;
   }
 
   /**
@@ -112,10 +112,19 @@ export abstract class ConversationManager {
    * 重新读盘，读到后经 `dispatchList` 推送更新。
    */
   isCachedListStale(): boolean {
-    return this.listSnapshots.get(this.host.getWorkspacePath() ?? '')?.dirty ?? false;
+    return this.listSnapshots.get(this.workspaceCacheKey())?.dirty ?? false;
   }
 
-  /** 丢弃指定工作目录的列表快照（关闭工作目录等场景），下次拉取时重新读盘 */
+  /**
+   * 快照缓存键：活动工作区的身份。默认用路径（单工作区宿主路径即身份）；
+   * 多工作区宿主覆写为稳定 id（`workspaceRefKey`）——同路径不同主机的两个远程
+   * 工作区不能共享一份快照（Windows 上本地规范化还会把远程路径变形归一）。
+   */
+  protected workspaceCacheKey(): string {
+    return this.host.getWorkspacePath() ?? '';
+  }
+
+  /** 丢弃指定快照键的列表快照（关闭工作目录等场景；键与 `workspaceCacheKey` 同一口径），下次拉取时重新读盘 */
   invalidateCachedList(workspace: string): void {
     this.listSnapshots.delete(workspace);
   }

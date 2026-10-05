@@ -25,9 +25,19 @@ export class ElectronConversationManager extends ConversationManager {
   constructor(
     host: UIHost,
     sendToSidebar: (channel: string, payload: unknown) => void,
+    /**
+     * 活动工作区的稳定 id（`workspaceRefKey`）：列表快照按它分份——同路径不同
+     * 主机的远程工作区各存一份，路径不作身份（Windows 本地规范化还会把它变形）。
+     */
+    private readonly activeWorkspaceKey: () => string = () => host.getWorkspacePath() ?? '',
   ) {
     super(host);
     this.setSidebarOutlet(sendToSidebar);
+  }
+
+  /** 快照键 = 活动工作区稳定 id */
+  protected override workspaceCacheKey(): string {
+    return this.activeWorkspaceKey();
   }
 
   /** 流 1：纯磁盘列表 → ① 原生侧栏 ② webview 子对话树 */

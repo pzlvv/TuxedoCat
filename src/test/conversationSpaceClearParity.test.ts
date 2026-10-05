@@ -52,7 +52,7 @@ const CORE_BINARY = path.join(
 
 interface SpaceClearReceipt {
   type: 'conversationSpaceCleared';
-  sessionId: string;
+  dirName: string;
   result:
     | { status: 'complete'; removedFiles: number; removedBytes: number }
     | { status: 'error'; message: string };
@@ -155,7 +155,7 @@ async function runEmbedded(home: string, dirName: string, mode: 'clear' | 'remov
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     bus.emitToCore(hostEnvironment());
-    bus.emitToCore({ type: 'conversationSpaceCleared', sessionId: dirName, mode });
+    bus.emitToCore({ type: 'conversationSpaceCleared', dirName, mode });
     await waitFor(() => received.some((event) => (event.type as string) === 'conversationSpaceCleared'));
     await new Promise((resolve) => setTimeout(resolve, 100));
     resetGlobalEventBus();
@@ -215,7 +215,7 @@ async function driveRealCore(child: CoreChild, dirName: string, mode: 'clear' | 
     child.kill();
     throw new Error(`core 未就绪（未收到 coreReady），已收到: ${received.map((e) => e.type).join(',')}`);
   }
-  send({ kind: 'uiEvent', event: { type: 'conversationSpaceCleared', sessionId: dirName, mode } });
+  send({ kind: 'uiEvent', event: { type: 'conversationSpaceCleared', dirName, mode } });
   const settled = await waitFor(() => received.some((event) => (event.type as string) === 'conversationSpaceCleared'), 10_000);
   if (!settled) {
     // 收不到回执本身就是缺陷现场：杀掉进程后带着已收集的事件失败
@@ -407,7 +407,7 @@ async function runStandaloneRemote(home: string, dirName: string, mode: 'clear' 
     // 否则清空事件会被 Core 的就绪守卫拒绝（与本地 stdio 车道同一口径）。
     bus.emitToCore(hostEnvironment());
     await waitFor(() => received.some((event) => event.type === 'coreReady'), 10_000);
-    bus.emitToCore({ type: 'conversationSpaceCleared', sessionId: dirName, mode });
+    bus.emitToCore({ type: 'conversationSpaceCleared', dirName, mode });
     const settled = await waitFor(() => received.some((event) => (event.type as string) === 'conversationSpaceCleared'), 10_000);
     if (!settled) {
       throw new Error(`远程 core 未回 conversationSpaceCleared 回执（dirName=${dirName}），已收到: ${received.map((e) => e.type).join(',')}`);
@@ -440,7 +440,7 @@ async function run(): Promise<void> {
 
     const receipt = receiptOf(received);
     check('Embedded 发出完成回执', receipt?.result.status === 'complete');
-    check('Embedded 回执带目录名', receipt?.sessionId === SPACE_DIR_NAME);
+    check('Embedded 回执带目录名', receipt?.dirName === SPACE_DIR_NAME);
     check(
       'Embedded 回执统计与实际删除一致',
       receipt?.result.status === 'complete'
@@ -478,7 +478,7 @@ async function run(): Promise<void> {
 
     const receipt = receiptOf(received);
     check('Standalone 本地连接发出完成回执', receipt?.result.status === 'complete');
-    check('Standalone 本地回执带目录名', receipt?.sessionId === SPACE_DIR_NAME);
+    check('Standalone 本地回执带目录名', receipt?.dirName === SPACE_DIR_NAME);
     check(
       'Standalone 本地回执统计与 Embedded 口径一致',
       receipt?.result.status === 'complete'

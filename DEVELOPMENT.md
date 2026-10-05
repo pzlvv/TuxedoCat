@@ -458,7 +458,7 @@ core/  ←  host/  ←  宿主实现（VSCode* / Electron*）
   对话目录下的 `<conversations>/<project>/workspace.meta.json`（记录 workspacePath）不同：
   它归 core（在 Core 数据目录内），目录创建与清单读写都在 core，宿主不参与写盘。
   宿主本地偏好（`theme` / `shortcut`）不在这两份文件里：它们只有 Electron 消费，落
-  `userData/workspace-state.json`（`electron/main.ts`），core 不读不写（第 11.1 节）。
+  `userData/workspace-state.json`（`electron/workspaceStateStore.ts`，临时文件 + rename 原子落盘、内容未变不落盘），core 不读不写（第 11.1 节）。
 
   **规则 9 的审计结论**（M15 对 `src/host/**` 与宿主实现层的 core import 逐项归类）：
 
@@ -788,7 +788,7 @@ wire message（若该事件会产生 webview 协议消息）。
 | 22 | `highlightLanguagesUsed` | `languages: readonly string[]` | `history/Conversation`（消息落盘时扫描围栏代码块语言，只报未记录过的） | `onHighlightLanguagesUsed` | 写 settings.json 的 `highlightLanguages` 字段（经 `UIHost.updateSettingsJson`，见第 5.1 节） |
 | 23 | `log` | `message`（已格式化的整行） | `Logger`（每写一行日志） | `log` | 写 UI 自己的日志出口（VS Code 是 OutputChannel，Electron 是 console） |
 | 24 | `notice` | `sessionId`, `key`, `params`, `level` | `skills/bundled/spin`、`spin/Loop`、`spin_host`、`commands`（瞬时状态提示：键 + 参数） | `onNotice` | `notice`（webview 用翻译表渲染成瞬时提示，不进消息流） |
-| 25 | `conversationSpaceCleared` | `sessionId`（对话空间目录名）, `result`（`complete` 带删除统计 / `error` 带原因） | `initializeCoreEvents`（`conversationSpaceCleared` UiEvent 清空完成 / 失败后的执行回执） | `onConversationSpaceCleared` | `conversationSpaceCleared`（`complete`）/ `conversationSpacesError`（`error`）——设置面板解除「删除中」的唯一信号 |
+| 25 | `conversationSpaceCleared` | `dirName`（对话空间目录名）, `result`（`complete` 带删除统计 / `error` 带原因） | `initializeCoreEvents`（`conversationSpaceCleared` UiEvent 清空完成 / 失败后的执行回执） | `onConversationSpaceCleared` | `conversationSpaceCleared`（`complete`）/ `conversationSpacesError`（`error`）——设置面板解除「删除中」的唯一信号 |
 
 > 第 1–10 项是渲染类 handler，第 11–24 项是控制面与事实通知 handler——这条界线只是 `WebViewUI` 内部的
 > 分区，不是事件类型的分组。
@@ -837,7 +837,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 29 | `conversationRenamed` | `sessionId`, `title` | `renameConversation`、智能命名、Electron 侧栏 | `history.updateConversationMetadataTitle` → `titleChanged` + `conversationListChanged` |
 | 30 | `conversationDeleted` | `sessionId` | `deleteConversation`、Electron 侧栏 | `history.deleteConversation`（**递归删除整棵子树**：自身 + 所有层级的子孙对话）→ `conversationListChanged` |
 | 31 | `conversationContextUpdated` | `sessionId`, `changes` | `updateConversationContext` 消息、`extension.ts`（编辑器上下文） | `history.updateConversationContext`（合并语义） |
-| 32 | `conversationSpaceCleared` | `sessionId`（**对话空间目录名**，不是会话 id）, `mode`（`clear` 清内容保留空间目录 / `remove` 整目录删除——workspace 已不存在时用） | `clearConversationSpace`（单行「清除历史」= clear；「移除」与无效目录批量清理 = remove） | `history/ConversationSpace.clearConversationSpace` / `removeConversationSpace` → `conversationSpaceCleared`（回执，判别联合：`complete` / `error`）+ `conversationListChanged`；多连接宿主按**当前活动连接**路由（与空间统计同源），不走会话路由 |
+| 32 | `conversationSpaceCleared` | `dirName`（**对话空间目录名**，不是会话 id）, `mode`（`clear` 清内容保留空间目录 / `remove` 整目录删除——workspace 已不存在时用） | `clearConversationSpace`（单行「清除历史」= clear；「移除」与无效目录批量清理 = remove） | `history/ConversationSpace.clearConversationSpace` / `removeConversationSpace` → `conversationSpaceCleared`（回执，判别联合：`complete` / `error`）+ `conversationListChanged`；多连接宿主按**当前活动连接**路由（与空间统计同源），不走会话路由 |
 | 33 | `modelChanged` | `sessionId`, `ref`（`ModelRef` = provider + model） | `setModel`（wire 是扁平的 `model` / `provider`，handler 入口组装成 `ModelRef`；provider 为空即非法，记录日志并忽略） | `setSessionModel` + 写 meta.json（**保持扁平字段** `model` / `provider`）→ `sessionConfigChanged` |
 | 34 | `thinkingEffortChanged` | `sessionId`, `mode` | `setThinkingMode` | `setSessionThinkingMode` + 写 meta.json（字段名仍是 `thinkingMode`）→ `sessionConfigChanged` |
 | 35 | `promptModeChanged` | `sessionId`, `mode` | `setPromptMode` | `setSessionPromptPreset` + 写 meta.json → `sessionConfigChanged` |
@@ -1045,7 +1045,7 @@ before/after 两个虚拟文档组成的 diff 标签，Electron 空实现（diff
 Standalone 的 Rust `config`），宿主不参与写盘。
 
 `theme` / `shortcut` 不属于这份文件：它们是 Electron 宿主本地偏好，落
-`userData/workspace-state.json`（`electron/main.ts`），core 不读不写（第 11.1 节）。
+`userData/workspace-state.json`（`electron/workspaceStateStore.ts`，临时文件 + rename 原子落盘、内容未变不落盘），core 不读不写（第 11.1 节）。
 
 两个宿主共用 `src/host/settingsFile.ts`：`updateSettingsJson` 委托给
 `SettingsStore.updateSettings`，串行化「读-改-写」（避免并发写坏文件或丢字段），
@@ -1301,7 +1301,7 @@ import core 的只读函数与类型（第 2 节规则 9）。
 | 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestMcpServers` / `requestSkills` / `requestConversationSpaces` / `requestSmartNaming` |
 | 纯显示操作 | `expandCompact`（只读归档 + 重放消息到 webview，不改 core 状态） |
 | 配置文件写入 | `UIHost.updateSettingsJson`（LLM 配置 / MCP 默认值 / 高亮语言）——写全局 `settings.json` 是宿主能力；项目清单 `workspace.meta.json` 归 core，不在宿主 |
-| 宿主本地偏好写入 | `electron/main.ts` 的 `writeThemeMode` / `writeWakeShortcut`（`theme` / `shortcut`）——落 `userData/workspace-state.json`，与 core 的 settings.json 无关 |
+| 宿主本地偏好写入 | `electron/main.ts` 的 `writeThemeMode` / `writeWakeShortcut`（`theme` / `shortcut`）——经 `electron/workspaceStateStore.ts` 落 `userData/workspace-state.json`（原子落盘），与 core 的 settings.json 无关 |
 | 载体 / 视图层动作 | Electron 的 `sidebar:new-conversation` / `sidebar:open-conversation` / `sidebar:get-active-session` / `sidebar:active-session-changed`（开视图与视图层状态，随后由新视图自己发 `loadConversation`）；webview 的 `closeWebview` / `openConversation` / `openNewConversation` / `prewarmViewReady` 由 `electron/main.ts` 的消息入口直接消化，不经 `WebviewMessageHandler`、不走总线。`deleteConversation` 在多视图宿主（Electron）由同一入口接管：先关该会话的视图（含子会话闭包，与侧栏删除共用 `deleteConversationWithViews`），再发 `conversationDeleted`；单视图宿主没有可关的视图，仍走 `WebviewMessageHandler` 的 UiEvent 翻译 |
 | 环境查询（按来源回包） | webview 的 `requestTheme` / `requestContextLimit` 在 `WebviewMessageHandler` 内处理（按 `ctx.sender` 回包），但不走总线——它们只读 core 的配置函数与宿主环境，不改 core 状态。宿主在视图加载时也推同一对消息（`UIHost.onThemeChanged` / `WebViewUI.pushContextLimit`），但那次推送受时序约束（VS Code `resolveWebviewView` 后延时、Electron `did-finish-load`），由 webview 主动拉取才能尽早解除首屏 Loading，也让多视图宿主下的后台预热视图拿到回包 |
 
@@ -2496,7 +2496,7 @@ dropSession(sessionId: string): void {
 | 打开集合 | `openWorkspaces: WorkspaceRef[]`（主进程进程内事实，按标签页顺序；本地 / 远程同构）；活动项 `workspacePath`（打开集合中的一项） |
 | 标签页 | 标题栏（原菜单栏区域）：`titlebar:workspaces` 下发 `{ version, workspaces: [{id,path,name,remote,availability}], activeWorkspace, activity }`（与 `titlebar:get-state` 同字段名，均带单调版本号 `version`——每次推送 +1，get-state 响应带当前值；标题栏按版本号丢弃陈旧回包，避免「get-state 回包在途期间状态变化并经推送先到」时把新状态覆盖回旧值，`e2e/webview/titlebar.spec.ts` 锁定该时序；`availability` ∈ `available` / `unavailable` / `connecting`），标题栏按 `id`（`workspaceRefKey`）作身份渲染标签页（活动项高亮、每项可关闭、键盘可切换、可拖拽排序，建链中 / 不可用项同样可激活）+「添加」按钮；宽度够时每张固定 192px，总宽超出时逐张收窄到 56px 下限后横向滚动；打开集合为空时不渲染标签页区域（添加入口在侧栏空态与菜单）；浮窗模式隐藏菜单图标与标签页 |
 | 不可用工作区 | 连接状态机 `WorkspaceAvailabilityState`（`electron/workspaceAvailability.ts`，available / unavailable / connecting 三态 + 就绪标记，按去重键，时序不变量由 `src/test/workspaceAvailability.test.ts` 锁定）。启动期判定不可用：本地目录已不存在（恢复时 `isValidWorkspaceDir` 检查），或远程建连失败。**远程标签页从启动起即 connecting**（文字前黄色呼吸点），由 `probeStartupRemoteWorkspaces` 经 `bootstrapCore.probeRemoteEndpoint` 逐 endpoint 探测落定（传输层直连，**3 秒建链超时，远端引导不计入**——opener 的 `prepare` 先完成 SSH 的发现 / 部署 / 启动（冷部署上传产物远超 3 秒），3 秒只管 daemon 就绪后的建链；同一 endpoint 只探测一次，SSH 引导按目标去重（`sshTransport.ts` 的 in-flight 表），探测与正式连接不重复部署；正式连接的长超时如 SSH 120 秒不适用于此）：成功恢复可选，失败转红点。daemon 存活但工作区 channel 建失败（远端 core 起不来）等形态由 `onWorkspaceConnectionState` 的 lost 信号兜底（只对**从未就绪**的远程 Connection 标记；曾就绪过的 Core 退出走重启策略，不标红；Connection 已就绪的判定优先于探测失败）。两条失败信号（lost 与探测落定）到达顺序不定，`markUnavailable` 落定不可用即清建链中（互斥），保证标红推送不再带着黄态、同键重复标记也不丢刷新——探测失败的 catch 分支与成功分支对称地显式刷新标题栏与聊天区。标红时**先推送再执行清理**（销毁该目录的 Connection 与预加载对话视图可能抛错——如预热视图的 `new-*` 临时 key 无归属 Connection——清理失败只落盘诊断日志，不回退状态、不阻断推送）。不可用项**保留在打开集合里且可正常激活**（标签页文字前挂红点，悬停说明原因；不建立 Connection——`getOpenWorkspaceRefs` 过滤，不预加载视图）；活动项落在其上时**不回退**，聊天区由 `syncChatAreaForActiveWorkspace` 改显占位页（不显示对话列表与 webview，侧栏对话列表清空）：目录不存在 → 「目录不存在」+ 路径；远程不可连 → 「无法连接远程主机」+ 路径 + **「重新连接」按钮**（占位页经 `chat:reconnect-workspace` 触发 `reconnectWorkspace`：转 connecting，同一 3 秒探测，成功撤销判定、补建 Connection 并切回对话视图，失败回到红点）；建链中 → 「正在连接」。打开对话 / 新建对话的入口在建链中与不可用目录上一律忽略。经目录选择器 / CLI 重新提交已验证的目标时同样撤销判定并补建 Connection（`reviveWorkspaceIfRecovered`）；关闭标签页即丢弃判定 |
-| 标签页运行指示 | 每个工作目录的聚合运行时状态（`activity`：工作目录 id → `waiting` / `running`），由主进程 `collectWorkspaceActivity()` 读 `ConversationManager` 缓存的全量会话运行时快照（core `sessionRuntimeChanged` 的宿主投影）+ 宿主的「会话 → 工作目录」索引按会话归并：该目录下任一会话在等待用户操作 → `waiting`（黄，优先），否则任一非 idle → `running`（蓝）。两份输入都取宿主自己的投影，不读进程内 `src/core`——Standalone（产品形态）下 core 在独立进程，进程内的 `sessionRuntime` 与会话工作目录表都是空的（第 12.6 节）。状态流每次变化（`setStatusListener` 里）另推 `titlebar:workspace-activity`，渲染层就地切换 class 不重建标签页（重建会打断动画、丢 hover / 焦点 / 拖拽状态）。动效与对话列表 `running-bar` 对齐：运行中＝蓝色流水（渐变滚动），等待用户＝黄色呼吸（只脉动不滚动）——对话列表的黄色同样是呼吸（`.running-bar--waiting` 的 `background` 简写把 `background-size` 复位成 `auto`，流水不产生位移） |
+| 标签页运行指示 | 每个工作目录的聚合运行时状态（`activity`：工作目录 id → `waiting` / `running`），由主进程 `collectWorkspaceActivity()` 读 `ConversationManager` 缓存的全量会话运行时快照（core `sessionRuntimeChanged` 的宿主投影）+ 宿主的「会话 → 工作目录」索引按会话归并：该目录下任一会话在等待用户操作 → `waiting`（黄，优先），否则任一非 idle → `running`（蓝）。两份输入都取宿主自己的投影，不读进程内 `src/core`——Standalone（产品形态）下 core 在独立进程，进程内的 `sessionRuntime` 与会话工作目录表都是空的（第 12.6 节）。状态流每次变化（`setStatusListener` 里）另推 `titlebar:workspace-activity`，渲染层就地切换 class 不重建标签页（重建会打断动画、丢 hover / 焦点 / 拖拽状态）。动效与对话列表 `running-bar` 对齐：运行中＝蓝色流水（渐变滚动），等待用户＝黄色呼吸（只脉动不滚动）——对话列表的黄色同样是呼吸（`.running-bar--waiting` 的 `background` 简写把 `background-size` 复位成 `auto`，流水不产生位移）。忙闲判定收敛在 core 的 `sessionBusyLevel`（waiting 优先、其次 running、idle 垫底）——标签页流水灯、托盘状态点（`deriveTrayStatusFromStates`）与关闭前的二次确认（对话级 `sessionIsBusy` / 工作区级 `workspaceHasBusySession` / 应用退出的聚合确认）消费同一份派生，不再各写一遍 |
 | 标签页拖拽排序 | 渲染层用 HTML5 drag 事件（`dragstart` / `dragover` / `drop` / `dragend`）：越过目标中线决定插到其前 / 后，`drop-before` / `drop-after` 伪元素画放置指示线；提交完整排列经 `titlebar:reorder-workspaces` → `reorderWorkspaces()`，主进程按去重键校验「同组目录的排列」后才写入打开集合并落盘，非法排列整次忽略；活动项与已打开视图不受顺序影响 |
 | 非活动标签页预加载 | 首次启动（`createMainWindow` 打开活动目录的新对话之后）对打开集合里**非活动且可用**的每个目录调用 `chatViews.preloadWorkspace(ws)`（错开 400ms + 250ms×i，避免启动瞬间同时拉起多个渲染进程；不可用工作区跳过）；实现复用后台预热机制（`--prewarm=1` 后台加载渲染、跳过会话初始化），切到该目录时 `setActiveWorkspace` 命中它直接 `show()` + 补发激活消息，不再现建视图 + 等页面加载。`new-` 临时 key 带自增序号，避免同毫秒连续创建撞 key；`setActiveWorkspace` 不再销毁其它目录的预热视图（它们是那些标签页的预加载视图，关闭目录 / 窗口时统一销毁） |
 | 菜单 | Windows / Linux 全部收编为单一分区 `main`，标题栏用一个图标按钮表示；条目：打开本地工作区 / 打开远程工作区 / 添加最近的工作区 ▸ / 主题 ▸ / 快捷键 / 开发者工具 / 关于 / 退出。macOS 沿用系统菜单栏分区 |
@@ -2601,7 +2601,7 @@ MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 
 | 下拉菜单 | 独立 `WebContentsView` | 不用 `BrowserWindow`：开窗有系统动画与层级窗口合成，会「闪一下」；视图只是同窗口内的一块合成区域，摆位即显示。首次打开测量尺寸并缓存 |
 | 菜单关闭 | 侧栏/聊天视图 focus + 窗口 blur/hide/move/resize + 点标题栏空白 + Esc | **不要用标题栏 blur 关菜单**：显示菜单视图会让焦点重新计算（可能变成「无焦点视图」），据此关菜单会让菜单刚弹出就被自己关掉（已踩过）。打开时把焦点交给菜单视图（Esc/方向键依赖它），关闭时还给打开前的视图 |
 | 菜单置顶 | `addChildView` 重新入栈 | 聊天视图是动态 `addChildView` 的，会盖住菜单视图；显示菜单时再 `addChildView` 一次即可提到最上层。**不要先 `removeChildView`**——那会把焦点掉成「无视图」，菜单随即被关掉 |
-| 快捷键 | 原生 accelerator + `before-input-event` 兜底 | 无边框窗口下原生 accelerator 是否生效依平台而定，两处都命中时按 id 去重（250ms）。唤醒快捷键持久化在 `workspace-state.json` 的 `shortcut` 字段（旧版本写在 settings.json 的 `shortcut` 由 `migrateLegacyThemeAndShortcut()` 一次性迁移） |
+| 快捷键 | 原生 accelerator + `before-input-event` 兜底 | 无边框窗口下原生 accelerator 是否生效依平台而定，两处都命中时按 id 去重（250ms）。唤醒快捷键持久化在 `workspace-state.json` 的 `shortcut` 字段（旧版本写在 settings.json 的 `shortcut` 由 `migrateLegacyThemeAndShortcut()` 一次性迁移）；注册失败（组合键被系统或其它程序占用）不弹窗、落 fileLogger（`shortcut` 组件）与 console.warn 留痕 |
 | 窗口模式 | `windowMode: 'normal' \| 'floating'` | floating = 隐藏侧栏（`sidebarView` 收成 0 尺寸）+ 聊天视图占满整宽（`chatViews.setConversationListOwner('webview')`），复用同一批 webview，不重新加载对话 |
 | 浮窗最小化 | `mainWindow.on('minimize')` + `titlebar:minimize` | 完整模式最小化到任务栏；浮窗模式最小化改走 `hide()` 隐藏到系统托盘（隐藏的窗口不在任务栏保留按钮），唤醒入口是托盘图标单击 / 双击与全局快捷键（`showMainWindowFromTray`） |
 | 模式切换的异步状态 | `waitForWindowEvent()` + `windowModeSwitching` | 先还原最大化/退出全屏（等 `unmaximize` / `leave-full-screen` 事件落定，1s 超时兜底）再 `setBounds`，否则会被忽略或只改还原尺寸；切换期间用标志位防重入 |

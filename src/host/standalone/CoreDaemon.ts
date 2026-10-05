@@ -83,6 +83,8 @@ export const DEFAULT_DAEMON_LINK_TIMEOUT_MS = 10_000;
 export const SSH_DAEMON_LINK_TIMEOUT_MS = 120_000;
 /** 关闭 channel / daemon 的等待上限 */
 export const DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS = 5_000;
+/** 仅断链（disconnect，不发 shutdown）时等本地链路退出的宽限；超时 kill 兜底 */
+export const DAEMON_DISCONNECT_GRACE_MS = 2_000;
 
 /**
  * 目录操作（列举 / 新建 / 删除）失败。
@@ -137,9 +139,10 @@ export interface CoreDaemonLinkOpener {
    *
    * 探测方（`probeRemoteEndpoint`）先跑它再开始计时：部署可能远超探测的短超时，
    * 计时只该覆盖「daemon 就绪之后的建链」。实现必须幂等——`open()` 自己会再走一遍
-   * 引导，此时 daemon 已就绪，是快路径。
+   * 引导，此时 daemon 已就绪，是快路径。无远端准备工作的形态给 no-op 实现
+   * 并注明理由（TCP 直连 socket 连上即就绪，没有准备步骤）。
    */
-  prepare?(): Promise<void>;
+  prepare(): Promise<void>;
   /** 释放底层资源（SSH 连接等）；幂等 */
   dispose(): void;
 }
@@ -532,6 +535,50 @@ export class CoreDaemon {
     this.enqueue(encodeDaemonFrame({ kind: 'closeWorkspace', channel: channelId }));
     if (!channel) return;
     await channel.waitClosed(this.options.shutdownTimeoutMs ?? DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS);
+  }
+
+  /**
+   * 仅断开本机的控制通道，**不发 `shutdown` 帧**（宿主正常退出用）。
+   *
+   * `shutdown` 帧在 daemon 侧是全局停机：任一连接收到即结束全部 Core——多客户端
+   * 并发接入下（`docs/core-daemon.md` 第 12.5 节），一台宿主退出会连坐杀掉其它
+   * 客户端的会话。SSH 引导的 daemon 自带 `--idle-exit`：最后一条控制链路断开后
+   * 空闲计时到期自行退出并清状态文件，宿主退出只需优雅关闭自己的链路。
+   * 显式「杀 daemon」仍走 `shutdown`（kill 协议 / 换血流程）。
+   */
+  async disconnect(): Promise<void> {
+    if (this.stopped) {
+      this.options.transport.dispose();
+      return;
+    }
+    this.stopped = true;
+    this.clearLinkTimeout();
+    this.stopHeartbeat();
+    this.stopLinkWatchdog();
+    this.silenceFatal = null;
+    this.linkAttempt += 1;
+    const writer = this.writer;
+    if (writer) {
+      // 优雅关闭链路（不发帧）：daemon 侧按断开处理，空闲计时起算
+      writer.end();
+      try {
+        await this.waitForExit(DAEMON_DISCONNECT_GRACE_MS);
+      } catch {
+        // 本地链路退出超时：下面 kill 兜底
+      }
+    }
+    try {
+      writer?.kill();
+    } catch {
+      // 已断开
+    }
+    this.options.transport.dispose();
+    const leftovers = [...this.channels.values()];
+    this.channels.clear();
+    this.openingRequests.clear();
+    for (const channel of leftovers) {
+      channel.handleDaemonGone(new Error('daemon disconnected by host'));
+    }
   }
 
   /** 关闭控制通道：`shutdown` 帧 → 等链路退出 → 超时强制断开 */

@@ -538,6 +538,9 @@ const App = () => {
       agentMode,
       promptMode,
       thinkingMode,
+      // webSearch 也在会话快照里：菜单开关的值经保存边界持久化，
+      // 否则切走再切回会丢（恢复链读 savedState.webSearch）
+      webSearch,
       contextLength,
       queuedMessage: queuedMessageRef.current.get(sid) ?? null,
       modelRef,
@@ -549,7 +552,7 @@ const App = () => {
       selectedLines: selectedLines ?? undefined,
       totalContextTokens: contextLength,
     });
-  }, [userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, promptMode, thinkingMode, contextLength, modelRef, currentFile, selectedLines]);
+  }, [userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, promptMode, thinkingMode, webSearch, contextLength, modelRef, currentFile, selectedLines]);
 
   /**
    * **会话跳转的唯一 UI 入口**（对话列表 / 对话树 / 子代理 From 链接 / 返回父会话按钮
@@ -705,10 +708,17 @@ const App = () => {
       if (state) state.webSearch = pending.webSearch;
     }
     if (pending.mcpEnabled && sid) {
-      // 整体覆盖当前会话的启用列表：先乐观更新可见状态，再交给宿主写入会话覆盖，
-      // 完成后 core 回推 setMcpServers（与输入框菜单勾选同一条链路）。
+      // 整体覆盖当前会话的启用列表：先乐观更新可见状态与会话缓存，再交给宿主写入
+      // 会话覆盖，完成后 core 回推 setMcpServers（与输入框菜单勾选同一条链路）。
       const desired = new Set(pending.mcpEnabled);
       setMcpServers((prev) => prev.map((server) => ({ ...server, enabled: desired.has(server.name) })));
+      const cached = mcpServersBySessionRef.current.get(sid);
+      if (cached) {
+        mcpServersBySessionRef.current.set(
+          sid,
+          cached.map((server) => ({ ...server, enabled: desired.has(server.name) })),
+        );
+      }
       postMessage({ type: 'setMcpEnabledList', sessionId: sid, names: pending.mcpEnabled });
     }
   }, [applyDefaultsPrompt, sessionStates]);
@@ -716,8 +726,20 @@ const App = () => {
   // 勾选/取消某个 MCP：交给 extension 写入当前会话 meta.json，
   // 成功后 extension 回推最新列表（setMcpServers）刷新 UI。这里先乐观更新，
   // 避免等待往返造成勾选延迟；带上 sessionId 让宿主写入正确的会话。
+  // 乐观更新同时写会话缓存：缓存与可见状态是同一事实的两份投影，
+  // 只写一份的话「快速切走再切回」会短暂显示旧值（缓存读路径）。
   const handleMcpToggle = useCallback((name: string, enabled: boolean) => {
     setMcpServers((prev) => prev.map((s) => (s.name === name ? { ...s, enabled } : s)));
+    const sid = currentSessionIdRef.current;
+    if (sid) {
+      const cached = mcpServersBySessionRef.current.get(sid);
+      if (cached) {
+        mcpServersBySessionRef.current.set(
+          sid,
+          cached.map((s) => (s.name === name ? { ...s, enabled } : s)),
+        );
+      }
+    }
     postMessage({ type: 'setMcpEnabled', name, enabled, sessionId: currentSessionIdRef.current ?? undefined });
   }, []);
 

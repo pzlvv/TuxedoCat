@@ -5,8 +5,26 @@ import { profileLog } from '../../debug';
 import { UiLanguage, setUiLanguage, t } from '../../i18n';
 import { setUiFontSize, type UiFontSize } from '../../fontSize';
 import { AgentMode, ApplyDefaultsPrompt, LlmConfigPanelPayload, PromptMode, ThinkingMode } from '../../types';
+import type { SessionState } from '../../types';
 import { postMessage } from '../../webviewEnv';
+import { sameMcpEnabledList } from '../../../core/utils/mcpList';
 import { missingPanelFields } from './shared';
+
+/**
+ * 当前会话的会话状态快照打补丁：live state 与 store 快照的会话配置字段必须
+ * 成对更新（切换边界 `saveCurrentSessionSnapshot` 会从 live 值整体重建快照，
+ * 这里补的是切换发生前的读取方——压缩 / 恢复等路径直接读 store）。
+ */
+function patchCurrentSessionState(
+  props: HandlerContext['props'],
+  patch: Partial<Pick<SessionState, 'modelRef' | 'agentMode' | 'promptMode' | 'thinkingMode' | 'webSearch'>>,
+): void {
+  const sid = props.currentSessionIdRef.current;
+  if (!sid) return;
+  const state = props.sessionStates.get(sid);
+  if (!state) return;
+  Object.assign(state, patch);
+}
 
 const profileTag = '[Profile]';
 
@@ -41,6 +59,7 @@ export function handleConfigSetModel(
           const ref = modelRefOf(wire.provider, wire.model);
           if (fromCurrentSession && ref) {
             props.setModelRef(ref);
+            patchCurrentSessionState(props, { modelRef: ref });
           }
           return;
 }
@@ -53,6 +72,7 @@ export function handleConfigSetAgentMode(
           const wire = msg;
           if (fromCurrentSession && wire.mode) {
             props.setAgentMode(wire.mode);
+            patchCurrentSessionState(props, { agentMode: wire.mode });
           }
           return;
 }
@@ -65,6 +85,7 @@ export function handleConfigSetPromptMode(
           const wire = msg;
           if (fromCurrentSession && wire.mode) {
             props.setPromptMode(wire.mode);
+            patchCurrentSessionState(props, { promptMode: wire.mode });
           }
           return;
 }
@@ -77,6 +98,7 @@ export function handleConfigSetThinkingMode(
           const wire = msg;
           if (fromCurrentSession && wire.mode) {
             props.setThinkingMode(wire.mode);
+            patchCurrentSessionState(props, { thinkingMode: wire.mode });
           }
           return;
 }
@@ -89,6 +111,7 @@ export function handleConfigSetWebSearch(
           const wire = msg;
           if (fromCurrentSession) {
             props.setWebSearch(!!wire.webSearch);
+            patchCurrentSessionState(props, { webSearch: !!wire.webSearch });
           }
           return;
 }
@@ -312,15 +335,9 @@ function mcpListText(names: readonly string[]): string {
   return names.length > 0 ? names.join(', ') : t('applyDefaults.mcpNone');
 }
 
-/** 两个启用列表是否等价（顺序无关：面板与 core 的列表顺序不保证一致） */
+/** 两个启用列表是否等价：收敛在 core 的 sameMcpEnabledList（顺序无关，唯一实现） */
 function sameMcpList(a: readonly string[], b: readonly string[]): boolean {
-  const setA = new Set(a);
-  const setB = new Set(b);
-  if (setA.size !== setB.size) return false;
-  for (const name of setA) {
-    if (!setB.has(name)) return false;
-  }
-  return true;
+  return sameMcpEnabledList(a, b);
 }
 
 export function handleConfigLlmConfigSaved(
@@ -387,7 +404,9 @@ export function handleConfigLlmConfigSaved(
     }
   }
 
-  if (msg.defaultPromptMode && msg.defaultPromptMode !== prevDefaults.promptMode && msg.defaultPromptMode !== prevProps.promptMode) {
+  // 「当前对话的值」未到达（undefined = 等待态）的项不进确认框：undefined 不是值，
+  // 拿它比较会把「还没收到」误判成「与默认值不同」（第 12.7 节：webview 不猜值）
+  if (msg.defaultPromptMode && msg.defaultPromptMode !== prevDefaults.promptMode && prevProps.promptMode !== undefined && msg.defaultPromptMode !== prevProps.promptMode) {
     pending.changes.push({
       label: t('applyDefaults.changePromptMode'),
       from: promptModeText(prevProps.promptMode),
@@ -395,7 +414,7 @@ export function handleConfigLlmConfigSaved(
     });
     pending.promptMode = msg.defaultPromptMode;
   }
-  if (msg.thinkingEffort && msg.thinkingEffort !== prevDefaults.thinkingMode && msg.thinkingEffort !== prevProps.thinkingMode) {
+  if (msg.thinkingEffort && msg.thinkingEffort !== prevDefaults.thinkingMode && prevProps.thinkingMode !== undefined && msg.thinkingEffort !== prevProps.thinkingMode) {
     pending.changes.push({
       label: t('applyDefaults.changeThinkingEffort'),
       from: thinkingModeText(prevProps.thinkingMode),
@@ -403,7 +422,7 @@ export function handleConfigLlmConfigSaved(
     });
     pending.thinkingMode = msg.thinkingEffort;
   }
-  if (msg.defaultAgentMode && msg.defaultAgentMode !== prevDefaults.agentMode && msg.defaultAgentMode !== prevProps.agentMode) {
+  if (msg.defaultAgentMode && msg.defaultAgentMode !== prevDefaults.agentMode && prevProps.agentMode !== undefined && msg.defaultAgentMode !== prevProps.agentMode) {
     pending.changes.push({
       label: t('applyDefaults.changeAgentMode'),
       from: agentModeText(prevProps.agentMode),
@@ -411,7 +430,7 @@ export function handleConfigLlmConfigSaved(
     });
     pending.agentMode = msg.defaultAgentMode;
   }
-  if (typeof msg.webSearch === 'boolean' && msg.webSearch !== prevDefaults.webSearch && msg.webSearch !== prevProps.webSearch) {
+  if (typeof msg.webSearch === 'boolean' && msg.webSearch !== prevDefaults.webSearch && prevProps.webSearch !== undefined && msg.webSearch !== prevProps.webSearch) {
     pending.changes.push({
       label: t('applyDefaults.changeWebSearch'),
       from: webSearchText(prevProps.webSearch),

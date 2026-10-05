@@ -65,7 +65,7 @@ export function removeSshEntry(list: readonly SshHistoryEntry[], key: string): S
 }
 
 /** 候选文案：`<user>@<host>`，端口非 22 时追加 `:<port>` */
-export function formatSshEntry(entry: SshHistoryEntry): string {
+export function formatSshEntry(entry: SshHistoryCandidate): string {
   return entry.port === 22
     ? `${entry.user}@${entry.host}`
     : `${entry.user}@${entry.host}:${entry.port}`;
@@ -79,13 +79,13 @@ export function formatSshEntry(entry: SshHistoryEntry): string {
  * 既支持敲用户名、也支持敲主机名或端口。空关键字视为「不过滤」，直接取最近的几条。
  */
 export function matchSshEntries(
-  list: readonly SshHistoryEntry[],
+  list: readonly SshHistoryCandidate[],
   keyword: string,
   limit: number = SSH_SUGGESTION_LIMIT,
-): SshHistoryEntry[] {
+): SshHistoryCandidate[] {
   const needle = keyword.trim().toLowerCase();
   if (needle.length === 0) return list.slice(0, limit);
-  const ranked: Array<{ entry: SshHistoryEntry; prefix: boolean }> = [];
+  const ranked: Array<{ entry: SshHistoryCandidate; prefix: boolean }> = [];
   for (const entry of list) {
     const targets = [
       `${entry.user}@${entry.host}`.toLowerCase(),
@@ -103,4 +103,18 @@ export function matchSshEntries(
     .sort((a, b) => Number(a.prefix ? 0 : 1) - Number(b.prefix ? 0 : 1))
     .slice(0, limit)
     .map((item) => item.entry);
+}
+
+/**
+ * 历史候选：下发给「打开远程工作区」窗口的条目，**不含口令**。
+ *
+ * 候选列表只用于展示（host / 端口 / 用户）与筛选，不需要口令；选定某条候选时，
+ * 窗口按去重键经 `sshHistoryEntry` 单独取整条（含口令）回填表单——口令只在
+ * 用户显式选定的那一次跨进程，不随整表常驻页面内存。
+ */
+export type SshHistoryCandidate = Omit<SshHistoryEntry, 'password'>;
+
+/** 剥掉口令：历史整表下发渲染进程前调用（口令按选定项单独取） */
+export function toSshHistoryCandidate(entry: SshHistoryEntry): SshHistoryCandidate {
+  return { host: entry.host, port: entry.port, user: entry.user };
 }

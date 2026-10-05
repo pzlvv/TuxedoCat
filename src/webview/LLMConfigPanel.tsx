@@ -916,7 +916,8 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
         }
       } else if (msg.type === 'llmConfigSaveError') {
         setSaving(false);
-        setApiKeyError(msg.error || t('llmConfig.saveFailed'));
+        // host 只回原始错误：i18n 前缀在这里拼（用户可见文本走 i18n）
+        setApiKeyError(msg.error ? `${t('llmConfig.saveFailed')}: ${msg.error}` : t('llmConfig.saveFailed'));
       }
     };
     window.addEventListener('message', handler);
@@ -1006,7 +1007,9 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
         setClearingAction(null);
         statsInFlightRef.current = false;
         statsRefreshTrailingRef.current = false;
-        setConversationSpacesError(msg.error || t('llmConfig.conversationSpaceError'));
+        setConversationSpacesError(
+          msg.error ? `${t('llmConfig.conversationSpaceError')}: ${msg.error}` : t('llmConfig.conversationSpaceError'),
+        );
       } else if (msg.type === 'conversationSpaceCleared') {
         setClearingSpaceDirName(null);
         setClearingAction(null);

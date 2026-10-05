@@ -225,3 +225,44 @@ test('US-9 上下文用量条显示并可点击触发压缩', async () => {
   await usage.click();
   await host.waitForSent('requestCompress');
 });
+
+test('US-29 MCP 分组逐服务器开关，切换上报 setMcpEnabled 并刷新状态', async () => {
+  const { page, host } = handle;
+  await host.setMcpState({ servers: ['fs-tools', 'git-tools'], sessionEnabled: ['fs-tools'] });
+  // webview 只在启动/激活时请求 MCP 列表，这里直接推送当前会话的服务器状态
+  await host.waitForSent('startNewConversation', 15_000);
+  await host.send({
+    type: 'setMcpServers', sessionId: null,
+    servers: [
+      {
+        name: 'fs-tools', type: 'local', command: ['fake-mcp'], environment: {}, url: '', headers: {},
+        enabled: true, running: true, toolCount: 0, error: null,
+      },
+      {
+        name: 'git-tools', type: 'local', command: ['fake-mcp'], environment: {}, url: '', headers: {},
+        enabled: false, running: false, toolCount: 0, error: null,
+      },
+    ],
+  });
+
+  await page.locator('button[title="功能开关"]').click();
+  const menu = page.locator('ul.agent-mode-menu');
+  await expect(menu.getByText('MCP', { exact: true })).toBeVisible();
+
+  // 展开 MCP 分组：飞出弹层列出 mcp.json 的服务器，启用的带工具数状态小字
+  await menu.getByText('MCP', { exact: true }).click({ force: true });
+  const fsRow = page.getByText('fs-tools', { exact: true }).last();
+  await expect(fsRow).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText('0 个工具').last()).toBeVisible();
+
+  // 勾掉启用的 fs-tools：宿主收到 setMcpEnabled(name, enabled=false)
+  await fsRow.click({ force: true });
+  const off = await host.waitForSentWhere('setMcpEnabled', (m) => m.name === 'fs-tools');
+  expect(off.enabled).toBe(false);
+
+  // 勾上未启用的 git-tools：enabled=true
+  const gitRow = page.getByText('git-tools', { exact: true }).last();
+  await gitRow.click({ force: true });
+  const on = await host.waitForSentWhere('setMcpEnabled', (m) => m.name === 'git-tools');
+  expect(on.enabled).toBe(true);
+});

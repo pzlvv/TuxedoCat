@@ -26,7 +26,7 @@ export interface SshTarget {
 }
 
 /** 远端目录项（SFTP readdir 的归类结果，与本地文件树同一形态） */
-export interface SshDirEntry {
+export interface DirectoryEntry {
   name: string;
   kind: 'file' | 'directory';
 }
@@ -268,7 +268,7 @@ export class SshClient {
    * 排序不在这一层做：调用方（Electron 侧栏）与本地目录列表共用同一份
    * 「目录优先 + 名称排序」的比较器，避免两套排序规则漂移。
    */
-  async listDirectory(target: string): Promise<SshDirEntry[]> {
+  async listDirectory(target: string): Promise<DirectoryEntry[]> {
     const sftp = await this.requireSftp();
     const list = await new Promise<FileEntryWithStats[]>((resolve, reject) => {
       sftp.readdir(target, (error, entries) => {
@@ -276,7 +276,7 @@ export class SshClient {
         else resolve(entries);
       });
     });
-    const entries: SshDirEntry[] = [];
+    const entries: DirectoryEntry[] = [];
     for (const entry of list) {
       if (entry.attrs.isSymbolicLink()) {
         const kind = await this.statKind(`${target.replace(/\/+$/, '')}/${entry.filename}`);

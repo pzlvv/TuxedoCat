@@ -58,7 +58,7 @@ async function waitForAgentReply(
   pollIntervalMs: number = 1000,
   expectedAgentId?: string,
 ): Promise<string | null> {
-  const queue = (engine as any).agentMessageQueue;
+  const queue = engine.agentMessageQueue;
   const messages = engine.getMessages();
 
   /**
@@ -66,7 +66,7 @@ async function waitForAgentReply(
    * 返回 null 表示 spin 执行已被用户中止，调用方应停止主循环。
    */
   const checkAborted = async (): Promise<boolean> => {
-    if (typeof (engine as any).isAborted === 'function' && (engine as any).isAborted()) {
+    if (engine.isAborted()) {
       return true;
     }
     if (!expectedAgentId) {
@@ -75,13 +75,13 @@ async function waitForAgentReply(
     try {
       const { subAgentRegistry } = await import('../tools/agent/SubAgentRegistry.js');
       const record = subAgentRegistry.get(expectedAgentId);
-      const childEngine = record?.engine as any;
-      if (typeof childEngine?.isAborted !== 'function' || !childEngine.isAborted()) {
+      const childEngine = record?.engine;
+      if (!childEngine || !childEngine.isAborted()) {
         return false;
       }
       // 子代理的“静默中止”是其在首次 Reply 后主动停止自身，并非用户中止；
       // 此时仍需继续读取其 Reply，否则会把正常完成误判为中止而终止整个 spin。
-      if (typeof childEngine.isSilentAbort === 'function' && childEngine.isSilentAbort()) {
+      if (childEngine.isSilentAbort()) {
         return false;
       }
       return true;
@@ -258,7 +258,7 @@ export async function spinLoop(
 
   while (true) {
     // 用户中止后立即停止主循环，不再读取/执行后续节点
-    if (typeof (engine as any).isAborted === 'function' && (engine as any).isAborted()) {
+    if (engine.isAborted()) {
       logger.info('SpinLoop', 'Spin aborted, stopping loop');
       break;
     }
@@ -280,7 +280,7 @@ export async function spinLoop(
           uuid: `spin_error_${Date.now()}`,
           timestamp: Date.now(),
         };
-        (engine as any).mutableMessages.push(errorMsgObj);
+        engine.appendMemoryMessage(errorMsgObj);
       }
       break;
     }
@@ -299,7 +299,7 @@ export async function spinLoop(
           uuid: `spin_error_${Date.now()}`,
           timestamp: Date.now(),
         };
-        (engine as any).mutableMessages.push(errorMsgObj);
+        engine.appendMemoryMessage(errorMsgObj);
       }
       break;
     }
@@ -376,7 +376,7 @@ export async function spinLoop(
           uuid: `spin_stop_${Date.now()}`,
           timestamp: Date.now(),
         };
-        (engine as any).mutableMessages.push(stopMsg);
+        engine.appendMemoryMessage(stopMsg);
       }
       await updateNodeMeta(cwd, next.id, false, `failed after ${MAX_ATTEMPTS} attempts`);
       break;
@@ -426,12 +426,12 @@ export async function spinLoop(
         uuid: `spin_user_${Date.now()}`,
         timestamp: Date.now(),
       };
-      (engine as any).mutableMessages.push(startMsg);
+      engine.appendMemoryMessage(startMsg);
     }
 
     // 执行 Agent 工具
     // 先丢弃上一轮子代理遗留的未消费回复，避免旧 Reply 被当前节点误读。
-    (engine as any).agentMessageQueue.length = 0;
+    engine.agentMessageQueue.length = 0;
     await engine.submitToolUse({
       name: 'Agent',
       input: {
@@ -488,7 +488,7 @@ export async function spinLoop(
         uuid: `spin_result_${Date.now()}`,
         timestamp: Date.now(),
       };
-      (engine as any).mutableMessages.push(resultMsg);
+      engine.appendMemoryMessage(resultMsg);
       // 立即持久化到磁盘/缓存，不依赖后续 submitToolUse 的遍历
       // 最后一个 Task 完成后不会再有下一次 submitToolUse，如果不持久化会丢失
       try {

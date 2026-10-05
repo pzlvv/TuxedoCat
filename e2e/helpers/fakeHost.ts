@@ -34,7 +34,11 @@ export const FAKE_HOST_INIT = `
     runtimeStates: [],
     conversationSpaces: [],
     // 脚本化助手轮次：每次 sendMessage 使用当时的值
-    turn: { thinking: '', text: '', chunkDelayMs: 40 },
+    turn: { thinking: '', text: '', chunkDelayMs: 40, usage: null },
+    // 界面语言（saveLLMConfig 后更新并随 llmConfigSaved 回传，驱动 US-41 立即生效）
+    language: 'zh',
+    // expandCompact 的应答数据：整批替换后的消息（压缩历史展开场景）
+    expandedMessages: [],
     // 引擎忙碌时再来一条 sendMessage 是否回 queuedMessage（排队语义）
     queueWhileBusy: true,
     // 收到 abort 时回推的运行时快照（null = 回空闲快照）。
@@ -106,7 +110,7 @@ export const FAKE_HOST_INIT = `
     if (!active.has(sessionId)) return;
     send({
       type: 'streamEnd', sessionId, role: 'assistant', accumulated: cfg.text, streamId,
-      usage: { input_tokens: 100, output_tokens: 20 },
+      usage: cfg.usage ?? { input_tokens: 100, output_tokens: 20 },
     });
     send({ type: 'addMessage', sessionId, role: 'assistant', content: cfg.text });
 
@@ -192,6 +196,7 @@ export const FAKE_HOST_INIT = `
         // 与真实宿主同口径：保存成功后回 llmConfigSaved，webview 据此更新新对话默认值、
         // 并在默认值与当前对话不一致时弹「是否应用到当前对话」对话框。
         const before = { ...state.settingsDefaults };
+        if (typeof msg.language === 'string') state.language = msg.language;
         if (typeof msg.thinkingEffort === 'string') state.settingsDefaults.thinkingMode = msg.thinkingEffort;
         if (typeof msg.defaultAgentMode === 'string') state.settingsDefaults.agentMode = msg.defaultAgentMode;
         if (typeof msg.defaultPromptMode === 'string') state.settingsDefaults.promptMode = msg.defaultPromptMode;
@@ -232,6 +237,7 @@ export const FAKE_HOST_INIT = `
           webSearch: next.webSearch,
           currentProviderDefaultModel: next.model,
           currentProviderDefaultModelChanged: next.model !== before.model,
+          language: state.language,
           ...mcpFacts,
           activeProvider: next.provider,
           closeAfterSave: !!msg.closeAfterSave,
@@ -312,8 +318,15 @@ export const FAKE_HOST_INIT = `
             metadata: { sessionId: msg.sessionId, title: conv ? conv.title : '', model: 'mock-model', provider: 'mock-provider' },
             messages: conv && conv.messages ? conv.messages : [],
           },
+          hasCompactArchive: !!(conv && conv.hasCompactArchive),
           provider: 'mock-provider', model: 'mock-model', agentMode: 'risk',
         });
+        break;
+      }
+      case 'expandCompact': {
+        // 压缩历史展开：宿主读归档后整批替换消息，再回展开完成（隐藏展开按钮）
+        send({ type: 'messagesReplaced', sessionId: msg.sessionId, messages: state.expandedMessages });
+        send({ type: 'expandCompactDone', sessionId: msg.sessionId });
         break;
       }
       default:
@@ -386,11 +399,24 @@ export class FakeHostDriver {
     await this.page.evaluate((m) => (window as any).__fakeHost.send(m), msg);
   }
 
-  /** 改写脚本化助手轮次参数 */
-  async setTurn(turn: { thinking?: string; text: string; chunkDelayMs?: number }): Promise<void> {
+  /** 改写脚本化助手轮次参数（usage 覆盖 streamEnd 的用量回执，驱动缓存命中率场景） */
+  async setTurn(turn: {
+    thinking?: string;
+    text: string;
+    chunkDelayMs?: number;
+    usage?: Record<string, number> | null;
+  }): Promise<void> {
     await this.page.evaluate(
       (t) => { Object.assign((window as any).__fakeHost.state.turn, t); },
       turn,
+    );
+  }
+
+  /** 改写 expandCompact 应答的整批消息（压缩历史展开场景） */
+  async setExpandedMessages(messages: Array<Record<string, unknown>>): Promise<void> {
+    await this.page.evaluate(
+      (list) => { (window as any).__fakeHost.state.expandedMessages = list; },
+      messages,
     );
   }
 

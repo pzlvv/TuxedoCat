@@ -87,15 +87,16 @@ rl.on('line', (line) => {
     return;
   }
   if (frame.kind === 'uiEvent' && frame.event.type === 'conversationSpaceCleared') {
-    const dirName = frame.event.sessionId;
+    // 回执字段与 CoreEvent 契约同名：dirName（对话空间目录名）
+    const dirName = frame.event.dirName;
     if (String(dirName).startsWith('fail-')) {
       send({ kind: 'event', event: {
-        type: 'conversationSpaceCleared', sessionId: dirName,
+        type: 'conversationSpaceCleared', dirName,
         result: { status: 'error', message: 'Conversation space not found: ' + dirName },
       } });
     } else {
       send({ kind: 'event', event: {
-        type: 'conversationSpaceCleared', sessionId: dirName,
+        type: 'conversationSpaceCleared', dirName,
         result: { status: 'complete', removedFiles: 3, removedBytes: isRemote ? ${REMOTE_REMOVED_BYTES} : ${LOCAL_REMOVED_BYTES} },
       } });
       send({ kind: 'event', event: { type: 'conversationListChanged' } });

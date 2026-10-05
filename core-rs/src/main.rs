@@ -503,16 +503,21 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
             core.on_conversation_deleted(&session_id);
         }
         "conversationSpaceCleared" => {
-            // 与 Embedded 一致：`sessionId` 在这里是**对话空间目录名**，清空整个空间。
+            // 与 Embedded 一致：`dirName` 是**对话空间目录名**，清空整个空间。
             // mode 决定清理深度（对齐 UiEvent 契约）：`clear` 清内容保留空间目录
             // （workspace 还在，项目映射要留着）；`remove` 整目录删除（workspace 已
             // 不存在，清掉后列表不再显示）。旧宿主不带 mode（两侧同包分发，跨版本
             // 窗口期）按 clear 处理。
             let mode = event.get("mode").and_then(Value::as_str).unwrap_or("clear");
+            let dir_name = event
+                .get("dirName")
+                .and_then(Value::as_str)
+                .unwrap_or(&session_id)
+                .to_string();
             let outcome = if mode == "remove" {
-                history::remove_conversation_space(&session_id)
+                history::remove_conversation_space(&dir_name)
             } else {
-                history::clear_conversation_space(&session_id)
+                history::clear_conversation_space(&dir_name)
             };
             // 成功与失败都必须发 `conversationSpaceCleared` 回执（判别联合）：
             // webview 设置面板的「删除中」按钮靠它解除——UiEvent 是 fire-and-forget，
@@ -520,13 +525,13 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
             match outcome {
                 Ok((removed_files, removed_bytes)) => {
                     // 清掉归属该空间的内存会话，避免 UI 继续显示已删除的对话
-                    clear_memory_sessions_of_space(core, &session_id);
+                    clear_memory_sessions_of_space(core, &dir_name);
                     core.emit_runtime();
                     emit(
                         core,
                         json!({
                             "type": "conversationSpaceCleared",
-                            "sessionId": session_id,
+                            "dirName": dir_name,
                             "result": {
                                 "status": "complete",
                                 "removedFiles": removed_files,
@@ -541,7 +546,7 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                         core,
                         json!({
                             "type": "conversationSpaceCleared",
-                            "sessionId": session_id,
+                            "dirName": dir_name,
                             "result": { "status": "error", "message": err },
                         }),
                     );

@@ -123,13 +123,14 @@
 
 ### US-10 当前文件引用开关
 
-作为用户在编辑器选中文件发送消息时，我希望默认携带文件路径与选中行，并可一键切换
-「文件信息不发给 LLM」，以便控制上下文内容。
+作为用户在编辑器选中文件发送消息时，我希望状态条显示当前文件 chip（文件名 + 行号
+区间），并可一键切换「文件信息不发给 LLM」，以便控制上下文内容。
 
 验收标准：
 
-1. 状态条显示文件 chip（文件名 + 行号区间），点击切换隐藏/恢复。
-2. 隐藏状态下发送的消息不携带文件信息。
+1. 状态条显示文件 chip（文件名 + 行号区间）；**默认为隐藏态**（文件信息不发给
+   LLM），点击 chip 切换隐藏 / 恢复。
+2. 隐藏状态下发送的消息不携带文件信息；恢复态发送携带 filePath / selectedLines。
 
 ### US-11 余额与缓存命中率展示
 
@@ -553,18 +554,23 @@
 | `e2e/webview/permission.spec.ts` | US-18 | webview UI |
 | `e2e/webview/sessions.spec.ts` | US-19、US-20、US-21、US-22 | webview UI |
 | `e2e/webview/settings.spec.ts` | US-7、US-23、US-24、US-25、US-26 | webview UI |
-| `e2e/webview/inputMenu.spec.ts` | US-5、US-8、US-9 | webview UI |
+| `e2e/webview/inputMenu.spec.ts` | US-5、US-8、US-9、US-29 | webview UI |
+| `e2e/webview/inputExtras.spec.ts` | US-6、US-10、US-11 | webview UI |
+| `e2e/webview/messagePresentation.spec.ts` | US-13、US-16、US-17 | webview UI |
+| `e2e/webview/notifications.spec.ts` | US-40 | webview UI |
+| `e2e/webview/language.spec.ts` | US-41 | webview UI |
 | `e2e/webview/titlebar.spec.ts` | US-36（标题栏渲染层快照时序） | webview UI |
 | `e2e/electron/assistant.spec.ts` | US-1、US-2、US-14、US-15、US-18、US-28 | Electron 整应用 |
 | `e2e/electron/sessions.spec.ts` | US-19、US-20、US-21、US-22 | Electron 整应用 |
 | `e2e/electron/workspace.spec.ts` | US-30、US-35、US-36 | Electron 整应用 |
 | `e2e/electron/remoteWorkspace.spec.ts` | US-36（SSH 连接表单与历史） | Electron 整应用 |
 | `e2e/electron/fileExplorer.spec.ts` | US-42、US-43 | Electron 整应用 |
+| `e2e/electron/desktopShell.spec.ts` | US-27、US-31、US-32、US-34、US-37、US-39 | Electron 整应用 |
+| `e2e/electron/preview.spec.ts` | US-38（文件 Monaco 预览） | Electron 整应用 |
 
-未覆盖 e2e 的 US（US-6 图片粘贴、US-10/11 状态条瞬时值、US-13/16/17 消息呈现细节、
-US-27 技能、US-29 MCP、US-31/32/33/34 桌面端窗口与托盘、US-37 最近工作区、
-US-38/39 预览与 Spin、US-40/41 通知与语言切换、US-42 的远程工作区提示与 US-43 的
-「在文件资源管理器中打开」——后者会弹出真实资源管理器窗口）由 `src/test/` 的既有
-单测 / 场景测试与后续补充覆盖。
+未覆盖 e2e 的 US（US-33 托盘图标状态点与闪烁提醒——属 OS 集成层，改键对话框之外
+的真实全局按键唤醒同不驱动；US-38 的图片预览窗；US-42 的远程（SSH）工作区文件
+浏览——需要真实 SSH/SFTP 远端；US-43 的「在文件资源管理器中打开」——会弹出真实
+资源管理器窗口）由 `src/test/` 的既有单测 / 场景测试与后续补充覆盖。
 
 运行方式与前置构建见 `e2e/README.md`。

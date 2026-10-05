@@ -310,7 +310,7 @@ export class WebViewUI implements WebViewUiPort {
       titleChanged: (e) => this.onTitleChanged(e.sessionId, e.title),
       sessionCreated: (e) => this.onSessionCreated(e.sessionId),
       conversationListChanged: () => this.onConversationListChanged(),
-      conversationSpaceCleared: (e) => this.onConversationSpaceCleared(e.sessionId, e.result),
+      conversationSpaceCleared: (e) => this.onConversationSpaceCleared(e.dirName, e.result),
       sessionRuntimeChanged: (e) => this.onSessionRuntimeChanged(e.states),
       spinDesignDataChanged: () => this.onSpinDesignDataChanged(),
       highlightLanguagesUsed: (e) => this.onHighlightLanguagesUsed(e.languages),
@@ -507,10 +507,10 @@ export class WebViewUI implements WebViewUiPort {
         removedBytes: result.removedBytes,
       });
     } else {
-      // 与 handleRequestConversationSpaces 的错误文案同口径：原文 + 中文前缀
+      // 只回传原始错误：前缀文案由 webview 的 i18n 拼（与统计失败同口径）
       this.host.sendToWebview({
         type: 'conversationSpacesError',
-        error: `清空对话空间失败: ${result.message}`,
+        error: result.message,
       });
     }
   }

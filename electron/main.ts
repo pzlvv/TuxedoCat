@@ -39,6 +39,8 @@ import {
   parseSshHistory,
   rememberSshEntry,
   removeSshEntry,
+  sshHistoryKey,
+  toSshHistoryCandidate,
   type SshHistoryEntry,
 } from '../src/host/sshHistory.js';
 import { DirectoryOperationError } from '../src/host/standalone/CoreDaemon.js';
@@ -61,6 +63,7 @@ import {
 
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
 import {
+  deleteEachPath,
   listDirectory,
   resolveWithinRoot,
   resolveAllWithinRoot,
@@ -69,9 +72,19 @@ import {
 import {
   listRemoteDirectory,
   deleteRemotePaths,
-  disposeRemoteFilesClient,
+  retainRemoteFilesClient,
+  releaseRemoteFilesClient,
   disposeAllRemoteFilesClients,
 } from './sidebarFilesRemote.js';
+import { sshTargetFor, sshTargetKey } from '../src/host/sshTarget.js';
+import { sessionBusyLevel } from '../src/core/sessionRuntime.js';
+import {
+  readWorkspaceState,
+  writeWorkspaceState,
+  getWorkspaceStateFile,
+  type WorkspaceState,
+  type WindowRect,
+} from './workspaceStateStore.js';
 import { PRODUCT_NAME, EXTENSION_NAME, SETTINGS_FILE_NAME } from '../src/config/project.js';
 import { resolveConfigDir } from '../src/config/configDir.js';
 import {
@@ -292,6 +305,17 @@ function workspacePathMatches(ref: WorkspaceRef, target: string): boolean {
   return ref.endpoint ? ref.path === target : sameWorkspace(ref.path, target);
 }
 
+/**
+ * 会话所属路径 → 工作区稳定 id（`workspaceRefKey`）：聊天视图的归属判等用 id。
+ * 不在打开集合时按路径本身作 id 兜底（会话目录理论必在打开集合里——
+ * openConversation 流程先经 isWorkspaceUsableForConversation 校验）。
+ */
+function workspaceIdForPath(workspace: string | undefined): string {
+  if (!workspace) return '';
+  const ref = openWorkspaces.find((candidate) => workspacePathMatches(candidate, workspace));
+  return ref ? refKey(ref) : workspace;
+}
+
 /** 两个可能为空的工作区引用是否指向同一项（都为空视为相同） */
 function sameRef(a: WorkspaceRef | undefined, b: WorkspaceRef | undefined): boolean {
   if (!a || !b) return a === b;
@@ -391,6 +415,9 @@ let focusRepaintTimer: ReturnType<typeof setTimeout> | null = null;
  */
 const APP_ROOT = path.resolve(__dirname, '..');
 
+/** 最近打开的工作区上限（workspace-state.json 的 recentWorkspaces） */
+const MAX_RECENT_WORKSPACES = 10;
+
 /**
  * 隐藏的多实例开关（不对外公开，仅供本地测试）。
  *
@@ -486,9 +513,13 @@ async function main(): Promise<void> {
   // 聊天区由 `syncChatAreaForActiveWorkspace` 改显占位页，不回退到别的标签页
   // （远程可达性由 initCore 之后的探测异步判定，10 秒超时）。
   openWorkspaces = readOpenWorkspaces();
-  // 远程工作区从启动起进入建链中（黄色呼吸点）：可达性由 initCore 之后的探测落定
+  // 远程工作区从启动起进入建链中（黄色呼吸点）：可达性由 initCore 之后的探测落定；
+  // 侧栏文件浏览器的 SSH 连接按打开集合登记共享（关闭时按计数释放）
   for (const ref of openWorkspaces) {
-    if (ref.endpoint) workspaceAvailabilityState.markConnecting(refKey(ref));
+    if (ref.endpoint) {
+      workspaceAvailabilityState.markConnecting(refKey(ref));
+      retainRemoteFilesClient(ref.endpoint);
+    }
   }
   workspacePath = readActiveWorkspace(openWorkspaces);
   const cliWorkspace = process.argv.find((a) => a.startsWith('--workspace='));
@@ -536,8 +567,8 @@ async function main(): Promise<void> {
     refreshTrayLocale();
   });
   setupMenu();
-  // 注册全局唤醒快捷键（settings.json 中的 shortcut，默认 Ctrl+Alt+X）
-  // 注册失败时弹窗提示，避免静默失效
+  // 注册全局唤醒快捷键（settings.json 中的 shortcut，默认 Ctrl+Alt+X）；
+  // 注册失败（组合键被占用）不弹窗，落日志留痕（见 registerWakeShortcutValue）
   registerWakeShortcut();
   // GPU 进程异常（合成表面丢失 → 整个页面空白）时强制重绘所有视图
   app.on('child-process-gone', (_event, details) => {
@@ -728,12 +759,31 @@ function createMainWindow(): void {
     // 窗口被拖动后菜单的锚点失效，直接关掉（与原生菜单一致）
     closeTitlebarMenu();
   });
-  win.on('close', () => {
+  // 退出确认：关一张标签要确认、退出却直接杀掉全部运行中会话是粒度倒挂——
+  // 任一工作区还有非 idle 对话时先经同一份确认（confirmCloseBusy，默认落在「取消」）；
+  // 确认后置标志放行，关闭流程不再重复问。关闭路径的关键不变量：preventDefault 后
+  // 每一条出口（再次 close / will-quit）都必须能走到真正的退出。
+  let windowCloseConfirmed = false;
+  win.on('close', (event) => {
     if (sizeSaveTimer) {
       clearTimeout(sizeSaveTimer);
       sizeSaveTimer = undefined;
     }
     persistWindowRect();
+    if (windowCloseConfirmed) return;
+    const busyWorkspace = openWorkspaces.find((candidate) => workspaceHasBusySession(candidate));
+    if (!busyWorkspace) return;
+    event.preventDefault();
+    void confirmCloseBusy(
+      tt('仍有对话在运行', 'Conversations are still running'),
+      tt(`「${refDisplay(busyWorkspace)}」下仍有对话在运行，退出会中止它们。确定退出？`,
+         `Conversations in "${refDisplay(busyWorkspace)}" are still running. Quit anyway?`),
+    ).then((confirmed) => {
+      if (confirmed && win && !win.isDestroyed()) {
+        windowCloseConfirmed = true;
+        win.close();
+      }
+    });
   });
 
   // ── 左侧原生侧栏 ──
@@ -842,11 +892,23 @@ function createMainWindow(): void {
     preloadPath: path.join(__dirname, 'preload.cjs'),
     chatPlaceholderPreloadPath: path.join(__dirname, 'chatPlaceholderPreload.cjs'),
     workspacePath: workspacePath?.path ?? '',
+    workspaceId: workspacePath ? refKey(workspacePath) : '',
     locale: app.getLocale(),
     systemLocale: getSystemLocaleForStartup(),
     uiLanguage,
     uiFontSize,
     highlightLanguages,
+    // 语言 / 字号每次建视图时从 SettingsStore 实时读取：设置保存后新开的视图
+    // 首帧就是新档位（运行中视图由 defaults 推送即时生效，这里是新视图的来源）
+    readUiPreferences: () => {
+      try {
+        const { getSettingsStore } = require('../src/host/SettingsStore.js') as typeof import('../src/host/SettingsStore.js');
+        const store = getSettingsStore();
+        return { uiLanguage: store.readUiLanguage(), uiFontSize: store.readUiFontSize() };
+      } catch {
+        return undefined;
+      }
+    },
     // 聊天视图整体下移，给顶部自绘标题栏让位
     topInset: TITLEBAR_HEIGHT,
     // 对话列表渲染方随窗口模式推导：悬浮窗隐藏原生侧栏，列表改由 webview 顶栏渲染
@@ -910,7 +972,7 @@ function createMainWindow(): void {
     .forEach((ref, index) => {
       setTimeout(() => {
         // 定时器触发时该目录可能已被关闭：仍在打开集合里才预加载
-        if (findWorkspace(ref)) chatViews?.preloadWorkspace(ref.path);
+        if (findWorkspace(ref)) chatViews?.preloadWorkspace(refKey(ref), ref.path);
       }, 400 + index * 250);
     });
 
@@ -924,7 +986,7 @@ function createMainWindow(): void {
       syncSessionWorkspaceIndex();
       const workspace = sessionWorkspaces.get(sid);
       if (workspace) void registerCoreSessionWorkspace(sid, workspace);
-      chatViews?.openConversation(sid, workspace);
+      chatViews?.openConversation(sid, workspaceIdForPath(workspace), workspace);
     }, 2000);
   }
 
@@ -1323,13 +1385,14 @@ function updateTrayStatusFromStates(
 
 /**
  * 重新注册全局唤醒快捷键：先注销旧值，再读取宿主本地偏好并注册新值。
- * 注册失败（快捷键被系统或其它程序占用）时静默忽略，不弹窗也不报错。
+ * 注册失败（快捷键被系统或其它程序占用）不弹窗（托盘 / 菜单入口仍然可用），
+ * 但必须落日志留痕——静默失效的症状是「按快捷键没反应」，没有日志无从排查。
  */
 function registerWakeShortcut(): void {
   registerWakeShortcutValue(readWakeShortcutSync());
 }
 
-/** 按指定值注册全局唤醒快捷键（先注销旧值）；注册失败静默忽略 */
+/** 按指定值注册全局唤醒快捷键（先注销旧值）；失败落日志，不中断主流程 */
 function registerWakeShortcutValue(shortcut: string): void {
   if (appQuitting) return;
   // 快捷键设置对话框打开期间不注册全局快捷键，避免用户按下的组合键被占用/触发
@@ -1342,9 +1405,16 @@ function registerWakeShortcutValue(shortcut: string): void {
     if (globalShortcut.register(shortcut, () => toggleMainWindowFromTray())) {
       registeredWakeShortcut = shortcut;
       console.log(`[main] Global wake shortcut registered: ${shortcut}`);
+      return;
     }
-  } catch {
-    // 静默忽略：快捷键注册失败不影响应用主流程
+    // 组合键被占用（另一个实例 / 其它程序）：应用仍可用，失效原因必须可见
+    const message = `wake shortcut not registered (already taken): ${shortcut}`;
+    console.warn(`[main] ${message}`);
+    fileLogger.warn('shortcut', message);
+  } catch (err) {
+    const message = `wake shortcut register threw: ${shortcut}: ${String(err)}`;
+    console.warn(`[main] ${message}`);
+    fileLogger.warn('shortcut', message);
   }
 }
 
@@ -1807,8 +1877,10 @@ type WorkspaceActivityLevel = 'waiting' | 'running';
 function collectWorkspaceActivity(): Record<string, WorkspaceActivityLevel> {
   const result: Record<string, WorkspaceActivityLevel> = {};
   for (const state of conversations?.getSessionStatesSnapshot() ?? []) {
-    // idle 且非 waiting = 空闲，不点亮
-    if (state.idle && !state.waiting) continue;
+    // 忙闲判定收敛在 core 的 sessionBusyLevel（与托盘 / 关闭确认同一份派生）：
+    // waiting（等用户）> running > idle
+    const level = sessionBusyLevel(state);
+    if (level === 'idle') continue;
     const workspace = sessionWorkspaces.get(state.sessionId);
     if (!workspace) continue;
     // 会话登记的目录与打开集合可能写法不同（本地：大小写 / 分隔符 / 尾斜杠；
@@ -1816,7 +1888,7 @@ function collectWorkspaceActivity(): Record<string, WorkspaceActivityLevel> {
     const target = openWorkspaces.find((candidate) => workspacePathMatches(candidate, workspace));
     if (!target) continue;
     const key = refKey(target);
-    if (state.waiting) result[key] = 'waiting';
+    if (level === 'waiting') result[key] = 'waiting';
     else if (result[key] !== 'waiting') result[key] = 'running';
   }
   return result;
@@ -1828,21 +1900,22 @@ function syncTitlebarActivity(): void {
 }
 
 /**
- * 该工作目录下是否有非 idle 的对话（与标签页流水灯读同一份事实，见 collectWorkspaceActivity）。
- * 关闭标签页前用它判定要不要让用户二次确认。
+ * 该工作目录下是否有非 idle 的对话（waiting 也算忙：等用户输入的会话关掉会丢问题）。
+ * 与标签页流水灯 / 托盘消费同一个派生（core 的 `sessionBusyLevel`）。
  */
 function workspaceHasBusySession(ref: WorkspaceRef): boolean {
   return collectWorkspaceActivity()[refKey(ref)] !== undefined;
 }
 
 /**
- * 该对话当前是否非 idle：读宿主缓存的会话运行时快照（与 `collectWorkspaceActivity`
- * 同一份事实、同一条来源），未登记任何事实（含新建中的 `new-` 临时 key）＝ 空闲。
+ * 该对话当前是否非 idle（含 waiting）：读宿主缓存的会话运行时快照（与
+ * `collectWorkspaceActivity` 同一份事实、同一个派生 `sessionBusyLevel`），
+ * 未登记任何事实（含新建中的 `new-` 临时 key）＝ 空闲。
  */
 function sessionIsBusy(sessionId: string): boolean {
   const states = conversations?.getSessionStatesSnapshot() ?? [];
   const state = states.find((candidate) => candidate.sessionId === sessionId);
-  return state !== undefined && !state.idle;
+  return state !== undefined && sessionBusyLevel(state) !== 'idle';
 }
 
 /**
@@ -2760,19 +2833,25 @@ function openRemoteWorkspaceDialog(): void {
     return { ok: true };
   });
 
-  // SSH 连接历史：条目带着口令下发——选定候选要整表单回填（含口令），只发进这个窗口，
-  // 与 connect 的「凭证不下发到页面」（标题不需要口令）不冲突
+  // SSH 连接历史：候选只带 host / 端口 / 用户（展示与筛选不需要口令）；
+  // 口令按选定项经 `remote-workspace:ssh-history-entry` 单独取——不随整表常驻页面
   ipcMain.handle('remote-workspace:ssh-history', (event) => {
     if (!isSender(event.sender)) return [];
-    return readSshHistory();
+    return readSshHistory().map(toSshHistoryCandidate);
+  });
+
+  ipcMain.handle('remote-workspace:ssh-history-entry', (event, key: unknown) => {
+    if (!isSender(event.sender)) return null;
+    if (typeof key !== 'string') return null;
+    return readSshHistory().find((entry) => sshHistoryKey(entry) === key) ?? null;
   });
 
   ipcMain.handle('remote-workspace:ssh-history-remove', (event, key: unknown) => {
-    if (!isSender(event.sender)) return readSshHistory();
-    if (typeof key !== 'string') return readSshHistory();
+    if (!isSender(event.sender)) return readSshHistory().map(toSshHistoryCandidate);
+    if (typeof key !== 'string') return readSshHistory().map(toSshHistoryCandidate);
     const next = removeSshEntry(readSshHistory(), key);
     writeWorkspaceState({ ...readWorkspaceState(), recentSshConnections: next });
-    return next;
+    return next.map(toSshHistoryCandidate);
   });
 
   const onCancel = (event: Electron.IpcMainEvent): void => {
@@ -2787,6 +2866,7 @@ function openRemoteWorkspaceDialog(): void {
     ipcMain.removeHandler('remote-workspace:delete');
     ipcMain.removeHandler('remote-workspace:open');
     ipcMain.removeHandler('remote-workspace:ssh-history');
+    ipcMain.removeHandler('remote-workspace:ssh-history-entry');
     ipcMain.removeHandler('remote-workspace:ssh-history-remove');
     ipcMain.removeListener('remote-workspace:cancel', onCancel);
     if (remoteWorkspaceWindow === win) remoteWorkspaceWindow = undefined;
@@ -2876,6 +2956,10 @@ function addWorkspaceRefs(refs: readonly WorkspaceRef[]): void {
     added.push(existing ?? ref);
   }
   if (added.length === 0) return;
+  // 侧栏文件浏览器的 SSH 连接共享随工作区一起登记（关闭时按计数释放）
+  for (const ref of opened) {
+    if (ref.endpoint) retainRemoteFilesClient(ref.endpoint);
+  }
   // 新打开的工作区通知 Client 建立 Connection（重复打开只激活已有视图）；
   // 重新打开是全新的一次建连，清掉上一世的就绪标记
   for (const ref of opened) {
@@ -2978,12 +3062,14 @@ async function closeWorkspace(target: WorkspaceRef | string): Promise<void> {
   openWorkspaces.splice(idx, 1);
   // 标签页关闭即丢弃启动期的不可用判定 / 建链状态：之后经「最近打开」重新添加按全新打开处理
   workspaceAvailabilityState.clearAll(refKey(ref));
-  // 文件浏览器的 SSH 连接随工作区一起释放（重开按新连接处理）
-  disposeRemoteFilesClient(ref.endpoint);
-  chatViews?.closeWorkspace(ref.path);
+  // 文件浏览器的 SSH 连接随工作区释放一次共享：同一 endpoint 还有其它工作区
+  // 在用时连接保留（引用计数归零才真正断开），重开按新连接处理
+  releaseRemoteFilesClient(ref.endpoint);
+  // 视图归属按稳定 id（refKey）：同路径不同主机的远程工作区互不误伤
+  chatViews?.closeWorkspace(refKey(ref));
   // 该目录的列表快照一并丢弃：关闭期间盘上内容可能变化（另一实例 / daemon 侧），
   // 重新打开时按首次打开处理（无快照 → 完整读一次盘）。其它目录的快照不受影响。
-  conversations?.invalidateCachedList(ref.path);
+  conversations?.invalidateCachedList(refKey(ref));
   for (const [sid, ws] of [...sessionWorkspaces]) {
     if (workspacePathMatches(ref, ws)) sessionWorkspaces.delete(sid);
   }
@@ -3045,7 +3131,7 @@ function markWorkspaceUnavailable(ref: WorkspaceRef, reason: string, mode: 'buil
   // 该目录下的对话视图一并销毁：会话所属的 Core 已不存在，视图内容不再有效
   // （侧栏「已打开会话」与活动会话随之清空，由 ChatViewManager 推送）
   try {
-    chatViews?.closeWorkspace(ref.path);
+    chatViews?.closeWorkspace(refKey(ref));
   } catch (err) {
     // 清理失败不阻断状态收敛（上面已推送）；只留诊断日志
     fileLogger.error('workspace-tab', `closeWorkspace(${refDisplay(ref)}) failed: ${String(err)}`);
@@ -3109,7 +3195,7 @@ function syncChatAreaForActiveWorkspace(): void {
   if (!chatViews) return;
   if (!workspacePath) {
     chatViews.showChatPlaceholder(null);
-    chatViews.setWorkspacePath('');
+    chatViews.setWorkspacePath('', '');
     chatViews.disposeAll();
     chatViews.openNewConversation('');
     return;
@@ -3118,12 +3204,12 @@ function syncChatAreaForActiveWorkspace(): void {
   if (availability === 'available') {
     chatViews.showChatPlaceholder(null);
     // setActiveWorkspace 负责更新 opts.workspacePath 并清理旧目录的预热视图
-    chatViews.setActiveWorkspace(workspacePath.path);
+    chatViews.setActiveWorkspace(workspacePath.path, refKey(workspacePath));
     return;
   }
   // 该目录的对话不可用：清空侧栏对话列表（上一目录的列表不再适用）
   conversations?.clearConversationList();
-  chatViews.setWorkspacePath(workspacePath.path);
+  chatViews.setWorkspacePath(workspacePath.path, refKey(workspacePath));
   chatViews.showChatPlaceholder(
     getChatPlaceholderHtml({
       kind: availability === 'connecting'
@@ -3148,12 +3234,12 @@ function syncChatAreaForActiveWorkspace(): void {
  * 的 lost 信号兜底（见 initCore 的订阅）。
  */
 function probeStartupRemoteWorkspaces(): void {
-  // 同一 endpoint（host/port/user + 凭证，凭证不同即不同 daemon）只探测一次
+  // 同一连接目标（端口归一 + 凭证指纹，`sshTargetKey` 唯一派生）只探测一次
   const groups = new Map<string, { endpoint: WorkspaceEndpoint; display: string; refs: WorkspaceRef[] }>();
   for (const ref of openWorkspaces) {
     const endpoint = ref.endpoint;
     if (!endpoint || !workspaceAvailabilityState.hasConnecting(refKey(ref))) continue;
-    const key = JSON.stringify(endpoint);
+    const key = sshTargetKey(sshTargetFor(endpoint));
     const group = groups.get(key);
     if (group) {
       group.refs.push(ref);
@@ -3214,105 +3300,6 @@ function sidebarWorkspaceState(): {
     active: workspacePath ? refKey(workspacePath) : null,
     recent: recentWorkspaceTabs(),
   };
-}
-
-/**
- * Electron 宿主本地状态文件。
- * 位于 Electron userData 目录（Windows 下即 %APPDATA%\<PRODUCT_NAME>\），
- * 用于记录打开集合、活动工作目录与最近打开的工作目录列表（最多 10 个）；
- * windowSize / floatingWindowSize 分别记录完整模式与浮窗模式的上次窗口位置与大小
- * （两个模式各存一份，切换模式时按各自记录还原位置）；
- * windowMode / floatingPinned 记录上次使用的窗口模式与浮窗置顶状态，启动时优先按它们恢复；
- * theme / shortcut 是只有 Electron 消费的宿主本地偏好，core 不读不写。
- * 文件格式：
- * {
- *   "openWorkspaces": ["C:\\path\\to\\ws", { "scheme": "ssh", "path": "/home/pz", "endpoint": {...} }],
- *   "activeWorkspace": "C:\\path\\to\\ws2",
- *   "recentWorkspaces": ["C:\\path\\to\\ws2", { "scheme": "tcp", "path": "/srv", "endpoint": {...} }],
- *   "recentSshConnections": [{ "host": "192.168.1.5", "port": 22, "user": "root", "password": "…" }],
- *   "windowSize": { "x": 320, "y": 180, "width": 1280, "height": 860 },
- *   "floatingWindowSize": { "x": 1500, "y": 120, "width": 480, "height": 780 },
- *   "windowMode": "floating",
- *   "floatingPinned": true,
- *   "theme": "system",
- *   "shortcut": "Ctrl+Alt+X"
- * }
- *
- * 本地项写字符串（旧版本格式，读取时按本地引用迁移），远程项写 `SerializedWorkspaceRef`。
- * **远程凭证（token / SSH 口令）随 endpoint 一起明文落盘**：重启后要能直接恢复并打开
- * 已连接过的工作区（`docs/client-connection.md` 第 9 节）。
- *
- * 读取口径：字段缺失或非法即按「没有」处理，不做任何跨字段回退
- * （例如 openWorkspaces 缺失就是没有打开任何工作目录）。
- */
-const MAX_RECENT_WORKSPACES = 10;
-
-/** 窗口位置与大小（x/y 可缺失：历史版本只存过宽高） */
-interface WindowRect {
-  x?: number;
-  y?: number;
-  width?: number;
-  height?: number;
-}
-
-interface WorkspaceState {
-  /**
-   * 打开集合：按标签页顺序排列。新版本写 `SerializedWorkspaceRef`（含远程项）；
-   * 旧版本写本地路径字符串，读取时按本地引用迁移。
-   */
-  openWorkspaces?: Array<string | SerializedWorkspaceRef>;
-  /** 活动工作区 id（`workspaceRefKey`）；无活动项时为 null */
-  activeWorkspaceKey?: string | null;
-  /** 旧版本的活动工作目录（本地路径）；读取时按本地引用迁移 */
-  activeWorkspace?: string | null;
-  /** 最近打开的工作区：与 `openWorkspaces` 同格式（字符串 = 本地路径） */
-  recentWorkspaces?: Array<string | SerializedWorkspaceRef>;
-  /**
-   * SSH 连接历史（`docs/client-connection.md` 第 9 节）：最近连接在前，最多 20 条。
-   * **口令明文落盘**——历史的作用就是下次一键回填表单（host / 端口 / 用户 / 口令）。
-   */
-  recentSshConnections?: SshHistoryEntry[];
-  /** 完整模式窗口位置与大小（字段名沿用 windowSize，现在同时存位置） */
-  windowSize?: WindowRect;
-  /** 悬浮窗模式窗口位置与大小；与完整模式独立存储 */
-  floatingWindowSize?: WindowRect;
-  /** 上次退出时的窗口模式：启动时优先按它恢复 */
-  windowMode?: 'normal' | 'floating';
-  /** 浮窗「总在最前」状态：启动时优先按它恢复（默认 true） */
-  floatingPinned?: boolean;
-  /** 主题模式：跟随系统 / 强制浅色 / 强制深色（宿主本地偏好，core 不读） */
-  theme?: ThemeMode;
-  /** 唤醒快捷键（Electron accelerator 形式；宿主本地偏好，core 不读） */
-  shortcut?: string;
-}
-
-function getWorkspaceStateFile(): string {
-  return path.join(app.getPath('userData'), 'workspace-state.json');
-}
-
-/** 读取工作区状态文件（损坏/不存在时返回空对象） */
-function readWorkspaceState(): WorkspaceState {
-  try {
-    const file = getWorkspaceStateFile();
-    if (!fs.existsSync(file)) return {};
-    const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
-    if (!data || typeof data !== 'object') return {};
-    return data as WorkspaceState;
-  } catch {
-    // 读取失败时忽略，回到未选择工作区状态
-    return {};
-  }
-}
-
-/** 写回完整状态（调用方负责先 read 再合并，避免覆盖其它字段） */
-function writeWorkspaceState(state: WorkspaceState): void {
-  try {
-    const dir = app.getPath('userData');
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(getWorkspaceStateFile(), JSON.stringify(state, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('[main] Failed to write workspace state:', err);
-  }
 }
 
 // ==================== 宿主本地偏好：theme / shortcut ====================
@@ -3727,10 +3714,11 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: W
   // 对「key 已经等于 sessionId」的调用，registerSession 是提前返回的空操作。
   if (message.type === 'startNewConversation' || message.type === 'loadConversation') {
     if (sessionId) {
-      // 该视图自己的工作目录是权威来源（新建对话继承它；加载对话本就属于它）
-      const workspace = chatViews?.getWorkspaceForWebContents(sender);
+      // 该视图自己的工作区是权威来源（新建对话继承它；加载对话本就属于它）；
+      // 视图归属按稳定 id 登记，这里取路径用于 sessionWorkspaces（会话 → 目录索引）
+      const workspace = chatViews?.getWorkspacePathForWebContents(sender);
       chatViews?.registerSession(sender, sessionId);
-      const resolved = workspace ?? chatViews?.getWorkspaceForKey(sessionId);
+      const resolved = workspace ?? chatViews?.getWorkspacePathForKey(sessionId);
       if (resolved) {
         const p = canonicalWorkspacePath(resolved);
         sessionWorkspaces.set(sessionId, p);
@@ -3751,7 +3739,7 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: W
       }
       if (workspace) void registerCoreSessionWorkspace(sessionId, workspace);
       activateWorkspaceForPath(workspace);
-      chatViews?.openConversation(sessionId, workspace);
+      chatViews?.openConversation(sessionId, workspaceIdForPath(workspace), workspace);
     }
     return;
   }
@@ -4056,7 +4044,7 @@ function setupIpc(): void {
       const workspace = sessionWorkspaces.get(sessionId);
       if (workspace) void registerCoreSessionWorkspace(sessionId, workspace);
       activateWorkspaceForPath(workspace);
-      chatViews?.openConversation(sessionId, workspace);
+      chatViews?.openConversation(sessionId, workspaceIdForPath(workspace), workspace);
     }
   });
 
@@ -4066,7 +4054,7 @@ function setupIpc(): void {
       console.warn('[main] ignore new-conversation for non-available workspace:', refDisplay(workspacePath));
       return;
     }
-    chatViews?.openNewConversation(workspacePath?.path ?? '');
+    chatViews?.openNewConversation(workspacePath ? refKey(workspacePath) : '');
   });
 
   // 关闭指定会话（UI → core 走 WebViewUI.closeConversation：
@@ -4130,21 +4118,21 @@ function setupIpc(): void {
   });
 
   // ── 侧栏文件浏览器（US-42 / US-43） ──
-  // root 由渲染层回传、不可信：它是侧栏工作区项的稳定 id（refKey），按 id 回查
+  // workspaceId 由渲染层回传、不可信：它是侧栏工作区项的稳定 id（refKey），按 id 回查
   // 「打开集合中的工作区」——不能按路径回查：远程项的展示路径（ssh://user@host/…）
   // 与 ref.path（远端真实路径）不同，且同一路径可以在多台机器上出现，只有 id 唯一
   // （与侧栏「最近打开」点击的回查方式同一约定）。条目相对路径再经 sidebarFiles 的
   // 越界校验（本地 win32 / 远程 posix），双保险缺一不可。
-  const resolveFilesRef = (root: unknown): WorkspaceRef | null => {
-    if (typeof root !== 'string' || root.length === 0) return null;
-    return openWorkspaces.find((ref) => refKey(ref) === root) ?? null;
+  const resolveFilesRef = (workspaceId: unknown): WorkspaceRef | null => {
+    if (typeof workspaceId !== 'string' || workspaceId.length === 0) return null;
+    return openWorkspaces.find((ref) => refKey(ref) === workspaceId) ?? null;
   };
-  /** 公共入参校验：root 合法 + relPaths 是非空字符串数组；不合法时回错误而非抛错（渲染层按 ok:false 显示） */
+  /** 公共入参校验：workspaceId 合法 + paths 是非空字符串数组；不合法时回错误而非抛错（渲染层按 ok:false 显示） */
   const parseFilesPayload = (
     payload: unknown,
   ): { ref: WorkspaceRef; rels: string[] } | { error: string } => {
-    const p = (payload ?? {}) as { root?: unknown; paths?: unknown };
-    const ref = resolveFilesRef(p.root);
+    const p = (payload ?? {}) as { workspaceId?: unknown; paths?: unknown };
+    const ref = resolveFilesRef(p.workspaceId);
     if (!ref) return { error: 'workspace-unavailable' };
     if (!Array.isArray(p.paths) || p.paths.length === 0 || !p.paths.every((x) => typeof x === 'string' && x.length > 0)) {
       return { error: 'invalid-arguments' };
@@ -4159,8 +4147,8 @@ function setupIpc(): void {
 
   ipcMain.handle('sidebar:files-list', async (event, payload: unknown) => {
     if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-list');
-    const p = (payload ?? {}) as { root?: unknown; dir?: unknown };
-    const ref = resolveFilesRef(p.root);
+    const p = (payload ?? {}) as { workspaceId?: unknown; dir?: unknown };
+    const ref = resolveFilesRef(p.workspaceId);
     if (!ref) return { ok: false, error: 'workspace-unavailable' };
     if (typeof p.dir !== 'string') return { ok: false, error: 'invalid-arguments' };
     if (ref.endpoint) {
@@ -4187,14 +4175,17 @@ function setupIpc(): void {
 
   ipcMain.handle('sidebar:files-reveal', (event, payload: unknown) => {
     if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-reveal');
-    const parsed = parseFilesPayload(payload);
-    if ('error' in parsed) return { ok: false, error: parsed.error };
-    const { ref, rels } = parsed;
+    // 单项语义用单项契约：preload 发 `{ workspaceId, path }`（此前借复数 paths 数组
+    // 再 slice(0,1) 静默丢多余项）
+    const p = (payload ?? {}) as { workspaceId?: unknown; path?: unknown };
+    const ref = resolveFilesRef(p.workspaceId);
+    if (!ref) return { ok: false, error: 'workspace-unavailable' };
+    if (typeof p.path !== 'string' || p.path.length === 0) return { ok: false, error: 'invalid-arguments' };
     // 「在文件资源管理器中打开」只对本地路径有意义：远程项在渲染层就不显示该菜单项
     if (ref.endpoint) return { ok: false, error: 'remote-unsupported' };
-    const abs = resolveAllWithinRoot(ref.path, rels.slice(0, 1));
+    const abs = resolveWithinRoot(ref.path, p.path);
     if (!abs) return { ok: false, error: 'outside-root' };
-    shell.showItemInFolder(abs[0]);
+    shell.showItemInFolder(abs);
     return { ok: true };
   });
 
@@ -4261,17 +4252,18 @@ function setupIpc(): void {
     }
     const abs = resolveAllWithinRoot(ref.path, rels);
     if (!abs) return { ok: false, error: 'outside-root' };
-    const failures: string[] = [];
-    for (let i = 0; i < abs.length; i++) {
-      try {
-        await shell.trashItem(abs[i]);
-      } catch (err) {
-        failures.push(`${rels[i]}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-    if (failures.length > 0) {
-      fileLogger.warn('sidebar-files', `delete failed (${refDisplay(ref)}): ${failures.join('; ')}`);
-      return { ok: false, error: failures.join('\n') };
+    // 逐项失败收集收敛在 deleteEachPath（与远程 SFTP 删除同一份口径）；
+    // 部分失败如实回报（渲染层无论成败都刷新树，残留项会自然显现）
+    try {
+      await deleteEachPath(rels, (rel) => {
+        const target = resolveWithinRoot(ref.path, rel);
+        if (!target) return Promise.reject(new Error('path escapes the workspace root'));
+        return shell.trashItem(target);
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      fileLogger.warn('sidebar-files', `delete failed (${refDisplay(ref)}): ${message}`);
+      return { ok: false, error: message };
     }
     return { ok: true };
   });
@@ -4342,6 +4334,8 @@ function initCore(): void {
         sidebarView.webContents.send(channel, payload);
       }
     },
+    // 列表快照按工作区稳定 id 分份（同路径不同主机的远程工作区互不命中）
+    () => (workspacePath ? refKey(workspacePath) : ''),
   );
   conversations = conversationsMgr;
   // 托盘只吃状态流（阶段 3.6）：running / waiting 来自 core 的 sessionRuntimeChanged

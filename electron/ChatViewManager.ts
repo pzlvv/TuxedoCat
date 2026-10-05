@@ -14,7 +14,6 @@
 import { BrowserWindow, WebContents, WebContentsView, Rectangle, nativeTheme, shell } from 'electron';
 import * as path from 'path';
 import type { WebviewMessage } from '../src/host/webviewMessages.js';
-import { sameWorkspace } from '../src/host/workspacePaths.js';
 
 export const SIDEBAR_WIDTH = 280;
 /** 自绘标题栏高度：主窗口顶部由标题栏 WebContentsView 占据，侧栏/聊天视图整体下移 */
@@ -45,13 +44,26 @@ function isExternalUrl(targetUrl: string): boolean {
   return /^(https?|mailto|tel):/i.test(targetUrl);
 }
 
+/** 语言 / 字号档位（readUiPreferences 的回包） */
+interface UiFontPrefs {
+  uiLanguage?: 'auto' | 'zh' | 'en';
+  uiFontSize?: 'medium' | 'large' | 'xlarge';
+}
+
 export interface ChatViewManagerOptions {
   win: BrowserWindow;
   appRoot: string;
   preloadPath: string;
   /** 聊天区占位页的 preload（活动工作区建链中 / 不可用时替代对话视图，见 showChatPlaceholder） */
   chatPlaceholderPreloadPath: string;
+  /** 活动工作区路径（--workspace= 注入 / 展示；身份判等不用它，用 workspaceId） */
   workspacePath: string;
+  /**
+   * 活动工作区 id（`workspaceRefKey` 稳定身份）：视图归属与判等只按 id——
+   * 远程路径不能按本地语义规范化（会变形 / 大小写归一），同路径不同主机的
+   * 两个远程工作区必须是两个身份。
+   */
+  workspaceId: string;
   locale: string;
   systemLocale: string;
   /** 用户显式选择的界面语言（'auto' | 'zh' | 'en'），随 --uiLanguage 注入 webview */
@@ -60,6 +72,12 @@ export interface ChatViewManagerOptions {
   uiFontSize?: 'medium' | 'large' | 'xlarge';
   /** 上次已使用过的 Shiki 语言（来自 settings.json），随 --highlightLanguages 注入供 webview 预热 */
   highlightLanguages?: string[];
+  /**
+   * 语言 / 字号的实时读取口：每个视图创建时调用一次，替代启动期快照——
+   * 设置保存后新开的视图首帧就要拿到新档位（运行中的视图另有 defaults 推送）。
+   * 返回 undefined 时回退上面的启动期值。
+   */
+  readUiPreferences?: () => UiFontPrefs | undefined;
   /**
    * 内容区顶部内缩量（自绘标题栏高度）。
    * 聊天视图从该 y 坐标开始，避免被顶部标题栏遮挡。
@@ -173,60 +191,77 @@ export class ChatViewManager {
   private placeholderHtml: string | null = null;
 
   /**
-   * 视图 key（正式 sessionId 或 `new-` 临时 key）→ 该视图所属的工作目录。
-   * 工作目录是对话的属性：视图创建时记下它，切换工作目录后重建视图时按对话自己的目录注入。
+   * 视图 key（正式 sessionId 或 `new-` 临时 key）→ 该视图所属的工作区 id
+   * （`workspaceRefKey` 稳定身份）。工作区是对话的属性：视图创建时记下它，
+   * 切换工作区后重建视图时按对话自己的 id 归属。
+   *
+   * **id 与路径是两个维度**：id 用于归属与判等（远程路径不能按本地语义规范化，
+   * 同路径不同主机的两个远程工作区必须是两个身份）；路径只用于给视图注入
+   * `--workspace=` 与显示，按 id 在 `workspacePathById` 里查。
    */
   private readonly viewWorkspaces = new Map<string, string>();
+  /** 工作区 id → 展示 / 注入用路径（登记于 setActiveWorkspace / 预热 / 新建对话） */
+  private readonly workspacePathById = new Map<string, string>();
 
   constructor(opts: ChatViewManagerOptions) {
     this.opts = opts;
+    this.workspacePathById.set(opts.workspaceId, opts.workspacePath);
     // 与 conversationListOwner 保持一致：以悬浮窗启动时首帧布局就没有侧栏，无需调用方再补一次
     this.sidebarHidden = opts.conversationListOwner === 'webview';
   }
 
-  /** 更新活动工作目录（新建视图携带它作为 --workspace= 默认值） */
-  setWorkspacePath(p: string): void {
+  /** 更新活动工作区（id 用于归属判等，path 用于新建视图的 --workspace= 注入） */
+  setWorkspacePath(p: string, id: string): void {
     this.opts.workspacePath = p;
+    this.opts.workspaceId = id;
+    this.workspacePathById.set(id, p);
   }
 
-  /** 视图 key 所属的工作目录（未登记时回退到当前活动工作目录） */
+  /** 视图 key 所属的工作区 id（未登记时回退到当前活动工作区） */
   getWorkspaceForKey(key: string): string {
-    return this.viewWorkspaces.get(key) ?? this.opts.workspacePath;
+    return this.viewWorkspaces.get(key) ?? this.opts.workspaceId;
   }
 
-  /** 某 webContents 对应的视图所属工作目录（找不到时 undefined） */
+  /** 某 webContents 对应的视图所属工作区 id（找不到时 undefined） */
   getWorkspaceForWebContents(webContents: WebContents): string | undefined {
     const key = this.getKeyByWebContents(webContents);
     return key ? this.viewWorkspaces.get(key) : undefined;
   }
 
-  /**
-   * 两个视图工作目录是否指同一目录。
-   *
-   * 用宿主的去重键判等（忽略大小写 / 尾部分隔符 / 符号链接等表示差异）；
-   * `''` 是合法的「未打开工作目录」空态目录，`sameWorkspace` 会把空值判为不相等，
-   * 所以先按字符串相等短路（`'' === ''`、`undefined === undefined`）。
-   */
-  private isSameWorkspace(a: string | undefined, b: string | undefined): boolean {
-    if (a === b) return true;
-    if (!a || !b) return false;
-    return sameWorkspace(a, b);
+  /** 视图 key 所属工作区的路径（--workspace= 注入 / 展示用；未登记回退活动路径） */
+  getWorkspacePathForKey(key: string): string {
+    return this.workspacePathById.get(this.getWorkspaceForKey(key)) ?? this.opts.workspacePath;
+  }
+
+  /** 某 webContents 对应的视图所属工作区路径（找不到时 undefined） */
+  getWorkspacePathForWebContents(webContents: WebContents): string | undefined {
+    const id = this.getWorkspaceForWebContents(webContents);
+    return id === undefined ? undefined : this.workspacePathById.get(id) ?? this.opts.workspacePath;
   }
 
   /**
-   * 切换活动工作目录：把可见视图切到该目录最近使用的对话；没有则在该目录新建对话。
+   * 两个工作区 id 是否相同：id 是 `workspaceRefKey` 稳定身份，字符串精确比较
+   * （表示差异已在派生 id 时归一；`''` 是合法的「未打开工作区」空态 id）。
+   */
+  private isSameWorkspace(a: string | undefined, b: string | undefined): boolean {
+    return a === b;
+  }
+
+  /**
+   * 切换活动工作区（id = `workspaceRefKey`，path 用于视图注入）：
+   * 把可见视图切到该目录最近使用的对话；没有则在该目录新建对话。
    *
-   * 视图按对话自己的工作目录保留（不随切换销毁），因此切回时能直接恢复上次的对话。
-   * 属于其它工作目录的后台预热视图不再适用：销毁它（预热定时器保留，触发时按
+   * 视图按对话自己的工作区保留（不随切换销毁），因此切回时能直接恢复上次的对话。
+   * 属于其它工作区的后台预热视图不再适用：销毁它（预热定时器保留，触发时按
    * 新的活动目录创建），避免留下无人跟踪的孤儿视图。
    */
-  setActiveWorkspace(workspace: string): void {
-    this.opts.workspacePath = workspace;
-    // 其它工作目录的后台预热视图保留：它们是那些标签页的预加载视图，
-    // 切过去时直接 show()（消除首次切换的闪烁）；关闭工作目录 / 窗口时统一销毁。
+  setActiveWorkspace(workspace: string, id: string): void {
+    this.setWorkspacePath(workspace, id);
+    // 其它工作区的后台预热视图保留：它们是那些标签页的预加载视图，
+    // 切过去时直接 show()（消除首次切换的闪烁）；关闭工作区 / 窗口时统一销毁。
     const next = [...this.lru]
       .reverse()
-      .find((key) => this.isSameWorkspace(this.viewWorkspaces.get(key), workspace) && this.isViewAlive(key));
+      .find((key) => this.isSameWorkspace(this.viewWorkspaces.get(key), id) && this.isViewAlive(key));
     if (next && next !== this.currentSessionId) {
       this.touch(next);
       this.show(next);
@@ -234,16 +269,16 @@ export class ChatViewManager {
       return;
     }
     if (next) {
-      // 已经是该工作目录的活动视图：无需切换
+      // 已经是该工作区的活动视图：无需切换
       return;
     }
-    this.openNewConversation(workspace);
+    this.openNewConversation(id);
   }
 
-  /** 关闭一个工作目录：销毁该目录下所有已打开的对话视图（卸内存 + 中止运行中查询） */
-  closeWorkspace(workspace: string): void {
+  /** 关闭一个工作区：销毁该目录下所有已打开的对话视图（卸内存 + 中止运行中查询） */
+  closeWorkspace(id: string): void {
     const keys = [...this.views.keys()].filter((key) =>
-      this.isSameWorkspace(this.viewWorkspaces.get(key), workspace),
+      this.isSameWorkspace(this.viewWorkspaces.get(key), id),
     );
     const closedCurrent = !!this.currentSessionId && keys.includes(this.currentSessionId);
     for (const key of keys) {
@@ -421,7 +456,7 @@ export class ChatViewManager {
    * workspace 为该对话所属的工作目录（宿主按对话解析后传入）；省略时按视图已有登记，
    * 再回退到当前活动工作目录。
    */
-  openConversation(sessionId: string, workspace?: string): void {
+  openConversation(sessionId: string, id?: string, path?: string): void {
     let view = this.views.get(sessionId);
     if (!view || view.webContents.isDestroyed()) {
       // 视图已被销毁（如用户点击关闭按钮）但仍残留在 map 中时，清理后重建
@@ -429,10 +464,12 @@ export class ChatViewManager {
         this.views.delete(sessionId);
         this.lru = this.lru.filter((k) => k !== sessionId);
       }
-      const ws = workspace ?? this.viewWorkspaces.get(sessionId) ?? this.opts.workspacePath;
+      const wsId = id ?? this.viewWorkspaces.get(sessionId) ?? this.opts.workspaceId;
+      const ws = path ?? this.workspacePathById.get(wsId) ?? this.opts.workspacePath;
+      this.workspacePathById.set(wsId, ws);
       view = this.createView(sessionId, { workspace: ws });
       this.views.set(sessionId, view);
-      this.viewWorkspaces.set(sessionId, ws);
+      this.viewWorkspaces.set(sessionId, wsId);
     }
     this.touch(sessionId);
     this.show(sessionId);
@@ -452,9 +489,11 @@ export class ChatViewManager {
    * 后台预热的视图也走这条复用路径：直接 show() 即可，由 show() 对仍是预热态的
    * 视图补发 activatePrewarmedView 让它完成启动初始化（见 show / prewarmKeys）。
    */
-  openNewConversation(workspace?: string): void {
-    const ws = workspace ?? this.opts.workspacePath;
-    const reusable = this.findReusableNewConversation(ws);
+  openNewConversation(id?: string): void {
+    const wsId = id ?? this.opts.workspaceId;
+    // 注入用路径：按 id 查登记表（未登记回退活动路径）
+    const ws = this.workspacePathById.get(wsId) ?? this.opts.workspacePath;
+    const reusable = this.findReusableNewConversation(wsId);
     if (reusable) {
       this.touch(reusable);
       // 已经在展示这个未发送的新对话：只聚焦，保留输入框里的草稿，避免重复 addChildView。
@@ -476,7 +515,7 @@ export class ChatViewManager {
     const key = this.nextNewKey();
     const view = this.createView(undefined, { workspace: ws });
     this.views.set(key, view);
-    this.viewWorkspaces.set(key, ws);
+    this.viewWorkspaces.set(key, wsId);
     this.unsentNewKeys.add(key);
     this.touch(key);
     this.show(key);
@@ -485,12 +524,12 @@ export class ChatViewManager {
 
   /**
    * 查找可复用的「未发送新对话」视图（优先当前正在展示的那个）。
-   * 只在同一工作目录内复用：草稿属于该目录下的新对话。
+   * 只在同一工作区内复用：草稿属于该工作区下的新对话。
    * 返回 null 表示没有可复用的，需要新建。
    */
-  private findReusableNewConversation(workspace: string): string | null {
+  private findReusableNewConversation(workspaceId: string): string | null {
     const inWorkspace = (key: string): boolean =>
-      this.isSameWorkspace(this.viewWorkspaces.get(key), workspace);
+      this.isSameWorkspace(this.viewWorkspaces.get(key), workspaceId);
     // 优先复用当前活动视图，避免无谓的视图切换
     if (this.currentSessionId && inWorkspace(this.currentSessionId) && this.isUnsentNewConversation(this.currentSessionId)) {
       return this.currentSessionId;
@@ -507,10 +546,10 @@ export class ChatViewManager {
     return null;
   }
 
-  /** 指定工作目录内是否已存在「新建但还没发过消息」的对话视图（含后台预热的那个） */
-  private hasUnsentNewConversation(workspace?: string): boolean {
+  /** 指定工作区内是否已存在「新建但还没发过消息」的对话视图（含后台预热的那个） */
+  private hasUnsentNewConversation(workspaceId?: string): boolean {
     for (const key of this.unsentNewKeys) {
-      if (workspace !== undefined && !this.isSameWorkspace(this.viewWorkspaces.get(key), workspace)) continue;
+      if (workspaceId !== undefined && !this.isSameWorkspace(this.viewWorkspaces.get(key), workspaceId)) continue;
       if (this.isUnsentNewConversation(key)) return true;
     }
     return false;
@@ -541,11 +580,11 @@ export class ChatViewManager {
   private prewarmNewConversation(): void {
     // 占位页展示期间不预热：当前活动工作区没有可用的对话视图
     if (this.placeholderView) return;
-    this.prewarmForWorkspace(this.opts.workspacePath);
+    this.prewarmForWorkspace(this.opts.workspaceId);
   }
 
   /**
-   * 预加载某个工作目录的聊天视图（宿主在首次启动时为**非活动标签页**逐个调用）。
+   * 预加载某个工作区的聊天视图（宿主在首次启动时为**非活动标签页**逐个调用）。
    *
    * 复用后台预热机制：视图带 `--prewarm=1` 在后台把页面加载并渲染好，但跳过会「落地」的
    * 启动初始化（不生成 session）。用户点该标签页时 `setActiveWorkspace` 找到它，
@@ -553,18 +592,20 @@ export class ChatViewManager {
    *
    * 同一目录已有「未发送的新对话」（含已预热的）时不重复创建。
    */
-  preloadWorkspace(workspace: string): void {
-    console.log(`[chat-view] preloading workspace view: ${workspace}`);
-    this.prewarmForWorkspace(workspace);
+  preloadWorkspace(id: string, path: string): void {
+    console.log(`[chat-view] preloading workspace view: ${path}`);
+    this.workspacePathById.set(id, path);
+    this.prewarmForWorkspace(id);
   }
 
-  private prewarmForWorkspace(workspace: string): void {
+  private prewarmForWorkspace(id: string): void {
     // 窗口已销毁（退出中）时不再创建
     if (this.opts.win.isDestroyed()) return;
-    if (this.hasUnsentNewConversation(workspace)) return;
+    if (this.hasUnsentNewConversation(id)) return;
+    const workspace = this.workspacePathById.get(id) ?? this.opts.workspacePath;
     const key = this.nextNewKey();
     const view = this.createView(undefined, { prewarm: true, workspace });
-    this.viewWorkspaces.set(key, workspace);
+    this.viewWorkspaces.set(key, id);
     // 提前给出正确视口尺寸：预热视图未挂到窗口，若不设 bounds 会以 0x0 渲染，
     // 切到前台再 resize 可能出现一次布局跳动。
     view.setBounds(this.chatBounds());
@@ -858,15 +899,15 @@ export class ChatViewManager {
    */
   private switchAwayFromClosedSession(sessionId: string): void {
     if (this.currentSessionId !== sessionId) return;
-    const workspace = this.viewWorkspaces.get(sessionId) ?? this.opts.workspacePath;
+    const workspaceId = this.viewWorkspaces.get(sessionId) ?? this.opts.workspaceId;
     this.currentSessionId = null;
     const next = [...this.lru]
       .reverse()
-      .find((k) => this.isSameWorkspace(this.viewWorkspaces.get(k), workspace) && this.isViewAlive(k));
+      .find((k) => this.isSameWorkspace(this.viewWorkspaces.get(k), workspaceId) && this.isViewAlive(k));
     if (next) {
       this.show(next);
     } else {
-      this.openNewConversation(workspace);
+      this.openNewConversation(workspaceId);
     }
   }
 
@@ -889,8 +930,10 @@ export class ChatViewManager {
           `--workspace=${workspace}`,
           `--locale=${this.opts.locale}`,
           `--systemLocale=${this.opts.systemLocale}`,
-          `--uiLanguage=${this.opts.uiLanguage || 'auto'}`,
-          `--uiFontSize=${this.opts.uiFontSize || 'medium'}`,
+          // 语言 / 字号每次建视图实时读取：设置保存后新开视图首帧即为新档位
+          // （启动期 opts 值只作读盘失败时的回退）
+          `--uiLanguage=${this.opts.readUiPreferences?.()?.uiLanguage ?? this.opts.uiLanguage ?? 'auto'}`,
+          `--uiFontSize=${this.opts.readUiPreferences?.()?.uiFontSize ?? this.opts.uiFontSize ?? 'medium'}`,
           `--highlightLanguages=${(this.opts.highlightLanguages || []).join(',')}`,
           `--conversationListOwner=${this.opts.conversationListOwner ?? 'host'}`,
           `--theme=${initialTheme}`,

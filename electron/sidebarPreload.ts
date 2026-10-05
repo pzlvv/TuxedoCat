@@ -63,20 +63,21 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
   },
   // ── 文件浏览器（US-42 / US-43） ──
   // rel 一律是 '/' 分隔的相对路径（约定格式，见 electron/sidebarFiles.ts）；
-  // root 是侧栏工作区项的稳定 id（refKey），主进程按 id 回查打开集合里的工作区引用
-  filesList: (root: string, dir: string): Promise<unknown> => {
-    return ipcRenderer.invoke('sidebar:files-list', { root, dir });
+  // workspaceId 是侧栏工作区项的稳定 id（refKey），主进程按 id 回查打开集合里的
+  // 工作区引用（与「最近打开」点击同一约定，不按展示路径回查）
+  filesList: (workspaceId: string, dir: string): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-list', { workspaceId, dir });
   },
   /** 在系统文件资源管理器中定位（只作用于单个条目） */
-  filesReveal: (root: string, relPath: string): Promise<unknown> => {
-    return ipcRenderer.invoke('sidebar:files-reveal', { root, paths: [relPath] });
+  filesReveal: (workspaceId: string, relPath: string): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-reveal', { workspaceId, path: relPath });
   },
   /** 复制路径：relative 为 true 时复制相对路径；多项以换行拼接 */
-  filesCopyPaths: (root: string, relPaths: string[], relative: boolean): Promise<unknown> => {
-    return ipcRenderer.invoke('sidebar:files-copy-paths', { root, paths: relPaths, relative });
+  filesCopyPaths: (workspaceId: string, relPaths: string[], relative: boolean): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-copy-paths', { workspaceId, paths: relPaths, relative });
   },
   /** 删除（移入回收站）：主进程先弹原生确认框 */
-  filesDelete: (root: string, relPaths: string[]): Promise<unknown> => {
-    return ipcRenderer.invoke('sidebar:files-delete', { root, paths: relPaths });
+  filesDelete: (workspaceId: string, relPaths: string[]): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-delete', { workspaceId, paths: relPaths });
   },
 });

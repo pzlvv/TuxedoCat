@@ -1779,6 +1779,17 @@ export class QueryEngine {
   }
 
   /**
+   * 追加一条只进内存的消息（spin 主循环的系统提示 / 节点结果标记；不持久化、不通知 UI）。
+   *
+   * spin 的落盘由它自己在需要处显式 `appendMessage`（结果消息要立即持久化，
+   * 错误提示只留在内存）；此前经 `as any` 直写私有 `mutableMessages`，
+   * 这里给显式 API 挡住封装绕行。
+   */
+  public appendMemoryMessage(msg: Message): void {
+    this.mutableMessages.push(msg);
+  }
+
+  /**
    * 追加一条"已发送"消息到当前对话并持久化（不经过 LLM）
    * 用于记录 @ 发送消息的操作日志
    */

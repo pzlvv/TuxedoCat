@@ -219,8 +219,9 @@ runTests('sshDaemonBootstrap', async () => {
     fake.executables.add(BINARY_PATH);
     const daemon = await ensureRemoteDaemon(fake, options);
     check('补 rg 后仍复用同一个 daemon', daemon.port === 10975 && fake.startCount === 0);
-    check('已在跑时补传自带 ripgrep', fake.uploads.length === 1
-      && fake.uploads[0]?.remote === RIPGREP_PATH && fake.uploads[0]?.local === ripgrep);
+    check('已在跑时补传自带 ripgrep（经临时名 + mv）', fake.uploads.length === 1
+      && fake.uploads[0]?.remote === `${RIPGREP_PATH}.new` && fake.uploads[0]?.local === ripgrep
+      && fake.commands.includes(`mv -f '${RIPGREP_PATH}.new' '${RIPGREP_PATH}'`));
     check('已在跑时不重跑 start', !fake.commands.includes(START_COMMAND));
   }
 
@@ -234,9 +235,9 @@ runTests('sshDaemonBootstrap', async () => {
     check('目录被清时补传可执行文件（经临时名 + mv）', fake.uploads.some(
       (upload) => upload.remote === `${BINARY_PATH}.new` && upload.local === binary,
     ) && fake.commands.includes(`mv -f '${BINARY_PATH}.new' '${BINARY_PATH}'`));
-    check('补传的自带 ripgrep 落在指纹目录里', fake.uploads.some(
-      (upload) => upload.remote === RIPGREP_PATH,
-    ));
+    check('补传的自带 ripgrep 落在指纹目录里（最终路径由 mv 到位）', fake.uploads.some(
+      (upload) => upload.remote === `${RIPGREP_PATH}.new`,
+    ) && fake.commands.includes(`mv -f '${RIPGREP_PATH}.new' '${RIPGREP_PATH}'`));
     check('补传后仍复用运行中的 daemon', daemon.port === 10975
       && !fake.commands.includes(START_COMMAND));
     check('目标文件本身永不直接覆盖写（执行中的 daemon 是 ETXTBSY）',
@@ -267,8 +268,9 @@ runTests('sshDaemonBootstrap', async () => {
       && fake.commands.includes(`mv -f '${BINARY_PATH}.new' '${BINARY_PATH}'`));
     check('上传的是本机携带的对应平台产物', fake.uploads[0]?.local === binary);
     check('上传后置可执行权限', fake.uploads[0]?.mode === 0o755);
-    check('未部署时一并上传自带 ripgrep', fake.uploads[1]?.remote === RIPGREP_PATH
-      && fake.uploads[1]?.local === ripgrep);
+    check('未部署时一并上传自带 ripgrep（同样经临时名 + mv）', fake.uploads[1]?.remote === `${RIPGREP_PATH}.new`
+      && fake.uploads[1]?.local === ripgrep
+      && fake.commands.includes(`mv -f '${RIPGREP_PATH}.new' '${RIPGREP_PATH}'`));
     check('上传前建好部署目录', fake.commands.includes(`mkdir -p '${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}'`));
     check('上传后执行 start（绑回环，端口交给内核分配）', fake.commands.includes(START_COMMAND));
     check('返回 daemon endpoint', daemon.host === '127.0.0.1' && daemon.port === 10976);
