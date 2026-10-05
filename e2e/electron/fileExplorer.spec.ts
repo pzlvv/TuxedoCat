@@ -119,19 +119,40 @@ test('US-42 目录懒加载逐层展开，刷新按钮能看到外部新建的�
   await expect(sb.locator(`${FILE_ROWS}[data-path="fresh-file.txt"]`)).toBeVisible({ timeout: 15_000 });
 });
 
-test('US-42 切换活动工作目录后文件树重置为新目录', async () => {
+test('US-42 文件树状态按工作区独立：切换标签页不清空、不失效，切回原样保留', async () => {
+  const sb = await sidebar();
+  await expandFiles(sb);
+
+  // A：展开 src 目录（单击展开）
+  await sb.locator(`${FILE_ROWS}[data-path="src"]`).click();
+  await expect(sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`)).toBeVisible();
+
+  // 添加第二个工作区（自动激活）：折叠状态按工作区记忆，B 是折叠的
   const dir2 = await makeWorkspace({ 'only-in-b.txt': 'B' }, 'e2e-ws-files-b');
   try {
-    const sb = await sidebar();
-    await expandFiles(sb);
-
-    // addWorkspaces 把新目录置为活动项：文件树应重置为新目录的内容
     await sb.evaluate((p) =>
       (window as unknown as { sidebarAPI?: { addWorkspaces: (paths: string[]) => void } })
         .sidebarAPI!.addWorkspaces([p as string]), dir2);
+    await expect(sb.locator(`${SECTION}.expanded`)).toHaveCount(0, { timeout: 15_000 });
+
+    // 展开 B：只看到 B 的内容（A 的树缓存不会串进来）
+    await sb.locator('#filesHeader').click();
     await expect(sb.locator(`${FILE_ROWS}[data-path="only-in-b.txt"]`)).toBeVisible({ timeout: 15_000 });
-    // 旧目录的条目不再出现（树已整体重置，不是叠加）
-    await expect(sb.locator(`${FILE_ROWS}[data-path="readme.md"]`)).toHaveCount(0);
+
+    // 切回 A：分区仍是展开的（各自记忆），src 仍展开、条目原样保留（树没被重置 / 失效）
+    await sb.evaluate(async (wsPath) => {
+      const w = window as unknown as {
+        sidebarAPI?: {
+          getWorkspaces: () => Promise<{ workspaces: Array<{ id: string; path: string }> }>;
+          openWorkspace: (id: string) => void;
+        };
+      };
+      const state = await w.sidebarAPI!.getWorkspaces();
+      const target = state.workspaces.find((t) => t.path === (wsPath as string));
+      if (target) w.sidebarAPI!.openWorkspace(target.id);
+    }, app.workspaceDir);
+    await expect(sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`)).toBeVisible({ timeout: 15_000 });
+    await expect(sb.locator(`${FILE_ROWS}[data-path="readme.md"]`)).toBeVisible();
   } finally {
     await fs.promises.rm(dir2, { recursive: true, force: true }).catch(() => undefined);
   }

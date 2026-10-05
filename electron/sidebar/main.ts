@@ -992,7 +992,7 @@ function fileHintRowHtml(text: string, depth: number): string {
   return `<div class="file-row file-hint" style="padding-left:${indent}px">${escapeHtml(text)}</div>`;
 }
 
-function fileRowHtml(rel: string, name: string, kind: 'file' | 'directory', depth: number, expanded: boolean): string {
+function fileRowHtml(files: WorkspaceFilesState, rel: string, name: string, kind: 'file' | 'directory', depth: number, expanded: boolean): string {
   const indent = FILE_ROW_BASE_INDENT + depth * FILE_ROW_INDENT;
   // 目录才占折叠箭头位：文件用等宽空位占住，图标与名称在两层间对齐
   const chevron = kind === 'directory'
@@ -1001,14 +1001,16 @@ function fileRowHtml(rel: string, name: string, kind: 'file' | 'directory', dept
   const icon = kind === 'directory'
     ? { cls: expanded ? 'ficon-folder-open' : 'ficon-folder', svg: expanded ? FICON_FOLDER_OPEN : FICON_FOLDER }
     : fileIconFor(name);
-  return `<div class="file-row${selectedFilePaths.has(rel) ? ' selected' : ''}" data-path="${escapeHtml(rel)}" data-kind="${kind}" style="padding-left:${indent}px" title="${escapeHtml(rel)}">` +
+  return `<div class="file-row${files.selected.has(rel) ? ' selected' : ''}" data-path="${escapeHtml(rel)}" data-kind="${kind}" style="padding-left:${indent}px" title="${escapeHtml(rel)}">` +
     `${chevron}<span class="file-icon ${icon.cls}">${icon.svg}</span><span class="file-name">${escapeHtml(name)}</span></div>`;
 }
 
 function renderFiles(): void {
+  const id = activeFilesId;
+  const files = activeFilesState();
   const rows: string[] = [];
-  if (filesRoot) {
-    renderDirRows('', 0, rows);
+  if (files && id !== null) {
+    renderDirRows(files, id, '', 0, rows);
   }
   filesTreeEl.innerHTML = rows.join('');
 }
@@ -1017,10 +1019,10 @@ function renderFiles(): void {
  * 递归铺平可见行：展开且已加载的目录继续下钻，未读过的目录挂「加载中」占位并触发
  * 懒加载（loadDir 同步置 loading，回包后重渲染，不会形成渲染循环）。
  */
-function renderDirRows(rel: string, depth: number, rows: string[]): void {
-  const listing = fileTree.get(rel);
+function renderDirRows(files: WorkspaceFilesState, workspaceId: string, rel: string, depth: number, rows: string[]): void {
+  const listing = files.tree.get(rel);
   if (!listing) {
-    loadDir(rel);
+    loadDir(workspaceId, rel);
     rows.push(fileHintRowHtml('加载中…', depth));
     return;
   }
@@ -1038,85 +1040,97 @@ function renderDirRows(rel: string, depth: number, rows: string[]): void {
   }
   for (const entry of listing.entries) {
     const childRel = rel ? `${rel}/${entry.name}` : entry.name;
-    const expandedDir = entry.kind === 'directory' && expandedDirs.has(childRel);
-    rows.push(fileRowHtml(childRel, entry.name, entry.kind, depth, expandedDir));
-    if (expandedDir) renderDirRows(childRel, depth + 1, rows);
+    const expandedDir = entry.kind === 'directory' && files.expandedDirs.has(childRel);
+    rows.push(fileRowHtml(files, childRel, entry.name, entry.kind, depth, expandedDir));
+    if (expandedDir) renderDirRows(files, workspaceId, childRel, depth + 1, rows);
   }
 }
 
-function loadDir(rel: string): void {
-  const root = filesRoot;
-  if (!root) return;
-  const existing = fileTree.get(rel);
+/**
+ * 读取一个工作区的某层目录。回包写回**它自己的状态**：切到别的标签页不会作废在途
+ * 请求（回来时树已就绪），只有该工作区被关闭（状态丢弃）或手动刷新（代次 +1）才丢弃。
+ * 只有正在显示的工作区才触发重渲染，后台工作区的回包静默入缓存。
+ */
+function loadDir(workspaceId: string, rel: string): void {
+  const files = filesStateByWorkspace.get(workspaceId);
+  if (!files) return;
+  const existing = files.tree.get(rel);
   // 已加载 / 在途不重读；error 允许重试（点错误行）
   if (existing && existing.state !== 'error') return;
-  const generation = filesGeneration;
-  fileTree.set(rel, { state: 'loading', entries: [] });
-  window.sidebarAPI?.filesList(root, rel)
+  const generation = files.generation;
+  files.tree.set(rel, { state: 'loading', entries: [] });
+  window.sidebarAPI?.filesList(workspaceId, rel)
     .then((res) => {
-      // 回包时目录已切换：丢弃（新旧 root 的回包都可能迟到，与对话列表同思路）
-      if (generation !== filesGeneration || root !== filesRoot) return;
-      if (res.ok && res.entries) fileTree.set(rel, { state: 'loaded', entries: res.entries });
-      else fileTree.set(rel, { state: 'error', entries: [], error: res.error || '读取失败' });
-      renderFiles();
+      // 回包时该工作区已关闭（状态丢弃）或已刷新（代次变化）：丢弃
+      if (filesStateByWorkspace.get(workspaceId) !== files || files.generation !== generation) return;
+      if (res.ok && res.entries) files.tree.set(rel, { state: 'loaded', entries: res.entries });
+      else files.tree.set(rel, { state: 'error', entries: [], error: res.error || '读取失败' });
+      if (workspaceId === activeFilesId) renderFiles();
     })
     .catch((err) => {
-      if (generation !== filesGeneration || root !== filesRoot) return;
-      fileTree.set(rel, { state: 'error', entries: [], error: String(err) });
-      renderFiles();
+      if (filesStateByWorkspace.get(workspaceId) !== files || files.generation !== generation) return;
+      files.tree.set(rel, { state: 'error', entries: [], error: String(err) });
+      if (workspaceId === activeFilesId) renderFiles();
     });
 }
 
 /**
- * 文件浏览器跟随活动工作目录：root 变化（含本地 ↔ 远程切换）时整树重置——缓存、
- * 展开状态、选中都是「上一个目录」的事实，不能带进新目录。展开状态下立即读新根。
- * 远程（SSH）工作区同样浏览：root 是远端 POSIX 绝对路径，读盘 / 删除在主进程走
- * SFTP（electron/sidebarFilesRemote.ts），渲染层只感知 filesRemote 的差异
- * （右键菜单少一项「在文件资源管理器中打开」）。
+ * 文件浏览器跟随活动工作区。**只切换显示哪一套状态，不清不重建**：每个工作区的
+ * 树缓存 / 目录展开 / 选中 / 折叠状态都独立保存（US-42 验收 1 / 3），切走再切回
+ * 原样保留；被关闭的工作区状态整体丢弃，重新打开按新工作区处理。
+ * 远程（SSH）工作区同样浏览：读盘 / 删除在主进程走 SFTP（electron/sidebarFilesRemote.ts），
+ * 渲染层只感知 filesRemote 的差异（右键菜单少一项「在文件资源管理器中打开」）。
  */
 function setFilesWorkspace(state: WorkspacesState | null): void {
+  // 关闭掉的工作区状态丢弃（含树缓存与折叠记忆）；重新打开同一目录按全新工作区处理
+  if (state) {
+    const openIds = new Set(state.workspaces.map((w) => w.id));
+    for (const id of [...filesStateByWorkspace.keys()]) {
+      if (!openIds.has(id)) filesStateByWorkspace.delete(id);
+    }
+  }
   const active = state?.workspaces.find((w) => w.id === state.active) ?? null;
   if (!active) {
     filesSectionEl.classList.add('hidden');
-    filesRoot = null;
+    activeFilesId = null;
     filesRemote = false;
     return;
   }
   filesSectionEl.classList.remove('hidden');
-  const nextRemote = active.remote;
-  // root 用工作区项的稳定 id（refKey）：展示路径（远程是 ssh://user@host/…）不能
-  // 作为操作标识，主进程按 id 回查引用后取真实路径
-  const nextRoot = active.id;
-  if (nextRoot !== filesRoot || nextRemote !== filesRemote) {
-    filesRoot = nextRoot;
-    filesRemote = nextRemote;
-    filesGeneration += 1;
-    fileTree.clear();
-    expandedDirs.clear();
-    selectedFilePaths.clear();
-    fileSelectionAnchor = null;
+  const changed = activeFilesId !== active.id || filesRemote !== active.remote;
+  activeFilesId = active.id;
+  filesRemote = active.remote;
+  const files = filesStateFor(active.id);
+  filesSectionEl.classList.toggle('expanded', files.expanded);
+  // 展开且根目录还没读过（新工作区 / 重启后恢复展开）才补一次读取；切回已浏览过的
+  // 工作区直接命中缓存，不打断它的树
+  if (files.expanded && !files.tree.has('')) loadDir(active.id, '');
+  if (changed) {
     closeFilesMenu();
-    if (filesExpanded) loadDir('');
+    renderFiles();
   }
-  filesSectionEl.classList.toggle('expanded', filesExpanded);
-  renderFiles();
 }
 
 function setFilesExpanded(expanded: boolean): void {
-  filesExpanded = expanded;
-  storeFilesExpanded(expanded);
+  const id = activeFilesId;
+  if (!id) return;
+  const files = filesStateFor(id);
+  files.expanded = expanded;
+  persistFilesExpanded();
   filesSectionEl.classList.toggle('expanded', expanded);
   // 首次展开才读根目录；折叠后再展开命中缓存，不重复读盘
-  if (expanded && filesRoot && !fileTree.has('')) loadDir('');
+  if (expanded && !files.tree.has('')) loadDir(id, '');
 }
 
-/** 整树刷新（刷新按钮 / 删除后）：丢弃全部缓存，重读根与已展开目录，保留展开状态 */
+/** 整树刷新（刷新按钮 / 删除后）：丢弃该工作区的全部缓存，重读根与已展开目录，保留展开状态 */
 function refreshFiles(): void {
-  if (!filesRoot) return;
-  filesGeneration += 1;
-  fileTree.clear();
-  loadDir('');
-  for (const dir of expandedDirs) loadDir(dir);
+  const id = activeFilesId;
+  const files = activeFilesState();
+  if (!id || !files) return;
+  files.generation += 1;
+  files.tree.clear();
+  loadDir(id, '');
+  for (const dir of files.expandedDirs) loadDir(id, dir);
   renderFiles();
 }
 
@@ -1129,21 +1143,26 @@ function visibleFilePaths(): string[] {
 }
 
 function applyFileSelectionClasses(): void {
+  const files = activeFilesState();
+  if (!files) return;
   filesTreeEl.querySelectorAll<HTMLElement>('.file-row[data-path]').forEach((el) => {
-    el.classList.toggle('selected', selectedFilePaths.has(el.dataset.path || ''));
+    el.classList.toggle('selected', files.selected.has(el.dataset.path || ''));
   });
 }
 
 function clearFileSelection(): void {
-  if (selectedFilePaths.size === 0) return;
-  selectedFilePaths.clear();
-  fileSelectionAnchor = null;
+  const files = activeFilesState();
+  if (!files || files.selected.size === 0) return;
+  files.selected.clear();
+  files.anchor = null;
   applyFileSelectionClasses();
 }
 
 function toggleDirExpanded(rel: string): void {
-  if (expandedDirs.has(rel)) expandedDirs.delete(rel);
-  else expandedDirs.add(rel);
+  const files = activeFilesState();
+  if (!files) return;
+  if (files.expandedDirs.has(rel)) files.expandedDirs.delete(rel);
+  else files.expandedDirs.add(rel);
   // 展开未读过的目录时 renderDirRows 会顺手触发懒加载
   renderFiles();
 }
@@ -1195,8 +1214,10 @@ function closeFilesMenu(): void {
 }
 
 function copySelectedFilePaths(relative: boolean): void {
-  if (!filesRoot || selectedFilePaths.size === 0) return;
-  window.sidebarAPI?.filesCopyPaths(filesRoot, [...selectedFilePaths], relative)
+  const id = activeFilesId;
+  const files = activeFilesState();
+  if (!id || !files || files.selected.size === 0) return;
+  window.sidebarAPI?.filesCopyPaths(id, [...files.selected], relative)
     .then((res) => {
       if (!res.ok) console.error('[sidebar] copy file paths failed:', res.error);
     })
@@ -1204,8 +1225,8 @@ function copySelectedFilePaths(relative: boolean): void {
 }
 
 function revealFilesTarget(targetPath: string): void {
-  if (!filesRoot || filesRemote) return;
-  window.sidebarAPI?.filesReveal(filesRoot, targetPath)
+  if (!activeFilesId || filesRemote) return;
+  window.sidebarAPI?.filesReveal(activeFilesId, targetPath)
     .then((res) => {
       if (!res.ok) console.error('[sidebar] reveal in file explorer failed:', res.error);
     })
@@ -1213,14 +1234,16 @@ function revealFilesTarget(targetPath: string): void {
 }
 
 function deleteSelectedFiles(): void {
-  if (!filesRoot || selectedFilePaths.size === 0) return;
-  window.sidebarAPI?.filesDelete(filesRoot, [...selectedFilePaths])
+  const id = activeFilesId;
+  const files = activeFilesState();
+  if (!id || !files || files.selected.size === 0) return;
+  window.sidebarAPI?.filesDelete(id, [...files.selected])
     .then((res) => {
       // 用户取消 → 不动树；其余（成功 / 部分失败）都刷新：被删项消失、失败项仍在。
       // 删除后清空选中：被删的路径已无意义，残留选中只会在树上高亮不存在的行。
       if (!res.ok && res.error === 'cancelled') return;
-      selectedFilePaths.clear();
-      fileSelectionAnchor = null;
+      files.selected.clear();
+      files.anchor = null;
       refreshFiles();
     })
     .catch((err) => console.error('[sidebar] delete files failed:', err));
@@ -1229,7 +1252,10 @@ function deleteSelectedFiles(): void {
 /* ── 事件绑定（init 调用一次；树内容重建不受影响，全部委托在固定容器上） ── */
 
 function bindFilesEvents(): void {
-  filesHeaderEl.addEventListener('click', () => setFilesExpanded(!filesExpanded));
+  filesHeaderEl.addEventListener('click', () => {
+    const files = activeFilesState();
+    if (files) setFilesExpanded(!files.expanded);
+  });
   filesRefreshBtn.addEventListener('click', (e) => {
     // 刷新按钮在分区条内：不要顺带触发分区条的展开 / 折叠
     e.stopPropagation();
@@ -1243,11 +1269,13 @@ function bindFilesEvents(): void {
       clearFileSelection();
       return;
     }
+    const files = activeFilesState();
+    if (!files) return;
     // 读取失败的目录行：点击重试
     const retryDir = row.dataset.retryDir;
     if (retryDir !== undefined) {
-      fileTree.delete(retryDir);
-      loadDir(retryDir);
+      files.tree.delete(retryDir);
+      if (activeFilesId !== null) loadDir(activeFilesId, retryDir);
       return;
     }
     const path = row.dataset.path;
@@ -1258,27 +1286,27 @@ function bindFilesEvents(): void {
       return;
     }
     const visible = visibleFilePaths();
-    if (e.shiftKey && fileSelectionAnchor !== null) {
+    if (e.shiftKey && files.anchor !== null) {
       // Shift 连选：以锚点为界取当前可见行序的连续段（锚点不在可见行里时退化为单选）
-      const from = visible.indexOf(fileSelectionAnchor);
+      const from = visible.indexOf(files.anchor);
       const to = visible.indexOf(path);
       if (from >= 0 && to >= 0) {
         const [lo, hi] = from <= to ? [from, to] : [to, from];
-        selectedFilePaths.clear();
-        for (let i = lo; i <= hi; i++) selectedFilePaths.add(visible[i]);
+        files.selected.clear();
+        for (let i = lo; i <= hi; i++) files.selected.add(visible[i]);
       } else {
-        selectedFilePaths.clear();
-        selectedFilePaths.add(path);
-        fileSelectionAnchor = path;
+        files.selected.clear();
+        files.selected.add(path);
+        files.anchor = path;
       }
     } else if (e.ctrlKey || e.metaKey) {
-      if (selectedFilePaths.has(path)) selectedFilePaths.delete(path);
-      else selectedFilePaths.add(path);
-      fileSelectionAnchor = path;
+      if (files.selected.has(path)) files.selected.delete(path);
+      else files.selected.add(path);
+      files.anchor = path;
     } else {
-      selectedFilePaths.clear();
-      selectedFilePaths.add(path);
-      fileSelectionAnchor = path;
+      files.selected.clear();
+      files.selected.add(path);
+      files.anchor = path;
       // 目录单击即展开 / 折叠（US-42：单展开，不要双击）；Ctrl / Shift 多选不触发
       if (row.dataset.kind === 'directory') toggleDirExpanded(path);
     }
@@ -1288,16 +1316,17 @@ function bindFilesEvents(): void {
   filesTreeEl.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     const row = (e.target as HTMLElement).closest<HTMLElement>('.file-row[data-path]');
-    if (!row || !row.dataset.path) {
+    const files = activeFilesState();
+    if (!row || !row.dataset.path || !files) {
       closeFilesMenu();
       return;
     }
     // 右键未选中的项：先把它置为唯一选中项，再弹菜单（资源管理器标准行为）
     const path = row.dataset.path;
-    if (!selectedFilePaths.has(path)) {
-      selectedFilePaths.clear();
-      selectedFilePaths.add(path);
-      fileSelectionAnchor = path;
+    if (!files.selected.has(path)) {
+      files.selected.clear();
+      files.selected.add(path);
+      files.anchor = path;
       applyFileSelectionClasses();
     }
     openFilesMenu(e.clientX, e.clientY, path);
@@ -1310,14 +1339,16 @@ function bindFilesEvents(): void {
       clearFileSelection();
       return;
     }
+    const files = activeFilesState();
+    if (!files) return;
     if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
       e.preventDefault();
-      selectedFilePaths.clear();
-      for (const p of visibleFilePaths()) selectedFilePaths.add(p);
+      files.selected.clear();
+      for (const p of visibleFilePaths()) files.selected.add(p);
       applyFileSelectionClasses();
       return;
     }
-    if (e.key === 'Delete' && selectedFilePaths.size > 0) {
+    if (e.key === 'Delete' && files.selected.size > 0) {
       e.preventDefault();
       deleteSelectedFiles();
     }
