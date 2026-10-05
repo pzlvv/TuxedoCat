@@ -128,8 +128,9 @@ export async function fetchStreamingResponse(
         deps.timeoutRetryState.count++;
         logger.warn(component,
           `${timeoutError.message}，丢弃本次请求并重试 (${deps.timeoutRetryState.count}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-        await sleep(RETRY_DELAY_MS);
+        // 先查中断再等重试间隔：abort 不能在重试等待上再叠加整段延迟
         checkAborted(signal);
+        await sleep(RETRY_DELAY_MS);
         throw new TransportRetry(timeoutError.message);
       }
       throw timeoutError;
@@ -137,8 +138,9 @@ export async function fetchStreamingResponse(
     // 对网络层错误（fetch failed / ECONNRESET 等）重试数次
     if (retryCount < MAX_RETRIES && isNetworkFetchError(fetchError)) {
       logger.warn(component, `Network error while fetching (${formatErrorChain(fetchError)}), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
-      await sleep(RETRY_DELAY_MS);
+      // 先查中断再等重试间隔：abort 不能在重试等待上再叠加整段延迟
       checkAborted(signal);
+      await sleep(RETRY_DELAY_MS);
       throw new TransportRetry(`network error: ${formatErrorChain(fetchError)}`);
     }
     throw fetchError;
@@ -149,8 +151,9 @@ export async function fetchStreamingResponse(
     logger.warn(component, `API request got ${response.status}, retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
     // 释放未消费的响应体，避免连接被占用
     response.body?.cancel().catch(() => { });
-    await sleep(RETRY_DELAY_MS);
+    // 先查中断再等重试间隔：abort 不能在重试等待上再叠加整段延迟
     checkAborted(signal);
+    await sleep(RETRY_DELAY_MS);
     throw new TransportRetry(`HTTP ${response.status}`);
   }
 
@@ -167,8 +170,9 @@ export async function fetchStreamingResponse(
 
     // 适配器级重试（如 stream_options 被网关拒绝时的 400）
     if (plan.retryOnBadResponse?.(response.status, errorText) && retryCount < MAX_RETRIES) {
-      await sleep(RETRY_DELAY_MS);
+      // 先查中断再等重试间隔：abort 不能在重试等待上再叠加整段延迟
       checkAborted(signal);
+      await sleep(RETRY_DELAY_MS);
       throw new TransportRetry(`HTTP ${response.status} (adapter retry)`);
     }
 

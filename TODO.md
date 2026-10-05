@@ -92,7 +92,7 @@ Standalone Core 是 Core 的第二套实现。
 - [x] Anthropic `content_block_start` 的初始值：thinking 块的 `signature` 与 tool_use 块的 `input` 都按 Embedded `RealApi` 保留（没有 `signature_delta` / `input_json_delta` 时它们就是最终值；有增量时 signature 追加、input 解析后覆盖）。用例 `llm_tests.rs::anthropic_stream_keeps_signature_from_content_block_start` / `anthropic_stream_uses_content_block_start_input_when_no_delta` 与 `engine_tests.rs::anthropic_start_signature_is_persisted_in_thinking_block` / `anthropic_content_block_start_input_is_persisted_without_delta`。
 - [x] 流式 block 粒度：`llm.rs` 的 `LlmEvent` 补 `BlockStart` / `BlockStop` / `MessageDelta` 三个边界事件（Anthropic 直接来自 `content_block_start` / `content_block_stop` / `message_delta`；Chat Completions 由适配器按角色切换合成，对齐 `OpenAiApi` 的 `emitBlockStop()` / `emitMessageDelta()`），`engine.rs` 据此对齐 `Query.ts`：块级 `streamId`（`blk_*`，`streamMessage` 与 `streamEnd` 共用）、`block_stop` 一条 **usage 缺省**的 `streamEnd`、`message_delta` 按角色各一条**带 usage** 的（纯 tool_use 轮次补一条 `accumulated` 为空、`streamId` 回退轮次级 `msg_*` 的 assistant 事件）。用例 `llm_tests.rs::anthropic_stream_emits_block_boundaries` / `anthropic_stream_emits_a_tool_use_block` / `openai_stream_synthesizes_block_boundaries` / `openai_tool_calls_get_their_own_block`、`engine_tests.rs::anthropic_stream_end_granularity_matches_embedded_blocks` / `openai_stream_end_granularity_matches_embedded_blocks` / `pure_tool_use_turn_emits_one_usage_carrying_stream_end`，以及 `standaloneCoreEngine.test.ts` 的真实帧通道断言。
 - [x] 重试与退化重复：网络错误 / 502、503 与「无内容且无结束原因」按 `MAX_RETRIES=3` / `RETRY_DELAY_MS=1000` 重试；`repetitionDetector.ts` 的退化重复检测（尾窗 + 反转串 Z 函数）已移植并接入两条流（`DEFAULT_MAX_REPETITION_RETRIES=1`，重试前发 `Reset` 丢弃本轮输出），对齐 `shared.ts` / `OpenAiApi.ts` / `RealApi.ts`。Chat Completions 的 `stream_options.include_usage` 被 400 拒绝时，与 Embedded 一致地**占用一次重试预算 + 先等 `RETRY_DELAY_MS`**，并在本次调用内的后续请求里持续省略该字段（用例 `llm_tests.rs::openai_stream_drops_stream_options_when_provider_rejects_it`）。
-- [x] 流式看门狗：移植 `streamTimeout.ts` 的首字节 300s / 空闲 60s（`DEFAULT_FIRST_BYTE_TIMEOUT_MS` / `DEFAULT_STREAM_IDLE_TIMEOUT_MS`）与超时重试 1 次（独立预算 `DEFAULT_MAX_TIMEOUT_RETRIES`，重试前发 `Reset` 丢弃本轮输出）。阻塞读取放在独立线程、主线程 `recv_timeout` 计时；「有效事件」口径与 Embedded 一致（Anthropic 的 `ping` / SSE 注释不算进展，OpenAI 能解析出 JSON 的数据帧都算）。用例 `llm_tests.rs::stream_watchdog_times_out_on_first_byte_and_retries_once` / `stream_watchdog_does_not_treat_anthropic_ping_as_progress` / `stream_watchdog_times_out_after_idle_gap_and_retries_once` / `stream_watchdog_resets_idle_timer_on_progress`。
+- [x] 流式看门狗：移植 `streamTimeout.ts` 的首字节 300s / 空闲 60s（`DEFAULT_FIRST_BYTE_TIMEOUT_MS` / `DEFAULT_STREAM_IDLE_TIMEOUT_MS`）与超时重试 1 次（独立预算 `DEFAULT_MAX_TIMEOUT_RETRIES`，重试前发 `Reset` 丢弃本轮输出）。阻塞读取放在独立线程、主线程按固定小切片（`CANCEL_POLL_SLICE_MS`）等待、看门狗用 deadline 自行累计（abort 在切片粒度内被响应，见「待修缺陷：abort 响应时延」）；「有效事件」口径与 Embedded 一致（Anthropic 的 `ping` / SSE 注释不算进展，OpenAI 能解析出 JSON 的数据帧都算）。用例 `llm_tests.rs::stream_watchdog_times_out_on_first_byte_and_retries_once` / `stream_watchdog_does_not_treat_anthropic_ping_as_progress` / `stream_watchdog_times_out_after_idle_gap_and_retries_once` / `stream_watchdog_resets_idle_timer_on_progress`。
 - [x] 用量统计（input / output / cache / reasoning token）：`streamEnd` 的 usage 恒带 cache 两键（缺省 0），与 Embedded `extractUsageFields` 一致。
 - [x] 上下文估算与输出上限钳制：移植 `tokenEstimate.ts`，按 Query.ts 的 `getAvailableOutputTokens = min(output, contextWindow - 当前上下文占用)` 钳制请求体 `max_tokens`（`util::estimate_request_tokens` + `ProviderConfig.context_window`）。
       **当前上下文占用**取 `Math.max(exactTokenCount ?? 0, 估算值)`：`exactTokenCount` 是最近一条带 `usage` 的 assistant 消息的 `input + output`（内存里找不到时回退 `meta.json` 的 `context.totalContextTokens`），见 `engine.rs::exact_context_tokens`；只取估算值时，真实上下文大于估算值（多模态图片等）会把输出空间留大，导致 `input + max_tokens` 超出窗口（用例 `engine_tests.rs::available_output_tokens_matches_the_embedded_formula` / `exact_context_tokens_prefers_the_last_assistant_usage` / `exact_context_tokens_falls_back_to_metadata_total_context_tokens`）。
@@ -382,6 +382,69 @@ MCP 列表 / 对话空间统计 / 会话加载 / 技能列表 / 挂起持久化�
 - 工具 `_meta` 的 before/after 写入（`ToolHandler` → `updateToolUseMeta`）。
 
 详见 `DEVELOPMENT.md` 第 2 节规则 9 的审计结论与 `docs/standalone-core.md` 第 10 节。
+
+---
+
+## 待修缺陷：abort 响应时延
+
+现象：流式输出中点「终止」，约 1 秒后才停。
+
+链路：webview 点击 → `WebviewMessageHandler.handleAbort`（`src/host/ui/webviewMessageHandler.ts:701`）
+发 `UiEvent.abortRequested` → Core `Integration.abortCurrentQuery`（`src/core/Integration.ts:144`）
+按会话运行时事实分两阶段 → `QueryEngine.abortForegroundQuery`（`src/core/QueryEngine.ts:1710`）
+置中止标记并 `abort()` 当前 controller → 外部 signal 经看门狗
+（`src/core/llm/streamTimeout.ts:131-143`）传给 `fetch` → 读流中断 →
+`*User Interrupted*`（`src/core/Query.ts:743-791`）→ 消费循环 `flush()` + `finalizeIdle`
+（`src/core/QueryEngine.ts:606-639`）发 `queryEnd` 与 `markQueryRunning(false)`，按钮回灰。
+
+两套 Core 的实测（本地 SSE 假服务，abort 落在两次事件之间）：
+
+| 实现 | abort → `queryEnd` |
+| --- | --- |
+| Embedded（外部 signal 接进 undici `fetch`） | 17ms（`reader.read()` 立即以 `AbortError` 拒绝） |
+| Standalone（`core-rs/src/llm.rs`） | ≈ 下一个 SSE 事件的到达时间（事件间隔 50 / 800 / 1500ms → 80 / 814 / 1523ms） |
+
+根因：`core-rs/src/llm.rs::read_sse()` 只在每次进入读循环之前检查一次 `cancel`，循环体是
+阻塞的 `recv_timeout()`（`core-rs/src/llm.rs:373-383`）。因此：
+
+- 流在跑：中止时延 = 到下一个事件的间隔，用户侧表现为 ~1s，取决于模型 / 网关的事件密度；
+- 流停滞（长时间无事件）：要等满 `idle_timeout_ms`（默认 60s，`core-rs/src/engine.rs:2888-2889`），
+  且 `read_sse` 的超时分支不查 `cancel`（`core-rs/src/llm.rs:423`）；
+- 超时后走重试分支，先 `sleep_ms(RETRY_DELAY_MS)`（1000ms）再回到循环顶查 `cancel`
+  （`core-rs/src/llm.rs:284-298`），再叠加 1s（实测：idle=300ms 时 abort → 返回 1315ms）。
+
+Embedded 侧同类问题（仅当 abort 表现为 `TypeError: terminated` 而非 `AbortError` 时命中）：
+三个适配器的 terminated 重试分支是「先 `sleep(RETRY_DELAY_MS)` 再 `checkAborted(signal)`」
+（`RealApi.ts:442-451` / `OpenAiApi.ts:500-507` / `ResponsesApi.ts:759-767`），会精确多等 1 秒。
+
+次因（UI 侧，量级取决于回答长度）：流式期间每个 delta 都让 `message.content` 变化，
+`MessagesView.tsx:790-800` 的 `ReactMarkdown`（remark-gfm/math + rehype-raw/katex + Shiki）
+按整段重解析，主线程饱和会推迟点击投递与「画面停住」的时刻。
+
+待修项（Core 行为改动必须两套同步，并同步 parity 对照表与两侧测试）：
+
+- [x] `read_sse` 把一次 `recv_timeout(timeout_ms)` 换成固定小切片（50ms）循环，每片查
+      `cancel`，看门狗计时改用 deadline 自行累计（首个有效事件前
+      `deadline = now + first_byte_timeout`，之后每个有效事件重置为
+      `now + idle_timeout`）；
+- [x] `read_sse` 的超时分支先查 `cancel`：循环顶先查取消再看 deadline，两者同时成立
+      按「用户中断」返回（`Ok`），不上报 Timeout；
+- [x] 重试等待可中断：`sleep_ms` 改为 `sleep_ms_interruptible(delay, cancel)` 分片
+      sleep + 查 `cancel`，覆盖 `stream()` 的三类重试（网络 / 超时 / 退化重复）与
+      `stream_openai` 的 `stream_options` 400 分支；
+- [x] Embedded 三个适配器把 `checkAborted(signal)` 提到 `sleep(RETRY_DELAY_MS)` 之前
+      （含 `streaming.ts` 传输层骨架的同款等待：网络错误 / 502·503 / 看门狗超时 /
+      适配器级 400，共 15 处；未 abort 时 `checkAborted` 是空操作，行为不变）；
+      两侧回归用例在 `core-rs/src/llm_tests.rs`（停滞中取消立刻返回 / 取消优先于
+      超时 / 重试等待被打断，各断言时延上限）；Embedded 侧 external signal 一旦
+      置位 fetch/read 即以 AbortError 拒绝，无法经公共 API 做确定性计时测试，
+      依赖既有 103 个 TS 测试文件回归；
+- [ ] webview 流式期降级渲染（纯文本 / 低频重解析 / 跳过 Shiki 增量重排），流结束再切回完整 markdown；
+- [ ] 可选：host↔daemon 链路设 `TCP_NODELAY`（远程 SSH 工作区收益更明显）。
+
+涉及文件：`core-rs/src/llm.rs`、`core-rs/src/engine.rs`、`src/core/llm/RealApi.ts`、
+`src/core/llm/OpenAiApi.ts`、`src/core/llm/ResponsesApi.ts`、`src/core/llm/streaming.ts`、
+`src/webview/MessagesView.tsx`。
 
 ---
 

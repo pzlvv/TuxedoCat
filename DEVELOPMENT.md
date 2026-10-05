@@ -779,7 +779,7 @@ wire message（若该事件会产生 webview 协议消息）。
 | 13 | `titleChanged` | `sessionId`, `title` | `Integration`（新会话初始标题）、`skills/bundled/spin`、`initializeCoreEvents`（重命名） | `onTitleChanged` | `setTitle` |
 | 14 | `sessionCreated` | `sessionId`, `parentSessionId: string \| null` | `QueryEngine`（新会话与子代理会话创建都会走到这里） | `onSessionCreated` | `initSessionState` |
 | 15 | `conversationListChanged` | 无 | `history/Conversation`（消息落盘）、`tools/agent/AgentTool`（子代理创建 / 结束）、`initializeCoreEvents`（改名 / 删除） | `onConversationListChanged` → `ConversationManager.refresh()` | `conversationsData`（VS Code）；Electron 另推原生侧栏 |
-| 16 | `sessionRuntimeChanged` | `states: readonly SessionRuntimeState[]` | core 的 `sessionRuntime`（第 4.5 节） | `onSessionRuntimeChanged` → `ConversationManager.updateSessionStates()` | VS Code：webview 对话树流水灯（`sessionRuntimeStates`）；Electron：侧栏流水灯 + 托盘状态点 |
+| 16 | `sessionRuntimeChanged` | `states: readonly SessionRuntimeState[]` | core 的 `sessionRuntime`（第 4.5 节） | `onSessionRuntimeChanged` → `ConversationManager.updateSessionStates()` | VS Code：webview 对话树流水灯（`sessionRuntimeStates`）；Electron：侧栏流水灯 + 托盘状态点 + 系统睡眠阻断 |
 | 17 | `spinDesignDataChanged` | 无 | `skills/bundled/spin`、`spin/Loop` | `onSpinDesignDataChanged` | `SpinDesign.refresh()` |
 | 18 | `compactBegin` | `sessionId` | `compact/compact` | `onCompactBegin` | `compressProgress`（`status: 'start'`） |
 | 19 | `compactEnd` | `sessionId`, `result` | `compact/compact`（`complete`）、`Integration` / `QueryEngine`（`error`） | `onCompactEnd` | `compressProgress`（`status: 'complete'` / `'error'`） |
@@ -1196,7 +1196,7 @@ webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接�
 | source of truth | 磁盘（core 的 `loadConversationList()`） | core 的 `sessionRuntime`（第 4.5 节） |
 | 变化频率 | 低（落盘 / 改名 / 删除 / 新建） | 高（查询开始结束、等用户、用户响应） |
 | 触发 | `CoreEvent.conversationListChanged` | `CoreEvent.sessionRuntimeChanged` |
-| 消费者 | webview 子对话树、Electron 原生侧栏 | VS Code webview 对话树流水灯、Electron 侧栏流水灯、系统托盘状态点 |
+| 消费者 | webview 子对话树、Electron 原生侧栏 | VS Code webview 对话树流水灯、Electron 侧栏流水灯、系统托盘状态点、系统睡眠阻断（宿主进程与 Core 进程各一份） |
 
 两条流**不合并**：把 `idle` / `waiting` 贴到磁盘列表上一起推送，会让列表接口失真
 （磁盘元数据里混进运行时状态），且每次状态变化都要重读一遍盘；托盘也只能从对话列表反推
@@ -1216,7 +1216,7 @@ webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接�
 | `invalidateCachedList(workspace)` | 丢弃指定目录的快照（关闭工作目录等场景），下次拉取重新读盘；其它目录不受影响 |
 | `updateSessionStates(states)` | 把最新的会话状态分发出去（VS Code 实现还在这里刷新空闲计时，见下） |
 | `dispatchStates(states)`（abstract） | 把会话状态分发给该宿主的界面 |
-| `setStatusListener(fn)` | 注册会话状态回调（Electron 托盘用；VS Code 不注册） |
+| `setStatusListener(fn)` | 注册会话状态回调（Electron 托盘与系统睡眠阻断用；VS Code 不注册） |
 | `setSidebarOutlet(fn)` | 设置「推侧栏」的出口（Electron 专用） |
 | `noteSessionActivity(sessionId)` | 记录会话活动（重置空闲计时）。基类默认无操作，只有 VS Code 实现覆盖 |
 
@@ -1740,8 +1740,7 @@ export class ElectronUIHost implements UIHost {
   `sidebar:workspaces-changed`（打开集合 + 活动项 + 最近工作目录）由 `main.ts` 的
   `broadcastWorkspaces()` 单独推送。会话的工作目录与它无关：由 `main.ts` 在会话被 core
   解析目录之前按来源视图登记（`registerCoreSessionWorkspace`）。
-- 私有辅助：`sendToRenderer`（按 `sessionId` 定向，未命中回退活动视图）、`openImagePreview`、
-  `openMonacoWindow`、`openMermaidWindow`。
+- 预览窗口辅助：`sendToRenderer`（按 `sessionId` 定向，未命中回退活动视图）、`openImagePreviewWindow`（内置图片查看器窗口，公开——侧栏文件浏览器双击打开图片复用同一入口）、`openMonacoWindow`（公开——侧栏双击打开远程文本时带 `content` 复用同一窗口，`filePath` 只用于语法推断）、`openMermaidWindow`。
 
 ### 8.3 UIHost 实现对照表
 
@@ -1755,7 +1754,7 @@ export class ElectronUIHost implements UIHost {
 | `getWorkspacePath()` | `vscode.workspace.workspaceFolders?.[0]?.uri.fsPath` | `this.workspacePath`（宿主当前工作目录；由标签页切换 / 添加 / 关闭驱动） |
 | `isDarkTheme()` | `vscode.window.activeColorTheme.kind`（Dark / HighContrast） | `nativeTheme.shouldUseDarkColors` |
 | `getLocale()` | `vscode.env.language` | `app.getLocale()`（原始 BCP-47，不做归一化；消费方按 `startsWith('zh')` 判断） |
-| `openFile(filePath, target)` | 图片 → `vscode.open`；文本 → `openTextDocument` + `showTextDocument` + 选区定位；`openTextDocument` 抛错（二进制）→ 回退 `vscode.open` | 图片 → `openImagePreview`；其余 → `openMonacoWindow({ mode: 'view' })` 并定位到行 |
+| `openFile(filePath, target)` | 图片 → `vscode.open`；文本 → `openTextDocument` + `showTextDocument` + 选区定位；`openTextDocument` 抛错（二进制）→ 回退 `vscode.open` | 先按打开集合的远程工作区做 `/` 前缀匹配（活动项优先）：命中的远端路径经 SFTP 读出——图片进 `openImagePreviewWindow`、文本进 `openMonacoWindow({ mode: 'view', content })`（读失败也开窗口显示原因，与本地 ENOENT 对齐）；本地路径：图片 → `openImagePreviewWindow`（内置图片查看器，滚轮缩放），其余 → `openMonacoWindow({ mode: 'view' })` 并定位到行 |
 | `showVirtualDocument(content, title)` | 走 bootstrap 注入的 `onShowContentInVirtualDocumentCallback`（`DocumentManager`） | `openMonacoWindow({ mode: 'content' })` |
 | `showDiff(options)` | `DocumentManager.showDiff` 打开 before/after 虚拟文档的 diff 标签（按内容哈希去重，先关上一个预览） | **空实现**——没有原生 diff 界面，diff 只在 webview 工具卡片里渲染（第 7.2 节） |
 | `openMermaidPreview(code)` | `vscode.window.createWebviewPanel`（复用 `MERMAID_PANEL_ID`） | `openMermaidWindow`（`data:` URL + 本地 mermaid.min.js） |
@@ -1805,7 +1804,7 @@ export class ElectronUIHost implements UIHost {
 | 构造依赖 | `host: UIHost` | `host: UIHost` + `sendToSidebar(channel, payload)`（侧栏出口，由 `main.ts` 注入）+ `sendToChatViews(message)`（广播给所有聊天视图，abort 按钮数据源） |
 | `dispatchList` | `host.sendToWebview({ type: 'conversationsData', conversations })` | ① `sendToSidebar('sidebar:conversations-updated', list)` ② `host.sendToWebview({ type: 'conversationsData', ... })` |
 | `dispatchStates` | `host.sendToWebview({ type: 'sessionRuntimeStates', states })`（对话树流水灯 + abort 按钮） | ① `sendToSidebar('sidebar:session-states-updated', states)` ② `statusListener(states)`（托盘）③ 广播给所有聊天视图（abort 按钮） |
-| `setStatusListener` | 不注册 | `main.ts` 注入 `updateTrayStatusFromStates`：托盘状态点 + 「任务结束」闪烁 |
+| `setStatusListener` | 不注册 | `main.ts` 注入 `updateTrayStatusFromStates`：托盘状态点 + 「任务结束」闪烁，另驱动系统睡眠阻断（`sleepBlocker.update`） |
 | 空闲会话回收 | **承担**（计时 / 巡检 / 关闭动作分发，见第 5.4 节） | 不承担 |
 | 额外通道 | 无 | `sidebar:session-loaded-changed`（`loaded` 由 `ChatViewManager.onLoadedChanged` 单独推，不进两条流）；`dispatchStates` 的 `sidebar:session-states-updated` 由侧栏消费（流水灯）、`statusListener` 走托盘、广播给聊天视图的 `sessionRuntimeStates` 供 abort 按钮 |
 
@@ -1885,7 +1884,7 @@ Standalone 下打开第一个真实工作区时占位 Connection 被销毁。
 | 虚拟文档 provider（预览 / diff 三个 scheme） | VS Code | 无对应 Electron 能力 |
 | `registerWebviewViewProvider` / 命令 / 状态栏项 | VS Code | 扩展界面入口 |
 | `host.setMainWindow` / `setSidebarView` / `setChatViewManager` / `setWorkspaceSource` | Electron | 主进程句柄注入；`setWorkspaceSource` 提供打开集合 / 活动项 / 变化订阅（Client 据此建立 Connection） |
-| `conversations.setStatusListener` | Electron | 托盘状态点与闪烁提醒 |
+| `conversations.setStatusListener` | Electron | 托盘状态点、闪烁提醒与系统睡眠阻断 |
 | 侧栏出口（`sendToSidebar`） | Electron | 原生侧栏三条流 |
 | `chatViews.closeConversation = (sid) => ui.releaseConversation(sid)` | Electron | 视图销毁序列只卸内存 |
 | 菜单 / 托盘 / 全局唤醒快捷键 / 单实例锁 | Electron | 桌面端集成 |
@@ -1931,7 +1930,10 @@ context.subscriptions.push(
 const host = new ElectronUIHost();
 const spinDesign = new ElectronSpinDesign(host);
 const conversations = new ElectronConversationManager(host, sendToSidebar);
-conversations.setStatusListener((states) => updateTrayStatusFromStates(states));  // 托盘只吃状态流
+conversations.setStatusListener((states) => {   // 托盘与睡眠阻断都只吃这条状态流
+  updateTrayStatusFromStates(states);           // 状态点 + 「任务结束」闪烁
+  sleepBlocker.update(states);                  // 任一会话非 idle 即阻断系统睡眠
+});
 
 const { ui } = bootstrapCore(host, spinDesign, conversations, {
   locale: app.getLocale(),
@@ -1982,9 +1984,10 @@ Electron 的视图句柄：`ElectronUIHost.webviewHandleFor(source)` 把来源 `
 | 工作区来源 | `vscode.workspace.workspaceFolders` | 菜单 / 命令行 `--workspace=` / 上次记录（`setWorkspacePath`） |
 | 空闲回收 | 启用（`startIdleMonitor`） | 不启用 |
 | 托盘 | 无 | `setStatusListener` → 状态点 + 闪烁提醒 |
+| 系统睡眠阻断 | 无（VS Code 扩展没有电源 API）；standalone 下由 Core 子进程自己阻断（第 11.1 节） | `setStatusListener` → `sleepBlocker.update(states)`（`electron/powerSaveBlocker.ts` 的 `powerSaveBlocker`） |
 | 侧栏 | 无（webview 内下拉） | 原生 `WebContentsView` + 三条流：`sidebar:conversations-updated` / `sidebar:session-states-updated` / `sidebar:session-loaded-changed` |
 | 虚拟文档 | 注册三个 `TextDocumentContentProvider` | 无（用 Monaco 辅助窗口） |
-| 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销全局快捷键、停托盘闪烁并销毁托盘、`shutdownCore()` |
+| 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销全局快捷键、停托盘闪烁并销毁托盘、释放睡眠阻断、`shutdownCore()` |
 
 ### 8.7 启动期状态：写入入口与读取器
 
@@ -2074,7 +2077,7 @@ export function shutdownCore(): Promise<void>;
 | 宿主 | 退出钩子 | 调用 |
 | --- | --- | --- |
 | VS Code | `deactivate()` | `stopIdleMonitor()`（宿主专属）+ `shutdownCore()` |
-| Electron | `app.on('will-quit')` | 宿主专属清理（快捷键 / 托盘 / 定时器）+ `shutdownCore()` |
+| Electron | `app.on('will-quit')` | 宿主专属清理（快捷键 / 托盘 / 定时器 / 睡眠阻断）+ `shutdownCore()` |
 
 `shutdownCore` 先 `client.closeAll()` 销毁全部 Connection（Standalone 下逐个关闭
 channel / 本地 `stdio` Core 进程），再关闭远程 daemon；Embedded 下经 `MCPHost.shutdown()`
@@ -2473,7 +2476,7 @@ dropSession(sessionId: string): void {
 | `getWorkspacePath` | `workspaceFolders[0].uri.fsPath`（单一工作目录） | 主进程持有的 `workspacePath`（宿主当前工作目录：打开集合中的一项，由标题栏标签页切换 / 添加 / 关闭驱动） |
 | `isDarkTheme` | `activeColorTheme` 为 Dark 或 HighContrast | `nativeTheme.shouldUseDarkColors` |
 | `getLocale` | `vscode.env.language`（BCP-47，如 `zh-cn`） | `app.getLocale()`（BCP-47，如 `zh-CN`）——与 VS Code 同一值域，不做归一化 |
-| `openFile` | 编辑器打开并选中行；图片 / 二进制退到 `vscode.open` | 图片开内置预览窗口；其余开 Monaco 窗口（`mode: 'view'`） |
+| `openFile` | 编辑器打开并选中行；图片 / 二进制退到 `vscode.open` | 远程路径（落在打开的远程工作区内）经 SFTP 读出进内置窗口；图片开内置查看器；其余开 Monaco 窗口（`mode: 'view'`） |
 | `showVirtualDocument` | `DocumentManager` → 虚拟文档预览标签 | Monaco 窗口（`mode: 'content'`） |
 | `showDiff` | `DocumentManager.showDiff` → 原生 diff 标签 | 空实现（diff 归 webview） |
 | `openMermaidPreview` | 复用单个 `WebviewPanel` | 复用单个 `BrowserWindow`（语义一致） |
@@ -2503,7 +2506,7 @@ dropSession(sessionId: string): void {
 | 加号菜单 | 标题栏末尾「加号」改为菜单入口（`titlebar:workspace-menu`），主进程用原生 `Menu.popup` 弹出「打开本地工作区 / 打开远程工作区」两项 |
 | 打开远程工作区 | `openRemoteWorkspaceDialog()`：填 SSH 表单 → 经 `listRemoteDirectories()` 完成 SSH 引导并鉴权 → **连接成功后立刻**列出远端主目录，弹出远端目录选择器（`electron/remoteWorkspace/`）；选择器可改路径、进上级（`..`）、新建与删除空目录（`createRemoteDirectory` / `deleteRemoteDirectory`）；选定目录后 `addRemoteWorkspace(endpoint, path)` 加入打开集合（`scheme=ssh`） |
 | 侧栏头部 | 「搜索框 + 新对话」：搜索框按标题过滤当前活动工作目录的对话列表 |
-| 侧栏文件浏览器 | 侧栏底部常驻「文件」分区条（默认折叠，展开占侧栏 50% 高度），树展示活动工作目录（目录懒加载：展开哪层读哪层，单击目录即展开 / 折叠，Ctrl / Shift 多选不触发展开；`sidebar:files-list`），分区条带刷新按钮；右键菜单「复制完整路径 / 复制相对路径 / 在文件资源管理器中打开 / 删除」（`sidebar:files-copy-paths` / `sidebar:files-reveal` / `sidebar:files-delete`，菜单项不做危险色强调）。**每个工作区一套独立状态**（渲染层 `WorkspaceFilesState`，按工作区 id 存放）：树缓存、目录展开、选中与折叠状态都随工作区保存——切换标签页只换显示哪一套，不清不重建、不作废在途请求（回包写回它自己的状态，只有正在显示的工作区触发重渲染），切回原样保留；折叠状态按工作区落侧栏 localStorage（id → 布尔表，键 `tuxedo.sidebar.filesExpanded`），工作区被关闭时状态整体丢弃、重新打开按新工作区处理。删除语义分两端：本地走原生确认框 + `shell.trashItem`（移入回收站，可恢复）；远程走 SSH 的 SFTP 递归删除（目录连同内容，永久），确认框文案标明「无法撤销」。复制语义：本地绝对 / 相对路径都按平台分隔符；远程是远端 POSIX 串、相对路径保持 `/` 分隔（不经本地 path 翻译）。「在文件资源管理器中打开」仅本地工作区提供（远程项在渲染层就不显示该菜单项，主进程对远程同样拒绝）。实现：本地读盘 / 校验在 `electron/sidebarFiles.ts`（`resolveWithinRoot` 带 `posix` 分支，远程路径按 win32 解析会变形）；远程经 `electron/sidebarFilesRemote.ts`——一个 endpoint 一条 SSH 连接（`SshClient`，按完整连接目标缓存，连接进行中并发首连去重），列目录 / 删除走 SFTP（`sshClient.ts` 的 `listDirectory` / `removePath`），连接随工作区关闭与应用退出释放。安全口径：root 由渲染层回传、传的是侧栏工作区项的稳定 id（refKey），主进程按 id 回查「打开集合中的工作区」——不按路径回查（工作区项的 `path` 是展示路径，远程项与真实路径不同、且同一路径可在多台机器出现，与「最近打开」点击按 id 回查同一约定），条目相对路径（'/' 分隔约定格式）经越界校验；这组通道只接受侧栏视图来源（`isSidebarSender`）；文件操作（含 SFTP 连接建立与失败原因）落盘 `fileLogger`（`sidebar-files` 组件），打包态无 console 也可事后排查。打开集合为空不显示分区。选择模型与资源管理器一致（点击 / Ctrl 切换 / Shift 连选 / Ctrl+A / Esc / Delete），定义见 `docs/user-stories.md` US-42 / US-43 |
+| 侧栏文件浏览器 | 侧栏底部常驻「文件」分区条（默认折叠，展开占侧栏 50% 高度），树展示活动工作目录（目录懒加载：展开哪层读哪层，单击目录即展开 / 折叠，Ctrl / Shift 多选不触发展开；`sidebar:files-list`），分区条带刷新按钮；右键菜单「复制完整路径 / 复制相对路径 / 在文件资源管理器中打开 / 删除」（`sidebar:files-copy-paths` / `sidebar:files-reveal` / `sidebar:files-delete`，菜单项不做危险色强调）。**每个工作区一套独立状态**（渲染层 `WorkspaceFilesState`，按工作区 id 存放）：树缓存、目录展开、选中与折叠状态都随工作区保存——切换标签页只换显示哪一套，不清不重建、不作废在途请求（回包写回它自己的状态，只有正在显示的工作区触发重渲染），切回原样保留；折叠状态按工作区落侧栏 localStorage（id → 布尔表，键 `tuxedo.sidebar.filesExpanded`），工作区被关闭时状态整体丢弃、重新打开按新工作区处理。删除语义分两端：本地走原生确认框 + `shell.trashItem`（移入回收站，可恢复）；远程走 SSH 的 SFTP 递归删除（目录连同内容，永久），确认框文案标明「无法撤销」。复制语义：本地绝对 / 相对路径都按平台分隔符；远程是远端 POSIX 串、相对路径保持 `/` 分隔（不经本地 path 翻译）。「在文件资源管理器中打开」仅本地工作区提供（远程项在渲染层就不显示该菜单项，主进程对远程同样拒绝）。实现：本地读盘 / 校验在 `electron/sidebarFiles.ts`（`resolveWithinRoot` 带 `posix` 分支，远程路径按 win32 解析会变形）；远程经 `electron/sidebarFilesRemote.ts`——一个 endpoint 一条 SSH 连接（`SshClient`，按完整连接目标缓存，连接进行中并发首连去重），列目录 / 删除走 SFTP（`sshClient.ts` 的 `listDirectory` / `removePath`），连接随工作区关闭与应用退出释放。安全口径：root 由渲染层回传、传的是侧栏工作区项的稳定 id（refKey），主进程按 id 回查「打开集合中的工作区」——不按路径回查（工作区项的 `path` 是展示路径，远程项与真实路径不同、且同一路径可在多台机器出现，与「最近打开」点击按 id 回查同一约定），条目相对路径（'/' 分隔约定格式）经越界校验；这组通道只接受侧栏视图来源（`isSidebarSender`）；文件操作（含 SFTP 连接建立与失败原因）落盘 `fileLogger`（`sidebar-files` 组件），打包态无 console 也可事后排查。双击文件行打开（`sidebar:files-open`，本地与远程工作区同样支持）：文本（代码 / 配置 / 文本扩展名，以及嗅探不出二进制的未知类型）进内置文本窗口（Monaco `mode: 'view'`，与工具卡片点「Edit」预览同一效果）；图片进内置图片查看器（`dist/imageViewer`，滚轮以光标为锚缩放、放大后可拖动平移、双击在 100% 与适配窗口间切换）；其它二进制调系统默认应用（`shell.openPath`）；**远程二进制不支持打开**——渲染层对已知二进制直接跳过（不发 IPC，省一次 SFTP 嗅探），未知扩展名经主进程嗅探后同样拒绝，错误消息 `remote-binary-unsupported` 按预期行为处理（主进程不弹框、渲染层不报错）。分流与图标共用同一份扩展名根集合（`electron/fileTypes.ts`），编排与临时落盘在 `electron/fileOpen.ts`（`shell.openPath` / 窗口打开经 `FileOpenBridge` 注入，SFTP 读原语在 `electron/sidebarFilesRemote.ts` 的 `remoteFileReaderFor`），目录双击不再翻转（单击已展开 / 折叠，双击的第二下忽略）。分区折叠期渲染层不渲染文件树、不预读根目录（否则启动时刻的目录内容被缓存，首次展开命中陈旧数据——懒加载的根目录读取点必须是首次展开）。打开集合为空不显示分区。选择模型与资源管理器一致（点击 / Ctrl 切换 / Shift 连选 / Ctrl+A / Esc / Delete），定义见 `docs/user-stories.md` US-42 / US-43 |
 | 空态 | 打开集合为空时，侧栏显示「打开本地工作区」+ 最近工作区（点击即添加）；聊天区保持纯提示。活动工作区建链中 / 不可用时侧栏对话列表清空（不显示对话列表） |
 | 启动等待态 | 侧栏初始化**先取工作区状态**（`sidebar:get-workspaces`，宿主本地事实）并渲染，之后才拉对话列表（要等 core 连接就绪；远程工作区连不上 / core 启动慢时会一直等）。工作区状态未到达前侧栏的 `workspacesState` 为 `null`，`render()` 保持等待态、不画空态——否则 core 未就绪期间会把「尚未取到工作区」错报成「尚未打开工作区」 |
 | 添加 | `openWorkspaceDialog()` 支持多选，`addWorkspaces(paths)` 按顺序加入打开集合、末项置为活动项；已在集合中的目录直接切为活动项。远程目录经 `addRemoteWorkspace(endpoint, path)` 加入 |
@@ -2566,7 +2569,8 @@ Electron 的 `sidebar:get-conversations` 直接读它，切换标签页不再每
 | 工作区来源 | `workspaceFolders` | 菜单选择的 `workspacePath` |
 | 原生侧栏 / 托盘 / Monaco 窗口 / 快捷键对话框 / 菜单 / 自绘标题栏 / 悬浮窗模式 | 无 | 有 |
 | 空闲回收 / 状态栏项 / 虚拟文档 provider / 命令注册 | 有 | 无 |
-| 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销快捷键、销毁托盘、`shutdownCore()` |
+| 系统睡眠阻断 | 无：VS Code 扩展没有电源 API，standalone 下由 Core 子进程自己阻断 | `setStatusListener` → `sleepBlocker.update(states)`（`electron/powerSaveBlocker.ts`） |
+| 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销快捷键、销毁托盘、释放睡眠阻断、`shutdownCore()` |
 
 **托盘状态点与「任务结束」闪烁提醒**属于 `statusListener` 这条流：它吃的是**会话状态流**，
 挂在 `ElectronConversationManager.setStatusListener` 上（`electron/main.ts`）。颜色与闪烁分两步：
@@ -2597,6 +2601,25 @@ core 侧对应 `sessionRuntime`（引擎池 + pending user choice）：它维护
 `idle` / `waiting`，变化时推**全量** `sessionRuntimeChanged`；托盘只是这份全量状态的一个消费者。
 MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 侧的只有「把状态读出来给面板看」。
 
+**系统睡眠阻断**挂在同一条 `statusListener` 上：任一会话非 idle（含 `waiting`）→ 阻断系统
+进入睡眠 / 休眠，全部空闲 → 释放。判定复用 core 的 `sessionBusyLevel`，与托盘 / 标签页流水灯 /
+关闭前的二次确认同一份派生；阻断类型只要求系统不挂起、允许屏幕熄灭（Electron 侧
+`prevent-app-suspension`，Core 侧 Windows `ES_SYSTEM_REQUIRED` / Linux `systemd-inhibit
+--what=idle:sleep`）。`update()` 幂等：全量快照高频重复推送不会重复申请阻断，也不会误停
+已在生效的阻断。
+
+阻断分两处实现，因为「谁的机器需要保持清醒」按进程划分：
+
+| | Electron 宿主（`electron/powerSaveBlocker.ts`） | Standalone Core 进程（`core-rs/src/power.rs`） |
+| --- | --- | --- |
+| 覆盖的机器 | 宿主所在机器 | Core 进程所在机器（本地子进程 = 本机；远程 daemon = 远端） |
+| 触发 | `setStatusListener` 的会话状态流 | `Core::emit_runtime` 推快照前的同一个判定 |
+| 为什么需要 | 本地任务跑在宿主进程里 | 远程工作区的长任务在远端执行，宿主那台机器睡不睡与它无关 |
+
+两处都在 standalone 形态下生效（冗余但无害）；`CORE_KIND=embedded` 的 Electron 侧只剩宿主
+那一份，`CORE_KIND=embedded` 的 VS Code 侧没有人阻断（VS Code 扩展没有电源 API）——这是
+已记录的固有差异，不做静默降级。
+
 **自绘标题栏与窗口模式**（`electron/titlebar/` + `electron/main.ts`）：
 
 | 项 | 现状 | 说明 |
@@ -2612,6 +2635,7 @@ MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 
 | 菜单置顶 | `addChildView` 重新入栈 | 聊天视图是动态 `addChildView` 的，会盖住菜单视图；显示菜单时再 `addChildView` 一次即可提到最上层。**不要先 `removeChildView`**——那会把焦点掉成「无视图」，菜单随即被关掉 |
 | 快捷键 | 原生 accelerator + `before-input-event` 兜底 | 无边框窗口下原生 accelerator 是否生效依平台而定，两处都命中时按 id 去重（250ms）。唤醒快捷键持久化在 `workspace-state.json` 的 `shortcut` 字段（旧版本写在 settings.json 的 `shortcut` 由 `migrateLegacyThemeAndShortcut()` 一次性迁移）；注册失败（组合键被系统或其它程序占用）不弹窗、落 fileLogger（`shortcut` 组件）与 console.warn 留痕 |
 | 窗口模式 | `windowMode: 'normal' \| 'floating'` | floating = 隐藏侧栏（`sidebarView` 收成 0 尺寸）+ 聊天视图占满整宽（`chatViews.setConversationListOwner('webview')`），复用同一批 webview，不重新加载对话 |
+| 侧栏宽度 | 右缘拖拽手柄（`electron/sidebar` 的 `#resizeHandle`）+ `sidebar:set-width` | 手柄按住水平拖动改宽度（渲染层 pointer capture，拖出视图边界不丢事件），松手落盘一次（`workspace-state.json` 的 `sidebarWidth` 字段，启动时播种，缺失 / 非法回默认 280）；拖拽过程走 `send` 高频上报不落盘，双击手柄恢复默认。宽度事实在主进程：`currentSidebarWidth()` 做全部夹取（200~640 DIP，且不挤掉聊天区的 320px 最小宽），`layout()` 的侧栏 bounds 与 `ChatViewManager.chatBounds()` 的左缘经构造期注入的 `sidebarWidth()` 读取口取同一份值（一份事实一个写入点）。浮窗模式侧栏收成 0 尺寸，用户宽度保持不动，切回完整模式原样恢复 |
 | 浮窗最小化 | `mainWindow.on('minimize')` + `titlebar:minimize` | 完整模式最小化到任务栏；浮窗模式最小化改走 `hide()` 隐藏到系统托盘（隐藏的窗口不在任务栏保留按钮），唤醒入口是托盘图标单击 / 双击与全局快捷键（`showMainWindowFromTray`） |
 | 模式切换的异步状态 | `waitForWindowEvent()` + `windowModeSwitching` | 先还原最大化/退出全屏（等 `unmaximize` / `leave-full-screen` 事件落定，1s 超时兜底）再 `setBounds`，否则会被忽略或只改还原尺寸；切换期间用标志位防重入 |
 | 模式切换条件 | `canToggleWindowMode()` | 打开集合为空时禁用（浮窗隐藏侧栏，切换后无法再选工作目录） |
@@ -2716,7 +2740,7 @@ MCP 这条踩过坑：acquire 挂在「webview 打开」上时，引用生命周
 | --- | --- | --- |
 | Edit / Write 改动（diff） | webview 工具卡片（core 展开进 `displayArgs.diffHunks`，第 7.2 节） | `ElectronUIHost.showDiff` 留空——它能开 Monaco diff 窗口，但那是**重复实现**，不做 |
 | mermaid 代码块 | 宿主原生窗口（webview 只发 `openMermaidPreview`）：VS Code 复用单个 `WebviewPanel`，Electron 复用单个 `BrowserWindow` | webview 不做页内渲染浮层 |
-| 图片 | 宿主：VS Code `vscode.open` 内置图片预览，Electron `openImagePreview` | — |
+| 图片 | 宿主：VS Code `vscode.open` 内置图片预览，Electron `openImagePreviewWindow`（`dist/imageViewer`，滚轮缩放 / 拖动平移） | — |
 | 完整文本 / 虚拟文档 | 宿主：VS Code `DocumentManager` 虚拟文档标签，Electron Monaco 窗口（`mode: 'content'`） | — |
 
 VS Code 在 manual 模式下额外用 `host.showDiff` 开原生 before/after diff 标签（第 7.2 节），

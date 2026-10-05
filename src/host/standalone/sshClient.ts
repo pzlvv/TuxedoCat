@@ -358,6 +358,39 @@ export class SshClient {
     });
   }
 
+  /** 读一个远端文件的完整字节（图片预览 / 二进制下载临时目录用；大文件调用方自担） */
+  async readFileBuffer(target: string): Promise<Buffer> {
+    const sftp = await this.requireSftp();
+    return new Promise<Buffer>((resolve, reject) => {
+      // 不带 encoding 时 ssh2 回 Buffer（@types 把回调参数标成 handle，实际就是文件内容）
+      sftp.readFile(target, (error: Error | undefined, data: Buffer) => {
+        if (error) reject(new Error(`SFTP read failed (${target}): ${error.message}`));
+        else resolve(data);
+      });
+    });
+  }
+
+  /** 只读远端文件前 maxBytes 字节（未知扩展名先嗅探再决定怎么打开，避免整文件下载） */
+  async readFileHead(target: string, maxBytes: number): Promise<Buffer> {
+    const sftp = await this.requireSftp();
+    return new Promise<Buffer>((resolve, reject) => {
+      sftp.open(target, 'r', (openError, handle) => {
+        if (openError) {
+          reject(new Error(`SFTP open failed (${target}): ${openError.message}`));
+          return;
+        }
+        const buffer = Buffer.alloc(Math.max(1, maxBytes));
+        sftp.read(handle, buffer, 0, buffer.length, 0, (readError, bytesRead) => {
+          // close 无论成败都要走：句柄泄漏远端不会自动回收
+          sftp.close(handle, () => {
+            if (readError) reject(new Error(`SFTP read failed (${target}): ${readError.message}`));
+            else resolve(buffer.subarray(0, bytesRead ?? 0));
+          });
+        });
+      });
+    });
+  }
+
   /** 上传一个本地文件到远端，并按 `mode` 设定权限位 */
   async upload(localPath: string, remotePath: string, mode: number): Promise<void> {
     const sftp = await this.requireSftp();

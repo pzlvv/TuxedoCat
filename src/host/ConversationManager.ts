@@ -159,7 +159,7 @@ export abstract class ConversationManager {
 
   /**
    * 注册会话状态回调，可选。
-   * Electron 用它驱动系统托盘状态点与「任务结束」闪烁提醒；VS Code 不注册。
+   * Electron 用它驱动系统托盘状态点、「任务结束」闪烁提醒与系统睡眠阻断；VS Code 不注册。
    */
   setStatusListener(fn: (states: readonly SessionRuntimeState[]) => void): void {
     this.statusListener = fn;

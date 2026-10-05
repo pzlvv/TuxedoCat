@@ -490,8 +490,9 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
                 timeoutRetryState.count++;
                 logger.warn('OpenAiAPI',
                   `${timeoutError.message}，丢弃本次响应并重试 (${timeoutRetryState.count}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-                await sleep(RETRY_DELAY_MS);
+                // 先查中断再等重试间隔：abort 不能在重试等待上再叠加整段延迟
                 checkAborted(signal);
+                await sleep(RETRY_DELAY_MS);
                 yield* runAttempt(retryCount + 1);
                 return;
               }
@@ -500,8 +501,9 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
             if (retryCount < MAX_RETRIES && readError instanceof TypeError && readError.message === 'terminated') {
               logger.warn('OpenAiAPI', `Stream terminated (TypeError: terminated), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
               closeReader();
-              await sleep(RETRY_DELAY_MS);
+              // 先查中断再等重试间隔：abort 不能在重试等待上再叠加整段延迟
               checkAborted(signal);
+              await sleep(RETRY_DELAY_MS);
               yield* runAttempt(retryCount + 1);
               return;
             }
@@ -632,8 +634,9 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
           closeReader();
           logger.warn('OpenAiAPI',
             `${loopError.message}，丢弃本次响应并重试 (${repetitionRetryCount}/${DEFAULT_MAX_REPETITION_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-          await sleep(RETRY_DELAY_MS);
+          // 先查中断再等重试间隔：abort 不能在重试等待上再叠加整段延迟
           checkAborted(signal);
+          await sleep(RETRY_DELAY_MS);
           yield* runAttempt(retryCount + 1);
           return;
         }
@@ -668,8 +671,9 @@ export async function* callOpenAiLLM(options: StreamOptions): AsyncGenerator<Str
           stopReason = 'end_turn';
         } else if (retryCount < MAX_RETRIES) {
           logger.warn('OpenAiAPI', `Stream ended without finish_reason and no content, retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
-          await sleep(RETRY_DELAY_MS);
+          // 先查中断再等重试间隔：abort 不能在重试等待上再叠加整段延迟
           checkAborted(signal);
+          await sleep(RETRY_DELAY_MS);
           yield* runAttempt(retryCount + 1);
           return;
         } else {

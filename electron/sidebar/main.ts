@@ -24,6 +24,9 @@
  *   - filesReveal(id, rel)      在系统文件资源管理器中定位（单项语义）
  *   - filesCopyPaths(...)       复制完整 / 相对路径（多项换行拼接）
  *   - filesDelete(id, rels)     删除（移入回收站，主进程先弹原生确认框）
+ *   - filesOpen(id, rel)        双击打开：文本 / 图片进内置窗口，二进制调系统应用（US-42）
+ * 侧栏宽度（US-44）：
+ *   - setSidebarWidth(w, final) 右缘手柄拖拽改宽度；final 时主进程落盘，null 恢复默认
  * 侧栏头部为「搜索框 + 新对话」：搜索框按标题过滤当前活动工作目录的对话列表；
  * 打开集合为空时空态展示「打开本地工作区」+ 最近工作区（点击即添加）。
  * 对话列表有独立的等待态：列表尚未取到（启动 / 刚切换活动目录）时留白，超过
@@ -47,6 +50,16 @@
  */
 
 import { PRODUCT_NAME } from '../../src/config/project.js';
+// 类型扩展名集合、打开分流与「远程二进制不支持」常量的根在 electron/fileTypes.ts
+// （US-42 验收 6）：图标说是文本的，双击就进内置文本窗口，一份事实一个写入点
+import {
+  classifyFileForOpen,
+  FILE_CODE_EXTS,
+  FILE_CONFIG_EXTS,
+  FILE_IMAGE_EXTS,
+  FILE_TEXT_EXTS,
+  REMOTE_BINARY_UNSUPPORTED,
+} from '../fileTypes.js';
 
 interface ConversationMeta {
   sessionId: string;
@@ -130,6 +143,11 @@ interface SidebarAPI {
   filesCopyPaths: (workspaceId: string, relPaths: string[], relative: boolean) => Promise<FilesOpResult>;
   /** 删除（移入回收站）：主进程先弹原生确认框 */
   filesDelete: (workspaceId: string, relPaths: string[]) => Promise<FilesOpResult>;
+  /** 双击打开（US-42 验收 6）：主进程按类型分流——文本 / 图片进内置窗口，二进制调系统应用 */
+  filesOpen: (workspaceId: string, relPath: string) => Promise<FilesOpResult>;
+  // ── 侧栏宽度（US-44） ──
+  /** 拖拽手柄改宽度；width 为 null 恢复默认。final 为 true 时主进程把值落盘 */
+  setSidebarWidth: (width: number | null, final: boolean) => void;
 }
 
 declare global {
@@ -148,6 +166,8 @@ const filesHeaderEl = document.getElementById('filesHeader')!;
 const filesBodyEl = document.getElementById('filesBody')!;
 const filesRefreshBtn = document.getElementById('filesRefresh') as HTMLButtonElement;
 const filesTreeEl = document.getElementById('filesTree')!;
+// 侧栏宽度拖拽手柄（US-44，吸附在侧栏右缘）
+const resizeHandleEl = document.getElementById('resizeHandle')!;
 
 /**
  * 活动工作目录的对话列表。
@@ -953,16 +973,7 @@ const FICON_FILE_JSON = lucideSvg('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2
 const FICON_IMAGE = lucideSvg('<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>');
 const FICON_ARCHIVE = lucideSvg('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9h2"/><path d="M10 13h2"/><path d="M10 17h2"/><path d="m10 5 1-1-1-1"/>');
 
-const FILE_TEXT_EXTS = new Set(['md', 'txt', 'log', 'rst', 'adoc']);
-const FILE_CODE_EXTS = new Set([
-  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'rs', 'go', 'java', 'c', 'h', 'cpp', 'hpp',
-  'cc', 'cs', 'rb', 'php', 'swift', 'kt', 'kts', 'sh', 'bash', 'zsh', 'bat', 'cmd', 'ps1',
-  'vue', 'svelte', 'astro', 'html', 'htm', 'css', 'scss', 'sass', 'less', 'sql', 'lua',
-  'dart', 'scala', 'groovy', 'ex', 'exs', 'erl', 'clj', 'cljs', 'r', 'pl', 'proto',
-  'graphql', 'prisma', 'cmake',
-]);
-const FILE_CONFIG_EXTS = new Set(['json', 'jsonc', 'json5', 'toml', 'yaml', 'yml', 'xml', 'ini', 'cfg', 'conf', 'env', 'properties', 'lock']);
-const FILE_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp', 'avif', 'tiff']);
+/** 压缩包扩展名：只用于图标着色（双击打开归「系统应用」分流，不参与类型判定） */
 const FILE_ARCHIVE_EXTS = new Set(['zip', 'gz', 'tar', 'rar', '7z', 'bz2', 'xz', 'zst']);
 
 /** 文件名 → 图标与配色 class（lucide 按类型区分，US-42 验收 5）；未识别类型用通用文件图标 */
@@ -1001,10 +1012,15 @@ function fileRowHtml(files: WorkspaceFilesState, rel: string, name: string, kind
 function renderFiles(): void {
   const id = activeFilesId;
   const files = activeFilesState();
-  const rows: string[] = [];
-  if (files && id !== null) {
-    renderDirRows(files, id, '', 0, rows);
+  // 分区折叠时不渲染也不读目录：折叠期渲染会经 renderDirRows 触发根目录的懒加载，
+  // 把「启动时刻」的目录内容缓存下来，用户之后展开时命中陈旧缓存（US-42 的懒加载
+  // 语义是「点开才读该层」，根目录的第一个读取点必须是首次展开）。
+  if (!files || id === null || !files.expanded) {
+    filesTreeEl.innerHTML = '';
+    return;
   }
+  const rows: string[] = [];
+  renderDirRows(files, id, '', 0, rows);
   filesTreeEl.innerHTML = rows.join('');
 }
 
@@ -1242,6 +1258,24 @@ function deleteSelectedFiles(): void {
     .catch((err) => console.error('[sidebar] delete files failed:', err));
 }
 
+/**
+ * 双击文件行：打开方式（内置文本 / 图片窗口 / 系统应用）由主进程按类型分流。
+ * 远程工作区的已知二进制在这里直接跳过（US-42 验收 6：远程二进制不支持打开），
+ * 不发 IPC——避免为「注定打不开」的文件去做 SFTP 嗅探；未知扩展名仍交给主进程嗅探。
+ */
+function openFileRow(rel: string): void {
+  const id = activeFilesId;
+  if (!id) return;
+  if (filesRemote && classifyFileForOpen(rel) === 'binary') return;
+  window.sidebarAPI?.filesOpen(id, rel)
+    .then((res) => {
+      if (!res.ok && res.error !== REMOTE_BINARY_UNSUPPORTED) {
+        console.error('[sidebar] open file failed:', res.error);
+      }
+    })
+    .catch((err) => console.error('[sidebar] open file failed:', err));
+}
+
 /* ── 事件绑定（init 调用一次；树内容重建不受影响，全部委托在固定容器上） ── */
 
 function bindFilesEvents(): void {
@@ -1273,6 +1307,9 @@ function bindFilesEvents(): void {
     }
     const path = row.dataset.path;
     if (!path) return; // 提示行（加载中 / 空目录）不可选
+    // 双击的第二下不再翻转目录（e.detail >= 2）：否则目录双击 = 展开 + 折叠来回抖。
+    // 双击的第一下已经翻过一次，净效果仍是「展开」。
+    if (e.detail >= 2 && row.dataset.kind === 'directory') return;
     // 折叠箭头只切换目录展开，不改选中（与 VS Code 资源管理器一致）
     if (row.dataset.kind === 'directory' && (e.target as HTMLElement).closest('.file-chevron')) {
       toggleDirExpanded(path);
@@ -1300,10 +1337,19 @@ function bindFilesEvents(): void {
       files.selected.clear();
       files.selected.add(path);
       files.anchor = path;
-      // 目录单击即展开 / 折叠（US-42：单展开，不要双击）；Ctrl / Shift 多选不触发
+      // 目录单击即展开 / 折叠（US-42：单展开，不要双击）；Ctrl / Shift 多选不触发。
+      // 双击的第二下不再翻转（上面已整体 return），目录双击不会来回抖
       if (row.dataset.kind === 'directory') toggleDirExpanded(path);
     }
     applyFileSelectionClasses();
+  });
+
+  // 双击文件行打开（US-42 验收 6）：目录不响应双击（单击已展开 / 折叠），
+  // 提示行（无 data-path）与错误行（data-retry-dir）也不响应
+  filesTreeEl.addEventListener('dblclick', (e) => {
+    const row = (e.target as HTMLElement).closest<HTMLElement>('.file-row[data-kind="file"][data-path]');
+    if (!row || row.dataset.retryDir !== undefined) return;
+    openFileRow(row.dataset.path || '');
   });
 
   filesTreeEl.addEventListener('contextmenu', (e) => {
@@ -1361,6 +1407,61 @@ function bindFilesEvents(): void {
   window.addEventListener('resize', closeFilesMenu);
 }
 
+/* ── 侧栏宽度拖拽（US-44） ── */
+
+/**
+ * 拖拽手柄：按住沿水平方向拖动改侧栏宽度，松手（final: true）时主进程落盘，
+ * 双击恢复默认宽度。宽度事实在主进程（layout 用它摆侧栏 + 聊天区），渲染层只上报
+ * 「想要的宽度」，夹取（最小 / 最大 / 不挤掉聊天区）也在主进程做。
+ *
+ * setPointerCapture 让按住后的 pointermove / pointerup 持续送达手柄——拖出侧栏
+ * 视图边界（变宽时越过手柄 / 覆盖到聊天区）也不丢事件；合成事件（e2e）没有活动
+ * pointer，capture 会抛错，try/catch 兜住后靠 window 级监听照常工作。
+ */
+function bindResizeHandle(): void {
+  let dragging = false;
+  let startPointerX = 0;
+  let startWidth = 0;
+
+  const applyMove = (clientX: number, final: boolean): void => {
+    if (!dragging) return;
+    window.sidebarAPI?.setSidebarWidth(startWidth + (clientX - startPointerX), final);
+  };
+
+  resizeHandleEl.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    dragging = true;
+    startPointerX = e.clientX;
+    startWidth = window.innerWidth;
+    resizeHandleEl.classList.add('dragging');
+    document.body.classList.add('sidebar-resizing');
+    e.preventDefault();
+    try { resizeHandleEl.setPointerCapture(e.pointerId); } catch { /* 合成事件没有活动 pointer */ }
+  });
+  resizeHandleEl.addEventListener('pointermove', (e) => applyMove(e.clientX, false));
+  // move / up 同时挂 window：capture 生效时事件本就送达手柄，两处都收到时
+  // dragging 状态保证只应用一次
+  window.addEventListener('pointermove', (e) => applyMove(e.clientX, false));
+  const endDrag = (e: PointerEvent): void => {
+    if (!dragging) return;
+    applyMove(e.clientX, true);
+    dragging = false;
+    resizeHandleEl.classList.remove('dragging');
+    document.body.classList.remove('sidebar-resizing');
+    try { resizeHandleEl.releasePointerCapture(e.pointerId); } catch { /* 未 capture 过 */ }
+  };
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('pointercancel', (e) => {
+    // pointercancel（拖拽被系统打断）：保留已拖出的宽度并落盘，与松手同一收尾
+    endDrag(e);
+  });
+
+  // 双击恢复默认宽度（语义见主进程 SIDEBAR_DEFAULT_WIDTH）
+  resizeHandleEl.addEventListener('dblclick', () => {
+    window.sidebarAPI?.setSidebarWidth(null, true);
+  });
+}
+
 // 点击空白处取消重命名/删除确认
 document.addEventListener('click', (e) => {
   if ((e.target as HTMLElement).closest('.item')) return;
@@ -1379,6 +1480,7 @@ async function init(): Promise<void> {
   }
   bindListEvents();
   bindFilesEvents();
+  bindResizeHandle();
   subscribe();
 
   newChatBtn.addEventListener('click', () => {

@@ -10,6 +10,24 @@ body {
   flex-direction: column;
   user-select: none;
 }
+/* 拖拽进行中光标钉在 col-resize（指针可能越过手柄进入内容区） */
+body.sidebar-resizing { cursor: col-resize; }
+
+/* ── 侧栏宽度拖拽手柄（US-44） ──
+   吸附在侧栏右缘：命中区 6px 宽（视觉只有 hover 时的一条高亮线），全高、
+   固定定位在最上层，不随列表 / 文件区滚动。 */
+.resize-handle {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+.resize-handle:hover { background: rgba(99, 102, 241, 0.35); }
+.resize-handle.dragging { background: rgba(99, 102, 241, 0.6); }
 .header {
   display: flex;
   align-items: center;

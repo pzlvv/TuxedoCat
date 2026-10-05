@@ -9,6 +9,7 @@ import type { MockLlm } from '../helpers/mockLlmServer';
 /**
  * US-42 侧栏文件浏览器（折叠 / 展开 50% / 懒加载树 / 刷新 / 跟随活动工作目录）
  * US-43 文件多选与右键菜单（复制完整 / 相对路径、删除确认）
+ * US-44 侧栏宽度拖拽（右缘手柄、持久化、双击恢复默认）
  *
  * 驱动的是 Electron 原生侧栏（dist/sidebar），文件树数据来自主进程真实读盘，
  * 删除 / 复制经 stubMainMessageBox / 主进程剪贴板桩驱动两条分支。
@@ -287,4 +288,96 @@ test('US-43 删除需原生确认：取消不动，确认后移入回收站并�
       || fs.existsSync(path.join(workspaceDir, 'readme.md')),
     { timeout: 15_000 },
   ).toBe(false);
+});
+
+test('US-42 双击文件行打开：文本进 Monaco（与 Edit 预览同效果）', async () => {
+  const sb = await sidebar();
+  await expandFiles(sb);
+
+  await sb.locator(`${FILE_ROWS}[data-path="readme.md"]`).dblclick();
+  const monacoPage = await app.waitForPage('monaco', 20_000);
+  await expect(monacoPage.locator('.monaco-editor')).toBeVisible({ timeout: 20_000 });
+});
+
+test('US-42 双击文件行打开：目录净效果仍是展开（双击不翻转）', async () => {
+  const sb = await sidebar();
+  await expandFiles(sb);
+
+  // 双击目录 = 两次单击但第二下被忽略：src 保持展开、子条目在
+  await sb.locator(`${FILE_ROWS}[data-path="src"]`).dblclick();
+  await expect(sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`)).toBeVisible();
+});
+
+test('US-42 双击文件行打开：图片进内置查看器，二进制调系统应用', async () => {
+  // 1x1 PNG（真实字节，能被 <img> 解码）+ 含 NUL 字节的未知扩展名（嗅探判二进制）
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  await fs.promises.writeFile(path.join(workspaceDir, 'pic.png'), png);
+  await fs.promises.writeFile(path.join(workspaceDir, 'payload.bin'), Buffer.from([0x00, 0x01, 0x02, 0xff]));
+  const sb = await sidebar();
+  await expandFiles(sb);
+
+  // 图片 → 内置图片查看器窗口（dist/imageViewer）
+  await sb.locator(`${FILE_ROWS}[data-path="pic.png"]`).dblclick();
+  const viewerPage = await app.waitForPage('imageViewer', 20_000);
+  await expect(viewerPage.locator('#image')).toBeVisible({ timeout: 20_000 });
+
+  // 滚轮缩放：向上滚一档 → 110%（1x1 像素图初始就是 100%，缩放角标同步显示）
+  await viewerPage.mouse.move(450, 350);
+  await viewerPage.mouse.wheel(0, -120);
+  await expect(viewerPage.locator('#badge')).toHaveText('110%', { timeout: 5_000 });
+
+  // 二进制 → shell.openPath（桩掉：验证调用链路与参数，不真的拉起系统应用）
+  const injected = await mainEval<string>(app, `(function(){try{
+    const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
+    globalThis.__openPathCalls = [];
+    e.shell.openPath = async (p) => { globalThis.__openPathCalls.push(String(p)); return ''; };
+    return 'ok';
+  } catch (err) { return 'ERR ' + err.message; }})()`);
+  if (injected !== 'ok') throw new Error(`openPath 注入失败：${injected}`);
+  await sb.locator(`${FILE_ROWS}[data-path="payload.bin"]`).dblclick();
+  await expect.poll(async () => {
+    const raw = await mainEval<string>(app, 'JSON.stringify(globalThis.__openPathCalls)');
+    return JSON.parse(raw) as string[];
+  }, { timeout: 10_000 }).toEqual([path.join(workspaceDir, 'payload.bin')]);
+});
+
+test('US-44 拖拽侧栏右缘改宽度并持久化，双击恢复默认', async () => {
+  const sb = await sidebar();
+  await expect(sb.locator('#resizeHandle')).toBeAttached();
+  const width = () => sb.evaluate(() => window.innerWidth);
+  // 默认 280（无持久化记录）
+  await expect.poll(width, { timeout: 5_000 }).toBe(280);
+
+  // 合成指针序列驱动拖拽（277 → 397：280 + 120 = 400）。pointer capture 对合成
+  // pointer 不可用，拖拽逻辑挂在 window 级监听上照常工作；主进程按 IPC 夹取后应用
+  await sb.evaluate(() => {
+    const fire = (target: EventTarget, type: string, x: number): void => {
+      target.dispatchEvent(new PointerEvent(type, {
+        bubbles: true, cancelable: true, clientX: x, pointerId: 7, button: 0,
+      }));
+    };
+    fire(document.getElementById('resizeHandle')!, 'pointerdown', 277);
+    fire(window, 'pointermove', 397);
+    fire(window, 'pointerup', 397);
+  });
+  await expect.poll(width, { timeout: 5_000 }).toBe(400);
+
+  // 松手（final: true）落盘：workspace-state.json 记下 400（文件可能尚未创建，读不到按未落盘重试）
+  const persistedWidth = async (): Promise<number | undefined> => {
+    try {
+      const raw = await fs.promises.readFile(app.stateFile, 'utf-8');
+      return (JSON.parse(raw) as { sidebarWidth?: number }).sidebarWidth;
+    } catch {
+      return undefined;
+    }
+  };
+  await expect.poll(persistedWidth, { timeout: 5_000 }).toBe(400);
+
+  // 双击手柄恢复默认宽度，同样落盘
+  await sb.locator('#resizeHandle').dblclick();
+  await expect.poll(width, { timeout: 5_000 }).toBe(280);
+  await expect.poll(persistedWidth, { timeout: 5_000 }).toBe(280);
 });

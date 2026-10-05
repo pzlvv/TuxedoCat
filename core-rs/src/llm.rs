@@ -6,11 +6,12 @@
 //! 超时与重试：整体请求 600s 由 reqwest 承担；网络错误 / 502、503 与「无内容且无
 //! 结束原因」按 `MAX_RETRIES=3`、`RETRY_DELAY_MS=1000` 重试；退化重复按
 //! `DEFAULT_MAX_REPETITION_RETRIES=1` 重试（对齐 `shared.ts` / `OpenAiApi.ts` /
-//! `RealApi.ts`）。
+//! `RealApi.ts`）。流式读取与重试等待都按 `CANCEL_POLL_SLICE_MS` 切片查
+//! `cancel`，abort 在切片粒度内被响应。
 
 use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 
@@ -20,6 +21,11 @@ use crate::util::sanitize_json_surrogates;
 /// 重试延迟（ms）与最大重试次数（对齐 `shared.ts` 的 `RETRY_DELAY_MS` / `MAX_RETRIES`）
 pub(crate) const RETRY_DELAY_MS: u64 = 1000;
 pub(crate) const MAX_RETRIES: u32 = 3;
+
+/// 取消轮询切片（ms）：`read_sse` 的阻塞等待与重试延迟都切成该粒度，每片之间查
+/// 一次 `cancel`。abort 的响应上限由此决定（50ms 量级），不取决于下一个 SSE
+/// 事件的到达时间，也不叠加在超时 / 重试等待上。
+const CANCEL_POLL_SLICE_MS: u64 = 50;
 
 /// 流式看门狗（对齐 `streamTimeout.ts`）：
 /// - 首字节超时：从发起请求到收到**首个有效事件**（心跳 `ping` / SSE 注释不算）；
@@ -59,9 +65,24 @@ impl StreamFailure {
     }
 }
 
-/// 阻塞 `delay_ms`（重试间隔；Embedded 用 `await sleep(RETRY_DELAY_MS)`）
-fn sleep_ms(delay_ms: u64) {
-    std::thread::sleep(Duration::from_millis(delay_ms));
+/// 可中断的延迟等待（重试间隔；Embedded 用 `await sleep(RETRY_DELAY_MS)`）。
+///
+/// 分片 sleep，每片之间查一次 `cancel`：等待期间置位取消时提前返回 `true`，
+/// 调用方随即走「用户中断」收尾——重试等待不再给 abort 时延整段叠加
+/// `RETRY_DELAY_MS`。
+fn sleep_ms_interruptible(delay_ms: u64, cancel: &AtomicBool) -> bool {
+    let mut remaining = delay_ms;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return true;
+        }
+        if remaining == 0 {
+            return false;
+        }
+        let slice = remaining.min(CANCEL_POLL_SLICE_MS);
+        std::thread::sleep(Duration::from_millis(slice));
+        remaining -= slice;
+    }
 }
 
 /// token 用量
@@ -260,7 +281,7 @@ pub fn stream(req: &LlmRequest, emit: &mut dyn FnMut(LlmEvent)) -> Result<(), St
                     );
                     // 丢弃本次尝试已产生的全部输出（对齐 Embedded 重试后重置累积文本）
                     emit(LlmEvent::Reset);
-                    sleep_ms(RETRY_DELAY_MS);
+                    sleep_ms_interruptible(RETRY_DELAY_MS, req.cancel);
                     continue;
                 }
                 return Err(message);
@@ -276,7 +297,7 @@ pub fn stream(req: &LlmRequest, emit: &mut dyn FnMut(LlmEvent)) -> Result<(), St
                     // `Query.ts` 也会在重试后的 `block_start` 重置累积文本）。
                     // 网络错误可能发生在已收到部分增量之后，必须丢弃本轮输出。
                     emit(LlmEvent::Reset);
-                    sleep_ms(RETRY_DELAY_MS);
+                    sleep_ms_interruptible(RETRY_DELAY_MS, req.cancel);
                     continue;
                 }
                 return Err(message);
@@ -291,7 +312,7 @@ pub fn stream(req: &LlmRequest, emit: &mut dyn FnMut(LlmEvent)) -> Result<(), St
                         "[core] {message}，丢弃本次响应并重试 ({timeout_retries}/{DEFAULT_MAX_TIMEOUT_RETRIES})，{RETRY_DELAY_MS}ms 后开始..."
                     );
                     emit(LlmEvent::Reset);
-                    sleep_ms(RETRY_DELAY_MS);
+                    sleep_ms_interruptible(RETRY_DELAY_MS, req.cancel);
                     continue;
                 }
                 return Err(message);
@@ -331,9 +352,11 @@ fn messages_url(base: &str) -> String {
 
 /// 逐行读取 SSE，把每个 `data:` 载荷交给 `on_data`，并带流式看门狗（对齐 `streamTimeout.ts`）。
 ///
-/// 阻塞读取放在独立线程，主线程用 `recv_timeout` 计时：
-/// - 首个**有效事件**前用 `first_byte_timeout_ms`；
-/// - 收到有效事件后用 `idle_timeout_ms`（两条有效事件之间的最大间隔）。
+/// 阻塞读取放在独立线程，主线程只做切片等待：`recv_timeout` 每次最多等
+/// `CANCEL_POLL_SLICE_MS`，每片回来都查一次 `cancel`，看门狗用 deadline 自行累计
+/// （首个**有效事件**前用 `first_byte_timeout_ms`，之后每收到有效事件把 deadline
+/// 重置为 `now + idle_timeout_ms`）。这样单次等待不再等于整个超时窗口：流停滞时
+/// abort 也能在切片粒度内被响应，而不是等满 `idle_timeout_ms`。
 ///
 /// `on_data` 返回该帧是否算「有效进展」：Anthropic 的 `ping` / 未知事件不算，
 /// OpenAI 能解析出 JSON 的数据帧都算（SSE 注释行在进入 `on_data` 前就被丢弃）。
@@ -370,17 +393,32 @@ pub(crate) fn read_sse(
     });
 
     let mut saw_progress = false;
+    let mut deadline = Instant::now() + Duration::from_millis(first_byte_timeout_ms);
     loop {
+        // 先查取消、再看超时：两者同时成立按「用户中断」收尾，不上报 Timeout
+        // （对齐 Embedded 重试分支把 `checkAborted` 放在等待之前的口径）。
         if cancel.load(Ordering::Relaxed) {
             stopped.store(true, Ordering::Relaxed);
             return Ok(());
         }
-        let timeout_ms = if saw_progress {
-            idle_timeout_ms
-        } else {
-            first_byte_timeout_ms
-        };
-        match receiver.recv_timeout(Duration::from_millis(timeout_ms)) {
+        if Instant::now() >= deadline {
+            stopped.store(true, Ordering::Relaxed);
+            let timeout_ms = if saw_progress {
+                idle_timeout_ms
+            } else {
+                first_byte_timeout_ms
+            };
+            let seconds = (timeout_ms as f64 / 1000.0).round() as u64;
+            let message = if saw_progress {
+                format!(
+                    "LLM 流式响应超时：连续 {seconds}s 无新的输出事件（流已停滞）"
+                )
+            } else {
+                format!("LLM 流式响应超时：{seconds}s 内未收到任何有效输出事件")
+            };
+            return Err(StreamFailure::Timeout(message));
+        }
+        match receiver.recv_timeout(Duration::from_millis(CANCEL_POLL_SLICE_MS)) {
             Ok(Ok(line)) => {
                 // 对齐 `parseSSELines`：先对整行做 **JS** 空白 trim，再要求 `data:`
                 // 前缀（TS 的 `line.trim().startsWith('data:')` 允许前导空白），
@@ -402,6 +440,7 @@ pub(crate) fn read_sse(
                 }
                 if on_data(payload)? {
                     saw_progress = true;
+                    deadline = Instant::now() + Duration::from_millis(idle_timeout_ms);
                 }
             }
             Ok(Err(err)) => {
@@ -411,16 +450,7 @@ pub(crate) fn read_sse(
                 return Err(StreamFailure::Retryable(format!("read stream failed: {err}")));
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                stopped.store(true, Ordering::Relaxed);
-                let seconds = (timeout_ms as f64 / 1000.0).round() as u64;
-                let message = if saw_progress {
-                    format!(
-                        "LLM 流式响应超时：连续 {seconds}s 无新的输出事件（流已停滞）"
-                    )
-                } else {
-                    format!("LLM 流式响应超时：{seconds}s 内未收到任何有效输出事件")
-                };
-                return Err(StreamFailure::Timeout(message));
+                // 切片内没有新帧：回到循环顶查 cancel 与看门狗 deadline
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
         }
@@ -1072,10 +1102,11 @@ fn stream_openai(
                 "[core] provider rejected \"stream_options\"; retrying without it ({}/{MAX_RETRIES}) after {RETRY_DELAY_MS}ms...",
                 *retry_count
             );
-            if req.cancel.load(Ordering::Relaxed) {
+            // 重试等待可中断：取消置位（含等待期间到达）时立刻返回，
+            // 由引擎按「用户中断」收尾，不再发起下一次请求。
+            if sleep_ms_interruptible(RETRY_DELAY_MS, req.cancel) {
                 return Ok(());
             }
-            sleep_ms(RETRY_DELAY_MS);
             body.remove("stream_options");
             response = send(&body)
                 .map_err(|err| StreamFailure::Retryable(format!("request failed: {err}")))?;

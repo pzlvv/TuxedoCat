@@ -2,7 +2,7 @@
  * ElectronConversationManager - Electron 的 ConversationManager 实现
  *
  * dispatchList：① 原生侧栏（sidebar:conversations-updated）② webview 子对话树
- * dispatchStates：① 原生侧栏流水灯（sidebar:session-states-updated）② statusListener（托盘）
+ * dispatchStates：① 原生侧栏流水灯（sidebar:session-states-updated）② statusListener（托盘 + 睡眠阻断）
  *                 ③ 广播给所有聊天视图（webview 据此推导 abort 按钮可用性）
  *
  * 纯磁盘列表不再贴 loaded/idle/waitingForUser 标记：
@@ -59,7 +59,7 @@ export class ElectronConversationManager extends ConversationManager {
     this.host.log(`Conversation list refreshed (${list.length} conversations)`);
   }
 
-  /** 流 2：① 原生侧栏流水灯 ② statusListener（托盘）③ 聊天视图（abort 按钮） */
+  /** 流 2：① 原生侧栏流水灯 ② statusListener（托盘 + 睡眠阻断）③ 聊天视图（abort 按钮） */
   protected dispatchStates(states: readonly SessionRuntimeState[]): void {
     this.outlet('sidebar:session-states-updated', states);
     this.statusListener?.(states);

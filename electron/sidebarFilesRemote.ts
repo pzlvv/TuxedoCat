@@ -21,6 +21,7 @@ import { sshTargetFor, sshTargetKey } from '../src/host/sshTarget.js';
 import type { WorkspaceEndpoint } from '../src/host/workspaceRef.js';
 import { sharedInFlight } from '../src/core/utils/asyncUtils.js';
 import { deleteEachPath, resolveWithinRoot, sortSidebarEntries } from './sidebarFiles.js';
+import type { RemoteFileReader } from './fileOpen.js';
 
 export { sshTargetFor };
 
@@ -163,6 +164,18 @@ export async function deleteRemotePaths(
     }
   }
   if (failures.length > 0) throw new Error(failures.join('\n'));
+}
+
+/** 远端文件读取原语（`RemoteFileReader`）：双击打开按类型读整文件 / 只读头部嗅探 */
+export function remoteFileReaderFor(
+  endpoint: WorkspaceEndpoint,
+  log: (...args: unknown[]) => void,
+): RemoteFileReader {
+  return {
+    readHead: (absPath, maxBytes) => clientFor(endpoint, log).then((c) => c.readFileHead(absPath, maxBytes)),
+    readBytes: (absPath) => clientFor(endpoint, log).then((c) => c.readFileBuffer(absPath)),
+    readText: (absPath) => clientFor(endpoint, log).then((c) => c.readText(absPath)),
+  };
 }
 
 /** 测试用：清空全部模块级状态（进程级缓存的连接与计数） */

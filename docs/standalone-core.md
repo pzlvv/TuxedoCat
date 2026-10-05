@@ -42,6 +42,11 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
   `mcp__*` 工具注入与按会话启用列表过滤）、
   Spin 引擎（`spin.json` 读写、拓扑排序、子代理执行、验收判定、`/spin` 命令）、
   智能命名 / 压缩归档展开 / DeepSeek 余额推送（都要读 core 的磁盘数据，因此整体在 Core 侧）；
+- 系统睡眠阻断（`core-rs/src/power.rs`）：任一会话非 idle（含等待用户确认）时阻断 **Core 进程
+  所在机器**的睡眠 / 休眠——Windows `SetThreadExecutionState(ES_SYSTEM_REQUIRED)`、Linux
+  `systemd-inhibit --what=idle:sleep`，都只要求系统不挂起、允许屏幕熄灭。远程工作区的长任务
+  在远端执行，宿主那台机器睡不睡与它无关，因此这一份必须在 Core 进程里；Electron 宿主另有
+  一份同口径的实现（`DEVELOPMENT.md` 第 11.1 节）；
 - 全局配置与 MCP 配置的读写**不在** Core 侧：两者由 UI 持有，经
   `hostEnvironmentProvided` 的配置快照下发（`docs/core-ui-separation.md` 第 4 节）；
 - 尚未迁入的部分见 `TODO.md`「已知缺口」与 `DIFF.md` 第 3 节。

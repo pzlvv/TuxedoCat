@@ -16,6 +16,7 @@
 	"exclude": [
 		"vite.config.ts",
 		"vite.monaco.config.ts",
+		"vite.imageViewer.config.ts",
 		"vite.sidebar.config.ts",
 		"vite.titlebar.config.ts",
 		"vite.remoteWorkspace.config.ts",

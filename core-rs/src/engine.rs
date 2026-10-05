@@ -17,6 +17,7 @@ use crate::config;
 use crate::history;
 use crate::llm::{self, LlmEvent, LlmRequest, Usage};
 use crate::permission;
+use crate::power;
 use crate::prompt;
 use crate::tool_input;
 use crate::tools::{self, ToolContext, ToolOutcome};
@@ -409,6 +410,9 @@ impl Core {
             }
             *last = states.clone();
         }
+        // 任一会话非 idle → 阻断本进程所在机器的睡眠（宿主侧另有 Electron 的实现，
+        // 见 power 模块头注释）。放在 diff 之后：快照没变则忙闲也没变，阻断状态已是对的。
+        power::set_prevent_sleep(power::should_prevent_sleep(&states));
         self.emit(json!({ "type": "sessionRuntimeChanged", "states": states }));
     }
 

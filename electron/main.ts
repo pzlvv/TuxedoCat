@@ -17,11 +17,11 @@
  */
 
 import { fileLogger } from '../src/core/Logger.js';
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents, globalShortcut, Tray, nativeImage, screen, clipboard, type NativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents, globalShortcut, Tray, nativeImage, screen, clipboard, powerSaveBlocker, type NativeImage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import { ChatViewManager, SIDEBAR_WIDTH, TITLEBAR_HEIGHT, chatViewBackgroundColor } from './ChatViewManager.js';
+import { ChatViewManager, SIDEBAR_DEFAULT_WIDTH, TITLEBAR_HEIGHT, chatViewBackgroundColor } from './ChatViewManager.js';
 import {
   getTitlebarMenuHtml,
   TITLEBAR_MENU_WIDTH,
@@ -63,6 +63,7 @@ import {
 
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
 import { diffSessionEndEvents, type SessionLevel } from './trayAttention.js';
+import { SleepBlocker } from './powerSaveBlocker.js';
 import {
   deleteEachPath,
   listDirectory,
@@ -73,10 +74,17 @@ import {
 import {
   listRemoteDirectory,
   deleteRemotePaths,
+  remoteFileReaderFor,
   retainRemoteFilesClient,
   releaseRemoteFilesClient,
   disposeAllRemoteFilesClients,
 } from './sidebarFilesRemote.js';
+import {
+  openLocalWorkspaceFile,
+  openRemoteWorkspaceFile,
+  REMOTE_BINARY_UNSUPPORTED,
+  type FileOpenBridge,
+} from './fileOpen.js';
 import { sshTargetFor, sshTargetKey } from '../src/host/sshTarget.js';
 import { sessionBusyLevel } from '../src/core/sessionRuntime.js';
 import {
@@ -255,6 +263,53 @@ let windowMode: WindowMode = 'normal';
 let floatingPinned = true;
 /** 模式切换进行中（applyWindowMode 含 await）：用于防重入 */
 let windowModeSwitching = false;
+
+// ── 侧栏宽度（可拖拽，US-44） ──
+/** 侧栏宽度可调下限（DIP）：再窄对话列表不可用 */
+const SIDEBAR_MIN_WIDTH = 200;
+/** 侧栏宽度可调上限（DIP）：再宽聊天区失去意义；上限随窗口宽度另有夹取 */
+const SIDEBAR_MAX_WIDTH = 640;
+/** 聊天区保留的最小宽度：侧栏无论怎么拖都不能把它挤掉 */
+const CHAT_MIN_WIDTH = 320;
+/**
+ * 用户拖拽出的侧栏宽度（DIP）。
+ *
+ * 只存「用户想要的值」，不做窗口相关夹取——窗口随时会变，窗口相关夹取在
+ * `currentSidebarWidth()` 里按当前窗口实时算（窗口拉宽后侧栏自动回到用户拖的值）。
+ * 启动时从 workspace-state.json 播种（app ready 后 createMainWindow 前调用
+ * `seedSidebarWidth`），持久化见 `sidebarWidthPersist`。
+ */
+let sidebarWidthPx = SIDEBAR_DEFAULT_WIDTH;
+
+/** 读盘播种侧栏宽度：值非法（手工改坏 / 旧版本残留）按没有记录处理 */
+function seedSidebarWidth(): void {
+  const saved = readWorkspaceState().sidebarWidth;
+  sidebarWidthPx = typeof saved === 'number' && Number.isFinite(saved)
+    ? Math.round(Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, saved)))
+    : SIDEBAR_DEFAULT_WIDTH;
+}
+
+/**
+ * 当前实际生效的侧栏宽度：用户值 + 窗口相关夹取（不挤掉聊天区）。
+ *
+ * `layout()` 与 `ChatViewManager.chatBounds()` 都从这取值——一份事实一个写入点
+ * （第 12 章规则 4），聊天区摆位与侧栏 bounds 永远对得上。
+ */
+function currentSidebarWidth(): number {
+  if (!mainWindow) return sidebarWidthPx;
+  const [w] = mainWindow.getContentSize();
+  const maxByWindow = Math.max(SIDEBAR_MIN_WIDTH, w - CHAT_MIN_WIDTH);
+  return Math.round(Math.min(sidebarWidthPx, maxByWindow));
+}
+
+/** 拖拽 / 双击恢复后应用宽度；`persist` 为 true 时同步落盘（拖拽过程不落盘） */
+function applySidebarWidth(width: number, persist: boolean): void {
+  sidebarWidthPx = Math.round(Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, width)));
+  layout();
+  if (persist) {
+    writeWorkspaceState({ ...readWorkspaceState(), sidebarWidth: sidebarWidthPx });
+  }
+}
 /** 对话列表的读取与分发（bootstrap 创建；sidebar:get-conversations 读它的列表快照） */
 let conversations: ElectronConversationManager | undefined;
 /**
@@ -507,6 +562,10 @@ async function main(): Promise<void> {
   currentThemeMode = readThemeModeSync();
   nativeTheme.themeSource = currentThemeMode;
 
+  // 侧栏宽度同样从状态文件播种（拖拽值持久化在 sidebarWidth 字段）：
+  // 必须在 createMainWindow 之前——首帧 layout() 就按它摆侧栏与聊天区
+  seedSidebarWidth();
+
   // ── 工作目录 ──
   // 不默认使用当前工作目录：恢复上次打开的打开集合与活动项；
   // 命令行 --workspace= 作为额外的一项加入打开集合并置为活动项。
@@ -608,6 +667,8 @@ async function main(): Promise<void> {
     stopTrayBlink();
     tray?.destroy();
     tray = undefined;
+    // 释放电源阻断：进程退出前不再占着系统的电源请求
+    sleepBlocker.dispose();
     // 侧栏文件浏览器的 SSH 连接（远程工作区的 SFTP 会话）一并释放
     disposeAllRemoteFilesClients();
     // core 侧的进程级资源（MCP 子进程 / Standalone Core 进程）统一由共享骨架释放；
@@ -912,6 +973,8 @@ function createMainWindow(): void {
     },
     // 聊天视图整体下移，给顶部自绘标题栏让位
     topInset: TITLEBAR_HEIGHT,
+    // 侧栏宽度实时读取口：用户拖拽手柄改宽度后聊天区摆位立即跟随（见 currentSidebarWidth）
+    sidebarWidth: currentSidebarWidth,
     // 对话列表渲染方随窗口模式推导：悬浮窗隐藏原生侧栏，列表改由 webview 顶栏渲染
     // （视图模式不变，Electron 恒为多视图）
     conversationListOwner: windowMode === 'floating' ? 'webview' : 'host',
@@ -1163,6 +1226,13 @@ let trayStatus: TrayStatus | null = null;
 
 /** 各会话上一次的忙闲级别（`diffSessionEndEvents` 的差分基准，随每次全量推送推进） */
 let traySessionLevels = new Map<string, SessionLevel>();
+
+/**
+ * 系统睡眠 / 休眠阻断：任一会话非 idle 时阻断（`prevent-app-suspension`，允许屏幕熄灭），
+ * 全部空闲后释放。与托盘状态点吃同一条会话状态流（`setStatusListener`），
+ * 见 `electron/powerSaveBlocker.ts` 与 DEVELOPMENT.md 第 8.6 节。
+ */
+const sleepBlocker = new SleepBlocker(powerSaveBlocker);
 
 /** 托盘提示文案（按当前宿主语言输出中/英文） */
 const TRAY_STATUS_LABEL: Record<TrayStatus, { zh: string; en: string }> = {
@@ -1621,7 +1691,9 @@ function layout(): void {
     // 重新显示时可能丢合成表面（整页空白，需 resize 才恢复），收成 0 尺寸不触发那条路径。
     sidebarView?.setBounds({ x: 0, y: TITLEBAR_HEIGHT, width: 0, height: 0 });
   } else {
-    sidebarView?.setBounds({ x: 0, y: TITLEBAR_HEIGHT, width: SIDEBAR_WIDTH, height: contentHeight });
+    // 宽度走 currentSidebarWidth()（用户拖拽值 + 窗口相关夹取），
+    // 与 chatBounds() 的 left 取值同源，聊天区与侧栏永远贴合
+    sidebarView?.setBounds({ x: 0, y: TITLEBAR_HEIGHT, width: currentSidebarWidth(), height: contentHeight });
   }
   chatViews?.layout();
 }
@@ -4008,6 +4080,23 @@ function setupIpc(): void {
   // 工作目录流：打开集合 + 活动项 + 最近列表（可用子集，与侧栏推送同一形态）
   ipcMain.handle('sidebar:get-workspaces', () => sidebarWorkspaceState());
 
+  // ── 侧栏宽度拖拽（US-44） ──
+  // 拖拽过程高频触发走 send（fire-and-forget，不等回包不落盘）；pointerup 带
+  // final: true 时同步落盘一次（workspace-state.json 的 sidebarWidth 字段）。
+  // width 传 null = 双击手柄恢复默认宽度。只接受侧栏视图来源：宽度是窗口级布局
+  // 事实，别让任意页面都能改。
+  ipcMain.on('sidebar:set-width', (event, payload: unknown) => {
+    // send 通道的来源守卫按 titlebar:* 的同一口径静默 return（throw 会成为主进程未捕获异常）
+    if (!isSidebarSender(event.sender)) return;
+    const p = (payload ?? {}) as { width?: unknown; final?: unknown };
+    if (p.width === null) {
+      applySidebarWidth(SIDEBAR_DEFAULT_WIDTH, true);
+      return;
+    }
+    if (typeof p.width !== 'number' || !Number.isFinite(p.width)) return;
+    applySidebarWidth(p.width, p.final === true);
+  });
+
   ipcMain.on('sidebar:add-workspaces', (_event, paths?: unknown) => {
     if (Array.isArray(paths) && paths.every((p) => typeof p === 'string')) {
       addWorkspaces(paths as string[]);
@@ -4277,6 +4366,67 @@ function setupIpc(): void {
     }
     return { ok: true };
   });
+
+  // ── 双击打开文件（US-42 验收 6） ──
+  // 分流在 electron/fileOpen.ts：文本 → 内置 Monaco 窗口（与「Edit 预览」同一效果）、
+  // 图片 → 内置图片查看器（滚轮缩放）、其它二进制 → 系统默认应用。
+  // 远程工作区：文本 / 图片走 SFTP 读出进内置窗口；二进制不支持打开。
+  const fileOpenBridge: FileOpenBridge = {
+    openImageViewer: (init) => {
+      if (!uiHost) throw new Error('ui host unavailable');
+      return uiHost.openImagePreviewWindow(init);
+    },
+    openTextViewer: (init) => {
+      if (!uiHost) throw new Error('ui host unavailable');
+      // filePath 传文件名：Monaco 只用它做语法推断，不读盘（内容已在 content 里）
+      return uiHost.openMonacoWindow({ mode: 'view', ...init });
+    },
+    openLocalFile: (filePath) => {
+      if (!uiHost) throw new Error('ui host unavailable');
+      return uiHost.openFile(filePath, null);
+    },
+    openWithSystemApp: async (filePath) => {
+      // shell.openPath 失败时回错误串（成功回 ''），原样抛给调用方显示
+      const failure = await shell.openPath(filePath);
+      if (failure) throw new Error(failure);
+    },
+  };
+
+  ipcMain.handle('sidebar:files-open', async (event, payload: unknown) => {
+    if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-open');
+    const p = (payload ?? {}) as { workspaceId?: unknown; path?: unknown };
+    const ref = resolveFilesRef(p.workspaceId);
+    if (!ref) return { ok: false, error: 'workspace-unavailable' };
+    if (typeof p.path !== 'string' || p.path.length === 0) return { ok: false, error: 'invalid-arguments' };
+    if (!uiHost) return { ok: false, error: 'no-host' };
+    try {
+      if (ref.endpoint) {
+        await openRemoteWorkspaceFile(fileOpenBridge, remoteFileReaderFor(ref.endpoint, fileOpLog), ref.path, p.path);
+      } else {
+        await openLocalWorkspaceFile(fileOpenBridge, ref.path, p.path);
+      }
+      return { ok: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // 远程二进制「不支持打开」是预期行为：不弹框，渲染层静默忽略
+      if (message === REMOTE_BINARY_UNSUPPORTED) {
+        fileOpLog(`remote binary open skipped (${refDisplay(ref)}/${p.path})`);
+        return { ok: false, error: message };
+      }
+      // 打不开（读盘失败 / 系统应用拒绝 / 越界）如实回报：日志落盘 + 原生提示框
+      fileLogger.warn('sidebar-files', `open failed (${refDisplay(ref)}/${p.path}): ${message}`);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        void dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          buttons: [tt('确定', 'OK')],
+          noLink: true,
+          message: tt(`无法打开「${p.path}」`, `Cannot open "${p.path}"`),
+          detail: message,
+        });
+      }
+      return { ok: false, error: message };
+    }
+  });
 }
 
 /**
@@ -4353,6 +4503,8 @@ function initCore(): void {
     updateTrayStatusFromStates(states);
     // 标题栏标签页流水灯（蓝=运行 / 黄=等待）也吃这条状态流，就地刷新不重建标签页
     syncTitlebarActivity();
+    // 非 idle 会话存在时阻断系统睡眠 / 休眠（与托盘同一份状态流）
+    sleepBlocker.update(states);
   });
 
   // 共享启动接线：locale / 日志 / 总线 / core 侧订阅 / WebViewUI / 历史 / 会话队列 /

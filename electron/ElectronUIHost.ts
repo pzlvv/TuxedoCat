@@ -10,20 +10,33 @@ import type { BrowserWindow, WebContents, WebContentsView } from 'electron';
 import { app, nativeTheme, dialog, BrowserWindow as BrowserWindowCtor } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import { pathToFileURL } from 'url';
 import type { ChatViewManager } from './ChatViewManager.js';
 import type { UIHost, WorkspaceChange } from '../src/host/UIHost.js';
 import { WebviewViewHandle } from '../src/host/UIHost.js';
-import type { WorkspaceRef } from '../src/host/workspaceRef.js';
+import type { WorkspaceRef, WorkspaceEndpoint } from '../src/host/workspaceRef.js';
 import type { WebviewMessage } from '../src/host/webviewMessages.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
 import { isImageFile } from '../src/host/imageFiles.js';
 import { fileLogger } from '../src/core/Logger.js';
 import { writeSettingsJson } from '../src/host/settingsFile.js';
+import { imageMimeFor } from './fileTypes.js';
+import { remoteFileReaderFor } from './sidebarFilesRemote.js';
 
 /** 项目根目录（dist-electron 的上一级，与 main.ts 的 APP_ROOT 一致） */
 const APP_ROOT = path.resolve(__dirname, '..');
+
+/** 本地图片 → data URL（图片查看器窗口统一吃 data URL：本地 / 远程同一渲染路径） */
+async function readImageAsDataUrl(filePath: string, log: (line: string) => void): Promise<string> {
+  try {
+    const bytes = await fs.promises.readFile(filePath);
+    return `data:${imageMimeFor(filePath)};base64,${bytes.toString('base64')}`;
+  } catch (err) {
+    log(`Failed to read image for preview: ${filePath} (${err})`);
+    // 读不出内容时回一个 1x1 透明像素，窗口仍可打开并显示缩放角标（不静默吞错）
+    return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  }
+}
 
 export class ElectronUIHost implements UIHost {
   private mainWindow: BrowserWindow | undefined;
@@ -182,9 +195,20 @@ export class ElectronUIHost implements UIHost {
   }
 
   async openFile(filePath: string, target: import('../src/host/UIHost.js').LineSelection | null): Promise<void> {
-    // 图片用内置图片预览窗口打开，避免 Monaco 按 utf-8 读取显示乱码
+    // 远程工作区的文件链接（Read 工具卡片等）：路径是远端机上的 POSIX 绝对路径，
+    // 本地盘读不到（ENOENT → 空编辑器）——先按打开集合里的远程工作区做前缀匹配，
+    // 命中就走 SFTP 读出内容，进与本地同一套内置窗口
+    const remote = this.resolveRemoteWorkspaceFile(filePath);
+    if (remote) {
+      await this.openRemoteFile(remote.endpoint, remote.abs);
+      return;
+    }
+    // 图片用内置图片查看器打开，避免 Monaco 按 utf-8 读取显示乱码
     if (isImageFile(filePath)) {
-      this.openImagePreview(filePath);
+      await this.openImagePreviewWindow({
+        title: path.basename(filePath),
+        dataUrl: await readImageAsDataUrl(filePath, this.log.bind(this)),
+      });
       return;
     }
     // Monaco 编辑器窗口打开文件并定位到行
@@ -194,6 +218,60 @@ export class ElectronUIHost implements UIHost {
       selectedLines: target ?? undefined,
       title: path.basename(filePath),
     });
+  }
+
+  /**
+   * 把文件路径解析到某个已打开的远程工作区内（活动项优先）。
+   *
+   * webview 发来的 filePath 是 core 读文件时的远端真实路径（POSIX 绝对路径）；
+   * 只有落在某个远程工作区 root 内才按远程处理，否则维持本地语义
+   * （本地工作区路径、跨盘的 Windows 路径都不会命中 `/` 前缀匹配）。
+   */
+  private resolveRemoteWorkspaceFile(filePath: string): { endpoint: WorkspaceEndpoint; abs: string } | null {
+    if (typeof filePath !== 'string' || !filePath.startsWith('/')) return null;
+    // 活动工作区优先：同一文件在多个工作区出现时按用户当前上下文解释
+    const active = this.getWorkspaceRef();
+    const refs = [
+      ...(active ? [active] : []),
+      ...this.getOpenWorkspaceRefs().filter((ref) => ref !== active),
+    ];
+    for (const ref of refs) {
+      if (!ref.endpoint) continue;
+      const root = ref.path.replace(/\/+$/, '');
+      if (filePath === root || filePath.startsWith(`${root}/`)) {
+        return { endpoint: ref.endpoint, abs: filePath };
+      }
+    }
+    return null;
+  }
+
+  /** 经 SFTP 读远端文件并进内置窗口（文本 → Monaco，图片 → 查看器） */
+  private async openRemoteFile(endpoint: NonNullable<WorkspaceRef['endpoint']>, abs: string): Promise<void> {
+    const name = path.posix.basename(abs);
+    const reader = remoteFileReaderFor(endpoint, (...args) => this.log(...args));
+    try {
+      if (isImageFile(name)) {
+        const bytes = await reader.readBytes(abs);
+        await this.openImagePreviewWindow({
+          title: name,
+          dataUrl: `data:${imageMimeFor(name)};base64,${bytes.toString('base64')}`,
+        });
+        return;
+      }
+      // Read 链接指向 core 读过的文件（图片在上面分支拦下），按 utf8 文本读
+      const content = await reader.readText(abs);
+      // filePath 只传文件名：Monaco 据此选语法，不读本地盘
+      await this.openMonacoWindow({ mode: 'view', content, title: name, filePath: name });
+    } catch (err) {
+      // 读不到（断链 / 权限 / 已删除）也保持「点击有响应」：与本地 ENOENT 开空窗口
+      // 的行为对齐，开 content 窗口显示原因，不让链接点下去毫无反馈
+      this.log(`Failed to open remote file ${abs}: ${err}`);
+      await this.openMonacoWindow({
+        mode: 'content',
+        title: name,
+        content: `// 无法读取远程文件: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   }
 
   async showVirtualDocument(content: string, title: string): Promise<void> {
@@ -271,33 +349,42 @@ export class ElectronUIHost implements UIHost {
   // ===================== Electron 专有：预览窗口 =====================
 
   /**
-   * 打开图片预览窗口。
+   * 打开内置图片查看器窗口（`dist/imageViewer`）。
    *
-   * 直接把 file:// URL 交给 Chromium 渲染：浏览器内置的图片查看器会自动
-   * 居中、自适应缩放并支持缩放/拖动，比自建 <img> 页面更接近“默认图片预览”。
+   * 主进程把文件字节构造成 data URL 发给页面，页面自建 <img>：打开时适配窗口、
+   * 滚轮以光标为锚缩放、放大后可拖动平移（此前是把 file:// URL 直接交给 Chromium，
+   * 没有缩放能力）。图片内容只在构造 data URL 时读一次盘。
    */
-  private openImagePreview(filePath: string): void {
+  async openImagePreviewWindow(init: { title: string; dataUrl: string }): Promise<void> {
+    const indexPath = path.join(APP_ROOT, 'dist', 'imageViewer', 'index.html');
+    if (!fs.existsSync(indexPath)) {
+      this.log(`Image viewer page not found: ${indexPath}. Run npm run build:webview`);
+      return;
+    }
     const win = new BrowserWindowCtor({
       width: 900,
       height: 700,
-      title: path.basename(filePath),
+      title: init.title || PRODUCT_NAME,
       icon: path.join(APP_ROOT, 'assets', 'logo.png'),
       autoHideMenuBar: true,
       backgroundColor: nativeTheme.shouldUseDarkColors ? '#1e1e1e' : '#ffffff',
-      webPreferences: { sandbox: true },
+      webPreferences: {
+        sandbox: false,
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, 'imageViewerPreload.cjs'),
+      },
     });
-
-    const url = pathToFileURL(filePath).toString();
-    win.loadURL(url).catch((err) => {
-      this.log(`Failed to load image preview: ${filePath} (${err})`);
-    });
+    await win.loadFile(indexPath);
+    win.webContents.send('imageviewer-init', init);
   }
 
   /**
    * 打开 Monaco 编辑器窗口并发送初始化数据
-   * view 模式由主进程读取文件内容；content 模式直接传入内容
+   * view 模式：给了 content 直接用（远程文件经 SFTP 读出）；给了 filePath 由主进程读盘；
+   * content 模式直接传入内容
    */
-  private async openMonacoWindow(init: {
+  async openMonacoWindow(init: {
     mode: 'view' | 'content';
     filePath?: string;
     selectedLines?: { start: number; end: number };
@@ -328,9 +415,9 @@ export class ElectronUIHost implements UIHost {
     }
     await win.loadFile(indexPath);
 
-    // 读取文件内容（view 模式）
+    // 读取文件内容（view 模式；调用方已给 content 时直接用——远程文件不走本地盘）
     const data: Record<string, unknown> = { ...init };
-    if (init.mode === 'view' && init.filePath) {
+    if (init.mode === 'view' && init.filePath && init.content === undefined) {
       try {
         data.content = await fs.promises.readFile(init.filePath, 'utf-8');
       } catch (err: any) {

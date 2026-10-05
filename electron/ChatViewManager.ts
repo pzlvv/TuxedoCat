@@ -7,15 +7,19 @@
  * 布局：
  *   ┌──────────┬──────────────────────────────┐
  *   │ sidebar  │ chat view (当前对话)          │
- *   │ 280px    │                              │
+ *   │ 可拖拽    │                              │
  *   └──────────┴──────────────────────────────┘
+ *
+ * 侧栏宽度不再用常量：布局时经 `opts.sidebarWidth()` 实时取值（main.ts 持有
+ * 当前宽度并负责夹取与持久化，见 `DEVELOPMENT.md` 第 11.1 节）。
  */
 
 import { BrowserWindow, WebContents, WebContentsView, Rectangle, nativeTheme, shell } from 'electron';
 import * as path from 'path';
 import type { WebviewMessage } from '../src/host/webviewMessages.js';
 
-export const SIDEBAR_WIDTH = 280;
+/** 侧栏默认宽度（无持久化记录 / 双击拖拽手柄恢复时使用） */
+export const SIDEBAR_DEFAULT_WIDTH = 280;
 /** 自绘标题栏高度：主窗口顶部由标题栏 WebContentsView 占据，侧栏/聊天视图整体下移 */
 export const TITLEBAR_HEIGHT = 38;
 /** 深色主题下的聊天视图兜底背景色（与主窗口 backgroundColor 一致，避免加载期闪烁） */
@@ -93,6 +97,11 @@ export interface ChatViewManagerOptions {
    * webview），悬浮窗只把列表搬进顶栏，不改变「切换会话复用 / 另开视图」的行为。
    */
   conversationListOwner?: 'host' | 'webview';
+  /**
+   * 侧栏当前宽度（DIP）的实时读取口：布局时调用，不做缓存——用户拖拽手柄改宽度
+   * 后要立即反映到聊天区摆位。夹取（最小 / 最大 / 不挤掉聊天区）由 main.ts 负责。
+   */
+  sidebarWidth: () => number;
   onActiveSessionChanged: (sessionId: string | null) => void;
   onViewCreated?: (view: WebContentsView) => void;
   /**
@@ -400,7 +409,7 @@ export class ChatViewManager {
     const [w, h] = this.opts.win.getContentSize();
     const top = this.opts.topInset ?? 0;
     // 侧栏隐藏（悬浮窗）：左侧不留侧栏宽度；窄窗下不再强撑 320（否则会被窗口裁掉）
-    const left = this.sidebarHidden ? 0 : SIDEBAR_WIDTH;
+    const left = this.sidebarHidden ? 0 : this.opts.sidebarWidth();
     const width = this.sidebarHidden ? Math.max(0, w - left) : Math.max(320, w - left);
     return { x: left, y: top, width, height: Math.max(0, h - top) };
   }

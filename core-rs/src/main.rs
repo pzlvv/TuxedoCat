@@ -28,6 +28,7 @@ mod mcp;
 mod mcp_config;
 mod mcp_http;
 mod permission;
+mod power;
 mod prompt;
 mod remote;
 mod replay;

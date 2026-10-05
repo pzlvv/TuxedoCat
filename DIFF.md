@@ -165,6 +165,20 @@ Standalone 宿主需要一条握手级事件确认会话已建立（`standaloneC
 `tool_result.content` 由内置工具生成，恒为字符串或带 `type` 的块数组，正常路径下
 不会出现 `null` 元素；Rust 不因单个坏元素让整轮请求失败，属于有意保留的更稳健行为。
 
+### 2.10 abort 在重试等待中的中断粒度
+
+| | 行为 |
+| --- | --- |
+| Embedded | 重试分支只在 `sleep(RETRY_DELAY_MS)` **之前**调一次 `checkAborted(signal)`；abort 落在 1s 等待期间时，要等本次 sleep 走完、下一次 `fetch` 立即以 AbortError 拒绝才被观察到（外部 signal 一旦置位，fetch/read 即拒绝，无法经公共 API 再提前）。 |
+| Standalone | 重试等待用 `sleep_ms_interruptible` 分片 sleep（`CANCEL_POLL_SLICE_MS` = 50ms），每片之间查 `cancel`；等待期间置位取消时提前返回，`stream()` 循环顶随即按「用户中断」收尾。 |
+
+abort 的整体响应口径两侧一致（流式读取不等到下一个事件 / 不等满超时窗口、取消优先
+于超时上报），差别只剩「abort 恰好落在重试 1s 等待期间」这一窗口：Standalone 在
+50ms 内打断，Embedded 最多再等 1s。时延回归用例在 `llm_tests.rs`
+（`stream_returns_promptly_when_cancelled_during_a_stall` /
+`stream_reports_user_interrupt_instead_of_timeout_when_cancelled` /
+`retry_sleep_is_interrupted_by_cancel`）。
+
 ---
 
 ## 3. 未迁入能力

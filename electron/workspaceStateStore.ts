@@ -23,7 +23,8 @@
  *   "windowMode": "floating",
  *   "floatingPinned": true,
  *   "theme": "system",
- *   "shortcut": "Ctrl+Alt+X"
+ *   "shortcut": "Ctrl+Alt+X",
+ *   "sidebarWidth": 340
  * }
  *
  * **远程凭证（SSH 口令）随 endpoint 一起明文落盘**：重启后要能直接恢复并打开
@@ -77,6 +78,8 @@ export interface WorkspaceState {
   theme?: 'system' | 'light' | 'dark';
   /** 唤醒快捷键（Electron accelerator 形式；宿主本地偏好，core 不读） */
   shortcut?: string;
+  /** 侧栏宽度（DIP，拖拽手柄调整）；缺失 / 非法时用默认宽度（`SIDEBAR_DEFAULT_WIDTH`） */
+  sidebarWidth?: number;
 }
 
 export function getWorkspaceStateFile(): string {

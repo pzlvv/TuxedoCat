@@ -1538,3 +1538,125 @@ fn stream_does_not_send_when_already_cancelled() {
     assert!(events.is_empty(), "取消后不应产出任何事件：{events:?}");
     assert_eq!(hits.load(Ordering::Relaxed), 0, "取消后不应发起请求");
 }
+
+// ==================== abort 响应时延（切片粒度取消） ====================
+//
+// abort 必须在 `CANCEL_POLL_SLICE_MS` 量级内被响应：流停滞不等满空闲超时、
+// 取消优先于超时上报、重试等待可被打断（对齐 TODO「待修缺陷：abort 响应时延」）。
+
+/// 在独立线程延迟置位取消标志（模拟用户在流式期间点「终止」）
+fn cancel_after(cancel: &Arc<AtomicBool>, delay_ms: u64) {
+    let cancel = Arc::clone(cancel);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(delay_ms));
+        cancel.store(true, Ordering::Relaxed);
+    });
+}
+
+#[test]
+fn stream_returns_promptly_when_cancelled_during_a_stall() {
+    // 先发一个有效事件（切到空闲计时），随后流停滞：取消置位后应在切片粒度内
+    // 返回，而不是等满 idle_timeout（旧行为：等到下一个事件或超时才查 cancel）。
+    let (base_url, _hits) = start_stalling_server(|_index, stream| {
+        write_sse_headers(stream);
+        write_sse_event(
+            stream,
+            &json!({ "choices": [{ "delta": { "content": "部分" } }] }).to_string(),
+        );
+        std::thread::sleep(Duration::from_millis(10_000));
+    });
+    let provider = provider(&base_url, "OpenAI");
+    let cancel = Arc::new(AtomicBool::new(false));
+    cancel_after(&cancel, 300);
+    let request = LlmRequest {
+        provider: &provider,
+        system_prompt: "s",
+        messages: &[json!({ "role": "user", "content": "hi" })],
+        tools: &[],
+        session_id: "sess-abort-stall",
+        thinking_enabled: false,
+        cancel: &cancel,
+        first_byte_timeout_ms: 5_000,
+        idle_timeout_ms: 5_000,
+    };
+    let started = std::time::Instant::now();
+    let result = stream(&request, &mut |_event| {});
+    let elapsed = started.elapsed();
+    assert!(result.is_ok(), "取消应按「用户中断」收尾：{result:?}");
+    assert!(
+        elapsed < Duration::from_millis(2_000),
+        "abort 后应立刻返回，而不是等满空闲超时：{elapsed:?}"
+    );
+}
+
+#[test]
+fn stream_reports_user_interrupt_instead_of_timeout_when_cancelled() {
+    // 服务端只发响应头然后静默挂住：取消在首字节超时到期前置位，
+    // 应按「用户中断」返回，而不是先报 Timeout 再走重试。
+    let (base_url, _hits) = start_stalling_server(|_index, stream| {
+        write_sse_headers(stream);
+        std::thread::sleep(Duration::from_millis(10_000));
+    });
+    let provider = provider(&base_url, "OpenAI");
+    let cancel = Arc::new(AtomicBool::new(false));
+    cancel_after(&cancel, 300);
+    let request = LlmRequest {
+        provider: &provider,
+        system_prompt: "s",
+        messages: &[json!({ "role": "user", "content": "hi" })],
+        tools: &[],
+        session_id: "sess-abort-timeout",
+        thinking_enabled: false,
+        cancel: &cancel,
+        first_byte_timeout_ms: 2_000,
+        idle_timeout_ms: 2_000,
+    };
+    let started = std::time::Instant::now();
+    let result = stream(&request, &mut |_event| {});
+    let elapsed = started.elapsed();
+    assert!(
+        result.is_ok(),
+        "取消应优先于超时，按「用户中断」返回：{result:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(1_500),
+        "取消应在超时到期前被观察到：{elapsed:?}"
+    );
+}
+
+#[test]
+fn retry_sleep_is_interrupted_by_cancel() {
+    // 服务端恒返 503：第一次失败进入重试等待，取消在等待期间置位——
+    // 等待应被打断并立刻以「用户中断」收尾，不再叠加 RETRY_DELAY_MS，
+    // 也不再发起下一次请求。
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&hits);
+    let llm = FakeLlm::start_with_status(move |_index, _body| {
+        counter.fetch_add(1, Ordering::Relaxed);
+        (503, "server busy".to_string())
+    });
+    let provider = provider(&llm.base_url, "OpenAI");
+    let cancel = Arc::new(AtomicBool::new(false));
+    cancel_after(&cancel, 200);
+    let request = LlmRequest {
+        provider: &provider,
+        system_prompt: "s",
+        messages: &[json!({ "role": "user", "content": "hi" })],
+        tools: &[],
+        session_id: "sess-abort-retry",
+        thinking_enabled: false,
+        cancel: &cancel,
+        first_byte_timeout_ms: DEFAULT_FIRST_BYTE_TIMEOUT_MS,
+        idle_timeout_ms: DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+    };
+    let started = std::time::Instant::now();
+    let result = stream(&request, &mut |_event| {});
+    let elapsed = started.elapsed();
+    let error = result.expect_err("取消应终止重试");
+    assert!(error.contains("aborted"), "应按「用户中断」收尾：{error}");
+    assert_eq!(hits.load(Ordering::Relaxed), 1, "取消后不应发起下一次请求");
+    assert!(
+        elapsed < Duration::from_millis(900),
+        "重试等待应被取消打断，而不是等满 {RETRY_DELAY_MS}ms：{elapsed:?}"
+    );
+}

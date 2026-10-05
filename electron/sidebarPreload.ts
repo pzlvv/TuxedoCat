@@ -1,7 +1,8 @@
 /**
  * Electron preload - 侧栏专用
  * 暴露 sidebarAPI：对话列表读写 + 工作目录（打开集合 / 添加 / 切换 / 关闭）+ 变化推送
- * + 文件浏览器（US-42 / US-43：列表 / 复制路径 / 资源管理器定位 / 删除）
+ * + 文件浏览器（US-42 / US-43：列表 / 复制路径 / 资源管理器定位 / 删除 / 双击打开）
+ * + 侧栏宽度拖拽（US-44）
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
@@ -79,5 +80,14 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
   /** 删除（移入回收站）：主进程先弹原生确认框 */
   filesDelete: (workspaceId: string, relPaths: string[]): Promise<unknown> => {
     return ipcRenderer.invoke('sidebar:files-delete', { workspaceId, paths: relPaths });
+  },
+  /** 双击打开（US-42 验收 6）：主进程按类型分流（内置文本 / 图片窗口或系统应用） */
+  filesOpen: (workspaceId: string, relPath: string): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-open', { workspaceId, path: relPath });
+  },
+  // ── 侧栏宽度（US-44） ──
+  // 拖拽过程高频 send（不落盘），final: true（松手 / 双击恢复）才落盘一次
+  setSidebarWidth: (width: number | null, final: boolean): void => {
+    ipcRenderer.send('sidebar:set-width', { width, final });
   },
 });

@@ -432,8 +432,9 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
               timeoutRetryState.count++;
               logger.warn('RealAPI',
                 `${timeoutError.message}，丢弃本次响应并重试 (${timeoutRetryState.count}/${DEFAULT_MAX_TIMEOUT_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-              await sleep(RETRY_DELAY_MS);
+              // 先查中断再等重试间隔：abort 不能在重试等待上再叠加整段延迟
               checkAborted(signal);
+              await sleep(RETRY_DELAY_MS);
               yield* runAttempt(retryCount + 1);
               return;
             }
@@ -444,8 +445,9 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
             logger.warn('RealAPI', `Stream terminated (TypeError: terminated), retrying (${retryCount + 1}/${MAX_RETRIES}) after ${RETRY_DELAY_MS}ms...`);
             // 释放之前的 reader
             closeReader();
-            await sleep(RETRY_DELAY_MS);
+            // 先查中断再等重试间隔：abort 不能在重试等待上再叠加整段延迟
             checkAborted(signal);
+            await sleep(RETRY_DELAY_MS);
             yield* runAttempt(retryCount + 1);
             return;
           }
@@ -613,8 +615,9 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
           closeReader();
           logger.warn('RealAPI',
             `${loopError.message}，丢弃本次响应并重试 (${repetitionRetryCount}/${DEFAULT_MAX_REPETITION_RETRIES})，${RETRY_DELAY_MS}ms 后开始...`);
-          await sleep(RETRY_DELAY_MS);
+          // 先查中断再等重试间隔：abort 不能在重试等待上再叠加整段延迟
           checkAborted(signal);
+          await sleep(RETRY_DELAY_MS);
           yield* runAttempt(retryCount + 1);
           return;
         }
