@@ -284,7 +284,7 @@ export function getProjectRoot(sessionId?: string | null): string {
 }
 
 /**
- * 扩展 / 应用根目录（ripgrep、pandoc 等资源的定位基准）。
+ * 扩展 / 应用根目录（ripgrep 等资源的定位基准）。
  *
  * 由 `UiEvent.hostEnvironmentProvided` 写入；未收到事件前为 undefined。
  */

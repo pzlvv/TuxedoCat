@@ -354,7 +354,7 @@ export type UiEvent =
       /**
        * 扩展 / 应用根目录。
        *
-       * Embedded Core 用它定位随宿主分发的 ripgrep / pandoc（`utils/ripgrep.ts`）；
+       * Embedded Core 用它定位随宿主分发的 ripgrep（`utils/ripgrep.ts`）；
        * Standalone Core 的自带资源以**自己的可执行文件目录**为基准（与可执行文件同级的
        * `ripgrep/`），这里只作本机开发期的兜底（`docs/standalone-core.md` 第 4 节）。
        */

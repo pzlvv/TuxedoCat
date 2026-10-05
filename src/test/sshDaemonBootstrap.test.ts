@@ -6,8 +6,9 @@
  *   `ripgrep/` 时仍补传——「在跑」不等于产物齐全）；
  * - 已部署未启动 → 只跑 `start --idle-exit 30`，产物在就不重传（指纹目录
  *   存在即视为同版本，不做字节比对——「不无脑覆盖」）；
- * - 未部署 → 上传产物（临时名 + `mv` 原子换名）+ `start --idle-exit 30`；
- * - `start` 失败 / 状态文件读不出 / 本机产物缺指纹或缺自带 ripgrep → 报错，不静默降级。
+ * - 未部署 → 上传产物（客户端唯一暂存名 + `mv` 原子换名）+ `start --idle-exit 30`；
+ * - `start` 失败 / 状态文件读不出 / 本机产物缺指纹或缺自带 ripgrep → 报错，不静默降级；
+ * - 上传失败时清掉自己的暂存文件，不在远端槽位留半截产物。
  *
  * 多版本各占一个指纹槽位：新版本天然落在新槽位，旧 daemon 原样留给旧版本的客户端。
  *
@@ -49,6 +50,22 @@ const RIPGREP_PATH = `${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}/ripgrep/rg`;
  */
 const START_COMMAND = `'${BINARY_PATH}' start --idle-exit 30`;
 
+/**
+ * 暂存名判定：上传落到「目标路径 + 客户端唯一后缀」的暂存文件上（pid + 随机数），
+ * 不再是固定 `.new`——两台机器的客户端并发部署同一槽位时各写各的暂存，不交错损坏。
+ */
+function isUniqueStagingOf(staging: string | undefined, target: string): boolean {
+  return staging !== undefined
+    && staging.startsWith(`${target}.`)
+    && staging.endsWith('.new')
+    && staging !== `${target}.new`;
+}
+
+/** 暂存 → 目标的 `mv` 原子换名命令 */
+function mvCommand(staging: string | undefined, target: string): string | undefined {
+  return staging === undefined ? undefined : `mv -f '${staging}' '${target}'`;
+}
+
 /** 假的远端 SSH：文件系统、可执行文件与转发可达性都可控 */
 class FakeSsh implements RemoteSsh {
   readonly commands: string[] = [];
@@ -64,6 +81,8 @@ class FakeSsh implements RemoteSsh {
   uname = 'Linux x86_64';
   startExit = 0;
   startStderr = '';
+  /** 上传一律失败（模拟 SFTP 传输中断，验证暂存清理） */
+  uploadFails = false;
   /** `start` 之后不落状态文件（模拟 daemon 没起来） */
   skipState = false;
   private endpoint = '127.0.0.1:10975';
@@ -88,8 +107,10 @@ class FakeSsh implements RemoteSsh {
   }
 
   async upload(localPath: string, remotePath: string, mode: number): Promise<void> {
+    // 先记尝试再抛错：失败用例要能拿到暂存路径，去断言清理命令
     this.uploads.push({ local: localPath, remote: remotePath, mode });
     this.events.push(`upload:${remotePath}`);
+    if (this.uploadFails) throw new Error('sftp upload failed: connection lost');
     this.executables.add(remotePath);
   }
 
@@ -106,6 +127,7 @@ class FakeSsh implements RemoteSsh {
     if (command === 'uname -sm') return { code: 0, stdout: `${this.uname}\n`, stderr: '' };
     if (command.startsWith('mkdir -p ')) return { code: 0, stdout: '', stderr: '' };
     if (command.startsWith('mv -f ')) return { code: 0, stdout: '', stderr: '' };
+    if (command.startsWith('rm -f ')) return { code: 0, stdout: '', stderr: '' };
     if (command === START_COMMAND) {
       if (this.startExit === 0 && !this.skipState) {
         this.startCount += 1;
@@ -219,9 +241,11 @@ runTests('sshDaemonBootstrap', async () => {
     fake.executables.add(BINARY_PATH);
     const daemon = await ensureRemoteDaemon(fake, options);
     check('补 rg 后仍复用同一个 daemon', daemon.port === 10975 && fake.startCount === 0);
-    check('已在跑时补传自带 ripgrep（经临时名 + mv）', fake.uploads.length === 1
-      && fake.uploads[0]?.remote === `${RIPGREP_PATH}.new` && fake.uploads[0]?.local === ripgrep
-      && fake.commands.includes(`mv -f '${RIPGREP_PATH}.new' '${RIPGREP_PATH}'`));
+    const rgStaging = fake.uploads[0]?.remote;
+    const rgMv = mvCommand(rgStaging, RIPGREP_PATH);
+    check('已在跑时补传自带 ripgrep（经唯一暂存名 + mv）', fake.uploads.length === 1
+      && isUniqueStagingOf(rgStaging, RIPGREP_PATH) && fake.uploads[0]?.local === ripgrep
+      && rgMv !== undefined && fake.commands.includes(rgMv));
     check('已在跑时不重跑 start', !fake.commands.includes(START_COMMAND));
   }
 
@@ -232,12 +256,16 @@ runTests('sshDaemonBootstrap', async () => {
     fake.writeState('127.0.0.1:10975');
     fake.reachable.add('127.0.0.1:10975');
     const daemon = await ensureRemoteDaemon(fake, options);
-    check('目录被清时补传可执行文件（经临时名 + mv）', fake.uploads.some(
-      (upload) => upload.remote === `${BINARY_PATH}.new` && upload.local === binary,
-    ) && fake.commands.includes(`mv -f '${BINARY_PATH}.new' '${BINARY_PATH}'`));
-    check('补传的自带 ripgrep 落在指纹目录里（最终路径由 mv 到位）', fake.uploads.some(
-      (upload) => upload.remote === `${RIPGREP_PATH}.new`,
-    ) && fake.commands.includes(`mv -f '${RIPGREP_PATH}.new' '${RIPGREP_PATH}'`));
+    const binaryStaging = fake.uploads.find((upload) => upload.local === binary)?.remote;
+    const binaryMv = mvCommand(binaryStaging, BINARY_PATH);
+    const rgStaging = fake.uploads.find((upload) => upload.local === ripgrep)?.remote;
+    const rgMv = mvCommand(rgStaging, RIPGREP_PATH);
+    check('目录被清时补传可执行文件（经唯一暂存名 + mv）',
+      isUniqueStagingOf(binaryStaging, BINARY_PATH) && binaryMv !== undefined
+      && fake.commands.includes(binaryMv));
+    check('补传的自带 ripgrep 落在指纹目录里（最终路径由 mv 到位）',
+      isUniqueStagingOf(rgStaging, RIPGREP_PATH) && rgMv !== undefined
+      && fake.commands.includes(rgMv));
     check('补传后仍复用运行中的 daemon', daemon.port === 10975
       && !fake.commands.includes(START_COMMAND));
     check('目标文件本身永不直接覆盖写（执行中的 daemon 是 ETXTBSY）',
@@ -263,17 +291,38 @@ runTests('sshDaemonBootstrap', async () => {
   {
     const fake = new FakeSsh();
     const daemon = await ensureRemoteDaemon(fake, options);
-    check('未部署时上传到 ~/.local/bin/<部署目录>/（经临时名 + mv 原子换名）', fake.uploads.length === 2
-      && fake.uploads[0]?.remote === `${BINARY_PATH}.new`
-      && fake.commands.includes(`mv -f '${BINARY_PATH}.new' '${BINARY_PATH}'`));
+    const binaryStaging = fake.uploads[0]?.remote;
+    const binaryMv = mvCommand(binaryStaging, BINARY_PATH);
+    const rgStaging = fake.uploads[1]?.remote;
+    const rgMv = mvCommand(rgStaging, RIPGREP_PATH);
+    check('未部署时上传到 ~/.local/bin/<部署目录>/（经唯一暂存名 + mv 原子换名）', fake.uploads.length === 2
+      && isUniqueStagingOf(binaryStaging, BINARY_PATH)
+      && binaryMv !== undefined && fake.commands.includes(binaryMv));
     check('上传的是本机携带的对应平台产物', fake.uploads[0]?.local === binary);
     check('上传后置可执行权限', fake.uploads[0]?.mode === 0o755);
-    check('未部署时一并上传自带 ripgrep（同样经临时名 + mv）', fake.uploads[1]?.remote === `${RIPGREP_PATH}.new`
-      && fake.uploads[1]?.local === ripgrep
-      && fake.commands.includes(`mv -f '${RIPGREP_PATH}.new' '${RIPGREP_PATH}'`));
+    check('未部署时一并上传自带 ripgrep（同样经唯一暂存名 + mv）',
+      isUniqueStagingOf(rgStaging, RIPGREP_PATH) && fake.uploads[1]?.local === ripgrep
+      && rgMv !== undefined && fake.commands.includes(rgMv));
     check('上传前建好部署目录', fake.commands.includes(`mkdir -p '${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}'`));
     check('上传后执行 start（绑回环，端口交给内核分配）', fake.commands.includes(START_COMMAND));
     check('返回 daemon endpoint', daemon.host === '127.0.0.1' && daemon.port === 10976);
+  }
+
+  // ---------- 部署失败：清掉自己的暂存，不在远端留半截产物 ----------
+
+  {
+    const fake = new FakeSsh();
+    fake.uploadFails = true;
+    let message = '';
+    try {
+      await ensureRemoteDaemon(fake, options);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    check('上传失败时引导报错（不静默降级）', message.includes('sftp upload failed'));
+    const staging = fake.uploads[0]?.remote;
+    check('上传失败时清掉自己的暂存文件', staging !== undefined
+      && fake.commands.includes(`rm -f '${staging}'`));
   }
 
   // ---------- 状态文件在但连不上：按「没在跑」处理 ----------

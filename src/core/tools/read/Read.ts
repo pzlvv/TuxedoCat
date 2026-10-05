@@ -3,16 +3,14 @@
  *
  * 限制：
  * 1. maxSizeBytes (256KB) - 读取前通过 stat 检查文件大小（仅未传 limit 的整文件读取）
- *    - xlsx / doc / 图片文件跳过此检查；图片另有 15MB 上限
+ *    - xlsx / 图片文件跳过此检查；图片另有 15MB 上限
  * 2. maxLines (2000) / maxLineLength (2000) / maxOutputBytes (50KB)
  *    - 读取后构建有界窗口，传了 offset/limit 也生效
  */
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import * as crypto from 'crypto';
-import { statSync, existsSync } from 'fs';
-import { execSync } from 'child_process';
+import { statSync } from 'fs';
 import { z } from 'zod';
 import type { ToolUseContext, ToolResult } from '../Tool.js';
 import { buildTool, MAX_RESULT_SIZE_CHARS } from '../Tool.js';
@@ -20,8 +18,6 @@ import type { ReadInput, ReadOutput } from './Types.js';
 import { TOOL_NAME, DESCRIPTION, getPrompt } from './Prompt.js';
 import { expandPath } from '../../utils/path.js';
 import { surrogateSafeHeadEnd } from '../../utils/stringUtils.js';
-import { getExtensionPath } from '../../history/Config.js';
-import { getToolResultsDir, getToolResultFilePrefix } from '../toolResultStorage.js';
 import {
   getDefaultLimits,
   FileTooLargeError,
@@ -29,9 +25,6 @@ import {
 
 /** xlsx 文件一次最多读取的行数 */
 const XLSX_MAX_LINES = 50;
-
-/** 支持的文档文件扩展名（通过 pandoc 转为 md） */
-const DOC_EXTENSIONS = ['.doc', '.docx', '.ppt', '.pptx'];
 
 /** 支持的图片扩展名 -> MIME 类型（图片以 base64 返回，不受文本大小限制） */
 const IMAGE_MEDIA_TYPES: Record<string, string> = {
@@ -105,103 +98,6 @@ function buildBoundedWindow(lines: string[], caps: ReadWindowCaps): BoundedWindo
     lineCount: selected.length,
     truncatedByBytes,
   };
-}
-
-/** pandoc 可执行文件路径 */
-function getPandocPath(): string {
-  const platform = process.platform;
-  const arch = process.arch;
-  const subDir = platform === 'win32' && arch === 'x64' ? 'x64-win32'
-    : platform === 'linux' && arch === 'x64' ? 'x64-linux'
-    : null;
-
-  // 当前平台没有预编译 pandoc 产物（macOS / linux-arm64 等）：
-  // 回退到 PATH 中的系统 pandoc，而不是直接抛错导致 doc/docx 读取必然失败。
-  if (!subDir) {
-    const exeName = platform === 'win32' ? 'pandoc.exe' : 'pandoc';
-    return exeName;
-  }
-  const exeName = platform === 'win32' ? 'pandoc.exe' : 'pandoc';
-
-  // 资源定位一律基于应用 / 扩展根目录，不用对话工作目录（规格 §4.4）：
-  // 优先 dist/resources（打包产物），其次 resources（dev 未 build 时）
-  try {
-    const extPath = getExtensionPath();
-    for (const candidate of [
-      path.join(extPath, 'dist', 'resources', 'pandoc', subDir, exeName),
-      path.join(extPath, 'resources', 'pandoc', subDir, exeName),
-    ]) {
-      if (existsSync(candidate)) {
-        return candidate;
-      }
-    }
-  } catch {
-    // getExtensionPath 未注入（独立运行 core 的场景）：回退 PATH
-  }
-
-  // 打包产物缺失时也回退到 PATH 中的系统 pandoc
-  return exeName;
-}
-
-/**
- * 使用 pandoc 将 doc/docx 转换为 markdown
- *
- * 输出文件名带会话前缀（与持久化工具结果一致），删除对话时按前缀一并清理。
- *
- * @param filePath - 源文档路径
- * @param sessionId - 当前会话 ID（用于文件名前缀与按会话清理）
- * @returns 转换后的 markdown 文件路径
- */
-export async function convertDocToMd(filePath: string, sessionId?: string): Promise<string> {
-  const ext = path.extname(filePath).toLowerCase();
-  if (!DOC_EXTENSIONS.includes(ext)) {
-    throw new Error(`Unsupported document format: ${ext}`);
-  }
-
-  const pandocPath = getPandocPath();
-  // PATH 回退场景（pandocPath 不含路径分隔符）无法用 existsSync 检查，
-  // 直接尝试执行；报错时给出包含平台信息的提示。
-  if (!existsSync(pandocPath) && pandocPath.includes(path.sep)) {
-    throw new Error(
-      `Pandoc not found at ${pandocPath}. Please ensure pandoc is installed in resources/pandoc/ or available in PATH.`,
-    );
-  }
-
-  // 输出文件放到 tool-results 目录
-  const toolResultsDir = getToolResultsDir(sessionId);
-  await fs.mkdir(toolResultsDir, { recursive: true });
-
-  // md 文件名带源路径 hash：不同目录下的同名文件（a/report.docx 与 b/report.docx）
-  // 若共用 `${name}.md` 会互相覆盖缓存——A 转换后 B 读取时按 mtime 误判，
-  // 甚至拿到 A 的内容。加入源绝对路径 hash 后互不冲突。
-  // 文件名再带会话前缀，使转换结果随对话删除一并清理（缓存不再跨会话共享）。
-  const parsedPath = path.parse(filePath);
-  const pathHash = crypto.createHash('sha1').update(path.resolve(filePath)).digest('hex').slice(0, 10);
-  const sessionPrefix = sessionId ? getToolResultFilePrefix(sessionId) : '';
-  const mdFileName = `${sessionPrefix}${parsedPath.name}_${pathHash}.md`;
-  const mdFilePath = path.join(toolResultsDir, mdFileName);
-
-  // 缓存：如果 md 文件已存在且源文件未变更，直接返回
-  if (existsSync(mdFilePath)) {
-    const srcStat = statSync(filePath);
-    const mdStat = statSync(mdFilePath);
-    if (srcStat.mtimeMs <= mdStat.mtimeMs) {
-      return mdFilePath;
-    }
-  }
-
-  // 执行 pandoc 转换
-  const cmd = `"${pandocPath}" "${filePath}" -t markdown --wrap=none -o "${mdFilePath}"`;
-  try {
-    execSync(cmd, { timeout: 30000 });
-  } catch (error: any) {
-    try { await fs.unlink(mdFilePath); } catch { /* ignore */ }
-    throw new Error(
-      `Failed to convert document to markdown: ${error.message || error}`,
-    );
-  }
-
-  return mdFilePath;
 }
 
 /**
@@ -450,7 +346,7 @@ export const ReadTool = buildTool({
     }
 
     // 展开路径（支持 ~、相对路径等）
-    let fullPath = expandPath(filePath, context.cwd);
+    const fullPath = expandPath(filePath, context.cwd);
 
     // 获取限制值
     const { maxSizeBytes, maxLines, maxLineLength, maxOutputBytes } = getDefaultLimits();
@@ -461,16 +357,15 @@ export const ReadTool = buildTool({
       throw new Error(`limit must be less than or equal to ${maxLines}`);
     }
 
-    // 获取文件扩展名，判断是否为 xlsx/xlsm 或 doc/docx
+    // 获取文件扩展名，判断是否为 xlsx/xlsm
     const fileExt = path.extname(fullPath).toLowerCase();
     const isXlsx = fileExt === '.xlsx' || fileExt === '.xlsm';
-    const isDocFile = DOC_EXTENSIONS.includes(fileExt);
     const isImage = fileExt in IMAGE_MEDIA_TYPES;
 
     // ---- 第 1 层：文件大小预检查（读取前） ----
     // 只有读取整个文本文件（未提供 limit）时才检查文件大小。
-    // xlsx / doc / 图片文件跳过此检查（图片有自己的 15MB 上限）。
-    if (limit === undefined && !isXlsx && !isDocFile && !isImage) {
+    // xlsx / 图片文件跳过此检查（图片有自己的 15MB 上限）。
+    if (limit === undefined && !isXlsx && !isImage) {
       try {
         const stats = statSync(fullPath);
         if (stats.size > maxSizeBytes) {
@@ -511,12 +406,6 @@ export const ReadTool = buildTool({
       };
     }
 
-    // doc/docx 文件：先转 md，然后走常规文本读取流程
-    if (isDocFile) {
-      const mdFilePath = await convertDocToMd(fullPath, context.sessionId);
-      // 重定向 fullPath 到 md 文件，复用后续的文本读取逻辑
-      fullPath = mdFilePath;
-    }
     // 检查文件是否为二进制
     const { isBinaryFile: checkBinary } = await import('isbinaryfile');
     const isBinary = await checkBinary(fullPath);

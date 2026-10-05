@@ -153,7 +153,7 @@ Standalone Core 是 Core 的第二套实现。
 - [x] 子进程不闪窗：所有 spawn 走 `util::hide_console`（`CREATE_NO_WINDOW`），
       git 状态按工作目录缓存；`standaloneCoreEngine.test.ts` 有静态守卫。
 - [x] 资源定位：ripgrep 产物（Core 以自身可执行文件目录为基准定位自带的 `ripgrep/`；宿主 `extensionPath` 只作本机开发期兜底）。
-- [x] 文档读取：doc/docx/ppt/pptx 经随应用分发的 pandoc 转 markdown（缓存到 `tool-results/<sessionId>__<stem>_<sha1>.md`）；xlsx/xlsm 用 `calamine` 读成对齐列宽的行文本（`sheet` 选表、`offset`/`limit` 窗口、每行 `String(cell)` 走 ECMAScript 口径）。`Read` schema 补 `sheet`，`toolSchemaParity` 的 `Read.sheet` 缺口移除；`toolResultParity` 新增 4 条 xlsx 用例（共用提交入库的 `src/test/fixtures/xlsx/people.xlsx`）。
+- [x] 表格读取：xlsx/xlsm 用 `calamine` 读成对齐列宽的行文本（`sheet` 选表、`offset`/`limit` 窗口、每行 `String(cell)` 走 ECMAScript 口径）。`Read` schema 补 `sheet`，`toolSchemaParity` 的 `Read.sheet` 缺口移除；`toolResultParity` 新增 4 条 xlsx 用例（共用提交入库的 `src/test/fixtures/xlsx/people.xlsx`）。
 
 完成判据：默认工具集在 Core 侧可执行，权限确认与用户问答经帧通道往返。
 

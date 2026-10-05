@@ -2568,21 +2568,30 @@ Electron 的 `sidebar:get-conversations` 直接读它，切换标签页不再每
 | 空闲回收 / 状态栏项 / 虚拟文档 provider / 命令注册 | 有 | 无 |
 | 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销快捷键、销毁托盘、`shutdownCore()` |
 
-**托盘状态点与「任务结束」闪烁提醒**属于 `statusListener` 这条流：它吃的是**会话状态流**
-（`deriveTrayStatusFromStates(states)`：`waiting` > `running`（`idle === false`）> `idle`），
-挂在 `ElectronConversationManager.setStatusListener` 上（`electron/main.ts`）。
+**托盘状态点与「任务结束」闪烁提醒**属于 `statusListener` 这条流：它吃的是**会话状态流**，
+挂在 `ElectronConversationManager.setStatusListener` 上（`electron/main.ts`）。颜色与闪烁分两步：
+
+- **颜色**（静态与闪烁相位共用）吃**聚合**状态：`deriveTrayStatusFromStates(states)` 按
+  `waiting` > `running`（`idle === false`）> `idle` 聚合出黄 / 红 / 绿点；
+- **闪烁**（任务结束提醒）由 `diffSessionEndEvents`（`electron/trayAttention.ts`）对**相邻两次**
+  全量推送按 sessionId 差分：任一会话从运行中结束（running → idle 完成、running → waiting
+  等用户）且窗口处于后台就闪，**不看聚合状态是否变化**——两个对话在跑时其中一个完成同样
+  提醒（聚合仍是 running，红点闪）；颜色取当前聚合状态。不算事件的迁移：waiting → running
+  （用户已应答继续跑）、idle → waiting、running → running；新出现（启动 / 切换工作区恢复）与
+  消失（关闭对话 / 切换工作区）的会话只更新级别表不产生事件。
 
 托盘右键菜单（`buildTrayMenu()`）与托盘提示（`trayTooltip()`）是系统级 UI，文案与主菜单
 同源、走 `tt()` 按宿主语言取词；宿主语言在运行期变化时由 `onHostLocaleChanged` 订阅
 `refreshTrayLocale()` 重建（与 `setupMenu()` 一起），不能只在创建时定一次。
 
-**不要为它加 `onQueryEnd` 之类的事件**——托盘是**聚合**状态，单会话事件驱动不了它：
+**不为此加 `onQueryEnd` 之类的新事件**——闪烁事件由两次全量快照差分得出，core 不新增
+单会话结束事件流；状态点的颜色也始终是聚合量，单会话事件表达不了它：
 
-| 状态迁移 | 原因 | 单会话事件能覆盖吗 |
-| --- | --- | --- |
-| `idle=false → idle=true` | 查询结束 | 能 |
-| `idle=false → waiting=true` | 查询没结束，但要用户确认（ask user / 权限确认） | **不能** |
-| `idle=false → idle=false` | 主查询结束了，但后台 Bash / 非 idle 子代理还在跑 | 发了但不该熄灯 |
+| 状态迁移 | 原因 | 聚合颜色 | 闪烁（单会话差分） |
+| --- | --- | --- | --- |
+| `idle=false → idle=true` | 查询结束 | 随其余会话聚合，可能仍是红点 | 闪（完成提醒） |
+| `idle=false → waiting=true` | 查询没结束，但要用户确认（ask user / 权限确认） | 黄点（waiting 优先级最高） | 闪（等待提醒） |
+| `idle=false → idle=false` | 主查询结束了，但后台 Bash / 非 idle 子代理还在跑 | 红点 | 不闪（任务没结束） |
 
 core 侧对应 `sessionRuntime`（引擎池 + pending user choice）：它维护每个会话的
 `idle` / `waiting`，变化时推**全量** `sessionRuntimeChanged`；托盘只是这份全量状态的一个消费者。
@@ -2895,13 +2904,13 @@ Core 的两种实现由选择变量 `CORE_KIND` 装配：`embedded` 为 `src/cor
 | --- | --- | --- |
 | 选择变量 / 帧协议 / 进程管理 / 崩溃重启 | 已落地（落点见第 1.3 节）；Standalone 的崩溃重启由 daemon 承担（`daemon.rs`），Host 侧只把 `channelReset` 翻译成重新握手 | — |
 | daemon 进程模型 | 已落地：动作 `stdio` / `start` / `kill`（daemon 实体走内部动作 `start-daemon`，没有动作时按 `start`）、`--help` / `--version` 与参数校验（`cli.rs`，版本行附构建指纹）、控制通道多路复用、多客户端并发（thread-per-connection，客户端身份是鉴权成功的连接，按连接隔离 channel / 心跳 / 计数；`shutdown` 全局生效）、空闲退出（`--idle-exit <秒>`：无任何控制连接持续该时长即自行退出并清状态文件，SSH 引导固定传 30——客户端 crash 后远端不留常驻进程；缺省常驻只有 `kill` 结束）、`liveCores` 计数归零 + grace 期退出、连接断开清理、重启上限报告（`docs/core-daemon.md`） | — |
-| 远程服务 | 已落地：`start` 把 daemon 拉到后台（脱离终端）并打印就绪信息，`kill` 结束它；daemon 恒绑 `127.0.0.1`、端口交内核分配，状态 / 诊断日志按构建指纹分文件落盘在 `~/<configDir>/core-daemon-<指纹>.*`（与会话数据同目录）；回环地址就是访问边界，控制通道上没有单独的鉴权帧；`listDirectories` 供 Host 连接后立刻弹出远端目录选择（`core-rs/src/remote.rs`、`src/host/standalone/CoreDaemon.ts`、`src/host/remoteConnect.ts`、`electron/remoteWorkspace/`） | 断线重连 |
+| 远程服务 | 已落地：`start` 把 daemon 拉到后台（脱离终端）并打印就绪信息，`kill` 结束它；「检查 → 拉起 → 等就绪」持按指纹的互斥锁文件（`core-daemon-<指纹>.json.lock`，持有者崩溃按 pid / mtime 接管）——两台机器的客户端同时首次引导同一台服务器，同指纹只拉起一个 daemon；daemon 恒绑 `127.0.0.1`、端口交内核分配，状态 / 诊断日志按构建指纹分文件落盘在 `~/<configDir>/core-daemon-<指纹>.*`（与会话数据同目录）；回环地址就是访问边界，控制通道上没有单独的鉴权帧；`listDirectories` 供 Host 连接后立刻弹出远端目录选择（`core-rs/src/remote.rs`、`src/host/standalone/CoreDaemon.ts`、`src/host/remoteConnect.ts`、`electron/remoteWorkspace/`） | 断线重连 |
 | 远程工作区落盘与恢复 | 已落地：打开集合与最近列表（含远程项与凭证）写 `userData/workspace-state.json`，启动时按落盘凭证重新接入；最近列表同时含本地与远程项，标题栏「加号」菜单可打开最近工作区（`src/host/workspaceState.ts`、`electron/main.ts`、`electron/sidebar/`） | 凭证的加密存储与钥匙串集成 |
-| SSH 接入 | 已落地：`ssh` scheme 下全部通信走 SSH 端口（`ssh2` 库，不依赖系统 OpenSSH），建链时自动完成「发现 / 部署 / 启动」远端 daemon——部署按构建指纹落位 `~/.local/bin/<core.deployPrefix>_<指纹前 32 位>/`（部署目录存在即同版本，缺失才部署，不做产物哈希比对；状态 / 日志按完整指纹分文件），启动传 `--idle-exit 30`（daemon 绑回环、端口交内核分配），多版本 Core 在同一台远端机器上各占一个槽位、各跑一个 daemon 互不干扰（见 `docs/core-daemon.md` 第 12.8 节），凭证只活在会话内，主机密钥按 TOFU 记在 `~/<configDir>/known-hosts.json`（`src/host/standalone/sshClient.ts`、`sshDaemonBootstrap.ts`、`sshTransport.ts`、`electron/remoteWorkspace/`） | SSH 密钥 / agent 认证 / 断线重连 |
+| SSH 接入 | 已落地：`ssh` scheme 下全部通信走 SSH 端口（`ssh2` 库，不依赖系统 OpenSSH），建链时自动完成「发现 / 部署 / 启动」远端 daemon——部署按构建指纹落位 `~/.local/bin/<core.deployPrefix>_<指纹前 32 位>/`（部署目录存在即同版本，缺失才部署，不做产物哈希比对；上传走客户端唯一暂存名 + `mv` 原子换名，并发部署互不损坏；状态 / 日志按完整指纹分文件），启动传 `--idle-exit 30`（daemon 绑回环、端口交内核分配），多版本 Core 在同一台远端机器上各占一个槽位、各跑一个 daemon 互不干扰（见 `docs/core-daemon.md` 第 12.8 节），凭证只活在会话内，主机密钥按 TOFU 记在 `~/<configDir>/known-hosts.json`（`src/host/standalone/sshClient.ts`、`sshDaemonBootstrap.ts`、`sshTransport.ts`、`electron/remoteWorkspace/`） | SSH 密钥 / agent 认证 / 断线重连 |
 | 本地 Core 启动 | 已落地：本地同机工作区由 Host 直接用 `stdio` 起单进程 Core（`createStandaloneCoreBus`，stdio 帧通道，无端口），不经过 daemon；daemon 只服务远程 endpoint | — |
 | 事件投递 | `emitToCore` 只写帧；Standalone 下进程内不注册 core 侧订阅（规格第 1.1 节） | — |
 | 用户消息入口 | `UiEvent.userMessageSubmitted`；`WebviewMessageHandler` 不再直接调用引擎 | — |
-| 会话引擎 / 内置工具 / 会话落盘 / 配置读写 | 已在 `core-rs/` 内实现（查询循环、Bash（含 `run_in_background` 与自动转后台）/ Read（含 doc/docx/ppt/pptx/xlsx）/ Write / Edit / Grep / Glob / TodoWrite / Agent / Reply / AskUserQuestion / Skill、并行工具批、meta.json + jsonl、settings.json 读写） | 与 Embedded 的逐项对等（`TODO.md` M2–M4） |
+| 会话引擎 / 内置工具 / 会话落盘 / 配置读写 | 已在 `core-rs/` 内实现（查询循环、Bash（含 `run_in_background` 与自动转后台）/ Read（含 xlsx）/ Write / Edit / Grep / Glob / TodoWrite / Agent / Reply / AskUserQuestion / Skill、并行工具批、meta.json + jsonl、settings.json 读写） | 与 Embedded 的逐项对等（`TODO.md` M2–M4） |
 | 子代理 | `Agent` 建 `sub_*` 子会话并后台跑，`Reply` 把回复作为 `origin='agent'` 的 user 消息投回创建者；`sessionRuntime.idle` 递归到子代理 | — |
 | 技能 / 斜杠命令 | 已在 `core-rs/` 内实现（`skills.rs` 的 frontmatter 解析 / 变量替换 / 目录扫描 / 内置注册，`commands.rs` 的 `CommandDispatcher` 与内置命令注册表，技能清单注入系统提示环境段，`Skill` 工具末位不变式）；**已知缺口**：内置 `spin` 命令只有 `design` 分支可用（依赖 Spin 引擎） | `skillsParity.json` / `systemPromptParity.json` / `toolSchemaParity.json` 三份对照表覆盖 |
 | 对话压缩 | 已在 `core-rs/` 内实现（`compact.rs` 的阈值 / 触发 / 摘要 prompt / 归档，`replay.rs` 的历史消息 → UI 消息转换，`messagesReplaced` 整批重放）；自动压缩在 `aiBegin` 前、手动压缩经 `UiEvent.compactRequested`（非空闲时延后） | `compactParity.json` 对照表 + `compact_engine_tests.rs` 端到端 |

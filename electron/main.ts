@@ -62,6 +62,7 @@ import {
 } from '../src/host/workspaceState.js';
 
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
+import { diffSessionEndEvents, type SessionLevel } from './trayAttention.js';
 import {
   deleteEachPath,
   listDirectory,
@@ -1160,6 +1161,9 @@ const TRAY_ICON_PATH = path.join(APP_ROOT, 'assets', 'logo.png');
 /** 托盘当前展示的状态，避免状态未变化时重复重建图标 */
 let trayStatus: TrayStatus | null = null;
 
+/** 各会话上一次的忙闲级别（`diffSessionEndEvents` 的差分基准，随每次全量推送推进） */
+let traySessionLevels = new Map<string, SessionLevel>();
+
 /** 托盘提示文案（按当前宿主语言输出中/英文） */
 const TRAY_STATUS_LABEL: Record<TrayStatus, { zh: string; en: string }> = {
   idle: { zh: '全部任务空闲', en: 'All tasks idle' },
@@ -1258,7 +1262,7 @@ function restoreTrayIcon(): void {
 
 /**
  * 启动托盘闪烁：整个图标（Logo + 状态圆点）在“亮 / 灭”两个相位之间切换。
- * `status` 决定圆点颜色（空闲绿点 / 等待黄点）。
+ * `status` 决定圆点颜色（空闲绿点 / 运行红点 / 等待黄点）。
  * 返回是否成功启动（图标不可用时返回 false，调用方回退到静态图标）。
  */
 function startTrayBlink(status: TrayStatus): boolean {
@@ -1316,9 +1320,10 @@ function isWindowInBackground(): boolean {
 }
 
 /**
- * 任务从运行中结束（变为空闲或等待用户确认）且窗口处于后台时的提醒：
- * 只闪烁托盘图标（颜色跟随当前状态：空闲绿点 / 等待黄点），不闪烁窗口 /
- * 任务栏图标——窗口闪烁过于打扰，提醒入口统一收敛到托盘。
+ * 任务结束提醒：任一会话从运行中结束（完成 → idle、或转等待用户确认 → waiting）
+ * 且窗口处于后台（最小化/隐藏/可见但非顶层）时的提醒。颜色跟随当前**聚合**状态：
+ * 其它对话还在跑时红点闪、全部空闲绿点闪、有会话等用户黄点闪。
+ * 只闪烁托盘图标，不闪烁窗口 / 任务栏图标——窗口闪烁过于打扰，提醒入口统一收敛到托盘。
  */
 function startAttention(status: TrayStatus): void {
   if (!isWindowInBackground()) return;
@@ -1357,28 +1362,33 @@ function setupTray(): void {
  * 有会话在等待用户确认/提问 → 黄点；有会话运行中 → 红点；全部空闲 → 绿点。
  * 状态未变化时不重建图标（createFromBitmap / resize 有一定开销）。
  *
- * 另外负责“任务结束提醒”：当任务从运行中变为空闲或等待用户确认、且窗口处于
- * 后台（最小化/隐藏/可见但非顶层）时，只闪烁托盘图标，直到用户打开界面。
+ * 另外负责「任务结束提醒」：任一会话从运行中结束（完成 → idle、转等待 → waiting）
+ * 且窗口处于后台时就闪烁，**不看聚合状态是否变化**——两个对话在跑时其中一个完成，
+ * 聚合仍是 running，同样要提醒（红点闪）。事件由 `diffSessionEndEvents` 对相邻两次
+ * 全量推送差分得出；闪烁颜色取当前聚合状态。
  */
 function updateTrayStatusFromStates(
   states: ReadonlyArray<import('../src/core/AssistantEventBus.js').SessionRuntimeState>,
 ): void {
   const status = deriveTrayStatusFromStates(states);
-  if (status === trayStatus) return;
-  const previous = trayStatus;
-  trayStatus = status;
+  const ends = diffSessionEndEvents(traySessionLevels, states);
+  traySessionLevels = ends.next;
 
-  if (status === 'running' && attentionActive) {
-    attentionActive = false;
+  if (status !== trayStatus) {
+    trayStatus = status;
+
+    if (status === 'running' && attentionActive) {
+      attentionActive = false;
+    }
+
+    if (attentionActive) {
+      if (!startTrayBlink(status)) restoreTrayIcon();
+    } else {
+      restoreTrayIcon();
+    }
   }
 
-  if (attentionActive) {
-    if (!startTrayBlink(status)) restoreTrayIcon();
-  } else {
-    restoreTrayIcon();
-  }
-
-  if (previous === 'running' && (status === 'idle' || status === 'waiting')) {
+  if (ends.anyCompleted || ends.anyNowWaiting) {
     startAttention(status);
   }
 }

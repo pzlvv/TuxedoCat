@@ -10,11 +10,13 @@
  *    多版本 Core 在同一台远端机器上各占一个槽位、各跑一个 daemon——不同版本
  *    的客户端同时接入同一台机器互不干扰；同版本的多个客户端并发接同一个
  *    daemon 由 daemon 侧的多连接支持（`docs/core-daemon.md` 第 12.5 节）。
- * 2. **部署**：指纹目录里缺可执行文件或自带 `ripgrep/rg` 才上传（临时名 + rename，
- *    对可能仍在执行的旧 inode 安全）；**指纹目录存在即视为同版本**，不做产物
+ * 2. **部署**：指纹目录里缺可执行文件或自带 `ripgrep/rg` 才上传（客户端唯一暂存名
+ *    + rename 原子换名：对可能仍在执行的旧 inode 安全，两台机器的客户端并发部署
+ *    同一槽位也互不交错损坏）；**指纹目录存在即视为同版本**，不做产物
  *    哈希比对——指纹只由源码内容与编译器身份决定，同一版本不该因字节差异互相
  *    覆盖：新版本天然落在新槽位，旧 daemon 原样留给旧版本的客户端。
- * 3. **启动**：`start --idle-exit 30`（幂等：已在跑就复用），再读状态文件。
+ * 3. **启动**：`start --idle-exit 30`（幂等：已在跑就复用；远端 `start` 自带按
+ *    指纹的互斥锁，并发引导同指纹也只拉起一个 daemon），再读状态文件。
  *    daemon 恒绑回环、端口交给内核分配（`docs/core-daemon.md` 第 12.2 节）：转发连接
  *    从远端本机发起，daemon 端口不出机器；多版本 Core 各占一个槽位、各跑一个 daemon，
  *    内核分配端口使端口冲突从构造上不可能发生。实际端口以按指纹的状态文件为准
@@ -27,6 +29,7 @@
  * `src/test/sshDaemonBootstrap.test.ts`）。
  */
 
+import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
 import {
@@ -158,10 +161,10 @@ export async function ensureRemoteDaemon(
  *
  * 指纹只由源码内容与编译器身份决定（`docs/standalone-core.md` 第 4.4 节），同一
  * 指纹的两个构建产物行为一致，因此存在就不再上传——不同构建机 / 不同客户端的
- * 同版本产物互不覆盖。上传走「临时名 + `mv` 原子换名」：目标可能正被一个在跑的
- * daemon 执行（它的指纹目录被清过、状态文件丢失时我们无从得知它在跑），对执行中
- * 的文件直接覆盖写是 `ETXTBSY`（SFTP 层报 `Failure`）；`mv` 是 rename，只换目录项，
- * 运行中的进程继续用旧 inode。返回是否发生了上传（调用方据此打部署日志）。
+ * 同版本产物互不覆盖。上传走「客户端唯一暂存名 + `mv` 原子换名」：目标可能正被
+ * 一个在跑的 daemon 执行（它的指纹目录被清过、状态文件丢失时我们无从得知它在跑），
+ * 对执行中的文件直接覆盖写是 `ETXTBSY`（SFTP 层报 `Failure`）；`mv` 是 rename，
+ * 只换目录项，运行中的进程继续用旧 inode。返回是否发生了上传（调用方据此打部署日志）。
  */
 async function ensureRemoteBinary(
   ssh: RemoteSsh,
@@ -175,7 +178,12 @@ async function ensureRemoteBinary(
 }
 
 /**
- * 原子上传一个可执行文件：先传临时名，再 `mv` 原子换名到最终路径。
+ * 原子上传一个可执行文件：先传客户端唯一的暂存名，再 `mv` 原子换名到最终路径。
+ *
+ * 暂存名带 pid + 随机数后缀：两台机器的客户端同时首次部署同一台服务器（同指纹
+ * 槽位）时，固定暂存名会让两条上传流写同一个文件、交错损坏，`mv` 上去的就成了
+ * 坏产物——而「指纹目录存在即视为同版本」不会自愈。各写各的暂存、原子换名，
+ * 谁先谁后落地的都是完整文件。
  *
  * 目标可能正被执行（daemon 二进制由远端 systemd/init 拉起、ripgrep 由 Core 的
  * Grep/Glob 每次 spawn——它的部署槽位被外部清过、`stat` 判定不存在时我们无从
@@ -183,9 +191,16 @@ async function ensureRemoteBinary(
  * `mv` 是 rename，只换目录项，运行中的进程继续用旧 inode。两处部署共用这一份。
  */
 async function uploadAtomically(ssh: RemoteSsh, localPath: string, remotePath: string): Promise<void> {
-  const staging = `${remotePath}.new`;
-  await ssh.upload(localPath, staging, 0o755);
-  await ssh.exec(`mv -f ${shellQuote(staging)} ${shellQuote(remotePath)}`);
+  const staging = `${remotePath}.${process.pid}-${randomBytes(4).toString('hex')}.new`;
+  try {
+    await ssh.upload(localPath, staging, 0o755);
+    await ssh.exec(`mv -f ${shellQuote(staging)} ${shellQuote(remotePath)}`);
+  } catch (error) {
+    // 部署失败时清掉自己的暂存，不在远端槽位留半截产物（尽力而为：清不掉也不
+    // 掩盖原始错误——连接本身已经断了的话，残留文件无害）
+    await ssh.exec(`rm -f ${shellQuote(staging)}`).catch(() => undefined);
+    throw error;
+  }
 }
 
 /**

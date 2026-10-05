@@ -1187,7 +1187,7 @@ fn read_truncates_overlong_lines_and_huge_files() {
     assert!(rendered.len() < 60 * 1024, "输出应被 50KB 上限截住，实际 {}", rendered.len());
 }
 
-// ==================== Read：xlsx / 文档（pandoc）====================
+// ==================== Read：xlsx ====================
 
 /// 单测用的最小 xlsx 单元格
 enum XlsxCell {
@@ -1428,35 +1428,6 @@ fn xlsx_cells_and_columns_match_javascript_semantics() {
     assert_eq!(line_count, 2);
     assert!(!truncated);
     assert_eq!(content, "Row 1: a\nRow 2: b");
-}
-
-#[test]
-fn convert_doc_to_md_rejects_unsupported_formats() {
-    let sandbox = Sandbox::new("tools-doc-unsupported");
-    sandbox.write_file("a.txt", "x");
-    let path = sandbox.workspace.join("a.txt");
-    let err = convert_doc_to_md(&path, "s", &sandbox.workspace.to_string_lossy()).unwrap_err();
-    assert_eq!(err, "Unsupported document format: .txt");
-}
-
-#[test]
-fn read_doc_without_pandoc_reports_a_conversion_error() {
-    let sandbox = Sandbox::new("tools-doc-nopandoc");
-    sandbox.write_file("a.docx", "not really a docx");
-    let outcome = execute("Read", &json!({ "file_path": "a.docx" }), &context(&sandbox));
-    assert!(outcome.is_error());
-    assert!(
-        text(&outcome).starts_with("Failed to convert document to markdown:"),
-        "got {}",
-        text(&outcome)
-    );
-}
-
-#[test]
-fn path_hash_prefix_matches_sha1_head() {
-    // 对齐 Embedded `crypto.createHash('sha1').update(path).digest('hex').slice(0, 10)`
-    assert_eq!(path_hash_prefix(""), "da39a3ee5e");
-    assert_eq!(path_hash_prefix("abc"), "a9993e3647");
 }
 
 #[test]

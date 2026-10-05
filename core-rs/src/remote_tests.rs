@@ -484,6 +484,89 @@ fn probe_endpoint_reports_listeners() {
     assert!(!probe_endpoint("not-an-endpoint"), "解析不了即视为没有");
 }
 
+// ==================== start 互斥锁 ====================
+
+fn lock_path_in(dir: &Path) -> PathBuf {
+    dir.join(format!("{}.lock", daemon_state_file_name()))
+}
+
+/// 锁互斥：持有期间第二方拿不到（报错而不是悄悄并行拉起）；释放后立即可复用，
+/// 锁文件随之删掉。
+#[test]
+fn start_lock_is_exclusive_and_reusable_after_release() {
+    let dir = temp_dir("start-lock");
+    let path = lock_path_in(&dir);
+
+    let first = acquire_start_lock_for(&path, Duration::from_secs(5), Duration::from_secs(60))
+        .expect("first acquire");
+    let error = acquire_start_lock_for(&path, Duration::from_millis(150), Duration::from_secs(60))
+        .expect_err("持有中应等不到锁");
+    assert!(error.contains("lock"), "{error}");
+    assert!(path.exists(), "报错路径不得删别人的锁文件");
+
+    drop(first);
+    let second = acquire_start_lock_for(&path, Duration::from_secs(5), Duration::from_secs(60))
+        .expect("release 后应可立即复用");
+    drop(second);
+    assert!(!path.exists(), "锁释放后锁文件应删掉");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 持有者已死（pid 不存在）：锁立即被接管，不等到预算耗尽。/proc 判活只有 Linux
+/// 有，其它平台按活着处理（交给 mtime 兜底），本用例只在 Linux 跑。
+#[cfg(target_os = "linux")]
+#[test]
+fn start_lock_is_taken_over_when_the_holder_is_dead() {
+    let dir = temp_dir("start-lock-dead");
+    let path = lock_path_in(&dir);
+
+    // 造一个确定已退出的 pid：起一个立即退出的子进程并收尸
+    let mut child = Command::new("true")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn child");
+    let dead_pid = child.id();
+    let _ = child.wait();
+    std::fs::write(&path, dead_pid.to_string()).unwrap();
+
+    let started = Instant::now();
+    let takeover = acquire_start_lock_for(&path, Duration::from_secs(5), Duration::from_secs(60))
+        .expect("死持有者的锁应被接管");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "应立即接管，而不是等满预算"
+    );
+    drop(takeover);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 锁文件读不出 pid（持有者建文件后、写 pid 前崩溃）：宽限内当新鲜继续等，
+/// 超过宽限按 mtime 接管。
+#[test]
+fn start_lock_without_pid_waits_for_grace_then_is_taken_over() {
+    let dir = temp_dir("start-lock-empty");
+    let path = lock_path_in(&dir);
+    std::fs::write(&path, b"").unwrap();
+
+    // 宽限内（stale_after 远大于 mtime）：等满预算报错，不抢占
+    let error = acquire_start_lock_for(&path, Duration::from_millis(150), Duration::from_secs(60))
+        .expect_err("宽限内应继续等");
+    assert!(error.contains("lock"), "{error}");
+    assert!(path.exists(), "报错路径不得删别人的锁文件");
+
+    // 超过宽限（stale_after 设小、等 mtime 老过去）：接管
+    thread::sleep(Duration::from_millis(120));
+    let takeover = acquire_start_lock_for(&path, Duration::from_secs(5), Duration::from_millis(60))
+        .expect("超龄的无 pid 锁应被接管");
+    drop(takeover);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 // ==================== 结束 daemon（`kill`）====================
 
 /// `stop_daemon`：发 `shutdown`，服务端据此结束 daemon。

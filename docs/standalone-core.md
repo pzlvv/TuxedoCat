@@ -167,7 +167,7 @@ resources/core/x64-win32/ripgrep/rg.exe
 | 进程管理 | `bash_task.rs::kill_tree`、`mcp.rs` 的子进程终止 | `#[cfg(windows)]` 走 `taskkill /T /F`；非 Windows 走 `Child::kill`，与 Embedded（Node `detached: true` + `childProcess.kill()`，同样只杀直接子进程）逐字对齐 |
 | 路径处理 | `util.rs` 的 `normalize_path` / `expand_path`、`config.rs` 的 `encodeURIComponent` 等价物 | 盘符与 UNC 的换算都在 `cfg!(windows)` 分支内；非 Windows 走 POSIX 分支，多字节路径按字节比较 |
 | shell 探测 | `shell.rs::detect` | 非 Windows 直接用 `$SHELL`（缺省 `/bin/bash`）；Windows 才走 Git Bash → PowerShell → cmd.exe 的优先级 |
-| 资源定位 | `tools.rs::ripgrep_path` / `get_pandoc_path`、`config.rs::extension_path` | Core 自带产物以**自己的可执行文件目录**为基准（`<exe 目录>/ripgrep/rg[.exe]`），宿主 `extensionPath` 只作本机开发期的兜底、最后回退 PATH；可执行名按 `cfg!(windows)` 加 `.exe`；产物目录按 `<arch>-<platform>` 解析，矩阵外直接拒绝而不是猜一个目录 |
+| 资源定位 | `tools.rs::ripgrep_path`、`config.rs::extension_path` | Core 自带产物以**自己的可执行文件目录**为基准（`<exe 目录>/ripgrep/rg[.exe]`），宿主 `extensionPath` 只作本机开发期的兜底、最后回退 PATH；可执行名按 `cfg!(windows)` 加 `.exe`；产物目录按 `<arch>-<platform>` 解析，矩阵外直接拒绝而不是猜一个目录 |
 | 主目录 | `config.rs::home_dir` | `USERPROFILE` 优先、`HOME` 兜底，两者都缺才报错 |
 | 系统语言 | 宿主：`src/host/i18n.ts::getSystemLocale`（不在 Core 侧） | 仅 Windows 查 PowerShell `Get-UICulture`；其余平台读 `LANG` / `LC_ALL` |
 | 控制台窗口 | `util.rs::hide_console` | 仅 Windows 设 `CREATE_NO_WINDOW`，非 Windows 是空操作 |
@@ -388,7 +388,7 @@ Standalone Core 下，core 侧事实的归属与 `docs/core-ui-separation.md` �
 | 会话工作目录表 | Core | 单目录宿主（VS Code）在会话首次解析目录前经 `UiEvent.sessionWorkspaceAssigned` 登记；多工作目录宿主（Electron）按来源视图登记；加载对话后由 `meta.json` 的 `project` 校正 |
 | 工具执行 | Core | 在 Core 所在机器操作文件系统 |
 | MCP 子进程 | Core | 生命周期由 Core 管理 |
-| ripgrep / pandoc | Core | 随 Core 分发并定位：与 Core 可执行文件同级（`<exe 目录>/ripgrep/`），本地起进程与远端上传的是同一个目录 |
+| ripgrep | Core | 随 Core 分发并定位：与 Core 可执行文件同级（`<exe 目录>/ripgrep/`），本地起进程与远端上传的是同一个目录 |
 | 宿主环境（extensionPath / logToConsole / configDirName） | UI 提供，Core 消费 | 经 `UiEvent.hostEnvironmentProvided` |
 | 会话工作目录 | UI 提供，Core 消费 | 经 `UiEvent.sessionWorkspaceAssigned` |
 | 日志行 | Core 产生 | 经 `CoreEvent.log` 上报；标准错误仅用于诊断 |

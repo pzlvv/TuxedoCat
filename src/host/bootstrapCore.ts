@@ -73,7 +73,7 @@ export interface CoreBootstrapOptions {
    * 扩展 / 应用根目录。
    *
    * Standalone 用它定位 Core 产物目录（`resources/core/<arch-platform>/`，其中已含
-   * Core 自带的 `ripgrep/`）；Embedded Core 用它定位随宿主分发的 ripgrep / pandoc。
+   * Core 自带的 `ripgrep/`）；Embedded Core 用它定位随宿主分发的 ripgrep。
    */
   extensionPath: string;
   /**

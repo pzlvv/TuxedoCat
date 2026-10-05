@@ -144,18 +144,7 @@ Standalone 宿主需要一条握手级事件确认会话已建立（`standaloneC
 `[DONE]` 按协议就是最后一个事件，Rust 的提前收尾不丢任何内容，属于有意保留的
 更稳健行为。
 
-### 2.8 pandoc 转换失败的报错文案
-
-| | 行为 |
-| --- | --- |
-| Embedded | `Read.ts::convertDocToMd` 抛 `Failed to convert document to markdown: ${error.message}`，其中 `error.message` 是 Node `execSync` 的整段文案（`Command failed: "<pandoc>" ...\n<stderr>`）。 |
-| Standalone | 抛 `Failed to convert document to markdown: <trimmed stderr>`；没有 stderr 时退化为 `pandoc exited with <status>`。 |
-
-Node 的 `error.message` 含完整命令行与 OS 级错误串，Rust 侧无法逐字复刻；这里保留
-更干净的 stderr 文案。错误**前缀**（`Failed to convert document to markdown: `）
-与「删掉半成品 md」的收尾两侧一致，只有冒号后的细节不同。
-
-### 2.9 数字字符串的宽松解析
+### 2.8 数字字符串的宽松解析
 
 | | 行为 |
 | --- | --- |
@@ -166,7 +155,7 @@ Node 的 `error.message` 含完整命令行与 OS 级错误串，Rust 侧无法�
 `total_balance`（恒为数字字符串）与环境变量，正常路径下不会出现「数字前缀 + 垃圾后缀」，
 因此差异不可达。Rust 的严格解析属于有意保留的更稳健行为（不把坏输入当有效值）。
 
-### 2.10 tool_result 内容数组里的 `null` 元素
+### 2.9 tool_result 内容数组里的 `null` 元素
 
 | | 行为 |
 | --- | --- |
@@ -327,9 +316,9 @@ Standalone 恒为空（Core 加载时已给缺失 `tool_result` 的 `tool_use` �
 AskUserQuestion 已迁入（定义 / schema / 权限直接放行 / `CoreRequest.userChoice`
 往返 / 结果文案），对等面见第 4 节。
 
-Read 的 doc/docx/ppt/pptx（pandoc 转 markdown）与 xlsx/xlsm（`calamine` 读取）
-已迁入，`toolResultParity` 用提交入库的 `src/test/fixtures/xlsx/people.xlsx`
-锁定 xlsx 输出；`Read` schema 的 `sheet` 缺口已消除。
+Read 的 xlsx/xlsm（`calamine` 读取）已迁入，`toolResultParity` 用提交入库的
+`src/test/fixtures/xlsx/people.xlsx` 锁定 xlsx 输出；`Read` schema 的 `sheet`
+缺口已消除。
 
 后台 Bash 已迁入（`core-rs/src/bash_task.rs`）：`run_in_background`（file mode 输出
 文件 + 完成通知）、前台超时自动转后台、通知驱动的转后台、完成通知经

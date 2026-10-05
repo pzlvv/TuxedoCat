@@ -1856,170 +1856,6 @@ fn format_read_output(
     result
 }
 
-// ==================== doc / docx / ppt / pptx（pandoc）====================
-
-/// 支持的文档扩展名（通过 pandoc 转为 markdown）
-const DOC_EXTENSIONS: [&str; 4] = [".doc", ".docx", ".ppt", ".pptx"];
-
-/// pandoc 可执行文件路径（对齐 Embedded `getPandocPath`）：
-/// 优先 `dist/resources/pandoc/<arch-platform>/`、其次 `resources/pandoc/...`，
-/// 产物缺失时回退到 PATH 中的 `pandoc`。
-fn get_pandoc_path() -> String {
-    let platform = if cfg!(windows) { "win32" } else { "linux" };
-    let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
-    let exe_name = if cfg!(windows) { "pandoc.exe" } else { "pandoc" };
-    let sub_dir = match (platform, arch) {
-        ("win32", "x64") => "x64-win32",
-        ("linux", "x64") => "x64-linux",
-        // 当前平台没有预编译 pandoc 产物（macOS / linux-arm64 等）：回退 PATH
-        _ => return exe_name.to_string(),
-    };
-    if let Ok(extension_path) = config::extension_path() {
-        let base = Path::new(&extension_path);
-        for candidate in [
-            base.join("dist")
-                .join("resources")
-                .join("pandoc")
-                .join(sub_dir)
-                .join(exe_name),
-            base.join("resources")
-                .join("pandoc")
-                .join(sub_dir)
-                .join(exe_name),
-        ] {
-            if candidate.exists() {
-                return candidate.to_string_lossy().to_string();
-            }
-        }
-    }
-    exe_name.to_string()
-}
-
-/// 源绝对路径 sha1 的前 10 个十六进制字符（对齐 Embedded 的
-/// `crypto.createHash('sha1').update(path.resolve(filePath))`）。
-fn path_hash_prefix(path: &str) -> String {
-    use sha1::{Digest, Sha1};
-    let mut hasher = Sha1::new();
-    hasher.update(path.as_bytes());
-    let digest = hasher.finalize();
-    digest.iter().take(5).map(|byte| format!("{byte:02x}")).collect()
-}
-
-/// 运行子进程并等待，超过 `timeout` 时杀掉（对齐 `execSync` 的 `timeout`）。
-/// 返回 `(exit_status, stderr)`。
-fn run_with_timeout(
-    mut command: Command,
-    timeout: Duration,
-) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
-    let mut child = command.spawn().map_err(|err| err.to_string())?;
-    let deadline = std::time::Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("timeout".to_string());
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            Err(err) => return Err(err.to_string()),
-        }
-    };
-    let mut stderr = Vec::new();
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_end(&mut stderr);
-    }
-    Ok((status, stderr))
-}
-
-/// 用 pandoc 把 doc/docx/ppt/pptx 转成 markdown，返回 md 文件路径。
-///
-/// 对齐 Embedded `Read.ts::convertDocToMd`：
-/// - 输出到 `<projectConversationDir>/tool-results/`；
-/// - 文件名 `<sessionId>__<stem>_<sha1(path)[..10]>.md`（会话前缀便于按对话清理，
-///   路径 hash 避免不同目录同名文件互相覆盖）；
-/// - 源文件 mtime <= md mtime 时直接命中缓存；
-/// - 转换失败时删掉半成品并抛错。
-fn convert_doc_to_md(file_path: &Path, session_id: &str, project: &str) -> Result<PathBuf, String> {
-    let ext = file_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| format!(".{}", value.to_lowercase()))
-        .unwrap_or_default();
-    if !DOC_EXTENSIONS.contains(&ext.as_str()) {
-        return Err(format!("Unsupported document format: {ext}"));
-    }
-
-    let pandoc_path = get_pandoc_path();
-    // PATH 回退场景（pandocPath 不含路径分隔符）无法用 exists 检查，直接尝试执行；
-    // 报错时给出包含平台信息的提示。
-    let has_separator =
-        pandoc_path.contains(std::path::MAIN_SEPARATOR) || pandoc_path.contains('/');
-    if has_separator && !Path::new(&pandoc_path).exists() {
-        return Err(format!(
-            "Pandoc not found at {pandoc_path}. Please ensure pandoc is installed in resources/pandoc/ or available in PATH."
-        ));
-    }
-
-    let tool_results_dir = config::project_conversation_dir(project)?.join("tool-results");
-    std::fs::create_dir_all(&tool_results_dir)
-        .map_err(|err| format!("mkdir {} failed: {err}", tool_results_dir.display()))?;
-
-    let stem = file_path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("");
-    let resolved = file_path.to_string_lossy().to_string();
-    let md_path = tool_results_dir.join(format!(
-        "{session_id}__{stem}_{}.md",
-        path_hash_prefix(&resolved)
-    ));
-
-    // 缓存：md 已存在且源文件未变更时直接返回
-    if md_path.exists() {
-        if let (Ok(src_stat), Ok(md_stat)) =
-            (std::fs::metadata(file_path), std::fs::metadata(&md_path))
-        {
-            if let (Ok(src_mtime), Ok(md_mtime)) = (src_stat.modified(), md_stat.modified()) {
-                if src_mtime <= md_mtime {
-                    return Ok(md_path);
-                }
-            }
-        }
-    }
-
-    // 执行 pandoc：`pandoc <file> -t markdown --wrap=none -o <md>`
-    let mut command = Command::new(&pandoc_path);
-    command
-        .arg(file_path)
-        .args(["-t", "markdown", "--wrap=none", "-o"])
-        .arg(&md_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    util::hide_console(&mut command);
-
-    match run_with_timeout(command, Duration::from_secs(30)) {
-        Ok((status, _)) if status.success() => Ok(md_path),
-        Ok((status, stderr)) => {
-            let _ = std::fs::remove_file(&md_path);
-            let detail = String::from_utf8_lossy(&stderr).trim().to_string();
-            let detail = if detail.is_empty() {
-                format!("pandoc exited with {status}")
-            } else {
-                detail
-            };
-            Err(format!("Failed to convert document to markdown: {detail}"))
-        }
-        Err(err) => {
-            let _ = std::fs::remove_file(&md_path);
-            Err(format!("Failed to convert document to markdown: {err}"))
-        }
-    }
-}
-
 // ==================== xlsx / xlsm ====================
 
 /// xlsx 文件一次最多读取的行数
@@ -2255,10 +2091,9 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         .map(|value| format!(".{}", value.to_lowercase()))
         .unwrap_or_default();
     let is_xlsx = ext == ".xlsx" || ext == ".xlsm";
-    let is_doc = DOC_EXTENSIONS.contains(&ext.as_str());
 
-    // 整文件读取（未传 limit）时先做 256KB 上限检查；xlsx / doc / 图片文件豁免。
-    if limit.is_none() && !is_xlsx && !is_doc && media_type.is_none() {
+    // 整文件读取（未传 limit）时先做 256KB 上限检查；xlsx / 图片文件豁免。
+    if limit.is_none() && !is_xlsx && media_type.is_none() {
         if let Ok(meta) = std::fs::metadata(&path) {
             if meta.is_file() && meta.len() > READ_MAX_SIZE_BYTES {
                 return ToolOutcome::Error(format!(
@@ -2296,17 +2131,7 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         };
     }
 
-    // doc / docx / ppt / pptx：先用 pandoc 转 md，再走常规文本读取流程
-    let read_path = if is_doc {
-        match convert_doc_to_md(&path, &ctx.session_id, &ctx.cwd) {
-            Ok(md_path) => md_path,
-            Err(err) => return ToolOutcome::Error(err),
-        }
-    } else {
-        path.clone()
-    };
-
-    let bytes = match std::fs::read(&read_path) {
+    let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(err) => return ToolOutcome::Error(format!("Read failed: {err}")),
     };

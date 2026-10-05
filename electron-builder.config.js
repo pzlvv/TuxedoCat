@@ -70,7 +70,7 @@ module.exports = {
   extraMetadata: {
     main: project.build.electronMainOut,
   },
-  // 代码打进 asar（更小更安全）；ripgrep/pandoc 等外部可执行文件
+  // 代码打进 asar（更小更安全）；ripgrep 等外部可执行文件
   // 必须真实存在于磁盘，通过 asarUnpack 解包到 app.asar.unpacked，
   // Electron 会自动把 app.asar 内的路径重定向到解包后的真实路径
   asar: true,

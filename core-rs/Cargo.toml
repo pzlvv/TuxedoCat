@@ -27,9 +27,6 @@ reqwest = { version = "0.12", default-features = false, features = [
     "gzip",
 ] }
 sha2 = "0.10"
-# Read 工具的 doc/docx/ppt/pptx → markdown 走随应用分发的 pandoc 产物（对齐
-# Embedded `Read.ts::convertDocToMd`）；md 缓存文件名带源路径 sha1 前缀。
-sha1 = "0.10"
 # Read 工具的 xlsx/xlsm 读取（对齐 Embedded 的 `xlsx` npm 包 + `readXlsxContent`）。
 calamine = "0.36"
 # ECMAScript `Number.prototype.toString()` 口径的浮点格式化：xlsx 单元格

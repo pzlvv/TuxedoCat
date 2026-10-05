@@ -10,7 +10,7 @@
  *   | maxLineLength  | 2,000     | 读取后        | 单行截断            |
  *   | maxOutputBytes | 50 KB     | 读取后        | 截断输出            |
  *
- * maxSizeBytes 仅在未传 limit 的整文件读取时检查（xlsx / doc / 图片文件跳过）；
+ * maxSizeBytes 仅在未传 limit 的整文件读取时检查（xlsx / 图片文件跳过）；
  * 传了 limit/offset 时仍会执行 maxLines / maxLineLength / maxOutputBytes 窗口限制。
  */
 

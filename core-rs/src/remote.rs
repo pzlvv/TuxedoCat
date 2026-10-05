@@ -2,7 +2,8 @@
 //!
 //! 两个角色：
 //! - `start`（启动器，用户可见）：确保后台 daemon 在跑，打印就绪信息后自己退出；
-//!   没有 daemon 就用 `start-daemon` 拉一个到后台。
+//!   没有 daemon 就用 `start-daemon` 拉一个到后台。并发 start 由按指纹的互斥锁
+//!   串行化：两台机器的客户端同时首次引导同一台服务器，同指纹也只拉起一个 daemon。
 //! - `start-daemon`（daemon 实体，启动器的内部实现）：绑回环端口、把实际 endpoint
 //!   落盘（`~/<configDir>/core-daemon-<指纹>.json`，按构建指纹区分——
 //!   `docs/standalone-core.md` 第 4.4 节），然后常驻 accept。
@@ -429,6 +430,13 @@ pub fn daemon_log_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join(daemon_log_file_name()))
 }
 
+/// start 互斥锁路径：状态文件名加 `.lock` 后缀（`core-daemon-<指纹>.json.lock`），
+/// 与状态 / 日志同目录。名字由状态文件名派生，自动按指纹区分——同版本（同指纹）
+/// 才互斥，多版本各锁各的。
+fn daemon_lock_path() -> Result<PathBuf, String> {
+    Ok(config_dir()?.join(format!("{}.lock", daemon_state_file_name())))
+}
+
 /// 读状态文件：不存在 / 读不出 / 解析失败都当作「没有 daemon」。
 pub fn read_daemon_state_at(path: &Path) -> Option<DaemonState> {
     let text = std::fs::read_to_string(path).ok()?;
@@ -497,6 +505,116 @@ fn probe_endpoint(endpoint: &str) -> bool {
     connect_endpoint(endpoint).is_ok()
 }
 
+// ==================== start 互斥（同指纹只拉起一个 daemon）====================
+
+/// start 互斥锁的等待上限：覆盖持锁方「检查 → 拉起 → 等就绪」的最长持锁时间
+/// （LAUNCH_TIMEOUT）加余量。等不到就报错退出，不静默再拉一个 daemon。
+const START_LOCK_WAIT: Duration = Duration::from_secs(15);
+/// 锁文件读不出持有者 pid 时的老化宽限：罩住「create_new 成功、pid 还没写入」的
+/// 正常窗口，过了它才允许按 mtime 抢占。
+const START_LOCK_STALE: Duration = Duration::from_secs(15);
+/// 抢不到锁时的重试间隔。
+const START_LOCK_RETRY: Duration = Duration::from_millis(100);
+
+/// start 互斥锁的持有标记：Drop 时删锁文件，`run_start` 的全部提前返回路径都释放。
+#[derive(Debug)]
+struct StartLock {
+    path: PathBuf,
+}
+
+impl Drop for StartLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// 拿 start 互斥锁：锁文件用 `create_new`（O_CREAT | O_EXCL）创建——操作系统层面
+/// 原子，同一时刻只有一个进程建得成功，写入自己的 pid 供后来者判活
+/// （`docs/core-daemon.md` 第 12.3 节）。
+///
+/// 锁被占时按持有者状态分流：pid 还活着就等（持锁方最多 LAUNCH_TIMEOUT 就该交锁）；
+/// pid 已死立即接管（持有者崩溃不会留下永久锁）；pid 读不出（建文件与写 pid 之间
+/// 崩溃）按 mtime 超过 [`START_LOCK_STALE`] 接管。等满 [`START_LOCK_WAIT`] 还拿不到
+/// 就报错——宁可让这次接入失败，也不能悄悄拉起同指纹的第二个 daemon。
+fn acquire_start_lock(path: &Path) -> Result<StartLock, String> {
+    acquire_start_lock_for(path, START_LOCK_WAIT, START_LOCK_STALE)
+}
+
+/// [`acquire_start_lock`] 的可注入版：等待预算与老化宽限作参数，供测试用小值。
+fn acquire_start_lock_for(
+    path: &Path,
+    wait: Duration,
+    stale_after: Duration,
+) -> Result<StartLock, String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("mkdir {} failed: {error}", parent.display()))?;
+    }
+    let deadline = Instant::now() + wait;
+    loop {
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(mut file) => {
+                let _ = writeln!(file, "{}", std::process::id());
+                return Ok(StartLock { path: path.to_path_buf() });
+            }
+            // 锁被占：持有者已死 / 锁文件超龄就接管，否则等一等再试
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if start_lock_is_abandoned(path, stale_after) {
+                    let _ = std::fs::remove_file(path);
+                    continue;
+                }
+            }
+            Err(error) => return Err(format!("cannot create lock {}: {error}", path.display())),
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "another start holds the lock {}; retry when the other client is done",
+                path.display()
+            ));
+        }
+        std::thread::sleep(START_LOCK_RETRY);
+    }
+}
+
+/// 锁文件是否已废弃（可以安全接管）。
+fn start_lock_is_abandoned(path: &Path, stale_after: Duration) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        // 锁文件刚被持有者释放：当废弃处理，立刻回循环抢建
+        return true;
+    };
+    let holder = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok());
+    match holder {
+        Some(pid) => !process_alive(pid),
+        // pid 读不出（持有者建文件后、写 pid 前崩了）：按 mtime 老化判定
+        None => metadata_age(&metadata) >= stale_after,
+    }
+}
+
+/// 持有者进程是否还活着。远程机器只支持 Linux，直接查 `/proc`；其它平台查不了
+/// 也不猜：按活着处理，交给 mtime 老化兜底（Windows 本机调试 `start` 的路径）。
+fn process_alive(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        Path::new(&format!("/proc/{pid}")).exists()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
+/// 文件 mtime 距今的时长；读不出时间按 0（当新鲜）。
+fn metadata_age(metadata: &std::fs::Metadata) -> Duration {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.elapsed().ok())
+        .unwrap_or_default()
+}
+
 // ==================== 启动器（`start`）====================
 
 /// 打印就绪信息：端口取 daemon 状态文件里**实际**监听的那个（内核分配）。
@@ -549,6 +667,28 @@ pub fn run_start(options: RemoteOptions) -> i32 {
         }
     };
 
+    match existing_daemon(&state_path) {
+        ExistingDaemon::Running(state) => {
+            if !print_ready(&state) {
+                return 1;
+            }
+            return 0;
+        }
+        ExistingDaemon::None => {}
+    }
+
+    // 慢路径持互斥锁（`docs/core-daemon.md` 第 12.3 节）：检查与拉起之间的窗口会让
+    // 并发的 start 各拉一个同指纹 daemon——锁内重查后，后到的一方直接复用先到方
+    // 拉起的 daemon。
+    let _lock = match daemon_lock_path().and_then(|path| acquire_start_lock(&path)) {
+        Ok(lock) => lock,
+        Err(error) => {
+            diag!("[core] remote: {error}");
+            return 1;
+        }
+    };
+
+    // 持锁重查：等锁期间对方可能已把 daemon 拉起。
     match existing_daemon(&state_path) {
         ExistingDaemon::Running(state) => {
             if !print_ready(&state) {

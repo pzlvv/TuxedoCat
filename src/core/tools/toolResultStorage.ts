@@ -225,9 +225,8 @@ export async function persistOutputFile(
 /**
  * 删除指定会话在 tool-results 下的全部会话关联文件。
  *
- * 持久化工具结果（见 getToolResultPath）与 Read 工具生成的 pandoc 转换结果
- * （见 Read.convertDocToMd）文件名都带会话前缀，这里按前缀扫描目录直接删除，
- * 不需要回扫对话消息内容。
+ * 持久化工具结果（见 getToolResultPath）文件名都带会话前缀，这里按前缀扫描目录
+ * 直接删除，不需要回扫对话消息内容。
  *
  * @param projectPath 该会话所属项目目录；省略时按 sessionId 解析
  * @returns 实际删除的文件数

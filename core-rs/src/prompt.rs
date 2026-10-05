@@ -79,7 +79,7 @@ Reads the contents of a file from the local filesystem.
 - Line numbers shown in output are 1-based and separated by `|`; `offset` uses the same 1-based numbering (consistent with the Edit tool)
 
 **Limits:**
-- Maximum file size for whole-file reads: 256.0 KB (text files only; xlsx/doc/image files are exempt). Files larger than this require `offset` and `limit`
+- Maximum file size for whole-file reads: 256.0 KB (text files only; xlsx/image files are exempt). Files larger than this require `offset` and `limit`
 - Maximum lines per read: 2000
 - Maximum characters per line: 2000 (longer lines are truncated)
 - Maximum output bytes per read: 50.0 KB (output is capped; use `offset` to continue)
@@ -91,9 +91,6 @@ Reads the contents of a file from the local filesystem.
 - Parses cells into a text table with aligned columns
 - Supports `offset`, `limit`, and `sheet` parameters (max 50 rows per read)
 - If there are multiple sheets, all sheet names are listed so you can read other sheets
-
-**Word / PowerPoint Documents (.doc / .docx / .ppt / .pptx) Support:**
-- Automatically converts to Markdown for reading
 
 **Image Files (.png / .jpg / .jpeg / .gif / .webp / .bmp) Support:**
 - Reads the image and returns it as an image content block, so the model can see the actual image directly.
