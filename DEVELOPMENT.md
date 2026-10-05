@@ -72,7 +72,7 @@ flowchart TB
 | core（业务层） | `src/core/` | 引擎（`QueryEngine` / `Query` / `RunTools`）、历史（`history/`）、工具（`tools/`）、MCP（`mcp/`）、LLM 配置（`llm/`）、压缩（`compact/`）、skills、prompt、spin、会话运行时（`sessionRuntime.ts`）、命令分发（`CommandDispatcher.ts`） | `AssistantEventBus` 的事件类型与 `requireEventBus()` | host/、宿主实现（只读函数与类型） |
 | AssistantEventBus（事件契约） | 类型在 `src/core/AssistantEventBus.ts`，实现在 `src/host/EventBus.ts` | core 与 UI 之间唯一的耦合点；事件词汇表 `CoreEvent` / `CoreRequest` / `UiEvent` / `UiRequest`；全局注册（`setGlobalEventBus` / `requireEventBus` / `resetGlobalEventBus`） | 无（纯接口 + 纯数据类型） | core、host、宿主实现 |
 | host（UI 层） | `src/host/`，禁止 import `vscode` / `electron` | `WebViewUI`（唯一 UI 实现）；三契约 `UIHost` / `SpinDesign` / `ConversationManager`；连接模型 `Client` / `Connection` 与总线实现；共享子模块（`ui/toolHandler.ts` / `ui/userChoice.ts` / `ui/webviewMessageHandler.ts`）；`SessionUiState` | core 的事件类型与只读函数 | 宿主实现（implements 三契约） |
-| 宿主实现 | `src/VSCode*.ts`、`electron/*.ts` | 三契约的 VS Code / Electron 双端实现（`VSCodeUIHost` / `ElectronUIHost`、`VSCodeSpinDesign` / `ElectronSpinDesign`、`SingleWebViewConversationManager` / `ElectronConversationManager`）；bootstrap 接线（`extension.ts` / `main.ts` 调用共享骨架 `host/bootstrapCore.ts`） | host/（三契约、WebViewUI 与 bootstrap 骨架）、core 只读函数、宿主 API | —（顶层） |
+| 宿主实现 | `src/VSCode*.ts`、`electron/*.ts`、`src/tui/` | 三契约的 VS Code / Electron / TUI 三端实现（`VSCodeUIHost` / `ElectronUIHost` / `TuiUIHost`、`VSCodeSpinDesign` / `ElectronSpinDesign` / `TuiSpinDesign`、`SingleWebViewConversationManager` / `ElectronConversationManager` / `TuiConversationManager`）；bootstrap 接线（`extension.ts` / `electron/main.ts` / `src/tui/render/main.ts` 调用共享骨架 `host/bootstrapCore.ts`；TUI 见 `docs/tui.md`） | host/（三契约、WebViewUI 与 bootstrap 骨架）、core 只读函数、宿主 API（TUI 侧为 Node API） | —（顶层） |
 
 #### 模块要点
 
@@ -143,7 +143,11 @@ flowchart TB
 | `electron/titlebar/` + `electron/titlebarPreload.ts` | Electron 专属：自绘标题栏（左侧品牌区 + 单一菜单图标 + 工作目录标签页区；右侧置顶钉 / 模式切换 / 最小化-最大化-关闭，两个图标按钮与窗口按钮同宽同高），替代系统默认标题栏与系统菜单栏 |
 | `electron/titlebarMenuHtml.ts` + `electron/titlebarMenuPreload.ts` | Electron 专属：标题栏下拉菜单。菜单由独立 `WebContentsView` 承载（标题栏视图只有 38px 高，自身 bounds 会裁掉向下展开的菜单），首次打开测量尺寸后缓存，再次打开直接摆位显示；子菜单（「添加最近的工作目录」）渲染成右侧飞出面板，默认收起 |
 | `electron/sidebar/` + `electron/sidebarPreload.ts` | Electron 专属：原生侧栏（头部搜索框 + 新对话按钮；对话列表；空态「添加工作目录」+ 最近工作目录；底部可折叠的文件浏览器分区，`electron/sidebarFiles.ts` 提供路径校验与目录读取） |
-| `src/extension.ts` / `electron/main.ts` | 各自的 bootstrap：构造三契约与宿主句柄 → 调用共享骨架 `bootstrapCore` → 执行宿主专属接线（第 8.6 节） |
+| `src/extension.ts` / `electron/main.ts` / `src/tui/render/main.ts` | 各自的 bootstrap：构造三契约与宿主句柄 → 调用共享骨架 `bootstrapCore` → 执行宿主专属接线（第 8.6 节；TUI 侧无宿主专属 UI 接线，见 `docs/tui.md` 第 2 节） |
+| `src/tui/` | TUI 宿主实现（第三个宿主，`docs/tui.md`）：`TuiUIHost` / `TuiSpinDesign` / `TuiConversationManager` 三契约的终端实现；`store.ts` 纯 reducer（wire 消息 + `tui:` 本地动作 → 唯一渲染事实）；`coreRoot.ts` Core 产物定位（安装前缀 / 仓库）；`composerState.ts` 编辑器状态机；`render/` 为 ESM 作用域（ink 5 依赖），含 Ink 入口 `main.ts`、根组件 `App.tsx`、markdown 映射与组件 |
+| `tui/esbuild.js` | TUI bundle 构建：`src/tui/render/main.ts` → `dist/tui.mjs`（ESM；ink 5 带顶层 await，CJS 无法加载），注入 createRequire / __dirname banner |
+| `installer-rs/` | TUI 版安装程序（`docs/tui-installer.md`）：纯 Rust 自解压安装器，构建期把 Core / ripgrep / TUI bundle 烧进单文件；`.cargo/config.toml` 配 musl 的 rust-lld |
+| `scripts/build-tui-installer.mjs` | 安装程序构建：按目标确保 Core 产物与 TUI bundle 就位 → cargo 交叉构建 → 落位 `release/tui-installer/`（四目标：Windows x64/arm64、Linux x64/arm64 musl） |
 
 **硬约束**：`VSCodeUIHost.ts` / `VSCodeSpinDesign.ts` / `VSCodeConversationManager.ts`
 不得放入 `src/host/`。`electron/tsconfig.json` 的 `include` 包含 `../src/host/**/*.ts`，
@@ -1678,6 +1682,8 @@ UI 侧提前弹框会造成双重确认。
 
 三个契约各自的实现对照。8.1 / 8.2 只列两个宿主类的骨架（含 bootstrap 专用接线），逐成员实现见
 8.3（`UIHost`）、8.4（`SpinDesign`）、8.5（`ConversationManager`）；8.6 是 bootstrap 的接线顺序。
+第三个宿主 TUI（`src/tui/`）不在此展开：三契约的终端实现、逐成员映射与构建见 `docs/tui.md`
+（其分发与 Core 部署见 `docs/tui-installer.md`）。
 
 ### 8.1 VSCodeUIHost
 
@@ -1810,7 +1816,7 @@ export class ElectronUIHost implements UIHost {
 
 ### 8.6 宿主接线
 
-本节覆盖进程启动阶段（VS Code 的 `activate` / Electron 的 `main()`）完成的接线：core 全局
+本节覆盖进程启动阶段（VS Code 的 `activate` / Electron 的 `main()` / TUI 的 `src/tui/render/main.ts`）完成的接线：core 全局
 单例与宿主能力提供者的注册、事件总线的创建与订阅、`WebViewUI` 的创建与子模块接线、
 历史系统 / 会话队列 / 配置目录 / MCP 残留清理，以及退出路径对 core 资源的
 释放。窗口 / 面板 / 菜单 / 托盘 / 快捷键等宿主界面构造与 webview 内容注入属于宿主实现层，
@@ -2464,7 +2470,7 @@ dropSession(sessionId: string): void {
 
 这些差异由契约实现承担，共享代码只调契约方法，不感知宿主。
 
-**`UIHost`**（`src/VSCodeUIHost.ts` / `electron/ElectronUIHost.ts`）
+**`UIHost`**（`src/VSCodeUIHost.ts` / `electron/ElectronUIHost.ts`；TUI 宿主 `src/tui/TuiUIHost.ts` 的逐成员终端语义见 `docs/tui.md` 第 5 节）
 
 | 方法 | VS Code | Electron |
 | --- | --- | --- |

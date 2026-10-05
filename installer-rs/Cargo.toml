@@ -1,0 +1,21 @@
+[package]
+name = "tuxedo-cat-tui-installer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# TUI 版安装程序（docs/tui-installer.md）：
+# 把 Standalone Core、捆绑 ripgrep 与 TUI bundle 内嵌进单个可执行文件，
+# 运行时自解压到安装前缀。零第三方依赖（纯 std）——安装器要在任意目标机上
+# 直接运行，不假设系统里有任何运行库（Linux 一律 musl 静态链接）。
+
+[[bin]]
+name = "tuxedo-cat-tui-installer"
+path = "src/main.rs"
+
+# 嵌入载荷数 MB：体积优先，不需要运行速度
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

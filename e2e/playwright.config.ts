@@ -43,5 +43,7 @@ export default defineConfig({
   projects: [
     { name: 'webview-ui', testMatch: /webview[\\/].+\.spec\.ts/ },
     { name: 'electron-app', testMatch: /electron[\\/].+\.spec\.ts/ },
+    // TUI 安装程序（无浏览器：构建 → 自解压 → 载荷可执行 → TUI 启动守卫）
+    { name: 'tui-installer', testMatch: /tui[\\/].+\.spec\.ts/ },
   ],
 });
