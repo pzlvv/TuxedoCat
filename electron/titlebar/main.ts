@@ -138,6 +138,8 @@ interface TitlebarAPI {
   onWorkspacesChanged: (callback: (state: TitlebarWorkspacesState) => void) => void;
   /** 标签页流水灯状态变化（就地更新，不重建标签页） */
   onWorkspaceActivity: (callback: (activity: WorkspaceActivity) => void) => void;
+  /** 未读完成的标签页集合（「任务完成」绿色呼吸；激活标签页后主进程清除并重推） */
+  onWorkspaceCompletion: (callback: (workspaceIds: string[]) => void) => void;
 }
 
 declare global {
@@ -256,6 +258,33 @@ function normalizeWorkspaceActivity(activity: unknown): WorkspaceActivity {
   return result;
 }
 
+/**
+ * 未读完成的标签页集合（「任务完成」绿色呼吸）。
+ *
+ * 主进程推的是**全量集合快照**（幂等）：会话在用户看不到时完成（窗口失焦 /
+ * 标签页未激活 / 非当前对话）就记为未读，回到窗口后灯条挂上——呼吸一次后保持
+ * 常亮，直到激活该标签页（主进程清除并重推，class 随之摘掉）。集合要在本地持有：
+ * 标签页区重建（renderWorkspaces）时按它恢复 class，不依赖推送时序。
+ */
+const completionAttention = new Set<string>();
+
+/** 把未读完成状态写进标签页 class；活动项不亮（正在看的标签页无需提醒） */
+function applyTabCompletion(tab: HTMLElement, id: string | undefined, isActive: boolean): void {
+  tab.classList.toggle('activity-completed', !!id && !isActive && completionAttention.has(id));
+}
+
+/** 应用一份未读完成集合快照：整体替换并就地刷新已渲染标签页（不重建 DOM） */
+function applyWorkspaceCompletion(ids: unknown): void {
+  if (!Array.isArray(ids)) return;
+  completionAttention.clear();
+  for (const id of ids) {
+    if (typeof id === 'string' && id) completionAttention.add(id);
+  }
+  tabsEl.querySelectorAll<HTMLElement>('.ws-tab').forEach((tab) => {
+    applyTabCompletion(tab, tab.dataset.id, tab.classList.contains('active'));
+  });
+}
+
 /** 把流水灯状态写进标签页 class（waiting 优先于 running；无状态 = 不点亮） */
 function applyTabActivity(tab: HTMLElement, level: WorkspaceActivityLevel | undefined): void {
   tab.classList.toggle('activity-running', level === 'running');
@@ -346,6 +375,8 @@ function renderWorkspaces(
       + (connecting ? ' connecting' : '');
     // 流水灯：非 idle 点亮（黄 waiting 优先，蓝 running 次之）
     applyTabActivity(tab, workspaceActivity[ws.id]);
+    // 未读完成呼吸：集合在本地持有，重建标签页时恢复 class（不依赖推送时序）
+    applyTabCompletion(tab, ws.id, isActive);
     tab.dataset.id = ws.id;
     // 不可用 / 建链中的标签页在悬停说明里给出状态（本地看目录，远程看连接）；
     // 点击它们同样切换活动项，聊天区会显示对应的占位页
@@ -572,6 +603,8 @@ async function init(): Promise<void> {
   api.onWorkspacesChanged((s) => { if (s) applyWorkspacesSnapshot(s); });
   // 流水灯状态变化：就地更新 class，不重建标签页（重建会打断流水动画）
   api.onWorkspaceActivity((activity) => applyWorkspaceActivity(activity));
+  // 未读完成集合：全量快照整体替换（幂等；激活标签页后主进程清除并重推）
+  api.onWorkspaceCompletion((ids) => applyWorkspaceCompletion(ids));
 
   let state: TitlebarState;
   try {

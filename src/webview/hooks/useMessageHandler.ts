@@ -7,7 +7,7 @@ import type { SessionStatesStore } from '../sessionState';
 import { profileLog } from '../debug';
 import { handleStreamShowThinkingAnimation, handleStreamAiEnd, handleStreamQueryBegin, handleStreamQueryEnd, handleStreamStreamMessage, handleStreamStreamEnd, handleStreamCompressProgress } from './handlers/streamHandlers';
 import { handleToolAddMessage, handleToolUpdateToolArgs, handleToolUpdateToolStatus, handleToolToolProgress, handleToolRequestUserChoice, handleToolToolMetaData } from './handlers/toolHandlers';
-import { handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
+import { handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationSessionCompletionAttention, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
 import { handleConfigSetTheme, handleConfigSetModel, handleConfigSetAgentMode, handleConfigSetPromptMode, handleConfigSetThinkingMode, handleConfigSetWebSearch, handleConfigSetMcpServers, handleConfigSetModels, handleConfigSetSkills, handleConfigContextLimitUpdated, handleConfigNotice, handleConfigSettingsDefaults, handleConfigProviderModelsResult, handleConfigSetNewConversationDefaults, handleConfigLlmConfigSaved, handleConfigShowLLMConfig, handleConfigBalanceUpdate, handleConfigFocusInput, handleConfigActivatePrewarmedView } from './handlers/configHandlers';
 import type { HandlerContext } from './handlers/handlerContext';
 
@@ -76,6 +76,8 @@ export interface UseMessageHandlerProps {
   setForceScrollKey: (v: number | ((prev: number) => number)) => void;
   /** core 推来会话运行时状态时递增，强制对话列表重渲染以刷新流水灯与 abort 按钮 */
   setSessionIdleVersion: (v: number | ((prev: number) => number)) => void;
+  /** 未读完成的会话集合（「任务完成」绿色呼吸，Electron 宿主推送；sessionId → 到达时刻） */
+  setCompletionAttention: React.Dispatch<React.SetStateAction<Map<string, number>>>;
   setExpandedSubSessions: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   /** 全部 provider 及其模型列表（菜单三级子菜单数据源）；空数组 = 宿主答了「没有配置模型」 */
   setProviderModels: (v: ProviderModels[]) => void;
@@ -372,6 +374,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           break;
         case 'sessionRuntimeStates':
           handleConversationSessionRuntimeStates(msg, ctx);
+          break;
+        case 'sessionCompletionAttention':
+          handleConversationSessionCompletionAttention(msg, ctx);
           break;
         case 'conversationLoaded':
           handleConversationConversationLoaded(msg, ctx);

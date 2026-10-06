@@ -64,6 +64,7 @@ import {
 
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
 import { diffSessionEndEvents, type SessionLevel } from './trayAttention.js';
+import { diffCompletionAttention } from './completionAttention.js';
 import { SleepBlocker } from './powerSaveBlocker.js';
 import {
   deleteEachPath,
@@ -95,7 +96,7 @@ import {
   type WorkspaceState,
   type WindowRect,
 } from './workspaceStateStore.js';
-import { PRODUCT_NAME, EXTENSION_NAME, SETTINGS_FILE_NAME } from '../src/config/project.js';
+import { PRODUCT_NAME, EXTENSION_NAME, SETTINGS_FILE_NAME, ENV_PREFIX } from '../src/config/project.js';
 import { resolveConfigDir } from '../src/config/configDir.js';
 import {
   DEFAULT_WAKE_SHORTCUT,
@@ -107,6 +108,14 @@ import { tt, onHostLocaleChanged, getHostLocale } from '../src/host/i18n.js';
 import { requireEventBus } from '../src/core/AssistantEventBus.js';
 import { getShortcutDialogHtml } from './shortcutDialogHtml.js';
 import { resolveSmartTitle } from '../src/core/history/smartNaming.js';
+
+/**
+ * e2e 专用的侧栏列表延迟注入开关（`<envPrefix>_E2E_SLOW_LIST_MS`）。
+ *
+ * 主进程与 e2e/electron/sessions.spec.ts 共用这一个名字派生点；envPrefix 取自
+ * project.json，源码不出现产品字面量。
+ */
+const E2E_SLOW_LIST_ENV = `${ENV_PREFIX}_E2E_SLOW_LIST_MS`;
 
 /**
  * 判断 URL 是否为需要在系统浏览器打开的外部链接。
@@ -1010,6 +1019,8 @@ function createMainWindow(): void {
     conversationListOwner: windowMode === 'floating' ? 'webview' : 'host',
     onActiveSessionChanged: (sessionId) => {
       sidebarView?.webContents.send('sidebar:active-session-changed', sessionId);
+      // 该对话成为当前对话 = 阅读了它的未读完成：清掉并同步（侧栏 / webview 灯条随之熄灭）
+      if (sessionId && unreadCompletionSessions.delete(sessionId)) syncCompletionAttention();
       // 同步 UI 侧的「当前活跃会话」：切到已打开的视图不会再走 loadConversation /
       // startNewConversation，不同步的话按会话解析的数据（project skills / MCP 启用
       // 列表）会停在旧视图，取到别的标签页的工作目录。
@@ -1115,6 +1126,8 @@ function createMainWindow(): void {
   mainWindow.on('show', cancelAttention);
   mainWindow.on('restore', cancelAttention);
   mainWindow.on('focus', cancelAttention);
+  // 回到窗口后播放攒下的「任务完成」绿色呼吸（完成发生在窗口失焦期间）
+  mainWindow.on('focus', () => pumpCompletionAttention());
 
   mainWindow.on('closed', () => {
     // 后台预热的聊天视图未挂在窗口上，需显式清理（其余视图随窗口销毁）
@@ -1256,6 +1269,21 @@ let trayStatus: TrayStatus | null = null;
 
 /** 各会话上一次的忙闲级别（`diffSessionEndEvents` 的差分基准，随每次全量推送推进） */
 let traySessionLevels = new Map<string, SessionLevel>();
+
+/**
+ * 「任务完成」绿色呼吸（`completionAttention.ts` + `syncCompletionAttention`）：
+ * 会话 running → idle 且用户当时看不到（窗口失焦 / 标签页未激活 / 非当前对话）时
+ * 对对话项记「未读完成」（标签页只在完成时该标签页未激活才记——激活中的标签页
+ * 视为已读）；等用户回到现场（窗口聚焦）推给各渲染层——灯条呼吸一次后**保持
+ * 常亮**，直到用户阅读：激活该标签页清掉标签页项，把该对话切为当前对话清掉对话项。
+ * 未读集合归主进程独有——焦点 / 激活 / 当前对话是宿主本地事实，webview / 侧栏 /
+ * 标题栏只吃全量集合快照（幂等，重复推送不重复呼吸）。
+ */
+let completionAttentionLevels = new Map<string, SessionLevel>();
+/** 未读完成的标签页（工作区稳定 id）：激活该标签页即视为阅读 */
+const unreadCompletionTabs = new Set<string>();
+/** 未读完成的对话（sessionId）：该对话成为当前对话即视为阅读 */
+const unreadCompletionSessions = new Set<string>();
 
 /**
  * 系统睡眠 / 休眠阻断：任一会话非 idle 时阻断（`prevent-app-suspension`，允许屏幕熄灭），
@@ -1436,6 +1464,80 @@ function cancelAttention(): void {
   if (!attentionActive) return;
   attentionActive = false;
   restoreTrayIcon();
+}
+
+/**
+ * 主窗口是否持有焦点。「任务完成」绿色呼吸的武装 / 播放判据，与托盘的
+ * `isWindowInBackground` 分开：这里只看主窗口（快捷键设置对话框聚焦时主窗口
+ * 失焦，但那个对话框盖在主窗口上，聊天区是否可见无法一概而论——完成呼吸等
+ * 主窗口真正拿到 focus 事件再播，语义与「窗口获取到焦点后」一致）。
+ */
+function isMainWindowFocused(): boolean {
+  return !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused();
+}
+
+/** 会话归属工作区的稳定 id（复用标签页流水灯 `collectWorkspaceActivity` 的同一套归属查找） */
+function resolveSessionWorkspaceKey(sessionId: string): string | null {
+  const workspace = sessionWorkspaces.get(sessionId);
+  if (!workspace) return null;
+  const target = openWorkspaces.find((candidate) => workspacePathMatches(candidate, workspace));
+  return target ? refKey(target) : null;
+}
+
+/**
+ * 「任务完成」绿色呼吸的武装入口：吃与会话状态流同一份全量推送（`setStatusListener`），
+ * 差分出 running → idle 且用户当时看不到的完成，记入未读集合后立即尝试推送。
+ */
+function updateCompletionAttentionFromStates(
+  states: ReadonlyArray<import('../src/core/AssistantEventBus.js').SessionRuntimeState>,
+): void {
+  const activeKey = workspacePath ? refKey(workspacePath) : null;
+  const activeSessionId = chatViews?.getActiveSessionId() ?? null;
+  const arm = diffCompletionAttention(completionAttentionLevels, states, (sessionId) => {
+    const workspaceKey = resolveSessionWorkspaceKey(sessionId);
+    return {
+      workspaceKey,
+      tabActive: workspaceKey !== null && workspaceKey === activeKey,
+      sessionCurrent: activeSessionId === sessionId,
+      windowFocused: isMainWindowFocused(),
+    };
+  });
+  completionAttentionLevels = arm.next;
+  // 快照里消失的会话（关闭工作区 / 删除对话）不再提醒
+  let removed = false;
+  for (const sessionId of arm.gone) {
+    if (unreadCompletionSessions.delete(sessionId)) removed = true;
+  }
+  for (const key of arm.tabs) unreadCompletionTabs.add(key);
+  for (const sessionId of arm.sessions) unreadCompletionSessions.add(sessionId);
+  pumpCompletionAttention();
+  // 清除也要同步出去：让渲染层把已消失会话的灯条熄掉（与推送同一幂等快照）
+  if (removed) syncCompletionAttention();
+}
+
+/**
+ * 把未读完成的全量集合推给三个渲染层（幂等快照，不是增量事件）：
+ * - 标题栏：标签页集合（浮窗没有标签页，照推无害——标签页区隐藏）；
+ * - 侧栏 / webview：会话集合。渲染层按 sessionId 匹配自己的列表，列表里没有的
+ *   id 自然不亮；集合里已有的 id 保留原到达时刻（不重复呼吸），新 id 以到达时刻
+ *   起算呼吸一个周期后转常亮。
+ */
+function syncCompletionAttention(): void {
+  const sessions = [...unreadCompletionSessions];
+  sendToTitlebar('titlebar:workspace-completion', [...unreadCompletionTabs]);
+  sidebarView?.webContents.send('sidebar:session-completion', sessions);
+  uiHost?.broadcastToWebviews({ type: 'sessionCompletionAttention', sessionIds: sessions });
+}
+
+/**
+ * 用户回到现场时推送未读完成集合（只推不请——集合要等用户阅读才清除）：
+ * - 主窗口聚焦（focus 事件 / 武装时正聚焦）：灯条此刻挂上并呼吸一次，之后常亮；
+ * - 切换标签页 / 切换窗口模式后：新可见表面的灯条补齐（集合未变，已亮的不重播呼吸）。
+ * 窗口失焦期间不推送：呼吸留给用户回来后第一眼（不可见的呼吸等于没呼吸）。
+ */
+function pumpCompletionAttention(): void {
+  if (!isMainWindowFocused()) return;
+  syncCompletionAttention();
 }
 
 /** 创建系统托盘（只创建一次），提供“显示主窗口”和“退出”入口 */
@@ -1908,6 +2010,9 @@ async function applyWindowMode(mode: WindowMode): Promise<void> {
     syncWindowTitle();
     layout();
     pushTitlebarModeState();
+    // 模式切换改变了可见表面（浮窗没有侧栏与标签页，完整模式相反）：
+    // 补推一次未读完成，让新可见表面的灯条挂上（集合未变，已亮的不重播呼吸）
+    pumpCompletionAttention();
   } finally {
     windowModeSwitching = false;
   }
@@ -3125,6 +3230,8 @@ function activateWorkspace(target: WorkspaceRef | string): void {
   uiHost?.setWorkspacePath(ref);
   if (changed) {
     saveOpenWorkspaces(openWorkspaces, workspacePath);
+    // 激活标签页 = 阅读了它的未读完成：清掉标签页项并同步（对话项要等各自被打开才清）
+    if (unreadCompletionTabs.delete(refKey(ref))) syncCompletionAttention();
     // 列表快照按目录各存一份：切换标签页不丢快照，侧栏直接命中（脏快照由
     // get-conversations 后台补读，见 sidebar:get-conversations）
     // 从「无工作目录」进入：销毁空态视图（--workspace= 为空），避免残留
@@ -3183,9 +3290,15 @@ async function closeWorkspace(target: WorkspaceRef | string): Promise<void> {
   // 该目录的列表快照一并丢弃：关闭期间盘上内容可能变化（另一实例 / daemon 侧），
   // 重新打开时按首次打开处理（无快照 → 完整读一次盘）。其它目录的快照不受影响。
   conversations?.invalidateCachedList(refKey(ref));
+  // 关闭的工作区不再提醒：未读完成的标签页项与该目录会话的对话项一并丢弃
+  let completionCleared = unreadCompletionTabs.delete(refKey(ref));
   for (const [sid, ws] of [...sessionWorkspaces]) {
-    if (workspacePathMatches(ref, ws)) sessionWorkspaces.delete(sid);
+    if (workspacePathMatches(ref, ws)) {
+      sessionWorkspaces.delete(sid);
+      if (unreadCompletionSessions.delete(sid)) completionCleared = true;
+    }
   }
+  if (completionCleared) syncCompletionAttention();
   const wasActive = sameRef(workspacePath, ref);
   if (wasActive) {
     // 活动权移交相邻项；相邻项不可用 / 建链中时聊天区由 syncChatAreaForActiveWorkspace
@@ -4118,7 +4231,8 @@ function setupIpc(): void {
     // e2e 专用：注入列表拉取延迟，驱动侧栏等待态「转圈延时显示」的慢路径
     // （e2e/electron/sessions.spec.ts 的「等待超过 200ms 才显示加载中」用例）。
     // 同 --multi-instance：隐藏开关，不对外公开；未设置时无开销。
-    const e2eSlowListMs = Number(process.env.TUXEDO_CAT_E2E_SLOW_LIST_MS);
+    // 变量名与 e2e 用例共用同一常量（envPrefix 派生，源码不持有产品字面量）。
+    const e2eSlowListMs = Number(process.env[E2E_SLOW_LIST_ENV]);
     if (e2eSlowListMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, e2eSlowListMs));
     }
@@ -4599,6 +4713,8 @@ function initCore(): void {
   // 托盘只吃状态流（阶段 3.6）：running / waiting 来自 core 的 sessionRuntimeChanged
   conversationsMgr.setStatusListener((states) => {
     updateTrayStatusFromStates(states);
+    // 「任务完成」绿色呼吸：同一份状态流里差分出「用户没看到的完成」（见 completionAttention.ts）
+    updateCompletionAttentionFromStates(states);
     // 标题栏标签页流水灯（蓝=运行 / 黄=等待）也吃这条状态流，就地刷新不重建标签页
     syncTitlebarActivity();
     // 非 idle 会话存在时阻断系统睡眠 / 休眠（与托盘同一份状态流）

@@ -381,6 +381,10 @@ const App = () => {
   // 会话运行状态版本号：core 推来 sessionRuntimeStates 时递增，
   // 强制 App 重渲染，使对话列表的流水灯（running-bar）与 abort 按钮即时变化。
   const [sessionIdleVersion, setSessionIdleVersion] = useState(0);
+  // 未读完成的会话（「任务完成」绿色呼吸；sessionId → 推送到达时刻）。
+  // 主进程推全量集合快照（幂等）：列表项呼吸一次后保持常亮，直到该对话成为当前
+  // 对话（主进程清除并重推）。只有 Electron 宿主发这条消息，其它宿主集合恒为空。
+  const [completionAttention, setCompletionAttention] = useState<Map<string, number>>(new Map());
 
   // 输入框 refs
   const mainInputRef = useRef<HTMLTextAreaElement>(null);
@@ -451,6 +455,7 @@ const App = () => {
     setModelRef, setWebSearch, setContextLength, setQueuedMessage,
     setUserChoiceRequest, setNamingSessions, setStreamingVersion, setForceScrollKey,
     setSessionIdleVersion,
+    setCompletionAttention,
     setExpandedSubSessions, setProviderModels, setBalance, setBalanceCurrency, setIsUnlimited,
     setCurrentSessionIdRef, setLlmConfigPayload,
     setSettingsDefaults, settingsDefaults, setLocaleVersion,
@@ -1178,6 +1183,7 @@ const App = () => {
                           }
                           isIdle={getSessionIdleState(item.sessionId)}
                           isWaitingForUser={getSessionWaitingState(item.sessionId)}
+                          completionAttention={completionAttention}
                           getSessionIdleState={getSessionIdleState}
                           getSessionWaitingState={getSessionWaitingState}
                           onToggle={() => _toggleSubSession(item.sessionId)}

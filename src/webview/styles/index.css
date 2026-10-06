@@ -935,6 +935,34 @@ textarea::-webkit-scrollbar-thumb:hover {
   animation: runningBarWaitingBreathing 1.6s ease-in-out infinite;
 }
 
+/* ── 未读完成（「任务完成」绿色呼吸，Electron 宿主推送）──
+   会话在用户看不到时完成（窗口失焦 / 标签页未激活 / 非当前对话）：回到窗口后
+   灯条呼吸一次（升→微回落→稳在常亮），之后保持常亮，直到该对话成为当前对话
+   （主进程从未读集合清除并重推，条目随之熄灭）。绿色与托盘空闲点 / Electron
+   侧栏 loaded 点同一绿（#22c55e）；当前对话不亮（正在看的就是「已读」）。 */
+@keyframes runningBarCompletionBreathing {
+  0% { opacity: 0.5; }
+  50% { opacity: 1; }
+  75% { opacity: 0.6; }
+  100% { opacity: 1; }
+}
+.running-bar--completed {
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(34, 197, 94, 0.5) 30%,
+    rgba(34, 197, 94, 0.8) 50%,
+    rgba(34, 197, 94, 0.5) 70%,
+    transparent 100%
+  );
+  /* 覆盖 .running-bar 的流水动画：常亮不动 */
+  animation: none;
+}
+/* 推送到达后的第一个周期带一次呼吸，之后回落到 .running-bar--completed 的常亮 */
+.running-bar--completed-breath {
+  animation: runningBarCompletionBreathing 1.6s ease-in-out 1;
+}
+
 /* Single View：其它会话正在等待用户输入时，历史对话按钮的呼吸提醒。
    - 颜色走 --history-attention-rgb，便于按主题切换：暗色用亮黄（yellow-400），
      亮色用更深的琥珀（amber-600），避免在浅背景上刺眼、同时对比更好；

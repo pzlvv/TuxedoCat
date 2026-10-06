@@ -64,4 +64,8 @@ contextBridge.exposeInMainWorld('titlebarAPI', {
   onWorkspaceActivity: (callback: (activity: unknown) => void): void => {
     ipcRenderer.on('titlebar:workspace-activity', (_event, activity) => callback(activity));
   },
+  /** 未读完成的标签页集合（「任务完成」绿色呼吸，激活标签页后由主进程清除） */
+  onWorkspaceCompletion: (callback: (workspaceIds: string[]) => void): void => {
+    ipcRenderer.on('titlebar:workspace-completion', (_event, ids) => callback(ids));
+  },
 });

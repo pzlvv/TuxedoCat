@@ -53,6 +53,10 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
   onSessionStatesUpdated: (callback: (states: unknown) => void): void => {
     ipcRenderer.on('sidebar:session-states-updated', (_event, states) => callback(states));
   },
+  /** 未读完成的会话集合（「任务完成」绿色呼吸；对话成为当前对话后由主进程清除） */
+  onSessionCompletion: (callback: (sessionIds: string[]) => void): void => {
+    ipcRenderer.on('sidebar:session-completion', (_event, sessionIds) => callback(sessionIds));
+  },
   onSessionLoadedChanged: (callback: (sessionIds: unknown) => void): void => {
     ipcRenderer.on('sidebar:session-loaded-changed', (_event, sessionIds) => callback(sessionIds));
   },

@@ -296,17 +296,49 @@ body {
   );
   animation: wsTabFlow 1.5s linear infinite;
 }
-/* 等待用户操作（ask user / 权限确认）：黄色呼吸（不流水，优先于蓝） */
+/* 等待用户操作（ask user / 权限确认）：黄色呼吸（不流水，优先于蓝）。
+   background-size 必须复位成 100% 100%：基类的 200% 是给蓝流水滚动用的，
+   不复位的话 180° 渐变只露出上半段——顶暗尾亮，不是与对话列表一致的
+   「中间亮、两头暗」。渐变配色与 .running-bar--waiting 同一套（峰值 0.8）。 */
 .ws-tab.activity-waiting .ws-tab-activity {
   background-image: linear-gradient(
     180deg,
     transparent 0%,
     rgba(250, 204, 21, 0.5) 30%,
-    rgba(250, 204, 21, 0.9) 50%,
+    rgba(250, 204, 21, 0.8) 50%,
     rgba(250, 204, 21, 0.5) 70%,
     transparent 100%
   );
+  background-size: 100% 100%;
   animation: wsTabWaitingBreathing 1.6s ease-in-out infinite;
+}
+
+/* ── 未读完成（「任务完成」绿色呼吸）──
+   该标签页在完成时未激活（激活中的标签页视为已读：里面的完成由对话项的灯
+   当场表达，切走再切回不补亮）：回到窗口后灯条呼吸一次（升→微回落→稳在常亮），
+   之后保持常亮，直到激活该标签页（主进程清除未读集合并重推，class 随之摘掉）。
+   绿色与托盘空闲点 / 侧栏 loaded 点同一绿（#22c55e）；活动项不亮（正在看的
+   标签页无需提醒，class 由渲染层跳过）。放在 running / waiting 之后：
+   短暂共存时完成提醒盖过流水 / 等待，3.2s 内稳定常亮后随清除恢复原指示。 */
+@keyframes wsTabCompletionBreathing {
+  0% { opacity: 0.5; }
+  50% { opacity: 1; }
+  75% { opacity: 0.6; }
+  100% { opacity: 1; }
+}
+.ws-tab.activity-completed .ws-tab-activity {
+  display: block;
+  background-image: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(34, 197, 94, 0.5) 30%,
+    rgba(34, 197, 94, 0.8) 50%,
+    rgba(34, 197, 94, 0.5) 70%,
+    transparent 100%
+  );
+  /* 复位 background-size（同等待条）：渐变完整落在条上，中间亮、两头暗 */
+  background-size: 100% 100%;
+  animation: wsTabCompletionBreathing 1.6s ease-in-out 1;
 }
 
 /* ── 不可用工作区标签页（本地目录不存在 / 远程连不上）──

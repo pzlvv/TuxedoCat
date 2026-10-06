@@ -158,7 +158,7 @@ body.sidebar-resizing { cursor: col-resize; }
   }
 }
 
-/* 等待用户输入（ask user 提问 / 权限确认）时的黄色呼吸灯 */
+/* 等待用户输入（ask user / 提问 / 权限确认）时的黄色呼吸灯 */
 .running-bar--waiting {
   background: linear-gradient(
     180deg,
@@ -170,6 +170,34 @@ body.sidebar-resizing { cursor: col-resize; }
   );
   /* 覆盖 .running-bar 的流水动画，改为单一呼吸动画（与 webview 对话列表保持一致） */
   animation: runningBarWaitingBreathing 1.6s ease-in-out infinite;
+}
+
+/* ── 未读完成（「任务完成」绿色呼吸）──
+   会话在用户看不到时完成（窗口失焦 / 标签页未激活 / 非当前对话）：回到窗口后
+   灯条呼吸一次（升→微回落→稳在常亮），之后保持常亮，直到该对话被打开（主进程
+   从未读集合清除并重推，条目随之熄灭）。绿色与托盘空闲点 / loaded 点同一绿
+   （#22c55e）；当前对话不亮（正在看的就是「已读」）。 */
+@keyframes runningBarCompletionBreathing {
+  0% { opacity: 0.5; }
+  50% { opacity: 1; }
+  75% { opacity: 0.6; }
+  100% { opacity: 1; }
+}
+.running-bar--completed {
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(34, 197, 94, 0.5) 30%,
+    rgba(34, 197, 94, 0.8) 50%,
+    rgba(34, 197, 94, 0.5) 70%,
+    transparent 100%
+  );
+  /* 覆盖 .running-bar 的流水动画：常亮不动 */
+  animation: none;
+}
+/* 推送到达后的第一个周期带一次呼吸，之后回落到 .running-bar--completed 的常亮 */
+.running-bar--completed-breath {
+  animation: runningBarCompletionBreathing 1.6s ease-in-out 1;
 }
 
 /* ── 未选择工作区时的引导占位 ── */

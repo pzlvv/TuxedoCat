@@ -131,6 +131,8 @@ interface SidebarAPI {
   smartNameConversation: (sessionId: string) => Promise<{ ok: boolean; title?: string; error?: string }>;
   onConversationsUpdated: (cb: (list: ConversationMeta[]) => void) => void;
   onSessionStatesUpdated: (cb: (states: SessionRuntimeState[]) => void) => void;
+  /** 未读完成的会话集合（「任务完成」绿色呼吸；对话成为当前对话后由主进程清除） */
+  onSessionCompletion: (cb: (sessionIds: string[]) => void) => void;
   onSessionLoadedChanged: (cb: (sessionIds: string[]) => void) => void;
   onActiveSessionChanged: (cb: (sessionId: string | null) => void) => void;
   onWorkspacesChanged: (cb: (state: WorkspacesState) => void) => void;
@@ -204,6 +206,16 @@ let sessionStates = new Map<string, SessionRuntimeState>();
 /** 已打开（有活动视图）的会话集合，来自 `sidebar:session-loaded-changed` */
 let loadedSessions = new Set<string>();
 
+/** 「任务完成」呼吸动画的时长（与 styles.css 的 animation 周期一致） */
+const COMPLETION_BREATH_MS = 1600;
+/**
+ * 未读完成的会话（「任务完成」绿色呼吸）：sessionId → 推送到达时刻。
+ * 主进程推**全量集合快照**（幂等）：灯条呼吸一次（到达后一个周期内带动画，之后
+ * 常亮），直到该对话被打开（成为当前对话）——主进程清除并重推，条目随之熄灭。
+ * 已有条目保留首次到达时刻：重复推送不给已亮的灯条重播呼吸。
+ */
+let completionAttention = new Map<string, number>();
+
 /** 归一化 IPC 传来的运行时状态（跨进程边界，做一次防御性校验） */
 function normalizeSessionStates(states: unknown): Map<string, SessionRuntimeState> {
   const map = new Map<string, SessionRuntimeState>();
@@ -221,6 +233,18 @@ function normalizeSessionStates(states: unknown): Map<string, SessionRuntimeStat
 function normalizeLoadedSessions(sessionIds: unknown): Set<string> {
   if (!Array.isArray(sessionIds)) return new Set();
   return new Set(sessionIds.filter((id): id is string => typeof id === 'string'));
+}
+
+/** 应用一份未读完成集合快照：整体替换（已有条目保留原到达时刻，不重播呼吸） */
+function applySessionCompletion(sessionIds: unknown): void {
+  if (!Array.isArray(sessionIds)) return;
+  const next = new Map<string, number>();
+  for (const sessionId of sessionIds) {
+    if (typeof sessionId !== 'string' || !sessionId) continue;
+    next.set(sessionId, completionAttention.get(sessionId) ?? Date.now());
+  }
+  completionAttention = next;
+  render();
 }
 
 // 交互状态（render 重建 DOM 后仍需保留）
@@ -539,10 +563,16 @@ function itemHtml(c: ConversationMeta, depth: number, childCount: number, isExpa
   const dot = loadedSessions.has(c.sessionId) ? '<span class="loaded-dot" title="已打开"></span>' : '';
   const state = sessionStates.get(c.sessionId);
   // 非 idle 对话显示左边流水灯条（与 webview 对话列表一致；当前活跃会话同样显示）
-  // 正在等待用户输入（ask user / 权限确认）时显示黄色
+  // 正在等待用户输入（ask user / 权限确认）时显示黄色；
+  // 空闲但未读完成（用户没看到的任务结束）显示绿色：呼吸一次后常亮，直到该对话
+  // 被打开——当前对话不亮（正在看的就是「已读」，主进程的清除推送也会随之到达）
+  const completionAt = completionAttention.get(c.sessionId);
+  const completionBar = completionAt !== undefined && state?.idle !== false && c.sessionId !== activeSessionId
+    ? `<div class="running-bar running-bar--completed${Date.now() - completionAt < COMPLETION_BREATH_MS ? ' running-bar--completed-breath' : ''}"></div>`
+    : '';
   const runningBar = state && !state.idle
     ? `<div class="running-bar${state.waiting ? ' running-bar--waiting' : ''}"></div>`
-    : '';
+    : completionBar;
   const isRenaming = renamingSessionId === c.sessionId;
   const isNaming = namingSessions.has(c.sessionId);
   const isConfirming = confirmDeleteId === c.sessionId;
@@ -786,6 +816,9 @@ function subscribe(): void {
   window.sidebarAPI.onSessionStatesUpdated((states) => {
     sessionStates = normalizeSessionStates(states);
     render();
+  });
+  window.sidebarAPI.onSessionCompletion((sessionIds) => {
+    applySessionCompletion(sessionIds);
   });
   window.sidebarAPI.onSessionLoadedChanged((sessionIds) => {
     loadedSessions = normalizeLoadedSessions(sessionIds);

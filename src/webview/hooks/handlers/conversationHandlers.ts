@@ -128,6 +128,25 @@ export function handleConversationSessionRuntimeStates(
           return;
 }
 
+export function handleConversationSessionCompletionAttention(
+  msg: Extract<HostToWebviewWire, { type: 'sessionCompletionAttention' }>,
+  ctx: HandlerContext,
+): void {
+  const { props } = ctx;
+  // 未读完成的会话集合（「任务完成」绿色呼吸，Electron 宿主专用）：主进程判定好
+  // 推送时机（窗口聚焦）才下发，这里只负责挂灯条——呼吸一次后常亮，集合里消失
+  // （该对话被打开 / 会话被删除）时由后续推送熄灭。已有条目保留原到达时刻，
+  // 重复推送不给已亮的灯条重播呼吸。
+  const incoming = new Set((msg.sessionIds || []).filter((sid) => typeof sid === 'string' && sid));
+  props.setCompletionAttention(prev => {
+    const next = new Map<string, number>();
+    for (const sid of incoming) {
+      next.set(sid, prev.get(sid) ?? Date.now());
+    }
+    return next;
+  });
+}
+
 export function handleConversationConversationLoaded(
   msg: Extract<HostToWebviewWire, { type: 'conversationLoaded' }>,
   ctx: HandlerContext,

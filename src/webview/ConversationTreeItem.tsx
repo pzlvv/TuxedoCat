@@ -25,6 +25,8 @@ export interface ConversationTreeItemProps {
   isIdle: boolean;
   /** 会话是否正在等待用户输入（ask user / 权限确认）——流水灯显示黄色 */
   isWaitingForUser?: boolean;
+  /** 未读完成的会话集合（「任务完成」绿色呼吸；sessionId → 推送到达时刻）。 */
+  completionAttention?: Map<string, number>;
   getSessionIdleState: (sessionId: string) => boolean;
   /** 获取子会话是否正在等待用户输入 */
   getSessionWaitingState?: (sessionId: string) => boolean;
@@ -50,6 +52,9 @@ export interface ConversationTreeItemProps {
 
 const MAX_DEPTH = 20; // circular reference / stack overflow protection
 
+/** 「任务完成」呼吸动画的时长（与 index.css 的 animation 周期一致）：到达后一个周期内带动画，之后常亮 */
+const COMPLETION_BREATH_MS = 1600;
+
 /* ------------------------------------------------------------------ */
 /*  Component                                                         */
 /* ------------------------------------------------------------------ */
@@ -60,6 +65,7 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
   isExpanded,
   isIdle,
   isWaitingForUser,
+  completionAttention,
   getSessionIdleState,
   getSessionWaitingState,
   onToggle,
@@ -143,9 +149,17 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
         }}
         onClick={isRenaming ? undefined : onSelect}
       >
-        {!isIdle && (
+        {!isIdle ? (
           <div className={isWaitingForUser ? 'running-bar running-bar--waiting' : 'running-bar'} />
-        )}
+        ) : (() => {
+          // 未读完成（「任务完成」绿色呼吸）：会话在用户看不到时完成后挂上，
+          // 呼吸一次后保持常亮，直到该对话成为当前对话（主进程清除并重推）。
+          // 当前对话不亮——正在看的就是「已读」。
+          const completionAt = completionAttention?.get(item.sessionId);
+          if (completionAt === undefined || isActive) return null;
+          const breath = Date.now() - completionAt < COMPLETION_BREATH_MS;
+          return <div className={`running-bar running-bar--completed${breath ? ' running-bar--completed-breath' : ''}`} />;
+        })()}
         <div className="flex items-center justify-between gap-2">
           <div className="flex-1 min-w-0 flex items-center gap-1">
             {/* 展开/折叠按钮（仅在有关联子对话时显示） */}
@@ -313,6 +327,7 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
               isExpanded={expandedSubSessions[child.sessionId] === true}
               isIdle={getSessionIdleState(child.sessionId)}
               isWaitingForUser={getSessionWaitingState?.(child.sessionId) ?? false}
+              completionAttention={completionAttention}
               getSessionIdleState={getSessionIdleState}
               getSessionWaitingState={getSessionWaitingState}
               onToggle={() => onToggleSub(child.sessionId)}

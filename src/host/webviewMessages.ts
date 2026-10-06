@@ -219,6 +219,16 @@ export type HostToWebviewMessage = {
     subAgentRunning: boolean;
   }>;
 } | {
+  /**
+   * 未读完成的会话集合（「任务完成」绿色呼吸，Electron 宿主专用——其它宿主不发）。
+   * 主进程对相邻两次会话运行时快照差分出 running → idle，且完成时刻窗口失焦 /
+   * 标签页未激活 / 会话非当前时记为未读；窗口聚焦后推送。列表项绿色呼吸一次后
+   * 保持常亮，直到该对话成为当前对话（主进程清除并重推，条目随之熄灭）。
+   * 全量集合快照（幂等）：webview 按自己的列表匹配 sessionId，列表里没有的忽略。
+   */
+  type: 'sessionCompletionAttention';
+  sessionIds: string[];
+} | {
   type: 'conversationLoaded';
   sessionId: string;
   conversation: {
