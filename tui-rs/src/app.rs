@@ -285,7 +285,7 @@ impl App {
                     self.respond_choice(choice.choice_id.clone(), -1, Some(text));
                 }
             }
-            KeyCode::Backspace => {
+            _ if is_backspace(key) => {
                 input.pop();
             }
             KeyCode::Char(character)
@@ -341,7 +341,7 @@ impl App {
                     0
                 };
             }
-            KeyCode::Backspace => {
+            _ if is_backspace(key) => {
                 self.menu_filter.pop();
                 self.menu_cursor = 0;
             }
@@ -365,7 +365,7 @@ impl App {
                     self.close_menu();
                 }
             }
-            KeyCode::Backspace => {
+            _ if is_backspace(key) => {
                 if let Some(Menu::Rename { value, .. }) = self.menu.as_mut() {
                     value.pop();
                 }
@@ -546,7 +546,7 @@ impl App {
                     self.composer = composer::initial_editor();
                 }
             }
-            KeyCode::Backspace => {
+            _ if is_backspace(key) => {
                 self.composer =
                     composer::apply_key(&self.composer, "", &EditorKey { backspace: true, ..Default::default() })
             }
@@ -1310,6 +1310,14 @@ struct MenuItem {
     key: String,
     label: String,
     hint: Option<String>,
+}
+
+/// 退格键的两种到达形态：crossterm 只把 \x7f 解析成 `Backspace`；把退格键发成
+/// ^H（\x08）的终端里，\x08 落在控制字节区被解析成 `Ctrl+H`——按 ASCII 惯例把它
+/// 当退格处理，否则这类终端里退格键「没反应」（Ctrl+退格反而生效的怪象）。
+fn is_backspace(key: KeyEvent) -> bool {
+    key.code == KeyCode::Backspace
+        || (key.code == KeyCode::Char('h') && key.modifiers.contains(KeyModifiers::CONTROL))
 }
 
 fn filter_items(items: &[MenuItem], filter: &str) -> Vec<MenuItem> {

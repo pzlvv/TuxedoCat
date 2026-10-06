@@ -160,10 +160,10 @@ fn output_path_follows_tmpdir() {
     let sandbox = Sandbox::new("bash-task-paths");
     let tmp = sandbox.root.join("tmp");
     let _guard = TmpDirGuard::set(&tmp);
-    assert_eq!(task_output_dir(), tmp.join("tuxedo-cat-tasks"));
+    assert_eq!(task_output_dir(), tmp.join(TASK_OUTPUT_DIR_NAME));
     assert_eq!(
         task_output_path("bg-1-2"),
-        tmp.join("tuxedo-cat-tasks").join("bg-1-2.output")
+        tmp.join(TASK_OUTPUT_DIR_NAME).join("bg-1-2.output")
     );
 }
 

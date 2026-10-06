@@ -29,7 +29,7 @@ import {
   isCoreToUiFrame,
   isUiToCoreFrame,
 } from '../host/standalone/protocol';
-import { CORE_KIND, resolveCoreKind } from '../host/coreKind';
+import { CORE_KIND, CORE_KIND_ENV, resolveCoreKind } from '../host/coreKind';
 import {
   coreBinaryCandidates,
   coreBinaryFileName,
@@ -213,16 +213,16 @@ async function run(): Promise<void> {
   {
     check('default core kind is standalone', resolveCoreKind({}) === 'standalone');
     check('CORE_KIND is standalone', CORE_KIND === 'standalone');
-    check('env override embedded', resolveCoreKind({ TUXEDO_CAT_CORE: 'embedded' }) === 'embedded');
+    check('env override embedded', resolveCoreKind({ [CORE_KIND_ENV]: 'embedded' }) === 'embedded');
     check(
       'env override standalone',
-      resolveCoreKind({ TUXEDO_CAT_CORE: 'standalone' }) === 'standalone',
+      resolveCoreKind({ [CORE_KIND_ENV]: 'standalone' }) === 'standalone',
     );
     check(
       'empty env falls back to the default',
-      resolveCoreKind({ TUXEDO_CAT_CORE: '' }) === 'standalone',
+      resolveCoreKind({ [CORE_KIND_ENV]: '' }) === 'standalone',
     );
-    check('invalid env throws', throws(() => resolveCoreKind({ TUXEDO_CAT_CORE: 'rust' })));
+    check('invalid env throws', throws(() => resolveCoreKind({ [CORE_KIND_ENV]: 'rust' })));
   }
 
   // ---------- 帧编解码 ----------
@@ -344,7 +344,7 @@ async function run(): Promise<void> {
       type: 'hostEnvironmentProvided',
       extensionPath: 'D:/app',
       logToConsole: true,
-      configDirName: '.tuxedo-cat',
+      configDirName: CONFIG_DIR_NAME,
       settings: emptySettingsSnapshot(),
       mcpServers: [],
     });
@@ -521,7 +521,7 @@ async function run(): Promise<void> {
       type: 'hostEnvironmentProvided',
       extensionPath: 'D:/app',
       logToConsole: true,
-      configDirName: '.tuxedo-cat',
+      configDirName: CONFIG_DIR_NAME,
       settings: emptySettingsSnapshot(),
       mcpServers: [],
     });

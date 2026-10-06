@@ -782,7 +782,7 @@ wire message（若该事件会产生 webview 协议消息）。
 | 13 | `titleChanged` | `sessionId`, `title` | `Integration`（新会话初始标题）、`skills/bundled/spin`、`initializeCoreEvents`（重命名） | `onTitleChanged` | `setTitle` |
 | 14 | `sessionCreated` | `sessionId`, `parentSessionId: string \| null` | `QueryEngine`（新会话与子代理会话创建都会走到这里） | `onSessionCreated` | `initSessionState` |
 | 15 | `conversationListChanged` | 无 | `history/Conversation`（消息落盘）、`tools/agent/AgentTool`（子代理创建 / 结束）、`initializeCoreEvents`（改名 / 删除） | `onConversationListChanged` → `ConversationManager.refresh()` | `conversationsData`（VS Code）；Electron 另推原生侧栏 |
-| 16 | `sessionRuntimeChanged` | `states: readonly SessionRuntimeState[]` | core 的 `sessionRuntime`（第 4.5 节） | `onSessionRuntimeChanged` → `ConversationManager.updateSessionStates()` | VS Code：webview 对话树流水灯（`sessionRuntimeStates`）；Electron：侧栏流水灯 + 托盘状态点 + 系统睡眠阻断 |
+| 16 | `sessionRuntimeChanged` | `states: readonly SessionRuntimeState[]` | core 的 `sessionRuntime`（第 4.5 节） | `onSessionRuntimeChanged` → `ConversationManager.updateSessionStates()` | VS Code：webview 对话树流水灯（`sessionRuntimeStates`）；Electron：侧栏流水灯 + 托盘状态点 + 未读完成呼吸 + 系统睡眠阻断 |
 | 17 | `spinDesignDataChanged` | 无 | `skills/bundled/spin`、`spin/Loop` | `onSpinDesignDataChanged` | `SpinDesign.refresh()` |
 | 18 | `compactBegin` | `sessionId` | `compact/compact` | `onCompactBegin` | `compressProgress`（`status: 'start'`） |
 | 19 | `compactEnd` | `sessionId`, `result` | `compact/compact`（`complete`）、`Integration` / `QueryEngine`（`error`） | `onCompactEnd` | `compressProgress`（`status: 'complete'` / `'error'`） |
@@ -1199,7 +1199,7 @@ webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接�
 | source of truth | 磁盘（core 的 `loadConversationList()`） | core 的 `sessionRuntime`（第 4.5 节） |
 | 变化频率 | 低（落盘 / 改名 / 删除 / 新建） | 高（查询开始结束、等用户、用户响应） |
 | 触发 | `CoreEvent.conversationListChanged` | `CoreEvent.sessionRuntimeChanged` |
-| 消费者 | webview 子对话树、Electron 原生侧栏 | VS Code webview 对话树流水灯、Electron 侧栏流水灯、系统托盘状态点、系统睡眠阻断（宿主进程与 Core 进程各一份） |
+| 消费者 | webview 子对话树、Electron 原生侧栏 | VS Code webview 对话树流水灯、Electron 侧栏流水灯、系统托盘状态点、未读完成呼吸（Electron）、系统睡眠阻断（宿主进程与 Core 进程各一份） |
 
 两条流**不合并**：把 `idle` / `waiting` 贴到磁盘列表上一起推送，会让列表接口失真
 （磁盘元数据里混进运行时状态），且每次状态变化都要重读一遍盘；托盘也只能从对话列表反推
@@ -1810,7 +1810,7 @@ export class ElectronUIHost implements UIHost {
 | 构造依赖 | `host: UIHost` | `host: UIHost` + `sendToSidebar(channel, payload)`（侧栏出口，由 `main.ts` 注入）+ `sendToChatViews(message)`（广播给所有聊天视图，abort 按钮数据源） |
 | `dispatchList` | `host.sendToWebview({ type: 'conversationsData', conversations })` | ① `sendToSidebar('sidebar:conversations-updated', list)` ② `host.sendToWebview({ type: 'conversationsData', ... })` |
 | `dispatchStates` | `host.sendToWebview({ type: 'sessionRuntimeStates', states })`（对话树流水灯 + abort 按钮） | ① `sendToSidebar('sidebar:session-states-updated', states)` ② `statusListener(states)`（托盘）③ 广播给所有聊天视图（abort 按钮） |
-| `setStatusListener` | 不注册 | `main.ts` 注入 `updateTrayStatusFromStates`：托盘状态点 + 「任务结束」闪烁，另驱动系统睡眠阻断（`sleepBlocker.update`） |
+| `setStatusListener` | 不注册 | `main.ts` 注入 `updateTrayStatusFromStates`：托盘状态点 + 「任务结束」闪烁；`updateCompletionAttentionFromStates`：「任务完成」未读呼吸；另驱动系统睡眠阻断（`sleepBlocker.update`） |
 | 空闲会话回收 | **承担**（计时 / 巡检 / 关闭动作分发，见第 5.4 节） | 不承担 |
 | 额外通道 | 无 | `sidebar:session-loaded-changed`（`loaded` 由 `ChatViewManager.onLoadedChanged` 单独推，不进两条流）；`dispatchStates` 的 `sidebar:session-states-updated` 由侧栏消费（流水灯）、`statusListener` 走托盘、广播给聊天视图的 `sessionRuntimeStates` 供 abort 按钮 |
 
@@ -1890,7 +1890,7 @@ Standalone 下打开第一个真实工作区时占位 Connection 被销毁。
 | 虚拟文档 provider（预览 / diff 三个 scheme） | VS Code | 无对应 Electron 能力 |
 | `registerWebviewViewProvider` / 命令 / 状态栏项 | VS Code | 扩展界面入口 |
 | `host.setMainWindow` / `setSidebarView` / `setChatViewManager` / `setWorkspaceSource` | Electron | 主进程句柄注入；`setWorkspaceSource` 提供打开集合 / 活动项 / 变化订阅（Client 据此建立 Connection） |
-| `conversations.setStatusListener` | Electron | 托盘状态点、闪烁提醒与系统睡眠阻断 |
+| `conversations.setStatusListener` | Electron | 托盘状态点、闪烁提醒、未读完成呼吸与系统睡眠阻断 |
 | 侧栏出口（`sendToSidebar`） | Electron | 原生侧栏三条流 |
 | `chatViews.closeConversation = (sid) => ui.releaseConversation(sid)` | Electron | 视图销毁序列只卸内存 |
 | 菜单 / 托盘 / 全局唤醒快捷键 / 单实例锁 | Electron | 桌面端集成 |
@@ -1991,7 +1991,7 @@ Electron 的视图句柄：`ElectronUIHost.webviewHandleFor(source)` 把来源 `
 | 空闲回收 | 启用（`startIdleMonitor`） | 不启用 |
 | 托盘 | 无 | `setStatusListener` → 状态点 + 闪烁提醒 |
 | 系统睡眠阻断 | 无（VS Code 扩展没有电源 API）；standalone 下由 Core 子进程自己阻断（第 11.1 节） | `setStatusListener` → `sleepBlocker.update(states)`（`electron/powerSaveBlocker.ts` 的 `powerSaveBlocker`） |
-| 侧栏 | 无（webview 内下拉） | 原生 `WebContentsView` + 三条流：`sidebar:conversations-updated` / `sidebar:session-states-updated` / `sidebar:session-loaded-changed` |
+| 侧栏 | 无（webview 内下拉） | 原生 `WebContentsView` + 四条流：`sidebar:conversations-updated` / `sidebar:session-states-updated` / `sidebar:session-loaded-changed` / `sidebar:session-completion`（未读完成，见第 11 章「未读完成呼吸」） |
 | 虚拟文档 | 注册三个 `TextDocumentContentProvider` | 无（用 Monaco 辅助窗口） |
 | 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销全局快捷键、停托盘闪烁并销毁托盘、释放睡眠阻断、`shutdownCore()` |
 
@@ -2505,7 +2505,8 @@ dropSession(sessionId: string): void {
 | 打开集合 | `openWorkspaces: WorkspaceRef[]`（主进程进程内事实，按标签页顺序；本地 / 远程同构）；活动项 `workspacePath`（打开集合中的一项） |
 | 标签页 | 标题栏（原菜单栏区域）：`titlebar:workspaces` 下发 `{ version, workspaces: [{id,path,name,remote,availability}], activeWorkspace, activity }`（与 `titlebar:get-state` 同字段名，均带单调版本号 `version`——每次推送 +1，get-state 响应带当前值；标题栏按版本号丢弃陈旧回包，避免「get-state 回包在途期间状态变化并经推送先到」时把新状态覆盖回旧值，`e2e/webview/titlebar.spec.ts` 锁定该时序；`availability` ∈ `available` / `unavailable` / `connecting`），标题栏按 `id`（`workspaceRefKey`）作身份渲染标签页（活动项高亮、每项可关闭、键盘可切换、可拖拽排序，建链中 / 不可用项同样可激活）+「添加」按钮；宽度够时每张固定 192px，总宽超出时逐张收窄到 56px 下限后横向滚动；打开集合为空时不渲染标签页区域（添加入口在侧栏空态与菜单）；浮窗模式隐藏菜单图标与标签页 |
 | 不可用工作区 | 连接状态机 `WorkspaceAvailabilityState`（`electron/workspaceAvailability.ts`，available / unavailable / connecting 三态 + 就绪标记，按去重键，时序不变量由 `src/test/workspaceAvailability.test.ts` 锁定）。启动期判定不可用：本地目录已不存在（恢复时 `isValidWorkspaceDir` 检查），或远程建连失败。**远程标签页从启动起即 connecting**（文字前黄色呼吸点），由 `probeStartupRemoteWorkspaces` 经 `bootstrapCore.probeRemoteEndpoint` 逐 endpoint 探测落定（传输层直连，**3 秒建链超时，远端引导不计入**——opener 的 `prepare` 先完成 SSH 的发现 / 部署 / 启动（冷部署上传产物远超 3 秒），3 秒只管 daemon 就绪后的建链；同一 endpoint 只探测一次，SSH 引导按目标去重（`sshTransport.ts` 的 in-flight 表），探测与正式连接不重复部署；正式连接的长超时如 SSH 120 秒不适用于此）：成功恢复可选，失败转红点。daemon 存活但工作区 channel 建失败（远端 core 起不来）等形态由 `onWorkspaceConnectionState` 的 lost 信号兜底（只对**从未就绪**的远程 Connection 标记；曾就绪过的 Core 退出走重启策略，不标红；Connection 已就绪的判定优先于探测失败）。两条失败信号（lost 与探测落定）到达顺序不定，`markUnavailable` 落定不可用即清建链中（互斥），保证标红推送不再带着黄态、同键重复标记也不丢刷新——探测失败的 catch 分支与成功分支对称地显式刷新标题栏与聊天区。标红时**先推送再执行清理**（销毁该目录的 Connection 与预加载对话视图可能抛错——如预热视图的 `new-*` 临时 key 无归属 Connection——清理失败只落盘诊断日志，不回退状态、不阻断推送）。不可用项**保留在打开集合里且可正常激活**（标签页文字前挂红点，悬停说明原因；不建立 Connection——`getOpenWorkspaceRefs` 过滤，不预加载视图）；活动项落在其上时**不回退**，聊天区由 `syncChatAreaForActiveWorkspace` 改显占位页（不显示对话列表与 webview，侧栏对话列表清空）：目录不存在 → 「目录不存在」+ 路径；远程不可连 → 「无法连接远程主机」+ 路径 + 原因 + **「重新连接」按钮**（占位页经 `chat:reconnect-workspace` 触发 `reconnectWorkspace`：转 connecting，同一 3 秒探测，成功撤销判定、补建 Connection 并切回对话视图，失败回到红点；失败原因落盘（`unavailableReasons` 按去重键留存）并随占位页展示——指纹变更有专属引导（新旧指纹 + 确认指引，`src/test/chatPlaceholderReason.test.ts` 锁定渲染），其余展示原始错误。**SSH 主机密钥变更**（`SshHostKeyError` 携带新旧指纹）走确认例外：弹告警比对指纹，用户确认后 `recordKnownHostFingerprint` 重建信任并立刻重试一次，拒绝则维持不可用）；建链中 → 「正在连接」。打开对话 / 新建对话的入口在建链中与不可用目录上一律忽略。经目录选择器 / CLI 重新提交已验证的目标时同样撤销判定并补建 Connection（`reviveWorkspaceIfRecovered`）；关闭标签页即丢弃判定 |
-| 标签页运行指示 | 每个工作目录的聚合运行时状态（`activity`：工作目录 id → `waiting` / `running`），由主进程 `collectWorkspaceActivity()` 读 `ConversationManager` 缓存的全量会话运行时快照（core `sessionRuntimeChanged` 的宿主投影）+ 宿主的「会话 → 工作目录」索引按会话归并：该目录下任一会话在等待用户操作 → `waiting`（黄，优先），否则任一非 idle → `running`（蓝）。两份输入都取宿主自己的投影，不读进程内 `src/core`——Standalone（产品形态）下 core 在独立进程，进程内的 `sessionRuntime` 与会话工作目录表都是空的（第 12.6 节）。状态流每次变化（`setStatusListener` 里）另推 `titlebar:workspace-activity`，渲染层就地切换 class 不重建标签页（重建会打断动画、丢 hover / 焦点 / 拖拽状态）。动效与对话列表 `running-bar` 对齐：运行中＝蓝色流水（渐变滚动），等待用户＝黄色呼吸（只脉动不滚动）——对话列表的黄色同样是呼吸（`.running-bar--waiting` 的 `background` 简写把 `background-size` 复位成 `auto`，流水不产生位移）。忙闲判定收敛在 core 的 `sessionBusyLevel`（waiting 优先、其次 running、idle 垫底）——标签页流水灯、托盘状态点（`deriveTrayStatusFromStates`）与关闭前的二次确认（对话级 `sessionIsBusy` / 工作区级 `workspaceHasBusySession` / 应用退出的聚合确认）消费同一份派生，不再各写一遍 |
+| 标签页运行指示 | 每个工作目录的聚合运行时状态（`activity`：工作目录 id → `waiting` / `running`），由主进程 `collectWorkspaceActivity()` 读 `ConversationManager` 缓存的全量会话运行时快照（core `sessionRuntimeChanged` 的宿主投影）+ 宿主的「会话 → 工作目录」索引按会话归并：该目录下任一会话在等待用户操作 → `waiting`（黄，优先），否则任一非 idle → `running`（蓝）。两份输入都取宿主自己的投影，不读进程内 `src/core`——Standalone（产品形态）下 core 在独立进程，进程内的 `sessionRuntime` 与会话工作目录表都是空的（第 12.6 节）。状态流每次变化（`setStatusListener` 里）另推 `titlebar:workspace-activity`，渲染层就地切换 class 不重建标签页（重建会打断动画、丢 hover / 焦点 / 拖拽状态）。动效与对话列表 `running-bar` 对齐：运行中＝蓝色流水（渐变滚动），等待用户＝黄色呼吸（只脉动不滚动）——对话列表的黄色同样是呼吸（`.running-bar--waiting` 的 `background` 简写把 `background-size` 复位成 `auto`，流水不产生位移）；标题栏的等待 / 完成条则显式 `background-size: 100% 100%`（基类的 200% 供蓝流水滚动），180° 渐变完整落在条上，与对话列表同为「中间亮、两头暗」。忙闲判定收敛在 core 的 `sessionBusyLevel`（waiting 优先、其次 running、idle 垫底）——标签页流水灯、托盘状态点（`deriveTrayStatusFromStates`）与关闭前的二次确认（对话级 `sessionIsBusy` / 工作区级 `workspaceHasBusySession` / 应用退出的聚合确认）消费同一份派生，不再各写一遍 |
+| 未读完成呼吸 | 会话在用户看不到时完成（主窗口失焦 / 归属标签页未激活 / 非当前对话，任一命中）→ 记为「未读完成」；用户回到现场后挂绿色灯条：呼吸一次后保持常亮，直到用户阅读——激活标签页清该标签页项，该对话成为当前对话清该对话项。**对话项**按上述三条件武装；**标签页**只在完成时该标签页未激活才武装——激活中的标签页视为已读（里面的完成由对话项的灯当场表达，切走再切回不补亮）。事实归主进程独有（`electron/completionAttention.ts` 对相邻两次 `sessionRuntimeChanged` 全量快照差分出 running → idle——与托盘「任务结束提醒」（`trayAttention.ts`）同一手法，waiting → idle 是用户应答 / 中止的结果不算完成；焦点 / 激活 / 当前对话由 `isMainWindowFocused` / `workspacePath` / `ChatViewManager.getActiveSessionId` 注入，会话归属复用 `collectWorkspaceActivity` 同一套查找），渲染层只吃**幂等全量快照**：`titlebar:workspace-completion`（标签页 id 集合）/ `sidebar:session-completion` 与 webview `sessionCompletionAttention`（sessionId 集合）——重复推送不重播呼吸（侧栏 / webview 按 sessionId 记首次到达时刻，到达后一个动画周期内带呼吸、之后常亮）。推送时机 = 回到现场（focus / 切换标签页 / 切换窗口模式）；失焦期间不推——不可见的呼吸等于没呼吸。灯条只挂非活动标签页 / 非当前对话（正在看的就是「已读」）；浮窗没有标签页（标签页集合照推不亮，切回完整模式补齐）。关闭工作区 / 会话从快照消失即从未读集合清除。时序不变量由 `src/test/completionAttention.test.ts` 锁定 |
 | 标签页拖拽排序 | 渲染层用 HTML5 drag 事件（`dragstart` / `dragover` / `drop` / `dragend`）：越过目标中线决定插到其前 / 后，`drop-before` / `drop-after` 伪元素画放置指示线；提交完整排列经 `titlebar:reorder-workspaces` → `reorderWorkspaces()`，主进程按去重键校验「同组目录的排列」后才写入打开集合并落盘，非法排列整次忽略；活动项与已打开视图不受顺序影响 |
 | 非活动标签页预加载 | 首次启动（`createMainWindow` 打开活动目录的新对话之后）对打开集合里**非活动且可用**的每个目录调用 `chatViews.preloadWorkspace(ws)`（错开 400ms + 250ms×i，避免启动瞬间同时拉起多个渲染进程；不可用工作区跳过）；实现复用后台预热机制（`--prewarm=1` 后台加载渲染、跳过会话初始化），切到该目录时 `setActiveWorkspace` 命中它直接 `show()` + 补发激活消息，不再现建视图 + 等页面加载。`new-` 临时 key 带自增序号，避免同毫秒连续创建撞 key；`setActiveWorkspace` 不再销毁其它目录的预热视图（它们是那些标签页的预加载视图，关闭目录 / 窗口时统一销毁） |
 | 菜单 | Windows / Linux 全部收编为单一分区 `main`，标题栏用一个图标按钮表示；条目：打开本地工作区 / 打开远程工作区 / 添加最近的工作区 ▸ / 主题 ▸ / 快捷键 / 开发者工具 / 关于 / 退出。macOS 沿用系统菜单栏分区 |

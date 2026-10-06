@@ -118,6 +118,16 @@ fn snapshot_payload_round_shape() {
     assert_eq!(payload["llm"]["providers"]["p"]["defaultModel"], "m");
     assert_eq!(payload["llm"]["providers"]["p"]["modelLimits"]["m"]["apiType"], "OpenAI");
     assert_eq!(payload["defaultAgentMode"], "risk");
+    // 令牌数出线必须是整数（core 按 u64 收）：f64 直接序列化会写出 `131072.0`，
+    // core 解析整个 settings 时拒收 → Core 永不 ready。as_u64 对浮点返回 None，据此锁死。
+    assert_eq!(payload["llm"]["maxTokens"].as_u64(), Some(131072));
+    assert_eq!(payload["llm"]["modelLimitsFallback"]["context"].as_u64(), Some(1048576));
+    assert_eq!(payload["llm"]["providers"]["p"]["modelLimits"]["m"]["context"].as_u64(), Some(1048576));
+    assert_eq!(payload["llm"]["providers"]["p"]["modelLimits"]["m"]["output"].as_u64(), Some(131072));
+    assert_eq!(
+        payload["llm"]["providers"]["p"]["modelLimits"]["m"]["thinkingTokenBudget"].as_u64(),
+        Some(196608)
+    );
 }
 
 #[test]

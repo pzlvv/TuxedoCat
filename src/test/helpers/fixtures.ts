@@ -231,7 +231,7 @@ process.on('exit', () => {
 
 /** 建一个临时目录（`mkdir` + 退出时自动删除），用来当 projectRoot / HOME */
 export function makeTempDir(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `tuxedo-cat-${prefix}-`));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `tc-${prefix}-`));
   trackedTempDirs.add(dir);
   return dir;
 }

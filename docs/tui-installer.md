@@ -19,7 +19,7 @@
 3. **部署布局**（载荷的相对路径在构建期定死，见第 3 节）：
 
    ```
-   <prefix>/share/<core.deployPrefix>/<指纹>/tuxedo-cat-core[.exe] + fingerprint
+   <prefix>/share/<core.deployPrefix>/<指纹>/<core.binaryName>[.exe] + fingerprint
    <prefix>/share/<core.deployPrefix>/ripgrep/rg[.exe]      # 全部指纹槽位共享一份
    <prefix>/share/<core.deployPrefix>/tui[.exe]             # TUI 原生二进制（无需 Node.js）
    ```
@@ -30,14 +30,14 @@
    （tui-rs/src/core_root.rs）。产品名取 `src/config/project.json` 的
    `core.deployPrefix`，指纹读自产物自带的 `fingerprint` 文件（构建期校验 64 位
    小写 hex，不合法直接构建失败）。
-4. **默认前缀 `~/.local/bin`**（PATH 惯例目录，装完即用）；Windows 没有这个惯例，
-   落在 `~/.tuxedo-cat/bin`，加不加 PATH 由用户决定。`--prefix <dir>` 覆盖；
-   `TUXEDO_CAT_TUI_ROOT` 环境变量让 TUI 找到自定义前缀。
-5. **软链接**（unix）：安装时建 `<prefix>/<core.deployPrefix>` → 产品目录里的
-   `tui`（相对目标，前缀整体挪动不断链）——TUI 升级换指纹槽位时链接目标不变，
-   `~/.local/bin/<产品名>` 直接可用。旧布局的拷贝或指向不同的旧链接经临时链接 +
-   rename 原子替换；同名目录不是本安装器建的，报错让用户处理。Windows 无此步
-   （符号链接要特权），直接以产品目录路径运行。
+4. **默认前缀（应用根）`~/.local`**：产品落 `~/.local/share/<产品名>/`（XDG 数据
+   目录）；Windows 没有这个惯例，落在 `~/<configDir>`，加不加 PATH 由用户决定。
+   `--prefix <dir>` 覆盖；`<envPrefix>_TUI_ROOT` 环境变量让 TUI 找到自定义前缀。
+5. **软链接**（unix）：安装时建 `<prefix>/bin/<core.deployPrefix>` → 产品目录里的
+   `tui`（相对目标 `../share/<产品名>/tui`，前缀整体挪动不断链）——TUI 升级换指纹
+   槽位时链接目标不变，`~/.local/bin/<产品名>` 直接可用。旧布局的拷贝或指向不同的
+   旧链接经临时链接 + rename 原子替换；同名目录不是本安装器建的，报错让用户处理。
+   Windows 无此步（符号链接要特权），直接以产品目录路径运行。
 6. **幂等与原子**：内容未变的文件跳过（保留可执行位）；写盘走同目录临时文件 +
    改名，中断不留半个文件；unix 上可执行文件统一 0755。
 
@@ -49,8 +49,8 @@ tuxedo-cat-tui-installer [--prefix <dir>] [--print-prefix] [--version] [--help]
 
 | 参数 | 行为 |
 | --- | --- |
-| （默认） | 安装到前缀（默认 `~/.local/bin`，Windows `~/.tuxedo-cat/bin`），逐文件打印 已安装 / 未变化，建软链接（unix），结尾给运行命令 |
-| `--prefix <dir>` | 指定安装前缀（自定义前缀 + `TUXEDO_CAT_TUI_ROOT` 组合使用） |
+| （默认） | 安装到前缀（应用根，默认 `~/.local`，Windows `~/<configDir>`），逐文件打印 已安装 / 未变化，建软链接（unix），结尾给运行命令 |
+| `--prefix <dir>` | 指定安装前缀（自定义前缀 + `<envPrefix>_TUI_ROOT` 组合使用） |
 | `--print-prefix` | 只打印默认前缀并退出 |
 | `--version` | 打印版本（构建期取包版本）、构建指纹与内嵌载荷摘要 |
 | `--help` | 用法说明 |
@@ -79,8 +79,8 @@ npm run package:tui
   └─ npm run build:tui                        # tui-rs 的宿主 release 构建
   └─ node scripts/build-tui-installer.mjs     # 每个目标：
        1. Core 产物就位检查（缺则 build-core.mjs --target <triple>）
-       2. TUI 二进制就位检查（缺则 cargo build --release
-          --manifest-path tui-rs/Cargo.toml --target <triple>，cwd=tui-rs）
+       2. cargo build --release --target <triple>（cwd=tui-rs，增量；
+          不做「产物在就跳过」——TUI 无新旧标记，旧产物会被静默嵌入）
        3. cargo build --release --target <triple>（cwd=installer-rs，
           musl 的 rust-lld 配在 installer-rs/.cargo/config.toml）
        4. 复制到 <releaseDir>/tui-installer/tuxedo-cat-tui-installer-<pkg>[.exe]

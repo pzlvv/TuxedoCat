@@ -74,7 +74,7 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 | 重启 | Core 实例意外退出后由 daemon 重新启动并恢复接线 | daemon（`docs/core-daemon.md`） |
 | Core 可执行文件名 | `core.binaryName`（`src/config/project.json`），Windows 加 `.exe` | 工程配置 |
 | Core 产物目录 | `resources/<core.resourceDir>/<arch>-<platform>/` | 工程配置 |
-| Core 部署目录 | `~/.local/bin/share/<core.deployPrefix>/<指纹>/`（`coreDeployDirPath`），部署槽位目录，见第 4.4 节 | 工程配置 |
+| Core 部署目录 | `~/.local/share/<core.deployPrefix>/<指纹>/`（`coreDeployDirPath`），部署槽位目录，见第 4.4 节 | 工程配置 |
 
 产品名、可执行文件名与产物目录名一律取自 `src/config/project.json`；代码与 Rust 包名
 不出现产品名。
@@ -151,22 +151,29 @@ Electron 打包后产物落在 `app.asar` 内的 `dist/resources/`，但可执�
 （当前只有 `ripgrep/rg[.exe]`）同级：
 
 ```
-resources/core/x64-win32/tuxedo-cat-core.exe
+resources/core/x64-win32/<core.binaryName>.exe
 resources/core/x64-win32/ripgrep/rg.exe
 ```
 
-部署到 `~/.local/bin/share/<core.deployPrefix>/` 时按指纹落槽位，ripgrep 提升为产品
+部署到 `~/.local/share/<core.deployPrefix>/` 时按指纹落槽位，ripgrep 提升为产品
 目录里全部槽位共享的一份（rg 与指纹无关，Grep / Glob 的行为不随 Core 版本变）：
 
 ```
-~/.local/bin/share/<core.deployPrefix>/<指纹>/tuxedo-cat-core[.exe] + fingerprint
-~/.local/bin/share/<core.deployPrefix>/ripgrep/rg[.exe]
-~/.local/bin/share/<core.deployPrefix>/tui[.exe]                    # TUI 版安装器附带
+~/.local/share/<core.deployPrefix>/<指纹>/<core.binaryName>[.exe] + fingerprint
+~/.local/share/<core.deployPrefix>/ripgrep/rg[.exe]
+~/.local/share/<core.deployPrefix>/tui[.exe]                    # TUI 版安装器附带
 ```
 
 Core 以**自己的可执行文件所在目录的上一级**定位共享资源（`tools.rs::ripgrep_path`：
 槽位上一级产品目录里的 `ripgrep/`），本地起进程、远端上传与 TUI 版安装用的是
 同一个位置，不依赖宿主提供 `extensionPath`。
+
+**产品身份单源**：部署产品目录名（`core.deployPrefix`）、Core 二进制名
+（`core.binaryName`）、扩展名（`extensionName`）、配置目录名（`configDir`）等产品
+身份字段只有一份来源——`src/config/project.json`。Rust 侧（core-rs / tui-rs /
+installer-rs）经各自 `build.rs` 构建期烧成 `TC_*` 编译期环境变量，运行期代码经
+`env!` 取值，不出现产品字面量；TS 侧经 `src/config/project.ts`。企业版改名只动
+project.json 与各 crate 的包名，不改逻辑代码。
 
 ### 4.2 跨平台约束
 
@@ -266,7 +273,7 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
   与 Linux 构建机上是同一个编译器）；目标三元组与 profile（release / debug）。
 - **不混入** zig / C 工具链版本：指纹是「版本身份」不是「字节一致」，同源码同 rustc
   下 C 部分的工具链差异不构成版本差异；指纹相同的两个构建产物行为一致。
-- **用途**：部署按指纹落位槽位目录 `~/.local/bin/share/<core.deployPrefix>/<指纹>/`
+- **用途**：部署按指纹落位槽位目录 `~/.local/share/<core.deployPrefix>/<指纹>/`
   （`coreDeployDirPath`：产品目录取 `src/config/project.json` 的 `core.deployPrefix` 把
   不同产品的槽位分开，指纹用完整 64 位，与按指纹命名的 daemon 状态 / 日志文件
   （`core-daemon-<指纹>.*`，`docs/core-daemon.md` 第 12.3 节）同口径）；自带的

@@ -18,20 +18,28 @@ function resolve(...segments) {
 }
 
 /**
- * 构建期 Core 实现（`TUXEDO_CAT_CORE=embedded|standalone`）。
+ * 构建期 Core 实现（`<coreKindEnv>=embedded|standalone`）。
  *
  * 与运行时选择变量（`src/host/coreKind.ts`）同名同取值：打包时由 esbuild `define`
  * 注入到产物里，构建脚本据此决定要不要 Rust Core、产物落到哪个目录。
  * 未设置时与源码默认值一致，为 `standalone`。
  */
 function resolveCoreKind() {
-  const raw = process.env.TUXEDO_CAT_CORE;
+  const raw = process.env[coreKindEnv];
   if (raw === undefined || raw === '') return 'standalone';
   if (raw !== 'embedded' && raw !== 'standalone') {
-    throw new Error(`Invalid TUXEDO_CAT_CORE="${raw}"; expected "embedded" or "standalone".`);
+    throw new Error(`Invalid ${coreKindEnv}="${raw}"; expected "embedded" or "standalone".`);
   }
   return raw;
 }
+
+/**
+ * Core 实现选择变量的环境变量名（`<envPrefix>_<core.envVarSuffix>`）。
+ *
+ * 与运行时 `src/config/project.ts` 的 `CORE_ENV_VAR` 同一配置来源（project.json），
+ * 源码不出现产品字面量。
+ */
+const coreKindEnv = `${project.envPrefix}_${project.core.envVarSuffix}`;
 
 const coreKind = resolveCoreKind();
 
@@ -46,6 +54,7 @@ module.exports = {
   rootDir,
   resolve,
   coreKind,
+  coreKindEnv,
   releaseDir,
   distDir: resolve(project.build.dist),
   distElectronDir: resolve(project.build.distElectron),

@@ -22,15 +22,18 @@ export function mapToolResultToToolResultBlockParam(
   is_canceled?: boolean;
 } {
   const result = content as BashToolOutput;
-  const { stdout, stderr, exitCode, interrupted, backgroundTaskId, assistantAutoBackgrounded } = result;
+  const { stdout, stderr, exitCode, interrupted, backgroundTaskId, backgroundElapsedMs, assistantAutoBackgrounded } = result;
 
   // 后台命令：通知模型命令已在后台运行
   if (backgroundTaskId) {
     const outputPath = getTaskOutputPath(backgroundTaskId);
     let backgroundInfo: string;
     if (assistantAutoBackgrounded) {
-      backgroundInfo = `Command was moved to the background (ran too long). Task ID: ${backgroundTaskId}. It is still running — you will be notified when it completes. Output is being written to: ${outputPath}. For long-running work, consider using run_in_background to keep this conversation responsive.`;
-      // 如果有 stderr（包含 reminder 等），附加到消息中
+      // 自动转后台的说明只在这里拼一次：`Exec.ts` 只回传命令自身的 stderr 与
+      // `find` 提示，避免 taskId / 完成通知在同一个 tool_result 里重复两遍。
+      const elapsedNote = backgroundElapsedMs === undefined ? '' : ` after ${backgroundElapsedMs}ms`;
+      backgroundInfo = `Command moved to the background${elapsedNote} (task ID: ${backgroundTaskId}). Output is being written to: ${outputPath}. Do not poll for the result — you will be notified when it completes. Continue with other tasks in the meantime; if there is nothing else to do, end this turn.`;
+      // 命令自身的 stderr 与 `find` 提示附在说明之后
       if (stderr) {
         backgroundInfo += '\n' + stderr;
       }

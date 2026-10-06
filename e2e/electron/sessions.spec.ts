@@ -5,6 +5,7 @@ import { startMockLlm } from '../helpers/mockLlmServer';
 import { launchApp, makeWorkspace, stubMainMessageBox } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
+import { ENV_PREFIX } from '../../src/config/project';
 
 /**
  * US-19 侧栏对话列表 / US-20 新建对话 / US-21 重命名 / US-22 删除（Electron 原生侧栏）
@@ -181,7 +182,9 @@ test('US-19 列表等待超过 100ms 才显示加载中，快速切换不闪转�
   // - 慢拉取（主进程钩子注入 800ms 延迟）：切换工作区等待超过 100ms，必须出现「加载中」；
   // - 快拉取（撤销注入，毫秒级回包）：切换工作区不得闪转圈——否则 tab 页间切换闪烁。
   // 延时阈值 100ms（sidebar 的 LOADING_SHOW_DELAY_MS）；拉取延迟钩子是主进程的
-  // TUXEDO_CAT_E2E_SLOW_LIST_MS（隐藏开关；页面侧 window.sidebarAPI 不可写）。
+  // <envPrefix>_E2E_SLOW_LIST_MS 隐藏开关（与 electron/main.ts 的 E2E_SLOW_LIST_ENV
+  // 同一派生；页面侧 window.sidebarAPI 不可写）。
+  const e2eSlowListEnv = `${ENV_PREFIX}_E2E_SLOW_LIST_MS`;
   const dir2 = await makeWorkspace({}, 'e2e-ws-second');
   try {
     await sb.evaluate(() => {
@@ -202,7 +205,7 @@ test('US-19 列表等待超过 100ms 才显示加载中，快速切换不闪转�
     });
 
     // 慢路径：加第二个工作区并切为活动项，拉取被延迟 800ms，等待超过 100ms 必出转圈
-    await app.evaluateInMain("process.env.TUXEDO_CAT_E2E_SLOW_LIST_MS = '800'");
+    await app.evaluateInMain(`process.env.${e2eSlowListEnv} = '800'`);
     await sb.evaluate((dir) =>
       (window as unknown as { sidebarAPI?: { addWorkspaces: (paths: string[]) => void } })
         .sidebarAPI!.addWorkspaces([dir as string]), dir2);
@@ -216,7 +219,7 @@ test('US-19 列表等待超过 100ms 才显示加载中，快速切换不闪转�
 
     // 快路径：撤销注入，按 id 切回第一个工作区（activate-workspace 的字符串参数是
     // refKey 不是路径），列表毫秒级回包，不得出现转圈
-    await app.evaluateInMain('delete process.env.TUXEDO_CAT_E2E_SLOW_LIST_MS');
+    await app.evaluateInMain(`delete process.env.${e2eSlowListEnv}`);
     await sb.evaluate(async (wsPath) => {
       const w = window as unknown as {
         sidebarAPI?: {

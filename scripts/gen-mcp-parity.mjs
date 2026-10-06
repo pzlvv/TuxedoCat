@@ -24,6 +24,8 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const coreDir = join(repoRoot, 'out', 'src', 'core');
+/** 沙箱配置目录名与真实口径一致（src/config/project.json 的 configDir） */
+const configDirName = require(join(repoRoot, 'src', 'config', 'project.json')).configDir;
 
 const { normalizeMcpCallResult, listMcpTools, quoteWindowsArg } = require(
   join(coreDir, 'mcp', 'Client.js'),
@@ -320,7 +322,7 @@ const configParseCases = [
 ];
 
 const tempHome = mkdtempSync(join(tmpdir(), 'mcp-parity-'));
-const configDir = join(tempHome, '.tuxedo-cat');
+const configDir = join(tempHome, configDirName);
 mkdirSync(configDir, { recursive: true });
 const previousHome = process.env.HOME;
 const previousUserProfile = process.env.USERPROFILE;

@@ -14,16 +14,17 @@ import { CORE_ENV_VAR } from '../config/project.js';
 export type CoreKind = 'embedded' | 'standalone';
 
 /**
- * 构建期注入的默认实现（esbuild `define`，值来自打包环境的 `TUXEDO_CAT_CORE`）。
+ * 构建期注入的默认实现（esbuild `define`，值来自打包环境的 `CORE_KIND_ENV`）。
  *
  * 源码里不赋值：未注入（`tsc` 编译、单测、直接跑源码）时 `typeof` 为 `'undefined'`，
  * 回落到 `'standalone'`。打包时 `esbuild.js` / `electron/esbuild.js` 按变体注入字面量。
+ * 符号名是纯内部约定，不带产品名（企业版改名不涉及）。
  */
-declare const __TUXEDO_CAT_CORE_KIND__: CoreKind | undefined;
+declare const __CORE_KIND__: CoreKind | undefined;
 
 /** 默认实现：未注入构建期取值时为 Standalone Core（Rust，独立进程） */
 export const CORE_KIND: CoreKind =
-  typeof __TUXEDO_CAT_CORE_KIND__ === 'string' ? __TUXEDO_CAT_CORE_KIND__ : 'standalone';
+  typeof __CORE_KIND__ === 'string' ? __CORE_KIND__ : 'standalone';
 
 /** 覆盖变量名（`src/config/project.json` 的 `core.envVarSuffix`）：取值为 CoreKind 时生效 */
 export const CORE_KIND_ENV = CORE_ENV_VAR;

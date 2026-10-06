@@ -4,8 +4,8 @@
  * 目标环境只有 SSH 端口、daemon 端口映射不出来时，Host 经 SSH 完成：
  *
  * 1. **发现**：部署槽位由本机携带产物的**构建指纹**决定（`docs/standalone-core.md`
- *    第 4.4 节）——远端部署目录 `~/.local/bin/share/<core.deployPrefix>/<指纹>/`，
- *    状态文件 `~/<configDir>/core-daemon-<指纹>.json`。状态文件里的 daemon 探得通就是
+ *    第 4.4 节）——远端部署目录 `~/.local/share/<core.deployPrefix>/<指纹>/`，
+ *    状态文件 `~/<configDir>/run/core-daemon-<指纹>.json`。状态文件里的 daemon 探得通就是
  *    本版本（同一指纹）的 daemon 在跑，直接复用：不重启、不覆盖。
  *    多版本 Core 在同一台远端机器上各占一个槽位、各跑一个 daemon——不同版本
  *    的客户端同时接入同一台机器互不干扰；同版本的多个客户端并发接同一个
@@ -59,8 +59,9 @@ export interface RemoteSsh {
   openTcpForward(host: string, port: number): Promise<{ destroy(): void }>;
 }
 
-/** 部署前缀（相对远端主目录）；实际落位是其下 `share/<core.deployPrefix>/…` */
-export const REMOTE_BIN_DIR = '.local/bin';
+/** 部署根（应用根，相对远端主目录）；实际落位是其下 `share/<core.deployPrefix>/…`，
+ * 即 `~/.local/share/<产品名>/<指纹>/`（与本机安装器、tui-rs 产物定位同一口径） */
+export const REMOTE_DEPLOY_ROOT = '.local';
 
 /**
  * SSH 引导拉起的 daemon 的空闲退出秒数（`start --idle-exit`，`docs/core-daemon.md`
@@ -111,11 +112,13 @@ export async function ensureRemoteDaemon(
   const fingerprint = readCoreFingerprint(options.extensionPath, target.platform, target.arch);
   const remoteBinary = posixJoin(
     home,
-    REMOTE_BIN_DIR,
+    REMOTE_DEPLOY_ROOT,
     coreDeployDirPath(fingerprint),
     coreBinaryFileName(target.platform),
   );
-  const statePath = posixJoin(home, CONFIG_DIR_NAME, daemonStateFileName(fingerprint));
+  // 状态文件在配置目录的 run/ 子目录（daemon 的运行期事实，与 core-rs 的
+  // `daemon_state_path` 同口径）；daemon 落盘时自建目录，这里只读
+  const statePath = posixJoin(home, CONFIG_DIR_NAME, 'run', daemonStateFileName(fingerprint));
 
   // 1. 该指纹的 daemon 在跑 → 直接复用。状态文件本身按指纹命名，探得通的一定是
   //    本版本的 daemon，无需再做任何版本比对。
@@ -126,7 +129,7 @@ export async function ensureRemoteDaemon(
   if (await ensureRemoteBinary(ssh, localBinary, remoteBinary)) {
     options.log(`[ssh] deployed ${remoteBinary} (${target.platform}-${target.arch})`);
   }
-  const remoteRipgrep = posixJoin(home, REMOTE_BIN_DIR, coreDeployRipgrepPath(), 'rg');
+  const remoteRipgrep = posixJoin(home, REMOTE_DEPLOY_ROOT, coreDeployRipgrepPath(), 'rg');
   await ensureRemoteRipgrep(ssh, options, localBinary, remoteRipgrep, target);
 
   // 3. 在跑的 daemon 原样返回；否则 start（幂等：已在跑就只打印就绪信息）。启动前
@@ -151,7 +154,7 @@ export async function ensureRemoteDaemon(
   if (!state) {
     throw new Error(
       `remote daemon started but ${statePath} is missing or malformed; `
-      + `see the remote ${daemonLogFileName(fingerprint)} for details.`,
+      + `see the remote ~/${CONFIG_DIR_NAME}/logs/${daemonLogFileName(fingerprint)} for details.`,
     );
   }
   return state;

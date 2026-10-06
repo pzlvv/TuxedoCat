@@ -76,6 +76,9 @@ pub struct TuiMessage {
     /// 用户消息的 uuid（与排队项配对清除）
     pub message_uuid: Option<String>,
     pub is_compact_summary: bool,
+    /// 本消息来自的 LLM 块 streamId（仅 streamEnd 落下的 thinking / assistant 有）；
+    /// 同一块的第二次 streamEnd（message_delta 带 usage）按它就地收敛，不重复追加
+    pub stream_id: Option<String>,
 }
 
 /// 流式缓冲：streamMessage 累积、streamEnd / queryEnd 收敛。
@@ -83,6 +86,8 @@ pub struct TuiMessage {
 pub struct StreamBlock {
     pub role: Role, // Thinking | Assistant
     pub text: String,
+    /// 本块的 streamId（wire `streamMessage.streamId`）；streamEnd 按它精确收敛
+    pub stream_id: String,
 }
 
 /// 会话级投影（每会话一份；只在会话被打开 / 收到消息时存在）。
@@ -314,8 +319,8 @@ pub enum Action {
 
     // ===== 消息流 =====
     AddMessage(AddMessageData),
-    StreamMessage { session_id: String, role: Role, text: String },
-    StreamEnd { session_id: String, role: Role, accumulated: String, total_tokens: f64 },
+    StreamMessage { session_id: String, role: Role, text: String, stream_id: String },
+    StreamEnd { session_id: String, role: Role, accumulated: String, total_tokens: f64, stream_id: String },
     ShowThinkingAnimation { session_id: String, show: bool },
     AiBegin { session_id: String },
     AiEnd { session_id: String },
@@ -488,19 +493,49 @@ pub fn reduce(state: &TuiState, ids: &mut Ids, action: &Action) -> TuiState {
 
         // ===== 消息流 =====
         Action::AddMessage(data) => reduce_add_message(state, ids, data),
-        Action::StreamMessage { session_id, role, text } => with_session(state, session_id, |session| {
-            session.stream = Some(StreamBlock { role: *role, text: text.clone() });
-        }),
-        Action::StreamEnd { session_id, role, accumulated, total_tokens } => {
+        Action::StreamMessage { session_id, role, text, stream_id } => {
             with_session(state, session_id, |session| {
-                if session.stream.as_ref().map(|stream| stream.role) == Some(*role) {
+                session.stream = Some(StreamBlock {
+                    role: *role,
+                    text: text.clone(),
+                    stream_id: stream_id.clone(),
+                });
+            })
+        }
+        Action::StreamEnd { session_id, role, accumulated, total_tokens, stream_id } => {
+            with_session(state, session_id, |session| {
+                // 流式缓冲按 (role, streamId) 收敛：只有本块自己的收尾才清掉，
+                // 跨块 / 跨角色的迟到收尾不误清别的块
+                let converged = matches!(
+                    session.stream.as_ref(),
+                    Some(stream) if stream.role == *role && stream.stream_id == *stream_id
+                );
+                if converged {
                     session.stream = None;
                 }
-                let last = session.messages.last();
-                let duplicate = matches!(last, Some(message)
-                    if message.role == *role && message.content == *accumulated);
-                if !duplicate {
-                    session.messages.push(message_from_wire(ids, *role, accumulated, None, None, None, *total_tokens, None, false));
+                // 同一块的 streamEnd 到两条（block_stop 一条 usage 缺省 + message_delta
+                // 一条带 usage）：按 (role, streamId) 匹配本块已落的消息就地收敛，不重复
+                // 追加。相邻同内容去重在多块轮次（思考→文字）里会失效——message_delta
+                // 的两条收尾与 block_stop 落下的消息角色交错，比对「最后一条」必然失配
+                // （对齐 webview 的 streamId + role 精确匹配语义）。
+                if let Some(index) = session.messages.iter().rposition(|message| {
+                    message.role == *role && message.stream_id.as_deref() == Some(stream_id.as_str())
+                }) {
+                    let existing = &session.messages[index];
+                    session.messages[index] = TuiMessage {
+                        content: accumulated.clone(),
+                        ..existing.clone()
+                    };
+                } else {
+                    let last = session.messages.last();
+                    let duplicate = matches!(last, Some(message)
+                        if message.role == *role && message.content == *accumulated);
+                    if !duplicate {
+                        session.messages.push(TuiMessage {
+                            stream_id: Some(stream_id.clone()),
+                            ..message_from_wire(ids, *role, accumulated, None, None, None, *total_tokens, None, false)
+                        });
+                    }
                 }
                 if *total_tokens > 0.0 {
                     session.context_tokens = *total_tokens;
@@ -757,6 +792,8 @@ fn message_from_wire(
         context_tokens,
         message_uuid,
         is_compact_summary,
+        // addMessage 通路不带 streamId；streamEnd 落下的消息由调用方补上
+        stream_id: None,
     }
 }
 

@@ -6,10 +6,10 @@
 //! 启动顺序：读 `hello` 帧 → 校验协议版本 → 回 `ready` → 进入帧循环。
 //! 退出：收到 `shutdown` 帧或标准输入 EOF（宿主退出）。
 
-// 保留控制台子系统：这样 `tuxedo-cat-core --help` / `start` 的输出在终端里可见
-// （独立运行的前提）。宿主与 daemon 起本进程时分别用 `windowsHide` / `CREATE_NO_WINDOW`
-// 隐藏控制台窗口（`src/host/standalone/CoreDaemon.ts`、`util::hide_console`），
-// 因此不会出现窗口闪烁。
+// 保留控制台子系统：这样部署后的 Core 二进制在终端里跑 `--help` / `start` 时输出
+// 可见（独立运行的前提）。宿主与 daemon 起本进程时分别用 `windowsHide` /
+// `CREATE_NO_WINDOW` 隐藏控制台窗口（`src/host/standalone/CoreDaemon.ts`、
+// `util::hide_console`），因此不会出现窗口闪烁。
 mod balance;
 mod bash_task;
 mod bus;

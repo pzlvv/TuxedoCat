@@ -36,8 +36,9 @@ pub const PROTOCOL_VERSION: &str = "2024-11-05";
 pub const CONTROL_TIMEOUT_MS: u64 = 30_000;
 /// tools/call 超时（工具可能耗时较长）
 pub const CALL_TIMEOUT_MS: u64 = 300_000;
-/// `clientInfo.name`（对齐 Embedded 的 `EXTENSION_NAME`）
-pub const EXTENSION_NAME: &str = "tuxedo-cat";
+/// `clientInfo.name`（对齐 Embedded 的 `EXTENSION_NAME`：同一配置来源
+/// `project.json` 的 `extensionName`，build.rs 构建期烧入，源码不持有产品字面量）
+pub const EXTENSION_NAME: &str = env!("TC_EXTENSION_NAME");
 
 /// MCP 服务器返回的工具定义
 #[derive(Clone, Debug, PartialEq)]

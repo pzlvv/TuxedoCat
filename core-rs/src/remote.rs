@@ -5,7 +5,7 @@
 //!   没有 daemon 就用 `start-daemon` 拉一个到后台。并发 start 由按指纹的互斥锁
 //!   串行化：两台机器的客户端同时首次引导同一台服务器，同指纹也只拉起一个 daemon。
 //! - `start-daemon`（daemon 实体，启动器的内部实现）：绑回环端口、把实际 endpoint
-//!   落盘（`~/<configDir>/core-daemon-<指纹>.json`，按构建指纹区分——
+//!   落盘（`~/<configDir>/run/core-daemon-<指纹>.json`，按构建指纹区分——
 //!   `docs/standalone-core.md` 第 4.4 节），然后常驻 accept。
 //!
 //! daemon 只监听目标机器的回环地址，端口由内核分配：Host 经 SSH 转发接入，端口不出
@@ -356,7 +356,7 @@ pub fn bind_listener() -> std::io::Result<TcpListener> {
 // ==================== daemon 状态文件 ====================
 
 /// daemon 落盘文件名的前缀：实际文件按构建指纹区分——
-/// `core-daemon-<指纹>.json` / `.log`。
+/// 状态 `run/core-daemon-<指纹>.json`（+ 同名 `.lock`）、日志 `logs/core-daemon-<指纹>.log`。
 ///
 /// 一个指纹一个 daemon、一份落盘文件：多版本 Core 在同一台远端机器上各占一个槽位、
 /// 各跑一个 daemon 时，各自的 `start` / `kill` / 探测只作用于自己指纹的 daemon，
@@ -400,7 +400,7 @@ pub const LAUNCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// 探测「daemon 是否还活着」的连接超时。
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
-/// daemon 落盘的状态（`~/<configDir>/core-daemon-<指纹>.json`）。
+/// daemon 落盘的状态（`~/<configDir>/run/core-daemon-<指纹>.json`）。
 ///
 /// 只有 daemon 自己写这个文件（单一写入点）：它知道实际绑定的端口。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -421,20 +421,23 @@ fn config_dir() -> Result<PathBuf, String> {
 }
 
 /// 状态文件路径；配置目录解析不出来时返回 `Err`（调用方直接报错，不静默降级）。
+/// 状态文件路径：配置目录的 `run/` 子目录（运行期事实——daemon 在跑的端口，
+/// 与配置 / 日志分开落位；宿主侧同名规则见 `daemonProtocol.ts::daemonStateFileName`）。
 pub fn daemon_state_path() -> Result<PathBuf, String> {
-    Ok(config_dir()?.join(daemon_state_file_name()))
+    Ok(config_dir()?.join("run").join(daemon_state_file_name()))
 }
 
-/// 后台日志路径（与状态文件同目录）。
+/// 后台日志路径：配置目录的 `logs/` 子目录（与 TS 侧宿主日志 `logs/<产品>.log` 的
+/// 目录口径一致）；`spawn_daemon` 打开日志前会先建目录。
 pub fn daemon_log_path() -> Result<PathBuf, String> {
-    Ok(config_dir()?.join(daemon_log_file_name()))
+    Ok(config_dir()?.join("logs").join(daemon_log_file_name()))
 }
 
 /// start 互斥锁路径：状态文件名加 `.lock` 后缀（`core-daemon-<指纹>.json.lock`），
-/// 与状态 / 日志同目录。名字由状态文件名派生，自动按指纹区分——同版本（同指纹）
-/// 才互斥，多版本各锁各的。
+/// 与状态文件同在 `run/` 子目录。名字由状态文件名派生，自动按指纹区分——同版本（同
+/// 指纹）才互斥，多版本各锁各的。锁获取前会先建目录（`acquire_start_lock_for`）。
 fn daemon_lock_path() -> Result<PathBuf, String> {
-    Ok(config_dir()?.join(format!("{}.lock", daemon_state_file_name())))
+    Ok(config_dir()?.join("run").join(format!("{}.lock", daemon_state_file_name())))
 }
 
 /// 读状态文件：不存在 / 读不出 / 解析失败都当作「没有 daemon」。

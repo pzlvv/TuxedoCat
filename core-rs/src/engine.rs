@@ -2345,8 +2345,8 @@ fn tool_progress_emitter(
 
 /// LLM 调用失败时给用户看的系统消息（逐字对齐 Embedded `Query.ts` 的模板）
 fn llm_error_message(error: &str) -> String {
-    // 宿主环境未就绪时的兜底目录名与 `project.json` 的 `configDir` 一致（`.tuxedo-cat`），
-    // 否则文案里的路径会缺前导点（`~tuxedo-cat/settings.json`）。
+    // 宿主环境未就绪时的兜底目录名用 `DEFAULT_CONFIG_DIR_NAME`（project.json 的
+    // `configDir`，自带前导点）：换成一个不带点的名字，文案里的路径会缺前导点。
     let config_dir = config::host_environment()
         .map(|env| env.config_dir_name)
         .unwrap_or_else(|| config::DEFAULT_CONFIG_DIR_NAME.to_string());

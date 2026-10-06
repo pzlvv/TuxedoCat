@@ -333,6 +333,7 @@ impl Host {
                 let data = event.get("data").cloned().unwrap_or(Value::Null);
                 let role = data.get("role").and_then(Value::as_str).and_then(Role::parse);
                 let accumulated = data.get("accumulated").and_then(Value::as_str).unwrap_or("");
+                let stream_id = data.get("streamId").and_then(Value::as_str).unwrap_or("").to_string();
                 // 流式阶段决定当前是 thinking 还是 assistant 文本输出
                 match role {
                     Some(Role::Assistant) => {
@@ -345,7 +346,7 @@ impl Host {
                     None => return Vec::new(),
                 }
                 let role = role.unwrap_or(Role::Assistant);
-                vec![Action::StreamMessage { session_id, role, text: accumulated.to_string() }]
+                vec![Action::StreamMessage { session_id, role, text: accumulated.to_string(), stream_id }]
             }
             "streamEnd" => {
                 let session_id = session(event);
@@ -354,10 +355,11 @@ impl Host {
                     return Vec::new();
                 };
                 let accumulated = data.get("accumulated").and_then(Value::as_str).unwrap_or("").to_string();
+                let stream_id = data.get("streamId").and_then(Value::as_str).unwrap_or("").to_string();
                 let usage = data.get("usage").cloned().unwrap_or(Value::Null);
                 let input = usage.get("input_tokens").and_then(Value::as_f64).unwrap_or(0.0);
                 let output = usage.get("output_tokens").and_then(Value::as_f64).unwrap_or(0.0);
-                vec![Action::StreamEnd { session_id, role, accumulated, total_tokens: input + output }]
+                vec![Action::StreamEnd { session_id, role, accumulated, total_tokens: input + output, stream_id }]
             }
             "toolCall" => {
                 let session_id = session(event);
@@ -1248,6 +1250,7 @@ impl Host {
                 context_tokens: data.context_tokens + data.output_tokens,
                 message_uuid: data.message_uuid,
                 is_compact_summary: data.is_compact_summary,
+                stream_id: None,
             })
             .collect()
     }
@@ -1329,6 +1332,7 @@ impl Host {
                                     context_tokens: 0.0,
                                     message_uuid: None,
                                     is_compact_summary: false,
+                                    stream_id: None,
                                 });
                             }
                             _ => {}
@@ -1360,6 +1364,7 @@ impl Host {
             context_tokens: 0.0,
             message_uuid: uuid,
             is_compact_summary,
+            stream_id: None,
         }
     }
 

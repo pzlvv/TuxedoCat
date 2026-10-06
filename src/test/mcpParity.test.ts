@@ -21,6 +21,7 @@ import { listMcpTools, normalizeMcpCallResult, quoteWindowsArg } from '../core/m
 import type { McpCallResult, McpToolDefinition } from '../core/mcp/Client';
 import { buildMcpToolName } from '../core/mcp/McpTool';
 import { isRemoteServer, isRemoteType, readMcpServers } from '../core/mcp/Config';
+import { CONFIG_DIR_NAME } from '../config/project';
 import type { McpServerInfo } from '../core/webviewTypes';
 import { createChecker, runTests } from './helpers/harness';
 import { applyTestSettings } from './helpers/fixtures';
@@ -122,7 +123,7 @@ async function run(): Promise<void> {
   const previousHome = process.env.HOME;
   const previousUserProfile = process.env.USERPROFILE;
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-parity-test-'));
-  const configDir = path.join(tempHome, '.tuxedo-cat');
+  const configDir = path.join(tempHome, CONFIG_DIR_NAME);
   fs.mkdirSync(configDir, { recursive: true });
   process.env.HOME = tempHome;
   process.env.USERPROFILE = tempHome;

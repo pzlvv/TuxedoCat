@@ -64,6 +64,10 @@ export const bashOutputSchema = z.object({
     .string()
     .optional()
     .describe('后台任务 ID（命令在后台运行时设置）'),
+  backgroundElapsedMs: z
+    .number()
+    .optional()
+    .describe('自动转入后台前命令已在前台运行的时长（毫秒）'),
   assistantAutoBackgrounded: z
     .boolean()
     .optional()

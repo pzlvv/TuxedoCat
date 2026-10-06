@@ -227,7 +227,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 11. 本地同机工作区由 Host 直接用 `stdio` 起 Core（stdio 帧通道，无端口），不经过
     daemon。
 12. `ssh` 接入下全部通信走 SSH 端口：daemon 端口不需要对外映射，远端部署槽位
-    `~/.local/bin/share/<core.deployPrefix>/<指纹>/`
+    `~/.local/share/<core.deployPrefix>/<指纹>/`
     里没有可执行文件时自动部署、该指纹的 daemon 没有在跑时自动启动（端口交给内核
     分配），已在跑时直接复用；不同版本的客户端各占一个指纹槽位，互不覆盖、互不踢；
 13. SSH 主机密钥首次连接记录、之后不一致即报错；`start` 失败时把远端 stderr 带回宿主。
@@ -275,7 +275,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 - `start`：确保后台 daemon 在跑，把就绪信息打印到标准输出后**自己退出**（daemon 常驻）。
   - 已有 daemon 在跑（状态文件里的 endpoint 连得上）→ 直接复用它，打印它的实际端口；
   - 没有 → 以 `start-daemon` 拉起一个后台进程（脱离终端与进程组、stdin 置空、诊断追加到
-    `~/<configDir>/core-daemon-<指纹>.log`，按指纹区分见 12.3），等它落盘后打印。
+    `~/<configDir>/logs/core-daemon-<指纹>.log`，按指纹区分见 12.3），等它落盘后打印。
   - 「检查 → 拉起」全程持按指纹的互斥锁（第 12.3 节）：两台机器的客户端同时首次引导
     同一台服务器时，同指纹只拉起一个 daemon；等锁的一方锁后重查，直接复用对方拉起的。
 - `kill`：结束在跑的 daemon——连上它、`ping` 探活、发 `shutdown`，随后清掉状态文件。
@@ -295,17 +295,21 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 ### 12.3 状态文件
 
-- 落盘文件按**构建指纹**区分（`docs/standalone-core.md` 第 4.4 节；与 `settings.json`
-  同目录）：状态文件 `~/<configDir>/core-daemon-<指纹>.json`、诊断日志
-  `core-daemon-<指纹>.log`。一个指纹一个 daemon、一份落盘文件：多版本 Core 在同一台
-  远端机器上各占一个槽位时，各自的 `start` / `kill` / 探测只作用于自己指纹的 daemon，
-  互不踩踏。命名规则与 `src/host/standalone/daemonProtocol.ts` 的
+- 落盘文件按**构建指纹**区分（`docs/standalone-core.md` 第 4.4 节；都在配置目录的
+  子目录里，不与 `settings.json` 混放）：状态文件（运行期事实）与 start 互斥锁在
+  `run/` 子目录，诊断日志在 `logs/` 子目录（与宿主侧日志同目录）：
+  状态文件 `~/<configDir>/run/core-daemon-<指纹>.json`、诊断日志
+  `~/<configDir>/logs/core-daemon-<指纹>.log`。一个指纹一个 daemon、一份落盘文件：
+  多版本 Core 在同一台远端机器上各占一个槽位时，各自的 `start` / `kill` / 探测只作用于
+  自己指纹的 daemon，互不踩踏。命名规则与 `src/host/standalone/daemonProtocol.ts` 的
   `daemonStateFileName` / `daemonLogFileName` 一致，改动必须同步两侧。
 - 状态文件字段：`endpoint`（实际监听的 `127.0.0.1:<端口>`）。
-- **只有 daemon 写它**：daemon 知道实际绑定的端口。原子落盘；Unix 上权限 `0600`。
+- **只有 daemon 写它**：daemon 知道实际绑定的端口。原子落盘（落盘前自建 `run/`
+  目录）；Unix 上权限 `0600`。
   `kill` 只在文件内容仍是该 daemon 那份时删除它（期间可能有新 daemon 覆盖过）。
 - 状态文件缺失、或里面的 endpoint 连不上，都按「没有 daemon」处理（`start` 会拉起新的）。
-- **start 互斥锁**：`core-daemon-<指纹>.json.lock`（状态文件名加 `.lock`，同目录，
+- **start 互斥锁**：`core-daemon-<指纹>.json.lock`（状态文件名加 `.lock`，与状态文件
+  同在 `run/` 子目录，
   自动按指纹区分——同版本才互斥，多版本各锁各的）。`start` 在「检查 → 拉起 → 等就绪」
   全程持锁：锁文件用 `O_CREAT | O_EXCL` 创建并写入持有者 pid；pid 已死或锁文件无 pid
   且超过宽限（15s）即被接管，持有者崩溃不留永久锁；等锁超时（15s）报错退出，不静默
@@ -370,9 +374,9 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 - 控制连接开启 TCP keepalive（空闲 45s 起、每 10s 探、3 次无应答判死）：SSH 接入时
   对端是本机 sshd，探活无意义但无害；对端消失后读线程等不到 EOF 时，keepalive 是
   socket 层的回收手段（心跳超时兜底控制帧层的沉默）。
-- daemon 的诊断按行原子追加到 `core-daemon.log`（`start` 以追加模式把 stderr 重定向
-  到它）：全部诊断先整行格式化再一次写入（stderr 锁内），多线程并发不丢行、不交错
-  半行；追加模式（O_APPEND）保证每次 write 原子落到文件尾。
+- daemon 的诊断按行原子追加到 `logs/core-daemon-<指纹>.log`（`start` 以追加模式把
+  stderr 重定向到它）：全部诊断先整行格式化再一次写入（stderr 锁内），多线程并发不丢行、
+  不交错半行；追加模式（O_APPEND）保证每次 write 原子落到文件尾。
 
 ### 12.6 远端目录选择
 
@@ -424,11 +428,11 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 | 情况 | 判据 | 行为 |
 | --- | --- | --- |
 | 该指纹的 daemon 在跑 | 该指纹的状态文件 `core-daemon-<指纹>.json` 里的 endpoint 探得通 | 直接复用：不重启 daemon、不覆盖产物；槽位缺可执行文件或共享位缺 `ripgrep` 时补传（「在跑」不等于产物齐全——槽位被外部清过时进程仍在跑） |
-| 已部署未启动 | `~/.local/bin/share/<core.deployPrefix>/<指纹>/` 里有可执行文件、探测不通 | 补齐缺的自带 `ripgrep`（若缺），执行 `<可执行文件> start --idle-exit 30`（幂等），再读状态文件 |
-| 未部署 | `~/.local/bin/share/<core.deployPrefix>/<指纹>/` 里没有可执行文件 | 上传本机携带的对应平台产物（按远端 `uname -sm` 选平台）后 `start --idle-exit 30` |
+| 已部署未启动 | `~/.local/share/<core.deployPrefix>/<指纹>/` 里有可执行文件、探测不通 | 补齐缺的自带 `ripgrep`（若缺），执行 `<可执行文件> start --idle-exit 30`（幂等），再读状态文件 |
+| 未部署 | `~/.local/share/<core.deployPrefix>/<指纹>/` 里没有可执行文件 | 上传本机携带的对应平台产物（按远端 `uname -sm` 选平台）后 `start --idle-exit 30` |
 
 - 部署槽位由本机携带产物的**构建指纹**决定（`docs/standalone-core.md` 第 4.4 节）：
-  产物落远端部署槽位 `~/.local/bin/share/<core.deployPrefix>/<指纹>/`
+  产物落远端部署槽位 `~/.local/share/<core.deployPrefix>/<指纹>/`
   （`coreDeployDirPath`：产品目录取 `core.deployPrefix`，槽位用完整指纹；自带的
   `ripgrep` 提升为产品目录根的共享位 `share/<core.deployPrefix>/ripgrep`，Core 以
   所在槽位的上一级目录定位它，远端机器不需要预装 `rg`），状态 / 日志文件按
@@ -457,7 +461,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
   在远端手工删除——先确认该指纹的 daemon 不在跑（状态文件探得通的就是在跑的）。
 - 本机产物里没有指纹文件或缺自带的 ripgrep 属于构建不完整，直接报错，不静默降级。
 - daemon 的端口 **以远端状态文件为准**（第 12.3 节）：Host 读
-  `~/<configDir>/core-daemon-<指纹>.json`，按里面的 `127.0.0.1:<端口>` 开转发通道。
+  `~/<configDir>/run/core-daemon-<指纹>.json`，按里面的 `127.0.0.1:<端口>` 开转发通道。
 - 状态文件缺失 / 损坏 / 连不上都按「没有在跑」处理，与 `start` 自己的判据同口径。
 - 任何一步失败都直接报错（`start` 的退出码与 stderr 一并带回宿主），不回退到「先连上
   再说」。

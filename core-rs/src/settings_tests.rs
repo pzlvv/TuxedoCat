@@ -47,7 +47,7 @@ fn host_environment(settings: Value, mcp_servers: Value) -> Value {
         "type": "hostEnvironmentProvided",
         "extensionPath": "/ext",
         "logToConsole": false,
-        "configDirName": ".tuxedo-cat",
+        "configDirName": crate::config::DEFAULT_CONFIG_DIR_NAME,
         "settings": settings,
         "mcpServers": mcp_servers,
     })

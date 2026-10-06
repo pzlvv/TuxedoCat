@@ -1,15 +1,15 @@
 //! TUI 版安装程序（docs/tui-installer.md）：内嵌 Core / ripgrep / TUI 二进制的自解压安装器。
 //!
-//! 用法：
-//!   tuxedo-cat-tui-installer [--prefix <dir>] [--print-prefix] [--version] [--help]
+//! 用法（程序名 = CARGO_PKG_NAME）：
+//!   <本程序> [--prefix <dir>] [--print-prefix] [--version] [--help]
 //!
-//! - 部署布局（构建期嵌进载荷，见 build.rs）：
-//!   `<prefix>/share/<产品名>/<指纹>/tuxedo-cat-core[.exe]`（按指纹的槽位）、
-//!   `<prefix>/share/<产品名>/ripgrep/rg[.exe]`（全部槽位共享一份）、
-//!   `<prefix>/share/<产品名>/tui[.exe]`；
-//! - 默认安装前缀 `~/.local/bin`（PATH 已含的目录，装完即用；Windows 没有这个
-//!   惯例，落在 `~/.tuxedo-cat/bin`，自担 PATH）；`--prefix <dir>` 覆盖；
-//! - unix 额外建软链接 `~/.local/bin/<产品名>` → 产品目录里的 `tui`（相对目标，
+//! - 部署布局（构建期嵌进载荷，见 build.rs）：前缀是**应用根**，产品落
+//!   `<prefix>/share/<产品名>/`——unix 默认前缀 `~/.local`，即
+//!   `~/.local/share/<产品名>/<core.binaryName>[.exe]`（按指纹的槽位）、
+//!   `~/.local/share/<产品名>/ripgrep/rg[.exe]`（全部槽位共享一份）、
+//!   `~/.local/share/<产品名>/tui[.exe]`；Windows 默认前缀 `~/<configDir>`；
+//!   `--prefix <dir>` 覆盖；
+//! - unix 额外建软链接 `<prefix>/bin/<产品名>` → 产品目录里的 `tui`（相对目标，
 //!   前缀整体挪动不断链）：旧布局的拷贝或指向不同的旧链接会被原子换名替换；
 //! - 幂等：内容未变的文件跳过（保留可执行位），链接已指向正确目标时跳过；
 //! - 落盘原子：先写同目录临时文件再改名，中断不会留下半个文件。
@@ -30,17 +30,16 @@ fn product_name() -> &'static str {
     payload::PRODUCT_DIR.split_once('/').map(|(_, name)| name).unwrap_or(payload::PRODUCT_DIR)
 }
 
-/// 默认安装前缀：unix 是 `~/.local/bin`（PATH 惯例目录）；Windows 没有
-/// `~/.local/bin` 惯例，落在 `~/.tuxedo-cat/bin`，加不加 PATH 由用户决定
+/// 默认安装前缀（应用根）：unix 是 `~/.local`——产品落 `~/.local/share/<产品名>/`
+/// （XDG 数据目录），启动链接落 `~/.local/bin/<产品名>`（PATH 惯例目录）；Windows
+/// 没有 `~/.local` 惯例，整棵落 `~/<configDir>`（build.rs 烧入的 project.json
+/// `configDir`），加不加 PATH 由用户决定
 fn default_prefix() -> PathBuf {
-    let dir = if cfg!(windows) {
-        [".tuxedo-cat", "bin"]
-    } else {
-        [".local", "bin"]
-    };
     let mut prefix = home_dir();
-    for segment in dir {
-        prefix.push(segment);
+    if cfg!(windows) {
+        prefix.push(env!("TC_CONFIG_DIR"));
+    } else {
+        prefix.push(".local");
     }
     prefix
 }
@@ -54,22 +53,27 @@ fn home_dir() -> PathBuf {
 
 fn run_hint(prefix: &Path) -> String {
     if cfg!(unix) {
-        format!("{}", prefix.join(product_name()).display())
+        format!("{}", prefix.join("bin").join(product_name()).display())
     } else {
         format!("{}", prefix.join(payload::TUI_REL).display())
     }
 }
 
 fn print_usage() {
+    // 产品显示名 / 程序名 / Windows 配置目录都来自构建期烧入的配置值，不在源码里
+    // 出现产品字面量（企业版改名只动 project.json）
     println!(
-        "Tuxedo Cat TUI 安装程序（自解压）：把 Standalone Core、捆绑 ripgrep 与 TUI 二进制\n\
+        "{} TUI 安装程序（自解压）：把 Standalone Core、捆绑 ripgrep 与 TUI 二进制\n\
          安装到本机部署布局。\n\n\
-         用法：tuxedo-cat-tui-installer [--prefix <dir>] [--print-prefix] [--version]\n\n\
-         --prefix <dir>   安装前缀（默认 ~/.local/bin，Windows 为 ~/.tuxedo-cat/bin）\n\
+         用法：{} [--prefix <dir>] [--print-prefix] [--version]\n\n\
+         --prefix <dir>   安装前缀（应用根；默认 ~/.local，Windows 为 ~/{}）\n\
          --print-prefix   只打印默认前缀并退出\n\
          --version        打印版本、构建指纹与内嵌载荷摘要\n\
          安装布局：<prefix>/share/<产品名>/<指纹>/core + ripgrep + tui（构建指纹见 --version）；\n\
-         unix 上另有软链接 <prefix>/<产品名> 指向 TUI，装完直接运行（无需 Node.js）。"
+         unix 上另有软链接 <prefix>/bin/<产品名> 指向 TUI，装完直接运行（无需 Node.js）。",
+        env!("TC_PRODUCT_NAME"),
+        env!("CARGO_PKG_NAME"),
+        env!("TC_CONFIG_DIR"),
     );
 }
 
@@ -120,19 +124,24 @@ fn mark_executable(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// 建软链接 `<prefix>/<产品名>` → 产品目录里的 `tui`（unix；Windows 无此步）。
+/// 建软链接 `<prefix>/bin/<产品名>` → 产品目录里的 `tui`（unix；Windows 无此步）。
 ///
 /// 软链接让 `~/.local/bin`（已在 PATH）直接可用：TUI 升级换指纹槽位时链接目标
-/// `share/<产品名>/tui` 不变，无需重建。已指向正确目标时跳过（幂等）；旧布局的
+/// `../share/<产品名>/tui` 不变，无需重建。已指向正确目标时跳过（幂等）；旧布局的
 /// 拷贝或指向不同的旧链接换成新链接（临时链接 + rename 原子换名）；同名目录
 /// 不是本安装器建的东西，报错让用户自己处理，不删除。
 #[cfg(unix)]
 fn install_launch_link(prefix: &Path) -> io::Result<bool> {
     use std::os::unix::fs::symlink;
 
-    let link = prefix.join(product_name());
-    // 相对目标：相对链接所在目录解析，前缀整体挪动不断链
-    let target = format!("{}/{}", payload::PRODUCT_DIR, payload::TUI_REL);
+    let bin_dir = prefix.join("bin");
+    let link = bin_dir.join(product_name());
+    // 相对目标：链接落在 `<prefix>/bin/`，产品目录相对它上一级——`../share/<产品名>/tui`，
+    // 前缀整体挪动不断链
+    let target = format!("../{}", payload::TUI_REL);
+    if !bin_dir.exists() {
+        fs::create_dir_all(&bin_dir)?;
+    }
 
     let needs_update = match fs::symlink_metadata(&link) {
         Ok(meta) if meta.file_type().is_symlink() => {
@@ -154,7 +163,7 @@ fn install_launch_link(prefix: &Path) -> io::Result<bool> {
 
     // 临时链接 + 原子换名：并发安装各用各的临时名，rename 只换目录项，
     // 正在通过旧链接跑 TUI 的进程不受影响
-    let staging = prefix.join(format!(
+    let staging = bin_dir.join(format!(
         ".{}.{}.new",
         product_name(),
         std::process::id()
@@ -243,7 +252,8 @@ fn main() -> ExitCode {
     if args.version {
         let total: usize = payload::FILES.iter().map(|(_, bytes, _)| bytes.len()).sum();
         println!(
-            "tuxedo-cat-tui-installer {}（载荷 {}，指纹 {}，内嵌 {} 个文件 / {} KB）",
+            "{} {}（载荷 {}，指纹 {}，内嵌 {} 个文件 / {} KB）",
+            env!("CARGO_PKG_NAME"),
             payload::VERSION,
             payload::TARGET_PKG,
             payload::FINGERPRINT,

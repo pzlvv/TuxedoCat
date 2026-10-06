@@ -25,8 +25,8 @@ const baseConfig = {
   // 可选原生加速，缺失时 ssh2 自己退化到纯 JS 实现。
   external: ['electron', 'bufferutil', 'utf-8-validate', 'cpu-features', '*.node'],
   tsconfig: project.resolve('tsconfig.json'),
-  // 构建期把 Core 实现（TUXEDO_CAT_CORE）烧进产物，见 src/host/coreKind.ts
-  define: { __TUXEDO_CAT_CORE_KIND__: JSON.stringify(project.coreKind) },
+  // 构建期把 Core 实现（coreKind）烧进产物，见 src/host/coreKind.ts
+  define: { __CORE_KIND__: JSON.stringify(project.coreKind) },
 };
 
 const entries = [

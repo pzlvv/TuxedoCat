@@ -929,7 +929,7 @@ pub fn get_skill_dir_commands(cwd: &str) -> Vec<SkillCommand> {
     let project_skills_dir = Path::new(cwd).join(
         config::host_environment()
             .map(|env| env.config_dir_name)
-            .unwrap_or_else(|| ".tuxedo-cat".to_string()),
+            .unwrap_or_else(|| config::DEFAULT_CONFIG_DIR_NAME.to_string()),
     ).join("skills");
 
     let mut all: Vec<SkillWithPath> = Vec::new();

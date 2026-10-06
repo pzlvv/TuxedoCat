@@ -465,20 +465,25 @@ async function autoBackgroundCommand(
   const elapsed = Date.now() - startTime;
   logger.info('Exec', `Foreground command auto-backgrounded: "${description || command}" (taskId=${taskId}, ran for ${elapsed}ms)`);
 
-  // 检测命令中是否包含 find，如果是则添加提示
+  // 命令里出现 `find` 时追加提示：耗时超预算通常意味着检索范围没收窄
   const containsFind = /\bfind\b/.test(command);
-  let reminder = '';
-  if (containsFind) {
-    reminder = '\n[reminder] The command contains `find` and took longer than expected. Try re-reading the user\'s request carefully — there is usually a clue about the exact file path or pattern to use, which can help narrow the search scope.';
-  }
+  const reminder = containsFind
+    ? '[reminder] The command contains `find` and took longer than expected. Try re-reading the user\'s request carefully — there is usually a clue about the exact file path or pattern to use, which can help narrow the search scope.'
+    : '';
+
+  // stderr 只承载命令自身的错误输出与 `find` 提示。「已转入后台」的说明（taskId /
+  // 输出路径 / 完成通知）由 `Result.ts` 统一拼一次（DEVELOPMENT.md 第 12 节：
+  // 一份事实只有一个写入点），否则同一份说明会在 tool_result 里出现两遍。
+  const stderr = [currentStderr.trimEnd(), reminder].filter((part) => part.length > 0).join('\n');
 
   // 返回带有已收集部分输出和 auto-background 标记的结果
   return {
     stdout: currentOutput,
-    stderr: `Command has been running for ${elapsed}ms and has been automatically moved to background.\n${currentStderr}Background task ID: ${taskId}\nYou will be notified when the command completes.${reminder}`,
+    stderr,
     exitCode: 0,
     interrupted: true,
     backgroundTaskId: taskId,
+    backgroundElapsedMs: elapsed,
     assistantAutoBackgrounded: true,
   };
 }

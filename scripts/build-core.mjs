@@ -14,7 +14,7 @@
  * Core 以**自己的可执行文件目录**为基准定位自带资源，本地与远端都是这一个位置。
  * 同目录还有一份 `fingerprint` 构建指纹（见 computeFingerprint 与
  * docs/standalone-core.md 第 4.4 节）：SSH 部署按指纹落位远端部署目录
- * `~/.local/bin/share/<core.deployPrefix>/<指纹>/`，多版本 Core 在同一台机器上各占一个槽位互不干扰。
+ * `~/.local/share/<core.deployPrefix>/<指纹>/`，多版本 Core 在同一台机器上各占一个槽位互不干扰。
  *
  * 产品名与产物名一律取自 src/config/project.json（`core.binaryName` /
  * `core.resourceDir`），本脚本不写死。Rust 侧的包名固定为中性的 `standalone-core`，
@@ -376,7 +376,7 @@ function buildTarget(target, options) {
   console.log(`[build-core] ${target.triple} → ${outPath}`);
 
   // 指纹文件与可执行文件同级落位：宿主运行时读它确定远端部署槽位
-  // 部署槽位 `~/.local/bin/share/<core.deployPrefix>/<指纹>/`；随 copy-assets 进入打包产物（Electron / vsix 携带）。
+  // 部署槽位 `~/.local/share/<core.deployPrefix>/<指纹>/`；随 copy-assets 进入打包产物（Electron / vsix 携带）。
   const fingerprintPath = join(outDir, FINGERPRINT_FILE_NAME);
   writeFileSync(fingerprintPath, `${computeFingerprint(target.triple, profile)}\n`);
   console.log(`[build-core] ${target.dir} 指纹 → ${fingerprintPath}`);
@@ -411,7 +411,7 @@ function copyBundledRipgrep(target, outDir) {
 function main() {
   // embedded 变体走进程内 TypeScript Core，不需要 Rust Core 产物；打包流程照样调用本脚本。
   if (project.coreKind === 'embedded') {
-    console.log('[build-core] TUXEDO_CAT_CORE=embedded：embedded 变体不需要 Rust Core，跳过。');
+    console.log(`[build-core] ${project.coreKindEnv}=embedded：embedded 变体不需要 Rust Core，跳过。`);
     return;
   }
 

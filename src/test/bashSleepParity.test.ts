@@ -27,6 +27,7 @@ import * as path from 'path';
 import { BashTool } from '../core/tools/bash/Bash';
 import { execCommand } from '../core/tools/bash/Exec';
 import { abortBackgroundTasksForSession } from '../core/tools/bash/LocalShellTask';
+import { mapToolResultToToolResultBlockParam } from '../core/tools/bash/Result';
 import { containsSleepCommand } from '../core/tools/bash/SleepDetect';
 import { splitBySeparators } from '../core/tools/bash/TimeoutPolicy';
 import { createChecker, runTests } from './helpers/harness';
@@ -131,6 +132,25 @@ async function run(): Promise<void> {
     check('孙进程持有管道时前台超时照样转后台', bg.assistantAutoBackgrounded === true);
     check('转入后台前的已累积输出被保留', String(bg.stdout).includes('started'));
     check('超时未等孙进程自然退出', bgElapsed < 1_200);
+
+    // 自动转后台的 tool_result 文案只拼一次，不再与 `Exec` 回传的 stderr 重复。
+    // 对齐 Rust `bash_timeout_moves_the_command_to_the_background`。
+    const mappedText = String(mapToolResultToToolResultBlockParam(bg, 'toolu-bg-auto').content);
+    check(
+      '自动转后台说明带已运行时长与 taskId',
+      /Command moved to the background after \d+ms \(task ID: bg-auto-/.test(mappedText),
+    );
+    check('自动转后台说明带输出文件路径', mappedText.includes(`${bg.backgroundTaskId}.output`));
+    check(
+      '自动转后台的完成通知只出现一次',
+      mappedText.split('you will be notified when it completes.').length === 2,
+    );
+    check(
+      '自动转后台说明提示不要轮询、先去处理其它事情',
+      mappedText.includes(
+        'Do not poll for the result — you will be notified when it completes. Continue with other tasks in the meantime; if there is nothing else to do, end this turn.',
+      ),
+    );
     abortBackgroundTasksForSession('s1');
   } finally {
     // Windows 上杀掉 shell 不会带走孙进程（`sleep`），它仍持有 cwd / 管道，

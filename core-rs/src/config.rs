@@ -49,8 +49,9 @@ pub fn extension_path() -> Result<String, String> {
 
 /// 配置目录名的兜底值：宿主还没下发 `hostEnvironmentProvided` 时用。
 ///
-/// 与 `src/config/project.json` 的 `configDir` 一致（独立运行 / 启动期读盘时用得上）。
-pub const DEFAULT_CONFIG_DIR_NAME: &str = ".tuxedo-cat";
+/// 来源是 `src/config/project.json` 的 `configDir`（build.rs 构建期烧入，源码不持有
+/// 产品字面量；与 TS 侧 `CONFIG_DIR_NAME` 同一配置来源，企业版改名只动 project.json）。
+pub const DEFAULT_CONFIG_DIR_NAME: &str = env!("TC_CONFIG_DIR");
 
 /// 用户主目录（Windows 优先 `USERPROFILE`，其余用 `HOME`）
 fn home_dir() -> Result<PathBuf, String> {
@@ -356,8 +357,9 @@ pub struct ProviderConfig {
 
 /// 输出上限的绝对上限（对齐 `MAX_OUTPUT_TOKENS_UPPER_LIMIT`）
 const MAX_OUTPUT_TOKENS_UPPER_LIMIT: u32 = 384 * 1024;
-/// 环境变量：最高优先级的输出上限覆盖（`project.json` 的 `envMaxOutputTokens`）
-const ENV_MAX_OUTPUT_TOKENS: &str = "TUXEDO_CAT_MAX_OUTPUT_TOKENS";
+/// 环境变量：最高优先级的输出上限覆盖（名字取 `project.json` 的 `envMaxOutputTokens`，
+/// build.rs 构建期烧入；与 TS 侧同一配置来源）
+const ENV_MAX_OUTPUT_TOKENS: &str = env!("TC_ENV_MAX_OUTPUT_TOKENS");
 
 /// apiKey 未配置时给用户看的文案（逐字对齐 `llm/config.ts` 的 `getConfig` /
 /// `getConfigForProvider`：两条路径抛的是同一段文本）。

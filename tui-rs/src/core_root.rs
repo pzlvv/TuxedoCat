@@ -1,16 +1,20 @@
 //! Core 产物定位（部署布局：`<prefix>/share/<产品名>/<指纹>/`）。
 //!
 //! Core 的部署不在 TUI 里（独立安装程序，docs/tui-installer.md）。安装布局由
-//! 安装器落位（unix 默认前缀 `~/.local/bin`，Windows `~/.tuxedo-cat/bin`）：
+//! 安装器落位，前缀是**应用根**（unix 默认 `~/.local`，Windows `~/<configDir>`，
+//! `configDir` 取 `src/config/project.json`）：
 //!
 //! ```text
-//! <prefix>/share/<产品名>/<指纹>/tuxedo-cat-core[.exe] + fingerprint   # 按指纹的槽位
-//! <prefix>/share/<产品名>/ripgrep/rg[.exe]                             # 全部槽位共享
-//! <prefix>/share/<产品名>/tui[.exe]                                    # 本程序
+//! <prefix>/share/<产品名>/<core.binaryName>[.exe] + fingerprint   # 按指纹的槽位
+//! <prefix>/share/<产品名>/ripgrep/rg[.exe]                        # 全部槽位共享
+//! <prefix>/share/<产品名>/tui[.exe]                               # 本程序
+//! <prefix>/bin/<产品名> → ../share/<产品名>/tui                   # unix 启动链接
 //! ```
 //!
+//! unix 上产品目录即 `~/.local/share/<产品名>/`（XDG 数据目录）。
+//!
 //! 候选根顺序（第一个能解析出 Core 二进制的胜出）：
-//! 1. 环境变量 `TUXEDO_CAT_TUI_ROOT`（显式指定部署前缀或仓库根）；
+//! 1. 环境变量 `<envPrefix>_TUI_ROOT`（显式指定部署前缀或仓库根）；
 //! 2. 默认部署前缀（安装程序的默认落点）；
 //! 3. 可执行文件所在目录（就地运行：本程序就在产品目录里）；
 //! 4. 可执行文件的各级上级目录（开发期：`tui-rs/target/<profile>/` → 仓库根的
@@ -24,23 +28,25 @@ use std::path::{Path, PathBuf};
 
 use crate::settings::home_dir;
 
-/// 显式指定部署前缀的环境变量（与 TUXEDO_CAT_CORE 同一命名族）。
-pub const TUI_ROOT_ENV: &str = "TUXEDO_CAT_TUI_ROOT";
+/// 显式指定部署前缀的环境变量：名称取 `src/config/project.json` 的 `envPrefix`
+/// （tui-rs/build.rs 构建期烧入），与 `CORE_ENV_VAR`（`<envPrefix>_CORE`）同一命名族。
+pub const TUI_ROOT_ENV: &str = concat!(env!("TC_ENV_PREFIX"), "_TUI_ROOT");
 
-/// 部署布局的产品目录名（`src/config/project.json` 的 `core.deployPrefix`；Rust 侧
-/// 拷贝，改名与该文件、installer-rs/build.rs 同步）。
-pub const DEPLOY_PRODUCT_NAME: &str = "tuxedo-cat";
+/// 部署布局的产品目录名（`src/config/project.json` 的 `core.deployPrefix`，经
+/// tui-rs/build.rs 构建期烧入——源码不持有产品字面量，企业版改名只动 project.json）。
+pub const DEPLOY_PRODUCT_NAME: &str = env!("TC_DEPLOY_PREFIX");
 
 /// 候选根向上回溯的层数上限：覆盖 `tui-rs/target/<profile>/`（2 层到仓库根）
 /// 这类开发期路径，不无限上翻。
 const MAX_ANCESTORS: usize = 5;
 
-/// Core 可执行文件名（`src/config/project.json` 的 `core.binaryName`；Windows 带 `.exe`）。
+/// Core 可执行文件名（`src/config/project.json` 的 `core.binaryName`，经
+/// tui-rs/build.rs 烧入；Windows 带 `.exe`）。
 pub fn core_binary_file_name() -> &'static str {
     if cfg!(windows) {
-        "tuxedo-cat-core.exe"
+        concat!(env!("TC_CORE_BINARY_NAME"), ".exe")
     } else {
-        "tuxedo-cat-core"
+        env!("TC_CORE_BINARY_NAME")
     }
 }
 
@@ -68,11 +74,14 @@ pub fn product_dir_in(prefix: &Path) -> PathBuf {
 /// 部署布局的共享 ripgrep：`<部署前缀>/share/<产品名>/ripgrep/rg[.exe]`。
 ///
 /// Core 自己按「所在槽位的上一级目录里的 `ripgrep`」定位（core-rs/src/tools.rs），
-/// 这份路径只给测试与诊断用。
-pub fn shared_ripgrep_in(prefix: &Path) -> PathBuf {
+/// TUI 运行时不消费这份路径，只在测试里断言布局；`#[cfg(test)]` 免得正常构建报
+/// dead code。
+#[cfg(test)]
+pub(crate) fn shared_ripgrep_in(prefix: &Path) -> PathBuf {
     product_dir_in(prefix).join("ripgrep").join(ripgrep_file_name())
 }
 
+#[cfg(test)]
 fn ripgrep_file_name() -> &'static str {
     if cfg!(windows) {
         "rg.exe"
@@ -81,15 +90,15 @@ fn ripgrep_file_name() -> &'static str {
     }
 }
 
-/// 默认部署前缀（与安装程序同一落点：unix `~/.local/bin`，Windows `~/.tuxedo-cat/bin`）。
+/// 默认部署前缀（应用根，与安装程序同一落点：unix `~/.local`——产品目录即
+/// `~/.local/share/<产品名>/`；Windows `~/<configDir>`，`configDir` 经
+/// tui-rs/build.rs 从 `project.json` 烧入）。
 pub fn default_install_prefix() -> PathBuf {
     let mut prefix = home_dir();
     if cfg!(windows) {
-        prefix.push(".tuxedo-cat");
-        prefix.push("bin");
+        prefix.push(env!("TC_CONFIG_DIR"));
     } else {
         prefix.push(".local");
-        prefix.push("bin");
     }
     prefix
 }
@@ -141,11 +150,11 @@ pub fn root_candidates(exe_dir: &Path) -> Vec<PathBuf> {
 
 /// 候选根里的 Core 二进制（两种形态，部署布局优先；可测试的纯读函数）。
 fn core_binary_in(root: &Path) -> Option<PathBuf> {
-    // 部署布局：`<root>/share/<产品名>/<指纹>/tuxedo-cat-core[.exe]`
+    // 部署布局：`<root>/share/<产品名>/<指纹>/<core.binaryName>[.exe]`
     if let Some(core) = core_slot_in(&product_dir_in(root)) {
         return Some(core.join(core_binary_file_name()));
     }
-    // 开发期仓库布局：`<root>/resources/core/<arch-platform>/tuxedo-cat-core[.exe]`
+    // 开发期仓库布局：`<root>/resources/core/<arch-platform>/<core.binaryName>[.exe]`
     let dir = core_platform_dir()?;
     let path = root.join("resources").join("core").join(dir).join(core_binary_file_name());
     path.is_file().then_some(path)

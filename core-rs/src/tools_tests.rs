@@ -320,23 +320,32 @@ fn bash_timeout_moves_the_command_to_the_background() {
     // 自动转后台的结果退出码是 0（UI 状态 success），与 Embedded 的 `exitCode: 0` 一致
     assert!(!outcome.is_status_error(), "got {body}");
     assert_eq!(outcome.exit_code(), 0);
+    // 自动转后台的说明只出现一次：taskId / 输出路径 / 完成通知不再重复两遍
     assert!(
-        body.contains("Command was moved to the background (ran too long). Task ID: bg-auto-"),
+        body.contains("Command moved to the background after ")
+            && body.contains("ms (task ID: bg-auto-"),
         "got {body}"
     );
-    assert!(body.contains("For long-running work, consider using run_in_background"), "got {body}");
     assert!(
-        body.contains("Command has been running for ")
-            && body.contains("ms and has been automatically moved to background."),
+        body.contains("Do not poll for the result — you will be notified when it completes."),
         "got {body}"
     );
-    assert!(body.contains("You will be notified when the command completes."), "got {body}");
+    assert!(
+        body.contains("Continue with other tasks in the meantime; if there is nothing else to do, end this turn."),
+        "got {body}"
+    );
+    // 完成通知只出现一次（taskId 会随输出路径再出现一次，属正常）
+    assert_eq!(
+        body.matches("you will be notified when it completes.").count(),
+        1,
+        "完成通知只应出现一次: {body}"
+    );
 
     let task_id = body
-        .split("Task ID: ")
+        .split("(task ID: ")
         .nth(1)
         .unwrap()
-        .split('.')
+        .split(')')
         .next()
         .unwrap()
         .to_string();
@@ -518,7 +527,7 @@ fn bash_abort_kills_a_sleep_command_without_a_timeout() {
 #[test]
 fn bash_timeout_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe() {
     // 子进程退出不等于管道到达 EOF：`sleep 3 &` 让 bash 立刻退出，但后台 `sleep` 继承了
-    // 管道写端，读线程会一直阻塞到它退出（Windows 上 `tuxedo-cat-core start` 拉起的
+    // 管道写端，读线程会一直阻塞到它退出（Windows 上部署的 Core 二进制 `start` 拉起的
     // detached daemon 是同一形态，而且永不退出）。
     // 对齐 Embedded `Exec.ts`：前台超时与子进程是否已退出无关，到点就转后台。
     let sandbox = Sandbox::new("tools-bash-timeout-grandchild-pipe");
@@ -540,7 +549,7 @@ fn bash_timeout_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe
 
     assert!(!outcome.is_error(), "自动转后台不算工具失败: {body}");
     assert_eq!(outcome.exit_code(), 0);
-    assert!(body.contains("Task ID: bg-auto-"), "got {body}");
+    assert!(body.contains("(task ID: bg-auto-"), "got {body}");
     assert!(body.contains("started"), "转入后台前的已累积输出要带过去: {body}");
     assert!(
         elapsed < std::time::Duration::from_millis(2000),
@@ -640,7 +649,7 @@ fn bash_spawn_failure_is_reported() {
 
 // ==================== 后台 Bash 任务（`run_in_background`） ====================
 
-/// 把 `TMPDIR` 指到沙箱里（后台任务的输出文件落在 `tuxedo-cat-tasks/`）
+/// 把 `TMPDIR` 指到沙箱里（后台任务的输出文件落在 `TASK_OUTPUT_DIR_NAME`/）
 fn point_tmpdir_at(path: &Path) -> Option<String> {
     let previous = std::env::var("TMPDIR").ok();
     std::fs::create_dir_all(path).expect("create tmp dir");
@@ -814,7 +823,8 @@ fn sleep_moves_to_the_background_when_a_background_task_completes() {
     let outcome = execute("Bash", &json!({ "command": "sleep 5" }), &ctx);
     let body = text(&outcome);
     assert!(
-        body.contains("Command was moved to the background (ran too long). Task ID: bg-auto-"),
+        body.contains("Command moved to the background after ")
+            && body.contains("ms (task ID: bg-auto-"),
         "got {body}"
     );
 
@@ -865,9 +875,9 @@ fn foreground_command_needs_three_seconds_before_a_completion_notification_backg
         &ctx,
     );
     let body = text(&outcome);
-    assert!(body.contains("Task ID: bg-auto-"), "got {body}");
+    assert!(body.contains("(task ID: bg-auto-"), "got {body}");
     let elapsed: u64 = body
-        .split("Command has been running for ")
+        .split("Command moved to the background after ")
         .nth(1)
         .and_then(|rest| rest.split("ms").next())
         .and_then(|value| value.parse().ok())
@@ -2133,11 +2143,11 @@ fn ripgrep_path_prefers_the_bundled_binary() {
 #[test]
 fn ripgrep_candidates_prefer_the_core_bundle() {
     let exe = if cfg!(windows) { "rg.exe" } else { "rg" };
-    let core_dir = Path::new("/deploy/share/tuxedo-cat/9d7e480b");
+    let core_dir = Path::new("/deploy/share/some-product/9d7e480b");
     let candidates = ripgrep_candidates(Some(core_dir), Some("/host/root"));
     assert_eq!(candidates.len(), 3, "got {candidates:?}");
     // 1. 部署布局的共享位：槽位上一级产品目录里的 `ripgrep/rg[.exe]`
-    assert!(candidates[0].starts_with(Path::new("/deploy/share/tuxedo-cat")), "got {:?}", candidates[0]);
+    assert!(candidates[0].starts_with(Path::new("/deploy/share/some-product")), "got {:?}", candidates[0]);
     assert!(candidates[0].ends_with(Path::new("ripgrep").join(exe)));
     // 2/3. 宿主 extensionPath：`dist/resources` 优先，其次仓库里的 `resources`
     assert!(candidates[1].starts_with(Path::new("/host/root")), "got {:?}", candidates[1]);
@@ -2561,7 +2571,7 @@ fn auto_background_failure_falls_back_to_exit_code_124() {
     // 打开输出文件失败时杀掉子进程、按「超时失败」收尾（对齐 Embedded 的 catch 分支）：
     // `{stdout}\n{stderr}`，退出码 124。
     let sandbox = Sandbox::new("tools-bash-auto-background-failure");
-    // 把 TMPDIR 指向一个普通文件：`<TMPDIR>/tuxedo-cat-tasks` 无法创建
+    // 把 TMPDIR 指向一个普通文件：`<TMPDIR>/<tmpTaskDirName>` 无法创建
     let blocker = sandbox.root.join("not-a-dir");
     std::fs::write(&blocker, b"x").unwrap();
     let previous = std::env::var("TMPDIR").ok();

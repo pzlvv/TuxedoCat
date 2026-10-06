@@ -58,7 +58,7 @@ export const CORE_RIPGREP_DIR = 'ripgrep';
 export const CORE_FINGERPRINT_FILE_NAME = 'fingerprint';
 
 /**
- * 部署产品目录（相对部署前缀 `~/.local/bin`）：`share/<core.deployPrefix>`（纯函数）。
+ * 部署产品目录（相对部署根 `~/.local`）：`share/<core.deployPrefix>`（纯函数）。
  *
  * 部署布局是全产品共享的一份，TUI 安装器（installer-rs）与 SSH 引导同一口径：产品
  * 目录下按指纹分槽放 Core 二进制，自带 ripgrep 是全部槽位共享的一份（见
@@ -70,7 +70,7 @@ export function coreDeployShareDirName(): string {
 }
 
 /**
- * 部署目录（相对部署前缀 `~/.local/bin`）：`share/<产品名>/<完整指纹>`（纯函数，
+ * 部署目录（相对部署根 `~/.local`）：`share/<产品名>/<完整指纹>`（纯函数，
  * 派生逻辑只有这一份）。
  *
  * 槽位名用完整 64 位指纹，与按指纹命名的 daemon 状态 / 日志文件（`daemonProtocol.ts`）
@@ -175,7 +175,7 @@ export function resolveCoreBinary(
 /**
  * 读取 Standalone Core 的构建指纹（可执行文件同级的 `fingerprint` 文件）。
  *
- * 指纹是部署的槽位标识：宿主据此确定部署目录 `~/.local/bin/share/<产品名>/<指纹>/`
+ * 指纹是部署的槽位标识：宿主据此确定部署目录 `~/.local/share/<产品名>/<指纹>/`
  * （`coreDeployDirPath`）与该指纹专属的 daemon 状态文件（`docs/core-daemon.md`
  * 第 12.3 节）。
  * 文件缺失 / 内容不是 64 位小写 hex 都抛错：产物不完整属于构建期错误，静默猜一个

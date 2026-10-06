@@ -45,7 +45,7 @@ fn host_environment_defaults_are_used_for_missing_fields() {
     let env = config::host_environment().expect("host env");
     assert_eq!(env.extension_path, "");
     assert!(!env.log_to_console);
-    assert_eq!(env.config_dir_name, ".tuxedo-cat", "缺省值对齐默认配置目录名");
+    assert_eq!(env.config_dir_name, config::DEFAULT_CONFIG_DIR_NAME, "缺省值对齐默认配置目录名");
 }
 
 /// 一份最小的合法快照（与 `settings_tests` 的同名构造同口径）

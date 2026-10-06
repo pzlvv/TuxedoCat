@@ -338,7 +338,7 @@
 
 验收标准：
 
-1. 技能来自 bundled → 项目 `.tuxedo-cat/skills/` → 用户 `~/.tuxedo-cat/skills/`。
+1. 技能来自 bundled → 项目 `<configDir>/skills/` → 用户 `~/<configDir>/skills/`。
 2. 内置命令不进 LLM 上下文，执行后 UI 收到 `commandDispatched` 做客户端动作
    （如 `/spin design` 打开设计器）。
 3. 技能与内置命令同名时技能被忽略并给出 WARNING。

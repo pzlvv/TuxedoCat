@@ -22,7 +22,7 @@ fn temp_dir(tag: &str) -> PathBuf {
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
     let dir = std::env::temp_dir().join(format!(
-        "tuxedo-cat-remote-{tag}-{}-{nanos}",
+        "core-remote-{tag}-{}-{nanos}",
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).expect("create temp dir");

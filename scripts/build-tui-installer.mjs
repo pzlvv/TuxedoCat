@@ -2,17 +2,18 @@
 /**
  * TUI 版安装程序构建（docs/tui-installer.md 第 5 节）。
  *
- * 产出 `<releaseDir>/tui-installer/tuxedo-cat-tui-installer-<arch>-<platform>[.exe]`，
- * 覆盖四个目标：Windows x64 / arm64、Linux x64 / arm64（musl）。每个安装器内嵌
- * 对应平台的 Standalone Core、捆绑 ripgrep、指纹文件与 TUI 二进制（tui-rs release 产物）。
+ * 产出 `<releaseDir>/tui-installer/<安装器名>-<arch>-<platform>[.exe]`（安装器名 =
+ * installer-rs crate 的二进制名），覆盖四个目标：Windows x64 / arm64、Linux x64 /
+ * arm64（musl）。每个安装器内嵌对应平台的 Standalone Core、捆绑 ripgrep、指纹文件
+ * 与 TUI 二进制（tui-rs release 产物）。
  *
  * 步骤（每个目标）：
  * 1. Core 产物就位检查：`resources/core/<dir>/` 缺失时先跑
  *    `node scripts/build-core.mjs --target <triple>`（arm64-win32 不在默认打包集合
  *    PACKAGE_DIRS 里，这里按需补建）；
- * 2. TUI 二进制就位检查：`tui-rs/target/<triple>/release/` 缺失时先跑
- *    `cargo build --release --manifest-path tui-rs/Cargo.toml --target <triple>`
- *    （cwd 必须在 tui-rs：musl 的 rust-lld 配置在 tui-rs/.cargo/config.toml）；
+ * 2. TUI 二进制：`cargo build --release --target <triple>`（cwd 必须在 tui-rs：
+ *    musl 的 rust-lld 配置在 tui-rs/.cargo/config.toml）——增量构建，产物已最新
+ *    时近乎免费，不做「产物在就跳过」的检查（旧二进制会被静默嵌入）；
  * 3. `cargo build --release --manifest-path installer-rs/Cargo.toml --target <triple>`
  *    （cwd 必须在 installer-rs：cargo 只从当前目录往上找 .cargo/config.toml，
  *    musl 的 rust-lld 配置在那里；安装器是纯 Rust，交叉不需要 zig）；
@@ -34,7 +35,25 @@ import { TARGETS, FINGERPRINT_FILE_NAME } from './build-core.mjs';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = join(repoRoot, 'installer-rs', 'Cargo.toml');
 const manifestDir = dirname(manifestPath);
-const BINARY_NAME = 'tuxedo-cat-tui-installer';
+
+/**
+ * cargo 二进制产物名：`Cargo.toml` 的 `[[bin]] name`（cargo 产物名的单一来源）。
+ *
+ * 与 `installer-rs/build.rs` 的解析口径一致（同一份来源，两处消费）；排版变化直接
+ * 抛错，不静默降级。
+ */
+function cargoBinName(manifest) {
+  const sectionStart = manifest.indexOf('[[bin]]');
+  if (sectionStart < 0) throw new Error(`${manifest} 缺 [[bin]] 段`);
+  const match = manifest.slice(sectionStart).match(/^name\s*=\s*"([^"]+)"/m);
+  if (!match) throw new Error(`${manifest} 的 [[bin]] 缺 name`);
+  return match[1];
+}
+
+/** 安装器产物名（= installer-rs crate 的二进制名，源码不出现产品字面量） */
+const BINARY_NAME = cargoBinName(readFileSync(manifestPath, 'utf8'));
+/** TUI 二进制产物名（= tui-rs crate 的二进制名） */
+const TUI_BIN_NAME = cargoBinName(readFileSync(join(repoRoot, 'tui-rs', 'Cargo.toml'), 'utf8'));
 /** 安装器版本取包版本（src/config/project.json 不带 version 字段） */
 const packageVersion = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version;
 
@@ -97,7 +116,7 @@ function resolveTargets(options) {
 /** Core 产物三件套是否齐（二进制 / ripgrep / 指纹） */
 function coreArtifactsReady(target) {
   const dir = join(repoRoot, 'resources', project.core.resourceDir, target.dir);
-  return existsSync(join(dir, `tuxedo-cat-core${target.ext}`))
+  return existsSync(join(dir, `${project.core.binaryName}${target.ext}`))
     && existsSync(join(dir, 'ripgrep', `rg${target.ext}`))
     && existsSync(join(dir, FINGERPRINT_FILE_NAME));
 }
@@ -156,15 +175,14 @@ function buildInstaller(target, strict) {
   }
 
   // 2. TUI 二进制（tui-rs 按同一 triple 交叉构建；产物路径是 installer-rs/build.rs
-  //    的默认探测位置，两侧同步改）
-  const tuiBinary = join(repoRoot, 'tui-rs', 'target', target.triple, 'release', `tuxedo-cat-tui${target.ext}`);
+  //    的默认探测位置，两侧同步改）。无条件 cargo build 而非「产物在就跳过」：
+  //    TUI 没有指纹之类的新旧标记，existsSync 跳过会把源码改版前的旧二进制静默
+  //    嵌进安装器；cargo 增量构建在已是最新时近乎免费
+  run('cargo', ['build', '--release', '--target', target.triple], join(repoRoot, 'tui-rs'));
+  const tuiBinary = join(repoRoot, 'tui-rs', 'target', target.triple, 'release', `${TUI_BIN_NAME}${target.ext}`);
   if (!existsSync(tuiBinary)) {
-    console.log('[build-tui-installer] TUI 二进制缺失，先构建 tui-rs…');
-    run('cargo', ['build', '--release', '--target', target.triple], join(repoRoot, 'tui-rs'));
-    if (!existsSync(tuiBinary)) {
-      console.error(`[build-tui-installer] TUI 构建后仍缺产物：${tuiBinary}`);
-      process.exit(1);
-    }
+    console.error(`[build-tui-installer] TUI 构建后仍缺产物：${tuiBinary}`);
+    process.exit(1);
   }
 
   // 3. cargo（cwd 在 crate 目录，musl 的 .cargo/config.toml 才生效）
@@ -191,7 +209,7 @@ function buildInstaller(target, strict) {
 
 function main() {
   if (project.coreKind === 'embedded') {
-    console.error('[build-tui-installer] TUXEDO_CAT_CORE=embedded：TUI 只随 standalone Core 分发，embedded 变体不生成安装器。');
+    console.error(`[build-tui-installer] ${project.coreKindEnv}=embedded：TUI 只随 standalone Core 分发，embedded 变体不生成安装器。`);
     process.exit(2);
   }
   if (!existsSync(manifestPath)) {

@@ -929,7 +929,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             &ctx.session_id,
             ctx.background.clone(),
         ) {
-            Ok(task_id) => ToolOutcome::Success(background_result_text(&task_id, "", "", false)),
+            Ok(task_id) => ToolOutcome::Success(background_result_text(&task_id, "", "", false, None)),
             // 对齐 Embedded：spawn / 打开输出文件失败时 stdout 为空、退出码 1，
             // 错误文本走普通拼接路径（`Result.ts` 会再补一行 `Exit code: 1`）。
             Err(error) => ToolOutcome::CommandFailed {
@@ -1019,7 +1019,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let cancel = ctx.cancel.clone();
     let mut cancelled = false;
     // 子进程退出不等于管道到达 EOF：孙进程可能继承了管道写端（Windows 上 detached 的常驻
-    // 进程就是这样——`tuxedo-cat-core start` 拉起的 daemon 即一例；此时读线程会一直阻塞在
+    // 进程就是这样——本二进制 `start` 拉起的 daemon 即一例；此时读线程会一直阻塞在
     // `read`，直到孙进程退出）。因此「等子进程退出」与「等管道 EOF」共用同一套判定：
     // 中止、前台超时、通知驱动转后台都不依赖子进程是否还活着。只在前一阶段判定的话，
     // 一条已经退出的命令会让 abort 与前台超时全部失效
@@ -1222,20 +1222,24 @@ fn auto_background_command(
     );
     crate::bash_task::watch_backgrounded(child, task_id.clone(), kill, ctx.background.clone());
 
-    // `find` 提示（对齐 Embedded：命令里出现 `find` 时提醒模型重新读需求）
+    // `find` 提示（对齐 Embedded：命令里出现 `find` 时提醒模型重新读需求）。
+    // 已累积的输出（含命令自身的 stderr）都在 `stdout` 里，这里只回传提示；
+    // 「已转入后台」的说明由 `background_result_text` 拼一次。
     let reminder = if contains_find_word(command) {
-        "\n[reminder] The command contains `find` and took longer than expected. Try re-reading \
+        "[reminder] The command contains `find` and took longer than expected. Try re-reading \
          the user's request carefully — there is usually a clue about the exact file path or \
          pattern to use, which can help narrow the search scope."
     } else {
         ""
     };
-    let stderr = format!(
-        "Command has been running for {elapsed}ms and has been automatically moved to background.\n\
-         Background task ID: {task_id}\nYou will be notified when the command completes.{reminder}"
-    );
 
-    ToolOutcome::Success(background_result_text(&task_id, &stdout, &stderr, true))
+    ToolOutcome::Success(background_result_text(
+        &task_id,
+        &stdout,
+        reminder,
+        true,
+        Some(elapsed),
+    ))
 }
 
 /// JS `stdout || ''` + `if (stderr) output += (output ? '\n' : '') + stderr`
@@ -1289,23 +1293,29 @@ fn js_coerce_bool(value: Option<&Value>) -> bool {
 ///
 /// - `stdout` 是「转入后台前已累积的输出」：必须拼在提示**之前**，否则 Bash 卡片会从
 ///   流式阶段的高度突变为几行文本（Embedded 的原注释即为此）；
-/// - `auto_backgrounded` 为真时用「已自动转入后台」文案，并把 `stderr`（自动转后台
-///   的说明 + `find` 提示）附在末尾。
+/// - `auto_backgrounded` 为真时用「已自动转入后台」文案（`elapsed_ms` 是转入后台前
+///   已在前台运行的时长），并把 `stderr`（命令自身的错误输出 + `find` 提示）附在末尾。
 fn background_result_text(
     task_id: &str,
     stdout: &str,
     stderr: &str,
     auto_backgrounded: bool,
+    elapsed_ms: Option<u64>,
 ) -> String {
     let output_path = crate::bash_task::task_output_path(task_id)
         .to_string_lossy()
         .to_string();
     let mut info = if auto_backgrounded {
+        // 自动转后台的说明只在这里拼一次：`auto_background_command` 只回传命令自身的
+        // stderr 与 `find` 提示，避免 taskId / 完成通知在同一个 tool_result 里出现两遍。
+        let elapsed_note = elapsed_ms
+            .map(|ms| format!(" after {ms}ms"))
+            .unwrap_or_default();
         format!(
-            "Command was moved to the background (ran too long). Task ID: {task_id}. \
-             It is still running — you will be notified when it completes. Output is being \
-             written to: {output_path}. For long-running work, consider using \
-             run_in_background to keep this conversation responsive."
+            "Command moved to the background{elapsed_note} (task ID: {task_id}). Output is \
+             being written to: {output_path}. Do not poll for the result — you will be notified \
+             when it completes. Continue with other tasks in the meantime; if there is nothing \
+             else to do, end this turn."
         )
     } else {
         format!(

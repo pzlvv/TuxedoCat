@@ -2,7 +2,7 @@
 //!
 //! 对齐 Embedded 的三个模块：
 //! - `tools/bash/LocalShellTask.ts`：任务注册表 / 完成通知文案 / `markSessionBackground`
-//! - `tools/bash/TaskOutput.ts`：file mode 输出文件（`<TMPDIR>/tuxedo-cat-tasks/<taskId>.output`）
+//! - `tools/bash/TaskOutput.ts`：file mode 输出文件（`<TMPDIR>/<tmpTaskDirName>/<taskId>.output`）
 //! - `tools/bash/ShellCommand.ts`：进程生命周期（kill / 结果）
 //!
 //! 未移植的部分（Embedded 有、Rust 暂无消费方）：
@@ -22,8 +22,9 @@ use std::time::Duration;
 
 use crate::util;
 
-/// 任务输出目录名（对齐 `src/config/project.json` 的 `tmpTaskDirName`）
-pub const TASK_OUTPUT_DIR_NAME: &str = "tuxedo-cat-tasks";
+/// 任务输出目录名（`src/config/project.json` 的 `tmpTaskDirName`，build.rs 构建期
+/// 烧入——源码不持有产品字面量，与 TS 侧同一配置来源）
+pub const TASK_OUTPUT_DIR_NAME: &str = env!("TC_TMP_TASK_DIR_NAME");
 
 /// 子进程退出轮询间隔（与前台 `run_bash` 的等待节奏一致）
 const POLL_INTERVAL_MS: u64 = 30;

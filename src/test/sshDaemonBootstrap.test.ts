@@ -23,7 +23,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { createChecker, runTests } from './helpers/harness';
 import {
-  REMOTE_BIN_DIR,
+  REMOTE_DEPLOY_ROOT,
   detectRemoteTarget,
   ensureRemoteDaemon,
   splitEndpoint,
@@ -40,10 +40,10 @@ const FINGERPRINT = 'f'.repeat(64);
 const DEPLOY_DIR = coreDeployDirPath(FINGERPRINT);
 /** 远端共享 ripgrep 路径：`share/<core.deployPrefix>/ripgrep`（同一份派生纯函数） */
 const RIPGREP_DIR = coreDeployRipgrepPath();
-const STATE_PATH = `${HOME}/${CONFIG_DIR_NAME}/core-daemon-${FINGERPRINT}.json`;
-const BINARY_PATH = `${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}/${coreBinaryFileName('linux')}`;
+const STATE_PATH = `${HOME}/${CONFIG_DIR_NAME}/run/core-daemon-${FINGERPRINT}.json`;
+const BINARY_PATH = `${HOME}/${REMOTE_DEPLOY_ROOT}/${DEPLOY_DIR}/${coreBinaryFileName('linux')}`;
 /** Core 自带的 ripgrep：产品目录根的共享位，全部指纹槽位共用（`docs/standalone-core.md` 第 4 节） */
-const RIPGREP_PATH = `${HOME}/${REMOTE_BIN_DIR}/${RIPGREP_DIR}/rg`;
+const RIPGREP_PATH = `${HOME}/${REMOTE_DEPLOY_ROOT}/${RIPGREP_DIR}/rg`;
 /**
  * 引导执行的启动命令：daemon 恒绑回环（转发连接从远端本机发起，端口不出机器）；
  * 端口交给内核分配——多版本 daemon 并存互不抢固定端口，实际端口随状态文件读回；
@@ -297,7 +297,7 @@ runTests('sshDaemonBootstrap', async () => {
     const binaryMv = mvCommand(binaryStaging, BINARY_PATH);
     const rgStaging = fake.uploads[1]?.remote;
     const rgMv = mvCommand(rgStaging, RIPGREP_PATH);
-    check('未部署时上传到 ~/.local/bin/share/<产品名>/<指纹>/（经唯一暂存名 + mv 原子换名）', fake.uploads.length === 2
+    check('未部署时上传到 ~/.local/share/<产品名>/<指纹>/（经唯一暂存名 + mv 原子换名）', fake.uploads.length === 2
       && isUniqueStagingOf(binaryStaging, BINARY_PATH)
       && binaryMv !== undefined && fake.commands.includes(binaryMv));
     check('上传的是本机携带的对应平台产物', fake.uploads[0]?.local === binary);
@@ -305,8 +305,8 @@ runTests('sshDaemonBootstrap', async () => {
     check('未部署时一并上传自带 ripgrep 到共享位（同样经唯一暂存名 + mv）',
       isUniqueStagingOf(rgStaging, RIPGREP_PATH) && fake.uploads[1]?.local === ripgrep
       && rgMv !== undefined && fake.commands.includes(rgMv));
-    check('上传前建好指纹槽位目录', fake.commands.includes(`mkdir -p '${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}'`));
-    check('上传前建好 ripgrep 共享位目录', fake.commands.includes(`mkdir -p '${HOME}/${REMOTE_BIN_DIR}/${RIPGREP_DIR}'`));
+    check('上传前建好指纹槽位目录', fake.commands.includes(`mkdir -p '${HOME}/${REMOTE_DEPLOY_ROOT}/${DEPLOY_DIR}'`));
+    check('上传前建好 ripgrep 共享位目录', fake.commands.includes(`mkdir -p '${HOME}/${REMOTE_DEPLOY_ROOT}/${RIPGREP_DIR}'`));
     check('上传后执行 start（绑回环，端口交给内核分配）', fake.commands.includes(START_COMMAND));
     check('返回 daemon endpoint', daemon.host === '127.0.0.1' && daemon.port === 10976);
   }

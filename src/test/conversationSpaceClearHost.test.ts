@@ -36,6 +36,7 @@ import type { SpinDesign } from '../host/SpinDesign';
 import type { ConversationMetadata } from '../core/history/Conversation';
 import type { SessionRuntimeState } from '../core/AssistantEventBus';
 import { remoteWorkspaceRef, localWorkspaceRef, type WorkspaceEndpoint, type WorkspaceRef } from '../host/workspaceRef';
+import { CORE_ENV_VAR } from '../config/project';
 import { createChecker, runTests } from './helpers/harness';
 import { createTestHost, type TestHost } from './helpers/fixtures';
 
@@ -250,10 +251,10 @@ async function run(): Promise<void> {
   const { check, finish } = createChecker();
 
   // 家目录指向临时目录：宿主 settings.json 与本地 Core 进程的数据目录都隔离
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-cat-space-clear-host-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tc-space-clear-host-'));
   process.env.USERPROFILE = home;
   process.env.HOME = home;
-  process.env.TUXEDO_CAT_CORE = 'standalone';
+  process.env[CORE_ENV_VAR] = 'standalone';
 
   const fake = await startBridgingFakeRemote();
   const remoteEndpoint: WorkspaceEndpoint = {

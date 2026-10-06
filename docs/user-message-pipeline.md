@@ -210,7 +210,7 @@ Skill 命令的注入内容是一条 assistant `tool_use`（`name: 'Skill'`）�
 | 用户消息类型 | 用户消息在协议中只有一个类型（`sendMessage`） |
 | 环境查询请求 | webview → host 的请求类型（`requestSkills` / `requestSessionRuntimeStates`）按同一约定声明 |
 | 会话运行时状态推送 | `pushSessionRuntimeStates` 是模块内实现细节；对外入口是消息分发表 |
-| 活动指示动效 | 运行中 = 蓝色流水（渐变背景滚动）；等待用户 = 黄色呼吸（明暗脉动，不滚动）。webview 对话列表与 Electron 标题栏用同一套语义；等待用户态以单一动画表达 |
+| 活动指示动效 | 运行中 = 蓝色流水（渐变背景滚动）；等待用户 = 黄色呼吸（明暗脉动，不滚动）。webview 对话列表与 Electron 标题栏用同一套语义；等待用户态以单一动画表达。未读完成（Electron：用户看不到时完成的任务）= 绿色呼吸一次后常亮，直到该对话被打开（状态机见 `DEVELOPMENT.md` 第 11 章「未读完成呼吸」） |
 
 ---
 

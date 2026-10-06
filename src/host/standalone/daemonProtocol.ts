@@ -18,18 +18,19 @@ import { stringifyJsonSafe } from '../../core/utils/stringUtils.js';
  * 远端 daemon 的状态 / 日志文件名（`docs/core-daemon.md` 第 12.3 节）。
  *
  * 文件名按**构建指纹**区分：`core-daemon-<指纹>.json` 等。一个指纹一个 daemon、
- * 一份状态文件——多版本 Core 在同一台远端机器上并存时，各自的 `start` / `kill` /
+ * 一份落盘文件——多版本 Core 在同一台远端机器上并存时，各自的 `start` / `kill` /
  * 探测只作用于自己指纹的 daemon，互不踩踏（`docs/standalone-core.md` 第 4.4 节）。
- * 与 `settings.json` 同目录（`~/<configDir>/`），**只有 daemon 写它们**；Host 侧读取
- * 状态文件来拿到实际监听端口（SSH 接入时 daemon 端口不对外映射，只能这样发现）。
- * 命名规则与 `core-rs/src/remote.rs` 的 `DAEMON_STATE_FILE_NAME` /
- * `DAEMON_LOG_FILE_NAME`（按指纹拼接）保持一致，改动必须同步两侧。
+ * 状态文件（+ 同名 `.lock`）在配置目录的 `run/` 子目录（daemon 的运行期事实，
+ * `core-rs/src/remote.rs::daemon_state_path` 同口径，改动必须同步两侧），诊断日志
+ * 在 `logs/` 子目录；Host 侧读取状态文件来拿到实际监听端口（SSH 接入时 daemon
+ * 端口不对外映射，只能这样发现）。
  */
 export function daemonStateFileName(fingerprint: string): string {
   return `core-daemon-${fingerprint}.json`;
 }
 
-/** 诊断日志文件名；`start` 拉起的 daemon 把 stderr/stdout 追加到这里 */
+/** 诊断日志文件名；`start` 拉起的 daemon 把 stderr/stdout 追加到配置目录 `logs/`
+ * 子目录下的这个文件（`core-rs/src/remote.rs::daemon_log_path` 同口径，改动同步两侧） */
 export function daemonLogFileName(fingerprint: string): string {
   return `core-daemon-${fingerprint}.log`;
 }

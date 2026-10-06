@@ -326,6 +326,15 @@ pub fn resolve_settings_snapshot(raw: &Value) -> SettingsSnapshot {
     }
 }
 
+/// 令牌数出线必须是整数：core 按 u64 收（TS 侧 JSON 整数同口径），内部用 f64 做
+/// 算术没问题，但 f64 直接序列化会写出 `131072.0`，core 解析整个 settings 时报
+/// `invalid type: floating point` 拒收快照（hostEnvironmentProvided 失败 → Core
+/// 永不 ready，宿主后续所有 UiEvent 全被拒）。`f64 as u64` 是饱和转换，负数 /
+/// NaN 落 0，令牌数取值下不会出现。
+fn token_count(value: f64) -> u64 {
+    value as u64
+}
+
 /// 快照 → `hostEnvironmentProvided.settings` 载荷（字段名与 TS 快照逐项一致）。
 pub fn snapshot_to_payload(snapshot: &SettingsSnapshot) -> Value {
     let mut providers = Map::new();
@@ -335,10 +344,10 @@ pub fn snapshot_to_payload(snapshot: &SettingsSnapshot) -> Value {
             limits.insert(
                 model.clone(),
                 json!({
-                    "context": limits_entry.context,
-                    "output": limits_entry.output,
+                    "context": token_count(limits_entry.context),
+                    "output": token_count(limits_entry.output),
                     "apiType": limits_entry.api_type.as_str(),
-                    "thinkingTokenBudget": limits_entry.thinking_token_budget,
+                    "thinkingTokenBudget": token_count(limits_entry.thinking_token_budget),
                 }),
             );
         }
@@ -359,14 +368,14 @@ pub fn snapshot_to_payload(snapshot: &SettingsSnapshot) -> Value {
             "webSearch": snapshot.web_search,
             "thinkingEffort": snapshot.thinking_effort,
             "model": snapshot.model,
-            "maxTokens": snapshot.max_tokens,
+            "maxTokens": token_count(snapshot.max_tokens),
             "enableUsageStats": snapshot.enable_usage_stats,
             "providers": Value::Object(providers),
             "modelLimitsFallback": {
-                "context": snapshot.model_limits_fallback.context,
-                "output": snapshot.model_limits_fallback.output,
+                "context": token_count(snapshot.model_limits_fallback.context),
+                "output": token_count(snapshot.model_limits_fallback.output),
                 "apiType": snapshot.model_limits_fallback.api_type.as_str(),
-                "thinkingTokenBudget": snapshot.model_limits_fallback.thinking_token_budget,
+                "thinkingTokenBudget": token_count(snapshot.model_limits_fallback.thinking_token_budget),
             },
         },
         "mcp": { "enabled": snapshot.mcp_enabled },
@@ -512,10 +521,11 @@ pub fn home_dir() -> PathBuf {
     std::env::temp_dir()
 }
 
-/// 配置目录名（`src/config/project.json` 的 `configDir`）。
-pub const CONFIG_DIR_NAME: &str = ".tuxedo-cat";
+/// 配置目录名（`src/config/project.json` 的 `configDir`，经 tui-rs/build.rs 构建期
+/// 烧入——源码不持有产品字面量，企业版改名只动 project.json）。
+pub const CONFIG_DIR_NAME: &str = env!("TC_CONFIG_DIR");
 
-/// 全局配置目录：`<home>/.tuxedo-cat`。
+/// 全局配置目录：`<home>/<CONFIG_DIR_NAME>`。
 pub fn config_dir() -> PathBuf {
     home_dir().join(CONFIG_DIR_NAME)
 }

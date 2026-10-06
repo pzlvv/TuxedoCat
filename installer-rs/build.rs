@@ -5,14 +5,18 @@
 //! `payload.rs`：`include_bytes!` 把它们烧进安装器——产物缺失直接构建失败并给出
 //! 补救命令。
 //!
-//! 安装布局在构建期就定死（安装器是自解压，落点即载荷的相对路径）：
+//! 安装布局在构建期就定死（安装器是自解压，落点即载荷的相对路径）。前缀是
+//! **应用根**（unix 默认 `~/.local`，Windows `~/<configDir>`；`--prefix` 覆盖）：
 //!
 //! ```text
-//! <prefix>/share/<产品名>/<指纹>/tuxedo-cat-core[.exe]   # 按指纹的槽位
+//! <prefix>/share/<产品名>/<指纹>/<core.binaryName>[.exe]   # 按指纹的槽位
 //! <prefix>/share/<产品名>/<指纹>/fingerprint
-//! <prefix>/share/<产品名>/ripgrep/rg[.exe]               # 全部槽位共享一份
-//! <prefix>/share/<产品名>/tui[.exe]                      # TUI 二进制
+//! <prefix>/share/<产品名>/ripgrep/rg[.exe]                 # 全部槽位共享一份
+//! <prefix>/share/<产品名>/tui[.exe]                        # TUI 二进制
 //! ```
+//!
+//! unix 上产品即 `~/.local/share/<产品名>/`（XDG 数据目录），另有软链接
+//! `~/.local/bin/<产品名>` → 产品目录里的 `tui`（安装器 main.rs 落位）。
 //!
 //! 产品名取 `src/config/project.json` 的 `core.deployPrefix`，指纹读自产物自带的
 //! `fingerprint` 文件（与宿主 `readCoreFingerprint` 同一校验口径：64 位小写 hex，
@@ -20,8 +24,10 @@
 //! 上一级目录里的 `ripgrep`」定位共享 rg（core-rs/src/tools.rs），与这里配对。
 //!
 //! 三元组 → 产物目录的映射与 `scripts/build-core.mjs`、`src/config/project.json`
-//! 的根集合保持一致（`tuxedo-cat-core`、`ripgrep/rg`、`fingerprint`、`tuxedo-cat-tui`）；
-//! 此处是 Rust 侧拷贝，改名时各处同步。
+//! 的根集合保持一致（`core.binaryName`、`ripgrep/rg`、`fingerprint`、TUI crate 产物）；
+//! 此处是 Rust 侧拷贝，改名时各处同步。产品身份字段（`deployPrefix` / `binaryName` /
+//! `configDir` / `productName`）全部构建期读自 `src/config/project.json`，源码不出现
+//! 产品字面量（企业版改名只动 project.json，与 tui-rs/build.rs 同一口径）。
 
 use std::env;
 use std::fs;
@@ -59,6 +65,20 @@ fn json_string_field(text: &str, key: &str) -> String {
     after[value_start..value_start + value_len].to_string()
 }
 
+/// 从 tui-rs 的 `Cargo.toml` 里取 TUI 二进制的产物名（`[[bin]]` 段的 `name`）。
+///
+/// 产物名 = cargo 的二进制目标名，单一来源是 tui-rs/Cargo.toml；排版变化直接 panic。
+/// 与 `scripts/build-tui-installer.mjs` 的解析口径一致（同一份来源，两处消费）。
+fn cargo_bin_name(text: &str) -> String {
+    let section = text.find("[[bin]]").expect("tui-rs/Cargo.toml 缺 [[bin]] 段");
+    let rest = &text[section..];
+    let needle = "name = \"";
+    let start = rest.find(needle).expect("tui-rs/Cargo.toml 的 [[bin]] 缺 name");
+    let after = &rest[start + needle.len()..];
+    let end = after.find('"').expect("tui-rs/Cargo.toml 的 [[bin]] name 没有闭合引号");
+    after[..end].to_string()
+}
+
 fn main() {
     let triple = env::var("TARGET").expect("cargo 必须设置 TARGET");
     let pkg = pkg_dir(&triple);
@@ -74,7 +94,12 @@ fn main() {
         .unwrap_or_else(|_| repo_root.join("resources").join("core"));
     // TUI 与安装器按同一 triple 交叉构建（scripts/build-tui-installer.mjs 负责）；
     // 宿主同三元组时回退到 `npm run build:tui` 的原生产物（无 triple 目录），
-    // 让 `cargo test`（installer-rs）在常规构建后即可运行
+    // 让 `cargo test`（installer-rs）在常规构建后即可运行。产物名解析自
+    // tui-rs/Cargo.toml 的 `[[bin]] name`（cargo 产物名的单一来源）
+    let tui_bin_name = cargo_bin_name(
+        &fs::read_to_string(repo_root.join("tui-rs").join("Cargo.toml"))
+            .expect("读取 tui-rs/Cargo.toml 失败"),
+    );
     let tui_binary = env::var("TUI_INSTALL_TUI_BINARY")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -83,12 +108,12 @@ fn main() {
                 .join("target")
                 .join(triple.clone())
                 .join("release")
-                .join(format!("tuxedo-cat-tui{ext}"));
+                .join(format!("{tui_bin_name}{ext}"));
             let host_native = repo_root
                 .join("tui-rs")
                 .join("target")
                 .join("release")
-                .join(format!("tuxedo-cat-tui{ext}"));
+                .join(format!("{tui_bin_name}{ext}"));
             let host_matches = env::var("HOST").map(|host| host == triple).unwrap_or(false);
             if triple_specific.is_file() || !host_matches {
                 triple_specific
@@ -99,11 +124,20 @@ fn main() {
     let version =
         env::var("TUI_INSTALL_VERSION").unwrap_or_else(|_| "dev".to_string());
 
-    // 产品名：部署布局的产品目录段（`share/<core.deployPrefix>`），与宿主
-    // `coreDeployShareDirName` 同一配置来源
+    // 产品身份字段：部署产品目录名 / Core 二进制名 / 配置目录名 / 产品显示名，
+    // 与 tui-rs/build.rs 同一口径（env! 消费，源码零产品字面量）
     let project_text = fs::read_to_string(repo_root.join("src").join("config").join("project.json"))
         .expect("读取 src/config/project.json 失败");
     let product = json_string_field(&project_text, "deployPrefix");
+    let core_binary_name = json_string_field(&project_text, "binaryName");
+    let config_dir_name = json_string_field(&project_text, "configDir");
+    let product_name = json_string_field(&project_text, "productName");
+    println!("cargo:rustc-env=TC_CONFIG_DIR={config_dir_name}");
+    println!("cargo:rustc-env=TC_PRODUCT_NAME={product_name}");
+    println!("cargo:rerun-if-changed=../tui-rs/Cargo.toml");
+
+    // 产品名：部署布局的产品目录段（`share/<core.deployPrefix>`），与宿主
+    // `coreDeployShareDirName` 同一配置来源
     let product_dir = format!("share/{product}");
 
     let pkg_dir_path = payload_root.join(pkg);
@@ -126,7 +160,7 @@ fn main() {
     }
 
     // (安装后相对路径, 源文件, 可执行位)
-    let core_name = format!("tuxedo-cat-core{ext}");
+    let core_name = format!("{core_binary_name}{ext}");
     let tui_name = format!("tui{ext}");
     let entries: Vec<(String, PathBuf, bool)> = vec![
         (format!("{product_dir}/{tui_name}"), tui_binary, true),
@@ -146,6 +180,12 @@ fn main() {
             true,
         ),
     ];
+
+    // 载荷文件被 include_bytes! 烧进产物：任一文件变化（重跑 build:core 会换指纹与
+    // 二进制）都必须重跑本脚本重嵌，否则安装器会带着过期载荷
+    for (_, source, _) in &entries {
+        println!("cargo:rerun-if-changed={}", source.display());
+    }
 
     let mut payload = String::new();
     payload.push_str(&format!(

@@ -1,7 +1,7 @@
 /**
  * 孤立代理项（lone surrogate）防线。
  *
- * 背景（真实事故，见 `~/.tuxedo-cat/fail_logs/llm_fail_2026-09-26T15-05-45-068Z.json`）：
+ * 背景（真实事故，见配置目录 `fail_logs/llm_fail_2026-09-26T15-05-45-068Z.json`）：
  *   一段以 emoji 结尾的 Bash 输出落盘后，工具结果被按「前 2K + 后 2K」截断，
  *   尾部 `slice` 正好切在 `😀`（`D83D DE00`）的代理对中间，留下孤立低位代理项
  *   `\uDE00`。`JSON.stringify` 把它写成 `"\ude00"`——语法合法、语义非法。

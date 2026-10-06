@@ -526,9 +526,12 @@ async function run(): Promise<void> {
           endpoint.host === '127.0.0.1' && endpoint.port > 0,
         );
         const port = endpoint.port;
+        // 状态文件在配置目录的 run/ 子目录（daemon 的运行期事实，与 core-rs 的
+        // `daemon_state_path` 同口径）
         const statePath = path.join(
           home,
           '.tuxedo-cat',
+          'run',
           daemonStateFileName(fs.readFileSync(fingerprintPath, 'utf8').trim()),
         );
         check('真实 daemon 按指纹落盘状态文件', fs.existsSync(statePath));

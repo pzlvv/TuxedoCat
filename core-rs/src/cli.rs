@@ -40,7 +40,8 @@ fn takes_value(arg: &str) -> bool {
     matches!(arg, "--idle-exit")
 }
 
-/// 程序名：取可执行文件名（打包后是 `tuxedo-cat-core`，开发期是 `standalone-core`）。
+/// 程序名：取可执行文件名（打包后是部署的 Core 二进制名 `core.binaryName`，
+/// 开发期是 `standalone-core`）。
 ///
 /// 不硬编码产品名：Rust 侧保持中性，对外展示的名字由分发时的文件名决定。
 pub fn program_name() -> String {

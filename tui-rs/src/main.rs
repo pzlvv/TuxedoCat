@@ -1,7 +1,7 @@
 //! TUI 入口（docs/tui.md 第 2 节；`src/tui/render/main.ts` 的移植）。
 //!
 //! 用法：
-//!   tuxedo-cat-tui [--workspace <dir>] [--verbose] [--version]
+//!   <本程序> [--workspace <dir>] [--verbose] [--version]
 //!
 //! - `--workspace`：唯一本地工作区（默认当前目录）；
 //! - Core 形态只有 Standalone：本进程按需 spawn `<core-binary> stdio`，stdio 即帧通道
@@ -76,7 +76,7 @@ fn parse_args() -> CliArgs {
             "--version" => args.version = true,
             other => {
                 eprintln!("未知参数：{other}");
-                eprintln!("用法：tuxedo-cat-tui [--workspace <dir>] [--verbose] [--version]");
+                eprintln!("用法：{} [--workspace <dir>] [--verbose] [--version]", env!("CARGO_PKG_NAME"));
                 std::process::exit(2);
             }
         }
@@ -88,7 +88,8 @@ fn parse_args() -> CliArgs {
 fn main() {
     let args = parse_args();
     if args.version {
-        println!("tuxedo-cat tui {TUI_VERSION} (core=standalone)");
+        // 产品名取部署产品目录名（project.json 的 core.deployPrefix，build.rs 烧入）
+        println!("{} tui {TUI_VERSION} (core=standalone)", env!("TC_DEPLOY_PREFIX"));
         return;
     }
 

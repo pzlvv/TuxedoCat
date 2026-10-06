@@ -77,14 +77,14 @@ notice 提示后退出。
 
 部署布局（`docs/tui-installer.md` 第 1 节）：`<前缀>/share/<产品名>/<指纹>/` 放
 Core 槽位，`<前缀>/share/<产品名>/ripgrep/` 是全部槽位共享的 rg，TUI 二进制在
-`<前缀>/share/<产品名>/tui[.exe]`（unix 上另有软链接 `<前缀>/<产品名>` 指向它）。
+`<前缀>/share/<产品名>/tui[.exe]`（unix 上另有软链接 `<前缀>/bin/<产品名>` 指向它）。
 
 候选根顺序（每个根先按部署布局、再按开发期仓库布局解析；第一个能解析出 Core
 二进制的胜出；全部落空报错附安装指引，不静默降级）：
 
-1. 环境变量 `TUXEDO_CAT_TUI_ROOT`（显式指定部署前缀或仓库根）；
-2. 默认部署前缀：unix `~/.local/bin`，Windows `~/.tuxedo-cat/bin`（安装程序的
-   默认落点）；
+1. 环境变量 `<envPrefix>_TUI_ROOT`（显式指定部署前缀或仓库根）；
+2. 默认部署前缀（应用根）：unix `~/.local`（产品目录即 `~/.local/share/<产品名>/`），
+   Windows `~/<configDir>`（安装程序的默认落点）；
 3. TUI 可执行文件所在目录（就地运行：本程序就在产品目录里）；
 4. 可执行文件的各级上级目录（有层数上限）：经软链接或产品目录启动时回溯到部署
    前缀；开发期 `tui-rs/target/<profile>/` 回溯到仓库根。
@@ -93,7 +93,7 @@ Core 槽位，`<前缀>/share/<产品名>/ripgrep/` 是全部槽位共享的 rg�
 
 - 部署布局：`<根>/share/<产品名>/` 下任一「`fingerprint` + Core 二进制都齐」的
   指纹槽位（多版本并存取排序最大的一员，只为确定）；
-- 仓库布局（开发期）：`<根>/resources/core/<arch-platform>/tuxedo-cat-core[.exe]`
+- 仓库布局（开发期）：`<根>/resources/core/<arch-platform>/<core.binaryName>[.exe]`
   （平台矩阵见 `docs/standalone-core.md` 第 4.1 节）。
 
 ## 3. 选型与产物形态
@@ -150,7 +150,7 @@ tui-rs/
 | --- | --- |
 | `message` | `AddMessage` 动作；role 为 user 时顺带刷新对话列表（`onMessage`） |
 | `streamMessage` | assistant 空累积跳过；thinking / text 阶段标记 + 流式缓冲替换 |
-| `streamEnd` | 流式缓冲收敛 + 消息追加（相邻去重）+ tokens 记账（input+output，不取 max） |
+| `streamEnd` | 按 (role, streamId) 匹配消息就地收敛（同一块两条收尾：block_stop 缺 usage + message_delta 带 usage），未匹配才追加（相邻同内容兜底）；tokens 记账（input+output，不取 max） |
 | `toolCall` / `toolResult` | 工具卡片状态机（running → success/fail；状态只升不降；并发计数） |
 | `toolProgress` | 卡片输出替换（core 已按 4K 上限裁剪，原样转发） |
 | `toolArgsUpdated` | 显式忽略（文件引用 chips 数据面，v1 不渲染） |
@@ -243,6 +243,7 @@ tui-rs/
 | 按键 | 行为 |
 | --- | --- |
 | `Enter` | 发送（会话配置带上已到达的事实） |
+| `Backspace` | 删除光标前字符（把退格键发成 ^H 的终端经 crossterm 到达为 `Ctrl+H`，同按退格处理） |
 | `Ctrl+O` | 换行（多数终端里 Shift+Enter 与 Enter 同码；Ctrl+J 同理按换行兜底） |
 | `Ctrl+U` | 清当前行 |
 | 粘贴 | 含多行的文本原样插入（bracketed paste） |
@@ -307,7 +308,7 @@ pending 的事实都在 store，覆盖层只持导航类局部状态。
    与重定向管道不支持 raw mode——入口在渲染前显式拦截并给出可行动报错。
 2. **多行编辑器**：IME、撤销、富编辑无现成完整解；v1 状态机覆盖换行（Ctrl+O）/
    粘贴 / 退格 / 删除 / 方向键 / 清行，`composer.rs` 独立可测。
-3. **stdout 纪律**：全生命周期 stdout 是渲染面；日志走文件（`~/.tuxedo-cat/tui-rs.log`）
+3. **stdout 纪律**：全生命周期 stdout 是渲染面；日志走文件（`~/<configDir>/tui-rs.log`）
    + `--verbose` 时的 stderr，库的 stdout 泄漏会打花界面。
 4. **渲染上限**：消息流只渲染最近 150 条（整帧重绘的帧率约束），更早的历史经
    会话加载仍在 store，翻页查看留给后续。

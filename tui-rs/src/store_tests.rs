@@ -40,12 +40,14 @@ fn message_flow_and_stream_convergence() {
         session_id: "s1".into(),
         role: Role::Assistant,
         text: "正在回答".into(),
+        stream_id: "blk1".into(),
     });
     state = step(&state, &mut ids, &Action::StreamEnd {
         session_id: "s1".into(),
         role: Role::Assistant,
         accumulated: "正在回答".into(),
         total_tokens: 150.0,
+        stream_id: "blk1".into(),
     });
 
     let session = state.sessions.get("s1").unwrap();
@@ -56,6 +58,38 @@ fn message_flow_and_stream_convergence() {
     // token 用量 = input + output（服务端值直接采用）
     assert_eq!(session.context_tokens, 150.0);
     // streamEnd 收敛流式缓冲
+    assert!(session.stream.is_none());
+}
+
+#[test]
+fn stream_end_double_delivery_converges_by_stream_id() {
+    // 单轮多块（思考→文字）时序：同一块的 streamEnd 到两条（block_stop 缺 usage +
+    // message_delta 带 usage），且两条收尾与另一块交错——按 (role, streamId) 收敛，
+    // 不得重复追加（webview 同语义）
+    let mut ids = Ids::new();
+    let mut state = initial_state();
+    state = step(&state, &mut ids, &add_user("s1", "hello", None));
+    let stream_end = |role: Role, accumulated: &str, total_tokens: f64, stream_id: &str| Action::StreamEnd {
+        session_id: "s1".into(),
+        role,
+        accumulated: accumulated.into(),
+        total_tokens,
+        stream_id: stream_id.into(),
+    };
+    // block_stop：两条流式消息落下
+    state = step(&state, &mut ids, &stream_end(Role::Thinking, "想到啦", 0.0, "blk1"));
+    state = step(&state, &mut ids, &stream_end(Role::Assistant, "你好！", 0.0, "blk2"));
+    // message_delta：带 usage 的收尾，角色与本块交错
+    state = step(&state, &mut ids, &stream_end(Role::Thinking, "想到啦", 120.0, "blk1"));
+    state = step(&state, &mut ids, &stream_end(Role::Assistant, "你好！", 120.0, "blk2"));
+
+    let session = state.sessions.get("s1").unwrap();
+    assert_eq!(session.messages.len(), 3, "同块的第二次 streamEnd 不得追加重复消息");
+    assert_eq!(session.messages[1].role, Role::Thinking);
+    assert_eq!(session.messages[2].role, Role::Assistant);
+    assert_eq!(session.messages[2].content, "你好！");
+    // usage 由 message_delta 那条收尾记账
+    assert_eq!(session.context_tokens, 120.0);
     assert!(session.stream.is_none());
 }
 
@@ -150,6 +184,7 @@ fn query_end_converges_hanging_stream() {
         session_id: "s1".into(),
         role: Role::Thinking,
         text: "想了一半".into(),
+        stream_id: "blk1".into(),
     });
     // abort 路径没有 streamEnd，queryEnd 必须收敛悬挂缓冲
     state = step(&state, &mut ids, &Action::QueryEnd { session_id: "s1".into() });
@@ -172,6 +207,7 @@ fn conversation_loaded_projects_history() {
             context_tokens: 0.0,
             message_uuid: None,
             is_compact_summary: false,
+            stream_id: None,
         },
         TuiMessage {
             id: 2,
@@ -183,6 +219,7 @@ fn conversation_loaded_projects_history() {
             context_tokens: 15.0,
             message_uuid: None,
             is_compact_summary: false,
+            stream_id: None,
         },
     ];
     state = step(&state, &mut ids, &Action::ConversationLoaded(ConversationLoadedData {

@@ -25,7 +25,7 @@
  *
  * `resources/core/` 在 .gitignore 里：产物不入库，所以修改时间可以放心当判据。
  *
- * `TUXEDO_CAT_CORE=embedded` 变体不需要 Rust Core，直接跳过。
+ * Core 实现选择变量为 embedded 的变体不需要 Rust Core，直接跳过。
  *
  * 用法：node scripts/verify-core-artifacts.mjs
  */
@@ -108,7 +108,7 @@ function fileDigest(target) {
 
 function main() {
   if (project.coreKind === 'embedded') {
-    console.log('[verify-core] TUXEDO_CAT_CORE=embedded：不需要 Rust Core，跳过。');
+    console.log(`[verify-core] ${project.coreKindEnv}=embedded：不需要 Rust Core，跳过。`);
     return;
   }
 
