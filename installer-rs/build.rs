@@ -1,12 +1,13 @@
 //! 构建期载荷嵌入（docs/tui-installer.md 第 3 节）。
 //!
 //! 按编译目标三元组挑选 `resources/core/<arch>-<platform>/` 里的产物（Core 二进制、
-//! 捆绑 ripgrep、指纹文件）与 TUI bundle（`dist/tui.mjs`），生成 `payload.rs`：
-//! `include_bytes!` 把它们烧进安装器——产物缺失直接构建失败并给出补救命令。
+//! 捆绑 ripgrep、指纹文件）与 TUI 二进制（`tui-rs` 的 release 产物），生成
+//! `payload.rs`：`include_bytes!` 把它们烧进安装器——产物缺失直接构建失败并给出
+//! 补救命令。
 //!
 //! 目录名 / 文件名与 `scripts/build-core.mjs`、`src/config/project.json` 的根集合
-//! 保持一致（`tuxedo-cat-core`、`ripgrep/rg`、`fingerprint`）；此处是 Rust 侧第二
-//! 份拷贝，改名时两处同步。
+//! 保持一致（`tuxedo-cat-core`、`ripgrep/rg`、`fingerprint`、`tuxedo-cat-tui`）；
+//! 此处是 Rust 侧第二份拷贝，改名时两处同步。
 
 use std::env;
 use std::fs;
@@ -36,17 +37,39 @@ fn main() {
     let payload_root = env::var("TUI_INSTALL_PAYLOAD_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| repo_root.join("resources").join("core"));
-    let bundle = env::var("TUI_INSTALL_BUNDLE")
+    // TUI 与安装器按同一 triple 交叉构建（scripts/build-tui-installer.mjs 负责）；
+    // 宿主同三元组时回退到 `npm run build:tui` 的原生产物（无 triple 目录），
+    // 让 `cargo test`（installer-rs）在常规构建后即可运行
+    let tui_binary = env::var("TUI_INSTALL_TUI_BINARY")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| repo_root.join("dist").join("tui.mjs"));
+        .unwrap_or_else(|_| {
+            let triple_specific = repo_root
+                .join("tui-rs")
+                .join("target")
+                .join(triple.clone())
+                .join("release")
+                .join(format!("tuxedo-cat-tui{ext}"));
+            let host_native = repo_root
+                .join("tui-rs")
+                .join("target")
+                .join("release")
+                .join(format!("tuxedo-cat-tui{ext}"));
+            let host_matches = env::var("HOST").map(|host| host == triple).unwrap_or(false);
+            if triple_specific.is_file() || !host_matches {
+                triple_specific
+            } else {
+                host_native
+            }
+        });
     let version =
         env::var("TUI_INSTALL_VERSION").unwrap_or_else(|_| "dev".to_string());
 
     let pkg_dir_path = payload_root.join(pkg);
     // (安装后相对路径, 源文件, 可执行位)
     let core_name = format!("tuxedo-cat-core{ext}");
+    let tui_name = format!("tuxedo-cat-tui{ext}");
     let entries: Vec<(String, PathBuf, bool)> = vec![
-        ("tui.mjs".to_string(), bundle.clone(), false),
+        (tui_name.clone(), tui_binary, true),
         (
             format!("resources/core/{pkg}/{core_name}"),
             pkg_dir_path.join(&core_name),
@@ -77,7 +100,7 @@ fn main() {
         if !source.is_file() {
             panic!(
                 "缺少安装器载荷：{}。\n先构建对应产物：Core → `npm run build:core`（或 \
-                 `npm run build:core -- --target {triple}`），TUI bundle → `npm run build:tui`。",
+                 `npm run build:core -- --target {triple}`），TUI → `npm run build:tui`。",
                 source.display()
             );
         }
@@ -92,6 +115,6 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     fs::write(out_dir.join("payload.rs"), payload).expect("写入 payload.rs 失败");
     println!("cargo:rerun-if-env-changed=TUI_INSTALL_PAYLOAD_DIR");
-    println!("cargo:rerun-if-env-changed=TUI_INSTALL_BUNDLE");
+    println!("cargo:rerun-if-env-changed=TUI_INSTALL_TUI_BINARY");
     println!("cargo:rerun-if-env-changed=TUI_INSTALL_VERSION");
 }

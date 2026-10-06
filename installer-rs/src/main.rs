@@ -1,13 +1,13 @@
-//! TUI 版安装程序（docs/tui-installer.md）：内嵌 Core / ripgrep / TUI bundle 的自解压安装器。
+//! TUI 版安装程序（docs/tui-installer.md）：内嵌 Core / ripgrep / TUI 二进制的自解压安装器。
 //!
 //! 用法：
 //!   tuxedo-cat-tui-installer [--prefix <dir>] [--print-prefix] [--version] [--help]
 //!
 //! - 默认安装前缀 `~/.tuxedo-cat/tui`（`src/config/project.json` 的 configDir；
-//!   TUI 侧 `src/tui/coreRoot.ts` 按同一前缀探测）；
-//! - 安装布局与 Electron 应用内一致：`<prefix>/tui.mjs` +
+//!   TUI 侧 `tui-rs/src/core_root.rs` 按同一前缀探测）；
+//! - 安装布局：`<prefix>/tuxedo-cat-tui[.exe]`（原生二进制，无需 Node）+
 //!   `<prefix>/resources/core/<arch>-<platform>/`——TUI 沿用
-//!   `resolveCoreBinary(extensionPath)` 的同一搜索路径，无需特判；
+//!   `resolveCoreBinary` 的同一搜索路径，无需特判；
 //! - 幂等：内容未变的文件跳过（保留可执行位），重复运行无副作用；
 //! - 落盘原子：先写同目录临时文件再改名，中断不会留下半个文件。
 
@@ -35,13 +35,13 @@ fn default_prefix() -> PathBuf {
 
 fn print_usage() {
     println!(
-        "Tuxedo Cat TUI 安装程序（自解压）：把 Standalone Core、捆绑 ripgrep 与 TUI bundle\n\
+        "Tuxedo Cat TUI 安装程序（自解压）：把 Standalone Core、捆绑 ripgrep 与 TUI 二进制\n\
          安装到本机用户目录。\n\n\
          用法：tuxedo-cat-tui-installer [--prefix <dir>] [--print-prefix] [--version]\n\n\
          --prefix <dir>   安装前缀（默认 ~/.tuxedo-cat/tui）\n\
          --print-prefix   只打印默认前缀并退出\n\
          --version        打印版本与内嵌载荷摘要\n\
-         安装后运行：node <prefix>/tui.mjs（需要 Node.js >= 18）"
+         安装后运行：<prefix>/tuxedo-cat-tui（原生二进制，无需 Node.js）"
     );
 }
 
@@ -94,7 +94,7 @@ fn mark_executable(_path: &Path) -> io::Result<()> {
 
 fn install(prefix: &Path) -> io::Result<()> {
     println!("安装前缀：{}", prefix.display());
-    println!("内嵌载荷：{}（Core / ripgrep / TUI bundle）", payload::TARGET_PKG);
+    println!("内嵌载荷：{}（Core / ripgrep / TUI 二进制）", payload::TARGET_PKG);
     let mut installed = 0usize;
     let mut unchanged = 0usize;
     let mut total_bytes = 0u64;
@@ -130,7 +130,8 @@ fn install(prefix: &Path) -> io::Result<()> {
         "完成：{installed} 个文件更新、{unchanged} 个未变化（{} KB 写入）。",
         total_bytes / 1024
     );
-    println!("运行 TUI：node {}", prefix.join("tui.mjs").display());
+    let tui_name = if cfg!(windows) { "tuxedo-cat-tui.exe" } else { "tuxedo-cat-tui" };
+    println!("运行 TUI：{}", prefix.join(tui_name).display());
     Ok(())
 }
 

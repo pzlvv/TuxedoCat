@@ -1,0 +1,9 @@
+# TUI 的交叉构建目标由 scripts/build-tui-installer.mjs 通过 `--target` 指定。
+# tui-rs 是纯 Rust（无 C 依赖），Linux musl 交叉只需要 rustup 的 rust-lld，
+# 不需要 zig；与 core-rs / installer-rs 的 .cargo/config.toml 同一手法。
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"

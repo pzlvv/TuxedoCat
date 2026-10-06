@@ -4,13 +4,15 @@
  *
  * 产出 `<releaseDir>/tui-installer/tuxedo-cat-tui-installer-<arch>-<platform>[.exe]`，
  * 覆盖四个目标：Windows x64 / arm64、Linux x64 / arm64（musl）。每个安装器内嵌
- * 对应平台的 Standalone Core、捆绑 ripgrep、指纹文件与 TUI bundle（dist/tui.mjs）。
+ * 对应平台的 Standalone Core、捆绑 ripgrep、指纹文件与 TUI 二进制（tui-rs release 产物）。
  *
  * 步骤（每个目标）：
  * 1. Core 产物就位检查：`resources/core/<dir>/` 缺失时先跑
  *    `node scripts/build-core.mjs --target <triple>`（arm64-win32 不在默认打包集合
  *    PACKAGE_DIRS 里，这里按需补建）；
- * 2. TUI bundle 就位检查：`dist/tui.mjs` 缺失时先跑 `node tui/esbuild.js`；
+ * 2. TUI 二进制就位检查：`tui-rs/target/<triple>/release/` 缺失时先跑
+ *    `cargo build --release --manifest-path tui-rs/Cargo.toml --target <triple>`
+ *    （cwd 必须在 tui-rs：musl 的 rust-lld 配置在 tui-rs/.cargo/config.toml）；
  * 3. `cargo build --release --manifest-path installer-rs/Cargo.toml --target <triple>`
  *    （cwd 必须在 installer-rs：cargo 只从当前目录往上找 .cargo/config.toml，
  *    musl 的 rust-lld 配置在那里；安装器是纯 Rust，交叉不需要 zig）；
@@ -152,11 +154,16 @@ function buildInstaller(target, strict) {
     }
   }
 
-  // 2. TUI bundle
-  const bundle = join(repoRoot, 'dist', 'tui.mjs');
-  if (!existsSync(bundle)) {
-    console.log('[build-tui-installer] dist/tui.mjs 缺失，先构建 TUI bundle…');
-    run('node', [join(repoRoot, 'tui', 'esbuild.js')], repoRoot);
+  // 2. TUI 二进制（tui-rs 按同一 triple 交叉构建；产物路径是 installer-rs/build.rs
+  //    的默认探测位置，两侧同步改）
+  const tuiBinary = join(repoRoot, 'tui-rs', 'target', target.triple, 'release', `tuxedo-cat-tui${target.ext}`);
+  if (!existsSync(tuiBinary)) {
+    console.log('[build-tui-installer] TUI 二进制缺失，先构建 tui-rs…');
+    run('cargo', ['build', '--release', '--target', target.triple], join(repoRoot, 'tui-rs'));
+    if (!existsSync(tuiBinary)) {
+      console.error(`[build-tui-installer] TUI 构建后仍缺产物：${tuiBinary}`);
+      process.exit(1);
+    }
   }
 
   // 3. cargo（cwd 在 crate 目录，musl 的 .cargo/config.toml 才生效）

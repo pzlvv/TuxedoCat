@@ -12,7 +12,7 @@ import { test, expect } from '@playwright/test';
  * 内嵌 Core 可执行（--version）→ 安装目录里的 TUI 可启动（--version 与
  * 非 TTY 守卫两条路径，后者同时验证「从安装位置解析 Core 产物」的候选链）。
  *
- * 前置产物：`npm run build:core`（宿主平台）；TUI bundle 由构建脚本自动补建。
+ * 前置产物：`npm run build:core`（宿主平台）；TUI 二进制由构建脚本自动补建。
  * workers=1 顺序执行，安装前缀在 beforeAll 建一次、全部用例共用。
  */
 
@@ -52,12 +52,12 @@ test.beforeAll(async () => {
 
   // 安装一次，后续用例共用同一前缀
   const installed = await run(installerPath, ['--prefix', prefix], { timeout: 120_000 });
-  expect(installed.stdout).toContain('已安装：tui.mjs');
+  expect(installed.stdout).toContain(`已安装：tuxedo-cat-tui${ext}`);
 });
 
-test('安装布局完整（tui.mjs + Core + ripgrep + 指纹）', () => {
+test('安装布局完整（TUI 二进制 + Core + ripgrep + 指纹）', () => {
   const layout = [
-    path.join(prefix, 'tui.mjs'),
+    path.join(prefix, `tuxedo-cat-tui${ext}`),
     path.join(prefix, 'resources', 'core', pkgDir, `tuxedo-cat-core${ext}`),
     path.join(prefix, 'resources', 'core', pkgDir, 'ripgrep', `rg${ext}`),
     path.join(prefix, 'resources', 'core', pkgDir, 'fingerprint'),
@@ -73,8 +73,8 @@ test('安装布局完整（tui.mjs + Core + ripgrep + 指纹）', () => {
 
 test('重复安装幂等（内容未变全部跳过）', async () => {
   const second = await run(installerPath, ['--prefix', prefix], { timeout: 120_000 });
-  expect(second.stdout).toContain('未变化：tui.mjs');
-  expect(second.stdout).not.toContain('已安装：tui.mjs');
+  expect(second.stdout).toContain(`未变化：tuxedo-cat-tui${ext}`);
+  expect(second.stdout).not.toContain(`已安装：tuxedo-cat-tui${ext}`);
 });
 
 test('内嵌 Core 可执行（--version 报告指纹）', async () => {
@@ -84,14 +84,14 @@ test('内嵌 Core 可执行（--version 报告指纹）', async () => {
 });
 
 test('安装目录里的 TUI 可启动（--version / 非 TTY 守卫）', async () => {
-  const tui = path.join(prefix, 'tui.mjs');
+  const tui = path.join(prefix, `tuxedo-cat-tui${ext}`);
 
-  const version = await run(process.execPath, [tui, '--version'], { timeout: 60_000 });
+  const version = await run(tui, ['--version'], { timeout: 60_000 });
   expect(version.stdout).toContain('tuxedo-cat tui');
 
   // 非 TTY：启动守卫报可行动错误。此路径已先完成 Core 产物解析——
   // 若安装布局不完整会先得到「未找到 Standalone Core 产物」而失败
-  const result = await run(process.execPath, [tui, '--workspace', prefix], {
+  const result = await run(tui, ['--workspace', prefix], {
     timeout: 60_000,
     env: { ...process.env, TUXEDO_CAT_TUI_ROOT: prefix },
   }).then(
