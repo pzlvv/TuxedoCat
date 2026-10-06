@@ -890,6 +890,12 @@ const MessageItem = memo(function MessageItem({
  *
  * 4. useMessageHandler 会在 Bash/Write/Edit 等 preview 渲染前先把容器预滚到底部
  *    （scrollToBottomBeforeRender），保证“先滚动、后渲染”的视觉顺序。
+ *
+ * 5. 不变式：用户滚离（userScrolledAway）优先级最高，一旦置位，所有自动滚动
+ *    路径（ResizeObserver / 流式轮询 / settle 轮询 / layoutEffect / 渲染前预滚）
+ *    一律让位。只有三种入口可以复位：用户自己滚回底部、真正的用户消息到达
+ *    （isPinnableUserMessage，不含后台通知/子代理消息/压缩摘要）、会话加载等
+ *    forceScrollKey 显式触发。系统自动消息永远不能打断用户向上翻阅。
  */
 const SCROLL_AWAY_THRESHOLD = 50; // px — distance from bottom to consider "away"
 
@@ -1015,6 +1021,13 @@ function useAutoScroll(
       profileLog(`[AutoScroll] scrollToBottom force=${force} SKIP container=null`);
       return;
     }
+    // 统一闸门：用户滚离时非强制滚动一律不执行（用户滚动优先级最高）。
+    // 强制滚动只保留给已经在外层重置滚离状态的入口（真正的用户消息 /
+    // 会话加载 / forceScrollKey），避免任何调用路径漏检把用户拉回底部。
+    if (!force && userScrolledAwayRef.current) {
+      profileLog('[AutoScroll] scrollToBottom SKIP userScrolledAway=true');
+      return;
+    }
     const beforeTop = container.scrollTop;
     const beforeHeight = container.scrollHeight;
     const beforeClient = container.clientHeight;
@@ -1082,6 +1095,14 @@ function useAutoScroll(
         profileLog(`[AutoScroll] wheel STOP userScrolledAway=true deltaY=${event.deltaY} distance=${distanceFromBottom.toFixed(1)}`);
       }
     };
+    // 拖拽中（滚动条拖动、触摸滑动、选择文本等）持续刷新输入时间。
+    // pointerdown/touchstart 只在起始瞬间记录一次，拖动超过 1s 后 scroll 监听的
+    // userRecentlyScrolled 门槛就会过期：用户仍在拖滚动条向上滚，却被 scroll 监听
+    // 当作“无输入的伪滚动”拒绝置位 userScrolledAway，随后被自动滚动拉回底部。
+    // 只刷新时间、不置位状态，方向判定仍由 wheel/scroll 监听负责。
+    const handlePointerMove = (event: PointerEvent) => {
+      if (event.buttons !== 0) markUserScrollInput();
+    };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (
         event.key.startsWith('Arrow') ||
@@ -1096,13 +1117,17 @@ function useAutoScroll(
     };
     window.addEventListener('wheel', handleWheel, { passive: true });
     window.addEventListener('touchstart', markUserScrollInput, { passive: true });
+    window.addEventListener('touchmove', markUserScrollInput, { passive: true });
     window.addEventListener('keydown', handleKeyDown, { passive: true });
     window.addEventListener('pointerdown', markUserScrollInput, { passive: true });
+    window.addEventListener('pointermove', handlePointerMove, { passive: true });
     return () => {
       window.removeEventListener('wheel', handleWheel);
       window.removeEventListener('touchstart', markUserScrollInput);
+      window.removeEventListener('touchmove', markUserScrollInput);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('pointerdown', markUserScrollInput);
+      window.removeEventListener('pointermove', handlePointerMove);
     };
   }, [containerRef, userScrolledAwayRef]);
 
@@ -1273,10 +1298,11 @@ function useAutoScroll(
         profileLog(`[AutoScroll] settle poll scrollHeight ${prevScrollHeight}->${sh} userScrolledAway=${userScrolledAwayRef.current} inputAge=${(now - lastUserScrollInputRef.current).toFixed(0)}ms`);
         prevScrollHeight = sh;
         lastChangeTime = now;
-        // 用户在轮询期间主动滚动后停止跟随；但 userScrolledAway 也可能是浏览器
-        // 布局/overflow-anchor 造成的伪状态，此时附近没有用户滚动输入，应继续强制滚底。
-        const userRecentlyScrolled = now - lastUserScrollInputRef.current < 1000;
-        if (!userScrolledAwayRef.current || !userRecentlyScrolled) {
+        // 用户滚离状态一律尊重（用户滚动优先级最高）。能置位 userScrolledAway 的
+        // 每条路径（滚轮监听、scroll 监听的 userRecentlyScrolled 门槛、展开回调）
+        // 都以真实用户输入为前提，伪滚动已被 programmaticScrollPending 与输入时间
+        // 双重过滤，不存在需要在这里按“最近无输入”强行覆盖的真滚离。
+        if (!userScrolledAwayRef.current) {
           scrollToBottom(true);
         }
       }
@@ -1933,8 +1959,12 @@ const MessagesView = memo(({
     const hasNewMessage = messages.length > prevMsgCountRef.current;
     prevMsgCountRef.current = messages.length;
 
-    // Detect new user message (role transition to 'user')
-    const isNewUserMessage = lastMsg?.role === 'user' && lastMsgRoleRef.current !== 'user';
+    // Detect new user message (role transition to 'user').
+    // 只有「真正的用户消息」才允许重置滚离状态并强制滚底（用户滚动优先级最高）：
+    // 后台 Bash 通知（origin=bash）、子代理 From 消息（origin=agent）、压缩摘要
+    // 虽然都是 role=user，但属于系统自动消息——用户正在上方翻阅历史时它们到达，
+    // 不能把视口拉回底部。判定与滚动置顶共用 isPinnableUserMessage。
+    const isNewUserMessage = isPinnableUserMessage(lastMsg) && lastMsgRoleRef.current !== 'user';
     if (lastMsg) {
       lastMsgRoleRef.current = lastMsg.role;
     }
