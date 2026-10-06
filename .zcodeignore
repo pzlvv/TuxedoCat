@@ -1,0 +1,51 @@
+node_modules
+dist/
+dist-electron/
+out/
+release/
+
+# Rust 构建产物（Standalone Core）；由 `npm run build:core` 重建，不入库
+core-rs/target/
+resources/core/
+*.vsix
+.watch-app.pid
+.watch-ext.pid
+
+# 测试产物：vscode-test 下载的 VS Code、c8 覆盖率报告
+.vscode-test/
+coverage/
+
+# 本地实验脚本与截图（CDP 探针 / 渲染预览），不属于产品代码
+exp/
+
+# Playwright e2e 产物（trace / 失败上下文快照）
+test-results/
+playwright-report/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）
