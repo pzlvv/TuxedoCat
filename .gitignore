@@ -4,9 +4,10 @@ dist-electron/
 out/
 release/
 
-# Rust 构建产物（Standalone Core）；由 `npm run build:core` 重建，不入库
+# Rust 构建产物（Standalone Core / TUI）；由 `npm run build:core` / cargo 重建，不入库
 core-rs/target/
 installer-rs/target/
+tui-rs/target/
 resources/core/
 *.vsix
 .watch-app.pid

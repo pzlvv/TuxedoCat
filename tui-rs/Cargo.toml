@@ -1,0 +1,23 @@
+[package]
+name = "tuxedo-cat-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Tuxedo Cat 的终端宿主（第三个宿主的 Rust 实现，直连 Standalone Core 帧通道）"
+
+[[bin]]
+name = "tuxedo-cat-tui"
+path = "src/main.rs"
+
+[dependencies]
+# 帧载荷与 settings.json 的读-改-写都要保留键序（与 TS JSON.stringify 的插入序一致），
+# 否则每次写盘都会把用户手编的 settings.json 键序打乱
+serde_json = { version = "1", features = ["preserve_order"] }
+serde = { version = "1", features = ["derive"] }
+ratatui = "0.29"
+crossterm = "0.28"
+# 会话 id 与消息 uuid 用 v4 随机（对齐 TS crypto.randomUUID / user_${ts}_${rand}）
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+strip = true
+lto = true
