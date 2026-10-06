@@ -173,16 +173,18 @@ mod platform {
         pub fn start() -> Option<Handle> {
             // stderr 不重定向：`systemd-inhibit` 的失败原因（无 D-Bus / 无 session /
             // 参数被拒）直接进本进程的诊断输出，宿主会把它落进 core 日志。
-            let mut child = Command::new("systemd-inhibit")
+            let mut command = Command::new("systemd-inhibit");
+            command
                 .arg(format!("--what={WHAT}"))
                 .arg("--mode=block")
                 .arg(format!("--who={}", cli::program_name()))
                 .arg("--why=task in progress")
                 .arg("cat")
                 .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .spawn()
-                .ok()?;
+                .stdout(Stdio::null());
+            // 与 Core 的全部 spawn 同一口径：统一走 hide_console（非 Windows 是 no-op）
+            crate::util::hide_console(&mut command);
+            let mut child = command.spawn().ok()?;
             let liveness = child.stdin.take()?;
             // `systemd-inhibit` 先取抑制锁、再 exec 命令：取锁失败时它立刻退出，而
             // `spawn` 仍然成功。隔一小段观察它是否还活着，早退即按「不支持」处理。
