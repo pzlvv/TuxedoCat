@@ -131,7 +131,7 @@ function run(command, args, cwd, env, strict = true) {
  * 构建单个目标的安装器。
  *
  * @param strict 显式 `--target` 指定的目标严格失败；默认集合里 Core 交叉工具链
- *   缺失时**显式跳过**并说明补救方式（如 arm64-win32 的 ring 需要 clang）——打包机
+ *   缺失时**显式跳过**并说明补救方式（如 arm64-win32 的 ring 需要 zig 充当 clang）——打包机
  *   没装全工具链也能产出其余目标，跳过不是静默降级：输出里逐条说明
  */
 function buildInstaller(target, strict) {
@@ -148,7 +148,8 @@ function buildInstaller(target, strict) {
       }
       console.error(
         `[build-tui-installer] 跳过 ${target.dir} 安装器：Core 交叉构建失败` +
-        `（Windows ARM64 的 ring 需要 clang；装好后重跑，或先产出 core 产物再回来）。`,
+        `（Windows ARM64 的 ring 需要 zig 充当 clang，见 docs/standalone-core.md 第 4.3 节；` +
+        `装好后重跑，或先产出 core 产物再回来）。`,
       );
       return false;
     }

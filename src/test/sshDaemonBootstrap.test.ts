@@ -2,9 +2,9 @@
  * 单测：SSH 远端引导（`src/host/standalone/sshDaemonBootstrap.ts`）。
  *
  * 覆盖 `docs/core-daemon.md` 第 12.8 节按指纹落位后的三条分支与失败路径：
- * - 该指纹的 daemon 在跑 → 直接复用，不重启、不覆盖（缺可执行文件或自带
- *   `ripgrep/` 时仍补传——「在跑」不等于产物齐全）；
- * - 已部署未启动 → 只跑 `start --idle-exit 30`，产物在就不重传（指纹目录
+ * - 该指纹的 daemon 在跑 → 直接复用，不重启、不覆盖（缺可执行文件或共享位缺
+ *   ripgrep 时仍补传——「在跑」不等于产物齐全）；
+ * - 已部署未启动 → 只跑 `start --idle-exit 30`，产物在就不重传（指纹槽位
  *   存在即视为同版本，不做字节比对——「不无脑覆盖」）；
  * - 未部署 → 上传产物（客户端唯一暂存名 + `mv` 原子换名）+ `start --idle-exit 30`；
  * - `start` 失败 / 状态文件读不出 / 本机产物缺指纹或缺自带 ripgrep → 报错，不静默降级；
@@ -29,19 +29,21 @@ import {
   splitEndpoint,
   type RemoteSsh,
 } from '../host/standalone/sshDaemonBootstrap';
-import { coreBinaryFileName, coreDeployDirName } from '../host/standalone/coreBinary';
+import { coreBinaryFileName, coreDeployDirPath, coreDeployRipgrepPath } from '../host/standalone/coreBinary';
 import { CONFIG_DIR_NAME, CORE_RESOURCE_DIR } from '../config/project';
 import type { SshExecResult, SshFileInfo } from '../host/standalone/sshClient';
 
 const HOME = '/home/dev';
 /** 构建指纹：64 位小写 hex，与 `build-core.mjs` 的产物同构 */
 const FINGERPRINT = 'f'.repeat(64);
-/** 远端部署目录名：`<core.deployPrefix>_<指纹前一半>`（与实现共用同一份派生纯函数） */
-const DEPLOY_DIR = coreDeployDirName(FINGERPRINT);
+/** 远端指纹槽位目录：`share/<core.deployPrefix>/<指纹>`（与实现共用同一份派生纯函数） */
+const DEPLOY_DIR = coreDeployDirPath(FINGERPRINT);
+/** 远端共享 ripgrep 路径：`share/<core.deployPrefix>/ripgrep`（同一份派生纯函数） */
+const RIPGREP_DIR = coreDeployRipgrepPath();
 const STATE_PATH = `${HOME}/${CONFIG_DIR_NAME}/core-daemon-${FINGERPRINT}.json`;
 const BINARY_PATH = `${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}/${coreBinaryFileName('linux')}`;
-/** Core 自带的 ripgrep：与远端可执行文件同级（`docs/standalone-core.md` 第 4 节） */
-const RIPGREP_PATH = `${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}/ripgrep/rg`;
+/** Core 自带的 ripgrep：产品目录根的共享位，全部指纹槽位共用（`docs/standalone-core.md` 第 4 节） */
+const RIPGREP_PATH = `${HOME}/${REMOTE_BIN_DIR}/${RIPGREP_DIR}/rg`;
 /**
  * 引导执行的启动命令：daemon 恒绑回环（转发连接从远端本机发起，端口不出机器）；
  * 端口交给内核分配——多版本 daemon 并存互不抢固定端口，实际端口随状态文件读回；
@@ -249,7 +251,7 @@ runTests('sshDaemonBootstrap', async () => {
     check('已在跑时不重跑 start', !fake.commands.includes(START_COMMAND));
   }
 
-  // ---------- 在跑但指纹目录被清过：补可执行文件，不重启 daemon ----------
+  // ---------- 在跑但指纹槽位被清过：补可执行文件，不重启 daemon ----------
 
   {
     const fake = new FakeSsh();
@@ -260,10 +262,10 @@ runTests('sshDaemonBootstrap', async () => {
     const binaryMv = mvCommand(binaryStaging, BINARY_PATH);
     const rgStaging = fake.uploads.find((upload) => upload.local === ripgrep)?.remote;
     const rgMv = mvCommand(rgStaging, RIPGREP_PATH);
-    check('目录被清时补传可执行文件（经唯一暂存名 + mv）',
+    check('槽位被清时补传可执行文件（经唯一暂存名 + mv）',
       isUniqueStagingOf(binaryStaging, BINARY_PATH) && binaryMv !== undefined
       && fake.commands.includes(binaryMv));
-    check('补传的自带 ripgrep 落在指纹目录里（最终路径由 mv 到位）',
+    check('补传的自带 ripgrep 落在产品共享位（最终路径由 mv 到位）',
       isUniqueStagingOf(rgStaging, RIPGREP_PATH) && rgMv !== undefined
       && fake.commands.includes(rgMv));
     check('补传后仍复用运行中的 daemon', daemon.port === 10975
@@ -280,7 +282,7 @@ runTests('sshDaemonBootstrap', async () => {
     fake.executables.add(RIPGREP_PATH);
     const daemon = await ensureRemoteDaemon(fake, options);
     check('已部署时返回状态文件里的端口', daemon.port === 10976);
-    check('指纹目录存在时不重新上传（不做字节比对）', fake.uploads.length === 0);
+    check('指纹槽位存在时不重新上传（不做字节比对）', fake.uploads.length === 0);
     check('已部署时执行 start（绑回环）', fake.commands.includes(START_COMMAND));
     // 远端可执行文件名要先问 `uname`，因此这一步一定会发生
     check('先问远端平台', fake.commands.includes('uname -sm'));
@@ -295,15 +297,16 @@ runTests('sshDaemonBootstrap', async () => {
     const binaryMv = mvCommand(binaryStaging, BINARY_PATH);
     const rgStaging = fake.uploads[1]?.remote;
     const rgMv = mvCommand(rgStaging, RIPGREP_PATH);
-    check('未部署时上传到 ~/.local/bin/<部署目录>/（经唯一暂存名 + mv 原子换名）', fake.uploads.length === 2
+    check('未部署时上传到 ~/.local/bin/share/<产品名>/<指纹>/（经唯一暂存名 + mv 原子换名）', fake.uploads.length === 2
       && isUniqueStagingOf(binaryStaging, BINARY_PATH)
       && binaryMv !== undefined && fake.commands.includes(binaryMv));
     check('上传的是本机携带的对应平台产物', fake.uploads[0]?.local === binary);
     check('上传后置可执行权限', fake.uploads[0]?.mode === 0o755);
-    check('未部署时一并上传自带 ripgrep（同样经唯一暂存名 + mv）',
+    check('未部署时一并上传自带 ripgrep 到共享位（同样经唯一暂存名 + mv）',
       isUniqueStagingOf(rgStaging, RIPGREP_PATH) && fake.uploads[1]?.local === ripgrep
       && rgMv !== undefined && fake.commands.includes(rgMv));
-    check('上传前建好部署目录', fake.commands.includes(`mkdir -p '${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}'`));
+    check('上传前建好指纹槽位目录', fake.commands.includes(`mkdir -p '${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}'`));
+    check('上传前建好 ripgrep 共享位目录', fake.commands.includes(`mkdir -p '${HOME}/${REMOTE_BIN_DIR}/${RIPGREP_DIR}'`));
     check('上传后执行 start（绑回环，端口交给内核分配）', fake.commands.includes(START_COMMAND));
     check('返回 daemon endpoint', daemon.host === '127.0.0.1' && daemon.port === 10976);
   }

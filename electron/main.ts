@@ -53,7 +53,8 @@ import {
   type WorkspaceEndpoint,
   type WorkspaceRef,
 } from '../src/host/workspaceRef.js';
-import { getChatPlaceholderHtml } from './chatPlaceholderHtml.js';
+import { getChatPlaceholderHtml, type ChatPlaceholderReason } from './chatPlaceholderHtml.js';
+import { recordKnownHostFingerprint, SshHostKeyError } from '../src/host/standalone/sshClient.js';
 import { WorkspaceAvailabilityState } from './workspaceAvailability.js';
 import {
   parseWorkspaceEntry as parseWorkspaceEntryShared,
@@ -401,6 +402,35 @@ function emitWorkspaceChange(type: 'opened' | 'closed' | 'activated', ref: Works
  *   在添加入口已验证过，默认可用。
  */
 const workspaceAvailabilityState = new WorkspaceAvailabilityState();
+
+/**
+ * 不可用原因（按去重键，占位页说明文字的来源）。
+ *
+ * 错误对象到不了占位页：落定不可用 / 重连失败时在这里留一份结构化原因，「主机
+ * 密钥已变更」这类安全敏感形态才能带上新旧指纹引导确认。可用即失效（重建信任 /
+ * 重连成功的路径上删除）。
+ */
+const unavailableReasons = new Map<string, ChatPlaceholderReason>();
+
+/** 把建连失败翻译成占位页原因：指纹变更加密结构形态，其余展示原始错误 */
+function unavailableReasonOf(err: unknown): ChatPlaceholderReason {
+  if (err instanceof SshHostKeyError) {
+    return {
+      kind: 'hostKeyChanged',
+      expectedFingerprint: err.expectedFingerprint,
+      observedFingerprint: err.observedFingerprint,
+    };
+  }
+  return { kind: 'generic', detail: describeError(err) };
+}
+
+/** 原因的单行文本（日志用；指纹变更附上两份指纹便于留档比对） */
+function reasonTextOf(reason: ChatPlaceholderReason): string {
+  return reason.kind === 'hostKeyChanged'
+    ? `${tt('SSH 主机密钥与首次连接的记录不一致', 'SSH host key changed')} `
+      + `(recorded=${reason.expectedFingerprint}, observed=${reason.observedFingerprint})`
+    : reason.detail;
+}
 
 /** 工作区当前是否可用（未在启动期被判定为不可用） */
 function isWorkspaceAvailable(ref: WorkspaceRef): boolean {
@@ -3144,6 +3174,7 @@ async function closeWorkspace(target: WorkspaceRef | string): Promise<void> {
   openWorkspaces.splice(idx, 1);
   // 标签页关闭即丢弃启动期的不可用判定 / 建链状态：之后经「最近打开」重新添加按全新打开处理
   workspaceAvailabilityState.clearAll(refKey(ref));
+  unavailableReasons.delete(refKey(ref));
   // 文件浏览器的 SSH 连接随工作区释放一次共享：同一 endpoint 还有其它工作区
   // 在用时连接保留（引用计数归零才真正断开），重开按新连接处理
   releaseRemoteFilesClient(ref.endpoint);
@@ -3186,7 +3217,7 @@ async function closeWorkspace(target: WorkspaceRef | string): Promise<void> {
  * 聊天区由 `syncChatAreaForActiveWorkspace` 改显占位页。标签页保留在打开集合里
  * （红点），可以点击激活，远程不可连时占位页提供「重新连接」按钮。
  */
-function markWorkspaceUnavailable(ref: WorkspaceRef, reason: string, mode: 'build' | 'runtime' = 'build'): void {
+function markWorkspaceUnavailable(ref: WorkspaceRef, reason: ChatPlaceholderReason, mode: 'build' | 'runtime' = 'build'): void {
   const key = refKey(ref);
   // 状态机先落定（含清掉建链中）：曾就绪过 = 工作区事实上可用（探测与建链竞态的
   // 输家不该否定赢家）；重复标记同样返回 false。两条守卫下副作用都不重复执行。
@@ -3197,9 +3228,10 @@ function markWorkspaceUnavailable(ref: WorkspaceRef, reason: string, mode: 'buil
     : workspaceAvailabilityState.markUnavailable(key);
   fileLogger.info(
     'workspace-tab',
-    `markUnavailable ${refDisplay(ref)}: changed=${changed}, now=${workspaceAvailabilityState.availabilityOf(key)} (${reason})`,
+    `markUnavailable ${refDisplay(ref)}: changed=${changed}, now=${workspaceAvailabilityState.availabilityOf(key)} (${reasonTextOf(reason)})`,
   );
   if (!changed) return;
+  unavailableReasons.set(key, reason);
   console.warn(`[main] workspace unavailable: ${refDisplay(ref)} (${reason})`);
   workspaceAvailabilityState.clearReady(key);
   // 状态已落定，**先推送再清理**：推送是标签页红点 / 侧栏状态的唯一来源，不能排在
@@ -3225,9 +3257,11 @@ function markWorkspaceUnavailable(ref: WorkspaceRef, reason: string, mode: 'buil
 
 /**
  * 重连一个不可用的工作区（占位页「重新连接」按钮触发）：红点先变黄色呼吸点
- * （建链中），经 `probeRemoteEndpoint`（3 秒建链超时，远端引导不计入）重新建链——
- * 成功则撤销不可用判定、重新走 opened 建立 Connection 并把聊天区切回对话视图；
- * 失败回到红点。本地项的重试只校验目录是否重新存在。建链中重复触发忽略；标签页被关闭则中止。
+ * （建链中），经 `openRemoteWorkspaceAfterProbe`（3 秒建链超时，远端引导不计入）
+ * 重新建链——成功则撤销不可用判定、重新走 opened 建立 Connection 并把聊天区切回
+ * 对话视图；失败回到红点，原因落盘并留给占位页。主机密钥变更是例外流程：弹比对
+ * 告警，用户确认即重建信任并立刻重试一次。本地项的重试只校验目录是否重新存在。
+ * 建链中重复触发忽略；标签页被关闭则中止。
  */
 async function reconnectWorkspace(id: string): Promise<void> {
   const ref = openWorkspaces.find((candidate) => refKey(candidate) === id);
@@ -3237,18 +3271,25 @@ async function reconnectWorkspace(id: string): Promise<void> {
   syncTitlebarWorkspaces();
   if (sameRef(workspacePath, ref)) syncChatAreaForActiveWorkspace();
   try {
-    if (ref.endpoint) {
-      const { probeRemoteEndpoint } = require('../src/host/bootstrapCore.js') as typeof import('../src/host/bootstrapCore.js');
-      await probeRemoteEndpoint(ref.endpoint, CONNECT_PROBE_TIMEOUT_MS);
-    } else if (!isValidWorkspaceDir(ref.path)) {
-      throw new Error(`本地目录仍不存在：${ref.path}`);
+    try {
+      await openRemoteWorkspaceAfterProbe(ref);
+    } catch (err) {
+      // 主机密钥变更：静默失败对用户等于死路——弹告警展示新旧指纹，
+      // 确认后重建信任再试一次（拒绝则维持不可用）
+      if (!(err instanceof SshHostKeyError)) throw err;
+      if (!(await confirmHostKeyChange(err))) throw err;
+      recordKnownHostFingerprint(err.host, err.port, err.observedFingerprint);
+      fileLogger.info(
+        'workspace-tab',
+        `host key for ${err.host}:${err.port} re-trusted after confirmation; retrying reconnect`,
+      );
+      await openRemoteWorkspaceAfterProbe(ref);
     }
-    // 等待期间标签页可能已被关闭：不再补建 Connection
-    if (!openWorkspaces.some((candidate) => refKey(candidate) === key)) return;
-    workspaceAvailabilityState.clearAll(key);
-    emitWorkspaceChange('opened', ref);
-    activateWorkspace(ref);
   } catch (err) {
+    const reason = unavailableReasonOf(err);
+    unavailableReasons.set(key, reason);
+    // 失败原因必须落盘：只进 console 时，日志文件里重连为什么失败无据可查
+    fileLogger.info('workspace-tab', `reconnect failed (${refDisplay(ref)}): ${reasonTextOf(reason)}`);
     console.warn(`[main] workspace reconnect failed: ${refDisplay(ref)}:`, err);
   } finally {
     // 先落定状态再刷新：成功 → 可用；失败 → 回到红点。
@@ -3257,6 +3298,53 @@ async function reconnectWorkspace(id: string): Promise<void> {
     syncTitlebarWorkspaces();
     if (sameRef(workspacePath, ref)) syncChatAreaForActiveWorkspace();
   }
+}
+
+/**
+ * 重连的核心段：短超时探测远程 endpoint（本地项校验目录存在），通过后撤销不可用
+ * 判定、补建 Connection 并激活。重连与「指纹确认后的重试」共用；失败抛错由调用方
+ * 决定是否重试。
+ */
+async function openRemoteWorkspaceAfterProbe(ref: WorkspaceRef): Promise<void> {
+  if (ref.endpoint) {
+    const { probeRemoteEndpoint } = require('../src/host/bootstrapCore.js') as typeof import('../src/host/bootstrapCore.js');
+    await probeRemoteEndpoint(ref.endpoint, CONNECT_PROBE_TIMEOUT_MS);
+  } else if (!isValidWorkspaceDir(ref.path)) {
+    throw new Error(`本地目录仍不存在：${ref.path}`);
+  }
+  // 等待期间标签页可能已被关闭：不再补建 Connection
+  if (!openWorkspaces.some((candidate) => refKey(candidate) === refKey(ref))) return;
+  workspaceAvailabilityState.clearAll(refKey(ref));
+  unavailableReasons.delete(refKey(ref));
+  emitWorkspaceChange('opened', ref);
+  activateWorkspace(ref);
+}
+
+/**
+ * 主机密钥变更告警（TOFU 的确认例外）：展示记录与观测两份指纹，用户确认后重建
+ * 信任。拒绝 / 主窗口不可用时按不确认处理，工作区维持不可用（占位页保留指纹
+ * 比对信息）。
+ */
+async function confirmHostKeyChange(err: SshHostKeyError): Promise<boolean> {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  const target = `${err.host}:${err.port}`;
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: [tt('信任并重连', 'Trust && Reconnect'), tt('取消', 'Cancel')],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+    message: tt('SSH 主机密钥已变更', 'SSH host key has changed'),
+    detail: tt(
+      `${target} 的主机密钥与首次连接时记录的指纹不一致。\n\n`
+      + `记录的指纹：${err.expectedFingerprint}\n`
+      + `观测的指纹：${err.observedFingerprint}`,
+      `${target}'s host key differs from the fingerprint recorded on first connect.\n\n`
+      + `Recorded: ${err.expectedFingerprint}\n`
+      + `Observed: ${err.observedFingerprint}`,
+    ),
+  });
+  return response === 0;
 }
 
 /** 会话所属工作区是否可打开对话视图（建链中 / 不可用的目录只显占位页，不开视图） */
@@ -3300,6 +3388,10 @@ function syncChatAreaForActiveWorkspace(): void {
           ? 'remoteUnreachable'
           : 'dirMissing',
       path: refDisplay(workspacePath),
+      // 不可用原因：指纹变更带新旧指纹引导确认，其余展示原始错误；无记录为 null
+      reason: availability === 'unavailable'
+        ? (unavailableReasons.get(refKey(workspacePath)) ?? null)
+        : null,
     }),
   );
 }
@@ -3337,6 +3429,7 @@ function probeStartupRemoteWorkspaces(): void {
           const key = refKey(ref);
           if (!openWorkspaces.some((candidate) => refKey(candidate) === key)) continue;
           workspaceAvailabilityState.clearConnecting(key);
+          unavailableReasons.delete(key);
           // 探测期间 Connection 先死了一步（lost → 已标红）：endpoint 事实上可达，恢复并补建
           if (workspaceAvailabilityState.revokeUnavailable(key)) {
             workspaceAvailabilityState.clearReady(key);
@@ -3355,7 +3448,7 @@ function probeStartupRemoteWorkspaces(): void {
           // 已标红过（lost 信号先到）时 markWorkspaceUnavailable 内部不再重复刷新：
           // 探测落定是「黄点必须收场」的最后时限，这里与成功分支对称地显式刷一次，
           // 保证标题栏与聊天区一定画出落定后的状态（红点 / 占位页）
-          markWorkspaceUnavailable(ref, String(err));
+          markWorkspaceUnavailable(ref, unavailableReasonOf(err));
         }
         syncTitlebarWorkspaces();
         syncChatAreaForActiveWorkspace();
@@ -4543,7 +4636,7 @@ function initCore(): void {
     } else if (ref.endpoint) {
       // 运行期致命走 runtime 落定（撤销就绪豁免）；从未就绪的建链失败走默认守卫。
       // 落定时顺带清掉建链中：否则这次标红推送的仍是黄态，黄点要等下一次全量刷新才消失
-      markWorkspaceUnavailable(ref, reason, 'runtime');
+      markWorkspaceUnavailable(ref, { kind: 'generic', detail: reason }, 'runtime');
     }
   });
 

@@ -20,16 +20,16 @@ import { ensureRemoteDaemonShared } from '../host/standalone/sshTransport';
 import type { SshExecResult, SshFileInfo } from '../host/standalone/sshClient';
 import type { RemoteSsh } from '../host/standalone/sshDaemonBootstrap';
 import { REMOTE_BIN_DIR } from '../host/standalone/sshDaemonBootstrap';
-import { coreBinaryFileName, coreDeployDirName } from '../host/standalone/coreBinary';
+import { coreBinaryFileName, coreDeployDirPath, coreDeployRipgrepPath } from '../host/standalone/coreBinary';
 import { CONFIG_DIR_NAME, CORE_RESOURCE_DIR } from '../config/project';
 
 const HOME = '/home/dev';
 const FINGERPRINT = 'a'.repeat(64);
-/** 远端部署目录名：`<core.deployPrefix>_<指纹前一半>`（与实现共用同一份派生纯函数） */
-const DEPLOY_DIR = coreDeployDirName(FINGERPRINT);
+/** 远端指纹槽位目录：`share/<core.deployPrefix>/<指纹>`（与实现共用同一份派生纯函数） */
+const DEPLOY_DIR = coreDeployDirPath(FINGERPRINT);
 const STATE_PATH = `${HOME}/${CONFIG_DIR_NAME}/core-daemon-${FINGERPRINT}.json`;
 const BINARY_PATH = `${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}/${coreBinaryFileName('linux')}`;
-const RIPGREP_PATH = `${HOME}/${REMOTE_BIN_DIR}/${DEPLOY_DIR}/ripgrep/rg`;
+const RIPGREP_PATH = `${HOME}/${REMOTE_BIN_DIR}/${coreDeployRipgrepPath()}/rg`;
 const START_COMMAND = `'${BINARY_PATH}' start --idle-exit 30`;
 const TARGET = { host: '203.0.113.7', port: 22, user: 'dev', password: 'secret' };
 

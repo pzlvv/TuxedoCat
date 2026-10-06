@@ -13,7 +13,8 @@
     "src/test/**/*.ts",
     "electron/fileOpen.ts",
     "electron/fileTypes.ts",
-    "electron/sidebarFiles.ts"
+    "electron/sidebarFiles.ts",
+    "electron/chatPlaceholderHtml.ts"
   ],
   "exclude": [
     "node_modules",

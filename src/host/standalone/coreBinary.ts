@@ -51,26 +51,45 @@ export const CORE_RIPGREP_DIR = 'ripgrep';
 /**
  * 构建指纹文件名（与可执行文件同级，`build-core.mjs` 落位）。
  *
- * 指纹只由源码内容与编译器身份决定（docs/standalone-core.md 第 4.4 节）：SSH 部署按
- * 它落位远端部署目录 `~/.local/bin/<core.deployPrefix>_<指纹前一半>/`，多版本 Core
- * 在同一台远端机器上各占一个槽位互不干扰；Electron / vsix 打包把它与产物一起携带，
- * 宿主运行时读取。
+ * 指纹只由源码内容与编译器身份决定（docs/standalone-core.md 第 4.4 节）：部署按它
+ * 落位 `share/<产品名>/<指纹>/` 槽位（见 `coreDeployDirPath`），多版本 Core 在同一台
+ * 机器上各占一个槽位互不干扰；Electron / vsix 打包把它与产物一起携带，宿主运行时读取。
  */
 export const CORE_FINGERPRINT_FILE_NAME = 'fingerprint';
 
-/** 部署目录名里指纹的截取位数：64 位指纹取前一半，目录名不因完整指纹而过长 */
-const DEPLOY_FINGERPRINT_CHARS = 32;
+/**
+ * 部署产品目录（相对部署前缀 `~/.local/bin`）：`share/<core.deployPrefix>`（纯函数）。
+ *
+ * 部署布局是全产品共享的一份，TUI 安装器（installer-rs）与 SSH 引导同一口径：产品
+ * 目录下按指纹分槽放 Core 二进制，自带 ripgrep 是全部槽位共享的一份（见
+ * `coreDeployRipgrepPath`）。产品名取自 `src/config/project.json`（`core.deployPrefix`），
+ * 把不同产品的部署槽位在共享机器上分开。
+ */
+export function coreDeployShareDirName(): string {
+  return ['share', CORE_DEPLOY_PREFIX].join('/');
+}
 
 /**
- * 远端部署目录名：`<core.deployPrefix>_<指纹前一半>`（纯函数，派生逻辑只有这一份）。
+ * 部署目录（相对部署前缀 `~/.local/bin`）：`share/<产品名>/<完整指纹>`（纯函数，
+ * 派生逻辑只有这一份）。
  *
- * 产品前缀取自 `src/config/project.json`（`core.deployPrefix`），把不同产品的部署
- * 槽位在共享机器上分开；指纹取前 32 位作为槽位区分已足够（其余位只让目录名变长），
- * 完整指纹仍在状态 / 日志文件名与 `--version` 里。入参是 `readCoreFingerprint`
+ * 槽位名用完整 64 位指纹，与按指纹命名的 daemon 状态 / 日志文件（`daemonProtocol.ts`）
+ * 同口径，一个指纹一个目录、各跑各的 daemon 互不干扰。入参是 `readCoreFingerprint`
  * 读出的 64 位指纹。
  */
-export function coreDeployDirName(fingerprint: string): string {
-  return `${CORE_DEPLOY_PREFIX}_${fingerprint.slice(0, DEPLOY_FINGERPRINT_CHARS)}`;
+export function coreDeployDirPath(fingerprint: string): string {
+  return `${coreDeployShareDirName()}/${fingerprint}`;
+}
+
+/**
+ * 共享 ripgrep 的部署路径（相对部署前缀）：`share/<产品名>/ripgrep`。
+ *
+ * ripgrep 与指纹无关（Grep / Glob 的行为不随 Core 版本变），全部指纹槽位共享同一份；
+ * Core 侧按「自己所在槽位的上一级目录里的 `ripgrep`」定位它（core-rs/src/tools.rs 的
+ * `ripgrep_candidates`）。远端只支持 Linux，文件名不带 `.exe`。
+ */
+export function coreDeployRipgrepPath(): string {
+  return `${coreDeployShareDirName()}/ripgrep`;
 }
 
 /** 自带 ripgrep 的文件名；Windows 带 `.exe` */
@@ -156,9 +175,9 @@ export function resolveCoreBinary(
 /**
  * 读取 Standalone Core 的构建指纹（可执行文件同级的 `fingerprint` 文件）。
  *
- * 指纹是 SSH 部署的槽位标识：宿主据此确定远端部署目录
- * `~/.local/bin/<core.deployPrefix>_<指纹前一半>/` 与该指纹专属的 daemon 状态文件
- * （`docs/core-daemon.md` 第 12.3 节）。
+ * 指纹是部署的槽位标识：宿主据此确定部署目录 `~/.local/bin/share/<产品名>/<指纹>/`
+ * （`coreDeployDirPath`）与该指纹专属的 daemon 状态文件（`docs/core-daemon.md`
+ * 第 12.3 节）。
  * 文件缺失 / 内容不是 64 位小写 hex 都抛错：产物不完整属于构建期错误，静默猜一个
  * 指纹会部署到错误的槽位（`DEVELOPMENT.md` 第 12 章）。
  */

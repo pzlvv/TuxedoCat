@@ -75,17 +75,26 @@ notice 提示后退出。
 
 ### 2.4 Core 产物定位（`tui-rs/src/core_root.rs`）
 
-候选顺序（第一个能解析出 Core 二进制的胜出；全部落空报错附安装指引，不静默
-降级）：
+部署布局（`docs/tui-installer.md` 第 1 节）：`<前缀>/share/<产品名>/<指纹>/` 放
+Core 槽位，`<前缀>/share/<产品名>/ripgrep/` 是全部槽位共享的 rg，TUI 二进制在
+`<前缀>/share/<产品名>/tui[.exe]`（unix 上另有软链接 `<前缀>/<产品名>` 指向它）。
 
-1. 环境变量 `TUXEDO_CAT_TUI_ROOT`（显式指定安装前缀）；
-2. 默认安装前缀 `~/.tuxedo-cat/tui`（安装程序的默认落点）；
-3. TUI 可执行文件所在目录（自定义前缀下就地运行）；
-4. 可执行文件上一级（开发期：`tui-rs/target/release/` → 仓库根的 `resources/core/`）。
+候选根顺序（每个根先按部署布局、再按开发期仓库布局解析；第一个能解析出 Core
+二进制的胜出；全部落空报错附安装指引，不静默降级）：
 
-产物路径口径与 `src/host/standalone/coreBinary.ts` 一致：
-`resources/core/<arch-platform>/tuxedo-cat-core[.exe]`（平台矩阵见
-`docs/standalone-core.md` 第 4.1 节）。
+1. 环境变量 `TUXEDO_CAT_TUI_ROOT`（显式指定部署前缀或仓库根）；
+2. 默认部署前缀：unix `~/.local/bin`，Windows `~/.tuxedo-cat/bin`（安装程序的
+   默认落点）；
+3. TUI 可执行文件所在目录（就地运行：本程序就在产品目录里）；
+4. 可执行文件的各级上级目录（有层数上限）：经软链接或产品目录启动时回溯到部署
+   前缀；开发期 `tui-rs/target/<profile>/` 回溯到仓库根。
+
+布局判定（`core_binary_in`）：
+
+- 部署布局：`<根>/share/<产品名>/` 下任一「`fingerprint` + Core 二进制都齐」的
+  指纹槽位（多版本并存取排序最大的一员，只为确定）；
+- 仓库布局（开发期）：`<根>/resources/core/<arch-platform>/tuxedo-cat-core[.exe]`
+  （平台矩阵见 `docs/standalone-core.md` 第 4.1 节）。
 
 ## 3. 选型与产物形态
 

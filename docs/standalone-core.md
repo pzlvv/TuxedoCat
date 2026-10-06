@@ -18,7 +18,8 @@
    载荷字段逐项一致。
 4. **独立进程**：Standalone Core 是独立的可执行文件，承载 core 侧全部职责
    （引擎、工具、历史、MCP 子进程、技能）。
-5. **平台范围**：当前产出 Windows x64 与 Linux x64 / arm64；目标矩阵预留 Windows arm64。
+5. **平台范围**：当前产出 Windows x64 与 Linux x64 / arm64；Windows arm64 可构建
+   （`--target` / `npm run build:core:win32-arm64` 或 TUI 安装器按需补建），不进默认打包集合。
 6. **一条帧通道**：UI 与 Standalone Core 之间只有一条双向帧通道；UI 为客户端，Core 为服务端。
 7. **一个工作区一个 Core 进程**：每个打开的工作区对应一个 Core 进程；一个 Core 进程只服务
    它的 Connection（`docs/client-connection.md` 第 5 节）。
@@ -73,7 +74,7 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 | 重启 | Core 实例意外退出后由 daemon 重新启动并恢复接线 | daemon（`docs/core-daemon.md`） |
 | Core 可执行文件名 | `core.binaryName`（`src/config/project.json`），Windows 加 `.exe` | 工程配置 |
 | Core 产物目录 | `resources/<core.resourceDir>/<arch>-<platform>/` | 工程配置 |
-| Core 部署目录名 | `<core.deployPrefix>_<指纹前 32 位>`（`coreDeployDirName`），SSH 部署槽位名，见第 4.4 节 | 工程配置 |
+| Core 部署目录 | `~/.local/bin/share/<core.deployPrefix>/<指纹>/`（`coreDeployDirPath`），部署槽位目录，见第 4.4 节 | 工程配置 |
 
 产品名、可执行文件名与产物目录名一律取自 `src/config/project.json`；代码与 Rust 包名
 不出现产品名。
@@ -104,8 +105,8 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 ## 4. Standalone Core 形态
 
 - 语言与工具链：Rust（edition 2021），Cargo 构建。
-- 产物：`core.binaryName`（Windows 加 `.exe`）单文件可执行，外加同级的自带工具目录
-  （`ripgrep/`）；**部署单元是整个产物目录**，见第 4.1 节。
+- 产物：`core.binaryName`（Windows 加 `.exe`）单文件可执行，外加自带的工具目录
+  （`ripgrep/`，部署时提升为产品目录的共享位）；部署按指纹落槽位，见第 4.1 节。
 - 源码位置：`core-rs/`（Cargo 包，包名与二进制名保持中性；对外文件名由构建脚本按配置落位）。
 - 进程属性：由宿主启动时不显示窗口；标准输入 / 标准输出为帧通道，标准错误为诊断输出。
   远程服务（`start` 动作）让 daemon 把控制通道换成 TCP（`docs/core-daemon.md` 第 12 节）。
@@ -134,7 +135,7 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 | 平台 | 架构 | 目标三元组 | 产物目录（`<core.resourceDir>` = `core`） | 状态 |
 | --- | --- | --- | --- | --- |
 | Windows | x64 | `x86_64-pc-windows-msvc` | `resources/core/x64-win32/` | 产出 |
-| Windows | arm64 | `aarch64-pc-windows-msvc` | `resources/core/arm64-win32/` | 预留 |
+| Windows | arm64 | `aarch64-pc-windows-msvc` | `resources/core/arm64-win32/` | 可构建（不进默认打包集合，见第 4.3 节） |
 | Linux | x64 | `x86_64-unknown-linux-musl` | `resources/core/x64-linux/` | 产出（静态 musl；Windows 上交叉编译，见第 4.3 节） |
 | Linux | arm64 | `aarch64-unknown-linux-musl` | `resources/core/arm64-linux/` | 产出（静态 musl；Windows 上交叉编译，见第 4.3 节） |
 
@@ -146,21 +147,33 @@ Electron 打包后产物落在 `app.asar` 内的 `dist/resources/`，但可执�
 `app.asar.unpacked/`，宿主定位候选路径时把 `app.asar` 改写为 `app.asar.unpacked` 并优先取用
 （`child_process.spawn` 不做 Electron 的 asar 重定向，直接 spawn asar 内路径必 ENOENT）。
 
-**部署单元**：一个产物目录 = 一个自包含单元，除可执行文件外还有 Core 自带的工具目录
-（当前只有 `ripgrep/rg[.exe]`）。Core 以**自己的可执行文件所在目录**为基准
-定位自带资源（`tools.rs::ripgrep_path`），因此本地起进程与远端上传用的都是这一个位置，
-不依赖宿主提供 `extensionPath`：
+**部署单元与共享位**：仓库里的产物目录是自包含的——可执行文件与自带工具目录
+（当前只有 `ripgrep/rg[.exe]`）同级：
 
 ```
 resources/core/x64-win32/tuxedo-cat-core.exe
 resources/core/x64-win32/ripgrep/rg.exe
 ```
 
-### 4.2 跨平台预留约束
+部署到 `~/.local/bin/share/<core.deployPrefix>/` 时按指纹落槽位，ripgrep 提升为产品
+目录里全部槽位共享的一份（rg 与指纹无关，Grep / Glob 的行为不随 Core 版本变）：
+
+```
+~/.local/bin/share/<core.deployPrefix>/<指纹>/tuxedo-cat-core[.exe] + fingerprint
+~/.local/bin/share/<core.deployPrefix>/ripgrep/rg[.exe]
+~/.local/bin/share/<core.deployPrefix>/tui[.exe]                    # TUI 版安装器附带
+```
+
+Core 以**自己的可执行文件所在目录的上一级**定位共享资源（`tools.rs::ripgrep_path`：
+槽位上一级产品目录里的 `ripgrep/`），本地起进程、远端上传与 TUI 版安装用的是
+同一个位置，不依赖宿主提供 `extensionPath`。
+
+### 4.2 跨平台约束
 
 - Core 侧不依赖 Windows 专有 API；平台差异收敛在少量模块：进程管理、路径处理、
   shell 探测、资源定位。
-- 构建脚本按目标三元组参数化；当前产出 Windows x64 与 Linux x64 / arm64（musl 静态）。
+- 构建脚本按目标三元组参数化；当前产出 Windows x64 与 Linux x64 / arm64（musl 静态），
+  Windows arm64 可按需构建（见第 4.3 节）。
   Linux 目标在 Windows 上直接交叉编译（rust-lld + zig，见第 4.3 节），不需要 Linux 环境。
 - 宿主侧的启动、帧通道与契约不随平台变化。
 - 新增平台时只补产物目录与构建目标，不改契约与磁盘格式。
@@ -172,7 +185,7 @@ resources/core/x64-win32/ripgrep/rg.exe
 | 进程管理 | `bash_task.rs::kill_tree`、`mcp.rs` 的子进程终止 | `#[cfg(windows)]` 走 `taskkill /T /F`；非 Windows 走 `Child::kill`，与 Embedded（Node `detached: true` + `childProcess.kill()`，同样只杀直接子进程）逐字对齐 |
 | 路径处理 | `util.rs` 的 `normalize_path` / `expand_path`、`config.rs` 的 `encodeURIComponent` 等价物 | 盘符与 UNC 的换算都在 `cfg!(windows)` 分支内；非 Windows 走 POSIX 分支，多字节路径按字节比较 |
 | shell 探测 | `shell.rs::detect` | 非 Windows 直接用 `$SHELL`（缺省 `/bin/bash`）；Windows 才走 Git Bash → PowerShell → cmd.exe 的优先级 |
-| 资源定位 | `tools.rs::ripgrep_path`、`config.rs::extension_path` | Core 自带产物以**自己的可执行文件目录**为基准（`<exe 目录>/ripgrep/rg[.exe]`），宿主 `extensionPath` 只作本机开发期的兜底、最后回退 PATH；可执行名按 `cfg!(windows)` 加 `.exe`；产物目录按 `<arch>-<platform>` 解析，矩阵外直接拒绝而不是猜一个目录 |
+| 资源定位 | `tools.rs::ripgrep_path`、`config.rs::extension_path` | Core 自带产物以**自己的可执行文件目录的上一级**为基准（`<exe 目录>/../ripgrep/rg[.exe]`，部署布局的共享位），宿主 `extensionPath` 只作本机开发期的兜底、最后回退 PATH；可执行名按 `cfg!(windows)` 加 `.exe`；产物目录按 `<arch>-<platform>` 解析，矩阵外直接拒绝而不是猜一个目录 |
 | 主目录 | `config.rs::home_dir` | `USERPROFILE` 优先、`HOME` 兜底，两者都缺才报错 |
 | 系统语言 | 宿主：`src/host/i18n.ts::getSystemLocale`（不在 Core 侧） | 仅 Windows 查 PowerShell `Get-UICulture`；其余平台读 `LANG` / `LC_ALL` |
 | 控制台窗口 | `util.rs::hide_console` | 仅 Windows 设 `CREATE_NO_WINDOW`，非 Windows 是空操作 |
@@ -196,21 +209,27 @@ Linux 产物一律用 **musl**：静态链接、不依赖目标机器的 glibc �
 npm run build:core            # 打包要携带的全部目标（Windows x64 + Linux x64 / arm64）
 npm run build:core:host       # 只建当前平台 / 架构（本地调试用）
 npm run build:core:linux-x64  # 只建 Linux x64（Windows 上就是交叉编译，不需要 WSL）
+npm run build:core:win32-arm64 # 只建 Windows arm64（不进默认打包集合，见下）
 ```
 
 `build-core.mjs` 的目标分三档：不带参数时构建 `PACKAGE_DIRS`（打包要携带的 Windows x64 +
 Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只建当前平台 / 架构；`--target <三元组>`
 只建指定目标。本地调试（`dev:electron`、`watch:app` 的 Rust 重建）走 `--host`，不白编 Linux 那份。
 
-交叉编译到 Linux 需要两样东西，**都在本机解决，不用 Linux 环境**：
+构建的工具链分两段，**都在本机解决**：
 
-1. **Rust 目标与链接器**：`rustup target add x86_64-unknown-linux-musl`。链接器用 rustup
-   自带的 `rust-lld` + self-contained 的 musl crt / libc（配在 `core-rs/.cargo/config.toml`），
-   不需要系统上的交叉链接器。
+1. **Rust 目标与链接器**（`rustup target add <triple>`）：
+   - Linux musl：链接器用 rustup 自带的 `rust-lld` + self-contained 的 musl crt / libc
+     （配在 `core-rs/.cargo/config.toml`），不需要系统上的交叉链接器；
+   - Windows arm64：MSVC 目标的链接器由 rustc 经 Visual Studio 定位，需要装好 VS 的
+     「MSVC ARM64 生成工具」组件（MSVC 链接器不跨平台，只在 Windows 宿主构建）。
 2. **C 编译器**：`ring`（`reqwest` 的 `rustls-tls` 依赖）里有 C + 汇编，cc-rs 需要一个能产出
-   该目标文件的 C 编译器。用 [zig](https://ziglang.org/)：它自带 clang 与 musl 头文件 / libc，
+   该目标文件的 C 编译器。用 [zig](https://ziglang.org/)：它自带 clang 与头文件 / libc，
    一个可执行文件就够。装好保证 `zig` 在 PATH 上即可（装在别处用环境变量 `ZIG` 指定）；
-   构建脚本会注入 `CC` / `CFLAGS` / `AR`，缺 zig 时直接报错、不静默降级。
+   构建脚本会注入 `CC` / `CFLAGS`，缺 zig 时直接报错、不静默降级。两个用场：
+   - Linux musl：交叉编译的 C 编译器，静态库打包用 `zig ar`；
+   - Windows arm64：ring 的 build.rs 对该目标**硬性要求 clang**（MSVC 的 cl.exe 不被
+     接受），由 zig cc 充当；静态库打包用 VS 的 lib.exe（cc-rs 自行定位，不注入 AR）。
 
 打包（`npm run package:ext` / `package:app`）会校验要携带的 Core 产物
 （`scripts/verify-core-artifacts.mjs`）：产物缺失、比 `core-rs/src/**` 旧、构建指纹与
@@ -224,13 +243,11 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 官方发布物（15.2.0；Linux 两份为 `unknown-linux-musl` 静态链接），入库前按官方 `.sha256`
 逐份校验。
 
-**预留平台**：Windows arm64 已登记目标与产物目录（矩阵一致性由
-`src/test/corePlatformMatrix.test.ts` 锁定），但还没有实际产物。已实测的阻塞：
-
-- **Windows arm64**：构建会停在 `ring` 的自定义构建脚本上，报 `failed to find tool "clang"`。
-  `ring` 含 ARM64 汇编，交叉编译需要 clang 与 ARM64 的 MSVC 链接器；只装 Rust target 不够。
-
-这与第 11 节「目标矩阵中预留平台的实际产出」不属于覆盖范围一致。
+**Windows arm64**：目标与产物目录已登记（矩阵一致性由
+`src/test/corePlatformMatrix.test.ts` 锁定）且可构建（`npm run build:core:win32-arm64`），
+但不在默认打包集合 `PACKAGE_DIRS` 里——打包仍只携带 Windows x64 与 Linux 两份；需要时
+按目标显式构建，TUI 安装器（`scripts/build-tui-installer.mjs`）对 `arm64-win32` 也是
+按需补建 Core 产物。这与第 11 节「Windows arm64 的常态打包」不属于覆盖范围一致。
 
 ### 4.4 构建指纹
 
@@ -249,14 +266,13 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
   与 Linux 构建机上是同一个编译器）；目标三元组与 profile（release / debug）。
 - **不混入** zig / C 工具链版本：指纹是「版本身份」不是「字节一致」，同源码同 rustc
   下 C 部分的工具链差异不构成版本差异；指纹相同的两个构建产物行为一致。
-- **用途**：SSH 部署按指纹落位远端部署目录 `~/.local/bin/<core.deployPrefix>_<指纹前 32 位>/`
-  （目录名由 `coreDeployDirName` 从 `src/config/project.json` 的 `core.deployPrefix` 与
-  指纹前一半拼出——产品前缀把不同产品的部署槽位分开，指纹取前 32 位使目录名不因完整
-  指纹过长；可执行文件 + 自带的
-  `ripgrep/` 同级），daemon 的状态 / 日志文件按完整指纹命名
-  （`core-daemon-<指纹>.*`，`docs/core-daemon.md` 第 12.3 节）。多版本 Core 在同一台
-  远端机器上各占一个槽位、各跑一个 daemon，互不覆盖、互不换血；部署以「指纹目录
-  存在即同版本」为准，**不做产物哈希比对**——指纹目录存在就不再上传，缺失才部署
+- **用途**：部署按指纹落位槽位目录 `~/.local/bin/share/<core.deployPrefix>/<指纹>/`
+  （`coreDeployDirPath`：产品目录取 `src/config/project.json` 的 `core.deployPrefix` 把
+  不同产品的槽位分开，指纹用完整 64 位，与按指纹命名的 daemon 状态 / 日志文件
+  （`core-daemon-<指纹>.*`，`docs/core-daemon.md` 第 12.3 节）同口径）；自带的
+  `ripgrep/` 提升为产品目录的共享位（见第 4.1 节）。多版本 Core 在同一台
+  机器上各占一个槽位、各跑一个 daemon，互不覆盖、互不换血；部署以「指纹槽位
+  存在即同版本」为准，**不做产物哈希比对**——槽位存在就不再上传，缺失才部署
   并拉起。Electron / vsix 打包把 `fingerprint` 文件与产物一起携带，宿主运行时经
   `readCoreFingerprint` 读取（缺失 / 格式非法抛错，不猜）。
 
@@ -466,7 +482,7 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 
 - 跨机器部署与网络传输；
 - 网络连接断开后的重连（进程崩溃后的重启见第 7.1 节）；
-- 目标矩阵中预留平台（Windows arm64）的实际产出；
+- Windows arm64 的常态打包（产物可按需构建，见第 4.3 节；不进默认打包集合）；
 - UI 侧的界面表现与 webview 协议；
 - `embedded` 实现的改动；
 - daemon 的进程模型与协议（见 `docs/core-daemon.md`）；
@@ -489,7 +505,8 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 10. 两个工作区各自拥有一个 Core 进程；其中一个的 Core 崩溃不影响另一个。
 11. 重启次数超过上限时 daemon 停止重启并报告。
 12. `CORE_KIND = embedded` 时装配进程内 Core，恒一个 Connection。
-13. 产物目录按平台 / 架构解析，Windows x64 与 Linux x64 / arm64 有实际产物，Windows arm64 为预留。
+13. 产物目录按平台 / 架构解析，Windows x64 与 Linux x64 / arm64 有实际产物；Windows arm64
+    可按需构建，不进默认打包集合。
 14. `start` 打印监听端口（daemon 留在后台）。
 
 ---

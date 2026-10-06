@@ -4,17 +4,18 @@
  * 目标环境只有 SSH 端口、daemon 端口映射不出来时，Host 经 SSH 完成：
  *
  * 1. **发现**：部署槽位由本机携带产物的**构建指纹**决定（`docs/standalone-core.md`
- *    第 4.4 节）——远端部署目录 `~/.local/bin/<core.deployPrefix>_<指纹前一半>/`，
+ *    第 4.4 节）——远端部署目录 `~/.local/bin/share/<core.deployPrefix>/<指纹>/`，
  *    状态文件 `~/<configDir>/core-daemon-<指纹>.json`。状态文件里的 daemon 探得通就是
  *    本版本（同一指纹）的 daemon 在跑，直接复用：不重启、不覆盖。
  *    多版本 Core 在同一台远端机器上各占一个槽位、各跑一个 daemon——不同版本
  *    的客户端同时接入同一台机器互不干扰；同版本的多个客户端并发接同一个
  *    daemon 由 daemon 侧的多连接支持（`docs/core-daemon.md` 第 12.5 节）。
- * 2. **部署**：指纹目录里缺可执行文件或自带 `ripgrep/rg` 才上传（客户端唯一暂存名
- *    + rename 原子换名：对可能仍在执行的旧 inode 安全，两台机器的客户端并发部署
- *    同一槽位也互不交错损坏）；**指纹目录存在即视为同版本**，不做产物
+ * 2. **部署**：指纹槽位里缺 Core 可执行文件、或共享位缺自带 `ripgrep` 才上传（客户端
+ *    唯一暂存名 + rename 原子换名：对可能仍在执行的旧 inode 安全，两台机器的客户端
+ *    并发部署同一槽位也互不交错损坏）；**槽位存在即视为同版本**，不做产物
  *    哈希比对——指纹只由源码内容与编译器身份决定，同一版本不该因字节差异互相
- *    覆盖：新版本天然落在新槽位，旧 daemon 原样留给旧版本的客户端。
+ *    覆盖：新版本天然落在新槽位，旧 daemon 原样留给旧版本的客户端。ripgrep 与指纹
+ *    无关，放产品目录根（`share/<core.deployPrefix>/ripgrep`）供全部槽位共享。
  * 3. **启动**：`start --idle-exit 30`（幂等：已在跑就复用；远端 `start` 自带按
  *    指纹的互斥锁，并发引导同指纹也只拉起一个 daemon），再读状态文件。
  *    daemon 恒绑回环、端口交给内核分配（`docs/core-daemon.md` 第 12.2 节）：转发连接
@@ -33,11 +34,10 @@ import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
 import {
-  CORE_RIPGREP_DIR,
-  bundledRipgrepFileName,
   bundledRipgrepPath,
   coreBinaryFileName,
-  coreDeployDirName,
+  coreDeployDirPath,
+  coreDeployRipgrepPath,
   readCoreFingerprint,
   resolveCoreBinary,
 } from './coreBinary.js';
@@ -59,7 +59,7 @@ export interface RemoteSsh {
   openTcpForward(host: string, port: number): Promise<{ destroy(): void }>;
 }
 
-/** 远端部署槽位的父目录（相对远端主目录）；实际落位是其下的 `<core.deployPrefix>_<指纹前一半>/` 子目录 */
+/** 部署前缀（相对远端主目录）；实际落位是其下 `share/<core.deployPrefix>/…` */
 export const REMOTE_BIN_DIR = '.local/bin';
 
 /**
@@ -112,7 +112,7 @@ export async function ensureRemoteDaemon(
   const remoteBinary = posixJoin(
     home,
     REMOTE_BIN_DIR,
-    coreDeployDirName(fingerprint),
+    coreDeployDirPath(fingerprint),
     coreBinaryFileName(target.platform),
   );
   const statePath = posixJoin(home, CONFIG_DIR_NAME, daemonStateFileName(fingerprint));
@@ -126,7 +126,8 @@ export async function ensureRemoteDaemon(
   if (await ensureRemoteBinary(ssh, localBinary, remoteBinary)) {
     options.log(`[ssh] deployed ${remoteBinary} (${target.platform}-${target.arch})`);
   }
-  await ensureRemoteRipgrep(ssh, options, localBinary, remoteBinary, target);
+  const remoteRipgrep = posixJoin(home, REMOTE_BIN_DIR, coreDeployRipgrepPath(), 'rg');
+  await ensureRemoteRipgrep(ssh, options, localBinary, remoteRipgrep, target);
 
   // 3. 在跑的 daemon 原样返回；否则 start（幂等：已在跑就只打印就绪信息）。启动前
   //    不结束别的 daemon：daemon 恒绑回环、端口交给内核分配，多版本 daemon 并存时
@@ -157,12 +158,12 @@ export async function ensureRemoteDaemon(
 }
 
 /**
- * 确保远端指纹目录里有可执行文件：缺失才上传，存在即同版本。
+ * 确保远端指纹槽位里有可执行文件：缺失才上传，存在即同版本。
  *
  * 指纹只由源码内容与编译器身份决定（`docs/standalone-core.md` 第 4.4 节），同一
  * 指纹的两个构建产物行为一致，因此存在就不再上传——不同构建机 / 不同客户端的
  * 同版本产物互不覆盖。上传走「客户端唯一暂存名 + `mv` 原子换名」：目标可能正被
- * 一个在跑的 daemon 执行（它的指纹目录被清过、状态文件丢失时我们无从得知它在跑），
+ * 一个在跑的 daemon 执行（它的指纹槽位被清过、状态文件丢失时我们无从得知它在跑），
  * 对执行中的文件直接覆盖写是 `ETXTBSY`（SFTP 层报 `Failure`）；`mv` 是 rename，
  * 只换目录项，运行中的进程继续用旧 inode。返回是否发生了上传（调用方据此打部署日志）。
  */
@@ -204,25 +205,21 @@ async function uploadAtomically(ssh: RemoteSsh, localPath: string, remotePath: s
 }
 
 /**
- * 确保远端有 Core 自带的 ripgrep（与远端可执行文件同级）。
+ * 确保远端有 Core 自带的 ripgrep（产品目录根的共享位，全部指纹槽位共用）。
  *
  * 远端机器不一定装过 `rg`，而 Grep / Glob 是核心工具：缺了它，远端的工具只能
- * `spawn rg ENOENT`。**缺了才传**——远端路径与平台无关（远端只支持 Linux，
- * 文件名恒为 `rg`），先按这个名字 stat。本机产物里没有这份 rg 属于构建不完整，
- * 直接报错（`DEVELOPMENT.md` 第 12 章）。
+ * `spawn rg ENOENT`。ripgrep 与指纹无关（Grep / Glob 的行为不随 Core 版本变），
+ * 放 `share/<core.deployPrefix>/ripgrep`——与 Core 侧「自己所在槽位的上一级目录里
+ * 找 `ripgrep`」的定位口径配对（core-rs/src/tools.rs）。**缺了才传**；本机产物里
+ * 没有这份 rg 属于构建不完整，直接报错（`DEVELOPMENT.md` 第 12 章）。
  */
 async function ensureRemoteRipgrep(
   ssh: RemoteSsh,
   options: RemoteBootstrapOptions,
   localBinary: string,
-  remoteBinary: string,
+  remoteRipgrep: string,
   target: RemoteTarget,
 ): Promise<void> {
-  const remoteRipgrep = posixJoin(
-    posixDirname(remoteBinary),
-    CORE_RIPGREP_DIR,
-    bundledRipgrepFileName('linux'),
-  );
   if ((await ssh.stat(remoteRipgrep)).exists) return;
 
   const localRipgrep = bundledRipgrepPath(localBinary, target.platform);

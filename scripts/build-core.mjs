@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Standalone Core（Rust）构建脚本（见 docs/standalone-core.md 第 4.1 节）。
+ * Standalone Core（Rust）构建脚本（见 docs/standalone-core.md 第 4.3 节）。
  *
  * 用法：
  *   node scripts/build-core.mjs                        # 打包要携带的全部目标，release
@@ -14,7 +14,7 @@
  * Core 以**自己的可执行文件目录**为基准定位自带资源，本地与远端都是这一个位置。
  * 同目录还有一份 `fingerprint` 构建指纹（见 computeFingerprint 与
  * docs/standalone-core.md 第 4.4 节）：SSH 部署按指纹落位远端部署目录
- * `~/.local/bin/<core.deployPrefix>_<指纹前一半>/`，多版本 Core 在同一台远端机器上各占一个槽位互不干扰。
+ * `~/.local/bin/share/<core.deployPrefix>/<指纹>/`，多版本 Core 在同一台机器上各占一个槽位互不干扰。
  *
  * 产品名与产物名一律取自 src/config/project.json（`core.binaryName` /
  * `core.resourceDir`），本脚本不写死。Rust 侧的包名固定为中性的 `standalone-core`，
@@ -186,40 +186,49 @@ function buildableOnHost(target) {
 }
 
 /**
- * 交叉编译到 Linux 时的 C 工具链。
+ * ring 的 C / 汇编需要系统 C 编译器的目标：注入 zig 充当。
  *
- * Rust 那部分不需要系统工具链（rustup 自带 musl 的 crt / libc，链接器用 rust-lld，
- * 见 `core-rs/.cargo/config.toml`）；但 `ring` 里有 C + 汇编，cc-rs 需要一个能产出
- * 该目标文件的 C 编译器。用 zig：它自带 clang 与 musl 头文件 / libc，
- * 一个可执行文件就够，不用装交叉 gcc。
+ * Rust 那部分不需要系统工具链（musl 用 rustup 自带的 crt / libc + rust-lld，见
+ * `core-rs/.cargo/config.toml`；MSVC 目标的链接由 rustc 经 Visual Studio 定位，
+ * arm64 要装好 VS 的「MSVC ARM64 生成工具」组件）；但 `ring` 里有 C + 汇编，
+ * cc-rs 需要一个能产出该目标文件的 C 编译器：
  *
- * 本机就是 Linux 时不注入：系统自带的 cc 能直接编 musl（装了 musl-tools 的话）。
+ * - Linux musl（本机非 Linux）：系统上没有交叉 gcc，用 zig cc + zig ar；
+ * - aarch64-pc-windows-msvc：ring 的 build.rs 对 Windows ARM64 **硬性要求 clang**
+ *   （「On Windows AArch64 we currently must use Clang」），MSVC 的 cl.exe 不被
+ *   接受，用 zig cc 充当 clang。静态库打包不注入 AR：MSVC 目标吃 `-out:` /
+ *   `-nologo` 口径，必须用 VS 的 lib.exe（cc-rs 自己定位，lib.exe 对目标架构
+ *   不敏感），`zig ar` 是 GNU ar 口径对不上。
  */
 function crossToolchainEnv(target) {
   const isLinuxTriple = target.triple.endsWith('-linux-musl');
-  if (!isLinuxTriple || process.platform === 'linux') return {};
+  const isWindowsArm64 = target.triple === 'aarch64-pc-windows-msvc';
+  if (!isLinuxTriple && !isWindowsArm64) return {};
+  // 本机就是 Linux 时不注入：系统自带的 cc 能直接编 musl（装了 musl-tools 的话）。
+  if (isLinuxTriple && process.platform === 'linux') return {};
 
   const zig = process.env.ZIG || 'zig';
   const probe = spawnSync(zig, ['version'], { stdio: 'ignore', shell: false });
   if (probe.error || probe.status !== 0) {
     console.error(
-      `[build-core] 交叉编译 ${target.triple} 需要 zig（ring 的 C / 汇编要一个 C 编译器）：` +
-        `找不到 \`${zig}\`。安装方式见 docs/standalone-core.md 第 4.1 节；` +
+      `[build-core] 构建 ${target.triple} 需要 zig（ring 的 C / 汇编要一个 C 编译器）：` +
+        `找不到 \`${zig}\`。安装方式见 docs/standalone-core.md 第 4.3 节；` +
         '已装在别处时用环境变量 ZIG 指定可执行文件路径。',
     );
     process.exit(1);
   }
 
-  // cc-rs 认 `zig cc`，但它会按 **Rust 三元组** 补 `--target=x86_64-unknown-linux-musl`；
-  // zig 0.16 起不再接受 `unknown` 这个 OS 名（报 UnknownOperatingSystem），
-  // 所以要再用 CFLAGS 追加一个 zig 认的目标（clang 取最后一个 --target）。
+  // cc-rs 认 `zig cc`，但它会按 **Rust 三元组** 补 `--target=<rust 三元组>`；zig 不认
+  // 三元组里的 vendor 段（`unknown` / `pc` 都报 UnknownOperatingSystem），所以要再用
+  // CFLAGS 追加一个 zig 认的目标（clang 取最后一个 --target）。
   const key = target.triple.replace(/-/g, '_');
-  const zigTarget = target.triple.replace('-unknown-', '-');
-  return {
+  const zigTarget = target.triple.replace(/-(unknown|pc)-/, '-');
+  const env = {
     [`CC_${key}`]: `${zig} cc`,
     [`CFLAGS_${key}`]: `--target=${zigTarget}`,
-    [`AR_${key}`]: `${zig} ar`,
   };
+  if (!isWindowsArm64) env[`AR_${key}`] = `${zig} ar`;
+  return env;
 }
 
 function parseArgs(argv) {
@@ -367,7 +376,7 @@ function buildTarget(target, options) {
   console.log(`[build-core] ${target.triple} → ${outPath}`);
 
   // 指纹文件与可执行文件同级落位：宿主运行时读它确定远端部署槽位
-  // `~/.local/bin/<指纹>/`；随 copy-assets 进入打包产物（Electron / vsix 携带）。
+  // 部署槽位 `~/.local/bin/share/<core.deployPrefix>/<指纹>/`；随 copy-assets 进入打包产物（Electron / vsix 携带）。
   const fingerprintPath = join(outDir, FINGERPRINT_FILE_NAME);
   writeFileSync(fingerprintPath, `${computeFingerprint(target.triple, profile)}\n`);
   console.log(`[build-core] ${target.dir} 指纹 → ${fingerprintPath}`);

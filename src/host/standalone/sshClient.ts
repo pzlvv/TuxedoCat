@@ -8,6 +8,8 @@
  *
  * 主机密钥校验（TOFU）：首次连接把指纹记进 `~/<configDir>/known-hosts.json`，
  * 之后指纹不一致直接失败——不做「忽略校验」的静默降级（`DEVELOPMENT.md` 第 12 章）。
+ * 指纹变更由宿主弹告警、用户比对确认后经 `recordKnownHostFingerprint` 重建信任，
+ * 模块本身不提供「跳过校验」的连接方式。
  */
 
 import * as fs from 'fs';
@@ -85,15 +87,35 @@ function writeKnownHosts(file: string, entries: Record<string, string>): void {
   fs.writeFileSync(file, `${JSON.stringify(entries, null, 2)}\n`, 'utf8');
 }
 
-/** 主机密钥不匹配：错误信息里带上比对结论，用户据此判断是不是换了机器 */
+/** 主机密钥不匹配：携带记录与观测两份指纹，宿主据此弹「指纹已变更」告警供用户确认 */
 export class SshHostKeyError extends Error {
-  constructor(readonly host: string, readonly port: number) {
+  constructor(
+    readonly host: string,
+    readonly port: number,
+    /** known-hosts.json 里记录的旧指纹 */
+    readonly expectedFingerprint: string,
+    /** 本次连接观测到的新指纹（用户确认后经 `recordKnownHostFingerprint` 重建信任） */
+    readonly observedFingerprint: string,
+  ) {
     super(
-      `SSH host key for ${host}:${port} does not match the recorded fingerprint; `
-      + 'remove the entry from known-hosts.json only if the host was rebuilt on purpose.',
+      `SSH host key for ${host}:${port} does not match the fingerprint `
+      + 'recorded in known-hosts.json.',
     );
     this.name = 'SshHostKeyError';
   }
+}
+
+/**
+ * 重建对一台主机的信任：把确认过的新指纹写回 known-hosts.json。
+ *
+ * 用户在宿主的告警框里比对过新旧指纹并确认后调用；
+ * 模块外不提供删除条目的口子——信任的建立只能走 TOFU 首连或这里。
+ */
+export function recordKnownHostFingerprint(host: string, port: number, fingerprint: string): void {
+  const file = knownHostsPath();
+  const entries = readKnownHosts(file);
+  entries[`${host}:${port}`] = fingerprint;
+  writeKnownHosts(file, entries);
 }
 
 /** SSH 连接已断开：后续操作直接报错，不排队等待 */
@@ -445,7 +467,7 @@ export class SshClient {
       return true;
     }
     if (known !== fingerprint) {
-      this.hostKeyMismatch = new SshHostKeyError(host, port);
+      this.hostKeyMismatch = new SshHostKeyError(host, port, known, fingerprint);
       return false;
     }
     return true;

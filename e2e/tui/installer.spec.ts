@@ -8,9 +8,12 @@ import { test, expect } from '@playwright/test';
 /**
  * TUI 版安装程序 e2e（docs/tui-installer.md）。
  *
- * 场景级：构建宿主平台的安装器 → 安装到临时前缀 → 验证布局与载荷完整性 →
+ * 场景级：构建宿主平台的安装器 → 安装到临时前缀 → 验证部署布局与载荷完整性 →
  * 内嵌 Core 可执行（--version）→ 安装目录里的 TUI 可启动（--version 与
- * 非 TTY 守卫两条路径，后者同时验证「从安装位置解析 Core 产物」的候选链）。
+ * 非 TTY 守卫两条路径，后者同时验证「从部署前缀解析指纹槽位」的候选链）。
+ *
+ * 部署布局：`<prefix>/share/<产品名>/<指纹>/core + fingerprint`、
+ * `<prefix>/share/<产品名>/ripgrep/rg`、`<prefix>/share/<产品名>/tui`。
  *
  * 前置产物：`npm run build:core`（宿主平台）；TUI 二进制由构建脚本自动补建。
  * workers=1 顺序执行，安装前缀在 beforeAll 建一次、全部用例共用。
@@ -19,6 +22,11 @@ import { test, expect } from '@playwright/test';
 const run = promisify(execFile);
 
 const repoRoot = path.resolve(__dirname, '..', '..');
+const project = JSON.parse(readFileSync(path.join(repoRoot, 'src', 'config', 'project.json'), 'utf8')) as {
+  core: { deployPrefix: string };
+};
+/** 部署产品目录名（`src/config/project.json` 的 `core.deployPrefix`，与安装器同一来源） */
+const PRODUCT = project.core.deployPrefix;
 const hostPlatform = process.platform as 'win32' | 'linux' | 'darwin';
 const hostArch = process.arch as 'x64' | 'arm64';
 
@@ -36,12 +44,16 @@ const ext = hostExt();
 const installerPath = path.join(repoRoot, 'release', 'tui-installer', `tuxedo-cat-tui-installer-${pkgDir}${ext}`);
 
 let prefix = '';
+let fingerprint = '';
+let slotDir = '';
 
 test.beforeAll(async () => {
   prefix = mkdtempSync(path.join(os.tmpdir(), 'tui-installer-e2e-'));
   // 宿主平台 Core 产物（darwin 等无产物平台整文件跳过）
   const core = path.join(repoRoot, 'resources', 'core', pkgDir, `tuxedo-cat-core${ext}`);
   test.skip(!existsSync(core), `宿主平台 Core 产物缺失（${core}）：先 npm run build:core`);
+  fingerprint = readFileSync(path.join(repoRoot, 'resources', 'core', pkgDir, 'fingerprint'), 'utf8').trim();
+  slotDir = path.join(prefix, 'share', PRODUCT, fingerprint);
 
   // 构建宿主安装器（cargo 缓存命中时很快）
   const { stdout } = await run('node', [path.join(repoRoot, 'scripts', 'build-tui-installer.mjs'), '--host'], {
@@ -52,45 +64,44 @@ test.beforeAll(async () => {
 
   // 安装一次，后续用例共用同一前缀
   const installed = await run(installerPath, ['--prefix', prefix], { timeout: 120_000 });
-  expect(installed.stdout).toContain(`已安装：tuxedo-cat-tui${ext}`);
+  expect(installed.stdout).toContain(`已安装：share/${PRODUCT}/tui${ext}`);
 });
 
-test('安装布局完整（TUI 二进制 + Core + ripgrep + 指纹）', () => {
+test('部署布局完整（TUI + 指纹槽位 + 共享 ripgrep）', () => {
   const layout = [
-    path.join(prefix, `tuxedo-cat-tui${ext}`),
-    path.join(prefix, 'resources', 'core', pkgDir, `tuxedo-cat-core${ext}`),
-    path.join(prefix, 'resources', 'core', pkgDir, 'ripgrep', `rg${ext}`),
-    path.join(prefix, 'resources', 'core', pkgDir, 'fingerprint'),
+    path.join(prefix, 'share', PRODUCT, `tui${ext}`),
+    path.join(slotDir, `tuxedo-cat-core${ext}`),
+    path.join(slotDir, 'fingerprint'),
+    path.join(prefix, 'share', PRODUCT, 'ripgrep', `rg${ext}`),
   ];
   for (const file of layout) expect(existsSync(file), file).toBe(true);
 
-  // 指纹与仓库产物一致（载荷没有被换掉）
-  const fingerprint = readFileSync(path.join(prefix, 'resources', 'core', pkgDir, 'fingerprint'), 'utf8').trim();
-  const repoFingerprint = readFileSync(path.join(repoRoot, 'resources', 'core', pkgDir, 'fingerprint'), 'utf8').trim();
-  expect(fingerprint).toBe(repoFingerprint);
+  // 槽位指纹与仓库产物一致（载荷没有被换掉），且是 64 位小写 hex
+  const installedFingerprint = readFileSync(path.join(slotDir, 'fingerprint'), 'utf8').trim();
+  expect(installedFingerprint).toBe(fingerprint);
   expect(fingerprint).toMatch(/^[0-9a-f]{64}$/);
 });
 
 test('重复安装幂等（内容未变全部跳过）', async () => {
   const second = await run(installerPath, ['--prefix', prefix], { timeout: 120_000 });
-  expect(second.stdout).toContain(`未变化：tuxedo-cat-tui${ext}`);
-  expect(second.stdout).not.toContain(`已安装：tuxedo-cat-tui${ext}`);
+  expect(second.stdout).toContain(`未变化：share/${PRODUCT}/tui${ext}`);
+  expect(second.stdout).not.toContain(`已安装：share/${PRODUCT}/tui${ext}`);
 });
 
 test('内嵌 Core 可执行（--version 报告指纹）', async () => {
-  const core = path.join(prefix, 'resources', 'core', pkgDir, `tuxedo-cat-core${ext}`);
+  const core = path.join(slotDir, `tuxedo-cat-core${ext}`);
   const { stdout } = await run(core, ['--version'], { timeout: 60_000 });
-  expect(stdout.trim().length).toBeGreaterThan(0);
+  expect(stdout).toContain(fingerprint);
 });
 
 test('安装目录里的 TUI 可启动（--version / 非 TTY 守卫）', async () => {
-  const tui = path.join(prefix, `tuxedo-cat-tui${ext}`);
+  const tui = path.join(prefix, 'share', PRODUCT, `tui${ext}`);
 
   const version = await run(tui, ['--version'], { timeout: 60_000 });
   expect(version.stdout).toContain('tuxedo-cat tui');
 
   // 非 TTY：启动守卫报可行动错误。此路径已先完成 Core 产物解析——
-  // 若安装布局不完整会先得到「未找到 Standalone Core 产物」而失败
+  // 若部署布局不完整会先得到「未找到 Standalone Core 产物」而失败
   const result = await run(tui, ['--workspace', prefix], {
     timeout: 60_000,
     env: { ...process.env, TUXEDO_CAT_TUI_ROOT: prefix },
