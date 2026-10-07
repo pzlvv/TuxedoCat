@@ -370,12 +370,83 @@ pub fn is_auto_message(message: &Value) -> bool {
     }
 }
 
-/// 把用户输入历史格式化成编号列表（`formatUserInputHistory`）
-pub fn format_user_input_history(messages: &[Value]) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    let mut index = 0u64;
+/// 摘要中「用户输入历史」章节最多保留的条数
+pub const USER_INPUT_HISTORY_MAX: usize = 12;
+/// 超限时保留的最早条数
+pub const USER_INPUT_HISTORY_HEAD: usize = 4;
+/// 超限时保留的最后条数（与 HEAD 相加不超过 MAX）
+pub const USER_INPUT_HISTORY_TAIL: usize = 8;
+
+/// 把用户输入消息提取成历史条目（`toUserInputEntries`）：`{ uuid, content }`。
+///
+/// 只保留 `extract_user_content` 得到的文本块，跳过图片 / 工具结果等系统内容；
+/// 空内容条目直接丢弃。
+pub fn to_user_input_entries(messages: &[Value]) -> Vec<Value> {
+    let mut entries: Vec<Value> = Vec::new();
     for message in messages {
         let content = util::js_trim(&extract_user_content(message)).to_string();
+        if content.is_empty() {
+            continue;
+        }
+        let uuid = message.get("uuid").and_then(Value::as_str).unwrap_or("");
+        entries.push(json!({ "uuid": uuid, "content": content }));
+    }
+    entries
+}
+
+/// 读取上一次压缩摘要持久化的用户输入历史（`readCompactUserInputHistory`）。
+///
+/// 取消息数组里最后一条 `isCompactSummary` 消息上的 `compactUserInputHistory`；
+/// 压缩总是整体替换消息，所以同一时刻至多一条摘要消息。
+pub fn read_compact_user_input_history(messages: &[Value]) -> Vec<Value> {
+    for message in messages.iter().rev() {
+        if message.get("isCompactSummary").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        if let Some(history) = message.get("compactUserInputHistory").and_then(Value::as_array) {
+            return history.clone();
+        }
+    }
+    Vec::new()
+}
+
+/// 组装摘要里的「用户输入历史」（`selectUserInputHistory`）：
+/// 把 `previous`（上次摘要持久化的历史）与 `region_inputs`（本次归档区里的真实用户输入）
+/// 按时间顺序合并去重，再取最早 `head` 条 + 最后 `tail` 条；不超过 `max` 条时全留。
+///
+/// 两次压缩之间没有重叠：`previous` 里的条目在上次压缩时已从消息里移除，不会出现在
+/// 本次的 `region_inputs`；去重只是防御性兜底。
+pub fn select_user_input_history(
+    previous: &[Value],
+    region_inputs: &[Value],
+    max: usize,
+    head: usize,
+    tail: usize,
+) -> Vec<Value> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut merged: Vec<Value> = Vec::new();
+    for entry in previous.iter().chain(region_inputs.iter()) {
+        let uuid = entry.get("uuid").and_then(Value::as_str).unwrap_or("");
+        if !seen.insert(uuid.to_string()) {
+            continue;
+        }
+        merged.push(entry.clone());
+    }
+    if merged.len() <= max {
+        return merged;
+    }
+    let mut result: Vec<Value> = merged[..head].to_vec();
+    result.extend_from_slice(&merged[merged.len() - tail..]);
+    result
+}
+
+/// 把用户输入历史条目格式化成编号列表（`formatUserInputEntries`）。
+pub fn format_user_input_entries(entries: &[Value]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut index = 0u64;
+    for entry in entries {
+        let content =
+            util::js_trim(entry.get("content").and_then(Value::as_str).unwrap_or("")).to_string();
         if content.is_empty() {
             continue;
         }
@@ -383,6 +454,15 @@ pub fn format_user_input_history(messages: &[Value]) -> String {
         lines.push(format!("{index}. {content}"));
     }
     lines.join("\n\n")
+}
+
+/// 把用户输入消息格式化成编号列表（`formatUserInputHistory`，`formatUserInputEntries` 的便捷封装）。
+///
+/// 生产路径已改用 `to_user_input_entries` + `format_user_input_entries`（需要保留 uuid 去重），
+/// 这里只给对等对照表测试用，避免 bin 目标出现 dead_code 警告。
+#[cfg(test)]
+pub fn format_user_input_history(messages: &[Value]) -> String {
+    format_user_input_entries(&to_user_input_entries(messages))
 }
 
 /// 摘要生成 prompt（`generateCompactSummaryPrompt`）
@@ -698,8 +778,20 @@ fn compact_conversation_inner(
     let (summary, summary_output_tokens) =
         generate_summary(provider, &messages_to_summarize, custom_instructions, session_id);
 
-    // 提取用户输入历史，追加为摘要消息的一个章节
-    let user_input_history = format_user_input_history(&get_user_input_history(&messages_to_summarize));
+    // 提取用户输入历史，追加为摘要消息的一个章节。
+    // 历史 = 上次摘要持久化的历史（含会话最初的用户输入，见 `docs/compaction.md`）
+    //      + 本次归档区里的真实用户输入；合并后只保留首尾两端，避免摘要无限膨胀。
+    // 保留区里的用户输入不进这里，避免与仍在上下文中的消息重复。
+    let previous_user_input_history = read_compact_user_input_history(&messages_for_compact);
+    let region_user_inputs = to_user_input_entries(&get_user_input_history(&messages_to_summarize));
+    let selected_user_input_history = select_user_input_history(
+        &previous_user_input_history,
+        &region_user_inputs,
+        USER_INPUT_HISTORY_MAX,
+        USER_INPUT_HISTORY_HEAD,
+        USER_INPUT_HISTORY_TAIL,
+    );
+    let user_input_history = format_user_input_entries(&selected_user_input_history);
     let user_input_history = if user_input_history.is_empty() {
         None
     } else {
@@ -744,6 +836,8 @@ fn compact_conversation_inner(
         "uuid": format!("summary_{}", util::now_millis()),
         "timestamp": util::now_millis(),
         "isCompactSummary": true,
+        // 跨多次压缩保留全局用户输入历史：下次压缩据此恢复会话最初的用户输入。
+        "compactUserInputHistory": selected_user_input_history,
     });
 
     // 通知 UI：压缩完成（带上摘要生成的真实 output tokens）

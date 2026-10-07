@@ -6,7 +6,7 @@ import type { Message } from '../types.js';
 import type { CompactionResult } from './types.js';
 import { COMPACT_SYSTEM_PROMPT } from './types.js';
 
-import { generateCompactSummaryPrompt, generateCompactUserMessage, generateCompactBoundaryContent, getUserInputHistory, selectUserInputHistory, formatUserInputHistory } from './prompt.js';
+import { generateCompactSummaryPrompt, generateCompactUserMessage, generateCompactBoundaryContent, getUserInputHistory, toUserInputEntries, readCompactUserInputHistory, selectUserInputHistory, formatUserInputEntries } from './prompt.js';
 import { logger } from '../Logger.js';
 import { getSettings } from '../settings.js';
 import { requireEventBus, type CoreEvent } from '../AssistantEventBus.js';
@@ -29,7 +29,7 @@ function emitToUi(event: CoreEvent): void {
  * 2. Calculate pre-compact token count
  * 3. Generate summary via LLM call
  * 4. Create boundary marker
- * 5. Create summary message
+ * 5. Create summary message (含全局用户输入历史快照，见 `docs/compaction.md`)
  * 6. Keep recent important messages (last N messages)
  *
  * 注意：压缩期间会把会话标记为"正在压缩"（见 compact/state.ts），
@@ -121,13 +121,16 @@ async function compactConversationInner(
 
   // 提取用户输入历史（过滤掉系统自动产生的 reminder / silent / 子代理消息等），
   // 追加为摘要消息中的一个章节，避免压缩后丢失用户真实的原始输入。
-  // 但只保留首尾两端（最多 12 条：最早 4 条 + 最后 8 条），
-  // 否则归档区的全部用户输入都塞进摘要会让摘要无限膨胀，更快再次触发压缩。
-  const rawUserInputHistory = getUserInputHistory(messagesToSummarize);
-  const selectedUserInputHistory = selectUserInputHistory(rawUserInputHistory);
-  const userInputHistory = formatUserInputHistory(selectedUserInputHistory);
+  // 历史 = 上次摘要持久化的历史（含会话最初的用户输入，见 docs/compaction.md）
+  //      + 本次归档区里的真实用户输入；合并后只保留首尾两端
+  //      （最多 12 条：最早 4 条 + 最后 8 条），否则摘要会随对话增长无限膨胀、
+  //      更快再次触发压缩。保留区里的用户输入不进这里，避免与仍在上下文中的消息重复。
+  const previousUserInputHistory = readCompactUserInputHistory(messagesForCompact);
+  const regionUserInputs = toUserInputEntries(getUserInputHistory(messagesToSummarize));
+  const selectedUserInputHistory = selectUserInputHistory(previousUserInputHistory, regionUserInputs);
+  const userInputHistory = formatUserInputEntries(selectedUserInputHistory);
   if (userInputHistory) {
-    logger.info('compact', `Collected user input history (${selectedUserInputHistory.length}/${rawUserInputHistory.length} messages, ${userInputHistory.length} chars)`);
+    logger.info('compact', `Collected user input history (${selectedUserInputHistory.length} entries = ${previousUserInputHistory.length} carried + ${regionUserInputs.length} in region, ${userInputHistory.length} chars)`);
   }
 
   // Step 4: Create boundary marker
@@ -162,6 +165,8 @@ async function compactConversationInner(
     uuid: `summary_${Date.now()}`,
     timestamp: Date.now(),
     isCompactSummary: true,
+    // 跨多次压缩保留全局用户输入历史：下次压缩据此恢复会话最初的用户输入。
+    compactUserInputHistory: selectedUserInputHistory,
   };
 
   // Notify UI: compact complete with actual output tokens from summary generation

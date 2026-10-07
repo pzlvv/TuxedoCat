@@ -50,6 +50,38 @@ fn seed_messages(harness: &EngineHarness, session_id: &str, project: &str, count
         .map(str::to_string);
 }
 
+/// 在当前会话末尾追加 `count` 条用户消息（从 `start` 开始编号），并落盘。
+fn append_messages(
+    harness: &EngineHarness,
+    session_id: &str,
+    project: &str,
+    start: usize,
+    count: usize,
+) {
+    let state = harness.core.session(session_id);
+    let messages = {
+        let mut state = state.lock().unwrap();
+        for index in start..start + count {
+            state.messages.push(json!({
+                "type": "user",
+                "message": { "role": "user", "content": format!("消息 {index}") },
+                "uuid": format!("u-{index}"),
+                "timestamp": index as u64,
+            }));
+        }
+        state.persisted_count = state.messages.len();
+        let last_uuid = state
+            .messages
+            .last()
+            .and_then(|message| message.get("uuid"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        state.last_uuid = last_uuid;
+        state.messages.clone()
+    };
+    crate::history::replace_messages(session_id, project, &messages).unwrap();
+}
+
 /// 手动压缩：`compactBegin` / `compactEnd` / `messagesReplaced`，jsonl 被整文件重写，
 /// 归档写出被摘要掉的部分，`meta.json` 标记 `isCompacted`。
 #[test]
@@ -127,6 +159,46 @@ fn manual_compact_rewrites_the_conversation_and_archives_the_rest() {
     let state = harness.core.session_if_exists("s1").unwrap();
     assert_eq!(state.lock().unwrap().messages.len(), 32);
     assert!(!state.lock().unwrap().compacting, "压缩结束后应当复位");
+
+    crate::compact::reset_for_test();
+}
+
+/// 多次压缩：摘要里的用户输入历史头部来自上一次持久化的历史，
+/// 会话最初的用户输入不会因为再次压缩而丢失（见 `docs/compaction.md`）。
+#[test]
+fn repeated_compact_keeps_the_global_user_input_head() {
+    let sandbox = Sandbox::new("engine-compact-repeat");
+    crate::compact::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    seed_messages(&harness, "s1", &project, 40);
+
+    // 第一次压缩：归档区是「消息 0」..「消息 9」，10 条 ≤ 12 全部保留。
+    harness.core.request_compact("s1");
+    let after_first = crate::history::load_messages("s1", &project);
+    let first_history = after_first[1]["compactUserInputHistory"].as_array().unwrap();
+    assert_eq!(first_history.len(), 10, "首次压缩保留归档区全部 10 条");
+    assert_eq!(first_history[0]["content"], json!("消息 0"));
+    assert_eq!(first_history[9]["content"], json!("消息 9"));
+
+    // 追加 40 条新消息，让会话再次超过压缩阈值后压缩第二次。
+    append_messages(&harness, "s1", &project, 40, 40);
+    harness.core.request_compact("s1");
+
+    let after_second = crate::history::load_messages("s1", &project);
+    let summary = after_second[1]["message"]["content"].as_str().unwrap();
+    let second_history = after_second[1]["compactUserInputHistory"].as_array().unwrap();
+    // 头部 = 会话最早的 4 条（从上次持久化历史沿用，不因再次压缩而丢失）；
+    // 尾部 = 本次归档区最近 8 条（「消息 42」..「消息 49」）。
+    assert_eq!(second_history.len(), 12, "got {second_history:?}");
+    assert_eq!(second_history[0]["content"], json!("消息 0"));
+    assert_eq!(second_history[3]["content"], json!("消息 3"));
+    assert_eq!(second_history[11]["content"], json!("消息 49"));
+    assert!(summary.contains("1. 消息 0"), "got {summary}");
+    assert!(summary.contains("12. 消息 49"), "got {summary}");
 
     crate::compact::reset_for_test();
 }

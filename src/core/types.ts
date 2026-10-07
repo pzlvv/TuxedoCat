@@ -43,6 +43,18 @@ export interface AssistantMessage {
 }
 
 /**
+ * 压缩摘要里保存的用户输入历史条目（见 `docs/compaction.md`）。
+ *
+ * 只保留用户真实输入的纯文本与来源 uuid：uuid 用于跨多次压缩合并去重，
+ * content 用于拼进摘要的「用户输入历史」章节。不存原始 content blocks，
+ * 避免把图片 base64 等大块内容带进摘要。
+ */
+export interface UserInputHistoryEntry {
+  uuid: string
+  content: string
+}
+
+/**
  * 用户消息
  */
 export interface UserMessage {
@@ -70,6 +82,13 @@ export interface UserMessage {
   _needsUINotification?: boolean
   /** 压缩摘要消息标记（展开归档时用于区分摘要与普通消息） */
   isCompactSummary?: boolean
+  /**
+   * 压缩摘要携带的全局用户输入历史（最早 4 条 + 最近 8 条，见 `docs/compaction.md`）。
+   *
+   * 只写在 `isCompactSummary` 消息上。多次压缩时下一次压缩据此恢复会话最初的
+   * 用户输入，避免"开头被压缩掉后再也回不来"。保留区里的用户输入不进这里。
+   */
+  compactUserInputHistory?: UserInputHistoryEntry[]
   /**
    * 消息来源（仅系统自动消息需要显式标记，用户消息留空即视为 `user`）。
    *

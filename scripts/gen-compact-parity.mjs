@@ -26,6 +26,10 @@ const {
   formatMessagesForCompact,
   getUserInputHistory,
   formatUserInputHistory,
+  toUserInputEntries,
+  formatUserInputEntries,
+  readCompactUserInputHistory,
+  selectUserInputHistory,
   generateCompactSummaryPrompt,
   generateCompactUserMessage,
 } = require(join(coreDir, 'compact', 'prompt.js'));
@@ -236,6 +240,113 @@ const userHistory = historyCases.map(({ name, messages }) => ({
   messages,
   history: getUserInputHistory(messages),
   result: formatUserInputHistory(getUserInputHistory(messages)),
+}));
+
+// ---------------- 用户输入历史条目（uuid + 纯文本） ----------------
+
+const userInputEntries = historyCases.map(({ name, messages }) => ({
+  name,
+  messages,
+  result: toUserInputEntries(getUserInputHistory(messages)),
+}));
+
+const entryFormatCases = [
+  {
+    name: '两条',
+    entries: [
+      { uuid: 'e0', content: '第一条' },
+      { uuid: 'e1', content: '第二条' },
+    ],
+  },
+  {
+    name: '空内容跳过并重新编号',
+    entries: [
+      { uuid: 'e0', content: '   ' },
+      { uuid: 'e1', content: 'x' },
+    ],
+  },
+  { name: '空数组', entries: [] },
+];
+
+const userInputEntryFormatting = entryFormatCases.map(({ name, entries }) => ({
+  name,
+  entries,
+  result: formatUserInputEntries(entries),
+}));
+
+// ---------------- 全局用户输入历史选择（多次压缩） ----------------
+
+const entry = (uuid, content = `msg-${uuid}`) => ({ uuid, content });
+const entries = (prefix, count) =>
+  Array.from({ length: count }, (_, i) => entry(`${prefix}${i}`));
+
+const selectionCases = [
+  { name: '首次压缩（无持久化历史）超限', previous: [], regionInputs: entries('r', 13) },
+  { name: '合计恰好上限', previous: entries('u', 4), regionInputs: entries('r', 8) },
+  { name: '多次压缩：头部固定为持久化历史', previous: entries('u', 4), regionInputs: entries('r', 20) },
+  { name: '多次压缩：6 条历史 + 1 条新增', previous: entries('u', 6), regionInputs: entries('r', 1) },
+  { name: '重复 uuid 去重且保序', previous: [entry('u0'), entry('u1')], regionInputs: [entry('u1'), entry('u2')] },
+  { name: '空输入', previous: [], regionInputs: [] },
+];
+
+const userInputHistorySelection = selectionCases.map(({ name, previous, regionInputs }) => ({
+  name,
+  previous,
+  regionInputs,
+  result: selectUserInputHistory(previous, regionInputs),
+}));
+
+// ---------------- 读取摘要持久化的用户输入历史 ----------------
+
+const summaryHistoryCases = [
+  { name: '没有摘要消息', messages: conversation },
+  {
+    name: '摘要消息带历史',
+    messages: [
+      { type: 'user', message: { role: 'user', content: '普通' }, uuid: 'p-1', timestamp: 1 },
+      {
+        type: 'user',
+        message: { role: 'user', content: '摘要' },
+        uuid: 's-1',
+        timestamp: 2,
+        isCompactSummary: true,
+        compactUserInputHistory: [entry('h0'), entry('h1')],
+      },
+    ],
+  },
+  {
+    name: '取最后一条摘要消息',
+    messages: [
+      {
+        type: 'user',
+        message: { role: 'user', content: '摘要1' },
+        uuid: 's-1',
+        timestamp: 1,
+        isCompactSummary: true,
+        compactUserInputHistory: [entry('old')],
+      },
+      {
+        type: 'user',
+        message: { role: 'user', content: '摘要2' },
+        uuid: 's-2',
+        timestamp: 2,
+        isCompactSummary: true,
+        compactUserInputHistory: [entry('new')],
+      },
+    ],
+  },
+  {
+    name: '摘要消息没有该字段',
+    messages: [
+      { type: 'user', message: { role: 'user', content: '摘要' }, uuid: 's-3', timestamp: 1, isCompactSummary: true },
+    ],
+  },
+];
+
+const compactUserInputHistory = summaryHistoryCases.map(({ name, messages }) => ({
+  name,
+  messages,
+  result: readCompactUserInputHistory(messages),
 }));
 
 // ---------------- 摘要 prompt ----------------
@@ -587,10 +698,15 @@ const replay = replayMessages.map(({ name, messages }) => ({
 const output = {
   note:
     '对话压缩纯函数对照表（Embedded `compact/*` ↔ Standalone `core-rs/src/compact.rs`）。' +
-    '只覆盖提示词拼装 / 用户输入历史 / 阈值 / 可压缩判定 / 压缩后消息组装 / ' +
+    '只覆盖提示词拼装 / 用户输入历史（条目提取 / 格式化 / 跨多次压缩的全局选择 / ' +
+    '读取摘要持久化历史）/ 阈值 / 可压缩判定 / 压缩后消息组装 / ' +
     '历史消息 → UI 消息的转换；真正跑 LLM 的压缩流程由 Rust 侧假 LLM 单测覆盖。',
   formatted,
   userHistory,
+  userInputEntries,
+  userInputEntryFormatting,
+  userInputHistorySelection,
+  compactUserInputHistory,
   summaryPrompts,
   compactUserMessages,
   thresholds,

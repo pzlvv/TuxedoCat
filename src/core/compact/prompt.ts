@@ -2,7 +2,7 @@
  * Compact prompt templates
  */
 
-import type { Message, UserMessage } from '../types.js';
+import type { Message, UserInputHistoryEntry, UserMessage } from '../types.js';
 import { isAutoMessage } from '../utils/messageOrigin.js';
 
 /**
@@ -168,37 +168,85 @@ export const USER_INPUT_HISTORY_HEAD = 4;
 export const USER_INPUT_HISTORY_TAIL = 8;
 
 /**
- * 限制「用户输入历史」的条数：超过上限时只保留最早 HEAD 条与最后 TAIL 条。
+ * 把用户输入消息提取成历史条目（纯文本 + 来源 uuid）。
  *
- * 压缩时若把归档区的全部用户输入都塞进摘要消息，摘要会随对话增长无限膨胀，
- * 反而更快再次触发压缩。这里只保留首尾两端：最早几条保留任务初始意图，
- * 最后几条保留最近上下文，中间省略。
+ * 只保留 `extractUserContent` 得到的文本块，跳过图片 / 工具结果等系统内容，
+ * 避免把大块内容带进摘要；空内容条目直接丢弃。
  */
-export function selectUserInputHistory(
-  messages: UserMessage[],
-  max: number = USER_INPUT_HISTORY_MAX,
-  head: number = USER_INPUT_HISTORY_HEAD,
-  tail: number = USER_INPUT_HISTORY_TAIL,
-): UserMessage[] {
-  if (messages.length <= max) return messages;
-  return [...messages.slice(0, head), ...messages.slice(-tail)];
+export function toUserInputEntries(messages: readonly UserMessage[]): UserInputHistoryEntry[] {
+  const entries: UserInputHistoryEntry[] = [];
+  for (const msg of messages) {
+    const content = extractUserContent(msg).trim();
+    if (!content) continue;
+    entries.push({ uuid: msg.uuid, content });
+  }
+  return entries;
 }
 
 /**
- * Format user input history as a numbered list.
+ * 读取上一次压缩摘要持久化的用户输入历史（没有则返回空数组）。
+ *
+ * 取消息数组里最后一条 `isCompactSummary` 消息上的 `compactUserInputHistory`：
+ * 压缩总是整体替换消息，所以同一时刻至多一条摘要消息。
  */
-export function formatUserInputHistory(messages: UserMessage[]): string {
+export function readCompactUserInputHistory(messages: readonly Message[]): UserInputHistoryEntry[] {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg.type !== 'user' || msg.isCompactSummary !== true) continue;
+    const history = (msg as UserMessage).compactUserInputHistory;
+    if (Array.isArray(history)) return history;
+  }
+  return [];
+}
+
+/**
+ * 组装摘要里的「用户输入历史」：把上次摘要持久化的历史与本次归档区里的真实用户输入
+ * 按时间顺序合并去重，再取最早 HEAD 条 + 最后 TAIL 条（不超过 MAX 条时全留）。
+ *
+ * - `previous`：上次摘要持久化的历史（可能为空；已压缩掉的用户输入只剩这一份）。
+ * - `regionInputs`：本次被摘要掉的归档区里的真实用户输入（保留区不参与）。
+ *
+ * 两次压缩之间没有重叠：`previous` 里的条目在上次压缩时已从消息里移除，不会出现在
+ * 本次的 `regionInputs`；去重只是防御性兜底，防止旧数据或异常状态产生重复条目。
+ */
+export function selectUserInputHistory(
+  previous: readonly UserInputHistoryEntry[],
+  regionInputs: readonly UserInputHistoryEntry[],
+  max: number = USER_INPUT_HISTORY_MAX,
+  head: number = USER_INPUT_HISTORY_HEAD,
+  tail: number = USER_INPUT_HISTORY_TAIL,
+): UserInputHistoryEntry[] {
+  const seen = new Set<string>();
+  const merged: UserInputHistoryEntry[] = [];
+  for (const entry of [...previous, ...regionInputs]) {
+    if (seen.has(entry.uuid)) continue;
+    seen.add(entry.uuid);
+    merged.push(entry);
+  }
+  if (merged.length <= max) return merged;
+  return [...merged.slice(0, head), ...merged.slice(-tail)];
+}
+
+/**
+ * 把用户输入历史条目格式化成编号列表。
+ */
+export function formatUserInputEntries(entries: readonly UserInputHistoryEntry[]): string {
   const lines: string[] = [];
   let index = 0;
-
-  for (const msg of messages) {
-    const content = extractUserContent(msg).trim();
+  for (const entry of entries) {
+    const content = entry.content.trim();
     if (!content) continue;
     index += 1;
     lines.push(`${index}. ${content}`);
   }
-
   return lines.join('\n\n');
+}
+
+/**
+ * 把用户输入消息格式化成编号列表（`formatUserInputEntries` 的便捷封装）。
+ */
+export function formatUserInputHistory(messages: readonly UserMessage[]): string {
+  return formatUserInputEntries(toUserInputEntries(messages));
 }
 
 /**

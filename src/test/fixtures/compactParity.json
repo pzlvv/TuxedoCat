@@ -1,5 +1,5 @@
 {
-  "note": "对话压缩纯函数对照表（Embedded `compact/*` ↔ Standalone `core-rs/src/compact.rs`）。只覆盖提示词拼装 / 用户输入历史 / 阈值 / 可压缩判定 / 压缩后消息组装 / 历史消息 → UI 消息的转换；真正跑 LLM 的压缩流程由 Rust 侧假 LLM 单测覆盖。",
+  "note": "对话压缩纯函数对照表（Embedded `compact/*` ↔ Standalone `core-rs/src/compact.rs`）。只覆盖提示词拼装 / 用户输入历史（条目提取 / 格式化 / 跨多次压缩的全局选择 / 读取摘要持久化历史）/ 阈值 / 可压缩判定 / 压缩后消息组装 / 历史消息 → UI 消息的转换；真正跑 LLM 的压缩流程由 Rust 侧假 LLM 单测覆盖。",
   "formatted": [
     {
       "name": "完整会话",
@@ -590,6 +590,1067 @@
         }
       ],
       "result": "1. \n\n2. hello"
+    }
+  ],
+  "userInputEntries": [
+    {
+      "name": "完整会话",
+      "messages": [
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "帮我看一下这个文件"
+          },
+          "uuid": "u-1",
+          "timestamp": 1
+        },
+        {
+          "type": "assistant",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "thinking",
+                "thinking": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              },
+              {
+                "type": "text",
+                "text": "好的，我先读一下"
+              },
+              {
+                "type": "tool_use",
+                "id": "call_1",
+                "name": "Read",
+                "input": {
+                  "file_path": "/tmp/a.ts"
+                }
+              }
+            ]
+          },
+          "uuid": "a-1",
+          "timestamp": 2
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "call_1",
+                "content": "line one\nline two",
+                "exit_code": 0
+              }
+            ]
+          },
+          "uuid": "r-1",
+          "timestamp": 3
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "继续"
+              },
+              {
+                "type": "image",
+                "source": {
+                  "type": "base64",
+                  "media_type": "image/png",
+                  "data": "AAA"
+                }
+              }
+            ]
+          },
+          "uuid": "u-2",
+          "timestamp": 4
+        },
+        {
+          "type": "system",
+          "content": "system note",
+          "uuid": "s-1",
+          "timestamp": 5
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<reminder>please reply</reminder>"
+          },
+          "uuid": "u-3",
+          "timestamp": 6
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "reminder 字段消息"
+          },
+          "uuid": "u-4",
+          "timestamp": 7,
+          "reminder": "x"
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "silent 消息"
+          },
+          "uuid": "u-5",
+          "timestamp": 8,
+          "silent": true
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "子代理回复"
+          },
+          "uuid": "u-6",
+          "timestamp": 9,
+          "origin": "agent"
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "旧字段子代理回复"
+          },
+          "uuid": "u-7",
+          "timestamp": 10,
+          "fromSubAgent": true
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "后台任务完成"
+          },
+          "uuid": "u-8",
+          "timestamp": 11,
+          "origin": "bash"
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "技能注入"
+          },
+          "uuid": "u-9",
+          "timestamp": 12,
+          "isMeta": true
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "压缩摘要"
+          },
+          "uuid": "u-10",
+          "timestamp": 13,
+          "isCompactSummary": true
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "带块的用户消息"
+              }
+            ]
+          },
+          "uuid": "u-11",
+          "timestamp": 14
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": ""
+          },
+          "uuid": "u-12",
+          "timestamp": 15
+        }
+      ],
+      "result": [
+        {
+          "uuid": "u-1",
+          "content": "帮我看一下这个文件"
+        },
+        {
+          "uuid": "u-2",
+          "content": "继续"
+        },
+        {
+          "uuid": "u-11",
+          "content": "带块的用户消息"
+        }
+      ]
+    },
+    {
+      "name": "空数组",
+      "messages": [],
+      "result": []
+    },
+    {
+      "name": "JS 空白口径（U+FEFF / U+0085）",
+      "messages": [
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "﻿"
+          },
+          "uuid": "w-1",
+          "timestamp": 1
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": ""
+          },
+          "uuid": "w-2",
+          "timestamp": 2
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "  ﻿hello  "
+          },
+          "uuid": "w-3",
+          "timestamp": 3
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "﻿<reminder>x</reminder>"
+          },
+          "uuid": "w-4",
+          "timestamp": 4
+        }
+      ],
+      "result": [
+        {
+          "uuid": "w-2",
+          "content": ""
+        },
+        {
+          "uuid": "w-3",
+          "content": "hello"
+        }
+      ]
+    }
+  ],
+  "userInputEntryFormatting": [
+    {
+      "name": "两条",
+      "entries": [
+        {
+          "uuid": "e0",
+          "content": "第一条"
+        },
+        {
+          "uuid": "e1",
+          "content": "第二条"
+        }
+      ],
+      "result": "1. 第一条\n\n2. 第二条"
+    },
+    {
+      "name": "空内容跳过并重新编号",
+      "entries": [
+        {
+          "uuid": "e0",
+          "content": "   "
+        },
+        {
+          "uuid": "e1",
+          "content": "x"
+        }
+      ],
+      "result": "1. x"
+    },
+    {
+      "name": "空数组",
+      "entries": [],
+      "result": ""
+    }
+  ],
+  "userInputHistorySelection": [
+    {
+      "name": "首次压缩（无持久化历史）超限",
+      "previous": [],
+      "regionInputs": [
+        {
+          "uuid": "r0",
+          "content": "msg-r0"
+        },
+        {
+          "uuid": "r1",
+          "content": "msg-r1"
+        },
+        {
+          "uuid": "r2",
+          "content": "msg-r2"
+        },
+        {
+          "uuid": "r3",
+          "content": "msg-r3"
+        },
+        {
+          "uuid": "r4",
+          "content": "msg-r4"
+        },
+        {
+          "uuid": "r5",
+          "content": "msg-r5"
+        },
+        {
+          "uuid": "r6",
+          "content": "msg-r6"
+        },
+        {
+          "uuid": "r7",
+          "content": "msg-r7"
+        },
+        {
+          "uuid": "r8",
+          "content": "msg-r8"
+        },
+        {
+          "uuid": "r9",
+          "content": "msg-r9"
+        },
+        {
+          "uuid": "r10",
+          "content": "msg-r10"
+        },
+        {
+          "uuid": "r11",
+          "content": "msg-r11"
+        },
+        {
+          "uuid": "r12",
+          "content": "msg-r12"
+        }
+      ],
+      "result": [
+        {
+          "uuid": "r0",
+          "content": "msg-r0"
+        },
+        {
+          "uuid": "r1",
+          "content": "msg-r1"
+        },
+        {
+          "uuid": "r2",
+          "content": "msg-r2"
+        },
+        {
+          "uuid": "r3",
+          "content": "msg-r3"
+        },
+        {
+          "uuid": "r5",
+          "content": "msg-r5"
+        },
+        {
+          "uuid": "r6",
+          "content": "msg-r6"
+        },
+        {
+          "uuid": "r7",
+          "content": "msg-r7"
+        },
+        {
+          "uuid": "r8",
+          "content": "msg-r8"
+        },
+        {
+          "uuid": "r9",
+          "content": "msg-r9"
+        },
+        {
+          "uuid": "r10",
+          "content": "msg-r10"
+        },
+        {
+          "uuid": "r11",
+          "content": "msg-r11"
+        },
+        {
+          "uuid": "r12",
+          "content": "msg-r12"
+        }
+      ]
+    },
+    {
+      "name": "合计恰好上限",
+      "previous": [
+        {
+          "uuid": "u0",
+          "content": "msg-u0"
+        },
+        {
+          "uuid": "u1",
+          "content": "msg-u1"
+        },
+        {
+          "uuid": "u2",
+          "content": "msg-u2"
+        },
+        {
+          "uuid": "u3",
+          "content": "msg-u3"
+        }
+      ],
+      "regionInputs": [
+        {
+          "uuid": "r0",
+          "content": "msg-r0"
+        },
+        {
+          "uuid": "r1",
+          "content": "msg-r1"
+        },
+        {
+          "uuid": "r2",
+          "content": "msg-r2"
+        },
+        {
+          "uuid": "r3",
+          "content": "msg-r3"
+        },
+        {
+          "uuid": "r4",
+          "content": "msg-r4"
+        },
+        {
+          "uuid": "r5",
+          "content": "msg-r5"
+        },
+        {
+          "uuid": "r6",
+          "content": "msg-r6"
+        },
+        {
+          "uuid": "r7",
+          "content": "msg-r7"
+        }
+      ],
+      "result": [
+        {
+          "uuid": "u0",
+          "content": "msg-u0"
+        },
+        {
+          "uuid": "u1",
+          "content": "msg-u1"
+        },
+        {
+          "uuid": "u2",
+          "content": "msg-u2"
+        },
+        {
+          "uuid": "u3",
+          "content": "msg-u3"
+        },
+        {
+          "uuid": "r0",
+          "content": "msg-r0"
+        },
+        {
+          "uuid": "r1",
+          "content": "msg-r1"
+        },
+        {
+          "uuid": "r2",
+          "content": "msg-r2"
+        },
+        {
+          "uuid": "r3",
+          "content": "msg-r3"
+        },
+        {
+          "uuid": "r4",
+          "content": "msg-r4"
+        },
+        {
+          "uuid": "r5",
+          "content": "msg-r5"
+        },
+        {
+          "uuid": "r6",
+          "content": "msg-r6"
+        },
+        {
+          "uuid": "r7",
+          "content": "msg-r7"
+        }
+      ]
+    },
+    {
+      "name": "多次压缩：头部固定为持久化历史",
+      "previous": [
+        {
+          "uuid": "u0",
+          "content": "msg-u0"
+        },
+        {
+          "uuid": "u1",
+          "content": "msg-u1"
+        },
+        {
+          "uuid": "u2",
+          "content": "msg-u2"
+        },
+        {
+          "uuid": "u3",
+          "content": "msg-u3"
+        }
+      ],
+      "regionInputs": [
+        {
+          "uuid": "r0",
+          "content": "msg-r0"
+        },
+        {
+          "uuid": "r1",
+          "content": "msg-r1"
+        },
+        {
+          "uuid": "r2",
+          "content": "msg-r2"
+        },
+        {
+          "uuid": "r3",
+          "content": "msg-r3"
+        },
+        {
+          "uuid": "r4",
+          "content": "msg-r4"
+        },
+        {
+          "uuid": "r5",
+          "content": "msg-r5"
+        },
+        {
+          "uuid": "r6",
+          "content": "msg-r6"
+        },
+        {
+          "uuid": "r7",
+          "content": "msg-r7"
+        },
+        {
+          "uuid": "r8",
+          "content": "msg-r8"
+        },
+        {
+          "uuid": "r9",
+          "content": "msg-r9"
+        },
+        {
+          "uuid": "r10",
+          "content": "msg-r10"
+        },
+        {
+          "uuid": "r11",
+          "content": "msg-r11"
+        },
+        {
+          "uuid": "r12",
+          "content": "msg-r12"
+        },
+        {
+          "uuid": "r13",
+          "content": "msg-r13"
+        },
+        {
+          "uuid": "r14",
+          "content": "msg-r14"
+        },
+        {
+          "uuid": "r15",
+          "content": "msg-r15"
+        },
+        {
+          "uuid": "r16",
+          "content": "msg-r16"
+        },
+        {
+          "uuid": "r17",
+          "content": "msg-r17"
+        },
+        {
+          "uuid": "r18",
+          "content": "msg-r18"
+        },
+        {
+          "uuid": "r19",
+          "content": "msg-r19"
+        }
+      ],
+      "result": [
+        {
+          "uuid": "u0",
+          "content": "msg-u0"
+        },
+        {
+          "uuid": "u1",
+          "content": "msg-u1"
+        },
+        {
+          "uuid": "u2",
+          "content": "msg-u2"
+        },
+        {
+          "uuid": "u3",
+          "content": "msg-u3"
+        },
+        {
+          "uuid": "r12",
+          "content": "msg-r12"
+        },
+        {
+          "uuid": "r13",
+          "content": "msg-r13"
+        },
+        {
+          "uuid": "r14",
+          "content": "msg-r14"
+        },
+        {
+          "uuid": "r15",
+          "content": "msg-r15"
+        },
+        {
+          "uuid": "r16",
+          "content": "msg-r16"
+        },
+        {
+          "uuid": "r17",
+          "content": "msg-r17"
+        },
+        {
+          "uuid": "r18",
+          "content": "msg-r18"
+        },
+        {
+          "uuid": "r19",
+          "content": "msg-r19"
+        }
+      ]
+    },
+    {
+      "name": "多次压缩：6 条历史 + 1 条新增",
+      "previous": [
+        {
+          "uuid": "u0",
+          "content": "msg-u0"
+        },
+        {
+          "uuid": "u1",
+          "content": "msg-u1"
+        },
+        {
+          "uuid": "u2",
+          "content": "msg-u2"
+        },
+        {
+          "uuid": "u3",
+          "content": "msg-u3"
+        },
+        {
+          "uuid": "u4",
+          "content": "msg-u4"
+        },
+        {
+          "uuid": "u5",
+          "content": "msg-u5"
+        }
+      ],
+      "regionInputs": [
+        {
+          "uuid": "r0",
+          "content": "msg-r0"
+        }
+      ],
+      "result": [
+        {
+          "uuid": "u0",
+          "content": "msg-u0"
+        },
+        {
+          "uuid": "u1",
+          "content": "msg-u1"
+        },
+        {
+          "uuid": "u2",
+          "content": "msg-u2"
+        },
+        {
+          "uuid": "u3",
+          "content": "msg-u3"
+        },
+        {
+          "uuid": "u4",
+          "content": "msg-u4"
+        },
+        {
+          "uuid": "u5",
+          "content": "msg-u5"
+        },
+        {
+          "uuid": "r0",
+          "content": "msg-r0"
+        }
+      ]
+    },
+    {
+      "name": "重复 uuid 去重且保序",
+      "previous": [
+        {
+          "uuid": "u0",
+          "content": "msg-u0"
+        },
+        {
+          "uuid": "u1",
+          "content": "msg-u1"
+        }
+      ],
+      "regionInputs": [
+        {
+          "uuid": "u1",
+          "content": "msg-u1"
+        },
+        {
+          "uuid": "u2",
+          "content": "msg-u2"
+        }
+      ],
+      "result": [
+        {
+          "uuid": "u0",
+          "content": "msg-u0"
+        },
+        {
+          "uuid": "u1",
+          "content": "msg-u1"
+        },
+        {
+          "uuid": "u2",
+          "content": "msg-u2"
+        }
+      ]
+    },
+    {
+      "name": "空输入",
+      "previous": [],
+      "regionInputs": [],
+      "result": []
+    }
+  ],
+  "compactUserInputHistory": [
+    {
+      "name": "没有摘要消息",
+      "messages": [
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "帮我看一下这个文件"
+          },
+          "uuid": "u-1",
+          "timestamp": 1
+        },
+        {
+          "type": "assistant",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "thinking",
+                "thinking": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              },
+              {
+                "type": "text",
+                "text": "好的，我先读一下"
+              },
+              {
+                "type": "tool_use",
+                "id": "call_1",
+                "name": "Read",
+                "input": {
+                  "file_path": "/tmp/a.ts"
+                }
+              }
+            ]
+          },
+          "uuid": "a-1",
+          "timestamp": 2
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "call_1",
+                "content": "line one\nline two",
+                "exit_code": 0
+              }
+            ]
+          },
+          "uuid": "r-1",
+          "timestamp": 3
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "继续"
+              },
+              {
+                "type": "image",
+                "source": {
+                  "type": "base64",
+                  "media_type": "image/png",
+                  "data": "AAA"
+                }
+              }
+            ]
+          },
+          "uuid": "u-2",
+          "timestamp": 4
+        },
+        {
+          "type": "system",
+          "content": "system note",
+          "uuid": "s-1",
+          "timestamp": 5
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<reminder>please reply</reminder>"
+          },
+          "uuid": "u-3",
+          "timestamp": 6
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "reminder 字段消息"
+          },
+          "uuid": "u-4",
+          "timestamp": 7,
+          "reminder": "x"
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "silent 消息"
+          },
+          "uuid": "u-5",
+          "timestamp": 8,
+          "silent": true
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "子代理回复"
+          },
+          "uuid": "u-6",
+          "timestamp": 9,
+          "origin": "agent"
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "旧字段子代理回复"
+          },
+          "uuid": "u-7",
+          "timestamp": 10,
+          "fromSubAgent": true
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "后台任务完成"
+          },
+          "uuid": "u-8",
+          "timestamp": 11,
+          "origin": "bash"
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "技能注入"
+          },
+          "uuid": "u-9",
+          "timestamp": 12,
+          "isMeta": true
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "压缩摘要"
+          },
+          "uuid": "u-10",
+          "timestamp": 13,
+          "isCompactSummary": true
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "带块的用户消息"
+              }
+            ]
+          },
+          "uuid": "u-11",
+          "timestamp": 14
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": ""
+          },
+          "uuid": "u-12",
+          "timestamp": 15
+        }
+      ],
+      "result": []
+    },
+    {
+      "name": "摘要消息带历史",
+      "messages": [
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "普通"
+          },
+          "uuid": "p-1",
+          "timestamp": 1
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "摘要"
+          },
+          "uuid": "s-1",
+          "timestamp": 2,
+          "isCompactSummary": true,
+          "compactUserInputHistory": [
+            {
+              "uuid": "h0",
+              "content": "msg-h0"
+            },
+            {
+              "uuid": "h1",
+              "content": "msg-h1"
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "uuid": "h0",
+          "content": "msg-h0"
+        },
+        {
+          "uuid": "h1",
+          "content": "msg-h1"
+        }
+      ]
+    },
+    {
+      "name": "取最后一条摘要消息",
+      "messages": [
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "摘要1"
+          },
+          "uuid": "s-1",
+          "timestamp": 1,
+          "isCompactSummary": true,
+          "compactUserInputHistory": [
+            {
+              "uuid": "old",
+              "content": "msg-old"
+            }
+          ]
+        },
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "摘要2"
+          },
+          "uuid": "s-2",
+          "timestamp": 2,
+          "isCompactSummary": true,
+          "compactUserInputHistory": [
+            {
+              "uuid": "new",
+              "content": "msg-new"
+            }
+          ]
+        }
+      ],
+      "result": [
+        {
+          "uuid": "new",
+          "content": "msg-new"
+        }
+      ]
+    },
+    {
+      "name": "摘要消息没有该字段",
+      "messages": [
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "摘要"
+          },
+          "uuid": "s-3",
+          "timestamp": 1,
+          "isCompactSummary": true
+        }
+      ],
+      "result": []
     }
   ],
   "summaryPrompts": [

@@ -51,6 +51,71 @@ mod parity_tests {
     }
 
     #[test]
+    fn user_input_entries_parity() {
+        let fixture = fixture();
+        for case in fixture["userInputEntries"].as_array().unwrap() {
+            let messages = case["messages"].as_array().unwrap();
+            let entries = to_user_input_entries(&get_user_input_history(messages));
+            assert_eq!(
+                Value::Array(entries),
+                case["result"],
+                "用户输入条目不一致: {}",
+                case["name"].as_str().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn user_input_entry_formatting_parity() {
+        let fixture = fixture();
+        for case in fixture["userInputEntryFormatting"].as_array().unwrap() {
+            let entries = case["entries"].as_array().unwrap();
+            assert_eq!(
+                format_user_input_entries(entries),
+                case["result"].as_str().unwrap(),
+                "用户输入条目格式化不一致: {}",
+                case["name"].as_str().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn user_input_history_selection_parity() {
+        let fixture = fixture();
+        for case in fixture["userInputHistorySelection"].as_array().unwrap() {
+            let previous = case["previous"].as_array().unwrap();
+            let region_inputs = case["regionInputs"].as_array().unwrap();
+            let selected = select_user_input_history(
+                previous,
+                region_inputs,
+                USER_INPUT_HISTORY_MAX,
+                USER_INPUT_HISTORY_HEAD,
+                USER_INPUT_HISTORY_TAIL,
+            );
+            assert_eq!(
+                Value::Array(selected),
+                case["result"],
+                "用户输入历史选择不一致: {}",
+                case["name"].as_str().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn compact_user_input_history_parity() {
+        let fixture = fixture();
+        for case in fixture["compactUserInputHistory"].as_array().unwrap() {
+            let messages = case["messages"].as_array().unwrap();
+            assert_eq!(
+                Value::Array(read_compact_user_input_history(messages)),
+                case["result"],
+                "读取摘要持久化历史不一致: {}",
+                case["name"].as_str().unwrap()
+            );
+        }
+    }
+
+    #[test]
     fn summary_prompt_parity() {
         let fixture = fixture();
         for case in fixture["summaryPrompts"].as_array().unwrap() {
