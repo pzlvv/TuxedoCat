@@ -971,6 +971,63 @@ fn run_consumer_stops_when_cancelled() {
     assert_eq!(harness.sink.events_of("queryEnd").len(), 1);
 }
 
+// ==================== 排队消息撤回（`queuedMessageDiscarded`）====================
+
+/// 对齐 Embedded `QueryEngine.discardPendingUserMessage`（webview 排队项的
+/// 「编辑 / 删除」，`docs/user-message-pipeline.md` 第 5.2 节）。
+#[test]
+fn queued_message_is_discarded_by_uuid() {
+    let _sandbox = Sandbox::new("engine-discard-queued");
+    let harness = EngineHarness::allow_all();
+    let state = harness.core.session("s1");
+    {
+        let mut state = state.lock().unwrap();
+        state.pending_user_message = Some(json!({
+            "type": "user",
+            "message": { "role": "user", "content": "排队消息" },
+            "uuid": "u1",
+            "timestamp": 1,
+        }));
+        state.pending_skill_injection = Some(SkillInjection {
+            skill_name: "spin".to_string(),
+            skill_args: String::new(),
+        });
+        state.running = true;
+    }
+
+    harness.core.on_queued_message_discarded("s1", "u1");
+
+    let state = state.lock().unwrap();
+    assert!(state.pending_user_message.is_none(), "uuid 配对时丢弃排队消息");
+    // Skill 待注入与排队消息同生共死（对齐 Embedded `clearPendingUserMessage`）
+    assert!(state.pending_skill_injection.is_none(), "Skill 待注入一并清除");
+    // 不置 cancel：撤回排队项不打断正在运行的查询（区别于 abort 第一阶段）
+    assert!(!state.cancel.load(Ordering::Relaxed), "撤回不置 cancel");
+}
+
+#[test]
+fn queued_message_discard_is_a_noop_on_uuid_mismatch() {
+    let _sandbox = Sandbox::new("engine-discard-queued-mismatch");
+    let harness = EngineHarness::allow_all();
+    let state = harness.core.session("s1");
+    {
+        let mut state = state.lock().unwrap();
+        state.pending_user_message = Some(json!({
+            "type": "user",
+            "message": { "role": "user", "content": "排队消息" },
+            "uuid": "u1",
+            "timestamp": 1,
+        }));
+    }
+
+    // uuid 不匹配（已被消费 / 被更新的排队消息替换）与未知会话：都不动
+    harness.core.on_queued_message_discarded("s1", "u-other");
+    harness.core.on_queued_message_discarded("s-missing", "u1");
+
+    let state = state.lock().unwrap();
+    assert!(state.pending_user_message.is_some(), "uuid 不匹配时不动");
+}
+
 #[test]
 fn run_consumer_reports_turn_failures_as_system_messages() {
     let _sandbox = Sandbox::new("engine-consumer-error");
@@ -1110,12 +1167,12 @@ fn first_user_message_without_text_falls_back_to_new_conversation() {
     );
 }
 
-/// 已建档但还没有消息（messageCount === 0）时，首条用户消息覆盖标题
-/// （对齐 `updateMetadataForNewMessage`：`prevMessageCount === 0` 时更新标题，
-/// 即便此前已被改名）。
+/// 已建档但还没有消息（messageCount === 0）时，首条用户消息**不**覆盖已有标题
+/// （对齐 `updateMetadataForNewMessage`：meta.json 已有标题——用户重命名 /
+/// 智能命名 / spin 改名先落盘——则保留，首条消息只在尚无标题时生成推导标题）。
 #[test]
-fn first_user_message_overwrites_preexisting_title() {
-    let sandbox = Sandbox::new("engine-first-message-overwrites-title");
+fn first_user_message_preserves_preexisting_title() {
+    let sandbox = Sandbox::new("engine-first-message-preserves-title");
     let llm = FakeLlm::start(|_index, _| openai_text_sse(&["好的"]));
     prepare(&sandbox, &llm.base_url, "auto");
     let workspace = sandbox.workspace.to_string_lossy().to_string();
@@ -1132,12 +1189,12 @@ fn first_user_message_overwrites_preexisting_title() {
 
     assert_eq!(
         history::load_metadata("s1", &workspace).unwrap()["title"],
-        "帮我看看这个文件"
+        "旧标题"
     );
 }
 
 /// 已经有消息的会话（messageCount > 0）改名后，后续消息不得覆盖标题
-/// （对齐 `updateMetadataForNewMessage`：只有 `prevMessageCount === 0` 才更新标题）。
+/// （对齐 `updateMetadataForNewMessage`：已有消息或有显式标题时都不更新）。
 #[test]
 fn rename_after_messages_is_preserved_on_later_turns() {
     let sandbox = Sandbox::new("engine-rename-preserved");
@@ -3089,9 +3146,10 @@ fn permission_refusal_with_a_reason_continues_the_turn() {
 }
 
 #[test]
-fn rename_without_a_metadata_file_still_broadcasts_title_changed() {
-    // 对齐 Embedded `initializeCoreEvents` 的 conversationRenamed：meta.json 不存在时
-    // `updateConversationMetadataTitle` 只吞掉 ENOENT（不凭空建档），但事件照发。
+fn rename_without_a_metadata_file_creates_it_and_broadcasts_title_changed() {
+    // 对齐 Embedded `initializeCoreEvents` 的 conversationRenamed：显式改标题必须
+    // 落盘（meta.json 缺失时建档），再广播事件——UI 只消费真实数据变更后的事件，
+    // 否则重启 / 刷新列表后标题回到「未命名」。
     let sandbox = Sandbox::new("engine-rename-no-metadata");
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     config::set_active_workspace(Some(workspace.clone()));
@@ -3103,9 +3161,14 @@ fn rename_without_a_metadata_file_still_broadcasts_title_changed() {
     assert_eq!(title["sessionId"], "ghost");
     assert_eq!(title["title"], "标题");
     assert!(harness.sink.event_of("conversationListChanged").is_some());
+    let metadata = history::load_metadata("ghost", &workspace).expect("meta.json 已建档");
+    assert_eq!(metadata["title"], "标题");
+    assert_eq!(metadata["messageCount"], 0, "无消息时计数为 0");
     assert!(
-        history::load_metadata("ghost", &workspace).is_none(),
-        "不得凭空创建 meta.json"
+        history::messages_path("ghost", &workspace)
+            .map(|path| path.exists())
+            .unwrap_or(false),
+        "补空 .jsonl"
     );
 }
 

@@ -56,6 +56,7 @@ fn run_sub_agent(
         }));
         state.running = true;
         state.cancel.store(false, Ordering::Relaxed);
+        state.silent_abort = false;
     }
 
     let mut retries = 0usize;
@@ -92,6 +93,7 @@ fn run_sub_agent(
         }));
         state.running = true;
         state.cancel.store(false, Ordering::Relaxed);
+        state.silent_abort = false;
     }
 
     core.emit(json!({ "type": "queryEnd", "sessionId": sub_session_id }));
@@ -176,11 +178,30 @@ pub struct AgentMessage {
     pub from_session_id: String,
 }
 
+/// 会话工作模式（对齐 Embedded `QueryEngine.workMode`）。
+///
+/// `spin`：主会话不参与 LLM 消费循环，只由 SpinLoop 循环起子代理
+/// （对齐 Embedded `beginConsumer` 对 spin 的忽略）。由 `spin_host.rs` 在
+/// `/spin` 执行期间设置，循环结束恢复 `Normal`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkMode {
+    Normal,
+    Spin,
+}
+
 /// 单个会话的运行时状态
 pub struct SessionState {
     pub cancel: Arc<AtomicBool>,
     pub running: bool,
     pub waiting: bool,
+    /// 静默中止标记（对齐 Embedded `QueryEngine.silentAbortRequested`）：本次中止是
+    /// 业务主动结束（spin 子代理首次 Reply 后停止自身），查询循环收尾时**不回显**
+    /// `*User Interrupted*`（见 `emit_user_interrupted`）。新的消费循环启动时随
+    /// `cancel` 一并复位。
+    pub silent_abort: bool,
+    /// 工作模式（`QueryEngine.workMode`）：`spin` 期间子代理 Reply 不进消费队列
+    /// （见 `deliver_agent_reply` 的 spin 分支），由 SpinLoop 消费。
+    pub work_mode: WorkMode,
     /// 待消费的用户消息（`QueryEngine.pendingUserMessage`）。
     ///
     /// **单槽位**：Embedded 的 `submitMessage(type='user')` 直接
@@ -253,6 +274,8 @@ impl SessionState {
             cancel: Arc::new(AtomicBool::new(false)),
             running: false,
             waiting: false,
+            silent_abort: false,
+            work_mode: WorkMode::Normal,
             pending_user_message: None,
             messages: Vec::new(),
             persisted_count: 0,
@@ -547,6 +570,31 @@ impl Core {
         }
     }
 
+    /// `UiEvent.queuedMessageDiscarded`：webview 排队项的「编辑 / 删除」撤回排队消息
+    /// （对齐 Embedded `QueryEngine.discardPendingUserMessage`）。
+    ///
+    /// 按 uuid 配对：引擎队列里没有该 uuid 的待消费消息（已被消费、被更新的排队
+    /// 消息替换，或本来就不存在）时不动，也不置 `cancel`——撤回排队项不打断正在
+    /// 运行的查询。
+    pub fn on_queued_message_discarded(&self, session_id: &str, uuid: &str) {
+        let Some(state) = self.session_if_exists(session_id) else {
+            return;
+        };
+        let mut state = state.lock().unwrap();
+        let matches = state
+            .pending_user_message
+            .as_ref()
+            .and_then(|message| message.get("uuid").and_then(Value::as_str))
+            .map(|pending| pending == uuid)
+            .unwrap_or(false);
+        if matches {
+            state.pending_user_message = None;
+            // Skill 命令的待注入信息与排队消息同生共死（对齐 Embedded
+            // `clearPendingUserMessage`）：消息撤回后注入不再发生。
+            state.pending_skill_injection = None;
+        }
+    }
+
     /// 中止会话及其递归子代理的运行中工作（abort 第二阶段 / 会话关闭）。
     ///
     /// 对齐 Embedded `Integration.abortSessionScope`：前台查询、后台 Bash 任务、
@@ -560,6 +608,29 @@ impl Core {
         for child in crate::subagent::list_for_creator(session_id) {
             self.abort_session_scope(&child, visited);
         }
+    }
+
+    /// 静默中止一个会话（对齐 Embedded `QueryEngine.requestSilentAbort` = 置
+    /// `silentAbortRequested` + `interrupt()`）：复用 [`Self::abort_session_scope`]
+    /// 的完整中止逻辑（前台查询、后台 Bash 任务、递归子代理），但先标记
+    /// `silent_abort`，让查询循环收尾时不再向 UI 回显 `*User Interrupted*`。
+    ///
+    /// 使用场景：spin 模式下子代理首次 Reply 后立即停止自身，避免其继续消耗
+    /// token、产生多余消息；主循环仍会正常读取该 Reply 并推进后续节点。
+    /// 会话已被中止（用户 abort）时不动——回显语义交给原中止路径
+    /// （对齐 Embedded 的 `!selfEngine.isAborted()` 门槛）。
+    fn request_silent_abort(&self, session_id: &str) {
+        let Some(state) = self.session_if_exists(session_id) else {
+            return;
+        };
+        {
+            let mut state = state.lock().unwrap();
+            if state.cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            state.silent_abort = true;
+        }
+        self.abort_session_scope(session_id, &mut HashSet::new());
     }
 
     /// 中止某会话所有运行中的后台 Bash 任务，并同步 `background` 事实。
@@ -624,6 +695,7 @@ impl Core {
             } else {
                 state.running = true;
                 state.cancel.store(false, Ordering::Relaxed);
+                state.silent_abort = false;
                 true
             }
         };
@@ -741,12 +813,154 @@ impl Core {
         content: &str,
         from_session_id: &str,
     ) -> Result<(), String> {
-        if self.session_if_exists(target_session_id).is_none() {
+        let state = self.session_if_exists(target_session_id);
+        if state.is_none() {
             return Err(format!("目标会话 {target_session_id} 不存在"));
         }
-        self.enqueue_agent_message(target_session_id, content, "agent", from_session_id);
-        // 供前台 `sleep` 命令监听：等待期间收到子代理 Reply 时立刻转入后台
-        crate::subagent::emit_reply_delivered(target_session_id, from_session_id, content);
+        // spin 模式的主会话不参与 LLM 消费循环（对齐 Embedded `workMode === 'spin'`
+        // 时 `beginConsumer` 直接忽略）：Reply 只进上下文（silent）并落盘，内容经
+        // `emit_reply_delivered` 交给 SpinLoop 做验收判定。绝不能入 `agent_messages`——
+        // 否则消费循环会在 Spin 结束后把它当普通自动消息喂给主对话 LLM，
+        // 主对话就接管开始正常 agent 循环了（对齐 Embedded `buildAgentReplyMessage`
+        // 的 spin `silent` 分支 + `submitToolUse` 收尾的 `flushAgentQueue`）。
+        let spin_state = state
+            .filter(|state| state.lock().unwrap().work_mode == WorkMode::Spin);
+        match spin_state {
+            Some(state) => {
+                persist_spin_reply(self, target_session_id, &state, content, from_session_id);
+                // 供前台 `sleep` 命令监听：等待期间收到子代理 Reply 时立刻转入后台。
+                // 必须先于静默中止：监听器（SpinLoop / sleep 检测）要先拿到 Reply。
+                crate::subagent::emit_reply_delivered(
+                    target_session_id,
+                    from_session_id,
+                    content,
+                );
+                // 对齐 Embedded `ReplyTool` 的 spin 优化：子代理首次 Reply 后立即
+                // 静默中止其自身引擎——否则它会拿到 Reply 的 tool_result 后再跑一轮
+                // LLM（多余 token，还可能重复 Reply）。
+                if from_session_id != target_session_id {
+                    self.request_silent_abort(from_session_id);
+                }
+            }
+            None => {
+                self.enqueue_agent_message(
+                    target_session_id,
+                    content,
+                    "agent",
+                    from_session_id,
+                );
+                // 供前台 `sleep` 命令监听：等待期间收到子代理 Reply 时立刻转入后台
+                crate::subagent::emit_reply_delivered(
+                    target_session_id,
+                    from_session_id,
+                    content,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// 无 LLM 直连执行一次工具（对齐 Embedded `QueryEngine.submitToolUse`）。
+    ///
+    /// 构造一条 assistant tool_use 消息并执行工具，把 tool_result 落盘 + 进上下文；
+    /// 供 SpinLoop 起子代理使用（Embedded `spin/Loop.ts` 的
+    /// `submitToolUse({ name: 'Agent', input })`）。不走 LLM、不消费队列。
+    ///
+    /// 事件序列对齐 `inject_skill_tool_use`：
+    /// `toolCall`（授权前）→ `toolPermissionRequested` → `toolCall`（执行前）→ `toolResult`。
+    /// webview 收到 `toolCall` 会关掉 thinking 动画——Spin 的父对话不跑 LLM，
+    /// 动画本就不该持续亮着。
+    pub fn submit_tool_use(
+        self: &Arc<Self>,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+    ) -> Result<(), String> {
+        let state = self.session(session_id);
+        // 已请求中止时不再执行（对齐 Embedded `submitToolUse` 的 `isAborted()` 早退）
+        if state.lock().unwrap().cancel.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let project = self.project_of(session_id)?;
+
+        let tool_use_id = util::unique_id("tooluse");
+        let assistant_message = json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": tool_name,
+                    "input": input,
+                }],
+            },
+            "uuid": format!("assistant_{}", util::now_millis()),
+            "timestamp": util::now_millis(),
+        });
+        persist_message(self, session_id, &project, &state, &assistant_message)?;
+        // 每条落盘消息各发一次 `conversationListChanged`（对齐 `Conversation.appendMessage`）
+        announce_message_appended(self, session_id, &project, false);
+
+        // 授权前先发一次 `toolCall`（UI 上架 running 卡片）
+        self.emit(json!({
+            "type": "toolCall",
+            "sessionId": session_id,
+            "toolUseId": tool_use_id,
+            "toolName": tool_name,
+        }));
+        let agent_mode = state.lock().unwrap().agent_mode.clone();
+        match self.resolve_permission(session_id, &tool_use_id, tool_name, input, &agent_mode, &project)
+        {
+            PermissionOutcome::Allowed { .. } => {
+                // 执行前再发一次 `toolCall`（卡片转「执行中」）
+                self.emit(json!({
+                    "type": "toolCall",
+                    "sessionId": session_id,
+                    "toolUseId": tool_use_id,
+                    "toolName": tool_name,
+                }));
+            }
+            PermissionOutcome::Denied { message, .. } => {
+                // 拒绝分支：卡片置 error，补一条 error tool_result，不执行工具
+                self.emit(json!({
+                    "type": "toolResult",
+                    "sessionId": session_id,
+                    "toolUseId": tool_use_id,
+                    "toolName": tool_name,
+                    "output": message,
+                    "status": "error",
+                }));
+                let result_message = json!({
+                    "type": "user",
+                    "message": { "role": "user", "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": message,
+                        "exit_code": -1,
+                        "is_canceled": false,
+                    }] },
+                    "uuid": util::unique_id("tool_result"),
+                    "timestamp": util::now_millis(),
+                });
+                persist_message(self, session_id, &project, &state, &result_message)?;
+                emit_highlight_languages(self, &result_message);
+                announce_message_appended(self, session_id, &project, false);
+                return Ok(());
+            }
+        }
+
+        let outcome = execute_tool(self, session_id, &project, &state, &tool_use_id, tool_name, input);
+        let block = emit_tool_outcome(self, session_id, &project, &tool_use_id, tool_name, &outcome);
+        let result_message = json!({
+            "type": "user",
+            "message": { "role": "user", "content": [block] },
+            "uuid": util::unique_id("tool_result"),
+            "timestamp": util::now_millis(),
+        });
+        persist_message(self, session_id, &project, &state, &result_message)?;
+        emit_highlight_languages(self, &result_message);
+        announce_message_appended(self, session_id, &project, false);
         Ok(())
     }
 
@@ -794,36 +1008,61 @@ impl Core {
     /// 只写 `meta.json` 的标题，不发任何事件（对齐 Embedded
     /// `history.updateConversationMetadataTitle`）。
     ///
-    /// `meta.json` 不存在时静默吞掉 ENOENT、不凭空建档。返回 `false` 表示会话没有
-    /// 工作目录（调用方据此决定是否广播）。
+    /// `meta.json` 缺失时**建档**：显式改标题（用户重命名 / 智能命名 / spin 改名）
+    /// 必须落到磁盘，否则广播出去的 `titleChanged` 与磁盘不一致——重启 / 刷新列表后
+    /// 标题回到「未命名」。`messageCount` 从已落盘的 `.jsonl` 数出（口径同
+    /// `touch_metadata`），并补空 `.jsonl`（加载要求文件存在）。
+    /// 返回 `false` 表示会话没有工作目录（标题没写成）。
     fn write_conversation_title(&self, session_id: &str, title: &str) -> bool {
         let Ok(project) = self.project_of(session_id) else {
             return false;
         };
-        if history::load_metadata(session_id, &project).is_some() {
-            let title = title.to_string();
-            let _ = history::update_metadata(
-                session_id,
-                &project,
-                || json!({ "sessionId": session_id, "project": project }),
-                |metadata| {
-                    metadata["title"] = json!(title);
-                },
-            );
+        let count = history::count_messages(&history::load_messages(session_id, &project));
+        let title = title.to_string();
+        let title_for_fallback = title.clone();
+        let _ = history::update_metadata(
+            session_id,
+            &project,
+            || {
+                json!({
+                    "sessionId": session_id,
+                    "project": project,
+                    "title": title_for_fallback,
+                    "createdAt": util::now_millis(),
+                    "updatedAt": util::now_millis(),
+                    "messageCount": count,
+                })
+            },
+            |metadata| {
+                metadata["title"] = json!(title);
+            },
+        );
+        if let Ok(path) = history::messages_path(session_id, &project) {
+            if !path.exists() {
+                let _ = std::fs::write(&path, "");
+            }
         }
         true
     }
 
-    /// `/spin` 等「内部改标题」路径：只写 `meta.json`，**不广播事件**
-    /// （对齐 Embedded `bundled/spin.ts` 直接调 `updateConversationMetadataTitle`，
-    /// 而不是走 `conversationRenamed` 那条会广播的 UiEvent）。
-    pub fn update_conversation_title(&self, session_id: &str, title: &str) {
-        self.write_conversation_title(session_id, title);
+    /// `/spin` 等「内部改标题」路径：写 `meta.json` 并广播 `titleChanged`
+    /// （对齐 Embedded `bundled/spin.ts` 的标题更新——`titleChanged` 的事件表来源
+    /// 包含 skills/bundled/spin，webview 靠它刷新打开中对话的标题栏）。
+    /// 不涉及 `conversationRenamed`——那是 UI 发起重命名的 UiEvent，方向不同。
+    /// 列表变化与重命名同口径：标题已落盘，广播 `conversationListChanged` 让宿主
+    /// 重读磁盘分发。返回 `false` 表示会话没有工作目录（标题没写成）。
+    pub fn update_conversation_title(&self, session_id: &str, title: &str) -> bool {
+        if !self.write_conversation_title(session_id, title) {
+            return false;
+        }
+        self.emit(json!({ "type": "titleChanged", "sessionId": session_id, "title": title }));
+        self.emit(json!({ "type": "conversationListChanged" }));
+        true
     }
 
     pub fn on_conversation_renamed(&self, session_id: &str, title: &str) {
-        // meta.json 不存在时 Embedded 的 `updateConversationMetadataTitle` 只是静默
-        // 吞掉 ENOENT（不凭空创建文件），但**仍然**照常广播事件——这里对齐该行为。
+        // 对齐 Embedded 的 `updateConversationMetadataTitle`：meta.json 缺失时建档
+        // （标题先落盘），再照常广播事件——UI 只消费真实数据变更后的事件。
         if !self.write_conversation_title(session_id, title) {
             return;
         }
@@ -1009,6 +1248,7 @@ impl Core {
             } else {
                 state.running = true;
                 state.cancel.store(false, Ordering::Relaxed);
+                state.silent_abort = false;
                 true
             }
         };
@@ -1104,6 +1344,7 @@ impl Core {
             }
             state.running = true;
             state.cancel.store(false, Ordering::Relaxed);
+            state.silent_abort = false;
             true
         };
         if should_start {
@@ -2365,6 +2606,13 @@ fn emit_user_interrupted(
     project: &str,
     state: &Arc<Mutex<SessionState>>,
 ) -> Result<(), String> {
+    // 静默中止（业务主动结束，如 spin 子代理首次 Reply 后停止自身）：
+    // 不向 UI 回显中断消息、不落盘系统消息，直接结束。对齐 Embedded `Query.ts` 的
+    // 两条 `*User Interrupted*` 回显路径开头的 `silentAbort()` 检查——Rust 侧
+    // 回显收敛在本函数，一处检查覆盖全部收尾点。
+    if state.lock().unwrap().silent_abort {
+        return Ok(());
+    }
     core.emit(json!({
         "type": "message",
         "sessionId": session_id,
@@ -2588,6 +2836,48 @@ fn persist_auto_message(
         })
     };
     core.emit(json!({ "type": "message", "sessionId": session_id, "data": data }));
+}
+
+/// spin 模式下把子代理 Reply 写进主会话上下文并落盘（对齐 Embedded
+/// `buildAgentReplyMessage` 的 spin `silent` 分支 + `submitToolUse` 收尾的
+/// `flushAgentQueue`）。
+///
+/// 消息带 `silent` 标记：进上下文、写 `<sid>.jsonl`，但**不发** `message` 事件、
+/// 回放时不展示（`replay.rs` 过滤 `silent`）——对齐 Embedded spin 模式下
+/// `consumeAgentMessages(false)` 不通知 UI 的口径。落盘失败不阻塞：仍进内存上下文。
+fn persist_spin_reply(
+    core: &Arc<Core>,
+    session_id: &str,
+    state: &Arc<Mutex<SessionState>>,
+    content: &str,
+    from_session_id: &str,
+) {
+    let item = AgentMessage {
+        content: content.to_string(),
+        origin: "agent".to_string(),
+        from_session_id: from_session_id.to_string(),
+    };
+    let mut message = build_auto_message(&item);
+    if let Some(object) = message.as_object_mut() {
+        object.insert("silent".to_string(), json!(true));
+    }
+    match core.project_of(session_id) {
+        Ok(project) => match persist_message(core, session_id, &project, state, &message) {
+            Ok(_) => {
+                emit_highlight_languages(core, &message);
+                // 系统自动消息：不刷新 `updatedAt`
+                announce_message_appended(core, session_id, &project, false);
+            }
+            Err(error) => {
+                state.lock().unwrap().messages.push(message);
+                eprintln!("[core] persist spin reply failed: {error}");
+            }
+        },
+        Err(error) => {
+            state.lock().unwrap().messages.push(message);
+            eprintln!("[core] resolve project for spin reply failed: {error}");
+        }
+    }
 }
 
 /// 一批排队消息（对齐 Embedded `QueryEngine.consumeQueuedOnce` 的四种消费形态）。
@@ -4603,9 +4893,16 @@ fn update_title_if_needed(core: &Arc<Core>, session_id: &str, project: &str) {
         .as_ref()
         .map(|value| value.get("clearedAt").is_some())
         .unwrap_or(false);
-    // 只有「meta 缺失」或「未清空且此前没有消息」才用首条用户消息生成标题；
-    // 否则（已有消息的会话）保持现有标题，改名 / 首条标题不被后续消息覆盖。
-    if !meta_missing && (cleared || prev_count > 0) {
+    // 已有显式标题（用户重命名 / 智能命名 / spin 改名先落了标题）时首条消息不覆盖。
+    let has_title = metadata
+        .as_ref()
+        .and_then(|value| value.get("title"))
+        .and_then(Value::as_str)
+        .map(|value| !value.is_empty())
+        .unwrap_or(false);
+    // 只有「meta 缺失」或「未清空且此前没有消息且尚无标题」才用首条用户消息生成标题；
+    // 否则（已有消息 / 已显式命名的会话）保持现有标题，改名 / 首条标题不被后续消息覆盖。
+    if !meta_missing && (cleared || prev_count > 0 || has_title) {
         return;
     }
 

@@ -10,6 +10,7 @@ import { handleToolAddMessage, handleToolUpdateToolArgs, handleToolUpdateToolSta
 import { handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationSessionCompletionAttention, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
 import { handleConfigSetTheme, handleConfigSetModel, handleConfigSetAgentMode, handleConfigSetPromptMode, handleConfigSetThinkingMode, handleConfigSetWebSearch, handleConfigSetMcpServers, handleConfigSetModels, handleConfigSetSkills, handleConfigContextLimitUpdated, handleConfigNotice, handleConfigSettingsDefaults, handleConfigProviderModelsResult, handleConfigSetNewConversationDefaults, handleConfigLlmConfigSaved, handleConfigShowLLMConfig, handleConfigBalanceUpdate, handleConfigFocusInput, handleConfigActivatePrewarmedView } from './handlers/configHandlers';
 import type { HandlerContext } from './handlers/handlerContext';
+import { restoreQueuedMessageToInput } from './restoreQueuedMessage';
 
 // Profiling helper
 
@@ -251,44 +252,11 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
      * 把排队消息回填到输入框：与用户当前草稿用 \n 连接（草稿为空时直接使用排队内容）。
      * 目标会话为当前会话时写入实时输入框；否则写入该会话的状态快照，
      * 保证切换回去后仍能看到回填的草稿。
+     *
+     * 唯一实现在 restoreQueuedMessage.ts，排队项「编辑」撤回（useAppHandlers）共用。
      */
-    const restoreQueuedMessageToInput = (targetSessionId: string, queued: QueuedMessagePayload) => {
-      const queuedText = queued.content ?? '';
-      const queuedImages = queued.images ?? [];
-      const joinWithDraft = (draft: string) => (draft ? `${queuedText}\n${draft}` : queuedText);
-
-      const state = props.sessionStates.get(targetSessionId);
-      if (state) {
-        state.queuedMessage = null;
-      }
-
-      if (targetSessionId === props.currentSessionIdRef.current) {
-        const draft = props.inputAreaRef.current?.getValue() ?? '';
-        const draftImages = props.inputAreaRef.current?.getPastedImages?.() ?? [];
-        const nextText = joinWithDraft(draft);
-        props.inputAreaRef.current?.setValue(nextText);
-        if (queuedImages.length > 0) {
-          props.inputAreaRef.current?.setPastedImages?.([...queuedImages, ...draftImages]);
-        }
-        // 光标移到末尾，方便用户继续编辑（若期间已切换会话则跳过，避免抢焦点）
-        setTimeout(() => {
-          if (props.currentSessionIdRef.current !== targetSessionId) return;
-          const el = props.mainInputRef.current;
-          if (el) {
-            el.focus();
-            el.setSelectionRange(nextText.length, nextText.length);
-          }
-        }, 0);
-        return;
-      }
-
-      if (state) {
-        state.input = joinWithDraft(state.input ?? '');
-        if (queuedImages.length > 0) {
-          state.pastedImages = [...queuedImages, ...(state.pastedImages ?? [])];
-        }
-      }
-    };
+    const restoreQueuedMessage = (targetSessionId: string, queued: QueuedMessagePayload) =>
+      restoreQueuedMessageToInput(props, targetSessionId, queued);
 
     const handleMessage = (event: MessageEvent<HostToWebviewWire>) => {
       // wire 数据在运行时无类型：只验「有字符串 type」即按协议窄化（分发靠 switch 判别）
@@ -310,7 +278,7 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
         lastActivityBySessionRef,
         sessionMessagesCacheRef,
         scrollToBottomBeforeRender,
-        restoreQueuedMessageToInput,
+        restoreQueuedMessageToInput: restoreQueuedMessage,
         sessionId,
         fromCurrentSession,
         hostSessionId,

@@ -1,5 +1,6 @@
 import {
   diffCompletionAttention,
+  pickReadCompletions,
   type CompletionAttentionFacts,
 } from '../../electron/completionAttention';
 import { createChecker, runTests } from './helpers/harness';
@@ -14,7 +15,10 @@ import { createChecker, runTests } from './helpers/harness';
  * - 标签页武装条件更严：只在完成时该标签页**未激活**才武装——激活中的标签页视为
  *   已读（里面的完成由对话项的灯当场表达），切走再切回不补亮；
  * - 新出现 / 消失的会话不武装（消失的从级别表移除，供调用方清未读集合）；
- * - 同一工作区多个会话完成只武装一个标签页（去重），对话逐个武装。
+ * - 同一工作区多个会话完成只武装一个标签页（去重），对话逐个武装；
+ * - 已读清理（`pickReadCompletions`）：此刻完全可见（聚焦 + 激活标签页 + 当前对话）
+ *   的未读完成播放前清掉——聚焦即已读；缺任一事实的保留待播放；
+ * - 回窗场景：失焦期间当前对话完成被武装，回窗聚焦后视为已读，切走不补亮。
  *
  * 运行方式：npm run test:all -- completionAttention
  */
@@ -130,6 +134,33 @@ runTests('completionAttention', async () => {
     const third = diffCompletionAttention(second.next, [st('a', 'running')], () => seen());
     const fourth = diffCompletionAttention(third.next, [st('a', 'idle')], () => seen({ windowFocused: false }));
     return second.sessions.length === 1 && fourth.sessions.length === 1;
+  })());
+
+  check('已读清理：聚焦 + 激活标签页 + 当前对话 → 播放前视为已读移除', (() => {
+    const read = pickReadCompletions(['a'], () => seen());
+    return read.length === 1 && read[0] === 'a';
+  })());
+
+  check('已读清理：失焦 / 标签页未激活 / 非当前对话任一命中 → 保留待播放', (() => {
+    const read = pickReadCompletions(
+      ['a', 'b', 'c'],
+      (sid) => seen({
+        windowFocused: sid !== 'a',
+        tabActive: sid !== 'b',
+        sessionCurrent: sid !== 'c',
+      }),
+    );
+    return read.length === 0;
+  })());
+
+  check('回窗场景：失焦期间当前对话完成被武装，回窗聚焦后已读不再翻旧账', (() => {
+    // 武装：窗口失焦，但对话就是激活标签页里的当前对话（缺陷报告的场景）
+    const first = diffCompletionAttention(new Map(), [st('a', 'running')], () => seen());
+    const second = diffCompletionAttention(first.next, [st('a', 'idle')], () => seen({ windowFocused: false }));
+    if (second.sessions.length !== 1 || second.sessions[0] !== 'a') return false;
+    // 回窗：焦点回来了，画面事实齐了 → 已读，播放前清掉，切走后无灯可补亮
+    const read = pickReadCompletions(second.sessions, () => seen());
+    return read.length === 1 && read[0] === 'a';
   })());
 
   finish();

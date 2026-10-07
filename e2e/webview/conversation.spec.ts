@@ -170,6 +170,54 @@ test('US-3 引擎忙碌时消息排队，轮末自动重发；中止后回填输
   ).toHaveValue(/会被回填的消息/, { timeout: 10_000 });
 });
 
+test('US-3 排队项编辑撤回到输入框 / 删除；排队时禁止发送', async () => {
+  const { page, host } = handle;
+  const sendMessageCount = async (): Promise<number> =>
+    (await host.sentAll()).filter((m) => m.type === 'sendMessage').length;
+
+  // ── 编辑：排队消息撤回到输入框，引擎不再消费它 ──
+  await host.setTurn({ text: '第一轮回答。'.repeat(30), chunkDelayMs: 250 });
+  await page.fill('textarea.input-textarea', '第一条消息');
+  await page.press('textarea.input-textarea', 'Enter');
+  await expect(page.locator('button[title="终止"]')).toBeVisible({ timeout: 15_000 });
+
+  await page.fill('textarea.input-textarea', '要编辑的消息');
+  await page.press('textarea.input-textarea', 'Enter');
+  const banner = page.getByText(/等待中/).first();
+  await expect(banner).toBeVisible();
+
+  // 排队期间发送被禁用：按钮置灰，Enter 也不再触发上行
+  const sendButton = page.locator('button:has(.ti-send)').last();
+  await expect(sendButton).toBeDisabled();
+  await page.fill('textarea.input-textarea', '排队中不能再发');
+  await page.press('textarea.input-textarea', 'Enter');
+  await page.waitForTimeout(300);
+  expect(await sendMessageCount()).toBe(2);
+
+  // 编辑：横幅消失、内容撤回到输入框，宿主收到 discardQueuedMessage
+  await page.locator('button[title*="编辑排队消息"]').click();
+  await expect(banner).toBeHidden({ timeout: 10_000 });
+  await expect(page.locator('textarea.input-textarea')).toHaveValue(/要编辑的消息/, { timeout: 10_000 });
+  expect((await host.sentAll()).filter((m) => m.type === 'discardQueuedMessage')).toHaveLength(1);
+
+  // 本轮结束后不自动重发（撤回即取消）
+  await expect(page.locator('button[title="终止"]')).toBeDisabled({ timeout: 20_000 });
+  expect(await sendMessageCount()).toBe(2);
+
+  // ── 删除：排队消息直接丢弃，不回填输入框 ──
+  await host.setTurn({ text: '第二轮回答。'.repeat(30), chunkDelayMs: 250 });
+  await page.fill('textarea.input-textarea', '第二条消息');
+  await page.press('textarea.input-textarea', 'Enter');
+  await expect(page.locator('button[title="终止"]')).toBeEnabled({ timeout: 15_000 });
+
+  await page.fill('textarea.input-textarea', '要删除的消息');
+  await page.press('textarea.input-textarea', 'Enter');
+  await expect(page.getByText(/等待中/).first()).toBeVisible();
+  await page.locator('button[title*="删除排队消息"]').click();
+  await expect(page.getByText(/等待中/).first()).toBeHidden({ timeout: 10_000 });
+  expect((await host.sentAll()).filter((m) => m.type === 'discardQueuedMessage')).toHaveLength(2);
+});
+
 test('US-12 代码块一键复制并反馈「已复制」', async ({ browserName }) => {
   test.skip(browserName !== 'chromium', '剪贴板断言仅在 Chromium 下执行');
   const { page, host } = handle;

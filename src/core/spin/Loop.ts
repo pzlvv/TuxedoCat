@@ -3,13 +3,16 @@
  *
  * 读取 spin.json，按拓扑序逐个执行未通过的节点，
  * 每个节点起子 agent 执行，完成后由 LLM 根据 note 判断是否通过。
+ *
+ * 进度消息统一走 `engine.appendSpinMessage`（内存上下文 + 落盘 + UI 事件一次到位，
+ * 与 agent loop 的消息出口同一抽象；对齐 Standalone `SpinHost::push_message`），
+ * 本文件不再直接 emitToUi / appendMessage。
  */
 
 import { logger } from '../Logger.js';
 import type { QueryEngine } from '../QueryEngine.js';
 import type { CoreEvent } from '../AssistantEventBus.js';
 import { requireEventBus } from '../AssistantEventBus.js';
-import type { MessageData } from '../types.js';
 import { getMessageOrigin } from '../utils/messageOrigin.js';
 import { CoreNoticeKeys } from '../coreText.js';
 
@@ -33,7 +36,6 @@ import {
 } from './Engine.js';
 import { SpinJudger } from './SpinJudger.js';
 import type { SpinNode } from './Types.js';
-import type { Message } from '../types.js';
 
 const MAX_ATTEMPTS = 100;
 
@@ -269,38 +271,14 @@ export async function spinLoop(
       // 会落盘：文案一律英文，不走本地化（落盘文本统一英文）
       const errorMsg = 'Cannot read spin.json: file is missing or invalid JSON.';
       logger.warn('SpinLoop', errorMsg);
-      emitToUi({ type: 'message', sessionId, data: {
-        role: 'user',
-        content: errorMsg,
-      } as MessageData });
-      {
-        const errorMsgObj: Message = {
-          type: 'user',
-          message: { role: 'user', content: errorMsg },
-          uuid: `spin_error_${Date.now()}`,
-          timestamp: Date.now(),
-        };
-        engine.appendMemoryMessage(errorMsgObj);
-      }
+      await engine.appendSpinMessage(errorMsg);
       break;
     }
 
     const validationError = validateSpinDesign(config);
     if (validationError) {
       logger.warn('SpinLoop', `spin.json validation failed: ${validationError}`);
-      emitToUi({ type: 'message', sessionId, data: {
-        role: 'user',
-        content: validationError,
-      } as MessageData });
-      {
-        const errorMsgObj: Message = {
-          type: 'user',
-          message: { role: 'user', content: validationError },
-          uuid: `spin_error_${Date.now()}`,
-          timestamp: Date.now(),
-        };
-        engine.appendMemoryMessage(errorMsgObj);
-      }
+      await engine.appendSpinMessage(validationError);
       break;
     }
 
@@ -363,21 +341,8 @@ export async function spinLoop(
     if (attempts >= MAX_ATTEMPTS) {
       logger.info('SpinLoop', `Task ${currentSeq}${iterationLabel} failed after ${MAX_ATTEMPTS} attempts, stopping spin mode`);
       // 会落盘：文案一律英文，不走本地化（落盘文本统一英文）
-      const stopMsgContent =
-        `Task ${currentSeq} failed after ${MAX_ATTEMPTS} attempts, stopping the entire Spin mode`;
-      emitToUi({ type: 'message', sessionId, data: {
-        role: 'user',
-        content: stopMsgContent,
-      } as MessageData });
-      {
-        const stopMsg: Message = {
-          type: 'user',
-          message: { role: 'user', content: stopMsgContent },
-          uuid: `spin_stop_${Date.now()}`,
-          timestamp: Date.now(),
-        };
-        engine.appendMemoryMessage(stopMsg);
-      }
+      await engine.appendSpinMessage(
+        `Task ${currentSeq} failed after ${MAX_ATTEMPTS} attempts, stopping the entire Spin mode`);
       await updateNodeMeta(cwd, next.id, false, `failed after ${MAX_ATTEMPTS} attempts`);
       break;
     }
@@ -413,21 +378,8 @@ export async function spinLoop(
 
     logger.info('SpinLoop', `Executing Task ${currentSeq}${iterationLabel} - ${resolvedTask}${attemptSuffix}`);
     // 会落盘：文案一律英文，不走本地化（落盘文本统一英文）
-    const startMsgContent =
-      `${attemptPrefix}${iterationLabel} Starting: Task ${currentSeq} - ${resolvedTask}`;
-    emitToUi({ type: 'message', sessionId, data: {
-      role: 'user',
-      content: startMsgContent,
-    } as MessageData });
-    {
-      const startMsg: Message = {
-        type: 'user',
-        message: { role: 'user', content: startMsgContent },
-        uuid: `spin_user_${Date.now()}`,
-        timestamp: Date.now(),
-      };
-      engine.appendMemoryMessage(startMsg);
-    }
+    await engine.appendSpinMessage(
+      `${attemptPrefix}${iterationLabel} Starting: Task ${currentSeq} - ${resolvedTask}`);
 
     // 执行 Agent 工具
     // 先丢弃上一轮子代理遗留的未消费回复，避免旧 Reply 被当前节点误读。
@@ -475,27 +427,8 @@ export async function spinLoop(
     await updateNodeMeta(cwd, next.id, nodePassed, metaNote, { rolloutPassed: nextCompleted });
 
     // 会落盘：文案一律英文，不走本地化（落盘文本统一英文）
-    const resultMsgContent =
-      `${attemptPrefix}${iterationLabel} ${accept ? 'Passed' : 'Failed'}: Task ${currentSeq} - ${resolvedTask}`;
-    emitToUi({ type: 'message', sessionId, data: {
-      role: 'user',
-      content: resultMsgContent,
-    } as MessageData });
-    {
-      const resultMsg: Message = {
-        type: 'user',
-        message: { role: 'user', content: resultMsgContent },
-        uuid: `spin_result_${Date.now()}`,
-        timestamp: Date.now(),
-      };
-      engine.appendMemoryMessage(resultMsg);
-      // 立即持久化到磁盘/缓存，不依赖后续 submitToolUse 的遍历
-      // 最后一个 Task 完成后不会再有下一次 submitToolUse，如果不持久化会丢失
-      try {
-        const { appendMessage } = await import('../history/Conversation.js');
-        await appendMessage(resultMsg, sessionId, engine.getLastPersistedMessageUuid() ?? undefined);
-      } catch {}
-    }
+    await engine.appendSpinMessage(
+      `${attemptPrefix}${iterationLabel} ${accept ? 'Passed' : 'Failed'}: Task ${currentSeq} - ${resolvedTask}`);
 
     // 本节点已完成（spin.json 的 meta 已落盘）：立刻刷新设计器页面，
     // 不要等到整个循环结束才更新，否则执行过程中页面上的完成标记一直是旧的。

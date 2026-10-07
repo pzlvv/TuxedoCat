@@ -697,9 +697,10 @@ async function updateMetadataForNewMessage(
       // 清空对话只清空内容，不清空标题：后续再发新消息不得覆盖原标题
       const isCleared = metadata.clearedAt !== undefined;
 
-      // 如果当前还没有用户消息（新对话或从历史恢复但无消息），
-      // 用首条用户消息生成标题；但清空过的会话必须保留原标题
-      if (!isCleared && prevMessageCount === 0 && message.type === 'user' && 'message' in message) {
+      // 如果当前还没有用户消息（新对话或从历史恢复但无消息）且没有显式标题
+      // （用户重命名 / 智能命名 / spin 改名会先写标题），用首条用户消息生成标题；
+      // 清空过的会话与已显式命名的会话保留原标题
+      if (!isCleared && prevMessageCount === 0 && !metadata.title && message.type === 'user' && 'message' in message) {
         const title = titleFromUserMessage(message);
         if (title) {
           metadata.title = title;
@@ -1394,8 +1395,9 @@ export async function updateConversationContext(
 
 /**
  * 更新对话 metadata 的标题
- * 用于需要显式修正对话标题的场景（如 spin 模式）
- * 如果 meta.json 不存在，则不操作
+ * 用于需要显式修正对话标题的场景（用户重命名、智能命名、spin 模式改名）。
+ * meta.json 缺失时建档：显式改标题必须落到磁盘，否则 UI 收到的 titleChanged
+ * 与磁盘不一致——重启 / 刷新列表后标题回到「未命名」。
  */
 export async function updateConversationMetadataTitle(
   sessionId: string,
@@ -1409,30 +1411,71 @@ export async function updateConversationMetadataTitle(
   const metadataPath = getMetadataPath(sessionId, projectPath);
 
   await enqueueMetadataWrite(metadataPath, async () => {
+    let metadata: ConversationMetadata;
     try {
-      const existing = await readFile(metadataPath, 'utf8');
-      const metadata: ConversationMetadata = JSON.parse(existing) as ConversationMetadata;
-      metadata.title = title;
-      // 标题更新不 touch updatedAt（保持"最后消息时间"语义）
-      await writeFile(metadataPath, JSON.stringify(metadata, null, 2), { encoding: 'utf8', mode: 0o600 });
-
-      // 同步更新内存缓存
-      const cached = conversationCache.get(sessionId);
-      if (cached) {
-        cached.metadata.title = title;
-      }
-
-      // 同步更新对话列表缓存
-      const listCache = getConversationListCacheForSession(sessionId);
-      if (listCache) {
-        const entry = listCache.find(c => c.sessionId === sessionId);
-        if (entry) {
-          entry.title = title;
-        }
-      }
+      metadata = JSON.parse(await readFile(metadataPath, 'utf8')) as ConversationMetadata;
     } catch (err) {
       if ((err as any)?.code !== 'ENOENT') {
         logger.warn('Conversation', `Failed to update metadata title for ${sessionId}: ${err}`);
+        return;
+      }
+      // 建档。messageCount 从已落盘的 .jsonl 数出：只数真实消息记录，排除
+      // stream / tombstone / tool_use_update 记录（tool_use_update 是顶层 type、
+      // 无 message 包装；口径同 Standalone count_messages），避免掩盖已写消息。
+      const conversationPath = getConversationPath(sessionId, projectPath);
+      let messageCount = 0;
+      try {
+        for (const line of (await readFile(conversationPath, 'utf8')).split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const record = JSON.parse(line) as {
+              type?: string;
+              message?: { type?: string };
+            };
+            const innerType = record.message?.type;
+            if (record.type === 'tool_use_update'
+              || innerType === 'stream_event' || innerType === 'stream_request_start'
+              || innerType === 'tombstone' || innerType === 'tool_use_update') {
+              continue;
+            }
+            if (innerType === undefined) continue; // 非消息记录（无 message 包装）
+            messageCount++;
+          } catch { /* 损坏行不计 */ }
+        }
+      } catch { /* .jsonl 不存在按 0 计 */ }
+      await ensureProjectConversationDir(projectPath);
+      metadata = {
+        sessionId,
+        project: projectPath,
+        title,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messageCount,
+      };
+      // 补空 .jsonl：loadConversation 要求消息文件存在（同 createConversationMetadataSync）
+      try {
+        await readFile(conversationPath, 'utf8');
+      } catch {
+        await writeFile(conversationPath, '', { encoding: 'utf8', mode: 0o600 });
+      }
+    }
+    metadata.title = title;
+    // 标题更新不 touch updatedAt（保持"最后消息时间"语义；建档时已在上面赋值）
+    await writeFile(metadataPath, JSON.stringify(metadata, null, 2), { encoding: 'utf8', mode: 0o600 });
+
+    // 同步更新内存缓存
+    const cached = conversationCache.get(sessionId);
+    if (cached) {
+      cached.metadata.title = title;
+    }
+
+    // 同步更新对话列表缓存（新建档的会话此前不在缓存里，不追加：
+    // messageCount === 0 的会话按规则不进列表，等首条消息落盘后自然进入）
+    const listCache = getConversationListCacheForSession(sessionId);
+    if (listCache) {
+      const entry = listCache.find(c => c.sessionId === sessionId);
+      if (entry) {
+        entry.title = title;
       }
     }
   });

@@ -114,8 +114,17 @@ test('US-21 发起重命名请求（智能命名由宿主执行）', async () =>
   const requested = await host.waitForSent('requestSmartNaming');
   expect(requested.sessionId).toBe('sess-alpha');
 
-  // 命名完成回推后标题刷新
-  await host.send({ type: 'smartNamingResult', sessionId: 'sess-alpha', title: '智能起的新名字' });
+  // 命名结束：smartNamingResult 只清「命名中」标记，不携带标题；标题刷新走
+  // 磁盘事实驱动的 conversationsData（core 落盘后 conversationListChanged →
+  // ConversationManager.refresh() 的推送）
+  await host.send({ type: 'smartNamingResult', sessionId: 'sess-alpha' });
+  await host.send({
+    type: 'conversationsData',
+    conversations: [
+      { sessionId: 'sess-alpha', title: '智能起的新名字', createdAt: Date.now() - 3 * DAY, updatedAt: Date.now(), messageCount: 6 },
+      { sessionId: 'sess-beta', title: '部署记录', createdAt: Date.now() - DAY, updatedAt: Date.now() - DAY, messageCount: 2 },
+    ],
+  });
   await expect(dropdown.getByText('智能起的新名字')).toBeVisible({ timeout: 10_000 });
 });
 

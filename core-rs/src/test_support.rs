@@ -738,7 +738,12 @@ pub fn openai_text_sse(chunks: &[&str]) -> String {
 
 /// OpenAI 协议：一次工具调用（参数按两片到达）+ 结束
 pub fn openai_tool_sse(id: &str, name: &str, arguments: &str) -> String {
-    let split = arguments.len() / 2;
+    // 参数含多字节 UTF-8（中文入参等）时按字节对半切会切进字符内部并 panic：
+    // 回退到最近的字符边界，ASCII 参数行为不变
+    let mut split = arguments.len() / 2;
+    while split > 0 && !arguments.is_char_boundary(split) {
+        split -= 1;
+    }
     let (first, second) = arguments.split_at(split);
     let mut out = String::new();
     out.push_str(&format!(

@@ -265,6 +265,14 @@ export type UiEvent =
       deferEcho?: boolean;
     }
   | { type: 'abortRequested'; sessionId: string }
+  /**
+   * 用户撤回排队消息（webview 排队项的「编辑 / 删除」）。
+   *
+   * `uuid` 是排队项携带的消息 uuid：core 按 uuid 配对，只丢弃引擎队列里尚未消费的
+   * 同一消息；已被消费（进入上下文）或被更新的排队消息替换时不动，也不打断正在
+   * 运行的查询（`docs/user-message-pipeline.md` 第 5.2 节）。
+   */
+  | { type: 'queuedMessageDiscarded'; sessionId: string; uuid: string }
 
   // ===== 压缩 =====
   /** 用户触发压缩（会改写会话数据，属 core 业务） */

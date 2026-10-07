@@ -640,6 +640,12 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
         "abortRequested" => {
             core.on_abort(&session_id);
         }
+        "queuedMessageDiscarded" => {
+            // 对齐 Embedded `QueryEngine.discardPendingUserMessage`：webview 排队项的
+            // 「编辑 / 删除」撤回排队消息。按 uuid 配对，未消费才丢弃。
+            let uuid = event.get("uuid").and_then(Value::as_str).unwrap_or("");
+            core.on_queued_message_discarded(&session_id, uuid);
+        }
         "compactRequested" => {
             // 对齐 Embedded `Integration.requestCompact`：空闲时立即压缩，非空闲时
             // 登记「待压缩」交由下一轮对话开始时执行。

@@ -513,6 +513,7 @@ const App = () => {
 
   const {
     formatRelativeTime, loadConversations, onStartup, handleSend, handleAbort,
+    handleEditQueuedMessage, handleDeleteQueuedMessage,
     handleCompress, handleUserChoiceResponse, handleUserChoiceSubmit,
     handleChoiceResponse, handleToggleFileHidden,
     toggleSubSession: _toggleSubSession,
@@ -1335,6 +1336,8 @@ onClick={handleNewConversation}
               onSend={handleSend}
               onAbort={handleAbort}
               onCompress={handleCompress}
+              onEditQueuedMessage={handleEditQueuedMessage}
+              onDeleteQueuedMessage={handleDeleteQueuedMessage}
               mainInputRef={mainInputRef as React.RefObject<HTMLTextAreaElement | null>}
               colors={colors}
               isDark={isDark}

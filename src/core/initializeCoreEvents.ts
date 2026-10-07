@@ -121,6 +121,12 @@ async function registerIntegrationUiEvents(bus: AssistantEventBus): Promise<void
     abortCurrentQuery(sessionId);
   });
 
+  // queuedMessageDiscarded：排队项「编辑 / 删除」撤回排队消息。引擎不在池里时无事可做：
+  // 排队项只登记在 webview，引擎随会话释放后消息已无处可去（幂等，不过度兜底）。
+  bus.onUiEvent('queuedMessageDiscarded', ({ sessionId, uuid }) => {
+    getSessionEngine(sessionId)?.discardPendingUserMessage(uuid);
+  });
+
   // ===== 用户消息 =====
   // 宿主只发 userMessageSubmitted；取 / 建引擎、应用会话覆盖、入队都在 core 侧完成。
   const { submitUserMessage } = await import('./Integration.js');

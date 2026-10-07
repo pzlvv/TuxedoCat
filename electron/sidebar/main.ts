@@ -565,9 +565,10 @@ function itemHtml(c: ConversationMeta, depth: number, childCount: number, isExpa
   // 非 idle 对话显示左边流水灯条（与 webview 对话列表一致；当前活跃会话同样显示）
   // 正在等待用户输入（ask user / 权限确认）时显示黄色；
   // 空闲但未读完成（用户没看到的任务结束）显示绿色：呼吸一次后常亮，直到该对话
-  // 被打开——当前对话不亮（正在看的就是「已读」，主进程的清除推送也会随之到达）
+  // 被打开——当前对话不亮（正在看的就是「已读」，主进程的清除推送也会随之到达）；
+  // 只挂顶层对话行（depth === 0）：子会话（subagent）的完成属于对话整体，由父会话的灯表达
   const completionAt = completionAttention.get(c.sessionId);
-  const completionBar = completionAt !== undefined && state?.idle !== false && c.sessionId !== activeSessionId
+  const completionBar = completionAt !== undefined && depth === 0 && state?.idle !== false && c.sessionId !== activeSessionId
     ? `<div class="running-bar running-bar--completed${Date.now() - completionAt < COMPLETION_BREATH_MS ? ' running-bar--completed-breath' : ''}"></div>`
     : '';
   const runningBar = state && !state.idle

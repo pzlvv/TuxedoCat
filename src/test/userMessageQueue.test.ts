@@ -27,6 +27,7 @@ import { resolveSettingsSnapshot } from '../core/settingsSnapshot';
 import { createChecker, runTests } from './helpers/harness';
 
 type Submitted = Extract<UiEvent, { type: 'userMessageSubmitted' }>;
+type Discarded = Extract<UiEvent, { type: 'queuedMessageDiscarded' }>;
 
 interface Harness {
   handler: WebviewMessageHandler;
@@ -34,6 +35,8 @@ interface Harness {
   posted: Array<Record<string, unknown>>;
   /** 发到 core 的 userMessageSubmitted */
   submitted: Submitted[];
+  /** 发到 core 的 queuedMessageDiscarded（排队项「编辑 / 删除」撤回） */
+  discarded: Discarded[];
   /** 宿主登记的排队项（`null` 表示清除） */
   queued: Array<{ sessionId: string; queued: QueuedMessageState | null }>;
   runtimeStates: SessionRuntimeState[];
@@ -59,6 +62,8 @@ function buildHarness(): Harness {
   setGlobalEventBus(bus);
   const submitted: Submitted[] = [];
   bus.onUiEvent('userMessageSubmitted', (event) => submitted.push(event));
+  const discarded: Discarded[] = [];
+  bus.onUiEvent('queuedMessageDiscarded', (event) => discarded.push(event));
   // Core 就绪：就绪前只接受 hostEnvironmentProvided（docs/core-ui-separation.md 第 7 节）
   applySettingsSnapshot(resolveSettingsSnapshot({}), []);
 
@@ -94,7 +99,7 @@ function buildHarness(): Harness {
     onQueuedMessage: (sessionId, state) => queued.push({ sessionId, queued: state }),
   };
 
-  return { handler, posted, submitted, queued, runtimeStates, logs };
+  return { handler, posted, submitted, discarded, queued, runtimeStates, logs };
 }
 
 async function run(): Promise<void> {
@@ -186,6 +191,19 @@ async function run(): Promise<void> {
     check('快照缺失时不登记排队项', queued.length === 0);
     check('快照缺失时乐观回显', posted.some((message) => message.type === 'addMessage'));
     check('快照缺失时不置 deferEcho', submitted[0]?.deferEcho === undefined);
+    resetGlobalEventBus();
+  }
+
+  // ===== 排队项「编辑 / 删除」：discardQueuedMessage 翻译成 queuedMessageDiscarded =====
+  {
+    const { handler, submitted, discarded, logs } = buildHarness();
+
+    await handler.handleWebviewMessage({ type: 'discardQueuedMessage', sessionId: 's1', uuid: 'user_1' });
+
+    check('撤回翻译成 queuedMessageDiscarded', discarded.length === 1);
+    check('sessionId 与 uuid 原样回带', discarded[0]?.sessionId === 's1' && discarded[0]?.uuid === 'user_1');
+    check('撤回不产生用户消息事件', submitted.length === 0);
+    check('处理撤回不报错', logs.length === 0);
     resetGlobalEventBus();
   }
 

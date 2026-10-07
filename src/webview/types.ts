@@ -163,8 +163,8 @@ export interface Message {
 export interface QueuedMessagePayload {
   /** 该排队消息归属的会话 ID，防止切换对话后串会 */
   sessionId: string;
-  /** 该排队消息的 uuid；与补发的用户气泡配对，用于按消息精确清除 */
-  uuid?: string;
+  /** 该排队消息的 uuid；与补发的用户气泡配对，用于按消息精确清除（编辑 / 删除撤回也按它配对） */
+  uuid: string;
   content: string;
   images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
   /** 排队时选中的文件路径 */

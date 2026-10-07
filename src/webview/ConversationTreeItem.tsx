@@ -25,7 +25,7 @@ export interface ConversationTreeItemProps {
   isIdle: boolean;
   /** 会话是否正在等待用户输入（ask user / 权限确认）——流水灯显示黄色 */
   isWaitingForUser?: boolean;
-  /** 未读完成的会话集合（「任务完成」绿色呼吸；sessionId → 推送到达时刻）。 */
+  /** 未读完成的会话集合（「任务完成」绿色呼吸；sessionId → 推送到达时刻）。只挂顶层对话行，子会话（subagent）不亮。 */
   completionAttention?: Map<string, number>;
   getSessionIdleState: (sessionId: string) => boolean;
   /** 获取子会话是否正在等待用户输入 */
@@ -154,9 +154,10 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
         ) : (() => {
           // 未读完成（「任务完成」绿色呼吸）：会话在用户看不到时完成后挂上，
           // 呼吸一次后保持常亮，直到该对话成为当前对话（主进程清除并重推）。
-          // 当前对话不亮——正在看的就是「已读」。
+          // 当前对话不亮——正在看的就是「已读」；子会话（subagent）行不亮——
+          // 子会话的完成属于对话整体，由父会话的灯表达。
           const completionAt = completionAttention?.get(item.sessionId);
-          if (completionAt === undefined || isActive) return null;
+          if (completionAt === undefined || isActive || !isRoot) return null;
           const breath = Date.now() - completionAt < COMPLETION_BREATH_MS;
           return <div className={`running-bar running-bar--completed${breath ? ' running-bar--completed-breath' : ''}`} />;
         })()}

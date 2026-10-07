@@ -64,7 +64,7 @@ import {
 
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
 import { diffSessionEndEvents, type SessionLevel } from './trayAttention.js';
-import { diffCompletionAttention } from './completionAttention.js';
+import { diffCompletionAttention, pickReadCompletions, type CompletionAttentionFacts } from './completionAttention.js';
 import { SleepBlocker } from './powerSaveBlocker.js';
 import {
   deleteEachPath,
@@ -1126,8 +1126,12 @@ function createMainWindow(): void {
   mainWindow.on('show', cancelAttention);
   mainWindow.on('restore', cancelAttention);
   mainWindow.on('focus', cancelAttention);
-  // 回到窗口后播放攒下的「任务完成」绿色呼吸（完成发生在窗口失焦期间）
-  mainWindow.on('focus', () => pumpCompletionAttention());
+  // 回到窗口后播放攒下的「任务完成」绿色呼吸（完成发生在窗口失焦期间）；
+  // 先按当前画面事实清「已读」（聚焦即已读，正看着的对话不亮灯）再推剩余未读
+  mainWindow.on('focus', () => {
+    reconcileCompletionAttention();
+    pumpCompletionAttention();
+  });
 
   mainWindow.on('closed', () => {
     // 后台预热的聊天视图未挂在窗口上，需显式清理（其余视图随窗口销毁）
@@ -1275,14 +1279,16 @@ let traySessionLevels = new Map<string, SessionLevel>();
  * 会话 running → idle 且用户当时看不到（窗口失焦 / 标签页未激活 / 非当前对话）时
  * 对对话项记「未读完成」（标签页只在完成时该标签页未激活才记——激活中的标签页
  * 视为已读）；等用户回到现场（窗口聚焦）推给各渲染层——灯条呼吸一次后**保持
- * 常亮**，直到用户阅读：激活该标签页清掉标签页项，把该对话切为当前对话清掉对话项。
+ * 常亮**，直到用户阅读：激活该标签页清掉标签页项，把该对话切为当前对话清掉对话项；
+ * 回窗聚焦那一刻正看着的对话（聚焦 + 激活标签页 + 当前对话）直接视为已读，
+ * 播放前由 `reconcileCompletionAttention` 清掉——聚焦即已读，切到别的对话不补亮。
  * 未读集合归主进程独有——焦点 / 激活 / 当前对话是宿主本地事实，webview / 侧栏 /
  * 标题栏只吃全量集合快照（幂等，重复推送不重复呼吸）。
  */
 let completionAttentionLevels = new Map<string, SessionLevel>();
 /** 未读完成的标签页（工作区稳定 id）：激活该标签页即视为阅读 */
 const unreadCompletionTabs = new Set<string>();
-/** 未读完成的对话（sessionId）：该对话成为当前对话即视为阅读 */
+/** 未读完成的对话（sessionId）：成为当前对话、或回窗聚焦时正看着即视为阅读 */
 const unreadCompletionSessions = new Set<string>();
 
 /**
@@ -1485,23 +1491,29 @@ function resolveSessionWorkspaceKey(sessionId: string): string | null {
 }
 
 /**
+ * 「任务完成」绿色呼吸的画面事实求值（completionAttention.ts 的 `factsOf` 注入）。
+ * 武装（`updateCompletionAttentionFromStates`）与回窗已读清理
+ * （`reconcileCompletionAttention`）共用这一份，两个判定恒为反义。
+ */
+function completionFactsOf(sessionId: string): CompletionAttentionFacts {
+  const workspaceKey = resolveSessionWorkspaceKey(sessionId);
+  const activeKey = workspacePath ? refKey(workspacePath) : null;
+  return {
+    workspaceKey,
+    tabActive: workspaceKey !== null && workspaceKey === activeKey,
+    sessionCurrent: (chatViews?.getActiveSessionId() ?? null) === sessionId,
+    windowFocused: isMainWindowFocused(),
+  };
+}
+
+/**
  * 「任务完成」绿色呼吸的武装入口：吃与会话状态流同一份全量推送（`setStatusListener`），
  * 差分出 running → idle 且用户当时看不到的完成，记入未读集合后立即尝试推送。
  */
 function updateCompletionAttentionFromStates(
   states: ReadonlyArray<import('../src/core/AssistantEventBus.js').SessionRuntimeState>,
 ): void {
-  const activeKey = workspacePath ? refKey(workspacePath) : null;
-  const activeSessionId = chatViews?.getActiveSessionId() ?? null;
-  const arm = diffCompletionAttention(completionAttentionLevels, states, (sessionId) => {
-    const workspaceKey = resolveSessionWorkspaceKey(sessionId);
-    return {
-      workspaceKey,
-      tabActive: workspaceKey !== null && workspaceKey === activeKey,
-      sessionCurrent: activeSessionId === sessionId,
-      windowFocused: isMainWindowFocused(),
-    };
-  });
+  const arm = diffCompletionAttention(completionAttentionLevels, states, completionFactsOf);
   completionAttentionLevels = arm.next;
   // 快照里消失的会话（关闭工作区 / 删除对话）不再提醒
   let removed = false;
@@ -1512,6 +1524,22 @@ function updateCompletionAttentionFromStates(
   for (const sessionId of arm.sessions) unreadCompletionSessions.add(sessionId);
   pumpCompletionAttention();
   // 清除也要同步出去：让渲染层把已消失会话的灯条熄掉（与推送同一幂等快照）
+  if (removed) syncCompletionAttention();
+}
+
+/**
+ * 回窗已读清理：从未读对话集合移除此刻完全可见（聚焦 + 激活标签页 + 当前对话，
+ * `pickReadCompletions`）的条目。清除原本只挂「成为当前对话」「激活标签页」两个
+ * 迁移事件；完成发生在窗口失焦期间、而该对话**本来就是**当前对话时迁移永远不来
+ * ——聚焦是它唯一的已读时机。focus 处理器先调这里再 `pumpCompletionAttention`：
+ * 正看着的对话不亮灯，切到别的对话后也不会补亮。
+ */
+function reconcileCompletionAttention(): void {
+  if (unreadCompletionSessions.size === 0) return;
+  let removed = false;
+  for (const sessionId of pickReadCompletions([...unreadCompletionSessions], completionFactsOf)) {
+    if (unreadCompletionSessions.delete(sessionId)) removed = true;
+  }
   if (removed) syncCompletionAttention();
 }
 
@@ -1530,7 +1558,8 @@ function syncCompletionAttention(): void {
 }
 
 /**
- * 用户回到现场时推送未读完成集合（只推不请——集合要等用户阅读才清除）：
+ * 用户回到现场时推送未读完成集合（只推不请——集合要等用户阅读才清除；focus 事件
+ * 先经 `reconcileCompletionAttention` 清掉已读再推）：
  * - 主窗口聚焦（focus 事件 / 武装时正聚焦）：灯条此刻挂上并呼吸一次，之后常亮；
  * - 切换标签页 / 切换窗口模式后：新可见表面的灯条补齐（集合未变，已亮的不重播呼吸）。
  * 窗口失焦期间不推送：呼吸留给用户回来后第一眼（不可见的呼吸等于没呼吸）。

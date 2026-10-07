@@ -479,23 +479,15 @@ export function handleConversationSmartNamingResult(
   const { props } = ctx;
           const wire = msg;
           profileLog('[App] smartNamingResult received', msg);
-          // 更新命名中状态
+          // 只清「命名中」标记：标题与列表不由本地改——core 落盘后广播
+          // titleChanged / conversationListChanged，webview 只消费那两条消息
           {
             const namingSessionId = wire.sessionId;
-            const newTitle = wire.title;
             props.setNamingSessions(prev => {
               const next = new Set(prev);
               next.delete(namingSessionId);
               return next;
             });
-            // 如果重命名的是当前对话，同步更新顶部标题显示
-            if (namingSessionId === props.currentSessionIdRef.current) {
-              props.setConversationTitle(resolveTitle(newTitle));
-            }
-            // 同步更新对话列表中的标题（即时刷新，无需等待后端返回）
-            props.setConversations(prev => prev.map(c =>
-              c.sessionId === namingSessionId ? { ...c, title: newTitle } : c
-            ));
           }
           return;
 }

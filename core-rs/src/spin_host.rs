@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::engine::Core;
+use crate::engine::{Core, WorkMode};
 use crate::spin::{self, SpinHost, SpinJudgerResult, SpinSubAgentRequest};
 use crate::{config, history, subagent, util};
 
@@ -53,7 +53,7 @@ impl CoreSpinHost {
 impl SpinHost for CoreSpinHost {
     fn run_sub_agent(&self, request: SpinSubAgentRequest) -> Result<String, String> {
         // 先把「期望的子会话 id」放在共享槽里：子代理在另一个线程上跑，Reply 可能
-        // 早于 create_sub_agent 返回，监听器必须在起会话**之前**就注册好。
+        // 早于会话登记可查，监听器必须在起会话**之前**就注册好。
         let expected: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let expected_for_listener = Arc::clone(&expected);
         let parent = self.session_id.clone();
@@ -81,18 +81,29 @@ impl SpinHost for CoreSpinHost {
             &request.iteration_label,
             &request.node.task,
         );
-        let spawn_result = self.core.create_sub_agent(crate::tools::SubAgentRequest {
-            creator_session_id: self.session_id.clone(),
-            prompt: request.prompt.clone(),
-            description,
-            // Spin Design 的节点统一用 Master 角色（完整工具集），对齐 `Runner.ts`
-            role: "Master".to_string(),
+        // 对齐 Embedded `spin/Loop.ts` 的
+        // `submitToolUse({ name: 'Agent', input: { prompt, agentRole, description } })`：
+        // 走完整的工具执行路径（assistant tool_use 落盘 + toolCall/toolResult 事件），
+        // 父对话上能看到 Agent 卡片；webview 收到 `toolCall` 会关掉 thinking 动画。
+        let input = json!({
+            "prompt": request.prompt,
+            "agentRole": "Master",
+            "description": description,
         });
-        let sub_session_id = match spawn_result {
-            Ok(id) => id,
-            Err(err) => {
+        let registered_before = subagent::list_for_creator(&self.session_id).len();
+        if let Err(error) = self.core.submit_tool_use(&self.session_id, "Agent", &input) {
+            subagent::off_reply_delivered(listener);
+            return Err(error);
+        }
+        // 子代理 id 从注册表反查（对齐 `getCurrentSpinAgentId` 取最近登记的一个）。
+        // 没有新增登记说明 Agent 工具没起会话（被拒绝 / 入参非法）：返回 Err 让主循环
+        // 把失败当作节点反馈参与验收判定，而不是无限等 Reply。
+        let registered = subagent::list_for_creator(&self.session_id);
+        let sub_session_id = match registered.last() {
+            Some(id) if registered.len() > registered_before => id.clone(),
+            _ => {
                 subagent::off_reply_delivered(listener);
-                return Err(err);
+                return Err("Agent tool did not spawn a sub-agent".to_string());
             }
         };
         *expected.lock().unwrap() = Some(sub_session_id.clone());
@@ -220,16 +231,27 @@ pub fn run_spin_command(
         return None;
     };
 
-    // 标题改成「Spin 设计」。对齐 TS `bundled/spin.ts`：直接调
-    // `updateConversationMetadataTitle` 只写 meta.json、**不广播** `titleChanged` /
-    // `conversationListChanged`（TS 里那条 `titleChanged` 在 `if (!engine)` 死分支里）。
+    // 标题改成「Spin Design」：写 `meta.json` 并广播 `titleChanged`（webview 靠它
+    // 刷新打开中对话的标题栏；`titleChanged` 事件表的来源包含 skills/bundled/spin）。
     // 落盘文本统一英文（`docs/core-ui-separation.md` 第 4.8 节）。
     core.update_conversation_title(session_id, "Spin Design");
 
     let host = Arc::new(CoreSpinHost::new(Arc::clone(core), session_id));
     let abort = host.abort_flag();
     let runner: Arc<dyn SpinHost> = host;
+    // spin 模式：主会话不参与 LLM 消费循环（对齐 Embedded `bundled/spin.ts` 的
+    // `workMode = 'spin'` / finally 恢复 `normal`）。期间投递到本会话的子代理 Reply
+    // 走 `deliver_agent_reply` 的 spin 分支——只落 silent 消息进上下文，不进消费队列，
+    // 消费循环也就不会在 Spin 结束后拿它跑主对话的 agent 循环。
+    if let Some(state) = core.session_if_exists(session_id) {
+        state.lock().unwrap().work_mode = WorkMode::Spin;
+    }
     let outcome = spin::SpinLoop::with_abort_flag(runner, cwd, session_id, abort).run();
+    // 无论 Completed / Stopped / Aborted / Failed 都要恢复；会话可能已被删除，
+    // `session()` 会让刚删除的会话复活，这里用 `session_if_exists`
+    if let Some(state) = core.session_if_exists(session_id) {
+        state.lock().unwrap().work_mode = WorkMode::Normal;
+    }
     if let spin::SpinOutcome::Failed(message) = &outcome {
         emit_spin_message(core, session_id, message);
     }

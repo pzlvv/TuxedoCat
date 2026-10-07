@@ -93,6 +93,10 @@ interface InputAreaProps {
   onSend: () => void;
   onAbort: () => void;
   onCompress: () => void;
+  /** 排队项「编辑」：把排队消息撤回到输入框（与 abort 的 queryEnd 回填同一实现） */
+  onEditQueuedMessage: () => void;
+  /** 排队项「删除」：丢弃排队消息，不回填输入框 */
+  onDeleteQueuedMessage: () => void;
   mainInputRef: React.RefObject<HTMLTextAreaElement | null>;
   colors: Colors;
   isDark: boolean;
@@ -1618,6 +1622,8 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   onSend,
   onAbort,
   onCompress,
+  onEditQueuedMessage,
+  onDeleteQueuedMessage,
   mainInputRef,
   colors,
   isDark,
@@ -1950,7 +1956,9 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   const mcpBusy = !!mcpConnecting;
   const configBusy = !!configLoading;
   const busy = mcpBusy || configBusy;
-  const sendDisabled = !hasContent || isInputDisabled || busy;
+  // 已有排队消息时禁止再次发送：排队项一次只有一条，改主意走横幅上的编辑 / 删除
+  // （docs/user-message-pipeline.md 第 5.2 节），不靠继续提交覆盖。
+  const sendDisabled = !hasContent || isInputDisabled || busy || !!queuedMessage;
 
   return (
     <div
@@ -2003,9 +2011,25 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
               <span style={{ opacity: 0.7 }}>{t('inputArea.waitingImages', { count: queuedMessage.images.length })}</span>
             )}
           </span>
-          <span className="ui-fs-11 whitespace-nowrap" style={{ color: colors.placeholder }}>
-            {t('inputArea.resubmitToEdit')}
-          </span>
+          {/* 编辑 = 撤回到输入框；删除 = 丢弃。两者都先清排队项，再由宿主撤回引擎队列里的消息 */}
+          <button
+            type="button"
+            onClick={onEditQueuedMessage}
+            title={t('inputArea.editQueuedMessage')}
+            className="w-5 h-5 rounded flex items-center justify-center flex-shrink-0 transition-all hover:brightness-125"
+            style={{ color: colors.harness }}
+          >
+            <Icon name="pencil" size={12} />
+          </button>
+          <button
+            type="button"
+            onClick={onDeleteQueuedMessage}
+            title={t('inputArea.deleteQueuedMessage')}
+            className="w-5 h-5 rounded flex items-center justify-center flex-shrink-0 transition-all hover:brightness-125"
+            style={{ color: colors.placeholder }}
+          >
+            <Icon name="trash" size={12} />
+          </button>
         </div>
       )}
       {/* Row 1: Pasted images + Textarea with slash popup */}

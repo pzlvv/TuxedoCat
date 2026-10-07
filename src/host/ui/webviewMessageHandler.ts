@@ -314,6 +314,7 @@ export class WebviewMessageHandler {
       entry('requestCompress', (msg) => this.emitUiEvent({ type: 'compactRequested', sessionId: msg.sessionId })),
       entry('sendMessage', (msg) => this.handleUserMessage(msg)),
       entry('abort', (msg) => this.handleAbort(msg)),
+      entry('discardQueuedMessage', (msg) => this.emitUiEvent({ type: 'queuedMessageDiscarded', sessionId: msg.sessionId, uuid: msg.uuid })),
 
       // ===== 会话生命周期（UiEvent 翻译）=====
       entry('loadConversation', (msg) => this.handleLoadConversation(msg)),
@@ -1490,11 +1491,11 @@ export class WebviewMessageHandler {
     try {
       const title = await requestSmartNaming(sessionId);
       this.log(`[WebviewMessageHandler] smartNaming result for ${sessionId}: "${title}"`);
-      this.setTitle(sessionId, title);
-      this.host.sendToWebview({ type: 'smartNamingResult', sessionId, title });
-      // UI → core：标题写盘走总线（core 落盘 + 广播 titleChanged / conversationListChanged）；
-      // 列表刷新由 conversationListChanged → ConversationManager.refresh() 统一驱动，
-      // 这里不再直接落盘、也不直接推 conversationsData。
+      // 只通知「命名结束」（webview 清掉转圈标记）；标题显示不在这里直推——
+      // UI → core：标题写盘走总线（core 落盘后广播 titleChanged / conversationListChanged，
+      // 先改真实数据、再由消息驱动 UI）；列表刷新由 conversationListChanged →
+      // ConversationManager.refresh() 统一驱动。
+      this.host.sendToWebview({ type: 'smartNamingResult', sessionId });
       await this.emitUiEvent({ type: 'conversationRenamed', sessionId, title });
     } catch (error: any) {
       this.log(`[WebviewMessageHandler] smartNaming error: ${error.message}`);

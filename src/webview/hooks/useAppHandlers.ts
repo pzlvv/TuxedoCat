@@ -4,6 +4,7 @@ import { profileLog } from '../debug';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults } from '../types';
 import { createSessionState, type SessionStatesStore } from '../sessionState';
 import { ensureImageSize } from '../imageSize';
+import { restoreQueuedMessageToInput } from './restoreQueuedMessage';
 import { buildConversationTitle } from '../../core/utils/contentBlocks';
 import type { ModelRef } from '../../core/llm/modelRef';
 import { t } from '../i18n';
@@ -106,6 +107,8 @@ export interface UseAppHandlersReturn {
   handleSend: () => Promise<void>;
   handleAbort: () => void;
   handleCompress: () => void;
+  handleEditQueuedMessage: () => void;
+  handleDeleteQueuedMessage: () => void;
   handleUserChoiceResponse: (index: number, reply?: string) => void;
   handleUserChoiceSubmit: (inputValue: string) => void;
   handleChoiceResponse: (index: number) => void;
@@ -210,6 +213,13 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     // 发送前补齐图片宽高，供 core 层生成 Image[<width>*<height>] 标题
     const pastedImages = await Promise.all(rawPastedImages.map((img) => ensureImageSize(img)));
     if (!inputValue.trim() && pastedImages.length === 0) return;
+    // 已有排队消息时不允许再发（发送按钮置灰 + Enter 同守卫）：排队项一次只有一条，
+    // 改主意走横幅上的编辑 / 删除（docs/user-message-pipeline.md 第 5.2 节），
+    // 不靠继续提交覆盖。
+    {
+      const sid = props.currentSessionIdRef.current;
+      if (sid && props.queuedMessageRef.current.has(sid)) return;
+    }
 
     // Preserve cursor position before clearing - we'll restore it when user types after abort
     props.cursorPositionRef.current = props.mainInputRef.current?.selectionStart ?? inputValue.length;
@@ -345,6 +355,41 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     });
   }, []);
 
+  /**
+   * 排队项「编辑 / 删除」的共用实现：清除本端排队项，并通知 core 丢弃引擎队列里
+   * 尚未消费的同一消息（按 uuid 配对，`docs/user-message-pipeline.md` 第 5.2 节）。
+   * 与 abort 的 queryEnd 回填一样复用 restoreQueuedMessageToInput，但不置
+   * abortedSessionsRef——撤回排队项不打断正在运行的查询。
+   */
+  const discardQueuedMessage = useCallback((restoreToInput: boolean) => {
+    if (!hasHostMessageApi()) {
+      throw new Error('VSCode API not available');
+    }
+
+    const sessionId = props.currentSessionIdRef.current;
+    const queued = sessionId ? props.queuedMessageRef.current.get(sessionId) : undefined;
+    if (!sessionId || !queued) return;
+
+    // 排队项是 webview 拥有的 UI 状态：用户主动撤回时本地先清除（发送按钮随
+    // queuedMessage 恢复可用），引擎侧的同一消息由 discardQueuedMessage 撤销。
+    props.queuedMessageRef.current.delete(sessionId);
+    props.setQueuedMessage(null);
+    if (restoreToInput) {
+      restoreQueuedMessageToInput(props, sessionId, queued);
+    }
+    postMessage({
+      type: 'discardQueuedMessage',
+      sessionId,
+      uuid: queued.uuid,
+    });
+  }, []);
+
+  /** 排队项「编辑」：把排队消息撤回到输入框（与 abort 的回填同一实现） */
+  const handleEditQueuedMessage = useCallback(() => discardQueuedMessage(true), [discardQueuedMessage]);
+
+  /** 排队项「删除」：丢弃排队消息，不回填输入框 */
+  const handleDeleteQueuedMessage = useCallback(() => discardQueuedMessage(false), [discardQueuedMessage]);
+
   const handleCompress = useCallback(() => {
     if (!hasHostMessageApi()) {
       throw new Error('VSCode API not available');
@@ -441,6 +486,8 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     handleSend,
     handleAbort,
     handleCompress,
+    handleEditQueuedMessage,
+    handleDeleteQueuedMessage,
     handleUserChoiceResponse,
     handleUserChoiceSubmit,
     handleChoiceResponse,

@@ -325,8 +325,8 @@ export type HostToWebviewMessage = {
 } | {
   type: 'queuedMessage';
   sessionId: string;
-  /** 该排队消息的 uuid；与补发的用户气泡 `messageUuid` 配对，用于按消息精确清除 */
-  uuid?: string;
+  /** 该排队消息的 uuid；与补发的用户气泡 `messageUuid` 配对，用于按消息精确清除（宿主登记时恒生成） */
+  uuid: string;
   /** 排队的消息内容 */
   content: string;
   /** 排队的消息携带的图片 */
@@ -371,7 +371,6 @@ export type HostToWebviewMessage = {
 } | {
   type: 'smartNamingResult';
   sessionId: string;
-  title: string;
 } | {
   type: 'expandCompactDone';
   sessionId: string;
@@ -688,6 +687,15 @@ export type WebviewToHostMessage = {
   /** 中止当前查询；多视图宿主下携带发起方会话 */
   type: 'abort';
   sessionId?: string;
+} | {
+  /**
+   * 用户撤回排队消息（排队项的「编辑 / 删除」）：宿主翻译成
+   * `UiEvent.queuedMessageDiscarded`，core 按 uuid 丢弃引擎里尚未消费的同一消息。
+   * 「编辑时回填输入框」是 webview 本地表现，不经过本消息。
+   */
+  type: 'discardQueuedMessage';
+  sessionId: string;
+  uuid: string;
 } | {
   type: 'requestSmartNaming';
   sessionId: string;

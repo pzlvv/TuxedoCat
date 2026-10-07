@@ -140,9 +140,16 @@ Skill 命令的注入内容是一条 assistant `tool_use`（`name: 'Skill'`）�
 | 消息进入 LLM 上下文（补发用户气泡） | 引擎消费循环 | `addMessage`（role = user，含 `uuid`） |
 | 内置命令就地执行 | 宿主（`commandDispatched`） | `clearQueuedMessage` |
 | 会话关闭 / 释放 | 宿主 | `clearQueuedMessage` |
+| 用户在排队项上点「编辑 / 删除」 | webview 本地清除；宿主把 `discardQueuedMessage` 翻译成 `UiEvent.queuedMessageDiscarded` | core 按 `uuid` 丢弃引擎里尚未消费的同一消息（已被消费或被更新的排队消息替换时不动） |
 
 内置命令不进入上下文、不产生用户气泡，其排队项由 `commandDispatched` 显式清除。清除按排队项的
 `uuid` 匹配，不按文本内容匹配。
+
+用户撤回（编辑 / 删除）是 webview 自己发起的动作：webview 先本地清除排队项，再发
+`discardQueuedMessage` 让 core 丢弃引擎队列里的同一消息，两步用同一 `uuid` 关联。撤回不置
+abort 标记、不打断正在运行的查询。「编辑」在清除排队项的同时把消息回填输入框（与 abort 在
+`queryEnd` 的回填共用同一实现 `restoreQueuedMessageToInput`），「删除」直接丢弃。存在排队项
+期间发送按钮禁用：排队项一次只有一条，改主意走编辑 / 删除，不靠继续提交覆盖。
 
 ### 5.3 兜底回投
 
@@ -210,7 +217,7 @@ Skill 命令的注入内容是一条 assistant `tool_use`（`name: 'Skill'`）�
 | 用户消息类型 | 用户消息在协议中只有一个类型（`sendMessage`） |
 | 环境查询请求 | webview → host 的请求类型（`requestSkills` / `requestSessionRuntimeStates`）按同一约定声明 |
 | 会话运行时状态推送 | `pushSessionRuntimeStates` 是模块内实现细节；对外入口是消息分发表 |
-| 活动指示动效 | 运行中 = 蓝色流水（渐变背景滚动）；等待用户 = 黄色呼吸（明暗脉动，不滚动）。webview 对话列表与 Electron 标题栏用同一套语义；等待用户态以单一动画表达。未读完成（Electron：用户看不到时完成的任务）= 绿色呼吸一次后常亮，直到该对话被打开（状态机见 `DEVELOPMENT.md` 第 11 章「未读完成呼吸」） |
+| 活动指示动效 | 运行中 = 蓝色流水（渐变背景滚动）；等待用户 = 黄色呼吸（明暗脉动，不滚动）。webview 对话列表与 Electron 标题栏用同一套语义；等待用户态以单一动画表达。未读完成（Electron：用户看不到时完成的任务）= 绿色呼吸一次后常亮，直到该对话被打开；回窗聚焦时正被看着的对话视为已读、不挂灯（状态机见 `DEVELOPMENT.md` 第 11 章「未读完成呼吸」） |
 
 ---
 
@@ -221,7 +228,7 @@ Skill 命令的注入内容是一条 assistant `tool_use`（`name: 'Skill'`）�
 - 一条命令消息最多被解析一次。
 - 内置命令不进入 LLM 上下文，不产生用户气泡。
 - Skill 注入的上下文顺序唯一：用户消息在前，`tool_use` / `tool_result` 在后。
-- 排队项在消息进入上下文、被就地执行、或会话关闭时被清除。
+- 排队项在消息进入上下文、被就地执行、被用户撤回（编辑 / 删除）、或会话关闭时被清除。
 - 排队项以消息 `uuid` 关联，不以文本内容关联。
 - 未被消费的排队项在 `queryEnd` 时回投。
 - 系统环境信息缓存按工作目录分桶；预热刷新该目录条目。
@@ -246,6 +253,9 @@ Skill 命令的注入内容是一条 assistant `tool_use`（`name: 'Skill'`）�
 12. 在已有正文前补 `/` 后选补全：正文保留，结果为 `/${skillName} 正文`。
 13. 输入不以 `/` 开头时不展示补全菜单。
 14. `requestSessionRuntimeStates` 的回包只投递给请求方视图。
+15. 排队项点「编辑」：排队项消失、消息回填输入框、引擎不再消费它（下一轮 LLM 请求不带它）；正在运行的查询不受影响。
+16. 排队项点「删除」：排队项消失，消息不进入上下文；已被消费的消息按 `uuid` 不匹配而保持不动。
+17. 存在排队项时发送按钮禁用；撤回（编辑 / 删除）后恢复可用。
 
 ---
 
@@ -259,7 +269,7 @@ Skill 命令的注入内容是一条 assistant `tool_use`（`name: 'Skill'`）�
 | 轮次边界 / 命令解析 | `src/core/QueryEngine.ts` 的 `messageConsumer` / `resolvePendingCommand` |
 | 命令匹配 | `src/core/CommandDispatcher.ts` 的 `dispatch` |
 | Skill 注入 | `src/core/QueryEngine.ts` 的 `injectSkillToolUse` |
-| 排队项登记 / 清除 | `src/host/ui/webviewMessageHandler.ts` 的 `queuedMessage` 回推；`src/host/WebViewUI.ts` 的 `onCommandSend` / `onQueuedMessage`；`src/webview/hooks/useMessageHandler.ts` 的 `addMessage` / `queryEnd` 分支 |
+| 排队项登记 / 清除 | `src/host/ui/webviewMessageHandler.ts` 的 `queuedMessage` 回推；`src/host/WebViewUI.ts` 的 `onCommandSend` / `onQueuedMessage`；`src/webview/hooks/useMessageHandler.ts` 的 `addMessage` / `queryEnd` 分支；用户撤回：`src/webview/hooks/useAppHandlers.ts` 的 `handleEditQueuedMessage` / `handleDeleteQueuedMessage`（共用 `restoreQueuedMessage.ts`）→ `UiEvent.queuedMessageDiscarded` → `src/core/QueryEngine.ts` 的 `discardPendingUserMessage`（Standalone：`core-rs/src/engine.rs` 的 `on_queued_message_discarded`） |
 | 系统环境信息缓存 | `src/core/prompt/SystemEnvironment.ts` 的 `getSystemDynamicInfo` / `warmupSystemDynamicInfo` |
 | 斜杠补全 | `src/webview/InputArea.tsx` 的 `handleInputChange` / `commitSlash` |
 | 活动指示动效 | `src/webview/styles/index.css` 的 `.running-bar` / `.running-bar--waiting`；`electron/titlebar/styles.css` 的 `.ws-tab-activity` |

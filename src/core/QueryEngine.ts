@@ -167,8 +167,8 @@ export class QueryEngine {
   public upstreamWorkspace?: string;
   /** 会话角色 */
   public readonly role?: string;
-  /** 工作模式 */
-  public readonly workMode: WorkMode;
+  /** 工作模式（spin 接管期间由 setWorkMode 切换，其余时间不变） */
+  public workMode: WorkMode;
   /** 会话关联的提示词预设（运行时值；持久化由 UiEvent 的 core 侧处理写入 meta.json） */
   public promptPresetId: PromptPresetId = 'normal';
   /** 混合模式是否已完成首次 LLM 回复；完成后从极简切换为普通 */
@@ -228,11 +228,6 @@ export class QueryEngine {
    */
   setLastPersistedMessageUuid(uuid: string): void {
     this.lastPersistedMessageUuid = uuid;
-  }
-
-  /** 读取持久化游标（如 Spin 主循环追加消息时需要 parentUuid） */
-  getLastPersistedMessageUuid(): string | null {
-    return this.lastPersistedMessageUuid;
   }
 
   /**
@@ -330,11 +325,11 @@ export class QueryEngine {
    * - 已有 modelConfig 时，将会话关联的 webSearch 覆盖值合并进去
    * - 没有 modelConfig（如 createEngine 预创建）但设置了 webSearchOverride 时，
    *   返回仅含 webSearch 的部分配置，由 callRealLLM 与 settings.json 全量配置合并
-   * - 该值与每次 query() 发给 LLM 的配置保持一致，供 AgentTool/SpinRunner 创建子代理时继承。
+   * - 该值与每次 query() 发给 LLM 的配置保持一致，供 AgentTool 创建子代理时继承（spin 子代理同样经 Agent 工具）。
    */
   /**
    * 获取本会话的工作目录（项目根目录）。
-   * 供 AgentTool / SpinRunner 创建子代理时继承父会话的 cwd，避免退回 process.cwd()。
+   * 供 AgentTool 创建子代理时继承父会话的 cwd（spin 子代理同样经 Agent 工具），避免退回 process.cwd()。
    */
   getCwd(): string {
     return this.config.cwd;
@@ -913,6 +908,25 @@ export class QueryEngine {
     this.pendingUserMsgUuid = null;
     this.pendingUserMsgData = null;
     this.pendingSkillInjection = null;
+  }
+
+  /**
+   * 撤回尚未消费的排队用户消息（webview 排队项的「编辑 / 删除」，
+   * `docs/user-message-pipeline.md` 第 5.2 节）。
+   *
+   * 按 uuid 配对（排队项以消息 uuid 关联，不以文本内容关联）：引擎队列里没有
+   * 该 uuid 的待消费消息——已被消费、被更新的排队消息替换，或本来就不存在——时不动。
+   * 与 abort 的第 1.5 步同样只动「排队未消费」的消息，且不动 abortRequested：
+   * 撤回排队项不打断正在运行的查询。
+   */
+  discardPendingUserMessage(uuid: string): void {
+    if (this.pendingUserMessage === null) return;
+    // uuid 的落点有二：userMsgUuid 选项直填，或随 userMsgData 携带（宿主入口走后者）
+    const pendingUuid = this.pendingUserMsgUuid
+      ?? (this.pendingUserMsgData as { uuid?: string } | null)?.uuid
+      ?? null;
+    if (pendingUuid !== uuid) return;
+    this.clearPendingUserMessage();
   }
 
   /**
@@ -1779,14 +1793,45 @@ export class QueryEngine {
   }
 
   /**
-   * 追加一条只进内存的消息（spin 主循环的系统提示 / 节点结果标记；不持久化、不通知 UI）。
-   *
-   * spin 的落盘由它自己在需要处显式 `appendMessage`（结果消息要立即持久化，
-   * 错误提示只留在内存）；此前经 `as any` 直写私有 `mutableMessages`，
-   * 这里给显式 API 挡住封装绕行。
+   * spin 接管消费循环的开关：`/spin` 进入前置 'spin'（messageConsumer 只清队列、
+   * 主会话不跑 LLM，由 SpinLoop 驱动），SpinLoop 结束后恢复 'normal'。
+   * 模式切换是 core 内部编排，不产生事件；此前由 spin 命令经 `as any` 直写字段。
    */
-  public appendMemoryMessage(msg: Message): void {
+  public setWorkMode(mode: WorkMode): void {
+    this.workMode = mode;
+  }
+
+  /**
+   * 追加一条 spin 进度消息（role=user）并落盘 + 通知 UI。
+   *
+   * 与 agent loop 的消息出口同一抽象：内存上下文、磁盘、UI 事件（message +
+   * conversationListChanged）一次到位，SpinLoop 不再各自 emitToUi / appendMessage
+   * （对齐 Standalone `SpinHost::push_message` 的语义——每条进度都持久化）。
+   * await 返回时消息已在磁盘上，收尾 flush 不会重复落盘。
+   */
+  public async appendSpinMessage(content: string): Promise<void> {
+    const msg: Message = {
+      type: 'user',
+      message: { role: 'user', content },
+      uuid: `spin_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      timestamp: Date.now(),
+    };
     this.mutableMessages.push(msg);
+    try {
+      const { appendMessage } = await import('./history/Conversation.js');
+      const result = await appendMessage(msg, this.sessionID, this.resolvePersistParentUuid(msg));
+      this.lastPersistedMessageUuid = result.uuid;
+      (msg as any)._persisted = true;
+    } catch (err) {
+      logger.warn('QueryEngine', `appendSpinMessage: failed to persist: ${err}`);
+    }
+    emitToUi({
+      type: 'message',
+      sessionId: this.sessionID,
+      data: { role: 'user', content } as MessageData,
+    });
+    // 每落盘一条消息发一次（对齐 appendMessage 的粒度与 Rust push_message）
+    emitToUi({ type: 'conversationListChanged' });
   }
 
   /**

@@ -35,6 +35,7 @@
   "uiEvents": [
     "userMessageSubmitted",
     "abortRequested",
+    "queuedMessageDiscarded",
     "compactRequested",
     "conversationStarted",
     "conversationOpened",
