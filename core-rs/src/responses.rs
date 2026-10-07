@@ -26,7 +26,7 @@ use crate::util;
 ///
 /// Embedded 超过此值时把完整文本持久化到磁盘、消息里只留文件路径 + 预览；
 /// Standalone 侧的超长文本兜底统一由 `tools::cap_tool_result` 那一套承担
-/// （助手回复本身尚未接同类兜底，见 `DIFF.md`）。
+/// （助手回复本身尚未接同类兜底，见 `DEVELOPMENT.md` 第 13.3.15 节）。
 const ASSISTANT_MAX_TEXT_CHARS: usize = 40_000;
 
 /// 供 `ASSISTANT_MAX_TEXT_CHARS` 的说明引用（避免 dead_code 警告）

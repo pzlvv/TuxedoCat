@@ -50,7 +50,7 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
   一份同口径的实现（`DEVELOPMENT.md` 第 11.1 节）；
 - 全局配置与 MCP 配置的读写**不在** Core 侧：两者由 UI 持有，经
   `hostEnvironmentProvided` 的配置快照下发（`docs/core-ui-separation.md` 第 4 节）；
-- 尚未迁入的部分见 `TODO.md`「已知缺口」与 `DIFF.md` 第 3 节。
+- 尚未迁入的部分见 `TODO.md`「已知缺口」；两套实现有意保留的差异见 `DEVELOPMENT.md` 第 13 章。
 
 尚未迁入的能力在 Core 侧表现为明确的提示消息或缺失，不做静默降级。
 

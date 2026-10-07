@@ -561,7 +561,7 @@ const replayMessages = [
             { type: 'tool_use', id: 'call_1', name: 'Bash', input: { command: 'ls' } },
             {
               // 注意：`Edit` 走 `buildEditDiffHunks` 分支（Standalone 不预计算
-              // `diffHunks`，见 `DIFF.md` 第 2.2 节），因此这里用 `Write` 覆盖
+              // `diffHunks`，见 `DEVELOPMENT.md` 第 13.2.2 节），因此这里用 `Write` 覆盖
               // 「非 Edit 且带 before/after」的那条分支。
               type: 'tool_use',
               id: 'call_2',

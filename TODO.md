@@ -7,8 +7,8 @@ Standalone Core 是 Core 的第二套实现。
 目标矩阵预留 Windows arm64，见 `docs/standalone-core.md` 第 4.1 节。
 
 **状态**：本清单 143 项全部完成；预留平台 Windows arm64 的**实际产物**未产出（缺交叉工具链，
-实测记录见 `docs/standalone-core.md` 第 4.3 节）。已知缺口与有意保留的实现差异见
-`DIFF.md`。
+实测记录见 `docs/standalone-core.md` 第 4.3 节）。已知缺口见文末
+「已知缺口（Standalone 下暂不可用）」，有意保留的实现差异见 `DEVELOPMENT.md` 第 13 章。
 
 **后续工作不在本清单**：Standalone Core 移植完成后，工作转入「Core / UI 架构重构」，
 分解见文末**第二部分**（M9–M16 已全部完成）。
@@ -296,7 +296,7 @@ Standalone 下宿主不直接读取 core 的磁盘数据（`docs/standalone-core
       权限决策随机表 `src/test/fixtures/permissionFuzzParity.json`
       （`permissionFuzzParity.test.ts` ↔ `core-rs/src/permission_tests.rs::fuzz_parity_tests`，
       固定种子生成 420 条命令分词 / 引号 / 转义 / 空白组合）。
-      任一侧偏离对照表即失败；有意保留的差异见 `DIFF.md`，未迁入项登记在
+      任一侧偏离对照表即失败；有意保留的差异见 `DEVELOPMENT.md` 第 13 章，未迁入项登记在
       对照表的 `divergences` 里。
 - [x] JS 空白口径统一（U+0085 / U+FEFF）：`util::js_trim` / `util::is_js_whitespace` 显式实现
       ECMAScript WhiteSpace + LineTerminator，替换掉 `permission` / `tools` / `history` / `prompt` /
@@ -338,7 +338,7 @@ Standalone 下宿主不直接读取 core 的磁盘数据（`docs/standalone-core
       `## Tool Usage` 工具清单与 `## Tool Details` 逐工具详细用法、极简预设；
       Read 窗口限制（offset/limit / 2000 行 / 2000 字符 / 50KB / 256KB 预检 / CRLF / 尾随空行）
       新增 10 条 `toolResultParity.json` 用例。有意保留的差异（TS bug / Rust 更健壮）集中登记在
-      新增的 `DIFF.md`。
+      `DEVELOPMENT.md` 第 13 章。
 - [x] Rust 侧覆盖率：`npm run coverage:core` 用 `-C instrument-coverage` + `llvm-tools` 度量，行覆盖 93.6%、函数 91.3%、区域 92.5%（`--check 80` 可作门槛）；测试代码不计入统计。
 - [x] Core 引擎端到端：本地假 LLM + 真实产物跑通「新建会话 → 用户消息 → 流式回复 → 落盘 → 第二轮带上历史」；`standaloneCoreEngine.test.ts` 另覆盖「磁盘上只有 tool_use 的崩溃现场 → 恢复结果先于新用户消息落盘、parentUuid 接链、messageCount 计入」与「冒号结尾触发 reminder 追问时只有一对 queryBegin/queryEnd（消费循环级事件，对齐 Embedded `submitMessage` / `finalizeIdle`）」。
 - [x] 开发期 watch：`scripts/watch-app.js` 在前端 watcher 之外增加 Rust 重建轮询——监听
@@ -347,13 +347,13 @@ Standalone 下宿主不直接读取 core 的磁盘数据（`docs/standalone-core
       与前端 watcher 解耦（不进 `watchers` 数组，构建失败只打日志，不触发「任一 watcher 退出则整体退出」）；
       `WATCH_CORE=0` 可关闭，Rust 侧改动也可手动 `npm run build:core` 重建（README 已补说明）。
 - [x] 对等测试：同一串 `UiEvent` 在两种实现下产出同一串 `CoreEvent`。新增 `src/test/coreEventParity.test.ts`：同一串脚本化 `UiEvent`（宿主环境 → 活动工作目录 → 新建会话 → 打开会话 → 用户消息）分别喂给进程内 Embedded Core 与真实 Rust 产物，两边都指向同一个本地假 LLM，断言（1）产生同一**组** `CoreEvent`、（2）查询生命周期（`queryBegin` / `aiBegin` / `streamMessage` / `streamEnd` / `aiEnd` / `queryEnd`）的**相对顺序**一致、（3）两边都推了会话运行时快照且收尾回到空闲。
-      **它抓出了两处真实偏差**：① Rust 把 `queryEnd` 发在 `sessionRuntimeChanged` **之前**（Embedded 相反），会让托盘/流水灯的收尾晚一拍——已修正；② 落盘驱动的事件（`conversationListChanged` / `projectConversationDirReady`）插入位置不同，根因是 Embedded 的 `startPersist` 是 fire-and-forget、Rust 在调 LLM 前同步落盘；这一条**有意保留**（同步落盘让崩溃现场更可预测），登记在 `DIFF.md` 第 3.3 节。此外 Rust 会多推一次全量快照 `sessionRuntimeChanged`（幂等），比较时单列断言。
+      **它抓出了两处真实偏差**：① Rust 把 `queryEnd` 发在 `sessionRuntimeChanged` **之前**（Embedded 相反），会让托盘/流水灯的收尾晚一拍——已修正；② 落盘驱动的事件（`conversationListChanged` / `projectConversationDirReady`）插入位置不同，根因是 Embedded 的 `startPersist` 是 fire-and-forget、Rust 在调 LLM 前同步落盘；这一条**有意保留**（同步落盘让崩溃现场更可预测，见 `DEVELOPMENT.md` 第 13.3.4 节）。此外 Rust 会多推一次全量快照 `sessionRuntimeChanged`（幂等），比较时单列断言。
 - [x] 端到端（不含真实 LLM 凭据）。五段分别落在四个文件里，全部用本地假 LLM 冒充 OpenAI Chat Completions：
       - 用户消息 → 流式回复 → 落盘：`standaloneCoreEngine.test.ts`（另覆盖崩溃恢复与 reminder 追问只有一对 `queryBegin`/`queryEnd`）；
       - 工具执行：`standaloneCoreTools.test.ts`（真实产物 + 真实文件系统）、`standaloneCorePermission*.test.ts`（权限往返与预览）；
       - **重启续读**：`standaloneCoreRestart.test.ts`——第一轮跑完后**直接杀掉** Core 进程（不发 `shutdown`，模拟崩溃），用同一个 HOME 起新进程，断言对话列表能从磁盘读到该会话、且第二轮 LLM 请求里带上第一轮的用户消息与助手回复（角色序列 `user → assistant → user`）。
       **有意不覆盖**：真实 LLM（需要 API 凭据，不进自动化）与真实宿主（Electron / VS Code 的启动由 `standaloneBootstrap.test.ts` + `bootstrapWiring.test.ts` 覆盖接线，端到端人工验证走 `npm run package:app`）。
-- [x] 文档同步（随各里程碑滚动更新）：`DEVELOPMENT.md` 第 13.2 节的现状表已按当前实现更新（内置工具含后台 Bash / 子代理 / AskUserQuestion、并行工具批、配置读写、子代理单列一行）；`docs/standalone-core.md` 第 1.1 节与第 10 节的「未迁入 / 来源」表已按实际落地状态改写，并注明「待改」的三项（对话列表 / UI 语言 / 配置目录）需要 UI → core 的请求通道，而同机部署下直接读盘仍然成立（规格第 11 节把跨机器列为不覆盖范围）。M2–M7 全部落地后再做一次收尾校对。
+- [x] 文档同步（随各里程碑滚动更新）：`DEVELOPMENT.md` 第 14.2 节的现状表已按当前实现更新（内置工具含后台 Bash / 子代理 / AskUserQuestion、并行工具批、配置读写、子代理单列一行）；`docs/standalone-core.md` 第 1.1 节与第 10 节的「未迁入 / 来源」表已按实际落地状态改写，并注明「待改」的三项（对话列表 / UI 语言 / 配置目录）需要 UI → core 的请求通道，而同机部署下直接读盘仍然成立（规格第 11 节把跨机器列为不覆盖范围）。M2–M7 全部落地后再做一次收尾校对。
 
 完成判据：`npm run package:app` 产出的安装包内含 Rust Core，Standalone 模式可跑通全流程。
 
@@ -493,7 +493,7 @@ Embedded 侧同类问题（仅当 abort 表现为 `TypeError: terminated` 而非
 | M13 | Client / Connection 拆分 | 已完成 |
 | M14 | daemon 进程模型（方案 A） | 已完成 |
 | M15 | 宿主侧 in-process core 调用清理 | 已完成 |
-| M16 | 收尾（DIFF / 文档 / dead_code 审计） | 已完成 |
+| M16 | 收尾（差异清单 / 文档 / dead_code 审计） | 已完成 |
 
 M11 / M12 与 M13 / M14 互相独立，可以并行；M15 是 M13 的前置——先让宿主侧不再依赖
 「core 在同一进程」这个隐含假设，Connection 拆分才不会被这些调用点缠住。
@@ -681,12 +681,12 @@ Standalone 下这些调用读的是宿主进程里不存在的 core 状态，目
 
 ## M16 收尾
 
-- [x] `DIFF.md` 记录本轮新增的实现差异：MCP 默认列表重同步的触发点、模型身份解析的归属、
-      就绪门禁在两种装配下的不同表现。
-- [x] `DEVELOPMENT.md` 第 13 章现状表按当前实现校对（第 4 章的两张事件表已在 M10 更新）。
+- [x] 本轮新增的实现差异登记在 `DEVELOPMENT.md` 第 13 章：MCP 默认列表重同步的触发点、
+      模型身份解析的归属、就绪门禁在两种装配下的不同表现。
+- [x] `DEVELOPMENT.md` 第 14 章现状表按当前实现校对（第 4 章的两张事件表已在 M10 更新）。
 - [x] `core-rs` 的 `#[allow(dead_code)]` 全量审计：逐项确认是「测试专用」还是真死代码；
       `i18n.rs` 的表级 allow 随 M11 消失。
 - [x] `docs/standalone-core.md` 第 10 节「宿主侧已无对 core 磁盘数据的直接读取」的例外表
       按 M15 结果更新。
 - [x] `docs/core-ui-separation.md` 第 9 节「不覆盖范围」复核（重连是否仍排除、跨机器部署的结论）。
-- [x] 全量收尾：Rust + TS + parity 测试 + 类型 + lint 干净，两套实现的一致性差异全部登记在 `DIFF.md`。
+- [x] 全量收尾：Rust + TS + parity 测试 + 类型 + lint 干净，两套实现的一致性差异登记在 `DEVELOPMENT.md` 第 13 章。

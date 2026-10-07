@@ -178,7 +178,7 @@ mod unit_tests {
     fn convert_messages_tolerates_null_elements_in_tool_result_content() {
         // Embedded 的 `toToolOutputPart(null)` 会读 `block.type` 抛 TypeError；
         // Standalone 按 `JSON.stringify(null ?? '')` 处理，不让单个坏元素废掉整轮请求
-        // （见 `DIFF.md` 第 2.10 节）。
+        // （见 `DEVELOPMENT.md` 第 13.2.9 节）。
         let messages = vec![json!({
             "role": "user",
             "content": [{

@@ -24,5 +24,6 @@ exp/
 test-results/
 playwright-report/
 
-# ZCode 本地会话状态（规划稿等），不入库
+# ZCode 本地会话状态（规划稿等）与本地忽略文件，不入库
 .zcode/
+.zcodeignore

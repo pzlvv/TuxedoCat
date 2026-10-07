@@ -1409,7 +1409,7 @@ fn read_xlsx_renders_booleans_like_javascript() {
 #[test]
 fn read_xlsx_keeps_iso_dates_as_text() {
     // 有意保留的差异：SheetJS 读 `t="d"` 单元格时会带约 43 秒的系统性偏移，
-    // Standalone 原样输出单元格里的 ISO 文本（见 DIFF.md 1.6）。
+    // Standalone 原样输出单元格里的 ISO 文本（见 `DEVELOPMENT.md` 第 13.1.6 节）。
     let sandbox = Sandbox::new("tools-read-xlsx-iso");
     write_minimal_xlsx(
         &sandbox.workspace.join("a.xlsx"),
