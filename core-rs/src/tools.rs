@@ -1311,17 +1311,21 @@ fn background_result_text(
         let elapsed_note = elapsed_ms
             .map(|ms| format!(" after {ms}ms"))
             .unwrap_or_default();
+        let reminder_label = crate::bash_task::background_reminder_interval_label(0);
         format!(
             "Command moved to the background{elapsed_note} (task ID: {task_id}). Output is \
              being written to: {output_path}. Do not poll for the result — you will be notified \
-             when it completes. Continue with other tasks in the meantime; if there is nothing \
+             when it completes. If it is still running, you will get a progress reminder in \
+             {reminder_label}. Continue with other tasks in the meantime; if there is nothing \
              else to do, end this turn."
         )
     } else {
+        let reminder_label = crate::bash_task::background_reminder_interval_label(0);
         format!(
             "Command running in background with ID: {task_id}. Output is being written to: \
-             {output_path}. You will be notified automatically when it completes. Continue \
-             with other tasks in the meantime."
+             {output_path}. You will be notified automatically when it completes. If it is still \
+             running, you will get a progress reminder in {reminder_label}. Continue with other \
+             tasks in the meantime."
         )
     };
     if auto_backgrounded && !stderr.is_empty() {

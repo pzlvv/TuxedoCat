@@ -3734,6 +3734,23 @@ fn assistant_reply_ending_with_a_colon_triggers_a_silent_reminder_follow_up() {
     assert_eq!(metadata["messageCount"], json!(4));
 }
 
+/// 后台任务提醒投递：同一 tick 多个任务到点时**追加**而不是覆盖。
+///
+/// 对齐 Embedded `QueryEngine.deliverBackgroundReminder`（`src/test/backgroundReminderDelivery.test.ts`）。
+#[test]
+fn background_reminder_appends_to_pending_reminder() {
+    let harness = EngineHarness::allow_all();
+    let state = harness.core.session("s-rem");
+    // 假装消费循环在跑：投递只入队，不 spawn 消费者线程（避免真跑 LLM）
+    state.lock().unwrap().running = true;
+
+    harness.core.deliver_background_reminder("s-rem", "A");
+    harness.core.deliver_background_reminder("s-rem", "B");
+
+    let pending = state.lock().unwrap().pending_reminder.clone();
+    assert_eq!(pending.as_deref(), Some("A\n\nB"));
+}
+
 #[test]
 fn truncated_stop_reason_triggers_a_reminder_follow_up() {
     let sandbox = Sandbox::new("engine-reminder-stop-reason");

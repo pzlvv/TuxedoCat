@@ -93,6 +93,8 @@ fn run_core() {
     // MCP：清掉没有任何会话引用的残留进程（上一次 Core 崩溃留下的孤儿）
     crate::mcp::prune();
     let core = Arc::new(Core::new(Arc::clone(&shared_bus)));
+    // 后台任务周期性提醒：进程级调度线程，空闲满一个间隔后向 LLM 投递 reminder
+    core.start_background_reminder_scheduler();
 
     let code = run_frame_loop(reader, &core, &shared_bus);
 

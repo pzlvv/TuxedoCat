@@ -32,6 +32,36 @@ const POLL_INTERVAL_MS: u64 = 30;
 /// 完成通知里附带的 stdout 预览上限（对齐 `buildCompletionNotification`）
 const NOTIFICATION_OUTPUT_CHARS: usize = 500;
 
+/// 后台任务周期性提醒的间隔（分钟）：第 1 次 5min，其后 10 / 20 / 30min，再往后固定 30min。
+///
+/// 与 Embedded `BACKGROUND_REMINDER_INTERVALS_MIN` 逐项一致（`src/core/tools/bash/BackgroundReminder.ts`）。
+pub const BACKGROUND_REMINDER_INTERVALS_MIN: [u64; 4] = [5, 10, 20, 30];
+
+/// 提醒里附带的任务输出尾部字符数（与完成通知的 500 保持一致）
+pub const BACKGROUND_REMINDER_OUTPUT_CHARS: usize = 500;
+
+/// 提醒调度线程的轮询间隔：1s 粒度足够（最小间隔是分钟级），开销可忽略
+pub const BACKGROUND_REMINDER_TICK_MS: u64 = 1000;
+
+/// 第 `round` 次提醒与上一次之间的分钟数（round 从 0 起；越界取最后一档）
+pub fn background_reminder_interval_min(round: usize) -> u64 {
+    BACKGROUND_REMINDER_INTERVALS_MIN[round.min(BACKGROUND_REMINDER_INTERVALS_MIN.len() - 1)]
+}
+
+/// 第 `round` 次提醒的间隔标签（如 `5min` / `30min`）
+pub fn background_reminder_interval_label(round: usize) -> String {
+    format!("{}min", background_reminder_interval_min(round))
+}
+
+/// 按当前 OS 生成可执行的 kill 命令（与提醒文案同一口径）
+pub fn background_reminder_kill_command(pid: u32) -> String {
+    if cfg!(windows) {
+        format!("taskkill /T /F /PID {pid}")
+    } else {
+        format!("kill {pid}")
+    }
+}
+
 // ==================== 输出文件 ====================
 
 /// 任务输出目录：`TMPDIR` / `TEMP` / `/tmp` 之下（对齐 `TaskOutput.getTaskOutputDir`）。
@@ -105,13 +135,15 @@ pub struct FinishedTask {
     pub duration_ms: u64,
 }
 
-/// 运行中的后台任务快照（兜底提醒用）
+/// 运行中的后台任务快照（提醒调度用）
 #[derive(Clone, Debug)]
 pub struct RunningTask {
     pub task_id: String,
     pub description: String,
     pub command: String,
     pub pid: u32,
+    /// 任务开始时间（wall clock，毫秒），用于报告「已执行时间」
+    pub start_time: u64,
 }
 
 struct TaskRecord {
@@ -152,6 +184,7 @@ pub fn running_tasks_for_session(session_id: &str) -> Vec<RunningTask> {
             description: task.description.clone(),
             command: task.command.clone(),
             pid: task.pid,
+            start_time: task.start_time,
         })
         .collect()
 }
@@ -298,6 +331,114 @@ pub fn build_completion_notification(finished: &FinishedTask, stdout: &str) -> S
         }
         lines.push(preview);
     }
+    lines.join("\n")
+}
+
+// ==================== 周期性提醒 ====================
+
+/// 提醒时钟状态：`round` 是下一次提醒的序号，`accumulated_ms` 是自上次提醒以来
+/// 累积的「空闲」时长（对齐 Embedded `ReminderClock`）。
+#[derive(Clone, Debug, Default)]
+pub struct ReminderClock {
+    pub round: usize,
+    pub accumulated_ms: u64,
+}
+
+/// 推进提醒时钟：累加 `awake_ms`，返回本次到点的提醒轮次（从早到晚）。
+///
+/// 时钟只由调用方在会话空闲时推进；query engine 有任务时调用方不累加，
+/// 因此这里不需要知道查询状态。一次推进可能跨过多个间隔（进程被挂起等），
+/// 逐档扣减，保证后续轮次不漂移。对齐 Embedded `advanceReminderClock`。
+pub fn advance_reminder_clock(clock: &mut ReminderClock, awake_ms: u64) -> Vec<usize> {
+    let mut fired = Vec::new();
+    clock.accumulated_ms = clock.accumulated_ms.saturating_add(awake_ms);
+    loop {
+        let due = background_reminder_interval_min(clock.round) * 60_000;
+        if clock.accumulated_ms < due {
+            break;
+        }
+        clock.accumulated_ms -= due;
+        fired.push(clock.round);
+        clock.round += 1;
+    }
+    fired
+}
+
+/// 读取任务输出文件的尾部（最多 `max_chars * 4` 字节，按 UTF-8 解码）。
+///
+/// 后台任务由子进程直接写文件，这里只取尾部做提醒预览，避免把整个输出读进内存。
+pub fn read_output_tail(task_id: &str, max_chars: usize) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let Ok(mut file) = std::fs::File::open(task_output_path(task_id)) else {
+        return String::new();
+    };
+    let Ok(size) = file.metadata().map(|meta| meta.len()) else {
+        return String::new();
+    };
+    if size == 0 {
+        return String::new();
+    }
+    let byte_count = size.min((max_chars as u64).saturating_mul(4)) as usize;
+    if file
+        .seek(SeekFrom::Start(size - byte_count as u64))
+        .is_err()
+    {
+        return String::new();
+    }
+    let mut buffer = vec![0u8; byte_count];
+    let read = file.read(&mut buffer).unwrap_or(0);
+    buffer.truncate(read);
+    String::from_utf8_lossy(&buffer).into_owned()
+}
+
+/// 构造后台任务的提醒文案（纯文本，纯函数）。
+///
+/// 对齐 Embedded `buildBackgroundReminderText`：两侧逐字一致，差异即对等测试失败。
+#[allow(clippy::too_many_arguments)]
+pub fn build_background_reminder_text(
+    task_id: &str,
+    description: &str,
+    command: &str,
+    elapsed_ms: u64,
+    output: &str,
+    next_interval_label: &str,
+    kill_command: &str,
+) -> String {
+    let command_part = if !command.is_empty() && command != description {
+        format!("\nCommand: {command}")
+    } else {
+        String::new()
+    };
+    let mut lines = vec![
+        "<reminder>".to_string(),
+        format!("Background bash task {task_id} is still running."),
+        format!("Description: {description}{command_part}"),
+        format!("Elapsed: {}", format_duration(elapsed_ms)),
+    ];
+
+    let output = util::js_trim_end(output);
+    if !output.is_empty() {
+        let preview = if util::utf16_len(output) > BACKGROUND_REMINDER_OUTPUT_CHARS {
+            format!(
+                "...\n{}",
+                util::utf16_tail(output, BACKGROUND_REMINDER_OUTPUT_CHARS)
+            )
+        } else {
+            output.to_string()
+        };
+        lines.push(format!(
+            "Current output (last {BACKGROUND_REMINDER_OUTPUT_CHARS} chars):"
+        ));
+        lines.push(preview);
+    }
+
+    lines.push(format!("Next reminder in {next_interval_label}."));
+    lines.push(format!(
+        "If this task is no longer needed, kill it: {kill_command}"
+    ));
+    lines.push("Do not sleep or poll; if there is nothing else to do, end this turn.".to_string());
+    lines.push("</reminder>".to_string());
     lines.join("\n")
 }
 

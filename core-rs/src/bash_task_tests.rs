@@ -305,3 +305,79 @@ fn completing_tasks_fire_the_completed_event() {
     assert_eq!(seen.lock().unwrap().len(), before);
     reset_for_test();
 }
+
+/// 后台任务提醒对等测试：与 Embedded 共用 `src/test/fixtures/backgroundReminderParity.json`。
+///
+/// 对齐 `src/test/backgroundReminderParity.test.ts`：间隔档位（5 / 10 / 20 / 30 / 30…）、
+/// 提醒时钟推进（空闲累加 / 暂停不累加 / 一次跨多档）、提醒文案逐字一致。
+#[test]
+fn background_reminder_parity() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../src/test/fixtures/backgroundReminderParity.json"
+    ))
+    .expect("parse backgroundReminderParity.json");
+
+    let intervals: Vec<u64> = fixture["intervalsMin"]
+        .as_array()
+        .expect("intervalsMin")
+        .iter()
+        .map(|value| value.as_u64().expect("interval"))
+        .collect();
+    assert_eq!(intervals, BACKGROUND_REMINDER_INTERVALS_MIN.to_vec());
+
+    assert_eq!(
+        fixture["firstLabel"].as_str().expect("firstLabel"),
+        background_reminder_interval_label(0)
+    );
+
+    for case in fixture["intervalLabelCases"].as_array().expect("intervalLabelCases") {
+        let round = case["round"].as_u64().expect("round") as usize;
+        assert_eq!(
+            background_reminder_interval_min(round),
+            case["min"].as_u64().expect("min"),
+            "round {round}"
+        );
+        assert_eq!(
+            background_reminder_interval_label(round),
+            case["label"].as_str().expect("label"),
+            "round {round}"
+        );
+    }
+
+    for case in fixture["clockCases"].as_array().expect("clockCases") {
+        let mut clock = ReminderClock::default();
+        for step in case["steps"].as_array().expect("steps") {
+            let awake_ms = step["awakeMs"].as_u64().expect("awakeMs");
+            let expected: Vec<usize> = step["fired"]
+                .as_array()
+                .expect("fired")
+                .iter()
+                .map(|value| value.as_u64().expect("round") as usize)
+                .collect();
+            assert_eq!(
+                advance_reminder_clock(&mut clock, awake_ms),
+                expected,
+                "case: {}",
+                case["name"]
+            );
+        }
+    }
+
+    for case in fixture["textCases"].as_array().expect("textCases") {
+        let text = build_background_reminder_text(
+            case["taskId"].as_str().expect("taskId"),
+            case["description"].as_str().expect("description"),
+            case["command"].as_str().expect("command"),
+            case["elapsedMs"].as_u64().expect("elapsedMs"),
+            case["output"].as_str().expect("output"),
+            case["nextIntervalLabel"].as_str().expect("nextIntervalLabel"),
+            case["killCommand"].as_str().expect("killCommand"),
+        );
+        assert_eq!(
+            text,
+            case["expected"].as_str().expect("expected"),
+            "case: {}",
+            case["name"]
+        );
+    }
+}

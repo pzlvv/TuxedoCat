@@ -937,6 +937,12 @@ webview 对话树的运行标记、两端 abort 按钮），生产者是 `src/co
 对外快照里每个会话都递归计算派生值，因此子代理的 `query` / `waiting` / `compacting` / `background`
 变化会连带刷新其创建者的 `idle` / `subAgentRunning`。
 
+`background` 来源还驱动后台任务的两类提醒：查询结束时的一次性兜底提醒（`QueryEngine` /
+`engine.rs` 的消费循环收尾）与周期性进度提醒（`tools/bash/BackgroundReminder`，Standalone 为
+`engine.rs` 的调度线程）。周期提醒只在该会话 `queryRunning` / `compacting` 均为假（abort 按钮为黄）
+时推进每个运行中任务的时钟——只看引擎状态，不看查询由什么触发——按 5 / 10 / 20 / 30min
+（此后 30min）向 LLM 投递 reminder（规格见 `docs/background-reminder.md`）。
+
 - `waiting` 的取值由 `markSessionWaiting` 直接驱动：入队时由 `Integration.requestUserChoice`
   标记，webview 弹出 / 应答时由 `UiEvent.userChoicePendingChanged` 标记。
   `sessionResources.isSessionIdle` 经 `isSessionWaiting(sessionId)` 读同一份事实。

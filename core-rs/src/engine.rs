@@ -244,6 +244,10 @@ pub struct SessionState {
     /// 已发过「仍有后台任务在跑」兜底提醒的任务 ID（`remindedBackgroundTaskIds`）：
     /// 同一批任务只提醒一次，避免「提醒 → 查询 → 提醒」递归。
     pub reminded_background_tasks: HashSet<String>,
+    /// 后台任务的周期性提醒时钟（`taskId -> 时钟`，对齐 Embedded
+    /// `tools/bash/BackgroundReminder` 的调度表）。只在会话空闲时前进；
+    /// 任务结束 / 会话关闭后清理。
+    pub reminder_entries: HashMap<String, ReminderEntry>,
     /// 子代理会话的创建者（`AgentTool` 写入；普通会话为 None）。
     pub parent_session_id: Option<String>,
     /// 子代理会话的静态系统提示词（`AgentTool` 的 `staticSystemPrompt`）。
@@ -266,6 +270,14 @@ pub struct SessionState {
 pub struct SkillInjection {
     pub skill_name: String,
     pub skill_args: String,
+}
+
+/// 一个后台任务的提醒调度项（对齐 Embedded `BackgroundReminder` 的登记项）：
+/// 纯时钟 + 上次推进时刻。任务描述 / 命令 / 开始时间在推进时从注册表读取。
+#[derive(Clone, Debug)]
+pub struct ReminderEntry {
+    pub clock: crate::bash_task::ReminderClock,
+    pub last_tick_ms: u64,
 }
 
 impl SessionState {
@@ -293,6 +305,7 @@ impl SessionState {
             compacting: false,
             auto_compact_tracking: None,
             reminded_background_tasks: HashSet::new(),
+            reminder_entries: HashMap::new(),
             parent_session_id: None,
             static_system_prompt: None,
             system_prompt_prefix: None,
@@ -696,6 +709,133 @@ impl Core {
                 state.running = true;
                 state.cancel.store(false, Ordering::Relaxed);
                 state.silent_abort = false;
+                true
+            }
+        };
+        self.emit_runtime();
+        if should_start {
+            let core = Arc::clone(self);
+            let worker_session = session_id.to_string();
+            std::thread::spawn(move || {
+                run_consumer(core, worker_session);
+            });
+        }
+    }
+
+    /// 启动后台任务的周期性提醒调度线程（进程级，只调一次）。
+    ///
+    /// 线程每秒推进一次所有会话的提醒时钟（`tick_background_reminders`）；持 `Weak`
+    /// 引用，`Core` 释放后线程自行退出。
+    pub fn start_background_reminder_scheduler(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(
+                bash_task::BACKGROUND_REMINDER_TICK_MS,
+            ));
+            let Some(core) = weak.upgrade() else {
+                break;
+            };
+            core.tick_background_reminders(util::now_millis());
+        });
+    }
+
+    /// 推进一次所有会话的后台任务提醒时钟（对齐 Embedded `tickBackgroundReminders`）。
+    ///
+    /// 时钟只在会话空闲（`running` / `compacting` 均为假，即 abort 按钮为黄）时前进；
+    /// 到点则投递一条 reminder（会启动消费循环让 LLM 立即看到）。
+    pub fn tick_background_reminders(self: &Arc<Self>, now_ms: u64) {
+        let session_ids: Vec<String> = self.session_order.lock().unwrap().clone();
+        for session_id in session_ids {
+            let Some(state) = self.session_if_exists(&session_id) else {
+                continue;
+            };
+            // 先取运行中任务快照，再锁会话状态：避免与 `handle_finish`
+            // （先锁任务表、后经钩子锁会话状态）形成锁序倒置。
+            let running = bash_task::running_tasks_for_session(&session_id);
+            if running.is_empty() {
+                let mut guard = state.lock().unwrap();
+                guard.reminder_entries.clear();
+                continue;
+            }
+            let mut due: Vec<(String, usize)> = Vec::new();
+            {
+                let mut guard = state.lock().unwrap();
+                let awake = !guard.running && !guard.compacting;
+                let running_ids: HashSet<&str> =
+                    running.iter().map(|task| task.task_id.as_str()).collect();
+                guard
+                    .reminder_entries
+                    .retain(|task_id, _| running_ids.contains(task_id.as_str()));
+                for task in &running {
+                    let entry = guard
+                        .reminder_entries
+                        .entry(task.task_id.clone())
+                        .or_insert_with(|| ReminderEntry {
+                            clock: bash_task::ReminderClock::default(),
+                            last_tick_ms: now_ms,
+                        });
+                    let delta = now_ms.saturating_sub(entry.last_tick_ms);
+                    entry.last_tick_ms = now_ms;
+                    if !awake || delta == 0 {
+                        continue;
+                    }
+                    let fired = bash_task::advance_reminder_clock(&mut entry.clock, delta);
+                    if let Some(round) = fired.last().copied() {
+                        due.push((task.task_id.clone(), round));
+                    }
+                }
+            }
+
+            for (task_id, round) in due {
+                let Some(task) = running.iter().find(|task| task.task_id == task_id) else {
+                    continue;
+                };
+                let content = bash_task::build_background_reminder_text(
+                    &task.task_id,
+                    &task.description,
+                    &task.command,
+                    now_ms.saturating_sub(task.start_time),
+                    &bash_task::read_output_tail(
+                        &task.task_id,
+                        bash_task::BACKGROUND_REMINDER_OUTPUT_CHARS,
+                    ),
+                    &bash_task::background_reminder_interval_label(round + 1),
+                    &bash_task::background_reminder_kill_command(task.pid),
+                );
+                self.deliver_background_reminder(&session_id, &content);
+            }
+        }
+    }
+
+    /// 投递一条后台任务的周期性提醒（对齐 Embedded
+    /// `QueryEngine.deliverBackgroundReminder`）：写进 `pending_reminder` 并唤醒消费循环。
+    ///
+    /// 提醒是 silent 的 user 消息（LLM 可见、UI 不可见）。压缩期间只丢弃：
+    /// 调度线程下一轮会再发一次。
+    pub fn deliver_background_reminder(self: &Arc<Self>, session_id: &str, content: &str) {
+        let Some(state) = self.session_if_exists(session_id) else {
+            return;
+        };
+        let should_start = {
+            let mut guard = state.lock().unwrap();
+            if guard.cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            // 压缩会整体替换消息数组，此时注入会被覆盖；交给下一轮调度。
+            if guard.compacting {
+                return;
+            }
+            // 同一 tick 可能有多个任务同时到点：追加而不是覆盖，否则先到点的会被顶掉。
+            guard.pending_reminder = Some(match guard.pending_reminder.take() {
+                Some(existing) => format!("{existing}\n\n{content}"),
+                None => content.to_string(),
+            });
+            if guard.running {
+                false
+            } else {
+                guard.running = true;
+                guard.cancel.store(false, Ordering::Relaxed);
+                guard.silent_abort = false;
                 true
             }
         };
@@ -1684,6 +1824,8 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
                         user_message: None,
                     }),
                     None => {
+                        // 队列排空：会话转空闲。后台任务的周期性提醒由进程级调度线程
+                        // （`tick_background_reminders`）在空闲满一个间隔后另行投递。
                         guard.running = false;
                         None
                     }
@@ -2423,6 +2565,10 @@ fn agent_source_info(agent_id: &str) -> String {
 ///
 /// 同一批 taskId 只提醒一次（`reminded_background_tasks`），因此不会
 /// 「提醒 → 查询 → 提醒」递归。
+///
+/// 与周期提醒（`deliver_background_reminder` / `tick_background_reminders`）的分工：
+/// 本条是查询刚结束时的一次性兜底；周期提醒在空闲满 5min 后按 5 / 10 / 20 / 30min
+/// 档位持续汇报进度。
 fn background_reminder(session_id: &str, state: &mut SessionState) -> Option<String> {
     let tasks: Vec<bash_task::RunningTask> = bash_task::running_tasks_for_session(session_id)
         .into_iter()

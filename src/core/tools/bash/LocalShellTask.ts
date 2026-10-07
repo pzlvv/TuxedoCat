@@ -2,7 +2,8 @@
  * LocalShellTask - 后台 shell 任务生命周期管理
  *
  * 负责将已在运行的 shell 命令注册为后台任务，并在任务完成时
- * 通过 agentMessageQueue 向 LLM 发送通知。
+ * 通过 agentMessageQueue 向 LLM 发送通知；同时为每个任务挂上
+ * 周期性提醒时钟（`BackgroundReminder`，规格见 `docs/background-reminder.md`）。
  *
  * 参考 claude-code-main 的 LocalShellTask 设计
  */
@@ -10,6 +11,12 @@
 import type { ShellCommand } from './ShellCommand.js';
 import { logger } from '../../Logger.js';
 import { markSessionBackground } from '../../sessionRuntime.js';
+import {
+  formatDuration,
+  registerBackgroundReminder,
+  unregisterBackgroundReminder,
+  unregisterSessionBackgroundReminders,
+} from './BackgroundReminder.js';
 
 /**
  * 后台任务增减后同步 sessionRuntime 的 background 事实。
@@ -123,12 +130,14 @@ export function registerBackgroundTask(
   // 将进程转为后台
   shellCommand.background(taskId);
   syncBackgroundState(sessionID);
+  startTaskReminder(taskState, shellCommand.pid);
 
   // 监听结果
   void shellCommand.result.then(result => {
     const task = backgroundTasks.get(taskId);
     if (!task) return;
 
+    unregisterBackgroundReminder(taskId);
     const finalStatus = result.code === 0 ? 'completed' : 'failed';
     task.status = finalStatus;
     task.endTime = Date.now();
@@ -213,12 +222,14 @@ export function backgroundExistingTask(
     return false;
   }
   syncBackgroundState(sessionID);
+  startTaskReminder(taskState, shellCommand.pid);
 
   // 监听结果
   void shellCommand.result.then(result => {
     const task = backgroundTasks.get(taskId);
     if (!task) return;
 
+    unregisterBackgroundReminder(taskId);
     const finalStatus = result.code === 0 ? 'completed' : 'failed';
     task.status = finalStatus;
     task.endTime = Date.now();
@@ -342,7 +353,11 @@ export function abortBackgroundTasksForSession(sessionID: string): number {
     logger.info('LocalShellTask', `Aborted background task ${taskId} for session ${sessionID}`);
     count++;
   }
-  if (count > 0) syncBackgroundState(sessionID);
+  if (count > 0) {
+    // 被中止的任务不再提醒（先移除再 kill，result 回调查不到 task 也不会重复注销）
+    unregisterSessionBackgroundReminders(sessionID);
+    syncBackgroundState(sessionID);
+  }
   return count;
 }
 
@@ -380,12 +395,35 @@ function notifyEngine(notification: string, sessionID?: string, agentId?: string
 }
 
 /**
- * 格式化时长
+ * 周期性提醒的投递：只投给该会话自己的引擎（找不到就丢弃，不误发到别的会话）。
+ *
+ * 与 `notifyEngine` 的区别：完成通知走 `enqueueAgentMessage`（UI 可见的纯文本
+ * 系统消息）；提醒走 `deliverBackgroundReminder`（silent、UI 不可见，只喂给 LLM）。
  */
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  const minutes = Math.floor(ms / 60000);
-  const seconds = Math.round((ms % 60000) / 1000);
-  return `${minutes}m ${seconds}s`;
+function deliverReminder(sessionID: string | undefined, content: string): void {
+  if (!sessionID) return;
+  try {
+    const { getSessionEngine } = require('../../QueryEngine.js');
+    const engine = getSessionEngine(sessionID);
+    if (engine && typeof engine.deliverBackgroundReminder === 'function') {
+      engine.deliverBackgroundReminder(content);
+    }
+  } catch (error) {
+    logger.error('LocalShellTask', 'Failed to deliver background reminder:', error);
+  }
+}
+
+/** 为刚登记的后台任务挂上提醒时钟（在 `syncBackgroundState` 之后调用，保证会话已登记） */
+function startTaskReminder(task: LocalShellTaskState, pid: number | undefined): void {
+  if (!task.sessionID) return;
+  const sessionID = task.sessionID;
+  registerBackgroundReminder({
+    taskId: task.taskId,
+    sessionID,
+    description: task.description,
+    command: task.command,
+    startTime: task.startTime,
+    pid,
+    deliver: (content) => deliverReminder(sessionID, content),
+  });
 }

@@ -210,7 +210,7 @@ export class QueryEngine {
   /** 待处理的 Reminder 消息（LLM 可见，UI 不可见） */
   private pendingReminder: string | null = null;
   /**
-   * 已提醒过「后台仍在运行」的后台任务 ID 集合。
+   * 已提醒过「后台仍在运行」兜底提醒的任务 ID 集合。
    * 用于保证每个后台任务只提醒一次，避免「提醒 → 查询 → 提醒」的无限递归。
    */
   private remindedBackgroundTaskIds = new Set<string>();
@@ -634,6 +634,31 @@ export class QueryEngine {
   }
 
   /**
+   * 投递一条后台 Bash 任务的周期性提醒（由 `tools/bash/BackgroundReminder` 的
+   * 调度器在会话空闲满一个间隔时调用）。
+   *
+   * 提醒是 silent 的 `pendingReminder`（LLM 可见、UI 不可见），会像兜底提醒一样
+   * 主动启动消费循环让 LLM 立即看到。压缩期间只丢弃：调度器下一轮会再发一次。
+   *
+   * 同一 tick 可能有多个任务同时到点：追加到已有 `pendingReminder` 之后而不是覆盖，
+   * 否则先到点的提醒会被后到点的顶掉。两条提醒之间空一行分隔。
+   */
+  deliverBackgroundReminder(content: string): void {
+    // spin 模式没有 LLM 消费循环，提醒不会被读取
+    if (this.workMode === 'spin') return;
+    if (this.isAborted()) return;
+    // 压缩会整体替换消息数组，此时注入会被覆盖；交给下一轮调度
+    if (isCompacting(this.sessionID)) return;
+
+    this.pendingReminder = this.pendingReminder === null
+      ? content
+      : `${this.pendingReminder}\n\n${content}`;
+    if (!this.isConsumerRunning) {
+      this.beginConsumer(true);
+    }
+  }
+
+  /**
    * 查询结束（End）后的兜底提醒：若本会话仍有运行中的后台 Bash 任务，
    * 向 LLM 注入一条 reminder，列出当前后台进程（taskId + pid + 命令），让 LLM 二选一：
    * - 不再需要的 → 执行 reminder 里按当前 OS 生成好的 kill 命令；
@@ -642,6 +667,10 @@ export class QueryEngine {
    * 只发一次：已提醒过的 taskId 记录在 remindedBackgroundTaskIds 中，
    * 后续 finalizeIdle 不会对同一批任务重复提醒，因此即使提醒本身触发了一轮
    * 新的查询（本方法会启动消费循环），也不会出现「提醒 → 查询 → 提醒」的递归。
+   *
+   * 与周期提醒（`deliverBackgroundReminder`）的分工：本条是查询刚结束时的一次性
+   * 兜底（让 LLM 立刻决定是否 kill 掉不需要的任务）；周期提醒在空闲满 5min 后按
+   * 5 / 10 / 20 / 30min 档位持续汇报进度。
    */
   private async maybeRemindBackgroundTasks(): Promise<void> {
     // spin 模式没有 LLM 消费循环，提醒不会被读取

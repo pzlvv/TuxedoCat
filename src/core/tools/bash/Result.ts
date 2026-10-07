@@ -7,6 +7,7 @@
 
 import type { BashToolOutput } from './Types.js';
 import { getTaskOutputPath } from './TaskOutput.js';
+import { BACKGROUND_REMINDER_FIRST_LABEL } from './BackgroundReminder.js';
 
 /**
  * 将工具结果映射为工具结果块参数
@@ -32,13 +33,13 @@ export function mapToolResultToToolResultBlockParam(
       // 自动转后台的说明只在这里拼一次：`Exec.ts` 只回传命令自身的 stderr 与
       // `find` 提示，避免 taskId / 完成通知在同一个 tool_result 里重复两遍。
       const elapsedNote = backgroundElapsedMs === undefined ? '' : ` after ${backgroundElapsedMs}ms`;
-      backgroundInfo = `Command moved to the background${elapsedNote} (task ID: ${backgroundTaskId}). Output is being written to: ${outputPath}. Do not poll for the result — you will be notified when it completes. Continue with other tasks in the meantime; if there is nothing else to do, end this turn.`;
+      backgroundInfo = `Command moved to the background${elapsedNote} (task ID: ${backgroundTaskId}). Output is being written to: ${outputPath}. Do not poll for the result — you will be notified when it completes. If it is still running, you will get a progress reminder in ${BACKGROUND_REMINDER_FIRST_LABEL}. Continue with other tasks in the meantime; if there is nothing else to do, end this turn.`;
       // 命令自身的 stderr 与 `find` 提示附在说明之后
       if (stderr) {
         backgroundInfo += '\n' + stderr;
       }
     } else {
-      backgroundInfo = `Command running in background with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}. You will be notified automatically when it completes. Continue with other tasks in the meantime.`;
+      backgroundInfo = `Command running in background with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}. You will be notified automatically when it completes. If it is still running, you will get a progress reminder in ${BACKGROUND_REMINDER_FIRST_LABEL}. Continue with other tasks in the meantime.`;
     }
 
     // 保留已累积的 stdout：命令转入后台前，前端 Bash 卡片已经在流式阶段展示过

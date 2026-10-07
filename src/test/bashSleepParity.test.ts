@@ -148,8 +148,12 @@ async function run(): Promise<void> {
     check(
       '自动转后台说明提示不要轮询、先去处理其它事情',
       mappedText.includes(
-        'Do not poll for the result — you will be notified when it completes. Continue with other tasks in the meantime; if there is nothing else to do, end this turn.',
+        'Do not poll for the result — you will be notified when it completes. If it is still running, you will get a progress reminder in 5min. Continue with other tasks in the meantime; if there is nothing else to do, end this turn.',
       ),
+    );
+    check(
+      '自动转后台说明带下次提醒间隔',
+      mappedText.includes('you will get a progress reminder in 5min.'),
     );
     abortBackgroundTasksForSession('s1');
   } finally {

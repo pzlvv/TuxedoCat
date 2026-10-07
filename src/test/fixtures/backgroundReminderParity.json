@@ -1,0 +1,172 @@
+{
+  "note": "后台任务周期性提醒对照表：Embedded（src/core/tools/bash/BackgroundReminder.ts）与 Standalone（core-rs/src/bash_task.rs）逐字一致。由 scripts/gen-background-reminder-parity.mjs 生成。",
+  "intervalsMin": [
+    5,
+    10,
+    20,
+    30
+  ],
+  "firstLabel": "5min",
+  "intervalLabelCases": [
+    {
+      "round": 0,
+      "min": 5,
+      "label": "5min"
+    },
+    {
+      "round": 1,
+      "min": 10,
+      "label": "10min"
+    },
+    {
+      "round": 2,
+      "min": 20,
+      "label": "20min"
+    },
+    {
+      "round": 3,
+      "min": 30,
+      "label": "30min"
+    },
+    {
+      "round": 4,
+      "min": 30,
+      "label": "30min"
+    },
+    {
+      "round": 100,
+      "min": 30,
+      "label": "30min"
+    }
+  ],
+  "clockCases": [
+    {
+      "name": "未满 5min 不触发",
+      "steps": [
+        {
+          "awakeMs": 299999,
+          "fired": []
+        }
+      ]
+    },
+    {
+      "name": "满 5min 触发第 0 轮",
+      "steps": [
+        {
+          "awakeMs": 300000,
+          "fired": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "按 5 / 10 / 20 / 30 / 30 依次到点",
+      "steps": [
+        {
+          "awakeMs": 300000,
+          "fired": [
+            0
+          ]
+        },
+        {
+          "awakeMs": 600000,
+          "fired": [
+            1
+          ]
+        },
+        {
+          "awakeMs": 1200000,
+          "fired": [
+            2
+          ]
+        },
+        {
+          "awakeMs": 1800000,
+          "fired": [
+            3
+          ]
+        },
+        {
+          "awakeMs": 1800000,
+          "fired": [
+            4
+          ]
+        }
+      ]
+    },
+    {
+      "name": "暂停后按剩余量继续（不足一档不触发）",
+      "steps": [
+        {
+          "awakeMs": 180000,
+          "fired": []
+        },
+        {
+          "awakeMs": 120000,
+          "fired": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "一次跨过多档逐档触发",
+      "steps": [
+        {
+          "awakeMs": 900000,
+          "fired": [
+            0,
+            1
+          ]
+        }
+      ]
+    }
+  ],
+  "textCases": [
+    {
+      "name": "带命令与短输出",
+      "taskId": "bg-1",
+      "description": "Say hello",
+      "command": "echo hello",
+      "elapsedMs": 300000,
+      "output": "hello\n",
+      "nextIntervalLabel": "10min",
+      "killCommand": "kill 1234",
+      "expected": "<reminder>\nBackground bash task bg-1 is still running.\nDescription: Say hello\nCommand: echo hello\nElapsed: 5m 0s\nCurrent output (last 500 chars):\nhello\nNext reminder in 10min.\nIf this task is no longer needed, kill it: kill 1234\nDo not sleep or poll; if there is nothing else to do, end this turn.\n</reminder>"
+    },
+    {
+      "name": "命令与描述相同、无输出",
+      "taskId": "bg-2",
+      "description": "echo hi",
+      "command": "echo hi",
+      "elapsedMs": 65000,
+      "output": "",
+      "nextIntervalLabel": "5min",
+      "killCommand": "taskkill /T /F /PID 4321",
+      "expected": "<reminder>\nBackground bash task bg-2 is still running.\nDescription: echo hi\nElapsed: 1m 5s\nNext reminder in 5min.\nIf this task is no longer needed, kill it: taskkill /T /F /PID 4321\nDo not sleep or poll; if there is nothing else to do, end this turn.\n</reminder>"
+    },
+    {
+      "name": "亚秒级时长",
+      "taskId": "bg-3",
+      "description": "Quick",
+      "command": "quick",
+      "elapsedMs": 999,
+      "output": "done",
+      "nextIntervalLabel": "30min",
+      "killCommand": "kill 7",
+      "expected": "<reminder>\nBackground bash task bg-3 is still running.\nDescription: Quick\nCommand: quick\nElapsed: 999ms\nCurrent output (last 500 chars):\ndone\nNext reminder in 30min.\nIf this task is no longer needed, kill it: kill 7\nDo not sleep or poll; if there is nothing else to do, end this turn.\n</reminder>"
+    },
+    {
+      "name": "长输出取尾部 500 字符",
+      "taskId": "bg-4",
+      "description": "Stream",
+      "command": "stream",
+      "elapsedMs": 125000,
+      "output": "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789",
+      "nextIntervalLabel": "20min",
+      "killCommand": "kill 999",
+      "expected": "<reminder>\nBackground bash task bg-4 is still running.\nDescription: Stream\nCommand: stream\nElapsed: 2m 5s\nCurrent output (last 500 chars):\n...\n01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789\nNext reminder in 20min.\nIf this task is no longer needed, kill it: kill 999\nDo not sleep or poll; if there is nothing else to do, end this turn.\n</reminder>"
+    }
+  ]
+}

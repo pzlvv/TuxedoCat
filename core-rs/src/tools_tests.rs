@@ -334,6 +334,11 @@ fn bash_timeout_moves_the_command_to_the_background() {
         body.contains("Continue with other tasks in the meantime; if there is nothing else to do, end this turn."),
         "got {body}"
     );
+    // 下次提醒间隔（对齐 Embedded `Result.ts`）
+    assert!(
+        body.contains("you will get a progress reminder in 5min."),
+        "got {body}"
+    );
     // 完成通知只出现一次（taskId 会随输出路径再出现一次，属正常）
     assert_eq!(
         body.matches("you will be notified when it completes.").count(),
@@ -742,6 +747,10 @@ fn bash_background_returns_a_task_id_immediately() {
         "got {body}"
     );
     assert!(body.contains("You will be notified automatically when it completes."), "got {body}");
+    assert!(
+        body.contains("you will get a progress reminder in 5min."),
+        "got {body}"
+    );
     // 提示里带上输出文件路径（file mode 的子进程 stdout 直接写该文件）
     let task_id = body
         .trim_start_matches("Command running in background with ID: ")
