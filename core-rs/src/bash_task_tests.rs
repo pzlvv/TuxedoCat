@@ -306,6 +306,50 @@ fn completing_tasks_fire_the_completed_event() {
     reset_for_test();
 }
 
+/// 完成收尾的钩子顺序：注册时 `sync`；任务结束时必须 **`notify`（唤醒引擎置
+/// running）先于 `sync_background`（清 background）**。顺序反了会先推出一份
+/// 「running=false 且 background=false」的瞬时 idle 运行时快照，被宿主差分成
+/// running → idle 而误武装「任务完成」绿灯——完成通知触发的接续查询其实还在继续
+/// （见 `handle_finish` 的顺序注释；对齐 Embedded 侧
+/// `backgroundCompletionOrder.test.ts`）。
+#[test]
+fn completion_notifies_the_engine_before_clearing_background() {
+    let sandbox = Sandbox::new("bash-task-finish-order");
+    let _guard = TmpDirGuard::set(&sandbox.root.join("tmp"));
+    reset_for_test();
+
+    let events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+    let notify_events = Arc::clone(&events);
+    let sync_events = Arc::clone(&events);
+    let ordered_hooks = Hooks {
+        notify: Arc::new(move |_session_id: &str, _content: &str| {
+            notify_events.lock().unwrap().push("notify");
+        }),
+        sync_background: Arc::new(move |_session_id: &str| {
+            sync_events.lock().unwrap().push("sync");
+        }),
+    };
+    spawn_background(
+        "echo order",
+        &sandbox.workspace.to_string_lossy(),
+        "Echo order",
+        "s-bg",
+        Some(ordered_hooks),
+    )
+    .expect("spawn background");
+
+    let deadline = Instant::now() + Duration::from_millis(10_000);
+    while events.lock().unwrap().len() < 3 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        ["sync", "notify", "sync"].as_slice(),
+        "注册时 sync 一次；完成收尾必须 notify 先于 sync_background"
+    );
+    reset_for_test();
+}
+
 /// 后台任务提醒对等测试：与 Embedded 共用 `src/test/fixtures/backgroundReminderParity.json`。
 ///
 /// 对齐 `src/test/backgroundReminderParity.test.ts`：间隔档位（5 / 10 / 20 / 30 / 30…）、

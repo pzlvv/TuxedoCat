@@ -558,14 +558,18 @@ fn watch(mut child: Child, task_id: String, pid: u32, kill: Arc<AtomicBool>, hoo
 }
 
 /// 任务结束的统一收尾（对齐 `LocalShellTask` 的 `shellCommand.result.then(...)`）。
+///
+/// 顺序：慢步骤（读输出文件 / 拼通知 / 完成事件监听器）在前，`notify` 先于
+/// `sync_background`。`notify` 唤醒引擎置 `running`（推 idle=false 运行时快照），
+/// 随后 `sync_background` 清 `background` 时 `running` 仍真——两份快照的 idle
+/// 恒为 false，完成通知触发的接续查询之前不会先推一份「瞬时 idle」被宿主差分成
+/// running → idle 而误武装「任务完成」绿灯。引擎不接续（会话已关闭等）时 notify
+/// 不置 running，`sync_background` 推出的 idle 才是真实完成，照常武装。
 fn handle_finish(task_id: &str, exit_code: i32, hooks: &Option<Hooks>) {
     let Some(finished) = finish_task(task_id, exit_code) else {
         // 记录已被移除（会话中止 / 关闭）：丢弃输出与通知
         return;
     };
-    if let Some(hooks) = hooks {
-        (hooks.sync_background)(&finished.session_id);
-    }
     // 完成事件（前台命令据此决定是否自动转后台）
     emit_task_completed(&finished);
     // file mode 的 stdout 就是输出文件内容（对齐 `TaskOutput.getStdout`）
@@ -573,6 +577,7 @@ fn handle_finish(task_id: &str, exit_code: i32, hooks: &Option<Hooks>) {
     let notification = build_completion_notification(&finished, &stdout);
     if let Some(hooks) = hooks {
         (hooks.notify)(&finished.session_id, &notification);
+        (hooks.sync_background)(&finished.session_id);
     }
 }
 

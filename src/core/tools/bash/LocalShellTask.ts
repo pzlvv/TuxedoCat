@@ -143,7 +143,6 @@ export function registerBackgroundTask(
     task.endTime = Date.now();
     task.exitCode = result.code;
     task.shellCommand = null;
-    syncBackgroundState(sessionID);
 
     logger.info('LocalShellTask', `Background task ${taskId} ${finalStatus} (exit ${result.code})`);
 
@@ -157,7 +156,7 @@ export function registerBackgroundTask(
         summary = `Background command "${description}" completed (exit code ${result.code})`;
         break;
       case 'failed':
-        summary = `Background command "${description}" failed with exit code ${result.code}`;
+        summary = `Background command "${description}" failed with exit code ${result.code})`;
         break;
       default:
         summary = `Background command "${description}" was stopped`;
@@ -174,8 +173,14 @@ export function registerBackgroundTask(
       agentId,
     });
 
-    // 通过 sessionID 通知正确的引擎
+    // 先唤醒引擎再清 background（与 core-rs `handle_finish` 的顺序对齐，parity）：
+    // notifyEngine 置 running（idle=false 运行时快照，第 4.5 节）之后，
+    // syncBackgroundState 清 background 时 running 仍真——两份快照的 idle 恒为
+    // false，完成通知触发的接续查询之前不会先推一份「瞬时 idle」被宿主差分成
+    // running → idle 而误武装「任务完成」绿灯。引擎不接续（找不到引擎等）时
+    // running 不置位，清 background 推出的 idle 才是真实完成，照常武装。
     notifyEngine(notification, sessionID, agentId);
+    syncBackgroundState(sessionID);
   });
 
   return taskId;
