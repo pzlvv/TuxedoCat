@@ -14,9 +14,10 @@
  * 当前宽度并负责夹取与持久化，见 `DEVELOPMENT.md` 第 11.1 节）。
  */
 
-import { BrowserWindow, WebContents, WebContentsView, Rectangle, nativeTheme, shell } from 'electron';
+import { BrowserWindow, WebContents, WebContentsView, Rectangle, nativeTheme } from 'electron';
 import * as path from 'path';
 import type { WebviewMessage } from '../src/host/webviewMessages.js';
+import { guardViewNavigation } from './viewNavigation.js';
 
 /** 侧栏默认宽度（无持久化记录 / 双击拖拽手柄恢复时使用） */
 export const SIDEBAR_DEFAULT_WIDTH = 280;
@@ -38,14 +39,6 @@ const CHAT_VIEW_BACKGROUND_LIGHT = '#f4f4f5';
  */
 export function chatViewBackgroundColor(isDark: boolean = nativeTheme.shouldUseDarkColors): string {
   return isDark ? CHAT_VIEW_BACKGROUND : CHAT_VIEW_BACKGROUND_LIGHT;
-}
-
-/**
- * 判断 URL 是否为需要在系统浏览器打开的外部链接。
- * 内部链接（应用自身 file:// 页面、相对路径）不算外部链接。
- */
-function isExternalUrl(targetUrl: string): boolean {
-  return /^(https?|mailto|tel):/i.test(targetUrl);
 }
 
 /** 语言 / 字号档位（readUiPreferences 的回包） */
@@ -348,6 +341,8 @@ export class ChatViewManager {
           backgroundThrottling: false,
         },
       });
+      // 占位页同样注入 chatPlaceholderPreload（重连按钮 IPC），拒绝窗口内导航 / window.open
+      guardViewNavigation(this.placeholderView.webContents, 'chat-placeholder');
     }
     this.opts.win.contentView.addChildView(this.placeholderView);
     this.placeholderView.setBounds(this.chatBounds());
@@ -969,28 +964,11 @@ export class ChatViewManager {
     });
     void view.webContents.loadURL(url);
 
-    // 外部链接防御：webview 内任何 window.open / target=_blank 都不在 Electron 中打开，
-    // 统一交给系统默认浏览器（主进程 shell.openExternal）。
-    view.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
-      if (isExternalUrl(targetUrl)) {
-        void shell.openExternal(targetUrl).catch((err) => {
-          console.error(`[chat-view] Failed to open external URL (window.open): ${err}`);
-        });
-      }
-      return { action: 'deny' };
-    });
-
-    // 外部链接防御：webview 内普通 <a href> 导航（未被 JS 拦截时）也不在 Electron 中打开，
-    // 允许应用自身的 file:// 页面（如未来内置页面），其余一律交给系统浏览器。
-    view.webContents.on('will-navigate', (event, targetUrl) => {
-      if (targetUrl.startsWith('file://')) return; // 应用内导航放行
-      event.preventDefault();
-      if (isExternalUrl(targetUrl)) {
-        void shell.openExternal(targetUrl).catch((err) => {
-          console.error(`[chat-view] Failed to open external URL (navigate): ${err}`);
-        });
-      }
-    });
+    // 外部链接防御：webview 内任何 window.open / target=_blank / <a href> 导航都不在
+    // Electron 中打开，统一交给系统默认浏览器（见 electron/viewNavigation.ts）。
+    // webview 侧的全局点击拦截（src/webview/App.tsx）已覆盖常规点击，这里是第二道防线：
+    // 未被 JS 拦截的导航（修饰键点击 / 脚本导航 / 拖放）同样落到这里。
+    guardViewNavigation(view.webContents, 'chat-view');
 
     view.webContents.on('did-fail-load', (_e, code, desc) => {
       console.error(`[chat-view] did-fail-load: ${code} ${desc}`);

@@ -30,6 +30,7 @@ import {
 } from './titlebarMenuHtml.js';
 import { ElectronUIHost } from './ElectronUIHost.js';
 import { ElectronSpinDesign } from './ElectronSpinDesign.js';
+import { guardViewNavigation } from './viewNavigation.js';
 import { ElectronConversationManager } from './ElectronConversationManager.js';
 import { WebViewUI } from '../src/host/WebViewUI.js';
 import type { WebviewToHostMessage } from '../src/host/webviewMessages.js';
@@ -116,42 +117,6 @@ import { resolveSmartTitle } from '../src/core/history/smartNaming.js';
  * project.json，源码不出现产品字面量。
  */
 const E2E_SLOW_LIST_ENV = `${ENV_PREFIX}_E2E_SLOW_LIST_MS`;
-
-/**
- * 判断 URL 是否为需要在系统浏览器打开的外部链接。
- * 内部链接（应用自身 file:// 页面、相对路径）不算外部链接。
- */
-function isExternalUrl(targetUrl: string): boolean {
-  return /^(https?|mailto|tel):/i.test(targetUrl);
-}
-
-/**
- * 应用自有 WebContentsView 的导航防御（与侧栏 / 聊天视图同策略）：
- * 拒绝一切 window.open，应用内 file:// 导航放行，其余一律拦下并交给系统浏览器。
- *
- * 标题栏 / 菜单视图虽然只加载本地文件与 data: URL，但页面一旦被拖放或脚本导航到
- * 外部页面，preload 会在新页面重跑、把 titlebarAPI / titlebarMenuAPI 交给外部页面，
- * 外部页面即可调用菜单动作（含退出）。这里补上第二道防线。
- */
-function guardViewNavigation(wc: Electron.WebContents): void {
-  wc.setWindowOpenHandler(({ url: targetUrl }) => {
-    if (isExternalUrl(targetUrl)) {
-      void shell.openExternal(targetUrl).catch((err) => {
-        console.error(`[view] Failed to open external URL (window.open): ${err}`);
-      });
-    }
-    return { action: 'deny' };
-  });
-  wc.on('will-navigate', (event, targetUrl) => {
-    if (targetUrl.startsWith('file://')) return; // 应用内导航放行
-    event.preventDefault();
-    if (isExternalUrl(targetUrl)) {
-      void shell.openExternal(targetUrl).catch((err) => {
-        console.error(`[view] Failed to open external URL (navigate): ${err}`);
-      });
-    }
-  });
-}
 
 /**
  * 加载自绘标题栏页面。
@@ -918,24 +883,9 @@ function createMainWindow(): void {
     }
   });
 
-  // 外部链接防御（与聊天视图一致）：侧栏内点击链接不在 Electron 中打开，交给系统浏览器
-  sidebarView.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
-    if (isExternalUrl(targetUrl)) {
-      void shell.openExternal(targetUrl).catch((err) => {
-        console.error(`[sidebar] Failed to open external URL (window.open): ${err}`);
-      });
-    }
-    return { action: 'deny' };
-  });
-  sidebarView.webContents.on('will-navigate', (event, targetUrl) => {
-    if (targetUrl.startsWith('file://')) return; // 应用内导航放行
-    event.preventDefault();
-    if (isExternalUrl(targetUrl)) {
-      void shell.openExternal(targetUrl).catch((err) => {
-        console.error(`[sidebar] Failed to open external URL (navigate): ${err}`);
-      });
-    }
-  });
+  // 外部链接防御（与聊天视图同一份实现）：侧栏内点击链接不在 Electron 中打开，
+  // 交给系统浏览器（见 electron/viewNavigation.ts）
+  guardViewNavigation(sidebarView.webContents, 'sidebar');
   // 无边框窗口下原生菜单栏不再绘制，菜单快捷键用 before-input-event 兜底
   sidebarView.webContents.on('before-input-event', handleMenuAccelerator);
 
@@ -954,7 +904,9 @@ function createMainWindow(): void {
   });
   mainWindow.contentView.addChildView(titlebarView);
   loadTitlebarView(titlebarView.webContents);
-  guardViewNavigation(titlebarView.webContents);
+  // 标题栏虽然只加载本地文件与 data: URL，但页面一旦被拖放或脚本导航到外部页面，
+  // preload 会在新页面重跑、把 titlebarAPI 交给外部页面（含窗口控制动作）
+  guardViewNavigation(titlebarView.webContents, 'titlebar');
   titlebarView.webContents.on('before-input-event', handleMenuAccelerator);
   // 刻意不监听标题栏的 blur 来关菜单：显示菜单视图会让焦点重新计算（可能变成
   // 「无焦点视图」），据此关菜单会让菜单刚弹出就被自己关掉。关闭触发点改为：
@@ -1726,6 +1678,8 @@ function openShortcutDialog(): void {
     },
   });
   shortcutDialogWindow = win;
+  // 页面注入 shortcutPreload：同其他应用自有页面一样拒绝窗口内导航 / window.open
+  guardViewNavigation(win.webContents, 'shortcut-dialog');
 
   const currentState = (): { display: string; error?: string } => ({
     display: formatAcceleratorForDisplay(candidate),
@@ -2665,7 +2619,7 @@ function ensureTitlebarMenuView(): WebContentsView {
   });
   // 页面内容完全由主进程生成，但仍拒绝任何导航 / window.open：
   // 一旦被拖放导航到外部页面，preload 重跑会把 titlebarMenuAPI 交给外部页面
-  guardViewNavigation(view.webContents);
+  guardViewNavigation(view.webContents, 'titlebar-menu');
   // 视图自身背景必须透明：页面底色透明只解决页面内部，视图默认是白底，
   // 二级飞出面板之外多出来的那块会露出白边（实测踩过）
   view.setBackgroundColor('#00000000');
@@ -2960,6 +2914,8 @@ function openRemoteWorkspaceDialog(): void {
     },
   });
   remoteWorkspaceWindow = win;
+  // 页面注入 remoteWorkspacePreload（含远端目录读写）：同其他应用自有页面一样拒绝导航
+  guardViewNavigation(win.webContents, 'remote-workspace');
 
   /** 已连接成功的 endpoint；未连接时为 null（后续 list / create / delete / open 都要求它） */
   let connected: WorkspaceEndpoint | null = null;

@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import type { UIHost } from '../src/host/UIHost.js';
 import type { SpinDesign } from '../src/host/SpinDesign.js';
 import { tt, getSystemLocale } from '../src/host/i18n.js';
+import { guardViewNavigation } from './viewNavigation.js';
 
 /** 项目根目录（dist-electron 的上一级，与 main.ts 的 APP_ROOT 一致） */
 const APP_ROOT = path.resolve(__dirname, '..');
@@ -93,6 +94,8 @@ export class ElectronSpinDesign implements SpinDesign {
       },
     });
     this.spinDesignWindow = win;
+    // 页面注入 spinPreload（保存 spin.json / 导出）：同其他应用自有页面一样拒绝窗口内导航
+    guardViewNavigation(win.webContents, 'spin-design');
     win.on('closed', () => {
       if (this.spinDesignWindow === win) {
         this.spinDesignWindow = undefined;

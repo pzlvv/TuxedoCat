@@ -23,6 +23,7 @@ import { fileLogger } from '../src/core/Logger.js';
 import { writeSettingsJson } from '../src/host/settingsFile.js';
 import { imageMimeFor } from './fileTypes.js';
 import { remoteFileReaderFor } from './sidebarFilesRemote.js';
+import { guardViewNavigation } from './viewNavigation.js';
 
 /** 项目根目录（dist-electron 的上一级，与 main.ts 的 APP_ROOT 一致） */
 const APP_ROOT = path.resolve(__dirname, '..');
@@ -376,6 +377,7 @@ export class ElectronUIHost implements UIHost {
         preload: path.join(__dirname, 'imageViewerPreload.cjs'),
       },
     });
+    guardViewNavigation(win.webContents, 'image-viewer');
     await win.loadFile(indexPath);
     win.webContents.send('imageviewer-init', init);
   }
@@ -401,6 +403,9 @@ export class ElectronUIHost implements UIHost {
       backgroundColor: isDark ? '#1e1e1e' : '#ffffff',
       webPreferences: { sandbox: true },
     });
+    // 预览页里的 http(s) / mailto 链接是 target=_blank：不拦的话 Electron 会新开一个
+    // 应用内窗口装外部页面（默认 setWindowOpenHandler 行为），这里统一交给系统浏览器
+    guardViewNavigation(win.webContents, 'markdown-preview');
     const html = await getMarkdownPreviewHtml(init.content, { title, isDark });
     // base64 而非 encodeURIComponent：CJK 的百分号编码会 9 倍膨胀，轻易顶破
     // Chromium 对 data URL 的 ~2MB 上限；base64 只放大 4/3（超大文件仍会被
@@ -436,6 +441,8 @@ export class ElectronUIHost implements UIHost {
         preload: path.join(__dirname, 'monacoPreload.cjs'),
       },
     });
+    // 页面注入 monacoPreload（读盘 / 写文件）：同其他应用自有页面一样拒绝窗口内导航
+    guardViewNavigation(win.webContents, 'monaco');
 
     const indexPath = path.join(APP_ROOT, 'dist', 'monaco', 'index.html');
     if (!fs.existsSync(indexPath)) {
@@ -483,6 +490,9 @@ export class ElectronUIHost implements UIHost {
         backgroundColor: nativeTheme.shouldUseDarkColors ? '#1a1a1f' : '#ffffff',
         webPreferences: { sandbox: true },
       });
+      // 图表内容来自模型（mermaid securityLevel 默认 strict，链接不可点）：
+      // 仍拒绝窗口内导航，避免拖放 / 脚本把窗口带到外部页面
+      guardViewNavigation(win.webContents, 'mermaid-preview');
       this.mermaidWindow = win;
       win.on('closed', () => {
         if (this.mermaidWindow === win) this.mermaidWindow = undefined;

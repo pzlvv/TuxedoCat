@@ -2583,6 +2583,7 @@ Electron 的 `sidebar:get-conversations` 直接读它，切换标签页不再每
 | 编辑器上下文 | 有：`persistCurrentFileContext` → `conversationContextUpdated`（`activeTextEditor` + 选中行） | **刻意没有**：桌面端没有 `activeTextEditor` 等价物，打开 Monaco 只是查看，不改变发消息时附带的文件上下文 |
 | 工作区来源 | `workspaceFolders` | 菜单选择的 `workspacePath` |
 | 原生侧栏 / 托盘 / Monaco 窗口 / 快捷键对话框 / 菜单 / 自绘标题栏 / 悬浮窗模式 | 无 | 有 |
+| 应用自有页面导航防御 | 无：webview 由 VS Code 承载，页面导航由 VS Code 约束，外链点击走 webview 侧拦截（`src/webview/App.tsx` 的 `openUrl`）→ `vscode.env.openExternal` | `guardViewNavigation`（`electron/viewNavigation.ts`）：聊天视图 / 侧栏 / 标题栏 / 下拉菜单 / 占位页 / 各预览窗口 / 对话框统一拒绝 `window.open` 与渲染进程发起的非 `file://` 导航，外部链接（http(s) / mailto / tel）交系统默认浏览器 |
 | 空闲回收 / 状态栏项 / 虚拟文档 provider / 命令注册 | 有 | 无 |
 | 系统睡眠阻断 | 无：VS Code 扩展没有电源 API，standalone 下由 Core 子进程自己阻断 | `setStatusListener` → `sleepBlocker.update(states)`（`electron/powerSaveBlocker.ts`） |
 | 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销快捷键、销毁托盘、释放睡眠阻断、`shutdownCore()` |
