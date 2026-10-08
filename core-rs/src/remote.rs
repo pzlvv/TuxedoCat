@@ -656,6 +656,29 @@ fn existing_daemon(state_path: &Path) -> ExistingDaemon {
     ExistingDaemon::Running(state)
 }
 
+/// daemon 落盘前的同指纹把关：状态文件已指向**另一个**连得上的 endpoint 时，
+/// 说明同指纹已有 daemon 在跑，返回它的 endpoint（调用方退出，不落盘不服务）。
+///
+/// 这是孤儿 daemon 的防线（`docs/core-daemon.md` 第 12.3 节）。`start` 在「等就绪」
+/// 期间被杀（客户端被 kill / SSH 会话断开），锁没释放，但已拉起、脱离进程组的
+/// daemon 仍会启动完成——它的落盘从此没有任何锁保护。若同指纹已有别的 daemon 先
+/// 落盘，孤儿无条件覆盖会把在跑 daemon 的状态文件换成自己的端口；孤儿按 idle-exit
+/// 退出时还会把它删掉（`remove_state_if_unchanged`），在跑 daemon 从此无状态文件，
+/// 下一次引导再拉一个，就是同指纹双 daemon。endpoint 等于自己的那份不算兄弟——
+/// 别的进程不可能占着自己刚绑到的端口，那是被 kill -9 的前任留下的过期文件，照常
+/// 覆盖。本防线把孤儿的活动窗口从整个启动期压到「bind 与落盘之间」的毫秒级；
+/// 检查不能持 start 锁——拉起方 spawn 本进程时正持着锁，持锁重查会死锁。
+fn sibling_daemon_endpoint(state_path: &Path, own_endpoint: &str) -> Option<String> {
+    let state = read_daemon_state_at(state_path)?;
+    if state.endpoint == own_endpoint {
+        return None;
+    }
+    if probe_endpoint(&state.endpoint) {
+        return Some(state.endpoint);
+    }
+    None
+}
+
 /// `start`：确保后台 daemon 在跑，把就绪信息打印出来。
 ///
 /// 已有 daemon 在跑（状态文件里的 endpoint 连得上）就直接复用；否则把 daemon 拉到
@@ -1235,6 +1258,16 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     };
     // endpoint 存回环地址与内核分配的实际端口；Host 读它开 SSH 转发通道。
     let endpoint = format!("{}:{}", Ipv4Addr::LOCALHOST, local.port());
+    // 孤儿防线先于落盘（`docs/core-daemon.md` 第 12.3 节）：同指纹已有 daemon 在跑
+    // 就退出，不覆盖它的状态文件、不抢它的客户端。拉起方（`start`）的
+    // `wait_for_daemon` 随后会读到兄弟的那份状态文件，照样把宿主带到在跑的 daemon。
+    if let Some(sibling) = sibling_daemon_endpoint(&state_path, &endpoint) {
+        diag!(
+            "[core] remote: another daemon for this fingerprint is already running at {sibling}; \
+             this instance exits without touching the state file"
+        );
+        return 1;
+    }
     let state = DaemonState { endpoint };
     // 落盘先于 accept：启动器按「状态文件可读 + endpoint 连得上」判断就绪。
     if let Err(error) = write_daemon_state(&state_path, &state) {
@@ -1245,10 +1278,12 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     // 标准输出可能被缓冲；启动器 / 用户要立刻看到就绪行，立即冲刷。
     let _ = std::io::stdout().flush();
     // 启动事实落日志（stdout 的就绪行与 stderr 诊断都进了 daemon 日志文件）：
-    // 异常退出时日志里得有「何时、以什么参数起来过」这一行锚点
+    // 异常退出时日志里得有「何时、以什么参数起来过」这一行锚点。
+    // endpoint 此刻已在 `state` 里（String 非 Copy，不能再用变量名），读 `state.endpoint`
     diag!(
-        "[core] daemon started (pid={}, endpoint={endpoint}, idle-exit={}s, binary={})",
+        "[core] daemon started (pid={}, endpoint={}, idle-exit={}s, binary={})",
         std::process::id(),
+        state.endpoint,
         options.idle_exit.map(|idle| idle.as_secs()).unwrap_or_default(),
         std::env::current_exe()
             .map(|path| path.display().to_string())
@@ -1294,7 +1329,11 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     runtime.wait_until_drained(STOP_TIMEOUT);
     // 只删自己写的那份：期间可能有新 daemon 覆盖过状态文件
     remove_state_if_unchanged(&state_path, &state);
-    diag!("[core] daemon stopped (pid={}, endpoint={endpoint})", std::process::id());
+    diag!(
+        "[core] daemon stopped (pid={}, endpoint={})",
+        std::process::id(),
+        state.endpoint
+    );
     0
 }
 

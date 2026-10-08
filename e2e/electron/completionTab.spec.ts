@@ -14,7 +14,6 @@ let mockLlm: MockLlm;
 let app: AppHandle;
 
 test.beforeEach(async () => {
-  const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
   const workspaceDir = await makeWorkspace({});
   mockLlm = await startMockLlm({ workspaceDir });
   void workspaceDir;

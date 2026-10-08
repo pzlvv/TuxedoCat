@@ -954,7 +954,7 @@ fn load_messages_replaces_invalid_utf8_bytes_instead_of_dropping_the_file() {
         br#"{"uuid":"u2","parentUuid":"u1","timestamp":2,"message":{"type":"user","message":{"role":"user","content":"a"#,
     );
     bytes.push(0xE4);
-    bytes.extend_from_slice(br#"b"}}"#);
+    bytes.extend_from_slice(br#"b"}}}"#);
     bytes.push(b'\n');
     std::fs::write(dir.join("s1.jsonl"), bytes).unwrap();
 

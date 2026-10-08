@@ -484,6 +484,82 @@ fn probe_endpoint_reports_listeners() {
     assert!(!probe_endpoint("not-an-endpoint"), "解析不了即视为没有");
 }
 
+// ==================== daemon 落盘前的孤儿防线 ==================
+
+/// 状态文件指向另一个**连得上**的 endpoint：同指纹已有 daemon 在跑，防线拦截。
+/// （`start` 在「等就绪」期间被杀时，已拉起的 daemon 仍在启动，它落盘前必须
+/// 让位给先落盘的兄弟，否则会覆盖在跑 daemon 的状态文件——见
+/// `sibling_daemon_endpoint` 的注释与 `docs/core-daemon.md` 第 12.3 节。）
+#[test]
+fn sibling_daemon_endpoint_detects_a_running_sibling() {
+    let dir = temp_dir("sibling-alive");
+    let path = dir.join(daemon_state_file_name());
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let sibling = listener.local_addr().unwrap().to_string();
+    write_daemon_state(&path, &DaemonState { endpoint: sibling.clone() }).unwrap();
+
+    assert_eq!(
+        sibling_daemon_endpoint(&path, "127.0.0.1:1"),
+        Some(sibling),
+        "兄弟在跑：退出不落盘"
+    );
+
+    drop(listener);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// endpoint 等于自己刚绑到的端口：不算兄弟（别人占不了自己的端口），
+/// 那是前任留下的过期文件，照常覆盖落盘。
+#[test]
+fn sibling_daemon_endpoint_ignores_its_own_endpoint() {
+    let dir = temp_dir("sibling-own");
+    let path = dir.join(daemon_state_file_name());
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let endpoint = listener.local_addr().unwrap().to_string();
+    write_daemon_state(&path, &DaemonState { endpoint: endpoint.clone() }).unwrap();
+
+    assert_eq!(sibling_daemon_endpoint(&path, &endpoint), None, "自己的 endpoint 不拦");
+
+    drop(listener);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 状态文件指向没人监听的端口（前任崩溃 / 被 kill -9）：过期文件，不拦。
+#[test]
+fn sibling_daemon_endpoint_ignores_a_dead_endpoint() {
+    let dir = temp_dir("sibling-dead");
+    let path = dir.join(daemon_state_file_name());
+    let port = {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    write_daemon_state(
+        &path,
+        &DaemonState {
+            endpoint: format!("127.0.0.1:{port}"),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        sibling_daemon_endpoint(&path, "127.0.0.1:1"),
+        None,
+        "过期的 endpoint 不拦"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 没有状态文件（正常首启 / 文件被外部清掉）：不拦——后者是 12.8 节接受的残留
+/// 形态，防线看不到没有落盘的 daemon，不在此处处理。
+#[test]
+fn sibling_daemon_endpoint_is_none_without_a_state_file() {
+    let dir = temp_dir("sibling-none");
+    let path = dir.join(daemon_state_file_name());
+    assert_eq!(sibling_daemon_endpoint(&path, "127.0.0.1:1"), None);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 // ==================== start 互斥锁 ====================
 
 fn lock_path_in(dir: &Path) -> PathBuf {

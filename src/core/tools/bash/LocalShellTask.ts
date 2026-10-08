@@ -156,7 +156,7 @@ export function registerBackgroundTask(
         summary = `Background command "${description}" completed (exit code ${result.code})`;
         break;
       case 'failed':
-        summary = `Background command "${description}" failed with exit code ${result.code})`;
+        summary = `Background command "${description}" failed with exit code ${result.code}`;
         break;
       default:
         summary = `Background command "${description}" was stopped`;
