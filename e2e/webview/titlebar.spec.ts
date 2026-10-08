@@ -32,6 +32,9 @@ const FAKE_TITLEBAR_API = `
       onWorkspacesChanged: (cb) => w.__workspacesListeners.push(cb),
       onWindowState: noop, onMenuState: noop, onModelChanged: noop,
       onModeState: noop, onWorkspaceActivity: noop,
+      // init() 会逐个订阅全部事件通道：缺任何一个，init 在 getState 之前就抛
+      // TypeError，钩子永远不置位（用例表现为 120s 超时）
+      onWorkspaceCompletion: noop,
       minimize: noop, toggleMaximize: noop, close: noop, toggleMode: noop,
       togglePin: noop, openMenu: noop, closeMenu: noop, activateWorkspace: noop,
       closeWorkspace: noop, showWorkspaceMenu: noop, reorderWorkspaces: noop,

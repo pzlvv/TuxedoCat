@@ -92,11 +92,16 @@ export async function openStaticPage(
     permissions: ['clipboard-read', 'clipboard-write'],
   });
   const page = await context.newPage();
-  // 排查辅助：页面运行期错误转发到测试输出
+  // 排查辅助：页面运行期错误转发到测试输出。只转发 console 会漏掉未捕获异常
+  // （pageerror 不进 console）——假 API 缺方法导致 init 抛 TypeError 时，
+  // 页面看起来毫无动静，用例只会表现为超时
   page.on('console', (msg) => {
     if (msg.type() === 'error') {
       console.error('[page-console]', msg.text());
     }
+  });
+  page.on('pageerror', (error) => {
+    console.error('[page-error]', error.message);
   });
   if (initScript) await page.addInitScript(initScript);
   await page.goto(`${url}/index.html`);
