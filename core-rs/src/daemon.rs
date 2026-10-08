@@ -224,6 +224,9 @@ impl CoreSpawner for SystemCoreSpawner {
         // Windows：不弹控制台窗口（与 Core 侧同一条规则）
         crate::util::hide_console(&mut command);
         let mut child = command.spawn()?;
+        // 子进程事实先落日志再接线：Core 异常退出（段错误 / 被杀）时日志里得有
+        // pid 与启动时刻这一行锚点，才能对上系统侧的进程事件
+        diag!("[daemon] channel {channel}: core process started (pid={})", child.id());
         let stdin = child
             .stdin
             .take()
@@ -289,6 +292,14 @@ impl CoreSpawner for SystemCoreSpawner {
                 }
                 match child.try_wait() {
                     Ok(Some(status)) => {
+                        // Unix 上 code=None 意味着被信号杀死（段错误是 SIGSEGV=11），
+                        // 单独记一行，把「崩溃」与「带退出码退出」区分开
+                        #[cfg(unix)]
+                        if let Some(signal) =
+                            std::os::unix::process::ExitStatusExt::signal(&status)
+                        {
+                            diag!("[daemon] channel {channel}: core terminated by signal {signal}");
+                        }
                         exit_sink.on_exit(channel, status.code());
                         return;
                     }

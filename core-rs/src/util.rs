@@ -55,6 +55,22 @@ macro_rules! diag {
 }
 pub(crate) use diag;
 
+/// 安装 panic 钩子：panic 信息与强制捕获的调用栈整块写 stderr。
+///
+/// daemon 的 stderr 就是 `logs/core-daemon-<指纹>.log`，stdio Core 的 stderr 由宿主
+/// 收进诊断日志。不装钩子时默认钩子依赖 `RUST_BACKTRACE` 环境变量，两种运行方式都
+/// 没人设它，异常退出只剩一行 panic 位置、没有栈。`force_capture` 无视环境变量；
+/// release 构建不 strip 且保留行号表（`Cargo.toml` 的 `[profile.release]`），栈才能
+/// 符号化。整块一次 `write_all`，多行栈不与其它诊断线程交错。
+pub fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        use std::io::Write as _;
+        let mut stderr = std::io::stderr().lock();
+        let _ = stderr.write_all(format!("[core] panic: {info}\n{backtrace}\n").as_bytes());
+    }));
+}
+
 pub fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -77,6 +93,18 @@ pub fn random_suffix() -> String {
 /// `<prefix>_<millis>_<suffix>`
 pub fn unique_id(prefix: &str) -> String {
     format!("{prefix}_{}_{}", now_millis(), random_suffix())
+}
+
+/// 宽松读取文本文件：无效 UTF-8 字节替换为 U+FFFD，不因内容报错。
+///
+/// 对齐 Node `readFile(path, 'utf8')` 的宽松解码（WHATWG 口径，Rust
+/// `from_utf8_lossy` 同策略）：会话数据（`.jsonl` / `.meta.json`）由多进程共写，
+/// 异常退出可能留下半截多字节序列；`read_to_string` 的严格校验会让**整个文件**
+/// 读取失败、整个会话被当成空，而 Embedded 侧同等场景只损失一个替换字符。
+/// 文件不存在等 I/O 错误仍然照常返回 `Err`。
+pub fn read_to_string_lossy(path: &std::path::Path) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// JS `String.prototype.length`：UTF-16 code unit 数。

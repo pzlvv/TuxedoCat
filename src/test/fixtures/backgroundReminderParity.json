@@ -6,6 +6,7 @@
     20,
     30
   ],
+  "fallbackMinElapsedMs": 180000,
   "firstLabel": "5min",
   "intervalLabelCases": [
     {
@@ -167,6 +168,56 @@
       "nextIntervalLabel": "20min",
       "killCommand": "kill 999",
       "expected": "<reminder>\nBackground bash task bg-4 is still running.\nDescription: Stream\nCommand: stream\nElapsed: 2m 5s\nCurrent output (last 500 chars):\n...\n01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789\nNext reminder in 20min.\nIf this task is no longer needed, kill it: kill 999\nDo not sleep or poll; if there is nothing else to do, end this turn.\n</reminder>"
+    }
+  ],
+  "fallbackQualifyCases": [
+    {
+      "name": "刚起不久的普通命令不进列表",
+      "elapsedMs": 1000,
+      "command": "echo hi",
+      "expected": false
+    },
+    {
+      "name": "不满 3 分钟的普通命令不进列表",
+      "elapsedMs": 179999,
+      "command": "echo hi",
+      "expected": false
+    },
+    {
+      "name": "满 3 分钟进列表",
+      "elapsedMs": 180000,
+      "command": "echo hi",
+      "expected": true
+    },
+    {
+      "name": "sleep 命令即时进列表",
+      "elapsedMs": 0,
+      "command": "sleep 300",
+      "expected": true
+    },
+    {
+      "name": "组合段里的 sleep 也进列表",
+      "elapsedMs": 0,
+      "command": "echo a && sleep 5",
+      "expected": true
+    },
+    {
+      "name": "参数里的 sleep 字样不算",
+      "elapsedMs": 1000,
+      "command": "echo sleep",
+      "expected": false
+    },
+    {
+      "name": "环境变量前缀后的 sleep 算",
+      "elapsedMs": 0,
+      "command": "FOO=1 sleep 5",
+      "expected": true
+    },
+    {
+      "name": "管道后面的 sleep 算",
+      "elapsedMs": 0,
+      "command": "cat x | sleep 1",
+      "expected": true
     }
   ]
 }

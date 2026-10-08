@@ -8,8 +8,9 @@
  * - `core-rs/src/bash_task_tests.rs` 断言 Standalone
  *   （`core-rs/src/bash_task.rs`）的输出等于对照表。
  *
- * 覆盖三件事：间隔档位（5 / 10 / 20 / 30 / 30…）、提醒时钟推进（空闲累加、
- * 暂停不累加、一次跨多档）、提醒文案（描述 / 命令 / 时长 / 输出尾部 / 下次间隔）。
+ * 覆盖四件事：间隔档位（5 / 10 / 20 / 30 / 30…）、提醒时钟推进（空闲累加、
+ * 暂停不累加、一次跨多档）、提醒文案（描述 / 命令 / 时长 / 输出尾部 / 下次间隔）、
+ * 兜底提醒门槛（满 3 分钟或命令含 sleep 才进查询结束的兜底列表）。
  *
  * 用法：先 `npm run compile-tests`，再 `node scripts/gen-background-reminder-parity.mjs`。
  */
@@ -117,13 +118,38 @@ const textCases = textInputs.map((input) => ({
   expected: reminder.buildBackgroundReminderText(input),
 }));
 
+// ---- 兜底提醒门槛（查询结束的一次性提醒）----
+// 时间无关口径：只记 elapsedMs 与 command，startTime 由消费侧以「now - elapsedMs」
+// 现算，两侧对同一份用例断言布尔结果。
+const FALLBACK_NOW = 10 * 60_000;
+const fallbackQualifyInputs = [
+  { name: '刚起不久的普通命令不进列表', elapsedMs: 1_000, command: 'echo hi' },
+  { name: '不满 3 分钟的普通命令不进列表', elapsedMs: 3 * MINUTE - 1, command: 'echo hi' },
+  { name: '满 3 分钟进列表', elapsedMs: 3 * MINUTE, command: 'echo hi' },
+  { name: 'sleep 命令即时进列表', elapsedMs: 0, command: 'sleep 300' },
+  { name: '组合段里的 sleep 也进列表', elapsedMs: 0, command: 'echo a && sleep 5' },
+  { name: '参数里的 sleep 字样不算', elapsedMs: 1_000, command: 'echo sleep' },
+  { name: '环境变量前缀后的 sleep 算', elapsedMs: 0, command: 'FOO=1 sleep 5' },
+  { name: '管道后面的 sleep 算', elapsedMs: 0, command: 'cat x | sleep 1' },
+];
+
+const fallbackQualifyCases = fallbackQualifyInputs.map((input) => ({
+  ...input,
+  expected: reminder.qualifiesBackgroundFallbackReminder(
+    { startTime: FALLBACK_NOW - input.elapsedMs, command: input.command },
+    FALLBACK_NOW,
+  ),
+}));
+
 const fixture = {
   note: '后台任务周期性提醒对照表：Embedded（src/core/tools/bash/BackgroundReminder.ts）与 Standalone（core-rs/src/bash_task.rs）逐字一致。由 scripts/gen-background-reminder-parity.mjs 生成。',
   intervalsMin: [...reminder.BACKGROUND_REMINDER_INTERVALS_MIN],
+  fallbackMinElapsedMs: reminder.BACKGROUND_REMINDER_MIN_ELAPSED_MS,
   firstLabel: reminder.BACKGROUND_REMINDER_FIRST_LABEL,
   intervalLabelCases,
   clockCases,
   textCases,
+  fallbackQualifyCases,
 };
 
 const outPath = join(repoRoot, 'src', 'test', 'fixtures', 'backgroundReminderParity.json');

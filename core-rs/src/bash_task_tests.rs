@@ -353,7 +353,8 @@ fn completion_notifies_the_engine_before_clearing_background() {
 /// 后台任务提醒对等测试：与 Embedded 共用 `src/test/fixtures/backgroundReminderParity.json`。
 ///
 /// 对齐 `src/test/backgroundReminderParity.test.ts`：间隔档位（5 / 10 / 20 / 30 / 30…）、
-/// 提醒时钟推进（空闲累加 / 暂停不累加 / 一次跨多档）、提醒文案逐字一致。
+/// 提醒时钟推进（空闲累加 / 暂停不累加 / 一次跨多档）、提醒文案逐字一致、
+/// 兜底提醒门槛（满 3 分钟或命令含 sleep）逐条一致。
 #[test]
 fn background_reminder_parity() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
@@ -368,6 +369,14 @@ fn background_reminder_parity() {
         .map(|value| value.as_u64().expect("interval"))
         .collect();
     assert_eq!(intervals, BACKGROUND_REMINDER_INTERVALS_MIN.to_vec());
+
+    assert_eq!(
+        fixture["fallbackMinElapsedMs"]
+            .as_u64()
+            .expect("fallbackMinElapsedMs"),
+        BACKGROUND_REMINDER_MIN_ELAPSED_MS,
+        "兜底门槛的最小运行时长与对照表一致"
+    );
 
     assert_eq!(
         fixture["firstLabel"].as_str().expect("firstLabel"),
@@ -420,6 +429,28 @@ fn background_reminder_parity() {
         assert_eq!(
             text,
             case["expected"].as_str().expect("expected"),
+            "case: {}",
+            case["name"]
+        );
+    }
+
+    // 兜底门槛：now 固定，start_time 按 elapsedMs 倒推，结果与对照表逐条一致
+    let fallback_now_ms: u64 = 10 * 60_000;
+    for case in fixture["fallbackQualifyCases"]
+        .as_array()
+        .expect("fallbackQualifyCases")
+    {
+        let elapsed_ms = case["elapsedMs"].as_u64().expect("elapsedMs");
+        let task = RunningTask {
+            task_id: "bg-fixture".to_string(),
+            description: String::new(),
+            command: case["command"].as_str().expect("command").to_string(),
+            pid: 1,
+            start_time: fallback_now_ms - elapsed_ms,
+        };
+        assert_eq!(
+            qualifies_fallback_reminder(&task, fallback_now_ms),
+            case["expected"].as_bool().expect("expected"),
             "case: {}",
             case["name"]
         );

@@ -375,6 +375,8 @@ function buildTarget(target, options) {
   copyFileSync(built, outPath);
   console.log(`[build-core] ${target.triple} → ${outPath}`);
 
+  copyDebugSymbols(built, outDir, target);
+
   // 指纹文件与可执行文件同级落位：宿主运行时读它确定远端部署槽位
   // 部署槽位 `~/.local/share/<core.deployPrefix>/<指纹>/`；随 copy-assets 进入打包产物（Electron / vsix 携带）。
   const fingerprintPath = join(outDir, FINGERPRINT_FILE_NAME);
@@ -382,6 +384,20 @@ function buildTarget(target, options) {
   console.log(`[build-core] ${target.dir} 指纹 → ${fingerprintPath}`);
 
   copyBundledRipgrep(target, outDir);
+}
+
+/**
+ * 部署崩溃诊断符号：Windows（MSVC）的行号表在可执行文件旁的 `.pdb` 里，不随 exe
+ * 部署则 panic 钩子输出的调用栈只有地址。debug 构建（profile=debug）本来就不 strip，
+ * pdb 同样带上；Linux（musl / ELF）的行号表嵌在二进制内，无需额外产物。
+ */
+function copyDebugSymbols(built, outDir, target) {
+  if (target.platform !== 'win32') return;
+  const pdb = built.replace(/\.exe$/, '.pdb');
+  if (!existsSync(pdb)) return; // 工具链没产出 pdb（如自定义 profile 关掉 debug）时不阻塞构建
+  const dest = join(outDir, `${BINARY_NAME}.pdb`);
+  copyFileSync(pdb, dest);
+  console.log(`[build-core] ${target.dir} 调试符号 → ${dest}`);
 }
 
 /**

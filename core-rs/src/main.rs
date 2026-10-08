@@ -59,6 +59,9 @@ use frame::{CoreToUiFrame, UiToCoreFrame, CORE_PROTOCOL_VERSION};
 use util::sanitize_json_surrogates;
 
 fn main() {
+    // 崩溃诊断先于一切动作安装：daemon 与 Core 两种模式都可能异常退出，
+    // panic 位置 + 调用栈必须落进日志（见 `util::install_panic_hook`）
+    util::install_panic_hook();
     // 动作选择（`docs/core-daemon.md` 第 3 节）：`stdio` 是单进程 Core（stdio 是帧通道）；
     // `start`（缺省）是远程服务的启动器（确保后台 daemon 在跑、打印就绪信息后退出），
     // `kill` 结束它，daemon 实体走隐藏动作 `start-daemon`（`docs/core-daemon.md` 第 12 节）。

@@ -45,4 +45,8 @@ zip = "8"
 opt-level = 3
 lto = true
 codegen-units = 1
-strip = true
+# 崩溃诊断：不 strip 并保留行号表——daemon / Core 异常退出时，panic 钩子强制捕获的
+# 调用栈（写进 core-daemon 日志 / 宿主诊断日志）才能符号化出函数名与行号。
+# 只带行号表不带变量信息，体积增量远小于完整 debug 信息；Windows（MSVC）的
+# 行号表在构建产物旁的 .pdb 里，由 scripts/build-core.mjs 一并部署。
+debug = "line-tables-only"

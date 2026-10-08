@@ -2560,8 +2560,11 @@ fn agent_source_info(agent_id: &str) -> String {
 }
 
 /// 消费循环即将空转时的兜底提醒（对齐 `QueryEngine.maybeRemindBackgroundTasks`）：
-/// 本会话仍有运行中的后台任务、且这批任务还没提醒过 → 生成一条 reminder 让 LLM
-/// 二选一（不再需要的执行 kill 命令 / 都还需要就直接结束本轮等通知，不要 sleep 轮询）。
+/// 本会话仍有运行中的后台任务、满足兜底门槛（运行满 3 分钟或命令含 sleep 子命令，
+/// `bash_task::qualifies_fallback_reminder`）、且这批任务还没提醒过 → 生成一条
+/// reminder 让 LLM 二选一（不再需要的执行 kill 命令 / 都还需要就直接结束本轮等通知，
+/// 不要 sleep 轮询）。不满足门槛的任务不进列表；全部不满足时本次不提醒
+/// （任务留着，下轮查询结束再按当时运行时长判定）。
 ///
 /// 同一批 taskId 只提醒一次（`reminded_background_tasks`），因此不会
 /// 「提醒 → 查询 → 提醒」递归。
@@ -2573,6 +2576,7 @@ fn background_reminder(session_id: &str, state: &mut SessionState) -> Option<Str
     let tasks: Vec<bash_task::RunningTask> = bash_task::running_tasks_for_session(session_id)
         .into_iter()
         .filter(|task| !state.reminded_background_tasks.contains(&task.task_id))
+        .filter(|task| bash_task::qualifies_fallback_reminder(task, util::now_millis()))
         .collect();
     if tasks.is_empty() {
         return None;

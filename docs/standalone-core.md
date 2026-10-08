@@ -164,9 +164,11 @@ resources/core/x64-win32/ripgrep/rg.exe
 ~/.local/share/<core.deployPrefix>/tui[.exe]                    # TUI 版安装器附带
 ```
 
-Core 以**自己的可执行文件所在目录的上一级**定位共享资源（`tools.rs::ripgrep_path`：
-槽位上一级产品目录里的 `ripgrep/`），本地起进程、远端上传与 TUI 版安装用的是
-同一个位置，不依赖宿主提供 `extensionPath`。
+Core 定位自带 ripgrep 时**以自己的可执行文件为基准**（`tools.rs::ripgrep_path`，按优先级
+取第一个存在的）：可执行文件同目录下的 `ripgrep/`（仓库产物与 Electron 打包布局——
+`asarUnpack` 解包后 rg 与 Core 在同一层，而 Rust 的 `Path::exists` 看不进 asar 内的
+`dist/resources/ripgrep/`），以及槽位上一级产品目录里的 `ripgrep/`（远端部署的共享位）。
+本地起进程、远端上传与 TUI 版安装都在这两条候选内，不依赖宿主提供 `extensionPath`。
 
 **产品身份单源**：部署产品目录名（`core.deployPrefix`）、Core 二进制名
 （`core.binaryName`）、扩展名（`extensionName`）、配置目录名（`configDir`）等产品
@@ -192,7 +194,7 @@ project.json 与各 crate 的包名，不改逻辑代码。
 | 进程管理 | `bash_task.rs::kill_tree`、`mcp.rs` 的子进程终止 | `#[cfg(windows)]` 走 `taskkill /T /F`；非 Windows 走 `Child::kill`，与 Embedded（Node `detached: true` + `childProcess.kill()`，同样只杀直接子进程）逐字对齐 |
 | 路径处理 | `util.rs` 的 `normalize_path` / `expand_path`、`config.rs` 的 `encodeURIComponent` 等价物 | 盘符与 UNC 的换算都在 `cfg!(windows)` 分支内；非 Windows 走 POSIX 分支，多字节路径按字节比较 |
 | shell 探测 | `shell.rs::detect` | 非 Windows 直接用 `$SHELL`（缺省 `/bin/bash`）；Windows 才走 Git Bash → PowerShell → cmd.exe 的优先级 |
-| 资源定位 | `tools.rs::ripgrep_path`、`config.rs::extension_path` | Core 自带产物以**自己的可执行文件目录的上一级**为基准（`<exe 目录>/../ripgrep/rg[.exe]`，部署布局的共享位），宿主 `extensionPath` 只作本机开发期的兜底、最后回退 PATH；可执行名按 `cfg!(windows)` 加 `.exe`；产物目录按 `<arch>-<platform>` 解析，矩阵外直接拒绝而不是猜一个目录 |
+| 资源定位 | `tools.rs::ripgrep_path`、`config.rs::extension_path` | Core 自带产物以**自己的可执行文件目录**为基准（`<exe 目录>/ripgrep/rg[.exe]` 本地打包布局优先，`<exe 目录>/../ripgrep/rg[.exe]` 部署布局的共享位次之——Rust 的 `Path::exists` 看不进 asar），宿主 `extensionPath` 只作本机开发期的兜底、最后回退 PATH；可执行名按 `cfg!(windows)` 加 `.exe`；产物目录按 `<arch>-<platform>` 解析，矩阵外直接拒绝而不是猜一个目录 |
 | 主目录 | `config.rs::home_dir` | `USERPROFILE` 优先、`HOME` 兜底，两者都缺才报错 |
 | 系统语言 | 宿主：`src/host/i18n.ts::getSystemLocale`（不在 Core 侧） | 仅 Windows 查 PowerShell `Get-UICulture`；其余平台读 `LANG` / `LC_ALL` |
 | 控制台窗口 | `util.rs::hide_console` | 仅 Windows 设 `CREATE_NO_WINDOW`，非 Windows 是空操作 |

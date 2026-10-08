@@ -860,7 +860,8 @@ fn extract_command_name(segment: &str) -> String {
 /// 对齐 Embedded `SleepDetect.containsSleepCommand`：含 `sleep` 的命令**不设前台超时**，
 /// 让 `sleep` 自然完成（Embedded 会在后台任务完成 / 子代理 Reply 通知时把它转入后台，
 /// 本阶段无该通知通道，但「不设超时」的口径必须一致）。
-fn contains_sleep_command(command: &str) -> bool {
+/// 兜底提醒的门槛判定（`bash_task::qualifies_fallback_reminder`）也复用它。
+pub(crate) fn contains_sleep_command(command: &str) -> bool {
     crate::permission::split_by_separators(command)
         .iter()
         .any(|segment| extract_command_name(segment) == "sleep")
@@ -2922,14 +2923,19 @@ fn core_executable_dir() -> Option<PathBuf> {
 }
 
 /// ripgrep 的候选路径，按优先级排列（纯函数，便于用例锁死顺序）：
-/// 1. 部署布局的共享位（`<Core 可执行文件目录>/../ripgrep/`：槽位上一级的产品
+/// 1. Core 自己槽位里的自带位（`<Core 可执行文件目录>/ripgrep/`）：本地打包布局，
+///    构建脚本把 rg 与可执行文件落在一起（`resources/<core.resourceDir>/<dir>/ripgrep/`，
+///    打包后随 asarUnpack 解包，Rust 的 `Path::exists` 看不进 asar，只有这条能用）；
+/// 2. 部署布局的共享位（`<Core 可执行文件目录>/../ripgrep/`：槽位上一级的产品
 ///    目录里，全部指纹槽位共享一份）；
-/// 2. 宿主 `extensionPath`（本机开发期兜底：直接用 `cargo run` / `cargo test`
+/// 3. 宿主 `extensionPath`（本机开发期兜底：直接用 `cargo run` / `cargo test`
 ///    的 Core 进程、或从仓库里跑宿主时，产物在 `resources/` / `dist/resources/`）。
 fn ripgrep_candidates(core_dir: Option<&Path>, extension_path: Option<&str>) -> Vec<PathBuf> {
     let exe = exe_name("rg");
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(dir) = core_dir {
+        // 本地打包布局：rg 与 Core 可执行文件同目录下的 `ripgrep/` 子目录
+        candidates.push(dir.join("ripgrep").join(&exe));
         // 槽位上一级：`share/<产品名>/<指纹>/` 的上一级是产品目录，共享 rg 在那里
         if let Some(parent) = dir.parent() {
             candidates.push(parent.join("ripgrep").join(&exe));

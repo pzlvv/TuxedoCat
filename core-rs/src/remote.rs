@@ -1156,6 +1156,13 @@ fn accept_loop(
         }
         match stream {
             Ok(stream) => {
+                // 连接接入落一行日志：daemon 无预警死掉时，日志里最后一条连接记录
+                // 就是定位「哪条连接 / 哪个 Core」的锚点
+                let peer = stream
+                    .peer_addr()
+                    .map(|address| address.to_string())
+                    .unwrap_or_else(|_| "<unknown>".to_string());
+                diag!("[core] remote: control connection accepted ({peer})");
                 let runtime = Arc::clone(&runtime);
                 let spawner = Arc::clone(&spawner);
                 let options = options.clone();
@@ -1195,6 +1202,7 @@ fn serve_accepted(
     };
     let exit = serve_connection(stream, options, spawner, (events, event_rx));
     runtime.unregister(id);
+    diag!("[core] remote: control connection closed (exit={exit:?})");
     if exit == ChannelExit::Stop {
         runtime.begin_stop();
     }
@@ -1236,6 +1244,16 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     println!("{}", ready_message(local.port()));
     // 标准输出可能被缓冲；启动器 / 用户要立刻看到就绪行，立即冲刷。
     let _ = std::io::stdout().flush();
+    // 启动事实落日志（stdout 的就绪行与 stderr 诊断都进了 daemon 日志文件）：
+    // 异常退出时日志里得有「何时、以什么参数起来过」这一行锚点
+    diag!(
+        "[core] daemon started (pid={}, endpoint={endpoint}, idle-exit={}s, binary={})",
+        std::process::id(),
+        options.idle_exit.map(|idle| idle.as_secs()).unwrap_or_default(),
+        std::env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "<unknown>".to_string())
+    );
 
     // Core 进程工厂启动时解析一次：解析不出直接失败，不等到第一条连接才暴露
     let spawner: Arc<dyn CoreSpawner> = match daemon::SystemCoreSpawner::current_exe() {
@@ -1276,6 +1294,7 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     runtime.wait_until_drained(STOP_TIMEOUT);
     // 只删自己写的那份：期间可能有新 daemon 覆盖过状态文件
     remove_state_if_unchanged(&state_path, &state);
+    diag!("[core] daemon stopped (pid={}, endpoint={endpoint})", std::process::id());
     0
 }
 

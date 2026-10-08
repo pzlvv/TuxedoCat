@@ -880,9 +880,11 @@ const MessageItem = memo(function MessageItem({
  *    at the bottom by default — the browser handles anchoring natively.
  *
  * 2. Wheel 事件一旦出现（向上滚动，或当前已不在底部）就立刻标记
- *    userScrolledAway，不等 scroll 事件越过阈值；JS scroll listener 仍用
- *    **distance threshold** 作为辅助，检测其他输入（触摸/键盘/滚动条）造成的
- *    scroll-away。2 px fudge 帮助避免布局抖动或 momentum 滚动舍入造成的误判。
+ *    userScrolledAway，不等 scroll 事件；JS scroll listener 作为辅助，覆盖其他
+ *    输入（触摸/键盘/滚动条拖动）造成的 scroll-away：只要「真实用户输入附近 +
+ *    确实在向上滚」，哪怕只离开底部 2px 也算用户主动滚离——微小上滚不再被
+ *    自动滚动拉回。2px 判定带（与 isAtBottom 同口径）帮助避免布局抖动或
+ *    momentum 滚动舍入造成的误判。
  *
  * 3. ResizeObserver on container children provides a **fallback** for cases
  *    where CSS overflow-anchor alone is insufficient (e.g. multi-frame
@@ -897,7 +899,6 @@ const MessageItem = memo(function MessageItem({
  *    （isPinnableUserMessage，不含后台通知/子代理消息/压缩摘要）、会话加载等
  *    forceScrollKey 显式触发。系统自动消息永远不能打断用户向上翻阅。
  */
-const SCROLL_AWAY_THRESHOLD = 50; // px — distance from bottom to consider "away"
 
 /**
  * 消息滚动容器（.messages-container）的上内边距：py-4 = 16px。
@@ -1147,12 +1148,15 @@ function useAutoScroll(
       if (distanceFromBottom <= 2) {
         // At the very bottom — resume auto-scroll
         userScrolledAwayRef.current = false;
-      } else if (!programmaticScrollPendingRef.current && distanceFromBottom > SCROLL_AWAY_THRESHOLD && scrollTop < lastScrollTop - 2) {
-        // 只有附近存在真实用户滚动输入时，才把“向上滚动”判定为用户主动滚走。
-        // overflow-anchor / 布局调整在设置 scrollTop 后也可能产生 scrollTop 回退
-        // （概率性出现），这种伪滚动没有对应的 wheel/touch/keyboard/pointerdown
-        // 输入，不能把 userScrolledAwayRef 置为 true，否则后续非强制滚动
-        // （流式增量、toolMetaData 异步 diff 展开等）会被自身抑制。
+      } else if (!programmaticScrollPendingRef.current && distanceFromBottom > 2 && scrollTop < lastScrollTop - 2) {
+        // 只要附近存在真实用户滚动输入且确实在向上滚，离开底部超过 2px（判定带
+        // 之外）就算用户主动滚离——用户操作即使微小也不该被自动滚动拉回。
+        // 三个守卫把伪滚动排除在外：programmaticScrollPending（强制滚动的等待窗
+        // 口）、scrollTop < lastScrollTop - 2（确实在向上，overflow-anchor 在内容
+        // 下方增长时 scrollTop 只增不减）、1s 内有真实输入（wheel/touch/keyboard/
+        // pointer 都会刷新）——布局调整产生的 scrollTop 回退没有对应输入，不会
+        // 误置位，否则后续非强制滚动（流式增量、toolMetaData 异步 diff 展开等）
+        // 会被自身抑制。
         const userRecentlyScrolled = performance.now() - lastUserScrollInputRef.current < 1000;
         if (userRecentlyScrolled) {
           userScrolledAwayRef.current = true;
@@ -1160,7 +1164,8 @@ function useAutoScroll(
         }
       }
       lastScrollTop = scrollTop;
-      // Between 2 and threshold: keep previous state (hysteresis prevents flickering)
+      // 无真实输入的微小离开（布局/锚点调整）保持原状态：置位分支的方向与输入
+      // 时间双重过滤已把伪滚动排除，这里不再需要额外迟滞带
       profileLog(`[AutoScroll] scroll event scrollTop=${scrollTop}/${scrollHeight} ch=${clientHeight} distance=${distanceFromBottom.toFixed(1)} atBottom=${isAtBottomRef.current} pending=${programmaticScrollPendingRef.current} userScrolledAway=${userScrolledAwayRef.current}`);
     };
 

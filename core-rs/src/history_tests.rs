@@ -937,6 +937,52 @@ fn load_metadata_reads_files_with_lone_surrogate_escapes() {
     assert_eq!(metadata["title"], "带 emoji \u{FFFD} 的标题");
 }
 
+/// 会话文件由多进程共写，异常退出可能留下半截多字节序列（无效 UTF-8 字节）。
+/// Embedded 侧 Node `readFile(path, 'utf8')` 宽松解码只损失一个替换字符；
+/// Rust 侧 `read_to_string` 严格校验会让**整个会话**被当成空——这里锁住宽松口径。
+#[test]
+fn load_messages_replaces_invalid_utf8_bytes_instead_of_dropping_the_file() {
+    let sandbox = Sandbox::new("history-invalid-utf8");
+    let dir = sandbox.conversation_dir(PROJECT);
+    // 第二行 content 里塞一个孤立的 0xE4（三字节序列的头，后面没跟续字节）
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(
+        br#"{"uuid":"u1","parentUuid":null,"timestamp":1,"message":{"type":"user","message":{"role":"user","content":"ok"}}}"#,
+    );
+    bytes.push(b'\n');
+    bytes.extend_from_slice(
+        br#"{"uuid":"u2","parentUuid":"u1","timestamp":2,"message":{"type":"user","message":{"role":"user","content":"a"#,
+    );
+    bytes.push(0xE4);
+    bytes.extend_from_slice(br#"b"}}"#);
+    bytes.push(b'\n');
+    std::fs::write(dir.join("s1.jsonl"), bytes).unwrap();
+
+    // 严格解码单独看这个文件会失败（这就是 read_to_string 的行为）
+    let raw = std::fs::read(dir.join("s1.jsonl")).unwrap();
+    assert!(String::from_utf8(raw).is_err());
+
+    let messages = load_messages("s1", PROJECT);
+    assert_eq!(messages.len(), 2, "无效字节只损失一个替换字符，不该丢整个会话：{messages:?}");
+    assert_eq!(messages[0]["message"]["content"], "ok");
+    assert_eq!(messages[1]["message"]["content"], "a\u{FFFD}b");
+}
+
+#[test]
+fn load_metadata_replaces_invalid_utf8_bytes() {
+    let sandbox = Sandbox::new("history-invalid-utf8-meta");
+    let dir = sandbox.conversation_dir(PROJECT);
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(br#"{"sessionId":"s1","title":"a"#);
+    bytes.push(0xFF);
+    bytes.extend_from_slice(br#"b","project":"D:/repo/demo"}"#);
+    std::fs::write(dir.join("s1.meta.json"), bytes).unwrap();
+
+    let metadata = load_metadata("s1", PROJECT).expect("宽松解码后应能读出元数据");
+    assert_eq!(metadata["sessionId"], "s1");
+    assert_eq!(metadata["title"], "a\u{FFFD}b");
+}
+
 #[test]
 fn conversation_list_excludes_workspace_manifest() {
     // 对齐 Embedded loadConversationList：工作区清单（workspace.meta.json）不是会话，

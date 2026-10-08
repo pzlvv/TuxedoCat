@@ -17,6 +17,7 @@ import type { PromptPresetId } from './prompt/PromptPreset.js';
 import { getAllTools } from './tools/index.js';
 import { logger } from './Logger.js';
 import { isCompacting, isPendingCompact, markPendingCompact, unmarkPendingCompact } from './compact/state.js';
+import { qualifiesBackgroundFallbackReminder } from './tools/bash/BackgroundReminder.js';
 import { randomId } from './tools/RunTools.js';
 import type { DispatchResult, SkillDispatchInfo } from './CommandDispatcher.js';
 
@@ -659,10 +660,14 @@ export class QueryEngine {
   }
 
   /**
-   * 查询结束（End）后的兜底提醒：若本会话仍有运行中的后台 Bash 任务，
+   * 查询结束（End）后的兜底提醒：若本会话仍有运行中的后台 Bash 任务，且满足
+   * 兜底门槛（运行满 3 分钟，或命令里包含 sleep 子命令——`qualifiesBackgroundFallbackReminder`），
    * 向 LLM 注入一条 reminder，列出当前后台进程（taskId + pid + 命令），让 LLM 二选一：
    * - 不再需要的 → 执行 reminder 里按当前 OS 生成好的 kill 命令；
    * - 都还需要 → 直接结束本轮等待完成通知，不要 sleep / 轮询。
+   *
+   * 不满足门槛的任务不进列表：短命任务很快自己完成，为它打断一轮 LLM 只会产生噪音；
+   * 全部不满足时本次不提醒（任务留着，下轮查询结束再按当时运行时长判定）。
    *
    * 只发一次：已提醒过的 taskId 记录在 remindedBackgroundTaskIds 中，
    * 后续 finalizeIdle 不会对同一批任务重复提醒，因此即使提醒本身触发了一轮
@@ -681,8 +686,10 @@ export class QueryEngine {
     let runningTasks: Array<{ taskId: string; description: string; command: string; pid?: number }>;
     try {
       const { getRunningBackgroundTasksForSession } = await import('./tools/bash/LocalShellTask.js');
+      const now = Date.now();
       runningTasks = getRunningBackgroundTasksForSession(this.sessionID)
-        .filter(t => !this.remindedBackgroundTaskIds.has(t.taskId))
+        .filter(t => !this.remindedBackgroundTaskIds.has(t.taskId)
+          && qualifiesBackgroundFallbackReminder(t, now))
         .map(t => ({ taskId: t.taskId, description: t.description, command: t.command, pid: t.pid }));
     } catch (err) {
       logger.warn('QueryEngine', `Failed to inspect background tasks for ${this.sessionID}: ${err}`);

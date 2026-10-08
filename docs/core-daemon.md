@@ -377,6 +377,12 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 - daemon 的诊断按行原子追加到 `logs/core-daemon-<指纹>.log`（`start` 以追加模式把
   stderr 重定向到它）：全部诊断先整行格式化再一次写入（stderr 锁内），多线程并发不丢行、
   不交错半行；追加模式（O_APPEND）保证每次 write 原子落到文件尾。
+- 崩溃诊断：进程入口安装 panic 钩子（`util::install_panic_hook`），panic 位置与强制
+  捕获的调用栈整块写进上述日志（默认钩子依赖 `RUST_BACKTRACE`，没人设它）；daemon 的
+  启动 / 停止、控制连接接入 / 关闭、Core 子进程启动（含 pid）与信号终止（Unix）各落
+  一行锚点。release 构建不 strip 并保留行号表（`core-rs/Cargo.toml` 的
+  `[profile.release]`；Windows 的行号表在 `.pdb` 里，由 `scripts/build-core.mjs` 随
+  可执行文件一并部署），栈帧才能符号化出函数名与行号。
 
 ### 12.6 远端目录选择
 

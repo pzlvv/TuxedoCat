@@ -45,13 +45,14 @@ pub fn load_compact_archive(session_id: &str, project: &str) -> Vec<Value> {
     let Ok(path) = compact_archive_path(session_id, project) else {
         return Vec::new();
     };
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(text) = util::read_to_string_lossy(&path) else {
         return Vec::new();
     };
     text.lines()
         .filter(|line| !line.trim().is_empty())
         .filter_map(|line| {
-            serde_json::from_str::<Value>(line)
+            // 与 `parse_messages` 同口径：宿主写入的行可能带孤立代理项转义，清洗后再解析
+            serde_json::from_str::<Value>(&util::sanitize_json_surrogates(line))
                 .ok()
                 .and_then(|stored| stored.get("message").cloned())
         })
@@ -94,7 +95,7 @@ pub fn load_conversation_list(workspace_path: Option<&str>) -> Vec<Value> {
         if !name.ends_with(".meta.json") || name == "workspace.meta.json" {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+        let Ok(text) = util::read_to_string_lossy(&entry.path()) else {
             continue;
         };
         let Ok(metadata) = serde_json::from_str::<Value>(&util::sanitize_json_surrogates(&text))
@@ -140,7 +141,7 @@ pub fn compact_archive_path(session_id: &str, project: &str) -> Result<PathBuf, 
 /// 读取 `meta.json`；缺失或解析失败返回 None
 pub fn load_metadata(session_id: &str, project: &str) -> Option<Value> {
     let path = metadata_path(session_id, project).ok()?;
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = util::read_to_string_lossy(&path).ok()?;
     // 宿主可能写入孤立代理项（`\ude00`），serde_json 严格解析会整行失败
     serde_json::from_str(&util::sanitize_json_surrogates(&text)).ok()
 }
@@ -155,7 +156,7 @@ pub fn update_metadata(
     let _guard = WRITE_LOCK.lock().unwrap();
     let dir = config::ensure_project_conversation_dir(project)?;
     let path = dir.join(session_file_name(session_id, ".meta.json")?);
-    let mut metadata = std::fs::read_to_string(&path)
+    let mut metadata = util::read_to_string_lossy(&path)
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&util::sanitize_json_surrogates(&text)).ok())
         .unwrap_or_else(fallback);
@@ -274,7 +275,7 @@ fn conversation_closure_in(dir: &std::path::Path, session_id: &str) -> Vec<Strin
             let Some(id) = name.strip_suffix(".meta.json") else {
                 continue;
             };
-            let parent = std::fs::read_to_string(entry.path())
+            let parent = util::read_to_string_lossy(&entry.path())
                 .ok()
                 .and_then(|text| serde_json::from_str::<Value>(&util::sanitize_json_surrogates(&text)).ok())
                 .and_then(|metadata| {
@@ -621,7 +622,7 @@ pub fn load_messages(session_id: &str, project: &str) -> Vec<Value> {
     let Ok(path) = messages_path(session_id, project) else {
         return Vec::new();
     };
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(text) = util::read_to_string_lossy(&path) else {
         return Vec::new();
     };
     parse_messages(&text)
@@ -1133,7 +1134,7 @@ pub fn project_of_session(session_id: &str) -> Option<String> {
         if !candidate.exists() {
             continue;
         }
-        let text = std::fs::read_to_string(&candidate).ok()?;
+        let text = util::read_to_string_lossy(&candidate).ok()?;
         let metadata: Value = serde_json::from_str(&util::sanitize_json_surrogates(&text)).ok()?;
         if let Some(project) = metadata.get("project").and_then(Value::as_str) {
             return Some(project.to_string());
@@ -1222,7 +1223,7 @@ pub fn update_context(
 /// 对话空间的项目路径：优先读目录里的 `workspace.meta.json`，
 /// 读不到时退回目录名的百分号解码（对齐 Embedded `readWorkspacePath`）。
 fn read_workspace_path(dir_path: &std::path::Path, dir_name: &str) -> String {
-    if let Ok(content) = std::fs::read_to_string(dir_path.join("workspace.meta.json")) {
+    if let Ok(content) = util::read_to_string_lossy(&dir_path.join("workspace.meta.json")) {
         if let Ok(settings) = serde_json::from_str::<Value>(&content) {
             if let Some(workspace) = settings.get("workspacePath").and_then(Value::as_str) {
                 let trimmed = workspace.trim();

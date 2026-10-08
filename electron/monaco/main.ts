@@ -67,8 +67,14 @@ let editor: monaco.editor.IStandaloneCodeEditor | monaco.editor.IStandaloneDiffE
 const container = document.getElementById('container')!;
 
 function applyTheme(): void {
-  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  monaco.editor.setTheme(isDark ? 'vs-dark' : 'vs');
+  monaco.editor.setTheme(currentTheme());
+}
+
+// 主题跟随 prefers-color-scheme（主进程 nativeTheme.themeSource 驱动，应用内切换
+// 主题会触发 change 事件）。创建编辑器时必须现算主题：全局 setTheme 会被创建
+// 参数里硬编码的 theme 覆盖，导致浅色系统下打开的编辑器仍是深色。
+function currentTheme(): string {
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'vs-dark' : 'vs';
 }
 
 function revealLines(e: monaco.editor.IStandaloneCodeEditor, lines?: { start: number; end: number }): void {
@@ -84,7 +90,7 @@ function initView(data: MonacoInitData): void {
   const model = monaco.editor.createModel(data.content || '', lang);
   editor = monaco.editor.create(container, {
     model,
-    theme: 'vs-dark',
+    theme: currentTheme(),
     fontSize: 13,
     fontFamily: 'Consolas, "Courier New", monospace',
     automaticLayout: true,
@@ -105,7 +111,7 @@ function initDiff(data: MonacoInitData): void {
   const original = monaco.editor.createModel(data.beforeContent || '', lang);
   const modified = monaco.editor.createModel(data.afterContent || '', lang);
   editor = monaco.editor.createDiffEditor(container, {
-    theme: 'vs-dark',
+    theme: currentTheme(),
     fontSize: 13,
     fontFamily: 'Consolas, "Courier New", monospace',
     automaticLayout: true,
@@ -123,7 +129,7 @@ function initContent(data: MonacoInitData): void {
   const model = monaco.editor.createModel(data.content || '', lang);
   editor = monaco.editor.create(container, {
     model,
-    theme: 'vs-dark',
+    theme: currentTheme(),
     fontSize: 13,
     fontFamily: 'Consolas, "Courier New", monospace',
     automaticLayout: true,

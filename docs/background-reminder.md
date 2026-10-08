@@ -22,12 +22,20 @@
 ### 1.0 查询结束兜底提醒
 
 一轮查询结束时（`finalizeIdle` / 消费循环即将空转），若该会话仍有运行中的后台任务、
-且这批任务还没被兜底提醒过，投递一条 reminder 列出 `taskId` / `pid` / 命令与按当前
-OS 生成的 kill 命令，让 LLM 二选一：不再需要的执行 kill，都还需要就直接结束本轮等
-完成通知（不要 sleep / 轮询）。
+满足兜底门槛、且这批任务还没被兜底提醒过，投递一条 reminder 列出 `taskId` / `pid` /
+命令与按当前 OS 生成的 kill 命令，让 LLM 二选一：不再需要的执行 kill，都还需要就
+直接结束本轮等完成通知（不要 sleep / 轮询）。
 
+- 兜底门槛（`qualifiesBackgroundFallbackReminder` / `bash_task::qualifies_fallback_reminder`）：
+  任务满足下列之一才进提醒列表——
+  1. 运行满 3 分钟（`BACKGROUND_REMINDER_MIN_ELAPSED_MS`）；
+  2. 命令包含 sleep 子命令（与超时策略的 sleep 判定同一口径——sleep 类任务在等
+     定时事件，最需要被提醒「别轮询，等通知」）。
+  不满足的任务不进列表（短命任务很快自己完成，为它打断一轮 LLM 只是噪音）；全部
+  不满足时本次不投递。门槛按**当时的**运行时长判定：这轮不满 3 分钟没进列表的任务，
+  下轮查询结束满 3 分钟后仍会被兜底提醒。
 - 同一批 `taskId` 只提醒一次（`remindedBackgroundTaskIds` / `reminded_background_tasks`），
-  避免「提醒 → 查询 → 提醒」递归。
+  避免「提醒 → 查询 → 提醒」递归；只有真正进过列表的 `taskId` 才登记。
 - Embedded：`QueryEngine.maybeRemindBackgroundTasks`；Standalone：
   `engine.rs` 的 `background_reminder`（在消费循环的「队列排空」判定里调用）。
 - 本条与周期提醒互相独立：兜底提醒只是「启动一次查询」的众多原因之一，对周期时钟没有
@@ -89,7 +97,8 @@ OS 生成的 kill 命令，让 LLM 二选一：不再需要的执行 kill，都�
 ## 3. 测试
 
 - 对等对照表 `src/test/fixtures/backgroundReminderParity.json`（生成脚本
-  `scripts/gen-background-reminder-parity.mjs`）：间隔档位、时钟推进、提醒文案。
+  `scripts/gen-background-reminder-parity.mjs`）：间隔档位、时钟推进、提醒文案、
+  兜底门槛（满 3 分钟 / 含 sleep 的布尔判定）。
   - Embedded：`src/test/backgroundReminderParity.test.ts`；
   - Standalone：`core-rs/src/bash_task_tests.rs::background_reminder_parity`。
 - 调度接线：`src/test/backgroundReminderScheduler.test.ts`（空闲到点、暂停不累计、

@@ -17,7 +17,9 @@
 import { closeSync, fstatSync, openSync, readSync } from 'fs';
 import { logger } from '../../Logger.js';
 import { getSessionRuntimeState } from '../../sessionRuntime.js';
+import { containsSleepCommand } from './SleepDetect.js';
 import { getTaskOutputPath } from './TaskOutput.js';
+import { splitBySeparators } from './TimeoutPolicy.js';
 
 /**
  * 提醒间隔（分钟）：第 1 次 5min，其后 10 / 20 / 30min，再往后固定 30min。
@@ -25,6 +27,28 @@ import { getTaskOutputPath } from './TaskOutput.js';
  * 与 Standalone `bash_task::BACKGROUND_REMINDER_INTERVALS_MIN` 逐项一致。
  */
 export const BACKGROUND_REMINDER_INTERVALS_MIN = [5, 10, 20, 30] as const;
+
+/**
+ * 查询结束兜底提醒的最小任务运行时长：运行不满 3 分钟、且命令里没有 sleep 的
+ * 后台任务不进兜底提醒列表（这类任务多半很快自己完成，不值得为它打断一轮 LLM；
+ * 真有需要时 5min 档的周期提醒会接上）。
+ *
+ * 与 Standalone `bash_task::BACKGROUND_REMINDER_MIN_ELAPSED_MS` 一致。
+ */
+export const BACKGROUND_REMINDER_MIN_ELAPSED_MS = 3 * 60_000;
+
+/**
+ * 任务是否满足兜底提醒门槛：运行满 3 分钟，或命令里包含 sleep 子命令
+ * （sleep 类任务在等一个定时事件，最需要被提醒「别去轮询，等通知」）。
+ * sleep 判定与超时策略（`TimeoutPolicy` / `Bash.ts` 的 isSleep）同一口径。
+ */
+export function qualifiesBackgroundFallbackReminder(
+  task: { startTime: number; command: string },
+  now: number = Date.now(),
+): boolean {
+  if (now - task.startTime >= BACKGROUND_REMINDER_MIN_ELAPSED_MS) return true;
+  return containsSleepCommand(splitBySeparators(task.command));
+}
 
 /** 调度器轮询间隔：1s 粒度足够（最小间隔是分钟级），开销可忽略 */
 const BACKGROUND_REMINDER_TICK_MS = 1000;
