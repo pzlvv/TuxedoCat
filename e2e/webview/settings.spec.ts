@@ -218,8 +218,13 @@ test('US-24 界面字号档位随保存提交，宿主回传后即时生效', as
   const saved = await host.waitForSent('saveLLMConfig', 15_000);
   expect(saved.fontSize).toBe('large');
 
-  // 宿主保存成功回传后，根元素 CSS 变量即时切到「特大」档（+2px），字号由 CSS 变量统一驱动
-  await host.send({ type: 'llmConfigSaved', fontSize: 'xlarge' });
+  // 宿主保存成功回传后，根元素 CSS 变量即时切到「特大」档（+2px），字号由 CSS 变量统一驱动。
+  // 只改字号：defaultsChanged 全 false，不弹「应用到当前对话」
+  await host.send({
+    type: 'llmConfigSaved',
+    fontSize: 'xlarge',
+    defaultsChanged: { activeProvider: false, thinkingEffort: false, promptMode: false, agentMode: false, webSearch: false },
+  });
   await expect.poll(() => page.evaluate(
     () => document.documentElement.style.getPropertyValue('--ui-font-offset'),
   )).toBe('2px');

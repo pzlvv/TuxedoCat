@@ -48,6 +48,14 @@ interface Entry {
 
 const states = new Map<string, Entry>();
 
+/**
+ * 子代理会话 → 父会话 id（快照的 `parentSessionId` 来源）。
+ * 与 SubAgentRegistry 分开存：注册表会在子代理完成一轮后注销，而父子关系
+ * 随会话存续（消费者要能识别「这条完成来自子对话」）。随 `dropSessionRuntime` /
+ * `resetSessionRuntime` 一并清理。
+ */
+const parents = new Map<string, string>();
+
 /** 新建一条空白事实 */
 function emptyEntry(): Entry {
   return { query: false, waiting: false, compacting: false, background: false, subagent: false };
@@ -123,6 +131,7 @@ function toSnapshot(sessionId: string, entry: Entry): Omit<SessionRuntimeState, 
     compacting: entry.compacting,
     backgroundRunning: entry.background,
     subAgentRunning,
+    parentSessionId: parents.get(sessionId) ?? null,
   };
 }
 
@@ -216,9 +225,21 @@ export function markSessionWaiting(sessionId: string, waiting: boolean): void {
   update(sessionId, (entry) => { entry.waiting = waiting; });
 }
 
+/**
+ * 登记子代理会话的父会话（AgentTool 创建子代理时调用，快照经 `parentSessionId`
+ * 暴露）。只写映射不发快照：该会话的第一个忙事实（query 开始）才会让它进快照，
+ * 那时父子关系已在场。
+ */
+export function markSessionParent(sessionId: string, parentSessionId: string): void {
+  if (!sessionId || !parentSessionId) return;
+  parents.set(sessionId, parentSessionId);
+}
+
 /** 会话关闭 / 删除：移除该会话的运行时状态 */
 export function dropSessionRuntime(sessionId: string): void {
-  if (!sessionId || !states.has(sessionId)) return;
+  if (!sessionId) return;
+  parents.delete(sessionId);
+  if (!states.has(sessionId)) return;
   const next = new Map<string, Entry>();
   for (const [key, entry] of states) {
     if (key !== sessionId) next.set(key, { ...entry });
@@ -258,6 +279,7 @@ export function getSessionRuntimeState(sessionId: string): SessionRuntimeState |
 
 /** 清空全部状态（工作区切换 / 测试用） */
 export function resetSessionRuntime(): void {
+  parents.clear();
   if (states.size === 0) return;
   states.clear();
   try {

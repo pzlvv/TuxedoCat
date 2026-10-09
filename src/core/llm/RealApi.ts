@@ -22,7 +22,7 @@ import {
   LLMRepetitionError,
   DEFAULT_MAX_REPETITION_RETRIES,
 } from './repetitionDetector.js';
-import { unwrapToolInput } from '../utils/toolInput.js';
+import { normalizeToolInput, unwrapToolInput } from '../utils/toolInput.js';
 import {
   computeMaxOutputTokens,
   newStreamMessageId,
@@ -198,6 +198,31 @@ export async function* callRealLLM(options: StreamOptions): AsyncGenerator<Strea
 }
 
 /**
+ * 归一化发给 Anthropic 协议的消息：`tool_use.input` 非对象（典型：LLM 生成的
+ * 非法 JSON 参数解析失败后残留的原文 string）时替换为归一化对象。
+ *
+ * 只复制被改写的块，不改原消息对象（上下文 / UI 仍持有原引用）。
+ */
+function sanitizeAnthropicMessages(
+  messages: Array<{ role: string; content: string | unknown[] }>,
+): Array<{ role: string; content: string | unknown[] }> {
+  return messages.map((msg) => {
+    if (msg.role !== 'assistant' || !Array.isArray(msg.content)) return msg;
+    let changed = false;
+    const content = msg.content.map((block) => {
+      if (!block || typeof block !== 'object') return block;
+      const toolUse = block as { type?: string; input?: unknown };
+      if (toolUse.type !== 'tool_use') return block;
+      if (toolUse.input && typeof toolUse.input === 'object' && !Array.isArray(toolUse.input)) return block;
+      changed = true;
+      return { ...toolUse, input: normalizeToolInput(toolUse.input) };
+    });
+    return changed ? { ...msg, content } : msg;
+  });
+}
+export { sanitizeAnthropicMessages };
+
+/**
  * 调用 Anthropic 兼容协议的 LLM API（流式模式）
  *
  * 返回两种类型的事件：
@@ -255,11 +280,13 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
       // （`LLMConfig.outputTokenCap`）都要满足
       const maxTokensValue = computeMaxOutputTokens(config, effectiveMaxTokens);
 
-      // 构建请求体
+      // 构建请求体。tool_use 的非法 JSON 入参（解析失败的原文 string）在这里归一为
+      // 对象：Anthropic 协议的 input 字段要求对象，原样字符串会让整轮请求 400，
+      // 且毒化上下文后**此后每一轮**请求都失败（见 utils/toolInput.ts）。
       requestBody = {
         model,
         max_tokens: maxTokensValue,
-        messages,
+        messages: sanitizeAnthropicMessages(messages),
         stream: true,
         temperature: SAMPLING_TEMPERATURE,
         top_p: SAMPLING_TOP_P,
@@ -736,7 +763,7 @@ async function* callAnthropicLLM(options: StreamOptions): AsyncGenerator<StreamE
         'Authorization': `Bearer ${apiKey}`,
         'anthropic-version': '2023-06-01',
       },
-      requestBody: requestBody ?? { model, max_tokens: effectiveMaxTokens, messages },
+      requestBody: requestBody ?? { model, max_tokens: effectiveMaxTokens, messages: sanitizeAnthropicMessages(messages) },
       config,
       error,
     });

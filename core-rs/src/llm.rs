@@ -484,7 +484,13 @@ fn stream_anthropic(
     body.insert("stream".to_string(), json!(true));
     body.insert("temperature".to_string(), json!(1.0));
     body.insert("top_p".to_string(), json!(0.95));
-    body.insert("messages".to_string(), Value::Array(req.messages.to_vec()));
+    body.insert(
+        "messages".to_string(),
+        // tool_use 的非法 JSON 入参归一为对象：Anthropic 协议的 input 字段要求对象，
+        // 原样字符串会让整轮请求 400 并毒化此后的每一轮（见 engine.rs 的
+        // `sanitize_anthropic_messages`，与 Embedded `RealApi.ts` 对齐）。
+        Value::Array(crate::engine::sanitize_anthropic_messages(req.messages)),
+    );
     if !req.system_prompt.is_empty() {
         body.insert("system".to_string(), json!(req.system_prompt));
     }
@@ -925,12 +931,12 @@ pub fn to_chat_messages(messages: &[Value]) -> Vec<Value> {
                                 .get("id")
                                 .filter(|value| crate::history::js_truthy(Some(value)))
                                 .or_else(|| block.get("call_id"));
-                            // `typeof input === 'string' ? input : JSON.stringify(input ?? {})`
-                            let arguments = match block.get("input") {
-                                Some(Value::String(text)) => text.clone(),
-                                Some(Value::Null) | None => "{}".to_string(),
-                                Some(other) => crate::util::js_json_stringify(other),
-                            };
+                            // 与 JS `serializeToolArguments` 对齐：合法 JSON 字符串原样
+                            // 保留（兼容 double-encode），非法 JSON 字符串降级为字符串
+                            // 字面量，保证 arguments 一定是合法 JSON（否则严格校验的
+                            // 服务商会 400，此后每轮请求都失败）。
+                            let arguments =
+                                crate::engine::serialize_tool_arguments(block.get("input"));
                             let mut call = Map::new();
                             if let Some(id) = id {
                                 call.insert("id".to_string(), id.clone());

@@ -530,6 +530,14 @@ export interface SessionRuntimeState {
    * 下层子代理）。abort 按钮黄色态的判据之一。
    */
   subAgentRunning: boolean;
+  /**
+   * 父会话 id（子代理会话才有；普通会话为 null）。登记于子代理创建时，
+   * 随会话存续——不随 SubAgentRegistry 的注销消失（子代理完成一轮后仍留在
+   * 注册表等 Reply，此时父子关系对消费者依然有意义）。
+   *
+   * 消费示例：托盘「完成提醒」用它区分「子对话完成」（不打扰）与「主对话完成」。
+   */
+  parentSessionId: string | null;
 }
 
 // ==================== 通用 ====================

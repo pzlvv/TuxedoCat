@@ -1,0 +1,52 @@
+{
+  "cases": [
+    {
+      "name": "对象入参：arguments 序列化、Anthropic input 原样",
+      "input": { "command": "ls" },
+      "arguments": "{\"command\":\"ls\"}",
+      "objectInput": { "command": "ls" }
+    },
+    {
+      "name": "非法 JSON 字符串：arguments 降级为字符串字面量、Anthropic input 归一空对象",
+      "input": "{command: ls}",
+      "arguments": "\"{command: ls}\"",
+      "objectInput": {}
+    },
+    {
+      "name": "合法 JSON 字符串（double-encode 对象）：arguments 原样、Anthropic input 解包",
+      "input": "{\"todos\":[{\"content\":\"a\",\"status\":\"pending\",\"activeForm\":\"Doing a\"}]}",
+      "arguments": "{\"todos\":[{\"content\":\"a\",\"status\":\"pending\",\"activeForm\":\"Doing a\"}]}",
+      "objectInput": { "todos": [ { "content": "a", "status": "pending", "activeForm": "Doing a" } ] }
+    },
+    {
+      "name": "合法 JSON 字符串（数字）：arguments 原样、Anthropic input 归一空对象",
+      "input": "123",
+      "arguments": "123",
+      "objectInput": {}
+    },
+    {
+      "name": "空字符串：arguments 降级为空字符串字面量、Anthropic input 归一空对象",
+      "input": "",
+      "arguments": "\"\"",
+      "objectInput": {}
+    },
+    {
+      "name": "null：arguments 空对象、Anthropic input 归一空对象",
+      "input": null,
+      "arguments": "{}",
+      "objectInput": {}
+    },
+    {
+      "name": "数组：arguments 序列化、Anthropic input 归一空对象",
+      "input": [1, 2],
+      "arguments": "[1,2]",
+      "objectInput": {}
+    },
+    {
+      "name": "数字：arguments 序列化、Anthropic input 归一空对象",
+      "input": 5,
+      "arguments": "5",
+      "objectInput": {}
+    }
+  ]
+}

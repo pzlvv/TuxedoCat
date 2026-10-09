@@ -217,6 +217,8 @@ export type HostToWebviewMessage = {
     compacting: boolean;
     backgroundRunning: boolean;
     subAgentRunning: boolean;
+    /** 父会话 id（子代理会话才有；普通会话为 null） */
+    parentSessionId: string | null;
   }>;
 } | {
   /**
@@ -405,6 +407,20 @@ export type HostToWebviewMessage = {
   defaultAgentMode?: 'manual' | 'risk' | 'auto';
   defaultPromptMode?: 'normal' | 'minimal' | 'mixed';
   webSearch?: boolean;
+  /**
+   * 本次保存真正改动的默认项（宿主对比保存前后快照得出）。「是否询问应用到当前
+   * 对话」只看这些标志 + 与当前对话值的比较，不再与 webview 本地缓存的默认值比较
+   * （缓存未到达时是 undefined，比较会把「没改」误判成「改了」）。只改语言 / 字号
+   * 等 UI 项时全为 false，即使默认值与当前对话不一致也不弹确认框。
+   */
+  defaultsChanged: {
+    /** 默认服务商（activeProvider）变化 */
+    activeProvider: boolean;
+    thinkingEffort: boolean;
+    promptMode: boolean;
+    agentMode: boolean;
+    webSearch: boolean;
+  };
   /**
    * 当前对话所用服务商在保存后的默认模型。webview 只有默认服务商的默认模型，
    * 判断不了当前对话所用服务商（可能是另一个 provider）的默认模型变化。

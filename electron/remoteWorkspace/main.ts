@@ -11,7 +11,7 @@
  */
 
 import { formatLabel, getRemoteWorkspaceLabels } from './labels.js';
-import { splitPathInput } from './pathInput.js';
+import { ensureTrailingSeparator, splitPathInput } from './pathInput.js';
 import {
   formatSshEntry,
   matchSshEntries,
@@ -298,13 +298,14 @@ function main(): void {
   /**
    * 输入框里的即时预览：输入停顿后就刷新列表。
    *
-   * 两步：
-   *   1. 先把输入当完整路径列一次——存在就直接展开它的内容（上一级敲完即可见里面）；
-   *   2. 不存在就把最后一段当过滤词，列父目录再按前缀筛（路径补全，`/workspace/a` 只留
-   *      `a` 开头的目录）。
+   * 按尾分隔符拆成「要列的目录 + 最后一段」：
+   *   - 末段**没有**分隔符（`/w/ab`）：最后一段是过滤词，列父目录按前缀筛——
+   *     `ab` 与 `abc` 同时显示，不进 `ab`；
+   *   - 末段**带**分隔符（`/w/ab/`）：用户明确结束了这一级，列出 `ab` 的内容。
    *
-   * 与回车跳转的区别是「不打扰」：路径还没敲完是常态，所以失败既不报错也不清空列表，
-   * 只有回车（`navigate`）才给明确错误。列表刷新了但输入框内容不回写，用户还在敲。
+   * 与回车跳转的区别是「不打扰」：路径还没敲完是常态，所以失败既不报错也不清空
+   * 列表，只有回车（`navigate`）才给明确错误。列表刷新了但输入框内容不回写，
+   * 用户还在敲。
    */
   function schedulePreview(): void {
     if (previewTimer !== null) window.clearTimeout(previewTimer);
@@ -326,29 +327,25 @@ function main(): void {
   async function previewPath(): Promise<void> {
     if (busy || !listing) return;
     const typed = pathInput.value.trim();
-    if (typed.length === 0 || typed === listing.path) return;
+    // 输入与当前目录一致（带或不带尾分隔符）时不刷新
+    if (typed.length === 0
+      || typed === listing.path
+      || typed === ensureTrailingSeparator(listing.path)) return;
     // 每次预览都占一个新代次：慢的旧回包回来时对不上，直接丢弃
     const generation = ++previewGeneration;
     try {
-      const direct = await api.list(typed);
-      if (generation !== previewGeneration) return;
-      if (direct.ok) {
-        listing = direct.listing;
-        renderListing({ keepPathInput: true });
-        return;
-      }
       const { dir, prefix } = splitPathInput(typed);
-      if (dir.length === 0 || prefix.length === 0) return;
-      const parent = await api.list(dir);
+      if (dir.length === 0) return;
+      const target = await api.list(dir);
       if (generation !== previewGeneration) return;
-      if (!parent.ok) return;
+      if (!target.ok) return;
       // 过滤只作用于目录名：daemon 的目录列举本来就只回目录，不含文件
       const needle = prefix.toLowerCase();
       listing = {
-        ...parent.listing,
-        entries: parent.listing.entries.filter((entry) =>
-          entry.name.toLowerCase().startsWith(needle),
-        ),
+        ...target.listing,
+        entries: needle
+          ? target.listing.entries.filter((entry) => entry.name.toLowerCase().startsWith(needle))
+          : target.listing.entries,
       };
       renderListing({ keepPathInput: true });
     } catch {
@@ -565,11 +562,15 @@ function main(): void {
       entriesEl.appendChild(empty);
     }
 
-    // 输入框正在被编辑（即时预览）时不要回写：会把用户敲的字抹掉
-    if (options?.keepPathInput !== true) pathInput.value = listing.path;
+    // 输入框正在被编辑（即时预览）时不要回写：会把用户敲的字抹掉。
+    // 回写时统一带尾分隔符：显示的目录始终以 `/` 结尾（点击候选即自动补上），
+    // 继续敲的就是下一级。
+    if (options?.keepPathInput !== true) pathInput.value = ensureTrailingSeparator(listing.path);
     upButton.disabled = busy || !listing.parent;
     openButton.disabled = busy;
     newFolderButton.disabled = busy || editing?.kind === 'create';
+    // 路径框是这一步的输入中心：渲染完把焦点收回来（行内编辑自己抢焦点，跳过）。
+    if (editing?.kind !== 'create' && editing?.kind !== 'rename') pathInput.focus();
   }
 
   // ---------- 新建 / 删除 ----------
@@ -690,6 +691,18 @@ function main(): void {
       });
   });
   element<HTMLButtonElement>('cancelPicker').addEventListener('click', () => api.cancel());
+
+  // 路径框始终保持焦点：列表区 / 工具栏 / 右键菜单的按下不把焦点抢走（点击照常
+  // 触发）。行内编辑（新建 / 重命名）的输入框与按钮除外——它们自己需要焦点。
+  entriesEl.addEventListener('mousedown', (event) => {
+    const target = event.target as HTMLElement | null;
+    if (target && target.closest('input, button')) return;
+    event.preventDefault();
+  });
+  for (const button of [upButton, newFolderButton, openButton, element<HTMLButtonElement>('cancelPicker')]) {
+    button.addEventListener('mousedown', (event) => event.preventDefault());
+  }
+  contextMenu.addEventListener('mousedown', (event) => event.preventDefault());
 
   // 接入面板不抢输入框焦点：窗口打开时保持「未选中任何字段」，由用户点进要填的那一项
 }

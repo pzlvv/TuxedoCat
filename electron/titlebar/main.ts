@@ -415,7 +415,12 @@ function renderWorkspaces(
     closeBtn.title = labels.closeWorkspace;
     closeBtn.setAttribute('aria-label', `${labels.closeWorkspace}: ${ws.name || ws.path}`);
     closeBtn.innerHTML = ICON_TAB_CLOSE;
-    closeBtn.addEventListener('mousedown', (event) => event.stopPropagation());
+    closeBtn.addEventListener('mousedown', (event) => {
+      event.stopPropagation();
+      // 标签页上的任何按下都要收起已打开的下拉菜单（stopPropagation 挡了标题栏
+      // 空白处的兜底关闭，这里自己补）
+      if (openMenuId) api?.closeMenu();
+    });
     closeBtn.addEventListener('click', (event) => {
       event.stopPropagation();
       api?.closeWorkspace(ws.id);
@@ -426,6 +431,8 @@ function renderWorkspaces(
       event.stopPropagation();
       // 中键关标签页：抑制 Chromium 的「中键自动滚动」（否则页面会进入滚动模式）
       if (event.button === 1) event.preventDefault();
+      // stopPropagation 挡了标题栏空白处的兜底关闭：点标签页也要收起下拉菜单
+      if (openMenuId) api?.closeMenu();
     });
     // 鼠标中键：关闭这张标签页（与关闭按钮同一入口；是否二次确认由主进程决定）
     tab.addEventListener('auxclick', (event) => {
@@ -499,7 +506,11 @@ function renderWorkspaces(
   addBtn.title = labels.addWorkspace;
   addBtn.setAttribute('aria-label', labels.addWorkspace);
   addBtn.innerHTML = ICON_TAB_ADD;
-  addBtn.addEventListener('mousedown', (event) => event.stopPropagation());
+  addBtn.addEventListener('mousedown', (event) => {
+    event.stopPropagation();
+    // stopPropagation 挡了标题栏空白处的兜底关闭：点加号也要收起下拉菜单
+    if (openMenuId) api?.closeMenu();
+  });
   addBtn.addEventListener('click', (event) => {
     event.stopPropagation();
     // 加号改成菜单：打开本地目录 / 打开远程目录（由主进程弹原生菜单）

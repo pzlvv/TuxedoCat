@@ -239,6 +239,8 @@ export interface SessionRuntimeState {
   compacting: boolean;
   backgroundRunning: boolean;
   subAgentRunning: boolean;
+  /** 父会话 id（子代理会话才有；普通会话为 null） */
+  parentSessionId: string | null;
 }
 
 export interface Colors {

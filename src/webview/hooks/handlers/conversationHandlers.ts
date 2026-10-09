@@ -120,6 +120,7 @@ export function handleConversationSessionRuntimeStates(
               compacting: !!s.compacting,
               backgroundRunning: !!s.backgroundRunning,
               subAgentRunning: !!s.subAgentRunning,
+              parentSessionId: s.parentSessionId ?? null,
             });
           }
           props.sessionRuntimeStatesRef.current = runtime;

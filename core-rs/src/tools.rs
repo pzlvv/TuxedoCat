@@ -502,22 +502,21 @@ pub fn is_concurrency_safe(name: &str, input: &Value) -> bool {
     }
 }
 
-/// 是否是已注册的内置工具（用于区分「工具不存在」与「工具执行失败」两条错误通道）
+/// 是否是已注册的内置工具（用于区分「工具不存在」与「工具执行失败」两条错误通道）。
+///
+/// 从 `definitions()` 推导（首次调用后缓存名单）：不手抄第二份名单——新增工具只改
+/// `definitions()` 一处，`is_known` 自动跟上，不会出现「definitions 里有、
+/// `is_known` 说不认识」的漂移。
 pub fn is_known(name: &str) -> bool {
-    matches!(
-        name,
-        "Bash"
-            | "Read"
-            | "Write"
-            | "Edit"
-            | "Grep"
-            | "Glob"
-            | "TodoWrite"
-            | "Agent"
-            | "Reply"
-            | "AskUserQuestion"
-            | "Skill"
-    )
+    static KNOWN: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let known = KNOWN.get_or_init(|| {
+        definitions()
+            .iter()
+            .filter_map(|definition| definition.get("name").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect()
+    });
+    known.iter().any(|known_name| known_name == name)
 }
 
 /// 工具的语义校验（对齐 Embedded 各工具的 `validateInput`）。

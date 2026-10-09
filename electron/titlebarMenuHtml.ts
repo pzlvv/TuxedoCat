@@ -62,6 +62,12 @@ export interface TitlebarMenuHtmlOptions {
   /** 锚点（主面板左边）右侧还能用多少宽度：不够放飞出面板时改为向左展开 */
   availableRight?: number;
   /**
+   * 二级飞出面板宽度（px）：主进程按「锚点到窗口右缘」下发的动态值，让
+   * 「最近的工作区」这类长路径条目铺满可用宽度、完整显示。小于
+   * TITLEBAR_SUBMENU_WIDTH 时按缺省值处理。
+   */
+  flyoutWidth?: number;
+  /**
    * CSP nonce（由主进程随机生成）。页面是 data: URL + 内联 style/script，
    * 用 nonce 而不是 'unsafe-inline'：将来若有字段忘了转义，注入的脚本也执行不了。
    */
@@ -149,6 +155,11 @@ export function getTitlebarMenuHtml(options: TitlebarMenuHtmlOptions): string {
   const scrollThumbHover = options.isDark ? '#4a4a55' : '#aeaeb9';
   const maxHeight = options.maxHeight && options.maxHeight > 0 ? Math.round(options.maxHeight) : 0;
   const availableRight = Number.isFinite(options.availableRight) ? Math.round(options.availableRight as number) : -1;
+  // 飞出面板宽度：主进程按「锚点到窗口右缘」下发，保证长路径完整显示；
+  // 非法 / 过小的值按缺省宽度处理
+  const flyoutWidth = Number.isFinite(options.flyoutWidth) && (options.flyoutWidth as number) > TITLEBAR_SUBMENU_WIDTH
+    ? Math.round(options.flyoutWidth as number)
+    : TITLEBAR_SUBMENU_WIDTH;
   // nonce 由主进程用 base64 生成（不含引号），但仍过滤一次避免拼进属性时破坏 HTML
   const nonce = String(options.nonce ?? '').replace(/[^A-Za-z0-9+/=_-]/g, '');
 
@@ -196,7 +207,7 @@ export function getTitlebarMenuHtml(options: TitlebarMenuHtmlOptions): string {
   .flyout {
     position: absolute;
     display: none;
-    width: ${TITLEBAR_SUBMENU_WIDTH}px;
+    width: ${flyoutWidth}px;
     overflow-y: auto;
     overflow-x: hidden;
     z-index: 2;
@@ -299,7 +310,7 @@ export function getTitlebarMenuHtml(options: TitlebarMenuHtmlOptions): string {
     }
     var menu = document.getElementById('menu');
     var PANEL_W = ${TITLEBAR_MENU_WIDTH};
-    var FLYOUT_W = ${TITLEBAR_SUBMENU_WIDTH};
+    var FLYOUT_W = ${flyoutWidth};
     var maxHeight = ${maxHeight || 0};
     var availableRight = ${availableRight};
     // 右侧放不下整个飞出面板时改为向左展开（此时页面整体左移 FLYOUT_W）

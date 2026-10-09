@@ -54,6 +54,7 @@ function runtimeState(sessionId: string, idle: boolean): SessionRuntimeState {
     compacting: false,
     backgroundRunning: false,
     subAgentRunning: false,
+    parentSessionId: null,
   };
 }
 

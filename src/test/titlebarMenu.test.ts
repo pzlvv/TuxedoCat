@@ -55,6 +55,23 @@ async function run(): Promise<void> {
   check('飞出面板高度上限取自 maxHeight', html.includes('maxHeight - top'));
   check('飞出面板宽度与常量一致', html.includes(`width: ${TITLEBAR_SUBMENU_WIDTH}px`));
 
+  // 动态飞出宽度：主进程按「锚点到窗口右缘」下发，长路径完整显示；
+  // 非法 / 过小值回退缺省宽度
+  const wide = getTitlebarMenuHtml({
+    items: [{ type: 'item', id: 'a', label: 'a' }],
+    isDark: false,
+    nonce: 'testnonce',
+    flyoutWidth: 1280,
+  });
+  check('下发的飞出宽度生效（CSS 与页面变量同步）', wide.includes('width: 1280px') && wide.includes('var FLYOUT_W = 1280;'));
+  const narrow = getTitlebarMenuHtml({
+    items: [{ type: 'item', id: 'a', label: 'a' }],
+    isDark: false,
+    nonce: 'testnonce',
+    flyoutWidth: 100,
+  });
+  check('过小的飞出宽度回退缺省值', narrow.includes(`width: ${TITLEBAR_SUBMENU_WIDTH}px`));
+
   // 未传 maxHeight（无高度上限）时不能拼出 `min-height: px` 这种非法声明
   const uncapped = menuWithRecents(3);
   check('未给 maxHeight 时不产生非法 min-height 声明', !/min-height:\s*px/.test(uncapped));

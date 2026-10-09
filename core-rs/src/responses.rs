@@ -193,11 +193,10 @@ pub fn convert_messages_to_responses_input(messages: &[Value]) -> Vec<Value> {
                                     .or_else(|| object.get("call_id"))
                                     .and_then(Value::as_str)
                                     .unwrap_or("");
-                                let arguments = match object.get("input") {
-                                    Some(Value::String(text)) => text.clone(),
-                                    Some(other) => js_json_string(other),
-                                    None => "{}".to_string(),
-                                };
+                                // 与 JS `serializeToolArguments` 对齐：非法 JSON 字符串
+                                // 降级为字符串字面量，保证 arguments 一定是合法 JSON。
+                                let arguments =
+                                    crate::engine::serialize_tool_arguments(object.get("input"));
                                 function_calls.push(json!({
                                     "type": "function_call",
                                     "id": call_id,

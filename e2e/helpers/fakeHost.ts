@@ -225,6 +225,15 @@ export const FAKE_HOST_INIT = `
               };
         }
         const next = state.settingsDefaults;
+        // 本次保存真正改动的默认项（与真实宿主同口径：对比保存前后快照）。
+        // webview 的「是否询问应用到当前对话」只看这些标志。
+        const defaultsChanged = {
+          activeProvider: next.provider !== before.provider,
+          thinkingEffort: next.thinkingMode !== before.thinkingMode,
+          promptMode: next.promptMode !== before.promptMode,
+          agentMode: next.agentMode !== before.agentMode,
+          webSearch: next.webSearch !== before.webSearch,
+        };
         send({
           type: 'llmConfigSaved',
           defaultModel: next.model,
@@ -235,6 +244,7 @@ export const FAKE_HOST_INIT = `
           defaultAgentMode: next.agentMode,
           defaultPromptMode: next.promptMode,
           webSearch: next.webSearch,
+          defaultsChanged,
           currentProviderDefaultModel: next.model,
           currentProviderDefaultModelChanged: next.model !== before.model,
           language: state.language,

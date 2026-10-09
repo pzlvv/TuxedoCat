@@ -8,7 +8,7 @@
  */
 
 import { createChecker, runTests } from './helpers/harness';
-import { splitPathInput } from '../../electron/remoteWorkspace/pathInput';
+import { ensureTrailingSeparator, splitPathInput } from '../../electron/remoteWorkspace/pathInput';
 
 runTests('remotePathInput', () => {
   const { check, finish } = createChecker();
@@ -38,6 +38,14 @@ runTests('remotePathInput', () => {
 
   const empty = splitPathInput('');
   check('空串：目录与过滤词都是空', empty.dir === '' && empty.prefix === '');
+
+  // 尾分隔符归一：显示的目录始终以 `/` 结尾（点击候选自动补上）
+  check('普通目录补尾分隔符', ensureTrailingSeparator('/home/dev') === '/home/dev/');
+  check('根路径保持原样', ensureTrailingSeparator('/') === '/');
+  check('已带尾分隔符不重复补', ensureTrailingSeparator('/home/dev/') === '/home/dev/');
+  check('windows 尾分隔符也认可（不重复补）', ensureTrailingSeparator('C:\\Users') === 'C:\\Users/');
+  check('windows 尾反斜杠保持原样', ensureTrailingSeparator('C:\\Users\\') === 'C:\\Users\\');
+  check('空串保持原样', ensureTrailingSeparator('') === '');
 
   finish();
 });

@@ -591,6 +591,7 @@ fn emit_runtime_reports_root_facts_and_busy_subagents() {
     parent.lock().unwrap().running = false;
     let child = harness.core.session("c1");
     child.lock().unwrap().running = true;
+    child.lock().unwrap().parent_session_id = Some("p1".to_string());
     crate::subagent::register("c1", "p1");
     harness.sink.clear();
     harness.core.emit_runtime();
@@ -603,6 +604,14 @@ fn emit_runtime_reports_root_facts_and_busy_subagents() {
     assert_eq!(parent_entry["queryRunning"], false);
     assert_eq!(parent_entry["subAgentRunning"], true);
     assert_eq!(parent_entry["idle"], false);
+    // parentSessionId 根事实：普通会话为 null、子代理会话带父 id
+    // （spawn 时落 `parent_session_id`，对齐 Embedded 的 `markSessionParent`）
+    assert_eq!(parent_entry["parentSessionId"], Value::Null);
+    let child_entry = states
+        .iter()
+        .find(|state| state["sessionId"] == "c1")
+        .expect("child entry");
+    assert_eq!(child_entry["parentSessionId"], "p1");
 
     // 子代理空闲后父会话回到空闲（登记仍在，不算「有子代理在跑」）
     child.lock().unwrap().running = false;
@@ -4207,6 +4216,71 @@ fn fix_tool_input_parity_tests() {
             assert_eq!(fixed.as_ref(), Some(output), "{name}: 修复结果不一致");
         }
     }
+}
+
+// ==================== 工具入参序列化对等（serializeToolArguments） ====================
+
+/// 两侧共用 `src/test/fixtures/toolArgumentsParity.json`：TS 侧
+/// `toolArgumentsParity.test.ts` 断言 `serializeToolArguments` /
+/// `sanitizeAnthropicMessages` 产出该表，这里断言 Rust 侧同名函数产出同结果。
+///
+/// 背景：LLM 生成的工具参数解析失败时，非法 JSON 原文残留在 `tool_use.input`（string），
+/// 原样发给 Provider 会让严格校验 arguments / input 的服务商 400，且毒化上下文后
+/// 此后的每一轮请求都失败。序列化层必须保证输出永远是合法 JSON / 对象。
+#[test]
+fn tool_arguments_parity_tests() {
+    const FIXTURE: &str = include_str!("../../src/test/fixtures/toolArgumentsParity.json");
+    let fixture: Value = serde_json::from_str(FIXTURE).expect("对照表不是合法 JSON");
+    let cases = fixture["cases"].as_array().expect("cases 不是数组");
+    assert!(!cases.is_empty(), "cases 为空");
+    for case in cases {
+        let name = case["name"].as_str().unwrap_or("<unnamed>");
+        let input = &case["input"];
+        let expected_arguments = case["arguments"].as_str().expect("arguments 不是字符串");
+        assert_eq!(
+            crate::engine::serialize_tool_arguments(Some(input)),
+            expected_arguments,
+            "{name}: arguments 不一致"
+        );
+        // 包成 assistant tool_use 消息再消毒，对照归一后的 input
+        let message = json!({
+            "role": "assistant",
+            "content": [{ "type": "tool_use", "id": "t-1", "name": "Bash", "input": input }],
+        });
+        let sanitized = crate::engine::sanitize_anthropic_messages(&[message])
+            .into_iter()
+            .next()
+            .unwrap();
+        let block = &sanitized["content"][0];
+        assert_eq!(
+            block["input"], case["objectInput"],
+            "{name}: Anthropic input 不一致"
+        );
+    }
+
+    // input 缺失（None）的口径：arguments 空对象、Anthropic input 空对象
+    assert_eq!(crate::engine::serialize_tool_arguments(None), "{}");
+    let message = json!({
+        "role": "assistant",
+        "content": [{ "type": "tool_use", "id": "t-2", "name": "Bash" }],
+    });
+    let sanitized = crate::engine::sanitize_anthropic_messages(&[message])
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(sanitized["content"][0]["input"], json!({}));
+
+    // 对象型 tool_use 不被改写（保持原值）
+    let object_block = json!({ "type": "tool_use", "id": "t-3", "name": "Bash", "input": { "command": "ls" } });
+    let message = json!({
+        "role": "assistant",
+        "content": [object_block.clone(), { "type": "text", "text": "ok" }],
+    });
+    let sanitized = crate::engine::sanitize_anthropic_messages(&[message])
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(sanitized["content"][0], object_block, "对象型 tool_use 应保持原值");
 }
 
 // ==================== 后台 Bash 任务通知 ====================

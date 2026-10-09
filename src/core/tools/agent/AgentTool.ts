@@ -21,6 +21,7 @@ import { inputSchema, outputSchema } from './Types.js';
 import type { CoreEvent } from '../../AssistantEventBus.js';
 import { requireEventBus } from '../../AssistantEventBus.js';
 import { logger } from '../../Logger.js';
+import { markSessionParent } from '../../sessionRuntime.js';
 import { subAgentRegistry } from './SubAgentRegistry.js';
 
 /** core → UI 单向事件的发送侧封装（AgentTool 统一走它） */
@@ -286,6 +287,10 @@ export const AgentTool = buildTool({
       const { setSessionWorkspace } = await import('../../history/Config.js');
       setSessionWorkspace(subSessionID, context.cwd);
     } catch { /* 工作目录不可用时忽略：引擎 cwd 仍由 context.cwd 提供 */ }
+
+    // 登记父子关系到运行时快照（`parentSessionId`）：托盘等消费者据此区分
+    // 「子对话完成」与「主对话完成」。在引擎启动前登记，首个忙事实进快照时它已在场。
+    markSessionParent(subSessionID, creatorSessionId);
 
     // 创建子代理的 QueryEngine
     const subEngine = new QueryEngine(subSessionID, {

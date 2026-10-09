@@ -389,6 +389,20 @@ async function* authorizeOne(
     const errorMsg = `InputValidationError: ${parsedInput.error.message}`;
     logger.error('runTools', `Tool ${toolUse.name} input validation failed: ${errorMsg}`);
 
+    // 非对象入参（典型：LLM 返回的非法 JSON 参数解析失败后残留的原文 string）在这里
+    // 收敛成空对象并落一条 tool_use_update：否则该字符串随历史在后续每轮请求中原样
+    // 回传给 Provider，严格校验 arguments 的服务商会一直 400，表现为「此后所有输入
+    // 都失败」。对象型入参即使校验失败也可安全序列化，保持原样。
+    if (typeof toolUse.input !== 'object' || toolUse.input === null || Array.isArray(toolUse.input)) {
+      (toolUse as any).input = {};
+      try {
+        const { updateToolUseInput } = await import('../history/index.js');
+        await updateToolUseInput(sessionID, toolUse.id, {});
+      } catch (e) {
+        logger.warn('runTools', `Failed to persist normalized input for ${toolUse.name}: ${e}`);
+      }
+    }
+
     await emitToolPermissionRequest(sessionID, toolUse.id, toolUse.name, normalizeToolInput(toolUse.input), tool);
     emitToolResultError(sessionID, toolUse.id, toolUse.name, errorMsg);
 

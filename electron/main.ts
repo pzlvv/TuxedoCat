@@ -64,7 +64,7 @@ import {
 } from '../src/host/workspaceState.js';
 
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
-import { diffSessionEndEvents, type SessionLevel } from './trayAttention.js';
+import { diffSessionEndEvents, type SessionBusyRecord, type SessionLevel } from './trayAttention.js';
 import { diffCompletionAttention, pickReadCompletions, type CompletionAttentionFacts } from './completionAttention.js';
 import { SleepBlocker } from './powerSaveBlocker.js';
 import {
@@ -1223,8 +1223,8 @@ const TRAY_ICON_PATH = path.join(APP_ROOT, 'assets', 'logo.png');
 /** 托盘当前展示的状态，避免状态未变化时重复重建图标 */
 let trayStatus: TrayStatus | null = null;
 
-/** 各会话上一次的忙闲级别（`diffSessionEndEvents` 的差分基准，随每次全量推送推进） */
-let traySessionLevels = new Map<string, SessionLevel>();
+/** 各会话上一次的忙闲记录（`diffSessionEndEvents` 的差分基准，随每次全量推送推进） */
+let traySessionLevels = new Map<string, SessionBusyRecord>();
 
 /**
  * 「任务完成」绿色呼吸（`completionAttention.ts` + `syncCompletionAttention`）：
@@ -2674,8 +2674,9 @@ function showTitlebarMenu(size: { width: number; height: number; offsetX?: numbe
 
   const content = mainWindow.getContentBounds();
   const offsetX = Math.round(size.offsetX ?? 0);
-  // 上限放到「主面板 + 二级面板」，避免把二级菜单裁掉
-  const maxWidth = TITLEBAR_MENU_WIDTH + TITLEBAR_SUBMENU_WIDTH;
+  // 上限放到整个内容区宽度：飞出面板按「锚点到窗口右缘」动态取宽，不再能用
+  // 固定的「主面板 + 二级面板」封顶（页面上报的是真实并集尺寸，封顶只为防异常值）
+  const maxWidth = content.width;
   const width = Math.max(160, Math.min(maxWidth, Math.round(size.width) || TITLEBAR_MENU_WIDTH));
   // 高度兜底：菜单页已按 maxHeight 自限，这里防止异常尺寸超出窗口
   const height = Math.max(
@@ -2738,11 +2739,15 @@ function openTitlebarMenu(payload: { id?: string; anchorX?: number }): void {
     const maxHeight = Math.max(80, content.height - TITLEBAR_HEIGHT - 8);
     // 锚点右侧剩余宽度：不够放二级飞出面板时，菜单页会改成向左展开
     const availableRight = content.width - titlebarMenuAnchorX - 4;
+    // 飞出面板宽度铺满「主面板右边到窗口右缘」：「最近的工作区」这类长路径条目
+    // 完整显示不截断（全屏宽度足够放下任何真实路径）
+    const flyoutWidth = Math.max(TITLEBAR_SUBMENU_WIDTH, availableRight - TITLEBAR_MENU_WIDTH);
     const html = getTitlebarMenuHtml({
       items: section.items,
       isDark: nativeTheme.shouldUseDarkColors,
       maxHeight,
       availableRight,
+      flyoutWidth,
       // 每次生成新 nonce：菜单页的内联 style/script 只认这一个，注入的脚本无法执行
       nonce: crypto.randomBytes(16).toString('base64'),
     });
@@ -4148,6 +4153,8 @@ function setupIpc(): void {
   // 加号按钮：弹出「打开本地工作区 / 打开远程工作区」菜单
   ipcMain.on('titlebar:workspace-menu', (event) => {
     if (!isTitlebarSender(event.sender)) return;
+    // 先收起可能还开着的自绘下拉菜单：两个菜单同时开着会让焦点 / Esc 语义混乱
+    closeTitlebarMenu();
     popupWorkspaceMenu();
   });
 

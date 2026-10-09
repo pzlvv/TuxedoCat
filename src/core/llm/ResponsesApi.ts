@@ -36,7 +36,7 @@ import {
   LLMRepetitionError,
   DEFAULT_MAX_REPETITION_RETRIES,
 } from './repetitionDetector.js';
-import { unwrapToolInput } from '../utils/toolInput.js';
+import { serializeToolArguments, unwrapToolInput } from '../utils/toolInput.js';
 import {
   computeMaxOutputTokens,
   newStreamMessageId,
@@ -294,7 +294,7 @@ export function convertMessagesToResponsesInput(messages: Array<{ role: string; 
               id: callId,
               call_id: callId,
               name: block.name,
-              arguments: typeof block.input === 'string' ? block.input : JSON.stringify(block.input ?? {}),
+              arguments: serializeToolArguments(block.input),
             });
           }
         }

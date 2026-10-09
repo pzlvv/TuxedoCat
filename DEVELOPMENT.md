@@ -930,6 +930,7 @@ webview 对话树的运行标记、两端 abort 按钮），生产者是 `src/co
 | `compacting` | `compacting` 来源（正在压缩上下文） |
 | `backgroundRunning` | `background` 来源（有运行中的后台 Bash 任务） |
 | `subAgentRunning` | 派生字段：存在非 idle 的已登记子代理（递归到子代理自身的查询 / 压缩 / 后台任务 / 下层子代理） |
+| `parentSessionId` | 父会话 ID（子代理会话才有；普通会话为 `null`）。登记于子代理创建时，随会话存续，不随注册表注销消失——消费者据此区分「子对话完成」与「主对话完成」（如托盘完成提醒只对后者闪烁） |
 
 `idle === false`（会话非空闲）当且仅当 `queryRunning` / `waiting` / `compacting` /
 `backgroundRunning` / `subAgentRunning` 任一为真；即 `idle` 是其余字段的合取，消费者

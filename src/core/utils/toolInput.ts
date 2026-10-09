@@ -60,6 +60,27 @@ export function normalizeToolInput(input: unknown): Record<string, unknown> {
 }
 
 /**
+ * 序列化 tool_use.input 为「字符串型 arguments」协议（OpenAI Chat Completions /
+ * Responses）要求的 JSON 文本，保证输出一定是合法 JSON。
+ *
+ * LLM 生成的工具参数解析失败时，非法 JSON 原文会残留在 `tool_use.input`（string）。
+ * 若把它原样塞进 `arguments` 发给严格校验的服务商，整轮请求 400，且该消息留在
+ * 上下文里会让**此后每一轮**请求都失败。因此：合法 JSON 字符串原样保留（兼容
+ * double-encode 场景），非法字符串降级为 `JSON.stringify` 的字符串字面量。
+ */
+export function serializeToolArguments(input: unknown): string {
+  if (typeof input === 'string') {
+    try {
+      JSON.parse(input);
+      return input;
+    } catch {
+      return JSON.stringify(input);
+    }
+  }
+  return JSON.stringify(input ?? {});
+}
+
+/**
  * 生成用于日志的 tool_use.input 摘要。
  *
  * 不要直接对 input 调用 `Object.keys()`：当 input 是被 double-encode 的字符串时，

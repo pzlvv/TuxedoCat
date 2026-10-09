@@ -17,6 +17,7 @@ import {
   markQueryRunning,
   markSessionBackground,
   markSessionCompacting,
+  markSessionParent,
   markSessionWaiting,
   dropSessionRuntime,
   getSessionRuntimeState,
@@ -77,6 +78,21 @@ async function run(): Promise<void> {
   assert.equal(isSessionWaiting('s2'), true);
   assert.equal(isSessionWaiting('s1'), false);
   check('waiting propagated', true);
+
+  // parentSessionId：markSessionParent 登记（AgentTool 创建子代理时调用），
+  // 快照经 toSnapshot 暴露；普通会话为 null，drop 后一并清理
+  assert.equal(states.find((s) => s.sessionId === 's1')?.parentSessionId, null, '普通会话为 null');
+  markSessionParent('sub-1', 's1');
+  markQueryRunning('sub-1', true);
+  states = lastStates();
+  assert.equal(states.find((s) => s.sessionId === 'sub-1')?.parentSessionId, 's1');
+  check('parentSessionId exposed in snapshot', true);
+  dropSessionRuntime('sub-1');
+  markQueryRunning('sub-1', true);
+  states = lastStates();
+  assert.equal(states.find((s) => s.sessionId === 'sub-1')?.parentSessionId, null, 'drop 后父子关系清理');
+  dropSessionRuntime('sub-1');
+  check('parentSessionId cleared on drop', true);
 
   // waiting 是独立来源：query 开始 / 结束不清掉它
   markQueryRunning('s2', true);

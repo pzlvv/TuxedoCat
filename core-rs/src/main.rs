@@ -210,7 +210,7 @@ fn run_frame_loop(
                 bus.handle_response(id, ok, result, error);
             }
             UiToCoreFrame::Request { id, request } => {
-                let response = match dispatch_ui_request(&request) {
+                let response = match dispatch_ui_request(core, &request) {
                     Ok(result) => CoreToUiFrame::response(id, result),
                     Err(error) => CoreToUiFrame::error_response(id, error),
                 };
@@ -233,7 +233,7 @@ fn run_frame_loop(
 /// 宿主不直接读 core 的磁盘数据（`docs/standalone-core.md` 第 10 节）：
 /// 需要「core 的事实」时经帧通道请求，这里应答。未知类型一律报错而不是回空值——
 /// 静默的空结果会让宿主把「契约漂移」误当成「确实没有数据」。
-fn dispatch_ui_request(request: &Value) -> Result<Value, String> {
+fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
     let request_type = request
         .get("type")
         .and_then(Value::as_str)
@@ -281,7 +281,7 @@ fn dispatch_ui_request(request: &Value) -> Result<Value, String> {
                 .get("sessionId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "conversationLoadRequested without sessionId".to_string())?;
-            Ok(conversation_load_payload(session_id))
+            Ok(conversation_load_payload(core, session_id))
         }
         // 斜杠命令与技能列表（内置命令 + 内置技能 + 会话工作目录下的技能）。
         "skillsRequested" => {
@@ -298,10 +298,14 @@ fn dispatch_ui_request(request: &Value) -> Result<Value, String> {
 /// 会话加载结果：消息 + 元数据 + 派生事实（对齐 Embedded `loadConversationForHost`）。
 ///
 /// - 会话文件不存在 → 空消息 + `metadata: null`（宿主据此走「新对话」路径）；
-/// - `pendingToolUseIds` 恒为空：Core 加载时已给缺失 tool_result 的 tool_use 补取消
-///   结果（`history::ensure_tool_results`），不存在需要 UI 恢复的进程内待执行表；
+/// - 会话空闲时给缺失 tool_result 的 tool_use 补「会话中断」取消结果（对齐 Embedded
+///   `loadConversation` 的 `ensureToolResults` + `workingSessions` 守卫）：否则上次
+///   崩溃时正在执行的 tool_use 没有 tool_result，webview 按「无结果且非待确认」推导为
+///   running，永远显示运行中；运行中的会话不伪造；
+/// - `pendingToolUseIds` 恒为空：Standalone 的工具执行状态不落盘，进程重启后不存在
+///   进程内待执行表（中断的工具经上一条补取消结果渲染为失败）；
 /// - `agentMode` 取 meta.json 的权威值（缺失为 null，由宿主回退默认值）。
-fn conversation_load_payload(session_id: &str) -> Value {
+fn conversation_load_payload(core: &Core, session_id: &str) -> Value {
     let Some(project) = history::project_of_session(session_id) else {
         return json!({
             "messages": [],
@@ -311,7 +315,10 @@ fn conversation_load_payload(session_id: &str) -> Value {
             "agentMode": Value::Null,
         });
     };
-    let messages = history::load_messages(session_id, &project);
+    let mut messages = history::load_messages(session_id, &project);
+    if core.session_is_idle(session_id) {
+        history::ensure_tool_results(&mut messages);
+    }
     let metadata = history::load_metadata(session_id, &project);
     let has_compact_archive = !history::load_compact_archive(session_id, &project).is_empty();
     let agent_mode = metadata

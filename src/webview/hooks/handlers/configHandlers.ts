@@ -352,7 +352,6 @@ export function handleConfigLlmConfigSaved(
 
   const prevProps = propsRef.current;
   const prevDefaults = prevProps.settingsDefaults;
-  const prevModelRef = prevDefaults.modelRef;
   const currentSessionId = props.currentSessionIdRef.current;
   const sessionState = currentSessionId ? props.sessionStates.get(currentSessionId) : undefined;
 
@@ -366,13 +365,16 @@ export function handleConfigLlmConfigSaved(
   // 当前对话实际生效的模型身份：优先用宿主刚解析的 activeModel，否则用本地值。
   const currentModelRef = activeModelRef ?? prevProps.modelRef;
 
-  // 逐项对比「新默认值」与「保存前的默认值 / 当前对话的值」：只有「相对保存前有变化」
-  // 且「与当前对话不一致」时才需要询问是否应用到当前对话；只影响新对话的变化不进对话框。
+  // 逐项对比「新默认值」与「当前对话的值」：只有宿主确认本次保存**真正改动了该项**
+  // （`defaultsChanged`，对比保存前后快照得出）且「与当前对话不一致」时才询问是否
+  // 应用到当前对话；只影响新对话的变化不进对话框。不再与本地缓存的 settingsDefaults
+  // 比较——缓存未到达时是 undefined，会把「没改」误判成「改了」，导致只改语言 / 字号
+  // 也弹确认框。
   const pending: ApplyDefaultsPrompt = { changes: [] };
   const savedProvider = msg.defaultModelProvider;
   const savedModel = msg.defaultModel;
 
-  if (savedProvider && savedProvider !== prevModelRef?.provider && savedProvider !== currentModelRef?.provider) {
+  if (msg.defaultsChanged.activeProvider && savedProvider && savedProvider !== currentModelRef?.provider) {
     // 默认服务商变化，且当前对话用的是另一个服务商 → 询问是否切换
     const nextModelRef = modelRefOf(savedProvider, savedModel);
     if (nextModelRef) {
@@ -406,7 +408,7 @@ export function handleConfigLlmConfigSaved(
 
   // 「当前对话的值」未到达（undefined = 等待态）的项不进确认框：undefined 不是值，
   // 拿它比较会把「还没收到」误判成「与默认值不同」（第 12.7 节：webview 不猜值）
-  if (msg.defaultPromptMode && msg.defaultPromptMode !== prevDefaults.promptMode && prevProps.promptMode !== undefined && msg.defaultPromptMode !== prevProps.promptMode) {
+  if (msg.defaultsChanged.promptMode && msg.defaultPromptMode && prevProps.promptMode !== undefined && msg.defaultPromptMode !== prevProps.promptMode) {
     pending.changes.push({
       label: t('applyDefaults.changePromptMode'),
       from: promptModeText(prevProps.promptMode),
@@ -414,7 +416,7 @@ export function handleConfigLlmConfigSaved(
     });
     pending.promptMode = msg.defaultPromptMode;
   }
-  if (msg.thinkingEffort && msg.thinkingEffort !== prevDefaults.thinkingMode && prevProps.thinkingMode !== undefined && msg.thinkingEffort !== prevProps.thinkingMode) {
+  if (msg.defaultsChanged.thinkingEffort && msg.thinkingEffort && prevProps.thinkingMode !== undefined && msg.thinkingEffort !== prevProps.thinkingMode) {
     pending.changes.push({
       label: t('applyDefaults.changeThinkingEffort'),
       from: thinkingModeText(prevProps.thinkingMode),
@@ -422,7 +424,7 @@ export function handleConfigLlmConfigSaved(
     });
     pending.thinkingMode = msg.thinkingEffort;
   }
-  if (msg.defaultAgentMode && msg.defaultAgentMode !== prevDefaults.agentMode && prevProps.agentMode !== undefined && msg.defaultAgentMode !== prevProps.agentMode) {
+  if (msg.defaultsChanged.agentMode && msg.defaultAgentMode && prevProps.agentMode !== undefined && msg.defaultAgentMode !== prevProps.agentMode) {
     pending.changes.push({
       label: t('applyDefaults.changeAgentMode'),
       from: agentModeText(prevProps.agentMode),
@@ -430,7 +432,7 @@ export function handleConfigLlmConfigSaved(
     });
     pending.agentMode = msg.defaultAgentMode;
   }
-  if (typeof msg.webSearch === 'boolean' && msg.webSearch !== prevDefaults.webSearch && prevProps.webSearch !== undefined && msg.webSearch !== prevProps.webSearch) {
+  if (msg.defaultsChanged.webSearch && typeof msg.webSearch === 'boolean' && prevProps.webSearch !== undefined && msg.webSearch !== prevProps.webSearch) {
     pending.changes.push({
       label: t('applyDefaults.changeWebSearch'),
       from: webSearchText(prevProps.webSearch),

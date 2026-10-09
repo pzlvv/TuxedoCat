@@ -426,7 +426,7 @@ impl Core {
             .iter()
             .filter_map(|session_id| sessions.get(session_id).map(|state| (session_id, state)))
             .map(|(session_id, state)| {
-                let (running, pending, waiting, compacting, background) = {
+                let (running, pending, waiting, compacting, background, parent) = {
                     let state = state.lock().unwrap();
                     (
                         state.running,
@@ -434,6 +434,7 @@ impl Core {
                         state.waiting,
                         state.compacting,
                         state.background,
+                        state.parent_session_id.clone(),
                     )
                 };
                 // `pending_user_message` 是「已入队、消费循环即将接手」的窗口，与
@@ -451,6 +452,9 @@ impl Core {
                     "compacting": compacting,
                     "backgroundRunning": background,
                     "subAgentRunning": sub_agent_running,
+                    // 父会话 id（子代理会话才有；spawn 时落 `parent_session_id`）。
+                    // 与 Embedded 的 `parents` 映射同口径：随会话存续，不随注册表注销消失
+                    "parentSessionId": parent,
                 })
             })
             .collect();
@@ -3744,6 +3748,19 @@ fn run_query_loop(
             let validation_message =
                 schema_error.or_else(|| tools::validate_input(&tool_name, &input, project));
             if let Some(validation_message) = validation_message {
+                // 非对象入参（典型：LLM 返回的非法 JSON 参数解析失败后残留的原文
+                // string）在这里收敛成空对象并落一条 `tool_use_update`（对齐 Embedded
+                // `RunTools.authorizeOne`）：否则该字符串随历史在后续每轮请求中原样
+                // 回传给 Provider，严格校验 arguments 的服务商会一直 400，表现为
+                // 「此后所有输入都失败」。对象型入参即使校验失败也可安全序列化，保持原样。
+                if !raw_input.is_object() {
+                    let _ = history::append_tool_use_update(
+                        session_id,
+                        project,
+                        &tool_use_id,
+                        &json!({ "input": {} }),
+                    );
+                }
                 // 与 Embedded 一致：验证失败时同样先发一次 toolPermissionRequested
                 // （工具实例在场，checkPermissions 会跑；displayArgs 照常展开）。
                 let (perm_result, display_args) =
@@ -4089,6 +4106,82 @@ fn unwrap_tool_input(value: Value) -> Value {
     } else {
         value
     }
+}
+
+/// 序列化 `tool_use.input` 为「字符串型 arguments」协议（OpenAI Chat Completions /
+/// Responses）要求的 JSON 文本，保证输出一定是合法 JSON（对齐 Embedded
+/// `utils/toolInput.ts` 的 `serializeToolArguments`）。
+///
+/// LLM 生成的工具参数解析失败时，非法 JSON 原文会残留在 `tool_use.input`（string）；
+/// 原样发给严格校验 arguments 的服务商会 400，且毒化上下文后此后的每一轮请求都
+/// 失败。合法 JSON 字符串原样保留（兼容 double-encode），非法字符串降级为
+/// `JSON.stringify` 的字符串字面量。
+pub(crate) fn serialize_tool_arguments(input: Option<&Value>) -> String {
+    match input {
+        None | Some(Value::Null) => "{}".to_string(),
+        Some(Value::String(text)) => {
+            if serde_json::from_str::<Value>(text).is_ok() {
+                text.clone()
+            } else {
+                serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string())
+            }
+        }
+        Some(other) => crate::util::js_json_stringify(other),
+    }
+}
+
+/// 归一化 `tool_use.input` 为对象（对齐 Embedded `normalizeToolInput`）：
+/// 字符串（含 double-encode）解出对象时用解出值，其余非对象一律空对象。
+fn normalize_tool_input(value: &Value) -> Value {
+    let unwrapped = unwrap_tool_input(value.clone());
+    if unwrapped.is_object() {
+        unwrapped
+    } else {
+        json!({})
+    }
+}
+
+/// 归一化发给 Anthropic 协议的消息：`tool_use.input` 非对象（典型：非法 JSON 参数
+/// 解析失败后残留的原文 string）时替换为归一化对象（对齐 Embedded `RealApi.ts` 的
+/// `sanitizeAnthropicMessages`）。只复制被改写的块，不动原消息。
+pub(crate) fn sanitize_anthropic_messages(messages: &[Value]) -> Vec<Value> {
+    messages
+        .iter()
+        .map(|message| {
+            if message.get("role").and_then(Value::as_str) != Some("assistant") {
+                return message.clone();
+            }
+            let Some(Value::Array(blocks)) = message.get("content") else {
+                return message.clone();
+            };
+            let mut changed = false;
+            let sanitized: Vec<Value> = blocks
+                .iter()
+                .map(|block| {
+                    if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                        return block.clone();
+                    }
+                    if matches!(block.get("input"), Some(Value::Object(_))) {
+                        return block.clone();
+                    }
+                    changed = true;
+                    let mut map = block.as_object().cloned().unwrap_or_default();
+                    map.insert(
+                        "input".to_string(),
+                        normalize_tool_input(block.get("input").unwrap_or(&Value::Null)),
+                    );
+                    Value::Object(map)
+                })
+                .collect();
+            if changed {
+                let mut map = message.as_object().cloned().unwrap_or_default();
+                map.insert("content".to_string(), Value::Array(sanitized));
+                Value::Object(map)
+            } else {
+                message.clone()
+            }
+        })
+        .collect()
 }
 
 /// JS `\w`（正则）：ASCII 字母 / 数字 / 下划线。

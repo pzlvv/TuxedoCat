@@ -1655,6 +1655,18 @@ export class WebviewMessageHandler {
       // 等价判定收敛在 core 的 sameMcpEnabledList（顺序无关；与 webview 同一份）
       const mcpDefaultEnabledChanged = !sameMcpEnabledList(beforeSnapshot.mcp.enabled, mcpDefaultEnabled);
 
+      // 本次保存真正改动的默认项（对比前后快照）。「是否询问应用到当前对话」只看
+      // 这些标志：只改语言 / 字号等 UI 项时全为 false，webview 不弹确认框。
+      // 默认服务商的默认模型变化不单列：切换服务商的询问自带新默认模型，同服务商
+      // 的默认模型变化由 currentProviderDefaultModelChanged 覆盖。
+      const defaultsChanged = {
+        activeProvider: beforeSnapshot.llm.activeProvider !== snapshot.llm.activeProvider,
+        thinkingEffort: beforeSnapshot.llm.thinkingEffort !== snapshot.llm.thinkingEffort,
+        promptMode: beforeSnapshot.defaultPromptMode !== snapshot.defaultPromptMode,
+        agentMode: beforeSnapshot.defaultAgentMode !== snapshot.defaultAgentMode,
+        webSearch: beforeSnapshot.llm.webSearch !== snapshot.llm.webSearch,
+      };
+
       // 保存后校验当前会话的模型身份：provider 或模型失效时解析出可用身份，
       // 并把结果作为 `modelChanged` 报给 core（core 负责落 meta.json 与同步引擎配置，
       // 见 `initializeCoreEvents` 的 `modelChanged` 处理器）。返回给 webview 的
@@ -1727,6 +1739,7 @@ export class WebviewMessageHandler {
         defaultAgentMode: savedAgentMode,
         defaultPromptMode: savedPromptMode,
         webSearch: savedWebSearch,
+        defaultsChanged,
         currentProviderDefaultModel,
         currentProviderDefaultModelChanged,
         // 当前对话的 MCP 启用列表在写盘前已被钉住：只有确实存在当前对话时才回传，

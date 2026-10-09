@@ -8,6 +8,15 @@ fn dispatch(harness: &EngineHarness, event: Value) {
     dispatch_ui_event(&harness.core, &harness.bus, event);
 }
 
+/// 给 `dispatch_ui_request` 提供一个空 Core：这些请求只读磁盘与会话状态，
+/// 不经总线发事件（bus 只需存在）。
+fn test_core() -> Core {
+    let sink = crate::test_support::Capture::new();
+    Core::new(Arc::new(Mutex::new(CoreBus::<FrameWriter>::new(
+        sink.writer(),
+    ))))
+}
+
 fn system_message(harness: &EngineHarness) -> String {
     harness.sink.event_of("message").expect("system message")["data"]["content"]
         .as_str()
@@ -856,7 +865,7 @@ fn ui_request_lists_conversations_of_the_requested_workspace() {
     // 清空过的会话保留条目
     write("cleared", 0, 400, true);
 
-    let listed = dispatch_ui_request(&json!({
+    let listed = dispatch_ui_request(&test_core(), &json!({
         "type": "conversationListRequested",
         "workspacePath": project,
     }))
@@ -875,12 +884,12 @@ fn ui_request_list_falls_back_to_the_active_workspace() {
     let sandbox = Sandbox::new("main-ui-request-list-active");
     // 没有活动工作目录 → 空表而不是报错
     assert_eq!(
-        dispatch_ui_request(&json!({ "type": "conversationListRequested" })).unwrap(),
+        dispatch_ui_request(&test_core(), &json!({ "type": "conversationListRequested" })).unwrap(),
         json!([]),
     );
     config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
     assert_eq!(
-        dispatch_ui_request(&json!({ "type": "conversationListRequested" })).unwrap(),
+        dispatch_ui_request(&test_core(), &json!({ "type": "conversationListRequested" })).unwrap(),
         json!([]),
     );
 }
@@ -896,7 +905,7 @@ fn ui_request_without_an_archive_returns_null() {
     )
     .unwrap();
     assert_eq!(
-        dispatch_ui_request(&json!({ "type": "compactArchiveRequested", "sessionId": "s1" })).unwrap(),
+        dispatch_ui_request(&test_core(), &json!({ "type": "compactArchiveRequested", "sessionId": "s1" })).unwrap(),
         Value::Null,
     );
 }
@@ -912,7 +921,7 @@ fn ui_request_mcp_servers_merges_config_and_runtime() {
         }
     }));
 
-    let listed = dispatch_ui_request(&json!({
+    let listed = dispatch_ui_request(&test_core(), &json!({
         "type": "mcpServersRequested",
         "sessionId": "s1",
     }))
@@ -949,7 +958,7 @@ fn ui_request_conversation_spaces_counts_files_and_projects() {
     )
     .unwrap();
 
-    let spaces = dispatch_ui_request(&json!({ "type": "conversationSpacesRequested" })).unwrap();
+    let spaces = dispatch_ui_request(&test_core(), &json!({ "type": "conversationSpacesRequested" })).unwrap();
     let spaces = spaces.as_array().unwrap();
     assert_eq!(spaces.len(), 2);
     let space = spaces
@@ -1029,9 +1038,9 @@ fn conversation_space_cleared_without_mode_defaults_to_clear() {
 #[test]
 fn ui_request_flush_session_validates_session_id() {
     let _sandbox = Sandbox::new("main-ui-request-flush");
-    assert!(dispatch_ui_request(&json!({ "type": "flushSessionRequested" })).is_err());
+    assert!(dispatch_ui_request(&test_core(), &json!({ "type": "flushSessionRequested" })).is_err());
     assert_eq!(
-        dispatch_ui_request(&json!({ "type": "flushSessionRequested", "sessionId": "s1" })).unwrap(),
+        dispatch_ui_request(&test_core(), &json!({ "type": "flushSessionRequested", "sessionId": "s1" })).unwrap(),
         Value::Null,
     );
 }
@@ -1054,7 +1063,7 @@ fn ui_request_conversation_load_returns_messages_metadata_and_facts() {
     )
     .unwrap();
 
-    let loaded = dispatch_ui_request(&json!({
+    let loaded = dispatch_ui_request(&test_core(), &json!({
         "type": "conversationLoadRequested",
         "sessionId": "s1",
     }))
@@ -1071,7 +1080,7 @@ fn ui_request_conversation_load_returns_messages_metadata_and_facts() {
     );
 
     // 会话不存在：空消息 + null 元数据，不报错
-    let missing = dispatch_ui_request(&json!({
+    let missing = dispatch_ui_request(&test_core(), &json!({
         "type": "conversationLoadRequested",
         "sessionId": "no-such",
     }))
@@ -1079,7 +1088,64 @@ fn ui_request_conversation_load_returns_messages_metadata_and_facts() {
     assert_eq!(missing["messages"], json!([]));
     assert!(missing["metadata"].is_null());
 
-    assert!(dispatch_ui_request(&json!({ "type": "conversationLoadRequested" })).is_err());
+    assert!(dispatch_ui_request(&test_core(), &json!({ "type": "conversationLoadRequested" })).is_err());
+}
+
+/// 崩溃残留的孤儿 tool_use（无配对 tool_result）：空闲会话加载时补「会话中断」
+/// 取消结果（webview 据此渲染失败而非 running），运行中的会话不伪造
+/// （对齐 Embedded `loadConversation` 的 `ensureToolResults` + `workingSessions` 守卫）。
+#[test]
+fn ui_request_conversation_load_recovers_interrupted_tool_use_for_idle_session() {
+    let sandbox = Sandbox::new("main-ui-request-load-recover");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    history::create_conversation(
+        "s1",
+        &project,
+        json!({ "sessionId": "s1", "project": project, "title": "t" }),
+    )
+    .unwrap();
+    history::append_message(
+        "s1",
+        &project,
+        &json!({
+            "type": "assistant",
+            "uuid": "a1",
+            "message": { "role": "assistant", "content": [
+                { "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "ls" } }
+            ]},
+        }),
+        None,
+    )
+    .unwrap();
+
+    // 空闲会话：补出取消结果，消息数 1 → 2
+    let idle = dispatch_ui_request(
+        &test_core(),
+        &json!({ "type": "conversationLoadRequested", "sessionId": "s1" }),
+    )
+    .unwrap();
+    let messages = idle["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2, "空闲会话应补取消结果");
+    assert_eq!(messages[1]["type"], "user");
+    let block = &messages[1]["message"]["content"][0];
+    assert_eq!(block["type"], "tool_result");
+    assert_eq!(block["tool_use_id"], "t1");
+    assert_eq!(block["is_canceled"], true);
+
+    // 运行中的会话：原样返回，不伪造
+    let busy_core = test_core();
+    let state = busy_core.session("s1");
+    state.lock().unwrap().running = true;
+    let busy = dispatch_ui_request(
+        &busy_core,
+        &json!({ "type": "conversationLoadRequested", "sessionId": "s1" }),
+    )
+    .unwrap();
+    assert_eq!(
+        busy["messages"].as_array().unwrap().len(),
+        1,
+        "运行中的会话不补取消结果"
+    );
 }
 
 #[test]
@@ -1087,7 +1153,7 @@ fn ui_request_skills_lists_builtins_and_project_skills() {
     let sandbox = Sandbox::new("main-ui-request-skills");
     let project = sandbox.workspace.to_string_lossy().to_string();
     // 没有会话工作目录：只列内置命令与内置技能
-    let without_session = dispatch_ui_request(&json!({ "type": "skillsRequested" })).unwrap();
+    let without_session = dispatch_ui_request(&test_core(), &json!({ "type": "skillsRequested" })).unwrap();
     let skills = without_session["skills"].as_array().unwrap();
     assert!(!skills.is_empty());
     assert!(skills.iter().any(|skill| skill["isBuiltin"] == true));
@@ -1107,7 +1173,7 @@ fn ui_request_skills_lists_builtins_and_project_skills() {
     )
     .unwrap();
     config::set_session_workspace("s1", Some(project));
-    let with_session = dispatch_ui_request(&json!({
+    let with_session = dispatch_ui_request(&test_core(), &json!({
         "type": "skillsRequested",
         "sessionId": "s1",
     }))
@@ -1122,15 +1188,15 @@ fn ui_request_skills_lists_builtins_and_project_skills() {
 #[test]
 fn ui_request_unknown_type_is_an_error() {
     let _sandbox = Sandbox::new("main-ui-request-unknown");
-    assert!(dispatch_ui_request(&json!({ "type": "nope" })).is_err());
-    assert!(dispatch_ui_request(&json!({})).is_err());
+    assert!(dispatch_ui_request(&test_core(), &json!({ "type": "nope" })).is_err());
+    assert!(dispatch_ui_request(&test_core(), &json!({})).is_err());
 }
 
 #[test]
 fn ui_request_requires_a_session_id_where_needed() {
     let _sandbox = Sandbox::new("main-ui-request-session");
-    assert!(dispatch_ui_request(&json!({ "type": "smartNamingRequested" })).is_err());
-    assert!(dispatch_ui_request(&json!({ "type": "compactArchiveRequested" })).is_err());
+    assert!(dispatch_ui_request(&test_core(), &json!({ "type": "smartNamingRequested" })).is_err());
+    assert!(dispatch_ui_request(&test_core(), &json!({ "type": "compactArchiveRequested" })).is_err());
 }
 
 #[test]
