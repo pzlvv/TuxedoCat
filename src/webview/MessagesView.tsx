@@ -8,7 +8,7 @@ import { Icon } from './Icon';
 import { ThinkingAnimation } from './ThinkingAnimation';
 import { ConversationLoading } from './ConversationLoading';
 import InlineCode from './components/InlineCode';
-import { measureTruncation } from './hooks/measureTruncation';
+import { measureTruncation, releaseTruncation } from './hooks/measureTruncation';
 import { AnsiText, hasAnsi } from './ansi';
 import { PersistedOutputBox, isPersistedOutput } from './tools/persistedOutput';
 import * as ToolComponents from './tools';
@@ -338,16 +338,29 @@ const UserMessage = memo(function UserMessage({
   // 改为登记到批量测量队列：一次只读 + 一次只写（详见 hooks/measureTruncation.ts），
   // 仍在绘制前完成，折叠语义不变。
   useLayoutEffect(() => {
-    // 展开态不重测：折叠高度已放开，按溢出判定会误判为「未截断」，
-    // 导致「收起」按钮消失；保持 isTruncated 即可。
-    if (expanded) return;
     const el = contentRef.current;
     if (!el) return;
+    // 展开态不重测：折叠高度已放开，按溢出判定会误判为「未截断」，
+    // 导致「收起」按钮消失；同时停止尺寸观察，避免窗口缩放触发同样的误判。
+    if (expanded) {
+      releaseTruncation(el);
+      return;
+    }
     // 真正的用户消息已按折叠高度 clamp → 按溢出判定；
     // 子代理 From/To 消息与后台任务通知沿用行数阈值，保持原有行为。
+    // 测量入口同时把元素交给共享 ResizeObserver：窗口 / 侧边栏宽度变化会改变折行数，
+    // 折叠高度下的溢出判定随之变化，必须重测才能让「显示完整内容」入口与真实溢出状态一致。
     const plainUserMessage = !isAutoOrigin(message.origin);
     measureTruncation(el, setIsTruncated, plainUserMessage ? 'overflow' : 'lines');
   }, [message.content, message.origin, expanded]);
+
+  // 卸载时解除尺寸观察（ResizeObserver 强引用元素，不解除会阻止回收）
+  useLayoutEffect(() => {
+    const el = contentRef.current;
+    return () => {
+      if (el) releaseTruncation(el);
+    };
+  }, []);
 
   // memo 化 ReactMarkdown：content 未变化时跳过重复解析（例如流式结束帧、
   // isStreaming/status 等字段变化触发的重渲染），只有内容或主题色变化时才重新解析。

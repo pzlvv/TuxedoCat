@@ -69,6 +69,29 @@ test('US-16 超长用户消息默认折叠，可展开/收起', async () => {
   await expect(page.getByText('显示完整内容')).toBeVisible();
 });
 
+test('US-16 窗口宽度变化改变折行数时，折叠入口随之更新', async () => {
+  const { page, host } = handle;
+  await host.setTurn({ text: '收到。', chunkDelayMs: 10 });
+  // 宽视口约 2 行（放得下），收窄后折成 7 行左右（超出折叠高度）
+  const text = `${'窗口宽度变化会改变这段用户消息的折行数。'.repeat(8)}【宽度标记】`;
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.fill('textarea.input-textarea', text);
+  await page.press('textarea.input-textarea', 'Enter');
+  await host.waitForSent('sendMessage');
+  await expect(page.getByText('【宽度标记】')).toBeVisible({ timeout: 15_000 });
+
+  // 宽视口：内容完整放得下，不显示折叠入口
+  await expect(page.getByText('显示完整内容')).toBeHidden();
+
+  // 收窄视口：折行数增加、超出折叠高度 → 折叠入口出现（US-16 验收 1）
+  await page.setViewportSize({ width: 360, height: 800 });
+  await expect(page.getByText('显示完整内容')).toBeVisible({ timeout: 5_000 });
+
+  // 再拉宽：重新放得下 → 折叠入口消失
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(page.getByText('显示完整内容')).toBeHidden({ timeout: 5_000 });
+});
+
 test('US-16 用户消息滚出视口顶部时吸附置顶，点击回到原位', async ({ browserName }) => {
   test.skip(browserName !== 'chromium', '吸附测量依赖真实布局');
   const { page, host } = handle;

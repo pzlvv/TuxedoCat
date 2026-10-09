@@ -18,6 +18,12 @@ import { flushSync } from 'react-dom';
  *
  * 微任务在 React 提交（同一个任务）之后、浏览器绘制之前执行，因此仍然是
  * 「绘制前完成测量与折叠」的语义，与原 useLayoutEffect 等价。
+ *
+ * 尺寸变化重测：窗口 / 侧边栏宽度变化会让同一条消息的折行数改变，折叠高度下
+ * 「是否溢出」的判定随之改变（例如拉宽后原本被截断的消息能完整放下）。
+ * 因此每个被登记的元素都由一个**共享** ResizeObserver 观察，尺寸变化时用最近一次
+ * 登记的回写函数重新测量。共享一个 observer 是因为窗口拖动时每个元素都会回调一次，
+ * 逐元素新建 observer 只会多出同样数量的回调对象，没有收益。
  */
 
 /**
@@ -34,8 +40,46 @@ interface Job {
   mode: TruncationMode;
 }
 
+/** 元素最近一次登记的回写函数、判定模式与测量时的内容盒尺寸（用于过滤 ResizeObserver 的初始/重复回调） */
+interface Registration {
+  apply: (truncated: boolean) => void;
+  mode: TruncationMode;
+  /** 上次测量时元素的内容盒尺寸；初始回调与它一致时说明没有真实尺寸变化，跳过 */
+  width: number;
+  height: number;
+}
+
 let queue: Job[] = [];
 let scheduled = false;
+/** 已观察元素 → 最近一次登记（WeakMap：元素卸载后随之回收，不会阻止 GC） */
+const registrations = new WeakMap<HTMLElement, Registration>();
+let resizeObserver: ResizeObserver | null = null;
+
+function enqueue(job: Job): void {
+  queue.push(job);
+  if (scheduled) return;
+  scheduled = true;
+  queueMicrotask(flush);
+}
+
+/** 惰性创建共享 ResizeObserver；运行环境没有该 API 时返回 null（此时退化为只在内容变化时测量） */
+function getResizeObserver(): ResizeObserver | null {
+  if (typeof ResizeObserver === 'undefined') return null;
+  if (!resizeObserver) {
+    resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const el = entry.target as HTMLElement;
+        const registration = registrations.get(el);
+        if (!registration) continue;
+        // 尺寸没变（含 observe 后的首次回调）→ 无需重测
+        const rect = entry.contentRect;
+        if (Math.abs(registration.width - rect.width) < 1 && Math.abs(registration.height - rect.height) < 1) continue;
+        enqueue({ el, apply: registration.apply, mode: registration.mode });
+      }
+    });
+  }
+  return resizeObserver;
+}
 
 function flush(): void {
   scheduled = false;
@@ -52,6 +96,12 @@ function flush(): void {
     if (!el.isConnected) {
       results[i] = false;
       continue;
+    }
+    // 记录本次测量时的内容盒尺寸，供 ResizeObserver 回调过滤「尺寸未变」的重复通知
+    const registration = registrations.get(el);
+    if (registration) {
+      registration.width = el.clientWidth;
+      registration.height = el.clientHeight;
     }
     if (jobs[i].mode === 'overflow') {
       // 已按折叠高度 clamp：内容比可见高度多 1px 以上即视为截断（+1 容忍取整误差）
@@ -71,12 +121,33 @@ function flush(): void {
   });
 }
 
-/** 登记一次截断测量；同一批（同一微任务内）的登记会合并成一次强制布局 */
+/**
+ * 登记一次截断测量；同一批（同一微任务内）的登记会合并成一次强制布局。
+ * 同时把元素交给共享 ResizeObserver 观察，尺寸变化（折行数改变）时自动重测。
+ * 对同一元素重复调用只更新回写函数与模式，不会重复触发初始观察。
+ */
 export function measureTruncation(el: HTMLElement, apply: (truncated: boolean) => void, mode: TruncationMode = 'lines'): void {
-  queue.push({ el, apply, mode });
-  if (scheduled) return;
-  scheduled = true;
-  queueMicrotask(flush);
+  // 复用已有登记：只更新回写函数与模式，保留上次测得的内容盒尺寸。
+  // 首次登记时尺寸未知，先置 NaN；本次测量（flush 只读阶段）会补上，
+  // 因此 observe 之后的首次回调能据此判定「尺寸未变」而跳过。
+  const existing = registrations.get(el);
+  if (existing) {
+    existing.apply = apply;
+    existing.mode = mode;
+  } else {
+    registrations.set(el, { apply, mode, width: NaN, height: NaN });
+  }
+  getResizeObserver()?.observe(el);
+  enqueue({ el, apply, mode });
+}
+
+/**
+ * 停止观察并清除登记：元素卸载，或进入不应再按溢出判定的状态（如已展开）时调用。
+ * ResizeObserver 会强引用被观察元素，卸载时不解除会阻止元素回收。
+ */
+export function releaseTruncation(el: HTMLElement): void {
+  registrations.delete(el);
+  resizeObserver?.unobserve(el);
 }
 
 /** 仅供测试/诊断：当前待处理的测量数 */
