@@ -108,7 +108,7 @@ import {
 import { tt, onHostLocaleChanged, getHostLocale } from '../src/host/i18n.js';
 import { requireEventBus } from '../src/core/AssistantEventBus.js';
 import { getShortcutDialogHtml } from './shortcutDialogHtml.js';
-import { resolveSmartTitle } from '../src/core/history/smartNaming.js';
+import { requestSmartNaming } from '../src/host/coreFacts.js';
 
 /**
  * e2e 专用的侧栏列表延迟注入开关（`<envPrefix>_E2E_SLOW_LIST_MS`）。
@@ -4395,16 +4395,15 @@ function setupIpc(): void {
 
   ipcMain.handle('sidebar:smart-name-conversation', async (_event, sessionId: string) => {
     try {
-      // 先刷新会话工作目录索引并登记到 core：loadConversation 按会话解析工作目录
+      // 先刷新会话工作目录索引并登记到 core：命名按会话解析工作目录（数据 / 配置都在 core）
       syncSessionWorkspaceIndex();
       const smartWs = sessionWorkspaces.get(sessionId);
       if (smartWs) void registerCoreSessionWorkspace(sessionId, smartWs);
-      // 智能命名编排属 core（与 webview 版 handleRequestSmartNaming 同一逻辑：
-      // 取最近 5 条用户/助手文本 → LLM 生成标题 → 写 meta.json）；
-      // 标题写盘走 UiEvent.conversationRenamed，后续广播（titleChanged / 列表刷新）走 core
-      const { loadConversation } = await import('../src/core/history/index.js');
-      const conversation = await loadConversation(sessionId);
-      const title = await resolveSmartTitle(sessionId, (conversation.messages || []) as any[]);
+      // 智能命名编排属 core：走受控事实入口（coreFacts），按 CORE_KIND 分派——
+      // Embedded 直读本进程 core；Standalone 经 UiRequest.smartNamingRequested
+      // 交给 daemon（在主进程直调 Embedded 实现会在 Standalone 下因 settings
+      // 快照未注入而抛错）。标题写盘走 UiEvent.conversationRenamed，广播由 core 发
+      const title = await requestSmartNaming(sessionId);
       const { requireEventBus } = await import('../src/core/AssistantEventBus.js');
       requireEventBus().emitToCore({ type: 'conversationRenamed', sessionId, title });
       // 标题回推与列表刷新由 core 广播（titleChanged / conversationListChanged）

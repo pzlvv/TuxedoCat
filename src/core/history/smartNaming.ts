@@ -1,8 +1,9 @@
 /**
  * 智能命名：从对话最近消息生成标题。
  *
- * 供 electron/main.ts（sidebar:smart-name-conversation）使用；
- * WebViewUI 的 webviewMessageHandler 版本下次收敛时复用同一签名。
+ * 生成入口是 host/coreFacts.ts 的 requestSmartNaming（按 CORE_KIND 分派：
+ * Embedded 在宿主进程直调本模块；Standalone 由 core-rs 的 smart_naming 同构实现
+ * 应答 UiRequest.smartNamingRequested）。
  */
 import { extractLastJsonObject } from '../utils/lastJson.js';
 import { surrogateSafeHeadEnd } from '../utils/stringUtils.js';
@@ -74,7 +75,9 @@ export function parseSmartNamingTitle(rawResult: string): string {
       title = tMatch[1];
     } else {
       const lines = rawResult.split('\n').filter(l => l.trim());
-      title = lines[lines.length - 1]?.trim()?.substring(0, 50) || FALLBACK_TITLE;
+      const lastLine = lines[lines.length - 1]?.trim() ?? '';
+      // 截断按完整字符取：50 个 UTF-16 单元内不切开代理对（与 Rust utf16_take 同口径）
+      title = lastLine.substring(0, surrogateSafeHeadEnd(lastLine, 50)) || FALLBACK_TITLE;
     }
   }
   return title;

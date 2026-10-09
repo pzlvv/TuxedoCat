@@ -393,6 +393,10 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+  /* 放开继承自 .ws-tab 的 line-height:1：12.5px 行框容不下字体度量，
+     g / p / y 的降部伸出行框，被上面的 overflow:hidden 裁掉下半截；
+     normal 按字体度量取行框，flex 垂直居中不受影响 */
+  line-height: normal;
 }
 /* 关闭按钮始终占位（visibility 切换），避免 hover 进出时标签页宽度跳变 */
 .ws-tab-close {

@@ -343,3 +343,28 @@ test('US-36 标红推送不被预加载视图清理失败吞掉：非活动远�
     blackhole.close();
   }
 });
+
+test('US-35 标签页文本降部完整可见（line-height 不裁 g/p/y）', async () => {
+  const repoRoot = process.cwd().replace(/[\/]e2e$/, '');
+  const dir = await makeWorkspace({}, 'graphics-playground');
+  app = await launchApp({ repoRoot, mockLlm, workspaceDir: dir });
+
+  const titlebarPage = await app.titlebarPage();
+  await expect(titlebarPage.locator('.ws-tab-label')).toHaveText('graphics-playground', { timeout: 20_000 });
+
+  // 文本 ink 盒（按字体度量）不得超出 label 的 overflow:hidden 裁剪盒：
+  // 回归即行高被压回 1，g / p / y 的降部会伸出行框被裁掉下半截
+  const probe = await titlebarPage.evaluate(() => {
+    const label = document.querySelector<HTMLElement>('.ws-tab-label')!;
+    const range = document.createRange();
+    range.selectNodeContents(label);
+    const textRect = range.getBoundingClientRect();
+    const labelRect = label.getBoundingClientRect();
+    return {
+      bottom: textRect.bottom - labelRect.bottom,
+      top: labelRect.top - textRect.top,
+    };
+  });
+  expect(probe.bottom).toBeLessThanOrEqual(0.5);
+  expect(probe.top).toBeLessThanOrEqual(0.5);
+});
