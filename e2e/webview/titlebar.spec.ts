@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { openStaticPage } from '../helpers/webviewHarness';
+import { PRODUCT_NAME } from '../../src/config/project';
 
 /**
  * 标题栏标签页快照的时序（US-36）：陈旧的 get-state 回包不得覆盖较新的推送。
@@ -53,7 +54,7 @@ function snapshot(availability: 'unavailable' | 'connecting', version?: number) 
     activeWorkspace: 'ws-local',
     activity: {},
     platform: 'win32',
-    productName: 'Tuxedo Cat',
+    productName: PRODUCT_NAME,
     maximized: false,
     sections: [],
     labels: undefined,

@@ -41,7 +41,7 @@ async function run(): Promise<void> {
   // 一般错误：原始错误详情进页面
   const generic = getChatPlaceholderHtml({
     kind: 'remoteUnreachable',
-    path: 'ssh://pz@172.20.56.28/home/pz/git/TuxedoCat',
+    path: 'ssh://pz@172.20.56.28/home/pz/git/demo',
     reason: { kind: 'generic', detail: 'SSH connection timed out after 20000ms' },
   });
   assert.ok(generic.includes('SSH connection timed out after 20000ms'), '一般原因展示原始错误');

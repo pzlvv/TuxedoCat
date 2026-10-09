@@ -1,5 +1,7 @@
 [package]
-name = "tuxedo-cat-tui-installer"
+# crate / 二进制名保持中性：cargo 不认变量，产品名由构建脚本按
+# `src/config/project.json` 落到分发产物上（docs/product-identity.md）。
+name = "standalone-tui-installer"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -10,7 +12,7 @@ publish = false
 # 直接运行，不假设系统里有任何运行库（Linux 一律 musl 静态链接）。
 
 [[bin]]
-name = "tuxedo-cat-tui-installer"
+name = "standalone-tui-installer"
 path = "src/main.rs"
 
 # 嵌入载荷数 MB：体积优先，不需要运行速度

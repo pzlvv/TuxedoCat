@@ -7,6 +7,7 @@ import { launchApp, makeWorkspace, stubMainMessageBox } from '../helpers/electro
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
+import { CONFIG_DIR_NAME } from '../../src/config/project';
 
 /**
  * US-30 完整模式与悬浮窗切换 / US-35 多工作区标签页（打开集合恢复 / 切换 / 关闭）
@@ -80,7 +81,7 @@ test('US-35 多工作区标签页：恢复打开集合、切换活动工作区�
   await betaChat.press('textarea.input-textarea', 'Enter');
   await expect(betaChat.getByText(/收到：工作区 B/).first()).toBeVisible({ timeout: 30_000 });
 
-  const conversationsRoot = path.join(app.homeDir, '.tuxedo-cat', 'conversations');
+  const conversationsRoot = path.join(app.homeDir, CONFIG_DIR_NAME, 'conversations');
   const projectDirs = fs.readdirSync(conversationsRoot);
   expect(projectDirs.length).toBe(1);
   const dirName = projectDirs[0];

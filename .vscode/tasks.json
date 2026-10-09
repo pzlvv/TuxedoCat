@@ -43,7 +43,7 @@
       "isBackground": true,
       "group": "build",
       "problemMatcher": {
-        "owner": "tuxedo-cat-watch-ext",
+        "owner": "watch-ext",
         "pattern": { "regexp": "^$" },
         "background": {
           "activeOnStart": true,
@@ -59,7 +59,7 @@
       "isBackground": true,
       "group": "build",
       "problemMatcher": {
-        "owner": "tuxedo-cat-watch",
+        "owner": "watch-app",
         "pattern": { "regexp": "^$" },
         "background": {
           "activeOnStart": true,

@@ -88,7 +88,7 @@ Connection 持有：
 | --- | --- | --- | --- |
 | `scheme` | 这类工作区怎么接 | `file` | `ssh`（全部通信走 SSH 端口）；`wsl` / `container` 预留 |
 | `endpoint` | 接哪台机器、用什么凭证 | `null` | `{ host, port, user, auth }` |
-| `path` | 那台机器上的目录 | `d:\git\TuxedoCat` | `/home/alice/src/tuxedo-cat` |
+| `path` | 那台机器上的目录 | `d:\git\demo` | `/home/alice/src/demo` |
 
 - `(scheme, endpoint)` 决定 Connection 的目标；`path` 是 Core 的会话工作目录。
 - **Core 只见 `path`**：endpoint 与凭证不下发到 Core，也不进入配置快照。

@@ -14,7 +14,7 @@ src/test/memtest/
 ├── harness.entry.tsx      # 测试页面入口：把样本会话挂到 MessagesView 上
 ├── template.html          # 页面模板（build.mjs 用它生成 index.html）
 ├── build.mjs              # 用 esbuild 把 harness 打成单文件 web.js，并复制真实 CSS
-├── preprocess.js          # 把 ~/.tuxedo-cat/conversations 的 JSONL 转成样本集
+├── preprocess.js          # 把 <configDir>/conversations 的 JSONL 转成样本集
 ├── make-synthetic.mjs     # 生成"多语言"合成会话（验证 Shiki 按需加载）
 ├── make-length-sweep.mjs  # 从同一会话切出不同长度的样本（隔离"长度"变量）
 ├── run.mjs                # 内存 / DOM 测试驱动
@@ -51,7 +51,7 @@ src/test/memtest/
 cd src/test/memtest
 
 # 1) 准备样本数据（二选一）
-node preprocess.js sessions.json     # 从真实会话导出（需要 ~/.tuxedo-cat/conversations）
+node preprocess.js sessions.json     # 从真实会话导出（需要 <configDir>/conversations）
 node make-synthetic.mjs              # 或生成多语言合成会话 sessions-synthetic.json
 
 # 2) 构建 harness 页面

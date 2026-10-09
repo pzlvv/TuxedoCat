@@ -33,7 +33,7 @@ import {
   coreBinaryFileName,
   corePlatformDir,
 } from '../host/standalone/coreBinary';
-import { CORE_RESOURCE_DIR } from '../config/project';
+import { CONFIG_DIR_NAME, CORE_RESOURCE_DIR } from '../config/project';
 import { createChecker, runTests } from './helpers/harness';
 import { createRecordingCoreEventHandlers, emptySettingsSnapshot } from './helpers/fixtures';
 import type { CoreRequestHandlers } from '../core/AssistantEventBus';
@@ -509,7 +509,7 @@ async function run(): Promise<void> {
       console.log(`skip real daemon smoke: ${path.relative(repoRoot, binary)} or fingerprint missing`);
     } else {
       // 真实 daemon（`start-daemon`）：状态文件写到临时 HOME，别碰用户自己的 daemon
-      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-cat-daemon-'));
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'core-daemon-'));
       const child = spawn(
         binary,
         ['start-daemon'],
@@ -530,7 +530,7 @@ async function run(): Promise<void> {
         // `daemon_state_path` 同口径）
         const statePath = path.join(
           home,
-          '.tuxedo-cat',
+          CONFIG_DIR_NAME,
           'run',
           daemonStateFileName(fs.readFileSync(fingerprintPath, 'utf8').trim()),
         );
@@ -551,7 +551,7 @@ async function run(): Promise<void> {
           type: 'hostEnvironmentProvided',
           extensionPath: repoRoot,
           logToConsole: false,
-          configDirName: '.tuxedo-cat-test',
+          configDirName: `${CONFIG_DIR_NAME}-test`,
           settings: emptySettingsSnapshot(),
           mcpServers: [],
         });

@@ -68,7 +68,7 @@ pub fn usage() -> String {
     format!(
         "\
 {version}
-Tuxedo Cat 的 Standalone Core（独立进程）。
+{product} 的 Standalone Core（独立进程）。
 
 用法：
   {program} [动作] [选项]
@@ -89,7 +89,9 @@ start 选项：
   -V, --version       显示版本号。
 ",
         version = version(),
-        program = program
+        program = program,
+        // 产品显示名构建期烧入（core-rs/build.rs），源码不持有产品字面量
+        product = env!("TC_PRODUCT_NAME")
     )
 }
 

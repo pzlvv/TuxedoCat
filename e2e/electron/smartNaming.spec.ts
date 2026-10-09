@@ -5,6 +5,7 @@ import { startMockLlm, lastUserText } from '../helpers/mockLlmServer';
 import { launchApp, makeWorkspace } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
+import { CONFIG_DIR_NAME } from '../../src/config/project';
 
 /**
  * US-21 智能命名（真实 LLM 链路）
@@ -69,7 +70,7 @@ function namingRequests(): MockLlm['requests'] {
 
 /** 读取沙箱 home 下唯一的会话 meta.json（单会话场景） */
 function readMeta(): Record<string, unknown> {
-  const conversationsRoot = path.join(app!.homeDir, '.tuxedo-cat', 'conversations');
+  const conversationsRoot = path.join(app!.homeDir, CONFIG_DIR_NAME, 'conversations');
   const projectDir = fs.readdirSync(conversationsRoot)[0];
   const metaFile = fs.readdirSync(path.join(conversationsRoot, projectDir))
     .find((f) => f.startsWith('session_') && f.endsWith('.meta.json'))!;

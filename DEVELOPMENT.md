@@ -1,4 +1,4 @@
-# TuxedoCat 开发文档
+# <product-name> 开发文档
 
 > 本文描述当前代码的架构实现（as-built），而非演进计划。
 > 文档内容以代码为准；文档与代码不一致时，应先修正其中一方，使二者保持一致。
@@ -101,6 +101,8 @@ flowchart TB
 
 | 路径 | 职责 |
 | --- | --- |
+| `src/config/project.json` | 产品身份与工程变量的定义处之一（另一处是 `package.json`）：产品名 / 扩展名 / 配置目录 / 环境变量前缀 / 命令与面板 id / Core 产物名与部署前缀；`src/test/brandLiteral.test.ts` 守卫「其余文件不出现产品字面量」与「两处定义一致」（`docs/product-identity.md`） |
+| `src/config/project.ts` | 上述变量的 TS 只读入口（`PRODUCT_NAME` / `EXTENSION_NAME` / `CONFIG_DIR_NAME` / `ENV_PREFIX` / `CORE_ENV_VAR` / `CORE_BINARY_NAME` / `CORE_DEPLOY_PREFIX` …），源码与用例一律经它取值 |
 | `src/core/AssistantEventBus.ts` | 事件类型（`CoreEvent` / `CoreRequest` / `UiEvent`）、处理器映射类型、总线接口、全局注册（`setGlobalEventBus` / `requireEventBus` / `resetGlobalEventBus`） |
 | `src/host/webviewMessages.ts` | webview ↔ host 消息协议（wire 联合类型，按方向拆分：`HostToWebviewMessage` / `WebviewToHostMessage` / 双向成员），两端唯一的协议类型来源 |
 | `src/core/webviewTypes.ts` | core 侧的展示事实类型（`McpServerInfo` / `ProviderModels` 等），core 产出、host 组装进消息载荷 |
@@ -110,7 +112,7 @@ flowchart TB
 | `src/host/Client.ts` | 宿主级唯一实例：工作区 / 会话路由表、配置快照推送、就绪门禁；同时实现 `AssistantEventBus`，作为宿主侧的总线路由器（`emitToCore` / `requestCore` 按会话找归属） |
 | `src/host/Connection.ts` | 宿主与一个 Core 的一对一连接：持有总线、就绪状态机（`connecting → ready → closed`）、该工作区的会话集合；未就绪时排队 `UiEvent` / 挂起 `requestCore` |
 | `src/host/workspaceRef.ts` | 工作区引用 `{ scheme, path, endpoint }` 与去重键；本地 / 远程同构，Core 只见 `path` |
-| `src/host/coreKind.ts` | Core 实现的选择变量：`CORE_KIND`（默认 `standalone`，打包时由 esbuild 按 `TUXEDO_CAT_CORE` 注入构建期取值）与 `TUXEDO_CAT_CORE` 运行期覆盖入口，`resolveCoreKind()` |
+| `src/host/coreKind.ts` | Core 实现的选择变量：`CORE_KIND`（默认 `standalone`，打包时由 esbuild 按 `<envPrefix>_<core.envVarSuffix>` 注入构建期取值）与 `<envPrefix>_<core.envVarSuffix>` 运行期覆盖入口，`resolveCoreKind()` |
 | `src/host/standalone/protocol.ts` | Standalone 帧协议：帧类型、编解码、换行分隔 JSON 解码器 |
 | `src/host/standalone/coreBinary.ts` | Standalone Core 产物定位：平台 / 架构 → `resources/core/<arch>-<platform>/` |
 | `src/host/standalone/CoreProcess.ts` | 单进程形态的 Core 进程管理：启动 / 握手 / 帧收发 / 背压 / 崩溃重启 / 关闭；实现 `CoreChannelTransport` |
@@ -2928,7 +2930,7 @@ Embedded Core（`src/core`，TypeScript）是唯一真值，Standalone Core（`c
 
 ```
 node -e "…GrepTool.call({pattern:'alpha',output_mode:'content'}, {cwd: <temp dir>})"
-# Embedded 输出：D:\git\TuxedoCat\C:\Users\...\Temp\xxx\a.txt:1:alpha
+# Embedded 输出：D:\git\demo\C:\Users\...\Temp\xxx\a.txt:1:alpha
 # Standalone 输出：a.txt:1:alpha
 ```
 

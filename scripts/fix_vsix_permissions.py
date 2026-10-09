@@ -5,10 +5,22 @@ VSIX packages built on Windows lose Unix executable permissions.
 This script restores +x for the bundled Linux executables (ripgrep / Standalone Core).
 """
 
+import json
 import zipfile
 import os
 import sys
 import shutil
+
+# 产品名与 Core 二进制名取工程配置的唯一来源（docs/product-identity.md）：
+# 路径相对本脚本文件解析，不受调用方 cwd 影响。
+_PROJECT_JSON = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "src", "config", "project.json",
+)
+with open(_PROJECT_JSON, encoding="utf-8") as _f:
+    _PROJECT = json.load(_f)
+
+CORE_BINARY_NAME = _PROJECT["core"]["binaryName"]
 
 # 两份 ripgrep 按 Core 变体互斥存在（scripts/copy-assets.mjs 按变体清理 dist）：
 #   embedded   → 只有 dist/resources/ripgrep/（TS 侧 Grep / Glob 的 rg）
@@ -19,10 +31,10 @@ TARGET_FILES = [
     "extension/dist/resources/ripgrep/x64-linux/rg",
     # Core 自带的 ripgrep（与 Core 可执行文件同级，Grep / Glob 靠它）
     "extension/dist/resources/core/x64-linux/ripgrep/rg",
-    "extension/dist/resources/core/x64-linux/tuxedo-cat-core",
+    f"extension/dist/resources/core/x64-linux/{CORE_BINARY_NAME}",
     # arm64 Linux 与 x64 同为打包要携带的平台（build-core.mjs 的 PACKAGE_DIRS）
     "extension/dist/resources/ripgrep/arm64-linux/rg",
-    "extension/dist/resources/core/arm64-linux/tuxedo-cat-core",
+    f"extension/dist/resources/core/arm64-linux/{CORE_BINARY_NAME}",
     "extension/dist/resources/core/arm64-linux/ripgrep/rg",
     # Add more linux/macos binaries here if needed
     # "extension/dist/resources/ripgrep/x64-darwin/rg",

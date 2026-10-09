@@ -18,8 +18,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { applyTestSettings, makeTempDir } from './helpers/fixtures';
 import { runCases } from './helpers/harness';
+import { CONFIG_DIR_NAME } from '../config/project';
 
-const CONFIG_DIR = '.tuxedo-cat';
+const CONFIG_DIR = CONFIG_DIR_NAME;
 
 /** 在临时 HOME 下写 settings.json 并返回该 HOME 路径 */
 function makeTempHome(settings: unknown): string {

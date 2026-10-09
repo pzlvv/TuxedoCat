@@ -2,7 +2,7 @@
  * 单测：多宿主进程共写 `settings.json` 不丢数据（`docs/core-ui-separation.md` 第 4.6 节）。
  *
  * 场景：同一台机器上同时跑着 VS Code 扩展宿主与多个 Electron 实例，它们读同一份
- * `~/.tuxedo-cat/settings.json`。`SettingsStore.updateSettings` 是「读-改-写」，
+ * `<configDir>/settings.json`。`SettingsStore.updateSettings` 是「读-改-写」，
  * 早期实现有三处会**销毁用户配置**：
  *
  * 1. `writeFile` 先截断再写入（非原子）→ 并发读者会读到半截文件；

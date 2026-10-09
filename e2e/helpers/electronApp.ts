@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
 import { workspaceRefKey } from '../../src/host/workspaceRef';
+import { CONFIG_DIR_NAME, CORE_ENV_VAR, EXTENSION_NAME } from '../../src/config/project';
 import type { MockLlm } from './mockLlmServer';
 
 /**
@@ -24,9 +25,9 @@ import type { MockLlm } from './mockLlmServer';
  *    放在入口文件**之前**（Chromium/Node 开关解析位置）。
  *
  * 隔离策略：
- * - `USERPROFILE`/`HOME`/`APPDATA` 指向临时目录：`~/.tuxedo-cat/`（settings.json、
+ * - `USERPROFILE`/`HOME`/`APPDATA` 指向临时目录：`~/<configDir>/`（settings.json、
  *   会话落盘）与 Electron userData（workspace-state.json）全部进沙箱
- * - `TUXEDO_CAT_CORE=embedded`：进程内 TS Core（`src/host/coreKind.ts` 运行期覆盖），
+ * - `<envPrefix>_<core.envVarSuffix>=embedded`：进程内 TS Core（`src/host/coreKind.ts` 运行期覆盖），
  *   免 Rust 产物依赖；LLM 指向本地 mock SSE 服务器
  * - `--multi-instance=<id>` + `--workspace=<dir>`：跳过单实例锁、启动即打开工作区
  */
@@ -67,7 +68,7 @@ export interface AppHandle {
 }
 
 function writeSettings(homeDir: string, mockLlm: MockLlm): void {
-  const configDir = path.join(homeDir, '.tuxedo-cat');
+  const configDir = path.join(homeDir, CONFIG_DIR_NAME);
   fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify({
     llm: {
@@ -148,7 +149,7 @@ async function spawnApp(options: {
   const instanceId = randomUUID().replace(/-/g, '').slice(0, 12);
   const roamingDir = path.join(homeDir, 'AppData', 'Roaming');
   await fs.promises.mkdir(roamingDir, { recursive: true });
-  const userDataDir = path.join(roamingDir, 'tuxedo-cat-multi-' + instanceId);
+  const userDataDir = path.join(roamingDir, `${EXTENSION_NAME}-multi-` + instanceId);
   const stateFile = path.join(userDataDir, 'workspace-state.json');
 
   if ((options.openWorkspaces && options.openWorkspaces.length > 0) || options.stateOverrides) {
@@ -175,7 +176,7 @@ async function spawnApp(options: {
     USERPROFILE: homeDir,
     HOME: homeDir,
     APPDATA: roamingDir,
-    TUXEDO_CAT_CORE: options.coreKind ?? 'standalone',
+    [CORE_ENV_VAR]: options.coreKind ?? 'standalone',
     DISABLE_AUTO_COMPACT: '1',
   };
   delete env.ELECTRON_RUN_AS_NODE;

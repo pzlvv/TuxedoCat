@@ -100,7 +100,7 @@ Core 槽位，`<前缀>/share/<产品名>/ripgrep/` 是全部槽位共享的 rg�
 
 - **渲染 ratatui + crossterm 0.28**：整帧重绘（与 Ink 的自上而下重绘同预算约束，
   消息流渲染上限 150 条、markdown 解析按消息 id 缓存）。不引入异步运行时。
-- **产物是原生二进制**：`tui-rs/target/release/tuxedo-cat-tui[.exe]`，运行不需要
+- **产物是原生二进制**：`tui-rs/target/release/standalone-tui[.exe]`，运行不需要
   Node。crate 依赖只有 `serde` / `serde_json`（preserve_order，settings.json 键序
   不乱）、`ratatui` / `crossterm`、`uuid`（会话 id v4）。
 - **markdown**（`markdown.rs`）：自研子集解析（标题 / 强调 / 行内代码 / 围栏代码 /
@@ -267,7 +267,7 @@ pending 的事实都在 store，覆盖层只持导航类局部状态。
 
 ## 8. 构建与依赖
 
-- `npm run build:tui`（cargo build --release）→ `tui-rs/target/release/tuxedo-cat-tui[.exe]`；
+- `npm run build:tui`（cargo build --release）→ `tui-rs/target/release/standalone-tui[.exe]`；
   `npm run tui` 启动（cargo run --release）。
 - `npm run package:tui` 生成安装程序（`docs/tui-installer.md`），并挂在
   `npm run package` 链尾。

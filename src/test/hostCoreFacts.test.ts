@@ -26,11 +26,12 @@ import {
   requestMcpServers,
   requestSkills,
 } from '../host/coreFacts';
+import { CONFIG_DIR_NAME, CORE_ENV_VAR } from '../config/project';
 
 const home = makeTempDir('host-core-facts-home');
 process.env.USERPROFILE = home;
 process.env.HOME = home;
-process.env.TUXEDO_CAT_CORE = 'embedded';
+process.env[CORE_ENV_VAR] = 'embedded';
 
 async function run(): Promise<void> {
   const { check, finish } = createChecker();
@@ -106,7 +107,7 @@ async function run(): Promise<void> {
   check('询问模式有权威取值或 null', loaded.agentMode === null || typeof loaded.agentMode === 'string');
 
   // ── 斜杠命令与技能列表：内置项 + 项目技能目录 ──
-  const skillDir = path.join(project, '.tuxedo-cat', 'skills', 'demo');
+  const skillDir = path.join(project, CONFIG_DIR_NAME, 'skills', 'demo');
   fs.mkdirSync(skillDir, { recursive: true });
   fs.writeFileSync(
     path.join(skillDir, 'SKILL.md'),

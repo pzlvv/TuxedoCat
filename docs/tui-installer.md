@@ -44,7 +44,7 @@
 ## 2. CLI
 
 ```
-tuxedo-cat-tui-installer [--prefix <dir>] [--print-prefix] [--version] [--help]
+<extensionName>-tui-installer [--prefix <dir>] [--print-prefix] [--version] [--help]
 ```
 
 | 参数 | 行为 |
@@ -67,7 +67,7 @@ tuxedo-cat-tui-installer [--prefix <dir>] [--print-prefix] [--version] [--help]
   的 `fingerprint` 文件。
 - 载荷来源可用环境变量注入（测试 / 定制）：`TUI_INSTALL_PAYLOAD_DIR`（默认
   `<repo>/resources/core`）、`TUI_INSTALL_TUI_BINARY`（默认
-  `<repo>/tui-rs/target/<triple>/release/tuxedo-cat-tui[.exe]`）、
+  `<repo>/tui-rs/target/<triple>/release/standalone-tui[.exe]`）、
   `TUI_INSTALL_VERSION`（默认 `dev`；构建脚本传包版本）。
 - 生成 `$OUT_DIR/payload.rs`：`FILES: &[(&str, &[u8], bool)]`（部署布局内的相对
   路径、字节、可执行位）+ 上述常量。
@@ -83,7 +83,7 @@ npm run package:tui
           不做「产物在就跳过」——TUI 无新旧标记，旧产物会被静默嵌入）
        3. cargo build --release --target <triple>（cwd=installer-rs，
           musl 的 rust-lld 配在 installer-rs/.cargo/config.toml）
-       4. 复制到 <releaseDir>/tui-installer/tuxedo-cat-tui-installer-<pkg>[.exe]
+       4. 复制到 <releaseDir>/tui-installer/<extensionName>-tui-installer-<pkg>[.exe]
 ```
 
 - `npm run package` 链尾挂 `package:tui`（ext → app → tui）。

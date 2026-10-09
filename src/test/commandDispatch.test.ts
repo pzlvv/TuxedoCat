@@ -19,7 +19,7 @@ import { makeTempDir } from './helpers/fixtures';
 import { runTests } from './helpers/harness';
 
 async function run(): Promise<void> {
-  // 用空目录作为 cwd：只暴露内置 Skill，避免读到仓库自带的 .tuxedo-cat/skills
+  // 用空目录作为 cwd：只暴露内置 Skill，避免读到仓库自带的 <configDir>/skills
   const cwd = makeTempDir('dispatch');
 
   const fixturePath = path.resolve(__dirname, '../../../src/test/fixtures/commandDispatchParity.json');

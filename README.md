@@ -1,6 +1,6 @@
-# Tuxedo Cat
+# <product-name>
 
-Tuxedo Cat 是一个面向 VS Code 与 Electron 的 AI 助手，提供侧边栏对话、LLM 配置管理、流式响应、代码 diff 预览与桌面端集成能力。
+`<product-name>` 是一个面向 VS Code 与 Electron 的 AI 助手，提供侧边栏对话、LLM 配置管理、流式响应、代码 diff 预览与桌面端集成能力。
 
 ## 功能特性
 
@@ -91,11 +91,11 @@ Core 有两种实现，由 `src/host/coreKind.ts` 的 `CORE_KIND` 装配（默�
 npm run build:core
 
 # 独立运行（帮助 / 版本 / 远程模式）
-./resources/core/x64-win32/tuxedo-cat-core.exe --help
-./resources/core/x64-win32/tuxedo-cat-core.exe --version
+./resources/core/x64-win32/<core.binaryName>.exe --help
+./resources/core/x64-win32/<core.binaryName>.exe --version
 
 # 开发 / 测试时临时切回进程内实现
-TUXEDO_CAT_CORE=embedded npm run dev:electron
+<envPrefix>_<core.envVarSuffix>=embedded npm run dev:electron
 
 # Rust 侧单测
 cd core-rs && cargo test
@@ -107,7 +107,7 @@ cd core-rs && cargo test
 菜单 →「打开远程工作区」），填目标的 SSH 主机 / 端口 / 用户 / 口令即可：
 
 - 目标机器不需要映射 daemon 端口，也不需要预装 Core——Host 按本机产物的构建指纹把
-  对应平台的产物经 SFTP 部署到 `~/.local/bin/share/tuxedo-cat/<指纹>/`，再用 SSH 转发通道接入；
+  对应平台的产物经 SFTP 部署到 `~/.local/share/<core.deployPrefix>/<指纹>/`，再用 SSH 转发通道接入；
 - daemon 只监听目标机器的回环地址、端口交给内核分配，用户不需要填任何连接信息；
 - 连接成功后**立刻**弹出远端目录选择器，选定目录即作为远程工作区打开。
 
@@ -121,12 +121,12 @@ Standalone Core 的 `start` / `kill` 仍是可用的命令行入口：`start` �
 # 在开发机上交叉编译出 Linux core（Windows / Linux 同一条命令，产物是静态 musl）
 npm run build:core:linux-x64
 # 把产物拷到目标机器后启动（也可由 Host 经 SSH 自动部署）
-./resources/core/x64-linux/tuxedo-cat-core start
+./resources/core/x64-linux/<core.binaryName> start
 # [core] 远程服务已就绪，监听 127.0.0.1:<内核分配端口>（Host 经 SSH 转发接入）
 ```
 
 daemon 只监听回环，访问边界就是承载它的 SSH 通道：不需要凭证、不需要端口映射，也不
-需要用户填任何连接信息。再执行一次 `start` 会复用同一个 daemon；`tuxedo-cat-core kill`
+需要用户填任何连接信息。再执行一次 `start` 会复用同一个 daemon；`<core.binaryName> kill`
 结束它。
 
 `npm run watch:app`（VS Code 的后台任务 / 手动运行）会在前端 watcher 之外额外轮询
@@ -166,7 +166,7 @@ npm run package:ext:embedded
 npm run package:app:embedded
 ```
 
-变体由构建期环境变量 `TUXEDO_CAT_CORE` 选择，产物分开落位、互不覆盖：
+变体由构建期环境变量 `<envPrefix>_<core.envVarSuffix>` 选择，产物分开落位、互不覆盖：
 standalone → `release/`，embedded → `release/embedded/`。embedded 变体不构建
 也不打包 Rust Core。
 

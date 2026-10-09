@@ -4,7 +4,8 @@
  *
  * 输出目录随 Core 变体变化（见 `project.config.cjs` 的 `releaseDir`）：
  * standalone → `release/`，embedded → `release/embedded/`。
- * 静态 npm script 没法在运行时按 `TUXEDO_CAT_CORE` 解析目录，所以收进本脚本；
+ * 静态 npm script 没法在运行时按构建期 Core 变体变量（`<envPrefix>_<core.envVarSuffix>`）
+ * 解析目录，所以收进本脚本；
  * 流程与原 `vsce package --out release && python scripts/fix_vsix_permissions.py` 一致。
  */
 import { mkdirSync, readdirSync, statSync } from 'node:fs';

@@ -5,7 +5,7 @@ import { startMockLlm } from '../helpers/mockLlmServer';
 import { launchApp, makeWorkspace, stubMainMessageBox } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
-import { ENV_PREFIX } from '../../src/config/project';
+import { CONFIG_DIR_NAME, ENV_PREFIX } from '../../src/config/project';
 
 /**
  * US-19 侧栏对话列表 / US-20 新建对话 / US-21 重命名 / US-22 删除（Electron 原生侧栏）
@@ -60,7 +60,7 @@ test('US-19 发送消息后侧栏出现会话条目并显示消息数', async ()
   await expect(items(sb)).toHaveCount(1);
 
   // 对话在磁盘上落盘（meta + jsonl）
-  const conversationsRoot = path.join(app.homeDir, '.tuxedo-cat', 'conversations');
+  const conversationsRoot = path.join(app.homeDir, CONFIG_DIR_NAME, 'conversations');
   const projectDir = fs.readdirSync(conversationsRoot)[0];
   const files = fs.readdirSync(path.join(conversationsRoot, projectDir));
   expect(files.some((f) => f.startsWith('session_') && f.endsWith('.meta.json'))).toBe(true);
@@ -101,7 +101,7 @@ test('US-21 侧栏重命名会话（行内输入，Enter 提交）', async () =>
 
   // 标题更新 + 落盘到 meta.json
   await expect(item).toContainText('我的重命名会话', { timeout: 15_000 });
-  const conversationsRoot = path.join(app.homeDir, '.tuxedo-cat', 'conversations');
+  const conversationsRoot = path.join(app.homeDir, CONFIG_DIR_NAME, 'conversations');
   const projectDir = fs.readdirSync(conversationsRoot)[0];
   const metaFile = fs.readdirSync(path.join(conversationsRoot, projectDir))
     .find((f) => f.startsWith('session_') && f.endsWith('.meta.json'))!;
@@ -125,7 +125,7 @@ test('US-22 侧栏删除会话带二次确认，确认后数据删除', async ()
   await expect((await chat()).locator('textarea.input-textarea')).toBeEnabled({ timeout: 30_000 });
 
   // 磁盘数据被删除（meta + jsonl 均不在）
-  const conversationsRoot = path.join(app.homeDir, '.tuxedo-cat', 'conversations');
+  const conversationsRoot = path.join(app.homeDir, CONFIG_DIR_NAME, 'conversations');
   const projectDir = fs.readdirSync(conversationsRoot)[0];
   await expect.poll(
     () => fs.readdirSync(path.join(conversationsRoot, projectDir))

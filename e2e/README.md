@@ -49,12 +49,12 @@ e2e/
 
 ## 隔离策略（electron-app）
 
-- `USERPROFILE` / `HOME` / `APPDATA` 指向临时目录：`~/.tuxedo-cat/`（settings.json、
+- `USERPROFILE` / `HOME` / `APPDATA` 指向临时目录：`~/<configDir>/`（settings.json、
   会话落盘）与 Electron userData（workspace-state.json）全部进沙箱，用例结束删除。
   注意 `APPDATA` 必须一并指向沙箱并预建目录，否则 Electron 解析不出 `appData` 路径。
 - settings.json 预写 mock provider（manual 询问模式让写操作弹权限确认），
   LLM 指向本地 mock SSE 服务器，全程无外网请求。
-- `TUXEDO_CAT_CORE=standalone`（默认）：Rust Core 独立进程，多 Connection / daemon / SSH 链路与
+- `<envPrefix>_<core.envVarSuffix>=standalone`（默认）：Rust Core 独立进程，多 Connection / daemon / SSH 链路与
   产品一致；前置 `npm run build:core`。远程工作区场景只有 standalone 才真实（embedded 单
   Connection 无 lost 信号、session 路由有「唯一连接」退路，覆盖不了失败链路）。
 - `--multi-instance=<id>` 跳过单实例锁；实例后缀会被 main.ts 截断到 32 字符，

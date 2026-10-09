@@ -11,10 +11,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { makeTempDir } from './helpers/fixtures';
 import { runTests } from './helpers/harness';
+import { CONFIG_DIR_NAME } from '../config/project';
 
-/** 在工作目录下写一个项目级 Skill（<cwd>/.tuxedo-cat/skills/<name>/SKILL.md） */
+/** 在工作目录下写一个项目级 Skill（<cwd>/<configDir>/skills/<name>/SKILL.md） */
 function writeSkill(cwd: string, name: string): void {
-  const dir = path.join(cwd, '.tuxedo-cat', 'skills', name);
+  const dir = path.join(cwd, CONFIG_DIR_NAME, 'skills', name);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(
     path.join(dir, 'SKILL.md'),

@@ -15,7 +15,7 @@ const project = require('./project.config.cjs');
 // "ARM64 LZMA2"。安装时负责解压的 nsis7z 插件（nsis-resources 3.4.1，2019-03-24，
 // 7-Zip 19.00 代码）没有 ARM64 过滤器，这些条目解压报 Unsupported Method；
 // 而 NSIS 脚本没有检查 Nsis7z::Extract 的返回值，安装照样"成功"——
-// 结果就是 arm64 包丢掉 Tuxedo Cat.exe 和全部 ARM64 dll，程序无法启动。
+// 结果就是 arm64 包丢掉 <product-name>.exe 和全部 ARM64 dll，程序无法启动。
 //
 // 修法：把打包用的 7za 固定为 7zip-bin@5.2.0 里的 7-Zip（win-x64 是 21.07，
 // win-arm64 是 21.02 alpha）。这是最后一个不认识 ARM64 过滤器的版本：它只会给

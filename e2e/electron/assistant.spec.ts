@@ -5,6 +5,7 @@ import { startMockLlm, lastUserText } from '../helpers/mockLlmServer';
 import { launchApp, makeWorkspace } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
+import { CONFIG_DIR_NAME } from '../../src/config/project';
 
 /**
  * US-1 流式对话 / US-2 中止 / US-14 工具卡片 / US-15 回滚 / US-18 权限确认 / US-28 工具轮次
@@ -76,7 +77,7 @@ test('US-28+US-18 写文件完整轮次：权限确认 → 工具执行 → 落�
   expect(mockLlm.requests[1].body.messages.some((m) => m.role === 'tool')).toBe(true);
 
   // 会话落盘：jsonl 存在于隔离的会话目录
-  const conversationsRoot = path.join(app.homeDir, '.tuxedo-cat', 'conversations');
+  const conversationsRoot = path.join(app.homeDir, CONFIG_DIR_NAME, 'conversations');
   const projectDirs = fs.readdirSync(conversationsRoot);
   expect(projectDirs.length).toBeGreaterThanOrEqual(1);
   const jsonlFiles = fs.readdirSync(path.join(conversationsRoot, projectDirs[0]))

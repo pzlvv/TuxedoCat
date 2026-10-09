@@ -3661,7 +3661,7 @@ function readLegacySettingsFields(): { theme?: unknown; shortcut?: unknown } | n
  * 一次性迁移旧版本的状态文件（只在目标文件不存在时执行）：
  *
  * 1. userData 目录：新版本显式指定为 `appData/<extensionName>`；旧版本打包态落在
- *    `appData/<productName>`（"Tuxedo Cat"），开发态落在 `appData/Electron`。
+ *    `appData/<productName>`（`<product-name>`），开发态落在 `appData/Electron`。
  * 2. 字段：旧版本只记单个 `lastWorkspace`，新版本记 `openWorkspaces` /
  *    `activeWorkspace`。迁移时把 lastWorkspace 提升为打开集合的唯一一项。
  *

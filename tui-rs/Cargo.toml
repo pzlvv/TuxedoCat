@@ -1,11 +1,13 @@
 [package]
-name = "tuxedo-cat-tui"
+# crate / 二进制名保持中性：cargo 不认变量，产品名由构建脚本按
+# `src/config/project.json` 落到分发产物上（docs/product-identity.md）。
+name = "standalone-tui"
 version = "0.1.0"
 edition = "2021"
-description = "Tuxedo Cat 的终端宿主（第三个宿主的 Rust 实现，直连 Standalone Core 帧通道）"
+description = "<product-name> 的终端宿主（第三个宿主的 Rust 实现，直连 Standalone Core 帧通道）"
 
 [[bin]]
-name = "tuxedo-cat-tui"
+name = "standalone-tui"
 path = "src/main.rs"
 
 [dependencies]

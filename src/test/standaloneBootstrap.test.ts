@@ -19,7 +19,7 @@ import type { SpinDesign } from '../host/SpinDesign';
 import type { ConversationMetadata } from '../core/history/Conversation';
 import type { SessionRuntimeState } from '../core/AssistantEventBus';
 import { coreBinaryFileName, corePlatformDir } from '../host/standalone/coreBinary';
-import { CORE_RESOURCE_DIR } from '../config/project';
+import { CORE_ENV_VAR, CORE_RESOURCE_DIR } from '../config/project';
 import { createChecker, runTests } from './helpers/harness';
 import { createTestHost } from './helpers/fixtures';
 
@@ -65,7 +65,7 @@ async function run(): Promise<void> {
     return;
   }
 
-  process.env.TUXEDO_CAT_CORE = 'standalone';
+  process.env[CORE_ENV_VAR] = 'standalone';
 
   const logs: string[] = [];
   const host = createTestHost({

@@ -115,7 +115,7 @@ Standalone Core 是 Core 的第二套实现。
 - [x] 中断语义：`abortRequested` 在工具执行前到达时**不执行**该工具，补 `Command was aborted before execution`（`exit_code: -1` / `is_canceled: true`）并结束本轮；执行中到达时杀掉子进程（`exit_code: 130` / `Command was interrupted`），均对齐 Embedded `executeSingleItem` / `Exec.ts`。
 - [x] 工具往返端到端：假 LLM 触发 Bash / Read → 工具结果回填 → 最终回复（`standaloneCoreTools.test.ts`）。
 - [x] 后台 Bash 任务与完成通知事件：`core-rs/src/bash_task.rs` 对齐 `tools/bash/LocalShellTask.ts` + `TaskOutput.ts`（file mode）+ `ShellCommand.ts`。
-  - `run_in_background`：子进程 stdout/stderr 直接重定向到 `<TMPDIR>/tuxedo-cat-tasks/<taskId>.output`，立刻返回 `taskId`（tool_result 文案逐字对齐 `Result.ts`）；`run_in_background` 按 JS `Boolean(value)` 强制转换（对齐 `z.coerce.boolean()`）。
+  - `run_in_background`：子进程 stdout/stderr 直接重定向到 `<TMPDIR>/<tmpTaskDirName>/<taskId>.output`，立刻返回 `taskId`（tool_result 文案逐字对齐 `Result.ts`）；`run_in_background` 按 JS `Boolean(value)` 强制转换（对齐 `z.coerce.boolean()`）。
   - 前台超时**不再杀进程**，改为自动转后台继续跑（`bg-auto-` 前缀，`assistantAutoBackgrounded` 文案 + `find` reminder）；只有「打开输出文件失败」才以退出码 124 收尾。
   - 通知驱动转后台：普通命令收到后台任务完成通知且已运行 ≥ `AUTO_BG_MIN_RUNNING_MS`(3s) → 转后台；`sleep` 命令收到**本会话**的后台任务完成通知或子代理 Reply 投递 → 立刻转后台。
   - 完成通知经 `enqueue_bash_notification` 注入为一条 `origin='bash'` 的 user 消息（进上下文 + 上报 UI + 落盘），空闲时唤醒消费循环；`SessionState.background` 参与 `idle` 判定；会话中止 / 关闭 / 删除时中止该会话全部后台任务（先移除记录再 kill，被中止任务不发通知）。

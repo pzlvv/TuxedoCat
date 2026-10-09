@@ -27,6 +27,7 @@ import { createTestHost, makeTempDir } from './helpers/fixtures';
 import { getSettingsStore, resetSettingsStore } from '../host/SettingsStore';
 import { getHostLocale } from '../host/i18n';
 import { coreReadyCount, isCoreReady } from '../host/coreReadiness';
+import { CORE_ENV_VAR } from '../config/project';
 
 class StubConversationManager extends ConversationManager {
   protected async dispatchList(_list: readonly ConversationMetadata[]): Promise<void> {
@@ -73,7 +74,7 @@ async function run(): Promise<void> {
 
   // 本节校验的是**进程内**接线（core 侧 UiEvent 订阅、注入点登记），固定用 embedded 装配；
   // Standalone 的进程 / 帧通道接线见 `standaloneBus.test.ts`。
-  process.env.TUXEDO_CAT_CORE = 'embedded';
+  process.env[CORE_ENV_VAR] = 'embedded';
 
   // 配置存储读写宿主自己的 `settings.json`：HOME 指向临时目录，避免污染真实用户配置。
   // 也必须隔离：用例把 `llm.webSearch` 改成 `false` 来触发订阅，若真实配置已是 `false`
@@ -91,7 +92,7 @@ async function run(): Promise<void> {
     locale: 'zh-CN',
     log: () => undefined,
     logToConsole: false,
-    extensionPath: '/tmp/tuxedo-cat-ext',
+    extensionPath: '/tmp/ext',
   });
 
   const snapshot = bootstrapSnapshot();

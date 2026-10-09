@@ -19,6 +19,7 @@ import { createChecker, runTests } from './helpers/harness';
 import { makeTestBus } from './helpers/fixtures';
 import { applySettingsSnapshot, hasSettingsSnapshot, resetSettingsSnapshot } from '../core/settings';
 import { resolveSettingsSnapshot } from '../core/settingsSnapshot';
+import { CONFIG_DIR_NAME } from '../config/project';
 
 function throws(fn: () => void): boolean {
   try {
@@ -118,7 +119,7 @@ async function run(): Promise<void> {
         type: 'hostEnvironmentProvided',
         extensionPath: '/ext',
         logToConsole: false,
-        configDirName: '.tuxedo-cat',
+        configDirName: CONFIG_DIR_NAME,
         settings: resolveSettingsSnapshot({}),
         mcpServers: [],
       });

@@ -13,7 +13,7 @@ use serde_json::json;
 fn encode_uri_component_keeps_unreserved_and_escapes_rest() {
     assert_eq!(encode_uri_component("abcXYZ019"), "abcXYZ019");
     assert_eq!(encode_uri_component("-_.!~*'()"), "-_.!~*'()");
-    assert_eq!(encode_uri_component(r"D:\git\TuxedoCat"), "D%3A%5Cgit%5CTuxedoCat");
+    assert_eq!(encode_uri_component(r"D:\git\demo"), "D%3A%5Cgit%5Cdemo");
     assert_eq!(encode_uri_component("a b"), "a%20b");
     assert_eq!(encode_uri_component("中文"), "%E4%B8%AD%E6%96%87");
 }
@@ -21,8 +21,8 @@ fn encode_uri_component_keeps_unreserved_and_escapes_rest() {
 #[test]
 fn decode_project_dir_name_round_trips_percent_encoding() {
     assert_eq!(
-        decode_project_dir_name("D%3A%5Cgit%5CTuxedoCat").as_deref(),
-        Some(r"D:\git\TuxedoCat")
+        decode_project_dir_name("D%3A%5Cgit%5Cdemo").as_deref(),
+        Some(r"D:\git\demo")
     );
     assert_eq!(
         decode_project_dir_name("%E4%B8%AD%E6%96%87").as_deref(),

@@ -36,7 +36,7 @@ import type {
   UiRequest,
 } from '../core/AssistantEventBus';
 import { emptySettingsSnapshot, createTestHost } from './helpers/fixtures';
-import { CONFIG_DIR_NAME } from '../config/project';
+import { CONFIG_DIR_NAME, CORE_ENV_VAR } from '../config/project';
 
 // ==================== 记录型总线（可控就绪） ====================
 
@@ -394,7 +394,7 @@ async function run(): Promise<void> {
 
   // ── 7. bootstrapCore 按工作区装配 + 工作区打开 / 关闭事件 + shutdownCore ──
   {
-    process.env.TUXEDO_CAT_CORE = 'standalone';
+    process.env[CORE_ENV_VAR] = 'standalone';
     const fakeCoreScript = `
       const readline = require('readline');
       const rl = readline.createInterface({ input: process.stdin });

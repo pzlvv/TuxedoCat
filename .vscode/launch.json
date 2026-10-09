@@ -1,5 +1,5 @@
 {
-  // Tuxedo Cat 调试配置
+  // <product-name> 调试配置
   //
   // 两个调试目标：
   //   1) VS Code 扩展（extensionHost）：调试 src/extension.ts + webview

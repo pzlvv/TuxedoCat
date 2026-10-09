@@ -1,6 +1,6 @@
 //! TUI 版安装程序（docs/tui-installer.md）：内嵌 Core / ripgrep / TUI 二进制的自解压安装器。
 //!
-//! 用法（程序名 = CARGO_PKG_NAME）：
+//! 用法（程序名取可执行文件名，Rust 侧不持有产品字面量）：
 //!   <本程序> [--prefix <dir>] [--print-prefix] [--version] [--help]
 //!
 //! - 部署布局（构建期嵌进载荷，见 build.rs）：前缀是**应用根**，产品落
@@ -28,6 +28,21 @@ mod payload {
 /// 也是载荷里产品目录段（`share/<产品名>`）的来源
 fn product_name() -> &'static str {
     payload::PRODUCT_DIR.split_once('/').map(|(_, name)| name).unwrap_or(payload::PRODUCT_DIR)
+}
+
+/// 程序名：取可执行文件名（分发产物名由构建脚本按 `project.json` 落位）。
+///
+/// 不硬编码产品名：Rust 侧保持中性，对外展示的名字由分发时的文件名决定
+/// （与 `core-rs/src/cli.rs` 的 `program_name` 同一口径）。
+fn program_name() -> String {
+    env::args()
+        .next()
+        .and_then(|path| {
+            std::path::Path::new(&path)
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| env!("CARGO_PKG_NAME").to_string())
 }
 
 /// 默认安装前缀（应用根）：unix 是 `~/.local`——产品落 `~/.local/share/<产品名>/`
@@ -72,7 +87,7 @@ fn print_usage() {
          安装布局：<prefix>/share/<产品名>/<指纹>/core + ripgrep + tui（构建指纹见 --version）；\n\
          unix 上另有软链接 <prefix>/bin/<产品名> 指向 TUI，装完直接运行（无需 Node.js）。",
         env!("TC_PRODUCT_NAME"),
-        env!("CARGO_PKG_NAME"),
+        program_name(),
         env!("TC_CONFIG_DIR"),
     );
 }
@@ -253,7 +268,7 @@ fn main() -> ExitCode {
         let total: usize = payload::FILES.iter().map(|(_, bytes, _)| bytes.len()).sum();
         println!(
             "{} {}（载荷 {}，指纹 {}，内嵌 {} 个文件 / {} KB）",
-            env!("CARGO_PKG_NAME"),
+            program_name(),
             payload::VERSION,
             payload::TARGET_PKG,
             payload::FINGERPRINT,

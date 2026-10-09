@@ -44,6 +44,21 @@ use protocol::{CoreToUiFrame, UiToCoreFrame};
 
 const TUI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// 程序名：取可执行文件名（打包后是部署的 `tui`，开发期是 crate 产物名）。
+///
+/// 不硬编码产品名：Rust 侧保持中性，对外展示的名字由分发时的文件名决定
+/// （与 `core-rs/src/cli.rs` 的 `program_name` 同一口径）。
+fn program_name() -> String {
+    std::env::args()
+        .next()
+        .and_then(|path| {
+            std::path::Path::new(&path)
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| env!("CARGO_PKG_NAME").to_string())
+}
+
 /// 主循环事件（core 帧 / core 退出；键盘事件在主线程直接读）。
 enum CoreEvent {
     Frame(CoreToUiFrame),
@@ -76,7 +91,7 @@ fn parse_args() -> CliArgs {
             "--version" => args.version = true,
             other => {
                 eprintln!("未知参数：{other}");
-                eprintln!("用法：{} [--workspace <dir>] [--verbose] [--version]", env!("CARGO_PKG_NAME"));
+                eprintln!("用法：{} [--workspace <dir>] [--verbose] [--version]", program_name());
                 std::process::exit(2);
             }
         }

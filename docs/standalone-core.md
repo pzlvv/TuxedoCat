@@ -121,7 +121,7 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 - Bash 工具按 `src/core/tools/bash/ShellDetector.ts` 的优先级选择 shell：
   Windows 上 Git Bash 优先，cmd.exe 只在全部探测失败时兜底。
 - 后台 Bash 任务（`run_in_background` / 前台超时自动转后台）的输出直接由子进程
-  写入 `<TMPDIR|TEMP|/tmp>/tuxedo-cat-tasks/<taskId>.output`（对齐
+  写入 `<TMPDIR|TEMP|/tmp>/<tmpTaskDirName>/<taskId>.output`（对齐
   `tools/bash/TaskOutput.ts` 的 file mode）；任务完成后 Core 把一条
   `origin='bash'` 的完成通知作为 user 消息注入该会话并唤醒消费循环，
   会话关闭 / 中止时终止该会话的全部后台任务。

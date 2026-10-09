@@ -1,6 +1,6 @@
-# TuxedoCat 用户故事（US）
+# <product-name> 用户故事（US）
 
-本文档描述 TuxedoCat 当前实现（as-built）面向用户的能力，以用户故事（User Story）形式
+本文档描述 <product-name> 当前实现（as-built）面向用户的能力，以用户故事（User Story）形式
 组织，作为场景级 UI 测试（`e2e/`）的需求基线：每条故事附验收标准，可验证的条目在
 `e2e/webview/` 与 `e2e/electron/` 的用例中以 `US-xx` 编号引用。
 

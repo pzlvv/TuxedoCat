@@ -8,8 +8,8 @@
 //!    变了）时重新编译；缺省时透传空值，Rust 侧取 `manual-build` 占位（见
 //!    `remote.rs::build_fingerprint`），只影响绕过构建脚本的手动 cargo 构建。
 //! 2. 把 `src/config/project.json` 的产品身份字段烧成编译期环境变量（`TC_*`）：
-//!    配置目录名 / 后台任务输出目录名 / 输出上限的环境变量名。运行期代码经 `env!`
-//!    取值，源码不出现产品字面量——企业版改名只动 project.json（与
+//!    产品显示名 / 扩展名 / 配置目录名 / 后台任务输出目录名 / 输出上限的环境变量名。
+//!    运行期代码经 `env!` 取值，源码不出现产品字面量——企业版改名只动 project.json（与
 //!    tui-rs/build.rs、installer-rs/build.rs 同一口径）。`json_string_field` 是
 //!    同一手法的拷贝（零第三方依赖，不为读一个配置键引 serde），取不到直接 panic。
 
@@ -43,6 +43,7 @@ fn main() {
     let project_text = fs::read_to_string(manifest_dir.join("../src/config/project.json"))
         .expect("读取 src/config/project.json 失败：core-rs 须在仓库内构建");
     for (env_key, field) in [
+        ("TC_PRODUCT_NAME", "productName"),
         ("TC_EXTENSION_NAME", "extensionName"),
         ("TC_CONFIG_DIR", "configDir"),
         ("TC_TMP_TASK_DIR_NAME", "tmpTaskDirName"),

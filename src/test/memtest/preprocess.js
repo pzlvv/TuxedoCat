@@ -1,5 +1,5 @@
 /**
- * 预处理脚本：把 ~/.tuxedo-cat/conversations 下的 JSONL 会话文件
+ * 预处理脚本：把 <configDir>/conversations 下的 JSONL 会话文件
  * 转换为 webview Message[]（完整复刻 useMessageHandler.ts 中
  * conversationLoaded 的恢复逻辑 + VSCodeUI.postConversationLoaded 的
  * _meta 裁剪逻辑），并附带扩展端统计信息（消息条数、原始字节数）。
@@ -10,8 +10,17 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 
-const CONV_ROOT = path.join(os.homedir(), '.tuxedo-cat', 'conversations');
+// 配置目录名取工程配置的唯一来源（docs/product-identity.md），不硬编码产品字面量
+const CONFIG_DIR_NAME = JSON.parse(
+  fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'src', 'config', 'project.json'),
+    'utf8',
+  ),
+).configDir;
+
+const CONV_ROOT = path.join(os.homedir(), CONFIG_DIR_NAME, 'conversations');
 
 // ── 精简版 buildEditDiffHunks 前置统计（不真正 diff，只记录行数）──────
 // 真正的 diff 在 webview bundle 内由 harness 的 runtime 逻辑执行，
