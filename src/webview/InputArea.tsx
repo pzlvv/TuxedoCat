@@ -339,9 +339,10 @@ const MENU_EDGE_MARGIN_PX = 0;
 const MENU_MAIN_PANEL_FALLBACK_WIDTH = 0;
 
 /**
- * 层级背景色：**仅内联模式使用**；非内联（飞出弹层）模式只用圆点表示选中，不加底色。
- * - 一级（「模型」/「MCP」分组标题）：只有展开时才显示，青绿 rgba(20,184,166,0.22)；
- * - 二级（provider / MCP 服务器行）：只要一级展开就一直显示，靛蓝 rgba(99,102,241,0.16)；
+ * 层级背景色：**仅内联模式使用**（内联只发生在模型分组）；非内联（飞出弹层）模式
+ * 只用圆点表示选中，不加底色。
+ * - 一级（「模型」分组标题）：只有展开时才显示，青绿 rgba(20,184,166,0.22)；
+ * - 二级（provider 行）：只要一级展开就一直显示，靛蓝 rgba(99,102,241,0.16)；
  * - 三级（具体模型行）：不加背景（仅圆点）。
  */
 const MENU_EXPANDED_BG = 'rgba(20, 184, 166, 0.22)';
@@ -524,12 +525,15 @@ const ToggleMenu = memo(({
    * webview 过窄时（不足以并排放下二级 + 三级弹出菜单）改用「内联展开」：
    * 子菜单直接在菜单面板内展开，而不是向右/左飞出。
    *
+   * 只有模型分组切内联（三级级联最宽、最容易被裁）；MCP 分组恒为飞出弹层，
+   * 不随宽度切换结构。
+   *
    * 该决定在「点击弹出菜单」的那一刻做出并冻结（见 onOpenChange），
    * 展开期间窗口缩放不重算，避免菜单结构抖动。
    */
   const [inlineMode, setInlineMode] = useState(false);
-  /** 内联模式下当前展开的一级分组（手风琴：同时只允许一个） */
-  const [inlineSection, setInlineSection] = useState<'mcp' | 'model' | null>(null);
+  /** 内联模式下模型分组是否展开（手风琴内只有它一个一级分组） */
+  const [inlineModelOpen, setInlineModelOpen] = useState(false);
   /** 内联模式下当前展开的 provider（手风琴：同时只允许一个） */
   const [inlineProvider, setInlineProvider] = useState<string | null>(null);
 
@@ -543,7 +547,7 @@ const ToggleMenu = memo(({
   const closeMenu = useCallback(() => {
     setMenuOpen(false);
     setSubmenuOpenKeys([]);
-    setInlineSection(null);
+    setInlineModelOpen(false);
     setInlineProvider(null);
   }, []);
 
@@ -554,7 +558,7 @@ const ToggleMenu = memo(({
     if (menuOpen) return;
     // 只在确有展开项时更新，避免空数组触发无意义的重渲染
     setSubmenuOpenKeys((keys) => (keys.length > 0 ? [] : keys));
-    setInlineSection((s) => (s === null ? s : null));
+    setInlineModelOpen((open) => (open ? false : open));
     setInlineProvider((p) => (p === null ? p : null));
   }, [menuOpen]);
 
@@ -931,13 +935,8 @@ const ToggleMenu = memo(({
   // Ant 的 submenu 在子项被点击后会收起弹层，导致勾选一个就要重新展开。
   // 这里把 Dropdown / Menu 的展开状态改为受控，并在勾选瞬间打一个 suppress 时间窗
   // （见 suppressCloseUntilRef），把紧随其后的「收起二级菜单 / 关闭 Dropdown」请求忽略掉。
-  /**
-   * MCP 服务器行 label。
-   * - inline = false（非内联飞出弹层）：不加底色，名字超长用省略号截断；
-   * - inline = true（面板内展开）：二级行一直带靛蓝底色，名字超长与模型名一样悬停滚动，
-   *   行宽由父级 280px 面板约束，内容再长也不会把菜单撑宽。
-   */
-  const renderMcpChildLabel = (server: McpServerInfo, inline: boolean) => {
+  /** MCP 服务器行（飞出弹层）：名字超长用省略号截断 */
+  const renderMcpChildLabel = (server: McpServerInfo) => {
     // 启用后的运行时状态：连接中 / 工具数 / 连接失败
     const statusText = !server.enabled
       ? ''
@@ -956,8 +955,6 @@ const ToggleMenu = memo(({
 
     return (
       <div
-        // 内联：整行悬停触发长名字滚动（与非内联的 hover-scroll-scope 行为一致）
-        className={inline ? 'hover-scroll-scope' : undefined}
         onClick={(e) => {
           // 阻止冒泡到 MenuItem，避免菜单因点击该项而关闭（可连续勾选多个）
           e.stopPropagation();
@@ -969,12 +966,8 @@ const ToggleMenu = memo(({
           display: 'flex',
           alignItems: 'center',
           cursor: 'pointer',
-          // 垂直内边距收紧，抵消第二行小字带来的高度；
-          // 内联时补一点水平内边距，让底色与文字之间留白
-          padding: inline ? '3px 6px' : '3px 0',
-          // 二级（内联）：只要一级展开就一直有底色
-          backgroundColor: inline ? MENU_SUBLEVEL_BG : undefined,
-          borderRadius: inline ? '4px' : undefined,
+          // 垂直内边距收紧，抵消第二行小字带来的高度
+          padding: '3px 0',
           minWidth: 0,
         }}
         title={tooltip}
@@ -991,37 +984,20 @@ const ToggleMenu = memo(({
             lineHeight: 1.15,
             userSelect: 'none',
             minWidth: 0,
-            flex: inline ? '1 1 0' : undefined,
           }}
         >
-          {inline ? (
-            // 内联：名字超长与模型名一样悬停滚动，不撑宽菜单
-            <HoverScrollText
-              prefix=""
-              text={server.name}
-              width={null}
-              style={{
-                display: 'flex',
-                flex: '1 1 0',
-                minWidth: 0,
-                fontSize: uiFontSizePx(12),
-                color: server.enabled ? colors.harness : colors.textPrimary,
-              }}
-            />
-          ) : (
-            <span
-              style={{
-                fontSize: uiFontSizePx(12),
-                color: server.enabled ? colors.harness : colors.textPrimary,
-                maxWidth: '220px',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {server.name}
-            </span>
-          )}
+          <span
+            style={{
+              fontSize: uiFontSizePx(12),
+              color: server.enabled ? colors.harness : colors.textPrimary,
+              maxWidth: '220px',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {server.name}
+          </span>
           {statusText && (
             <span style={{ fontSize: uiFontSizePx(10), color: server.error ? '#ef4444' : colors.textSystem }}>
               {statusText}
@@ -1032,24 +1008,24 @@ const ToggleMenu = memo(({
     );
   };
 
-  /** MCP 为空时的占位行（内联 / 非内联共用） */
-  const renderMcpEmptyLabel = (inline: boolean) => (
-    <div style={{ padding: inline ? '3px 6px' : '3px 0', fontSize: uiFontSizePx(12), color: colors.textSystem }}>
+  /** MCP 为空时的占位行 */
+  const renderMcpEmptyLabel = () => (
+    <div style={{ padding: '3px 0', fontSize: uiFontSizePx(12), color: colors.textSystem }}>
       {t('inputArea.mcpEmpty')}
     </div>
   );
 
-  // 非内联（飞出弹层）模式的 MCP 子菜单项
+  // MCP 子菜单项（飞出弹层；窄 webview 下也不切内联，见 inlineMode 注释）
   const mcpChildren = mcpServers && mcpServers.length > 0
     ? mcpServers.map((server) => ({
         key: `mcp:${server.name}`,
-        label: renderMcpChildLabel(server, false),
+        label: renderMcpChildLabel(server),
         // 禁用 MenuItem 自身点击，交互完全交给 label 内部 div 处理
         disabled: true,
       }))
     : [{
         key: 'mcpEmpty',
-        label: renderMcpEmptyLabel(false),
+        label: renderMcpEmptyLabel(),
         disabled: true,
       }];
 
@@ -1062,47 +1038,6 @@ const ToggleMenu = memo(({
     />
   );
 
-  /** 内联模式：MCP 分组（点击标题在面板内展开 / 收起，手风琴） */
-  const mcpGroupInline = {
-    key: 'mcpGroup',
-    label: (
-      <div style={{ display: 'flex', flexDirection: 'column' }}>
-        <div
-          onClick={(e) => {
-            e.stopPropagation();
-            setInlineSection((s) => (s === 'mcp' ? null : 'mcp'));
-            setInlineProvider(null);
-          }}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            cursor: 'pointer',
-            // 一级（内联）：只有展开时才显示青绿底色
-            backgroundColor: inlineSection === 'mcp' ? MENU_EXPANDED_BG : undefined,
-            borderRadius: '4px',
-            padding: '4px 6px',
-          }}
-        >
-          <span style={{ width: '14px', flexShrink: 0 }} />
-          <span style={{ fontSize: uiFontSizePx(12), color: colors.textPrimary, userSelect: 'none', marginLeft: '12px', flex: '1 1 0' }}>
-            {t('inputArea.mcp')}
-          </span>
-          {inlineChevron(inlineSection === 'mcp')}
-        </div>
-        {inlineSection === 'mcp' && (
-          <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: '14px', marginTop: 2, minWidth: 0, overflow: 'hidden', contain: 'inline-size' }}>
-            {mcpServers && mcpServers.length > 0
-              ? mcpServers.map((server) => (
-                  <div key={`mcp:${server.name}`}>{renderMcpChildLabel(server, true)}</div>
-                ))
-              : renderMcpEmptyLabel(true)}
-          </div>
-        )}
-      </div>
-    ),
-    disabled: true,
-  };
-
   /** 内联模式：模型分组（provider 手风琴展开，展开的 provider 内再列出模型） */
   const modelGroupInline = {
     key: 'modelGroup',
@@ -1113,17 +1048,19 @@ const ToggleMenu = memo(({
           className="hover-scroll-scope"
           onClick={(e) => {
             e.stopPropagation();
-            setInlineSection((s) => (s === 'model' ? null : 'model'));
+            setInlineModelOpen((open) => !open);
             setInlineProvider(null);
           }}
           style={{
             display: 'flex',
             alignItems: 'center',
             cursor: 'pointer',
-            // 一级（内联）：只有展开时才显示青绿底色，与是否已选模型无关
-            backgroundColor: inlineSection === 'model' ? MENU_EXPANDED_BG : undefined,
+            // 一级（内联）：只有展开时才显示青绿底色，与是否已选模型无关。
+            // 水平内边距与其它菜单项的文本缩进一致（12px）：其它行的文字都从
+            // 「12px 缩进」起步，这里若用小内边距，「模型」两个字会整体偏左。
+            backgroundColor: inlineModelOpen ? MENU_EXPANDED_BG : undefined,
             borderRadius: '4px',
-            padding: '4px 6px',
+            padding: '4px 12px',
           }}
         >
           <span style={{ width: '14px', flexShrink: 0 }} />
@@ -1150,9 +1087,9 @@ const ToggleMenu = memo(({
               />
             )}
           </span>
-          {inlineChevron(inlineSection === 'model')}
+          {inlineChevron(inlineModelOpen)}
         </div>
-        {inlineSection === 'model' && (
+        {inlineModelOpen && (
           <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: '14px', marginTop: 2, minWidth: 0, overflow: 'hidden', contain: 'inline-size' }}>
             {providerModels === undefined ? waitingRow(t('inputArea.modelLoading')) : providerModels.length > 0 ? providerModels.map((p) => (
               <div key={p.key} style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
@@ -1247,21 +1184,20 @@ const ToggleMenu = memo(({
         disabled: true,
       }];
 
-  // MCP / 模型两个分组：窄 webview 用内联展开，宽 webview 用弹出子菜单
-  const mcpGroupItem = inlineMode
-    ? mcpGroupInline
-    : {
-        key: 'mcpGroup',
-        label: (
-          <div style={{ display: 'flex', alignItems: 'center' }}>
-            <span style={{ width: '14px', flexShrink: 0 }} />
-            <span style={{ fontSize: uiFontSizePx(12), color: colors.textPrimary, userSelect: 'none', marginLeft: '12px' }}>{t('inputArea.mcp')}</span>
-          </div>
-        ),
-        type: 'submenu' as const,
-        children: mcpChildren,
-      };
+  // MCP 分组：恒为飞出弹层（不随 webview 宽度切内联，见 inlineMode 注释）
+  const mcpGroupItem = {
+    key: 'mcpGroup',
+    label: (
+      <div style={{ display: 'flex', alignItems: 'center' }}>
+        <span style={{ width: '14px', flexShrink: 0 }} />
+        <span style={{ fontSize: uiFontSizePx(12), color: colors.textPrimary, userSelect: 'none', marginLeft: '12px' }}>{t('inputArea.mcp')}</span>
+      </div>
+    ),
+    type: 'submenu' as const,
+    children: mcpChildren,
+  };
 
+  // 模型分组：窄 webview 用内联展开，宽 webview 用弹出子菜单（只有它切内联）
   const modelGroupItem = inlineMode
     ? modelGroupInline
     : {
@@ -1338,8 +1274,7 @@ const ToggleMenu = memo(({
     makeDivider('divider-2'),
     webSearchItem,
     makeDivider('divider-3'),
-    // MCP：位于「模型」上方，二级菜单内以 checkbox 列出所有 MCP
-    // （窄 webview 时由 mcpGroupItem 切换为内联展开）
+    // MCP：位于「模型」上方，二级菜单内以 checkbox 列出所有 MCP（恒为飞出弹层）
     mcpGroupItem,
     makeDivider('divider-3b'),
     modelGroupItem,

@@ -622,11 +622,6 @@ textarea::-webkit-scrollbar-thumb:hover {
   border: 1px solid var(--border-color) !important;
 }
 
-/* 历史对话下拉菜单宽度约束 */
-.conversation-dropdown {
-  max-width: calc(100vw - 70px) !important;
-}
-
 .ripple-dot-container {
   /* 注意：不要在这里声明 position: relative。
      时间线内的涟漪点依赖 .msg-timeline-custom-dot 的 position: absolute

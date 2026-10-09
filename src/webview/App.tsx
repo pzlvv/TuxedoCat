@@ -96,6 +96,8 @@ const App = () => {
   } = useConversationLoading(initialSessionId);
   // 子对话展开状态（sessionId -> boolean）
   const [conversationDropdownOpen, setConversationDropdownOpen] = useState(false);
+  // 历史对话按钮：弹层（placement=bottomRight）以它的右缘为右边界，宽度收口据此计算
+  const historyBtnRef = useRef<HTMLButtonElement>(null);
   const [conversationTitle, setConversationTitle] = useState<string>(t('app.untitled'));
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   // 当前对话的父会话 ID（子对话时有效）
@@ -1123,13 +1125,20 @@ const App = () => {
               trigger={deleteConfirm ? [] : ['click']}
               placement="bottomRight"
               getPopupContainer={() => document.body}
-              dropdownRender={() => (
+              dropdownRender={() => {
+                // 弹层右缘对齐按钮右缘（bottomRight），宽度一旦超过「按钮右缘到窗口左缘」
+                // 的距离，左缘就越出窗口（antd 不做水平回移，浮窗窄窗口实测左缘 -16px 被
+                // 裁）。打开瞬间按锚点实测收口：maxWidth ≤ 按钮右缘，左缘必然 ≥ 0。
+                // 宽度上限 400 不变；按钮必已挂载（弹层由它触发），量不到时退回旧口径。
+                const anchorRight = Math.floor(historyBtnRef.current?.getBoundingClientRect().right ?? 0);
+                const maxWidth = anchorRight > 0 ? Math.min(400, anchorRight - 1) : 'calc(100vw - 70px)';
+                return (
                 <div
                   className="conversation-dropdown"
                   onScroll={handleConversationScroll}
                   style={{
                     width: '400px',
-                    maxWidth: 'calc(100vw - 70px)',
+                    maxWidth,
                     maxHeight: '400px',
                     overflowY: 'auto',
                     backgroundColor: colors.primaryFrame,
@@ -1235,9 +1244,11 @@ const App = () => {
                     )}
                   </div>
                 </div>
-              )}
+                );
+              }}
             >
               <button
+                ref={historyBtnRef}
                 className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors${historyButtonAttention ? ' history-btn--attention' : ''}`}
                 style={{ backgroundColor: colors.bgTertiary }}
                 title={historyButtonAttention ? t('app.conversationHistoryPending') : t('app.conversationHistory')}

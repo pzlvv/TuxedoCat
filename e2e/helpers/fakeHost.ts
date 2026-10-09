@@ -14,11 +14,22 @@ import { expect } from '@playwright/test';
  * 改写脚本化轮次的参数。
  */
 
-/** webview 侧「新对话」语义固定为 VS Code 单视图 + webview 渲染对话列表 */
-export const FAKE_HOST_INIT = `
+/** 宿主能力注入（`src/host/types.ts` 的 HostInfo 形态）：webview 据此渲染顶栏 */
+export interface FakeHostInfo {
+  conversationView: 'single' | 'multi';
+  conversationListOwner: 'host' | 'webview';
+}
+
+/**
+ * 按宿主能力生成注入脚本。默认形态（FAKE_HOST_INIT）是 VS Code 单视图；
+ * Electron 浮窗（多视图 + 列表在顶栏，顶栏多出「关闭」按钮）等非默认形态
+ * 用例传入对应能力。
+ */
+export function fakeHostInit(hostInfo: FakeHostInfo): string {
+  return `
 (() => {
   // —— 宿主注入（preload / 扩展 HTML 注入的等价物）——
-  window.__hostInfo = { conversationView: 'single', conversationListOwner: 'webview' };
+  window.__hostInfo = ${JSON.stringify(hostInfo)};
   window.__initialTheme = 'dark';
   window.__uiLocale = 'zh';
   window.__uiFontSize = 'medium';
@@ -355,6 +366,13 @@ export const FAKE_HOST_INIT = `
   window.__fakeHost = { send, sent, state };
 })();
 `;
+}
+
+/** webview 侧「新对话」语义固定为 VS Code 单视图 + webview 渲染对话列表 */
+export const FAKE_HOST_INIT = fakeHostInit({ conversationView: 'single', conversationListOwner: 'webview' });
+
+/** Electron 浮窗形态：多视图（顶栏多「关闭」按钮）+ 对话列表在 webview 顶栏 */
+export const FAKE_HOST_INIT_FLOATING = fakeHostInit({ conversationView: 'multi', conversationListOwner: 'webview' });
 
 /** 测试侧驱动器：跨进程边界操作页面内的假宿主 */
 export class FakeHostDriver {

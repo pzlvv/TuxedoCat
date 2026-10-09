@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Browser, Page } from '@playwright/test';
 import { FAKE_HOST_INIT, FakeHostDriver } from './fakeHost';
-
 /**
  * webview UI 级测试的页面装配：静态伺服构建产物 `dist/webview/`，
  * 以假宿主初始化脚本打开真实 webview bundle。
@@ -117,9 +116,14 @@ export async function openStaticPage(
 /**
  * 打开一个装配好假宿主的 webview 页面。
  * 每个用例独立 BrowserContext（隔离 clipboard 权限与存储），静态服务器进程内共享。
+ * `initScript` 缺省用 VS Code 单视图形态；Electron 浮窗等形态传 `FAKE_HOST_INIT_FLOATING`。
  */
-export async function openWebviewView(browser: Browser, repoRoot: string): Promise<WebviewHandle> {
-  const { page, close } = await openStaticPage(browser, path.join(repoRoot, 'dist', 'webview'), FAKE_HOST_INIT);
+export async function openWebviewView(
+  browser: Browser,
+  repoRoot: string,
+  initScript: string = FAKE_HOST_INIT,
+): Promise<WebviewHandle> {
+  const { page, close } = await openStaticPage(browser, path.join(repoRoot, 'dist', 'webview'), initScript);
   const host = new FakeHostDriver(page);
   await host.waitReady();
   return {

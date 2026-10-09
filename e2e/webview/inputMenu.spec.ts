@@ -129,6 +129,36 @@ test('US-8 极窄视口下模型子菜单内联展开，避免弹层越出左缘
   await menu.getByText('mock-provider', { exact: true }).first().click({ force: true });
   await expect(menu.getByText('mock-model-pro', { exact: true })).toHaveCount(3);
   expect(await page.locator('.model-list-submenu').count()).toBe(0);
+
+  // 内联态「模型」标题与其它一级项左对齐（历史回归：标题行内边距小一号，整体偏左 6px）
+  const modelLabel = await menu.getByText('模型', { exact: true }).first().boundingBox();
+  const settingsLabel = await menu.getByText('设置', { exact: true }).first().boundingBox();
+  expect(Math.abs(modelLabel!.x - settingsLabel!.x)).toBeLessThan(1);
+});
+
+test('US-8 极窄视口下 MCP 分组保持飞出弹层（不随模型分组切内联）', async () => {
+  const { page, host } = handle;
+  await host.setMcpState({ servers: ['fs-tools'] });
+  await host.waitForSent('startNewConversation', 15_000);
+  await host.send({
+    type: 'setMcpServers', sessionId: null,
+    servers: [
+      {
+        name: 'fs-tools', type: 'local', command: ['fake-mcp'], environment: {}, url: '', headers: {},
+        enabled: true, running: true, toolCount: 0, error: null,
+      },
+    ],
+  });
+  // 360px：内联判定命中（模型分组切内联），但 MCP 恒为飞出弹层
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.locator('button[title="功能开关"]').click();
+  const menu = page.locator('ul.agent-mode-menu');
+  await expect(menu).toBeVisible();
+
+  await menu.getByText('MCP', { exact: true }).click({ force: true });
+  // 服务器行可见，但不在主菜单面板里（主面板内出现即为内联展开）
+  await expect(page.getByText('fs-tools', { exact: true }).last()).toBeVisible({ timeout: 10_000 });
+  expect(await menu.getByText('fs-tools', { exact: true }).count()).toBe(0);
 });
 
 test('US-8 主面板宽 + 服务商名长：二级弹层两侧都放不下 → 内联（不被右缘裁掉）', async () => {
