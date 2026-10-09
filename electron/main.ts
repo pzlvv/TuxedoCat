@@ -2739,15 +2739,15 @@ function openTitlebarMenu(payload: { id?: string; anchorX?: number }): void {
     const maxHeight = Math.max(80, content.height - TITLEBAR_HEIGHT - 8);
     // 锚点右侧剩余宽度：不够放二级飞出面板时，菜单页会改成向左展开
     const availableRight = content.width - titlebarMenuAnchorX - 4;
-    // 飞出面板宽度铺满「主面板右边到窗口右缘」：「最近的工作区」这类长路径条目
-    // 完整显示不截断（全屏宽度足够放下任何真实路径）
-    const flyoutWidth = Math.max(TITLEBAR_SUBMENU_WIDTH, availableRight - TITLEBAR_MENU_WIDTH);
+    // 飞出面板宽度上限「主面板右边 → 窗口右缘」：面板按内容自适应（条目短就收缩），
+    // 「最近的工作区」这类长路径条目最多铺满到这个上限、完整显示不截断
+    const flyoutMaxWidth = Math.max(TITLEBAR_SUBMENU_WIDTH, availableRight - TITLEBAR_MENU_WIDTH);
     const html = getTitlebarMenuHtml({
       items: section.items,
       isDark: nativeTheme.shouldUseDarkColors,
       maxHeight,
       availableRight,
-      flyoutWidth,
+      flyoutMaxWidth,
       // 每次生成新 nonce：菜单页的内联 style/script 只认这一个，注入的脚本无法执行
       nonce: crypto.randomBytes(16).toString('base64'),
     });

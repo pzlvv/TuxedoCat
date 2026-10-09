@@ -62,11 +62,12 @@ export interface TitlebarMenuHtmlOptions {
   /** 锚点（主面板左边）右侧还能用多少宽度：不够放飞出面板时改为向左展开 */
   availableRight?: number;
   /**
-   * 二级飞出面板宽度（px）：主进程按「锚点到窗口右缘」下发的动态值，让
-   * 「最近的工作区」这类长路径条目铺满可用宽度、完整显示。小于
-   * TITLEBAR_SUBMENU_WIDTH 时按缺省值处理。
+   * 二级飞出面板宽度上限（px）：主进程按「锚点到窗口右缘」下发。飞出面板按内容
+   * 自适应（width: max-content）——条目短就收缩，不撑满可用宽度；「最近的工作区」
+   * 这类长路径条目最多铺满到这个上限、完整显示。小于 TITLEBAR_SUBMENU_WIDTH
+   * 时按缺省值处理。
    */
-  flyoutWidth?: number;
+  flyoutMaxWidth?: number;
   /**
    * CSP nonce（由主进程随机生成）。页面是 data: URL + 内联 style/script，
    * 用 nonce 而不是 'unsafe-inline'：将来若有字段忘了转义，注入的脚本也执行不了。
@@ -155,10 +156,9 @@ export function getTitlebarMenuHtml(options: TitlebarMenuHtmlOptions): string {
   const scrollThumbHover = options.isDark ? '#4a4a55' : '#aeaeb9';
   const maxHeight = options.maxHeight && options.maxHeight > 0 ? Math.round(options.maxHeight) : 0;
   const availableRight = Number.isFinite(options.availableRight) ? Math.round(options.availableRight as number) : -1;
-  // 飞出面板宽度：主进程按「锚点到窗口右缘」下发，保证长路径完整显示；
-  // 非法 / 过小的值按缺省宽度处理
-  const flyoutWidth = Number.isFinite(options.flyoutWidth) && (options.flyoutWidth as number) > TITLEBAR_SUBMENU_WIDTH
-    ? Math.round(options.flyoutWidth as number)
+  // 飞出面板宽度上限：主进程按「锚点到窗口右缘」下发；非法 / 过小的值按缺省宽度处理
+  const flyoutMaxWidth = Number.isFinite(options.flyoutMaxWidth) && (options.flyoutMaxWidth as number) > TITLEBAR_SUBMENU_WIDTH
+    ? Math.round(options.flyoutMaxWidth as number)
     : TITLEBAR_SUBMENU_WIDTH;
   // nonce 由主进程用 base64 生成（不含引号），但仍过滤一次避免拼进属性时破坏 HTML
   const nonce = String(options.nonce ?? '').replace(/[^A-Za-z0-9+/=_-]/g, '');
@@ -207,7 +207,11 @@ export function getTitlebarMenuHtml(options: TitlebarMenuHtmlOptions): string {
   .flyout {
     position: absolute;
     display: none;
-    width: ${flyoutWidth}px;
+    /* 宽度按内容自适应：条目短就收缩到缺省宽度，不撑满可用空间；长条目最多
+       铺到主进程下发的上限（锚点 → 窗口右缘），完整显示不截断 */
+    width: max-content;
+    min-width: ${TITLEBAR_SUBMENU_WIDTH}px;
+    max-width: ${flyoutMaxWidth}px;
     overflow-y: auto;
     overflow-x: hidden;
     z-index: 2;
@@ -310,11 +314,11 @@ export function getTitlebarMenuHtml(options: TitlebarMenuHtmlOptions): string {
     }
     var menu = document.getElementById('menu');
     var PANEL_W = ${TITLEBAR_MENU_WIDTH};
-    var FLYOUT_W = ${flyoutWidth};
     var maxHeight = ${maxHeight || 0};
     var availableRight = ${availableRight};
-    // 右侧放不下整个飞出面板时改为向左展开（此时页面整体左移 FLYOUT_W）
-    var side = availableRight < 0 || availableRight >= PANEL_W + FLYOUT_W ? 'right' : 'left';
+    // 当前展开的飞出面板方向。面板宽度按内容自适应（CSS width: max-content），
+    // 每个面板的实测宽度不同，向左 / 向右展开在 openSubmenu 时按实测宽度决定
+    var openSide = 'right';
     var openFlyout = null;
     // 键盘焦点所在面板与序号：二级面板打开后方向键要能在面板内部移动
     var activeRoot = menu;
@@ -334,15 +338,18 @@ export function getTitlebarMenuHtml(options: TitlebarMenuHtmlOptions): string {
       var panel = menu.getBoundingClientRect();
       var right = panel.right;
       var bottom = panel.bottom;
+      var offsetX = 0;
       if (openFlyout) {
         var fr = openFlyout.getBoundingClientRect();
         right = Math.max(right, fr.right);
         bottom = Math.max(bottom, fr.bottom);
+        // 向左展开时视图整体左移飞出面板实测宽度，主面板才能对齐菜单按钮
+        if (openSide === 'left') offsetX = -Math.ceil(fr.width);
       }
       api.resize({
         width: Math.ceil(right),
         height: Math.ceil(bottom),
-        offsetX: side === 'left' && openFlyout ? -FLYOUT_W : 0,
+        offsetX: offsetX,
       });
     }
 
@@ -386,6 +393,7 @@ export function getTitlebarMenuHtml(options: TitlebarMenuHtmlOptions): string {
       var trigger = openTrigger();
       if (trigger) trigger.classList.remove('open');
       openFlyout = null;
+      openSide = 'right';
       document.body.style.paddingLeft = '';
       // 焦点回主面板：键盘继续在主面板里移动
       clearActive();
@@ -402,15 +410,20 @@ export function getTitlebarMenuHtml(options: TitlebarMenuHtmlOptions): string {
       }
       closeFlyout();
       openFlyout = el;
-      if (side === 'right') {
+      trigger.classList.add('open');
+      el.classList.add('open');
+      // display:none 时量不出尺寸：先挂 open 再实测自适应后的宽度。
+      // 从挂 open 到定位完成都在同一个同步块里，不会画出「停在旧位置」的中间帧。
+      var w = Math.ceil(el.getBoundingClientRect().width);
+      // 右侧放不下实测宽度的整个面板时改为向左展开（此时页面整体左移面板宽度）
+      openSide = availableRight >= 0 && availableRight < PANEL_W + w ? 'left' : 'right';
+      if (openSide === 'right') {
         el.style.left = PANEL_W + 'px';
         document.body.style.paddingLeft = '';
       } else {
         el.style.left = '0px';
-        document.body.style.paddingLeft = FLYOUT_W + 'px';
+        document.body.style.paddingLeft = w + 'px';
       }
-      trigger.classList.add('open');
-      el.classList.add('open');
       positionFlyout(trigger);
       reportSize();
     }
