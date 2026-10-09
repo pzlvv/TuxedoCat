@@ -35,24 +35,40 @@ test('浮窗窄窗口：历史对话下拉不越出窗口左缘（bottomRight �
   ]);
 
   const historyBtn = page.locator('button[title="对话历史"]');
-  // 480 = 浮窗默认宽度；280 = 浮窗最小宽度。宽度收口在「打开瞬间」实测锚点，
-  // 所以每个宽度都要先关掉上一次的弹层再重新打开。
-  for (const width of [480, 280]) {
-    await page.setViewportSize({ width, height: 640 });
-    await historyBtn.click();
-    const popup = page.locator('.ant-dropdown:has(.conversation-dropdown)').first();
-    await expect(popup).toBeVisible();
+  const popup = page.locator('.ant-dropdown:has(.conversation-dropdown)').first();
+  // 弹层几何：左缘 >= 0（不越出窗口左缘）、右缘贴历史按钮右缘（bottomRight）、
+  // 宽度 = min(400, 视口 - 96)（96 = 顶栏右缘固定 chrome，见 App.tsx dropdownRender）
+  const expectGeometry = async (width: number) => {
+    const expectedMax = Math.min(400, width - 96);
     await expect.poll(async () => {
       const box = await popup.boundingBox();
       return box ? Math.round(box.x) : -1;
-    }, { message: `viewport=${width}` }).toBeGreaterThanOrEqual(0);
-    // 右缘仍与历史按钮对齐（bottomRight 语义保留）
+    }, { message: `viewport=${width} 左缘` }).toBeGreaterThanOrEqual(0);
     const btnBox = await historyBtn.boundingBox();
-    const popupBox = await popup.boundingBox();
-    expect(Math.round(popupBox!.x + popupBox!.width))
+    const box = await popup.boundingBox();
+    expect(Math.round(box!.x + box!.width))
       .toBeLessThanOrEqual(Math.round(btnBox!.x + btnBox!.width) + 1);
-    // 点击空白处关闭（Escape 不在 Dropdown 的关闭路径上）
-    await page.mouse.click(20, 400);
-    await expect(popup).toBeHidden();
+    expect(Math.round(box!.width)).toBe(expectedMax);
+  };
+
+  await page.setViewportSize({ width: 480, height: 640 });
+  await historyBtn.click();
+  await expect(popup).toBeVisible();
+  await expectGeometry(480);
+
+  // 打开状态下缩放窗口：宽度实时跟随（有 400 上限），左缘始终 >= 0
+  for (const width of [800, 280, 470]) {
+    await page.setViewportSize({ width, height: 640 });
+    await expectGeometry(width);
   }
+
+  // 点击空白处关闭（Escape 不在 Dropdown 的关闭路径上）
+  await page.mouse.click(20, 400);
+  await expect(popup).toBeHidden();
+
+  // 关掉再以最窄浮窗宽度打开：打开时刻的口径同样正确
+  await page.setViewportSize({ width: 280, height: 640 });
+  await historyBtn.click();
+  await expect(popup).toBeVisible();
+  await expectGeometry(280);
 });
