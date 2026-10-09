@@ -314,6 +314,7 @@ export class WebviewMessageHandler {
       entry('requestCompress', (msg) => this.emitUiEvent({ type: 'compactRequested', sessionId: msg.sessionId })),
       entry('sendMessage', (msg) => this.handleUserMessage(msg)),
       entry('abort', (msg) => this.handleAbort(msg)),
+      entry('backgroundBashTool', (msg) => this.emitUiEvent({ type: 'bashBackgroundRequested', sessionId: msg.sessionId, toolUseId: msg.toolUseId })),
       entry('discardQueuedMessage', (msg) => this.emitUiEvent({ type: 'queuedMessageDiscarded', sessionId: msg.sessionId, uuid: msg.uuid })),
 
       // ===== 会话生命周期（UiEvent 翻译）=====

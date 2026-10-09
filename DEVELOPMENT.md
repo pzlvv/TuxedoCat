@@ -857,6 +857,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 43 | `userChoicePendingChanged` | `sessionId`, `pending: boolean` | `UserChoiceManager`（webview 弹出选择、用户应答、`dropSession` 释放视图时） | `initializeCoreEvents` 的 `registerUserChoiceUiEvents` → `markSessionWaiting`（`sessionRuntime` 的 `waiting` 来源，供 `isSessionIdle` 判定） |
 | 44 | `sessionWorkspaceAssigned` | `sessionId`, `workspacePath: string \| null` | `WebviewMessageHandler.ensureSessionWorkspace`（会话首次被 core 解析目录之前）、`electron/main.ts` 的 `registerCoreSessionWorkspace`（多工作目录宿主按来源视图登记） | `initializeCoreEvents` 的 `registerSessionWorkspaceUiEvents` → `setSessionWorkspace` / `clearSessionWorkspace`（Standalone 下同一处理器在 Core 进程内） |
 | 45 | `queuedMessageDiscarded` | `sessionId`, `uuid` | `discardQueuedMessage`（webview 排队项的「编辑 / 删除」，`docs/user-message-pipeline.md` 第 5.2 节） | `QueryEngine.discardPendingUserMessage`（Standalone：`engine.rs` 的 `on_queued_message_discarded`）——按 `uuid` 丢弃引擎里尚未消费的同一消息，不置 abort 标记（不打断正在运行的查询） |
+| 46 | `bashBackgroundRequested` | `sessionId`, `toolUseId` | `backgroundBashTool`（Bash 卡片「转后台」按钮，`docs/manual-background.md`） | `QueryEngine.requestBashBackground`（Standalone：`engine.rs` 的 `on_bash_background_requested`）——按 `toolUseId` 触发该次前台执行转入后台，结果照常进上下文但暂停下一轮 LLM 请求；没有匹配的前台执行时幂等忽略 |
 
 **`changes` 数组而不是可选字段**：`history.updateConversationContext` 是**部分合并**语义
 （未列出的字段保持原值），用数组而不是一组可选字段，是为了同时满足「一次可带多个字段」
@@ -3283,12 +3284,13 @@ passthrough）与参数切分正则一致；命令在**出队时**解析
   `Reply` 把回复作为 `origin='agent'` 的 user 消息投回创建者会话（含 From 头），
   `sessionRuntime.idle` 递归到子代理。
 - **后台 Bash**（`bash_task.rs`）：`run_in_background`（file mode 输出文件 + 完成
-  通知）、前台超时自动转后台、通知驱动的转后台、完成通知经 `enqueue_bash_notification`
-  注入为 `origin='bash'` 的 user 消息、`SessionState.background` 参与 `idle` 判定、
-  会话中止 / 关闭时中止后台任务、「仍有后台任务在跑」兜底提醒。未迁入的子项（不构成
-  对外缺口，逐条列在 `bash_task.rs` 模块头）：`TaskOutput` 的 pipe mode（内存 buffer +
-  超限 spill）与进度轮询、5GB 磁盘看门狗；自动转后台的说明文案不含「转后台前已累积的
-  stderr」。
+  通知）、前台超时自动转后台、通知驱动的转后台、用户手工转后台
+  （`MANUAL_BG` 注册表 + `LoopPauseSignal`，`docs/manual-background.md`）、完成通知经
+  `enqueue_bash_notification` 注入为 `origin='bash'` 的 user 消息、`SessionState.background`
+  参与 `idle` 判定、会话中止 / 关闭时中止后台任务、「仍有后台任务在跑」兜底提醒。未迁入的
+  子项（不构成对外缺口，逐条列在 `bash_task.rs` 模块头）：`TaskOutput` 的 pipe mode（内存
+  buffer + 超限 spill）与进度轮询、5GB 磁盘看门狗；自动转后台的说明文案不含「转后台前已
+  累积的 stderr」。
 - **AskUserQuestion**：定义 / schema / 权限直接放行 / `CoreRequest.userChoice` 往返 /
   结果文案两侧一致。
 - **Read 的 xlsx/xlsm**（`calamine`）：`toolResultParity` 用提交入库的
@@ -3392,7 +3394,7 @@ Core 的两种实现由选择变量 `CORE_KIND` 装配：`embedded` 为 `src/cor
 | 本地 Core 启动 | 已落地：本地同机工作区由 Host 直接用 `stdio` 起单进程 Core（`createStandaloneCoreBus`，stdio 帧通道，无端口），不经过 daemon；daemon 只服务远程 endpoint | — |
 | 事件投递 | `emitToCore` 只写帧；Standalone 下进程内不注册 core 侧订阅（规格第 1.1 节） | — |
 | 用户消息入口 | `UiEvent.userMessageSubmitted`；`WebviewMessageHandler` 不再直接调用引擎 | — |
-| 会话引擎 / 内置工具 / 会话落盘 / 配置读写 | 已在 `core-rs/` 内实现（查询循环、Bash（含 `run_in_background` 与自动转后台）/ Read（含 xlsx）/ Write / Edit / Grep / Glob / TodoWrite / Agent / Reply / AskUserQuestion / Skill、并行工具批、meta.json + jsonl、settings.json 读写） | 与 Embedded 的逐项对等（`TODO.md` M2–M4） |
+| 会话引擎 / 内置工具 / 会话落盘 / 配置读写 | 已在 `core-rs/` 内实现（查询循环、Bash（含 `run_in_background`、自动转后台与手工转后台）/ Read（含 xlsx）/ Write / Edit / Grep / Glob / TodoWrite / Agent / Reply / AskUserQuestion / Skill、并行工具批、meta.json + jsonl、settings.json 读写） | 与 Embedded 的逐项对等（`TODO.md` M2–M4） |
 | 子代理 | `Agent` 建 `sub_*` 子会话并后台跑，`Reply` 把回复作为 `origin='agent'` 的 user 消息投回创建者；`sessionRuntime.idle` 递归到子代理 | — |
 | 技能 / 斜杠命令 | 已在 `core-rs/` 内实现（`skills.rs` 的 frontmatter 解析 / 变量替换 / 目录扫描 / 内置注册，`commands.rs` 的 `CommandDispatcher` 与内置命令注册表，技能清单注入系统提示环境段，`Skill` 工具末位不变式）；**已知缺口**：内置 `spin` 命令只有 `design` 分支可用（依赖 Spin 引擎） | `skillsParity.json` / `systemPromptParity.json` / `toolSchemaParity.json` 三份对照表覆盖 |
 | 对话压缩 | 已在 `core-rs/` 内实现（`compact.rs` 的阈值 / 触发 / 摘要 prompt / 归档，`replay.rs` 的历史消息 → UI 消息转换，`messagesReplaced` 整批重放）；自动压缩在 `aiBegin` 前、手动压缩经 `UiEvent.compactRequested`（非空闲时延后） | `compactParity.json` 对照表 + `compact_engine_tests.rs` 端到端 |

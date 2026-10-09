@@ -77,6 +77,14 @@ export interface QueryParams {
    * 首次 Reply 后停止自身）。
    */
   silentAbort?: () => boolean
+  /**
+   * 消费「手工转后台」的循环暂停请求（`QueryEngine.requestLoopPause`）。
+   * 在工具批收尾、下一轮 LLM 请求发起前调用；返回 true 时本轮查询就此结束：
+   * 工具结果已进上下文，但下一轮 LLM 请求不发起——会话回到「等待用户输入」，
+   * 队列消息到达时由既有入队路径立刻拉起新一轮（接续由队列消息触发，
+   * 与转后台结果无关）。
+   */
+  pauseRequested?: () => boolean
 }
 
 // -- query loop state
@@ -918,6 +926,15 @@ async function* queryLoop(
     };
 
     messages.push(...assistantMessages, ...toolResults);
+
+    // 手工转后台（`UiEvent.bashBackgroundRequested`）：本批工具结果照常进入上下文，
+    // 但暂停下一轮 LLM 请求（aiEnd 已在上方发过）。消费循环随后按队列状态收尾：
+    // 队列为空 → 结束本轮等用户输入；队列有消息（用户消息 / 后台完成通知 /
+    // 提醒）→ 由既有入队路径立刻拉起新一轮，性质与用户触发的查询一致。
+    if (params.pauseRequested?.()) {
+      return { reason: 'paused' };
+    }
+
     state = {
       messages,
       turnCount: nextTurnCount,

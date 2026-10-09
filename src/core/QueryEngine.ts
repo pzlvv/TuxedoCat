@@ -215,6 +215,13 @@ export class QueryEngine {
    * 用于保证每个后台任务只提醒一次，避免「提醒 → 查询 → 提醒」的无限递归。
    */
   private remindedBackgroundTaskIds = new Set<string>();
+  /**
+   * 手工转后台（`UiEvent.bashBackgroundRequested`）请求的循环暂停标记。
+   * 置位方：`Exec.triggerAutoBackground('user-requested')` 转换成功后调
+   * `requestLoopPause`；消费方：`Query` 工具批收尾（下一轮 LLM 请求发起前）。
+   * 新用户消息与中止都会清掉残留标记（暂停只对「当前这轮查询」有意义）。
+   */
+  private loopPauseRequested = false;
   /** 正在进行的持久化操作列表，供 flush() 等待 */
   private pendingPersists: Promise<void>[] = [];
   /** 追踪最后一条持久化到磁盘的消息 uuid，用于在 appendMessage 时正确设置 parentUuid */
@@ -947,6 +954,49 @@ export class QueryEngine {
   }
 
   /**
+   * 用户请求把某台**正在前台运行**的 Bash 命令转入后台
+   * （`UiEvent.bashBackgroundRequested`，Bash 卡片「转后台」按钮）。
+   *
+   * 只负责触发转换（`ManualBackground` 注册表）；暂停标记由 `Exec` 的转换
+   * 成功路径回写（`requestLoopPause`）。没有匹配的前台执行时幂等忽略
+   * （命令已结束 / 从未登记，按钮与实际状态之间的竞态由注册表兜住）。
+   */
+  requestBashBackground(toolUseId: string): void {
+    const { requestManualBackground } = require('./tools/bash/ManualBackground.js') as typeof import('./tools/bash/ManualBackground.js');
+    requestManualBackground(toolUseId);
+  }
+
+  /**
+   * 置循环暂停标记：当前这轮查询在工具批收尾后不再发起下一轮 LLM 请求，
+   * 会话回到「等待用户输入」。队列消息（用户消息 / 后台完成通知 / 提醒）到达时
+   * 由既有入队路径（submitMessage / enqueueAgentMessage / deliverBackgroundReminder）
+   * 立刻拉起新一轮——接续循环由队列消息触发，与转后台结果无关。
+   */
+  requestLoopPause(): void {
+    this.loopPauseRequested = true;
+  }
+
+  /**
+   * 消费暂停请求（`Query` 在工具批收尾、下一轮 LLM 请求发起前调用）。
+   * 取走即清除：暂停只生效一次。
+   */
+  consumeLoopPauseRequest(): boolean {
+    const paused = this.loopPauseRequested;
+    this.loopPauseRequested = false;
+    return paused;
+  }
+
+  /**
+   * 登记某后台任务「已兜底提醒」。手工转后台的任务在转换成功时登记：
+   * 查询收尾的兜底提醒（`maybeRemindBackgroundTasks`）会为运行中的后台任务
+   * 立刻补一条 reminder 并拉起新查询——那等于转后台结果自己触发了接续循环，
+   * 违背 `requestLoopPause` 的暂停语义，因此该任务不再进兜底提醒列表。
+   */
+  markBackgroundTaskReminded(taskId: string): void {
+    this.remindedBackgroundTaskIds.add(taskId);
+  }
+
+  /**
    * 撤回尚未消费的排队用户消息（webview 排队项的「编辑 / 删除」，
    * `docs/user-message-pipeline.md` 第 5.2 节）。
    *
@@ -1291,9 +1341,11 @@ export class QueryEngine {
     const promptStr = typeof _prompt === 'string' ? _prompt : String(_prompt);
 
     if (type === 'user') {
-      // 用户发起新一轮消息：清除上一次 abort 标记，恢复正常可执行状态
+      // 用户发起新一轮消息：清除上一次 abort 标记，恢复正常可执行状态；
+      // 手工转后台的循环暂停标记同样只对「当时那轮查询」有意义，一并清除。
       this.abortRequested = false;
       this.silentAbortRequested = false;
+      this.loopPauseRequested = false;
     }
 
     if (type === 'reminder') {
@@ -1568,6 +1620,8 @@ export class QueryEngine {
         silent: false,
         // 静默中止判定：spin 子代理 Reply 后主动停止自身时不回显中断消息
         silentAbort: () => this.silentAbortRequested,
+        // 手工转后台的消费出口：工具批收尾后、下一轮 LLM 请求前取走暂停请求
+        pauseRequested: () => this.consumeLoopPauseRequest(),
       })) {
         const shouldPersist = message.type === 'assistant'
           || (message.type === 'user' && Array.isArray(message.message?.content))
@@ -1759,6 +1813,9 @@ export class QueryEngine {
    */
   private abortForegroundQuery(): void {
     this.abortRequested = true;
+    // 中止让暂停标记失效：被中止的那轮查询不会再走到工具批收尾的暂停出口，
+    // 残留标记否则会在下一轮查询的工具批后错误地暂停循环。
+    this.loopPauseRequested = false;
 
     // 1. 丢弃已排队但未消费的后台任务完成通知
     this.discardBackgroundTaskNotifications();

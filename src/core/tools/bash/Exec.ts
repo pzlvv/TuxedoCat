@@ -20,6 +20,7 @@ import { TaskOutput } from './TaskOutput.js';
 import { wrapSpawn } from './ShellCommand.js';
 import { registerBackgroundTask, onBackgroundTaskCompleted } from './LocalShellTask.js';
 import { watchSleepNotifications } from './SleepDetect.js';
+import { registerForegroundBashTrigger, unregisterForegroundBashTrigger } from './ManualBackground.js';
 import { logger } from '../../Logger.js';
 
 /** 自动转入后台后，等待完成的超时（不限制，让后台任务自然完成） */
@@ -101,6 +102,7 @@ async function execForeground(
       isResolved = true;
       unsubscribeBgCompleted();
       unsubscribeSleepNotify?.();
+      unregisterForegroundBashTrigger(toolUseId);
       if (timeoutId) clearTimeout(timeoutId);
       if (child) {
         // 在 Windows 上 child.kill('SIGTERM') 可能无效，先尝试 SIGTERM 再 SIGKILL
@@ -158,13 +160,16 @@ async function execForeground(
   /**
    * 将当前前台命令转入后台继续执行
    * 触发条件：超时，或 sleep 命令执行中收到后台任务完成/子代理 Reply 通知，
-   * 或普通命令执行中收到后台任务完成通知且已运行超过 AUTO_BG_MIN_RUNNING_MS
+   * 或普通命令执行中收到后台任务完成通知且已运行超过 AUTO_BG_MIN_RUNNING_MS，
+   * 或用户在 Bash 卡片上点「转后台」（`reason === 'user-requested'`，
+   * `ManualBackground` 注册表触发，见该文件的暂停语义说明）
    */
   const triggerAutoBackground = (reason: string) => {
     if (isResolved || !child) return;
     isResolved = true;
     unsubscribeBgCompleted();
     unsubscribeSleepNotify?.();
+    unregisterForegroundBashTrigger(toolUseId);
     if (signal) {
       signal.removeEventListener('abort', onAbort);
     }
@@ -186,6 +191,20 @@ async function execForeground(
     // 转入后台：detach 子进程，通过文件模式继续收集输出
     autoBackgroundCommand(child, command, cwd, signal, description, toolUseId, agentId, sessionID, fullOutput, stderr, startTime)
       .then(bgResult => {
+        // 手工转后台成功：暂停标记由这里回写引擎（转换失败走 catch，不暂停）。
+        // 结果本身照常作为 tool_result 进入上下文，暂停的只是「下一轮 LLM 请求」。
+        if (reason === 'user-requested' && bgResult.backgroundTaskId && sessionID) {
+          try {
+            const { getSessionEngine } = require('../../QueryEngine.js') as typeof import('../../QueryEngine.js');
+            const engine = getSessionEngine(sessionID);
+            engine?.requestLoopPause();
+            // 同时登记「已兜底提醒」：查询收尾的兜底提醒会为运行中的后台任务立刻
+            // 拉起新查询，那等于转后台结果自己触发了接续循环，违背暂停语义。
+            engine?.markBackgroundTaskReminded(bgResult.backgroundTaskId);
+          } catch (err) {
+            logger.warn('Exec', `Failed to pause loop after manual background: ${err}`);
+          }
+        }
         if (resultResolve) {
           resultResolve(bgResult);
         }
@@ -208,6 +227,14 @@ async function execForeground(
   // sleep 命令：不设前台超时，由通知监听决定是否转后台
   if (timeout > 0) {
     timeoutId = setTimeout(() => triggerAutoBackground('timeout'), timeout);
+  }
+
+  // --- 手工转后台 ---
+  // Bash 卡片「转后台」按钮经 UiEvent.bashBackgroundRequested 到达；触发器与
+  // 自动转后台同一条路径（幂等：命令已收尾时 isResolved 守卫直接返回）。
+  // 各收尾路径（onAbort / close / error / 已转后台）都会注销本登记。
+  if (toolUseId) {
+    registerForegroundBashTrigger(toolUseId, () => triggerAutoBackground('user-requested'));
   }
 
   async function resolveForegroundResult(baseResult: {
@@ -317,6 +344,7 @@ async function execForeground(
       isResolved = true;
       unsubscribeBgCompleted();
       unsubscribeSleepNotify?.();
+      unregisterForegroundBashTrigger(toolUseId);
       if (timeoutId) clearTimeout(timeoutId);
       if (signal) signal.removeEventListener('abort', onAbort);
 
@@ -344,6 +372,7 @@ async function execForeground(
       isResolved = true;
       unsubscribeBgCompleted();
       unsubscribeSleepNotify?.();
+      unregisterForegroundBashTrigger(toolUseId);
       if (timeoutId) clearTimeout(timeoutId);
       if (signal) signal.removeEventListener('abort', onAbort);
 

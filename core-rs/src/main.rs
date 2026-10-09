@@ -652,6 +652,15 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
         "abortRequested" => {
             core.on_abort(&session_id);
         }
+        // 用户把正在前台运行的 Bash 命令转入后台（Bash 卡片「转后台」按钮）：
+        // 触发转换 + 暂停下一轮 LLM 请求（见 `tools.rs` 的手工转后台注册表）。
+        "bashBackgroundRequested" => {
+            let tool_use_id = event
+                .get("toolUseId")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            core.on_bash_background_requested(&session_id, tool_use_id);
+        }
         "queuedMessageDiscarded" => {
             // 对齐 Embedded `QueryEngine.discardPendingUserMessage`：webview 排队项的
             // 「编辑 / 删除」撤回排队消息。按 uuid 配对，未消费才丢弃。

@@ -197,6 +197,7 @@ export const enDict: Record<string, string> = {
   'tool.bash.openFullOutputFile': 'Open full output file',
   'tool.bash.clickFullCommand': 'Click to view full command',
   'tool.bash.copyCommand': 'Copy command',
+  'tool.bash.moveBackground': 'Move to background',
 
   /* ── tools/EditFile.tsx ──────────────────────────────────── */
   'tool.editFile.noSessionForRollback': 'No active session found, cannot roll back',

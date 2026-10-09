@@ -1429,6 +1429,133 @@ fn second_llm_round_sees_the_tool_result() {    let sandbox = Sandbox::new("engi
         .all(|message| message["role"] != "tool"));
 }
 
+/// 手工转后台（`UiEvent.bashBackgroundRequested`，Bash 卡片「转后台」按钮；
+/// 对齐 Embedded `src/test/manualBackground.test.ts` 的同名用例）：
+///
+/// 1. 前台 Bash 跑起来后触发转后台 → toolResult 落盘（success）、消费循环收尾
+///    （queryEnd，等待用户输入），**没有**第二次 LLM 请求——下一轮 agent 循环暂停；
+/// 2. 触发暂停的任务登记「已兜底提醒」：消费循环收尾不为它补一条 reminder
+///    又拉起新查询（否则 sleep 类任务会立刻 qualify，暂停等于失效）；
+/// 3. 下一条用户消息（队列消息）立刻拉起新一轮：第二轮 LLM 请求的上下文里
+///    带着转后台的 tool_result——接续由队列消息触发，与转后台结果无关。
+
+#[test]
+fn manual_background_pauses_the_loop_until_a_queued_message_arrives() {
+    let sandbox = Sandbox::new("engine-manual-background");
+    let previous_tmpdir = std::env::var("TMPDIR").ok();
+    std::env::set_var("TMPDIR", sandbox.root.join("tmp"));
+    crate::bash_task::reset_for_test();
+
+    let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = Arc::clone(&bodies);
+    let llm = FakeLlm::start(move |index, body| {
+        captured.lock().unwrap().push(body.clone());
+        if index == 0 {
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"sleep 30","description":"Long sleep"}"#,
+            )
+        } else {
+            openai_text_sse(&["继续"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    history::create_conversation("s1", &workspace, json!({ "sessionId": "s1", "title": "" }))
+        .unwrap();
+
+    let harness = EngineHarness::allow_all();
+    submit(&harness, "s1", "跑个长命令", "u-1");
+
+    // 等前台 Bash 真正跑起来（注册表登记完成）再触发手工转后台
+    assert!(
+        harness.wait_for(
+            |_| crate::tools::is_foreground_bash_running("call_1"),
+            Duration::from_secs(10),
+        ),
+        "前台 Bash 未登记: {:?}",
+        harness.sink.event_types()
+    );
+    assert!(crate::tools::request_manual_background("call_1"));
+
+    // 转换完成 → 工具批收尾 → 暂停出口 → 消费循环收尾（queryEnd）
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
+    {
+        let bodies = bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "手工转后台后不应发起第二次 LLM 请求");
+    }
+
+    // 后台任务仍在跑；触发暂停的任务已登记「已兜底提醒」；会话回到「等待用户输入」
+    let running = crate::bash_task::running_tasks_for_session("s1");
+    assert_eq!(running.len(), 1, "转后台后应有 1 个运行中的后台任务");
+    {
+        let state = harness.core.session("s1");
+        let state = state.lock().unwrap();
+        assert!(
+            state.reminded_background_tasks.contains(&running[0].task_id),
+            "触发暂停的任务应登记已兜底提醒: {:?}",
+            state.reminded_background_tasks
+        );
+        assert!(!state.running, "消费循环应收尾（等待用户输入）");
+    }
+    let result = harness.sink.event_of("toolResult").expect("toolResult");
+    assert_eq!(result["status"], "success", "转后台不是失败: {result}");
+    assert!(
+        result["output"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Command moved to the background"),
+        "got {result}"
+    );
+
+    // 队列消息（新用户消息）立刻拉起新一轮：第二轮请求上下文里带转后台的 tool_result
+    harness.sink.clear();
+    submit(&harness, "s1", "继续", "u-2");
+    assert!(
+        harness.wait_query_end(),
+        "第二轮未结束: {:?}",
+        harness.sink.event_types()
+    );
+    {
+        let bodies = bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2, "用户消息应拉起新一轮 LLM 请求");
+        let tool_message = bodies[1]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "tool")
+            .unwrap_or_else(|| panic!("第二轮缺少 tool 结果: {:?}", bodies[1]["messages"]));
+        assert!(
+            tool_message["content"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Command moved to the background"),
+            "got {tool_message}"
+        );
+        // 第二轮里最后一条用户消息是新的「继续」
+        let user_texts: Vec<&str> = bodies[1]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "user")
+            .filter_map(|message| message["content"].as_str())
+            .collect();
+        assert!(user_texts.contains(&"继续"), "got {user_texts:?}");
+    }
+
+    crate::bash_task::abort_tasks_for_session("s1");
+    crate::bash_task::reset_for_test();
+    match previous_tmpdir {
+        Some(value) => std::env::set_var("TMPDIR", value),
+        None => std::env::remove_var("TMPDIR"),
+    }
+}
+
 /// 写一份带 `features.maxTurns` 的 settings（沿用 `write_llm_settings` 的连接信息）
 fn write_settings_with_features_max_turns(sandbox: &Sandbox, base_url: &str, agent_mode: &str, max_turns: u64) {
     sandbox.write_settings(json!({

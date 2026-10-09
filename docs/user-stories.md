@@ -366,6 +366,21 @@
 1. 菜单 MCP 分组每服务器一行开关；状态小字显示 连接中/N 个工具/连接失败。
 2. 切换后宿主收到 `setMcpEnabled`，core 落盘并广播新状态。
 
+### US-45 命令转入后台
+
+作为用户，我希望把正在前台执行的 Bash 命令转入后台继续运行，以便长命令不再挡住对话，
+等它完成或我发新消息时再继续（`docs/manual-background.md`）。
+
+验收标准：
+
+1. Bash 卡片执行中在「复制命令」左侧显示「转后台」按钮，点击后宿主收到
+   `backgroundBashTool`（会话 ID + 工具调用 ID）；卡片完成后按钮消失，重复点击无副作用。
+2. 转换后结果照常作为 tool_result 回填（状态成功、带 `bg-auto-` 后台任务 ID），但本轮
+   agent 循环暂停：不再发起下一次 LLM 请求，会话回到等待用户输入（终止按钮因仍有后台
+   任务为黄）。
+3. 队列有消息时立刻续跑：新用户消息、后台任务完成通知（或 reminder）到达即拉起新一轮，
+   接续由队列消息触发；转后台结果本身不触发接续。
+
 ## EP-8 桌面端窗口与标题栏（桌面端）
 
 ### US-30 完整模式与悬浮窗切换
@@ -586,6 +601,7 @@
 | `e2e/webview/notifications.spec.ts` | US-40 | webview UI |
 | `e2e/webview/language.spec.ts` | US-41 | webview UI |
 | `e2e/webview/titlebar.spec.ts` | US-36（标题栏渲染层快照时序） | webview UI |
+| `e2e/webview/bashBackgroundButton.spec.ts` | US-45 | webview UI |
 | `e2e/electron/assistant.spec.ts` | US-1、US-2、US-14、US-15、US-18、US-28 | Electron 整应用 |
 | `e2e/electron/sessions.spec.ts` | US-19、US-20、US-21、US-22 | Electron 整应用 |
 | `e2e/electron/workspace.spec.ts` | US-30、US-35、US-36 | Electron 整应用 |
@@ -593,6 +609,7 @@
 | `e2e/electron/fileExplorer.spec.ts` | US-42、US-43、US-44 | Electron 整应用 |
 | `e2e/electron/desktopShell.spec.ts` | US-27、US-31、US-32、US-34、US-37、US-39 | Electron 整应用 |
 | `e2e/electron/preview.spec.ts` | US-38（文件 Monaco 预览） | Electron 整应用 |
+| `e2e/electron/backgroundBash.spec.ts` | US-45 | Electron 整应用 |
 
 未覆盖 e2e 的 US（US-33 托盘图标状态点与闪烁提醒——属 OS 集成层，改键对话框之外
 的真实全局按键唤醒同不驱动；US-38 的图片查看器窗口；US-42 的远程（SSH）工作区文件

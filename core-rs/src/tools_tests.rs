@@ -36,6 +36,8 @@ use serde_json::json;
 fn context(sandbox: &Sandbox) -> ToolContext {
     ToolContext {
         session_id: "s-tools".to_string(),
+        tool_use_id: None,
+        pause: None,
         cwd: sandbox.workspace.to_string_lossy().to_string(),
         on_progress: None,
         cancel: None,
@@ -385,6 +387,76 @@ fn bash_timeout_reminder_mentions_find_for_find_commands() {
 }
 
 #[test]
+fn bash_manual_background_converts_and_requests_loop_pause() {
+    // 手工转后台（`UiEvent.bashBackgroundRequested`）：前台命令跑起来后由注册表触发，
+    // 与自动转后台同一条路径（对齐 Embedded `ManualBackground` + Exec 的
+    // `triggerAutoBackground('user-requested')`）。区别只有两点：转换成功置
+    // 循环暂停信号（带 task id）；没有 tool_use_id 的执行不登记（按钮无从触发）。
+    let sandbox = Sandbox::new("tools-bash-manual-bg");
+    let previous = point_tmpdir_at(&sandbox.root.join("tmp"));
+    crate::bash_task::reset_for_test();
+
+    let pause = LoopPauseSignal::default();
+    let ctx = ToolContext {
+        session_id: "s-tools".to_string(),
+        tool_use_id: Some("toolu-manual-bg".to_string()),
+        cwd: sandbox.workspace.to_string_lossy().to_string(),
+        on_progress: None,
+        cancel: None,
+        pause: Some(pause.clone()),
+        user_choice: None,
+        background: None,
+        subagent: None,
+    };
+    let handle = std::thread::spawn(move || {
+        execute(
+            "Bash",
+            &json!({ "command": "sleep 30", "timeout": 60_000, "description": "Long sleep" }),
+            &ctx,
+        )
+    });
+
+    // 等注册表登记完成再触发（触发太早找不到条目，返回 false）
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !is_foreground_bash_running("toolu-manual-bg") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "前台 Bash 未登记到手工转后台注册表"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(request_manual_background("toolu-manual-bg"));
+    // 未登记 / 已结束的 tool_use_id：幂等返回 false
+    assert!(!request_manual_background("toolu-missing"));
+
+    let outcome = handle.join().unwrap();
+    let body = text(&outcome);
+    assert!(!outcome.is_status_error(), "手工转后台不算工具失败: {body}");
+    assert!(
+        body.contains("Command moved to the background after ")
+            && body.contains("ms (task ID: bg-auto-"),
+        "got {body}"
+    );
+
+    // 转换成功：暂停信号置位并带回 task id；注册表条目已注销
+    assert!(pause.take(), "转换成功应置循环暂停信号");
+    let source_task = pause.take_source_task().expect("暂停信号应带回 task id");
+    assert!(source_task.starts_with("bg-auto-"), "got {source_task}");
+    assert!(
+        !is_foreground_bash_running("toolu-manual-bg"),
+        "收尾后注册表条目应注销"
+    );
+    // 后台任务真实登记，且属于本会话
+    assert_eq!(crate::bash_task::running_count_for_session("s-tools"), 1);
+    let running = crate::bash_task::running_tasks_for_session("s-tools");
+    assert_eq!(running[0].task_id, source_task);
+
+    crate::bash_task::abort_tasks_for_session("s-tools");
+    restore_tmpdir(previous);
+    crate::bash_task::reset_for_test();
+}
+
+#[test]
 fn concurrency_safety_matches_embedded() {
     // 对齐各工具的 `isConcurrencySafe`（`Tool.ts` 默认 false）
     assert!(is_concurrency_safe("Read", &json!({ "file_path": "a.txt" })));
@@ -465,6 +537,8 @@ fn bash_sleep_commands_have_no_foreground_timeout() {
     let sink = std::sync::Arc::clone(&collected);
     let ctx = ToolContext {
         session_id: "s-sleep".to_string(),
+        tool_use_id: None,
+        pause: None,
         cwd: sandbox.workspace.to_string_lossy().to_string(),
         on_progress: Some(std::sync::Arc::new(move |progress: BashProgress| {
             sink.lock().unwrap().push(progress);
@@ -499,6 +573,8 @@ fn bash_abort_kills_a_sleep_command_without_a_timeout() {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let ctx = ToolContext {
         session_id: "s-abort".to_string(),
+        tool_use_id: None,
+        pause: None,
         cwd: sandbox.workspace.to_string_lossy().to_string(),
         on_progress: None,
         cancel: Some(std::sync::Arc::clone(&cancel)),
@@ -577,6 +653,8 @@ fn bash_abort_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe()
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let ctx = ToolContext {
         session_id: "s-abort-grandchild".to_string(),
+        tool_use_id: None,
+        pause: None,
         cwd: sandbox.workspace.to_string_lossy().to_string(),
         on_progress: None,
         cancel: Some(std::sync::Arc::clone(&cancel)),
@@ -700,6 +778,8 @@ fn background_context(
 ) -> ToolContext {
     ToolContext {
         session_id: "s-bg".to_string(),
+        tool_use_id: None,
+        pause: None,
         cwd: sandbox.workspace.to_string_lossy().to_string(),
         on_progress: None,
         cancel: None,
@@ -989,6 +1069,8 @@ fn bash_reports_streaming_progress() {
     let sink = std::sync::Arc::clone(&collected);
     let ctx = ToolContext {
         session_id: "s-progress".to_string(),
+        tool_use_id: None,
+        pause: None,
         cwd: sandbox.workspace.to_string_lossy().to_string(),
         on_progress: Some(std::sync::Arc::new(move |progress: BashProgress| {
             sink.lock().unwrap().push(progress);
@@ -1029,6 +1111,8 @@ fn bash_progress_preview_is_capped_at_four_kilobytes() {
     let sink = std::sync::Arc::clone(&collected);
     let ctx = ToolContext {
         session_id: "s-progress-cap".to_string(),
+        tool_use_id: None,
+        pause: None,
         cwd: sandbox.workspace.to_string_lossy().to_string(),
         on_progress: Some(std::sync::Arc::new(move |progress: BashProgress| {
             sink.lock().unwrap().push(progress);
@@ -1957,6 +2041,8 @@ fn todo_write_clears_storage_when_all_completed() {
     let sandbox = Sandbox::new("tools-todo-alldone");
     let ctx = ToolContext {
         session_id: "session-alldone".to_string(),
+        tool_use_id: None,
+        pause: None,
         cwd: sandbox.workspace.to_string_lossy().to_string(),
         on_progress: None,
         cancel: None,
@@ -1979,6 +2065,8 @@ fn todo_write_keeps_state_per_session() {
     let sandbox = Sandbox::new("tools-todo-session");
     let first = ToolContext {
         session_id: "session-a".to_string(),
+        tool_use_id: None,
+        pause: None,
         cwd: sandbox.workspace.to_string_lossy().to_string(),
         on_progress: None,
         cancel: None,
@@ -2003,6 +2091,8 @@ fn todo_write_keeps_state_per_session() {
 fn ask_context(sandbox: &Sandbox, response: Value) -> ToolContext {
     ToolContext {
         session_id: "s-ask".to_string(),
+        tool_use_id: None,
+        pause: None,
         cwd: sandbox.workspace.to_string_lossy().to_string(),
         on_progress: None,
         cancel: None,
@@ -2098,6 +2188,8 @@ fn ask_user_question_sends_tool_name_message_and_choices() {
     let sink = std::sync::Arc::clone(&captured);
     let ctx = ToolContext {
         session_id: "s-ask-options".to_string(),
+        tool_use_id: None,
+        pause: None,
         cwd: sandbox.workspace.to_string_lossy().to_string(),
         on_progress: None,
         cancel: None,

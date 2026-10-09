@@ -705,6 +705,15 @@ export type WebviewToHostMessage = {
   sessionId?: string;
 } | {
   /**
+   * 用户把某台正在前台运行的 Bash 命令转入后台（Bash 卡片「转后台」按钮）：
+   * 宿主翻译成 `UiEvent.bashBackgroundRequested`，core 侧触发转换并暂停
+   * 下一轮 agent 循环（见 `tools/bash/ManualBackground.ts`）。
+   */
+  type: 'backgroundBashTool';
+  sessionId: string;
+  toolUseId: string;
+} | {
+  /**
    * 用户撤回排队消息（排队项的「编辑 / 删除」）：宿主翻译成
    * `UiEvent.queuedMessageDiscarded`，core 按 uuid 丢弃引擎里尚未消费的同一消息。
    * 「编辑时回填输入框」是 webview 本地表现，不经过本消息。

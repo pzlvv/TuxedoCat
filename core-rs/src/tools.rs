@@ -9,6 +9,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
@@ -114,6 +115,98 @@ pub struct BashProgress {
 /// （走 `CoreRequest.userChoice` 帧），单测可注入桩。
 pub type UserChoiceFn = std::sync::Arc<dyn Fn(&Value) -> Option<Value> + Send + Sync>;
 
+/// 手工转后台的循环暂停信号（对齐 Embedded `QueryEngine.requestLoopPause` /
+/// `consumeLoopPauseRequest`）。
+///
+/// 置位方：前台 Bash 手工转后台成功（`UiEvent.bashBackgroundRequested` →
+/// `auto_background_command(manual = true)`）；消费方：查询循环在工具批收尾、
+/// 下一轮 LLM 请求发起前（结果照常进上下文，但不再发起下一轮）。
+///
+/// `source_task` 记录触发暂停的后台任务 id：消费方据此把该任务登记进「已兜底
+/// 提醒」集合——查询收尾的兜底提醒会为运行中的后台任务立刻拉起新查询，那等于
+/// 转后台结果自己触发了接续循环，违背暂停语义。
+#[derive(Clone, Default)]
+pub struct LoopPauseSignal {
+    paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    source_task: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl LoopPauseSignal {
+    /// 置暂停标记；`source_task` 是触发暂停的后台任务 id
+    pub fn request(&self, source_task: Option<String>) {
+        *self.source_task.lock().unwrap() = source_task;
+        self.paused.store(true, Ordering::Relaxed);
+    }
+
+    /// 取走暂停请求（取走即清除，暂停只生效一次）
+    pub fn take(&self) -> bool {
+        self.paused.swap(false, Ordering::Relaxed)
+    }
+
+    /// 取走触发暂停的后台任务 id（随 `take` 一起消费）
+    pub fn take_source_task(&self) -> Option<String> {
+        self.source_task.lock().unwrap().take()
+    }
+
+    /// 清除残留请求（新用户消息 / 中止时调用；暂停只对「当时那轮查询」有意义）
+    pub fn clear(&self) {
+        self.paused.store(false, Ordering::Relaxed);
+        self.source_task.lock().unwrap().take();
+    }
+}
+
+// ==================== 手工转后台注册表 ====================
+
+/// 前台 Bash 执行的手工转后台注册表（对齐 Embedded `tools/bash/ManualBackground.ts`）：
+/// `tool_use_id -> 请求标记`。`run_bash` spawn 后登记、收尾时注销；
+/// `request_manual_background` 置位后由前台等待循环在下一个 30ms 轮询点转入后台。
+static MANUAL_BG: Mutex<Vec<(String, std::sync::Arc<std::sync::atomic::AtomicBool>)>> =
+    Mutex::new(Vec::new());
+
+fn register_manual_bg(tool_use_id: &str) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    MANUAL_BG
+        .lock()
+        .unwrap()
+        .push((tool_use_id.to_string(), std::sync::Arc::clone(&flag)));
+    flag
+}
+
+fn unregister_manual_bg(tool_use_id: Option<&str>) {
+    let Some(tool_use_id) = tool_use_id else { return };
+    let mut registry = MANUAL_BG.lock().unwrap();
+    if let Some(position) = registry
+        .iter()
+        .position(|(id, _)| id == tool_use_id)
+    {
+        registry.remove(position);
+    }
+}
+
+/// 该 tool_use_id 是否仍有一台前台执行在跑（对齐 Embedded `isForegroundBashRunning`；
+/// 供单测等待登记完成）
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn is_foreground_bash_running(tool_use_id: &str) -> bool {
+    MANUAL_BG
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(id, _)| id == tool_use_id)
+}
+
+/// 触发手工转后台。不存在匹配的前台执行（命令已结束 / 从未登记）时返回 false，
+/// 调用方据此什么都不做（幂等，不过度兜底）。
+pub fn request_manual_background(tool_use_id: &str) -> bool {
+    let registry = MANUAL_BG.lock().unwrap();
+    match registry.iter().find(|(id, _)| id == tool_use_id) {
+        Some((_, flag)) => {
+            flag.store(true, Ordering::Relaxed);
+            true
+        }
+        None => false,
+    }
+}
+
 /// `Agent` 工具的建会话请求（对齐 `AgentTool.call` 用到的几个入参）
 #[derive(Clone, Debug)]
 pub struct SubAgentRequest {
@@ -138,12 +231,19 @@ pub struct SubAgentHooks {
 pub struct ToolContext {
     pub session_id: String,
     pub cwd: String,
+    /// 当前工具调用的 tool_use id（对齐 Embedded `ToolUseContext.toolUseId`）。
+    /// 前台 Bash 用它登记「手工转后台」注册表；缺省（单测 / 未知调用方）时不登记。
+    pub tool_use_id: Option<String>,
     /// 流式进度回调（Bash 用）。单测不设置时不上报。
     pub on_progress: Option<std::sync::Arc<dyn Fn(BashProgress) + Send + Sync>>,
     /// 会话取消标记（`abortRequested` 置位）。Bash 在等待子进程时轮询它，
     /// 命中即杀掉子进程并按「被中断」收尾（对齐 Embedded 的 abort → `onAbort` → kill）。
     /// 单测不设置时视为「不取消」。
     pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// 手工转后台的循环暂停信号（`SessionState.pause_loop` 的克隆）。
+    /// 前台 Bash 手工转后台成功后置位，查询循环在工具批收尾时消费；
+    /// 单测不设置时照常转后台，只是不暂停循环。
+    pub pause: Option<LoopPauseSignal>,
     /// 用户问答回调（AskUserQuestion 用）。单测不设置时该工具报错。
     pub user_choice: Option<UserChoiceFn>,
     /// 后台 Bash 任务的引擎钩子（完成通知 / `background` 事实同步）。
@@ -1009,6 +1109,11 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         })
     });
 
+    // 手工转后台（`UiEvent.bashBackgroundRequested`，Bash 卡片「转后台」按钮）：
+    // spawn 成功后按 tool_use_id 登记请求标记，收尾（完成 / 中止 / 已转后台 /
+    // 等待出错）时注销。等待循环轮询它，命中即与自动转后台走同一条路径。
+    let manual_bg = ctx.tool_use_id.as_deref().map(register_manual_bg);
+
     // `timeout` 来自工具输入，可能极大；用 checked_add 避免 Instant 溢出 panic。
     // `timeout_ms == 0` 表示不设超时（对齐 Embedded 的 `SLEEP_NO_TIMEOUT_MS`）。
     let deadline = if timeout_ms == 0 {
@@ -1031,6 +1136,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
                 let _ = child.kill();
                 crate::bash_task::off_task_completed(bg_subscription);
                 crate::subagent::off_reply_delivered(reply_subscription);
+                unregister_manual_bg(ctx.tool_use_id.as_deref());
                 return ToolOutcome::Error(format!("Bash: wait failed: {err}"));
             }
         };
@@ -1057,11 +1163,17 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             cancelled = true;
             break;
         }
-        if deadline_passed(deadline)
+        let manual_requested = manual_bg
+            .as_ref()
+            .map(|flag| flag.load(Ordering::Relaxed))
+            .unwrap_or(false);
+        if manual_requested
+            || deadline_passed(deadline)
             || should_auto_background(timeout_ms, &session_completed, &bg_completed, started)
         {
             crate::bash_task::off_task_completed(bg_subscription);
             crate::subagent::off_reply_delivered(reply_subscription);
+            unregister_manual_bg(ctx.tool_use_id.as_deref());
             return auto_background_command(
                 child,
                 &command,
@@ -1069,12 +1181,14 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
                 ctx,
                 &full_output,
                 started,
+                manual_requested,
             );
         }
         std::thread::sleep(Duration::from_millis(30));
     }
     crate::bash_task::off_task_completed(bg_subscription);
     crate::subagent::off_reply_delivered(reply_subscription);
+    unregister_manual_bg(ctx.tool_use_id.as_deref());
 
     let status = child.wait().ok().and_then(|value| value.code()).unwrap_or(-1);
     // 被中止：**不等**管道读完。被杀的子进程可能留下仍持有管道的孙进程
@@ -1159,12 +1273,16 @@ fn description_of(input: &Value, command: &str) -> String {
 
 /// 前台命令转入后台继续执行（对齐 Embedded `Exec.autoBackgroundCommand`）。
 ///
-/// 触发条件：前台预算超时，或（sleep / 普通命令的）后台任务完成通知。
+/// 触发条件：前台预算超时、（sleep / 普通命令的）后台任务完成通知，或用户在
+/// Bash 卡片上点「转后台」（`manual = true`，`UiEvent.bashBackgroundRequested`）。
 /// 流程：把已累积输出写进输出文件 → 把文件句柄挂到共享汇（后续输出直接进文件）→
 /// 登记为后台任务 → 把子进程交给等待线程 → 立即返回「已转入后台」的结果。
 ///
 /// 返回结果的 `stdout` 是转入后台前已累积的输出，`stderr` 是给模型的说明
 /// （由 `background_result_text` 拼进 tool_result）。
+///
+/// 手工转后台成功时置 `ctx.pause`（下一轮 LLM 请求不发起，任务 id 随信号带回，
+/// 由查询循环登记「已兜底提醒」）；转换失败走早退分支，不置暂停。
 fn auto_background_command(
     child: std::process::Child,
     command: &str,
@@ -1172,6 +1290,7 @@ fn auto_background_command(
     ctx: &ToolContext,
     sink: &std::sync::Arc<std::sync::Mutex<PipeSink>>,
     started: std::time::Instant,
+    manual: bool,
 ) -> ToolOutcome {
     use std::io::Write;
 
@@ -1221,6 +1340,17 @@ fn auto_background_command(
         ctx.background.clone(),
     );
     crate::bash_task::watch_backgrounded(child, task_id.clone(), kill, ctx.background.clone());
+
+    // 手工转后台成功：置循环暂停信号（工具结果照常进上下文，下一轮 LLM 请求
+    // 不发起）。task id 随信号带回，消费方（查询循环）据此登记「已兜底提醒」，
+    // 避免消费收尾的兜底提醒立刻为该任务拉起新查询（对齐 Embedded
+    // `Exec.triggerAutoBackground('user-requested')` 的 requestLoopPause +
+    // markBackgroundTaskReminded）。
+    if manual {
+        if let Some(pause) = &ctx.pause {
+            pause.request(Some(task_id.clone()));
+        }
+    }
 
     // `find` 提示（对齐 Embedded：命令里出现 `find` 时提醒模型重新读需求）。
     // 已累积的输出（含命令自身的 stderr）都在 `stdout` 里，这里只回传提示；

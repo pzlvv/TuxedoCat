@@ -266,6 +266,14 @@ export type UiEvent =
     }
   | { type: 'abortRequested'; sessionId: string }
   /**
+   * 用户请求把某台**正在前台运行**的 Bash 命令转入后台（Bash 卡片「转后台」按钮）。
+   *
+   * core 侧由引擎触发 `tools/bash/ManualBackground` 注册表里该 `toolUseId` 的
+   * 转换；转换成功后暂停下一轮 LLM 请求（结果照常进上下文）。没有匹配的
+   * 前台执行时幂等忽略（规格见 `docs/manual-background.md`）。
+   */
+  | { type: 'bashBackgroundRequested'; sessionId: string; toolUseId: string }
+  /**
    * 用户撤回排队消息（webview 排队项的「编辑 / 删除」）。
    *
    * `uuid` 是排队项携带的消息 uuid：core 按 uuid 配对，只丢弃引擎队列里尚未消费的

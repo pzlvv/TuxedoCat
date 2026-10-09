@@ -121,6 +121,12 @@ async function registerIntegrationUiEvents(bus: AssistantEventBus): Promise<void
     abortCurrentQuery(sessionId);
   });
 
+  // bashBackgroundRequested：Bash 卡片「转后台」按钮。引擎不在池里时无事可做
+  // （会话已释放就没有前台命令在跑）；引擎侧再按注册表幂等忽略已结束的执行。
+  bus.onUiEvent('bashBackgroundRequested', ({ sessionId, toolUseId }) => {
+    getSessionEngine(sessionId)?.requestBashBackground(toolUseId);
+  });
+
   // queuedMessageDiscarded：排队项「编辑 / 删除」撤回排队消息。引擎不在池里时无事可做：
   // 排队项只登记在 webview，引擎随会话释放后消息已无处可去（幂等，不过度兜底）。
   bus.onUiEvent('queuedMessageDiscarded', ({ sessionId, uuid }) => {

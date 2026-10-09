@@ -2,7 +2,7 @@ import React, { useMemo, useLayoutEffect, useRef } from 'react';
 import { Icon } from '../Icon';
 import { ToolCallProps } from './Types';
 import { ToolHeader } from './ToolHeader';
-import { postMessage } from '../webviewEnv';
+import { postMessage, getWindowSessionId } from '../webviewEnv';
 import { t } from '../i18n';
 import { AnsiText, hasAnsi, renderAnsiToNodes } from '../ansi';
 import { formatSize, parsePersistedOutput } from './persistedOutput';
@@ -52,6 +52,20 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
     if (command) {
       navigator.clipboard.writeText(command);
     }
+  };
+
+  // 转后台：只对「正在前台执行」的命令有意义（status === 'running' 才渲染按钮）。
+  // 点击后 core 侧把该次执行转入后台并暂停下一轮 agent 循环；按钮随工具卡片
+  // 收到 toolResult 自然消失，重复点击在 core 侧幂等。
+  const handleBackground = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const sid = getWindowSessionId();
+    if (!sid || !toolCallId) return;
+    postMessage({
+      type: 'backgroundBashTool',
+      sessionId: sid,
+      toolUseId: toolCallId,
+    });
   };
 
   const handleCommandClick = () => {
@@ -311,6 +325,16 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
               {command}
             </button>
           </div>
+          {status === 'running' && (
+            <button
+              onClick={handleBackground}
+              className="flex-shrink-0 p-1 rounded hover:bg-opacity-80 transition-colors"
+              style={{ backgroundColor: 'transparent' }}
+              title={t('tool.bash.moveBackground')}
+            >
+              <Icon name="clock" size={12} style={{ color: colors.textSystem }} />
+            </button>
+          )}
           <button
             onClick={handleCopy}
             className="flex-shrink-0 p-1 rounded hover:bg-opacity-80 transition-colors"

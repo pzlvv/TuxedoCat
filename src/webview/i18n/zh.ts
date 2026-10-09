@@ -197,6 +197,7 @@ export const zhDict: Record<string, string> = {
   'tool.bash.openFullOutputFile': '打开完整输出文件',
   'tool.bash.clickFullCommand': '点击查看完整命令',
   'tool.bash.copyCommand': '复制命令',
+  'tool.bash.moveBackground': '转入后台',
 
   /* ── tools/EditFile.tsx ──────────────────────────────────── */
   'tool.editFile.noSessionForRollback': '未找到当前会话，无法回滚',

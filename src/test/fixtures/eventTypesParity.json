@@ -35,6 +35,7 @@
   "uiEvents": [
     "userMessageSubmitted",
     "abortRequested",
+    "bashBackgroundRequested",
     "queuedMessageDiscarded",
     "compactRequested",
     "conversationStarted",

@@ -58,6 +58,7 @@ void _EXHAUSTIVE_CORE_REQUESTS;
 const UI_EVENT_TYPES = [
   'userMessageSubmitted',
   'abortRequested',
+  'bashBackgroundRequested',
   'queuedMessageDiscarded',
   'compactRequested',
   'conversationStarted',

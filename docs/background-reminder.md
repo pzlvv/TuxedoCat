@@ -35,7 +35,9 @@
   不满足时本次不投递。门槛按**当时的**运行时长判定：这轮不满 3 分钟没进列表的任务，
   下轮查询结束满 3 分钟后仍会被兜底提醒。
 - 同一批 `taskId` 只提醒一次（`remindedBackgroundTaskIds` / `reminded_background_tasks`），
-  避免「提醒 → 查询 → 提醒」递归；只有真正进过列表的 `taskId` 才登记。
+  避免「提醒 → 查询 → 提醒」递归；进过列表的 `taskId` 才登记。手工转后台
+  （`docs/manual-background.md`）的任务在转换成功时即登记：它为暂停本轮循环而转后台，
+  兜底提醒若立刻为它拉起新查询，暂停语义就失效了。
 - Embedded：`QueryEngine.maybeRemindBackgroundTasks`；Standalone：
   `engine.rs` 的 `background_reminder`（在消费循环的「队列排空」判定里调用）。
 - 本条与周期提醒互相独立：兜底提醒只是「启动一次查询」的众多原因之一，对周期时钟没有

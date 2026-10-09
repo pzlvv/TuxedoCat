@@ -988,7 +988,8 @@ fn conversation_list_excludes_workspace_manifest() {
     // 对齐 Embedded loadConversationList：工作区清单（workspace.meta.json）不是会话，
     // 混进列表会渲染成「(未命名对话) NaN/NaN/NaN」的幽灵条目
     let sandbox = Sandbox::new("history-list-manifest");
-    let dir = sandbox.conversation_dir(PROJECT); // ensure 时写入 workspace.meta.json
+    // 调用只为触发 ensure 写入 workspace.meta.json，路径本身用不上
+    sandbox.conversation_dir(PROJECT);
     create_conversation("s1", PROJECT, json!({ "sessionId": "s1", "title": "s1" })).unwrap();
     append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
     // messageCount 由引擎在 append 后刷新（append_message 本身不写 meta）；

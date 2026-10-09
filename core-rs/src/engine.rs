@@ -192,6 +192,11 @@ pub enum WorkMode {
 /// 单个会话的运行时状态
 pub struct SessionState {
     pub cancel: Arc<AtomicBool>,
+    /// 手工转后台（`UiEvent.bashBackgroundRequested`）的循环暂停标记
+    /// （对齐 Embedded `QueryEngine.loopPauseRequested`）。置位方：前台 Bash 手工
+    /// 转后台成功；消费方：`run_query_loop` 在工具批收尾、下一轮 LLM 请求发起前。
+    /// 新用户消息与中止都会清除残留标记（暂停只对「当时那轮查询」有意义）。
+    pub pause_loop: crate::tools::LoopPauseSignal,
     pub running: bool,
     pub waiting: bool,
     /// 静默中止标记（对齐 Embedded `QueryEngine.silentAbortRequested`）：本次中止是
@@ -284,6 +289,7 @@ impl SessionState {
     fn new(agent_mode: String, project: Option<String>) -> Self {
         Self {
             cancel: Arc::new(AtomicBool::new(false)),
+            pause_loop: crate::tools::LoopPauseSignal::default(),
             running: false,
             waiting: false,
             silent_abort: false,
@@ -380,7 +386,9 @@ impl Core {
 
     /// 当前登记的全部会话 id（按创建序）。
     ///
-    /// 供测试 harness 收尾清场用：见 `test_support.rs` 的 `EngineHarness::drop`。
+    /// 只服务测试 harness 收尾清场（见 `test_support.rs` 的 `EngineHarness::drop`），
+    /// 不是 Core 契约的一部分，因此只在测试构建里编译，避免生产构建的 dead_code 告警。
+    #[cfg(test)]
     pub fn session_ids(&self) -> Vec<String> {
         self.session_order.lock().unwrap().clone()
     }
@@ -599,7 +607,26 @@ impl Core {
     /// 不动后台 Bash 任务与子代理（对齐 `QueryEngine.interruptForeground`）。
     fn abort_foreground(&self, session_id: &str) {
         if let Some(state) = self.session_if_exists(session_id) {
-            state.lock().unwrap().cancel.store(true, Ordering::Relaxed);
+            let state = state.lock().unwrap();
+            state.cancel.store(true, Ordering::Relaxed);
+            // 中止让暂停标记失效：被中止的那轮查询不会再走到工具批收尾的暂停
+            // 出口，残留标记否则会在下一轮查询的工具批后错误地暂停循环。
+            state.pause_loop.clear();
+        }
+    }
+
+    /// `UiEvent.bashBackgroundRequested`：用户把某台**正在前台运行**的 Bash 命令
+    /// 转入后台（Bash 卡片「转后台」按钮，对齐 Embedded
+    /// `QueryEngine.requestBashBackground`）。
+    ///
+    /// 只触发转换（`tools::request_manual_background` 按 tool_use_id 查注册表）；
+    /// 暂停标记由 `auto_background_command(manual = true)` 的成功路径回写
+    /// `SessionState.pause_loop`。没有匹配的前台执行时幂等忽略。
+    pub fn on_bash_background_requested(&self, _session_id: &str, tool_use_id: &str) {
+        if !crate::tools::request_manual_background(tool_use_id) {
+            self.log(&format!(
+                "bashBackgroundRequested: no foreground bash running for tool_use {tool_use_id}; ignored"
+            ));
         }
     }
 
@@ -1409,6 +1436,10 @@ impl Core {
                 state.running = true;
                 state.cancel.store(false, Ordering::Relaxed);
                 state.silent_abort = false;
+                // 手工转后台的暂停标记只对「当时那轮查询」有意义：新用户消息
+                // 开启新一轮，清掉残留标记（对齐 Embedded `submitMessage` 的
+                // `loopPauseRequested = false`）。
+                state.pause_loop.clear();
                 true
             }
         };
@@ -2114,9 +2145,18 @@ fn execute_tool(
             }),
         )
     });
+    // 取共享句柄必须在字面量之外：字段表达式产生的临时 guard 存活到整条
+    // let 语句结束，两个字段各写一次 state.lock() 会让第二个与第一个尚未
+    // 释放的 guard 互斥，自死锁。
+    let (cancel, pause_loop) = {
+        let state = state.lock().unwrap();
+        (state.cancel.clone(), state.pause_loop.clone())
+    };
     let context = ToolContext {
         session_id: session_id.to_string(),
         cwd: project.to_string(),
+        // 手工转后台按 tool_use_id 登记（Bash 卡片「转后台」按钮）
+        tool_use_id: Some(tool_use_id.to_string()),
         // 工具流式进度 → `toolProgress` 帧（对齐 Embedded `RunTools` 的 onProgress）
         on_progress: Some(tool_progress_emitter(
             Arc::clone(core),
@@ -2125,7 +2165,9 @@ fn execute_tool(
         )),
         // 会话取消标记：Bash 等待子进程时轮询它，命中即杀子进程
         // （对齐 Embedded 的 abort → `onAbort` → kill）
-        cancel: Some(state.lock().unwrap().cancel.clone()),
+        cancel: Some(cancel),
+        // 手工转后台的循环暂停信号：前台 Bash 转后台成功后置位
+        pause: Some(pause_loop),
         user_choice: Some(user_choice),
         // 后台 Bash 任务钩子：完成通知注入 + `background` 事实同步
         background: Some(core.background_hooks()),
@@ -4038,6 +4080,22 @@ fn run_query_loop(
             // （该分支不补发 `aiEnd`）。
             state.lock().unwrap().pending_user_message = None;
             emit_user_interrupted(core, session_id, project, state)?;
+            return Ok(());
+        }
+        // 手工转后台（`UiEvent.bashBackgroundRequested`，对齐 Embedded `Query.ts`
+        // 的 `paused` 出口）：本批工具结果照常进上下文，但不再发起下一轮 LLM 请求。
+        // 会话由消费循环按队列状态收尾——队列为空 → 结束本轮等用户输入；队列有消息
+        // （用户消息 / 后台完成通知 / 提醒）→ 立刻拉起新一轮，性质与用户触发的查询
+        // 一致（接续由队列消息触发，与转后台结果无关）。触发暂停的任务同时登记
+        // 「已兜底提醒」，避免消费收尾的兜底提醒立刻为它补一条 reminder 又拉起循环。
+        if state.lock().unwrap().pause_loop.take() {
+            let source_task = state.lock().unwrap().pause_loop.take_source_task();
+            let mut state = state.lock().unwrap();
+            if let Some(task_id) = source_task {
+                state.reminded_background_tasks.insert(task_id);
+            }
+            drop(state);
+            core.emit(json!({ "type": "aiEnd", "sessionId": session_id }));
             return Ok(());
         }
         // 本轮结束
