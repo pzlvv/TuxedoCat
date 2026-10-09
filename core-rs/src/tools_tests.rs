@@ -544,7 +544,10 @@ fn bash_timeout_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe
         "Bash",
         &json!({
             "command": "echo started; sleep 3 &",
-            "timeout": 300,
+            // 超时死线要给 shell 启动留足余量：满载的测试进程里 Git Bash 冷启动
+            // 可能超过几百毫秒，死线太紧时 `echo` 还没落盘就转后台，断言
+            // 「已累积输出要带过去」就变成对机器速度的断言而不是对行为的断言。
+            "timeout": 1500,
             "description": "Grandchild holds the pipe",
         }),
         &context(&sandbox),
@@ -557,7 +560,7 @@ fn bash_timeout_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe
     assert!(body.contains("(task ID: bg-auto-"), "got {body}");
     assert!(body.contains("started"), "转入后台前的已累积输出要带过去: {body}");
     assert!(
-        elapsed < std::time::Duration::from_millis(2000),
+        elapsed < std::time::Duration::from_millis(2800),
         "超时后不该等孙进程（sleep 3）自然退出，实际 {elapsed:?}"
     );
 
@@ -582,8 +585,10 @@ fn bash_abort_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe()
         subagent: None,
     };
     let flag = std::sync::Arc::clone(&cancel);
+    // 取消死线留给 shell 启动的余量见 `bash_timeout_applies_after_the_shell_...`：
+    // 太紧时 `echo` 还没落盘，「已累积输出要保留」就变成对机器速度的断言。
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(std::time::Duration::from_millis(1200));
         flag.store(true, std::sync::atomic::Ordering::Relaxed);
     });
 
@@ -597,7 +602,7 @@ fn bash_abort_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe()
     assert!(body.contains("Command was interrupted"), "got {body}");
     assert!(body.contains("started"), "已累积输出要保留: {body}");
     assert!(
-        elapsed < std::time::Duration::from_millis(2000),
+        elapsed < std::time::Duration::from_millis(2800),
         "abort 未生效，耗时 {elapsed:?}"
     );
 }
@@ -2574,7 +2579,9 @@ fn bash_interrupted_with_no_output_keeps_the_empty_marker() {
 fn bash_interrupted_with_output_appends_the_marker() {
     let sandbox = Sandbox::new("tools-bash-abort-output");
     let mut ctx = context(&sandbox);
-    ctx.cancel = Some(cancel_after(200));
+    // 1.2s 而不是 200ms：取消死线必须留给 Git Bash 启动 + `echo` 落盘的余量
+    // （满载的测试进程里几百毫秒不够，断言会退化成对机器速度的断言）。
+    ctx.cancel = Some(cancel_after(1200));
     let outcome = execute("Bash", &json!({ "command": "echo partial; sleep 5" }), &ctx);
     assert_eq!(text(&outcome), "partial\nCommand was interrupted");
     assert_eq!(outcome.exit_code(), 130);
@@ -2593,7 +2600,8 @@ fn auto_background_failure_falls_back_to_exit_code_124() {
 
     let outcome = execute(
         "Bash",
-        &json!({ "command": "echo partial; sleep 5", "timeout": 300 }),
+        // 超时死线给 shell 启动留余量（同 `bash_timeout_applies_after_the_shell_...`）
+        &json!({ "command": "echo partial; sleep 5", "timeout": 1500 }),
         &context(&sandbox),
     );
     let body = text(&outcome);

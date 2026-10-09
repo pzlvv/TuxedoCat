@@ -32,6 +32,49 @@ import {
 import { logger } from '../Logger.js';
 import { EXTENSION_NAME } from '../../config/project.js';
 
+/** 握手对「本机软件瞬时掐断连接」的重试次数与起始退避（共 3 次尝试）。
+ * 与 LLM 客户端的网络错误重试次数一致（`llm/` 的重试上限）。 */
+const START_MAX_ATTEMPTS = 3;
+const START_RETRY_DELAY_MS = 200;
+
+/** 握手失败是否属于网络层瞬时错误（可重试）。
+ *
+ * 与本文件产出的错误文案耦合：网络层错误统一落成「网络错误」（`wrapNetworkError`
+ * 的映射）或「SSE 连接已关闭」（SSE 长连接的中断）；其余——HTTP 状态、超时、
+ * endpoint 未下发——是服务端的确定性行为，不重试。 */
+function isTransientNetworkError(message: string): boolean {
+  return message.includes('网络错误') || message.includes('SSE 连接已关闭');
+}
+
+/** POST 发送阶段对瞬时网络错误做有界重试：本机安全软件（过滤驱动）会间歇性
+ * 掐断刚建立的连接（ECONNRESET / ECONNABORTED），与 LLM 客户端对网络错误的
+ * 处理约定一致（重试 3 次）。只在 fetch 本身抛错时重试——此时请求未被服务器
+ * 受理，不存在重复执行工具的歧义；abort（超时/中止）是确定性行为，不重试。 */
+const SEND_MAX_ATTEMPTS = 3;
+const SEND_RETRY_DELAY_MS = 150;
+
+function isTransientFetchError(err: unknown): boolean {
+  // 与 wrapNetworkError 的分类一致：abort 归超时/中止，其余是网络层
+  return err instanceof Error && err.name !== 'AbortError' && !/aborted/i.test(err.message);
+}
+
+async function sendPostWithRetry(send: () => Promise<UndiciResponse>): Promise<UndiciResponse> {
+  let attempt = 0;
+  for (;;) {
+    attempt += 1;
+    try {
+      return await send();
+    } catch (err) {
+      if (attempt >= SEND_MAX_ATTEMPTS || !isTransientFetchError(err)) throw err;
+      await sleep(SEND_RETRY_DELAY_MS);
+    }
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 /** 一次待响应的请求（旧版 SSE 模式下响应从长连接回流） */
 interface PendingRequest {
   resolve: (value: JsonRpcMessage) => void;
@@ -150,6 +193,11 @@ export class McpHttpClient implements McpClient {
   /**
    * 建立连接并完成 initialize 握手 + tools/list。
    * 先试 Streamable HTTP，失败后回退旧版 SSE；两种都失败则抛错。
+   *
+   * 本机安全软件（杀毒 / 防火墙的过滤驱动）会间歇性掐断刚建立的回环连接
+   * （ECONNRESET / ECONNABORTED，fetch 报网络层错误）。与 LLM 客户端对网络错误的
+   * 处理约定一致（llm 层重试 3 次）：握手失败且属于网络层瞬时错误时退避后整体
+   * 重来；协议层失败（HTTP 状态、服务器沉默）是服务端的确定性行为，一次定论。
    */
   async start(): Promise<void> {
     if (this.running) return;
@@ -168,11 +216,38 @@ export class McpHttpClient implements McpClient {
     this.running = true;
     this.initialized = false;
 
+    let attempt = 0;
+    let delay = START_RETRY_DELAY_MS;
+    for (;;) {
+      attempt += 1;
+      try {
+        await this.handshake();
+        this.initialized = true;
+        return;
+      } catch (combined) {
+        const message = combined instanceof Error ? combined.message : String(combined);
+        if (attempt >= START_MAX_ATTEMPTS || !isTransientNetworkError(message)) {
+          this.stop();
+          throw combined;
+        }
+        logger.info(
+          'McpHttpClient',
+          `[${this.name}] 连接被瞬时中断，${delay}ms 后重试（${attempt}/${START_MAX_ATTEMPTS}）：${message}`,
+        );
+        // 清掉失败尝试的残留（SSE 长连接、半截握手状态）再重来
+        this.resetTransientState();
+        await sleep(delay);
+        delay *= 2;
+      }
+    }
+  }
+
+  /** 一次完整的握手尝试：先 Streamable HTTP，失败回退旧版 SSE。 */
+  private async handshake(): Promise<void> {
     let streamableError: Error | null = null;
     try {
       await this.connectStreamable();
       this.mode = 'streamable';
-      this.initialized = true;
       return;
     } catch (err) {
       streamableError = err instanceof Error ? err : new Error(String(err));
@@ -186,10 +261,8 @@ export class McpHttpClient implements McpClient {
     try {
       await this.connectLegacy();
       this.mode = 'legacy';
-      this.initialized = true;
     } catch (err) {
       const legacyError = err instanceof Error ? err : new Error(String(err));
-      this.stop();
       throw new Error(
         `启动 MCP server "${this.name}" (${this.url}) 失败: `
         + `Streamable HTTP: ${streamableError.message}；旧版 SSE: ${legacyError.message}`,
@@ -324,12 +397,12 @@ export class McpHttpClient implements McpClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await undiciFetch(this.url, {
+      const response = await sendPostWithRetry(() => undiciFetch(this.url, {
         method: 'POST',
         headers: this.buildHeaders(true),
         body: JSON.stringify(message),
         signal: controller.signal,
-      });
+      }));
       return await this.readStreamableResponse(response, message.id ?? null);
     } catch (err) {
       throw this.wrapNetworkError(err, timeoutMs);
@@ -436,7 +509,7 @@ export class McpHttpClient implements McpClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), CONTROL_TIMEOUT_MS);
     try {
-      const response = await undiciFetch(endpoint, {
+      const response = await sendPostWithRetry(() => undiciFetch(endpoint, {
         method: 'POST',
         headers: {
           Accept: 'application/json, text/event-stream',
@@ -445,7 +518,7 @@ export class McpHttpClient implements McpClient {
         },
         body: JSON.stringify(message),
         signal: controller.signal,
-      });
+      }));
       if (!response.ok) {
         const text = await response.text().catch(() => '');
         throw new Error(`HTTP ${response.status} ${response.statusText}${text ? `: ${text.slice(0, 300)}` : ''}`);

@@ -64,7 +64,12 @@ impl FakeHttp {
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(5));
                     }
-                    Err(_) => break,
+                    // Windows 上客户端在 accept 前重置连接时，accept 会瞬时返回
+                    // WSAECONNRESET。退出线程会关掉 listener，后续请求全部拒连；
+                    // 睡一下继续轮询，线程只经 stop 退出。
+                    Err(_) => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
                 }
             }
         });

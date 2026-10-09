@@ -34,6 +34,52 @@ use crate::mcp::{
     McpToolDefinition, CALL_TIMEOUT_MS, CONTROL_TIMEOUT_MS, PROTOCOL_VERSION,
 };
 
+/// 握手对「本机软件瞬时掐断连接」的重试次数与起始退避（共 3 次尝试）。
+/// 与 LLM 客户端的网络错误重试次数一致（llm.rs 的 MAX_RETRIES）。
+const START_MAX_ATTEMPTS: u32 = 3;
+const START_RETRY_DELAY_MS: u64 = 200;
+
+/// POST 发送阶段的重试次数与退避。只在 `send()` 本身失败时重试——此时请求未被
+/// 服务器受理，不存在重复执行工具的歧义；超时（等待预算耗尽）是确定性行为，不重试。
+const SEND_MAX_ATTEMPTS: u32 = 3;
+const SEND_RETRY_DELAY_MS: u64 = 150;
+
+/// 握手失败是否属于网络层瞬时错误（可重试）。
+///
+/// 与本文件产出的错误文案耦合：网络层错误统一落成「网络错误」（`wrap_network_error`
+/// / `post_legacy` 的映射）或「SSE 连接已关闭」（`legacy_sse_reader` 的连接中断）；
+/// 其余——HTTP 状态、超时、endpoint 未下发——是服务端的确定性行为，不重试。
+fn is_transient_network_error(message: &str) -> bool {
+    message.contains("网络错误") || message.contains("SSE 连接已关闭")
+}
+
+/// POST 的发送阶段对瞬时网络错误做有界重试：本机安全软件（过滤驱动）会间歇性
+/// 掐断刚建立的连接（WSAECONNRESET / WSAECONNABORTED，reqwest 报
+/// 「error sending request」），与 LLM 客户端对网络错误的处理约定一致（llm.rs 重试 3 次）。
+fn send_post_with_retry(
+    name: &str,
+    build: impl Fn() -> reqwest::blocking::RequestBuilder,
+) -> Result<reqwest::blocking::Response, reqwest::Error> {
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        match build().send() {
+            Ok(response) => return Ok(response),
+            Err(err) => {
+                let transient =
+                    (err.is_request() || err.is_connect() || err.is_body()) && !err.is_timeout();
+                if !transient || attempt >= SEND_MAX_ATTEMPTS {
+                    return Err(err);
+                }
+                eprintln!(
+                    "[core] mcp: [{name}] 请求被瞬时中断，{SEND_RETRY_DELAY_MS}ms 后重试（{attempt}/{SEND_MAX_ATTEMPTS}）：{err}"
+                );
+                std::thread::sleep(Duration::from_millis(SEND_RETRY_DELAY_MS));
+            }
+        }
+    }
+}
+
 /// 解析出的 SSE 事件
 #[derive(Clone, Debug, PartialEq)]
 struct SseEvent {
@@ -231,12 +277,13 @@ impl McpHttpClient {
         let headers = self.build_headers(true);
         // 与 Embedded 的 `JSON.stringify` 逐字对齐（数字走 JS 口径）
         let body = crate::util::js_json_stringify(message);
-        let response = client
-            .post(&self.shared.url)
-            .headers(headers)
-            .body(body)
-            .send()
-            .map_err(|err| self.wrap_network_error(&err, timeout_ms))?;
+        let response = send_post_with_retry(self.name(), || {
+            client
+                .post(&self.shared.url)
+                .headers(headers.clone())
+                .body(body.clone())
+        })
+        .map_err(|err| self.wrap_network_error(&err, timeout_ms))?;
         let expect_id = message.get("id").cloned().unwrap_or(Value::Null);
         self.read_streamable_response(response, &expect_id)
     }
@@ -533,6 +580,31 @@ impl McpHttpClient {
         self.shared.state.lock().unwrap().tools = tools;
         Ok(())
     }
+
+    /// 一次完整的握手尝试：先 Streamable HTTP，失败回退旧版 SSE。
+    /// 失败时返回合并了两种传输错误的信息（能否重试由 `start` 判定）。
+    fn handshake(&self) -> Result<(), String> {
+        let streamable_error = match self.connect_streamable() {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                eprintln!(
+                    "[core] mcp: [{}] Streamable HTTP 握手失败，回退旧版 SSE: {err}",
+                    self.name()
+                );
+                self.reset_transient_state();
+                err
+            }
+        };
+
+        match self.connect_legacy() {
+            Ok(()) => Ok(()),
+            Err(legacy_error) => Err(format!(
+                "启动 MCP server \"{}\" ({}) 失败: Streamable HTTP: {streamable_error}；旧版 SSE: {legacy_error}",
+                self.name(),
+                self.shared.url
+            )),
+        }
+    }
 }
 
 impl McpClient for McpHttpClient {
@@ -582,33 +654,34 @@ impl McpClient for McpHttpClient {
             state.initialized = false;
         }
 
-        let streamable_error = match self.connect_streamable() {
-            Ok(()) => {
-                self.shared.state.lock().unwrap().initialized = true;
-                return Ok(());
-            }
-            Err(err) => {
-                eprintln!(
-                    "[core] mcp: [{}] Streamable HTTP 握手失败，回退旧版 SSE: {err}",
-                    self.name()
-                );
-                self.reset_transient_state();
-                err
-            }
-        };
-
-        match self.connect_legacy() {
-            Ok(()) => {
-                self.shared.state.lock().unwrap().initialized = true;
-                Ok(())
-            }
-            Err(legacy_error) => {
-                self.stop();
-                Err(format!(
-                    "启动 MCP server \"{}\" ({}) 失败: Streamable HTTP: {streamable_error}；旧版 SSE: {legacy_error}",
-                    self.name(),
-                    self.shared.url
-                ))
+        // 本机安全软件（杀毒 / 防火墙的过滤驱动）会间歇性掐断刚建立的回环连接
+        // （WSAECONNRESET / WSAECONNABORTED，reqwest 报「error sending request」）。
+        // 与 LLM 客户端对网络错误的处理约定一致（llm.rs 重试 3 次）：握手失败且属于
+        // 网络层瞬时错误时退避后整体重来；协议层失败（HTTP 状态、服务器沉默）是
+        // 服务端的确定性行为，一次定论不重试。
+        let mut attempt = 0u32;
+        let mut delay = START_RETRY_DELAY_MS;
+        loop {
+            attempt += 1;
+            match self.handshake() {
+                Ok(()) => {
+                    self.shared.state.lock().unwrap().initialized = true;
+                    return Ok(());
+                }
+                Err(combined) => {
+                    if attempt >= START_MAX_ATTEMPTS || !is_transient_network_error(&combined) {
+                        self.stop();
+                        return Err(combined);
+                    }
+                    eprintln!(
+                        "[core] mcp: [{}] 连接被瞬时中断，{delay}ms 后重试（{attempt}/{START_MAX_ATTEMPTS}）：{combined}",
+                        self.name()
+                    );
+                    // 清掉失败尝试的残留（SSE 读取线程、半截握手状态）再重来
+                    self.reset_transient_state();
+                    std::thread::sleep(Duration::from_millis(delay));
+                    delay *= 2;
+                }
             }
         }
     }
@@ -846,21 +919,22 @@ fn post_legacy(shared: &Arc<HttpShared>, message: &Value) -> Result<(), String> 
     }
     // 与 Embedded 的 `JSON.stringify` 逐字对齐（数字走 JS 口径）
     let body = crate::util::js_json_stringify(message);
-    let response = client
-        .post(&endpoint)
-        .headers(headers)
-        .body(body)
-        .send()
-        .map_err(|err| {
-            if err.is_timeout() {
-                format!(
-                    "MCP server \"{}\" 请求超时（{CONTROL_TIMEOUT_MS}ms）",
-                    shared.name
-                )
-            } else {
-                format!("MCP server \"{}\" 网络错误: {err}", shared.name)
-            }
-        })?;
+    let response = send_post_with_retry(&shared.name, || {
+        client
+            .post(&endpoint)
+            .headers(headers.clone())
+            .body(body.clone())
+    })
+    .map_err(|err| {
+        if err.is_timeout() {
+            format!(
+                "MCP server \"{}\" 请求超时（{CONTROL_TIMEOUT_MS}ms）",
+                shared.name
+            )
+        } else {
+            format!("MCP server \"{}\" 网络错误: {err}", shared.name)
+        }
+    })?;
     if !response.status().is_success() {
         let status = response.status();
         let mut response = response;

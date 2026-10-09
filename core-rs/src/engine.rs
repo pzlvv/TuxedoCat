@@ -364,9 +364,25 @@ impl Core {
         self.sessions.lock().unwrap().get(session_id).cloned()
     }
 
+    /// 会话当前是否空闲（未登记视为空闲）。对齐 Embedded `loadConversation` 的
+    /// `workingSessions` 守卫：运行中的会话不伪造「会话中断」的取消结果。
+    pub fn session_is_idle(&self, session_id: &str) -> bool {
+        match self.session_if_exists(session_id) {
+            None => true,
+            Some(state) => state.lock().unwrap().is_idle(),
+        }
+    }
+
     pub fn drop_session(&self, session_id: &str) {
         self.sessions.lock().unwrap().remove(session_id);
         self.session_order.lock().unwrap().retain(|id| id != session_id);
+    }
+
+    /// 当前登记的全部会话 id（按创建序）。
+    ///
+    /// 供测试 harness 收尾清场用：见 `test_support.rs` 的 `EngineHarness::drop`。
+    pub fn session_ids(&self) -> Vec<String> {
+        self.session_order.lock().unwrap().clone()
     }
 
     /// 会话工作目录：会话级登记优先，其次 `meta.json` 的 `project`，最后活动工作目录

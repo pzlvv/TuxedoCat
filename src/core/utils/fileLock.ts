@@ -21,10 +21,19 @@ import * as fs from 'fs';
 
 /** 锁文件过期时间：超过这个时长仍未被释放，视为持有者已崩溃 */
 export const LOCK_STALE_MS = 15_000;
-/** 获取锁的最大尝试次数 */
+/** 获取锁的最大尝试次数（同步路径：`sleepSync` 占着主线程，预算必须小） */
 const LOCK_MAX_ATTEMPTS = 20;
+/** 异步路径的获取预算：`withFileLock` 每次重试都让出事件循环，可以等得更久。
+ * 共写进程多且机器负载高时锁会长时间饱和，预算太小会让「保存设置」这类用户操作
+ * 无谓地抛错；总等待仍远小于 `LOCK_STALE_MS`，不会与陈旧锁抢占语义纠缠。 */
+const LOCK_ASYNC_MAX_ATTEMPTS = 200;
 /** 两次尝试之间的间隔 */
 const LOCK_RETRY_DELAY_MS = 10;
+
+/** rename 瞬时失败的重试参数：指数退避，封顶 `RENAME_RETRY_MAX_MS` */
+const RENAME_MAX_ATTEMPTS = 10;
+const RENAME_RETRY_BASE_MS = 5;
+const RENAME_RETRY_MAX_MS = 100;
 
 /** 当前进程 pid（写入锁文件，供陈旧判定） */
 const PID = process.pid;
@@ -123,6 +132,28 @@ export function acquireLockSync(lockPath: string): boolean {
 }
 
 /**
+ * Windows 上 `rename` 覆盖已有文件可能瞬时 `EPERM` / `EACCES`：目标正被一个不带
+ * 删除共享位的句柄占住——最常见是杀毒软件 / 索引器接管了刚落盘的文件（`graceful-fs`
+ * 对同一问题就是这么处理的）。这类占用是毫秒级的，有限次退避重试即可穿过；
+ * 重试用尽或非瞬时错误原样抛出，不做静默降级。
+ */
+async function renameWithRetry(tmpPath: string, filePath: string): Promise<void> {
+  let delay = RENAME_RETRY_BASE_MS;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await fs.promises.rename(tmpPath, filePath);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      const transient = code === 'EPERM' || code === 'EACCES';
+      if (!transient || attempt >= RENAME_MAX_ATTEMPTS) throw err;
+      await sleep(delay);
+      delay = Math.min(delay * 2, RENAME_RETRY_MAX_MS);
+    }
+  }
+}
+
+/**
  * 在跨进程互斥下执行 `fn`。
  *
  * 拿不到锁时抛错而不是继续执行：调用方要写的是共享文件，无锁写入会覆盖其它进程的
@@ -130,12 +161,12 @@ export function acquireLockSync(lockPath: string): boolean {
  */
 export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
   let acquired = false;
-  for (let attempt = 0; attempt < LOCK_MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < LOCK_ASYNC_MAX_ATTEMPTS; attempt++) {
     if (tryCreateLock(lockPath)) {
       acquired = true;
       break;
     }
-    if (attempt < LOCK_MAX_ATTEMPTS - 1) await sleep(LOCK_RETRY_DELAY_MS);
+    if (attempt < LOCK_ASYNC_MAX_ATTEMPTS - 1) await sleep(LOCK_RETRY_DELAY_MS);
   }
   if (!acquired) {
     throw new Error(`failed to acquire file lock: ${lockPath}`);
@@ -160,7 +191,7 @@ export async function writeFileAtomic(
 ): Promise<void> {
   await fs.promises.writeFile(tmpPath, data, 'utf-8');
   try {
-    await fs.promises.rename(tmpPath, filePath);
+    await renameWithRetry(tmpPath, filePath);
   } catch (err) {
     // rename 失败时清掉临时文件，避免残留
     await fs.promises.unlink(tmpPath).catch(() => undefined);

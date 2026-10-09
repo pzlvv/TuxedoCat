@@ -548,7 +548,13 @@ impl FakeLlm {
                     Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(5));
                     }
-                    Err(_) => break,
+                    // Windows 上客户端在 accept 前重置连接时，accept 会瞬时返回
+                    // WSAECONNRESET。这里绝不能退出：线程一退 listener 就关了，
+                    // 后续所有请求都会被拒连（测试里表现为 LLM 请求三次重试全失败）。
+                    // accept 错误都是单连接级的，睡一下继续轮询；线程只经 stop 退出。
+                    Err(_) => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
                 }
             }
         });
@@ -588,7 +594,11 @@ impl FakeLlm {
                     Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(5));
                     }
-                    Err(_) => break,
+                    // 同 `start`：accept 的瞬时错误（Windows 的 WSAECONNRESET）
+                    // 不能退出线程，否则 listener 关闭、后续请求全部拒连。
+                    Err(_) => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
                 }
             }
         });
@@ -638,7 +648,11 @@ impl FakeLlm {
                     Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(5));
                     }
-                    Err(_) => break,
+                    // 同 `start`：accept 的瞬时错误（Windows 的 WSAECONNRESET）
+                    // 不能退出线程，否则 listener 关闭、后续请求全部拒连。
+                    Err(_) => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
                 }
             }
         });
@@ -1164,6 +1178,30 @@ impl EngineHarness {
 
 impl Drop for EngineHarness {
     fn drop(&mut self) {
+        // 收尾必须把还活着的轮次（尤其是后台子代理会话）全部中止并等静默：
+        // 测试函数一返回，`Sandbox` 持有的进程级串行锁就释放了，下一个用例会立刻
+        // 重置全局 settings / 活动工作目录。此时若本用例的后台轮次还在跑，它会读走
+        // 下一个用例的 FakeLlm base_url 与工作目录——既污染对方 FakeLlm 的应答序号，
+        // 也让本方会话把下一个用例的沙箱写进落盘（满载跑全量时稳定复现）。
+        for session_id in self.core.session_ids() {
+            self.core.on_abort(&session_id);
+        }
+        // 轮次线程是分离的，只能等：深度空闲判断沿子代理注册表覆盖子会话
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            let busy = self
+                .core
+                .session_ids()
+                .iter()
+                .any(|id| !self.core.is_session_idle(id));
+            if !busy {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        for session_id in self.core.session_ids() {
+            self.core.drop_session(&session_id);
+        }
         self.stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
