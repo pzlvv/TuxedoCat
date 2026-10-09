@@ -68,12 +68,9 @@ if (existingPid && existingPid !== process.pid && isAlive(existingPid)) {
   process.exit(0);
 }
 
-// watcher 不监听 assets/resources，先复制一次静态资源
+// watcher 不监听 assets/resources，先复制一次静态资源（含按 Core 变体清理多余的 rg）
 try {
-  execSync(
-    `node -e "require('fs').cpSync('assets','dist/assets',{recursive:true});require('fs').cpSync('resources','dist/resources',{recursive:true})"`,
-    { cwd: ROOT, stdio: 'inherit' }
-  );
+  execSync('node scripts/copy-assets.mjs', { cwd: ROOT, stdio: 'inherit' });
 } catch (err) {
   console.error('[watch:app] copy-assets failed:', err);
 }

@@ -14,7 +14,8 @@
 !dist/webview/logo.svg
 !dist/webview/logo*.png
 
-# 运行时外部可执行文件（预编译 ripgrep：win32-x64 / win32-arm64 / linux-x64）
+# 运行时外部可执行文件：Standalone Core 产物（含它自带的 rg），或 Embedded 变体的预编译
+# ripgrep。两份 rg 按变体互斥，scripts/copy-assets.mjs 已清掉不属于本变体的那份。
 !dist/resources/**
 
 # 扩展图标 / 视图图标（package.json 的 icon 与 contributes.viewsContainers 引用）

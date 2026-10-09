@@ -93,7 +93,7 @@
     "build:remoteWorkspace": "vite build --config vite.remoteWorkspace.config.ts",
     "watch:webview": "vite build --watch",
     "build": "npm run check-types && npm run lint && node esbuild.js && npm run build:webview && npm run copy-assets",
-    "copy-assets": "node -e \"const fs=require('fs');const p=require('./project.config.cjs');fs.cpSync('assets', 'dist/assets', {recursive: true});fs.cpSync('resources', 'dist/resources', {recursive: true});if(p.coreKind==='embedded'){fs.rmSync('dist/resources/core', {recursive: true, force: true})}\"",
+    "copy-assets": "node scripts/copy-assets.mjs",
     "build:electron": "node electron/esbuild.js",
     "build:electron:prod": "node electron/esbuild.js --production",
     "watch:electron": "node electron/esbuild.js --watch",

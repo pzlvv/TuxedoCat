@@ -10,12 +10,16 @@ import os
 import sys
 import shutil
 
+# 两份 ripgrep 按 Core 变体互斥存在（scripts/copy-assets.mjs 按变体清理 dist）：
+#   embedded   → 只有 dist/resources/ripgrep/（TS 侧 Grep / Glob 的 rg）
+#   standalone → 只有 dist/resources/core/**/ripgrep/（Core 自带的 rg）
+# 这里列两者的并集；本变体里不存在的条目匹配不到，静默跳过。
 TARGET_FILES = [
     # 打包时仅包含 dist/resources（.vscodeignore 已排除顶层 resources/）
     "extension/dist/resources/ripgrep/x64-linux/rg",
-    "extension/dist/resources/core/x64-linux/tuxedo-cat-core",
     # Core 自带的 ripgrep（与 Core 可执行文件同级，Grep / Glob 靠它）
     "extension/dist/resources/core/x64-linux/ripgrep/rg",
+    "extension/dist/resources/core/x64-linux/tuxedo-cat-core",
     # arm64 Linux 与 x64 同为打包要携带的平台（build-core.mjs 的 PACKAGE_DIRS）
     "extension/dist/resources/ripgrep/arm64-linux/rg",
     "extension/dist/resources/core/arm64-linux/tuxedo-cat-core",

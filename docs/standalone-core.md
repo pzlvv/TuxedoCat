@@ -167,8 +167,16 @@ resources/core/x64-win32/ripgrep/rg.exe
 Core 定位自带 ripgrep 时**以自己的可执行文件为基准**（`tools.rs::ripgrep_path`，按优先级
 取第一个存在的）：可执行文件同目录下的 `ripgrep/`（仓库产物与 Electron 打包布局——
 `asarUnpack` 解包后 rg 与 Core 在同一层，而 Rust 的 `Path::exists` 看不进 asar 内的
-`dist/resources/ripgrep/`），以及槽位上一级产品目录里的 `ripgrep/`（远端部署的共享位）。
-本地起进程、远端上传与 TUI 版安装都在这两条候选内，不依赖宿主提供 `extensionPath`。
+`dist/resources/core/<平台>/ripgrep/`），以及槽位上一级产品目录里的 `ripgrep/`（远端部署
+的共享位）。本地起进程、远端上传与 TUI 版安装都在这两条候选内，不依赖宿主提供
+`extensionPath`。
+
+**两份 ripgrep 的归属**：`resources/ripgrep/<dir>/` 归 Embedded Core（TS 侧
+`src/core/utils/ripgrep.ts` 定位），`resources/core/<dir>/ripgrep/` 归 Standalone Core
+自带。`scripts/copy-assets.mjs` 把 `resources/` 复制进 `dist/` 后按当前变体清掉不属于本
+变体的那份（embedded 删 `dist/resources/core/`，standalone 删 `dist/resources/ripgrep/`），
+两种变体的分发包里各只留一份。源目录两份都保留：embedded 变体要前者，
+`build-core.mjs::copyBundledRipgrep` 拿后者当 Core 自带 rg 的源。
 
 **产品身份单源**：部署产品目录名（`core.deployPrefix`）、Core 二进制名
 （`core.binaryName`）、扩展名（`extensionName`）、配置目录名（`configDir`）等产品
@@ -250,7 +258,8 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 
 预编译 ripgrep（`resources/ripgrep/<arch>-<platform>/`）四个平台取自同一版本的 ripgrep
 官方发布物（15.2.0；Linux 两份为 `unknown-linux-musl` 静态链接），入库前按官方 `.sha256`
-逐份校验。
+逐份校验。这份源同时供 Embedded Core 直接读取，也是 `build-core.mjs::copyBundledRipgrep`
+复制成 Core 自带 rg（`resources/core/<dir>/ripgrep/`）的源。
 
 **Windows arm64**：目标与产物目录已登记（矩阵一致性由
 `src/test/corePlatformMatrix.test.ts` 锁定）且可构建（`npm run build:core:win32-arm64`），
