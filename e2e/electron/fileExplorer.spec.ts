@@ -56,6 +56,21 @@ async function expandFiles(sb: Page): Promise<void> {
   await expect(sb.locator(`${FILE_ROWS}[data-path="src"]`)).toBeVisible({ timeout: 15_000 });
 }
 
+/** 按路径切换活动工作区（走主进程 openWorkspace，与侧栏点击工作区同一路径） */
+async function openWorkspaceByPath(sb: Page, wsPath: string): Promise<void> {
+  await sb.evaluate(async (p) => {
+    const w = window as unknown as {
+      sidebarAPI?: {
+        getWorkspaces: () => Promise<{ workspaces: Array<{ id: string; path: string }> }>;
+        openWorkspace: (id: string) => void;
+      };
+    };
+    const state = await w.sidebarAPI!.getWorkspaces();
+    const target = state.workspaces.find((t) => t.path === (p as string));
+    if (target) w.sidebarAPI!.openWorkspace(target.id);
+  }, wsPath);
+}
+
 /** 替换主进程剪贴板，记录 writeText 调用（原生剪贴板内容无法直接断言） */
 async function stubClipboard(): Promise<void> {
   const injected = await mainEval<string>(app, `(function(){try{
@@ -154,6 +169,38 @@ test('US-42 文件树状态按工作区独立：切换标签页不清空、不�
     }, app.workspaceDir);
     await expect(sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`)).toBeVisible({ timeout: 15_000 });
     await expect(sb.locator(`${FILE_ROWS}[data-path="readme.md"]`)).toBeVisible();
+  } finally {
+    await fs.promises.rm(dir2, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test('US-42 折叠态下树 DOM 被清空后，再次展开仍显示缓存内容（无需手动刷新）', async () => {
+  const sb = await sidebar();
+  await expandFiles(sb);
+
+  // A 折叠：此后任何一次 renderFiles（折叠态不渲染，会把树 DOM 清空）都会抹掉 A 的树
+  await sb.locator('#filesHeader').click();
+  await expect(sb.locator(`${SECTION}.expanded`)).toHaveCount(0);
+
+  const dir2 = await makeWorkspace({ 'only-in-b.txt': 'B' }, 'e2e-ws-files-c');
+  try {
+    // 添加 B（自动激活、默认折叠）→ 折叠态 renderFiles 清空 A 的树 DOM
+    await sb.evaluate((p) =>
+      (window as unknown as { sidebarAPI?: { addWorkspaces: (paths: string[]) => void } })
+        .sidebarAPI!.addWorkspaces([p as string]), dir2);
+    // 展开 B 并等它渲染：DOM 变成 B 的条目，用于确认随后「切回 A」确实发生了
+    await sb.locator('#filesHeader').click();
+    await expect(sb.locator(`${FILE_ROWS}[data-path="only-in-b.txt"]`)).toBeVisible({ timeout: 15_000 });
+
+    // 切回 A（仍折叠）：renderFiles 把 DOM 清空 → 条目归零即「切回已生效」的信号
+    await openWorkspaceByPath(sb, app.workspaceDir);
+    await expect(sb.locator(FILE_ROWS)).toHaveCount(0, { timeout: 15_000 });
+    await expect(sb.locator(`${SECTION}.expanded`)).toHaveCount(0);
+
+    // 展开 A：命中缓存也必须重画，不能停在空树
+    await sb.locator('#filesHeader').click();
+    await expect(sb.locator(`${FILE_ROWS}[data-path="readme.md"]`)).toBeVisible({ timeout: 15_000 });
+    await expect(sb.locator(`${FILE_ROWS}[data-path="src"]`)).toBeVisible();
   } finally {
     await fs.promises.rm(dir2, { recursive: true, force: true }).catch(() => undefined);
   }

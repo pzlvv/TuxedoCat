@@ -1174,8 +1174,12 @@ function setFilesExpanded(expanded: boolean): void {
   files.expanded = expanded;
   persistFilesExpanded();
   filesSectionEl.classList.toggle('expanded', expanded);
-  // 首次展开才读根目录；折叠后再展开命中缓存，不重复读盘
-  if (expanded && !files.tree.has('')) loadDir(id, '');
+  // 展开 / 折叠都必须重画（US-42 验收 1）：renderFiles 在折叠态会清空树 DOM
+  // （折叠时不渲染也不读目录），折叠期间任何一次 renderFiles（切换工作区、在途目录
+  // 回包）都会把已缓存的树清掉；此时只切 class 不重画，展开就命中「有缓存、无 DOM」
+  // 的状态，用户看到空树、只能手动刷新。展开时 renderDirRows 会顺手触发根目录懒加载
+  // （首个读取点仍是这次展开，不会把折叠期内容缓存下来）。
+  renderFiles();
 }
 
 /** 整树刷新（刷新按钮 / 删除后）：丢弃该工作区的全部缓存，重读根与已展开目录，保留展开状态 */
