@@ -15,6 +15,10 @@
  * （`BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS`），避免定时提醒刚投递完、它拉起的
  * 那轮查询一结束就又被兜底提醒一次。
  *
+ * 兜底门槛另有一条 sleep 豁免：命令含 `sleep` 子命令、且本任务还没兜底过的，刚注册也
+ * 兜底一次（sleep 类任务在等定时事件，最需要被提醒「别去轮询，等通知」）。豁免每个任务
+ * 只走一次（`fallbackReminded`），否则查询结束会每轮命中。
+ *
  * 对应 Standalone 实现：`core-rs/src/engine.rs` 的 `tick_background_reminders`
  * 与 `core-rs/src/bash_task.rs` 的间隔常量 / 文案。
  */
@@ -22,7 +26,9 @@
 import { closeSync, fstatSync, openSync, readSync } from 'fs';
 import { logger } from '../../Logger.js';
 import { getSessionRuntimeState } from '../../sessionRuntime.js';
+import { containsSleepCommand } from './SleepDetect.js';
 import { getTaskOutputPath } from './TaskOutput.js';
+import { splitBySeparators } from './TimeoutPolicy.js';
 
 /**
  * 提醒间隔（分钟）：第 1 次 5min，其后 10 / 20 / 30min，再往后固定 30min。
@@ -32,22 +38,38 @@ import { getTaskOutputPath } from './TaskOutput.js';
 export const BACKGROUND_REMINDER_INTERVALS_MIN = [5, 10, 20, 30] as const;
 
 /**
- * 同一任务两次提醒之间的最小间隔（查询结束兜底门槛）：距上次「访问」不足 3 分钟的，
- * 查询结束时不进兜底提醒列表——它刚被周期提醒报告过，或本轮查询刚刚看过它。
+ * 同一任务两次提醒之间的最小间隔（查询结束兜底门槛）：距上次「访问」不足 3 分钟、
+ * 且不满足 sleep 豁免的任务，查询结束时不进兜底提醒列表——它刚被周期提醒报告过，
+ * 或本轮查询刚刚看过它。
  *
  * 与 Standalone `bash_task::BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS` 一致。
  */
 export const BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS = 3 * 60_000;
 
+/** 兜底门槛的输入（纯数据，供两侧对等测试共用） */
+export interface BackgroundFallbackReminderInput {
+  /** 该任务上次被「访问」的时刻（周期提醒投递 / 查询结束，任务注册时取开始时间） */
+  lastAccessedAt: number;
+  /** 任务命令（sleep 判定与超时策略 `Bash.ts` 的 isSleep 同一口径） */
+  command: string;
+  /**
+   * 是否已经兜底提醒过（含手工转后台时预置的抑制标记）。sleep 豁免每个任务只走一次，
+   * 否则查询结束会每轮命中。
+   */
+  fallbackReminded: boolean;
+}
+
 /**
- * 距上次访问是否已满最小间隔：`lastAccessedAt` 是该任务上次被「访问」的时刻
- * （周期提醒投递 / 查询结束，任务注册时取开始时间）。纯函数，供两侧对等测试共用。
+ * 任务是否满足查询结束的兜底门槛：距上次访问满最小间隔，或命令含 `sleep` 子命令、
+ * 且本任务还没兜底过（sleep 类任务在等一个定时事件，最需要被提醒「别去轮询，等通知」，
+ * 因此刚注册也兜底一次）。纯函数，供两侧对等测试共用。
  */
 export function qualifiesBackgroundFallbackReminder(
-  lastAccessedAt: number,
+  input: BackgroundFallbackReminderInput,
   now: number = Date.now(),
 ): boolean {
-  return now - lastAccessedAt >= BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS;
+  if (now - input.lastAccessedAt >= BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS) return true;
+  return !input.fallbackReminded && containsSleepCommand(splitBySeparators(input.command));
 }
 
 /** 调度器轮询间隔：1s 粒度足够（最小间隔是分钟级），开销可忽略 */
@@ -139,6 +161,10 @@ interface ReminderSchedule extends ReminderClock {
    * 登记时取任务开始时间（任务刚起不算「已访问」）。
    */
   lastAccessedAt: number;
+  /**
+   * 是否已经兜底提醒过（含手工转后台时预置的抑制标记）：sleep 豁免据此只生效一次。
+   */
+  fallbackReminded: boolean;
   deliver: BackgroundReminderDelivery;
 }
 
@@ -299,6 +325,7 @@ export function registerBackgroundReminder(registration: BackgroundReminderRegis
     accumulatedMs: 0,
     lastTickMs: now,
     lastAccessedAt: registration.startTime,
+    fallbackReminded: false,
     deliver: registration.deliver,
   });
   ensureTicker();
@@ -319,7 +346,8 @@ export function unregisterSessionBackgroundReminders(sessionID: string): void {
 }
 
 /**
- * 查询结束兜底门槛的运行时入口：该任务距上次访问已满最小间隔才需要兜底。
+ * 查询结束兜底门槛的运行时入口：该任务满足门槛（距上次访问满最小间隔，或还没兜底过的
+ * sleep 任务）才需要兜底。
  *
  * 未登记提醒时钟的任务不进兜底列表（无会话的任务不在 `getRunningBackgroundTasksForSession`
  * 的结果里，查不到时钟说明任务已结束 / 已被注销，此时不该再提醒）。
@@ -327,7 +355,28 @@ export function unregisterSessionBackgroundReminders(sessionID: string): void {
 export function isBackgroundFallbackReminderDue(taskId: string, now: number = Date.now()): boolean {
   const schedule = schedules.get(taskId);
   if (!schedule) return false;
-  return qualifiesBackgroundFallbackReminder(schedule.lastAccessedAt, now);
+  return qualifiesBackgroundFallbackReminder(
+    {
+      lastAccessedAt: schedule.lastAccessedAt,
+      command: schedule.command,
+      fallbackReminded: schedule.fallbackReminded,
+    },
+    now,
+  );
+}
+
+/**
+ * 登记一次「已兜底」：该任务的 sleep 豁免不再生效。
+ *
+ * 两个写入点：查询结束兜底投递时（sleep 豁免每个任务只走一次，否则查询结束每轮命中）、
+ * 手工转后台转换成功时（任务刚注册就兜底会拉起新一轮，违背暂停语义——
+ * `docs/manual-background.md` 第 1.4 节）。
+ */
+export function markBackgroundTasksFallbackReminded(taskIds: readonly string[]): void {
+  for (const taskId of taskIds) {
+    const schedule = schedules.get(taskId);
+    if (schedule) schedule.fallbackReminded = true;
+  }
 }
 
 /**
@@ -335,7 +384,8 @@ export function isBackgroundFallbackReminderDue(taskId: string, now: number = Da
  *
  * 周期提醒在 `fireReminder` 内自调；查询结束由 `QueryEngine` 对本会话运行中的
  * 全部任务调用（无论本次是否兜底）——提醒自己拉起的那轮查询结束时，同一批任务
- * 距上次访问不足最小间隔，不会再被兜底。
+ * 距上次访问不足最小间隔，不会再被时间门槛兜底；本次投递过的任务另有
+ * `markBackgroundTasksFallbackReminded` 挡住 sleep 豁免。
  */
 export function markBackgroundTasksAccessed(taskIds: readonly string[], atMs: number = Date.now()): void {
   for (const taskId of taskIds) {

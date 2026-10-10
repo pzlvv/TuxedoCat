@@ -10,7 +10,8 @@
  *
  * 覆盖四件事：间隔档位（5 / 10 / 20 / 30 / 30…）、提醒时钟推进（空闲累加、
  * 暂停不累加、一次跨多档）、提醒文案（描述 / 命令 / 时长 / 输出尾部 / 下次间隔）、
- * 兜底提醒门槛（距上次访问满 3 分钟才进查询结束的兜底列表）。
+ * 兜底提醒门槛（距上次访问满 3 分钟，或还没兜底过的 sleep 任务，才进查询结束的
+ * 兜底列表）。
  *
  * 用法：先 `npm run compile-tests`，再 `node scripts/gen-background-reminder-parity.mjs`。
  */
@@ -120,19 +121,29 @@ const textCases = textInputs.map((input) => ({
 
 // ---- 兜底提醒门槛（查询结束的一次性提醒）----
 // 时间无关口径：只记「距上次访问的时长」，上次访问时刻由消费侧以「now - sinceLastAccessMs」
-// 现算，两侧对同一份用例断言布尔结果。
+// 现算，两侧对同一份用例断言布尔结果。`command` / `fallbackReminded` 覆盖 sleep 豁免
+// （含 sleep 子命令、且本任务还没兜底过 → 刚注册也进列表；豁免每个任务只走一次）。
 const FALLBACK_NOW = 10 * 60_000;
 const fallbackQualifyInputs = [
-  { name: '刚注册（距上次访问 0ms）不进列表', sinceLastAccessMs: 0 },
-  { name: '距上次访问不满 3 分钟不进列表', sinceLastAccessMs: 3 * MINUTE - 1 },
-  { name: '距上次访问满 3 分钟进列表', sinceLastAccessMs: 3 * MINUTE },
-  { name: '距上次访问远超 3 分钟进列表', sinceLastAccessMs: 10 * MINUTE },
+  { name: '刚注册的非 sleep 任务（距上次访问 0ms）不进列表', sinceLastAccessMs: 0, command: 'echo done', fallbackReminded: false },
+  { name: '刚注册的 sleep 任务走豁免进列表', sinceLastAccessMs: 0, command: 'sleep 300', fallbackReminded: false },
+  { name: '含 sleep 的组合命令按分隔符拆分后走豁免', sinceLastAccessMs: 0, command: 'echo a; sleep 5', fallbackReminded: false },
+  { name: '引号里的 sleep 不是子命令，不走豁免', sinceLastAccessMs: 0, command: "echo 'sleep 5'", fallbackReminded: false },
+  { name: '已兜底过的 sleep 任务不再走豁免', sinceLastAccessMs: 0, command: 'sleep 300', fallbackReminded: true },
+  { name: '距上次访问不满 3 分钟不进列表', sinceLastAccessMs: 3 * MINUTE - 1, command: 'echo done', fallbackReminded: false },
+  { name: '距上次访问满 3 分钟进列表', sinceLastAccessMs: 3 * MINUTE, command: 'echo done', fallbackReminded: false },
+  { name: '距上次访问远超 3 分钟进列表', sinceLastAccessMs: 10 * MINUTE, command: 'echo done', fallbackReminded: false },
+  { name: '已兜底过的 sleep 任务仍按时间门槛进列表', sinceLastAccessMs: 3 * MINUTE, command: 'sleep 300', fallbackReminded: true },
 ];
 
 const fallbackQualifyCases = fallbackQualifyInputs.map((input) => ({
   ...input,
   expected: reminder.qualifiesBackgroundFallbackReminder(
-    FALLBACK_NOW - input.sinceLastAccessMs,
+    {
+      lastAccessedAt: FALLBACK_NOW - input.sinceLastAccessMs,
+      command: input.command,
+      fallbackReminded: input.fallbackReminded,
+    },
     FALLBACK_NOW,
   ),
 }));

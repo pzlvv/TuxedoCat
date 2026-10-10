@@ -5,7 +5,8 @@
  * - 会话空闲（abort 按钮为黄）时时钟前进，满一个间隔投递 reminder；
  * - query engine 有任务（`queryRunning`）时时钟暂停，暂停期间不投递、也不丢已积累量；
  * - 任务完成 / 会话中止后注销，不再提醒；
- * - 周期提醒 / 查询结束都会刷新任务的「上次访问时刻」，最小间隔内不再满足兜底门槛。
+ * - 周期提醒 / 查询结束都会刷新任务的「上次访问时刻」，最小间隔内不再满足兜底门槛；
+ * - sleep 豁免：含 sleep 的任务刚注册即满足兜底门槛，登记「已兜底」后不再命中。
  *
  * 纯时钟推进（5 / 10 / 20 / 30 档位）由 `backgroundReminderParity.test.ts` 的对等
  * 对照表锁定，这里只验证与 `sessionRuntime` 的接线。
@@ -18,6 +19,7 @@ import {
   BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS,
   isBackgroundFallbackReminderDue,
   markBackgroundTasksAccessed,
+  markBackgroundTasksFallbackReminded,
   registerBackgroundReminder,
   tickBackgroundReminders,
   unregisterBackgroundReminder,
@@ -121,8 +123,8 @@ function run(): void {
     registerBackgroundReminder({
       taskId: 'bg-cooldown',
       sessionID,
-      description: 'Sleep',
-      command: 'sleep 600',
+      description: 'Watcher',
+      command: 'build --watch',
       startTime: now,
       pid: 7,
       deliver: (content) => delivered.push(content),
@@ -148,6 +150,26 @@ function run(): void {
       !isBackgroundFallbackReminderDue('bg-cooldown', firedAt + MINUTE),
     );
     unregisterBackgroundReminder('bg-cooldown');
+  }
+
+  // ===== sleep 豁免：含 sleep 的任务刚注册也兜底一次，且只走一次 =====
+  {
+    const sessionID = 's-rem-sleep';
+    const now = Date.now();
+    markQueryRunning(sessionID, false);
+    registerBackgroundReminder({
+      taskId: 'bg-sleep',
+      sessionID,
+      description: 'Sleep',
+      command: 'sleep 600',
+      startTime: now,
+      pid: 8,
+      deliver: () => undefined,
+    });
+    check('含 sleep 的任务刚注册即满足兜底门槛', isBackgroundFallbackReminderDue('bg-sleep', now));
+    markBackgroundTasksFallbackReminded(['bg-sleep']);
+    check('登记已兜底后 sleep 豁免不再命中', !isBackgroundFallbackReminderDue('bg-sleep', now));
+    unregisterBackgroundReminder('bg-sleep');
   }
 
   finish();

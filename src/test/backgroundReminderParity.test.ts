@@ -60,6 +60,8 @@ interface TextCase {
 interface FallbackQualifyCase {
   name: string;
   sinceLastAccessMs: number;
+  command: string;
+  fallbackReminded: boolean;
   expected: boolean;
 }
 
@@ -125,7 +127,11 @@ function run(): void {
     check(
       `兜底门槛：${qualifyCase.name}`,
       qualifiesBackgroundFallbackReminder(
-        fallbackNow - qualifyCase.sinceLastAccessMs,
+        {
+          lastAccessedAt: fallbackNow - qualifyCase.sinceLastAccessMs,
+          command: qualifyCase.command,
+          fallbackReminded: qualifyCase.fallbackReminded,
+        },
         fallbackNow,
       ) === qualifyCase.expected,
     );

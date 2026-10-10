@@ -172,23 +172,66 @@
   ],
   "fallbackQualifyCases": [
     {
-      "name": "刚注册（距上次访问 0ms）不进列表",
+      "name": "刚注册的非 sleep 任务（距上次访问 0ms）不进列表",
       "sinceLastAccessMs": 0,
+      "command": "echo done",
+      "fallbackReminded": false,
+      "expected": false
+    },
+    {
+      "name": "刚注册的 sleep 任务走豁免进列表",
+      "sinceLastAccessMs": 0,
+      "command": "sleep 300",
+      "fallbackReminded": false,
+      "expected": true
+    },
+    {
+      "name": "含 sleep 的组合命令按分隔符拆分后走豁免",
+      "sinceLastAccessMs": 0,
+      "command": "echo a; sleep 5",
+      "fallbackReminded": false,
+      "expected": true
+    },
+    {
+      "name": "引号里的 sleep 不是子命令，不走豁免",
+      "sinceLastAccessMs": 0,
+      "command": "echo 'sleep 5'",
+      "fallbackReminded": false,
+      "expected": false
+    },
+    {
+      "name": "已兜底过的 sleep 任务不再走豁免",
+      "sinceLastAccessMs": 0,
+      "command": "sleep 300",
+      "fallbackReminded": true,
       "expected": false
     },
     {
       "name": "距上次访问不满 3 分钟不进列表",
       "sinceLastAccessMs": 179999,
+      "command": "echo done",
+      "fallbackReminded": false,
       "expected": false
     },
     {
       "name": "距上次访问满 3 分钟进列表",
       "sinceLastAccessMs": 180000,
+      "command": "echo done",
+      "fallbackReminded": false,
       "expected": true
     },
     {
       "name": "距上次访问远超 3 分钟进列表",
       "sinceLastAccessMs": 600000,
+      "command": "echo done",
+      "fallbackReminded": false,
+      "expected": true
+    },
+    {
+      "name": "已兜底过的 sleep 任务仍按时间门槛进列表",
+      "sinceLastAccessMs": 180000,
+      "command": "sleep 300",
+      "fallbackReminded": true,
       "expected": true
     }
   ]

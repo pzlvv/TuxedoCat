@@ -7,8 +7,9 @@
  * 语义（两侧一致）：
  * 1. 前台命令跑起来后由注册表触发，与自动转后台（超时 / 通知驱动）同一条路径，
  *    结果照常作为 tool_result（`assistantAutoBackgrounded` + `bg-auto-` taskId）；
- * 2. 转换成功回写引擎：置循环暂停标记（下一轮 LLM 请求不发起）；查询收尾的
- *    兜底提醒不会为该任务立刻补 reminder（任务刚注册，距上次访问不足最小间隔）；
+ * 2. 转换成功回写引擎：置循环暂停标记（下一轮 LLM 请求不发起）；该任务同时登记为
+ *    「已兜底」，3 分钟门槛与 sleep 豁免都不再命中，查询收尾的兜底提醒不会为它立刻
+ *    补 reminder；
  * 3. 暂停标记一次性消费；新用户消息 / 中止会清掉残留标记。
  *
  * 运行方式：npm run test:all -- manualBackground
@@ -21,6 +22,7 @@ import { createEventBus } from '../host/EventBus';
 import { resetGlobalEventBus, setGlobalEventBus } from '../core/AssistantEventBus';
 import { sessionEngines, QueryEngine } from '../core/QueryEngine';
 import { execCommand } from '../core/tools/bash/Exec';
+import { isBackgroundFallbackReminderDue } from '../core/tools/bash/BackgroundReminder';
 import { abortBackgroundTasksForSession } from '../core/tools/bash/LocalShellTask';
 import {
   isForegroundBashRunning,
@@ -84,6 +86,12 @@ runTests('manualBackground', async () => {
     check('手工转后台结果带 bg-auto- taskId', (result.backgroundTaskId ?? '').startsWith('bg-auto-'));
     check('转换成功回写引擎：置循环暂停标记', pausedFlags.length === 1);
     check('收尾后注册表条目已注销', !isForegroundBashRunning(TOOL_USE_ID));
+    // 该任务已登记「已兜底」：即便命令含 sleep，也不满足兜底门槛（暂停语义不失效）
+    check(
+      '手工转后台的任务不满足兜底门槛',
+      result.backgroundTaskId !== undefined
+        && !isBackgroundFallbackReminderDue(result.backgroundTaskId),
+    );
 
     // 收尾：杀掉后台任务、还原引擎池与总线
     abortBackgroundTasksForSession(SESSION);

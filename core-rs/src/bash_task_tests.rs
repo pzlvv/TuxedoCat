@@ -354,7 +354,7 @@ fn completion_notifies_the_engine_before_clearing_background() {
 ///
 /// 对齐 `src/test/backgroundReminderParity.test.ts`：间隔档位（5 / 10 / 20 / 30 / 30…）、
 /// 提醒时钟推进（空闲累加 / 暂停不累加 / 一次跨多档）、提醒文案逐字一致、
-/// 兜底提醒门槛（距上次访问满 3 分钟）逐条一致。
+/// 兜底提醒门槛（距上次访问满 3 分钟，或还没兜底过的 sleep 任务）逐条一致。
 #[test]
 fn background_reminder_parity() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
@@ -435,6 +435,7 @@ fn background_reminder_parity() {
     }
 
     // 兜底门槛：now 固定，上次访问时刻按 sinceLastAccessMs 倒推，结果与对照表逐条一致
+    // （含 sleep 豁免：命令含 sleep 且还没兜底过的任务刚注册也进列表，且只走一次）。
     let fallback_now_ms: u64 = 10 * 60_000;
     for case in fixture["fallbackQualifyCases"]
         .as_array()
@@ -443,8 +444,15 @@ fn background_reminder_parity() {
         let since_last_access_ms = case["sinceLastAccessMs"]
             .as_u64()
             .expect("sinceLastAccessMs");
+        let command = case["command"].as_str().expect("command");
+        let fallback_reminded = case["fallbackReminded"].as_bool().expect("fallbackReminded");
         assert_eq!(
-            qualifies_fallback_reminder(fallback_now_ms - since_last_access_ms, fallback_now_ms),
+            qualifies_fallback_reminder(
+                fallback_now_ms - since_last_access_ms,
+                command,
+                fallback_reminded,
+                fallback_now_ms,
+            ),
             case["expected"].as_bool().expect("expected"),
             "case: {}",
             case["name"]

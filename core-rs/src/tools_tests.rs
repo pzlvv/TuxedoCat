@@ -466,6 +466,12 @@ fn bash_manual_background_converts_and_requests_loop_pause() {
         "got {}",
         running[0].task_id
     );
+    // 暂停信号携带触发暂停的任务 id：消费方据此把该任务登记为「已兜底」，
+    // 查询收尾的兜底提醒不再为它立刻补 reminder。
+    assert_eq!(
+        pause.take_source_task().as_deref(),
+        Some(running[0].task_id.as_str())
+    );
 
     crate::bash_task::abort_tasks_for_session("s-tools");
     restore_tmpdir(previous);

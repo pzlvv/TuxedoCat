@@ -1435,8 +1435,9 @@ fn second_llm_round_sees_the_tool_result() {    let sandbox = Sandbox::new("engi
 ///
 /// 1. 前台 Bash 跑起来后触发转后台 → toolResult 落盘（success）、消费循环收尾
 ///    （queryEnd，等待用户输入），**没有**第二次 LLM 请求——下一轮 agent 循环暂停；
-/// 2. 消费循环收尾不为触发暂停的任务补兜底 reminder：任务刚注册，距上次访问不足
-///    最小间隔，否则 sleep 类任务会立刻 qualify，暂停等于失效；
+/// 2. 消费循环收尾不为触发暂停的任务补兜底 reminder：暂停信号携带的 `source_task`
+///    在暂停出口被登记为「已兜底」（`fallback_reminded`），3 分钟门槛与 sleep 豁免
+///    都不再命中，否则 `sleep 30` 会立刻 qualify，暂停等于失效；
 /// 3. 下一条用户消息（队列消息）立刻拉起新一轮：第二轮 LLM 请求的上下文里
 ///    带着转后台的 tool_result——接续由队列消息触发，与转后台结果无关。
 
@@ -3881,6 +3882,44 @@ fn background_reminder_appends_to_pending_reminder() {
 
     let pending = state.lock().unwrap().pending_reminder.clone();
     assert_eq!(pending.as_deref(), Some("A\n\nB"));
+    // 投递即「由 reminder 拉起的一轮」：消费循环收尾不再补兜底提醒。
+    assert!(state.lock().unwrap().reminder_driven_run);
+}
+
+/// 查询结束兜底提醒的门槛（对齐 Embedded `src/test/backgroundFallbackReminder.test.ts`）：
+/// 非 sleep 的刚注册任务不进列表；含 `sleep` 的刚注册即兜底一次，登记
+/// `fallback_reminded` + 刷新 `last_accessed_ms` 后不再命中。
+#[test]
+fn fallback_reminder_gate_matches_embedded() {
+    // 用沙箱取进程级串行锁：本用例直接读全局任务注册表，不能被并行的
+    // `reset_for_test()` 清掉。
+    let sandbox = Sandbox::new("engine-fallback-reminder-gate");
+    crate::bash_task::reset_for_test();
+    let harness = EngineHarness::allow_all();
+    let state = harness.core.session("s-fb");
+
+    crate::bash_task::register_running("bg-plain", "Watcher", "build --watch", "s-fb", 111, None);
+    crate::bash_task::register_running("bg-sleep", "Sleep", "sleep 600", "s-fb", 222, None);
+
+    {
+        let mut guard = state.lock().unwrap();
+        let text = background_reminder("s-fb", &mut guard).expect("sleep 豁免应兜底");
+        assert!(text.contains("bg-sleep"), "got {text}");
+        assert!(!text.contains("bg-plain"), "非 sleep 刚注册不该进列表: {text}");
+    }
+    {
+        let mut guard = state.lock().unwrap();
+        assert!(
+            background_reminder("s-fb", &mut guard).is_none(),
+            "登记已兜底 + 上次访问刷新后不该再兜底"
+        );
+    }
+
+    crate::bash_task::abort_tasks_for_session("s-fb");
+    crate::bash_task::reset_for_test();
+    // `sandbox` 与 `harness` 在函数末尾按声明逆序析构（harness 先、sandbox 后），
+    // 串行锁在全部清理完成后才释放。
+    drop(sandbox);
 }
 
 #[test]

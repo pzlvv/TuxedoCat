@@ -2,8 +2,9 @@
 
 本规格界定后台 Bash 任务发给 LLM 的两类提醒：
 
-- **查询结束兜底提醒**：一轮查询刚结束时若仍有运行中的后台任务、且距上次访问该任务
-  已满最小间隔，投递一条 reminder，让 LLM 决定是否 kill 掉不再需要的任务；
+- **查询结束兜底提醒**：一轮查询刚结束时若仍有满足门槛的运行中后台任务（距上次访问
+  已满最小间隔，或命令含 `sleep` 且还没兜底过），投递一条 reminder，让 LLM 决定是否
+  kill 掉不再需要的任务；
 - **周期性提醒**：会话前台空闲（abort 按钮为黄）时，每个仍在运行的后台任务按
   5 / 10 / 20 / 30 分钟（此后固定 30 分钟）的间隔投递 reminder，报告任务当前输出、
   已执行时间与下次提醒间隔。
@@ -21,24 +22,33 @@
 
 ### 1.0 查询结束兜底提醒
 
-一轮查询结束时（`finalizeIdle` / 消费循环即将空转），若该会话仍有运行中的后台任务、
-且距上次访问该任务已满最小间隔，投递一条 reminder 列出 `taskId` / `pid` / 命令与
-按当前 OS 生成的 kill 命令，让 LLM 二选一：不再需要的执行 kill，都还需要就直接结束
-本轮等完成通知（不要 sleep / 轮询）。
+一轮查询结束时（`finalizeIdle` / 消费循环即将空转），若该会话仍有满足门槛的运行中后台
+任务，投递一条 reminder 列出 `taskId` / `pid` / 命令与按当前 OS 生成的 kill 命令，让 LLM
+二选一：不再需要的执行 kill，都还需要就直接结束本轮等完成通知（不要 sleep / 轮询）。
 
-- 兜底门槛（`qualifiesBackgroundFallbackReminder` / `bash_task::qualifies_fallback_reminder`）：
-  任务距上次访问满 3 分钟（`BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS`）才进提醒
-  列表。`lastAccessedAt` 是该任务上次被「访问」的时刻，任务注册时取开始时间：刚注册的
-  任务不进列表（短命任务很快自己完成，为它打断一轮 LLM 只是噪音），刚被周期提醒报告过
-  的任务也不会紧接着再被兜底提醒一次。全部不满足时本次不投递；门槛按**当时的**距上次
-  访问时长判定，不满足的任务留着，后续查询结束再判。
+- 兜底门槛（`qualifiesBackgroundFallbackReminder` / `bash_task::qualifies_fallback_reminder`）
+  取两条的**或**：
+  - 距上次访问满 3 分钟（`BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS`）。`lastAccessedAt`
+    是该任务上次被「访问」的时刻，任务注册时取开始时间：刚注册的任务不进列表（短命任务
+    很快自己完成，为它打断一轮 LLM 只是噪音），刚被周期提醒报告过的任务也不会紧接着再被
+    兜底提醒一次；
+  - 命令含 `sleep` 子命令、且本任务**还没兜底过**（`fallbackReminded` / `fallback_reminded`）。
+    sleep 类任务在等一个定时事件，最需要被提醒「别去轮询，等通知」，因此刚注册也兜底一次。
+    `sleep` 判定与超时策略同一口径（`SleepDetect.containsSleepCommand` /
+    `tools::contains_sleep_command`）。
+  全部不满足时本次不投递；门槛按**当时的**距上次访问时长判定，不满足的任务留着，后续
+  查询结束再判。
 - 一次「访问」＝投递周期提醒，或一轮查询结束（无论本次是否兜底）。查询结束时由
   `QueryEngine.maybeRemindBackgroundTasks` / `engine.rs` 的 `background_reminder` 把
   本会话运行中任务的上次访问时刻刷成当前时刻（`markBackgroundTasksAccessed` /
-  `ReminderEntry.last_accessed_ms`）。因此兜底提醒自己触发的那轮查询结束时，同一批任务
-  距上次访问不足最小间隔，不会被再次兜底，不存在「提醒 → 查询 → 提醒」递归。
-- 手工转后台（`docs/manual-background.md`）的任务同样受这条门槛保护：任务在转换成功
-  时才注册，查询收尾的兜底提醒不会立刻为它拉起新查询，暂停语义不失效。
+  `ReminderEntry.last_accessed_ms`），本次投递的任务同时登记为「已兜底」
+  （`markBackgroundTasksFallbackReminded` / `ReminderEntry.fallback_reminded`）：sleep 豁免
+  每个任务只走一次，否则查询结束会每轮命中。
+- 由 reminder 拉起的那一轮结束时**直接跳过**兜底提醒（Embedded `QueryEngine.reminderDrivenRun`，
+  Standalone `SessionState.reminder_driven_run`）：提醒不接力，模型不会刚被提醒过又被追问
+  「要不要 kill」。标记取走即清除，只对刚结束的那一轮有意义；下一轮照常按门槛判定。
+- 手工转后台（`docs/manual-background.md`）的任务在转换成功时即登记为「已兜底」：3 分钟
+  门槛与 sleep 豁免都不再命中，查询收尾的兜底提醒不会为它拉起新查询，暂停语义不失效。
 - Embedded：`QueryEngine.maybeRemindBackgroundTasks`；Standalone：
   `engine.rs` 的 `background_reminder`（在消费循环的「队列排空」判定里调用）。
 - 本条与周期提醒互相独立：兜底提醒只是「启动一次查询」的众多原因之一，对周期时钟没有
@@ -101,17 +111,27 @@
 - 「上次访问时刻」挂在提醒调度项上（Embedded `ReminderSchedule.lastAccessedAt` /
   Standalone `ReminderEntry.last_accessed_ms`），写入点只有两处：周期提醒投递（同一调度项）
   与查询结束（对本会话运行中的全部任务）。
+- 「已兜底」同样挂在提醒调度项上（Embedded `ReminderSchedule.fallbackReminded` /
+  Standalone `ReminderEntry.fallback_reminded`），写入点只有两处：查询结束兜底投递
+  （对本批投递的任务）与手工转后台转换成功（Embedded `Exec.triggerAutoBackground`
+  调 `markBackgroundTasksFallbackReminded`；Standalone 的暂停出口消费
+  `LoopPauseSignal.source_task`）。
+- 「本轮由 reminder 拉起」是消费循环级事实：Embedded `QueryEngine.reminderDrivenRun`，
+  Standalone `SessionState.reminder_driven_run`。置位方是两类提醒的投递点（周期提醒入口
+  `deliverBackgroundReminder` / `deliver_background_reminder`，以及兜底提醒本身），
+  消费循环收尾取走；Standalone 在取消分支额外清一次（reminder 已被丢弃）。
 
 ## 3. 测试
 
 - 对等对照表 `src/test/fixtures/backgroundReminderParity.json`（生成脚本
   `scripts/gen-background-reminder-parity.mjs`）：间隔档位、时钟推进、提醒文案、
-  兜底门槛（距上次访问满 3 分钟的布尔判定）。
+  兜底门槛（距上次访问满 3 分钟或 sleep 豁免的布尔判定）。
   - Embedded：`src/test/backgroundReminderParity.test.ts`；
   - Standalone：`core-rs/src/bash_task_tests.rs::background_reminder_parity`。
 - 调度接线：`src/test/backgroundReminderScheduler.test.ts`（空闲到点、暂停不累计、
-  中止注销、周期提醒 / 查询结束刷新 `lastAccessedAt` 后的冷却）。
+  中止注销、周期提醒 / 查询结束刷新 `lastAccessedAt` 后的冷却、sleep 豁免只走一次）。
 - 兜底提醒接线：`src/test/backgroundFallbackReminder.test.ts`（刚注册不兜底、满最小间隔
-  投递带 kill 命令的 reminder、查询结束刷新后不递归）。
+  投递带 kill 命令的 reminder、查询结束刷新后不递归、sleep 豁免只走一次、reminder
+  拉起的那一轮不补兜底）。
 - 工具结果文案：`src/test/bashSleepParity.test.ts` 与
   `core-rs/src/tools_tests.rs` 的自动转后台 / 后台用例断言下次提醒间隔。

@@ -122,16 +122,20 @@ pub type UserChoiceFn = std::sync::Arc<dyn Fn(&Value) -> Option<Value> + Send + 
 /// `auto_background_command(manual = true)`）；消费方：查询循环在工具批收尾、
 /// 下一轮 LLM 请求发起前（结果照常进上下文，但不再发起下一轮）。
 ///
-/// 查询收尾的兜底提醒不会为触发暂停的任务立刻补 reminder：任务刚注册，距上次
-/// 提醒不足最小间隔（`docs/background-reminder.md` 第 1.0 节）。
+/// `source_task` 记录触发暂停的后台任务 id：消费方据此把该任务登记为「已兜底」
+/// （`ReminderEntry.fallback_reminded`）——查询收尾的兜底提醒会为满足门槛的运行中任务
+/// 补一条 reminder 并拉起新查询，那等于转后台结果自己触发了接续循环，违背暂停语义
+/// （`docs/manual-background.md` 第 1.4 节）。
 #[derive(Clone, Default)]
 pub struct LoopPauseSignal {
     paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    source_task: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl LoopPauseSignal {
-    /// 置暂停标记
-    pub fn request(&self) {
+    /// 置暂停标记；`source_task` 是触发暂停的后台任务 id
+    pub fn request(&self, source_task: Option<String>) {
+        *self.source_task.lock().unwrap() = source_task;
         self.paused.store(true, Ordering::Relaxed);
     }
 
@@ -140,9 +144,15 @@ impl LoopPauseSignal {
         self.paused.swap(false, Ordering::Relaxed)
     }
 
+    /// 取走触发暂停的后台任务 id（随 `take` 一起消费）
+    pub fn take_source_task(&self) -> Option<String> {
+        self.source_task.lock().unwrap().take()
+    }
+
     /// 清除残留请求（新用户消息 / 中止时调用；暂停只对「当时那轮查询」有意义）
     pub fn clear(&self) {
         self.paused.store(false, Ordering::Relaxed);
+        self.source_task.lock().unwrap().take();
     }
 }
 
@@ -1334,12 +1344,13 @@ fn auto_background_command(
     crate::bash_task::watch_backgrounded(child, task_id.clone(), kill, ctx.background.clone());
 
     // 手工转后台成功：置循环暂停信号（工具结果照常进上下文，下一轮 LLM 请求
-    // 不发起）。消费收尾的兜底提醒不会为该任务立刻补 reminder：任务刚注册，
-    // 距上次访问不足最小间隔（对齐 Embedded `Exec.triggerAutoBackground('user-requested')`
-    // 的 `requestLoopPause`）。
+    // 不发起）。`source_task` 随暂停信号带给消费方，由它把该任务登记为「已兜底」：
+    // 消费收尾的兜底提醒不再为它立刻补 reminder（对齐 Embedded
+    // `Exec.triggerAutoBackground('user-requested')` 的 `requestLoopPause` +
+    // `markBackgroundTasksFallbackReminded`）。
     if manual {
         if let Some(pause) = &ctx.pause {
-            pause.request();
+            pause.request(Some(task_id.clone()));
         }
     }
 

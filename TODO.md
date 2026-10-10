@@ -119,7 +119,7 @@ Standalone Core 是 Core 的第二套实现。
   - 前台超时**不再杀进程**，改为自动转后台继续跑（`bg-auto-` 前缀，`assistantAutoBackgrounded` 文案 + `find` reminder）；只有「打开输出文件失败」才以退出码 124 收尾。
   - 通知驱动转后台：普通命令收到后台任务完成通知且已运行 ≥ `AUTO_BG_MIN_RUNNING_MS`(3s) → 转后台；`sleep` 命令收到**本会话**的后台任务完成通知或子代理 Reply 投递 → 立刻转后台。
   - 完成通知经 `enqueue_bash_notification` 注入为一条 `origin='bash'` 的 user 消息（进上下文 + 上报 UI + 落盘），空闲时唤醒消费循环；`SessionState.background` 参与 `idle` 判定；会话中止 / 关闭 / 删除时中止该会话全部后台任务（先移除记录再 kill，被中止任务不发通知）。
-  - 兜底提醒：消费循环即将空转、且仍有距上次访问满 3 分钟的后台任务时，注入一条 reminder 列出 `taskId` / `pid` / 命令与按当前 OS 生成的 kill 命令（周期提醒投递 / 查询结束都会刷新该任务的「上次访问时刻」）。
+  - 兜底提醒：消费循环即将空转、且仍有满足门槛的后台任务（距上次访问满 3 分钟，或命令含 `sleep` 且还没兜底过）时，注入一条 reminder 列出 `taskId` / `pid` / 命令与按当前 OS 生成的 kill 命令（周期提醒投递 / 查询结束都会刷新该任务的「上次访问时刻」，投递过的任务登记「已兜底」；由 reminder 拉起的那一轮收尾直接跳过）。
   - 用例：`bash_task_tests.rs`（9 条）、`tools_tests.rs`（后台 / 自动转后台 / 中断 / find 词边界共 9 条）、`engine_tests.rs`（通知唤醒消费循环、后台任务占用 idle 2 条）、`standaloneCoreTools.test.ts`（后台 Bash 端到端 + schema 暴露 `run_in_background`）。
 - [x] 并行工具批：连续出现的并发安全工具攒成一批**并行**执行（对齐 `RunTools.executeToolBatch` 的收集循环 + `executeParallelBatch`）。
       `tools::is_concurrency_safe` 逐工具对齐 `isConcurrencySafe`（Read / Grep / Glob 恒真；Bash 等同 `isReadOnly(input)`；Edit / Write / TodoWrite / AskUserQuestion 为假）。

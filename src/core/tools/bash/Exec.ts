@@ -19,6 +19,7 @@ import { findSuitableShell, type ShellInfo } from './ShellDetector.js';
 import { TaskOutput } from './TaskOutput.js';
 import { wrapSpawn } from './ShellCommand.js';
 import { registerBackgroundTask, onBackgroundTaskCompleted } from './LocalShellTask.js';
+import { markBackgroundTasksFallbackReminded } from './BackgroundReminder.js';
 import { watchSleepNotifications } from './SleepDetect.js';
 import { registerForegroundBashTrigger, unregisterForegroundBashTrigger } from './ManualBackground.js';
 import { logger } from '../../Logger.js';
@@ -193,8 +194,8 @@ async function execForeground(
       .then(bgResult => {
         // 手工转后台成功：暂停标记由这里回写引擎（转换失败走 catch，不暂停）。
         // 结果本身照常作为 tool_result 进入上下文，暂停的只是「下一轮 LLM 请求」。
-        // 查询收尾的兜底提醒不会为它立刻补 reminder：任务刚注册，距上次访问不足
-        // 最小间隔（`docs/background-reminder.md` 第 1.0 节）。
+        // 查询收尾的兜底提醒不会为它立刻补 reminder：该任务登记为「已兜底」，
+        // 3 分钟门槛与 sleep 豁免都不再命中（`docs/manual-background.md` 第 1.4 节）。
         if (reason === 'user-requested' && bgResult.backgroundTaskId && sessionID) {
           try {
             const { getSessionEngine } = require('../../QueryEngine.js') as typeof import('../../QueryEngine.js');
@@ -203,6 +204,7 @@ async function execForeground(
           } catch (err) {
             logger.warn('Exec', `Failed to pause loop after manual background: ${err}`);
           }
+          markBackgroundTasksFallbackReminded([bgResult.backgroundTaskId]);
         }
         if (resultResolve) {
           resultResolve(bgResult);

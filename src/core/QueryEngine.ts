@@ -20,6 +20,7 @@ import { isCompacting, isPendingCompact, markPendingCompact, unmarkPendingCompac
 import {
   isBackgroundFallbackReminderDue,
   markBackgroundTasksAccessed,
+  markBackgroundTasksFallbackReminded,
 } from './tools/bash/BackgroundReminder.js';
 import { randomId } from './tools/RunTools.js';
 import type { DispatchResult, SkillDispatchInfo } from './CommandDispatcher.js';
@@ -213,6 +214,14 @@ export class QueryEngine {
   private consumerExitResolvers: Array<() => void> = [];
   /** 待处理的 Reminder 消息（LLM 可见，UI 不可见） */
   private pendingReminder: string | null = null;
+  /**
+   * 本轮消费是否由后台任务的 reminder 拉起（`deliverBackgroundReminder` 与
+   * `maybeRemindBackgroundTasks` 投递时置位，`finalizeIdle` 消费后清零）。
+   *
+   * reminder 拉起的这一轮结束时不再补兜底提醒：否则「提醒 → 查询 → 提醒」会互相接力，
+   * 模型刚被提醒过又被追问「要不要 kill」。
+   */
+  private reminderDrivenRun = false;
   /**
    * 手工转后台（`UiEvent.bashBackgroundRequested`）请求的循环暂停标记。
    * 置位方：`Exec.triggerAutoBackground('user-requested')` 转换成功后调
@@ -636,7 +645,13 @@ export class QueryEngine {
       emitToUi({ type: 'queryEnd', sessionId: this.sessionID });
     }
     await this.runPendingCompactIfNeeded();
-    await this.maybeRemindBackgroundTasks();
+    // 本轮由后台 reminder 拉起：不再补兜底提醒，避免「提醒 → 查询 → 提醒」接力
+    // （标记取走即清除，只对刚结束的这一轮有意义）。
+    const reminderDriven = this.reminderDrivenRun;
+    this.reminderDrivenRun = false;
+    if (!reminderDriven) {
+      await this.maybeRemindBackgroundTasks();
+    }
   }
 
   /**
@@ -659,26 +674,31 @@ export class QueryEngine {
     this.pendingReminder = this.pendingReminder === null
       ? content
       : `${this.pendingReminder}\n\n${content}`;
+    // 这一轮由 reminder 拉起（或 reminder 已并入当前这轮）：结束时不再补兜底提醒。
+    this.reminderDrivenRun = true;
     if (!this.isConsumerRunning) {
       this.beginConsumer(true);
     }
   }
 
   /**
-   * 查询结束（End）后的兜底提醒：若本会话仍有运行中的后台 Bash 任务，且距上次访问
-   * 已满 3 分钟（`BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS`），向 LLM 注入一条
-   * reminder，列出当前后台进程（taskId + pid + 命令），让 LLM 二选一：
+   * 查询结束（End）后的兜底提醒：若本会话仍有满足门槛的、运行中的后台 Bash 任务，
+   * 向 LLM 注入一条 reminder，列出当前后台进程（taskId + pid + 命令），让 LLM 二选一：
    * - 不再需要的 → 执行 reminder 里按当前 OS 生成好的 kill 命令；
    * - 都还需要 → 直接结束本轮等待完成通知，不要 sleep / 轮询。
    *
-   * 不满最小间隔的任务不进列表：任务刚起就打断一轮 LLM 只是噪音；刚被周期提醒报告过
-   * 的任务也不该紧接着再被兜底提醒一次（周期提醒投递时会刷新该任务的「上次访问时刻」）。
-   * 全部不满足时本次不投递（任务留着，后续查询结束再按当时距上次访问的时长判定）。
+   * 门槛（`isBackgroundFallbackReminderDue`）：距上次访问满 3 分钟
+   * （`BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS`），或命令含 sleep 子命令且本任务
+   * 还没兜底过（sleep 类任务在等定时事件，刚注册也提醒一次）。不满门槛的任务不进列表：
+   * 任务刚起就打断一轮 LLM 只是噪音；刚被周期提醒报告过的任务也不该紧接着再被兜底
+   * 提醒一次（周期提醒投递时会刷新该任务的「上次访问时刻」）。全部不满足时本次不投递
+   * （任务留着，后续查询结束再按当时距上次访问的时长判定）。
    *
    * 查询结束本身也是一次「访问」：无论本次是否兜底，都把本会话运行中任务的上次访问
-   * 时刻刷新为当前时刻（`markBackgroundTasksAccessed`）。因此提醒自己触发的那轮查询
-   * 结束时，同一批任务距上次访问不足最小间隔，不会被再次兜底，不存在
-   * 「提醒 → 查询 → 提醒」的递归。
+   * 时刻刷新为当前时刻（`markBackgroundTasksAccessed`）；本次投递的任务同时登记为
+   * 「已兜底」（`markBackgroundTasksFallbackReminded`），sleep 豁免不再重复命中。
+   *
+   * 另外，`finalizeIdle` 对「由 reminder 拉起的那一轮」直接跳过本方法：提醒不再接力。
    *
    * 与周期提醒（`deliverBackgroundReminder`）的分工：本条是查询刚结束时的一次性
    * 兜底（让 LLM 立刻决定是否 kill 掉不需要的任务）；周期提醒在空闲满 5min 后按
@@ -700,6 +720,8 @@ export class QueryEngine {
         .map(t => ({ taskId: t.taskId, description: t.description, command: t.command, pid: t.pid }));
       // 查询结束即一次「访问」：先刷新再入队，提醒触发的查询结束后不会被再次兜底。
       markBackgroundTasksAccessed(running.map(t => t.taskId), now);
+      // 本次投递的任务登记「已兜底」：sleep 豁免每个任务只走一次。
+      markBackgroundTasksFallbackReminded(runningTasks.map(t => t.taskId));
     } catch (err) {
       logger.warn('QueryEngine', `Failed to inspect background tasks for ${this.sessionID}: ${err}`);
       return;
@@ -742,7 +764,9 @@ export class QueryEngine {
     // 若同步启动消费循环，会被 Integration 的收尾覆盖成「已空闲」。
     // 延后到宏任务可保证「上一轮先收尾，再开始提醒这一轮」。
     //
-    // 本会话运行中任务的「上次访问时刻」已刷新为当前时刻，因此不会递归重复提醒。
+    // 本会话运行中任务的「上次访问时刻」已刷新为当前时刻，因此不会递归重复提醒；
+    // 兜底提醒拉起的这一轮同样算「由 reminder 拉起」，收尾时不再补兜底。
+    this.reminderDrivenRun = true;
     const timer = setTimeout(() => {
       // 期间已被别的消费循环接管 / 用户中止 / 会话已释放：交给接管方或直接放弃
       if (this.isConsumerRunning || this.isAborted()) return;
