@@ -30,25 +30,29 @@ const UserChoiceOverlay = memo(function UserChoiceOverlay({
     onChoiceResponse(index);
   }, [onChoiceResponse]);
 
+  // 空格 / 回车会触发 <button> 的原生 click。overlay 打开时焦点默认落在第一个选项上
+  // （App.tsx 为数字键 1-9 快捷键而聚焦），一次误触即等于确认该选项，权限请求下通常是
+  // 「允许」，风险最高。按产品要求禁用键盘确认：只能鼠标点击，避免误触。
+  const handleButtonKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault();
+    }
+  }, []);
+
   const handleChoiceKeyDown = useCallback((e: React.KeyboardEvent, _index: number) => {
     if (e.key === 'Tab' && !e.shiftKey) {
       e.preventDefault();
       choiceInputRef.current?.focus();
+      return;
     }
-  }, [choiceInputRef]);
+    handleButtonKeyDown(e);
+  }, [choiceInputRef, handleButtonKeyDown]);
 
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
     setLocalChoiceInput(value);
     inputSyncRef.current = value;
   }, [inputSyncRef]);
-
-  const handleInputKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      onSubmit(localChoiceInput);
-    }
-  }, [onSubmit, localChoiceInput]);
 
   return (
     <div
@@ -109,7 +113,6 @@ const UserChoiceOverlay = memo(function UserChoiceOverlay({
             ref={choiceInputRef as React.RefObject<HTMLTextAreaElement>}
             value={localChoiceInput}
             onChange={handleInputChange}
-            onKeyDown={handleInputKeyDown}
             placeholder={t('userChoice.placeholder')}
             className="w-full resize-none focus:outline-none max-h-[200px] text-sm"
             style={{
@@ -124,7 +127,10 @@ const UserChoiceOverlay = memo(function UserChoiceOverlay({
           />
         </div>
         <button
+          type="button"
           onClick={() => onSubmit(localChoiceInput)}
+          onKeyDown={handleButtonKeyDown}
+          aria-label={t('userChoice.submit')}
           className="w-8 h-8 rounded-lg flex items-center justify-center transition-all hover:brightness-110 flex-shrink-0"
           style={{
             backgroundColor: colors.harness,

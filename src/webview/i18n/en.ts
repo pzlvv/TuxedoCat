@@ -217,6 +217,7 @@ export const enDict: Record<string, string> = {
 
   /* ── UserChoiceOverlay.tsx ───────────────────────────────── */
   'userChoice.placeholder': 'Type your thoughts',
+  'userChoice.submit': 'Send',
 
   /* ── ThinkingAnimation.tsx ───────────────────────────────── */
   'thinkingAnim.think1': 'I know you are impatient, but no need to rush',

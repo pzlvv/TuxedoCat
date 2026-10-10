@@ -217,6 +217,7 @@ export const zhDict: Record<string, string> = {
 
   /* ── UserChoiceOverlay.tsx ───────────────────────────────── */
   'userChoice.placeholder': '输入您的想法',
+  'userChoice.submit': '发送',
 
   /* ── ThinkingAnimation.tsx ───────────────────────────────── */
   'thinkingAnim.think1': '我知道你很急，但是你先别急',
