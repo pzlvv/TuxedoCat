@@ -43,3 +43,43 @@ export function ensureTrailingSeparator(path: string): string {
   if (path.length === 0 || path.endsWith('/') || path.endsWith('\\')) return path;
   return `${path}/`;
 }
+
+/**
+ * 去掉末尾分隔符（文件系统根保留成 `/`），用于比较「两个路径是不是同一个目录」。
+ *
+ * - `/workspace/a/` → `/workspace/a`
+ * - `/`            → `/`（根不能剥成空串）
+ * - `C:\Users\`    → `C:\Users`
+ */
+export function trimTrailingSeparators(path: string): string {
+  let end = path.length;
+  while (end > 1 && (path[end - 1] === '/' || path[end - 1] === '\\')) end -= 1;
+  return path.slice(0, end);
+}
+
+/**
+ * 两个路径是否指向同一个目录：只忽略末尾分隔符的差异。
+ *
+ * 选择器用它判断「路径框指向的是不是当前列出的目录」——daemon 回显的 `path` 与
+ * 输入框里敲的写法可能一个带尾分隔符一个不带（见 `main.ts` 的 `inputPointsAtListing`）。
+ */
+export function sameDirectory(left: string, right: string): boolean {
+  return trimTrailingSeparators(left) === trimTrailingSeparators(right);
+}
+
+/**
+ * 路径框「指向的目录」：末尾带分隔符时是它自己，否则是最后一段之前的父目录；
+ * 整串都没有分隔符（`C:` / 相对名）时按整串算——调用方据此放弃过滤回退。
+ */
+export function typedDirectory(typed: string): string {
+  const { dir } = splitPathInput(typed);
+  return dir.length > 0 ? dir : typed;
+}
+
+/**
+ * 补全路径框的值：把选中项写进输入框。已经指向选中项（带不带尾分隔符都算）时补上
+ * 尾分隔符——表示「这一级敲完了」，预览随即展开它的内容（连按 Tab 逐级往下）。
+ */
+export function completePathInput(typed: string, target: string): string {
+  return sameDirectory(typed, target) ? ensureTrailingSeparator(target) : target;
+}

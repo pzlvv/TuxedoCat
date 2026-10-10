@@ -180,6 +180,17 @@ body {
   background: var(--hover);
 }
 
+/* 选中行：上下方向键移动的当前项（恒有选中项，默认第一项）。放在 :hover 之后，
+   同优先级下由「后来者胜」盖过悬停底色。 */
+.row.selected {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.row.selected .row-confirm-text {
+  color: var(--accent-fg);
+}
+
 .row-name {
   flex: 1 1 auto;
   overflow: hidden;

@@ -8,7 +8,14 @@
  */
 
 import { createChecker, runTests } from './helpers/harness';
-import { ensureTrailingSeparator, splitPathInput } from '../../electron/remoteWorkspace/pathInput';
+import {
+  completePathInput,
+  ensureTrailingSeparator,
+  sameDirectory,
+  splitPathInput,
+  trimTrailingSeparators,
+  typedDirectory,
+} from '../../electron/remoteWorkspace/pathInput';
 
 runTests('remotePathInput', () => {
   const { check, finish } = createChecker();
@@ -46,6 +53,28 @@ runTests('remotePathInput', () => {
   check('windows 尾分隔符也认可（不重复补）', ensureTrailingSeparator('C:\\Users') === 'C:\\Users/');
   check('windows 尾反斜杠保持原样', ensureTrailingSeparator('C:\\Users\\') === 'C:\\Users\\');
   check('空串保持原样', ensureTrailingSeparator('') === '');
+
+  // 同目录判定：只忽略末尾分隔符差异（选择器据此判断「路径框指向的是不是当前列出的目录」）
+  check('去尾分隔符', trimTrailingSeparators('/home/dev/') === '/home/dev');
+  check('根保留成 /', trimTrailingSeparators('/') === '/');
+  check('windows 尾反斜杠也去掉', trimTrailingSeparators('C:\\Users\\') === 'C:\\Users');
+  check('无尾分隔符不动', trimTrailingSeparators('/home/dev') === '/home/dev');
+  check('尾分隔符差异算同一目录', sameDirectory('/home/dev/', '/home/dev'));
+  check('反斜杠尾分隔符也算同一目录', sameDirectory('C:\\Users\\', 'C:\\Users'));
+  check('不同目录不算同一目录', !sameDirectory('/home/dev/', '/home/dev2/'));
+  check('父目录与子目录不算同一目录', !sameDirectory('/home/dev/', '/home/dev/x/'));
+
+  // 路径框指向的目录：末尾带分隔符是它自己，否则是父目录；整串没分隔符时按整串算
+  check('指向的目录：带尾分隔符是它自己', typedDirectory('/home/dev/') === '/home/dev/');
+  check('指向的目录：不带尾分隔符是父目录', typedDirectory('/home/dev') === '/home/');
+  check('指向的目录：没有分隔符时按整串算', typedDirectory('C:') === 'C:');
+  check('指向的目录：空串', typedDirectory('') === '');
+
+  // 补全：未补全时写选中项；已指向选中项时补尾分隔符（表示「这一级敲完了」）
+  check('补全：前缀补成选中项', completePathInput('/home/de', '/home/dev') === '/home/dev');
+  check('补全：已到选中项时补尾分隔符', completePathInput('/home/dev', '/home/dev') === '/home/dev/');
+  check('补全：带尾分隔符时保持', completePathInput('/home/dev/', '/home/dev') === '/home/dev/');
+  check('补全：windows 反斜杠同样处理', completePathInput('C:\\Users', 'C:\\Users') === 'C:\\Users/');
 
   finish();
 });

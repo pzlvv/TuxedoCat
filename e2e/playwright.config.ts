@@ -11,6 +11,8 @@ import path from 'node:path';
  *   驱动「webview UI 在真实浏览器里的用户操作」。
  * - `electron-app`：`_electron.launch` 拉起完整桌面应用（embedded core + 假 LLM
  *   SSE 服务器），驱动「整应用的真实用户链路」。
+ * - `remote-workspace-ui`：`electron/remoteWorkspace/` 的选择器页面（要连真实 SSH
+ *   才走得到，整应用 e2e 覆盖不了）：Chromium 加载构建产物 + 假远端目录树。
  */
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -26,6 +28,7 @@ function assertArtifact(rel: string): void {
 
 assertArtifact(path.join('dist', 'webview', 'index.html'));
 assertArtifact(path.join('dist-electron', 'main.cjs'));
+assertArtifact(path.join('dist', 'remoteWorkspace', 'index.html'));
 
 export default defineConfig({
   testDir: '.',
@@ -43,6 +46,7 @@ export default defineConfig({
   projects: [
     { name: 'webview-ui', testMatch: /webview[\\/].+\.spec\.ts/ },
     { name: 'electron-app', testMatch: /electron[\\/].+\.spec\.ts/ },
+    { name: 'remote-workspace-ui', testMatch: /remoteWorkspace[\\/].+\.spec\.ts/ },
     // TUI 安装程序（无浏览器：构建 → 自解压 → 载荷可执行 → TUI 启动守卫）
     { name: 'tui-installer', testMatch: /tui[\\/].+\.spec\.ts/ },
   ],

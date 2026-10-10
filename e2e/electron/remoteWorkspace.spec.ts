@@ -8,7 +8,7 @@ import type { MockLlm } from '../helpers/mockLlmServer';
 /**
  * 「打开远程工作区」对话框（`electron/remoteWorkspace/`，规格 `docs/client-connection.md`
  * 第 4.2 节）：
- * - 接入方式只有 SSH 表单，打开不聚焦任何输入框；
+ * - 接入方式只有 SSH 表单，打开不聚焦任何输入框，窗口不建菜单栏（Alt 不呼出菜单）；
  * - SSH 连接历史候选：host 聚焦弹出（最多 6 条）、文案 `<user>@<host>(:port)`
  *   （端口 22 不显示）、关键字前缀匹配排在非前缀匹配之前（同级按时间）、
  *   选定候选回填整表单（含口令）、候选行右侧删除按钮清历史并落盘。
@@ -42,6 +42,20 @@ async function openDialog(currentApp: AppHandle): Promise<Page> {
   return currentApp.waitForPage('dist/remoteWorkspace/index.html');
 }
 
+/**
+ * 主进程求值：入口 bundle 是 CJS，inspector 的全局求值上下文里没有裸 `require`，
+ * 与 `desktopShell.spec.ts` 同口径经 `process.mainModule.require` 取 electron。
+ * 表达式要回**基本类型**（对象走 `JSON.stringify`）——CDP 默认按引用回对象，取不到 `value`。
+ */
+function mainExpr<T>(currentApp: AppHandle, body: string): Promise<T> {
+  return currentApp.evaluateInMain(
+    `(function(){try{const e=process.mainModule?process.mainModule.require('electron'):require('electron');return ${body};}catch(err){return 'ERR '+err.message;}})()`,
+  ).then((raw) => {
+    const envelope = raw as { result?: { result?: { value?: T } } };
+    return envelope?.result?.result?.value as T;
+  });
+}
+
 /** 预置的 SSH 连接历史（数组顺序即时间序：第 0 条最近连接） */
 const HISTORY = [
   { host: '10.0.0.1', port: 22, user: 'root', password: 'pw-root-1' },
@@ -59,12 +73,13 @@ function suggestionTexts(page: Page): Promise<string[]> {
 }
 
 test('接入方式只有 SSH 表单且打开不聚焦输入框，无历史时不弹候选', async () => {
-  app = await launchApp({
+  const launched = await launchApp({
     repoRoot: process.cwd().replace(/[\\/]e2e$/, ''),
     mockLlm,
     workspaceDir,
   });
-  const dialog = await openDialog(app);
+  app = launched;
+  const dialog = await openDialog(launched);
 
   // 接入方式只有 SSH 表单：没有连接串页签
   await expect(dialog.locator('#tabConnectionString')).toHaveCount(0);
@@ -82,6 +97,15 @@ test('接入方式只有 SSH 表单且打开不聚焦输入框，无历史时不
     .toBe('sshHost');
   // 无历史时不弹候选
   await expect(dialog.locator('#sshSuggestions')).toBeHidden();
+
+  // 窗口不建菜单栏（`autoHideMenuBar: false` + `setMenu(null)`）：Alt 不会呼出菜单
+  await expect
+    .poll(async () => JSON.parse(await mainExpr<string>(launched, `JSON.stringify((() => {
+      const { BrowserWindow } = process.mainModule.require('electron');
+      const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('dist/remoteWorkspace/index.html'));
+      return win ? { autoHide: win.autoHideMenuBar, visible: win.isMenuBarVisible() } : null;
+    })())`)))
+    .toEqual({ autoHide: false, visible: false });
 });
 
 test('host 聚焦弹出最近 6 条候选，端口 22 不显示、非 22 追加 :port', async () => {

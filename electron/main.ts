@@ -2909,7 +2909,8 @@ function openRemoteWorkspaceDialog(): void {
     show: false,
     title: tt('打开远程工作区', 'Open Remote Workspace'),
     icon: path.join(APP_ROOT, 'assets', 'logo.png'),
-    autoHideMenuBar: true,
+    // 这一步的键盘中心是页面里的路径框：Alt 不该呼出菜单栏，菜单栏也直接不建
+    autoHideMenuBar: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#1a1a1f' : '#ffffff',
     webPreferences: {
       sandbox: false,
@@ -2918,6 +2919,8 @@ function openRemoteWorkspaceDialog(): void {
       preload: path.join(__dirname, 'remoteWorkspacePreload.cjs'),
     },
   });
+  // 菜单栏只挂在 Windows / Linux 的窗口上（macOS 是应用级菜单，不受影响）
+  if (process.platform !== 'darwin') win.setMenu(null);
   remoteWorkspaceWindow = win;
   // 页面注入 remoteWorkspacePreload（含远端目录读写）：同其他应用自有页面一样拒绝导航
   guardViewNavigation(win.webContents, 'remote-workspace');

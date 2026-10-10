@@ -3,15 +3,27 @@
  *
  * 两步：接入远端（SSH 表单）→ 选远端目录。选目录这一步按目录选择器的习惯做：
  *   - 路径可编辑，回车即跳转（`..` 那一行也能回上一级）；
- *   - 列表只列子目录，单击进入；
+ *   - 列表只列子目录，单击进入；上下方向键 / Ctrl+N / Ctrl+P 移动选中项，选中项恒在
+ *     （默认第一项，`..` 除外）；
+ *   - Tab / 回车把选中项补全进路径框（回车在已补全到选中项时进入该项）；
  *   - 工具栏提供「新建文件夹」（列表顶部内联输入）与逐行「删除」（行内二次确认）。
+ *
+ * 列表内容始终与路径框一致：路径框是目录就列它的全部内容，末尾一段是前缀就只列匹配项。
+ * 前缀过滤是**渲染期视图**（`filter`），不改写 `listing`——否则回写路径框后列表会停在
+ * 上一轮的过滤结果上（路径框是 `/abc/`、列表却只剩 `/abc/def` 开头的项）。
  *
  * 与主进程通过 preload 暴露的 `window.remoteWorkspaceAPI` 通信；文案由主进程经
  * `loadFile` 的 query 传 locale，见 `labels.ts`。
  */
 
 import { formatLabel, getRemoteWorkspaceLabels } from './labels.js';
-import { ensureTrailingSeparator, splitPathInput } from './pathInput.js';
+import {
+  completePathInput,
+  ensureTrailingSeparator,
+  sameDirectory,
+  splitPathInput,
+  typedDirectory,
+} from './pathInput.js';
 import {
   formatSshEntry,
   matchSshEntries,
@@ -79,6 +91,12 @@ function main(): void {
   const menuDeleteButton = element<HTMLButtonElement>('menuDelete');
 
   let listing: DirectoryListing | null = null;
+  /** 前缀过滤词（小写，取自路径框最后一段）；空串表示列表就是该目录的全部内容 */
+  let filter = '';
+  /** 选中行路径（`..` 行也算候选）；有候选时恒有选中项 */
+  let selectedPath: string | null = null;
+  /** 本次渲染出的可选中行：路径 → 行元素（切选中态只改 class，不重画整表） */
+  const selectableRows = new Map<string, HTMLElement>();
   let editing: InlineEdit | null = null;
   let busy = false;
 
@@ -327,10 +345,16 @@ function main(): void {
   async function previewPath(): Promise<void> {
     if (busy || !listing) return;
     const typed = pathInput.value.trim();
-    // 输入与当前目录一致（带或不带尾分隔符）时不刷新
+    // 输入框就是当前列出的目录（或已被清空）：清掉过滤词，列表回到该目录的全部内容
     if (typed.length === 0
       || typed === listing.path
-      || typed === ensureTrailingSeparator(listing.path)) return;
+      || typed === ensureTrailingSeparator(listing.path)) {
+      if (filter.length > 0) {
+        filter = '';
+        renderListing({ keepPathInput: true });
+      }
+      return;
+    }
     // 每次预览都占一个新代次：慢的旧回包回来时对不上，直接丢弃
     const generation = ++previewGeneration;
     try {
@@ -339,14 +363,14 @@ function main(): void {
       const target = await api.list(dir);
       if (generation !== previewGeneration) return;
       if (!target.ok) return;
-      // 过滤只作用于目录名：daemon 的目录列举本来就只回目录，不含文件
-      const needle = prefix.toLowerCase();
-      listing = {
-        ...target.listing,
-        entries: needle
-          ? target.listing.entries.filter((entry) => entry.name.toLowerCase().startsWith(needle))
-          : target.listing.entries,
-      };
+      // 整份列举原样收下：过滤只落在 `filter` 上，之后任何一次回写路径框都能立刻
+      // 退回「该目录的全部内容」。过滤只作用于目录名——daemon 本来就只回目录，不含文件
+      listing = target.listing;
+      const nextFilter = prefix.toLowerCase();
+      // 过滤词变了就回到第一项（「默认当前第一个」）：用户还在敲，选中项要跟着候选走，
+      // 否则 Tab / 回车补全会落在上一轮留下的选中项上
+      if (nextFilter !== filter) selectedPath = null;
+      filter = nextFilter;
       renderListing({ keepPathInput: true });
     } catch {
       // 预览失败静默：回车时 navigate() 会给出具体原因
@@ -548,29 +572,118 @@ function main(): void {
     return row;
   }
 
+  /** 列表该显示的行：过滤是渲染期视图，`listing` 始终是整份列举 */
+  function visibleEntries(): DirectoryEntry[] {
+    if (!listing) return [];
+    if (filter.length === 0) return listing.entries;
+    return listing.entries.filter((entry) => entry.name.toLowerCase().startsWith(filter));
+  }
+
   function renderListing(options?: { keepPathInput?: boolean }): void {
     entriesEl.textContent = '';
+    selectableRows.clear();
     if (!listing) return;
 
+    // 回写路径框 = 放弃过滤：列表必须同时退回该目录的全部内容，否则会出现
+    // 「路径框是 /abc/、列表却只剩 /abc/def 开头的项」这种错位。在途预览也要作废：
+    // 它的过滤词基于旧输入，落地会把过滤又贴回来。
+    if (options?.keepPathInput !== true) {
+      filter = '';
+      cancelPreview();
+      // 回写统一带尾分隔符：显示的目录始终以 `/` 结尾（点击候选即自动补上），
+      // 继续敲的就是下一级。
+      pathInput.value = ensureTrailingSeparator(listing.path);
+    }
+
+    const visible = visibleEntries();
+
     if (editing?.kind === 'create') entriesEl.appendChild(createRow());
-    if (listing.parent) entriesEl.appendChild(parentRow(listing.parent));
-    for (const entry of listing.entries) entriesEl.appendChild(rowFor(entry));
-    if (listing.entries.length === 0 && editing?.kind !== 'create') {
+    if (listing.parent) {
+      const row = parentRow(listing.parent);
+      selectableRows.set(listing.parent, row);
+      entriesEl.appendChild(row);
+    }
+    for (const entry of visible) {
+      const row = rowFor(entry);
+      selectableRows.set(entry.path, row);
+      entriesEl.appendChild(row);
+    }
+    if (visible.length === 0 && editing?.kind !== 'create') {
       const empty = document.createElement('div');
       empty.className = 'empty';
       empty.textContent = labels.empty;
       entriesEl.appendChild(empty);
     }
 
-    // 输入框正在被编辑（即时预览）时不要回写：会把用户敲的字抹掉。
-    // 回写时统一带尾分隔符：显示的目录始终以 `/` 结尾（点击候选即自动补上），
-    // 继续敲的就是下一级。
-    if (options?.keepPathInput !== true) pathInput.value = ensureTrailingSeparator(listing.path);
+    // 选中项恒在：当前选中项没了（被过滤掉 / 被删掉）或本来就没有时回到第一项。
+    // 默认不落在 `..` 上——它是「上一级」，只有方向键才选得到。
+    if (selectedPath === null || !selectableRows.has(selectedPath)) {
+      selectedPath = visible[0]?.path ?? null;
+    }
+    for (const [path, row] of selectableRows) {
+      row.classList.toggle('selected', path === selectedPath);
+    }
+
     upButton.disabled = busy || !listing.parent;
     openButton.disabled = busy;
     newFolderButton.disabled = busy || editing?.kind === 'create';
     // 路径框是这一步的输入中心：渲染完把焦点收回来（行内编辑自己抢焦点，跳过）。
     if (editing?.kind !== 'create' && editing?.kind !== 'rename') pathInput.focus();
+  }
+
+  // ---------- 键盘：选中项 ----------
+
+  /** 上下方向键移动选中项（`..` 也在候选里；到头即停，不循环） */
+  function moveSelection(delta: number): void {
+    const order = [...selectableRows.keys()];
+    if (order.length === 0) return;
+    const index = selectedPath === null ? -1 : order.indexOf(selectedPath);
+    const next = index < 0
+      ? (delta > 0 ? 0 : order.length - 1)
+      : Math.min(order.length - 1, Math.max(0, index + delta));
+    const path = order[next];
+    if (path === selectedPath) return;
+    selectedPath = path;
+    for (const [key, row] of selectableRows) row.classList.toggle('selected', key === path);
+    selectableRows.get(path)?.scrollIntoView({ block: 'nearest' });
+  }
+
+  /** 路径框指向的是不是当前列出的目录：末尾带分隔符是它自己，否则是「父目录 + 最后一段过滤词」 */
+  function inputPointsAtListing(): boolean {
+    if (!listing) return false;
+    const typed = pathInput.value.trim();
+    if (typed.length === 0) return false;
+    return sameDirectory(typedDirectory(typed), listing.path);
+  }
+
+  /**
+   * 补全输入：把选中项写进路径框（光标到末尾）。已经补全到选中项时补上尾分隔符——
+   * 表示「这一级敲完了」，预览随即展开它的内容（Tab 连按即逐级往下）。
+   */
+  function completeInput(): void {
+    if (selectedPath === null || !inputPointsAtListing()) return;
+    pathInput.value = completePathInput(pathInput.value.trim(), selectedPath);
+    pathInput.setSelectionRange(pathInput.value.length, pathInput.value.length);
+    // 补全后让列表跟上：末段成为完整名字就只剩它自己，补了分隔符就展开下一级
+    schedulePreview();
+  }
+
+  /**
+   * 回车：输入框还没补全到选中项时先补全（与 Tab 同一份补全，看得见再确认），已经是
+   * 选中项时进入它；路径框指向的不是当前列出的目录（预览失败 / 路径还没敲完）时按
+   * 输入框跳转，由 navigate() 给出明确错误。
+   */
+  function submitPathInput(): void {
+    if (selectedPath !== null && inputPointsAtListing()) {
+      if (!sameDirectory(pathInput.value.trim(), selectedPath)) {
+        completeInput();
+        return;
+      }
+      navigate(selectedPath);
+      return;
+    }
+    const target = pathInput.value.trim();
+    if (target.length > 0) navigate(target);
   }
 
   // ---------- 新建 / 删除 ----------
@@ -659,9 +772,25 @@ function main(): void {
 
   pathInput.addEventListener('input', schedulePreview);
   pathInput.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter') return;
-    const target = pathInput.value.trim();
-    if (target.length > 0) navigate(target);
+    // 上下选择：方向键 / Ctrl+N / Ctrl+P（路径框是这一步唯一常驻焦点的控件，
+    // 这些键就落在它上面；不拦默认行为的话 Tab 会把焦点挪走、Ctrl+P 会冒打印）
+    const key = event.key.toLowerCase();
+    if (key === 'arrowdown' || (event.ctrlKey && key === 'n')) {
+      event.preventDefault();
+      moveSelection(1);
+      return;
+    }
+    if (key === 'arrowup' || (event.ctrlKey && key === 'p')) {
+      event.preventDefault();
+      moveSelection(-1);
+      return;
+    }
+    if (key === 'tab') {
+      event.preventDefault();
+      completeInput();
+      return;
+    }
+    if (key === 'enter') submitPathInput();
   });
   upButton.addEventListener('click', () => {
     if (listing?.parent) navigate(listing.parent);
@@ -674,10 +803,12 @@ function main(): void {
   });
   openButton.addEventListener('click', () => {
     if (busy || !listing) return;
+    // 路径框停在候选前缀上时「打开」作用于选中项（与回车一致）；否则打开当前列出的目录
+    const target = filter.length > 0 && selectedPath !== null ? selectedPath : listing.path;
     pickerError.textContent = '';
     setBusy(true);
     api
-      .open(listing.path)
+      .open(target)
       .then((result) => {
         // 成功时主进程随即关掉窗口；失败留在这一步，把原因显示出来（不能停在全灰的忙态）
         if (!result.ok) {
@@ -692,17 +823,22 @@ function main(): void {
   });
   element<HTMLButtonElement>('cancelPicker').addEventListener('click', () => api.cancel());
 
-  // 路径框始终保持焦点：列表区 / 工具栏 / 右键菜单的按下不把焦点抢走（点击照常
-  // 触发）。行内编辑（新建 / 重命名）的输入框与按钮除外——它们自己需要焦点。
-  entriesEl.addEventListener('mousedown', (event) => {
+  // 路径框始终保持焦点：这一步里所有鼠标按下都不抢焦点（行内编辑的输入框除外——它们
+  // 自己要用）。只拦默认行为，click 照常触发：行、工具栏按钮、右键菜单都还能用。
+  document.addEventListener('mousedown', (event) => {
+    if (pickerView.classList.contains('hidden')) return;
     const target = event.target as HTMLElement | null;
-    if (target && target.closest('input, button')) return;
+    if (target?.closest('input, textarea')) return;
     event.preventDefault();
+  }, true);
+
+  // 兜底：焦点落到这一步的容器上（行内编辑被移除、窗口切回来）就收回路径框
+  document.addEventListener('focusin', () => {
+    if (pickerView.classList.contains('hidden')) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement || active instanceof HTMLButtonElement) return;
+    pathInput.focus();
   });
-  for (const button of [upButton, newFolderButton, openButton, element<HTMLButtonElement>('cancelPicker')]) {
-    button.addEventListener('mousedown', (event) => event.preventDefault());
-  }
-  contextMenu.addEventListener('mousedown', (event) => event.preventDefault());
 
   // 接入面板不抢输入框焦点：窗口打开时保持「未选中任何字段」，由用户点进要填的那一项
 }
