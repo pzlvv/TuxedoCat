@@ -476,7 +476,7 @@ let focusRepaintTimer: ReturnType<typeof setTimeout> | null = null;
 const APP_ROOT = path.resolve(__dirname, '..');
 
 /** 最近打开的工作区上限（workspace-state.json 的 recentWorkspaces） */
-const MAX_RECENT_WORKSPACES = 10;
+const MAX_RECENT_WORKSPACES = 20;
 
 /**
  * 隐藏的多实例开关（不对外公开，仅供本地测试）。
@@ -3806,7 +3806,7 @@ function saveOpenWorkspaces(open: readonly WorkspaceRef[], active: WorkspaceRef 
 
 /**
  * 读取最近打开的工作区（本地项过滤掉已不存在的目录，远程项无法检查、原样保留），
- * 按去重键去重，最多 10 个，最近的在最前。
+ * 按去重键去重，最多 20 个，最近的在最前。
  * 同一目录的不同表示（尾部分隔符 / 大小写 / 符号链接等）只保留最靠前的一条。
  */
 function readRecentWorkspaces(): WorkspaceRef[] {
@@ -3825,7 +3825,7 @@ function readRecentWorkspaces(): WorkspaceRef[] {
   return refs.slice(0, MAX_RECENT_WORKSPACES);
 }
 
-/** 把工作区置顶写入最近列表（按去重键去重、最多 10 个） */
+/** 把工作区置顶写入最近列表（按去重键去重、最多 20 个） */
 function rememberRecentWorkspace(ref: WorkspaceRef): void {
   const prev = readWorkspaceState();
   const key = refKey(ref);

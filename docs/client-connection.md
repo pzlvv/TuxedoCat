@@ -203,7 +203,7 @@ Connection 持有：
 | --- | --- |
 | `openWorkspaces` | 打开集合（按标签页顺序）：本地项是路径字符串，远程项是 `{ scheme, path, endpoint }` |
 | `activeWorkspaceKey` | 活动项的去重键（`workspaceRefKey`） |
-| `recentWorkspaces` | 最近打开的工作区（最多 10 个，最近的在最前），与 `openWorkspaces` 同格式 |
+| `recentWorkspaces` | 最近打开的工作区（最多 20 个，最近的在最前），与 `openWorkspaces` 同格式 |
 | `recentSshConnections` | SSH 连接历史（最多 20 条，最近连接在前）：`{ host, port, user, password }`，同一 `user@host:port` 只留最新一条；口令明文，供「打开远程工作区」的表单回填与候选（第 4.2 节） |
 
 - **远程凭证明文落盘**：`endpoint.auth`（`sshPassword`）随引用一起写进
