@@ -10,7 +10,7 @@
  * 界面字号档位偏移（`settings.json` 的 `uiFontSize`）。
  *
  * `src/webview/fontSize.ts` 在启动期与档位变更时把它写到根元素：
- * medium = 0px / large = 1px / xlarge = 2px。下面 `ui-fs-*` 的字号都写成
+ * medium = 0px / large = 2px / xlarge = 4px。下面 `ui-fs-*` 的字号都写成
  * `calc(<基准>px + var(--ui-font-offset))`，因此改档位只需重设这一个变量。
  * 基准值就是各区域的当前字号（medium 档表现不变）。
  */

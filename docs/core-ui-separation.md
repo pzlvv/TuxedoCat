@@ -298,7 +298,7 @@ CoreEvent.notice { sessionId, key, params, level }
   （`SettingsStore.readUiFontSize()`），webview 不持有该取值。
 - 宿主把档位同步注入 webview（`window.__uiFontSize`，与 `__uiLocale` 同一路径）；
   webview 侧 `src/webview/fontSize.ts` 把它折算为根元素 CSS 变量 `--ui-font-offset`
-  （0 / 1 / 2 px），受影响的字号统一写成 `calc(<基准>px + var(--ui-font-offset))`
+  （0 / 2 / 4 px），受影响的字号统一写成 `calc(<基准>px + var(--ui-font-offset))`
   （`src/webview/styles/index.css` 的 `ui-fs-*`）。运行期变更经设置面板保存回传后即时生效。
 - 影响范围：输入框、输入框 context 用量、MessagesView、菜单项、历史对话项、设置面板、标题。
 

@@ -4,7 +4,7 @@
  * 与 i18n 同口径：取值由宿主在页面首帧前注入 `window.__uiFontSize`，webview 不持有
  * 默认值；缺失或非法即启动期报错（`docs/webview-facts.md` 第 3 节）。
  *
- * 档位 → 字号偏移：medium = 0px / large = 1px / xlarge = 2px。受影响的字号统一写成
+ * 档位 → 字号偏移：medium = 0px / large = 2px / xlarge = 4px。受影响的字号统一写成
  * `calc(<基准>px + var(--ui-font-offset))`（CSS 见 `styles/index.css` 的 `ui-fs-*`），
  * 因此切换档位只需重设一个 CSS 变量即可整体生效；antd 菜单项的 fontSize token 是 JS
  * 取值，需要订阅重渲染（`useUiFontOffset`）。
@@ -16,7 +16,7 @@ import { useSyncExternalStore } from 'react';
 export type UiFontSize = 'medium' | 'large' | 'xlarge';
 
 /** 档位 → 相对 `medium` 基准的字号偏移（px） */
-const FONT_OFFSET_PX: Record<UiFontSize, number> = { medium: 0, large: 1, xlarge: 2 };
+const FONT_OFFSET_PX: Record<UiFontSize, number> = { medium: 0, large: 2, xlarge: 4 };
 
 /**
  * 初始档位：读取宿主注入的 `window.__uiFontSize`（来自 `settings.json`）。

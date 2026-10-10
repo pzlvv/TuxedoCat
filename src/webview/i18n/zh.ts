@@ -111,7 +111,7 @@ export const zhDict: Record<string, string> = {
   'llmConfig.fontSizeMedium': '中',
   'llmConfig.fontSizeLarge': '大',
   'llmConfig.fontSizeXLarge': '特大',
-  'llmConfig.fontSizeHint': '输入框、消息、菜单与设置面板的字号；以「中」为基准，大 / 特大分别 +1 / +2 像素',
+  'llmConfig.fontSizeHint': '输入框、消息、菜单与设置面板的字号；以「中」为基准，大 / 特大分别 +2 / +4 像素',
   'llmConfig.sectionConversationSpace': '对话空间管理',
   'llmConfig.conversationSpaceHint': '统计各对话空间的大小，可清空其中的对话数据',
   'llmConfig.conversationSpaceStats': '统计',

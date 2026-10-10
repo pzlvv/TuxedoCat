@@ -111,7 +111,7 @@ export const enDict: Record<string, string> = {
   'llmConfig.fontSizeMedium': 'Medium',
   'llmConfig.fontSizeLarge': 'Large',
   'llmConfig.fontSizeXLarge': 'Extra Large',
-  'llmConfig.fontSizeHint': 'Font size for the input box, messages, menus and settings; Medium is the baseline, Large / Extra Large add 1 / 2 px',
+  'llmConfig.fontSizeHint': 'Font size for the input box, messages, menus and settings; Medium is the baseline, Large / Extra Large add 2 / 4 px',
   'llmConfig.sectionConversationSpace': 'Conversation Space',
   'llmConfig.conversationSpaceHint': 'Show sizes of conversation spaces. You can clear conversation data.',
   'llmConfig.conversationSpaceStats': 'Scan',
