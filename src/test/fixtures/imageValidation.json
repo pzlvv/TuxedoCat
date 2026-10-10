@@ -1,0 +1,173 @@
+{
+  "note": "Read 读图片时的「魔数 + 结构完整性」校验对照表：Embedded 的 src/core/tools/read/imageValidation.ts::validateImageBytes 与 Standalone 的 tools::image_validation_failure 必须给出同一个结论。hex 是完整文件字节，mediaType 是扩展名声明的 MIME，expected 为 null（通过）或失败原因标识。校验只看文件头与结构自洽性（声明长度 / 结束标记），不校验 CRC、不解码像素——那两类问题 provider 侧同样会报错。",
+  "cases": [
+    {
+      "name": "png-empty",
+      "why": "空文件连签名都不足",
+      "mediaType": "image/png",
+      "hex": "",
+      "expected": "signature"
+    },
+    {
+      "name": "png-valid",
+      "why": "签名 + IHDR + IDAT + IEND，块长度自洽",
+      "mediaType": "image/png",
+      "hex": "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c48900000001494441540028387de80000000049454e44ae426082",
+      "expected": null
+    },
+    {
+      "name": "png-signature-mismatch",
+      "why": "内容是 JPEG，扩展名说是 PNG：签名不符",
+      "mediaType": "image/png",
+      "hex": "ffd8ffe000104a46494600010100000100010000ffd9",
+      "expected": "signature"
+    },
+    {
+      "name": "png-truncated-chunk",
+      "why": "块头声明 13 字节数据，文件在中途结束",
+      "mediaType": "image/png",
+      "hex": "89504e470d0a1a0a0000000d4948445200000001",
+      "expected": "truncated"
+    },
+    {
+      "name": "png-missing-iend",
+      "why": "块走完了但没有 IEND（文件在块边界被截断）",
+      "mediaType": "image/png",
+      "hex": "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489",
+      "expected": "missing-end-marker"
+    },
+    {
+      "name": "png-trailing-data",
+      "why": "IEND 之后还有多余字节",
+      "mediaType": "image/png",
+      "hex": "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c48900000001494441540028387de80000000049454e44ae42608200",
+      "expected": "trailing-data"
+    },
+    {
+      "name": "png-iend-with-length",
+      "why": "IEND 块长度必须为 0",
+      "mediaType": "image/png",
+      "hex": "89504e470d0a1a0a0000000149454e4400d11a4fe1",
+      "expected": "malformed"
+    },
+    {
+      "name": "jpeg-valid",
+      "why": "SOI + APP0 + EOI",
+      "mediaType": "image/jpeg",
+      "hex": "ffd8ffe000104a46494600010100000100010000ffd9",
+      "expected": null
+    },
+    {
+      "name": "jpeg-bad-signature",
+      "why": "首字节不是 SOI",
+      "mediaType": "image/jpeg",
+      "hex": "ffd7ffe000104a46494600010100000100010000ffd9",
+      "expected": "signature"
+    },
+    {
+      "name": "jpeg-missing-eoi",
+      "why": "没有 EOI（FF D9）收尾",
+      "mediaType": "image/jpeg",
+      "hex": "ffd8ffe000104a46494600010100000100010000",
+      "expected": "missing-end-marker"
+    },
+    {
+      "name": "gif-valid",
+      "why": "GIF89a 头 + 逻辑屏幕描述符 + trailer 0x3B",
+      "mediaType": "image/gif",
+      "hex": "474946383961010001008000003b",
+      "expected": null
+    },
+    {
+      "name": "gif-bad-signature",
+      "why": "GIF88a 不是合法版本号",
+      "mediaType": "image/gif",
+      "hex": "474946383861010001008000003b",
+      "expected": "signature"
+    },
+    {
+      "name": "gif-truncated",
+      "why": "逻辑屏幕描述符不足 7 字节",
+      "mediaType": "image/gif",
+      "hex": "474946383961010001",
+      "expected": "truncated"
+    },
+    {
+      "name": "gif-missing-trailer",
+      "why": "最后不是 trailer 0x3B",
+      "mediaType": "image/gif",
+      "hex": "4749463839610100010080000000",
+      "expected": "missing-end-marker"
+    },
+    {
+      "name": "webp-valid",
+      "why": "RIFF 声明长度 = 实际长度 - 8",
+      "mediaType": "image/webp",
+      "hex": "524946460c000000574542505650382000000000",
+      "expected": null
+    },
+    {
+      "name": "webp-bad-signature",
+      "why": "四字符码不是 WEBP",
+      "mediaType": "image/webp",
+      "hex": "524946460c000000574542515650382000000000",
+      "expected": "signature"
+    },
+    {
+      "name": "webp-truncated",
+      "why": "RIFF 声明长度大于实际文件长度",
+      "mediaType": "image/webp",
+      "hex": "524946460c00000057454250",
+      "expected": "truncated"
+    },
+    {
+      "name": "webp-trailing-data",
+      "why": "RIFF 声明长度小于实际文件长度",
+      "mediaType": "image/webp",
+      "hex": "524946460c00000057454250565038200000000000",
+      "expected": "trailing-data"
+    },
+    {
+      "name": "bmp-valid",
+      "why": "BM 头 + 文件头声明的文件长度 = 实际长度",
+      "mediaType": "image/bmp",
+      "hex": "424d36000000000000003600000028000000010000000100000001001800000000000000000000000000000000000000000000000000",
+      "expected": null
+    },
+    {
+      "name": "bmp-bad-signature",
+      "why": "首两字节不是 BM",
+      "mediaType": "image/bmp",
+      "hex": "424e36000000000000003600000028000000010000000100000001001800000000000000000000000000000000000000000000000000",
+      "expected": "signature"
+    },
+    {
+      "name": "bmp-truncated",
+      "why": "声明长度大于实际文件长度",
+      "mediaType": "image/bmp",
+      "hex": "424d360000000000000036000000",
+      "expected": "truncated"
+    },
+    {
+      "name": "bmp-trailing-data",
+      "why": "声明长度小于实际文件长度",
+      "mediaType": "image/bmp",
+      "hex": "424d3600000000000000360000002800000001000000010000000100180000000000000000000000000000000000000000000000000000",
+      "expected": "trailing-data"
+    },
+    {
+      "name": "bmp-header-too-short",
+      "why": "声明长度小于 BMP 文件头本身（14 字节）",
+      "mediaType": "image/bmp",
+      "hex": "424d0a000000000000000a000000000000000000",
+      "expected": "malformed"
+    },
+    {
+      "name": "unsupported-media-type",
+      "why": "media_type 不在支持的图片类型里",
+      "mediaType": "image/tiff",
+      "hex": "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c48900000001494441540028387de80000000049454e44ae426082",
+      "expected": "unsupported"
+    }
+  ]
+}

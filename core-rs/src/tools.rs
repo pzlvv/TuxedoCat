@@ -1648,6 +1648,137 @@ fn is_image_extension(path: &Path) -> Option<&'static str> {
     }
 }
 
+/// 图片合法性校验（对齐 Embedded 的 `tools/read/imageValidation.ts`）。
+///
+/// Read 按扩展名给图片定 `media_type`，但扩展名不是事实——发给 LLM 的 image
+/// content block 一旦不是真图片，provider 会整轮报错。这里补一层「魔数 + 结构
+/// 完整性」校验：文件头必须匹配声明的格式，且声明长度 / 结束标记必须自洽。
+///
+/// 返回 `None` 表示通过，否则是失败原因标识（两侧共享，见
+/// `src/test/fixtures/imageValidation.json` 与 DEVELOPMENT.md 第 13.4 节）。
+pub fn image_validation_failure(bytes: &[u8], media_type: &str) -> Option<&'static str> {
+    match media_type {
+        "image/png" => validate_png(bytes),
+        "image/jpeg" => validate_jpeg(bytes),
+        "image/gif" => validate_gif(bytes),
+        "image/webp" => validate_webp(bytes),
+        "image/bmp" => validate_bmp(bytes),
+        _ => Some("unsupported"),
+    }
+}
+
+/// 失败原因标识 -> 工具错误消息里的英文说明（与 Embedded 的
+/// `IMAGE_VALIDATION_REASON_TEXT` 逐字一致）
+fn image_validation_reason_text(reason: &str) -> &'static str {
+    match reason {
+        "signature" => "file signature does not match the format",
+        "truncated" => "declared length exceeds the actual file size",
+        "missing-end-marker" => "missing the end-of-image marker",
+        "trailing-data" => "extra bytes after the end-of-image marker",
+        "malformed" => "malformed image structure",
+        _ => "unsupported image type",
+    }
+}
+
+/// PNG：签名 + 逐块走到 IEND（块长度自洽、IEND 是最后一块且长度为 0）
+fn validate_png(bytes: &[u8]) -> Option<&'static str> {
+    const SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    if !bytes.starts_with(&SIGNATURE) {
+        return Some("signature");
+    }
+    let mut offset = SIGNATURE.len();
+    loop {
+        // 连块头（长度 + 类型）都不完整：后面不可能再有 IEND
+        if offset + 8 > bytes.len() {
+            return Some("missing-end-marker");
+        }
+        let length = u32::from_be_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ]) as u64;
+        let end = offset as u64 + 12 + length;
+        if end > bytes.len() as u64 {
+            return Some("truncated");
+        }
+        let end = end as usize;
+        if &bytes[offset + 4..offset + 8] == b"IEND" {
+            if length != 0 {
+                return Some("malformed");
+            }
+            return if end == bytes.len() {
+                None
+            } else {
+                Some("trailing-data")
+            };
+        }
+        offset = end;
+    }
+}
+
+/// JPEG：SOI（FF D8）+ 紧随的标记前缀 FF，且以 EOI（FF D9）收尾
+fn validate_jpeg(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() < 4 || bytes[0] != 0xff || bytes[1] != 0xd8 || bytes[2] != 0xff {
+        return Some("signature");
+    }
+    let end = bytes.len();
+    if bytes[end - 2] != 0xff || bytes[end - 1] != 0xd9 {
+        return Some("missing-end-marker");
+    }
+    None
+}
+
+/// GIF：GIF87a / GIF89a 头 + 逻辑屏幕描述符 + trailer 0x3B
+fn validate_gif(bytes: &[u8]) -> Option<&'static str> {
+    if !(bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) {
+        return Some("signature");
+    }
+    // 头之后还有 7 字节逻辑屏幕描述符；不足即结构不完整
+    if bytes.len() < 13 {
+        return Some("truncated");
+    }
+    if bytes[bytes.len() - 1] != 0x3b {
+        return Some("missing-end-marker");
+    }
+    None
+}
+
+/// WebP：RIFF 容器 + `WEBP` 四字符码，且 RIFF 声明长度与实际文件长度一致
+fn validate_webp(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
+        return Some("signature");
+    }
+    // RIFF 的长度字段不含前 8 字节（'RIFF' + 长度本身）
+    let declared = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as u64 + 8;
+    if declared > bytes.len() as u64 {
+        return Some("truncated");
+    }
+    if declared < bytes.len() as u64 {
+        return Some("trailing-data");
+    }
+    None
+}
+
+/// BMP：`BM` 头 + 文件头里声明的文件长度与实际长度一致
+fn validate_bmp(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() < 14 || &bytes[0..2] != b"BM" {
+        return Some("signature");
+    }
+    let declared = u32::from_le_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]) as u64;
+    // 文件头本身就有 14 字节，声明比它还短说明结构不合法
+    if declared < 14 {
+        return Some("malformed");
+    }
+    if declared > bytes.len() as u64 {
+        return Some("truncated");
+    }
+    if declared < bytes.len() as u64 {
+        return Some("trailing-data");
+    }
+    None
+}
+
 /// 文件大小展示（对齐 `limits.ts` 的 `formatFileSize`）
 ///
 /// `toFixed(1)` 走 [`util::js_to_fixed_1`]：`262400 B = 256.25 KB` 必须格式化成
@@ -2288,6 +2419,14 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
                 return ToolOutcome::Error(format!(
                     "Image file too large to read: {file_path} ({} bytes, max 15MB)",
                     bytes.len()
+                ));
+            }
+            // 扩展名不是事实：内容与扩展名声明的格式不符时不发 image block，
+            // 否则 provider 会因非法图片整轮报错（DEVELOPMENT.md 第 13.4 节）
+            if let Some(reason) = image_validation_failure(&bytes, media_type) {
+                return ToolOutcome::Error(format!(
+                    "Invalid image file: {file_path}. The content is not a valid {media_type} image ({}).",
+                    image_validation_reason_text(reason)
                 ));
             }
             // 以 image content block 返回（模型直接看到图片），而不是把 base64 拼成文本。

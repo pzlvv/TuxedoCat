@@ -48,6 +48,7 @@ Reads the contents of a file from the local filesystem.
 
 **Image Files (.png / .jpg / .jpeg / .gif / .webp / .bmp) Support:**
 - Reads the image and returns it as an image content block, so the model can see the actual image directly.
+- The content must match the format its extension declares (signature and end-of-image marker); a mismatch is reported as an invalid image instead of being sent.
 
 **Important:**
 - Always read a file before attempting to edit it

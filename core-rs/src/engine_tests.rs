@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::test_support::{
-    anthropic_sse, openai_text_sse, openai_tool_sse, EngineHarness, FakeLlm, Sandbox,
+    anthropic_sse, minimal_png_bytes, openai_text_sse, openai_tool_sse, EngineHarness, FakeLlm,
+    Sandbox,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -1241,7 +1242,7 @@ fn image_read_is_returned_as_an_image_content_block() {
     });
     prepare(&sandbox, &llm.base_url, "auto");
     let workspace = sandbox.workspace.to_string_lossy().to_string();
-    let bytes: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x01];
+    let bytes = minimal_png_bytes();
     std::fs::write(sandbox.workspace.join("pic.png"), &bytes).unwrap();
     history::create_conversation("s1", &workspace, json!({ "sessionId": "s1", "title": "" }))
         .unwrap();

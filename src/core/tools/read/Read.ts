@@ -6,6 +6,9 @@
  *    - xlsx / 图片文件跳过此检查；图片另有 15MB 上限
  * 2. maxLines (2000) / maxLineLength (2000) / maxOutputBytes (50KB)
  *    - 读取后构建有界窗口，传了 offset/limit 也生效
+ *
+ * 图片：扩展名声明 media_type 后还要过一遍「魔数 + 结构完整性」校验
+ * （`imageValidation.ts`），内容与格式不符时报错而不是发非法 image block。
  */
 
 import * as fs from 'fs/promises';
@@ -22,22 +25,15 @@ import {
   getDefaultLimits,
   FileTooLargeError,
 } from './limits.js';
+import {
+  IMAGE_MEDIA_TYPES,
+  MAX_IMAGE_SIZE_BYTES,
+  imageValidationErrorMessage,
+  validateImageBytes,
+} from './imageValidation.js';
 
 /** xlsx 文件一次最多读取的行数 */
 const XLSX_MAX_LINES = 50;
-
-/** 支持的图片扩展名 -> MIME 类型（图片以 base64 返回，不受文本大小限制） */
-const IMAGE_MEDIA_TYPES: Record<string, string> = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.bmp': 'image/bmp',
-};
-
-/** 图片文件的最大字节数（15MB） */
-const MAX_IMAGE_SIZE_BYTES = 15 * 1024 * 1024;
 
 /** Read 窗口限制 */
 interface ReadWindowCaps {
@@ -419,6 +415,12 @@ export const ReadTool = buildTool({
           throw new Error(`Image file too large to read: ${filePath} (${imageStat.size} bytes, max 15MB)`);
         }
         const imageBuffer = await fs.readFile(fullPath);
+        // 扩展名不是事实：内容与扩展名声明的格式不符时不发 image block，
+        // 否则 provider 会因非法图片整轮报错（DEVELOPMENT.md 第 13.4 节）
+        const failure = validateImageBytes(imageBuffer, mediaType);
+        if (failure) {
+          throw new Error(imageValidationErrorMessage(filePath, mediaType, failure));
+        }
         return {
           data: {
             content: '',

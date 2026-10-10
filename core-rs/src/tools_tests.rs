@@ -30,7 +30,7 @@ fn skill_tool_is_last_in_definitions() {
     );
 }
 
-use crate::test_support::{repo_root, ripgrep_available, Sandbox};
+use crate::test_support::{minimal_png_bytes, repo_root, ripgrep_available, Sandbox};
 use serde_json::json;
 
 fn context(sandbox: &Sandbox) -> ToolContext {
@@ -49,6 +49,20 @@ fn context(sandbox: &Sandbox) -> ToolContext {
 
 fn text(outcome: &ToolOutcome) -> String {
     outcome.text().to_string()
+}
+
+/// 十六进制串 -> 字节（对照表夹具用；两侧 parity 测试共享同一份 hex 写法）
+fn decode_hex(text: &str) -> Vec<u8> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    let mut index = 0;
+    while index + 1 < bytes.len() {
+        let high = (bytes[index] as char).to_digit(16).expect("hex high");
+        let low = (bytes[index + 1] as char).to_digit(16).expect("hex low");
+        out.push((high * 16 + low) as u8);
+        index += 2;
+    }
+    out
 }
 
 // ==================== 定义与分发 ====================
@@ -1223,7 +1237,7 @@ fn read_reports_empty_files_and_directories() {
 #[test]
 fn read_returns_images_as_base64() {
     let sandbox = Sandbox::new("tools-read-image");
-    let bytes: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02];
+    let bytes = minimal_png_bytes();
     let path = sandbox.workspace.join("pic.png");
     std::fs::write(&path, &bytes).unwrap();
 
@@ -1263,6 +1277,32 @@ fn read_recognises_every_supported_image_extension() {
     }
     assert_eq!(is_image_extension(Path::new("a.txt")), None);
     assert_eq!(is_image_extension(Path::new("noext")), None);
+}
+
+#[test]
+fn read_rejects_image_content_that_does_not_match_its_extension() {
+    // 内容是 JPEG，扩展名是 .png：不发非法 image block，直接报错。
+    let sandbox = Sandbox::new("tools-read-image-mismatch");
+    let bytes = decode_hex("ffd8ffe000104a46494600010100000100010000ffd9");
+    std::fs::write(sandbox.workspace.join("bad.png"), &bytes).unwrap();
+    let outcome = execute("Read", &json!({ "file_path": "bad.png" }), &context(&sandbox));
+    assert_eq!(
+        text(&outcome),
+        "Invalid image file: bad.png. The content is not a valid image/png image (file signature does not match the format)."
+    );
+}
+
+#[test]
+fn read_rejects_truncated_images() {
+    // PNG 块头声明 13 字节数据，文件在中途结束
+    let sandbox = Sandbox::new("tools-read-image-truncated");
+    let bytes = decode_hex("89504e470d0a1a0a0000000d4948445200000001");
+    std::fs::write(sandbox.workspace.join("cut.png"), &bytes).unwrap();
+    let outcome = execute("Read", &json!({ "file_path": "cut.png" }), &context(&sandbox));
+    assert_eq!(
+        text(&outcome),
+        "Invalid image file: cut.png. The content is not a valid image/png image (declared length exceeds the actual file size)."
+    );
 }
 
 #[test]
@@ -2717,19 +2757,6 @@ mod binary_detection_parity_tests {
     /// 「Rust 的 `is_binary_content` == 本表」。
     const FIXTURE: &str = include_str!("../../src/test/fixtures/binaryDetection.json");
 
-    fn decode_hex(text: &str) -> Vec<u8> {
-        let bytes = text.as_bytes();
-        let mut out = Vec::with_capacity(bytes.len() / 2);
-        let mut index = 0;
-        while index + 1 < bytes.len() {
-            let high = (bytes[index] as char).to_digit(16).expect("hex high");
-            let low = (bytes[index + 1] as char).to_digit(16).expect("hex low");
-            out.push((high * 16 + low) as u8);
-            index += 2;
-        }
-        out
-    }
-
     #[test]
     fn matches_the_shared_binary_detection_table() {
         let fixture: Value = serde_json::from_str(FIXTURE).expect("对照表必须是合法 JSON");
@@ -2755,6 +2782,49 @@ mod binary_detection_parity_tests {
         assert!(
             failures.is_empty(),
             "二进制判定与 Embedded 不一致：\n{}",
+            failures.join("\n")
+        );
+    }
+}
+
+// ==================== Read 图片合法性校验对等（与 Embedded 共用对照表） ====================
+
+mod image_validation_parity_tests {
+    use super::*;
+
+    /// 与 Embedded 共用同一份对照表（`src/test/fixtures/imageValidation.json`）。
+    ///
+    /// TS 侧测试断言「本表 == `validateImageBytes` 的真实结果」；这里断言
+    /// 「Rust 的 `image_validation_failure` == 本表」。
+    const FIXTURE: &str = include_str!("../../src/test/fixtures/imageValidation.json");
+
+    #[test]
+    fn matches_the_shared_image_validation_table() {
+        let fixture: Value = serde_json::from_str(FIXTURE).expect("对照表必须是合法 JSON");
+        let cases = fixture
+            .get("cases")
+            .and_then(Value::as_array)
+            .expect("对照表缺少 cases");
+        assert!(!cases.is_empty(), "对照表不能为空");
+        let mut failures: Vec<String> = Vec::new();
+        for case in cases {
+            let name = case.get("name").and_then(Value::as_str).unwrap_or("<unnamed>");
+            let media_type = case.get("mediaType").and_then(Value::as_str).unwrap_or("");
+            let hex = case.get("hex").and_then(Value::as_str).unwrap_or("");
+            // expected 为 null 表示通过
+            let expected = case.get("expected").and_then(Value::as_str);
+            let bytes = decode_hex(hex);
+            let actual = image_validation_failure(&bytes, media_type);
+            if actual != expected {
+                failures.push(format!(
+                    "{name}: 期望 {expected:?}，实际 {actual:?}（{} 字节）",
+                    bytes.len()
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "图片合法性校验与 Embedded 不一致：\n{}",
             failures.join("\n")
         );
     }
