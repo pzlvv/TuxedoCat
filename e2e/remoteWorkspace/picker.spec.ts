@@ -10,7 +10,7 @@ import { openStaticPage } from '../helpers/webviewHarness';
  * 以假 `window.remoteWorkspaceAPI`（内存目录树）驱动真实页面逻辑，锁住：
  * - 路径框里删字母（不是删目录）后，列表回到该目录的全部内容（曾经停在上一轮过滤结果上）；
  * - 选中项恒在（默认第一项，`..` 除外）、上下方向键 / `Ctrl+N` / `Ctrl+P` 移动；
- * - `Tab` / 回车把选中项补全进路径框，回车在已补全到选中项时进入该项；
+ * - `Tab` 把选中项补全进路径框（带尾分隔符并展开其内容），回车直接进入选中目录；
  * - 路径框常驻焦点（点标题 / 错误行 / 面板空白都不丢）；
  * - 「打开此目录」在路径框停在候选前缀上时作用于选中项。
  */
@@ -125,24 +125,20 @@ test('选中项恒在且默认第一项（`..` 除外），上下方向键 / Ctr
   await expect(selected).toHaveText('..');
 });
 
-test('Tab / 回车把选中项补全进路径框，回车在已补全时进入该项', async () => {
+test('Tab 补全带尾分隔符并展开，回车直接进入选中目录', async () => {
   const { page } = handle;
   const input = page.locator('#pathInput');
 
-  // 前缀 → Tab 补全；再按一次 Tab 补尾分隔符并展开它的内容
+  // 前缀 → Tab 补全：写入选中项并带尾分隔符，列表随即展开它的内容
   await page.fill('#pathInput', '/abc/de');
   await expect(page.locator('#entries .row.selected')).toHaveText('def');
-  await page.keyboard.press('Tab');
-  await expect(input).toHaveValue('/abc/def');
   await page.keyboard.press('Tab');
   await expect(input).toHaveValue('/abc/def/');
   await expect.poll(() => rowTexts(page)).toEqual(['..', 'x', 'y']);
 
-  // 回车：未补全先补全（不跳转），已补全再回车进入
+  // 回车：一次进入选中目录（路径框回写自带尾分隔符）
   await page.fill('#pathInput', '/abc/de');
   await expect(page.locator('#entries .row.selected')).toHaveText('def');
-  await page.keyboard.press('Enter');
-  await expect(input).toHaveValue('/abc/def');
   await page.keyboard.press('Enter');
   await expect(input).toHaveValue('/abc/def/');
   await expect.poll(() => rowTexts(page)).toEqual(['..', 'x', 'y']);

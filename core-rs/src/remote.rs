@@ -1242,6 +1242,13 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
             return 1;
         }
     };
+    // panic trace 直接落日志文件（替换进程入口装的 stderr 钩子）：stderr 通常已被启动器
+    // 重定向到同一文件，但手动从终端拉起时 stderr 是终端——崩溃必须留痕靠钩子自己写
+    //（`docs/core-daemon.md` 第 12.5 节）。路径解析失败不拦启动：后续落状态文件时同样
+    // 的错误会报出来。
+    if let Ok(log_path) = daemon_log_path() {
+        crate::util::install_panic_hook_with_file(log_path);
+    }
     let listener = match bind_listener() {
         Ok(listener) => listener,
         Err(error) => {

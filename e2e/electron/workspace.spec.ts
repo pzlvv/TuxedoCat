@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { startMockLlm } from '../helpers/mockLlmServer';
-import { launchApp, makeWorkspace, stubMainMessageBox } from '../helpers/electronApp';
+import { launchApp, makeWorkspace, waitForMessageBox, clickMessageBoxButton, messageBoxText } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
@@ -209,25 +209,25 @@ test('US-35 标签页内有对话非 idle 时关闭标签页需二次确认', as
   await chatPage.press('textarea.input-textarea', 'Enter');
   await expect(chatPage.locator('button[title="终止"]')).toBeEnabled({ timeout: 30_000 });
 
-  const messageBox = await stubMainMessageBox(app);
   const tabs = (await app.titlebarPage()).locator('#workspaceTabs [role="tab"]');
   await expect(tabs).toHaveCount(2, { timeout: 20_000 });
   // 标签页流水灯亮 = 该目录下确实有非 idle 对话（与宿主的关闭前判定同一份事实）
   await expect(tabs.first()).toHaveClass(/activity-running/, { timeout: 20_000 });
 
-  // 取消（默认返回下标 1）：标签页保留，查询继续跑
+  // 取消（自绘确认框按钮 1）：标签页保留，查询继续跑
   await tabs.first().hover();
   await tabs.first().locator('.ws-tab-close').click();
-  await expect.poll(() => messageBox.calls()).toHaveLength(1);
-  expect((await messageBox.calls())[0].message).toContain('e2e-ws-busy-a');
+  const box = await waitForMessageBox(app);
+  expect((await messageBoxText(box)).message).toContain('e2e-ws-busy-a');
+  await clickMessageBoxButton(box, 1);
   await expect(tabs).toHaveCount(2);
   await expect(chatPage.locator('button[title="终止"]')).toBeEnabled();
 
-  // 确认：标签页关闭，运行中的查询随视图销毁中止
-  await messageBox.setResponse(0);
+  // 确认（按钮 0「仍然关闭」）：标签页关闭，运行中的查询随视图销毁中止
   await tabs.first().hover();
   await tabs.first().locator('.ws-tab-close').click();
-  await expect.poll(() => messageBox.calls()).toHaveLength(2);
+  const box2 = await waitForMessageBox(app);
+  await clickMessageBoxButton(box2, 0);
   await expect(tabs).toHaveCount(1, { timeout: 20_000 });
 
   await fs.promises.rm(aDir, { recursive: true, force: true }).catch(() => undefined);

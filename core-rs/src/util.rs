@@ -71,6 +71,29 @@ pub fn install_panic_hook() {
     }));
 }
 
+/// 在 [`install_panic_hook`] 之上加**直接落文件**：panic 整块（信息 + 栈）除 stderr 外
+/// 追加写 `log_path`。
+///
+/// daemon 的 stderr 通常已被启动器（`spawn_daemon`）重定向到同一个日志文件，但被
+/// 手动从终端拉起（`start-daemon` 直跑）时 stderr 是终端，崩溃一屏滚过就没了——
+/// 钩子自己写文件是「daemon 崩溃必须留下 trace」的兜底路径。panic 发生在任意线程、
+/// 钩子拿不到上下文，路径在安装时捕获进闭包；文件在 panic 时才打开（一次 append
+/// 一次 write），打开失败只能放弃（stderr 里已有同一份内容）。
+pub fn install_panic_hook_with_file(log_path: std::path::PathBuf) {
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let block = format!("[core] panic: {info}\n{backtrace}\n");
+        use std::io::Write as _;
+        {
+            let mut stderr = std::io::stderr().lock();
+            let _ = stderr.write_all(block.as_bytes());
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+            let _ = file.write_all(block.as_bytes());
+        }
+    }));
+}
+
 pub fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

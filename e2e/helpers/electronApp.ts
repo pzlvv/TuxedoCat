@@ -431,55 +431,41 @@ export async function mainEval<T>(app: AppHandle, expression: string): Promise<T
   return raw?.result?.result?.value as T;
 }
 
-/** 已记录的一次原生消息框调用 */
-export interface MessageBoxCall {
-  message: string;
-  detail: string;
-  buttons: string[];
-}
-
-export interface MessageBoxStub {
-  /** 设置后续调用返回的按钮下标（0 = 第一个按钮） */
-  setResponse(index: number): Promise<void>;
-  /** 已记录的全部调用 */
-  calls(): Promise<MessageBoxCall[]>;
-}
+/** 自绘消息框窗口的页面标题（与 electron/styledMessageBox.ts 的 MESSAGE_BOX_PAGE_TITLE 同步） */
+const MESSAGE_BOX_PAGE_TITLE = 'tc-message-box';
 
 /**
- * 替换主进程的原生消息框（`dialog.showMessageBox`）。
- *
- * Playwright 点不到原生模态，用例只能这样注入：桩记录每次调用的文案，并按
- * `setResponse` 设置的下标返回，从而驱动「确认 / 取消」两条分支。
- * 未设置时按对话框自己的 `defaultId` 返回——用户不点按钮、直接回车 / Esc 时
- * 原生对话框给的就是这个下标，桩必须与之一致，否则「默认取消」这类断言会测成
- * 「默认确认」。
- * 注入失败（主进程拿不到 electron 模块）直接抛错，避免误判成业务行为。
+ * 等待自绘消息框窗口出现（关闭确认 / 删除确认等已不再走原生 dialog，Playwright
+ * 可以直接驱动它的页面），返回其 Page。按「data URL + 固定页面标题」识别——
+ * 应用里只有消息框用 data URL 载入且标题固定。
  */
-export async function stubMainMessageBox(app: AppHandle): Promise<MessageBoxStub> {
-  const injected = await mainEval<string>(app, `(function(){try{
-    const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
-    globalThis.__messageBoxCalls = [];
-    globalThis.__messageBoxResponse = null;
-    e.dialog.showMessageBox = async (win, opts) => {
-      globalThis.__messageBoxCalls.push({
-        message: String(opts && opts.message || ''),
-        detail: String(opts && opts.detail || ''),
-        buttons: (opts && opts.buttons) || [],
-      });
-      const fallback = opts && typeof opts.defaultId === 'number' ? opts.defaultId : 0;
-      return { response: globalThis.__messageBoxResponse ?? fallback, checkboxChecked: false };
-    };
-    return 'ok';
-  } catch (err) { return 'ERR ' + err.message; }})()`);
-  if (injected !== 'ok') throw new Error(`原生消息框注入失败：${injected}`);
-  return {
-    setResponse: async (index: number) => {
-      await app.evaluateInMain(`globalThis.__messageBoxResponse = ${index}`);
-    },
-    calls: async () => JSON.parse(
-      await mainEval<string>(app, 'JSON.stringify(globalThis.__messageBoxCalls)'),
-    ) as MessageBoxCall[],
-  };
+export async function waitForMessageBox(app: AppHandle, timeout = 10_000): Promise<Page> {
+  const startedAt = Date.now();
+  for (;;) {
+    const candidates = app.context.pages().filter((p) => p.url().startsWith('data:text/html'));
+    for (const page of candidates) {
+      if ((await page.title()) === MESSAGE_BOX_PAGE_TITLE) return page;
+    }
+    if (Date.now() - startedAt > timeout) {
+      throw new Error('等待自绘消息框超时。现有页面：'
+        + app.context.pages().map((p) => p.url()).join(', '));
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+}
+
+/** 读当前消息框渲染出的文案（message / detail / 按钮标签，顺序即下标顺序） */
+export async function messageBoxText(page: Page): Promise<{ message: string; detail: string; buttons: string[] }> {
+  return page.evaluate(() => ({
+    message: (document.querySelector('.message') as HTMLElement | null)?.textContent ?? '',
+    detail: (document.querySelector('.detail') as HTMLElement | null)?.textContent ?? '',
+    buttons: Array.from(document.querySelectorAll<HTMLButtonElement>('.actions button')).map((b) => b.textContent ?? ''),
+  }));
+}
+
+/** 点击消息框按钮（0 = 第一个按钮；点击后窗口关闭） */
+export async function clickMessageBoxButton(page: Page, index: number): Promise<void> {
+  await page.locator(`.actions button[data-index="${index}"]`).click();
 }
 
 /** 造一个临时工作区；name 用于固定目录名（工作区标签页显示目录名） */

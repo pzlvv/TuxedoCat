@@ -657,28 +657,24 @@ function main(): void {
   }
 
   /**
-   * 补全输入：把选中项写进路径框（光标到末尾）。已经补全到选中项时补上尾分隔符——
-   * 表示「这一级敲完了」，预览随即展开它的内容（Tab 连按即逐级往下）。
+   * 补全输入：把选中项写进路径框（带尾分隔符，光标到末尾）。候选全是目录，选中即
+   * 「这一级敲完了」——预览随即展开它的内容（Tab 连按即逐级往下）。
    */
   function completeInput(): void {
     if (selectedPath === null || !inputPointsAtListing()) return;
-    pathInput.value = completePathInput(pathInput.value.trim(), selectedPath);
+    pathInput.value = completePathInput(selectedPath);
     pathInput.setSelectionRange(pathInput.value.length, pathInput.value.length);
     // 补全后让列表跟上：末段成为完整名字就只剩它自己，补了分隔符就展开下一级
     schedulePreview();
   }
 
   /**
-   * 回车：输入框还没补全到选中项时先补全（与 Tab 同一份补全，看得见再确认），已经是
-   * 选中项时进入它；路径框指向的不是当前列出的目录（预览失败 / 路径还没敲完）时按
-   * 输入框跳转，由 navigate() 给出明确错误。
+   * 回车：进入当前选中的目录（一次到位，`renderListing` 回写路径时自带尾分隔符）；
+   * 没有选中项（路径框指向的不是当前列出的目录 / 预览失败 / 过滤无匹配）时按
+   * 输入框原文跳转，由 navigate() 给出明确错误。
    */
   function submitPathInput(): void {
     if (selectedPath !== null && inputPointsAtListing()) {
-      if (!sameDirectory(pathInput.value.trim(), selectedPath)) {
-        completeInput();
-        return;
-      }
       navigate(selectedPath);
       return;
     }

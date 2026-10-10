@@ -2,7 +2,7 @@ import { test, expect, type Locator, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { startMockLlm } from '../helpers/mockLlmServer';
-import { launchApp, makeWorkspace, stubMainMessageBox } from '../helpers/electronApp';
+import { launchApp, makeWorkspace, waitForMessageBox, clickMessageBoxButton, messageBoxText } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
 import { CONFIG_DIR_NAME, ENV_PREFIX } from '../../src/config/project';
@@ -145,21 +145,21 @@ test('US-19 关闭非 idle 对话需二次确认', async () => {
   await expect(item.locator('.running-bar')).toBeVisible({ timeout: 30_000 });
   await expect(item.locator('.loaded-dot')).toBeVisible();
 
-  const messageBox = await stubMainMessageBox(app);
-
-  // 取消（默认返回下标 1）：视图与运行都保留
+  // 取消（自绘确认框按钮 1）：视图与运行都保留
   await item.hover();
   await item.locator('[data-action="close"]').click();
-  await expect.poll(() => messageBox.calls()).toHaveLength(1);
-  expect((await messageBox.calls())[0].message).toBe('该对话正在运行');
+  const box = await waitForMessageBox(app);
+  const text = await messageBoxText(box);
+  expect(text.message).toBe('该对话正在运行');
+  await clickMessageBoxButton(box, 1);
   await expect(item.locator('.loaded-dot')).toBeVisible();
   await expect(item.locator('.running-bar')).toBeVisible();
 
-  // 确认：视图销毁（已打开标记消失）、运行中止（流水灯消失）
-  await messageBox.setResponse(0);
+  // 确认（按钮 0「仍然关闭」）：视图销毁（已打开标记消失）、运行中止（流水灯消失）
   await item.hover();
   await item.locator('[data-action="close"]').click();
-  await expect.poll(() => messageBox.calls()).toHaveLength(2);
+  const box2 = await waitForMessageBox(app);
+  await clickMessageBoxButton(box2, 0);
   await expect(item.locator('.loaded-dot')).toHaveCount(0, { timeout: 30_000 });
   await expect(item.locator('.running-bar')).toHaveCount(0, { timeout: 30_000 });
 });

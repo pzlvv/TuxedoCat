@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { startMockLlm } from '../helpers/mockLlmServer';
-import { launchApp, makeWorkspace, stubMainMessageBox, mainEval } from '../helpers/electronApp';
+import { launchApp, makeWorkspace, waitForMessageBox, clickMessageBoxButton, messageBoxText, mainEval } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
 
@@ -12,7 +12,7 @@ import type { MockLlm } from '../helpers/mockLlmServer';
  * US-44 侧栏宽度拖拽（右缘手柄、持久化、双击恢复默认）
  *
  * 驱动的是 Electron 原生侧栏（dist/sidebar），文件树数据来自主进程真实读盘，
- * 删除 / 复制经 stubMainMessageBox / 主进程剪贴板桩驱动两条分支。
+ * 删除确认经自绘消息框窗口驱动（waitForMessageBox / clickMessageBoxButton）、复制经主进程剪贴板桩。
  */
 const SECTION = '#filesSection';
 const TREE = '#filesTree';
@@ -256,31 +256,31 @@ test('US-43 在文件资源管理器中打开只作用于右键项（主进程�
   }, { timeout: 5_000 }).toEqual([path.join(workspaceDir, 'notes.txt')]);
 });
 
-test('US-43 删除需原生确认：取消不动，确认后移入回收站并刷新（Delete 键入口）', async () => {
+test('US-43 删除需自绘确认：取消不动，确认后移入回收站并刷新（Delete 键入口）', async () => {
   const sb = await sidebar();
   await expandFiles(sb);
-  const messageBox = await stubMainMessageBox(app);
 
-  // 选中两项后按 Delete：先弹原生确认框，默认按钮是「取消」
+  // 选中两项后按 Delete：先弹自绘确认框，默认按钮是「取消」
   await sb.locator(`${FILE_ROWS}[data-path="notes.txt"]`).click();
   await sb.locator(`${FILE_ROWS}[data-path="readme.md"]`).click({ modifiers: ['Control'] });
   await expect(sb.locator(SELECTED_ROWS)).toHaveCount(2);
   await sb.keyboard.press('Delete');
-  await expect.poll(() => messageBox.calls(), { timeout: 10_000 }).toHaveLength(1);
-  const call = (await messageBox.calls())[0];
+  const box = await waitForMessageBox(app);
+  const call = await messageBoxText(box);
   expect(call.buttons).toEqual(['移入回收站', '取消']);
   expect(call.message).toBe('要删除选中的 2 项吗？');
 
-  // 取消（桩按 defaultId 应答）：文件仍在，树不变
+  // 取消：文件仍在，树不变
+  await clickMessageBoxButton(box, 1);
   await expect(sb.locator(`${FILE_ROWS}[data-path="notes.txt"]`)).toBeVisible();
   await expect(sb.locator(`${FILE_ROWS}[data-path="readme.md"]`)).toBeVisible();
   expect(fs.existsSync(path.join(workspaceDir, 'notes.txt'))).toBe(true);
   expect(fs.existsSync(path.join(workspaceDir, 'readme.md'))).toBe(true);
 
-  // 确认：文件移出工作目录，树自动刷新后条目消失
-  await messageBox.setResponse(0);
+  // 确认（按钮 0「移入回收站」）：文件移出工作目录，树自动刷新后条目消失
   await sb.keyboard.press('Delete');
-  await expect.poll(() => messageBox.calls(), { timeout: 10_000 }).toHaveLength(2);
+  const box2 = await waitForMessageBox(app);
+  await clickMessageBoxButton(box2, 0);
   await expect(sb.locator(`${FILE_ROWS}[data-path="notes.txt"]`)).toHaveCount(0, { timeout: 15_000 });
   await expect(sb.locator(`${FILE_ROWS}[data-path="readme.md"]`)).toHaveCount(0, { timeout: 15_000 });
   await expect.poll(

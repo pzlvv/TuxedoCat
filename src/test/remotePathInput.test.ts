@@ -70,11 +70,10 @@ runTests('remotePathInput', () => {
   check('指向的目录：没有分隔符时按整串算', typedDirectory('C:') === 'C:');
   check('指向的目录：空串', typedDirectory('') === '');
 
-  // 补全：未补全时写选中项；已指向选中项时补尾分隔符（表示「这一级敲完了」）
-  check('补全：前缀补成选中项', completePathInput('/home/de', '/home/dev') === '/home/dev');
-  check('补全：已到选中项时补尾分隔符', completePathInput('/home/dev', '/home/dev') === '/home/dev/');
-  check('补全：带尾分隔符时保持', completePathInput('/home/dev/', '/home/dev') === '/home/dev/');
-  check('补全：windows 反斜杠同样处理', completePathInput('C:\\Users', 'C:\\Users') === 'C:\\Users/');
+  // 补全：候选全是目录，补全即「这一级敲完了」——始终带尾分隔符，预览随即展开其内容
+  check('补全：前缀补成选中项并带尾分隔符', completePathInput('/home/dev') === '/home/dev/');
+  check('补全：已带尾分隔符时保持', completePathInput('/home/dev/') === '/home/dev/');
+  check('补全：windows 反斜杠统一补成 /', completePathInput('C:\\Users') === 'C:\\Users/');
 
   finish();
 });

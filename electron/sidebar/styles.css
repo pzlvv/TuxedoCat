@@ -494,9 +494,13 @@ body.sidebar-resizing { cursor: col-resize; }
 
 /* ═══ 文件浏览器（US-42 / US-43） ═══
    分区条常驻侧栏底部；展开占侧栏 50% 高度（flex: 0 0 50%），对话列表相应收窄。
-   树行 / 右键菜单的配色与对话列表同一灰阶（#26262c hover、indigo 选中系）。 */
+   树行 / 右键菜单的配色与对话列表同一灰阶（#26262c hover、indigo 选中系）。
+   展开是「上推」动画：折叠态显式给 flex-basis: 28px（分区条高度）作起点，展开到
+   50% 由 transition 铺过；内容再叠一层自下而上的淡入（files-body-in）。 */
 .files-section {
   flex-shrink: 0;
+  flex-basis: 28px;
+  transition: flex-basis 0.22s ease;
   display: flex;
   flex-direction: column;
   border-top: 1px solid #26262c;
@@ -509,6 +513,10 @@ body.sidebar-resizing { cursor: col-resize; }
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  animation: files-body-in 0.22s ease;
+}
+@keyframes files-body-in {
+  from { opacity: 0; transform: translateY(10px); }
 }
 .files-header {
   display: flex;
@@ -609,6 +617,13 @@ body.sidebar-resizing { cursor: col-resize; }
   font-size: 11.5px;
   color: #6b6b74;
   cursor: default;
+}
+/* 加载中行的转圈：.spinner（智能命名转圈）的缩小版，读盘在途的可视反馈 */
+.file-hint-spinner {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+  flex-shrink: 0;
 }
 .file-error {
   color: #f87171;

@@ -36,7 +36,7 @@ test.afterEach(async () => {
 /**
  * 主进程求值（包一层 try 以便把错误带回断言信息）。
  * 入口 bundle 是 CJS，但 inspector 的全局求值上下文里没有裸 `require`，
- * 与 stubMainMessageBox 同口径经 `process.mainModule.require` 取 electron。
+ * 经 `process.mainModule.require` 取 electron。
  */
 function mainExpr<T>(body: string): Promise<T> {
   return app.evaluateInMain(

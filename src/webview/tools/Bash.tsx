@@ -1,4 +1,4 @@
-import React, { useMemo, useLayoutEffect, useRef } from 'react';
+import React, { useMemo, useLayoutEffect, useRef, useState } from 'react';
 import { Icon } from '../Icon';
 import { ToolCallProps } from './Types';
 import { ToolHeader } from './ToolHeader';
@@ -6,6 +6,7 @@ import { postMessage, getWindowSessionId } from '../webviewEnv';
 import { t } from '../i18n';
 import { AnsiText, hasAnsi, renderAnsiToNodes } from '../ansi';
 import { formatSize, parsePersistedOutput } from './persistedOutput';
+import { PREVIEW_LINES, PreviewMoreHint } from './previewLimit';
 
 /**
  * 用于「滚到底部」的超大 scrollTop 值。
@@ -17,6 +18,12 @@ const SCROLL_TO_BOTTOM = 1e9;
 export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId, status, isStreaming }) => {
   const command = args.command || '';
   const description = args.description || '';
+
+  // 执行完成后的行级截断（与 Edit / Write 的预览限行同一约定）：默认只渲染前
+  // PREVIEW_LINES 行 + 「显示全部」提示条，展开后渲染全部并放开滚动高度。
+  // 流式期间不截断（要看到最新输出滚到底部）；status 不会从完成退回运行，
+  // 展开状态一旦置位就保持到卡片销毁。
+  const [outputExpanded, setOutputExpanded] = useState(false);
 
   // 输出内容变化或流式结束时自动滚动到底部。
   // 注意：流式状态切换会挂载新的滚动容器（流式 div ↔ 普通 div），
@@ -125,8 +132,8 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
     while (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') {
       rawLines.pop();
     }
-    // 内容上限已在工具层统一执行（4K，前 2K + 后 2K），UI 不再二次截断，
-    // 收到多少就渲染多少（滚动容器 maxHeight 负责可视高度）。
+    // 内容上限已在工具层统一执行（4K，前 2K + 后 2K）。流式期间收到多少渲染多少
+    //（滚动容器 maxHeight 负责可视高度）；执行完成后的行级截断在下方 truncateLines。
     const lines = rawLines;
 
     // 统一行渲染（withCursor 用于流式末尾光标）
@@ -166,13 +173,18 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
       lineHeight: '1.6',
     };
 
-    const renderBlock = () => {
-      const text = lines.join('\n');
-      return (
-        <pre style={blockStyle}>
-          {hasAnsi(text) ? renderAnsiToNodes(text) : text}
-        </pre>
-      );
+    const renderBlock = (text: string) => (
+      <pre style={blockStyle}>
+        {hasAnsi(text) ? renderAnsiToNodes(text) : text}
+      </pre>
+    );
+
+    /** 完成态的行级截断：默认只渲染前 PREVIEW_LINES 行，展开后放开 */
+    const truncateLines = (text: string): { text: string; truncated: boolean; total: number } => {
+      const allLines = text.split('\n');
+      const total = allLines.length;
+      if (outputExpanded || total <= PREVIEW_LINES) return { text, truncated: false, total };
+      return { text: allLines.slice(0, PREVIEW_LINES).join('\n'), truncated: true, total };
     };
 
     // ─── 流式输出：实时显示最新累积输出 + 自动滚动 ───
@@ -208,6 +220,8 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
       const sizeStr = persistedInfo.originalSize > 0
         ? formatSize(persistedInfo.originalSize)
         : '';
+      // 预览（前 2K + 后 2K）也可能有几十行：与普通输出同一套行级截断
+      const preview = truncateLines(persistedInfo.preview);
 
       return (
         <div
@@ -243,25 +257,31 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
           </div>
 
           {/* 预览内容：与流式共用滚动容器（maxHeight 115），不换行截断。
-              预览由工具层按「前 2K + 后 2K」生成，UI 原样整段渲染（加载历史时走这条路径）。 */}
+              预览由工具层按「前 2K + 后 2K」生成，UI 整段渲染（加载历史时走这条路径）。 */}
           <div
             ref={outputRef}
             className="cursor-pointer overflow-auto"
             onClick={handleOutputClick}
             title={t('tool.bash.clickFullOutput')}
-            style={{ maxHeight: 115 }}
+            style={{ maxHeight: outputExpanded ? undefined : 115 }}
           >
-            <pre style={blockStyle}>
-              {hasAnsi(persistedInfo.preview)
-                ? renderAnsiToNodes(persistedInfo.preview)
-                : persistedInfo.preview}
-            </pre>
+            {renderBlock(preview.text)}
           </div>
+          {preview.truncated && (
+            <PreviewMoreHint
+              shown={PREVIEW_LINES}
+              total={preview.total}
+              expanded={outputExpanded}
+              colors={colors}
+              onClick={() => setOutputExpanded(true)}
+            />
+          )}
         </div>
       );
     }
 
     // 普通输出：与流式显示共用同一滚动结构，完成后高度与流式保持一致
+    const normal = truncateLines(lines.join('\n'));
     return (
       <div
         className="px-3 py-2 ui-fs-11 font-mono"
@@ -273,13 +293,22 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
         <div
           ref={outputRef}
           className="overflow-auto cursor-pointer"
-          style={{ maxHeight: 115 }}
+          style={{ maxHeight: outputExpanded ? undefined : 115 }}
           onClick={handleOutputClick}
           title={t('tool.bash.clickFullOutput')}
         >
           {/* 执行完成 / 从历史加载：按是否含 ANSI 分流整段渲染 */}
-          {renderBlock()}
+          {renderBlock(normal.text)}
         </div>
+        {normal.truncated && (
+          <PreviewMoreHint
+            shown={PREVIEW_LINES}
+            total={normal.total}
+            expanded={outputExpanded}
+            colors={colors}
+            onClick={() => setOutputExpanded(true)}
+          />
+        )}
       </div>
     );
   };

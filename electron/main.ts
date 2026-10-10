@@ -21,6 +21,7 @@ import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+import { spawn } from 'child_process';
 import { ChatViewManager, SIDEBAR_DEFAULT_WIDTH, TITLEBAR_HEIGHT, chatViewBackgroundColor } from './ChatViewManager.js';
 import {
   getTitlebarMenuHtml,
@@ -30,6 +31,7 @@ import {
 } from './titlebarMenuHtml.js';
 import { ElectronUIHost } from './ElectronUIHost.js';
 import { ElectronSpinDesign } from './ElectronSpinDesign.js';
+import { showStyledMessageBox } from './styledMessageBox.js';
 import { guardViewNavigation } from './viewNavigation.js';
 import { ElectronConversationManager } from './ElectronConversationManager.js';
 import { WebViewUI } from '../src/host/WebViewUI.js';
@@ -2119,17 +2121,16 @@ function sessionIsBusy(sessionId: string): boolean {
 }
 
 /**
- * 关闭前的二次确认（原生模态对话框）：返回 true 表示用户确认关闭。
- * 窗口不可用时没有可确认的对象，按「继续关闭」处理（与无确认路径同行为）。
+ * 关闭前的二次确认（自绘模态对话框，electron/styledMessageBox.ts）：返回 true 表示
+ * 用户确认关闭。窗口不可用时没有可确认的对象，按「继续关闭」处理（与无确认路径同行为）。
  */
 async function confirmCloseBusy(message: string, detail: string): Promise<boolean> {
   if (!mainWindow || mainWindow.isDestroyed()) return true;
-  const { response } = await dialog.showMessageBox(mainWindow, {
+  const response = await showStyledMessageBox(mainWindow, {
     type: 'warning',
     buttons: [tt('仍然关闭', 'Close Anyway'), tt('取消', 'Cancel')],
     defaultId: 1,
     cancelId: 1,
-    noLink: true,
     message,
     detail,
   });
@@ -2244,22 +2245,18 @@ function toggleFloatingPinned(): void {
 }
 
 /**
- * 打开/切换开发者工具（Ctrl+Shift+I）：
- * 优先调试当前聚焦的 webContents（聊天视图/侧栏），
- * 聚焦不可用时回退到活动聊天视图，最后回退到主窗口。
+ * 打开/关闭开发者工具（Ctrl+Shift+I）：独立窗口打开（detach——主窗口是自绘
+ * WebContentsView 布局，停靠式面板会挤压 / 遮挡视图，且在部分打包形态下不可见）。
+ * 优先调试当前聚焦的 webContents（聊天视图/侧栏），聚焦不可用时回退到活动聊天
+ * 视图，最后回退到主窗口。
  */
 function toggleDevTools(): void {
-  const focused = webContents.getFocusedWebContents();
-  if (focused && !focused.isDestroyed()) {
-    focused.toggleDevTools();
-    return;
-  }
-  const active = chatViews?.getActiveWebContents();
-  if (active && !active.isDestroyed()) {
-    active.toggleDevTools();
-    return;
-  }
-  mainWindow?.webContents.toggleDevTools();
+  const target = webContents.getFocusedWebContents()
+    ?? chatViews?.getActiveWebContents()
+    ?? (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null);
+  if (!target || target.isDestroyed()) return;
+  if (target.isDevToolsOpened()) target.closeDevTools();
+  else target.openDevTools({ mode: 'detach' });
 }
 
 /**
@@ -2283,14 +2280,16 @@ function scheduleRepaintOnVisible(): void {
   setTimeout(repaintAllViews, 100); // 等待窗口框架生效后再补一次，双保险
 }
 
-/** 显示「关于」对话框（原生菜单与自绘菜单共用） */
+/** 显示「关于」对话框（原生菜单与自绘菜单共用）：自绘窗口，与应用深浅主题一致 */
 function showAboutDialog(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  void dialog.showMessageBox(mainWindow, {
+  void showStyledMessageBox(mainWindow, {
     type: 'info',
-    title: `About ${PRODUCT_NAME}`,
+    buttons: [tt('确定', 'OK')],
+    defaultId: 0,
+    cancelId: 0,
     message: PRODUCT_NAME,
-    detail: `Version ${app.getVersion()}`,
+    detail: tt(`版本 ${app.getVersion()}`, `Version ${app.getVersion()}`),
   });
 }
 
@@ -3434,12 +3433,11 @@ async function openRemoteWorkspaceAfterProbe(ref: WorkspaceRef): Promise<void> {
 async function confirmHostKeyChange(err: SshHostKeyError): Promise<boolean> {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   const target = `${err.host}:${err.port}`;
-  const { response } = await dialog.showMessageBox(mainWindow, {
+  const response = await showStyledMessageBox(mainWindow, {
     type: 'warning',
     buttons: [tt('信任并重连', 'Trust && Reconnect'), tt('取消', 'Cancel')],
     defaultId: 1,
     cancelId: 1,
-    noLink: true,
     message: tt('SSH 主机密钥已变更', 'SSH host key has changed'),
     detail: tt(
       `${target} 的主机密钥与首次连接时记录的指纹不一致。\n\n`
@@ -4489,6 +4487,49 @@ function setupIpc(): void {
     return { ok: true };
   });
 
+  /**
+   * 在本地目录拉起系统终端（侧栏右键「在此处打开命令行」）。窗口须独立于应用生命周期：
+   * detached + stdio ignore 后立刻 unref，主进程不持有句柄。
+   * Windows 上不能直接 `cmd /k`（stdio ignore 时 stdin 是 NUL，cmd 读到 EOF 立即退出，
+   * 实测即退）——经 `start` 拉起的新控制台窗口里 stdin 是 CONIN$，交互会话驻留。
+   */
+  const spawnTerminalAt = (dir: string): void => {
+    if (process.platform === 'win32') {
+      const comspec = process.env.ComSpec || 'cmd.exe';
+      // cwd 直接给目录（start 不带 /D，路径含空格也无需转义）；首参空串是窗口标题占位
+      spawn(comspec, ['/c', 'start', '', 'cmd.exe', '/k'], { cwd: dir, detached: true, stdio: 'ignore' }).unref();
+      return;
+    }
+    if (process.platform === 'darwin') {
+      spawn('open', ['-a', 'Terminal', dir], { detached: true, stdio: 'ignore' }).unref();
+      return;
+    }
+    // Linux：Debian 系有 x-terminal-emulator 别名，其余退回 gnome-terminal
+    const terminal = fs.existsSync('/usr/bin/x-terminal-emulator') ? '/usr/bin/x-terminal-emulator' : 'gnome-terminal';
+    spawn(terminal, ['--working-directory', dir], { detached: true, stdio: 'ignore' }).unref();
+  };
+
+  ipcMain.handle('sidebar:files-open-terminal', (event, payload: unknown) => {
+    if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-open-terminal');
+    const p = (payload ?? {}) as { workspaceId?: unknown; dir?: unknown };
+    const ref = resolveFilesRef(p.workspaceId);
+    if (!ref) return { ok: false, error: 'workspace-unavailable' };
+    if (typeof p.dir !== 'string') return { ok: false, error: 'invalid-arguments' };
+    // 与 reveal 同理：远程项在渲染层就不显示该菜单项，主进程再拒一次（双保险）
+    if (ref.endpoint) return { ok: false, error: 'remote-unsupported' };
+    // 根目录（空 rel）合法：工作区根就是「此处」
+    const abs = resolveWithinRoot(ref.path, p.dir, { allowRoot: true });
+    if (!abs) return { ok: false, error: 'outside-root' };
+    try {
+      spawnTerminalAt(abs);
+      return { ok: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      fileLogger.warn('sidebar-files', `open terminal failed (${refDisplay(ref)}/${p.dir}): ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
   ipcMain.handle('sidebar:files-copy-paths', (event, payload: unknown) => {
     if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-copy-paths');
     const p = (payload ?? {}) as { relative?: unknown };
@@ -4517,26 +4558,24 @@ function setupIpc(): void {
     if ('error' in parsed) return { ok: false, error: parsed.error };
     const { ref, rels } = parsed;
     if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, error: 'no-window' };
-    // 原生确认框，本地 / 远程分别措辞：本地移入回收站（可恢复），远程永久删除
-    // （目录连同内容，远端没有回收站）。默认与取消都落在「取消」（与 confirmCloseBusy
-    // 同一口径，e2e 用 stubMainMessageBox 驱动确认 / 取消两条分支）。
+    // 自绘确认框（与应用深浅主题一致），本地 / 远程分别措辞：本地移入回收站（可恢复），
+    // 远程永久删除（目录连同内容，远端没有回收站）。默认与取消都落在「取消」
+    // （与 confirmCloseBusy 同一口径，e2e 直接驱动自绘窗口的按钮）。
     const isRemote = ref.endpoint !== null;
     const shown = rels.slice(0, 5).join('\n');
     const detailList = `${shown}${rels.length > 5 ? `\n${tt(`…（共 ${rels.length} 项）`, `… (${rels.length} items in total)`)}` : ''}`;
-    const { response } = await dialog.showMessageBox(mainWindow, {
+    const response = await showStyledMessageBox(mainWindow, {
       type: 'warning',
       buttons: isRemote
         ? [tt('永久删除', 'Delete Permanently'), tt('取消', 'Cancel')]
         : [tt('移入回收站', 'Move to Trash'), tt('取消', 'Cancel')],
       defaultId: 1,
       cancelId: 1,
-      noLink: true,
       message: tt(`要删除选中的 ${rels.length} 项吗？`, `Delete ${rels.length} selected item(s)?`),
-      detail: isRemote
+      detail: (isRemote
         ? tt('所选项目将被永久删除（目录连同内容），无法撤销：', 'The selected items will be deleted permanently (directories with their contents). This cannot be undone:')
-          + `\n${detailList}`
-        : tt('所选项目将移入系统回收站：', 'The selected items will be moved to the Recycle Bin:')
-          + `\n${detailList}`,
+        : tt('所选项目将移入系统回收站：', 'The selected items will be moved to the Recycle Bin:'))
+        + `\n${detailList}`,
     });
     if (response !== 0) return { ok: false, error: 'cancelled' };
     if (ref.endpoint) {
@@ -4619,13 +4658,14 @@ function setupIpc(): void {
         fileOpLog(`remote binary open skipped (${refDisplay(ref)}/${p.path})`);
         return { ok: false, error: message };
       }
-      // 打不开（读盘失败 / 系统应用拒绝 / 越界）如实回报：日志落盘 + 原生提示框
+      // 打不开（读盘失败 / 系统应用拒绝 / 越界）如实回报：日志落盘 + 自绘提示框
       fileLogger.warn('sidebar-files', `open failed (${refDisplay(ref)}/${p.path}): ${message}`);
       if (mainWindow && !mainWindow.isDestroyed()) {
-        void dialog.showMessageBox(mainWindow, {
+        void showStyledMessageBox(mainWindow, {
           type: 'warning',
           buttons: [tt('确定', 'OK')],
-          noLink: true,
+          defaultId: 0,
+          cancelId: 0,
           message: tt(`无法打开「${p.path}」`, `Cannot open "${p.path}"`),
           detail: message,
         });

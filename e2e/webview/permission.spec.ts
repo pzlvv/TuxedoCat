@@ -88,7 +88,7 @@ test('US-18 输入自定义文本后点击发送按钮提交（携带 reply）',
   expect(resp.reply).toBe('改成只写前半部分');
 });
 
-test('US-18 回车不提交自定义文本（只换行，防误触）', async () => {
+test('US-18 输入框内回车提交自定义文本、Shift+回车换行', async () => {
   const { page, host } = handle;
   const sessionId = await currentSessionId();
   await requestPermission(sessionId);
@@ -96,14 +96,19 @@ test('US-18 回车不提交自定义文本（只换行，防误触）', async ()
   const overlay = page.locator('.user-choice-overlay');
   await expect(overlay).toBeVisible({ timeout: 10_000 });
   const input = overlay.locator('textarea');
-  await input.fill('改成只写前半部分');
-  await input.press('Enter');
 
-  // 回车只换行，不产生应答；overlay 保持打开
-  await page.waitForTimeout(300);
+  // Shift+回车只换行，不产生应答
+  await input.fill('改成只写前半部分');
+  await input.press('Shift+Enter');
+  await page.waitForTimeout(200);
   expect((await host.sentAll()).some((m) => m.type === 'respondUserChoice')).toBe(false);
-  await expect(overlay).toBeVisible();
   await expect(input).toHaveValue('改成只写前半部分\n');
+
+  // 回车提交（携带 reply，带 choices 的请求按「拒绝 + 原因」语义 index=1）
+  await input.press('Enter');
+  const resp = await host.waitForSent('respondUserChoice');
+  expect(resp.index).toBe(1);
+  expect(resp.reply).toBe('改成只写前半部分\n');
 });
 
 test('US-18 空格 / 回车不触发焦点选项确认（防误触）', async () => {

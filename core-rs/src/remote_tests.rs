@@ -1226,3 +1226,24 @@ fn shutdown_wins_over_idle_exit() {
         .expect("waiter should return on shutdown");
     assert!(stopped, "shutdown 先到应报停机，而不是空闲退出");
 }
+
+// ==================== 崩溃诊断 ====================
+
+/// daemon 的 panic 钩子除 stderr 外必须把整块 trace（信息 + 栈）追加进日志文件：
+/// 手动从终端拉起的 daemon stderr 不是文件，钩子直写文件是唯一留痕路径
+/// （`run_start_daemon` 安装的就是这个钩子）。
+#[test]
+fn panic_hook_appends_trace_to_file() {
+    let dir = temp_dir("panic-hook");
+    let log_path = dir.join("daemon-panic.log");
+    // 换钩子前留档，断言完立刻还原：全局钩子不该影响同进程其它用例的 panic 输出
+    let previous = std::panic::take_hook();
+    crate::util::install_panic_hook_with_file(log_path.clone());
+    let payload = thread::spawn(|| panic!("boom-in-daemon"));
+    payload.join().expect_err("panic thread should unwind");
+    std::panic::set_hook(previous);
+    let content = std::fs::read_to_string(&log_path).expect("panic trace file should exist");
+    assert!(content.contains("[core] panic:"), "trace 块应带 panic 前缀：{content}");
+    assert!(content.contains("boom-in-daemon"), "trace 块应含 panic 信息：{content}");
+    std::fs::remove_dir_all(&dir).expect("cleanup temp dir");
+}

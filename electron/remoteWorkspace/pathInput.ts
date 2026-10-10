@@ -77,9 +77,10 @@ export function typedDirectory(typed: string): string {
 }
 
 /**
- * 补全路径框的值：把选中项写进输入框。已经指向选中项（带不带尾分隔符都算）时补上
- * 尾分隔符——表示「这一级敲完了」，预览随即展开它的内容（连按 Tab 逐级往下）。
+ * 补全路径框的值：把选中项写进输入框，并**始终**带上尾分隔符——候选全是目录
+ * （daemon 只回目录），选中即视为「这一级敲完了」，预览随即展开它的内容
+ * （Tab 连按逐级往下）。
  */
-export function completePathInput(typed: string, target: string): string {
-  return sameDirectory(typed, target) ? ensureTrailingSeparator(target) : target;
+export function completePathInput(target: string): string {
+  return ensureTrailingSeparator(target);
 }

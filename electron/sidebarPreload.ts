@@ -77,6 +77,10 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
   filesReveal: (workspaceId: string, relPath: string): Promise<unknown> => {
     return ipcRenderer.invoke('sidebar:files-reveal', { workspaceId, path: relPath });
   },
+  /** 在该目录打开系统命令行（只作用于单个目录；本地工作区专属） */
+  filesOpenTerminal: (workspaceId: string, dirRel: string): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-open-terminal', { workspaceId, dir: dirRel });
+  },
   /** 复制路径：relative 为 true 时复制相对路径；多项以换行拼接 */
   filesCopyPaths: (workspaceId: string, relPaths: string[], relative: boolean): Promise<unknown> => {
     return ipcRenderer.invoke('sidebar:files-copy-paths', { workspaceId, paths: relPaths, relative });

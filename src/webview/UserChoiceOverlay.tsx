@@ -54,6 +54,17 @@ const UserChoiceOverlay = memo(function UserChoiceOverlay({
     inputSyncRef.current = value;
   }, [inputSyncRef]);
 
+  // 输入框内：Enter 提交、Shift+Enter 换行。焦点在输入框里时不会误触选项按钮
+  //（按钮的键盘激活已在 handleButtonKeyDown 里单独禁用）；中文输入法组合中的回车
+  // 是确认候选字，不提交。
+  const handleInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      onSubmit(localChoiceInput);
+    }
+  }, [localChoiceInput, onSubmit]);
+
   return (
     <div
       className="user-choice-overlay max-w-[680px] mx-auto rounded-lg border-2 transition-colors focus:outline-none"
@@ -113,6 +124,7 @@ const UserChoiceOverlay = memo(function UserChoiceOverlay({
             ref={choiceInputRef as React.RefObject<HTMLTextAreaElement>}
             value={localChoiceInput}
             onChange={handleInputChange}
+            onKeyDown={handleInputKeyDown}
             placeholder={t('userChoice.placeholder')}
             className="w-full resize-none focus:outline-none max-h-[200px] text-sm"
             style={{

@@ -142,9 +142,11 @@ interface SidebarAPI {
   filesList: (workspaceId: string, dir: string) => Promise<FilesListResult>;
   /** 在系统文件资源管理器中定位（只作用于单个条目） */
   filesReveal: (workspaceId: string, relPath: string) => Promise<FilesOpResult>;
+  /** 在该目录打开系统命令行（只作用于单个目录；本地工作区专属） */
+  filesOpenTerminal: (workspaceId: string, dirRel: string) => Promise<FilesOpResult>;
   /** 复制路径：relative 为 true 时复制相对路径；多项以换行拼接 */
   filesCopyPaths: (workspaceId: string, relPaths: string[], relative: boolean) => Promise<FilesOpResult>;
-  /** 删除（移入回收站）：主进程先弹原生确认框 */
+  /** 删除（移入回收站）：主进程先弹自绘确认框 */
   filesDelete: (workspaceId: string, relPaths: string[]) => Promise<FilesOpResult>;
   /** 双击打开（US-42 验收 6）：主进程按类型分流——文本 / 图片进内置窗口，二进制调系统应用 */
   filesOpen: (workspaceId: string, relPath: string) => Promise<FilesOpResult>;
@@ -938,6 +940,8 @@ let activeFilesId: string | null = null;
 let filesRemote = false;
 /** 当前右键菜单目标（「在文件资源管理器中打开」只作用于它） */
 let filesMenuTarget: string | null = null;
+/** 右键目标的条目类型：「在此处打开命令行」对文件取其父目录，对目录就是它自己 */
+let filesMenuKind: 'file' | 'directory' = 'file';
 let filesMenuEl: HTMLDivElement | null = null;
 
 function readStoredExpandedMap(): Record<string, boolean> {
@@ -1033,6 +1037,12 @@ function fileHintRowHtml(text: string, depth: number): string {
   return `<div class="file-row file-hint" style="padding-left:${indent}px">${escapeHtml(text)}</div>`;
 }
 
+/** 加载中占位行：转圈动画 + 文案（读盘在途的可视反馈，与文字提示区分开） */
+function fileLoadingRowHtml(depth: number): string {
+  const indent = FILE_ROW_BASE_INDENT + depth * FILE_ROW_INDENT;
+  return `<div class="file-row file-hint" style="padding-left:${indent}px"><span class="spinner file-hint-spinner"></span>加载中…</div>`;
+}
+
 function fileRowHtml(files: WorkspaceFilesState, rel: string, name: string, kind: 'file' | 'directory', depth: number, expanded: boolean): string {
   const indent = FILE_ROW_BASE_INDENT + depth * FILE_ROW_INDENT;
   // 目录才占折叠箭头位：文件用等宽空位占住，图标与名称在两层间对齐
@@ -1069,11 +1079,11 @@ function renderDirRows(files: WorkspaceFilesState, workspaceId: string, rel: str
   const listing = files.tree.get(rel);
   if (!listing) {
     loadDir(workspaceId, rel);
-    rows.push(fileHintRowHtml('加载中…', depth));
+    rows.push(fileLoadingRowHtml(depth));
     return;
   }
   if (listing.state === 'loading') {
-    rows.push(fileHintRowHtml('加载中…', depth));
+    rows.push(fileLoadingRowHtml(depth));
     return;
   }
   if (listing.state === 'error') {
@@ -1224,28 +1234,31 @@ function ensureFilesMenuEl(): HTMLDivElement {
     if (!item) return;
     e.stopPropagation();
     const action = item.dataset.menu;
-    // closeFilesMenu 会把 filesMenuTarget 清空：「在文件资源管理器中打开」只作用于
-    // 右键项（不吃选中集合），必须先把目标取下来再关菜单
+    // closeFilesMenu 会把 filesMenuTarget 清空：「在文件资源管理器中打开」与
+    // 「在此处打开命令行」只作用于右键项（不吃选中集合），必须先把目标取下来再关菜单
     const target = filesMenuTarget;
+    const targetKind = filesMenuKind;
     closeFilesMenu();
     if (action === 'copy-full') copySelectedFilePaths(false);
     else if (action === 'copy-rel') copySelectedFilePaths(true);
     else if (action === 'reveal' && target !== null) revealFilesTarget(target);
+    else if (action === 'terminal' && target !== null) openTerminalHere(targetKind === 'directory' ? target : parentRelPath(target));
     else if (action === 'delete') deleteSelectedFiles();
   });
   document.body.appendChild(filesMenuEl);
   return filesMenuEl;
 }
 
-function openFilesMenu(x: number, y: number, targetPath: string): void {
+function openFilesMenu(x: number, y: number, targetPath: string, targetKind: 'file' | 'directory'): void {
   filesMenuTarget = targetPath;
+  filesMenuKind = targetKind;
   const el = ensureFilesMenuEl();
-  // 「在文件资源管理器中打开」只对本地工作区有意义：远程工作区不显示该项
-  // （主进程对远程同样拒绝，双保险）。
+  // 「在文件资源管理器中打开」「在此处打开命令行」只对本地工作区有意义：远程工作区
+  // 不显示这两项（主进程对远程同样拒绝，双保险）。
   el.innerHTML = `
     <button class="files-menu-item" data-menu="copy-full">复制完整路径</button>
     <button class="files-menu-item" data-menu="copy-rel">复制相对路径</button>
-    ${filesRemote ? '' : '<button class="files-menu-item" data-menu="reveal">在文件资源管理器中打开</button>'}
+    ${filesRemote ? '' : '<button class="files-menu-item" data-menu="reveal">在文件资源管理器中打开</button><button class="files-menu-item" data-menu="terminal">在此处打开命令行</button>'}
     <button class="files-menu-item" data-menu="delete">删除</button>`;
   el.classList.add('open');
   // 夹取进视口：靠近右缘 / 底部时向左 / 向上收（先量尺寸再定位）
@@ -1277,6 +1290,22 @@ function revealFilesTarget(targetPath: string): void {
       if (!res.ok) console.error('[sidebar] reveal in file explorer failed:', res.error);
     })
     .catch((err) => console.error('[sidebar] reveal in file explorer failed:', err));
+}
+
+/** 相对路径的父目录（'a/b/c' → 'a/b'，顶层 → 根 ''）：rel 一律 '/' 分隔（约定格式） */
+function parentRelPath(rel: string): string {
+  const index = rel.lastIndexOf('/');
+  return index < 0 ? '' : rel.slice(0, index);
+}
+
+/** 在目录上打开系统命令行（右键「在此处打开命令行」）：本地工作区专属，主进程拉起终端 */
+function openTerminalHere(dirRel: string): void {
+  if (!activeFilesId || filesRemote) return;
+  window.sidebarAPI?.filesOpenTerminal(activeFilesId, dirRel)
+    .then((res) => {
+      if (!res.ok) console.error('[sidebar] open terminal failed:', res.error);
+    })
+    .catch((err) => console.error('[sidebar] open terminal failed:', err));
 }
 
 function deleteSelectedFiles(): void {
@@ -1405,7 +1434,7 @@ function bindFilesEvents(): void {
       files.anchor = path;
       applyFileSelectionClasses();
     }
-    openFilesMenu(e.clientX, e.clientY, path);
+    openFilesMenu(e.clientX, e.clientY, path, row.dataset.kind === 'directory' ? 'directory' : 'file');
   });
 
   // 键盘：Ctrl/Cmd+A 全选可见项、Delete 删除选中、Esc 清空
