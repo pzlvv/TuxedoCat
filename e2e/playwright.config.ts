@@ -9,7 +9,7 @@ import path from 'node:path';
  * - `webview-ui`：Chromium 直接加载构建产物 `dist/webview/index.html`，宿主侧以
  *   假宿主（`helpers/fakeHost.ts`）按 `src/host/webviewMessages.ts` 协议应答，
  *   驱动「webview UI 在真实浏览器里的用户操作」。
- * - `electron-app`：`_electron.launch` 拉起完整桌面应用（embedded core + 假 LLM
+ * - `electron-app`：`_electron.launch` 拉起完整桌面应用（standalone core + 假 LLM
  *   SSE 服务器），驱动「整应用的真实用户链路」。
  * - `remote-workspace-ui`：`electron/remoteWorkspace/` 的选择器页面（要连真实 SSH
  *   才走得到，整应用 e2e 覆盖不了）：Chromium 加载构建产物 + 假远端目录树。

@@ -387,7 +387,9 @@ MCP 列表 / 对话空间统计 / 会话加载 / 技能列表 / 挂起持久化�
 
 ## 待修缺陷：abort 响应时延
 
-现象：流式输出中点「终止」，约 1 秒后才停。
+现象：流式输出中点「终止」，约 1 秒后才停；网关接受连接后完全不回响应头时，
+Standalone 下点「终止」要等满 reqwest 的 600s 整体超时（旧实现里首字节看门狗从收到
+响应头才开始计时）。
 
 链路：webview 点击 → `WebviewMessageHandler.handleAbort`（`src/host/ui/webviewMessageHandler.ts:701`）
 发 `UiEvent.abortRequested` → Core `Integration.abortCurrentQuery`（`src/core/Integration.ts:144`）
@@ -439,6 +441,18 @@ Embedded 侧同类问题（仅当 abort 表现为 `TypeError: terminated` 而非
       超时 / 重试等待被打断，各断言时延上限）；Embedded 侧 external signal 一旦
       置位 fetch/read 即以 AbortError 拒绝，无法经公共 API 做确定性计时测试，
       依赖既有 103 个 TS 测试文件回归；
+- [x] 等待响应头阶段的取消（网关接受连接后完全不回响应头，abort 曾要等满 reqwest
+      600s 整体超时才生效）：`llm::send_cancellable` 把阻塞的 `send()` 放独立线程、
+      主线程按 `CANCEL_POLL_SLICE_MS` 切片查 `cancel`，取消置位即以「用户中断」
+      返回；首字节看门狗改从「请求发出」时刻起算（`read_sse` 接收 send 阶段算出的
+      deadline，覆盖「响应头 + 首个有效事件」整段）；错误响应正文的阻塞读取
+      （`error_body`）同样切片查 `cancel`。Embedded 侧外部 signal 接进 undici
+      `fetch`，本就能在等响应头 / 读正文时即时 abort，无需改动；两侧回归用例
+      `llm_tests.rs::abort_while_waiting_for_response_headers_returns_promptly` /
+      `abort_while_reading_error_body_returns_promptly` /
+      `stream_watchdog_times_out_when_server_never_sends_headers`，整应用 e2e
+      `e2e/electron/assistant.spec.ts::US-2 网关不回响应头时中止仍立即回到空闲态`
+      （旧核心下实测在该用例失败）；
 - [ ] webview 流式期降级渲染（纯文本 / 低频重解析 / 跳过 Shiki 增量重排），流结束再切回完整 markdown；
 - [ ] 可选：host↔daemon 链路设 `TCP_NODELAY`（远程 SSH 工作区收益更明显）。
 

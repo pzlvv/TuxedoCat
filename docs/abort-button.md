@@ -91,4 +91,6 @@ core sessionRuntime ──sessionRuntimeChanged（全量根事实）──▶ �
 - UI 级 e2e：`e2e/webview/conversation.spec.ts` 的「abort 按钮三态」用例，
   以假宿主注入 `sessionRuntimeStates` 驱动按钮颜色与可点性。
 - 整应用 e2e：`e2e/electron/assistant.spec.ts` 的「两阶段中止」用例，经 Standalone
-  Core 真实跑一个后台 Bash 任务，验证前台结束后按钮转黄、再次点击才停后台任务。
+  Core 真实跑一个后台 Bash 任务，验证前台结束后按钮转黄、再次点击才停后台任务；
+  同文件的「网关不回响应头时中止」用例以 mock LLM 的 `无响应` 脚本模拟静默挂住的
+  网关（不回响应头），验证请求停在等待响应头阶段时点击中止仍立即回到空闲态。

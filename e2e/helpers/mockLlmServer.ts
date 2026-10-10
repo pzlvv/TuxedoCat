@@ -5,11 +5,14 @@ import type { AddressInfo } from 'node:net';
  * Electron 整应用测试的假 LLM：一个 OpenAI Chat Completions 兼容的 SSE 服务器。
  *
  * embedded core 经真实链路（settings.json → settingsSnapshot → OpenAiApi.ts 流式
- * 适配器）请求本服务器；按用户消息内容脚本化决定轮次行为：
+ * 适配器）；standalone core 经 Rust 的 `llm::stream_*`。按用户消息内容脚本化决定
+ * 轮次行为：
  * - 常规文本 → 流式文本终轮（finish_reason=stop）
  * - `写入文件 <名字>` → Write 工具轮（finish_reason=tool_calls），工具结果回传后
  *   下一请求自动落终轮
  * - `慢速回答` → 长间隔分片流（供中止场景）
+ * - `无响应` → 接受连接、读完请求后**完全不回响应头**（模拟静默挂住的网关，
+ *   供「不回响应头时中止」场景）
  * 所有请求体（model / messages / tools）都被记录，供用例断言。
  */
 
@@ -24,11 +27,12 @@ export interface RecordedRequest {
   };
 }
 
-/** 一轮应答的脚本：text 终轮 / tool 工具轮 / slow 慢速流 */
+/** 一轮应答的脚本：text 终轮 / tool 工具轮 / slow 慢速流 / hang 不回响应头 */
 export type ScriptDecision =
   | { kind: 'text'; text: string; thinking?: string }
   | { kind: 'tool'; name: string; args: Record<string, unknown>; preamble?: string }
-  | { kind: 'slow'; text: string; chunkDelayMs: number };
+  | { kind: 'slow'; text: string; chunkDelayMs: number }
+  | { kind: 'hang' };
 
 export interface MockLlm {
   /** baseURL（已含 /v1），写入 settings.json 的 provider */
@@ -65,6 +69,8 @@ function hasToolResult(messages: Array<{ role: string; content: unknown }>): boo
 export async function startMockLlm(options: { workspaceDir: string }): Promise<MockLlm> {
   const requests: RecordedRequest[] = [];
   let handler: ((req: RecordedRequest) => ScriptDecision) | null = null;
+  /** `hang` 脚本挂住的响应：close() 时兜底销毁，避免服务器关不掉 */
+  const hangingResponses = new Set<http.ServerResponse>();
 
   /** 默认路由：按用户消息文本决定轮次行为 */
   const decideRound = (req: RecordedRequest): ScriptDecision => {
@@ -90,6 +96,10 @@ export async function startMockLlm(options: { workspaceDir: string }): Promise<M
     }
     if (text.startsWith('慢速回答')) {
       return { kind: 'slow', text: '这是一段慢速流式输出，逐字到达，适合验证中止操作。'.repeat(3), chunkDelayMs: 700 };
+    }
+    if (text.startsWith('无响应')) {
+      // 静默挂住的网关：接受连接、读完请求后连响应头都不回
+      return { kind: 'hang' };
     }
     const bashMatch = text.match(/^执行命令\s+(.+)$/);
     if (bashMatch) {
@@ -132,6 +142,13 @@ export async function startMockLlm(options: { workspaceDir: string }): Promise<M
       requests.push(recorded);
 
       const decision = (handler ?? decideRound)(recorded);
+      if (decision.kind === 'hang') {
+        // 不回任何响应头、也不结束响应：请求一直停在「等响应头」阶段。
+        // 客户端 abort 会断开连接（res 随之 close）；测试失败时由 close() 兜底销毁。
+        hangingResponses.add(res);
+        res.on('close', () => hangingResponses.delete(res));
+        return;
+      }
       res.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-store',
@@ -210,6 +227,11 @@ export async function startMockLlm(options: { workspaceDir: string }): Promise<M
     baseURL: `http://127.0.0.1:${port}/v1`,
     requests,
     setHandler(h) { handler = h; },
-    close() { server.close(); },
+    close() {
+      // 先销毁挂住的响应，server.close() 才不会被未结束的连接拖住
+      for (const res of hangingResponses) res.destroy();
+      hangingResponses.clear();
+      server.close();
+    },
   };
 }

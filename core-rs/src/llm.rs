@@ -6,8 +6,9 @@
 //! 超时与重试：整体请求 600s 由 reqwest 承担；网络错误 / 502、503 与「无内容且无
 //! 结束原因」按 `MAX_RETRIES=3`、`RETRY_DELAY_MS=1000` 重试；退化重复按
 //! `DEFAULT_MAX_REPETITION_RETRIES=1` 重试（对齐 `shared.ts` / `OpenAiApi.ts` /
-//! `RealApi.ts`）。流式读取与重试等待都按 `CANCEL_POLL_SLICE_MS` 切片查
-//! `cancel`，abort 在切片粒度内被响应。
+//! `RealApi.ts`）。请求发送（等待响应头）、流式读取与重试等待都按
+//! `CANCEL_POLL_SLICE_MS` 切片查 `cancel`，abort 在切片粒度内被响应；首字节
+//! 看门狗从请求发出时刻起算，覆盖「连响应头都不回」的网关。
 
 use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -82,6 +83,71 @@ fn sleep_ms_interruptible(delay_ms: u64, cancel: &AtomicBool) -> bool {
         let slice = remaining.min(CANCEL_POLL_SLICE_MS);
         std::thread::sleep(Duration::from_millis(slice));
         remaining -= slice;
+    }
+}
+
+/// 取消（abort）时返回给上层的错误文案：引擎按 `cancel` 判定「用户中断」收尾，
+/// 不把这条文案当作 LLM 故障回显（对齐 Embedded `AbortError` 的静默语义）。
+const LLM_ABORTED_MESSAGE: &str = "LLM request aborted";
+
+/// 首字节超时文案（send 阶段与 `read_sse` 共用，逐字对齐 `LLMStreamTimeoutError`）。
+fn first_byte_timeout_message(timeout_ms: u64) -> String {
+    let seconds = (timeout_ms as f64 / 1000.0).round() as u64;
+    format!("LLM 流式响应超时：{seconds}s 内未收到任何有效输出事件")
+}
+
+/// 发送请求，并在等待响应头期间按切片响应取消与首字节超时。
+///
+/// `reqwest::blocking` 的 `send()` 一旦阻塞就无法从外部打断（只能等客户端整体
+/// 超时，默认 600s），与 `read_sse` 同一套做法：`send()` 放独立线程，主线程按
+/// `CANCEL_POLL_SLICE_MS` 切片等待结果——
+/// - 取消置位 → 立刻以「用户中断」返回，不再等响应头（对齐 Embedded 把外部
+///   signal 接进 undici `fetch` 后 abort 立刻以 `AbortError` 拒绝）；
+/// - 首字节 deadline 到期 → 按 `StreamFailure::Timeout` 上报，交给看门狗重试预算
+///   （对齐 Embedded 看门狗从请求发出开始计时，覆盖「连响应头都不回」的网关）。
+///
+/// 返回响应头与本次尝试的首字节 deadline：deadline 从「请求发出」起算，继续交给
+/// `read_sse`，使首字节超时覆盖「响应头 + 首个有效事件」整段（与 Embedded 一致）。
+pub(crate) fn send_cancellable(
+    client: reqwest::blocking::Client,
+    request: reqwest::blocking::Request,
+    cancel: &AtomicBool,
+    first_byte_timeout_ms: u64,
+) -> Result<(reqwest::blocking::Response, Instant), StreamFailure> {
+    let deadline = Instant::now() + Duration::from_millis(first_byte_timeout_ms);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    // 取消 / 超时后接收端被丢弃：响应到达时发送失败，响应体自然析构、连接归还。
+    std::thread::spawn(move || {
+        let _ = sender.send(client.execute(request));
+    });
+    loop {
+        // 先查取消、再看超时（与 `read_sse` 同一顺序）：两者同时成立按「用户中断」收尾
+        if cancel.load(Ordering::Relaxed) {
+            return Err(StreamFailure::Fatal(LLM_ABORTED_MESSAGE.to_string()));
+        }
+        if Instant::now() >= deadline {
+            return Err(StreamFailure::Timeout(first_byte_timeout_message(
+                first_byte_timeout_ms,
+            )));
+        }
+        match receiver.recv_timeout(Duration::from_millis(CANCEL_POLL_SLICE_MS)) {
+            Ok(Ok(response)) => return Ok((response, deadline)),
+            Ok(Err(err)) => {
+                // 与请求失败同时到达的取消优先：Embedded 侧 signal 已置位时 fetch
+                // 也以 AbortError 拒绝，不能把用户中断回显成网络错误。
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(StreamFailure::Fatal(LLM_ABORTED_MESSAGE.to_string()));
+                }
+                return Err(StreamFailure::Retryable(format!("request failed: {err}")));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                // 发送线程 panic（未预期）：按网络错误处理，与 reqwest send 失败同口径
+                return Err(StreamFailure::Retryable(
+                    "request failed: send thread panicked".to_string(),
+                ));
+            }
+        }
     }
 }
 
@@ -262,7 +328,7 @@ pub fn stream(req: &LlmRequest, emit: &mut dyn FnMut(LlmEvent)) -> Result<(), St
         // LLM 故障回显（对齐 Embedded `executeRequest` 开头 `checkAborted` 抛
         // AbortError 的路径）。
         if req.cancel.load(Ordering::Relaxed) {
-            return Err("LLM request aborted".to_string());
+            return Err(LLM_ABORTED_MESSAGE.to_string());
         }
         let outcome = stream_fn(req.provider.api_type.as_str())(
             req,
@@ -354,8 +420,9 @@ fn messages_url(base: &str) -> String {
 ///
 /// 阻塞读取放在独立线程，主线程只做切片等待：`recv_timeout` 每次最多等
 /// `CANCEL_POLL_SLICE_MS`，每片回来都查一次 `cancel`，看门狗用 deadline 自行累计
-/// （首个**有效事件**前用 `first_byte_timeout_ms`，之后每收到有效事件把 deadline
-/// 重置为 `now + idle_timeout_ms`）。这样单次等待不再等于整个超时窗口：流停滞时
+/// （首个**有效事件**前用 `send_cancellable` 从请求发出时刻算起的
+/// `first_byte_deadline`，之后每收到有效事件把 deadline 重置为
+/// `now + idle_timeout_ms`）。这样单次等待不再等于整个超时窗口：流停滞时
 /// abort 也能在切片粒度内被响应，而不是等满 `idle_timeout_ms`。
 ///
 /// `on_data` 返回该帧是否算「有效进展」：Anthropic 的 `ping` / 未知事件不算，
@@ -363,6 +430,7 @@ fn messages_url(base: &str) -> String {
 pub(crate) fn read_sse(
     response: reqwest::blocking::Response,
     cancel: &AtomicBool,
+    first_byte_deadline: Instant,
     first_byte_timeout_ms: u64,
     idle_timeout_ms: u64,
     on_data: &mut dyn FnMut(&str) -> Result<bool, StreamFailure>,
@@ -393,7 +461,9 @@ pub(crate) fn read_sse(
     });
 
     let mut saw_progress = false;
-    let mut deadline = Instant::now() + Duration::from_millis(first_byte_timeout_ms);
+    // 首字节 deadline 从「请求发出」起算（send_cancellable 计算），而不是从收到
+    // 响应头起算：网关完全不回响应头时，计时必须在 send 阶段就已经在走。
+    let mut deadline = first_byte_deadline;
     loop {
         // 先查取消、再看超时：两者同时成立按「用户中断」收尾，不上报 Timeout
         // （对齐 Embedded 重试分支把 `checkAborted` 放在等待之前的口径）。
@@ -403,18 +473,11 @@ pub(crate) fn read_sse(
         }
         if Instant::now() >= deadline {
             stopped.store(true, Ordering::Relaxed);
-            let timeout_ms = if saw_progress {
-                idle_timeout_ms
-            } else {
-                first_byte_timeout_ms
-            };
-            let seconds = (timeout_ms as f64 / 1000.0).round() as u64;
             let message = if saw_progress {
-                format!(
-                    "LLM 流式响应超时：连续 {seconds}s 无新的输出事件（流已停滞）"
-                )
+                let seconds = (idle_timeout_ms as f64 / 1000.0).round() as u64;
+                format!("LLM 流式响应超时：连续 {seconds}s 无新的输出事件（流已停滞）")
             } else {
-                format!("LLM 流式响应超时：{seconds}s 内未收到任何有效输出事件")
+                first_byte_timeout_message(first_byte_timeout_ms)
             };
             return Err(StreamFailure::Timeout(message));
         }
@@ -457,9 +520,30 @@ pub(crate) fn read_sse(
     }
 }
 
-/// 读取错误响应体，用于错误提示（对齐 Embedded：完整正文，不截断）
-pub(crate) fn error_body(response: reqwest::blocking::Response) -> String {
-    response.text().unwrap_or_default()
+/// 读取错误响应体，用于错误提示（对齐 Embedded：完整正文，不截断）。
+///
+/// 读取同样按 `CANCEL_POLL_SLICE_MS` 切片查 `cancel`：网关回了错误响应头却挂着
+/// 正文不发时，abort 不能在这里再等满 reqwest 的整体超时。取消时返回「用户中断」
+/// 错误，由上层按取消收尾（不再展示 API 错误）。
+pub(crate) fn error_body(
+    response: reqwest::blocking::Response,
+    cancel: &AtomicBool,
+) -> Result<String, StreamFailure> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(response.text().unwrap_or_default());
+    });
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(StreamFailure::Fatal(LLM_ABORTED_MESSAGE.to_string()));
+        }
+        match receiver.recv_timeout(Duration::from_millis(CANCEL_POLL_SLICE_MS)) {
+            Ok(body) => return Ok(body),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            // 读取线程结束但没送出正文（未预期）：与 `response.text()` 失败同口径，返回空串
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(String::new()),
+        }
+    }
 }
 
 /// HTTP 错误文案（逐字对齐 `RealApi.ts` / `OpenAiApi.ts` 的
@@ -516,7 +600,7 @@ fn stream_anthropic(
     }
 
     let client = http_client().map_err(StreamFailure::Fatal)?;
-    let response = client
+    let request = client
         .post(messages_url(&provider.base_url))
         .header("Content-Type", "application/json")
         // 同时携带两种认证方式以兼容不同网关（与 Embedded 一致）
@@ -527,12 +611,15 @@ fn stream_anthropic(
         // 用 JS `JSON.stringify` 口径序列化（Embedded 侧是 `stringifyJsonSafe`）：
         // serde_json 会把 `1.0` 写成 `1.0`，JS 写 `1`，逐字对齐请求体。
         .body(crate::util::js_json_stringify(&Value::Object(body)))
-        .send()
-        .map_err(|err| StreamFailure::Retryable(format!("request failed: {err}")))?;
+        .build()
+        .map_err(|err| StreamFailure::Fatal(format!("request build failed: {err}")))?;
+    // 等待响应头期间也可取消 / 受首字节超时约束（见 send_cancellable）
+    let (response, first_byte_deadline) =
+        send_cancellable(client, request, req.cancel, req.first_byte_timeout_ms)?;
 
     if !response.status().is_success() {
         let status = response.status();
-        let detail = error_body(response);
+        let detail = error_body(response, req.cancel)?;
         let message = api_error_message(status, &detail);
         // 502 / 503 走网络错误同一套重试（对齐 `isRetryableStatus`）
         return Err(if is_retryable_status(status.as_u16()) {
@@ -550,7 +637,7 @@ fn stream_anthropic(
     // usage 累计值（对齐 Embedded `RealApi` 的 `accumulatedInputTokens/OutputTokens`）
     let mut accumulated_input_tokens: u64 = 0;
     let mut accumulated_output_tokens: u64 = 0;
-    read_sse(response, cancel, req.first_byte_timeout_ms, req.idle_timeout_ms, &mut |payload| {
+    read_sse(response, cancel, first_byte_deadline, req.first_byte_timeout_ms, req.idle_timeout_ms, &mut |payload| {
         let Ok(event) = serde_json::from_str::<Value>(&sanitize_json_surrogates(payload)) else {
             return Ok(false);
         };
@@ -1078,7 +1165,7 @@ fn stream_openai(
     }
 
     let client = http_client().map_err(StreamFailure::Fatal)?;
-    let send = |body: &Map<String, Value>| -> Result<reqwest::blocking::Response, reqwest::Error> {
+    let build_request = |body: &Map<String, Value>| -> Result<reqwest::blocking::Request, reqwest::Error> {
         client
             .post(chat_completions_url(&provider.base_url))
             .header("Content-Type", "application/json")
@@ -1089,15 +1176,19 @@ fn stream_openai(
             .header("x-session-id", req.session_id)
             // JS `JSON.stringify` 口径（见 Anthropic 分支的同款说明）
             .body(crate::util::js_json_stringify(&Value::Object(body.clone())))
-            .send()
+            .build()
     };
 
-    let mut response = send(&body).map_err(|err| StreamFailure::Retryable(format!("request failed: {err}")))?;
+    let request = build_request(&body)
+        .map_err(|err| StreamFailure::Fatal(format!("request build failed: {err}")))?;
+    // 等待响应头期间也可取消 / 受首字节超时约束（见 send_cancellable）
+    let (mut response, mut first_byte_deadline) =
+        send_cancellable(client.clone(), request, req.cancel, req.first_byte_timeout_ms)?;
     // 服务商不认识 stream_options：去掉该字段重试一次
     // （对齐 `OpenAiApi`：占用一次重试预算、先等 `RETRY_DELAY_MS`，并在本次调用内持续省略该字段）
     if !response.status().is_success() && response.status().as_u16() == 400 {
         let status = response.status();
-        let detail = error_body(response);
+        let detail = error_body(response, req.cancel)?;
         if *include_stream_usage
             && detail.to_lowercase().contains("stream_options")
             && *retry_count < MAX_RETRIES
@@ -1108,21 +1199,30 @@ fn stream_openai(
                 "[core] provider rejected \"stream_options\"; retrying without it ({}/{MAX_RETRIES}) after {RETRY_DELAY_MS}ms...",
                 *retry_count
             );
-            // 重试等待可中断：取消置位（含等待期间到达）时立刻返回，
-            // 由引擎按「用户中断」收尾，不再发起下一次请求。
+            // 重试等待可中断：取消置位（含等待期间到达）时立刻以「用户中断」返回，
+            // 由引擎按取消收尾，不再发起下一次请求，也不落空 assistant 消息。
             if sleep_ms_interruptible(RETRY_DELAY_MS, req.cancel) {
-                return Ok(());
+                return Err(StreamFailure::Fatal(LLM_ABORTED_MESSAGE.to_string()));
             }
             body.remove("stream_options");
-            response = send(&body)
-                .map_err(|err| StreamFailure::Retryable(format!("request failed: {err}")))?;
+            let request = build_request(&body)
+                .map_err(|err| StreamFailure::Fatal(format!("request build failed: {err}")))?;
+            // 每次尝试重新武装看门狗：首字节 deadline 从本次发送重新起算
+            let sent = send_cancellable(
+                client.clone(),
+                request,
+                req.cancel,
+                req.first_byte_timeout_ms,
+            )?;
+            response = sent.0;
+            first_byte_deadline = sent.1;
         } else {
             return Err(StreamFailure::Fatal(api_error_message(status, &detail)));
         }
     }
     if !response.status().is_success() {
         let status = response.status();
-        let detail = error_body(response);
+        let detail = error_body(response, req.cancel)?;
         let message = api_error_message(status, &detail);
         return Err(if is_retryable_status(status.as_u16()) {
             StreamFailure::Retryable(message)
@@ -1148,7 +1248,7 @@ fn stream_openai(
     // 必须按 index 累积（对齐 Embedded 的 `toolBlockByIndex`），
     // 流结束后再按「首次出现顺序」补发，避免把后一个调用的参数拼进前一个。
     let mut tool_calls_by_index: Vec<(u64, String, String, String)> = Vec::new();
-    read_sse(response, cancel, req.first_byte_timeout_ms, req.idle_timeout_ms, &mut |payload| {
+    read_sse(response, cancel, first_byte_deadline, req.first_byte_timeout_ms, req.idle_timeout_ms, &mut |payload| {
         let Ok(event) = serde_json::from_str::<Value>(&sanitize_json_surrogates(payload)) else {
             return Ok(false);
         };

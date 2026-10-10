@@ -1660,3 +1660,108 @@ fn retry_sleep_is_interrupted_by_cancel() {
         "重试等待应被取消打断，而不是等满 {RETRY_DELAY_MS}ms：{elapsed:?}"
     );
 }
+
+#[test]
+fn abort_while_waiting_for_response_headers_returns_promptly() {
+    // 服务端接受连接、读完请求头后完全不回响应头（网关静默挂住）。
+    // abort 置位后应在切片粒度内返回，而不是等满 reqwest 客户端的 600s 超时；
+    // 以「用户中断」错误返回，由引擎按 cancel 收尾（不落空的 assistant 消息）。
+    let (base_url, _hits) = start_stalling_server(|_index, _stream| {
+        std::thread::sleep(Duration::from_millis(30_000));
+    });
+    let cancel = Arc::new(AtomicBool::new(false));
+    cancel_after(&cancel, 300);
+    let cancel_thread = Arc::clone(&cancel);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let provider = provider(&base_url, "OpenAI");
+        let request = LlmRequest {
+            provider: &provider,
+            system_prompt: "s",
+            messages: &[json!({ "role": "user", "content": "hi" })],
+            tools: &[],
+            session_id: "sess-abort-no-headers",
+            thinking_enabled: false,
+            cancel: &cancel_thread,
+            first_byte_timeout_ms: 5_000,
+            idle_timeout_ms: 5_000,
+        };
+        let result = stream(&request, &mut |_event| {});
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(Duration::from_millis(3_000)) {
+        Ok(result) => {
+            let error = result.expect_err("取消应作为失败返回，由引擎按用户中断收尾");
+            assert!(error.contains("aborted"), "应按「用户中断」收尾：{error}");
+        }
+        Err(_) => panic!("abort 后 3s 内未返回：请求卡在 .send() 等待响应头上"),
+    }
+}
+
+#[test]
+fn abort_while_reading_error_body_returns_promptly() {
+    // 服务端回 502 响应头后挂着错误正文不发（声明 Content-Length 但永不发送）：
+    // abort 置位后应立刻返回，不在 error_body 的阻塞读取上等满 reqwest 整体超时。
+    let (base_url, _hits) = start_stalling_server(|_index, stream| {
+        use std::io::Write;
+        stream
+            .write_all(
+                b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: 16\r\n\r\n",
+            )
+            .expect("write 502 headers");
+        stream.flush().expect("flush 502 headers");
+        std::thread::sleep(Duration::from_millis(30_000));
+    });
+    let cancel = Arc::new(AtomicBool::new(false));
+    cancel_after(&cancel, 300);
+    let cancel_thread = Arc::clone(&cancel);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let provider = provider(&base_url, "OpenAI");
+        let request = LlmRequest {
+            provider: &provider,
+            system_prompt: "s",
+            messages: &[json!({ "role": "user", "content": "hi" })],
+            tools: &[],
+            session_id: "sess-abort-error-body",
+            thinking_enabled: false,
+            cancel: &cancel_thread,
+            first_byte_timeout_ms: 5_000,
+            idle_timeout_ms: 5_000,
+        };
+        let result = stream(&request, &mut |_event| {});
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(Duration::from_millis(3_000)) {
+        Ok(result) => {
+            let error = result.expect_err("取消应作为失败返回，由引擎按用户中断收尾");
+            assert!(error.contains("aborted"), "应按「用户中断」收尾：{error}");
+        }
+        Err(_) => panic!("abort 后 3s 内未返回：请求卡在错误正文的阻塞读取上"),
+    }
+}
+
+#[test]
+fn stream_watchdog_times_out_when_server_never_sends_headers() {
+    // 服务端接受连接后完全不回响应头：首字节超时从请求发出起算（与 Embedded
+    // 看门狗一致），到期按 Timeout 上报并走独立预算重试一次，而不是等满
+    // reqwest 客户端的 600s 整体超时。
+    let (base_url, hits) = start_stalling_server(|_index, _stream| {
+        std::thread::sleep(Duration::from_millis(2_000));
+    });
+    let provider = provider(&base_url, "OpenAI");
+    let started = std::time::Instant::now();
+    let (result, events) = collect_with_timeouts(&provider, 200, 200);
+    let elapsed = started.elapsed();
+    let error = result.expect_err("应当超时报错");
+    assert!(
+        error.contains("未收到任何有效输出事件"),
+        "首字节超时文案不对: {error}"
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 2, "首字节超时应只重试一次");
+    assert!(events.iter().any(|event| matches!(event, LlmEvent::Reset)));
+    assert!(
+        elapsed < Duration::from_millis(3_000),
+        "不应等满 reqwest 整体超时：{elapsed:?}"
+    );
+}

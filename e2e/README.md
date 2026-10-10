@@ -41,7 +41,8 @@ e2e/
 │   ├── webviewHarness.ts       # 静态伺服 dist/webview + 页面装配（clipboard 权限等）
 │   ├── mockLlmServer.ts        # OpenAI Chat Completions 兼容 SSE 服务器：
 │   │                           #   写入文件 <名> → Write 工具轮；执行命令 <cmd> → Bash 工具轮；
-│   │                           #   慢速回答 → 慢速流（中止场景）；其余 → 文本终轮
+│   │                           #   慢速回答 → 慢速流（中止场景）；无响应 → 不回响应头（静默挂住）；
+│   │                           #   其余 → 文本终轮
 │   └── electronApp.ts          # Electron 启动器：沙箱隔离 + CDP 直连 + 活动视图解析
 ├── webview/                    # US-1/2/3/4/5/6/7/8/9/10/11/12/13/16/17/18/19/20/21/22/23/24/25/26/29/40/41/45
 │                               # （titlebar.spec 为标题栏快照时序，US-36 渲染层）

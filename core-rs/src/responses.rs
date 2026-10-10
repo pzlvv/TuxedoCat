@@ -17,8 +17,8 @@ use std::sync::atomic::Ordering;
 use serde_json::{json, Map, Value};
 
 use crate::llm::{
-    api_error_message, error_body, is_retryable_status, read_sse, BlockKind, LlmEvent, LlmRequest,
-    RepetitionDetector, StreamFailure, Usage,
+    api_error_message, error_body, is_retryable_status, read_sse, send_cancellable, BlockKind,
+    LlmEvent, LlmRequest, RepetitionDetector, StreamFailure, Usage,
 };
 use crate::util;
 
@@ -529,19 +529,22 @@ pub fn stream_responses(
 
     let client = crate::llm::http_client().map_err(StreamFailure::Fatal)?;
     let url = build_responses_url(&provider.base_url);
-    let response = client
+    let request = client
         .post(&url)
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {}", provider.api_key))
         .header("x-session-id", req.session_id)
         // JS `JSON.stringify` 口径（对齐 `ResponsesApi.ts` 的 `stringifyJsonSafe`）
         .body(crate::util::js_json_stringify(&Value::Object(body.clone())))
-        .send()
-        .map_err(|err| StreamFailure::Retryable(format!("request failed: {err}")))?;
+        .build()
+        .map_err(|err| StreamFailure::Fatal(format!("request build failed: {err}")))?;
+    // 等待响应头期间也可取消 / 受首字节超时约束（见 `send_cancellable`）
+    let (response, first_byte_deadline) =
+        send_cancellable(client, request, req.cancel, req.first_byte_timeout_ms)?;
 
     if !response.status().is_success() {
         let status = response.status();
-        let detail = error_body(response);
+        let detail = error_body(response, req.cancel)?;
         let message = api_error_message(status, &detail);
         return Err(if is_retryable_status(status.as_u16()) {
             StreamFailure::Retryable(message)
@@ -574,6 +577,7 @@ pub fn stream_responses(
     read_sse(
         response,
         cancel,
+        first_byte_deadline,
         req.first_byte_timeout_ms,
         req.idle_timeout_ms,
         &mut |payload| {

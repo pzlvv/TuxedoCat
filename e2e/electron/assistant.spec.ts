@@ -10,8 +10,8 @@ import { CONFIG_DIR_NAME } from '../../src/config/project';
 /**
  * US-1 流式对话 / US-2 中止 / US-14 工具卡片 / US-15 回滚 / US-18 权限确认 / US-28 工具轮次
  *
- * Electron 整应用链路：真实 embedded core（进程内 TS 实现）+ 本地 mock LLM SSE 服务器，
- * manual 询问模式（settings.json defaultAgentMode）让写操作弹权限确认。
+ * Electron 整应用链路：真实 standalone core（Rust 独立进程）+ 本地 mock LLM SSE
+ * 服务器，manual 询问模式（settings.json defaultAgentMode）让写操作弹权限确认。
  */
 
 let mockLlm: MockLlm;
@@ -156,6 +156,28 @@ test('US-2 首包到达前中止后，下一条消息仍进入本轮上下文并
   if (mockLlm.requests.length === 1) {
     expect(sent).toContain('慢速回答一段长内容');
   }
+});
+
+test('US-2 网关不回响应头时中止仍立即回到空闲态', async () => {
+  // 回归：请求发出后网关接受连接、读完请求却完全不回响应头（静默挂住）。
+  // 旧实现 standalone core 阻塞在 reqwest 的 send() 上，只认 600s 整体超时，
+  // 点「终止」没有任何反应；修复后 send 阶段按切片查 cancel，应立即以
+  // 「用户中断」收尾。mock 的 `无响应` 脚本就是这个形态（默认路由，见 mockLlmServer）。
+  const chatPage = await app.chatPage();
+  await chatPage.fill('textarea.input-textarea', '无响应');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+
+  const abortButton = chatPage.locator('button[title="终止"]');
+  await expect(abortButton).toBeEnabled({ timeout: 30_000 });
+  // 等假网关收到完整请求：此刻 core 已进入「等响应头」阶段，中止才落在本次回归点上
+  await expect.poll(() => mockLlm.requests.length, { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
+  await abortButton.click();
+
+  // 中止后回到空闲（灰）并回显中断消息。30 秒的裕量仍远低于 600s 整体超时，
+  // 旧实现下这条断言不可能通过（全量负载下比单跑慢，沿用同文件其它中止用例的口径）。
+  await expect(abortButton).toBeDisabled({ timeout: 30_000 });
+  await expect(chatPage.getByText('*User Interrupted*').first()).toBeVisible({ timeout: 30_000 });
+  await expect(chatPage.locator('textarea.input-textarea')).toBeEnabled();
 });
 
 test('US-2 两阶段中止：前台结束后按钮转黄，再次点击才停后台任务', async () => {

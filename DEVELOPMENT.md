@@ -3075,12 +3075,22 @@ Standalone 宿主需要一条握手级事件确认会话已建立（`standaloneC
 | Embedded | 重试分支只在 `sleep(RETRY_DELAY_MS)` **之前**调一次 `checkAborted(signal)`；abort 落在 1s 等待期间时，要等本次 sleep 走完、下一次 `fetch` 立即以 AbortError 拒绝才被观察到（外部 signal 一旦置位，fetch/read 即拒绝，无法经公共 API 再提前）。 |
 | Standalone | 重试等待用 `sleep_ms_interruptible` 分片 sleep（`CANCEL_POLL_SLICE_MS` = 50ms），每片之间查 `cancel`；等待期间置位取消时提前返回，`stream()` 循环顶随即按「用户中断」收尾。 |
 
-abort 的整体响应口径两侧一致（流式读取不等到下一个事件 / 不等满超时窗口、取消优先
-于超时上报），差别只剩「abort 恰好落在重试 1s 等待期间」这一窗口：Standalone 在
-50ms 内打断，Embedded 最多再等 1s。时延回归用例在 `llm_tests.rs`
-（`stream_returns_promptly_when_cancelled_during_a_stall` /
+abort 的整体响应口径两侧一致（请求发送 / 流式读取不等到下一个事件、不等满超时窗口，
+取消优先于超时上报），差别只剩「abort 恰好落在重试 1s 等待期间」这一窗口：Standalone
+在 50ms 内打断，Embedded 最多再等 1s。
+
+等待响应头阶段（网关接受连接后完全不回响应头）与错误响应正文的读取同样在两侧都即时
+响应：Embedded 把外部 signal 接进 undici `fetch`，abort 置位即以 `AbortError` 拒绝；
+Standalone 的 `llm::send_cancellable` / `llm::error_body` 把阻塞的 `send()` / `text()`
+放独立线程、主线程按 `CANCEL_POLL_SLICE_MS` 切片等待，取消置位即按「用户中断」返回，
+首字节看门狗也从「请求发出」时刻起算（不再等满 reqwest 的 600s 整体超时）。时延回归
+用例在 `llm_tests.rs`（`stream_returns_promptly_when_cancelled_during_a_stall` /
 `stream_reports_user_interrupt_instead_of_timeout_when_cancelled` /
-`retry_sleep_is_interrupted_by_cancel`）。
+`retry_sleep_is_interrupted_by_cancel` /
+`abort_while_waiting_for_response_headers_returns_promptly` /
+`abort_while_reading_error_body_returns_promptly` /
+`stream_watchdog_times_out_when_server_never_sends_headers`）；整应用链路见
+`e2e/electron/assistant.spec.ts` 的「网关不回响应头时中止」用例。
 
 ### 13.3 装配与事实归属上的差异
 
