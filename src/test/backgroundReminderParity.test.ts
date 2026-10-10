@@ -15,9 +15,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import {
+  BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS,
   BACKGROUND_REMINDER_FIRST_LABEL,
   BACKGROUND_REMINDER_INTERVALS_MIN,
-  BACKGROUND_REMINDER_MIN_ELAPSED_MS,
   advanceReminderClock,
   backgroundReminderIntervalLabel,
   backgroundReminderIntervalMin,
@@ -59,14 +59,13 @@ interface TextCase {
 
 interface FallbackQualifyCase {
   name: string;
-  elapsedMs: number;
-  command: string;
+  sinceLastAccessMs: number;
   expected: boolean;
 }
 
 interface Fixture {
   intervalsMin: number[];
-  fallbackMinElapsedMs: number;
+  fallbackMinIntervalMs: number;
   firstLabel: string;
   intervalLabelCases: IntervalLabelCase[];
   clockCases: ClockCase[];
@@ -83,8 +82,8 @@ function run(): void {
     JSON.stringify([...BACKGROUND_REMINDER_INTERVALS_MIN]) === JSON.stringify(fixture.intervalsMin),
   );
   check(
-    '兜底门槛的最小运行时长与对照表一致',
-    BACKGROUND_REMINDER_MIN_ELAPSED_MS === fixture.fallbackMinElapsedMs,
+    '兜底门槛的最小提醒间隔与对照表一致',
+    BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS === fixture.fallbackMinIntervalMs,
   );
   check('首次提醒标签与对照表一致', BACKGROUND_REMINDER_FIRST_LABEL === fixture.firstLabel);
 
@@ -120,13 +119,13 @@ function run(): void {
     );
   }
 
-  // 兜底门槛：now 固定，startTime 按 elapsedMs 倒推，结果与对照表逐条一致
+  // 兜底门槛：now 固定，上次访问时刻按 sinceLastAccessMs 倒推，结果与对照表逐条一致
   const fallbackNow = 10 * 60_000;
   for (const qualifyCase of fixture.fallbackQualifyCases) {
     check(
       `兜底门槛：${qualifyCase.name}`,
       qualifiesBackgroundFallbackReminder(
-        { startTime: fallbackNow - qualifyCase.elapsedMs, command: qualifyCase.command },
+        fallbackNow - qualifyCase.sinceLastAccessMs,
         fallbackNow,
       ) === qualifyCase.expected,
     );

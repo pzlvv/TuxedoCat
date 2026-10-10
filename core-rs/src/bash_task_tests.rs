@@ -354,7 +354,7 @@ fn completion_notifies_the_engine_before_clearing_background() {
 ///
 /// 对齐 `src/test/backgroundReminderParity.test.ts`：间隔档位（5 / 10 / 20 / 30 / 30…）、
 /// 提醒时钟推进（空闲累加 / 暂停不累加 / 一次跨多档）、提醒文案逐字一致、
-/// 兜底提醒门槛（满 3 分钟或命令含 sleep）逐条一致。
+/// 兜底提醒门槛（距上次访问满 3 分钟）逐条一致。
 #[test]
 fn background_reminder_parity() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
@@ -371,11 +371,11 @@ fn background_reminder_parity() {
     assert_eq!(intervals, BACKGROUND_REMINDER_INTERVALS_MIN.to_vec());
 
     assert_eq!(
-        fixture["fallbackMinElapsedMs"]
+        fixture["fallbackMinIntervalMs"]
             .as_u64()
-            .expect("fallbackMinElapsedMs"),
-        BACKGROUND_REMINDER_MIN_ELAPSED_MS,
-        "兜底门槛的最小运行时长与对照表一致"
+            .expect("fallbackMinIntervalMs"),
+        BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS,
+        "兜底门槛的最小提醒间隔与对照表一致"
     );
 
     assert_eq!(
@@ -434,22 +434,17 @@ fn background_reminder_parity() {
         );
     }
 
-    // 兜底门槛：now 固定，start_time 按 elapsedMs 倒推，结果与对照表逐条一致
+    // 兜底门槛：now 固定，上次访问时刻按 sinceLastAccessMs 倒推，结果与对照表逐条一致
     let fallback_now_ms: u64 = 10 * 60_000;
     for case in fixture["fallbackQualifyCases"]
         .as_array()
         .expect("fallbackQualifyCases")
     {
-        let elapsed_ms = case["elapsedMs"].as_u64().expect("elapsedMs");
-        let task = RunningTask {
-            task_id: "bg-fixture".to_string(),
-            description: String::new(),
-            command: case["command"].as_str().expect("command").to_string(),
-            pid: 1,
-            start_time: fallback_now_ms - elapsed_ms,
-        };
+        let since_last_access_ms = case["sinceLastAccessMs"]
+            .as_u64()
+            .expect("sinceLastAccessMs");
         assert_eq!(
-            qualifies_fallback_reminder(&task, fallback_now_ms),
+            qualifies_fallback_reminder(fallback_now_ms - since_last_access_ms, fallback_now_ms),
             case["expected"].as_bool().expect("expected"),
             "case: {}",
             case["name"]

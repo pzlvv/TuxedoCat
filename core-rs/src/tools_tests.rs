@@ -405,7 +405,7 @@ fn bash_manual_background_converts_and_requests_loop_pause() {
     // 手工转后台（`UiEvent.bashBackgroundRequested`）：前台命令跑起来后由注册表触发，
     // 与自动转后台同一条路径（对齐 Embedded `ManualBackground` + Exec 的
     // `triggerAutoBackground('user-requested')`）。区别只有两点：转换成功置
-    // 循环暂停信号（带 task id）；没有 tool_use_id 的执行不登记（按钮无从触发）。
+    // 循环暂停信号；没有 tool_use_id 的执行不登记（按钮无从触发）。
     let sandbox = Sandbox::new("tools-bash-manual-bg");
     let previous = point_tmpdir_at(&sandbox.root.join("tmp"));
     crate::bash_task::reset_for_test();
@@ -452,10 +452,8 @@ fn bash_manual_background_converts_and_requests_loop_pause() {
         "got {body}"
     );
 
-    // 转换成功：暂停信号置位并带回 task id；注册表条目已注销
+    // 转换成功：暂停信号置位；注册表条目已注销
     assert!(pause.take(), "转换成功应置循环暂停信号");
-    let source_task = pause.take_source_task().expect("暂停信号应带回 task id");
-    assert!(source_task.starts_with("bg-auto-"), "got {source_task}");
     assert!(
         !is_foreground_bash_running("toolu-manual-bg"),
         "收尾后注册表条目应注销"
@@ -463,7 +461,11 @@ fn bash_manual_background_converts_and_requests_loop_pause() {
     // 后台任务真实登记，且属于本会话
     assert_eq!(crate::bash_task::running_count_for_session("s-tools"), 1);
     let running = crate::bash_task::running_tasks_for_session("s-tools");
-    assert_eq!(running[0].task_id, source_task);
+    assert!(
+        running[0].task_id.starts_with("bg-auto-"),
+        "got {}",
+        running[0].task_id
+    );
 
     crate::bash_task::abort_tasks_for_session("s-tools");
     restore_tmpdir(previous);

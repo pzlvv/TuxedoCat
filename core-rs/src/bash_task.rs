@@ -37,19 +37,16 @@ const NOTIFICATION_OUTPUT_CHARS: usize = 500;
 /// 与 Embedded `BACKGROUND_REMINDER_INTERVALS_MIN` 逐项一致（`src/core/tools/bash/BackgroundReminder.ts`）。
 pub const BACKGROUND_REMINDER_INTERVALS_MIN: [u64; 4] = [5, 10, 20, 30];
 
-/// 查询结束兜底提醒的最小任务运行时长：运行不满 3 分钟、且命令里没有 sleep 的
-/// 后台任务不进兜底提醒列表（这类任务多半很快自己完成，不值得为它打断一轮 LLM；
-/// 真有需要时 5min 档的周期提醒会接上）。
+/// 同一任务两次提醒之间的最小间隔（查询结束兜底门槛）：距上次「访问」不足 3 分钟的，
+/// 查询结束时不进兜底提醒列表——它刚被周期提醒报告过，或本轮查询刚刚看过它。
 ///
-/// 与 Embedded `BackgroundReminder.BACKGROUND_REMINDER_MIN_ELAPSED_MS` 一致。
-pub const BACKGROUND_REMINDER_MIN_ELAPSED_MS: u64 = 3 * 60_000;
+/// 与 Embedded `BackgroundReminder.BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS` 一致。
+pub const BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS: u64 = 3 * 60_000;
 
-/// 任务是否满足兜底提醒门槛：运行满 3 分钟，或命令里包含 sleep 子命令
-/// （sleep 类任务在等一个定时事件，最需要被提醒「别去轮询，等通知」）。
-/// sleep 判定与超时策略（`tools::contains_sleep_command`）同一口径。
-pub fn qualifies_fallback_reminder(task: &RunningTask, now_ms: u64) -> bool {
-    now_ms.saturating_sub(task.start_time) >= BACKGROUND_REMINDER_MIN_ELAPSED_MS
-        || crate::tools::contains_sleep_command(&task.command)
+/// 距上次访问是否已满最小间隔：`last_accessed_ms` 是该任务上次被「访问」的时刻
+/// （周期提醒投递 / 查询结束，任务注册时取开始时间）。纯函数，供两侧对等测试共用。
+pub fn qualifies_fallback_reminder(last_accessed_ms: u64, now_ms: u64) -> bool {
+    now_ms.saturating_sub(last_accessed_ms) >= BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS
 }
 
 /// 提醒里附带的任务输出尾部字符数（与完成通知的 500 保持一致）

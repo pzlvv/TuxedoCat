@@ -1435,8 +1435,8 @@ fn second_llm_round_sees_the_tool_result() {    let sandbox = Sandbox::new("engi
 ///
 /// 1. 前台 Bash 跑起来后触发转后台 → toolResult 落盘（success）、消费循环收尾
 ///    （queryEnd，等待用户输入），**没有**第二次 LLM 请求——下一轮 agent 循环暂停；
-/// 2. 触发暂停的任务登记「已兜底提醒」：消费循环收尾不为它补一条 reminder
-///    又拉起新查询（否则 sleep 类任务会立刻 qualify，暂停等于失效）；
+/// 2. 消费循环收尾不为触发暂停的任务补兜底 reminder：任务刚注册，距上次访问不足
+///    最小间隔，否则 sleep 类任务会立刻 qualify，暂停等于失效；
 /// 3. 下一条用户消息（队列消息）立刻拉起新一轮：第二轮 LLM 请求的上下文里
 ///    带着转后台的 tool_result——接续由队列消息触发，与转后台结果无关。
 
@@ -1491,17 +1491,12 @@ fn manual_background_pauses_the_loop_until_a_queued_message_arrives() {
         assert_eq!(bodies.len(), 1, "手工转后台后不应发起第二次 LLM 请求");
     }
 
-    // 后台任务仍在跑；触发暂停的任务已登记「已兜底提醒」；会话回到「等待用户输入」
+    // 后台任务仍在跑；消费循环收尾（未为刚注册的任务补兜底 reminder）；会话回到「等待用户输入」
     let running = crate::bash_task::running_tasks_for_session("s1");
     assert_eq!(running.len(), 1, "转后台后应有 1 个运行中的后台任务");
     {
         let state = harness.core.session("s1");
         let state = state.lock().unwrap();
-        assert!(
-            state.reminded_background_tasks.contains(&running[0].task_id),
-            "触发暂停的任务应登记已兜底提醒: {:?}",
-            state.reminded_background_tasks
-        );
         assert!(!state.running, "消费循环应收尾（等待用户输入）");
     }
     let result = harness.sink.event_of("toolResult").expect("toolResult");

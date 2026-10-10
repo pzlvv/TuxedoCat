@@ -193,14 +193,13 @@ async function execForeground(
       .then(bgResult => {
         // 手工转后台成功：暂停标记由这里回写引擎（转换失败走 catch，不暂停）。
         // 结果本身照常作为 tool_result 进入上下文，暂停的只是「下一轮 LLM 请求」。
+        // 查询收尾的兜底提醒不会为它立刻补 reminder：任务刚注册，距上次访问不足
+        // 最小间隔（`docs/background-reminder.md` 第 1.0 节）。
         if (reason === 'user-requested' && bgResult.backgroundTaskId && sessionID) {
           try {
             const { getSessionEngine } = require('../../QueryEngine.js') as typeof import('../../QueryEngine.js');
             const engine = getSessionEngine(sessionID);
             engine?.requestLoopPause();
-            // 同时登记「已兜底提醒」：查询收尾的兜底提醒会为运行中的后台任务立刻
-            // 拉起新查询，那等于转后台结果自己触发了接续循环，违背暂停语义。
-            engine?.markBackgroundTaskReminded(bgResult.backgroundTaskId);
           } catch (err) {
             logger.warn('Exec', `Failed to pause loop after manual background: ${err}`);
           }

@@ -246,12 +246,10 @@ pub struct SessionState {
     pub compacting: bool,
     /// 自动压缩的连续失败计数与轮次（`AutoCompactTrackingState`）
     pub auto_compact_tracking: Option<crate::compact::AutoCompactTracking>,
-    /// 已发过「仍有后台任务在跑」兜底提醒的任务 ID（`remindedBackgroundTaskIds`）：
-    /// 同一批任务只提醒一次，避免「提醒 → 查询 → 提醒」递归。
-    pub reminded_background_tasks: HashSet<String>,
     /// 后台任务的周期性提醒时钟（`taskId -> 时钟`，对齐 Embedded
     /// `tools/bash/BackgroundReminder` 的调度表）。只在会话空闲时前进；
-    /// 任务结束 / 会话关闭后清理。
+    /// 任务结束 / 会话关闭后清理。时钟项同时记着「上次访问时刻」，
+    /// 查询结束的兜底提醒据此冷却。
     pub reminder_entries: HashMap<String, ReminderEntry>,
     /// 子代理会话的创建者（`AgentTool` 写入；普通会话为 None）。
     pub parent_session_id: Option<String>,
@@ -278,11 +276,14 @@ pub struct SkillInjection {
 }
 
 /// 一个后台任务的提醒调度项（对齐 Embedded `BackgroundReminder` 的登记项）：
-/// 纯时钟 + 上次推进时刻。任务描述 / 命令 / 开始时间在推进时从注册表读取。
+/// 纯时钟 + 上次推进时刻 + 上次访问时刻。任务描述 / 命令 / 开始时间在推进时从注册表读取。
 #[derive(Clone, Debug)]
 pub struct ReminderEntry {
     pub clock: crate::bash_task::ReminderClock,
     pub last_tick_ms: u64,
+    /// 上次「访问」该任务的时刻（周期提醒投递 / 查询结束）：查询结束兜底门槛据此冷却。
+    /// 登记时取任务开始时间（任务刚起不算「已访问」）。
+    pub last_accessed_ms: u64,
 }
 
 impl SessionState {
@@ -310,7 +311,6 @@ impl SessionState {
             background: false,
             compacting: false,
             auto_compact_tracking: None,
-            reminded_background_tasks: HashSet::new(),
             reminder_entries: HashMap::new(),
             parent_session_id: None,
             static_system_prompt: None,
@@ -820,6 +820,7 @@ impl Core {
                         .or_insert_with(|| ReminderEntry {
                             clock: bash_task::ReminderClock::default(),
                             last_tick_ms: now_ms,
+                            last_accessed_ms: task.start_time,
                         });
                     let delta = now_ms.saturating_sub(entry.last_tick_ms);
                     entry.last_tick_ms = now_ms;
@@ -828,6 +829,9 @@ impl Core {
                     }
                     let fired = bash_task::advance_reminder_clock(&mut entry.clock, delta);
                     if let Some(round) = fired.last().copied() {
+                        // 投递即一次「访问」：它拉起的那轮查询结束时，
+                        // 兜底门槛不会再为同一任务触发。
+                        entry.last_accessed_ms = now_ms;
                         due.push((task.task_id.clone(), round));
                     }
                 }
@@ -2622,29 +2626,45 @@ fn agent_source_info(agent_id: &str) -> String {
 }
 
 /// 消费循环即将空转时的兜底提醒（对齐 `QueryEngine.maybeRemindBackgroundTasks`）：
-/// 本会话仍有运行中的后台任务、满足兜底门槛（运行满 3 分钟或命令含 sleep 子命令，
-/// `bash_task::qualifies_fallback_reminder`）、且这批任务还没提醒过 → 生成一条
-/// reminder 让 LLM 二选一（不再需要的执行 kill 命令 / 都还需要就直接结束本轮等通知，
-/// 不要 sleep 轮询）。不满足门槛的任务不进列表；全部不满足时本次不提醒
-/// （任务留着，下轮查询结束再按当时运行时长判定）。
+/// 本会话仍有运行中的后台任务、且距上次访问已满最小间隔
+/// （`bash_task::qualifies_fallback_reminder`）→ 生成一条 reminder 让 LLM 二选一
+/// （不再需要的执行 kill 命令 / 都还需要就直接结束本轮等通知，不要 sleep 轮询）。
+/// 不满最小间隔的任务不进列表（刚起 / 刚被周期提醒报告过）；全部不满足时本次不投递
+/// （任务留着，后续查询结束再按当时距上次访问的时长判定）。
 ///
-/// 同一批 taskId 只提醒一次（`reminded_background_tasks`），因此不会
+/// 消费循环收尾本身也是一次「访问」：无论本次是否兜底，都把本会话运行中任务的
+/// `last_accessed_ms` 刷成当前时刻（`ReminderEntry.last_accessed_ms`）。因此提醒自己
+/// 触发的那轮查询结束时，同一批任务距上次访问不足最小间隔，不会被再次兜底，不存在
 /// 「提醒 → 查询 → 提醒」递归。
 ///
 /// 与周期提醒（`deliver_background_reminder` / `tick_background_reminders`）的分工：
 /// 本条是查询刚结束时的一次性兜底；周期提醒在空闲满 5min 后按 5 / 10 / 20 / 30min
 /// 档位持续汇报进度。
 fn background_reminder(session_id: &str, state: &mut SessionState) -> Option<String> {
-    let tasks: Vec<bash_task::RunningTask> = bash_task::running_tasks_for_session(session_id)
-        .into_iter()
-        .filter(|task| !state.reminded_background_tasks.contains(&task.task_id))
-        .filter(|task| bash_task::qualifies_fallback_reminder(task, util::now_millis()))
-        .collect();
+    let now_ms = util::now_millis();
+    let running = bash_task::running_tasks_for_session(session_id);
+    let mut tasks: Vec<bash_task::RunningTask> = Vec::new();
+    for task in &running {
+        let entry = state
+            .reminder_entries
+            .entry(task.task_id.clone())
+            .or_insert_with(|| ReminderEntry {
+                clock: bash_task::ReminderClock::default(),
+                last_tick_ms: now_ms,
+                last_accessed_ms: task.start_time,
+            });
+        if bash_task::qualifies_fallback_reminder(entry.last_accessed_ms, now_ms) {
+            tasks.push(task.clone());
+        }
+    }
+    // 查询结束即一次「访问」：先刷新再入队，提醒触发的查询结束后不会被再次兜底。
+    for task in &running {
+        if let Some(entry) = state.reminder_entries.get_mut(&task.task_id) {
+            entry.last_accessed_ms = now_ms;
+        }
+    }
     if tasks.is_empty() {
         return None;
-    }
-    for task in &tasks {
-        state.reminded_background_tasks.insert(task.task_id.clone());
     }
 
     // 直接按当前 OS 生成可执行的 kill 命令，省得 LLM 自己判断平台
@@ -4086,15 +4106,9 @@ fn run_query_loop(
         // 的 `paused` 出口）：本批工具结果照常进上下文，但不再发起下一轮 LLM 请求。
         // 会话由消费循环按队列状态收尾——队列为空 → 结束本轮等用户输入；队列有消息
         // （用户消息 / 后台完成通知 / 提醒）→ 立刻拉起新一轮，性质与用户触发的查询
-        // 一致（接续由队列消息触发，与转后台结果无关）。触发暂停的任务同时登记
-        // 「已兜底提醒」，避免消费收尾的兜底提醒立刻为它补一条 reminder 又拉起循环。
+        // 一致（接续由队列消息触发，与转后台结果无关）。消费收尾的兜底提醒不会为
+        // 触发暂停的任务立刻补 reminder：任务刚注册，距上次访问不足最小间隔。
         if state.lock().unwrap().pause_loop.take() {
-            let source_task = state.lock().unwrap().pause_loop.take_source_task();
-            let mut state = state.lock().unwrap();
-            if let Some(task_id) = source_task {
-                state.reminded_background_tasks.insert(task_id);
-            }
-            drop(state);
             core.emit(json!({ "type": "aiEnd", "sessionId": session_id }));
             return Ok(());
         }

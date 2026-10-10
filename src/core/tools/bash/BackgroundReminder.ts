@@ -10,6 +10,11 @@
  * 时钟只在空闲时累加：query engine 有任务时暂停，避免在 LLM 正在工作时反复打断；
  * 提醒本身会启动一轮查询，因此同一时刻只投递一条。
  *
+ * 每个任务另有一个「上次访问时刻」（`lastAccessedAt`）：周期提醒投递时刷新，查询结束时
+ * 由 `QueryEngine` 对本会话运行中的全部任务刷新。查询结束的兜底提醒据此冷却
+ * （`BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS`），避免定时提醒刚投递完、它拉起的
+ * 那轮查询一结束就又被兜底提醒一次。
+ *
  * 对应 Standalone 实现：`core-rs/src/engine.rs` 的 `tick_background_reminders`
  * 与 `core-rs/src/bash_task.rs` 的间隔常量 / 文案。
  */
@@ -17,9 +22,7 @@
 import { closeSync, fstatSync, openSync, readSync } from 'fs';
 import { logger } from '../../Logger.js';
 import { getSessionRuntimeState } from '../../sessionRuntime.js';
-import { containsSleepCommand } from './SleepDetect.js';
 import { getTaskOutputPath } from './TaskOutput.js';
-import { splitBySeparators } from './TimeoutPolicy.js';
 
 /**
  * 提醒间隔（分钟）：第 1 次 5min，其后 10 / 20 / 30min，再往后固定 30min。
@@ -29,25 +32,22 @@ import { splitBySeparators } from './TimeoutPolicy.js';
 export const BACKGROUND_REMINDER_INTERVALS_MIN = [5, 10, 20, 30] as const;
 
 /**
- * 查询结束兜底提醒的最小任务运行时长：运行不满 3 分钟、且命令里没有 sleep 的
- * 后台任务不进兜底提醒列表（这类任务多半很快自己完成，不值得为它打断一轮 LLM；
- * 真有需要时 5min 档的周期提醒会接上）。
+ * 同一任务两次提醒之间的最小间隔（查询结束兜底门槛）：距上次「访问」不足 3 分钟的，
+ * 查询结束时不进兜底提醒列表——它刚被周期提醒报告过，或本轮查询刚刚看过它。
  *
- * 与 Standalone `bash_task::BACKGROUND_REMINDER_MIN_ELAPSED_MS` 一致。
+ * 与 Standalone `bash_task::BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS` 一致。
  */
-export const BACKGROUND_REMINDER_MIN_ELAPSED_MS = 3 * 60_000;
+export const BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS = 3 * 60_000;
 
 /**
- * 任务是否满足兜底提醒门槛：运行满 3 分钟，或命令里包含 sleep 子命令
- * （sleep 类任务在等一个定时事件，最需要被提醒「别去轮询，等通知」）。
- * sleep 判定与超时策略（`TimeoutPolicy` / `Bash.ts` 的 isSleep）同一口径。
+ * 距上次访问是否已满最小间隔：`lastAccessedAt` 是该任务上次被「访问」的时刻
+ * （周期提醒投递 / 查询结束，任务注册时取开始时间）。纯函数，供两侧对等测试共用。
  */
 export function qualifiesBackgroundFallbackReminder(
-  task: { startTime: number; command: string },
+  lastAccessedAt: number,
   now: number = Date.now(),
 ): boolean {
-  if (now - task.startTime >= BACKGROUND_REMINDER_MIN_ELAPSED_MS) return true;
-  return containsSleepCommand(splitBySeparators(task.command));
+  return now - lastAccessedAt >= BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS;
 }
 
 /** 调度器轮询间隔：1s 粒度足够（最小间隔是分钟级），开销可忽略 */
@@ -134,6 +134,11 @@ interface ReminderSchedule extends ReminderClock {
   startTime: number;
   pid?: number;
   lastTickMs: number;
+  /**
+   * 上次「访问」该任务的时刻（周期提醒投递 / 查询结束）：查询结束兜底门槛据此冷却。
+   * 登记时取任务开始时间（任务刚起不算「已访问」）。
+   */
+  lastAccessedAt: number;
   deliver: BackgroundReminderDelivery;
 }
 
@@ -229,13 +234,15 @@ export function buildBackgroundReminderText(input: BackgroundReminderTextInput):
 }
 
 /** 到点：构造并投递提醒（`round` 是刚触发的轮次，下一次是 `round + 1`） */
-function fireReminder(schedule: ReminderSchedule, round: number): void {
+function fireReminder(schedule: ReminderSchedule, round: number, now: number): void {
+  // 投递即一次「访问」：它拉起的那轮查询结束时，兜底门槛不会再为同一任务触发
+  schedule.lastAccessedAt = now;
   const output = readTaskOutputTail(schedule.taskId, BACKGROUND_REMINDER_OUTPUT_CHARS);
   const content = buildBackgroundReminderText({
     taskId: schedule.taskId,
     description: schedule.description,
     command: schedule.command,
-    elapsedMs: Date.now() - schedule.startTime,
+    elapsedMs: now - schedule.startTime,
     output,
     nextIntervalLabel: backgroundReminderIntervalLabel(round + 1),
     killCommand: buildKillCommand(schedule.pid),
@@ -260,7 +267,7 @@ export function tickBackgroundReminders(now: number): void {
     if (!isSessionAwake(schedule.sessionID)) continue;
     const fired = advanceReminderClock(schedule, delta);
     if (fired.length > 0) {
-      fireReminder(schedule, fired[fired.length - 1]);
+      fireReminder(schedule, fired[fired.length - 1], now);
     }
   }
 }
@@ -291,6 +298,7 @@ export function registerBackgroundReminder(registration: BackgroundReminderRegis
     round: 0,
     accumulatedMs: 0,
     lastTickMs: now,
+    lastAccessedAt: registration.startTime,
     deliver: registration.deliver,
   });
   ensureTicker();
@@ -308,4 +316,30 @@ export function unregisterSessionBackgroundReminders(sessionID: string): void {
     if (schedule.sessionID === sessionID) schedules.delete(taskId);
   }
   stopTickerIfIdle();
+}
+
+/**
+ * 查询结束兜底门槛的运行时入口：该任务距上次访问已满最小间隔才需要兜底。
+ *
+ * 未登记提醒时钟的任务不进兜底列表（无会话的任务不在 `getRunningBackgroundTasksForSession`
+ * 的结果里，查不到时钟说明任务已结束 / 已被注销，此时不该再提醒）。
+ */
+export function isBackgroundFallbackReminderDue(taskId: string, now: number = Date.now()): boolean {
+  const schedule = schedules.get(taskId);
+  if (!schedule) return false;
+  return qualifiesBackgroundFallbackReminder(schedule.lastAccessedAt, now);
+}
+
+/**
+ * 登记一次「访问」：把给定任务的上次访问时刻刷新到 `atMs`。
+ *
+ * 周期提醒在 `fireReminder` 内自调；查询结束由 `QueryEngine` 对本会话运行中的
+ * 全部任务调用（无论本次是否兜底）——提醒自己拉起的那轮查询结束时，同一批任务
+ * 距上次访问不足最小间隔，不会再被兜底。
+ */
+export function markBackgroundTasksAccessed(taskIds: readonly string[], atMs: number = Date.now()): void {
+  for (const taskId of taskIds) {
+    const schedule = schedules.get(taskId);
+    if (schedule) schedule.lastAccessedAt = atMs;
+  }
 }

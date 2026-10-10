@@ -65,10 +65,9 @@ after <已运行时长> (task ID: …) …」（`tools/bash/Result.ts`）。转�
 
 ### 1.4 与兜底提醒的边界
 
-触发暂停的后台任务在转换成功时即登记进「已兜底提醒」集合（`markBackgroundTaskReminded` /
-`reminded_background_tasks`）：查询收尾的兜底提醒（`docs/background-reminder.md` 第 1.0 节）
-会为运行中的后台任务补一条 reminder 并拉起新查询，那等于转后台结果自己触发了接续循环，
-违背 1.3 的暂停语义。周期性提醒不受影响。
+触发暂停的后台任务在转换成功时才注册，距上次访问不足最小间隔，因此查询收尾的兜底提醒
+（`docs/background-reminder.md` 第 1.0 节）不会为它补一条 reminder 并拉起新查询——否则
+转后台结果自己就触发了接续循环，违背 1.3 的暂停语义。周期性提醒不受影响。
 
 ## 2. 实现
 
@@ -79,11 +78,11 @@ after <已运行时长> (task ID: …) …」（`tools/bash/Result.ts`）。转�
 | UiEvent | `bashBackgroundRequested`（`src/core/AssistantEventBus.ts`） | 同左 |
 | core 订阅 | `initializeCoreEvents.ts` → `QueryEngine.requestBashBackground` | `main.rs` 的 `dispatch_ui_event` → `Core::on_bash_background_requested` |
 | 注册表 | `tools/bash/ManualBackground.ts`（`toolUseId → 触发器`） | `tools.rs` 的 `MANUAL_BG`（`tool_use_id → 请求标记`） |
-| 暂停信号 | `QueryEngine.loopPauseRequested` + `requestLoopPause` / `consumeLoopPauseRequest` | `tools::LoopPauseSignal`（`paused` + `source_task`）挂在 `SessionState.pause_loop` |
+| 暂停信号 | `QueryEngine.loopPauseRequested` + `requestLoopPause` / `consumeLoopPauseRequest` | `tools::LoopPauseSignal`（`paused`）挂在 `SessionState.pause_loop` |
 | 消费点 | `src/core/Query.ts` 的 `queryLoop`（工具批收尾、下一轮请求前） | `core-rs/src/engine.rs` 的 `run_query_loop`（同一位置） |
 
-两侧实现按同一份契约对齐：事件名、暂停语义、兜底提醒登记的时机一致，差异只在注册表的
-载体（闭包 / 请求标记）与暂停信号随 `SessionState` 携带 `source_task` 的方式。
+两侧实现按同一份契约对齐：事件名、暂停语义、兜底提醒门槛的生效时机一致，差异只在
+注册表的载体（闭包 / 请求标记）。
 
 ## 3. 测试
 

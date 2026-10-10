@@ -4,7 +4,8 @@
  * 覆盖 `BackgroundReminder.tickBackgroundReminders` 的会话状态联动：
  * - 会话空闲（abort 按钮为黄）时时钟前进，满一个间隔投递 reminder；
  * - query engine 有任务（`queryRunning`）时时钟暂停，暂停期间不投递、也不丢已积累量；
- * - 任务完成 / 会话中止后注销，不再提醒。
+ * - 任务完成 / 会话中止后注销，不再提醒；
+ * - 周期提醒 / 查询结束都会刷新任务的「上次访问时刻」，最小间隔内不再满足兜底门槛。
  *
  * 纯时钟推进（5 / 10 / 20 / 30 档位）由 `backgroundReminderParity.test.ts` 的对等
  * 对照表锁定，这里只验证与 `sessionRuntime` 的接线。
@@ -14,6 +15,9 @@
 
 import { markQueryRunning } from '../core/sessionRuntime';
 import {
+  BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS,
+  isBackgroundFallbackReminderDue,
+  markBackgroundTasksAccessed,
   registerBackgroundReminder,
   tickBackgroundReminders,
   unregisterBackgroundReminder,
@@ -54,7 +58,8 @@ function run(): void {
     tickBackgroundReminders(now + 5 * MINUTE + OVERSHOOT);
     check('满 5min 投递一次', delivered.length === 1);
     check('提醒带下次间隔 10min', delivered[0]?.includes('Next reminder in 10min.') === true);
-    check('提醒带已执行时长', delivered[0]?.includes('Elapsed: 5m 0s') === true);
+    // 已执行时长取本次 tick 的注入时刻：startTime 距 now 5min，tick 在 now + 5min（+1s 跨阈值）
+    check('提醒带已执行时长', delivered[0]?.includes('Elapsed: 10m 1s') === true);
     unregisterBackgroundReminder('bg-idle');
   }
 
@@ -105,6 +110,44 @@ function run(): void {
     unregisterSessionBackgroundReminders(sessionID);
     tickBackgroundReminders(now + 30 * MINUTE);
     check('注销后不再投递', delivered.length === 0);
+  }
+
+  // ===== 上次访问时刻：周期提醒 / 查询结束后最小间隔内不再兜底 =====
+  {
+    const delivered: string[] = [];
+    const sessionID = 's-rem-cooldown';
+    const now = Date.now();
+    markQueryRunning(sessionID, false);
+    registerBackgroundReminder({
+      taskId: 'bg-cooldown',
+      sessionID,
+      description: 'Sleep',
+      command: 'sleep 600',
+      startTime: now,
+      pid: 7,
+      deliver: (content) => delivered.push(content),
+    });
+    check('刚注册的任务不满足兜底门槛', !isBackgroundFallbackReminderDue('bg-cooldown', now));
+
+    const firedAt = now + 5 * MINUTE + OVERSHOOT;
+    tickBackgroundReminders(firedAt);
+    check('周期提醒已投递', delivered.length === 1);
+    check('周期提醒后最小间隔内不满足兜底门槛', !isBackgroundFallbackReminderDue('bg-cooldown', firedAt));
+    check(
+      '满最小间隔后重新满足兜底门槛',
+      isBackgroundFallbackReminderDue(
+        'bg-cooldown',
+        firedAt + BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS,
+      ),
+    );
+
+    // 查询结束也是一次「访问」：兜底提醒自己拉起的那轮查询收尾后同样要冷却
+    markBackgroundTasksAccessed(['bg-cooldown'], firedAt + MINUTE);
+    check(
+      '查询结束访问后刷新冷却起点',
+      !isBackgroundFallbackReminderDue('bg-cooldown', firedAt + MINUTE),
+    );
+    unregisterBackgroundReminder('bg-cooldown');
   }
 
   finish();

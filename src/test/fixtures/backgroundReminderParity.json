@@ -6,7 +6,7 @@
     20,
     30
   ],
-  "fallbackMinElapsedMs": 180000,
+  "fallbackMinIntervalMs": 180000,
   "firstLabel": "5min",
   "intervalLabelCases": [
     {
@@ -172,51 +172,23 @@
   ],
   "fallbackQualifyCases": [
     {
-      "name": "刚起不久的普通命令不进列表",
-      "elapsedMs": 1000,
-      "command": "echo hi",
+      "name": "刚注册（距上次访问 0ms）不进列表",
+      "sinceLastAccessMs": 0,
       "expected": false
     },
     {
-      "name": "不满 3 分钟的普通命令不进列表",
-      "elapsedMs": 179999,
-      "command": "echo hi",
+      "name": "距上次访问不满 3 分钟不进列表",
+      "sinceLastAccessMs": 179999,
       "expected": false
     },
     {
-      "name": "满 3 分钟进列表",
-      "elapsedMs": 180000,
-      "command": "echo hi",
+      "name": "距上次访问满 3 分钟进列表",
+      "sinceLastAccessMs": 180000,
       "expected": true
     },
     {
-      "name": "sleep 命令即时进列表",
-      "elapsedMs": 0,
-      "command": "sleep 300",
-      "expected": true
-    },
-    {
-      "name": "组合段里的 sleep 也进列表",
-      "elapsedMs": 0,
-      "command": "echo a && sleep 5",
-      "expected": true
-    },
-    {
-      "name": "参数里的 sleep 字样不算",
-      "elapsedMs": 1000,
-      "command": "echo sleep",
-      "expected": false
-    },
-    {
-      "name": "环境变量前缀后的 sleep 算",
-      "elapsedMs": 0,
-      "command": "FOO=1 sleep 5",
-      "expected": true
-    },
-    {
-      "name": "管道后面的 sleep 算",
-      "elapsedMs": 0,
-      "command": "cat x | sleep 1",
+      "name": "距上次访问远超 3 分钟进列表",
+      "sinceLastAccessMs": 600000,
       "expected": true
     }
   ]

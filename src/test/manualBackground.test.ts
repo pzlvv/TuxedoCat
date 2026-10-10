@@ -7,8 +7,8 @@
  * 语义（两侧一致）：
  * 1. 前台命令跑起来后由注册表触发，与自动转后台（超时 / 通知驱动）同一条路径，
  *    结果照常作为 tool_result（`assistantAutoBackgrounded` + `bg-auto-` taskId）；
- * 2. 转换成功回写引擎：置循环暂停标记（下一轮 LLM 请求不发起）+ 该任务登记
- *    「已兜底提醒」（查询收尾不为它补 reminder 又拉起循环）；
+ * 2. 转换成功回写引擎：置循环暂停标记（下一轮 LLM 请求不发起）；查询收尾的
+ *    兜底提醒不会为该任务立刻补 reminder（任务刚注册，距上次访问不足最小间隔）；
  * 3. 暂停标记一次性消费；新用户消息 / 中止会清掉残留标记。
  *
  * 运行方式：npm run test:all -- manualBackground
@@ -53,10 +53,8 @@ runTests('manualBackground', async () => {
 
   const SESSION = 's-manual-bg';
   const pausedFlags: string[] = [];
-  const remindedTasks: string[] = [];
   const fakeEngine = {
     requestLoopPause: (): void => { pausedFlags.push('paused'); },
-    markBackgroundTaskReminded: (taskId: string): void => { remindedTasks.push(taskId); },
   } as unknown as QueryEngine;
   sessionEngines.set(SESSION, fakeEngine);
 
@@ -85,10 +83,6 @@ runTests('manualBackground', async () => {
     check('手工转后台结果带 assistantAutoBackgrounded', result.assistantAutoBackgrounded === true);
     check('手工转后台结果带 bg-auto- taskId', (result.backgroundTaskId ?? '').startsWith('bg-auto-'));
     check('转换成功回写引擎：置循环暂停标记', pausedFlags.length === 1);
-    check(
-      '转换成功回写引擎：该任务登记已兜底提醒',
-      remindedTasks.length === 1 && remindedTasks[0] === result.backgroundTaskId,
-    );
     check('收尾后注册表条目已注销', !isForegroundBashRunning(TOOL_USE_ID));
 
     // 收尾：杀掉后台任务、还原引擎池与总线
@@ -112,11 +106,6 @@ runTests('manualBackground', async () => {
     engine.requestLoopPause();
     check('暂停请求可被消费（一次性）', engine.consumeLoopPauseRequest() === true);
     check('第二次消费返回 false（取走即清除）', engine.consumeLoopPauseRequest() === false);
-
-    engine.requestLoopPause();
-    engine.markBackgroundTaskReminded('bg-auto-x');
-    const reminded = (engine as unknown as { remindedBackgroundTaskIds: Set<string> }).remindedBackgroundTaskIds;
-    check('markBackgroundTaskReminded 登记任务 id', reminded.has('bg-auto-x'));
 
     // 中止清掉残留暂停标记：被中止的那轮查询不会再走到暂停出口
     engine.requestLoopPause();

@@ -17,7 +17,10 @@ import type { PromptPresetId } from './prompt/PromptPreset.js';
 import { getAllTools } from './tools/index.js';
 import { logger } from './Logger.js';
 import { isCompacting, isPendingCompact, markPendingCompact, unmarkPendingCompact } from './compact/state.js';
-import { qualifiesBackgroundFallbackReminder } from './tools/bash/BackgroundReminder.js';
+import {
+  isBackgroundFallbackReminderDue,
+  markBackgroundTasksAccessed,
+} from './tools/bash/BackgroundReminder.js';
 import { randomId } from './tools/RunTools.js';
 import type { DispatchResult, SkillDispatchInfo } from './CommandDispatcher.js';
 
@@ -210,11 +213,6 @@ export class QueryEngine {
   private consumerExitResolvers: Array<() => void> = [];
   /** 待处理的 Reminder 消息（LLM 可见，UI 不可见） */
   private pendingReminder: string | null = null;
-  /**
-   * 已提醒过「后台仍在运行」兜底提醒的任务 ID 集合。
-   * 用于保证每个后台任务只提醒一次，避免「提醒 → 查询 → 提醒」的无限递归。
-   */
-  private remindedBackgroundTaskIds = new Set<string>();
   /**
    * 手工转后台（`UiEvent.bashBackgroundRequested`）请求的循环暂停标记。
    * 置位方：`Exec.triggerAutoBackground('user-requested')` 转换成功后调
@@ -667,18 +665,20 @@ export class QueryEngine {
   }
 
   /**
-   * 查询结束（End）后的兜底提醒：若本会话仍有运行中的后台 Bash 任务，且满足
-   * 兜底门槛（运行满 3 分钟，或命令里包含 sleep 子命令——`qualifiesBackgroundFallbackReminder`），
-   * 向 LLM 注入一条 reminder，列出当前后台进程（taskId + pid + 命令），让 LLM 二选一：
+   * 查询结束（End）后的兜底提醒：若本会话仍有运行中的后台 Bash 任务，且距上次访问
+   * 已满 3 分钟（`BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS`），向 LLM 注入一条
+   * reminder，列出当前后台进程（taskId + pid + 命令），让 LLM 二选一：
    * - 不再需要的 → 执行 reminder 里按当前 OS 生成好的 kill 命令；
    * - 都还需要 → 直接结束本轮等待完成通知，不要 sleep / 轮询。
    *
-   * 不满足门槛的任务不进列表：短命任务很快自己完成，为它打断一轮 LLM 只会产生噪音；
-   * 全部不满足时本次不提醒（任务留着，下轮查询结束再按当时运行时长判定）。
+   * 不满最小间隔的任务不进列表：任务刚起就打断一轮 LLM 只是噪音；刚被周期提醒报告过
+   * 的任务也不该紧接着再被兜底提醒一次（周期提醒投递时会刷新该任务的「上次访问时刻」）。
+   * 全部不满足时本次不投递（任务留着，后续查询结束再按当时距上次访问的时长判定）。
    *
-   * 只发一次：已提醒过的 taskId 记录在 remindedBackgroundTaskIds 中，
-   * 后续 finalizeIdle 不会对同一批任务重复提醒，因此即使提醒本身触发了一轮
-   * 新的查询（本方法会启动消费循环），也不会出现「提醒 → 查询 → 提醒」的递归。
+   * 查询结束本身也是一次「访问」：无论本次是否兜底，都把本会话运行中任务的上次访问
+   * 时刻刷新为当前时刻（`markBackgroundTasksAccessed`）。因此提醒自己触发的那轮查询
+   * 结束时，同一批任务距上次访问不足最小间隔，不会被再次兜底，不存在
+   * 「提醒 → 查询 → 提醒」的递归。
    *
    * 与周期提醒（`deliverBackgroundReminder`）的分工：本条是查询刚结束时的一次性
    * 兜底（让 LLM 立刻决定是否 kill 掉不需要的任务）；周期提醒在空闲满 5min 后按
@@ -691,25 +691,21 @@ export class QueryEngine {
     if (this.isConsumerRunning || this.isAborted()) return;
 
     let runningTasks: Array<{ taskId: string; description: string; command: string; pid?: number }>;
+    const now = Date.now();
     try {
       const { getRunningBackgroundTasksForSession } = await import('./tools/bash/LocalShellTask.js');
-      const now = Date.now();
-      runningTasks = getRunningBackgroundTasksForSession(this.sessionID)
-        .filter(t => !this.remindedBackgroundTaskIds.has(t.taskId)
-          && qualifiesBackgroundFallbackReminder(t, now))
+      const running = getRunningBackgroundTasksForSession(this.sessionID);
+      runningTasks = running
+        .filter(t => isBackgroundFallbackReminderDue(t.taskId, now))
         .map(t => ({ taskId: t.taskId, description: t.description, command: t.command, pid: t.pid }));
+      // 查询结束即一次「访问」：先刷新再入队，提醒触发的查询结束后不会被再次兜底。
+      markBackgroundTasksAccessed(running.map(t => t.taskId), now);
     } catch (err) {
       logger.warn('QueryEngine', `Failed to inspect background tasks for ${this.sessionID}: ${err}`);
       return;
     }
 
     if (runningTasks.length === 0) return;
-
-    // 先登记再入队：提醒触发的查询结束后会再次进入 finalizeIdle，
-    // 此时同一批 taskId 已在集合中，不会被再次提醒。
-    for (const task of runningTasks) {
-      this.remindedBackgroundTaskIds.add(task.taskId);
-    }
 
     // 直接按当前 OS 生成可执行的 kill 命令，省得 LLM 自己判断平台。
     // Windows 用 taskkill /T 连子进程树一起杀；其他平台用 kill。
@@ -746,7 +742,7 @@ export class QueryEngine {
     // 若同步启动消费循环，会被 Integration 的收尾覆盖成「已空闲」。
     // 延后到宏任务可保证「上一轮先收尾，再开始提醒这一轮」。
     //
-    // remindedBackgroundTaskIds 已保证同一批任务只提醒一次，因此不会递归重复提醒。
+    // 本会话运行中任务的「上次访问时刻」已刷新为当前时刻，因此不会递归重复提醒。
     const timer = setTimeout(() => {
       // 期间已被别的消费循环接管 / 用户中止 / 会话已释放：交给接管方或直接放弃
       if (this.isConsumerRunning || this.isAborted()) return;
@@ -984,16 +980,6 @@ export class QueryEngine {
     const paused = this.loopPauseRequested;
     this.loopPauseRequested = false;
     return paused;
-  }
-
-  /**
-   * 登记某后台任务「已兜底提醒」。手工转后台的任务在转换成功时登记：
-   * 查询收尾的兜底提醒（`maybeRemindBackgroundTasks`）会为运行中的后台任务
-   * 立刻补一条 reminder 并拉起新查询——那等于转后台结果自己触发了接续循环，
-   * 违背 `requestLoopPause` 的暂停语义，因此该任务不再进兜底提醒列表。
-   */
-  markBackgroundTaskReminded(taskId: string): void {
-    this.remindedBackgroundTaskIds.add(taskId);
   }
 
   /**

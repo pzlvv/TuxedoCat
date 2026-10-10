@@ -122,19 +122,16 @@ pub type UserChoiceFn = std::sync::Arc<dyn Fn(&Value) -> Option<Value> + Send + 
 /// `auto_background_command(manual = true)`）；消费方：查询循环在工具批收尾、
 /// 下一轮 LLM 请求发起前（结果照常进上下文，但不再发起下一轮）。
 ///
-/// `source_task` 记录触发暂停的后台任务 id：消费方据此把该任务登记进「已兜底
-/// 提醒」集合——查询收尾的兜底提醒会为运行中的后台任务立刻拉起新查询，那等于
-/// 转后台结果自己触发了接续循环，违背暂停语义。
+/// 查询收尾的兜底提醒不会为触发暂停的任务立刻补 reminder：任务刚注册，距上次
+/// 提醒不足最小间隔（`docs/background-reminder.md` 第 1.0 节）。
 #[derive(Clone, Default)]
 pub struct LoopPauseSignal {
     paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    source_task: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl LoopPauseSignal {
-    /// 置暂停标记；`source_task` 是触发暂停的后台任务 id
-    pub fn request(&self, source_task: Option<String>) {
-        *self.source_task.lock().unwrap() = source_task;
+    /// 置暂停标记
+    pub fn request(&self) {
         self.paused.store(true, Ordering::Relaxed);
     }
 
@@ -143,15 +140,9 @@ impl LoopPauseSignal {
         self.paused.swap(false, Ordering::Relaxed)
     }
 
-    /// 取走触发暂停的后台任务 id（随 `take` 一起消费）
-    pub fn take_source_task(&self) -> Option<String> {
-        self.source_task.lock().unwrap().take()
-    }
-
     /// 清除残留请求（新用户消息 / 中止时调用；暂停只对「当时那轮查询」有意义）
     pub fn clear(&self) {
         self.paused.store(false, Ordering::Relaxed);
-        self.source_task.lock().unwrap().take();
     }
 }
 
@@ -1281,8 +1272,9 @@ fn description_of(input: &Value, command: &str) -> String {
 /// 返回结果的 `stdout` 是转入后台前已累积的输出，`stderr` 是给模型的说明
 /// （由 `background_result_text` 拼进 tool_result）。
 ///
-/// 手工转后台成功时置 `ctx.pause`（下一轮 LLM 请求不发起，任务 id 随信号带回，
-/// 由查询循环登记「已兜底提醒」）；转换失败走早退分支，不置暂停。
+/// 手工转后台成功时置 `ctx.pause`（下一轮 LLM 请求不发起）；转换失败走早退分支，
+/// 不置暂停。查询收尾的兜底提醒不会为该任务立刻补 reminder（任务刚注册，距上次
+/// 访问不足最小间隔，见 `docs/background-reminder.md` 第 1.0 节）。
 fn auto_background_command(
     child: std::process::Child,
     command: &str,
@@ -1342,13 +1334,12 @@ fn auto_background_command(
     crate::bash_task::watch_backgrounded(child, task_id.clone(), kill, ctx.background.clone());
 
     // 手工转后台成功：置循环暂停信号（工具结果照常进上下文，下一轮 LLM 请求
-    // 不发起）。task id 随信号带回，消费方（查询循环）据此登记「已兜底提醒」，
-    // 避免消费收尾的兜底提醒立刻为该任务拉起新查询（对齐 Embedded
-    // `Exec.triggerAutoBackground('user-requested')` 的 requestLoopPause +
-    // markBackgroundTaskReminded）。
+    // 不发起）。消费收尾的兜底提醒不会为该任务立刻补 reminder：任务刚注册，
+    // 距上次访问不足最小间隔（对齐 Embedded `Exec.triggerAutoBackground('user-requested')`
+    // 的 `requestLoopPause`）。
     if manual {
         if let Some(pause) = &ctx.pause {
-            pause.request(Some(task_id.clone()));
+            pause.request();
         }
     }
 
