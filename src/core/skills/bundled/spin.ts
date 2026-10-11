@@ -90,7 +90,7 @@ export function getSpinCommandDefinition(): BuiltinCommandDefinition {
         throw new Error(`spin: session engine missing for ${sessionId}`);
       }
 
-      // 落盘文本统一英文（`docs/core-ui-separation.md` 第 4.8 节）：标题写进 meta.json。
+      // 落盘文本统一英文（`docs/architecture/core-ui-separation.md` 第 4.8 节）：标题写进 meta.json。
       // 写盘在前、广播在后（UI 只认落盘后的事件）；meta.json 缺失时由写盘侧建档。
       const spinTitle = 'Spin Design';
       const { updateConversationMetadataTitle } = await import('../../history/Conversation.js');

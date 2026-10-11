@@ -55,7 +55,7 @@ export interface UseMessageHandlerProps {
   setConversationTitle: (v: string) => void;
   setMaxContextTokens: (v: number | null) => void;
   setSkills: (v: Array<{ name: string; description: string; isBuiltin?: boolean }>) => void;
-  /** 呈现一条 core 产出的瞬时提示（键 + 参数，`docs/core-ui-separation.md` 第 4.9 节） */
+  /** 呈现一条 core 产出的瞬时提示（键 + 参数，`docs/architecture/core-ui-separation.md` 第 4.9 节） */
   pushNotice: (key: string, params: Record<string, string | number>, level: 'info' | 'warn' | 'error') => void;
   /** MCP 服务器列表（含启用状态），由 extension 读取 mcp.json + settings.json 后下发 */
   setMcpServers: (v: McpServerInfo[]) => void;
@@ -88,7 +88,7 @@ export interface UseMessageHandlerProps {
   setCurrentSessionIdRef: (sid: string | null) => void;
   /**
    * LLM 配置面板载荷：宿主随 `showLLMConfig` 一次给齐；`null` 表示关闭面板。
-   * 载荷到达即面板打开，webview 不补默认值（`docs/webview-facts.md` 第 6 节）。
+   * 载荷到达即面板打开，webview 不补默认值（`docs/hosts/webview-facts.md` 第 6 节）。
    */
   setLlmConfigPayload: (v: LlmConfigPanelPayload | null) => void;
   /** 服务商配置完成状态：未完成时输入框禁用并引导打开设置；null 表示尚未探测到配置 */

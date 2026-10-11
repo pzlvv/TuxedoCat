@@ -1,4 +1,4 @@
-//! TUI 版安装程序（docs/tui-installer.md）：内嵌 Core / ripgrep / TUI 二进制的自解压安装器。
+//! TUI 版安装程序（docs/features/tui-installer.md）：内嵌 Core / ripgrep / TUI 二进制的自解压安装器。
 //!
 //! 用法（程序名取可执行文件名，Rust 侧不持有产品字面量）：
 //!   <本程序> [--prefix <dir>] [--print-prefix] [--version] [--help]

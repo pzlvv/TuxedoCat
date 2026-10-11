@@ -195,7 +195,7 @@ async function execForeground(
         // 手工转后台成功：暂停标记由这里回写引擎（转换失败走 catch，不暂停）。
         // 结果本身照常作为 tool_result 进入上下文，暂停的只是「下一轮 LLM 请求」。
         // 查询收尾的兜底提醒不会为它立刻补 reminder：该任务登记为「已兜底」，
-        // 3 分钟门槛与 sleep 豁免都不再命中（`docs/background-bash.md` 第 1.4 节）。
+        // 3 分钟门槛与 sleep 豁免都不再命中（`docs/features/background-bash.md` FR-002）。
         if (reason === 'user-requested' && bgResult.backgroundTaskId && sessionID) {
           try {
             const { getSessionEngine } = require('../../QueryEngine.js') as typeof import('../../QueryEngine.js');
@@ -502,7 +502,7 @@ async function autoBackgroundCommand(
     : '';
 
   // stderr 只承载命令自身的错误输出与 `find` 提示。「已转入后台」的说明（taskId /
-  // 输出路径 / 完成通知）由 `Result.ts` 统一拼一次（DEVELOPMENT.md 第 5 章：
+  // 输出路径 / 完成通知）由 `Result.ts` 统一拼一次（docs/architecture/principles.md：
   // 一份事实只有一个写入点），否则同一份说明会在 tool_result 里出现两遍。
   const stderr = [currentStderr.trimEnd(), reminder].filter((part) => part.length > 0).join('\n');
 

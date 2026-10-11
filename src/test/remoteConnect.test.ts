@@ -1,7 +1,7 @@
 /**
  * 单测：远程接入请求解析（`src/host/remoteConnect.ts`）。
  *
- * 接入方式只有 SSH 表单（`docs/core-daemon.md` 第 12 节）。这里锁住两件事：
+ * 接入方式只有 SSH 表单（`docs/core/core-daemon.md` 第 12 节）。这里锁住两件事：
  * - 表单校验：主机 / 用户去首尾空白，口令原样保留，端口必须是 1-65535 的数字；
  * - 接入请求收敛成 `WorkspaceEndpoint`：形状不对一律报原因码，不做静默降级。
  *
@@ -15,7 +15,7 @@ import { remoteWorkspaceRef } from '../host/workspaceRef';
 runTests('remoteConnect', () => {
   const { check, finish } = createChecker();
 
-  // ---------- SSH 表单（`docs/core-daemon.md` 第 12 节） ----------
+  // ---------- SSH 表单（`docs/core/core-daemon.md` 第 12 节） ----------
 
   const ssh = parseSshConnectionInput({
     host: ' 172.20.56.28 ',

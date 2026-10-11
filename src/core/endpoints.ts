@@ -1,5 +1,5 @@
 /**
- * 跨层共享的服务地址常量（`docs/webview-facts.md` 第 1 节）。
+ * 跨层共享的服务地址常量（`docs/hosts/webview-facts.md` 第 1 节）。
  *
  * 本模块只放**服务地址**，不放任何配置字段的默认值——「`settings.json` 缺字段时取什么值」
  * 由宿主的配置快照解析唯一决定（`settingsSnapshot.ts`），webview 不持有配置默认值。

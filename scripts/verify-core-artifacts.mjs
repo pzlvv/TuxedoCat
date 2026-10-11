@@ -18,7 +18,7 @@
  *      里最新的一个（早于就是「源码改了但没重编」）；`#[cfg(test)]` 专属文件不算
  *      （cargo 不会为它们重链产物）；
  *   3. 构建指纹文件存在、且与按当前源码重算的指纹一致（`build-core.mjs` 的
- *      `computeFingerprint`，见 docs/standalone-core.md 第 4.4 节）：指纹缺失或对不上
+ *      `computeFingerprint`，见 docs/core/standalone-core.md 第 4.4 节）：指纹缺失或对不上
  *      意味着产物是旧构建或老版本脚本产的，SSH 部署会按错误的槽位落位；
  *   4. `dist/resources/core/` 里的副本与 `resources/` 里的**字节一致**（打包真正吃的是
  *      dist 里那份；`copy-assets` 漏跑过，或跑在重建之前就会不一致）。

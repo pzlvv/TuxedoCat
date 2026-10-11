@@ -1,6 +1,6 @@
 /**
  * 查询结束兜底提醒的门槛与冷却（Embedded `QueryEngine.maybeRemindBackgroundTasks`，
- * 规格见 `docs/background-bash.md` 第 4 节）。
+ * 规格见 `docs/features/background-bash.md` 第 4 节）。
  *
  * 锁定五条接线语义：
  * - 任务刚注册（距上次访问不足最小间隔、且不满足 sleep 豁免）不进兜底列表；

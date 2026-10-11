@@ -9,7 +9,7 @@
  * 的解码交给 provider，不做重复实现）。
  *
  * 判定规则与 Standalone Core 的 `tools::image_validation_failure` 一一对应，
- * 两侧共用对照表 `src/test/fixtures/imageValidation.json`（docs/core-parity.md 第 4 节）。
+ * 两侧共用对照表 `src/test/fixtures/imageValidation.json`（docs/core/core-parity.md 第 4 节）。
  */
 
 /** 支持的图片扩展名 -> MIME 类型（图片以 base64 返回，不受文本大小限制） */

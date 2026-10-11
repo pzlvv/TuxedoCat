@@ -3,7 +3,7 @@
  *
  * 负责将已在运行的 shell 命令注册为后台任务，并在任务完成时
  * 通过 agentMessageQueue 向 LLM 发送通知；同时为每个任务挂上
- * 周期性提醒时钟（`BackgroundReminder`，规格见 `docs/background-bash.md`）。
+ * 周期性提醒时钟（`BackgroundReminder`，规格见 `docs/features/background-bash.md`）。
  *
  * 参考 claude-code-main 的 LocalShellTask 设计
  */
@@ -174,7 +174,7 @@ export function registerBackgroundTask(
     });
 
     // 先唤醒引擎再清 background（与 core-rs `handle_finish` 的顺序对齐，parity）：
-    // notifyEngine 置 running（idle=false 运行时快照，`DEVELOPMENT.md` 第 4.5 节）之后，
+    // notifyEngine 置 running（idle=false 运行时快照，``docs/core/session-runtime.md`）之后，
     // syncBackgroundState 清 background 时 running 仍真——两份快照的 idle 恒为
     // false，完成通知触发的接续查询之前不会先推一份「瞬时 idle」被宿主差分成
     // running → idle 而误武装「任务完成」绿灯。引擎不接续（找不到引擎等）时

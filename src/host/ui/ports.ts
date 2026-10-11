@@ -3,7 +3,7 @@
  *
  * 端口隔离：子模块（ToolHandler / UserChoiceManager / WebviewMessageHandler）
  * 拿不到 WebViewUI 的全量方法，只能通过这个窄接口回推 webview
- * （docs/contracts.md）。
+ * （docs/architecture/contracts.md）。
  * 由 WebViewUI 实现；子模块只依赖这个窄接口。成员全部必选。
  */
 
@@ -37,7 +37,7 @@ import type { ConversationLoadedExtra } from '../conversationPayload.js';
 export type { ConversationLoadedExtra };
 
 /**
- * 排队项内容（`docs/user-message-pipeline.md` 第 5 节）。
+ * 排队项内容（`docs/features/user-message-pipeline.md` 第 5 节）。
  *
  * `uuid` 是宿主为该消息生成的 uuid，core 把消息并入 LLM 上下文时补发的
  * `addMessage.messageUuid` 与它配对，webview 据此清除排队项（不按文本匹配）。
@@ -76,7 +76,7 @@ export interface WebViewUiPort {
   /**
    * 通知 UI 登记 / 清除该会话的排队项（`null` = 清除）。
    *
-   * 登记：引擎忙碌、消息尚未进入 LLM 上下文时（`docs/user-message-pipeline.md` 第 5.1 节）；
+   * 登记：引擎忙碌、消息尚未进入 LLM 上下文时（`docs/features/user-message-pipeline.md` FR-003）；
    * 清除：内置命令就地执行时由宿主显式清除（`onCommandSend`），
    * 进入上下文的用户消息由 core 补发的 `addMessage`（带 `messageUuid`）清除。
    * 唯一调用者是 WebviewMessageHandler，不是 core。

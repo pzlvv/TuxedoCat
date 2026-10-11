@@ -1,5 +1,5 @@
 /**
- * 单测：webview 不持有配置事实的默认值（`docs/webview-facts.md`，DEVELOPMENT.md 第 5.10 节）。
+ * 单测：webview 不持有配置事实的默认值（`docs/hosts/webview-facts.md`，docs/architecture/principles.md 第 10 节）。
  *
  * 用静态扫描锁定三条不变量：
  * 1. webview 源码不出现配置字段的默认值字面量（webSearch / thinkingEffort / agentMode /

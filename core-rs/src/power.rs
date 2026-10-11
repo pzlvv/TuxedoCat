@@ -2,10 +2,10 @@
 //!
 //! 归属：Electron 宿主用 `powerSaveBlocker` 阻断它所在机器的睡眠
 //! （`electron/powerSaveBlocker.ts`）；Standalone Core 是独立进程（本地 `stdio` 单进程 /
-//! 远程 daemon 的每个工作区一个进程，见 `docs/standalone-core.md` 第 1 节），跑在宿主
+//! 远程 daemon 的每个工作区一个进程，见 `docs/core/standalone-core.md` 第 1 节），跑在宿主
 //! 不一定管得到的机器上——远程工作区的长任务在远端执行，宿主那台机器睡不睡与它无关。
 //! 因此由 Core 进程自己阻断它所在机器的睡眠。两处判定口径一致：任一会话 `idle == false`
-//! （含等待用户确认）即阻断（`docs/host-matrix.md` 第 6 节宿主接线、docs/host-matrix.md 第 12 节宿主固有差异）。
+//! （含等待用户确认）即阻断（`docs/hosts/host-matrix.md` 第 6 节宿主接线、docs/hosts/host-matrix.md 第 12 节宿主固有差异）。
 //!
 //! 阻断类型与 Electron 侧一致——只要求系统不挂起、允许屏幕熄灭：
 //!
@@ -15,7 +15,7 @@
 //!   官方抑制入口）。子进程的 stdin 是本进程持有的管道：正常释放时 kill 子进程，本进程被
 //!   强杀时管道关闭、子进程读到 EOF 自行退出——不会留下孤儿把机器一直钉醒。
 //! - **其余平台**：当前产出矩阵只有 Windows x64 与 Linux x64 / arm64
-//!   （`docs/standalone-core.md` 第 1 节），没有实现；保持不阻断并落一条诊断。
+//!   （`docs/core/standalone-core.md` 第 1 节），没有实现；保持不阻断并落一条诊断。
 
 use std::sync::Mutex;
 
@@ -25,7 +25,7 @@ use crate::util::diag;
 
 /// 任一会话非 idle → 需要阻断睡眠。
 ///
-/// `idle` 是引擎推的派生字段（`Core::emit_runtime`，`DEVELOPMENT.md` 第 5.8 节）：自身查询 / 压缩 /
+/// `idle` 是引擎推的派生字段（`Core::emit_runtime`，``docs/architecture/principles.md` 第 8 节）：自身查询 / 压缩 /
 /// 后台 Bash / 子代理 / 等待用户任一为真时 `idle == false`。判定口径与 Electron 侧
 /// `shouldPreventSleep` 一致。
 pub fn should_prevent_sleep(states: &[Value]) -> bool {
@@ -204,7 +204,7 @@ mod platform {
     }
 }
 
-/// 其余平台：没有实现（产出矩阵见 `docs/standalone-core.md` 第 1 节）。
+/// 其余平台：没有实现（产出矩阵见 `docs/core/standalone-core.md` 第 1 节）。
 #[cfg(not(any(windows, target_os = "linux")))]
 mod platform {
     #[allow(dead_code)]

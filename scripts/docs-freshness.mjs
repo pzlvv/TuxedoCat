@@ -11,8 +11,8 @@
  *
  * 口径
  * ----
- * - 覆盖范围与 docsLint 的 frontmatter 组一致：docs/ 顶层规格（README.md 地图除外），
- *   外加 DEVELOPMENT.md（架构总纲，无 frontmatter，同样参与对比）。
+ * - 覆盖范围与 docsLint 的 frontmatter 组一致：docs/ 递归全部规格（各级 README.md
+ *   地图与 archive/ 冻结档案除外）。
  * - 引用提取与 docsLint 的「行内代码里的仓库路径必须存在」同口径：只取行内反引号里
  *   的仓库前缀路径，通配 / 占位符不取；markdown 链接指向的多是其他文档，不参与。
  * - 时间一律取 git 最后提交时间（文件 mtime 在 clone / rebase 后不可信）。
@@ -28,13 +28,20 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
-const DOC_RELPATHS = [
-  ...fs.readdirSync(path.join(ROOT, 'docs'), { withFileTypes: true })
-    .filter((e) => e.isFile() && e.name.endsWith('.md') && e.name !== 'README.md')
-    .map((e) => `docs/${e.name}`)
-    .sort(),
-  'DEVELOPMENT.md',
-];
+const DOC_RELPATHS = (() => {
+  const out = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === 'archive') continue; // 冻结档案不参与新鲜度对比
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(full); continue; }
+      if (!e.name.endsWith('.md') || e.name === 'README.md') continue;
+      out.push(path.relative(ROOT, full).replace(/\\/g, '/'));
+    }
+  };
+  walk(path.join(ROOT, 'docs'));
+  return out.sort();
+})();
 
 /** 与 docsLint 第 9 组同一份前缀集合；docsLint 若扩前缀，这里同步 */
 const REPO_PATH_PREFIX = /^(?:src|docs|specs|core-rs|electron|tui-rs|scripts|e2e|installer-rs|assets|resources)\//;

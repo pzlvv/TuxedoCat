@@ -2,8 +2,8 @@
  * 后台 Bash 任务的周期性提醒调度。
  *
  * 每个后台任务有自己的提醒时钟，时钟只在会话「前台空闲」时前进——即
- * `sessionRuntime`（`DEVELOPMENT.md 第 4.5 节`）的 `queryRunning` / `compacting`
- * 均为假，对应 abort 按钮的黄色（`docs/abort-button.md`）。到达 5 / 10 / 20 / 30
+ * `sessionRuntime`（`docs/core/session-runtime.md`）的 `queryRunning` / `compacting`
+ * 均为假，对应 abort 按钮的黄色（`docs/features/abort-button.md`）。到达 5 / 10 / 20 / 30
  * 分钟（此后固定 30 分钟）时向 LLM 投递一条 reminder，报告任务当前输出、
  * 已执行时间与下次提醒间隔。
  *
@@ -370,7 +370,7 @@ export function isBackgroundFallbackReminderDue(taskId: string, now: number = Da
  *
  * 两个写入点：查询结束兜底投递时（sleep 豁免每个任务只走一次，否则查询结束每轮命中）、
  * 手工转后台转换成功时（任务刚注册就兜底会拉起新一轮，违背暂停语义——
- * `docs/background-bash.md` 第 1.4 节）。
+ * `docs/features/background-bash.md` FR-002）。
  */
 export function markBackgroundTasksFallbackReminded(taskIds: readonly string[]): void {
   for (const taskId of taskIds) {

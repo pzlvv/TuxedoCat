@@ -1,5 +1,5 @@
 /**
- * 宿主侧的 Core 就绪状态（`docs/core-ui-separation.md` 第 7 节）。
+ * 宿主侧的 Core 就绪状态（`docs/architecture/core-ui-separation.md` 第 7 节）。
  *
  * 就绪判据是「Core 已处理 `hostEnvironmentProvided`」——Core 处理完发一次
  * `CoreEvent.coreReady`。每次重新推送配置快照后都会再收到一次，因此这里的

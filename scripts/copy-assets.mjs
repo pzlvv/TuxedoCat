@@ -3,7 +3,7 @@
  * 静态资源落位（`npm run copy-assets`）。
  *
  * 把 `assets/` 与 `resources/` 复制进 `dist/`，再按当前 Core 变体清掉**不属于本变体**的
- * 那份 ripgrep（见 docs/standalone-core.md 第 4 节）：
+ * 那份 ripgrep（见 docs/core/standalone-core.md 第 4 节）：
  *   - embedded：只有 `dist/resources/ripgrep/` 有用（TS 侧 Grep / Glob 的 rg，定位见
  *     `src/core/utils/ripgrep.ts`）；`dist/resources/core/` 是 Rust 产物，删。
  *   - standalone：只有 `dist/resources/core/<arch-platform>/ripgrep/` 有用（Core 自带的
@@ -36,7 +36,7 @@ cpSync(
   { recursive: true },
 );
 
-// 变体互斥：每份 rg 只在自己那侧被读取（docs/standalone-core.md 第 4 节）。
+// 变体互斥：每份 rg 只在自己那侧被读取（docs/core/standalone-core.md 第 4 节）。
 const stale =
   project.coreKind === 'embedded'
     ? project.resolve(project.build.dist, 'resources', project.core.resourceDir)

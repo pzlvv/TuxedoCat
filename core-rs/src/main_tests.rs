@@ -1264,7 +1264,7 @@ fn dispatch_ui_event_covers_every_ui_event_type() {
 // 侧没有任何消费者——Rust 侧新增 / 删除事件时 fixture 不会红（「半张表」）。这里补齐：
 //
 // - 正向：coreEvents / coreRequests 的每个名字（除 `coreEventsDivergences` 登记的
-//   有意差异外，见 docs/core-parity.md）都必须作为 `"type": "<name>"` 出现在非测试
+//   有意差异外，见 docs/core/core-parity.md）都必须作为 `"type": "<name>"` 出现在非测试
 //   Rust 源码里（emit 位点）；
 // - 反向：非测试 Rust 源码里所有 camelCase 的 `"type": "…"` 字面量都必须登记进
 //   fixture 的某个数组（或 `rustTypeLiteralExemptions`）——Rust 新增 emit 而忘了登记
@@ -1332,13 +1332,13 @@ fn fixture_core_events_and_requests_exist_in_rust_emit_sites() {
         for name in fixture[group].as_array().expect(group) {
             let t = name.as_str().expect("type string");
             if divergences.contains(t) {
-                continue; // 有意差异（docs/core-parity.md）：Standalone 不广播
+                continue; // 有意差异（docs/core/core-parity.md）：Standalone 不广播
             }
             let needle = format!("\"type\": \"{t}\"");
             assert!(
                 sources.iter().any(|(_, content)| content.contains(&needle)),
                 "{group} 的 `{t}` 在 Rust 非 test 源码里没有 emit 位点（`\"type\": \"{t}\"`）；\
-                 若为有意差异，登记进 coreEventsDivergences 并在 docs/core-parity.md 写明理由"
+                 若为有意差异，登记进 coreEventsDivergences 并在 docs/core/core-parity.md 写明理由"
             );
         }
     }

@@ -2,7 +2,7 @@
  * 模型限值的读取与派生：Core 侧只从配置快照取值，**不持有内置注册表**。
  *
  * 注册表与用户覆盖的合并由 UI 在产出快照时完成（`src/core/settingsSnapshot.ts`），
- * 这里只做「查表 → 兜底 → 派生」三件事（`docs/core-ui-separation.md` 第 4.3 节）。
+ * 这里只做「查表 → 兜底 → 派生」三件事（`docs/architecture/core-ui-separation.md` 第 4.3 节）。
  */
 
 import { ENV_MAX_OUTPUT_TOKENS } from '../../config/project.js';

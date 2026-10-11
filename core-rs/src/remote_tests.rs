@@ -1,4 +1,4 @@
-//! 远程监听模式用例（`docs/core-daemon.md` 第 12 节）：
+//! 远程监听模式用例（`docs/core/core-daemon.md` 第 12 节）：
 //! 就绪输出、命令行解析、目录列举，以及一条真实 TCP 控制通道上的目录列举
 //! 端到端路径；另有多客户端并发用例（双连接 / 独立 Core / 断开隔离 /
 //! shutdown 全局生效 / 探活连接不阻塞接入），Core 进程用假工厂，不依赖真实
@@ -489,7 +489,7 @@ fn probe_endpoint_reports_listeners() {
 /// 状态文件指向另一个**连得上**的 endpoint：同指纹已有 daemon 在跑，防线拦截。
 /// （`start` 在「等就绪」期间被杀时，已拉起的 daemon 仍在启动，它落盘前必须
 /// 让位给先落盘的兄弟，否则会覆盖在跑 daemon 的状态文件——见
-/// `sibling_daemon_endpoint` 的注释与 `docs/core-daemon.md` 第 12.3 节。）
+/// `sibling_daemon_endpoint` 的注释与 `docs/core/core-daemon.md` 第 12.3 节。）
 #[test]
 fn sibling_daemon_endpoint_detects_a_running_sibling() {
     let dir = temp_dir("sibling-alive");
@@ -1139,7 +1139,7 @@ fn probe_connection_does_not_block_the_next_one() {
     // 覆盖（短上限版），这里不等默认的 60s。
 }
 
-// ==================== 空闲退出（`--idle-exit`，`docs/core-daemon.md` 第 12.5 节）====================
+// ==================== 空闲退出（`--idle-exit`，`docs/core/core-daemon.md` 第 12.5 节）====================
 //
 // 客户端异常退出（crash / 断电）后远端不留常驻进程：daemon 在没有任何控制连接持续
 // `--idle-exit` 秒后自行退出。这里直接测 `wait_for_stop_or_idle` 的时序语义。

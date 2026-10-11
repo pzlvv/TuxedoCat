@@ -5,17 +5,17 @@ last_reviewed: 2026-10-11
 
 # 规格：宿主实现对照与分叉清单
 
-本规格界定三契约在两个宿主上的实现对照（第 1–11 节，含 bootstrap 接线与启动期注入点）与宿主分叉清单（第 12–13 节：有意保留的固有差异、尚未收敛的分叉点）。第三个宿主 TUI 不实现这些契约，见 `docs/tui.md`。
+本规格界定三契约在两个宿主上的实现对照（第 1–11 节，含 bootstrap 接线与启动期注入点）与宿主分叉清单（第 12–13 节：有意保留的固有差异、尚未收敛的分叉点）。第三个宿主 TUI 不实现这些契约，见 `docs/hosts/tui.md`。
 
-交叉引用：`docs/contracts.md`（契约定义）、`docs/webview-ui.md`（唯一 UI 实现）、`docs/client-connection.md`（连接模型）、`docs/electron-multi-workspace.md`（多工作目录）、`docs/vscode-idle-close.md`（VS Code 空闲回收）、[DEVELOPMENT.md 第 1 章](../DEVELOPMENT.md#1-架构总览)（架构总览）。
+交叉引用：`docs/architecture/contracts.md`（契约定义）、`docs/hosts/webview-ui.md`（唯一 UI 实现）、`docs/core/client-connection.md`（连接模型）、`docs/hosts/electron-multi-workspace.md`（多工作目录）、`docs/hosts/vscode-idle-close.md`（VS Code 空闲回收）、[docs/architecture/overview.md 第 1 节](../architecture/overview.md#1-架构概述)（架构总览）。
 
 ---
 
 三个契约各自的实现对照。第 1、2 节只列两个宿主类的骨架（含 bootstrap 专用接线），逐成员实现见
 第 3 节（`UIHost`）、第 4 节（`SpinDesign`）、第 5 节（`ConversationManager`）；第 6 节是 bootstrap 的接线顺序。
 第三个宿主 TUI（`tui-rs/`，纯 Rust）不在此展开：它直连 Standalone Core 帧通道、不
-实现本节契约，core 帧 ↔ 渲染动作的翻译与构建见 `docs/tui.md`（其分发与 Core 部署见
-`docs/tui-installer.md`）。
+实现本节契约，core 帧 ↔ 渲染动作的翻译与构建见 `docs/hosts/tui.md`（其分发与 Core 部署见
+`docs/features/tui-installer.md`）。
 
 ## 目录
 
@@ -93,7 +93,7 @@ export class ElectronUIHost implements UIHost {
   被切到前台时由宿主组装并直发 `activatePrewarmedView`，视图管理器不直连 `webContents.send`。
 - `webviewHandleFor(source)` 把来源 `WebContents` 包成 `WebviewViewHandle`，供
   `sendToWebviewView` / `onThemeChanged` 定向投递，并作为 `ctx.sender` 传给
-  `WebViewUI.handleWebviewMessage`（[docs/contracts.md 第 8 节](contracts.md#8-webviewmessagehandler)）。
+  `WebViewUI.handleWebviewMessage`（[docs/architecture/contracts.md 第 8 节](../architecture/contracts.md#8-webviewmessagehandler)）。
 - `setWorkspacePath` 记录宿主当前工作目录（`getWorkspacePath()` 的返回值）；侧栏的
   `sidebar:workspaces-changed`（打开集合 + 活动项 + 最近工作目录）由 `main.ts` 的
   `broadcastWorkspaces()` 单独推送。会话的工作目录与它无关：由 `main.ts` 在会话被 core
@@ -114,7 +114,7 @@ export class ElectronUIHost implements UIHost {
 | `getLocale()` | `vscode.env.language` | `app.getLocale()`（原始 BCP-47，不做归一化；消费方按 `startsWith('zh')` 判断） |
 | `openFile(filePath, target)` | 图片 → `vscode.open`；文本 → `openTextDocument` + `showTextDocument` + 选区定位；`openTextDocument` 抛错（二进制）→ 回退 `vscode.open` | 先按打开集合的远程工作区做 `/` 前缀匹配（活动项优先）：命中的远端路径经 SFTP 读出——图片进 `openImagePreviewWindow`、文本进 `openMonacoWindow({ mode: 'view', content })`（读失败也开窗口显示原因，与本地 ENOENT 对齐）；本地路径：图片 → `openImagePreviewWindow`（内置图片查看器，滚轮缩放），其余 → `openMonacoWindow({ mode: 'view' })` 并定位到行 |
 | `showVirtualDocument(content, title)` | 走 bootstrap 注入的 `onShowContentInVirtualDocumentCallback`（`DocumentManager`） | `openMonacoWindow({ mode: 'content' })` |
-| `showDiff(options)` | `DocumentManager.showDiff` 打开 before/after 虚拟文档的 diff 标签（按内容哈希去重，先关上一个预览） | **空实现**——没有原生 diff 界面，diff 只在 webview 工具卡片里渲染（[docs/contracts.md 第 7 节](contracts.md#7-toolhandler)） |
+| `showDiff(options)` | `DocumentManager.showDiff` 打开 before/after 虚拟文档的 diff 标签（按内容哈希去重，先关上一个预览） | **空实现**——没有原生 diff 界面，diff 只在 webview 工具卡片里渲染（[docs/architecture/contracts.md 第 7 节](../architecture/contracts.md#7-toolhandler)） |
 | `openMermaidPreview(code)` | `vscode.window.createWebviewPanel`（复用 `MERMAID_PANEL_ID`） | `openMermaidWindow`（`data:` URL + 本地 mermaid.min.js） |
 | `closePreview()` | `DocumentManager.closePreview()`（关掉记录的预览标签） | **空实现**——Monaco / Mermaid 是独立窗口，不属于宿主侧预览 |
 | `openExternalUrl(url)` | `vscode.env.openExternal(vscode.Uri.parse(url))` | `shell.openExternal(url)` |
@@ -128,8 +128,8 @@ export class ElectronUIHost implements UIHost {
 | --- | --- | --- |
 | Spin 设计器（打开 / 刷新） | `SpinDesign`（第 4 节） | 独立 surface：独立面板 / 窗口、独立消息协议 |
 | 对话列表 / 会话状态 / 空闲回收 | `ConversationManager`（第 5 节） | 独立 surface：两条流 + VS Code 专属的计时 |
-| MCP 会话引用生命周期 | core 的 `MCPHost`（[docs/contracts.md 第 3 节](contracts.md#3-mcp-宿主mcphost)） | 驱动信号来自 core 的会话事实，不是宿主视图 |
-| 全局配置写入 | `UIHost.updateSettingsJson` | 全局 `settings.json` 是宿主资源；项目清单 `workspace.meta.json` 归 core（[docs/contracts.md 第 1 节](contracts.md#1-uihost对话-webview-的宿主能力)） |
+| MCP 会话引用生命周期 | core 的 `MCPHost`（[docs/architecture/contracts.md 第 3 节](../architecture/contracts.md#3-mcp-宿主mcphost)） | 驱动信号来自 core 的会话事实，不是宿主视图 |
+| 全局配置写入 | `UIHost.updateSettingsJson` | 全局 `settings.json` 是宿主资源；项目清单 `workspace.meta.json` 归 core（[docs/architecture/contracts.md 第 1 节](../architecture/contracts.md#1-uihost对话-webview-的宿主能力)） |
 
 ## 4. SpinDesign 实现对照表
 
@@ -155,7 +155,7 @@ export class ElectronUIHost implements UIHost {
 
 ## 5. ConversationManager 实现对照表
 
-两条流的逐项对照见[docs/contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)，这里只列两个实现之间的差异：
+两条流的逐项对照见[docs/architecture/contracts.md 第 4 节](../architecture/contracts.md#4-对话相关数据conversationmanager)，这里只列两个实现之间的差异：
 
 | | SingleWebViewConversationManager（`src/VSCodeConversationManager.ts`） | ElectronConversationManager（`electron/ElectronConversationManager.ts`） |
 | --- | --- | --- |
@@ -163,19 +163,19 @@ export class ElectronUIHost implements UIHost {
 | `dispatchList` | `host.sendToWebview({ type: 'conversationsData', conversations })` | ① `sendToSidebar('sidebar:conversations-updated', list)` ② `host.sendToWebview({ type: 'conversationsData', ... })` |
 | `dispatchStates` | `host.sendToWebview({ type: 'sessionRuntimeStates', states })`（对话树流水灯 + abort 按钮） | ① `sendToSidebar('sidebar:session-states-updated', states)` ② `statusListener(states)`（托盘）③ 广播给所有聊天视图（abort 按钮） |
 | `setStatusListener` | 不注册 | `main.ts` 注入 `updateTrayStatusFromStates`：托盘状态点 + 「任务结束」闪烁；`updateCompletionAttentionFromStates`：「任务完成」未读呼吸；另驱动系统睡眠阻断（`sleepBlocker.update`） |
-| 空闲会话回收 | **承担**（计时 / 巡检 / 关闭动作分发，见[docs/contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） | 不承担 |
+| 空闲会话回收 | **承担**（计时 / 巡检 / 关闭动作分发，见[docs/architecture/contracts.md 第 4 节](../architecture/contracts.md#4-对话相关数据conversationmanager)） | 不承担 |
 | 额外通道 | 无 | `sidebar:session-loaded-changed`（`loaded` 由 `ChatViewManager.onLoadedChanged` 单独推，不进两条流）；`dispatchStates` 的 `sidebar:session-states-updated` 由侧栏消费（流水灯）、`statusListener` 走托盘、广播给聊天视图的 `sessionRuntimeStates` 供 abort 按钮 |
 
 ## 6. 宿主接线
 
-本节覆盖进程启动阶段（VS Code 的 `activate` / Electron 的 `main()`；TUI 的启动接线在 `tui-rs/src/main.rs`，见 [docs/tui.md 第 2 节](tui.md#2-接入架构)）完成的接线：core 全局
+本节覆盖进程启动阶段（VS Code 的 `activate` / Electron 的 `main()`；TUI 的启动接线在 `tui-rs/src/main.rs`，见 [docs/hosts/tui.md 第 2 节](tui.md#2-接入架构)）完成的接线：core 全局
 单例与宿主能力提供者的注册、事件总线的创建与订阅、`WebViewUI` 的创建与子模块接线、
 历史系统 / 会话队列 / 配置目录 / MCP 残留清理，以及退出路径对 core 资源的
 释放。窗口 / 面板 / 菜单 / 托盘 / 快捷键等宿主界面构造与 webview 内容注入属于宿主实现层，
 不在本节范围。
 
 启动接线分成两层：**共享骨架**（`src/host/bootstrapCore.ts` 的 `bootstrapCore`）与
-**宿主专属接线**（各自 bootstrap 内）。骨架内的顺序固定（[DEVELOPMENT.md 第 3.5 节](../DEVELOPMENT.md#35-全局注册与-bootstrap-顺序)），
+**宿主专属接线**（各自 bootstrap 内）。骨架内的顺序固定（[docs/architecture/events.md 第 5 节](../architecture/events.md#5-全局注册与-bootstrap-顺序)），
 宿主差异以 `CoreBootstrapOptions` 的必选成员传入——漏传是编译错误。
 
 ```ts src=src/host/bootstrapCore.ts
@@ -319,7 +319,7 @@ console.log(`[bootstrap] ${JSON.stringify(bootstrapSnapshot())}`);
 之后各输出一行；字段与守卫测试见第 8、10 节。
 
 **向对话 webview 下发消息**：宿主侧（bootstrap 或 `WebViewUI` / `WebviewMessageHandler`）组装 wire
-消息后经 `UIHost` 的传输成员投递，不直接操作 webview / webContents（[docs/contracts.md 第 1 节](contracts.md#1-uihost对话-webview-的宿主能力)）。
+消息后经 `UIHost` 的传输成员投递，不直接操作 webview / webContents（[docs/architecture/contracts.md 第 1 节](../architecture/contracts.md#1-uihost对话-webview-的宿主能力)）。
 
 | 目标 | 成员 | VS Code | Electron |
 | --- | --- | --- | --- |
@@ -330,8 +330,8 @@ console.log(`[bootstrap] ${JSON.stringify(bootstrapSnapshot())}`);
 
 Electron 的视图句柄：`ElectronUIHost.webviewHandleFor(source)` 把来源 `WebContents` 包成
 `WebviewViewHandle`（bootstrap 接线方法，不属于 `UIHost` 契约），`sendToWebviewView` 与
-`onThemeChanged` 解包后直发，也作为消息入口的 `ctx.sender`（[docs/contracts.md 第 8 节](contracts.md#8-webviewmessagehandler)）。
-主题值统一取自 `UIHost.isDarkTheme()`（[docs/contracts.md 第 1 节](contracts.md#1-uihost对话-webview-的宿主能力)）。
+`onThemeChanged` 解包后直发，也作为消息入口的 `ctx.sender`（[docs/architecture/contracts.md 第 8 节](../architecture/contracts.md#8-webviewmessagehandler)）。
+主题值统一取自 `UIHost.isDarkTheme()`（[docs/architecture/contracts.md 第 1 节](../architecture/contracts.md#1-uihost对话-webview-的宿主能力)）。
 
 `ChatViewManager` 只负责视图集合与路由，消息的组装与投递在宿主：预热视图的
 `activatePrewarmedView` 出口由 `ElectronUIHost.setChatViewManager` 注入
@@ -364,7 +364,7 @@ core 的启动期状态按来源分两类。
 | 日志出口开关 | `hostEnvironmentProvided.logToConsole` | `setLogToConsole` | — | 静默丢弃（可接受） |
 
 宿主 locale 不在其中：Core 不感知语言，`hostEnvironmentProvided` 没有 locale 字段
-（[docs/core-ui-separation.md 第 4.8 节](core-ui-separation.md#48-文本语言)）。
+（[docs/architecture/core-ui-separation.md 第 4.8 节](../architecture/core-ui-separation.md#48-文本语言)）。
 
 会话工作目录表（`setSessionWorkspace(sessionId, path)` → `getSessionWorkspace(sessionId)`）是
 core 的对话属性：目录由宿主在会话首次被 core 解析目录之前登记，不经总线；未登记时
@@ -398,7 +398,7 @@ Embedded 没有该事件），因此宿主原生 UI（Electron 菜单 / 托盘�
   单个订阅者抛错不影响其它订阅者。
 
 `sessionResources.isSessionIdle` 的「等待用户」来源是 core 自己的 `sessionRuntime`
-（`isSessionWaiting`），没有需要保证注入的读取器（[docs/contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)）。
+（`isSessionWaiting`），没有需要保证注入的读取器（[docs/architecture/contracts.md 第 4 节](../architecture/contracts.md#4-对话相关数据conversationmanager)）。
 
 ## 8. 启动自检
 
@@ -489,11 +489,11 @@ daemon 侧任一连接的 shutdown 是全局停机，SSH 引导的 daemon 自带
 
 合并后共享层只有一份 `WebViewUI`；宿主差异集中在四处：
 
-1. **webview 能力声明**：`HostInfo` 决定列表 / 新建 / 关闭 / 打开方式由谁负责（`docs/contracts.md`）；
-2. **三个契约实现**：`UIHost` / `SpinDesign` / `ConversationManager`（`docs/contracts.md`）；
+1. **webview 能力声明**：`HostInfo` 决定列表 / 新建 / 关闭 / 打开方式由谁负责（`docs/architecture/contracts.md`）；
+2. **三个契约实现**：`UIHost` / `SpinDesign` / `ConversationManager`（`docs/architecture/contracts.md`）；
 3. **宿主 bootstrap**：共享骨架 `src/host/bootstrapCore.ts` + 各自 bootstrap
    `src/extension.ts`（VS Code）与 `electron/main.ts`（Electron）；
-4. **webview 内的能力分支**：只读 `HostInfo`，不嗅探宿主（[docs/contracts.md 第 12 节](contracts.md#12-消费点)）。
+4. **webview 内的能力分支**：只读 `HostInfo`，不嗅探宿主（[docs/architecture/contracts.md 第 12 节](../architecture/contracts.md#12-消费点)）。
 
 本章只列**当前仍存在**的分叉：第 12 节是有意保留的宿主固有差异，第 13 节是尚未收敛的分叉点。
 文档只描述现状，不列已收敛 / 已消除的历史差异。
@@ -529,7 +529,7 @@ daemon 侧任一连接的 shutdown 是全局停机，SSH 引导的 daemon 自带
 
 **工作目录（多工作目录，Electron 专属）**（`electron/main.ts` + 侧栏 / 标题栏）
 
-工作目录是**对话的属性**：core 按 `sessionId` 解析（[docs/core-ui-separation.md 第 3.3 节](core-ui-separation.md#33-会话工作目录)）。Electron 侧的多工作目录
+工作目录是**对话的属性**：core 按 `sessionId` 解析（[docs/architecture/core-ui-separation.md 第 3.3 节](../architecture/core-ui-separation.md#33-会话工作目录)）。Electron 侧的多工作目录
 呈现与交互：
 
 | 方面 | 现状 |
@@ -537,15 +537,15 @@ daemon 侧任一连接的 shutdown 是全局停机，SSH 引导的 daemon 自带
 | 打开集合 | `openWorkspaces: WorkspaceRef[]`（主进程进程内事实，按标签页顺序；本地 / 远程同构）；活动项 `workspacePath`（打开集合中的一项） |
 | 标签页 | 标题栏（原菜单栏区域）：`titlebar:workspaces` 下发 `{ version, workspaces: [{id,path,name,remote,availability}], activeWorkspace, activity }`（与 `titlebar:get-state` 同字段名，均带单调版本号 `version`——每次推送 +1，get-state 响应带当前值；标题栏按版本号丢弃陈旧回包，避免「get-state 回包在途期间状态变化并经推送先到」时把新状态覆盖回旧值，`e2e/webview/titlebar.spec.ts` 锁定该时序；`availability` ∈ `available` / `unavailable` / `connecting`），标题栏按 `id`（`workspaceRefKey`）作身份渲染标签页（活动项高亮、每项可关闭、键盘可切换、可拖拽排序，建链中 / 不可用项同样可激活）+「添加」按钮；宽度够时每张固定 192px，总宽超出时逐张收窄到 56px 下限后横向滚动；打开集合为空时不渲染标签页区域（添加入口在侧栏空态与菜单）；浮窗模式隐藏菜单图标与标签页 |
 | 不可用工作区 | 连接状态机 `WorkspaceAvailabilityState`（`electron/workspaceAvailability.ts`，available / unavailable / connecting 三态 + 就绪标记，按去重键，时序不变量由 `src/test/workspaceAvailability.test.ts` 锁定）。启动期判定不可用：本地目录已不存在（恢复时 `isValidWorkspaceDir` 检查），或远程建连失败。**远程标签页从启动起即 connecting**（文字前黄色呼吸点），由 `probeStartupRemoteWorkspaces` 经 `bootstrapCore.probeRemoteEndpoint` 逐 endpoint 探测落定（传输层直连，**3 秒建链超时，远端引导不计入**——opener 的 `prepare` 先完成 SSH 的发现 / 部署 / 启动（冷部署上传产物远超 3 秒），3 秒只管 daemon 就绪后的建链；同一 endpoint 只探测一次，SSH 引导按目标去重（`sshTransport.ts` 的 in-flight 表），探测与正式连接不重复部署；正式连接的长超时如 SSH 120 秒不适用于此）：成功恢复可选，失败转红点。daemon 存活但工作区 channel 建失败（远端 core 起不来）等形态由 `onWorkspaceConnectionState` 的 lost 信号兜底（只对**从未就绪**的远程 Connection 标记；曾就绪过的 Core 退出走重启策略，不标红；Connection 已就绪的判定优先于探测失败）。两条失败信号（lost 与探测落定）到达顺序不定，`markUnavailable` 落定不可用即清建链中（互斥），保证标红推送不再带着黄态、同键重复标记也不丢刷新——探测失败的 catch 分支与成功分支对称地显式刷新标题栏与聊天区。标红时**先推送再执行清理**（销毁该目录的 Connection 与预加载对话视图可能抛错——如预热视图的 `new-*` 临时 key 无归属 Connection——清理失败只落盘诊断日志，不回退状态、不阻断推送）。不可用项**保留在打开集合里且可正常激活**（标签页文字前挂红点，悬停说明原因；不建立 Connection——`getOpenWorkspaceRefs` 过滤，不预加载视图）；活动项落在其上时**不回退**，聊天区由 `syncChatAreaForActiveWorkspace` 改显占位页（不显示对话列表与 webview，侧栏对话列表清空）：目录不存在 → 「目录不存在」+ 路径；远程不可连 → 「无法连接远程主机」+ 路径 + 原因 + **「重新连接」按钮**（占位页经 `chat:reconnect-workspace` 触发 `reconnectWorkspace`：转 connecting，同一 3 秒探测，成功撤销判定、补建 Connection 并切回对话视图，失败回到红点；失败原因落盘（`unavailableReasons` 按去重键留存）并随占位页展示——指纹变更有专属引导（新旧指纹 + 确认指引，`src/test/chatPlaceholderReason.test.ts` 锁定渲染），其余展示原始错误。**SSH 主机密钥变更**（`SshHostKeyError` 携带新旧指纹）走确认例外：弹告警比对指纹，用户确认后 `recordKnownHostFingerprint` 重建信任并立刻重试一次，拒绝则维持不可用）；建链中 → 「正在连接」。打开对话 / 新建对话的入口在建链中与不可用目录上一律忽略。经目录选择器 / CLI 重新提交已验证的目标时同样撤销判定并补建 Connection（`reviveWorkspaceIfRecovered`）；关闭标签页即丢弃判定 |
-| 标签页运行指示 | 每个工作目录的聚合运行时状态（`activity`：工作目录 id → `waiting` / `running`），由主进程 `collectWorkspaceActivity()` 读 `ConversationManager` 缓存的全量会话运行时快照（core `sessionRuntimeChanged` 的宿主投影）+ 宿主的「会话 → 工作目录」索引按会话归并：该目录下任一会话在等待用户操作 → `waiting`（黄，优先），否则任一非 idle → `running`（蓝）。两份输入都取宿主自己的投影，不读进程内 `src/core`——Standalone（产品形态）下 core 在独立进程，进程内的 `sessionRuntime` 与会话工作目录表都是空的（[docs/contracts.md 第 6 节](contracts.md#6-userchoicemanager)）。状态流每次变化（`setStatusListener` 里）另推 `titlebar:workspace-activity`，渲染层就地切换 class 不重建标签页（重建会打断动画、丢 hover / 焦点 / 拖拽状态）。动效与对话列表 `running-bar` 对齐：运行中＝蓝色流水（渐变滚动），等待用户＝黄色呼吸（只脉动不滚动）——对话列表的黄色同样是呼吸（`.running-bar--waiting` 的 `background` 简写把 `background-size` 复位成 `auto`，流水不产生位移）；标题栏的等待 / 完成条则显式 `background-size: 100% 100%`（基类的 200% 供蓝流水滚动），180° 渐变完整落在条上，与对话列表同为「中间亮、两头暗」。忙闲判定收敛在 core 的 `sessionBusyLevel`（waiting 优先、其次 running、idle 垫底）——标签页流水灯、托盘状态点（`deriveTrayStatusFromStates`）与关闭前的二次确认（对话级 `sessionIsBusy` / 工作区级 `workspaceHasBusySession` / 应用退出的聚合确认）消费同一份派生，不再各写一遍 |
+| 标签页运行指示 | 每个工作目录的聚合运行时状态（`activity`：工作目录 id → `waiting` / `running`），由主进程 `collectWorkspaceActivity()` 读 `ConversationManager` 缓存的全量会话运行时快照（core `sessionRuntimeChanged` 的宿主投影）+ 宿主的「会话 → 工作目录」索引按会话归并：该目录下任一会话在等待用户操作 → `waiting`（黄，优先），否则任一非 idle → `running`（蓝）。两份输入都取宿主自己的投影，不读进程内 `src/core`——Standalone（产品形态）下 core 在独立进程，进程内的 `sessionRuntime` 与会话工作目录表都是空的（[docs/architecture/contracts.md 第 6 节](../architecture/contracts.md#6-userchoicemanager)）。状态流每次变化（`setStatusListener` 里）另推 `titlebar:workspace-activity`，渲染层就地切换 class 不重建标签页（重建会打断动画、丢 hover / 焦点 / 拖拽状态）。动效与对话列表 `running-bar` 对齐：运行中＝蓝色流水（渐变滚动），等待用户＝黄色呼吸（只脉动不滚动）——对话列表的黄色同样是呼吸（`.running-bar--waiting` 的 `background` 简写把 `background-size` 复位成 `auto`，流水不产生位移）；标题栏的等待 / 完成条则显式 `background-size: 100% 100%`（基类的 200% 供蓝流水滚动），180° 渐变完整落在条上，与对话列表同为「中间亮、两头暗」。忙闲判定收敛在 core 的 `sessionBusyLevel`（waiting 优先、其次 running、idle 垫底）——标签页流水灯、托盘状态点（`deriveTrayStatusFromStates`）与关闭前的二次确认（对话级 `sessionIsBusy` / 工作区级 `workspaceHasBusySession` / 应用退出的聚合确认）消费同一份派生，不再各写一遍 |
 | 未读完成呼吸 | 会话在用户看不到时完成（主窗口失焦 / 归属标签页未激活 / 非当前对话，任一命中）→ 记为「未读完成」；用户回到现场后挂绿色灯条：呼吸一次后保持常亮，直到用户阅读——激活标签页清该标签页项，该对话成为当前对话清该对话项；回窗聚焦那一刻正完全可见的对话（聚焦 + 激活标签页 + 当前对话）在播放前即清——聚焦即已读（`pickReadCompletions`），切到别的对话不补亮。**对话项**按上述三条件武装；**标签页**只在完成时该标签页未激活才武装——激活中的标签页视为已读（里面的完成由对话项的灯当场表达，切走再切回不补亮）。事实归主进程独有（`electron/completionAttention.ts` 对相邻两次 `sessionRuntimeChanged` 全量快照差分出 running → idle——与托盘「任务结束提醒」（`trayAttention.ts`）同一手法，waiting → idle 是用户应答 / 中止的结果不算完成；焦点 / 激活 / 当前对话由 `isMainWindowFocused` / `workspacePath` / `ChatViewManager.getActiveSessionId` 注入，会话归属复用 `collectWorkspaceActivity` 同一套查找），渲染层只吃**幂等全量快照**：`titlebar:workspace-completion`（标签页 id 集合）/ `sidebar:session-completion` 与 webview `sessionCompletionAttention`（sessionId 集合）——重复推送不重播呼吸（侧栏 / webview 按 sessionId 记首次到达时刻，到达后一个动画周期内带呼吸、之后常亮）。推送时机 = 回到现场（focus / 切换标签页 / 切换窗口模式）；失焦期间不推——不可见的呼吸等于没呼吸。灯条只挂非活动标签页 / 非当前对话的**顶层对话行**（正在看的就是「已读」；子会话（subagent）行不挂——子会话的完成属于对话整体，由父会话的灯表达）；浮窗没有标签页（标签页集合照推不亮，切回完整模式补齐）。关闭工作区 / 会话从快照消失即从未读集合清除。时序不变量由 `src/test/completionAttention.test.ts` 锁定 |
 | 标签页拖拽排序 | 渲染层用 HTML5 drag 事件（`dragstart` / `dragover` / `drop` / `dragend`）：越过目标中线决定插到其前 / 后，`drop-before` / `drop-after` 伪元素画放置指示线；提交完整排列经 `titlebar:reorder-workspaces` → `reorderWorkspaces()`，主进程按去重键校验「同组目录的排列」后才写入打开集合并落盘，非法排列整次忽略；活动项与已打开视图不受顺序影响 |
 | 非活动标签页预加载 | 首次启动（`createMainWindow` 打开活动目录的新对话之后）对打开集合里**非活动且可用**的每个目录调用 `chatViews.preloadWorkspace(ws)`（错开 400ms + 250ms×i，避免启动瞬间同时拉起多个渲染进程；不可用工作区跳过）；实现复用后台预热机制（`--prewarm=1` 后台加载渲染、跳过会话初始化），切到该目录时 `setActiveWorkspace` 命中它直接 `show()` + 补发激活消息，不再现建视图 + 等页面加载。`new-` 临时 key 带自增序号，避免同毫秒连续创建撞 key；`setActiveWorkspace` 不再销毁其它目录的预热视图（它们是那些标签页的预加载视图，关闭目录 / 窗口时统一销毁） |
 | 菜单 | Windows / Linux 全部收编为单一分区 `main`，标题栏用一个图标按钮表示；条目：打开本地工作区 / 打开远程工作区 / 添加最近的工作区 ▸ / 主题 ▸ / 快捷键 / 开发者工具 / 关于 / 退出。macOS 沿用系统菜单栏分区 |
 | 加号菜单 | 标题栏末尾「加号」改为菜单入口（`titlebar:workspace-menu`），主进程用原生 `Menu.popup` 弹出「打开本地工作区 / 打开远程工作区」两项 |
-| 打开远程工作区 | `openRemoteWorkspaceDialog()`：填 SSH 表单 → 经 `listRemoteDirectories()` 完成 SSH 引导并鉴权 → **连接成功后立刻**列出远端主目录，弹出远端目录选择器（`electron/remoteWorkspace/`）；选择器可改路径、进上级（`..`）、新建 / 重命名 / 删除目录（`createRemoteDirectory` / `renameRemoteDirectory` / `deleteRemoteDirectory`，删除两阶段确认）；路径框常驻焦点，上下方向键 / `Ctrl+N` / `Ctrl+P` 移动选中项（恒有选中项），`Tab` / 回车把选中项补全进路径框（详见 [docs/core-daemon.md 第 12.6 节](core-daemon.md#126-远端目录选择)）；选定目录后 `addRemoteWorkspace(endpoint, path)` 加入打开集合（`scheme=ssh`） |
+| 打开远程工作区 | `openRemoteWorkspaceDialog()`：填 SSH 表单 → 经 `listRemoteDirectories()` 完成 SSH 引导并鉴权 → **连接成功后立刻**列出远端主目录，弹出远端目录选择器（`electron/remoteWorkspace/`）；选择器可改路径、进上级（`..`）、新建 / 重命名 / 删除目录（`createRemoteDirectory` / `renameRemoteDirectory` / `deleteRemoteDirectory`，删除两阶段确认）；路径框常驻焦点，上下方向键 / `Ctrl+N` / `Ctrl+P` 移动选中项（恒有选中项），`Tab` / 回车把选中项补全进路径框（详见 [docs/core/core-daemon.md 第 12.6 节](../core/core-daemon.md#126-远端目录选择)）；选定目录后 `addRemoteWorkspace(endpoint, path)` 加入打开集合（`scheme=ssh`） |
 | 侧栏头部 | 「搜索框 + 新对话」：搜索框按标题过滤当前活动工作目录的对话列表 |
-| 侧栏文件浏览器 | 侧栏底部常驻「文件资源管理器」分区条（默认折叠，展开占侧栏 50% 高度，展开 / 折叠带 flex-basis 上推过渡与内容淡入），树展示活动工作目录（目录懒加载：展开哪层读哪层，单击目录即展开 / 折叠，Ctrl / Shift 多选不触发展开；`sidebar:files-list`；加载中行显示 spinner 动画），分区条带刷新按钮；右键菜单「复制完整路径 / 复制相对路径 / 在文件资源管理器中打开 / 在此处打开命令行 / 删除」（`sidebar:files-copy-paths` / `sidebar:files-reveal` / `sidebar:files-open-terminal` / `sidebar:files-delete`，菜单项不做危险色强调）。**每个工作区一套独立状态**（渲染层 `WorkspaceFilesState`，按工作区 id 存放）：树缓存、目录展开、选中与折叠状态都随工作区保存——切换标签页只换显示哪一套，不清不重建、不作废在途请求（回包写回它自己的状态，只有正在显示的工作区触发重渲染），切回原样保留；折叠状态按工作区落侧栏 localStorage（id → 布尔表，键 `tuxedo.sidebar.filesExpanded`），工作区被关闭时状态整体丢弃、重新打开按新工作区处理。删除语义分两端：本地走自绘确认框（`electron/styledMessageBox.ts`）+ `shell.trashItem`（移入回收站，可恢复）；远程走 SSH 的 SFTP 递归删除（目录连同内容，永久），确认框文案标明「无法撤销」。复制语义：本地绝对 / 相对路径都按平台分隔符；远程是远端 POSIX 串、相对路径保持 `/` 分隔（不经本地 path 翻译）。「在文件资源管理器中打开」「在此处打开命令行」仅本地工作区提供（远程项在渲染层就不显示这两项菜单，主进程对远程同样拒绝）；「在此处打开命令行」对目录行打开该目录、对文件行打开其父目录，主进程按平台拉起系统终端（Windows 经 `cmd /c start` 开新控制台驻留，macOS 用 `open -a Terminal`，Linux 用 `x-terminal-emulator` / `gnome-terminal`，进程 detached 不随应用退出）。实现：本地读盘 / 校验在 `electron/sidebarFiles.ts`（`resolveWithinRoot` 带 `posix` 分支，远程路径按 win32 解析会变形）；远程经 `electron/sidebarFilesRemote.ts`——一个 endpoint 一条 SSH 连接（`SshClient`，按完整连接目标缓存，连接进行中并发首连去重），列目录 / 删除走 SFTP（`sshClient.ts` 的 `listDirectory` / `removePath`），连接随工作区关闭与应用退出释放。安全口径：root 由渲染层回传、传的是侧栏工作区项的稳定 id（refKey），主进程按 id 回查「打开集合中的工作区」——不按路径回查（工作区项的 `path` 是展示路径，远程项与真实路径不同、且同一路径可在多台机器出现，与「最近打开」点击按 id 回查同一约定），条目相对路径（'/' 分隔约定格式）经越界校验；这组通道只接受侧栏视图来源（`isSidebarSender`）；文件操作（含 SFTP 连接建立与失败原因）落盘 `fileLogger`（`sidebar-files` 组件），打包态无 console 也可事后排查。双击文件行打开（`sidebar:files-open`，本地与远程工作区同样支持）：Markdown（`.md` / `.markdown`）进内置 Markdown 预览窗口（`ElectronUIHost.openMarkdownPreviewWindow`——`src/host/markdownHtml.ts` 用 marked 渲染 GFM 并在生成侧净化内容：原生 HTML 片段转义、非 http(s) / mailto / 锚点协议的链接降级为纯文本，只读 HTML 经 base64 data URL 装进无 preload 的沙箱窗口，深浅色随 `nativeTheme`）；文本（代码 / 配置 / 文本扩展名，以及嗅探不出二进制的未知类型）进内置文本窗口（Monaco `mode: 'view'`，与工具卡片点「Edit」预览同一效果）；图片进内置图片查看器（`dist/imageViewer`，滚轮以光标为锚缩放、放大后可拖动平移、双击在 100% 与适配窗口间切换）；其它二进制调系统默认应用（`shell.openPath`）；**远程二进制不支持打开**——渲染层对已知二进制直接跳过（不发 IPC，省一次 SFTP 嗅探），未知扩展名经主进程嗅探后同样拒绝，错误消息 `remote-binary-unsupported` 按预期行为处理（主进程不弹框、渲染层不报错）。分流与图标共用同一份扩展名根集合（`electron/fileTypes.ts`），编排与临时落盘在 `electron/fileOpen.ts`（`shell.openPath` / 窗口打开经 `FileOpenBridge` 注入，SFTP 读原语在 `electron/sidebarFilesRemote.ts` 的 `remoteFileReaderFor`），目录双击不再翻转（单击已展开 / 折叠，双击的第二下忽略）。分区折叠期渲染层不渲染文件树、不预读根目录（否则启动时刻的目录内容被缓存，首次展开命中陈旧数据——懒加载的根目录读取点必须是首次展开）。打开集合为空不显示分区。选择模型与资源管理器一致（点击 / Ctrl 切换 / Shift 连选 / Ctrl+A / Esc / Delete），定义见 `docs/user-stories.md` US-42 / US-43 |
+| 侧栏文件浏览器 | 侧栏底部常驻「文件资源管理器」分区条（默认折叠，展开占侧栏 50% 高度，展开 / 折叠带 flex-basis 上推过渡与内容淡入），树展示活动工作目录（目录懒加载：展开哪层读哪层，单击目录即展开 / 折叠，Ctrl / Shift 多选不触发展开；`sidebar:files-list`；加载中行显示 spinner 动画），分区条带刷新按钮；右键菜单「复制完整路径 / 复制相对路径 / 在文件资源管理器中打开 / 在此处打开命令行 / 删除」（`sidebar:files-copy-paths` / `sidebar:files-reveal` / `sidebar:files-open-terminal` / `sidebar:files-delete`，菜单项不做危险色强调）。**每个工作区一套独立状态**（渲染层 `WorkspaceFilesState`，按工作区 id 存放）：树缓存、目录展开、选中与折叠状态都随工作区保存——切换标签页只换显示哪一套，不清不重建、不作废在途请求（回包写回它自己的状态，只有正在显示的工作区触发重渲染），切回原样保留；折叠状态按工作区落侧栏 localStorage（id → 布尔表，键 `tuxedo.sidebar.filesExpanded`），工作区被关闭时状态整体丢弃、重新打开按新工作区处理。删除语义分两端：本地走自绘确认框（`electron/styledMessageBox.ts`）+ `shell.trashItem`（移入回收站，可恢复）；远程走 SSH 的 SFTP 递归删除（目录连同内容，永久），确认框文案标明「无法撤销」。复制语义：本地绝对 / 相对路径都按平台分隔符；远程是远端 POSIX 串、相对路径保持 `/` 分隔（不经本地 path 翻译）。「在文件资源管理器中打开」「在此处打开命令行」仅本地工作区提供（远程项在渲染层就不显示这两项菜单，主进程对远程同样拒绝）；「在此处打开命令行」对目录行打开该目录、对文件行打开其父目录，主进程按平台拉起系统终端（Windows 经 `cmd /c start` 开新控制台驻留，macOS 用 `open -a Terminal`，Linux 用 `x-terminal-emulator` / `gnome-terminal`，进程 detached 不随应用退出）。实现：本地读盘 / 校验在 `electron/sidebarFiles.ts`（`resolveWithinRoot` 带 `posix` 分支，远程路径按 win32 解析会变形）；远程经 `electron/sidebarFilesRemote.ts`——一个 endpoint 一条 SSH 连接（`SshClient`，按完整连接目标缓存，连接进行中并发首连去重），列目录 / 删除走 SFTP（`sshClient.ts` 的 `listDirectory` / `removePath`），连接随工作区关闭与应用退出释放。安全口径：root 由渲染层回传、传的是侧栏工作区项的稳定 id（refKey），主进程按 id 回查「打开集合中的工作区」——不按路径回查（工作区项的 `path` 是展示路径，远程项与真实路径不同、且同一路径可在多台机器出现，与「最近打开」点击按 id 回查同一约定），条目相对路径（'/' 分隔约定格式）经越界校验；这组通道只接受侧栏视图来源（`isSidebarSender`）；文件操作（含 SFTP 连接建立与失败原因）落盘 `fileLogger`（`sidebar-files` 组件），打包态无 console 也可事后排查。双击文件行打开（`sidebar:files-open`，本地与远程工作区同样支持）：Markdown（`.md` / `.markdown`）进内置 Markdown 预览窗口（`ElectronUIHost.openMarkdownPreviewWindow`——`src/host/markdownHtml.ts` 用 marked 渲染 GFM 并在生成侧净化内容：原生 HTML 片段转义、非 http(s) / mailto / 锚点协议的链接降级为纯文本，只读 HTML 经 base64 data URL 装进无 preload 的沙箱窗口，深浅色随 `nativeTheme`）；文本（代码 / 配置 / 文本扩展名，以及嗅探不出二进制的未知类型）进内置文本窗口（Monaco `mode: 'view'`，与工具卡片点「Edit」预览同一效果）；图片进内置图片查看器（`dist/imageViewer`，滚轮以光标为锚缩放、放大后可拖动平移、双击在 100% 与适配窗口间切换）；其它二进制调系统默认应用（`shell.openPath`）；**远程二进制不支持打开**——渲染层对已知二进制直接跳过（不发 IPC，省一次 SFTP 嗅探），未知扩展名经主进程嗅探后同样拒绝，错误消息 `remote-binary-unsupported` 按预期行为处理（主进程不弹框、渲染层不报错）。分流与图标共用同一份扩展名根集合（`electron/fileTypes.ts`），编排与临时落盘在 `electron/fileOpen.ts`（`shell.openPath` / 窗口打开经 `FileOpenBridge` 注入，SFTP 读原语在 `electron/sidebarFilesRemote.ts` 的 `remoteFileReaderFor`），目录双击不再翻转（单击已展开 / 折叠，双击的第二下忽略）。分区折叠期渲染层不渲染文件树、不预读根目录（否则启动时刻的目录内容被缓存，首次展开命中陈旧数据——懒加载的根目录读取点必须是首次展开）。打开集合为空不显示分区。选择模型与资源管理器一致（点击 / Ctrl 切换 / Shift 连选 / Ctrl+A / Esc / Delete），定义见 `docs/features/user-stories.md` US-42 / US-43 |
 | 空态 | 打开集合为空时，侧栏显示「打开本地工作区」+ 最近工作区（点击即添加）；聊天区保持纯提示。活动工作区建链中 / 不可用时侧栏对话列表清空（不显示对话列表） |
 | 启动等待态 | 侧栏初始化**先取工作区状态**（`sidebar:get-workspaces`，宿主本地事实）并渲染，之后才拉对话列表（要等 core 连接就绪；远程工作区连不上 / core 启动慢时会一直等）。工作区状态未到达前侧栏的 `workspacesState` 为 `null`，`render()` 保持等待态、不画空态——否则 core 未就绪期间会把「尚未取到工作区」错报成「尚未打开工作区」 |
 | 添加 | `openWorkspaceDialog()` 支持多选，`addWorkspaces(paths)` 按顺序加入打开集合、末项置为活动项；已在集合中的目录直接切为活动项。远程目录经 `addRemoteWorkspace(endpoint, path)` 加入 |
@@ -554,7 +554,7 @@ daemon 侧任一连接的 shutdown 是全局停机，SSH 引导的 daemon 自带
 | 切换 | `activateWorkspace(ref \| id)`：更新 provider（`uiHost.setWorkspacePath(ref)`）、`chatViews.setActiveWorkspace(ref.path)`（切到该目录最近使用的对话，没有则新建）、刷新侧栏列表与标题栏 |
 | 宿主会话工作目录索引 | `sessionWorkspaces: Map<sessionId, path>`：来源为各工作目录对话列表的 `project` 字段 + 视图自己的目录（`ChatViewManager.getWorkspaceForWebContents`）；打开对话时据此注入 `--workspace=` |
 | 聊天视图 | `ChatViewManager` 按视图记录所属工作目录（`viewWorkspaces`）；`openConversation(id, workspace)` / `openNewConversation(workspace)` 注入对应 `--workspace=`；切换活动目录不销毁视图 |
-| 持久化 | `workspace-state.json` 的 `openWorkspaces`（`SerializedWorkspaceRef`）/ `activeWorkspaceKey`（无活动项写 `null`）；启动恢复打开集合与活动项，已不存在的本地目录**保留并标记为不可用**（红点 + 占位页，见「不可用工作区」），保存的活动项保持为活动项。**远程工作区同样落盘**：`endpoint` 连同凭证（SSH 口令，明文）写进宿主本地状态文件，重启后据此重新接入（[docs/client-connection.md 第 9 节](client-connection.md#9-落盘与恢复宿主侧)）。字段缺失或非法即按「没有」处理，不做跨字段回退；旧版本写的是路径字符串 + `activeWorkspace`，读取时按本地引用迁移；升级路径由 `migrateLegacyWorkspaceState()` 一次性迁移（旧 userData 目录 + 旧 `lastWorkspace` 字段），迁移后不再回退读旧字段 |
+| 持久化 | `workspace-state.json` 的 `openWorkspaces`（`SerializedWorkspaceRef`）/ `activeWorkspaceKey`（无活动项写 `null`）；启动恢复打开集合与活动项，已不存在的本地目录**保留并标记为不可用**（红点 + 占位页，见「不可用工作区」），保存的活动项保持为活动项。**远程工作区同样落盘**：`endpoint` 连同凭证（SSH 口令，明文）写进宿主本地状态文件，重启后据此重新接入（[docs/core/client-connection.md 第 9 节](../core/client-connection.md#9-落盘与恢复宿主侧)）。字段缺失或非法即按「没有」处理，不做跨字段回退；旧版本写的是路径字符串 + `activeWorkspace`，读取时按本地引用迁移；升级路径由 `migrateLegacyWorkspaceState()` 一次性迁移（旧 userData 目录 + 旧 `lastWorkspace` 字段），迁移后不再回退读旧字段 |
 | userData 目录 | `electron/main.ts` 启动最早期用 `app.setPath('userData', appData + <配置里的应用目录名>)` 显式指定：开发态（`electron dist-electron/main.cjs`）默认名是 `Electron`、打包态是 `productName`，不指定会落到不同目录；指定后两态读写同一份工作目录状态 / 窗口位置 / 缓存。目录名取自 `src/config/project.json` 的 `extensionName`，不硬编码 |
 | 浮窗模式 | 以当前活动工作目录（即活动对话的工作目录）为窗口上下文；品牌位显示活动目录名 |
 

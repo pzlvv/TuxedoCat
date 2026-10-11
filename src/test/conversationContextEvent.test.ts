@@ -30,7 +30,7 @@ function buildHandler(): { handler: WebviewMessageHandler; received: ContextUpda
   setGlobalEventBus(bus);
   const received: ContextUpdated[] = [];
   bus.onUiEvent('conversationContextUpdated', (e) => received.push(e));
-  // Core 就绪：就绪前只接受 hostEnvironmentProvided（docs/core-ui-separation.md 第 7 节）。
+  // Core 就绪：就绪前只接受 hostEnvironmentProvided（docs/architecture/core-ui-separation.md 第 7 节）。
   // 本用例的总线没有注册 core 侧订阅，因此直接调 core 侧的唯一写入口置位就绪。
   applySettingsSnapshot(resolveSettingsSnapshot({}), []);
 

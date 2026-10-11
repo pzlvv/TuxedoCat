@@ -1,5 +1,5 @@
 /**
- * abort 两阶段对等测试（Embedded ↔ Standalone，`docs/abort-button.md` 第 1.2 节）。
+ * abort 两阶段对等测试（Embedded ↔ Standalone，`docs/features/abort-button.md` FR-002）。
  *
  * abort 按钮点一次发一条 `UiEvent.abortRequested`，core 依据该会话的运行时事实
  * 决定中止范围：

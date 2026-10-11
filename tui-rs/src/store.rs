@@ -1,8 +1,8 @@
-//! TUI 渲染事实的唯一来源（docs/tui.md 第 4 节；`src/tui/store.ts` 的移植）。
+//! TUI 渲染事实的唯一来源（docs/hosts/tui.md 第 4 节；`src/tui/store.ts` 的移植）。
 //!
 //! 模式对齐 webview 侧的 `src/webview/sessionState.ts`：core 推来的事实经译层
 //! （`host.rs`）转成本模块的动作，store 是只读投影——不反推、不猜默认值
-//! （DEVELOPMENT.md 第 5 章）；事实未到达用 `None` 表达等待态，不填默认值。
+//! （docs/architecture/principles.md）；事实未到达用 `None` 表达等待态，不填默认值。
 //!
 //! 动作里既有译层转发的 core 事实，也有 `Tui:` 前缀的本地动作（激活会话、开关
 //! 覆盖层、本地通知）——它们是终端 UI 自己拥有的事实（不来自 core），与 core 事实

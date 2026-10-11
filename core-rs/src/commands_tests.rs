@@ -252,7 +252,7 @@ fn spin_command_reports_missing_engine() {
 fn spin_description_is_the_shared_text_key() {
     let _guard = serial();
     let definition = spin_command_definition();
-    // Core 只产出文案键，翻译在 UI（`docs/core-ui-separation.md` 第 4.8 节）。
+    // Core 只产出文案键，翻译在 UI（`docs/architecture/core-ui-separation.md` 第 4.8 节）。
     assert_eq!(definition.description, crate::core_text::SPIN_COMMAND_DESCRIPTION);
 }
 

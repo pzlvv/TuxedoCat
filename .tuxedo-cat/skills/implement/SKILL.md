@@ -21,7 +21,7 @@ user-invocable: true
    不另立进度表。
 3. 任务触到 Core 行为（引擎 / 工具 / 权限 / 事件 / 落盘）时：`src/core/` 与 `core-rs/`
    两侧同步改，同步 parity 对照表与两侧测试（AGENTS.md 第 5 节；只改一侧视为未完成）。
-4. 任务触到契约 / 事件词汇表时：同步 DEVELOPMENT.md 事件表与对应 `docs/<topic>.md`；
+4. 任务触到契约 / 事件词汇表时：同步 `docs/architecture/events.md` 事件表与对应 `docs/<topic>.md`；
    完成判据里列了测试 / lint 组的，跑到绿为止。
 5. 出现 spec 未覆盖的新问题时：停，向用户提出——要么补进 spec（留痕）要么作为新任务
    追加；不静默扩范围。

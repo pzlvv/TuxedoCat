@@ -1,7 +1,7 @@
 /**
  * SpinDesign - Spin 设计器的宿主契约（第二个 UI surface）
  *
- * 与 UIHost 分开的理由（docs/contracts.md 第 2 节）：
+ * 与 UIHost 分开的理由（docs/architecture/contracts.md 第 2 节）：
  * 1. 独立面板/窗口（VS Code: WebviewPanel；Electron: BrowserWindow），
  *    生命周期与消息协议都与对话 webview 无关；
  * 2. UIHost 已经有很多成员，再混进 2 个 Spin 专属成员会让「宿主能力」失真；

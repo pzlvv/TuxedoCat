@@ -3,7 +3,7 @@
  *
  * **配置归 UI**：本模块只从配置快照取值（`src/core/settings.ts`），不读
  * `settings.json`、不持有内置模型注册表——注册表与用户覆盖的合并由 UI 在产出快照时
- * 完成（`docs/core-ui-separation.md` 第 4 节）。因此这里没有任何读盘缓存：
+ * 完成（`docs/architecture/core-ui-separation.md` 第 4 节）。因此这里没有任何读盘缓存：
  * 快照变了，下次取值就是新值。
  *
  * 面向设置面板的读取（默认值、provider 列表、模型身份校验）不在这里：

@@ -1,5 +1,5 @@
 /**
- * CoreDaemon - Host 侧的 daemon 客户端（`docs/core-daemon.md`）。
+ * CoreDaemon - Host 侧的 daemon 客户端（`docs/core/core-daemon.md`）。
  *
  * 一个 endpoint 一个 daemon：daemon 是目标机器上的常驻服务（由 `start` 拉起），
  * 只监听目标机器的回环地址，Host 经 SSH 转发连它的 TCP 控制通道。
@@ -11,7 +11,7 @@
  * 本模块把它翻译成「连接重置」——重新发 `hello`、等 `ready`、再通知总线。
  * 重启次数超限时 daemon 回 `workspaceClosed(reason=failed)`，本模块报告 fatal。
  *
- * 链路心跳（`docs/core-daemon.md` 第 12.5 节）：链路就绪后定期发 `ping`。
+ * 链路心跳（`docs/core/core-daemon.md` 第 12.5 节）：链路就绪后定期发 `ping`。
  * Host 消失而 TCP 未断（断网 / 休眠 / 进程冻结）时 daemon 读不到 EOF，只能靠
  * 控制帧的沉默判死；Host 定期发帧，daemon 才能区分「活着的静默」与「已死」。
  *
@@ -49,7 +49,7 @@ import type { WorkspaceRef } from '../workspaceRef.js';
 /** 出站队列软水位：越过只记录诊断，不丢帧 */
 const OUTBOX_WARN_THRESHOLD = 10_000;
 /**
- * 链路心跳间隔（`docs/core-daemon.md` 第 12.5 节）。
+ * 链路心跳间隔（`docs/core/core-daemon.md` 第 12.5 节）。
  *
  * daemon 以「最近一次收到控制帧」判定链路死活（60s 空闲回收）：daemon 自己不发帧，
  * Host 不定期发心跳的话，它没有任何手段区分「活着的静默」与「已死而 TCP 未断」。
@@ -58,7 +58,7 @@ const OUTBOX_WARN_THRESHOLD = 10_000;
  */
 const DAEMON_HEARTBEAT_INTERVAL_MS = 1_000;
 /**
- * Host 侧沉默判定（`docs/core-daemon.md` 第 12.5 节）：链路上这么长时间没有任何
+ * Host 侧沉默判定（`docs/core/core-daemon.md` 第 12.5 节）：链路上这么长时间没有任何
  * 入站帧即疑似断连。daemon 死而 socket 未断（对端断电 / 网络分区，等不到 EOF/RST）、
  * daemon 进程卡死，socket 层都没有任何信号，唯一依据是 pong 的有无。
  *
@@ -105,7 +105,7 @@ export class DirectoryOperationError extends Error {
 /**
  * 控制通道的链路（Host 侧）。
  *
- * 连接一个已经在监听的 daemon（`docs/core-daemon.md` 第 12 节）；本地同机工作区
+ * 连接一个已经在监听的 daemon（`docs/core/core-daemon.md` 第 12 节）；本地同机工作区
  * 不走 daemon：`bootstrapCore` 直接用 `stdio` 动作起单进程 Core（stdio 帧通道，
  * 无端口，见 `createStandaloneCoreBus`）。
  *
@@ -125,12 +125,12 @@ export interface CoreDaemonLink {
 }
 
 /**
- * 控制通道建链器（`docs/core-daemon.md` 第 12 节）。
+ * 控制通道建链器（`docs/core/core-daemon.md` 第 12 节）。
  *
  * 唯一实现是 `createSshDaemonOpener`（`sshTransport.ts`）：全部通信走 SSH 端口，
  * 远端 daemon 的 endpoint 由引导流程从远端状态文件取得（`sshDaemonBootstrap.ts`）。
  *
- * 失败时 reject：直接上报，不做「先连上再说」的降级（`DEVELOPMENT.md` 第 5 章）。
+ * 失败时 reject：直接上报，不做「先连上再说」的降级（``docs/architecture/principles.md`）。
  */
 export interface CoreDaemonLinkOpener {
   open(): Promise<CoreDaemonLink>;
@@ -541,7 +541,7 @@ export class CoreDaemon {
    * 仅断开本机的控制通道，**不发 `shutdown` 帧**（宿主正常退出用）。
    *
    * `shutdown` 帧在 daemon 侧是全局停机：任一连接收到即结束全部 Core——多客户端
-   * 并发接入下（`docs/core-daemon.md` 第 12.5 节），一台宿主退出会连坐杀掉其它
+   * 并发接入下（`docs/core/core-daemon.md` 第 12.5 节），一台宿主退出会连坐杀掉其它
    * 客户端的会话。SSH 引导的 daemon 自带 `--idle-exit`：最后一条控制链路断开后
    * 空闲计时到期自行退出并清状态文件，宿主退出只需优雅关闭自己的链路。
    * 显式「杀 daemon」仍走 `shutdown`（kill 协议 / 换血流程）。
@@ -704,7 +704,7 @@ export class CoreDaemon {
   /**
    * 启动链路心跳（链路就绪后）：定期发 `ping`，daemon 以「最近一次收到控制帧」
    * 判定链路死活，沉默超过它的心跳超时即按断开处理并回收全部 Core
-   * （`docs/core-daemon.md` 第 12.5 节）。帧走 `enqueue`，与业务帧同序。
+   * （`docs/core/core-daemon.md` 第 12.5 节）。帧走 `enqueue`，与业务帧同序。
    */
   private startHeartbeat(): void {
     if (this.heartbeatTimer) return;
@@ -902,7 +902,7 @@ export class CoreDaemon {
     this.noteInbound();
     switch (value.kind) {
       case 'pong': {
-        // 心跳应答：首个 pong 武装沉默判定（`docs/core-daemon.md` 第 12.5 节）
+        // 心跳应答：首个 pong 武装沉默判定（`docs/core/core-daemon.md` 第 12.5 节）
         if (!this.silenceArmed) this.armSilenceWatchdog();
         return;
       }

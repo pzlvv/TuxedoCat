@@ -101,7 +101,7 @@ async function run(): Promise<void> {
   check('request(userChoice) returns index', choice.index === 0);
 
   // ---- 就绪门禁：Core 收到 hostEnvironmentProvided 之前拒绝其它 UiEvent ----
-  // `docs/core-ui-separation.md` 第 7 节：快照就是就绪判据，顺序错误在启动期暴露。
+  // `docs/architecture/core-ui-separation.md` 第 7 节：快照就是就绪判据，顺序错误在启动期暴露。
   {
     resetSettingsSnapshot();
     const gated = createEventBus();

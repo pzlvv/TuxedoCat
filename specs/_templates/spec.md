@@ -48,7 +48,7 @@ status: 起草
 
 ## 非目标
 
-<这次明确不做的事；被推迟的方向注明去向（TODO.md / DEVELOPMENT.md 第 6 章 / 后续 spec）。>
+<这次明确不做的事；被推迟的方向注明去向（TODO.md / [docs/architecture/open-questions.md](../../docs/architecture/open-questions.md) / 后续 spec）。>
 
 ## 对需求基线的影响
 
@@ -66,7 +66,7 @@ status: 起草
 
 ## 待澄清
 
-未决问题逐条列出；每条 `[待澄清]` 必须同行带去向链接（ADR / DEVELOPMENT.md 第 6 章 /
+未决问题逐条列出；每条 `[待澄清]` 必须同行带去向链接（ADR / [docs/architecture/open-questions.md](../../docs/architecture/open-questions.md) /
 写成非目标）。status 进入「实施中」前本节清零——没有未决问题时整节留空。
 
 ```text

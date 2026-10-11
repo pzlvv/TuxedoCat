@@ -2,7 +2,7 @@
  * `mcp.json` 的纯解析：把磁盘上的原始 JSON 规范化为服务器定义列表。
  *
  * 只做纯函数、不做 I/O：文件读取归 UI（`src/host/SettingsStore.ts`），Core 侧从配置
- * 快照读取结果（`docs/core-ui-separation.md` 第 4.7 节）。解析失败一律返回空列表，
+ * 快照读取结果（`docs/architecture/core-ui-separation.md` 第 4.7 节）。解析失败一律返回空列表，
  * 不抛错——这是 UI 侧行为，Core 不参与。
  */
 

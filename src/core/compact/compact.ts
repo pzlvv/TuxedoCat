@@ -29,7 +29,7 @@ function emitToUi(event: CoreEvent): void {
  * 2. Calculate pre-compact token count
  * 3. Generate summary via LLM call
  * 4. Create boundary marker
- * 5. Create summary message (含全局用户输入历史快照，见 `docs/compaction.md`)
+ * 5. Create summary message (含全局用户输入历史快照，见 `docs/features/compaction.md`)
  * 6. Keep recent important messages (last N messages)
  *
  * 注意：压缩期间会把会话标记为"正在压缩"（见 compact/state.ts），
@@ -121,7 +121,7 @@ async function compactConversationInner(
 
   // 提取用户输入历史（过滤掉系统自动产生的 reminder / silent / 子代理消息等），
   // 追加为摘要消息中的一个章节，避免压缩后丢失用户真实的原始输入。
-  // 历史 = 上次摘要持久化的历史（含会话最初的用户输入，见 docs/compaction.md）
+  // 历史 = 上次摘要持久化的历史（含会话最初的用户输入，见 docs/features/compaction.md）
   //      + 本次归档区里的真实用户输入；合并后只保留首尾两端
   //      （最多 12 条：最早 4 条 + 最后 8 条），否则摘要会随对话增长无限膨胀、
   //      更快再次触发压缩。保留区里的用户输入不进这里，避免与仍在上下文中的消息重复。
@@ -239,7 +239,7 @@ async function generateSummary(messages: Message[], customInstructions: string |
     const { getSessionThinkingMode } = await import('../Integration.js');
 
     // 摘要生成沿用用户在会话中设置的 thinking effort；未设置或为 'off' 时取配置快照的
-    // 默认强度（默认值的唯一来源，见 `docs/webview-facts.md` 第 2 节），保证压缩质量
+    // 默认强度（默认值的唯一来源，见 `docs/hosts/webview-facts.md` 第 2 节），保证压缩质量
     // （'off' 会让摘要模型跳过思考，长上下文压缩效果明显变差）。
     const sessionThinkingEffort = getSessionThinkingMode(sessionId);
     const compactThinkingEffort: 'off' | 'low' | 'high' | 'max' =

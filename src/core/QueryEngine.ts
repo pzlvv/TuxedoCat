@@ -1008,7 +1008,7 @@ export class QueryEngine {
 
   /**
    * 撤回尚未消费的排队用户消息（webview 排队项的「编辑 / 删除」，
-   * `docs/user-message-pipeline.md` 第 5.2 节）。
+   * `docs/features/user-message-pipeline.md` FR-003）。
    *
    * 按 uuid 配对（排队项以消息 uuid 关联，不以文本内容关联）：引擎队列里没有
    * 该 uuid 的待消费消息——已被消费、被更新的排队消息替换，或本来就不存在——时不动。
@@ -1276,7 +1276,7 @@ export class QueryEngine {
     if (this.sessionTitle) {
       // 通知 UI 新会话已创建（如 webview 预初始化 session 状态）；子代理会话的
       // 父子事实由 conversationsData / sessionRuntimeStates 的 parentSessionId 承载，
-      // 不随本事件携带（本字段无读取方，见 DEVELOPMENT.md 第 4.1 节 sessionCreated 行）。
+      // 不随本事件携带（本字段无读取方，见 docs/architecture/events.md 第 2.1 节 sessionCreated 行）。
       emitToUi({
         type: 'sessionCreated',
         sessionId: this.sessionID,

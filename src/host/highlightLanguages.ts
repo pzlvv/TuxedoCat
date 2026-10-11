@@ -2,7 +2,7 @@
  * Shiki 高亮语言的宿主侧记录（`settings.json` 的 `highlightLanguages` 字段）。
  *
  * 这是 **UI 专属**字段：只有 UI 消费（webview 启动时注入预热、webview 上报后合并），
- * Core 不感知、不落盘、不进配置快照（`docs/core-ui-separation.md` 第 4.9 节）。
+ * Core 不感知、不落盘、不进配置快照（`docs/architecture/core-ui-separation.md` 第 4.9 节）。
  */
 
 /** Shiki 已使用语言在 settings.json 中的字段名 */

@@ -4,9 +4,9 @@
  * 属 bootstrap 序列，在 setGlobalEventBus(bus) 之后调用一次。
  *
  * 按 core 模块分注册函数（Integration / history / sessionResources / mcp），
- * 每个模块订阅自己关心的少数几个事件（DEVELOPMENT.md 第 3.6 / 4.3 节）。
+ * 每个模块订阅自己关心的少数几个事件（docs/architecture/events.md 第 3 / 2.3 节）。
  * 不做成映射表穷尽检查：core 侧漏订阅是「该动作暂无 core 消费方」的合法中间态，
- * 由 `DEVELOPMENT.md` 第 4.3 节的「core 侧消费方」列在评审时对照兜底。
+ * 由 ``docs/architecture/events.md` 第 2.3 节的「core 侧消费方」列在评审时对照兜底。
  *
  * 事件 handler 内部不直接持有跨模块状态：只调用对应模块自己的导出函数
  * （abortCurrentQuery / updateSessionModel …），保持与原直接函数调用相同的内聚度。
@@ -47,14 +47,14 @@ function registerHostEnvironmentUiEvents(bus: AssistantEventBus): void {
       setExtensionPath(extensionPath);
       setLogToConsole(logToConsole);
       // 配置快照（唯一写入入口）：core 侧所有配置读取都从这里取值，
-      // 不再读 `settings.json` / `mcp.json`（`docs/core-ui-separation.md` 第 4.4 节）。
+      // 不再读 `settings.json` / `mcp.json`（`docs/architecture/core-ui-separation.md` 第 4.4 节）。
       applySettingsSnapshot(settings, mcpServers);
-      // 快照就是就绪判据：应用完才算就绪（`docs/core-ui-separation.md` 第 7 节）。宿主据此判定
+      // 快照就是就绪判据：应用完才算就绪（`docs/architecture/core-ui-separation.md` 第 7 节）。宿主据此判定
       // 「Core 已跟上最新配置」，每次重新推送快照后都会再收到一次。
       requireEventBus().emitToUi({ type: 'coreReady' });
 
       // MCP 全局默认启用列表变了：让所有已注册会话按新的默认值重同步连接。
-      // 配置变更只经快照到达 core（`docs/core-ui-separation.md` 第 4.5 节），没有单独的通知事件；
+      // 配置变更只经快照到达 core（`docs/architecture/core-ui-separation.md` 第 4.5 节），没有单独的通知事件；
       // 每个会话自己的勾选存在各自的 meta.json，走 `mcpEnabledChanged`。
       // 等价判定用唯一实现 sameMcpEnabledList（顺序无关；启用语义与顺序无关）
       const enabled = settings.mcp.enabled;

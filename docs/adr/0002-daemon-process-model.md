@@ -2,7 +2,7 @@
 
 - 状态：已采纳
 - 日期：2025（Core / UI 架构重构，M14）
-- 规格：`docs/core-daemon.md`
+- 规格：`docs/core/core-daemon.md`
 
 ## 背景
 
@@ -20,7 +20,7 @@ M14 之前的形态：一个 Host 实例一个 Core 进程，崩溃由 Host 侧�
 - Core 崩溃由 daemon 在同一 channel 上重启并恢复接线；重启次数超限时 daemon 关闭
   channel 并向宿主报告——Host 侧只消费 `channelReset` 与 fatal 事件；
 - 控制通道多路复用、thread-per-connection、按连接隔离心跳与计数；单条 channel 的
-  拥塞不阻塞其它 channel（背压，[docs/core-daemon.md 第 7.4 节](../core-daemon.md#74-背压)）；
+  拥塞不阻塞其它 channel（背压，[docs/core/core-daemon.md 第 7.4 节](../core/core-daemon.md#74-背压)）；
 - 每连接的存活 Core 计数归零 + grace 期退出、`--idle-exit` 空闲自退（SSH 引导固定 30s，
   客户端崩溃后远端不留常驻进程）；
 - 本地同机工作区不经过 daemon：Host 直接用 `stdio` 起单进程 Core（`CoreProcess.ts`

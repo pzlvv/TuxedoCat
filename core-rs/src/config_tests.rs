@@ -430,7 +430,7 @@ fn write_workspace_meta_is_idempotent_and_readable() {
 
 #[test]
 fn ensure_project_conversation_dir_writes_the_manifest() {
-    // 项目清单由 Core 写（`docs/core-ui-separation.md` 第 4.1 节）
+    // 项目清单由 Core 写（`docs/architecture/core-ui-separation.md` 第 4.1 节）
     let sandbox = Sandbox::new("config-dir-manifest");
     let project = sandbox.workspace.to_string_lossy().to_string();
     let dir = ensure_project_conversation_dir(&project).unwrap();

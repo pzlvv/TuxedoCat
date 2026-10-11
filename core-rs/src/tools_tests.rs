@@ -1546,7 +1546,7 @@ fn read_xlsx_renders_booleans_like_javascript() {
 #[test]
 fn read_xlsx_keeps_iso_dates_as_text() {
     // 有意保留的差异：SheetJS 读 `t="d"` 单元格时会带约 43 秒的系统性偏移，
-    // Standalone 原样输出单元格里的 ISO 文本（见 `docs/core-parity.md` 第 1.6 节）。
+    // Standalone 原样输出单元格里的 ISO 文本（见 `docs/core/core-parity.md` 第 1.6 节）。
     let sandbox = Sandbox::new("tools-read-xlsx-iso");
     write_minimal_xlsx(
         &sandbox.workspace.join("a.xlsx"),
@@ -2291,7 +2291,7 @@ fn ripgrep_path_prefers_the_bundled_binary() {
 
 /// ripgrep 的候选顺序：Core 自己槽位里的自带位（可执行文件同目录的 `ripgrep/`，
 /// 本地打包布局）与部署布局的共享位（槽位上一级产品目录的 `ripgrep/`）优先，
-/// 宿主 `extensionPath` 只作本机开发期兜底（`docs/standalone-core.md` 第 4 节）。
+/// 宿主 `extensionPath` 只作本机开发期兜底（`docs/core/standalone-core.md` 第 4 节）。
 ///
 /// 用纯函数锁顺序：`ripgrep_path()` 的定位基准是进程自己的可执行文件目录，
 /// 用例进程在 `core-rs/target/...`，没法在它旁边放产物。

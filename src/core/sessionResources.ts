@@ -36,7 +36,7 @@ export function isTemporarySessionId(sessionId: string): boolean {
  * - 引擎消费循环在运行
  *
  * 只读：不修改任何状态。引擎状态无法判定时保守返回 false（视为非空闲）。
- * 各来源的事实都在 core 内：等待用户读 `sessionRuntime`（`docs/host-matrix.md` 第 7 节），
+ * 各来源的事实都在 core 内：等待用户读 `sessionRuntime`（`docs/hosts/host-matrix.md` 第 7 节），
  * 不再由宿主注入判定闭包。
  */
 export async function isSessionIdle(sessionId: string, visited: Set<string> = new Set()): Promise<boolean> {

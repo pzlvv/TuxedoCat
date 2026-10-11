@@ -1,4 +1,4 @@
-//! daemon 进程模型（见 `docs/core-daemon.md`）。
+//! daemon 进程模型（见 `docs/core/core-daemon.md`）。
 //!
 //! 职责：
 //! - 一个 endpoint 一个 daemon；每（连接, 工作区）一个 Core 进程（daemon 持有其 stdio）；
@@ -11,11 +11,11 @@
 //! 线程模型：
 //! - 主循环只做状态机与转发，输入事件经 `DaemonEvent` 通道汇聚；
 //! - 每个 Core 进程各有一个 stdout 读线程、stderr 诊断线程、stdin 写线程与退出监视
-//!   线程：单条 channel 的阻塞不会拖住其它 channel（`docs/core-daemon.md` 第 7.4 节背压）；
+//!   线程：单条 channel 的阻塞不会拖住其它 channel（`docs/core/core-daemon.md` 第 7.4 节背压）；
 //! - 控制通道出站经 `FrameOutput`：远程实现是加锁串行的 socket 写，越过软水位只
 //!   记录诊断，不丢帧；
 //! - 一次 `run_daemon` 调用是一条控制连接的全部状态（channel 表、计数、grace、心跳），
-//!   连接之间互不共享（`docs/core-daemon.md` 第 12.5 节）。
+//!   连接之间互不共享（`docs/core/core-daemon.md` 第 12.5 节）。
 //!
 //! 进程工厂（`CoreSpawner`）与事件汇（`CoreEventSink`）都做了抽象：
 //! 单元测试注入假进程，不需要真实可执行文件。
@@ -91,7 +91,7 @@ pub struct DaemonOptions {
     /// - 远程 daemon：`false`。控制通道本身是生命周期边界：连接在，daemon 就在
     ///   （目录选择期间可能长时间没有工作区）；连接断开走 `HostDisconnected` 退出。
     pub idle_exit: bool,
-    /// 心跳空闲超时（远程控制通道；`docs/core-daemon.md` 第 12.5 节）。
+    /// 心跳空闲超时（远程控制通道；`docs/core/core-daemon.md` 第 12.5 节）。
     ///
     /// 控制通道建立即武装：这么长时间没收到任何控制帧，按 Host 断开处理
     /// （close_all + 本条会话结束）。Host 消失而 TCP 未断（断网 / 休眠 / 进程冻结）
@@ -215,7 +215,7 @@ impl CoreSpawner for SystemCoreSpawner {
         sink: Arc<dyn CoreEventSink>,
     ) -> std::io::Result<Box<dyn CoreProcessHandle>> {
         let mut command = Command::new(&self.binary);
-        // 动作是**裸词**（`docs/core-daemon.md` 第 3 节）：`--stdio` 会被当成未知选项报错退出。
+        // 动作是**裸词**（`docs/core/core-daemon.md` 第 3 节）：`--stdio` 会被当成未知选项报错退出。
         command
             .arg("stdio")
             .stdin(Stdio::piped())
@@ -544,7 +544,7 @@ pub fn run_daemon(
                         return ChannelExit::Stop;
                     }
                     HostToDaemonFrame::Ping => {
-                        // 心跳：回 pong（Host 据此武装沉默判定，`docs/core-daemon.md` 第 12.5 节）；本帧的空闲顺延由上面「收到控制帧」统一处理
+                        // 心跳：回 pong（Host 据此武装沉默判定，`docs/core/core-daemon.md` 第 12.5 节）；本帧的空闲顺延由上面「收到控制帧」统一处理
                         send_to_host(out.as_ref(), &DaemonToHostFrame::Pong);
                     }
                 }

@@ -1,5 +1,5 @@
 /**
- * Standalone Core 工具往返（docs/standalone-core.md 第 5、7 节）：
+ * Standalone Core 工具往返（docs/core/standalone-core.md 第 5、7 节）：
  * 假 LLM 先回一次工具调用，Core 执行工具并把结果回填，再回最终文本。
  *
  * 重点验证：

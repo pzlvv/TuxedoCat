@@ -1,5 +1,5 @@
 /**
- * 测试专用的 daemon 控制通道建链器（`docs/core-daemon.md` 第 12 节）。
+ * 测试专用的 daemon 控制通道建链器（`docs/core/core-daemon.md` 第 12 节）。
  *
  * 生产代码里 Host 只有一条建链路径（SSH，`sshTransport.ts`）。单测要在一个进程里跑
  * 真实 socket 与真实帧编解码，因此需要一个直连假 daemon 的建链器——它只存在于测试

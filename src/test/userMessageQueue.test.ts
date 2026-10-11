@@ -1,5 +1,5 @@
 /**
- * 用户消息排队项单测（`docs/user-message-pipeline.md` 第 5 节）：
+ * 用户消息排队项单测（`docs/features/user-message-pipeline.md` 第 5 节）：
  *
  * - 引擎忙碌（core 推送的会话运行时快照 `idle === false`，含消费循环运行中与压缩中）时，
  *   宿主登记排队项（带消息 `uuid`）并置 `deferEcho`，由 core 在消息真正进入 LLM 上下文时
@@ -65,7 +65,7 @@ function buildHarness(): Harness {
   bus.onUiEvent('userMessageSubmitted', (event) => submitted.push(event));
   const discarded: Discarded[] = [];
   bus.onUiEvent('queuedMessageDiscarded', (event) => discarded.push(event));
-  // Core 就绪：就绪前只接受 hostEnvironmentProvided（docs/core-ui-separation.md 第 7 节）
+  // Core 就绪：就绪前只接受 hostEnvironmentProvided（docs/architecture/core-ui-separation.md 第 7 节）
   applySettingsSnapshot(resolveSettingsSnapshot({}), []);
 
   const posted: Array<Record<string, unknown>> = [];

@@ -1,5 +1,5 @@
 /**
- * 排队消息撤回单测（Embedded，`docs/user-message-pipeline.md` 第 5.2 节）：
+ * 排队消息撤回单测（Embedded，`docs/features/user-message-pipeline.md` FR-003）：
  *
  * webview 排队项的「编辑 / 删除」经 `UiEvent.queuedMessageDiscarded` 到达
  * `QueryEngine.discardPendingUserMessage`：

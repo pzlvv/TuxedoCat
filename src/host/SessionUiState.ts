@@ -112,7 +112,7 @@ export class SessionUiState {
    * 供宿主回答 `conversationLoaded.hasActiveQuery`（webview 据此恢复 thinking 动画）。
    * 不能用 core 的 `sessionRuntime.idle`——那是「会话非空闲」口径，包含后台子代理 /
    * 后台 Bash / 压缩，后台子代理在等用户时会让父会话 `idle=false`，重新加载父会话会
-   * 误恢复出 thinking 动画（docs/webview-ui.md）。
+   * 误恢复出 thinking 动画（docs/hosts/webview-ui.md）。
    */
   isQueryActive(sessionId: string): boolean {
     return (this.queryActiveCounts.get(sessionId) ?? 0) > 0;
@@ -122,7 +122,7 @@ export class SessionUiState {
 
   /**
    * 会话关闭 / 删除：移除该会话的全部 per-session 状态（防长期运行累积）。
-   * 由 WebViewUI.closeConversation 调用（docs/webview-ui.md 第 1 节）。
+   * 由 WebViewUI.closeConversation 调用（docs/hosts/webview-ui.md 第 1 节）。
    */
   dropSession(sessionId: string): void {
     this.activityPhases.delete(sessionId);

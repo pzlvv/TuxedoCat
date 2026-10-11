@@ -407,7 +407,7 @@ export function handleConfigLlmConfigSaved(
   }
 
   // 「当前对话的值」未到达（undefined = 等待态）的项不进确认框：undefined 不是值，
-  // 拿它比较会把「还没收到」误判成「与默认值不同」（`DEVELOPMENT.md` 第 5.7 节：webview 不猜值）
+  // 拿它比较会把「还没收到」误判成「与默认值不同」（``docs/architecture/principles.md` 第 7 节：webview 不猜值）
   if (msg.defaultsChanged.promptMode && msg.defaultPromptMode && prevProps.promptMode !== undefined && msg.defaultPromptMode !== prevProps.promptMode) {
     pending.changes.push({
       label: t('applyDefaults.changePromptMode'),
@@ -441,7 +441,7 @@ export function handleConfigLlmConfigSaved(
     pending.webSearch = msg.webSearch;
   }
   // 宿主未能把当前对话钉在保存前的 MCP 列表上（钉住失败不阻断保存，见
-  // `docs/webview-facts.md` 第 6 节）：没有可靠的「当前对话的值」，不弹确认框，
+  // `docs/hosts/webview-facts.md` 第 6 节）：没有可靠的「当前对话的值」，不弹确认框，
   // 改为一次提示——该对话可能已跟随新的默认值。
   if (msg.mcpPinFailed) {
     props.pushNotice('notice.mcp.pinFailed', {}, 'warn');
@@ -477,7 +477,7 @@ export function handleConfigLlmConfigSaved(
   }
 
   // 有需要应用到当前对话的变化：交给 App 弹确认对话框，用户确认后再改当前对话，
-  // 不静默覆盖用户在当前对话里的选择（`docs/core-ui-separation.md` 第 4 节）。
+  // 不静默覆盖用户在当前对话里的选择（`docs/architecture/core-ui-separation.md` 第 4 节）。
   if (pending.changes.length > 0) {
     props.setApplyDefaultsPrompt(pending);
   }
@@ -501,7 +501,7 @@ export function handleConfigShowLLMConfig(
 ): void {
   const { props } = ctx;
           // 显示 LLM 配置面板（启动时 apiKey 为空或用户点击设置时触发）。
-          // 面板载荷由宿主一次给齐，webview 不补默认值（`docs/webview-facts.md` 第 6 节）；
+          // 面板载荷由宿主一次给齐，webview 不补默认值（`docs/hosts/webview-facts.md` 第 6 节）；
           // 载荷字段缺失即协议错误，这里逐字段校验后组装，缺字段时不打开面板。
           const raw = msg as Record<string, any>;
           const rawProviders = raw.providers;

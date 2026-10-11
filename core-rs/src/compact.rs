@@ -779,7 +779,7 @@ fn compact_conversation_inner(
         generate_summary(provider, &messages_to_summarize, custom_instructions, session_id);
 
     // 提取用户输入历史，追加为摘要消息的一个章节。
-    // 历史 = 上次摘要持久化的历史（含会话最初的用户输入，见 `docs/compaction.md`）
+    // 历史 = 上次摘要持久化的历史（含会话最初的用户输入，见 `docs/features/compaction.md`）
     //      + 本次归档区里的真实用户输入；合并后只保留首尾两端，避免摘要无限膨胀。
     // 保留区里的用户输入不进这里，避免与仍在上下文中的消息重复。
     let previous_user_input_history = read_compact_user_input_history(&messages_for_compact);

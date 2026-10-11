@@ -20,7 +20,7 @@ import { getProjectRoot } from './history/Config.js';
 import { userChoiceQueue } from './UserChoiceQueue.js';
 import { isCompacting, isPendingCompact, markPendingCompact, unmarkPendingCompact } from './compact/state.js';
 
-/** core → UI 单向事件的发送侧封装（Integration 内统一走它，便于 grep 对照 `DEVELOPMENT.md` 第 4.1 节允许清单） */
+/** core → UI 单向事件的发送侧封装（Integration 内统一走它，便于 grep 对照 ``docs/architecture/events.md` 第 2.1 节允许清单） */
 function emitToUi(event: CoreEvent): void {
   requireEventBus().emitToUi(event);
 }
@@ -33,7 +33,7 @@ export type UserMessageSubmission = Extract<UiEvent, { type: 'userMessageSubmitt
  *
  * 宿主只发 `userMessageSubmitted`；这里负责取 / 建引擎、应用本次消息携带的会话覆盖、
  * 组装待处理消息对象并交给引擎队列。命令解析与 Skill 注入发生在引擎的消费循环
- * （轮次边界，见 `docs/user-message-pipeline.md`）。
+ * （轮次边界，见 `docs/features/user-message-pipeline.md`）。
  */
 export async function submitUserMessage(payload: UserMessageSubmission): Promise<void> {
   const { sessionId, content, uuid } = payload;
@@ -129,7 +129,7 @@ export async function submitUserMessage(payload: UserMessageSubmission): Promise
 }
 
 /**
- * 中止指定会话：按该会话当前的运行时事实分两阶段（`docs/abort-button.md` 第 1.2 节）。
+ * 中止指定会话：按该会话当前的运行时事实分两阶段（`docs/features/abort-button.md` FR-002）。
  *
  * - 前台有工作（`queryRunning` / `compacting`）→ 只中止前台查询，后台 Bash 任务与
  *   子代理保持运行，等待用户再次点击。
@@ -583,7 +583,7 @@ export async function restoreConversationEngine(sessionID: string, messages: Mes
 
   // 为恢复的对话设置提示词预设：
   // 优先使用 meta.json 中保存的 promptMode（用户在该对话中的显式选择），
-  // 未配置时取配置快照的默认值（默认值的唯一来源，见 `docs/webview-facts.md` 第 2 节）。
+  // 未配置时取配置快照的默认值（默认值的唯一来源，见 `docs/hosts/webview-facts.md` 第 2 节）。
   try {
     if (!conversation) {
       const { loadConversation } = await import('./history/index.js');

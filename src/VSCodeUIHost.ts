@@ -101,7 +101,7 @@ export class VSCodeUIHost implements UIHost {
   /**
    * 当前工作区引用：取第一个工作区文件夹的 URI。
    *
-   * VS Code 的 workspace URI 是取值的来源（`docs/client-connection.md` 第 4 节）：
+   * VS Code 的 workspace URI 是取值的来源（`docs/core/client-connection.md` 第 4 节）：
    * `scheme` 取 URI 的 scheme，`endpoint` 由 authority 解析，`path` 取 URI 的 path。
    * 当前只支持本地（file）连接；非 file scheme 的 endpoint 只登记取值，不实现传输。
    */

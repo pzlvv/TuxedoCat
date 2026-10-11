@@ -9,7 +9,7 @@ last_reviewed: 2026-10-11
 组织，作为场景级 UI 测试（`e2e/`）的需求基线：每条故事附验收标准，可验证的条目在
 `e2e/webview/` 与 `e2e/electron/` 的用例中以 `US-xx` 编号引用。
 
-- 架构与事件词汇的权威来源是 `DEVELOPMENT.md`；主题性规格见 `docs/<topic>.md`。
+- 架构与事件词汇的权威来源是 `docs/` 下的 as-built 规格（地图见 [docs/README.md](../README.md)）；主题性规格按域分目录（architecture / core / hosts / features）。
 - 故事按主题（Epic）分组，编号规则：`US-<序号>`，全文唯一。
 - 宿主双形态：VS Code 扩展（单视图）与 Electron 桌面端（多视图）。故事默认两种宿主
   都适用，仅桌面端适用的标注「桌面端」。
@@ -57,7 +57,7 @@ last_reviewed: 2026-10-11
 验收标准：
 
 1. 终止按钮三态：查询 / 压缩进行中为红色可点；查询停下但仍有后台任务或子代理为黄色
-   可点；都为空时为灰色不可点（`docs/abort-button.md`）。
+   可点；都为空时为灰色不可点（`docs/features/abort-button.md`）。
 2. 点击后宿主收到 `abort`（携带会话 ID）。首次点击只中止前台查询，后台任务与子代理
    继续运行、按钮转为黄色；再次点击才中止它们。
 3. 中止时若该会话有排队中的消息，排队内容回填到输入框供编辑重发。
@@ -402,7 +402,7 @@ last_reviewed: 2026-10-11
 ### US-45 命令转入后台
 
 作为用户，我希望把正在前台执行的 Bash 命令转入后台继续运行，以便长命令不再挡住对话，
-等它完成或我发新消息时再继续（`docs/background-bash.md`）。
+等它完成或我发新消息时再继续（`docs/features/background-bash.md`）。
 
 验收标准：
 

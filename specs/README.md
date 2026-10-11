@@ -38,21 +38,21 @@ slug 为小写连字符，与实施分支同名。目录内固定三件套，缺
 
 | ID | 含义 | 落点 |
 | --- | --- | --- |
-| `US-xx` | 用户故事（已有） | [docs/user-stories.md](../docs/user-stories.md)，e2e 用例以之编号 |
+| `US-xx` | 用户故事（已有） | [docs/features/user-stories.md](../docs/features/user-stories.md)，e2e 用例以之编号 |
 | `FR-nnn` | spec 的功能需求条目 | `spec.md` 的「功能需求」节 |
 | `AC-n` | 验收标准，一行式 GIVEN / WHEN / THEN，回指 FR | `spec.md` 的「用户场景与验收标准」节 |
 | `Tnnn` | 任务，回指 FR，带依赖与完成判据 | `tasks.md` |
 
 `spec.md` 的追溯矩阵逐 FR 登记实现落点（文件 / 契约成员 / 事件名）与测试落点；每条验收
 标准要么有实现与测试，要么显式登记「无自动覆盖 + 理由」。落地时同步
-[docs/user-stories.md](../docs/user-stories.md) 与 e2e 映射：新增 US 要有 e2e 用例，
+[docs/features/user-stories.md](../docs/features/user-stories.md) 与 e2e 映射：新增 US 要有 e2e 用例，
 或按既有口径登记豁免。缺陷形态（`defect.md`）以回归测试条目为追溯键，docsLint 只查
 章节齐全与非空。
 
 ## 4. 澄清闸门
 
 spec 级未决问题写入 `spec.md`（或 `defect.md`）的「待澄清」节：`[待澄清]` 标记必须同行
-带去向链接——转成 ADR、转进 [DEVELOPMENT.md 第 6 章](../DEVELOPMENT.md#6-待定事项)、
+带去向链接——转成 ADR、转进 [docs/architecture/open-questions.md](../docs/architecture/open-questions.md)、
 或写成非目标。status 进入「实施中」前清零，docsLint 拦截残留标记。
 
 ## 5. 守卫口径（docsLint）

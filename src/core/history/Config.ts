@@ -10,7 +10,7 @@ import { logger } from '../Logger.js';
 import { resolveConfigDir } from '../../config/configDir.js';
 
 /**
- * 项目清单文件名（`docs/core-ui-separation.md` 第 4.1 节）。
+ * 项目清单文件名（`docs/architecture/core-ui-separation.md` 第 4.1 节）。
  *
  * 位于 `<conversations>/<project>/` 下，记录该编码目录对应的完整 workspacePath，
  * 便于从 conversations 下的子目录反查原始项目路径。读写都归 Core。

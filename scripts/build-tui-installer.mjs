@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * TUI 版安装程序构建（docs/tui-installer.md 第 5 节）。
+ * TUI 版安装程序构建（docs/features/tui-installer.md 第 5 节）。
  *
  * 产出 `<releaseDir>/tui-installer/<extensionName>-tui-installer-<arch>-<platform>[.exe]`，
  * 覆盖四个目标：Windows x64 / arm64、Linux x64 / arm64（musl）。每个安装器内嵌对应
  * 平台的 Standalone Core、捆绑 ripgrep、指纹文件与 TUI 二进制（tui-rs release 产物）。
  *
  * 分发名由 `src/config/project.json` 的 `extensionName` 派生；cargo 的 crate / 二进制
- * 名保持中性（cargo 不认变量），两者在 `docs/product-identity.md` 里定死。
+ * 名保持中性（cargo 不认变量），两者在 `docs/hosts/product-identity.md` 里定死。
  *
  * 步骤（每个目标）：
  * 1. Core 产物就位检查：`resources/core/<dir>/` 缺失时先跑
@@ -57,7 +57,7 @@ function cargoBinName(manifest) {
 const BINARY_NAME = cargoBinName(readFileSync(manifestPath, 'utf8'));
 /** tui-rs 的 cargo 产物名（中性） */
 const TUI_BIN_NAME = cargoBinName(readFileSync(join(repoRoot, 'tui-rs', 'Cargo.toml'), 'utf8'));
-/** 分发产物名：产品名派生，改名只动 project.json（docs/product-identity.md） */
+/** 分发产物名：产品名派生，改名只动 project.json（docs/hosts/product-identity.md） */
 const DIST_NAME = `${project.extensionName}-tui-installer`;
 /** 安装器版本取包版本（src/config/project.json 不带 version 字段） */
 const packageVersion = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version;
@@ -187,7 +187,7 @@ function buildInstaller(target, strict) {
       }
       console.error(
         `[build-tui-installer] 跳过 ${target.dir} 安装器：Core 交叉构建失败` +
-        `（Windows ARM64 的 ring 需要 zig 充当 clang，见 docs/standalone-core.md 第 4.3 节；` +
+        `（Windows ARM64 的 ring 需要 zig 充当 clang，见 docs/core/standalone-core.md 第 4.3 节；` +
         `装好后重跑，或先产出 core 产物再回来）。`,
       );
       return false;

@@ -1,7 +1,7 @@
 /**
  * 单测：宿主状态文件里工作区引用的序列化 / 反序列化（`src/host/workspaceState.ts`）。
  *
- * 锁住三件事（`docs/client-connection.md` 第 4 / 9 节）：
+ * 锁住三件事（`docs/core/client-connection.md` 第 4 / 9 节）：
  * - 本地项：旧版本的路径字符串按本地引用迁移，目录已不存在即丢弃；
  * - 远程项：`scheme` / `path` / endpoint 与**凭证**（SSH 口令）逐项往返；
  * - 形状不合法（缺字段 / 端口越界 / 认不出的凭证种类）一律丢弃，不猜、不补默认值。

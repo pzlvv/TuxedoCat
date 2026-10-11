@@ -1,6 +1,6 @@
 /**
  * 宿主侧的配置存储：全局 `settings.json` 与 `mcp.json` 的唯一读写点
- * （`docs/core-ui-separation.md` 第 4 节）。
+ * （`docs/architecture/core-ui-separation.md` 第 4 节）。
  *
  * 职责：
  * - **读**：读盘 → 调 `resolveSettingsSnapshot` 补默认值、规范化 → 产出一份配置快照；
@@ -58,7 +58,7 @@ export type UiFontSize = 'medium' | 'large' | 'xlarge';
  * 界面语言的默认值（`auto` = 跟随系统）。
  *
  * `uiLanguage` 只有 UI 侧消费、不进配置快照，因此它的缺省取值由宿主在这里决定
- * （`docs/webview-facts.md` 第 2 节：默认值归宿主）。webview 不持有该取值。
+ * （`docs/hosts/webview-facts.md` 第 2 节：默认值归宿主）。webview 不持有该取值。
  */
 const DEFAULT_UI_LANGUAGE: UiLanguage = 'auto';
 
@@ -189,7 +189,7 @@ export class SettingsStore {
    * 重新读盘并刷新快照（**打开设置面板 / webview 挂载时调用**）。
    *
    * 存在意义：本 store 只在启动期 `loadSync()` 一次，之后不监听文件
-   * （`docs/core-ui-separation.md` 第 4.5 节）。若启动瞬间文件不可用，或用户在外部
+   * （`docs/architecture/core-ui-separation.md` 第 4.5 节）。若启动瞬间文件不可用，或用户在外部
    * 手工恢复 / 编辑了 `settings.json`，进程会一直停留在旧快照上——表现就是
    * 「设置没被读到、反复弹设置页」。这里给一个显式的重读入口，把手工修改收敛回来。
    *

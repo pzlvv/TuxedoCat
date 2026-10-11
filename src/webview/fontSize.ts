@@ -2,7 +2,7 @@
  * 界面字号档位（`settings.json` 的 `uiFontSize`）。
  *
  * 与 i18n 同口径：取值由宿主在页面首帧前注入 `window.__uiFontSize`，webview 不持有
- * 默认值；缺失或非法即启动期报错（`docs/webview-facts.md` 第 3 节）。
+ * 默认值；缺失或非法即启动期报错（`docs/hosts/webview-facts.md` 第 3 节）。
  *
  * 档位 → 字号偏移：medium = 0px / large = 2px / xlarge = 4px。受影响的字号统一写成
  * `calc(<基准>px + var(--ui-font-offset))`（CSS 见 `styles/index.css` 的 `ui-fs-*`），
@@ -21,7 +21,7 @@ const FONT_OFFSET_PX: Record<UiFontSize, number> = { medium: 0, large: 2, xlarge
 /**
  * 初始档位：读取宿主注入的 `window.__uiFontSize`（来自 `settings.json`）。
  *
- * 这是**同步注入**的事实（`docs/webview-facts.md` 第 3 节）：页面首帧之前由宿主写入，
+ * 这是**同步注入**的事实（`docs/hosts/webview-facts.md` 第 3 节）：页面首帧之前由宿主写入，
  * 不存在「尚未到达」的窗口。缺失或取值非法说明宿主接线不完整，直接抛错，不猜默认值。
  */
 function readInitialUiFontSize(): UiFontSize {

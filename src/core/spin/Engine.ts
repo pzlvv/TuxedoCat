@@ -98,7 +98,7 @@ export function getSpinDesignIssue(config: unknown): SpinDesignIssue | null {
  * @returns 错误信息；合法时返回 null
  *
  * 返回的文案会进入会话历史（SpinLoop 把它 push 进 mutableMessages 并落盘），
- * 因此**一律英文**，不走本地化（DEVELOPMENT.md 第 2 章：落盘文本统一英文）。
+ * 因此**一律英文**，不走本地化（docs/architecture/layering.md 第 2 节：落盘文本统一英文）。
  */
 export function validateSpinDesign(config: unknown): string | null {
   if (!config || typeof config !== 'object') {

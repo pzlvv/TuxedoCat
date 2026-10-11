@@ -164,7 +164,7 @@ fn manual_compact_rewrites_the_conversation_and_archives_the_rest() {
 }
 
 /// 多次压缩：摘要里的用户输入历史头部来自上一次持久化的历史，
-/// 会话最初的用户输入不会因为再次压缩而丢失（见 `docs/compaction.md`）。
+/// 会话最初的用户输入不会因为再次压缩而丢失（见 `docs/features/compaction.md`）。
 #[test]
 fn repeated_compact_keeps_the_global_user_input_head() {
     let sandbox = Sandbox::new("engine-compact-repeat");

@@ -1,4 +1,4 @@
-//! TUI 入口（docs/tui.md 第 2 节；`src/tui/render/main.ts` 的移植）。
+//! TUI 入口（docs/hosts/tui.md 第 2 节；`src/tui/render/main.ts` 的移植）。
 //!
 //! 用法：
 //!   <本程序> [--workspace <dir>] [--verbose] [--version]
@@ -122,7 +122,7 @@ fn main() {
         }
     };
 
-    // TTY 守卫（docs/tui.md 第 11.1 节风险 1）：raw mode 需要交互式终端；
+    // TTY 守卫（docs/hosts/tui.md 第 11.1 节风险 1）：raw mode 需要交互式终端；
     // 老 conhost 与重定向管道不支持——渲染前显式拦截，给出可行动的报错。
     if !std::io::stdin().is_tty() || !std::io::stdout().is_tty() {
         eprintln!(

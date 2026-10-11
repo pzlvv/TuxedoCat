@@ -64,7 +64,7 @@ interface InputAreaProps {
   /**
    * abort 按钮三态：`query`（红，前台运行中）/ `background`（黄，只剩后台与子代理）/
    * `none`（灰，空闲不可点）。由 core 的 sessionRuntime 根事实经
-   * `resolveAbortButtonState` 推导（docs/abort-button.md 第 1.1 节）。
+   * `resolveAbortButtonState` 推导（docs/features/abort-button.md FR-001）。
    */
   abortButtonState: AbortButtonState;
   /**
@@ -901,7 +901,7 @@ const ToggleMenu = memo(({
   };
 
   /**
-   * 等待项：事实尚未从宿主到达时的统一表现（`docs/webview-facts.md` 第 4 节）。
+   * 等待项：事实尚未从宿主到达时的统一表现（`docs/hosts/webview-facts.md` 第 4 节）。
    * 转圈 + 文案，不显示任何猜测值。
    */
   const waitingRow = (text: string) => (
@@ -1892,7 +1892,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   const configBusy = !!configLoading;
   const busy = mcpBusy || configBusy;
   // 已有排队消息时禁止再次发送：排队项一次只有一条，改主意走横幅上的编辑 / 删除
-  // （docs/user-message-pipeline.md 第 5.2 节），不靠继续提交覆盖。
+  // （docs/features/user-message-pipeline.md FR-003），不靠继续提交覆盖。
   const sendDisabled = !hasContent || isInputDisabled || busy || !!queuedMessage;
 
   return (
@@ -2120,7 +2120,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             data-abort-state={abortButtonState}
             className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${abortButtonState === 'none' ? '' : 'hover:brightness-110'}`}
             style={{
-              // 红 = 前台运行中；黄 = 只剩后台任务 / 子代理（docs/abort-button.md 第 1.1 节）
+              // 红 = 前台运行中；黄 = 只剩后台任务 / 子代理（docs/features/abort-button.md FR-001）
               backgroundColor:
                 abortButtonState === 'query'
                   ? '#ef4444'

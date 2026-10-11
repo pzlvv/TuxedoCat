@@ -1,5 +1,5 @@
 /**
- * SSH 连接历史（宿主侧，纯函数；`docs/client-connection.md` 第 4.2 / 9 节）。
+ * SSH 连接历史（宿主侧，纯函数；`docs/core/client-connection.md` 第 4.2 / 9 节）。
  *
  * 「打开远程工作区」窗口在 SSH 接入成功后把 host / 端口 / 用户 / 口令记入宿主本地状态
  * （`workspace-state.json` 的 `recentSshConnections`，**明文**、按最近连接在前排序）；

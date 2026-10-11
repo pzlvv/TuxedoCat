@@ -7,7 +7,7 @@ user-invocable: true
 
 两层分工，先判断落在哪层：
 
-- **`docs/`（含 DEVELOPMENT.md）**：as-built 规格，只写现状——描述代码当前的实现，
+- **`docs/`（architecture / core / hosts / features 四域）**：as-built 规格，只写现状——描述代码当前的实现，
   不出现「变成」「现在是」「不再是」等描述修改过程的用语。
 - **`specs/`**：改动规格，描述尚未落地的意图与验收（AGENTS.md 第 0 节的显式例外）；
   目录约定、生命周期与闸门见 `specs/README.md`，模板在 `specs/_templates/`，

@@ -1,7 +1,7 @@
 /**
  * 宿主侧的配置读取与派生（**全部基于宿主自己的配置快照**）。
  *
- * 配置归宿主（`docs/core-ui-separation.md` 第 4 节）：`settings.json` 的读写、
+ * 配置归宿主（`docs/architecture/core-ui-separation.md` 第 4 节）：`settings.json` 的读写、
  * 默认值补齐、模型注册表都在宿主侧，因此「面板要显示的默认值」「某个模型身份还
  * 能不能用」这类判断也在宿主侧完成，不向 Core 请求。
  *
@@ -33,7 +33,7 @@ export interface LLMProviderInfo {
    *
    * 取自快照的 `provider.modelLimits`：注册表匹配与用户覆盖的合并由快照解析完成，
    * 面板只显示结果。面板不自己推断协议——「某个模型用什么协议」是宿主的事实
-   * （`docs/webview-facts.md` 第 3 节）。
+   * （`docs/hosts/webview-facts.md` 第 3 节）。
    */
   modelConfigs: Record<string, { context: number; output: number; apiType: ApiType }>;
 }
@@ -56,7 +56,7 @@ export interface LLMConfigPanelPayload {
  * 合并全局默认启用列表（`settings.json` 的 `mcp.enabled`）。
  *
  * 与 Core 无关：两个输入都来自宿主自己的 `SettingsStore`
- * （`docs/core-ui-separation.md` 第 4 节）。
+ * （`docs/architecture/core-ui-separation.md` 第 4 节）。
  */
 export function readMcpServersForDefaults(
   snapshot: SettingsSnapshot,

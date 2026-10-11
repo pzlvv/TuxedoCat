@@ -1,5 +1,5 @@
 /**
- * 单测：宿主语言收敛（`docs/core-ui-separation.md` 第 4.8 节、`docs/host-matrix.md` 第 7 节）。
+ * 单测：宿主语言收敛（`docs/architecture/core-ui-separation.md` 第 4.8 节、`docs/hosts/host-matrix.md` 第 7 节）。
  *
  * `primeHostLocale(hostLocale)` 把宿主 locale + `settings.json` 的 `uiLanguage`
  * 收敛到进程内 i18n（`src/host/i18n.ts`）。语义：

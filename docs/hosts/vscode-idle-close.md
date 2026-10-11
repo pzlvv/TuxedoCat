@@ -92,15 +92,15 @@ idleCloseHandler(sessionId)
 
 ---
 
-## 4. 归属与边界（DEVELOPMENT.md 约束）
+## 4. 归属与边界（分层约束）
 
 | 关注点 | 归属 | 依据 |
 | --- | --- | --- |
-| 计时 / 巡检 / 关闭判定 | 宿主层 `SingleWebViewConversationManager` | [DEVELOPMENT.md 第 5.4 节](../DEVELOPMENT.md#54-core-的资源跟-core-的事实走)、[docs/contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager) |
-| 「是否空闲」事实 | core `sessionResources.isSessionIdle`（只读） | [DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)、[第 5.4 节](../DEVELOPMENT.md#54-core-的资源跟-core-的事实走) |
-| 「哪个会话在前台」 | UI（`activeSessionProvider`） | [DEVELOPMENT.md 第 5.7 节](../DEVELOPMENT.md#57-一份事实只有一个写入点) |
-| 关闭动作 | `WebViewUI.closeConversation` → `conversationClosed` | [docs/contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)、[DEVELOPMENT.md 第 4.3 节](../DEVELOPMENT.md#43-uieventui--core单向) |
-| 启用范围 | 仅 VS Code | [docs/host-matrix.md 第 6 节](host-matrix.md#6-宿主接线) |
+| 计时 / 巡检 / 关闭判定 | 宿主层 `SingleWebViewConversationManager` | [docs/architecture/principles.md 第 4 节](../architecture/principles.md#4-core-的资源跟-core-的事实走)、[docs/architecture/contracts.md 第 4 节](../architecture/contracts.md#4-对话相关数据conversationmanager) |
+| 「是否空闲」事实 | core `sessionResources.isSessionIdle`（只读） | [docs/core/session-runtime.md](../core/session-runtime.md)、[第 4 节](../architecture/principles.md#4-core-的资源跟-core-的事实走) |
+| 「哪个会话在前台」 | UI（`activeSessionProvider`） | [docs/architecture/principles.md 第 7 节](../architecture/principles.md#7-一份事实只有一个写入点) |
+| 关闭动作 | `WebViewUI.closeConversation` → `conversationClosed` | [docs/architecture/contracts.md 第 4 节](../architecture/contracts.md#4-对话相关数据conversationmanager)、[docs/architecture/events.md 第 2.3 节](../architecture/events.md#23-uieventui--core单向) |
+| 启用范围 | 仅 VS Code | [docs/hosts/host-matrix.md 第 6 节](host-matrix.md#6-宿主接线) |
 
 边界规则：
 

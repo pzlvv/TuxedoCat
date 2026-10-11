@@ -1,5 +1,5 @@
 /**
- * 宿主侧的「core 事实」入口（见 docs/standalone-core.md 第 10 节）。
+ * 宿主侧的「core 事实」入口（见 docs/core/standalone-core.md 第 10 节）。
  *
  * 宿主不直接读取 core 的磁盘数据。以下事实在两种装配下的取法不同：
  *
@@ -10,7 +10,7 @@
  *
  * 配置类事实（界面语言 / 系统语言 / 高亮语言 / 默认值 / 模型身份 / 原始 settings）
  * **不在这里**：它们全部归宿主，直接经 `SettingsStore` 读宿主自己的文件与快照
- * （`docs/core-ui-separation.md` 第 4 节，`settingsRead.ts`），不问 Core。
+ * （`docs/architecture/core-ui-separation.md` 第 4 节，`settingsRead.ts`），不问 Core。
  * 系统语言也是宿主自己探测——i18n 归宿主，Core 不感知语言。
  *
  * 调用点统一走本模块，不再直接 import `src/core/history/**` 的读取函数。

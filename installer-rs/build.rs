@@ -1,4 +1,4 @@
-//! 构建期载荷嵌入（docs/tui-installer.md 第 3 节）。
+//! 构建期载荷嵌入（docs/features/tui-installer.md 第 3 节）。
 //!
 //! 按编译目标三元组挑选 `resources/core/<arch>-<platform>/` 里的产物（Core 二进制、
 //! 捆绑 ripgrep、指纹文件）与 TUI 二进制（`tui-rs` 的 release 产物），生成

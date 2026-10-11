@@ -33,7 +33,7 @@
  * 100ms（LOADING_SHOW_DELAY_MS）仍未取到才显示「加载中」——快速切换的列表毫秒级
  * 回包，转圈闪现像闪烁；「暂无对话」只表示列表已取到且为空，不能把未知猜成空。
  *
- * 三条流各自单一 owner（docs/contracts.md 第 4 节规则 8）：
+ * 三条流各自单一 owner（docs/architecture/contracts.md 第 4 节规则 8）：
  *   列表（磁盘元数据）+ 运行时状态（core sessionRuntime）+ loaded（ChatViewManager 视图层），
  *   在 render() 时合并，列表载荷本身不再携带 loaded / idle / waitingForUser 标记。
  *
@@ -92,7 +92,7 @@ interface WorkspacesState {
 
 /**
  * 会话运行时状态（core `SessionRuntimeState` 中侧栏消费的字段子集，
- * 见 DEVELOPMENT.md 第 3.1 节）：侧栏只关心忙不忙，不读 abort 按钮用的根事实。
+ * 见 docs/architecture/events.md 第 2 节）：侧栏只关心忙不忙，不读 abort 按钮用的根事实。
  */
 interface SessionRuntimeState {
   sessionId: string;
@@ -178,7 +178,7 @@ const resizeHandleEl = document.getElementById('resizeHandle')!;
  * 活动工作目录的对话列表。
  *
  * `null` = 当前目录的列表尚未取到（启动 / 刚切换活动目录）：这是**等待态**，
- * 不是「没有对话」。与 workspacesState 的 null 同一语义（DEVELOPMENT.md 第 5 章
+ * 不是「没有对话」。与 workspacesState 的 null 同一语义（docs/architecture/principles.md
  * 规则 7：事实未到达表示等待态，不猜值）——列表要等 core 连接就绪才能读到，
  * 用 `[]` 占位会把「未知」错渲染成「暂无对话」；取到列表后 `null` 不再出现，
  * 「确实为空」由非 null 的空数组表达。

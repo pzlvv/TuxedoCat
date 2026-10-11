@@ -1,4 +1,4 @@
-//! 底部编辑器的纯状态机（docs/tui.md 第 7.2 节；`src/tui/composerState.ts` 的移植）。
+//! 底部编辑器的纯状态机（docs/hosts/tui.md 第 7.2 节；`src/tui/composerState.ts` 的移植）。
 //!
 //! 按键 → 新状态，纯函数可单测；渲染与键盘解析在 `app.rs`。
 //! 键位的现实约束：多数终端里 Shift+Enter 与 Enter 同码（无法区分），换行用

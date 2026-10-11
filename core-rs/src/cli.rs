@@ -1,4 +1,4 @@
-//! 命令行解析（`docs/core-daemon.md` 第 3 节）。
+//! 命令行解析（`docs/core/core-daemon.md` 第 3 节）。
 //!
 //! Standalone Core 用**动作**（子命令，裸词）选择做什么，`--idle-exit` 这类**选项**才带 `--`：
 //! - `stdio`：单进程 Core，stdio 是帧通道（供宿主接入本地工作区）；
@@ -55,7 +55,7 @@ pub fn program_name() -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_NAME").to_string())
 }
 
-/// 版本行：版本号后附构建指纹（`docs/standalone-core.md` 第 4.4 节）——远端 daemon
+/// 版本行：版本号后附构建指纹（`docs/core/standalone-core.md` 第 4.4 节）——远端 daemon
 /// 手工排查「这是哪个版本」时，指纹是版本身份的唯一凭据（`--version` 由
 /// `remote.rs::build_fingerprint` 同源的编译期环境提供）。
 pub fn version() -> String {

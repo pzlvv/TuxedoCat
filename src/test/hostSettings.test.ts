@@ -1,5 +1,5 @@
 /**
- * 单测：宿主侧配置读取与保存（`docs/core-ui-separation.md` 第 4 节）。
+ * 单测：宿主侧配置读取与保存（`docs/architecture/core-ui-separation.md` 第 4 节）。
  *
  * 覆盖四块：
  * - `settingsRead`：面板载荷、默认值、模型身份校验与回落；
@@ -85,7 +85,7 @@ runTests('hostSettings', async () => {
   );
 
   // 各模型的限值与协议随载荷下发：面板只显示，不自己推断
-  // （`docs/webview-facts.md` 第 6 节）。
+  // （`docs/hosts/webview-facts.md` 第 6 节）。
   const deepseekInfo = panel.providers.find((p) => p.key === 'api.deepseek.com');
   check('面板载荷带 provider 的 modelConfigs', !!deepseekInfo?.modelConfigs);
   check(

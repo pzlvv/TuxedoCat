@@ -1,5 +1,5 @@
 /**
- * Standalone Core 产物的定位（见 docs/standalone-core.md 第 4.1 节）。
+ * Standalone Core 产物的定位（见 docs/core/standalone-core.md 第 4.1 节）。
  *
  * 产物目录命名与 `resources/ripgrep/` 一致：`<arch>-<platform>`。
  * 平台矩阵里的每个组合都有一个目录；当前只有 Windows x64 有实际产物。
@@ -14,7 +14,7 @@
  *
  * 同一个产物目录里还有 Core **自带**的 `ripgrep/`（Grep / Glob 用的 `rg`）：Core 以
  * 自己的可执行文件目录为基准定位它，Host 只负责把整份产物搬到位（本地直接起进程、
- * 远端 SSH 引导上传），见 `docs/standalone-core.md` 第 4 节。
+ * 远端 SSH 引导上传），见 `docs/core/standalone-core.md` 第 4 节。
  */
 
 import * as fs from 'fs';
@@ -43,7 +43,7 @@ export function coreBinaryFileName(platform: NodeJS.Platform = process.platform)
  * Core 自带工具的目录名（与 Core 可执行文件同级）。
  *
  * Core 以**自己的可执行文件所在目录**为基准定位自带资源（`core-rs/src/tools.rs` 的
- * `ripgrep_path`，见 `docs/standalone-core.md` 第 4 节）：Grep / Glob 用的 `rg` 就放在
+ * `ripgrep_path`，见 `docs/core/standalone-core.md` 第 4 节）：Grep / Glob 用的 `rg` 就放在
  * 这个目录里，本地由 `npm run build:core` 落位，远端由 SSH 引导原样上传。
  */
 export const CORE_RIPGREP_DIR = 'ripgrep';
@@ -51,7 +51,7 @@ export const CORE_RIPGREP_DIR = 'ripgrep';
 /**
  * 构建指纹文件名（与可执行文件同级，`build-core.mjs` 落位）。
  *
- * 指纹只由源码内容与编译器身份决定（docs/standalone-core.md 第 4.4 节）：部署按它
+ * 指纹只由源码内容与编译器身份决定（docs/core/standalone-core.md 第 4.4 节）：部署按它
  * 落位 `share/<产品名>/<指纹>/` 槽位（见 `coreDeployDirPath`），多版本 Core 在同一台
  * 机器上各占一个槽位互不干扰；Electron / vsix 打包把它与产物一起携带，宿主运行时读取。
  */
@@ -159,7 +159,7 @@ export function resolveCoreBinary(
   if (!dir) {
     throw new Error(
       `Standalone Core has no product for platform=${platform} arch=${arch}. ` +
-      'See docs/standalone-core.md section 4.1 for the target matrix.',
+      'See docs/core/standalone-core.md section 4.1 for the target matrix.',
     );
   }
   const candidates = coreBinaryCandidates(extensionPath, platform, arch);
@@ -176,9 +176,9 @@ export function resolveCoreBinary(
  * 读取 Standalone Core 的构建指纹（可执行文件同级的 `fingerprint` 文件）。
  *
  * 指纹是部署的槽位标识：宿主据此确定部署目录 `~/.local/share/<产品名>/<指纹>/`
- * （`coreDeployDirPath`）与该指纹专属的 daemon 状态文件（`docs/core-daemon.md` 第 12.3 节）。
+ * （`coreDeployDirPath`）与该指纹专属的 daemon 状态文件（`docs/core/core-daemon.md` 第 12.3 节）。
  * 文件缺失 / 内容不是 64 位小写 hex 都抛错：产物不完整属于构建期错误，静默猜一个
- * 指纹会部署到错误的槽位（`DEVELOPMENT.md` 第 5 章）。
+ * 指纹会部署到错误的槽位（``docs/architecture/principles.md`）。
  */
 export function readCoreFingerprint(
   extensionPath: string,

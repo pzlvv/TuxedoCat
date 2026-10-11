@@ -415,7 +415,7 @@ fn collect_fence_languages_scans_string_and_block_contents() {
 fn highlight_languages_reports_every_message_without_deduping_or_writing() {
     // Core 只上报「本条消息用到了哪些语言」：不维护「已记录」集合、也不写 settings.json。
     // `highlightLanguages` 是 UI 专属字段，去重与落盘由宿主的 `highlightLanguagesMutator`
-    // 承担（`docs/core-ui-separation.md` 第 4.9 节）。
+    // 承担（`docs/architecture/core-ui-separation.md` 第 4.9 节）。
     let sandbox = Sandbox::new("engine-highlight-languages");
     let llm = FakeLlm::fixed(openai_text_sse(&["好的"]));
     prepare(&sandbox, &llm.base_url, "auto");
@@ -568,7 +568,7 @@ fn emit_runtime_reports_idle_and_waiting_flags() {
 }
 
 /// 快照按根事实分列：查询 / 压缩各自驱动 `idle`，子代理非 idle 时父会话的
-/// `subAgentRunning` 为真（`docs/abort-button.md` 第 1.1 节）。
+/// `subAgentRunning` 为真（`docs/features/abort-button.md` FR-001）。
 #[test]
 fn emit_runtime_reports_root_facts_and_busy_subagents() {
     let sandbox = Sandbox::new("engine-runtime-facts");
@@ -984,7 +984,7 @@ fn run_consumer_stops_when_cancelled() {
 // ==================== 排队消息撤回（`queuedMessageDiscarded`）====================
 
 /// 对齐 Embedded `QueryEngine.discardPendingUserMessage`（webview 排队项的
-/// 「编辑 / 删除」，`docs/user-message-pipeline.md` 第 5.2 节）。
+/// 「编辑 / 删除」，`docs/features/user-message-pipeline.md` FR-003）。
 #[test]
 fn queued_message_is_discarded_by_uuid() {
     let _sandbox = Sandbox::new("engine-discard-queued");

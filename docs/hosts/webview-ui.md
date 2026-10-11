@@ -7,7 +7,7 @@ last_reviewed: 2026-10-11
 
 本规格界定唯一的 UI 实现 `WebViewUI`（第 1–4 节）与会话级 UI 状态 `SessionUiState`（第 5–10 节）。`WebViewUI` 不实现任何事件契约，只经 `AssistantEventBus` 订阅与发送；`SessionUiState` 是 host 侧渲染投影，与 core 的 `sessionRuntime` 分工明确。
 
-交叉引用：[DEVELOPMENT.md 第 3 章](../DEVELOPMENT.md#3-核心契约assistanteventbus)（总线契约）与[第 4 章](../DEVELOPMENT.md#4-事件列表)（事件列表）、`docs/contracts.md`（宿主契约与端口）、`docs/webview-facts.md`（webview 的事实与等待态）、`docs/abort-button.md`（abort 按钮三态）。
+交叉引用：[docs/architecture/events.md 第 1 节](../architecture/events.md#1-总线契约)（总线契约）与[第 2 节](../architecture/events.md#2-事件词汇表)（事件列表）、`docs/architecture/contracts.md`（宿主契约与端口）、`docs/hosts/webview-facts.md`（webview 的事实与等待态）、`docs/features/abort-button.md`（abort 按钮三态）。
 
 ---
 
@@ -19,7 +19,7 @@ last_reviewed: 2026-10-11
 
 渲染与控制 handler 同处一个类，按注释分区（不拆 `WebViewNotifier` / `WebViewController`）；
 事件路由由总线承担，两者之间不需要「事件 → 方法」的适配层（不设 `WebViewEventBus`）。
-理由见[DEVELOPMENT.md 第 3.3 节](../DEVELOPMENT.md#33-ui-侧订阅webviewui)。
+理由见[docs/architecture/events.md 第 1 节](../architecture/events.md#1-总线契约)。
 
 ## 目录
 
@@ -47,10 +47,10 @@ last_reviewed: 2026-10-11
 
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
-| `host` | `UIHost` | 宿主能力（[docs/contracts.md 第 1 节](contracts.md#1-uihost对话-webview-的宿主能力)）；`public readonly`，子模块直接引用 |
+| `host` | `UIHost` | 宿主能力（[docs/architecture/contracts.md 第 1 节](../architecture/contracts.md#1-uihost对话-webview-的宿主能力)）；`public readonly`，子模块直接引用 |
 | `bus` | `AssistantEventBus` | 只用于注册两张映射表；向 core 发消息走 `emitToCore` |
-| `spinDesign` | `SpinDesign` | Spin 设计器（[docs/contracts.md 第 2 节](contracts.md#2-spin-设计器契约spindesign)） |
-| `conversations` | `ConversationManager` | 对话列表 / 会话状态（空闲回收是 VS Code 实现的事，[docs/contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
+| `spinDesign` | `SpinDesign` | Spin 设计器（[docs/architecture/contracts.md 第 2 节](../architecture/contracts.md#2-spin-设计器契约spindesign)） |
+| `conversations` | `ConversationManager` | 对话列表 / 会话状态（空闲回收是 VS Code 实现的事，[docs/architecture/contracts.md 第 4 节](../architecture/contracts.md#4-对话相关数据conversationmanager)） |
 | `deps.createUserChoiceManager` | 工厂 | 宿主专属：VS Code 传 `OutputChannel`，Electron 传 `console` 包装的日志出口（不传 `onChoiceShown`；waiting 由 core 的 `sessionRuntimeChanged` 推给侧栏与托盘） |
 | `deps.log` | `(...args: unknown[]) => void` | 日志出口（VS Code 写 `OutputChannel`，Electron 写 `console`） |
 
@@ -64,14 +64,14 @@ last_reviewed: 2026-10-11
 const ui = WebViewUI.create(host, bus, spinDesign, conversations, { log, createUserChoiceManager });
 ```
 
-`host` / `spinDesign` / `conversations` 三者平行注入（契约按 UI surface 划分，[DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)规则 7）；
+`host` / `spinDesign` / `conversations` 三者平行注入（契约按 UI surface 划分，[docs/architecture/layering.md 第 2 节](../architecture/layering.md#2-规则清单)规则 7）；
 `createUserChoiceManager` 由骨架构造（日志出口取自宿主的 `log` 参数），宿主不再各自实现。
 
 **类内分区**（同一个类内按注释分区，不拆类）：
 
 | 区 | 内容 |
 | --- | --- |
-| `WebViewUiPort` 实现 | 子模块回推 webview 的窄端口（`docs/contracts.md`） |
+| `WebViewUiPort` 实现 | 子模块回推 webview 的窄端口（`docs/architecture/contracts.md`） |
 | 渲染 handler | 消息 / 流式 / 工具 / AI 阶段的投影与推送 |
 | 控制面 handler | 查询生命周期 / 工具权限 / 用户选择 / 压缩 / 命令 |
 | 事实通知 handler | `onConversationListChanged` / `onSessionRuntimeChanged` / `onSpinDesignDataChanged` |
@@ -82,9 +82,9 @@ const ui = WebViewUI.create(host, bus, spinDesign, conversations, { log, createU
 | 成员 | 用途 |
 | --- | --- |
 | `sessionUi: SessionUiState`（`public readonly`） | 渲染 handler 记活动阶段；控制面 handler 记查询计数（第 5 节） |
-| `toolHandler: ToolHandler` | 工具卡片状态 + 权限弹框（`docs/contracts.md`） |
-| `userChoiceManager: UserChoiceManager` | ask user / 权限确认队列（`docs/contracts.md`） |
-| `webviewMessageHandler: WebviewMessageHandler` | webview 协议消息入口（`docs/contracts.md`） |
+| `toolHandler: ToolHandler` | 工具卡片状态 + 权限弹框（`docs/architecture/contracts.md`） |
+| `userChoiceManager: UserChoiceManager` | ask user / 权限确认队列（`docs/architecture/contracts.md`） |
+| `webviewMessageHandler: WebviewMessageHandler` | webview 协议消息入口（`docs/architecture/contracts.md`） |
 | `post: WebviewPoster` | `(sessionId, 消息体) => void`：补 `sessionId` 后交宿主，全类统一用它投递 |
 
 子模块的接线：`UserChoiceManager` 由宿主工厂创建（收 `WebviewPoster` + `closePreview` +
@@ -99,7 +99,7 @@ userChoiceManager }`，构造完成后回填 `uiPort = this`。
 releaseConversation(sessionId: string): void {
   // 临时 `new-` key 尚未对应正式会话（core 侧 releaseSessionResources 对它本就是
   // no-op），不发 conversationClosed：会话从未登记归属，多连接下 Client 按会话
-  // 路由查不到归属会直接抛错（`docs/client-connection.md` 第 1 节）。
+  // 路由查不到归属会直接抛错（`docs/core/client-connection.md` 第 1 节）。
   if (!isTemporarySessionId(sessionId)) {
     requireEventBus().emitToCore({ type: 'conversationClosed', sessionId }); // core 卸内存
   }
@@ -151,7 +151,7 @@ closeConversation(sessionId: string): void {
 
 | 方法 | 行为 |
 | --- | --- |
-| `requestToolPermission` | `sessionUi.beginToolPhase`（thinking 让位于工具卡片）→ `toolHandler.requestToolPermission`（上架工具卡片；Edit / Write 带 diff 且 `agentMode === 'manual'` 时调 `host.showDiff` 打开宿主侧 diff，见[docs/contracts.md 第 7 节](contracts.md#7-toolhandler)） |
+| `requestToolPermission` | `sessionUi.beginToolPhase`（thinking 让位于工具卡片）→ `toolHandler.requestToolPermission`（上架工具卡片；Edit / Write 带 diff 且 `agentMode === 'manual'` 时调 `host.showDiff` 打开宿主侧 diff，见[docs/architecture/contracts.md 第 7 节](../architecture/contracts.md#7-toolhandler)） |
 | `requestUserChoice` | `userChoiceManager.requestUserChoice` |
 | `onQueryBegin` | `sessionUi.beginQuery()` 计数去重（嵌套调用直接忽略）→ `markThinking` → `setThinkingAnimation(true)` → 投递 `queryBegin` |
 | `onQueryEnd` | `sessionUi.endQuery()` 去重 → `markIdle` → **显式 `setThinkingAnimation(false)`**（中断路径可能没有 `onAIEnd`，只发 `queryEnd` 会让 thinking 动画残留）→ 投递 `queryEnd` → `onConversationListChanged()` |
@@ -166,7 +166,7 @@ closeConversation(sessionId: string): void {
 | 方法 | 行为 |
 | --- | --- |
 | `onConversationListChanged` | `conversations.refresh()`；「立即还是节流、推给哪些界面」由 `ConversationManager` 决定，core 不参与 |
-| `onSessionRuntimeChanged` | `conversations.updateSessionStates(states)`；**只读**，不写回 `sessionUi`（[DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)） |
+| `onSessionRuntimeChanged` | `conversations.updateSessionStates(states)`；**只读**，不写回 `sessionUi`（[docs/core/session-runtime.md](../core/session-runtime.md)） |
 | `onSpinDesignDataChanged` | `spinDesign.refresh()`（设计器不在 `UIHost` 上） |
 | `onHighlightLanguagesUsed` | `host.updateSettingsJson(highlightLanguagesMutator(languages))`——core 只报告事实（不去重，同一种语言会重复上报），去重 / 上限 / 字段名在宿主的 `highlightLanguagesMutator`，写盘也在宿主 |
 
@@ -189,15 +189,15 @@ thinking / text / tool 动画）。`ConversationLoadedExtra.hasActiveQuery` 由
 | `onCoreRequests` | 2 | `toolPermissionRequested` → `requestToolPermission`；`userChoice` → `requestUserChoice` |
 
 映射表把 `CoreEvent` 的 `e` 拆成位置参数后转调同名 handler，handler 自身保持
-「一个方法一组参数」的形式（便于单测与复用），签名细节见 [DEVELOPMENT.md 第 4.1 节](../DEVELOPMENT.md#41-coreeventcore--ui单向) / [第 4.2 节](../DEVELOPMENT.md#42-corerequestcore--ui请求-响应)。
+「一个方法一组参数」的形式（便于单测与复用），签名细节见 [docs/architecture/events.md 第 2.1 节](../architecture/events.md#21-coreeventcore--ui单向) / [第 2.2 节](../architecture/events.md#22-corerequestcore--ui请求-响应)。
 
 ## 4. 对外方法
 
-`WebViewUI` 除了实现 `WebViewUiPort`（`docs/contracts.md`）外，还向宿主暴露以下入口：
+`WebViewUI` 除了实现 `WebViewUiPort`（`docs/architecture/contracts.md`）外，还向宿主暴露以下入口：
 
 | 方法 | 消费者 |
 | --- | --- |
-| `handleWebviewMessage(message, ctx?)` | 宿主 webview 的 `onDidReceiveMessage`（`extension.ts` / `electron/main.ts`）。`ctx.sender` 为来源视图句柄：Electron 用 `webviewHandleFor(sender)` 传入；单视图宿主 / 宿主主动推送省略（见[docs/contracts.md 第 8 节](contracts.md#8-webviewmessagehandler)） |
+| `handleWebviewMessage(message, ctx?)` | 宿主 webview 的 `onDidReceiveMessage`（`extension.ts` / `electron/main.ts`）。`ctx.sender` 为来源视图句柄：Electron 用 `webviewHandleFor(sender)` 传入；单视图宿主 / 宿主主动推送省略（见[docs/architecture/contracts.md 第 8 节](../architecture/contracts.md#8-webviewmessagehandler)） |
 | `getActiveSessionId()` | `host.getActiveSessionId` 接线（VS Code 空闲巡检的 `activeSessionProvider`、MCP 面板取当前会话）、`extension.ts` 的 `persistCurrentFileContext` |
 | `getActivityPhase(sessionId)` | `postConversationLoaded` 内部；`conversationLoaded` 的 `activityPhase` 字段来源 |
 | `isQueryActive(sessionId)` | `WebviewMessageHandler.handleLoadConversation` 内部；`conversationLoaded` 的 `hasActiveQuery` 字段来源（只认本会话自己的查询计数，见第 5 节） |
@@ -301,9 +301,9 @@ export class SessionUiState {
 ## 8. abort 按钮：读 core 的 `sessionRuntime`，不由这里判定
 
 abort 按钮的三态（红 / 黄 / 灰）与两阶段中止由 core 的 `sessionRuntime` 根事实决定
-（[DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)）——所以它不属于 `SessionUiState`。`queryActiveCounts` 只服务两件事：
+（[docs/core/session-runtime.md](../core/session-runtime.md)）——所以它不属于 `SessionUiState`。`queryActiveCounts` 只服务两件事：
 `queryBegin` / `queryEnd` 去重，以及 `isQueryActive`（`conversationLoaded.hasActiveQuery` 的
-来源，见 10.1 / 第 2 节）。完整规格见 `docs/abort-button.md`。
+来源，见 10.1 / 第 2 节）。完整规格见 `docs/features/abort-button.md`。
 
 链路（没有宿主推送，全是状态）：
 
@@ -360,14 +360,14 @@ dropSession(sessionId: string): void {
 **core 侧配套**：`releaseConversation` 发的 `conversationClosed` 由
 `sessionResources.releaseSessionResources` 处理，其中调 `userChoiceQueue.rejectPending(sessionId)`
 拒绝该会话挂起的用户选择，并调 `dropSessionRuntime(sessionId)` 丢弃 core 侧该会话的
-`idle` / `waiting` 状态（[DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)），避免侧栏黄灯 / 托盘状态点残留——否则等待方
+`idle` / `waiting` 状态（[docs/core/session-runtime.md](../core/session-runtime.md)），避免侧栏黄灯 / 托盘状态点残留——否则等待方
 （`RunTools` / `AskUserQuestion`）会永久挂起，且队列在会话关闭后仍会尝试弹出该会话的选择框。拒绝以异常形式传播：
 `RunTools.authorizeOne` 捕获后按 **deny** 处理（与 `toolPermissionRequested` 的失败兜底同一口径），
 `AskUserQuestion` 由工具执行层（`RunTools.executeSingleItem`）统一捕获转成工具错误。
 
 ## 10. 与 core 的 `SessionRuntimeState` 的边界
 
-`SessionUiState` 是**渲染投影**，不是运行时事实的 owner（[DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)）：
+`SessionUiState` 是**渲染投影**，不是运行时事实的 owner（[docs/core/session-runtime.md](../core/session-runtime.md)）：
 
 | | `SessionUiState`（host） | `SessionRuntimeState`（core） |
 | --- | --- | --- |

@@ -4,7 +4,7 @@
  * 写入只有一处：`applySettingsSnapshot`，由 `UiEvent.hostEnvironmentProvided` 的处理器
  * 调用一次；读取只有 `getSettings()` 与 `getMcpServerDefinitions()`。Core 侧其它模块
  * 一律从这里取值，不得出现 `settings.json` / `mcp.json` 的路径与文件读取
- * （`docs/core-ui-separation.md` 第 4.4 节）。
+ * （`docs/architecture/core-ui-separation.md` 第 4.4 节）。
  *
  * 快照未到达时读取入口抛错，与 `getExtensionPath()` 同一口径：接线缺失必须在启动期
  * 暴露，不做静默回落。Core 不提供默认值——默认值与规范化在 UI 侧的纯函数里执行
@@ -30,7 +30,7 @@ export function applySettingsSnapshot(
   mcpServers = servers;
 }
 
-/** 快照是否已到达（就绪判据的一部分，见 `docs/core-ui-separation.md` 第 7 节） */
+/** 快照是否已到达（就绪判据的一部分，见 `docs/architecture/core-ui-separation.md` 第 7 节） */
 export function hasSettingsSnapshot(): boolean {
   return snapshot !== null;
 }

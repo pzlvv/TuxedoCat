@@ -6,10 +6,10 @@
  * 需要通知 core 时通过注入的回调 / 总线。
  *
  * 持有 SessionUiState / ToolHandler / UserChoiceManager / WebviewMessageHandler；
- * 构造注入 host + spinDesign + conversations（三个契约，见 `docs/contracts.md`）。
+ * 构造注入 host + spinDesign + conversations（三个契约，见 `docs/architecture/contracts.md`）。
  *
  * 渲染 handler 与控制面 handler 在一个类里按注释分区
- * （不拆 WebViewNotifier / WebViewController，见 `DEVELOPMENT.md` 第 3.3 节）。
+ * （不拆 WebViewNotifier / WebViewController，见 ``docs/architecture/events.md 第 1 节）。
  */
 
 import type { AssistantEventBus, CoreEvent, CoreEventHandlers, CoreRequestHandlers } from '../core/AssistantEventBus.js';
@@ -178,20 +178,20 @@ export class WebViewUI implements WebViewUiPort {
   /**
    * 该会话的 UI 侧状态已释放（视图关闭 / 会话删除）：
    * fan-out 给所有持有 per-session 状态的子模块，各自清理。
-   * 由 `releaseConversation` 统一调用（`docs/webview-ui.md` 第 1 / 9 节）。
+   * 由 `releaseConversation` 统一调用（`docs/hosts/webview-ui.md` 第 1 / 9 节）。
    */
   dropSession(sessionId: string): void {
     this.sessionUi.dropSession(sessionId);                  // 阶段 / 工具计数 / 查询计数
     this.userChoiceManager.dropSession(sessionId);          // 挂起的选择回调 + diff 快照
     this.webviewMessageHandler.dropTrackedSession(sessionId); // tracked active session
-    this.onQueuedMessage(sessionId, null);                  // 会话释放 → 清排队项（`docs/user-message-pipeline.md` 第 5.2 节）
+    this.onQueuedMessage(sessionId, null);                  // 会话释放 → 清排队项（`docs/features/user-message-pipeline.md` FR-003）
   }
 
   /**
    * 登记 / 清除该会话的排队项（`queued === null` 表示清除）。
    *
    * 登记时带上 `uuid`：core 把消息并入 LLM 上下文后补发 `addMessage`（含 `messageUuid`），
-   * webview 按 uuid 清除排队项（见 `docs/user-message-pipeline.md` 第 5 节）。
+   * webview 按 uuid 清除排队项（见 `docs/features/user-message-pipeline.md` 第 5 节）。
    */
   onQueuedMessage(sessionId: string, queued: QueuedMessageState | null): void {
     this.postToWebview(sessionId, queued === null
@@ -272,13 +272,13 @@ export class WebViewUI implements WebViewUiPort {
    *
    * 只读 `SessionUiState` 的查询计数（本会话自己的消费循环），不读 `sessionRuntime.idle`
    * ——后者含后台子代理 / 后台 Bash / 压缩，会把「父会话空闲、后台子代理在等用户」
-   * 误判成父会话有活跃查询（docs/webview-ui.md）。
+   * 误判成父会话有活跃查询（docs/hosts/webview-ui.md）。
    */
   isQueryActive(sessionId: string): boolean {
     return this.sessionUi.isQueryActive(sessionId);
   }
 
-  /** 记录会话活动，重置该会话的空闲关闭计时（空闲回收是 VS Code 专属，见 `docs/contracts.md` 第 4 节） */
+  /** 记录会话活动，重置该会话的空闲关闭计时（空闲回收是 VS Code 专属，见 `docs/architecture/contracts.md` 第 4 节） */
   noteSessionActivity(sessionId: string): void {
     this.conversations.noteSessionActivity(sessionId);
   }
@@ -288,7 +288,7 @@ export class WebViewUI implements WebViewUiPort {
   private buildCoreEventHandlers(): CoreEventHandlers {
     return {
       // ===== 连接生命周期 =====
-      // Core 处理完宿主环境与配置快照（`docs/core-ui-separation.md` 第 7 节）。
+      // Core 处理完宿主环境与配置快照（`docs/architecture/core-ui-separation.md` 第 7 节）。
       // 每次重新推送快照后都会再来一次；宿主侧只记录闩锁状态，不触发渲染。
       coreReady: () => markCoreReady(),
 
@@ -529,7 +529,7 @@ export class WebViewUI implements WebViewUiPort {
   }
 
   /**
-   * 瞬时状态提示（`docs/core-ui-separation.md` 第 4.9 节）。
+   * 瞬时状态提示（`docs/architecture/core-ui-separation.md` 第 4.9 节）。
    *
    * core 只给「键 + 参数」，翻译与呈现由 webview 承担：原样转发，不进消息流、
    * 不落盘。键缺失时 webview 显示键本身并记日志。
@@ -577,7 +577,7 @@ export class WebViewUI implements WebViewUiPort {
   async onCommandSend(commandName: string, args: string, sessionId: string): Promise<void> {
     // 内置命令就地执行、不进入 LLM 上下文，因此不会补发用户气泡。
     // 这里显式清除该会话的排队项，避免 webview 在 queryEnd 时把它当成
-    // 「未被消费」而重复投递（见 docs/contracts.md 第 9 节的 onQueuedMessage）。
+    // 「未被消费」而重复投递（见 docs/architecture/contracts.md 第 9 节的 onQueuedMessage）。
     this.onQueuedMessage(sessionId, null);
     if (commandName === 'spin') {
       const trimmed = args.trim();
@@ -620,7 +620,7 @@ export class WebViewUI implements WebViewUiPort {
         this.postToWebview(sessionId, { type: 'setModel', model: change.ref.model, provider: change.ref.provider });
         break;
       case 'thinkingEffort':
-        // 落盘字段仍是 thinkingMode（wire 协议命名不受事件约定约束，见 `DEVELOPMENT.md` 第 3.4 节）
+        // 落盘字段仍是 thinkingMode（wire 协议命名不受事件约定约束，见 ``docs/architecture/events.md 第 2 节）
         this.postToWebview(sessionId, { type: 'setThinkingMode', mode: change.value });
         break;
       case 'promptMode':
@@ -658,7 +658,7 @@ export class WebViewUI implements WebViewUiPort {
    * 向对话 webview 下发当前上下文上限（视图加载完成时的初始化推送）。
    *
    * `sender` 为 null 时走默认路由（单视图宿主 / 活动视图）；模型切换的回包走 webview 的
-   * `requestContextLimit`（`docs/contracts.md` 第 8 节），与这里共用 `WebviewMessageHandler` 的同一份实现。
+   * `requestContextLimit`（`docs/architecture/contracts.md` 第 8 节），与这里共用 `WebviewMessageHandler` 的同一份实现。
    */
   pushContextLimit(sender: WebviewViewHandle | null): void {
     this.webviewMessageHandler.pushContextLimit(sender, undefined);
@@ -673,7 +673,7 @@ export class WebViewUI implements WebViewUiPort {
    * 打开 LLM 配置面板。
    *
    * 配置事实来自宿主自己的快照与 `settings.json`（`settingsRead.ts` /
-   * `readMcpServersForDefaults`）；wire message 的组装与投递在 UI 层完成（`DEVELOPMENT.md` 第 5.6 节）。
+   * `readMcpServersForDefaults`）；wire message 的组装与投递在 UI 层完成（``docs/architecture/principles.md` 第 6 节）。
    *
    * `trigger` 决定是否弹：
    * - `'startup'`：仅当「已配置 active provider 但 apiKey 为空」时弹（视图加载后的补弹）
@@ -686,7 +686,7 @@ export class WebViewUI implements WebViewUiPort {
     let message: Extract<HostToWebviewMessage, { type: 'showLLMConfig' }>;
     try {
       // 打开面板前先重读一次磁盘：手工恢复 / 编辑 settings.json 后不必重载窗口
-      // （启动期只 loadSync 一次，不监听文件，见 `docs/core-ui-separation.md` 第 4.5 节）。
+      // （启动期只 loadSync 一次，不监听文件，见 `docs/architecture/core-ui-separation.md` 第 4.5 节）。
       const store = getSettingsStore();
       store.refreshFromDisk();
       // 面板载荷与「是否已配置 provider」都来自宿主自己的快照
@@ -708,7 +708,7 @@ export class WebViewUI implements WebViewUiPort {
       };
     } catch (err) {
       // 读取失败无法判断「是否真的未配置」，也无法给出面板载荷。载荷字段全部必选
-      // （`docs/webview-facts.md` 第 6 节），不补默认值：不打开面板，只记日志。
+      // （`docs/hosts/webview-facts.md` 第 6 节），不补默认值：不打开面板，只记日志。
       // 用一份空面板顶上去会把用户误导去重配，甚至把空值当默认值写回磁盘。
       this.log(`[WebViewUI] Failed to read LLM config; LLM 配置面板未打开: ${err}`);
       return;
@@ -726,7 +726,7 @@ export class WebViewUI implements WebViewUiPort {
    * 临时 `new-` key 尚未对应正式会话（core 侧 releaseSessionResources 对它本就是
    * no-op，`src/core/sessionResources.ts`），不发 `conversationClosed`：
    * 会话从未登记过归属，多连接下 Client 按会话路由查不到归属会直接抛错
-   * （`docs/client-connection.md` 第 6 节）。
+   * （`docs/core/client-connection.md` 第 6 节）。
    */
   releaseConversation(sessionId: string): void {
     if (!isTemporarySessionId(sessionId)) {

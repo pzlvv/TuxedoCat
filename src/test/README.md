@@ -124,5 +124,5 @@ runTests('myFeature', run);
 ## 场景级 e2e（Playwright，独立车道）
 
 `e2e/` 下还有一层 Playwright 场景级测试（webview UI 级 + Electron 整应用），
-需求基线为 `docs/user-stories.md`，与本车道互不依赖，运行方式见 `e2e/README.md`
+需求基线为 `docs/features/user-stories.md`，与本车道互不依赖，运行方式见 `e2e/README.md`
 （`npm run test:e2e`）。

@@ -1049,7 +1049,7 @@ pub trait SpinHost: Send + Sync {
         }));
     }
 
-    /// 上报一条瞬时提示（键 + 参数，`docs/core-ui-separation.md` 第 4.9 节）。
+    /// 上报一条瞬时提示（键 + 参数，`docs/architecture/core-ui-separation.md` 第 4.9 节）。
     ///
     /// Core 不拼文案：只给键与参数，翻译与呈现由 UI 承担；提示不进会话历史。
     fn emit_notice(&self, session_id: &str, key: &str, params: Value, level: &str) {
@@ -1162,7 +1162,7 @@ impl SpinLoop {
 
             let Some(next) = get_next_node(&config) else {
                 // 瞬时状态通知：只上报、不落盘（对齐 TS 侧只 emitToUi 的写法）。
-                // 文案键化，翻译在 UI（`docs/core-ui-separation.md` 第 4.9 节）。
+                // 文案键化，翻译在 UI（`docs/architecture/core-ui-separation.md` 第 4.9 节）。
                 self.host.emit_notice(
                     &self.session_id,
                     crate::core_text::SPIN_ALL_COMPLETED,

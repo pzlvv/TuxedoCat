@@ -214,7 +214,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     const pastedImages = await Promise.all(rawPastedImages.map((img) => ensureImageSize(img)));
     if (!inputValue.trim() && pastedImages.length === 0) return;
     // 已有排队消息时不允许再发（发送按钮置灰 + Enter 同守卫）：排队项一次只有一条，
-    // 改主意走横幅上的编辑 / 删除（docs/user-message-pipeline.md 第 5.2 节），
+    // 改主意走横幅上的编辑 / 删除（docs/features/user-message-pipeline.md FR-003），
     // 不靠继续提交覆盖。
     {
       const sid = props.currentSessionIdRef.current;
@@ -275,7 +275,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
 
     const messagePayload = {
       // 用户消息只有一个 wire 类型：是否排队由宿主按引擎忙碌状态决定，
-      // 排队项由宿主回推 queuedMessage 建立（见 docs/contracts.md 第 8 节）。
+      // 排队项由宿主回推 queuedMessage 建立（见 docs/architecture/contracts.md 第 8 节）。
       type: 'sendMessage' as const,
       sessionId,
       content: messageContent,
@@ -284,7 +284,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       fileHidden: props.fileHidden,
       selectedLines: props.selectedLines ?? undefined,
       // 会话配置只带「已从宿主获取到」的字段：未到达的字段留空，
-      // 由宿主按自己的配置解析（webview 不代宿主决定，`docs/webview-facts.md` 第 5 节）。
+      // 由宿主按自己的配置解析（webview 不代宿主决定，`docs/hosts/webview-facts.md` 第 5 节）。
       agentMode: props.agentMode,
       thinkingMode: props.thinkingMode,
       webSearch: props.webSearch,
@@ -319,7 +319,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     });
 
     // 排队项不在发送侧乐观登记：宿主入队后按引擎忙碌状态回推 queuedMessage，
-    // 保证「登记」与「清除」都只有宿主一个来源（见 DEVELOPMENT.md 第 5.7 节）。
+    // 保证「登记」与「清除」都只有宿主一个来源（见 docs/architecture/principles.md 第 7 节）。
 
     // Save to per-session command history
     if (sessionId && messageContent.trim()) {
@@ -357,7 +357,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
 
   /**
    * 排队项「编辑 / 删除」的共用实现：清除本端排队项，并通知 core 丢弃引擎队列里
-   * 尚未消费的同一消息（按 uuid 配对，`docs/user-message-pipeline.md` 第 5.2 节）。
+   * 尚未消费的同一消息（按 uuid 配对，`docs/features/user-message-pipeline.md` FR-003）。
    * 与 abort 的 queryEnd 回填一样复用 restoreQueuedMessageToInput，但不置
    * abortedSessionsRef——撤回排队项不打断正在运行的查询。
    */

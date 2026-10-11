@@ -3,9 +3,9 @@
  *
  * 契约：文档描述现状，聚合数字不手写维护。本用例把这些做成可执行断言：
  *
- * 1. **事件词汇表一致**：DEVELOPMENT.md 第 3.1 节的汇总表（数量）与 `src/core/AssistantEventBus.ts`
+ * 1. **事件词汇表一致**：`docs/architecture/events.md` 第 2 节的汇总表（数量）与 `src/core/AssistantEventBus.ts`
  *    的四组联合类型逐组对照；`CoreEvent` / `CoreRequest` / `UiEvent` 的每个成员名都必须
- *    出现在第 4 章的事件表里（`UiRequest` 的成员按规格落在 `docs/standalone-core.md` 第 10 节）。
+ *    出现在事件表里（`UiRequest` 的成员按规格落在 `docs/core/standalone-core.md` 第 10 节）。
  *    新增事件忘了更新文档时直接失败。
  * 2. **文档侧：跨文档引用必须是链接**：全部 markdown 中，内链的文件与 `#anchor` 必须存在
  *    （锚点按 GitHub 的 slug 规则，fixture 见 SLUG_FIXTURES）；「文件名 + 第 N 节」的文字形式
@@ -18,16 +18,16 @@
  *    `<dir>/README.md` 也在地图里（新增 / 移动文档必须更新地图）。
  * 5. **ADR 完整性**：`docs/adr/` 编号连续且唯一、状态取值合法、被取代指向存在的文件。
  * 6. **术语禁别名**：`UIHost` / `UiEvent` 等固化术语命中别名清单即失败。
- * 7. **DEVELOPMENT.md 体积棘轮**：总行数 ≤ 棘轮值，只降不升；主动减体积后手动下调棘轮值。
+ * 7. **events.md 体积棘轮**：`docs/architecture/events.md` 总行数 ≤ 棘轮值，只降不升；主动减体积后手动下调棘轮值。
  * 8. **聚合数字不手写（扩界）**：`UIHost` / `WebViewUiPort` / uiPort 窄端口 / webview 消息
- *    类型 / `onCoreEvents` 映射表的成员名与数量从代码提取，对照 `docs/contracts.md` /
- *    `docs/webview-ui.md` 的宣称值——代码加了成员而文档数字没跟上时失败。
+ *    类型 / `onCoreEvents` 映射表的成员名与数量从代码提取，对照 `docs/architecture/contracts.md` /
+ *    `docs/hosts/webview-ui.md` 的宣称值——代码加了成员而文档数字没跟上时失败。
  * 9. **文档路径存在性**：markdown 行内代码里 `src/` / `docs/` / `core-rs/` / `electron/` 等
  *    前缀的仓库路径必须存在（行内代码整体不参与章节引用扫描，但路径是「指得到的东西」，
  *    单独校验；含通配符 / 占位符的写法不在此列）。
  * 10. **UiEvent 命名风格**：全小写驼峰、过去式、无 `on` 前缀、无命令式动词开头
  *     （AGENTS.md 第 3 节；`AssistantEventBus.ts` 的联合逐成员检查）。
- * 11. **CoreEvent 触发点列**：DEVELOPMENT.md 4.1 表的「core 侧触发点」列里反引号模块名
+ * 11. **CoreEvent 触发点列**：`docs/architecture/events.md` 2.1 表的「core 侧触发点」列里反引号模块名
  *     与真实 emit 位点（`src/core` 里 `emitToUi` 的所在文件）逐事件对照——重构挪动了
  *     emit 位点而没改表时失败。 UiEvent（4.3，宿主侧发起）不在此列。
  * 12. **契约可选成员冻结**：铁律 4.2 禁止 `?`；`AssistantEventBus.ts` 联合与结果映射里
@@ -35,8 +35,8 @@
  *     `null` / 判别联合，或评审后显式扩清单）。
  * 13. **常量引用存活**：文档行内代码里引用的全大写常量 / 环境变量名必须仍出现在代码里
  *     （含 `src/config/project.json` 的键）——常量改名 / 删除而文档没跟上时失败。
- * 14. **事件载荷列逐字段对照**：第 4.1 / 4.2 / 4.3 表的「载荷」列逐行解析字段名，与
- *     `AssistantEventBus.ts` 对应联合成员的顶层字段双向对照——成员名检查是「出现在第 4 章
+ * 14. **事件载荷列逐字段对照**：`events.md` 2.1 / 2.2 / 2.3 表的「载荷」列逐行解析字段名，与
+ *     `AssistantEventBus.ts` 对应联合成员的顶层字段双向对照——成员名检查是「出现在事件表
  *     任意位置」级别，同名成员在别的行出现即通过；载荷列这里补上逐行口径
  *     （`userMessageSubmitted.workspacePath` 就是这类漂移的实例）。
  * 15. **反引号标识符存活**：文档行内代码里的标识符（小驼峰 / 大驼峰，非全大写）必须出现在
@@ -61,9 +61,13 @@
  *     逐 FR 一行、AC 回指 FR 且为 GIVEN / WHEN / THEN 一行式）、plan 宪章检查四项义务、
  *     status 取值合法、`[待澄清]` 标记必须带去向链接且实施中 / 已收敛清零（口径见
  *     `specs/README.md`）；编号与 `docs/archive/specs/` 已归档编号不复用。
- * 23. **主题规格 frontmatter**：`docs/` 顶层规格（README.md 地图除外）必须带 owner /
+ * 23. **主题规格 frontmatter**：`docs/` 全部规格（各级 README.md 地图除外）必须带 owner /
  *     last_reviewed（YYYY-MM-DD）——规格所有权与新鲜度的可执行下限；引用源码的时间
  *     对比是独立报告（`scripts/docs-freshness.mjs`，只出报告不进门禁）。
+ * 24. **特性规格结构**：`docs/features/*.md`（需求基线 user-stories.md 除外）必须带
+ *     `# 规格：` H1 与七节骨架（用户场景与验收标准 / 功能需求 / 行为规格 / 边界与错误路径 /
+ *     非目标 / 对需求基线的影响 / 追溯矩阵），FR 唯一、AC 一行式回指 FR、追溯矩阵逐 FR 一行
+ *     （as-built 特性规格的 spec 形态下限，正则口径与组 22 一致）。
  *
  * `tmp_*` 临时文件、`docs/archive/` 冻结档案与 `specs/_templates/` 模板不参与校验；
  * 代码块（fenced / 行内反引号）不参与
@@ -81,7 +85,7 @@ import { createChecker, runTests } from './helpers/harness';
 /** 仓库根：编译产物在 `out/src/test/`，往上三层 */
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
-/** 不参与扫描的目录（构建产物 / 依赖 / 数据目录）；配置目录名从定义处取（`docs/product-identity.md`） */
+/** 不参与扫描的目录（构建产物 / 依赖 / 数据目录）；配置目录名从定义处取（`docs/hosts/product-identity.md`） */
 const SKIP_DIRS = new Set([
   '.git', '.zcode', 'node_modules', 'out', 'dist', 'dist-electron', 'release',
   'coverage', 'test-results', 'playwright-report', '.vscode-test', 'target',
@@ -208,6 +212,8 @@ function resolveTargetFile(fromRel: string, fileRef: string): string | null {
     candidates.push(
       path.posix.normalize(path.posix.join(path.posix.dirname(fromRel), fileRef)),
       fileRef,
+      // docs/ 分域目录化后，裸文件名依次在四个子目录里找
+      ...['architecture', 'core', 'hosts', 'features'].map((d) => `docs/${d}/${fileRef}`),
       `docs/${fileRef}`,
     );
   }
@@ -221,7 +227,7 @@ function resolveTargetFile(fromRel: string, fileRef: string): string | null {
 }
 
 /** 限定引用（「文件名 + 第 N 节/章」，含枚举与区间）与裸引用（「第 N 节/章」） */
-const QUALIFIED_REF = /`?((?:docs\/)?[A-Za-z0-9][\w-]*\.md)`?\s*(?:的\s*)?第\s*([0-9][0-9.\s/、,–—-]*?)\s*(节|章)/g;
+const QUALIFIED_REF = /`?((?:docs\/)?[A-Za-z0-9][\w-]*(?:\/[\w-]+)*\.md)`?\s*(?:的\s*)?第\s*([0-9][0-9.\s/、,–—-]*?)\s*(节|章)/g;
 const BARE_REF = /第\s*([0-9][0-9.\s/、,–—-]*?)\s*(节|章)/g;
 const MD_LINK = /\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
 
@@ -504,8 +510,35 @@ function coreEmitModules(): { emits: Map<string, Set<string>>; universe: Set<str
   return { emits, universe };
 }
 
-/** DEVELOPMENT.md 体积棘轮（AGENTS.md 第 0 节「控体积」的可执行形态）：只降不升，主动减体积后下调 */
-const DEV_LINE_RATCHET = 1237;
+/** events.md 体积棘轮（AGENTS.md 第 0 节「控体积」的可执行形态）：只降不升，主动减体积后下调 */
+const EVENTS_LINE_RATCHET = 434;
+
+/** H2 标题文字（组 22 / 24 的章节判定用） */
+const headingTitle = (line: string): string | null => {
+  const m = /^##\s+(.+?)\s*$/.exec(line);
+  return m && m[1] !== undefined ? m[1] : null;
+};
+/** 是否存在标题含 keyword 的 H2 节 */
+const hasSection = (text: string, keyword: string): boolean =>
+  text.split(/\r?\n/).some((line) => {
+    const title = headingTitle(line);
+    return title !== null && title.includes(keyword);
+  });
+/** `## <含 keyword 的标题>` 到下一个 `## ` 之间的正文（subsection 不截断） */
+const sectionBody = (text: string, keyword: string): string => {
+  const body: string[] = [];
+  let started = false;
+  for (const line of text.split(/\r?\n/)) {
+    const title = headingTitle(line);
+    if (title !== null) {
+      if (started) break;
+      if (title.includes(keyword)) started = true;
+      continue;
+    }
+    if (started) body.push(line);
+  }
+  return body.join('\n');
+};
 
 function main(): void {
   const checker = createChecker();
@@ -532,37 +565,32 @@ function main(): void {
 
   // ---------- 1. 事件词汇表 ----------
   const busSource = readText('src/core/AssistantEventBus.ts');
-  const dev = readText('DEVELOPMENT.md');
-  const ch4 = dev.split('## 4. 事件列表')[1]?.split('## 5. ')[0] ?? '';
-  const standaloneCore = readText('docs/standalone-core.md');
+  const eventsDoc = readText('docs/architecture/events.md');
+  const standaloneCore = readText('docs/core/standalone-core.md');
 
   const counts: Record<string, number> = {};
   for (const union of ['CoreEvent', 'CoreRequest', 'UiEvent', 'UiRequest'] as const) {
     const names = unionMemberNames(busSource, union);
     counts[union] = names.length;
 
-    // 汇总表宣称的数量（两种表式：3.1 的「词汇表|方向|语义|数量」与第 4 章的「组|方向|数量|处理方」）
-    const forms = [
-      '\\| `' + union + '` \\|[^|]+\\|[^|]+\\| (\\d+) \\|',
-      '\\| `' + union + '` \\|[^|]+\\| (\\d+) \\|',
-    ];
-    const claimed = forms.flatMap((f) =>
-      [...dev.matchAll(new RegExp(f, 'g'))].map((m) => Number(m[1])));
+    // 汇总表宣称的数量（events.md 第 2 节的「词汇表|方向|语义|数量|处理方」表）
+    const form = '\\| `' + union + '` \\|[^|]+\\|[^|]+\\| (\\d+) \\|';
+    const claimed = [...eventsDoc.matchAll(new RegExp(form, 'g'))].map((m) => Number(m[1]));
     checker.check(
       `${union} 汇总数量 ${claimed.join('/')} 与类型联合一致（实际 ${names.length}）`,
       claimed.length > 0 && claimed.every((c) => c === names.length),
     );
 
-    // 成员名单：前三组以反引号包裹出现在第 4 章事件表；UiRequest 在规格里写作
+    // 成员名单：前三组以反引号包裹出现在事件表；UiRequest 在规格里写作
     // `UiRequest.<name>` 整体，按裸名匹配 standalone-core
-    const corpus = union === 'UiRequest' ? standaloneCore : ch4;
+    const corpus = union === 'UiRequest' ? standaloneCore : eventsDoc;
     const missing = names.filter((n) => (union === 'UiRequest' ? !corpus.includes(n) : !corpus.includes(`\`${n}\``)));
     checker.check(`${union} 全部 ${names.length} 个成员名都在文档中出现`, missing.length === 0);
     if (missing.length > 0) {
       console.log(`     缺失: ${missing.join(', ')}`);
     }
   }
-  const totalClaimed = /共 (\d+) 个事件/.exec(dev);
+  const totalClaimed = /共 (\d+) 个事件/.exec(eventsDoc);
   const totalActual = counts.CoreEvent + counts.CoreRequest + counts.UiEvent + counts.UiRequest;
   checker.check(
     `「共 N 个事件」总数一致（文档 ${totalClaimed?.[1] ?? '未写'}，实际 ${totalActual}）`,
@@ -666,12 +694,13 @@ function main(): void {
 
   // ---------- 4. 文档地图覆盖 ----------
   const docMap = readText('docs/README.md');
-  const docFiles = fs.readdirSync(path.join(REPO_ROOT, 'docs'))
-    .filter((f) => f.endsWith('.md') && f !== 'README.md');
-  const unmapped = docFiles.filter((f) => !docMap.includes(f));
+  // docs/ 递归全部规格（各级 README.md 地图、adr/ 自带索引、archive/ 冻结档案除外）都要登记
+  const docFiles = files.filter((rel) => rel.startsWith('docs/') && rel.endsWith('.md')
+    && rel !== 'docs/README.md' && !rel.startsWith('docs/adr/'));
+  const unmapped = docFiles.filter((rel) => !docMap.includes(rel));
   checker.check(`docs/README.md 地图覆盖全部规格（缺 ${unmapped.length} 篇）`, unmapped.length === 0);
-  for (const f of unmapped) {
-    console.log(`     未登记: docs/${f}`);
+  for (const rel of unmapped) {
+    console.log(`     未登记: ${rel}`);
   }
   // 子目录导读 <dir>/README.md 也在地图里（根 README 与地图自身除外）
   const subReadmes = files.filter((rel) => rel.endsWith('/README.md') && rel !== 'docs/README.md');
@@ -730,16 +759,16 @@ function main(): void {
     console.log(`     ${h}`);
   }
 
-  // ---------- 7. DEVELOPMENT.md 体积棘轮 ----------
-  const devLines = dev.split(/\r?\n/).length;
+  // ---------- 7. events.md 体积棘轮 ----------
+  const eventsLines = eventsDoc.split(/\r?\n/).length;
   checker.check(
-    `DEVELOPMENT.md 行数 ${devLines} ≤ 棘轮 ${DEV_LINE_RATCHET}（只降不升）`,
-    devLines <= DEV_LINE_RATCHET,
+    `events.md 行数 ${eventsLines} ≤ 棘轮 ${EVENTS_LINE_RATCHET}（只降不升）`,
+    eventsLines <= EVENTS_LINE_RATCHET,
   );
 
   // ---------- 8. 聚合数字不手写（扩界）：契约成员 / 消息类型 / 映射表 ----------
-  const contracts = readText('docs/contracts.md');
-  const webviewUi = readText('docs/webview-ui.md');
+  const contracts = readText('docs/architecture/contracts.md');
+  const webviewUi = readText('docs/hosts/webview-ui.md');
   const uiHostSrc = readText('src/host/UIHost.ts');
   const portsSrc = readText('src/host/ui/ports.ts');
   const handlerSrc = readText('src/host/ui/webviewMessageHandler.ts');
@@ -860,7 +889,7 @@ function main(): void {
 
   // ---------- 11. CoreEvent 触发点列与真实 emit 位点对照 ----------
   const { emits, universe } = coreEmitModules();
-  const ch41 = ch4.slice(ch4.indexOf('### 4.1'), ch4.indexOf('### 4.2'));
+  const ch41 = eventsDoc.slice(eventsDoc.indexOf('### 2.1'), eventsDoc.indexOf('### 2.2'));
   const triggerProblems: string[] = [];
   let previousDocumented = new Set<string>();
   for (const line of ch41.split('\n')) {
@@ -902,7 +931,7 @@ function main(): void {
       );
     }
   }
-  checker.check(`4.1 触发点列与真实 emit 位点一致（漂移 ${triggerProblems.length} 处）`, triggerProblems.length === 0);
+  checker.check(`2.1 触发点列与真实 emit 位点一致（漂移 ${triggerProblems.length} 处）`, triggerProblems.length === 0);
   for (const p of triggerProblems) {
     console.log(`     ${p}`);
   }
@@ -972,15 +1001,15 @@ function main(): void {
   // ---------- 14. 事件载荷列与联合类型逐字段对照 ----------
   {
     const sections: Array<[string, string]> = [
-      ['CoreEvent', '### 4.1'],
-      ['CoreRequest', '### 4.2'],
-      ['UiEvent', '### 4.3'],
+      ['CoreEvent', '### 2.1'],
+      ['CoreRequest', '### 2.2'],
+      ['UiEvent', '### 2.3'],
     ];
     const payloadProblems: string[] = [];
     for (const [unionName, marker] of sections) {
-      const from = ch4.indexOf(marker);
-      const next = ch4.indexOf('\n### ', from + 1);
-      const section = ch4.slice(from, next < 0 ? undefined : next);
+      const from = eventsDoc.indexOf(marker);
+      const next = eventsDoc.indexOf('\n### ', from + 1);
+      const section = eventsDoc.slice(from, next < 0 ? undefined : next);
       const documented = new Map(parseEventRows(section).map((r) => [r.type, r.payload]));
       const actual = unionMemberFields(busSource, unionName);
       for (const [type, fields] of actual) {
@@ -1179,7 +1208,7 @@ function main(): void {
         snapshotExpected.push(top);
       }
     }
-    const sep43 = readText('docs/core-ui-separation.md');
+    const sep43 = readText('docs/architecture/core-ui-separation.md');
     const part43 = sep43.slice(sep43.indexOf('### 4.3'), sep43.indexOf('### 4.4'));
     const snapshotDoc = [...part43.matchAll(/^\| `([a-zA-Z0-9_.]+)` \|/gm)].map((m) => m[1] ?? '');
     diffNames(snapshotExpected, snapshotDoc, 'core-ui-separation.md 4.3 快照字段表');
@@ -1229,7 +1258,7 @@ function main(): void {
       const refs = [...readText(rel).matchAll(/\bUS-(\d+)\b/g)].map((m) => m[1] ?? '');
       usBySpec.set(rel, [...new Set(refs)].sort());
     }
-    const userStories = readText('docs/user-stories.md');
+    const userStories = readText('docs/features/user-stories.md');
     const appendix = userStories.slice(userStories.indexOf('## 附录'));
     const docBySpec = new Map<string, string[]>();
     for (const m of appendix.matchAll(/^\| `([^`]+)` \|([^|]*)\|/gm)) {
@@ -1351,30 +1380,6 @@ function main(): void {
     const PLAN_SECTIONS = ['技术方案', '受影响模块与契约', '宪章检查', '被否决的替代方案'];
     const CHARTER_ITEMS = ['分层', '铁律', 'parity', '文档同步'];
 
-    const headingTitle = (line: string): string | null => {
-      const m = /^##\s+(.+?)\s*$/.exec(line);
-      return m && m[1] !== undefined ? m[1] : null;
-    };
-    const hasSection = (text: string, keyword: string): boolean =>
-      text.split(/\r?\n/).some((line) => {
-        const title = headingTitle(line);
-        return title !== null && title.includes(keyword);
-      });
-    /** `## <含 keyword 的标题>` 到下一个 `## ` 之间的正文（subsection 不截断） */
-    const sectionBody = (text: string, keyword: string): string => {
-      const body: string[] = [];
-      let started = false;
-      for (const line of text.split(/\r?\n/)) {
-        const title = headingTitle(line);
-        if (title !== null) {
-          if (started) break;
-          if (title.includes(keyword)) started = true;
-          continue;
-        }
-        if (started) body.push(line);
-      }
-      return body.join('\n');
-    };
     /**
      * `[待澄清]` 标记检查：行内代码与 fenced 块里的出现是文档（写法说明）不算标记；
      * 实施中 / 已收敛不允许残留，起草 / 待评审的标记必须同行带去向链接。
@@ -1393,7 +1398,7 @@ function main(): void {
           continue;
         }
         if (!noInline.includes('](')) {
-          specProblems.push(`${relPath}:${i + 1} 待澄清标记必须同行带去向链接（ADR / DEVELOPMENT.md 第 6 章 / 非目标）`);
+          specProblems.push(`${relPath}:${i + 1} 待澄清标记必须同行带去向链接（ADR / docs/architecture/open-questions.md / 非目标）`);
         }
       }
     };
@@ -1539,11 +1544,10 @@ function main(): void {
   // ---------- 23. 主题规格 frontmatter（owner / last_reviewed，规格新鲜度） ----------
   {
     const fmProblems: string[] = [];
-    const docsDir = path.join(REPO_ROOT, 'docs');
-    const topicSpecs = fs.readdirSync(docsDir)
-      .filter((f) => f.endsWith('.md') && f !== 'README.md');
-    for (const f of topicSpecs) {
-      const rel = `docs/${f}`;
+    // docs/ 递归全部规格（各级 README.md 地图与 adr/ ——ADR 用「状态：」行而非 frontmatter——除外）
+    const topicSpecs = files.filter((rel) => rel.startsWith('docs/') && rel.endsWith('.md')
+      && rel !== 'docs/README.md' && !rel.startsWith('docs/adr/'));
+    for (const rel of topicSpecs) {
       const text = readText(rel);
       const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1];
       if (fm === undefined) {
@@ -1557,6 +1561,71 @@ function main(): void {
     }
     checker.check(`主题规格 frontmatter 字段齐全（问题 ${fmProblems.length} 处）`, fmProblems.length === 0);
     for (const p of fmProblems.slice(0, 20)) console.log(`     ${p}`);
+  }
+
+  // ---------- 24. 特性规格结构（docs/features/ 的 as-built spec 形态） ----------
+  {
+    const featureProblems: string[] = [];
+    const FEATURE_SECTIONS = [
+      '用户场景与验收标准', '功能需求', '行为规格', '边界与错误路径', '非目标',
+      '对需求基线的影响', '追溯矩阵',
+    ];
+    // 需求基线不是特性规格；其余 docs/features/*.md 全部按 spec 形态校验
+    const featureDocs = files.filter(
+      (rel) => rel.startsWith('docs/features/') && rel.endsWith('.md') && rel !== 'docs/features/user-stories.md',
+    );
+    for (const rel of featureDocs) {
+      const text = readText(rel);
+      const h1 = /^#\s+(.+?)\s*$/m.exec(text)?.[1] ?? '';
+      if (!h1.startsWith('规格：')) featureProblems.push(`${rel}: H1 应以「规格：」开头`);
+      for (const keyword of FEATURE_SECTIONS) {
+        if (!hasSection(text, keyword)) featureProblems.push(`${rel}: 缺「${keyword}」章节`);
+      }
+      // FR / AC / 追溯矩阵的正则口径与组 22 的改动规格一致（as-built 没有 status 与待澄清闸门）
+      const frs = [...text.matchAll(/^### (FR-\d{3})：/gm)].map((m) => m[1] ?? '');
+      const frSet = new Set(frs);
+      if (frs.length === 0) featureProblems.push(`${rel}: 无 FR-nnn 功能需求条目`);
+      for (const fr of frSet) {
+        if (frs.indexOf(fr) !== frs.lastIndexOf(fr)) featureProblems.push(`${rel}: ${fr} 重复定义`);
+      }
+      const acLines = [...text.matchAll(/^\s*- \*\*(AC-\d+)\*\*（(FR-\d{3})）：(.*)$/gm)];
+      for (const m of acLines) {
+        const acId = m[1] ?? '';
+        const fr = m[2] ?? '';
+        const line = m[3] ?? '';
+        if (!frSet.has(fr)) featureProblems.push(`${rel}: ${acId} 回指不存在的 ${fr}`);
+        if (!(line.includes('GIVEN') && line.includes('WHEN') && line.includes('THEN'))) {
+          featureProblems.push(`${rel}: ${acId} 不是 GIVEN / WHEN / THEN 一行式`);
+        }
+      }
+      for (const fr of frSet) {
+        if (!acLines.some((m) => m[2] === fr)) featureProblems.push(`${rel}: ${fr} 无验收标准`);
+      }
+      // 追溯矩阵：逐 FR 一行；覆盖列语义与组 22 一致
+      const matrixText = sectionBody(text, '追溯矩阵');
+      const matrixRows = [...matrixText.matchAll(/^\| (FR-\d{3}) \|(.*)$/gm)];
+      for (const fr of frSet) {
+        const rows = matrixRows.filter((m) => m[1] === fr);
+        if (rows.length === 0) { featureProblems.push(`${rel}: 追溯矩阵缺 ${fr} 行`); continue; }
+        if (rows.length > 1) featureProblems.push(`${rel}: 追溯矩阵 ${fr} 多行`);
+        const cells = (rows[0]?.[2] ?? '').split('|').map((c) => c.trim());
+        const impl = cells[0] ?? '';
+        const test = cells[1] ?? '';
+        const coverage = cells[2] ?? '';
+        if (coverage.startsWith('无自动覆盖')) {
+          if (coverage.trim() === '无自动覆盖') {
+            featureProblems.push(`${rel}: 追溯矩阵 ${fr} 登记无自动覆盖但未写理由`);
+          }
+        } else if (coverage !== '自动' || impl === '' || impl === '—' || test === '' || test === '—') {
+          featureProblems.push(`${rel}: 追溯矩阵 ${fr} 覆盖列应为「自动」或「无自动覆盖 + 理由」`);
+        }
+      }
+      for (const m of matrixRows) {
+        if (!frSet.has(m[1] ?? '')) featureProblems.push(`${rel}: 追溯矩阵列了不存在的 ${m[1] ?? ''}`);
+      }
+    }
+    checker.check(`特性规格 spec 形态结构（问题 ${featureProblems.length} 处）`, featureProblems.length === 0);
+    for (const p of featureProblems.slice(0, 20)) console.log(`     ${p}`);
   }
 
   checker.finish();

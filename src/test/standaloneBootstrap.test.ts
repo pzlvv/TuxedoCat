@@ -1,5 +1,5 @@
 /**
- * Standalone 装配下的启动接线（docs/standalone-core.md 第 3、5、7 节）：
+ * Standalone 装配下的启动接线（docs/core/standalone-core.md 第 3、5、7 节）：
  * - `CORE_KIND = standalone` 时 `bootstrapCore` 拉起 Core 进程并完成握手；
  * - 宿主环境经帧通道进入 Core；Core 侧的日志事件回到宿主日志出口；
  * - 自检快照报告 `coreKind = standalone` 与 UI 侧接线事实；
@@ -110,7 +110,7 @@ async function run(): Promise<void> {
   // 也不建会话队列（这些是 Core 进程的职责）。
   check('进程内不注册 core 侧扩展路径', !hasExtensionPath());
 
-  // 连接模型（docs/client-connection.md）：打开的工作区对应一个 Connection
+  // 连接模型（docs/core/client-connection.md）：打开的工作区对应一个 Connection
   check('启动快照报告 Connection 数', snapshot.connectionCount === 1);
   const connection = bootstrapped.client.listConnections()[0];
   check('Connection 已就绪', await waitFor(() => connection?.isReady() === true));

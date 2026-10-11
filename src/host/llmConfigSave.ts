@@ -1,5 +1,5 @@
 /**
- * LLM 全局配置的保存（**宿主侧**，`docs/core-ui-separation.md` 第 4.6 节）。
+ * LLM 全局配置的保存（**宿主侧**，`docs/architecture/core-ui-separation.md` 第 4.6 节）。
  *
  * 配置归宿主：设置面板的整段 mutation（provider 表 + `modelConfigs` 补齐 +
  * 顶层默认值 + MCP 默认启用列表）在这里执行，`settings.json` 由宿主写，

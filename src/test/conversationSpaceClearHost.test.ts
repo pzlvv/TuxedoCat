@@ -1,5 +1,5 @@
 /**
- * 对话空间清空回执的宿主送达测试（DEVELOPMENT.md 第 4.1 / 4.3 节）。
+ * 对话空间清空回执的宿主送达测试（docs/architecture/events.md 第 2.1 / 2.3 节）。
  *
  * webview 设置面板发出 `clearConversationSpace` 后，「删除中」按钮只能靠宿主下发的
  * `conversationSpaceCleared`（成功）或 `conversationSpacesError`（失败）解除。

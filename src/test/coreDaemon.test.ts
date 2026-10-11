@@ -1,5 +1,5 @@
 /**
- * daemon 客户端与通道总线用例（`docs/core-daemon.md` 第 10 节）：
+ * daemon 客户端与通道总线用例（`docs/core/core-daemon.md` 第 10 节）：
  * - 控制通道协议编解码与校验；
  * - openWorkspace → channel / 描述符；两个 channel 互不影响；
  * - 内层帧原样转发（hello → ready 握手、uiEvent → CoreEvent）；
@@ -464,7 +464,7 @@ async function run(): Promise<void> {
 
   // ---------- 链路心跳：链路就绪后定期发 ping ----------
   //
-  // daemon 靠「最近一次收到控制帧」判定链路死活（心跳空闲回收，docs/core-daemon.md 第 12.5 节）：Host 必须定期发 `ping`，沉默的连接会在 daemon 侧被误判断开。
+  // daemon 靠「最近一次收到控制帧」判定链路死活（心跳空闲回收，docs/core/core-daemon.md 第 12.5 节）：Host 必须定期发 `ping`，沉默的连接会在 daemon 侧被误判断开。
   {
     const fake = await startFakeDaemon();
     const daemon = new CoreDaemon({
@@ -496,7 +496,7 @@ async function run(): Promise<void> {
       corePlatformDir('win32', 'x64')!,
     );
     const binary = path.join(productDir, coreBinaryFileName('win32'));
-    // 构建指纹与可执行文件同级（`build-core.mjs` 落位，docs/standalone-core.md 第 4.4 节）：
+    // 构建指纹与可执行文件同级（`build-core.mjs` 落位，docs/core/standalone-core.md 第 4.4 节）：
     // daemon 的状态文件按它命名，这里读真实产物的指纹来断言两侧命名规则一致
     const fingerprintPath = path.join(productDir, CORE_FINGERPRINT_FILE_NAME);
     if (

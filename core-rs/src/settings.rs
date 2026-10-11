@@ -1,6 +1,6 @@
 //! 配置快照：Core 消费的配置形态（契约与 TS 侧 `src/core/settingsSnapshot.ts` 一致）。
 //!
-//! 磁盘上的 `settings.json` 与 `mcp.json` 归 UI 所有（`docs/core-ui-separation.md` 第 4 节）：UI 读盘后补默认值、规范化，产出一份快照，随
+//! 磁盘上的 `settings.json` 与 `mcp.json` 归 UI 所有（`docs/architecture/core-ui-separation.md` 第 4 节）：UI 读盘后补默认值、规范化，产出一份快照，随
 //! `UiEvent.hostEnvironmentProvided` 一次下发。本模块是 Core 侧的**唯一入口**：
 //!
 //! - 写入只有 [`apply_settings_snapshot`]；
@@ -16,7 +16,7 @@
 //! Core 侧不再有任何 `settings.json` / `mcp.json` 的路径与文件读取。
 //!
 //! `apply_from_host_environment` 会报告「MCP 默认启用列表是否变化」：配置变更只经
-//! 快照到达 Core（`docs/core-ui-separation.md` 第 4.5 节），没有单独的通知事件，因此这个判断在这里做。
+//! 快照到达 Core（`docs/architecture/core-ui-separation.md` 第 4.5 节），没有单独的通知事件，因此这个判断在这里做。
 
 use std::sync::Mutex;
 

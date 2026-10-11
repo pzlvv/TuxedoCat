@@ -1,7 +1,7 @@
 /**
  * 配置快照：Core 消费的配置形态（契约由 core 定义）。
  *
- * 磁盘上的 `settings.json` 与 `mcp.json` 归 UI 所有（`docs/core-ui-separation.md` 第 4 节）。UI 读盘后调本模块的纯函数补默认值、规范化，产出一份快照，经
+ * 磁盘上的 `settings.json` 与 `mcp.json` 归 UI 所有（`docs/architecture/core-ui-separation.md` 第 4 节）。UI 读盘后调本模块的纯函数补默认值、规范化，产出一份快照，经
  * `UiEvent.hostEnvironmentProvided` 下发给 Core；Core 侧只有一个读取入口
  * （`src/core/settings.ts` 的 `getSettings()` / `getMcpServerDefinitions()`），
  * 不感知这两个文件的路径，也不读盘。
@@ -34,7 +34,7 @@ export type ThinkingEffort = 'off' | 'low' | 'high' | 'max';
 /**
  * 单个模型的**已解析**限值：内置模型注册表与用户覆盖合并后的结果。
  *
- * Core 只读结果，不持有注册表、不做模型名匹配（`docs/core-ui-separation.md` 第 4.3 节）。未命中 `modelLimits` 的模型用 `modelLimitsFallback`。
+ * Core 只读结果，不持有注册表、不做模型名匹配（`docs/architecture/core-ui-separation.md` 第 4.3 节）。未命中 `modelLimits` 的模型用 `modelLimitsFallback`。
  */
 export interface ModelLimits {
   /** 上下文窗口（token 数） */
@@ -105,11 +105,11 @@ export interface SettingsSnapshot {
 }
 
 /**
- * 配置字段的默认值（**唯一来源**，`docs/webview-facts.md` 第 2 节）。
+ * 配置字段的默认值（**唯一来源**，`docs/hosts/webview-facts.md` 第 2 节）。
  *
  * `settings.json` 缺字段 / 类型不对 / 取值非法时生效的取值只在这里定义：本模块是
  * `settings.json` 的规范化入口，宿主的其它模块与 core 都读产出的快照，不各自声明常量。
- * webview 不持有这些取值——事实未到达时它显示等待态（`DEVELOPMENT.md` 第 5.10 节）。
+ * webview 不持有这些取值——事实未到达时它显示等待态（``docs/architecture/principles.md` 第 10 节）。
  */
 const DEFAULT_WEB_SEARCH = true;
 const DEFAULT_THINKING_EFFORT: ThinkingEffort = 'high';

@@ -207,7 +207,7 @@ export type HostToWebviewMessage = {
   type: 'sessionRuntimeStates';
   /**
    * 全量快照；宿主不持有其所有权，调用方只读。
-   * 字段与 core `SessionRuntimeState` 一致（根事实 + 派生 `idle`，`DEVELOPMENT.md` 第 4.5 节）。
+   * 字段与 core `SessionRuntimeState` 一致（根事实 + 派生 `idle`，``docs/core/session-runtime.md`）。
    */
   states: ReadonlyArray<{
     sessionId: string;
@@ -265,7 +265,7 @@ export type HostToWebviewMessage = {
   toolMetaMap?: Record<string, unknown>;
 } | {
   /**
-   * 瞬时状态提示（`docs/core-ui-separation.md` 第 4.9 节）。
+   * 瞬时状态提示（`docs/architecture/core-ui-separation.md` 第 4.9 节）。
    *
    * core 只给「键 + 参数」，webview 用 `t(key, params)` 翻译后以瞬时提示呈现；
    * 不进消息流、不落盘。键缺失时显示键本身并记日志。

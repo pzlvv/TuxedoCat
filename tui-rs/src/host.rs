@@ -2,14 +2,14 @@
 //! + `ui/toolHandler.ts` 的移植）。
 //!
 //! TS 版 TUI 复用 WebViewUI 以保证「宿主逻辑只存在一份」；Rust TUI 直连帧通道，
-//! 这一层的行为就在本模块重建（docs/tui.md 第 1 节第 2 条为 TS 版口径，Rust 版以此模块
+//! 这一层的行为就在本模块重建（docs/hosts/tui.md 第 1 节第 2 条为 TS 版口径，Rust 版以此模块
 //! 为唯一事实翻译点）。职责：
 //! - CoreEvent → 渲染动作（流式 / 工具卡片 / 排队 / 配置回写 / notice 翻译）；
 //! - CoreRequest → 交互（权限卡片先出、diff 预览、用户选择覆盖层）并应答；
 //! - 用户输入 → UiEvent / UiRequest（uuid 生成、乐观回显、排队 deferEcho）；
 //! - 宿主自有事实（settings 默认值 / 模型菜单 / 上下文上限 / 余额转发）。
 //!
-//! 边界语义（DEVELOPMENT.md 第 3.7 节）：request 无内置超时——core 掉线时由
+//! 边界语义（docs/architecture/events.md 第 6 节）：request 无内置超时——core 掉线时由
 //! `reset_connection()` 以错误收场全部挂起请求，不静默挂死。
 
 use std::collections::HashMap;
@@ -36,7 +36,7 @@ use crate::i18n;
 // ==================== 日志 ====================
 
 /// 日志出口：文件 + `--verbose` 时的 stderr；**绝不写 stdout**（stdout 是渲染面，
-/// docs/tui.md 第 11.1 节风险 3）。
+/// docs/hosts/tui.md 第 11.1 节风险 3）。
 pub struct Logger {
     file: Mutex<Option<std::fs::File>>,
     verbose: bool,
@@ -173,14 +173,14 @@ impl Host {
     // ==================== 握手与快照 ====================
 
     /// Core 就绪（`ready` 帧）：推送宿主环境与配置快照（core 的就绪判据，
-    /// docs/standalone-core.md 第 6 节；必须在其它 UiEvent 之前）。
+    /// docs/core/standalone-core.md 第 6 节；必须在其它 UiEvent 之前）。
     pub fn on_ready(&mut self) {
         self.ready = true;
         self.emit_host_environment();
     }
 
     /// 宿主环境与配置快照（`hostEnvironmentProvided`）：整份快照，没有增量语义
-    /// （docs/core-ui-separation.md 第 4.5 节）。配置写盘后重推走同一条路径。
+    /// （docs/architecture/core-ui-separation.md 第 4.5 节）。配置写盘后重推走同一条路径。
     pub fn emit_host_environment(&mut self) {
         let snapshot = self.settings.snapshot();
         let mcp_servers: Vec<Value> = self
@@ -1175,7 +1175,7 @@ impl Host {
 
         // 引擎是否仍在忙：读 core 推送的运行时状态快照（ConversationCache）。忙碌时该
         // 消息要等下一次 LLM 请求才进入上下文：登记排队项并置 deferEcho 让 core 真正
-        // 并入上下文时补发用户气泡（docs/user-message-pipeline.md 第 5 节）
+        // 并入上下文时补发用户气泡（docs/features/user-message-pipeline.md 第 5 节）
         let is_queued = self
             .runtime
             .state_of(session_id)

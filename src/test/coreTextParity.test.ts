@@ -1,5 +1,5 @@
 /**
- * Core 文案键对等测试（`docs/core-ui-separation.md` 第 4.8 / 4.9 节）。
+ * Core 文案键对等测试（`docs/architecture/core-ui-separation.md` 第 4.8 / 4.9 节）。
  *
  * 两侧共用 `src/test/fixtures/coreTextKeys.json`：
  * - 本文件断言「TS core 登记的键集合 == 对照表」且「对照表 ⊆ webview 翻译表（zh / en）」；

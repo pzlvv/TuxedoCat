@@ -263,7 +263,7 @@ pub fn spin_command_definition() -> BuiltinCommandDefinition {
             }
 
             // 没有注入钩子（单测 / 未接线的装配）：明确报错而不是静默什么都不做。
-            // 瞬时提示只给「键 + 参数」，翻译在 UI（`docs/core-ui-separation.md` 第 4.9 节）。
+            // 瞬时提示只给「键 + 参数」，翻译在 UI（`docs/architecture/core-ui-separation.md` 第 4.9 节）。
             context.emit(json!({
                 "type": "notice",
                 "sessionId": context.session_id,

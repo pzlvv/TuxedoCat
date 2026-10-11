@@ -44,7 +44,7 @@ function normalizeToolArgs(args: unknown): Record<string, any> {
  * 会话询问模式的存储（core 拥有会话配置）。
  *
  * 会话级覆盖优先；会话尚未记录时取配置快照的 `defaultAgentMode`——默认值的唯一来源是
- * 宿主的快照解析（`docs/webview-facts.md` 第 2 节），core 不再自持兜底常量。
+ * 宿主的快照解析（`docs/hosts/webview-facts.md` 第 2 节），core 不再自持兜底常量。
  */
 const sessionAgentModes = new Map<string, AgentMode>();
 

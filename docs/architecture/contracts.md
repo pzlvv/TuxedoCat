@@ -5,9 +5,9 @@ last_reviewed: 2026-10-11
 
 # 规格：宿主契约与端口
 
-本规格界定宿主侧全部契约与端口，分三部分：三契约 `UIHost` / `SpinDesign` / `ConversationManager`（第 1–5 节，含 MCP 生命周期入口 `MCPHost`）、共享子模块端口（第 6–9 节：`UserChoiceManager` / `ToolHandler` / `WebviewMessageHandler` / `WebViewUiPort`）、webview 侧契约 `HostInfo`（第 10–13 节）。契约成员全部必选、按 UI surface 划分；分层与依赖规则见 [DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)，事件词汇表见[第 3 章](../DEVELOPMENT.md#3-核心契约assistanteventbus)、[第 4 章](../DEVELOPMENT.md#4-事件列表)。
+本规格界定宿主侧全部契约与端口，分三部分：三契约 `UIHost` / `SpinDesign` / `ConversationManager`（第 1–5 节，含 MCP 生命周期入口 `MCPHost`）、共享子模块端口（第 6–9 节：`UserChoiceManager` / `ToolHandler` / `WebviewMessageHandler` / `WebViewUiPort`）、webview 侧契约 `HostInfo`（第 10–13 节）。契约成员全部必选、按 UI surface 划分；分层与依赖规则见 [docs/architecture/layering.md 第 2 节](layering.md#2-规则清单)，事件词汇表见[第 1 节](events.md#1-总线契约)、[第 2 节](events.md#2-事件词汇表)。
 
-交叉引用：`docs/webview-ui.md`（WebViewUI 实现与会话 UI 状态——契约的消费方）、`docs/host-matrix.md`（两个宿主对三契约的逐成员实现对照）、`docs/webview-facts.md`（webview 的事实与等待态——`HostInfo` 的消费语义）、[DEVELOPMENT.md 第 5 章](../DEVELOPMENT.md#5-架构原则)（架构原则）。
+交叉引用：`docs/hosts/webview-ui.md`（WebViewUI 实现与会话 UI 状态——契约的消费方）、`docs/hosts/host-matrix.md`（两个宿主对三契约的逐成员实现对照）、`docs/hosts/webview-facts.md`（webview 的事实与等待态——`HostInfo` 的消费语义）、[docs/architecture/principles.md](principles.md)（架构原则）。
 
 ---
 
@@ -21,7 +21,7 @@ last_reviewed: 2026-10-11
 | `MCPHost` | core 单例 | MCP 的会话级生命周期（**不是宿主契约**） | 唯一实现，无宿主分支 |
 | `ConversationManager` | abstract class | 对话列表 / 会话运行时状态（空闲会话回收在 VS Code 实现里） | `SingleWebViewConversationManager` / `ElectronConversationManager` |
 
-契约按 **UI surface** 划分（[DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)规则 7）：新增面板、窗口或列表类功能时，先确定其所属
+契约按 **UI surface** 划分（[docs/architecture/layering.md 第 2 节](layering.md#2-规则清单)规则 7）：新增面板、窗口或列表类功能时，先确定其所属
 surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实，不属于任何 UI surface，
 因此 `WorkspaceProvider` 单独成契约，供只需要工作区的消费方依赖；`UIHost` 继承它，
 保持「对话 webview 宿主」契约的完整性。
@@ -55,7 +55,7 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | 约束 | 理由 |
 | --- | --- |
 | 成员全部必选，不出现 `?` | 调用方不必用 `host.foo?.()` 静默降级；可选语义用 `null` 或判别联合表达 |
-| 能力命名表达语义，不暴露宿主类型 | 共享代码里不出现 `host.kind === '...'` 形式的宿主嗅探（[DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)规则 5） |
+| 能力命名表达语义，不暴露宿主类型 | 共享代码里不出现 `host.kind === '...'` 形式的宿主嗅探（[docs/architecture/layering.md 第 2 节](layering.md#2-规则清单)规则 5） |
 | 入参显式 | 可选语义用 `null`，而不是省略参数 |
 | 返回值统一 `Promise<void>` | 不用 `void \| Promise<void>` 联合 |
 
@@ -90,19 +90,19 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 Spin 设计器）与 `Client`（按工作区建立 Connection），core 不读取它。
 
 **对话自己的工作目录**不经该契约表达：它是对话的属性，由 core 的会话工作目录表按
-`sessionId` 解析（见[docs/core-ui-separation.md 第 3.3 节](core-ui-separation.md#33-会话工作目录)）。宿主在会话首次被 core 解析目录之前把目录登记进去
-（`WebviewMessageHandler.ensureSessionWorkspace`，见[docs/host-matrix.md 第 7 节](host-matrix.md#7-启动期状态写入入口与读取器)）。
+`sessionId` 解析（见[docs/architecture/core-ui-separation.md 第 3.3 节](core-ui-separation.md#33-会话工作目录)）。宿主在会话首次被 core 解析目录之前把目录登记进去
+（`WebviewMessageHandler.ensureSessionWorkspace`，见[docs/hosts/host-matrix.md 第 7 节](../hosts/host-matrix.md#7-启动期状态写入入口与读取器)）。
 
 `WebviewViewHandle` 是名义类型（必须是该类实例，任意对象无法冒充）：多视图宿主用它包裹自己的
 视图对象，单视图宿主的 `sendToWebviewView` 等价于 `sendToWebview`（句柄不参与路由）。句柄的产出
-方式见[docs/host-matrix.md 第 6 节](host-matrix.md#6-宿主接线)。
+方式见[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主接线)。
 
 `showDiff` 由工具权限流程调用（`ToolHandler.requestToolPermission`，见第 7 节）：VS Code 打开
 before/after 两个虚拟文档组成的 diff 标签，Electron 空实现（diff 只在 webview 里渲染）。
 **仅 manual 模式调用**——auto / risk 下改动自动放行，不弹原生 diff
 （webview 工具卡片里的 diff 仍然展示）。
 
-全局配置 `~/<CONFIG_DIR_NAME>/settings.json` 是宿主资源，写入口唯一（[DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)规则 9）：
+全局配置 `~/<CONFIG_DIR_NAME>/settings.json` 是宿主资源，写入口唯一（[docs/architecture/layering.md 第 2 节](layering.md#2-规则清单)规则 9）：
 
 | 文件 | 内容 | 写入口 |
 | --- | --- | --- |
@@ -113,12 +113,12 @@ before/after 两个虚拟文档组成的 diff 标签，Electron 空实现（diff
 Standalone 的 Rust `config`），宿主不参与写盘。
 
 `theme` / `shortcut` 不属于这份文件：它们是 Electron 宿主本地偏好，落
-`userData/workspace-state.json`（`electron/workspaceStateStore.ts`，临时文件 + rename 原子落盘、内容未变不落盘），core 不读不写（[docs/host-matrix.md 第 12 节](host-matrix.md#12-宿主固有差异有意保留)）。
+`userData/workspace-state.json`（`electron/workspaceStateStore.ts`，临时文件 + rename 原子落盘、内容未变不落盘），core 不读不写（[docs/hosts/host-matrix.md 第 12 节](../hosts/host-matrix.md#12-宿主固有差异有意保留)）。
 
 两个宿主共用 `src/host/settingsFile.ts`：`updateSettingsJson` 委托给
 `SettingsStore.updateSettings`，串行化「读-改-写」（避免并发写坏文件或丢字段），
 写盘后重新解析快照并通知订阅者——`bootstrapCore` 注册的那次订阅会把整份快照推给
-Connection（[docs/core-ui-separation.md 第 4.6 节](core-ui-separation.md#46-写盘规则)）。core 侧没有读缓存，也没有
+Connection（[docs/architecture/core-ui-separation.md 第 4.6 节](core-ui-separation.md#46-写盘规则)）。core 侧没有读缓存，也没有
 `resetSettingsCache()` 这类调用。
 
 字段名与合并规则以**纯函数**给出（不写盘），例如
@@ -132,7 +132,7 @@ Connection（[docs/core-ui-separation.md 第 4.6 节](core-ui-separation.md#46-�
 `sessionResources.releaseSessionResources`）。
 
 两个实现：`src/VSCodeUIHost.ts`（+ `src/VSCodeUIHost/`）与 `electron/ElectronUIHost.ts`；
-逐成员对照见[docs/host-matrix.md 第 3 节](host-matrix.md#3-uihost-实现对照表)。
+逐成员对照见[docs/hosts/host-matrix.md 第 3 节](../hosts/host-matrix.md#3-uihost-实现对照表)。
 
 ## 2. Spin 设计器契约：SpinDesign
 
@@ -208,7 +208,7 @@ core 与它只有一条连接：`CoreEvent.spinDesignDataChanged` → `WebViewUI
 `onSessionOpened` / `onSessionEnabledChanged` 在串行链内 `await` 到 server 进入最终状态
 （running 或 error）后广播 `sessionConfigChanged(mcpEnabled)`：连接是异步的，缺这条事实，
 webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接中」。UI 收到后重新读取运行时
-状态并回推 `setMcpServers`（[DEVELOPMENT.md 第 4.1 节](../DEVELOPMENT.md#41-coreeventcore--ui单向)事件 21）。
+状态并回推 `setMcpServers`（[docs/architecture/events.md 第 2.1 节](events.md#21-coreeventcore--ui单向)事件 21）。
 
 另提供三个只读转发：`getTools()` / `getServerStatus()` / `readServers(sessionId)`；工具聚合
 与面板读取的实际路径是 `mcp/Manager` 与 `mcp/Config`。
@@ -239,7 +239,7 @@ webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接�
 `mcp.enabled`，经配置快照下发）。输入框菜单的勾选只写会话覆盖；设置面板「默认配置」只写
 全局默认。全局默认变更会让 core 重同步**其它**已注册会话，但当前对话在写盘前已被宿主钉在
 它当前的列表上（`mcpEnabledListChanged`），因此不会静默跟随——是否跟随由设置面板的
-「应用到当前对话」确认框决定（[docs/webview-facts.md 第 6 节](webview-facts.md#6-设置面板)）。
+「应用到当前对话」确认框决定（[docs/hosts/webview-facts.md 第 6 节](../hosts/webview-facts.md#6-设置面板)）。
 
 **按会话暴露 MCP 工具**：MCP 进程是进程级全局的（多个会话可共享同一个 server），但
 「把哪些 MCP 工具发给某个会话的 LLM」必须按该会话的启用列表过滤，否则 A 会话已取消勾选、
@@ -256,12 +256,12 @@ webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接�
 
 位置：`src/host/ConversationManager.ts`（abstract class）。
 
-它分发**两条互相独立的流**（[DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)规则 8）：
+它分发**两条互相独立的流**（[docs/architecture/layering.md 第 2 节](layering.md#2-规则清单)规则 8）：
 
 | | 流 1：对话列表 | 流 2：会话运行时状态 |
 | --- | --- | --- |
-| 内容 | 磁盘元数据：`title` / `createdAt` / `updatedAt` / `messageCount` / `parentSessionId` | 运行时根事实与派生 `idle`（`SessionRuntimeState`，[DEVELOPMENT.md 第 3.1 节](../DEVELOPMENT.md#31-事件定义) / [第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)） |
-| source of truth | 磁盘（core 的 `loadConversationList()`） | core 的 `sessionRuntime`（[DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)） |
+| 内容 | 磁盘元数据：`title` / `createdAt` / `updatedAt` / `messageCount` / `parentSessionId` | 运行时根事实与派生 `idle`（`SessionRuntimeState`，[docs/architecture/events.md 第 2 节](events.md#2-事件词汇表) / [docs/core/session-runtime.md](../core/session-runtime.md)） |
+| source of truth | 磁盘（core 的 `loadConversationList()`） | core 的 `sessionRuntime`（[docs/core/session-runtime.md](../core/session-runtime.md)） |
 | 变化频率 | 低（落盘 / 改名 / 删除 / 新建） | 高（查询开始结束、等用户、用户响应） |
 | 触发 | `CoreEvent.conversationListChanged` | `CoreEvent.sessionRuntimeChanged` |
 | 消费者 | webview 子对话树、Electron 原生侧栏 | VS Code webview 对话树流水灯、Electron 侧栏流水灯、系统托盘状态点、未读完成呼吸（Electron）、系统睡眠阻断（宿主进程与 Core 进程各一份） |
@@ -329,7 +329,7 @@ VS Code 实现里的成员：
 
 `isSessionIdle` 的「等待用户」事实读 core 自己的 `sessionRuntime`（`isSessionWaiting`）：
 入队时 `Integration.requestUserChoice` 标记，webview 弹出 / 应答时宿主经
-`UiEvent.userChoicePendingChanged` 上报（[DEVELOPMENT.md 第 4.3 节](../DEVELOPMENT.md#43-uieventui--core单向)），core 侧由 `markSessionWaiting` 落地。
+`UiEvent.userChoicePendingChanged` 上报（[docs/architecture/events.md 第 2.3 节](events.md#23-uieventui--core单向)），core 侧由 `markSessionWaiting` 落地。
 
 **调用方**：
 
@@ -350,11 +350,11 @@ owner，由它**单独推送**给侧栏（`sidebar:session-loaded-changed`），
 
 宿主（webview 协议消息、Electron 原生侧栏 IPC、Electron 菜单、VS Code 编辑器事件、VS Code
 空闲回收）**改 core 状态的请求一律翻译为 `UiEvent`**，不直接调 core 的状态变更函数；宿主可以
-import core 的只读函数与类型（[DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)规则 9）。
+import core 的只读函数与类型（[docs/architecture/layering.md 第 2 节](layering.md#2-规则清单)规则 9）。
 
 | 入口 | 位置 | 翻译为 |
 | --- | --- | --- |
-| webview 协议消息 | `webviewMessageHandler` 的 `messageHandlers` 表 | 多数映射为 `UiEvent`（[DEVELOPMENT.md 第 4.3 节](../DEVELOPMENT.md#43-uieventui--core单向)） |
+| webview 协议消息 | `webviewMessageHandler` 的 `messageHandlers` 表 | 多数映射为 `UiEvent`（[docs/architecture/events.md 第 2.3 节](events.md#23-uieventui--core单向)） |
 | 关闭会话 / 空闲回收（仅 VS Code） | `WebViewUI.closeConversation` → `releaseConversation` | `conversationClosed` |
 | 编辑器上下文 | `extension.ts` 的 `persistCurrentFileContext` | `conversationContextUpdated` |
 | Electron 侧栏：关闭 | `sidebar:close-conversation` | `WebViewUI.closeConversation(sid)`（= `conversationClosed` + 关视图） |
@@ -406,7 +406,7 @@ import core 的只读函数与类型（[DEVELOPMENT.md 第 2 章](../DEVELOPMENT
 
 | 依赖 | 内容 |
 | --- | --- |
-| `host: UIHost` | 宿主能力（投递消息、日志、打开文件…）；子模块不 import `vscode` / `electron`（[DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)规则 3、4） |
+| `host: UIHost` | 宿主能力（投递消息、日志、打开文件…）；子模块不 import `vscode` / `electron`（[docs/architecture/layering.md 第 2 节](layering.md#2-规则清单)规则 3、4） |
 | 回调 | 回推 webview 或通知 `WebViewUI`：`postToWebview` / `postConversationLoaded` / `setTitle` / `closePreview` … |
 
 `WebviewMessageHandler` 另有一个**构造后回填**的窄端口 `uiPort`（只声明自己用到的 7 个成员）。
@@ -439,10 +439,10 @@ import core 的只读函数与类型（[DEVELOPMENT.md 第 2 章](../DEVELOPMENT
 | --- | --- |
 | `initUserChoiceQueue()` | 把 core `UserChoiceQueue` 的 3 个回调接到本类：`onShowUserChoice` / `onSessionLoaded` → 恢复该会话的待答选择；`isSessionOpen` → 上面注入的读取器。**不注册会话切换**：会话已 open 时请求直接投递到该会话自己的视图（多视图下未选中的视图也会显示，切过去即可看到）；未 open 的请求保留 pending，由 UI 提醒用户 |
 | `requestUserChoice(sessionId, options)` | `CoreRequest.userChoice` 的入口：按会话入 `UserChoiceQueue`（不直接弹框），由 `isSessionOpen` 决定立即投递还是保留 pending；队列回调未注册（宿主未接线）时退化为直接 `showUserChoice` |
-| `showUserChoice(sessionId, options)` | 弹出选择框并等待应答（队列投递与未接线兜底的共同落点）：① 保存 diff 快照（`beforeContent` / `afterContent` / 上下文 / 起止行）② 投递 `requestUserChoice` ③ 发 `UiEvent.userChoicePendingChanged(pending: true)`（`idle` / `waiting` 归 core，见[DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)；Embedded 入队时 `Integration.requestUserChoice` 已提前标记、Standalone 由 Core 的 `waiting_request` 标记，此处幂等）④ 返回 Promise，`resolve` 时 `closePreview()` + 发 `userChoicePendingChanged(pending: false)` |
+| `showUserChoice(sessionId, options)` | 弹出选择框并等待应答（队列投递与未接线兜底的共同落点）：① 保存 diff 快照（`beforeContent` / `afterContent` / 上下文 / 起止行）② 投递 `requestUserChoice` ③ 发 `UiEvent.userChoicePendingChanged(pending: true)`（`idle` / `waiting` 归 core，见[docs/core/session-runtime.md](../core/session-runtime.md)；Embedded 入队时 `Integration.requestUserChoice` 已提前标记、Standalone 由 Core 的 `waiting_request` 标记，此处幂等）④ 返回 Promise，`resolve` 时 `closePreview()` + 发 `userChoicePendingChanged(pending: false)` |
 | `hasPendingChoice(sessionId)` | 该会话是否有待答选择：`pendingUserChoices`（已弹出）或 `userChoiceQueue`（已入队未投递，会话尚未 open）任一命中即为真。供 core `isSessionIdle` 判定「非空闲，不回收」 |
 | `saveDiffSnapshot(sessionId, snapshot)` | 写入 diff 快照（`beforeContent` / `afterContent` / 上下文 / 起止行）并登记归属会话。`ToolHandler.requestToolPermission` 调用（`showUserChoice` 也直接写同一份快照） |
-| `dropSession(sessionId)` | 会话 UI 侧状态释放：拒绝该会话在 `UserChoiceQueue` 里尚未投递的请求（Standalone 的 Core 进程不持有宿主队列，Embedded 由 core 的 `releaseSessionResources` 负责，此处幂等），清掉该会话的 `pendingUserChoices` 回调，并在 diff 快照归属该会话时清空快照。由 `WebViewUI.dropSession` fan-out 调用（[docs/webview-ui.md 第 9 节](webview-ui.md#9-生命周期dropsession)） |
+| `dropSession(sessionId)` | 会话 UI 侧状态释放：拒绝该会话在 `UserChoiceQueue` 里尚未投递的请求（Standalone 的 Core 进程不持有宿主队列，Embedded 由 core 的 `releaseSessionResources` 负责，此处幂等），清掉该会话的 `pendingUserChoices` 回调，并在 diff 快照归属该会话时清空快照。由 `WebViewUI.dropSession` fan-out 调用（[docs/hosts/webview-ui.md 第 9 节](../hosts/webview-ui.md#9-生命周期dropsession)） |
 | `pendingUserChoices: Map<choiceId, {sessionId, resolve}>` | 待答选择表；`WebviewMessageHandler.handleRespondUserChoice` 按 `choiceId` 取出并 resolve |
 | `currentBeforeContent` / `currentAfterContent` / `currentContextBefore` / `currentContextAfter` / `currentStartLine` / `currentEndLine` | 当前 diff 快照，**与 `ToolHandler` 共享**（`ToolHandler` 经 `saveDiffSnapshot` 写入，两边都读）；`diffSnapshotSessionId` 记录归属会话，供 `dropSession` 精确清理 |
 
@@ -461,7 +461,7 @@ diff 快照——**确认框不在这里弹**（见下）。
 | `onToolResult(sessionId, toolUseId, toolName, output, status)` | Edit 失败时清空卡片上的 diff；成功时补 `contextBefore` / `contextAfter` / 起止行；最后投递 `updateToolStatus`（`success` / `fail` + `output`） |
 
 **不做权限判断**：`permResult` 已由 core 按 agentMode 规则加工完（`allow` / `deny` / `ask`，
-见[DEVELOPMENT.md 第 4.2 节](../DEVELOPMENT.md#42-corerequestcore--ui请求-响应)）。`ask` 的确认框由 core 侧发起（Embedded：`RunTools` → `Integration.requestUserChoice`；
+见[docs/architecture/events.md 第 2.2 节](events.md#22-corerequestcore--ui请求-响应)）。`ask` 的确认框由 core 侧发起（Embedded：`RunTools` → `Integration.requestUserChoice`；
 Standalone：Core 发 `CoreRequest.userChoice`），宿主统一经 `UserChoiceManager.requestUserChoice`
 入 `UserChoiceQueue`（会话已 open 即投递到该会话自己的视图，未 open 保留 pending，不自动切换会话），
 UI 侧提前弹框会造成双重确认。
@@ -513,13 +513,13 @@ UI 侧提前弹框会造成双重确认。
 | 其它 | `saveLLMConfig` / `requestSmartNaming` |
 
 前两个分区留在本模块内（只操作宿主或只读 core）；其余要么发 `UiEvent`，要么是**显示类**动作。
-完整映射见[DEVELOPMENT.md 第 4.3 节](../DEVELOPMENT.md#43-uieventui--core单向)的「UI 侧触发点」列。
+完整映射见[docs/architecture/events.md 第 2.3 节](events.md#23-uieventui--core单向)的「UI 侧触发点」列。
 
 **LLM 配置面板**：`requestLLMConfig`（用户点设置按钮）与 `startNewConversation` 的配置引导都委托
 `WebViewUI.showLLMConfigPanel(trigger, sessionId)`；视图加载补弹由两个 bootstrap 用同一方法触发
 （`trigger='startup'`）。core 只提供配置事实（`getLLMConfigPanelPayload` /
 `hasActiveProviderSetting` / `readMcpServersForDefaults`），wire message 的组装与投递在 UI 层
-（[docs/contracts.md 第 6 节](contracts.md#6-userchoicemanager)）。三条触发路径共用同一份面板载荷（含 MCP 默认启用列表），差异只在守卫。
+（[docs/architecture/contracts.md 第 6 节](contracts.md#6-userchoicemanager)）。三条触发路径共用同一份面板载荷（含 MCP 默认启用列表），差异只在守卫。
 
 **留在模块内的两处例外**：
 
@@ -538,15 +538,15 @@ UI 侧提前弹框会造成双重确认。
 | 成员 | 语义 |
 | --- | --- |
 | `postToWebview(sessionId, message)` | 补 `sessionId` 后投递到宿主 webview |
-| `postConversationLoaded(sessionId, conversation, extra)` | 推送 `conversationLoaded`（含 `activityPhase`，见[docs/webview-ui.md 第 2 节](webview-ui.md#2-内部流程约定)） |
+| `postConversationLoaded(sessionId, conversation, extra)` | 推送 `conversationLoaded`（含 `activityPhase`，见[docs/hosts/webview-ui.md 第 2 节](../hosts/webview-ui.md#2-内部流程约定)） |
 | `onTitleChanged(sessionId, title)` | 会话标题变化（`WebviewMessageHandler` 的 `setTitle` 回调走它） |
 | `dropSession(sessionId)` | 该会话的 UI 侧状态已释放 |
-| `onQueuedMessage(sessionId, queued)` | 登记 / 清除该会话的排队项（`queued` 为 `null` 表示清除，载荷类型 `QueuedMessageState`）。登记调用点：`WebviewMessageHandler.handleUserMessage`（会话运行时快照 `idle === false` 时，见 [docs/user-message-pipeline.md 第 1 节](user-message-pipeline.md#1-能力)）；清除调用点：内置命令就地执行（`onCommandSend`）、会话释放（`dropSession`）、进入上下文的用户消息由补发的 `addMessage`（带 `messageUuid`）清除 |
+| `onQueuedMessage(sessionId, queued)` | 登记 / 清除该会话的排队项（`queued` 为 `null` 表示清除，载荷类型 `QueuedMessageState`）。登记调用点：`WebviewMessageHandler.handleUserMessage`（会话运行时快照 `idle === false` 时，见 [docs/features/user-message-pipeline.md 第 2 节](../features/user-message-pipeline.md#2-功能需求)）；清除调用点：内置命令就地执行（`onCommandSend`）、会话释放（`dropSession`）、进入上下文的用户消息由补发的 `addMessage`（带 `messageUuid`）清除 |
 | `getActiveSessionId()` | 当前前台会话 |
 | `openSpinDesign()` | 打开 Spin 设计器（子模块不直接持有 `SpinDesign`，见第 2 节） |
 | `refreshConversations()` | 重新读取并分发对话列表 |
 | `getSessionRuntimeStatesSnapshot()` | 最近一次会话运行时状态快照（`ConversationManager` 缓存）；Standalone 下进程内 `sessionRuntime` 不被写入，拉取必须走这份缓存 |
-| `isQueryActive(sessionId)` | 该会话**自己的**查询是否在跑（`SessionUiState.isQueryActive`）；`conversationLoaded.hasActiveQuery` 的来源，**不用** `sessionRuntime.idle`（后者含后台子代理 / 后台 Bash / 压缩，见`docs/webview-ui.md`） |
+| `isQueryActive(sessionId)` | 该会话**自己的**查询是否在跑（`SessionUiState.isQueryActive`）；`conversationLoaded.hasActiveQuery` 的来源，**不用** `sessionRuntime.idle`（后者含后台子代理 / 后台 Bash / 压缩，见`docs/hosts/webview-ui.md`） |
 | `isSessionOpen(sessionId)` | 该会话的聊天视图是否 open（多视图：有聊天视图；单视图：open == active）；经 `bootstrapCore` 注入给 `UserChoiceManager` 的 `isSessionOpenInternal`，core `UserChoiceQueue` 借它决定立即投递还是保留 pending（第 6 节） |
 | `noteSessionActivity(sessionId)` | 记录会话活动（重置空闲计时；空闲回收只在 VS Code 生效，见第 4 节） |
 | `showLLMConfigPanel(trigger, sessionId)` | 打开 LLM 配置面板：core 给配置事实，`WebViewUI` 组装 `showLLMConfig` 并投递（`trigger` 见下） |
@@ -611,7 +611,7 @@ Electron 悬浮窗只把 `conversationListOwner` 切到 `webview`（原生侧栏
 
 ## 10. 注入
 
-同步注入的事实（页面首帧之前写入 `window`，webview 只读，缺失即接线错误，见[docs/contracts.md 第 10 节](contracts.md#10-注入)）：
+同步注入的事实（页面首帧之前写入 `window`，webview 只读，缺失即接线错误，见[docs/architecture/contracts.md 第 10 节](contracts.md#10-注入)）：
 
 | 事实 | 读取方 | VS Code（`src/extension.ts` 的 `getWebviewContent()` 内联脚本） | Electron（`electron/preload.ts`） |
 | --- | --- | --- | --- |
@@ -644,7 +644,7 @@ webview 只按能力渲染，不判断宿主类型：
 | 消费点 | 读取 | 行为 |
 | --- | --- | --- |
 | `App.tsx` 顶栏 | `rendersConversationListInWebview(hostInfo)` | `true` 时渲染对话历史下拉（`Dropdown`）；`false` 时由 Electron 原生侧栏接管，webview 不渲染 |
-| `App.tsx` 历史对话按钮提醒 | `sessionRuntimeStatesRef` 的 `waiting` + 本视图 `conversations` 的 `sessionId` 集合 | 对话列表由 webview 渲染（VS Code / Electron 悬浮窗）时，**本视图对话列表里**有「其它会话」在等待用户操作（ask user / 权限确认）时给历史按钮加黄色呼吸提醒（`history-btn--attention`）。只认本视图列表里的会话：列表按工作目录读盘（`loadConversationList(workspace)`），因此其它工作目录的 `waiting` 不提醒——浮窗顶栏只能看 / 切到本目录的对话，提醒了也过不去。列表与运行时状态都是**视图本地缓存**：列表只推给活动视图、状态只在变化时推，所以切到 webview 渲染列表时 `App.tsx` 会主动补发 `getConversations` + `requestSessionRuntimeStates`，避免「之前不是活动视图」的浮窗用旧数据判断（[docs/contracts.md 第 8 节](contracts.md#8-webviewmessagehandler)） |
+| `App.tsx` 历史对话按钮提醒 | `sessionRuntimeStatesRef` 的 `waiting` + 本视图 `conversations` 的 `sessionId` 集合 | 对话列表由 webview 渲染（VS Code / Electron 悬浮窗）时，**本视图对话列表里**有「其它会话」在等待用户操作（ask user / 权限确认）时给历史按钮加黄色呼吸提醒（`history-btn--attention`）。只认本视图列表里的会话：列表按工作目录读盘（`loadConversationList(workspace)`），因此其它工作目录的 `waiting` 不提醒——浮窗顶栏只能看 / 切到本目录的对话，提醒了也过不去。列表与运行时状态都是**视图本地缓存**：列表只推给活动视图、状态只在变化时推，所以切到 webview 渲染列表时 `App.tsx` 会主动补发 `getConversations` + `requestSessionRuntimeStates`，避免「之前不是活动视图」的浮窗用旧数据判断（[docs/architecture/contracts.md 第 8 节](contracts.md#8-webviewmessagehandler)） |
 | `App.tsx` 顶栏 | `newConversationEntryOf(hostInfo) === 'webview'` | 渲染「新建对话」按钮；`'host'` 时由侧栏按钮触发。点击后按 `openConversationModeOf(hostInfo)` 分支：`openConversation`（多视图）只发 `{ type: 'openNewConversation' }` 交给宿主另开 / 复用「未发送的新对话」视图，本视图不改自己的会话状态；`loadConversation`（单视图）在当前视图内原地新建（发 `startNewConversation`） |
 | `App.tsx` 历史对话下拉的删除 | `openConversationModeOf(hostInfo)` | 删除当前对话后：`openConversation`（多视图）由宿主连同该会话的视图一起关（`deleteConversationWithViews`），关掉当前视图后由 `switchAwayFromClosedSession` 另开一个新对话视图，webview 不再自己新建；`loadConversation`（单视图）在当前视图内原地新建 |
 | `App.tsx` 顶栏 | `canCloseConversation(hostInfo)` | `true` 时渲染关闭按钮，发 `{ type: 'closeWebview' }`（销毁 webview，释放渲染进程） |
@@ -695,7 +695,7 @@ export function postMessage(msg: unknown): boolean;    // 有通道则发，返�
 `getHostMessageApi()` 首次调用按固定顺序解析并缓存到模块级 `_hostMessageApi`：
 `window.electronAPI.postMessage`（Electron preload）优先，其次 `window.vscode.postMessage`
 （VS Code `acquireVsCodeApi()` / 浏览器 shim）；两者都没有直接抛错——宿主集成缺失，
-不做静默降级（[DEVELOPMENT.md 第 5.1 节](../DEVELOPMENT.md#51-不过度-fallback)）。`hasHostMessageApi()` 走同一套探测但不抛错、不写缓存，供可选发送路径先行判断。
+不做静默降级（[docs/architecture/principles.md 第 1 节](principles.md#1-不过度-fallback)）。`hasHostMessageApi()` 走同一套探测但不抛错、不写缓存，供可选发送路径先行判断。
 
 | 宿主 | 注入方 | 通道 | 消息去向 |
 | --- | --- | --- | --- |

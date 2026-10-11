@@ -432,10 +432,10 @@ impl Core {
     /// 对齐 Embedded `sessionRuntime.pushIfChanged`：状态没变时不发事件；
     /// 有变化时按会话插入序推全量快照（消费者不维护状态表）。
     ///
-    /// 快照字段与 Embedded `SessionRuntimeState` 一致（`DEVELOPMENT.md` 第 5.8 节）：暴露
+    /// 快照字段与 Embedded `SessionRuntimeState` 一致（``docs/architecture/principles.md` 第 8 节）：暴露
     /// `queryRunning` / `waiting` / `compacting` / `backgroundRunning` /
     /// `subAgentRunning` 根事实，`idle` 是它们的合取。流水灯 / 托盘读 `idle`；
-    /// abort 按钮按根事实推导三态（`docs/abort-button.md`）。
+    /// abort 按钮按根事实推导三态（`docs/features/abort-button.md`）。
     pub fn emit_runtime(&self) {
         let order = self.session_order.lock().unwrap().clone();
         let sessions = self.sessions.lock().unwrap();
@@ -551,7 +551,7 @@ impl Core {
     ///
     /// 对齐 Embedded `sessionRuntime.hasBusySubAgent`：对每个已登记子代理单独判定它
     /// 自己的子树是否空闲。子代理完成一轮后可能仍留在注册表里等 Reply，此时它空闲，
-    /// 父会话的 `subAgentRunning` 为假（`docs/abort-button.md` 第 1.1 节）。
+    /// 父会话的 `subAgentRunning` 为假（`docs/features/abort-button.md` FR-001）。
     fn has_busy_subagent(
         sessions: &HashMap<String, Arc<Mutex<SessionState>>>,
         session_id: &str,
@@ -571,7 +571,7 @@ impl Core {
     pub fn on_host_environment(&self, env: config::HostEnvironment) {
         config::set_host_environment(env);
         let _ = config::ensure_config_dirs();
-        // Core 不感知语言（`docs/core-ui-separation.md` 第 4.8 节）：宿主环境里没有
+        // Core 不感知语言（`docs/architecture/core-ui-separation.md` 第 4.8 节）：宿主环境里没有
         // locale 字段，面向界面的文本以「键 + 参数」经 `CoreEvent.notice` 交给 UI 翻译。
         self.log("Standalone Core ready.");
     }
@@ -612,7 +612,7 @@ impl Core {
         self.emit_runtime();
     }
 
-    /// `UiEvent.abortRequested`：abort 按钮点击（`docs/abort-button.md` 第 1.2 节）。
+    /// `UiEvent.abortRequested`：abort 按钮点击（`docs/features/abort-button.md` FR-002）。
     ///
     /// 对齐 Embedded `Integration.abortCurrentQuery`：按该会话的运行时事实分两阶段——
     /// - 前台有工作（`running` / `compacting`）→ 只中止前台查询（置 `cancel`），
@@ -5219,7 +5219,7 @@ fn emit_highlight_languages(core: &Arc<Core>, message: &Value) {
     }
     // core 只上报「本条消息用到了哪些语言」，不维护「已记录」集合：`highlightLanguages`
     // 是 UI 专属字段，去重与落盘由宿主的 `highlightLanguagesMutator` 承担，因此同一门
-    // 语言可能被重复上报，宿主按幂等处理（`docs/core-ui-separation.md` 第 4.9 节）。
+    // 语言可能被重复上报，宿主按幂等处理（`docs/architecture/core-ui-separation.md` 第 4.9 节）。
     core.emit(json!({ "type": "highlightLanguagesUsed", "languages": languages }));
 }
 

@@ -216,7 +216,7 @@ export function getPreloadedHighlightLanguages(): string[] {
  * 宿主注入的首帧主题（`window.__initialTheme`）。
  *
  * 主题的权威值由宿主的 `setTheme` 消息下发（VS Code 跟随编辑器主题、Electron 跟随
- * nativeTheme）；首帧主题是**同步注入**的事实（`docs/webview-facts.md` 第 3 节），
+ * nativeTheme）；首帧主题是**同步注入**的事实（`docs/hosts/webview-facts.md` 第 3 节），
  * 用于 React 渲染前选对兜底背景色，避免浅色主题下先闪一帧深色 loading。
  *
  * 注入缺失或取值非法说明宿主接线不完整，直接抛错——不猜一个主题。

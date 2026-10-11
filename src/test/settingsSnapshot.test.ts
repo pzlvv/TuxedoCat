@@ -1,7 +1,7 @@
 /**
  * 单测：配置快照的解析与宿主侧配置存储。
  *
- * 覆盖三块（`docs/core-ui-separation.md` 第 4 节）：
+ * 覆盖三块（`docs/architecture/core-ui-separation.md` 第 4 节）：
  * - `resolveSettingsSnapshot`：默认值补缺、白名单校验、provider 规范化、
  *   模型限值的预解析（注册表 + 用户覆盖）与兜底；
  * - `parseMcpServerDefinitions`：`mcp.json` 的包裹层、command/environment 归一、

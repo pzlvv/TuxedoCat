@@ -233,7 +233,7 @@ pub fn run_spin_command(
 
     // 标题改成「Spin Design」：写 `meta.json` 并广播 `titleChanged`（webview 靠它
     // 刷新打开中对话的标题栏；`titleChanged` 事件表的来源包含 skills/bundled/spin）。
-    // 落盘文本统一英文（`docs/core-ui-separation.md` 第 4.8 节）。
+    // 落盘文本统一英文（`docs/architecture/core-ui-separation.md` 第 4.8 节）。
     core.update_conversation_title(session_id, "Spin Design");
 
     let host = Arc::new(CoreSpinHost::new(Arc::clone(core), session_id));
@@ -263,7 +263,7 @@ pub fn run_spin_command(
 
 /// 结构问题的文案键与参数（`variable-no-value` 带上具体变量名）
 ///
-/// Core 只给「键 + 参数」，翻译在 UI（`docs/core-ui-separation.md` 第 4.9 节）。
+/// Core 只给「键 + 参数」，翻译在 UI（`docs/architecture/core-ui-separation.md` 第 4.9 节）。
 fn spin_issue_notice(cwd: &str, issue: &spin::SpinProjectState) -> (&'static str, Value) {
     match issue {
         spin::SpinProjectState::EmptyNode => (crate::core_text::SPIN_EMPTY_NODE, json!({})),
@@ -285,7 +285,7 @@ fn spin_issue_notice(cwd: &str, issue: &spin::SpinProjectState) -> (&'static str
     }
 }
 
-/// 发一条瞬时提示（键 + 参数，`docs/core-ui-separation.md` 第 4.9 节）
+/// 发一条瞬时提示（键 + 参数，`docs/architecture/core-ui-separation.md` 第 4.9 节）
 fn emit_spin_notice(core: &Arc<Core>, session_id: &str, key: &str, params: Value, level: &str) {
     core.emit(json!({
         "type": "notice",

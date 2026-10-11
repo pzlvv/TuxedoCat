@@ -28,7 +28,7 @@ function isChineseLocale(value: unknown): boolean {
 /**
  * 初始 UI 语言：读取宿主注入的 `window.__uiLocale`（来自宿主配置）。
  *
- * 这是**同步注入**的事实（`docs/webview-facts.md` 第 3 节）：页面首帧之前由宿主写入，
+ * 这是**同步注入**的事实（`docs/hosts/webview-facts.md` 第 3 节）：页面首帧之前由宿主写入，
  * 不存在「尚未到达」的窗口。缺失或取值非法说明宿主接线不完整，直接抛错，
  * 与 `getHostInfo()` 同一口径——不猜一个默认语言。
  */
@@ -112,7 +112,7 @@ const loggedMissingKeys = new Set<string>();
  * Placeholders like `{name}` in the resource are replaced with the values
  * given in `params`. Missing keys fall back to English, then to the key itself
  * （缺失时记一条日志：键由 core 产出，缺失即对等约束被破坏，
- * `docs/core-ui-separation.md` 第 4.8 节）。
+ * `docs/architecture/core-ui-separation.md` 第 4.8 节）。
  */
 export function t(key: string, params?: Record<string, string | number>): string {
   const dict = getDict();

@@ -1,5 +1,5 @@
 /**
- * 单测：Client / Connection 连接模型（`docs/client-connection.md` 第 11 节）。
+ * 单测：Client / Connection 连接模型（`docs/core/client-connection.md` 第 11 节）。
  *
  * 覆盖验收要点：
  * 1. 打开一个工作区建立一个 Connection；重复打开只激活已有；

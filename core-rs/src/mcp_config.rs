@@ -42,7 +42,7 @@ use crate::history;
 use crate::util;
 
 // 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
-// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+// 契约清理时连同调用点一起删除（`docs/architecture/core-ui-separation.md` 第 4 节）。
 #[allow(dead_code)]
 /// `mcp.json` 路径（与全局 `settings.json` 同目录）
 pub fn mcp_config_path() -> Result<PathBuf, String> {
@@ -57,7 +57,7 @@ pub fn is_plain_object(value: &Value) -> bool {
 }
 
 // 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
-// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+// 契约清理时连同调用点一起删除（`docs/architecture/core-ui-separation.md` 第 4 节）。
 #[allow(dead_code)]
 /// 从任意 settings 对象里取出 `mcp.enabled`；字段缺失 / 类型不合法时返回 `None`。
 ///
@@ -75,7 +75,7 @@ pub fn extract_enabled_list(settings: &Value) -> Option<Vec<String>> {
 }
 
 // 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
-// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+// 契约清理时连同调用点一起删除（`docs/architecture/core-ui-separation.md` 第 4 节）。
 #[allow(dead_code)]
 /// 取出服务器映射：优先 `mcp` / `mcpServers` 包裹层，否则把根对象本身当作映射。
 ///
@@ -91,7 +91,7 @@ pub fn extract_server_map(root: &Value) -> &Value {
 }
 
 // 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
-// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+// 契约清理时连同调用点一起删除（`docs/architecture/core-ui-separation.md` 第 4 节）。
 #[allow(dead_code)]
 /// 把任意 `command` 值规范化为字符串数组（兼容 string / string[]）。
 ///
@@ -116,7 +116,7 @@ pub fn normalize_command(value: &Value) -> Vec<String> {
 }
 
 // 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
-// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+// 契约清理时连同调用点一起删除（`docs/architecture/core-ui-separation.md` 第 4 节）。
 #[allow(dead_code)]
 /// 把任意 `environment` / `headers` 值规范化为 `string -> string` 映射。
 ///
@@ -141,7 +141,7 @@ pub fn normalize_string_map(value: &Value) -> Vec<(String, String)> {
 }
 
 // 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
-// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+// 契约清理时连同调用点一起删除（`docs/architecture/core-ui-separation.md` 第 4 节）。
 #[allow(dead_code)]
 /// 把任意 `url` 值规范化为去掉首尾空白的字符串（对齐 `normalizeUrl`）。
 pub fn normalize_url(value: &Value) -> String {
@@ -170,7 +170,7 @@ pub fn is_remote_type(type_name: &str) -> bool {
 }
 
 // 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
-// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+// 契约清理时连同调用点一起删除（`docs/architecture/core-ui-separation.md` 第 4 节）。
 #[allow(dead_code)]
 /// 归一化传输类型（对齐 `normalizeType`）。
 ///
@@ -201,7 +201,7 @@ pub fn is_remote_server(type_name: &str, url: &str, command: &[String]) -> bool 
 }
 
 // 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
-// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+// 契约清理时连同调用点一起删除（`docs/architecture/core-ui-separation.md` 第 4 节）。
 #[allow(dead_code)]
 /// 模拟 JS 的 `a ?? b ?? c`（只在 `null` / `undefined` 时落空；缺失键等同 undefined）。
 fn first_defined(value: &Value, keys: &[&str]) -> Value {
@@ -288,7 +288,7 @@ impl McpServerInfo {
 }
 
 // 过渡期：读取路径已迁到配置快照，本函数/常量只剩测试在用；
-// 契约清理时连同调用点一起删除（`docs/core-ui-separation.md` 第 4 节）。
+// 契约清理时连同调用点一起删除（`docs/architecture/core-ui-separation.md` 第 4 节）。
 #[allow(dead_code)]
 /// 解析 `mcp.json` 的**纯函数**部分（对齐 `readMcpServerDefinitions` 的对象遍历）。
 ///
@@ -503,7 +503,7 @@ fn persist_session_mcp(session_id: &str, enabled: &[String]) {
 /// MCP 服务器定义（不含启用状态）。
 ///
 /// 来自配置快照：UI 在连接建立时读一次 `mcp.json`、解析后随 `hostEnvironmentProvided`
-/// 下发；Core 不感知文件路径，中途修改不通知（`docs/core-ui-separation.md` 第 4.7 节）。
+/// 下发；Core 不感知文件路径，中途修改不通知（`docs/architecture/core-ui-separation.md` 第 4.7 节）。
 /// 快照未到达时返回空数组。
 pub fn read_mcp_server_definitions() -> Vec<McpServerDefinition> {
     crate::settings::mcp_server_definitions().unwrap_or_default()

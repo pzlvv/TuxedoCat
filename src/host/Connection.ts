@@ -1,5 +1,5 @@
 /**
- * Connection - 宿主与一个 Core 之间的一对一连接（`docs/client-connection.md`）。
+ * Connection - 宿主与一个 Core 之间的一对一连接（`docs/core/client-connection.md`）。
  *
  * Connection 是总线、就绪状态与生命周期的**作用域**：
  * - 总线（`AssistantEventBus`）1:1 属于 Connection；总线载荷不带 connectionId；
@@ -31,7 +31,7 @@ import type { StandaloneCoreBus } from './standalone/StandaloneEventBus.js';
 import type { WorkspaceRef } from './workspaceRef.js';
 import { workspaceRefDisplayPath } from './workspaceRef.js';
 
-/** Connection 生命周期状态（`docs/client-connection.md` 第 7 节） */
+/** Connection 生命周期状态（`docs/core/client-connection.md` 第 7 节） */
 export type ConnectionState = 'connecting' | 'ready' | 'closed';
 
 /** Core 非预期退出 / 无法恢复时的回调（宿主据此把受影响的忙会话标记为失败） */

@@ -1,5 +1,5 @@
 /**
- * Client - 宿主级唯一实例（`docs/client-connection.md`）。
+ * Client - 宿主级唯一实例（`docs/core/client-connection.md`）。
  *
  * 职责：
  * - 维护 `workspaceId → connectionId` 主表与 `sessionId → connectionId` 派生表；
@@ -119,7 +119,7 @@ export class Client implements AssistantEventBus {
   /**
    * 按 sessionId 取 Connection。
    *
-   * 查不到归属时报错（`docs/client-connection.md` 第 6 节：不静默丢弃）。
+   * 查不到归属时报错（`docs/core/client-connection.md` 第 6 节：不静默丢弃）。
    * 只有一个 Connection 时（Embedded / 单工作区宿主）把它作为归属并登记——
    * 这是「数量对上层透明」的退路，不改变多连接下的严格路由。
    */
@@ -169,7 +169,7 @@ export class Client implements AssistantEventBus {
       this.workspaceToConnection.delete(key);
     }
 
-    // Embedded：恒一个 Connection，工作区是会话属性（`docs/client-connection.md` 第 3.2 节）
+    // Embedded：恒一个 Connection，工作区是会话属性（`docs/core/client-connection.md` 第 3.2 节）
     if (this.options.coreKind === 'embedded') {
       const only = [...this.connections.values()][0];
       if (only) {
@@ -372,7 +372,7 @@ export class Client implements AssistantEventBus {
     }
     if (event.type === 'conversationSpaceCleared') {
       // 这个事件的 `sessionId` 是**对话空间目录名**，不是会话 id（`conversationSpaceCleared`
-      // 的载荷约定，DEVELOPMENT.md 第 4.3 节），
+      // 的载荷约定，docs/architecture/events.md 第 2.3 节），
       // 不能走会话路由：目录名永远不是已登记的会话，多连接下 routeSession 会抛
       // 「查不到归属」。清空目标跟随**当前活动连接**——面板的空间统计就来自它
       // （`requestConversationSpaces` 同为无会话路由），两边看到的是同一个 core 的数据目录。
@@ -479,7 +479,7 @@ export class Client implements AssistantEventBus {
    *
    * 本地路径按宿主口径判等（大小写 / 尾分隔符）；远程路径是**目标机器上的字符串**，
    * 逐字比较——对远程路径跑本地规范化会把 `/home/pz/a` 变成 `D:\home\pz\a`，
-   * 也可能把大小写不同的两个目录误判成同一个（`docs/client-connection.md` 第 4 节）。
+   * 也可能把大小写不同的两个目录误判成同一个（`docs/core/client-connection.md` 第 4 节）。
    */
   private connectionForWorkspacePath(path: string): Connection | undefined {
     for (const connection of this.connections.values()) {

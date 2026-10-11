@@ -1,5 +1,5 @@
 /**
- * abort 按钮三态推导单测（`docs/abort-button.md` 第 1.1 节）。
+ * abort 按钮三态推导单测（`docs/features/abort-button.md` FR-001）。
  *
  * 根事实 → 颜色 / 可点性的唯一实现是 `src/host/abortButtonState.ts` 的纯函数，
  * webview 与测试共用它，不在组件里另写一遍 `if`。

@@ -9,8 +9,8 @@ last_reviewed: 2026-10-11
 的唯一来源与去字面化契约：产品名只允许出现在**两个定义处**，其余源码、构建脚本、用例、
 文档一律经变量引用或占位符表达，因此改产品名不需要全仓搜索替换。
 
-交叉引用：[DEVELOPMENT.md 第 1.3 节](../DEVELOPMENT.md#13-目录布局)（目录布局）、[第 5.9 节](../DEVELOPMENT.md#59-同一字段的默认值只有一处)（同一字段的默认值只有一处）、
-`docs/standalone-core.md`（Core 产物名与部署目录）、`docs/tui-installer.md`（安装器分发名）。
+交叉引用：[docs/architecture/repo-map.md](../architecture/repo-map.md)（目录布局）、[第 9 节](../architecture/principles.md#9-同一字段的默认值只有一处)（同一字段的默认值只有一处）、
+`docs/core/standalone-core.md`（Core 产物名与部署目录）、`docs/features/tui-installer.md`（安装器分发名）。
 
 ## 1. 定义处
 

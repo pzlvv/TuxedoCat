@@ -17,9 +17,9 @@ user-invocable: true
    三类：已满足（附证据落点）/ 偏差（要么改代码、要么改 spec 并留痕）/ 未做（回写
    tasks.md，不勾选）。
 2. 存在偏差或未做时停：与用户裁决后再继续；收敛不绿不归档。
-3. 收敛绿后按「影响基线」把 delta 并入 as-built 规格（`docs/<topic>.md`、DEVELOPMENT.md
+3. 收敛绿后按「影响基线」把 delta 并入 as-built 规格（`docs/<topic>.md`、`docs/architecture/events.md`
    事件表等），新增文档登记 `docs/README.md` 地图；影响基线里的行内代码改为链接。
-4. 落地时同步需求基线：spec 承诺的新增 US 进 `docs/user-stories.md` 并配 e2e 用例或
+4. 落地时同步需求基线：spec 承诺的新增 US 进 `docs/features/user-stories.md` 并配 e2e 用例或
    登记豁免。
 5. 跑 `npm run docs:freshness` 看一眼报告（只提示，不阻塞）；`npm run test:all --
    docs-lint` 必须绿。

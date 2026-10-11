@@ -371,7 +371,7 @@ export interface LoadedConversationCommonContext {
  * 由调用点传入分支语义：无 savedState 分支传回退基线值（与原实现一致）。
  *
  * 回退链的末端是 `undefined`（尚未到达）而不是某个默认值：宿主把 `settings.json` 的
- * 默认值已经解析进消息里，webview 不再自备兜底（`docs/webview-facts.md` 第 3 节）。
+ * 默认值已经解析进消息里，webview 不再自备兜底（`docs/hosts/webview-facts.md` 第 3 节）。
  * 返回解析出的 savedContext 关键字段供调用点继续计算 contextLength / 新建 state。
  */
 export function applyLoadedConversationState(
@@ -425,7 +425,7 @@ export function applyLoadedConversationState(
 /**
  * 设置面板载荷的必填字段校验：返回缺失 / 非法的字段名列表。
  *
- * 载荷由宿主一次给齐（`docs/webview-facts.md` 第 6 节），缺字段即协议错误；
+ * 载荷由宿主一次给齐（`docs/hosts/webview-facts.md` 第 6 节），缺字段即协议错误；
  * 此时不打开面板，避免用空值把用户误导去重配。
  */
 export function missingPanelFields(payload: LlmConfigPanelPayload): string[] {

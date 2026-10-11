@@ -286,7 +286,7 @@ export async function spinLoop(
     if (!next) {
       logger.info('SpinLoop', 'All nodes completed');
       // 瞬时状态通知：只发 UI、不落盘（不 push mutableMessages）。
-      // 文案键化，由 UI 翻译（`docs/core-ui-separation.md` 第 4.9 节）。
+      // 文案键化，由 UI 翻译（`docs/architecture/core-ui-separation.md` 第 4.9 节）。
       emitToUi({
         type: 'notice',
         sessionId,

@@ -1,5 +1,5 @@
 /**
- * Core 实现的选择（见 docs/standalone-core.md 第 3 节）。
+ * Core 实现的选择（见 docs/core/standalone-core.md 第 3 节）。
  *
  * 装配哪种 Core 由本模块唯一决定：
  * - `embedded`：`src/core` 的 TypeScript 实现，与 UI 同进程；

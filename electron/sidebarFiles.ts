@@ -5,7 +5,7 @@
  * 回收站（shell.trashItem）与删除确认框都在 `electron/main.ts` 的 IPC 处理器里做，
  * 本模块只提供「路径校验 + 目录读取 + 路径格式化」这些纯 fs 逻辑，可在单测中直接使用。
  *
- * 安全面（DEVELOPMENT.md 第 5.1 节：接线缺失直接报错，不静默降级）：
+ * 安全面（docs/architecture/principles.md 第 1 节：接线缺失直接报错，不静默降级）：
  * - 渲染层传来的 `rel` 是「'/' 分隔的相对路径」这一约定格式（Windows 上 path API
  *   同样接受 '/'，无需翻译分隔符）；所有操作先经 `resolveWithinRoot` 解析，
  *   越界（`..` 上跳、绝对路径、指向根目录本身）一律返回 null，调用方整单拒绝。

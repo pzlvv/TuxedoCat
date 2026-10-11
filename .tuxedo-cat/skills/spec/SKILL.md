@@ -21,10 +21,10 @@ user-invocable: true
    「支持 / 优化 / 合理 / 尽量」这类不可判定的词。
 5. 功能需求：`### FR-nnn：<标题>`（nnn 三位、不重复），只写「应该是什么样」，
    不写实现方案（那是 /plan 的事）。
-6. 补齐边界与错误路径、非目标、对 docs/user-stories.md 的影响（新增 US 必须登记 e2e
+6. 补齐边界与错误路径、非目标、对 docs/features/user-stories.md 的影响（新增 US 必须登记 e2e
    用例或按既有口径登记豁免；流程类改动写「无新增 US」+ 理由）。
 7. 未决问题写入「待澄清」节：`[待澄清]` 必须同行带去向链接（转 ADR / 转
-   DEVELOPMENT.md 第 6 章 / 写成非目标）；实施前必须清零。
+   [docs/architecture/open-questions.md](../../../docs/architecture/open-questions.md) / 写成非目标）；实施前必须清零。
 8. 停：把 spec.md 交给用户评审，等明确反馈。
 
 规则出处：`specs/README.md`（工作流与守卫口径）、`AGENTS.md` 第 0 节（specs/ 例外与

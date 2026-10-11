@@ -2,7 +2,7 @@
 //!
 //! v1 控制在常用子集：标题 / 强调 / 行内代码 / 围栏代码 / 列表 / 引用 / 表格 /
 //! 链接 / 分隔线；原生 HTML 片段按字面文本展示（终端无 DOM）；shiki ANSI 高亮不在
-//! v1（待定项，见 docs/tui.md 第 11.2 节）。产出带样式的行，渲染层直接消费。
+//! v1（待定项，见 docs/hosts/tui.md 第 11.2 节）。产出带样式的行，渲染层直接消费。
 
 /// 行内样式（渲染层映射到 ratatui Style）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

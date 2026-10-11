@@ -28,7 +28,7 @@
  * }
  *
  * **远程凭证（SSH 口令）随 endpoint 一起明文落盘**：重启后要能直接恢复并打开
- * 已连接过的工作区（`docs/client-connection.md` 第 9 节）；落盘是唯一副本，
+ * 已连接过的工作区（`docs/core/client-connection.md` 第 9 节）；落盘是唯一副本，
  * 不向渲染进程整表下发（候选列表只要 host / 端口 / 用户，口令按选定项单独取）。
  *
  * 读取口径：字段缺失或非法即按「没有」处理，不做任何跨字段回退
@@ -62,7 +62,7 @@ export interface WorkspaceState {
   /** 最近打开的工作区：与 `openWorkspaces` 同格式（字符串 = 本地路径） */
   recentWorkspaces?: Array<string | SerializedWorkspaceRef>;
   /**
-   * SSH 连接历史（`docs/client-connection.md` 第 9 节）：最近连接在前，最多 20 条。
+   * SSH 连接历史（`docs/core/client-connection.md` 第 9 节）：最近连接在前，最多 20 条。
    * **口令明文落盘**——历史的作用就是下次回填表单；只落盘、不整表下发渲染进程。
    */
   recentSshConnections?: SshHistoryEntry[];

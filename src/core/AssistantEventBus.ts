@@ -6,11 +6,11 @@
  * - UI（WebViewUI）订阅 CoreEvent / CoreRequest，发 UiEvent。
  * 事件类型是两边唯一的公共词汇表。
  *
- * 事件命名约定（见 DEVELOPMENT.md 第 3.4 节）：
+ * 事件命名约定（见 docs/architecture/events.md 第 2 节）：
  * - CoreEvent / CoreRequest 的 type = 处理器方法名去掉 on 前缀
  * - UiEvent 的 type 是过去式，描述用户已经做完的动作
  *
- * 边界语义（见 DEVELOPMENT.md 第 3.7 节）：
+ * 边界语义（见 docs/architecture/events.md 第 6 节）：
  * - emitToUi 时 onCoreEvents 尚未注册 → 抛错（bootstrap 顺序错误，启动期暴露）
  * - emitToCore / onUiEvent 对某 type 尚无 core 订阅者 → 静默丢弃（合法中间态）
  * - request() 无内置超时：响应方不存在 / 响应丢失会永久挂起；
@@ -35,11 +35,11 @@ import type { NoticeLevel, NoticeParams } from './coreText.js';
  *
  * 不按「渲染 / 控制」再分组：事件是纯数据，分组只会多一层没有语义的包装；
  * 「谁来处理」由订阅方（WebViewUI）在 `onCoreEvents` 里决定，
- * 逐事件的触发点与处理见 DEVELOPMENT.md 第 4 章。
+ * 逐事件的触发点与处理见 docs/architecture/events.md 第 2 节。
  */
 export type CoreEvent =
   /**
-   * Core 已就绪（处理完 `hostEnvironmentProvided`，`docs/core-ui-separation.md` 第 7 节）。
+   * Core 已就绪（处理完 `hostEnvironmentProvided`，`docs/architecture/core-ui-separation.md` 第 7 节）。
    *
    * 每次应用配置快照后都发一次（首次握手、以及后续每次重新推送快照），
    * 宿主据此判定「Core 已跟上最新配置」。Core 侧的就绪状态本身是幂等的。
@@ -115,7 +115,7 @@ export type CoreEvent =
    * 本条消息里用到了哪些高亮语言（围栏代码块语言）。
    *
    * core 只做「从消息里扫出来」这一件事，**不维护已记录集合**：`highlightLanguages`
-   * 是 UI 专属字段（`docs/core-ui-separation.md` 第 4.9 节），去重与上限由宿主的
+   * 是 UI 专属字段（`docs/architecture/core-ui-separation.md` 第 4.9 节），去重与上限由宿主的
    * `highlightLanguagesMutator` 承担，写盘走 `UIHost.updateSettingsJson`。
    * 因此同一语言可能被重复上报，宿主按幂等处理。
    */
@@ -155,7 +155,7 @@ export type CoreEvent =
    */
   | { type: 'log'; message: string }
   /**
-   * 瞬时状态提示（`docs/core-ui-separation.md` 第 4.9 节）。
+   * 瞬时状态提示（`docs/architecture/core-ui-separation.md` 第 4.9 节）。
    *
    * core 不拼文案：只给「键 + 参数」，翻译与呈现由 UI 承担（键在 `coreText.ts` 登记）。
    * 提示不进消息流、不落盘；`sessionId` 指出提示归属的会话。
@@ -270,7 +270,7 @@ export type UiEvent =
    *
    * core 侧由引擎触发 `tools/bash/ManualBackground` 注册表里该 `toolUseId` 的
    * 转换；转换成功后暂停下一轮 LLM 请求（结果照常进上下文）。没有匹配的
-   * 前台执行时幂等忽略（规格见 `docs/background-bash.md`）。
+   * 前台执行时幂等忽略（规格见 `docs/features/background-bash.md`）。
    */
   | { type: 'bashBackgroundRequested'; sessionId: string; toolUseId: string }
   /**
@@ -278,7 +278,7 @@ export type UiEvent =
    *
    * `uuid` 是排队项携带的消息 uuid：core 按 uuid 配对，只丢弃引擎队列里尚未消费的
    * 同一消息；已被消费（进入上下文）或被更新的排队消息替换时不动，也不打断正在
-   * 运行的查询（`docs/user-message-pipeline.md` 第 5.2 节）。
+   * 运行的查询（`docs/features/user-message-pipeline.md` FR-003）。
    */
   | { type: 'queuedMessageDiscarded'; sessionId: string; uuid: string }
 
@@ -292,7 +292,7 @@ export type UiEvent =
    *
    * 只携带 `sessionId`：会话归属的工作目录由宿主先经 `sessionWorkspaceAssigned`
    * 登记（`WebviewMessageHandler.handleStartNewConversation` 先登记再发本事件），
-   * core 按会话解析，不从本事件读取。Standalone Core 不发本事件（见 docs/core-parity.md）。
+   * core 按会话解析，不从本事件读取。Standalone Core 不发本事件（见 docs/core/core-parity.md）。
    */
   | { type: 'conversationStarted'; sessionId: string }
   | { type: 'conversationOpened'; sessionId: string }
@@ -359,7 +359,7 @@ export type UiEvent =
   /**
    * 宿主环境与配置快照（连接建立后由 UI 发一次）。
    *
-   * 宿主固有差异 + 配置快照一次给齐（`docs/core-ui-separation.md` 第 3.2 节）：
+   * 宿主固有差异 + 配置快照一次给齐（`docs/architecture/core-ui-separation.md` 第 3.2 节）：
    * - 环境三项（extensionPath / logToConsole / configDirName）是宿主固有差异；
    * - `settings` 是配置快照，`mcpServers` 是 `mcp.json` 的解析结果。
    *
@@ -373,7 +373,7 @@ export type UiEvent =
        *
        * Embedded Core 用它定位随宿主分发的 ripgrep（`utils/ripgrep.ts`）；
        * Standalone Core 的自带资源以**自己的可执行文件目录**为基准（与可执行文件同级的
-       * `ripgrep/`），这里只作本机开发期的兜底（`docs/standalone-core.md` 第 4 节）。
+       * `ripgrep/`），这里只作本机开发期的兜底（`docs/core/standalone-core.md` 第 4 节）。
        */
       extensionPath: string;
       /** core 日志是否同时输出到控制台 */
@@ -413,7 +413,7 @@ export type UiEvent =
 /**
  * 需要 core 返回结果的请求（`CoreRequest` 的反方向）。
  *
- * 宿主不直接读取 core 的磁盘数据（`docs/standalone-core.md` 第 10 节）：需要
+ * 宿主不直接读取 core 的磁盘数据（`docs/core/standalone-core.md` 第 10 节）：需要
  * 「core 的事实」时由宿主发起请求、core 应答。Embedded 下这些事实本来就在同进程，
  * 请求退化为一次函数调用，结果一致。
  *
@@ -511,10 +511,10 @@ export type UiRequestResultMap = {
  * 只有 core 能提供的事实进这里；宿主自己的界面状态（如 Electron 的
  * 「视图已打开」）由宿主自己维护，不混进来。
  *
- * 契约只放**根事实**（`DEVELOPMENT.md` 第 5.8 节）：`queryRunning` / `waiting` / `compacting` /
+ * 契约只放**根事实**（``docs/architecture/principles.md` 第 8 节）：`queryRunning` / `waiting` / `compacting` /
  * `backgroundRunning` / `subAgentRunning` 是各来源的事实，`idle` 是它们的合取。
  * 只关心「忙不忙」的消费者（流水灯 / 托盘）读 `idle`；要区分前台与后台的消费者
- * （abort 按钮三态，`docs/abort-button.md`）读根事实自己推导表现（`DEVELOPMENT.md` 第 5.6 节）。
+ * （abort 按钮三态，`docs/features/abort-button.md`）读根事实自己推导表现（``docs/architecture/principles.md` 第 6 节）。
  */
 export interface SessionRuntimeState {
   sessionId: string;
@@ -523,7 +523,7 @@ export interface SessionRuntimeState {
    *
    * 派生字段：其余根事实（`queryRunning` / `waiting` / `compacting` /
    * `backgroundRunning` / `subAgentRunning`）全为假时才为真。保留它是为了让
-   * 流水灯 / 托盘这类只关心「忙不忙」的消费者不必自己合取（`DEVELOPMENT.md` 第 5.8 节）。
+   * 流水灯 / 托盘这类只关心「忙不忙」的消费者不必自己合取（``docs/architecture/principles.md` 第 8 节）。
    */
   idle: boolean;
   /** 正在等待用户操作（ask user / 权限确认）——流水灯显示黄色 */

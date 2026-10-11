@@ -7,11 +7,11 @@ last_reviewed: 2026-10-11
 
 本规格界定第三个宿主（继 VS Code webview 宿主、Electron 宿主之后）的终端实现：纯 Rust
 （`tui-rs/`），直连 Standalone Core 的帧通道，不依赖 Node。分发与 Core 部署见
-`docs/tui-installer.md`。
+`docs/features/tui-installer.md`。
 
 本规格界定 TUI 的现状。TUI 与 core-rs 同语言、同阻塞线程模型；core 的两种实现
-（`docs/standalone-core.md`）与事件词汇表（[DEVELOPMENT.md 第 3 章](../DEVELOPMENT.md#3-核心契约assistanteventbus)、[第 4 章](../DEVELOPMENT.md#4-事件列表)）零改动，
-不产生 parity 对照表与两侧测试的同步义务。帧协议见 `docs/standalone-core.md`
+（`docs/core/standalone-core.md`）与事件词汇表（[docs/architecture/events.md 第 1 节](../architecture/events.md#1-总线契约)、[第 2 节](../architecture/events.md#2-事件词汇表)）零改动，
+不产生 parity 对照表与两侧测试的同步义务。帧协议见 `docs/core/standalone-core.md`
 第 6 节；`src/host/` 的宿主层（WebViewUI 及其子模块）继续服务 VS Code 与
 Electron 两个宿主，TUI 侧的等价行为由 `tui-rs/src/host.rs` 移植承载。
 
@@ -98,7 +98,7 @@ notice 提示后退出。
 
 ### 2.4 Core 产物定位（`tui-rs/src/core_root.rs`）
 
-部署布局（[docs/tui-installer.md 第 1 节](tui-installer.md#1-能力)）：`<前缀>/share/<产品名>/<指纹>/` 放
+部署布局（[docs/features/tui-installer.md 第 2 节](../features/tui-installer.md#2-功能需求)）：`<前缀>/share/<产品名>/<指纹>/` 放
 Core 槽位，`<前缀>/share/<产品名>/ripgrep/` 是全部槽位共享的 rg，TUI 二进制在
 `<前缀>/share/<产品名>/tui[.exe]`（unix 上另有软链接 `<前缀>/bin/<产品名>` 指向它）。
 
@@ -117,7 +117,7 @@ Core 槽位，`<前缀>/share/<产品名>/ripgrep/` 是全部槽位共享的 rg�
 - 部署布局：`<根>/share/<产品名>/` 下任一「`fingerprint` + Core 二进制都齐」的
   指纹槽位（多版本并存取排序最大的一员，只为确定）；
 - 仓库布局（开发期）：`<根>/resources/core/<arch-platform>/<core.binaryName>[.exe]`
-  （平台矩阵见 [docs/standalone-core.md 第 4.1 节](standalone-core.md#41-平台矩阵)）。
+  （平台矩阵见 [docs/core/standalone-core.md 第 4.1 节](../core/standalone-core.md#41-平台矩阵)）。
 
 ## 3. 选型与产物形态
 
@@ -163,7 +163,7 @@ tui-rs/
   store 是只读投影，不反推、不猜默认值；未知动作在译层就不产生。
 - i18n：`uiLanguage`（zh/en/auto）在启动期收敛（auto → 宿主 locale / 系统语言，
   Windows 查 PowerShell 的 UI 语言），TUI 自有文案走 `tt()`；core `notice` 键复用
-  webview 字典的对应条目（键缺失回显键本身，[docs/core-ui-separation.md 第 4.9 节](core-ui-separation.md#49-瞬时状态通知)）。
+  webview 字典的对应条目（键缺失回显键本身，[docs/architecture/core-ui-separation.md 第 4.9 节](../architecture/core-ui-separation.md#49-瞬时状态通知)）。
 
 ## 5. 译层映射（`host.rs` ⇆ TS 宿主行为）
 
@@ -292,7 +292,7 @@ pending 的事实都在 store，覆盖层只持导航类局部状态。
 
 - `npm run build:tui`（cargo build --release）→ `tui-rs/target/release/standalone-tui[.exe]`；
   `npm run tui` 启动（cargo run --release）。
-- `npm run package:tui` 生成安装程序（`docs/tui-installer.md`），并挂在
+- `npm run package:tui` 生成安装程序（`docs/features/tui-installer.md`），并挂在
   `npm run package` 链尾。
 - 依赖：`ratatui` / `crossterm` / `serde` / `serde_json`（preserve_order）/
   `uuid`（v4）；无 Node 运行时依赖。
@@ -336,7 +336,7 @@ pending 的事实都在 store，覆盖层只持导航类局部状态。
 4. **渲染上限**：消息流只渲染最近 150 条（整帧重绘的帧率约束），更早的历史经
    会话加载仍在 store，翻页查看留给后续。
 5. **Edit/Write 的 `_meta` 落盘**：TS 宿主在权限通过前把 before/after 追加写进
-   会话 `_meta`（[standalone-core.md 第 10 节](standalone-core.md#10-宿主侧的-core-事实读取)的宿主例外）；Rust TUI 不直接写
+   会话 `_meta`（[standalone-core.md 第 10 节](../core/standalone-core.md#10-宿主侧的-core-事实读取)的宿主例外）；Rust TUI 不直接写
    core 的会话文件，回滚依赖 core 侧 `tool_result` 备份（`rollback.rs` 的兜底路径）。
 
 ### 11.2 待定项

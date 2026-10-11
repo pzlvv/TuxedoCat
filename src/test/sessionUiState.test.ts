@@ -1,5 +1,5 @@
 /**
- * SessionUiState 单测（docs/webview-ui.md）：
+ * SessionUiState 单测（docs/hosts/webview-ui.md）：
  * - `isQueryActive` 只认本会话**自己的**查询（queryBegin/queryEnd 计数）；
  * - 回归用例：后台子代理让 `sessionRuntime` 的父会话非空闲（idle=false），
  *   但父会话自己的查询判定仍为 false——`conversationLoaded.hasActiveQuery` 必须

@@ -1,5 +1,5 @@
 /**
- * 工作区标签页的连接状态机（`docs/host-matrix.md`「不可用工作区」）。
+ * 工作区标签页的连接状态机（`docs/hosts/host-matrix.md`「不可用工作区」）。
  *
  * 三态：available 可用 / unavailable 不可用（红点）/ connecting 建链中（黄色呼吸点），
  * 按工作区去重键（`workspaceRefKey`）记录。这是 Electron 主进程专属事实（VS Code

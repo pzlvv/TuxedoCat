@@ -9,10 +9,10 @@ last_reviewed: 2026-10-11
 webview 不持有任何配置默认值；事实尚未到达时，界面给出明确的等待态，不显示猜测值，也不把
 猜测值当作配置回传给宿主。
 
-参考 `docs/contracts.md`（webview 侧契约：HostInfo）、`docs/webview-ui.md`（会话级 UI 状态）、
-[DEVELOPMENT.md 第 5.1 节](../DEVELOPMENT.md#51-不过度-fallback)（不过度 fallback）、[第 5.6 节](../DEVELOPMENT.md#56-core-描述事实ui-决定表现)（core 描述事实，UI 决定表现）、[第 5.7 节](../DEVELOPMENT.md#57-一份事实只有一个写入点)（一份
-事实只有一个写入点）、[第 5.9 节](../DEVELOPMENT.md#59-同一字段的默认值只有一处)（同一字段的默认值只有一处）、[第 5.10 节](../DEVELOPMENT.md#510-webview-不持有事实的默认值)（webview 不持有
-事实的默认值）；[docs/core-ui-separation.md 第 4 节](core-ui-separation.md#4-配置归-ui)（配置归 UI 侧）。
+参考 `docs/architecture/contracts.md`（webview 侧契约：HostInfo）、`docs/hosts/webview-ui.md`（会话级 UI 状态）、
+[docs/architecture/principles.md 第 1 节](../architecture/principles.md#1-不过度-fallback)（不过度 fallback）、[第 6 节](../architecture/principles.md#6-core-描述事实ui-决定表现)（core 描述事实，UI 决定表现）、[第 7 节](../architecture/principles.md#7-一份事实只有一个写入点)（一份
+事实只有一个写入点）、[第 9 节](../architecture/principles.md#9-同一字段的默认值只有一处)（同一字段的默认值只有一处）、[第 10 节](../architecture/principles.md#10-webview-不持有事实的默认值)（webview 不持有
+事实的默认值）；[docs/architecture/core-ui-separation.md 第 4 节](../architecture/core-ui-separation.md#4-配置归-ui)（配置归 UI 侧）。
 
 ---
 
@@ -69,7 +69,7 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
 | 各模型的限值与协议 | 随面板载荷的 `providers[].modelConfigs` | 不打开面板 | `src/host/settingsRead.ts` |
 
 「同步注入」的三种事实在首帧之前就位，没有等待窗口；缺失说明宿主接线不完整，
-按 [DEVELOPMENT.md 第 5.1 节](../DEVELOPMENT.md#51-不过度-fallback) 直接抛错。
+按 [docs/architecture/principles.md 第 1 节](../architecture/principles.md#1-不过度-fallback) 直接抛错。
 
 ---
 
@@ -113,9 +113,9 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
   「读取失败」与「未配置」是两回事：只有后者才引导用户配置；用一份空面板顶上去会把
   用户误导去重配，甚至把空值当默认值写回磁盘。
 - 打开面板前宿主重读一次磁盘，使用户在外部修改 `settings.json` 后不必重载窗口
-  （[docs/core-ui-separation.md 第 4.5 节](core-ui-separation.md#45-同步点)）。
+  （[docs/architecture/core-ui-separation.md 第 4.5 节](../architecture/core-ui-separation.md#45-同步点)）。
 - 界面语言 / 界面字号随载荷下发（`language` / `fontSize`）；webview 不补默认值，
-  保存回传后即时生效（[docs/core-ui-separation.md 第 4.8 节](core-ui-separation.md#48-文本语言)/[第 4.10 节](core-ui-separation.md#410-界面字号)）。
+  保存回传后即时生效（[docs/architecture/core-ui-separation.md 第 4.8 节](../architecture/core-ui-separation.md#48-文本语言)/[第 4.10 节](../architecture/core-ui-separation.md#410-界面字号)）。
 - 保存成功后宿主回传保存后的默认值，以及**只有宿主知道**的两项事实：当前对话所用
   服务商的默认模型（`currentProviderDefaultModel`）与它相对保存前是否变化
   （`currentProviderDefaultModelChanged`）——webview 只有默认服务商的默认模型，

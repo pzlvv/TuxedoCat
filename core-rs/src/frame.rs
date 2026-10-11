@@ -1,4 +1,4 @@
-//! 帧协议（见 docs/standalone-core.md 第 6 节）。
+//! 帧协议（见 docs/core/standalone-core.md 第 6 节）。
 //!
 //! 编码：UTF-8，换行（`\n`）分隔的 JSON，一行一帧。
 //! 帧内换行以 JSON 转义表达，帧边界只由 `\n` 决定。
@@ -13,7 +13,7 @@ use serde_json::Value;
 ///
 /// 2：新增 UI → core 的请求方向（`UiToCoreFrame::Request` /
 /// `CoreToUiFrame::Response`），用于宿主向 Core 索取「core 的事实」
-/// （对话列表 / 界面语言 / 配置目录，见 `docs/standalone-core.md` 第 10 节）。
+/// （对话列表 / 界面语言 / 配置目录，见 `docs/core/standalone-core.md` 第 10 节）。
 pub const CORE_PROTOCOL_VERSION: u32 = 2;
 
 /// UI → Core 的帧。

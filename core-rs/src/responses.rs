@@ -7,7 +7,7 @@
 //! 因此引擎（`engine.rs`）与上层无需任何改动。
 //!
 //! **已知缺口**：内置 `web_search` 工具与搜索卡片事件（`web_search_call` /
-//! `_update` / `_done`）尚未迁入，见 `docs/standalone-core.md` 第 9 节的已知缺口；因此本模块不下发 `web_search`
+//! `_update` / `_done`）尚未迁入，见 `docs/core/standalone-core.md` 第 9 节的已知缺口；因此本模块不下发 `web_search`
 //! 工具，`webSearchUsed` 恒为 false（`shouldSkipUsageForContext` 只剩「超过上下文
 //! 窗口 60%」那道闸门）。
 
@@ -26,7 +26,7 @@ use crate::util;
 ///
 /// Embedded 超过此值时把完整文本持久化到磁盘、消息里只留文件路径 + 预览；
 /// Standalone 侧的超长文本兜底统一由 `tools::cap_tool_result` 那一套承担
-/// （助手回复本身尚未接同类兜底，见 `docs/core-parity.md` 第 3.15 节）。
+/// （助手回复本身尚未接同类兜底，见 `docs/core/core-parity.md` 第 3.15 节）。
 const ASSISTANT_MAX_TEXT_CHARS: usize = 40_000;
 
 /// 供 `ASSISTANT_MAX_TEXT_CHARS` 的说明引用（避免 dead_code 警告）

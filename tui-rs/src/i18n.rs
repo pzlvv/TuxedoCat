@@ -2,7 +2,7 @@
 //!
 //! 语言归 UI：`tt()` 在中英之间二选一，语言在启动期收敛（settings.json 的
 //! `uiLanguage` → 宿主 locale → 系统语言）；core `notice` 键复用 webview 字典数据
-//! （键缺失回显键本身，与 webview 的 t() 同口径，见 docs/core-ui-separation.md 第 4.9 节）。
+//! （键缺失回显键本身，与 webview 的 t() 同口径，见 docs/architecture/core-ui-separation.md 第 4.9 节）。
 
 use std::sync::Mutex;
 

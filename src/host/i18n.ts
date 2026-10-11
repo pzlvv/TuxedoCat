@@ -1,5 +1,5 @@
 /**
- * Lightweight i18n for the host layer（`docs/core-ui-separation.md` 第 4.8 节）。
+ * Lightweight i18n for the host layer（`docs/architecture/core-ui-separation.md` 第 4.8 节）。
  *
  * i18n 归 UI：翻译表、语言选择与渲染都在 UI 侧。本模块只服务**宿主进程内的原生 UI**
  * （Electron 原生菜单、Spin 设计器页面等）；Core 不感知语言，面向界面的文本以

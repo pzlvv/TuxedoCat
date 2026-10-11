@@ -13,7 +13,7 @@ import { createChecker, runTests } from './helpers/harness';
 /**
  * 侧栏文件浏览器的路径校验与目录读取（`electron/sidebarFiles.ts`，纯 fs 可直接单测）。
  *
- * 覆盖点（安全面，DEVELOPMENT.md 第 5.1 节）：
+ * 覆盖点（安全面，docs/architecture/principles.md 第 1 节）：
  * - `resolveWithinRoot` 的越界判定：`..` 上跳、绝对路径、根目录本身（allowRoot）；
  * - posix 分支：远程路径不能按 win32 语义解析（`/home/pz` 变形 `D:\home\pz`）；
  * - `listDirectory`：目录优先排序、断链跳过；

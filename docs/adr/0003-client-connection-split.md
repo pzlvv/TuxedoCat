@@ -2,7 +2,7 @@
 
 - 状态：已采纳
 - 日期：2025（Core / UI 架构重构，M13）
-- 规格：`docs/client-connection.md`
+- 规格：`docs/core/client-connection.md`
 
 ## 背景
 
@@ -28,6 +28,6 @@
 ## 替代方案（被否决）
 
 - **全局单一总线按事件字段区分工作区**：每个载荷都要带工作区标记，且「哪个会话归哪个
-  Core」仍无处安放，违反「不同来源的数据走不同的流」（[DEVELOPMENT.md 第 2 章](../../DEVELOPMENT.md#2-分层与依赖规则)规则 8）。
+  Core」仍无处安放，违反「不同来源的数据走不同的流」（[docs/architecture/layering.md 第 2 节](../architecture/layering.md#2-规则清单)规则 8）。
 - **每会话一个连接**：Core 进程与会话的生命周期解耦（会话可跨进程恢复），按会话建连接
   会把进程管理与对话管理耦死。

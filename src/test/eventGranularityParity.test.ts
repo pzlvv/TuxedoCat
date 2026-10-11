@@ -109,7 +109,7 @@ async function run(): Promise<void> {
     initializeCoreEvents(bus);
     // `registerHistoryUiEvents` 是异步注册（内部 `await import`），等处理器就位
     await new Promise((resolve) => setTimeout(resolve, 300));
-    // 宿主连接：就绪前只接受 hostEnvironmentProvided（docs/core-ui-separation.md 第 7 节）
+    // 宿主连接：就绪前只接受 hostEnvironmentProvided（docs/architecture/core-ui-separation.md 第 7 节）
     provideHostEnvironment(bus);
     recording.received('titleChanged').length = 0;
     recording.received('conversationListChanged').length = 0;

@@ -1,6 +1,6 @@
 //! Core 产物定位（部署布局：`<prefix>/share/<产品名>/<指纹>/`）。
 //!
-//! Core 的部署不在 TUI 里（独立安装程序，docs/tui-installer.md）。安装布局由
+//! Core 的部署不在 TUI 里（独立安装程序，docs/features/tui-installer.md）。安装布局由
 //! 安装器落位，前缀是**应用根**（unix 默认 `~/.local`，Windows `~/<configDir>`，
 //! `configDir` 取 `src/config/project.json`）：
 //!
@@ -22,7 +22,7 @@
 //!
 //! 每个候选根按两种形态解析，部署布局优先：`share/<产品名>/` 下任一「`fingerprint`
 //! + Core 二进制都齐」的指纹槽位；否则当开发期仓库根（`resources/core/<pkg>/`）。
-//! 全部落空直接报错并给出安装指引——接线缺失不静默降级（DEVELOPMENT.md 第 5 章规则 1）。
+//! 全部落空直接报错并给出安装指引——接线缺失不静默降级（docs/architecture/principles.md规则 1）。
 
 use std::path::{Path, PathBuf};
 

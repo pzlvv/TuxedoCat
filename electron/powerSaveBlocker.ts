@@ -1,10 +1,10 @@
 /**
  * 系统电源阻断（Electron `powerSaveBlocker`）：任一会话非 idle 时阻止系统进入
- * 睡眠 / 休眠，全部空闲后立即释放（`docs/host-matrix.md` 第 6 节宿主接线、
- * docs/host-matrix.md 第 12 节托盘段落）。
+ * 睡眠 / 休眠，全部空闲后立即释放（`docs/hosts/host-matrix.md` 第 6 节宿主接线、
+ * docs/hosts/host-matrix.md 第 12 节托盘段落）。
  *
  * 为什么在宿主：电源状态是桌面端集成能力，core 只描述「会话是否空闲」的事实，
- * 表现由 UI 决定（`DEVELOPMENT.md` 第 5.6 节）。判定复用 core 的 `sessionBusyLevel`，与托盘状态点 /
+ * 表现由 UI 决定（``docs/architecture/principles.md` 第 6 节）。判定复用 core 的 `sessionBusyLevel`，与托盘状态点 /
  * 标签页流水灯 / 关闭确认同一份派生——`waiting`（等用户确认）也非 idle，同样阻断。
  *
  * 阻断类型取 `prevent-app-suspension` 而非 `prevent-display-sleep`：跑任务时允许屏幕

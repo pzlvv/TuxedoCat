@@ -7,7 +7,7 @@ import type { InputAreaRef } from '../InputArea';
  * 目标会话为当前会话时写入实时输入框；否则写入该会话的状态快照，
  * 保证切换回去后仍能看到回填的草稿。
  *
- * 唯一实现、两处调用（`docs/user-message-pipeline.md` 第 5.2 / 5.3 节）：
+ * 唯一实现、两处调用（`docs/features/user-message-pipeline.md` FR-003）：
  * - `queryEnd` 兜底回投时用户主动 abort 的会话（useMessageHandler 的 queryEnd 分支）；
  * - 排队项「编辑」把消息撤回到输入框（useAppHandlers 的 handleEditQueuedMessage）。
  */

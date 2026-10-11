@@ -7,7 +7,7 @@
  * - `setSessionMcpEnabledList`（整表覆盖，宿主保存默认配置前用来钉住当前对话）。
  *
  * 与 Rust 侧 `main_tests::session_config_events_are_dispatched` 的
- * `mcpEnabledListChanged` 断言同口径（`docs/core-ui-separation.md` 第 4 节）。
+ * `mcpEnabledListChanged` 断言同口径（`docs/architecture/core-ui-separation.md` 第 4 节）。
  *
  * 运行方式：npm run test:all -- mcpSessionEnabled
  */

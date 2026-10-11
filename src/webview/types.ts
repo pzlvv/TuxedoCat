@@ -78,7 +78,7 @@ export interface ModelConfigEntry {
 
 /**
  * 设置面板载荷：宿主随 `showLLMConfig` 一次给齐的面板配置事实
- * （`docs/webview-facts.md` 第 6 节）。
+ * （`docs/hosts/webview-facts.md` 第 6 节）。
  *
  * 字段全部必选：webview 不补默认值，宿主未给齐即协议错误。面板只在载荷到达后打开，
  * 因此不存在「部分字段缺失」的中间态。
@@ -228,9 +228,9 @@ export interface TokenRankingItem {
 /**
  * core 推送的会话运行时状态（`sessionRuntimeStates` 的 webview 侧投影）。
  *
- * 与 core `SessionRuntimeState` 字段一致：根事实 + 派生 `idle`（`DEVELOPMENT.md` 第 4.5 节）。
+ * 与 core `SessionRuntimeState` 字段一致：根事实 + 派生 `idle`（``docs/core/session-runtime.md`）。
  * 流水灯读 `idle` / `waiting`；abort 按钮经 `resolveAbortButtonState` 读根事实
- * （`docs/abort-button.md`）。
+ * （`docs/features/abort-button.md`）。
  */
 export interface SessionRuntimeState {
   idle: boolean;

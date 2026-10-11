@@ -270,7 +270,7 @@ function seedSidebarWidth(): void {
  * 当前实际生效的侧栏宽度：用户值 + 窗口相关夹取（不挤掉聊天区）。
  *
  * `layout()` 与 `ChatViewManager.chatBounds()` 都从这取值——一份事实一个写入点
- * （DEVELOPMENT.md 第 5 章规则 4），聊天区摆位与侧栏 bounds 永远对得上。
+ * （docs/architecture/principles.md规则 4），聊天区摆位与侧栏 bounds 永远对得上。
  */
 function currentSidebarWidth(): number {
   if (!mainWindow) return sidebarWidthPx;
@@ -292,7 +292,7 @@ let conversations: ElectronConversationManager | undefined;
 /**
  * 打开集合：已打开的工作区引用，按标签页顺序排列（进程内事实）。
  *
- * 本地与远程同构（`docs/client-connection.md` 第 4 节）：本地 `endpoint === null`，
+ * 本地与远程同构（`docs/core/client-connection.md` 第 4 节）：本地 `endpoint === null`，
  * 远程带 `{ host, port, user, auth }`。标签页 / 侧栏用 `workspaceRefKey` 作稳定 id。
  */
 let openWorkspaces: WorkspaceRef[] = [];
@@ -322,7 +322,7 @@ function findWorkspace(ref: WorkspaceRef): WorkspaceRef | undefined {
 }
 
 /**
- * 工作目录的规范化口径（`docs/client-connection.md` 第 4 节）。
+ * 工作目录的规范化口径（`docs/core/client-connection.md` 第 4 节）。
  *
  * 本地路径按宿主口径规范化（大小写 / 尾分隔符）；**远程路径是目标机器上的字符串，
  * 原样保留**——对 `/home/pz/proj` 跑本地规范化会得到 `D:\home\pz\proj`，之后按路径
@@ -465,7 +465,7 @@ let appQuitting = false;
  * 窗口销毁/应用退出时清理，避免句柄悬挂（纯防御性）。
  */
 let focusRepaintTimer: ReturnType<typeof setTimeout> | null = null;
-// 侧栏三条流各自单一 owner（docs/contracts.md 第 4 节）：
+// 侧栏三条流各自单一 owner（docs/architecture/contracts.md 第 4 节）：
 // - 列表（纯磁盘元数据）→ ConversationManager.dispatchList → sidebar:conversations-updated
 // - 运行时状态（idle / waiting）→ ConversationManager.dispatchStates → sidebar:session-states-updated
 // - loaded（视图层）→ ChatViewManager.onLoadedChanged → sidebar:session-loaded-changed
@@ -930,7 +930,7 @@ function createMainWindow(): void {
   let highlightLanguages: string[] = [];
   try {
     // UI 专属字段（界面语言 / 界面字号 / 高亮语言）归宿主：读宿主自己的 settings.json 快照
-    // （`docs/core-ui-separation.md` 第 4.8 / 4.9 节），不问 core。
+    // （`docs/architecture/core-ui-separation.md` 第 4.8 / 4.9 节），不问 core。
     const { getSettingsStore } = require('../src/host/SettingsStore.js') as typeof import('../src/host/SettingsStore.js');
     const settingsStore = getSettingsStore();
     // createMainWindow 在 initCore 之前：首帧语言 / 字号 / 高亮语言要先拿到，所以这里先读盘。
@@ -981,7 +981,7 @@ function createMainWindow(): void {
       webviewUi?.setActiveSessionId(sessionId ?? undefined);
     },
     onLoadedChanged: (sessionIds) => {
-      // 视图层「已打开会话」集合单独推送（不并入对话列表流），见 docs/contracts.md 第 4 节
+      // 视图层「已打开会话」集合单独推送（不并入对话列表流），见 docs/architecture/contracts.md 第 4 节
       sidebarView?.webContents.send('sidebar:session-loaded-changed', sessionIds);
       // 同步 UI 侧的「已打开会话」集合：UserChoiceQueue 据此判定待答请求能否投递
       // （open 即投递到该会话自己的视图；open 与 active/selected 是两个概念）
@@ -1248,7 +1248,7 @@ const unreadCompletionSessions = new Set<string>();
 /**
  * 系统睡眠 / 休眠阻断：任一会话非 idle 时阻断（`prevent-app-suspension`，允许屏幕熄灭），
  * 全部空闲后释放。与托盘状态点吃同一条会话状态流（`setStatusListener`），
- * 见 `electron/powerSaveBlocker.ts` 与 docs/host-matrix.md 第 6 节。
+ * 见 `electron/powerSaveBlocker.ts` 与 docs/hosts/host-matrix.md 第 6 节。
  */
 const sleepBlocker = new SleepBlocker(powerSaveBlocker);
 
@@ -1774,7 +1774,7 @@ function getSystemLocaleForStartup(): string {
 }
 
 /**
- * 在创建原生 UI 之前收敛宿主语言（`docs/host-matrix.md` 第 7 节）。
+ * 在创建原生 UI 之前收敛宿主语言（`docs/hosts/host-matrix.md` 第 7 节）。
  *
  * 界面语言是宿主自己的 `settings.json` 字段：先 `loadSync()` 读盘，再交给
  * `primeHostLocale()`（读 `uiLanguage` + 宿主 locale，收敛到进程内 i18n）。
@@ -2068,7 +2068,7 @@ type WorkspaceActivityLevel = 'waiting' | 'running';
  * 该目录下任一会话在等待用户操作（ask user / 权限确认）→ `waiting`（黄，优先）；
  * 否则任一会话非 idle（查询 / 压缩 / 后台 Bash / 子代理）→ `running`（蓝）。
  *
- * 两份输入都取宿主自己的投影，不 require `src/core` 的进程内状态（`DEVELOPMENT.md` 第 5.6 节
+ * 两份输入都取宿主自己的投影，不 require `src/core` 的进程内状态（``docs/architecture/principles.md` 第 6 节
  * 「core 描述事实，UI 决定表现」）：
  * - 状态：`ConversationManager` 缓存的全量快照——core 的 `sessionRuntimeChanged`
  *   经 Connection 推到宿主后存在这里。Standalone（产品形态）下 core 在独立进程，
@@ -2857,7 +2857,7 @@ function describeError(error: unknown): string {
 }
 
 /**
- * 把「打开远程工作区」窗口的接入请求翻成 `WorkspaceEndpoint`（`docs/core-daemon.md` 第 12 节）。
+ * 把「打开远程工作区」窗口的接入请求翻成 `WorkspaceEndpoint`（`docs/core/core-daemon.md` 第 12 节）。
  *
  * 形状校验与「凭证种类 → 接入方式」的收敛在 host 层（`buildRemoteEndpoint`）；这里只把
  * 原因码翻成本地化文案——i18n 只存在于宿主实现，不进 host 层。
@@ -2880,7 +2880,7 @@ function parseRemoteConnectRequest(
 /**
  * 打开「打开远程工作区」窗口。
  *
- * 流程（`docs/core-daemon.md` 第 12 节）：
+ * 流程（`docs/core/core-daemon.md` 第 12 节）：
  * 1. 填 SSH 表单（主机 / 端口 / 用户 / 口令）；
  * 2. 连接成功后**立刻**列出远端主目录，进入目录选择（可进上级 / 新建 / 删除）；
  * 3. 选定目录后加为工作区（同一个 daemon 连接随后用于打开该工作区）。
@@ -3790,7 +3790,7 @@ function readActiveWorkspace(open: readonly WorkspaceRef[]): WorkspaceRef | unde
  * 保存打开集合与活动项（顺带清掉旧版本遗留的 lastWorkspace 字段）。
  *
  * 远程项与本地项一起落盘：endpoint 连同凭证（token / SSH 口令）写进宿主本地状态文件，
- * 重启后直接恢复并重新连接（见 `docs/client-connection.md` 第 9 节）。
+ * 重启后直接恢复并重新连接（见 `docs/core/client-connection.md` 第 9 节）。
  */
 function saveOpenWorkspaces(open: readonly WorkspaceRef[], active: WorkspaceRef | undefined): void {
   const prev = readWorkspaceState() as WorkspaceState & { lastWorkspace?: unknown };
@@ -4268,7 +4268,7 @@ function setupIpc(): void {
   // 经 Connection 推来的投影）。状态流是「变化时才推」的：侧栏初始化 / 重载时主动拉
   // 一次，补上「推送早于侧栏就绪」造成的空档，否则流水灯 / 等待标记会一直不亮。
   // Standalone（产品形态）下 core 在独立进程，进程内 `src/core/sessionRuntime` 是空的，
-  // 必须走这份缓存（`DEVELOPMENT.md` 第 5.6 节）。
+  // 必须走这份缓存（``docs/architecture/principles.md` 第 6 节）。
   ipcMain.handle('sidebar:get-session-states', () => {
     return conversations?.getSessionStatesSnapshot() ?? [];
   });
@@ -4756,7 +4756,7 @@ function initCore(): void {
   });
 
   // 共享启动接线：locale / 日志 / 总线 / core 侧订阅 / WebViewUI / 历史 / 会话队列 /
-  // 等待用户读取器 / 配置目录 / 环境预热 / MCP 残留清理（DEVELOPMENT.md 第 3.5 节；宿主专属接线见 `docs/host-matrix.md` 第 6 节）
+  // 等待用户读取器 / 配置目录 / 环境预热 / MCP 残留清理（docs/architecture/events.md 第 5 节；宿主专属接线见 `docs/hosts/host-matrix.md` 第 6 节）
   const { ui } = bootstrapCore(host, spinDesign, conversationsMgr, {
     locale: app.getLocale(),
     log: (...args: unknown[]) => {

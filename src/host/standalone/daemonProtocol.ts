@@ -1,5 +1,5 @@
 /**
- * daemon 控制通道协议（`docs/core-daemon.md` 第 7 节）。
+ * daemon 控制通道协议（`docs/core/core-daemon.md` 第 7 节）。
  *
  * 编码与内层帧通道同口径：UTF-8，换行分隔的 JSON，一行一帧。
  * 控制通道上只有一条连接；每个 Core 的帧通道是它上面的一条逻辑 channel。
@@ -15,11 +15,11 @@ import { stringifyJsonSafe } from '../../core/utils/stringUtils.js';
 // ==================== 远端 daemon 状态文件 ====================
 
 /**
- * 远端 daemon 的状态 / 日志文件名（`docs/core-daemon.md` 第 12.3 节）。
+ * 远端 daemon 的状态 / 日志文件名（`docs/core/core-daemon.md` 第 12.3 节）。
  *
  * 文件名按**构建指纹**区分：`core-daemon-<指纹>.json` 等。一个指纹一个 daemon、
  * 一份落盘文件——多版本 Core 在同一台远端机器上并存时，各自的 `start` / `kill` /
- * 探测只作用于自己指纹的 daemon，互不踩踏（`docs/standalone-core.md` 第 4.4 节）。
+ * 探测只作用于自己指纹的 daemon，互不踩踏（`docs/core/standalone-core.md` 第 4.4 节）。
  * 状态文件（+ 同名 `.lock`）在配置目录的 `run/` 子目录（daemon 的运行期事实，
  * `core-rs/src/remote.rs::daemon_state_path` 同口径，改动必须同步两侧），诊断日志
  * 在 `logs/` 子目录；Host 侧读取状态文件来拿到实际监听端口（SSH 接入时 daemon
@@ -42,7 +42,7 @@ export interface DaemonStateFile {
 }
 
 // ==================== 通道描述符 ====================
-/** ChannelDescriptor（`docs/core-daemon.md` 第 4.1 节） */
+/** ChannelDescriptor（`docs/core/core-daemon.md` 第 4.1 节） */
 export type ChannelDescriptor =
   /** 走当前控制通道的该 channel（本规格实现） */
   | { kind: 'multiplexed'; channel: number }
@@ -62,7 +62,7 @@ export type HostToDaemonFrame =
   | { kind: 'deleteDirectory'; id: number; path: string; recursive: boolean }
   | { kind: 'shutdown' }
   /**
-   * 链路心跳（`docs/core-daemon.md` 第 12.5 节）：链路就绪后定期发送，daemon 回
+   * 链路心跳（`docs/core/core-daemon.md` 第 12.5 节）：链路就绪后定期发送，daemon 回
    * `pong` 并以「最近一次收到控制帧」判定 Host 死活——Host 消失而 TCP 未断（断网 /
    * 休眠 / 进程冻结）时，daemon 的读线程永远等不到 EOF，沉默是它唯一的断开依据
    * （同步 accept 循环被死连接占住，后续接入全部饿死：探测「连得上」、auth 无应答）。
@@ -92,7 +92,7 @@ export interface DirectoryListing {
 
 /** daemon → Host */
 export type DaemonToHostFrame =
-  /** 心跳应答：对 `ping` 的回应；Host 见首个 pong 武装沉默判定（`docs/core-daemon.md` 第 12.5 节） */
+  /** 心跳应答：对 `ping` 的回应；Host 见首个 pong 武装沉默判定（`docs/core/core-daemon.md` 第 12.5 节） */
   | { kind: 'pong' }
   | { kind: 'workspaceOpened'; id: number; channel: number; descriptor: ChannelDescriptor }
   | { kind: 'workspaceFailed'; id: number; error: string }

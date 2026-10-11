@@ -1,5 +1,5 @@
 /**
- * 工作区引用用例（`docs/client-connection.md` 第 4 节）：
+ * 工作区引用用例（`docs/core/client-connection.md` 第 4 节）：
  * 本地 / 远程三元组、endpoint 连接目标键、展示路径与判等。
  *
  * 运行方式：npm run test:all -- workspace-ref

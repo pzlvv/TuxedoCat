@@ -1,5 +1,5 @@
 /**
- * Standalone Core 帧通道单测（docs/standalone-core.md 第 5、6、7 节）：
+ * Standalone Core 帧通道单测（docs/core/standalone-core.md 第 5、6、7 节）：
  * - 帧编解码：分块、空行、非法 JSON、reset
  * - 产物定位：平台矩阵目录名与候选路径
  * - 握手：hello → ready；whenReady / isReady

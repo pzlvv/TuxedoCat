@@ -10,8 +10,8 @@ last_reviewed: 2026-10-11
 是一个客户端）；每（连接, 工作区）一个 Core 进程。一条连接断开只结束该连接的全部 Core，
 任一连接发 `shutdown` 才结束整个 daemon（第 12.5 节）。
 
-Standalone Core 的进程形态与帧协议见 `docs/standalone-core.md`；连接模型见
-`docs/client-connection.md`；Core 与 UI 的分离形态见 `docs/core-ui-separation.md`。
+Standalone Core 的进程形态与帧协议见 `docs/core/standalone-core.md`；连接模型见
+`docs/core/client-connection.md`；Core 与 UI 的分离形态见 `docs/architecture/core-ui-separation.md`。
 
 ---
 
@@ -48,7 +48,7 @@ Standalone Core 的进程形态与帧协议见 `docs/standalone-core.md`；连�
 5. **生命周期归 daemon**：Core 的启动、重启、终止都由 daemon 承担，Host 不直接管理进程。
 6. **状态按连接隔离**：channel 表、channel id 序列、计数、grace 与心跳（ping/pong）
    都按连接持有；一条连接断开只结束该连接及其全部 Core，其余连接不受影响。
-7. **帧语义不变**：daemon 只加一层信封，不改 [docs/standalone-core.md 第 6.2 节](standalone-core.md#62-帧类型)的帧集合。
+7. **帧语义不变**：daemon 只加一层信封，不改 [docs/core/standalone-core.md 第 6.2 节](standalone-core.md#62-帧类型)的帧集合。
 8. **同一二进制**：daemon 与 Core 是同一个可执行文件的两个模式，版本天然一致。
 9. **通道描述符**：daemon 返回 `ChannelDescriptor`，今天表达「走这条控制通道、channel N」，
    将来可以表达「去连这个地址」，Host 上层不因此改动。
@@ -73,7 +73,7 @@ Standalone Core 的进程形态与帧协议见 `docs/standalone-core.md`；连�
 
 - daemon 与 Core 是同一个可执行文件（`core.binaryName`），用**动作**（子命令，裸词）选择
   做什么，`--idle-exit` 这类**选项**才带 `--`：
-  - `stdio`：Core 模式，stdio 是帧通道（[docs/standalone-core.md 第 4 节](standalone-core.md#4-standalone-core-形态)）；
+  - `stdio`：Core 模式，stdio 是帧通道（[docs/core/standalone-core.md 第 4 节](standalone-core.md#4-standalone-core-形态)）；
   - `start`（缺省）：远程服务的启动器——确保后台 daemon 在跑（没有就拉起），打印就绪
     信息后退出（第 12 节）；
   - `kill`：结束在跑的 daemon（第 12 节）；
@@ -101,12 +101,12 @@ Host B ── 控制通道 ──┘           └── Core B1（B 连接的 c
 
 - 每个 Host 与 daemon 之间一条控制通道；daemon 同时服务多条，每条连接一个服务线程，
   一条连接里的任何等待（目录列举、Core 重启）不阻塞其它连接。
-- 每条 channel 上跑的帧与 [docs/standalone-core.md 第 6.2 节](standalone-core.md#62-帧类型)完全一致；daemon 不解读
+- 每条 channel 上跑的帧与 [docs/core/standalone-core.md 第 6.2 节](standalone-core.md#62-帧类型)完全一致；daemon 不解读
   内层帧，只按 channel 转发。
 - channel id 由 daemon 分配，在**一条控制通道内**唯一且**稳定**：Core 崩溃重启后沿用
   同一个 channel id（第 6 节）；不同连接的编号空间互相独立（都从 1 起）。
 - channel 是双向的；两侧的帧按写入顺序转发，不丢帧、不合并（沿用
-  [docs/standalone-core.md 第 6.5 节](standalone-core.md#65-背压)的背压约定）。
+  [docs/core/standalone-core.md 第 6.5 节](standalone-core.md#65-背压)的背压约定）。
 
 ### 4.1 ChannelDescriptor
 
@@ -153,7 +153,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
   不静默重试。
 - **恢复**：重启后在**同一 channel** 上重新握手；Host 侧感知为「连接重置」，重新发
   `hello`，重放 `hostEnvironmentProvided`（含配置快照）与已打开的会话
-  （[docs/standalone-core.md 第 7.2 节](standalone-core.md#72-连接态重放)）。
+  （[docs/core/standalone-core.md 第 7.2 节](standalone-core.md#72-连接态重放)）。
 - **隔离**：一个 channel 的重启不影响其它 channel。
 
 ---
@@ -162,7 +162,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 ### 7.1 帧
 
-控制通道沿用 [docs/standalone-core.md 第 6.1 节](standalone-core.md#61-帧)的编码：UTF-8，换行分隔的 JSON，
+控制通道沿用 [docs/core/standalone-core.md 第 6.1 节](standalone-core.md#61-帧)的编码：UTF-8，换行分隔的 JSON，
 一行一帧。
 
 ### 7.2 帧类型
@@ -192,14 +192,14 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 - `id` 由 Host 生成，在单条控制通道内唯一；`workspaceOpened` / `workspaceFailed` /
   `directoriesListed` / `directoryCreated` / `directoryRenamed` / `directoryDeleted` /
   `directoryFailed` 回带同一个 `id`。
-- 内层帧是 [docs/standalone-core.md 第 6.2 节](standalone-core.md#62-帧类型)的帧集合，原样嵌套在信封帧的 `frame` 字段里（`daemon_protocol.rs` 的 `Frame { channel, frame }`）。
+- 内层帧是 [docs/core/standalone-core.md 第 6.2 节](standalone-core.md#62-帧类型)的帧集合，原样嵌套在信封帧的 `frame` 字段里（`daemon_protocol.rs` 的 `Frame { channel, frame }`）。
 - 未知类型一律丢弃并记录，不做静默降级。
 
 ### 7.3 握手
 
 控制通道没有协议版本握手：daemon 与 Host 随同一份产物分发，版本由分发保证。Core 与 Host
 之间的协议版本校验仍在各自 channel 的 `hello` / `ready` 上完成
-（[docs/standalone-core.md 第 6.3 节](standalone-core.md#63-握手)）。
+（[docs/core/standalone-core.md 第 6.3 节](standalone-core.md#63-握手)）。
 
 ### 7.4 背压
 
@@ -214,7 +214,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 - 打开工作区：本地同机不走 daemon（Host 直接以 `stdio` 起 Core）；远程取该 endpoint 的
   daemon（没有则先建立控制通道），发 `openWorkspace`；拿到 `descriptor` 后建立
-  Connection（[docs/client-connection.md 第 5 节](client-connection.md#5-connection-生命周期)）。
+  Connection（[docs/core/client-connection.md 第 5 节](client-connection.md#5-connection-生命周期)）。
 - 关闭工作区：Client 发 `closeWorkspace`，Connection 销毁。
 - Core 崩溃：daemon 重启后在同一 channel 上重置；Client 走第 6 节的恢复路径。
 - `connectionId` 与 `channel` 是两层的概念：前者是 Host 侧的路由键，后者是传输层的多路
@@ -225,7 +225,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 ## 9. 不覆盖范围
 
 - 远程凭证的加密存储（宿主把 SSH 口令明文写进 `workspace-state.json`，
-  见 [docs/client-connection.md 第 9 节](client-connection.md#9-落盘与恢复宿主侧)；钥匙串集成不在范围内）；
+  见 [docs/core/client-connection.md 第 9 节](client-connection.md#9-落盘与恢复宿主侧)；钥匙串集成不在范围内）；
 - SSH 的密钥 / agent 认证（当前只有口令一种凭证）；
 - 断线重连（SSH 断开与 TCP 断开同口径：一条连接结束即关闭它自己的全部 Core，其余
   连接不受影响）；
@@ -244,7 +244,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 4. 连接上活着的 Core 进程归零后 daemon 在 grace 期结束时退出；grace 期内新开工作区则继续服务。
 5. 控制连接断开时，该连接的全部 Core 被关闭，服务线程结束，daemon 继续服务其它连接。
 6. Core 崩溃后 daemon 在同一 channel 上重启它；超过重启上限时关闭 channel 并报告。
-7. 内层帧与 [docs/standalone-core.md 第 6.2 节](standalone-core.md#62-帧类型)逐项一致，daemon 不解读内层帧。
+7. 内层帧与 [docs/core/standalone-core.md 第 6.2 节](standalone-core.md#62-帧类型)逐项一致，daemon 不解读内层帧。
 8. 单条 channel 的拥塞不阻塞其它 channel；一条连接的等待不阻塞其它连接。
 9. daemon 恒绑 `127.0.0.1`、端口交给内核分配。
 10. 控制通道上的 `listDirectories` 返回目标机器上的子目录（连接后即可弹出远端目录选择）。
@@ -323,7 +323,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 ### 12.3 状态文件
 
-- 落盘文件按**构建指纹**区分（[docs/standalone-core.md 第 4.4 节](standalone-core.md#44-构建指纹)；都在配置目录的
+- 落盘文件按**构建指纹**区分（[docs/core/standalone-core.md 第 4.4 节](standalone-core.md#44-构建指纹)；都在配置目录的
   子目录里，不与 `settings.json` 混放）：状态文件（运行期事实）与 start 互斥锁在
   `run/` 子目录，诊断日志在 `logs/` 子目录（与宿主侧日志同目录）：
   状态文件 `~/<configDir>/run/core-daemon-<指纹>.json`、诊断日志
@@ -477,7 +477,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
    模块本身不提供「跳过校验」的连接方式）；
 2. 引导远端 daemon（`sshDaemonBootstrap.ts`，见下）；
 3. 在远端开一条 `direct-tcpip` 转发通道到该 daemon（等价于 `ssh -W`），它就是要用的
-   控制通道；控制帧与 [docs/standalone-core.md 第 6.2 节](standalone-core.md#62-帧类型)完全一致。
+   控制通道；控制帧与 [docs/core/standalone-core.md 第 6.2 节](standalone-core.md#62-帧类型)完全一致。
 
 引导的分支（按顺序判断）：
 
@@ -487,7 +487,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 | 已部署未启动 | `~/.local/share/<core.deployPrefix>/<指纹>/` 里有可执行文件、探测不通 | 补齐缺的自带 `ripgrep`（若缺），执行 `<可执行文件> start --idle-exit 30`（幂等），再读状态文件 |
 | 未部署 | `~/.local/share/<core.deployPrefix>/<指纹>/` 里没有可执行文件 | 上传本机携带的对应平台产物（按远端 `uname -sm` 选平台）后 `start --idle-exit 30` |
 
-- 部署槽位由本机携带产物的**构建指纹**决定（[docs/standalone-core.md 第 4.4 节](standalone-core.md#44-构建指纹)）：
+- 部署槽位由本机携带产物的**构建指纹**决定（[docs/core/standalone-core.md 第 4.4 节](standalone-core.md#44-构建指纹)）：
   产物落远端部署槽位 `~/.local/share/<core.deployPrefix>/<指纹>/`
   （`coreDeployDirPath`：产品目录取 `core.deployPrefix`，槽位用完整指纹；自带的
   `ripgrep` 提升为产品目录根的共享位 `share/<core.deployPrefix>/ripgrep`，Core 以

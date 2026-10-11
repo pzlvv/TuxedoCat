@@ -1,5 +1,5 @@
 /**
- * Standalone Core 引擎端到端（docs/standalone-core.md 第 5、7 节）：
+ * Standalone Core 引擎端到端（docs/core/standalone-core.md 第 5、7 节）：
  * 直接驱动 Rust 产物跑完一轮真实对话——
  * `hello` → `ready` → 宿主环境 / 工作目录 → 新建会话 → 用户消息 → 流式回复 → 落盘。
  *
@@ -384,7 +384,7 @@ async function run(): Promise<void> {
       check('标题由首条用户消息生成', metadata.title === '你好');
     }
     if (sessionDir) {
-      // 项目清单由 Core 自己写（docs/core-ui-separation.md 第 4.1 节）：宿主不参与写盘。
+      // 项目清单由 Core 自己写（docs/architecture/core-ui-separation.md 第 4.1 节）：宿主不参与写盘。
       const manifestFile = path.join(sessionDir, 'workspace.meta.json');
       const manifest = fs.existsSync(manifestFile)
         ? (JSON.parse(fs.readFileSync(manifestFile, 'utf8')) as { workspacePath?: string })
@@ -393,7 +393,7 @@ async function run(): Promise<void> {
     }
 
     // ---- 配置写入归宿主：Core 不写 settings.json，也不接受「改配置」的事件 ----
-    // Core 只消费 `hostEnvironmentProvided` 下发的快照（docs/core-ui-separation.md 第 4 节），
+    // Core 只消费 `hostEnvironmentProvided` 下发的快照（docs/architecture/core-ui-separation.md 第 4 节），
     // 因此这里断言「Core 没碰过宿主写的全局配置」。
     const globalSettingsFile = path.join(homeDir, CONFIG_DIR_NAME, 'settings.json');
     const readGlobalSettings = (): Record<string, any> => {

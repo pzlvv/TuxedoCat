@@ -5,9 +5,9 @@ last_reviewed: 2026-10-11
 
 # 规格：两套 Core 的实现差异
 
-本规格界定 Embedded Core（`src/core`，TypeScript）与 Standalone Core（`core-rs`，Rust）两套实现**有意保留**的差异与装配 / 事实归属差异（第 1–3 节）、由 parity 对照表锁定的对等面（第 4 节）与 `core-rs` 的 dead_code 审计（第 5 节）。Embedded Core 是唯一真值，Standalone Core逐项对齐；尚未迁入的能力见 [docs/standalone-core.md 第 9 节](standalone-core.md#9-与-embedded-core-的对等)的已知缺口。
+本规格界定 Embedded Core（`src/core`，TypeScript）与 Standalone Core（`core-rs`，Rust）两套实现**有意保留**的差异与装配 / 事实归属差异（第 1–3 节）、由 parity 对照表锁定的对等面（第 4 节）与 `core-rs` 的 dead_code 审计（第 5 节）。Embedded Core 是唯一真值，Standalone Core逐项对齐；尚未迁入的能力见 [docs/core/standalone-core.md 第 9 节](standalone-core.md#9-与-embedded-core-的对等)的已知缺口。
 
-交叉引用：`docs/standalone-core.md`（Standalone 形态与契约）、`docs/webview-ui.md`（待定事项）、`src/test/fixtures/*Parity.json`（对照表）。
+交叉引用：`docs/core/standalone-core.md`（Standalone 形态与契约）、`docs/hosts/webview-ui.md`（待定事项）、`src/test/fixtures/*Parity.json`（对照表）。
 
 ---
 
@@ -18,7 +18,7 @@ Embedded Core（`src/core`，TypeScript）是唯一真值，Standalone Core（`c
 2. **Rust 实现更健壮**（第 2 节）：TS 的行为在边界条件下会丢数据 / 挂死 / 产生非法输出。
 
 装配与事实归属带来的差异见第 3 节，两侧共用对照表锁定的对等面见第 4 节，`core-rs` 的
-`#[allow(dead_code)]` 审计见第 5 节。尚未迁入的能力见 [docs/standalone-core.md 第 9 节](standalone-core.md#9-与-embedded-core-的对等)的
+`#[allow(dead_code)]` 审计见第 5 节。尚未迁入的能力见 [docs/core/standalone-core.md 第 9 节](standalone-core.md#9-与-embedded-core-的对等)的
 已知缺口，Standalone 的形态与契约见同一份规格。
 
 ## 目录
@@ -272,7 +272,7 @@ standalone= queryBegin, sessionConfigChanged, projectConversationDirReady,
 ### 3.5 模型注册表
 
 模型注册表（`src/core/utils/modelConfig.ts` 的 `MODEL_CONFIGS`）归 UI：宿主按注册表
-把 `modelLimits` 预解析进配置快照（[docs/core-ui-separation.md 第 4 节](core-ui-separation.md#4-配置归-ui)），Core 只消费
+把 `modelLimits` 预解析进配置快照（[docs/architecture/core-ui-separation.md 第 4 节](../architecture/core-ui-separation.md#4-配置归-ui)），Core 只消费
 `modelLimits` / `modelLimitsFallback`，两侧不存在需要各自维护的第二张表。Rust 侧没有
 按模型名匹配的注册表，命中逻辑与快照逐项一致。
 
@@ -328,9 +328,9 @@ Host 侧只把 `channelReset` 翻译成「连接重置」（重新 `hello`、重
 ### 3.12 宿主侧 core 事实读取的例外
 
 `coreFacts` 是宿主侧统一入口（Embedded 直读 / Standalone 走 `UiRequest`）。仍保留的
-直接读取见[DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)规则 9 的审计结论：会话工作目录的宿主侧索引、工具 `_meta` 的
+直接读取见[docs/architecture/layering.md 第 2 节](../architecture/layering.md#2-规则清单)规则 9 的审计结论：会话工作目录的宿主侧索引、工具 `_meta` 的
 before/after 写入。两者在 Standalone 下与本机 Core 共用同一份磁盘；远程工作区落地时
-需要迁到 `UiRequest`（[docs/client-connection.md 第 9 节](client-connection.md#9-落盘与恢复宿主侧)把远程列为不覆盖范围）。
+需要迁到 `UiRequest`（[docs/core/client-connection.md 第 9 节](client-connection.md#9-落盘与恢复宿主侧)把远程列为不覆盖范围）。
 
 ### 3.13 额外接受的旧事件
 
@@ -411,7 +411,7 @@ passthrough）与参数切分正则一致；命令在**出队时**解析
   `sessionRuntime.idle` 递归到子代理。
 - **后台 Bash**（`bash_task.rs`）：`run_in_background`（file mode 输出文件 + 完成
   通知）、前台超时自动转后台、通知驱动的转后台、用户手工转后台
-  （`MANUAL_BG` 注册表 + `LoopPauseSignal`，`docs/background-bash.md`）、完成通知经
+  （`MANUAL_BG` 注册表 + `LoopPauseSignal`，`docs/features/background-bash.md`）、完成通知经
   `enqueue_bash_notification` 注入为 `origin='bash'` 的 user 消息、`SessionState.background`
   参与 `idle` 判定、会话中止 / 关闭时中止后台任务、「仍有后台任务在跑」兜底提醒。未迁入的
   子项（不构成对外缺口，逐条列在 `bash_task.rs` 模块头）：`TaskOutput` 的 pipe mode（内存

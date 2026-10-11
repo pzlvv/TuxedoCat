@@ -99,7 +99,7 @@ async function run(): Promise<void> {
   initializeCoreEvents(bus);
   // core 侧订阅在异步 import 完成后才注册，等它就绪再发消息。
   await new Promise((r) => setTimeout(r, 800));
-  // 宿主连接：就绪前只接受 hostEnvironmentProvided（docs/core-ui-separation.md 第 7 节）
+  // 宿主连接：就绪前只接受 hostEnvironmentProvided（docs/architecture/core-ui-separation.md 第 7 节）
   provideHostEnvironment(bus);
 
   // 1) 翻译层必须把 filePath 带进 UiEvent（漏接线的直接体现）

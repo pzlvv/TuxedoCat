@@ -179,7 +179,7 @@ export function clearSessionMcpOverride(sessionId: string): void {
  * （设置面板一次性保存多个勾选项时用）。
  *
  * core 只描述**怎么改**，**写盘由宿主承担**（`UIHost.updateSettingsJson`，
- * 见 `DEVELOPMENT.md` 第 2 章规则 9）。
+ * 见 ``docs/architecture/layering.md 第 2 节规则 9）。
  */
 export function mcpDefaultsMutator(names: readonly string[]): (cfg: Record<string, any>) => void {
   const normalized = Array.from(new Set(names.filter((n): n is string => typeof n === 'string' && !!n)));
@@ -194,7 +194,7 @@ export function mcpDefaultsMutator(names: readonly string[]): (cfg: Record<strin
  *
  * 来自配置快照：UI 在连接建立时读一次 `mcp.json`、解析后随
  * `hostEnvironmentProvided` 下发；Core 不感知文件路径，中途修改不通知
- * （`docs/core-ui-separation.md` 第 4.7 节）。
+ * （`docs/architecture/core-ui-separation.md` 第 4.7 节）。
  */
 function readMcpServerDefinitions(): readonly McpServerDefinition[] {
   return getMcpServerDefinitions();

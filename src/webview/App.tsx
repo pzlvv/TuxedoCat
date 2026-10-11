@@ -104,7 +104,7 @@ const App = () => {
   const [contextLength, setContextLength] = useState<number>(0);
   const [maxContextTokens, setMaxContextTokens] = useState<number | null>(null);
   /**
-   * 会话配置事实（`docs/webview-facts.md` 第 3 节）：全部以 `undefined` 起，
+   * 会话配置事实（`docs/hosts/webview-facts.md` 第 3 节）：全部以 `undefined` 起，
    * 收到宿主下发的值之前保持「尚未到达」。webview 不设默认值——未到达时输入区显示等待态，
    * 也不把这些字段当作配置回传给宿主。
    *
@@ -159,7 +159,7 @@ const App = () => {
   const [namingSessions, setNamingSessions] = useState<Set<string>>(new Set());
 
   /**
-   * LLM 配置面板载荷：宿主随 `showLLMConfig` 一次给齐（`docs/webview-facts.md` 第 6 节）。
+   * LLM 配置面板载荷：宿主随 `showLLMConfig` 一次给齐（`docs/hosts/webview-facts.md` 第 6 节）。
    *
    * `null` = 尚未收到载荷，面板不打开。webview 不补默认值，也不在载荷缺失时打开空面板。
    */
@@ -206,7 +206,7 @@ const App = () => {
   // 会话尚未建立时 currentSessionId 为 null：此时不下发，等会话建立后本 effect 会因
   // currentSessionId 变化重跑并补发，避免以 null 作为 sessionId 写入 core 存储 / meta.json。
   // 未获取到配置前 agentMode 为 undefined：此时不下发，避免用 webview 的猜测
-  // 覆盖会话配置（`docs/webview-facts.md` 第 5 节）。
+  // 覆盖会话配置（`docs/hosts/webview-facts.md` 第 5 节）。
   useEffect(() => {
     if (!currentSessionId || !agentMode) return;
     postMessage({ type: 'setAgentMode', mode: agentMode, sessionId: currentSessionId });
@@ -305,7 +305,7 @@ const App = () => {
   const [applyDefaultsPrompt, setApplyDefaultsPrompt] = useState<ApplyDefaultsPrompt | null>(null);
 
   /**
-   * 瞬时状态提示（`docs/core-ui-separation.md` 第 4.9 节）：core 只给「键 + 参数」，
+   * 瞬时状态提示（`docs/architecture/core-ui-separation.md` 第 4.9 节）：core 只给「键 + 参数」，
    * 这里翻译后以浮层呈现，不进消息流；若干秒后自动消失。
    */
   const [notices, setNotices] = useState<NoticeItem[]>([]);
@@ -400,7 +400,7 @@ const App = () => {
   const { conversationTree, expandedSubSessions, setExpandedSubSessions } = useConversationTree(conversations);
 
   // 对话树流水灯（idle / waiting）只读 core 推送的会话运行时状态：
-  // 与 Electron 侧栏同一数据源（core sessionRuntimeChanged），不再本地推导（`docs/host-matrix.md`）。
+  // 与 Electron 侧栏同一数据源（core sessionRuntimeChanged），不再本地推导（`docs/hosts/host-matrix.md`）。
   // 未记录的会话视为 idle（不显示流水灯）。
   const getSessionIdleState = useCallback((sid: string): boolean => {
     return sessionRuntimeStatesRef.current.get(sid)?.idle ?? true;
@@ -410,7 +410,7 @@ const App = () => {
   }, []);
 
   // abort 按钮三态（红 / 黄 / 灰）：判定读 core 的 sessionRuntime 根事实，由纯函数
-  // resolveAbortButtonState 推导表现（docs/abort-button.md 第 1.1 节）。事实未到达
+  // resolveAbortButtonState 推导表现（docs/features/abort-button.md FR-001）。事实未到达
   // （当前会话没有快照）按空闲处理，按钮置灰不可点。
   const abortButtonState: AbortButtonState = useMemo(() => {
     if (!currentSessionId) return 'none';

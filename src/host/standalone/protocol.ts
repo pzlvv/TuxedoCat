@@ -1,5 +1,5 @@
 /**
- * Standalone Core 的帧协议（见 docs/standalone-core.md 第 6 节）。
+ * Standalone Core 的帧协议（见 docs/core/standalone-core.md 第 6 节）。
  *
  * 编码：UTF-8，换行（`\n`）分隔的 JSON，一行一帧。
  * 帧内换行以 JSON 转义表达，帧边界只由 `\n` 决定。

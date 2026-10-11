@@ -8,7 +8,7 @@
  * - `resolveConfigDir()` = `<home>/<CONFIG_DIR_NAME>`。
  *
  * 为什么值得单测：口径分叉会表现成「日志写在一处、配置读在另一处」，
- * 症状是「设置没被读到」，非常难查（见 `docs/core-ui-separation.md` 第 4 节）。
+ * 症状是「设置没被读到」，非常难查（见 `docs/architecture/core-ui-separation.md` 第 4 节）。
  *
  * 运行方式：npm run test:all -- configDir
  */

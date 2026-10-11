@@ -1,6 +1,6 @@
 /**
  * StandaloneEventBus - AssistantEventBus 在帧通道上的实现
- * （见 docs/standalone-core.md 第 3、5、6、7 节）。
+ * （见 docs/core/standalone-core.md 第 3、5、6、7 节）。
  *
  * UI 侧的总线：
  * - `emitToCore` → `uiEvent` 帧；
@@ -11,7 +11,7 @@
  * 与内存实现（`src/host/EventBus.ts`）的差异，全部来自进程边界：
  * - 就绪前的 `uiEvent` 在 UI 侧排队，握手完成后按序发出；
  * - 「连接态」事件（`hostEnvironmentProvided`）保留最后一次取值，
- *   每次握手后重放；`conversationOpened` 的会话集合同样重放（`docs/standalone-core.md` 第 7.1 节）；
+ *   每次握手后重放；`conversationOpened` 的会话集合同样重放（`docs/core/standalone-core.md` 第 7.1 节）；
  * - 处理器尚未注册时到达的 `CoreEvent` 先缓存，注册后按序补投；
  * - 未注册 `CoreRequest` 处理器时回 `ok: false` 的响应，而不是让对端永久挂起。
  *
@@ -288,7 +288,7 @@ export function createCoreChannelBus(
     }
     const handler = (coreEventHandlers as Record<string, (e: CoreEvent) => void>)[event.type];
     if (!handler) {
-      // `docs/standalone-core.md` 第 5 节：未知事件类型视为契约漂移，丢弃并记录
+      // `docs/core/standalone-core.md` 第 5 节：未知事件类型视为契约漂移，丢弃并记录
       log(`[core] unknown CoreEvent type: ${String((event as { type?: unknown }).type)}`);
       return;
     }

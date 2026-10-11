@@ -1,5 +1,5 @@
 /**
- * 单测：多宿主进程共写 `settings.json` 不丢数据（`docs/core-ui-separation.md` 第 4.6 节）。
+ * 单测：多宿主进程共写 `settings.json` 不丢数据（`docs/architecture/core-ui-separation.md` 第 4.6 节）。
  *
  * 场景：同一台机器上同时跑着 VS Code 扩展宿主与多个 Electron 实例，它们读同一份
  * `<configDir>/settings.json`。`SettingsStore.updateSettings` 是「读-改-写」，

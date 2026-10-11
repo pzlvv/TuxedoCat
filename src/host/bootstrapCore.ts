@@ -1,19 +1,19 @@
 /**
- * bootstrapCore - 宿主无关的启动接线骨架（见 docs/host-matrix.md 第 6 节）
+ * bootstrapCore - 宿主无关的启动接线骨架（见 docs/hosts/host-matrix.md 第 6 节）
  *
  * 两个宿主（VS Code 扩展 / Electron 主进程）的启动接线由本函数统一执行，
  * 宿主只提供自身差异（locale / 日志出口 / 资源根目录 / 工作区事实）。
  * 本模块位于 host/ 层，不 import `vscode` / `electron`。
  *
- * Core 实现的装配由 `CORE_KIND` 决定（见 docs/standalone-core.md 第 3 节）：
+ * Core 实现的装配由 `CORE_KIND` 决定（见 docs/core/standalone-core.md 第 3 节）：
  * - `embedded`：进程内总线（`createEventBus`），恒一个 Connection；
  * - `standalone`：每个工作区一个 Connection、一个 Core 进程，经 daemon 通道通信。
  *
- * 连接模型见 `docs/client-connection.md`：
+ * 连接模型见 `docs/core/client-connection.md`：
  * - `Client` 是宿主级唯一实例，维护工作区 / 会话路由与配置快照推送；
  * - `Connection` 是总线、就绪状态与生命周期的作用域。
  *
- * 顺序（不可调换，理由见 DEVELOPMENT.md 第 3.5 节；宿主专属接线见 `docs/host-matrix.md` 第 6 节）：
+ * 顺序（不可调换，理由见 docs/architecture/events.md 第 5 节；宿主专属接线见 `docs/hosts/host-matrix.md` 第 6 节）：
  *   创建 Client 并注册全局总线 → 注册 core 侧 UiEvent 订阅（仅 embedded）
  *   → 创建 WebViewUI（其构造函数注册 CoreEvent / CoreRequest 处理器）
  *   → 按工作区打开 Connection（连接建立时推送宿主环境与配置快照）
@@ -24,7 +24,7 @@
  *
  * 顺序错误在启动期暴露：`setGlobalEventBus` 重复注册抛错、
  * `emitToUi` 在 `WebViewUI.create` 之前抛错、未注册处理器时打开 Connection 抛错
- * （DEVELOPMENT.md 第 3.5、3.7 节）。
+ * （docs/architecture/events.md 第 5 / 6 节）。
  */
 
 import type { AssistantEventBus, UiEvent } from '../core/AssistantEventBus.js';
@@ -93,7 +93,7 @@ export interface CoreBootstrapResult {
 
 /** 启动接线快照（只读；用于启动日志与双端对照） */
 export interface BootstrapSnapshot {
-  /** 本次装配的 Core 实现（`docs/standalone-core.md` 第 3 节） */
+  /** 本次装配的 Core 实现（`docs/core/standalone-core.md` 第 3 节） */
   coreKind: CoreKind;
   locale: string;
   uiLanguage: 'auto' | 'zh' | 'en';
@@ -129,7 +129,7 @@ export function bootstrapCore(
   const coreKind = resolveCoreKind();
 
   // ── 0. 配置：读宿主自己的 settings.json / mcp.json（同步，webview 首帧要同步取值）──
-  // 配置归 UI（`docs/core-ui-separation.md` 第 4 节）：两种装配都读宿主自己的文件，
+  // 配置归 UI（`docs/architecture/core-ui-separation.md` 第 4 节）：两种装配都读宿主自己的文件，
   // 之后由 `SettingsStore` 的订阅把变更推给各 Connection。
   const settingsStore = getSettingsStore();
   try {
@@ -153,7 +153,7 @@ export function bootstrapCore(
   }
 
   // 宿主环境与配置快照：构造与推送收敛到一处。首次连接与后续配置变更走同一条
-  // 路径（`docs/core-ui-separation.md` 第 4.5 节：整份快照，没有增量语义）。
+  // 路径（`docs/architecture/core-ui-separation.md` 第 4.5 节：整份快照，没有增量语义）。
   const hostEnvironment = (): Extract<UiEvent, { type: 'hostEnvironmentProvided' }> => ({
     type: 'hostEnvironmentProvided',
     extensionPath: options.extensionPath,
@@ -175,7 +175,7 @@ export function bootstrapCore(
     openChannel: coreKind === 'standalone'
       ? (options.openStandaloneChannel ?? ((ref: WorkspaceRef) => openStandaloneChannel(ref, options)))
       : undefined,
-    // Core 崩溃 / 无法重启（`docs/standalone-core.md` 第 7.1 节）：把该连接上受影响的「忙」会话标记为失败，
+    // Core 崩溃 / 无法重启（`docs/core/standalone-core.md` 第 7.1 节）：把该连接上受影响的「忙」会话标记为失败，
     // 补发错误消息与 queryEnd，并把运行时状态复位为 idle —— 不静默挂起。
     // 同时把生命周期转发给宿主订阅者（`onWorkspaceConnectionState`）。
     onConnectionLost: (connection, reason) => {
@@ -296,7 +296,7 @@ const workspaceUnsubscribers = new Set<() => void>();
  * - 本地同机（`endpoint === null`）：Host 直接以 `stdio` 动作起一个 Core 进程，stdio 是帧通道
  *   （不监听端口、不需要 token）；
  * - 远程：连该 endpoint 的 daemon 控制通道（TCP + `auth`），每个工作区一条 channel
- *   （`docs/core-daemon.md` 第 12 节）。
+ *   （`docs/core/core-daemon.md` 第 12 节）。
  *
  * 两种形态对 Connection 暴露同一个 `AssistantEventBus`。
  */
@@ -308,7 +308,7 @@ function openStandaloneChannel(
   if (!ref.endpoint) {
     const bus = createStandaloneCoreBus({
       binaryPath: resolveCoreBinary(options.extensionPath),
-      // 显式 `stdio`（裸词动作，`docs/core-daemon.md` 第 3 节）：单进程 Core，stdio 帧通道
+      // 显式 `stdio`（裸词动作，`docs/core/core-daemon.md` 第 3 节）：单进程 Core，stdio 帧通道
       spawnArgs: ['stdio'],
       log,
     });
@@ -330,7 +330,7 @@ function openStandaloneChannel(
  * 取该远程工作区 endpoint 的 daemon（一个 endpoint 一个 daemon；宿主退出只断开自己的
  * 控制链路，不发 shutdown——daemon 的 idle-exit 自行清场，见 `shutdownCore`）。
  *
- * 全部通信走 SSH 端口（`docs/core-daemon.md` 第 12 节）。
+ * 全部通信走 SSH 端口（`docs/core/core-daemon.md` 第 12 节）。
  */
 function remoteDaemonForEndpoint(ref: WorkspaceRef, options: CoreBootstrapOptions): CoreDaemon {
   const endpoint = ref.endpoint;
@@ -352,7 +352,7 @@ function remoteDaemonForEndpoint(ref: WorkspaceRef, options: CoreBootstrapOption
 }
 
 /**
- * 建链方式（`docs/core-daemon.md` 第 12 节）：全部通信走 SSH 端口，daemon 的
+ * 建链方式（`docs/core/core-daemon.md` 第 12 节）：全部通信走 SSH 端口，daemon 的
  * endpoint 与 token 由引导流程取得（`sshDaemonBootstrap.ts`）。
  */
 function daemonOpenerFor(
@@ -568,7 +568,7 @@ function markConnectionSessionsFailed(
             ? {
                 ...state,
                 // Core 已失联：会话的所有运行时来源一并归零，避免留下
-                // 「idle 但 queryRunning」这类自相矛盾的快照（`DEVELOPMENT.md` 第 5.8 节）。
+                // 「idle 但 queryRunning」这类自相矛盾的快照（``docs/architecture/principles.md` 第 8 节）。
                 idle: true,
                 waiting: false,
                 queryRunning: false,

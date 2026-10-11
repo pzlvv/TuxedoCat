@@ -27,7 +27,7 @@ async function run(): Promise<void> {
 
   const testBus = makeTestBus();
   setGlobalEventBus(testBus.bus);
-  // Core 就绪：就绪前只接受 hostEnvironmentProvided（docs/core-ui-separation.md 第 7 节）。
+  // Core 就绪：就绪前只接受 hostEnvironmentProvided（docs/architecture/core-ui-separation.md 第 7 节）。
   applySettingsSnapshot(resolveSettingsSnapshot({}), []);
 
   let activeSession = 'parent';

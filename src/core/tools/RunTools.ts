@@ -447,7 +447,7 @@ async function* authorizeOne(
 
   // 传入 schema 解析后的输入，保证权限决策与 call 使用的是同一份规范化数据。
   // 发送前先发 toolCall 事件：UI 收到后立即上架 running 卡片，
-  // 避免「权限决策期间既没有 thinking 也没有 running」的空窗（见 DEVELOPMENT.md 7.2）。
+  // 避免「权限决策期间既没有 thinking 也没有 running」的空窗（见 `docs/architecture/events.md` 第 2.1 节的 toolCall 行）。
   emitToUi({ type: 'toolCall', sessionId: sessionID, toolUseId: toolUse.id, toolName: toolUse.name });
   let permission = await emitToolPermissionRequest(sessionID, toolUse.id, toolUse.name, parsedInput.data as Record<string, any>, tool);
 

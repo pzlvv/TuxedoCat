@@ -1,5 +1,5 @@
 /**
- * Core 面向界面的文案键（`docs/core-ui-separation.md` 第 4.8 / 4.9 节）。
+ * Core 面向界面的文案键（`docs/architecture/core-ui-separation.md` 第 4.8 / 4.9 节）。
  *
  * Core 不感知语言：瞬时状态提示以「键 + 参数」表达，经 `CoreEvent.notice` 交给 UI
  * 翻译；内置命令的描述同样以键表达。这些键必须在 UI 翻译表里存在，由

@@ -1,5 +1,5 @@
 /**
- * 品牌字面量守卫（`docs/product-identity.md`）。
+ * 品牌字面量守卫（`docs/hosts/product-identity.md`）。
  *
  * 契约：产品身份只允许出现在两个**定义处**——
  * - `src/config/project.json`：工程变量（配置目录、环境变量前缀、命令前缀、面板 id …）；

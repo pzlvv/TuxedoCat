@@ -12,7 +12,7 @@ import {
 } from '../../src/config/project';
 
 /**
- * TUI 版安装程序 e2e（docs/tui-installer.md）。
+ * TUI 版安装程序 e2e（docs/features/tui-installer.md）。
  *
  * 场景级：构建宿主平台的安装器 → 安装到临时前缀 → 验证部署布局与载荷完整性 →
  * 内嵌 Core 可执行（--version）→ 安装目录里的 TUI 可启动（--version 与

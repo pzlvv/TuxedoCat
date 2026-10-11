@@ -47,7 +47,7 @@ async function run(): Promise<void> {
   assert.equal(states[0].sessionId, 's1');
   assert.equal(states[0].idle, false);
   assert.equal(states[0].waiting, false);
-  // 根事实随派生 idle 一起进快照（docs/abort-button.md 第 1.1 节）
+  // 根事实随派生 idle 一起进快照（docs/features/abort-button.md FR-001）
   assert.equal(states[0].queryRunning, true);
   assert.equal(states[0].compacting, false);
   assert.equal(states[0].backgroundRunning, false);

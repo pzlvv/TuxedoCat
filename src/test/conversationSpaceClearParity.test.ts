@@ -1,5 +1,5 @@
 /**
- * 对话空间清空回执的对等测试（DEVELOPMENT.md 第 4.3 / 4.1 节）。
+ * 对话空间清空回执的对等测试（docs/architecture/events.md 第 2.3 / 2.1 节）。
  *
  * 设置页的「删除中」按钮靠 core 的完成回执解除：`UiEvent.conversationSpaceCleared`
  * 触发删除后，两套 Core 都必须发回**同名 CoreEvent 回执**（判别联合：
@@ -207,7 +207,7 @@ async function driveRealCore(child: CoreChild, dirName: string, mode: 'clear' | 
     child.stdin.write(`${JSON.stringify(frame)}\n`);
   };
   // 帧按序处理：hello → 宿主环境（core 的就绪判据）→ 清空事件。
-  // 就绪前发其它 UiEvent 会被 Core 拒绝（docs/core-ui-separation.md 第 7 节）。
+  // 就绪前发其它 UiEvent 会被 Core 拒绝（docs/architecture/core-ui-separation.md 第 7 节）。
   send({ kind: 'hello', protocol: CORE_PROTOCOL_VERSION });
   send({ kind: 'uiEvent', event: hostEnvironment() });
   const ready = await waitFor(() => received.some((event) => event.type === 'coreReady'), 10_000);
@@ -403,7 +403,7 @@ async function runStandaloneRemote(home: string, dirName: string, mode: 'clear' 
 
     const ready = await waitFor(() => bus.isReady(), 10_000);
     if (!ready) throw new Error('远程通道握手未完成');
-    // 就绪判据是配置快照（docs/core-ui-separation.md 第 7 节）：先送宿主环境再清空，
+    // 就绪判据是配置快照（docs/architecture/core-ui-separation.md 第 7 节）：先送宿主环境再清空，
     // 否则清空事件会被 Core 的就绪守卫拒绝（与本地 stdio 车道同一口径）。
     bus.emitToCore(hostEnvironment());
     await waitFor(() => received.some((event) => event.type === 'coreReady'), 10_000);

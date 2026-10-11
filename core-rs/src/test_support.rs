@@ -67,7 +67,7 @@ impl Sandbox {
             config_dir_name: config_dir_name.clone(),
         });
         // 沙箱默认「宿主已连接、配置为空」：真实路径上 `hostEnvironmentProvided`
-        // 永远先于任何其它 UiEvent（`docs/core-ui-separation.md` 第 7 节），
+        // 永远先于任何其它 UiEvent（`docs/architecture/core-ui-separation.md` 第 7 节），
         // 就绪前收到其它事件会被 Core 拒绝。需要「快照尚未到达」状态的用例
         // 自己调 `settings::reset_settings_snapshot()`。
         settings::apply_settings_snapshot(build_test_snapshot(&json!({})), Vec::new());
@@ -87,7 +87,7 @@ impl Sandbox {
     /// 写 `settings.json` **并**把等价的配置快照注入 Core 侧唯一入口。
     ///
     /// 测试里由本函数扮演 **Host** 的角色：UI 读盘后补默认值、规范化，产出一份快照
-    /// 随 `hostEnvironmentProvided` 下发（`docs/core-ui-separation.md` 第 4 节）。
+    /// 随 `hostEnvironmentProvided` 下发（`docs/architecture/core-ui-separation.md` 第 4 节）。
     /// 因此这里复刻 Host 的规范化口径（白名单回落、缺字段补默认、无 `baseURL` 的
     /// provider 不进快照）。
     ///

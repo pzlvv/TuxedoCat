@@ -1,4 +1,4 @@
-//! Standalone Core（见 docs/standalone-core.md）。
+//! Standalone Core（见 docs/core/standalone-core.md）。
 //!
 //! 进程模型：由宿主（VS Code 扩展宿主 / Electron 主进程）启动，标准输入 / 标准输出
 //! 为帧通道，标准错误为诊断输出。一个 Core 进程服务一个宿主实例。
@@ -62,9 +62,9 @@ fn main() {
     // 崩溃诊断先于一切动作安装：daemon 与 Core 两种模式都可能异常退出，
     // panic 位置 + 调用栈必须落进日志（见 `util::install_panic_hook`）
     util::install_panic_hook();
-    // 动作选择（`docs/core-daemon.md` 第 3 节）：`stdio` 是单进程 Core（stdio 是帧通道）；
+    // 动作选择（`docs/core/core-daemon.md` 第 3 节）：`stdio` 是单进程 Core（stdio 是帧通道）；
     // `start`（缺省）是远程服务的启动器（确保后台 daemon 在跑、打印就绪信息后退出），
-    // `kill` 结束它，daemon 实体走隐藏动作 `start-daemon`（`docs/core-daemon.md` 第 12 节）。
+    // `kill` 结束它，daemon 实体走隐藏动作 `start-daemon`（`docs/core/core-daemon.md` 第 12 节）。
     // `--help` / `--version` 与参数错误都在 `cli::parse` 里收口。
     let args: Vec<String> = std::env::args().skip(1).collect();
     match cli::parse(&args) {
@@ -230,7 +230,7 @@ fn run_frame_loop(
 
 /// UI → core 请求的分发（对齐 `UiRequest`，见 `src/core/AssistantEventBus.ts`）。
 ///
-/// 宿主不直接读 core 的磁盘数据（`docs/standalone-core.md` 第 10 节）：
+/// 宿主不直接读 core 的磁盘数据（`docs/core/standalone-core.md` 第 10 节）：
 /// 需要「core 的事实」时经帧通道请求，这里应答。未知类型一律报错而不是回空值——
 /// 静默的空结果会让宿主把「契约漂移」误当成「确实没有数据」。
 fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
@@ -418,7 +418,7 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
         bus.handle_ui_event(&event);
     }
 
-    // 就绪前只接受宿主环境与配置快照（`docs/core-ui-separation.md` 第 7 节）：
+    // 就绪前只接受宿主环境与配置快照（`docs/architecture/core-ui-separation.md` 第 7 节）：
     // 其它 UiEvent 说明宿主接线顺序错了，记一条 log 暴露而不是静默生效。
     // 快照就是 core 的就绪判据（`settings.rs`），不需要额外的状态位。
     if event_type != "hostEnvironmentProvided" && !settings::has_settings_snapshot() {
@@ -460,14 +460,14 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                     .to_string(),
             });
             // 配置快照：与宿主环境同一条事件一次给齐。缺字段是协议错误，
-            // 记一条 log 事件暴露，不静默回落（`docs/core-ui-separation.md` 第 4.4 节）。
+            // 记一条 log 事件暴露，不静默回落（`docs/architecture/core-ui-separation.md` 第 4.4 节）。
             match settings::apply_from_host_environment(&event) {
                 Ok(mcp_defaults_changed) => {
-                    // 快照就是就绪判据：应用完才算就绪（`docs/core-ui-separation.md` 第 7 节）。宿主据此判定
+                    // 快照就是就绪判据：应用完才算就绪（`docs/architecture/core-ui-separation.md` 第 7 节）。宿主据此判定
                     // 「Core 已跟上最新配置」，每次重新推送快照后都会再收到一次。
                     emit(core, json!({ "type": "coreReady" }));
                     // MCP 全局默认启用列表变了：让所有已注册会话按新的默认值重同步连接。
-                    // 配置变更只经快照到达 core（`docs/core-ui-separation.md` 第 4.5 节），没有单独的通知事件。
+                    // 配置变更只经快照到达 core（`docs/architecture/core-ui-separation.md` 第 4.5 节），没有单独的通知事件。
                     if mcp_defaults_changed {
                         crate::mcp::sync_all_sessions();
                     }

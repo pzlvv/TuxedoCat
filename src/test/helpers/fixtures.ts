@@ -269,7 +269,7 @@ export function settingsSnapshotFromHome(homeDir: string): SettingsSnapshot {
 /**
  * 模拟宿主连接：发一次 `hostEnvironmentProvided`（宿主环境 + 空配置快照）。
  *
- * Core 就绪前只接受这一条 `UiEvent`（`docs/core-ui-separation.md` 第 7 节），
+ * Core 就绪前只接受这一条 `UiEvent`（`docs/architecture/core-ui-separation.md` 第 7 节），
  * 因此任何直接 `emitToCore` 驱动 core 的用例都必须先握手。配置快照按空配置解析
  * （等价于「用户还没配置过」）；需要具体配置的用例自己构造快照再发。
  */

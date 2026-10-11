@@ -286,8 +286,8 @@ export class ElectronUIHost implements UIHost {
 
   /**
    * 空实现：Electron 没有「原生 diff」这个界面。
-   * Edit / Write 的改动只在 webview 的工具卡片里渲染（`docs/contracts.md` 第 7 节），
-   * 桌面端不再重复开 Monaco diff 窗口（docs/host-matrix.md 第 12 节 UIHost 对照表）。
+   * Edit / Write 的改动只在 webview 的工具卡片里渲染（`docs/architecture/contracts.md` 第 7 节），
+   * 桌面端不再重复开 Monaco diff 窗口（docs/hosts/host-matrix.md 第 12 节 UIHost 对照表）。
    */
   async showDiff(): Promise<void> {
     /* 空实现：diff 归 webview */

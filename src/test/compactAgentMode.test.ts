@@ -9,7 +9,7 @@
  * - `toUserInputEntries` / `formatUserInputEntries` / `readCompactUserInputHistory`。
  * - `inheritAgentMode` / `inheritAgentModeFrom`（src/core/tools/PermissionPolicy.ts）：
  *   子会话完整继承父会话的 manual / risk / auto；父值缺失时取配置快照的默认值
- *   （默认值只有一处来源，见 `docs/webview-facts.md` 第 2 节）。
+ *   （默认值只有一处来源，见 `docs/hosts/webview-facts.md` 第 2 节）。
  *
  * 运行方式：npm run test:all -- compactAgentMode
  */

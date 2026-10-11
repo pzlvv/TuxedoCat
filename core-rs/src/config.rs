@@ -304,7 +304,7 @@ fn read_settings_file(path: &std::path::Path) -> Value {
 
 /// 写项目对话目录的 `workspace.meta.json`（记录该目录对应的 workspacePath）。
 ///
-/// 目录与清单都由 Core 创建与写入（`docs/core-ui-separation.md` 第 4.1 节）；
+/// 目录与清单都由 Core 创建与写入（`docs/architecture/core-ui-separation.md` 第 4.1 节）；
 /// 与 Embedded `writeWorkspaceMeta` 一致：`workspacePath` 未变化时不重写（幂等）。
 pub fn write_workspace_meta(project_dir: &std::path::Path, workspace_path: &str) -> Result<(), String> {
     let path = project_dir.join("workspace.meta.json");

@@ -1,4 +1,4 @@
-//! Core 侧的帧总线（见 docs/standalone-core.md 第 5、6、7 节）。
+//! Core 侧的帧总线（见 docs/core/standalone-core.md 第 5、6、7 节）。
 //!
 //! 职责：帧写出、`CoreEvent` 上报、`CoreRequest` 发起与应答匹配、`UiEvent` 分发。
 //! 写出目标泛型化，便于测试捕获帧内容。

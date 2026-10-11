@@ -3,7 +3,7 @@ import { Colors } from '../types';
 import { t } from '../i18n';
 
 /**
- * 一条瞬时状态提示（`docs/core-ui-separation.md` 第 4.9 节）。
+ * 一条瞬时状态提示（`docs/architecture/core-ui-separation.md` 第 4.9 节）。
  *
  * core 只给「键 + 参数」，翻译在这里做；不进消息流、不落盘。
  */

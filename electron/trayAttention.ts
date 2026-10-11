@@ -11,7 +11,7 @@
  * 落回 idle 也不是——那是子对话一轮的结束，不是主对话完成。「转等待用户」
  * （running → waiting，ask user / 权限确认）不受此抑制，照常提醒。
  *
- * core 只推全量 `sessionRuntimeChanged` 快照（DEVELOPMENT.md 第 4.5 节），没有单会话结束事件；
+ * core 只推全量 `sessionRuntimeChanged` 快照（docs/core/session-runtime.md），没有单会话结束事件；
  * 这里对相邻两次全量推送按 sessionId 差分出事件，不引入新的事件流。
  */
 

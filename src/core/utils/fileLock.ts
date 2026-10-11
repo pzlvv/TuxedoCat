@@ -1,5 +1,5 @@
 /**
- * 跨进程文件锁（`docs/core-ui-separation.md` 第 4.6 节）。
+ * 跨进程文件锁（`docs/architecture/core-ui-separation.md` 第 4.6 节）。
  *
  * 同一台机器上会有多个宿主进程同时读写同一份共享文件（VS Code 扩展宿主 + 多个
  * Electron 实例），而「读-改-写」在没有互斥时既不原子也不安全。这里的锁基于
@@ -157,7 +157,7 @@ async function renameWithRetry(tmpPath: string, filePath: string): Promise<void>
  * 在跨进程互斥下执行 `fn`。
  *
  * 拿不到锁时抛错而不是继续执行：调用方要写的是共享文件，无锁写入会覆盖其它进程的
- * 修改（`docs/core-ui-separation.md` 第 4.6 节「后写覆盖」只适用于成功拿到锁的串行化）。
+ * 修改（`docs/architecture/core-ui-separation.md` 第 4.6 节「后写覆盖」只适用于成功拿到锁的串行化）。
  */
 export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
   let acquired = false;

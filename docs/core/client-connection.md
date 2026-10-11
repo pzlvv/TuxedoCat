@@ -9,11 +9,11 @@ last_reviewed: 2026-10-11
 宿主与一个 Core 之间的一对一连接，是总线、就绪状态与生命周期的作用域。工作区表示、
 Connection 生命周期、会话路由与就绪门禁都在本规格内确定。
 
-Core 与 UI 的分离形态见 `docs/core-ui-separation.md`；Standalone 进程形态见
-`docs/standalone-core.md`；Core 进程的 daemon 见 `docs/core-daemon.md`。
+Core 与 UI 的分离形态见 `docs/architecture/core-ui-separation.md`；Standalone 进程形态见
+`docs/core/standalone-core.md`；Core 进程的 daemon 见 `docs/core/core-daemon.md`。
 
-参考 [DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)（分层与依赖规则）、[第 3 章](../DEVELOPMENT.md#3-核心契约assistanteventbus)（核心契约：AssistantEventBus）、
-[docs/host-matrix.md 第 6 节](host-matrix.md#6-宿主接线)（宿主接线）、[DEVELOPMENT.md 第 5.7 节](../DEVELOPMENT.md#57-一份事实只有一个写入点)（一份事实只有一个写入点）。
+参考 [docs/architecture/layering.md 第 2 节](../architecture/layering.md#2-规则清单)（分层与依赖规则）、[第 1 节](../architecture/events.md#1-总线契约)（核心契约：AssistantEventBus）、
+[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主接线)（宿主接线）、[docs/architecture/principles.md 第 7 节](../architecture/principles.md#7-一份事实只有一个写入点)（一份事实只有一个写入点）。
 
 ---
 
@@ -97,7 +97,7 @@ Connection 持有：
 
 - `(scheme, endpoint)` 决定 Connection 的目标；`path` 是 Core 的会话工作目录。
 - **Core 只见 `path`**：endpoint 与凭证不下发到 Core，也不进入配置快照。
-- `auth` 是判别联合，`kind` 唯一决定控制通道怎么建（[docs/core-daemon.md 第 12 节](core-daemon.md#12-远程服务start--kill)）：
+- `auth` 是判别联合，`kind` 唯一决定控制通道怎么建（[docs/core/core-daemon.md 第 12 节](core-daemon.md#12-远程服务start--kill)）：
   只有 `{ kind: 'sshPassword' }`（`ssh`，口令只用于建 SSH 连接）。
 - `ssh` 下 `host` / `port` 是 SSH 的地址与端口，daemon 的端口由引导流程从远端状态文件
   取得，不写进引用。
@@ -110,7 +110,7 @@ Connection 持有：
 ### 4.1 与 Core 数据目录的关系
 
 - Core 的数据目录仍是 `~/<CONFIG_DIR_NAME>`，按 Core 实例一份，在 Core 所在机器上；
-  `getConfigHomeDir()` 的语义不变（[docs/core-ui-separation.md 第 4 节](core-ui-separation.md#4-配置归-ui)）。
+  `getConfigHomeDir()` 的语义不变（[docs/architecture/core-ui-separation.md 第 4 节](../architecture/core-ui-separation.md#4-配置归-ui)）。
 - 会话目录名仍由 `path` 派生（`encodeURIComponent`，超长走哈希），**不引入工作区身份**：
   不同机器上的相同路径落在各自 Core 的数据目录里，不会相撞。
 - `meta.json` 的 `project` 字段仍存 `path`。
@@ -118,9 +118,9 @@ Connection 持有：
 ### 4.2 远程打开流程（Electron）
 
 1. 菜单 / 标题栏加号选「打开远程工作区」，填 SSH 表单（IP / 端口 / 用户 / 口令）；
-   Host 自动部署并启动远端 Core（[docs/core-daemon.md 第 12.8 节](core-daemon.md#128-ssh-接入ssh-scheme)）；
+   Host 自动部署并启动远端 Core（[docs/core/core-daemon.md 第 12.8 节](core-daemon.md#128-ssh-接入ssh-scheme)）；
 2. Host 把输入收敛成 `endpoint`，**连接成功后立刻**列出远端主目录，弹出远端目录选择器
-   （[docs/core-daemon.md 第 12.6 节](core-daemon.md#126-远端目录选择)）；
+   （[docs/core/core-daemon.md 第 12.6 节](core-daemon.md#126-远端目录选择)）；
 3. 选定目录后按 `remoteWorkspaceRef` 加入打开集合：`(scheme, endpoint, path)`；
 4. 打开该工作区时复用同一条控制通道发 `openWorkspace`。
 
@@ -184,7 +184,7 @@ Connection 持有：
   `CoreEvent.coreReady`。
 - `coreReady` 幂等：同一 Connection 内重复到达只生效一次。
 - **门禁在 Client 侧**：未就绪期间的 `UiEvent` 一律不发出。Core 侧对应地做硬断言：
-  就绪前收到任何 `UiEvent` 直接抛错，把顺序错误变成启动期错误（[DEVELOPMENT.md 第 3.7 节](../DEVELOPMENT.md#37-总线边界语义启动窗口--无订阅者--请求丢失)）。
+  就绪前收到任何 `UiEvent` 直接抛错，把顺序错误变成启动期错误（[docs/architecture/events.md 第 6 节](../architecture/events.md#6-边界语义)）。
 - 一个 Connection 未就绪不影响其它 Connection。
 - 重连不在本规格范围内（第 10 节）。
 
@@ -195,7 +195,7 @@ Connection 持有：
 - 快照是 Client 级的：`SettingsStore` 读磁盘、补默认值、规范化后产出一份；每个 Connection
   就绪时推同一份。
 - Connection 建立时推送；快照变化时推给所有已就绪的 Connection。
-- 快照的字段、默认值来源、同步点清单与写盘规则见 [docs/core-ui-separation.md 第 4 节](core-ui-separation.md#4-配置归-ui)。
+- 快照的字段、默认值来源、同步点清单与写盘规则见 [docs/architecture/core-ui-separation.md 第 4 节](../architecture/core-ui-separation.md#4-配置归-ui)。
 
 ---
 
@@ -227,12 +227,12 @@ Connection 持有：
   （重连期间转建链中，同一 3 秒建链超时；成功撤销判定、补建 Connection 并切回对话视图）。
   活动项
   不因不可用而回退；可用的引用（含远程）交给 `Client.openWorkspace` 建立 Connection，
-  远程项按落盘凭证重新走一遍 SSH 引导（[docs/core-daemon.md 第 12.8 节](core-daemon.md#128-ssh-接入ssh-scheme)）。连不上不影响
+  远程项按落盘凭证重新走一遍 SSH 引导（[docs/core/core-daemon.md 第 12.8 节](core-daemon.md#128-ssh-接入ssh-scheme)）。连不上不影响
   其它工作区。
 - **最近列表**：本地项在读取时过滤掉已不存在的目录；远程项无法本地检查，原样保留。
   关闭标签页只从打开集合移除，不抹掉最近列表里的凭证。
 - 读取口径：形状不合法（缺 host、端口越界、认不出的凭证种类等）的项整项丢弃，
-  不猜、不补默认值（[DEVELOPMENT.md 第 5.1 节](../DEVELOPMENT.md#51-不过度-fallback)）。
+  不猜、不补默认值（[docs/architecture/principles.md 第 1 节](../architecture/principles.md#1-不过度-fallback)）。
 
 ---
 
@@ -240,7 +240,7 @@ Connection 持有：
 
 - 远程凭证的加密存储与钥匙串集成（当前是明文落盘，见第 9 节）；
 - SSH 的密钥 / agent 认证（当前只有口令）；
-- 远程 daemon 的部署由 Host 自动完成（[docs/core-daemon.md 第 12.8 节](core-daemon.md#128-ssh-接入ssh-scheme)）；
+- 远程 daemon 的部署由 Host 自动完成（[docs/core/core-daemon.md 第 12.8 节](core-daemon.md#128-ssh-接入ssh-scheme)）；
 - 断线重连（含远程工作区在重启后连不上时的自动重试）；
 - 多 Connection 的界面呈现（归属标识、切换入口）。
 
@@ -254,7 +254,7 @@ Connection 持有：
 4. Client 未收到 `coreReady` 前不发出任何 `UiEvent`；Core 在就绪前收到 `UiEvent` 抛错。
 5. 一份配置快照推给所有 Connection，Connection 之间不共享内存状态。
 6. `connectionId` 不出现在任何总线载荷中。
-7. 关闭工作区后 Connection 销毁；daemon 计数递减，归零后按 `docs/core-daemon.md` 退出。
+7. 关闭工作区后 Connection 销毁；daemon 计数递减，归零后按 `docs/core/core-daemon.md` 退出。
 8. 会话按 `sessionId` 路由到正确 Connection；查不到归属时报错。
 9. 同一 endpoint 的多个工作区共用一个 daemon；不同 endpoint 各自独立。
 10. 远程连接失败时报错，不建立 Connection。

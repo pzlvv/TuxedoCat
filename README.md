@@ -15,7 +15,7 @@
 ## 技术栈
 
 - TypeScript
-- Rust（Standalone Core，见 `docs/standalone-core.md`）
+- Rust（Standalone Core，见 `docs/core/standalone-core.md`）
 - VS Code Extension API
 - Electron + electron-builder
 - React + Vite
@@ -25,13 +25,13 @@
 
 ## 目录结构
 
-目录布局与各路径的唯一事实在 [DEVELOPMENT.md 第 1.3 节](DEVELOPMENT.md#13-目录布局)，此处不再重复。
+目录布局与各路径的唯一事实在 [docs/architecture/repo-map.md](docs/architecture/repo-map.md)，此处不再重复。
 
 ## 环境要求
 
 - Node.js 18+
 - npm 9+
-- Rust 工具链（构建 Standalone Core；目标矩阵见 [docs/standalone-core.md 第 4.1 节](docs/standalone-core.md#41-平台矩阵)）
+- Rust 工具链（构建 Standalone Core；目标矩阵见 [docs/core/standalone-core.md 第 4.1 节](docs/core/standalone-core.md#41-平台矩阵)）
 - Git LFS（克隆后拉取 `resources/` 下的大文件）
 
 ## 快速开始
@@ -62,7 +62,7 @@ npm run build:all
 
 Core 有两种实现，由 `src/host/coreKind.ts` 的 `CORE_KIND` 装配（默认 `standalone`）：
 `embedded` 为 `src/core` 的 TypeScript 实现（与 UI 同进程），`standalone` 为 `core-rs/`
-的 Rust 实现（独立进程，经帧通道通信）。规格见 `docs/standalone-core.md`。
+的 Rust 实现（独立进程，经帧通道通信）。规格见 `docs/core/standalone-core.md`。
 
 ```bash
 # 构建 Standalone Core（产物落在 resources/<core.resourceDir>/<arch>-<platform>/）
@@ -90,7 +90,7 @@ cd core-rs && cargo test
 - daemon 只监听目标机器的回环地址、端口交给内核分配，用户不需要填任何连接信息；
 - 连接成功后**立刻**弹出远端目录选择器，选定目录即作为远程工作区打开。
 
-细节见 [docs/core-daemon.md 第 12 节](docs/core-daemon.md#12-远程服务start--kill)。
+细节见 [docs/core/core-daemon.md 第 12 节](docs/core/core-daemon.md#12-远程服务start--kill)。
 
 Standalone Core 的 `start` / `kill` 仍是可用的命令行入口：`start` 确保后台 daemon 在跑
 （没有就拉起）并打印就绪信息后自己退出，`kill` 结束它。不带动作直接运行可执行文件同样
@@ -116,17 +116,17 @@ daemon 只监听回环，访问边界就是承载它的 SSH 通道：不需要�
 
 ### 架构图（Mermaid）
 
-`DEVELOPMENT.md` 里的架构图用 Mermaid 渲染：VS Code 内置的 Markdown 预览、GitHub 等
+`docs/architecture/`（[overview.md](docs/architecture/overview.md) / [class-diagrams.md](docs/architecture/class-diagrams.md)）里的架构图用 Mermaid 渲染：VS Code 内置的 Markdown 预览、GitHub 等
 支持 Mermaid 的渲染器都直接识别 `mermaid` 代码块，不需要装扩展、起本地服务或额外
 安装 JDK。
 
 > 助手回复里的 mermaid 代码块走的是另一条路径（webview 内「预览」按钮 → 宿主原生
-> 窗口），见 `docs/user-stories.md`。
+> 窗口），见 `docs/features/user-stories.md`。
 
 ## 文档
 
 - `docs/README.md` —— 文档地图：全部规格的索引与「什么内容写到哪」的分类法
-- `DEVELOPMENT.md` —— 架构总纲：分层规则、事件词汇表、架构原则
+- `docs/architecture/` —— 架构规格：总览、分层规则、事件词汇表、架构原则、待定事项
 - `AGENTS.md` —— AI 协作约定（也适用于人类贡献者）
 - `docs/adr/` —— 架构决策记录（ADR）
 - 文档一致性守卫 `src/test/docsLint.test.ts`：CI 在每个 PR 上运行（`.github/workflows/docs.yml`），本地 `npm run test:all -- docs-lint`
@@ -173,7 +173,7 @@ npm run package:tui:x64
 
 Standalone 变体的包里要同时有全部三个平台的 core（`x64-win32` / `x64-linux` /
 `arm64-linux`）。`build:core` 默认就构建全部携带目标（Windows 上直接交叉编译 Linux，
-需要 zig，见 [docs/standalone-core.md 第 4.3 节](docs/standalone-core.md#43-构建与目标平台)），无需先单独构建：
+需要 zig，见 [docs/core/standalone-core.md 第 4.3 节](docs/core/standalone-core.md#43-构建与目标平台)），无需先单独构建：
 
 ```bash
 npm run package

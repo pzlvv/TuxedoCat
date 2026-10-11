@@ -1,4 +1,4 @@
-//! daemon 控制通道协议的编解码用例（`docs/core-daemon.md` 第 7 节）。
+//! daemon 控制通道协议的编解码用例（`docs/core/core-daemon.md` 第 7 节）。
 
 use super::*;
 use serde_json::json;

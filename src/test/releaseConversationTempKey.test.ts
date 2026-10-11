@@ -1,10 +1,10 @@
 /**
- * releaseConversation 对临时 `new-` key 的处理（docs/webview-ui.md 第 1 节）：
+ * releaseConversation 对临时 `new-` key 的处理（docs/hosts/webview-ui.md 第 1 节）：
  *
  * 新建对话在 webview 上报正式 sessionId 前用 `new-<timestamp>` 临时 key。
  * core 从未拥有这样的会话（releaseSessionResources 对它本就是 no-op），
  * 所以「卸内存」不能给它发 `conversationClosed`——多连接宿主里 Client 按会话
- * 路由查不到归属会直接抛错（`docs/client-connection.md` 第 6 节），实测在
+ * 路由查不到归属会直接抛错（`docs/core/client-connection.md` 第 6 节），实测在
  * 「多个工作区标签 + 未发消息的新对话」下关工作区崩主进程。
  *
  * 运行方式：npm run test:all -- release-conversation-temp-key
@@ -106,7 +106,7 @@ async function run(): Promise<void> {
     assert.strictEqual(bus.closedOf('conversationClosed').length, 0);
     check('temp new- key emits no conversationClosed', true);
 
-    // core 就绪门禁的判据是「配置快照已应用」（docs/core-ui-separation.md 第 7 节）
+    // core 就绪门禁的判据是「配置快照已应用」（docs/architecture/core-ui-separation.md 第 7 节）
     applyTestSettings({});
     bus.emittedUiEvents.length = 0;
 

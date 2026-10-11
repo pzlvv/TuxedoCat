@@ -1,5 +1,5 @@
 /**
- * UserChoiceManager.dropSession 单测（docs/webview-ui.md 第 9 节）：
+ * UserChoiceManager.dropSession 单测（docs/hosts/webview-ui.md 第 9 节）：
  * - 清掉该会话挂起的用户选择回调，不影响其它会话
  * - diff 快照只在归属该会话时清空
  * - 清掉已弹出的选择时经总线解除「等待用户」状态
@@ -20,7 +20,7 @@ async function run(): Promise<void> {
   // UserChoiceManager 经总线上报「等待用户」状态（dropSession 会解除该状态）
   const testBus = makeTestBus();
   setGlobalEventBus(testBus.bus);
-  // Core 就绪：就绪前只接受 hostEnvironmentProvided（docs/core-ui-separation.md 第 7 节）。
+  // Core 就绪：就绪前只接受 hostEnvironmentProvided（docs/architecture/core-ui-separation.md 第 7 节）。
   // 本用例的总线没有注册 core 侧订阅，因此直接调 core 侧的唯一写入口置位就绪。
   applySettingsSnapshot(resolveSettingsSnapshot({}), []);
 

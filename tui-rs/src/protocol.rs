@@ -1,5 +1,5 @@
 //! 帧协议客户端（对齐 `core-rs/src/frame.rs` 与 `src/host/standalone/protocol.ts`，
-//! 见 docs/standalone-core.md 第 6 节）。
+//! 见 docs/core/standalone-core.md 第 6 节）。
 //!
 //! 编码：UTF-8，换行（`\n`）分隔的 JSON，一行一帧；帧内换行以 JSON 转义表达。
 //! 本模块只做编解码与信封类型；事件 / 请求的载荷以 `serde_json::Value` 透传，

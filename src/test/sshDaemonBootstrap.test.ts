@@ -1,7 +1,7 @@
 /**
  * 单测：SSH 远端引导（`src/host/standalone/sshDaemonBootstrap.ts`）。
  *
- * 覆盖 `docs/core-daemon.md` 第 12.8 节按指纹落位后的三条分支与失败路径：
+ * 覆盖 `docs/core/core-daemon.md` 第 12.8 节按指纹落位后的三条分支与失败路径：
  * - 该指纹的 daemon 在跑 → 直接复用，不重启、不覆盖（缺可执行文件或共享位缺
  *   ripgrep 时仍补传——「在跑」不等于产物齐全）；
  * - 已部署未启动 → 只跑 `start --idle-exit 30`，产物在就不重传（指纹槽位
@@ -42,13 +42,13 @@ const DEPLOY_DIR = coreDeployDirPath(FINGERPRINT);
 const RIPGREP_DIR = coreDeployRipgrepPath();
 const STATE_PATH = `${HOME}/${CONFIG_DIR_NAME}/run/core-daemon-${FINGERPRINT}.json`;
 const BINARY_PATH = `${HOME}/${REMOTE_DEPLOY_ROOT}/${DEPLOY_DIR}/${coreBinaryFileName('linux')}`;
-/** Core 自带的 ripgrep：产品目录根的共享位，全部指纹槽位共用（`docs/standalone-core.md` 第 4 节） */
+/** Core 自带的 ripgrep：产品目录根的共享位，全部指纹槽位共用（`docs/core/standalone-core.md` 第 4 节） */
 const RIPGREP_PATH = `${HOME}/${REMOTE_DEPLOY_ROOT}/${RIPGREP_DIR}/rg`;
 /**
  * 引导执行的启动命令：daemon 恒绑回环（转发连接从远端本机发起，端口不出机器）；
  * 端口交给内核分配——多版本 daemon 并存互不抢固定端口，实际端口随状态文件读回；
  * `--idle-exit 30` 让 daemon 在最后一条连接断开后自行退出（客户端 crash 不留常驻
- * 进程），见 `docs/core-daemon.md` 第 12.2 / 12.5 / 12.8 节。
+ * 进程），见 `docs/core/core-daemon.md` 第 12.2 / 12.5 / 12.8 节。
  */
 const START_COMMAND = `'${BINARY_PATH}' start --idle-exit 30`;
 
@@ -154,7 +154,7 @@ function makeExtensionPath(): { root: string; binary: string; ripgrep: string } 
   );
   fs.mkdirSync(path.dirname(binary), { recursive: true });
   fs.writeFileSync(binary, 'fake-core-binary');
-  // 构建指纹与可执行文件同级（`npm run build:core` 的落位，docs/standalone-core.md 第 4.4 节）
+  // 构建指纹与可执行文件同级（`npm run build:core` 的落位，docs/core/standalone-core.md 第 4.4 节）
   fs.writeFileSync(path.join(path.dirname(binary), 'fingerprint'), `${FINGERPRINT}\n`);
   // Core 自带的 ripgrep 与可执行文件同级
   const ripgrep = path.join(path.dirname(binary), 'ripgrep', 'rg');
