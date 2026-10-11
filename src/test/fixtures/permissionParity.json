@@ -59,6 +59,7 @@
     { "tool": "Bash", "mode": "manual", "args": { "command": "\u0085" }, "expect": "ask", "why": "仅 U+0085：JS trim 不去，首词不是只读命令" },
     { "tool": "Bash", "mode": "manual", "args": { "command": "\ufeff" }, "expect": "ask", "why": "仅 U+FEFF：JS trim 去空后无段，isReadOnly=false → ask" },
     { "tool": "AskUserQuestion", "mode": "manual", "args": { "question": "hi" }, "expect": "allow", "why": "checkPermissions 直接放行：提问在 call() 里弹框，不再双重确认" },
-    { "tool": "AskUserQuestion", "mode": "risk", "args": { "question": "hi", "choices": [{ "label": "A" }, { "label": "B" }] }, "expect": "allow", "why": "risk 模式同样直接放行（非 Bash 不参与风险拦截）" }
+    { "tool": "AskUserQuestion", "mode": "risk", "args": { "question": "hi", "choices": [{ "label": "A" }, { "label": "B" }] }, "expect": "allow", "why": "risk 模式同样直接放行（非 Bash 不参与风险拦截）" },
+    { "tool": "AskUserQuestion", "mode": "auto", "args": { "question": "hi" }, "expect": "deny", "why": "auto 模式下 AskUserQuestion 不可用：auto 分支覆盖 checkPermissions 直接 deny，不弹提问框" }
   ]
 }

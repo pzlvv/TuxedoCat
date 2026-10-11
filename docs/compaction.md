@@ -41,9 +41,10 @@
 3. 用归档区调 LLM 生成摘要（`COMPACT_SYSTEM_PROMPT` + `generateCompactSummaryPrompt`）。
 4. 新建边界标记（`system` / `compact_boundary`）与摘要消息（`user` / `isCompactSummary`）。
 5. 组装压缩后的消息：`[边界标记, 摘要消息, ...保留区]`（`buildPostCompactMessages`）。
-6. 整文件重写 jsonl（`replaceConversationMessages`）、把归档区 + 摘要写入归档文件、
-   标记 `meta.json` 的 `context.isCompacted = true` / `isExpanded = false`，
-   最后 `replayMessagesToUI` 投递 `messagesReplaced` 整批替换 UI 消息区。
+6. `compactEnd`（`complete`，带压缩后 token 数）与归档写盘（`saveCompactArchive`：归档区 + 摘要）
+   在 `compactConversation` 内完成；返回后整文件重写 jsonl（`replaceConversationMessages`）、
+   标记 `meta.json` 的 `context.isCompacted = true` / `isExpanded = false`，最后
+   `replayMessagesToUI` 投递 `messagesReplaced` 整批替换 UI 消息区。
 
 保留区按条数截断后必须修复 `tool_use` / `tool_result` 配对（`sanitizeToolPairing`）：
 某条 `tool_use` 被留在归档区、其 `tool_result` 落在保留区（或相反）时，会向保留区
@@ -94,11 +95,10 @@
                     │
                     ├─ LLM 生成摘要
                     ├─ 组装 [边界, 摘要, ...保留区]
-                    ├─ replaceConversationMessages（整文件重写 jsonl）
+                    ├─ compactEnd ──▶ UI（进度提示 complete / error）
                     ├─ saveCompactArchive（归档区 + 摘要）
+                    ├─ replaceConversationMessages（整文件重写 jsonl + meta 标记）
                     └─ replayMessagesToUI ──messagesReplaced──▶ UI（整批替换消息区）
-                    │
-                    └─compactEnd──▶ UI（进度提示 complete / error）
 ```
 
 ## 3. 测试

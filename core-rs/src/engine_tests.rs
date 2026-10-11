@@ -1706,7 +1706,9 @@ fn ask_user_question_round_trips_through_the_user_choice_request() {
             openai_text_sse(&["收到"])
         }
     });
-    prepare(&sandbox, &llm.base_url, "auto");
+    // auto 模式下 AskUserQuestion 被权限层直接 deny（对齐 PermissionPolicy.ts 的
+    // auto 分支）；本测试验证的是 userChoice 的问答回环，用 manual 模式让工具放行。
+    prepare(&sandbox, &llm.base_url, "manual");
 
     let harness = EngineHarness::start(|request| match request["type"].as_str().unwrap() {
         // AskUserQuestion 的 checkPermissions 直接放行：回传 permResult 本身

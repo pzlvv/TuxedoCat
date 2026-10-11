@@ -463,7 +463,7 @@ export class WebviewMessageHandler {
 
     // wire 字段名是 `selectedLines`（与 `updateConversationContext` 同一口径）；
     // 进 core 的载荷字段名是 `fileSelectedLines`（`UiEvent.userMessageSubmitted` 的契约名，
-    // 见 DEVELOPMENT.md 第 4.3 节 #41），两者在这一层做翻译。
+    // 见 DEVELOPMENT.md 第 4.3 节），两者在这一层做翻译。
     const selectedLines = message.selectedLines;
     const filePath = typeof message.filePath === 'string' ? message.filePath : undefined;
     const uuid = `user_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;

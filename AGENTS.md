@@ -24,9 +24,18 @@
   如 `docs/contracts.md`、`docs/core-ui-separation.md`、`docs/standalone-core.md`。
 - **规格文件结构**：`# 规格：<主题>` → 开篇段落界定范围（不用引用块）→ 交叉引用其他规格与
   `DEVELOPMENT.md 第 N 节（标题）` → `## 1. 能力` 等分节；300 行以上补内部目录。
-- **待办不存史**：`TODO.md` 只列未完成项，完成即删；已完成工作的溯源进 `docs/archive/`（冻结，不再更新）。
-- **聚合数字不手写**：事件数量、契约 / 端口成员数、webview 消息类型数等可从代码推导的聚合值
+- **待办不存史**：`TODO.md` 只列未完成项，完成即删（交付物能在仓库内验证的项——产物路径已存在、
+  脚本已支持——删项前先与对应规格核对口径）；已完成工作的溯源进 `docs/archive/`（冻结，不再更新）。
+- **聚合数字与名单不手抄**：事件数量、契约 / 端口成员数、webview 消息类型数等可从代码推导的聚合值
   以 `docsLint.test.ts` 对照代码校验为准，不手工维护；正文叙述里不写枚举数量（写「见第 N 节清单」）。
+  同一原则扩到**名单与结构**：载荷字段列、契约成员表、快照字段表、方法清单、平台集合都由 docsLint
+  从代码逐项对照——新清单表进文档时必须挂对应的 lint 组，先问一句「它漂了什么会红」。
+- **同一事实只写一处**：跨文档不复述事实，第二份文档只写链接——两份各写一份必然各自腐烂
+  （「不经总线」「恢复语义」的双版本是实例）。
+- **文档内代码块标注来源**：含 `export` / 顶层声明的 fenced 代码块必须写 ```` ```ts src=<路径> ````
+  标注，docsLint 据此与真实文件比对声明名、方法调用名与 async 旗标；纯示意块在 info 里写「示意」。
+- **禁行号引用**：代码注释与文档禁止「表 #N / 节 #N」式引用（事件表重编号即静默腐烂），
+  一律点名事件名 / 成员名。
 - **术语与代码一致**：owner、事件名、契约名、文件路径沿用代码中的写法。
 
 ## 1. 分层与依赖（评审必查）
@@ -89,7 +98,8 @@ npm run compile       # check-types + lint + esbuild
 npm run build:all     # TS + Rust core + electron
 npm run test:all      # 编译并跑全部测试
 npm run test:core     # cargo test（core-rs）
-npm run electron      # 启动 Electron 调试
+npm run build:core:host # 只重建当前平台 Core（真实双端测试的本地前置）
+npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electron:debug）
 ```
 
 - 测试在 `src/test/*.test.ts`；Rust 在 `core-rs/src/*_tests.rs`。
@@ -105,10 +115,13 @@ npm run electron      # 启动 Electron 调试
   `coreEventParity` 真实运行而不是 skip）。
 - 提交前至少跑 `npm run check-types && npm run lint`，涉及 core 的改动加 `npm run test:core`
   （CI 会再跑一遍，本地跑只是提前暴露）。
+- **涉及 core 的改动先 `npm run build:core:host` 再跑 `npm run test:all`**：`coreEventParity`
+  等真实双端测试依赖 Core 产物，不构建会**静默 skip**（CI 的 tests job 先 `build:core:linux-x64`
+  所以真实在跑；本地 Windows 不补这一步，事件流顺序类漂移在本地发现不了）。
 
 ## 6. 常见改动清单
 
-**新增事件**（[DEVELOPMENT.md 第 4.4 节](DEVELOPMENT.md#44-新增事件时的检查清单)）：定方向（CoreEvent / CoreRequest / UiEvent / UiRequest）→ 定名 → 定载荷（必填，可选语义用 `null` / 判别联合）→ 改四组联合类型 + `WebViewUI` 映射表（漏写会编译报错）→ `UiEvent` 补 core 侧订阅与 `WebviewMessageHandler` 翻译 → 更新文档表格（`docsLint.test.ts` 校验数量、名单与 4.1 触发点列）。
+**新增事件**（[DEVELOPMENT.md 第 4.4 节](DEVELOPMENT.md#44-新增事件时的检查清单)）：定方向（CoreEvent / CoreRequest / UiEvent / UiRequest）→ 定名 → 定载荷（必填，可选语义用 `null` / 判别联合）→ 改四组联合类型 + `WebViewUI` 映射表（漏写会编译报错）→ `UiEvent` 补 core 侧订阅与 `WebviewMessageHandler` 翻译 → 更新文档表格（`docsLint.test.ts` 校验数量、名单、逐事件载荷列与 4.1 触发点列）。
 
 **新增启动期注入点**（[docs/host-matrix.md 第 11 节](docs/host-matrix.md#11-新增启动期注入点检查清单)）：core 定写入入口 + 读取入口（未写入抛错）→ 分类（宿主环境走同步 `UiEvent` 注册，进程内进 `bootstrapCore`）→ 登记 `CoreBootstrapOptions` 与 `bootstrapSnapshot` → 更新 `bootstrapWiring.test.ts` → 同步文档。
 

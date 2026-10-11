@@ -1398,3 +1398,32 @@ fn dispatch_ui_request_covers_every_ui_request_type() {
         );
     }
 }
+
+// ==================== runtimeStateParity.json：运行时快照字段集合的双向锁定 ====================
+
+/// `SessionRuntimeState` 快照字段没有任何跨端类型共享（TS 接口 / Rust 手写 JSON /
+/// webview 投影各自维护）。fixture 锁字段集合：改 `runtime_state_json` 的字段而没同步
+/// fixture 与 TS 测试时，这里失败。
+#[test]
+fn runtime_state_fields_match_parity_fixture() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../src/test/fixtures/runtimeStateParity.json"
+    ))
+    .expect("parse runtimeStateParity.json");
+    let sample = crate::engine::Core::runtime_state_json("s", false, false, false, false, false, false, None);
+    let mut actual: Vec<String> = sample
+        .as_object()
+        .expect("runtime state object")
+        .keys()
+        .cloned()
+        .collect();
+    actual.sort();
+    let mut expected: Vec<String> = fixture["fields"]
+        .as_array()
+        .expect("fields")
+        .iter()
+        .map(|v| v.as_str().expect("field name").to_string())
+        .collect();
+    expected.sort();
+    assert_eq!(actual, expected, "runtime_state_json 字段集与 runtimeStateParity.json 不一致");
+}

@@ -1966,6 +1966,32 @@
       }
     },
     {
+      "name": "ask-user-question-auto-deny",
+      "why": "auto 模式下 AskUserQuestion 不可用：auto 分支覆盖 checkPermissions 直接 deny，message 与 Embedded 逐字一致，displayArgs 原样透传",
+      "tool": "AskUserQuestion",
+      "mode": "auto",
+      "args": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": "A"
+          }
+        ]
+      },
+      "expectPermResult": {
+        "behavior": "deny",
+        "message": "AskUserQuestion is unavailable in Auto mode. Please analyze the situation and make a reasonable decision on your own."
+      },
+      "expectDisplayArgs": {
+        "question": "hi",
+        "choices": [
+          {
+            "label": "A"
+          }
+        ]
+      }
+    },
+    {
       "name": "skill-allow",
       "why": "Skill 的 checkPermissions 直接放行（技能只注入 prompt）：permResult 只有 behavior（不带 updatedInput），displayArgs 原样透传；manual 模式也不弹确认框",
       "tool": "Skill",

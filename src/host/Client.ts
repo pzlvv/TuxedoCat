@@ -371,7 +371,8 @@ export class Client implements AssistantEventBus {
       return;
     }
     if (event.type === 'conversationSpaceCleared') {
-      // 这个事件的 `sessionId` 是**对话空间目录名**，不是会话 id（DEVELOPMENT.md 表 #32），
+      // 这个事件的 `sessionId` 是**对话空间目录名**，不是会话 id（`conversationSpaceCleared`
+      // 的载荷约定，DEVELOPMENT.md 第 4.3 节），
       // 不能走会话路由：目录名永远不是已登记的会话，多连接下 routeSession 会抛
       // 「查不到归属」。清空目标跟随**当前活动连接**——面板的空间统计就来自它
       // （`requestConversationSpaces` 同为无会话路由），两边看到的是同一个 core 的数据目录。

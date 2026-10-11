@@ -4,6 +4,7 @@
  * 覆盖 `BackgroundReminder.tickBackgroundReminders` 的会话状态联动：
  * - 会话空闲（abort 按钮为黄）时时钟前进，满一个间隔投递 reminder；
  * - query engine 有任务（`queryRunning`）时时钟暂停，暂停期间不投递、也不丢已积累量；
+ * - 压缩中（`compacting`）与 `queryRunning` 同一门槛：时钟暂停、不投递、已积累量不丢；
  * - 任务完成 / 会话中止后注销，不再提醒；
  * - 周期提醒 / 查询结束都会刷新任务的「上次访问时刻」，最小间隔内不再满足兜底门槛；
  * - sleep 豁免：含 sleep 的任务刚注册即满足兜底门槛，登记「已兜底」后不再命中。
@@ -14,7 +15,7 @@
  * 运行方式：npm run test:all -- background-reminder-scheduler
  */
 
-import { markQueryRunning } from '../core/sessionRuntime';
+import { markQueryRunning, markSessionCompacting } from '../core/sessionRuntime';
 import {
   BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS,
   isBackgroundFallbackReminderDue,
@@ -90,6 +91,33 @@ function run(): void {
     tickBackgroundReminders(now + 10 * MINUTE + OVERSHOOT); // 累计 3 + 2 = 5min
     check('恢复后补满 5min 即投递', delivered.length === 1);
     unregisterBackgroundReminder('bg-pause');
+  }
+
+  // ===== 压缩中：与 queryRunning 同一门槛（前台不空闲），时钟暂停、不投递也不丢已积累量 =====
+  {
+    const delivered: string[] = [];
+    const sessionID = 's-rem-compact';
+    const now = Date.now();
+    markQueryRunning(sessionID, false);
+    registerBackgroundReminder({
+      taskId: 'bg-compact',
+      sessionID,
+      description: 'Compact',
+      command: 'compact',
+      startTime: now,
+      pid: 2,
+      deliver: (content) => delivered.push(content),
+    });
+
+    tickBackgroundReminders(now + 4 * MINUTE + OVERSHOOT); // 空闲累计 4min（<5min 不投递）
+    markSessionCompacting(sessionID, true);
+    tickBackgroundReminders(now + 9 * MINUTE + OVERSHOOT); // 压缩中过 5min：时钟不动
+    check('压缩中到点不投递', delivered.length === 0);
+
+    markSessionCompacting(sessionID, false);
+    tickBackgroundReminders(now + 10 * MINUTE + OVERSHOOT); // 累计 4 + 1 = 5min
+    check('压缩结束后时钟补上即投递', delivered.length === 1);
+    unregisterBackgroundReminder('bg-compact');
   }
 
   // ===== 会话中止：注销全部提醒 =====

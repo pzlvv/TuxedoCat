@@ -2,7 +2,7 @@
 
 本规格界定宿主侧全部契约与端口，分三部分：三契约 `UIHost` / `SpinDesign` / `ConversationManager`（第 1–5 节，含 MCP 生命周期入口 `MCPHost`）、共享子模块端口（第 6–9 节：`UserChoiceManager` / `ToolHandler` / `WebviewMessageHandler` / `WebViewUiPort`）、webview 侧契约 `HostInfo`（第 10–13 节）。契约成员全部必选、按 UI surface 划分；分层与依赖规则见 [DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)，事件词汇表见[第 3 章](../DEVELOPMENT.md#3-核心契约assistanteventbus)、[第 4 章](../DEVELOPMENT.md#4-事件列表)。
 
-交叉引用：`docs/webview-ui.md`（WebViewUI 实现与会话 UI 状态——契约的消费方）、`docs/host-matrix.md`（两个宿主对三契约的逐成员实现对照）、`docs/webview-facts.md`（webview 的事实与等待态——`HostInfo` 的消费语义）、`docs/contracts.md`（架构原则）。
+交叉引用：`docs/webview-ui.md`（WebViewUI 实现与会话 UI 状态——契约的消费方）、`docs/host-matrix.md`（两个宿主对三契约的逐成员实现对照）、`docs/webview-facts.md`（webview 的事实与等待态——`HostInfo` 的消费语义）、[DEVELOPMENT.md 第 5 章](../DEVELOPMENT.md#5-架构原则)（架构原则）。
 
 ---
 
@@ -255,7 +255,7 @@ webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接�
 
 | | 流 1：对话列表 | 流 2：会话运行时状态 |
 | --- | --- | --- |
-| 内容 | 磁盘元数据：`title` / `createdAt` / `messageCount` / `parentSessionId` / `role` | 运行时根事实与派生 `idle`（`SessionRuntimeState`，[DEVELOPMENT.md 第 3.1 节](../DEVELOPMENT.md#31-事件定义) / [第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)） |
+| 内容 | 磁盘元数据：`title` / `createdAt` / `updatedAt` / `messageCount` / `parentSessionId` | 运行时根事实与派生 `idle`（`SessionRuntimeState`，[DEVELOPMENT.md 第 3.1 节](../DEVELOPMENT.md#31-事件定义) / [第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)） |
 | source of truth | 磁盘（core 的 `loadConversationList()`） | core 的 `sessionRuntime`（[DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)） |
 | 变化频率 | 低（落盘 / 改名 / 删除 / 新建） | 高（查询开始结束、等用户、用户响应） |
 | 触发 | `CoreEvent.conversationListChanged` | `CoreEvent.sessionRuntimeChanged` |
@@ -282,6 +282,8 @@ webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接�
 | `setStatusListener(fn)` | 注册会话状态回调（Electron 托盘与系统睡眠阻断用；VS Code 不注册） |
 | `setSidebarOutlet(fn)` | 设置「推侧栏」的出口（Electron 专用） |
 | `noteSessionActivity(sessionId)` | 记录会话活动（重置空闲计时）。基类默认无操作，只有 VS Code 实现覆盖 |
+| `getSessionStatesSnapshot()` | 最近一次分发的全量会话状态快照（Electron 侧栏播种 / 宿主恢复时读） |
+| `workspaceCacheKey()`（protected） | 当前缓存目录的键：基类用工作目录路径，Electron 实现换成稳定 refKey（切目录不清快照） |
 
 两个实现：
 
@@ -561,8 +563,7 @@ UI 侧提前弹框会造成双重确认。
 「对话列表归谁渲染 / 新建对话入口在哪 / 打开会话用哪种方式」都只读这张表，不做宿主嗅探
 （嗅探只能回答「有没有 Electron preload」，无法表达这类能力差异）。
 
-```ts
-// src/host/types.ts
+```ts src=src/host/types.ts
 export interface HostInfo {
   /**
    * 会话视图模式：每个会话是否有独立的 webview。它是「切换会话 / 关闭会话」这一组
@@ -620,7 +621,7 @@ Electron 悬浮窗只把 `conversationListOwner` 切到 `webview`（原生侧栏
 
 位置：`src/webview/webviewEnv.ts`。
 
-```ts
+```ts src=src/webview/webviewEnv.ts
 export function getHostInfo(): HostInfo;
 ```
 
@@ -677,7 +678,7 @@ webview 只按能力渲染，不判断宿主类型：
 
 能力声明之外的另一条契约：webview 往宿主发消息。位置：`src/webview/webviewEnv.ts`。
 
-```ts
+```ts src=src/webview/webviewEnv.ts
 interface HostMessageApi {
   postMessage(message: unknown): void;
 }

@@ -66,7 +66,7 @@ Core 有两种实现，由 `src/host/coreKind.ts` 的 `CORE_KIND` 装配（默�
 
 ```bash
 # 构建 Standalone Core（产物落在 resources/<core.resourceDir>/<arch>-<platform>/）
-# 默认构建打包要携带的 Windows x64 + Linux x64；只建当前平台用 npm run build:core:host
+# 默认构建打包要携带的全部平台（x64-win32 / x64-linux / arm64-linux）；只建当前平台用 npm run build:core:host
 npm run build:core
 
 # 独立运行（帮助 / 版本 / 远程模式）
@@ -109,10 +109,10 @@ daemon 只监听回环，访问边界就是承载它的 SSH 通道：不需要�
 结束它。
 
 `npm run watch:app`（VS Code 的后台任务 / 手动运行）会在前端 watcher 之外额外轮询
-`core-rs/src/**/*.rs` 与 `core-rs/Cargo.toml`：**改动时**自动跑一次 `npm run build:core`
-（release，产物直接落 `resources/<core.resourceDir>/`）。源码没动时不会触发构建，
+`core-rs/src/**/*.rs` 与 `core-rs/Cargo.toml`：**改动时**自动跑一次 `npm run build:core:host`
+（release，只重建当前平台，产物直接落 `resources/<core.resourceDir>/`）。源码没动时不会触发构建，
 构建失败只打日志、不影响前端 watcher。只想改前端时用 `WATCH_CORE=0 npm run watch:app`
-关掉它，Rust 侧改动则手动 `npm run build:core` 重建。
+关掉它；要重建全平台携带目标时手动 `npm run build:core`。
 
 ### 架构图（Mermaid）
 
@@ -171,17 +171,15 @@ npm run package:app:x64
 npm run package:tui:x64
 ```
 
-Standalone 变体的包里要同时有 Windows 与 Linux 两个 core，而 `build:core` 只编当前
-平台，所以 Linux core 要先单独构建：
+Standalone 变体的包里要同时有全部三个平台的 core（`x64-win32` / `x64-linux` /
+`arm64-linux`）。`build:core` 默认就构建全部携带目标（Windows 上直接交叉编译 Linux，
+需要 zig，见 [docs/standalone-core.md 第 4.3 节](docs/standalone-core.md#43-构建与目标平台)），无需先单独构建：
 
 ```bash
-# Windows 上直接交叉编译（需要 zig，见 docs/standalone-core.md 第 4.3 节）
-npm run build:core:linux-x64
-
 npm run package
 ```
 
-打包前会校验这两个 core 产物（`scripts/verify-core-artifacts.mjs`）：缺失、比 Rust 源码旧、
+打包前会校验这三个 core 产物（`scripts/verify-core-artifacts.mjs`）：缺失、比 Rust 源码旧、
 或没同步进 `dist/` 都直接报错，不会把旧 core 静默打进包。
 
 ## Git LFS

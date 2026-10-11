@@ -89,7 +89,7 @@ userChoiceManager }`，构造完成后回填 `uiPort = this`。
 
 **会话关闭 / 内存释放**：拆成两个方法（`closeConversation` = `releaseConversation` + 销毁宿主视图）：
 
-```ts
+```ts src=src/host/WebViewUI.ts
 /** 只卸内存，不销毁宿主视图 */
 releaseConversation(sessionId: string): void {
   // 临时 `new-` key 尚未对应正式会话（core 侧 releaseSessionResources 对它本就是
@@ -106,6 +106,7 @@ dropSession(sessionId: string): void {
   this.sessionUi.dropSession(sessionId);                    // 阶段 / 工具计数 / 查询计数
   this.userChoiceManager.dropSession(sessionId);            // 挂起的选择回调 + diff 快照
   this.webviewMessageHandler.dropTrackedSession(sessionId); // tracked active session
+  this.onQueuedMessage(sessionId, null);                    // 会话释放 → 清排队项
 }
 
 /** 卸内存 + 销毁宿主视图；两件事归属不同，这里只做分发 */
@@ -200,6 +201,8 @@ thinking / text / tool 动画）。`ConversationLoadedExtra.hasActiveQuery` 由
 | `onTitleChanged(sessionId, title)` | 子模块注入的 `setTitle` 回调 |
 | `showLLMConfigPanel(trigger, sessionId)` | `extension.ts` / `electron/main.ts` 的视图加载补弹（`startup`）；`WebviewMessageHandler` 的新对话引导（`new-conversation`）与 `requestLLMConfig` 回包（`request`） |
 | `pushContextLimit(sender)` | `extension.ts` / `electron/main.ts` 的视图加载初始化推送（`sender` 为 `null` 走默认路由）；与 webview 的 `requestContextLimit` 共用 `WebviewMessageHandler` 的同一份实现 |
+| `setActiveSessionId(sessionId)` | Electron 宿主在活动视图切换时回填（`electron/main.ts` 接线）：`WebviewMessageHandler` 的按会话解析（技能 / MCP 列表等）依赖它指向真实活动视图 |
+| `setOpenSessions(sessionIds)` | Electron 宿主在打开集合变化时回填（`electron/main.ts` 接线） |
 
 ---
 
@@ -215,7 +218,7 @@ thinking / text / tool 动画（`conversationLoaded.activityPhase`，第 2 节�
 abort 按钮的可用性**不在这里**：它是「会话非空闲」，读 core 的 `sessionRuntime`
 （`sessionRuntimeStates`），webview 自己推导。
 
-```ts
+```ts src=src/host/SessionUiState.ts
 export type SessionActivityPhase = 'idle' | 'thinking' | 'text' | 'tool';
 
 export class SessionUiState {
@@ -318,7 +321,7 @@ abort 按钮的三态（红 / 黄 / 灰）与两阶段中止由 core 的 `sessio
 会话的全部 per-session 状态。实际调用路径是 `WebViewUI.releaseConversation`
 （会话关闭 / 删除 / 空闲回收都会走到它，第 1 节）：
 
-```ts
+```ts src=src/host/WebViewUI.ts
 releaseConversation(sessionId: string): void {
   // 临时 `new-` key 不发 conversationClosed（第 1 节）
   if (!isTemporarySessionId(sessionId)) {
@@ -332,6 +335,7 @@ dropSession(sessionId: string): void {
   this.sessionUi.dropSession(sessionId);                    // 阶段 / 工具计数 / 查询计数
   this.userChoiceManager.dropSession(sessionId);            // 挂起的选择回调 + diff 快照
   this.webviewMessageHandler.dropTrackedSession(sessionId); // tracked active session
+  this.onQueuedMessage(sessionId, null);                    // 会话释放 → 清排队项（发 clearQueuedMessage）
 }
 ```
 
@@ -342,6 +346,7 @@ dropSession(sessionId: string): void {
 | `SessionUiState` | `activityPhases` / `activeToolCounts` / `queryActiveCounts` |
 | `UserChoiceManager` | `pendingUserChoices` 中属于该会话的回调；diff 快照（仅当归属于该会话） |
 | `WebviewMessageHandler` | `trackedActiveSessionId` |
+| webview 排队项 | 经 `onQueuedMessage(sessionId, null)` 向该会话的视图发 `clearQueuedMessage` |
 
 `UserChoiceManager` 的 diff 快照是「当前请求」的全局暂存位（不带会话键），
 所以用 `diffSnapshotSessionId` 记录最后写入方，`dropSession` 只在归属该会话时清空，

@@ -322,7 +322,9 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 - Standalone Core 实现 core 侧：发 `CoreEvent` 与 `CoreRequest`，收 `UiEvent`，
   回 `CoreRequestResultMap` 的结果。
 - 用户消息进入 core 的唯一入口是 `UiEvent.userMessageSubmitted`；宿主不直接调用会话引擎。
-- 工具权限按会话的 agentMode 加工：`manual` 一律询问、`risk` 只拦截危险操作、`auto` 全放行。
+- 工具权限按会话的 agentMode 加工：`manual` 保持工具自身判定（只读直接放行、写操作询问）、
+  `risk` 危险操作仍询问而普通操作放行、`auto` 把询问放行——但 `AskUserQuestion` 在 `auto`
+  下直接拒绝（提问框不可用，拒绝文案与 Embedded 逐字一致，由权限对照表锁定）。
   `ask` 表示「需要弹确认框」，由 Core 再发一次 `CoreRequest.userChoice` 取用户选择；
   权限结果的语义是「保持询问」而不是「拒绝」。
 - 载荷字段名与 TypeScript 类型逐项一致（`camelCase` 原样）。

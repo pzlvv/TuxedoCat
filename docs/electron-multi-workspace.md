@@ -147,8 +147,9 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 
 | 条目 | 行为 |
 | --- | --- |
-| 添加工作目录... | 打开系统目录选择框，选中目录加入打开集合 |
-| 添加最近的工作目录 ▸ | 子菜单列出最近工作目录，点击即添加 |
+| 打开本地工作区...（Ctrl+O） | 打开系统目录选择框，选中目录加入打开集合 |
+| 打开远程工作区...（Ctrl+Shift+O） | 打开远程工作区对话框（SSH 接入，连远端 Core 后弹远端目录选择） |
+| 添加最近的工作区 ▸ | 子菜单列出最近工作目录，点击即添加 |
 | 主题 ▸ | 子菜单单选：跟随系统 / 浅色 / 深色；持久化在宿主本地状态 `userData/workspace-state.json` 的 `theme` 字段，切换后立即应用到窗口、自绘标题栏 / 侧栏与所有对话视图 |
 | 快捷键... | 打开唤醒快捷键设置对话框 |
 | 开发者工具 | 在独立窗口打开 / 关闭开发者工具 |
@@ -220,12 +221,13 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | 字段 | 内容 |
 | --- | --- |
 | `openWorkspaces` | 打开集合，按标签页顺序 |
-| `activeWorkspace` | 活动工作目录；无活动项时为 `null` |
+| `activeWorkspaceKey` | 活动工作区的 refKey；无活动项时为 `null`（旧字段 `activeWorkspace` 仅作本地路径兼容保留） |
 | `recentWorkspaces` | 最近工作目录，去重、有序、上限 20 |
 | `windowSize` / `floatingWindowSize` | 完整模式 / 浮窗模式的上次位置与尺寸 |
 | `windowMode` / `floatingPinned` | 上次窗口模式与浮窗置顶状态 |
 
-启动时恢复打开集合与活动项；已不存在的目录从集合中剔除。
+启动时恢复打开集合与活动项；已不存在的本地目录**保留**并标记为不可用（宿主只标记，
+不做静默丢弃——该由用户决定何时关闭标签页，与最近列表的「不显示失效项」口径不同）。
 
 一次性迁移：目标状态文件不存在时，从旧版本的状态文件（旧 userData 目录
 `<appData>/<productName>`（打包态）/ `<appData>/Electron`（开发态））搬迁，并把旧版本的单个
@@ -266,11 +268,11 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | 规格项 | 现有落点 |
 | --- | --- |
 | 工作目录单值 | `electron/main.ts` 的 `workspacePath` |
-| 最近工作目录 / 状态文件 | `electron/main.ts` 的 `readRecentWorkspaces` / `saveLastWorkspace` / `workspace-state.json` |
+| 最近工作目录 / 状态文件 | `electron/workspaceStateStore.ts` 的 `readWorkspaceState` / `writeWorkspaceState` / `saveOpenWorkspaces` |
 | 菜单定义与动作表 | `electron/main.ts` 的 `buildMenuSections` / `setupMenu` / `invokeMenuAction` |
 | 自绘菜单渲染 | `electron/titlebar/main.ts` 的 `renderMenubar`、`electron/titlebarMenuHtml.ts` |
 | 标题栏品牌 / 模式状态 | `electron/titlebar/main.ts` 的 `applyModeState`、`electron/main.ts` 的 `pushTitlebarModeState` |
-| 侧栏头部 | `electron/sidebar/index.html` 的 `.header`、`electron/sidebar/main.ts` 的 `updateHeader` |
+| 侧栏头部 | `electron/sidebar/index.html` 的静态 `.header`；数据刷新走 `electron/sidebar/main.ts` 的 `render()` |
 | 侧栏对话列表 | `electron/sidebar/main.ts` 的 `render`、`sidebar:conversations-updated` 流 |
 | 对话列表加载 | `src/core/history/Conversation.ts` 的 `loadConversationList` / `readProjectConversationMetadata` |
 | 对话元数据 | `src/core/history/Conversation.ts` 的 `ConversationMetadata.project` |

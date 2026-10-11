@@ -259,7 +259,7 @@ export type UiEvent =
        * 宿主本次不做乐观回显（会话忙碌排队、或 `/` 开头的命令消息）时置 true：
        * 由 core 在消息真正进入 LLM 上下文时补发用户气泡；未置位时宿主已乐观回显，
        * core 不再补发。Embedded 走 `QueryEngine.notifyUserMessageToUI`
-       * （`Integration.submitMessage` 判定），Standalone 走 `engine::emit_user_message_to_ui`，
+       * （`Integration.submitUserMessage` 判定），Standalone 走 `engine::emit_user_message_to_ui`，
        * 两侧同语义。
        */
       deferEcho?: boolean;

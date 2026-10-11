@@ -624,20 +624,21 @@
 | `e2e/webview/sessions.spec.ts` | US-19、US-20、US-21、US-22 | webview UI |
 | `e2e/webview/settings.spec.ts` | US-7、US-23、US-24、US-25、US-26 | webview UI |
 | `e2e/webview/inputMenu.spec.ts` | US-5、US-8、US-9、US-29 | webview UI |
-| `e2e/webview/inputExtras.spec.ts` | US-6、US-10、US-11 | webview UI |
+| `e2e/webview/inputExtras.spec.ts` | US-1、US-6、US-10、US-11 | webview UI |
 | `e2e/webview/messagePresentation.spec.ts` | US-13、US-16、US-17 | webview UI |
 | `e2e/webview/notifications.spec.ts` | US-40 | webview UI |
-| `e2e/webview/language.spec.ts` | US-41 | webview UI |
+| `e2e/webview/language.spec.ts` | US-24、US-41 | webview UI |
 | `e2e/webview/titlebar.spec.ts` | US-36（标题栏渲染层快照时序） | webview UI |
 | `e2e/webview/bashBackgroundButton.spec.ts` | US-45 | webview UI |
 | `e2e/webview/bashOutputCollapse.spec.ts` | US-14（Bash 输出折叠） | webview UI |
 | `e2e/electron/assistant.spec.ts` | US-1、US-2、US-14、US-15、US-18、US-28 | Electron 整应用 |
+| `e2e/electron/smartNaming.spec.ts` | US-21 | Electron 整应用 |
 | `e2e/electron/sessions.spec.ts` | US-19、US-20、US-21、US-22 | Electron 整应用 |
 | `e2e/electron/workspace.spec.ts` | US-30、US-35、US-36 | Electron 整应用 |
 | `e2e/electron/remoteWorkspace.spec.ts` | US-36（SSH 连接表单与历史） | Electron 整应用 |
 | `e2e/electron/fileExplorer.spec.ts` | US-42、US-43、US-44 | Electron 整应用 |
 | `e2e/electron/desktopShell.spec.ts` | US-27、US-31、US-32、US-34、US-37、US-39 | Electron 整应用 |
-| `e2e/electron/preview.spec.ts` | US-38（文件 Monaco 预览） | Electron 整应用 |
+| `e2e/electron/preview.spec.ts` | US-14、US-38（文件 Monaco 预览） | Electron 整应用 |
 | `e2e/electron/backgroundBash.spec.ts` | US-45 | Electron 整应用 |
 
 未覆盖 e2e 的 US（US-33 托盘图标状态点与闪烁提醒——属 OS 集成层，改键对话框之外

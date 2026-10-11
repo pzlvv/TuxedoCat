@@ -1,0 +1,13 @@
+{
+  "fields": [
+    "sessionId",
+    "idle",
+    "waiting",
+    "queryRunning",
+    "compacting",
+    "backgroundRunning",
+    "subAgentRunning",
+    "parentSessionId"
+  ],
+  "webviewOmitted": ["sessionId"]
+}

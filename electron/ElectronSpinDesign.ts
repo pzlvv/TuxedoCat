@@ -145,6 +145,12 @@ export class ElectronSpinDesign implements SpinDesign {
             win.webContents.send('spin-design-message', { type: 'spinExportResult', success: false, error: String(err) });
           }
         });
+      } else if (msg?.type === 'refreshSpinDesign') {
+        // 设计器工具栏"刷新"：重读磁盘上最新的 spin.json 与技能列表回传（与 VSCodeSpinDesign 一致）。
+        // 复用 refresh() 的装配路径（SpinLoop 完成后的自动刷新同路），只读不落盘
+        this.refresh().catch((err) => {
+          this.host.log(`[ElectronSpinDesign] spin.json refresh failed: ${err}`);
+        });
       }
     };
     ipcMain.on('spin-design-message', listener);

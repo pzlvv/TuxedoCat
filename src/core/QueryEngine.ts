@@ -1276,7 +1276,7 @@ export class QueryEngine {
     if (this.sessionTitle) {
       // 通知 UI 新会话已创建（如 webview 预初始化 session 状态）；子代理会话的
       // 父子事实由 conversationsData / sessionRuntimeStates 的 parentSessionId 承载，
-      // 不随本事件携带（本字段无读取方，见 DEVELOPMENT.md 第 4.1 节 #14）。
+      // 不随本事件携带（本字段无读取方，见 DEVELOPMENT.md 第 4.1 节 sessionCreated 行）。
       emitToUi({
         type: 'sessionCreated',
         sessionId: this.sessionID,

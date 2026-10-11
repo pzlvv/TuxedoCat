@@ -4,7 +4,7 @@
 //! 三档询问模式：
 //! - `manual`：工具自己的判定保持原样（读工具放行，写工具询问）；
 //! - `risk`：只拦截危险操作，其余自动放行；
-//! - `auto`：`ask` 一律放行。
+//! - `auto`：`ask` 一律放行；`AskUserQuestion` 直接 deny（auto 模式不可用，不弹提问框）。
 //!
 //! `ask` 不等于拒绝：它表示「需要弹确认框」，由引擎再发一次
 //! `CoreRequest.userChoice` 拿用户的选择。
@@ -12,6 +12,11 @@
 use serde_json::{json, Value};
 
 use crate::util::{is_js_whitespace, js_trim};
+
+/// auto 模式下 AskUserQuestion 的 deny 文案（与
+/// `src/core/tools/PermissionPolicy.ts` 的 auto 分支逐字一致）。
+const ASK_USER_QUESTION_AUTO_DENY_MESSAGE: &str =
+    "AskUserQuestion is unavailable in Auto mode. Please analyze the situation and make a reasonable decision on your own.";
 
 /// 权限决策
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -563,6 +568,12 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
 pub fn decide(tool_name: &str, args: &Value, agent_mode: &str, cwd: &str) -> Decision {
     // 权限对照表单测不涉及会话级判定（Agent 的嵌套调用检查），传空串
     let check = base_check(tool_name, args, cwd, "");
+    // auto 模式下 AskUserQuestion 不可用：不弹提问框，直接返回不可用结果
+    // （对齐 PermissionPolicy.ts 的 auto 分支：覆盖工具自身的 checkPermissions，
+    // 先于 auto 的 ask→allow 加工，因此 manual / risk 不受影响）。
+    if tool_name == "AskUserQuestion" && agent_mode == "auto" {
+        return Decision::Deny(ASK_USER_QUESTION_AUTO_DENY_MESSAGE.to_string());
+    }
     if check.decision != Decision::Ask {
         return check.decision;
     }
@@ -748,6 +759,18 @@ pub fn resolve_tool_permission(
         }
         _ => None,
     };
+
+    // auto 模式下 AskUserQuestion 不可用：不弹提问框，直接返回不可用结果
+    // （对齐 PermissionPolicy.ts 的 auto 分支：落在 diffPayload 计算之后、auto 的
+    // ask→allow 加工之前，覆盖工具自身的 checkPermissions 结果；manual / risk 不受影响）。
+    if tool_name == "AskUserQuestion" && agent_mode == "auto" {
+        let perm_result = json!({
+            "behavior": "deny",
+            "message": ASK_USER_QUESTION_AUTO_DENY_MESSAGE,
+        });
+        let display_args = build_display_args(tool_name, &args, cwd, None, &perm_result);
+        return (perm_result, display_args);
+    }
 
     let perm_result = match &check.decision {
         Decision::Allow => match &check.updated_input {

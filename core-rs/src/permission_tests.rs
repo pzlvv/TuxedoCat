@@ -136,6 +136,34 @@ fn auto_mode_allows_asks_but_not_denies() {
     );
 }
 
+/// 对齐 `PermissionPolicy.ts` 的 auto 分支：auto 模式下 AskUserQuestion 直接 deny
+/// （不弹提问框，message 与 Embedded 逐字一致）；manual 保持工具自身的 allow
+/// （提问本身在 `call()` 里弹框），risk 不受影响（非 Bash，不参与风险拦截）。
+#[test]
+fn ask_user_question_denied_in_auto_mode() {
+    let args = json!({ "question": "hi", "choices": [{ "label": "A" }, { "label": "B" }] });
+
+    // manual：工具自身 checkPermissions 放行，行为不变
+    assert_eq!(decide("AskUserQuestion", &args, "manual", CWD), Decision::Allow);
+    // risk：不受影响
+    assert_eq!(decide("AskUserQuestion", &args, "risk", CWD), Decision::Allow);
+    // auto：deny，message 与 Embedded 逐字一致
+    assert_eq!(
+        decide("AskUserQuestion", &args, "auto", CWD),
+        Decision::Deny(ASK_USER_QUESTION_AUTO_DENY_MESSAGE.to_string())
+    );
+
+    // `resolve_tool_permission`（引擎实际路径）与 Embedded 下发的形状一致：
+    // permResult 只有 behavior + message，displayArgs 原样透传入参
+    let (perm_result, display_args) =
+        resolve_tool_permission("AskUserQuestion", &args, "auto", CWD, "session-1");
+    assert_eq!(
+        perm_result,
+        json!({ "behavior": "deny", "message": ASK_USER_QUESTION_AUTO_DENY_MESSAGE })
+    );
+    assert_eq!(display_args, args);
+}
+
 #[test]
 fn manual_mode_asks_for_writes() {
     assert_eq!(decide("Bash", &bash("sleep 1"), "manual", CWD), Decision::Ask);

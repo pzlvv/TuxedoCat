@@ -36,7 +36,7 @@
 
 位置：`src/VSCodeUIHost.ts`（+ `src/VSCodeUIHost/documentManager.ts`、`diffUris.ts`）。
 
-```ts
+```ts src=src/VSCodeUIHost.ts
 export class VSCodeUIHost implements UIHost {
   constructor(outputChannel: vscode.OutputChannel);   // 内部创建 DocumentManager
 
@@ -67,7 +67,7 @@ export class VSCodeUIHost implements UIHost {
 
 位置：`electron/ElectronUIHost.ts`。
 
-```ts
+```ts src=electron/ElectronUIHost.ts
 export class ElectronUIHost implements UIHost {
   // ===== bootstrap 专用接线（不属于 UIHost）=====
   setMainWindow(win: BrowserWindow): void;
@@ -173,7 +173,7 @@ export class ElectronUIHost implements UIHost {
 **宿主专属接线**（各自 bootstrap 内）。骨架内的顺序固定（[DEVELOPMENT.md 第 3.5 节](../DEVELOPMENT.md#35-全局注册与-bootstrap-顺序)），
 宿主差异以 `CoreBootstrapOptions` 的必选成员传入——漏传是编译错误。
 
-```ts
+```ts src=src/host/bootstrapCore.ts
 export interface CoreBootstrapOptions {
   /** 宿主 locale 原始值（BCP-47）；二值收敛由宿主 i18n（`src/host/i18n.ts`）承担 */
   locale: string;
@@ -223,7 +223,7 @@ Standalone 下打开第一个真实工作区时占位 Connection 被销毁。
 | 参数 | VS Code 取值 | Electron 取值 |
 | --- | --- | --- |
 | `locale` | `vscode.env.language` | `app.getLocale()` |
-| `log` | `(...args) => outputChannel.appendLine(args.map(String).join(' '))` | `(...args) => console.log('[WebViewUI]', args.map(String).join(' '))` |
+| `log` | `(...args) => outputChannel.appendLine(args.map(String).join(' '))` | `console.log('[WebViewUI]', …)` 之外经 `fileLogger.info('host', …)` 落盘（远端工作区的问题只在日志文件里可见） |
 | `logToConsole` | `false` | `true` |
 | `extensionPath` | `context.extensionPath` | `APP_ROOT` |
 
@@ -399,7 +399,7 @@ Embedded 没有该事件），因此宿主原生 UI（Electron 菜单 / 托盘�
 
 `src/host/bootstrapCore.ts` 导出：
 
-```ts
+```ts src=src/host/bootstrapCore.ts
 export interface BootstrapSnapshot {
   coreKind: 'embedded' | 'standalone';
   locale: string;
@@ -417,7 +417,7 @@ export function bootstrapSnapshot(): BootstrapSnapshot;
 
 - 快照在 `bootstrapCore` 返回前写入；未执行骨架时调用抛错。
 - 布尔字段由 core 的读取入口实际查询得出（总线 / UI 单例 / 扩展路径 provider /
-  会话队列回调），不是骨架的自报值。
+  活动连接数）；`logToConsole` 例外，直接取宿主参数的自报值。
 - 两个宿主的 bootstrap 在骨架返回后各输出一行快照日志：
   VS Code 写 `OutputChannel`，Electron 写 `console`。
 - 快照用于双端对照：两端日志的字段差异即漂移点。
@@ -426,7 +426,7 @@ export function bootstrapSnapshot(): BootstrapSnapshot;
 
 core 资源的释放有单一入口：
 
-```ts
+```ts src=src/host/bootstrapCore.ts
 /** 释放 core 侧进程级资源（Connection / Core 进程 / MCP 子进程） */
 export function shutdownCore(): Promise<void>;
 ```
@@ -437,7 +437,9 @@ export function shutdownCore(): Promise<void>;
 | Electron | `app.on('will-quit')` | 宿主专属清理（快捷键 / 托盘 / 定时器 / 睡眠阻断）+ `shutdownCore()` |
 
 `shutdownCore` 先 `client.closeAll()` 销毁全部 Connection（Standalone 下逐个关闭
-channel / 本地 `stdio` Core 进程），再关闭远程 daemon；Embedded 下经 `MCPHost.shutdown()`
+channel / 本地 `stdio` Core 进程），再断开远程 daemon 的控制链路——**不发 `shutdown`**：
+daemon 侧任一连接的 shutdown 是全局停机，SSH 引导的 daemon 自带 idle-exit，最后一条
+链路断开后自行退出；Embedded 下经 `MCPHost.shutdown()`
 结束 MCP 子进程。宿主不直接调用 `McpManager` 的同类方法。
 
 ## 10. 一致性守护
@@ -450,13 +452,14 @@ channel / 本地 `stdio` Core 进程），再关闭远程 daemon；Embedded 下�
 
 **测试期**：`src/test/bootstrapWiring.test.ts`（`npm run test:all -- bootstrap-wiring`）断言：
 
-1. 骨架执行完毕后，`bootstrapSnapshot()` 的每个布尔字段为 `true`；
+1. 骨架执行完毕后，`bootstrapSnapshot()` 的各字段如实反映本次装配（`logToConsole`
+   保留宿主传入值——VS Code 恒为 `false`）；
 2. 快照的 `locale` 保留宿主传入的原始值（不做收敛后再上报）；
 3. `hasExtensionPath()` 为真；
 4. `requireEventBus()` 可调用（不抛错）；
 5. 静态扫描 `src/core/**/*.ts` 中导出的 `set*` / `initialize*` 名字，每个名字出现在
    启动接线（`bootstrapCore.ts` 或 `initializeCoreEvents.ts`）或白名单中。
-   白名单只含会话级运行时 setter（`setSession*`）。
+   白名单只含会话级运行时 setter（`setSession*`）与测试注入用的 `setCallLlmOverride`。
 
 测试怎么跑、单元测试与宿主集成测试怎么分工、新测试写在哪，见 `src/test/README.md`。
 
@@ -467,8 +470,9 @@ channel / 本地 `stdio` Core 进程），再关闭远程 daemon；Embedded 下�
 1. 在 core 中定义写入入口；
 2. 在 core 中定义对应的读取入口（未写入抛错，或说明默认值可接受的理由）；
 3. 判断它属于哪一类（第 7 节）：
-   - **宿主环境 / 工作目录**：加一条 `UiEvent`，在 `initializeCoreEvents` 的
-     `registerHostEnvironmentUiEvents` / `registerWorkspaceUiEvents` 里**同步**注册处理器；
+   - **宿主环境 / 工作目录 / 用户选择**：加一条 `UiEvent`，在 `initializeCoreEvents` 的
+     `registerHostEnvironmentUiEvents` / `registerSessionWorkspaceUiEvents` /
+     `registerUserChoiceUiEvents` 里**同步**注册处理器；
      取值来自宿主时，在 `bootstrapCore` 内发出该事件，并确定它在顺序中的位置；
    - **进程内**：在 `bootstrapCore` 内加入接线步骤，并确定它在顺序中的位置；
 4. 若取值来自宿主环境，加入 `CoreBootstrapOptions` 的必选成员；
@@ -501,7 +505,7 @@ channel / 本地 `stdio` Core 进程），再关闭远程 daemon；Embedded 下�
 | `broadcastToWebviews` | `sendToWebview`（单 webview） | `chatViews.broadcast`（含隐藏对话视图与后台预热视图） |
 | `sendToWebviewView` | `sendToWebview`（句柄不参与路由） | 句柄解包为 `WebContents` 后直发 |
 | `onThemeChanged` | `sendToWebview`（单 webview；值取 `isDarkTheme()`） | `null` → `chatViews.broadcast`；指定句柄 → 直发（值取 `isDarkTheme()`） |
-| `log` | `OutputChannel.appendLine` | `console.log`（`[ElectronUIHost]` 前缀） |
+| `log` | `OutputChannel.appendLine` | `console.log`（`[ElectronUIHost]` 前缀）+ `fileLogger.info('host', …)` 落盘 |
 | `getWorkspacePath` | `workspaceFolders[0].uri.fsPath`（单一工作目录） | 主进程持有的 `workspacePath`（宿主当前工作目录：打开集合中的一项，由标题栏标签页切换 / 添加 / 关闭驱动） |
 | `isDarkTheme` | `activeColorTheme` 为 Dark 或 HighContrast | `nativeTheme.shouldUseDarkColors` |
 | `getLocale` | `vscode.env.language`（BCP-47，如 `zh-cn`） | `app.getLocale()`（BCP-47，如 `zh-CN`）——与 VS Code 同一值域，不做归一化 |
@@ -679,4 +683,9 @@ MCP **不在**这个列表里：生命周期归 core（`MCPHost`），留在 UI 
 
 ## 13. 尚未收敛的分叉点
 
-暂无。新发现的分叉按同样方式记在这里（现状 + 影响 / 备注）。
+- VS Code 对非 `file` scheme 的工作区引用只登记取值、不实现传输（`getWorkspaceRef`，
+  `src/VSCodeUIHost.ts`）：打开 remote / ssh scheme 的文件夹时引用带 endpoint，但没有
+  传输实现。当前没有 UI 入口能触发它（VS Code 的远程窗口不由本扩展管理），未来接入
+  远程能力时要先补齐。
+
+新发现的分叉按同样方式记在这里（现状 + 影响 / 备注）。

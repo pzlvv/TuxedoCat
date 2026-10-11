@@ -128,9 +128,9 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 计数与退出：
 
-- 计数按连接维护：每条连接的会话自己持有 `liveCores`（本连接活着的 Core 进程数），
-  不跨连接汇总。
-- `liveCores` 归零后启动 **grace 计时器（30s）**；期间收到新的 `openWorkspace` 则取消
+- 计数按连接维护：每条连接（`daemon.rs` 的 `ChannelState`）自己持有活着的 Core 进程
+  （每 channel 一个），不跨连接汇总。
+- 连接上活着的 Core 进程归零后启动 **grace 计时器（30s）**；期间收到新的 `openWorkspace` 则取消
   计时器；到期后该连接的会话结束。grace 期避免「关一个工作区又开一个」时反复启停。
 - 远程 daemon 的连接**不启用** grace 退出（`DaemonOptions.idle_exit = false`）：控制
   通道本身是生命周期边界，目录选择期间可以长时间没有工作区（第 12.5 节）。
@@ -187,7 +187,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 - `id` 由 Host 生成，在单条控制通道内唯一；`workspaceOpened` / `workspaceFailed` /
   `directoriesListed` / `directoryCreated` / `directoryRenamed` / `directoryDeleted` /
   `directoryFailed` 回带同一个 `id`。
-- 内层帧是 [docs/standalone-core.md 第 6.2 节](standalone-core.md#62-帧类型)的帧集合，原样嵌套在 `frame.frame` 里。
+- 内层帧是 [docs/standalone-core.md 第 6.2 节](standalone-core.md#62-帧类型)的帧集合，原样嵌套在信封帧的 `frame` 字段里（`daemon_protocol.rs` 的 `Frame { channel, frame }`）。
 - 未知类型一律丢弃并记录，不做静默降级。
 
 ### 7.3 握手
@@ -235,8 +235,8 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 
 1. 打开一个工作区时 daemon 启动一个 Core 进程，并返回 channel 与描述符。
 2. 两个工作区对应两个 channel、两个 Core 进程，且互不影响。
-3. 关闭工作区后 channel 关闭、Core 退出、`liveCores` 递减。
-4. `liveCores` 归零后 daemon 在 grace 期结束时退出；grace 期内新开工作区则继续服务。
+3. 关闭工作区后 channel 关闭、Core 退出，该连接上活着的 Core 进程数递减。
+4. 连接上活着的 Core 进程归零后 daemon 在 grace 期结束时退出；grace 期内新开工作区则继续服务。
 5. 控制连接断开时，该连接的全部 Core 被关闭，服务线程结束，daemon 继续服务其它连接。
 6. Core 崩溃后 daemon 在同一 channel 上重启它；超过重启上限时关闭 channel 并报告。
 7. 内层帧与 [docs/standalone-core.md 第 6.2 节](standalone-core.md#62-帧类型)逐项一致，daemon 不解读内层帧。
@@ -283,7 +283,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 | SSH 客户端 | `src/host/standalone/sshClient.ts`（`ssh2` 库，不依赖系统 OpenSSH） |
 | SSH 接入建链与远端引导 | `src/host/standalone/sshTransport.ts`、`sshDaemonBootstrap.ts` |
 | 本地单进程 Core | `src/host/standalone/StandaloneEventBus.ts`（`createStandaloneCoreBus`，`stdio`） |
-| endpoint → daemon 注册表 | `src/host/bootstrapCore.ts`（`daemonForEndpoint` / `listRemoteDirectories`） |
+| endpoint → daemon 注册表 | `src/host/bootstrapCore.ts`（`remoteDaemonForEndpoint` / `listRemoteDirectories`） |
 | 远程连接与目录选择 UI | `electron/main.ts`、`electron/remoteWorkspace/`（vite 页面）、`electron/remoteWorkspacePreload.ts` |
 | 帧编解码（内层） | `src/host/standalone/protocol.ts`（不变） |
 | 总线适配器 | `src/host/standalone/StandaloneEventBus.ts` |

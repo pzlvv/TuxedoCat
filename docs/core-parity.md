@@ -283,8 +283,8 @@ standalone= queryBegin, sessionConfigChanged, projectConversationDirReady,
 
 Core 不产出文案：提示类输出经 `CoreEvent.notice` 携带「键 + 参数 + 级别」，键表由
 `coreTextParity` 对照锁定；系统语言探测归宿主（`src/host/i18n.ts`），Core
-不感知语言，也没有 `systemLocaleRequested` 请求。Rust 侧只有 `core_text.rs` 的键与
-参数。
+不感知语言，也没有 systemLocaleRequested 这类请求（已随 locale 收敛删除）。Rust 侧只有
+`core_text.rs` 的键与参数。
 
 ### 3.8 MCP 默认列表重同步的触发点
 
@@ -412,8 +412,10 @@ passthrough）与参数切分正则一致；命令在**出队时**解析
   子项（不构成对外缺口，逐条列在 `bash_task.rs` 模块头）：`TaskOutput` 的 pipe mode（内存
   buffer + 超限 spill）与进度轮询、5GB 磁盘看门狗；自动转后台的说明文案不含「转后台前已
   累积的 stderr」。
-- **AskUserQuestion**：定义 / schema / 权限直接放行 / `CoreRequest.userChoice` 往返 /
-  结果文案两侧一致。
+- **AskUserQuestion**：定义 / schema / `CoreRequest.userChoice` 往返 / 结果文案两侧一致。
+  权限：manual / risk 下工具自判放行（提问本身在工具内弹框）；**auto 下直接拒绝**
+  （"AskUserQuestion is unavailable in Auto mode…"，拒绝文案两侧逐字一致，由
+  `permissionParity` / `permissionPolicyParity` 的 auto 用例锁定）。
 - **Read 的 xlsx/xlsm**（`calamine`）：`toolResultParity` 用提交入库的
   `src/test/fixtures/xlsx/people.xlsx` 锁定输出。
 
@@ -448,9 +450,15 @@ Embedded 的 Reminder 重试在每次 `submitMessage` 后固定等待 1.5s 再�
 | `mcpParity.json` | `mcp/Client.ts` 的 `normalizeMcpCallResult` / `quoteWindowsArg`、`mcp/Config.ts` 的解析与归一化 | `mcp::normalize_mcp_call_result` / `mcp::quote_windows_arg` / `mcp_config::*` |
 | `spinParity.json` | `spin/Engine.ts` / `spin/SpinJudger.ts` 的纯函数 | `spin::get_variables_without_value` / `spin::topological_sort` / `spin::compute_progress` / `spin::build_run_prompt` / `spin::parse_accept` |
 | `responsesParity.json` | `llm/ResponsesApi.ts` 的转换纯函数 | `responses::build_responses_url` / `responses::convert_messages_to_responses_input` / `responses::sync_content_blocks_from_output` |
+| `eventTypesParity.json` | 事件词汇表：`eventTypeParity.test.ts`（编译期穷尽 + 集合相等） | `main_tests`（emit 位点 / dispatch 分支双向锁定） |
+| `toolArgumentsParity.json` | `toolArgumentsParity.test.ts` | `engine_tests` |
+| `commandDispatchParity.json` | `commandDispatch.test.ts` | `commands_tests` |
+| `backgroundReminderParity.json` | `backgroundReminderParity.test.ts`（提醒时钟纯逻辑） | `bash_task_tests` |
+| `coreTextKeys.json` | `coreTextParity.test.ts`（瞬时提示键表） | `core_text_tests` |
+| `runtimeStateParity.json` | `runtimeStateParity.test.ts`（`SessionRuntimeState` 字段集合） | `main_tests`（`runtime_state_json` 字段集） |
 
-对照表的生成脚本在 `scripts/gen-*.mjs`，改动任一侧实现后重跑生成脚本并跑
-`npm run test:all` 与 `npm run test:core` 即可确认没有漂移。
+对照表一部分由 `scripts/gen-*.mjs` 生成（生成器只覆盖部分表，其余手工维护）；改动任一侧
+实现后跑 `npm run test:all` 与 `npm run test:core` 即可确认没有漂移。
 
 ## 5. `#[allow(dead_code)]` 审计
 

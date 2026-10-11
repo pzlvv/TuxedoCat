@@ -461,18 +461,16 @@ impl Core {
                 // 子代理都空闲，父会话才算空闲。
                 let idle = Core::is_idle_deep(&sessions, session_id, &mut HashSet::new());
                 let sub_agent_running = Core::has_busy_subagent(&sessions, session_id);
-                json!({
-                    "sessionId": session_id,
-                    "idle": idle,
-                    "waiting": waiting,
-                    "queryRunning": query_running,
-                    "compacting": compacting,
-                    "backgroundRunning": background,
-                    "subAgentRunning": sub_agent_running,
-                    // 父会话 id（子代理会话才有；spawn 时落 `parent_session_id`）。
-                    // 与 Embedded 的 `parents` 映射同口径：随会话存续，不随注册表注销消失
-                    "parentSessionId": parent,
-                })
+                Core::runtime_state_json(
+                    session_id,
+                    idle,
+                    waiting,
+                    query_running,
+                    compacting,
+                    background,
+                    sub_agent_running,
+                    parent.as_deref(),
+                )
             })
             .collect();
         drop(sessions);
@@ -487,6 +485,35 @@ impl Core {
         // 见 power 模块头注释）。放在 diff 之后：快照没变则忙闲也没变，阻断状态已是对的。
         power::set_prevent_sleep(power::should_prevent_sleep(&states));
         self.emit(json!({ "type": "sessionRuntimeChanged", "states": states }));
+    }
+
+    /// 单个会话的运行时快照 JSON（字段与 Embedded `SessionRuntimeState` 一致）。
+    ///
+    /// 字段集合由 `src/test/fixtures/runtimeStateParity.json` 双向锁定
+    /// （TS 侧 `runtimeStateParity.test.ts`，Rust 侧 `main_tests`）——增删字段必须
+    /// 同步 fixture 与两侧测试，缺一即失败。
+    pub(crate) fn runtime_state_json(
+        session_id: &str,
+        idle: bool,
+        waiting: bool,
+        query_running: bool,
+        compacting: bool,
+        background: bool,
+        sub_agent_running: bool,
+        parent_session_id: Option<&str>,
+    ) -> Value {
+        json!({
+            "sessionId": session_id,
+            "idle": idle,
+            "waiting": waiting,
+            "queryRunning": query_running,
+            "compacting": compacting,
+            "backgroundRunning": background,
+            "subAgentRunning": sub_agent_running,
+            // 父会话 id（子代理会话才有；spawn 时落 `parent_session_id`）。
+            // 与 Embedded 的 `parents` 映射同口径：随会话存续，不随注册表注销消失
+            "parentSessionId": parent_session_id,
+        })
     }
 
     // ==================== UiEvent 入口 ====================

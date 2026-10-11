@@ -6,7 +6,8 @@ import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
 
 /**
- * 「打开远程工作区」对话框（`electron/remoteWorkspace/`，规格 `docs/client-connection.md` 第 4.2 节）：
+ * 「打开远程工作区」对话框（US-36：SSH 连接表单与连接历史；`electron/remoteWorkspace/`，
+ * 规格 `docs/client-connection.md` 第 4.2 节）：
  * - 接入方式只有 SSH 表单，打开不聚焦任何输入框，窗口不建菜单栏（Alt 不呼出菜单）；
  * - SSH 连接历史候选：host 聚焦弹出（最多 6 条）、文案 `<user>@<host>(:port)`
  *   （端口 22 不显示）、关键字前缀匹配排在非前缀匹配之前（同级按时间）、

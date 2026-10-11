@@ -35,9 +35,31 @@
  *     `null` / 判别联合，或评审后显式扩清单）。
  * 13. **常量引用存活**：文档行内代码里引用的全大写常量 / 环境变量名必须仍出现在代码里
  *     （含 `src/config/project.json` 的键）——常量改名 / 删除而文档没跟上时失败。
+ * 14. **事件载荷列逐字段对照**：第 4.1 / 4.2 / 4.3 表的「载荷」列逐行解析字段名，与
+ *     `AssistantEventBus.ts` 对应联合成员的顶层字段双向对照——成员名检查是「出现在第 4 章
+ *     任意位置」级别，同名成员在别的行出现即通过；载荷列这里补上逐行口径
+ *     （`userMessageSubmitted.workspacePath` 就是这类漂移的实例）。
+ * 15. **反引号标识符存活**：文档行内代码里的标识符（小驼峰 / 大驼峰，非全大写）必须出现在
+ *     代码里；`模块.函数` 形式的引用解析到同名模块文件后逐符号校验——函数改名 / 模块不存在
+ *     而文档没跟上时失败（`registerWorkspaceUiEvents` / `updateHeader` 是实例）。
+ * 16. **文档内代码块来源标注**：含 `export` / 顶层声明的 fenced 代码块必须标注 `src=<路径>`
+ *     （或标「示意」豁免）；标注后块内声明名、方法调用名、`export function` 的 async 旗标
+ *     与真实文件逐项比对——文档手抄代码与实现脱节时失败（3.6 的签名漂移是实例）。
+ * 17. **清单对照扩界**：`SettingsSnapshot` 字段表（`core-ui-separation.md` 4.3）、
+ *     `SpinDesign` / `ConversationManager` 成员表（`contracts.md` §2 / §4）、`WebViewUI`
+ *     对外方法表（`webview-ui.md` §4）与对应接口 / 类的成员双向对照——手抄清单漏行时失败。
+ * 18. **US ↔ e2e 映射双向对照**：`user-stories.md` 附录表与 `e2e` 下各 spec 文件实际的
+ *     `US-xx` 引用逐文件双向一致（多列 / 少列 / 引用不存在的 US 都失败）。
+ * 19. **npm run 脚本名存活**：文档行内代码里的 `npm run <script>` 必须存在于
+ *     `package.json` scripts（TODO.md 除外——它描述的是尚未做的）。
+ * 20. **打包平台集合单源**：`scripts/build-core.mjs` 的 `PACKAGE_DIRS` 平台目录名必须全部
+ *     出现在 `README.md`（README 手写平台清单而脚本扩平台时失败）。
+ * 21. **禁「表 #N」行号引用**：代码注释与文档禁止「表 #N / 表格 #N」写法——事件表重编号时
+ *     行号引用静默腐烂（`表 #32` / `#41` 是实例），一律点名事件名。
  *
  * `tmp_*` 临时文件与 `docs/archive/` 冻结档案不参与校验；代码块（fenced / 行内反引号）不参与
- * 文档侧扫描——块内是示例与引用样本，不是文档结构的一部分。
+ * 文档侧扫描——块内是示例与引用样本，不是文档结构的一部分（例外：第 16 项对标注 `src=` 的
+ * fenced 块做与真实文件的比对）。
  *
  * 运行方式：npm run test:all -- docs-lint
  */
@@ -263,6 +285,168 @@ function blockMemberNames(source: string, marker: RegExp): string[] {
     }
   }
   return names;
+}
+
+// ---------- 共享：去注释（联合成员字段提取用） ----------
+/** 去掉块注释与整行行注释——字段名必须从代码而非注释文本里提取 */
+function stripComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+}
+
+/** 取 `from` 之后第一个 `{` 的配平块（含两端花括号）——接口 / 类体提取用 */
+function balancedBlock(source: string, from: number): string {
+  const open = source.indexOf('{', from);
+  let depth = 0;
+  let end = open;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === '{') depth += 1;
+    else if (source[i] === '}') {
+      depth -= 1;
+      if (depth === 0) { end = i; break; }
+    }
+  }
+  return source.slice(open, end + 1);
+}
+
+/**
+ * 块内**第一层深度**的字段名（区别于 `blockMemberNames` 的拍平行为：
+ * 嵌套对象字面量里的同名字段不计）。
+ */
+function depthOneFieldNames(blockText: string): string[] {
+  const fields: string[] = [];
+  let depth = 0;
+  for (const line of blockText.split('\n')) {
+    const m = /^\s+(?:readonly\s+)?([a-zA-Z0-9_]+)\s*[(:;]/.exec(line);
+    if (m && m[1] !== undefined && depth === 1) fields.push(m[1]);
+    for (const ch of line) {
+      if (ch === '{') depth += 1;
+      else if (ch === '}') depth -= 1;
+    }
+  }
+  return fields;
+}
+
+/** 类 / abstract class 的类级成员名（2 空格缩进行；方法体内部的行更深，不会命中） */
+function classMemberNames(source: string, declMarker: RegExp): string[] {
+  const at = source.search(declMarker);
+  if (at < 0) throw new Error(`class marker not found: ${declMarker}`);
+  const names: string[] = [];
+  for (const line of balancedBlock(source, at).split('\n')) {
+    if (/^ {2}(?:static|private)\b/.test(line)) continue;
+    const m = /^ {2}(?:abstract\s+|protected\s+|async\s+)*(?:async\s+)?([a-zA-Z_][A-Za-z0-9_]*)\s*[(<]/.exec(line);
+    if (m && m[1] !== undefined) names.push(m[1]);
+  }
+  return names;
+}
+
+/**
+ * 解析 `AssistantEventBus.ts` 里某组联合的每个成员的**载荷字段**（第 14 项）：
+ * type 名 → 顶层字段名数组。只收成员对象第一层深度上的 `name:` ——嵌套对象字面量
+ * （`images?` 的元素、`result` / `change` 的判别联合分支）里的同名字段不计。
+ */
+function unionMemberFields(source: string, unionName: string): Map<string, string[]> {
+  const lines = stripComments(source).split(/\r?\n/);
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (new RegExp(`^export type ${unionName}\\s*=`).test(lines[i])) { start = i + 1; break; }
+  }
+  if (start < 0) throw new Error(`union ${unionName} not found`);
+  const result = new Map<string, string[]>();
+  const fieldsOf = (memberText: string): string[] => {
+    const fields: string[] = [];
+    for (const m of memberText.matchAll(/\b([a-zA-Z][a-zA-Z0-9_]*)\??\s*:/g)) {
+      const name = m[1];
+      if (name === undefined || name === 'type') continue;
+      let depth = 0;
+      for (const ch of memberText.slice(0, m.index)) {
+        if (ch === '{') depth += 1;
+        else if (ch === '}') depth -= 1;
+      }
+      if (depth === 0) fields.push(name);
+    }
+    return fields;
+  };
+  let memberText: string | null = null;
+  let memberType = '';
+  let depth = 0;
+  const flush = (): void => {
+    if (memberText === null) return;
+    // type 名从完整成员文本提取（多行成员的 `type:` 不在首行）
+    const t = memberText.match(/type:\s*'([a-zA-Z]+)'/);
+    result.set(t && t[1] !== undefined ? t[1] : memberType, fieldsOf(memberText));
+    memberText = null;
+    memberType = '';
+  };
+  for (let i = start; i < lines.length; i++) {
+    if (/^(export |declare )/.test(lines[i])) break;
+    const opened = lines[i].match(/^\s*\|\s*\{(.*)$/);
+    if (opened && memberText === null) {
+      memberText = opened[1] ?? '';
+      memberType = memberText.match(/type:\s*'([a-zA-Z]+)'/)?.[1] ?? '';
+      depth = 1;
+      for (const ch of memberText) {
+        if (ch === '{') depth += 1;
+        else if (ch === '}') depth -= 1;
+      }
+      if (depth <= 0) flush();
+      continue;
+    }
+    if (memberText !== null) {
+      memberText += `\n${lines[i]}`;
+      for (const ch of lines[i]) {
+        if (ch === '{') depth += 1;
+        else if (ch === '}') depth -= 1;
+      }
+      if (depth <= 0) flush();
+    }
+  }
+  flush();
+  return result;
+}
+
+/** 解析事件表「载荷」列的字段名：顶层逗号切分，每段取第一个反引号 token 的 `:` 前半（去 `?`） */
+function payloadFields(cell: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of cell) {
+    if (ch === '(' || ch === '（') depth += 1;
+    else if (ch === ')' || ch === '）') depth = Math.max(0, depth - 1);
+    if (ch === ',' && depth === 0) { parts.push(current); current = ''; continue; }
+    current += ch;
+  }
+  parts.push(current);
+  const fields: string[] = [];
+  for (const part of parts) {
+    const token = part.match(/`([^`]+)`/)?.[1];
+    if (token === undefined) continue;
+    const name = token.split(/[:：]/)[0]?.trim().replace(/\?$/, '') ?? '';
+    if (/^[a-zA-Z][a-zA-Z0-9_]*$/.test(name)) fields.push(name);
+  }
+  return fields;
+}
+
+/** 解析第 4.x 节的事件表行：表头定位「`type`」与「载荷」列，逐行取事件名与载荷字段 */
+function parseEventRows(section: string): Array<{ type: string; payload: string[] }> {
+  const rows: Array<{ type: string; payload: string[] }> = [];
+  let typeCol = -1;
+  let payloadCol = -1;
+  for (const line of section.split('\n')) {
+    if (!/^\|/.test(line)) continue;
+    const cells = line.split(/(?<!\\)\|/).map((c) => c.trim());
+    if (cells.every((c) => /^-*$/.test(c))) continue; // 分隔行
+    const headerType = cells.findIndex((c) => c === '`type`');
+    if (headerType >= 0 && cells.includes('载荷')) {
+      typeCol = headerType;
+      payloadCol = cells.indexOf('载荷');
+      continue;
+    }
+    if (typeCol < 0) continue;
+    if (!/^\d+$/.test(cells[1] ?? '')) continue; // 事件行都有 # 列；节尾的对照表（首列是散文）不算
+    const type = (cells[typeCol] ?? '').replace(/`/g, '');
+    if (/^[a-zA-Z]+$/.test(type)) rows.push({ type, payload: payloadFields(cells[payloadCol] ?? '') });
+  }
+  return rows;
 }
 
 /**
@@ -628,7 +812,7 @@ function main(): void {
       for (const m of linkRemoved.matchAll(/`([^`\n]+)`/g)) {
         const token = m[1] ?? '';
         if (!token.includes('/') || !REPO_PATH_PREFIX.test(token)) continue;
-        if (/[<>*\[\]\s]/.test(token) || token.includes('...')) continue; // 通配 / 占位符不是具体路径
+        if (/[<>*[\]\s]/.test(token) || token.includes('...')) continue; // 通配 / 占位符不是具体路径
         // `path.rs::symbol`（测试名 / 导出符号）与 `path.md#锚点` 都只校验文件部分
         const filePart = token.split('::')[0].split('#')[0].replace(/\/+$/, '');
         if (filePart !== '' && !fs.existsSync(path.join(REPO_ROOT, filePart))) {
@@ -766,6 +950,366 @@ function main(): void {
   checker.check(`文档引用的常量 / 环境变量名全部存活（失效 ${missingConsts.length} 处）`, missingConsts.length === 0);
   for (const b of missingConsts.slice(0, 20)) {
     console.log(`     ${b}`);
+  }
+
+  // ---------- 14. 事件载荷列与联合类型逐字段对照 ----------
+  {
+    const sections: Array<[string, string]> = [
+      ['CoreEvent', '### 4.1'],
+      ['CoreRequest', '### 4.2'],
+      ['UiEvent', '### 4.3'],
+    ];
+    const payloadProblems: string[] = [];
+    for (const [unionName, marker] of sections) {
+      const from = ch4.indexOf(marker);
+      const next = ch4.indexOf('\n### ', from + 1);
+      const section = ch4.slice(from, next < 0 ? undefined : next);
+      const documented = new Map(parseEventRows(section).map((r) => [r.type, r.payload]));
+      const actual = unionMemberFields(busSource, unionName);
+      for (const [type, fields] of actual) {
+        const docFields = documented.get(type);
+        if (docFields === undefined) {
+          payloadProblems.push(`${unionName}.${type} 不在 ${marker} 表中`);
+          continue;
+        }
+        const missing = fields.filter((f) => !docFields.includes(f));
+        const extra = docFields.filter((f) => !fields.includes(f));
+        if (missing.length > 0 || extra.length > 0) {
+          payloadProblems.push(
+            `${unionName}.${type} 载荷列与联合不一致（缺 ${missing.join(' / ') || '—'}，多 ${extra.join(' / ') || '—'}）`,
+          );
+        }
+      }
+      for (const type of documented.keys()) {
+        if (!actual.has(type)) payloadProblems.push(`${marker} 表列了不存在的成员 ${type}`);
+      }
+    }
+    checker.check(`事件载荷列与联合类型逐字段一致（漂移 ${payloadProblems.length} 处）`, payloadProblems.length === 0);
+    for (const p of payloadProblems) console.log(`     ${p}`);
+  }
+
+  // ---------- 15. 反引号标识符存活 ----------
+  {
+    const identifierUniverse = new Set<string>();
+    /** TS 文件模块 basename（无扩展名）→ 内容（`模块.符号` 引用按此解析，含一层 extends 基类）。
+     * 只收 TS：Rust 与 TS 常有同名模块（`llm` / `config` / `host`），文档里的点引用
+     * 多是 TS 键路径或实例调用，跨语言同名会让模块级校验变成误报源。 */
+    const fileModules = new Map<string, string[]>();
+    for (const rel of codeFiles) {
+      const text = readText(rel);
+      for (const m of text.matchAll(/\b[A-Za-z_][A-Za-z0-9_]+\b/g)) {
+        if (m[0] !== undefined) identifierUniverse.add(m[0]);
+      }
+      if (!/\.(?:test\.)?tsx?$/.test(rel)) continue; // 点引用只对 TS 模块做精确校验
+      const base = (rel.split('/').pop() ?? '').replace(/\.(?:test\.)?tsx?$/, '');
+      if (base !== '') {
+        identifierUniverse.add(base); // 模块名本身（如 `coreEventParity`）也是合法引用
+        const list = fileModules.get(base) ?? [];
+        list.push(text);
+        fileModules.set(base, list);
+      }
+    }
+    // 只减不增：确实只存在于文档的概念在此豁免——
+    // 反面教材点名（「架构中不设 X」）与外部产品名；
+    const IDENT_EXEMPT = new Set<string>([
+      'Playwright',
+      'WebViewEventBus', 'WebViewNotifier', 'WebViewController', 'AssistantNotifier', 'AssistantController',
+    ]);
+    // `前缀.符号` 里不是模块引用的键路径 / 内置 API / 打包产物名
+    const DOTTED_EXEMPT = new Set<string>(['core.binaryName', 'core.deployPrefix', 'path.relative', 'app.asar']);
+    const KNOWN_EXT = new Set(['ts', 'tsx', 'js', 'mjs', 'cjs', 'rs', 'json', 'md', 'html', 'css']);
+    const identProblems: string[] = [];
+    for (const rel of mdFiles) {
+      if (rel === 'TODO.md') continue; // TODO 描述尚未做的
+      const lines = readText(rel).split(/\r?\n/);
+      let inFence = false;
+      for (let i = 0; i < lines.length; i++) {
+        const raw = lines[i];
+        if (/^\s*(```|~~~)/.test(raw)) { inFence = !inFence; continue; }
+        if (inFence) continue;
+        for (const m of raw.replace(MD_LINK, ' ').matchAll(/`([^`\n]+)`/g)) {
+          const token = m[1] ?? '';
+          const dotted = token.match(/^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/);
+          if (dotted && dotted[1] !== undefined && dotted[2] !== undefined) {
+            const [prefix, symbol] = [dotted[1], dotted[2]];
+            if (KNOWN_EXT.has(symbol)) continue; // `engine.rs` / `sessionRuntime.ts` 是文件名
+            if (DOTTED_EXEMPT.has(token)) continue;
+            const texts = fileModules.get(prefix);
+            if (texts === undefined) {
+              // 前缀不是文件模块（实例变量 / 目录 / 内置对象如 `shell.openExternal`）：
+              // 只查符号是否在全库存在
+              if (!identifierUniverse.has(symbol)) {
+                identProblems.push(`${rel}:${i + 1} ${prefix}.${symbol}：符号在代码里不存在`);
+              }
+              continue;
+            }
+            if (!texts.some((t) => new RegExp(`\\b${symbol}\\b`).test(t))) {
+              // 命中继承链（子类文件里引用基类成员）不算漂移：查一层 extends 基类
+              const bases = new Set<string>();
+              for (const t of texts) {
+                for (const b of t.matchAll(/extends\s+([A-Za-z0-9_]+)/g)) {
+                  if (b[1] !== undefined) bases.add(b[1]);
+                }
+              }
+              const baseTexts = [...bases].flatMap((b) => fileModules.get(b) ?? []);
+              // 模块未命中但全库存在（实例调用 / 跨模块同名）不算漂移；只拦「哪里都没有」的符号
+              if (!baseTexts.some((t) => new RegExp(`\\b${symbol}\\b`).test(t))
+                && !identifierUniverse.has(symbol)) {
+                identProblems.push(`${rel}:${i + 1} ${prefix}.${symbol}：符号在 ${prefix} 模块里不存在`);
+              }
+            }
+            continue;
+          }
+          if (/\W/.test(token)) continue; // 路径 / 键路径 / 命令交给其它检查
+          if (!/^[A-Za-z][A-Za-z0-9]{3,}$/.test(token)) continue;
+          if (!/[a-z]/.test(token)) continue; // 全大写交给第 13 项
+          if (IDENT_EXEMPT.has(token)) continue;
+          if (!identifierUniverse.has(token)) {
+            identProblems.push(`${rel}:${i + 1} 标识符在代码里不存在：\`${token}\``);
+          }
+        }
+      }
+    }
+    checker.check(`反引号标识符全部存活（失效 ${identProblems.length} 处）`, identProblems.length === 0);
+    for (const b of identProblems.slice(0, 20)) console.log(`     ${b}`);
+  }
+
+  // ---------- 16. 文档内代码块来源标注 ----------
+  {
+    const fenceProblems: string[] = [];
+    for (const rel of mdFiles) {
+      const lines = readText(rel).split(/\r?\n/);
+      let inFence = false;
+      let info = '';
+      let startLine = 0;
+      const block: string[] = [];
+      const checkFence = (): void => {
+        const content = block.join('\n');
+        if (!/\bexport\s+/.test(content)) return; // 无导出声明的示例不强制标注
+        const srcMatch = /(?:^|\s)src=(\S+)/.exec(info);
+        if (srcMatch === null || srcMatch[1] === undefined) {
+          if (!info.includes('示意')) {
+            fenceProblems.push(`${rel}:${startLine} 含导出声明的代码块缺 src= 来源标注（纯示意写「示意」）`);
+          }
+          return;
+        }
+        const targetRel = srcMatch[1];
+        const targetPath = path.join(REPO_ROOT, targetRel);
+        if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isFile()) {
+          fenceProblems.push(`${rel}:${startLine} src= 目标不存在：${targetRel}`);
+          return;
+        }
+        const target = targetRel.replace(/\\/g, '/');
+        const targetText = readText(target);
+        for (const m of content.matchAll(/(?:^|\n)\s*(?:export\s+)?(?:declare\s+)?(?:async\s+)?(?:function|class|interface|type|const|enum)\s+([A-Za-z0-9_]+)/g)) {
+          const name = m[1];
+          if (name !== undefined && !new RegExp(`\\b${name}\\b`).test(targetText)) {
+            fenceProblems.push(`${rel}:${startLine} 代码块声明的 ${name} 不在 ${target}`);
+          }
+        }
+        for (const m of content.matchAll(/export\s+(async\s+)?function\s+([A-Za-z0-9_]+)/g)) {
+          const name = m[2];
+          if (name === undefined) continue;
+          const t = new RegExp(`export\\s+(async\\s+)?function\\s+${name}\\b`).exec(targetText);
+          if (t === null) {
+            fenceProblems.push(`${rel}:${startLine} ${target} 无 export function ${name}`);
+          } else if ((m[1] !== undefined) !== (t[1] !== undefined)) {
+            fenceProblems.push(`${rel}:${startLine} ${name} 的 async 旗标与 ${target} 不一致`);
+          }
+        }
+        for (const line of block) {
+          const cm = /^\s+(?:readonly\s+|private\s+|protected\s+|public\s+|static\s+|abstract\s+|async\s+|get\s+|set\s+)*([a-zA-Z_][A-Za-z0-9_]*)\s*\(/.exec(line);
+          if (cm === null || cm[1] === undefined) continue;
+          const name = cm[1];
+          if (['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'await', 'function'].includes(name)) continue;
+          if (!new RegExp(`\\b${name}\\b`).test(targetText)) {
+            fenceProblems.push(`${rel}:${startLine} 代码块引用的 ${name}( 不在 ${target}`);
+          }
+        }
+      };
+      for (let i = 0; i < lines.length; i++) {
+        if (/^\s*(```|~~~)/.test(lines[i])) {
+          if (!inFence) { inFence = true; info = lines[i]; startLine = i + 1; block.length = 0; }
+          else { inFence = false; checkFence(); }
+          continue;
+        }
+        if (inFence) block.push(lines[i]);
+      }
+    }
+    checker.check(`文档内代码块来源标注与比对（问题 ${fenceProblems.length} 处）`, fenceProblems.length === 0);
+    for (const p of fenceProblems.slice(0, 20)) console.log(`     ${p}`);
+  }
+
+  // ---------- 17. 清单对照扩界 ----------
+  {
+    const listProblems: string[] = [];
+    const diffNames = (expected: string[], found: string[], label: string): void => {
+      const missing = expected.filter((n) => !found.includes(n));
+      const extra = found.filter((n) => !expected.includes(n));
+      if (missing.length > 0 || extra.length > 0) {
+        listProblems.push(`${label} 与代码不一致（缺 ${missing.join(' / ') || '—'}，多 ${extra.join(' / ') || '—'}）`);
+      }
+    };
+    // (a) SettingsSnapshot ↔ core-ui-separation.md 4.3 字段表（嵌套 llm / mcp 展开成点路径）
+    const snapshotSrc = readText('src/core/settingsSnapshot.ts');
+    const snapIface = balancedBlock(snapshotSrc, snapshotSrc.search(/export interface SettingsSnapshot\b/));
+    const snapshotExpected: string[] = [];
+    for (const top of depthOneFieldNames(snapIface)) {
+      if (top === 'llm' || top === 'mcp') {
+        const subAt = snapIface.search(new RegExp(`\\n\\s+${top}:\\s*\\{`));
+        for (const f of depthOneFieldNames(balancedBlock(snapIface, subAt))) snapshotExpected.push(`${top}.${f}`);
+      } else {
+        snapshotExpected.push(top);
+      }
+    }
+    const sep43 = readText('docs/core-ui-separation.md');
+    const part43 = sep43.slice(sep43.indexOf('### 4.3'), sep43.indexOf('### 4.4'));
+    const snapshotDoc = [...part43.matchAll(/^\| `([a-zA-Z0-9_.]+)` \|/gm)].map((m) => m[1] ?? '');
+    diffNames(snapshotExpected, snapshotDoc, 'core-ui-separation.md 4.3 快照字段表');
+    // (b) SpinDesign ↔ contracts.md §2 成员表
+    const spinMembers = blockMemberNames(readText('src/host/SpinDesign.ts'), /export interface SpinDesign\b/);
+    const spinPart = contracts.slice(contracts.indexOf('## 2. Spin'), contracts.indexOf('## 3.'));
+    const spinDoc = [...spinPart.matchAll(/^\| `([a-zA-Z0-9_]+)\(/gm)].map((m) => m[1] ?? '');
+    diffNames(spinMembers, spinDoc, 'contracts.md §2 SpinDesign 成员表');
+    // (c) ConversationManager ↔ contracts.md §4 基类成员表
+    const cmMembers = classMemberNames(readText('src/host/ConversationManager.ts'), /export abstract class ConversationManager\b/)
+      .filter((n) => n !== 'constructor');
+    const cmFrom = contracts.indexOf('**用抽象类而不是接口**');
+    const cmPart = contracts.slice(cmFrom, contracts.indexOf('两个实现：', cmFrom));
+    const cmDoc = [...cmPart.matchAll(/^\| `([a-zA-Z0-9_]+)\(/gm)].map((m) => m[1] ?? '');
+    diffNames(cmMembers, cmDoc, 'contracts.md §4 ConversationManager 基类成员表');
+    // (d) WebViewUI 公有方法 ↔ webview-ui.md §4 对外方法表
+    const publicMethods: string[] = [];
+    for (const line of webViewUiSrc.split('\n')) {
+      if (/^ {2}(?:static|private)\b/.test(line)) continue;
+      const mm = /^ {2}(?:async\s+)?([a-zA-Z_][A-Za-z0-9_]*)\s*[(<]/.exec(line);
+      if (mm && mm[1] !== undefined) publicMethods.push(mm[1]);
+    }
+    // 豁免 = 内部消费 / 经映射表调用的入口（只减不增）；`on*` 是 CoreEvent / CoreRequest 处理器家族
+    const HOST_METHOD_EXEMPT = new Set([
+      'postToWebview', 'postConversationLoaded', 'dropSession', 'isSessionOpen', 'openSpinDesign',
+      'refreshConversations', 'getSessionRuntimeStatesSnapshot', 'noteSessionActivity',
+      'requestToolPermission', 'requestUserChoice',
+    ]);
+    const hostFacing = publicMethods.filter((n) => !/^on[A-Z]/.test(n) && !HOST_METHOD_EXEMPT.has(n));
+    const part4 = webviewUi.slice(webviewUi.indexOf('## 4. 对外方法'), webviewUi.indexOf('## 5.'));
+    const section4Doc = [...part4.matchAll(/^\| `([a-zA-Z0-9_]+)\(/gm)].map((m) => m[1] ?? '')
+      // 文档里的 on* 行是子模块回调（不在宿主直接调用面），双侧都不参与对照
+      .filter((n) => !/^on[A-Z]/.test(n));
+    diffNames(hostFacing, section4Doc, 'webview-ui.md §4 对外方法表');
+    for (const n of new Set(section4Doc)) {
+      if (!publicMethods.includes(n)) listProblems.push(`webview-ui.md §4 列的 ${n}( 不是 WebViewUI 的公有方法`);
+    }
+    checker.check(`契约 / 快照 / 方法清单与代码一致（问题 ${listProblems.length} 处）`, listProblems.length === 0);
+    for (const p of listProblems) console.log(`     ${p}`);
+  }
+
+  // ---------- 18. US ↔ e2e 映射双向对照 ----------
+  {
+    const usBySpec = new Map<string, string[]>();
+    for (const rel of files) {
+      if (!rel.startsWith('e2e/') || !rel.endsWith('.spec.ts')) continue;
+      const refs = [...readText(rel).matchAll(/\bUS-(\d+)\b/g)].map((m) => m[1] ?? '');
+      usBySpec.set(rel, [...new Set(refs)].sort());
+    }
+    const userStories = readText('docs/user-stories.md');
+    const appendix = userStories.slice(userStories.indexOf('## 附录'));
+    const docBySpec = new Map<string, string[]>();
+    for (const m of appendix.matchAll(/^\| `([^`]+)` \|([^|]*)\|/gm)) {
+      const file = m[1];
+      if (file === undefined || !file.startsWith('e2e/')) continue;
+      const us = [...(m[2] ?? '').matchAll(/US-(\d+)/g)].map((x) => x[1] ?? '');
+      docBySpec.set(file, [...new Set(us)].sort());
+    }
+    const usProblems: string[] = [];
+    for (const [file, refs] of usBySpec) {
+      const listed = docBySpec.get(file);
+      if (refs.length === 0) {
+        if (listed !== undefined) usProblems.push(`${file} 无 US 引用但附录表列了 US-${listed.join(' / US-')}`);
+        continue;
+      }
+      if (listed === undefined) {
+        usProblems.push(`${file} 引用 US-${refs.join(' / US-')} 但附录表没有该文件的行`);
+        continue;
+      }
+      const missing = refs.filter((r) => !listed.includes(r));
+      const extra = listed.filter((r) => !refs.includes(r));
+      if (missing.length > 0 || extra.length > 0) {
+        const fmt = (rs: string[]): string => rs.map((r) => `US-${r}`).join(' / ') || '—';
+        usProblems.push(`${file} 附录映射不一致（缺 ${fmt(missing)}，多 ${fmt(extra)}）`);
+      }
+    }
+    for (const file of docBySpec.keys()) {
+      if (!usBySpec.has(file)) usProblems.push(`附录表列的 ${file} 不存在`);
+    }
+    checker.check(`US ↔ e2e 映射双向一致（问题 ${usProblems.length} 处）`, usProblems.length === 0);
+    for (const p of usProblems) console.log(`     ${p}`);
+  }
+
+  // ---------- 19. npm run 脚本名存活 ----------
+  {
+    const packageJson = JSON.parse(readText('package.json')) as { scripts?: Record<string, string> };
+    const scripts = new Set(Object.keys(packageJson.scripts ?? {}));
+    const scriptProblems: string[] = [];
+    for (const rel of mdFiles) {
+      if (rel === 'TODO.md') continue; // TODO 描述尚未做的
+      const lines = readText(rel).split(/\r?\n/);
+      let inFence = false;
+      for (let i = 0; i < lines.length; i++) {
+        const raw = lines[i];
+        if (/^\s*(```|~~~)/.test(raw)) { inFence = !inFence; continue; }
+        if (inFence) continue;
+        for (const m of raw.replace(MD_LINK, ' ').matchAll(/`npm run ([a-zA-Z0-9:_-]+)`/g)) {
+          const name = m[1];
+          if (name !== undefined && !scripts.has(name)) {
+            scriptProblems.push(`${rel}:${i + 1} npm run ${name} 不在 package.json`);
+          }
+        }
+      }
+    }
+    checker.check(`npm run 脚本名全部存活（失效 ${scriptProblems.length} 处）`, scriptProblems.length === 0);
+    for (const b of scriptProblems.slice(0, 20)) console.log(`     ${b}`);
+  }
+
+  // ---------- 20. 打包平台集合单源 ----------
+  {
+    const buildCore = readText('scripts/build-core.mjs');
+    const dirs = [...(buildCore.match(/PACKAGE_DIRS\s*=\s*\[([^\]]*)\]/)?.[1] ?? '').matchAll(/'([^']+)'/g)]
+      .map((m) => m[1] ?? '');
+    const readme = readText('README.md');
+    const missingPlatforms = dirs.filter((d) => !readme.includes(d));
+    checker.check(
+      `README 平台清单与 PACKAGE_DIRS 一致（${dirs.join(' / ')}）`,
+      dirs.length > 0 && missingPlatforms.length === 0,
+    );
+    for (const d of missingPlatforms) console.log(`     README 缺平台目录：${d}`);
+  }
+
+  // ---------- 21. 禁「表 #N」行号引用 ----------
+  {
+    const tableRefProblems: string[] = [];
+    for (const rel of codeFiles) {
+      const lines = readText(rel).split(/\r?\n/);
+      for (let i = 0; i < lines.length; i++) {
+        if (/表(?:格)?\s*#\d+|节\s*#\d+/.test(lines[i])) {
+          tableRefProblems.push(`${rel}:${i + 1} 禁止「表 / 节 #N」行号引用（点名事件名 / 成员名）`);
+        }
+      }
+    }
+    for (const rel of mdFiles) {
+      const lines = readText(rel).split(/\r?\n/);
+      let inFence = false;
+      for (let i = 0; i < lines.length; i++) {
+        const raw = lines[i];
+        if (/^\s*(```|~~~)/.test(raw)) { inFence = !inFence; continue; }
+        if (inFence) continue;
+        if (/表(?:格)?\s*#\d+|节\s*#\d+/.test(raw)) {
+          tableRefProblems.push(`${rel}:${i + 1} 禁止「表 / 节 #N」行号引用（点名事件名 / 成员名）`);
+        }
+      }
+    }
+    checker.check(`无「表 #N」行号引用（命中 ${tableRefProblems.length} 处）`, tableRefProblems.length === 0);
+    for (const b of tableRefProblems.slice(0, 20)) console.log(`     ${b}`);
   }
 
   checker.finish();

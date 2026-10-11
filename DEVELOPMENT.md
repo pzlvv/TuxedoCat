@@ -446,7 +446,7 @@ core/  ←  host/  ←  宿主实现（VSCode* / Electron*）
    （高频）各自拥有独立的事件与分发方法；`loaded` 这类宿主界面状态由其 owner 单独推送。
    判据：若两个字段的变化频率相差一个数量级，或其 owner 不同，则不应出现在同一条流中。
 9. `host/` 与宿主实现可以 **import core 的只读函数与类型**（如 `loadConversationList`、
-   `readHighlightLanguagesSync`、`ConversationMetadata`），这属于「宿主消费 core 的事实」，
+   `hasSettingsSnapshot`、`ConversationMetadata`），这属于「宿主消费 core 的事实」，
    与「core 不得 import host」共同构成单向依赖：`宿主实现 → host/ → core/`。
    但 host 侧**不得调用 core 的状态变更函数**；改状态的请求一律翻译为 `UiEvent` 走总线。
   全局配置文件 `~/<CONFIG_DIR_NAME>/settings.json` 是宿主资源：**读与写都在宿主**，
@@ -566,7 +566,7 @@ UI 可以被替换，也可以只订阅自己关心的事件。
 
 **穷尽检查靠映射类型**：
 
-```ts
+```ts src=src/core/AssistantEventBus.ts
 export type CoreEventHandlers = {
   readonly [K in CoreEvent['type']]: (event: Extract<CoreEvent, { type: K }>) => void;
 };
@@ -695,20 +695,20 @@ core 模块随 bundle 加载，**模块顶层不能订阅**（加载时总线还
 ### 3.6 core 侧 UiEvent 订阅：initializeCoreEvents
 
 core 侧**没有处理器契约**，与 UI 侧同理：消费方是分散的模块（`Integration` / `history` /
-`sessionResources` / `mcp` / `sessionWorkspace`），各自用 `onUiEvent(type, handler)` 订阅自己关心的少数几个事件。
+`sessionResources` / `mcp`），各自用 `onUiEvent(type, handler)` 订阅自己关心的少数几个事件。
 
 唯一注册入口是 `src/core/initializeCoreEvents.ts`，按 core 模块分注册函数：
 
-```ts
-export function initializeCoreEvents(bus: AssistantEventBus): void {
+```ts src=src/core/initializeCoreEvents.ts
+export async function initializeCoreEvents(bus: AssistantEventBus): Promise<void> {
   registerHostEnvironmentUiEvents(bus);        // hostEnvironmentProvided（同步注册）
   registerSessionWorkspaceUiEvents(bus);       // sessionWorkspaceAssigned（同步注册）
   registerUserChoiceUiEvents(bus);             // userChoicePendingChanged（同步注册）
-
-  void registerIntegrationUiEvents(bus);       // 消息 / 压缩 / 配置 / 会话生命周期
-  void registerHistoryUiEvents(bus);           // 重命名 / 删除 / 上下文 / 空间
-  void registerSessionResourcesUiEvents(bus);  // conversationClosed → releaseSessionResources
-  void registerMcpUiEvents(bus);               // mcpEnabledChanged / mcpEnabledListChanged
+  await Promise.all([ // 四组并行就位；返回的 Promise resolve 即「订阅全部就位」，调用方 await 它作就绪门禁
+    registerIntegrationUiEvents(bus),          // 消息 / 压缩 / 配置 / 会话生命周期
+    registerHistoryUiEvents(bus),              // 重命名 / 删除 / 上下文 / 空间
+    registerSessionResourcesUiEvents(bus), registerMcpUiEvents(bus),  // 会话资源释放 / MCP 差量同步
+  ]);
 }
 ```
 
@@ -797,7 +797,7 @@ wire message（若该事件会产生 webview 协议消息）。
 > 第 1–10 项是渲染类 handler，第 11–24 项是控制面与事实通知 handler——这条界线只是 `WebViewUI` 内部的
 > 分区，不是事件类型的分组。
 >
-> 各表的 `#` 列是**表内序号**（4.1 自 0 起，4.2 / 4.3 自 1 起），「表格 #N」引用均指对应表的序号；
+> 各表的 `#` 列是**表内序号**（4.1 自 0 起，4.2 / 4.3 自 1 起）；跨表指名一律用事件名，不用行号。
 > 父子会话的展示事实读 `conversationsData` / `sessionRuntimeStates` 的 `parentSessionId`（第 4.5 节）。
 
 ### 4.2 CoreRequest（core → UI，请求-响应）
@@ -813,7 +813,7 @@ wire message（若该事件会产生 webview 协议消息）。
 结果类型的映射写在 `CoreRequestResultMap`（第 3.1 节），保证 handler 返回类型与请求一一对应。
 超时口径见第 3.7 节。
 
-**没有 `uiDynamicInfo` 这类请求**：宿主当前工作目录不经过总线——它是宿主侧的环境事实，
+**没有 uiDynamicInfo 这类请求**：宿主当前工作目录不经过总线——它是宿主侧的环境事实，
 由 `WorkspaceProvider.getWorkspacePath()` 提供，消费方是宿主自己的界面（对话列表、
 Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有对应的事件，也没有对应的请求。
 
@@ -823,7 +823,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 `getProjectRoot(sessionId)` 只按会话解析，未登记时抛错；`hasProjectRoot(sessionId)`
 供「没有工作目录时降级」的调用点做前置守卫。core 里需要工作目录的地方
 （history / mcp / tools / spin / prompt）都按会话解析，不读单一全局值；
-工具侧一律以 `ToolUseContext.cwd`（引擎的 `config.cwd`）为基准展开相对路径，
+工具侧一律以 `ToolUseContext.cwd`（引擎配置里的 `cwd`）为基准展开相对路径，
 不需要总线参与。
 
 ### 4.3 UiEvent（UI → core，单向）
@@ -846,12 +846,12 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 11 | `thinkingEffortChanged` | `sessionId`, `mode` | `setThinkingMode` | `setSessionThinkingMode` + 写 meta.json（字段名仍是 `thinkingMode`）→ `sessionConfigChanged` |
 | 12 | `promptModeChanged` | `sessionId`, `mode` | `setPromptMode` | `setSessionPromptPreset` + 写 meta.json → `sessionConfigChanged` |
 | 13 | `agentModeChanged` | `sessionId`, `mode` | `setAgentMode` | `setSessionAgentMode` + 写 meta.json → `sessionConfigChanged` |
-| 14 | `webSearchChanged` | `sessionId`, `enabled` | `setWebSearch` | `engine.updateWebSearch` + 写 meta.json → `sessionConfigChanged` |
+| 14 | `webSearchChanged` | `sessionId`, `enabled` | `setWebSearch` | `QueryEngine.updateWebSearch` + 写 meta.json → `sessionConfigChanged` |
 | 15 | `mcpEnabledChanged` | `sessionId`, `name`, `enabled` | `setMcpEnabled` | `mcp/Config.setSessionMcpEnabled` + `Manager.syncSession` → `sessionConfigChanged`（差量同步完成后） |
 | 16 | `mcpEnabledListChanged` | `sessionId`, `names`（**完整启用列表**，去重、保留顺序） | `setMcpEnabledList`（设置面板「应用到当前对话」）；宿主保存默认配置时直接发（写盘前先把当前对话钉在它当前的列表上） | `mcp/Config.setSessionMcpEnabledList` + `Manager.syncSession` → `sessionConfigChanged`（差量同步完成后）；与 `mcpEnabledChanged` 是同一条事实的两个粒度 |
 | 17 | `editRolledBack` | `sessionId`, `toolUseId`, `direction`, `filePath?` | `rollbackEdit` | `history/rollback.rollbackEdit`（`filePath` 作为 `input.file_path` 缺失时的兜底路径） |
 | 18 | `hostEnvironmentProvided` | `extensionPath`, `logToConsole`, `configDirName`, `settings`, `mcpServers` | `bootstrapCore`（每个 Connection 建立时推送一次；此后每次配置写盘由 `SettingsStore` 订阅重推整份快照给所有 Connection） | `initializeCoreEvents` 的 `registerHostEnvironmentUiEvents` → `setExtensionPath` / `setLogToConsole` / `applySettingsSnapshot` → `CoreEvent.coreReady` |
-| 19 | `userMessageSubmitted` | `sessionId`, `content`, `uuid`, `images?`, `filePath?`, `fileSelectedLines?`, `fileHidden?`, `agentMode?`, `thinkingMode?`, `model?`, `webSearch?`, `deferEcho?` | `sendMessage`（handler 组装载荷：wire 的 `selectedLines` 翻译成 `fileSelectedLines`；`uuid` 由宿主生成并回带，完整链路见 `docs/user-message-pipeline.md`） | `Integration.submitMessage` → 入队 / 落盘 / 命令解析 / 轮次消费 |
+| 19 | `userMessageSubmitted` | `sessionId`, `content`, `uuid`, `images?`, `filePath?`, `fileSelectedLines?`, `fileHidden?`, `agentMode?`, `thinkingMode?`, `model?`, `webSearch?`, `workspacePath?`, `deferEcho?` | `sendMessage`（handler 组装载荷：wire 的 `selectedLines` 翻译成 `fileSelectedLines`；`uuid` 由宿主生成并回带；`workspacePath` 兜底 Standalone 重启恢复，完整链路见 `docs/user-message-pipeline.md`） | `Integration.submitUserMessage` → 入队 / 落盘 / 命令解析 / 轮次消费 |
 | 20 | `userChoicePendingChanged` | `sessionId`, `pending: boolean` | `UserChoiceManager`（webview 弹出选择、用户应答、`dropSession` 释放视图时） | `initializeCoreEvents` 的 `registerUserChoiceUiEvents` → `markSessionWaiting`（`sessionRuntime` 的 `waiting` 来源，供 `isSessionIdle` 判定） |
 | 21 | `sessionWorkspaceAssigned` | `sessionId`, `workspacePath: string \| null` | `WebviewMessageHandler.ensureSessionWorkspace`（会话首次被 core 解析目录之前）、`electron/main.ts` 的 `registerCoreSessionWorkspace`（多工作目录宿主按来源视图登记） | `initializeCoreEvents` 的 `registerSessionWorkspaceUiEvents` → `setSessionWorkspace` / `clearSessionWorkspace`（Standalone 下同一处理器在 Core 进程内） |
 | 22 | `queuedMessageDiscarded` | `sessionId`, `uuid` | `discardQueuedMessage`（webview 排队项的「编辑 / 删除」，[docs/user-message-pipeline.md 第 5.2 节](docs/user-message-pipeline.md#52-清除)） | `QueryEngine.discardPendingUserMessage`（Standalone：`engine.rs` 的 `on_queued_message_discarded`）——按 `uuid` 丢弃引擎里尚未消费的同一消息，不置 abort 标记（不打断正在运行的查询） |
@@ -871,9 +871,9 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | UI 侧动作 | 设空标题、查余额、下发 settings.json 默认配置、必要时弹 LLM 配置引导 | 渲染消息、恢复输入草稿与 session 状态 |
 
 `conversationStarted` 已经走总线：`handleStartNewConversation` → `emitUiEvent`，由 core 的
-订阅调 `Integration.createEngine`（表格 #3）。`conversationOpened` 由 `handleLoadConversation` 与
-`handleStartNewConversation` 发出（表格 #4）：Standalone 下 Core 据此载入历史并建立 MCP 引用；
-Embedded 下宿主在发完事件后直接调 `restoreConversationEngine`，core 侧没有对应订阅。
+订阅调 `Integration.createEngine`。`conversationOpened` 由 `handleLoadConversation` 与
+`handleStartNewConversation` 发出：Standalone 下 Core 据此载入历史并建立 MCP 引用；Embedded
+下宿主在发完事件后直接调 `restoreConversationEngine`，core 侧没有对应订阅。
 
 **仍然留在 `WebviewMessageHandler`（不是 UiEvent）的消息**
 
@@ -913,7 +913,7 @@ webview 对话树的运行标记、两端 abort 按钮），生产者是 `src/co
 
 | 函数 | 来源 | 事实 | 调用点 |
 | --- | --- | --- | --- |
-| `markQueryRunning(sessionId, running)` | `query` | 会话自身有活跃查询 / 引擎在消费 | `QueryEngine`（queryBegin / queryEnd、beginConsumer） |
+| `markQueryRunning(sessionId, running)` | `query` | 会话自身有活跃查询 / 引擎在消费 | `QueryEngine`（queryBegin / queryEnd、beginConsumer、submitMessage 消费恢复） |
 | `markSessionCompacting(sessionId, compacting)` | `compacting` | 正在压缩上下文（会整体替换消息数组） | `compact/compact.ts`（`compactConversation` 的进出） |
 | `markSessionBackground(sessionId, background)` | `background` | 有运行中的后台 Bash 任务 | `tools/bash/LocalShellTask`（注册 / 结束 / 中止后按剩余任务数同步） |
 | `markSessionSubAgent(sessionId, subagent)` | `subagent` | 该会话已注册子代理（idle 递归看子代理当前是否非 idle，本标志只作变更信号） | `tools/agent/SubAgentRegistry`（register / unregister） |
