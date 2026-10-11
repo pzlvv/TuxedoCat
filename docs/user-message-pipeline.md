@@ -60,8 +60,8 @@ webview 的用户消息经宿主 `WebviewMessageHandler` 的一个处理器进�
 | --- | --- |
 | 活动计时 | `noteSessionActivity(sessionId)`（空闲回收只在 VS Code 生效，见 [docs/contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
 | 消息身份 | 生成 `uuid` 并回带进 `UiEvent`；core 落盘沿用同一个 uuid，UI 按它配对排队项与用户气泡 |
-| 排队判定 | 读 core 的会话运行时快照：该会话 `idle === false` 时登记排队项并置 `deferEcho`，否则乐观回显用户气泡（第 5 节） |
-| 字段翻译 | wire 的 `selectedLines` 翻译成 `UiEvent` 的 `fileSelectedLines`（[DEVELOPMENT.md 第 4.3 节](../DEVELOPMENT.md#43-uieventui--core单向) #41） |
+| 排队判定 | 读 core 的会话运行时快照：该会话 `idle === false` 时登记排队项并置 `deferEcho`；命令消息（`/` 开头）即使空闲也置 `deferEcho`、不做乐观回显（内置命令就地执行、不落盘，立刻画气泡会留下刷新后消失的「幽灵」消息）；其余空闲消息乐观回显（第 5 节） |
+| 字段翻译 | wire 的 `selectedLines` 翻译成 `UiEvent` 的 `fileSelectedLines`（[DEVELOPMENT.md 第 4.3 节](../DEVELOPMENT.md#43-uieventui--core单向) #19） |
 | 会话覆盖 | `agentMode` / `thinkingMode` / `webSearch` / 模型身份（provider + model）随 `UiEvent` 下发；`promptMode` 由独立的 `setPromptMode` 消息承载 |
 | 入队 | 发 `UiEvent.userMessageSubmitted`：取 / 建引擎、应用会话覆盖、入队、命令解析都在 core 侧（第 4 节） |
 
@@ -130,7 +130,9 @@ Skill 命令的注入内容是一条 assistant `tool_use`（`name: 'Skill'`）�
   登记排队项，不做发送侧乐观回显；
 - 给 `UiEvent.userMessageSubmitted` 带上 `deferEcho`，由 core 在消息真正进入上下文时补发用户气泡。
 
-空闲（`idle === true`，或快照里没有该会话）时仍是发送侧乐观回显，不登记排队项。
+空闲（`idle === true`，或快照里没有该会话）且**不是命令消息**（`/` 开头）时仍是发送侧乐观回显，
+不登记排队项；命令消息无论忙闲都置 `deferEcho`、不乐观回显，由 core 在消息真正进入上下文时
+补发用户气泡（Skill 命令）或干脆不发（内置命令就地执行、不落盘）。
 
 ### 5.2 清除
 

@@ -73,7 +73,7 @@ export class ElectronUIHost implements UIHost {
   setMainWindow(win: BrowserWindow): void;
   setSidebarView(view: WebContentsView): void;
   setChatViewManager(m: ChatViewManager): void;    // 记录视图管理器，并注入 activatePrewarmedView 出口
-  setWorkspacePath(p: string | undefined): void;   // 记录宿主当前工作目录
+  setWorkspacePath(ref: WorkspaceRef | undefined): void;   // 记录宿主当前工作区引用
   webviewHandleFor(source: WebContents): WebviewViewHandle;   // 来源视图包成句柄
 
   // ===== UIHost 实现 =====
@@ -154,7 +154,7 @@ export class ElectronUIHost implements UIHost {
 
 | | SingleWebViewConversationManager（`src/VSCodeConversationManager.ts`） | ElectronConversationManager（`electron/ElectronConversationManager.ts`） |
 | --- | --- | --- |
-| 构造依赖 | `host: UIHost` | `host: UIHost` + `sendToSidebar(channel, payload)`（侧栏出口，由 `main.ts` 注入）+ `sendToChatViews(message)`（广播给所有聊天视图，abort 按钮数据源） |
+| 构造依赖 | `host: UIHost` | `host: UIHost` + `sendToSidebar(channel, payload)`（侧栏出口，由 `main.ts` 注入）+ `activeWorkspaceKey: () => string`（活动工作区稳定 id，列表快照按它分份；缺省回退宿主工作路径）。广播给聊天视图走 `host.broadcastToWebviews`，不是独立依赖 |
 | `dispatchList` | `host.sendToWebview({ type: 'conversationsData', conversations })` | ① `sendToSidebar('sidebar:conversations-updated', list)` ② `host.sendToWebview({ type: 'conversationsData', ... })` |
 | `dispatchStates` | `host.sendToWebview({ type: 'sessionRuntimeStates', states })`（对话树流水灯 + abort 按钮） | ① `sendToSidebar('sidebar:session-states-updated', states)` ② `statusListener(states)`（托盘）③ 广播给所有聊天视图（abort 按钮） |
 | `setStatusListener` | 不注册 | `main.ts` 注入 `updateTrayStatusFromStates`：托盘状态点 + 「任务结束」闪烁；`updateCompletionAttentionFromStates`：「任务完成」未读呼吸；另驱动系统睡眠阻断（`sleepBlocker.update`） |
@@ -282,7 +282,11 @@ context.subscriptions.push(
 // electron/main.ts（initCore）
 const host = new ElectronUIHost();
 const spinDesign = new ElectronSpinDesign(host);
-const conversations = new ElectronConversationManager(host, sendToSidebar);
+const conversations = new ElectronConversationManager(
+  host,
+  sendToSidebar,
+  () => refKey(workspacePath),   // 列表快照按工作区稳定 id 分份
+);
 conversations.setStatusListener((states) => {   // 托盘与睡眠阻断都只吃这条状态流
   updateTrayStatusFromStates(states);           // 状态点 + 「任务结束」闪烁
   sleepBlocker.update(states);                  // 任一会话非 idle 即阻断系统睡眠
@@ -440,7 +444,8 @@ channel / 本地 `stdio` Core 进程），再关闭远程 daemon；Embedded 下�
 
 **编译期**：
 
-- `CoreBootstrapOptions` 的成员全部必选，不出现 `?`。
+- `CoreBootstrapOptions` 除测试注入的 `openStandaloneChannel?`（缺省时经 daemon 启动配置里的
+  Core 可执行文件）外，成员全部必选，不出现其它 `?`。
 - 骨架函数的形参顺序固定：三个契约在前，宿主参数在后。
 
 **测试期**：`src/test/bootstrapWiring.test.ts`（`npm run test:all -- bootstrap-wiring`）断言：

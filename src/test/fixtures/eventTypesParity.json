@@ -1,5 +1,9 @@
 {
-  "comment": "事件词汇对照表：CoreEvent / CoreRequest / UiEvent 的全部 type。TS 侧 eventTypeParity.test.ts 以编译期穷尽检查锁联合类型、运行时对照本表；Rust 侧 main_tests 读同一张表，验证 dispatch_ui_event 对每个 UiEvent type 都有显式分支（不再静默兜底）。",
+  "comment": "事件词汇对照表：CoreEvent / CoreRequest / UiEvent / UiRequest 的全部 type。TS 侧 eventTypeParity.test.ts 以编译期穷尽检查锁联合类型、运行时对照本表；Rust 侧 main_tests 读同一张表做双向锁定：dispatch_ui_event 对每个 UiEvent type 都有显式分支（不再静默兜底）、dispatch_ui_request 对每个 UiRequest type 同理、coreEvents / coreRequests 的每个名字（除 coreEventsDivergences 登记的有意差异外）都有 Rust 侧 emit 位点，且 Rust 非 test 源码里所有 camelCase 的 \"type\" 字面量都必须登记进本表（rustTypeLiteralExemptions 豁免非事件字面量）。",
+  "coreEventsDivergences": [
+    "sessionCreated"
+  ],
+  "rustTypeLiteralExemptions": [],
   "coreEvents": [
     "coreReady",
     "message",

@@ -161,7 +161,7 @@ Standalone 宿主需要一条握手级事件确认会话已建立（`standaloneC
 | | 行为 |
 | --- | --- |
 | Embedded | `parseInt` / `parseFloat`：接受数字前缀 + 任意后缀（`parseInt('5abc') === 5`），非数字返回 `NaN`。 |
-| Standalone | `str::parse`：要求整串（允许首尾空白）都是合法数字，否则解析失败并走各自的兜底（Grep count 不计入、余额 `total_balance` 记 0、`HARNESS_MAX_OUTPUT_TOKENS` 视为未设置）。 |
+| Standalone | `str::parse`：要求整串（允许首尾空白）都是合法数字，否则解析失败并走各自的兜底（Grep count 不计入、余额 `total_balance` 记 0、`ENV_MAX_OUTPUT_TOKENS` 指向的环境变量视为未设置）。 |
 
 输入分别是 ripgrep `-c` 的输出（恒为 `<path>:<数字>`）、DeepSeek 余额接口的
 `total_balance`（恒为数字字符串）与环境变量，正常路径下不会出现「数字前缀 + 垃圾后缀」，
@@ -390,11 +390,12 @@ passthrough）与参数切分正则一致；命令在**出队时**解析
 末位（`assert_skill_tool_is_last` 守不变式），技能清单注入系统提示的环境段。
 有意保留的差异：
 
-- 内置 `spin` 命令只有 `design` 分支可用（UI 据此打开设计器）；`auto` / 其它分支依赖
-  Spin 引擎，当前返回一条说明消息。
 - 用户级技能目录统一走 `config::config_home()`（`USERPROFILE` 优先），与
   `settings.json` / `conversations/` 保持一致；Embedded 的 skills 走
   `process.env.HOME || process.env.USERPROFILE`（两者在真实宿主下通常同指一处）。
+- Standalone Core 不广播 `sessionCreated`（Embedded 在引擎构造、且已有标题时发；
+  Standalone 的新会话状态由宿主 `startNewConversation` 流程与
+  `conversationStarted` 的应答覆盖）。
 
 ### 3.18 子代理、后台 Bash 与其余已迁入能力
 

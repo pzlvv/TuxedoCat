@@ -261,7 +261,7 @@ async function run(): Promise<void> {
     });
     core.send({
       kind: 'uiEvent',
-      event: { type: 'conversationStarted', sessionId, workspacePath: workspace },
+      event: { type: 'conversationStarted', sessionId },
     });
     // 对齐 Embedded：`conversationStarted` 只登记工作目录（内存态），不建档、不广播。
     // `meta.json` / `.jsonl` 只在第一条消息持久化时创建。

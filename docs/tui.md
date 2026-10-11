@@ -301,7 +301,7 @@ pending 的事实都在 store，覆盖层只持导航类局部状态。
 | 协议 | 帧编解码 / 增量解码 / 坏行跳过 | `tui-rs/src/protocol_tests.rs` |
 | 配置 | 快照默认值 / 注册表匹配 / 模型身份校验 / mcp.json / 写入纪律（拒绝覆盖、键序保留） | `tui-rs/src/settings_tests.rs` |
 | store | 纯 reducer 表驱动：消息流 / 流式 / 去重 / 排队 / 工具卡片 / 配置回写 / 通知 / 本地动作 | `tui-rs/src/store_tests.rs` |
-| 译层 | 选择队列（投递 / 重投 / 覆盖收帧 / 释放收帧）+ 译层翻译 | `tui-rs/src/choices.rs` 内嵌 `mod tests`、`src/host.rs` 的纯函数 |
+| 译层 | 选择队列（投递 / 重投 / 覆盖收帧 / 释放收帧）+ 译层翻译 | `tui-rs/src/choices.rs` 内嵌 `mod tests`、`tui-rs/src/host.rs` 的纯函数 |
 | 渲染子集 | markdown 块与行内 / diff 着色折叠 / 编辑器状态机 | `markdown_tests.rs` / `diffview_tests.rs` / `composer_tests.rs` |
 | i18n / 产物定位 | notice 键翻译 / 占位符 / 候选顺序 / 失败指引 | `i18n_tests.rs` / `core_root_tests.rs` |
 | 安装程序 e2e | 构建 → 自解压 → 布局 / 指纹 / 幂等 → 内嵌 Core `--version` → 安装目录里的 TUI 启动守卫 | `e2e/tui/installer.spec.ts`（project `tui-installer`） |

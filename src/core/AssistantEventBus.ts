@@ -79,12 +79,7 @@ export type CoreEvent =
   | { type: 'queryBegin'; sessionId: string }
   | { type: 'queryEnd'; sessionId: string }
   | { type: 'titleChanged'; sessionId: string; title: string }
-  | {
-      type: 'sessionCreated';
-      sessionId: string;
-      /** 子代理会话的父会话；普通新会话为 null */
-      parentSessionId: string | null;
-    }
+  | { type: 'sessionCreated'; sessionId: string }
   /** 对话列表（磁盘元数据）发生变化：落盘 / 改名 / 删除 / 新建 */
   | { type: 'conversationListChanged' }
   /**
@@ -253,14 +248,19 @@ export type UiEvent =
       thinkingMode?: 'off' | 'low' | 'high' | 'max';
       model?: ModelRef;
       webSearch?: boolean;
-      /** 该会话的工作目录（多工作目录宿主按会话解析后带上） */
+      /**
+       * 宿主当前**活动**工作目录。会话工作目录的正规登记入口是
+       * `sessionWorkspaceAssigned`（Embedded 唯一读取方也是它）；本字段只服务
+       * Standalone 的重启恢复——Core 重启后会话工作目录表丢失，消息进入时由
+       * Core 据此兜底登记（`engine.rs` 的 `on_user_message`，仅在该会话尚未登记时生效）。
+       */
       workspacePath?: string;
       /**
-       * 是否由 core 在「消息真正进入 LLM 上下文」时补发用户气泡。
-       *
-       * 仅 Embedded 下的命令消息（`/xxx`）置 true：宿主不再乐观回显，
-       * 由 QueryEngine 在出队解析后决定是否补发（内置命令就地执行、不落盘，
-       * 因此不应留下一个不会被持久化的气泡）。Standalone 无此机制，恒为 false。
+       * 宿主本次不做乐观回显（会话忙碌排队、或 `/` 开头的命令消息）时置 true：
+       * 由 core 在消息真正进入 LLM 上下文时补发用户气泡；未置位时宿主已乐观回显，
+       * core 不再补发。Embedded 走 `QueryEngine.notifyUserMessageToUI`
+       * （`Integration.submitMessage` 判定），Standalone 走 `engine::emit_user_message_to_ui`，
+       * 两侧同语义。
        */
       deferEcho?: boolean;
     }
@@ -290,10 +290,11 @@ export type UiEvent =
   /**
    * 新会话建立。
    *
-   * `workspacePath` 是该会话归属的工作目录（多工作目录宿主按会话解析后带上）；
-   * 缺省时 core 回退到活动工作目录。
+   * 只携带 `sessionId`：会话归属的工作目录由宿主先经 `sessionWorkspaceAssigned`
+   * 登记（`WebviewMessageHandler.handleStartNewConversation` 先登记再发本事件），
+   * core 按会话解析，不从本事件读取。Standalone Core 不发本事件（见 docs/core-parity.md）。
    */
-  | { type: 'conversationStarted'; sessionId: string; workspacePath?: string }
+  | { type: 'conversationStarted'; sessionId: string }
   | { type: 'conversationOpened'; sessionId: string }
   /**
    * 会话被关闭：释放该会话的运行时内存，磁盘数据不动。

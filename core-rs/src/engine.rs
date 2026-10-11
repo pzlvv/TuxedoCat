@@ -1386,14 +1386,19 @@ impl Core {
         };
         let session_id = session_id.to_string();
 
-        // 登记会话工作目录（宿主随消息带上；多工作目录宿主按会话解析）
-        if let Some(project) = payload.get("workspacePath").and_then(Value::as_str) {
-            let project = config::normalize_workspace(project);
-            config::set_session_workspace(&session_id, Some(project.clone()));
-            let state = self.session(&session_id);
-            let mut state = state.lock().unwrap();
-            if state.project.is_none() {
-                state.project = Some(project);
+        // 快照兜底：Core 重启后会话工作目录表（内存态）丢失，宿主随消息带的活动
+        // 工作目录据此恢复登记。仅在该会话**尚未登记**时生效——正规登记入口是
+        // `sessionWorkspaceAssigned`（一份事实一个写入点），不在这里覆盖既有登记
+        // （活动目录未必是该会话归属的目录）。
+        if config::session_workspace(&session_id).is_none() {
+            if let Some(project) = payload.get("workspacePath").and_then(Value::as_str) {
+                let project = config::normalize_workspace(project);
+                config::set_session_workspace(&session_id, Some(project.clone()));
+                let state = self.session(&session_id);
+                let mut state = state.lock().unwrap();
+                if state.project.is_none() {
+                    state.project = Some(project);
+                }
             }
         }
 

@@ -1,5 +1,8 @@
-# 文档一致性守卫：docsLint 的输入不止 markdown——事件表对照 AssistantEventBus 的类型联合，
-# 代码注释里的章节引用也参与校验，因此不做 paths 过滤：只改 .ts / .rs 注释的 PR 同样要跑。
+# 文档一致性守卫 + 全量测试。docsLint 的输入不止 markdown——事件表对照
+# AssistantEventBus 的类型联合，代码注释里的章节引用也参与校验，因此不做
+# paths 过滤：只改 .ts / .rs 注释的 PR 同样要跑。tests job 把 check-types /
+# lint / 全部测试 / Rust 测试搬进 CI：AGENTS.md 第 5 节「两套 Core 同步改」
+# 靠它强制，不靠本地纪律。
 name: docs
 
 on:
@@ -16,3 +19,26 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:all -- docs-lint
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      # musl 目标的 ring（C / 汇编）需要 musl-gcc（build-core.mjs 的 crossToolchainEnv
+      # 在 Linux 宿主上不注入 zig，直接用系统 cc）
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # 先产出 Linux Core 产物：coreEventParity.test.ts 是真实二进制的端到端对等测试，
+      # 产物缺失会静默 skip——CI 上必须真的跑（AGENTS.md 第 5 节 parity 锁）
+      - run: npm run build:core:linux-x64
+      - run: npm run check-types
+      - run: npm run lint
+      - run: npm run test:all
+      - run: npm run test:core

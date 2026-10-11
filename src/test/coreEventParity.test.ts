@@ -41,12 +41,14 @@ import { makeTempDir } from './helpers/fixtures';
 import { resolveSettingsSnapshot, type SettingsSnapshot } from '../core/settingsSnapshot';
 
 const REPO_ROOT = path.resolve(__dirname, '../../..');
+/** 产物目录按**当前平台**解析（非 win32 用 x64）：CI（ubuntu）先 `npm run build:core:linux-x64`
+ * 产出 x64-linux 产物后本测试真实运行，不再「非 win32 永远 skip」。 */
 const CORE_BINARY = path.join(
   REPO_ROOT,
   'resources',
   CORE_RESOURCE_DIR,
-  corePlatformDir('win32', 'x64')!,
-  coreBinaryFileName('win32'),
+  corePlatformDir(process.platform, 'x64')!,
+  coreBinaryFileName(process.platform),
 );
 
 /** 一轮 queryEnd 之后的收集窗口：吸收异步到达的事件（MCP 同步等） */
@@ -78,7 +80,7 @@ function scriptedUiEvents(
       mcpServers: [],
     },
     { type: 'sessionWorkspaceAssigned', sessionId, workspacePath },
-    { type: 'conversationStarted', sessionId, workspacePath },
+    { type: 'conversationStarted', sessionId },
     { type: 'conversationOpened', sessionId },
     {
       type: 'userMessageSubmitted',
@@ -360,7 +362,7 @@ async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<boo
 async function run(): Promise<void> {
   const { check, finish } = createChecker();
 
-  if (process.platform !== 'win32' || !fs.existsSync(CORE_BINARY)) {
+  if (!fs.existsSync(CORE_BINARY)) {
     console.log(`skip: ${path.relative(REPO_ROOT, CORE_BINARY)} missing (run npm run build:core)`);
     finish();
     return;
@@ -434,6 +436,21 @@ async function run(): Promise<void> {
         };
         const mine = last.states?.find((state) => state.sessionId === scenario.sessionId);
         check(`${scenario.name}：${label} 收尾时会话回到空闲`, mine?.idle === true);
+      }
+
+      // 3.5 代表性扁平事件的载荷字段名两侧一致：Standalone 的事件载荷是裸
+      // serde_json::Value（frame.rs 自述过渡态），字段名漂移会直接穿透 type 序列
+      // 比较——这里挑载荷全为扁平必填字段的事件锁字段名；某侧没产生该事件时跳过。
+      for (const eventType of ['toolCall', 'toolResult', 'notice', 'commandDispatched', 'aiBegin', 'aiEnd'] as const) {
+        const mine = embeddedEvents.find((event) => event.type === eventType);
+        const theirs = standaloneEvents.find((event) => event.type === eventType);
+        if (!mine || !theirs) continue;
+        const keys = (event: CoreEvent): string =>
+          Object.keys(event).filter((key) => key !== 'type').sort().join(',');
+        check(
+          `${scenario.name}：${eventType} 载荷字段名一致（${keys(mine)}）`,
+          keys(mine) === keys(theirs),
+        );
       }
 
       // 4. 摘掉快照事件后两边的交错仍然不同：这是已知且有意保留的差异

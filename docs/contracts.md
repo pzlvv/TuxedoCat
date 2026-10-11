@@ -54,7 +54,7 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | 入参显式 | 可选语义用 `null`，而不是省略参数 |
 | 返回值统一 `Promise<void>` | 不用 `void \| Promise<void>` 联合 |
 
-成员清单（全部必选，共 21 个：`UIHost` 自身 17 个 + 继承 `WorkspaceProvider` 的 4 个）：
+成员清单（全部必选，共 20 个：`UIHost` 自身 16 个 + 继承 `WorkspaceProvider` 的 4 个）：
 
 | 分组 | 成员 | 语义 |
 | --- | --- | --- |
@@ -140,7 +140,7 @@ Electron 里是 `BrowserWindow`。它有自己的生命周期（打开 → 复�
 与 `UIHost` 分开的理由：
 
 1. 独立面板 / 窗口，生命周期与消息协议都与对话 webview 无关；
-2. `UIHost` 已承载 17 个成员，再混进 Spin 专属成员会让「宿主能力」失真；
+2. `UIHost` 已承载 16 个成员，再混进 Spin 专属成员会让「宿主能力」失真；
 3. 拆出后 Spin 的整块（HTML 生成 + 导出 + 面板管理）可整体替换或搬走。
 
 接口只有两个成员：
@@ -377,7 +377,7 @@ import core 的只读函数与类型（[DEVELOPMENT.md 第 2 章](../DEVELOPMENT
 | 环节 | 做法 |
 | --- | --- |
 | 打开 | `suspendWakeShortcut(win.webContents)` 注销当前全局快捷键（与窗口销毁时的兜底恢复配对），避免用户按下的组合键先触发唤醒 |
-| 按键捕获 | 主进程 `before-input-event` → `electron/shortcut.acceleratorFromKeyboardEvent`（页面只负责显示） |
+| 按键捕获 | 主进程 `before-input-event` → `electron/shortcut.ts` 的 `acceleratorFromKeyboardEvent`（页面只负责显示） |
 | 保存 | 写宿主本地偏好（`writeWakeShortcut`），写完后关闭窗口；关闭回调按最新偏好重新注册 |
 | 取消 / Esc | 直接关闭；关闭后按最新偏好恢复注册 |
 | 注册入口 | `registerWakeShortcutValue(shortcut)`：先注销旧值再注册新值，失败静默忽略 |
@@ -402,7 +402,7 @@ import core 的只读函数与类型（[DEVELOPMENT.md 第 2 章](../DEVELOPMENT
 | `host: UIHost` | 宿主能力（投递消息、日志、打开文件…）；子模块不 import `vscode` / `electron`（[DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)规则 3、4） |
 | 回调 | 回推 webview 或通知 `WebViewUI`：`postToWebview` / `postConversationLoaded` / `setTitle` / `closePreview` … |
 
-`WebviewMessageHandler` 另有一个**构造后回填**的窄端口 `uiPort`（只声明自己用到的 4 个成员）。
+`WebviewMessageHandler` 另有一个**构造后回填**的窄端口 `uiPort`（只声明自己用到的 7 个成员）。
 回填是因为 `WebViewUI` 只能在构造期间把自己交出去；端口内容是 `WebViewUiPort`（第 9 节）的子集。
 
 子模块之间只有一条依赖：`ToolHandler` 与 `WebviewMessageHandler` 都持有**同一个**
@@ -490,7 +490,7 @@ UI 侧提前弹框会造成双重确认。
 | `setActiveSessionId(sessionId)` | 宿主切换前台会话时同步「当前活跃会话」。多视图宿主（Electron）切到**已打开**的视图不会再走 `loadConversation` / `startNewConversation`，必须由宿主在活动视图变化时显式同步（`ChatViewManager.show` → `onActiveSessionChanged` → `WebViewUI.setActiveSessionId`）；否则 `trackedActiveSessionId` 停在旧视图，按会话解析的数据（project skills / MCP 启用列表）会取到别的标签页的工作目录 |
 | `dropTrackedSession(sessionId)` | 会话关闭 / 删除时清掉 `trackedActiveSessionId`（若指向该会话） |
 | `emitUiEvent(event)` | `requireEventBus().emitToCore(event)`——**改 core 状态的唯一出口** |
-| `buildMessageHandlers()` | 41 个消息类型 → 处理器（见下）；其中 `sendMessage` 是用户消息的唯一入口（`handleUserMessage`），wire 类型不区分「新消息 / 排队消息」：是否登记排队项由宿主按 core 的会话运行时快照决定（第 9 节 `onQueuedMessage`） |
+| `buildMessageHandlers()` | 42 个消息类型 → 处理器（见下）；其中 `sendMessage` 是用户消息的唯一入口（`handleUserMessage`），wire 类型不区分「新消息 / 排队消息」：是否登记排队项由宿主按 core 的会话运行时快照决定（第 9 节 `onQueuedMessage`） |
 
 **消息分发表**（`buildMessageHandlers`，按代码注释分区）：
 
@@ -500,9 +500,9 @@ UI 侧提前弹框会造成双重确认。
 | 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestSkills` / `requestConversationSpaces` / `requestMcpServers` / `requestSessionRuntimeStates` / `getConversations` |
 | 环境查询 | `requestTheme`（→ `host.onThemeChanged(ctx.sender)`）/ `requestContextLimit`（→ `pushContextLimit(ctx.sender, modelRefOf(msg.provider, msg.model))`：读该模型身份（provider + model）的上下文配置，经 `sendToWebviewView` / `sendToWebview` 回包 `contextLimitUpdated`；`ref` 为 `undefined` 时按 active provider 的默认模型算，视图加载初始化推送即走这条）；`pushContextLimit` 也是 `WebViewUI` 的对外方法，供宿主在视图加载时主动推同一份内容 |
 | 请求响应 / 显示 | `respondUserChoice` / `expandCompact` / `rollbackEdit`（→ `UiEvent`） |
-| 消息 / 压缩 / 中止 | `sendMessage`（→ `handleUserMessage`：登记排队项 / 乐观回显后发 `UiEvent.userMessageSubmitted`）/ `abort` / `discardQueuedMessage` / `requestCompress`（后三者 → `UiEvent`） |
+| 消息 / 压缩 / 中止 | `sendMessage`（→ `handleUserMessage`：登记排队项 / 乐观回显后发 `UiEvent.userMessageSubmitted`）/ `abort` / `backgroundBashTool`（Bash 卡片「转后台」，→ `UiEvent.bashBackgroundRequested`）/ `discardQueuedMessage` / `requestCompress`（除 `sendMessage` 外均 → `UiEvent`） |
 | 会话生命周期 | `loadConversation` / `startNewConversation` / `deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace`（`deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace` → `UiEvent`；多视图宿主的 `deleteConversation` 由宿主消息入口先接管，见第 5 节「载体 / 视图层动作」） |
-| 会话配置 | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpEnabled`（全部 → `UiEvent`，core 处理后广播 `sessionConfigChanged` 回推多端）。`setModel` 的 wire 载荷是扁平的 `model` + `provider`，在 handler 入口组装成 `ModelRef`（provider 空串非法：记录日志并忽略，不回退到其它 provider） |
+| 会话配置 | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpEnabled` / `setMcpEnabledList`（全部 → `UiEvent`，core 处理后广播 `sessionConfigChanged` 回推多端）。`setModel` 的 wire 载荷是扁平的 `model` + `provider`，在 handler 入口组装成 `ModelRef`（provider 空串非法：记录日志并忽略，不回退到其它 provider） |
 | 其它 | `saveLLMConfig` / `requestSmartNaming` |
 
 前两个分区留在本模块内（只操作宿主或只读 core）；其余要么发 `UiEvent`，要么是**显示类**动作。
@@ -540,6 +540,7 @@ UI 侧提前弹框会造成双重确认。
 | `refreshConversations()` | 重新读取并分发对话列表 |
 | `getSessionRuntimeStatesSnapshot()` | 最近一次会话运行时状态快照（`ConversationManager` 缓存）；Standalone 下进程内 `sessionRuntime` 不被写入，拉取必须走这份缓存 |
 | `isQueryActive(sessionId)` | 该会话**自己的**查询是否在跑（`SessionUiState.isQueryActive`）；`conversationLoaded.hasActiveQuery` 的来源，**不用** `sessionRuntime.idle`（后者含后台子代理 / 后台 Bash / 压缩，见`docs/webview-ui.md`） |
+| `isSessionOpen(sessionId)` | 该会话的聊天视图是否 open（多视图：有聊天视图；单视图：open == active）；经 `bootstrapCore` 注入给 `UserChoiceManager` 的 `isSessionOpenInternal`，core `UserChoiceQueue` 借它决定立即投递还是保留 pending（第 6 节） |
 | `noteSessionActivity(sessionId)` | 记录会话活动（重置空闲计时；空闲回收只在 VS Code 生效，见第 4 节） |
 | `showLLMConfigPanel(trigger, sessionId)` | 打开 LLM 配置面板：core 给配置事实，`WebViewUI` 组装 `showLLMConfig` 并投递（`trigger` 见下） |
 

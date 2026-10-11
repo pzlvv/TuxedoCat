@@ -136,7 +136,7 @@ closeConversation(sessionId: string): void {
 | `onToolCall` | `sessionUi.markToolPhase` → `toolHandler.onToolCall` |
 | `onToolResult` | `sessionUi.endToolPhase` → `toolHandler.onToolResult` |
 | `onToolArgsUpdated` | 投递 `updateToolArgs` |
-| `onToolProgress` | `pushToolProgress`（`queryActivity`；单次发送上限 `STREAM_CAP_CHARS` = 100k 字符，超出只保留尾部） |
+| `onToolProgress` | `pushToolProgress`（`queryActivity`；推送内容已由工具层按统一上限 4K（前 2K + 后 2K）裁剪，宿主原样转发，不再二次截断） |
 | `onAIBegin` | `markThinking` + `setThinkingAnimation(true)` → 投递 `aiBegin` |
 | `onAIEnd` | `markIdle` + `setThinkingAnimation(false)` → 投递 `aiEnd` → `fetchAndSendBalance`（每轮 LLM 调用后刷新余额） |
 | `onMessagesReplaced` | 投递 `messagesReplaced`（整批替换 webview 消息区）；触发方是 `compact` 的归档重放（`replayMessagesToUI`），宿主侧的 `expandCompact` 直接投递同一条 wire message、不经过本 handler |
@@ -162,7 +162,7 @@ closeConversation(sessionId: string): void {
 | `onConversationListChanged` | `conversations.refresh()`；「立即还是节流、推给哪些界面」由 `ConversationManager` 决定，core 不参与 |
 | `onSessionRuntimeChanged` | `conversations.updateSessionStates(states)`；**只读**，不写回 `sessionUi`（[DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)） |
 | `onSpinDesignDataChanged` | `spinDesign.refresh()`（设计器不在 `UIHost` 上） |
-| `onHighlightLanguagesUsed` | `host.updateSettingsJson(highlightLanguagesMutator(languages))`——core 只报告事实，字段名 / 去重 / 上限在 core，写盘在宿主 |
+| `onHighlightLanguagesUsed` | `host.updateSettingsJson(highlightLanguagesMutator(languages))`——core 只报告事实（不去重，同一种语言会重复上报），去重 / 上限 / 字段名在宿主的 `highlightLanguagesMutator`，写盘也在宿主 |
 
 **投递路径**：所有出站消息都经 `postToWebview(sessionId, message)` 补 `sessionId` 后交
 `host.sendToWebview`。`postConversationLoaded` 例外——它经 `buildConversationLoadedPayload`
@@ -179,7 +179,7 @@ thinking / text / tool 动画）。`ConversationLoadedExtra.hasActiveQuery` 由
 
 | 表 | 数量 | 内容 |
 | --- | --- | --- |
-| `onCoreEvents` | 25 | 10 个渲染（`message` / `streamMessage` / `streamEnd` / `toolCall` / `toolResult` / `toolArgsUpdated` / `toolProgress` / `aiBegin` / `aiEnd` / `messagesReplaced`）+ 15 个控制面与事实通知（`coreReady` / `queryBegin` / `queryEnd` / `titleChanged` / `sessionCreated` / `conversationListChanged` / `sessionRuntimeChanged` / `spinDesignDataChanged` / `highlightLanguagesUsed` / `compactBegin` / `compactEnd` / `commandDispatched` / `sessionConfigChanged` / `log` / `notice`） |
+| `onCoreEvents` | 26 | 10 个渲染（`message` / `streamMessage` / `streamEnd` / `toolCall` / `toolResult` / `toolArgsUpdated` / `toolProgress` / `aiBegin` / `aiEnd` / `messagesReplaced`）+ 16 个控制面与事实通知（`coreReady` / `queryBegin` / `queryEnd` / `titleChanged` / `sessionCreated` / `conversationListChanged` / `conversationSpaceCleared` / `sessionRuntimeChanged` / `spinDesignDataChanged` / `highlightLanguagesUsed` / `compactBegin` / `compactEnd` / `commandDispatched` / `sessionConfigChanged` / `log` / `notice`） |
 | `onCoreRequests` | 2 | `toolPermissionRequested` → `requestToolPermission`；`userChoice` → `requestUserChoice` |
 
 映射表把 `CoreEvent` 的 `e` 拆成位置参数后转调同名 handler，handler 自身保持

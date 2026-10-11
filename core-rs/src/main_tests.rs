@@ -220,8 +220,9 @@ fn conversation_started_only_registers_the_workspace() {
 
     dispatch(
         &harness,
-        json!({ "type": "conversationStarted", "sessionId": "s1", "workspacePath": workspace }),
+        json!({ "type": "sessionWorkspaceAssigned", "sessionId": "s1", "workspacePath": workspace }),
     );
+    dispatch(&harness, json!({ "type": "conversationStarted", "sessionId": "s1" }));
 
     // 不落盘
     assert!(history::load_metadata("s1", &workspace).is_none(), "不应预建 meta.json");
@@ -252,8 +253,9 @@ fn conversation_started_keeps_existing_metadata() {
 
     dispatch(
         &harness,
-        json!({ "type": "conversationStarted", "sessionId": "s1", "workspacePath": workspace }),
+        json!({ "type": "sessionWorkspaceAssigned", "sessionId": "s1", "workspacePath": workspace }),
     );
+    dispatch(&harness, json!({ "type": "conversationStarted", "sessionId": "s1" }));
 
     assert_eq!(history::load_metadata("s1", &workspace).unwrap()["title"], "老标题");
     assert!(harness.sink.event_of("sessionCreated").is_none());
@@ -261,15 +263,11 @@ fn conversation_started_keeps_existing_metadata() {
 
 #[test]
 fn conversation_started_without_a_session_id_is_ignored() {
-    let sandbox = Sandbox::new("main-conversation-started-no-id");
+    let _sandbox = Sandbox::new("main-conversation-started-no-id");
     let harness = EngineHarness::allow_all();
     dispatch(
         &harness,
-        json!({
-            "type": "conversationStarted",
-            "sessionId": "",
-            "workspacePath": sandbox.workspace.to_string_lossy()
-        }),
+        json!({ "type": "conversationStarted", "sessionId": "" }),
     );
     assert!(harness.sink.events().is_empty());
 }
@@ -1233,10 +1231,10 @@ fn session_workspace_assigned_registers_and_clears() {
     assert_eq!(config::session_workspace("s1"), None);
 }
 
-/// 事件词汇对照： 的 match 必须给  里的
+/// 事件词汇对照：`dispatch_ui_event` 的 match 必须给 `eventTypesParity.json` 里的
 /// 每个 UiEvent type 一个显式分支（TS 侧 eventTypeParity.test.ts 以编译期穷尽检查
 /// 锁 AssistantEventBus 的联合类型；Rust 侧事件载荷是裸 Value，只能在分发点锁
-/// 「每个 type 都有分支」，防止联合新增成员后 Rust 侧静默落入  兜底）。
+/// 「每个 type 都有分支」，防止联合新增成员后 Rust 侧静默落入 `_` 兜底）。
 /// 局限：这是对源码文本的断言——match 重写为别的分发结构时，本测试要跟着改。
 #[test]
 fn dispatch_ui_event_covers_every_ui_event_type() {
@@ -1256,6 +1254,147 @@ fn dispatch_ui_event_covers_every_ui_event_type() {
         assert!(
             dispatch_src.contains(&branch),
             "dispatch_ui_event 缺少 UiEvent 分支: {t}"
+        );
+    }
+}
+
+// ==================== eventTypesParity.json 的 Rust 侧双向锁定 ====================
+//
+// 此前本文件只消费 uiEvents 一张数组，coreEvents / coreRequests / uiRequests 在 Rust
+// 侧没有任何消费者——Rust 侧新增 / 删除事件时 fixture 不会红（「半张表」）。这里补齐：
+//
+// - 正向：coreEvents / coreRequests 的每个名字（除 `coreEventsDivergences` 登记的
+//   有意差异外，见 docs/core-parity.md）都必须作为 `"type": "<name>"` 出现在非测试
+//   Rust 源码里（emit 位点）；
+// - 反向：非测试 Rust 源码里所有 camelCase 的 `"type": "…"` 字面量都必须登记进
+//   fixture 的某个数组（或 `rustTypeLiteralExemptions`）——Rust 新增 emit 而忘了登记
+//   词汇表时在此失败。LLM / MCP 协议的 snake_case 与全小写字面量天然不满足 camelCase
+//   判定，无需豁免；
+// - uiRequests：`dispatch_ui_request` 对每个名字都有显式分支（与 dispatch_ui_event 同型）。
+//
+// 局限（与 dispatch_ui_event 的断言同理）：这是对源码文本的断言，不校验载荷；分发结构
+// 重写时本节测试要跟着改。
+
+/// 非 `*_tests.rs` 的 Rust 源码（文件路径 → 内容）。
+/// cargo test 的工作目录是 crate 根（core-rs/），故相对 `src/` 遍历。
+fn non_test_rs_sources() -> Vec<(String, String)> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("read core-rs/src") {
+            // entry.path() 已含目录前缀（dir 是相对路径时它也是相对路径），不能再 join 一次
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && !path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .ends_with("_tests.rs")
+            {
+                let content = std::fs::read_to_string(&path).expect("read source file");
+                out.push((path.to_string_lossy().to_string(), content));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(std::path::Path::new("src"), &mut out);
+    assert!(!out.is_empty(), "src/ 下没有找到 Rust 源码（工作目录应为 crate 根）");
+    out
+}
+
+/// camelCase 判定：首字母小写且其余部分含大写字母。LLM / MCP 协议的 snake_case
+/// （`tool_result`）与全小写字面量（`text` / `image`）不满足，天然被排除。
+fn is_camel_case_type(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_lowercase() => chars.any(|c| c.is_ascii_uppercase()),
+        _ => false,
+    }
+}
+
+fn event_parity_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../src/test/fixtures/eventTypesParity.json"))
+        .expect("parse eventTypesParity.json")
+}
+
+#[test]
+fn fixture_core_events_and_requests_exist_in_rust_emit_sites() {
+    let fixture = event_parity_fixture();
+    let divergences: std::collections::HashSet<String> = fixture["coreEventsDivergences"]
+        .as_array()
+        .expect("coreEventsDivergences")
+        .iter()
+        .map(|v| v.as_str().expect("type string").to_string())
+        .collect();
+    let sources = non_test_rs_sources();
+
+    for group in ["coreEvents", "coreRequests"] {
+        for name in fixture[group].as_array().expect(group) {
+            let t = name.as_str().expect("type string");
+            if divergences.contains(t) {
+                continue; // 有意差异（docs/core-parity.md）：Standalone 不广播
+            }
+            let needle = format!("\"type\": \"{t}\"");
+            assert!(
+                sources.iter().any(|(_, content)| content.contains(&needle)),
+                "{group} 的 `{t}` 在 Rust 非 test 源码里没有 emit 位点（`\"type\": \"{t}\"`）；\
+                 若为有意差异，登记进 coreEventsDivergences 并在 docs/core-parity.md 写明理由"
+            );
+        }
+    }
+}
+
+#[test]
+fn rust_type_literals_are_registered_in_the_fixture() {
+    let fixture = event_parity_fixture();
+    let mut known: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for group in ["coreEvents", "coreRequests", "uiEvents", "uiRequests"] {
+        for name in fixture[group].as_array().expect(group) {
+            known.insert(name.as_str().expect("type string").to_string());
+        }
+    }
+    for exemption in fixture["rustTypeLiteralExemptions"]
+        .as_array()
+        .expect("rustTypeLiteralExemptions")
+    {
+        known.insert(exemption.as_str().expect("type string").to_string());
+    }
+
+    for (file, content) in non_test_rs_sources() {
+        let mut rest = content.as_str();
+        while let Some(at) = rest.find("\"type\": \"") {
+            rest = &rest[at + "\"type\": \"".len()..];
+            let end = rest.find('"').expect("unterminated type literal");
+            let t = &rest[..end];
+            if is_camel_case_type(t) && !known.contains(t) {
+                panic!(
+                    "{file} 里的 \"type\": \"{t}\" 未登记进 eventTypesParity.json——\
+                     Rust 侧新增了 CoreEvent / CoreRequest 而事件词汇表没跟上"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn dispatch_ui_request_covers_every_ui_request_type() {
+    let fixture = event_parity_fixture();
+    let src = include_str!("main.rs");
+    let start = src.find("fn dispatch_ui_request").expect("dispatch_ui_request in main.rs");
+    // 取到下一个顶级声明为止（列位 0 的 `fn ` / `pub fn ` / `const `；属性行不影响定位）
+    let offset = src[start + 1..]
+        .find("\nfn ")
+        .or_else(|| src[start + 1..].find("\npub fn "))
+        .or_else(|| src[start + 1..].find("\nconst "))
+        .unwrap_or(src.len() - start - 1);
+    let dispatch_src = &src[start..start + 1 + offset];
+
+    for request_type in fixture["uiRequests"].as_array().expect("uiRequests") {
+        let t = request_type.as_str().expect("type string");
+        let branch = format!("\"{t}\" =>");
+        assert!(
+            dispatch_src.contains(&branch),
+            "dispatch_ui_request 缺少 UiRequest 分支: {t}"
         );
     }
 }

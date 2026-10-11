@@ -1274,12 +1274,12 @@ export class QueryEngine {
     // 注意：不再提前创建会话文件（meta.json + .jsonl）。
     // meta.json 只在第一条消息持久化（appendMessage）时创建，避免没发消息就生成会话文件。
     if (this.sessionTitle) {
-      // 通知 UI 新会话已创建（如 webview 预初始化 session 状态）；
-      // 子代理会话带 parentSessionId，供 UI 展示树形结构与返回主对话按钮
+      // 通知 UI 新会话已创建（如 webview 预初始化 session 状态）；子代理会话的
+      // 父子事实由 conversationsData / sessionRuntimeStates 的 parentSessionId 承载，
+      // 不随本事件携带（本字段无读取方，见 DEVELOPMENT.md 第 4.1 节 #14）。
       emitToUi({
         type: 'sessionCreated',
         sessionId: this.sessionID,
-        parentSessionId: this.parentSessionId ?? null,
       });
     }
 

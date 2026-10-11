@@ -51,7 +51,7 @@
 | --- | --- |
 | 加载 / 打开对话 | `webviewMessageHandler.handleLoadConversation` |
 | 新建对话 | `webviewMessageHandler.handleStartNewConversation` |
-| 用户发送消息 | `webviewMessageHandler.handleSendMessage` |
+| 用户发送消息 | `webviewMessageHandler.handleUserMessage` |
 | 对话进入非空闲 | `ConversationManager.updateSessionStates` 的状态跃迁 |
 | 对话从非空闲回到空闲 | 同上（工作结束后从头计时） |
 | 对话处于前台 | 每次巡检（前台会话永不关闭，并持续刷新计时） |

@@ -234,9 +234,10 @@ pub fn dispatch(prompt: &str, context: &CommandContext) -> DispatchOutcome {
 
 /// 内置 `spin` 命令（对齐 `bundled/spin.ts`）。
 ///
-/// **迁移状态**：`/spin design` 分支（UI 打开设计器）已可用；`auto` / 其它分支
-/// 依赖 Spin 引擎（`spin/Engine.ts` 的 `detectProjectState` / `readSpinJson`、
-/// `spin/Loop.ts` 的 `spinLoop`），随 M6-198 一并接入。
+/// `design` 分支返回 `None`（UI 经 `commandDispatched` 打开设计器）；`auto` / 其它
+/// 分支由引擎注入的 `start_spin` 钩子在本线程跑完整个 Spin 主循环
+/// （`spin_host::run_spin_command` ↔ Embedded `skills/bundled/spin.ts`）。
+/// 钩子未注入（单测 / 未接线装配）时发 `notice` 提示不可用，不静默降级。
 pub fn spin_command_definition() -> BuiltinCommandDefinition {
     BuiltinCommandDefinition {
         name: "spin".to_string(),

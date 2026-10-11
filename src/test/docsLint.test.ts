@@ -19,6 +19,22 @@
  * 5. **ADR 完整性**：`docs/adr/` 编号连续且唯一、状态取值合法、被取代指向存在的文件。
  * 6. **术语禁别名**：`UIHost` / `UiEvent` 等固化术语命中别名清单即失败。
  * 7. **DEVELOPMENT.md 体积棘轮**：总行数 ≤ 棘轮值，只降不升；主动减体积后手动下调棘轮值。
+ * 8. **聚合数字不手写（扩界）**：`UIHost` / `WebViewUiPort` / uiPort 窄端口 / webview 消息
+ *    类型 / `onCoreEvents` 映射表的成员名与数量从代码提取，对照 `docs/contracts.md` /
+ *    `docs/webview-ui.md` 的宣称值——代码加了成员而文档数字没跟上时失败。
+ * 9. **文档路径存在性**：markdown 行内代码里 `src/` / `docs/` / `core-rs/` / `electron/` 等
+ *    前缀的仓库路径必须存在（行内代码整体不参与章节引用扫描，但路径是「指得到的东西」，
+ *    单独校验；含通配符 / 占位符的写法不在此列）。
+ * 10. **UiEvent 命名风格**：全小写驼峰、过去式、无 `on` 前缀、无命令式动词开头
+ *     （AGENTS.md 第 3 节；`AssistantEventBus.ts` 的联合逐成员检查）。
+ * 11. **CoreEvent 触发点列**：DEVELOPMENT.md 4.1 表的「core 侧触发点」列里反引号模块名
+ *     与真实 emit 位点（`src/core` 里 `emitToUi` 的所在文件）逐事件对照——重构挪动了
+ *     emit 位点而没改表时失败。 UiEvent（4.3，宿主侧发起）不在此列。
+ * 12. **契约可选成员冻结**：铁律 4.2 禁止 `?`；`AssistantEventBus.ts` 联合与结果映射里
+ *     现存的可选字段冻结于豁免清单，出现清单之外的可选字段即失败（新字段改用
+ *     `null` / 判别联合，或评审后显式扩清单）。
+ * 13. **常量引用存活**：文档行内代码里引用的全大写常量 / 环境变量名必须仍出现在代码里
+ *     （含 `src/config/project.json` 的键）——常量改名 / 删除而文档没跟上时失败。
  *
  * `tmp_*` 临时文件与 `docs/archive/` 冻结档案不参与校验；代码块（fenced / 行内反引号）不参与
  * 文档侧扫描——块内是示例与引用样本，不是文档结构的一部分。
@@ -216,6 +232,76 @@ const TERM_ALIASES: ReadonlyArray<readonly [string, RegExp]> = [
   ['WebViewUiPort', /\b(?:WebViewUIPort|WebviewUiPort)\b/],
   ['sessionRuntime', /\bSessionRuntime\b/],
 ];
+
+/**
+ * 取 marker 之后第一个 `{` 的配平块，收集其中的成员名（`name(` 方法 / `name:` 属性）。
+ * 用于把「接口 / 对象类型字面量有多少成员」从代码推导出来（AGENTS.md 第 0 节
+ * 「聚合数字不手写」），对照文档宣称值。括号深度计数跳过多行签名里的参数行
+ * （如 `postConversationLoaded(\n  sessionId: string, …)` 的参数不是成员）。
+ */
+function blockMemberNames(source: string, marker: RegExp): string[] {
+  const from = source.search(marker);
+  if (from < 0) throw new Error(`marker not found: ${marker}`);
+  const open = source.indexOf('{', from);
+  let depth = 0;
+  let end = open;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === '{') depth += 1;
+    else if (source[i] === '}') {
+      depth -= 1;
+      if (depth === 0) { end = i; break; }
+    }
+  }
+  const names: string[] = [];
+  let parenDepth = 0;
+  for (const rawLine of source.slice(open, end).split('\n')) {
+    const member = parenDepth === 0 ? /^\s+(?:readonly )?([a-zA-Z0-9_]+)\s*[(:;]/.exec(rawLine) : null;
+    if (member && member[1] !== undefined) names.push(member[1]);
+    for (const ch of rawLine) {
+      if (ch === '(') parenDepth += 1;
+      else if (ch === ')') parenDepth -= 1;
+    }
+  }
+  return names;
+}
+
+/**
+ * 扫 `src/core` 里全部 `emitToUi(` 调用（含多行字面量：事件名取调用点后 300 字符窗口内
+ * 的 `type: '...'`），产出 事件名 → 发出文件的模块名（相对 `src/core`、去 `.ts`），
+ * 以及全部模块名的集合（触发点列的「模块宇宙」）。
+ * 事件名不在调用点的（变量传播）抓不到——当前词汇表没有这种写法，出现时这里会
+ * 表现为「文档列了模块而代码抓不到」，按漂移暴露。
+ */
+function coreEmitModules(): { emits: Map<string, Set<string>>; universe: Set<string> } {
+  const emits = new Map<string, Set<string>>();
+  const universe = new Set<string>();
+  const coreDir = path.join(REPO_ROOT, 'src', 'core');
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (SKIP_DIRS.has(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (!entry.name.endsWith('.ts') || entry.name.includes('.test.') || entry.name === 'AssistantEventBus.ts') continue;
+      universe.add(path.relative(coreDir, full).split(path.sep).join('/').replace(/\.ts$/, ''));
+      const src = fs.readFileSync(full, 'utf-8');
+      let at = 0;
+      for (;;) {
+        const found = src.indexOf('emitToUi(', at);
+        if (found < 0) break;
+        const m = src.slice(found, found + 300).match(/type: '([a-zA-Z]+)'/);
+        if (m && m[1] !== undefined) {
+          const module = path.relative(coreDir, full).split(path.sep).join('/').replace(/\.ts$/, '');
+          const set = emits.get(m[1]) ?? new Set<string>();
+          set.add(module);
+          emits.set(m[1], set);
+        }
+        at = found + 'emitToUi('.length;
+      }
+    }
+  };
+  walk(coreDir);
+  return { emits, universe };
+}
 
 /** DEVELOPMENT.md 体积棘轮（AGENTS.md 第 0 节「控体积」的可执行形态）：只降不升，主动减体积后下调 */
 const DEV_LINE_RATCHET = 1237;
@@ -449,6 +535,238 @@ function main(): void {
     `DEVELOPMENT.md 行数 ${devLines} ≤ 棘轮 ${DEV_LINE_RATCHET}（只降不升）`,
     devLines <= DEV_LINE_RATCHET,
   );
+
+  // ---------- 8. 聚合数字不手写（扩界）：契约成员 / 消息类型 / 映射表 ----------
+  const contracts = readText('docs/contracts.md');
+  const webviewUi = readText('docs/webview-ui.md');
+  const uiHostSrc = readText('src/host/UIHost.ts');
+  const portsSrc = readText('src/host/ui/ports.ts');
+  const handlerSrc = readText('src/host/ui/webviewMessageHandler.ts');
+  const webViewUiSrc = readText('src/host/WebViewUI.ts');
+
+  const uiHostSelf = blockMemberNames(uiHostSrc, /export interface UIHost\b/);
+  const workspaceProvider = blockMemberNames(uiHostSrc, /export interface WorkspaceProvider\b/);
+  const hostClaim = /共 (\d+) 个：`UIHost` 自身 (\d+) 个 \+ 继承 `WorkspaceProvider` 的 (\d+) 个/.exec(contracts);
+  checker.check(
+    `contracts.md 的 UIHost 成员数（代码：自身 ${uiHostSelf.length} + 继承 ${workspaceProvider.length}）与宣称一致`,
+    hostClaim !== null
+    && Number(hostClaim[1]) === uiHostSelf.length + workspaceProvider.length
+    && Number(hostClaim[2]) === uiHostSelf.length
+    && Number(hostClaim[3]) === workspaceProvider.length,
+  );
+  const carriedClaim = /`UIHost` 已承载 (\d+) 个成员/.exec(contracts);
+  checker.check(
+    'contracts.md 第 2 节的 UIHost 成员数与代码一致',
+    carriedClaim !== null && Number(carriedClaim[1]) === uiHostSelf.length,
+  );
+
+  const uiPortMembers = blockMemberNames(handlerSrc, /uiPort\?: \{/);
+  const uiPortClaim = /窄端口 `uiPort`（只声明自己用到的 (\d+) 个成员）/.exec(contracts);
+  checker.check(
+    `contracts.md 的 uiPort 窄端口成员数与代码一致（实际 ${uiPortMembers.length}）`,
+    uiPortClaim !== null && Number(uiPortClaim[1]) === uiPortMembers.length,
+  );
+
+  const webViewUiPort = blockMemberNames(portsSrc, /export interface WebViewUiPort\b/);
+  const missingPort = webViewUiPort.filter((n) => !contracts.includes(`\`${n}(`));
+  checker.check(
+    `WebViewUiPort 全部 ${webViewUiPort.length} 个成员名都在 contracts.md 出现`,
+    missingPort.length === 0,
+  );
+  for (const n of missingPort) {
+    console.log(`     缺失: ${n}`);
+  }
+
+  const entryCount = (handlerSrc.match(/entry\('/g) ?? []).length;
+  const msgClaim = /(\d+) 个消息类型/.exec(contracts);
+  checker.check(
+    `contracts.md 的 webview 消息类型数与 buildMessageHandlers 一致（实际 ${entryCount}）`,
+    msgClaim !== null && Number(msgClaim[1]) === entryCount,
+  );
+
+  const coreHandlerKeys = blockMemberNames(webViewUiSrc, /private buildCoreEventHandlers/);
+  const onCoreEventsClaim = /\| `onCoreEvents` \| (\d+) \|/.exec(webviewUi);
+  checker.check(
+    `webview-ui.md 的 onCoreEvents 数量与 WebViewUI 映射表一致（实际 ${coreHandlerKeys.length}）`,
+    onCoreEventsClaim !== null && Number(onCoreEventsClaim[1]) === coreHandlerKeys.length,
+  );
+  const renderClaim = /(\d+) 个渲染（/.exec(webviewUi);
+  const controlClaim = /(\d+) 个控制面与事实通知（/.exec(webviewUi);
+  checker.check(
+    'webview-ui.md 渲染 + 控制面分区数之和与映射表总数一致',
+    renderClaim !== null && controlClaim !== null
+    && Number(renderClaim[1]) + Number(controlClaim[1]) === coreHandlerKeys.length,
+  );
+  const eventsRow = webviewUi.split('\n').find((l) => l.includes('`onCoreEvents` |')) ?? '';
+  const listedEvents = new Set(
+    [...eventsRow.matchAll(/`([a-zA-Z]+)`/g)].map((m) => m[1]).filter((t) => t !== 'onCoreEvents'),
+  );
+  const keySet = new Set(coreHandlerKeys);
+  const unlisted = coreHandlerKeys.filter((k) => !listedEvents.has(k));
+  const phantom = [...listedEvents].filter((t) => !keySet.has(t));
+  checker.check(
+    `onCoreEvents 名单双向一致（缺 ${unlisted.length} / 多 ${phantom.length}）`,
+    unlisted.length === 0 && phantom.length === 0,
+  );
+  for (const k of unlisted) console.log(`     代码有、文档未列: ${k}`);
+  for (const t of phantom) console.log(`     文档列了、代码没有: ${t}`);
+
+  // ---------- 9. 行内代码里的仓库路径必须存在 ----------
+  const REPO_PATH_PREFIX = /^(?:src|docs|core-rs|electron|tui-rs|scripts|e2e|installer-rs|assets|resources)\//;
+  const brokenPaths: string[] = [];
+  for (const rel of mdFiles) {
+    // TODO.md 描述的是**计划**（如「新增 docs/guide/」），路径尚不存在是常态，不参与本检查
+    if (rel === 'TODO.md') continue;
+    const lines = readText(rel).split(/\r?\n/);
+    let inFence = false;
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i];
+      if (/^\s*(```|~~~)/.test(raw)) { inFence = !inFence; continue; }
+      if (inFence) continue;
+      // 链接的 href 已由第 2 项校验；这里只看行内代码里的裸路径
+      const linkRemoved = raw.replace(MD_LINK, ' ');
+      for (const m of linkRemoved.matchAll(/`([^`\n]+)`/g)) {
+        const token = m[1] ?? '';
+        if (!token.includes('/') || !REPO_PATH_PREFIX.test(token)) continue;
+        if (/[<>*\[\]\s]/.test(token) || token.includes('...')) continue; // 通配 / 占位符不是具体路径
+        // `path.rs::symbol`（测试名 / 导出符号）与 `path.md#锚点` 都只校验文件部分
+        const filePart = token.split('::')[0].split('#')[0].replace(/\/+$/, '');
+        if (filePart !== '' && !fs.existsSync(path.join(REPO_ROOT, filePart))) {
+          brokenPaths.push(`${rel}:${i + 1} 路径不存在：\`${token}\``);
+        }
+      }
+    }
+  }
+  checker.check(`行内代码里的仓库路径全部存在（失效 ${brokenPaths.length} 处）`, brokenPaths.length === 0);
+  for (const b of brokenPaths.slice(0, 20)) {
+    console.log(`     ${b}`);
+  }
+
+  // ---------- 10. UiEvent 命名风格（AGENTS.md 第 3 节） ----------
+  const COMMAND_VERB = /^(?:set|update|open|clear|refresh|toggle|show|hide|apply|reset|sync|init|register|send|push|mark|load|save|close|start|stop|begin)[A-Z]/;
+  const namingProblems = unionMemberNames(busSource, 'UiEvent')
+    .map((name) => {
+      if (!/^[a-z][a-zA-Z0-9]*$/.test(name)) return `${name}：不是全小写驼峰`;
+      if (/^on/.test(name)) return `${name}：带 on 前缀`;
+      if (COMMAND_VERB.test(name)) return `${name}：命令式动词开头（UiEvent 用过去式）`;
+      return null;
+    })
+    .filter((p): p is string => p !== null);
+  checker.check(`UiEvent 命名风格（违规 ${namingProblems.length} 处）`, namingProblems.length === 0);
+  for (const p of namingProblems) {
+    console.log(`     ${p}`);
+  }
+
+  // ---------- 11. CoreEvent 触发点列与真实 emit 位点对照 ----------
+  const { emits, universe } = coreEmitModules();
+  const ch41 = ch4.slice(ch4.indexOf('### 4.1'), ch4.indexOf('### 4.2'));
+  const triggerProblems: string[] = [];
+  let previousDocumented = new Set<string>();
+  for (const line of ch41.split('\n')) {
+    if (!/^\| \d+ \|/.test(line)) continue;
+    const cols = line.split('|');
+    const type = (cols[2] ?? '').trim().replace(/`/g, '');
+    const triggerCell = (cols[4] ?? '').trim();
+    // 触发点列的约定：模块名一律反引号包裹、形如 `Query` / `history/Conversation`；
+    // 括号里的散文说明（事件名、设置键、其它文档）不参与对照。判定按三档：
+    // 含 `/` 或大写开头且在模块宇宙里 → 模块；形状像模块但宇宙里没有 → 拼写漂移；
+    // 其余（小写开头的事件名 / 键名）→ 忽略。`同上` 沿用上一行的清单。
+    const classified = (token: string): 'module' | 'phantom' | 'ignore' => {
+      if (!/^[A-Za-z][A-Za-z0-9]*(\/[A-Za-z0-9]+)*$/.test(token)) return 'ignore';
+      if (token.includes('/') || /^[A-Z]/.test(token)) return universe.has(token) ? 'module' : 'phantom';
+      return universe.has(token) ? 'module' : 'ignore';
+    };
+    let documented: Set<string>;
+    let phantoms: string[];
+    if (triggerCell === '同上') {
+      documented = previousDocumented;
+      phantoms = [];
+    } else {
+      documented = new Set();
+      phantoms = [];
+      for (const m of triggerCell.matchAll(/`([^`]+)`/g)) {
+        const token = m[1];
+        if (token === undefined) continue;
+        const kind = classified(token);
+        if (kind === 'module') documented.add(token);
+        else if (kind === 'phantom') phantoms.push(token);
+      }
+    }
+    previousDocumented = documented;
+    const actual = emits.get(type) ?? new Set<string>();
+    const missing = [...actual].filter((m) => !documented.has(m)).sort();
+    if (missing.length > 0 || phantoms.length > 0) {
+      triggerProblems.push(
+        `#${type} 触发点列与 emit 位点不一致（缺 ${missing.join(' / ') || '—'}，写错 ${phantoms.join(' / ') || '—'}）`,
+      );
+    }
+  }
+  checker.check(`4.1 触发点列与真实 emit 位点一致（漂移 ${triggerProblems.length} 处）`, triggerProblems.length === 0);
+  for (const p of triggerProblems) {
+    console.log(`     ${p}`);
+  }
+
+  // ---------- 12. 契约可选成员冻结（铁律 4.2 的现状豁免清单） ----------
+  // 存量豁免（只减不增；新增可选成员必须改用 null / 判别联合，或评审后显式扩清单）：
+  // - `userMessageSubmitted`：images / filePath / fileSelectedLines / fileHidden /
+  //   agentMode / thinkingMode / model / webSearch / workspacePath / deferEcho
+  //   （宿主按 wire 组装，字段缺省即「本次消息没带」，与「值为 null」语义不同）；
+  // - `editRolledBack`：filePath（`input.file_path` 缺失时的兜底路径）；
+  // - `CoreRequestResultMap.userChoice`：reply（用户可写附言）；
+  // - `UiRequest`：conversationListRequested.workspacePath、balanceRequested /
+  //   mcpServersRequested / skillsRequested 的 sessionId（无会话上下文的请求不带）；
+  // - `images` 元素的 mediaType / width / height（dataUrl 自带类型与尺寸时的省写）。
+  const OPTIONAL_FIELD_ALLOWLIST = new Set([
+    'images', 'mediaType', 'width', 'height', 'filePath', 'fileSelectedLines', 'fileHidden',
+    'agentMode', 'thinkingMode', 'model', 'webSearch', 'workspacePath', 'deferEcho', 'reply',
+    'sessionId',
+  ]);
+  const optionalFieldHits = [...busSource.matchAll(/\b([a-zA-Z]+)\?:/g)]
+    .map((m) => m[1] ?? '')
+    .filter((name) => !OPTIONAL_FIELD_ALLOWLIST.has(name));
+  checker.check(
+    `契约可选成员冻结（清单外 ${optionalFieldHits.length} 处）`,
+    optionalFieldHits.length === 0,
+  );
+  for (const name of new Set(optionalFieldHits)) {
+    console.log(`     新增可选字段未走豁免清单: ${name}?`);
+  }
+
+  // ---------- 13. 常量引用存活 ----------
+  // 文档行内代码里引用的全大写名（常量 / 环境变量 / 工程配置键）必须仍出现在代码里：
+  // 常量改名 / 删除而文档没跟上时失败（STREAM_CAP_CHARS 就是这类漂移的实例）。
+  // 值不在此校验——文档里的值是给人读的散文（「2 小时」），逐字对照会破坏可读性。
+  const CAPS_TOKEN = /\b[A-Z][A-Z0-9_]{2,}\b/g;
+  const isCapsName = (token: string): boolean => /^[A-Z][A-Z0-9_]{2,}$/.test(token);
+  const codeUniverse = new Set<string>();
+  for (const rel of [...codeFiles, 'src/config/project.json']) {
+    for (const m of readText(rel).matchAll(CAPS_TOKEN)) {
+      if (m[0] !== undefined) codeUniverse.add(m[0]);
+    }
+  }
+  const missingConsts: string[] = [];
+  for (const rel of mdFiles) {
+    // TODO.md 描述的是尚未做的（如 TCP_NODELAY），引用不存在的名字是常态
+    if (rel === 'TODO.md') continue;
+    const lines = readText(rel).split(/\r?\n/);
+    let inFence = false;
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i];
+      if (/^\s*(```|~~~)/.test(raw)) { inFence = !inFence; continue; }
+      if (inFence) continue;
+      for (const m of raw.replace(MD_LINK, ' ').matchAll(/`([^`\n]+)`/g)) {
+        const token = m[1] ?? '';
+        if (!isCapsName(token)) continue;
+        if (!codeUniverse.has(token)) {
+          missingConsts.push(`${rel}:${i + 1} 引用的名字在代码里不存在：\`${token}\``);
+        }
+      }
+    }
+  }
+  checker.check(`文档引用的常量 / 环境变量名全部存活（失效 ${missingConsts.length} 处）`, missingConsts.length === 0);
+  for (const b of missingConsts.slice(0, 20)) {
+    console.log(`     ${b}`);
+  }
 
   checker.finish();
 }

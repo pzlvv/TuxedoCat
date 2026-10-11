@@ -747,15 +747,14 @@ fn clear_memory_sessions_of_space(core: &Arc<Core>, dir_name: &str) {
 /// `meta.json` / `.jsonl` 只在第一条消息持久化（`appendMessage`）时创建，
 /// 否则「点了新建但没发消息」会在磁盘上留下一个空对话并出现在列表里。
 /// 没有工作目录时 Embedded 直接返回（不报错），这里同样静默返回。
-fn start_conversation(core: &Arc<Core>, session_id: &str, event: &Value) {
+fn start_conversation(core: &Arc<Core>, session_id: &str, _event: &Value) {
     if session_id.is_empty() {
         return;
     }
-    let project = event
-        .get("workspacePath")
-        .and_then(Value::as_str)
-        .map(|value| value.to_string())
-        .or_else(|| config::project_root(session_id).ok())
+    // 会话工作目录的登记入口是 `sessionWorkspaceAssigned`（事件载荷不携带目录，
+    // 与 Embedded 的 `createEngine` 同口径：只按会话解析）。
+    let project = config::project_root(session_id)
+        .ok()
         .unwrap_or_default();
     if project.is_empty() {
         return;

@@ -328,8 +328,10 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 - 载荷字段名与 TypeScript 类型逐项一致（`camelCase` 原样）。
 - `CoreEvent` 的每个 `type` 在两种实现下语义一致（[DEVELOPMENT.md 第 4.1 节](../DEVELOPMENT.md#41-coreeventcore--ui单向)）。
 - `CoreRequest` 的两个请求（`toolPermissionRequested` / `userChoice`）由 Core 发起、UI 应答。
-- `UiRequest` 的四个请求（`conversationListRequested` / `smartNamingRequested` /
-  `balanceRequested` / `compactArchiveRequested`）由 UI 发起、Core 应答：
+- `UiRequest` 的九个请求（`conversationListRequested` / `smartNamingRequested` /
+  `balanceRequested` / `compactArchiveRequested` / `mcpServersRequested` /
+  `conversationSpacesRequested` / `flushSessionRequested` / `conversationLoadRequested` /
+  `skillsRequested`）由 UI 发起、Core 应答：
   宿主不直接读 core 的磁盘数据（第 10 节）。未知类型一律回 `ok:false` 的响应，
   不做静默降级。
 - 配置不走请求：Core 不读 `settings.json` / `mcp.json`，也不请求写配置；配置由 UI 经
@@ -361,15 +363,18 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 
 | 方向 | 帧 | 载荷 |
 | --- | --- | --- |
-| UI → Core | `hello` | `{ kind: 'hello', protocol: 1 }` |
+| UI → Core | `hello` | `{ kind: 'hello', protocol: 2 }` |
 | Core → UI | `ready` | `{ kind: 'ready' }` |
 | Core → UI | `event` | `{ kind: 'event', event: CoreEvent }` |
 | Core → UI | `request` | `{ kind: 'request', id: number, request: CoreRequest }` |
-| UI → Core | `response` | `{ kind: 'response', id: number, ok: true, result: … }` 或 `{ kind: 'response', id: number, ok: false, error: string }` |
+| Core → UI | `response` | `{ kind: 'response', id: number, ok: true, result: … }` 或 `{ kind: 'response', id: number, ok: false, error: string }`（应答 UI → Core 的 `request`） |
+| UI → Core | `request` | `{ kind: 'request', id: number, request: UiRequest }` |
+| UI → Core | `response` | 同上形状（应答 Core → UI 的 `request`） |
 | UI → Core | `uiEvent` | `{ kind: 'uiEvent', event: UiEvent }` |
 | UI → Core | `shutdown` | `{ kind: 'shutdown' }` |
 
-- `id` 由 Core 生成，在单个连接内唯一；`response` 回带同一个 `id`。
+- `request` 的 `id` 由**发起方**生成（Core 发 `CoreRequest`、UI 发 `UiRequest` 各自编号），
+  在单个连接内唯一；`response` 回带同一个 `id`。
 - 同一方向上的帧按写入顺序处理。
 
 ### 6.3 握手
@@ -479,7 +484,6 @@ Standalone Core 下，core 侧事实的归属与 [docs/core-ui-separation.md 第
 | 能力 | 表现 |
 | --- | --- |
 | Responses API 的内置 Web Search | `apiType='Responses'` 可用，但不下发内置 `web_search` 工具，模型不会自动联网搜索（搜索卡片事件 `web_search_call` 也未迁入） |
-| 内置 `spin` 命令 | 只有 `design` 分支可用（依赖 Spin 引擎），其余分支提示不可用 |
 
 缺口能力在 Core 侧表现为明确的提示消息或缺失，不做静默降级；有意保留的行为差异不在此列
 （见 `docs/core-parity.md`）。
@@ -592,7 +596,7 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | 工具与权限（真实产物） | `src/test/standaloneCoreTools.test.ts`、`standaloneCorePermission.test.ts` | `npm run test:all` |
 | 两种实现对等 | `src/test/permissionParity.test.ts` + `core-rs` 单测读同一份 fixture | `npm run test:all` |
 | 远程 daemon（真实 TCP） | `core-rs/src/remote_tests.rs`（服务端）、`src/test/remoteCoreDaemon.test.ts`（Host 侧） | `npm run test:core` / `npm run test:all` |
-| 真实宿主 | `src/test/suite/` | `npm test`（VS Code）/ Electron 手测 |
+| 真实宿主 | `src/test/vscodeHost/` | `npm test`（VS Code）/ Electron 手测 |
 
 ### 约定
 
