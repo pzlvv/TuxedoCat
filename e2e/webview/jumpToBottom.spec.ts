@@ -91,6 +91,24 @@ test('US-47 底部不显示；向上滚不触发；向下达标手势显示；�
   expect(Math.max(...durations)).toBeGreaterThan(0);
   expect(Math.max(...durations)).toBeLessThanOrEqual(0.2);
 
+  // z 序回归锁：按钮必须压过置顶吸附容器——user-msg-pin 常驻 zIndex 10 且消息容器
+  // 后于按钮绘制，同 z 序时落进按钮区域的用户消息会盖住按钮（遮挡缺陷）
+  const zOrder = await page.evaluate(() => {
+    const btn = document.querySelector('button[data-jump-to-bottom="true"]');
+    if (!btn) return null;
+    const pin = document.querySelector('.user-msg-pin');
+    const rect = btn.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    return {
+      btnZ: getComputedStyle(btn).zIndex,
+      pinZ: pin ? getComputedStyle(pin).zIndex : '0',
+      hitIsButton: hit instanceof Element && hit.closest('button[data-jump-to-bottom="true"]') !== null,
+    };
+  });
+  expect(zOrder).not.toBeNull();
+  expect(Number(zOrder!.btnZ)).toBeGreaterThan(Number(zOrder!.pinZ));
+  expect(zOrder!.hitIsButton).toBe(true);
+
   // 点击：回到底部（钉底判定）+ 按钮隐藏（自动跟随恢复）
   await jump.click();
   await expect(jump).toHaveAttribute('data-hidden', '');
@@ -180,4 +198,44 @@ test('US-47 滚动条拖动按下即隐藏且不恢复', async () => {
   await page.waitForTimeout(200);
   await expect(jump).toHaveAttribute('data-hidden', '');
   await expectAwayFromBottom(page);
+});
+
+test('US-47 向上滚动任意幅度立即隐藏；重新显示需新的达标手势', async () => {
+  const { page } = handle;
+  await setupTallConversation(page);
+  const jump = page.locator('button[data-jump-to-bottom="true"]');
+
+  // 达标手势先让按钮显示
+  await expect(async () => {
+    await page.mouse.move(640, 200);
+    await page.mouse.wheel(0, -800);
+    await page.mouse.wheel(0, -800);
+    await page.mouse.wheel(0, -800);
+    await page.mouse.wheel(0, 400);
+    await page.mouse.wheel(0, 400);
+    await expectAwayFromBottom(page, 800);
+    await expect(jump).not.toHaveAttribute('data-hidden');
+  }).toPass({ timeout: 20_000 });
+
+  // 向上滚动一点点（60px）：立即隐藏
+  await page.mouse.move(640, 200);
+  await page.mouse.wheel(0, -60);
+  await expect(jump).toHaveAttribute('data-hidden', '');
+
+  // 小幅下滚不复现（手势累计已被向上滚动清零）
+  await page.waitForTimeout(200);
+  await page.mouse.wheel(0, 80);
+  await page.waitForTimeout(150);
+  await expect(jump).toHaveAttribute('data-hidden', '');
+
+  // 新的达标手势重新显示：先上滚腾出空间再下滚（上滚同时会隐藏按钮，属达标前的准备），
+  // 重试每轮净余量 +400px，不会像纯下滚那样越试越贴近底部
+  await expect(async () => {
+    await page.mouse.move(640, 200);
+    await page.mouse.wheel(0, -1200);
+    await page.mouse.wheel(0, 400);
+    await page.mouse.wheel(0, 400);
+    await expectAwayFromBottom(page, 800);
+    await expect(jump).not.toHaveAttribute('data-hidden');
+  }).toPass({ timeout: 20_000 });
 });

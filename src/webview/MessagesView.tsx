@@ -1013,6 +1013,9 @@ function useAutoScroll(
   /** 滚动手势达标回调（docs/hosts/webview-ui.md 第 11 节）：消息区内一次向下滚动手势的
       累计滚动位移超过可视高度 1/3 且用户已滚离时触发；跳到底部按钮的唯一显示入口 */
   onWheelGestureThreshold?: () => void,
+  /** 向上滚动回调（docs/hosts/webview-ui.md 第 11 节）：检测到实际向上滚动位移（任意幅度）
+      且 1s 内有真实用户滚动输入时触发；跳到底部按钮的隐藏入口之一，手势累计同步清零 */
+  onUserScrollUp?: () => void,
 ) {
   const isAtBottomRef = useRef(true);
   /**
@@ -1207,6 +1210,14 @@ function useAutoScroll(
           profileLog(`[AutoScroll] scroll MARK userScrolledAway=true distance=${distanceFromBottom.toFixed(1)} scrollTop=${scrollTop} lastInputAge=${(performance.now() - lastUserScrollInputRef.current).toFixed(0)}ms`);
         }
       }
+      // 向上滚动即隐藏（docs/hosts/webview-ui.md 第 11 节）：任意幅度的向上位移都结束当前
+      // 显示——手势累计清零并通知消费方；以 1s 内有真实用户滚动输入为前提（与滚离置位
+      // 同口径，wheel/touch/keyboard/pointer 都会刷新输入时刻），布局收缩造成的 scrollTop
+      // 回退没有用户输入，不隐藏。
+      if (scrollTop < lastScrollTop && performance.now() - lastUserScrollInputRef.current < 1000) {
+        wheelGestureAccumRef.current = 0;
+        onUserScrollUp?.();
+      }
       // 滚动手势累计（docs/hosts/webview-ui.md 第 11 节）：手势窗口活跃且用户已滚离时，
       // 向下的实际滚动位移计入累计。用户已滚离时自动滚动全被抑制，此时的向下位移必为
       // 用户滚轮输入所致——流式跟随 / overflow-anchor 的程序化位移不会污染累计；
@@ -1237,7 +1248,7 @@ function useAutoScroll(
     return () => {
       container.removeEventListener('scroll', handleScroll);
     };
-  }, [containerRef, onAtBottomChange, onWheelGestureThreshold]);
+  }, [containerRef, onAtBottomChange, onWheelGestureThreshold, onUserScrollUp]);
 
   // ── ResizeObserver: fallback for multi-frame content rendering ─────
   // Observes the container itself — when any child content expands/contracts,
@@ -1922,7 +1933,10 @@ const MessagesView = memo(({
   const handleWheelGestureThreshold = useCallback(() => {
     setJumpVisible(true);
   }, []);
-  const { userScrolledAwayRef, scrollToBottom } = useAutoScroll(containerRef, isStreaming, hasRunningTools, forceScrollKey, userScrolledAwayRefProp, handleAtBottomChange, handleWheelGestureThreshold);
+  const handleUserScrollUp = useCallback(() => {
+    setJumpVisible(false);
+  }, []);
+  const { userScrolledAwayRef, scrollToBottom } = useAutoScroll(containerRef, isStreaming, hasRunningTools, forceScrollKey, userScrolledAwayRefProp, handleAtBottomChange, handleWheelGestureThreshold, handleUserScrollUp);
 
   // 滚动条拖动按下即隐藏（docs/hosts/webview-ui.md 第 11 节）：Chromium 把原生滚动条上的
   // 指针事件派发给滚动容器本身且 offsetX 落在滚动条槽（offsetX >= clientWidth），子元素上的
@@ -2266,10 +2280,12 @@ const MessagesView = memo(({
   return (
     <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
       {/* 跳到底部（docs/hosts/webview-ui.md 第 11 节）：一次向下滚动手势累计位移超过可视高度
-          1/3 且不在底部时从右下角淡入，点击回底并恢复自动跟随；滚动条拖动按下即隐藏。
-          常驻挂载 + opacity/pointer-events 过渡实现淡入淡出（条件渲染做不了淡出），隐藏态
-          不进 a11y 树、不可聚焦、不拦截下层点击；data-hidden 供 e2e 做确定性显隐断言
-          （opacity:0 在 Playwright 中仍算 visible）。纯定位操作，无未读信息。 */}
+          1/3 且不在底部时从右下角淡入，向上滚动（任意幅度）立即淡出，点击回底并恢复自动跟随；
+          滚动条拖动按下即隐藏。常驻挂载 + opacity/pointer-events 过渡实现淡入淡出（条件渲染
+          做不了淡出），隐藏态不进 a11y 树、不可聚焦、不拦截下层点击；data-hidden 供 e2e 做确定性
+          显隐断言（opacity:0 在 Playwright 中仍算 visible）。z 序 30：所有真实用户消息常驻
+          user-msg-pin 的 zIndex 10 且消息容器后于本按钮绘制，同 z 序会被落进按钮区域的消息
+          盖住（高于吸附容器 10 与置顶背景延伸条 20、低于加载遮罩 40）。纯定位操作，无未读信息。 */}
       {!isEmpty && (
         <button
           type="button"
@@ -2281,7 +2297,7 @@ const MessagesView = memo(({
             scrollToBottom(true);
             setJumpVisible(false);
           }}
-          className="absolute bottom-3 right-3 z-10 w-7 h-7 rounded-full flex items-center justify-center hover:brightness-110"
+          className="absolute bottom-3 right-3 z-30 w-7 h-7 rounded-full flex items-center justify-center hover:brightness-110"
           style={{
             backgroundColor: colors.bgSecondary,
             border: `1px solid ${colors.border}`,
