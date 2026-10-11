@@ -5,4 +5,7 @@
 [specs/README.md](specs/README.md)）。完成的项当场删除；里程碑与已完成工作的历史记录见
 `docs/archive/`。文档体系与「什么内容写到哪」见 `docs/README.md`。
 
-当前无未排期项。
+- **e2e 测试名 ↔ spec FR 编号双向对照**（docsLint 组）：e2e 用例名里引用的 `FR-nnn` 必须能解析到
+  活动 spec 或 `docs/features/` 的 FR 条目，spec 的每个 FR 至少被测试名或追溯矩阵行引用——防
+  「spec 重排编号后既有测试名引用悬空」（specs/003 收敛评审时发现 FR-007 与 FR-002/003 两套编号
+  分叉的实例）。验收判据：docsLint 新组上线，引用悬空即红。

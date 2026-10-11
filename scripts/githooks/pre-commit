@@ -1,0 +1,13 @@
+#!/bin/sh
+# spec 闸门（AGENTS.md 第 5 节）：功能性代码提交前，specs/ 必须已有改动规格。
+# 纯缺陷修复豁免：git commit --no-verify，并在提交信息注明豁免理由。
+staged=$(git diff --cached --name-only)
+code=$(printf '%s\n' "$staged" | grep -E '^(src|electron|e2e|core-rs|tui-rs|installer-rs)/')
+if [ -n "$code" ]; then
+  specDirs=$(find specs -mindepth 1 -maxdepth 1 -type d ! -name '_templates' 2>/dev/null)
+  if [ -z "$specDirs" ]; then
+    printf >&2 '\nspec 闸门：本次提交触及功能性代码（src/ electron/ e2e/ core-rs/ tui-rs/ installer-rs/），但 specs/ 下没有任何改动规格。\n\n  功能性改动：按 .tuxedo-cat/skills/spec/SKILL.md 起草 specs/<NNN>-<slug>/（三件套），评审放行后再提交。\n  纯缺陷修复：git commit --no-verify 提交，并在提交信息注明豁免理由。\n\n口径见 AGENTS.md 第 5 节。\n'
+    exit 1
+  fi
+fi
+exit 0

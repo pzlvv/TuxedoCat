@@ -114,6 +114,8 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
 - **spec 闸门（进入实施的第一步）**：功能性改动（新增 US / FR / 用户可见行为变化）必须先有改动规格——
   `specs/` 存在对应目录且三件套齐备，按 `.tuxedo-cat/skills/spec/SKILL.md` 起草、产出即停等人评审，
   评审放行后按 `.tuxedo-cat/skills/implement/SKILL.md` 的前置闸门逐任务实施；没有 spec 不得直接改代码。
+  pre-commit 钩子（`scripts/githooks/pre-commit`，克隆后 `git config core.hooksPath scripts/githooks`
+  启用，LFS 钩子已随库迁移到同目录）拦功能性代码提交；纯缺陷修复 `--no-verify` 提交并注明豁免。
   纯缺陷修复豁免（需要留痕时用 defect.md 形态）。ZCode 会话的技能入口是 `.zcode/skills`
   （入库，与 `.tuxedo-cat/skills` 内容一致——本机是指向后者的 junction，git 穿透它提交
   同一份文件；编辑改 `.tuxedo-cat/skills`，提交时以 `.zcode/skills` 路径落库）。

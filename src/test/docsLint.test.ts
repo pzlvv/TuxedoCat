@@ -70,6 +70,10 @@
  *     `# 规格：` H1 与七节骨架（用户场景与验收标准 / 功能需求 / 行为规格 / 边界与错误路径 /
  *     非目标 / 对需求基线的影响 / 追溯矩阵），FR 唯一、AC 一行式回指 FR、追溯矩阵逐 FR 一行
  *     （as-built 特性规格的 spec 形态下限，正则口径与组 22 一致）。
+ * 25. **收敛态 spec 落点存活**：`status: 已收敛` 的 spec 不再豁免存在性检查（组 9 / 13 /
+ *     15 / 19 经 `FUTURE_WORK_DOC` 分档放行）——追溯矩阵测试落点、行内代码路径 / 常量 /
+ *     标识符 / npm 脚本必须在代码里真实存在（起草 / 待评审 / 实施中仍豁免，描述尚未落地的
+ *     改动）；/converge 在 status 改「已收敛」后、归档前跑 docsLint 验证。
  *
  * `tmp_*` 临时文件、`docs/archive/` 冻结档案与 `specs/_templates/` 模板不参与校验；
  * 代码块（fenced / 行内反引号）不参与
@@ -100,8 +104,18 @@ const SCAN_EXTENSIONS = new Set(['.ts', '.tsx', '.rs', '.md', '.mjs', '.cjs']);
  * 描述「尚未落地内容」的文档（specs/README.md 守卫口径）：TODO.md 与 specs/。
  * 存在性类检查（行内代码路径、常量 / 标识符、npm run 脚本名）豁免——spec 与待办引用
  * 的路径、脚本、常量尚未存在是常态；落地后由 docs/ 的全量对照兜底。
+ *
+ * 分档例外：status「已收敛」的 spec 已过 /converge 逐条核对，落点转为受检——矩阵
+ * 测试路径、标识符、脚本必须在代码里真实存在（起草 / 待评审 / 实施中仍豁免）。
  */
-const FUTURE_WORK_DOC = (rel: string): boolean => rel === 'TODO.md' || rel.startsWith('specs/');
+function convergedSpec(rel: string): boolean {
+  if (!/^specs\/\d+-[^/]+\/(?:spec|defect)\.md$/.test(rel)) return false;
+  const frontMatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readText(rel))?.[1] ?? '';
+  return (/^status:\s*(\S+)\s*$/m.exec(frontMatter)?.[1] ?? '') === '已收敛';
+}
+
+const FUTURE_WORK_DOC = (rel: string): boolean =>
+  rel === 'TODO.md' || (rel.startsWith('specs/') && !convergedSpec(rel));
 
 function readText(rel: string): string {
   return fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
@@ -847,7 +861,7 @@ function main(): void {
   const REPO_PATH_PREFIX = /^(?:src|docs|specs|core-rs|electron|tui-rs|scripts|e2e|installer-rs|assets|resources)\//;
   const brokenPaths: string[] = [];
   for (const rel of mdFiles) {
-    // TODO.md 与 specs/ 描述的是**计划**（如「新增 docs/guide/」），路径尚不存在是常态，不参与本检查
+    // TODO.md 与 specs/ 描述的是**计划**（如「新增 docs/guide/」），路径尚不存在是常态，不参与本检查；已收敛的 spec 例外（FUTURE_WORK_DOC 分档放行）
     if (FUTURE_WORK_DOC(rel)) continue;
     const lines = readText(rel).split(/\r?\n/);
     let inFence = false;
