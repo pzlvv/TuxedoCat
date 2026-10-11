@@ -24,6 +24,7 @@
  * 用法：
  *   node scripts/build-tui-installer.mjs                     # 宿主可构建的全部 4 目标
  *   node scripts/build-tui-installer.mjs --host              # 只构建当前宿主平台
+ *   node scripts/build-tui-installer.mjs --arch x64          # 只构建某架构的全部平台（x64 / arm64）
  *   node scripts/build-tui-installer.mjs --target <triple>   # 显式指定（不看 buildableOnHost）
  */
 
@@ -67,10 +68,12 @@ function buildableOnHost(target) {
 }
 
 function parseArgs(argv) {
-  const options = { target: null, host: false };
+  const options = { target: null, host: false, arch: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--target') {
       options.target = argv[++i];
+    } else if (argv[i] === '--arch') {
+      options.arch = argv[++i];
     } else if (argv[i] === '--host') {
       options.host = true;
     } else {
@@ -82,6 +85,11 @@ function parseArgs(argv) {
 }
 
 function resolveTargets(options) {
+  // 三种选定方式互斥：混用属于用法错误，不猜意图
+  if ((options.target ? 1 : 0) + (options.host ? 1 : 0) + (options.arch ? 1 : 0) > 1) {
+    console.error('[build-tui-installer] --target / --host / --arch 不能同时使用。');
+    process.exit(2);
+  }
   if (options.target) {
     const found = TARGETS.find((t) => t.triple === options.target);
     if (!found) {
@@ -90,8 +98,15 @@ function resolveTargets(options) {
     }
     return [found];
   }
-  let targets = TARGETS;
-  if (options.host) {
+  let targets;
+  if (options.arch) {
+    // 架构名取矩阵登记（x64 / arm64），不认识的直接报错，不静默产出空集
+    if (!TARGETS.some((t) => t.arch === options.arch)) {
+      console.error(`[build-tui-installer] 未知架构：${options.arch}（可用：${[...new Set(TARGETS.map((t) => t.arch))].join('、')}）`);
+      process.exit(2);
+    }
+    targets = TARGETS.filter((t) => t.arch === options.arch);
+  } else if (options.host) {
     const hostPlatform = process.platform;
     const hostArch = process.arch;
     const hostTarget = TARGETS.find((t) => t.platform === hostPlatform && t.arch === hostArch);
@@ -101,15 +116,16 @@ function resolveTargets(options) {
     }
     targets = [hostTarget];
   } else {
-    // 默认集合里构建不了的目标显式说明后跳过（不是静默降级）
-    for (const target of targets.filter((t) => !buildableOnHost(t))) {
-      console.log(
-        `[build-tui-installer] 跳过 ${target.triple}：当前宿主 ${process.platform} 构建不了它。` +
-        `要在本机产出，用 --target ${target.triple} 显式指定。`,
-      );
-    }
-    targets = targets.filter(buildableOnHost);
+    targets = TARGETS;
   }
+  // 默认集合与 --arch 过滤集合里构建不了的目标显式说明后跳过（不是静默降级）
+  for (const target of targets.filter((t) => !buildableOnHost(t))) {
+    console.log(
+      `[build-tui-installer] 跳过 ${target.triple}：当前宿主 ${process.platform} 构建不了它。` +
+      `要在本机产出，用 --target ${target.triple} 显式指定。`,
+    );
+  }
+  targets = targets.filter(buildableOnHost);
   if (targets.length === 0) {
     console.error('[build-tui-installer] 没有可构建的目标。');
     process.exit(2);

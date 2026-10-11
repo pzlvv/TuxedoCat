@@ -72,7 +72,7 @@ fn message_origin_falls_back_to_legacy_flags() {
 }
 
 /// `Edit` 的 `diffHunks` 分支：Embedded 预计算 hunk 数组，Standalone 有意改发
-/// `beforeContent` / `afterContent`（见 `DEVELOPMENT.md` 第 13.2.2 节），由 webview 回退计算。
+/// `beforeContent` / `afterContent`（见 `docs/core-parity.md` 第 2.2 节），由 webview 回退计算。
 #[test]
 fn edit_tool_use_sends_before_and_after_instead_of_diff_hunks() {
     let messages = vec![

@@ -1,5 +1,5 @@
 /**
- * UserChoiceManager.dropSession 单测（DEVELOPMENT.md 第 10.5 节）：
+ * UserChoiceManager.dropSession 单测（docs/webview-ui.md 第 9 节）：
  * - 清掉该会话挂起的用户选择回调，不影响其它会话
  * - diff 快照只在归属该会话时清空
  * - 清掉已弹出的选择时经总线解除「等待用户」状态

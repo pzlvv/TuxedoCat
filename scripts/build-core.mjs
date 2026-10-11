@@ -21,8 +21,7 @@
  * 这里按配置重命名后落位。
  *
  * 默认构建的是**打包要携带的全部目标**（`PACKAGE_DIRS`），不是只建当前平台：
- * 只建当前平台时，打包会静默带上一次构建的旧 Linux 产物（docs/standalone-core.md
- * 第 4.3 节）。矩阵里其余一项为预留：目标三元组已登记，装好对应 target 即可构建。
+ * 只建当前平台时，打包会静默带上一次构建的旧 Linux 产物（docs/standalone-core.md 第 4.3 节）。矩阵里其余一项为预留：目标三元组已登记，装好对应 target 即可构建。
  */
 
 import { spawnSync } from 'node:child_process';

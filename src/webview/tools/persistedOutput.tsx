@@ -5,7 +5,7 @@ import { t } from '../i18n';
 import { AnsiText } from '../ansi';
 
 /**
- * 解析持久化输出标签（Bash / RemoteBash / assistant 超长文本共用）
+ * 解析持久化输出标签（Bash / assistant 超长文本共用）
  * 格式:
  * <persisted-output>
  * Output too large (XXKB). Full output saved to: /path/to/file

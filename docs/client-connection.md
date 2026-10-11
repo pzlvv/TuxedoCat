@@ -7,8 +7,8 @@ Connection 生命周期、会话路由与就绪门禁都在本规格内确定。
 Core 与 UI 的分离形态见 `docs/core-ui-separation.md`；Standalone 进程形态见
 `docs/standalone-core.md`；Core 进程的 daemon 见 `docs/core-daemon.md`。
 
-参考 `DEVELOPMENT.md` 第 2 节（分层与依赖规则）、第 3 节（核心契约：AssistantEventBus）、
-第 8.6 节（宿主接线）、第 12.7 节（一份事实只有一个写入点）。
+参考 [DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)（分层与依赖规则）、[第 3 章](../DEVELOPMENT.md#3-核心契约assistanteventbus)（核心契约：AssistantEventBus）、
+[docs/host-matrix.md 第 6 节](host-matrix.md#6-宿主接线)（宿主接线）、[DEVELOPMENT.md 第 5.7 节](../DEVELOPMENT.md#57-一份事实只有一个写入点)（一份事实只有一个写入点）。
 
 ---
 
@@ -92,7 +92,7 @@ Connection 持有：
 
 - `(scheme, endpoint)` 决定 Connection 的目标；`path` 是 Core 的会话工作目录。
 - **Core 只见 `path`**：endpoint 与凭证不下发到 Core，也不进入配置快照。
-- `auth` 是判别联合，`kind` 唯一决定控制通道怎么建（`docs/core-daemon.md` 第 12 节）：
+- `auth` 是判别联合，`kind` 唯一决定控制通道怎么建（[docs/core-daemon.md 第 12 节](core-daemon.md#12-远程服务start--kill)）：
   只有 `{ kind: 'sshPassword' }`（`ssh`，口令只用于建 SSH 连接）。
 - `ssh` 下 `host` / `port` 是 SSH 的地址与端口，daemon 的端口由引导流程从远端状态文件
   取得，不写进引用。
@@ -105,7 +105,7 @@ Connection 持有：
 ### 4.1 与 Core 数据目录的关系
 
 - Core 的数据目录仍是 `~/<CONFIG_DIR_NAME>`，按 Core 实例一份，在 Core 所在机器上；
-  `getConfigHomeDir()` 的语义不变（`docs/core-ui-separation.md` 第 4 节）。
+  `getConfigHomeDir()` 的语义不变（[docs/core-ui-separation.md 第 4 节](core-ui-separation.md#4-配置归-ui)）。
 - 会话目录名仍由 `path` 派生（`encodeURIComponent`，超长走哈希），**不引入工作区身份**：
   不同机器上的相同路径落在各自 Core 的数据目录里，不会相撞。
 - `meta.json` 的 `project` 字段仍存 `path`。
@@ -113,9 +113,9 @@ Connection 持有：
 ### 4.2 远程打开流程（Electron）
 
 1. 菜单 / 标题栏加号选「打开远程工作区」，填 SSH 表单（IP / 端口 / 用户 / 口令）；
-   Host 自动部署并启动远端 Core（`docs/core-daemon.md` 第 12.8 节）；
+   Host 自动部署并启动远端 Core（[docs/core-daemon.md 第 12.8 节](core-daemon.md#128-ssh-接入ssh-scheme)）；
 2. Host 把输入收敛成 `endpoint`，**连接成功后立刻**列出远端主目录，弹出远端目录选择器
-   （`docs/core-daemon.md` 第 12.6 节）；
+   （[docs/core-daemon.md 第 12.6 节](core-daemon.md#126-远端目录选择)）；
 3. 选定目录后按 `remoteWorkspaceRef` 加入打开集合：`(scheme, endpoint, path)`；
 4. 打开该工作区时复用同一条控制通道发 `openWorkspace`。
 
@@ -179,7 +179,7 @@ Connection 持有：
   `CoreEvent.coreReady`。
 - `coreReady` 幂等：同一 Connection 内重复到达只生效一次。
 - **门禁在 Client 侧**：未就绪期间的 `UiEvent` 一律不发出。Core 侧对应地做硬断言：
-  就绪前收到任何 `UiEvent` 直接抛错，把顺序错误变成启动期错误（`DEVELOPMENT.md` 第 12 章）。
+  就绪前收到任何 `UiEvent` 直接抛错，把顺序错误变成启动期错误（[DEVELOPMENT.md 第 3.7 节](../DEVELOPMENT.md#37-总线边界语义启动窗口--无订阅者--请求丢失)）。
 - 一个 Connection 未就绪不影响其它 Connection。
 - 重连不在本规格范围内（第 10 节）。
 
@@ -190,7 +190,7 @@ Connection 持有：
 - 快照是 Client 级的：`SettingsStore` 读磁盘、补默认值、规范化后产出一份；每个 Connection
   就绪时推同一份。
 - Connection 建立时推送；快照变化时推给所有已就绪的 Connection。
-- 快照的字段、默认值来源、同步点清单与写盘规则见 `docs/core-ui-separation.md` 第 4 节。
+- 快照的字段、默认值来源、同步点清单与写盘规则见 [docs/core-ui-separation.md 第 4 节](core-ui-separation.md#4-配置归-ui)。
 
 ---
 
@@ -222,12 +222,12 @@ Connection 持有：
   （重连期间转建链中，同一 3 秒建链超时；成功撤销判定、补建 Connection 并切回对话视图）。
   活动项
   不因不可用而回退；可用的引用（含远程）交给 `Client.openWorkspace` 建立 Connection，
-  远程项按落盘凭证重新走一遍 SSH 引导（`docs/core-daemon.md` 第 12.8 节）。连不上不影响
+  远程项按落盘凭证重新走一遍 SSH 引导（[docs/core-daemon.md 第 12.8 节](core-daemon.md#128-ssh-接入ssh-scheme)）。连不上不影响
   其它工作区。
 - **最近列表**：本地项在读取时过滤掉已不存在的目录；远程项无法本地检查，原样保留。
   关闭标签页只从打开集合移除，不抹掉最近列表里的凭证。
 - 读取口径：形状不合法（缺 host、端口越界、认不出的凭证种类等）的项整项丢弃，
-  不猜、不补默认值（`DEVELOPMENT.md` 第 12 章）。
+  不猜、不补默认值（[DEVELOPMENT.md 第 5.1 节](../DEVELOPMENT.md#51-不过度-fallback)）。
 
 ---
 
@@ -235,7 +235,7 @@ Connection 持有：
 
 - 远程凭证的加密存储与钥匙串集成（当前是明文落盘，见第 9 节）；
 - SSH 的密钥 / agent 认证（当前只有口令）；
-- 远程 daemon 的部署由 Host 自动完成（`docs/core-daemon.md` 第 12.8 节）；
+- 远程 daemon 的部署由 Host 自动完成（[docs/core-daemon.md 第 12.8 节](core-daemon.md#128-ssh-接入ssh-scheme)）；
 - 断线重连（含远程工作区在重启后连不上时的自动重试）；
 - 多 Connection 的界面呈现（归属标识、切换入口）。
 

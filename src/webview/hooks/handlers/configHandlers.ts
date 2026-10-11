@@ -407,7 +407,7 @@ export function handleConfigLlmConfigSaved(
   }
 
   // 「当前对话的值」未到达（undefined = 等待态）的项不进确认框：undefined 不是值，
-  // 拿它比较会把「还没收到」误判成「与默认值不同」（第 12.7 节：webview 不猜值）
+  // 拿它比较会把「还没收到」误判成「与默认值不同」（`DEVELOPMENT.md` 第 5.7 节：webview 不猜值）
   if (msg.defaultsChanged.promptMode && msg.defaultPromptMode && prevProps.promptMode !== undefined && msg.defaultPromptMode !== prevProps.promptMode) {
     pending.changes.push({
       label: t('applyDefaults.changePromptMode'),

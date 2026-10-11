@@ -12,7 +12,7 @@ import type { z } from 'zod';
  *
  * 只用于 UI 展示（工具卡片 diff、宿主 diff）与 `_meta` 落盘，**不参与权限决策**：
  * core 在 auto / risk 模式下把 `ask` 自动放行为 `allow` 时，这些字段会原样保留，
- * 因此「有没有授权流程」不影响用户看到改动（DEVELOPMENT.md 第 7.2 节）。
+ * 因此「有没有授权流程」不影响用户看到改动（docs/contracts.md 第 7 节）。
  */
 export interface PermissionDiffPayload {
   beforeContent?: string | null;

@@ -4,7 +4,7 @@
  * 单 webview 宿主：对话列表只推 webview 的 conversationsData（子对话树）；
  * 会话运行时状态无消费者（webview 对话树从 queryBegin/queryEnd 自己维护）→ 空实现。
  *
- * 空闲会话回收也只在本实现里（DEVELOPMENT.md 第 5.4 节）：VS Code 只有一份 webview，
+ * 空闲会话回收也只在本实现里（docs/contracts.md 第 4 节）：VS Code 只有一份 webview，
  * 关闭空闲对话只是卸内存；Electron 每个对话一个独立视图，自动关闭等于关掉用户的窗口，
  * 因此不参与回收。
  *
@@ -46,7 +46,7 @@ export class SingleWebViewConversationManager extends ConversationManager {
   }
 
   /**
-   * 流 2：空实现——webview 的对话树从 queryBegin/queryEnd 自己维护（第 4.5 节）。
+   * 流 2：空实现——webview 的对话树从 queryBegin/queryEnd 自己维护（`DEVELOPMENT.md` 第 4.5 节）。
    *
    * 空闲计时顺带在这里刷新：会话从空闲进入工作（非 idle）或从工作回到空闲时，
    * 都视为一次活动（工作结束后才从头计时）。
@@ -93,7 +93,7 @@ export class SingleWebViewConversationManager extends ConversationManager {
 
   /**
    * 「当前激活会话」读取器（bootstrap 注入）。
-   * 「哪个会话在前台」是 UI 自己的状态（DEVELOPMENT.md 第 12.7 节），
+   * 「哪个会话在前台」是 UI 自己的状态（DEVELOPMENT.md 第 5.7 节），
    * 未注入时视为「无激活会话」。
    */
   private activeSessionProvider: (() => string | null | undefined) | null = null;

@@ -11,7 +11,7 @@
 //! 线程模型：
 //! - 主循环只做状态机与转发，输入事件经 `DaemonEvent` 通道汇聚；
 //! - 每个 Core 进程各有一个 stdout 读线程、stderr 诊断线程、stdin 写线程与退出监视
-//!   线程：单条 channel 的阻塞不会拖住其它 channel（规格第 7.4 节背压）；
+//!   线程：单条 channel 的阻塞不会拖住其它 channel（`docs/core-daemon.md` 第 7.4 节背压）；
 //! - 控制通道出站经 `FrameOutput`：远程实现是加锁串行的 socket 写，越过软水位只
 //!   记录诊断，不丢帧；
 //! - 一次 `run_daemon` 调用是一条控制连接的全部状态（channel 表、计数、grace、心跳），
@@ -544,8 +544,7 @@ pub fn run_daemon(
                         return ChannelExit::Stop;
                     }
                     HostToDaemonFrame::Ping => {
-                        // 心跳：回 pong（Host 据此武装沉默判定，`docs/core-daemon.md`
-                        // 第 12.5 节）；本帧的空闲顺延由上面「收到控制帧」统一处理
+                        // 心跳：回 pong（Host 据此武装沉默判定，`docs/core-daemon.md` 第 12.5 节）；本帧的空闲顺延由上面「收到控制帧」统一处理
                         send_to_host(out.as_ref(), &DaemonToHostFrame::Pong);
                     }
                 }

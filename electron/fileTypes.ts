@@ -4,8 +4,7 @@
  * 侧栏文件树的图标着色（`electron/sidebar/main.ts` 的 fileIconFor）与「双击打开」
  * 的分流（`electron/fileOpen.ts` 的 classifyFileForOpen）消费同一份扩展名集合：
  * 图标说是文本的，双击就进内置文本窗口（Markdown 是例外——着色与文本同类，
- * 双击进内置 Markdown 预览窗口）——一份事实一个写入点（DEVELOPMENT.md
- * 第 12 章规则 4），扩类型在这里加一处即可。
+ * 双击进内置 Markdown 预览窗口）——一份事实一个写入点（DEVELOPMENT.md 第 5 章规则 4），扩类型在这里加一处即可。
  */
 
 /** 图片扩展名（图标着色 + 内置图片查看器打开） */

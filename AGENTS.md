@@ -5,15 +5,27 @@
 
 ## 0. 文档要求
 
-适用对象：`DEVELOPMENT.md`、`docs/*.md`。
+适用对象：`DEVELOPMENT.md`、`docs/*.md`、`TODO.md`、`README.md`。文档分类法（哪类内容
+写到哪、命名与寿命判据）见 `docs/README.md`；本节只列写作规则。
 
 - **只写现状**：文档描述代码当前的实现（as-built），不写计划、不写演进过程。
 - **直接陈述应有形态**：文档只回答「应该是什么样」，不出现「变成」「现在是」「不再是」等描述修改过程的用语。
 - **与代码同步**：文档与代码不一致时，先修其中一方使二者一致。
-- **章节引用对应**：代码注释用 `DEVELOPMENT.md 第 N 节` 引用章节，章节编号与引用一一对应；改编号必须同步改注释。
-- **未定事项归位**：尚未确定的方向进 `DEVELOPMENT.md` 第 14 章（现状 + 待定），正文只保留已定的结论。
-- **规格分册**：`DEVELOPMENT.md` 承载架构总览与事件词汇表；主题性规格落到 `docs/<topic>.md`，如 `docs/core-ui-separation.md`、`docs/webview-facts.md`、`docs/standalone-core.md`。
-- **规格文件结构**：`# 规格：<主题>` → 开篇段落界定范围 → 交叉引用其他规格与 `DEVELOPMENT.md 第 N 节（标题）` → `## 1. 能力` 等分节。
+- **章节引用对应**：文档侧跨文档章节引用一律写成相对链接 + 标题锚点（如
+  `[第 5.9 节](../DEVELOPMENT.md#59-同一字段的默认值只有一处)`），不写「某文件第 N 节」的文字形式；
+  裸「第 N 节」只允许同文件自引用；区间引用（如「第 1–3 节」）两端都要落在本文件。锚点按
+  GitHub 的 slug 规则生成（小写、去标点、空格转 `-`、重名追加 `-1`，连续空格不折叠），与
+  VS Code 预览的规则有差异时以 GitHub 为准。代码注释保留文字形式，且必须点名目标文件
+  （`DEVELOPMENT.md 第 N 节` 或 `docs/<topic>.md 第 N 节`），禁止裸章节号；改章节标题 / 编号时
+  同步改引用。引用有效性与事件表由 `src/test/docsLint.test.ts` 校验。
+- **未定事项归位**：尚未确定的方向进 [DEVELOPMENT.md 第 6 章](DEVELOPMENT.md#6-待定事项)（现状 + 待定），正文只保留已定的结论。
+  设计决策（决策 + 背景 + 被否决的替代方案）进 `docs/adr/`，编号递增、只增不删。
+- **规格分册**：`DEVELOPMENT.md` 承载架构总览与事件词汇表；主题性规格落到 `docs/<topic>.md`，
+  如 `docs/contracts.md`、`docs/core-ui-separation.md`、`docs/standalone-core.md`。
+- **规格文件结构**：`# 规格：<主题>` → 开篇段落界定范围（不用引用块）→ 交叉引用其他规格与
+  `DEVELOPMENT.md 第 N 节（标题）` → `## 1. 能力` 等分节；300 行以上补内部目录。
+- **待办不存史**：`TODO.md` 只列未完成项，完成即删；已完成工作的溯源进 `docs/archive/`（冻结，不再更新）。
+- **聚合数字不手写**：事件数量等可从代码推导的聚合值以 `docsLint.test.ts` 对照类型联合校验为准，不手工维护。
 - **术语与代码一致**：owner、事件名、契约名、文件路径沿用代码中的写法。
 
 ## 1. 分层与依赖（评审必查）
@@ -42,7 +54,7 @@ core/  ←  host/  ←  宿主实现（src/VSCode* / electron/*）
 - 类内按注释分区，不为了「短」而拆类（如 `WebViewUI` 保持单类）。
 - 不用 `!` 空断言；必选性由构造时序保证。
 
-## 3. 命名约定（第 3.4 节）
+## 3. 命名约定（[DEVELOPMENT.md 第 3.4 节](DEVELOPMENT.md#34-命名约定)）
 
 | 前缀 | 语义 | 判据 |
 | --- | --- | --- |
@@ -53,7 +65,7 @@ core/  ←  host/  ←  宿主实现（src/VSCode* / electron/*）
 - `UiEvent` 用**过去式**（`modelChanged`），描述已发生的动作，不用命令式（不叫 `setModel`）。
 - 事件 `type` 全小写驼峰、不带 `on` 前缀；wire protocol 名称不受此约定约束。
 
-## 4. 架构铁律（第 12 章）
+## 4. 架构铁律（[DEVELOPMENT.md 第 5 章](DEVELOPMENT.md#5-架构原则)）
 
 1. **不过度 fallback**：接线缺失 / 配置漏了直接抛错，不静默降级。只有「设计允许的瞬时状态」才允许 no-op，且必须注释理由。
 2. **不让接口 / 参数可选**：契约成员全必选；「没有」用 `null`，「互斥结果」用判别联合，不用 `?`。
@@ -82,12 +94,16 @@ npm run electron      # 启动 Electron 调试
   改任一侧的 Core 行为都必须**同时**改另一侧；只改一侧视为未完成。对应关系如
   `CommandDispatcher` ↔ `commands.rs`、`PermissionPolicy` ↔ `permission.rs`、`QueryEngine` ↔ `engine.rs`。
 - 跨语言行为靠 **parity 测试 + `src/test/fixtures/*Parity.json` 对照表**锁死；改任一侧必须同步对照表与两侧实现。
+- **文档同步是硬约束**：改 Core 行为 / 契约 / 事件词汇表时，同步受影响的规格
+  （`DEVELOPMENT.md` 事件表、对应 `docs/<topic>.md`），`npm run test:all -- docs-lint` 必须绿。
+  新增 / 移动文档要更新 `docs/README.md` 的地图；守卫进 CI（`.github/workflows/docs.yml`，
+  每个 PR 跑 `npm run test:all -- docs-lint`，不过滤路径——docsLint 还扫描代码注释里的章节引用）。
 - 提交前至少跑 `npm run check-types && npm run lint`，涉及 core 的改动加 `npm run test:core`。
 
 ## 6. 常见改动清单
 
-**新增事件**（第 4.4 节）：定方向（CoreEvent / CoreRequest / UiEvent）→ 定名 → 定载荷（必填，可选语义用 `null` / 判别联合）→ 改三组联合类型 + `WebViewUI` 映射表（漏写会编译报错）→ `UiEvent` 补 core 侧订阅与 `WebviewMessageHandler` 翻译 → 更新文档表格。
+**新增事件**（[DEVELOPMENT.md 第 4.4 节](DEVELOPMENT.md#44-新增事件时的检查清单)）：定方向（CoreEvent / CoreRequest / UiEvent / UiRequest）→ 定名 → 定载荷（必填，可选语义用 `null` / 判别联合）→ 改四组联合类型 + `WebViewUI` 映射表（漏写会编译报错）→ `UiEvent` 补 core 侧订阅与 `WebviewMessageHandler` 翻译 → 更新文档表格（`docsLint.test.ts` 校验数量与名单）。
 
-**新增启动期注入点**（第 8.11 节）：core 定写入入口 + 读取入口（未写入抛错）→ 分类（宿主环境走同步 `UiEvent` 注册，进程内进 `bootstrapCore`）→ 登记 `CoreBootstrapOptions` 与 `bootstrapSnapshot` → 更新 `bootstrapWiring.test.ts` → 同步文档。
+**新增启动期注入点**（[docs/host-matrix.md 第 11 节](docs/host-matrix.md#11-新增启动期注入点检查清单)）：core 定写入入口 + 读取入口（未写入抛错）→ 分类（宿主环境走同步 `UiEvent` 注册，进程内进 `bootstrapCore`）→ 登记 `CoreBootstrapOptions` 与 `bootstrapSnapshot` → 更新 `bootstrapWiring.test.ts` → 同步文档。
 
 **加新宿主 / 新面板**：实现对应契约接口，不动共享代码；差异只经契约注入。

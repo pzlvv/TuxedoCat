@@ -1,7 +1,7 @@
 /**
- * CoreEvent 对等测试（TODO.md M8-318）。
+ * CoreEvent 对等测试。
  *
- * 规格第 9 节：**两种实现对同一串 `UiEvent` 产生同一串 `CoreEvent`**。
+ * `docs/standalone-core.md` 第 9 节：**两种实现对同一串 `UiEvent` 产生同一串 `CoreEvent`**。
  * 本文件把这条判据做成可执行断言：同一串脚本化的 `UiEvent`
  * （宿主环境 → 活动工作目录 → 新建会话 → 用户消息）分别喂给
  *
@@ -96,7 +96,7 @@ function scriptedUiEvents(
  *
  * `sessionRuntimeChanged` 是**全量快照**事件：载荷是「所有会话的 idle/waiting」，
  * 重复推送不携带新信息，且它的触发点是「内部 diff 后发现变化」——而两边看到
- * 「会话开始忙」的时机不同（见文件头与 `DEVELOPMENT.md` 第 13.3.4 节）。因此比较时把它
+ * 「会话开始忙」的时机不同（见文件头与 `docs/core-parity.md` 第 3.4 节）。因此比较时把它
  * 单独摘出来，只断言它存在、且最后的快照是空闲。
  */
 function contractTypes(events: CoreEvent[]): string[] {
@@ -438,7 +438,7 @@ async function run(): Promise<void> {
 
       // 4. 摘掉快照事件后两边的交错仍然不同：这是已知且有意保留的差异
       //    （Embedded 的落盘是 fire-and-forget 的 `startPersist`，Rust 在调 LLM
-      //    之前同步落盘，见 `DEVELOPMENT.md` 第 13.3.4 节）。这里显式打印，便于将来对照。
+      //    之前同步落盘，见 `docs/core-parity.md` 第 3.4 节）。这里显式打印，便于将来对照。
       console.log(
         `  · ${scenario.name} 摘掉快照后的序列\n     embedded  = ${JSON.stringify(orderedTypes(embeddedEvents))}\n     standalone= ${JSON.stringify(orderedTypes(standaloneEvents))}`,
       );

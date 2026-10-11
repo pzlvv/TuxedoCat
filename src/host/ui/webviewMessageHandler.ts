@@ -172,7 +172,7 @@ export class WebviewMessageHandler {
   private loadConversationSeq = 0;
   /**
    * UI 侧维护的「最近一次成功加载/新建」会话 ID（原 core 的 activeSessionId）。
-   * 「哪个会话在前台」是 UI 自己的状态，core 不感知（DEVELOPMENT.md 第 12.7 节）。
+   * 「哪个会话在前台」是 UI 自己的状态，core 不感知（DEVELOPMENT.md 第 5.7 节）。
    * 空闲巡检（宿主层 ConversationManager）需要时通过注入的 provider 查询。
    */
   private trackedActiveSessionId: string | undefined;
@@ -206,7 +206,7 @@ export class WebviewMessageHandler {
   /**
    * UI → core：把 webview 协议消息翻译成 UiEvent 发到总线。
    * 本 handler 只做「解析 + 翻译」：改 core 状态的请求发 UiEvent，
-   * 写 settings.json 经 UIHost（core 只读不写，见第 7.3 节）。
+   * 写 settings.json 经 UIHost（core 只读不写，见 `docs/contracts.md` 第 8 节）。
    */
   private emitUiEvent(event: UiEvent): Promise<void> {
     requireEventBus().emitToCore(event);
@@ -271,7 +271,7 @@ export class WebviewMessageHandler {
    */
   private buildMessageHandlers(): Map<string, (msg: WebviewToHostMessage, ctx: WebviewRequestContext) => Promise<void> | void> {
     return new Map<string, (msg: WebviewToHostMessage, ctx: WebviewRequestContext) => Promise<void> | void>([
-      // ===== 纯宿主操作（留在 handler 内直接调 UIHost，见第 4.3 节保留清单）=====
+      // ===== 纯宿主操作（留在 handler 内直接调 UIHost，见 `DEVELOPMENT.md` 第 4.3 节保留清单）=====
       entry('openFile', (msg) => this.handleOpenFile(msg)),
       entry('requestToolMeta', (msg) => this.handleRequestToolMeta(msg)),
       entry('showVirtualDocument', (msg) => this.handleShowVirtualDocument(msg)),
@@ -479,7 +479,7 @@ export class WebviewMessageHandler {
     // 能拿到的「忙碌」事实（`idle === false` 覆盖消费循环运行中与压缩中）。
     // 忙碌时该消息要等下一次 LLM 请求才进入上下文：不在发送侧乐观回显，改为在输入框
     // 上方登记排队项（`docs/user-message-pipeline.md` 第 5.1 节），并置 `deferEcho`
-    // 让 core 真正并入上下文时补发用户气泡（第 5.2 节，webview 按 uuid 清除排队项）。
+    // 让 core 真正并入上下文时补发用户气泡（`docs/user-message-pipeline.md` 第 5.2 节，webview 按 uuid 清除排队项）。
     const runtimeState = this.uiPort
       ?.getSessionRuntimeStatesSnapshot()
       .find((state) => state.sessionId === sessionId);
@@ -713,7 +713,7 @@ export class WebviewMessageHandler {
   private async handleGetConversations(): Promise<void> {
     this.log(`getConversations requested`);
     // 列表查询走 ConversationManager.refresh()（唯一产出 conversationsData 的地方，
-    // 见第 5.4 节）；端口未注入时回退直读（过渡形态）
+    // 见 `docs/contracts.md` 第 4 节）；端口未注入时回退直读（过渡形态）
     if (this.uiPort?.refreshConversations) {
       await this.uiPort.refreshConversations();
       return;
@@ -737,7 +737,7 @@ export class WebviewMessageHandler {
     const loadSeq = ++this.loadConversationSeq;
     const isStaleLoad = (): boolean => loadSeq !== this.loadConversationSeq;
 
-    // 「哪个会话在前台」是 UI 自己的状态（第 12.7 节）：不再读写 core 的
+    // 「哪个会话在前台」是 UI 自己的状态（`DEVELOPMENT.md` 第 5.7 节）：不再读写 core 的
     // activeSessionId 全局缓存，由本 handler 维护最近一次成功加载的会话。
     const oldSessionId = this.trackedActiveSessionId;
     if (oldSessionId && oldSessionId !== message.sessionId) {
@@ -864,7 +864,7 @@ export class WebviewMessageHandler {
     // webview 重新加载会话时据此恢复 thinking 动画。
     // 不能用 `sessionRuntime.idle === false`：那是「会话非空闲」口径，包含后台子代理 /
     // 后台 Bash / 压缩；后台子代理在等用户时父会话会 idle=false，重新加载父会话就会
-    // 误恢复出 thinking 动画（DEVELOPMENT.md 第 10 节）。
+    // 误恢复出 thinking 动画（docs/webview-ui.md）。
     const hasActiveQuery = this.uiPort?.isQueryActive(message.sessionId) ?? false;
 
     // 压缩归档是否存在由 core 判定（随会话加载结果一次返回）
@@ -939,7 +939,7 @@ export class WebviewMessageHandler {
 
   private async handleStartNewConversation(message: Extract<WebviewToHostMessage, { type: 'startNewConversation' }>): Promise<void> {
     const newSessionId = message.sessionId;
-    // 「哪个会话在前台」由 UI 自己维护（第 12.7 节）
+    // 「哪个会话在前台」由 UI 自己维护（`DEVELOPMENT.md` 第 5.7 节）
     this.trackedActiveSessionId = newSessionId;
     // 先登记该会话的工作目录：core 收到 conversationStarted 后要按会话解析目录建引擎
     this.ensureSessionWorkspace(newSessionId);
@@ -1468,7 +1468,7 @@ export class WebviewMessageHandler {
   public async handleOpenSpinDesign(): Promise<void> {
     this.log(`openSpinDesign`);
     try {
-      // Spin 设计器是独立 surface（第 5.2 节）：经由 WebViewUI 转发到 SpinDesign.open，
+      // Spin 设计器是独立 surface（`docs/contracts.md` 第 2 节）：经由 WebViewUI 转发到 SpinDesign.open，
       // 不再放回 UIHost
       if (this.uiPort?.openSpinDesign) {
         await this.uiPort.openSpinDesign();
@@ -1630,7 +1630,7 @@ export class WebviewMessageHandler {
           // 差量同步（连接 / 断开）由 core 在收到新快照后自己触发（M9 起
           // `hostEnvironmentProvided` 的默认列表变化 → core 重同步所有已注册会话），
           // 完成后 core 广播 `sessionConfigChanged(mcpEnabled)`，UI 据此刷新列表。
-          // 宿主不再调用 core 的状态变更函数（第 2 节规则 9）。
+          // 宿主不再调用 core 的状态变更函数（`DEVELOPMENT.md` 第 2 章规则 9）。
         } catch (err: any) {
           this.log(`[WebviewMessageHandler] Failed to refresh MCP after default change: ${err.message}`);
         }
@@ -1761,7 +1761,7 @@ export class WebviewMessageHandler {
       this.host.sendToWebview({
         type: 'llmConfigSaveError',
         // 只回传原始错误：用户可见文案（含「保存失败」前缀）由 webview 的 i18n 拼
-        // （host 侧不产用户可见文案，AGENTS 第 2 节「用户可见文本走 i18n」）
+        // （host 侧不产用户可见文案；用户可见文本走 i18n，见 AGENTS.md「代码风格」）
         error: err instanceof Error ? err.message : String(err),
       });
     }

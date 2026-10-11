@@ -1,11 +1,11 @@
 # 规格：TUI 安装程序
 
-> TUI 版的分发与 Core 部署程序：单个自解压可执行文件，内嵌 Standalone Core、
-> 捆绑 ripgrep 与 TUI 原生二进制（tui-rs），安装时提取到本机部署布局。TUI 自身不承担
-> 部署（`docs/tui.md` 第 2.4 节的产物定位是它的消费方）。
+本规格界定 TUI 版的分发与 Core 部署程序：单个自解压可执行文件，内嵌 Standalone Core、
+捆绑 ripgrep 与 TUI 原生二进制（tui-rs），安装时提取到本机部署布局。TUI 自身不承担
+部署（[docs/tui.md 第 2.4 节](tui.md#24-core-产物定位tui-rssrccore_rootrs)的产物定位是它的消费方）。
 
 本规格界定安装程序的能力、部署布局、CLI 与构建链路。Core 产物矩阵与指纹见
-`docs/standalone-core.md` 第 4 节；平台目标（Windows / Linux × x64 / arm64，Linux
+[docs/standalone-core.md 第 4 节](standalone-core.md#4-standalone-core-形态)；平台目标（Windows / Linux × x64 / arm64，Linux
 一律 musl）沿用 `scripts/build-core.mjs` 的 `TARGETS`。
 
 ---
@@ -88,9 +88,10 @@ npm run package:tui
 
 - `npm run package` 链尾挂 `package:tui`（ext → app → tui）。
 - 目标集合：无参 = 宿主可构建的全部四目标（msvc 目标只能在 Windows 宿主构建）；
-  `--host` = 只构建当前宿主平台；`--target <triple>` = 显式指定。
+  `--host` = 只构建当前宿主平台；`--arch <arch>` = 只构建某架构的全部平台
+  （x64 / arm64，同样受宿主可构建性过滤）；`--target <triple>` = 显式指定。
 - **工具链缺口显式跳过**（默认集合）：如 Windows ARM64 的 Core 交叉构建需要
-  zig 充当 clang（ring 的 C 部分，见 `docs/standalone-core.md` 第 4.3 节），缺失时跳过该目标并说明补救方式——打包机没装全工具链
+  zig 充当 clang（ring 的 C 部分，见 [docs/standalone-core.md 第 4.3 节](standalone-core.md#43-构建与目标平台)），缺失时跳过该目标并说明补救方式——打包机没装全工具链
   也能产出其余目标；显式 `--target` 时严格失败。一个都没产出则整脚本失败。
 - 安装器自身是纯 Rust（无 C 依赖）：Linux musl 交叉只需 rustup 的 rust-lld
   （`rustup target add <triple>`），不需要 zig。

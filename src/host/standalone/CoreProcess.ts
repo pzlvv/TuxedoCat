@@ -4,7 +4,7 @@
  * 职责：启动子进程、握手、帧收发、崩溃检测、退避重启、优雅关闭。
  * 不含任何 core 业务语义；事件的落地由 `StandaloneEventBus` 承担。
  *
- * 背压（第 6.5 节）：不丢帧、不合并帧。出站帧进有序队列，底层流接受数据时
+ * 背压（`docs/standalone-core.md` 第 6.5 节）：不丢帧、不合并帧。出站帧进有序队列，底层流接受数据时
  * 按序冲刷；`stdin.write()` 返回 false 时等 `drain`。队列越过软水位只记录诊断。
  */
 
@@ -26,7 +26,7 @@ export interface CoreExitInfo {
   expected: boolean;
 }
 
-/** 重启策略（第 7.1 节） */
+/** 重启策略（`docs/standalone-core.md` 第 7.1 节） */
 export interface RestartPolicy {
   /** 时间窗口内允许的重启次数 */
   maxAttempts: number;

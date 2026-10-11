@@ -1,0 +1,18 @@
+# 文档一致性守卫：docsLint 的输入不止 markdown——事件表对照 AssistantEventBus 的类型联合，
+# 代码注释里的章节引用也参与校验，因此不做 paths 过滤：只改 .ts / .rs 注释的 PR 同样要跑。
+name: docs
+
+on:
+  pull_request:
+
+jobs:
+  docs-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:all -- docs-lint

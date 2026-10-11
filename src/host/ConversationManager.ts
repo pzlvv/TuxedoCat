@@ -1,7 +1,7 @@
 /**
  * ConversationManager - 对话相关数据的宿主契约（第三个 UI surface）
  *
- * 分发两条互相独立的流（DEVELOPMENT.md 第 5.4 节）：
+ * 分发两条互相独立的流（docs/contracts.md 第 4 节）：
  *
  * |          | 流 1：对话列表                     | 流 2：会话运行时状态              |
  * | -------- | --------------------------------- | -------------------------------- |
@@ -46,7 +46,7 @@ export abstract class ConversationManager {
    * 顺带把结果存成该目录的快照（标记为干净）。
    *
    * 失败自持（只记日志）：调用方多是 fire-and-forget（`void refresh()`），而读列表
-   * 走的 UiRequest 会在连接关闭 / Core 重启窗口被总线就地拒绝（第 3.7 节）——这里若
+   * 走的 UiRequest 会在连接关闭 / Core 重启窗口被总线就地拒绝（`DEVELOPMENT.md` 第 3.7 节）——这里若
    * 把失败抛出去，就会变成未处理 rejection 按进程级错误崩掉宿主。刷新本来就是
    * 「尽力而为」：失败后下一次 conversationListChanged 会再触发。
    */
@@ -84,7 +84,7 @@ export abstract class ConversationManager {
    * 读对话列表（source of truth，两端一致）。
    *
    * Embedded 下直接读盘；Standalone 下经 `UiRequest.conversationListRequested`
-   * 向 Core 索取——宿主不直接读 core 的磁盘数据（规格第 10 节）。
+   * 向 Core 索取——宿主不直接读 core 的磁盘数据（`docs/standalone-core.md` 第 10 节）。
    */
   protected async load(): Promise<ConversationMetadata[]> {
     return loadConversationListForHost(this.host.getWorkspacePath() ?? undefined);

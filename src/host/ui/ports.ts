@@ -3,7 +3,7 @@
  *
  * 端口隔离：子模块（ToolHandler / UserChoiceManager / WebviewMessageHandler）
  * 拿不到 WebViewUI 的全量方法，只能通过这个窄接口回推 webview
- * （DEVELOPMENT.md 第 7 节）。
+ * （docs/contracts.md）。
  * 由 WebViewUI 实现；子模块只依赖这个窄接口。成员全部必选。
  */
 

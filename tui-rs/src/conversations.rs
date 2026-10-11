@@ -1,6 +1,6 @@
 //! 会话列表与运行时状态的宿主缓存（`src/host/ConversationManager.ts` 的单工作区移植）。
 //!
-//! 两条互相独立的流（DEVELOPMENT.md 第 5.4 节）：
+//! 两条互相独立的流（docs/contracts.md 第 4 节）：
 //! - 列表：磁盘元数据（title/messageCount），低频，由 `conversationListChanged` 触发
 //!   重读（经 `UiRequest.conversationListRequested`，宿主不直接读 core 的磁盘）；
 //! - 运行态：idle / waiting 等根事实，高频，由 `sessionRuntimeChanged` 全量推送。

@@ -8,7 +8,7 @@ import { createChecker, runTests } from './helpers/harness';
 /**
  * 系统电源阻断（`electron/powerSaveBlocker.ts`）。
  *
- * 覆盖点（DEVELOPMENT.md 第 8.6 节宿主接线）：
+ * 覆盖点（docs/host-matrix.md 第 6 节宿主接线）：
  * - 任一会话非 idle（含 waiting）→ 启动 `prevent-app-suspension` 阻断；
  * - 全部空闲 / 空快照 → 释放阻断；
  * - 全量快照高频重复推送时幂等：不重复 start、不误 stop；

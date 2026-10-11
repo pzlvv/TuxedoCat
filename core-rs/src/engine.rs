@@ -432,7 +432,7 @@ impl Core {
     /// 对齐 Embedded `sessionRuntime.pushIfChanged`：状态没变时不发事件；
     /// 有变化时按会话插入序推全量快照（消费者不维护状态表）。
     ///
-    /// 快照字段与 Embedded `SessionRuntimeState` 一致（第 12.8 节）：暴露
+    /// 快照字段与 Embedded `SessionRuntimeState` 一致（`DEVELOPMENT.md` 第 5.8 节）：暴露
     /// `queryRunning` / `waiting` / `compacting` / `backgroundRunning` /
     /// `subAgentRunning` 根事实，`idle` 是它们的合取。流水灯 / 托盘读 `idle`；
     /// abort 按钮按根事实推导三态（`docs/abort-button.md`）。

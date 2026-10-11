@@ -27,7 +27,6 @@ import { isAutoMessageOrigin as isAutoOrigin } from '../core/utils/messageOrigin
  */
 const TOOL_COMPONENT_MAP: Record<string, React.ComponentType<any>> = {
   'Bash': ToolComponents.Bash,
-  'RemoteBash': ToolComponents.RemoteBash,
   'Read': ToolComponents.ReadFile,
   'ReadFile': ToolComponents.ReadFile,
   'Write': ToolComponents.WriteFile,

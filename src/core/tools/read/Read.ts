@@ -416,7 +416,7 @@ export const ReadTool = buildTool({
         }
         const imageBuffer = await fs.readFile(fullPath);
         // 扩展名不是事实：内容与扩展名声明的格式不符时不发 image block，
-        // 否则 provider 会因非法图片整轮报错（DEVELOPMENT.md 第 13.4 节）
+        // 否则 provider 会因非法图片整轮报错（docs/core-parity.md 第 4 节）
         const failure = validateImageBytes(imageBuffer, mediaType);
         if (failure) {
           throw new Error(imageValidationErrorMessage(filePath, mediaType, failure));

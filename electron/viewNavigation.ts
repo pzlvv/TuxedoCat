@@ -10,8 +10,7 @@
  * - 渲染进程发起的导航：应用内 `file://` 放行，其余拦下，外部链接交给系统默认浏览器。
  *
  * 程序化导航（`webContents.loadURL` / `loadFile`）不触发 `will-navigate`，不受影响。
- * 「用系统浏览器打开外部链接」是 UI 侧的宿主界面能力（`docs/core-ui-separation.md`
- * 第 5 节），不进 core。
+ * 「用系统浏览器打开外部链接」是 UI 侧的宿主界面能力（`docs/core-ui-separation.md` 第 5 节），不进 core。
  */
 import { shell, type WebContents } from 'electron';
 

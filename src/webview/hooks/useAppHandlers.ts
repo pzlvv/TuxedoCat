@@ -275,7 +275,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
 
     const messagePayload = {
       // 用户消息只有一个 wire 类型：是否排队由宿主按引擎忙碌状态决定，
-      // 排队项由宿主回推 queuedMessage 建立（见 DEVELOPMENT.md 第 7.3 节）。
+      // 排队项由宿主回推 queuedMessage 建立（见 docs/contracts.md 第 8 节）。
       type: 'sendMessage' as const,
       sessionId,
       content: messageContent,
@@ -319,7 +319,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     });
 
     // 排队项不在发送侧乐观登记：宿主入队后按引擎忙碌状态回推 queuedMessage，
-    // 保证「登记」与「清除」都只有宿主一个来源（见 DEVELOPMENT.md 第 12.7 节）。
+    // 保证「登记」与「清除」都只有宿主一个来源（见 DEVELOPMENT.md 第 5.7 节）。
 
     // Save to per-session command history
     if (sessionId && messageContent.trim()) {

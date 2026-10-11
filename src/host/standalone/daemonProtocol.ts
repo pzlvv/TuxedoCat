@@ -92,7 +92,7 @@ export interface DirectoryListing {
 
 /** daemon → Host */
 export type DaemonToHostFrame =
-  /** 心跳应答：对 `ping` 的回应；Host 见首个 pong 武装沉默判定（第 12.5 节） */
+  /** 心跳应答：对 `ping` 的回应；Host 见首个 pong 武装沉默判定（`docs/core-daemon.md` 第 12.5 节） */
   | { kind: 'pong' }
   | { kind: 'workspaceOpened'; id: number; channel: number; descriptor: ChannelDescriptor }
   | { kind: 'workspaceFailed'; id: number; error: string }

@@ -272,7 +272,7 @@ export class UserChoiceManager {
 
   /**
    * 会话的 UI 侧状态已释放（视图关闭 / 会话删除）：清掉该会话在本模块的 per-session 状态。
-   * 由 `WebViewUI.dropSession` 统一 fan-out 调用（DEVELOPMENT.md 第 10.5 节）。
+   * 由 `WebViewUI.dropSession` 统一 fan-out 调用（docs/webview-ui.md 第 9 节）。
    *
    * - 丢弃该会话挂起的用户选择回调：webview 已不在，响应不会再回来；
    * - diff 快照只有在归属该会话时才清空，避免误伤其它会话正在进行的 Edit / Write。

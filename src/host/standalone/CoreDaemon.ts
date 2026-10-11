@@ -130,7 +130,7 @@ export interface CoreDaemonLink {
  * 唯一实现是 `createSshDaemonOpener`（`sshTransport.ts`）：全部通信走 SSH 端口，
  * 远端 daemon 的 endpoint 由引导流程从远端状态文件取得（`sshDaemonBootstrap.ts`）。
  *
- * 失败时 reject：直接上报，不做「先连上再说」的降级（`DEVELOPMENT.md` 第 12 章）。
+ * 失败时 reject：直接上报，不做「先连上再说」的降级（`DEVELOPMENT.md` 第 5 章）。
  */
 export interface CoreDaemonLinkOpener {
   open(): Promise<CoreDaemonLink>;

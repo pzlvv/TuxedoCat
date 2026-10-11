@@ -2,7 +2,7 @@
  * 宿主本地状态文件（`workspace-state.json`）里工作区引用的序列化 / 反序列化。
  *
  * 纯函数，无宿主依赖：Electron 主进程与单测共用同一份口径
- * （见 `docs/client-connection.md` 第 4 节、第 9 节）。
+ * （见 `docs/client-connection.md` 第 4 / 9 节）。
  *
  * 本地项与远程项同格式：本地项的 `endpoint` 为 `null`，远程项带 host / port / user 与
  * **凭证**（SSH 口令，明文落盘，重启后据此恢复连接）。旧版本只写本地路径字符串，
@@ -35,7 +35,7 @@ export function serializeWorkspaceRef(ref: WorkspaceRef): SerializedWorkspaceRef
  * - 对象：本地项（`endpoint` 为 null）同样要求目录仍存在；远程项不检查本地是否存在
  *   （路径在目标机器上），但 endpoint 与凭证必须形状合法。
  *
- * 形状不合法即整项丢弃，不猜、不补默认值（`DEVELOPMENT.md` 第 12 章）。
+ * 形状不合法即整项丢弃，不猜、不补默认值（`DEVELOPMENT.md` 第 5 章）。
  */
 export function parseWorkspaceEntry(
   entry: unknown,

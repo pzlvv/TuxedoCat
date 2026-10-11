@@ -25,7 +25,7 @@ function emitToUi(event: CoreEvent): void {
 /**
  * 从一条消息里提取围栏代码块的语言列表（去重）。
  * 扫描 user / assistant 消息的字符串内容中的 ```lang 围栏标记，
- * 供 appendMessage 上报 Shiki 高亮语言预热集合（见第 7.3 节 2.6）。
+ * 供 appendMessage 上报 Shiki 高亮语言预热集合（见 `docs/contracts.md` 第 8 节 2.6）。
  */
 function collectFenceLanguages(message: Message): string[] {
   const langs = new Set<string>();

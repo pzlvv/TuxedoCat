@@ -10,7 +10,7 @@
  * 完全可见的对话在播放前即由 `pickReadCompletions` 清掉——聚焦即已读，切走后
  * 不补亮。
  *
- * core 只推全量 `sessionRuntimeChanged` 快照（第 4.5 节），没有单会话完成事件；
+ * core 只推全量 `sessionRuntimeChanged` 快照（DEVELOPMENT.md 第 4.5 节），没有单会话完成事件；
  * 与托盘「任务结束提醒」（`trayAttention.ts`）同一手法：对相邻两次全量推送按
  * sessionId 差分出事件，不引入新的事件流。差分语义与托盘一致：只有 running → idle
  * 算完成（waiting → idle 是用户应答 / 中止的结果，不是刚结束的任务）；新出现的会话

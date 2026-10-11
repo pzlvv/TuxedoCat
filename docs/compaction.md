@@ -6,12 +6,12 @@
 
 相关规格与章节：
 
-- `DEVELOPMENT.md 第 4.1 节（CoreEvent）`：`compactBegin` / `compactEnd` / `messagesReplaced`
-- `DEVELOPMENT.md 第 4.3 节（UiEvent）`：`compactRequested`
-- `DEVELOPMENT.md 第 4.5 节（sessionRuntimeChanged 的生产者：sessionRuntime）`：`compacting` 来源
-- `DEVELOPMENT.md 第 12.6 节（core 描述事实，UI 决定表现）`
-- `DEVELOPMENT.md 第 12.8 节（契约只写现状，派生字段从根字段推导）`
-- `docs/standalone-core.md 第 9 节（与 Embedded Core 的对等）`
+- [DEVELOPMENT.md 第 4.1 节](../DEVELOPMENT.md#41-coreeventcore--ui单向)（CoreEvent）：`compactBegin` / `compactEnd` / `messagesReplaced`
+- [DEVELOPMENT.md 第 4.3 节](../DEVELOPMENT.md#43-uieventui--core单向)（UiEvent）：`compactRequested`
+- [DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)（sessionRuntimeChanged 的生产者：sessionRuntime）：`compacting` 来源
+- [DEVELOPMENT.md 第 5.6 节](../DEVELOPMENT.md#56-core-描述事实ui-决定表现)（core 描述事实，UI 决定表现）
+- [DEVELOPMENT.md 第 5.8 节](../DEVELOPMENT.md#58-契约只写现状派生字段从根字段推导)（契约只写现状，派生字段从根字段推导）
+- [docs/standalone-core.md 第 9 节](standalone-core.md#9-与-embedded-core-的对等)（与 Embedded Core 的对等）
 - `docs/user-stories.md` 的 US-9 / US-17
 
 ## 1. 能力
@@ -33,7 +33,7 @@
 
 压缩会**整体替换**会话消息数组，期间把会话标记为「正在压缩」
 （`compact/state.ts` 的 `markCompacting` + `sessionRuntime` 的 `compacting` 来源，
-见 `DEVELOPMENT.md 第 4.5 节`），新到的用户消息只入队、由 `resumeAfterCompact` 排空。
+见 [DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)），新到的用户消息只入队、由 `resumeAfterCompact` 排空。
 
 1. 取最后一次压缩边界之后的消息（`getMessagesAfterCompactBoundary`）。
 2. 保留最近 `maxMessagesToKeep`（30）条消息作为**保留区**，原样留在上下文里；
@@ -84,9 +84,8 @@
 （保留区仍可见，展开时与归档一起重放）。
 
 - 展开（`expandCompact`）是**只读**操作：宿主读归档文件并把「归档 + 保留区」重放给
-  webview，不改任何 core 状态；LLM 仍只看压缩后的消息（`DEVELOPMENT.md 第 12.6 节`）。
-- Standalone 下归档读取经 `UiRequest.compactArchiveRequested`（`docs/standalone-core.md`
-  第 10 节）。
+  webview，不改任何 core 状态；LLM 仍只看压缩后的消息（[DEVELOPMENT.md 第 5.6 节](../DEVELOPMENT.md#56-core-描述事实ui-决定表现)）。
+- Standalone 下归档读取经 `UiRequest.compactArchiveRequested`（[docs/standalone-core.md 第 10 节](standalone-core.md#10-宿主侧的-core-事实读取)）。
 
 ## 2. 数据流
 

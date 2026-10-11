@@ -6,10 +6,10 @@
 
 相关规格与章节：
 
-- `DEVELOPMENT.md 第 4.5 节（sessionRuntimeChanged 的生产者：sessionRuntime）`
-- `DEVELOPMENT.md 第 10.4 节（abort 按钮：读 core 的 sessionRuntime，不由这里判定）`
-- `DEVELOPMENT.md 第 12.6 节（core 描述事实，UI 决定表现）`
-- `DEVELOPMENT.md 第 12.8 节（契约只写现状，派生字段从根字段推导）`
+- [DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)（sessionRuntimeChanged 的生产者：sessionRuntime）
+- [docs/webview-ui.md 第 8 节](webview-ui.md#8-abort-按钮读-core-的-sessionruntime不由这里判定)（abort 按钮：读 core 的 sessionRuntime，不由这里判定）
+- [DEVELOPMENT.md 第 5.6 节](../DEVELOPMENT.md#56-core-描述事实ui-决定表现)（core 描述事实，UI 决定表现）
+- [DEVELOPMENT.md 第 5.8 节](../DEVELOPMENT.md#58-契约只写现状派生字段从根字段推导)（契约只写现状，派生字段从根字段推导）
 - `docs/core-ui-separation.md`
 - `docs/user-stories.md` 的 US-2 / US-3
 
@@ -56,13 +56,13 @@ abort 按钮常驻输入区。它的可用性与颜色由**当前会话**的运�
 
 ### 1.3 事实与表现的边界
 
-- 事实 owner 是 core `sessionRuntime`（`DEVELOPMENT.md 第 4.5 节`）：按来源分列
+- 事实 owner 是 core `sessionRuntime`（[DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)）：按来源分列
   `query` / `waiting` / `compacting` / `background` / `subagent`，变化时推**全量**
   `sessionRuntimeChanged` 快照。
 - 快照只暴露**根事实**：`sessionId` / `idle` / `waiting` / `queryRunning` /
   `compacting` / `backgroundRunning` / `subAgentRunning`。颜色是表现，不进契约。
 - 按钮状态由纯函数 `resolveAbortButtonState`（`src/host/abortButtonState.ts`）从根事实
-  推导，只有一份实现，webview 与测试共用它（`DEVELOPMENT.md 第 12.8 节`）。
+  推导，只有一份实现，webview 与测试共用它（[DEVELOPMENT.md 第 5.8 节](../DEVELOPMENT.md#58-契约只写现状派生字段从根字段推导)）。
 - 中止范围的判定在 core（`Integration.abortCurrentQuery`），不在 UI：UI 不发送范围
   字段，避免「按钮颜色」与「实际中止范围」各写一份判据而分叉。
 
@@ -76,9 +76,9 @@ core sessionRuntime ──sessionRuntimeChanged（全量根事实）──▶ �
    Integration.abortCurrentQuery ◀── abort 消息 ── webview InputArea（三态按钮）
 ```
 
-- 上行：`abort` 消息只有 `sessionId`（`DEVELOPMENT.md 第 4.3 节`）。
+- 上行：`abort` 消息只有 `sessionId`（[DEVELOPMENT.md 第 4.3 节](../DEVELOPMENT.md#43-uieventui--core单向)）。
 - 下行：`sessionRuntimeStates` 携带全量 `SessionRuntimeState` 快照
-  （`DEVELOPMENT.md 第 5.4 节`）。
+  （[docs/contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)）。
 - core 的中止范围判定读 `sessionRuntime` 的同一份事实；两处判据同源，因此按钮显示
   「收尾中」时点击必定命中后台任务 / 子代理阶段。
 

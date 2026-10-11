@@ -20,7 +20,7 @@ import { getProjectRoot } from './history/Config.js';
 import { userChoiceQueue } from './UserChoiceQueue.js';
 import { isCompacting, isPendingCompact, markPendingCompact, unmarkPendingCompact } from './compact/state.js';
 
-/** core → UI 单向事件的发送侧封装（Integration 内统一走它，便于 grep 对照第 4.1 节允许清单） */
+/** core → UI 单向事件的发送侧封装（Integration 内统一走它，便于 grep 对照 `DEVELOPMENT.md` 第 4.1 节允许清单） */
 function emitToUi(event: CoreEvent): void {
   requireEventBus().emitToUi(event);
 }

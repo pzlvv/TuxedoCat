@@ -4,9 +4,9 @@
 解析、排队状态与消息归属一致、Skill 注入顺序唯一、系统环境信息按工作目录缓存、斜杠补全的
 替换边界由光标定义。
 
-参考 `DEVELOPMENT.md` 第 4.3 节（UiEvent）、第 5.4 节（ConversationManager）、第 7.3 节
-（WebviewMessageHandler）、第 7.4 节（WebViewUiPort）、第 10.3 节（`queryBegin` / `queryEnd`
-去重）、第 12.1 节（不过度 fallback）、第 12.7 节（一份事实只有一个写入点）。
+参考 [DEVELOPMENT.md 第 4.3 节](../DEVELOPMENT.md#43-uieventui--core单向)（UiEvent）、[docs/contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)（ConversationManager）、[第 8 节](contracts.md#8-webviewmessagehandler)（WebviewMessageHandler）、
+[第 9 节](contracts.md#9-端口webviewuiport)（WebViewUiPort）、[docs/webview-ui.md 第 7 节](webview-ui.md#7-查询计数querybegin--queryend-去重)（`queryBegin` / `queryEnd` 去重）、
+[DEVELOPMENT.md 第 5.1 节](../DEVELOPMENT.md#51-不过度-fallback)（不过度 fallback）、[第 5.7 节](../DEVELOPMENT.md#57-一份事实只有一个写入点)（一份事实只有一个写入点）。
 
 ---
 
@@ -58,16 +58,15 @@ webview 的用户消息经宿主 `WebviewMessageHandler` 的一个处理器进�
 
 | 步骤 | 内容 |
 | --- | --- |
-| 活动计时 | `noteSessionActivity(sessionId)`（空闲回收只在 VS Code 生效，见 `DEVELOPMENT.md` 第 5.4 节） |
+| 活动计时 | `noteSessionActivity(sessionId)`（空闲回收只在 VS Code 生效，见 [docs/contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
 | 消息身份 | 生成 `uuid` 并回带进 `UiEvent`；core 落盘沿用同一个 uuid，UI 按它配对排队项与用户气泡 |
 | 排队判定 | 读 core 的会话运行时快照：该会话 `idle === false` 时登记排队项并置 `deferEcho`，否则乐观回显用户气泡（第 5 节） |
-| 字段翻译 | wire 的 `selectedLines` 翻译成 `UiEvent` 的 `fileSelectedLines`（`DEVELOPMENT.md` 第 4.3 节 #41） |
+| 字段翻译 | wire 的 `selectedLines` 翻译成 `UiEvent` 的 `fileSelectedLines`（[DEVELOPMENT.md 第 4.3 节](../DEVELOPMENT.md#43-uieventui--core单向) #41） |
 | 会话覆盖 | `agentMode` / `thinkingMode` / `webSearch` / 模型身份（provider + model）随 `UiEvent` 下发；`promptMode` 由独立的 `setPromptMode` 消息承载 |
 | 入队 | 发 `UiEvent.userMessageSubmitted`：取 / 建引擎、应用会话覆盖、入队、命令解析都在 core 侧（第 4 节） |
 
 - 引擎创建不预置用户消息：`initialMessages` 为空，首条消息与后续消息同路径。
-- 查询开始 / 结束状态由 core 在消费循环里发（`queryBegin` / `queryEnd`，见 `DEVELOPMENT.md`
-  第 10.3 节）。
+- 查询开始 / 结束状态由 core 在消费循环里发（`queryBegin` / `queryEnd`，见 [docs/webview-ui.md 第 7 节](webview-ui.md#7-查询计数querybegin--queryend-去重)）。
 - 无工作目录的会话不进入管线：webview 显示引导，不发送消息。
 
 ### 3.3 入口不做的事
@@ -217,7 +216,7 @@ abort 标记、不打断正在运行的查询。「编辑」在清除排队项�
 | 用户消息类型 | 用户消息在协议中只有一个类型（`sendMessage`） |
 | 环境查询请求 | webview → host 的请求类型（`requestSkills` / `requestSessionRuntimeStates`）按同一约定声明 |
 | 会话运行时状态推送 | `pushSessionRuntimeStates` 是模块内实现细节；对外入口是消息分发表 |
-| 活动指示动效 | 运行中 = 蓝色流水（渐变背景滚动）；等待用户 = 黄色呼吸（明暗脉动，不滚动）。webview 对话列表与 Electron 标题栏用同一套语义；等待用户态以单一动画表达。未读完成（Electron：用户看不到时完成的任务）= 绿色呼吸一次后常亮，直到该对话被打开；回窗聚焦时正被看着的对话视为已读、不挂灯（状态机见 `DEVELOPMENT.md` 第 11 章「未读完成呼吸」） |
+| 活动指示动效 | 运行中 = 蓝色流水（渐变背景滚动）；等待用户 = 黄色呼吸（明暗脉动，不滚动）。webview 对话列表与 Electron 标题栏用同一套语义；等待用户态以单一动画表达。未读完成（Electron：用户看不到时完成的任务）= 绿色呼吸一次后常亮，直到该对话被打开；回窗聚焦时正被看着的对话视为已读、不挂灯（状态机见 `docs/host-matrix.md`「未读完成呼吸」） |
 
 ---
 

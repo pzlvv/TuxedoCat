@@ -270,7 +270,7 @@ export type UiEvent =
    *
    * core 侧由引擎触发 `tools/bash/ManualBackground` 注册表里该 `toolUseId` 的
    * 转换；转换成功后暂停下一轮 LLM 请求（结果照常进上下文）。没有匹配的
-   * 前台执行时幂等忽略（规格见 `docs/manual-background.md`）。
+   * 前台执行时幂等忽略（规格见 `docs/background-bash.md`）。
    */
   | { type: 'bashBackgroundRequested'; sessionId: string; toolUseId: string }
   /**
@@ -510,10 +510,10 @@ export type UiRequestResultMap = {
  * 只有 core 能提供的事实进这里；宿主自己的界面状态（如 Electron 的
  * 「视图已打开」）由宿主自己维护，不混进来。
  *
- * 契约只放**根事实**（第 12.8 节）：`queryRunning` / `waiting` / `compacting` /
+ * 契约只放**根事实**（`DEVELOPMENT.md` 第 5.8 节）：`queryRunning` / `waiting` / `compacting` /
  * `backgroundRunning` / `subAgentRunning` 是各来源的事实，`idle` 是它们的合取。
  * 只关心「忙不忙」的消费者（流水灯 / 托盘）读 `idle`；要区分前台与后台的消费者
- * （abort 按钮三态，`docs/abort-button.md`）读根事实自己推导表现（第 12.6 节）。
+ * （abort 按钮三态，`docs/abort-button.md`）读根事实自己推导表现（`DEVELOPMENT.md` 第 5.6 节）。
  */
 export interface SessionRuntimeState {
   sessionId: string;
@@ -522,7 +522,7 @@ export interface SessionRuntimeState {
    *
    * 派生字段：其余根事实（`queryRunning` / `waiting` / `compacting` /
    * `backgroundRunning` / `subAgentRunning`）全为假时才为真。保留它是为了让
-   * 流水灯 / 托盘这类只关心「忙不忙」的消费者不必自己合取（第 12.8 节）。
+   * 流水灯 / 托盘这类只关心「忙不忙」的消费者不必自己合取（`DEVELOPMENT.md` 第 5.8 节）。
    */
   idle: boolean;
   /** 正在等待用户操作（ask user / 权限确认）——流水灯显示黄色 */

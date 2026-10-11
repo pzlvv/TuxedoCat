@@ -51,7 +51,7 @@ export function activate(context: vscode.ExtensionContext) {
   conversationManager = conversations;
 
   // 共享启动接线：locale / 日志 / 总线 / core 侧订阅 / WebViewUI / 历史 / 会话队列 /
-  // 等待用户读取器 / 配置目录 / 环境预热 / MCP 残留清理（DEVELOPMENT.md 第 3.5、8.6 节）
+  // 等待用户读取器 / 配置目录 / 环境预热 / MCP 残留清理（DEVELOPMENT.md 第 3.5 节；宿主专属接线见 `docs/host-matrix.md` 第 6 节）
   const { ui } = bootstrapCore(host, new VSCodeSpinDesign(host), conversations, {
     locale: vscode.env.language,
     log: (...args: unknown[]) => {
@@ -220,7 +220,7 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * 视图加载完成后补弹 LLM 配置面板（active provider 已配置但缺 apiKey 时）。
-   * 配置读取与消息组装在 WebViewUI；这里只触发（第 12.6 节：core 描述事实，UI 决定表现）。
+   * 配置读取与消息组装在 WebViewUI；这里只触发（`DEVELOPMENT.md` 第 5.6 节：core 描述事实，UI 决定表现）。
    */
   private async checkAndSendLLMConfig(): Promise<void> {
     await this.ui.showLLMConfigPanel('startup', null);
@@ -259,7 +259,7 @@ class AssistantViewProvider implements vscode.WebviewViewProvider {
     filePath: string,
     selectedLines: { start: number; end: number }
   ): Promise<void> {
-    // 「当前活跃会话」由 UI 自己维护（第 12.7 节）；
+    // 「当前活跃会话」由 UI 自己维护（`DEVELOPMENT.md` 第 5.7 节）；
     // 写 meta.json 的动作翻译成 UiEvent.conversationContextUpdated 走总线
     const activeSessionId = this.ui.getActiveSessionId();
     if (!activeSessionId) {

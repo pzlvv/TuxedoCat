@@ -1,5 +1,5 @@
 /**
- * releaseConversation 对临时 `new-` key 的处理（DEVELOPMENT.md 第 6.1 节）：
+ * releaseConversation 对临时 `new-` key 的处理（docs/webview-ui.md 第 1 节）：
  *
  * 新建对话在 webview 上报正式 sessionId 前用 `new-<timestamp>` 临时 key。
  * core 从未拥有这样的会话（releaseSessionResources 对它本就是 no-op），

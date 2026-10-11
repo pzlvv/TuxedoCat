@@ -9,10 +9,10 @@
  * - 入参显式：可选语义用 `null` 表达，而不是省略参数。
  * - 返回值统一 Promise<void>，不用 void | Promise<void> 联合。
  *
- * 契约按 UI surface 划分（第 2 节规则 7）：
+ * 契约按 UI surface 划分（`DEVELOPMENT.md` 第 2 章规则 7）：
  * - UIHost 服务**对话 webview**
- * - SpinDesign 服务 Spin 设计器（独立面板/窗口，见第 5.2 节）
- * - ConversationManager 服务对话列表与会话状态（见第 5.4 节）
+ * - SpinDesign 服务 Spin 设计器（独立面板/窗口，见 `docs/contracts.md` 第 2 节）
+ * - ConversationManager 服务对话列表与会话状态（见 `docs/contracts.md` 第 4 节）
  *
  * `WorkspaceProvider` 是工作区（进程级环境事实）的独立契约，`UIHost` 继承它：
  * core 经订阅获得当前工作区与变化，启动期不主动读取。
@@ -128,7 +128,7 @@ export interface UIHost extends WorkspaceProvider {
    * 直发某个对话视图（预热视图初始化、按来源回包）。
    *
    * `view` 由宿主实现产出：多视图宿主把来源视图对象包成句柄交给调用方透传
-   * （Electron 为 `WebviewViewHandle` 包裹 `WebContents`，见第 8.6 节）；单视图宿主
+   * （Electron 为 `WebviewViewHandle` 包裹 `WebContents`，见 `docs/host-matrix.md` 第 6 节）；单视图宿主
    * （VS Code）等价于 `sendToWebview`，句柄不参与路由。
    */
   sendToWebviewView(view: WebviewViewHandle, message: HostToWebviewMessage): void;
@@ -175,7 +175,7 @@ export interface UIHost extends WorkspaceProvider {
    *
    * - VS Code：`DocumentManager.showDiff` 打开 before/after 两个虚拟文档组成的 diff 标签
    * - Electron：空实现——diff 只在 webview 的工具卡片里渲染，桌面端不再开 Monaco 窗口
-   *   （见 DEVELOPMENT.md 第 11.1 节 UIHost 对照表）
+   *   （见 docs/host-matrix.md 第 12 节 UIHost 对照表）
    *
    * 同一个 diff 重复打开时由宿主自行去重；打开新的 diff 前由宿主自行关闭上一个预览。
    */
@@ -220,7 +220,7 @@ export interface UIHost extends WorkspaceProvider {
   /**
    * 串行化「读-改-写」settings.json（~/<CONFIG_DIR_NAME>/settings.json）。
    *
-   * 配置文件是宿主资源：**写**由宿主承担，core 只读（第 2 节规则 9）。
+   * 配置文件是宿主资源：**写**由宿主承担，core 只读（`DEVELOPMENT.md` 第 2 章规则 9）。
    * `mutator` 同步修改 cfg；返回非 undefined 时作为新的完整配置写回。
    * 两个宿主共用 `src/host/settingsFile.ts` 的实现（串行队列 + 写后清 core 读缓存）。
    */

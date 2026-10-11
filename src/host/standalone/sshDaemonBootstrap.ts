@@ -3,8 +3,7 @@
  *
  * 目标环境只有 SSH 端口、daemon 端口映射不出来时，Host 经 SSH 完成：
  *
- * 1. **发现**：部署槽位由本机携带产物的**构建指纹**决定（`docs/standalone-core.md`
- *    第 4.4 节）——远端部署目录 `~/.local/share/<core.deployPrefix>/<指纹>/`，
+ * 1. **发现**：部署槽位由本机携带产物的**构建指纹**决定（`docs/standalone-core.md` 第 4.4 节）——远端部署目录 `~/.local/share/<core.deployPrefix>/<指纹>/`，
  *    状态文件 `~/<configDir>/run/core-daemon-<指纹>.json`。状态文件里的 daemon 探得通就是
  *    本版本（同一指纹）的 daemon 在跑，直接复用：不重启、不覆盖。
  *    多版本 Core 在同一台远端机器上各占一个槽位、各跑一个 daemon——不同版本
@@ -24,7 +23,7 @@
  *    （本模块唯一事实来源）。
  *
  * 各分支都以「读到状态文件里的 endpoint」收尾；任何一步失败都直接报错，
- * 不回退到「先连上再说」（`DEVELOPMENT.md` 第 12 章）。
+ * 不回退到「先连上再说」（`DEVELOPMENT.md` 第 5 章）。
  *
  * 本模块是 host 层：不 import `vscode` / `electron`，可脱离宿主单测（见
  * `src/test/sshDaemonBootstrap.test.ts`）。
@@ -64,8 +63,7 @@ export interface RemoteSsh {
 export const REMOTE_DEPLOY_ROOT = '.local';
 
 /**
- * SSH 引导拉起的 daemon 的空闲退出秒数（`start --idle-exit`，`docs/core-daemon.md`
- * 第 12.5 节）。
+ * SSH 引导拉起的 daemon 的空闲退出秒数（`start --idle-exit`，`docs/core-daemon.md` 第 12.5 节）。
  *
  * 客户端异常退出（crash / 断电 / 网络消失）后，该连接的 Core 随连接断开（EOF 或
  * 心跳超时）被 daemon 关闭，daemon 本体在**最后一条控制连接断开 30s**后自行退出——
@@ -135,8 +133,7 @@ export async function ensureRemoteDaemon(
   // 3. 在跑的 daemon 原样返回；否则 start（幂等：已在跑就只打印就绪信息）。启动前
   //    不结束别的 daemon：daemon 恒绑回环、端口交给内核分配，多版本 daemon 并存时
   //    互不抢固定端口，实际端口随状态文件读回；`--idle-exit` 让 daemon 在最后一条
-  //    连接断开后自行退出（客户端 crash 不留常驻进程，`docs/core-daemon.md`
-  //    第 12.5 节）。
+  //    连接断开后自行退出（客户端 crash 不留常驻进程，`docs/core-daemon.md` 第 12.5 节）。
   if (running) return running;
 
   const started = await ssh.exec(
@@ -214,7 +211,7 @@ async function uploadAtomically(ssh: RemoteSsh, localPath: string, remotePath: s
  * `spawn rg ENOENT`。ripgrep 与指纹无关（Grep / Glob 的行为不随 Core 版本变），
  * 放 `share/<core.deployPrefix>/ripgrep`——与 Core 侧「自己所在槽位的上一级目录里
  * 找 `ripgrep`」的定位口径配对（core-rs/src/tools.rs）。**缺了才传**；本机产物里
- * 没有这份 rg 属于构建不完整，直接报错（`DEVELOPMENT.md` 第 12 章）。
+ * 没有这份 rg 属于构建不完整，直接报错（`DEVELOPMENT.md` 第 5 章）。
  */
 async function ensureRemoteRipgrep(
   ssh: RemoteSsh,

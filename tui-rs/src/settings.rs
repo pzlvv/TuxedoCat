@@ -5,7 +5,7 @@
 //! 宿主读盘、补默认值、规范化成快照，经 `UiEvent.hostEnvironmentProvided` 下发 Core；
 //! Core 侧只消费快照（`core-rs/src/settings.rs`），不持有默认值。
 //!
-//! 写入纪律（DEVELOPMENT.md 第 12 章规则 9）：跨进程锁 + 读不出拒绝写 + 原子落盘 +
+//! 写入纪律（DEVELOPMENT.md 第 5 章规则 9）：跨进程锁 + 读不出拒绝写 + 原子落盘 +
 //! 内容未变不落盘（TUI 只写 `highlightLanguages` 一个字段，纪律照旧）。
 
 use std::collections::BTreeMap;
@@ -679,7 +679,7 @@ impl SettingsStore {
 
     /// 执行对 `settings.json` 的读-改-写，随后重新解析快照。
     ///
-    /// 三层保护（DEVELOPMENT.md 第 12 章规则 9）：跨进程锁内整体执行、读不出拒绝写、
+    /// 三层保护（DEVELOPMENT.md 第 5 章规则 9）：跨进程锁内整体执行、读不出拒绝写、
     /// 原子落盘 + 内容未变不落盘。TUI 目前只写 `highlightLanguages`。
     pub fn update_settings(
         &mut self,

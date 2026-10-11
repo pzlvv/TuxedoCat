@@ -179,7 +179,7 @@ export function clearSessionMcpOverride(sessionId: string): void {
  * （设置面板一次性保存多个勾选项时用）。
  *
  * core 只描述**怎么改**，**写盘由宿主承担**（`UIHost.updateSettingsJson`，
- * 见第 2 节规则 9）。
+ * 见 `DEVELOPMENT.md` 第 2 章规则 9）。
  */
 export function mcpDefaultsMutator(names: readonly string[]): (cfg: Record<string, any>) => void {
   const normalized = Array.from(new Set(names.filter((n): n is string => typeof n === 'string' && !!n)));

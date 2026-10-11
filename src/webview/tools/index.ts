@@ -1,5 +1,4 @@
 export { Bash } from './Bash';
-export { RemoteBash } from './RemoteBash';
 export { ReadFile } from './ReadFile';
 export { WriteFile } from './WriteFile';
 export { EditFile } from './EditFile';

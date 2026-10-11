@@ -125,7 +125,7 @@ pub type UserChoiceFn = std::sync::Arc<dyn Fn(&Value) -> Option<Value> + Send + 
 /// `source_task` 记录触发暂停的后台任务 id：消费方据此把该任务登记为「已兜底」
 /// （`ReminderEntry.fallback_reminded`）——查询收尾的兜底提醒会为满足门槛的运行中任务
 /// 补一条 reminder 并拉起新查询，那等于转后台结果自己触发了接续循环，违背暂停语义
-/// （`docs/manual-background.md` 第 1.4 节）。
+/// （`docs/background-bash.md` 第 1.4 节）。
 #[derive(Clone, Default)]
 pub struct LoopPauseSignal {
     paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -1284,7 +1284,7 @@ fn description_of(input: &Value, command: &str) -> String {
 ///
 /// 手工转后台成功时置 `ctx.pause`（下一轮 LLM 请求不发起）；转换失败走早退分支，
 /// 不置暂停。查询收尾的兜底提醒不会为该任务立刻补 reminder（任务刚注册，距上次
-/// 访问不足最小间隔，见 `docs/background-reminder.md` 第 1.0 节）。
+/// 访问不足最小间隔，见 `docs/background-bash.md` 第 4 节）。
 fn auto_background_command(
     child: std::process::Child,
     command: &str,
@@ -1657,7 +1657,7 @@ fn is_image_extension(path: &Path) -> Option<&'static str> {
 /// 完整性」校验：文件头必须匹配声明的格式，且声明长度 / 结束标记必须自洽。
 ///
 /// 返回 `None` 表示通过，否则是失败原因标识（两侧共享，见
-/// `src/test/fixtures/imageValidation.json` 与 DEVELOPMENT.md 第 13.4 节）。
+/// `src/test/fixtures/imageValidation.json` 与 docs/core-parity.md 第 4 节）。
 pub fn image_validation_failure(bytes: &[u8], media_type: &str) -> Option<&'static str> {
     match media_type {
         "image/png" => validate_png(bytes),
@@ -2424,7 +2424,7 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
                 ));
             }
             // 扩展名不是事实：内容与扩展名声明的格式不符时不发 image block，
-            // 否则 provider 会因非法图片整轮报错（DEVELOPMENT.md 第 13.4 节）
+            // 否则 provider 会因非法图片整轮报错（docs/core-parity.md 第 4 节）
             if let Some(reason) = image_validation_failure(&bytes, media_type) {
                 return ToolOutcome::Error(format!(
                     "Invalid image file: {file_path}. The content is not a valid {media_type} image ({}).",

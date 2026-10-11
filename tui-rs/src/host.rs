@@ -2,7 +2,7 @@
 //! + `ui/toolHandler.ts` 的移植）。
 //!
 //! TS 版 TUI 复用 WebViewUI 以保证「宿主逻辑只存在一份」；Rust TUI 直连帧通道，
-//! 这一层的行为就在本模块重建（docs/tui.md 第 1.2 节为 TS 版口径，Rust 版以此模块
+//! 这一层的行为就在本模块重建（docs/tui.md 第 1 节第 2 条为 TS 版口径，Rust 版以此模块
 //! 为唯一事实翻译点）。职责：
 //! - CoreEvent → 渲染动作（流式 / 工具卡片 / 排队 / 配置回写 / notice 翻译）；
 //! - CoreRequest → 交互（权限卡片先出、diff 预览、用户选择覆盖层）并应答；

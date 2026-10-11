@@ -109,7 +109,7 @@ export function isLanguageReady(language: string): boolean {
 
 /**
  * 语言首次加载成功后的本地记录。
- * 高亮语言预热集合改由 core 维护（DEVELOPMENT.md 第 7.3 节 2.6）：
+ * 高亮语言预热集合改由 core 维护（docs/contracts.md 第 8 节 2.6）：
  * core 在消息落盘时扫描围栏代码块语言写入 settings.json，
  * webview 不再上报（recordHighlightLanguage 协议消息已删除）。
  */

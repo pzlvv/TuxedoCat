@@ -14,12 +14,12 @@
  * 1. 转换成功后置引擎的循环暂停标记（`QueryEngine.requestLoopPause`）：
  *    工具结果照常进入上下文，但下一轮 LLM 请求不发起——会话回到
  *    「等待用户输入」；队列消息（用户消息 / 后台完成通知 / 提醒）到达时
- *    由既有入队路径立刻拉起新一轮（规格见 `docs/manual-background.md`，
+ *    由既有入队路径立刻拉起新一轮（规格见 `docs/background-bash.md`，
  *    消费循环本身见 `docs/user-message-pipeline.md` 第 4 节）。
  * 2. 该任务同时登记进「已兜底」集合（`markBackgroundTasksFallbackReminded`）：
  *    查询收尾的兜底提醒会为满足门槛的运行中任务补一条 reminder 并拉起新查询——
  *    那等于被转后台结果本身触发了接续循环，违背第 1 点的暂停语义，因此跳过
- *    （见 `docs/manual-background.md` 第 1.4 节）。
+ *    （见 `docs/background-bash.md` 第 1.4 节）。
  */
 
 /** 前台执行触发器：幂等（执行已收尾时为 no-op），由 Exec 层闭包提供 */

@@ -1,8 +1,8 @@
 /**
  * abort 按钮三态的推导（`docs/abort-button.md` 第 1.1 节）。
  *
- * core 只描述运行时根事实（`SessionRuntimeState`，第 4.5 节）；颜色与可点性属于表现，
- * 由这里的纯函数从根事实推导（第 12.6 / 12.8 节）。webview 与测试共用这一份实现，
+ * core 只描述运行时根事实（`SessionRuntimeState`，`DEVELOPMENT.md` 第 4.5 节）；颜色与可点性属于表现，
+ * 由这里的纯函数从根事实推导（`DEVELOPMENT.md` 第 5.6 / 5.8 节）。webview 与测试共用这一份实现，
  * 不在组件里另写一遍 `if`。
  */
 

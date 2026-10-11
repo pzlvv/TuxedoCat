@@ -4,7 +4,7 @@
  * 它不是宿主契约——没有 VSCode / Electron 两个实现，只有一个 core 侧单例。
  * 它接替了原 UIHost.onSessionOpened 的位置：MCP 的生命周期不该由 UI 决定。
  *
- * 问题（DEVELOPMENT.md 第 5.3 节）：MCP 引用绑定的是「会话被打开过」，
+ * 问题（docs/contracts.md 第 3 节）：MCP 引用绑定的是「会话被打开过」，
  * 而「会话打开 / 关闭」是 core 自己的事实。但此前 acquire 全部由宿主在
  * 「webview 打开 / 聊天视图打开」时触发，MCP 的生命周期被绑到 UI 的视图生命周期上。
  *

@@ -3,7 +3,7 @@
 //! 产品名（`core.deployPrefix`）、Core 二进制名（`core.binaryName`）、配置目录名
 //! （`configDir`）与环境变量前缀（`envPrefix`）在源码里一律经 `env!` 取这里烧入的值
 //! ——企业版改名只动 `project.json`，Rust 侧不出现任何产品字面量
-//! （`DEVELOPMENT.md` 第 12 章：同一字段的默认值只有一处）。
+//! （`DEVELOPMENT.md` 第 5 章：同一字段的默认值只有一处）。
 //!
 //! `json_string_field` 与 `installer-rs/build.rs` 是同一手法的拷贝（安装器保持零
 //! 第三方依赖，不为读一个配置键引 serde；此处同零依赖约束），键定位依赖

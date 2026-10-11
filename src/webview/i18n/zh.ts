@@ -297,9 +297,6 @@ export const zhDict: Record<string, string> = {
   'tool.queryMemory.found': 'Found {count} result',
   'tool.queryMemory.results': '{count} result',
 
-  /* ── tools/RemoteBash.tsx ────────────────────────────────── */
-  'tool.remoteBash.sshConnecting': 'SSH connecting to {identity}',
-
   /* ── MessagesView.tsx ────────────────────────────────────── */
   'messagesView.compactSummary': '对话压缩摘要',
   'messagesView.openConversation': 'Open conversation: {id}',

@@ -1,5 +1,5 @@
 /**
- * bootstrapCore - 宿主无关的启动接线骨架（见 DEVELOPMENT.md 第 8.6 节）
+ * bootstrapCore - 宿主无关的启动接线骨架（见 docs/host-matrix.md 第 6 节）
  *
  * 两个宿主（VS Code 扩展 / Electron 主进程）的启动接线由本函数统一执行，
  * 宿主只提供自身差异（locale / 日志出口 / 资源根目录 / 工作区事实）。
@@ -13,7 +13,7 @@
  * - `Client` 是宿主级唯一实例，维护工作区 / 会话路由与配置快照推送；
  * - `Connection` 是总线、就绪状态与生命周期的作用域。
  *
- * 顺序（不可调换，理由见 DEVELOPMENT.md 第 3.5、8.6 节）：
+ * 顺序（不可调换，理由见 DEVELOPMENT.md 第 3.5 节；宿主专属接线见 `docs/host-matrix.md` 第 6 节）：
  *   创建 Client 并注册全局总线 → 注册 core 侧 UiEvent 订阅（仅 embedded）
  *   → 创建 WebViewUI（其构造函数注册 CoreEvent / CoreRequest 处理器）
  *   → 按工作区打开 Connection（连接建立时推送宿主环境与配置快照）
@@ -93,7 +93,7 @@ export interface CoreBootstrapResult {
 
 /** 启动接线快照（只读；用于启动日志与双端对照） */
 export interface BootstrapSnapshot {
-  /** 本次装配的 Core 实现（第 3 节） */
+  /** 本次装配的 Core 实现（`docs/standalone-core.md` 第 3 节） */
   coreKind: CoreKind;
   locale: string;
   uiLanguage: 'auto' | 'zh' | 'en';
@@ -175,7 +175,7 @@ export function bootstrapCore(
     openChannel: coreKind === 'standalone'
       ? (options.openStandaloneChannel ?? ((ref: WorkspaceRef) => openStandaloneChannel(ref, options)))
       : undefined,
-    // Core 崩溃 / 无法重启（规格第 7.1 节）：把该连接上受影响的「忙」会话标记为失败，
+    // Core 崩溃 / 无法重启（`docs/standalone-core.md` 第 7.1 节）：把该连接上受影响的「忙」会话标记为失败，
     // 补发错误消息与 queryEnd，并把运行时状态复位为 idle —— 不静默挂起。
     // 同时把生命周期转发给宿主订阅者（`onWorkspaceConnectionState`）。
     onConnectionLost: (connection, reason) => {
@@ -568,7 +568,7 @@ function markConnectionSessionsFailed(
             ? {
                 ...state,
                 // Core 已失联：会话的所有运行时来源一并归零，避免留下
-                // 「idle 但 queryRunning」这类自相矛盾的快照（第 12.8 节）。
+                // 「idle 但 queryRunning」这类自相矛盾的快照（`DEVELOPMENT.md` 第 5.8 节）。
                 idle: true,
                 waiting: false,
                 queryRunning: false,

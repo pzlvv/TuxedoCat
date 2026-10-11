@@ -297,9 +297,6 @@ export const enDict: Record<string, string> = {
   'tool.queryMemory.found': 'Found {count} result{s}',
   'tool.queryMemory.results': '{count} result{s}',
 
-  /* ── tools/RemoteBash.tsx ────────────────────────────────── */
-  'tool.remoteBash.sshConnecting': 'SSH connecting to {identity}',
-
   /* ── MessagesView.tsx ────────────────────────────────────── */
   'messagesView.compactSummary': 'Conversation compact summary',
   'messagesView.openConversation': 'Open conversation: {id}',

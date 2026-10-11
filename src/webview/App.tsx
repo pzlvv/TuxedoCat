@@ -400,7 +400,7 @@ const App = () => {
   const { conversationTree, expandedSubSessions, setExpandedSubSessions } = useConversationTree(conversations);
 
   // 对话树流水灯（idle / waiting）只读 core 推送的会话运行时状态：
-  // 与 Electron 侧栏同一数据源（core sessionRuntimeChanged），不再本地推导（第 11 节）。
+  // 与 Electron 侧栏同一数据源（core sessionRuntimeChanged），不再本地推导（`docs/host-matrix.md`）。
   // 未记录的会话视为 idle（不显示流水灯）。
   const getSessionIdleState = useCallback((sid: string): boolean => {
     return sessionRuntimeStatesRef.current.get(sid)?.idle ?? true;

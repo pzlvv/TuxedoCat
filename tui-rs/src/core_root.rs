@@ -22,7 +22,7 @@
 //!
 //! 每个候选根按两种形态解析，部署布局优先：`share/<产品名>/` 下任一「`fingerprint`
 //! + Core 二进制都齐」的指纹槽位；否则当开发期仓库根（`resources/core/<pkg>/`）。
-//! 全部落空直接报错并给出安装指引——接线缺失不静默降级（DEVELOPMENT.md 第 12 章规则 1）。
+//! 全部落空直接报错并给出安装指引——接线缺失不静默降级（DEVELOPMENT.md 第 5 章规则 1）。
 
 use std::path::{Path, PathBuf};
 

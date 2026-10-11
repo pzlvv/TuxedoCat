@@ -8,9 +8,27 @@
 连接模型（Client / Connection / 工作区引用）见 `docs/client-connection.md`；Standalone
 Core 的进程形态见 `docs/standalone-core.md`；Core 进程的 daemon 见 `docs/core-daemon.md`。
 
-参考 `DEVELOPMENT.md` 第 2 节（分层与依赖规则）、第 3 节（核心契约：AssistantEventBus）、
-第 4 节（事件列表）、第 5.1 节（UIHost）、第 8.6 节（宿主接线）、第 8.7 节（注入点与读取器）、
-第 12.7 节（一份事实只有一个写入点）。
+参考 [DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)（分层与依赖规则）、[第 3 章](../DEVELOPMENT.md#3-核心契约assistanteventbus)（核心契约：AssistantEventBus）、
+[第 4 章](../DEVELOPMENT.md#4-事件列表)（事件列表）、[docs/contracts.md 第 1 节](contracts.md#1-uihost对话-webview-的宿主能力)（UIHost）、[docs/host-matrix.md 第 6 节](host-matrix.md#6-宿主接线)（宿主接线）、
+[第 7 节](host-matrix.md#7-启动期状态写入入口与读取器)（注入点与读取器）、[DEVELOPMENT.md 第 5.7 节](../DEVELOPMENT.md#57-一份事实只有一个写入点)（一份事实只有一个写入点）。
+
+---
+
+## 目录
+
+| 节 | 标题 |
+| --- | --- |
+| 1. | [能力](#1-能力) |
+| 2. | [术语与事实来源](#2-术语与事实来源) |
+| 3. | [总线：唯一的边](#3-总线唯一的边) |
+| 4. | [配置归 UI](#4-配置归-ui) |
+| 5. | [Core 的部署形态](#5-core-的部署形态) |
+| 6. | [连接模型](#6-连接模型) |
+| 7. | [Core 就绪](#7-core-就绪) |
+| 8. | [请求超时](#8-请求超时) |
+| 9. | [不覆盖范围](#9-不覆盖范围) |
+| 10. | [验收要点](#10-验收要点) |
+| 11. | [落点对照](#11-落点对照) |
 
 ---
 
@@ -85,7 +103,7 @@ Core 就绪前传递一次。
 - **配置路径不在其中**：Core 不感知 `settings.json` / `mcp.json` 的位置。
 - Core 侧的读取入口在对应事实到达前抛错，与 `requireEventBus()` 同一口径。
 - `standalone` 下这条事件是**连接态事件**：保留最后一次取值，每次握手后重放
-  （`docs/standalone-core.md` 第 7.2 节）。
+  （[docs/standalone-core.md 第 7.2 节](standalone-core.md#72-连接态重放)）。
 
 ### 3.3 会话工作目录
 
@@ -93,7 +111,7 @@ Core 就绪前传递一次。
   （`sessionId` → 路径），由 UI 在会话首次被 Core 解析目录之前登记
   （`setSessionWorkspace`），不经总线。Core 不感知「当前工作目录是谁」。
 - 登记的是**目标机器上的路径**：远程工作区的 endpoint 与凭证不下发到 Core
-  （`docs/client-connection.md` 第 4 节）。
+  （[docs/client-connection.md 第 4 节](client-connection.md#4-工作区引用)）。
 - 会话工作目录登记后，Core 以该路径预热系统动态信息（`SystemEnvironment` 的缓存按
   工作目录分桶；不同工作目录不互相命中）。
 
@@ -152,7 +170,7 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
 - Core 侧没有配置文件写入口，也没有配置文件读入口。
 - UI 侧是唯一写入点；写操作串行化，按调用顺序排队。
 - 项目清单随会话数据留在 Core 侧：它记录会话目录对应的 `path`，是 Core 数据的一部分
-  （`docs/client-connection.md` 第 4.1 节）。
+  （[docs/client-connection.md 第 4.1 节](client-connection.md#41-与-core-数据目录的关系)）。
 
 ### 4.2 快照与磁盘文件是两个东西
 
@@ -192,7 +210,7 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
 - 快照**不含** `uiLanguage`、`uiFontSize` 与 `highlightLanguages`：这三个字段只有 UI 消费
   （第 4.8、4.10 节）。
 - 快照**不含** endpoint 与凭证：那是 Connection 的配置，不是 Core 的
-  （`docs/client-connection.md` 第 4 节）。
+  （[docs/client-connection.md 第 4 节](client-connection.md#4-工作区引用)）。
 
 ### 4.4 Core 侧的单一入口
 
@@ -233,7 +251,7 @@ UI 推快照的时机只有三处，全部收敛到 `SettingsStore`：
 ### 4.6 写盘规则
 
 - 写操作串行化，按调用顺序排队。
-- 单次写操作失败不影响后续队列；失败记日志（`DEVELOPMENT.md` 第 12 章）。
+- 单次写操作失败不影响后续队列；失败记日志（[DEVELOPMENT.md 第 5.11 节](../DEVELOPMENT.md#511-共享文件的写安全)）。
 - 后写覆盖：不做冲突检测与合并提示。
 - 写盘完成后重新构造快照并推给所有已就绪的 Connection。
 - 写入口唯一：`SettingsStore.updateSettings`（宿主侧）。Embedded 与 Standalone 走
@@ -259,7 +277,7 @@ UI 推快照的时机只有三处，全部收敛到 `SettingsStore`：
 
 - `mcp.json` 由 UI 解析、规范化，随快照一次下发（`mcpServers`）。
 - 解析失败或文件缺失时按空表处理并记日志；这是 UI 侧行为，Core 不参与。
-- Core 侧的 MCP 子进程生命周期不变（`docs/standalone-core.md` 第 8 节）。
+- Core 侧的 MCP 子进程生命周期不变（[docs/standalone-core.md 第 8 节](standalone-core.md#8-事实归属)）。
 
 ### 4.8 文本语言
 
@@ -338,7 +356,7 @@ CoreEvent.notice { sessionId, key, params, level }
   Core 侧的就绪状态本身是幂等的——快照就是判据（`core/settings.ts` 的
   `hasSettingsSnapshot()`），不需要额外的状态位。
 - **就绪前只接受 `hostEnvironmentProvided`，其它 `UiEvent` 直接抛错**：挡住的责任在
-  UI 侧（`docs/client-connection.md` 第 7 节），Core 侧把顺序错误变成启动期错误。
+  UI 侧（[docs/client-connection.md 第 7 节](client-connection.md#7-就绪状态机)），Core 侧把顺序错误变成启动期错误。
   Embedded 下抛错点在 `host/EventBus.ts`（宿主与 Core 同进程，错误直接冒到调用点）；
   Standalone 下在 Core 进程内拒绝并记一条 log（帧通道没有反向异常通路）。
 - 重连不在本规格范围内（第 9 节）。
@@ -355,12 +373,12 @@ CoreEvent.notice { sessionId, key, params, level }
 
 ## 9. 不覆盖范围
 
-- 事件在连接上的序列化与反序列化格式（见 `docs/standalone-core.md` 第 6 节）。
+- 事件在连接上的序列化与反序列化格式（见 [docs/standalone-core.md 第 6 节](standalone-core.md#6-传输与协议)）。
 - 流式事件的节流与合并。
-- 断线后的恢复与重连。Core 崩溃后的进程重启（`docs/core-daemon.md` 第 6 节）是同一
+- 断线后的恢复与重连。Core 崩溃后的进程重启（[docs/core-daemon.md 第 6 节](core-daemon.md#6-重启)）是同一
   channel 内的连接重置，不属于跨连接的断线重连。
-- 远程工作区的实现（见 `docs/client-connection.md` 第 9 节）；跨机器部署时宿主直接读
-  Core 磁盘的例外需要迁到 `UiRequest`（见 `docs/standalone-core.md` 第 10 节）。
+- 远程工作区的实现（见 [docs/client-connection.md 第 9 节](client-connection.md#9-落盘与恢复宿主侧)）；跨机器部署时宿主直接读
+  Core 磁盘的例外需要迁到 `UiRequest`（见 [docs/standalone-core.md 第 10 节](standalone-core.md#10-宿主侧的-core-事实读取)）。
 - 多 Connection 的界面呈现。
 
 ---

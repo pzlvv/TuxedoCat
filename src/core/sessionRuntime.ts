@@ -1,8 +1,8 @@
 /**
  * sessionRuntime - 会话运行时状态的唯一 owner
  *
- * 变化时推全量 `CoreEvent.sessionRuntimeChanged`（消费者不维护状态表，见第 3.1 节）。
- * 快照按第 12.8 节暴露**根事实**：`queryRunning` / `waiting` / `compacting` /
+ * 变化时推全量 `CoreEvent.sessionRuntimeChanged`（消费者不维护状态表，见 `DEVELOPMENT.md` 第 3.1 节）。
+ * 快照按`DEVELOPMENT.md` 第 5.8 节暴露**根事实**：`queryRunning` / `waiting` / `compacting` /
  * `backgroundRunning` / `subAgentRunning`，`idle` 是它们的合取（派生字段）。
  * 流水灯 / 托盘读 `idle`；abort 按钮按根事实推导三态（`docs/abort-button.md`）。
  *
@@ -115,7 +115,7 @@ function hasBusySubAgent(sessionId: string): boolean {
  * 对外快照：各来源的根事实 + 由它们合取出的 `idle`。
  *
  * `idle` 与 `subAgentRunning` 都递归到子代理，但语义不同：前者回答「整棵子树是否
- * 都闲着」，后者回答「有没有子代理在跑」。消费者按需取（第 12.8 节）。
+ * 都闲着」，后者回答「有没有子代理在跑」。消费者按需取（`DEVELOPMENT.md` 第 5.8 节）。
  */
 function toSnapshot(sessionId: string, entry: Entry): Omit<SessionRuntimeState, 'sessionId'> {
   const subAgentRunning = hasBusySubAgent(sessionId);
@@ -251,7 +251,7 @@ export function dropSessionRuntime(sessionId: string): void {
  * 单个会话是否正在等待用户（ask user / 权限确认）。
  *
  * 供 `sessionResources.isSessionIdle` 读取——「等待用户」是 core 自己的事实，
- * 不由宿主注入判定闭包（第 8.7 节）。
+ * 不由宿主注入判定闭包（`docs/host-matrix.md` 第 7 节）。
  */
 export function isSessionWaiting(sessionId: string): boolean {
   return !!states.get(sessionId)?.waiting;
@@ -269,7 +269,7 @@ export function getSessionRuntimeStates(): readonly SessionRuntimeState[] {
  * 读单个会话的对外快照；该会话没有登记任何事实时返回 `null`。
  *
  * 供 `Integration.abortCurrentQuery` 判定中止阶段（前台有工作 / 只剩后台与子代理），
- * 与推送给 UI 的快照同源（第 12.7 节：一份事实只有一个写入点）。
+ * 与推送给 UI 的快照同源（`DEVELOPMENT.md` 第 5.7 节：一份事实只有一个写入点）。
  */
 export function getSessionRuntimeState(sessionId: string): SessionRuntimeState | null {
   const entry = states.get(sessionId);

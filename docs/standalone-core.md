@@ -4,7 +4,28 @@
 `docs/core-ui-separation.md`；本规格在其基础上确定 Standalone Core 的进程形态、选择方式、
 传输协议与事实归属。连接模型（Client / Connection / 工作区引用）见
 `docs/client-connection.md`；Core 进程的 daemon 见 `docs/core-daemon.md`。
-事件词汇表见 `DEVELOPMENT.md` 第 3、4 节。
+事件词汇表见 [DEVELOPMENT.md 第 3 章](../DEVELOPMENT.md#3-核心契约assistanteventbus)、[第 4 章](../DEVELOPMENT.md#4-事件列表)。
+
+---
+
+## 目录
+
+| 节 | 标题 |
+| --- | --- |
+| 1. | [能力](#1-能力) |
+| 2. | [术语与事实来源](#2-术语与事实来源) |
+| 3. | [选择变量](#3-选择变量) |
+| 4. | [Standalone Core 形态](#4-standalone-core-形态) |
+| 5. | [契约](#5-契约) |
+| 6. | [传输与协议](#6-传输与协议) |
+| 7. | [生命周期](#7-生命周期) |
+| 8. | [事实归属](#8-事实归属) |
+| 9. | [与 Embedded Core 的对等](#9-与-embedded-core-的对等) |
+| 10. | [宿主侧的 core 事实读取](#10-宿主侧的-core-事实读取) |
+| 11. | [不覆盖范围](#11-不覆盖范围) |
+| 12. | [验收要点](#12-验收要点) |
+| 13. | [落点对照](#13-落点对照) |
+| 14. | [测试与覆盖率](#14-测试与覆盖率) |
 
 ---
 
@@ -22,15 +43,15 @@
    （`--target` / `npm run build:core:win32-arm64` 或 TUI 安装器按需补建），不进默认打包集合。
 6. **一条帧通道**：UI 与 Standalone Core 之间只有一条双向帧通道；UI 为客户端，Core 为服务端。
 7. **一个工作区一个 Core 进程**：每个打开的工作区对应一个 Core 进程；一个 Core 进程只服务
-   它的 Connection（`docs/client-connection.md` 第 5 节）。
+   它的 Connection（[docs/client-connection.md 第 5 节](client-connection.md#5-connection-生命周期)）。
 8. **生命周期归 daemon**：Core 进程由 daemon 启动、终止与重启；daemon 见
    `docs/core-daemon.md`。
 9. **崩溃可恢复**：Core 进程意外退出后由 daemon 重启并恢复接线；单个 Connection 的 Core
    崩溃不影响其它 Connection。
 
-### 1.1 落地阶段
+### 1.1 Core 侧业务范围
 
-Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
+Core 进程承载的 core 侧业务：
 
 - `UiEvent` 只经帧通道进入 Core 进程；进程内不注册 core 侧订阅，也不建会话队列；
 - 用户消息经 `UiEvent.userMessageSubmitted` 进入 Core，宿主不直接调用引擎；
@@ -38,7 +59,7 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
   内置工具（含后台 Bash、子代理与 Skill）、会话落盘、项目清单读写、
   技能加载与斜杠命令解析（`CommandDispatcher` + 内置命令 + 技能命令）、
   对话压缩（自动 / 手动触发、摘要生成、归档与 `messagesReplaced` 重放）、
-  Responses API（`apiType='Responses'`，含内置 Web Search 的缺口见 `TODO.md`）、
+  Responses API（`apiType='Responses'`，内置 Web Search 的缺口见第 9 节）、
   MCP（stdio / Streamable HTTP / 旧版 SSE 三种传输、连接池与会话引用、
   `mcp__*` 工具注入与按会话启用列表过滤）、
   Spin 引擎（`spin.json` 读写、拓扑排序、子代理执行、验收判定、`/spin` 命令）、
@@ -47,10 +68,10 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
   所在机器**的睡眠 / 休眠——Windows `SetThreadExecutionState(ES_SYSTEM_REQUIRED)`、Linux
   `systemd-inhibit --what=idle:sleep`，都只要求系统不挂起、允许屏幕熄灭。远程工作区的长任务
   在远端执行，宿主那台机器睡不睡与它无关，因此这一份必须在 Core 进程里；Electron 宿主另有
-  一份同口径的实现（`DEVELOPMENT.md` 第 11.1 节）；
+  一份同口径的实现（[docs/host-matrix.md 第 12 节](host-matrix.md#12-宿主固有差异有意保留)）；
 - 全局配置与 MCP 配置的读写**不在** Core 侧：两者由 UI 持有，经
-  `hostEnvironmentProvided` 的配置快照下发（`docs/core-ui-separation.md` 第 4 节）；
-- 尚未迁入的部分见 `TODO.md`「已知缺口」；两套实现有意保留的差异见 `DEVELOPMENT.md` 第 13 章。
+  `hostEnvironmentProvided` 的配置快照下发（[docs/core-ui-separation.md 第 4 节](core-ui-separation.md#4-配置归-ui)）；
+- 尚未迁入的能力见第 9 节的「已知缺口」；两套实现有意保留的差异见 `docs/core-parity.md`。
 
 尚未迁入的能力在 Core 侧表现为明确的提示消息或缺失，不做静默降级。
 
@@ -79,7 +100,7 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
 产品名、可执行文件名与产物目录名一律取自 `src/config/project.json`；代码与 Rust 包名
 不出现产品名。
 
-事件词汇表的 owner 见 `docs/core-ui-separation.md` 第 2 节。
+事件词汇表的 owner 见 [docs/core-ui-separation.md 第 2 节](core-ui-separation.md#2-术语与事实来源)。
 
 ---
 
@@ -109,9 +130,9 @@ Core 侧业务按里程碑迁入 Core 进程（见 `TODO.md`）。当前：
   （`ripgrep/`，部署时提升为产品目录的共享位）；部署按指纹落槽位，见第 4.1 节。
 - 源码位置：`core-rs/`（Cargo 包，包名与二进制名保持中性；对外文件名由构建脚本按配置落位）。
 - 进程属性：由宿主启动时不显示窗口；标准输入 / 标准输出为帧通道，标准错误为诊断输出。
-  远程服务（`start` 动作）让 daemon 把控制通道换成 TCP（`docs/core-daemon.md` 第 12 节）。
+  远程服务（`start` 动作）让 daemon 把控制通道换成 TCP（[docs/core-daemon.md 第 12 节](core-daemon.md#12-远程服务start--kill)）。
 - 可独立运行：`--help` / `--version` 打印用法与版本；没有动作时按 `start` 处理
-  （`docs/core-daemon.md` 第 3 节）。
+  （[docs/core-daemon.md 第 3 节](core-daemon.md#3-进程形态)）。
 - 进程工作目录不作为业务事实；会话目录取自 `UiEvent`。
 - Core 进程创建的所有子进程（shell、ripgrep、git 等）都不显示控制台窗口；
   每次查询都不产生可见的窗口闪烁。
@@ -195,7 +216,7 @@ project.json 与各 crate 的包名，不改逻辑代码。
 - 宿主侧的启动、帧通道与契约不随平台变化。
 - 新增平台时只补产物目录与构建目标，不改契约与磁盘格式。
 
-平台差异的实际落点（审查口径，见 `TODO.md` M8-353）：
+平台差异的实际落点（审查口径）：
 
 | 关注点 | 落点 | 平台差异的处理 |
 | --- | --- | --- |
@@ -287,7 +308,7 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 - **用途**：部署按指纹落位槽位目录 `~/.local/share/<core.deployPrefix>/<指纹>/`
   （`coreDeployDirPath`：产品目录取 `src/config/project.json` 的 `core.deployPrefix` 把
   不同产品的槽位分开，指纹用完整 64 位，与按指纹命名的 daemon 状态 / 日志文件
-  （`core-daemon-<指纹>.*`，`docs/core-daemon.md` 第 12.3 节）同口径）；自带的
+  （`core-daemon-<指纹>.*`，[docs/core-daemon.md 第 12.3 节](core-daemon.md#123-状态文件)）同口径）；自带的
   `ripgrep/` 提升为产品目录的共享位（见第 4.1 节）。多版本 Core 在同一台
   机器上各占一个槽位、各跑一个 daemon，互不覆盖、互不换血；部署以「指纹槽位
   存在即同版本」为准，**不做产物哈希比对**——槽位存在就不再上传，缺失才部署
@@ -305,20 +326,20 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
   `ask` 表示「需要弹确认框」，由 Core 再发一次 `CoreRequest.userChoice` 取用户选择；
   权限结果的语义是「保持询问」而不是「拒绝」。
 - 载荷字段名与 TypeScript 类型逐项一致（`camelCase` 原样）。
-- `CoreEvent` 的每个 `type` 在两种实现下语义一致（`DEVELOPMENT.md` 第 4.1 节）。
+- `CoreEvent` 的每个 `type` 在两种实现下语义一致（[DEVELOPMENT.md 第 4.1 节](../DEVELOPMENT.md#41-coreeventcore--ui单向)）。
 - `CoreRequest` 的两个请求（`toolPermissionRequested` / `userChoice`）由 Core 发起、UI 应答。
 - `UiRequest` 的四个请求（`conversationListRequested` / `smartNamingRequested` /
   `balanceRequested` / `compactArchiveRequested`）由 UI 发起、Core 应答：
   宿主不直接读 core 的磁盘数据（第 10 节）。未知类型一律回 `ok:false` 的响应，
   不做静默降级。
 - 配置不走请求：Core 不读 `settings.json` / `mcp.json`，也不请求写配置；配置由 UI 经
-  `hostEnvironmentProvided` 的快照下发（`docs/core-ui-separation.md` 第 4 节）。
+  `hostEnvironmentProvided` 的快照下发（[docs/core-ui-separation.md 第 4 节](core-ui-separation.md#4-配置归-ui)）。
   设置面板的整段 mutation（provider 表 + `modelConfigs` 补齐 + 顶层默认值 + MCP
   默认启用列表）在 UI 侧执行，写盘后重新推整份快照——Core 侧没有「保存配置」这条通路。
 - Core 不感知语言：`hostEnvironmentProvided` 没有 locale 字段，也没有与语言相关的请求。
   Core 面向界面的文本以「键 + 参数」表达（`CoreEvent.notice`、内置命令描述），
-  翻译在 UI（`docs/core-ui-separation.md` 第 4.8 / 4.9 节）。
-- 边界语义沿用 `docs/core-ui-separation.md` 第 3.5 节，在帧通道上如此落地：
+  翻译在 UI（[docs/core-ui-separation.md 第 4.8 节](core-ui-separation.md#48-文本语言)/[第 4.9 节](core-ui-separation.md#49-瞬时状态通知)）。
+- 边界语义沿用 [docs/core-ui-separation.md 第 3.5 节](core-ui-separation.md#35-日志)，在帧通道上如此落地：
   - UI 侧 `onCoreEvents` 尚未注册时到达的 `CoreEvent` 先缓存，注册后按序补投；
   - 某 `UiEvent` 在 Core 侧无消费者 → 丢弃并记录；
   - `request()` 不内置超时；UI 侧未注册 `CoreRequest` 处理器时回 `ok: false` 的响应，
@@ -358,7 +379,7 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 3. UI 收到帧 `ready` 后，先发 `hostEnvironmentProvided`（含配置快照与 MCP 服务器表），
    再按原顺序发出排队的其它 `uiEvent`。
 4. Core 处理完 `hostEnvironmentProvided` 后发出 `CoreEvent.coreReady`；在此之前收到任何
-   `UiEvent` 都抛错（`docs/core-ui-separation.md` 第 7 节）。
+   `UiEvent` 都抛错（[docs/core-ui-separation.md 第 7 节](core-ui-separation.md#7-core-就绪)）。
 
 注意区分帧 `ready`（握手通过）与 `CoreEvent.coreReady`（Core 就绪）：前者是传输层事实，
 后者是 Core 业务状态。
@@ -395,7 +416,7 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 - **触发**：Core 进程在收到 `shutdown` 之前退出，或帧通道意外关闭。
 - **即时处理**：未决 `request` 全部 reject；Client 把受影响会话的在跑工作标记为失败，并写入
   一条错误消息。
-- **重启**：daemon 以退避策略重启 Core 进程（`docs/core-daemon.md` 第 5 节）；重启后重新
+- **重启**：daemon 以退避策略重启 Core 进程（[docs/core-daemon.md 第 5 节](core-daemon.md#5-生命周期与计数)）；重启后重新
   握手，重放 `hostEnvironmentProvided`（含配置快照），并对已打开的会话逐个发
   `conversationOpened`（会话工作目录由 Core 读 `meta.json` 的 `project` 自行恢复）。
 - **恢复**：会话数据在磁盘上，重启后按需重建引擎；进程内未落盘的在跑工作不恢复。
@@ -414,7 +435,7 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 
 ## 8. 事实归属
 
-Standalone Core 下，core 侧事实的归属与 `docs/core-ui-separation.md` 第 4、5 节一致。
+Standalone Core 下，core 侧事实的归属与 [docs/core-ui-separation.md 第 4 节](core-ui-separation.md#4-配置归-ui)、[第 5 节](core-ui-separation.md#5-core-的部署形态)一致。
 
 | 事实 | owner | 说明 |
 | --- | --- | --- |
@@ -453,11 +474,21 @@ Standalone Core 下，core 侧事实的归属与 `docs/core-ui-separation.md` �
 
 差异只在进程边界与资源定位，不在契约与磁盘格式。
 
+**已知缺口（Standalone 下暂不可用）**：
+
+| 能力 | 表现 |
+| --- | --- |
+| Responses API 的内置 Web Search | `apiType='Responses'` 可用，但不下发内置 `web_search` 工具，模型不会自动联网搜索（搜索卡片事件 `web_search_call` 也未迁入） |
+| 内置 `spin` 命令 | 只有 `design` 分支可用（依赖 Spin 引擎），其余分支提示不可用 |
+
+缺口能力在 Core 侧表现为明确的提示消息或缺失，不做静默降级；有意保留的行为差异不在此列
+（见 `docs/core-parity.md`）。
+
 ---
 
 ## 10. 宿主侧的 core 事实读取
 
-`DEVELOPMENT.md` 第 2 节规则 9 允许宿主直接 import core 的只读函数。Standalone Core 下，
+[DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)规则 9 允许宿主直接 import core 的只读函数。Standalone Core 下，
 core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数据。
 
 | 事实 | Embedded 下的读取 | Standalone 下的来源 |
@@ -504,7 +535,7 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 - UI 侧的界面表现与 webview 协议；
 - `embedded` 实现的改动；
 - daemon 的进程模型与协议（见 `docs/core-daemon.md`）；
-- 远程工作区与 endpoint 传输（见 `docs/client-connection.md` 第 9 节）。
+- 远程工作区与 endpoint 传输（见 [docs/client-connection.md 第 9 节](client-connection.md#9-落盘与恢复宿主侧)）。
 
 ---
 
@@ -538,14 +569,14 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | 总线适配器 | `src/host/standalone/StandaloneEventBus.ts` |
 | 进程管理（启动 / 重启 / 终止） | `src/host/standalone/CoreProcess.ts` |
 | daemon 客户端 | `src/host/standalone/CoreDaemon.ts`（建链器抽象，见 `docs/core-daemon.md`） |
-| SSH 接入（客户端 / 引导 / 建链） | `src/host/standalone/sshClient.ts`、`sshDaemonBootstrap.ts`、`sshTransport.ts`（见 `docs/core-daemon.md` 第 12.8 节） |
+| SSH 接入（客户端 / 引导 / 建链） | `src/host/standalone/sshClient.ts`、`sshDaemonBootstrap.ts`、`sshTransport.ts`（见 [docs/core-daemon.md 第 12.8 节](core-daemon.md#128-ssh-接入ssh-scheme)） |
 | 配置快照 | `src/host/SettingsStore.ts` |
 | 平台产物解析 | `src/host/standalone/coreBinary.ts`（产物目录 + 自带的 `ripgrep/`） |
 | bootstrap 分支 | `src/host/bootstrapCore.ts` |
 | 事件契约 | `src/core/AssistantEventBus.ts` |
 | Rust 包 | `core-rs/` |
 | 命令行（`--help` / `--version` / 模式） | `core-rs/src/cli.rs` |
-| 远程监听 / 目录列举 | `core-rs/src/remote.rs`（见 `docs/core-daemon.md` 第 12 节） |
+| 远程监听 / 目录列举 | `core-rs/src/remote.rs`（见 [docs/core-daemon.md 第 12 节](core-daemon.md#12-远程服务start--kill)） |
 | 构建目标参数化 | `core-rs/.cargo/config.toml`、`scripts/build-core.mjs`（平台矩阵 `TARGETS`、打包集 `PACKAGE_DIRS`） |
 | 分发产物 | `resources/core/<platform>-<arch>/`（可执行文件 + 自带的 `ripgrep/`） |
 

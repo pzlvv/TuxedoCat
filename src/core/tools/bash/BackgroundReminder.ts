@@ -370,7 +370,7 @@ export function isBackgroundFallbackReminderDue(taskId: string, now: number = Da
  *
  * 两个写入点：查询结束兜底投递时（sleep 豁免每个任务只走一次，否则查询结束每轮命中）、
  * 手工转后台转换成功时（任务刚注册就兜底会拉起新一轮，违背暂停语义——
- * `docs/manual-background.md` 第 1.4 节）。
+ * `docs/background-bash.md` 第 1.4 节）。
  */
 export function markBackgroundTasksFallbackReminded(taskIds: readonly string[]): void {
   for (const taskId of taskIds) {

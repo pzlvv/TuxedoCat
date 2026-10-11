@@ -463,11 +463,11 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
             // 记一条 log 事件暴露，不静默回落（`docs/core-ui-separation.md` 第 4.4 节）。
             match settings::apply_from_host_environment(&event) {
                 Ok(mcp_defaults_changed) => {
-                    // 快照就是就绪判据：应用完才算就绪（第 7 节）。宿主据此判定
+                    // 快照就是就绪判据：应用完才算就绪（`docs/core-ui-separation.md` 第 7 节）。宿主据此判定
                     // 「Core 已跟上最新配置」，每次重新推送快照后都会再收到一次。
                     emit(core, json!({ "type": "coreReady" }));
                     // MCP 全局默认启用列表变了：让所有已注册会话按新的默认值重同步连接。
-                    // 配置变更只经快照到达 core（第 4.5 节），没有单独的通知事件。
+                    // 配置变更只经快照到达 core（`docs/core-ui-separation.md` 第 4.5 节），没有单独的通知事件。
                     if mcp_defaults_changed {
                         crate::mcp::sync_all_sessions();
                     }

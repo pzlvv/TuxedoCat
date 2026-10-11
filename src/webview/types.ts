@@ -228,7 +228,7 @@ export interface TokenRankingItem {
 /**
  * core 推送的会话运行时状态（`sessionRuntimeStates` 的 webview 侧投影）。
  *
- * 与 core `SessionRuntimeState` 字段一致：根事实 + 派生 `idle`（第 4.5 节）。
+ * 与 core `SessionRuntimeState` 字段一致：根事实 + 派生 `idle`（`DEVELOPMENT.md` 第 4.5 节）。
  * 流水灯读 `idle` / `waiting`；abort 按钮经 `resolveAbortButtonState` 读根事实
  * （`docs/abort-button.md`）。
  */

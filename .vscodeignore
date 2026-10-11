@@ -24,4 +24,4 @@
 # 说明与许可证（vsce 会读取并重命名为 readme.md / LICENSE.txt）
 !README.md
 !LICENSE
-!CHANGELOG.md
+# CHANGELOG.md 待首次对外发版时建立（Keep a Changelog 格式）后再加入白名单

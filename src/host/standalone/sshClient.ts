@@ -7,7 +7,7 @@
  * 本模块是 host 层：不 import `vscode` / `electron`，两个宿主都能用。
  *
  * 主机密钥校验（TOFU）：首次连接把指纹记进 `~/<configDir>/known-hosts.json`，
- * 之后指纹不一致直接失败——不做「忽略校验」的静默降级（`DEVELOPMENT.md` 第 12 章）。
+ * 之后指纹不一致直接失败——不做「忽略校验」的静默降级（`DEVELOPMENT.md` 第 5 章）。
  * 指纹变更由宿主弹告警、用户比对确认后经 `recordKnownHostFingerprint` 重建信任，
  * 模块本身不提供「跳过校验」的连接方式。
  */

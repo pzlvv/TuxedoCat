@@ -25,34 +25,13 @@
 
 ## 目录结构
 
-```text
-.
-├── assets/                 # 图标等静态资源
-├── core-rs/                # Standalone Core（Rust，独立进程）
-├── electron/               # Electron 桌面端代码
-├── resources/              # 运行时二进制资源（Git LFS）
-│   ├── core/               # Standalone Core 各平台产物目录（可执行文件 + 自带的 ripgrep/）
-│   └── ripgrep/            # ripgrep 各平台可执行文件（Embedded Core 用；也是上一条的来源）
-├── scripts/                # 开发/打包辅助脚本
-├── src/
-│   ├── config/             # 工程配置
-│   ├── core/               # 核心对话/查询引擎
-│   ├── host/               # UI Host 抽象
-│   ├── test/               # 测试
-│   ├── utils/              # 工具函数
-│   ├── webview/            # VS Code Webview UI
-│   └── VSCodeUI/           # VS Code UI 集成
-├── .gitattributes          # Git LFS 配置
-├── electron-builder.config.js
-├── package.json
-└── vite.config.ts
-```
+目录布局与各路径的唯一事实在 [DEVELOPMENT.md 第 1.3 节](DEVELOPMENT.md#13-目录布局)，此处不再重复。
 
 ## 环境要求
 
 - Node.js 18+
 - npm 9+
-- Rust 工具链（构建 Standalone Core；目标矩阵见 `docs/standalone-core.md` 第 4.1 节）
+- Rust 工具链（构建 Standalone Core；目标矩阵见 [docs/standalone-core.md 第 4.1 节](docs/standalone-core.md#41-平台矩阵)）
 - Git LFS（克隆后拉取 `resources/` 下的大文件）
 
 ## 快速开始
@@ -111,7 +90,7 @@ cd core-rs && cargo test
 - daemon 只监听目标机器的回环地址、端口交给内核分配，用户不需要填任何连接信息；
 - 连接成功后**立刻**弹出远端目录选择器，选定目录即作为远程工作区打开。
 
-细节见 `docs/core-daemon.md` 第 12 节。
+细节见 [docs/core-daemon.md 第 12 节](docs/core-daemon.md#12-远程服务start--kill)。
 
 Standalone Core 的 `start` / `kill` 仍是可用的命令行入口：`start` 确保后台 daemon 在跑
 （没有就拉起）并打印就绪信息后自己退出，`kill` 结束它。不带动作直接运行可执行文件同样
@@ -144,6 +123,14 @@ daemon 只监听回环，访问边界就是承载它的 SSH 通道：不需要�
 > 助手回复里的 mermaid 代码块走的是另一条路径（webview 内「预览」按钮 → 宿主原生
 > 窗口），见 `docs/user-stories.md`。
 
+## 文档
+
+- `docs/README.md` —— 文档地图：全部规格的索引与「什么内容写到哪」的分类法
+- `DEVELOPMENT.md` —— 架构总纲：分层规则、事件词汇表、架构原则
+- `AGENTS.md` —— AI 协作约定（也适用于人类贡献者）
+- `docs/adr/` —— 架构决策记录（ADR）
+- 文档一致性守卫 `src/test/docsLint.test.ts`：CI 在每个 PR 上运行（`.github/workflows/docs.yml`），本地 `npm run test:all -- docs-lint`
+
 ## 打包
 
 ```bash
@@ -169,6 +156,20 @@ npm run package:app:embedded
 变体由构建期环境变量 `<envPrefix>_<core.envVarSuffix>` 选择，产物分开落位、互不覆盖：
 standalone → `release/`，embedded → `release/embedded/`。embedded 变体不构建
 也不打包 Rust Core。
+
+`npm run package:x64` 产出与 `npm run package` 同一组发布物，但按架构分发的安装器
+只出 x64：Electron 安装包只出 NSIS x64（`package:app:x64`），TUI 安装器只出 x64
+两平台（`package:tui:x64`）。`.vsix` 架构无关，包里携带的 Core 是远端 SSH 部署
+载荷（不分本机架构），不受 x64 限定影响：
+
+```bash
+# 全量发布物，但安装器只出 x64
+npm run package:x64
+
+# 只出其中一种的 x64 版本
+npm run package:app:x64
+npm run package:tui:x64
+```
 
 Standalone 变体的包里要同时有 Windows 与 Linux 两个 core，而 `build:core` 只编当前
 平台，所以 Linux core 要先单独构建：

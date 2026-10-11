@@ -63,6 +63,7 @@
     "watch:app": "node scripts/watch-app.js",
     "watch:ext": "node scripts/watch-ext.js",
     "package": "npm run package:ext && npm run package:app && npm run package:tui",
+    "package:x64": "npm run package:ext && npm run package:app:x64 && npm run package:tui:x64",
     "package:embedded": "node scripts/run-with-core-kind.mjs embedded run package",
     "package:ext": "npm run vscode:prepublish && node scripts/verify-core-artifacts.mjs && node scripts/package-ext.mjs",
     "package:ext:embedded": "node scripts/run-with-core-kind.mjs embedded run package:ext",
@@ -101,7 +102,9 @@
     "electron": "node scripts/electron-launch.js",
     "electron:debug": "node scripts/electron-launch.js --inspect=9229",
     "dev:electron": "npm run build:core:debug && npm run build:webview && npm run copy-assets && npm run build:electron && node scripts/electron-launch.js",
-    "package:app": "npm run build:core && npm run build:webview && npm run copy-assets && node scripts/verify-core-artifacts.mjs && npm run build:electron:prod && electron-builder --config electron-builder.config.js && node scripts/verify-nsis-payload.mjs",
+    "package:app:build": "npm run build:core && npm run build:webview && npm run copy-assets && node scripts/verify-core-artifacts.mjs && npm run build:electron:prod",
+    "package:app": "npm run package:app:build && electron-builder --config electron-builder.config.js && node scripts/verify-nsis-payload.mjs",
+    "package:app:x64": "npm run package:app:build && electron-builder --config electron-builder.config.js --win nsis:x64 && node scripts/verify-nsis-payload.mjs",
     "package:app:embedded": "node scripts/run-with-core-kind.mjs embedded run package:app",
     "package:electron": "npm run package:app",
     "demo": "tsc -p tsconfig.test.json && node out/test/vscode-diff-demo.js",
@@ -113,6 +116,7 @@
     "build:tui": "cargo build --release --manifest-path tui-rs/Cargo.toml",
     "tui": "cargo run --release --manifest-path tui-rs/Cargo.toml",
     "package:tui": "npm run build:tui && node scripts/build-tui-installer.mjs",
+    "package:tui:x64": "npm run build:tui && node scripts/build-tui-installer.mjs --arch x64",
     "test:e2e:tui": "playwright test -c e2e/playwright.config.ts --project=tui-installer"
   },
   "devDependencies": {

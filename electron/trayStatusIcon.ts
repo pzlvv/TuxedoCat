@@ -186,7 +186,7 @@ export function createTrayStatusIcon(
  * 忙闲判定收敛在 core 的 `sessionBusyLevel`（与标签页流水灯 / 关闭确认同一份派生）；
  * 这里只做聚合（任一会话 waiting 即托盘 waiting，否则任一非 idle 即 running）。
  * 托盘是聚合状态，吃 SessionRuntimeState[] 全量推送，不从对话列表（磁盘元数据）
- * 推导（DEVELOPMENT.md 第 5.4 节规则 8）。
+ * 推导（docs/contracts.md 第 4 节规则 8）。
  */
 export function deriveTrayStatusFromStates(states: ReadonlyArray<{ idle?: boolean; waiting?: boolean }>): TrayStatus {
   let running = false;
