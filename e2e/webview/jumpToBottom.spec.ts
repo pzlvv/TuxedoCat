@@ -5,9 +5,10 @@ import type { WebviewHandle } from '../helpers/webviewHarness';
 /**
  * US-47 跳到底部按钮（US-47，规格 docs/hosts/webview-ui.md 第 11 节）
  *
- * 场景级：压低视口 + 长回复撑高消息列表，真实滚轮向上滚离底部（按钮显隐依赖
- * 「不在底部 && 用户主动滚离」，程序化 scrollTop 不带用户输入、不触发），点击按钮
- * 回底并恢复自动跟随。显隐与钉底判定均断言真实 DOM 状态。
+ * 场景级：压低视口 + 长回复撑高消息列表，真实滚轮驱动显隐。显示触发源仅限「一次向下
+ * 滚动手势累计位移 > 可视高度 1/3 且不在底部」（键盘 / 滚动条拖动 / 触摸不触发，向上
+ * 滚不触发）；按钮右下角常驻挂载、opacity 淡入淡出——显隐断言一律用 data-hidden 属性
+ * （opacity:0 在 Playwright 中仍算 visible，不能用 toBeVisible/toBeHidden）。
  */
 
 let handle: WebviewHandle;
@@ -20,38 +21,163 @@ test.afterEach(async () => {
   await handle.close();
 });
 
-test('US-47 底部不显示按钮；滚离后浮现；点击回底并隐藏', async () => {
-  const { page, host } = handle;
+/** 撑高消息列表并等回复播完（fakeHost 分块固定 ~6 块，文本长度不影响流式时长） */
+async function setupTallConversation(page: import('@playwright/test').Page): Promise<void> {
+  const { host } = handle;
   await page.setViewportSize({ width: 1280, height: 500 });
-  await host.setTurn({ text: '段落内容，用于撑高消息列表。'.repeat(200), chunkDelayMs: 5 });
+  await host.setTurn({ text: '段落内容，用于撑高消息列表。'.repeat(3000), chunkDelayMs: 5 });
   await page.fill('textarea.input-textarea', '撑高列表');
   await page.press('textarea.input-textarea', 'Enter');
+  await expect(page.locator('button[title="终止"]')).toBeDisabled({ timeout: 30_000 });
+}
 
-  // 回复播完、自动跟随停在底部：按钮不显示
-  await expect(page.locator('button[title="终止"]')).toBeDisabled({ timeout: 20_000 });
-  const jump = page.locator('button[data-jump-to-bottom="true"]');
-  await expect(jump).toBeHidden();
-
-  // 真实滚轮向上滚离底部：按钮浮现（高负载下 wheel→scroll→render 可能丢帧，整体重试）
-  await expect(async () => {
-    await page.mouse.move(640, 200);
-    await page.mouse.wheel(0, -400);
-    await expect(jump).toBeVisible({ timeout: 2_000 });
-  }).toPass({ timeout: 20_000 });
-  const scrolledUp = await page.evaluate(() => {
+/** 断言消息列表当前不在底部（可选最小距离，避开 2px 判定带） */
+async function expectAwayFromBottom(page: import('@playwright/test').Page, minDistance = 2): Promise<void> {
+  const away = await page.evaluate((min) => {
     const el = document.querySelector('.messages-container');
     if (!el) return false;
-    return el.scrollTop + el.clientHeight < el.scrollHeight - 2;
-  });
-  expect(scrolledUp).toBe(true);
+    return el.scrollHeight - el.scrollTop - el.clientHeight > min;
+  }, minDistance);
+  expect(away).toBe(true);
+}
 
-  // 点击：回到底部（钉底判定）+ 按钮隐藏（userScrolledAway 复位、自动跟随恢复）
+test('US-47 底部不显示；向上滚不触发；向下达标手势显示；点击回底并隐藏', async () => {
+  const { page } = handle;
+  await setupTallConversation(page);
+  const jump = page.locator('button[data-jump-to-bottom="true"]');
+
+  // 回复播完、自动跟随停在底部：按钮不显示
+  await expect(jump).toHaveAttribute('data-hidden', '');
+
+  // 真实滚轮向上滚离底部：不再触发显示（触发源仅限向下的滚轮手势）；
+  // 高负载下 wheel→scroll 可能丢帧，滚动到位断言整体重试
+  await expect(async () => {
+    await page.mouse.move(640, 200);
+    await page.mouse.wheel(0, -800);
+    await page.mouse.wheel(0, -800);
+    await page.mouse.wheel(0, -800);
+    await expectAwayFromBottom(page, 500);
+  }).toPass({ timeout: 20_000 });
+  await page.waitForTimeout(300);
+  await expect(jump).toHaveAttribute('data-hidden', '');
+
+  // 向下达标手势：两次 400px 连滚（间隔远小于 150ms 手势阈值）累计远超可视高度 1/3 → 淡入显示；
+  // 环内同时断言未触底，防止重试累计下滚意外到底造成假通过
+  await expect(async () => {
+    await page.mouse.move(640, 200);
+    await page.mouse.wheel(0, 400);
+    await page.mouse.wheel(0, 400);
+    await expectAwayFromBottom(page, 800);
+    await expect(jump).not.toHaveAttribute('data-hidden');
+  }).toPass({ timeout: 20_000 });
+
+  // 等淡入过渡（150ms）结束后再取样式：shown 一通过就立即读，透明度还在过渡起点附近
+  await page.waitForTimeout(250);
+
+  // 显示期间：右下角定位（距右缘 / 底缘 12px，±2px 舍入）+ opacity 过渡声明（≤200ms 上界）
+  const box = await page.locator('.messages-container').boundingBox();
+  const jumpBox = await jump.boundingBox();
+  expect(box).not.toBeNull();
+  expect(jumpBox).not.toBeNull();
+  expect(Math.abs((jumpBox!.x + jumpBox!.width) - (box!.x + box!.width - 12))).toBeLessThanOrEqual(2);
+  expect(Math.abs((jumpBox!.y + jumpBox!.height) - (box!.y + box!.height - 12))).toBeLessThanOrEqual(2);
+  const style = await jump.evaluate((el) => {
+    const cs = getComputedStyle(el);
+    return { property: cs.transitionProperty, duration: cs.transitionDuration, opacity: cs.opacity };
+  });
+  expect(style.opacity).toBe('1');
+  expect(style.property).toContain('opacity');
+  const durations = style.duration.split(',').map((d) => parseFloat(d));
+  expect(Math.max(...durations)).toBeGreaterThan(0);
+  expect(Math.max(...durations)).toBeLessThanOrEqual(0.2);
+
+  // 点击：回到底部（钉底判定）+ 按钮隐藏（自动跟随恢复）
   await jump.click();
-  await expect(jump).toBeHidden({ timeout: 5_000 });
+  await expect(jump).toHaveAttribute('data-hidden', '');
   const pinned = await page.evaluate(() => {
     const el = document.querySelector('.messages-container');
     if (!el) return false;
     return el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
   });
   expect(pinned).toBe(true);
+});
+
+test('US-47 单次小幅滚动与键盘 PageDown 不触发显示', async () => {
+  const { page } = handle;
+  await setupTallConversation(page);
+  const jump = page.locator('button[data-jump-to-bottom="true"]');
+
+  // 大幅上滚留足余量：保证 PageDown 后仍远离底部，区分「键盘不触发」与「到底隐藏」
+  await expect(async () => {
+    await page.mouse.move(640, 200);
+    await page.mouse.wheel(0, -800);
+    await page.mouse.wheel(0, -800);
+    await page.mouse.wheel(0, -800);
+    await page.mouse.wheel(0, -800);
+    await expectAwayFromBottom(page, 1500);
+  }).toPass({ timeout: 20_000 });
+
+  // 停顿超过手势阈值（150ms）后单次小幅下滚：累计不足可视高度 1/3，不显示
+  await page.waitForTimeout(200);
+  await page.mouse.move(640, 200);
+  await page.mouse.wheel(0, 80);
+  await page.waitForTimeout(150);
+  await expect(jump).toHaveAttribute('data-hidden', '');
+
+  // 键盘 PageDown：把焦点放进滚动容器后真实按键（无 wheel 输入 → 不触发）
+  await page.evaluate(() => {
+    const el = document.querySelector('.messages-container') as HTMLElement | null;
+    if (el) {
+      el.setAttribute('tabindex', '-1');
+      el.focus();
+    }
+  });
+  const before = await page.evaluate(() => (document.querySelector('.messages-container') as HTMLElement)?.scrollTop ?? 0);
+  await page.keyboard.press('PageDown');
+  await page.waitForTimeout(150);
+  // 防假阳性：PageDown 确实向下滚动了且仍未到底
+  const after = await page.evaluate(() => {
+    const el = document.querySelector('.messages-container') as HTMLElement | null;
+    if (!el) return { scrollTop: 0, away: false };
+    return {
+      scrollTop: el.scrollTop,
+      away: el.scrollHeight - el.scrollTop - el.clientHeight > 500,
+    };
+  });
+  expect(after.scrollTop).toBeGreaterThan(before);
+  expect(after.away).toBe(true);
+  await expect(jump).toHaveAttribute('data-hidden', '');
+});
+
+test('US-47 滚动条拖动按下即隐藏且不恢复', async () => {
+  const { page } = handle;
+  await setupTallConversation(page);
+  const jump = page.locator('button[data-jump-to-bottom="true"]');
+
+  // 达标手势先让按钮显示
+  await expect(async () => {
+    await page.mouse.move(640, 200);
+    await page.mouse.wheel(0, -800);
+    await page.mouse.wheel(0, -800);
+    await page.mouse.wheel(0, -800);
+    await page.mouse.wheel(0, 400);
+    await page.mouse.wheel(0, 400);
+    await expect(jump).not.toHaveAttribute('data-hidden');
+  }).toPass({ timeout: 20_000 });
+
+  // 在滚动条槽（容器右缘内 3px）按下：按钮立即隐藏（Chromium 把滚动条事件派发给容器本身）
+  const box = await page.locator('.messages-container').boundingBox();
+  expect(box).not.toBeNull();
+  const sbX = box!.x + box!.width - 3;
+  const sbY = box!.y + box!.height / 2;
+  await page.mouse.move(sbX, sbY);
+  await page.mouse.down();
+  await expect(jump).toHaveAttribute('data-hidden', '');
+
+  // 拖动 / 松开过程与结束后均不恢复（拖动产生的滚动没有 wheel 输入）
+  await page.mouse.move(sbX, sbY - 60, { steps: 5 });
+  await page.mouse.up();
+  await page.waitForTimeout(200);
+  await expect(jump).toHaveAttribute('data-hidden', '');
+  await expectAwayFromBottom(page);
 });

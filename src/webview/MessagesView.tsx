@@ -919,6 +919,11 @@ const MessageItem = memo(function MessageItem({
  */
 const MESSAGES_CONTAINER_PADDING_TOP = 16;
 
+/** 滚动手势分隔阈值（docs/hosts/webview-ui.md 第 11 节）：相邻向下滚轮输入间隔不超过
+ * 该值归入同一次手势（典型滚轮连滚 / 触摸板惯性事件间隔 20–80ms），停顿超过即视为
+ * 新手势——「一次滚动超过可视高度 1/3 才显示跳到底部按钮」以单次手势为判定单元。 */
+const WHEEL_GESTURE_GAP_MS = 150;
+
 /** 用户消息折叠后的最大高度：原 180px 的 40% */
 const USER_MESSAGE_COLLAPSED_HEIGHT = 72;
 /** 折叠渐隐遮罩高度：随折叠高度同比缩小（原 50px 的 40%） */
@@ -1002,9 +1007,12 @@ function useAutoScroll(
   hasRunningTools: boolean,
   forceScrollKey?: number,
   externalUserScrolledAwayRef?: React.MutableRefObject<boolean>,
-  /** 底部状态回调（docs/hosts/webview-ui.md 第 11 节）：每次 scroll 事件都上报 atBottom；显隐由
-      消费方结合「用户主动滚离」求值（瞬时的内容增长不算滚离，避免流式期间闪现） */
+  /** 底部状态回调（docs/hosts/webview-ui.md 第 11 节）：每次 scroll 事件都上报 atBottom；
+      消费方据此在回底时隐藏跳到底部按钮 */
   onAtBottomChange?: (atBottom: boolean) => void,
+  /** 滚动手势达标回调（docs/hosts/webview-ui.md 第 11 节）：消息区内一次向下滚动手势的
+      累计滚动位移超过可视高度 1/3 且用户已滚离时触发；跳到底部按钮的唯一显示入口 */
+  onWheelGestureThreshold?: () => void,
 ) {
   const isAtBottomRef = useRef(true);
   /**
@@ -1014,6 +1022,10 @@ function useAutoScroll(
    */
   const internalUserScrolledAwayRef = useRef(false);
   const userScrolledAwayRef = externalUserScrolledAwayRef ?? internalUserScrolledAwayRef;
+  /** 最近一次向下滚轮输入的时刻：与 WHEEL_GESTURE_GAP_MS 一起划分手势边界 */
+  const lastWheelDownTimeRef = useRef(0);
+  /** 当前滚动手势内累计的实际向下滚动位移（scroll 监听按手势窗口累加 scrollTop 增量） */
+  const wheelGestureAccumRef = useRef(0);
 
   /** Force-scroll to bottom. Called by ResizeObserver and useLayoutEffect. */
   /** Ref to prevent duplicate rAF scroll-sync when called multiple times per frame */
@@ -1110,6 +1122,20 @@ function useAutoScroll(
         userScrolledAwayRef.current = true;
         profileLog(`[AutoScroll] wheel STOP userScrolledAway=true deltaY=${event.deltaY} distance=${distanceFromBottom.toFixed(1)}`);
       }
+      // 滚动手势跟踪（docs/hosts/webview-ui.md 第 11 节）：只有消息区内的连续向下滚轮
+      // 输入构成一次手势——其他面板的滚轮不参与；向上 / 横向滚轮清零累计；向下输入
+      // 间隔超过 WHEEL_GESTURE_GAP_MS 视为新一次手势，清零后重新累计。
+      const targetInContainer = event.target instanceof Node && container.contains(event.target);
+      if (!targetInContainer) return;
+      if (event.deltaY <= 0) {
+        wheelGestureAccumRef.current = 0;
+        return;
+      }
+      const now = performance.now();
+      if (now - lastWheelDownTimeRef.current > WHEEL_GESTURE_GAP_MS) {
+        wheelGestureAccumRef.current = 0;
+      }
+      lastWheelDownTimeRef.current = now;
     };
     // 拖拽中（滚动条拖动、触摸滑动、选择文本等）持续刷新输入时间。
     // pointerdown/touchstart 只在起始瞬间记录一次，拖动超过 1s 后 scroll 监听的
@@ -1164,6 +1190,8 @@ function useAutoScroll(
       if (distanceFromBottom <= 2) {
         // At the very bottom — resume auto-scroll
         userScrolledAwayRef.current = false;
+        // 回底即结束当前手势：下一次从底部出发的向下滚动重新累计（docs/hosts/webview-ui.md 第 11 节）
+        wheelGestureAccumRef.current = 0;
       } else if (!programmaticScrollPendingRef.current && distanceFromBottom > 2 && scrollTop < lastScrollTop - 2) {
         // 只要附近存在真实用户滚动输入且确实在向上滚，离开底部超过 2px（判定带
         // 之外）就算用户主动滚离——用户操作即使微小也不该被自动滚动拉回。
@@ -1179,12 +1207,27 @@ function useAutoScroll(
           profileLog(`[AutoScroll] scroll MARK userScrolledAway=true distance=${distanceFromBottom.toFixed(1)} scrollTop=${scrollTop} lastInputAge=${(performance.now() - lastUserScrollInputRef.current).toFixed(0)}ms`);
         }
       }
+      // 滚动手势累计（docs/hosts/webview-ui.md 第 11 节）：手势窗口活跃且用户已滚离时，
+      // 向下的实际滚动位移计入累计。用户已滚离时自动滚动全被抑制，此时的向下位移必为
+      // 用户滚轮输入所致——流式跟随 / overflow-anchor 的程序化位移不会污染累计；
+      // 键盘 / 拖动 / 触摸产生的滚动没有 wheel 输入、手势窗口不活跃，同样被排除。
+      // 达标即通知（消费方 React 同值 setState 去重）。
+      if (
+        scrollTop > lastScrollTop
+        && userScrolledAwayRef.current
+        && performance.now() - lastWheelDownTimeRef.current <= WHEEL_GESTURE_GAP_MS
+      ) {
+        wheelGestureAccumRef.current += scrollTop - lastScrollTop;
+        if (wheelGestureAccumRef.current > clientHeight / 3) {
+          onWheelGestureThreshold?.();
+        }
+      }
       lastScrollTop = scrollTop;
       // 无真实输入的微小离开（布局/锚点调整）保持原状态：置位分支的方向与输入
       // 时间双重过滤已把伪滚动排除，这里不再需要额外迟滞带
       profileLog(`[AutoScroll] scroll event scrollTop=${scrollTop}/${scrollHeight} ch=${clientHeight} distance=${distanceFromBottom.toFixed(1)} atBottom=${isAtBottomRef.current} pending=${programmaticScrollPendingRef.current} userScrolledAway=${userScrolledAwayRef.current}`);
-      // 跳到底部按钮的显隐信号（docs/hosts/webview-ui.md 第 11 节）：放在 userScrolledAway 更新之后，
-      // 消费方按「不在底部 && 用户主动滚离」求值，首次滚离那一帧就是正确状态
+      // 跳到底部按钮的回底信号（docs/hosts/webview-ui.md 第 11 节）：放在 userScrolledAway 更新之后，
+      // 消费方据 atBottom=true 隐藏按钮，强制回底（会话切换 / 点击按钮）落入同一分支
       onAtBottomChange?.(atBottom);
     };
 
@@ -1194,7 +1237,7 @@ function useAutoScroll(
     return () => {
       container.removeEventListener('scroll', handleScroll);
     };
-  }, [containerRef, onAtBottomChange]);
+  }, [containerRef, onAtBottomChange, onWheelGestureThreshold]);
 
   // ── ResizeObserver: fallback for multi-frame content rendering ─────
   // Observes the container itself — when any child content expands/contracts,
@@ -1867,15 +1910,39 @@ const MessagesView = memo(({
     [messages],
   );
 
-  // 跳到底部按钮的显隐（docs/hosts/webview-ui.md 第 11 节）：「不在底部」且「用户主动滚离」同时成立
-  // 才显示——流式内容增长造成的瞬时离底（无用户输入、自动跟随随即回底）不显示，
-  // 避免按钮逐帧闪烁；回调每次 scroll 都触发，React 同值 setState 自动去重。
-  // 会话切换的强制回底（distance ≤ 2）会把两个条件都带回 false
-  const [notAtBottom, setNotAtBottom] = useState(false);
+  // 跳到底部按钮的显隐（docs/hosts/webview-ui.md 第 11 节）：唯一显示入口是 useAutoScroll 的
+  // 手势达标回调——消息区内一次向下滚动手势累计位移超过可视高度 1/3 且用户已滚离
+  // （键盘 / 滚动条拖动 / 触摸产生的滚动没有滚轮输入，不触发）；回底（distance ≤ 2）、
+  // 滚动条拖动按下、点击按钮任一即隐藏。流式内容增长没有滚轮输入，天然不显示；
+  // 达标回调随每次 scroll 触发，React 同值 setState 自动去重；会话切换的强制回底落入回底分支。
+  const [jumpVisible, setJumpVisible] = useState(false);
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
-    setNotAtBottom(!atBottom && userScrolledAwayRefProp?.current === true);
-  }, [userScrolledAwayRefProp]);
-  const { userScrolledAwayRef, scrollToBottom } = useAutoScroll(containerRef, isStreaming, hasRunningTools, forceScrollKey, userScrolledAwayRefProp, handleAtBottomChange);
+    if (atBottom) setJumpVisible(false);
+  }, []);
+  const handleWheelGestureThreshold = useCallback(() => {
+    setJumpVisible(true);
+  }, []);
+  const { userScrolledAwayRef, scrollToBottom } = useAutoScroll(containerRef, isStreaming, hasRunningTools, forceScrollKey, userScrolledAwayRefProp, handleAtBottomChange, handleWheelGestureThreshold);
+
+  // 滚动条拖动按下即隐藏（docs/hosts/webview-ui.md 第 11 节）：Chromium 把原生滚动条上的
+  // 指针事件派发给滚动容器本身且 offsetX 落在滚动条槽（offsetX >= clientWidth），子元素上的
+  // 按下（文本选择等）与消息区背景点击不命中，不会误伤；pointerdown/mousedown 双监听兜
+  // Chromium 版本差异。拖动产生的 scroll 没有 wheel 输入，不会重新触发显示，拖动结束也不恢复。
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const hideOnScrollbarPress = (event: Event) => {
+      if (event.target !== container) return;
+      if ((event as MouseEvent).offsetX < container.clientWidth) return;
+      setJumpVisible(false);
+    };
+    container.addEventListener('pointerdown', hideOnScrollbarPress);
+    container.addEventListener('mousedown', hideOnScrollbarPress);
+    return () => {
+      container.removeEventListener('pointerdown', hideOnScrollbarPress);
+      container.removeEventListener('mousedown', hideOnScrollbarPress);
+    };
+  }, [containerRef]);
 
   // 用户展开 thinking / Edit diff / Write 预览 / 用户长消息时，
   // 先暂停自动滚动，避免 ResizeObserver 在展开后立刻把视口拉回底部，
@@ -2198,25 +2265,34 @@ const MessagesView = memo(({
 
   return (
     <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
-      {/* 跳到底部（docs/hosts/webview-ui.md 第 11 节）：滚离底部时浮现，点击回底并恢复自动跟随。
-          绝对定位在滚动容器底部居中（视觉上在输入框上方）；纯定位操作，无未读信息。 */}
-      {notAtBottom && !isEmpty && (
+      {/* 跳到底部（docs/hosts/webview-ui.md 第 11 节）：一次向下滚动手势累计位移超过可视高度
+          1/3 且不在底部时从右下角淡入，点击回底并恢复自动跟随；滚动条拖动按下即隐藏。
+          常驻挂载 + opacity/pointer-events 过渡实现淡入淡出（条件渲染做不了淡出），隐藏态
+          不进 a11y 树、不可聚焦、不拦截下层点击；data-hidden 供 e2e 做确定性显隐断言
+          （opacity:0 在 Playwright 中仍算 visible）。纯定位操作，无未读信息。 */}
+      {!isEmpty && (
         <button
           type="button"
           data-jump-to-bottom="true"
+          data-hidden={!jumpVisible ? '' : undefined}
           onClick={() => {
-            // 恢复自动跟随（清滚离抑制）+ 强制回底；按钮显隐由随后的 scroll 事件翻转驱动
+            // 恢复自动跟随（清滚离抑制）+ 强制回底；显隐由本回调直接收起
             userScrolledAwayRef.current = false;
             scrollToBottom(true);
-            setNotAtBottom(false);
+            setJumpVisible(false);
           }}
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 w-7 h-7 rounded-full flex items-center justify-center transition-all hover:brightness-110"
+          className="absolute bottom-3 right-3 z-10 w-7 h-7 rounded-full flex items-center justify-center hover:brightness-110"
           style={{
             backgroundColor: colors.bgSecondary,
             border: `1px solid ${colors.border}`,
             color: colors.textSystem,
             boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
+            opacity: jumpVisible ? 1 : 0,
+            pointerEvents: jumpVisible ? 'auto' : 'none',
+            transition: 'opacity 150ms ease, filter 150ms ease',
           }}
+          aria-hidden={!jumpVisible}
+          tabIndex={jumpVisible ? 0 : -1}
           title={t('messages.jumpToBottom')}
           aria-label={t('messages.jumpToBottom')}
         >
