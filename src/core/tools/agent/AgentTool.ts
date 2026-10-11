@@ -15,6 +15,7 @@
 import { z } from 'zod';
 import type { ToolUseContext, ToolResult, PermissionResult } from '../Tool.js';
 import { buildTool, MAX_RESULT_SIZE_CHARS } from '../Tool.js';
+import type { QueryEngine } from '../../QueryEngine.js';
 import { TOOL_NAME, DESCRIPTION, getPrompt, buildAgentCommunicationSection } from './Prompt.js';
 import type { AgentToolInput, AgentToolOutput } from './Types.js';
 import { inputSchema, outputSchema } from './Types.js';
@@ -23,11 +24,15 @@ import { requireEventBus } from '../../AssistantEventBus.js';
 import { logger } from '../../Logger.js';
 import { markSessionParent } from '../../sessionRuntime.js';
 import { subAgentRegistry } from './SubAgentRegistry.js';
+import { acquireSlot, releaseSlot } from './SubagentSlots.js';
 
 /** core → UI 单向事件的发送侧封装（AgentTool 统一走它） */
 function emitToUi(event: CoreEvent): void {
   requireEventBus().emitToUi(event);
 }
+
+/** 排队等待期间被中止的工具结果文案（与 RunTools 批取消的中止文案逐字一致） */
+const CANCELED_RESULT_MESSAGE = 'Tool was canceled due to abort';
 
 /**
  * 检查子代理引擎的消息中，在最后一个"真正的用户输入"之后是否有 Reply 工具调用。
@@ -233,7 +238,10 @@ export const AgentTool = buildTool({
 
     const { QueryEngine, getSessionEngine } = await import('../../QueryEngine.js');
 
-    // 创建新的 AbortController（链接到父 abortController）
+    // 创建新的 AbortController（specs/005 留痕：不链接父前台信号——首次中止只停
+    // 前台，运行中的子代理继续，与 abort-button 三态语义及 Rust 侧一致；递归中止
+    // （第二次点击 / 会话关闭）经 SubAgentRegistry 走 interruptRecursive）。
+    // 排队中的 Agent 调用属前台：acquireSlot 直接监听 parentSignal 取消。
     const parentSignal = (context.abortController as any)?.signal as AbortSignal | undefined;
     const abortController = new AbortController();
 
@@ -242,119 +250,143 @@ export const AgentTool = buildTool({
         // 父会话在子代理创建前已被中止：立即同步中止子代理，
         // 避免 addEventListener 对已 abort 的 signal 不触发导致子代理继续运行。
         abortController.abort();
-      } else {
-        parentSignal.addEventListener('abort', () => {
-          abortController.abort();
-        }, { once: true });
       }
     }
 
-    // 从主会话继承 thinking effort
-    // 优先从 context 获取（如果 ToolUseContext 提供了），否则从主会话引擎读取
-    let parentThinkingEffort = (context as any).thinkingEffort;
-    if (!parentThinkingEffort) {
+    // specs/005：并发上限——建子代理前先取槽位；同父会话并行子代理超过
+    // SUBAGENT_CONCURRENCY_LIMIT 时在本调用内排队（FIFO），等待期间随父会话中止
+    // 而取消（文案与 RunTools 批取消逐字一致），不创建子代理会话
+    if (!await acquireSlot(creatorSessionId, parentSignal)) {
+      return {
+        data: {
+          summary: CANCELED_RESULT_MESSAGE,
+          subAgentId: '',
+          role: agentRole,
+          messageCount: 0,
+          exitCode: -1,
+          canceled: true,
+        },
+      };
+    }
+
+    // 槽位在握后的启动段：任一步抛错必须把槽位还回去，否则父会话的可用槽位
+    // 永久少一（排队调用全部饿死）。成功路径的释放由下方后台任务的 finally 负责
+    // （完成 / 中止 / 异常三路都汇聚在那里），catch 只覆盖「后台任务未启动」窗口。
+    // 子代理引擎：在下方 try 内构造；catch 必抛出，走到 IIFE 时必已赋值
+    // （必选性由构造时序保证，不用空断言）
+    let subEngine: QueryEngine;
+    try {
+      // 从主会话继承 thinking effort
+      // 优先从 context 获取（如果 ToolUseContext 提供了），否则从主会话引擎读取
+      let parentThinkingEffort = (context as any).thinkingEffort;
+      if (!parentThinkingEffort) {
+        try {
+          const { getSessionThinkingMode } = await import('../../Integration.js');
+          parentThinkingEffort = getSessionThinkingMode(creatorSessionId);
+        } catch (e) {
+          logger.error('AgentTool', `获取主会话 thinking mode 失败: ${e}`);
+        }
+      }
+      // 如果主会话没有设置 thinking，回退到默认 thinking effort（与主会话新建对话时的默认值一致）
+      if (!parentThinkingEffort) {
+        const { getDefaultThinkingEffort } = await import('../../llm/config.js');
+        parentThinkingEffort = await getDefaultThinkingEffort();
+      }
+
+      // 继承父会话（query engine）实际生效的模型配置 / 提示词预设，避免子代理重新读取
+      // 全局配置而 fallback 到其它模型或提示词模式。
+      const parentEngine = getSessionEngine(creatorSessionId);
+      const modelConfig = parentEngine?.getEffectiveModelConfig();
+      const inheritedPromptPreset = parentEngine?.promptPresetId ?? 'normal';
+      logger.info('AgentTool', `Model config for role=${agentRole}: ${modelConfig ? `model=${modelConfig.model}` : 'inherited from parent (no explicit model config, will use same fallback as parent)'}`);
+
+      // 子代理 system prompt = 主对话同款提示词（按继承的预设组装），开头加 `## Communication` 段。
+      // 预设区块（工具说明 / 环境 / AGENTS.md）由 QueryEngine 按预设组装，不在这里拼。
+      const communicationSection = buildAgentCommunicationSection(creatorSessionId);
+
+      logger.info('[SystemPromptDump]', `=== SUBAGENT COMMUNICATION PREFIX (role=${agentRole}, session=${subSessionID}, chars=${communicationSection.length}) ===`);
+      logger.info('[SystemPromptDump]', communicationSection);
+      logger.info('[SystemPromptDump]', `=== SUBAGENT COMMUNICATION PREFIX END (role=${agentRole}, session=${subSessionID}) ===`);
+
+      // 子代理归属父会话的工作目录：登记后，子代理的历史读写 / 工具结果等按会话解析
+      // 工作目录时与父会话一致，不再回退到活动工作目录。
       try {
-        const { getSessionThinkingMode } = await import('../../Integration.js');
-        parentThinkingEffort = getSessionThinkingMode(creatorSessionId);
-      } catch (e) {
-        logger.error('AgentTool', `获取主会话 thinking mode 失败: ${e}`);
+        const { setSessionWorkspace } = await import('../../history/Config.js');
+        setSessionWorkspace(subSessionID, context.cwd);
+      } catch { /* 工作目录不可用时忽略：引擎 cwd 仍由 context.cwd 提供 */ }
+
+      // 登记父子关系到运行时快照（`parentSessionId`）：托盘等消费者据此区分
+      // 「子对话完成」与「主对话完成」。在引擎启动前登记，首个忙事实进快照时它已在场。
+      markSessionParent(subSessionID, creatorSessionId);
+
+      // 创建子代理的 QueryEngine
+      subEngine = new QueryEngine(subSessionID, {
+        cwd: context.cwd,
+        tools: [],
+        role: agentRole || undefined,
+        getAppState: () => context.getAppState(),
+        setAppState: (updater: (prev: unknown) => unknown) => {
+          context.setAppState(updater);
+        },
+        abortController: abortController as any,
+        initialMessages: [taskMessage as any],
+        maxTurns: Number.MAX_SAFE_INTEGER,
+        modelConfig,
+        systemPromptPrefix: communicationSection,
+        title: subTitle,
+        parentSessionId: creatorSessionId,
+      });
+
+      // 继承父对话的提示词预设（normal / minimal / mixed），system prompt 与主对话一致
+      subEngine.setPromptPreset(inheritedPromptPreset);
+      // 继承父对话的 thinking effort
+      subEngine.thinkingModeOverride = parentThinkingEffort;
+      // 继承父对话的模型身份（provider + model；meta.json 也要记录）
+      const parentModelRef = parentEngine?.modelRefOverride;
+      if (parentModelRef) {
+        subEngine.modelRefOverride = parentModelRef;
       }
-    }
-    // 如果主会话没有设置 thinking，回退到默认 thinking effort（与主会话新建对话时的默认值一致）
-    if (!parentThinkingEffort) {
-      const { getDefaultThinkingEffort } = await import('../../llm/config.js');
-      parentThinkingEffort = await getDefaultThinkingEffort();
-    }
 
-    // 继承父会话（query engine）实际生效的模型配置 / 提示词预设，避免子代理重新读取
-    // 全局配置而 fallback 到其它模型或提示词模式。
-    const parentEngine = getSessionEngine(creatorSessionId);
-    const modelConfig = parentEngine?.getEffectiveModelConfig();
-    const inheritedPromptPreset = parentEngine?.promptPresetId ?? 'normal';
-    logger.info('AgentTool', `Model config for role=${agentRole}: ${modelConfig ? `model=${modelConfig.model}` : 'inherited from parent (no explicit model config, will use same fallback as parent)'}`);
-
-    // 子代理 system prompt = 主对话同款提示词（按继承的预设组装），开头加 `## Communication` 段。
-    // 预设区块（工具说明 / 环境 / AGENTS.md）由 QueryEngine 按预设组装，不在这里拼。
-    const communicationSection = buildAgentCommunicationSection(creatorSessionId);
-
-    logger.info('[SystemPromptDump]', `=== SUBAGENT COMMUNICATION PREFIX (role=${agentRole}, session=${subSessionID}, chars=${communicationSection.length}) ===`);
-    logger.info('[SystemPromptDump]', communicationSection);
-    logger.info('[SystemPromptDump]', `=== SUBAGENT COMMUNICATION PREFIX END (role=${agentRole}, session=${subSessionID}) ===`);
-
-    // 子代理归属父会话的工作目录：登记后，子代理的历史读写 / 工具结果等按会话解析
-    // 工作目录时与父会话一致，不再回退到活动工作目录。
-    try {
-      const { setSessionWorkspace } = await import('../../history/Config.js');
-      setSessionWorkspace(subSessionID, context.cwd);
-    } catch { /* 工作目录不可用时忽略：引擎 cwd 仍由 context.cwd 提供 */ }
-
-    // 登记父子关系到运行时快照（`parentSessionId`）：托盘等消费者据此区分
-    // 「子对话完成」与「主对话完成」。在引擎启动前登记，首个忙事实进快照时它已在场。
-    markSessionParent(subSessionID, creatorSessionId);
-
-    // 创建子代理的 QueryEngine
-    const subEngine = new QueryEngine(subSessionID, {
-      cwd: context.cwd,
-      tools: [],
-      role: agentRole || undefined,
-      getAppState: () => context.getAppState(),
-      setAppState: (updater: (prev: unknown) => unknown) => {
-        context.setAppState(updater);
-      },
-      abortController: abortController as any,
-      initialMessages: [taskMessage as any],
-      maxTurns: Number.MAX_SAFE_INTEGER,
-      modelConfig,
-      systemPromptPrefix: communicationSection,
-      title: subTitle,
-      parentSessionId: creatorSessionId,
-    });
-
-    // 继承父对话的提示词预设（normal / minimal / mixed），system prompt 与主对话一致
-    subEngine.setPromptPreset(inheritedPromptPreset);
-    // 继承父对话的 thinking effort
-    subEngine.thinkingModeOverride = parentThinkingEffort;
-    // 继承父对话的模型身份（provider + model；meta.json 也要记录）
-    const parentModelRef = parentEngine?.modelRefOverride;
-    if (parentModelRef) {
-      subEngine.modelRefOverride = parentModelRef;
-    }
-
-    // ========== 持久化子会话元数据（meta.json）==========
-    // 子代理会话必须把 parentSessionId（关联主对话）、role、model 写入 meta.json，
-    // 否则对话列表/树形结构无法正确关联到主对话，
-    // 且点击进入子会话后 webview 拿不到 parentSessionId，不会显示"返回主对话"按钮。
-    // createConversationMetadataSync 在文件不存在时同步创建（messageCount=0），
-    // 之后第一条消息持久化（appendMessage -> updateMetadataForNewMessage）会读取
-    // 现有 meta.json 并保留这些字段，仅递增 messageCount 和更新标题。
-    try {
-      const { createConversationMetadataSync } = await import('../../history/Conversation.js');
-      createConversationMetadataSync(subSessionID, subTitle, creatorSessionId, agentRole, parentModelRef);
-      logger.info('AgentTool', `Pre-created conversation metadata for sub-agent ${subSessionID} (parent=${creatorSessionId}, role=${agentRole}, model=${modelConfig?.model ?? 'inherit'})`);
-    } catch (err) {
-      logger.warn('AgentTool', `Failed to pre-create conversation metadata for sub-agent ${subSessionID}: ${err}`);
-    }
-
-    // 注册到全局注册表
-    subAgentRegistry.register(subSessionID, subEngine, context, creatorSessionId);
-
-    // 继承父会话的 agent mode（agentMode 归 core）：完整继承主对话的 manual / risk / auto。
-    // 优先取父会话的内存记录；内存无记录（例如刚恢复的历史会话还没收到带 agentMode 的
-    // 用户消息）时回退到 settings.json 的默认值，避免子代理权限策略与主对话不一致。
-    try {
-      const { getStoredSessionAgentMode, inheritAgentModeFrom } = await import('../PermissionPolicy.js');
-      let parentAgentMode = getStoredSessionAgentMode(creatorSessionId);
-      if (!parentAgentMode) {
-        const { getDefaultAgentMode } = await import('../../llm/config.js');
-        parentAgentMode = await getDefaultAgentMode();
+      // ========== 持久化子会话元数据（meta.json）==========
+      // 子代理会话必须把 parentSessionId（关联主对话）、role、model 写入 meta.json，
+      // 否则对话列表/树形结构无法正确关联到主对话，
+      // 且点击进入子会话后 webview 拿不到 parentSessionId，不会显示"返回主对话"按钮。
+      // createConversationMetadataSync 在文件不存在时同步创建（messageCount=0），
+      // 之后第一条消息持久化（appendMessage -> updateMetadataForNewMessage）会读取
+      // 现有 meta.json 并保留这些字段，仅递增 messageCount 和更新标题。
+      try {
+        const { createConversationMetadataSync } = await import('../../history/Conversation.js');
+        createConversationMetadataSync(subSessionID, subTitle, creatorSessionId, agentRole, parentModelRef);
+        logger.info('AgentTool', `Pre-created conversation metadata for sub-agent ${subSessionID} (parent=${creatorSessionId}, role=${agentRole}, model=${modelConfig?.model ?? 'inherit'})`);
+      } catch (err) {
+        logger.warn('AgentTool', `Failed to pre-create conversation metadata for sub-agent ${subSessionID}: ${err}`);
       }
-      inheritAgentModeFrom(parentAgentMode, subSessionID);
-      // 同步落盘到子会话 meta.json：重启后重新打开子会话，UI 仍显示继承自主对话的模式
-      const { updateConversationContext } = await import('../../history/Conversation.js');
-      await updateConversationContext(subSessionID, { agentMode: parentAgentMode });
-      logger.info('AgentTool', `Sub-agent ${subSessionID} inherited agent mode "${parentAgentMode}" from ${creatorSessionId}`);
+
+      // 注册到全局注册表
+      subAgentRegistry.register(subSessionID, subEngine, context, creatorSessionId);
+
+      // 继承父会话的 agent mode（agentMode 归 core）：完整继承主对话的 manual / risk / auto。
+      // 优先取父会话的内存记录；内存无记录（例如刚恢复的历史会话还没收到带 agentMode 的
+      // 用户消息）时回退到 settings.json 的默认值，避免子代理权限策略与主对话不一致。
+      try {
+        const { getStoredSessionAgentMode, inheritAgentModeFrom } = await import('../PermissionPolicy.js');
+        let parentAgentMode = getStoredSessionAgentMode(creatorSessionId);
+        if (!parentAgentMode) {
+          const { getDefaultAgentMode } = await import('../../llm/config.js');
+          parentAgentMode = await getDefaultAgentMode();
+        }
+        inheritAgentModeFrom(parentAgentMode, subSessionID);
+        // 同步落盘到子会话 meta.json：重启后重新打开子会话，UI 仍显示继承自主对话的模式
+        const { updateConversationContext } = await import('../../history/Conversation.js');
+        await updateConversationContext(subSessionID, { agentMode: parentAgentMode });
+        logger.info('AgentTool', `Sub-agent ${subSessionID} inherited agent mode "${parentAgentMode}" from ${creatorSessionId}`);
+      } catch (err) {
+        logger.warn('AgentTool', `inheritAgentMode failed: ${err}`);
+      }
     } catch (err) {
-      logger.warn('AgentTool', `inheritAgentMode failed: ${err}`);
+      // 启动失败：槽位必须归还（后台任务未启动，其 finally 不会执行）
+      releaseSlot(creatorSessionId);
+      throw err;
     }
 
     // 在后台启动子代理处理初始消息（不阻塞）
@@ -487,6 +519,9 @@ export const AgentTool = buildTool({
         // 刷新对话列表：此时子代理的消息已持久化（messageCount >= 1），
         // 确保新子会话能在对话树中正确显示并关联到主对话。
         emitToUi({ type: 'conversationListChanged' });
+        // specs/005：子代理后台任务的唯一退出点——完成 / 中止 / 异常三路都在这里
+        // 收尾，并发槽位在此释放并唤醒该父会话最早的排队调用（FIFO）
+        releaseSlot(creatorSessionId);
       }
     })();
 
@@ -513,6 +548,18 @@ export const AgentTool = buildTool({
     data: AgentToolOutput,
     toolUseID: string,
   ) {
+    // specs/005：排队等待期间被中止——取消文案原样进结果并以 is_canceled 标记
+    // （键经 formatAndEmitResult 覆盖进 tool_result 消息），与 RunTools 批取消同口径
+    if (data.canceled) {
+      return {
+        tool_use_id: toolUseID,
+        type: 'tool_result' as const,
+        content: data.summary,
+        exit_code: -1,
+        is_canceled: true,
+      };
+    }
+
     const { exitCode, summary, role, subAgentId } = data;
     const success = exitCode === 0;
 

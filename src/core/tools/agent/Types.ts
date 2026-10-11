@@ -25,6 +25,7 @@ export const outputSchema = z.object({
   role: z.string().optional().describe('The role used for this agent'),
   messageCount: z.number().optional().describe('Number of messages exchanged in the sub-session'),
   exitCode: z.number().optional().describe('Exit code, 0 for success, non-zero for failure'),
+  canceled: z.boolean().optional().describe('True when the queued call was canceled before the sub-agent was created'),
 });
 
 export type AgentToolOutput = z.infer<typeof outputSchema>;

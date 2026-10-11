@@ -279,6 +279,12 @@ pub enum ToolOutcome {
     /// 与 Embedded 一致：UI 的 `toolResult` 状态是 `error`，但 tool_result block
     /// 不带 `is_error`，而是携带真实的 `exit_code`。
     CommandFailed { text: String, exit_code: i32 },
+    /// 排队等待期间被中止（specs/005 的 Agent 并发槽位）。
+    ///
+    /// 对齐 Embedded：排队调用随父会话前台中止而取消——UI `toolResult` 状态
+    /// `error`、`exit_code` -1、block `is_canceled: true`，文案与 `RunTools`
+    /// 批取消逐字一致（不加 `Error executing` 前缀）。
+    Canceled(String),
     /// 成功，且工具额外产出了要注入对话的消息（当前只有 Skill 的 prompt 注入）。
     ///
     /// 对齐 Embedded `RunTools`：`toolResult.newMessages` 会在该工具的 tool_result
@@ -301,7 +307,10 @@ impl ToolOutcome {
 
     /// UI `toolResult` 事件的状态是否为 error
     pub fn is_status_error(&self) -> bool {
-        matches!(self, ToolOutcome::Error(_) | ToolOutcome::CommandFailed { .. })
+        matches!(
+            self,
+            ToolOutcome::Error(_) | ToolOutcome::CommandFailed { .. } | ToolOutcome::Canceled(_)
+        )
     }
 
     /// tool_result block 的 `exit_code`：成功 0、命令非零退出取真实码、工具失败 -1
@@ -311,7 +320,7 @@ impl ToolOutcome {
             | ToolOutcome::SuccessWithMeta { .. }
             | ToolOutcome::SuccessBlocks(_)
             | ToolOutcome::SuccessWithMessages { .. } => 0,
-            ToolOutcome::Error(_) => -1,
+            ToolOutcome::Error(_) | ToolOutcome::Canceled(_) => -1,
             ToolOutcome::CommandFailed { exit_code, .. } => *exit_code,
         }
     }
@@ -320,6 +329,7 @@ impl ToolOutcome {
         match self {
             ToolOutcome::Success(text)
             | ToolOutcome::Error(text)
+            | ToolOutcome::Canceled(text)
             | ToolOutcome::CommandFailed { text, .. } => text,
             ToolOutcome::SuccessWithMeta { text, .. } => text,
             ToolOutcome::SuccessWithMessages { text, .. } => text,
@@ -1537,6 +1547,10 @@ fn read_pipe(
 ///
 /// 真正的工作在引擎侧的后台线程里（`engine::run_sub_agent`）：跑消费循环 →
 /// 检查是否调用过 `Reply` → 必要时注入 Reminder 重试。
+/// 排队等待期间被中止的工具结果文案（与 Embedded `RunTools` 批取消逐字一致）
+const CANCEL_RESULT_MESSAGE: &str = "Tool was canceled due to abort";
+
+/// `Agent` 工具：创建子代理（对齐 Embedded `AgentTool.call`）。
 fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let Some(prompt) = input.get("prompt").and_then(Value::as_str) else {
         return ToolOutcome::Error("prompt is required and must be a string".to_string());
@@ -1562,6 +1576,15 @@ fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         .map(str::to_string)
         .unwrap_or_else(|| format!("Agent: {role}"));
 
+    // specs/005：并发槽位——建子代理前先取槽位；同父会话并行子代理超过
+    // SUBAGENT_CONCURRENCY_LIMIT 时在本调用内排队（FIFO），等待期间随父会话
+    // 取消标记退出（文案与 Embedded 逐字一致），不建子代理会话。
+    // `ctx.cancel` 缺省（单测 / 未知调用方）时视为不取消。
+    let cancel_never = std::sync::atomic::AtomicBool::new(false);
+    let cancel = ctx.cancel.as_deref().unwrap_or(&cancel_never);
+    if !crate::subagent::acquire_slot(&ctx.session_id, cancel) {
+        return ToolOutcome::Canceled(CANCEL_RESULT_MESSAGE.to_string());
+    }
     match (hooks.spawn)(SubAgentRequest {
         creator_session_id: ctx.session_id.clone(),
         prompt: prompt.to_string(),
@@ -1574,8 +1597,12 @@ fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
              **Sub-agent ID**: `{sub_session_id}`\n\
              The sub-agent will reply directly when done."
         )),
-        // `call()` 抛错：由引擎补 `Error executing Agent: ` 前缀（对齐 `executeSingleTool`）
-        Err(error) => ToolOutcome::Error(error),
+        // `call()` 抛错：由引擎补 `Error executing Agent: ` 前缀（对齐 `executeSingleTool`）。
+        // spawn 失败时后台任务不会启动，槽位必须在此归还
+        Err(error) => {
+            crate::subagent::release_slot(&ctx.session_id);
+            ToolOutcome::Error(error)
+        }
     }
 }
 

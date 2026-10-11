@@ -67,6 +67,12 @@ abort 按钮常驻输入区。它的可用性与颜色由**当前会话**的运�
 中止）而仍有后台任务或子代理时，`sessionRuntimeChanged` 快照描述为
 `idle=false`、`queryRunning=false`、`backgroundRunning=true` 等，按钮随之为黄色。
 
+排队中的 `Agent` 调用（并发槽位等待，specs/005 的
+[US-49](user-stories.md#us-49-子代理并发上限)）属**前台查询的一部分**：第一阶段中止
+使所有排队调用取消（工具结果为取消文案，且不创建子代理会话），已运行的子代理照常
+保持运行——排队者不参与第二阶段「子代理仍在跑」的黄灯判据（它们从未创建会话，
+不影响 `sessionRuntime` 的子代理事实）。
+
 ### FR-003：事实与表现的边界
 
 - 事实 owner 是 core `sessionRuntime`（[docs/core/session-runtime.md](../core/session-runtime.md)）：按来源分列

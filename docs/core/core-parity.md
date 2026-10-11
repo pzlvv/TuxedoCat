@@ -408,7 +408,12 @@ passthrough）与参数切分正则一致；命令在**出队时**解析
   `engine::run_sub_agent`）：`Agent` 建 `sub_*` 子会话、写 `parentSessionId` / `role`
   的 `meta.json`、后台跑消费循环并在没调用 `Reply` 时注入 Reminder（最多 3 次）；
   `Reply` 把回复作为 `origin='agent'` 的 user 消息投回创建者会话（含 From 头），
-  `sessionRuntime.idle` 递归到子代理。
+  `sessionRuntime.idle` 递归到子代理。**并发上限**（specs/005）：同一创建者会话
+  并行子代理最多 4 个（Embedded `SubagentSlots.ts` 的
+  `SUBAGENT_CONCURRENCY_LIMIT` ↔ Rust `subagent::SUBAGENT_CONCURRENCY_LIMIT`，
+  同值同语义），超出的 `Agent` 调用在工具调用内 FIFO 排队、拿不到槽位不建会话，
+  等待期间随前台取消标记退出（取消文案两侧逐字一致）；槽位在子代理后台任务的
+  唯一退出点释放。
 - **后台 Bash**（`bash_task.rs`）：`run_in_background`（file mode 输出文件 + 完成
   通知）、前台超时自动转后台、通知驱动的转后台、用户手工转后台
   （`MANUAL_BG` 注册表 + `LoopPauseSignal`，`docs/features/background-bash.md`）、完成通知经

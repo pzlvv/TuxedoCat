@@ -4818,6 +4818,154 @@ fn agent_tool_spawns_a_sub_agent_that_replies_to_the_creator() {
     crate::subagent::reset_for_test();
 }
 
+/// specs/005：一轮 6 个 `Agent` 调用最多 4 个子代理并行——先启动的 4 个子代理
+/// 首请求都早于其中一个的完成时刻，其余 2 个（排队者，身份由线程竞速决定）
+/// 必须等槽位释放才启动；最终 6 个全部启动并回报。
+#[test]
+fn agent_tool_caps_concurrent_sub_agents_and_queues_the_rest() {
+    let sandbox = Sandbox::new("engine-agent-concurrency-cap");
+    // 不调用 `subagent::reset_for_test()`：并行用例共享注册表 / 槽位，
+    // 本用例用独立 creator id 隔离（与既有 Agent 用例同一约定）
+    let creator = "sc1";
+
+    struct Book {
+        /// 子代理首请求到达顺序（task 编号）
+        order: Vec<u32>,
+        /// task → 首请求开始时刻（epoch 毫秒）
+        starts: std::collections::HashMap<u32, u128>,
+        /// (task, 追问轮到达时刻)：追问轮 = 该子代理即将收尾释放槽位
+        finishes: Vec<(u32, u128)>,
+    }
+    let book = Arc::new(Mutex::new(Book {
+        order: Vec::new(),
+        starts: std::collections::HashMap::new(),
+        finishes: Vec::new(),
+    }));
+    let epoch = std::time::Instant::now();
+
+    let handler_book = Arc::clone(&book);
+    let llm = FakeLlm::start(move |_index, body| {
+        if is_sub_agent_request(body) {
+            let task = (1..=6u32).find(|n| {
+                body["messages"]
+                    .as_array()
+                    .map(|messages| {
+                        messages.iter().any(|message| {
+                            message
+                                .get("content")
+                                .and_then(Value::as_str)
+                                .map(|text| text.contains(&format!("并发任务{n}：")))
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false)
+            });
+            let Some(task) = task else {
+                return openai_text_sse(&["好"]);
+            };
+            // 消费循环在 Reply 之后还会追问：只有该子代理的**首请求**慢速应答并调用
+            // Reply（槽位时序的可观测点），追问轮记录收尾时刻并文本终轮，
+            // 避免无限循环
+            {
+                let mut book = handler_book.lock().unwrap();
+                if book.starts.contains_key(&task) {
+                    book.finishes.push((task, epoch.elapsed().as_millis()));
+                    drop(book);
+                    return openai_text_sse(&["好"]);
+                }
+                book.starts.insert(task, epoch.elapsed().as_millis());
+                book.order.push(task);
+            }
+            // 慢速子代理请求：拉长「直取 4 槽」的占位窗口
+            std::thread::sleep(Duration::from_millis(200));
+            let reply = format!(r#"{{"message":"并发任务{task}完成"}}"#);
+            return openai_multi_tool_sse(&[("reply", "Reply", &reply)]);
+        }
+        if !parent_saw_agent_tool_use(body) {
+            let calls: Vec<(String, String, String)> = (1..=6u32)
+                .map(|n| {
+                    (
+                        format!("agent_{n}"),
+                        "Agent".to_string(),
+                        format!(
+                            r#"{{"prompt":"并发任务{n}：慢慢回答","agentRole":"Master","description":"任务{n}"}}"#
+                        ),
+                    )
+                })
+                .collect();
+            let refs: Vec<(&str, &str, &str)> = calls
+                .iter()
+                .map(|(id, name, args)| (id.as_str(), name.as_str(), args.as_str()))
+                .collect();
+            return openai_multi_tool_sse(&refs);
+        }
+        openai_text_sse(&["全部完成"])
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::allow_all();
+
+    // 槽位峰值轮询：接线正确时 6 个调用里恰 4 个直取，active 峰值必达 4 且不超
+    let poll_stop = Arc::new(AtomicBool::new(false));
+    let max_active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    {
+        let poll_stop = Arc::clone(&poll_stop);
+        let max_active = Arc::clone(&max_active);
+        std::thread::spawn(move || {
+            while !poll_stop.load(Ordering::Relaxed) {
+                let (active, _) = crate::subagent::slot_stats_for_test(creator);
+                max_active.fetch_max(active, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(15));
+            }
+        });
+    }
+
+    submit(&harness, creator, "派6个并发子代理", "u-1");
+
+    // 6 个子代理全部回报（排队者最终都拿到槽位并完成）
+    assert!(
+        harness.wait_for(
+            |sink| sink
+                .events_of("message")
+                .iter()
+                .filter(|event| event["data"]["origin"] == "agent")
+                .count()
+                >= 6,
+            Duration::from_secs(60),
+        ),
+        "6 个子代理都应完成回报: {:?}",
+        harness.sink.event_types()
+    );
+    poll_stop.store(true, Ordering::Relaxed);
+
+    let book = book.lock().unwrap();
+    assert_eq!(book.order.len(), 6, "6 个子代理都应发起首请求: {:?}", book.order);
+    // 槽位峰值恰为 4：低于 4 说明接线缺失，高于 4 说明上限失效
+    assert_eq!(
+        max_active.load(Ordering::Relaxed),
+        4,
+        "并行子代理槽位峰值应为 4"
+    );
+    // 排队者只能在槽位释放后启动：首请求晚于最早的追问轮（该子代理即将释放槽位）
+    let first_finish = book
+        .finishes
+        .iter()
+        .map(|(_, at)| *at)
+        .min()
+        .expect("子代理应有追问轮");
+    for (task, start) in &book.starts {
+        if book.order.get(4) != Some(task) && book.order.get(5) != Some(task) {
+            continue;
+        }
+        assert!(
+            *start > first_finish,
+            "排队者只能在槽位释放后启动: task={task} start={start} first_finish={first_finish}"
+        );
+    }
+    // 注册表累计登记全部 6 个子代理
+    assert_eq!(crate::subagent::list_for_creator(creator).len(), 6);
+}
+
 /// 子代理完整继承主对话的 agent mode：manual / risk / auto 一律照搬（对齐 Embedded
 /// `inheritAgentMode`，不能把 manual 降级成 risk 造成越权），并落盘到子会话
 /// meta.json 的 context，重启后重开子会话仍显示继承来的模式。

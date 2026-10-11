@@ -67,7 +67,7 @@ export interface AppHandle {
   stateFile: string;
 }
 
-function writeSettings(homeDir: string, mockLlm: MockLlm): void {
+function writeSettings(homeDir: string, mockLlm: MockLlm, agentMode: 'manual' | 'risk' | 'auto'): void {
   const configDir = path.join(homeDir, CONFIG_DIR_NAME);
   fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify({
@@ -88,8 +88,9 @@ function writeSettings(homeDir: string, mockLlm: MockLlm): void {
       webSearch: false,
       enableUsageStats: false,
     },
-    // manual：Write/Edit/Bash 全部弹权限确认，覆盖 US-18 场景
-    defaultAgentMode: 'manual',
+    // manual：Write/Edit/Bash 全部弹权限确认，覆盖 US-18 场景；
+    // 子代理并发用例（specs/005）传 auto 让 Agent 调用免确认自动执行
+    defaultAgentMode: agentMode,
     defaultPromptMode: 'normal',
     uiLanguage: 'zh',
   }, null, 2));
@@ -142,7 +143,7 @@ async function spawnApp(options: {
   coreKind?: 'embedded' | 'standalone';
 }): Promise<SpawnedApp> {
   const homeDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tuxedo-e2e-home-'));
-  writeSettings(homeDir, options.mockLlm);
+  writeSettings(homeDir, options.mockLlm, options.agentMode ?? 'manual');
 
   // 实例后缀必须与 main.ts 的过滤规则一致（[^A-Za-z0-9_-] 剔除 + 截断 32），
   // 预置 workspace-state.json 的目录名要和它完全相同
@@ -248,6 +249,8 @@ export async function launchApp(options: {
   activeWorkspace?: string | SerializedWorkspaceRef;
   stateOverrides?: Record<string, unknown>;
   coreKind?: 'embedded' | 'standalone';
+  /** 权限模式（缺省 manual：工具调用弹确认）；auto 让工具免确认自动执行 */
+  agentMode?: 'manual' | 'risk' | 'auto';
 }): Promise<AppHandle> {
   const spawned = await spawnApp(options);
 

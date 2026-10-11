@@ -18,6 +18,10 @@ import type { AddressInfo } from 'node:net';
 
 export interface RecordedRequest {
   url: string;
+  /** 请求体解析完成（服务器侧「开始处理」）时刻 */
+  startedAt: number;
+  /** SSE 写完（[DONE] 已发出）时刻；hang 的请求没有此字段 */
+  finishedAt?: number;
   authorization?: string;
   body: {
     model: string;
@@ -27,10 +31,11 @@ export interface RecordedRequest {
   };
 }
 
-/** 一轮应答的脚本：text 终轮 / tool 工具轮 / slow 慢速流 / hang 不回响应头 */
+/** 一轮应答的脚本：text 终轮 / tool 工具轮 / tools 多工具轮 / slow 慢速流 / hang 不回响应头 */
 export type ScriptDecision =
   | { kind: 'text'; text: string; thinking?: string }
-  | { kind: 'tool'; name: string; args: Record<string, unknown>; preamble?: string }
+  | { kind: 'tool'; name: string; args: Record<string, unknown>; preamble?: string; delayMs?: number }
+  | { kind: 'tools'; calls: Array<{ name: string; args: Record<string, unknown> }>; preamble?: string; delayMs?: number }
   | { kind: 'slow'; text: string; chunkDelayMs: number }
   | { kind: 'hang' };
 
@@ -136,6 +141,7 @@ export async function startMockLlm(options: { workspaceDir: string }): Promise<M
       }
       const recorded: RecordedRequest = {
         url,
+        startedAt: Date.now(),
         authorization: req.headers.authorization as string | undefined,
         body,
       };
@@ -163,6 +169,7 @@ export async function startMockLlm(options: { workspaceDir: string }): Promise<M
         write({ choices: [], usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } });
         res.write('data: [DONE]\n\n');
         res.end();
+        recorded.finishedAt = Date.now();
       };
 
       if (decision.kind === 'text' || decision.kind === 'slow') {
@@ -189,31 +196,46 @@ export async function startMockLlm(options: { workspaceDir: string }): Promise<M
         return;
       }
 
-      // 工具轮：可选前置文本 → tool_calls（参数分两帧，覆盖 arguments 累积路径）
-      if (decision.preamble) {
+      // 工具轮：可选前置文本 → tool_calls（参数分两帧，覆盖 arguments 累积路径）。
+      // `tools` 多工具轮同一批 tool_calls 按 index 递增逐个下发（specs/005 的
+      // 并发上限用例用一轮 6 个 Agent 调用驱动 fan-out）。
+      // `delayMs` 模拟 LLM 首字延迟：setTimeout 让出事件循环，期间其他连接的
+      // 请求可以进来被解析（startedAt 落在别的请求区间内 = 并发可观测）
+      const emitToolCalls = (): void => {
+        if (decision.preamble) {
         write({ choices: [{ index: 0, delta: { content: decision.preamble }, finish_reason: null }] });
       }
-      const argsJson = JSON.stringify(decision.args);
-      write({
-        choices: [{
-          index: 0,
-          delta: {
-            tool_calls: [{
-              index: 0, id: `call_${Date.now()}`, type: 'function',
-              function: { name: decision.name, arguments: argsJson.slice(0, Math.ceil(argsJson.length / 2)) },
+        const calls = decision.kind === 'tools'
+          ? decision.calls.map((call) => ({ name: call.name, args: JSON.stringify(call.args) }))
+          : [{ name: decision.name, args: JSON.stringify(decision.args) }];
+        calls.forEach((call, callIndex) => {
+          write({
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: callIndex, id: `call_${Date.now()}_${callIndex}`, type: 'function',
+                  function: { name: call.name, arguments: call.args.slice(0, Math.ceil(call.args.length / 2)) },
+                }],
+              },
+              finish_reason: null,
             }],
-          },
-          finish_reason: null,
-        }],
-      });
-      write({
-        choices: [{
-          index: 0,
-          delta: { tool_calls: [{ index: 0, function: { arguments: argsJson.slice(Math.ceil(argsJson.length / 2)) } }] },
-          finish_reason: null,
-        }],
-      });
-      finish('tool_calls');
+          });
+          write({
+            choices: [{
+              index: 0,
+              delta: { tool_calls: [{ index: callIndex, function: { arguments: call.args.slice(Math.ceil(call.args.length / 2)) } }] },
+              finish_reason: null,
+            }],
+          });
+        });
+        finish('tool_calls');
+      };
+      if (decision.delayMs) {
+        setTimeout(emitToolCalls, decision.delayMs);
+      } else {
+        emitToolCalls();
+      }
     });
   });
 

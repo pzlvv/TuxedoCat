@@ -100,6 +100,9 @@ fn run_sub_agent(
     // 刷新对话列表：此时子代理消息已持久化，新子会话能正确出现在对话树里
     core.emit(json!({ "type": "conversationListChanged" }));
     core.emit_runtime();
+    // specs/005：子代理后台任务的唯一退出点——循环内各 break（完成 / 中止 /
+    // Reminder 耗尽 / 会话消失）都落到这里，并发槽位在此释放并唤醒最早排队者
+    crate::subagent::release_slot(&creator_session_id);
 }
 
 /// 子代理最近一轮里是否调用过 `Reply`（对齐 `AgentTool.checkSubAgentHasReply`）。
@@ -2330,12 +2333,13 @@ fn emit_tool_outcome(
     }));
     // tool_result block 口径对齐 Embedded：始终带 exit_code / is_canceled；
     // 工具执行失败（含权限拒绝）**不**写 is_error（Embedded 只在模型错误兜底时写）。
+    // is_canceled 仅「排队等待期间被中止」为真（对齐 Embedded mapper 的取消分支）。
     let mut block = json!({
         "type": "tool_result",
         "tool_use_id": tool_use_id,
         "content": block_content,
         "exit_code": outcome.exit_code(),
-        "is_canceled": false,
+        "is_canceled": matches!(outcome, ToolOutcome::Canceled(_)),
     });
     // `mapToolResultToToolResultBlockParam` 的多余键原样拷进 block
     // （Edit 的 startLine / endLine / beforeContent、Write 的 beforeContent）。
