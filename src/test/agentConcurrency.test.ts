@@ -75,6 +75,15 @@ function slowReplyRound(delayMs: number, message: string): ScriptedRound {
     })();
 }
 
+/** 直接抛错的 LLM 轮：注入子代理失败路径（错误轮 → 后台任务 catch → finally 释放槽位） */
+function throwingRound(): ScriptedRound {
+  return () =>
+    (async function* () {
+      throw new Error('注入的子代理 LLM 失败');
+      yield {} as AssistantMessage; // eslint-disable-line @typescript-eslint/no-unreachable-code
+    })();
+}
+
 /** 单轮路由：按请求特征分流（父会话轮次 / 子代理轮次） */
 function routingRound(route: (options: StreamOptions) => ScriptedRound): ScriptedRound {
   return (options) => route(options)(options);
@@ -299,6 +308,33 @@ async function run(): Promise<void> {
         '运行中子代理完成后槽位全部归还（中止路径释放接线）',
         heldSlots(creator) === 0 && queuedSlots(creator) === 0,
       );
+      await waitForQuiet(scenario);
+    } finally {
+      scenario.close();
+    }
+  }
+
+  {
+    // 失败路径：子代理 LLM 注入失败 → 后台任务 catch → finally 仍释放槽位
+    // （边界承诺「三类退出各释放一个槽位」的第三类）
+    const creator = 'fail-parent';
+    const scenario = await startScenario({
+      sessionId: creator,
+      rounds: () => routingScript((options) => {
+        if (options.sessionId === creator) {
+          const sawAgentResults = JSON.stringify(options.messages).includes('Sub-agent created with ID');
+          return sawAgentResults ? textRound('收尾') : multiToolUseRound(agentCalls(1));
+        }
+        if (JSON.stringify(options.messages).includes('并发任务1')) {
+          return throwingRound();
+        }
+        return textRound('好');
+      }),
+    });
+    try {
+      await scenario.send('派1个子代理');
+      await waitFor('失败子代理的槽位归还', 15_000, () => heldSlots(creator) === 0 && queuedSlots(creator) === 0);
+      check('子代理异常失败后槽位仍释放（三类退出锁定）', heldSlots(creator) === 0);
       await waitForQuiet(scenario);
     } finally {
       scenario.close();

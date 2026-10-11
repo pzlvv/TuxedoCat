@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：子代理并发上限（同父会话最多 4 个并行，超出排队）
@@ -33,7 +33,7 @@ status: 实施中
   - **AC-7**（FR-003）：GIVEN 排队调用已随前台中止取消 WHEN 槽位释放 THEN 队列不再启动任何调用（不产生无人认领的启动）
   - **AC-8**（FR-002）：GIVEN 某运行中子代理因异常失败或被单独中止而结束 WHEN 它退出 THEN 其槽位立即释放、排队调用可启动（错误路径不泄露槽位）
 - 场景 4：端到端验证（electron-app 层，mock LLM）
-  - **AC-9**（FR-001）：GIVEN mock LLM 脚本驱动父会话单轮发出 6 个 `Agent` 调用、子代理任务为慢速文本应答 WHEN 全部执行完 THEN mock LLM 记录的子代理请求并发峰值 ≤ 4，且第 5、6 个子代理的首个 LLM 请求时间晚于前 4 个中某次的完成时间
+  - **AC-9**（FR-001）：GIVEN mock LLM 脚本驱动父会话发出 6 个 `Agent` 调用（跨轮扇出 4+1+1，规避并行批线程竞争）且子代理任务为慢延迟应答 WHEN 全部执行完 THEN mock LLM 记录的子代理首请求区间重叠峰值恰为 4，且任务 5、6 的首个 LLM 请求时间晚于前 4 个中最早的完成时间
   - **AC-10**（FR-002）：GIVEN 同上场景 WHEN 观察启动顺序 THEN 第 5 个子代理先于第 6 个发出首个 LLM 请求（FIFO 可观测）
   - **AC-11**（FR-003）：GIVEN 6 个 `Agent` 调用、4 个运行中 WHEN 用户点击终止 THEN 对话列表中子会话数保持 4（排队 2 个未创建会话），按钮转为黄色「收尾中」态
 
@@ -98,10 +98,10 @@ Reply 回投、Reminder 重试、模型 / 权限模式继承、`sessionRuntime` 
 
 | 需求 | 实现落点 | 测试落点 | 覆盖 |
 | --- | --- | --- | --- |
-| FR-001 | `src/core/tools/agent/AgentTool.ts`（槽位获取，或 plan 定的调度模块）+ `core-rs/src/tools.rs`（`run_agent` 路径） | `src/test/agentConcurrency.test.ts`、`core-rs/src/*_tests.rs`（上限与排队）、`e2e/electron/subagentConcurrency.spec.ts`（AC-9） | 自动 |
-| FR-002 | 同 FR-001（FIFO 队列与槽位释放） | `src/test/agentConcurrency.test.ts`（FIFO / 三路退出释放）、`core-rs/src/*_tests.rs`、`e2e/electron/subagentConcurrency.spec.ts`（AC-10） | 自动 |
-| FR-003 | 同 FR-001（取消与清理路径） | `src/test/agentConcurrency.test.ts`（中止取消 / 不建会话）、`e2e/electron/subagentConcurrency.spec.ts`（AC-11） | 自动 |
-| FR-004 | 全局（回归锁） | `src/test/agentConcurrency.test.ts`（≤4 立即启动与结果形态）、既有子代理用例回归 | 自动 |
+| FR-001 | `src/core/tools/agent/SubagentSlots.ts` + `src/core/tools/agent/AgentTool.ts`（前置取槽位）+ `core-rs/src/subagent.rs`（槽位表）+ `core-rs/src/tools.rs`（`run_agent` 前置取槽位） | `src/test/agentConcurrency.test.ts`（上限内直取 / 超出排队 / 峰值恰 4）、`core-rs/src/subagent_tests.rs`（`direct_take_up_to_limit_then_release` 等）、`core-rs/src/engine_tests.rs`（`agent_tool_caps_concurrent_sub_agents_and_queues_the_rest`）、`e2e/electron/subagentConcurrency.spec.ts`（AC-9） | 自动 |
+| FR-002 | 同 FR-001（FIFO 等待队列与槽位释放） | `src/test/agentConcurrency.test.ts`（FIFO 顺序 / 三类退出释放）、`core-rs/src/subagent_tests.rs`（`waiters_wake_in_fifo_order`）、`e2e/electron/subagentConcurrency.spec.ts`（AC-10） | 自动 |
+| FR-003 | 同 FR-001（取消与清理路径）+ `core-rs/src/tools.rs`（`ToolOutcome::Canceled`） | `src/test/agentConcurrency.test.ts`（中止取消 / 不建会话 / 取消竞速）、`e2e/electron/subagentConcurrency.spec.ts`（AC-11） | 自动 |
+| FR-004 | 全局（回归锁） | `src/test/agentConcurrency.test.ts`（上限内直取即得 / 取消文案逐字一致）、`core-rs/src/engine_tests.rs` 既有子代理用例（`agent_tool_spawns_a_sub_agent_that_replies_to_the_creator` 等不改一字通过） | 自动 |
 
 ## 待澄清
 
@@ -110,8 +110,13 @@ Reply 回投、Reminder 重试、模型 / 权限模式继承、`sessionRuntime` 
 
 ## 收敛记录
 
-收敛时由 /converge 填写，结论只分三类。
-
-- 已满足：<FR / AC → 证据（实现与测试落点）>
-- 偏差：<与 spec 的差异；改代码或改 spec 并留痕>
-- 未做：<回写 tasks.md 的未完成项>
+- 已满足：
+  - FR-001（AC-1 / AC-3 / AC-4 / AC-9）：槽位上限两侧实现（`SubagentSlots.ts` / `subagent.rs`）；TS 场景测试「上限内全部立即取得槽位」「并行子代理槽位峰值恰为 4」「父会话一轮内 6 个调用全部启动」、Rust `subagent_tests.rs`（直取上限 / 超出排队）与 `engine_tests.rs` 端内用例（槽位峰值恰 4、6 个全部完成）、e2e 首请求区间重叠峰值恰为 4。
+  - FR-002（AC-2 / AC-5 / AC-8 / AC-10）：FIFO 与槽位释放（TS「多个排队者按 FIFO 顺序获得槽位」「排队者按发起顺序启动」、Rust `waiters_wake_in_fifo_order`、e2e FIFO 5→6）；三类退出各释放槽位由 TS 单测锁定（完成 = b1 槽位归零、中止 = b2「中止后槽位全部归还」、失败 = 「子代理异常失败后槽位仍释放（三类退出锁定）」注入用例）；跨轮共用同一队列由 e2e 跨轮扇出覆盖。
+  - FR-003（AC-6 / AC-7 / AC-11）：排队取消（TS「排队调用取消（文案逐字一致）」「排队调用不创建子代理会话」「排队中取消后槽位不再转移给它」、Rust `cancel_while_queued_returns_false`）；e2e 中止用例（侧栏恒 4 子会话、按钮仍可点、3 秒窗口排队者不补位）；「收尾中」黄灯判定由既有 `abortPhaseParity` 锁定，e2e 断言按钮可点（黄色为该状态的可见表现）。
+  - FR-004（AC-4）：既有子代理行为回归——Rust `agent_tool_spawns_a_sub_agent_that_replies_to_the_creator`（工具结果文案逐字断言）与 TS 既有全量用例不改一字通过；取消文案与 `RunTools` 批取消逐字一致由测试锁定。
+  - 影响基线 delta 已并入：user-stories 新增 US-49 + 附录映射行、abort-button.md 补排队边界、core-parity §3.18 补并发上限条目；docsLint 全绿。
+- 偏差：
+  - AC-9 的 e2e 驱动方式从「单轮 6 个调用」改为「跨轮扇出 4+1+1」：并行批每个工具一个独立线程，同轮多调用的直取槽位分配是线程竞争，末两位启动者身份不确定，FIFO 断言无法在单轮下确定；轮次边界把排队顺序串行化后断言确定，且顺带在 e2e 层覆盖了跨轮排队（AC-5）。可观察结论（峰值恰 4、排队者晚于最早完成、5 先于 6）与原 AC 一致，单轮 fan-out 由 TS 场景测试与 Rust engine 用例覆盖。AC-9 措辞已随实修改（本条即留痕）。
+  - TS 中止接线解耦（实施中发现的存量分歧修正）：`AgentTool` 原把子代理引擎的 `AbortController` 链接到父前台信号，前台中止会杀死运行中子代理，与 FR-003 / abort-button.md AC-2 / Rust 侧三方相悖；已解耦（递归中止仍经注册表 `interruptRecursive`），代码向 spec 对齐，spec 未改。超出 plan「受影响模块」表所列 AgentTool 改动面的部分仅此一处。
+- 未做：（无——tasks 11 项全勾；反向对照发现的 `SubAgentRegistry` 只增不减存量缺口不在本 spec 范围，已登记 TODO.md）
