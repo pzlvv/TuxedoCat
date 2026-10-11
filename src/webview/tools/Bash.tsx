@@ -66,11 +66,18 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
   // 折叠预览的源文本：持久化输出用其预览（前 2K + 后 2K，末尾行即真实输出的
   // 末尾行），其余用原始输出。流式期间一律用原始输出（持久化标签随 toolResult
   // 才到达，且命令回显里出现同名标签时不能误判）。
-  const previewText = streaming
-    ? (output || '')
-    : persistedInfo
-      ? persistedInfo.preview
-      : (output || '');
+  //
+  // CRLF 必须在这里归一成 \n：行 div（white-space: pre）对孤立 \r 不产生换行，
+  // 只含 \r 的空行高度为 0；而展开态整段 <pre> 里 \r\n 是真实换行、空行占一行。
+  // 同一输出在两种形态下高度不等时，usePreviewLimit 的实测会围绕「放得下 ↔
+  // 放不下」逐帧翻转（输出框 115 ↔ 自然高度），整页后半部分跟着闪烁。
+  const previewText = (
+    streaming
+      ? (output || '')
+      : persistedInfo
+        ? persistedInfo.preview
+        : (output || '')
+  ).replace(/\r\n/g, '\n');
 
   // 去掉末尾因换行产生的空行（流式与完成共用同一行数，避免光标/高度差异）
   const rawLines = useMemo(() => {

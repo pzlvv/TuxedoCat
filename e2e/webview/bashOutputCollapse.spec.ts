@@ -160,3 +160,74 @@ test('US-14 点击提示条展开：框高不变、出现框内滚动条、初�
 
   await page.screenshot({ path: 'test-results/bash-collapse-expanded.png', fullPage: true });
 });
+
+/**
+ * CRLF 回归：PowerShell 风格输出带 \r\n 且段间有空行。行 div 对孤立 \r 不产生
+ * 换行（0px 高），整段 <pre> 里 \r\n 是真实换行——若源文本不归一，同一输出在
+ * 「缩略候选段」与「整段 pre」两种形态下高度不等，实测围绕「放得下 ↔ 放不下」
+ * 每帧翻转，框高 115 ↔ 自然高度来回跳，整页后半部分跟着闪烁。
+ * 修复：previewText 归一 CRLF 后两形态等价。这里以逐帧高度采样锁死不回归。
+ */
+const CRLF_LINES = [
+  '=== nvlddmkm service ===',
+  '',
+  'Name      : nvlddmkm',
+  '',
+  'Status    : Running',
+  'StartMode : Auto',
+  'ExitCode  : 0',
+];
+
+test('US-14 CRLF 输出（含空行）折叠框高度稳定不振荡', async () => {
+  const { host, page } = handle;
+  const started = await host.waitForSent('startNewConversation');
+  const sessionId = started.sessionId as string;
+  await host.send({ type: 'addMessage', sessionId, role: 'user', content: '查一下服务' });
+  await host.send({
+    type: 'addMessage',
+    sessionId,
+    role: 'toolcall',
+    content: '',
+    toolName: 'Bash',
+    toolArgs: { command: 'powershell Get-Service nvlddmkm', description: 'CRLF output' },
+    toolCallId: 'bash-collapse-crlf',
+    status: 'running',
+  });
+  await host.send({
+    type: 'updateToolStatus',
+    sessionId,
+    toolCallId: 'bash-collapse-crlf',
+    output: CRLF_LINES.join('\r\n'),
+    status: 'success',
+  });
+
+  // 完成态渲染出折叠提示条（输出 7 行：缩略内容放得下与否取决于空行实测）
+  await expect(page.getByText(/仅显示末尾 \d+ 行 \/ 共 7 行，点击显示全部/)).toBeVisible({ timeout: 15_000 });
+
+  // 逐帧采样输出框高度：40 帧内必须恒定（±1px）。振荡形态是 115 ↔ 自然高度
+  // （7 行 ≈ 123px+）每帧翻转，任何采样窗口内都会出现 ≥2 个高度值。
+  const heights = await page.evaluate(() => {
+    return new Promise<number[]>((resolve) => {
+      const boxes = Array.from(
+        document.querySelectorAll<HTMLElement>('div[title="点击查看完整输出"]'),
+      );
+      const box = boxes.find((b) => (b.textContent || '').includes('nvlddmkm'));
+      if (!box) throw new Error('CRLF 输出框未渲染');
+      const out: number[] = [];
+      let i = 0;
+      const step = () => {
+        out.push(Math.round(box.getBoundingClientRect().height * 2) / 2);
+        i += 1;
+        if (i < 40) requestAnimationFrame(step);
+        else resolve(out);
+      };
+      requestAnimationFrame(step);
+    });
+  });
+  expect(heights.length).toBe(40);
+  const min = Math.min(...heights);
+  const max = Math.max(...heights);
+  expect(max - min, `40 帧内输出框高度必须稳定，实际 ${JSON.stringify([...new Set(heights)])}`).toBeLessThanOrEqual(1);
+  // 稳定在折叠态（框高与流式容器同高），而不是稳定在某个错误形态
+  expect(max).toBeLessThanOrEqual(116);
+});
