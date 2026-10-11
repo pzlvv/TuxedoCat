@@ -1,3 +1,8 @@
+---
+owner: pzlvv
+last_reviewed: 2026-10-11
+---
+
 # 规格：Core 与 UI 分离
 
 本规格描述 Core 与 UI 的分离形态。Core 与 UI 之间只有一条边——事件总线；Core 持有会话

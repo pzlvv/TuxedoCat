@@ -1,3 +1,8 @@
+---
+owner: pzlvv
+last_reviewed: 2026-10-11
+---
+
 # 规格：Standalone Core（Rust）
 
 本规格描述 Core 的第二种实现——Standalone Core。Core 与 UI 的分离形态见

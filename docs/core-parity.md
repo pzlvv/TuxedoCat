@@ -1,3 +1,8 @@
+---
+owner: pzlvv
+last_reviewed: 2026-10-11
+---
+
 # 规格：两套 Core 的实现差异
 
 本规格界定 Embedded Core（`src/core`，TypeScript）与 Standalone Core（`core-rs`，Rust）两套实现**有意保留**的差异与装配 / 事实归属差异（第 1–3 节）、由 parity 对照表锁定的对等面（第 4 节）与 `core-rs` 的 dead_code 审计（第 5 节）。Embedded Core 是唯一真值，Standalone Core逐项对齐；尚未迁入的能力见 [docs/standalone-core.md 第 9 节](standalone-core.md#9-与-embedded-core-的对等)的已知缺口。

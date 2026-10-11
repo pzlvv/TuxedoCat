@@ -1,3 +1,8 @@
+---
+owner: pzlvv
+last_reviewed: 2026-10-11
+---
+
 # <product-name> 用户故事（US）
 
 本文档描述 <product-name> 当前实现（as-built）面向用户的能力，以用户故事（User Story）形式

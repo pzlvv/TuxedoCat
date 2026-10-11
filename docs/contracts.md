@@ -1,3 +1,8 @@
+---
+owner: pzlvv
+last_reviewed: 2026-10-11
+---
+
 # 规格：宿主契约与端口
 
 本规格界定宿主侧全部契约与端口，分三部分：三契约 `UIHost` / `SpinDesign` / `ConversationManager`（第 1–5 节，含 MCP 生命周期入口 `MCPHost`）、共享子模块端口（第 6–9 节：`UserChoiceManager` / `ToolHandler` / `WebviewMessageHandler` / `WebViewUiPort`）、webview 侧契约 `HostInfo`（第 10–13 节）。契约成员全部必选、按 UI surface 划分；分层与依赖规则见 [DEVELOPMENT.md 第 2 章](../DEVELOPMENT.md#2-分层与依赖规则)，事件词汇表见[第 3 章](../DEVELOPMENT.md#3-核心契约assistanteventbus)、[第 4 章](../DEVELOPMENT.md#4-事件列表)。

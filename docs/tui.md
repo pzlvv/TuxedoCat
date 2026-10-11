@@ -1,3 +1,8 @@
+---
+owner: pzlvv
+last_reviewed: 2026-10-11
+---
+
 # 规格：TUI（终端宿主）
 
 本规格界定第三个宿主（继 VS Code webview 宿主、Electron 宿主之后）的终端实现：纯 Rust

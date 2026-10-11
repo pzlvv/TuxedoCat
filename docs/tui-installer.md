@@ -1,3 +1,8 @@
+---
+owner: pzlvv
+last_reviewed: 2026-10-11
+---
+
 # 规格：TUI 安装程序
 
 本规格界定 TUI 版的分发与 Core 部署程序：单个自解压可执行文件，内嵌 Standalone Core、

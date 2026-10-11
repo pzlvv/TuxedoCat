@@ -1,3 +1,8 @@
+---
+owner: pzlvv
+last_reviewed: 2026-10-11
+---
+
 # 规格：WebViewUI 实现与会话 UI 状态
 
 本规格界定唯一的 UI 实现 `WebViewUI`（第 1–4 节）与会话级 UI 状态 `SessionUiState`（第 5–10 节）。`WebViewUI` 不实现任何事件契约，只经 `AssistantEventBus` 订阅与发送；`SessionUiState` 是 host 侧渲染投影，与 core 的 `sessionRuntime` 分工明确。

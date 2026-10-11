@@ -1,3 +1,8 @@
+---
+owner: pzlvv
+last_reviewed: 2026-10-11
+---
+
 # 规格：Client 与 Connection
 
 本规格描述宿主侧的连接模型。Client 是宿主级唯一实例，持有配置快照与路由；Connection 是

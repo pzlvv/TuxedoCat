@@ -84,6 +84,7 @@
     "build:core:linux-arm64": "node scripts/build-core.mjs --target aarch64-unknown-linux-musl",
     "build:core:win32-arm64": "node scripts/build-core.mjs --target aarch64-pc-windows-msvc",
     "test:core": "cargo test --manifest-path core-rs/Cargo.toml",
+    "docs:freshness": "node scripts/docs-freshness.mjs",
     "coverage:core": "node scripts/coverage-core.mjs",
     "coverage:core:html": "node scripts/coverage-core.mjs --html",
     "build:webview": "vite build && vite build --config vite.monaco.config.ts && vite build --config vite.imageViewer.config.ts && vite build --config vite.sidebar.config.ts && vite build --config vite.titlebar.config.ts && vite build --config vite.remoteWorkspace.config.ts",

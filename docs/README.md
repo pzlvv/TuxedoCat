@@ -4,7 +4,9 @@
 章节编号与代码注释引用一一对应等）见 [AGENTS.md 第 0 节](../AGENTS.md#0-文档要求)；「什么内容写到哪」的判据见
 下表。文档与代码不一致时，先修其中一方使二者一致（`src/test/docsLint.test.ts` 校验
 事件表与载荷列、聚合数字与成员清单、章节引用、文档路径与常量、代码块来源标注、
-US↔e2e 映射）。
+US↔e2e 映射、specs/ 结构与闸门、主题规格 frontmatter）。主题规格带 `owner` /
+`last_reviewed` frontmatter（docsLint 校验字段齐全）；引用源码的新鲜度对比出报告：
+`npm run docs:freshness`（只出报告，不进 CI 门禁）。
 
 ## 分类法
 
@@ -16,9 +18,10 @@ US↔e2e 映射）。
 | 主题规格 | `docs/<topic>.md`（领域命名） | 跨模块的领域规格（契约、进程模型、管线、事实分工）；长期 |
 | 功能规格 | 并入主题规格或独立 `docs/<feature>.md` | 独立成篇判据：跨多个 surface 或有独立状态机；否则作主题规格的一节 |
 | 需求基线 | `docs/user-stories.md` | as-built 用户故事，e2e 用例以 `US-xx` 编号引用；随 e2e 演进 |
-| 待办清单 | `TODO.md`（根目录） | **只列未完成项**，完成即删；历史不保留在待办里 |
+| 改动规格 | `specs/<NNN>-<slug>/`（spec / plan / tasks 三件套，缺陷用 defect.md） | 尚未落地的意图与验收，是「只写现状」的唯一例外；生命周期见 `specs/README.md`；收敛后 delta 并入 `docs/`、整目录归档 `docs/archive/specs/` |
+| 待办清单 | `TODO.md`（根目录） | 只列**未排期**的想法与跨 spec 缺口，每条带验收判据；完成即删；进行中的工作在 specs/ 的 `tasks.md` 勾选跟踪 |
 | 决策记录 | `docs/adr/NNNN-<slug>.md` | 只记决策、背景与被否决的替代方案；编号递增，只增不删 |
-| 冻结档案 | `docs/archive/` | 已完成工作的溯源记录，不再更新 |
+| 冻结档案 | `docs/archive/` | 已完成工作的溯源记录（含 specs/ 归档），不再更新 |
 | 临时文件 | 仓库根 `tmp_*` | 一次性盘点 / 计划；不登记地图、不参与 docsLint 校验；落地或放弃后即删 |
 | 子目录导读 | `<dir>/README.md`（如 `src/test/README.md`） | 该目录的测试车道 / 运行方式说明 |
 
@@ -31,7 +34,14 @@ US↔e2e 映射）。
 | `README.md` | 快速上手：环境要求、构建 / 测试命令、双 Core 装配说明 |
 | `AGENTS.md` | AI 协作者约定：文档规则、分层依赖、命名约定、架构铁律、工作流 |
 | `DEVELOPMENT.md` | 架构总纲：总览与目录布局、分层规则、`AssistantEventBus` 契约、事件词汇表、架构原则、待定事项 |
-| `TODO.md` | 未完成项清单（流式渲染降级、TCP_NODELAY、Windows arm64 产物、文档按需改进项） |
+| `TODO.md` | 未排期想法与跨 spec 缺口（每条带验收判据；进行中的工作在 specs/ 的 `tasks.md`） |
+
+### 改动规格（进行中的工作）
+
+| 文档 | 范围 |
+| --- | --- |
+| `specs/README.md` | 改动规格工作流：目录约定、生命周期、需求 ID 与追溯、澄清 / 宪章 / 收敛闸门、docsLint 守卫口径、与 TODO.md 的分工 |
+| `specs/_templates/` | spec / defect / plan / tasks 四份模板（保留目录名，docsLint 不扫描） |
 
 ### Core 与进程
 

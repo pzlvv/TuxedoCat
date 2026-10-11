@@ -1,3 +1,8 @@
+---
+owner: pzlvv
+last_reviewed: 2026-10-11
+---
+
 # 规格：VS Code 单视图宿主的空闲对话回收
 
 本规格描述 VS Code 单视图宿主（`HostInfo.conversationView === 'single'`）对空闲对话的

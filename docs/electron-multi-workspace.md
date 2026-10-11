@@ -1,3 +1,8 @@
+---
+owner: pzlvv
+last_reviewed: 2026-10-11
+---
+
 # 规格：Electron 多工作目录
 
 本规格描述 Electron 宿主同时打开多个工作目录的能力。工作目录是对话的属性；每个已打开的

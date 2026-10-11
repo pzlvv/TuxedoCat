@@ -1,3 +1,8 @@
+---
+owner: pzlvv
+last_reviewed: 2026-10-11
+---
+
 # 规格：webview 的事实与等待态
 
 本规格描述 webview 与宿主之间的**事实分工**：webview 渲染所需的每一项事实都由宿主决定，

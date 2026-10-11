@@ -1,18 +1,23 @@
-# 规格：Bash 后台任务
-
-本规格界定 Bash 任务后台化的两块语义：**手工转后台**（第 1–3 节——用户把正在前台运行的命令转入后台继续执行时，工具结果如何进入上下文、本轮 agent 循环如何暂停、暂停后由谁接续）与**后台任务提醒**（第 4–9 节——查询结束兜底提醒与周期性进度提醒的调度与文案）。后台任务的注册 / 完成通知 / 中止不在本规格内；运行时事实（`backgroundRunning`）的归属见 [DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)。
-
-相关规格与章节：
-
-- [DEVELOPMENT.md 第 4.3 节](../DEVELOPMENT.md#43-uieventui--core单向)（UiEvent（UI → core，单向））
-- [DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)（sessionRuntimeChanged 的生产者：sessionRuntime）
-- [DEVELOPMENT.md 第 5.6 节](../DEVELOPMENT.md#56-core-描述事实ui-决定表现)（core 描述事实，UI 决定表现）
-- [DEVELOPMENT.md 第 5.7 节](../DEVELOPMENT.md#57-一份事实只有一个写入点)（一份事实只有一个写入点）
-- [docs/core-parity.md 第 3.18 节](core-parity.md#318-子代理后台-bash-与其余已迁入能力)（子代理、后台 Bash 与其余已迁入能力）
-- `docs/abort-button.md`（转换后按钮转黄；黄色 = 前台无工作、但仍有后台任务或子代理）
-- [docs/user-message-pipeline.md 第 4 节](user-message-pipeline.md#4-引擎消费循环)（引擎消费循环）
-- `docs/user-stories.md` 的 US-45
-
+---
+owner: pzlvv
+last_reviewed: 2026-10-11
+---
+
+# 规格：Bash 后台任务
+
+本规格界定 Bash 任务后台化的两块语义：**手工转后台**（第 1–3 节——用户把正在前台运行的命令转入后台继续执行时，工具结果如何进入上下文、本轮 agent 循环如何暂停、暂停后由谁接续）与**后台任务提醒**（第 4–9 节——查询结束兜底提醒与周期性进度提醒的调度与文案）。后台任务的注册 / 完成通知 / 中止不在本规格内；运行时事实（`backgroundRunning`）的归属见 [DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)。
+
+相关规格与章节：
+
+- [DEVELOPMENT.md 第 4.3 节](../DEVELOPMENT.md#43-uieventui--core单向)（UiEvent（UI → core，单向））
+- [DEVELOPMENT.md 第 4.5 节](../DEVELOPMENT.md#45-sessionruntimechanged-的生产者sessionruntime)（sessionRuntimeChanged 的生产者：sessionRuntime）
+- [DEVELOPMENT.md 第 5.6 节](../DEVELOPMENT.md#56-core-描述事实ui-决定表现)（core 描述事实，UI 决定表现）
+- [DEVELOPMENT.md 第 5.7 节](../DEVELOPMENT.md#57-一份事实只有一个写入点)（一份事实只有一个写入点）
+- [docs/core-parity.md 第 3.18 节](core-parity.md#318-子代理后台-bash-与其余已迁入能力)（子代理、后台 Bash 与其余已迁入能力）
+- `docs/abort-button.md`（转换后按钮转黄；黄色 = 前台无工作、但仍有后台任务或子代理）
+- [docs/user-message-pipeline.md 第 4 节](user-message-pipeline.md#4-引擎消费循环)（引擎消费循环）
+- `docs/user-stories.md` 的 US-45
+
 ## 目录
 
 | 节 | 标题 |
@@ -29,201 +34,201 @@
 
 ---
 
-## 1. 手工转后台：能力
-
-### 1.1 入口
-
-Bash 卡片在 `status === 'running'`（前台执行中）时，于「复制命令」按钮**左侧**渲染
-「转后台」按钮（时钟图标，`title` 取 i18n 的 `tool.bash.moveBackground`）。卡片进入任何
-完成态后按钮消失——执行状态是卡片自己的事实，按钮只是它的投影。
-
-点击后 webview 发 `backgroundBashTool` 消息（`sessionId` + `toolUseId`），宿主翻译为
-`UiEvent.bashBackgroundRequested`（[DEVELOPMENT.md 第 4.3 节](../DEVELOPMENT.md#43-uieventui--core单向)）。重复点击不产生额外效果。
-
-### 1.2 转换
-
-core 按 `toolUseId` 查「前台执行注册表」（`tools/bash/ManualBackground.ts` 的
-`requestManualBackground`）：
-
-- 命中 → 触发该次前台执行的转换，与自动转后台（前台超时 / 通知驱动）走同一条
-  `autoBackgroundCommand` 路径：子进程 detach、输出改由 file mode 继续收集、任务以
-  `bg-auto-` 前缀注册；
-- 未命中（命令已收尾 / 从未登记）→ 什么都不做。按钮与实际状态之间的竞态由注册表兜住，
-  调用方不补兜底（[DEVELOPMENT.md 第 5.1 节](../DEVELOPMENT.md#51-不过度-fallback)）。
-
-转换的结果**照常作为 tool_result 进入上下文**：状态成功、`assistantAutoBackgrounded`
-为真、`backgroundTaskId` 为 `bg-auto-*`，输出文案为「Command moved to the background
-after <已运行时长> (task ID: …) …」（`tools/bash/Result.ts`）。转换失败（打不开输出文件等）
-不置暂停标记，按前台结果收尾。
-
-注册表生命周期归 `Exec.execForeground`：spawn 后登记触发器，全部收尾路径（完成 / 中止 /
-已转后台 / 出错）注销。
-
-### 1.3 循环暂停
-
-转换成功时回写引擎的循环暂停标记（Embedded `QueryEngine.requestLoopPause` / Standalone
-`SessionState.pause_loop`）。消费出口在查询循环的工具批收尾、下一轮 LLM 请求发起之前：
-本批工具结果已进上下文，但**不再发起下一轮 LLM 请求**（`aiEnd` 已发）。消费循环随后按
-队列状态收尾：
-
-- 队列为空 → 结束本次消费，会话回到「等待用户输入」；abort 按钮因仍有后台任务而为黄
-  （[docs/abort-button.md 第 1.1 节](abort-button.md#11-三态)）；
-- 队列有消息（用户消息 / 后台任务完成通知 / reminder）→ 由既有入队路径立刻拉起新一轮，
-  性质与用户触发的查询一致——**接续由队列消息触发，与转后台结果无关**。
-
-暂停标记一次性（取走即清除）。新用户消息（`submitMessage` / `submit_message`）与中止
-（`abortForegroundQuery` / `abort_foreground`）都清掉残留标记——暂停只对「当时那轮查询」
-有意义。
-
-### 1.4 与兜底提醒的边界
-
-触发暂停的后台任务在转换成功时即登记为「已兜底」（Embedded `Exec.triggerAutoBackground`
-调 `markBackgroundTasksFallbackReminded`；Standalone 的暂停出口消费 `LoopPauseSignal.source_task`
-后写 `ReminderEntry.fallback_reminded`），3 分钟门槛与 sleep 豁免都不再命中，因此查询收尾
-的兜底提醒（第 4 节）不会为它补一条 reminder 并拉起新查询
-——否则转后台结果自己就触发了接续循环，违背 1.3 的暂停语义。周期性提醒不受影响。
-
-## 2. 手工转后台：实现
-
-| 环节 | Embedded（TS） | Standalone（Rust） |
-| --- | --- | --- |
-| 按钮 | `src/webview/tools/Bash.tsx` | 同左（webview 两宿主共用） |
-| 协议消息 | `backgroundBashTool`（`src/host/webviewMessages.ts`） | 同左 |
-| UiEvent | `bashBackgroundRequested`（`src/core/AssistantEventBus.ts`） | 同左 |
-| core 订阅 | `initializeCoreEvents.ts` → `QueryEngine.requestBashBackground` | `main.rs` 的 `dispatch_ui_event` → `Core::on_bash_background_requested` |
-| 注册表 | `tools/bash/ManualBackground.ts`（`toolUseId → 触发器`） | `tools.rs` 的 `MANUAL_BG`（`tool_use_id → 请求标记`） |
-| 暂停信号 | `QueryEngine.loopPauseRequested` + `requestLoopPause` / `consumeLoopPauseRequest` | `tools::LoopPauseSignal`（`paused` + `source_task`）挂在 `SessionState.pause_loop` |
-| 兜底抑制 | `Exec.triggerAutoBackground('user-requested')` → `markBackgroundTasksFallbackReminded` | 暂停出口消费 `source_task` → `ReminderEntry.fallback_reminded` |
-| 消费点 | `src/core/Query.ts` 的 `queryLoop`（工具批收尾、下一轮请求前） | `core-rs/src/engine.rs` 的 `run_query_loop`（同一位置） |
-
-两侧实现按同一份契约对齐：事件名、暂停语义、兜底提醒抑制的生效时机一致，差异只在
-注册表的载体（闭包 / 请求标记）与暂停信号随 `SessionState` 携带 `source_task` 的方式。
-
-## 3. 手工转后台：测试
-
-- 注册表与暂停标记：`src/test/manualBackground.test.ts`；Standalone 对应
-  `core-rs/src/tools_tests.rs::bash_manual_background_converts_and_requests_loop_pause`。
-- 消费循环语义（暂停 + 队列接续）：
-  `core-rs/src/engine_tests.rs::manual_background_pauses_the_loop_until_a_queued_message_arrives`。
-- 事件词汇表对等：`src/test/fixtures/eventTypesParity.json` +
-  `src/test/eventTypeParity.test.ts`（两侧同名 `bashBackgroundRequested`）。
-- webview UI 级 e2e：`e2e/webview/bashBackgroundButton.spec.ts`（按钮位置 / 点击上报 /
-  完成后隐藏）。
-- 整应用 e2e：`e2e/electron/backgroundBash.spec.ts`（真实 Standalone Core + mock LLM：
-  暂停后新用户消息接续、转后台前已排队的用户消息在暂停点接续、后台完成通知接续）。
-
-## 4. 查询结束兜底提醒
-
-一轮查询结束时（`finalizeIdle` / 消费循环即将空转），若该会话仍有满足门槛的运行中后台
-任务，投递一条 reminder 列出 `taskId` / `pid` / 命令与按当前 OS 生成的 kill 命令，让 LLM
-二选一：不再需要的执行 kill，都还需要就直接结束本轮等完成通知（不要 sleep / 轮询）。
-
-- 兜底门槛（`qualifiesBackgroundFallbackReminder` / `bash_task::qualifies_fallback_reminder`）
-  取两条的**或**：
-  - 距上次访问满 3 分钟（`BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS`）。`lastAccessedAt`
-    是该任务上次被「访问」的时刻，任务注册时取开始时间：刚注册的任务不进列表（短命任务
-    很快自己完成，为它打断一轮 LLM 只是噪音），刚被周期提醒报告过的任务也不会紧接着再被
-    兜底提醒一次；
-  - 命令含 `sleep` 子命令、且本任务**还没兜底过**（`fallbackReminded` / `fallback_reminded`）。
-    sleep 类任务在等一个定时事件，最需要被提醒「别去轮询，等通知」，因此刚注册也兜底一次。
-    `sleep` 判定与超时策略同一口径（`SleepDetect.containsSleepCommand` /
-    `tools::contains_sleep_command`）。
-  全部不满足时本次不投递；门槛按**当时的**距上次访问时长判定，不满足的任务留着，后续
-  查询结束再判。
-- 一次「访问」＝投递周期提醒，或一轮查询结束（无论本次是否兜底）。查询结束时由
-  `QueryEngine.maybeRemindBackgroundTasks` / `engine.rs` 的 `background_reminder` 把
-  本会话运行中任务的上次访问时刻刷成当前时刻（`markBackgroundTasksAccessed` /
-  `ReminderEntry.last_accessed_ms`），本次投递的任务同时登记为「已兜底」
-  （`markBackgroundTasksFallbackReminded` / `ReminderEntry.fallback_reminded`）：sleep 豁免
-  每个任务只走一次，否则查询结束会每轮命中。
-- 由 reminder 拉起的那一轮结束时**直接跳过**兜底提醒（Embedded `QueryEngine.reminderDrivenRun`，
-  Standalone `SessionState.reminder_driven_run`）：提醒不接力，模型不会刚被提醒过又被追问
-  「要不要 kill」。标记取走即清除，只对刚结束的那一轮有意义；下一轮照常按门槛判定。
-- 手工转后台（第 1 节）的任务在转换成功时即登记为「已兜底」：3 分钟
-  门槛与 sleep 豁免都不再命中，查询收尾的兜底提醒不会为它拉起新查询，暂停语义不失效。
-- Embedded：`QueryEngine.maybeRemindBackgroundTasks`；Standalone：
-  `engine.rs` 的 `background_reminder`（在消费循环的「队列排空」判定里调用）。
-- 本条与周期提醒互相独立：兜底提醒只是「启动一次查询」的众多原因之一，对周期时钟没有
-  特殊影响（见第 5 节的暂停口径）；反过来周期提醒投递时会刷新 `lastAccessedAt`，这正是
-  定时提醒不会紧接着触发兜底提醒的原因。
-
-## 5. 间隔档位
-
-每个后台任务有**自己的**提醒时钟。时钟只在会话「前台空闲」时前进；到达下列累计
-空闲时长时投递一次提醒：
-
-| 轮次 | 距上次提醒 | 累计空闲时长 |
-| --- | --- | --- |
-| 0 | 5min | 5min |
-| 1 | 10min | 15min |
-| 2 | 20min | 35min |
-| 3 | 30min | 65min |
-| 4+ | 30min | 每 30min 一次 |
-
-- 「前台空闲」＝ `sessionRuntime` 的 `queryRunning` 与 `compacting` 均为假
-  （`docs/abort-button.md` 的黄色）。query engine 有任务时**暂停计时**：暂停期间的
-  时长不计入累计，恢复后从剩余量继续。
-- 暂停只看 query engine 的**状态**，不看查询由什么触发：用户消息、子代理回复、
-  后台任务完成通知、兜底提醒、手动压缩——任何原因启动的查询都同样让时钟暂停。
-- 时钟按任务独立推进：A 到点提醒不会重置 B 的时钟；只要 query engine 在跑（不管是
-  谁启动的），同一会话里 A、B 的时钟就一起暂停。
-- 提醒只报告触发它的那个任务（任务描述 / 命令 / 当前输出 / 已执行时间 / 下次间隔）；
-  投递时把该任务的 `lastAccessedAt` 刷成当前时刻，查询结束的兜底提醒据此冷却（第 4 节）。
-- 「已执行时间」是任务自注册起的 wall clock 时长（子进程在暂停期间照常运行）。
-
-## 6. 投递
-
-- 提醒是 silent 的 `pendingReminder`（LLM 可见、UI 不可见），与「回复未完成」追问
-  同一条通道；投递时主动启动消费循环，让 LLM 立即看到。
-- 同一 tick 多个任务同时到点时**追加**到 `pendingReminder`（空行分隔）而不是覆盖，
-  否则先到点的提醒会被后到点的顶掉。
-- 压缩进行中不投递（压缩会整体替换消息数组）；调度线程下一轮再发。
-- 用户中止后丢弃投递（投递前检查中止标记），中止后台任务时注销对应时钟。
-- 任务完成 / 会话关闭后注销时钟，不再提醒。
-
-## 7. 工具结果里的下次间隔
-
-`run_in_background` 与自动转后台两种路径返回给 LLM 的 `tool_result` 都带上首次提醒
-间隔（`5min`）：任务仍在运行时，模型会收到进度提醒。
-
-## 8. 提醒：实现
-
-| 侧 | 调度 | 纯函数 |
-| --- | --- | --- |
-| Embedded（TS） | `src/core/tools/bash/BackgroundReminder.ts`（1s ticker，读 `sessionRuntime`；每个任务记 `lastAccessedAt`） | `advanceReminderClock` / `buildBackgroundReminderText` / `qualifiesBackgroundFallbackReminder` |
-| Standalone（Rust） | `core-rs/src/engine.rs` 的 `tick_background_reminders`（进程级调度线程；`ReminderEntry.last_accessed_ms`） | `core-rs/src/bash_task.rs` 的 `advance_reminder_clock` / `build_background_reminder_text` / `qualifies_fallback_reminder` |
-
-- 时钟登记 / 注销挂在后台任务生命周期上：Embedded 在 `LocalShellTask` 的注册 /
-  完成 / 中止点；Standalone 由调度线程按 `bash_task::running_tasks_for_session`
-  对账（任务结束即清理）。
-- 投递入口：Embedded `QueryEngine.deliverBackgroundReminder`；Standalone
-  `Core::deliver_background_reminder`。
-- 事实来源只有一处：会话是否空闲读 `sessionRuntime`（Embedded）/
-  `SessionState.running` + `compacting`（Standalone），不另建状态表。
-- 「上次访问时刻」挂在提醒调度项上（Embedded `ReminderSchedule.lastAccessedAt` /
-  Standalone `ReminderEntry.last_accessed_ms`），写入点只有两处：周期提醒投递（同一调度项）
-  与查询结束（对本会话运行中的全部任务）。
-- 「已兜底」同样挂在提醒调度项上（Embedded `ReminderSchedule.fallbackReminded` /
-  Standalone `ReminderEntry.fallback_reminded`），写入点只有两处：查询结束兜底投递
-  （对本批投递的任务）与手工转后台转换成功（Embedded `Exec.triggerAutoBackground`
-  调 `markBackgroundTasksFallbackReminded`；Standalone 的暂停出口消费
-  `LoopPauseSignal.source_task`）。
-- 「本轮由 reminder 拉起」是消费循环级事实：Embedded `QueryEngine.reminderDrivenRun`，
-  Standalone `SessionState.reminder_driven_run`。置位方是两类提醒的投递点（周期提醒入口
-  `deliverBackgroundReminder` / `deliver_background_reminder`，以及兜底提醒本身），
-  消费循环收尾取走；Standalone 在取消分支额外清一次（reminder 已被丢弃）。
-
-## 9. 提醒：测试
-
-- 对等对照表 `src/test/fixtures/backgroundReminderParity.json`（生成脚本
-  `scripts/gen-background-reminder-parity.mjs`）：间隔档位、时钟推进、提醒文案、
-  兜底门槛（距上次访问满 3 分钟或 sleep 豁免的布尔判定）。
-  - Embedded：`src/test/backgroundReminderParity.test.ts`；
-  - Standalone：`core-rs/src/bash_task_tests.rs::background_reminder_parity`。
-- 调度接线：`src/test/backgroundReminderScheduler.test.ts`（空闲到点、暂停不累计、
-  中止注销、周期提醒 / 查询结束刷新 `lastAccessedAt` 后的冷却、sleep 豁免只走一次）。
-- 兜底提醒接线：`src/test/backgroundFallbackReminder.test.ts`（刚注册不兜底、满最小间隔
-  投递带 kill 命令的 reminder、查询结束刷新后不递归、sleep 豁免只走一次、reminder
-  拉起的那一轮不补兜底）。
-- 工具结果文案：`src/test/bashSleepParity.test.ts` 与
-  `core-rs/src/tools_tests.rs` 的自动转后台 / 后台用例断言下次提醒间隔。
+## 1. 手工转后台：能力
+
+### 1.1 入口
+
+Bash 卡片在 `status === 'running'`（前台执行中）时，于「复制命令」按钮**左侧**渲染
+「转后台」按钮（时钟图标，`title` 取 i18n 的 `tool.bash.moveBackground`）。卡片进入任何
+完成态后按钮消失——执行状态是卡片自己的事实，按钮只是它的投影。
+
+点击后 webview 发 `backgroundBashTool` 消息（`sessionId` + `toolUseId`），宿主翻译为
+`UiEvent.bashBackgroundRequested`（[DEVELOPMENT.md 第 4.3 节](../DEVELOPMENT.md#43-uieventui--core单向)）。重复点击不产生额外效果。
+
+### 1.2 转换
+
+core 按 `toolUseId` 查「前台执行注册表」（`tools/bash/ManualBackground.ts` 的
+`requestManualBackground`）：
+
+- 命中 → 触发该次前台执行的转换，与自动转后台（前台超时 / 通知驱动）走同一条
+  `autoBackgroundCommand` 路径：子进程 detach、输出改由 file mode 继续收集、任务以
+  `bg-auto-` 前缀注册；
+- 未命中（命令已收尾 / 从未登记）→ 什么都不做。按钮与实际状态之间的竞态由注册表兜住，
+  调用方不补兜底（[DEVELOPMENT.md 第 5.1 节](../DEVELOPMENT.md#51-不过度-fallback)）。
+
+转换的结果**照常作为 tool_result 进入上下文**：状态成功、`assistantAutoBackgrounded`
+为真、`backgroundTaskId` 为 `bg-auto-*`，输出文案为「Command moved to the background
+after <已运行时长> (task ID: …) …」（`tools/bash/Result.ts`）。转换失败（打不开输出文件等）
+不置暂停标记，按前台结果收尾。
+
+注册表生命周期归 `Exec.execForeground`：spawn 后登记触发器，全部收尾路径（完成 / 中止 /
+已转后台 / 出错）注销。
+
+### 1.3 循环暂停
+
+转换成功时回写引擎的循环暂停标记（Embedded `QueryEngine.requestLoopPause` / Standalone
+`SessionState.pause_loop`）。消费出口在查询循环的工具批收尾、下一轮 LLM 请求发起之前：
+本批工具结果已进上下文，但**不再发起下一轮 LLM 请求**（`aiEnd` 已发）。消费循环随后按
+队列状态收尾：
+
+- 队列为空 → 结束本次消费，会话回到「等待用户输入」；abort 按钮因仍有后台任务而为黄
+  （[docs/abort-button.md 第 1.1 节](abort-button.md#11-三态)）；
+- 队列有消息（用户消息 / 后台任务完成通知 / reminder）→ 由既有入队路径立刻拉起新一轮，
+  性质与用户触发的查询一致——**接续由队列消息触发，与转后台结果无关**。
+
+暂停标记一次性（取走即清除）。新用户消息（`submitMessage` / `submit_message`）与中止
+（`abortForegroundQuery` / `abort_foreground`）都清掉残留标记——暂停只对「当时那轮查询」
+有意义。
+
+### 1.4 与兜底提醒的边界
+
+触发暂停的后台任务在转换成功时即登记为「已兜底」（Embedded `Exec.triggerAutoBackground`
+调 `markBackgroundTasksFallbackReminded`；Standalone 的暂停出口消费 `LoopPauseSignal.source_task`
+后写 `ReminderEntry.fallback_reminded`），3 分钟门槛与 sleep 豁免都不再命中，因此查询收尾
+的兜底提醒（第 4 节）不会为它补一条 reminder 并拉起新查询
+——否则转后台结果自己就触发了接续循环，违背 1.3 的暂停语义。周期性提醒不受影响。
+
+## 2. 手工转后台：实现
+
+| 环节 | Embedded（TS） | Standalone（Rust） |
+| --- | --- | --- |
+| 按钮 | `src/webview/tools/Bash.tsx` | 同左（webview 两宿主共用） |
+| 协议消息 | `backgroundBashTool`（`src/host/webviewMessages.ts`） | 同左 |
+| UiEvent | `bashBackgroundRequested`（`src/core/AssistantEventBus.ts`） | 同左 |
+| core 订阅 | `initializeCoreEvents.ts` → `QueryEngine.requestBashBackground` | `main.rs` 的 `dispatch_ui_event` → `Core::on_bash_background_requested` |
+| 注册表 | `tools/bash/ManualBackground.ts`（`toolUseId → 触发器`） | `tools.rs` 的 `MANUAL_BG`（`tool_use_id → 请求标记`） |
+| 暂停信号 | `QueryEngine.loopPauseRequested` + `requestLoopPause` / `consumeLoopPauseRequest` | `tools::LoopPauseSignal`（`paused` + `source_task`）挂在 `SessionState.pause_loop` |
+| 兜底抑制 | `Exec.triggerAutoBackground('user-requested')` → `markBackgroundTasksFallbackReminded` | 暂停出口消费 `source_task` → `ReminderEntry.fallback_reminded` |
+| 消费点 | `src/core/Query.ts` 的 `queryLoop`（工具批收尾、下一轮请求前） | `core-rs/src/engine.rs` 的 `run_query_loop`（同一位置） |
+
+两侧实现按同一份契约对齐：事件名、暂停语义、兜底提醒抑制的生效时机一致，差异只在
+注册表的载体（闭包 / 请求标记）与暂停信号随 `SessionState` 携带 `source_task` 的方式。
+
+## 3. 手工转后台：测试
+
+- 注册表与暂停标记：`src/test/manualBackground.test.ts`；Standalone 对应
+  `core-rs/src/tools_tests.rs::bash_manual_background_converts_and_requests_loop_pause`。
+- 消费循环语义（暂停 + 队列接续）：
+  `core-rs/src/engine_tests.rs::manual_background_pauses_the_loop_until_a_queued_message_arrives`。
+- 事件词汇表对等：`src/test/fixtures/eventTypesParity.json` +
+  `src/test/eventTypeParity.test.ts`（两侧同名 `bashBackgroundRequested`）。
+- webview UI 级 e2e：`e2e/webview/bashBackgroundButton.spec.ts`（按钮位置 / 点击上报 /
+  完成后隐藏）。
+- 整应用 e2e：`e2e/electron/backgroundBash.spec.ts`（真实 Standalone Core + mock LLM：
+  暂停后新用户消息接续、转后台前已排队的用户消息在暂停点接续、后台完成通知接续）。
+
+## 4. 查询结束兜底提醒
+
+一轮查询结束时（`finalizeIdle` / 消费循环即将空转），若该会话仍有满足门槛的运行中后台
+任务，投递一条 reminder 列出 `taskId` / `pid` / 命令与按当前 OS 生成的 kill 命令，让 LLM
+二选一：不再需要的执行 kill，都还需要就直接结束本轮等完成通知（不要 sleep / 轮询）。
+
+- 兜底门槛（`qualifiesBackgroundFallbackReminder` / `bash_task::qualifies_fallback_reminder`）
+  取两条的**或**：
+  - 距上次访问满 3 分钟（`BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS`）。`lastAccessedAt`
+    是该任务上次被「访问」的时刻，任务注册时取开始时间：刚注册的任务不进列表（短命任务
+    很快自己完成，为它打断一轮 LLM 只是噪音），刚被周期提醒报告过的任务也不会紧接着再被
+    兜底提醒一次；
+  - 命令含 `sleep` 子命令、且本任务**还没兜底过**（`fallbackReminded` / `fallback_reminded`）。
+    sleep 类任务在等一个定时事件，最需要被提醒「别去轮询，等通知」，因此刚注册也兜底一次。
+    `sleep` 判定与超时策略同一口径（`SleepDetect.containsSleepCommand` /
+    `tools::contains_sleep_command`）。
+  全部不满足时本次不投递；门槛按**当时的**距上次访问时长判定，不满足的任务留着，后续
+  查询结束再判。
+- 一次「访问」＝投递周期提醒，或一轮查询结束（无论本次是否兜底）。查询结束时由
+  `QueryEngine.maybeRemindBackgroundTasks` / `engine.rs` 的 `background_reminder` 把
+  本会话运行中任务的上次访问时刻刷成当前时刻（`markBackgroundTasksAccessed` /
+  `ReminderEntry.last_accessed_ms`），本次投递的任务同时登记为「已兜底」
+  （`markBackgroundTasksFallbackReminded` / `ReminderEntry.fallback_reminded`）：sleep 豁免
+  每个任务只走一次，否则查询结束会每轮命中。
+- 由 reminder 拉起的那一轮结束时**直接跳过**兜底提醒（Embedded `QueryEngine.reminderDrivenRun`，
+  Standalone `SessionState.reminder_driven_run`）：提醒不接力，模型不会刚被提醒过又被追问
+  「要不要 kill」。标记取走即清除，只对刚结束的那一轮有意义；下一轮照常按门槛判定。
+- 手工转后台（第 1 节）的任务在转换成功时即登记为「已兜底」：3 分钟
+  门槛与 sleep 豁免都不再命中，查询收尾的兜底提醒不会为它拉起新查询，暂停语义不失效。
+- Embedded：`QueryEngine.maybeRemindBackgroundTasks`；Standalone：
+  `engine.rs` 的 `background_reminder`（在消费循环的「队列排空」判定里调用）。
+- 本条与周期提醒互相独立：兜底提醒只是「启动一次查询」的众多原因之一，对周期时钟没有
+  特殊影响（见第 5 节的暂停口径）；反过来周期提醒投递时会刷新 `lastAccessedAt`，这正是
+  定时提醒不会紧接着触发兜底提醒的原因。
+
+## 5. 间隔档位
+
+每个后台任务有**自己的**提醒时钟。时钟只在会话「前台空闲」时前进；到达下列累计
+空闲时长时投递一次提醒：
+
+| 轮次 | 距上次提醒 | 累计空闲时长 |
+| --- | --- | --- |
+| 0 | 5min | 5min |
+| 1 | 10min | 15min |
+| 2 | 20min | 35min |
+| 3 | 30min | 65min |
+| 4+ | 30min | 每 30min 一次 |
+
+- 「前台空闲」＝ `sessionRuntime` 的 `queryRunning` 与 `compacting` 均为假
+  （`docs/abort-button.md` 的黄色）。query engine 有任务时**暂停计时**：暂停期间的
+  时长不计入累计，恢复后从剩余量继续。
+- 暂停只看 query engine 的**状态**，不看查询由什么触发：用户消息、子代理回复、
+  后台任务完成通知、兜底提醒、手动压缩——任何原因启动的查询都同样让时钟暂停。
+- 时钟按任务独立推进：A 到点提醒不会重置 B 的时钟；只要 query engine 在跑（不管是
+  谁启动的），同一会话里 A、B 的时钟就一起暂停。
+- 提醒只报告触发它的那个任务（任务描述 / 命令 / 当前输出 / 已执行时间 / 下次间隔）；
+  投递时把该任务的 `lastAccessedAt` 刷成当前时刻，查询结束的兜底提醒据此冷却（第 4 节）。
+- 「已执行时间」是任务自注册起的 wall clock 时长（子进程在暂停期间照常运行）。
+
+## 6. 投递
+
+- 提醒是 silent 的 `pendingReminder`（LLM 可见、UI 不可见），与「回复未完成」追问
+  同一条通道；投递时主动启动消费循环，让 LLM 立即看到。
+- 同一 tick 多个任务同时到点时**追加**到 `pendingReminder`（空行分隔）而不是覆盖，
+  否则先到点的提醒会被后到点的顶掉。
+- 压缩进行中不投递（压缩会整体替换消息数组）；调度线程下一轮再发。
+- 用户中止后丢弃投递（投递前检查中止标记），中止后台任务时注销对应时钟。
+- 任务完成 / 会话关闭后注销时钟，不再提醒。
+
+## 7. 工具结果里的下次间隔
+
+`run_in_background` 与自动转后台两种路径返回给 LLM 的 `tool_result` 都带上首次提醒
+间隔（`5min`）：任务仍在运行时，模型会收到进度提醒。
+
+## 8. 提醒：实现
+
+| 侧 | 调度 | 纯函数 |
+| --- | --- | --- |
+| Embedded（TS） | `src/core/tools/bash/BackgroundReminder.ts`（1s ticker，读 `sessionRuntime`；每个任务记 `lastAccessedAt`） | `advanceReminderClock` / `buildBackgroundReminderText` / `qualifiesBackgroundFallbackReminder` |
+| Standalone（Rust） | `core-rs/src/engine.rs` 的 `tick_background_reminders`（进程级调度线程；`ReminderEntry.last_accessed_ms`） | `core-rs/src/bash_task.rs` 的 `advance_reminder_clock` / `build_background_reminder_text` / `qualifies_fallback_reminder` |
+
+- 时钟登记 / 注销挂在后台任务生命周期上：Embedded 在 `LocalShellTask` 的注册 /
+  完成 / 中止点；Standalone 由调度线程按 `bash_task::running_tasks_for_session`
+  对账（任务结束即清理）。
+- 投递入口：Embedded `QueryEngine.deliverBackgroundReminder`；Standalone
+  `Core::deliver_background_reminder`。
+- 事实来源只有一处：会话是否空闲读 `sessionRuntime`（Embedded）/
+  `SessionState.running` + `compacting`（Standalone），不另建状态表。
+- 「上次访问时刻」挂在提醒调度项上（Embedded `ReminderSchedule.lastAccessedAt` /
+  Standalone `ReminderEntry.last_accessed_ms`），写入点只有两处：周期提醒投递（同一调度项）
+  与查询结束（对本会话运行中的全部任务）。
+- 「已兜底」同样挂在提醒调度项上（Embedded `ReminderSchedule.fallbackReminded` /
+  Standalone `ReminderEntry.fallback_reminded`），写入点只有两处：查询结束兜底投递
+  （对本批投递的任务）与手工转后台转换成功（Embedded `Exec.triggerAutoBackground`
+  调 `markBackgroundTasksFallbackReminded`；Standalone 的暂停出口消费
+  `LoopPauseSignal.source_task`）。
+- 「本轮由 reminder 拉起」是消费循环级事实：Embedded `QueryEngine.reminderDrivenRun`，
+  Standalone `SessionState.reminder_driven_run`。置位方是两类提醒的投递点（周期提醒入口
+  `deliverBackgroundReminder` / `deliver_background_reminder`，以及兜底提醒本身），
+  消费循环收尾取走；Standalone 在取消分支额外清一次（reminder 已被丢弃）。
+
+## 9. 提醒：测试
+
+- 对等对照表 `src/test/fixtures/backgroundReminderParity.json`（生成脚本
+  `scripts/gen-background-reminder-parity.mjs`）：间隔档位、时钟推进、提醒文案、
+  兜底门槛（距上次访问满 3 分钟或 sleep 豁免的布尔判定）。
+  - Embedded：`src/test/backgroundReminderParity.test.ts`；
+  - Standalone：`core-rs/src/bash_task_tests.rs::background_reminder_parity`。
+- 调度接线：`src/test/backgroundReminderScheduler.test.ts`（空闲到点、暂停不累计、
+  中止注销、周期提醒 / 查询结束刷新 `lastAccessedAt` 后的冷却、sleep 豁免只走一次）。
+- 兜底提醒接线：`src/test/backgroundFallbackReminder.test.ts`（刚注册不兜底、满最小间隔
+  投递带 kill 命令的 reminder、查询结束刷新后不递归、sleep 豁免只走一次、reminder
+  拉起的那一轮不补兜底）。
+- 工具结果文案：`src/test/bashSleepParity.test.ts` 与
+  `core-rs/src/tools_tests.rs` 的自动转后台 / 后台用例断言下次提醒间隔。
