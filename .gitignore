@@ -24,6 +24,8 @@ exp/
 test-results/
 playwright-report/
 
-# ZCode 本地会话状态（规划稿等）与本地忽略文件，不入库
-.zcode/
+# ZCode 本地会话状态（规划稿等）与本地忽略文件不入库；skills 入库（本机是指向
+# .tuxedo-cat/skills 的 junction，git 穿透它以 .zcode/skills 路径提交同一份文件）
+.zcode/*
 .zcodeignore
+!.zcode/skills/

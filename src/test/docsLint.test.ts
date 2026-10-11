@@ -49,7 +49,9 @@
  *     `SpinDesign` / `ConversationManager` 成员表（`contracts.md` §2 / §4）、`WebViewUI`
  *     对外方法表（`webview-ui.md` §4）与对应接口 / 类的成员双向对照——手抄清单漏行时失败。
  * 18. **US ↔ e2e 映射双向对照**：`user-stories.md` 附录表与 `e2e` 下各 spec 文件实际的
- *     `US-xx` 引用逐文件双向一致（多列 / 少列 / 引用不存在的 US 都失败）。
+ *     `US-xx` 引用逐文件双向一致（多列 / 少列 / 引用不存在的 US 都失败）；且每个 US 小节
+ *     必须落在附录映射表或「未覆盖 e2e 的 US」豁免段之一——新 US 既不登记 e2e 也不登记
+ *     豁免（裸奔）时失败。
  * 19. **npm run 脚本名存活**：文档行内代码里的 `npm run <script>` 必须存在于
  *     `package.json` scripts（TODO.md 除外——它描述的是尚未做的）。
  * 20. **打包平台集合单源**：`scripts/build-core.mjs` 的 `PACKAGE_DIRS` 平台目录名必须全部
@@ -1290,6 +1292,29 @@ function main(): void {
     }
     checker.check(`US ↔ e2e 映射双向一致（问题 ${usProblems.length} 处）`, usProblems.length === 0);
     for (const p of usProblems) console.log(`     ${p}`);
+
+    // 闭合校验：每个 US 小节必须落在附录映射表或「未覆盖 e2e 的 US」豁免段之一
+    // （specs/README.md 第 3 节：新增 US 必须登记 e2e 用例或按既有口径登记豁免）。
+    // 上面映射表的双向一致拦不住「新 US 两边都不登记」，这里补上（US-48 曾裸奔）
+    const mappedUs = new Set<string>();
+    for (const ids of docBySpec.values()) {
+      for (const id of ids) mappedUs.add(id);
+    }
+    const storyLines = userStories.split(/\r?\n/);
+    const exemptStart = storyLines.findIndex((line) => line.includes('未覆盖 e2e 的 US'));
+    let exemptText = '';
+    if (exemptStart !== -1) {
+      for (let i = exemptStart; i < storyLines.length; i++) {
+        const line = storyLines[i];
+        if (line === undefined || line.trim() === '') break;
+        exemptText += line;
+      }
+    }
+    const exemptUs = new Set([...exemptText.matchAll(/US-(\d+)/g)].map((m) => m[1] ?? ''));
+    const headingUs = [...userStories.matchAll(/^### US-(\d+) /gm)].map((m) => m[1] ?? '');
+    const loose = headingUs.filter((id) => !mappedUs.has(id) && !exemptUs.has(id));
+    checker.check(`US 与映射 / 豁免段闭合（漏网 ${loose.length} 处）`, loose.length === 0);
+    for (const id of loose) console.log(`     US-${id} 既不在附录映射表也不在「未覆盖 e2e 的 US」豁免段`);
   }
 
   // ---------- 19. npm run 脚本名存活 ----------

@@ -111,6 +111,12 @@ npm run build:core:host # 只重建当前平台 Core（真实双端测试的本�
 npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electron:debug）
 ```
 
+- **spec 闸门（进入实施的第一步）**：功能性改动（新增 US / FR / 用户可见行为变化）必须先有改动规格——
+  `specs/` 存在对应目录且三件套齐备，按 `.tuxedo-cat/skills/spec/SKILL.md` 起草、产出即停等人评审，
+  评审放行后按 `.tuxedo-cat/skills/implement/SKILL.md` 的前置闸门逐任务实施；没有 spec 不得直接改代码。
+  纯缺陷修复豁免（需要留痕时用 defect.md 形态）。ZCode 会话的技能入口是 `.zcode/skills`
+  （入库，与 `.tuxedo-cat/skills` 内容一致——本机是指向后者的 junction，git 穿透它提交
+  同一份文件；编辑改 `.tuxedo-cat/skills`，提交时以 `.zcode/skills` 路径落库）。
 - 测试在 `src/test/*.test.ts`；Rust 在 `core-rs/src/*_tests.rs`。
 - **两套 Core 必须同步改**：Core 行为有两套实现——Embedded `src/core/`（TS）与 Standalone `core-rs/`（Rust）。
   改任一侧的 Core 行为都必须**同时**改另一侧；只改一侧视为未完成。对应关系如
