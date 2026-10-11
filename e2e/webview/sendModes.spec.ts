@@ -45,7 +45,7 @@ test('US-46 下拉列出「立即发送 / 空闲发送」，立即发送与主�
 
 test('US-46 空闲发送：忙碌时本地挂起不上送，空闲后自动提交', async () => {
   const { page, host } = handle;
-  await host.setTurn({ text: '第一轮。'.repeat(30), chunkDelayMs: 120 });
+  await host.setTurn({ text: '第一轮。'.repeat(30), chunkDelayMs: 800 });
 
   await page.fill('textarea.input-textarea', '第一条消息');
   await page.press('textarea.input-textarea', 'Enter');
@@ -72,10 +72,14 @@ test('US-46 空闲发送：忙碌时本地挂起不上送，空闲后自动提�
 
 test('US-46 挂起期间禁止发送；编辑撤回 / 删除为纯本地动作', async () => {
   const { page, host } = handle;
-  await host.setTurn({ text: '长任务。'.repeat(25), chunkDelayMs: 150 });
+  const abortEnabled = page.locator('button[title="终止"]:not([disabled])');
+
+  // ── 编辑：挂起项撤回到输入框，引擎不再消费它 ──
+  // 挂起判定是「显式忙碌才挂起」：每次挂起前都用忙碌中的按钮锚定「确实在忙碌期」
+  await host.setTurn({ text: '第一轮。'.repeat(30), chunkDelayMs: 800 });
   await page.fill('textarea.input-textarea', '第一条消息');
   await page.press('textarea.input-textarea', 'Enter');
-  await expect(page.locator('button[title="终止"]')).toBeVisible({ timeout: 15_000 });
+  await expect(abortEnabled).toBeVisible({ timeout: 15_000 });
 
   await page.fill('textarea.input-textarea', '挂起的消息');
   await page.locator('button[data-send-mode-caret="true"]').click();
@@ -98,25 +102,35 @@ test('US-46 挂起期间禁止发送；编辑撤回 / 删除为纯本地动作',
   expect((await host.sentAll()).filter((m) => m.type === 'discardQueuedMessage')).toHaveLength(0);
   expect((await sendMessages(host)).length).toBe(1);
 
-  // 再挂起一条后删除：直接丢弃、输入框保持空，同样无 discardQueuedMessage
+  // ── 删除：等第一轮结束后另开一轮，再挂起一条后直接丢弃，不回填输入框 ──
+  // 轮次边界用假宿主的 turnsDone 计数等待（确定信号）；按钮禁用态是快照投影，存在误报窗口
+  await page.waitForFunction(() => (window as any).__fakeHost.turnsDone >= 1, undefined, { timeout: 30_000 });
+  await host.setTurn({ text: '第二轮。'.repeat(30), chunkDelayMs: 800 });
+  await page.fill('textarea.input-textarea', '第二条消息');
+  await page.press('textarea.input-textarea', 'Enter');
+  await expect(abortEnabled).toBeVisible({ timeout: 15_000 });
+  expect((await sendMessages(host)).length).toBe(2);
+
   await page.fill('textarea.input-textarea', '再挂起一条');
   await page.locator('button[data-send-mode-caret="true"]').click();
   await page.getByText('空闲发送', { exact: true }).click();
   const banner2 = page.getByText(/空闲后发送/).first();
   await expect(banner2).toBeVisible();
+  expect((await sendMessages(host)).length).toBe(2);
   await page.locator('button[title*="删除排队消息"]').click();
   await expect(banner2).toBeHidden({ timeout: 10_000 });
   await expect(page.locator('textarea.input-textarea')).toHaveValue('');
   expect((await host.sentAll()).filter((m) => m.type === 'discardQueuedMessage')).toHaveLength(0);
+  expect((await sendMessages(host)).length).toBe(2);
 
-  // 撤回即取消：本轮结束后不自动提交
-  await expect(page.locator('button[title="终止"]')).toBeDisabled({ timeout: 20_000 });
-  expect((await sendMessages(host)).length).toBe(1);
+  // 撤回即取消：本轮结束后不自动提交（上行的只有两条基础消息）
+  await page.waitForFunction(() => (window as any).__fakeHost.turnsDone >= 2, undefined, { timeout: 30_000 });
+  expect((await sendMessages(host)).map((m) => m.content)).toEqual(['第一条消息', '第二条消息']);
 });
 
 test('FR-003 中止回填优先：挂起项随中止回填输入框，空闲推送不重复投递', async () => {
   const { page, host } = handle;
-  await host.setTurn({ text: '慢任务。'.repeat(40), chunkDelayMs: 200 });
+  await host.setTurn({ text: '慢任务。'.repeat(40), chunkDelayMs: 800 });
   await page.fill('textarea.input-textarea', '第一条消息');
   await page.press('textarea.input-textarea', 'Enter');
   await expect(page.locator('button[title="终止"]')).toBeVisible({ timeout: 15_000 });
@@ -137,9 +151,40 @@ test('FR-003 中止回填优先：挂起项随中止回填输入框，空闲推�
   expect((await sendMessages(host)).length).toBe(1);
 });
 
+test('FR-003 会话关闭（非空快照缺席）挂起项清除：不投递、横幅消失', async () => {
+  const { page, host } = handle;
+  await host.setTurn({ text: '长任务。'.repeat(30), chunkDelayMs: 800 });
+  await page.fill('textarea.input-textarea', '第一条消息');
+  await page.press('textarea.input-textarea', 'Enter');
+  await expect(page.locator('button[title="终止"]')).toBeVisible({ timeout: 15_000 });
+  await page.fill('textarea.input-textarea', '会话关闭后应清除');
+  await page.locator('button[data-send-mode-caret="true"]').click();
+  await page.getByText('空闲发送', { exact: true }).click();
+  const banner = page.getByText(/空闲后发送/).first();
+  await expect(banner).toBeVisible();
+
+  // 空快照是信息不足（启动期补拉的种子），不得回收；非空快照中不再包含该会话
+  // （core 已卸载它 = 关闭 / 释放）才清除——清除后横幅消失、不投递
+  await host.send({ type: 'sessionRuntimeStates', states: [] });
+  await page.waitForTimeout(300);
+  await expect(banner).toBeVisible();
+  expect((await sendMessages(host)).length).toBe(1);
+
+  await host.send({
+    type: 'sessionRuntimeStates',
+    states: [{
+      sessionId: 'another-session', idle: true, waiting: false,
+      queryRunning: false, compacting: false, backgroundRunning: false, subAgentRunning: false,
+    }],
+  });
+  await expect(banner).toBeHidden({ timeout: 10_000 });
+  await page.waitForTimeout(300);
+  expect((await sendMessages(host)).length).toBe(1);
+});
+
 test('FR-003 webview 重载丢挂起项：不投递、不恢复', async () => {
   const { page, host } = handle;
-  await host.setTurn({ text: '长任务。'.repeat(30), chunkDelayMs: 150 });
+  await host.setTurn({ text: '长任务。'.repeat(30), chunkDelayMs: 800 });
   await page.fill('textarea.input-textarea', '第一条消息');
   await page.press('textarea.input-textarea', 'Enter');
   await expect(page.locator('button[title="终止"]')).toBeVisible({ timeout: 15_000 });

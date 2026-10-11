@@ -128,6 +128,8 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
     active.delete(sessionId);
     send({ type: 'sessionRuntimeStates', states: [idleState(sessionId)] });
     send({ type: 'queryEnd', sessionId });
+    // 轮次完成计数：测试用它做确定性的轮次边界等待（按钮禁用态是快照投影，存在误报窗口）
+    window.__fakeHost.turnsDone = (window.__fakeHost.turnsDone || 0) + 1;
   }
 
   /** 前台查询在跑的运行时快照（abort 按钮红色） */
@@ -363,7 +365,7 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
     },
   };
 
-  window.__fakeHost = { send, sent, state };
+  window.__fakeHost = { send, sent, state, turnsDone: 0 };
 })();
 `;
 }

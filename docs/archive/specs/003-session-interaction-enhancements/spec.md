@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：会话交互增强——标签页右键菜单、空闲发送与跳到底部
@@ -19,7 +19,7 @@ status: 实施中
 | [docs/features/user-message-pipeline.md](../../docs/features/user-message-pipeline.md) | 2. 功能需求（FR-001 唯一入口、FR-003 排队状态与消息归属一致）、6. 对需求基线的影响 | 修改 | 发送入口新增「空闲发送」提交语义：挂起是提交时机的语义，不是新消息类型，`queueMessage` 独立类型仍不存在；横幅区分等待条件、空闲挂起的撤回 / 中止回填 / 清除口径（宿主忙碌排队语义不变） |
 | [docs/features/user-stories.md](../../docs/features/user-stories.md) | 需求基线（US 清单、附录映射与豁免段） | 修改 | 新增 US-46（空闲发送）/ US-47（跳到底部）/ US-48（标签页右键菜单）小节；映射表登记 US-46 / US-47；US-48 豁免文案随四项菜单更新 |
 | [docs/hosts/electron-multi-workspace.md](../../docs/hosts/electron-multi-workspace.md) | 5. 标签页、8.2 关闭 | 修改 | 标签页右键交互（右键上报与原生菜单弹出）；「关闭其它所有工作区」批量关闭与汇总确认；「关闭所有空闲会话」手动批量入口 |
-| [docs/hosts/webview-ui.md](../../docs/hosts/webview-ui.md) | `新增「跳到底部与发送模式」节` | 新增 | webview 输入区 / 消息区的两组交互行为落 as-built（与既有「8. abort 按钮」节同形态；节名落地时定） |
+| [docs/hosts/webview-ui.md](../../docs/hosts/webview-ui.md) | [11. 消息区视图行为：跳到底部与发送模式](../../docs/hosts/webview-ui.md#11-消息区视图行为跳到底部与发送模式) | 新增 | webview 输入区 / 消息区的两组交互行为落 as-built（与既有 abort 按钮节同形态） |
 | [docs/architecture/contracts.md](../../docs/architecture/contracts.md) | 8. WebviewMessageHandler、9. 端口：WebViewUiPort | 无 delta | 「空闲发送」挂起定案为 webview 本地状态：`sendMessage` wire 类型与载荷不变、`onQueuedMessage` 口径不变（FR-003） |
 | [docs/hosts/vscode-idle-close.md](../../docs/hosts/vscode-idle-close.md) | 1. 能力、4. 归属与边界（分层约束） | 修改 | 「多视图宿主（Electron）不参与自动回收」口径补 Electron 手动批量入口的说明；自动回收仍仅 VS Code |
 
@@ -94,6 +94,9 @@ Electron 多工作区标签页支持右键唤起菜单。菜单是宿主原生 O
   无 delta）。
 - **空闲判定与既有排队判定同一事实源**：core 会话运行时快照派生的 `sessionBusyLevel`，
   `idle` 级别即无进行中查询、无等待用户输入、无压缩、无后台任务、无子代理。
+- **挂起判定**：以「空闲发送」提交时，该会话快照**显式忙碌**（`idle === false`）才挂起；
+  快照缺失（未登记的新会话等）视为本就空闲、等价立即发送——是否排队最终仍由宿主按
+  引擎忙碌状态裁决，消息不因判定缺失而滞留（边界「会话本就空闲时提交」条的上界口径）。
 - **触发**：该会话 `sessionBusyLevel` 变为 `idle` 时，挂起项自动按立即发送语义提交（走既有
   `sendMessage` 管线：此刻若会话又已忙碌，自然落入既有忙碌排队语义，不丢弃消息），横幅
   清除。
@@ -172,8 +175,38 @@ Electron 多工作区标签页支持右键唤起菜单。菜单是宿主原生 O
 
 ## 收敛记录
 
-收敛时由 /converge 填写，结论只分三类。
+收敛核对：21 条 AC 逐条对证据；反向对照从实现 diff 反向枚举行为分支（错误路径 / 竞态 /
+中止 / 边界置灰），逐条回找 spec；追溯矩阵测试落点逐个打开验证；影响基线按实际 diff 复核。
 
-- 已满足：<FR / AC → 证据（实现与测试落点）>
-- 偏差：<与 spec 的差异；改代码或改 spec 并留痕>
-- 未做：<回写 tasks.md 的未完成项>
+**已满足**（证据）：
+
+- FR-001（AC-1..7）：`electron/main.ts` 的 `popupTabContextMenu`（四项 + 置灰 + 一次汇总
+  确认 + `endpoint === null && fs.existsSync` 判定）+ `electron/workspaceBatchClose.ts`
+  纯函数；判定口径由 `src/test/workspaceBatchClose.test.ts` 七断言锁定（空闲可关 / 忙碌
+  不动 / 显示中不关 / 汇总确认 / 置灰判据）；IPC 收发由 `ipcChannels.test.ts` 自动配对；
+  菜单弹出与置灰人工验证（US-48 豁免）。
+- FR-002 / FR-003（AC-8..18）：`e2e/webview/sendModes.spec.ts` 六用例——下拉两项与立即
+  发送等价（用例 1）、忙碌挂起不上送 + 横幅「空闲后发送」可区分 + 空闲触发自动提交
+  （用例 2）、一次一条 + 纯本地编辑 / 删除（用例 3）、中止回填优先 + 注入 idle 快照不重复
+  投递（用例 4）、非空快照缺席清除 + 空快照不回收（用例 5）、重载丢失（用例 6）；
+  `sendMessage` / `onQueuedMessage` wire 契约零改动核实（影响基线 contracts.md 行）。
+- FR-004（AC-19..21）：`e2e/webview/jumpToBottom.spec.ts`——底部隐藏 / 滚轮滚离浮现 /
+  点击回底并恢复跟随（钉底判定断言）；显隐条件「不在底部 && 用户主动滚离」在
+  [docs/hosts/webview-ui.md 第 11 节](../../docs/hosts/webview-ui.md#11-消息区视图行为跳到底部与发送模式)落 as-built。
+- 全量：`check-types` 0 错、lint 干净、`test:all` 122 项全过（docsLint 43 组含 US 闭合）、
+  webview e2e 77/77。
+
+**偏差**（均已修复并留痕，实现与 spec 同步）：
+
+1. 挂起判定初版为「显式 `idle === true` 才直发」：无快照的新会话会被挂起，随后任意非空
+   快照缺席把它当「已关闭」回收，消息无声丢失——反向对照抓出。修复为「**显式忙碌**
+   （`idle === false`）才挂起」，快照缺失等价立即发送（是否排队最终由宿主裁决）；spec
+   FR-003「挂起判定」条与边界节同步留痕。
+2. 挂起项 GC 初版把空快照当「全部会话已关闭」回收（启动期 `requestSessionRuntimeStates`
+   的空种子推送触发，e2e 首跑抓出）——修复为**非空**快照缺席才回收；spec FR-003「清除」
+   条同步留痕，补 AC-14 e2e 用例（用例 5）。
+
+**未做**：无。`tasks.md` T001–T008 全部勾选（T008 为实施期发现：brandLiteral 白名单补
+`AGENTS.md` / pre-commit 的会话技能目录真实路径，非本 spec 产品范围）。测试辅助
+`e2e/helpers/fakeHost.ts` 新增轮次完成计数（`turnsDone`）供用例做确定性轮次边界等待，
+属测试基建非产品行为。

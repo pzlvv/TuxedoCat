@@ -370,14 +370,15 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
   };
 
   /**
-   * 空闲发送（US-46/FR-003）：构造与立即发送同一载荷。提交时刻该会话快照
-   * 显式 `idle === true` → 等价立即发送（无需等待）；否则挂起为 webview 本地待发项
-   * （不上送宿主，宿主契约不变），由空闲触发 effect 在该会话空闲时提交。
+   * 空闲发送（US-46/FR-003）：构造与立即发送同一载荷。提交时刻该会话快照**显式忙碌**
+   * （`idle === false`）才挂起为 webview 本地待发项（不上送宿主，宿主契约不变）；
+   * 快照缺失（未登记的新会话等）视为本就空闲、等价立即发送——是否排队最终仍由宿主
+   * 按引擎忙碌状态裁决，消息不会因判定缺失而滞留。挂起项由空闲触发 effect 提交。
    */
   const handleSendIdle = async () => {
     const wire = await buildUserMessageFromInput();
     if (!wire) return;
-    if (props.sessionRuntimeStatesRef.current.get(wire.sessionId)?.idle === true) {
+    if (props.sessionRuntimeStatesRef.current.get(wire.sessionId)?.idle !== false) {
       submitUserMessage(wire);
       return;
     }
