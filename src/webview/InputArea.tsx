@@ -8,6 +8,7 @@ import type { ModelRef } from '../core/llm/modelRef';
 import { postMessage, getWindowSessionId } from './webviewEnv';
 import type { AbortButtonState } from '../host/abortButtonState';
 import { SegmentControl, CheckboxGlyph } from './components/SegmentControl';
+import { dropdownMenuTheme, menuPanelShellStyle } from './components/dropdownMenuTheme';
 import { t } from './i18n';
 import { useUiFontOffset, uiFontSizePx } from './fontSize';
 
@@ -1354,19 +1355,7 @@ const ToggleMenu = memo(({
   ] : [loadingMenuItem];
 
   return (
-    <ConfigProvider
-      theme={{
-        components: {
-          Dropdown: {
-            colorBgElevated: colors.primaryFrame,
-            colorText: colors.textSystem,
-            controlItemBgHover: isDark ? 'rgba(99, 102, 241, 0.12)' : 'rgba(99, 102, 241, 0.06)',
-            controlItemBgActive: isDark ? 'rgba(99, 102, 241, 0.2)' : 'rgba(99, 102, 241, 0.12)',
-            fontSize: 12 + fontOffset,
-          },
-        },
-      }}
-    >
+    <ConfigProvider theme={dropdownMenuTheme(colors, isDark, 12 + fontOffset)}>
     <Dropdown
       menu={{
         items: menuItems,
@@ -1402,13 +1391,7 @@ const ToggleMenu = memo(({
         <div
           ref={menuPanelRef}
           className="agent-mode-menu"
-          style={{
-            border: `1px solid var(--border-color, ${colors.border})`,
-            borderRadius: '6px',
-            overflow: 'hidden',
-            // 宽度不写死，由内容（一级菜单项 / 当前模型行）自然撑开，与上一版本一致；
-            // 内联展开时二 / 三级容器带 contain: inline-size，不会把面板撑宽。
-          }}
+          style={menuPanelShellStyle(colors)}
         >
           {menu}
         </div>
@@ -1593,6 +1576,8 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
 }, ref) {
   const [input, setInput] = useState('');
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
+  // 发送模式菜单的主题 token 用到字号档位（与主配置菜单同一来源，随设置缩放）
+  const fontOffset = useUiFontOffset();
 
   // Command history navigation state
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -2187,7 +2172,11 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             <Icon name="square" size={12} className="text-white" />
           </button>
           {/* 发送 split button：主按钮恒为立即发送（US-46）；小三角下拉是
-              当次动作（立即发送 / 空闲发送），不记住选择、不改变主按钮语义 */}
+              当次动作（立即发送 / 空闲发送），不记住选择、不改变主按钮语义。
+              小三角贴按钮底部（不垂直居中）；下拉菜单与主配置菜单共用同一套主题
+              token（src/webview/components/dropdownMenuTheme.ts），随 light / dark
+              切换——不挂 .agent-mode-menu 类，其 CSS 禁用项重置对这里的纯文本
+              禁用项是误伤（见该文件注释）。 */}
           <div className="flex items-center rounded-lg overflow-hidden flex-shrink-0">
             <button
               onClick={onSend}
@@ -2217,32 +2206,41 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
                 <Icon name="send" size={14} className="text-white" />
               )}
             </button>
-            <Dropdown
-              menu={{
-                items: [
-                  { key: 'send-immediate', label: t('inputArea.sendImmediately'), disabled: sendDisabled, onClick: onSend },
-                  { key: 'send-idle', label: t('inputArea.sendOnIdle'), disabled: sendDisabled, onClick: onSendIdle },
-                ],
-              }}
-              trigger={['click']}
-              placement="topRight"
-              destroyOnHidden
-            >
-              <button
-                disabled={sendDisabled}
-                data-send-mode-caret="true"
-                className="h-7 w-4 flex items-center justify-center transition-all"
-                style={{
-                  backgroundColor: !sendDisabled ? colors.harness : colors.border,
-                  opacity: !sendDisabled ? 1 : 0.5,
-                  borderLeft: '1px solid rgba(255, 255, 255, 0.3)',
+            <ConfigProvider theme={dropdownMenuTheme(colors, isDark, 12 + fontOffset)}>
+              <Dropdown
+                menu={{
+                  items: [
+                    { key: 'send-immediate', label: t('inputArea.sendImmediately'), disabled: sendDisabled, onClick: onSend },
+                    { key: 'send-idle', label: t('inputArea.sendOnIdle'), disabled: sendDisabled, onClick: onSendIdle },
+                  ],
                 }}
-                title={t('inputArea.sendModeMenu')}
-                aria-label={t('inputArea.sendModeMenu')}
+                trigger={['click']}
+                placement="topRight"
+                destroyOnHidden
+                dropdownRender={(menu) => (
+                  <div style={menuPanelShellStyle(colors)}>
+                    {menu}
+                  </div>
+                )}
               >
-                <Icon name="chevron-down" size={11} className="text-white" />
-              </button>
-            </Dropdown>
+                <button
+                  disabled={sendDisabled}
+                  data-send-mode-caret="true"
+                  className="h-7 w-4 flex items-end justify-center transition-all"
+                  style={{
+                    backgroundColor: !sendDisabled ? colors.harness : colors.border,
+                    opacity: !sendDisabled ? 1 : 0.5,
+                    borderLeft: '1px solid rgba(255, 255, 255, 0.3)',
+                    // 小三角贴底：只留一点不顶到按钮边缘的呼吸距离
+                    paddingBottom: 4,
+                  }}
+                  title={t('inputArea.sendModeMenu')}
+                  aria-label={t('inputArea.sendModeMenu')}
+                >
+                  <Icon name="chevron-down" size={11} className="text-white" />
+                </button>
+              </Dropdown>
+            </ConfigProvider>
           </div>
         </div>
       </div>

@@ -6,7 +6,7 @@
 
 ## 任务清单
 
-- [x] **T001**（FR-001）：新增 `electron/workspaceBatchClose.ts` 纯函数（`selectClosableIdleSessions` / `summarizeOtherWorkspaces`）并在 `src/test/workspaceBatchClose.test.ts` 覆盖：空闲可关 / 忙碌不动 / 当前显示中的对话不关 / 任一他区忙碌需汇总确认 / 全闲免确认；`tsconfig.test.json` include 补该模块；依赖：—；完成判据：`npm run test:all -- workspace-batch-close` 绿
+- [x] **T001**（FR-001）：新增 `electron/workspaceBatchClose.ts` 纯函数（`selectClosableIdleSessions` / `summarizeOtherWorkspaces`）并在 `src/test/workspaceBatchClose.test.ts` 覆盖：空闲可关（含当前选中的对话）/ 忙碌不动 / 任一他区忙碌需汇总确认 / 全闲免确认；`tsconfig.test.json` include 补该模块；依赖：—；完成判据：`npm run test:all -- workspace-batch-close` 绿
 - [x] **T002**（FR-001）：主进程新增 `titlebar:tab-context-menu` IPC（`isTitlebarSender` 守卫、按 refKey 回查）、`popupTabContextMenu`（四项 + 置灰规则 + 「关闭其它所有工作区」一次汇总确认 + 「打开命令行」`endpoint === null && fs.existsSync` 判定 + `spawnTerminalAt`）、`closeWorkspace` 抽 `teardownWorkspace`；preload 暴露 `showTabContextMenu`，`TitlebarAPI` 补成员，`.ws-tab` 挂 `contextmenu`；依赖：T001；完成判据：`npm run check-types`（含 electron 配置）与 `npm run lint` 绿、`npm run test:all -- ipc-channels` 绿（新通道收发自动配对）
 - [x] **T003**（FR-002、FR-003）：webview 发送模式——`useAppHandlers.handleSend` 抽共用提交段，新增 `handleSendIdle`（时刻 `idle === true` 直接提交否则挂起）、挂起编辑 / 删除（纯本地，不发 `discardQueuedMessage`）、`handleAbort` 补挂起回填（中止回填优先）、排队守卫与 `sendDisabled` 查双来源；App 层挂起 Map/state、`sessionIdleVersion` 触发 effect（显式 `idle === true` 才触发）、会话关闭 / 删除清理挂起项、`InputArea` split 下拉（立即发送 / 空闲发送，禁用口径同主按钮）与空闲横幅（文案区分「空闲后发送」）；zh / en i18n 键对齐；依赖：—；完成判据：`npm run check-types` 与 `npm run lint` 绿
 - [x] **T004**（FR-004）：`MessagesView` 跳到底部按钮——useAutoScroll 布尔翻转回调镜像 `isAtBottomRef`、按钮绝对定位于容器 relative 包装底部居中（`data-jump-to-bottom`）、点击清 `userScrolledAwayRef` + `scrollToBottom(true)`、会话切换随既有重置隐藏；i18n `messages.jumpToBottom`（zh / en）；依赖：—；完成判据：`npm run check-types` 绿

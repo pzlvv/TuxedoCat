@@ -23,7 +23,7 @@ core 推送的运行时快照显式 `idle === true`；跳到底部按钮挂在 `
     完全一致）；恒可用。
   - 关闭所有空闲会话 → 枚举该工作区会话（遍历 `sessionWorkspaces` +
     `workspacePathMatches`，`closeWorkspace` 内 3287 已有先例），取 `!sessionIsBusy(sid)`
-    且 `sid !== chatViews?.getActiveSessionId()`（当前显示中的对话不关）者，逐个走
+    者（当前选中的对话空闲也包含在内），逐个走
     `closeConversationWithConfirm(sid)`——它在关闭时刻重查忙闲，判定后转忙的会话自然落入
     既有逐会话忙碌确认（spec 边界条）；无可关会话时 `enabled: false`。
   - 关闭其它所有工作区 → 其余工作区逐一查 `workspaceHasBusySession`；任一忙碌则先弹

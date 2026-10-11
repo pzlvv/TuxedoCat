@@ -2,7 +2,7 @@
  * 单测：标签页右键菜单的批量关闭判定（`electron/workspaceBatchClose.ts`）。
  *
  * 锁三类口径漂移：
- * - 「关闭所有空闲会话」范围＝右键工作区内、忙碌不动、**当前显示中的对话不关**；
+ * - 「关闭所有空闲会话」范围＝右键工作区内、忙碌不动、**当前选中的对话空闲也包含在内**；
  * - 「关闭其它所有工作区」＝任一他区忙碌需**一次**汇总确认、取消则全部不动；
  * - 置灰判据＝无可关会话 / 无其它工作区时清单为空（菜单项 enabled: false）。
  *
@@ -13,8 +13,8 @@ import { selectClosableIdleSessions, summarizeOtherWorkspaces } from '../../elec
 import type { WorkspaceSessionFacts } from '../../electron/workspaceBatchClose';
 import { createChecker, runTests } from './helpers/harness';
 
-function facts(sessionId: string, busy: boolean, displayed = false): WorkspaceSessionFacts {
-  return { sessionId, busy, displayed };
+function facts(sessionId: string, busy: boolean): WorkspaceSessionFacts {
+  return { sessionId, busy };
 }
 
 runTests('workspaceBatchClose', () => {
@@ -25,12 +25,12 @@ runTests('workspaceBatchClose', () => {
   const closable = selectClosableIdleSessions([facts('a', false), facts('b', true), facts('c', false)]);
   check('空闲会话入选、忙碌会话不动', closable.length === 2 && closable[0] === 'a' && closable[1] === 'c');
 
-  // 当前显示中的对话即使空闲也不关
-  const withoutShown = selectClosableIdleSessions([facts('shown', false, true), facts('hidden', false)]);
-  check('当前显示中的对话不关', withoutShown.length === 1 && withoutShown[0] === 'hidden');
+  // 当前选中的对话只要空闲也包含在内（与其它空闲会话同口径）
+  const withShown = selectClosableIdleSessions([facts('shown', false), facts('hidden', false)]);
+  check('当前选中的对话空闲也入选', withShown.length === 2 && withShown.includes('shown'));
 
-  // 等待用户（busy=true）与显示中叠加、以及空清单：全部排除后为空 → 菜单项置灰
-  check('忙碌 + 仅剩显示中时清单为空', selectClosableIdleSessions([facts('a', true), facts('b', false, true)]).length === 0);
+  // 全部忙碌（含等待用户）时无可关会话：清单为空 → 菜单项置灰
+  check('全部忙碌时清单为空', selectClosableIdleSessions([facts('a', true), facts('b', true)]).length === 0);
   check('无会话时清单为空', selectClosableIdleSessions([]).length === 0);
 
   // ---------- summarizeOtherWorkspaces ----------

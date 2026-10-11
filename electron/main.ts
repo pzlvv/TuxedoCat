@@ -2871,16 +2871,14 @@ const spawnTerminalAt = (dir: string): void => {
 
 /**
  * 收集某工作区下全部会话的批量关闭事实：sessionWorkspaces 索引出该目录的会话，
- * 逐个取判定时刻的忙闲（sessionBusyLevel，waiting 也算忙）与「当前显示中」
- * （对话视图的活动会话）。弹出菜单（置灰判定）与点击执行各收集一次——菜单开着
- * 期间会话状态可能变化，执行以点击时刻的事实为准。
+ * 逐个取判定时刻的忙闲（sessionBusyLevel，waiting 也算忙）。弹出菜单（置灰判定）
+ * 与点击执行各收集一次——菜单开着期间会话状态可能变化，执行以点击时刻的事实为准。
  */
 function collectWorkspaceSessionFacts(ref: WorkspaceRef): WorkspaceSessionFacts[] {
-  const displayed = chatViews?.getActiveSessionId() ?? null;
   const facts: WorkspaceSessionFacts[] = [];
   for (const [sid, ws] of sessionWorkspaces) {
     if (!workspacePathMatches(ref, ws)) continue;
-    facts.push({ sessionId: sid, busy: sessionIsBusy(sid), displayed: sid === displayed });
+    facts.push({ sessionId: sid, busy: sessionIsBusy(sid) });
   }
   return facts;
 }
@@ -2888,8 +2886,8 @@ function collectWorkspaceSessionFacts(ref: WorkspaceRef): WorkspaceSessionFacts[
 /**
  * 标签页右键菜单（原生 OS 菜单，与加号的 popupWorkspaceMenu 同形态；原生菜单无法被
  * Playwright 驱动，交互按 US-48 豁免人工验证）：关闭 / 关闭所有空闲会话（范围＝右键
- * 工作区，当前显示中的对话不关）/ 关闭其它所有工作区（任一他区忙碌先弹一次汇总确认）/
- * 打开命令行（仅本地，目录已不存在置灰）。置灰是终态，不在点击后再报错。
+ * 工作区，当前选中的对话空闲也包含在内）/ 关闭其它所有工作区（任一他区忙碌先弹一次
+ * 汇总确认）/ 打开命令行（仅本地，目录已不存在置灰）。置灰是终态，不在点击后再报错。
  */
 function popupTabContextMenu(ref: WorkspaceRef): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;

@@ -192,10 +192,10 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   - 「关闭」与关闭按钮同一语义：存在忙碌会话先经既有逐区忙碌确认，之后走同一份清理链
     （`teardownWorkspace`）。
   - 「关闭所有空闲会话」只作用于右键的工作区：按判定时刻的会话运行时快照逐会话判定
-    （忙碌含等待用户不动），当前显示中的对话不关（对话视图的活动会话）；判定与执行分离，
-    执行时逐会话走既有关闭入口——判定后转忙的会话在关闭时刻落入既有逐会话忙碌确认
-    （确认则关、取消则跳过继续其余），不静默跳过。判定纯函数在
-    `electron/workspaceBatchClose.ts`（`selectClosableIdleSessions` /
+    （忙碌含等待用户不动），空闲即关——当前选中的对话只要空闲也包含在内，关闭后由既有
+    关闭入口切到相邻会话；判定与执行分离，执行时逐会话走既有关闭入口——判定后转忙的
+    会话在关闭时刻落入既有逐会话忙碌确认（确认则关、取消则跳过继续其余），不静默跳过。
+    判定纯函数在 `electron/workspaceBatchClose.ts`（`selectClosableIdleSessions` /
     `summarizeOtherWorkspaces`），口径由 `src/test/workspaceBatchClose.test.ts` 锁定。
     无可关会话时菜单项置灰。
   - 「关闭其它所有工作区」在任一其它工作区有忙碌会话时先弹**一次**汇总确认（取消则
