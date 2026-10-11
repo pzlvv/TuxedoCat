@@ -47,7 +47,9 @@ const SKIP_DIRS = new Set([
  * 放行的定义处与生成物（相对仓库根的 POSIX 路径）。
  *
  * - `src/config/project.json` / `package.json`：品牌定义处；
- * - `package-lock.json`：由 `package.json` 的 name 生成。
+ * - `package-lock.json`：由 `package.json` 的 name 生成；
+ * - `AGENTS.md` / `scripts/githooks/pre-commit`：引用会话技能目录的**真实路径**
+ *   （spec 闸门的起草入口，目录名即品牌字面量，指路必须写实）。
  *
  * 各 crate 的 `Cargo.lock` 不在放行清单里：三个 Rust crate 的包名保持中性
  * （`standalone-core` / `standalone-tui` / `standalone-tui-installer`），
@@ -57,6 +59,8 @@ const ALLOWED_FILES = new Set([
   'src/config/project.json',
   'package.json',
   'package-lock.json',
+  'AGENTS.md',
+  'scripts/githooks/pre-commit',
 ]);
 
 /** 二进制后缀直接跳过（图片 / 字体 / 可执行文件） */

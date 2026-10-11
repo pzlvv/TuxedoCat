@@ -14,7 +14,8 @@
     "electron/fileOpen.ts",
     "electron/fileTypes.ts",
     "electron/sidebarFiles.ts",
-    "electron/chatPlaceholderHtml.ts"
+    "electron/chatPlaceholderHtml.ts",
+    "electron/workspaceBatchClose.ts"
   ],
   "exclude": [
     "node_modules",

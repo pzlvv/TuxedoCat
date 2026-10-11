@@ -70,6 +70,11 @@ import { diffSessionEndEvents, type SessionBusyRecord, type SessionLevel } from 
 import { diffCompletionAttention, pickReadCompletions, type CompletionAttentionFacts } from './completionAttention.js';
 import { SleepBlocker } from './powerSaveBlocker.js';
 import {
+  selectClosableIdleSessions,
+  summarizeOtherWorkspaces,
+  type WorkspaceSessionFacts,
+} from './workspaceBatchClose.js';
+import {
   deleteEachPath,
   listDirectory,
   resolveWithinRoot,
@@ -2841,6 +2846,101 @@ function popupWorkspaceMenu(): void {
   menu.popup({ window: mainWindow });
 }
 
+/**
+ * 在本地目录拉起系统终端（侧栏右键「在此处打开命令行」与标签页右键「打开命令行」
+ * 共用这一个入口）。窗口须独立于应用生命周期：detached + stdio ignore 后立刻 unref，
+ * 主进程不持有句柄。
+ * Windows 上不能直接 `cmd /k`（stdio ignore 时 stdin 是 NUL，cmd 读到 EOF 立即退出，
+ * 实测即退）——经 `start` 拉起的新控制台窗口里 stdin 是 CONIN$，交互会话驻留。
+ */
+const spawnTerminalAt = (dir: string): void => {
+  if (process.platform === 'win32') {
+    const comspec = process.env.ComSpec || 'cmd.exe';
+    // cwd 直接给目录（start 不带 /D，路径含空格也无需转义）；首参空串是窗口标题占位
+    spawn(comspec, ['/c', 'start', '', 'cmd.exe', '/k'], { cwd: dir, detached: true, stdio: 'ignore' }).unref();
+    return;
+  }
+  if (process.platform === 'darwin') {
+    spawn('open', ['-a', 'Terminal', dir], { detached: true, stdio: 'ignore' }).unref();
+    return;
+  }
+  // Linux：Debian 系有 x-terminal-emulator 别名，其余退回 gnome-terminal
+  const terminal = fs.existsSync('/usr/bin/x-terminal-emulator') ? '/usr/bin/x-terminal-emulator' : 'gnome-terminal';
+  spawn(terminal, ['--working-directory', dir], { detached: true, stdio: 'ignore' }).unref();
+};
+
+/**
+ * 收集某工作区下全部会话的批量关闭事实：sessionWorkspaces 索引出该目录的会话，
+ * 逐个取判定时刻的忙闲（sessionBusyLevel，waiting 也算忙）与「当前显示中」
+ * （对话视图的活动会话）。弹出菜单（置灰判定）与点击执行各收集一次——菜单开着
+ * 期间会话状态可能变化，执行以点击时刻的事实为准。
+ */
+function collectWorkspaceSessionFacts(ref: WorkspaceRef): WorkspaceSessionFacts[] {
+  const displayed = chatViews?.getActiveSessionId() ?? null;
+  const facts: WorkspaceSessionFacts[] = [];
+  for (const [sid, ws] of sessionWorkspaces) {
+    if (!workspacePathMatches(ref, ws)) continue;
+    facts.push({ sessionId: sid, busy: sessionIsBusy(sid), displayed: sid === displayed });
+  }
+  return facts;
+}
+
+/**
+ * 标签页右键菜单（原生 OS 菜单，与加号的 popupWorkspaceMenu 同形态；原生菜单无法被
+ * Playwright 驱动，交互按 US-48 豁免人工验证）：关闭 / 关闭所有空闲会话（范围＝右键
+ * 工作区，当前显示中的对话不关）/ 关闭其它所有工作区（任一他区忙碌先弹一次汇总确认）/
+ * 打开命令行（仅本地，目录已不存在置灰）。置灰是终态，不在点击后再报错。
+ */
+function popupTabContextMenu(ref: WorkspaceRef): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const menu = Menu.buildFromTemplate([
+    {
+      label: tt('关闭', 'Close'),
+      click: () => { void closeWorkspace(refKey(ref)); },
+    },
+    {
+      label: tt('关闭所有空闲会话', 'Close All Idle Sessions'),
+      // 置灰判定用弹出时刻的快照；点击时重新收集（菜单开着期间状态可能变化）
+      enabled: selectClosableIdleSessions(collectWorkspaceSessionFacts(ref)).length > 0,
+      click: async () => {
+        // 逐会话走既有关闭入口：关闭时刻重查忙闲，判定后转忙的会话落入既有逐会话
+        // 忙碌确认（确认则关、取消则跳过该会话继续其余），不静默跳过
+        for (const sid of selectClosableIdleSessions(collectWorkspaceSessionFacts(ref))) {
+          await closeConversationWithConfirm(sid);
+        }
+      },
+    },
+    {
+      label: tt('关闭其它所有工作区', 'Close Other Workspaces'),
+      enabled: openWorkspaces.length > 1,
+      click: async () => {
+        const plan = summarizeOtherWorkspaces(
+          openWorkspaces
+            .filter((candidate) => candidate !== ref && refKey(candidate) !== refKey(ref))
+            .map((candidate) => ({ id: refKey(candidate), hasBusySession: workspaceHasBusySession(candidate) })),
+        );
+        if (plan.ids.length === 0) return;
+        if (plan.needsConfirm && !(await confirmCloseBusy(
+          tt('其它工作区中仍有对话在运行', 'Conversations in other workspaces are still running'),
+          tt('关闭工作区会中止这些对话的运行。确定关闭全部其它工作区？', 'Closing these workspaces stops them. Close all other workspaces?'),
+        ))) return;
+        for (const otherId of plan.ids) {
+          const target = openWorkspaces.find((candidate) => refKey(candidate) === otherId);
+          if (target) teardownWorkspace(target);
+        }
+      },
+    },
+    { type: 'separator' },
+    {
+      label: tt('打开命令行', 'Open Terminal'),
+      // 仅本地工作区（远程不做 SSH 远端终端）；目录已不存在无从打开
+      enabled: ref.endpoint === null && fs.existsSync(ref.path),
+      click: () => { spawnTerminalAt(ref.path); },
+    },
+  ]);
+  menu.popup({ window: mainWindow });
+}
+
 /** 「打开远程工作区」窗口（连接远端 daemon → 选择远端目录） */
 let remoteWorkspaceWindow: BrowserWindow | undefined;
 
@@ -3268,6 +3368,15 @@ async function closeWorkspace(target: WorkspaceRef | string): Promise<void> {
     tt(`「${refDisplay(ref)}」下仍有对话在运行`, `Conversations in "${refDisplay(ref)}" are still running`),
     tt('关闭工作区会中止这些对话的运行。确定关闭？', 'Closing the workspace stops them. Close anyway?'),
   ))) return;
+  teardownWorkspace(ref);
+}
+
+/**
+ * 关闭工作区的清理链（无确认，确认由调用方负责）：标签页 × / 中键 / 右键「关闭」经
+ * `closeWorkspace` 的忙碌确认后进来；右键「关闭其它所有工作区」在**一次汇总确认**后
+ * 逐个进来——若走 `closeWorkspace` 会放大成每区一次确认，违背汇总语义。
+ */
+function teardownWorkspace(ref: WorkspaceRef): void {
   const idx = openWorkspaces.indexOf(ref);
   if (idx < 0) return;
   openWorkspaces.splice(idx, 1);
@@ -4146,6 +4255,14 @@ function setupIpc(): void {
     if (typeof p === 'string' && p) void closeWorkspace(p);
   });
 
+  // 标签页右键：弹出该工作区的上下文菜单（关闭 / 批量关闭 / 打开命令行）
+  ipcMain.on('titlebar:tab-context-menu', (event, p: unknown) => {
+    if (!isTitlebarSender(event.sender)) return;
+    if (typeof p !== 'string' || !p) return;
+    const ref = openWorkspaces.find((candidate) => refKey(candidate) === p);
+    if (ref) popupTabContextMenu(ref);
+  });
+
   ipcMain.on('titlebar:add-workspace', (event) => {
     if (!isTitlebarSender(event.sender)) return;
     void openWorkspaceDialog();
@@ -4486,28 +4603,6 @@ function setupIpc(): void {
     shell.showItemInFolder(abs);
     return { ok: true };
   });
-
-  /**
-   * 在本地目录拉起系统终端（侧栏右键「在此处打开命令行」）。窗口须独立于应用生命周期：
-   * detached + stdio ignore 后立刻 unref，主进程不持有句柄。
-   * Windows 上不能直接 `cmd /k`（stdio ignore 时 stdin 是 NUL，cmd 读到 EOF 立即退出，
-   * 实测即退）——经 `start` 拉起的新控制台窗口里 stdin 是 CONIN$，交互会话驻留。
-   */
-  const spawnTerminalAt = (dir: string): void => {
-    if (process.platform === 'win32') {
-      const comspec = process.env.ComSpec || 'cmd.exe';
-      // cwd 直接给目录（start 不带 /D，路径含空格也无需转义）；首参空串是窗口标题占位
-      spawn(comspec, ['/c', 'start', '', 'cmd.exe', '/k'], { cwd: dir, detached: true, stdio: 'ignore' }).unref();
-      return;
-    }
-    if (process.platform === 'darwin') {
-      spawn('open', ['-a', 'Terminal', dir], { detached: true, stdio: 'ignore' }).unref();
-      return;
-    }
-    // Linux：Debian 系有 x-terminal-emulator 别名，其余退回 gnome-terminal
-    const terminal = fs.existsSync('/usr/bin/x-terminal-emulator') ? '/usr/bin/x-terminal-emulator' : 'gnome-terminal';
-    spawn(terminal, ['--working-directory', dir], { detached: true, stdio: 'ignore' }).unref();
-  };
 
   ipcMain.handle('sidebar:files-open-terminal', (event, payload: unknown) => {
     if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-open-terminal');

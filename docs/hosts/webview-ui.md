@@ -35,6 +35,7 @@ last_reviewed: 2026-10-11
 | 8. | [abort 按钮：读 core 的 `sessionRuntime`，不由这里判定](#8-abort-按钮读-core-的-sessionruntime不由这里判定) |
 | 9. | [生命周期：dropSession](#9-生命周期dropsession) |
 | 10. | [与 core 的 `SessionRuntimeState` 的边界](#10-与-core-的-sessionruntimestate-的边界) |
+| 11. | [消息区视图行为：跳到底部与发送模式](#11-消息区视图行为跳到底部与发送模式) |
 
 ---
 
@@ -380,3 +381,15 @@ dropSession(sessionId: string): void {
 `ConversationManager.updateSessionStates`，不写回；也不能从 `SessionUiState` 反推
 `SessionRuntimeState`。互为对账可以，互相写值不行（两者数据源不同：一个看 wire 消息，
 一个看 core 内部状态）。
+
+---
+
+## 11. 消息区视图行为：跳到底部与发送模式
+
+两个纯 webview 渲染层行为（宿主类不参与，无新 wire / 事件；发送的入口语义见
+[docs/features/user-message-pipeline.md 第 2 节](../features/user-message-pipeline.md#2-功能需求)）：
+
+| 行为 | 规格 |
+| --- | --- |
+| 跳到底部 | 消息列表「不在底部 && 用户主动滚离」时，输入框上方浮现圆形按钮；点击清滚离抑制并强制回底、恢复自动跟随。显隐只由这两个条件决定——内容增长造成的瞬时离底（无用户输入、自动跟随随即回底）不显示，避免流式期间逐帧闪烁；不带未读计数。`useAutoScroll` 每次 scroll 事件上报 atBottom（在滚离标志更新之后），按钮组件结合滚离标志求值，同值 setState 由 React 去重 |
+| 发送模式 | 发送按钮为 split 形态：主按钮恒为立即发送；小三角下拉含「立即发送 / 空闲发送」，两项为当次动作（不记住选择），禁用口径与主按钮一致（无内容 / 输入禁用 / 连接或配置加载中 / 已有忙碌排队项或空闲挂起项）。空闲挂起的语义（webview 本地挂起、快照触发、中止回填、清除与重载丢失）见 FR-003 |

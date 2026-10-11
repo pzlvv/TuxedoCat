@@ -6,8 +6,12 @@
 import type { ModelRef } from '../core/llm/modelRef';
 import type { MessageOrigin } from '../core/types';
 import type { McpServerInfo } from '../core/webviewTypes';
+import type { WebviewToHostMessage } from '../host/webviewMessages';
 import type { UiLanguage } from './i18n';
 import type { UiFontSize } from './fontSize';
+
+/** `sendMessage` 的 wire 载荷形态（宿主契约 `src/host/webviewMessages.ts`，webview 只消费不另定义） */
+export type SendMessageWire = Extract<WebviewToHostMessage, { type: 'sendMessage' }>;
 
 export type Theme = 'dark' | 'light';
 export type AgentMode = 'manual' | 'risk' | 'auto';
@@ -173,6 +177,21 @@ export interface QueuedMessagePayload {
   selectedLines?: { start: number; end: number };
   /** 排队时文件信息是否被用户隐藏 */
   fileHidden?: boolean;
+}
+
+/**
+ * 空闲发送的本地挂起项（规格 docs/features/user-message-pipeline.md FR-003）：完整保留
+ * 构造好的 `sendMessage` wire 载荷，该会话快照 `idle === true` 时按立即发送语义原样提交。
+ * 挂起是 webview 本地状态：不上送宿主（`sendMessage` / `onQueuedMessage` 契约不变），
+ * webview 重载即丢失（无持久化）。
+ */
+export interface IdleSuspendedMessage {
+  /** 挂起项归属的会话（提交时正编辑的会话），跨会话不串 */
+  sessionId: string;
+  /** 本地 uuid：仅为复用排队横幅的编辑 / 删除与回填实现，不上送宿主 */
+  uuid: string;
+  /** 构造完成的原样 wire 载荷（含提交时刻的会话配置与文件上下文） */
+  wire: SendMessageWire;
 }
 
 export interface UserChoiceRequest {

@@ -131,6 +131,8 @@ interface TitlebarAPI {
   showWorkspaceMenu: () => void;
   /** 拖拽排序：提交完整的打开集合顺序（主进程按 id 校验） */
   reorderWorkspaces: (ids: string[]) => void;
+  /** 标签页右键：请求主进程弹出该工作区的上下文菜单（关闭 / 批量关闭 / 打开命令行） */
+  showTabContextMenu: (id: string) => void;
   onWindowState: (callback: (state: { maximized: boolean }) => void) => void;
   onMenuState: (callback: (state: { openId: string | null }) => void) => void;
   onModelChanged: (callback: (state: { sections: TitlebarSection[] }) => void) => void;
@@ -452,6 +454,14 @@ function renderWorkspaces(
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
       if (!isActive) api?.activateWorkspace(ws.id);
+    });
+    // 右键：弹出该工作区的上下文菜单（由主进程弹原生菜单，页面只上报 id）
+    tab.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      // 与 mousedown 同理：右键标签页也要收起已打开的下拉菜单
+      if (openMenuId) api?.closeMenu();
+      api?.showTabContextMenu(ws.id);
     });
 
     // ── 拖拽排序 ──

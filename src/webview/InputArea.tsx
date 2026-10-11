@@ -2,7 +2,7 @@ import React, { useState, useCallback, memo, forwardRef, useImperativeHandle, us
 import { Icon } from './Icon';
 import TextareaAutosize from 'react-textarea-autosize';
 import { ConfigProvider, Dropdown } from 'antd';
-import type { Colors, QueuedMessagePayload, ThinkingMode, PromptMode, AgentMode } from './types';
+import type { Colors, QueuedMessagePayload, ThinkingMode, PromptMode, AgentMode, IdleSuspendedMessage } from './types';
 import type { McpServerInfo, ProviderModels } from '../core/webviewTypes';
 import type { ModelRef } from '../core/llm/modelRef';
 import { postMessage, getWindowSessionId } from './webviewEnv';
@@ -91,12 +91,20 @@ interface InputAreaProps {
    */
   providerModels?: ProviderModels[];
   onSend: () => void;
+  /** 空闲发送（US-46）：下拉第二项——提交时机推迟到会话空闲 */
+  onSendIdle: () => void;
   onAbort: () => void;
   onCompress: () => void;
   /** 排队项「编辑」：把排队消息撤回到输入框（与 abort 的 queryEnd 回填同一实现） */
   onEditQueuedMessage: () => void;
   /** 排队项「删除」：丢弃排队消息，不回填输入框 */
   onDeleteQueuedMessage: () => void;
+  /** 当前会话的空闲挂起项（webview 本地状态，docs/features/user-message-pipeline.md FR-003）；null = 无 */
+  idleSuspendedMessage: IdleSuspendedMessage | null;
+  /** 空闲挂起项「编辑」：撤回到输入框（与排队项撤回同一实现，纯本地动作） */
+  onEditIdleSuspended: () => void;
+  /** 空闲挂起项「删除」：直接丢弃（纯本地动作） */
+  onDeleteIdleSuspended: () => void;
   mainInputRef: React.RefObject<HTMLTextAreaElement | null>;
   colors: Colors;
   isDark: boolean;
@@ -1555,10 +1563,14 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   setModelRef,
   providerModels,
   onSend,
+  onSendIdle,
   onAbort,
   onCompress,
   onEditQueuedMessage,
   onDeleteQueuedMessage,
+  idleSuspendedMessage,
+  onEditIdleSuspended,
+  onDeleteIdleSuspended,
   mainInputRef,
   colors,
   isDark,
@@ -1891,9 +1903,9 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   const mcpBusy = !!mcpConnecting;
   const configBusy = !!configLoading;
   const busy = mcpBusy || configBusy;
-  // 已有排队消息时禁止再次发送：排队项一次只有一条，改主意走横幅上的编辑 / 删除
-  // （docs/features/user-message-pipeline.md FR-003），不靠继续提交覆盖。
-  const sendDisabled = !hasContent || isInputDisabled || busy || !!queuedMessage;
+  // 已有待处理消息时禁止再次发送：忙碌排队项与空闲挂起项同为「一次只有一条」，
+  // 改主意走横幅上的编辑 / 删除（docs/features/user-message-pipeline.md FR-003），不靠继续提交覆盖。
+  const sendDisabled = !hasContent || isInputDisabled || busy || !!queuedMessage || !!idleSuspendedMessage;
 
   return (
     <div
@@ -1959,6 +1971,47 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           <button
             type="button"
             onClick={onDeleteQueuedMessage}
+            title={t('inputArea.deleteQueuedMessage')}
+            className="w-5 h-5 rounded flex items-center justify-center flex-shrink-0 transition-all hover:brightness-125"
+            style={{ color: colors.placeholder }}
+          >
+            <Icon name="trash" size={12} />
+          </button>
+        </div>
+      )}
+      {/* Idle-Suspended Banner：空闲发送的本地挂起项（docs/features/user-message-pipeline.md FR-003）。与忙碌排队横幅
+          同形态，标签区分等待条件——「空闲后发送」= 等会话空闲；「等待中」= 等下一轮。 */}
+      {idleSuspendedMessage && (
+        <div
+          className="px-3 py-1.5 flex items-center gap-2 ui-fs-12 border-b"
+          style={{
+            backgroundColor: isDark ? 'rgba(99, 102, 241, 0.12)' : 'rgba(99, 102, 241, 0.08)',
+            borderColor: colors.border,
+            color: colors.textSystem,
+          }}
+          data-idle-suspended="true"
+        >
+          <Icon name="clock" size={14} style={{ flexShrink: 0, color: colors.harness }} />
+          <span className="truncate flex-1">
+            <span style={{ color: colors.harness, fontWeight: 600 }}>{t('inputArea.idleWaiting')}</span>
+            {idleSuspendedMessage.wire.content}
+            {idleSuspendedMessage.wire.images && idleSuspendedMessage.wire.images.length > 0 && (
+              <span style={{ opacity: 0.7 }}>{t('inputArea.waitingImages', { count: idleSuspendedMessage.wire.images.length })}</span>
+            )}
+          </span>
+          {/* 编辑 = 撤回到输入框；删除 = 丢弃。挂起项不经宿主，两者都是纯本地动作 */}
+          <button
+            type="button"
+            onClick={onEditIdleSuspended}
+            title={t('inputArea.editQueuedMessage')}
+            className="w-5 h-5 rounded flex items-center justify-center flex-shrink-0 transition-all hover:brightness-125"
+            style={{ color: colors.harness }}
+          >
+            <Icon name="pencil" size={12} />
+          </button>
+          <button
+            type="button"
+            onClick={onDeleteIdleSuspended}
             title={t('inputArea.deleteQueuedMessage')}
             className="w-5 h-5 rounded flex items-center justify-center flex-shrink-0 transition-all hover:brightness-125"
             style={{ color: colors.placeholder }}
@@ -2133,34 +2186,64 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           >
             <Icon name="square" size={12} className="text-white" />
           </button>
-          <button
-            onClick={onSend}
-            disabled={sendDisabled}
-            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${!sendDisabled ? 'hover:brightness-110' : ''}`}
-            style={{
-              // MCP 连接中 / 配置加载中：保持置灰的禁用样式，仅把图标换成 loading 动画
-              backgroundColor: !sendDisabled ? colors.harness : colors.border,
-              opacity: !sendDisabled ? 1 : 0.5,
-            }}
-            title={busy ? t('inputArea.mcpConnecting') : undefined}
-          >
-            {busy ? (
-              <span
-                className="animate-spin"
+          {/* 发送 split button：主按钮恒为立即发送（US-46）；小三角下拉是
+              当次动作（立即发送 / 空闲发送），不记住选择、不改变主按钮语义 */}
+          <div className="flex items-center rounded-lg overflow-hidden flex-shrink-0">
+            <button
+              onClick={onSend}
+              disabled={sendDisabled}
+              className={`w-7 h-7 flex items-center justify-center transition-all ${!sendDisabled ? 'hover:brightness-110' : ''}`}
+              style={{
+                // MCP 连接中 / 配置加载中：保持置灰的禁用样式，仅把图标换成 loading 动画
+                backgroundColor: !sendDisabled ? colors.harness : colors.border,
+                opacity: !sendDisabled ? 1 : 0.5,
+              }}
+              title={busy ? t('inputArea.mcpConnecting') : undefined}
+            >
+              {busy ? (
+                <span
+                  className="animate-spin"
+                  style={{
+                    width: 12,
+                    height: 12,
+                    borderRadius: '50%',
+                    border: '2px solid transparent',
+                    borderTopColor: '#fff',
+                    borderRightColor: '#fff',
+                    display: 'inline-block',
+                  }}
+                />
+              ) : (
+                <Icon name="send" size={14} className="text-white" />
+              )}
+            </button>
+            <Dropdown
+              menu={{
+                items: [
+                  { key: 'send-immediate', label: t('inputArea.sendImmediately'), disabled: sendDisabled, onClick: onSend },
+                  { key: 'send-idle', label: t('inputArea.sendOnIdle'), disabled: sendDisabled, onClick: onSendIdle },
+                ],
+              }}
+              trigger={['click']}
+              placement="topRight"
+              destroyOnHidden
+            >
+              <button
+                disabled={sendDisabled}
+                data-send-mode-caret="true"
+                className="h-7 w-4 flex items-center justify-center transition-all"
                 style={{
-                  width: 12,
-                  height: 12,
-                  borderRadius: '50%',
-                  border: '2px solid transparent',
-                  borderTopColor: '#fff',
-                  borderRightColor: '#fff',
-                  display: 'inline-block',
+                  backgroundColor: !sendDisabled ? colors.harness : colors.border,
+                  opacity: !sendDisabled ? 1 : 0.5,
+                  borderLeft: '1px solid rgba(255, 255, 255, 0.3)',
                 }}
-              />
-            ) : (
-              <Icon name="send" size={14} className="text-white" />
-            )}
-          </button>
+                title={t('inputArea.sendModeMenu')}
+                aria-label={t('inputArea.sendModeMenu')}
+              >
+                <Icon name="chevron-down" size={11} className="text-white" />
+              </button>
+            </Dropdown>
+          </div>
         </div>
       </div>
     </div>

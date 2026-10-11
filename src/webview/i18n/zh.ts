@@ -132,12 +132,17 @@ export const zhDict: Record<string, string> = {
   'llmConfig.conversationSpaceRemoveMessage': '将删除该空间的对话历史与工作目录相关配置（不会影响工作目录本身）：\n{path}',
 
   /* ── InputArea.tsx ───────────────────────────────────────── */
+  'messages.jumpToBottom': '跳到底部',
   'inputArea.placeholder': '输入消息，Shift+Enter 换行',
   'inputArea.placeholderNeedConfigPrefix': '请先配置模型服务，',
   'inputArea.placeholderNeedConfigClick': '点击设置',
   'inputArea.placeholderNeedConfigTitle': '请先配置模型服务，点击设置',
   'inputArea.waiting': '等待中: ',
   'inputArea.waitingImages': '（含 {count} 张图片）',
+  'inputArea.idleWaiting': '空闲后发送: ',
+  'inputArea.sendImmediately': '立即发送',
+  'inputArea.sendOnIdle': '空闲发送',
+  'inputArea.sendModeMenu': '选择发送方式',
   'inputArea.editQueuedMessage': '编辑排队消息（撤回到输入框）',
   'inputArea.deleteQueuedMessage': '删除排队消息',
   'inputArea.askModeLoading': '加载中...',

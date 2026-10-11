@@ -45,6 +45,10 @@ contextBridge.exposeInMainWorld('titlebarAPI', {
   reorderWorkspaces: (ids: string[]): void => {
     ipcRenderer.send('titlebar:reorder-workspaces', ids);
   },
+  /** 标签页右键：请求主进程弹出该工作区的上下文菜单（关闭 / 批量关闭 / 打开命令行） */
+  showTabContextMenu: (id: string): void => {
+    ipcRenderer.send('titlebar:tab-context-menu', id);
+  },
   onWindowState: (callback: (state: unknown) => void): void => {
     ipcRenderer.on('titlebar:window-state', (_event, state) => callback(state));
   },

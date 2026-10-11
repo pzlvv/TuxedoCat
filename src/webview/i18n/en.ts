@@ -132,12 +132,17 @@ export const enDict: Record<string, string> = {
   'llmConfig.conversationSpaceRemoveMessage': 'This deletes the conversation history and workspace-related config of this space (the workspace directory itself is not affected):\n{path}',
 
   /* ── InputArea.tsx ───────────────────────────────────────── */
+  'messages.jumpToBottom': 'Jump to bottom',
   'inputArea.placeholder': 'Type your message, Shift+Enter for new line',
   'inputArea.placeholderNeedConfigPrefix': 'Please configure the model service first, ',
   'inputArea.placeholderNeedConfigClick': 'click Settings',
   'inputArea.placeholderNeedConfigTitle': 'Please configure the model service first, click Settings',
   'inputArea.waiting': 'Waiting: ',
   'inputArea.waitingImages': ' (with {count} image(s))',
+  'inputArea.idleWaiting': 'Send when idle: ',
+  'inputArea.sendImmediately': 'Send now',
+  'inputArea.sendOnIdle': 'Send when idle',
+  'inputArea.sendModeMenu': 'Choose send mode',
   'inputArea.editQueuedMessage': 'Edit queued message (recall to input box)',
   'inputArea.deleteQueuedMessage': 'Delete queued message',
   'inputArea.askModeLoading': 'Loading...',

@@ -5,7 +5,7 @@ import { Dropdown } from 'antd';
 import InputArea, { InputAreaRef } from './InputArea';
 import MessagesView from './MessagesView';
 import 'antd/dist/reset.css';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, SessionRuntimeState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload, ApplyDefaultsPrompt } from './types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, SessionRuntimeState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload, ApplyDefaultsPrompt, IdleSuspendedMessage } from './types';
 import { createSessionState, SessionStatesStore } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
@@ -151,6 +151,11 @@ const App = () => {
   // 切换会话后排队消息仍归属原会话，不会被误投递到其他会话。
   const [queuedMessage, setQueuedMessage] = useState<QueuedMessagePayload | null>(null);
   const queuedMessageRef = useRef<Map<string, QueuedMessagePayload>>(new Map());
+  // 空闲发送的本地挂起（docs/features/user-message-pipeline.md FR-003）：ref 是唯一事实（按会话存完整 wire 载荷），
+  // 展示在渲染时按当前会话派生；version 仅用于 ref 变更后触发重渲染。
+  // 挂起项不上送宿主（sendMessage / onQueuedMessage 契约不变），webview 重载即丢失。
+  const idleSuspendedRef = useRef<Map<string, IdleSuspendedMessage>>(new Map());
+  const [idleSuspendedVersion, setIdleSuspendedVersion] = useState(0);
   // 记录用户主动点击 abort 的会话。queryEnd 到达时用于判断：
   // 若该会话仍有排队消息，则不重新发送它，而是回填到输入框由用户自行修改。
   const abortedSessionsRef = useRef<Set<string>>(new Set());
@@ -501,6 +506,7 @@ const App = () => {
     newChatSessionRef, newChatDraftRef,
     isDeletingRef, listLoadedOnceRef, setCurrentSessionIdRef, inputAreaRef,
     COMMAND_HISTORY_MAX, _appMountTime,
+    idleSuspendedRef, setIdleSuspendedVersion, sessionRuntimeStatesRef, sessionIdleVersion,
   }), [
     currentFile, selectedLines, fileHidden, conversations, conversationsLoading,
     conversationDropdownOpen, conversationTitle, currentSessionId, parentSessionId,
@@ -509,11 +515,13 @@ const App = () => {
     modelRef, webSearch, settingsDefaults, hasCompactArchive, isCompactExpanded,
     queuedMessage, deleteConfirm, userChoiceRequest,
     showThinkingAnimation, animationMode, messages,
+    sessionIdleVersion,
   ]);
 
   const {
-    formatRelativeTime, loadConversations, onStartup, handleSend, handleAbort,
+    formatRelativeTime, loadConversations, onStartup, handleSend, handleSendIdle, handleAbort,
     handleEditQueuedMessage, handleDeleteQueuedMessage,
+    handleEditIdleSuspended, handleDeleteIdleSuspended,
     handleCompress, handleUserChoiceResponse, handleUserChoiceSubmit,
     handleChoiceResponse, handleToggleFileHidden,
     toggleSubSession: _toggleSubSession,
@@ -956,6 +964,11 @@ const App = () => {
     queuedMessage && currentSessionId && queuedMessage.sessionId === currentSessionId
       ? queuedMessage
       : null;
+  // 空闲挂起横幅同理会话绑定：ref 按会话存事实，渲染时派生当前会话的挂起项
+  //（version 递增保证 ref 变更后重渲染，读值在渲染期，无陈旧投影）
+  const activeIdleSuspended: IdleSuspendedMessage | null =
+    currentSessionId ? idleSuspendedRef.current.get(currentSessionId) ?? null : null;
+  void idleSuspendedVersion;
 
 
 
@@ -1343,10 +1356,14 @@ onClick={handleNewConversation}
               setModelRef={setModelRef}
               providerModels={providerModels}
               onSend={handleSend}
+              onSendIdle={handleSendIdle}
               onAbort={handleAbort}
               onCompress={handleCompress}
               onEditQueuedMessage={handleEditQueuedMessage}
               onDeleteQueuedMessage={handleDeleteQueuedMessage}
+              idleSuspendedMessage={activeIdleSuspended}
+              onEditIdleSuspended={handleEditIdleSuspended}
+              onDeleteIdleSuspended={handleDeleteIdleSuspended}
               mainInputRef={mainInputRef as React.RefObject<HTMLTextAreaElement | null>}
               colors={colors}
               isDark={isDark}

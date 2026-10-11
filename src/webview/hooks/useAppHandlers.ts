@@ -1,7 +1,7 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { hasHostMessageApi, postMessage } from '../webviewEnv';
 import { profileLog } from '../debug';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults } from '../types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, SessionRuntimeState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, IdleSuspendedMessage, SendMessageWire } from '../types';
 import { createSessionState, type SessionStatesStore } from '../sessionState';
 import { ensureImageSize } from '../imageSize';
 import { restoreQueuedMessageToInput } from './restoreQueuedMessage';
@@ -98,6 +98,13 @@ export interface UseAppHandlersProps {
   inputAreaRef: React.RefObject<any>;
   COMMAND_HISTORY_MAX: number;
   _appMountTime: React.MutableRefObject<number | null>;
+  // 空闲发送挂起（docs/features/user-message-pipeline.md FR-003）：webview 本地事实，ref 是唯一写入点，version 递增触发重渲染
+  idleSuspendedRef: React.MutableRefObject<Map<string, IdleSuspendedMessage>>;
+  setIdleSuspendedVersion: (v: number | ((prev: number) => number)) => void;
+  /** 会话运行时快照（core 推送的全量 states）：空闲判定与挂起项 GC 的事实源 */
+  sessionRuntimeStatesRef: React.MutableRefObject<Map<string, SessionRuntimeState>>;
+  /** 快照推送信号：每次 sessionRuntimeStates 到达递增，挂起项的触发与清理挂在其上 */
+  sessionIdleVersion: number;
 }
 
 export interface UseAppHandlersReturn {
@@ -105,10 +112,16 @@ export interface UseAppHandlersReturn {
   loadConversations: () => void;
   onStartup: () => void;
   handleSend: () => Promise<void>;
+  /** 空闲发送（US-46）：提交时机推迟到会话空闲；空闲时等价立即发送 */
+  handleSendIdle: () => Promise<void>;
   handleAbort: () => void;
   handleCompress: () => void;
   handleEditQueuedMessage: () => void;
   handleDeleteQueuedMessage: () => void;
+  /** 空闲挂起项「编辑」：撤回到输入框（与排队项撤回同一实现，纯本地动作） */
+  handleEditIdleSuspended: () => void;
+  /** 空闲挂起项「删除」：直接丢弃（纯本地动作） */
+  handleDeleteIdleSuspended: () => void;
   handleUserChoiceResponse: (index: number, reply?: string) => void;
   handleUserChoiceSubmit: (inputValue: string) => void;
   handleChoiceResponse: (index: number) => void;
@@ -206,24 +219,78 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     profileLog(`${profileTag} onStartup 完成 | session创建+postMsg=${(performance.now() - startupTime).toFixed(2)}ms`);
   };
 
-  const handleSend = async () => {
+  /**
+   * 用户消息提交的收尾（乐观列表刷新 + 命令历史 + 上送）：立即发送与空闲挂起的触发提交
+   * 共用这同一条管线（docs/features/user-message-pipeline.md FR-003「按立即发送语义提交」）。排队登记不在发送侧做——
+   * 宿主按引擎忙碌状态回推 queuedMessage，保证登记与清除都只有宿主一个来源
+   * （docs/features/user-message-pipeline.md FR-003、docs/architecture/principles.md 第 7 节）。
+   */
+  const submitUserMessage = useCallback((wire: SendMessageWire) => {
+    const sessionId = wire.sessionId;
+    const messageContent = wire.content;
+    const pastedImages = wire.images ?? [];
+
+    // 用户主动发消息后立即在本地对话列表中刷新修改时间，使其排到最前，
+    // 无需等待后端落盘 + 刷新列表；新会话则插入占位项。
+    // 后端返回 conversationsData 后会用权威数据替换/校正。
+    props.setConversations(prev => {
+      const now = Date.now();
+      const existingIdx = prev.findIndex(c => c.sessionId === sessionId);
+      if (existingIdx !== -1) {
+        // 已存在：只刷新 updatedAt，排序由 useConversationTree 按 updatedAt 完成
+        const next = prev.slice();
+        next[existingIdx] = { ...prev[existingIdx], updatedAt: now };
+        return next;
+      }
+      return [{
+        sessionId,
+        project: '',
+        title: buildConversationTitle(messageContent, pastedImages),
+        createdAt: now,
+        updatedAt: now,
+        messageCount: 1,
+        ...(props.parentSessionId ? { parentSessionId: props.parentSessionId } : {}),
+      }, ...prev];
+    });
+
+    // Save to per-session command history
+    if (sessionId && messageContent.trim()) {
+      const history = props.commandHistoryRef.current.get(sessionId) || [];
+      // Avoid duplicate consecutive entries
+      if (history.length === 0 || history[0] !== messageContent.trim()) {
+        history.unshift(messageContent.trim());
+        if (history.length > props.COMMAND_HISTORY_MAX) {
+          history.length = props.COMMAND_HISTORY_MAX;
+        }
+        props.commandHistoryRef.current.set(sessionId, history);
+      }
+    }
+
+    postMessage(wire);
+  }, []);
+
+  /**
+   * 从输入框构造用户消息载荷：读文本 / 图片、判空、双来源排队守卫、清输入框、会话解析。
+   * 立即发送（handleSend）与空闲发送（handleSendIdle）共用同一段构造——空闲发送拿到
+   * 同一载荷后挂起而非提交（US-46/FR-003）。返回 null 表示无内容或被守卫拦下。
+   */
+  const buildUserMessageFromInput = async (): Promise<SendMessageWire | null> => {
     const inputValue = props.inputAreaRef.current?.getValue() ?? '';
     const rawPastedImages: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }> =
       props.inputAreaRef.current?.getPastedImages?.() ?? [];
     // 发送前补齐图片宽高，供 core 层生成 Image[<width>*<height>] 标题
     const pastedImages = await Promise.all(rawPastedImages.map((img) => ensureImageSize(img)));
-    if (!inputValue.trim() && pastedImages.length === 0) return;
-    // 已有排队消息时不允许再发（发送按钮置灰 + Enter 同守卫）：排队项一次只有一条，
-    // 改主意走横幅上的编辑 / 删除（docs/features/user-message-pipeline.md FR-003），
+    if (!inputValue.trim() && pastedImages.length === 0) return null;
+    // 已有待处理消息时不允许再发（发送按钮置灰 + Enter 同守卫）：忙碌排队项与空闲挂起项
+    // 同为「一次只有一条」，改主意走横幅上的编辑 / 删除（docs/features/user-message-pipeline.md FR-003），
     // 不靠继续提交覆盖。
     {
       const sid = props.currentSessionIdRef.current;
-      if (sid && props.queuedMessageRef.current.has(sid)) return;
+      if (sid && (props.queuedMessageRef.current.has(sid) || props.idleSuspendedRef.current.has(sid))) return null;
     }
 
     // Preserve cursor position before clearing - we'll restore it when user types after abort
     props.cursorPositionRef.current = props.mainInputRef.current?.selectionStart ?? inputValue.length;
-    const messageContent = inputValue;
 
     props.inputAreaRef.current?.clear();
 
@@ -273,12 +340,12 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       props.setIsCompactExpanded(false);
     }
 
-    const messagePayload = {
+    const messagePayload: SendMessageWire = {
       // 用户消息只有一个 wire 类型：是否排队由宿主按引擎忙碌状态决定，
       // 排队项由宿主回推 queuedMessage 建立（见 docs/architecture/contracts.md 第 8 节）。
-      type: 'sendMessage' as const,
+      type: 'sendMessage',
       sessionId,
-      content: messageContent,
+      content: inputValue,
       images: pastedImages.length > 0 ? pastedImages : undefined,
       filePath: props.currentFile,
       fileHidden: props.fileHidden,
@@ -294,47 +361,32 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       model: props.modelRef?.model,
       provider: props.modelRef?.provider,
     };
+    return messagePayload;
+  };
 
-    // 用户主动发消息后立即在本地对话列表中刷新修改时间，使其排到最前，
-    // 无需等待后端落盘 + 刷新列表；新会话则插入占位项。
-    // 后端返回 conversationsData 后会用权威数据替换/校正。
-    props.setConversations(prev => {
-      const now = Date.now();
-      const existingIdx = prev.findIndex(c => c.sessionId === sessionId);
-      if (existingIdx !== -1) {
-        // 已存在：只刷新 updatedAt，排序由 useConversationTree 按 updatedAt 完成
-        const next = prev.slice();
-        next[existingIdx] = { ...prev[existingIdx], updatedAt: now };
-        return next;
-      }
-      return [{
-        sessionId,
-        project: '',
-        title: buildConversationTitle(messageContent, pastedImages),
-        createdAt: now,
-        updatedAt: now,
-        messageCount: 1,
-        ...(props.parentSessionId ? { parentSessionId: props.parentSessionId } : {}),
-      }, ...prev];
-    });
+  const handleSend = async () => {
+    const wire = await buildUserMessageFromInput();
+    if (wire) submitUserMessage(wire);
+  };
 
-    // 排队项不在发送侧乐观登记：宿主入队后按引擎忙碌状态回推 queuedMessage，
-    // 保证「登记」与「清除」都只有宿主一个来源（见 docs/architecture/principles.md 第 7 节）。
-
-    // Save to per-session command history
-    if (sessionId && messageContent.trim()) {
-      const history = props.commandHistoryRef.current.get(sessionId) || [];
-      // Avoid duplicate consecutive entries
-      if (history.length === 0 || history[0] !== messageContent.trim()) {
-        history.unshift(messageContent.trim());
-        if (history.length > props.COMMAND_HISTORY_MAX) {
-          history.length = props.COMMAND_HISTORY_MAX;
-        }
-        props.commandHistoryRef.current.set(sessionId, history);
-      }
+  /**
+   * 空闲发送（US-46/FR-003）：构造与立即发送同一载荷。提交时刻该会话快照
+   * 显式 `idle === true` → 等价立即发送（无需等待）；否则挂起为 webview 本地待发项
+   * （不上送宿主，宿主契约不变），由空闲触发 effect 在该会话空闲时提交。
+   */
+  const handleSendIdle = async () => {
+    const wire = await buildUserMessageFromInput();
+    if (!wire) return;
+    if (props.sessionRuntimeStatesRef.current.get(wire.sessionId)?.idle === true) {
+      submitUserMessage(wire);
+      return;
     }
-
-    postMessage(messagePayload);
+    props.idleSuspendedRef.current.set(wire.sessionId, {
+      sessionId: wire.sessionId,
+      uuid: `idle_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      wire,
+    });
+    props.setIdleSuspendedVersion((v) => v + 1);
   };
 
   const handleAbort = useCallback(() => {
@@ -343,8 +395,17 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     }
 
     const sessionId = props.currentSessionIdRef.current;
+    // 中止回填优先（docs/features/user-message-pipeline.md FR-003）：挂起中的空闲发送项随中止回填输入框、不再自动
+    // 提交。同步清挂起项先于 abort 上行与空闲触发 effect（触发以 ref 为事实源，先清
+    // 后到即 no-op），「空闲推送 vs 中止 queryEnd」的竞态在这里收敛。
+    const suspended = sessionId ? props.idleSuspendedRef.current.get(sessionId) : undefined;
+    if (sessionId && suspended) {
+      props.idleSuspendedRef.current.delete(sessionId);
+      props.setIdleSuspendedVersion((v) => v + 1);
+      restoreQueuedMessageToInput(props, sessionId, suspendedAsQueued(suspended));
+    }
     // 标记该会话被用户主动中止：queryEnd 到达时若有排队消息，
-    // 不再回发它，而是回填到输入框（见 useMessageHandler 的 queryEnd 处理）。
+    // 不再回发它，而是回填到输入框由用户自行修改。
     if (sessionId) {
       props.abortedSessionsRef.current.add(sessionId);
     }
@@ -389,6 +450,66 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
 
   /** 排队项「删除」：丢弃排队消息，不回填输入框 */
   const handleDeleteQueuedMessage = useCallback(() => discardQueuedMessage(false), [discardQueuedMessage]);
+
+  /** 挂起项转排队横幅字段视图：复用 restoreQueuedMessageToInput 与横幅展示的实现 */
+  const suspendedAsQueued = (suspended: IdleSuspendedMessage): QueuedMessagePayload => ({
+    sessionId: suspended.sessionId,
+    uuid: suspended.uuid,
+    content: suspended.wire.content,
+    images: suspended.wire.images,
+    filePath: suspended.wire.filePath,
+    selectedLines: suspended.wire.selectedLines,
+    fileHidden: suspended.wire.fileHidden,
+  });
+
+  /**
+   * 空闲挂起项的「编辑 / 删除」共用实现（docs/features/user-message-pipeline.md FR-003）：纯本地动作——挂起项不经
+   * 宿主，没有 discardQueuedMessage 对应物；编辑回填复用 restoreQueuedMessageToInput，
+   * 不置 abortedSessionsRef、不打断正在运行的查询。
+   */
+  const discardIdleSuspended = useCallback((restoreToInput: boolean) => {
+    const sessionId = props.currentSessionIdRef.current;
+    const suspended = sessionId ? props.idleSuspendedRef.current.get(sessionId) : undefined;
+    if (!sessionId || !suspended) return;
+    props.idleSuspendedRef.current.delete(sessionId);
+    props.setIdleSuspendedVersion((v) => v + 1);
+    if (restoreToInput) {
+      restoreQueuedMessageToInput(props, sessionId, suspendedAsQueued(suspended));
+    }
+  }, []);
+
+  /** 空闲挂起项「编辑」：撤回到输入框（与排队项 / abort 回填同一实现） */
+  const handleEditIdleSuspended = useCallback(() => discardIdleSuspended(true), [discardIdleSuspended]);
+
+  /** 空闲挂起项「删除」：直接丢弃，不回填输入框 */
+  const handleDeleteIdleSuspended = useCallback(() => discardIdleSuspended(false), [discardIdleSuspended]);
+
+  // 空闲挂起的自动触发与清理（docs/features/user-message-pipeline.md FR-003），随运行时快照推送（sessionIdleVersion 递增）执行：
+  // - 清理：**非空**快照中不再包含该会话（core 已卸载它 = 已关闭 / 释放）→ 挂起项清除、
+  //   不提交；空快照视为信息不足（启动期补拉的种子 / 尚无会话），不回收、不触发。
+  // - 触发：该会话快照显式 `idle === true` 才提交（快照缺失不猜——不过度 fallback），
+  //   提交走立即发送语义的同一管线；此刻若会话又忙碌，宿主按既有排队语义接收，消息不丢。
+  useEffect(() => {
+    const suspended = props.idleSuspendedRef.current;
+    if (suspended.size === 0) return;
+    const states = props.sessionRuntimeStatesRef.current;
+    let touched = false;
+    if (states.size > 0) {
+      for (const sid of [...suspended.keys()]) {
+        if (!states.has(sid)) {
+          suspended.delete(sid);
+          touched = true;
+        }
+      }
+    }
+    for (const [sid, item] of [...suspended]) {
+      if (states.get(sid)?.idle !== true) continue;
+      suspended.delete(sid);
+      touched = true;
+      submitUserMessage(item.wire);
+    }
+    if (touched) props.setIdleSuspendedVersion((v) => v + 1);
+  }, [props.sessionIdleVersion, submitUserMessage]);
 
   const handleCompress = useCallback(() => {
     if (!hasHostMessageApi()) {
@@ -484,10 +605,13 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     loadConversations,
     onStartup,
     handleSend,
+    handleSendIdle,
     handleAbort,
     handleCompress,
     handleEditQueuedMessage,
     handleDeleteQueuedMessage,
+    handleEditIdleSuspended,
+    handleDeleteIdleSuspended,
     handleUserChoiceResponse,
     handleUserChoiceSubmit,
     handleChoiceResponse,

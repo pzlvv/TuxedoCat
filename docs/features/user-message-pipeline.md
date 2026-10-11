@@ -39,6 +39,12 @@ last_reviewed: 2026-10-11
 - 场景 5：斜杠补全
   - **AC-15**（FR-006）：GIVEN 已有正文 WHEN 补 `/` 后选补全 THEN 正文保留，结果为 `/${skillName} 正文`
   - **AC-16**（FR-006）：GIVEN 输入不以 `/` 开头 WHEN 输入 THEN 不展示补全菜单
+- 场景 6：空闲发送
+  - **AC-17**（FR-003）：GIVEN 会话忙碌 WHEN 以「空闲发送」提交 THEN 消息不上送宿主，横幅登记该项且标明「空闲后发送」
+  - **AC-18**（FR-003）：GIVEN 空闲挂起项 WHEN 该会话快照变为 idle THEN 挂起项自动按立即发送语义提交、横幅清除
+  - **AC-19**（FR-003）：GIVEN 空闲挂起项 WHEN 用户中止该会话 THEN 挂起项回填输入框、不再自动提交；空闲推送与带中止标记的 `queryEnd` 竞态以中止回填收敛
+  - **AC-20**（FR-003）：GIVEN 空闲挂起项 WHEN 编辑 / 删除 THEN 本地清除并回填 / 丢弃，无 `discardQueuedMessage` 上行
+  - **AC-21**（FR-003）：GIVEN 空闲挂起项 WHEN 非空快照不再包含该会话或 webview 重载 THEN 挂起项清除 / 丢失、不投递
 
 ## 2. 功能需求
 
@@ -62,6 +68,8 @@ webview 的用户消息经宿主 `WebviewMessageHandler` 的一个处理器进�
 | 入队 | 发 `UiEvent.userMessageSubmitted`：取 / 建引擎、应用会话覆盖、入队、命令解析都在 core 侧 |
 
 - 引擎创建不预置用户消息：`initialMessages` 为空，首条消息与后续消息同路径。
+- 发送区 UI 不改变唯一入口：主按钮恒为立即发送；「空闲发送」（下拉项）在 webview 本地
+  挂起，触发时仍以 `sendMessage` 进入本管线（FR-003）。
 - 查询开始 / 结束状态由 core 在消费循环里发（`queryBegin` / `queryEnd`，见
   [docs/hosts/webview-ui.md 第 7 节](../hosts/webview-ui.md#7-查询计数querybegin--queryend-去重)）。
 - 无工作目录的会话不进入管线：webview 显示引导，不发送消息。
@@ -126,6 +134,23 @@ abort 标记、不打断正在运行的查询。「编辑」在清除排队项�
 （入队失败 / 引擎缺失）。
 
 **顺序**：同一会话内，`queuedMessage` 先于该消息的 `addMessage` / `clearQueuedMessage` 到达。
+
+**空闲挂起（webview 本地）**：发送区下拉的「空闲发送」把提交时机推迟到会话完全空闲：
+
+- 挂起项不上送宿主：`sendMessage` wire 类型与载荷、`onQueuedMessage` 登记口径都不变，
+  挂起事实由 webview 持有；横幅按当前会话派生展示，标签「空闲后发送」与忙碌排队的
+  「等待中」区分等待条件。
+- 触发以 core 推送的会话运行时快照为准：该会话显式 `idle === true`（无进行中查询 /
+  等待用户输入 / 压缩 / 后台任务 / 子代理）才按立即发送语义提交；快照缺失不触发
+  （不过度 fallback）。提交走本节顶端登记的同一入口，此刻若会话又忙碌则落入既有忙碌
+  排队语义，消息不丢。
+- 中止回填优先：用户中止时挂起项随中止回填输入框、不再自动提交（与忙碌排队的中止
+  回填共用同一实现）；空闲推送与带中止标记的 `queryEnd` 竞态以中止回填收敛——回填先
+  清除挂起项，后到的触发 no-op。
+- 清除：**非空**快照中不再包含该会话（已关闭 / 释放）即清除；空快照视为信息不足
+  （启动期补拉的种子），不回收、不触发。webview 重载即丢失（本地状态，无持久化）。
+- 挂起项与忙碌排队项同为一次一条：任一存在期间发送区禁用；编辑 / 删除是纯本地动作，
+  无 `discardQueuedMessage` 上行。
 
 ### FR-004：Skill 注入顺序唯一
 
@@ -214,6 +239,7 @@ Skill 的 `tool_use` / `tool_result` 紧跟在用户消息之后。
 - 系统环境信息缓存按工作目录分桶；预热刷新该目录条目。
 - 补全只改写 `/` 到光标之间的文本。
 - 运行中与等待用户两种活动指示的动效语义不同。
+- 空闲挂起项是 webview 本地状态：不上送宿主，触发与回收都以 core 推送的快照为准。
 
 ## 4. 边界与错误路径
 
@@ -233,7 +259,7 @@ Skill 的 `tool_use` / `tool_result` 紧跟在用户消息之后。
 
 关联既有 [user-stories.md](user-stories.md) 的 US-1（发送消息并获得流式回复）/
 US-3（消息排队）/ US-5（输入历史与斜杠命令补全）/ US-27（斜杠命令与技能触发）；
-无新增 US。
+新增 US-46（空闲发送与发送模式，e2e 见 `e2e/webview/sendModes.spec.ts`）。
 
 ## 7. 追溯矩阵
 
@@ -241,7 +267,7 @@ US-3（消息排队）/ US-5（输入历史与斜杠命令补全）/ US-27（斜
 | --- | --- | --- | --- |
 | FR-001 | `src/host/ui/webviewMessageHandler.ts` 的用户消息处理器 | `src/test/userMessageQueue.test.ts` | 自动 |
 | FR-002 | `src/core/QueryEngine.ts` 的 `messageConsumer` / `resolvePendingCommand`；`src/core/CommandDispatcher.ts` 的 `dispatch` | `src/test/userMessageQueue.test.ts`；Rust `core-rs/src/engine_tests.rs` | 自动 |
-| FR-003 | 排队链路：`src/host/ui/webviewMessageHandler.ts` 的 `queuedMessage` 回推、`src/host/WebViewUI.ts` 的 `onCommandSend` / `onQueuedMessage`、`src/webview/hooks/useAppHandlers.ts` 的撤回（共用 `restoreQueuedMessage.ts`）→ `src/core/QueryEngine.ts` 的 `discardPendingUserMessage`（Standalone：`core-rs/src/engine.rs` 的 `on_queued_message_discarded`） | `src/test/queuedMessageDiscard.test.ts` + `src/test/queueFlushParity.test.ts` | 自动 |
+| FR-003 | 排队链路：`src/host/ui/webviewMessageHandler.ts` 的 `queuedMessage` 回推、`src/host/WebViewUI.ts` 的 `onCommandSend` / `onQueuedMessage`、`src/webview/hooks/useAppHandlers.ts` 的撤回（共用 `restoreQueuedMessage.ts`）→ `src/core/QueryEngine.ts` 的 `discardPendingUserMessage`（Standalone：`core-rs/src/engine.rs` 的 `on_queued_message_discarded`）；空闲挂起（webview 本地）：`useAppHandlers` 的挂起 / 触发 / 中止回填 | `src/test/queuedMessageDiscard.test.ts` + `src/test/queueFlushParity.test.ts` + `e2e/webview/sendModes.spec.ts`（US-46） | 自动 |
 | FR-004 | `src/core/QueryEngine.ts` 的 `injectSkillToolUse` | `core-rs/src/engine_tests.rs`（Skill 注入顺序用例） | 自动 |
 | FR-005 | `src/core/prompt/SystemEnvironment.ts` 的 `getSystemDynamicInfo` / `warmupSystemDynamicInfo` | `src/test/systemEnvironmentCache.test.ts` | 自动 |
 | FR-006 | `src/webview/InputArea.tsx` 的 `handleInputChange` / `commitSlash` | 无自动覆盖 + webview 输入交互，现有测试车道未覆盖，AC-15 / AC-16 由人工场景验证 | 无自动覆盖 + 现有车道未建输入框补全用例 |
