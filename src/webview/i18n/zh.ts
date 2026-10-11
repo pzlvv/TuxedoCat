@@ -256,6 +256,7 @@ export const zhDict: Record<string, string> = {
 
   /* ── tools/previewLimit.tsx 代码预览按需渲染 ───────────────── */
   'tool.preview.showAllLines': '仅显示前 {shown} 行 / 共 {total} 行，点击显示全部',
+  'tool.preview.showTailLines': '仅显示末尾 {shown} 行 / 共 {total} 行，点击显示全部',
   'tool.preview.clickToShowAll': '点击显示全部内容',
   'tool.preview.allLinesShown': '共 {total} 行，已显示全部',
 

@@ -168,6 +168,12 @@
 验收标准：
 
 1. 卡片显示工具图标、名称与参数摘要；Bash 卡片命令可复制、可查看完整命令与输出。
+   Bash 输出框与流式期间同高（缩略 / 展开卡片总高度不变）：执行完成后缩略显示
+   **末尾**实测放得下的整行（overflow hidden 不出现滚动条，可见窗口钉在底部，
+   与 Edit/Write 预览同一套折叠实现）；提示条平铺不自绘边框（避免与命令卡片
+   边框形成双圈），位于输出框上方（chevron 朝上），点击展开后框高不变、仅出现
+   框内滚动条，初始视点仍在底部、可向上滚动查看更早输出；流式期间保持滚动跟随
+   最新输出。
 2. Edit/Write 卡片内嵌 diff/内容预览（红删绿增、单词级高亮），可展开/收起；超大输出
    持久化后显示「完整输出」按钮。
 3. Read 卡片路径可点击打开文件；子代理卡片可点击跳转到子会话。
@@ -604,6 +610,7 @@
 | `e2e/webview/language.spec.ts` | US-41 | webview UI |
 | `e2e/webview/titlebar.spec.ts` | US-36（标题栏渲染层快照时序） | webview UI |
 | `e2e/webview/bashBackgroundButton.spec.ts` | US-45 | webview UI |
+| `e2e/webview/bashOutputCollapse.spec.ts` | US-14（Bash 输出折叠） | webview UI |
 | `e2e/electron/assistant.spec.ts` | US-1、US-2、US-14、US-15、US-18、US-28 | Electron 整应用 |
 | `e2e/electron/sessions.spec.ts` | US-19、US-20、US-21、US-22 | Electron 整应用 |
 | `e2e/electron/workspace.spec.ts` | US-30、US-35、US-36 | Electron 整应用 |

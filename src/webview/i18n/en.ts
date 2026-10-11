@@ -256,6 +256,7 @@ export const enDict: Record<string, string> = {
 
   /* ── tools/previewLimit.tsx on-demand code preview ─────────── */
   'tool.preview.showAllLines': 'Showing first {shown} of {total} lines — click to show all',
+  'tool.preview.showTailLines': 'Showing last {shown} of {total} lines — click to show all',
   'tool.preview.clickToShowAll': 'Click to show all content',
   'tool.preview.allLinesShown': 'All {total} lines shown',
 

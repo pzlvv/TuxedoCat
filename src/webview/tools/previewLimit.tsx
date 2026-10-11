@@ -51,6 +51,11 @@ export interface PreviewLimitOptions {
   revision?: unknown;
   /** 用户展开预览时回调（用于暂停消息列表自动滚动） */
   onExpand?: () => void;
+  /**
+   * 内容区限高（px）。缺省 PREVIEW_CONTENT_HEIGHT（Edit/Write 预览框）。
+   * Bash 输出传 115：输出框与流式滚动容器同高，缩略/展开卡片总高度都不变。
+   */
+  contentHeight?: number;
 }
 
 export interface PreviewLimit {
@@ -87,7 +92,7 @@ export function usePreviewLimit(
   forceExpand = false,
   options: PreviewLimitOptions = {},
 ): PreviewLimit {
-  const { revision, onExpand } = options;
+  const { revision, onExpand, contentHeight = PREVIEW_CONTENT_HEIGHT } = options;
   // 用 ref 持有回调，避免其身份变化导致 expand 每次重建、进而让依赖它的
   // handleBoxClick 变化，最终触发不必要的重渲染。
   const onExpandRef = useRef(onExpand);
@@ -100,7 +105,7 @@ export function usePreviewLimit(
   const contentRef = useRef<HTMLDivElement>(null);
   const [fit, setFit] = useState(() => ({
     lines: Math.min(totalLines, PREVIEW_LINES),
-    height: PREVIEW_CONTENT_HEIGHT,
+    height: contentHeight,
     // 初始按"逻辑行超过上限"判断，测量后再用真实高度修正
     overflow: totalLines > PREVIEW_LINES,
   }));
@@ -121,14 +126,14 @@ export function usePreviewLimit(
 
       // 快速路径：已渲染的行整体都没超过内容区高度（scrollHeight 只读一次，
       // 不触发逐行 getBoundingClientRect）。绝大多数短预览都走这条分支。
-      if (el.scrollHeight <= PREVIEW_CONTENT_HEIGHT + 0.5) {
+      if (el.scrollHeight <= contentHeight + 0.5) {
         lines = limit;
         used = el.scrollHeight;
       } else {
         // 慢路径：存在折行导致内容超高，逐行累加找出能完整放下的整行数。
         for (let i = 0; i < limit; i++) {
           const h = (children[i] as HTMLElement).getBoundingClientRect().height;
-          if (used + h > PREVIEW_CONTENT_HEIGHT + 0.5) {
+          if (used + h > contentHeight + 0.5) {
             // 这一行放不下 → 后面连续的行同样不能显示（不能跳过中间行）
             overflow = true;
             break;
@@ -143,7 +148,7 @@ export function usePreviewLimit(
           lines = 1;
           used = Math.min(
             (children[0] as HTMLElement).getBoundingClientRect().height,
-            PREVIEW_CONTENT_HEIGHT,
+            contentHeight,
           );
         }
       }
@@ -160,7 +165,7 @@ export function usePreviewLimit(
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [totalLines, expanded, revision]);
+  }, [totalLines, expanded, revision, contentHeight]);
 
   // 是否还有内容没显示：
   //   - 逻辑行数超过上限（无论怎么折行都不可能全放下）；
@@ -211,6 +216,15 @@ export function usePreviewLimit(
  *
  * 说明：本 bundle 中带 onClick 的元素会各自注册一个原生 click 监听器
  * （与 Bash 输出 div、summary 的既有行为一致），因此展开态不再挂 onClick。
+ *
+ * 变体：
+ * - 默认（Edit / Write）：与上方预览框拼成一个带边框的面板，提示条自绘
+ *   「左 / 右 / 下」三边边框并倒圆下角，chevron 朝下（更多内容在下方）。
+ * - flat（Bash）：输出区嵌在已带边框的命令卡片内部，提示条再自绘边框会和
+ *   卡片边框形成双圈——只留居中文字条，边框完全交给外层卡片。
+ * - tail（Bash）：缩略态显示的是**末尾**行而非开头行（与流式期间「最新输出
+ *   在底部」的阅读位置一致），提示条放在输出框**上方**、chevron 朝上——
+ *   更多内容在上方，点击向上展开（框高不变，只出现框内滚动条）。
  */
 export const PreviewMoreHint: React.FC<{
   shown: number;
@@ -218,7 +232,9 @@ export const PreviewMoreHint: React.FC<{
   expanded: boolean;
   colors: any;
   onClick?: () => void;
-}> = ({ shown, total, expanded, colors, onClick }) => (
+  flat?: boolean;
+  tail?: boolean;
+}> = ({ shown, total, expanded, colors, onClick, flat, tail }) => (
   <div
     onClick={expanded ? undefined : onClick}
     style={{
@@ -230,18 +246,22 @@ export const PreviewMoreHint: React.FC<{
       fontSize: 11,
       cursor: expanded ? 'default' : 'pointer',
       color: colors.textSystem,
-      border: '1px solid',
+      border: flat ? 'none' : '1px solid',
       borderColor: colors.textSystem,
       borderTop: 'none',
-      borderRadius: '0 0 4px 4px',
+      borderRadius: flat ? 0 : '0 0 4px 4px',
       userSelect: 'none',
     }}
   >
-    {!expanded && <Icon name="chevron-down" size={12} />}
+    {/* chevron 方向随变体：默认提示「更多在下方」（朝下）；tail 提示条在
+        输出框上方、向上展开（朝上）。写成两个字面量以便 gen-icons 扫描。 */}
+    {!expanded && (tail
+      ? <Icon name="chevron-up" size={12} />
+      : <Icon name="chevron-down" size={12} />)}
     <span>
       {expanded
         ? t('tool.preview.allLinesShown', { total })
-        : t('tool.preview.showAllLines', { shown, total })}
+        : t(tail ? 'tool.preview.showTailLines' : 'tool.preview.showAllLines', { shown, total })}
     </span>
   </div>
 );
