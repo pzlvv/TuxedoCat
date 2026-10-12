@@ -221,11 +221,21 @@ export function usePreviewLimit(
  * - 默认（Edit / Write）：与上方预览框拼成一个带边框的面板，提示条自绘
  *   「左 / 右 / 下」三边边框并倒圆下角，chevron 朝下（更多内容在下方）。
  * - flat（Bash）：输出区嵌在已带边框的命令卡片内部，提示条再自绘边框会和
- *   卡片边框形成双圈——只留居中文字条，边框完全交给外层卡片。
+ *   卡片边框形成双圈——只留居中文字条与一条下边分割线，外框完全交给外层卡片。
  * - tail（Bash）：缩略态显示的是**末尾**行而非开头行（与流式期间「最新输出
  *   在底部」的阅读位置一致），提示条放在输出框**上方**、chevron 朝上——
- *   更多内容在上方，点击向上展开（框高不变，只出现框内滚动条）。
+ *   更多内容在上方，点击向上展开（提示条让出的高度由输出框接管，卡片总高不变）。
  */
+
+/**
+ * tail 变体提示条的固定高度（px，含下边 1px 分割线）。
+ *
+ * 展开时提示条不再渲染、其高度让给输出框（`Bash.tsx` 用
+ * `OUTPUT_BOX_HEIGHT + TAIL_HINT_HEIGHT` 撑开），因此这个高度必须与提示条实际占位
+ * 一致——固定高度 + `box-sizing: border-box` 让「总高度不变」不依赖逐帧实测。
+ */
+export const TAIL_HINT_HEIGHT = 22;
+
 export const PreviewMoreHint: React.FC<{
   shown: number;
   total: number;
@@ -249,6 +259,14 @@ export const PreviewMoreHint: React.FC<{
       border: flat ? 'none' : '1px solid',
       borderColor: colors.textSystem,
       borderTop: 'none',
+      // tail（Bash）：固定高度让「展开让位」精确；下边分割线与命令卡片外框区分开
+      ...(tail
+        ? {
+            height: TAIL_HINT_HEIGHT,
+            boxSizing: 'border-box' as const,
+            borderBottom: `1px solid ${colors.border ?? colors.textSystem}`,
+          }
+        : {}),
       borderRadius: flat ? 0 : '0 0 4px 4px',
       userSelect: 'none',
     }}

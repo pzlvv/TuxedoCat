@@ -14,6 +14,7 @@ import { postMessage, getHasWorkspace, getInjectedSessionId, LOGO_CLASS_NAME, ge
 import { getPlaceholderLogoUri, rotatePlaceholderLogo } from './placeholderLogo';
 import { canCloseConversation, newConversationEntryOf, openConversationModeOf, rendersConversationListInWebview, type HostInfo } from '../host/types';
 import { resolveAbortButtonState, type AbortButtonState } from '../host/abortButtonState';
+import { shouldAutoExpandSubSessions } from '../host/ui/conversationTreeDefaults';
 import type { McpServerInfo, ProviderModels } from '../core/webviewTypes';
 import type { ModelRef } from '../core/llm/modelRef';
 import { t } from './i18n';
@@ -1200,7 +1201,12 @@ const App = () => {
                           isRoot={true}
                           isExpanded={
                             expandedSubSessions[item.sessionId] === undefined
+                              // 默认：当前选中对话展开；子代理数达到上限时不自动展开，
+                              // 避免批量委派的对话把列表撑满（用户仍可手动展开）
                               ? item.sessionId === currentSessionId
+                                && shouldAutoExpandSubSessions(
+                                  (conversationTree.childrenMap.get(item.sessionId) ?? []).length,
+                                )
                               : expandedSubSessions[item.sessionId]
                           }
                           isIdle={getSessionIdleState(item.sessionId)}

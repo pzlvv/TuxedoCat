@@ -50,6 +50,8 @@
  */
 
 import { PRODUCT_NAME } from '../../src/config/project.js';
+// 子代理默认展开上限：与 webview 对话列表共用同一份事实（阈值两处各写一遍必然漂移）
+import { shouldAutoExpandSubSessions } from '../../src/host/ui/conversationTreeDefaults.js';
 // 类型扩展名集合、打开分流与「远程二进制不支持」常量的根在 electron/fileTypes.ts
 // （US-42 验收 6）：图标说是文本的，双击就进内置文本窗口，一份事实一个写入点
 import {
@@ -468,18 +470,12 @@ function render(): void {
     }
   }
 
-  // 子树是否包含当前活跃会话（用于决定默认展开状态）
-  const subtreeHasActive = (id: string, depth = 0): boolean => {
-    if (depth > 20) return false;
-    if (id === activeSessionId) return true;
-    const kids = childrenMap.get(id) || [];
-    return kids.some((k) => subtreeHasActive(k.sessionId, depth + 1));
-  };
   const isSubExpanded = (id: string): boolean => {
     const explicit = expandedSubSessions[id];
     if (explicit !== undefined) return explicit;
-    // 默认：当前活跃会话所在的分支展开，其余折叠（参考 webview 对话列表）
-    return subtreeHasActive(id);
+    // 默认：当前活跃会话所在的分支展开，其余折叠（参考 webview 对话列表）；
+    // 活跃会话自身的子会话列表达到上限时不自动展开（与 webview 同一阈值）
+    return defaultSubExpanded(id, (parent) => childrenMap.get(parent) || []);
   };
 
   // 按前序展开成「父在前、展开的子紧随其后」的渲染序列
@@ -649,20 +645,39 @@ function itemHtml(c: ConversationMeta, depth: number, childCount: number, isExpa
     </div>`;
 }
 
+/**
+ * 子会话列表的默认展开状态（与 webview 对话列表同一份阈值，见
+ * `src/host/ui/conversationTreeDefaults.ts`）：
+ *
+ * - 活动会话自身：直接子会话数达到上限时不展开——批量委派的对话不自动撑满列表，
+ *   用户仍可点折叠按钮展开；
+ * - 其余会话：子树含活动会话即展开，保证选中的子对话可见。
+ *
+ * `childrenOf` 由调用方注入：渲染路径用已经建好的 `childrenMap`（避免 O(n²)），
+ * 点击路径现算。
+ */
+function defaultSubExpanded(
+  id: string,
+  childrenOf: (parent: string) => ConversationMeta[],
+): boolean {
+  const subtreeHasActive = (current: string, depth = 0): boolean => {
+    if (depth > 20) return false;
+    if (current === activeSessionId) return true;
+    return childrenOf(current).some((k) => subtreeHasActive(k.sessionId, depth + 1));
+  };
+  if (id === activeSessionId) return shouldAutoExpandSubSessions(childrenOf(id).length);
+  return subtreeHasActive(id);
+}
+
 /** 切换子会话展开/折叠状态并重渲染 */
 function toggleSubSession(sessionId: string): void {
   // 与默认展开规则保持一致：首次点击时基于当前默认状态取反
-  const subtreeHasActive = (id: string, depth = 0): boolean => {
-    if (depth > 20) return false;
-    if (id === activeSessionId) return true;
+  const childrenOf = (parent: string): ConversationMeta[] =>
     // 列表在等待态时没有可点的条目，这里不可达；`?? []` 只为类型收窄
-    return (conversations ?? [])
-      .filter((k) => k.parentSessionId === id)
-      .some((k) => subtreeHasActive(k.sessionId, depth + 1));
-  };
+    (conversations ?? []).filter((k) => k.parentSessionId === parent);
   const current = expandedSubSessions[sessionId] !== undefined
     ? expandedSubSessions[sessionId]
-    : subtreeHasActive(sessionId);
+    : defaultSubExpanded(sessionId, childrenOf);
   expandedSubSessions[sessionId] = !current;
   render();
 }
@@ -918,6 +933,14 @@ interface WorkspaceFilesState {
   selected: Set<string>;
   /** Shift 连选锚点（上次点击项） */
   anchor: string | null;
+  /**
+   * 刷新后待回填的滚动位置（px）；null = 无需回填。
+   *
+   * 刷新先清空树（DOM 高度塌到 0，浏览器会把 scrollTop 夹到 0），内容重读回来后逐层
+   * 长回来。这里记住刷新前的位置，每次 renderFiles 尝试回填，直到内容高度能容纳它
+   * 为止；用户在期间主动滚动（滚轮 / 按键 / 指针）即放弃回填。
+   */
+  pendingScrollTop: number | null;
 }
 
 /** 折叠状态落 localStorage 的键（值是「工作区 id → 是否展开」的 JSON 表，US-42 验收 1） */
@@ -979,6 +1002,7 @@ function filesStateFor(id: string): WorkspaceFilesState {
       expandedDirs: new Set(),
       selected: new Set(),
       anchor: null,
+      pendingScrollTop: null,
     };
     filesStateByWorkspace.set(id, state);
   }
@@ -1069,6 +1093,20 @@ function renderFiles(): void {
   const rows: string[] = [];
   renderDirRows(files, id, '', 0, rows);
   filesTreeEl.innerHTML = rows.join('');
+  // 刷新后的滚动位置回填：内容还没长到目标位置时先夹住（保持待回填），能容纳即落位
+  if (files.pendingScrollTop !== null) {
+    filesBodyEl.scrollTop = files.pendingScrollTop;
+    if (filesBodyEl.scrollTop >= files.pendingScrollTop - 1) files.pendingScrollTop = null;
+  }
+}
+
+/**
+ * 放弃刷新后的滚动位置回填：用户在刷新在途期间主动滚动时调用（滚轮 / 按键 / 指针），
+ * 以用户的最新位置为准（见 `WorkspaceFilesState.pendingScrollTop`）。
+ */
+function cancelPendingFilesScroll(): void {
+  const files = activeFilesState();
+  if (files) files.pendingScrollTop = null;
 }
 
 /**
@@ -1157,6 +1195,8 @@ function setFilesWorkspace(state: WorkspacesState | null): void {
   activeFilesId = active.id;
   filesRemote = active.remote;
   const files = filesStateFor(active.id);
+  // 切换工作区不做过渡：每个工作区各自记忆展开态，切过去时直接呈现目标状态
+  filesSectionEl.classList.remove('files-anim');
   filesSectionEl.classList.toggle('expanded', files.expanded);
   // 展开且根目录还没读过（新工作区 / 重启后恢复展开）才补一次读取；切回已浏览过的
   // 工作区直接命中缓存，不打断它的树
@@ -1167,13 +1207,25 @@ function setFilesWorkspace(state: WorkspacesState | null): void {
   }
 }
 
+/** 分区条过渡 / 内容淡入的时长（与 styles.css 的 0.22s 对齐，留一点余量） */
+const FILES_SECTION_ANIM_MS = 300;
+let filesAnimTimer: number | null = null;
+
 function setFilesExpanded(expanded: boolean): void {
   const id = activeFilesId;
   if (!id) return;
   const files = filesStateFor(id);
   files.expanded = expanded;
   persistFilesExpanded();
+  // 用户点击分区条才播过渡：临时挂 files-anim，动画走完摘掉，切工作区时就不会
+  // 因残留的过渡属性把状态变化演成动画
+  filesSectionEl.classList.add('files-anim');
   filesSectionEl.classList.toggle('expanded', expanded);
+  if (filesAnimTimer !== null) window.clearTimeout(filesAnimTimer);
+  filesAnimTimer = window.setTimeout(() => {
+    filesAnimTimer = null;
+    filesSectionEl.classList.remove('files-anim');
+  }, FILES_SECTION_ANIM_MS);
   // 展开 / 折叠都必须重画（US-42 验收 1）：renderFiles 在折叠态会清空树 DOM
   // （折叠时不渲染也不读目录），折叠期间任何一次 renderFiles（切换工作区、在途目录
   // 回包）都会把已缓存的树清掉；此时只切 class 不重画，展开就命中「有缓存、无 DOM」
@@ -1182,11 +1234,14 @@ function setFilesExpanded(expanded: boolean): void {
   renderFiles();
 }
 
-/** 整树刷新（刷新按钮 / 删除后）：丢弃该工作区的全部缓存，重读根与已展开目录，保留展开状态 */
+/** 整树刷新（刷新按钮 / 删除后）：丢弃该工作区的全部缓存，重读根与已展开目录，保留展开状态与滚动位置 */
 function refreshFiles(): void {
   const id = activeFilesId;
   const files = activeFilesState();
   if (!id || !files) return;
+  // 刷新会清空并重读整棵树，DOM 高度先塌后涨：记下当前位置，等内容重新铺满后回填
+  // （内容不足时保持待回填，见 renderFiles）
+  files.pendingScrollTop = filesBodyEl.scrollTop;
   files.generation += 1;
   files.tree.clear();
   loadDir(id, '');
@@ -1464,7 +1519,10 @@ function bindFilesEvents(): void {
   });
   // 行不是 focusable 的：按下时把焦点移到树容器，Delete / Ctrl+A 才有接收者
   filesTreeEl.addEventListener('mousedown', () => filesTreeEl.focus({ preventScroll: true }));
-
+  // 刷新后的滚动位置回填：用户主动滚动（滚轮 / 按键 / 指针）即放弃回填，以用户位置为准
+  filesBodyEl.addEventListener('wheel', cancelPendingFilesScroll, { passive: true });
+  filesBodyEl.addEventListener('pointerdown', cancelPendingFilesScroll, true);
+  filesTreeEl.addEventListener('keydown', cancelPendingFilesScroll);
   // 菜单的关闭路径：点树外任意处、滚树、窗口失焦 / 缩放；Esc 在树 keydown 与 document 兜底
   document.addEventListener('click', (e) => {
     if (!(e.target as HTMLElement).closest('.files-context-menu')) closeFilesMenu();

@@ -6,7 +6,7 @@ import { postMessage, getWindowSessionId } from '../webviewEnv';
 import { t } from '../i18n';
 import { AnsiText, hasAnsi, renderAnsiToNodes } from '../ansi';
 import { formatSize, parsePersistedOutput } from './persistedOutput';
-import { usePreviewLimit, PreviewMoreHint } from './previewLimit';
+import { usePreviewLimit, PreviewMoreHint, TAIL_HINT_HEIGHT } from './previewLimit';
 
 /**
  * 用于「滚到底部」的超大 scrollTop 值。
@@ -20,6 +20,14 @@ const SCROLL_TO_BOTTOM = 1e9;
  * 与旧版滚动容器的 115px 一致：展开只是出现框内滚动条，卡片总高度不变。
  */
 const OUTPUT_BOX_HEIGHT = 115;
+
+/**
+ * 展开态输出框高度：缩略态的「提示条 + 输出框」总高。
+ *
+ * 提示条在展开后不再渲染（它提示的信息已由展开动作本身表达），让出的高度由输出框
+ * 接管——卡片总高度在折叠 / 展开之间不变，展开后多出一整条提示条的高度用于显示内容。
+ */
+const OUTPUT_BOX_EXPANDED_HEIGHT = OUTPUT_BOX_HEIGHT + TAIL_HINT_HEIGHT;
 
 export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId, status, isStreaming, onExpandToggle }) => {
   const command = args.command || '';
@@ -267,7 +275,8 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
     //       usePreviewLimit 实测），框高固定 OUTPUT_BOX_HEIGHT、overflow
     //       hidden，由钉底 effect 让可见窗口落在末尾 fittedLines 行 → 行数
     //       再多也不出滚动条；
-    // 展开：框高不变，overflow 换成 auto 出现框内滚动条，内容整段 <pre>
+    // 展开：提示条隐藏、输出框接管它的高度（缩略高度 + 提示条高度），
+    //       卡片总高不变；overflow 换成 auto 出现框内滚动条，内容整段 <pre>
     //       渲染全部行（见 blockStyle 注释），初始视点仍在底部、可向上滚；
     // 提示条在输出框**上方**（tail 变体，chevron 朝上）：Bash 显示的是末尾，
     // 更多内容在上方，展开即向上滚。
@@ -276,6 +285,8 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
     // hook 的实测只看已渲染的行，切小会让「实测 → 少渲染 → 实测」自锁在 1 行。
     const collapsed = hasMore && !expanded;
     const candidateLines = collapsed ? rawLines.slice(-visibleLines) : rawLines;
+    // 展开态输出框高度：提示条不再占位，由输出框接管它的高度，卡片总高不变
+    const boxHeight = hasMore ? (expanded ? OUTPUT_BOX_EXPANDED_HEIGHT : OUTPUT_BOX_HEIGHT) : undefined;
 
     const outputBox = (
       <div
@@ -284,10 +295,10 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
         onClick={handleOutputClick}
         title={t('tool.bash.clickFullOutput')}
         style={{
-          // 三态同高：缩略固定框高；展开只放开滚动（maxHeight 兜住）；
+          // 缩略固定框高；展开 = 缩略高度 + 提示条高度（提示条已隐藏）；
           // 行数不足一框（无 hasMore）时自然高度、无滚动条。
-          maxHeight: hasMore ? OUTPUT_BOX_HEIGHT : undefined,
-          height: collapsed ? OUTPUT_BOX_HEIGHT : undefined,
+          maxHeight: boxHeight,
+          height: collapsed ? OUTPUT_BOX_HEIGHT : expanded ? boxHeight : undefined,
           overflow: expanded ? 'auto' : 'hidden',
         }}
       >
@@ -295,9 +306,10 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
       </div>
     );
 
-    // 超行提示条用 flat 变体（不自绘边框，边框交给外层命令卡片），放在输出框
-    // 上方：显示的是末尾段，向上展开。
-    const moreHint = hasMore && (
+    // 超行提示条用 flat 变体（不自绘边框，只给下边一条分割线），放在输出框上方：
+    // 显示的是末尾段，向上展开。展开后提示条不再渲染——它让出的高度由输出框接管，
+    // 卡片总高度不变，多出的空间用于显示内容。
+    const moreHint = hasMore && !expanded && (
       <PreviewMoreHint
         shown={fittedLines}
         total={rawLines.length}

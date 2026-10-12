@@ -440,3 +440,122 @@ test('US-44 拖拽侧栏右缘改宽度并持久化，双击恢复默认', async
   await expect.poll(width, { timeout: 5_000 }).toBe(280);
   await expect.poll(persistedWidth, { timeout: 5_000 }).toBe(280);
 });
+
+/**
+ * specs/006 FR-002：右缘手柄与对话列表滚动条分居。
+ *
+ * 手柄吸附侧栏右缘、占据最右侧一条竖带；对话列表（含其滚动条）在该竖带左侧结束，
+ * 于是「拖滚动条」与「拖宽度」落在互不重叠的两条带上（US-44 验收 1 的补充）。
+ */
+test('US-44 右缘手柄与对话列表滚动条分居（滚动条不再压在手柄下）', async () => {
+  const sb = await sidebar();
+  await expect(sb.locator('#resizeHandle')).toBeAttached();
+  const geom = await sb.evaluate(() => {
+    const list = document.getElementById('list')!;
+    const handle = document.getElementById('resizeHandle')!;
+    const listRect = list.getBoundingClientRect();
+    const handleRect = handle.getBoundingClientRect();
+    return {
+      listRight: listRect.right,
+      handleLeft: handleRect.left,
+      handleWidth: handleRect.width,
+      viewportWidth: window.innerWidth,
+      listOverflowY: getComputedStyle(list).overflowY,
+    };
+  });
+  // 手柄吸附右缘（right: 0）
+  expect(Math.abs(geom.handleLeft + geom.handleWidth - geom.viewportWidth)).toBeLessThanOrEqual(1);
+  // 列表右缘（滚动条所在处）不进入手柄竖带
+  expect(geom.listRight).toBeLessThanOrEqual(geom.handleLeft + 0.5);
+  expect(geom.listOverflowY).toBe('auto');
+});
+
+/**
+ * specs/006 FR-004：切换工作区标签页时文件分区不做过渡。
+ *
+ * 过渡 / 淡入只挂在用户点击路径上的 `.files-anim`；因切换活动工作区导致的状态变化
+ * 直接生效（每个工作区各自记忆展开态，切过去时不该再演一遍动画）。
+ */
+test('US-42 切换工作区标签页时文件分区不做过渡动画', async () => {
+  const sb = await sidebar();
+  await expect(sb.locator(SECTION)).toBeVisible();
+
+  // 用户点击展开：临时挂 .files-anim，过渡 / 淡入生效
+  await sb.locator('#filesHeader').click();
+  const onExpand = await sb.evaluate((sel) => {
+    const el = document.querySelector(sel) as HTMLElement;
+    return {
+      hasAnim: el.classList.contains('files-anim'),
+      duration: getComputedStyle(el).transitionDuration,
+    };
+  }, SECTION);
+  expect(onExpand.hasAnim).toBe(true);
+  expect(onExpand.duration).not.toBe('0s');
+  await expect(sb.locator(`${FILE_ROWS}[data-path="src"]`)).toBeVisible({ timeout: 15_000 });
+  // 动画播完即摘掉标记，切换工作区时不会带上过渡属性
+  await expect(sb.locator(`${SECTION}.files-anim`)).toHaveCount(0, { timeout: 5_000 });
+
+  // 添加第二个工作区（自动激活、默认折叠）：切过去时状态直接生效，不播放过渡
+  const dir2 = await makeWorkspace({ 'only-in-b.txt': 'B' }, 'e2e-ws-files-anim');
+  try {
+    await sb.evaluate((p) =>
+      (window as unknown as { sidebarAPI?: { addWorkspaces: (paths: string[]) => void } })
+        .sidebarAPI!.addWorkspaces([p as string]), dir2);
+    await expect(sb.locator(`${SECTION}.expanded`)).toHaveCount(0, { timeout: 15_000 });
+    const onSwitch = await sb.evaluate((sel) => {
+      const el = document.querySelector(sel) as HTMLElement;
+      const body = el.querySelector('.files-body') as HTMLElement | null;
+      return {
+        hasAnim: el.classList.contains('files-anim'),
+        duration: getComputedStyle(el).transitionDuration,
+        animationName: body ? getComputedStyle(body).animationName : 'none',
+      };
+    }, SECTION);
+    expect(onSwitch.hasAnim).toBe(false);
+    expect(onSwitch.duration).toBe('0s');
+    expect(onSwitch.animationName).toBe('none');
+  } finally {
+    await fs.promises.rm(dir2, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+/**
+ * specs/006 FR-007：刷新后保留文件树的滚动位置。
+ *
+ * 刷新会清空并重读整棵树（DOM 高度先塌后涨），滚动位置在内容重新铺满后回填。
+ */
+test('US-42 刷新后保留文件树的滚动位置', async () => {
+  const sb = await sidebar();
+  // 造出可滚动的长列表（刷新会重读磁盘，新文件照常出现）
+  for (let i = 0; i < 60; i += 1) {
+    await fs.promises.writeFile(path.join(workspaceDir, `bulk-${String(i).padStart(2, '0')}.txt`), 'x', 'utf8');
+  }
+  await expandFiles(sb);
+  await expect(sb.locator(`${FILE_ROWS}[data-path="bulk-59.txt"]`)).toBeAttached({ timeout: 15_000 });
+  // 等展开过渡走完（.files-anim 摘掉）再量基准高度：过渡中分区高度还在变，
+  // 此时量到的 clientHeight 偏小，刷新后会被误判成「位置没还原」
+  await expect(sb.locator(`${SECTION}.files-anim`)).toHaveCount(0, { timeout: 5_000 });
+
+  const body = sb.locator('#filesBody');
+  const before = await body.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+    return { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
+  });
+  expect(before.scrollHeight).toBeGreaterThan(before.clientHeight);
+  expect(before.scrollTop).toBeGreaterThan(0);
+
+  await sb.locator('#filesRefresh').click();
+  // 刷新后内容重新长回来，滚动位置回到刷新前（内容不足时贴底）
+  await expect.poll(async () => body.evaluate((el) => el.scrollTop), { timeout: 15_000 })
+    .toBeGreaterThan(0);
+  const after = await body.evaluate((el) => ({
+    scrollTop: el.scrollTop,
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+    rows: document.querySelectorAll('#filesTree .file-row[data-path]').length,
+  }));
+  expect(
+    Math.abs(after.scrollTop - before.scrollTop),
+    `before=${JSON.stringify(before)} after=${JSON.stringify(after)}`,
+  ).toBeLessThanOrEqual(2);
+});

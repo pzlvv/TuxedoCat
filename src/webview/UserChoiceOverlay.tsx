@@ -126,7 +126,9 @@ const UserChoiceOverlay = memo(function UserChoiceOverlay({
             onChange={handleInputChange}
             onKeyDown={handleInputKeyDown}
             placeholder={t('userChoice.placeholder')}
-            className="w-full resize-none focus:outline-none max-h-[200px] text-sm"
+            // 高度上限只有一处来源：`maxRows`（同 InputArea：CSS max-height 会把
+            // 库算出的高度截短，让还没到上限的内容先出现滚动条）
+            className="w-full resize-none focus:outline-none text-sm"
             style={{
               backgroundColor: 'transparent',
               color: colors.textPrimary,

@@ -6,8 +6,9 @@ import type { WebviewHandle } from '../helpers/webviewHarness';
  * US-14 Bash 输出折叠（与 Edit/Write 预览同一套 usePreviewLimit 实现，
  * 限高为输出框常量高度）：执行完成后缩略态只显示**末尾**实测放得下的整行
  * （overflow hidden 不出现滚动条，可见窗口钉在底部）；提示条在输出框**上方**
- * （tail 变体，chevron 朝上，flat 不自绘边框避免与命令卡片双圈）；点击提示条
- * 展开后**框高不变**，只换成框内滚动条，初始视点仍在底部、可向上滚动。
+ * （tail 变体，chevron 朝上，flat 只给下边一条分割线，避免与命令卡片双圈）；
+ * 点击提示条展开后**提示条让位**：输出框接管它的高度（卡片总高不变），换成框内
+ * 滚动条，初始视点仍在底部、可向上滚动。
  *
  * 工具卡片挂在「用户消息开头的 segment」里渲染，注入方式与
  * bashBackgroundButton.spec.ts 同形（用户消息 → toolcall → updateToolStatus）。
@@ -107,29 +108,50 @@ test('US-14 完成态缩略：框高恒定、只显示末尾整行、无滚动�
   expect(state.lastLineBottom).toBeLessThanOrEqual(state.boxBottom + 1);
   // 提示条位于输出框上方（tail 变体：更多内容在上方，向上展开）
   expect(state.hintTop).toBeLessThan(state.boxTop);
-  // flat 提示条：边框只来自外层命令卡片（修复双圈边框）
+  // flat 提示条：外框只来自外层命令卡片（避免双圈），与输出框之间用一条下边分割线
   expect(state.hintBorderTopStyle).toBe('none');
+  const divider = await page.evaluate(() => {
+    const lastLine = Array.from(document.querySelectorAll('div'))
+      .find((n) => n.textContent === 'line-060-END') as HTMLElement | undefined;
+    if (!lastLine) throw new Error('末行未渲染');
+    const hint = (lastLine.parentElement as HTMLElement).previousElementSibling as HTMLElement | null;
+    if (!hint) throw new Error('提示条未渲染');
+    const style = getComputedStyle(hint);
+    return { bottomStyle: style.borderBottomStyle, bottomWidth: style.borderBottomWidth, height: hint.getBoundingClientRect().height };
+  });
+  expect(divider.bottomStyle).toBe('solid');
+  expect(divider.bottomWidth).toBe('1px');
+  // 固定高度：展开时「提示条高度整体转给输出框」靠它精确成立
+  expect(divider.height).toBeGreaterThan(0);
+  expect(divider.height).toBeLessThanOrEqual(23);
 
   await page.screenshot({ path: 'test-results/bash-collapse-collapsed.png', fullPage: true });
 });
 
-test('US-14 点击提示条展开：框高不变、出现框内滚动条、初始视点仍在底部', async () => {
+test('US-14 点击提示条展开：提示条让位、框高增加、出现框内滚动条、初始视点仍在底部', async () => {
   const { page } = handle;
   await addCompletedBashCard();
 
   const hint = page.getByText(/仅显示末尾 \d+ 行 \/ 共 60 行，点击显示全部/);
   await expect(hint).toBeVisible({ timeout: 15_000 });
-  const collapsedHeight = await page.evaluate(() => {
+  // 折叠态：提示条 + 输出框（展开后提示条让位，这段高度整体交给输出框）
+  const collapsed = await page.evaluate(() => {
     const lastLine = Array.from(document.querySelectorAll('div'))
       .find((n) => n.textContent === 'line-060-END') as HTMLElement | undefined;
     if (!lastLine) throw new Error('末行未渲染');
-    return (lastLine.parentElement as HTMLElement).getBoundingClientRect().height;
+    const box = lastLine.parentElement as HTMLElement;
+    const hintEl = box.previousElementSibling as HTMLElement | null;
+    return {
+      boxHeight: box.getBoundingClientRect().height,
+      hintHeight: hintEl ? hintEl.getBoundingClientRect().height : 0,
+    };
   });
+  expect(collapsed.hintHeight).toBeGreaterThan(0);
 
   await hint.click();
-  // 全部行渲染（整段 pre），提示条常驻上方、只换文案
+  // 全部行渲染（整段 pre）；提示条不再渲染——它让出的高度归输出框
   await expect(page.getByText('line-001', { exact: false })).toBeVisible();
-  await expect(page.getByText('共 60 行，已显示全部')).toBeVisible();
+  await expect(page.getByText('共 60 行，已显示全部')).toHaveCount(0);
 
   // 展开态量测：经 line-001 所在 pre 找输出容器（展开态无逐行 div）
   const state = await page.evaluate(() => {
@@ -144,19 +166,17 @@ test('US-14 点击提示条展开：框高不变、出现框内滚动条、初�
       scrollHeight: box.scrollHeight,
       clientHeight: box.clientHeight,
       scrollTop: box.scrollTop,
-      hintTop: (box.previousElementSibling as HTMLElement).getBoundingClientRect().top,
-      boxTop: rect.top,
+      hasHint: box.previousElementSibling !== null,
     };
   });
-  // 框高不变（展开只加滚动条）
-  expect(state.boxHeight).toBeLessThanOrEqual(116);
-  expect(Math.abs(state.boxHeight - collapsedHeight)).toBeLessThanOrEqual(1);
+  // 提示条不再占据布局（卡片总高不变：提示条高度整体转给输出框）
+  expect(state.hasHint).toBe(false);
+  expect(state.boxHeight - collapsed.boxHeight).toBeGreaterThanOrEqual(collapsed.hintHeight - 1);
+  expect(state.boxHeight - collapsed.boxHeight).toBeLessThanOrEqual(collapsed.hintHeight + 1);
   // 框内滚动条：内容高于框、overflow auto、视点钉在底部
   expect(state.overflowY).toBe('auto');
   expect(state.scrollHeight).toBeGreaterThan(state.clientHeight);
   expect(state.scrollTop + state.clientHeight).toBeGreaterThanOrEqual(state.scrollHeight - 2);
-  // 提示条保持在输出框上方
-  expect(state.hintTop).toBeLessThan(state.boxTop);
 
   await page.screenshot({ path: 'test-results/bash-collapse-expanded.png', fullPage: true });
 });

@@ -2049,7 +2049,11 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           onBlur={handleBlur}
           onMouseUp={handleMouseUp}
           placeholder={isInputDisabled ? '' : t('inputArea.placeholder')}
-          className="w-full resize-none focus:outline-none max-h-[200px] ui-fs-13 input-textarea"
+          // 高度上限只有一处来源：`maxRows`。不要再挂 `max-h-[...]` ——
+          // TextareaAutosize 写入的 inline height 会被 CSS max-height 悄悄截短，
+          // 库按 maxRows 算出的高度（12 行 ≈ 234px）一旦超过该像素值，内容还没到
+          // 上限就先冒出框内滚动条（粘贴多行时最明显）。
+          className="w-full resize-none focus:outline-none ui-fs-13 input-textarea"
           style={{
             backgroundColor: 'transparent',
             color: isInputDisabled ? colors.placeholder : colors.textPrimary,

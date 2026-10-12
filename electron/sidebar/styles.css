@@ -1,6 +1,12 @@
 @import '../ui/scrollbar.css';
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* 侧栏右缘留给宽度拖拽手柄的竖带宽度（= 滚动条宽度）：
+   手柄固定吸附右缘，内容（含各滚动容器的滚动条）整体内缩这么多，
+   于是「拖滚动条」与「拖宽度」落在互不重叠的两条竖带上（US-44）。 */
+:root { --resize-handle-width: 6px; }
+
 html, body { height: 100%; overflow: hidden; }
 body {
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -8,6 +14,8 @@ body {
   color: #c1c1c6;
   display: flex;
   flex-direction: column;
+  /* 内容右缘让出手柄竖带：列表 / 文件树的滚动条不再压在手柄与右边框上 */
+  padding-right: var(--resize-handle-width);
   user-select: none;
 }
 /* 拖拽进行中光标钉在 col-resize（指针可能越过手柄进入内容区） */
@@ -15,12 +23,13 @@ body.sidebar-resizing { cursor: col-resize; }
 
 /* ── 侧栏宽度拖拽手柄（US-44） ──
    吸附在侧栏右缘：命中区 6px 宽（视觉只有 hover 时的一条高亮线），全高、
-   固定定位在最上层，不随列表 / 文件区滚动。 */
+   固定定位在最上层，不随列表 / 文件区滚动。宽度与 body 的右内边距同源，
+   因此手柄竖带内没有任何滚动条。 */
 .resize-handle {
   position: fixed;
   top: 0;
   right: 0;
-  width: 6px;
+  width: var(--resize-handle-width);
   height: 100%;
   cursor: col-resize;
   background: transparent;
@@ -496,15 +505,17 @@ body.sidebar-resizing { cursor: col-resize; }
    分区条常驻侧栏底部；展开占侧栏 50% 高度（flex: 0 0 50%），对话列表相应收窄。
    树行 / 右键菜单的配色与对话列表同一灰阶（#26262c hover、indigo 选中系）。
    展开是「上推」动画：折叠态显式给 flex-basis: 28px（分区条高度）作起点，展开到
-   50% 由 transition 铺过；内容再叠一层自下而上的淡入（files-body-in）。 */
+   50% 由 transition 铺过；内容再叠一层自下而上的淡入（files-body-in）。
+   动画只挂在 `.files-anim` 下（用户点击分区条时临时加）：切换工作区标签页时展开
+   状态直接生效——每个工作区各自记忆展开态，切过去时不该再放一遍过渡动画。 */
 .files-section {
   flex-shrink: 0;
   flex-basis: 28px;
-  transition: flex-basis 0.22s ease;
   display: flex;
   flex-direction: column;
   border-top: 1px solid #26262c;
 }
+.files-section.files-anim { transition: flex-basis 0.22s ease; }
 .files-section.hidden { display: none; }
 .files-section .files-body { display: none; }
 .files-section.expanded { flex: 0 0 50%; min-height: 0; }
@@ -513,8 +524,8 @@ body.sidebar-resizing { cursor: col-resize; }
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  animation: files-body-in 0.22s ease;
 }
+.files-section.files-anim.expanded .files-body { animation: files-body-in 0.22s ease; }
 @keyframes files-body-in {
   from { opacity: 0; transform: translateY(10px); }
 }

@@ -143,3 +143,40 @@ test('US-11 缓存命中率随流式 usage 累计，tooltip 含读写明细', as
   expect(title).toContain('600');
   expect(title).toContain('200');
 });
+
+/**
+ * specs/006 FR-008：多行输入框高度随行数自适应。
+ *
+ * 高度上限只有一处来源（`maxRows`）：内容在 1–12 行内时高度恰好容纳、不出现滚动条，
+ * 超过 12 行才停在上限并出现框内滚动条。此前 className 上还挂着 `max-h-[200px]`，
+ * 像素上限把库算出的高度截短（11 / 12 行就冒出滚动条）。
+ */
+test('US-1 多行输入框高度自适应：未超上限不出现滚动条，超上限才滚动', async () => {
+  const { page } = handle;
+  const ta = page.locator('textarea.input-textarea');
+  await expect(ta).toBeVisible({ timeout: 15_000 });
+  const measure = () => ta.evaluate((el: HTMLTextAreaElement) => ({
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+  }));
+  const typeLines = async (count: number) => {
+    await ta.fill('');
+    await ta.click();
+    await page.keyboard.insertText(Array.from({ length: count }, (_, i) => `line-${i + 1}`).join('\n'));
+  };
+
+  // 两行：高度恰好容纳（AC-17）
+  await typeLines(2);
+  const two = await measure();
+  expect(two.scrollHeight).toBeLessThanOrEqual(two.clientHeight + 1);
+
+  // 上限内（12 行）：仍不出现滚动条（AC-18）
+  await typeLines(12);
+  const twelve = await measure();
+  expect(twelve.scrollHeight).toBeLessThanOrEqual(twelve.clientHeight + 1);
+
+  // 超过上限（16 行）：高度停在上限，出现框内滚动条（AC-18）
+  await typeLines(16);
+  const sixteen = await measure();
+  expect(sixteen.scrollHeight).toBeGreaterThan(sixteen.clientHeight + 1);
+});

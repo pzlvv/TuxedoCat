@@ -334,13 +334,25 @@ function findWorkspace(ref: WorkspaceRef): WorkspaceRef | undefined {
  * 找 Connection、注入 `--workspace=` 全都对不上（表现为远端工作区发消息没有响应）。
  */
 function canonicalWorkspacePath(target: string): string {
-  const remote = openWorkspaces.find((ref) => ref.endpoint !== null && ref.path === target);
+  const remote = openWorkspaces.find((ref) => ref.endpoint !== null && sameRemotePath(ref.path, target));
   return remote ? remote.path : normalizeWorkspacePath(target);
 }
 
-/** 工作目录路径是否属于该引用（本地按宿主口径判等，远程逐字比较） */
+/** 工作目录路径是否属于该引用（本地按宿主口径判等，远程逐字比较、忽略末尾分隔符差异） */
 function workspacePathMatches(ref: WorkspaceRef, target: string): boolean {
-  return ref.endpoint ? ref.path === target : sameWorkspace(ref.path, target);
+  return ref.endpoint ? sameRemotePath(ref.path, target) : sameWorkspace(ref.path, target);
+}
+
+/**
+ * 远程路径判等：目标机器上的字符串逐字比较，只抹平末尾分隔符差异。
+ *
+ * 远程路径不能跑本地规范化（Windows 上 `path.resolve('/home/pz/a')` 会变成
+ * `D:\home\pz\a`）；但工作区引用与对话元数据可能一个带尾斜杠、一个不带，
+ * 逐字比较会把同一个目录判成两个。
+ */
+function sameRemotePath(a: string, b: string): boolean {
+  const strip = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, '') : p);
+  return strip(a) === strip(b);
 }
 
 /**
@@ -4829,6 +4841,10 @@ function initCore(): void {
   const conversationsMgr = new ElectronConversationManager(
     host,
     (channel: string, payload: unknown) => {
+      // 工作区对话列表到达即刷新「会话 → 工作目录」索引：远程工作区建链慢，列表常
+      // 晚于工作区激活到达（首次 sidebar:get-conversations 只拿到空快照），不在这里
+      // 补记，右键菜单的「关闭所有空闲会话」会一直看不到该工作区的会话（US-48）。
+      if (channel === 'sidebar:conversations-updated') syncSessionWorkspaceIndex();
       if (sidebarView && !sidebarView.webContents.isDestroyed()) {
         sidebarView.webContents.send(channel, payload);
       }

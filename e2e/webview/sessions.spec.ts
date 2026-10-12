@@ -174,3 +174,81 @@ test('US-19 运行中的会话在列表里显示流水灯', async () => {
   await expect(dropdown.getByText('部署记录')).toBeVisible({ timeout: 10_000 });
   await expect(dropdown.locator('.running-bar').first()).toBeVisible();
 });
+
+/**
+ * specs/006 FR-003：选中对话的子代理默认展开上限。
+ *
+ * 直接子会话数达到 5 时不自动展开（批量委派的对话不把列表撑满），4 个及以下仍
+ * 默认展开。阈值是单一来源（`src/host/ui/conversationTreeDefaults.ts`），webview
+ * 与 Electron 侧栏共用。同时锁定「列表数据刷新不再改写选中对话自身的展开状态」——
+ * 祖先链自动展开只写祖先，选中项自身交给默认规则与用户显式状态。
+ */
+test('US-19 选中对话的子代理默认展开上限（>=5 不自动展开）', async () => {
+  const { page, host } = handle;
+  const now = Date.now();
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const seed = (childCount: number) => [
+    { sessionId: 'sess-parent', title: '批量委派', createdAt: now - 2 * DAY_MS, updatedAt: now, messageCount: 12 },
+    ...Array.from({ length: childCount }, (_, i) => ({
+      sessionId: `sess-sub-${i + 1}`,
+      title: `子代理 ${i + 1}`,
+      parentSessionId: 'sess-parent',
+      createdAt: now - DAY_MS,
+      updatedAt: now - DAY_MS,
+      messageCount: 1,
+    })),
+  ];
+
+  // 5 个子代理：选中该对话后默认折叠
+  await host.setConversations(seed(5));
+  await page.locator('button[title="对话历史"]').click();
+  const dropdown = page.locator('.conversation-dropdown');
+  await dropdown.getByText('批量委派').click();
+  await host.waitForSent('loadConversation');
+  await page.locator('button[title="对话历史"]').click();
+  await expect(dropdown.getByText('批量委派')).toBeVisible({ timeout: 10_000 });
+  await expect(dropdown.getByText('子代理 1')).toHaveCount(0);
+
+  // 列表数据刷新（同一选中对话）：保持折叠，不因自动展开规则改写
+  await host.send({ type: 'conversationsData', conversations: seed(5) });
+  await expect(dropdown.getByText('子代理 1')).toHaveCount(0);
+
+  // 4 个子代理：默认展开
+  await host.send({ type: 'conversationsData', conversations: seed(4) });
+  await expect(dropdown.getByText('子代理 1')).toBeVisible({ timeout: 10_000 });
+});
+
+test('SCRATCH input height', async ({ page }) => {
+  const ta = page.locator('textarea');
+  await expect(ta).toHaveCount(1, { timeout: 30_000 });
+  const m = async (tag: string) => {
+    const v = await ta.evaluate((el: HTMLTextAreaElement) => {
+      const cs = getComputedStyle(el);
+      return {
+        value: JSON.stringify(el.value),
+        rect: Math.round(el.getBoundingClientRect().height * 100) / 100,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+        inlineHeight: el.style.height,
+        lineHeight: cs.lineHeight,
+        fontSize: cs.fontSize,
+        overflowY: cs.overflowY,
+        maxHeight: cs.maxHeight,
+        whiteSpace: cs.whiteSpace,
+      };
+    });
+    console.log(tag, JSON.stringify(v));
+  };
+  await ta.click();
+  await m('empty');
+  await page.keyboard.insertText('第一行');
+  await m('one');
+  await page.keyboard.insertText('\n第二行');
+  await m('two');
+  await page.keyboard.insertText('\n第三行');
+  await m('three');
+  await ta.fill('');
+  await page.keyboard.insertText('a\nb');
+  await m('paste2');
+  expect(true).toBe(true);
+});

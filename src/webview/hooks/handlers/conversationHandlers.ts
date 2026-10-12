@@ -83,12 +83,15 @@ export function handleConversationConversationsData(
             if (currentConv?.title) {
               props.setConversationTitle(resolveTitle(currentConv.title));
             }
-            // 自动展开当前对话的祖先链，确保选中子对话时父对话可见
+            // 自动展开当前对话的祖先链，确保选中子对话时父对话可见。
+            // 只写祖先：选中对话**自身**的子代理列表是否展开交给默认规则
+            // （App.tsx 消费 conversationTreeDefaults 的阈值）与用户显式状态，
+            // 否则每次列表刷新都会把用户折叠过的子代理列表重新撑开。
             props.setExpandedSubSessions(prev => {
               const next = { ...prev };
               // 建立 sessionId -> conversation 索引，避免祖先链循环内反复 find()
               const convById = new Map(convs.map((c: any) => [c.sessionId, c]));
-              let id: string | null = sid;
+              let id: string | null = convById.get(sid)?.parentSessionId ?? null;
               while (id && convById.has(id)) {
                 next[id] = true;
                 id = convById.get(id)!.parentSessionId;

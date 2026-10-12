@@ -80,7 +80,8 @@ function throwingRound(): ScriptedRound {
   return () =>
     (async function* () {
       throw new Error('注入的子代理 LLM 失败');
-      yield {} as AssistantMessage; // eslint-disable-line @typescript-eslint/no-unreachable-code
+      // 保留 yield 使该函数成为异步生成器（抛错即结束本轮，不会真的产出）
+      yield {} as AssistantMessage;
     })();
 }
 

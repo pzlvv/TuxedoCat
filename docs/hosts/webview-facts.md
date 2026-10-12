@@ -97,6 +97,13 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
 等会话级消息）遵循同一规则：事实未到达时不发送，避免把 webview 侧的猜测写进会话的
 `meta.json`。
 
+从磁盘恢复会话时，模型身份先按当前配置快照校验再下发：`meta.json` 记录的
+（provider, model）仍有效即沿用；模型不在该 provider 的模型列表、或 provider 已从配置
+移除则回退默认模型（provider 仍在时用它的默认模型，provider 已移除时用 active provider
+的默认模型），回退结果经 `UiEvent.modelChanged` 让 core 写回 `meta.json`；`meta.json`
+未记录身份时取 active provider 的默认模型、不回写。校验是宿主侧纯计算
+（`resolveModelRef`），落盘与引擎同步归 core（[docs/core/core-parity.md 第 3.9 节](../core/core-parity.md#39-模型身份解析的归属)）。
+
 ---
 
 ## 6. 设置面板
