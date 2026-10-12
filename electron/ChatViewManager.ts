@@ -298,7 +298,13 @@ export class ChatViewManager {
     }
   }
 
-  private isViewAlive(key: string): boolean {
+  /**
+   * 该 key 是否有存活的视图（正式会话 ID 与 `new-` 临时 key 同判）。
+   *
+   * 关闭动作据此判定「有没有可卸的东西」：没有视图就没有运行时资源，关闭是空操作
+   * （见 `electron/main.ts` 的 `closeConversationWithConfirm`）。
+   */
+  isViewAlive(key: string): boolean {
     const view = this.views.get(key);
     return !!view && !view.webContents.isDestroyed();
   }

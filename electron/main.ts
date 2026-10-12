@@ -71,6 +71,7 @@ import { diffCompletionAttention, pickReadCompletions, type CompletionAttentionF
 import { SleepBlocker } from './powerSaveBlocker.js';
 import {
   selectClosableIdleSessions,
+  selectWorkspaceLoadedSessions,
   summarizeOtherWorkspaces,
   type WorkspaceSessionFacts,
 } from './workspaceBatchClose.js';
@@ -2882,24 +2883,34 @@ const spawnTerminalAt = (dir: string): void => {
 };
 
 /**
- * 收集某工作区下全部会话的批量关闭事实：sessionWorkspaces 索引出该目录的会话，
- * 逐个取判定时刻的忙闲（sessionBusyLevel，waiting 也算忙）。弹出菜单（置灰判定）
- * 与点击执行各收集一次——菜单开着期间会话状态可能变化，执行以点击时刻的事实为准。
+ * 收集某工作区下可关的批量关闭事实：候选＝该工作区**已打开**的会话视图
+ * （`ChatViewManager.getLoadedSessionIds`，含子代理对话），逐个取判定时刻的忙闲
+ * （sessionBusyLevel，waiting 也算忙）。弹出菜单（置灰判定）与点击执行各收集一次
+ * ——菜单开着期间会话状态可能变化，执行以点击时刻的事实为准。
+ *
+ * 候选不用「会话 → 工作目录」索引（磁盘对话列表）：列表里没打开过的会话没有视图 /
+ * 运行时资源可卸，关它只会发一条按 sessionId 路由不到的 `conversationClosed`
+ * （多 Connection 下 Client 查不到归属直接抛错，异常还会中断整批关闭）。
  */
 function collectWorkspaceSessionFacts(ref: WorkspaceRef): WorkspaceSessionFacts[] {
-  const facts: WorkspaceSessionFacts[] = [];
-  for (const [sid, ws] of sessionWorkspaces) {
-    if (!workspacePathMatches(ref, ws)) continue;
-    facts.push({ sessionId: sid, busy: sessionIsBusy(sid) });
-  }
-  return facts;
+  const views = chatViews;
+  if (!views) return [];
+  const loaded = views.getLoadedSessionIds().map((sessionId) => ({
+    sessionId,
+    workspaceId: views.getWorkspaceForKey(sessionId),
+  }));
+  return selectWorkspaceLoadedSessions(loaded, refKey(ref)).map((sessionId) => ({
+    sessionId,
+    busy: sessionIsBusy(sessionId),
+  }));
 }
 
 /**
  * 标签页右键菜单（原生 OS 菜单，与加号的 popupWorkspaceMenu 同形态；原生菜单无法被
  * Playwright 驱动，交互按 US-48 豁免人工验证）：关闭 / 关闭所有空闲会话（范围＝右键
- * 工作区，当前选中的对话空闲也包含在内）/ 关闭其它所有工作区（任一他区忙碌先弹一次
- * 汇总确认）/ 打开命令行（仅本地，目录已不存在置灰）。置灰是终态，不在点击后再报错。
+ * 工作区里已打开的对话视图，含子代理对话，当前选中的对话空闲也包含在内）/ 关闭其它
+ * 所有工作区（任一他区忙碌先弹一次汇总确认）/ 打开命令行（仅本地，目录已不存在置灰）。
+ * 置灰是终态，不在点击后再报错。
  */
 function popupTabContextMenu(ref: WorkspaceRef): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -4039,8 +4050,14 @@ function defaultFloatingWindowRect(): { width: number; height: number } {
  * 「非 idle 先二次确认、再走 WebViewUI.closeConversation」这条序列必须一致。
  * 非 idle（查询 / 压缩 / 后台 Bash / 子代理 / 等待用户）时关闭会中止这些运行，
  * 所以先问一次；`new-` 临时 key 未登记运行时事实，视为空闲、不问。
+ *
+ * 没有打开的视图（`ChatViewManager.isViewAlive` 为假）时直接空操作：没有可卸的运行时
+ * 资源，而 `conversationClosed` 按会话路由到归属 Connection——本进程没打开过的会话在
+ * Client 侧没有归属，多 Connection 下查不到归属直接抛错（批量关闭里一次抛错会中断
+ * 后续会话，见 docs/hosts/webview-ui.md 第 1 节）。
  */
 async function closeConversationWithConfirm(sessionId: string): Promise<void> {
+  if (!chatViews?.isViewAlive(sessionId)) return;
   if (sessionIsBusy(sessionId) && !(await confirmCloseBusy(
     tt('该对话正在运行', 'This conversation is still running'),
     tt('关闭后正在进行的运行会被中止。确定关闭？', 'Closing stops the running work. Close anyway?'),
@@ -4054,10 +4071,12 @@ async function closeConversationWithConfirm(sessionId: string): Promise<void> {
  * 侧栏「删除」与 webview 顶栏「删除」共用这一个入口——两条入口只是触发位置不同，
  * 「关掉该会话的视图、再删盘」这条序列必须一致。
  *
- * 宿主只负责「关视图」：对受影响闭包逐个调 WebViewUI.closeConversation（卸内存 +
- * 销毁视图，5.5 节约定顺序）。闭包由 core 的 collectConversationClosure 算出——
- * 与 deleteConversation 同一条规则，不再在宿主里重写一遍；删盘与列表广播由 core 的
- * conversationDeleted 订阅（deleteConversation → conversationListChanged）承担。
+ * 宿主只负责「关视图」：对受影响闭包里**已打开**的视图逐个调 WebViewUI.closeConversation
+ * （卸内存 + 销毁视图，5.5 节约定顺序）——没打开的会话没有视图可关，也不该发
+ * conversationClosed（按会话路由不到归属，多 Connection 下抛错会中断删除）。
+ * 闭包由 core 的 collectConversationClosure 算出——与 deleteConversation 同一条规则，
+ * 不再在宿主里重写一遍；删盘与列表广播由 core 的 conversationDeleted 订阅
+ * （deleteConversation → conversationListChanged）承担。
  * 删掉的是当前视图时，关视图后的善后（另开一个新对话视图）由
  * ChatViewManager.switchAwayFromClosedSession 完成。
  */
@@ -4076,7 +4095,12 @@ async function deleteConversationWithViews(sessionId: string): Promise<void> {
     await loadConversationList(sessionWorkspaces.get(sessionId)),
   );
   for (const sid of affected) {
-    webviewUi?.closeConversation(sid);
+    // 只有打开着的视图需要关：闭包里的子会话可能从未在本进程打开过，没有可卸资源，
+    // 关它会发一条按会话路由不到的 conversationClosed（多 Connection 下 Client 查不到
+    // 归属直接抛错，异常会中断删除、conversationDeleted 发不出去）。core 侧
+    // deleteConversation 递归处理整个闭包（文件 / 缓存 / 引擎 / MCP / 运行时状态），
+    // 跳过没有视图的会话不会漏卸。
+    if (chatViews?.isViewAlive(sid)) webviewUi?.closeConversation(sid);
     // 宿主索引同步清理：会话已删除，避免陈旧 sessionId → 目录 条目长期残留
     sessionWorkspaces.delete(sid);
   }
@@ -4842,8 +4866,10 @@ function initCore(): void {
     host,
     (channel: string, payload: unknown) => {
       // 工作区对话列表到达即刷新「会话 → 工作目录」索引：远程工作区建链慢，列表常
-      // 晚于工作区激活到达（首次 sidebar:get-conversations 只拿到空快照），不在这里
-      // 补记，右键菜单的「关闭所有空闲会话」会一直看不到该工作区的会话（US-48）。
+      // 晚于工作区激活到达（首次 sidebar:get-conversations 只拿到空快照）。删除 /
+      // 重命名 / 智能命名 / 从侧栏打开对话都按会话 id 反查该索引解析工作目录，不在这里
+      // 补记，这些操作对晚到的会话会解析不到归属（批量关闭空闲会话不走该索引，它按
+      // 已打开的会话视图枚举）。
       if (channel === 'sidebar:conversations-updated') syncSessionWorkspaceIndex();
       if (sidebarView && !sidebarView.webContents.isDestroyed()) {
         sidebarView.webContents.send(channel, payload);

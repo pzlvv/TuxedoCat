@@ -131,6 +131,12 @@ closeConversation(sessionId: string): void {
 | Electron 视图销毁序列（`ChatViewManager.closeConversation`） | `releaseConversation` |
 | Electron 关闭按钮 / 侧栏「关闭」、删除对话流程、VS Code 空闲回收 | `closeConversation` |
 
+Electron 的侧栏「关闭」/ 聊天视图顶栏关闭经 `electron/main.ts` 的 `closeConversationWithConfirm`
+（非 idle 先二次确认）。该会话没有打开的视图（`ChatViewManager.isViewAlive` 为假）时它直接
+空操作：没有可卸的运行时资源，而 `conversationClosed` 按会话路由到归属 Connection，本进程
+没打开过的会话在 Client 侧没有归属
+（[docs/core/client-connection.md 第 6 节](../core/client-connection.md#6-会话路由)）。
+
 ## 2. 内部流程约定
 
 **渲染 handler**：

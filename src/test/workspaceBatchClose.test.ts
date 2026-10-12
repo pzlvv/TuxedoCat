@@ -1,24 +1,49 @@
 /**
  * 单测：标签页右键菜单的批量关闭判定（`electron/workspaceBatchClose.ts`）。
  *
- * 锁三类口径漂移：
- * - 「关闭所有空闲会话」范围＝右键工作区内、忙碌不动、**当前选中的对话空闲也包含在内**；
+ * 锁四类口径漂移：
+ * - 「关闭所有空闲会话」候选＝右键工作区里**已打开**的会话视图（含子代理对话），
+ *   只出现在磁盘对话列表、没打开过的会话不进候选（没有可卸资源，关它只会发一条
+ *   路由不到的 conversationClosed）；
+ * - 候选内忙碌不动、**当前选中的对话空闲也包含在内**；
  * - 「关闭其它所有工作区」＝任一他区忙碌需**一次**汇总确认、取消则全部不动；
  * - 置灰判据＝无可关会话 / 无其它工作区时清单为空（菜单项 enabled: false）。
  *
  * 运行方式：npm run test:all -- workspace-batch-close
  */
 
-import { selectClosableIdleSessions, summarizeOtherWorkspaces } from '../../electron/workspaceBatchClose';
-import type { WorkspaceSessionFacts } from '../../electron/workspaceBatchClose';
+import {
+  selectClosableIdleSessions,
+  selectWorkspaceLoadedSessions,
+  summarizeOtherWorkspaces,
+} from '../../electron/workspaceBatchClose';
+import type { LoadedSessionFacts, WorkspaceSessionFacts } from '../../electron/workspaceBatchClose';
 import { createChecker, runTests } from './helpers/harness';
 
 function facts(sessionId: string, busy: boolean): WorkspaceSessionFacts {
   return { sessionId, busy };
 }
 
+function loaded(sessionId: string, workspaceId: string): LoadedSessionFacts {
+  return { sessionId, workspaceId };
+}
+
 runTests('workspaceBatchClose', () => {
   const { check, finish } = createChecker();
+
+  // ---------- selectWorkspaceLoadedSessions ----------
+  // 候选来源＝右键工作区里已打开的会话视图（含子代理对话）；其它工作区与空输入为空
+  const candidates = selectWorkspaceLoadedSessions([
+    loaded('root-a', 'ws-a'),
+    loaded('sub-a', 'ws-a'),
+    loaded('root-b', 'ws-b'),
+  ], 'ws-a');
+  check(
+    '只收右键工作区已打开的会话（含子代理对话）',
+    candidates.length === 2 && candidates[0] === 'root-a' && candidates[1] === 'sub-a',
+  );
+  check('其它工作区已打开的会话不进候选', !candidates.includes('root-b'));
+  check('该工作区没有已打开会话时候选为空', selectWorkspaceLoadedSessions([], 'ws-a').length === 0);
 
   // ---------- selectClosableIdleSessions ----------
   // 忙碌不动、空闲可关
