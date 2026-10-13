@@ -71,6 +71,11 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
     return parsePersistedOutput(output);
   }, [output]);
 
+  // 持久化输出「完整输出」按钮的大小文案（大小未知时留空，沿用既有文案形态）
+  const persistedSizeStr = persistedInfo && persistedInfo.originalSize > 0
+    ? formatSize(persistedInfo.originalSize)
+    : '';
+
   // 折叠预览的源文本：持久化输出用其预览（前 2K + 后 2K，末尾行即真实输出的
   // 末尾行），其余用原始输出。流式期间一律用原始输出（持久化标签随 toolResult
   // 才到达，且命令回显里出现同名标签时不能误判）。
@@ -306,28 +311,24 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
       </div>
     );
 
-    // 超行提示条用 flat 变体（不自绘边框，只给下边一条分割线），放在输出框上方：
-    // 显示的是末尾段，向上展开。展开后提示条不再渲染——它让出的高度由输出框接管，
-    // 卡片总高度不变，多出的空间用于显示内容。
+    // 超行提示条（tail 变体）放在输出框上方：显示的是末尾段，向上展开。外框与
+    // Edit / Write 的提示条镜像——自绘四边边框、倒圆上角，下边那一条即与输出框
+    // 之间的分割线。展开后提示条不再渲染——它让出的高度由输出框接管，卡片总高度
+    // 不变，多出的空间用于显示内容。
     const moreHint = hasMore && !expanded && (
       <PreviewMoreHint
         shown={fittedLines}
         total={rawLines.length}
         expanded={expanded}
-        flat
         tail
         colors={colors}
         onClick={expand}
       />
     );
 
-    // 如果是持久化输出，顶部保留「完整输出」按钮栏
-    if (persistedInfo) {
-      const sizeStr = persistedInfo.originalSize > 0
-        ? formatSize(persistedInfo.originalSize)
-        : '';
-
-      return (
+    return (
+      <>
+        {moreHint}
         <div
           className="px-3 py-2 ui-fs-11 font-mono"
           style={{
@@ -335,48 +336,9 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
             color: colors.textSystem,
           }}
         >
-          {/* 大小提示栏：仅保留“完整输出”按钮 */}
-          <div
-            className="flex items-center justify-end mb-2 pb-1.5 ui-fs-11"
-            style={{
-              borderBottom: `1px solid ${colors.border}`,
-              color: colors.textSystem,
-            }}
-          >
-            <button
-              onClick={handleOpenPersistedFile}
-              className="flex items-center gap-1 px-1.5 py-0.5 rounded cursor-pointer hover:underline"
-              style={{
-                background: 'none',
-                border: `1px solid ${colors.border}`,
-                color: colors.harness,
-                font: 'inherit',
-                fontSize: 'inherit',
-              }}
-              title={t('tool.bash.openFullOutputFile')}
-            >
-              <Icon name="file" size={10} />
-              {t('tool.bash.fullOutput', { size: sizeStr })}
-            </button>
-          </div>
-
-          {moreHint}
           {outputBox}
         </div>
-      );
-    }
-
-    return (
-      <div
-        className="px-3 py-2 ui-fs-11 font-mono"
-        style={{
-          backgroundColor: colors.bgSecondary,
-          color: colors.textSystem,
-        }}
-      >
-        {moreHint}
-        {outputBox}
-      </div>
+      </>
     );
   };
 
@@ -429,6 +391,26 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
               title={t('tool.bash.moveBackground')}
             >
               <Icon name="clock" size={12} style={{ color: colors.textSystem }} />
+            </button>
+          )}
+          {/* 超大输出被持久化到磁盘时，「完整输出」入口与复制按钮并排放在
+              命令行右侧，不再单独占一行 */}
+          {persistedInfo?.filePath && (
+            <button
+              onClick={handleOpenPersistedFile}
+              className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded cursor-pointer hover:underline ui-fs-12"
+              style={{
+                background: 'none',
+                border: 'none',
+                color: colors.harness,
+                // 只继承字体族：字号交给 ui-fs-12（与同行命令文字同档），
+                // 用 `font: inherit` 简写会把 class 的字号一并覆盖掉。
+                fontFamily: 'inherit',
+              }}
+              title={t('tool.bash.openFullOutputFile')}
+            >
+              <Icon name="file" size={12} />
+              {t('tool.bash.fullOutput', { size: persistedSizeStr })}
             </button>
           )}
           <button

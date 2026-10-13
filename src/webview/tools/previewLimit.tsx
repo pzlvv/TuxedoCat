@@ -220,15 +220,15 @@ export function usePreviewLimit(
  * 变体：
  * - 默认（Edit / Write）：与上方预览框拼成一个带边框的面板，提示条自绘
  *   「左 / 右 / 下」三边边框并倒圆下角，chevron 朝下（更多内容在下方）。
- * - flat（Bash）：输出区嵌在已带边框的命令卡片内部，提示条再自绘边框会和
- *   卡片边框形成双圈——只留居中文字条与一条下边分割线，外框完全交给外层卡片。
  * - tail（Bash）：缩略态显示的是**末尾**行而非开头行（与流式期间「最新输出
  *   在底部」的阅读位置一致），提示条放在输出框**上方**、chevron 朝上——
  *   更多内容在上方，点击向上展开（提示条让出的高度由输出框接管，卡片总高不变）。
+ *   外框与默认变体镜像：自绘「左 / 右 / 上 / 下」四边边框并倒圆上角，下边那一条
+ *   即与输出框之间的分割线（默认变体的分割线来自上方预览框的下边框）。
  */
 
 /**
- * tail 变体提示条的固定高度（px，含下边 1px 分割线）。
+ * tail 变体提示条的固定高度（px，含上下各 1px 边框）。
  *
  * 展开时提示条不再渲染、其高度让给输出框（`Bash.tsx` 用
  * `OUTPUT_BOX_HEIGHT + TAIL_HINT_HEIGHT` 撑开），因此这个高度必须与提示条实际占位
@@ -242,9 +242,8 @@ export const PreviewMoreHint: React.FC<{
   expanded: boolean;
   colors: any;
   onClick?: () => void;
-  flat?: boolean;
   tail?: boolean;
-}> = ({ shown, total, expanded, colors, onClick, flat, tail }) => (
+}> = ({ shown, total, expanded, colors, onClick, tail }) => (
   <div
     onClick={expanded ? undefined : onClick}
     style={{
@@ -256,18 +255,21 @@ export const PreviewMoreHint: React.FC<{
       fontSize: 11,
       cursor: expanded ? 'default' : 'pointer',
       color: colors.textSystem,
-      border: flat ? 'none' : '1px solid',
-      borderColor: colors.textSystem,
-      borderTop: 'none',
-      // tail（Bash）：固定高度让「展开让位」精确；下边分割线与命令卡片外框区分开
+      // 自绘外框按变体：默认变体只画「左 / 右 / 下」三边（上边由预览框的下边框
+      // 充当分割线）；tail 变体是它的镜像，画满四边、倒圆上角，下边那一条即与
+      // 输出框之间的分割线。
+      ...(tail
+        ? { border: '1px solid', borderColor: colors.textSystem, borderRadius: '4px 4px 0 0' }
+        : { border: '1px solid', borderColor: colors.textSystem, borderTop: 'none', borderRadius: '0 0 4px 4px' }),
+      // tail（Bash）：固定高度让「展开让位」精确；上下边框占掉 2px，纵向内边距
+      // 交给 flex 居中（写死 padding 会让文字被边框压住）。
       ...(tail
         ? {
             height: TAIL_HINT_HEIGHT,
             boxSizing: 'border-box' as const,
-            borderBottom: `1px solid ${colors.border ?? colors.textSystem}`,
+            padding: '0 8px',
           }
         : {}),
-      borderRadius: flat ? 0 : '0 0 4px 4px',
       userSelect: 'none',
     }}
   >

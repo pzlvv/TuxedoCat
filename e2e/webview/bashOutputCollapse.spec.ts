@@ -6,7 +6,8 @@ import type { WebviewHandle } from '../helpers/webviewHarness';
  * US-14 Bash 输出折叠（与 Edit/Write 预览同一套 usePreviewLimit 实现，
  * 限高为输出框常量高度）：执行完成后缩略态只显示**末尾**实测放得下的整行
  * （overflow hidden 不出现滚动条，可见窗口钉在底部）；提示条在输出框**上方**
- * （tail 变体，chevron 朝上，flat 只给下边一条分割线，避免与命令卡片双圈）；
+ * （tail 变体，chevron 朝上），外框与 Edit/Write 的提示条镜像——自绘四边边框、
+ * 倒圆上角，下边那一条即与输出框之间的分割线；
  * 点击提示条展开后**提示条让位**：输出框接管它的高度（卡片总高不变），换成框内
  * 滚动条，初始视点仍在底部、可向上滚动。
  *
@@ -64,6 +65,7 @@ async function addCompletedBashCard(): Promise<void> {
 async function readCollapseState(): Promise<{
   overflowY: string;
   boxHeight: number;
+  boxWidth: number;
   lastLineBottom: number;
   boxBottom: number;
   hintTop: number;
@@ -75,12 +77,15 @@ async function readCollapseState(): Promise<{
       .find((n) => n.textContent === 'line-060-END') as HTMLElement | undefined;
     if (!lastLine) throw new Error('末行未渲染');
     const box = lastLine.parentElement as HTMLElement;
-    const hint = box.previousElementSibling as HTMLElement | null;
+    // 提示条是输出容器（`px-3 py-2` 那层）的**前一个兄弟**——它整条铺满命令卡片，
+    // 不随输出框一起内缩。
+    const hint = (box.parentElement as HTMLElement).previousElementSibling as HTMLElement | null;
     const boxRect = box.getBoundingClientRect();
     const lineRect = lastLine.getBoundingClientRect();
     return {
       overflowY: getComputedStyle(box).overflowY,
       boxHeight: boxRect.height,
+      boxWidth: boxRect.width,
       lastLineBottom: lineRect.bottom,
       boxBottom: boxRect.bottom,
       hintTop: hint ? hint.getBoundingClientRect().top : NaN,
@@ -108,19 +113,31 @@ test('US-14 完成态缩略：框高恒定、只显示末尾整行、无滚动�
   expect(state.lastLineBottom).toBeLessThanOrEqual(state.boxBottom + 1);
   // 提示条位于输出框上方（tail 变体：更多内容在上方，向上展开）
   expect(state.hintTop).toBeLessThan(state.boxTop);
-  // flat 提示条：外框只来自外层命令卡片（避免双圈），与输出框之间用一条下边分割线
-  expect(state.hintBorderTopStyle).toBe('none');
+  // tail 提示条：自绘四边边框（与 Edit/Write 提示条镜像），下边那一条即与输出框
+  // 之间的分割线
+  expect(state.hintBorderTopStyle).toBe('solid');
   const divider = await page.evaluate(() => {
     const lastLine = Array.from(document.querySelectorAll('div'))
       .find((n) => n.textContent === 'line-060-END') as HTMLElement | undefined;
     if (!lastLine) throw new Error('末行未渲染');
-    const hint = (lastLine.parentElement as HTMLElement).previousElementSibling as HTMLElement | null;
+    const container = lastLine.parentElement?.parentElement as HTMLElement | null;
+    const hint = container?.previousElementSibling as HTMLElement | null;
     if (!hint) throw new Error('提示条未渲染');
     const style = getComputedStyle(hint);
-    return { bottomStyle: style.borderBottomStyle, bottomWidth: style.borderBottomWidth, height: hint.getBoundingClientRect().height };
+    return {
+      bottomStyle: style.borderBottomStyle,
+      bottomWidth: style.borderBottomWidth,
+      borderRadius: style.borderRadius,
+      width: hint.getBoundingClientRect().width,
+      height: hint.getBoundingClientRect().height,
+    };
   });
   expect(divider.bottomStyle).toBe('solid');
   expect(divider.bottomWidth).toBe('1px');
+  // 倒圆上角：与输出框上方相接的那一侧是直角
+  expect(divider.borderRadius).toBe('4px 4px 0px 0px');
+  // 整条铺满命令卡片（比内缩的输出框宽）
+  expect(divider.width).toBeGreaterThan(state.boxWidth);
   // 固定高度：展开时「提示条高度整体转给输出框」靠它精确成立
   expect(divider.height).toBeGreaterThan(0);
   expect(divider.height).toBeLessThanOrEqual(23);
@@ -140,7 +157,7 @@ test('US-14 点击提示条展开：提示条让位、框高增加、出现框�
       .find((n) => n.textContent === 'line-060-END') as HTMLElement | undefined;
     if (!lastLine) throw new Error('末行未渲染');
     const box = lastLine.parentElement as HTMLElement;
-    const hintEl = box.previousElementSibling as HTMLElement | null;
+    const hintEl = (box.parentElement as HTMLElement).previousElementSibling as HTMLElement | null;
     return {
       boxHeight: box.getBoundingClientRect().height,
       hintHeight: hintEl ? hintEl.getBoundingClientRect().height : 0,
@@ -160,13 +177,15 @@ test('US-14 点击提示条展开：提示条让位、框高增加、出现框�
     if (!pre) throw new Error('展开内容未渲染');
     const box = pre.parentElement as HTMLElement;
     const rect = box.getBoundingClientRect();
+    // 展开后提示条整条从 DOM 消失（外层只剩命令行那一行）
+    const sibling = (box.parentElement as HTMLElement).previousElementSibling as HTMLElement | null;
     return {
       overflowY: getComputedStyle(box).overflowY,
       boxHeight: rect.height,
       scrollHeight: box.scrollHeight,
       clientHeight: box.clientHeight,
       scrollTop: box.scrollTop,
-      hasHint: box.previousElementSibling !== null,
+      hasHint: !!sibling && (sibling.textContent || '').includes('仅显示末尾'),
     };
   });
   // 提示条不再占据布局（卡片总高不变：提示条高度整体转给输出框）
@@ -250,4 +269,63 @@ test('US-14 CRLF 输出（含空行）折叠框高度稳定不振荡', async () 
   expect(max - min, `40 帧内输出框高度必须稳定，实际 ${JSON.stringify([...new Set(heights)])}`).toBeLessThanOrEqual(1);
   // 稳定在折叠态（框高与流式容器同高），而不是稳定在某个错误形态
   expect(max).toBeLessThanOrEqual(116);
+});
+
+/**
+ * 超大输出被持久化到磁盘时，「完整输出」入口与复制按钮并排放在命令行那一行，
+ * 不再单独占一行（旧形态是输出区顶部一条 justify-end 的按钮栏）。
+ */
+test('US-14 持久化输出：「完整输出」按钮与复制按钮并排在同一行', async () => {
+  const { host, page } = handle;
+  const started = await host.waitForSent('startNewConversation');
+  const sessionId = started.sessionId as string;
+  await host.send({ type: 'addMessage', sessionId, role: 'user', content: '跑个命令' });
+  await host.send({
+    type: 'addMessage',
+    sessionId,
+    role: 'toolcall',
+    content: '',
+    toolName: 'Bash',
+    toolArgs: { command: 'echo done', description: 'Long output' },
+    toolCallId: 'bash-persisted-1',
+    status: 'running',
+  });
+  await host.send({
+    type: 'updateToolStatus',
+    sessionId,
+    toolCallId: 'bash-persisted-1',
+    output: [
+      '<persisted-output>',
+      'Output too large (128KB). Full output saved to: C:\\tmp\\out.txt',
+      '',
+      'Preview (first 2K + last 2K):',
+      bashOutput(),
+      '</persisted-output>',
+    ].join('\n'),
+    status: 'success',
+  });
+
+  const fullOutput = page.getByTitle('打开完整输出文件');
+  const copy = page.getByTitle('复制命令');
+  await expect(fullOutput).toBeVisible({ timeout: 15_000 });
+  await expect(copy).toBeVisible();
+
+  const fullBox = await fullOutput.boundingBox();
+  const copyBox = await copy.boundingBox();
+  expect(fullBox).not.toBeNull();
+  expect(copyBox).not.toBeNull();
+  // 同一行：两个按钮的垂直中心差在 2px 内
+  const fullCenter = (fullBox?.y ?? 0) + (fullBox?.height ?? 0) / 2;
+  const copyCenter = (copyBox?.y ?? 0) + (copyBox?.height ?? 0) / 2;
+  expect(Math.abs(fullCenter - copyCenter)).toBeLessThanOrEqual(2);
+  // 「完整输出」在复制按钮左侧，紧邻
+  expect((fullBox?.x ?? 0) + (fullBox?.width ?? 0)).toBeLessThanOrEqual((copyBox?.x ?? 0) + 1);
+
+  // 字号与同行的命令文字同档（ui-fs-12）——不能靠 `font: inherit` 简写吃外层字号
+  const command = page.getByTitle('点击查看完整命令');
+  const [fullFont, commandFont] = await Promise.all([
+    fullOutput.evaluate((el) => getComputedStyle(el).fontSize),
+    command.evaluate((el) => getComputedStyle(el).fontSize),
+  ]);
+  expect(fullFont).toBe(commandFont);
 });
