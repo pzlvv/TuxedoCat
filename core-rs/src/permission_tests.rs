@@ -65,60 +65,34 @@ fn risk_mode_allows_safe_commands() {
 #[test]
 fn risk_mode_intercepts_dangerous_commands() {
     assert_eq!(decide("Bash", &bash("dd if=/dev/zero of=x"), "risk", CWD), Decision::Ask);
-    assert_eq!(decide("Bash", &bash("git reset --hard HEAD"), "risk", CWD), Decision::Ask);
-    assert_eq!(decide("Bash", &bash("git checkout main"), "risk", CWD), Decision::Ask);
-    // 空白变体（多空格 / 制表符）也要命中
-    assert_eq!(decide("Bash", &bash("git  reset --hard"), "risk", CWD), Decision::Ask);
-    assert_eq!(decide("Bash", &bash("git\tcheckout main"), "risk", CWD), Decision::Ask);
-    // 词边界：mygit 不是 git
-    assert_eq!(decide("Bash", &bash("mygit checkout main"), "risk", CWD), Decision::Allow);
+    assert_eq!(decide("Bash", &bash("mkfs /dev/sda1"), "risk", CWD), Decision::Ask);
+    assert_eq!(decide("Bash", &bash("shred -u secret.txt"), "risk", CWD), Decision::Ask);
+    // 破坏性判定只看第一个词：`mkfs.ext4` 不匹配 `mkfs`，risk 放行
+    assert_eq!(decide("Bash", &bash("mkfs.ext4 /dev/sda1"), "risk", CWD), Decision::Allow);
 }
 
-/// `contains_risky_git` 必须等价于 Embedded 的 `/\bgit\s+(checkout|reset)\b/`：
-/// `git` 可以紧跟在引号 / `&` / `(` / `=` 等非词字符之后，不要求它自成一个
-/// 空白分隔的 token。此前按空白分词只认「token == git」，会漏判这些写法，
-/// 在 risk 模式下把危险命令误放行。
+/// git 写子命令不在危险名单里：risk 模式与 `rm` 同口径自动放行，
+/// 只有 manual 模式才逐条询问（对齐 Embedded `PermissionPolicy.isOperationRisky`）。
 #[test]
-fn risky_git_matches_the_embedded_regex() {
+fn risk_mode_allows_git_write_subcommands() {
     for command in [
         "git reset --hard HEAD",
-        "git  reset --hard",
-        "git\tcheckout main",
-        "git\nreset --hard",
+        "git checkout main",
+        "git push --force",
+        "git clean -fd",
         "bash -c 'git reset --hard HEAD'",
-        "\"git reset --hard\"",
-        "(git reset --hard)",
         "cd repo&&git checkout main",
-        "&&git reset --hard",
         "x=git reset",
-        "echo hi; git checkout main",
-        // JS `\s` 的空白口径：NBSP / 行分隔符 / ZWNBSP 都算
-        "git\u{00A0}reset",
-        "git\u{2028}reset",
-        "git\u{FEFF}reset",
-    ] {
-        assert_eq!(
-            decide("Bash", &bash(command), "risk", CWD),
-            Decision::Ask,
-            "应拦截：{command}"
-        );
-    }
-    for command in [
-        "mygit checkout main",
-        "git-checkout main",
-        "\"git\" reset --hard",
-        "GIT checkout main",
-        "git CHECKOUT main",
-        "echo mygit reset",
-        // U+0085（NEL）不在 JS `\s` 集合里，正则不命中
-        "git\u{0085}reset",
-        // 只读命令自身返回 allow，risk 分支不会触发（与 Embedded 一致）
-        "echo git reset",
     ] {
         assert_eq!(
             decide("Bash", &bash(command), "risk", CWD),
             Decision::Allow,
-            "不应拦截：{command}"
+            "risk 不应拦截：{command}"
+        );
+        assert_eq!(
+            decide("Bash", &bash(command), "manual", CWD),
+            Decision::Ask,
+            "manual 仍应询问：{command}"
         );
     }
 }

@@ -2096,12 +2096,18 @@ function workspaceDisplayName(): string {
   return workspaceDisplayNameOf(workspacePath);
 }
 
-/** 指定工作区的显示名（标题栏标签页 / 浮窗品牌位用）；远程带上主机名区分同名目录 */
+/**
+ * 指定工作区的显示名（标题栏标签页 / 浮窗品牌位用）。
+ *
+ * 远程把目录名放在前、主机名放在后（`目录名@主机名`，如 `TEST@192.168.1.1`）：
+ * 标签页收窄时从左往右截断，目录名是最能区分工作区的一段，必须留在可见侧；
+ * 同名目录靠尾部主机名区分（`docs/hosts/electron-multi-workspace.md` 第 5 节）。
+ */
 function workspaceDisplayNameOf(ref: WorkspaceRef | undefined): string {
   if (!ref) return '';
   const trimmed = ref.path.replace(/[\\/]+$/, '');
   const base = path.basename(trimmed) || ref.path;
-  return ref.endpoint ? `${ref.endpoint.host}:${base}` : base;
+  return ref.endpoint ? `${base}@${ref.endpoint.host}` : base;
 }
 
 /** 把窗口标题同步到当前模式 / 工作区 */

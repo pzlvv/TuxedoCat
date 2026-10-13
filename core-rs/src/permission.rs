@@ -591,81 +591,15 @@ pub fn decide(tool_name: &str, args: &Value, agent_mode: &str, cwd: &str) -> Dec
     }
 }
 
-/// 风险模式要拦截的操作
+/// 风险模式要拦截的操作：只有 Bash 破坏性命令（对齐 Embedded `PermissionPolicy.isOperationRisky`）。
+///
+/// 其余非只读命令（含 git 的写子命令）在 risk 模式下放行，只有 manual 才逐条询问。
 pub fn is_operation_risky(tool_name: &str, args: &Value) -> bool {
     if tool_name != "Bash" {
         return false;
     }
     let command = args.get("command").and_then(Value::as_str).unwrap_or("");
-    if is_destructive_command(command) {
-        return true;
-    }
-    contains_risky_git(command)
-}
-
-/// JS `\b` 的「词字符」集合：`[A-Za-z0-9_]`（ASCII，不含 Unicode 字母）。
-fn is_regex_word_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '_'
-}
-
-/// 等价于 Embedded `PermissionPolicy.isOperationRisky` 的正则
-/// `/\bgit\s+(checkout|reset)\b/`（无 `i` 标志，大小写敏感）。
-///
-/// 不能按空白分词后要求某个 token 恰为 `git`：正则在**任意词边界**上匹配，
-/// `bash -c 'git reset --hard'`、`cd repo&&git checkout main`、`(git reset)`
-/// 这些命令里的 `git` 前一个字符是引号 / `&` / `(`，同样命中；只按 token 相等
-/// 会漏判，risk 模式下把危险命令误放行。这里逐字符扫描，语义与 JS 正则一致：
-/// - `git` 前必须是串首或非词字符（`\b`）；
-/// - `git` 后必须是串尾或非词字符（`\b`，由 `\s+` 隐含）；
-/// - 其后至少一个 `\s`（JS `\s` 口径，含 Unicode 空白）；
-/// - 再匹配 `checkout` / `reset`，且其后是串尾或非词字符（`\b`）。
-fn contains_risky_git(command: &str) -> bool {
-    let chars: Vec<char> = command.chars().collect();
-    let length = chars.len();
-    let mut index = 0usize;
-    while index < length {
-        if chars[index] != 'g' {
-            index += 1;
-            continue;
-        }
-        // `\bgit`
-        let before_ok = index == 0 || !is_regex_word_char(chars[index - 1]);
-        let after_git = index + 3;
-        if !before_ok
-            || after_git > length
-            || chars[index + 1] != 'i'
-            || chars[index + 2] != 't'
-            || (after_git < length && is_regex_word_char(chars[after_git]))
-        {
-            index += 1;
-            continue;
-        }
-        // `\s+`
-        let mut cursor = after_git;
-        if cursor >= length || !is_js_whitespace(chars[cursor]) {
-            index += 1;
-            continue;
-        }
-        while cursor < length && is_js_whitespace(chars[cursor]) {
-            cursor += 1;
-        }
-        // `(checkout|reset)\b`
-        for word in ["checkout", "reset"] {
-            let word_len = word.chars().count();
-            let end = cursor + word_len;
-            if end > length {
-                continue;
-            }
-            if chars[cursor..end].iter().collect::<String>() != word {
-                continue;
-            }
-            if end == length || !is_regex_word_char(chars[end]) {
-                return true;
-            }
-        }
-        index += 1;
-    }
-    false
+    is_destructive_command(command)
 }
 
 /// 询问时的提示文案（对齐各工具 `checkPermissions` 返回的 message）

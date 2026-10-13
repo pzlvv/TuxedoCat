@@ -1440,8 +1440,8 @@
       }
     },
     {
-      "name": "bash-git-reset-risk",
-      "why": "git reset 在 risk 模式视为危险操作，保持 ask",
+      "name": "bash-git-write-risk",
+      "why": "git 写子命令不在危险名单：risk 模式与 rm 同口径自动放行",
       "tool": "Bash",
       "mode": "risk",
       "files": {},
@@ -1449,18 +1449,7 @@
         "command": "git reset --hard HEAD"
       },
       "expectPermResult": {
-        "behavior": "ask",
-        "message": "请求执行：git reset --hard HEAD",
-        "choices": [
-          {
-            "label": "允许",
-            "description": "执行此命令"
-          },
-          {
-            "label": "拒绝",
-            "description": "取消此操作"
-          }
-        ]
+        "behavior": "allow"
       },
       "expectDisplayArgs": {
         "command": "git reset --hard HEAD"

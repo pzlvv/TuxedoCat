@@ -1658,7 +1658,8 @@ fn permission_denied_turns_the_tool_result_into_an_error() {
     let sandbox = Sandbox::new("engine-permission-denied");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            openai_tool_sse("call_1", "Bash", r#"{"command":"git reset --hard"}"#)
+            // 破坏性命令是 risk 模式下唯一仍会 ask 的一类
+            openai_tool_sse("call_1", "Bash", r#"{"command":"dd if=/dev/zero of=x"}"#)
         } else {
             openai_text_sse(&["好的"])
         }
@@ -1671,7 +1672,7 @@ fn permission_denied_turns_the_tool_result_into_an_error() {
         "userChoice" => Some(json!({ "index": 1, "reply": "太危险了" })),
         _ => Some(json!({})),
     });
-    submit(&harness, "s1", "重置一下", "u-1");
+    submit(&harness, "s1", "执行危险命令", "u-1");
     assert!(harness.wait_query_end());
 
     let requests = harness.sink.requests_of("toolPermissionRequested");
@@ -1683,6 +1684,7 @@ fn permission_denied_turns_the_tool_result_into_an_error() {
     let choices = harness.sink.requests_of("userChoice");
     assert_eq!(choices.len(), 1, "ask 之后应当弹确认框");
     assert_eq!(choices[0]["options"]["toolName"], "Bash");
+    // 假宿主回的是不带 choices 的 `{ behavior: "ask" }`，引擎按缺省选项兜底
     assert_eq!(choices[0]["options"]["choices"][0]["label"], "允许");
 
     let result = harness.sink.event_of("toolResult").unwrap();
@@ -1749,7 +1751,8 @@ fn permission_denied_without_a_reason_uses_the_default_message() {
     let sandbox = Sandbox::new("engine-permission-denied-default");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            openai_tool_sse("call_1", "Bash", r#"{"command":"git reset --hard"}"#)
+            // 破坏性命令是 risk 模式下唯一仍会 ask 的一类
+            openai_tool_sse("call_1", "Bash", r#"{"command":"dd if=/dev/zero of=x"}"#)
         } else {
             openai_text_sse(&["好的"])
         }
@@ -1761,7 +1764,7 @@ fn permission_denied_without_a_reason_uses_the_default_message() {
         "userChoice" => Some(json!({ "index": 2 })),
         _ => Some(json!({})),
     });
-    submit(&harness, "s1", "重置一下", "u-1");
+    submit(&harness, "s1", "执行危险命令", "u-1");
     assert!(harness.wait_query_end());
 
     let result = harness.sink.event_of("toolResult").unwrap();

@@ -359,7 +359,7 @@
       "args": {
         "command": " \"git checkout \"a|b\"\" "
       },
-      "expect": "ask",
+      "expect": "allow",
       "why": "fuzz #14"
     },
     {
@@ -1391,7 +1391,7 @@
       "args": {
         "command": "  git checkout \"a|b\""
       },
-      "expect": "ask",
+      "expect": "allow",
       "why": "fuzz #57"
     },
     {
@@ -1607,7 +1607,7 @@
       "args": {
         "command": "\tgit reset \"a|b\" "
       },
-      "expect": "ask",
+      "expect": "allow",
       "why": "fuzz #66"
     },
     {
@@ -2039,7 +2039,7 @@
       "args": {
         "command": " git checkout -rf /\t"
       },
-      "expect": "ask",
+      "expect": "allow",
       "why": "fuzz #84"
     },
     {
@@ -2087,7 +2087,7 @@
       "args": {
         "command": "  git checkout file.txt"
       },
-      "expect": "ask",
+      "expect": "allow",
       "why": "fuzz #86"
     },
     {
@@ -2735,7 +2735,7 @@
       "args": {
         "command": "﻿git checkout $(echo hi)"
       },
-      "expect": "ask",
+      "expect": "allow",
       "why": "fuzz #113"
     },
     {
@@ -3095,7 +3095,7 @@
       "args": {
         "command": "\"git reset file.txt\""
       },
-      "expect": "ask",
+      "expect": "allow",
       "why": "fuzz #128"
     },
     {

@@ -26,7 +26,7 @@ require(join(repoRoot, 'out', 'src', 'core', 'history', 'Config.js')).setExtensi
 const { resolveToolPermission, setSessionAgentMode } = require(
   join(repoRoot, 'out', 'src', 'core', 'tools', 'PermissionPolicy.js'),
 );
-const { setActiveWorkspace } = require(join(repoRoot, 'out', 'src', 'core', 'history', 'Config.js'));
+const { setSessionWorkspace } = require(join(repoRoot, 'out', 'src', 'core', 'history', 'Config.js'));
 const { BashTool } = require(join(repoRoot, 'out', 'src', 'core', 'tools', 'bash', 'Bash.js'));
 
 /** mulberry32：固定种子的确定性 PRNG，保证对照表可重复生成 */
@@ -93,7 +93,7 @@ function buildCommand() {
 }
 
 const dir = mkdtempSync(join(tmpdir(), 'permission-fuzz-parity-'));
-setActiveWorkspace(dir);
+setSessionWorkspace('fuzz-session', dir);
 
 const cases = [];
 try {

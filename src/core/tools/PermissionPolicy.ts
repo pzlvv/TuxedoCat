@@ -88,13 +88,13 @@ export function inheritAgentModeFrom(parentMode: AgentMode, childSessionId: stri
 
 /**
  * 判断操作是否为危险操作（用于风险拦截模式）。
- * 危险操作定义：
- * 1. Bash 破坏性命令（dd、mkfs、format、fdisk、shred、wipe 等）
- * 2. Git 破坏性命令（仅 checkout、reset）
+ *
+ * 危险操作定义只有一条：Bash 破坏性命令（dd、mkfs、format、fdisk、shred、wipe 等，
+ * 名单见 `tools/bash/Validation.ts` 的 `DESTRUCTIVE_COMMANDS`）。其余非只读命令
+ * （含 git 的写子命令）与只读命令一样在 risk 模式下放行，只有 manual 才逐条询问。
  */
 function isOperationRisky(tool: unknown, toolName: string, args: Record<string, any>): boolean {
   if (toolName === 'Bash') {
-    const command = (args as any)?.command || '';
     if (tool && typeof tool === 'object' && 'isDestructive' in tool && typeof (tool as any).isDestructive === 'function') {
       try {
         if ((tool as any).isDestructive(args)) {
@@ -103,9 +103,6 @@ function isOperationRisky(tool: unknown, toolName: string, args: Record<string, 
       } catch {
         // ignore
       }
-    }
-    if (/\bgit\s+(checkout|reset)\b/.test(command)) {
-      return true;
     }
   }
   return false;

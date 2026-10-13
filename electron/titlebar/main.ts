@@ -84,7 +84,8 @@ type WorkspaceAvailability = 'available' | 'unavailable' | 'connecting';
 
 /**
  * 工作区标签页：`id` 是稳定身份（主进程的 workspaceRefKey），
- * `path` 是展示路径（远程带 `tcp://host` 前缀），`name` 是目录名。
+ * `path` 是展示路径（远程带 `tcp://host` 前缀），`name` 是标签文案
+ * （本地为目录名，远程为 `目录名@主机名`）。
  */
 interface TitlebarWorkspace {
   id: string;

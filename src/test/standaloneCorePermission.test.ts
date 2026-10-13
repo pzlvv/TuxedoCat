@@ -298,10 +298,18 @@ async function run(): Promise<void> {
     check('risk 模式：工具执行成功', result.toolResult?.status === 'success');
   }
 
-  // ---- risk 模式：危险命令仍然拦截 ----
+  // ---- risk 模式：git 写子命令不拦截（与 rm 同口径）----
   {
     const result = await runScenario({ mode: 'risk', command: 'git reset --hard HEAD' });
-    check('risk 模式：git reset 触发确认框', result.userChoices.length === 1);
+    check('risk 模式：git reset 只上架卡片、不弹确认框', result.userChoices.length === 0);
+    check('risk 模式：git reset 执行成功', result.toolResult?.status === 'success');
+  }
+
+  // ---- risk 模式：破坏性命令仍然拦截 ----
+  {
+    // count=0 让 dd 立即结束：命中破坏性名单即可，不必真的写数据
+    const result = await runScenario({ mode: 'risk', command: 'dd if=/dev/zero of=x count=0' });
+    check('risk 模式：dd 触发确认框', result.userChoices.length === 1);
     check('risk 模式：用户允许后工具执行成功', result.toolResult?.status === 'success');
   }
 
@@ -309,7 +317,7 @@ async function run(): Promise<void> {
   {
     const result = await runScenario({
       mode: 'risk',
-      command: 'git reset --hard HEAD',
+      command: 'dd if=/dev/zero of=x count=0',
       userChoice: 1,
     });
     check('risk 模式：用户拒绝后工具以 error 结束', result.toolResult?.status === 'error');
@@ -340,7 +348,7 @@ async function run(): Promise<void> {
 
   // ---- auto 模式：危险命令也不弹框 ----
   {
-    const result = await runScenario({ mode: 'auto', command: 'git reset --hard HEAD' });
+    const result = await runScenario({ mode: 'auto', command: 'dd if=/dev/zero of=x count=0' });
     check(
       'auto 模式：只上架卡片、不弹确认框',
       result.permissionRequests.length === 1 &&
