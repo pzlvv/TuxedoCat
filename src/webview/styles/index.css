@@ -762,6 +762,37 @@ textarea::-webkit-scrollbar-thumb:hover {
   color: var(--text-secondary) !important;
 }
 
+/* 二 / 三级子菜单弹层（MCP、服务商、模型）与一级面板同形态：1px 主题边框 + 6px 圆角
+   （一级面板的外壳见 menuPanelShellStyle，src/webview/components/dropdownMenuTheme.ts）。
+   弹层根节点（.ant-dropdown-menu-submenu-popup）自身背景透明、无边框，只有内层 ul
+   带 antd 的投影，不加边框时二 / 三级与一级面板观感不一致。
+   选择器取「弹层根 + ul 自身的 -sub 类」，两个约束都不能省：
+   - 只写 .ant-dropdown-menu 不行：antd 把 menu 的 prefixCls 拼进 popupClassName，
+     弹层根节点同样带这个类，后代选择器会把根节点一起加上边框（1px 叠成 2px）；
+   - 挂 popupClassName=model-list-submenu 也不行：MCP 分组的二级弹层没挂那个类，
+     按类写会漏掉它。内联展开的列表不在弹层根内，不受这条规则影响。 */
+.ant-dropdown-menu-submenu-popup .ant-dropdown-menu-sub {
+  border: 1px solid var(--border-color) !important;
+  border-radius: 6px !important;
+}
+
+/* 菜单滚动条（一级面板与二 / 三级弹层同一形态）：
+   1) antd 给菜单 ul 设了 `background-clip: padding-box`，滚动条槽位落在 padding box
+      之外——面板底色不铺到槽位，滚动条区域透出面板背后的内容（消息区 / 输入区），
+      表现为面板边上一条透明缺口；改成 border-box 让底色盖住槽位，滚动条才真正压在
+      面板底色之上。
+   2) 全局 `--scrollbar-color` 是 harness 色 + 0x80（半透明），压在面板底色上会与
+      底色混在一起，看着像「没有颜色」；菜单是浮层，滚动条要看得见，这里改用不透明的
+      harness 色（悬停态无对应能力：scrollbar-color 是标准属性，`::-webkit-scrollbar-thumb:hover`
+      那套在此已不生效）。
+   选择器同上面的边框规则：MCP 的二级弹层没挂 model-list-submenu，按 antd 的弹层类写；
+   一级面板的滚动容器是 ul.agent-mode-menu。 */
+.ant-dropdown-menu-submenu-popup .ant-dropdown-menu-sub,
+ul.agent-mode-menu {
+  background-clip: border-box !important;
+  scrollbar-color: var(--harness) transparent !important;
+}
+
 /* ─── 模型列表子菜单：限制高度 + 滚动 ───
    模型数量可能很多（如 opencode 有 37 个）。antd 给下拉菜单的垂直列表设的是
    `max-height: calc(100vh - 100px)`，而子菜单弹层是从菜单项向下展开的，

@@ -59,6 +59,24 @@ test('US-8 模型三级子菜单切换模型（setModel 携带 provider + model�
   await providerItem.hover();
   const modelItem = page.getByText('mock-model-pro', { exact: true }).last();
   await expect(modelItem).toBeVisible();
+  // 二 / 三级弹层都带 1px 主题边框 + 6px 圆角（与一级面板同形态，见 index.css 的
+  // .ant-dropdown-menu-submenu-popup .ant-dropdown-menu-sub 规则）
+  const popups = page.locator('.model-list-submenu:visible');
+  await expect(popups).toHaveCount(2);
+  for (const popup of await popups.all()) {
+    const list = popup.locator('ul.ant-dropdown-menu');
+    await expect(list).toHaveCSS('border-top-width', '1px');
+    await expect(list).toHaveCSS('border-top-style', 'solid');
+    await expect(list).toHaveCSS('border-top-left-radius', '6px');
+  }
+  // 菜单滚动条：面板底色必须盖住滚动条槽位（background-clip: border-box，否则槽位
+  // 透出面板背后的内容），且 thumb 不透明（rgba 会带 alpha）——见 index.css
+  const scrollers = [menu, ...(await popups.all()).map((p) => p.locator('ul.ant-dropdown-menu'))];
+  for (const scroller of scrollers) {
+    await expect(scroller).toHaveCSS('background-clip', 'border-box');
+    expect(await scroller.evaluate((el) => getComputedStyle(el).scrollbarColor))
+      .toMatch(/^rgb\(.+\) rgba\(0, 0, 0, 0\)$/);
+  }
   await modelItem.click({ force: true });
 
   const setModel = await host.waitForSentWhere('setModel', (m) => m.model === 'mock-model-pro');
@@ -159,6 +177,11 @@ test('US-8 极窄视口下 MCP 分组保持飞出弹层（不随模型分组切�
   // 服务器行可见，但不在主菜单面板里（主面板内出现即为内联展开）
   await expect(page.getByText('fs-tools', { exact: true }).last()).toBeVisible({ timeout: 10_000 });
   expect(await menu.getByText('fs-tools', { exact: true }).count()).toBe(0);
+  // MCP 的二级弹层同样带边框：它没挂 popupClassName=model-list-submenu，边框规则
+  // 必须按 antd 的弹层类写（见 index.css）
+  const mcpPopup = page.locator('.ant-dropdown-menu-submenu-popup:visible');
+  await expect(mcpPopup).toHaveCount(1);
+  await expect(mcpPopup.locator('ul.ant-dropdown-menu')).toHaveCSS('border-top-width', '1px');
 });
 
 test('US-8 主面板宽 + 服务商名长：二级弹层两侧都放不下 → 内联（不被右缘裁掉）', async () => {
