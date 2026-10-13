@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-13
 ---
 
 # 规格：两套 Core 的实现差异
@@ -470,6 +470,12 @@ Embedded 的 Reminder 重试在每次 `submitMessage` 后固定等待 1.5s 再�
 
 对照表一部分由 `scripts/gen-*.mjs` 生成（生成器只覆盖部分表，其余手工维护）；改动任一侧
 实现后跑 `npm run test:all` 与 `npm run test:core` 即可确认没有漂移。
+
+不靠对照表、由**两侧各一条行为用例**锁定的对等面：
+
+| 对等面 | Embedded 侧 | Standalone 侧 |
+| --- | --- | --- |
+| `waiting` 只在真的等用户时为真（`userChoice`）；`toolPermissionRequested` 的工具卡片往返不标记 | `RunTools.emitToolPermissionRequest` 不碰 `sessionRuntime`（`src/test/toolPermissionWaiting.test.ts`） | `Engine::plain_request` 承担该往返、`request_user_choice` 才标记（`engine_tests` 的 `auto_approved_tool_permission_never_marks_the_session_waiting` / `manual_tool_permission_marks_waiting_only_while_the_choice_is_pending`） |
 
 ## 5. `#[allow(dead_code)]` 审计
 

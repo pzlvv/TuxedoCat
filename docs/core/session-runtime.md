@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-13
 ---
 
 # 规格：sessionRuntime（会话运行时状态）
@@ -27,6 +27,12 @@ webview 对话树的运行标记、两端 abort 按钮）。
 | `markSessionSubAgent(sessionId, subagent)` | `subagent` | 该会话已注册子代理（idle 递归看子代理当前是否非 idle，本标志只作变更信号） | `tools/agent/SubAgentRegistry`（register / unregister） |
 | `markSessionWaiting(sessionId, waiting)` | `waiting` | 正在等待用户操作 | `Integration`（入队时标记）；`initializeCoreEvents` 的 `userChoicePendingChanged` 订阅（webview 弹出 / 应答时标记） |
 | `dropSessionRuntime(sessionId)` | — | 会话关闭 / 删除时清理该会话的状态 | `sessionResources.releaseSessionResources`、`history.deleteConversation` |
+
+`waiting` 只表示**真的在等用户**：`Integration.requestUserChoice` 的入队与 `userChoicePendingChanged`
+（webview 弹出 / 应答）。`CoreRequest.toolPermissionRequested` 的往返（上架工具卡片、回传权限结果）
+**不算**——宿主拿到 `permResult` 就返回，`ask` 也直接返回（真确认框随后由 `userChoice` 弹），
+那段时间并没有在等用户；两套 Core 同口径（Standalone 侧由 `Engine::plain_request` 承担该往返，
+只有 `request_user_choice` 走标记 `waiting` 的路径）。
 
 ## 2. 对外快照
 

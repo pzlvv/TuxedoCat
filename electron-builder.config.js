@@ -63,6 +63,9 @@ module.exports = {
     'dist-electron/**/*',
     'dist/**/*',
     'assets/**/*',
+    // Electron 宿主专属的运行时资源（托盘提示音）：不放 assets/ 是因为它是
+    // vite 侧栏 / 标题栏构建的 publicDir，会被复制进每份前端产物
+    'electron/assets/**/*',
     'package.json',
     '!node_modules/**',
   ],

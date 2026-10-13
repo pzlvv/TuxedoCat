@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-13
 ---
 
 # <product-name> 用户故事（US）
@@ -471,6 +471,7 @@ last_reviewed: 2026-10-11
    （多个任务在跑时其中一个完成也提醒，此时仍为红点；全部完成绿点、有任务等用户黄点）；
    任意窗口聚焦后停止。
 3. 右键菜单「显示 / 退出」；左键唤出主窗口。
+4. 闪烁提醒的同时播放一次提示音（Electron 宿主；VS Code 宿主不播放）。
 
 ### US-34 全局唤醒快捷键
 
@@ -737,7 +738,7 @@ last_reviewed: 2026-10-11
 | `e2e/electron/backgroundBash.spec.ts` | US-45 | Electron 整应用 |
 | `e2e/electron/subagentConcurrency.spec.ts` | US-49 | Electron 整应用 |
 
-未覆盖 e2e 的 US（US-33 托盘图标状态点与闪烁提醒——属 OS 集成层，改键对话框之外
+未覆盖 e2e 的 US（US-33 托盘图标状态点、闪烁提醒与提示音——属 OS 集成层，改键对话框之外
 的真实全局按键唤醒同不驱动；US-38 的图片查看器窗口；US-42 的远程（SSH）工作区文件
 浏览——需要真实 SSH/SFTP 远端；US-43 的「在文件资源管理器中打开」——会弹出真实
 资源管理器窗口；US-48 的标签页右键菜单——原生 OS 菜单无法被 Playwright 驱动，「关闭」与

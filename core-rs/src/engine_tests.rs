@@ -5645,3 +5645,95 @@ fn mcp_tools_are_concurrency_safe_per_their_annotations() {
     assert!(crate::engine::is_tool_concurrency_safe("Read", &json!({})));
     assert!(!crate::engine::is_tool_concurrency_safe("Write", &json!({})));
 }
+
+// ==================== 权限往返期间的 waiting（RT-1 / RT-2） ====================
+//
+// 缺陷：`toolPermissionRequested` 的往返（工具卡片上架 / 权限结果回传）曾被
+// `waiting_request` 一并标成 `waiting`，于是**每次工具调用**都凭空多出一次
+// `running → waiting` 迁移——托盘「任务结束提醒」闪一下（毫秒级、看不见）并响一声，
+// 侧栏黄灯同样闪。Embedded 侧 `RunTools.emitToolPermissionRequest` 从不碰
+// `sessionRuntime`，只有 `Integration.requestUserChoice` 才标记。
+// 对等面见 `docs/core/session-runtime.md` 第 1 节与 `docs/core/core-parity.md`。
+
+/// 统计快照序列里 `waiting` 为真的推送条数（只算目标会话）
+fn waiting_snapshots(harness: &EngineHarness, session_id: &str) -> usize {
+    harness
+        .sink
+        .events_of("sessionRuntimeChanged")
+        .iter()
+        .filter(|event| {
+            event["states"]
+                .as_array()
+                .map(|states| {
+                    states
+                        .iter()
+                        .any(|state| state["sessionId"] == session_id && state["waiting"] == true)
+                })
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+/// RT-1：auto 免确认的工具调用全程不产生 `waiting`（工具卡片往返不算等用户）
+#[test]
+fn auto_approved_tool_permission_never_marks_the_session_waiting() {
+    let sandbox = Sandbox::new("engine-waiting-auto");
+    let llm = FakeLlm::start(|index, _| {
+        if index == 0 {
+            openai_tool_sse("call_1", "Bash", r#"{"command":"echo hi"}"#)
+        } else {
+            openai_text_sse(&["好的"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    // auto 模式：权限结果已是 allow，宿主只是渲染卡片
+    let harness = EngineHarness::start(|request| match request["type"].as_str().unwrap() {
+        "toolPermissionRequested" => Some(json!({ "behavior": "allow" })),
+        _ => Some(json!({})),
+    });
+    submit(&harness, "s1", "跑个命令", "u-1");
+    assert!(harness.wait_query_end());
+
+    // 卡片确实上架过（否则这条用例会因「压根没走到权限」而空转）
+    assert_eq!(harness.sink.requests_of("toolPermissionRequested").len(), 1);
+    assert_eq!(harness.sink.requests_of("userChoice").len(), 0, "auto 模式不弹确认框");
+    assert_eq!(
+        waiting_snapshots(&harness, "s1"),
+        0,
+        "工具卡片往返不该把会话标成等待用户"
+    );
+}
+
+/// RT-2：manual 模式下 `waiting` 只在真确认框（`userChoice`）在途期间为真
+#[test]
+fn manual_tool_permission_marks_waiting_only_while_the_choice_is_pending() {
+    let sandbox = Sandbox::new("engine-waiting-manual");
+    let llm = FakeLlm::start(|index, _| {
+        if index == 0 {
+            openai_tool_sse("call_1", "Bash", r#"{"command":"echo hi"}"#)
+        } else {
+            openai_text_sse(&["好的"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "manual");
+
+    let harness = EngineHarness::start(|request| match request["type"].as_str().unwrap() {
+        // 上架卡片 → 保持 ask（真确认框随后由 userChoice 弹）
+        "toolPermissionRequested" => Some(json!({ "behavior": "ask" })),
+        "userChoice" => Some(json!({ "index": 0 })),
+        _ => Some(json!({})),
+    });
+    submit(&harness, "s1", "跑个命令", "u-1");
+    assert!(harness.wait_query_end());
+
+    assert_eq!(harness.sink.requests_of("toolPermissionRequested").len(), 1);
+    assert_eq!(harness.sink.requests_of("userChoice").len(), 1);
+    // 快照序列应为：(running,waiting=false) → (running,waiting=true) → (running,waiting=false) → idle
+    // 即 waiting 只在真确认框在途期间为真（1 条）；卡片往返若也标记会变成 2 条
+    assert_eq!(
+        waiting_snapshots(&harness, "s1"),
+        1,
+        "只有真确认框在途期间才算等待用户"
+    );
+}

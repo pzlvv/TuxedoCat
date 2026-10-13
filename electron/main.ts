@@ -69,6 +69,8 @@ import {
 
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
 import { diffSessionEndEvents, type SessionBusyRecord, type SessionLevel } from './trayAttention.js';
+import { createAttentionSound, traySoundEnabled } from './trayAttentionSound.js';
+import { createTraySoundPlayer } from './traySoundWindow.js';
 import { diffCompletionAttention, pickReadCompletions, type CompletionAttentionFacts } from './completionAttention.js';
 import { SleepBlocker } from './powerSaveBlocker.js';
 import {
@@ -693,6 +695,8 @@ async function main(): Promise<void> {
     stopTrayBlink();
     tray?.destroy();
     tray = undefined;
+    // 提醒音的播放窗口（若还活着）：显式销毁，不靠窗口销毁兜底
+    attentionSound.dispose();
     // 释放电源阻断：进程退出前不再占着系统的电源请求
     sleepBlocker.dispose();
     // 侧栏文件浏览器的 SSH 连接（远程工作区的 SFTP 会话）一并释放
@@ -1125,6 +1129,9 @@ function createMainWindow(): void {
       clearTimeout(focusRepaintTimer);
       focusRepaintTimer = null;
     }
+    // 提醒音的播放窗口一并销毁：它也是 BrowserWindow，留着会让 window-all-closed
+    // 不再触发（应用不退出）、activate 里「没有窗口才重建主窗口」的判定失效
+    attentionSound.dispose();
   });
 }
 
@@ -1335,6 +1342,26 @@ const trayBlinkImageCache = new Map<TrayStatus, { on: NativeImage; off: NativeIm
  */
 let attentionActive = false;
 
+/**
+ * 托盘提醒音（`electron/trayAttentionSound.ts` + `electron/traySoundWindow.ts`）：
+ * 提醒触发时（与托盘闪烁同一处判定）播一次 `electron/assets/meow.aac`，让最小化到托盘的用户
+ * 也能凭声音知道任务结束（`docs/hosts/host-matrix.md` 第 12 节的托盘提醒段落）。
+ *
+ * 播放载体懒建：首次提醒才创建隐藏窗口（播完自毁），不常驻——常驻窗口会改坏
+ * `window-all-closed` 与 `activate` 里的窗口计数判定。播放失败只落日志：调用点在
+ * `setStatusListener` 的回调里，抛错会连带打断同一快照上的托盘状态点与睡眠阻断。
+ *
+ * `traySoundEnabled()` 为假（e2e 启动器置了 `DISABLE_TRAY_SOUND`）时不建载体：整应用
+ * 用例在开发机上跑，出声会和真实运行的应用撞在一起。
+ */
+const attentionSound = createAttentionSound({
+  acquirePlayer: () =>
+    appQuitting || !traySoundEnabled()
+      ? null
+      : createTraySoundPlayer({ audioPath: path.join(APP_ROOT, 'electron', 'assets', 'meow.aac') }),
+  warn: (message) => fileLogger.warn('tray-sound', message),
+});
+
 function getTrayBlinkImages(status: TrayStatus): { on: NativeImage; off: NativeImage } | null {
   const cached = trayBlinkImageCache.get(status);
   if (cached) return cached;
@@ -1436,6 +1463,9 @@ function isWindowInBackground(): boolean {
 function startAttention(status: TrayStatus): void {
   if (!isWindowInBackground()) return;
   attentionActive = true;
+  // 除闪烁外再出一声：与闪烁同一判定、同一时机（窗口在前台不提醒也就不出声；
+  // 闪烁的亮 / 灭相位切换不经过这里，不会重复出声）
+  attentionSound.play();
   if (tray && !startTrayBlink(status)) restoreTrayIcon();
 }
 

@@ -18,8 +18,13 @@
 # ripgrep。两份 rg 按变体互斥，scripts/copy-assets.mjs 已清掉不属于本变体的那份。
 !dist/resources/**
 
-# 扩展图标 / 视图图标（package.json 的 icon 与 contributes.viewsContainers 引用）
-!assets/**
+# 扩展图标 / 视图图标（package.json 的 icon 与 contributes.viewsContainers 引用）。
+# 逐文件放行，不用 `!assets/**`：vsce 的匹配语义是「negate 行命中即入包」
+# （@vscode/vsce 的 collectFiles：`!ignore.some(…) || negate.some(…)`），整目录放行会把
+# assets/ 下将来新增的 Electron 专属资源一起打进 vsix，再补排除行也压不住
+# （托盘提示音已移到 electron/assets/，不进本白名单）。
+!assets/logo.png
+!assets/logo.svg
 
 # 说明与许可证（vsce 会读取并重命名为 readme.md / LICENSE.txt）
 !README.md

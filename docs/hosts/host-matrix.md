@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-13
 ---
 
 # 规格：宿主实现对照与分叉清单
@@ -349,7 +349,7 @@ Electron 的视图句柄：`ElectronUIHost.webviewHandleFor(source)` 把来源 `
 | 系统睡眠阻断 | 无（VS Code 扩展没有电源 API）；standalone 下由 Core 子进程自己阻断（第 12 节） | `setStatusListener` → `sleepBlocker.update(states)`（`electron/powerSaveBlocker.ts` 的 `powerSaveBlocker`） |
 | 侧栏 | 无（webview 内下拉） | 原生 `WebContentsView` + 四条流：`sidebar:conversations-updated` / `sidebar:session-states-updated` / `sidebar:session-loaded-changed` / `sidebar:session-completion`（未读完成，见第 12 节「未读完成呼吸」） |
 | 虚拟文档 | 注册三个 `TextDocumentContentProvider` | 无（用 Monaco 辅助窗口） |
-| 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销全局快捷键、停托盘闪烁并销毁托盘、释放睡眠阻断、`shutdownCore()` |
+| 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销全局快捷键、停托盘闪烁并销毁托盘与提醒音播放窗口、释放睡眠阻断、`shutdownCore()` |
 
 ## 7. 启动期状态：写入入口与读取器
 
@@ -610,7 +610,7 @@ Electron 的 `sidebar:get-conversations` 直接读它，切换标签页不再每
 | 应用自有页面导航防御 | 无：webview 由 VS Code 承载，页面导航由 VS Code 约束，外链点击走 webview 侧拦截（`src/webview/App.tsx` 的 `openUrl`）→ `vscode.env.openExternal` | `guardViewNavigation`（`electron/viewNavigation.ts`）：聊天视图 / 侧栏 / 标题栏 / 下拉菜单 / 占位页 / 各预览窗口 / 对话框统一拒绝 `window.open` 与渲染进程发起的非 `file://` 导航，外部链接（http(s) / mailto / tel）交系统默认浏览器 |
 | 空闲回收 / 状态栏项 / 虚拟文档 provider / 命令注册 | 有 | 无 |
 | 系统睡眠阻断 | 无：VS Code 扩展没有电源 API，standalone 下由 Core 子进程自己阻断 | `setStatusListener` → `sleepBlocker.update(states)`（`electron/powerSaveBlocker.ts`） |
-| 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销快捷键、销毁托盘、释放睡眠阻断、`shutdownCore()` |
+| 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销快捷键、销毁托盘与提醒音播放窗口、释放睡眠阻断、`shutdownCore()` |
 
 **托盘状态点与「任务结束」闪烁提醒**属于 `statusListener` 这条流：它吃的是**会话状态流**，
 挂在 `ElectronConversationManager.setStatusListener` 上（`electron/main.ts`）。颜色与闪烁分两步：
@@ -623,6 +623,19 @@ Electron 的 `sidebar:get-conversations` 直接读它，切换标签页不再每
   提醒（聚合仍是 running，红点闪）；颜色取当前聚合状态。不算事件的迁移：waiting → running
   （用户已应答继续跑）、idle → waiting、running → running；新出现（启动 / 切换工作区恢复）与
   消失（关闭对话 / 切换工作区）的会话只更新级别表不产生事件。
+
+**提醒音**挂在同一处判定上（`electron/trayAttentionSound.ts` 的编排 + `electron/traySoundWindow.ts`
+的播放载体）：`startAttention` 启动闪烁的同时播一次 `electron/assets/meow.aac`——窗口在前台不提醒也
+就不出声，闪烁的亮 / 灭相位切换不重复出声，上一次没播完又来提醒则从头重播（单路）。
+音频不走 `<audio>`：该文件的 MP4 容器时长元数据与数据不一致（声明 ≈6ms，实际约 1.25s），
+Chromium 按声明时长立刻判定结束；播放载体改为隐藏窗口里 `decodeAudioData` 解到文件尾、
+经 `AudioBufferSourceNode` 出声（`autoplayPolicy: no-user-gesture-required`，播完即销毁窗口，
+不常驻）。播放失败只落 `tray-sound` 日志，不打断同一快照上的状态点与睡眠阻断。播放窗口
+不常驻：播完自毁，主窗口关闭（`mainWindow.on('closed')`）与应用退出（`will-quit`）时立即
+销毁——它也是 BrowserWindow，留着会让 `window-all-closed` 不再触发、`activate` 里
+「没有窗口才重建主窗口」的判定失效。**VS Code 宿主没有这条通道**，扩展包（vsix）也不
+携带该音频——它是 Electron 应用包里的资源。
+e2e 的整应用用例经启动开关关掉它（见 [e2e/README.md](../../e2e/README.md#隔离策略electron-app)）。
 
 托盘右键菜单（`buildTrayMenu()`）与托盘提示（`trayTooltip()`）是系统级 UI，文案与主菜单
 同源、走 `tt()` 按宿主语言取词；宿主语言在运行期变化时由 `onHostLocaleChanged` 订阅

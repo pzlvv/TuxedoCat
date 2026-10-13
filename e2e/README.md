@@ -63,6 +63,9 @@ e2e/
   Connection 无 lost 信号、session 路由有「唯一连接」退路，覆盖不了失败链路）。
 - `--multi-instance=<id>` 跳过单实例锁；实例后缀会被 main.ts 截断到 32 字符，
   预置 workspace-state.json 时必须用同样的短 id 规则。
+- `DISABLE_TRAY_SOUND=1`：关掉「任务结束」的托盘提醒音（`electron/trayAttentionSound.ts`
+  的 `TRAY_SOUND_DISABLE_ENV`，启动器与宿主共用同一常量）。用例在开发机上跑完整链路，
+  会话结束同样触发提醒——不出声免得与开发机上真实运行的应用撞在一起。托盘闪烁照旧。
 
 ## 已知坑（实证结论）
 

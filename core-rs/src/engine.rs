@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -1722,6 +1723,10 @@ impl Core {
     }
 
     /// `CoreRequest.toolPermissionRequested`：UI 上架工具卡片并回传权限结果
+    ///
+    /// 走 `plain_request`：这段往返不算「等用户」（真确认框由随后的 `userChoice` 弹），
+    /// 否则每次工具调用都会凭空多出一次 `running → waiting` 迁移——托盘 / 侧栏会闪一下，
+    /// 与 Embedded 不一致（`docs/core/session-runtime.md` 第 1 节）。
     fn request_tool_permission(
         &self,
         session_id: &str,
@@ -1731,8 +1736,7 @@ impl Core {
         display_args: &Value,
         agent_mode: &str,
     ) -> Option<Value> {
-        self.waiting_request(
-            session_id,
+        self.plain_request(
             json!({
                 "type": "toolPermissionRequested",
                 "sessionId": session_id,
@@ -1820,22 +1824,46 @@ impl Core {
         }
     }
 
-    /// 发一次 `CoreRequest` 并等待应答；期间会话标记为 waiting
-    fn waiting_request(&self, session_id: &str, request: Value) -> Option<Value> {
-        let (id, receiver) = {
+    /// 把请求交给总线（无订阅者时返回 `None`，由各调用点按自己的口径兜底）
+    fn send_request(&self, request: Value) -> Option<(u64, Receiver<Value>)> {
+        let mut bus = self.bus.lock().unwrap();
+        bus.request(request)
+    }
+
+    /// 等一次应答；超时从 pending 表移除，避免反复超时导致无界增长
+    fn await_response(&self, id: u64, receiver: Receiver<Value>) -> Option<Value> {
+        let response = bus::wait_response(receiver, Duration::from_secs(3_600));
+        if response.is_none() {
             let mut bus = self.bus.lock().unwrap();
-            bus.request(request)?
-        };
+            bus.cancel_request(id);
+        }
+        response
+    }
+
+    /// 发一次 `CoreRequest` 并等待应答，**不改变**会话的 `waiting`
+    ///
+    /// 给「宿主只是渲染 / 回传」的请求用（`toolPermissionRequested`：上架工具卡片、
+    /// 写 Edit / Write 的 `_meta`、manual 下打开宿主 diff）——宿主拿到 `permResult`
+    /// 就返回，`ask` 也直接返回（真确认框随后由 `userChoice` 弹），这段往返里并没有
+    /// 在等用户。与 Embedded 的 `emitToolPermissionRequest` 同口径：
+    /// `docs/core/session-runtime.md` 第 1 节。
+    fn plain_request(&self, request: Value) -> Option<Value> {
+        let (id, receiver) = self.send_request(request)?;
+        self.await_response(id, receiver)
+    }
+
+    /// 发一次 `CoreRequest` 并等待应答；在途期间把会话标记为 `waiting`
+    ///
+    /// 只给**真的在等用户**的请求用（`userChoice`）：用户选择框的弹出 / 应答由
+    /// `userChoicePendingChanged` 与这里共同决定 `waiting`（与 Embedded 的
+    /// `Integration.requestUserChoice` 同口径）。
+    fn waiting_request(&self, session_id: &str, request: Value) -> Option<Value> {
+        let (id, receiver) = self.send_request(request)?;
         if let Some(state) = self.session_if_exists(session_id) {
             state.lock().unwrap().waiting = true;
         }
         self.emit_runtime();
-        let response = bus::wait_response(receiver, Duration::from_secs(3_600));
-        if response.is_none() {
-            // 超时：从 pending 表移除，避免反复超时导致无界增长
-            let mut bus = self.bus.lock().unwrap();
-            bus.cancel_request(id);
-        }
+        let response = self.await_response(id, receiver);
         if let Some(state) = self.session_if_exists(session_id) {
             state.lock().unwrap().waiting = false;
         }

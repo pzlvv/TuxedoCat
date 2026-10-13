@@ -7,6 +7,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from 'playwrig
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
 import { workspaceRefKey } from '../../src/host/workspaceRef';
 import { CONFIG_DIR_NAME, CORE_ENV_VAR, EXTENSION_NAME } from '../../src/config/project';
+import { TRAY_SOUND_DISABLE_ENV } from '../../electron/trayAttentionSound';
 import type { MockLlm } from './mockLlmServer';
 
 /**
@@ -179,6 +180,9 @@ async function spawnApp(options: {
     APPDATA: roamingDir,
     [CORE_ENV_VAR]: options.coreKind ?? 'standalone',
     DISABLE_AUTO_COMPACT: '1',
+    // 整应用用例在开发机上跑，会话结束会触发托盘提醒音——关掉它，
+    // 免得与开发机上真实运行的应用（或用户正在听的其它声音）撞在一起
+    [TRAY_SOUND_DISABLE_ENV]: '1',
   };
   delete env.ELECTRON_RUN_AS_NODE;
 
