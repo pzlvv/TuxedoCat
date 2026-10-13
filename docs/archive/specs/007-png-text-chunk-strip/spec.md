@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：Read 读 PNG 时剥离文本元数据块
@@ -73,14 +73,18 @@ Embedded 与 Standalone 对同一份 PNG 输入产出逐字节相同的载荷（
 - 剥离后只剩签名 + IHDR + IEND（文件本就没有 IDAT）：不新增校验、照原样发送，由 provider
   报错——与现状「校验不管像素数据」的口径一致。
 - 块类型大小写不同（如 `text`）：不是合法 PNG 块类型，不剥离、原样保留。
+- 剥离的前置条件是「字节已通过结构校验」（Read 分支先校验后剥离）；前置不成立时不静默
+  发回原始字节——Embedded 抛错、Standalone 返回失败标识并由 Read 转成与校验失败同形的
+  工具错误。该分支按构造不可达（校验与剥离共用同一份块遍历）。
 - 超过 15MB 的 PNG：仍按磁盘文件大小报 `Image file too large to read`（剥离在大小判定之后，
   判定口径不变）。
 
 ## 非目标
 
-- 不剥离非文本块（`eXIf` / `iCCP` / `gAMA` / `sRGB` / `tIME` / `pHYs` / APNG 的 `acTL` 等）：
-  本次范围由评审裁定为三类文本块；若实测非文本块体积成为问题，去向
-  [TODO.md](../../TODO.md)（另开 spec 时按同一口径登记对照表与两侧实现）。
+- 不剥离非文本块（PNG 的非文本 ancillary 块：EXIF、色彩配置、物理尺寸、APNG 动画控制等，
+  如 eXIf / iCCP / gAMA / sRGB / tIME / pHYs / acTL）：本次范围由评审裁定为三类文本块；
+  若实测非文本块体积成为问题，去向 [TODO.md](../../TODO.md)（另开 spec 时按同一口径登记
+  对照表与两侧实现）。
 - 不改其他图片格式的元数据（JPEG 的 APPn / EXIF、WebP 的 XMP、GIF 的注释扩展块）。
 - 不做像素解码、重编码或 CRC 校验。
 - 不做磁盘文件的元数据清理（不写回文件）。
@@ -99,9 +103,9 @@ content block（[docs/features/user-stories.md](../../docs/features/user-stories
 
 | 需求 | 实现落点 | 测试落点 | 覆盖 |
 | --- | --- | --- | --- |
-| FR-001 | `src/core/tools/read/` 的 PNG 文本块剥离与 `core-rs/src/tools.rs` 的 Read 图片分支 | `src/test/imageValidationParity.test.ts`、`core-rs/src/tools_tests.rs`（对照表驱动） | 自动 |
+| FR-001 | `src/core/tools/read/` 的 PNG 文本块剥离与 `core-rs/src/tools.rs` 的 Read 图片分支 | `src/test/pngTextChunkStripParity.test.ts`、`core-rs/src/tools_tests.rs`（对照表驱动） | 自动 |
 | FR-002 | 同上（整块移除，保留块字节不变） | 同上（剥离结果再走一次既有结构校验） | 自动 |
-| FR-003 | 同上（剥离只在 `image/png` 分支内发生） | 同上（非 PNG 载荷逐字节断言 + 既有错误文案用例不改） | 自动 |
+| FR-003 | 同上（剥离只在 `image/png` 分支内发生） | 同上（JPEG / GIF / WebP / BMP 四种格式的载荷逐字节断言 + 既有错误文案用例不改） | 自动 |
 | FR-004 | 共享对照表（`src/test/fixtures/` 的图片对照表） | 两侧对照表用例（TS / Rust 同表） | 自动 |
 
 ## 待澄清
@@ -111,8 +115,14 @@ content block（[docs/features/user-stories.md](../../docs/features/user-stories
 
 ## 收敛记录
 
-收敛时由 /converge 填写，结论只分三类。
-
 - 已满足：
+  - FR-001（AC-1 / AC-2 / AC-3）：两侧实现（`src/core/tools/read/imageValidation.ts` 的 `walkPngChunks` / `stripPngTextChunks`、`core-rs/src/tools.rs` 的 `png_chunk_bounds` / `strip_png_text_chunks`）＋共享对照表 `pngTextChunkStrip.json` 8 例（无文本块原样返回、`tEXt` / `zTXt` / `iTXt` 各一、三类连续混合、与非文本块交错只剥文本块、文本块位于 IHDR 之前、小写 `text` 原样保留）。对照表的期望字节由独立参考实现生成，且每例的 CRC 与 IDAT 压缩流另经独立校验——不是拿被测代码自证。TS 侧 `pngTextChunkStripParity.test.ts` 逐例断言 `stripPngTextChunks` == 期望字节，并用真实 `ReadTool.call` 断言 image block 载荷为剥离后字节；Rust 侧 `png_text_chunk_strip_parity_tests` 断言 `strip_png_text_chunks` == 同表 + 端到端 image block 载荷。
+  - FR-002（AC-4）：对照表每例的期望字节再走一次 `validateImageBytes`（两侧共用的校验表 15 例不改仍绿），锁定「剥离结果仍是结构自洽的 PNG」。
+  - FR-003（AC-5 / AC-6 / AC-7）：非 PNG 载荷逐字节原样——TS 用例覆盖 JPEG / GIF / WebP / BMP 四种格式（样本取自 `imageValidation.json` 的合法用例，两侧同源），Rust 用例 `read_keeps_non_png_payloads_untouched` 同四例；读后磁盘文件内容与修改时间不变由 TS 用例断言；校验失败文案不变由既有用例锁定（`imageValidationParity.test.ts` 的签名不符用例、Rust 的图片不符 / 截断 / 尾随字节用例一字未改即绿）。
+  - FR-004（AC-8）：同一份 `pngTextChunkStrip.json` 被两侧消费（TS 断言「本表 == Embedded 结果」，Rust 断言「Rust == 本表」），同表即同载荷。
+  - 影响基线 delta 已并入：[docs/core/core-parity.md 第 4 节](../../docs/core/core-parity.md#4-已由对照表锁定的对等面)对照表新增 `pngTextChunkStrip.json` 行（Embedded `stripPngTextChunks` ↔ Standalone `strip_png_text_chunks`）；未新增文档，`docs/README.md` 地图不变；无新增 US（Core 内部载荷处理，Read 的 image block 形态不变，见「对需求基线的影响」）。
 - 偏差：
-- 未做：
+  - AC-5 收敛期补测：AC 原文列举 JPEG / GIF / WebP / BMP 四种非 PNG 格式，实施期用例只覆盖 JPEG。收敛反向对照补齐四种格式的两侧用例（TS 侧 27 断言、Rust 侧新增 `read_keeps_non_png_payloads_untouched`），代码未改。
+  - 追溯矩阵落点修正：FR-001 / FR-002 / FR-003 的测试落点原写 `imageValidationParity.test.ts`（该文件覆盖的是校验，不含剥离），收敛期改为真实落点 `pngTextChunkStripParity.test.ts`。
+  - spec 补记：剥离「前置条件不成立」时的行为（实现按 plan 定为不静默降级：Embedded 抛错、Standalone 返回失败标识转工具错误），spec 的「边界与错误路径」原文未写，收敛期补记一条；该分支按构造不可达。
+- 未做：（无——tasks 8/8 全勾，无回写项）

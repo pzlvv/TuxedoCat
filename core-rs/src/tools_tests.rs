@@ -2906,6 +2906,45 @@ mod png_text_chunk_strip_parity_tests {
         // 磁盘文件不被改写
         assert_eq!(std::fs::read(sandbox.workspace.join("shot.png")).unwrap(), input);
     }
+
+    #[test]
+    fn read_keeps_non_png_payloads_untouched() {
+        // 非 PNG 图片（JPEG / GIF / WebP / BMP）的载荷逐字节原样：样本取自与 Embedded
+        // 共享的 `imageValidation.json`（valid 用例），与校验测试同一份字节来源。
+        const IMAGE_FIXTURE: &str = include_str!("../../src/test/fixtures/imageValidation.json");
+        let sandbox = Sandbox::new("tools-read-non-png-payload");
+        let fixture: Value = serde_json::from_str(IMAGE_FIXTURE).expect("对照表必须是合法 JSON");
+        let cases = fixture
+            .get("cases")
+            .and_then(Value::as_array)
+            .expect("对照表缺少 cases");
+        for (name, file_name, media_type) in [
+            ("jpeg-valid", "photo.jpg", "image/jpeg"),
+            ("gif-valid", "anim.gif", "image/gif"),
+            ("webp-valid", "shot.webp", "image/webp"),
+            ("bmp-valid", "old.bmp", "image/bmp"),
+        ] {
+            let case = cases
+                .iter()
+                .find(|case| case["name"] == name)
+                .expect("对照表缺少样本");
+            let bytes = decode_hex(case["hex"].as_str().expect("hex"));
+            std::fs::write(sandbox.workspace.join(file_name), &bytes).unwrap();
+            let outcome = execute("Read", &json!({ "file_path": file_name }), &context(&sandbox));
+            assert_eq!(
+                outcome.blocks(),
+                Some(&json!([{
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": base64_encode(&bytes),
+                    },
+                }])),
+                "{name} 的载荷被改写"
+            );
+        }
+    }
 }
 
 #[test]

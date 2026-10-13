@@ -30,8 +30,22 @@ interface StripCase {
 
 const FIXTURE = path.resolve(__dirname, '../../../src/test/fixtures/pngTextChunkStrip.json');
 
-/** 内容是 JPEG（签名 + EOI）：非 PNG 图片的载荷必须逐字节原样发出 */
-const JPEG_HEX = 'ffd8ffe000104a46494600010100000100010000ffd9';
+/** 图片校验对照表：非 PNG 的合法样本取自这里（与校验测试同一份字节来源） */
+const IMAGE_FIXTURE = path.resolve(__dirname, '../../../src/test/fixtures/imageValidation.json');
+
+interface ImageCase {
+  name: string;
+  mediaType: string;
+  hex: string;
+}
+
+/** 非 PNG 图片：载荷必须逐字节原样发出（不触碰 EXIF / XMP / 注释等元数据） */
+const NON_PNG_SAMPLES: { caseName: string; fileName: string; mediaType: string }[] = [
+  { caseName: 'jpeg-valid', fileName: 'photo.jpg', mediaType: 'image/jpeg' },
+  { caseName: 'gif-valid', fileName: 'anim.gif', mediaType: 'image/gif' },
+  { caseName: 'webp-valid', fileName: 'shot.webp', mediaType: 'image/webp' },
+  { caseName: 'bmp-valid', fileName: 'old.bmp', mediaType: 'image/bmp' },
+];
 
 function contextFor(cwd: string) {
   return {
@@ -97,15 +111,31 @@ async function run(): Promise<void> {
       );
     }
 
-    // 非 PNG 图片：载荷逐字节原样（不触碰 JPEG 的元数据）
-    fs.writeFileSync(path.join(dir, 'photo.jpg'), Buffer.from(JPEG_HEX, 'hex'));
-    const jpegResult = await (ReadTool as any).call({ file_path: 'photo.jpg' }, contextFor(dir));
-    const jpegMapped = (ReadTool as any).mapToolResultToToolResultBlockParam(jpegResult.data, 't2');
-    check(
-      '非 PNG 图片：载荷逐字节原样',
-      jpegMapped.content[0]?.source?.media_type === 'image/jpeg'
-        && jpegMapped.content[0]?.source?.data === Buffer.from(JPEG_HEX, 'hex').toString('base64'),
-    );
+    // 非 PNG 图片：载荷逐字节原样（不触碰 JPEG / GIF / WebP / BMP 的元数据）
+    const imageFixture = JSON.parse(fs.readFileSync(IMAGE_FIXTURE, 'utf8')) as {
+      cases: ImageCase[];
+    };
+    const samples = NON_PNG_SAMPLES.map((sample) => ({
+      ...sample,
+      testCase: imageFixture.cases.find((c) => c.name === sample.caseName),
+    }));
+    check('图片对照表含全部非 PNG 样本', samples.every((sample) => sample.testCase !== undefined));
+
+    for (const sample of samples) {
+      if (!sample.testCase) continue;
+      fs.writeFileSync(path.join(dir, sample.fileName), Buffer.from(sample.testCase.hex, 'hex'));
+      const result = await (ReadTool as any).call(
+        { file_path: sample.fileName },
+        contextFor(dir),
+      );
+      const mapped = (ReadTool as any).mapToolResultToToolResultBlockParam(result.data, 't2');
+      check(
+        `${sample.mediaType}：载荷逐字节原样`,
+        mapped.content[0]?.source?.media_type === sample.mediaType
+          && mapped.content[0]?.source?.data ===
+            Buffer.from(sample.testCase.hex, 'hex').toString('base64'),
+      );
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
