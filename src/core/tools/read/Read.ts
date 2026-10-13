@@ -9,6 +9,8 @@
  *
  * 图片：扩展名声明 media_type 后还要过一遍「魔数 + 结构完整性」校验
  * （`imageValidation.ts`），内容与格式不符时报错而不是发非法 image block。
+ * 校验通过后 PNG 再剥离文本元数据块（`tEXt` / `zTXt` / `iTXt`）才发出，
+ * 其余格式原样发送；磁盘文件始终只读。
  */
 
 import * as fs from 'fs/promises';
@@ -29,6 +31,7 @@ import {
   IMAGE_MEDIA_TYPES,
   MAX_IMAGE_SIZE_BYTES,
   imageValidationErrorMessage,
+  stripPngTextChunks,
   validateImageBytes,
 } from './imageValidation.js';
 
@@ -421,6 +424,9 @@ export const ReadTool = buildTool({
         if (failure) {
           throw new Error(imageValidationErrorMessage(filePath, mediaType, failure));
         }
+        // PNG 的文本注释块与像素无关，发送前整块剥离（磁盘文件不动）
+        const payload =
+          mediaType === 'image/png' ? stripPngTextChunks(imageBuffer) : imageBuffer;
         return {
           data: {
             content: '',
@@ -431,7 +437,7 @@ export const ReadTool = buildTool({
             truncatedByBytes: false,
             image: {
               mediaType,
-              data: imageBuffer.toString('base64'),
+              data: Buffer.from(payload).toString('base64'),
             },
           },
         };

@@ -1709,17 +1709,23 @@ fn image_validation_reason_text(reason: &str) -> &'static str {
     }
 }
 
-/// PNG：签名 + 逐块走到 IEND（块长度自洽、IEND 是最后一块且长度为 0）
-fn validate_png(bytes: &[u8]) -> Option<&'static str> {
-    const SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-    if !bytes.starts_with(&SIGNATURE) {
-        return Some("signature");
-    }
-    let mut offset = SIGNATURE.len();
+/// PNG 文件签名（8 字节）
+const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+/// PNG 里承载文本注释的块类型（作者 / 生成软件 / 提示词等，与像素无关）
+const PNG_TEXT_CHUNK_TYPES: [[u8; 4]; 3] = [*b"tEXt", *b"zTXt", *b"iTXt"];
+
+/// 逐块遍历 PNG（前置：签名已匹配），返回 `(块起点, 块尾后一位, 块类型)` 列表。
+///
+/// 块格式为「长度(4, BE) + 类型(4) + 数据(length) + CRC(4)」。校验与文本块剥离共用
+/// 这一份遍历——两侧对「块边界」的判断必须同源（docs/core/core-parity.md 第 4 节）。
+fn png_chunk_bounds(bytes: &[u8]) -> Result<Vec<(usize, usize, [u8; 4])>, &'static str> {
+    let mut chunks = Vec::new();
+    let mut offset = PNG_SIGNATURE.len();
     loop {
         // 连块头（长度 + 类型）都不完整：后面不可能再有 IEND
         if offset + 8 > bytes.len() {
-            return Some("missing-end-marker");
+            return Err("missing-end-marker");
         }
         let length = u32::from_be_bytes([
             bytes[offset],
@@ -1729,21 +1735,66 @@ fn validate_png(bytes: &[u8]) -> Option<&'static str> {
         ]) as u64;
         let end = offset as u64 + 12 + length;
         if end > bytes.len() as u64 {
-            return Some("truncated");
+            return Err("truncated");
         }
         let end = end as usize;
-        if &bytes[offset + 4..offset + 8] == b"IEND" {
+        let chunk_type = [
+            bytes[offset + 4],
+            bytes[offset + 5],
+            bytes[offset + 6],
+            bytes[offset + 7],
+        ];
+        if &chunk_type == b"IEND" {
             if length != 0 {
-                return Some("malformed");
+                return Err("malformed");
             }
-            return if end == bytes.len() {
-                None
-            } else {
-                Some("trailing-data")
-            };
+            if end != bytes.len() {
+                return Err("trailing-data");
+            }
+            chunks.push((offset, end, chunk_type));
+            return Ok(chunks);
         }
+        chunks.push((offset, end, chunk_type));
         offset = end;
     }
+}
+
+/// PNG：签名 + 逐块走到 IEND（块长度自洽、IEND 是最后一块且长度为 0）
+fn validate_png(bytes: &[u8]) -> Option<&'static str> {
+    if !bytes.starts_with(&PNG_SIGNATURE) {
+        return Some("signature");
+    }
+    png_chunk_bounds(bytes).err()
+}
+
+/// 剥离 PNG 的文本元数据块（`tEXt` / `zTXt` / `iTXt`），返回发给 LLM 的载荷。
+///
+/// 这三类块只承载文本注释，对模型看图没有价值，却可能让 base64 载荷膨胀到数百 KB。
+/// 整块移除不触碰保留块的字节，因此保留块的 CRC 仍然有效、图片渲染结果不变；块类型
+/// 按 ASCII 精确匹配（大小写敏感），与块出现的位置、数量无关；没有可剥离的块时原样
+/// 返回输入字节。判定与 Embedded 的 `stripPngTextChunks` 同语义，两侧共用对照表
+/// `src/test/fixtures/pngTextChunkStrip.json`。
+///
+/// 前置条件：`bytes` 已通过 [`image_validation_failure`]（结构自洽）。
+pub fn strip_png_text_chunks(bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let chunks = png_chunk_bounds(bytes)?;
+    if !chunks
+        .iter()
+        .any(|(_, _, chunk_type)| PNG_TEXT_CHUNK_TYPES.contains(chunk_type))
+    {
+        return Ok(bytes.to_vec());
+    }
+
+    // 签名不属于任何块，单独保留在最前
+    let mut payload = Vec::with_capacity(bytes.len());
+    payload.extend_from_slice(&bytes[..PNG_SIGNATURE.len()]);
+    for (start, end, chunk_type) in chunks {
+        if PNG_TEXT_CHUNK_TYPES.contains(&chunk_type) {
+            continue;
+        }
+        payload.extend_from_slice(&bytes[start..end]);
+    }
+    Ok(payload)
 }
 
 /// JPEG：SOI（FF D8）+ 紧随的标记前缀 FF，且以 EOI（FF D9）收尾
@@ -2459,12 +2510,27 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
                 ));
             }
             // 以 image content block 返回（模型直接看到图片），而不是把 base64 拼成文本。
+            // PNG 的文本注释块与像素无关，发送前整块剥离（磁盘文件不动）。
+            let payload = if media_type == "image/png" {
+                match strip_png_text_chunks(&bytes) {
+                    Ok(payload) => payload,
+                    // 上方校验已通过，走到这里说明遍历与校验漂移
+                    Err(reason) => {
+                        return ToolOutcome::Error(format!(
+                            "Invalid image file: {file_path}. The content is not a valid {media_type} image ({}).",
+                            image_validation_reason_text(reason)
+                        ))
+                    }
+                }
+            } else {
+                bytes
+            };
             return ToolOutcome::SuccessBlocks(json!([{
                 "type": "image",
                 "source": {
                     "type": "base64",
                     "media_type": media_type,
-                    "data": base64_encode(&bytes),
+                    "data": base64_encode(&payload),
                 },
             }]));
         }

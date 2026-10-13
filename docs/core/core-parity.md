@@ -449,6 +449,7 @@ Embedded 的 Reminder 重试在每次 `submitMessage` 后固定等待 1.5s 再�
 | `editResultParity.json` | `EditTool` | `tools::run_edit` |
 | `binaryDetection.json` | `isbinaryfile` | `tools::is_binary_content` |
 | `imageValidation.json` | `tools/read/imageValidation.ts` 的 `validateImageBytes` | `tools::image_validation_failure` |
+| `pngTextChunkStrip.json` | `tools/read/imageValidation.ts` 的 `stripPngTextChunks` | `tools::strip_png_text_chunks` |
 | `historyChainParity.json` | `loadConversation` | `history::load_messages` |
 | `jsParity.json` | `formatFileSize` / `generateHeadTailPreview` / Bash `validateInput` | `tools::format_file_size` / `util::clamp_output` / `tools::validate_input` |
 | `jsValueParity.json` | `parseDataUrl` / `String()` | `engine::split_data_url` / `util::js_string` |

@@ -1,5 +1,5 @@
 /**
- * 图片合法性校验（Embedded Core 侧）。
+ * 图片合法性校验与 PNG 载荷剥离（Embedded Core 侧）。
  *
  * Read 按**扩展名**给图片定 media_type，但扩展名不是事实：`.png` 里可能是任意
  * 二进制。发给 LLM 的 image content block 一旦不是真图片，provider 会整轮报错，
@@ -8,8 +8,13 @@
  * 文件头必须匹配扩展名声明的格式，且声明长度 / 结束标记必须自洽（CRC 与像素数据
  * 的解码交给 provider，不做重复实现）。
  *
+ * 校验通过后，PNG 还要过一遍 {@link stripPngTextChunks}：文本注释块（`tEXt` /
+ * `zTXt` / `iTXt`）与像素无关却可能让 base64 载荷膨胀，发送前整块移除。校验与剥离
+ * 共用同一份块遍历，两侧对「块边界」的判断同源。
+ *
  * 判定规则与 Standalone Core 的 `tools::image_validation_failure` 一一对应，
- * 两侧共用对照表 `src/test/fixtures/imageValidation.json`（docs/core/core-parity.md 第 4 节）。
+ * 两侧共用对照表 `src/test/fixtures/imageValidation.json`（docs/core/core-parity.md 第 4 节）；
+ * 剥离结果由 `src/test/fixtures/pngTextChunkStrip.json` 锁定同一节。
  */
 
 /** 支持的图片扩展名 -> MIME 类型（图片以 base64 返回，不受文本大小限制） */
@@ -92,33 +97,86 @@ function startsWithBytes(bytes: Uint8Array, prefix: readonly number[]): boolean 
   return true;
 }
 
-/**
- * PNG：签名 + 逐块走到 IEND。
- *
- * 块格式为「长度(4, BE) + 类型(4) + 数据(length) + CRC(4)」。这里只校验块长度自洽、
- * IEND 是最后一块且长度为 0——CRC 值不校验（那是解码方的职责，且能挡住的情况
- * 「文件被改坏一个字节」在 provider 侧同样会报错）。
- */
-function validatePng(bytes: Uint8Array): ImageValidationFailure | null {
-  if (!startsWithBytes(bytes, PNG_SIGNATURE)) return 'signature';
+/** PNG 块边界：`end` 为块尾后一位，块 = 长度(4) + 类型(4) + 数据 + CRC(4) */
+interface PngChunkBounds {
+  type: string;
+  start: number;
+  end: number;
+}
 
+/**
+ * 逐块遍历 PNG（前置：签名已匹配）。
+ *
+ * 块格式为「长度(4, BE) + 类型(4) + 数据(length) + CRC(4)」。校验与文本块剥离共用
+ * 这一份遍历——两侧对「块边界」的判断必须同源（docs/core/core-parity.md 第 4 节）。
+ * 返回失败原因时不产出块列表。
+ */
+function walkPngChunks(
+  bytes: Uint8Array,
+): { chunks: PngChunkBounds[] } | { failure: ImageValidationFailure } {
+  const chunks: PngChunkBounds[] = [];
   let offset = PNG_SIGNATURE.length;
   while (true) {
     // 连块头（长度 + 类型）都不完整：后面不可能再有 IEND
-    if (offset + 8 > bytes.length) return 'missing-end-marker';
+    if (offset + 8 > bytes.length) return { failure: 'missing-end-marker' };
 
     const length = readUint32BE(bytes, offset);
     const end = offset + 12 + length;
-    if (end > bytes.length) return 'truncated';
+    if (end > bytes.length) return { failure: 'truncated' };
 
-    const chunkType = asciiPrefix(bytes.subarray(offset + 4), 4);
-    if (chunkType === 'IEND') {
-      if (length !== 0) return 'malformed';
-      return end === bytes.length ? null : 'trailing-data';
+    const type = asciiPrefix(bytes.subarray(offset + 4), 4);
+    if (type === 'IEND') {
+      if (length !== 0) return { failure: 'malformed' };
+      if (end !== bytes.length) return { failure: 'trailing-data' };
+      chunks.push({ type, start: offset, end });
+      return { chunks };
     }
 
+    chunks.push({ type, start: offset, end });
     offset = end;
   }
+}
+
+/**
+ * PNG：签名 + 逐块走到 IEND。
+ *
+ * 只校验块长度自洽、IEND 是最后一块且长度为 0——CRC 值不校验（那是解码方的职责，
+ * 且能挡住的情况「文件被改坏一个字节」在 provider 侧同样会报错）。
+ */
+function validatePng(bytes: Uint8Array): ImageValidationFailure | null {
+  if (!startsWithBytes(bytes, PNG_SIGNATURE)) return 'signature';
+  const walk = walkPngChunks(bytes);
+  return 'failure' in walk ? walk.failure : null;
+}
+
+/** PNG 里承载文本注释的块类型（作者 / 生成软件 / 提示词等，与像素无关） */
+const PNG_TEXT_CHUNK_TYPES: ReadonlySet<string> = new Set(['tEXt', 'zTXt', 'iTXt']);
+
+/**
+ * 剥离 PNG 的文本元数据块（`tEXt` / `zTXt` / `iTXt`），返回发给 LLM 的载荷。
+ *
+ * 这三类块只承载文本注释，对模型看图没有价值，却可能让 base64 载荷膨胀到数百 KB。
+ * 整块移除不触碰保留块的字节，因此保留块的 CRC 仍然有效、图片渲染结果不变；块类型
+ * 按 ASCII 精确匹配（大小写敏感），与块出现的位置、数量无关；没有可剥离的块时原样
+ * 返回输入字节。判定与 Standalone 的 `tools::strip_png_text_chunks` 同语义，两侧共用
+ * 对照表 `src/test/fixtures/pngTextChunkStrip.json`。
+ *
+ * 前置条件：`bytes` 已通过 {@link validateImageBytes}（结构自洽）。
+ */
+export function stripPngTextChunks(bytes: Uint8Array): Uint8Array {
+  const walk = walkPngChunks(bytes);
+  if ('failure' in walk) {
+    // 调用点先校验后剥离；走到这里说明接线错了，直接抛错而不是静默发回原始字节
+    throw new Error(`stripPngTextChunks: malformed PNG (${walk.failure})`);
+  }
+
+  const kept = walk.chunks.filter((chunk) => !PNG_TEXT_CHUNK_TYPES.has(chunk.type));
+  if (kept.length === walk.chunks.length) return bytes;
+
+  // 签名不属于任何块，单独保留在最前
+  const parts: Uint8Array[] = [bytes.subarray(0, PNG_SIGNATURE.length)];
+  for (const chunk of kept) parts.push(bytes.subarray(chunk.start, chunk.end));
+  return Buffer.concat(parts);
 }
 
 /** JPEG：SOI（FF D8）+ 紧随的标记前缀 FF，且以 EOI（FF D9）收尾 */

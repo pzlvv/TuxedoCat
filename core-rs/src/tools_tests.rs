@@ -2838,6 +2838,76 @@ mod image_validation_parity_tests {
     }
 }
 
+mod png_text_chunk_strip_parity_tests {
+    use super::*;
+
+    /// 与 Embedded 共用同一份对照表（`src/test/fixtures/pngTextChunkStrip.json`）。
+    ///
+    /// TS 侧测试断言「本表 == `stripPngTextChunks` 的真实结果」；这里断言
+    /// 「Rust 的 `strip_png_text_chunks` == 本表」。
+    const FIXTURE: &str = include_str!("../../src/test/fixtures/pngTextChunkStrip.json");
+
+    #[test]
+    fn matches_the_shared_png_text_chunk_strip_table() {
+        let fixture: Value = serde_json::from_str(FIXTURE).expect("对照表必须是合法 JSON");
+        let cases = fixture
+            .get("cases")
+            .and_then(Value::as_array)
+            .expect("对照表缺少 cases");
+        assert!(!cases.is_empty(), "对照表不能为空");
+        let mut failures: Vec<String> = Vec::new();
+        for case in cases {
+            let name = case.get("name").and_then(Value::as_str).unwrap_or("<unnamed>");
+            let hex = case.get("hex").and_then(Value::as_str).unwrap_or("");
+            let expected = decode_hex(case.get("expectedHex").and_then(Value::as_str).unwrap_or(""));
+            match strip_png_text_chunks(&decode_hex(hex)) {
+                Ok(payload) if payload == expected => {}
+                Ok(payload) => failures.push(format!(
+                    "{name}: 剥离结果不符（{} 字节，期望 {} 字节）",
+                    payload.len(),
+                    expected.len()
+                )),
+                Err(reason) => failures.push(format!("{name}: 剥离失败（{reason}）")),
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "PNG 文本块剥离与 Embedded 不一致：\n{}",
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn read_strips_png_text_chunks_from_the_image_block() {
+        // 工具端到端：Read 发出的 image block 载荷是剥离后的字节，磁盘文件不动
+        let sandbox = Sandbox::new("tools-read-png-text-chunk");
+        let fixture: Value = serde_json::from_str(FIXTURE).expect("对照表必须是合法 JSON");
+        let case = fixture["cases"]
+            .as_array()
+            .and_then(|cases| cases.iter().find(|case| case["name"] == "png-text-chunk"))
+            .expect("对照表缺少 png-text-chunk");
+        let input = decode_hex(case["hex"].as_str().expect("hex"));
+        let expected = decode_hex(case["expectedHex"].as_str().expect("expectedHex"));
+        assert_ne!(input, expected, "用例本身应含可剥离的文本块");
+
+        std::fs::write(sandbox.workspace.join("shot.png"), &input).unwrap();
+        let outcome = execute("Read", &json!({ "file_path": "shot.png" }), &context(&sandbox));
+        assert_eq!(
+            outcome.blocks(),
+            Some(&json!([{
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": base64_encode(&expected),
+                },
+            }]))
+        );
+        // 磁盘文件不被改写
+        assert_eq!(std::fs::read(sandbox.workspace.join("shot.png")).unwrap(), input);
+    }
+}
+
 #[test]
 fn read_treats_text_content_with_an_image_extension_as_text() {
     // 对齐 Embedded：图片分支在 `isbinaryfile` 之内——扩展名像图片但内容是文本时按文本读。
