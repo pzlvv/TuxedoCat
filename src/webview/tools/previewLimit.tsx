@@ -223,12 +223,13 @@ export function usePreviewLimit(
  * - tail（Bash）：缩略态显示的是**末尾**行而非开头行（与流式期间「最新输出
  *   在底部」的阅读位置一致），提示条放在输出框**上方**、chevron 朝上——
  *   更多内容在上方，点击向上展开（提示条让出的高度由输出框接管，卡片总高不变）。
- *   外框与默认变体镜像：自绘「左 / 右 / 上 / 下」四边边框并倒圆上角，下边那一条
- *   即与输出框之间的分割线（默认变体的分割线来自上方预览框的下边框）。
+ *   提示条整条铺满命令卡片，它的上 / 左 / 右三边正好压在卡片已有的线条上（上边与
+ *   命令行下边框重合、左右与卡片外框重合），再自绘这三边就是双圈——只自绘下边那
+ *   一条，作为它与输出框之间的分割线。
  */
 
 /**
- * tail 变体提示条的固定高度（px，含上下各 1px 边框）。
+ * tail 变体提示条的固定高度（px，含下边 1px 分割线）。
  *
  * 展开时提示条不再渲染、其高度让给输出框（`Bash.tsx` 用
  * `OUTPUT_BOX_HEIGHT + TAIL_HINT_HEIGHT` 撑开），因此这个高度必须与提示条实际占位
@@ -256,12 +257,12 @@ export const PreviewMoreHint: React.FC<{
       cursor: expanded ? 'default' : 'pointer',
       color: colors.textSystem,
       // 自绘外框按变体：默认变体只画「左 / 右 / 下」三边（上边由预览框的下边框
-      // 充当分割线）；tail 变体是它的镜像，画满四边、倒圆上角，下边那一条即与
-      // 输出框之间的分割线。
+      // 充当分割线）；tail 变体整条铺满命令卡片，上 / 左 / 右三边与卡片已有线条
+      // 重合，只画下边那一条作分割线——用卡片边框色，与命令行下边框、卡片外框同色。
       ...(tail
-        ? { border: '1px solid', borderColor: colors.textSystem, borderRadius: '4px 4px 0 0' }
+        ? { border: 'none', borderBottom: `1px solid ${colors.border ?? colors.textSystem}` }
         : { border: '1px solid', borderColor: colors.textSystem, borderTop: 'none', borderRadius: '0 0 4px 4px' }),
-      // tail（Bash）：固定高度让「展开让位」精确；上下边框占掉 2px，纵向内边距
+      // tail（Bash）：固定高度让「展开让位」精确；下边框占掉 1px，纵向内边距
       // 交给 flex 居中（写死 padding 会让文字被边框压住）。
       ...(tail
         ? {

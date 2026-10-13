@@ -6,8 +6,8 @@ import type { WebviewHandle } from '../helpers/webviewHarness';
  * US-14 Bash 输出折叠（与 Edit/Write 预览同一套 usePreviewLimit 实现，
  * 限高为输出框常量高度）：执行完成后缩略态只显示**末尾**实测放得下的整行
  * （overflow hidden 不出现滚动条，可见窗口钉在底部）；提示条在输出框**上方**
- * （tail 变体，chevron 朝上），外框与 Edit/Write 的提示条镜像——自绘四边边框、
- * 倒圆上角，下边那一条即与输出框之间的分割线；
+ * （tail 变体，chevron 朝上），整条铺满命令卡片、只自绘下边那一条作为与输出框之间的
+ * 分割线（上 / 左 / 右三边正好落在卡片已有的线条上，自绘就是双圈）；
  * 点击提示条展开后**提示条让位**：输出框接管它的高度（卡片总高不变），换成框内
  * 滚动条，初始视点仍在底部、可向上滚动。
  *
@@ -71,6 +71,9 @@ async function readCollapseState(): Promise<{
   hintTop: number;
   boxTop: number;
   hintBorderTopStyle: string;
+  hintBorderLeftStyle: string;
+  hintBorderRightStyle: string;
+  hintBorderBottomStyle: string;
 }> {
   return handle.page.evaluate(() => {
     const lastLine = Array.from(document.querySelectorAll('div'))
@@ -91,6 +94,9 @@ async function readCollapseState(): Promise<{
       hintTop: hint ? hint.getBoundingClientRect().top : NaN,
       boxTop: boxRect.top,
       hintBorderTopStyle: hint ? getComputedStyle(hint).borderTopStyle : 'missing',
+      hintBorderLeftStyle: hint ? getComputedStyle(hint).borderLeftStyle : 'missing',
+      hintBorderRightStyle: hint ? getComputedStyle(hint).borderRightStyle : 'missing',
+      hintBorderBottomStyle: hint ? getComputedStyle(hint).borderBottomStyle : 'missing',
     };
   });
 }
@@ -113,9 +119,12 @@ test('US-14 完成态缩略：框高恒定、只显示末尾整行、无滚动�
   expect(state.lastLineBottom).toBeLessThanOrEqual(state.boxBottom + 1);
   // 提示条位于输出框上方（tail 变体：更多内容在上方，向上展开）
   expect(state.hintTop).toBeLessThan(state.boxTop);
-  // tail 提示条：自绘四边边框（与 Edit/Write 提示条镜像），下边那一条即与输出框
-  // 之间的分割线
-  expect(state.hintBorderTopStyle).toBe('solid');
+  // tail 提示条：整条铺满命令卡片，上 / 左 / 右三边与卡片已有线条（命令行下边框、
+  // 卡片外框）重合，只自绘下边那一条作分割线
+  expect(state.hintBorderTopStyle).toBe('none');
+  expect(state.hintBorderLeftStyle).toBe('none');
+  expect(state.hintBorderRightStyle).toBe('none');
+  expect(state.hintBorderBottomStyle).toBe('solid');
   const divider = await page.evaluate(() => {
     const lastLine = Array.from(document.querySelectorAll('div'))
       .find((n) => n.textContent === 'line-060-END') as HTMLElement | undefined;
@@ -134,8 +143,8 @@ test('US-14 完成态缩略：框高恒定、只显示末尾整行、无滚动�
   });
   expect(divider.bottomStyle).toBe('solid');
   expect(divider.bottomWidth).toBe('1px');
-  // 倒圆上角：与输出框上方相接的那一侧是直角
-  expect(divider.borderRadius).toBe('4px 4px 0px 0px');
+  // 不自绘外框：没有圆角
+  expect(divider.borderRadius).toBe('0px');
   // 整条铺满命令卡片（比内缩的输出框宽）
   expect(divider.width).toBeGreaterThan(state.boxWidth);
   // 固定高度：展开时「提示条高度整体转给输出框」靠它精确成立
