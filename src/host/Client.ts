@@ -231,11 +231,7 @@ export class Client implements AssistantEventBus {
       onReady: (ready) => this.options.onConnectionReady?.(ready),
       mergeRuntimeStates: (connectionId, states) =>
         this.mergeRuntimeStates(connectionId, states),
-      onClosed: (closed) => {
-        this.connections.delete(closed.id);
-        this.runtimeStatesByConnection.delete(closed.id);
-        if (this.currentConnectionId === closed.id) this.currentConnectionId = null;
-      },
+      onClosed: (closed) => this.detachConnection(closed),
       disposeBus,
     });
 
@@ -267,14 +263,37 @@ export class Client implements AssistantEventBus {
     }
   }
 
+  /**
+   * 关闭一个 Connection：先摘除再 `dispose()`。
+   *
+   * `dispose()` 要等 Core 进程退出才回调 `onClosed`（Standalone 下是异步、有耗时的），
+   * 而 Connection 一进入关闭流程就不再是可路由目标。留在连接表里会让
+   * `connectionForSession` 的「唯一连接」退路被垂死连接撑大而失效——宿主按启动期占位
+   * 连接登记过的会话（空态视图 / 该目录下的对话）在释放时会被判成「查不到归属」直接
+   * 抛错（`docs/core/client-connection.md` 第 6 节），也会让 `connectionForWorkspacePath`
+   * 命中一个已关闭的 Connection。
+   */
   private async closeConnection(connection: Connection): Promise<void> {
+    this.detachConnection(connection);
+    await connection.dispose();
+  }
+
+  /**
+   * 把 Connection 从连接表与两张路由表摘除（幂等）。
+   *
+   * 关闭流程与 `onClosed` 共用：两条路径都要保证「关闭后不再有路由残留」，
+   * 谁先到都能收敛到同一状态。
+   */
+  private detachConnection(connection: Connection): void {
+    this.connections.delete(connection.id);
+    this.runtimeStatesByConnection.delete(connection.id);
+    if (this.currentConnectionId === connection.id) this.currentConnectionId = null;
     for (const [sessionId, id] of [...this.sessionToConnection]) {
       if (id === connection.id) this.sessionToConnection.delete(sessionId);
     }
     for (const [key, id] of [...this.workspaceToConnection]) {
       if (id === connection.id) this.workspaceToConnection.delete(key);
     }
-    await connection.dispose();
   }
 
   /**

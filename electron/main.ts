@@ -36,7 +36,7 @@ import { guardViewNavigation } from './viewNavigation.js';
 import { ElectronConversationManager } from './ElectronConversationManager.js';
 import { WebViewUI } from '../src/host/WebViewUI.js';
 import type { WebviewToHostMessage } from '../src/host/webviewMessages.js';
-import { normalizeWorkspacePath, sameWorkspace, dedupeWorkspacePaths } from '../src/host/workspacePaths.js';
+import { normalizeWorkspacePath, sameWorkspace } from '../src/host/workspacePaths.js';
 import { buildRemoteEndpoint, type RemoteConnectError } from '../src/host/remoteConnect.js';
 import {
   parseSshHistory,
@@ -60,8 +60,10 @@ import { getChatPlaceholderHtml, type ChatPlaceholderReason } from './chatPlaceh
 import { recordKnownHostFingerprint, SshHostKeyError } from '../src/host/standalone/sshClient.js';
 import { WorkspaceAvailabilityState } from './workspaceAvailability.js';
 import {
+  migrateLegacyWorkspaceFields,
   parseWorkspaceEntry as parseWorkspaceEntryShared,
   serializeWorkspaceRef as serializeWorkspaceRefShared,
+  type LegacyWorkspaceFields,
   type SerializedWorkspaceRef,
 } from '../src/host/workspaceState.js';
 
@@ -3810,31 +3812,16 @@ function migrateLegacyWorkspaceState(): void {
     for (const legacyFile of candidates) {
       if (!fs.existsSync(legacyFile)) continue;
       try {
-        const raw = JSON.parse(fs.readFileSync(legacyFile, 'utf-8')) as
-          (WorkspaceState & { lastWorkspace?: unknown }) | null;
-        if (!raw || typeof raw !== 'object') continue;
+        const raw = JSON.parse(fs.readFileSync(legacyFile, 'utf-8')) as unknown;
+        const migrated = migrateLegacyWorkspaceFields(raw);
+        if (!migrated) continue;
 
-        const { lastWorkspace, ...rest } = raw;
-        // 只做形状过滤、不按「目录存在」过滤：迁移后的读取路径（readOpenWorkspaces）
-        // 会把目录已不存在的本地项标记为不可用（红点 + 禁选），不在这里静默丢弃
-        const legacyOpen = Array.isArray(raw.openWorkspaces)
-          ? raw.openWorkspaces.filter(
-              (ws): ws is string => typeof ws === 'string' && ws.trim().length > 0,
-            )
-          : [];
-        const legacyLast = isValidWorkspaceDir(lastWorkspace) ? normalizeWorkspacePath(lastWorkspace) : undefined;
-        const open = dedupeWorkspacePaths(legacyOpen.length > 0 ? legacyOpen : legacyLast ? [legacyLast] : []);
-        const legacyActive =
-          typeof raw.activeWorkspace === 'string' && raw.activeWorkspace ? raw.activeWorkspace : undefined;
-        const fallbackActive = legacyLast ?? (open.length > 0 ? open[open.length - 1] : undefined);
-        const active = legacyActive
-          ? open.find((w) => sameWorkspace(w, legacyActive)) ?? fallbackActive
-          : fallbackActive;
-
+        // 旧字段 `lastWorkspace` 不再写回新文件（迁移只发生一次，读取路径只认新字段）
+        const { lastWorkspace: _legacyLast, ...rest } = raw as WorkspaceState & LegacyWorkspaceFields;
         writeWorkspaceState({
           ...rest,
-          openWorkspaces: open,
-          activeWorkspace: active ?? null,
+          openWorkspaces: migrated.openWorkspaces,
+          activeWorkspace: migrated.activeWorkspace,
         });
         console.log(`[main] migrated legacy workspace state from ${legacyFile}`);
         return;

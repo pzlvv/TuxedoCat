@@ -392,6 +392,45 @@ async function run(): Promise<void> {
     await harness.client.closeAll();
   }
 
+  // ── 6c. 关闭流程中的 Connection 不再是路由目标 ──
+  // 空态视图（无工作目录）在启动时生成的会话走「唯一连接」退路登记到占位 Connection；
+  // 打开第一个真实工作区时占位 Connection 进入异步销毁（dispose 要等 Core 退出），
+  // 此刻销毁空态视图会发 conversationClosed——连接表里若还留着垂死连接，数量判定
+  // 失效，这个「无归属」事件会直接抛错（桌面端启动期实测）。
+  {
+    const harness = createClientHarness();
+    harness.client.openWorkspace(emptyWorkspaceRef());
+    harness.client.emitToCore({ type: 'conversationStarted', sessionId: 's-empty' });
+    check('空态会话登记到占位 Connection', harness.client.workspacePathForSession('s-empty') === '');
+
+    harness.client.openWorkspace(WS_A);
+    check('关闭中的占位 Connection 立即摘除', harness.client.listConnections().length === 1);
+    let threw = false;
+    try {
+      harness.client.emitToCore({ type: 'conversationClosed', sessionId: 's-empty' });
+    } catch {
+      threw = true;
+    }
+    check('销毁空态视图不抛「查不到归属」', !threw);
+    check('空态会话改挂到唯一存活的 Connection', harness.client.workspacePathForSession('s-empty') === WS_A.path);
+    check('占位 Connection 仍被释放', harness.disposed === 1);
+    await harness.client.closeAll();
+  }
+
+  // ── 6d. 空引用占位不与「宿主当前目录」工作区撞键 ──
+  // 占位引用的 path 是空串：去重键若跑本地规范化会得到宿主进程的当前目录，
+  // 打开该目录时会被当成「重复打开」直接返回占位 Connection（那个工作区没有自己的 Core）。
+  {
+    const harness = createClientHarness();
+    const placeholder = harness.client.openWorkspace(emptyWorkspaceRef()) as Connection;
+    const cwdRef = localWorkspaceRef(process.cwd());
+    const opened = harness.client.openWorkspace(cwdRef) as Connection;
+    check('当前目录工作区新建 Connection', opened !== placeholder);
+    check('当前目录工作区可路由', harness.client.connectionForWorkspace(cwdRef) === opened);
+    check('占位 Connection 让位销毁', !harness.client.listConnections().includes(placeholder));
+    await harness.client.closeAll();
+  }
+
   // ── 7. bootstrapCore 按工作区装配 + 工作区打开 / 关闭事件 + shutdownCore ──
   {
     process.env[CORE_ENV_VAR] = 'standalone';

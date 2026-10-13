@@ -265,7 +265,9 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 
 一次性迁移：目标状态文件不存在时，从旧版本的状态文件（旧 userData 目录
 `<appData>/<productName>`（打包态）/ `<appData>/Electron`（开发态））搬迁，并把旧版本的单个
-`lastWorkspace` 提升为 `openWorkspaces` 的唯一一项 + `activeWorkspace`；迁移后不再回退读旧字段。
+`lastWorkspace` 提升为 `openWorkspaces` 的唯一一项 + `activeWorkspace`；迁移只做形状过滤
+（目录是否仍存在不参与判定），目录已不存在的本地项同样保留、由读取路径标记为不可用；
+迁移后不再回退读旧字段。
 
 ---
 

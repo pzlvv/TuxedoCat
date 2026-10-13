@@ -96,6 +96,9 @@ Connection 持有：
 | `path` | 那台机器上的目录 | `d:\git\demo` | `/home/alice/src/demo` |
 
 - `(scheme, endpoint)` 决定 Connection 的目标；`path` 是 Core 的会话工作目录。
+- 未打开工作目录时用空引用占位（`emptyWorkspaceRef`：`path` 为空串）；它没有目录，
+  去重键（`workspaceRefKey`）只取 `(scheme, endpoint)`，不进本地路径规范化
+  （`path.resolve('')` 得到宿主进程的当前目录，会与真实工作区撞键）。
 - **Core 只见 `path`**：endpoint 与凭证不下发到 Core，也不进入配置快照。
 - `auth` 是判别联合，`kind` 唯一决定控制通道怎么建（[docs/core/core-daemon.md 第 12 节](core-daemon.md#12-远程服务start--kill)）：
   只有 `{ kind: 'sshPassword' }`（`ssh`，口令只用于建 SSH 连接）。
@@ -163,6 +166,9 @@ Connection 持有：
   登记冲突时以先登记者为准并报错，不做静默覆盖。
 - 加载历史会话时，Client 按主表推导归属；推导不出时向各 Connection 查询会话列表，
   仍查不到则报错。
+- 只有一个**存活**的 Connection 时，查不到归属的会话按它登记（数量对上层透明的退路）；
+  已进入关闭流程的 Connection 在 `dispose()` 之前就从主表与派生表摘除，既不参与这个
+  数量判定，也不再是路由目标（`dispose()` 要等 Core 进程退出，等待期不得继续被路由）。
 - Connection 收到的 `CoreEvent` / `CoreRequest` 交给 Client；Client 按 `sessionId` 分发。
   总线载荷不带 `connectionId`。
 - 宿主按工作区路径登记会话归属（`sessionWorkspaceAssigned`）时，**本地路径按宿主口径判等、

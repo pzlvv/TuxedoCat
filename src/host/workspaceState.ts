@@ -15,6 +15,11 @@ import {
   type WorkspaceEndpoint,
   type WorkspaceRef,
 } from './workspaceRef.js';
+import {
+  dedupeWorkspacePaths,
+  normalizeWorkspacePath,
+  sameWorkspace,
+} from './workspacePaths.js';
 
 /** 落盘的工作区引用（`WorkspaceRef` 的序列化形态） */
 export interface SerializedWorkspaceRef {
@@ -78,4 +83,51 @@ export function parseSerializedAuth(value: unknown): WorkspaceAuth | null {
   return typeof auth.password === 'string' && auth.password.length > 0
     ? { kind: 'sshPassword', password: auth.password }
     : null;
+}
+
+/** 旧版本状态文件里与工作目录有关的字段（新版本读的是 `openWorkspaces` / `activeWorkspaceKey`） */
+export interface LegacyWorkspaceFields {
+  lastWorkspace?: unknown;
+  openWorkspaces?: unknown;
+  activeWorkspace?: unknown;
+}
+
+/** 迁移结果：新格式的打开集合（本地路径，规范化后）与活动项路径 */
+export interface MigratedWorkspaceFields {
+  openWorkspaces: string[];
+  activeWorkspace: string | null;
+}
+
+/**
+ * 把旧版本状态文件的工作目录字段迁移到新格式（纯函数，`electron/main.ts` 负责落盘）。
+ *
+ * - 打开集合：优先取旧版的 `openWorkspaces`（本地路径字符串数组），否则取单个
+ *   `lastWorkspace`；都取不到时是空集合（该用户确实没有打开过工作目录）。
+ * - **只做形状过滤，不按「目录存在」过滤**：目录已不存在的本地项由读取路径标记为
+ *   不可用（红点 + 禁选），在这里丢弃会让老用户升级后打开集合静默变空、启动即空态。
+ * - 活动项：旧版 `activeWorkspace` 能在打开集合里找到时取它，否则取集合最后一项。
+ *
+ * 入参不是对象时返回 `null`（调用方据此跳过该候选文件）。
+ */
+export function migrateLegacyWorkspaceFields(raw: unknown): MigratedWorkspaceFields | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const { lastWorkspace, openWorkspaces, activeWorkspace } = raw as LegacyWorkspaceFields;
+  const legacyOpen = Array.isArray(openWorkspaces)
+    ? openWorkspaces.filter((ws): ws is string => typeof ws === 'string' && ws.trim().length > 0)
+    : [];
+  // 空串不能进 normalizeWorkspacePath：`path.resolve('')` 会变成宿主进程的当前目录
+  const legacyLast = typeof lastWorkspace === 'string' && lastWorkspace.trim().length > 0
+    ? normalizeWorkspacePath(lastWorkspace)
+    : undefined;
+  const open = dedupeWorkspacePaths(
+    legacyOpen.length > 0 ? legacyOpen : legacyLast ? [legacyLast] : [],
+  );
+  const legacyActive = typeof activeWorkspace === 'string' && activeWorkspace
+    ? activeWorkspace
+    : undefined;
+  const fallbackActive = legacyLast ?? (open.length > 0 ? open[open.length - 1] : undefined);
+  const active = legacyActive
+    ? open.find((w) => sameWorkspace(w, legacyActive)) ?? fallbackActive
+    : fallbackActive;
+  return { openWorkspaces: open, activeWorkspace: active ?? null };
 }

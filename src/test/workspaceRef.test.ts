@@ -60,6 +60,13 @@ async function run(): Promise<void> {
   // 空引用
   check('空引用判空', isEmptyWorkspaceRef(emptyWorkspaceRef()));
   check('非空引用不为空', !isEmptyWorkspaceRef(local));
+  // 空引用没有路径：不能跑本地规范化（`path.resolve('')` 是宿主当前目录，会与真实工作区撞键）
+  check('空引用键不含路径', workspaceRefKey(emptyWorkspaceRef()) === 'file//local');
+  check(
+    '空引用键不等于任何真实目录',
+    workspaceRefKey(emptyWorkspaceRef()) !== workspaceRefKey(localWorkspaceRef(process.cwd())),
+  );
+  check('空引用键稳定', workspaceRefKey(emptyWorkspaceRef()) === workspaceRefKey(emptyWorkspaceRef()));
 
   finish();
 }

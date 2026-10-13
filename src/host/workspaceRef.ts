@@ -83,12 +83,17 @@ export function workspaceEndpointKey(ref: WorkspaceRef): string {
  *
  * `(scheme, endpoint)` 决定连接目标，`path` 是目标机器上的目录；三者一起唯一确定
  * 一个 Connection。路径按宿主规范化口径处理（大小写 / 尾分隔符差异视为同一目录）。
+ *
+ * 空引用（`emptyWorkspaceRef`：未打开工作目录时的占位）没有路径，只以连接目标作身份：
+ * 它不能进本地规范化——`path.resolve('')` 会得到宿主进程的当前目录，与「当前目录恰好
+ * 被当作工作区打开」撞键，占位 Connection 会被误当成那个工作区的 Connection。
  */
 export function workspaceRefKey(ref: WorkspaceRef): string {
   const endpoint = ref.endpoint;
   const target = endpoint
     ? `${endpoint.user ?? ''}@${endpoint.host}:${endpoint.port ?? ''}`
     : 'local';
+  if (!ref.path) return `${ref.scheme}//${target}`;
   const path = ref.scheme === 'file' ? normalizeWorkspacePath(ref.path) : ref.path;
   return `${ref.scheme}//${target}${path}`;
 }
