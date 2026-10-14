@@ -2,7 +2,7 @@
 
 - 状态：已采纳
 - 日期：2026-10
-- 规格：`specs/010-tiered-change-workflow/`（改动规格）
+- 规格：`docs/archive/specs/010-tiered-change-workflow/`（改动规格，已收敛归档）
 - 相关：[ADR-0004](0004-spec-driven-change-workflow.md)（`specs/` 容器与生命周期）保持有效，
   本决策只把「什么改动需要走那套容器」按性质分档
 
