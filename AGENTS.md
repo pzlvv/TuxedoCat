@@ -11,11 +11,12 @@
 - **只写现状**：文档描述代码当前的实现（as-built），不写计划、不写演进过程。
 - **直接陈述应有形态**：文档只回答「应该是什么样」，不出现「变成」「现在是」「不再是」等描述修改过程的用语。
 - **与代码同步**：文档与代码不一致时，先修其中一方使二者一致。
-- **改动规格例外**：`specs/<NNN>-<slug>/` 描述尚未落地的意图与验收，是「只写现状」的
-  唯一例外（目录约定、生命周期与闸门见 [specs/README.md](specs/README.md)）；实施完成后
-  delta 并入 `docs/<topic>.md`，spec 整目录归档进 `docs/archive/specs/`。spec 内未决
-  问题用 `[待澄清]` 标记（必须带去向链接），实施前清零；其存在性类对照（路径 / 常量 /
-  标识符 / npm 脚本）与 TODO.md 同口径豁免。
+- **改动规格与缺陷规格例外**：`specs/<NNN>-<slug>/` 描述尚未落地的意图与验收、
+  `specs/defects/<slug>.md` 描述缺陷的现状与期望，两者是「只写现状」的例外（目录约定、
+  生命周期与闸门见 [specs/README.md](specs/README.md)）；实施完成后 delta 并入
+  `docs/<topic>.md`，改动规格整目录归档进 `docs/archive/specs/`，缺陷规格常驻仓库不归档。
+  spec 内未决问题用 `[待澄清]` 标记（必须带去向链接），实施前清零；其存在性类对照（路径 /
+  常量 / 标识符 / npm 脚本）与 TODO.md 同口径豁免。
 - **章节引用对应**：文档侧跨文档章节引用一律写成相对链接 + 标题锚点（如
   `[第 9 节](docs/architecture/principles.md#9-同一字段的默认值只有一处)`），不写「某文件第 N 节」的文字形式；
   裸「第 N 节」只允许同文件自引用；区间引用（如「第 1–3 节」）两端都要落在本文件。锚点按
@@ -33,7 +34,8 @@
   （相对链接 + 锚点）→ `## 1. 能力` 等分节；300 行以上补内部目录。特性规格（`docs/features/`）
   用固定七节骨架（场景 / FR / 行为规格 / 边界 / 非目标 / 基线影响 / 追溯矩阵）。
 - **待办不存史**：`TODO.md` 只列未排期的想法与跨 spec 的缺口（每条带验收判据或指向某个
-  spec），完成即删；进行中的工作在 spec 的 `tasks.md` 勾选跟踪（见 `specs/README.md`）；
+  spec），完成即删；进行中的工作在 spec 的 `tasks.md` 勾选跟踪、缺陷规格以 frontmatter 的
+  status 跟踪（见 `specs/README.md`）；
   已完成工作的溯源进 `docs/archive/`（冻结，不再更新）。
 - **聚合数字与名单不手抄**：事件数量、契约 / 端口成员数、webview 消息类型数等可从代码推导的聚合值
   以 `docsLint.test.ts` 对照代码校验为准，不手工维护；正文叙述里不写枚举数量（写「见第 N 节清单」）。
@@ -111,13 +113,22 @@ npm run build:core:host # 只重建当前平台 Core（真实双端测试的本�
 npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electron:debug）
 ```
 
-- **spec 闸门（进入实施的第一步）**：功能性改动（新增 US / FR / 用户可见行为变化）必须先有改动规格——
-  `specs/` 存在对应目录且三件套齐备，按 `.tuxedo-cat/skills/spec/SKILL.md` 起草、产出即停等人评审，
-  评审放行后按 `.tuxedo-cat/skills/implement/SKILL.md` 的前置闸门逐任务实施；没有 spec 不得直接改代码。
-  pre-commit 钩子（`scripts/githooks/pre-commit`，克隆后 `git config core.hooksPath scripts/githooks`
-  启用，LFS 钩子已随库迁移到同目录）拦功能性代码提交；纯缺陷修复 `--no-verify` 提交并注明豁免。
-  纯缺陷修复豁免（需要留痕时用 defect.md 形态）。ZCode 会话的技能入口是 `.zcode/skills`
-  （入库，与 `.tuxedo-cat/skills` 内容一致——本机是指向后者的 junction，git 穿透它提交
+- **分档闸门（进入实施的第一步）**：先按改动性质定档，档位由提交信息里的 `Flow` trailer 声明，
+  产物即证据；闸门在 `scripts/githooks/commit-msg`（克隆后 `git config core.hooksPath scripts/githooks`
+  启用，LFS 钩子已随库迁移到同目录）——它读不到档位或查不到对应产物就拒绝提交。
+
+  | 档 | 判据 | 产物 | 提交信息 |
+  | --- | --- | --- | --- |
+  | L0 直改 | 可观察效果不落任何 US / FR 的验收标准，且不触契约面（事件类型、载荷字段、契约成员、wire 消息、落盘字段）：样式、文案、配置、依赖、纯重构 | 无 | `Flow: L0`（理由写正文） |
+  | L1 缺陷修复 | 代码与 as-built 规格 / 契约不一致——应有行为已定义，只是没做到 | `specs/defects/<slug>.md`（现状 / 期望 / 不变量 / 回归测试 / 验证记录；文件名即 slug，不编号、不归档） | `Flow: L1` + `Defect: <slug>` |
+  | L2 需求变更 | as-built 规格定义的应有行为本身要变 | 就地修订 `docs/` 的基线 + 代码 + 测试（同一提交）；基线缺失时先补基线，单独一个提交 | `Flow: L2` |
+  | L3 新特性 | 新增 US / FR / 事件 / 契约成员 / 面板 / 宿主 / 文件格式 | `specs/<NNN>-<slug>/` 三件套 | `Flow: L3` + `Spec: <NNN>` |
+
+  判不清取较高档；档位可升不可降（实施中发现越档即停、重新定档）。L0 允许新增文件——判据只看
+  效果，不看文件数。merge 提交与纯文档提交不要求档位；`--no-verify` 仍能跳过一切，但那是例外
+  而不是出口。入口：L1 走 `/fix`，L3 走 `/spec` → `/plan` → `/tasks` → `/implement` →
+  `/converge`（每个 skill 产出即停等人评审），L2 就地改，L0 直接改。ZCode 会话的技能入口是
+  `.zcode/skills`（入库，与 `.tuxedo-cat/skills` 内容一致——本机是指向后者的 junction，git 穿透它提交
   同一份文件；编辑改 `.tuxedo-cat/skills`，提交时以 `.zcode/skills` 路径落库）。
 - 测试在 `src/test/*.test.ts`；Rust 在 `core-rs/src/*_tests.rs`。
 - **两套 Core 必须同步改**：Core 行为有两套实现——Embedded `src/core/`（TS）与 Standalone `core-rs/`（Rust）。
@@ -140,7 +151,7 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
 
 **新增事件**（[docs/architecture/events.md 第 7 节](docs/architecture/events.md#7-新增事件时的检查清单)）：定方向（CoreEvent / CoreRequest / UiEvent / UiRequest）→ 定名 → 定载荷（必填，可选语义用 `null` / 判别联合）→ 改四组联合类型 + `WebViewUI` 映射表（漏写会编译报错）→ `UiEvent` 补 core 侧订阅与 `WebviewMessageHandler` 翻译 → 更新文档表格（`docsLint.test.ts` 校验数量、名单、逐事件载荷列与 2.1 触发点列）。
 
-**新增启动期注入点**（[docs/hosts/host-matrix.md 第 11 节](docs/hosts/host-matrix.md#11-新增启动期注入点检查清单)）：core 定写入入口 + 读取入口（未写入抛错）→ 分类（宿主环境走同步 `UiEvent` 注册，进程内进 `bootstrapCore`）→ 登记 `CoreBootstrapOptions` 与 `bootstrapSnapshot` → 更新 `bootstrapWiring.test.ts` → 同步文档。
+**新增启动期注入点**（[docs/hosts/host-bootstrap.md 第 6 节](docs/hosts/host-bootstrap.md#6-新增启动期注入点检查清单)）：core 定写入入口 + 读取入口（未写入抛错）→ 分类（宿主环境走同步 `UiEvent` 注册，进程内进 `bootstrapCore`）→ 登记 `CoreBootstrapOptions` 与 `bootstrapSnapshot` → 更新 `bootstrapWiring.test.ts` → 同步文档。
 
 **重构 / 挪动 emit 位点**：docsLint 把 2.1 触发点列与真实 emit 位点逐事件对照、把契约成员数 /
 名单与文档数字对照——重构后先跑 `npm run test:all -- docs-lint`，红在哪一项就同步哪一处文档。

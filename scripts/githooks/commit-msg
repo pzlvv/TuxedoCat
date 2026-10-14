@@ -1,0 +1,95 @@
+#!/bin/sh
+# 改动分级闸门（AGENTS.md 第 5 节）：按提交信息里的 Flow trailer 判档，查对应产物。
+#
+# 档位与产物：
+#   L0 直改    —— 无产物，只声明
+#   L1 缺陷    —— specs/defects/<slug>.md（Defect trailer 指向）
+#   L2 需求变更 —— 暂存区必须含 docs/ 下的规格改动（需求与文档同提交）
+#   L3 新特性  —— specs/<NNN>-<slug>/ 三件套（Spec trailer 指向）
+#
+# 为什么闸门在 commit-msg 而不在 pre-commit：git 跑 pre-commit 时提交信息还没生成
+# （.git/COMMIT_EDITMSG 尚不存在），只有 commit-msg 拿得到消息文件（$1）。
+#
+# trailer 按行首 `Key: value` 解析（不用 git interpret-trailers：它只认末尾连续的
+# trailer 块，`git commit -m A -m "Flow: L1" -m "Defect: x"` 这种多段写法会漏掉
+# 中间那段）。
+#
+# 纯文档提交（暂存区不含代码路径）与 merge 提交不要求档位。
+
+msgFile=$1
+gitDir=$(git rev-parse --git-dir 2>/dev/null)
+
+# merge 提交豁免：消息由 git 生成，不是人写的档位声明
+if [ -f "$gitDir/MERGE_HEAD" ]; then
+  exit 0
+fi
+
+staged=$(git diff --cached --name-only)
+code=$(printf '%s\n' "$staged" | grep -E '^(src|electron|e2e|core-rs|tui-rs|installer-rs)/')
+if [ -z "$code" ]; then
+  exit 0
+fi
+
+# 行首锚定的 trailer 取值（`Flow: L0` 与 `Flow:L0` 都认）
+field() {
+  sed -n "s/^$1:[[:space:]]*//p" "$msgFile"
+}
+
+fail() {
+  printf >&2 '\n改动分级闸门：%s\n\n  四档判据与各档产物见 AGENTS.md 第 5 节。\n  纯缺陷修复走 /fix，新特性走 /spec。\n\n' "$1"
+  exit 1
+}
+
+flows=$(field Flow | sed 's/[[:space:]]*$//')
+flowCount=$(printf '%s\n' "$flows" | grep -c .)
+
+if [ "$flowCount" -eq 0 ]; then
+  fail '提交信息里没有 Flow trailer，而本次提交触及代码路径。写一行 Flow: L0 / L1 / L2 / L3 声明档位。'
+fi
+if [ "$flowCount" -gt 1 ]; then
+  fail "提交信息里有 $flowCount 条 Flow trailer，档位有歧义；只保留一条。"
+fi
+
+flow=$(printf '%s\n' "$flows" | head -1 | sed 's/[[:space:]].*$//')
+
+case "$flow" in
+  L0)
+    exit 0
+    ;;
+  L1)
+    slug=$(field Defect | head -1)
+    if [ -z "$slug" ]; then
+      fail 'Flow: L1 需要一行 Defect: <slug> 指向缺陷报告。'
+    fi
+    if [ ! -f "specs/defects/$slug.md" ]; then
+      fail "specs/defects/$slug.md 不存在——L1 的产物是缺陷报告，先按 /fix 起草。"
+    fi
+    exit 0
+    ;;
+  L2)
+    docsChanged=$(printf '%s\n' "$staged" | grep -E '^docs/.*\.md$')
+    if [ -z "$docsChanged" ]; then
+      fail 'Flow: L2 声明了需求变更，但暂存区没有 docs/ 下的规格改动——需求变更必须同时改 as-built 基线。'
+    fi
+    exit 0
+    ;;
+  L3)
+    num=$(field Spec | head -1)
+    if [ -z "$num" ]; then
+      fail 'Flow: L3 需要一行 Spec: <NNN> 指向改动规格编号（三位）。'
+    fi
+    specDir=$(ls -d "specs/$num"-*/ 2>/dev/null | head -1)
+    if [ -z "$specDir" ]; then
+      fail "specs/$num-*/ 不存在——L3 的产物是改动规格目录，先按 /spec 起草。"
+    fi
+    for required in spec.md plan.md tasks.md; do
+      if [ ! -f "$specDir$required" ]; then
+        fail "$specDir 缺 $required——三件套齐备才能提交。"
+      fi
+    done
+    exit 0
+    ;;
+  *)
+    fail "Flow 取值「$flow」非法，只认 L0 / L1 / L2 / L3。"
+    ;;
+esac

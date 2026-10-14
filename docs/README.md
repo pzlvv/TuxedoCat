@@ -4,10 +4,12 @@
 章节编号与代码注释引用一一对应等）见 [AGENTS.md 第 0 节](../AGENTS.md#0-文档要求)；「什么内容写到哪」的判据见
 下表。文档与代码不一致时，先修其中一方使二者一致（`src/test/docsLint.test.ts` 校验
 事件表与载荷列、聚合数字与成员清单、章节引用、文档路径与常量、代码块来源标注、
-US↔e2e 映射、specs/ 结构与闸门、主题规格 frontmatter、特性规格结构）。主题规格带
+US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatter、特性规格结构、单篇 500 行
+上限）。主题规格带
 `owner` / `last_reviewed` frontmatter（docsLint 校验字段齐全，`docs/` 递归全部规格，
 各级 README.md 地图除外）；引用源码的新鲜度对比出报告：`npm run docs:freshness`
-（只出报告，不进 CI 门禁）。
+（只出报告，不进 CI 门禁）。单篇超过 500 行即按 surface / 状态机拆（`docs/features/user-stories.md`
+是需求基线、各级 `README.md` 是地图 / 导读，两者豁免）。
 
 章节编号与代码注释中的「`docs/<path>.md 第 N 节`」引用一一对应；调整章节标题 / 编号时
 必须同步修改引用（`src/test/docsLint.test.ts` 的章节引用组校验）。
@@ -22,8 +24,9 @@ US↔e2e 映射、specs/ 结构与闸门、主题规格 frontmatter、特性规�
 | 主题规格 | `docs/core/<topic>.md`、`docs/hosts/<topic>.md` | 领域规格（Core 与进程、宿主与 UI）；长期 |
 | 特性规格 | `docs/features/<feature>.md`（spec 形态：场景 / FR / AC / 追溯矩阵） | 独立成篇判据：跨多个 surface 或有独立状态机；否则作主题规格的一节 |
 | 需求基线 | `docs/features/user-stories.md` | as-built 用户故事，e2e 用例以 `US-xx` 编号引用；随 e2e 演进 |
-| 改动规格 | `specs/<NNN>-<slug>/`（spec / plan / tasks 三件套，缺陷用 defect.md） | 尚未落地的意图与验收，是「只写现状」的唯一例外；生命周期见 `specs/README.md`；收敛后 delta 并入 `docs/`、整目录归档 `docs/archive/specs/` |
-| 待办清单 | `TODO.md`（根目录） | 只列**未排期**的想法与跨 spec 缺口，每条带验收判据；完成即删；进行中的工作在 specs/ 的 `tasks.md` 勾选跟踪 |
+| 改动规格 | `specs/<NNN>-<slug>/`（spec / plan / tasks 三件套） | 尚未落地的意图与验收，是「只写现状」的例外之一；生命周期见 `specs/README.md`；收敛后 delta 并入 `docs/`、整目录归档 `docs/archive/specs/` |
+| 缺陷规格 | `specs/defects/<slug>.md`（扁平单文件，文件名即 slug） | 缺陷的现状与期望，也是「只写现状」的例外；两段流程（评估+红 → 修复+绿）、不编号、不归档，是回归证据的索引（口径见 `specs/README.md`） |
+| 待办清单 | `TODO.md`（根目录） | 只列**未排期**的想法与跨 spec 缺口，每条带验收判据；完成即删；进行中的工作在 specs/ 的 `tasks.md` 勾选跟踪、缺陷规格以 status 跟踪 |
 | 决策记录 | `docs/adr/NNNN-<slug>.md` | 只记决策、背景与被否决的替代方案；编号递增，只增不删 |
 | 冻结档案 | `docs/archive/` | 已完成工作的溯源记录（含 specs/ 归档），不再更新 |
 | 临时文件 | 仓库根 `tmp_*` | 一次性盘点 / 计划；不登记地图、不参与 docsLint 校验；落地或放弃后即删 |
@@ -53,7 +56,8 @@ US↔e2e 映射、specs/ 结构与闸门、主题规格 frontmatter、特性规�
 | `docs/architecture/overview.md` | 架构总览：core / host / 宿主实现三层与 `AssistantEventBus` 唯一边、模块职责 |
 | `docs/architecture/layering.md` | 分层与依赖规则：依赖方向、九条规则、core import 审计结论 |
 | `docs/architecture/events.md` | `AssistantEventBus` 契约与四组事件词汇表（载荷 / 触发点 / 处理方 / wire message）、订阅、命名、bootstrap 顺序、边界语义 |
-| `docs/architecture/contracts.md` | 宿主契约与端口：`UIHost` / `SpinDesign` / `ConversationManager`、共享子模块端口、`HostInfo` |
+| `docs/architecture/contracts.md` | 宿主契约：`UIHost` / `SpinDesign` / `MCPHost` / `ConversationManager` 与宿主侧入口的 `UiEvent` 翻译 |
+| `docs/architecture/host-ui-modules.md` | 宿主侧共享子模块与窄端口：`UserChoiceManager` / `ToolHandler` / `WebviewMessageHandler` / `WebViewUiPort` |
 | `docs/architecture/core-ui-separation.md` | Core 与 UI 的分离形态：唯一边、配置快照、就绪判据 |
 | `docs/architecture/principles.md` | 架构原则：十一条可落点到代码行的判断标准 |
 | `docs/architecture/repo-map.md` | 仓库目录布局：全仓路径与关键文件职责的唯一对照表 |
@@ -64,9 +68,11 @@ US↔e2e 映射、specs/ 结构与闸门、主题规格 frontmatter、特性规�
 
 | 文档 | 范围 |
 | --- | --- |
-| `docs/core/standalone-core.md` | Standalone Core（Rust）：形态、选择变量、平台矩阵、契约、已知缺口 |
+| `docs/core/standalone-core.md` | Standalone Core（Rust）：形态、选择变量、平台矩阵、构建指纹、契约、传输与生命周期 |
+| `docs/core/standalone-core-boundaries.md` | Standalone Core 的对等、边界与验收：与 Embedded 的对等、宿主侧事实读取、落点与测试 |
 | `docs/core/core-parity.md` | 两套 Core 的实现差异与 parity 对照表锁定的对等面 |
-| `docs/core/core-daemon.md` | Core 进程的 daemon：启动 / 监督 / 终止、控制通道、远程服务（SSH） |
+| `docs/core/core-daemon.md` | Core 进程的 daemon：进程形态、通道模型、生命周期、控制通道协议 |
+| `docs/core/core-remote.md` | Core 远程服务：`start` / `kill`、状态文件、远端目录选择与 SSH 接入 |
 | `docs/core/client-connection.md` | 连接模型：宿主级 `Client` 与每工作区 `Connection` |
 | `docs/core/session-runtime.md` | `sessionRuntime`：会话运行时状态的唯一 owner 与 `sessionRuntimeChanged` 生产者 |
 
@@ -74,7 +80,9 @@ US↔e2e 映射、specs/ 结构与闸门、主题规格 frontmatter、特性规�
 
 | 文档 | 范围 |
 | --- | --- |
-| `docs/hosts/host-matrix.md` | 两宿主实现对照表、bootstrap 接线、宿主分叉清单 |
+| `docs/hosts/host-matrix.md` | 两宿主实现对照表与宿主分叉清单 |
+| `docs/hosts/host-bootstrap.md` | 宿主启动接线与生命周期：bootstrap 顺序、启动期注入点、自检、退出、一致性守护 |
+| `docs/hosts/host-info.md` | webview 侧的宿主能力声明 `HostInfo`（注入 / 读取与校验 / 消费点）与消息通道 |
 | `docs/hosts/webview-ui.md` | `WebViewUI` 实现与会话级 UI 状态 `SessionUiState` |
 | `docs/hosts/webview-facts.md` | webview 的事实与等待态：宿主决定事实、webview 不猜值 |
 | `docs/hosts/electron-multi-workspace.md` | Electron 多工作目录（对话的工作区属性、视图生命周期） |

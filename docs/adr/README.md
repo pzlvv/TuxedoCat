@@ -12,6 +12,7 @@
 | [0003](0003-client-connection-split.md) | Client / Connection 拆分（连接模型按工作区收敛） | 已采纳 |
 | [0004](0004-spec-driven-change-workflow.md) | SPEC 驱动开发的改动规格层（`specs/`） | 已采纳 |
 | [0005](0005-docs-tree-and-feature-specs.md) | 文档体系重组（拆解 DEVELOPMENT.md、docs/ 分域目录与特性规格层） | 已采纳 |
+| [0006](0006-tiered-change-workflow.md) | 改动分级流程（L0 直改 / L1 缺陷修复 / L2 需求变更 / L3 新特性） | 已采纳 |
 
 新决策取下一个递增编号；`src/test/docsLint.test.ts` 校验编号连续且唯一、状态取值合法、
 被取代指向的文件存在。

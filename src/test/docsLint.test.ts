@@ -5,7 +5,7 @@
  *
  * 1. **事件词汇表一致**：`docs/architecture/events.md` 第 2 节的汇总表（数量）与 `src/core/AssistantEventBus.ts`
  *    的四组联合类型逐组对照；`CoreEvent` / `CoreRequest` / `UiEvent` 的每个成员名都必须
- *    出现在事件表里（`UiRequest` 的成员按规格落在 `docs/core/standalone-core.md` 第 10 节）。
+ *    出现在事件表里（`UiRequest` 的成员按规格落在 `docs/core/standalone-core.md` 第 5 节）。
  *    新增事件忘了更新文档时直接失败。
  * 2. **文档侧：跨文档引用必须是链接**：全部 markdown 中，内链的文件与 `#anchor` 必须存在
  *    （锚点按 GitHub 的 slug 规则，fixture 见 SLUG_FIXTURES）；「文件名 + 第 N 节」的文字形式
@@ -21,7 +21,8 @@
  * 7. **events.md 体积棘轮**：`docs/architecture/events.md` 总行数 ≤ 棘轮值，只降不升；主动减体积后手动下调棘轮值。
  * 8. **聚合数字不手写（扩界）**：`UIHost` / `WebViewUiPort` / uiPort 窄端口 / webview 消息
  *    类型 / `onCoreEvents` 映射表的成员名与数量从代码提取，对照 `docs/architecture/contracts.md` /
- *    `docs/hosts/webview-ui.md` 的宣称值——代码加了成员而文档数字没跟上时失败。
+ *    `docs/architecture/host-ui-modules.md` / `docs/hosts/webview-ui.md` 的宣称值——
+ *    代码加了成员而文档数字没跟上时失败。
  * 9. **文档路径存在性**：markdown 行内代码里 `src/` / `docs/` / `core-rs/` / `electron/` 等
  *    前缀的仓库路径必须存在（行内代码整体不参与章节引用扫描，但路径是「指得到的东西」，
  *    单独校验；含通配符 / 占位符的写法不在此列）。
@@ -58,11 +59,12 @@
  *     出现在 `README.md`（README 手写平台清单而脚本扩平台时失败）。
  * 21. **禁「表 #N」行号引用**：代码注释与文档禁止「表 #N / 表格 #N」写法——事件表重编号时
  *     行号引用静默腐烂（`表 #32` / `#41` 是实例），一律点名事件名。
- * 22. **specs/ 改动规格结构**：`specs/<NNN>-<slug>/` 三件套齐全（spec 或 defect + plan +
- *     tasks）、H1 前缀、必填章节、FR / AC / T 编号与覆盖（tasks 覆盖全部 FR、追溯矩阵
- *     逐 FR 一行、AC 回指 FR 且为 GIVEN / WHEN / THEN 一行式）、plan 宪章检查四项义务、
- *     status 取值合法、`[待澄清]` 标记必须带去向链接且实施中 / 已收敛清零（口径见
- *     `specs/README.md`）；编号与 `docs/archive/specs/` 已归档编号不复用。
+ * 22. **specs/ 改动规格结构**：`specs/<NNN>-<slug>/` 的 H1 前缀、必填章节、FR / AC / T
+ *     编号与覆盖（tasks 覆盖全部 FR、追溯矩阵逐 FR 一行、AC 回指 FR 且为 GIVEN / WHEN /
+ *     THEN 一行式）、plan 宪章检查四项义务、status 取值合法、`[待澄清]` 标记必须带去向
+ *     链接且落定后清零（口径见 `specs/README.md`）；**三件套按 status 递进**（起草只要求
+ *     spec.md，待评审加 plan.md，实施中 / 已收敛要求齐）；编号与 `docs/archive/specs/`
+ *     已归档编号不复用。
  * 23. **主题规格 frontmatter**：`docs/` 全部规格（各级 README.md 地图除外）必须带 owner /
  *     last_reviewed（YYYY-MM-DD）——规格所有权与新鲜度的可执行下限；引用源码的时间
  *     对比是独立报告（`scripts/docs-freshness.mjs`，只出报告不进门禁）。
@@ -70,10 +72,17 @@
  *     `# 规格：` H1 与七节骨架（用户场景与验收标准 / 功能需求 / 行为规格 / 边界与错误路径 /
  *     非目标 / 对需求基线的影响 / 追溯矩阵），FR 唯一、AC 一行式回指 FR、追溯矩阵逐 FR 一行
  *     （as-built 特性规格的 spec 形态下限，正则口径与组 22 一致）。
- * 25. **收敛态 spec 落点存活**：`status: 已收敛` 的 spec 不再豁免存在性检查（组 9 / 13 /
- *     15 / 19 经 `FUTURE_WORK_DOC` 分档放行）——追溯矩阵测试落点、行内代码路径 / 常量 /
- *     标识符 / npm 脚本必须在代码里真实存在（起草 / 待评审 / 实施中仍豁免，描述尚未落地的
- *     改动）；/converge 在 status 改「已收敛」后、归档前跑 docsLint 验证。
+ * 25. **落定态落点存活**：`status: 已收敛` 的改动规格与 `status: 已修` 的缺陷规格不再豁免
+ *     存在性检查（组 9 / 13 / 15 / 19 经 `FUTURE_WORK_DOC` 分档放行）——追溯矩阵测试落点、
+ *     验证记录的用例落点、行内代码路径 / 常量 / 标识符 / npm 脚本必须在代码里真实存在
+ *     （起草 / 待评审 / 实施中，以及「待修」的缺陷仍豁免，描述尚未落地的改动）；
+ *     /converge 在 status 改「已收敛」后、归档前跑 docsLint 验证。
+ * 26. **specs/defects/ 缺陷规格**：`specs/defects/<slug>.md` 的文件名 slug 格式、H1 前缀、
+ *     status 取值（待修 / 已修 / 已放弃）、五节齐全、RT 编号唯一、验证记录四列表与结果
+ *     取值合法且含修复前的红与修复后的绿（口径见 `specs/README.md` 第 8 节）。
+ * 27. **文档体积上限**：`docs/` 下的规格不超过 500 行——`docs/features/user-stories.md`
+ *     （需求基线）与各级 `README.md`（地图 / 导读）豁免，`docs/archive/` 是冻结档案、
+ *     本就不参与校验；超限即拆（`specs/README.md` 第 9 节）。
  *
  * `tmp_*` 临时文件、`docs/archive/` 冻结档案与 `specs/_templates/` 模板不参与校验；
  * 代码块（fenced / 行内反引号）不参与
@@ -105,17 +114,24 @@ const SCAN_EXTENSIONS = new Set(['.ts', '.tsx', '.rs', '.md', '.mjs', '.cjs']);
  * 存在性类检查（行内代码路径、常量 / 标识符、npm run 脚本名）豁免——spec 与待办引用
  * 的路径、脚本、常量尚未存在是常态；落地后由 docs/ 的全量对照兜底。
  *
- * 分档例外：status「已收敛」的 spec 已过 /converge 逐条核对，落点转为受检——矩阵
- * 测试路径、标识符、脚本必须在代码里真实存在（起草 / 待评审 / 实施中仍豁免）。
+ * 分档例外（落点转为受检）：
+ * - status「已收敛」的改动规格：已过 /converge 逐条核对，矩阵测试路径、标识符、脚本
+ *   必须在代码里真实存在；
+ * - status「已修」的缺陷规格：验证记录里的回归用例落点同理。
+ * 起草 / 待评审 / 实施中，以及「待修」的缺陷仍豁免。
  */
-function convergedSpec(rel: string): boolean {
-  if (!/^specs\/\d+-[^/]+\/(?:spec|defect)\.md$/.test(rel)) return false;
-  const frontMatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readText(rel))?.[1] ?? '';
-  return (/^status:\s*(\S+)\s*$/m.exec(frontMatter)?.[1] ?? '') === '已收敛';
+function settledSpec(rel: string): boolean {
+  const statusOf = (): string => {
+    const frontMatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readText(rel))?.[1] ?? '';
+    return /^status:\s*(\S+)\s*$/m.exec(frontMatter)?.[1] ?? '';
+  };
+  if (/^specs\/\d+-[^/]+\/spec\.md$/.test(rel)) return statusOf() === '已收敛';
+  if (/^specs\/defects\/[^/]+\.md$/.test(rel)) return statusOf() === '已修';
+  return false;
 }
 
 const FUTURE_WORK_DOC = (rel: string): boolean =>
-  rel === 'TODO.md' || (rel.startsWith('specs/') && !convergedSpec(rel));
+  rel === 'TODO.md' || (rel.startsWith('specs/') && !settledSpec(rel));
 
 function readText(rel: string): string {
   return fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
@@ -529,6 +545,12 @@ function coreEmitModules(): { emits: Map<string, Set<string>>; universe: Set<str
 /** events.md 体积棘轮（AGENTS.md 第 0 节「控体积」的可执行形态）：只降不升，主动减体积后下调 */
 const EVENTS_LINE_RATCHET = 434;
 
+/**
+ * 文档体积上限（specs/README.md 第 9 节）：单篇规格超过即拆——「不要有巨型规格」的可执行形态。
+ * 豁免 `docs/features/user-stories.md`（需求基线，拆分已登记 TODO.md）与各级 `README.md`。
+ */
+const DOC_LINE_LIMIT = 500;
+
 /** H2 标题文字（组 22 / 24 的章节判定用） */
 const headingTitle = (line: string): string | null => {
   const m = /^##\s+(.+?)\s*$/.exec(line);
@@ -782,8 +804,23 @@ function main(): void {
     eventsLines <= EVENTS_LINE_RATCHET,
   );
 
+  // ---------- 7b. 文档体积上限（specs/README.md 第 9 节） ----------
+  {
+    const volumeProblems: string[] = [];
+    for (const rel of mdFiles) {
+      if (!rel.startsWith('docs/')) continue; // 只约束 docs/（AGENTS.md / TODO.md 不在内）
+      if (rel === 'docs/features/user-stories.md') continue; // 需求基线，已登记 TODO.md 拆分
+      if (path.basename(rel) === 'README.md') continue; // 地图 / 导读，篇幅随文档数增长
+      const lines = readText(rel).split(/\r?\n/).length;
+      if (lines > DOC_LINE_LIMIT) volumeProblems.push(`${rel}: ${lines} 行 > ${DOC_LINE_LIMIT}（按 surface / 状态机拆）`);
+    }
+    checker.check(`docs 单篇 ≤ ${DOC_LINE_LIMIT} 行（超限 ${volumeProblems.length} 篇）`, volumeProblems.length === 0);
+    for (const p of volumeProblems.slice(0, 20)) console.log(`     ${p}`);
+  }
+
   // ---------- 8. 聚合数字不手写（扩界）：契约成员 / 消息类型 / 映射表 ----------
   const contracts = readText('docs/architecture/contracts.md');
+  const hostUiModules = readText('docs/architecture/host-ui-modules.md');
   const webviewUi = readText('docs/hosts/webview-ui.md');
   const uiHostSrc = readText('src/host/UIHost.ts');
   const portsSrc = readText('src/host/ui/ports.ts');
@@ -807,16 +844,16 @@ function main(): void {
   );
 
   const uiPortMembers = blockMemberNames(handlerSrc, /uiPort\?: \{/);
-  const uiPortClaim = /窄端口 `uiPort`（只声明自己用到的 (\d+) 个成员）/.exec(contracts);
+  const uiPortClaim = /窄端口 `uiPort`（只声明自己用到的 (\d+) 个成员）/.exec(hostUiModules);
   checker.check(
-    `contracts.md 的 uiPort 窄端口成员数与代码一致（实际 ${uiPortMembers.length}）`,
+    `host-ui-modules.md 的 uiPort 窄端口成员数与代码一致（实际 ${uiPortMembers.length}）`,
     uiPortClaim !== null && Number(uiPortClaim[1]) === uiPortMembers.length,
   );
 
   const webViewUiPort = blockMemberNames(portsSrc, /export interface WebViewUiPort\b/);
-  const missingPort = webViewUiPort.filter((n) => !contracts.includes(`\`${n}(`));
+  const missingPort = webViewUiPort.filter((n) => !hostUiModules.includes(`\`${n}(`));
   checker.check(
-    `WebViewUiPort 全部 ${webViewUiPort.length} 个成员名都在 contracts.md 出现`,
+    `WebViewUiPort 全部 ${webViewUiPort.length} 个成员名都在 host-ui-modules.md 出现`,
     missingPort.length === 0,
   );
   for (const n of missingPort) {
@@ -824,9 +861,9 @@ function main(): void {
   }
 
   const entryCount = (handlerSrc.match(/entry\('/g) ?? []).length;
-  const msgClaim = /(\d+) 个消息类型/.exec(contracts);
+  const msgClaim = /(\d+) 个消息类型/.exec(hostUiModules);
   checker.check(
-    `contracts.md 的 webview 消息类型数与 buildMessageHandlers 一致（实际 ${entryCount}）`,
+    `host-ui-modules.md 的 webview 消息类型数与 buildMessageHandlers 一致（实际 ${entryCount}）`,
     msgClaim !== null && Number(msgClaim[1]) === entryCount,
   );
 
@@ -1400,30 +1437,31 @@ function main(): void {
   // ---------- 22. specs/ 改动规格结构（specs/README.md 的工作流口径） ----------
   {
     const specProblems: string[] = [];
+    const defectProblems: string[] = [];
     const SPEC_STATUSES = new Set(['起草', '待评审', '实施中', '已收敛']);
-    /** 三件套的 H1 前缀（不含 `# `） */
-    const H1_PREFIX: Record<string, string> = {
-      'spec.md': '改动规格：',
-      'defect.md': '缺陷规格：',
-    };
+    /** 改动规格的 H1 前缀（不含 `# `） */
+    const SPEC_H1 = '改动规格：';
     const PLAN_H1 = '实施方案：';
     const TASKS_H1 = '任务分解：';
     const SPEC_SECTIONS = [
       '影响基线', '用户场景与验收标准', '功能需求', '边界与错误路径', '非目标',
       '对需求基线的影响', '追溯矩阵', '待澄清', '收敛记录',
     ];
-    const DEFECT_SECTIONS = [
-      '影响基线', '现状', '期望', '不变量', '回归测试',
-      '对需求基线的影响', '追溯矩阵', '待澄清', '收敛记录',
-    ];
+    /** 缺陷规格（`specs/defects/<slug>.md`）的必填章节与 status / 结果取值 */
+    const DEFECT_H1 = '缺陷：';
+    const DEFECT_STATUSES = new Set(['待修', '已修', '已放弃']);
+    const DEFECT_SECTIONS = ['现状', '期望', '不变量', '回归测试', '验证记录'];
+    const DEFECT_RESULTS = new Set(['红', '绿', 'skipped', 'not-run', '部分验证']);
     const PLAN_SECTIONS = ['技术方案', '受影响模块与契约', '宪章检查', '被否决的替代方案'];
     const CHARTER_ITEMS = ['分层', '铁律', 'parity', '文档同步'];
 
     /**
      * `[待澄清]` 标记检查：行内代码与 fenced 块里的出现是文档（写法说明）不算标记；
-     * 实施中 / 已收敛不允许残留，起草 / 待评审的标记必须同行带去向链接。
+     * 落定态（实施中 / 已收敛 / 已修 / 已放弃）不允许残留，其余状态的标记必须同行带
+     * 去向链接。
      */
-    const scanClarification = (relPath: string, text: string, status: string): void => {
+    const SETTLED_STATUSES = new Set(['实施中', '已收敛', '已修', '已放弃']);
+    const scanClarification = (relPath: string, text: string, status: string, problems: string[]): void => {
       let inFence = false;
       const lines = text.split(/\r?\n/);
       for (let i = 0; i < lines.length; i++) {
@@ -1432,12 +1470,12 @@ function main(): void {
         if (inFence) continue;
         const noInline = raw.replace(/`[^`\n]*`/g, '``');
         if (!noInline.includes('[待澄清]')) continue;
-        if (status === '实施中' || status === '已收敛') {
-          specProblems.push(`${relPath}:${i + 1} 实施中 / 已收敛的 spec 不允许残留待澄清标记（实施前清零）`);
+        if (SETTLED_STATUSES.has(status)) {
+          problems.push(`${relPath}:${i + 1} 已落定（${status}）不允许残留待澄清标记（实施前清零）`);
           continue;
         }
         if (!noInline.includes('](')) {
-          specProblems.push(`${relPath}:${i + 1} 待澄清标记必须同行带去向链接（ADR / docs/architecture/open-questions.md / 非目标）`);
+          problems.push(`${relPath}:${i + 1} 待澄清标记必须同行带去向链接（ADR / docs/architecture/open-questions.md / 非目标）`);
         }
       }
     };
@@ -1464,31 +1502,38 @@ function main(): void {
 
       for (const name of liveSpecs) {
         const dirFiles = new Set(fs.readdirSync(path.join(specsDir, name)));
-        const specFile = ['spec.md', 'defect.md'].find((f) => dirFiles.has(f));
-        if (specFile === undefined) specProblems.push(`specs/${name}: 缺 spec.md（缺陷改动用 defect.md 替代）`);
-        for (const required of ['plan.md', 'tasks.md']) {
-          if (!dirFiles.has(required)) specProblems.push(`specs/${name}: 缺 ${required}`);
+        if (!dirFiles.has('spec.md')) {
+          specProblems.push(`specs/${name}: 缺 spec.md`);
+          continue;
         }
-        if (specFile === undefined) continue;
 
-        const specRel = `specs/${name}/${specFile}`;
+        const specRel = `specs/${name}/spec.md`;
         const specText = readText(specRel);
         const h1 = /^#\s+(.+?)\s*$/m.exec(specText)?.[1] ?? '';
-        const h1Prefix = H1_PREFIX[specFile] ?? '';
-        if (h1Prefix === '' || !h1.startsWith(h1Prefix)) {
-          specProblems.push(`${specRel}: H1 应以「${h1Prefix}」开头`);
+        if (!h1.startsWith(SPEC_H1)) {
+          specProblems.push(`${specRel}: H1 应以「${SPEC_H1}」开头`);
         }
         const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(specText)?.[1] ?? '';
         const status = /^status:\s*(\S+)\s*$/m.exec(fm)?.[1] ?? '';
         if (!SPEC_STATUSES.has(status)) {
           specProblems.push(`${specRel}: frontmatter status 非法「${status}」（起草 / 待评审 / 实施中 / 已收敛）`);
         }
-        for (const keyword of specFile === 'spec.md' ? SPEC_SECTIONS : DEFECT_SECTIONS) {
+        // 三件套按 status 递进（specs/README.md 第 5 节）：/spec 产出 spec.md 即停，
+        // /plan 加 plan.md，/tasks 加 tasks.md——起草与评审期间不该因为「还没写 tasks」而红。
+        const REQUIRED_BY_STATUS: Record<string, string[]> = {
+          '起草': [],
+          '待评审': ['plan.md'],
+          '实施中': ['plan.md', 'tasks.md'],
+          '已收敛': ['plan.md', 'tasks.md'],
+        };
+        for (const required of REQUIRED_BY_STATUS[status] ?? []) {
+          if (!dirFiles.has(required)) specProblems.push(`specs/${name}: status「${status}」缺 ${required}`);
+        }
+        for (const keyword of SPEC_SECTIONS) {
           if (!hasSection(specText, keyword)) specProblems.push(`${specRel}: 缺「${keyword}」章节`);
         }
 
-        // FR / AC / 追溯矩阵 / tasks 覆盖只对功能规格（spec.md）强制；缺陷形态以 RT 条目为键，
-        // 只查章节齐全与非空（上面已查）。
+        // FR / AC / 追溯矩阵 / tasks 覆盖。
         const frs = [...specText.matchAll(/^### (FR-\d{3})：/gm)].map((m) => m[1] ?? '');
         const frSet = new Set(frs);
         const taskText = dirFiles.has('tasks.md') ? readText(`specs/${name}/tasks.md`) : '';
@@ -1503,51 +1548,52 @@ function main(): void {
             specProblems.push(`specs/${name}/tasks.md: ${t} 重复`);
           }
         }
-        if (specFile === 'spec.md') {
-          if (frs.length === 0) specProblems.push(`${specRel}: 无 FR-nnn 功能需求条目`);
-          for (const fr of frSet) {
-            if (frs.indexOf(fr) !== frs.lastIndexOf(fr)) specProblems.push(`${specRel}: ${fr} 重复定义`);
+        if (frs.length === 0) specProblems.push(`${specRel}: 无 FR-nnn 功能需求条目`);
+        for (const fr of frSet) {
+          if (frs.indexOf(fr) !== frs.lastIndexOf(fr)) specProblems.push(`${specRel}: ${fr} 重复定义`);
+        }
+        const acLines = [...specText.matchAll(/^\s*- \*\*(AC-\d+)\*\*（(FR-\d{3})）：(.*)$/gm)];
+        for (const m of acLines) {
+          const acId = m[1] ?? '';
+          const fr = m[2] ?? '';
+          const line = m[3] ?? '';
+          if (!frSet.has(fr)) specProblems.push(`${specRel}: ${acId} 回指不存在的 ${fr}`);
+          if (!(line.includes('GIVEN') && line.includes('WHEN') && line.includes('THEN'))) {
+            specProblems.push(`${specRel}: ${acId} 不是 GIVEN / WHEN / THEN 一行式`);
           }
-          const acLines = [...specText.matchAll(/^\s*- \*\*(AC-\d+)\*\*（(FR-\d{3})）：(.*)$/gm)];
-          for (const m of acLines) {
-            const acId = m[1] ?? '';
-            const fr = m[2] ?? '';
-            const line = m[3] ?? '';
-            if (!frSet.has(fr)) specProblems.push(`${specRel}: ${acId} 回指不存在的 ${fr}`);
-            if (!(line.includes('GIVEN') && line.includes('WHEN') && line.includes('THEN'))) {
-              specProblems.push(`${specRel}: ${acId} 不是 GIVEN / WHEN / THEN 一行式`);
+        }
+        for (const fr of frSet) {
+          if (!acLines.some((m) => m[2] === fr)) specProblems.push(`${specRel}: ${fr} 无验收标准`);
+          // tasks 覆盖只在 tasks.md 已产出后强制（/spec 与 /plan 阶段还没有它）
+          if (dirFiles.has('tasks.md') && !taskFrs.has(fr)) {
+            specProblems.push(`specs/${name}/tasks.md: 未覆盖 ${fr}`);
+          }
+        }
+        for (const fr of taskFrs) {
+          if (!frSet.has(fr)) specProblems.push(`specs/${name}/tasks.md: 回指不存在的 ${fr}`);
+        }
+        // 追溯矩阵：逐 FR 一行；覆盖列「自动」要求实现与测试落点非空，
+        // 「无自动覆盖」要求同行给出理由
+        const matrixText = sectionBody(specText, '追溯矩阵');
+        const matrixRows = [...matrixText.matchAll(/^\| (FR-\d{3}) \|(.*)$/gm)];
+        for (const fr of frSet) {
+          const rows = matrixRows.filter((m) => m[1] === fr);
+          if (rows.length === 0) { specProblems.push(`${specRel}: 追溯矩阵缺 ${fr} 行`); continue; }
+          if (rows.length > 1) specProblems.push(`${specRel}: 追溯矩阵 ${fr} 多行`);
+          const cells = (rows[0]?.[2] ?? '').split('|').map((c) => c.trim());
+          const impl = cells[0] ?? '';
+          const test = cells[1] ?? '';
+          const coverage = cells[2] ?? '';
+          if (coverage.startsWith('无自动覆盖')) {
+            if (coverage.trim() === '无自动覆盖') {
+              specProblems.push(`${specRel}: 追溯矩阵 ${fr} 登记无自动覆盖但未写理由`);
             }
+          } else if (coverage !== '自动' || impl === '' || impl === '—' || test === '' || test === '—') {
+            specProblems.push(`${specRel}: 追溯矩阵 ${fr} 覆盖列应为「自动」或「无自动覆盖 + 理由」`);
           }
-          for (const fr of frSet) {
-            if (!acLines.some((m) => m[2] === fr)) specProblems.push(`${specRel}: ${fr} 无验收标准`);
-            if (!taskFrs.has(fr)) specProblems.push(`specs/${name}/tasks.md: 未覆盖 ${fr}`);
-          }
-          for (const fr of taskFrs) {
-            if (!frSet.has(fr)) specProblems.push(`specs/${name}/tasks.md: 回指不存在的 ${fr}`);
-          }
-          // 追溯矩阵：逐 FR 一行；覆盖列「自动」要求实现与测试落点非空，
-          // 「无自动覆盖」要求同行给出理由
-          const matrixText = sectionBody(specText, '追溯矩阵');
-          const matrixRows = [...matrixText.matchAll(/^\| (FR-\d{3}) \|(.*)$/gm)];
-          for (const fr of frSet) {
-            const rows = matrixRows.filter((m) => m[1] === fr);
-            if (rows.length === 0) { specProblems.push(`${specRel}: 追溯矩阵缺 ${fr} 行`); continue; }
-            if (rows.length > 1) specProblems.push(`${specRel}: 追溯矩阵 ${fr} 多行`);
-            const cells = (rows[0]?.[2] ?? '').split('|').map((c) => c.trim());
-            const impl = cells[0] ?? '';
-            const test = cells[1] ?? '';
-            const coverage = cells[2] ?? '';
-            if (coverage.startsWith('无自动覆盖')) {
-              if (coverage.trim() === '无自动覆盖') {
-                specProblems.push(`${specRel}: 追溯矩阵 ${fr} 登记无自动覆盖但未写理由`);
-              }
-            } else if (coverage !== '自动' || impl === '' || impl === '—' || test === '' || test === '—') {
-              specProblems.push(`${specRel}: 追溯矩阵 ${fr} 覆盖列应为「自动」或「无自动覆盖 + 理由」`);
-            }
-          }
-          for (const m of matrixRows) {
-            if (!frSet.has(m[1] ?? '')) specProblems.push(`${specRel}: 追溯矩阵列了不存在的 ${m[1] ?? ''}`);
-          }
+        }
+        for (const m of matrixRows) {
+          if (!frSet.has(m[1] ?? '')) specProblems.push(`${specRel}: 追溯矩阵列了不存在的 ${m[1] ?? ''}`);
         }
 
         // plan.md：H1、必填章节、宪章检查四项义务
@@ -1563,7 +1609,7 @@ function main(): void {
           for (const keyword of CHARTER_ITEMS) {
             if (!charter.includes(keyword)) specProblems.push(`${planRel}: 宪章检查缺「${keyword}」项`);
           }
-          scanClarification(planRel, planText, status);
+          scanClarification(planRel, planText, status, specProblems);
         }
         // tasks.md：H1 与待澄清标记
         if (dirFiles.has('tasks.md')) {
@@ -1571,13 +1617,62 @@ function main(): void {
           const tasksH1 = /^#\s+(.+?)\s*$/m.exec(taskText)?.[1] ?? '';
           if (!tasksH1.startsWith(TASKS_H1)) specProblems.push(`${tasksRel}: H1 应以「${TASKS_H1}」开头`);
           if (taskLines.length === 0) specProblems.push(`${tasksRel}: 无 T 编号任务条目`);
-          scanClarification(tasksRel, taskText, status);
+          scanClarification(tasksRel, taskText, status, specProblems);
         }
-        scanClarification(specRel, specText, status);
+        scanClarification(specRel, specText, status, specProblems);
+      }
+
+      // 缺陷规格（specs/defects/<slug>.md，specs/README.md 第 8 节）：扁平单文件、文件名即 slug、
+      // 不编号。必填五节 + RT 编号 + 验证记录四列表；「已修」的落点存活检查由 FUTURE_WORK_DOC 兜。
+      const defectsDir = path.join(specsDir, 'defects');
+      if (fs.existsSync(defectsDir)) {
+        const slugName = /^[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;
+        for (const entry of fs.readdirSync(defectsDir, { withFileTypes: true })) {
+          if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+          const rel = `specs/defects/${entry.name}`;
+          if (!slugName.test(entry.name)) {
+            defectProblems.push(`${rel}: 文件名应为 kebab-case slug（小写字母 / 数字 / 连字符）`);
+          }
+          const text = readText(rel);
+          const h1 = /^#\s+(.+?)\s*$/m.exec(text)?.[1] ?? '';
+          if (!h1.startsWith(DEFECT_H1)) defectProblems.push(`${rel}: H1 应以「${DEFECT_H1}」开头`);
+          const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? '';
+          const status = /^status:\s*(\S+)\s*$/m.exec(fm)?.[1] ?? '';
+          if (!DEFECT_STATUSES.has(status)) {
+            defectProblems.push(`${rel}: frontmatter status 非法「${status}」（待修 / 已修 / 已放弃）`);
+          }
+          for (const keyword of DEFECT_SECTIONS) {
+            if (!hasSection(text, keyword)) defectProblems.push(`${rel}: 缺「${keyword}」章节`);
+          }
+          const rts = [...text.matchAll(/^- \*\*(RT-\d+)\*\*/gm)].map((m) => m[1] ?? '');
+          if (rts.length === 0) defectProblems.push(`${rel}: 「回归测试」节无 RT 编号条目`);
+          for (const rt of rts) {
+            if (rts.indexOf(rt) !== rts.lastIndexOf(rt)) defectProblems.push(`${rel}: ${rt} 重复`);
+          }
+          // 验证记录：四列表头 + 结果取值合法 + 含修复前的红与修复后的绿
+          const record = sectionBody(text, '验证记录');
+          if (!/^\|\s*检查\s*\|\s*命令\s*\|\s*结果\s*\|\s*备注\s*\|\s*$/m.test(record)) {
+            defectProblems.push(`${rel}: 「验证记录」缺四列表头（检查 / 命令 / 结果 / 备注）`);
+          }
+          const results = [...record.matchAll(/^\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|\s*$/gm)]
+            .map((m) => (m[3] ?? '').trim())
+            .filter((value) => value !== '' && value !== '结果' && !/^-+$/.test(value));
+          for (const value of results) {
+            if (!DEFECT_RESULTS.has(value)) {
+              defectProblems.push(`${rel}: 验证记录结果取值非法「${value}」（红 / 绿 / skipped / not-run / 部分验证）`);
+            }
+          }
+          if (!results.includes('红') || !results.includes('绿')) {
+            defectProblems.push(`${rel}: 验证记录必须含修复前的红与修复后的绿各一行`);
+          }
+          scanClarification(rel, text, status, defectProblems);
+        }
       }
     }
     checker.check(`specs/ 改动规格结构与闸门（问题 ${specProblems.length} 处）`, specProblems.length === 0);
     for (const p of specProblems.slice(0, 20)) console.log(`     ${p}`);
+    checker.check(`specs/defects/ 缺陷规格（问题 ${defectProblems.length} 处）`, defectProblems.length === 0);
+    for (const p of defectProblems.slice(0, 20)) console.log(`     ${p}`);
   }
 
   // ---------- 23. 主题规格 frontmatter（owner / last_reviewed，规格新鲜度） ----------
