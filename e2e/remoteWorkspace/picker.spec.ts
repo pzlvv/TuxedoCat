@@ -3,7 +3,7 @@ import path from 'node:path';
 import { openStaticPage } from '../helpers/webviewHarness';
 
 /**
- * 「选择远端目录」页面（`electron/remoteWorkspace/`，规格 `docs/core/core-daemon.md` 第 12.6 节）。
+ * 「选择远端目录」页面（`electron/remoteWorkspace/`，规格 `docs/core/core-remote.md` 第 2.6 节）。
  *
  * 这一步要连上真实 SSH 才能走到，整应用 e2e（`e2e/electron/remoteWorkspace.spec.ts`）
  * 覆盖不到；这里按 webview-ui 同一手法直接伺服构建产物 `dist/remoteWorkspace/`，

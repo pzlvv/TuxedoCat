@@ -206,7 +206,7 @@ export class WebviewMessageHandler {
   /**
    * UI → core：把 webview 协议消息翻译成 UiEvent 发到总线。
    * 本 handler 只做「解析 + 翻译」：改 core 状态的请求发 UiEvent，
-   * 写 settings.json 经 UIHost（core 只读不写，见 `docs/architecture/contracts.md` 第 8 节）。
+   * 写 settings.json 经 UIHost（core 只读不写，见 `docs/architecture/host-ui-modules.md` 第 3 节）。
    */
   private emitUiEvent(event: UiEvent): Promise<void> {
     requireEventBus().emitToCore(event);

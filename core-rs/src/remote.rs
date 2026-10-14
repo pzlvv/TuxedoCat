@@ -1,4 +1,4 @@
-//! 远程 Core 服务（见 `docs/core/core-daemon.md` 第 12 节）。
+//! 远程 Core 服务（见 `docs/core/core-remote.md` 第 2 节）。
 //!
 //! 两个角色：
 //! - `start`（启动器，用户可见）：确保后台 daemon 在跑，打印就绪信息后自己退出；
@@ -13,12 +13,12 @@
 //!
 //! daemon 同时服务多条控制通道：accept 循环每接受一条连接就交一个线程去服务
 //! （thread-per-connection，同步阻塞模型，不引入 async runtime），随即回到 accept；
-//! 连接之间互不阻塞（`docs/core/core-daemon.md` 第 12.5 节）。远程目录列举
+//! 连接之间互不阻塞（`docs/core/core-remote.md` 第 2.5 节）。远程目录列举
 //! （`listDirectories`）也在控制通道上完成，Host 据此在连接后立刻弹出远端目录选择器。
 //!
 //! 「断开」有两条路径：TCP 层的 EOF / 错误，和心跳空闲超时——Host 消失而 TCP 未断
 //! （断网 / 休眠 / 进程冻结）时读线程永远等不到 EOF，靠 Host 定期 `ping` 的有无判定
-//! （沉默即断开，`docs/core/core-daemon.md` 第 12.5 节）。断开只结束该连接及其全部 Core，
+//! （沉默即断开，`docs/core/core-remote.md` 第 2.5 节）。断开只结束该连接及其全部 Core，
 //! 服务线程退出，daemon 继续接受下一条连接；只有任一连接发 `shutdown`（`kill` 发的）
 //! 才结束整个 daemon 进程——停机广播经 [`DaemonRuntime`] 向每条在途连接的会话注入
 //! 「Host 断开」事件，各连接走自己的收尾路径（关闭各自的全部 Core）。
@@ -47,7 +47,7 @@ pub struct RemoteOptions {
     /// 空闲退出（`--idle-exit <秒>`）：没有任何控制连接持续该时长后 daemon 自行退出。
     /// SSH 引导传 30 秒——客户端异常退出（crash / 断电 / 网络消失）后远端不留常驻进程；
     /// 不给这个选项时 daemon 常驻，只有 `shutdown`（`kill`）结束
-    /// （`docs/core/core-daemon.md` 第 12.5 节）。
+    /// （`docs/core/core-remote.md` 第 2.5 节）。
     pub idle_exit: Option<Duration>,
 }
 
@@ -273,7 +273,7 @@ impl FrameOutput for SocketOutput {
 /// 远程连接的 daemon 参数：控制通道在，daemon 就在（不因没有工作区而 grace 退出）。
 ///
 /// 心跳空闲回收只在远程启用：Host 定期发 `ping`，沉默即断开
-/// （`docs/core/core-daemon.md` 第 12.5 节）。
+/// （`docs/core/core-remote.md` 第 2.5 节）。
 pub fn remote_daemon_options() -> DaemonOptions {
     DaemonOptions {
         idle_exit: false,
@@ -285,7 +285,7 @@ pub fn remote_daemon_options() -> DaemonOptions {
 /// 把控制通道交给 daemon 主循环。返回即这条连接结束。
 ///
 /// 由每条已接受连接自己的服务线程调用（thread-per-connection，
-/// `docs/core/core-daemon.md` 第 12.5 节）。返回值在线程内处理（`serve_accepted`）：
+/// `docs/core/core-remote.md` 第 2.5 节）。返回值在线程内处理（`serve_accepted`）：
 /// `Stop`（对端发 `shutdown`，或本连接内部错误）→ 触发整个 daemon 的停机广播；
 /// `Continue`（普通断线）→ 线程自然结束，daemon 继续服务其它连接。
 ///
@@ -297,7 +297,7 @@ pub fn serve_connection(
     spawner: Arc<dyn CoreSpawner>,
     session_events: (Sender<DaemonEvent>, Receiver<DaemonEvent>),
 ) -> ChannelExit {
-    // 死对端探测（`docs/core/core-daemon.md` 第 12.5 节）：对端消失后读线程等不到 EOF
+    // 死对端探测（`docs/core/core-remote.md` 第 2.5 节）：对端消失后读线程等不到 EOF
     // 时，keepalive 是 socket 层的回收手段（心跳超时兜底控制帧层的沉默）。
     enable_keepalive(&stream);
     let peer = stream
@@ -345,7 +345,7 @@ fn enable_keepalive(stream: &TcpStream) {
 
 // ==================== 监听入口 ====================
 
-/// 绑定回环地址 + 内核分配的端口（`docs/core/core-daemon.md` 第 12.2 节）。
+/// 绑定回环地址 + 内核分配的端口（`docs/core/core-remote.md` 第 2.2 节）。
 ///
 /// daemon 端口不出目标机器：Host 经 SSH 转发接入，连接从远端本机发起。端口交给内核
 /// 分配，多版本 daemon 在同一台机器上并存时互不抢固定端口；实际端口落盘在状态文件里。
@@ -360,7 +360,7 @@ pub fn bind_listener() -> std::io::Result<TcpListener> {
 ///
 /// 一个指纹一个 daemon、一份落盘文件：多版本 Core 在同一台远端机器上各占一个槽位、
 /// 各跑一个 daemon 时，各自的 `start` / `kill` / 探测只作用于自己指纹的 daemon，
-/// 互不踩踏（`docs/core/standalone-core.md` 第 4.4 节、`docs/core/core-daemon.md` 第 12.3 节）。
+/// 互不踩踏（`docs/core/standalone-core.md` 第 4.4 节、`docs/core/core-remote.md` 第 2.3 节）。
 /// 命名规则与 `src/host/standalone/daemonProtocol.ts` 的 `daemonStateFileName` /
 /// `daemonLogFileName` 一致，改动必须同步两侧。
 pub const DAEMON_FILE_STEM: &str = "core-daemon";
@@ -533,7 +533,7 @@ impl Drop for StartLock {
 
 /// 拿 start 互斥锁：锁文件用 `create_new`（O_CREAT | O_EXCL）创建——操作系统层面
 /// 原子，同一时刻只有一个进程建得成功，写入自己的 pid 供后来者判活
-/// （`docs/core/core-daemon.md` 第 12.3 节）。
+/// （`docs/core/core-remote.md` 第 2.3 节）。
 ///
 /// 锁被占时按持有者状态分流：pid 还活着就等（持锁方最多 LAUNCH_TIMEOUT 就该交锁）；
 /// pid 已死立即接管（持有者崩溃不会留下永久锁）；pid 读不出（建文件与写 pid 之间
@@ -659,7 +659,7 @@ fn existing_daemon(state_path: &Path) -> ExistingDaemon {
 /// daemon 落盘前的同指纹把关：状态文件已指向**另一个**连得上的 endpoint 时，
 /// 说明同指纹已有 daemon 在跑，返回它的 endpoint（调用方退出，不落盘不服务）。
 ///
-/// 这是孤儿 daemon 的防线（`docs/core/core-daemon.md` 第 12.3 节）。`start` 在「等就绪」
+/// 这是孤儿 daemon 的防线（`docs/core/core-remote.md` 第 2.3 节）。`start` 在「等就绪」
 /// 期间被杀（客户端被 kill / SSH 会话断开），锁没释放，但已拉起、脱离进程组的
 /// daemon 仍会启动完成——它的落盘从此没有任何锁保护。若同指纹已有别的 daemon 先
 /// 落盘，孤儿无条件覆盖会把在跑 daemon 的状态文件换成自己的端口；孤儿按 idle-exit
@@ -703,7 +703,7 @@ pub fn run_start(options: RemoteOptions) -> i32 {
         ExistingDaemon::None => {}
     }
 
-    // 慢路径持互斥锁（`docs/core/core-daemon.md` 第 12.3 节）：检查与拉起之间的窗口会让
+    // 慢路径持互斥锁（`docs/core/core-remote.md` 第 2.3 节）：检查与拉起之间的窗口会让
     // 并发的 start 各拉一个同指纹 daemon——锁内重查后，后到的一方直接复用先到方
     // 拉起的 daemon。
     let _lock = match daemon_lock_path().and_then(|path| acquire_start_lock(&path)) {
@@ -1028,7 +1028,7 @@ fn detach(command: &mut Command) {
 
 // ==================== daemon 运行时（连接注册表与停机）====================
 
-/// daemon 进程的全局运行时：连接注册表 + 停机标记（`docs/core/core-daemon.md` 第 12.5 节）。
+/// daemon 进程的全局运行时：连接注册表 + 停机标记（`docs/core/core-remote.md` 第 2.5 节）。
 ///
 /// daemon 同时服务多条控制连接，每条连接一个服务线程；线程之间唯一的共享是这个
 /// 运行时。登记与停机广播在同一把锁下进行，保证 shutdown 广播不漏掉任何一条在途
@@ -1166,7 +1166,7 @@ impl DaemonRuntime {
 }
 
 /// accept 循环：每条连接一个服务线程，立即回到 accept——任何一条连接（包括连上后
-/// 一直不发帧的探活连接）都不阻塞后续接入（`docs/core/core-daemon.md` 第 12.5 节）。
+/// 一直不发帧的探活连接）都不阻塞后续接入（`docs/core/core-remote.md` 第 2.5 节）。
 fn accept_loop(
     listener: TcpListener,
     options: DaemonOptions,
@@ -1244,7 +1244,7 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     };
     // panic trace 直接落日志文件（替换进程入口装的 stderr 钩子）：stderr 通常已被启动器
     // 重定向到同一文件，但手动从终端拉起时 stderr 是终端——崩溃必须留痕靠钩子自己写
-    //（`docs/core/core-daemon.md` 第 12.5 节）。路径解析失败不拦启动：后续落状态文件时同样
+    //（`docs/core/core-remote.md` 第 2.5 节）。路径解析失败不拦启动：后续落状态文件时同样
     // 的错误会报出来。
     if let Ok(log_path) = daemon_log_path() {
         crate::util::install_panic_hook_with_file(log_path);
@@ -1265,7 +1265,7 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     };
     // endpoint 存回环地址与内核分配的实际端口；Host 读它开 SSH 转发通道。
     let endpoint = format!("{}:{}", Ipv4Addr::LOCALHOST, local.port());
-    // 孤儿防线先于落盘（`docs/core/core-daemon.md` 第 12.3 节）：同指纹已有 daemon 在跑
+    // 孤儿防线先于落盘（`docs/core/core-remote.md` 第 2.3 节）：同指纹已有 daemon 在跑
     // 就退出，不覆盖它的状态文件、不抢它的客户端。拉起方（`start`）的
     // `wait_for_daemon` 随后会读到兄弟的那份状态文件，照样把宿主带到在跑的 daemon。
     if let Some(sibling) = sibling_daemon_endpoint(&state_path, &endpoint) {
@@ -1319,7 +1319,7 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     // 空闲退出（`--idle-exit`，SSH 引导传 30s）：没有任何控制连接持续该时长（含启动
     // 后一直没有连接——兜住拉起后无人接入的孤儿 daemon）就自行退出，远端不留常驻
     // 进程；未给该选项则常驻，只有 `shutdown`（`kill` 发的）结束
-    // （`docs/core/core-daemon.md` 第 12.5 节）。
+    // （`docs/core/core-remote.md` 第 2.5 节）。
     let stopped = runtime.wait_for_stop_or_idle(options.idle_exit);
     if !stopped {
         diag!(

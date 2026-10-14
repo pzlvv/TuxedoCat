@@ -1,5 +1,5 @@
 /**
- * 远程 Core daemon 用例（`docs/core/core-daemon.md` 第 12 节）：
+ * 远程 Core daemon 用例（`docs/core/core-remote.md` 第 2 节）：
  * - `listDirectories` 走控制通道，返回远端目录列表（连接后立刻弹选择器的基础）；
  * - 远程 channel 与本地同构：openWorkspace → hello → ready；
  * - 沉默判定：pong 武装、沉默判死（daemon / 链路死亡 3s 内感知的宿主侧机制），

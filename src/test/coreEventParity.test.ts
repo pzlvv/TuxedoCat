@@ -1,7 +1,7 @@
 /**
  * CoreEvent 对等测试。
  *
- * `docs/core/standalone-core.md` 第 9 节：**两种实现对同一串 `UiEvent` 产生同一串 `CoreEvent`**。
+ * `docs/core/standalone-core-boundaries.md` 第 1 节：**两种实现对同一串 `UiEvent` 产生同一串 `CoreEvent`**。
  * 本文件把这条判据做成可执行断言：同一串脚本化的 `UiEvent`
  * （宿主环境 → 活动工作目录 → 新建会话 → 用户消息）分别喂给
  *

@@ -2,7 +2,7 @@
  * 托盘提醒音的播放编排（`electron/main.ts` 的 startAttention 消费）。
  *
  * 「任务结束提醒」触发托盘图标闪烁时（`electron/trayAttention.ts` 差分出的完成 / 转等待，
- * 且窗口在后台），除闪烁外再播一次提示音，见 `docs/hosts/host-matrix.md` 第 12 节的
+ * 且窗口在后台），除闪烁外再播一次提示音，见 `docs/hosts/host-matrix.md` 第 6 节的
  * 托盘提醒段落。
  *
  * 本模块只管**什么时候播、播失败怎么办**，不管怎么播（载体是 `electron/traySoundWindow.ts`

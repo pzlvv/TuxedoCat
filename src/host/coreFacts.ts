@@ -1,5 +1,5 @@
 /**
- * 宿主侧的「core 事实」入口（见 docs/core/standalone-core.md 第 10 节）。
+ * 宿主侧的「core 事实」入口（见 docs/core/standalone-core-boundaries.md 第 2 节）。
  *
  * 宿主不直接读取 core 的磁盘数据。以下事实在两种装配下的取法不同：
  *

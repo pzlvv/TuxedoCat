@@ -1,5 +1,5 @@
 /**
- * 单测：宿主侧「core 事实」入口（`docs/core/standalone-core.md` 第 10 节）。
+ * 单测：宿主侧「core 事实」入口（`docs/core/standalone-core-boundaries.md` 第 2 节）。
  *
  * M15 把以下事实从「宿主直接 import core 的状态函数」改为经 `coreFacts` 统一取数：
  * - MCP 面板列表（配置 + 会话启用状态 + 运行时状态）→ `requestMcpServers`

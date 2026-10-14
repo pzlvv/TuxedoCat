@@ -11,7 +11,7 @@ last_reviewed: 2026-10-11
 
 交叉引用：UiEvent 词汇表见 [events.md 第 2.3 节](../architecture/events.md#23-uieventui--core单向)；
 宿主契约见 [contracts.md 第 4 节](../architecture/contracts.md#4-对话相关数据conversationmanager)（ConversationManager）、
-[第 8 节](../architecture/contracts.md#8-webviewmessagehandler)（WebviewMessageHandler）、[第 9 节](../architecture/contracts.md#9-端口webviewuiport)（WebViewUiPort）；`queryBegin` / `queryEnd` 去重见
+[第 3 节](../architecture/host-ui-modules.md#3-webviewmessagehandler)（WebviewMessageHandler）、[第 4 节](../architecture/host-ui-modules.md#4-端口webviewuiport)（WebViewUiPort）；`queryBegin` / `queryEnd` 去重见
 [docs/hosts/webview-ui.md 第 7 节](../hosts/webview-ui.md#7-查询计数querybegin--queryend-去重)；
 「不过度 fallback」见 [principles.md 第 1 节](../architecture/principles.md#1-不过度-fallback)、
 「一份事实只有一个写入点」见 [principles.md 第 7 节](../architecture/principles.md#7-一份事实只有一个写入点)。

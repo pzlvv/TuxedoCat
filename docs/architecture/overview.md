@@ -77,4 +77,4 @@ flowchart TB
 - **宿主实现**：唯一允许 import `vscode` / `electron` 的层；同时负责 bootstrap 接线：
   共享骨架 `host/bootstrapCore.ts`（Client 与全局总线 → `WebViewUI.create` →
   按工作区打开 Connection → 历史 / 会话队列 / 等待用户读取器）+
-  各自的宿主专属接线（[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主接线)）。
+  各自的宿主专属接线（[docs/hosts/host-bootstrap.md 第 1 节](../hosts/host-bootstrap.md#1-宿主接线)）。

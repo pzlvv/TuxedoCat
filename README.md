@@ -90,7 +90,7 @@ cd core-rs && cargo test
 - daemon 只监听目标机器的回环地址、端口交给内核分配，用户不需要填任何连接信息；
 - 连接成功后**立刻**弹出远端目录选择器，选定目录即作为远程工作区打开。
 
-细节见 [docs/core/core-daemon.md 第 12 节](docs/core/core-daemon.md#12-远程服务start--kill)。
+细节见 [docs/core/core-remote.md 第 2 节](docs/core/core-remote.md#2-远程服务start--kill)。
 
 Standalone Core 的 `start` / `kill` 仍是可用的命令行入口：`start` 确保后台 daemon 在跑
 （没有就拉起）并打印就绪信息后自己退出，`kill` 结束它。不带动作直接运行可执行文件同样

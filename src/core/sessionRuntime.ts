@@ -251,7 +251,7 @@ export function dropSessionRuntime(sessionId: string): void {
  * 单个会话是否正在等待用户（ask user / 权限确认）。
  *
  * 供 `sessionResources.isSessionIdle` 读取——「等待用户」是 core 自己的事实，
- * 不由宿主注入判定闭包（`docs/hosts/host-matrix.md` 第 7 节）。
+ * 不由宿主注入判定闭包（`docs/hosts/host-bootstrap.md` 第 2 节）。
  */
 export function isSessionWaiting(sessionId: string): boolean {
   return !!states.get(sessionId)?.waiting;

@@ -464,7 +464,7 @@ async function run(): Promise<void> {
 
   // ---------- 链路心跳：链路就绪后定期发 ping ----------
   //
-  // daemon 靠「最近一次收到控制帧」判定链路死活（心跳空闲回收，docs/core/core-daemon.md 第 12.5 节）：Host 必须定期发 `ping`，沉默的连接会在 daemon 侧被误判断开。
+  // daemon 靠「最近一次收到控制帧」判定链路死活（心跳空闲回收，docs/core/core-remote.md 第 2.5 节）：Host 必须定期发 `ping`，沉默的连接会在 daemon 侧被误判断开。
   {
     const fake = await startFakeDaemon();
     const daemon = new CoreDaemon({

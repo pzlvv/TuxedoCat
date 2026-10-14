@@ -1,5 +1,5 @@
 /**
- * SSH 连接目标的唯一派生入口（`docs/core/core-daemon.md` 第 12 节）。
+ * SSH 连接目标的唯一派生入口（`docs/core/core-remote.md` 第 2 节）。
  *
  * 「同一个 SSH 连接目标」在仓库里有多个消费方，各自派生缓存 / 去重键：
  * daemon 注册表、SSH 引导去重、启动探测分组、侧栏文件浏览器的连接缓存。

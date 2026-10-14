@@ -1,5 +1,5 @@
 /**
- * SSH 客户端封装（`docs/core/core-daemon.md` 第 12 节）。
+ * SSH 客户端封装（`docs/core/core-remote.md` 第 2 节）。
  *
  * 用 `ssh2` 这个纯 JS 库实现，**不依赖系统 OpenSSH**：目标环境只有 SSH 端口时，
  * 控制通道、远端引导（部署 / 启动）与远端目录选择全部走这一条 SSH 连接。

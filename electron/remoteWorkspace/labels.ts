@@ -1,5 +1,5 @@
 /**
- * 「打开远程工作区」窗口的文案（`docs/core/core-daemon.md` 第 12 节）。
+ * 「打开远程工作区」窗口的文案（`docs/core/core-remote.md` 第 2 节）。
  *
  * 这个页面是 vite 产物、不属于 webview，用不上 `src/webview/i18n/` 的字典；locale 由
  * 主进程经 `loadFile` 的 query 传进来（宿主语言，见 `src/host/i18n.ts`）。

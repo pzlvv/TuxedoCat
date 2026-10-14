@@ -1,7 +1,7 @@
 /**
  * 单测：SSH 远端引导（`src/host/standalone/sshDaemonBootstrap.ts`）。
  *
- * 覆盖 `docs/core/core-daemon.md` 第 12.8 节按指纹落位后的三条分支与失败路径：
+ * 覆盖 `docs/core/core-remote.md` 第 2.8 节按指纹落位后的三条分支与失败路径：
  * - 该指纹的 daemon 在跑 → 直接复用，不重启、不覆盖（缺可执行文件或共享位缺
  *   ripgrep 时仍补传——「在跑」不等于产物齐全）；
  * - 已部署未启动 → 只跑 `start --idle-exit 30`，产物在就不重传（指纹槽位
@@ -48,7 +48,7 @@ const RIPGREP_PATH = `${HOME}/${REMOTE_DEPLOY_ROOT}/${RIPGREP_DIR}/rg`;
  * 引导执行的启动命令：daemon 恒绑回环（转发连接从远端本机发起，端口不出机器）；
  * 端口交给内核分配——多版本 daemon 并存互不抢固定端口，实际端口随状态文件读回；
  * `--idle-exit 30` 让 daemon 在最后一条连接断开后自行退出（客户端 crash 不留常驻
- * 进程），见 `docs/core/core-daemon.md` 第 12.2 / 12.5 / 12.8 节。
+ * 进程），见 `docs/core/core-remote.md` 第 2.2 / 2.5 / 2.8 节。
  */
 const START_COMMAND = `'${BINARY_PATH}' start --idle-exit 30`;
 

@@ -90,12 +90,12 @@ MCP 这条踩过坑：acquire 挂在「webview 打开」上时，引用生命周
 
 | 内容 | 渲染方 | 另一侧 |
 | --- | --- | --- |
-| Edit / Write 改动（diff） | webview 工具卡片（core 展开进 `displayArgs.diffHunks`，[contracts.md 第 7 节](contracts.md#7-toolhandler)） | `ElectronUIHost.showDiff` 留空——它能开 Monaco diff 窗口，但那是**重复实现**，不做 |
+| Edit / Write 改动（diff） | webview 工具卡片（core 展开进 `displayArgs.diffHunks`，[docs/architecture/host-ui-modules.md 第 2 节](host-ui-modules.md#2-toolhandler)） | `ElectronUIHost.showDiff` 留空——它能开 Monaco diff 窗口，但那是**重复实现**，不做 |
 | mermaid 代码块 | 宿主原生窗口（webview 只发 `openMermaidPreview`）：VS Code 复用单个 `WebviewPanel`，Electron 复用单个 `BrowserWindow` | webview 不做页内渲染浮层 |
 | 图片 | 宿主：VS Code `vscode.open` 内置图片预览，Electron `openImagePreviewWindow`（`dist/imageViewer`，滚轮缩放 / 拖动平移） | — |
 | 完整文本 / 虚拟文档 | 宿主：VS Code `DocumentManager` 虚拟文档标签，Electron Monaco 窗口（`mode: 'content'`） | — |
 
-VS Code 在 manual 模式下额外用 `host.showDiff` 开原生 before/after diff 标签（[contracts.md 第 7 节](contracts.md#7-toolhandler)），
+VS Code 在 manual 模式下额外用 `host.showDiff` 开原生 before/after diff 标签（[docs/architecture/host-ui-modules.md 第 2 节](host-ui-modules.md#2-toolhandler)），
 作为工具卡片之外的完整视图；Electron 不跟进（`showDiff` 空实现）。
 
 ## 6. core 描述事实，UI 决定表现
@@ -113,7 +113,7 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 节流与否、刷新哪些视图、未打开设计器时怎么办，全部由 `WebViewUI` / `UIHost` 决定。
 
 同一条分工也适用于**读函数**：core 只返回配置数据（如 `getLLMConfigPanelPayload` 返回面板载荷），
-`showLLMConfig` 这条 wire message 的组装与投递由 `WebViewUI.showLLMConfigPanel` 完成（[contracts.md 第 8 节](contracts.md#8-webviewmessagehandler)）。
+`showLLMConfig` 这条 wire message 的组装与投递由 `WebViewUI.showLLMConfigPanel` 完成（[docs/architecture/host-ui-modules.md 第 3 节](host-ui-modules.md#3-webviewmessagehandler)）。
 
 ## 7. 一份事实只有一个写入点
 
@@ -126,11 +126,11 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 | abort 按钮三态（红 / 黄 / 灰） | 纯函数 `resolveAbortButtonState`（`src/host/abortButtonState.ts`） | `InputArea` 渲染（[docs/features/abort-button.md](../features/abort-button.md)） |
 | webview 渲染阶段（thinking / text / tool） | `SessionUiState`（宿主侧渲染投影，[docs/hosts/webview-ui.md](../hosts/webview-ui.md)） | 渲染与 abort 按钮（不参与 abort 判定） |
 | 对话列表 | 磁盘（`loadConversationList`） | `ConversationManager.refresh()` 分发并留快照，`sidebar:get-conversations` 读快照（[contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
-| 对话树删除闭包 | 纯函数 `collectConversationClosure`（`src/core/history/Conversation.ts`） | core `deleteConversation` 与 Electron 宿主都调它，不各写一份（[docs/hosts/host-matrix.md 第 12 节](../hosts/host-matrix.md#12-宿主固有差异有意保留)） |
+| 对话树删除闭包 | 纯函数 `collectConversationClosure`（`src/core/history/Conversation.ts`） | core `deleteConversation` 与 Electron 宿主都调它，不各写一份（[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主固有差异有意保留)） |
 | 「哪个会话在前台」 | UI（VS Code：`SingleWebViewConversationManager` 的 `activeSessionProvider`；Electron：`ChatViewManager.getActiveSessionId`） | 空闲回收的「前台会话不关」、MCP 面板取数。core **不保存**这份状态（曾经在 `Config` 里缓存过一份） |
-| 「哪些会话 open」 | UI（Electron：`ChatViewManager.getLoadedSessionIds` → `WebViewUI.setOpenSessions`；VS Code：单视图下 open == active） | `UserChoiceQueue` 判断待答请求能否投递到该会话自己的视图（[contracts.md 第 6 节](contracts.md#6-userchoicemanager)）。core **不保存**这份状态 |
+| 「哪些会话 open」 | UI（Electron：`ChatViewManager.getLoadedSessionIds` → `WebViewUI.setOpenSessions`；VS Code：单视图下 open == active） | `UserChoiceQueue` 判断待答请求能否投递到该会话自己的视图（[docs/architecture/host-ui-modules.md 第 1 节](host-ui-modules.md#1-userchoicemanager)）。core **不保存**这份状态 |
 | 视图 ↔ 会话 ID 的绑定 | Electron `ChatViewManager`（`registerSession`） | 由 webview 上报的 `startNewConversation` / `loadConversation` 驱动（这两条消息才表达「这个视图当前属于哪个会话」） |
-| 工作区打开集合 / 活动项 | 宿主（VS Code：工作区文件夹；Electron：`main.ts` 的 `openWorkspaces` / `workspacePath`） | `WorkspaceProvider` 的消费方与 `Client`（按工作区建立 Connection，[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主接线)） |
+| 工作区打开集合 / 活动项 | 宿主（VS Code：工作区文件夹；Electron：`main.ts` 的 `openWorkspaces` / `workspacePath`） | `WorkspaceProvider` 的消费方与 `Client`（按工作区建立 Connection，[docs/hosts/host-bootstrap.md 第 1 节](../hosts/host-bootstrap.md#1-宿主接线)） |
 | `sessionId → Connection` 归属 | `Client`（`assignSession` 登记，`sessionWorkspaceAssigned` 事件驱动） | 总线路由、`Connection` 的会话集合。`connectionId` 是内部概念，不进任何总线载荷 |
 | Core 进程生命周期 | Standalone：daemon（启动 / 重启 / 终止，见 [docs/core/core-daemon.md](../core/core-daemon.md)）；Embedded：宿主进程本身 | `Connection` 只消费 `channelReset` / `workspaceClosed` 与 fatal 事件；`CoreProcess.ts` 是单进程形态的传输层实现 |
 | 家目录 / 全局配置目录 | `src/config/configDir.ts` 的 `resolveHomeDir()` / `resolveConfigDir()`（口径 `USERPROFILE` → `HOME` → `os.homedir()`，与 `core-rs/src/config.rs` 的 `home_dir()` 同序） | `SettingsStore` / `Logger` / skills 目录 / `RealApi` 失败转储 / Electron 旧字段迁移都调它，不各自 `os.homedir()` 或读 `HOME` |

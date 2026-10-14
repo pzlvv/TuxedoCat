@@ -40,7 +40,7 @@ pub fn hide_console_with(command: &mut Command, extra_flags: u32) {
 /// `logs/core-daemon-<指纹>.log`（`spawn_daemon` 以追加模式重定向）——多客户端并发后多条
 /// 服务线程同时诊断，半行会交错进日志。整行一次写入保证进程内不交错；追加
 /// 模式（O_APPEND）保证每次 write 原子落到文件尾，多进程追加也不丢行
-/// （`docs/core/core-daemon.md` 第 12.5 节）。写失败只能放弃：诊断没有别的去处。
+/// （`docs/core/core-remote.md` 第 2.5 节）。写失败只能放弃：诊断没有别的去处。
 pub fn diag_line(line: &str) {
     use std::io::Write as _;
     let mut stderr = std::io::stderr().lock();

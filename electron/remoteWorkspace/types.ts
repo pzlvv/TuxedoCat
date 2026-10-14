@@ -1,5 +1,5 @@
 /**
- * 「打开远程工作区」窗口与主进程之间的数据类型（`docs/core/core-daemon.md` 第 12 节）。
+ * 「打开远程工作区」窗口与主进程之间的数据类型（`docs/core/core-remote.md` 第 2 节）。
  *
  * preload 与页面共用；目录条目的形状直接沿用 daemon 协议里的定义，不另立一套。
  */
@@ -26,7 +26,7 @@ export type RemoteConnectResult =
   | { ok: false; error: string };
 
 /**
- * 连接请求：SSH 表单（`docs/core/core-daemon.md` 第 12 节）。
+ * 连接请求：SSH 表单（`docs/core/core-remote.md` 第 2 节）。
  *
  * 形状定义在 host 层（`src/host/remoteConnect.ts`）：主进程用同一份类型做校验，
  * 页面只负责收集输入，不自己解释格式。

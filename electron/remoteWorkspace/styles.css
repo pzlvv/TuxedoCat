@@ -1,7 +1,7 @@
 @import '../ui/scrollbar.css';
 
 /**
- * 「打开远程工作区」窗口的样式（`docs/core-daemon.md` 第 12 节）。
+ * 「打开远程工作区」窗口的样式（`docs/core-remote.md` 第 2 节）。
  *
  * 深浅色走 prefers-color-scheme：主进程的 themeSource 会驱动渲染进程的这个媒体查询
  * （与自绘标题栏 / 侧栏同一口径，见 electron/main.ts 的 setThemeSource）。

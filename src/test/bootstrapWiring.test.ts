@@ -1,5 +1,5 @@
 /**
- * 启动接线守卫（docs/hosts/host-matrix.md 第 10 节）：
+ * 启动接线守卫（docs/hosts/host-bootstrap.md 第 5 节）：
  *
  * 1. 共享骨架执行完毕后，自检快照的每个字段都成立；
  * 2. core 中导出的启动期注入点都在启动接线内登记（或属于白名单）。

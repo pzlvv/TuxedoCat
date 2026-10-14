@@ -5,7 +5,7 @@
 //! 远程 daemon 的每个工作区一个进程，见 `docs/core/standalone-core.md` 第 1 节），跑在宿主
 //! 不一定管得到的机器上——远程工作区的长任务在远端执行，宿主那台机器睡不睡与它无关。
 //! 因此由 Core 进程自己阻断它所在机器的睡眠。两处判定口径一致：任一会话 `idle == false`
-//! （含等待用户确认）即阻断（`docs/hosts/host-matrix.md` 第 6 节宿主接线、docs/hosts/host-matrix.md 第 12 节宿主固有差异）。
+//! （含等待用户确认）即阻断（`docs/hosts/host-bootstrap.md` 第 1 节宿主接线、docs/hosts/host-matrix.md 第 6 节宿主固有差异）。
 //!
 //! 阻断类型与 Electron 侧一致——只要求系统不挂起、允许屏幕熄灭：
 //!

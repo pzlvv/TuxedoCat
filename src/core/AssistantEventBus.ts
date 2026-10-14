@@ -413,7 +413,7 @@ export type UiEvent =
 /**
  * 需要 core 返回结果的请求（`CoreRequest` 的反方向）。
  *
- * 宿主不直接读取 core 的磁盘数据（`docs/core/standalone-core.md` 第 10 节）：需要
+ * 宿主不直接读取 core 的磁盘数据（`docs/core/standalone-core-boundaries.md` 第 2 节）：需要
  * 「core 的事实」时由宿主发起请求、core 应答。Embedded 下这些事实本来就在同进程，
  * 请求退化为一次函数调用，结果一致。
  *

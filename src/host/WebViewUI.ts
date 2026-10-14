@@ -577,7 +577,7 @@ export class WebViewUI implements WebViewUiPort {
   async onCommandSend(commandName: string, args: string, sessionId: string): Promise<void> {
     // 内置命令就地执行、不进入 LLM 上下文，因此不会补发用户气泡。
     // 这里显式清除该会话的排队项，避免 webview 在 queryEnd 时把它当成
-    // 「未被消费」而重复投递（见 docs/architecture/contracts.md 第 9 节的 onQueuedMessage）。
+    // 「未被消费」而重复投递（见 docs/architecture/host-ui-modules.md 第 4 节的 onQueuedMessage）。
     this.onQueuedMessage(sessionId, null);
     if (commandName === 'spin') {
       const trimmed = args.trim();
@@ -658,7 +658,7 @@ export class WebViewUI implements WebViewUiPort {
    * 向对话 webview 下发当前上下文上限（视图加载完成时的初始化推送）。
    *
    * `sender` 为 null 时走默认路由（单视图宿主 / 活动视图）；模型切换的回包走 webview 的
-   * `requestContextLimit`（`docs/architecture/contracts.md` 第 8 节），与这里共用 `WebviewMessageHandler` 的同一份实现。
+   * `requestContextLimit`（`docs/architecture/host-ui-modules.md` 第 3 节），与这里共用 `WebviewMessageHandler` 的同一份实现。
    */
   pushContextLimit(sender: WebviewViewHandle | null): void {
     this.webviewMessageHandler.pushContextLimit(sender, undefined);

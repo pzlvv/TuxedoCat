@@ -13,7 +13,7 @@ Core 与 UI 的分离形态见 `docs/architecture/core-ui-separation.md`；Stand
 `docs/core/standalone-core.md`；Core 进程的 daemon 见 `docs/core/core-daemon.md`。
 
 参考 [docs/architecture/layering.md 第 2 节](../architecture/layering.md#2-规则清单)（分层与依赖规则）、[第 1 节](../architecture/events.md#1-总线契约)（核心契约：AssistantEventBus）、
-[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主接线)（宿主接线）、[docs/architecture/principles.md 第 7 节](../architecture/principles.md#7-一份事实只有一个写入点)（一份事实只有一个写入点）。
+[docs/hosts/host-bootstrap.md 第 1 节](../hosts/host-bootstrap.md#1-宿主接线)（宿主接线）、[docs/architecture/principles.md 第 7 节](../architecture/principles.md#7-一份事实只有一个写入点)（一份事实只有一个写入点）。
 
 ---
 
@@ -100,7 +100,7 @@ Connection 持有：
   去重键（`workspaceRefKey`）只取 `(scheme, endpoint)`，不进本地路径规范化
   （`path.resolve('')` 得到宿主进程的当前目录，会与真实工作区撞键）。
 - **Core 只见 `path`**：endpoint 与凭证不下发到 Core，也不进入配置快照。
-- `auth` 是判别联合，`kind` 唯一决定控制通道怎么建（[docs/core/core-daemon.md 第 12 节](core-daemon.md#12-远程服务start--kill)）：
+- `auth` 是判别联合，`kind` 唯一决定控制通道怎么建（[docs/core/core-remote.md 第 2 节](core-remote.md#2-远程服务start--kill)）：
   只有 `{ kind: 'sshPassword' }`（`ssh`，口令只用于建 SSH 连接）。
 - `ssh` 下 `host` / `port` 是 SSH 的地址与端口，daemon 的端口由引导流程从远端状态文件
   取得，不写进引用。
@@ -121,9 +121,9 @@ Connection 持有：
 ### 4.2 远程打开流程（Electron）
 
 1. 菜单 / 标题栏加号选「打开远程工作区」，填 SSH 表单（IP / 端口 / 用户 / 口令）；
-   Host 自动部署并启动远端 Core（[docs/core/core-daemon.md 第 12.8 节](core-daemon.md#128-ssh-接入ssh-scheme)）；
+   Host 自动部署并启动远端 Core（[docs/core/core-remote.md 第 2.8 节](core-remote.md#28-ssh-接入ssh-scheme)）；
 2. Host 把输入收敛成 `endpoint`，**连接成功后立刻**列出远端主目录，弹出远端目录选择器
-   （[docs/core/core-daemon.md 第 12.6 节](core-daemon.md#126-远端目录选择)）；
+   （[docs/core/core-remote.md 第 2.6 节](core-remote.md#26-远端目录选择)）；
 3. 选定目录后按 `remoteWorkspaceRef` 加入打开集合：`(scheme, endpoint, path)`；
 4. 打开该工作区时复用同一条控制通道发 `openWorkspace`。
 
@@ -233,7 +233,7 @@ Connection 持有：
   （重连期间转建链中，同一 3 秒建链超时；成功撤销判定、补建 Connection 并切回对话视图）。
   活动项
   不因不可用而回退；可用的引用（含远程）交给 `Client.openWorkspace` 建立 Connection，
-  远程项按落盘凭证重新走一遍 SSH 引导（[docs/core/core-daemon.md 第 12.8 节](core-daemon.md#128-ssh-接入ssh-scheme)）。连不上不影响
+  远程项按落盘凭证重新走一遍 SSH 引导（[docs/core/core-remote.md 第 2.8 节](core-remote.md#28-ssh-接入ssh-scheme)）。连不上不影响
   其它工作区。
 - **最近列表**：本地项在读取时过滤掉已不存在的目录；远程项无法本地检查，原样保留。
   关闭标签页只从打开集合移除，不抹掉最近列表里的凭证。
@@ -246,7 +246,7 @@ Connection 持有：
 
 - 远程凭证的加密存储与钥匙串集成（当前是明文落盘，见第 9 节）；
 - SSH 的密钥 / agent 认证（当前只有口令）；
-- 远程 daemon 的部署由 Host 自动完成（[docs/core/core-daemon.md 第 12.8 节](core-daemon.md#128-ssh-接入ssh-scheme)）；
+- 远程 daemon 的部署由 Host 自动完成（[docs/core/core-remote.md 第 2.8 节](core-remote.md#28-ssh-接入ssh-scheme)）；
 - 断线重连（含远程工作区在重启后连不上时的自动重试）；
 - 多 Connection 的界面呈现（归属标识、切换入口）。
 

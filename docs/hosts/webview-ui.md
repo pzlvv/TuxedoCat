@@ -158,7 +158,7 @@ Electron 的侧栏「关闭」/ 聊天视图顶栏关闭经 `electron/main.ts` �
 
 | 方法 | 行为 |
 | --- | --- |
-| `requestToolPermission` | `sessionUi.beginToolPhase`（thinking 让位于工具卡片）→ `toolHandler.requestToolPermission`（上架工具卡片；Edit / Write 带 diff 且 `agentMode === 'manual'` 时调 `host.showDiff` 打开宿主侧 diff，见[docs/architecture/contracts.md 第 7 节](../architecture/contracts.md#7-toolhandler)） |
+| `requestToolPermission` | `sessionUi.beginToolPhase`（thinking 让位于工具卡片）→ `toolHandler.requestToolPermission`（上架工具卡片；Edit / Write 带 diff 且 `agentMode === 'manual'` 时调 `host.showDiff` 打开宿主侧 diff，见[docs/architecture/host-ui-modules.md 第 2 节](../architecture/host-ui-modules.md#2-toolhandler)） |
 | `requestUserChoice` | `userChoiceManager.requestUserChoice` |
 | `onQueryBegin` | `sessionUi.beginQuery()` 计数去重（嵌套调用直接忽略）→ `markThinking` → `setThinkingAnimation(true)` → 投递 `queryBegin` |
 | `onQueryEnd` | `sessionUi.endQuery()` 去重 → `markIdle` → **显式 `setThinkingAnimation(false)`**（中断路径可能没有 `onAIEnd`，只发 `queryEnd` 会让 thinking 动画残留）→ 投递 `queryEnd` → `onConversationListChanged()` |
@@ -204,7 +204,7 @@ thinking / text / tool 动画）。`ConversationLoadedExtra.hasActiveQuery` 由
 
 | 方法 | 消费者 |
 | --- | --- |
-| `handleWebviewMessage(message, ctx?)` | 宿主 webview 的 `onDidReceiveMessage`（`extension.ts` / `electron/main.ts`）。`ctx.sender` 为来源视图句柄：Electron 用 `webviewHandleFor(sender)` 传入；单视图宿主 / 宿主主动推送省略（见[docs/architecture/contracts.md 第 8 节](../architecture/contracts.md#8-webviewmessagehandler)） |
+| `handleWebviewMessage(message, ctx?)` | 宿主 webview 的 `onDidReceiveMessage`（`extension.ts` / `electron/main.ts`）。`ctx.sender` 为来源视图句柄：Electron 用 `webviewHandleFor(sender)` 传入；单视图宿主 / 宿主主动推送省略（见[docs/architecture/host-ui-modules.md 第 3 节](../architecture/host-ui-modules.md#3-webviewmessagehandler)） |
 | `getActiveSessionId()` | `host.getActiveSessionId` 接线（VS Code 空闲巡检的 `activeSessionProvider`、MCP 面板取当前会话）、`extension.ts` 的 `persistCurrentFileContext` |
 | `getActivityPhase(sessionId)` | `postConversationLoaded` 内部；`conversationLoaded` 的 `activityPhase` 字段来源 |
 | `isQueryActive(sessionId)` | `WebviewMessageHandler.handleLoadConversation` 内部；`conversationLoaded` 的 `hasActiveQuery` 字段来源（只认本会话自己的查询计数，见第 5 节） |

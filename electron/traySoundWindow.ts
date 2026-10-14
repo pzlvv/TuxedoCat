@@ -1,7 +1,7 @@
 /**
  * 托盘提醒音的播放载体：一个懒创建、播完自毁的隐藏窗口 + Web Audio。
  *
- * 为什么不用 `<audio src>`（见 `docs/hosts/host-matrix.md` 第 12 节的托盘提醒段落）：
+ * 为什么不用 `<audio src>`（见 `docs/hosts/host-matrix.md` 第 6 节的托盘提醒段落）：
  * `assets/meow.aac`
  * 是 MP4 容器（`ftyp mp42` + AAC-LC 44.1kHz 立体声），但容器时长元数据与数据不一致
  * （`mvhd` / `mdhd` 声明 ≈6ms，`stts` 每帧 delta = 5），Chromium 按声明时长判定结束，

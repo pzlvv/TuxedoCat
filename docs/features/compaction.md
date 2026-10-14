@@ -13,7 +13,7 @@ last_reviewed: 2026-10-11
 `compactEnd` / `messagesReplaced` / `compactRequested`）；`compacting` 来源见
 [docs/core/session-runtime.md](../core/session-runtime.md)；「core 描述事实，UI 决定表现」见
 [principles.md 第 6 节](../architecture/principles.md#6-core-描述事实ui-决定表现)；Standalone 对等见
-[docs/core/standalone-core.md 第 9 节](../core/standalone-core.md#9-与-embedded-core-的对等)。
+[docs/core/standalone-core-boundaries.md 第 1 节](../core/standalone-core-boundaries.md#1-与-embedded-core-的对等)。
 
 ## 1. 用户场景与验收标准
 
@@ -106,7 +106,7 @@ UI 发 `UiEvent.compactRequested` → `Integration.requestCompact`；
 
 - 展开（`expandCompact`）是**只读**操作：宿主读归档文件并把「归档 + 保留区」重放给
   webview，不改任何 core 状态；LLM 仍只看压缩后的消息（[principles.md 第 6 节](../architecture/principles.md#6-core-描述事实ui-决定表现)）。
-- Standalone 下归档读取经 `UiRequest.compactArchiveRequested`（[docs/core/standalone-core.md 第 10 节](../core/standalone-core.md#10-宿主侧的-core-事实读取)）。
+- Standalone 下归档读取经 `UiRequest.compactArchiveRequested`（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)）。
 
 ## 3. 行为规格
 

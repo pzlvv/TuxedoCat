@@ -1,5 +1,5 @@
 /**
- * SSH 接入的控制通道建链器（`docs/core/core-daemon.md` 第 12 节）。
+ * SSH 接入的控制通道建链器（`docs/core/core-remote.md` 第 2 节）。
  *
  * 目标环境只开放 SSH 端口时，Host 的全部通信都走这条 SSH 连接：
  * 1. `SshClient` 建立 SSH 连接（口令鉴权 + 主机密钥 TOFU 校验）；

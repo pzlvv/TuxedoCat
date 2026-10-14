@@ -5,7 +5,7 @@ last_reviewed: 2026-10-13
 
 # 规格：两套 Core 的实现差异
 
-本规格界定 Embedded Core（`src/core`，TypeScript）与 Standalone Core（`core-rs`，Rust）两套实现**有意保留**的差异与装配 / 事实归属差异（第 1–3 节）、由 parity 对照表锁定的对等面（第 4 节）与 `core-rs` 的 dead_code 审计（第 5 节）。Embedded Core 是唯一真值，Standalone Core逐项对齐；尚未迁入的能力见 [docs/core/standalone-core.md 第 9 节](standalone-core.md#9-与-embedded-core-的对等)的已知缺口。
+本规格界定 Embedded Core（`src/core`，TypeScript）与 Standalone Core（`core-rs`，Rust）两套实现**有意保留**的差异与装配 / 事实归属差异（第 1–3 节）、由 parity 对照表锁定的对等面（第 4 节）与 `core-rs` 的 dead_code 审计（第 5 节）。Embedded Core 是唯一真值，Standalone Core逐项对齐；尚未迁入的能力见 [docs/core/standalone-core-boundaries.md 第 1 节](standalone-core-boundaries.md#1-与-embedded-core-的对等)的已知缺口。
 
 交叉引用：`docs/core/standalone-core.md`（Standalone 形态与契约）、`docs/hosts/webview-ui.md`（待定事项）、`src/test/fixtures/*Parity.json`（对照表）。
 
@@ -18,7 +18,7 @@ Embedded Core（`src/core`，TypeScript）是唯一真值，Standalone Core（`c
 2. **Rust 实现更健壮**（第 2 节）：TS 的行为在边界条件下会丢数据 / 挂死 / 产生非法输出。
 
 装配与事实归属带来的差异见第 3 节，两侧共用对照表锁定的对等面见第 4 节，`core-rs` 的
-`#[allow(dead_code)]` 审计见第 5 节。尚未迁入的能力见 [docs/core/standalone-core.md 第 9 节](standalone-core.md#9-与-embedded-core-的对等)的
+`#[allow(dead_code)]` 审计见第 5 节。尚未迁入的能力见 [docs/core/standalone-core-boundaries.md 第 1 节](standalone-core-boundaries.md#1-与-embedded-core-的对等)的
 已知缺口，Standalone 的形态与契约见同一份规格。
 
 ## 目录

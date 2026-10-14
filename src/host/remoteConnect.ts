@@ -1,7 +1,7 @@
 /**
  * 远程接入输入的解析（宿主侧，纯函数）。
  *
- * 接入方式只有 SSH（`docs/core/core-daemon.md` 第 12 节）：目标只开放 SSH 端口时，填 SSH 的
+ * 接入方式只有 SSH（`docs/core/core-remote.md` 第 2 节）：目标只开放 SSH 端口时，填 SSH 的
  * IP / 端口 / 用户 / 口令，部署、启动与后续全部通信都走这条 SSH 连接。
  * 输入在这里收敛成 `WorkspaceEndpoint`（`buildRemoteEndpoint`）。
  * 不依赖 electron：可在单测里直接使用。
@@ -9,7 +9,7 @@
 
 import type { WorkspaceEndpoint } from './workspaceRef.js';
 
-/** SSH 表单输入（`docs/core/core-daemon.md` 第 12 节）：IP + 端口 + 用户 + 口令 */
+/** SSH 表单输入（`docs/core/core-remote.md` 第 2 节）：IP + 端口 + 用户 + 口令 */
 export interface SshConnectionInput {
   host: string;
   /** SSH 端口（默认 22） */
@@ -56,7 +56,7 @@ export function parseSshConnectionInput(raw: {
 }
 
 /**
- * 远程工作区接入请求（`docs/core/core-daemon.md` 第 12 节）：SSH 表单。
+ * 远程工作区接入请求（`docs/core/core-remote.md` 第 2 节）：SSH 表单。
  *
  * `port` 原样带表单里的字符串，校验在本模块。
  */

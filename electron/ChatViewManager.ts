@@ -11,7 +11,7 @@
  *   └──────────┴──────────────────────────────┘
  *
  * 侧栏宽度不再用常量：布局时经 `opts.sidebarWidth()` 实时取值（main.ts 持有
- * 当前宽度并负责夹取与持久化，见 `docs/hosts/host-matrix.md` 第 12 节）。
+ * 当前宽度并负责夹取与持久化，见 `docs/hosts/host-matrix.md` 第 6 节）。
  */
 
 import { BrowserWindow, WebContents, WebContentsView, Rectangle, nativeTheme } from 'electron';
@@ -848,7 +848,7 @@ export class ChatViewManager {
     },
   ): void {
     // 销毁视图前先卸内存（core：abort + 引擎出池 + MCP 释放），
-    // 再做纯视图销毁（不再依赖视图层内部 abort/release，见 docs/hosts/host-matrix.md 第 12 节）
+    // 再做纯视图销毁（不再依赖视图层内部 abort/release，见 docs/hosts/host-matrix.md 第 6 节）
     if (this.closeConversation) {
       this.closeConversation(key);
     } else {

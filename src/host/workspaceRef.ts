@@ -14,7 +14,7 @@
 import { normalizeWorkspacePath, sameWorkspace } from './workspacePaths.js';
 
 /**
- * 远程凭证（`docs/core/core-daemon.md` 第 12 节）。
+ * 远程凭证（`docs/core/core-remote.md` 第 2 节）。
  *
  * 只有 SSH 口令一种：SSH 完成机器级鉴权，daemon 的 token 由引导流程从远端状态文件
  * 取得、只在控制通道第一帧使用。`kind` 判别字段保留，便于后续新增凭证种类。
@@ -54,7 +54,7 @@ export function localWorkspaceRef(path: string): WorkspaceRef {
 }
 
 /**
- * SSH 接入（`docs/core/core-daemon.md` 第 12 节）：全部通信走 SSH 端口，
+ * SSH 接入（`docs/core/core-remote.md` 第 2 节）：全部通信走 SSH 端口，
  * 不要求目标机器把 daemon 端口映射出来。
  */
 export const SSH_WORKSPACE_SCHEME = 'ssh';

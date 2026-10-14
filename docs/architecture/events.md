@@ -96,10 +96,10 @@ export type CoreRequestHandlers = {
 | `CoreEvent` | core → UI | 单向事实通知 | 26 | `WebViewUI`（`onCoreEvents` 映射表） |
 | `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 2 | `WebViewUI`（`onCoreRequests` 映射表） |
 | `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 23 | core 侧订阅者（`initializeCoreEvents`） |
-| `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 9 | 两套 Core 的应答 + 宿主侧统一入口（[docs/core/standalone-core.md 第 10 节](../core/standalone-core.md#10-宿主侧的-core-事实读取)） |
+| `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 9 | 两套 Core 的应答 + 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
 
 `UiRequest` 的成员、两侧应答与宿主侧统一入口（`coreFacts`）见
-[docs/core/standalone-core.md 第 10 节](../core/standalone-core.md#10-宿主侧的-core-事实读取)。
+[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)。
 汇总数量由 `src/test/docsLint.test.ts` 对照类型联合校验，不手写维护。
 
 **两条独立的流**（[layering.md](layering.md) 规则 8）：
@@ -176,7 +176,7 @@ wire message（若该事件会产生 webview 协议消息）。命名规则见�
 
 | # | `type` | 载荷 | core 侧触发点 | 处理方 | 结果类型 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | `toolPermissionRequested` | `sessionId`, `toolUseId`, `toolName`, `permResult`, `displayArgs`, `agentMode` | `tools/RunTools`（工具执行前，权限规则已按 agentMode 加工完） | `requestToolPermission` | `PermissionResult`（Edit / Write 的 `beforeContent` / `afterContent` 等展示字段在 auto / risk 自动放行后仍保留；`agentMode` 供 UI 判断是否打开宿主侧 diff，见[contracts.md 第 7 节](contracts.md#7-toolhandler)） |
+| 1 | `toolPermissionRequested` | `sessionId`, `toolUseId`, `toolName`, `permResult`, `displayArgs`, `agentMode` | `tools/RunTools`（工具执行前，权限规则已按 agentMode 加工完） | `requestToolPermission` | `PermissionResult`（Edit / Write 的 `beforeContent` / `afterContent` 等展示字段在 auto / risk 自动放行后仍保留；`agentMode` 供 UI 判断是否打开宿主侧 diff，见[docs/architecture/host-ui-modules.md 第 2 节](host-ui-modules.md#2-toolhandler)） |
 | 2 | `userChoice` | `sessionId`, `options: UserChoiceOptions` | `Integration`（权限确认需要用户选择时） | `requestUserChoice` | `{ index: number; reply?: string }` |
 
 结果类型的映射写在 `CoreRequestResultMap`（第 2 节），保证 handler 返回类型与请求一一对应。
@@ -188,7 +188,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 
 工作目录是**对话的属性**：core 持有一份会话工作目录表（`Config.setSessionWorkspace` /
 `getSessionWorkspace`），登记时机为宿主在会话首次被 core 解析目录之前提供（新建 / 加载
-对话，见[docs/hosts/host-matrix.md 第 7 节](../hosts/host-matrix.md#7-启动期状态写入入口与读取器)）、加载对话读到元数据 `project` 后校正、子对话继承父对话。
+对话，见[docs/hosts/host-bootstrap.md 第 2 节](../hosts/host-bootstrap.md#2-启动期状态写入入口与读取器)）、加载对话读到元数据 `project` 后校正、子对话继承父对话。
 `getProjectRoot(sessionId)` 只按会话解析，未登记时抛错；`hasProjectRoot(sessionId)`
 供「没有工作目录时降级」的调用点做前置守卫。core 里需要工作目录的地方
 （history / mcp / tools / spin / prompt）都按会话解析，不读单一全局值；
@@ -249,8 +249,8 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 类别 | 消息 | 为什么不是 UiEvent |
 | --- | --- | --- |
 | 纯宿主操作 | `openFile` / `openMermaidPreview` / `openSpinDesign` / `openUrl` / `showVirtualDocument` / `requestToolMeta` / `debugLog` | 只操作宿主，不涉及 core 业务 |
-| 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestMcpServers` / `requestSkills` / `requestConversationSpaces` / `requestSessionRuntimeStates` / `requestSmartNaming` | 只读，不改变 core 状态；经 `coreFacts` 取数（Embedded 直读 / Standalone 走 `UiRequest`）。其中 `requestMcpServers` / `requestSkills` 是**按会话**解析的（project skills / MCP 启用列表跟会话的工作目录走）：会话归属取 `trackedActiveSessionId`——多视图宿主必须由宿主在活动视图变化时同步（见 [contracts.md 第 8 节](contracts.md#8-webviewmessagehandler)的 `setActiveSessionId`），否则会取到别的标签页的工作目录；`requestSkills` / `requestSessionRuntimeStates` 的回包按 `ctx.sender` 定向投递 |
-| 环境查询 | `requestTheme` / `requestContextLimit` | 只读宿主环境并回包，不涉及 core 状态；按 `ctx.sender` 定向投递（`sender` 为 `null` 走默认路由，见[contracts.md 第 8 节](contracts.md#8-webviewmessagehandler)） |
+| 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestMcpServers` / `requestSkills` / `requestConversationSpaces` / `requestSessionRuntimeStates` / `requestSmartNaming` | 只读，不改变 core 状态；经 `coreFacts` 取数（Embedded 直读 / Standalone 走 `UiRequest`）。其中 `requestMcpServers` / `requestSkills` 是**按会话**解析的（project skills / MCP 启用列表跟会话的工作目录走）：会话归属取 `trackedActiveSessionId`——多视图宿主必须由宿主在活动视图变化时同步（见 [docs/architecture/host-ui-modules.md 第 3 节](host-ui-modules.md#3-webviewmessagehandler)的 `setActiveSessionId`），否则会取到别的标签页的工作目录；`requestSkills` / `requestSessionRuntimeStates` 的回包按 `ctx.sender` 定向投递 |
+| 环境查询 | `requestTheme` / `requestContextLimit` | 只读宿主环境并回包，不涉及 core 状态；按 `ctx.sender` 定向投递（`sender` 为 `null` 走默认路由，见[docs/architecture/host-ui-modules.md 第 3 节](host-ui-modules.md#3-webviewmessagehandler)） |
 | 列表查询 | `getConversations` | 走 `WebViewUiPort.refreshConversations()` → `ConversationManager.refresh()`（唯一产出 `conversationsData` 的地方，见[contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
 | 请求响应 | `respondUserChoice` | 走 `CoreRequest.userChoice` 的 Promise 回传 |
 | 纯显示操作 | `expandCompact` | 只读归档文件 + 重放消息到 webview，不改任何 core 状态（LLM 仍只看压缩后的消息） |
@@ -389,12 +389,12 @@ resetGlobalEventBus();    // 测试用：清空全局总线
 宿主环境差异（扩展路径 / 日志出口开关 / 配置目录名 / 配置快照 / MCP 服务器表）经总线传递，
 core 侧没有对应的直接注入入口；宿主 locale 只在宿主进程内使用，core 不感知语言。
 会话的工作目录是对话的属性：宿主在会话首次被 core 解析目录之前经
-`UiEvent.sessionWorkspaceAssigned` 登记（[docs/hosts/host-matrix.md 第 7 节](../hosts/host-matrix.md#7-启动期状态写入入口与读取器)），Client 同时据此建立
+`UiEvent.sessionWorkspaceAssigned` 登记（[docs/hosts/host-bootstrap.md 第 2 节](../hosts/host-bootstrap.md#2-启动期状态写入入口与读取器)），Client 同时据此建立
 `sessionId → Connection` 路由。
 
 core 模块随 bundle 加载，**模块顶层不能订阅**（加载时总线还不存在）；订阅统一收敛到
 `initializeCoreEvents`（第 3 节）。接线项归属、注入点与读取器、启动自检与退出路径见
-[docs/hosts/host-matrix.md 第 6–10 节](../hosts/host-matrix.md#6-宿主接线)。
+[docs/hosts/host-bootstrap.md 第 1–6 节](../hosts/host-bootstrap.md#1-宿主接线)。
 
 ## 6. 边界语义
 

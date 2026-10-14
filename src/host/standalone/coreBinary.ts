@@ -176,7 +176,7 @@ export function resolveCoreBinary(
  * 读取 Standalone Core 的构建指纹（可执行文件同级的 `fingerprint` 文件）。
  *
  * 指纹是部署的槽位标识：宿主据此确定部署目录 `~/.local/share/<产品名>/<指纹>/`
- * （`coreDeployDirPath`）与该指纹专属的 daemon 状态文件（`docs/core/core-daemon.md` 第 12.3 节）。
+ * （`coreDeployDirPath`）与该指纹专属的 daemon 状态文件（`docs/core/core-remote.md` 第 2.3 节）。
  * 文件缺失 / 内容不是 64 位小写 hex 都抛错：产物不完整属于构建期错误，静默猜一个
  * 指纹会部署到错误的槽位（``docs/architecture/principles.md`）。
  */

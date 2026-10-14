@@ -128,7 +128,7 @@ export interface UIHost extends WorkspaceProvider {
    * 直发某个对话视图（预热视图初始化、按来源回包）。
    *
    * `view` 由宿主实现产出：多视图宿主把来源视图对象包成句柄交给调用方透传
-   * （Electron 为 `WebviewViewHandle` 包裹 `WebContents`，见 `docs/hosts/host-matrix.md` 第 6 节）；单视图宿主
+   * （Electron 为 `WebviewViewHandle` 包裹 `WebContents`，见 `docs/hosts/host-bootstrap.md` 第 1 节）；单视图宿主
    * （VS Code）等价于 `sendToWebview`，句柄不参与路由。
    */
   sendToWebviewView(view: WebviewViewHandle, message: HostToWebviewMessage): void;
@@ -175,7 +175,7 @@ export interface UIHost extends WorkspaceProvider {
    *
    * - VS Code：`DocumentManager.showDiff` 打开 before/after 两个虚拟文档组成的 diff 标签
    * - Electron：空实现——diff 只在 webview 的工具卡片里渲染，桌面端不再开 Monaco 窗口
-   *   （见 docs/hosts/host-matrix.md 第 12 节 UIHost 对照表）
+   *   （见 docs/hosts/host-matrix.md 第 6 节 UIHost 对照表）
    *
    * 同一个 diff 重复打开时由宿主自行去重；打开新的 diff 前由宿主自行关闭上一个预览。
    */

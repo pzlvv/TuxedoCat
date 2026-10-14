@@ -47,7 +47,7 @@ core/  ←  host/  ←  宿主实现（VSCode* / Electron*）
   对话目录下的 `<conversations>/<project>/workspace.meta.json`（记录 workspacePath）不同：
   它归 core（在 Core 数据目录内），目录创建与清单读写都在 core，宿主不参与写盘。
   宿主本地偏好（`theme` / `shortcut`）不在这两份文件里：它们只有 Electron 消费，落
-  `userData/workspace-state.json`（`electron/workspaceStateStore.ts`，临时文件 + rename 原子落盘、内容未变不落盘），core 不读不写（[docs/hosts/host-matrix.md 第 12 节](../hosts/host-matrix.md#12-宿主固有差异有意保留)）。
+  `userData/workspace-state.json`（`electron/workspaceStateStore.ts`，临时文件 + rename 原子落盘、内容未变不落盘），core 不读不写（[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主固有差异有意保留)）。
 
 ### 2.1 规则 9 的审计结论
 
@@ -61,7 +61,7 @@ core/  ←  host/  ←  宿主实现（VSCode* / Electron*）
 | UI 侧共享队列 | 状态归 UI，不属于 core 事实 | `src/core/UserChoiceQueue.ts`（宿主侧待答队列；Standalone 下同样由 UI 使用） |
 
 仍保留的直接读取（Standalone 下与本机 Core 共用同一份磁盘，远程工作区需要迁到
-`UiRequest`，见 [docs/core/standalone-core.md 第 10 节](../core/standalone-core.md#10-宿主侧的-core-事实读取)的例外表）：
+`UiRequest`，见 [docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)的例外表）：
 
 - 会话工作目录索引：宿主侧另存一份 `sessionId → workspacePath`
   （`history/Config.ts` 的 `getSessionWorkspace` / `setSessionWorkspace`）。Standalone 的

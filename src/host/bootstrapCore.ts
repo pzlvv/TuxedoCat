@@ -1,5 +1,5 @@
 /**
- * bootstrapCore - 宿主无关的启动接线骨架（见 docs/hosts/host-matrix.md 第 6 节）
+ * bootstrapCore - 宿主无关的启动接线骨架（见 docs/hosts/host-bootstrap.md 第 1 节）
  *
  * 两个宿主（VS Code 扩展 / Electron 主进程）的启动接线由本函数统一执行，
  * 宿主只提供自身差异（locale / 日志出口 / 资源根目录 / 工作区事实）。
@@ -13,7 +13,7 @@
  * - `Client` 是宿主级唯一实例，维护工作区 / 会话路由与配置快照推送；
  * - `Connection` 是总线、就绪状态与生命周期的作用域。
  *
- * 顺序（不可调换，理由见 docs/architecture/events.md 第 5 节；宿主专属接线见 `docs/hosts/host-matrix.md` 第 6 节）：
+ * 顺序（不可调换，理由见 docs/architecture/events.md 第 5 节；宿主专属接线见 `docs/hosts/host-bootstrap.md` 第 1 节）：
  *   创建 Client 并注册全局总线 → 注册 core 侧 UiEvent 订阅（仅 embedded）
  *   → 创建 WebViewUI（其构造函数注册 CoreEvent / CoreRequest 处理器）
  *   → 按工作区打开 Connection（连接建立时推送宿主环境与配置快照）
@@ -296,7 +296,7 @@ const workspaceUnsubscribers = new Set<() => void>();
  * - 本地同机（`endpoint === null`）：Host 直接以 `stdio` 动作起一个 Core 进程，stdio 是帧通道
  *   （不监听端口、不需要 token）；
  * - 远程：连该 endpoint 的 daemon 控制通道（TCP + `auth`），每个工作区一条 channel
- *   （`docs/core/core-daemon.md` 第 12 节）。
+ *   （`docs/core/core-remote.md` 第 2 节）。
  *
  * 两种形态对 Connection 暴露同一个 `AssistantEventBus`。
  */
@@ -330,7 +330,7 @@ function openStandaloneChannel(
  * 取该远程工作区 endpoint 的 daemon（一个 endpoint 一个 daemon；宿主退出只断开自己的
  * 控制链路，不发 shutdown——daemon 的 idle-exit 自行清场，见 `shutdownCore`）。
  *
- * 全部通信走 SSH 端口（`docs/core/core-daemon.md` 第 12 节）。
+ * 全部通信走 SSH 端口（`docs/core/core-remote.md` 第 2 节）。
  */
 function remoteDaemonForEndpoint(ref: WorkspaceRef, options: CoreBootstrapOptions): CoreDaemon {
   const endpoint = ref.endpoint;
@@ -352,7 +352,7 @@ function remoteDaemonForEndpoint(ref: WorkspaceRef, options: CoreBootstrapOption
 }
 
 /**
- * 建链方式（`docs/core/core-daemon.md` 第 12 节）：全部通信走 SSH 端口，daemon 的
+ * 建链方式（`docs/core/core-remote.md` 第 2 节）：全部通信走 SSH 端口，daemon 的
  * endpoint 与 token 由引导流程取得（`sshDaemonBootstrap.ts`）。
  */
 function daemonOpenerFor(

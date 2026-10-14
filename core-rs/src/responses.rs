@@ -7,7 +7,7 @@
 //! 因此引擎（`engine.rs`）与上层无需任何改动。
 //!
 //! **已知缺口**：内置 `web_search` 工具与搜索卡片事件（`web_search_call` /
-//! `_update` / `_done`）尚未迁入，见 `docs/core/standalone-core.md` 第 9 节的已知缺口；因此本模块不下发 `web_search`
+//! `_update` / `_done`）尚未迁入，见 `docs/core/standalone-core-boundaries.md` 第 1 节的已知缺口；因此本模块不下发 `web_search`
 //! 工具，`webSearchUsed` 恒为 false（`shouldSkipUsageForContext` 只剩「超过上下文
 //! 窗口 60%」那道闸门）。
 

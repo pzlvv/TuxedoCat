@@ -9,7 +9,7 @@ import { createChecker, runTests } from './helpers/harness';
 /**
  * 托盘提醒音的播放编排（`electron/trayAttentionSound.ts`）。
  *
- * 覆盖点（`docs/hosts/host-matrix.md` 第 12 节的托盘提醒段落）：
+ * 覆盖点（`docs/hosts/host-matrix.md` 第 6 节的托盘提醒段落）：
  * - 每次提醒触发播一次：`play()` 调用次数与提醒次数一致（重播语义由载体保证）；
  * - 载体只取一次：懒取 + 缓存，不在每次提醒时重建窗口；
  * - 应用退出中（`acquirePlayer()` 返回 `null`）静默 no-op：不落日志、不抛错；

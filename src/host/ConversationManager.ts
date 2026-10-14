@@ -84,7 +84,7 @@ export abstract class ConversationManager {
    * 读对话列表（source of truth，两端一致）。
    *
    * Embedded 下直接读盘；Standalone 下经 `UiRequest.conversationListRequested`
-   * 向 Core 索取——宿主不直接读 core 的磁盘数据（`docs/core/standalone-core.md` 第 10 节）。
+   * 向 Core 索取——宿主不直接读 core 的磁盘数据（`docs/core/standalone-core-boundaries.md` 第 2 节）。
    */
   protected async load(): Promise<ConversationMetadata[]> {
     return loadConversationListForHost(this.host.getWorkspacePath() ?? undefined);

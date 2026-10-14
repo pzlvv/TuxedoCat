@@ -14,8 +14,8 @@ last_reviewed: 2026-10-11
 Core 的进程形态见 `docs/core/standalone-core.md`；Core 进程的 daemon 见 `docs/core/core-daemon.md`。
 
 参考 [docs/architecture/layering.md 第 2 节](layering.md#2-规则清单)（分层与依赖规则）、[第 1 节](events.md#1-总线契约)（核心契约：AssistantEventBus）、
-[第 2 节](events.md#2-事件词汇表)（事件列表）、[docs/architecture/contracts.md 第 1 节](contracts.md#1-uihost对话-webview-的宿主能力)（UIHost）、[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主接线)（宿主接线）、
-[第 7 节](../hosts/host-matrix.md#7-启动期状态写入入口与读取器)（注入点与读取器）、[docs/architecture/principles.md 第 7 节](principles.md#7-一份事实只有一个写入点)（一份事实只有一个写入点）。
+[第 2 节](events.md#2-事件词汇表)（事件列表）、[docs/architecture/contracts.md 第 1 节](contracts.md#1-uihost对话-webview-的宿主能力)（UIHost）、[docs/hosts/host-bootstrap.md 第 1 节](../hosts/host-bootstrap.md#1-宿主接线)（宿主接线）、
+[第 2 节](../hosts/host-bootstrap.md#2-启动期状态写入入口与读取器)（注入点与读取器）、[docs/architecture/principles.md 第 7 节](principles.md#7-一份事实只有一个写入点)（一份事实只有一个写入点）。
 
 ---
 
@@ -383,7 +383,7 @@ CoreEvent.notice { sessionId, key, params, level }
 - 断线后的恢复与重连。Core 崩溃后的进程重启（[docs/core/core-daemon.md 第 6 节](../core/core-daemon.md#6-重启)）是同一
   channel 内的连接重置，不属于跨连接的断线重连。
 - 远程工作区的实现（见 [docs/core/client-connection.md 第 9 节](../core/client-connection.md#9-落盘与恢复宿主侧)）；跨机器部署时宿主直接读
-  Core 磁盘的例外需要迁到 `UiRequest`（见 [docs/core/standalone-core.md 第 10 节](../core/standalone-core.md#10-宿主侧的-core-事实读取)）。
+  Core 磁盘的例外需要迁到 `UiRequest`（见 [docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)）。
 - 多 Connection 的界面呈现。
 
 ---

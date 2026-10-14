@@ -13,7 +13,7 @@ use serde_json::Value;
 ///
 /// 2：新增 UI → core 的请求方向（`UiToCoreFrame::Request` /
 /// `CoreToUiFrame::Response`），用于宿主向 Core 索取「core 的事实」
-/// （对话列表 / 界面语言 / 配置目录，见 `docs/core/standalone-core.md` 第 10 节）。
+/// （对话列表 / 界面语言 / 配置目录，见 `docs/core/standalone-core-boundaries.md` 第 2 节）。
 pub const CORE_PROTOCOL_VERSION: u32 = 2;
 
 /// UI → Core 的帧。

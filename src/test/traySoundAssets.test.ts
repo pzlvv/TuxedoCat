@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { createChecker, runTests } from './helpers/harness';
 
 /**
- * 托盘提示音的资源与打包边界（`docs/hosts/host-matrix.md` 第 12 节的托盘提醒段落）。
+ * 托盘提示音的资源与打包边界（`docs/hosts/host-matrix.md` 第 6 节的托盘提醒段落）。
  *
  * 覆盖点：
  * - `electron/assets/meow.aac` 存在且非空（Electron 侧播放的资源前提）；

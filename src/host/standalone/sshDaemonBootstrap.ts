@@ -1,5 +1,5 @@
 /**
- * 远端 Core 的 SSH 引导（`docs/core/core-daemon.md` 第 12.8 节）。
+ * 远端 Core 的 SSH 引导（`docs/core/core-remote.md` 第 2.8 节）。
  *
  * 目标环境只有 SSH 端口、daemon 端口映射不出来时，Host 经 SSH 完成：
  *
@@ -8,7 +8,7 @@
  *    本版本（同一指纹）的 daemon 在跑，直接复用：不重启、不覆盖。
  *    多版本 Core 在同一台远端机器上各占一个槽位、各跑一个 daemon——不同版本
  *    的客户端同时接入同一台机器互不干扰；同版本的多个客户端并发接同一个
- *    daemon 由 daemon 侧的多连接支持（`docs/core/core-daemon.md` 第 12.5 节）。
+ *    daemon 由 daemon 侧的多连接支持（`docs/core/core-remote.md` 第 2.5 节）。
  * 2. **部署**：指纹槽位里缺 Core 可执行文件、或共享位缺自带 `ripgrep` 才上传（客户端
  *    唯一暂存名 + rename 原子换名：对可能仍在执行的旧 inode 安全，两台机器的客户端
  *    并发部署同一槽位也互不交错损坏）；**槽位存在即视为同版本**，不做产物
@@ -17,7 +17,7 @@
  *    无关，放产品目录根（`share/<core.deployPrefix>/ripgrep`）供全部槽位共享。
  * 3. **启动**：`start --idle-exit 30`（幂等：已在跑就复用；远端 `start` 自带按
  *    指纹的互斥锁，并发引导同指纹也只拉起一个 daemon），再读状态文件。
- *    daemon 恒绑回环、端口交给内核分配（`docs/core/core-daemon.md` 第 12.2 节）：转发连接
+ *    daemon 恒绑回环、端口交给内核分配（`docs/core/core-remote.md` 第 2.2 节）：转发连接
  *    从远端本机发起，daemon 端口不出机器；多版本 Core 各占一个槽位、各跑一个 daemon，
  *    内核分配端口使端口冲突从构造上不可能发生。实际端口以按指纹的状态文件为准
  *    （本模块唯一事实来源）。
@@ -63,7 +63,7 @@ export interface RemoteSsh {
 export const REMOTE_DEPLOY_ROOT = '.local';
 
 /**
- * SSH 引导拉起的 daemon 的空闲退出秒数（`start --idle-exit`，`docs/core/core-daemon.md` 第 12.5 节）。
+ * SSH 引导拉起的 daemon 的空闲退出秒数（`start --idle-exit`，`docs/core/core-remote.md` 第 2.5 节）。
  *
  * 客户端异常退出（crash / 断电 / 网络消失）后，该连接的 Core 随连接断开（EOF 或
  * 心跳超时）被 daemon 关闭，daemon 本体在**最后一条控制连接断开 30s**后自行退出——
@@ -133,7 +133,7 @@ export async function ensureRemoteDaemon(
   // 3. 在跑的 daemon 原样返回；否则 start（幂等：已在跑就只打印就绪信息）。启动前
   //    不结束别的 daemon：daemon 恒绑回环、端口交给内核分配，多版本 daemon 并存时
   //    互不抢固定端口，实际端口随状态文件读回；`--idle-exit` 让 daemon 在最后一条
-  //    连接断开后自行退出（客户端 crash 不留常驻进程，`docs/core/core-daemon.md` 第 12.5 节）。
+  //    连接断开后自行退出（客户端 crash 不留常驻进程，`docs/core/core-remote.md` 第 2.5 节）。
   if (running) return running;
 
   const started = await ssh.exec(
@@ -260,7 +260,7 @@ async function readDaemonState(
  * 探测状态文件里的 daemon 是否还在跑。
  *
  * 连不上按「没有 daemon」处理——与 core 自己的 `start`（`ExistingDaemon::None`）同口径
- * （`docs/core/core-daemon.md` 第 12.3 节）。
+ * （`docs/core/core-remote.md` 第 2.3 节）。
  */
 async function probeRunningDaemon(
   ssh: RemoteSsh,

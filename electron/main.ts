@@ -1275,7 +1275,7 @@ const unreadCompletionSessions = new Set<string>();
 /**
  * 系统睡眠 / 休眠阻断：任一会话非 idle 时阻断（`prevent-app-suspension`，允许屏幕熄灭），
  * 全部空闲后释放。与托盘状态点吃同一条会话状态流（`setStatusListener`），
- * 见 `electron/powerSaveBlocker.ts` 与 docs/hosts/host-matrix.md 第 6 节。
+ * 见 `electron/powerSaveBlocker.ts` 与 docs/hosts/host-bootstrap.md 第 1 节。
  */
 const sleepBlocker = new SleepBlocker(powerSaveBlocker);
 
@@ -1345,7 +1345,7 @@ let attentionActive = false;
 /**
  * 托盘提醒音（`electron/trayAttentionSound.ts` + `electron/traySoundWindow.ts`）：
  * 提醒触发时（与托盘闪烁同一处判定）播一次 `electron/assets/meow.aac`，让最小化到托盘的用户
- * 也能凭声音知道任务结束（`docs/hosts/host-matrix.md` 第 12 节的托盘提醒段落）。
+ * 也能凭声音知道任务结束（`docs/hosts/host-matrix.md` 第 6 节的托盘提醒段落）。
  *
  * 播放载体懒建：首次提醒才创建隐藏窗口（播完自毁），不常驻——常驻窗口会改坏
  * `window-all-closed` 与 `activate` 里的窗口计数判定。播放失败只落日志：调用点在
@@ -1824,7 +1824,7 @@ function getSystemLocaleForStartup(): string {
 }
 
 /**
- * 在创建原生 UI 之前收敛宿主语言（`docs/hosts/host-matrix.md` 第 7 节）。
+ * 在创建原生 UI 之前收敛宿主语言（`docs/hosts/host-bootstrap.md` 第 2 节）。
  *
  * 界面语言是宿主自己的 `settings.json` 字段：先 `loadSync()` 读盘，再交给
  * `primeHostLocale()`（读 `uiLanguage` + 宿主 locale，收敛到进程内 i18n）。
@@ -3016,7 +3016,7 @@ function describeError(error: unknown): string {
 }
 
 /**
- * 把「打开远程工作区」窗口的接入请求翻成 `WorkspaceEndpoint`（`docs/core/core-daemon.md` 第 12 节）。
+ * 把「打开远程工作区」窗口的接入请求翻成 `WorkspaceEndpoint`（`docs/core/core-remote.md` 第 2 节）。
  *
  * 形状校验与「凭证种类 → 接入方式」的收敛在 host 层（`buildRemoteEndpoint`）；这里只把
  * 原因码翻成本地化文案——i18n 只存在于宿主实现，不进 host 层。
@@ -3039,7 +3039,7 @@ function parseRemoteConnectRequest(
 /**
  * 打开「打开远程工作区」窗口。
  *
- * 流程（`docs/core/core-daemon.md` 第 12 节）：
+ * 流程（`docs/core/core-remote.md` 第 2 节）：
  * 1. 填 SSH 表单（主机 / 端口 / 用户 / 口令）；
  * 2. 连接成功后**立刻**列出远端主目录，进入目录选择（可进上级 / 新建 / 删除）；
  * 3. 选定目录后加为工作区（同一个 daemon 连接随后用于打开该工作区）。
@@ -4914,7 +4914,7 @@ function initCore(): void {
   });
 
   // 共享启动接线：locale / 日志 / 总线 / core 侧订阅 / WebViewUI / 历史 / 会话队列 /
-  // 等待用户读取器 / 配置目录 / 环境预热 / MCP 残留清理（docs/architecture/events.md 第 5 节；宿主专属接线见 `docs/hosts/host-matrix.md` 第 6 节）
+  // 等待用户读取器 / 配置目录 / 环境预热 / MCP 残留清理（docs/architecture/events.md 第 5 节；宿主专属接线见 `docs/hosts/host-bootstrap.md` 第 1 节）
   const { ui } = bootstrapCore(host, spinDesign, conversationsMgr, {
     locale: app.getLocale(),
     log: (...args: unknown[]) => {

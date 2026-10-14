@@ -15,7 +15,7 @@ import { stringifyJsonSafe } from '../../core/utils/stringUtils.js';
 // ==================== 远端 daemon 状态文件 ====================
 
 /**
- * 远端 daemon 的状态 / 日志文件名（`docs/core/core-daemon.md` 第 12.3 节）。
+ * 远端 daemon 的状态 / 日志文件名（`docs/core/core-remote.md` 第 2.3 节）。
  *
  * 文件名按**构建指纹**区分：`core-daemon-<指纹>.json` 等。一个指纹一个 daemon、
  * 一份落盘文件——多版本 Core 在同一台远端机器上并存时，各自的 `start` / `kill` /
@@ -62,7 +62,7 @@ export type HostToDaemonFrame =
   | { kind: 'deleteDirectory'; id: number; path: string; recursive: boolean }
   | { kind: 'shutdown' }
   /**
-   * 链路心跳（`docs/core/core-daemon.md` 第 12.5 节）：链路就绪后定期发送，daemon 回
+   * 链路心跳（`docs/core/core-remote.md` 第 2.5 节）：链路就绪后定期发送，daemon 回
    * `pong` 并以「最近一次收到控制帧」判定 Host 死活——Host 消失而 TCP 未断（断网 /
    * 休眠 / 进程冻结）时，daemon 的读线程永远等不到 EOF，沉默是它唯一的断开依据
    * （同步 accept 循环被死连接占住，后续接入全部饿死：探测「连得上」、auth 无应答）。
@@ -92,7 +92,7 @@ export interface DirectoryListing {
 
 /** daemon → Host */
 export type DaemonToHostFrame =
-  /** 心跳应答：对 `ping` 的回应；Host 见首个 pong 武装沉默判定（`docs/core/core-daemon.md` 第 12.5 节） */
+  /** 心跳应答：对 `ping` 的回应；Host 见首个 pong 武装沉默判定（`docs/core/core-remote.md` 第 2.5 节） */
   | { kind: 'pong' }
   | { kind: 'workspaceOpened'; id: number; channel: number; descriptor: ChannelDescriptor }
   | { kind: 'workspaceFailed'; id: number; error: string }

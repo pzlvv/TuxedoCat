@@ -441,7 +441,7 @@ fn heartbeat_is_refreshed_by_control_traffic() {
 
 #[test]
 fn ping_gets_a_pong_reply() {
-    // Host 靠 pong 武装沉默判定（`docs/core/core-daemon.md` 第 12.5 节）：daemon 对
+    // Host 靠 pong 武装沉默判定（`docs/core/core-remote.md` 第 2.5 节）：daemon 对
     // 每个 ping 都回一帧 pong，沉默判定与心跳空闲回收互不干扰
     let mut harness = Harness::fast();
     harness.command(json!({ "kind": "ping" }));

@@ -102,7 +102,7 @@ idleCloseHandler(sessionId)
 | 「是否空闲」事实 | core `sessionResources.isSessionIdle`（只读） | [docs/core/session-runtime.md](../core/session-runtime.md)、[第 4 节](../architecture/principles.md#4-core-的资源跟-core-的事实走) |
 | 「哪个会话在前台」 | UI（`activeSessionProvider`） | [docs/architecture/principles.md 第 7 节](../architecture/principles.md#7-一份事实只有一个写入点) |
 | 关闭动作 | `WebViewUI.closeConversation` → `conversationClosed` | [docs/architecture/contracts.md 第 4 节](../architecture/contracts.md#4-对话相关数据conversationmanager)、[docs/architecture/events.md 第 2.3 节](../architecture/events.md#23-uieventui--core单向) |
-| 启用范围 | 仅 VS Code | [docs/hosts/host-matrix.md 第 6 节](host-matrix.md#6-宿主接线) |
+| 启用范围 | 仅 VS Code | [docs/hosts/host-bootstrap.md 第 1 节](host-bootstrap.md#1-宿主接线) |
 
 边界规则：
 

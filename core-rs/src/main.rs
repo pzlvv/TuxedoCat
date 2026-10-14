@@ -64,7 +64,7 @@ fn main() {
     util::install_panic_hook();
     // 动作选择（`docs/core/core-daemon.md` 第 3 节）：`stdio` 是单进程 Core（stdio 是帧通道）；
     // `start`（缺省）是远程服务的启动器（确保后台 daemon 在跑、打印就绪信息后退出），
-    // `kill` 结束它，daemon 实体走隐藏动作 `start-daemon`（`docs/core/core-daemon.md` 第 12 节）。
+    // `kill` 结束它，daemon 实体走隐藏动作 `start-daemon`（`docs/core/core-remote.md` 第 2 节）。
     // `--help` / `--version` 与参数错误都在 `cli::parse` 里收口。
     let args: Vec<String> = std::env::args().skip(1).collect();
     match cli::parse(&args) {
@@ -230,7 +230,7 @@ fn run_frame_loop(
 
 /// UI → core 请求的分发（对齐 `UiRequest`，见 `src/core/AssistantEventBus.ts`）。
 ///
-/// 宿主不直接读 core 的磁盘数据（`docs/core/standalone-core.md` 第 10 节）：
+/// 宿主不直接读 core 的磁盘数据（`docs/core/standalone-core-boundaries.md` 第 2 节）：
 /// 需要「core 的事实」时经帧通道请求，这里应答。未知类型一律报错而不是回空值——
 /// 静默的空结果会让宿主把「契约漂移」误当成「确实没有数据」。
 fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {

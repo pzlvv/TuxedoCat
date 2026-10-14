@@ -51,7 +51,7 @@ export function activate(context: vscode.ExtensionContext) {
   conversationManager = conversations;
 
   // 共享启动接线：locale / 日志 / 总线 / core 侧订阅 / WebViewUI / 历史 / 会话队列 /
-  // 等待用户读取器 / 配置目录 / 环境预热 / MCP 残留清理（docs/architecture/events.md 第 5 节；宿主专属接线见 `docs/hosts/host-matrix.md` 第 6 节）
+  // 等待用户读取器 / 配置目录 / 环境预热 / MCP 残留清理（docs/architecture/events.md 第 5 节；宿主专属接线见 `docs/hosts/host-bootstrap.md` 第 1 节）
   const { ui } = bootstrapCore(host, new VSCodeSpinDesign(host), conversations, {
     locale: vscode.env.language,
     log: (...args: unknown[]) => {

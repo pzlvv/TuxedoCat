@@ -8,7 +8,7 @@ import { createChecker, runTests } from './helpers/harness';
 /**
  * 托盘「任务结束提醒」的事件差分（`electron/trayAttention.ts`）。
  *
- * 覆盖点（docs/hosts/host-matrix.md 第 6 节托盘段落）：
+ * 覆盖点（docs/hosts/host-bootstrap.md 第 1 节托盘段落）：
  * - 任一会话 running → idle / waiting 都产生事件（不看聚合状态是否变化：
  *   两个对话在跑时其中一个完成也要提醒）；
  * - running → running、waiting → running、idle → waiting 等迁移不算「任务结束」；

@@ -38,7 +38,7 @@ pub enum HostToDaemonFrame {
     },
     /// 关闭全部 channel 并退出
     Shutdown,
-    /// 心跳（`docs/core/core-daemon.md` 第 12.5 节）：Host 定期发送，daemon 回 `pong`
+    /// 心跳（`docs/core/core-remote.md` 第 2.5 节）：Host 定期发送，daemon 回 `pong`
     /// 并以「最近一次收到控制帧」判定 Host 死活。
     Ping,
 }
@@ -47,7 +47,7 @@ pub enum HostToDaemonFrame {
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum DaemonToHostFrame {
-    /// 心跳应答（`docs/core/core-daemon.md` 第 12.5 节）：对 `ping` 的回应。Host 见到
+    /// 心跳应答（`docs/core/core-remote.md` 第 2.5 节）：对 `ping` 的回应。Host 见到
     /// 首个 `pong` 即武装「沉默判定」——此后长时间无任何入站帧按断开处理。
     Pong,
     /// 工作区已打开：回带 Host 的请求 id 与 channel / 描述符

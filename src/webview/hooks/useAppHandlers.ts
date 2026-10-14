@@ -342,7 +342,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
 
     const messagePayload: SendMessageWire = {
       // 用户消息只有一个 wire 类型：是否排队由宿主按引擎忙碌状态决定，
-      // 排队项由宿主回推 queuedMessage 建立（见 docs/architecture/contracts.md 第 8 节）。
+      // 排队项由宿主回推 queuedMessage 建立（见 docs/architecture/host-ui-modules.md 第 3 节）。
       type: 'sendMessage',
       sessionId,
       content: inputValue,
