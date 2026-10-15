@@ -16,9 +16,10 @@ status: 已修
 
 ## 现状
 
-- `src/webview/MessagesView.tsx` 的 `measurePinnedMessage` 每次按帧把 `pinnedHeight`
+- `src/webview/MessagesView.tsx` 的 `measurePinnedMessage` 每次按帧把延伸条高度 state
   置为置顶候选元素 `getBoundingClientRect().height`（完整高度），不扣除消息被分组容器
-  底边顶出滚动容器顶部的部分。
+  底边顶出滚动容器顶部的部分。（该 state 已随 pinned-gutter-cover-stale-height-2 的
+  修复移除，高度改为 scroll 监听器内直写 DOM。）
 - 渲染侧 `.pin-gutter-cover` 以 `position: absolute; top: 0; height: pinnedHeight`
   铺在滚动容器父级上，覆盖滚动条 gutter。滚动容器只裁剪自己内部的 sticky 消息背景，
   管不到这个覆盖层。
@@ -68,5 +69,5 @@ status: 已修
 | 回归用例（修复后） | `npm run build:webview && npm run copy-assets && npx playwright test -c e2e/playwright.config.ts --project=webview-ui -g "延伸条"` | 绿 | 中间态断言（延伸条仍在渲染）与底边对齐断言均过 |
 | 既有回归 | `npm run test:e2e:webview` | 绿 | webview 全套 76/76（含既有 US-16 置顶两条） |
 | `check-types` | `npm run check-types` | 绿 | 三份 tsconfig 均 0 错 |
-| `lint` | `npm run lint` | 绿 | — |
+| 静态检查 | `npm run lint` | 绿 | — |
 | docs-lint | `npm run test:all -- docs-lint` | 绿 | 缺陷规格链接校验通过 |

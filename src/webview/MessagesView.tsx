@@ -1631,16 +1631,15 @@ const MessagesView = memo(({
   // sticky 消息」，即当前置顶的那条。
   const [pinnedMessage, setPinnedMessage] = useState<Message | null>(null);
   /**
-   * 当前置顶消息在 scrollport 内的可见高度（px）。滚动条由滚动容器自己绘制、且内容被
-   * 裁剪在 scrollport 内，负边距最多只能把置顶消息的背景铺到 scrollport 边缘，盖不住
-   * 右侧的滚动条 gutter。这里记录可见高度，供滚动容器父级里的覆盖层（render 中的
-   * pin-gutter-cover）对齐——覆盖层在滚动容器外、不受滚动裁剪，必须自带裁剪语义：
-   * 消息被下一条用户消息顶出时可见段收窄，按完整高度铺会在滚动条上留下伸出消息底边
-   * 的悬空色块（specs/defects/pinned-gutter-cover-stale-height.md）。
+   * 置顶身份镜像。延伸条高度在 scroll 监听器里同步直写（见 syncPinnedCoverHeight），
+   * 监听器只注册一次，读 state 会拿到过期闭包，必须走 ref。
    */
-  const [pinnedHeight, setPinnedHeight] = useState(0);
+  const pinnedMessageRef = useRef<Message | null>(null);
+  pinnedMessageRef.current = pinnedMessage;
   /** 滚动容器右侧滚动条 gutter 宽度（px），为 0 时说明滚动条是 overlay 模式，无需覆盖 */
   const [pinnedGutter, setPinnedGutter] = useState(0);
+  /** 延伸条 DOM。高度逐帧变化，直写更新、不经 React state（见 syncPinnedCoverHeight） */
+  const pinGutterCoverRef = useRef<HTMLDivElement | null>(null);
   /**
    * 高于可视区的用户消息不参与吸附：sticky 元素比视口还高时无法滚动浏览，
    * 会把后续回复整屏挡住（典型场景是点开「显示完整内容」展开超长消息）。
@@ -1664,12 +1663,33 @@ const MessagesView = memo(({
   const pendingUnstickRef = useRef<HTMLDivElement | null>(null);
 
   /**
+   * 延伸条高度同步直写：按当前置顶消息在 scrollport 内的可见段
+   * （min(完整高度, max(0, 消息底边 − 容器顶))）写 height/display。
+   * 不走 React state——置顶窗口期内高度逐帧变化，state 更新要让每个滚动帧都重渲染
+   * 整棵 MessagesView、且天然晚一拍（scroll 已生效、rAF 测量/提交未跑），帧预算紧张时
+   * 延伸条以旧高度残留数帧，在滚动条上闪现长度不对的长条
+   * （specs/defects/pinned-gutter-cover-stale-height-2.md）。
+   * 三个入口共用：scroll 监听器（同帧直写）、rAF 测量、挂载/换主后的 layout effect。
+   */
+  const syncPinnedCoverHeight = useCallback(() => {
+    const cover = pinGutterCoverRef.current;
+    const msg = pinnedMessageRef.current;
+    if (!cover || !msg) return;
+    const el = pinElByMsgRef.current.get(msg);
+    const container = containerRef.current;
+    if (!el || !container) return;
+    const rect = el.getBoundingClientRect();
+    const visibleHeight = Math.min(rect.height, Math.max(0, rect.bottom - container.getBoundingClientRect().top));
+    cover.style.height = `${visibleHeight}px`;
+    cover.style.display = visibleHeight > 0 ? 'block' : 'none';
+  }, []);
+
+  /**
    * 取消置顶：同时收起父级里盖滚动条的覆盖层。
    * 引用保持稳定，供置顶重算与「点击置顶消息跳回原位」共用同一份语义。
    */
   const clearPinned = useCallback(() => {
     setPinnedMessage(prev => (prev === null ? prev : null));
-    setPinnedHeight(prev => (prev === 0 ? prev : 0));
   }, []);
 
   const measurePinnedMessage = useCallback(() => {
@@ -1741,12 +1761,10 @@ const MessagesView = memo(({
       return;
     }
     setPinnedMessage(prev => (prev === candidate.msg ? prev : candidate.msg));
-    // 覆盖层只对齐消息在 scrollport 内的可见段：sticky 消息被自身分组容器的底边顶出时
-    // 顶部被裁剪，可见段是从 scrollport 顶边到消息实际底边这一段；按完整高度铺会伸出
-    // 底边之外，在滚动条上留一截悬空色块（specs/defects/pinned-gutter-cover-stale-height.md）
-    const visibleHeight = Math.min(candidateH, Math.max(0, candidateRect.bottom - containerTop));
-    setPinnedHeight(prev => (prev === visibleHeight ? prev : visibleHeight));
-  }, [containerRef, clearPinned]);
+    // 覆盖层只对齐消息在 scrollport 内的可见段（公式与「为什么直写」见 syncPinnedCoverHeight）：
+    // 置顶身份可能刚在此处切换，量一次让延伸条与新身份同步就位
+    syncPinnedCoverHeight();
+  }, [containerRef, clearPinned, syncPinnedCoverHeight]);
 
   /** 置顶重算的按帧调度（滚动、容器尺寸变化、消息展开/收起共用） */
   const pinnedMeasureRafRef = useRef<number | null>(null);
@@ -1758,18 +1776,24 @@ const MessagesView = memo(({
     });
   }, [measurePinnedMessage]);
 
-  // 滚动 / 容器尺寸变化时按帧重算置顶消息（无变化时 setState 会被 React 短路，不触发重渲染）
+  // 滚动 / 容器尺寸变化时按帧重算置顶消息（无变化时 setState 会被 React 短路，不触发重渲染）。
+  // 高度直写必须放在 scroll 监听器内、rAF 测量之前：滚动位置此刻已生效，延伸条同帧对齐；
+  // 等到 rAF/提交再更新就会残留旧高度（specs/defects/pinned-gutter-cover-stale-height-2.md）。
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    container.addEventListener('scroll', schedulePinnedMeasure, { passive: true });
+    const onScroll = () => {
+      syncPinnedCoverHeight();
+      schedulePinnedMeasure();
+    };
+    container.addEventListener('scroll', onScroll, { passive: true });
     const ro = new ResizeObserver(schedulePinnedMeasure);
     ro.observe(container);
     return () => {
-      container.removeEventListener('scroll', schedulePinnedMeasure);
+      container.removeEventListener('scroll', onScroll);
       ro.disconnect();
     };
-  }, [containerRef, schedulePinnedMeasure]);
+  }, [containerRef, schedulePinnedMeasure, syncPinnedCoverHeight]);
 
   // 组件卸载时取消未执行的置顶重算
   useEffect(() => () => {
@@ -2246,6 +2270,12 @@ const MessagesView = memo(({
     // oversizedPinnedMessages 只作为「超高集合变化后重跑本 effect」的触发源
   }, [pinGroups, measurePinnedMessage, containerRef, oversizedPinnedMessages]);
 
+  // 延伸条挂载 / 换主（置顶身份或 gutter 变化驱动挂载）后、绘制前同步量一次高度：
+  // 延伸条以隐藏态挂载（height 0 + display none），直写后才可见，首帧不以旧高度或 0 高闪现
+  useLayoutEffect(() => {
+    syncPinnedCoverHeight();
+  }, [pinnedMessage, pinnedGutter, syncPinnedCoverHeight]);
+
   // 已禁用 content-visibility 离屏布局优化：它在滚动/渲染过程中会导致布局跳动，
   // 对长对话的稳定性影响大于性能收益。
 
@@ -2486,10 +2516,12 @@ const MessagesView = memo(({
       {/* 滚动容器会把内容裁剪在 scrollport 内，sticky 消息的负边距最多铺到 scrollport
           边缘，盖不住右侧滚动条 gutter。这里在父级（relative）补一块与置顶消息可见段
           等高的覆盖层：它按定位元素绘制，压在滚动容器（含其滚动条）之上，于是置顶消息
-          看起来是整宽盖住了滚动条。高度取可见段（被顶出时收窄，见 measurePinnedMessage），
+          看起来是整宽盖住了滚动条。高度在 scroll 监听器内逐帧直写（syncPinnedCoverHeight）：
+          被顶出时收窄、完全顶出未移交时隐藏；置顶身份 / gutter 变化只驱动挂载与否，
           overlay 滚动条（gutter=0）时无需覆盖。 */}
-      {pinnedMessage && pinnedHeight > 0 && pinnedGutter > 0 && (
+      {pinnedMessage && pinnedGutter > 0 && (
         <div
+          ref={pinGutterCoverRef}
           aria-hidden
           className="pin-gutter-cover"
           style={{
@@ -2498,7 +2530,9 @@ const MessagesView = memo(({
             right: 0,
             // +1px 与置顶消息背景重叠，避免取整后留下一条缝（同色不可见）
             width: pinnedGutter + 1,
-            height: pinnedHeight,
+            // 隐藏态挂载：真实高度/显隐由 syncPinnedCoverHeight 直写（挂载后 layout effect 补一次，绘制前就位）
+            height: 0,
+            display: 'none',
             backgroundColor: isDark ? '#242442' : '#eff0fe',
             borderBottom: `1px solid ${colors.border}`,
             boxSizing: 'border-box',
