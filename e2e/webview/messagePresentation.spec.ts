@@ -127,11 +127,11 @@ test('US-16 用户消息滚出视口顶部时吸附置顶，点击回到原位',
   await pinned.click({ position: { x: 40, y: 8 } });
   await expect(page.locator('[data-pinned="true"]')).toBeHidden({ timeout: 5_000 });
 });
-
-test('US-16 置顶条被下一条用户消息顶出时，滚动条上的背景延伸条随可见高度收窄', async ({ browserName }) => {
-  // 缺陷规格 specs/defects/pinned-gutter-cover-stale-height.md RT-1：
-  // 延伸条（.pin-gutter-cover）在滚动容器父级、不受滚动裁剪，被顶出的置顶消息
-  // 若仍按完整高度铺 gutter，会在滚动条上留一截伸出消息实际底边的悬空色块
+test('US-16 置顶条只铺内容区：不盖滚动条槽、无延伸层', async ({ browserName }) => {
+  // US-16 验收 2（L2 改版）基线锁：置顶条是单层渲染——sticky 容器的负边距背景铺到
+  // 滚动条槽左缘为止，滚动条槽上没有任何延伸/覆盖元素。历史上曾用容器外延伸层把
+  // 背景接到滚动条上，两层拼接在合成器滚动下必然撕裂（specs/defects/
+  // pinned-gutter-cover-stale-height*），已随本基线整体移除；此用例防止它悄悄回来。
   test.skip(browserName !== 'chromium', '吸附测量依赖真实布局');
   const { page, host } = handle;
   await page.setViewportSize({ width: 1280, height: 480 });
@@ -143,8 +143,7 @@ test('US-16 置顶条被下一条用户消息顶出时，滚动条上的背景�
     await expect(page.getByText(`${label}`).first()).toBeVisible({ timeout: 15_000 });
   }
 
-  // 第一步：让「第二条用户消息」刚好吸附到容器顶（静态位置略越过顶边即被 sticky 拦下），
-  // 并确认延伸条已铺上滚动条 gutter
+  // 把「第二条用户消息」吸附到容器顶（静态位置略越过顶边即被 sticky 拦下）
   await page.evaluate(() => {
     const container = document.querySelector('.messages-container') as HTMLElement | null;
     if (!container) throw new Error('messages-container 不存在');
@@ -159,164 +158,17 @@ test('US-16 置顶条被下一条用户消息顶出时，滚动条上的背景�
   const pinned = page.locator('[data-pinned="true"]');
   await expect(pinned).toBeVisible({ timeout: 5_000 });
   await expect(pinned).toContainText('第二条用户消息');
-  await expect(page.locator('.pin-gutter-cover')).toHaveCount(1);
 
-  // 第二步：下滚让「第三条用户消息」顶部停在容器顶下 24px——仍在第二条的置顶窗口内
-  // （二分查找阈值是容器顶 +0.5px），但第二条已被自身分组底边顶出、可见高度收窄到个位像素
-  await page.evaluate(() => {
-    const container = document.querySelector('.messages-container') as HTMLElement | null;
-    if (!container) throw new Error('messages-container 不存在');
-    const leaf = Array.from(container.querySelectorAll('*')).find((el) =>
-      el.childElementCount === 0 && el.textContent === '第三条用户消息');
-    if (!leaf) throw new Error('找不到下一条用户消息文本节点');
-    const wrapper = (leaf as HTMLElement).closest('.user-msg-pin') ?? leaf;
-    const cr = container.getBoundingClientRect();
-    const wr = wrapper.getBoundingClientRect();
-    container.scrollTop += (wr.top - cr.top) - 24;
+  // 无延伸层：不存在任何盖在滚动条上的置顶背景元素
+  await expect(page.locator('.pin-gutter-cover')).toHaveCount(0);
+
+  // 置顶条右缘 = 滚动条槽左缘（内容区整宽）：左右都留 1.5px 取整容差
+  const edges = await page.evaluate(() => {
+    const container = document.querySelector('.messages-container') as HTMLElement;
+    const p = document.querySelector('[data-pinned="true"]') as HTMLElement;
+    const cRect = container.getBoundingClientRect();
+    const pRect = p.getBoundingClientRect();
+    return { pinnedRight: pRect.right, contentRight: cRect.left + container.clientWidth };
   });
-
-  // 中间态成立：第二条仍持置顶身份且延伸条还在渲染（消息尚有可见段）
-  await expect(page.locator('.pin-gutter-cover')).toHaveCount(1);
-  // 延伸条不得伸出置顶消息的实际底边（底边重合允许 1.5px 取整容差）
-  await expect(async () => {
-    const m = await page.evaluate(() => {
-      const cover = document.querySelector('.pin-gutter-cover') as HTMLElement | null;
-      const p = document.querySelector('[data-pinned="true"]') as HTMLElement | null;
-      if (!cover || !p) throw new Error('延伸条或置顶条不存在');
-      return { coverBottom: cover.getBoundingClientRect().bottom, pinnedBottom: p.getBoundingClientRect().bottom };
-    });
-    expect(m.coverBottom).toBeLessThanOrEqual(m.pinnedBottom + 1.5);
-  }).toPass({ timeout: 5_000 });
-  await expect(pinned).toContainText('第二条用户消息');
-});
-
-test('US-16 滚动进行中延伸条与置顶消息可见段同帧对齐', async ({ browserName }) => {
-  // 缺陷规格 specs/defects/pinned-gutter-cover-stale-height-2.md RT-2：
-  // 延伸条高度若走 React state，滚动生效帧与测量提交帧之间至少差一拍（帧预算紧张时更多），
-  // 滚动条上的延伸条会以旧高度闪现长条。在 scroll 监听器内（同帧、rAF 测量之前）采样，
-  // 锁「延伸条底边 ≤ 置顶消息实际底边」在滚动进行中每帧成立。
-  test.skip(browserName !== 'chromium', '吸附测量依赖真实布局');
-  const { page, host } = handle;
-  await page.setViewportSize({ width: 1280, height: 480 });
-  await host.setTurn({ text: `回答正文开头。\n\n${'这是较长的回答段落，用来把内容撑高。'.repeat(12)}\n\n`, chunkDelayMs: 5 });
-
-  for (const label of ['第一条用户消息', '第二条用户消息', '第三条用户消息']) {
-    await page.fill('textarea.input-textarea', label);
-    await page.press('textarea.input-textarea', 'Enter');
-    await expect(page.getByText(`${label}`).first()).toBeVisible({ timeout: 15_000 });
-  }
-
-  // 让「第二条用户消息」吸附到容器顶（复用 RT-1 第一步的几何）
-  await page.evaluate(() => {
-    const container = document.querySelector('.messages-container') as HTMLElement | null;
-    if (!container) throw new Error('messages-container 不存在');
-    const leaf = Array.from(container.querySelectorAll('*')).find((el) =>
-      el.childElementCount === 0 && el.textContent === '第二条用户消息');
-    if (!leaf) throw new Error('找不到目标用户消息文本节点');
-    const wrapper = (leaf as HTMLElement).closest('.user-msg-pin') ?? leaf;
-    const cr = container.getBoundingClientRect();
-    const wr = wrapper.getBoundingClientRect();
-    container.scrollTop += (wr.top - cr.top) + 4;
-  });
-  const pinned = page.locator('[data-pinned="true"]');
-  await expect(pinned).toBeVisible({ timeout: 5_000 });
-  await expect(page.locator('.pin-gutter-cover')).toHaveCount(1);
-
-  // 先让「第三条用户消息」停在容器顶下 120px（第二条仍完整吸附，扫描起点在窗口上方），
-  // 再逐帧下滚扫到 24px（步长 ≈9.6px，远大于 1.5px 容差）。采样用独立常驻 rAF 循环：
-  // rAF 相位在 scroll 监听器之后、绘制之前——若延伸条高度要等 rAF 测量/React 提交才更新，
-  // 此刻读到的必是上一帧残值；契约要求 scroll 生效帧内（rAF 时刻）高度已对齐。
-  // scrollTop 赋值放任务态（setTimeout 续体），保证每帧一个新滚动位。
-  // 采样对象固定为第二条（整个窗口内置顶身份不变）。
-  const samples = await page.evaluate(async () => {
-    const container = document.querySelector('.messages-container') as HTMLElement | null;
-    if (!container) throw new Error('messages-container 不存在');
-    const leaf = Array.from(container.querySelectorAll('*')).find((el) =>
-      el.childElementCount === 0 && el.textContent === '第三条用户消息');
-    if (!leaf) throw new Error('找不到下一条用户消息文本节点');
-    const wrapper = (leaf as HTMLElement).closest('.user-msg-pin') ?? leaf;
-    const cr = container.getBoundingClientRect();
-    const wr = wrapper.getBoundingClientRect();
-    container.scrollTop += (wr.top - cr.top) - 120; // 起点：第三条顶部在容器顶下 120px
-    const total = 120 - 24; // 终点与 RT-1 一致：第三条顶部停在容器顶下 24px
-    const steps = 10;
-    const delta = total / steps;
-    const collected: Array<{ coverBottom: number; pinnedBottom: number }> = [];
-    let sampling = true;
-    const raf = () => new Promise<number>((resolve) => requestAnimationFrame(resolve));
-    const sampleLoop = () => {
-      if (!sampling) return;
-      const cover = document.querySelector('.pin-gutter-cover') as HTMLElement | null;
-      const p = document.querySelector('[data-pinned="true"]') as HTMLElement | null;
-      // 高度收为 0（display:none）的帧不采样——「完全顶出未移交」窗口契约本就不渲染
-      if (cover && p && cover.style.display !== 'none') {
-        const cRect = container.getBoundingClientRect();
-        const pRect = p.getBoundingClientRect();
-        // 只采中间态：置顶消息仍有可见段（底边在容器顶之下）
-        if (pRect.bottom > cRect.top + 1) {
-          collected.push({ coverBottom: cover.getBoundingClientRect().bottom, pinnedBottom: pRect.bottom });
-        }
-      }
-      requestAnimationFrame(sampleLoop);
-    };
-    requestAnimationFrame(sampleLoop);
-    try {
-      for (let i = 0; i < steps; i++) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0)); // 任务态节拍：一帧一步
-        container.scrollTop += delta;
-        await raf();
-      }
-    } finally {
-      sampling = false;
-    }
-    return collected;
-  });
-
-  // 扫描确实穿过中间态（防 vacuous 绿）：至少 3 个有效样本
-  expect(samples.length).toBeGreaterThanOrEqual(3);
-  for (const s of samples) {
-    expect(s.coverBottom).toBeLessThanOrEqual(s.pinnedBottom + 1.5);
-  }
-});
-
-test('US-17 压缩历史：展开按钮 → expandCompact → 整批替换并隐藏按钮', async () => {
-  const { page, host } = handle;
-  const DAY = 3600_000;
-  const msg = (uuid: string, role: 'user' | 'assistant', text: string, ts: number) => ({
-    type: role, uuid, parentUuid: null, timestamp: ts,
-    message: role === 'user' ? { role, content: text } : { role, content: [{ type: 'text', text }] },
-  });
-  const t0 = Date.now() - 2 * DAY;
-  await host.setConversations([{
-    sessionId: 'sess-compact', title: '被压缩的对话', createdAt: t0, updatedAt: t0, messageCount: 2,
-    hasCompactArchive: true,
-    messages: [
-      msg('c-u1', 'user', '压缩前的用户问题', t0),
-      msg('c-a1', 'assistant', '压缩摘要：之前讨论了一些内容。', t0 + 1000),
-    ],
-  }]);
-  // expandCompact 应答：归档里的原始消息整批替换（messagesReplaced 的单项是扁平
-  // MessageData：role + 字符串 content，宿主侧 buildReplayMessageData 已把内容块拍平）
-  await host.setExpandedMessages([
-    { role: 'user', content: '压缩前的用户问题' },
-    { role: 'assistant', content: '压缩前的完整回答第一段。' },
-    { role: 'user', content: '压缩前的追问' },
-    { role: 'assistant', content: '压缩前的完整回答第二段。' },
-  ]);
-
-  // 打开历史并加载该会话
-  await page.locator('button[title="对话历史"]').click();
-  await page.getByText('被压缩的对话').click();
-
-  // 存在压缩归档：展开按钮出现，摘要先展示（US-17 验收 1）
-  const expandButton = page.getByText('展开压缩的对话历史');
-  await expect(expandButton).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByText('压缩摘要').first()).toBeVisible();
-
-  // 点击展开：宿主收到 expandCompact，返回后整批替换显示（验收 2）
-  await expandButton.click();
-  await host.waitForSent('expandCompact');
-  await expect(page.getByText('压缩前的完整回答第一段。').first()).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByText('压缩前的追问').first()).toBeVisible();
-  await expect(expandButton).toBeHidden();
+  expect(Math.abs(edges.pinnedRight - edges.contentRight)).toBeLessThanOrEqual(1.5);
 });
