@@ -128,6 +128,68 @@ test('US-16 用户消息滚出视口顶部时吸附置顶，点击回到原位',
   await expect(page.locator('[data-pinned="true"]')).toBeHidden({ timeout: 5_000 });
 });
 
+test('US-16 置顶条被下一条用户消息顶出时，滚动条上的背景延伸条随可见高度收窄', async ({ browserName }) => {
+  // 缺陷规格 specs/defects/pinned-gutter-cover-stale-height.md RT-1：
+  // 延伸条（.pin-gutter-cover）在滚动容器父级、不受滚动裁剪，被顶出的置顶消息
+  // 若仍按完整高度铺 gutter，会在滚动条上留一截伸出消息实际底边的悬空色块
+  test.skip(browserName !== 'chromium', '吸附测量依赖真实布局');
+  const { page, host } = handle;
+  await page.setViewportSize({ width: 1280, height: 480 });
+  await host.setTurn({ text: `回答正文开头。\n\n${'这是较长的回答段落，用来把内容撑高。'.repeat(12)}\n\n`, chunkDelayMs: 5 });
+
+  for (const label of ['第一条用户消息', '第二条用户消息', '第三条用户消息']) {
+    await page.fill('textarea.input-textarea', label);
+    await page.press('textarea.input-textarea', 'Enter');
+    await expect(page.getByText(`${label}`).first()).toBeVisible({ timeout: 15_000 });
+  }
+
+  // 第一步：让「第二条用户消息」刚好吸附到容器顶（静态位置略越过顶边即被 sticky 拦下），
+  // 并确认延伸条已铺上滚动条 gutter
+  await page.evaluate(() => {
+    const container = document.querySelector('.messages-container') as HTMLElement | null;
+    if (!container) throw new Error('messages-container 不存在');
+    const leaf = Array.from(container.querySelectorAll('*')).find((el) =>
+      el.childElementCount === 0 && el.textContent === '第二条用户消息');
+    if (!leaf) throw new Error('找不到目标用户消息文本节点');
+    const wrapper = (leaf as HTMLElement).closest('.user-msg-pin') ?? leaf;
+    const cr = container.getBoundingClientRect();
+    const wr = wrapper.getBoundingClientRect();
+    container.scrollTop += (wr.top - cr.top) + 4;
+  });
+  const pinned = page.locator('[data-pinned="true"]');
+  await expect(pinned).toBeVisible({ timeout: 5_000 });
+  await expect(pinned).toContainText('第二条用户消息');
+  await expect(page.locator('.pin-gutter-cover')).toHaveCount(1);
+
+  // 第二步：下滚让「第三条用户消息」顶部停在容器顶下 24px——仍在第二条的置顶窗口内
+  // （二分查找阈值是容器顶 +0.5px），但第二条已被自身分组底边顶出、可见高度收窄到个位像素
+  await page.evaluate(() => {
+    const container = document.querySelector('.messages-container') as HTMLElement | null;
+    if (!container) throw new Error('messages-container 不存在');
+    const leaf = Array.from(container.querySelectorAll('*')).find((el) =>
+      el.childElementCount === 0 && el.textContent === '第三条用户消息');
+    if (!leaf) throw new Error('找不到下一条用户消息文本节点');
+    const wrapper = (leaf as HTMLElement).closest('.user-msg-pin') ?? leaf;
+    const cr = container.getBoundingClientRect();
+    const wr = wrapper.getBoundingClientRect();
+    container.scrollTop += (wr.top - cr.top) - 24;
+  });
+
+  // 中间态成立：第二条仍持置顶身份且延伸条还在渲染（消息尚有可见段）
+  await expect(page.locator('.pin-gutter-cover')).toHaveCount(1);
+  // 延伸条不得伸出置顶消息的实际底边（底边重合允许 1.5px 取整容差）
+  await expect(async () => {
+    const m = await page.evaluate(() => {
+      const cover = document.querySelector('.pin-gutter-cover') as HTMLElement | null;
+      const p = document.querySelector('[data-pinned="true"]') as HTMLElement | null;
+      if (!cover || !p) throw new Error('延伸条或置顶条不存在');
+      return { coverBottom: cover.getBoundingClientRect().bottom, pinnedBottom: p.getBoundingClientRect().bottom };
+    });
+    expect(m.coverBottom).toBeLessThanOrEqual(m.pinnedBottom + 1.5);
+  }).toPass({ timeout: 5_000 });
+  await expect(pinned).toContainText('第二条用户消息');
+});
+
 test('US-17 压缩历史：展开按钮 → expandCompact → 整批替换并隐藏按钮', async () => {
   const { page, host } = handle;
   const DAY = 3600_000;

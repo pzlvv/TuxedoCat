@@ -1631,9 +1631,12 @@ const MessagesView = memo(({
   // sticky 消息」，即当前置顶的那条。
   const [pinnedMessage, setPinnedMessage] = useState<Message | null>(null);
   /**
-   * 当前置顶消息的高度（px）。滚动条由滚动容器自己绘制、且内容被裁剪在 scrollport 内，
-   * 负边距最多只能把置顶消息的背景铺到 scrollport 边缘，盖不住右侧的滚动条 gutter。
-   * 这里记录高度，供滚动容器父级里的覆盖层对齐（见 render 中的 pin-gutter-cover）。
+   * 当前置顶消息在 scrollport 内的可见高度（px）。滚动条由滚动容器自己绘制、且内容被
+   * 裁剪在 scrollport 内，负边距最多只能把置顶消息的背景铺到 scrollport 边缘，盖不住
+   * 右侧的滚动条 gutter。这里记录可见高度，供滚动容器父级里的覆盖层（render 中的
+   * pin-gutter-cover）对齐——覆盖层在滚动容器外、不受滚动裁剪，必须自带裁剪语义：
+   * 消息被下一条用户消息顶出时可见段收窄，按完整高度铺会在滚动条上留下伸出消息底边
+   * 的悬空色块（specs/defects/pinned-gutter-cover-stale-height.md）。
    */
   const [pinnedHeight, setPinnedHeight] = useState(0);
   /** 滚动容器右侧滚动条 gutter 宽度（px），为 0 时说明滚动条是 overlay 模式，无需覆盖 */
@@ -1719,7 +1722,8 @@ const MessagesView = memo(({
       return;
     }
     const candidate = entries[found];
-    const candidateH = candidate.el.getBoundingClientRect().height;
+    const candidateRect = candidate.el.getBoundingClientRect();
+    const candidateH = candidateRect.height;
     if (oversized.has(candidate.msg)) {
       clearPinned();
       return;
@@ -1737,7 +1741,11 @@ const MessagesView = memo(({
       return;
     }
     setPinnedMessage(prev => (prev === candidate.msg ? prev : candidate.msg));
-    setPinnedHeight(prev => (prev === candidateH ? prev : candidateH));
+    // 覆盖层只对齐消息在 scrollport 内的可见段：sticky 消息被自身分组容器的底边顶出时
+    // 顶部被裁剪，可见段是从 scrollport 顶边到消息实际底边这一段；按完整高度铺会伸出
+    // 底边之外，在滚动条上留一截悬空色块（specs/defects/pinned-gutter-cover-stale-height.md）
+    const visibleHeight = Math.min(candidateH, Math.max(0, candidateRect.bottom - containerTop));
+    setPinnedHeight(prev => (prev === visibleHeight ? prev : visibleHeight));
   }, [containerRef, clearPinned]);
 
   /** 置顶重算的按帧调度（滚动、容器尺寸变化、消息展开/收起共用） */
@@ -2476,9 +2484,10 @@ const MessagesView = memo(({
       )}
       </div>
       {/* 滚动容器会把内容裁剪在 scrollport 内，sticky 消息的负边距最多铺到 scrollport
-          边缘，盖不住右侧滚动条 gutter。这里在父级（relative）补一块与置顶消息等高的
-          覆盖层：它按定位元素绘制，压在滚动容器（含其滚动条）之上，于是置顶消息看起来
-          是整宽盖住了滚动条。overlay 滚动条（gutter=0）时无需覆盖。 */}
+          边缘，盖不住右侧滚动条 gutter。这里在父级（relative）补一块与置顶消息可见段
+          等高的覆盖层：它按定位元素绘制，压在滚动容器（含其滚动条）之上，于是置顶消息
+          看起来是整宽盖住了滚动条。高度取可见段（被顶出时收窄，见 measurePinnedMessage），
+          overlay 滚动条（gutter=0）时无需覆盖。 */}
       {pinnedMessage && pinnedHeight > 0 && pinnedGutter > 0 && (
         <div
           aria-hidden
