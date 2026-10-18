@@ -1602,6 +1602,98 @@ fn web_tools_follow_the_web_search_flag() {
     assert!(off.contains(&"Bash".to_string()) && off.contains(&"Read".to_string()));
 }
 
+/// 联网搜索切换必须同步变换工具清单与 system prompt：关闭后下一轮请求两工具
+/// 不在清单里，`## Tool Details` 的 WebSearch / WebFetch 段也随之消失
+/// （specs/defects/web-search-off-still-usable）。
+#[test]
+fn web_search_toggle_syncs_tool_list_and_prompt_details() {
+    let sandbox = Sandbox::new("engine-web-search-toggle");
+    let bodies: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&bodies);
+    let llm = FakeLlm::start(move |_, body| {
+        captured.lock().unwrap().push(body.clone());
+        openai_text_sse(&["好"])
+    });
+    sandbox.write_settings(json!({
+        "llm": {
+            "maxTokens": 4096,
+            "activeProvider": "fake",
+            "providers": {
+                "fake": {
+                    "baseURL": llm.base_url,
+                    "apiKey": "test-key",
+                    "models": ["fake-model"],
+                    "defaultModel": "fake-model",
+                    "modelConfigs": { "fake-model": { "apiType": "OpenAI", "output": 4096 } }
+                }
+            }
+        }
+    }));
+    config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
+    // OpenAI 协议的 system prompt 是 messages 里 role=system 的首条
+    let system_prompt_of = |body: &Value| -> String {
+        body["messages"]
+            .as_array()
+            .and_then(|messages| {
+                messages
+                    .iter()
+                    .find(|message| message["role"] == "system")
+            })
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    let harness = EngineHarness::allow_all();
+
+    // 第一轮：默认开 → 工具与 Tool Details 段都在
+    submit(&harness, "s1", "第一问", "u-1");
+    assert!(harness.wait_query_end(), "第一轮未结束");
+    {
+        let bodies = bodies.lock().unwrap();
+        assert!(!bodies.is_empty(), "应当发出 LLM 请求");
+        let names = tool_names(&bodies[0]);
+        assert!(
+            names.contains(&"WebSearch".to_string())
+                && names.contains(&"WebFetch".to_string()),
+            "默认开工具清单：{names:?}"
+        );
+        let prompt = system_prompt_of(&bodies[0]);
+        assert!(prompt.contains("## WebSearch Tool"), "默认开提示词应含 WebSearch 段");
+        assert!(prompt.contains("## WebFetch Tool"), "默认开提示词应含 WebFetch 段");
+    }
+
+    // 会话内关闭联网搜索（与 UI setWebSearch 同路径：配置事件）
+    harness
+        .core
+        .on_session_config_changed("s1", &json!({ "key": "webSearch", "value": false }));
+
+    // 第二轮：关 → 工具清单与 Tool Details 同步消失，其余工具说明不受影响
+    harness.sink.clear();
+    submit(&harness, "s1", "第二问", "u-2");
+    assert!(harness.wait_query_end(), "第二轮未结束");
+    {
+        let bodies = bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2, "切换后应发出第二轮请求");
+        let names = tool_names(&bodies[1]);
+        assert!(!names.contains(&"WebSearch".to_string()), "关：{names:?}");
+        assert!(!names.contains(&"WebFetch".to_string()), "关：{names:?}");
+        let prompt = system_prompt_of(&bodies[1]);
+        assert!(
+            !prompt.contains("## WebSearch Tool"),
+            "关：提示词不应再含 WebSearch 段"
+        );
+        assert!(
+            !prompt.contains("## WebFetch Tool"),
+            "关：提示词不应再含 WebFetch 段"
+        );
+        assert!(
+            prompt.contains("## Skill Tool") && prompt.contains("### Bash"),
+            "其余工具说明不受影响"
+        );
+    }
+}
+
 fn write_settings_with_features_max_turns(sandbox: &Sandbox, base_url: &str, agent_mode: &str, max_turns: u64) {
     sandbox.write_settings(json!({
         "defaultAgentMode": agent_mode,

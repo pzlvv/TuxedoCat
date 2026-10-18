@@ -352,3 +352,43 @@ mod system_prompt_parity_tests {
         assert_eq!(actual_tools, expected_tools, "内置工具顺序与对照表不一致");
     }
 }
+
+/// `## Tool Details` 的 WebSearch / WebFetch 段跟随注入清单：两工具不在清单里
+/// （联网搜索关闭）时对应段不出现在提示词，其余工具说明与 Tool Usage bullet 原样
+/// （specs/defects/web-search-off-still-usable）。
+#[test]
+fn tool_usage_details_follow_the_injected_tool_list() {
+    let full = crate::tools::definitions();
+    let without_web: Vec<Value> = full
+        .iter()
+        .filter(|tool| {
+            !matches!(
+                tool.get("name").and_then(Value::as_str),
+                Some("WebSearch") | Some("WebFetch")
+            )
+        })
+        .cloned()
+        .collect();
+
+    let with = tool_usage_section(&full);
+    let without = tool_usage_section(&without_web);
+
+    assert!(with.contains("## WebSearch Tool"), "全量清单应含 WebSearch 段");
+    assert!(with.contains("## WebFetch Tool"), "全量清单应含 WebFetch 段");
+    assert!(
+        !without.contains("## WebSearch Tool"),
+        "剔除后不应再含 WebSearch 段"
+    );
+    assert!(
+        !without.contains("## WebFetch Tool"),
+        "剔除后不应再含 WebFetch 段"
+    );
+    // 其余工具说明与清单 bullet 不受影响
+    assert!(
+        without.contains("## Skill Tool") && without.contains("### Bash"),
+        "其余工具说明应原样保留"
+    );
+    assert!(without.contains("**Bash**"), "其余工具 bullet 应原样保留");
+    assert!(!without.contains("**WebSearch**"), "Tool Usage 清单 bullet 应同步消失");
+    assert!(with.contains("**WebSearch**"), "全量清单应有 WebSearch bullet");
+}

@@ -14,11 +14,12 @@ const CORE_PRINCIPLES: &str = "You are a helpful software engineer assistant.
 - Do not use emojis in your responses.
 - When the sub-agent provides feedback or requests additional information, use the `Reply` tool to send messages back. Ordinary text output will not reach the sub-agent, only `Reply` can deliver messages to it.";
 
-/// 各内置工具的详细用法（`## Tool Details` 段）。
+/// 各内置工具的详细用法（`## Tool Details` 段的常驻部分）。
 ///
-/// 正文逐字沿用；
-/// 顺序与工具表一致（Bash / Read / Write / Edit / Grep / Glob / TodoWrite /
-/// Agent / Reply / AskUserQuestion / WebSearch / WebFetch / Skill）。
+/// 正文逐字沿用；顺序与工具表一致（Bash / Read / Write / Edit / Grep / Glob /
+/// TodoWrite / Agent / Reply / AskUserQuestion，其后按注入清单拼接
+/// `WEB_SEARCH_TOOL_DETAILS` / `WEB_FETCH_TOOL_DETAILS`，`SKILL_TOOL_DETAILS`
+/// 恒在最后）。
 const TOOL_DETAILS: &str = r#"### Bash
 Execute shell commands.
 
@@ -330,7 +331,12 @@ Ask the user a question and get their response. Use this tool when you need inpu
 - The user can also type free text even when choices are provided
 - Limit choices to 9 or fewer for readability
 
-### WebSearch
+"#;
+
+/// WebSearch 的 `## Tool Details` 段：只在工具被注入时由 `tool_usage_section`
+/// 拼入——联网搜索关闭时两工具不进清单，提示词不得再宣传它们
+/// （`docs/features/web-search.md` FR-004、specs/defects/web-search-off-still-usable）。
+const WEB_SEARCH_TOOL_DETAILS: &str = r#"### WebSearch
 ## WebSearch Tool
 
 Search the web for up-to-date information using the DeepSeek Search API.
@@ -345,7 +351,10 @@ Search the web for up-to-date information using the DeepSeek Search API.
 - When you need the full text of a specific result, call WebFetch with its url
 - An empty result means the search found nothing; refine the query or operators and retry
 
-### WebFetch
+"#;
+
+/// WebFetch 的 `## Tool Details` 段：注入条件同 `WEB_SEARCH_TOOL_DETAILS`。
+const WEB_FETCH_TOOL_DETAILS: &str = r#"### WebFetch
 ## WebFetch Tool
 
 Fetch a single web page and return its content as Markdown.
@@ -358,7 +367,10 @@ Fetch a single web page and return its content as Markdown.
 - Prefer WebSearch first, then WebFetch only the promising urls instead of fetching many pages
 - The result starts with the page title, followed by the Markdown body
 
-### Skill
+"#;
+
+/// Skill 的 `## Tool Details` 段：恒在且保持最后（分段顺序与拆分前一致）。
+const SKILL_TOOL_DETAILS: &str = r#"### Skill
 ## Skill Tool
 
 Execute a skill (slash command). Available skills are listed in the Environment section above.
@@ -470,6 +482,11 @@ pub fn sub_agent_communication_section(creator_session_id: &str) -> String {
 
 /// 工具说明区块（对齐 `generateToolUsagePrompt`）：
 /// `## Tool Usage`（一行一个工具）+ 空行 + `## Tool Details`（逐工具详细用法）。
+///
+/// WebSearch / WebFetch 的详细段跟随传入清单拼接：联网搜索关闭时两工具不进清单，
+/// 对应段也不进 Tool Details——提示词与工具清单必须随同一开关同步收敛，否则模型
+/// 仍会照提示词调用清单里不存在的工具（`docs/features/web-search.md` FR-004、
+/// specs/defects/web-search-off-still-usable）。
 pub fn tool_usage_section(tools: &[Value]) -> String {
     let tool_list = tools
         .iter()
@@ -483,7 +500,20 @@ pub fn tool_usage_section(tools: &[Value]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!("## Tool Usage\n{tool_list}\n\n## Tool Details\n{TOOL_DETAILS}")
+    let present = |name: &str| {
+        tools
+            .iter()
+            .any(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
+    };
+    let mut details = String::from(TOOL_DETAILS);
+    if present("WebSearch") {
+        details.push_str(WEB_SEARCH_TOOL_DETAILS);
+    }
+    if present("WebFetch") {
+        details.push_str(WEB_FETCH_TOOL_DETAILS);
+    }
+    details.push_str(SKILL_TOOL_DETAILS);
+    format!("## Tool Usage\n{tool_list}\n\n## Tool Details\n{details}")
 }
 
 /// 按预设组装 system prompt（对齐 `assembleSystemPrompt`）。
