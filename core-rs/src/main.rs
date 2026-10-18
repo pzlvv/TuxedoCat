@@ -38,6 +38,7 @@ mod settings;
 mod shell;
 mod skills;
 mod smart_naming;
+mod web_search;
 mod spin;
 mod spin_host;
 mod subagent;

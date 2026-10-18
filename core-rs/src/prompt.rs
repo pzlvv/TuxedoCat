@@ -17,8 +17,8 @@ const CORE_PRINCIPLES: &str = "You are a helpful software engineer assistant.
 /// 各内置工具的详细用法（`## Tool Details` 段）。
 ///
 /// 正文逐字沿用；
-/// 顺序与 `getAllTools()` 一致（Bash / Read / Write / Edit / Grep / Glob / TodoWrite /
-/// Agent / Reply / AskUserQuestion；Skill 尚未迁入）。
+/// 顺序与工具表一致（Bash / Read / Write / Edit / Grep / Glob / TodoWrite /
+/// Agent / Reply / AskUserQuestion / WebSearch / WebFetch / Skill）。
 const TOOL_DETAILS: &str = r#"### Bash
 Execute shell commands.
 
@@ -329,6 +329,34 @@ Ask the user a question and get their response. Use this tool when you need inpu
 - This tool BLOCKS execution until the user responds
 - The user can also type free text even when choices are provided
 - Limit choices to 9 or fewer for readability
+
+### WebSearch
+## WebSearch Tool
+
+Search the web for up-to-date information using the DeepSeek Search API.
+
+**Parameters:**
+- `query` (string, required): The search query, 1-128 characters. Supports operators: `site:`, `-site:`, `-"..."`, `"..."`, `lang:`, `after:`, `before:`
+
+**Usage:**
+- Use this tool when the question needs current information (news, releases, prices, docs changes)
+- Results include title, url, snippet and a summary per item; they do NOT include full page content
+- `count` (optional, 1-50, default 10) controls how many results to return
+- When you need the full text of a specific result, call WebFetch with its url
+- An empty result means the search found nothing; refine the query or operators and retry
+
+### WebFetch
+## WebFetch Tool
+
+Fetch a single web page and return its content as Markdown.
+
+**Parameters:**
+- `url` (string, required): The http(s) url to fetch. Must include a host and must not carry credentials
+
+**Usage:**
+- Use this tool to read the full content of a page found via WebSearch, or any public page
+- Prefer WebSearch first, then WebFetch only the promising urls instead of fetching many pages
+- The result starts with the page title, followed by the Markdown body
 
 ### Skill
 ## Skill Tool

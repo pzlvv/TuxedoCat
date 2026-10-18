@@ -123,12 +123,6 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 - daemon 的进程模型与协议（见 `docs/core/core-daemon.md`）；
 - 远程工作区与 endpoint 传输（见 [docs/core/client-connection.md 第 9 节](client-connection.md#9-落盘与恢复宿主侧)）。
 
-已知能力缺口（Core 侧表现为明确的提示消息或缺失，不做静默降级）：
-
-| 能力 | 表现 |
-| --- | --- |
-| Responses API 的内置 Web Search | `apiType='Responses'` 可用，但不下发内置 `web_search` 工具，模型不会自动联网搜索（搜索卡片事件 `web_search_call` 也未接入） |
-
 ---
 
 ## 5. 验收要点

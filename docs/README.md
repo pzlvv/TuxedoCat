@@ -99,6 +99,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 | `docs/features/abort-button.md` | abort 按钮的状态判定与两阶段中止语义 |
 | `docs/features/background-bash.md` | Bash 后台任务：手工转后台（暂停 / 接续）与两类任务提醒 |
 | `docs/features/tui-installer.md` | TUI 版分发与 Core 部署安装程序 |
+| `docs/features/web-search.md` | 联网搜索与网页抓取（WebSearch / WebFetch 客户端工具） |
 
 ### 基础
 

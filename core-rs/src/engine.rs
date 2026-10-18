@@ -3305,9 +3305,19 @@ fn run_query_loop(
     provider: &config::ProviderConfig,
     agent_mode: &str,
 ) -> Result<(), String> {
-    // 工具清单 = 内置工具 + 该会话启用列表里的 MCP 服务器工具
-    // 。
-    let all_tools = all_tool_definitions(session_id);
+    // 工具清单 = 内置工具 + 该会话启用列表里的 MCP 服务器工具。
+    // 联网搜索生效值（会话覆盖 → settings 默认，已并入 `provider.web_search`）
+    // 决定 WebSearch / WebFetch 是否注入；MCP 工具不受影响。
+    let all_tools: Vec<Value> = all_tool_definitions(session_id)
+        .into_iter()
+        .filter(|tool| {
+            provider.web_search
+                || !matches!(
+                    tool.get("name").and_then(Value::as_str),
+                    Some("WebSearch") | Some("WebFetch")
+                )
+        })
+        .collect();
     // 轮次上限：**普通会话恒为不限**。
     //
     // `settings.json` 里虽然声明了 `features.maxTurns`，但没有任何消费方

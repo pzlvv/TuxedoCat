@@ -897,53 +897,48 @@
   ],
   "skipUsage": [
     {
-      "webSearchUsed": true,
-      "inputTokens": 10,
-      "localInputEstimate": 10,
-      "contextWindow": 100000,
-      "result": {
-        "skip": true,
-        "reason": "web search usage skipped (input=10, localEstimate=10)"
-      }
-    },
-    {
-      "webSearchUsed": false,
       "inputTokens": 10,
       "localInputEstimate": 10,
       "contextWindow": 100000,
       "result": {
         "skip": false,
-        "reason": ""
+        "reason": "input tokens within 60% of the context window"
       }
     },
     {
-      "webSearchUsed": false,
+      "inputTokens": 10,
+      "localInputEstimate": 10,
+      "contextWindow": 100000,
+      "result": {
+        "skip": false,
+        "reason": "input tokens within 60% of the context window"
+      }
+    },
+    {
       "inputTokens": 60001,
       "localInputEstimate": 10,
       "contextWindow": 100000,
       "result": {
         "skip": true,
-        "reason": "input_tokens 60001 exceeds cap 60000"
+        "reason": "input tokens exceed 60% of the context window"
       }
     },
     {
-      "webSearchUsed": false,
       "inputTokens": 60000,
       "localInputEstimate": 10,
       "contextWindow": 100000,
       "result": {
         "skip": false,
-        "reason": ""
+        "reason": "input tokens within 60% of the context window"
       }
     },
     {
-      "webSearchUsed": false,
       "inputTokens": 0,
       "localInputEstimate": 0,
       "contextWindow": 0,
       "result": {
         "skip": false,
-        "reason": ""
+        "reason": "input tokens within 60% of the context window"
       }
     }
   ],

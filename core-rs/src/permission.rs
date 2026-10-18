@@ -390,7 +390,9 @@ fn normalize_tool_args(args: &Value) -> Value {
 /// 其余分支与 `cwd` 无关。
 fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> CheckResult {
     match tool_name {
-        "Read" | "Grep" | "Glob" | "TodoWrite" => CheckResult::allow_with_input(args),
+        "Read" | "Grep" | "Glob" | "TodoWrite" | "WebSearch" | "WebFetch" => {
+            CheckResult::allow_with_input(args)
+        }
         // `ReplyTool` 没有自定义 checkPermissions → 走 `buildTool` 默认实现（allow + updatedInput）
         "Reply" => CheckResult::allow_with_input(args),
         // `AgentTool.checkPermissions`：入参缺 prompt / agentRole 时 deny；

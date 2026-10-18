@@ -25,6 +25,8 @@ fn skill_tool_is_last_in_definitions() {
             "Agent",
             "Reply",
             "AskUserQuestion",
+            "WebSearch",
+            "WebFetch",
             "Skill"
         ]
     );
@@ -87,6 +89,8 @@ fn definitions_cover_every_builtin_tool() {
             "Agent",
             "Reply",
             "AskUserQuestion",
+            "WebSearch",
+            "WebFetch",
             "Skill"
         ]
     );

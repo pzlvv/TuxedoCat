@@ -3,7 +3,8 @@ import { openWebviewView } from '../helpers/webviewHarness';
 import type { WebviewHandle } from '../helpers/webviewHarness';
 
 /**
- * US-13 Mermaid 预览 / US-16 长消息折叠与用户消息置顶 / US-17 压缩历史展开
+ * US-13 Mermaid 预览 / US-16 长消息折叠与用户消息置顶 / US-17 压缩历史展开 /
+ * US-50 联网工具卡片（WebSearch / WebFetch）
  *
  * 场景级：真实 webview bundle + 假宿主应答（`e2e/helpers/fakeHost.ts`）。
  */
@@ -171,4 +172,39 @@ test('US-16 置顶条只铺内容区：不盖滚动条槽、无延伸层', async
     return { pinnedRight: pRect.right, contentRight: cRect.left + container.clientWidth };
   });
   expect(Math.abs(edges.pinnedRight - edges.contentRight)).toBeLessThanOrEqual(1.5);
+});
+
+test('US-50 WebSearch / WebFetch 工具卡片渲染查询词与 URL', async () => {
+  const { page, host } = handle;
+  const started = await host.waitForSent('startNewConversation');
+  const sessionId = started.sessionId as string;
+  await host.send({ type: 'addMessage', sessionId, role: 'user', content: '查一下' });
+  await host.send({
+    type: 'addMessage',
+    sessionId,
+    role: 'toolcall',
+    content: '',
+    toolName: 'WebSearch',
+    toolArgs: { query: 'DeepSeek V4 发布' },
+    toolCallId: 'ws-card-1',
+    status: 'running',
+  });
+  await host.send({
+    type: 'addMessage',
+    sessionId,
+    role: 'toolcall',
+    content: '',
+    toolName: 'WebFetch',
+    toolArgs: { url: 'https://example.com/v4-article' },
+    toolCallId: 'wf-card-1',
+    status: 'running',
+  });
+
+  // 搜索卡：标题用真实工具名，显示查询词
+  const searchCard = page.locator('div', { hasText: 'WebSearch' }).filter({ hasText: 'DeepSeek V4 发布' }).first();
+  await expect(searchCard).toBeVisible({ timeout: 10_000 });
+
+  // 抓取卡：复用同一卡片的 open_page 形态，显示 URL
+  const fetchCard = page.locator('div', { hasText: 'WebFetch' }).filter({ hasText: 'https://example.com/v4-article' }).first();
+  await expect(fetchCard).toBeVisible({ timeout: 10_000 });
 });

@@ -1034,18 +1034,6 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
 
   const inputStyle = getInputStyle(colors, isDark);
 
-  /**
-   * 联网搜索只有 Responses 协议支持：按当前 provider「默认模型」的协议判断。
-   * 协议已下放到模型级，因此不能再按 provider 判断。
-   */
-  const defaultModelApiType = (() => {
-    if (!activeProvider) return UNCONFIGURED_MODEL_API_TYPE;
-    const named = activeProvider.models.filter((m) => !!m.name.trim());
-    const target = named.find((m) => m.name.trim() === activeProvider.defaultModel.trim()) || named[0];
-    return target?.apiType || UNCONFIGURED_MODEL_API_TYPE;
-  })();
-  const webSearchDisabled = defaultModelApiType !== 'Responses';
-
   const formatBytes = (bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -1611,29 +1599,26 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
             </div>
           </div>
 
-          {/* Web Search */}
-          <div style={{ opacity: webSearchDisabled ? 0.45 : 1 }}>
+          {/* Web Search（WebSearch / WebFetch 工具注入开关，对所有协议生效） */}
+          <div>
             <label
               className="flex items-center gap-2"
               style={{
                 fontSize: uiFontSizePx(12),
                 color: colors.textSystem,
-                cursor: webSearchDisabled ? 'not-allowed' : 'pointer',
+                cursor: 'pointer',
               }}
             >
               <input
                 type="checkbox"
                 checked={webSearch}
-                disabled={webSearchDisabled}
                 onChange={(e) => setWebSearch(e.target.checked)}
                 style={{ accentColor: colors.harness }}
               />
               {t('llmConfig.webSearchLabel')}
             </label>
             <div className="ui-fs-11 mt-1" style={{ color: colors.textSystem }}>
-              {webSearchDisabled
-                ? t('llmConfig.webSearchDisabledHint')
-                : t('llmConfig.webSearchHint')}
+              {t('llmConfig.webSearchHint')}
             </div>
           </div>
 

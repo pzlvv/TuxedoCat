@@ -196,7 +196,7 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
 | 字段 | 内容 |
 | --- | --- |
 | `llm.activeProvider` | 当前 provider 键；未配置或指向不存在的 provider 时为空串 |
-| `llm.webSearch` | 默认 Web Search 开关 |
+| `llm.webSearch` | WebSearch / WebFetch 工具注入开关（新对话默认值） |
 | `llm.thinkingEffort` | 默认思考强度 |
 | `llm.model` | 顶层遗留模型名；只在没有会话级 provider 覆盖时优先于 provider 默认模型 |
 | `llm.maxTokens` | 配置级输出上限（与模型限值取更严的那个） |

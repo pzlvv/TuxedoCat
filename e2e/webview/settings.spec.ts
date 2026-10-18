@@ -98,6 +98,12 @@ test('US-24 默认设置与界面语言随保存提交', async () => {
   // 界面语言切 English
   await page.getByText('界面语言').locator('..').getByRole('button', { name: 'English' }).click();
 
+  // 联网搜索复选框可交互（US-50：WebSearch / WebFetch 工具对所有协议生效，
+  // 不再按默认模型的协议置灰）
+  const webSearch = page.getByRole('checkbox', { name: '启用联网搜索' });
+  await expect(webSearch).toBeEnabled();
+  await expect(page.getByText('只有 Responses 协议支持联网搜索')).toHaveCount(0);
+
   await page.getByRole('button', { name: '保存', exact: true }).click();
   const saved = await host.waitForSent('saveLLMConfig', 15_000);
   expect(saved.thinkingEffort).toBe('max');

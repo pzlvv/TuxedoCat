@@ -1548,6 +1548,60 @@ fn manual_background_pauses_the_loop_until_a_queued_message_arrives() {
 }
 
 /// 写一份带 `features.maxTurns` 的 settings（沿用 `write_llm_settings` 的连接信息）
+/// 联网搜索开关注入 WebSearch / WebFetch：settings 默认开 → 工具在清单里；
+/// 关 → 不在。会话级覆盖（context.webSearch）优先于 settings。
+#[test]
+fn web_tools_follow_the_web_search_flag() {
+    let run_query_and_collect_tools = |sandbox_name: &str, web_search: Option<bool>| -> Vec<String> {
+        let sandbox = Sandbox::new(sandbox_name);
+        let bodies: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&bodies);
+        let llm = FakeLlm::start(move |_, body| {
+            captured.lock().unwrap().push(body.clone());
+            openai_text_sse(&["好"])
+        });
+        let mut settings = json!({
+            "llm": {
+                "maxTokens": 4096,
+                "activeProvider": "fake",
+                "providers": {
+                    "fake": {
+                        "baseURL": llm.base_url,
+                        "apiKey": "test-key",
+                        "models": ["fake-model"],
+                        "defaultModel": "fake-model",
+                        "modelConfigs": { "fake-model": { "apiType": "OpenAI", "output": 4096 } }
+                    }
+                }
+            }
+        });
+        if let Some(enabled) = web_search {
+            settings["llm"]["webSearch"] = json!(enabled);
+        }
+        sandbox.write_settings(settings);
+        config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
+
+        let harness = EngineHarness::allow_all();
+        submit(&harness, "s1", "搜一下", "u-1");
+        assert!(harness.wait_query_end());
+        let bodies = bodies.lock().unwrap();
+        assert!(!bodies.is_empty(), "应当发出 LLM 请求");
+        tool_names(&bodies[0])
+    };
+
+    // 缺省（settings 未写 webSearch）= 开
+    let on = run_query_and_collect_tools("engine-web-tools-on", None);
+    assert!(on.contains(&"WebSearch".to_string()), "默认开：{on:?}");
+    assert!(on.contains(&"WebFetch".to_string()), "默认开：{on:?}");
+
+    // settings 显式关
+    let off = run_query_and_collect_tools("engine-web-tools-off", Some(false));
+    assert!(!off.contains(&"WebSearch".to_string()), "关：{off:?}");
+    assert!(!off.contains(&"WebFetch".to_string()), "关：{off:?}");
+    // 其余内置工具不受影响
+    assert!(off.contains(&"Bash".to_string()) && off.contains(&"Read".to_string()));
+}
+
 fn write_settings_with_features_max_turns(sandbox: &Sandbox, base_url: &str, agent_mode: &str, max_turns: u64) {
     sandbox.write_settings(json!({
         "defaultAgentMode": agent_mode,

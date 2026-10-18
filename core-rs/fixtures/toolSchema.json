@@ -1,5 +1,5 @@
 {
-  "note": "Embedded（src/core/tools/*，经 toolSchema.ts 的 zodToJsonSchema 转换）与 Standalone（core-rs/src/tools.rs 的 definitions()）的 LLM 可见工具定义对照表。TS 侧测试断言本表等于真实转换结果；Rust 侧测试断言除 divergences 列出的已知缺口外逐字段一致。",
+  "note": "Core（core-rs/src/tools.rs 的 definitions()）的 LLM 可见工具定义对照表：Rust 侧测试断言本表与 definitions() 逐字段一致（新增 / 改动工具必须同步本表）。",
   "tools": [
     {
       "name": "Bash",
@@ -253,6 +253,36 @@
         "choices": {
           "type": "array",
           "description": "Multiple choice options (1-9). If not provided, user can reply with free text."
+        }
+      }
+    },
+    {
+      "name": "WebSearch",
+      "description": "Search the web for up-to-date information (DeepSeek Search).",
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search query (1-128 characters). Supports operators like site:, lang:, after:, before: and quoted phrases"
+        },
+        "count": {
+          "type": "number",
+          "description": "Number of results to return (1-50, default 10)"
+        }
+      }
+    },
+    {
+      "name": "WebFetch",
+      "description": "Fetch a single web page and return its content as Markdown (DeepSeek Fetch).",
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "The http(s) url to fetch (no credentials in url)"
         }
       }
     },

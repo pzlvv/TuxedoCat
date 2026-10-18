@@ -128,6 +128,8 @@ last_reviewed: 2026-10-13
 验收标准：
 
 1. 菜单项顺序：设置、Spin 设计、联网搜索、MCP、模型、提示词模式、询问模式、思考强度。
+   「联网搜索」开关的是 `WebSearch` / `WebFetch` 两个客户端工具的注入（对所有
+   API 协议生效）；极简提示词模式下该开关禁用。
 2. 模型为三级子菜单（服务商 → 模型），当前模型有选中标记；切换后宿主收到 `setModel`。
    模型列表限高滚动，展开时当前选中的模型滚动到列表中间。
 3. 模型菜单顺序由 `settings.json` 决定：服务商顺序即 `llm.providers` 的书写顺序、
@@ -344,7 +346,7 @@ last_reviewed: 2026-10-13
 
 验收标准：
 
-1. 默认设置分区可调三项模式与联网搜索；界面语言支持 自动/中文/English；界面字号
+1. 默认设置分区可调三项模式与联网搜索（WebSearch / WebFetch 工具注入的默认值）；界面语言支持 自动/中文/English；界面字号
    档位 中 / 大 / 特大（默认中，相对基准 +0/+2/+4 像素）。
 2. 保存后语言立即生效（界面整体重挂载为新语言）。
 3. 界面字号随保存提交，宿主注入档位后即时生效：输入框、消息、菜单、设置面板与
@@ -714,6 +716,24 @@ last_reviewed: 2026-10-13
 
 ---
 
+### US-50 联网搜索与网页抓取（客户端工具）
+
+作为用户，我希望 AI 回答时能联网搜索与抓取网页（DeepSeek Search / Fetch），且这一
+能力对我配置的任何 API 协议（Completion / Anthropic / Responses）都可用，以便信息
+不过时、也不被协议绑定。
+
+验收标准：
+
+1. 会话联网搜索开启时，模型可调用 `WebSearch`（按查询词搜索，返回逐条标题 / 链接 /
+   摘要）与 `WebFetch`（抓取单个网页返回 Markdown 正文）两个工具；关闭时两个工具
+   不出现在模型的工具清单里。
+2. 设置页的联网搜索复选框不按默认模型的协议置灰：任何协议下都可勾选，保存后作为
+   新对话默认值。
+3. 两个工具调用在时间线渲染为工具卡片（搜索显示查询词、抓取显示 URL），成功 /
+   失败状态与其它工具卡片一致。
+4. 未配置 `api.deepseek.com` 服务商时，工具调用返回明确错误（指明需配置），会话不
+   中断。
+
 ## 附录：US 与 e2e 场景用例映射
 
 | 用例 | 覆盖的 US | 层级 |
@@ -721,10 +741,10 @@ last_reviewed: 2026-10-13
 | `e2e/webview/conversation.spec.ts` | US-1、US-2、US-3、US-4、US-12 | webview UI |
 | `e2e/webview/permission.spec.ts` | US-18 | webview UI |
 | `e2e/webview/sessions.spec.ts` | US-19、US-20、US-21、US-22 | webview UI |
-| `e2e/webview/settings.spec.ts` | US-7、US-23、US-24、US-25、US-26 | webview UI |
+| `e2e/webview/settings.spec.ts` | US-7、US-23、US-24、US-25、US-26、US-50（复选框不置灰） | webview UI |
 | `e2e/webview/inputMenu.spec.ts` | US-5、US-8、US-9、US-29 | webview UI |
 | `e2e/webview/inputExtras.spec.ts` | US-1、US-6、US-10、US-11 | webview UI |
-| `e2e/webview/messagePresentation.spec.ts` | US-13、US-16、US-17 | webview UI |
+| `e2e/webview/messagePresentation.spec.ts` | US-13、US-16、US-17、US-50（工具卡片） | webview UI |
 | `e2e/webview/notifications.spec.ts` | US-40 | webview UI |
 | `e2e/webview/language.spec.ts` | US-24、US-41 | webview UI |
 | `e2e/webview/titlebar.spec.ts` | US-36（标题栏渲染层快照时序） | webview UI |
@@ -749,6 +769,9 @@ US-42 的远程（SSH）工作区文件浏览——需要真实 SSH/SFTP 远端�
 驱动，「关闭」与「打开命令行」复用既有动作实现，批量关闭的判定（候选＝该工作区已打开的会话
 视图含子代理对话 / 空闲可关含当前选中的对话 / 忙碌不动 / 汇总确认）由
 `src/test/workspaceBatchClose.test.ts` 锁定，菜单弹出与置灰人工验证）
-由 `src/test/` 的既有单测 / 场景测试与后续补充覆盖。
+US-50 的 Core 侧整链（真实 Search / Fetch 调用）——依赖外网与 DeepSeek 账户，
+由 `core-rs` 单测（参数校验 / 请求构造 / 结果拼装 / 错误映射 / 本地一_shot 假服务器）
+与 `engine_tests` 的工具注入用例覆盖。
+由 `src/test/` 与 `core-rs` 的既有单测与后续补充覆盖。
 
 运行方式与前置构建见 `e2e/README.md`。

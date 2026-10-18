@@ -47,7 +47,6 @@ export const enDict: Record<string, string> = {
   'llmConfig.modelApiTypeTitle': 'API protocol for this model: Responses / Completion (v1/chat/completions) / Anthropic (v1/messages)',
   'llmConfig.webSearchLabel': 'Enable Web Search',
   'llmConfig.webSearchHint': 'Default web search setting for new conversations; when enabled the AI can search the web for up-to-date information. Switch anytime from the input area.',
-  'llmConfig.webSearchDisabledHint': 'Web search is only supported by the Responses protocol, and the current default model does not use it',
   'llmConfig.mcpLabel': 'MCP enabled by default',
   'llmConfig.mcpEmpty': 'No MCP configured (add one in mcp.json)',
   'llmConfig.mcpHint': 'Only sets the default for new conversations. Each conversation can be adjusted separately from the input menu.',

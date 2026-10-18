@@ -55,8 +55,7 @@ Core 进程承载的 core 侧业务：
   内置工具（含后台 Bash、子代理与 Skill）、会话落盘、项目清单读写、
   技能加载与斜杠命令解析（`CommandDispatcher` + 内置命令 + 技能命令）、
   对话压缩（自动 / 手动触发、摘要生成、归档与 `messagesReplaced` 重放）、
-  Responses API（`apiType='Responses'`；内置 Web Search 未接入，见
-  [docs/core/standalone-core-boundaries.md 第 4 节](standalone-core-boundaries.md#4-不覆盖范围)）、
+  Responses API（`apiType='Responses'`）、
   MCP（stdio / Streamable HTTP / 旧版 SSE 三种传输、连接池与会话引用、
   `mcp__*` 工具注入与按会话启用列表过滤）、
   Spin 引擎（`spin.json` 读写、拓扑排序、子代理执行、验收判定、`/spin` 命令）、

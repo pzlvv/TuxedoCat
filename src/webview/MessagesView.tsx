@@ -36,6 +36,7 @@ const TOOL_COMPONENT_MAP: Record<string, React.ComponentType<any>> = {
   'Glob': ToolComponents.Glob,
   'Grep': ToolComponents.Grep,
   'WebSearch': ToolComponents.WebSearch,
+  'WebFetch': ToolComponents.WebSearch,
   'TodoWrite': ToolComponents.TodoWrite,
   'Agent': ToolComponents.Agent,
   'Reply': ToolComponents.ReplyTool,

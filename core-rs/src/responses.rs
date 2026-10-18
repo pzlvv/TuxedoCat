@@ -6,10 +6,8 @@
 //! 产出的 `LlmEvent` 与 Anthropic / Chat Completions 两条适配器**完全一致**，
 //! 因此引擎（`engine.rs`）与上层无需任何改动。
 //!
-//! **已知缺口**：内置 `web_search` 工具与搜索卡片事件（`web_search_call` /
-//! `_update` / `_done`）尚未迁入，见 `docs/core/standalone-core-boundaries.md` 第 1 节的已知缺口；因此本模块不下发 `web_search`
-//! 工具，`webSearchUsed` 恒为 false（`shouldSkipUsageForContext` 只剩「超过上下文
-//! 窗口 60%」那道闸门）。
+//! 联网搜索不走 server 端内置工具：WebSearch / WebFetch 是 Core 进程内的客户端
+//! 工具（`web_search.rs`），本模块只透传 `function` 工具。
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -48,7 +46,6 @@ pub fn build_responses_url(base_url: &str) -> String {
 
 /// 内部 Anthropic 风格工具（`input_schema`）→ Responses API 工具格式。
 ///
-/// 非 `function` 类型（如内置 `web_search`）原样透传。
 pub fn convert_tools_to_responses_format(tools: &[Value]) -> Vec<Value> {
     tools
         .iter()
@@ -375,15 +372,9 @@ fn replace_data_urls(value: &Value, image_count: &mut u64) -> Value {
     }
 }
 
-/// 本轮 usage 是否可信（`shouldSkipUsageForContext`）
-pub fn should_skip_usage_for_context(
-    web_search_used: bool,
-    input_tokens: u64,
-    context_window: u64,
-) -> bool {
-    if web_search_used {
-        return true;
-    }
+/// 本轮 usage 是否可信：输入超过上下文窗口 60% 时本轮不可信
+/// （`shouldSkipUsageForContext` 的上下文闸门）。
+pub fn should_skip_usage_for_context(input_tokens: u64, context_window: u64) -> bool {
     let cap = (context_window as f64 * 0.6).floor() as u64;
     input_tokens > cap
 }
@@ -489,8 +480,6 @@ pub fn stream_responses(
     let provider = req.provider;
     let responses_input = convert_messages_to_responses_input(req.messages);
     let mut responses_tools = convert_tools_to_responses_format(req.tools);
-    // 已知缺口：内置 web_search 工具尚未迁入，这里不下发（见模块头）
-    responses_tools.retain(|tool| tool.get("type").and_then(Value::as_str) != Some("web_search"));
 
     let local_input_estimate = estimate_local_input_tokens(
         &responses_input,
@@ -651,7 +640,7 @@ pub fn stream_responses(
                             });
                         }
                         _ => {
-                            // message / web_search_call 等：message 的 content part 由
+                            // message 等：message 的 content part 由
                             // `response.content_part.added` 处理
                             current_kind = None;
                         }
@@ -817,11 +806,10 @@ pub fn stream_responses(
                     };
                     stop_reason = Some(map_responses_status(status, incomplete));
                     if let Some(parsed) = extract_usage(response.get("usage")) {
-                        // 本轮 usage 不可信（web search 污染 / 超过上下文窗口 60%）时不发
+                        // 本轮 usage 不可信（超过上下文窗口 60%）时不发
                         // `Usage` 事件：引擎因此不会把它写进消息，上下文显示与命中率统计
                         // 都跳过本轮（对齐 `emitMessageDelta` 的 `serverSessionRotated`）。
                         if !should_skip_usage_for_context(
-                            false,
                             parsed.input_tokens,
                             provider.context_window as u64,
                         ) {

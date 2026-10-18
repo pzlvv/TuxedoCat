@@ -47,7 +47,6 @@ export const zhDict: Record<string, string> = {
   'llmConfig.modelApiTypeTitle': '该模型使用的 API 协议：Responses / Completion(v1/chat/completions) / Anthropic(v1/messages)',
   'llmConfig.webSearchLabel': '启用联网搜索',
   'llmConfig.webSearchHint': '新对话默认的联网搜索开关，开启后 AI 回答时可自动联网获取最新信息；使用中可随时在输入区切换',
-  'llmConfig.webSearchDisabledHint': '只有 Responses 协议支持联网搜索，当前默认模型不是该协议',
   'llmConfig.mcpLabel': '默认启用的 MCP',
   'llmConfig.mcpEmpty': '未配置 MCP（在 mcp.json 中添加）',
   'llmConfig.mcpHint': '这里只设置新对话的默认值；单个对话可在输入框菜单里单独调整，互不影响',

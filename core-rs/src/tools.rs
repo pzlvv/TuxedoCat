@@ -16,6 +16,7 @@ use serde_json::{json, Map, Value};
 
 use crate::config;
 use crate::util;
+use crate::web_search;
 
 /// Read 的窗口上限
 const READ_MAX_SIZE_BYTES: u64 = 256 * 1024;
@@ -253,6 +254,7 @@ pub struct ToolContext {
     pub subagent: Option<SubAgentHooks>,
 }
 
+#[derive(Debug)]
 pub enum ToolOutcome {
     Success(String),
     /// 成功，且 tool_result block 需要额外字段。
@@ -531,6 +533,29 @@ pub fn definitions() -> Vec<Value> {
                 "required": ["question"]
             }
         }),
+        json!({
+            "name": "WebSearch",
+            "description": "Search the web for up-to-date information (DeepSeek Search).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query (1-128 characters). Supports operators like site:, lang:, after:, before: and quoted phrases" },
+                    "count": { "type": "number", "description": "Number of results to return (1-50, default 10)" }
+                },
+                "required": ["query"]
+            }
+        }),
+        json!({
+            "name": "WebFetch",
+            "description": "Fetch a single web page and return its content as Markdown (DeepSeek Fetch).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "The http(s) url to fetch (no credentials in url)" }
+                },
+                "required": ["url"]
+            }
+        }),
         // Skill **必须**是最后一项（提示词组装依赖它排除动态 Skill 内容）。
         // 新增工具请插在它前面。
         json!({
@@ -579,6 +604,8 @@ pub fn execute(name: &str, input: &Value, ctx: &ToolContext) -> ToolOutcome {
         "Agent" => run_agent(input, ctx),
         "Reply" => run_reply(input, ctx),
         "AskUserQuestion" => run_ask_user_question(input, ctx),
+        "WebSearch" => web_search::run_web_search(input),
+        "WebFetch" => web_search::run_web_fetch(input),
         "Skill" => run_skill(input, ctx),
         // `Error: Tool "<name>" not found`（不是「执行失败」，不加 `Error executing` 前缀）。
         other => ToolOutcome::Error(format!("Error: Tool \"{other}\" not found")),
@@ -596,7 +623,7 @@ pub fn execute(name: &str, input: &Value, ctx: &ToolContext) -> ToolOutcome {
 ///   实际执行只是建会话 + 起后台线程，本身不阻塞）。
 pub fn is_concurrency_safe(name: &str, input: &Value) -> bool {
     match name {
-        "Read" | "Grep" | "Glob" | "Agent" | "Reply" => true,
+        "Read" | "Grep" | "Glob" | "Agent" | "Reply" | "WebSearch" | "WebFetch" => true,
         "Bash" => input
             .get("command")
             .and_then(Value::as_str)
@@ -633,6 +660,8 @@ pub fn is_known(name: &str) -> bool {
 /// `InputValidationError: {message}` 并跳过该工具（不执行）。
 pub fn validate_input(name: &str, input: &Value, cwd: &str) -> Option<String> {
     match name {
+        "WebSearch" => return web_search::validate_search_input(input).err(),
+        "WebFetch" => return web_search::validate_fetch_input(input).err(),
         "Skill" => {
             let trimmed = util::js_trim(
                 input.get("skill").and_then(Value::as_str).unwrap_or(""),

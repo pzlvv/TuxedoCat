@@ -109,7 +109,6 @@ mod parity_tests {
         for case in fixture["skipUsage"].as_array().unwrap() {
             assert_eq!(
                 should_skip_usage_for_context(
-                    case["webSearchUsed"].as_bool().unwrap(),
                     case["inputTokens"].as_u64().unwrap(),
                     case["contextWindow"].as_u64().unwrap(),
                 ),
@@ -212,13 +211,11 @@ mod unit_tests {
     #[test]
     fn skip_usage_boundary_is_inclusive_at_cap() {
         // 恰好等于 cap（60%）不算超限；多 1 才算
-        assert!(!should_skip_usage_for_context(false, 60_000, 100_000));
-        assert!(should_skip_usage_for_context(false, 60_001, 100_000));
-        // web search 轮次一律跳过
-        assert!(should_skip_usage_for_context(true, 1, 100_000));
+        assert!(!should_skip_usage_for_context(60_000, 100_000));
+        assert!(should_skip_usage_for_context(60_001, 100_000));
         // 窗口为 0 时 cap 为 0，非零 input 即超限
-        assert!(should_skip_usage_for_context(false, 1, 0));
-        assert!(!should_skip_usage_for_context(false, 0, 0));
+        assert!(should_skip_usage_for_context(1, 0));
+        assert!(!should_skip_usage_for_context(0, 0));
     }
 
     #[test]

@@ -1073,7 +1073,7 @@ pub fn to_chat_tools(tools: &[Value]) -> Vec<Value> {
         .iter()
         .filter_map(|tool| {
             let object = tool.as_object()?;
-            // 非 function 的内置工具（如 web_search）在 Chat Completions 下不支持，直接丢弃
+            // 非 function 的工具在 Chat Completions 下不支持，直接丢弃
             if let Some(kind) = object.get("type").and_then(Value::as_str) {
                 if kind != "function" {
                     return None;

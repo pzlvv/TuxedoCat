@@ -4,17 +4,21 @@ import { ToolHeader } from './ToolHeader';
 import { t } from '../i18n';
 
 /**
- * WebSearch 工具卡片（Responses API 内置 web_search）
- * 模型自动联网搜索，UI 以工具卡片形式展示搜索内容：
- * - search 动作：显示搜索关键词
- * - open_page 动作：显示打开的网页 URL
+ * WebSearch / WebFetch 工具卡片
+ * 联网搜索（WebSearch 工具 / 历史 Responses 搜索项）与网页抓取（WebFetch 工具）：
+ * - search 形态：显示搜索关键词（args.query 或旧格式的 args.queries）
+ * - open_page 形态：显示抓取 / 打开的网页 URL
  *
  * 搜索进行中（status === 'running'）时不额外显示 loading，
  * 复用 timeline 上 toolcall 运行时的旋转小点即可；完成后显示"完成"。
  */
-export const WebSearch: React.FC<ToolCallProps> = ({ args, colors, status, output }) => {
-  const action = args?.action || 'search';
-  const queries: string[] = Array.isArray(args?.queries) ? args.queries : [];
+export const WebSearch: React.FC<ToolCallProps> = ({ toolName, args, colors, status, output }) => {
+  const action = args?.action || (typeof args?.url === 'string' && args.url ? 'open_page' : 'search');
+  const queries: string[] = Array.isArray(args?.queries)
+    ? args.queries
+    : typeof args?.query === 'string' && args.query
+      ? [args.query]
+      : [];
   const url: string = args?.url || '';
   const isFailed = status === 'fail';
   const failText = output || t('webSearch.failed');
@@ -26,7 +30,7 @@ export const WebSearch: React.FC<ToolCallProps> = ({ args, colors, status, outpu
   if (action === 'open_page') {
     const displayUrl = cleanUrl.length > 60 ? cleanUrl.substring(0, 60) + '…' : cleanUrl;
     return (
-      <ToolHeader icon="ExternalLink" name="WebSearch" colors={colors}>
+      <ToolHeader icon="ExternalLink" name={toolName} colors={colors}>
         <span
           style={{ color: isFailed ? colors.timelineStatusFail : colors.textPrimary }}
           title={cleanUrl}
@@ -53,7 +57,7 @@ export const WebSearch: React.FC<ToolCallProps> = ({ args, colors, status, outpu
   const isDone = status === 'success';
 
   return (
-    <ToolHeader icon="Search" name="WebSearch" colors={colors}>
+    <ToolHeader icon="Search" name={toolName} colors={colors}>
       <span
         style={{ color: isFailed ? colors.timelineStatusFail : colors.textPrimary }}
         title={queries.join('\n')}

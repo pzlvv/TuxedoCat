@@ -348,8 +348,8 @@ pub struct ProviderConfig {
     /// 上下文窗口（对齐 `getContextWindow`）：注册表条目与兜底同为 1M，
     /// 仅 `llm.providers[].modelConfigs[model].context` 会覆盖。
     pub context_window: u32,
-    /// 帧契约字段：Web Search 仅 Responses 协议生效，本阶段未接入
-    #[allow(dead_code)]
+    /// 联网搜索生效值（会话覆盖优先，缺省回 `llm.webSearch`）：
+    /// 决定 WebSearch / WebFetch 两个工具是否注入本轮工具清单
     pub web_search: bool,
 }
 
