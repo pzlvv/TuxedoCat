@@ -10,8 +10,9 @@ import { createSessionState, SessionStatesStore } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
-import { postMessage, getHasWorkspace, getInjectedSessionId, LOGO_CLASS_NAME, getEffectiveHostInfo, onConversationListOwnerChanged, navigateToConversation, getIsPrewarmView, getInitialTheme } from './webviewEnv';
+import { postMessage, getHasWorkspace, getInjectedSessionId, getEffectiveHostInfo, onConversationListOwnerChanged, navigateToConversation, getIsPrewarmView, getInitialTheme } from './webviewEnv';
 import { getPlaceholderLogoUri, rotatePlaceholderLogo } from './placeholderLogo';
+import { DecorativeLogo } from './DecorativeLogo';
 import { canCloseConversation, newConversationEntryOf, openConversationModeOf, rendersConversationListInWebview, type HostInfo } from '../host/types';
 import { resolveAbortButtonState, type AbortButtonState } from '../host/abortButtonState';
 import { shouldAutoExpandSubSessions } from '../host/ui/conversationTreeDefaults';
@@ -1037,11 +1038,7 @@ const App = () => {
           padding: '24px',
         }}
       >
-        <img
-          src={getPlaceholderLogoUri()}
-          alt="logo"
-          className={LOGO_CLASS_NAME}
-        />
+        <DecorativeLogo src={getPlaceholderLogoUri()} variant="empty" opacity={0.8} />
         <div
           className="text-[13px] text-center"
           style={{ color: colors.textSystem, maxWidth: '320px' }}

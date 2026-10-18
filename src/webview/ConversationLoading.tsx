@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import type { Colors } from './types';
 import { getPlaceholderLogoUri, rotatePlaceholderLogo } from './placeholderLogo';
+import { DecorativeLogo } from './DecorativeLogo';
 import { t } from './i18n';
 
 interface ConversationLoadingProps {
@@ -33,12 +34,7 @@ export const ConversationLoading: React.FC<ConversationLoadingProps> = ({ colors
       <div className="conversation-loading-ripple">
         <div className="conversation-loading-ring" style={{ borderColor: accent }} />
         <div className="conversation-loading-ring" style={{ borderColor: accent }} />
-        <img
-          src={logoSrc}
-          alt="logo"
-          className="conversation-loading-logo"
-          style={{ opacity: isDark ? 0.9 : 0.8 }}
-        />
+        <DecorativeLogo src={logoSrc} variant="loading" opacity={isDark ? 0.9 : 0.8} />
       </div>
 
       {/* 弹跳圆点 */}

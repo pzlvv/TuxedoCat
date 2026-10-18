@@ -13,8 +13,9 @@ import { AnsiText, hasAnsi } from './ansi';
 import { PersistedOutputBox, isPersistedOutput } from './tools/persistedOutput';
 import * as ToolComponents from './tools';
 import type { Message, Colors } from './types';
-import { postMessage, LOGO_CLASS_NAME } from './webviewEnv';
+import { postMessage } from './webviewEnv';
 import { getPlaceholderLogoUri } from './placeholderLogo';
+import { DecorativeLogo } from './DecorativeLogo';
 import { profileLog } from './debug';
 import { t } from './i18n';
 import { StreamStatsLabel } from './StreamStatsLabel';
@@ -2325,11 +2326,7 @@ const MessagesView = memo(({
               <ThinkingAnimation isVisible={showThinkingAnimation} isDark={isDark} mode={animationMode} />
             </div>
           ) : (
-            <img
-              src={getPlaceholderLogoUri()}
-              alt="logo"
-              className={LOGO_CLASS_NAME}
-            />
+            <DecorativeLogo src={getPlaceholderLogoUri()} variant="empty" opacity={0.8} />
           )}
         </div>
       ) : (

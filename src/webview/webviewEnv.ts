@@ -158,14 +158,6 @@ export function getLogoUri(): string {
   return _logoUri as string;
 }
 
-/**
- * Shared Tailwind classes for the logo image in empty/placeholder states.
- *
- * `max-w-full`：窄侧栏（VS Code 面板可以拖到很窄）下按容器收缩，避免横向溢出；
- * 有空间时按 360px 展示（原 240px 的 1.5 倍）。
- */
-export const LOGO_CLASS_NAME = 'w-[360px] max-w-full h-auto opacity-80';
-
 export function getHasWorkspace(): boolean {
   if (_hasWorkspace === undefined) {
     _hasWorkspace = (window as any).__hasWorkspace;

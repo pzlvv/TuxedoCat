@@ -183,6 +183,32 @@ textarea::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-hover-color, #7a7a85);
 }
 
+/* 装饰性 logo（空态背景图与加载动画）：纯装饰，完全不可操作。
+   它是 CSS 背景层而不是 <img>（见 PlaceholderLogo.tsx）——背景图不是内容节点，
+   命中测试、框选、原生图片拖拽都不存在；再关掉 pointer-events / user-select，
+   连容器上的鼠标手势与框选也碰不到它。装饰图统一 1024×1024 正方形。 */
+.placeholder-logo {
+  aspect-ratio: 1 / 1;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 空态背景图：窄侧栏（VS Code 面板可以拖到很窄）下按容器收缩，避免横向溢出；
+   有空间时按 360px 展示。 */
+.placeholder-logo--empty {
+  width: 360px;
+  max-width: 100%;
+}
+
+/* 加载动画：96px 波纹容器里居中的 56px 小图。 */
+.placeholder-logo--loading {
+  width: 56px;
+  border-radius: 10px;
+}
+
 /* Transparent background for markdown */
 .markdown-body {
   background: transparent !important;
@@ -1069,12 +1095,6 @@ ul.agent-mode-menu {
 
 .conversation-loading-ring:nth-child(2) {
   animation-delay: 1s;
-}
-
-.conversation-loading-logo {
-  width: 56px;
-  height: auto;
-  border-radius: 10px;
 }
 
 .conversation-loading-dot {
