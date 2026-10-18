@@ -191,6 +191,8 @@ export function getSpinDesignHtml(
     dot: '#25252b',
     dotBg: '#1a1a1f',
     ph: '#6a6a75',
+    sb: '#3a3a44',
+    sbH: '#4a4a55',
   } : {
     bg: '#f5f5f7',
     fg: '#18181b',
@@ -210,6 +212,8 @@ export function getSpinDesignHtml(
     dot: '#d4d4d8',
     dotBg: '#f5f5f7',
     ph: '#a1a1aa',
+    sb: '#c9c9d1',
+    sbH: '#aeaeb9',
   };
 
   return `<!DOCTYPE html>
@@ -219,6 +223,12 @@ export function getSpinDesignHtml(
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  /* 滚动条随 isDark 色板出，色值与 electron/ui/scrollbar.css 保持同一份
+     （侧栏 / 标题栏菜单 / 远程目录选择器等工具页共用那套），深浅色各一对 */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: ${c.sb}; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: ${c.sbH}; }
   body {
     font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: ${c.bg}; color: ${c.fg};
