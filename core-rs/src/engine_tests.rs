@@ -1694,6 +1694,75 @@ fn web_search_toggle_syncs_tool_list_and_prompt_details() {
     }
 }
 
+/// 随消息携带的 webSearch 负载只承担新会话种子职责，不得覆盖已确立的会话状态：
+/// 配置事件置 ON 后，负载 `false` 不得把工具从下一轮请求里剔除
+/// （specs/defects/websearch-recheck-clobbered-by-payload）。
+#[test]
+fn message_payload_does_not_override_established_web_search() {
+    let sandbox = Sandbox::new("engine-web-search-payload-seed");
+    let bodies: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&bodies);
+    let llm = FakeLlm::start(move |_, body| {
+        captured.lock().unwrap().push(body.clone());
+        openai_text_sse(&["好"])
+    });
+    sandbox.write_settings(json!({
+        "llm": {
+            "maxTokens": 4096,
+            "activeProvider": "fake",
+            "providers": {
+                "fake": {
+                    "baseURL": llm.base_url,
+                    "apiKey": "test-key",
+                    "models": ["fake-model"],
+                    "defaultModel": "fake-model",
+                    "modelConfigs": { "fake-model": { "apiType": "OpenAI", "output": 4096 } }
+                }
+            }
+        }
+    }));
+    config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
+    let submit_with_web_search = |harness: &EngineHarness, session_id: &str, content: &str, uuid: &str, web_search: bool| {
+        harness.core.on_user_message(&json!({
+            "sessionId": session_id,
+            "content": content,
+            "uuid": uuid,
+            "workspacePath": null,
+            "webSearch": web_search,
+        }));
+    };
+
+    let harness = EngineHarness::allow_all();
+
+    // 会话 A：配置事件先置 ON（与输入区重新勾选同路径），随后消息负载带 false
+    // （webview 本地状态与 core 发散时的旧值）
+    harness
+        .core
+        .on_session_config_changed("s-a", &json!({ "key": "webSearch", "value": true }));
+    submit_with_web_search(&harness, "s-a", "问一", "u-a1", false);
+    assert!(harness.wait_query_end(), "会话 A 未结束");
+    {
+        let bodies = bodies.lock().unwrap();
+        let names = tool_names(&bodies.last().unwrap());
+        assert!(
+            names.contains(&"WebSearch".to_string()) && names.contains(&"WebFetch".to_string()),
+            "已确立的 ON 不被负载 false 覆盖：{names:?}"
+        );
+    }
+
+    // 会话 B：全新会话（无任何配置事件），首条消息负载带 false——种子语义保持
+    submit_with_web_search(&harness, "s-b", "问二", "u-b1", false);
+    assert!(harness.wait_query_end(), "会话 B 未结束");
+    {
+        let bodies = bodies.lock().unwrap();
+        let names = tool_names(&bodies.last().unwrap());
+        assert!(
+            !names.contains(&"WebSearch".to_string()) && !names.contains(&"WebFetch".to_string()),
+            "新会话首条消息的负载 false 仍生效：{names:?}"
+        );
+    }
+}
+
 fn write_settings_with_features_max_turns(sandbox: &Sandbox, base_url: &str, agent_mode: &str, max_turns: u64) {
     sandbox.write_settings(json!({
         "defaultAgentMode": agent_mode,
