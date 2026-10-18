@@ -1750,9 +1750,25 @@ fn message_payload_does_not_override_established_web_search() {
         );
     }
 
-    // 会话 B：全新会话（无任何配置事件），首条消息负载带 false——种子语义保持
+    // 会话 B：全新会话（无任何配置事件），首条消息负载带 false——种子语义保持。
+    // 不能用 wait_query_end：它只判断「capture 里出现过 queryEnd + conversationListChanged」，
+    // s-a 已发过这两帧，会让等待立刻通过、断言在 s-b 的请求发出前读到 s-a 的请求体
+    // （bodies.last()）；这里按次数等到 s-b 自己的轮次结束帧。
     submit_with_web_search(&harness, "s-b", "问二", "u-b1", false);
-    assert!(harness.wait_query_end(), "会话 B 未结束");
+    assert!(
+        harness.wait_for(
+            |sink| {
+                let types = sink.event_types();
+                types.iter().filter(|kind| *kind == "queryEnd").count() >= 2
+                    && types
+                        .iter()
+                        .filter(|kind| *kind == "conversationListChanged")
+                        .count() >= 2
+            },
+            std::time::Duration::from_secs(30),
+        ),
+        "会话 B 未结束"
+    );
     {
         let bodies = bodies.lock().unwrap();
         let names = tool_names(&bodies.last().unwrap());
@@ -4441,8 +4457,11 @@ fn empty_thinking_effort_disables_reasoning_in_the_request() {
 }
 
 /// 随消息携带的会话覆盖必须**后于** meta.json 恢复应用（对齐 submitUserMessage 顺序）。
+/// agentMode / thinkingMode 的负载覆盖语义不变；webSearch 只承担新会话种子职责——
+/// 已确立的值（含 meta.json 恢复）不被负载覆盖，配置事件是唯一持续写入口
+/// （specs/defects/websearch-recheck-clobbered-by-payload）。
 #[test]
-fn message_payload_overrides_win_over_metadata() {
+fn message_payload_overrides_apply_after_metadata_except_established_web_search() {
     let sandbox = Sandbox::new("engine-payload-override");
     let llm = FakeLlm::start(|_index, _body| openai_text_sse(&["收到"]));
     prepare(&sandbox, &llm.base_url, "auto");
@@ -4472,7 +4491,8 @@ fn message_payload_overrides_win_over_metadata() {
     let state = state.lock().unwrap();
     assert_eq!(state.agent_mode, "auto");
     assert_eq!(state.thinking_effort.as_deref(), Some("max"));
-    assert_eq!(state.web_search, Some(true));
+    // meta.json 恢复的 false 已确立，负载 true 不得覆盖
+    assert_eq!(state.web_search, Some(false));
 }
 
 // ==================== 事件粒度 ====================

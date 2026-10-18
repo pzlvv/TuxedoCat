@@ -234,6 +234,17 @@ const App = () => {
     }
   }, [thinkingMode, currentSessionId]);
 
+  // 当联网搜索开关变化时通知 extension（会话级，持久化到 meta.json）。
+  // 未获取到配置前 webSearch 为 undefined：此时不下发，避免用 webview 的猜测
+  // 覆盖会话配置（`docs/hosts/webview-facts.md` 第 5 节）。core 侧随消息携带的
+  // webSearch 只承担新会话种子职责，这里的变化通知才是会话中途切换的正规写入口
+  // （specs/defects/websearch-recheck-clobbered-by-payload）。
+  useEffect(() => {
+    if (currentSessionId && webSearch !== undefined) {
+      postMessage({ type: 'setWebSearch', webSearch, sessionId: currentSessionId });
+    }
+  }, [webSearch, currentSessionId]);
+
   // 当模型身份（provider + model）变化时通知 extension，并重新请求对应模型的上下文限制。
   // 未获取到模型前为 undefined：此时不下发，避免空模型覆盖/污染会话配置。
   // wire 协议保持扁平：这里把模型身份拆成 model / provider 两个字段。

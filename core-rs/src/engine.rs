@@ -1434,8 +1434,14 @@ impl Core {
             if let Some(mode) = payload.get("thinkingMode").and_then(Value::as_str) {
                 state.thinking_effort = Some(mode.to_string());
             }
-            if let Some(enabled) = payload.get("webSearch").and_then(Value::as_bool) {
-                state.web_search = Some(enabled);
+            // webSearch 只由消息负载承担**新会话种子**职责：会话已确立（配置事件
+            // 写入、meta.json 恢复值、settings 默认种子都算）时负载不得覆盖——
+            // webview 本地值一旦与 core 发散，每条消息都会把勾选拉回旧值
+            // （specs/defects/websearch-recheck-clobbered-by-payload，架构原则 4）。
+            if state.web_search.is_none() {
+                if let Some(enabled) = payload.get("webSearch").and_then(Value::as_bool) {
+                    state.web_search = Some(enabled);
+                }
             }
             if let Some(model_ref) = payload.get("model") {
                 let model = model_ref.get("model").and_then(Value::as_str).map(|s| s.to_string());

@@ -93,9 +93,12 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
 - 已收到：按收到的值下发。
 - 未收到：输入区处于等待态，用户无法发送，因此不存在「未收到却下发」的路径。
 
-询问模式、提示词模式、模型身份的变化通知（`setAgentMode` / `setPromptMode` / `setModel`
+询问模式、提示词模式、模型身份、联网搜索的变化通知（`setAgentMode` / `setPromptMode` /
+`setModel` / `setWebSearch`
 等会话级消息）遵循同一规则：事实未到达时不发送，避免把 webview 侧的猜测写进会话的
-`meta.json`。
+`meta.json`。联网搜索的变化通知是会话中途切换的唯一持续写入口；随消息携带的
+`webSearch` 只承担新会话种子职责，不覆盖已确立的会话状态
+（[web-search.md FR-004](../features/web-search.md#fr-004开关语义)）。
 
 从磁盘恢复会话时，模型身份先按当前配置快照校验再下发：`meta.json` 记录的
 （provider, model）仍有效即沿用；模型不在该 provider 的模型列表、或 provider 已从配置

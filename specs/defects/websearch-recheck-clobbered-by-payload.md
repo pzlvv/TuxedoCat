@@ -1,5 +1,5 @@
 ---
-status: 待修
+status: 已修
 ---
 
 # 缺陷：重新勾选联网搜索后，消息负载用 webview 旧值把会话状态覆盖回关闭
@@ -64,3 +64,7 @@ status: 待修
 | 检查 | 命令 | 结果 | 备注 |
 | --- | --- | --- | --- |
 | 回归用例（修复前） | `cd core-rs && cargo test message_payload_does_not_override_established_web_search` | 红 | 会话 A 分支失败于「已确立的 ON 不被负载 false 覆盖」，失败打印的工具清单（Bash…Skill，无两 web 工具）与线上会话 15:07:44 模型枚举的清单一致；会话 B（种子）分支通过 |
+| 回归用例（修复后） | `cd core-rs && cargo test message_payload_does_not_override_established_web_search` | 绿 | 会话 A（已确立不被覆盖）与会话 B（种子）两分支都过。B 分支等待由 `wait_query_end` 改为按次数等第二轮 `queryEnd` + `conversationListChanged`：原判定是「capture 曾出现过该两帧」，s-a 的帧会让等待立即通过、断言读到 s-a 的请求体（该竞态在红阶段被会话 A 的先失败掩盖）；断言语义不变 |
+| 既有基线就地改版 | `cd core-rs && cargo test message_payload_overrides_apply_after_metadata_except_established_web_search` | 绿 | 原 `message_payload_overrides_win_over_metadata` 锁「负载胜过 meta」的旧语义，随修复改版：`agentMode` / `thinkingMode` 覆盖断言保留（不变量：本次不动），webSearch 断言翻转为「meta.json 恢复的已确立值不被负载覆盖」，函数名同步改写。改版前该用例失败时断言持有会话锁、`EngineHarness` 收尾对毒化锁 unwrap，进程 fail-fast（靠单线程跑定位） |
+| 既有回归（core 全量） | `cd core-rs && cargo test` | 绿 | 842 通过 / 0 失败 |
+| 既有回归（仓库全量） | `npm run build:core:host && npm run test:all` | 绿 | 57 组全过（standalone 系列驱动重建的 x64-win32 二进制、webviewFacts、docsLint；首跑唯一失败即本表当时还缺「修复后的绿」行）；`npm run check-types` / `npm run lint` 干净 |

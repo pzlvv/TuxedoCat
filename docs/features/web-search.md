@@ -45,9 +45,11 @@ Key 取配置快照里 baseURL host 为 `api.deepseek.com` 的
   「稍后可重试」提示，不自动重试；Key 不进错误文本。
 ### FR-004：开关语义
 
-会话覆盖（meta.json `context.webSearch` / 消息随带 /
-  配置事件）优先，缺省回 `settings.json` 的 `llm.webSearch`（默认 true，见
-  [core-ui-separation 第 4.3 节](../architecture/core-ui-separation.md)）；生效时
+生效值取会话**已确立**的覆盖：配置事件写入的值、meta.json `context.webSearch` 恢复的值；
+  全新会话的首条消息可随带 `webSearch` 作种子（缺省按 settings 解析）。都没有时回
+  `settings.json` 的 `llm.webSearch`（默认 true，见
+  [core-ui-separation 第 4.3 节](../architecture/core-ui-separation.md)）。会话已确立后，
+  随消息携带的负载不再覆盖（配置事件是唯一持续写入口）；生效时
   两工具进入工具清单（仍受提示词模式白名单约束），未生效时剔除。
 ### FR-005：卡片
 
