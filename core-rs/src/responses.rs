@@ -479,7 +479,7 @@ pub fn stream_responses(
 ) -> Result<(), StreamFailure> {
     let provider = req.provider;
     let responses_input = convert_messages_to_responses_input(req.messages);
-    let mut responses_tools = convert_tools_to_responses_format(req.tools);
+    let responses_tools = convert_tools_to_responses_format(req.tools);
 
     let local_input_estimate = estimate_local_input_tokens(
         &responses_input,
