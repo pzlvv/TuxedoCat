@@ -217,38 +217,3 @@ test('US-19 选中对话的子代理默认展开上限（>=5 不自动展开）'
   await host.send({ type: 'conversationsData', conversations: seed(4) });
   await expect(dropdown.getByText('子代理 1')).toBeVisible({ timeout: 10_000 });
 });
-
-test('SCRATCH input height', async ({ page }) => {
-  const ta = page.locator('textarea');
-  await expect(ta).toHaveCount(1, { timeout: 30_000 });
-  const m = async (tag: string) => {
-    const v = await ta.evaluate((el: HTMLTextAreaElement) => {
-      const cs = getComputedStyle(el);
-      return {
-        value: JSON.stringify(el.value),
-        rect: Math.round(el.getBoundingClientRect().height * 100) / 100,
-        scrollHeight: el.scrollHeight,
-        clientHeight: el.clientHeight,
-        inlineHeight: el.style.height,
-        lineHeight: cs.lineHeight,
-        fontSize: cs.fontSize,
-        overflowY: cs.overflowY,
-        maxHeight: cs.maxHeight,
-        whiteSpace: cs.whiteSpace,
-      };
-    });
-    console.log(tag, JSON.stringify(v));
-  };
-  await ta.click();
-  await m('empty');
-  await page.keyboard.insertText('第一行');
-  await m('one');
-  await page.keyboard.insertText('\n第二行');
-  await m('two');
-  await page.keyboard.insertText('\n第三行');
-  await m('three');
-  await ta.fill('');
-  await page.keyboard.insertText('a\nb');
-  await m('paste2');
-  expect(true).toBe(true);
-});
