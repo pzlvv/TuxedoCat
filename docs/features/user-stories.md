@@ -461,7 +461,7 @@ last_reviewed: 2026-10-13
 
 验收标准：
 
-1. 菜单「主题」单选切换，全部视图（标题栏/侧栏/聊天/预览）即时应用。
+1. 偏好设置窗口里主题单选切换，全部视图（标题栏/侧栏/聊天/预览）即时应用。
 2. 跟随系统时系统主题变化即时传播。
 
 ### US-33 系统托盘与任务提醒
@@ -475,7 +475,8 @@ last_reviewed: 2026-10-13
    （多个任务在跑时其中一个完成也提醒，此时仍为红点；全部完成绿点、有任务等用户黄点）；
    任意窗口聚焦后停止。
 3. 右键菜单「显示 / 退出」；左键唤出主窗口。
-4. 闪烁提醒的同时播放一次提示音（Electron 宿主；VS Code 宿主不播放）。
+4. 闪烁提醒的同时播放一次提示音（Electron 宿主；VS Code 宿主不播放）；提示音可在偏好设置
+   窗口里开关并调整音量（调整后预览播放一次）。
 
 ### US-34 全局唤醒快捷键
 
@@ -485,7 +486,7 @@ last_reviewed: 2026-10-13
 验收标准：
 
 1. 窗口不在前台按快捷键唤出并聚焦输入框；在前台再按隐藏回托盘。
-2. 快捷键设置对话框捕获新组合（Esc 取消、Enter 保存），保存后立即生效并持久化。
+2. 偏好设置窗口里点击快捷键字段后录制新组合（Esc 取消录制），录到合法组合即生效并持久化。
 
 ### US-44 侧栏宽度拖拽
 
@@ -737,17 +738,16 @@ last_reviewed: 2026-10-13
 | `e2e/electron/workspace.spec.ts` | US-30、US-35、US-36 | Electron 整应用 |
 | `e2e/electron/remoteWorkspace.spec.ts` | US-36（SSH 连接表单与历史） | Electron 整应用 |
 | `e2e/electron/fileExplorer.spec.ts` | US-42、US-43、US-44 | Electron 整应用 |
-| `e2e/electron/desktopShell.spec.ts` | US-27、US-31、US-32、US-34、US-37、US-39 | Electron 整应用 |
+| `e2e/electron/desktopShell.spec.ts` | US-27、US-31、US-32、US-33、US-34、US-37、US-39 | Electron 整应用 |
 | `e2e/electron/preview.spec.ts` | US-14、US-38（文件 Monaco 预览） | Electron 整应用 |
 | `e2e/electron/backgroundBash.spec.ts` | US-45 | Electron 整应用 |
 | `e2e/electron/subagentConcurrency.spec.ts` | US-49 | Electron 整应用 |
 
-未覆盖 e2e 的 US（US-33 托盘图标状态点、闪烁提醒与提示音——属 OS 集成层，改键对话框之外
-的真实全局按键唤醒同不驱动；US-38 的图片查看器窗口；US-42 的远程（SSH）工作区文件
-浏览——需要真实 SSH/SFTP 远端；US-43 的「在文件资源管理器中打开」——会弹出真实
-资源管理器窗口；US-48 的标签页右键菜单——原生 OS 菜单无法被 Playwright 驱动，「关闭」与
-「打开命令行」复用既有动作实现，批量关闭的判定（候选＝该工作区已打开的会话视图含子代理
-对话 / 空闲可关含当前选中的对话 / 忙碌不动 / 汇总确认）由
+未覆盖 e2e 的 US（US-33 的托盘图标状态点与闪烁提醒——属 OS 集成层；US-38 的图片查看器窗口；
+US-42 的远程（SSH）工作区文件浏览——需要真实 SSH/SFTP 远端；US-43 的「在文件资源管理器中
+打开」——会弹出真实资源管理器窗口；US-48 的标签页右键菜单——原生 OS 菜单无法被 Playwright
+驱动，「关闭」与「打开命令行」复用既有动作实现，批量关闭的判定（候选＝该工作区已打开的会话
+视图含子代理对话 / 空闲可关含当前选中的对话 / 忙碌不动 / 汇总确认）由
 `src/test/workspaceBatchClose.test.ts` 锁定，菜单弹出与置灰人工验证）
 由 `src/test/` 的既有单测 / 场景测试与后续补充覆盖。
 

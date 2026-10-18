@@ -216,7 +216,7 @@ export class ElectronUIHost implements UIHost {
 | 未读完成呼吸 | 会话在用户看不到时完成（主窗口失焦 / 归属标签页未激活 / 非当前对话，任一命中）→ 记为「未读完成」；用户回到现场后挂绿色灯条：呼吸一次后保持常亮，直到用户阅读——激活标签页清该标签页项，该对话成为当前对话清该对话项；回窗聚焦那一刻正完全可见的对话（聚焦 + 激活标签页 + 当前对话）在播放前即清——聚焦即已读（`pickReadCompletions`），切到别的对话不补亮。**对话项**按上述三条件武装；**标签页**只在完成时该标签页未激活才武装——激活中的标签页视为已读（里面的完成由对话项的灯当场表达，切走再切回不补亮）。事实归主进程独有（`electron/completionAttention.ts` 对相邻两次 `sessionRuntimeChanged` 全量快照差分出 running → idle——与托盘「任务结束提醒」（`trayAttention.ts`）同一手法，waiting → idle 是用户应答 / 中止的结果不算完成；焦点 / 激活 / 当前对话由 `isMainWindowFocused` / `workspacePath` / `ChatViewManager.getActiveSessionId` 注入，会话归属复用 `collectWorkspaceActivity` 同一套查找），渲染层只吃**幂等全量快照**：`titlebar:workspace-completion`（标签页 id 集合）/ `sidebar:session-completion` 与 webview `sessionCompletionAttention`（sessionId 集合）——重复推送不重播呼吸（侧栏 / webview 按 sessionId 记首次到达时刻，到达后一个动画周期内带呼吸、之后常亮）。推送时机 = 回到现场（focus / 切换标签页 / 切换窗口模式）；失焦期间不推——不可见的呼吸等于没呼吸。灯条只挂非活动标签页 / 非当前对话的**顶层对话行**（正在看的就是「已读」；子会话（subagent）行不挂——子会话的完成属于对话整体，由父会话的灯表达）；浮窗没有标签页（标签页集合照推不亮，切回完整模式补齐）。关闭工作区 / 会话从快照消失即从未读集合清除。时序不变量由 `src/test/completionAttention.test.ts` 锁定 |
 | 标签页拖拽排序 | 渲染层用 HTML5 drag 事件（`dragstart` / `dragover` / `drop` / `dragend`）：越过目标中线决定插到其前 / 后，`drop-before` / `drop-after` 伪元素画放置指示线；提交完整排列经 `titlebar:reorder-workspaces` → `reorderWorkspaces()`，主进程按去重键校验「同组目录的排列」后才写入打开集合并落盘，非法排列整次忽略；活动项与已打开视图不受顺序影响 |
 | 非活动标签页预加载 | 首次启动（`createMainWindow` 打开活动目录的新对话之后）对打开集合里**非活动且可用**的每个目录调用 `chatViews.preloadWorkspace(ws)`（错开 400ms + 250ms×i，避免启动瞬间同时拉起多个渲染进程；不可用工作区跳过）；实现复用后台预热机制（`--prewarm=1` 后台加载渲染、跳过会话初始化），切到该目录时 `setActiveWorkspace` 命中它直接 `show()` + 补发激活消息，不再现建视图 + 等页面加载。`new-` 临时 key 带自增序号，避免同毫秒连续创建撞 key；`setActiveWorkspace` 不再销毁其它目录的预热视图（它们是那些标签页的预加载视图，关闭目录 / 窗口时统一销毁） |
-| 菜单 | Windows / Linux 全部收编为单一分区 `main`，标题栏用一个图标按钮表示；条目：打开本地工作区 / 打开远程工作区 / 添加最近的工作区 ▸ / 主题 ▸ / 快捷键 / 开发者工具 / 关于 / 退出。macOS 沿用系统菜单栏分区 |
+| 菜单 | Windows / Linux 全部收编为单一分区 `main`，标题栏用一个图标按钮表示；条目：打开本地工作区 / 打开远程工作区 / 添加最近的工作区 ▸ / 偏好设置 / 开发者工具 / 关于 / 退出。macOS 沿用系统菜单栏分区 |
 | 加号菜单 | 标题栏末尾「加号」改为菜单入口（`titlebar:workspace-menu`），主进程用原生 `Menu.popup` 弹出「打开本地工作区 / 打开远程工作区」两项 |
 | 打开远程工作区 | `openRemoteWorkspaceDialog()`：填 SSH 表单 → 经 `listRemoteDirectories()` 完成 SSH 引导并鉴权 → **连接成功后立刻**列出远端主目录，弹出远端目录选择器（`electron/remoteWorkspace/`）；选择器可改路径、进上级（`..`）、新建 / 重命名 / 删除目录（`createRemoteDirectory` / `renameRemoteDirectory` / `deleteRemoteDirectory`，删除两阶段确认）；路径框常驻焦点，上下方向键 / `Ctrl+N` / `Ctrl+P` 移动选中项（恒有选中项），`Tab` / 回车把选中项补全进路径框（详见 [docs/core/core-remote.md 第 2.6 节](../core/core-remote.md#26-远端目录选择)）；选定目录后 `addRemoteWorkspace(endpoint, path)` 加入打开集合（`scheme=ssh`） |
 | 侧栏头部 | 「搜索框 + 新对话」：搜索框按标题过滤当前活动工作目录的对话列表 |
@@ -281,7 +281,7 @@ Electron 的 `sidebar:get-conversations` 直接读它，切换标签页不再每
 | 视图加载时的环境推送 | `resolveWebviewView` 后延时推 `requestTheme` / `requestContextLimit`（走同一 handler） | `did-finish-load` 时 `onThemeChanged(handle)` + 推 `requestContextLimit`（走同一 handler） |
 | 编辑器上下文 | 有：`persistCurrentFileContext` → `conversationContextUpdated`（`activeTextEditor` + 选中行） | **刻意没有**：桌面端没有 `activeTextEditor` 等价物，打开 Monaco 只是查看，不改变发消息时附带的文件上下文 |
 | 工作区来源 | `workspaceFolders` | 菜单选择的 `workspacePath` |
-| 原生侧栏 / 托盘 / Monaco 窗口 / 快捷键对话框 / 菜单 / 自绘标题栏 / 悬浮窗模式 | 无 | 有 |
+| 原生侧栏 / 托盘 / Monaco 窗口 / 偏好设置窗口 / 菜单 / 自绘标题栏 / 悬浮窗模式 | 无 | 有 |
 | 应用自有页面导航防御 | 无：webview 由 VS Code 承载，页面导航由 VS Code 约束，外链点击走 webview 侧拦截（`src/webview/App.tsx` 的 `openUrl`）→ `vscode.env.openExternal` | `guardViewNavigation`（`electron/viewNavigation.ts`）：聊天视图 / 侧栏 / 标题栏 / 下拉菜单 / 占位页 / 各预览窗口 / 对话框统一拒绝 `window.open` 与渲染进程发起的非 `file://` 导航，外部链接（http(s) / mailto / tel）交系统默认浏览器 |
 | 空闲回收 / 状态栏项 / 虚拟文档 provider / 命令注册 | 有 | 无 |
 | 系统睡眠阻断 | 无：VS Code 扩展没有电源 API，standalone 下由 Core 子进程自己阻断 | `setStatusListener` → `sleepBlocker.update(states)`（`electron/powerSaveBlocker.ts`） |
@@ -304,8 +304,11 @@ Electron 的 `sidebar:get-conversations` 直接读它，切换标签页不再每
 就不出声，闪烁的亮 / 灭相位切换不重复出声，上一次没播完又来提醒则从头重播（单路）。
 音频不走 `<audio>`：该文件的 MP4 容器时长元数据与数据不一致（声明 ≈6ms，实际约 1.25s），
 Chromium 按声明时长立刻判定结束；播放载体改为隐藏窗口里 `decodeAudioData` 解到文件尾、
-经 `AudioBufferSourceNode` 出声（`autoplayPolicy: no-user-gesture-required`，播完即销毁窗口，
-不常驻）。播放失败只落 `tray-sound` 日志，不打断同一快照上的状态点与睡眠阻断。播放窗口
+经 `GainNode`（按当前音量）与 `AudioBufferSourceNode` 出声（`autoplayPolicy: no-user-gesture-required`，
+播完即销毁窗口，不常驻）。是否出声与音量是宿主本地偏好（`workspace-state.json` 的
+`soundEnabled` / `soundVolume`，默认开启 / 满音量），在偏好设置窗口里改：关掉后连播放载体都不建；
+音量每次播放前现取，同一个载体既播提醒也播试听（拖完音量滑条预览一次）。播放失败只落
+`tray-sound` 日志，不打断同一快照上的状态点与睡眠阻断。播放窗口
 不常驻：播完自毁，主窗口关闭（`mainWindow.on('closed')`）与应用退出（`will-quit`）时立即
 销毁——它也是 BrowserWindow，留着会让 `window-all-closed` 不再触发、`activate` 里
 「没有窗口才重建主窗口」的判定失效。**VS Code 宿主没有这条通道**，扩展包（vsix）也不
@@ -354,14 +357,14 @@ API），本地任务的睡眠阻断由 Core 进程那一份承担——这是
 | --- | --- | --- |
 | 窗口框架 | `frame: false`（macOS 用 `titleBarStyle: 'hiddenInset'`） | 系统标题栏与系统菜单栏都不再绘制，改由顶部 38px 的 `titlebarView` 自绘 |
 | 菜单定义 | `buildMenuSections()` 单一来源 | 同时驱动原生 `Menu`（macOS 系统菜单栏 / role 类行为）与自绘菜单（`toTitlebarMenuNodes` 保留 `submenu` 层级） |
-| 主题 | `nativeTheme.themeSource`（`system` / `light` / `dark`）+ 聊天视图 `setTheme` 消息 | 模式持久化在宿主本地状态 `userData/workspace-state.json` 的 `theme` 字段（旧版本写在 settings.json 的 `theme` 由 `migrateLegacyThemeAndShortcut()` 一次性迁移），菜单「主题 ▸」切换（`applyThemeMode`）。`themeSource` 驱动原生配色、各渲染进程的 `prefers-color-scheme`（自绘标题栏 / 侧栏 / Monaco 预览的浅色覆盖）与窗口兜底底色；聊天 webview 不监听 `prefers-color-scheme`，由 `uiHost.onThemeChanged(null)` 广播 `setTheme`，新视图用 `--theme=` + `window.__initialTheme` 保证首帧底色正确。跟随系统时 OS 切换走 `nativeTheme.on('updated')`：除了刷新底色与广播主题，还要**作废自绘菜单缓存**——菜单配色是生成 HTML 时烘进内联样式的，缓存复用会让菜单停留在旧配色 |
+| 主题 | `nativeTheme.themeSource`（`system` / `light` / `dark`）+ 聊天视图 `setTheme` 消息 | 模式持久化在宿主本地状态 `userData/workspace-state.json` 的 `theme` 字段（旧版本写在 settings.json 的 `theme` 由 `migrateLegacyThemeAndShortcut()` 一次性迁移），偏好设置窗口的主题单选切换（`applyThemeMode`）。`themeSource` 驱动原生配色、各渲染进程的 `prefers-color-scheme`（自绘标题栏 / 侧栏 / Monaco 预览 / 偏好设置窗口的浅色覆盖）与窗口兜底底色；聊天 webview 不监听 `prefers-color-scheme`，由 `uiHost.onThemeChanged(null)` 广播 `setTheme`，新视图用 `--theme=` + `window.__initialTheme` 保证首帧底色正确。跟随系统时 OS 切换走 `nativeTheme.on('updated')`：除了刷新底色与广播主题，还要**作废自绘菜单缓存**——菜单配色是生成 HTML 时烘进内联样式的，缓存复用会让菜单停留在旧配色 |
 | 二级菜单 | 飞出面板（`.flyout`） | 「最近打开的工作目录」等子菜单默认收起，悬停/点击父项才展开；面板绝对定位在主面板右侧，右侧放不下时改向左展开（`offsetX` 为负）。宽度按内容自适应（`width: max-content`，缺省下限 `TITLEBAR_SUBMENU_WIDTH`），上限由主进程按「锚点到窗口右缘」下发（`flyoutMaxWidth`）：条目短就收缩、不撑满可用宽度，「最近的工作区」长路径最多铺满到上限、完整显示；展开时按实测宽度决定左右方向与 `offsetX` |
 | 二级菜单不裁切 | 视图尺寸 = 主面板 ∪ 飞出面板；**页面底色与视图背景都要透明** | 视图比主面板大时多出的区域必须能透出下方内容。实测 `WebContentsView` 的透明区域可与下方兄弟视图正常混叠（无需窗口级 `transparent`）。注意 `view.setBackgroundColor('#00000000')` 与页面 `background: transparent` **两者都要**：只改页面会露出视图默认的白底（表现为白边，已踩过）。展开/收起时页面重新上报尺寸，主进程 `setBounds` 调整视图 |
 | 飞出面板不被 `body` 裁掉 | `body` 的 `min-height` = 菜单可用高度上限（`maxHeight`） | 飞出面板是 `body` 的绝对定位子元素，而 `body` 只按主面板 `.menu` 的自然高度撑开，`overflow: hidden` 会把超出主面板的那截飞出面板整段裁掉——此时飞出面板自身 `scrollHeight == clientHeight`（不出现滚动条），后半截条目既看不到也滚不到，「添加最近的工作目录」条目多时就是「列表显示不全」。飞出面板底边由 `positionFlyout` 限制在 `maxHeight` 以内，所以 `body` 撑到 `maxHeight` 一定装得下（且撑满后不改变上报尺寸：`reportSize` 量的是主面板/飞出面板的 rect，不是 `body`）。回归用例：`src/test/titlebarMenu.test.ts` |
 | 下拉菜单 | 独立 `WebContentsView` | 不用 `BrowserWindow`：开窗有系统动画与层级窗口合成，会「闪一下」；视图只是同窗口内的一块合成区域，摆位即显示。首次打开测量尺寸并缓存 |
 | 菜单关闭 | 侧栏/聊天视图 focus + 窗口 blur/hide/move/resize + 点标题栏空白 + Esc | **不要用标题栏 blur 关菜单**：显示菜单视图会让焦点重新计算（可能变成「无焦点视图」），据此关菜单会让菜单刚弹出就被自己关掉（已踩过）。打开时把焦点交给菜单视图（Esc/方向键依赖它），关闭时还给打开前的视图 |
 | 菜单置顶 | `addChildView` 重新入栈 | 聊天视图是动态 `addChildView` 的，会盖住菜单视图；显示菜单时再 `addChildView` 一次即可提到最上层。**不要先 `removeChildView`**——那会把焦点掉成「无视图」，菜单随即被关掉 |
-| 快捷键 | 原生 accelerator + `before-input-event` 兜底 | 无边框窗口下原生 accelerator 是否生效依平台而定，两处都命中时按 id 去重（250ms）。唤醒快捷键持久化在 `workspace-state.json` 的 `shortcut` 字段（旧版本写在 settings.json 的 `shortcut` 由 `migrateLegacyThemeAndShortcut()` 一次性迁移）；注册失败（组合键被系统或其它程序占用）不弹窗、落 fileLogger（`shortcut` 组件）与 console.warn 留痕 |
+| 快捷键 | 原生 accelerator + `before-input-event` 兜底 | 无边框窗口下原生 accelerator 是否生效依平台而定，两处都命中时按 id 去重（250ms）。唤醒快捷键在偏好设置窗口里录制、持久化在 `workspace-state.json` 的 `shortcut` 字段（旧版本写在 settings.json 的 `shortcut` 由 `migrateLegacyThemeAndShortcut()` 一次性迁移）；注册失败（组合键被系统或其它程序占用）不弹窗、落 fileLogger（`shortcut` 组件）与 console.warn 留痕 |
 | 窗口模式 | `windowMode: 'normal' \| 'floating'` | floating = 隐藏侧栏（`sidebarView` 收成 0 尺寸）+ 聊天视图占满整宽（`chatViews.setConversationListOwner('webview')`），复用同一批 webview，不重新加载对话 |
 | 侧栏宽度 | 右缘拖拽手柄（`electron/sidebar` 的 `#resizeHandle`）+ `sidebar:set-width` | 手柄按住水平拖动改宽度（渲染层 pointer capture，拖出视图边界不丢事件），松手落盘一次（`workspace-state.json` 的 `sidebarWidth` 字段，启动时播种，缺失 / 非法回默认 280）；拖拽过程走 `send` 高频上报不落盘，双击手柄恢复默认。宽度事实在主进程：`currentSidebarWidth()` 做全部夹取（200~640 DIP，且不挤掉聊天区的 320px 最小宽），`layout()` 的侧栏 bounds 与 `ChatViewManager.chatBounds()` 的左缘经构造期注入的 `sidebarWidth()` 读取口取同一份值（一份事实一个写入点）。浮窗模式侧栏收成 0 尺寸，用户宽度保持不动，切回完整模式原样恢复 |
 | 浮窗最小化 | `mainWindow.on('minimize')` + `titlebar:minimize` | 完整模式最小化到任务栏；浮窗模式最小化改走 `hide()` 隐藏到系统托盘（隐藏的窗口不在任务栏保留按钮），唤醒入口是托盘图标单击 / 双击与全局快捷键（`showMainWindowFromTray`） |

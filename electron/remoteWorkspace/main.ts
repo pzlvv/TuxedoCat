@@ -281,7 +281,7 @@ function main(): void {
   // ---------- 第二步：选目录 ----------
 
   /** 路径输入的即时预览防抖（毫秒） */
-  const PREVIEW_DEBOUNCE_MS = 250;
+  const PREVIEW_DEBOUNCE_MS = 50;
   let previewTimer: number | null = null;
   /** 预览代次：快速输入时旧回包可能后到，只认最后一次发的那个 */
   let previewGeneration = 0;

@@ -11,6 +11,9 @@
  * 同一条回调上还有托盘状态点与睡眠阻断（`electron/powerSaveBlocker.ts`），抛错会连带
  * 影响它们（架构铁律 1：不静默降级，但也不让附加通道打翻主流程）。
  *
+ * 除提醒外还提供 `preview()`：偏好设置里开提示音 / 拖完音量滑条时试听一次，走同一个
+ * 载体（试听先建好，之后第一次提醒直接复用）与同一份音量（载体的 `getVolume()`）。
+ *
  * 保持纯逻辑（不 import electron），可被 `src/test/trayAttentionSound.test.ts` 单测。
  */
 
@@ -55,6 +58,14 @@ export interface AttentionSound {
   /** 提醒触发时调用：播放一次提示音（重播语义由载体保证：从头、单路） */
   play(): void;
   /**
+   * 用户试听：偏好设置里开提示音 / 拖音量滑条后预览播放一次。
+   *
+   * 与提醒走**同一个载体、同一份音量**：载体的窗口是懒建缓存的，试听先建好，
+   * 之后第一次提醒直接复用，不会为试听另起一路输出。音量由载体的
+   * `getVolume()` 每次播放前取，改动后无需重建载体。
+   */
+  preview(): void;
+  /**
    * 释放播放载体（幂等）：主窗口关闭 / 应用退出时调用，避免隐藏的播放窗口留着
    * 影响 `window-all-closed` 与 `activate` 的窗口计数。之后再次 `play()` 会重新取载体。
    */
@@ -64,19 +75,22 @@ export interface AttentionSound {
 export function createAttentionSound(deps: AttentionSoundDeps): AttentionSound {
   let player: AttentionSoundPlayer | null = null;
 
+  function playOnce(): void {
+    try {
+      player ??= deps.acquirePlayer();
+      if (!player) return;
+      void player.play().catch((err: unknown) => {
+        deps.warn(`play failed: ${String(err)}`);
+      });
+    } catch (err) {
+      // 取载体本身抛错（建窗失败等）与播放失败同形处理：留痕、不外抛
+      deps.warn(`play threw: ${String(err)}`);
+    }
+  }
+
   return {
-    play(): void {
-      try {
-        player ??= deps.acquirePlayer();
-        if (!player) return;
-        void player.play().catch((err: unknown) => {
-          deps.warn(`play failed: ${String(err)}`);
-        });
-      } catch (err) {
-        // 取载体本身抛错（建窗失败等）与播放失败同形处理：留痕、不外抛
-        deps.warn(`play threw: ${String(err)}`);
-      }
-    },
+    play: playOnce,
+    preview: playOnce,
     dispose(): void {
       const current = player;
       player = null;

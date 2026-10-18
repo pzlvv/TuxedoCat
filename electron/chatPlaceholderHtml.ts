@@ -1,5 +1,5 @@
 /**
- * 聊天区占位页 HTML（electron 生成，data URL 装载，与 shortcutDialogHtml 同模式）
+ * 聊天区占位页 HTML（electron 生成，data URL 装载，与 preferenceDialogHtml 同模式）
  *
  * 活动工作区建链中 / 不可用时替代对话视图：
  * - connecting：黄色呼吸点 + 「正在连接」（启动恢复的远程项 / 点击重连期间）；

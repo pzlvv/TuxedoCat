@@ -6,7 +6,7 @@
  * 2. 注册 IPC（webview-message）并委托给 WebViewUI（复用同一份 WebviewMessageHandler）
  * 3. 侧栏 IPC：对话列表读写、打开/新建对话、列表变化推送
  * 4. 初始化 core（bootstrapCore：总线 / core 侧订阅 / 宿主环境与工作目录经总线传递）
- * 5. 提供单一图标菜单（添加工作区 / 添加最近的工作区 / 快捷键 / 开发者工具 / 关于 / 退出）；
+ * 5. 提供单一图标菜单（添加工作区 / 添加最近的工作区 / 偏好设置 / 开发者工具 / 关于 / 退出）；
  *    标题栏「加号」菜单同样带「打开最近的工作区」
  * 6. 多工作目录：打开集合 + 活动项，标题栏标签页，按对话解析工作目录
  *
@@ -119,7 +119,8 @@ import {
 } from './shortcut.js';
 import { tt, onHostLocaleChanged, getHostLocale } from '../src/host/i18n.js';
 import { requireEventBus } from '../src/shared/AssistantEventBus.js';
-import { getShortcutDialogHtml } from './shortcutDialogHtml.js';
+import { getPreferenceDialogHtml, type PreferenceDialogState } from './preferenceDialogHtml.js';
+import { clampSoundVolume, readSoundSettings, type SoundSettings } from './soundSettings.js';
 import { requestSmartNaming } from '../src/host/coreFacts.js';
 
 /**
@@ -467,18 +468,18 @@ let uiHost: ElectronUIHost | undefined;
 let currentThemeMode: ThemeMode = 'system';
 /** 系统托盘：提供唤醒入口与退出入口（窗口不会因最小化而隐藏到托盘） */
 let tray: Tray | undefined;
-/** 当前已注册的全局唤醒快捷键（快捷键设置对话框打开时临时注销） */
+/** 当前已注册的全局唤醒快捷键（偏好设置窗口打开时临时注销） */
 let registeredWakeShortcut: string | undefined;
 /** 当前窗口是否由唤醒快捷键/托盘呼出，用于“再按一次回到托盘”的切换判断 */
 let wakeToggleActive = false;
 /**
- * 打开了「唤醒快捷键设置」对话框的 webContents 集合。
+ * 打开了偏好设置窗口的 webContents 集合。
  * 打开期间临时注销全局快捷键，避免用户按下的组合键先触发唤醒；
  * 用集合而不是布尔值，兼容同时打开多个的情况。
  */
-const shortcutDialogSenders = new Set<number>();
-/** 唤醒快捷键设置对话框（File - Shortcut...；同一时刻只开一个） */
-let shortcutDialogWindow: BrowserWindow | undefined;
+const preferenceDialogSenders = new Set<number>();
+/** 偏好设置窗口（菜单「偏好设置...」；同一时刻只开一个） */
+let preferenceDialogWindow: BrowserWindow | undefined;
 /** 应用退出中：避免 destroyed 回调里再尝试注册快捷键 */
 let appQuitting = false;
 /**
@@ -672,7 +673,7 @@ async function main(): Promise<void> {
     }
   });
 
-  // 本应用任意窗口（主窗口 / 快捷键设置对话框等）获得焦点即取消闪烁提醒。
+  // 本应用任意窗口（主窗口 / 偏好设置窗口等）获得焦点即取消闪烁提醒。
   // 只监听 mainWindow 的 focus 会漏掉子窗口聚焦的情况——子窗口聚焦时主窗口
   // 失去焦点，但用户正在使用本应用，不应继续闪烁。
   app.on('browser-window-focus', () => cancelAttention());
@@ -1141,15 +1142,14 @@ function windowBackgroundColor(): string {
 }
 
 /**
- * 应用主题模式（菜单「主题」子菜单的动作）。
+ * 应用主题模式（偏好设置窗口里主题单选的动作）。
  *
  * - `nativeTheme.themeSource`：驱动系统级配色、原生对话框，以及各渲染进程的
- *   prefers-color-scheme（自绘标题栏 / 侧栏 / Monaco 预览据此切换深浅）；
+ *   prefers-color-scheme（自绘标题栏 / 侧栏 / Monaco 预览 / 偏好设置窗口据此切换深浅）；
  * - 显式 `onThemeChanged(null)`：聊天 webview 不监听 prefers-color-scheme，
  *   主题值靠 setTheme 消息下发；重复选择同一项时不会触发 nativeTheme 的
  *   updated 事件，因此这里主动广播一次，保证值一致；
- * - 持久化落在宿主本地偏好（core 不参与）；
- * - 重建菜单：刷新子菜单当前选中项的勾选态。
+ * - 持久化落在宿主本地偏好（core 不参与）。
  */
 function applyThemeMode(mode: ThemeMode): void {
   currentThemeMode = mode;
@@ -1162,7 +1162,6 @@ function applyThemeMode(mode: ThemeMode): void {
   uiHost?.onThemeChanged(null);
   chatViews?.setBackgroundColor(chatViewBackgroundColor());
   mainWindow?.setBackgroundColor(windowBackgroundColor());
-  setupMenu();
 }
 
 /**
@@ -1352,13 +1351,18 @@ let attentionActive = false;
  * `setStatusListener` 的回调里，抛错会连带打断同一快照上的托盘状态点与睡眠阻断。
  *
  * `traySoundEnabled()` 为假（e2e 启动器置了 `DISABLE_TRAY_SOUND`）时不建载体：整应用
- * 用例在开发机上跑，出声会和真实运行的应用撞在一起。
+ * 用例在开发机上跑，出声会和真实运行的应用撞在一起。用户偏好里的「播放提示音」关掉时
+ * 同样不建载体（`readSoundSettingsSync()`），音量则每次播放前现取——偏好设置里拖滑条
+ * 不需要重建已缓存的播放窗口。
  */
 const attentionSound = createAttentionSound({
   acquirePlayer: () =>
-    appQuitting || !traySoundEnabled()
+    appQuitting || !traySoundEnabled() || !readSoundSettingsSync().enabled
       ? null
-      : createTraySoundPlayer({ audioPath: path.join(APP_ROOT, 'electron', 'assets', 'meow.aac') }),
+      : createTraySoundPlayer({
+          audioPath: path.join(APP_ROOT, 'electron', 'assets', 'meow.aac'),
+          getVolume: () => readSoundSettingsSync().volume,
+        }),
   warn: (message) => fileLogger.warn('tray-sound', message),
 });
 
@@ -1432,7 +1436,7 @@ function startTrayBlink(status: TrayStatus): boolean {
 /**
  * 本应用是否有任一窗口处于前台（拥有焦点）。
  *
- * 不能只看 `mainWindow.isFocused()`：唤醒快捷键设置对话框是带 parent 的独立
+ * 不能只看 `mainWindow.isFocused()`：偏好设置窗口是带 parent 的独立
  * BrowserWindow，它聚焦时主窗口失去焦点，但用户其实正在使用本应用，此时不应
  * 再闪烁提醒。`BrowserWindow.getFocusedWindow()` 会覆盖主窗口与所有子窗口。
  */
@@ -1478,8 +1482,8 @@ function cancelAttention(): void {
 
 /**
  * 主窗口是否持有焦点。「任务完成」绿色呼吸的武装 / 播放判据，与托盘的
- * `isWindowInBackground` 分开：这里只看主窗口（快捷键设置对话框聚焦时主窗口
- * 失焦，但那个对话框盖在主窗口上，聊天区是否可见无法一概而论——完成呼吸等
+ * `isWindowInBackground` 分开：这里只看主窗口（偏好设置窗口聚焦时主窗口
+ * 失焦，但那个窗口盖在主窗口上，聊天区是否可见无法一概而论——完成呼吸等
  * 主窗口真正拿到 focus 事件再播，语义与「窗口获取到焦点后」一致）。
  */
 function isMainWindowFocused(): boolean {
@@ -1640,8 +1644,8 @@ function registerWakeShortcut(): void {
 /** 按指定值注册全局唤醒快捷键（先注销旧值）；失败落日志，不中断主流程 */
 function registerWakeShortcutValue(shortcut: string): void {
   if (appQuitting) return;
-  // 快捷键设置对话框打开期间不注册全局快捷键，避免用户按下的组合键被占用/触发
-  if (shortcutDialogSenders.size > 0) return;
+  // 偏好设置窗口打开期间不注册全局快捷键，避免用户按下的组合键被占用/触发
+  if (preferenceDialogSenders.size > 0) return;
   if (registeredWakeShortcut) {
     globalShortcut.unregister(registeredWakeShortcut);
     registeredWakeShortcut = undefined;
@@ -1663,62 +1667,66 @@ function registerWakeShortcutValue(shortcut: string): void {
   }
 }
 
-/** 快捷键设置对话框打开：临时注销全局唤醒快捷键，避免用户按下的组合键直接触发唤醒 */
+/** 偏好设置窗口打开：临时注销全局唤醒快捷键，避免用户按下的组合键直接触发唤醒 */
 function suspendWakeShortcut(sender: Electron.WebContents): void {
   const senderId = sender.id;
-  if (shortcutDialogSenders.has(senderId)) return;
-  shortcutDialogSenders.add(senderId);
+  if (preferenceDialogSenders.has(senderId)) return;
+  preferenceDialogSenders.add(senderId);
   // 窗口被销毁（关闭 / 应用退出）时兜底释放，避免快捷键一直处于注销状态
   sender.once('destroyed', () => {
-    if (shortcutDialogSenders.delete(senderId) && shortcutDialogSenders.size === 0) {
+    if (preferenceDialogSenders.delete(senderId) && preferenceDialogSenders.size === 0) {
       resumeWakeShortcutInternal();
     }
   });
-  if (shortcutDialogSenders.size === 1 && registeredWakeShortcut) {
+  if (preferenceDialogSenders.size === 1 && registeredWakeShortcut) {
     globalShortcut.unregister(registeredWakeShortcut);
     registeredWakeShortcut = undefined;
     console.log('[main] Global wake shortcut suspended while the shortcut dialog is open');
   }
 }
 
-/** 所有设置对话框关闭后恢复全局快捷键注册（按最新 settings.json） */
+/** 偏好设置窗口关闭后恢复全局快捷键注册（按最新宿主本地偏好） */
 function resumeWakeShortcutInternal(): void {
   if (appQuitting) return;
   registerWakeShortcut();
 }
 
 /**
- * 打开唤醒快捷键设置对话框（File - Shortcut...）。
+ * 打开偏好设置窗口（菜单「偏好设置...」）。
  *
- * 快捷键是 Electron 专属能力（webview 里做不了：页面收不到被系统抢占的组合键，
- * 也没法注销已注册的全局快捷键），因此单独一个对话框：
- * - 打开期间注销当前全局快捷键（suspendWakeShortcut），关闭后按最新偏好恢复
- * - 按键捕获在主进程的 before-input-event 里做，复用宿主的快捷键解析；
- *   页面只负责显示，通过 preload 的 shortcutAPI 通信
- * - 保存时写入宿主本地偏好，写完后关闭
+ * 承载三块宿主本地偏好：
+ * - 主题：点选立即生效（applyThemeMode）；窗口配色走 `prefers-color-scheme`，
+ *   切换后窗口自己跟着变，不需要关掉重开
+ * - 提示音：开关与音量落盘；打开提示音 / 拖完音量滑条时预览播放一次
+ *   （与任务结束提醒共用同一个播放载体，见 attentionSound）
+ * - 唤醒快捷键：打开期间注销全局快捷键（suspendWakeShortcut），点快捷键字段后录制，
+ *   按键捕获在主进程的 before-input-event 里做（复用 electron/shortcut.ts）
+ *
+ * 与自绘消息框（`electron/styledMessageBox.ts`）同构：主进程把 HTML 作为 data URL
+ * 载入 BrowserWindow，页面通过 preload 的 preferenceAPI 通信。
  */
-function openShortcutDialog(): void {
-  if (shortcutDialogWindow && !shortcutDialogWindow.isDestroyed()) {
-    shortcutDialogWindow.focus();
+function openPreferenceDialog(): void {
+  if (preferenceDialogWindow && !preferenceDialogWindow.isDestroyed()) {
+    preferenceDialogWindow.focus();
     return;
   }
 
-  /** 候选快捷键：随用户按键更新，保存时才落盘 */
-  let candidate = readWakeShortcutSync();
-  let error: string | undefined;
+  /** 是否正在录制新快捷键：只有录制中才拦截按键，平时不影响窗口自身的键盘交互 */
+  let capturing = false;
+  let shortcutError: string | undefined;
 
   // 主窗口可见时才挂为子窗口：窗口最小化到托盘时挂隐藏的父窗口会让对话框也显示不出来
   const parent = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() ? mainWindow : undefined;
   const win = new BrowserWindow({
-    width: 420,
-    height: 268,
+    width: 460,
+    height: 460,
     ...(parent ? { parent } : {}),
     resizable: false,
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
     show: false,
-    title: tt('唤醒快捷键', 'Wake Shortcut'),
+    title: tt('偏好设置', 'Preferences'),
     icon: path.join(APP_ROOT, 'assets', 'logo.png'),
     autoHideMenuBar: true,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#1a1a1f' : '#ffffff',
@@ -1726,60 +1734,90 @@ function openShortcutDialog(): void {
       sandbox: false,
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path.join(__dirname, 'shortcutPreload.cjs'),
+      preload: path.join(__dirname, 'preferencePreload.cjs'),
     },
   });
-  shortcutDialogWindow = win;
-  // 页面注入 shortcutPreload：同其他应用自有页面一样拒绝窗口内导航 / window.open
-  guardViewNavigation(win.webContents, 'shortcut-dialog');
+  preferenceDialogWindow = win;
+  guardViewNavigation(win.webContents, 'preference-dialog');
 
-  const currentState = (): { display: string; error?: string } => ({
-    display: formatAcceleratorForDisplay(candidate),
-    error,
-  });
+  const currentState = (): PreferenceDialogState => {
+    const sound = readSoundSettingsSync();
+    return {
+      theme: currentThemeMode,
+      shortcutDisplay: formatAcceleratorForDisplay(readWakeShortcutSync()),
+      shortcutCapturing: capturing,
+      ...(shortcutError ? { shortcutError } : {}),
+      soundEnabled: sound.enabled,
+      soundVolume: sound.volume,
+    };
+  };
   const pushState = (): void => {
-    if (!win.isDestroyed()) win.webContents.send('shortcut-dialog:state', currentState());
+    if (!win.isDestroyed()) win.webContents.send('preference-dialog:state', currentState());
   };
   const closeDialog = (): void => {
     if (!win.isDestroyed()) win.close();
   };
 
-  /**
-   * 保存：写入宿主本地偏好，写完后关闭对话框——
-   * 关闭回调按最新偏好重新注册全局快捷键。
-   */
-  const save = (): void => {
-    const normalized = normalizeAccelerator(candidate);
-    if (!normalized) {
-      error = tt('快捷键无效，请重新设置', 'Invalid shortcut. Please set it again.');
-      pushState();
-      return;
-    }
-    error = undefined;
-    try {
-      writeWakeShortcut(normalized);
-      closeDialog();
-    } catch (err: unknown) {
-      console.error('[main] save wake shortcut failed:', err);
-      error = tt('保存失败', 'Failed to save');
-      pushState();
-    }
+  const onSetTheme = (_event: Electron.IpcMainEvent, mode: unknown): void => {
+    if (!isThemeMode(mode)) return;
+    applyThemeMode(mode);
+    pushState();
   };
+  const onSetSoundEnabled = (_event: Electron.IpcMainEvent, enabled: unknown): void => {
+    const on = enabled === true;
+    try {
+      writeSoundEnabled(on);
+    } catch (err) {
+      console.error('[main] persist sound enabled failed:', err);
+    }
+    // 打开提示音时试听一次：用户当场听到开关与音量生效
+    if (on) attentionSound.preview();
+    pushState();
+  };
+  const onSetSoundVolume = (_event: Electron.IpcMainEvent, volume: unknown): void => {
+    if (typeof volume !== 'number' || !Number.isFinite(volume)) return;
+    const clamped = clampSoundVolume(volume);
+    try {
+      writeSoundVolume(clamped);
+    } catch (err) {
+      console.error('[main] persist sound volume failed:', err);
+    }
+    // 拖完滑条预览播放一次：与提醒同一个载体、同一份音量
+    attentionSound.preview();
+    pushState();
+  };
+  const onCaptureShortcut = (): void => {
+    capturing = true;
+    shortcutError = undefined;
+    pushState();
+  };
+  const onClose = (): void => closeDialog();
+
+  ipcMain.handle('preference-dialog:get-state', () => currentState());
+  ipcMain.on('preference-dialog:set-theme', onSetTheme);
+  ipcMain.on('preference-dialog:set-sound-enabled', onSetSoundEnabled);
+  ipcMain.on('preference-dialog:set-sound-volume', onSetSoundVolume);
+  ipcMain.on('preference-dialog:capture-shortcut', onCaptureShortcut);
+  ipcMain.on('preference-dialog:close', onClose);
 
   // 打开期间注销全局快捷键：否则用户按下的组合键会先触发唤醒
   suspendWakeShortcut(win.webContents);
 
   win.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown') return;
-    event.preventDefault();
     if (input.key === 'Escape') {
-      closeDialog();
+      event.preventDefault();
+      if (capturing) {
+        capturing = false;
+        shortcutError = undefined;
+        pushState();
+      } else {
+        closeDialog();
+      }
       return;
     }
-    if (input.key === 'Enter') {
-      save();
-      return;
-    }
+    if (!capturing) return;
+    event.preventDefault();
     const accelerator = acceleratorFromKeyboardEvent({
       code: input.code,
       key: input.key,
@@ -1789,25 +1827,32 @@ function openShortcutDialog(): void {
       shiftKey: input.shift,
     });
     if (!accelerator) return; // 只按了修饰键，继续等待
-    candidate = accelerator;
-    error = undefined;
+    try {
+      writeWakeShortcut(accelerator);
+    } catch (err) {
+      console.error('[main] save wake shortcut failed:', err);
+      shortcutError = tt('保存失败', 'Failed to save');
+      pushState();
+      return;
+    }
+    capturing = false;
+    shortcutError = undefined;
     pushState();
   });
 
-  ipcMain.handle('shortcut-dialog:get-state', () => currentState());
-  ipcMain.on('shortcut-dialog:save', save);
-  ipcMain.on('shortcut-dialog:cancel', closeDialog);
   win.on('closed', () => {
-    ipcMain.removeHandler('shortcut-dialog:get-state');
-    ipcMain.removeListener('shortcut-dialog:save', save);
-    ipcMain.removeListener('shortcut-dialog:cancel', closeDialog);
-    if (shortcutDialogWindow === win) shortcutDialogWindow = undefined;
+    ipcMain.removeHandler('preference-dialog:get-state');
+    ipcMain.removeListener('preference-dialog:set-theme', onSetTheme);
+    ipcMain.removeListener('preference-dialog:set-sound-enabled', onSetSoundEnabled);
+    ipcMain.removeListener('preference-dialog:set-sound-volume', onSetSoundVolume);
+    ipcMain.removeListener('preference-dialog:capture-shortcut', onCaptureShortcut);
+    ipcMain.removeListener('preference-dialog:close', onClose);
+    if (preferenceDialogWindow === win) preferenceDialogWindow = undefined;
   });
 
   win.once('ready-to-show', () => win.show());
 
-  const html = getShortcutDialogHtml({
-    isDark: nativeTheme.shouldUseDarkColors,
+  const html = getPreferenceDialogHtml({
     locale: app.getLocale().startsWith('zh') ? 'zh' : 'en',
   });
   void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
@@ -2124,11 +2169,11 @@ type WorkspaceActivityLevel = 'waiting' | 'running';
  * 该目录下任一会话在等待用户操作（ask user / 权限确认）→ `waiting`（黄，优先）；
  * 否则任一会话非 idle（查询 / 压缩 / 后台 Bash / 子代理）→ `running`（蓝）。
  *
- * 两份输入都取宿主自己的投影，不 require `src/core` 的进程内状态（``docs/architecture/principles.md` 第 6 节
+ * 两份输入都取宿主自己的投影，不依赖进程内 core 状态（``docs/architecture/principles.md` 第 6 节
  * 「core 描述事实，UI 决定表现」）：
  * - 状态：`ConversationManager` 缓存的全量快照——core 的 `sessionRuntimeChanged`
  *   经 Connection 推到宿主后存在这里。Standalone（产品形态）下 core 在独立进程，
- *   主进程里的 `src/core/sessionRuntime` 永远是空的，读它流水灯恒不亮；
+ *   会话运行时事实在 Core 进程内，主进程里没有可读的登记表；
  * - 归属：宿主的「会话 → 工作目录」索引（打开 / 加载对话时登记，见
  *   `syncSessionWorkspaceIndex`），即 core 那张表在本进程的投影。
  */
@@ -2389,17 +2434,12 @@ function buildMenuSections(): MenuSectionDef[] {
     label: tt('添加最近的工作区', 'Add Recent Workspace'),
     submenu: buildRecentWorkspacesMenu(),
   };
-  // 主题：跟随系统 / 浅色 / 深色（二级菜单，单选；持久化在 settings.json 的 theme 字段）
-  const themeItem: MenuItemDef = {
-    id: 'main.theme',
-    label: tt('主题', 'Theme'),
-    submenu: buildThemeMenu(),
-  };
-  // 唤醒快捷键：Electron 专属能力（最小化到托盘后用该快捷键呼出窗口）
-  const shortcutItem: MenuItemDef = {
-    id: 'main.shortcut',
-    label: tt('快捷键...', 'Shortcut...'),
-    run: () => openShortcutDialog(),
+  // 偏好设置：Electron 专属能力（主题 / 唤醒快捷键 / 提示音都是宿主本地偏好，
+  // webview 里改不了），统一收进一个自绘设置窗口（见 openPreferenceDialog）
+  const preferenceItem: MenuItemDef = {
+    id: 'main.preference',
+    label: tt('偏好设置...', 'Preferences...'),
+    run: () => openPreferenceDialog(),
   };
   const devToolsItem: MenuItemDef = {
     id: 'main.devTools',
@@ -2423,8 +2463,7 @@ function buildMenuSections(): MenuSectionDef[] {
         addRemoteWorkspaceItem,
         recentWorkspaceItem,
         { type: 'separator' },
-        themeItem,
-        shortcutItem,
+        preferenceItem,
         { type: 'separator' },
         { id: 'file.close', label: 'Close Window', role: 'close' as const },
       ],
@@ -2443,8 +2482,7 @@ function buildMenuSections(): MenuSectionDef[] {
       addRemoteWorkspaceItem,
       recentWorkspaceItem,
       { type: 'separator' },
-      themeItem,
-      shortcutItem,
+      preferenceItem,
       { type: 'separator' },
       devToolsItem,
       { type: 'separator' },
@@ -2455,25 +2493,6 @@ function buildMenuSections(): MenuSectionDef[] {
   });
 
   return sections;
-}
-
-/**
- * 构建「主题」二级菜单：跟随系统 / 浅色 / 深色，单选。
- * 勾选态取内存里的 currentThemeMode（切换后立即重建菜单，不读盘）。
- */
-function buildThemeMenu(): MenuItemDef[] {
-  const options: Array<{ mode: ThemeMode; zh: string; en: string }> = [
-    { mode: 'system', zh: '跟随系统', en: 'Follow System' },
-    { mode: 'light', zh: '浅色', en: 'Light' },
-    { mode: 'dark', zh: '深色', en: 'Dark' },
-  ];
-  return options.map(({ mode, zh, en }) => ({
-    id: `main.theme.${mode}`,
-    label: tt(zh, en),
-    type: 'radio' as const,
-    checked: currentThemeMode === mode,
-    run: () => applyThemeMode(mode),
-  }));
 }
 
 /**
@@ -3749,7 +3768,7 @@ function sidebarWorkspaceState(): {
   };
 }
 
-// ==================== 宿主本地偏好：theme / shortcut ====================
+// ==================== 宿主本地偏好：theme / shortcut / sound ====================
 
 /**
  * 主题模式：
@@ -3783,6 +3802,26 @@ function readWakeShortcutSync(): string {
 /** 持久化唤醒快捷键（调用方已规范化） */
 function writeWakeShortcut(shortcut: string): void {
   writeWorkspaceState({ ...readWorkspaceState(), shortcut });
+}
+
+/**
+ * 读取提示音偏好：是否播放 + 音量（0–1 线性增益）。
+ *
+ * 字段缺失 / 非法按默认（开启、满音量，与提示音引入时的行为一致）——规范化
+ * 收敛在纯函数 `readSoundSettings` 里（`electron/soundSettings.ts`）。
+ */
+function readSoundSettingsSync(): SoundSettings {
+  return readSoundSettings(readWorkspaceState());
+}
+
+/** 持久化「是否播放提示音」 */
+function writeSoundEnabled(enabled: boolean): void {
+  writeWorkspaceState({ ...readWorkspaceState(), soundEnabled: enabled });
+}
+
+/** 持久化提示音音量（调用方已收敛到 [0, 1]） */
+function writeSoundVolume(volume: number): void {
+  writeWorkspaceState({ ...readWorkspaceState(), soundVolume: volume });
 }
 
 /**
@@ -4441,7 +4480,7 @@ function setupIpc(): void {
   // 运行时状态流：最近一次全量快照（owner 是 core 的 sessionRuntime，宿主缓存的是它
   // 经 Connection 推来的投影）。状态流是「变化时才推」的：侧栏初始化 / 重载时主动拉
   // 一次，补上「推送早于侧栏就绪」造成的空档，否则流水灯 / 等待标记会一直不亮。
-  // Standalone（产品形态）下 core 在独立进程，进程内 `src/core/sessionRuntime` 是空的，
+  // 会话运行时事实在 Core 进程内（经 sessionRuntimeChanged 全量推送），主进程只缓存快照，
   // 必须走这份缓存（``docs/architecture/principles.md` 第 6 节）。
   ipcMain.handle('sidebar:get-session-states', () => {
     return conversations?.getSessionStatesSnapshot() ?? [];

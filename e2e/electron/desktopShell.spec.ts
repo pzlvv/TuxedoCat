@@ -8,8 +8,8 @@ import type { Page } from '@playwright/test';
 import type { MockLlm } from '../helpers/mockLlmServer';
 
 /**
- * US-27 内置命令分发 / US-31 窗口控制 / US-32 主题切换 / US-34 全局唤醒快捷键 /
- * US-37 最近工作区 / US-39 Spin 设计器
+ * US-27 内置命令分发 / US-31 窗口控制 / US-32 主题切换 / US-33 系统托盘与任务提醒 /
+ * US-34 全局唤醒快捷键 / US-37 最近工作区 / US-39 Spin 设计器
  *
  * Electron 整应用链路（standalone core + mock LLM）：标题栏 / 自绘菜单 / 全局快捷键
  * 都只能在整应用层验证。标题栏下拉菜单是主进程生成的 data: URL WebContentsView，
@@ -81,6 +81,26 @@ async function findMenuPage(): Promise<Page> {
   throw new Error('自绘菜单视图未出现');
 }
 
+/** 在 CDP 目标列表里按内容特征找到偏好设置窗口页面（data: URL + #sound-enabled）。
+ *  等状态推入后再返回：主题单选已有勾选项，后续点击 / 断言不踩「状态未到」的竞态。 */
+async function findPreferencePage(): Promise<Page> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    for (const p of app.context.pages()) {
+      if (!p.url().startsWith('data:')) continue;
+      try {
+        const ready = await p.evaluate(
+          () => document.querySelector('#sound-enabled') !== null
+            && document.querySelector('input[name="theme"]:checked') !== null,
+        );
+        if (ready) return p;
+      } catch { /* 页面正在初始化 */ }
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  throw new Error('偏好设置窗口页面未出现');
+}
+
 /** 点开标题栏菜单并返回其页面（菜单按钮在标题栏视图上） */
 async function openMenuAndGetPage(): Promise<Page> {
   const titlebar = await app.titlebarPage();
@@ -117,7 +137,7 @@ test('US-31 标题栏最大化/还原切换窗口状态', async () => {
   await expect(btnMaximize).toHaveAttribute('aria-label', '最大化', { timeout: 10_000 });
 });
 
-test('US-34 全局唤醒快捷键：按配置注册、改键保存后立即换绑', async () => {
+test('US-34 全局唤醒快捷键：按配置注册、改键后立即换绑', async () => {
   // 换一个实例：预置一个**独占组合键**（Ctrl+Alt+8）作为初始快捷键。
   // 默认 Ctrl+Alt+X 可能被本机其它程序或上一轮泄漏的实例占用（注册失败会落日志），
   // 断言改用不会被占用的组合，让用例只验证「配置 → 注册 → 换绑」这条产品链路。
@@ -134,42 +154,31 @@ test('US-34 全局唤醒快捷键：按配置注册、改键保存后立即换�
     (v) => v === true,
   );
 
-  // 菜单「快捷键...」打开改键对话框（返回布尔：CDP 求值不带 returnByValue，数组传不回）
+  // 菜单「偏好设置...」打开设置窗口（返回布尔：CDP 求值不带 returnByValue，数组传不回）
   const menu = await openMenuAndGetPage();
-  await menu.locator('.item[data-id="main.shortcut"]').click();
+  await menu.locator('.item[data-id="main.preference"]').click();
   await pollMain<boolean>(
-    "e.BrowserWindow.getAllWindows().some(w=>w.getTitle()==='唤醒快捷键')",
+    "e.BrowserWindow.getAllWindows().some(w=>w.getTitle()==='偏好设置')",
     (v) => v === true,
   );
-
-  // 对话框页面与菜单视图同为 data: URL：按 #save 按钮特征区分
-  const dialogDeadline = Date.now() + 10_000;
-  let dialogPage: Page | null = null;
-  while (!dialogPage && Date.now() < dialogDeadline) {
-    for (const p of app.context.pages()) {
-      if (!p.url().startsWith('data:')) continue;
-      try {
-        if (await p.evaluate(() => document.querySelector('#save') !== null)) { dialogPage = p; break; }
-      } catch { /* 页面正在初始化 */ }
-    }
-    if (!dialogPage) await new Promise((r) => setTimeout(r, 150));
-  }
-  if (!dialogPage) throw new Error('改键对话框页面未出现');
+  const dialogPage = await findPreferencePage();
 
   // 打开时显示当前配置的组合
-  await dialogPage.waitForSelector('#key');
-  await expect(dialogPage.locator('#key')).toHaveText('Ctrl+Alt+8', { timeout: 5_000 });
+  await expect(dialogPage.locator('#shortcut')).toHaveText('Ctrl+Alt+8', { timeout: 5_000 });
 
-  // 捕获新组合：CDP 键盘事件不经过主进程 before-input-event（只接 OS 级输入），
+  // 点快捷键字段开始录制（等页面切到录制文案，确认主进程已进入录制态），再注入新组合：
+  // CDP 键盘事件不经过主进程 before-input-event（只接 OS 级输入），
   // 改用 Electron 的 sendInputEvent 从主进程注入同一输入管线
+  await dialogPage.locator('#shortcut').click();
+  await expect(dialogPage.locator('#shortcut')).toHaveText('请按下新的组合键…', { timeout: 5_000 });
   await mainExpr(
-    "e.BrowserWindow.getAllWindows().forEach(w=>{if(w.getTitle()==='唤醒快捷键')"
+    "e.BrowserWindow.getAllWindows().forEach(w=>{if(w.getTitle()==='偏好设置')"
     + "w.webContents.sendInputEvent({type:'keyDown',modifiers:['ctrl','alt'],keyCode:'Y'})})",
   );
-  await expect(dialogPage.locator('#key')).toHaveText('Ctrl+Alt+Y', { timeout: 5_000 });
-  await dialogPage.locator('#save').click();
+  await expect(dialogPage.locator('#shortcut')).toHaveText('Ctrl+Alt+Y', { timeout: 5_000 });
 
-  // 保存后立即换绑：新组合注册、旧组合注销（US-34 验收 2）
+  // 关闭窗口后按最新偏好重新注册：新组合注册、旧组合注销（US-34 验收 2）
+  await dialogPage.locator('#close').click();
   await pollMain<boolean>(
     "e.globalShortcut.isRegistered('Ctrl+Alt+Y')",
     (v) => v === true,
@@ -180,27 +189,60 @@ test('US-34 全局唤醒快捷键：按配置注册、改键保存后立即换�
   );
 });
 
-test('US-32 菜单切换主题，聊天视图底色立即跟随', async () => {
+test('US-32 偏好设置切换主题，聊天视图底色立即跟随', async () => {
   const chatPage = await app.chatPage();
   const bg = (): Promise<string> => chatPage.evaluate(() =>
     getComputedStyle(document.documentElement).getPropertyValue('--bg-primary').trim());
 
+  // 菜单「偏好设置...」打开设置窗口，主题单选在其中
+  const menu = await openMenuAndGetPage();
+  await menu.locator('.item[data-id="main.preference"]').click();
+  const dialogPage = await findPreferencePage();
+
   // 初始主题可能跟随系统：先显式切到深色，拿到确定性的起点值
-  let menu = await openMenuAndGetPage();
-  await clickSubmenuItem(menu, 'main.theme', 'main.theme.dark');
+  await dialogPage.locator('input[name="theme"][value="dark"]').click();
   await chatPage.waitForTimeout(800);
   const darkBg = await bg();
   expect(darkBg).not.toBe('');
 
   // 主题 → 浅色：聊天视图根变量立即切换（US-32 验收 1）
-  menu = await openMenuAndGetPage();
-  await clickSubmenuItem(menu, 'main.theme', 'main.theme.light');
+  await dialogPage.locator('input[name="theme"][value="light"]').click();
   await expect.poll(bg, { timeout: 10_000 }).not.toBe(darkBg);
 
   // 切回深色：恢复原值
-  menu = await openMenuAndGetPage();
-  await clickSubmenuItem(menu, 'main.theme', 'main.theme.dark');
+  await dialogPage.locator('input[name="theme"][value="dark"]').click();
   await expect.poll(bg, { timeout: 10_000 }).toBe(darkBg);
+});
+
+test('US-33 偏好设置：提示音开关与音量落盘，音量条随开关显隐', async () => {
+  // 菜单「偏好设置...」打开设置窗口
+  const menu = await openMenuAndGetPage();
+  await menu.locator('.item[data-id="main.preference"]').click();
+  const dialogPage = await findPreferencePage();
+
+  const readState = async (): Promise<Record<string, unknown>> =>
+    JSON.parse(await fs.promises.readFile(app.stateFile, 'utf-8')) as Record<string, unknown>;
+
+  // 提示音默认开启：音量条可见（US-33 验收 4）
+  await expect(dialogPage.locator('#volume-row')).toBeVisible();
+
+  // 关掉提示音：音量条隐藏，开关落盘
+  await dialogPage.locator('#sound-enabled').uncheck();
+  await expect(dialogPage.locator('#volume-row')).toBeHidden();
+  await expect.poll(async () => (await readState()).soundEnabled).toBe(false);
+
+  // 再打开：音量条回来
+  await dialogPage.locator('#sound-enabled').check();
+  await expect(dialogPage.locator('#volume-row')).toBeVisible();
+
+  // 拖完音量滑条（input 只改显示、change 才落盘）：音量以 0–1 落盘
+  await dialogPage.locator('#volume').evaluate((el) => {
+    const input = el as HTMLInputElement;
+    input.value = '40';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect.poll(async () => (await readState()).soundVolume as number).toBeCloseTo(0.4, 5);
 });
 
 test('US-37 最近工作区列表过滤失效目录，关闭后可从最近重开', async () => {

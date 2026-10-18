@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-14
+last_reviewed: 2026-10-17
 ---
 
 # 规格：Core 远程服务（`start` / `kill` 与 SSH 接入）
@@ -166,7 +166,7 @@ last_reviewed: 2026-10-14
   路径可编辑、列表首行是 `..`（上级）、工具栏可新建文件夹。破坏性操作不进常显 UI：
   右键目录行弹出「重命名 / 删除」菜单，选中后在该行内联编辑（重命名直接改名字；
   删除空目录一次确认、非空目录二次确认后递归删除）。
-- 路径输入停顿 250ms 后刷新列表（`electron/remoteWorkspace/pathInput.ts` 负责拆分）：
+- 路径输入停顿 50ms 后刷新列表（`electron/remoteWorkspace/pathInput.ts` 负责拆分）：
   末段带分隔符（`/workspace/a/`）表示「这一级敲完了」，列它自己；末段没有分隔符
   （`/workspace/a`）表示最后一段是**前缀过滤词**，列父目录再筛——`a` 与 `abc` 同时显示，
   不进 `a`。过滤只作用于目录名——daemon 的目录列举本来就只回目录、不含文件。

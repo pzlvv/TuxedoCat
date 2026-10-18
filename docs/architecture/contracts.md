@@ -346,7 +346,7 @@ import core 的只读函数与类型（[docs/architecture/layering.md 第 2 节]
 | Electron 侧栏 / webview 顶栏：删除 | `sidebar:delete-conversation` / `deleteConversationWithViews`（webview 的 `deleteConversation` 在多视图宿主由 `electron/main.ts` 接管） | 两条入口共用 `deleteConversationWithViews`：先用 `collectConversationClosure`（`src/shared/history/Conversation.ts`）求受影响闭包（自身 + 所有层级子孙，与 Core 的删除规则同一份格式），对闭包里**已打开**的视图逐个 `closeConversation`（没打开的会话没有可卸资源，也不发 `conversationClosed`——它按会话路由不到归属），再对 root 发 `conversationDeleted`（Core 对闭包逐个删盘并释放引擎 / MCP / 运行时状态） |
 | Electron 侧栏：重命名 | `sidebar:rename-conversation` | `conversationRenamed` |
 | Electron 侧栏：智能命名 | `sidebar:smart-name-conversation` | LLM 起名后发 `conversationRenamed` |
-| Electron 菜单：唤醒快捷键 | File - Shortcut... 对话框（`electron/main.ts`） | 写宿主本地状态（`workspace-state.json` 的 `shortcut` 字段），不经总线 |
+| Electron 菜单：偏好设置 | 「偏好设置...」窗口（`electron/main.ts` 的 `openPreferenceDialog`） | 写宿主本地状态（`workspace-state.json` 的 `theme` / `shortcut` / `soundEnabled` / `soundVolume` 字段），不经总线 |
 
 **留在宿主 / 共享子模块内、不翻译为事件的**：
 
@@ -360,16 +360,19 @@ import core 的只读函数与类型（[docs/architecture/layering.md 第 2 节]
 | 载体 / 视图层动作 | Electron 的 `sidebar:new-conversation` / `sidebar:open-conversation` / `sidebar:get-active-session` / `sidebar:active-session-changed`（开视图与视图层状态，随后由新视图自己发 `loadConversation`）；webview 的 `closeWebview` / `openConversation` / `openNewConversation` / `prewarmViewReady` 由 `electron/main.ts` 的消息入口直接消化，不经 `WebviewMessageHandler`、不走总线。`deleteConversation` 在多视图宿主（Electron）由同一入口接管：先关该会话的视图（含子会话闭包，与侧栏删除共用 `deleteConversationWithViews`），再发 `conversationDeleted`；单视图宿主没有可关的视图，仍走 `WebviewMessageHandler` 的 UiEvent 翻译 |
 | 环境查询（按来源回包） | webview 的 `requestTheme` / `requestContextLimit` 在 `WebviewMessageHandler` 内处理（按 `ctx.sender` 回包），但不走总线——它们只读 core 的配置函数与宿主环境，不改 core 状态。宿主在视图加载时也推同一对消息（`UIHost.onThemeChanged` / `WebViewUI.pushContextLimit`），但那次推送受时序约束（VS Code `resolveWebviewView` 后延时、Electron `did-finish-load`），由 webview 主动拉取才能尽早解除首屏 Loading，也让多视图宿主下的后台预热视图拿到回包 |
 
-**唤醒快捷键对话框**（Electron 专属，File - Shortcut...）
+**偏好设置窗口**（Electron 专属，菜单「偏好设置...」）
 
-唤醒快捷键是宿主能力，不能放进 webview：页面收不到被系统抢占的组合键，也无法注销已注册的
-全局快捷键。因此它是 Electron 的一个独立对话框（`electron/main.ts` 的 `openShortcutDialog` +
-`electron/shortcutPreload.ts` + `electron/shortcutDialogHtml.ts`）：
+主题、唤醒快捷键、提示音都是宿主能力，不能放进 webview：页面收不到被系统抢占的组合键，
+也无法注销已注册的全局快捷键。因此它们是 Electron 的一个独立窗口（`electron/main.ts` 的
+`openPreferenceDialog` + `electron/preferencePreload.ts` + `electron/preferenceDialogHtml.ts`）：
 
 | 环节 | 做法 |
 | --- | --- |
-| 打开 | `suspendWakeShortcut(win.webContents)` 注销当前全局快捷键（与窗口销毁时的兜底恢复配对），避免用户按下的组合键先触发唤醒 |
-| 按键捕获 | 主进程 `before-input-event` → `electron/shortcut.ts` 的 `acceleratorFromKeyboardEvent`（页面只负责显示） |
-| 保存 | 写宿主本地偏好（`writeWakeShortcut`），写完后关闭窗口；关闭回调按最新偏好重新注册 |
-| 取消 / Esc | 直接关闭；关闭后按最新偏好恢复注册 |
+| 主题 | 单选立即生效：`applyThemeMode(mode)` 写 `nativeTheme.themeSource` 与宿主本地偏好（`writeThemeMode`），窗口配色走 `prefers-color-scheme` 自己跟着变 |
+| 打开（快捷键） | `suspendWakeShortcut(win.webContents)` 注销当前全局快捷键（与窗口销毁时的兜底恢复配对），避免用户按下的组合键先触发唤醒 |
+| 按键捕获 | 点快捷键字段开始录制，主进程 `before-input-event` → `electron/shortcut.ts` 的 `acceleratorFromKeyboardEvent`（页面只负责显示） |
+| 保存（快捷键） | 录到合法组合即写宿主本地偏好（`writeWakeShortcut`）；关闭回调按最新偏好重新注册 |
+| 取消录制 / Esc | 录制中 Esc 只退出录制；未录制时 Esc 关闭窗口；关闭后按最新偏好恢复注册 |
+| 提示音开关 | 写宿主本地偏好（`writeSoundEnabled`）；打开时预览播放一次 |
+| 提示音音量 | 拖完滑条（change）写宿主本地偏好（`writeSoundVolume`）并预览播放一次；提醒与预览共用同一播放载体 |
 | 注册入口 | `registerWakeShortcutValue(shortcut)`：先注销旧值再注册新值，失败静默忽略 |

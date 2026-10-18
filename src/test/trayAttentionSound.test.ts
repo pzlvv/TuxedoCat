@@ -61,6 +61,22 @@ runTests('trayAttentionSound', async () => {
     check('载体只取一次（懒取后缓存，不每次重建）', acquired === 1);
   }
 
+  // ── 试听：偏好设置里开提示音 / 拖完音量滑条后预览一次 ──
+  {
+    const { player, calls } = fakePlayer();
+    let acquired = 0;
+    const sound = createAttentionSound({
+      acquirePlayer: () => { acquired++; return player; },
+      warn: () => { throw new Error('不该有日志'); },
+    });
+    sound.preview();
+    sound.play();
+    sound.preview();
+    await flush();
+    check('试听与提醒走同一个载体（懒取后缓存，只取一次）', acquired === 1);
+    check('试听与提醒各播一次（两次试听 + 一次提醒 → 三次播放）', calls.play === 3);
+  }
+
   // ── 退出中：acquirePlayer 返回 null ──
   {
     const warns: string[] = [];

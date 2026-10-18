@@ -48,7 +48,7 @@ last_reviewed: 2026-10-18
 | `src/VSCodeSpinDesign.ts` / `electron/ElectronSpinDesign.ts` | `SpinDesign` 的两个实现（构造注入 `UIHost`） |
 | `src/VSCodeConversationManager.ts` / `electron/ElectronConversationManager.ts` | `ConversationManager` 的两个实现；空闲会话回收（计时 / 巡检 / 关闭动作）只在 VS Code 侧 |
 | `electron/shortcut.ts` | Electron 专属：Electron accelerator 解析与规范化（唤醒快捷键）；core 不读不写 |
-| `electron/shortcutDialogHtml.ts` + `electron/shortcutPreload.ts` | Electron 专属：唤醒快捷键设置对话框（File - Shortcut...，见[docs/architecture/contracts.md 第 5 节](contracts.md#5-宿主侧入口动作翻译为-uievent)） |
+| `electron/preferenceDialogHtml.ts` + `electron/preferencePreload.ts` | Electron 专属：偏好设置窗口（菜单「偏好设置...」，见[docs/architecture/contracts.md 第 5 节](contracts.md#5-宿主侧入口动作翻译为-uievent)）。承载主题 / 唤醒快捷键 / 提示音三块宿主本地偏好 |
 | `electron/titlebar/` + `electron/titlebarPreload.ts` | Electron 专属：自绘标题栏（左侧品牌区 + 单一菜单图标 + 工作目录标签页区；右侧置顶钉 / 模式切换 / 最小化-最大化-关闭，两个图标按钮与窗口按钮同宽同高），替代系统默认标题栏与系统菜单栏 |
 | `electron/titlebarMenuHtml.ts` + `electron/titlebarMenuPreload.ts` | Electron 专属：标题栏下拉菜单。菜单由独立 `WebContentsView` 承载（标题栏视图只有 38px 高，自身 bounds 会裁掉向下展开的菜单），首次打开测量尺寸后缓存，再次打开直接摆位显示；子菜单（「添加最近的工作目录」）渲染成右侧飞出面板，默认收起 |
 | `electron/sidebar/` + `electron/sidebarPreload.ts` | Electron 专属：原生侧栏（头部搜索框 + 新对话按钮；对话列表；空态「添加工作目录」+ 最近工作目录；底部可折叠的文件浏览器分区，`electron/sidebarFiles.ts` 提供路径校验与目录读取） |

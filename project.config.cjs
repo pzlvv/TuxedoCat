@@ -42,7 +42,7 @@ module.exports = {
   electronMonacoPreloadOut: resolve(project.build.electronMonacoPreloadOut),
   electronImageViewerPreloadOut: resolve(project.build.electronImageViewerPreloadOut),
   electronSidebarPreloadOut: resolve(project.build.electronSidebarPreloadOut),
-  electronShortcutPreloadOut: resolve(project.build.electronShortcutPreloadOut),
+  electronPreferencePreloadOut: resolve(project.build.electronPreferencePreloadOut),
   electronTitlebarPreloadOut: resolve(project.build.electronTitlebarPreloadOut),
   electronTitlebarMenuPreloadOut: resolve(project.build.electronTitlebarMenuPreloadOut),
   electronRemoteWorkspacePreloadOut: resolve(project.build.electronRemoteWorkspacePreloadOut),

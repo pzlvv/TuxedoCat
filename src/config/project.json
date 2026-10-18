@@ -46,7 +46,7 @@
     "electronMonacoPreloadOut": "dist-electron/monacoPreload.cjs",
     "electronImageViewerPreloadOut": "dist-electron/imageViewerPreload.cjs",
     "electronSidebarPreloadOut": "dist-electron/sidebarPreload.cjs",
-    "electronShortcutPreloadOut": "dist-electron/shortcutPreload.cjs",
+    "electronPreferencePreloadOut": "dist-electron/preferencePreload.cjs",
     "electronTitlebarPreloadOut": "dist-electron/titlebarPreload.cjs",
     "electronTitlebarMenuPreloadOut": "dist-electron/titlebarMenuPreload.cjs",
     "electronRemoteWorkspacePreloadOut": "dist-electron/remoteWorkspacePreload.cjs",

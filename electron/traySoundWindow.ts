@@ -7,7 +7,8 @@
  * （`mvhd` / `mdhd` 声明 ≈6ms，`stts` 每帧 delta = 5），Chromium 按声明时长判定结束，
  * `<audio>` 实测只播 6ms。`decodeAudioData` 解到文件尾则完整（实测 1.254s），因此这里
  * 解码一次、缓存 AudioBuffer，每次播放新建 `AudioBufferSourceNode`（停旧源 + `start(0)`，
- * 天然满足「重播不叠加」）。
+ * 天然满足「重播不叠加」）。音量经 `GainNode` 施加：解码时建好、连到 destination，
+ * 每次播放前按当前音量写 `gain.value`（见 `electron/soundSettings.ts`）。
  *
  * 音频以 base64 经 `executeJavaScript` 注入页面：`data:` 页面加载 `file://` 子资源会被
  * Chromium 拒绝（实测 ERR_FAILED），所以不能把音频当页面子资源引用。
@@ -20,6 +21,7 @@
 import { BrowserWindow } from 'electron';
 import { readFileSync } from 'node:fs';
 import type { AttentionSoundPlayer } from './trayAttentionSound.js';
+import { clampSoundVolume } from './soundSettings.js';
 
 /** 页面标题标记（窗口不显示，仅便于调试时在窗口列表里辨认） */
 const PAGE_TITLE = 'tc-tray-sound';
@@ -45,24 +47,36 @@ function initScript(base64: string): string {
   const ctx = new AudioContext();
   if (ctx.state !== 'running') await ctx.resume().catch(() => {});
   const buffer = await ctx.decodeAudioData(bytes.buffer);
-  window.__traySound = { ctx, buffer, source: null };
+  // 增益节点常驻：每次播放前按当前音量改 gain.value，滑条调整无需重建窗口
+  const gain = ctx.createGain();
+  gain.connect(ctx.destination);
+  window.__traySound = { ctx, buffer, gain, source: null };
   return buffer.duration * 1000;
 })()`;
 }
 
-/** 播放脚本：停掉上一路源、从头播一次，返回播放后的上下文状态（调用方据此判定是否真的在出声） */
-const PLAY_SCRIPT = `(async () => {
+/**
+ * 播放脚本：停掉上一路源、按当前音量从头播一次，返回播放后的上下文状态
+ * （调用方据此判定是否真的在出声）。
+ *
+ * 音量在播放时注入而不是建窗时写死：偏好设置里拖滑条改的是状态文件，播放载体
+ * 懒建后缓存，不重建窗口也能拿到新值。`volume` 由调用方收敛到 0–1 的有限数。
+ */
+function playScript(volume: number): string {
+  return `(async () => {
   const state = window.__traySound;
   if (!state) throw new Error('sound not initialized');
   if (state.ctx.state !== 'running') await state.ctx.resume();
+  state.gain.gain.value = ${JSON.stringify(volume)};
   if (state.source) { try { state.source.stop(); } catch (err) {} }
   const source = state.ctx.createBufferSource();
   source.buffer = state.buffer;
-  source.connect(state.ctx.destination);
+  source.connect(state.gain);
   source.start(0);
   state.source = source;
   return state.ctx.state;
 })()`;
+}
 
 export interface TraySoundPlayer extends AttentionSoundPlayer {
   /**
@@ -73,7 +87,11 @@ export interface TraySoundPlayer extends AttentionSoundPlayer {
   dispose(): void;
 }
 
-export function createTraySoundPlayer(options: { audioPath: string }): TraySoundPlayer {
+export function createTraySoundPlayer(options: {
+  audioPath: string;
+  /** 当前音量（0–1 线性增益）；每次播放前取值，偏好设置改动无需重建载体 */
+  getVolume: () => number;
+}): TraySoundPlayer {
   let win: BrowserWindow | null = null;
   /** 解码完成的信号：resolve 音频时长（毫秒）；窗口销毁 / 解码失败时 reject */
   let ready: Promise<number> | null = null;
@@ -142,7 +160,7 @@ export function createTraySoundPlayer(options: { audioPath: string }): TraySound
       }
       const target = win;
       if (!target || target.isDestroyed()) throw new Error('sound window is gone');
-      const state = (await target.webContents.executeJavaScript(PLAY_SCRIPT)) as unknown;
+      const state = (await target.webContents.executeJavaScript(playScript(clampSoundVolume(options.getVolume())))) as unknown;
       if (state !== 'running') throw new Error(`audio context is ${String(state)}`);
       // 播完即销毁：窗口只在提醒后存活音频时长 + 余量
       destroyTimer = setTimeout(() => {

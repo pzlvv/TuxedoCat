@@ -1,8 +1,8 @@
 /**
  * 自绘标题栏下拉菜单的 HTML
  *
- * 与唤醒快捷键对话框同构：主进程把 HTML 作为 data URL 载入一个 WebContentsView
- * （见 main.ts 的 ensureTitlebarMenuView），页面只负责显示。
+ * 与偏好设置窗口（`electron/preferenceDialogHtml.ts`）同构：主进程把 HTML 作为 data URL
+ * 载入一个 WebContentsView（见 main.ts 的 ensureTitlebarMenuView），页面只负责显示。
  *
  * 二级菜单（如「最近打开的工作目录」）用飞出面板实现，默认收起、悬停父项才展开：
  * - 父项右侧显示箭头；飞出面板绝对定位在主面板右侧（右侧放不下时改为左侧）

@@ -24,6 +24,8 @@
  *   "floatingPinned": true,
  *   "theme": "system",
  *   "shortcut": "Ctrl+Alt+X",
+ *   "soundEnabled": true,
+ *   "soundVolume": 0.8,
  *   "sidebarWidth": 340
  * }
  *
@@ -78,6 +80,16 @@ export interface WorkspaceState {
   theme?: 'system' | 'light' | 'dark';
   /** 唤醒快捷键（Electron accelerator 形式；宿主本地偏好，core 不读） */
   shortcut?: string;
+  /**
+   * 任务结束提醒是否播放提示音（宿主本地偏好，core 不读）。
+   * 缺失按启用处理：提示音默认开着，用户关掉才落 false。
+   */
+  soundEnabled?: boolean;
+  /**
+   * 提示音音量（0–1 的线性增益；宿主本地偏好，core 不读）。
+   * 缺失 / 非法时按满音量（1）处理。
+   */
+  soundVolume?: number;
   /** 侧栏宽度（DIP，拖拽手柄调整）；缺失 / 非法时用默认宽度（`SIDEBAR_DEFAULT_WIDTH`） */
   sidebarWidth?: number;
 }

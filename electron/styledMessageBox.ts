@@ -4,8 +4,8 @@
  *
  * 为什么自绘：主窗口是无边框深浅双主题的自绘 UI，原生消息框（系统标题栏 + 系统
  * 字体）与应用观感割裂。这里用与应用同一套配色（#1a1a1f / #6366f1，见
- * electron/sidebar/styles.css、electron/titlebar/styles.css）画一个小窗口，与唤醒
- * 快捷键对话框（shortcutDialogHtml.ts）同构：主进程把 HTML 作为 data URL 载入
+ * electron/sidebar/styles.css、electron/titlebar/styles.css）画一个小窗口，与偏好
+ * 设置窗口（preferenceDialogHtml.ts）同构：主进程把 HTML 作为 data URL 载入
  * 无边框 BrowserWindow，页面只负责显示。
  *
  * 页面回传不配 preload：按钮点击 / 键盘 Enter / Esc 在页面里改写 document.title
