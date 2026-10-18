@@ -2,8 +2,8 @@ use serde_json::{json, Value};
 
 use super::*;
 
-/// 与 Embedded 共用同一份对照表（`src/test/fixtures/compactParity.json` 的 `replay` 段）。
-const FIXTURE: &str = include_str!("../../src/test/fixtures/compactParity.json");
+/// 行为对照表数据在 `core-rs/fixtures/compact.json` 的 `replay` 段。
+const FIXTURE: &str = include_str!("../fixtures/compact.json");
 
 #[test]
 fn replay_message_data_parity() {
@@ -71,8 +71,8 @@ fn message_origin_falls_back_to_legacy_flags() {
     assert_eq!(message_origin(&json!({})), None);
 }
 
-/// `Edit` 的 `diffHunks` 分支：Embedded 预计算 hunk 数组，Standalone 有意改发
-/// `beforeContent` / `afterContent`（见 `docs/core/core-parity.md` 第 2.2 节），由 webview 回退计算。
+/// `Edit` 的 `diffHunks` 分支：有意改发
+/// `beforeContent` / `afterContent`，由 webview 回退计算。
 #[test]
 fn edit_tool_use_sends_before_and_after_instead_of_diff_hunks() {
     let messages = vec![
@@ -102,7 +102,7 @@ fn edit_tool_use_sends_before_and_after_instead_of_diff_hunks() {
     assert_eq!(out[0]["param"], "⚙️ Edit");
 }
 
-/// `Write` 的 `beforeContent` / `afterContent` 原样进 `toolArgs`（Embedded 同分支）。
+/// `Write` 的 `beforeContent` / `afterContent` 原样进 `toolArgs`。
 #[test]
 fn write_tool_use_keeps_before_and_after() {
     let messages = vec![json!({

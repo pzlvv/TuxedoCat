@@ -6,11 +6,10 @@ use serde_json::{json, Map, Value};
 use super::*;
 use crate::test_support::{serial, Sandbox};
 
-/// 与 Embedded 共用同一份对照表（`src/test/fixtures/skillsParity.json`）。
+/// 行为对照表（数据见 core-rs/fixtures/）。
 ///
-/// TS 侧断言「本表 == Embedded `frontmatterParser` / `variableResolver` /
-/// `formatSkillListing`」；这里断言「Rust `skills::*` == 本表」。
-const FIXTURE: &str = include_str!("../../src/test/fixtures/skillsParity.json");
+/// 断言「Rust `skills::*` == 本表」。
+const FIXTURE: &str = include_str!("../fixtures/skills.json");
 
 fn fixture() -> Value {
     serde_json::from_str(FIXTURE).expect("skillsParity.json 解析失败")
@@ -244,7 +243,7 @@ mod parity_tests {
     }
 }
 
-// ==================== 单测（不依赖 Embedded） ====================
+// ==================== 单测 ====================
 
 mod unit_tests {
     use super::*;

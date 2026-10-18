@@ -139,8 +139,8 @@ use super::*;
     // ==================== 请求 token 估算（对齐 tokenEstimate.ts） ====================
 
     #[test]
-    fn estimate_text_tokens_matches_embedded_table() {
-        // 期望值取自 Embedded `estimateTextTokens`（npm 侧用例 tokenEstimateParity 同表）
+    fn estimate_text_tokens_matches_table() {
+        // 期望值锁定 `estimateTextTokens` 的既定判定表
         let cases: &[(&str, u64)] = &[
             ("", 0),
             ("abc", 1),
@@ -160,8 +160,8 @@ use super::*;
     }
 
     #[test]
-    fn estimate_request_tokens_matches_embedded_table() {
-        // 期望值取自 Embedded `estimateRequestTokens`
+    fn estimate_request_tokens_matches_table() {
+        // 期望值锁定 `estimateRequestTokens` 的既定输出
         let value = estimate_request_tokens(
             Some(&serde_json::json!([{ "role": "user", "content": "你好" }])),
             "sys",
@@ -179,7 +179,7 @@ use super::*;
             1519
         );
 
-        // OpenAI 的 image_url 是嵌套对象（url 字段），Embedded 的 replacer 不替换，
+        // OpenAI 的 image_url 是嵌套对象（url 字段），replacer 不替换，
         // 因此按整段 base64 估长——这里保持同口径
         let openai_image = serde_json::json!([{
             "role": "user",
@@ -193,8 +193,7 @@ use super::*;
         assert_eq!(estimate_request_tokens(None, "abc", None), 1);
 
         // JSON 序列化走 JS `JSON.stringify` 口径：整数值浮点写 `1`（不是 `1.0`），
-        // 非 ASCII 长度按 UTF-16 code unit 计。期望值取自 Embedded
-        // `estimateRequestTokens`。
+        // 非 ASCII 长度按 UTF-16 code unit 计。期望值锁定 `estimateRequestTokens` 的既定输出。
         assert_eq!(
             estimate_request_tokens(
                 Some(&serde_json::json!([{ "role": "user", "content": "中文" }])),

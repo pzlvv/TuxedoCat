@@ -1,25 +1,25 @@
 /**
- * Standalone 装配下的启动接线（docs/core/standalone-core.md 第 3、5、7 节）：
- * - `CORE_KIND = standalone` 时 `bootstrapCore` 拉起 Core 进程并完成握手；
+ * 启动接线冒烟（docs/core/standalone-core.md 第 3、5、7 节）：
+ * - `bootstrapCore` 拉起 Core 进程并完成握手；
  * - 宿主环境经帧通道进入 Core；Core 侧的日志事件回到宿主日志出口；
- * - 自检快照报告 `coreKind = standalone` 与 UI 侧接线事实；
+ * - 自检快照报告 UI 侧接线事实；
  * - `shutdownCore()` 结束 Core 进程。
  *
- * 需要 Standalone Core 产物（先跑 `npm run build:core`）；产物缺失时跳过。
+ * 需要 Core 产物（先跑 `npm run build:core`）；产物缺失时跳过。
  * 运行方式：npm run test:all -- standalone-bootstrap
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { bootstrapCore, bootstrapSnapshot, shutdownCore } from '../host/bootstrapCore';
-import { requireEventBus } from '../core/AssistantEventBus';
-import { hasExtensionPath } from '../core/history/Config';
+import { requireEventBus } from '../shared/AssistantEventBus';
+import { hasExtensionPath } from '../shared/history/Config';
 import { ConversationManager } from '../host/ConversationManager';
 import type { SpinDesign } from '../host/SpinDesign';
-import type { ConversationMetadata } from '../core/history/Conversation';
-import type { SessionRuntimeState } from '../core/AssistantEventBus';
+import type { ConversationMetadata } from '../shared/history/Conversation';
+import type { SessionRuntimeState } from '../shared/AssistantEventBus';
 import { coreBinaryFileName, corePlatformDir } from '../host/standalone/coreBinary';
-import { CORE_ENV_VAR, CORE_RESOURCE_DIR } from '../config/project';
+import { CORE_RESOURCE_DIR } from '../config/project';
 import { createChecker, runTests } from './helpers/harness';
 import { createTestHost } from './helpers/fixtures';
 
@@ -65,7 +65,6 @@ async function run(): Promise<void> {
     return;
   }
 
-  process.env[CORE_ENV_VAR] = 'standalone';
 
   const logs: string[] = [];
   const host = createTestHost({
@@ -83,7 +82,6 @@ async function run(): Promise<void> {
   });
 
   const snapshot = bootstrapSnapshot();
-  check('snapshot.coreKind 为 standalone', snapshot.coreKind === 'standalone');
   check('snapshot.eventBusRegistered', snapshot.eventBusRegistered === true);
   check('snapshot.uiCreated', snapshot.uiCreated === true);
   check('snapshot.extensionPathProvided', snapshot.extensionPathProvided === true);

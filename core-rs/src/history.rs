@@ -1,6 +1,6 @@
 //! 会话数据：`<sessionId>.meta.json` 与 `<sessionId>.jsonl`。
 //!
-//! 落盘格式与 Embedded Core 一致：两套实现读写同一份目录。
+//! 落盘格式：Core 写入、宿主读取同一份目录。
 //! JSONL 每行一条 `StoredMessage`（`uuid` / `parentUuid` / `timestamp` / `message`），
 //! `tool_use_update` 记录按顺序回放覆盖已写入的 tool_use block。
 
@@ -38,7 +38,7 @@ pub fn metadata_path(session_id: &str, project: &str) -> Result<PathBuf, String>
     Ok(config::project_conversation_dir(project)?.join(session_file_name(session_id, ".meta.json")?))
 }
 
-/// 读取压缩归档（对齐 Embedded `loadCompactArchive`）：返回归档里的 `message` 对象。
+/// 读取压缩归档：返回归档里的 `message` 对象。
 ///
 /// 文件不存在或读取失败时返回空表（调用方据此判定「没有归档」）。
 pub fn load_compact_archive(session_id: &str, project: &str) -> Vec<Value> {
@@ -59,7 +59,7 @@ pub fn load_compact_archive(session_id: &str, project: &str) -> Vec<Value> {
         .collect()
 }
 
-/// 对话列表元数据（对齐 Embedded `loadConversationList`）。
+/// 对话列表元数据。
 ///
 /// - `workspace_path` 为 `Some` 时读该工作目录的列表；`None` 时用活动工作目录；
 ///   宿主未打开工作目录（活动目录为空）时返回**空表**而不是报错——异常会一路冒泡到
@@ -68,7 +68,7 @@ pub fn load_compact_archive(session_id: &str, project: &str) -> Vec<Value> {
 ///   跳过（清空过的会话保留条目）；单条损坏只跳过该条。
 /// - 按 `updatedAt ?? createdAt` 倒序排序。
 ///
-/// 与 Embedded 的差异：这里不做列表缓存。core 是磁盘的唯一写入方，
+/// 这里不做列表缓存：core 是磁盘的唯一写入方，
 /// 每次现读磁盘拿到的就是最新事实；宿主侧另有自己的快照缓存。
 pub fn load_conversation_list(workspace_path: Option<&str>) -> Vec<Value> {
     let project = match workspace_path.filter(|path| !path.is_empty()) {
@@ -91,7 +91,7 @@ pub fn load_conversation_list(workspace_path: Option<&str>) -> Vec<Value> {
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         // 工作区清单（workspace.meta.json）也以 .meta.json 结尾，但它不是会话，
-        // 混进列表会渲染成幽灵条目，必须排除（对齐 Embedded loadConversationList）。
+        // 混进列表会渲染成幽灵条目，必须排除。
         if !name.ends_with(".meta.json") || name == "workspace.meta.json" {
             continue;
         }
@@ -120,8 +120,7 @@ pub fn load_conversation_list(workspace_path: Option<&str>) -> Vec<Value> {
             .or_else(|| value.get("createdAt").and_then(Value::as_f64))
             .unwrap_or(0.0) as i64
     };
-    // 稳定排序：`updatedAt` 相同时保持目录读取顺序，与 Embedded 的 `Array.prototype.sort`
-    // （V8 起稳定）一致
+    // 稳定排序：`updatedAt` 相同时保持目录读取顺序
     conversations.sort_by(|a, b| sort_key(b).cmp(&sort_key(a)));
     conversations
 }
@@ -196,8 +195,7 @@ pub fn create_conversation(
     Ok(())
 }
 
-/// 预建子代理会话的 `meta.json`（+ 空 `.jsonl`），对齐 Embedded
-/// `createConversationMetadataSync`。
+/// 预建子代理会话的 `meta.json`（+ 空 `.jsonl`）。
 ///
 /// 子代理会话必须**先**把 `parentSessionId` / `role` / `model` 写进 `meta.json`：
 /// 否则对话列表 / 树形结构无法关联到主对话，点进子会话也拿不到 `parentSessionId`。
@@ -222,7 +220,7 @@ pub fn create_sub_agent_metadata(
     metadata.insert("messageCount".to_string(), json!(0));
     metadata.insert("parentSessionId".to_string(), json!(parent_session_id));
     metadata.insert("role".to_string(), json!(role));
-    // 对齐 Embedded 的 `...(modelRef?.model ? { model } : {})`：空值不写该键
+    // 空值不写该键
     if let Some(model) = model.filter(|value| !value.is_empty()) {
         metadata.insert("model".to_string(), json!(model));
     }
@@ -234,7 +232,7 @@ pub fn create_sub_agent_metadata(
 
 /// 删除会话（`meta.json` + `.jsonl` + 压缩归档 + `tool-results/<sid>__*`）。
 ///
-/// 对齐 Embedded `deleteConversation`：递归删除该会话及其**所有层级的子孙对话**
+/// 递归删除该会话及其**所有层级的子孙对话**
 /// （`parentSessionId` 链传递闭包，先删子孙再删自己，中途失败不留孤儿）。
 pub fn delete_conversation(session_id: &str, project: &str) -> Result<(), String> {
     let _guard = WRITE_LOCK.lock().unwrap();
@@ -268,7 +266,7 @@ fn conversation_closure_in(dir: &std::path::Path, session_id: &str) -> Vec<Strin
             let Some(name) = name.to_str() else {
                 continue;
             };
-            // 工作区清单不是会话，不进闭包输入（对齐 Embedded readProjectConversationMetadata）
+            // 工作区清单不是会话，不进闭包输入
             if name == "workspace.meta.json" {
                 continue;
             }
@@ -300,7 +298,7 @@ fn conversation_closure_in(dir: &std::path::Path, session_id: &str) -> Vec<Strin
             }
         }
     }
-    // 先删子孙再删自己（对齐 Embedded 的遍历顺序）
+    // 先删子孙再删自己
     affected.retain(|id| id != session_id);
     affected.push(session_id.to_string());
     affected
@@ -319,7 +317,7 @@ fn delete_single_conversation(dir: &std::path::Path, session_id: &str) -> Result
     Ok(())
 }
 
-/// 删除 `tool-results/<sessionId>__*`（对齐 Embedded 的 `deleteSessionToolResults`）。
+/// 删除 `tool-results/<sessionId>__*`。
 ///
 /// 大工具结果按 `<sessionId>__<taskId>.txt` 命名（见 `tools::persist_large_output`），
 /// 会话删除后这些文件不再有任何引用方，必须一并清掉，否则项目对话目录会持续膨胀。
@@ -397,7 +395,7 @@ pub fn clear_conversation_space(dir_name: &str) -> Result<(u64, u64), String> {
         let is_tool_results = name == "tool-results";
         let is_jsonl = path.is_file() && name.ends_with(".jsonl");
         // workspace.meta.json 也以 .meta.json 结尾，但它是空间级配置（保留，
-        // 与 Embedded `clearConversationSpace` 同口径；对齐 conversation_spaces 的计数口径）
+        // 对齐 conversation_spaces 的计数口径）
         let is_meta =
             path.is_file() && name.ends_with(".meta.json") && name != "workspace.meta.json";
         if !is_tool_results && !is_jsonl && !is_meta {
@@ -422,7 +420,7 @@ pub fn clear_conversation_space(dir_name: &str) -> Result<(u64, u64), String> {
 
 /// 删除整个对话空间目录（连 `workspace.meta.json` 一起）。
 ///
-/// 对齐 Embedded `removeConversationSpace`：项目目录已不存在时空间级配置再无意义，
+/// 项目目录已不存在时空间级配置再无意义，
 /// 只有把目录整个删掉，列表才不会再显示它。删除前先统计（回执要带删除量）。
 pub fn remove_conversation_space(dir_name: &str) -> Result<(u64, u64), String> {
     let safe_base = std::path::Path::new(dir_name)
@@ -455,7 +453,7 @@ pub fn append_message(
         .get("uuid")
         .and_then(Value::as_str)
         .map(|value| value.to_string())
-        // 对齐 Embedded：`${sessionId}_${Date.now()}_${random}`（`randomId` 形态）
+        // 记录形态：`${sessionId}_${Date.now()}_${random}`（`randomId` 形态）
         .unwrap_or_else(|| crate::util::unique_id(session_id));
     let record = json!({
         "uuid": uuid,
@@ -467,8 +465,7 @@ pub fn append_message(
     Ok(uuid)
 }
 
-/// 追加一条 `tool_use_update` 记录（对齐 Embedded 的 `updateToolUseInput` /
-/// `updateToolUseMeta`）：加载历史时按顺序回放到对应的 `tool_use` block 上。
+/// 追加一条 `tool_use_update` 记录：加载历史时按顺序回放到对应的 `tool_use` block 上。
 ///
 /// 典型用途：Provider 把整个工具入参 double-encode 成字符串，内存里已解包，
 /// 但落盘的 assistant 消息仍是字符串；追加一条记录让「恢复历史后」也是对象。
@@ -490,7 +487,7 @@ pub fn append_tool_use_update(
     append_record(session_id, project, &Value::Object(record))
 }
 
-/// 整文件重写会话消息（对齐 Embedded `replaceConversationMessages`）。
+/// 整文件重写会话消息。
 ///
 /// 压缩 / 清空用：按数组顺序重新分配 `uuid` / `parentUuid` 链，并同步
 /// `meta.json` 的 `messageCount`（空数组时额外打 `clearedAt`）。
@@ -563,7 +560,7 @@ pub fn replace_messages(session_id: &str, project: &str, messages: &[Value]) -> 
     Ok(())
 }
 
-/// 保存压缩归档（对齐 Embedded `saveCompactArchive`）：被摘要掉的消息 + 新摘要。
+/// 保存压缩归档：被摘要掉的消息 + 新摘要。
 ///
 /// 保留区（最近 N 条）**不**进归档——它们仍在会话文件里，展开时与归档一起重放。
 pub fn save_compact_archive(
@@ -628,9 +625,9 @@ pub fn load_messages(session_id: &str, project: &str) -> Vec<Value> {
     parse_messages(&text)
 }
 
-/// 解析 JSONL 文本并按 `parentUuid` 链重建消息顺序（对齐 Embedded `loadConversation`）。
+/// 解析 JSONL 文本并按 `parentUuid` 链重建消息顺序。
 ///
-/// 逐项对齐 Embedded 的口径：
+/// 口径：
 /// - 单条损坏行 / 缺 `uuid` 的行只跳过，不影响整体加载；
 /// - 重复 `uuid` 后写覆盖先写，但保留首次出现的顺序位置（`Map.set` 语义）；
 /// - `tool_use_update` 按文件顺序回放到对应的 tool_use block；
@@ -651,9 +648,8 @@ pub fn parse_messages(text: &str) -> Vec<Value> {
     // 追加式 tool_use 更新记录，按文件顺序回放
     let mut updates: Vec<(String, Value)> = Vec::new();
     for line in text.lines() {
-        // 对齐 Embedded `content.split('\n').filter(line => line.trim())`：
         // 过滤口径是 **JS** 空白（含 U+FEFF、不含 U+0085），且过滤后仍按**原始行**
-        // 解析（Embedded 的 `JSON.parse(line)` 不 trim；serde_json 与 JSON.parse
+        // 解析（行本身不 trim；serde_json 与 JSON.parse
         // 都接受 ASCII 空白，但对 U+FEFF / U+0085 都会拒绝）。
         if util::js_trim(line).is_empty() {
             continue;
@@ -671,7 +667,7 @@ pub fn parse_messages(text: &str) -> Vec<Value> {
             updates.push((tool_use_id, value));
             continue;
         }
-        // 与 Embedded 一致：没有字符串 uuid 的记录直接忽略
+        // 没有字符串 uuid 的记录直接忽略
         let Some(uuid) = value.get("uuid").and_then(Value::as_str) else {
             continue;
         };
@@ -813,7 +809,7 @@ fn apply_tool_use_updates(messages: &mut [Value], updates: &[(String, Value)]) {
                     block["input"] = input.clone();
                 }
                 if let Some(meta) = update.get("meta").and_then(Value::as_object) {
-                    // 与 Embedded 一致：合并进已有 _meta（Object.assign），不整体替换，
+                    // 合并进已有 _meta（Object.assign 语义），不整体替换，
                     // 否则只带一个字段的更新会抹掉 toolCallTimestamp 等其它字段。
                     let mut merged = block
                         .get("_meta")
@@ -830,16 +826,16 @@ fn apply_tool_use_updates(messages: &mut [Value], updates: &[(String, Value)]) {
     }
 }
 
-/// 确保所有 `tool_use` 都有对应的 `tool_result`（对齐 Embedded `ensureToolResults`）。
+/// 确保所有 `tool_use` 都有对应的 `tool_result`。
 ///
 /// 处理进程崩溃等异常：assistant 消息（含 `tool_use`）已落盘，但 tool_result 未生成。
 /// 恢复时给缺失的 `tool_use` 补一条「会话中断」的取消结果，否则下一轮 Anthropic
 /// 请求会因 `tool_use ids were found without tool_result blocks` 直接 400。
 ///
-/// 只在**内存**里补，不落盘（与 Embedded 一致）：下次加载会重新生成。
+/// 只在**内存**里补，不落盘：下次加载会重新生成。
 pub fn ensure_tool_results(messages: &mut Vec<Value>) {
     // 收集所有 tool_use，记录所属 assistant 消息的 uuid（恢复消息的 parentUuid）。
-    // 与 Embedded 的 `Map` 口径一致：**同一个 id 只补一条**，重复出现时后写的
+    // **同一个 id 只补一条**，重复出现时后写的
     // name / parentUuid 覆盖先写的，但顺序仍按第一次出现的位置（Map 迭代顺序）。
     let mut order: Vec<String> = Vec::new();
     let mut info: std::collections::HashMap<String, (String, Option<String>)> =
@@ -935,7 +931,7 @@ pub fn ensure_tool_results(messages: &mut Vec<Value>) {
 
 /// 追加消息后刷新 `meta.json` 的 `messageCount`（并在用户主动发消息时刷新 `updatedAt`）。
 ///
-/// 对齐 Embedded `updateMetadataForNewMessage`：`updatedAt` **只**由用户主动发送的消息
+/// `updatedAt` **只**由用户主动发送的消息
 /// 刷新（`_userInitiated`），后台自动消息（reminder / 子代理回复等）不把旧会话顶到列表最前。
 ///
 /// 同时按 `updateMetadataForNewMessage` 的 `if (!metadata.context?.promptMode)` 分支
@@ -1105,10 +1101,10 @@ fn js_template_text(value: &Value) -> String {
 
 /// 统计消息数（用于 `meta.json` 的 `messageCount`）。
 ///
-/// 口径对齐 Embedded：`loadConversation` 把 `tool_use_update` 记录只当更新回放、
+/// 口径：`tool_use_update` 记录只当更新回放、
 /// **不**计入 `messages`（因此 `metadata.messageCount = messages.length` 也不含它），
 /// 而 `appendMessage` 的 `messageCount += 1` 同样只数真实消息。若把它算进来，
-/// 每修一次 double-encode 的 tool 入参就会让 `messageCount` 比 Embedded 多 1。
+/// 每修一次 double-encode 的 tool 入参就会让 `messageCount` 多 1。
 pub fn count_messages(messages: &[Value]) -> usize {
     messages
         .iter()
@@ -1221,7 +1217,7 @@ pub fn update_context(
 // ==================== 对话空间统计 ====================
 
 /// 对话空间的项目路径：优先读目录里的 `workspace.meta.json`，
-/// 读不到时退回目录名的百分号解码（对齐 Embedded `readWorkspacePath`）。
+/// 读不到时退回目录名的百分号解码。
 fn read_workspace_path(dir_path: &std::path::Path, dir_name: &str) -> String {
     if let Ok(content) = util::read_to_string_lossy(&dir_path.join("workspace.meta.json")) {
         if let Ok(settings) = serde_json::from_str::<Value>(&content) {
@@ -1238,7 +1234,7 @@ fn read_workspace_path(dir_path: &std::path::Path, dir_name: &str) -> String {
 
 /// 对话空间内的会话数（`<sessionId>.meta.json`；空间清单不算会话）
 ///
-/// 对齐 Embedded `countConversations`：`workspace.meta.json` 是空间级清单，
+/// `workspace.meta.json` 是空间级清单，
 /// 不是会话。
 fn count_conversations(dir_path: &std::path::Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir_path) else {
@@ -1253,7 +1249,7 @@ fn count_conversations(dir_path: &std::path::Path) -> u64 {
         .count() as u64
 }
 
-/// 统计全部对话空间（对齐 Embedded `getConversationSpaces`）：
+/// 统计全部对话空间：
 /// 每个空间目录的字节数 / 文件数 / 会话数 + 项目路径，按字节数降序。
 pub fn conversation_spaces() -> Vec<Value> {
     let Ok(root) = config::conversations_root() else {
@@ -1277,7 +1273,7 @@ pub fn conversation_spaces() -> Vec<Value> {
         let project_path = read_workspace_path(&dir_path, &dir_name);
         let conversation_count = count_conversations(&dir_path);
         // 项目目录已不存在（project_path 为空时无从判定，恒 false）：
-        // 对齐 Embedded `getConversationSpaces`，事实在 core 侧核实
+        // 事实在 core 侧核实
         let workspace_missing =
             !project_path.is_empty() && !std::path::Path::new(&project_path).exists();
         spaces.push((
@@ -1292,7 +1288,7 @@ pub fn conversation_spaces() -> Vec<Value> {
             }),
         ));
     }
-    // 与 Embedded 相同：按空间大小降序（数值相等时保持目录读取顺序）
+    // 按空间大小降序（数值相等时保持目录读取顺序）
     spaces.sort_by(|a, b| b.0.cmp(&a.0));
     spaces.into_iter().map(|(_, value)| value).collect()
 }

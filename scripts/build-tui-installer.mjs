@@ -187,7 +187,7 @@ function buildInstaller(target, strict) {
       }
       console.error(
         `[build-tui-installer] 跳过 ${target.dir} 安装器：Core 交叉构建失败` +
-        `（Windows ARM64 的 ring 需要 zig 充当 clang，见 docs/core/standalone-core.md 第 4.3 节；` +
+        `（Windows ARM64 的 ring 需要 zig 充当 clang，见 docs/core/standalone-core.md 第 3.3 节；` +
         `装好后重跑，或先产出 core 产物再回来）。`,
       );
       return false;
@@ -213,7 +213,7 @@ function buildInstaller(target, strict) {
   };
   run('cargo', cargoArgs, manifestDir, env);
 
-  // 4. 复制产物（release/<pkg>.exe / release/embedded 变体随 releaseDir 分流）
+  // 4. 复制产物（release/<pkg>.exe）
   const built = join(manifestDir, 'target', target.triple, 'release', `${BINARY_NAME}${target.ext}`);
   if (!existsSync(built)) {
     console.error(`[build-tui-installer] 未找到构建产物：${built}`);
@@ -228,10 +228,6 @@ function buildInstaller(target, strict) {
 }
 
 function main() {
-  if (project.coreKind === 'embedded') {
-    console.error(`[build-tui-installer] ${project.coreKindEnv}=embedded：TUI 只随 standalone Core 分发，embedded 变体不生成安装器。`);
-    process.exit(2);
-  }
   if (!existsSync(manifestPath)) {
     console.error(`找不到安装器 Rust 包：${manifestPath}`);
     process.exit(1);

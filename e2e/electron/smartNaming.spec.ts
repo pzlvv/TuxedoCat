@@ -131,7 +131,7 @@ test('US-21 悬浮窗 webview 智能命名：经总线到 standalone Core 生成
   // 标题刷新走磁盘事实：daemon 落盘后 conversationsData 推回 webview
   await expect(dropdown.getByText(MOCK_TITLE)).toBeVisible({ timeout: 30_000 });
 
-  // 命名请求由 Rust daemon 发出（同一 mock LLM），形状与 Embedded 一致
+  // 命名请求由 Rust daemon 发出（同一 mock LLM）
   const requests = namingRequests();
   expect(requests).toHaveLength(1);
   expect(requests[0].body.tools ?? []).toHaveLength(0);

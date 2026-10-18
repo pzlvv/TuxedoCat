@@ -15,7 +15,7 @@
  * 这里对相邻两次全量推送按 sessionId 差分出事件，不引入新的事件流。
  */
 
-import { sessionBusyLevel } from '../src/core/sessionRuntime.js';
+import { sessionBusyLevel } from '../src/shared/sessionRuntime.js';
 
 /** 单个会话的忙闲级别（与托盘状态点同一套取值，派生收敛在 core 的 sessionBusyLevel） */
 export type SessionLevel = 'idle' | 'running' | 'waiting';

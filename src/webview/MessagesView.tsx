@@ -19,7 +19,7 @@ import { profileLog } from './debug';
 import { t } from './i18n';
 import { StreamStatsLabel } from './StreamStatsLabel';
 import { uiFontSizePx } from './fontSize';
-import { isAutoMessageOrigin as isAutoOrigin } from '../core/utils/messageOrigin';
+import { isAutoMessageOrigin as isAutoOrigin } from '../shared/utils/messageOrigin';
 
 /**
  * Pre-computed stable tool component map — created once outside the component

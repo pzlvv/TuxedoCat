@@ -1,5 +1,5 @@
 /**
- * Standalone Core 产物的定位（见 docs/core/standalone-core.md 第 4.1 节）。
+ * Standalone Core 产物的定位（见 docs/core/standalone-core.md 第 3.1 节）。
  *
  * 产物目录命名与 `resources/ripgrep/` 一致：`<arch>-<platform>`。
  * 平台矩阵里的每个组合都有一个目录；当前只有 Windows x64 有实际产物。
@@ -51,7 +51,7 @@ export const CORE_RIPGREP_DIR = 'ripgrep';
 /**
  * 构建指纹文件名（与可执行文件同级，`build-core.mjs` 落位）。
  *
- * 指纹只由源码内容与编译器身份决定（docs/core/standalone-core.md 第 4.4 节）：部署按它
+ * 指纹只由源码内容与编译器身份决定（docs/core/standalone-core.md 第 3.4 节）：部署按它
  * 落位 `share/<产品名>/<指纹>/` 槽位（见 `coreDeployDirPath`），多版本 Core 在同一台
  * 机器上各占一个槽位互不干扰；Electron / vsix 打包把它与产物一起携带，宿主运行时读取。
  */

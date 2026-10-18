@@ -10,14 +10,14 @@
  *
  * 规则：非激活对话在最后一次活动后空闲超过 SESSION_IDLE_CLOSE_MS（2 小时）即关闭，
  * 每 SESSION_IDLE_CHECK_INTERVAL_MS（1 分钟）巡检一次。「是否空闲」由 core 的
- * 只读查询 isSessionIdle 判定，判定失败时保守视为「非空闲」。
+ 会话忙闲读 core 推送的运行时状态快照。
  */
 
-import type { ConversationMetadata } from './core/history/Conversation.js';
-import type { SessionRuntimeState } from './core/AssistantEventBus.js';
+import type { ConversationMetadata } from './shared/history/Conversation.js';
+import type { SessionRuntimeState } from './shared/AssistantEventBus.js';
 import type { UIHost } from './host/UIHost.js';
 import { ConversationManager } from './host/ConversationManager.js';
-import { isSessionIdle, isTemporarySessionId } from './core/sessionResources.js';
+import { isTemporarySessionId } from './shared/sessionResources.js';
 
 /** 非激活对话空闲多久后自动关闭（2 小时） */
 export const SESSION_IDLE_CLOSE_MS = 2 * 60 * 60 * 1000;
@@ -206,10 +206,11 @@ export class SingleWebViewConversationManager extends ConversationManager {
     }
   }
 
-  /** 会话是否仍在工作（core 只读事实查询）；判定失败时保守视为「非空闲」 */
+  /** 会话是否仍在工作（core 推送的运行时状态快照里该会话非 idle 即视为忙） */
   private async isBusy(sessionId: string): Promise<boolean> {
     try {
-      return !(await isSessionIdle(sessionId));
+      const state = this.getSessionStatesSnapshot().find((s) => s.sessionId === sessionId);
+      return state ? !state.idle : false;
     } catch {
       return true;
     }

@@ -36,7 +36,7 @@ fn decode_project_dir_name_round_trips_percent_encoding() {
 
 #[test]
 fn ensure_project_conversation_dir_writes_meta_once_and_backfills() {
-    // 对齐 Embedded `ensureProjectConversationDir`：Core 自己写项目清单
+    // Core 自己写项目清单
     // `workspace.meta.json`（每个目录一次，`ensuredProjectDirs` 缓存），宿主不参与写盘；
     // `ensureConfigDirs` 还会为已存在的目录补写一次。
     // 注：`Sandbox::new` 内部已持有 `serial()` 锁，这里不能再取（不可重入）。
@@ -240,7 +240,7 @@ fn resolve_provider_honours_overrides_and_falls_back_to_models_list() {
 #[test]
 fn resolve_provider_reports_missing_configuration() {
     let sandbox = Sandbox::new("config-provider-missing");
-    // 「没有可用 provider」与「provider 没有 apiKey」在 Embedded 里落到同一条文案：
+    // 「没有可用 provider」与「provider 没有 apiKey」落到同一条文案：
     // `getConfig` 在没有有效 activeProvider 时回退到空 apiKey 的兜底配置，
     // 最终抛的都是「API Key 未配置」（逐字对齐 `llm/config.ts`）。
     let api_key_message = format!(
@@ -253,7 +253,7 @@ fn resolve_provider_reports_missing_configuration() {
     sandbox.write_settings(json!({ "llm": { "activeProvider": "ghost" } }));
     assert_eq!(resolve_provider(None, None).unwrap_err(), api_key_message);
 
-    // activeProvider 指向的 provider 缺 baseURL：Embedded 视作「没有有效 provider」
+    // activeProvider 指向的 provider 缺 baseURL：视作「没有有效 provider」
     sandbox.write_settings(json!({ "llm": { "activeProvider": "p", "providers": { "p": {} } } }));
     assert_eq!(resolve_provider(None, None).unwrap_err(), api_key_message);
 
@@ -267,7 +267,7 @@ fn resolve_provider_reports_missing_configuration() {
         "provider \"ghost\" 不存在或未配置 baseURL"
     );
 
-    // provider 有 baseURL 但没配模型：Embedded 允许 `model` 为空串（由服务端报错），
+    // provider 有 baseURL 但没配模型：`model` 允许为空串（由服务端报错），
     // 这里同样不单独报「没有模型」，最终仍落到 API Key 文案（apiKey 未配置）。
     sandbox.write_settings(json!({ "llm": { "activeProvider": "p",
         "providers": { "p": { "baseURL": "https://x" } } } }));
@@ -281,7 +281,7 @@ fn resolve_provider_reports_missing_configuration() {
 /// provider 有 baseURL 与 apiKey、但没有任何模型来源时，模型解析为空串且**不**报错
 /// （对齐 `getConfig`：`llm.model || provider.defaultModel || provider.models[0] || ''`）。
 #[test]
-fn resolve_provider_allows_an_empty_model_like_embedded() {
+fn resolve_provider_allows_an_empty_model() {
     let sandbox = Sandbox::new("config-provider-empty-model");
     sandbox.write_settings(json!({ "llm": { "activeProvider": "p",
         "providers": { "p": { "baseURL": "https://x", "apiKey": "sk" } } } }));
@@ -419,7 +419,7 @@ fn write_workspace_meta_is_idempotent_and_readable() {
         None
     );
 
-    // 文件内容不是对象（数组）时按空对象重建（对齐 Embedded 的 `!Array.isArray` 判定）
+    // 文件内容不是对象（数组）时按空对象重建
     std::fs::write(&path, "[1,2]").unwrap();
     write_workspace_meta(&dir, "y").unwrap();
     assert_eq!(

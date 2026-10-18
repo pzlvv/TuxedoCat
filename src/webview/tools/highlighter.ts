@@ -1,7 +1,7 @@
 import type { Highlighter } from 'shiki';
 import { getPreloadedHighlightLanguages } from '../webviewEnv';
 import { profileLog } from '../debug';
-import { sharedInFlight } from '../../core/utils/asyncUtils';
+import { sharedInFlight } from '../../shared/utils/asyncUtils';
 
 /**
  * 全局共享的 Shiki highlighter 单例（按需加载语言）。

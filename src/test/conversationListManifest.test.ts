@@ -15,13 +15,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createChecker, runTests } from './helpers/harness';
 import { makeTempDir, makeTestBus } from './helpers/fixtures';
-import { setGlobalEventBus } from '../core/AssistantEventBus';
-import { getConversationDir, setSessionWorkspace } from '../core/history/Config';
+import { setGlobalEventBus } from '../shared/AssistantEventBus';
+import { getConversationDir, setSessionWorkspace } from '../shared/history/Config';
 import {
   deleteConversation,
   loadConversationList,
   readProjectConversationMetadata,
-} from '../core/history/Conversation';
+} from '../shared/history/Conversation';
 
 const home = makeTempDir('conversation-list-manifest-home');
 process.env.USERPROFILE = home;

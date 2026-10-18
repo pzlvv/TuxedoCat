@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-18
 ---
 
 # 规格：分层与依赖规则
@@ -13,17 +13,22 @@ last_reviewed: 2026-10-11
 依赖方向（代码评审必须检查）：
 
 ```
-core/  ←  host/  ←  宿主实现（VSCode* / Electron*）
-         ↑
-   AssistantEventBus 是 core 与 UI 之间唯一的边
+src/shared/（TS 共享叶子层：总线契约 / 类型 / 会话落盘格式 / 纯工具）
+   ←  src/host/  ←  宿主实现（VSCode* / Electron*）
+   ←  src/webview/（WebView UI）
+core-rs/（Core，Rust 独立进程）⟷ host/webview 只经 AssistantEventBus 帧通道
 ```
+
+`AssistantEventBus`（`src/shared/AssistantEventBus.ts`）是 Core 与 UI 之间唯一的边：
+Core 在独立进程内实现 core 侧契约，帧通道把它映射为宿主进程内的总线对象。
 
 ## 2. 规则清单
 
-1. `core/` 不得 import `host/` 的具体实现，只能 import `AssistantEventBus`、事件类型与宿主契约类型。
-   core 内部模块之间通过 `requireEventBus()` 发送事件，不得直接调用 UI 的任何方法。
-2. `core/` 不得定义「UI 侧处理器契约」类型。UI 需要处理哪些事件，由
-   `core/AssistantEventBus.ts` 中的 `CoreEventHandlers` 映射类型表达。
+1. `src/shared/` 是共享叶子层：不得 import `host/` 的实现与任何宿主 API
+   （`vscode` / `electron`），webview 与 host 都可以依赖它。事件契约（`CoreEvent` /
+   `CoreRequest` / `UiEvent`）与处理器映射类型（`CoreEventHandlers` 等）只在这一层定义。
+2. Core（`core-rs/`）不 import TS 侧任何代码；两侧只经帧通道上的事件词汇表通信，
+   载荷字段名逐项一致（`camelCase` 原样）。
 3. `host/` 不得 import `vscode` / `electron`。当前 `src/host/**` 中无任何此类 import。
 4. `host/ui/*` 不得 import 任何宿主 API；宿主差异通过 `UIHost` 与 `WebViewUiPort` 注入。
 5. 共享代码中不得出现 `host.kind === '...'` 形式的宿主嗅探；宿主差异须以能力字段或独立方法表达。
@@ -36,10 +41,10 @@ core/  ←  host/  ←  宿主实现（VSCode* / Electron*）
 8. **不同来源的数据走不同的流**，不得以附加标记的方式合并。磁盘元数据（低频）与运行时状态
    （高频）各自拥有独立的事件与分发方法；`loaded` 这类宿主界面状态由其 owner 单独推送。
    判据：若两个字段的变化频率相差一个数量级，或其 owner 不同，则不应出现在同一条流中。
-9. `host/` 与宿主实现可以 **import core 的只读函数与类型**（如 `loadConversationList`、
-   `hasSettingsSnapshot`、`ConversationMetadata`），这属于「宿主消费 core 的事实」，
-   与「core 不得 import host」共同构成单向依赖：`宿主实现 → host/ → core/`。
-   但 host 侧**不得调用 core 的状态变更函数**；改状态的请求一律翻译为 `UiEvent` 走总线。
+9. `host/` 与宿主实现可以 **import `src/shared/` 的只读函数与类型**（如
+   `loadConversationList`、`ConversationMetadata`），这属于「宿主消费 core 侧事实的
+   读取库」。但 host 侧**不得绕过总线改 Core 拥有的状态**；改状态的请求一律翻译为
+   `UiEvent` 走总线。
   全局配置文件 `~/<CONFIG_DIR_NAME>/settings.json` 是宿主资源：**读与写都在宿主**，
   core 不感知它的路径，只消费经 `UiEvent.hostEnvironmentProvided` 下发的配置快照
   （[docs/architecture/core-ui-separation.md 第 4 节](core-ui-separation.md#4-配置归-ui)）。写入口唯一：`SettingsStore.updateSettings`；
@@ -51,16 +56,15 @@ core/  ←  host/  ←  宿主实现（VSCode* / Electron*）
 
 ### 2.1 规则 9 的审计结论
 
-对 `src/host/**` 与宿主实现层的 core import 逐项归类：
+对 `src/host/**` 与宿主实现层的 `src/shared/` import 逐项归类：
 
 | 类别 | 判据 | 落点 |
 | --- | --- | --- |
 | 纯函数 / 类型 / 常量 | 无副作用、不读进程内状态 | `conversationPayload` / `llmConfigSave` / `settingsRead` / `webviewMessageHandler` 的解析与拼装函数、各模块的类型与常量 |
-| 受控事实入口 | 按 `CORE_KIND` 分派：Embedded 直读、Standalone 走 `UiRequest` | `src/host/coreFacts.ts`（对话列表 / 智能命名 / 余额 / 归档展开 / MCP 列表 / 对话空间 / 会话加载 / 技能列表 / 挂起持久化） |
-| Embedded-only 装配 | `CORE_KIND === 'embedded'` 分支内；Standalone 下 core 在进程外自行完成 | `bootstrapCore` 的 `initializeCoreEvents` / `ensureConfigDirs` / `getMCPHost().prune`；`webviewMessageHandler` 的 `restoreConversationEngine` |
-| UI 侧共享队列 | 状态归 UI，不属于 core 事实 | `src/core/UserChoiceQueue.ts`（宿主侧待答队列；Standalone 下同样由 UI 使用） |
+| 受控事实入口 | 一律走 `UiRequest`（事实在 Core 进程内） | `src/host/coreFacts.ts`（对话列表 / 智能命名 / 余额 / 归档展开 / MCP 列表 / 对话空间 / 会话加载 / 技能列表 / 挂起持久化） |
+| UI 侧共享队列 | 状态归 UI，不属于 core 事实 | `src/shared/UserChoiceQueue.ts`（宿主侧待答队列） |
 
-仍保留的直接读取（Standalone 下与本机 Core 共用同一份磁盘，远程工作区需要迁到
+仍保留的直接读取（与本机 Core 共用同一份磁盘，远程工作区需要迁到
 `UiRequest`，见 [docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)的例外表）：
 
 - 会话工作目录索引：宿主侧另存一份 `sessionId → workspacePath`

@@ -8,9 +8,9 @@
  *
  * 宿主差异通过 extraFields 注入（如 WebViewUI 传入的 activityPhase）。
  */
-import { buildEditDiffHunks } from '../core/utils/editDiff.js';
-import type { ModelRef } from '../core/llm/modelRef.js';
-import { getConversationModelRef } from '../core/history/Conversation.js';
+import { buildEditDiffHunks } from '../shared/utils/editDiff.js';
+import type { ModelRef } from '../shared/llm/modelRef.js';
+import { getConversationModelRef } from '../shared/history/Conversation.js';
 import type { HostToWebviewMessage, HostToWebviewMessageWithoutSessionId } from './webviewMessages.js';
 
 /** conversationLoaded 的 wire 消息形状（含 sessionId） */

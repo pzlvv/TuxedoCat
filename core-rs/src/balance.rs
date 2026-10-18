@@ -1,4 +1,4 @@
-//! DeepSeek 账户余额查询（对齐 Embedded `src/core/utils/balance.ts`）。
+//! DeepSeek 账户余额查询。
 //!
 //! 服务地址固定为 DeepSeek 官方（`DEEPSEEK_BASE_URL`），Key 取 `settings.json` 里
 //! 「hostname 是 `api.deepseek.com`」那个 provider 的 `apiKey`——**与 active provider

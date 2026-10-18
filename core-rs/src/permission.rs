@@ -92,7 +92,6 @@ const DESTRUCTIVE_COMMANDS: &[&str] = &["dd", "mkfs", "format", "fdisk", "shred"
 
 /// 按 `;` `&&` `||` `|` 切分复合命令；引号内与 `$(...)` 内的分隔符不切。
 ///
-/// 与 Embedded 的 `splitBySeparators`（`tools/bash/TimeoutPolicy.ts`）逐分支对齐：
 /// **换行不是分隔符**（`echo a\nrm -rf x` 只有一段，判定只看首个词 `echo`）。
 /// 这里刻意保留该行为，两套实现必须给出同一个权限决策。
 pub fn split_by_separators(command: &str) -> Vec<String> {
@@ -103,7 +102,7 @@ pub fn split_by_separators(command: &str) -> Vec<String> {
     let mut i = 0;
 
     fn push_current(result: &mut Vec<String>, current: &mut String) {
-        // 对齐 Embedded `current.trim()`：JS `String.prototype.trim` 去的是
+        // JS `String.prototype.trim` 去的是
         // WhiteSpace + LineTerminator（含 U+FEFF、不含 U+0085），与 Rust
         // `str::trim`（Unicode White_Space，含 U+0085、不含 U+FEFF）不同。
         let trimmed = js_trim(current);
@@ -200,7 +199,7 @@ pub fn split_by_separators(command: &str) -> Vec<String> {
 /// 按 JS 正则 `/\s+/` 分词：只在 ECMAScript 空白集合上切分，连续空白视为一个分隔符。
 ///
 /// 不能用 Rust 的 `split_whitespace()`（Unicode White_Space）：它在 U+0085 上切分
-/// 却不认 U+FEFF，而 JS `\s` 恰好相反。权限判定与 Embedded 共用同一套分词口径，
+/// 却不认 U+FEFF，而 JS `\s` 恰好相反。权限判定用同一套 JS 分词口径，
 /// 否则 `git<U+0085>status` / `git<U+FEFF>status` 这类命令会得出不同决策。
 fn js_split_whitespace(segment: &str) -> Vec<&str> {
     segment
@@ -254,7 +253,7 @@ pub fn is_destructive_command(command: &str) -> bool {
 
 // ==================== 决策 ====================
 
-/// 工具自身 `checkPermissions` 的结果（对齐 Embedded 各工具返回的 `PermissionResult`）。
+/// 工具自身 `checkPermissions` 的结果。
 struct CheckResult {
     decision: Decision,
     /// `ask` / `deny` 的提示文案（`allow` 时为空串）
@@ -426,10 +425,10 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
         "AskUserQuestion" => CheckResult::allow_plain(),
         // `SkillTool.checkPermissions` 直接放行（技能只注入 prompt，无破坏性），
         // 且不返回 `updatedInput`。落到 `_ => ask` 会让 manual 模式下的 `/skill`
-        // 与模型主动调用 Skill 都弹出确认框，与 Embedded 不一致。
+        // 与模型主动调用 Skill 都弹出确认框。
         "Skill" => CheckResult::allow_plain(),
         "Bash" => {
-            // 与 Embedded 的 `Bash.checkPermissions` 一致：只有缺失 / 非字符串 / 空串才非法；
+            // 只有缺失 / 非字符串 / 空串才非法；
             // 纯空白串是合法输入（会走到 ask）。
             let command = match args.get("command").and_then(Value::as_str) {
                 Some(value) if !value.is_empty() => value.to_string(),
@@ -447,7 +446,7 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
                 ask_choices(tool_name, args, cwd),
             )
         }
-        // 与 Embedded 的 `Write.checkPermissions` 一致：先校验入参，非法直接 deny
+        // 先校验入参，非法直接 deny
         // （deny 不被 auto / risk 加工，永远弹不出确认框）。
         "Write" => {
             let file_path = match args.get("file_path").and_then(Value::as_str) {
@@ -462,11 +461,10 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
             if args.get("content").map(Value::is_null).unwrap_or(true) {
                 return CheckResult::deny("Invalid content: content is required".to_string());
             }
-            // 对齐 Embedded：文件存在时读旧内容（overwrite），ENOENT 时 beforeContent = null
+            // 文件存在时读旧内容（overwrite），ENOENT 时 beforeContent = null
             // （create）；其它读取错误走 `权限检查失败` 的兜底 deny。
             //
-            // `afterContent` 原样保留 `args.content` 的类型：Embedded 的
-            // `Write.checkPermissions` 返回的就是 `input.content`（不 stringify），
+            // `afterContent` 原样保留 `args.content` 的类型（不 stringify）：
             // 数字 / 布尔等非字符串入参也会原样进 permResult；displayArgs 侧才用
             // `String(...)` 文本化（见 `diff_texts`）。
             let content_value = args.get("content").cloned().unwrap_or(Value::Null);
@@ -486,7 +484,7 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
                 diff,
             )
         }
-        // 与 Embedded 的 `Edit.checkPermissions` 一致：先校验入参，再校验目标文件存在，
+        // 先校验入参，再校验目标文件存在，
         // 读文件后跑 `computeEdit` 预览（失败即 deny，成功带 before/after/上下文/行号）。
         "Edit" => {
             let file_path = match args.get("file_path").and_then(Value::as_str) {
@@ -591,7 +589,7 @@ pub fn decide(tool_name: &str, args: &Value, agent_mode: &str, cwd: &str) -> Dec
     }
 }
 
-/// 风险模式要拦截的操作：只有 Bash 破坏性命令（对齐 Embedded `PermissionPolicy.isOperationRisky`）。
+/// 风险模式要拦截的操作：只有 Bash 破坏性命令。
 ///
 /// 其余非只读命令（含 git 的写子命令）在 risk 模式下放行，只有 manual 才逐条询问。
 pub fn is_operation_risky(tool_name: &str, args: &Value) -> bool {
@@ -673,8 +671,8 @@ pub fn ask_choices(tool_name: &str, args: &Value, cwd: &str) -> Value {
 /// `PermissionPolicy.resolveToolPermission` 的等价物：
 /// 工具自身判定 → 按 agentMode 加工 → 展开展示用参数。
 ///
-/// 返回 `(permResult, displayArgs)`，形状与 Embedded 下发给
-/// `CoreRequest.toolPermissionRequested` 的一致。
+/// 返回 `(permResult, displayArgs)`，形状即下发给
+/// `CoreRequest.toolPermissionRequested` 的载荷形状。
 pub fn resolve_tool_permission(
     tool_name: &str,
     raw_args: &Value,
@@ -760,7 +758,7 @@ pub fn resolve_tool_permission(
     (perm_result, display_args)
 }
 
-/// `{ behavior: 'allow', ...diffPayload }`（对齐 Embedded 的自动放行产物）
+/// `{ behavior: 'allow', ...diffPayload }`
 fn allow_with_diff(diff_payload: &Option<Value>) -> Value {
     let mut result = json!({ "behavior": "allow" });
     if let Some(diff) = diff_payload {
@@ -784,8 +782,7 @@ pub fn display_args_for_unknown(tool_name: &str, args: &Value, cwd: &str) -> Val
     )
 }
 
-/// `diffPayload` 的 before / after 文本化（对齐 Embedded 的 `diffBeforeContent` /
-/// `diffAfterContent`）：`beforeContent` 缺失 → 无 diff；null → 空串。
+/// `diffPayload` 的 before / after 文本化：`beforeContent` 缺失 → 无 diff；null → 空串。
 fn diff_texts(diff_payload: Option<&Value>) -> (String, String) {
     let Some(diff) = diff_payload else {
         return (String::new(), String::new());
@@ -809,7 +806,7 @@ fn diff_texts(diff_payload: Option<&Value>) -> (String, String) {
 /// `displayArgs` 展开）。
 ///
 /// `diffHunks` 有意省略：webview 在缺少该键时用同一份 `beforeContent` / `afterContent`
-/// 调用 `buildEditDiffHunks`（同一算法、同一入参），渲染结果与 Embedded 一致；
+/// 调用 `buildEditDiffHunks`（同一算法、同一入参），渲染结果一致；
 /// 随包下发整份内容会显著放大帧体积，因此这里沿用更紧凑的等价路径。
 fn build_display_args(
     tool_name: &str,
@@ -827,7 +824,7 @@ fn build_display_args(
         .expect("displayArgs 必须是对象");
 
     if matches!(tool_name, "Read" | "Write" | "Edit") {
-        // 对齐 Embedded：`args.file_path || args.path`（真值优先），再做类型判断
+        // `args.file_path || args.path`（真值优先），再做类型判断
         let file_path_value = args
             .get("file_path")
             .filter(|value| crate::history::js_truthy(Some(value)))
@@ -891,7 +888,7 @@ fn build_display_args(
                 .unwrap_or_default();
             display_map.insert("old_string".to_string(), json!(old_string));
             display_map.insert("new_string".to_string(), json!(new_string));
-            // 对齐 Embedded：`args.replace_all || false`（JS 真值，字符串 "false" 保留原样）
+            // `args.replace_all || false`（JS 真值，字符串 "false" 保留原样）
             let replace_all = args
                 .get("replace_all")
                 .filter(|value| crate::history::js_truthy(Some(value)))
@@ -902,7 +899,7 @@ fn build_display_args(
             // 只有本次权限检查确实携带 diff 信息时才附加 diff 字段
             if let Some(diff) = diff_payload {
                 let (diff_before, diff_after) = diff_texts(Some(diff));
-                // Embedded 只下发 diffHunks；Standalone 不预计算该键，改为下发
+                // 不预计算 diffHunks，改为下发
                 // beforeContent / afterContent，让 webview 用同一份
                 // `buildEditDiffHunks` 回退计算（渲染结果一致，代价是帧体积更大）。
                 display_map.insert(

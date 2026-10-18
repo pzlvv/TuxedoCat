@@ -1,4 +1,4 @@
-//! 系统提示词组装（对齐 Embedded 的三层结构：核心原则 / 工具说明 / 环境信息）。
+//! 系统提示词组装（三层结构：核心原则 / 工具说明 / 环境信息）。
 
 use serde_json::Value;
 
@@ -16,10 +16,9 @@ const CORE_PRINCIPLES: &str = "You are a helpful software engineer assistant.
 
 /// 各内置工具的详细用法（`## Tool Details` 段）。
 ///
-/// 逐字取自 Embedded 的 `src/core/tools/*/Prompt.ts`（`getPrompt()`），
+/// 正文逐字沿用；
 /// 顺序与 `getAllTools()` 一致（Bash / Read / Write / Edit / Grep / Glob / TodoWrite /
 /// Agent / Reply / AskUserQuestion；Skill 尚未迁入）。
-/// 由脚本从 `out/src/core/tools/*/Prompt.js` 直接导出，避免手抄误差。
 const TOOL_DETAILS: &str = r#"### Bash
 Execute shell commands.
 
@@ -472,24 +471,24 @@ pub fn build_system_prompt_with_preset(preset: &str, cwd: &str, tools: &[Value])
         parts.push(environment_section(cwd));
 
         if let Some(agents_md) = read_agents_md(cwd) {
-            // 与 Embedded 的 `AGENTS_MD_SECTION` 一致：原样追加，不加标题、不截断
+            // 原样追加，不加标题、不截断
             parts.push(agents_md);
         }
     }
 
-    // 注意：Embedded 的 preset 只声明三个区块（工具说明 / 环境 / AGENTS.md），
+    // 注意：preset 只声明三个区块（工具说明 / 环境 / AGENTS.md），
     // **没有**「当前文件 / 选中行」区块——文件上下文由 `build_raw_api_messages`
     // 以 `[Current File: ...]` 前缀注入用户消息（见 `Query.ts:152-172`）。
     // 因此这里不再追加 `## Current File` / `## Current Selection`，
     // 否则同一份文件上下文会被投递两次，且 system prompt 随用户切换文件而变
-    // （提示词缓存前缀失效、与 Embedded 逐字不同）。
+    // （提示词缓存前缀失效）。
     parts.join("\n\n")
 }
 
 /// 组装完整 system prompt（`normal` 预设的便捷入口）。
 ///
 /// `agent_mode` 保留在签名里（调用方按会话解析），但**不进**系统提示：
-/// Embedded 的环境段没有这一行（权限模式由 UI 展示）。
+/// 环境段没有这一行（权限模式由 UI 展示）。
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn build_system_prompt(cwd: &str, _agent_mode: &str, _metadata: &Value) -> String {
     build_system_prompt_with_preset("normal", cwd, &tools::definitions())
@@ -706,7 +705,7 @@ static GIT_CACHE: std::sync::Mutex<Option<std::collections::HashMap<String, Stri
 
 /// 读取工作目录下的 `AGENTS.md`（存在时并入系统提示）
 fn read_agents_md(cwd: &str) -> Option<String> {
-    // 对齐 Embedded `readAgentsMd`：cwd 为空时直接返回 null。
+    // cwd 为空时直接返回 null。
     // 否则 `Path::new("").join("AGENTS.md")` 会退化成进程工作目录下的
     // 相对路径，把无关的 AGENTS.md 注入系统提示。
     if cwd.is_empty() {
@@ -714,12 +713,12 @@ fn read_agents_md(cwd: &str) -> Option<String> {
     }
     let path = std::path::Path::new(cwd).join("AGENTS.md");
     let text = std::fs::read_to_string(path).ok()?;
-    // 对齐 Embedded `content.trim()`（JS 空白口径）
+    // `content.trim()`（JS 空白口径）
     let text = crate::util::js_trim(&text);
     if text.is_empty() {
         None
     } else {
-        // 与 Embedded 一致：原样返回（已去除首尾空白），不截断
+        // 原样返回（已去除首尾空白），不截断
         Some(text.to_string())
     }
 }

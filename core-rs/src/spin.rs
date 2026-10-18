@@ -1,15 +1,15 @@
-//! Spin Design 引擎（对齐 Embedded `src/core/spin/*`）。
+//! Spin Design 引擎。
 //!
-//! 模块划分与 Embedded 一致：
-//! - `Types.ts` → [`SpinNode`] / [`SpinEdge`] / [`SpinDesignIssue`] / [`SpinProjectState`]
-//! - `Engine.ts` → [`read_spin_json`] / [`write_spin_json`] / [`topological_sort`] /
+//! 模块划分：
+//! - 类型：[`SpinNode`] / [`SpinEdge`] / [`SpinDesignIssue`] / [`SpinProjectState`]
+//! - 引擎纯函数：[`read_spin_json`] / [`write_spin_json`] / [`topological_sort`] /
 //!   [`get_next_node`] / [`compute_progress`] / [`build_run_prompt`] /
 //!   [`substitute_spin_variables`] / [`validate_spin_design`] / [`detect_project_state`] /
 //!   [`update_node_meta`]
-//! - `SpinJudger.ts` → [`parse_accept`] / [`build_judge_prompts`] / [`judge_with_provider`]
-//! - `Runner.ts` → [`SUB_AGENT_REPLY_INSTRUCTION`] / [`sub_agent_description`]（真正起子代理由
+//! - 验收判定：[`parse_accept`] / [`build_judge_prompts`] / [`judge_with_provider`]
+//! - Runner：[`SUB_AGENT_REPLY_INSTRUCTION`] / [`sub_agent_description`]（真正起子代理由
 //!   宿主的 [`SpinHost::run_sub_agent`] 承接，复用 `engine::create_sub_agent`）
-//! - `Loop.ts` → [`SpinLoop`]
+//! - 主循环：[`SpinLoop`]
 //!
 //! **与引擎的边界**：`SpinLoop` 不依赖 `engine.rs` 的任何内部类型，全部交互收敛到
 //! [`SpinHost`] trait（子代理执行 / 事件上报 / 中止查询 / 进度消息落库 / Skills 加载 /
@@ -53,7 +53,7 @@ pub struct SpinNode {
     pub rollout: Value,
     /// For Each 遍历的用户变量名（仅当 JSON 里是字符串时解析）
     pub for_each: Option<String>,
-    /// 节点角色（画布元数据，不参与执行；对齐 Embedded 只读写原始 JSON）
+    /// 节点角色（画布元数据，不参与执行；只读写原始 JSON）
     #[allow(dead_code)]
     pub role: Option<String>,
     /// 该节点执行前需要依次加载的 Skill 名称列表
@@ -145,8 +145,7 @@ impl From<SpinDesignIssue> for SpinProjectState {
 
 /// `~/<CONFIG_DIR_NAME>/conversations/<encoded-workspace>/spin.json` 路径
 ///
-/// 目录解析复用 `config::project_conversation_dir`，与 Embedded 的
-/// `getProjectConversationDir` 同一口径。
+/// 目录解析复用 `config::project_conversation_dir`。
 pub fn spin_json_path(cwd: &str) -> Result<PathBuf, String> {
     Ok(config::project_conversation_dir(cwd)?.join(SPIN_FILE))
 }
@@ -685,9 +684,9 @@ pub fn build_run_prompt(
 
 /// spin.json 写操作串行锁。
 ///
-/// Embedded 的 `enqueueSpinWrite` 是模块级 Promise 串行链，避免 SpinLoop 与
+/// 写操作串行化：避免 SpinLoop 与
 /// Spin Design webview 保存并发「读-改-写」时丢失更新（例如用户「清除结果」
-/// 后被 Loop 回写覆盖）。Rust 侧用进程级 `Mutex` 达到同样的互斥语义。
+/// 后被 Loop 回写覆盖），用进程级 `Mutex` 实现互斥。
 static SPIN_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 fn spin_write_lock() -> MutexGuard<'static, ()> {
@@ -940,7 +939,7 @@ pub fn judge_with_provider(
     let mut raw_reply = String::new();
     let result = llm::stream(&request, &mut |event| match event {
         llm::LlmEvent::TextDelta(delta) => raw_reply.push_str(&delta),
-        // Embedded 的 `assistant` 事件用最后一个 text block **覆盖**累积文本
+        // `assistant` 事件用最后一个 text block **覆盖**累积文本
         llm::LlmEvent::AuthoritativeBlocks(blocks) => {
             if let Some(text) = blocks.iter().rev().find_map(|block| {
                 if block.get("type").and_then(Value::as_str) == Some("text") {

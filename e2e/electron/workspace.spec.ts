@@ -234,8 +234,8 @@ test('US-35 标签页内有对话非 idle 时关闭标签页需二次确认', as
   await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);
 });
 
-// 注：electron 场景测试统一跑 standalone core（产品真实形态；embedded 的单一
-// Connection 没有 lost 信号与严格 session 路由，覆盖不了远程工作区的失败链路）。
+// 注：electron 场景测试跑 standalone core（产品真实形态：多 Connection / daemon /
+// SSH 链路，含远程工作区的失败链路）。
 
 test('US-36 standalone core：活动项落在连不上的远程工作区，探测标红不受 lost 信号竞态影响', async () => {
   // Standalone（Rust core + daemon + 真实 SSH 传输）：远程工作区的 Connection 会发出

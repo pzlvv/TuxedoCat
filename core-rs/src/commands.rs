@@ -1,5 +1,4 @@
-//! 内置命令系统与统一调度层（对齐 Embedded `src/core/skills/builtinCommands.ts`
-//! 与 `src/core/CommandDispatcher.ts`）。
+//! 内置命令系统与统一调度层。
 //!
 //! 内置命令（BuiltinCommand）是与 Skill 并行的 `/` 触发机制：
 //! - 内置命令由 Core 直接处理（不经过 LLM），可以有客户端副作用
@@ -26,7 +25,7 @@ pub struct CommandContext {
     pub cwd: String,
     /// 命令名称（如 `spin`），由 dispatch 自动填充
     pub command_name: Option<String>,
-    /// core → UI 事件发送器（对齐 Embedded 的 `requireEventBus().emitToUi`）
+    /// core → UI 事件发送器
     pub emit: Arc<dyn Fn(Value) + Send + Sync>,
     /// `/spin` 非 `design` 分支的执行钩子：由引擎注入（启动 Spin 主循环）。
     ///
@@ -196,7 +195,7 @@ pub fn dispatch(prompt: &str, context: &CommandContext) -> DispatchOutcome {
             "args": cmd_args,
         }));
 
-        // 对齐 Embedded：`if (result)` 只上报非空返回值
+        // 只上报非空返回值
         if let Some(result) = (command.execute)(cmd_args, &cmd_context) {
             if !result.is_empty() {
                 context.emit(json!({
@@ -236,7 +235,7 @@ pub fn dispatch(prompt: &str, context: &CommandContext) -> DispatchOutcome {
 ///
 /// `design` 分支返回 `None`（UI 经 `commandDispatched` 打开设计器）；`auto` / 其它
 /// 分支由引擎注入的 `start_spin` 钩子在本线程跑完整个 Spin 主循环
-/// （`spin_host::run_spin_command` ↔ Embedded `skills/bundled/spin.ts`）。
+/// （见 `spin_host::run_spin_command`）。
 /// 钩子未注入（单测 / 未接线装配）时发 `notice` 提示不可用，不静默降级。
 pub fn spin_command_definition() -> BuiltinCommandDefinition {
     BuiltinCommandDefinition {
@@ -257,7 +256,7 @@ pub fn spin_command_definition() -> BuiltinCommandDefinition {
             }
 
             // 其余分支（`auto` 等）交给引擎注入的钩子：它会检测 spin.json 状态、
-            // 必要时跑完整个 Spin 主循环（对齐 Embedded `bundled/spin.ts`）。
+            // 必要时跑完整个 Spin 主循环。
             if let Some(start) = &context.start_spin {
                 return start(&trimmed);
             }

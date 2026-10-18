@@ -17,6 +17,7 @@
 import { BrowserWindow, WebContents, WebContentsView, Rectangle, nativeTheme } from 'electron';
 import * as path from 'path';
 import type { WebviewMessage } from '../src/host/webviewMessages.js';
+import { requireEventBus } from '../src/shared/AssistantEventBus.js';
 import { guardViewNavigation } from './viewNavigation.js';
 
 /** 侧栏默认宽度（无持久化记录 / 双击拖拽手柄恢复时使用） */
@@ -1010,15 +1011,16 @@ export class ChatViewManager {
   }
 
   /**
-   * 会话被关闭 / 删除前：中止其正在运行的查询（含后台 Bash 任务与递归子代理）。
-   * 引擎可能已被移除（删除后再次关闭），此时 abortCurrentQuery 会兜底中止后台任务。
-   * 临时 new- key 尚未对应正式会话，跳过。
+   * 会话被关闭 / 删除前：经总线请求 Core 中止其正在运行的查询
+   * （含后台 Bash 任务与递归子代理）。临时 new- key 尚未对应正式会话，跳过。
    */
   private abortSession(sessionId?: string): void {
     if (!sessionId || sessionId.startsWith('new-')) return;
-    void import('../src/core/Integration.js')
-      .then(({ abortCurrentQuery }) => abortCurrentQuery(sessionId))
-      .catch((err) => console.error(`[chat-view] abort query failed (${sessionId}):`, err));
+    try {
+      requireEventBus().emitToCore({ type: 'abortRequested', sessionId });
+    } catch (err) {
+      console.error(`[chat-view] abort query failed (${sessionId}):`, err);
+    }
   }
 
   private touch(sessionId: string): void {

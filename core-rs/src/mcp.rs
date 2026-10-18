@@ -1,18 +1,17 @@
 //! MCP（Model Context Protocol）客户端、管理器与工具注入。
 //!
-//! 对齐 Embedded 的 `src/core/mcp/*`：
-//! - `Client.ts` → [`McpStdioClient`] / [`list_mcp_tools`] / [`normalize_mcp_call_result`]
-//! - `HttpClient.ts` → [`crate::mcp_http::McpHttpClient`]
-//! - `Config.ts` → [`crate::mcp_config`]
-//! - `McpTool.ts` → [`build_mcp_tool_name`] / [`create_mcp_tool_definition`]
-//! - `Manager.ts` → [`McpManager`]（连接池 / 会话引用 / 延迟回收 / 运行时状态）
-//! - `MCPHost.ts` → [`on_session_opened`] / [`on_session_closed`] /
+//! - stdio 客户端：[`McpStdioClient`] / [`list_mcp_tools`] / [`normalize_mcp_call_result`]
+//! - HTTP 客户端：[`crate::mcp_http::McpHttpClient`]
+//! - 服务器配置：[`crate::mcp_config`]
+//! - 工具定义：[`build_mcp_tool_name`] / [`create_mcp_tool_definition`]
+//! - 管理器 [`McpManager`]（连接池 / 会话引用 / 延迟回收 / 运行时状态）
+//! - 宿主接口：[`on_session_opened`] / [`on_session_closed`] /
 //!   [`on_session_enabled_changed`] / [`prune`] / [`shutdown`]
 //!
-//! 与 Embedded 的进程模型差异：整仓是**阻塞式多线程**、没有 async 运行时。
+//! 进程模型：整仓是**阻塞式多线程**、没有 async 运行时。
 //! stdio 传输用 `std::process::Command` + 读线程 + `mpsc` 做请求-响应配对与超时；
 //! HTTP 传输用 `reqwest::blocking`。管理器把 acquire / release / sync / prune
-//! 串行排进一个后台工作线程（等价于 Embedded 的 `opChain`），因此这些入口都是
+//! 串行排进一个后台工作线程，因此这些入口都是
 //! 非阻塞的、可随时从任意线程调用。
 
 use std::collections::{HashMap, HashSet};
@@ -36,8 +35,8 @@ pub const PROTOCOL_VERSION: &str = "2024-11-05";
 pub const CONTROL_TIMEOUT_MS: u64 = 30_000;
 /// tools/call 超时（工具可能耗时较长）
 pub const CALL_TIMEOUT_MS: u64 = 300_000;
-/// `clientInfo.name`（对齐 Embedded 的 `EXTENSION_NAME`：同一配置来源
-/// `project.json` 的 `extensionName`，build.rs 构建期烧入，源码不持有产品字面量）
+/// `clientInfo.name`（同一配置来源：`src/config/project.json` 的 `extensionName`，
+/// build.rs 构建期烧入，源码不持有产品字面量）
 pub const EXTENSION_NAME: &str = env!("TC_EXTENSION_NAME");
 
 /// MCP 服务器返回的工具定义
@@ -281,7 +280,7 @@ impl McpStdioClient {
     }
 
     fn write(&self, message: &Value) -> Result<(), String> {
-        // JSON-RPC 帧与 Embedded 的 `JSON.stringify` 逐字对齐（数字走 JS 口径）
+        // JSON-RPC 帧按 JS `JSON.stringify` 逐字序列化（数字走 JS 口径）
         let text = format!("{}\n", js_json_stringify(message));
         let stdin = {
             let state = self.shared.state.lock().unwrap();
@@ -954,7 +953,7 @@ impl McpManager {
         }
     }
 
-    /// 把一次状态变更排入串行链（等价于 Embedded 的 `opChain.then(task, task)`）
+    /// 把一次状态变更排入串行链
     fn enqueue(&self, task: impl FnOnce() + Send + 'static) {
         let _ = self.sender.lock().unwrap().send(Box::new(task));
     }
@@ -1586,8 +1585,8 @@ fn rebuild_tools(state: &Arc<Mutex<ManagerState>>) -> bool {
     changed
 }
 
-/// Standalone 的引擎每轮重新组装 system prompt / 工具列表，没有 Embedded 的 prompt 缓存，
-/// 因此这两个失效入口是空实现（保留调用点以对齐 Manager 的流程）。
+/// 引擎每轮重新组装 system prompt / 工具列表，没有 prompt 缓存，
+/// 因此这两个失效入口是空实现。
 fn invalidate_prompt_caches() {}
 
 fn invalidate_session_prompt_cache(_session_id: &str) {}
@@ -1790,7 +1789,7 @@ pub fn is_destructive(name: &str) -> bool {
 
 /// 执行一个 MCP 工具调用，返回与内置工具同形的 [`crate::tools::ToolOutcome`]。
 ///
-/// 对齐 Embedded 的 `createMcpTool`：
+/// 工具调用的行为契约：
 /// - 成功 / `isError` 都走「成功」通道（`mapToolResultToToolResultBlockParam` 只给
 ///   错误内容加 `[MCP error] ` 前缀，不设 `is_error`）；空文本兜底 `(no output)`；
 /// - 转发失败（服务器未运行 / 超时等）走错误通道。

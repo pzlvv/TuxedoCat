@@ -1,4 +1,4 @@
-//! 构建脚本（`docs/core/standalone-core.md` 第 4.4 节）：
+//! 构建脚本（`docs/core/standalone-core.md` 第 3.4 节）：
 //!
 //! 1. 把 `scripts/build-core.mjs` 算好的构建指纹透传给编译期环境：`CORE_FINGERPRINT`
 //!    由构建脚本在调用 cargo 时设置，指纹只由源码内容与编译器身份决定；本脚本

@@ -12,17 +12,17 @@
  * （不拆 WebViewNotifier / WebViewController，见 ``docs/architecture/events.md 第 1 节）。
  */
 
-import type { AssistantEventBus, CoreEvent, CoreEventHandlers, CoreRequestHandlers } from '../core/AssistantEventBus.js';
-import { requireEventBus } from '../core/AssistantEventBus.js';
-import type { AgentMode, MessageData, StreamMessageData, StreamEndData } from '../core/types.js';
-import type { ModelRef } from '../core/llm/modelRef.js';
-import type { ToolProgressData, PermissionResult } from '../core/tools/Tool.js';
+import type { AssistantEventBus, CoreEvent, CoreEventHandlers, CoreRequestHandlers } from '../shared/AssistantEventBus.js';
+import { requireEventBus } from '../shared/AssistantEventBus.js';
+import type { AgentMode, MessageData, StreamMessageData, StreamEndData } from '../shared/types.js';
+import type { ModelRef } from '../shared/llm/modelRef.js';
+import type { ToolProgressData, PermissionResult } from '../shared/tools/Tool.js';
 import type { UIHost, WebviewViewHandle } from './UIHost.js';
 import type { SpinDesign } from './SpinDesign.js';
 import type { ConversationManager } from './ConversationManager.js';
-import type { UserChoiceOptions } from '../core/UserChoiceQueue.js';
-import type { SessionRuntimeState } from '../core/AssistantEventBus.js';
-import type { NoticeLevel, NoticeParams } from '../core/coreText.js';
+import type { UserChoiceOptions } from '../shared/UserChoiceQueue.js';
+import type { SessionRuntimeState } from '../shared/AssistantEventBus.js';
+import type { NoticeLevel, NoticeParams } from '../shared/coreText.js';
 import { SessionUiState } from './SessionUiState.js';
 import { UserChoiceManager } from './ui/userChoice.js';
 import { ToolHandler } from './ui/toolHandler.js';
@@ -32,7 +32,7 @@ import { pushToolProgress } from './queryActivity.js';
 import { buildConversationLoadedPayload } from './conversationPayload.js';
 import { readUiLanguage, readUiFontSize, requestBalance } from './coreFacts.js';
 import { markCoreReady } from './coreReadiness.js';
-import { isTemporarySessionId } from '../core/sessionResources.js';
+import { isTemporarySessionId } from '../shared/sessionResources.js';
 import {
   readHasActiveProviderSetting,
   readLlmConfigPanelPayload,
@@ -253,7 +253,7 @@ export class WebViewUI implements WebViewUiPort {
    * 会话未登记工作目录时返回 undefined。
    */
   private async workspaceForSession(sessionId: string | undefined): Promise<string | undefined> {
-    const { getProjectRoot, hasProjectRoot } = await import('../core/history/Config.js');
+    const { getProjectRoot, hasProjectRoot } = await import('../shared/history/Config.js');
     return hasProjectRoot(sessionId) ? getProjectRoot(sessionId) : undefined;
   }
 
@@ -591,7 +591,7 @@ export class WebViewUI implements WebViewUiPort {
         return;
       }
       // /spin: 无 spin.json 时打开设计器（shouldOpenSpinDesign 是 core 的只读函数）
-      const { shouldOpenSpinDesign } = await import('../core/history/spinCommand.js');
+      const { shouldOpenSpinDesign } = await import('../shared/history/spinCommand.js');
       if (ws && shouldOpenSpinDesign(ws)) {
         void this.spinDesign.open(ws).catch((err: unknown) => {
           this.log(`Error opening spin design: ${err}`);
@@ -746,7 +746,7 @@ export class WebViewUI implements WebViewUiPort {
   /**
    * 获取 DeepSeek 账户余额并发送到 webview（统一走 host.log，11.1 #13）。
    *
-   * 余额是 core 的事实（按 provider 的 apiKey 查询）：Embedded 直接查，
+   * 余额是 core 的事实（按 provider 的 apiKey 查询），经
    * Standalone 经 `UiRequest.balanceRequested` 让 Core 查，宿主不读 core 的配置。
    */
   private fetchAndSendBalance(sessionId: string): void {

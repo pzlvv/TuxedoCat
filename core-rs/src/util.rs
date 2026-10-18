@@ -123,7 +123,7 @@ pub fn unique_id(prefix: &str) -> String {
 /// 对齐 Node `readFile(path, 'utf8')` 的宽松解码（WHATWG 口径，Rust
 /// `from_utf8_lossy` 同策略）：会话数据（`.jsonl` / `.meta.json`）由多进程共写，
 /// 异常退出可能留下半截多字节序列；`read_to_string` 的严格校验会让**整个文件**
-/// 读取失败、整个会话被当成空，而 Embedded 侧同等场景只损失一个替换字符。
+/// 读取失败、整个会话被当成空；宽松解码同等场景只损失一个替换字符。
 /// 文件不存在等 I/O 错误仍然照常返回 `Err`。
 pub fn read_to_string_lossy(path: &std::path::Path) -> std::io::Result<String> {
     let bytes = std::fs::read(path)?;
@@ -132,7 +132,7 @@ pub fn read_to_string_lossy(path: &std::path::Path) -> std::io::Result<String> {
 
 /// JS `String.prototype.length`：UTF-16 code unit 数。
 ///
-/// Embedded 全部用 JS 的 `.length` / `.slice` / `.substring`（按 UTF-16 code unit），
+/// 计数口径对齐 JS 的 `.length` / `.slice` / `.substring`（按 UTF-16 code unit），
 /// 对 BMP 字符与「字符数」一致，对代理对（emoji / 生僻字）则是 2。这里按同一口径
 /// 计数，避免含 emoji 的工具输出在两侧触发不同的裁剪阈值。
 pub fn utf16_len(text: &str) -> usize {
@@ -381,8 +381,7 @@ pub fn js_to_fixed_1(value: f64) -> String {
 
 /// 工具结果上限：前 `head` + 后 `tail`，中间省略。
 ///
-/// 与 Embedded 的 `generateHeadTailPreview`（`src/core/tools/toolResultStorage.ts`）
-/// 逐 code unit 对齐：长度按 **UTF-16 code unit**（JS `.length`，不是字节数）计算，
+/// 逐 code unit 计算：长度按 **UTF-16 code unit**（JS `.length`，不是字节数）计算，
 /// 省略标记为 `\n... (N chars omitted) ...\n`。
 pub fn clamp_output(text: &str, head: usize, tail: usize) -> String {
     let total = utf16_len(text);
@@ -392,8 +391,7 @@ pub fn clamp_output(text: &str, head: usize, tail: usize) -> String {
     let head_text = utf16_take(text, head);
     let tail_text = utf16_tail(text, tail);
     // 省略数按**实际**切下的长度算：代理对跨在边界上时会被整对丢掉（少取 1 个
-    // code unit），用请求值算出来的省略数会多 1。Embedded 的
-    // `generateHeadTailPreview` 同样按对齐后的边界计数，两侧必须一致。
+    // code unit），用请求值算出来的省略数会多 1。按对齐后的边界计数。
     let omitted = total - utf16_len(&head_text) - utf16_len(&tail_text);
     format!("{head_text}\n... ({omitted} chars omitted) ...\n{tail_text}")
 }
@@ -402,7 +400,7 @@ pub fn clamp_output(text: &str, head: usize, tail: usize) -> String {
 
 /// 修复 JSON 文本里的孤立代理项转义（`\ude00` → U+FFFD）。
 ///
-/// 背景：宿主（Embedded Core / TS）用 `JSON.stringify` 序列化，遇到**孤立代理项**
+/// 背景：宿主（TS）用 `JSON.stringify` 序列化，遇到**孤立代理项**
 /// 会写成 `"\ude00"`——语法合法，但语义上是非法 Unicode。serde_json 是严格解析器，
 /// 读到直接报错；而宿主写入的会话历史（`.jsonl` / `.meta.json`）与帧通道都可能带
 /// 这种文本，于是整行 / 整帧被丢掉（`history.rs` 里的 `.ok()` 会静默降级）。

@@ -17,7 +17,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createChecker, runTests } from './helpers/harness';
 import { makeTempDir } from './helpers/fixtures';
-import { resolveSettingsSnapshot } from '../core/settingsSnapshot';
+import { resolveSettingsSnapshot } from '../shared/settingsSnapshot';
 import { SettingsStore } from '../host/SettingsStore';
 import { applyLlmConfigSave } from '../host/llmConfigSave';
 import {

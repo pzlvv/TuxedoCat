@@ -25,12 +25,12 @@ fn system_prompt_has_principles_tools_and_environment() {
         assert!(prompt.contains(&format!("- **{name}**")), "缺少工具 {name}");
     }
     assert!(prompt.contains(&format!("- **Working Directory**: {cwd}")));
-    // 与 Embedded 一致：`{platform} ({osType} {osRelease})`
+    // `{platform} ({osType} {osRelease})`
     assert!(prompt.contains(&format!("- **Operating System**: {} (", os_platform())));
     assert!(prompt.contains(os_type()));
     assert!(prompt.contains("- **Shell**: "));
     assert!(prompt.contains("- **Git Repository**: No"));
-    // 环境段不再包含 Permission Mode（Embedded 没有这一行）
+    // 环境段不包含 Permission Mode
     assert!(!prompt.contains("- **Permission Mode**:"));
     // 三段之间用空行分隔
     assert!(prompt.contains("\n\n## Tool Usage"));
@@ -38,7 +38,7 @@ fn system_prompt_has_principles_tools_and_environment() {
 
 #[test]
 fn system_prompt_carries_tool_details_for_every_builtin_tool() {
-    // 对齐 Embedded 的 `generateToolUsagePrompt`：`## Tool Usage` 之后必须紧跟
+    // `## Tool Usage` 之后必须紧跟
     // `## Tool Details`，并按 `getAllTools()` 的顺序逐工具渲染 `### <name>` + 详细用法。
     let sandbox = sandbox("prompt-tool-details");
     let cwd = sandbox.workspace.to_string_lossy().to_string();
@@ -91,7 +91,7 @@ fn agents_md_is_inlined_into_the_system_prompt() {
     sandbox.write_file("AGENTS.md", "  项目约定：只用单引号  \n");
     let cwd = sandbox.workspace.to_string_lossy().to_string();
     let prompt = build_system_prompt(&cwd, "manual", &json!({}));
-    // 与 Embedded 一致：原样追加，不加标题
+    // 原样追加，不加标题
     assert!(prompt.contains("项目约定：只用单引号"));
     assert!(!prompt.contains("## Project Instructions"));
     assert!(!prompt.contains("  \n"), "首尾空白应被裁剪");
@@ -106,14 +106,14 @@ fn agents_md_is_ignored_when_blank_or_missing() {
     sandbox.write_file("AGENTS.md", "   \n\n");
     assert!(read_agents_md(&cwd).is_none(), "只有空白");
 
-    // 对齐 Embedded `readAgentsMd`：cwd 为空时直接返回 null，绝不回退到
+    // cwd 为空时直接返回 null，绝不回退到
     // 进程工作目录下的相对 `AGENTS.md`。
     assert!(read_agents_md("").is_none(), "空 cwd");
 }
 
 #[test]
 fn agents_md_is_not_truncated() {
-    // 与 Embedded 一致：AGENTS.md 原样注入，不做长度截断
+    // AGENTS.md 原样注入，不做长度截断
     let sandbox = sandbox("prompt-agents-huge");
     sandbox.write_file("AGENTS.md", &"x".repeat(40 * 1024));
     let cwd = sandbox.workspace.to_string_lossy().to_string();
@@ -123,7 +123,7 @@ fn agents_md_is_not_truncated() {
 
 #[test]
 fn system_prompt_never_renders_file_context_sections() {
-    // Embedded 的 preset 只声明「工具说明 / 环境 / AGENTS.md」三个区块，
+    // preset 只声明「工具说明 / 环境 / AGENTS.md」三个区块，
     // 文件上下文由用户消息的 `[Current File: ...]` 前缀投递（见 Query.ts）。
     // 因此 meta.json 里带 currentFile / selectedLines 时也不应多出系统提示段。
     let sandbox = sandbox("prompt-file-context");
@@ -143,7 +143,7 @@ fn system_prompt_never_renders_file_context_sections() {
 }
 
 #[test]
-fn active_preset_matches_embedded_transitions() {
+fn active_preset_matches_spec_transitions() {
     // 非 mixed 直接返回用户选择；非法 / 缺省回退 normal
     assert_eq!(active_preset(None, false), "normal");
     assert_eq!(active_preset(Some("normal"), true), "normal");
@@ -257,17 +257,15 @@ fn windows_release_parsing_matches_node_os_release() {
     assert_eq!(parse_windows_release("  unknown  "), "unknown");
 }
 
-// ==================== 系统提示词静态部分对等（与 Embedded 共用对照表） ====================
+// ==================== 系统提示词静态部分对照表 ====================
 
 mod system_prompt_parity_tests {
     use super::*;
 
-    /// 与 Embedded 共用同一份对照表（`src/test/fixtures/systemPromptParity.json`）。
+    /// 行为对照表（数据见 core-rs/fixtures/）。
     ///
-    /// TS 侧断言「本表 == Embedded `generateCoreSystemPrompt` /
-    /// `generateToolUsagePrompt` / `assembleSystemPrompt`」；这里断言
-    /// 「Rust `core_prompt` / `tool_usage_section` / `preset_core_prompt` == 本表」。
-    const FIXTURE: &str = include_str!("../../src/test/fixtures/systemPromptParity.json");
+    /// 断言「Rust `core_prompt` / `tool_usage_section` / `preset_core_prompt` == 本表」。
+    const FIXTURE: &str = include_str!("../fixtures/systemPrompt.json");
 
     /// 找首个不同的 UTF-16 code unit，返回带上下文的可读信息（整段提示词太长，不能直接打印）。
     fn describe_difference(expected: &str, actual: &str) -> String {
@@ -299,7 +297,7 @@ mod system_prompt_parity_tests {
         assert_eq!(
             core_prompt(),
             expected_core,
-            "核心身份提示词与 Embedded 不一致：\n{}",
+            "核心身份提示词与对照表不一致：\n{}",
             describe_difference(expected_core, core_prompt())
         );
 
@@ -311,7 +309,7 @@ mod system_prompt_parity_tests {
         assert_eq!(
             actual_tool_usage,
             expected_tool_usage,
-            "工具说明与 Embedded 不一致：\n{}",
+            "工具说明与对照表不一致：\n{}",
             describe_difference(expected_tool_usage, &actual_tool_usage)
         );
 
@@ -322,10 +320,10 @@ mod system_prompt_parity_tests {
         assert_eq!(
             preset_core_prompt("minimal"),
             expected_minimal,
-            "极简预设核心身份与 Embedded 不一致"
+            "极简预设核心身份与对照表不一致"
         );
 
-        // Master 子代理的 `## Communication` 前缀段（Embedded 走 `systemPromptPrefix`）
+        // Master 子代理的 `## Communication` 前缀段
         let expected_communication = fixture
             .get("subAgentCommunicationSection")
             .and_then(Value::as_str)
@@ -334,7 +332,7 @@ mod system_prompt_parity_tests {
         assert_eq!(
             actual_communication,
             expected_communication,
-            "子代理 Communication 前缀与 Embedded 不一致：\n{}",
+            "子代理 Communication 前缀与对照表不一致：\n{}",
             describe_difference(expected_communication, &actual_communication)
         );
 

@@ -91,7 +91,7 @@ fn bash_detection_returns_a_bash_kind() {
 
 #[test]
 fn bash_display_name_classifies_the_vendor() {
-    // 对齐 Embedded `detectBashFromCommonPaths` 的分支：git / msys / cygwin / 普通
+    // git / msys / cygwin / 普通
     assert_eq!(
         common_path_bash_name(r"C:\Program Files\Git\bin\bash.exe"),
         "bash (Git Bash)"

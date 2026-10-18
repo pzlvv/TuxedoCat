@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-18
 ---
 
 # 规格：Electron 多工作目录
@@ -311,11 +311,11 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | 标题栏品牌 / 模式状态 | `electron/titlebar/main.ts` 的 `applyModeState`、`electron/main.ts` 的 `pushTitlebarModeState` |
 | 侧栏头部 | `electron/sidebar/index.html` 的静态 `.header`；数据刷新走 `electron/sidebar/main.ts` 的 `render()` |
 | 侧栏对话列表 | `electron/sidebar/main.ts` 的 `render`、`sidebar:conversations-updated` 流 |
-| 对话列表加载 | `src/core/history/Conversation.ts` 的 `loadConversationList` / `readProjectConversationMetadata` |
-| 对话元数据 | `src/core/history/Conversation.ts` 的 `ConversationMetadata.project` |
-| 项目根解析 | `src/core/history/Config.ts` 的 `getProjectRoot` / `setSessionWorkspace`（会话工作目录表：目录是对话的属性） |
+| 对话列表加载 | `src/host/coreFacts.ts` 的 `loadConversationListForHost`（`UiRequest.conversationListRequested`；落盘读取库 `src/shared/history/Conversation.ts` 服务宿主侧例外） |
+| 对话元数据 | `src/shared/history/Conversation.ts` 的 `ConversationMetadata.project` |
+| 项目根解析 | 宿主侧索引 `src/shared/history/Config.ts` 的 `getSessionWorkspace` / `setSessionWorkspace`（权威表在 Core 进程内：目录是对话的属性） |
 | 宿主工作目录传递 | `src/host/ui/webviewMessageHandler.ts` 的 `ensureSessionWorkspace`：新建 / 加载对话时按来源视图登记会话工作目录；`src/host/UIHost.ts` 的 `WorkspaceProvider.getWorkspacePath` 提供宿主当前目录（对话列表、Spin 设计器消费） |
 | 聊天视图工作目录 | `electron/ChatViewManager.ts` 的 `createView`（`--workspace=` 参数） |
-| 工具工作目录 | `src/core/tools/Tool.ts` 的 `ToolUseContext.cwd` |
-| 引擎 cwd | `src/core/QueryEngine.ts` 的 `config.cwd` / `getCwd` |
+| 工具工作目录 | `src/shared/tools/Tool.ts` 的 `ToolUseContext.cwd`（Core 侧工具执行以它为基准展开相对路径） |
+| 引擎 cwd | Core 进程内的会话引擎（`core-rs/src/engine.rs`，随会话工作目录派生） |
 | 浮窗模式 | `electron/main.ts` 的 `applyWindowMode` / `canToggleWindowMode` / `workspaceDisplayName` |

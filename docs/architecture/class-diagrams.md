@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-18
 ---
 
 # 规格：架构类图
@@ -205,28 +205,50 @@ classDiagram
   ElectronConversationManager ..> ChatViewManager : 订阅 loaded（视图开关）
 
   EventBusModule ..> AssistantEventBus : 注册与获取
-  BootstrapCore ..> EventBusModule : createEventBus / setGlobalEventBus
+  BootstrapCore ..> EventBusModule : setGlobalEventBus（注册 Client 为全局总线）
   BootstrapCore ..> WebViewUI : create
   BootstrapCore ..> UIHost : 构造注入
   BootstrapCore ..> SpinDesign : 构造注入
   BootstrapCore ..> ConversationManager : 构造注入
 ```
 
-## 2. core 侧与总线的交互
+## 2. Core 侧与总线的交互
+
+Core（`core-rs/`，Rust 独立进程）经帧通道与 UI 通信；下图为 Core 进程内各模块与总线的
+静态关系（帧协议层之下，`bus.rs` 把事件写为帧）：
 
 ```mermaid
 classDiagram
   direction LR
 
-  class QueryEngine
-  class Query
-  class RunTools
-  class Integration
-  class CommandDispatcher
-  class compact
-  class Conversation
-  class AgentTool
-  class sessionRuntime
+  class CoreEngine {
+    engine.rs
+    会话消费循环与运行时状态
+  }
+  class Commands {
+    commands.rs
+    命令解析与就地执行
+  }
+  class Compact {
+    compact.rs
+    压缩与归档
+  }
+  class Replay {
+    replay.rs
+    压缩后消息重放
+  }
+  class Spin {
+    spin.rs / spin_host.rs
+    Spin 引擎与子代理执行
+  }
+  class History {
+    history.rs
+    会话落盘
+  }
+  class Bus {
+    bus.rs
+    事件出口（帧）
+  }
 
   class AssistantEventBus {
     <<interface>>
@@ -235,15 +257,13 @@ classDiagram
     +onUiEvent(type, handler)
   }
 
-  QueryEngine ..> AssistantEventBus : emitToUi 与 request
-  Query ..> AssistantEventBus : emitToUi
-  RunTools ..> AssistantEventBus : emitToUi 与 request
-  Integration ..> AssistantEventBus : emitToUi 与 request
-  CommandDispatcher ..> AssistantEventBus : emitToUi
-  compact ..> AssistantEventBus : emitToUi
-  Conversation ..> AssistantEventBus : emitToUi
-  AgentTool ..> AssistantEventBus : emitToUi
-  sessionRuntime ..> AssistantEventBus : emitToUi
+  CoreEngine ..> AssistantEventBus : emit 与 request
+  Commands ..> AssistantEventBus : emit
+  Compact ..> AssistantEventBus : emit
+  Replay ..> AssistantEventBus : emit
+  Spin ..> AssistantEventBus : emit
+  History ..> Bus : 落盘事件
+  Bus ..> AssistantEventBus : emit（帧）
 ```
 
 ## 3. 图注说明
@@ -273,5 +293,6 @@ classDiagram
    两条流各自拥有独立的事件、分发方法与消费者，不合并为单一带标记列表。
    空闲会话回收（计时、巡检、关闭动作分发）只在 VS Code 的实现里（Electron 每个对话一个
    独立视图，自动关闭等于关掉用户的窗口），core 不参与计时。
-9. `MCPHost` **不是第四个宿主契约**。它仅有一个 core 侧单例，负责
-   「会话生命周期 → MCP 引用」的映射，驱动信号全部来自 core，而非宿主视图生命周期。
+9. MCP 生命周期**不是第四个宿主契约**。它在 Core 进程内（`core-rs/src/mcp.rs`），负责
+   「会话生命周期 → MCP 引用」的映射，驱动信号全部来自 Core 的会话事实，而非宿主视图
+   生命周期（[contracts.md 第 3 节](contracts.md#3-mcp-生命周期core-进程内)）。

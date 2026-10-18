@@ -26,7 +26,7 @@ import type {
   UiRequest,
   UiRequestResultMap,
   Unsubscribe,
-} from '../core/AssistantEventBus.js';
+} from '../shared/AssistantEventBus.js';
 import type { StandaloneCoreBus } from './standalone/StandaloneEventBus.js';
 import type { WorkspaceRef } from './workspaceRef.js';
 import { workspaceRefDisplayPath } from './workspaceRef.js';
@@ -61,7 +61,7 @@ export interface ConnectionOptions {
   ) => readonly SessionRuntimeState[];
   /** Connection 关闭后回调（Client 维护映射表） */
   onClosed?: (connection: Connection) => void;
-  /** 释放总线（Standalone 终止 Core 进程；Embedded 为空操作） */
+  /** 释放总线（终止 Core 进程） */
   disposeBus: () => Promise<void>;
 }
 
@@ -155,7 +155,7 @@ export class Connection {
     this.coreEventUnsubscribe = this.bus.onCoreEvents(handlers);
     this.bus.onCoreRequests(this.options.coreRequestHandlers());
 
-    // Standalone：Core 崩溃 / 无法恢复时报告宿主（Embedded 的总线没有这两条钩子）
+    // Core 崩溃 / 无法恢复时报告宿主
     const standalone = this.bus as Partial<StandaloneCoreBus>;
     if (typeof standalone.onExit === 'function') {
       this.exitUnsubscribe = standalone.onExit((info) => {

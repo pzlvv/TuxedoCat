@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { postMessage } from './webviewEnv';
-import { providerKeyFromBaseURL } from '../core/utils/providerKey.js';
+import { providerKeyFromBaseURL } from '../shared/utils/providerKey.js';
 // 面板不持有任何配置默认值：入参由宿主给齐（`docs/hosts/webview-facts.md` 第 6 节）。
 // 唯一自持的取值是「新增服务商」的预置地址，它是跨层共享的服务地址常量。
-import { DEEPSEEK_BASE_URL as DEFAULT_BASE_URL } from '../core/endpoints.js';
-import { DEFAULT_API_TYPE as DEFAULT_MODEL_API_TYPE } from '../core/utils/modelConfig.js';
+import { DEEPSEEK_BASE_URL as DEFAULT_BASE_URL } from '../shared/endpoints.js';
+import { DEFAULT_API_TYPE as DEFAULT_MODEL_API_TYPE } from '../shared/utils/modelConfig.js';
 import type { Colors, ThinkingMode, AgentMode, PromptMode } from './types';
-import type { McpServerInfo } from '../core/webviewTypes';
+import type { McpServerInfo } from '../shared/webviewTypes';
 import { t } from './i18n';
 import { uiFontSizePx, type UiFontSize } from './fontSize';
 import { Icon } from './Icon';

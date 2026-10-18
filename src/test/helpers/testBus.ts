@@ -1,0 +1,167 @@
+/**
+ * 测试用 AssistantEventBus 纯内存实现。
+ *
+ * 只做路由，不含「事件 → 方法」的映射逻辑，无宿主依赖：
+ * - core → UI：emitToUi / request 广播给 onCoreEvents / onCoreRequests 注册的处理器
+ * - UI → core：emitToCore 按 type 分发给 onUiEvent 注册的订阅者；
+ *   requestCore 调用 onUiRequests 注册的处理器（同进程下退化为一次直接调用）
+ *
+ * 边界语义（docs/architecture/events.md 第 6 节）：
+ * - emitToUi 时处理器未注册 → 抛错（bootstrap 顺序错误，启动期暴露）
+ * - emitToCore 时就绪前收到 `hostEnvironmentProvided` 以外的 UiEvent → 抛错
+ *   （docs/architecture/core-ui-separation.md 第 7 节；就绪判据与产品总线一致：
+ *   配置快照是否已应用，测试里经 `applyTestSettings` 提供）
+ * - emitToCore 时某 type 无订阅者 → 静默丢弃（合法中间态）
+ * - request() 无内置超时（总线保持纯路由）；调用点自行决定兜底
+ */
+
+import type {
+  AssistantEventBus,
+  CoreEvent,
+  CoreEventHandlers,
+  CoreRequest,
+  CoreRequestHandlers,
+  CoreRequestResultMap,
+  UiEvent,
+  UiRequest,
+  UiRequestHandlers,
+  UiRequestResultMap,
+  Unsubscribe,
+} from '../../shared/AssistantEventBus.js';
+import { hasSettingsSnapshot } from '../../shared/settings.js';
+
+export function createTestBus(): AssistantEventBus {
+  let coreEventHandlers: CoreEventHandlers | null = null;
+  let coreRequestHandlers: CoreRequestHandlers | null = null;
+  let uiRequestHandlers: UiRequestHandlers | null = null;
+  const uiEventHandlers = new Map<string, Set<(event: UiEvent) => void>>();
+
+  const bus: AssistantEventBus = {
+    emitToUi(event: CoreEvent): void {
+      if (!coreEventHandlers) {
+        throw new Error(
+          `No core event handlers registered before emitToUi(${event.type}). ` +
+          'Call onCoreEvents() (WebViewUI bootstrap) before core emits events.'
+        );
+      }
+      const handler = (coreEventHandlers as Record<string, (e: CoreEvent) => void>)[event.type];
+      if (handler) {
+        handler(event);
+      }
+    },
+
+    request<T extends CoreRequest['type']>(
+      request: Extract<CoreRequest, { type: T }>,
+    ): Promise<CoreRequestResultMap[T]> {
+      if (!coreRequestHandlers) {
+        return Promise.reject(
+          new Error(
+            `No core request handlers registered before request(${request.type}). ` +
+            'Call onCoreRequests() (WebViewUI bootstrap) before core sends requests.'
+          ),
+        );
+      }
+      const handler = (coreRequestHandlers as Record<string, (r: CoreRequest) => Promise<unknown>>)[
+        request.type
+      ];
+      if (!handler) {
+        return Promise.reject(
+          new Error(`No handler registered for core request ${request.type}.`),
+        );
+      }
+      return handler(request) as Promise<CoreRequestResultMap[T]>;
+    },
+
+    onCoreEvents(handlers: CoreEventHandlers): Unsubscribe {
+      if (coreEventHandlers) {
+        throw new Error('Core event handlers already registered. onCoreEvents() must be called once.');
+      }
+      coreEventHandlers = handlers;
+      return () => {
+        if (coreEventHandlers === handlers) {
+          coreEventHandlers = null;
+        }
+      };
+    },
+
+    onCoreRequests(handlers: CoreRequestHandlers): void {
+      if (coreRequestHandlers) {
+        throw new Error('Core request handlers already registered. onCoreRequests() must be called once.');
+      }
+      coreRequestHandlers = handlers;
+    },
+
+    requestCore<T extends UiRequest['type']>(
+      request: Extract<UiRequest, { type: T }>,
+    ): Promise<UiRequestResultMap[T]> {
+      if (!uiRequestHandlers) {
+        return Promise.reject(
+          new Error(
+            `No UI request handlers registered before requestCore(${request.type}). ` +
+            'Call onUiRequests() before UI sends requests.',
+          ),
+        );
+      }
+      const handler = (uiRequestHandlers as Record<string, (r: UiRequest) => Promise<unknown>>)[
+        request.type
+      ];
+      if (!handler) {
+        return Promise.reject(
+          new Error(`No handler registered for UI request ${request.type}.`),
+        );
+      }
+      return handler(request) as Promise<UiRequestResultMap[T]>;
+    },
+
+    onUiRequests(handlers: UiRequestHandlers): void {
+      if (uiRequestHandlers) {
+        throw new Error('UI request handlers already registered. onUiRequests() must be called once.');
+      }
+      uiRequestHandlers = handlers;
+    },
+
+    emitToCore(event: UiEvent): void {
+      // 就绪前只接受宿主环境与配置快照（docs/architecture/core-ui-separation.md 第 7 节）：
+      // 其它 UiEvent 说明宿主接线顺序错了，直接抛错而不是静默生效。
+      if (event.type !== 'hostEnvironmentProvided' && !hasSettingsSnapshot()) {
+        throw new Error(
+          `UiEvent.${event.type} arrived before the Core is ready. ` +
+          'The host must send hostEnvironmentProvided first (docs/architecture/core-ui-separation.md §7).',
+        );
+      }
+      const handlers = uiEventHandlers.get(event.type);
+      if (!handlers) return; // 暂无订阅者：静默丢弃（合法中间态）
+      for (const handler of [...handlers]) {
+        try {
+          handler(event);
+        } catch (err) {
+          // 单个订阅者失败不阻断其它订阅者
+          console.error(`[testBus] UiEvent handler error (${event.type}):`, err);
+        }
+      }
+    },
+
+    onUiEvent<T extends UiEvent['type']>(
+      type: T,
+      handler: (event: Extract<UiEvent, { type: T }>) => void,
+    ): Unsubscribe {
+      let set = uiEventHandlers.get(type);
+      if (!set) {
+        set = new Set();
+        uiEventHandlers.set(type, set);
+      }
+      const wrapped = handler as (event: UiEvent) => void;
+      set.add(wrapped);
+      return () => {
+        const current = uiEventHandlers.get(type);
+        if (!current) return;
+        current.delete(wrapped);
+        if (current.size === 0) {
+          uiEventHandlers.delete(type);
+        }
+      };
+    },
+  };
+
+  return bus;
+}

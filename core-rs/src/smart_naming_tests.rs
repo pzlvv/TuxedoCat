@@ -47,7 +47,7 @@ fn counts_one_assistant_message_once_even_with_many_text_blocks() {
         { "type": "text", "text": "b" },
         { "type": "text", "text": "c" },
     ] } })];
-    // 每条 text block 各占一个名额（与 Embedded 的循环结构一致）
+    // 每条 text block 各占一个名额
     assert_eq!(
         collect_smart_naming_context(&messages),
         vec!["[助手]: a".to_string(), "[助手]: b".to_string(), "[助手]: c".to_string()],
@@ -112,7 +112,7 @@ fn an_invalid_json_object_falls_through_to_the_last_line() {
 
 #[test]
 fn title_pattern_tolerates_loose_whitespace() {
-    // `extract_title_pattern` 是 JSON 解析失败后的兜底（Embedded 里也近乎不可达），
+    // `extract_title_pattern` 是 JSON 解析失败后的兜底（近乎不可达），
     // 这里直接断言它的匹配口径：键 / 冒号 / 值前后的空白都容忍，值不能为空。
     assert_eq!(
         extract_title_pattern("xx {  \"title\"  :  \"查询天气\"  } yy").unwrap(),
@@ -205,7 +205,7 @@ fn returns_none_without_any_object() {
 
 #[test]
 fn system_prompt_is_not_localized() {
-    // 给模型的指令不随界面语言变化（对齐 Embedded 的固定中文 prompt）
+    // 给模型的指令不随界面语言变化（固定中文 prompt）
     assert!(SMART_NAMING_SYSTEM_PROMPT.contains("你是一个对话标题生成器"));
     assert!(SMART_NAMING_SYSTEM_PROMPT.ends_with("只输出 JSON："));
 }

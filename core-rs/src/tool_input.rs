@@ -1,7 +1,7 @@
-//! 工具入参的 schema 校验（对齐 Embedded 各工具 Zod `inputSchema.safeParse`）。
+//! 工具入参的 schema 校验（Zod `inputSchema.safeParse` 口径）。
 //!
-//! Embedded `RunTools.authorizeOne` 在执行前先跑 `tool.inputSchema.safeParse(input)`，
-//! 失败时产出 `InputValidationError: <zod issues JSON>` 并跳过该工具。这里逐字复刻
+//! 执行前先做 schema 校验，失败时产出 `InputValidationError: <zod issues JSON>` 并跳过该工具。
+//! 这里逐字复刻
 //! 7 个内置工具 schema 的校验结果：错误文案（`JSON.stringify(issues, null, 2)`）与
 //! 校验通过后的规范化数据（`coerce` / `default` 的产物）都与 TS 一致。
 //!

@@ -1,18 +1,11 @@
 //! 后台 Bash 任务：注册表、输出文件、完成通知。
 //!
-//! 对齐 Embedded 的三个模块：
-//! - `tools/bash/LocalShellTask.ts`：任务注册表 / 完成通知文案 / `markSessionBackground`
-//! - `tools/bash/TaskOutput.ts`：file mode 输出文件（`<TMPDIR>/<tmpTaskDirName>/<taskId>.output`）
-//! - `tools/bash/ShellCommand.ts`：进程生命周期（kill / 结果）
-//!
-//! 未移植的部分（Embedded 有、Rust 暂无消费方）：
-//! - `TaskOutput` 的 pipe mode（内存 buffer + 超限 spill 到磁盘）：Rust 的前台输出由
+//! 未实现的部分（暂无消费方）：
+//! - `TaskOutput` 的 pipe mode（内存 buffer + 超限 spill 到磁盘）：前台输出由
 //!   `tools::read_pipe` 直接读管道，后台输出由子进程直接写文件 fd，不需要这一层。
 //! - 5GB 磁盘看门狗（`SIZE_WATCHDOG_INTERVAL_MS`）：仅在后台输出文件异常膨胀时生效的
-//!   保护措施，Rust 侧暂无对应实现。
-//! - `TaskOutput` 的进度轮询（`ProgressCallback`）：Embedded 用它给后台任务上报
-//!   增量进度，Rust 侧后台任务不报进度（与 Embedded 的 `execBackground` 不传
-//!   `onProgress` 一致）。
+//!   保护措施，暂无对应实现。
+//! - `TaskOutput` 的进度轮询（`ProgressCallback`）：后台任务不报进度。
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -34,14 +27,12 @@ const NOTIFICATION_OUTPUT_CHARS: usize = 500;
 
 /// 后台任务周期性提醒的间隔（分钟）：第 1 次 5min，其后 10 / 20 / 30min，再往后固定 30min。
 ///
-/// 与 Embedded `BACKGROUND_REMINDER_INTERVALS_MIN` 逐项一致（`src/core/tools/bash/BackgroundReminder.ts`）。
 pub const BACKGROUND_REMINDER_INTERVALS_MIN: [u64; 4] = [5, 10, 20, 30];
 
 /// 同一任务两次提醒之间的最小间隔（查询结束兜底门槛）：距上次「访问」不足 3 分钟、
 /// 且不满足 sleep 豁免的任务，查询结束时不进兜底提醒列表——它刚被周期提醒报告过，
 /// 或本轮查询刚刚看过它。
 ///
-/// 与 Embedded `BackgroundReminder.BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS` 一致。
 pub const BACKGROUND_FALLBACK_REMINDER_MIN_INTERVAL_MS: u64 = 3 * 60_000;
 
 /// 任务是否满足查询结束的兜底门槛：距上次访问满最小间隔，或命令含 `sleep` 子命令、
@@ -141,11 +132,11 @@ pub enum TaskStatus {
     Running,
     Completed,
     Failed,
-    /// 被中止（对齐 Embedded 的 `status: 'killed'`）。
+    /// 被中止（落盘 `status: 'killed'`）。
     ///
     /// 生产路径上取不到该状态：`abort_tasks_for_session` 会**先移除记录再 kill**，
     /// 完成回调因此查不到记录（被中止的任务不发通知）。保留该变体是为了让
-    /// 「was stopped」文案分支与 Embedded 一一对应，并供单测构造。
+    /// 「was stopped」文案分支，并供单测构造。
     #[cfg_attr(not(test), allow(dead_code))]
     Killed,
 }
@@ -363,7 +354,7 @@ pub fn build_completion_notification(finished: &FinishedTask, stdout: &str) -> S
 // ==================== 周期性提醒 ====================
 
 /// 提醒时钟状态：`round` 是下一次提醒的序号，`accumulated_ms` 是自上次提醒以来
-/// 累积的「空闲」时长（对齐 Embedded `ReminderClock`）。
+/// 累积的「空闲」时长。
 #[derive(Clone, Debug, Default)]
 pub struct ReminderClock {
     pub round: usize,
@@ -374,7 +365,7 @@ pub struct ReminderClock {
 ///
 /// 时钟只由调用方在会话空闲时推进；query engine 有任务时调用方不累加，
 /// 因此这里不需要知道查询状态。一次推进可能跨过多个间隔（进程被挂起等），
-/// 逐档扣减，保证后续轮次不漂移。对齐 Embedded `advanceReminderClock`。
+/// 逐档扣减，保证后续轮次不漂移。
 pub fn advance_reminder_clock(clock: &mut ReminderClock, awake_ms: u64) -> Vec<usize> {
     let mut fired = Vec::new();
     clock.accumulated_ms = clock.accumulated_ms.saturating_add(awake_ms);
@@ -420,7 +411,7 @@ pub fn read_output_tail(task_id: &str, max_chars: usize) -> String {
 
 /// 构造后台任务的提醒文案（纯文本，纯函数）。
 ///
-/// 对齐 Embedded `buildBackgroundReminderText`：两侧逐字一致，差异即对等测试失败。
+/// 文案逐字锁定，差异即对照表测试失败。
 #[allow(clippy::too_many_arguments)]
 pub fn build_background_reminder_text(
     task_id: &str,
@@ -486,8 +477,8 @@ pub fn spawn_background(
         std::fs::create_dir_all(parent)
             .map_err(|err| format!("mkdir task output dir failed: {err}"))?;
     }
-    // file mode：子进程的 stdout/stderr 直接指向同一个文件句柄（共享文件偏移，
-    // 与 Embedded 的 `stdio: ['pipe', fd, fd]` 一致）。
+    // file mode：子进程的 stdout/stderr 直接指向同一个文件句柄（三个 fd 共享
+    // 同一个文件偏移）。
     let file = std::fs::File::create(&path)
         .map_err(|err| format!("Failed to open output file for background command: {err}"))?;
     let stdout = Stdio::from(

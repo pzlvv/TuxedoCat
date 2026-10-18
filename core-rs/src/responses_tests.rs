@@ -3,8 +3,8 @@ use serde_json::{json, Value};
 use super::*;
     use crate::util::IMAGE_TOKEN_ESTIMATE;
 
-/// 与 Embedded 共用同一份对照表（`src/test/fixtures/responsesParity.json`）。
-const FIXTURE: &str = include_str!("../../src/test/fixtures/responsesParity.json");
+/// 行为对照表（数据见 core-rs/fixtures/）。
+const FIXTURE: &str = include_str!("../fixtures/responses.json");
 
 fn fixture() -> Value {
     serde_json::from_str(FIXTURE).expect("responsesParity.json 解析失败")
@@ -139,13 +139,13 @@ mod parity_tests {
     }
 }
 
-// ==================== 单测（不依赖 Embedded） ====================
+// ==================== 单测 ====================
 
 mod unit_tests {
     use super::*;
 
     #[test]
-    fn assistant_max_text_chars_matches_embedded() {
+    fn assistant_max_text_chars_matches_spec() {
         assert_eq!(assistant_max_text_chars(), 40_000);
     }
 
@@ -176,9 +176,8 @@ mod unit_tests {
 
     #[test]
     fn convert_messages_tolerates_null_elements_in_tool_result_content() {
-        // Embedded 的 `toToolOutputPart(null)` 会读 `block.type` 抛 TypeError；
-        // Standalone 按 `JSON.stringify(null ?? '')` 处理，不让单个坏元素废掉整轮请求
-        // （见 `docs/core/core-parity.md` 第 2.9 节）。
+        // 单个 null 元素按 `JSON.stringify(null ?? '')` 处理，不让坏元素废掉整轮请求
+        // 。
         let messages = vec![json!({
             "role": "user",
             "content": [{

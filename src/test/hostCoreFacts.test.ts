@@ -1,133 +1,115 @@
 /**
- * 单测：宿主侧「core 事实」入口（`docs/core/standalone-core-boundaries.md` 第 2 节）。
+ * 单测：宿主侧「core 事实」入口（`docs/core/standalone-core-boundaries.md 第 2 节）。
  *
- * M15 把以下事实从「宿主直接 import core 的状态函数」改为经 `coreFacts` 统一取数：
- * - MCP 面板列表（配置 + 会话启用状态 + 运行时状态）→ `requestMcpServers`
- * - 对话空间统计 → `requestConversationSpaces`
- * - 会话挂起持久化收尾 → `requestFlushSession`
- *
- * 本用例覆盖 Embedded 分支（Standalone 分支由帧通道用例覆盖）；
- * HOME / USERPROFILE 指向临时目录，避免污染真实用户目录。
+ * 事实都在 Core 进程内：coreFacts 的每个取数函数都必须把同名 `UiRequest`
+ * 发上总线、把应答原样返回。这里用内存总线锁「函数 → UiRequest 类型」的
+ * 路由契约（帧通道侧的编解码由 standalone 系列用例覆盖）。
  *
  * 运行方式：npm run test:all -- hostCoreFacts
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
 import { createChecker, runTests } from './helpers/harness';
-import { applyTestSettings, makeTempDir, makeTestBus } from './helpers/fixtures';
-import { setGlobalEventBus } from '../core/AssistantEventBus';
-import { getConversationDir, setSessionWorkspace } from '../core/history/Config';
-import { appendMessage } from '../core/history/Conversation';
+import { makeTestBus } from './helpers/fixtures';
+import { setGlobalEventBus, type UiRequest, type UiRequestHandlers } from '../shared/AssistantEventBus';
 import {
   loadConversationForHost,
+  requestBalance,
+  requestCompactArchive,
   requestConversationSpaces,
   requestFlushSession,
+  loadConversationListForHost,
   requestMcpServers,
   requestSkills,
+  requestSmartNaming,
 } from '../host/coreFacts';
-import { CONFIG_DIR_NAME, CORE_ENV_VAR } from '../config/project';
-
-const home = makeTempDir('host-core-facts-home');
-process.env.USERPROFILE = home;
-process.env.HOME = home;
-process.env[CORE_ENV_VAR] = 'embedded';
 
 async function run(): Promise<void> {
   const { check, finish } = createChecker();
 
-  // ── 对话空间统计：只数会话 meta，空间清单（workspace.meta.json）不算会话 ──
-  const project = path.join(home, 'workspace');
-  fs.mkdirSync(project, { recursive: true });
-  const spaceDir = path.join(getConversationDir(), encodeURIComponent(project));
-  fs.mkdirSync(path.join(spaceDir, 'tool-results'), { recursive: true });
-  fs.writeFileSync(path.join(spaceDir, 'workspace.meta.json'), JSON.stringify({ workspacePath: project }));
-  fs.writeFileSync(path.join(spaceDir, 's1.meta.json'), '{}');
-  fs.writeFileSync(path.join(spaceDir, 's1.jsonl'), '{"uuid":"u"}\n');
-  fs.writeFileSync(path.join(spaceDir, 'tool-results', 't1.txt'), 'tool output');
-
-  // 项目目录已删除的空间：统计顺带核实「目录不存在」这个事实
-  const goneProject = path.join(home, 'gone-workspace');
-  const goneSpaceDir = path.join(getConversationDir(), encodeURIComponent(goneProject));
-  fs.mkdirSync(goneSpaceDir, { recursive: true });
-  fs.writeFileSync(path.join(goneSpaceDir, 'workspace.meta.json'), JSON.stringify({ workspacePath: goneProject }));
-  fs.writeFileSync(path.join(goneSpaceDir, 's9.meta.json'), '{}');
-
-  const spaces = await requestConversationSpaces('embedded');
-  check('统计出两个对话空间', spaces.length === 2);
-  const space = spaces.find((candidate) => candidate.projectPath === project);
-  check('空间目录名正确', space?.dirName === encodeURIComponent(project));
-  check('项目路径取自 workspace.meta.json', space?.projectPath === project);
-  check('会话数只数 *.meta.json（不含空间清单）', space?.conversationCount === 1);
-  check('文件数包含子目录文件', (space?.fileCount ?? 0) >= 3);
-  check('字节数大于 0', (space?.sizeBytes ?? 0) > 0);
-  check('存在的项目目录不标记缺失', space?.workspaceMissing === false);
-  const goneSpace = spaces.find((candidate) => candidate.projectPath === goneProject);
-  check('已删除的项目目录标记缺失', goneSpace?.workspaceMissing === true);
-
-  // ── MCP 面板列表：快照里的定义 + 全局默认启用 + 运行时缺省值 ──
-  applyTestSettings(
-    { mcp: { enabled: ['alpha'] } },
-    {
-      mcp: {
-        alpha: { type: 'local', command: ['npx', 'alpha'] },
-        beta: { type: 'remote', url: 'https://beta.example' },
-      },
+  const { bus } = makeTestBus();
+  /** 收到的 UiRequest（按到达顺序），按类型回一个可识别的应答 */
+  const sent: UiRequest[] = [];
+  const handlers: UiRequestHandlers = {
+    conversationListRequested: async (req) => {
+      sent.push(req);
+      return [{ sessionId: 'c1', title: 't' } as never];
     },
-  );
-  const servers = await requestMcpServers(undefined, 'embedded');
-  check('列出两个 MCP server', servers.length === 2);
-  const alpha = servers.find((server) => server.name === 'alpha');
-  const beta = servers.find((server) => server.name === 'beta');
-  check('全局默认启用列表生效', alpha?.enabled === true);
-  check('未启用的 server 标记为 false', beta?.enabled === false);
-  check('未连接时补 running=false', alpha?.running === false);
-  check('未连接时补 toolCount=0', alpha?.toolCount === 0);
-  check('未连接时补 error=null', alpha?.error === null);
-  check('未连接时补 refCount=0', alpha?.refCount === 0);
+    conversationLoadRequested: async (req) => {
+      sent.push(req);
+      return {
+        messages: [],
+        metadata: null,
+        pendingToolUseIds: [],
+        hasCompactArchive: false,
+        agentMode: null,
+      };
+    },
+    smartNamingRequested: async (req) => {
+      sent.push(req);
+      return { title: 'named' };
+    },
+    balanceRequested: async (req) => {
+      sent.push(req);
+      return null;
+    },
+    compactArchiveRequested: async (req) => {
+      sent.push(req);
+      return null;
+    },
+    mcpServersRequested: async (req) => {
+      sent.push(req);
+      return [];
+    },
+    conversationSpacesRequested: async (req) => {
+      sent.push(req);
+      return [];
+    },
+    flushSessionRequested: async (req) => {
+      sent.push(req);
+      return null;
+    },
+    skillsRequested: async (req) => {
+      sent.push(req);
+      return { skills: [] };
+    },
+  };
+  bus.onUiRequests(handlers);
+  setGlobalEventBus(bus);
 
-  // ── 会话加载：消息 + 元数据 + 派生事实 ──
-  // `appendMessage` 走总线广播列表变化：这里注册一个只记录的总线
-  setGlobalEventBus(makeTestBus().bus);
-  setSessionWorkspace('s-load', project);
-  await appendMessage(
-    {
-      type: 'user',
-      uuid: 'u1',
-      message: { role: 'user', content: 'hello' },
-    } as never,
-    's-load',
-  );
-  const loaded = await loadConversationForHost('s-load', 'embedded');
-  check('加载出会话消息', loaded.messages.length === 1);
-  check('消息内容正确', (loaded.messages[0] as { uuid?: string } | undefined)?.uuid === 'u1');
-  check('元数据带上标题', typeof loaded.metadata?.title === 'string' && loaded.metadata.title.length > 0);
-  check('没有待执行工具', loaded.pendingToolUseIds.length === 0);
-  check('没有压缩归档', loaded.hasCompactArchive === false);
-  check('询问模式有权威取值或 null', loaded.agentMode === null || typeof loaded.agentMode === 'string');
+  // 每个取数函数发出同名 UiRequest，载荷带上路由键
+  const list = await loadConversationListForHost('/ws');
+  check('对话列表走 conversationListRequested', list.length === 1 && list[0].sessionId === 'c1');
+  check('列表请求带工作区', (sent.at(-1) as { workspacePath?: string })?.workspacePath === '/ws');
 
-  // ── 斜杠命令与技能列表：内置项 + 项目技能目录 ──
-  const skillDir = path.join(project, CONFIG_DIR_NAME, 'skills', 'demo');
-  fs.mkdirSync(skillDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(skillDir, 'SKILL.md'),
-    '---\nname: demo\ndescription: demo skill\n---\nbody\n',
-  );
-  const skills = await requestSkills('s-load', 'embedded');
-  check('列出内置命令', skills.some((skill) => skill.isBuiltin === true));
-  check('列出内置技能', skills.some((skill) => skill.isBuiltin === false));
-  check('列出项目技能', skills.some((skill) => skill.name === 'demo'));
-  check('列表项字段完整', skills.every((skill) => !!skill.name && typeof skill.description === 'string'));
+  const loaded = await loadConversationForHost('s1');
+  check('会话加载走 conversationLoadRequested', loaded.messages.length === 0);
+  check('加载请求带会话', (sent.at(-1) as { sessionId?: string })?.sessionId === 's1');
 
-  // ── 会话挂起持久化收尾：会话不存在时也算完成 ──
-  let flushed = false;
-  try {
-    await requestFlushSession('no-such-session', 'embedded');
-    flushed = true;
-  } catch {
-    flushed = false;
-  }
-  check('flush 不存在的会话不抛错', flushed);
+  const title = await requestSmartNaming('s1');
+  check('智能命名走 smartNamingRequested 并回传标题', title === 'named');
+
+  const balance = await requestBalance('s1');
+  check('余额走 balanceRequested', balance === null);
+
+  const archive = await requestCompactArchive('s1');
+  check('归档展开走 compactArchiveRequested', archive === null);
+
+  const servers = await requestMcpServers('s1');
+  check('MCP 列表走 mcpServersRequested', servers.length === 0);
+
+  const spaces = await requestConversationSpaces();
+  check('空间统计走 conversationSpacesRequested', spaces.length === 0);
+
+  await requestFlushSession('s1');
+  check('落盘收尾走 flushSessionRequested', sent.at(-1)?.type === 'flushSessionRequested');
+
+  const skills = await requestSkills('s1');
+  check('技能列表走 skillsRequested', skills.length === 0);
+
+  check(
+    '路由契约齐全（9 类请求各到一次）',
+    new Set(sent.map((req) => req.type)).size === 9,
+  );
 
   finish();
 }

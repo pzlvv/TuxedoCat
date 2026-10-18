@@ -15,7 +15,7 @@
 ## 技术栈
 
 - TypeScript
-- Rust（Standalone Core，见 `docs/core/standalone-core.md`）
+- Rust（Core，见 `docs/core/standalone-core.md`）
 - VS Code Extension API
 - Electron + electron-builder
 - React + Vite
@@ -31,7 +31,7 @@
 
 - Node.js 18+
 - npm 9+
-- Rust 工具链（构建 Standalone Core；目标矩阵见 [docs/core/standalone-core.md 第 4.1 节](docs/core/standalone-core.md#41-平台矩阵)）
+- Rust 工具链（构建 Core；目标矩阵见 [docs/core/standalone-core.md 第 3.1 节](docs/core/standalone-core.md#31-平台矩阵)）
 - Git LFS（克隆后拉取 `resources/` 下的大文件）
 
 ## 快速开始
@@ -58,23 +58,19 @@ npm run build
 npm run build:all
 ```
 
-## Standalone Core
+## Core（Rust）
 
-Core 有两种实现，由 `src/host/coreKind.ts` 的 `CORE_KIND` 装配（默认 `standalone`）：
-`embedded` 为 `src/core` 的 TypeScript 实现（与 UI 同进程），`standalone` 为 `core-rs/`
-的 Rust 实现（独立进程，经帧通道通信）。规格见 `docs/core/standalone-core.md`。
+Core 只有 Rust 一套实现（`core-rs/`），以独立进程形态运行、经帧通道与 UI 通信。
+规格见 `docs/core/standalone-core.md`。
 
 ```bash
-# 构建 Standalone Core（产物落在 resources/<core.resourceDir>/<arch>-<platform>/）
+# 构建 Core（产物落在 resources/<core.resourceDir>/<arch>-<platform>/）
 # 默认构建打包要携带的全部平台（x64-win32 / x64-linux / arm64-linux）；只建当前平台用 npm run build:core:host
 npm run build:core
 
 # 独立运行（帮助 / 版本 / 远程模式）
 ./resources/core/x64-win32/<core.binaryName>.exe --help
 ./resources/core/x64-win32/<core.binaryName>.exe --version
-
-# 开发 / 测试时临时切回进程内实现
-<envPrefix>_<core.envVarSuffix>=embedded npm run dev:electron
 
 # Rust 侧单测
 cd core-rs && cargo test
@@ -141,22 +137,6 @@ npm run package:ext
 npm run package:app
 ```
 
-打包默认装配 Standalone Core（Rust，独立进程）。要产出 Embedded Core
-（`src/core` 的 TypeScript 实现，与 UI 同进程）的变体，加 `:embedded` 后缀：
-
-```bash
-# 同时产出 embedded 的 .vsix 与 Electron 安装包
-npm run package:embedded
-
-# 只产出其中一种
-npm run package:ext:embedded
-npm run package:app:embedded
-```
-
-变体由构建期环境变量 `<envPrefix>_<core.envVarSuffix>` 选择，产物分开落位、互不覆盖：
-standalone → `release/`，embedded → `release/embedded/`。embedded 变体不构建
-也不打包 Rust Core。
-
 `npm run package:x64` 产出与 `npm run package` 同一组发布物，但按架构分发的安装器
 只出 x64：Electron 安装包只出 NSIS x64（`package:app:x64`），TUI 安装器只出 x64
 两平台（`package:tui:x64`）。`.vsix` 架构无关，包里携带的 Core 是远端 SSH 部署
@@ -173,7 +153,7 @@ npm run package:tui:x64
 
 Standalone 变体的包里要同时有全部三个平台的 core（`x64-win32` / `x64-linux` /
 `arm64-linux`）。`build:core` 默认就构建全部携带目标（Windows 上直接交叉编译 Linux，
-需要 zig，见 [docs/core/standalone-core.md 第 4.3 节](docs/core/standalone-core.md#43-构建与目标平台)），无需先单独构建：
+需要 zig，见 [docs/core/standalone-core.md 第 3.3 节](docs/core/standalone-core.md#33-构建与目标平台)），无需先单独构建：
 
 ```bash
 npm run package

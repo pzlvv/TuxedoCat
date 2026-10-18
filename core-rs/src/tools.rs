@@ -1,6 +1,6 @@
 //! 内置工具：定义、路径展开与执行。
 //!
-//! 与 Embedded Core 对齐的部分：工具名、输入 schema 字段、Read 的行号格式、
+//! 契约锁定部分：工具名、输入 schema 字段、Read 的行号格式、
 //! 工具结果上限（前 2K + 后 2K）。搜索类工具复用随 Core 分发的 ripgrep 产物
 //! （部署布局里与指纹槽位共享的 `ripgrep/` 目录，见 `ripgrep_path`）。
 
@@ -17,7 +17,7 @@ use serde_json::{json, Map, Value};
 use crate::config;
 use crate::util;
 
-/// Read 的窗口上限（与 Embedded 的 `tools/read/limits.ts` 一致）
+/// Read 的窗口上限
 const READ_MAX_SIZE_BYTES: u64 = 256 * 1024;
 const READ_MAX_LINES: usize = 2000;
 const READ_MAX_LINE_CHARS: usize = 2000;
@@ -27,7 +27,7 @@ const READ_MAX_IMAGE_BYTES: u64 = 15 * 1024 * 1024;
 /// 工具结果上限：前 2K + 后 2K
 pub const TOOL_RESULT_HEAD: usize = 2048;
 pub const TOOL_RESULT_TAIL: usize = 2048;
-/// 工具结果统一上限（对齐 Embedded 的 `MAX_RESULT_SIZE_CHARS`，4K）
+/// 工具结果统一上限
 pub const MAX_RESULT_SIZE_CHARS: usize = 4 * 1024;
 /// 持久化文件最大大小（对齐 `toolResultStorage.ts` 的 `MAX_PERSISTED_SIZE`，64MB）
 const MAX_PERSISTED_SIZE: usize = 64 * 1024 * 1024;
@@ -40,7 +40,7 @@ const AUTO_BG_MIN_RUNNING_MS: u64 = 3000;
 ///
 /// 对齐 `src/core/tools/RunTools.ts` 的持久化分支与 `toolResultStorage.ts` 的消息格式。
 pub fn cap_tool_result(text: &str, session_id: &str, project: &str, tool_name: &str) -> String {
-    // 对齐 Embedded：阈值按 JS `.length`（UTF-16 code unit），不是字节数 / 字符数。
+    // 阈值按 JS `.length`（UTF-16 code unit），不是字节数 / 字符数。
     if util::utf16_len(text) <= MAX_RESULT_SIZE_CHARS {
         return text.to_string();
     }
@@ -66,7 +66,7 @@ fn persist_large_output(
     let task_id = format!("tool-{tool_name}-{}", util::unique_id("").trim_start_matches('_'));
     let filepath = dir.join(format!("{session_id}__{task_id}.txt"));
 
-    // 对齐 Embedded `persistLargeOutput`：`originalSize = stdout.length`（UTF-16）。
+    // `originalSize = stdout.length`（UTF-16）。
     let total = util::utf16_len(text);
     let content_to_write = if total > MAX_PERSISTED_SIZE {
         let mut truncated: String = util::utf16_take(text, MAX_PERSISTED_SIZE);
@@ -95,7 +95,7 @@ fn build_large_tool_result_message(filepath: &str, text: &str) -> String {
     )
 }
 
-/// Bash 流式进度（对齐 Embedded `Tool.ts` 的 `BashProgress`）。
+/// Bash 流式进度。
 ///
 /// `output` 是本次读到的增量（UI 直接追加），`full_output` 是累计输出的
 /// 4K 预览（前 2K + 后 2K），规模信息按**完整**输出统计。
@@ -115,8 +115,7 @@ pub struct BashProgress {
 /// （走 `CoreRequest.userChoice` 帧），单测可注入桩。
 pub type UserChoiceFn = std::sync::Arc<dyn Fn(&Value) -> Option<Value> + Send + Sync>;
 
-/// 手工转后台的循环暂停信号（对齐 Embedded `QueryEngine.requestLoopPause` /
-/// `consumeLoopPauseRequest`）。
+/// 手工转后台的循环暂停信号。
 ///
 /// 置位方：前台 Bash 手工转后台成功（`UiEvent.bashBackgroundRequested` →
 /// `auto_background_command(manual = true)`）；消费方：查询循环在工具批收尾、
@@ -158,7 +157,7 @@ impl LoopPauseSignal {
 
 // ==================== 手工转后台注册表 ====================
 
-/// 前台 Bash 执行的手工转后台注册表（对齐 Embedded `tools/bash/ManualBackground.ts`）：
+/// 前台 Bash 执行的手工转后台注册表：
 /// `tool_use_id -> 请求标记`。`run_bash` spawn 后登记、收尾时注销；
 /// `request_manual_background` 置位后由前台等待循环在下一个 30ms 轮询点转入后台。
 static MANUAL_BG: Mutex<Vec<(String, std::sync::Arc<std::sync::atomic::AtomicBool>)>> =
@@ -184,8 +183,8 @@ fn unregister_manual_bg(tool_use_id: Option<&str>) {
     }
 }
 
-/// 该 tool_use_id 是否仍有一台前台执行在跑（对齐 Embedded `isForegroundBashRunning`；
-/// 供单测等待登记完成）
+/// 该 tool_use_id 是否仍有一台前台执行在跑
+/// （供单测等待登记完成）
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn is_foreground_bash_running(tool_use_id: &str) -> bool {
     MANUAL_BG
@@ -220,7 +219,7 @@ pub struct SubAgentRequest {
 
 /// 子代理工具（`Agent` / `Reply`）的引擎钩子。
 ///
-/// 单测不注入时这两个工具报错（与 Embedded「找不到引擎」一致）。
+/// 单测不注入时这两个工具报错（「找不到引擎」）。
 pub struct SubAgentHooks {
     /// 建子会话 + 起后台查询，返回子会话 id
     pub spawn: std::sync::Arc<dyn Fn(SubAgentRequest) -> Result<String, String> + Send + Sync>,
@@ -232,13 +231,13 @@ pub struct SubAgentHooks {
 pub struct ToolContext {
     pub session_id: String,
     pub cwd: String,
-    /// 当前工具调用的 tool_use id（对齐 Embedded `ToolUseContext.toolUseId`）。
+    /// 当前工具调用的 tool_use id。
     /// 前台 Bash 用它登记「手工转后台」注册表；缺省（单测 / 未知调用方）时不登记。
     pub tool_use_id: Option<String>,
     /// 流式进度回调（Bash 用）。单测不设置时不上报。
     pub on_progress: Option<std::sync::Arc<dyn Fn(BashProgress) + Send + Sync>>,
     /// 会话取消标记（`abortRequested` 置位）。Bash 在等待子进程时轮询它，
-    /// 命中即杀掉子进程并按「被中断」收尾（对齐 Embedded 的 abort → `onAbort` → kill）。
+    /// 命中即杀掉子进程并按「被中断」收尾。
     /// 单测不设置时视为「不取消」。
     pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// 手工转后台的循环暂停信号（`SessionState.pause_loop` 的克隆）。
@@ -258,7 +257,7 @@ pub enum ToolOutcome {
     Success(String),
     /// 成功，且 tool_result block 需要额外字段。
     ///
-    /// 对齐 Embedded：`mapToolResultToToolResultBlockParam` 返回的多余键会被原样
+    /// `mapToolResultToToolResultBlockParam` 返回的多余键会被原样
     /// 拷进 tool_result block（如 Edit 的 `startLine` / `endLine` / `beforeContent`、
     /// Write 的 `beforeContent`）。这些字段只服务 UI 的 diff 展示与回滚，
     /// **不**参与 4K 裁剪，也**不**进 LLM 请求（见 `engine::NON_LLM_BLOCK_FIELDS`）。
@@ -269,25 +268,25 @@ pub enum ToolOutcome {
     Error(String),
     /// 成功，且 tool_result 的 `content` 是**结构化 block 数组**（当前只有 Read 的图片）。
     ///
-    /// 对齐 Embedded 的 `Read.mapToolResultToToolResultBlockParam`：图片以
+    /// 图片以
     /// `[{type:"image", source:{type:"base64", media_type, data}}]` 返回，
     /// 让模型直接看到图片，而不是把 base64 当文本塞进上下文。
-    /// 该分支不参与 4K 文本裁剪（与 Embedded 对数组 content 的处理一致）。
+    /// 该分支不参与 4K 文本裁剪。
     SuccessBlocks(Value),
     /// 命令执行完成但退出码非零 / 被中断（Bash）。
     ///
-    /// 与 Embedded 一致：UI 的 `toolResult` 状态是 `error`，但 tool_result block
+    /// UI 的 `toolResult` 状态是 `error`，但 tool_result block
     /// 不带 `is_error`，而是携带真实的 `exit_code`。
     CommandFailed { text: String, exit_code: i32 },
     /// 排队等待期间被中止（specs/005 的 Agent 并发槽位）。
     ///
-    /// 对齐 Embedded：排队调用随父会话前台中止而取消——UI `toolResult` 状态
+    /// 排队调用随父会话前台中止而取消——UI `toolResult` 状态
     /// `error`、`exit_code` -1、block `is_canceled: true`，文案与 `RunTools`
     /// 批取消逐字一致（不加 `Error executing` 前缀）。
     Canceled(String),
     /// 成功，且工具额外产出了要注入对话的消息（当前只有 Skill 的 prompt 注入）。
     ///
-    /// 对齐 Embedded `RunTools`：`toolResult.newMessages` 会在该工具的 tool_result
+    /// `toolResult.newMessages` 会在该工具的 tool_result
     /// 消息**之后**逐条 yield 进对话（`{ type: 'user', ..., isMeta: true }`），
     /// 使后续 LLM 调用能读到技能正文。
     SuccessWithMessages {
@@ -299,7 +298,7 @@ pub enum ToolOutcome {
 impl ToolOutcome {
     /// tool_result block 的 `is_error`（仅「工具本身失败」为真，非零退出不算）。
     ///
-    /// 注意：Embedded 的工具循环并不写 `is_error`，此方法只用于测试与语义判断。
+    /// 注意：工具循环并不写 `is_error`，此方法只用于测试与语义判断。
     #[allow(dead_code)]
     pub fn is_error(&self) -> bool {
         matches!(self, ToolOutcome::Error(_))
@@ -388,7 +387,6 @@ pub fn definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "Bash",
-            // 与 Embedded 的 `getDescription({})`（bash/Prompt.ts）一致
             "description": "Execute Bash shell commands",
             "input_schema": {
                 "type": "object",
@@ -482,7 +480,7 @@ pub fn definitions() -> Vec<Value> {
         json!({
             "name": "TodoWrite",
             "description": "Create and manage a structured task list to track progress and organize complex work.",
-            // Embedded 的 `zodToJsonSchema` 不展开数组元素，todos 只声明为 array；
+            // todos 只声明为 array（不展开数组元素）；
             // 元素字段（content / activeForm / status）由运行期校验，见 run_todo_write。
             "input_schema": {
                 "type": "object",
@@ -494,14 +492,13 @@ pub fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "Agent",
-            // 与 Embedded 的 `DESCRIPTION`（agent/Prompt.ts）一致
             "description": "Create a new sub-agent that runs autonomously in the background.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "prompt": { "type": "string", "description": "The task for the agent to perform" },
                     "description": { "type": "string", "description": "A short (3-5 word) description of the task" },
-                    // Embedded 的 `z.enum(['Master'])`：zodToJsonSchema 不展开 enum，
+                    // enum 不展开：agentRole 只声明为 string，
                     // 只产出 string（取值由运行期校验，见 permission::base_check）
                     "agentRole": { "type": "string", "description": "The role of the agent to spawn" }
                 },
@@ -510,7 +507,6 @@ pub fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "Reply",
-            // 与 Embedded 的 `DESCRIPTION`（agent/ReplyTool.ts）一致
             "description": "Send a message to a target session.",
             "input_schema": {
                 "type": "object",
@@ -523,9 +519,8 @@ pub fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "AskUserQuestion",
-            // 与 Embedded 的 `getDescription()`（askuser/Prompt.ts）一致
             "description": "Ask the user a question and wait for their response.",
-            // Embedded 的 `zodToJsonSchema` 不展开数组元素：choices 只声明为 array，
+            // choices 只声明为 array（不展开数组元素），
             // 元素字段（label / description）由运行期校验，见 tool_input::check_choices。
             "input_schema": {
                 "type": "object",
@@ -536,11 +531,10 @@ pub fn definitions() -> Vec<Value> {
                 "required": ["question"]
             }
         }),
-        // Skill **必须**是最后一项（对齐 Embedded `DEFAULT_TOOLS` 的运行时不变式：
-        // `generate-prompt.ts` 依赖它排除动态 Skill 内容）。新增工具请插在它前面。
+        // Skill **必须**是最后一项（提示词组装依赖它排除动态 Skill 内容）。
+        // 新增工具请插在它前面。
         json!({
             "name": "Skill",
-            // 与 Embedded 的 `description({})`（skill/SkillTool.ts）一致：
             // 无 `skill` 入参时返回固定文案（**没有**句末句点）
             "description": "Execute a skill (slash command)",
             "input_schema": {
@@ -555,8 +549,8 @@ pub fn definitions() -> Vec<Value> {
     ]
 }
 
-/// `Skill` 工具必须是工具列表的最后一项（对齐 Embedded `tools/index.ts` 的
-/// 模块加载期不变式：末尾不是 SkillTool 时直接抛错）。
+/// `Skill` 工具必须是工具列表的最后一项（模块加载期不变式：
+/// 末尾不是 Skill 时直接抛错）。
 #[cfg(test)]
 pub fn assert_skill_tool_is_last() {
     let tools = definitions();
@@ -586,14 +580,13 @@ pub fn execute(name: &str, input: &Value, ctx: &ToolContext) -> ToolOutcome {
         "Reply" => run_reply(input, ctx),
         "AskUserQuestion" => run_ask_user_question(input, ctx),
         "Skill" => run_skill(input, ctx),
-        // 对齐 Embedded `RunTools.authorizeOne` 的工具不存在分支：
         // `Error: Tool "<name>" not found`（不是「执行失败」，不加 `Error executing` 前缀）。
         other => ToolOutcome::Error(format!("Error: Tool \"{other}\" not found")),
     }
 }
 
-/// 是否可以与相邻的同类工具**并行**执行（对齐 Embedded 各工具的
-/// `isConcurrencySafe`；`Tool.ts` 的默认实现返回 `false`）。
+/// 是否可以与相邻的同类工具**并行**执行（各工具的
+/// `isConcurrencySafe`，默认返回 `false`）。
 ///
 /// - `Read` / `Grep` / `Glob`：恒为真（纯读取）；
 /// - `Bash`：等同 `isReadOnly(input)`（`bash/Validation.ts::isConcurrencySafe`）；
@@ -630,7 +623,7 @@ pub fn is_known(name: &str) -> bool {
     known.iter().any(|known_name| known_name == name)
 }
 
-/// 工具的语义校验（对齐 Embedded 各工具的 `validateInput`）。
+/// 工具的语义校验。
 ///
 /// - Bash（`tools/bash/Validation.ts`）：命令非空 + 长度不超过 10000；
 /// - AskUserQuestion（`askuser/AskUserQuestion.ts`）：问题非空（纯空白也算空）；
@@ -902,7 +895,7 @@ fn input_bool(input: &Value, key: &str) -> Option<bool> {
 
 // ==================== Bash ====================
 
-/// 从单个子命令段提取第一个命令名（对齐 Embedded `SleepDetect.extractCommandName`）：
+/// 从单个子命令段提取第一个命令名：
 /// 先去掉 `FOO=1` 形式的环境变量前缀，再取第一个空白分隔的词，最后去掉包裹引号。
 fn extract_command_name(segment: &str) -> String {
     // 全程用 ECMAScript 空白口径（与 `SleepDetect.extractCommandName` 的
@@ -967,9 +960,9 @@ fn extract_command_name(segment: &str) -> String {
 
 /// 命令是否包含 `sleep` 子命令（按 `;` `&&` `||` `|` 拆分后任一段首词为 `sleep`）。
 ///
-/// 对齐 Embedded `SleepDetect.containsSleepCommand`：含 `sleep` 的命令**不设前台超时**，
-/// 让 `sleep` 自然完成（Embedded 会在后台任务完成 / 子代理 Reply 通知时把它转入后台，
-/// 本阶段无该通知通道，但「不设超时」的口径必须一致）。
+/// 含 `sleep` 的命令**不设前台超时**，
+/// 让 `sleep` 自然完成（本阶段无后台任务完成 / 子代理 Reply
+/// 通知的自动转后台通道）。
 /// 兜底提醒的门槛判定（`bash_task::qualifies_fallback_reminder`）也复用它。
 pub(crate) fn contains_sleep_command(command: &str) -> bool {
     crate::permission::split_by_separators(command)
@@ -992,7 +985,7 @@ fn deadline_passed(deadline: Option<std::time::Instant>) -> bool {
         .unwrap_or(false)
 }
 
-/// 通知驱动的自动转后台判定（对齐 Embedded `Exec.execForeground` 的两个监听）：
+/// 通知驱动的自动转后台判定：
 /// - 普通命令：有后台任务完成、且本命令已运行 ≥ `AUTO_BG_MIN_RUNNING_MS` → 转后台；
 /// - sleep 命令（不设前台超时）：本会话的后台任务完成 → **立刻**转后台。
 fn should_auto_background(
@@ -1013,13 +1006,12 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let Some(command) = input_str(input, "command") else {
         return ToolOutcome::Error("Bash: \"command\" is required".to_string());
     };
-    // 对齐 Embedded `Bash.call` 的 `const cwd = input.cwd || context.cwd`：
     // `input.cwd` **原样**交给子进程——相对路径由 OS 按 Core 进程的 cwd 解析
     // （不是会话工作目录），`~` 也不展开；空串是假值，回退会话工作目录。
     let cwd = input_str(input, "cwd")
         .filter(|path| !path.is_empty())
         .unwrap_or_else(|| ctx.cwd.clone());
-    // 前台超时策略（对齐 Embedded `Bash.call`）：
+    // 前台超时策略：
     // - 命令含 `sleep` 子命令：不设超时（`SLEEP_NO_TIMEOUT_MS = 0`），让 sleep 自然完成；
     // - 其余命令：默认 60s（`DEFAULT_BASH_TIMEOUT_MS`）。
     // `timeout` 不在对外 schema 里，仅保留内部覆盖（测试用），显式给出时优先。
@@ -1028,7 +1020,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
 
     // 后台模式（`run_in_background`）：子进程 detached、stdout/stderr 直接写输出文件，
     // 立刻返回 taskId，完成后经 `ToolContext.background.notify` 注入通知
-    // （对齐 Embedded `execCommand` 的 `runInBackground` 分支）。
+    // 。
     if js_coerce_bool(input.get("run_in_background")) {
         let description = input_str(input, "description")
             .filter(|value| !value.is_empty())
@@ -1041,7 +1033,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             ctx.background.clone(),
         ) {
             Ok(task_id) => ToolOutcome::Success(background_result_text(&task_id, "", "", false, None)),
-            // 对齐 Embedded：spawn / 打开输出文件失败时 stdout 为空、退出码 1，
+            // spawn / 打开输出文件失败时 stdout 为空、退出码 1，
             // 错误文本走普通拼接路径（`Result.ts` 会再补一行 `Exit code: 1`）。
             Err(error) => ToolOutcome::CommandFailed {
                 text: format!("{error}\nExit code: 1"),
@@ -1069,7 +1061,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     // 必须与子进程并发读取 stdout / stderr：否则输出超过管道缓冲区时子进程阻塞在
     // write，父进程又等它退出，双方互等（大输出命令如 `git log` / `ls -R` 会挂到超时）。
     //
-    // 同时按块上报 `toolProgress`（对齐 Embedded 的 `BashProgress`）：
+    // 同时按块上报 `toolProgress`：
     // 两个流共用一份累计缓冲，`fullOutput` 是它的 4K 预览。
     let started = std::time::Instant::now();
     let full_output = std::sync::Arc::new(std::sync::Mutex::new(PipeSink::default()));
@@ -1089,8 +1081,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         std::thread::spawn(move || read_pipe(pipe, full, progress, started, timeout_ms, stop))
     });
 
-    // 通知驱动的自动转后台（对齐 Embedded 的 `onBackgroundTaskCompleted` 监听 +
-    // `watchSleepNotifications`）：
+    // 通知驱动的自动转后台：
     // - 普通命令：有后台任务完成、且本命令已运行 ≥ `AUTO_BG_MIN_RUNNING_MS` → 转后台；
     // - sleep 命令：本会话的后台任务完成 → **立刻**转后台（不设最短运行时长），
     //   避免 sleep 阻塞模型处理通知。
@@ -1126,7 +1117,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let manual_bg = ctx.tool_use_id.as_deref().map(register_manual_bg);
 
     // `timeout` 来自工具输入，可能极大；用 checked_add 避免 Instant 溢出 panic。
-    // `timeout_ms == 0` 表示不设超时（对齐 Embedded 的 `SLEEP_NO_TIMEOUT_MS`）。
+    // `timeout_ms == 0` 表示不设超时。
     let deadline = if timeout_ms == 0 {
         None
     } else {
@@ -1139,7 +1130,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     // `read`，直到孙进程退出）。因此「等子进程退出」与「等管道 EOF」共用同一套判定：
     // 中止、前台超时、通知驱动转后台都不依赖子进程是否还活着。只在前一阶段判定的话，
     // 一条已经退出的命令会让 abort 与前台超时全部失效
-    // （对齐 Embedded `Exec.ts`：定时器与 abort 监听在 spawn 后立刻挂上，与子进程状态无关）。
+    // 。
     loop {
         let child_exited = match child.try_wait() {
             Ok(status) => status.is_some(),
@@ -1163,7 +1154,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             break;
         }
         // 会话被中止（`abortRequested`）：按「被中断」收尾
-        // （对齐 Embedded 的 abort → `onAbort` → kill → exitCode 130）。
+        // 。
         // 子进程还活着就杀掉；子进程已退出、只是孙进程仍持有管道时，停掉读线程、
         // 用已累积输出收尾——两种情形都要能让 abort 立刻生效。
         if cancel_requested(&cancel) {
@@ -1205,7 +1196,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     // 被中止：**不等**管道读完。被杀的子进程可能留下仍持有管道的孙进程
     // （Windows 上 `bash -c "sleep 30"` 的 `sleep` 就是孙进程），等待会一直阻塞到
     // 孙进程自己退出——abort 会因此「看起来没生效」。这里用已累积的共享输出快照收尾，
-    // 与 Embedded 的 abort 路径一致（直接 resolve 已累积的 `fullOutput`）。
+    // abort 路径直接用已累积的 `fullOutput` 收尾。
     let (stdout, stderr) = if cancelled {
         (full_output.lock().unwrap().full.clone(), String::new())
     } else {
@@ -1221,9 +1212,8 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         )
     };
 
-    // 输出口径对齐 Embedded 的 `bash/Result.ts` + `RunTools`：
-    //   mapToolResultToToolResultBlockParam 先 trim 出内容（空则 `(无输出)`），
-    //   随后 RunTools 再对被中断的结果追加 `\nCommand was interrupted`。
+    // 输出口径：先 trim 出内容（空则 `(无输出)`），
+    //   再对被中断的结果追加 `\nCommand was interrupted`。
     //   因此「空输出 + 被中断」的结果是 `(无输出)\nCommand was interrupted`，
     //   而不是把 `Command was interrupted` 单独当内容。
     let mut output = stdout;
@@ -1236,7 +1226,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     if status != 0 && !cancelled {
         output.push_str(&format!("\nExit code: {status}"));
     }
-    // 对齐 Embedded `Result.ts` 的 `output.trim()`（JS 空白口径）
+    // `output.trim()`（JS 空白口径）
     let trimmed = crate::util::js_trim(&output);
     let mut content = if trimmed.is_empty() {
         "(无输出)".to_string()
@@ -1246,8 +1236,8 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     if cancelled {
         content.push_str("\nCommand was interrupted");
     }
-    // 非零退出 / 中断：UI 状态为 error（但 tool_result 不带 is_error，与 Embedded 一致）。
-    // 会话中止：Embedded `Exec.ts` 的 `onAbort` 用退出码 130。
+    // 非零退出 / 中断：UI 状态为 error（但 tool_result 不带 is_error）。
+    // 会话中止：退出码 130。
     //
     // 注意：前台命令**不会**因超时被杀——超时会转入后台继续跑（见 `auto_background_command`），
     // 退出码 124 只出现在「转入后台失败」的分支。
@@ -1263,9 +1253,9 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
 
 /// 前台管道的共享汇。
 ///
-/// `full` 是两个流共用的累计输出（保证 `fullOutput` 与 Embedded 一样按到达顺序拼接）；
+/// `full` 是两个流共用的累计输出（`fullOutput` 按到达顺序拼接）；
 /// `file` 在「自动转后台」时置位——之后每个块除了进 `full`，还会**原样字节**追加到
-/// 输出文件（对齐 Embedded 把 `child.stdout/stderr` 的 `data` 写进 `fileHandle`）。
+/// 输出文件。
 ///
 /// 二者共用同一把锁是刻意的：转入后台时必须「把已累积输出写进文件」与「挂上文件句柄」
 /// 原子完成，否则读取线程在两步之间读到的块会既不在文件里、也不在最终结果里。
@@ -1275,14 +1265,14 @@ struct PipeSink {
     file: Option<std::fs::File>,
 }
 
-/// Bash 工具的 `description`（缺省回退命令本身，对齐 Embedded `input.description || command`）
+/// Bash 工具的 `description`（缺省回退命令本身）
 fn description_of(input: &Value, command: &str) -> String {
     input_str(input, "description")
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| command.to_string())
 }
 
-/// 前台命令转入后台继续执行（对齐 Embedded `Exec.autoBackgroundCommand`）。
+/// 前台命令转入后台继续执行。
 ///
 /// 触发条件：前台预算超时、（sleep / 普通命令的）后台任务完成通知，或用户在
 /// Bash 卡片上点「转后台」（`manual = true`，`UiEvent.bashBackgroundRequested`）。
@@ -1310,7 +1300,7 @@ fn auto_background_command(
     let task_id = crate::bash_task::generate_auto_task_id();
     let path = crate::bash_task::task_output_path(&task_id);
 
-    // 打开输出文件失败：杀掉子进程按「超时失败」收尾（对齐 Embedded 的 fallback）
+    // 打开输出文件失败：杀掉子进程按「超时失败」收尾
     let mut file = match path
         .parent()
         .map(std::fs::create_dir_all)
@@ -1355,16 +1345,14 @@ fn auto_background_command(
 
     // 手工转后台成功：置循环暂停信号（工具结果照常进上下文，下一轮 LLM 请求
     // 不发起）。`source_task` 随暂停信号带给消费方，由它把该任务登记为「已兜底」：
-    // 消费收尾的兜底提醒不再为它立刻补 reminder（对齐 Embedded
-    // `Exec.triggerAutoBackground('user-requested')` 的 `requestLoopPause` +
-    // `markBackgroundTasksFallbackReminded`）。
+    // 消费收尾的兜底提醒不再为它立刻补 reminder。
     if manual {
         if let Some(pause) = &ctx.pause {
             pause.request(Some(task_id.clone()));
         }
     }
 
-    // `find` 提示（对齐 Embedded：命令里出现 `find` 时提醒模型重新读需求）。
+    // `find` 提示（命令里出现 `find` 时提醒模型重新读需求）。
     // 已累积的输出（含命令自身的 stderr）都在 `stdout` 里，这里只回传提示；
     // 「已转入后台」的说明由 `background_result_text` 拼一次。
     let reminder = if contains_find_word(command) {
@@ -1434,7 +1422,7 @@ fn js_coerce_bool(value: Option<&Value>) -> bool {
 /// 后台命令的 tool_result 文案（对齐 `tools/bash/Result.ts` 的 `backgroundTaskId` 分支）。
 ///
 /// - `stdout` 是「转入后台前已累积的输出」：必须拼在提示**之前**，否则 Bash 卡片会从
-///   流式阶段的高度突变为几行文本（Embedded 的原注释即为此）；
+///   流式阶段的高度突变为几行文本；
 /// - `auto_backgrounded` 为真时用「已自动转入后台」文案（`elapsed_ms` 是转入后台前
 ///   已在前台运行的时长），并把 `stderr`（命令自身的错误输出 + `find` 提示）附在末尾。
 fn background_result_text(
@@ -1484,7 +1472,7 @@ fn background_result_text(
 }
 
 /// 逐块读一个子进程管道：累积到 `full`（stdout / stderr 共用，保证 `fullOutput`
-/// 与 Embedded 一样是「按到达顺序拼接」的完整输出），并按块回调进度。
+/// 是「按到达顺序拼接」的完整输出），并按块回调进度。
 ///
 /// 返回值是该管道自己的完整字节（最终结果仍按 stdout / stderr 分开拼接）。
 /// `stop` 置位后立即停止读取（中止 / 超时收尾），不再上报进度。
@@ -1513,7 +1501,7 @@ fn read_pipe(
                     let mut full = full.lock().unwrap();
                     full.full.push_str(&chunk);
                     // 已转入后台：原始字节追加到输出文件（不经过 lossy 解码，
-                    // 与 Embedded 直接写 `data` Buffer 一致）
+                    // 等价于直接写 `data` Buffer）
                     if let Some(file) = full.file.as_mut() {
                         let _ = file.write_all(&buffer[..size]);
                         let _ = file.flush();
@@ -1530,7 +1518,7 @@ fn read_pipe(
                         ),
                         elapsed_time_seconds: started.elapsed().as_secs_f64(),
                         total_lines: snapshot.split('\n').count(),
-                        // 对齐 Embedded `Exec.ts` 的 `totalBytes: fullOutput.length`（UTF-16）
+                        // `totalBytes: fullOutput.length`（UTF-16）
                         total_bytes: util::utf16_len(&snapshot),
                         timeout_ms,
                     });
@@ -1547,10 +1535,10 @@ fn read_pipe(
 ///
 /// 真正的工作在引擎侧的后台线程里（`engine::run_sub_agent`）：跑消费循环 →
 /// 检查是否调用过 `Reply` → 必要时注入 Reminder 重试。
-/// 排队等待期间被中止的工具结果文案（与 Embedded `RunTools` 批取消逐字一致）
+/// 排队等待期间被中止的工具结果文案
 const CANCEL_RESULT_MESSAGE: &str = "Tool was canceled due to abort";
 
-/// `Agent` 工具：创建子代理（对齐 Embedded `AgentTool.call`）。
+/// `Agent` 工具：创建子代理。
 fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let Some(prompt) = input.get("prompt").and_then(Value::as_str) else {
         return ToolOutcome::Error("prompt is required and must be a string".to_string());
@@ -1578,7 +1566,7 @@ fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
 
     // specs/005：并发槽位——建子代理前先取槽位；同父会话并行子代理超过
     // SUBAGENT_CONCURRENCY_LIMIT 时在本调用内排队（FIFO），等待期间随父会话
-    // 取消标记退出（文案与 Embedded 逐字一致），不建子代理会话。
+    // 取消标记退出（文案逐字锁定），不建子代理会话。
     // `ctx.cancel` 缺省（单测 / 未知调用方）时视为不取消。
     let cancel_never = std::sync::atomic::AtomicBool::new(false);
     let cancel = ctx.cancel.as_deref().unwrap_or(&cancel_never);
@@ -1677,14 +1665,14 @@ fn is_image_extension(path: &Path) -> Option<&'static str> {
     }
 }
 
-/// 图片合法性校验（对齐 Embedded 的 `tools/read/imageValidation.ts`）。
+/// 图片合法性校验。
 ///
 /// Read 按扩展名给图片定 `media_type`，但扩展名不是事实——发给 LLM 的 image
 /// content block 一旦不是真图片，provider 会整轮报错。这里补一层「魔数 + 结构
 /// 完整性」校验：文件头必须匹配声明的格式，且声明长度 / 结束标记必须自洽。
 ///
 /// 返回 `None` 表示通过，否则是失败原因标识（两侧共享，见
-/// `src/test/fixtures/imageValidation.json` 与 docs/core/core-parity.md 第 4 节）。
+/// 行为对照表 `core-rs/fixtures/imageValidation.json`）。
 pub fn image_validation_failure(bytes: &[u8], media_type: &str) -> Option<&'static str> {
     match media_type {
         "image/png" => validate_png(bytes),
@@ -1696,8 +1684,7 @@ pub fn image_validation_failure(bytes: &[u8], media_type: &str) -> Option<&'stat
     }
 }
 
-/// 失败原因标识 -> 工具错误消息里的英文说明（与 Embedded 的
-/// `IMAGE_VALIDATION_REASON_TEXT` 逐字一致）
+/// 失败原因标识 -> 工具错误消息里的英文说明（逐字锁定）
 fn image_validation_reason_text(reason: &str) -> &'static str {
     match reason {
         "signature" => "file signature does not match the format",
@@ -1718,7 +1705,7 @@ const PNG_TEXT_CHUNK_TYPES: [[u8; 4]; 3] = [*b"tEXt", *b"zTXt", *b"iTXt"];
 /// 逐块遍历 PNG（前置：签名已匹配），返回 `(块起点, 块尾后一位, 块类型)` 列表。
 ///
 /// 块格式为「长度(4, BE) + 类型(4) + 数据(length) + CRC(4)」。校验与文本块剥离共用
-/// 这一份遍历——两侧对「块边界」的判断必须同源（docs/core/core-parity.md 第 4 节）。
+/// 这一份遍历——「块边界」判断的行为对照表是 `core-rs/fixtures/pngTextChunkStrip.json`。
 fn png_chunk_bounds(bytes: &[u8]) -> Result<Vec<(usize, usize, [u8; 4])>, &'static str> {
     let mut chunks = Vec::new();
     let mut offset = PNG_SIGNATURE.len();
@@ -1772,8 +1759,8 @@ fn validate_png(bytes: &[u8]) -> Option<&'static str> {
 /// 这三类块只承载文本注释，对模型看图没有价值，却可能让 base64 载荷膨胀到数百 KB。
 /// 整块移除不触碰保留块的字节，因此保留块的 CRC 仍然有效、图片渲染结果不变；块类型
 /// 按 ASCII 精确匹配（大小写敏感），与块出现的位置、数量无关；没有可剥离的块时原样
-/// 返回输入字节。判定与 Embedded 的 `stripPngTextChunks` 同语义，两侧共用对照表
-/// `src/test/fixtures/pngTextChunkStrip.json`。
+/// 返回输入字节。行为对照表在
+/// `core-rs/fixtures/pngTextChunkStrip.json`。
 ///
 /// 前置条件：`bytes` 已通过 [`image_validation_failure`]（结构自洽）。
 pub fn strip_png_text_chunks(bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
@@ -2041,9 +2028,9 @@ fn is_binary_proto(buffer: &[u8], total_bytes: usize) -> bool {
 
 /// 二进制判定（逐分支移植 `isbinaryfile` 的 `isBinaryCheck`，只读前 512 字节）。
 ///
-/// Embedded 的 `Read.call` 用 `isbinaryfile` 判定：BOM / `%PDF-` / 无 BOM 的
+/// 判定项：BOM / `%PDF-` / 无 BOM 的
 /// UTF-16 / 可疑字节比例 / protobuf 嗅探。图片分支也在这个判定之内——
-/// 扩展名像图片但内容是文本时，Embedded 会按文本读，这里同样如此。
+/// 扩展名像图片但内容是文本时按文本读。
 fn is_binary_content(bytes: &[u8]) -> bool {
     if bytes.is_empty() {
         return false;
@@ -2162,7 +2149,7 @@ fn build_bounded_window(lines: &[&str]) -> (String, usize, bool) {
             break;
         }
         let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
-        // 对齐 Embedded `truncateLine`：按 JS `.length`（UTF-16 code unit）判定与截断。
+        // 按 JS `.length`（UTF-16 code unit）判定与截断。
         let text = if util::utf16_len(line) > READ_MAX_LINE_CHARS {
             format!(
                 "{}... (line truncated to {READ_MAX_LINE_CHARS} chars)",
@@ -2218,10 +2205,10 @@ const XLSX_MAX_LINES: usize = 50;
 /// 单列最大宽度（避免极端情况撑爆输出）
 const XLSX_MAX_COL_WIDTH: usize = 120;
 
-/// xlsx 读取结果（对齐 Embedded `readXlsxContent` 的返回中**进入 tool_result** 的部分）。
+/// xlsx 读取结果。
 ///
-/// Embedded 的 `data` 还带 `sheetName` / `sheets`，但 `mapToolResultToToolResultBlockParam`
-/// 与 UI 渲染都不消费它们，Standalone 的 tool_result 管线也无处承载，故不保留。
+/// `sheetName` / `sheets` 不进结果结构：
+/// UI 渲染与 tool_result 管线都不消费它们，无处承载，故不保留。
 struct XlsxReadResult {
     content: String,
     line_count: usize,
@@ -2360,7 +2347,7 @@ fn format_xlsx_data(
     (content, line_count, first_line, total_lines, truncated_by_bytes)
 }
 
-/// 读取 xlsx/xlsm（对齐 Embedded `readXlsxContent`）。
+/// 读取 xlsx/xlsm。
 fn read_xlsx_content(
     path: &Path,
     offset: Option<u64>,
@@ -2420,8 +2407,7 @@ fn read_xlsx_content(
 }
 
 fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
-    // 支持 file_path 与 path 两种参数名（对齐 Embedded Read.ts 的
-    // `input.file_path || input.path`：空串是假值，会回退到 path）。
+    // 支持 file_path 与 path 两种参数名（空串是假值，会回退到 path）。
     let file_path = input_str(input, "file_path")
         .filter(|value| !value.is_empty())
         .or_else(|| input_str(input, "path").filter(|value| !value.is_empty()));
@@ -2464,14 +2450,14 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         return ToolOutcome::Error(format!("File not found: {}", path.display()));
     }
 
-    // 对齐 Embedded：`isbinaryfile` 对非普通文件（目录 / 设备等）抛
+    // `isbinaryfile` 对非普通文件（目录 / 设备等）抛
     // `Path provided was not a file!`。此前直接 `fs::read` 会返回平台相关的
     // 权限 / EISDIR 文案（Windows 是「拒绝访问。(os error 5)」）。
     if !path.is_file() {
         return ToolOutcome::Error("Path provided was not a file!".to_string());
     }
 
-    // xlsx / xlsm：绕过二进制检查与常规文本读取（对齐 Embedded `readXlsxContent`）
+    // xlsx / xlsm：绕过二进制检查与常规文本读取
     if is_xlsx {
         let sheet = input_str(input, "sheet").filter(|value| !value.is_empty());
         return match read_xlsx_content(&path, offset, limit, sheet.as_deref()) {
@@ -2492,8 +2478,8 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     };
 
     if is_binary_content(&bytes) {
-        // 与 Embedded 一致：只有**内容确实是二进制**的图片才走 image content block；
-        // 扩展名像图片但内容是文本时按文本读（Embedded 的图片分支在 isbinaryfile 之内）。
+        // 只有**内容确实是二进制**的图片才走 image content block；
+        // 扩展名像图片但内容是文本时按文本读（图片分支在二进制判定之内）。
         if let Some(media_type) = media_type {
             if bytes.len() as u64 > READ_MAX_IMAGE_BYTES {
                 return ToolOutcome::Error(format!(
@@ -2502,7 +2488,7 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
                 ));
             }
             // 扩展名不是事实：内容与扩展名声明的格式不符时不发 image block，
-            // 否则 provider 会因非法图片整轮报错（docs/core/core-parity.md 第 4 节）
+            // 否则 provider 会因非法图片整轮报错（对照表 `core-rs/fixtures/imageValidation.json`）
             if let Some(reason) = image_validation_failure(&bytes, media_type) {
                 return ToolOutcome::Error(format!(
                     "Invalid image file: {file_path}. The content is not a valid {media_type} image ({}).",
@@ -2539,7 +2525,7 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         ));
     }
 
-    // 与 Embedded 一致：整体读取后按 `\n` 切分（保留末尾空行），再取 offset/limit 窗口。
+    // 整体读取后按 `\n` 切分（保留末尾空行），再取 offset/limit 窗口。
     let file_content = String::from_utf8_lossy(&bytes).to_string();
     let lines: Vec<&str> = file_content.split('\n').collect();
     let total_lines = lines.len();
@@ -2592,7 +2578,7 @@ pub fn base64_encode(bytes: &[u8]) -> String {
 // ==================== Write ====================
 
 fn run_write(input: &Value, ctx: &ToolContext) -> ToolOutcome {
-    // 对齐 Embedded `Write.call`：`!file_path` 视为缺参（空串也是假值）
+    // `!file_path` 视为缺参（空串也是假值）
     let Some(file_path) = input_str(input, "file_path").filter(|value| !value.is_empty()) else {
         return ToolOutcome::Error("file_path is required and must be a string".to_string());
     };
@@ -2602,7 +2588,7 @@ fn run_write(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let path = expand_path(&ctx.cwd, &file_path);
     let action = if path.exists() { "update" } else { "create" };
     // 写入前的原始内容（文件不存在时为 null），用于 UI 的 diff 展示与回滚
-    // （对齐 Embedded `Write.call` 里的 `beforeContent`）。
+    // 。
     let before_content = std::fs::read_to_string(&path).ok();
     if let Some(parent) = path.parent() {
         if let Err(err) = std::fs::create_dir_all(parent) {
@@ -2658,7 +2644,7 @@ fn uses_crlf(text: &str) -> bool {
     crlf > lf
 }
 
-/// 按 `\n` 统计行数（空串算 1 行，对齐 Embedded 的 `countLines`）
+/// 按 `\n` 统计行数（空串算 1 行）
 fn count_lines(text: &str) -> usize {
     if text.is_empty() {
         1
@@ -2667,7 +2653,7 @@ fn count_lines(text: &str) -> usize {
     }
 }
 
-/// `replace_all` 入参解析（逐分支对齐 Embedded 的 `resolveReplaceAll`）。
+/// `replace_all` 入参解析（字符串感知转换）。
 ///
 /// `pub(crate)`：权限阶段的 `Edit` 匹配校验也要用同一口径（见 `edit_match_error`）。
 pub(crate) fn resolve_replace_all(value: Option<&Value>) -> bool {
@@ -2689,7 +2675,7 @@ pub(crate) fn resolve_replace_all(value: Option<&Value>) -> bool {
     }
 }
 
-/// Edit 的匹配校验（对齐 Embedded `Edit.checkPermissions` → `computeEdit` 的两条
+/// Edit 的匹配校验（两条
 /// 前置错误）：`old_string` 在搜索窗口内找不到、或多处匹配且未 `replace_all` 时，
 /// `checkPermissions` 直接 deny（**不弹确认框**，也就不会被 auto / risk 放行）。
 ///
@@ -2730,7 +2716,7 @@ pub fn edit_match_error(
     None
 }
 
-/// `Edit.checkPermissions` 的预览产物（对齐 Embedded `ComputedEdit` + 上下文行）。
+/// `Edit.checkPermissions` 的预览产物。
 ///
 /// 这些字段随 `CoreRequest.toolPermissionRequested` 的 `permResult` 下发：
 /// 宿主据此写 tool_use 的 `_meta`（回滚与卡片 diff 用），webview 据此渲染 diff。
@@ -2741,13 +2727,13 @@ pub struct EditPermissionPreview {
     pub after_content: String,
     pub context_before: Vec<String>,
     pub context_after: Vec<String>,
-    /// `CRLF` / `LF`（对齐 Embedded `detectLineEndings`）
+    /// `CRLF` / `LF`
     pub line_endings: &'static str,
     pub start_line: usize,
     pub end_line: usize,
 }
 
-/// 上下文行是否有实际内容（对齐 Embedded `isMeaningfulContextLine`）
+/// 上下文行是否有实际内容
 fn is_meaningful_context_line(line: &str) -> bool {
     let trimmed = crate::util::js_trim(line);
     !trimmed.is_empty() && trimmed != "undefined"
@@ -2793,7 +2779,7 @@ fn get_context_lines_after(content: &str, start_index: usize, max_lines: usize) 
     result
 }
 
-/// Edit 的权限预览（对齐 Embedded `Edit.checkPermissions` 的 `computeEdit` 预览分支）：
+/// Edit 的权限预览：
 /// 与 `edit_match_error` / `run_edit` 共用同一套匹配、替换、行号口径，只读不写盘。
 pub fn edit_permission_preview(
     content: &str,
@@ -2918,7 +2904,7 @@ fn lcs_len(a: &[&str], b: &[&str]) -> Option<usize> {
 /// LCS DP 的单元数上限（约 4000×4000 行窗口）。
 const LCS_CELL_LIMIT: usize = 16_000_000;
 
-/// 按 1-based 行范围截取内容片段（对齐 Embedded 的 `sliceContentByLineRange`）。
+/// 按 1-based 行范围截取内容片段。
 ///
 /// 行定义与 diff 库一致：每行包含行尾换行符；文件末尾无换行符时最后一行不含。
 fn slice_by_line_range(content: &str, start_line: usize, end_line: usize) -> String {
@@ -2960,7 +2946,7 @@ fn slice_by_line_range(content: &str, start_line: usize, end_line: usize) -> Str
 /// 编辑区域前后各 3 行的上下文窗口（对齐 `diff.ts` 的 `CONTEXT_LINES`）
 const DIFF_CONTEXT_LINES: usize = 3;
 
-/// 增删行数（对齐 Embedded `Edit.editFileContent` 的
+/// 增删行数（按 diff 的
 /// `getPatchFromContents(...) → countLinesChanged(...)`）。
 ///
 /// jsdiff 的 `structuredPatch` 产出**最短编辑脚本**，因此增删行数由最长公共子序列
@@ -3074,7 +3060,7 @@ fn line_range_from_index(content: &str, start_index: usize, length: usize) -> (u
 }
 
 fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
-    // 对齐 Embedded `Edit.call`：file_path 空串视为缺参（old_string / new_string
+    // file_path 空串视为缺参（old_string / new_string
     // 允许空串——空 old_string 是「插入」语义）。
     let Some(file_path) = input_str(input, "file_path").filter(|value| !value.is_empty()) else {
         return ToolOutcome::Error("file_path is required and must be a string".to_string());
@@ -3083,7 +3069,7 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         return ToolOutcome::Error("old_string is required".to_string());
     };
     let new_string_raw = input_str(input, "new_string").unwrap_or_default();
-    // 与 Embedded 的 `resolveReplaceAll`（edit/Edit.ts）逐分支对齐：字符串感知转换，
+    // 字符串感知转换，
     // 而不是 Boolean(value)——`Boolean("false") === true` 会让显式传字符串 "false"
     // 的调用变成全量替换。
     let replace_all = resolve_replace_all(input.get("replace_all"));
@@ -3092,7 +3078,7 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let path = expand_path(&ctx.cwd, &file_path);
     let content = match std::fs::read_to_string(&path) {
         Ok(text) => text,
-        // 对齐 Embedded：Edit 用 `fs.readFile` 读盘，文件不存在时 Node 抛
+        // Edit 用 `fs.readFile` 读盘，文件不存在时 Node 抛
         // `ENOENT: no such file or directory, open '<path>'`。此前 Rust 返回
         // 平台相关的 `Edit: read failed: 系统找不到指定的文件。`。
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -3180,12 +3166,12 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     } else {
         line_range_from_index(&normalized, first_match_index, old_string.len())
     };
-    // 换行符还原（Embedded 先还原再算 diff：CRLF 文件里 oldContent 是 LF、
+    // 换行符还原（先还原再算 diff：CRLF 文件里 oldContent 是 LF、
     // newContent 是 CRLF，diff 因此把整段都算成变化——这里刻意复刻该行为）。
     if crlf {
         updated = updated.replace('\n', "\r\n");
     }
-    // 增删行数：与 Embedded 的 diff 口径一致（见 `count_lines_changed`）。
+    // 增删行数：diff 口径（见 `count_lines_changed`）。
     // 先按 diff 窗口计算；窗口过大时回退到「按行数 × 替换次数」的近似值。
     let line_delta = count_lines(&new_string) as i64 - count_lines(&old_string) as i64;
     let (old_end_line, new_end_line) = if replacements_made <= 1 {
@@ -3234,10 +3220,10 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             } else {
                 format!("Edited lines {start_line}-{end_line}")
             };
-            // 额外字段对齐 Embedded 的 `mapToolResultToToolResultBlockParam`：
+            // 额外字段：
             // `startLine` / `endLine` 供 UI 跳转选中，`beforeContent`（规范化后的
-            // 原始内容）供历史恢复时重算 diff。Embedded 只在 beforeContent 为真值时
-            // 才写入该键（空文件编辑时省略），这里保持一致。
+            // 原始内容）供历史恢复时重算 diff。只在 beforeContent 为真值时
+            // 才写入该键（空文件编辑时省略）。
             let mut extra = Map::new();
             extra.insert("startLine".to_string(), json!(start_line));
             extra.insert("endLine".to_string(), json!(end_line));
@@ -3307,7 +3293,7 @@ fn ripgrep_candidates(core_dir: Option<&Path>, extension_path: Option<&str>) -> 
     if let Some(extension_path) = extension_path {
         // 逐段 join（不要用 `"dist/resources/ripgrep"` 这种含 `/` 的单段字符串）：
         // Windows 上 `path.join` 产出的是反斜杠，错误文案里的命令行才能与
-        // Embedded 的 `path.join(...)` 完全一致。
+        // 与 `path.join(...)` 的产物完全一致。
         let sub_dir = platform_dir();
         let base = Path::new(extension_path);
         candidates.push(
@@ -3339,16 +3325,16 @@ pub fn ripgrep_path() -> String {
     "rg".to_string()
 }
 
-/// ripgrep 单次搜索上限（与 Embedded 的 20s 超时对齐）
+/// ripgrep 单次搜索上限
 const RIPGREP_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// 执行 ripgrep。
 ///
-/// 与 Embedded 的 `utils/ripgrep.ts` 一致：**不设置 `current_dir`**，让 rg 继承
+/// **不设置 `current_dir`**，让 rg 继承
 /// Core 进程的工作目录（宿主启动 Core 时也不指定 cwd，因此两边看到同一个 cwd）。
 /// 这一点会影响 `--glob` 的语义：ripgrep 对含 `/` 的 glob 模式是相对「当前工作
 /// 目录」而非搜索根匹配的。此前把 cwd 设成搜索根，`sub/*.txt` 在 Standalone 能
-/// 命中、在 Embedded 命中不到（宿主 cwd 下没有 `sub/`），两套实现结果不同。
+/// 命中（宿主 cwd 下没有 `sub/`），此前设成搜索根时结果不同。
 fn run_ripgrep(args: &[String]) -> Result<String, String> {
     let executable = ripgrep_path();
     let mut cmd = Command::new(&executable);
@@ -3419,7 +3405,7 @@ fn run_ripgrep(args: &[String]) -> Result<String, String> {
     }
     if code != Some(0) {
         // 对齐 Node `execFile` 的失败文案：`Command failed: <cmd> <args...>\n<stderr>`
-        // （stderr 原样保留，包含结尾换行；Embedded 侧由 Grep/Glob 抛出该 Error）。
+        // （stderr 原样保留，包含结尾换行）。
         let mut command_line = executable.clone();
         for arg in args {
             command_line.push(' ');
@@ -3430,15 +3416,15 @@ fn run_ripgrep(args: &[String]) -> Result<String, String> {
     Ok(stdout)
 }
 
-/// 把 ripgrep 的 stdout 解析成行，逐字对齐 Embedded `utils/ripgrep.ts`：
+/// 把 ripgrep 的 stdout 解析成行：
 /// `stdout.trim().split('\n').filter((line) => line.length > 0)`。
 ///
 /// 两个容易忽略的点：
 /// - 先对整个 stdout 做 **JS 口径**的 trim（含最后一行的尾随空格与 CRLF）。
 ///   rg 的 content 输出会原样带出匹配行的尾随空格；Rust 的 `.lines()` 不会去掉，
-///   而 Embedded 的 `.trim()` 会。
+///   而 JS 口径的 `.trim()` 会。
 /// - 按 `\n` 切分（**不是** `str::lines()`）：中间行的 `\r`（CRLF 文件里的匹配行）
-///   Embedded 原样保留，`.lines()` 会把 `\r` 吃掉。
+///   JS 口径原样保留，`.lines()` 会把 `\r` 吃掉。
 fn ripgrep_lines(stdout: &str) -> Vec<String> {
     crate::util::js_trim(stdout)
         .split('\n')
@@ -3470,10 +3456,10 @@ fn strip_search_root(search_path: &str, line: &str) -> String {
     }
 }
 
-/// 把 glob 参数按 Embedded 的规则拆成多个 `--glob`（空白分隔，非 `{...}` 再按 `,` 拆）
+/// 把 glob 参数拆成多个 `--glob`（空白分隔，非 `{...}` 再按 `,` 拆）
 fn split_glob_patterns(glob: &str) -> Vec<String> {
     let mut out = Vec::new();
-    // 对齐 Embedded `glob.split(/\s+/)`：JS 空白口径（U+0085 / U+FEFF 行为与
+    // JS 空白口径（U+0085 / U+FEFF 行为与
     // Rust `split_whitespace` 相反）
     for raw in glob
         .split(crate::util::is_js_whitespace)
@@ -3512,7 +3498,7 @@ fn apply_head_limit(
     (sliced, if was_truncated { Some(effective) } else { None })
 }
 
-/// 分页说明串（对齐 Embedded 的 `limit: X, offset: Y`；未分页时为空串）
+/// 分页说明串
 fn pagination_info(applied_limit: Option<u64>, offset: usize) -> String {
     if applied_limit.is_none() && offset == 0 {
         String::new()
@@ -3525,14 +3511,14 @@ fn pagination_info(applied_limit: Option<u64>, offset: usize) -> String {
 }
 
 fn run_grep(input: &Value, ctx: &ToolContext) -> ToolOutcome {
-    // 对齐 Embedded `Grep.call`：`!pattern` 视为缺参（空串是假值）
+    // `!pattern` 视为缺参（空串是假值）
     let Some(pattern) = input_str(input, "pattern").filter(|value| !value.is_empty()) else {
         return ToolOutcome::Error("pattern is required and must be a string".to_string());
     };
     let search_path = input_str(input, "path")
         .map(|path| expand_path(&ctx.cwd, &path).to_string_lossy().to_string())
         .unwrap_or_else(|| ctx.cwd.clone());
-    // Embedded 默认 files_with_matches
+    // 缺省 files_with_matches
     let mode = input_str(input, "output_mode").unwrap_or_else(|| "files_with_matches".to_string());
     let case_insensitive = input_bool(input, "-i").unwrap_or(false);
     let show_line_numbers = input_bool(input, "-n").unwrap_or(true);
@@ -3540,7 +3526,7 @@ fn run_grep(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let head_limit = input_u64(input, "head_limit");
     let offset = input_u64(input, "offset").unwrap_or(0) as usize;
 
-    // 参数与顺序对齐 Embedded `Grep.call`（`--color` / `--` 都不传：rg 在非 TTY
+    // 参数与顺序（`--color` / `--` 都不传：rg 在非 TTY
     // 下本就不上色，且错误文案会带上完整命令行，多一个参数就不一致）。
     let mut args: Vec<String> = vec!["--hidden".into()];
     for dir in [".git", ".svn", ".hg", ".bzr", ".jj", ".sl"] {
@@ -3583,7 +3569,7 @@ fn run_grep(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         }
     }
     // 以 `-` 开头的 pattern 会被 rg 当作选项解析（`--pre=<cmd>` 可执行任意程序），
-    // 因此与 Embedded 一致：加 `-e` 显式声明为模式。
+    // 因此加 `-e` 显式声明为模式。
     if pattern.starts_with('-') {
         args.push("-e".into());
         args.push(pattern);
@@ -3609,11 +3595,10 @@ fn run_grep(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             let limit_info = pagination_info(applied_limit, offset);
             match mode.as_str() {
                 "content" => {
-                    // 相对路径：对齐 Embedded `path.relative(searchPath, filePath)` 的
-                    // **结果**（rg 以绝对搜索根返回绝对路径，这里剥掉根前缀）。
+                    // 相对路径：剥掉搜索根前缀（rg 以绝对搜索根返回绝对路径）。
                     //
-                    // 刻意不复刻 Embedded content 模式的实现：它用 `line.indexOf(':')`
-                    // 截出「文件路径」，在 Windows 绝对路径（`D:\...`）上会把盘符后的
+                    // 不用 `line.indexOf(':')` 截「文件路径」：
+                    // 在 Windows 绝对路径（`D:\...`）上会把盘符后的
                     // `:` 当成字段分隔符，再交给 `path.relative` 解析，产出
                     // `D:\<process.cwd>\D:\...\a.txt:1:...` 这类错乱路径（搜索目录与
                     // 进程工作目录不同盘时尤其明显）。count / files 模式用
@@ -3723,7 +3708,7 @@ fn extract_glob_base_directory(pattern: &str) -> (String, String) {
 }
 
 fn run_glob(input: &Value, ctx: &ToolContext) -> ToolOutcome {
-    // 对齐 Embedded `Glob.call`：`!pattern` 视为缺参（空串是假值）
+    // `!pattern` 视为缺参（空串是假值）
     let Some(pattern) = input_str(input, "pattern").filter(|value| !value.is_empty()) else {
         return ToolOutcome::Error("pattern is required and must be a string".to_string());
     };
@@ -3739,7 +3724,7 @@ fn run_glob(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         }
     }
 
-    // 参数与顺序对齐 Embedded `Glob.call`（不传 `--color` / `--`）
+    // 参数与顺序（不传 `--color` / `--`）
     let args: Vec<String> = vec![
         "--files".into(),
         "--glob".into(),
@@ -3819,7 +3804,7 @@ fn run_todo_write(input: &Value, session_id: &str) -> ToolOutcome {
         return ToolOutcome::Error("todos is required and must be an array".to_string());
     };
 
-    // 运行期校验（对齐 Embedded 的 zod schema：content / activeForm 非空，status 枚举）
+    // 运行期校验
     for (index, item) in items.iter().enumerate() {
         let content_ok = item
             .get("content")
@@ -3853,7 +3838,7 @@ fn run_todo_write(input: &Value, session_id: &str) -> ToolOutcome {
         }
     }
 
-    // 全部完成时清空存储（对齐 Embedded：`newTodos = allDone ? [] : todos`）
+    // 全部完成时清空存储（`newTodos = allDone ? [] : todos`）
     let all_done = !items.is_empty()
         && items
             .iter()
@@ -3878,7 +3863,7 @@ fn run_todo_write(input: &Value, session_id: &str) -> ToolOutcome {
         "\n\nCurrent todo list: {total} items ({completed} completed, {in_progress} in progress, {pending} pending)"
     ));
     if total > 0 {
-        // 对齐 Embedded `mapToolResultToToolResultBlockParam`：标题行自带一个 `\n`
+        // 标题行自带一个 `\n`
         // （`'\n\nTasks:\n'`），随后每个条目再以 `\n` 开头，因此标题与第 1 条之间
         // 是空行（`Tasks:\n\n1. ...`）。
         text.push_str("\n\nTasks:\n");
@@ -3899,7 +3884,6 @@ fn run_todo_write(input: &Value, session_id: &str) -> ToolOutcome {
 
 /// AskUserQuestion：把问题 + 选项经 `CoreRequest.userChoice` 弹给用户，阻塞等待应答。
 ///
-/// 对齐 Embedded `askuser/AskUserQuestion.ts::call`：
 /// - 请求 `options` 固定为 `{ toolName, message, choices }`（无选项时 choices 为空数组，
 ///   不会退化成权限确认的「允许 / 拒绝」）；
 /// - 用户响应 `{ index, reply? }` 后按选项是否命中映射成 `{ index, reply }`，
@@ -3937,8 +3921,8 @@ fn run_ask_user_question(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         "choices": mapped_choices,
     });
 
-    // 请求失败（无订阅者 / 超时）：Embedded 的 `tool.call` 会抛错，最终产出
-    // `Error executing AskUserQuestion: ...`。这里同样走 `ToolOutcome::Error`。
+    // 请求失败（无订阅者 / 超时）走 `ToolOutcome::Error`，最终产出
+    // `Error executing AskUserQuestion: ...`。
     let Some(callback) = ctx.user_choice.as_ref() else {
         return ToolOutcome::Error("Failed to request user choice".to_string());
     };
@@ -3981,7 +3965,7 @@ fn run_ask_user_question(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     ToolOutcome::Success(content)
 }
 
-/// `Skill` 工具（对齐 Embedded `tools/skill/SkillTool.ts`）。
+/// `Skill` 工具。
 ///
 /// 工作流程：`validateInput` 已保证 skill 可解析 → 取技能正文 → 替换
 /// `${SKILL_DIR}` / `${SESSION_ID}` → 包装成 `isMeta: true` 的 user 消息随

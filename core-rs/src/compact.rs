@@ -1,11 +1,11 @@
-//! 对话压缩（对齐 Embedded `src/core/compact/*`）。
+//! 对话压缩。
 //!
-//! 模块划分与 Embedded 一致：
-//! - `types.ts` → 阈值常量 / [`get_auto_compact_threshold`] / `COMPACT_SYSTEM_PROMPT`
-//! - `prompt.ts` → [`format_messages_for_compact`] / [`generate_compact_summary_prompt`] 等
-//! - `autoCompact.ts` → [`is_auto_compact_enabled`] / [`should_auto_compact`]
-//! - `state.ts` → 「正在压缩」/「待压缩」注册表
-//! - `compact.ts` → [`compact_conversation`] / [`compact_and_apply_messages`] /
+//! 模块划分：
+//! - 阈值常量 / [`get_auto_compact_threshold`] / `COMPACT_SYSTEM_PROMPT`
+//! - [`format_messages_for_compact`] / [`generate_compact_summary_prompt`] 等提示词组装
+//! - [`is_auto_compact_enabled`] / [`should_auto_compact`]
+//! - 「正在压缩」/「待压缩」注册表
+//! - [`compact_conversation`] / [`compact_and_apply_messages`] /
 //!   [`sanitize_tool_pairing`] / [`build_post_compact_messages`]
 //!
 //! 压缩会**整体替换**会话消息（先清空再重新 push），因此期间必须挡住并发消费：
@@ -37,7 +37,7 @@ pub const COMPACT_SYSTEM_PROMPT: &str = "你是一个专业的对话摘要助手
 
 /// 自动压缩阈值（可用输入上限）：`contextWindow - min(50K, 0.3 * maxOutputTokens)`。
 ///
-/// 返回 `f64`：Embedded 是纯 JS 浮点运算，`0.3 * 8192 = 2457.6` 这类非整数值
+/// 返回 `f64`：阈值按浮点比较，`0.3 * 8192 = 2457.6` 这类非整数值
 /// 会原样参与比较（截断成整数会在阈值恰好落在边界时改变判定结果）。
 pub fn get_auto_compact_threshold(context_window: u64, max_output_tokens: u64) -> f64 {
     let buffer =
@@ -59,7 +59,7 @@ pub fn is_auto_compact_enabled() -> bool {
 /// 自动压缩跟踪状态（`AutoCompactTrackingState`）。
 ///
 /// 只有 `consecutive_failures` 参与判定；`compacted` / `turn_id` / `turn_counter`
-/// 是数据契约字段（Embedded 也只写不读），保留以便后续接入告警 / 遥测。
+/// 是数据契约字段（只写不读），保留以便后续接入告警 / 遥测。
 #[derive(Clone, Debug, Default)]
 #[allow(dead_code)]
 pub struct AutoCompactTracking {
@@ -507,7 +507,7 @@ pub fn generate_compact_user_message(
 
 /// 边界标记正文（`generateCompactBoundaryContent`）。
 ///
-/// `date` 由调用方传入（Embedded 用 `new Date().toISOString()`）。
+/// `date` 由调用方传入。
 pub fn generate_compact_boundary_content(
     trigger: &str,
     pre_compact_token_count: u64,
@@ -874,7 +874,7 @@ fn generate_summary(
     custom_instructions: Option<&str>,
     session_id: &str,
 ) -> (String, u64) {
-    // 对齐 Embedded `generateSummary`：LLM 配置缺失 / 请求失败都在这里吞掉，
+    // LLM 配置缺失 / 请求失败都在这里吞掉，
     // 返回空摘要 + 0 tokens（压缩流程照常收尾，不把整个压缩判为失败）。
     let Some(provider) = provider else {
         eprintln!("[core] compact: Failed to generate summary: LLM config unavailable");
@@ -987,7 +987,7 @@ pub fn compact_and_apply_messages(
 }
 
 /// 按会话解析 LLM 连接配置（与 `run_turn` 同口径：会话级 model / provider 优先）。
-/// 解析失败返回 `None`（摘要退化为空摘要，与 Embedded 的 `generateSummary` 一致）。
+/// 解析失败返回 `None`（摘要退化为空摘要）。
 fn session_provider(state: &Arc<Mutex<SessionState>>) -> Option<config::ProviderConfig> {
     let (model, provider) = {
         let state = state.lock().unwrap();

@@ -1,11 +1,11 @@
-//! 子代理注册表（对齐 Embedded `tools/agent/SubAgentRegistry.ts`）。
+//! 子代理注册表。
 //!
 //! 记录「子会话 → 创建它的会话」，供三处使用：
 //! - `Reply` 工具在未显式给 `targetSessionId` 时反查创建者；
 //! - `sessionRuntime` 的 `idle` 判定递归到子代理（子代理在跑 → 父会话不空闲）；
 //! - 会话中止 / 关闭时递归覆盖子孙会话。
 //!
-//! 与 Embedded 一致：**只注册不注销**（`unregister` 在 TS 里没有任何调用方）。
+//! **只注册不注销**（`unregister` 没有任何生产调用方）。
 //! 子代理跑完后它自己的 `SessionState` 回到空闲，父会话的 `idle` 也随之恢复；
 //! 保留登记是为了让「稍后再中止该会话」仍能覆盖到子代理。
 
@@ -33,7 +33,7 @@ pub fn register(id: &str, creator_session_id: &str) {
     });
 }
 
-/// 注销（Embedded 的 `unregister`；当前没有生产调用方，供测试与将来的清理逻辑用）
+/// 注销（当前没有生产调用方，供测试与将来的清理逻辑用）
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn unregister(id: &str) {
     AGENTS.lock().unwrap().retain(|record| record.id != id);
@@ -83,9 +83,7 @@ pub fn created_at(id: &str) -> Option<u64> {
 
 // ==================== 并发槽位（specs/005） ====================
 
-/// 同一创建者会话并行子代理上限。对齐 Embedded `SubagentSlots.ts` 的
-/// `SUBAGENT_CONCURRENCY_LIMIT`，两侧同值同语义（parity 锁定，
-/// docs/core/core-parity.md 3.18 子代理条目）。
+/// 同一创建者会话并行子代理上限（`SUBAGENT_CONCURRENCY_LIMIT`，specs/005 子代理条目）。
 pub const SUBAGENT_CONCURRENCY_LIMIT: usize = 4;
 
 /// 排队等待者：`granted` 是释放方的预留标记——置位即代表「一个空位已为你保留」，

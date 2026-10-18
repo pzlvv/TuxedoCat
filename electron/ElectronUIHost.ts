@@ -19,7 +19,7 @@ import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidH
 import { getMarkdownPreviewHtml } from '../src/host/markdownHtml.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
 import { isImageFile } from '../src/host/imageFiles.js';
-import { fileLogger } from '../src/core/Logger.js';
+import { fileLogger } from '../src/shared/Logger.js';
 import { writeSettingsJson } from '../src/host/settingsFile.js';
 import { imageMimeFor } from './fileTypes.js';
 import { remoteFileReaderFor } from './sidebarFilesRemote.js';

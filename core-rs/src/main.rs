@@ -131,7 +131,7 @@ fn decode_frame(line: &str) -> Result<UiToCoreFrame, serde_json::Error> {
 
 /// 注册 MCP「服务器集合已变化」的上报出口。
 ///
-/// 对齐 Embedded `MCPHost.notifyServersChanged`：会话的 MCP 引用刚建立 / 启用列表
+/// 会话的 MCP 引用刚建立 / 启用列表
 /// 刚变化时，把该会话**当前启用**的 server 名列表广播出去，UI 据此把「连接中」
 /// 刷新为已连接 / 失败。走 `sessionConfigChanged` 而不是新造事件——它与
 /// `UiEvent.mcpEnabledChanged` 是同一条事实的两个方向。
@@ -259,7 +259,7 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
             Ok(compact_archive_display(session_id))
         }
         // MCP 面板列表：配置（快照）+ 会话生效的启用状态 + 运行时状态
-        // （对齐 Embedded `pushMcpServers` 的合并口径）。
+        // 。
         "mcpServersRequested" => {
             let session_id = request.get("sessionId").and_then(Value::as_str);
             Ok(Value::Array(crate::mcp::servers_with_runtime(session_id)))
@@ -295,11 +295,10 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
     }
 }
 
-/// 会话加载结果：消息 + 元数据 + 派生事实（对齐 Embedded `loadConversationForHost`）。
+/// 会话加载结果：消息 + 元数据 + 派生事实。
 ///
 /// - 会话文件不存在 → 空消息 + `metadata: null`（宿主据此走「新对话」路径）；
-/// - 会话空闲时给缺失 tool_result 的 tool_use 补「会话中断」取消结果（对齐 Embedded
-///   `loadConversation` 的 `ensureToolResults` + `workingSessions` 守卫）：否则上次
+/// - 会话空闲时给缺失 tool_result 的 tool_use 补「会话中断」取消结果：否则上次
 ///   崩溃时正在执行的 tool_use 没有 tool_result，webview 按「无结果且非待确认」推导为
 ///   running，永远显示运行中；运行中的会话不伪造；
 /// - `pendingToolUseIds` 恒为空：Standalone 的工具执行状态不落盘，进程重启后不存在
@@ -516,7 +515,7 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
             core.on_conversation_deleted(&session_id);
         }
         "conversationSpaceCleared" => {
-            // 与 Embedded 一致：`dirName` 是**对话空间目录名**，清空整个空间。
+            // `dirName` 是**对话空间目录名**，清空整个空间。
             // mode 决定清理深度（对齐 UiEvent 契约）：`clear` 清内容保留空间目录
             // （workspace 还在，项目映射要留着）；`remove` 整目录删除（workspace 已
             // 不存在，清掉后列表不再显示）。旧宿主不带 mode（两侧同包分发，跨版本
@@ -607,7 +606,7 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
             );
         }
         "mcpEnabledChanged" => {
-            // 单开关语义（对齐 Embedded `Config.setSessionMcpEnabled`）：把这次勾选
+            // 单开关语义：把这次勾选
             // 合并进该会话的启用列表（内存覆盖 + 尽力写 meta.json），再让 MCPHost
             // 按新列表做差量同步。同步完成后由 `notifyServersChanged` 出口广播
             // `sessionConfigChanged(mcpEnabled)`，UI 据此把「连接中」刷新为最终状态，
@@ -618,7 +617,7 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
             crate::mcp::on_session_enabled_changed(&session_id);
         }
         "mcpEnabledListChanged" => {
-            // 整表覆盖语义（对齐 Embedded `Config.setSessionMcpEnabledList`）：`names`
+            // 整表覆盖语义：`names`
             // 是该会话启用后的完整列表，直接覆盖（去重、保留首次出现顺序），不做增量。
             // 内存覆盖同步生效——宿主保存默认配置时先发本事件把当前对话钉住，
             // 紧接着的配置写盘触发的 `sync_all_sessions` 必须能读到这个覆盖。
@@ -662,13 +661,13 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
             core.on_bash_background_requested(&session_id, tool_use_id);
         }
         "queuedMessageDiscarded" => {
-            // 对齐 Embedded `QueryEngine.discardPendingUserMessage`：webview 排队项的
+            // webview 排队项的
             // 「编辑 / 删除」撤回排队消息。按 uuid 配对，未消费才丢弃。
             let uuid = event.get("uuid").and_then(Value::as_str).unwrap_or("");
             core.on_queued_message_discarded(&session_id, uuid);
         }
         "compactRequested" => {
-            // 对齐 Embedded `Integration.requestCompact`：空闲时立即压缩，非空闲时
+            // 空闲时立即压缩，非空闲时
             // 登记「待压缩」交由下一轮对话开始时执行。
             //
             // 压缩要发一次 LLM 摘要请求（阻塞），放后台线程跑，避免卡住帧通道。
@@ -681,7 +680,7 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
 
         // ===== 其它 =====
         "editRolledBack" => {
-            // 对齐 Embedded `history/rollback.rollbackEdit`：按会话历史里的
+            // 按会话历史里的
             // `_meta` / `tool_result.beforeContent` 备份恢复磁盘文件，结果作为一条
             // system 消息回传 webview。
             let tool_use_id = event
@@ -742,17 +741,17 @@ fn clear_memory_sessions_of_space(core: &Arc<Core>, dir_name: &str) {
 
 /// `conversationStarted`：登记会话归属的工作目录。
 ///
-/// 对齐 Embedded 的 `initializeCoreEvents`：该事件只做 `createEngine`（内存态），
+/// 该事件只登记引擎（内存态），
 /// **不创建会话文件、不广播 `sessionCreated` / `conversationListChanged`**——
 /// `meta.json` / `.jsonl` 只在第一条消息持久化（`appendMessage`）时创建，
 /// 否则「点了新建但没发消息」会在磁盘上留下一个空对话并出现在列表里。
-/// 没有工作目录时 Embedded 直接返回（不报错），这里同样静默返回。
+/// 没有工作目录时直接静默返回（不报错）。
 fn start_conversation(core: &Arc<Core>, session_id: &str, _event: &Value) {
     if session_id.is_empty() {
         return;
     }
     // 会话工作目录的登记入口是 `sessionWorkspaceAssigned`（事件载荷不携带目录，
-    // 与 Embedded 的 `createEngine` 同口径：只按会话解析）。
+    // 只按会话解析）。
     let project = config::project_root(session_id)
         .ok()
         .unwrap_or_default();

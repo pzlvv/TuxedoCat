@@ -81,7 +81,6 @@ impl SpinHost for CoreSpinHost {
             &request.iteration_label,
             &request.node.task,
         );
-        // 对齐 Embedded `spin/Loop.ts` 的
         // `submitToolUse({ name: 'Agent', input: { prompt, agentRole, description } })`：
         // 走完整的工具执行路径（assistant tool_use 落盘 + toolCall/toolResult 事件），
         // 父对话上能看到 Agent 卡片；webview 收到 `toolCall` 会关掉 thinking 动画。
@@ -184,7 +183,6 @@ impl SpinHost for CoreSpinHost {
 
 /// `/spin` 非 `design` 分支：检测 `spin.json` 状态，必要时跑完整个 Spin 主循环。
 ///
-/// 对齐 Embedded `bundled/spin.ts`：
 /// - 结构有问题（`invalid` / `empty-node` / `not-dag` / `variable-no-value`）→ 发一条
 ///   说明消息，不执行；
 /// - 没有 `spin.json`（`init`）→ 发一条「先创建设计」的消息，不执行；
@@ -239,8 +237,7 @@ pub fn run_spin_command(
     let host = Arc::new(CoreSpinHost::new(Arc::clone(core), session_id));
     let abort = host.abort_flag();
     let runner: Arc<dyn SpinHost> = host;
-    // spin 模式：主会话不参与 LLM 消费循环（对齐 Embedded `bundled/spin.ts` 的
-    // `workMode = 'spin'` / finally 恢复 `normal`）。期间投递到本会话的子代理 Reply
+    // spin 模式：主会话不参与 LLM 消费循环。期间投递到本会话的子代理 Reply
     // 走 `deliver_agent_reply` 的 spin 分支——只落 silent 消息进上下文，不进消费队列，
     // 消费循环也就不会在 Spin 结束后拿它跑主对话的 agent 循环。
     if let Some(state) = core.session_if_exists(session_id) {

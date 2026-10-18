@@ -32,7 +32,6 @@ test('非活动标签页任务完成 → 标签页亮绿色未读完成灯', asy
     repoRoot, mockLlm, workspaceDir: bDir,
     openWorkspaces: [aDir, bDir],
     activeWorkspace: bDir,
-    coreKind: 'embedded',
   });
 
   // B（当前活动）里发起一条慢速查询：约 8s 的分片流，留足切标签页的时间

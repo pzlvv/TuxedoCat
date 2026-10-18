@@ -1,7 +1,7 @@
 /**
  * Standalone Core 重启续读端到端。
  *
- * `docs/core/standalone-core.md` 第 7.1 节：Core 崩溃 / 退出后由宿主重启，接线恢复。本文件验证**磁盘是唯一
+ * `docs/core/standalone-core.md` 第 6.1 节：Core 崩溃 / 退出后由宿主重启，接线恢复。本文件验证**磁盘是唯一
  * 事实来源**——第一轮跑完 → 杀掉 Core 进程 → 起一个新进程（同一个 HOME）→
  * 打开同一会话 → 再发一条用户消息，第二次 LLM 请求里必须带上第一轮的历史。
  *

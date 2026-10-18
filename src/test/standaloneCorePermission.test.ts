@@ -1,5 +1,5 @@
 /**
- * Standalone Core 权限链路（对照 Embedded 的 RunTools）：
+ * Core 权限链路（引擎 → 权限判定 → 工具执行 → 卡片事件）：
  *
  * - `risk` 模式下普通命令（`sleep 1`）**不弹确认框**，直接执行
  *   —— 这是「sleep 1 被拒绝」那个 bug 的回归用例；
@@ -142,7 +142,7 @@ async function runScenario(scenario: Scenario): Promise<ScenarioResult> {
   const workspace = path.join(homeDir, 'workspace');
   fs.mkdirSync(workspace, { recursive: true });
   // `git reset --hard HEAD` 只在真实仓库里才会以 0 退出；
-  // 否则 Bash 会按 Embedded 口径上报非零退出 → status error，掩盖「用户允许后执行」的断言。
+  // 否则 Bash 会上报非零退出 → status error，掩盖「用户允许后执行」的断言。
   try {
     execFileSync('git', ['init', '-q'], { cwd: workspace, windowsHide: true });
     execFileSync(
@@ -287,7 +287,7 @@ async function run(): Promise<void> {
   // ---- risk 模式：普通命令直接执行，不弹确认框（回归用例）----
   {
     const result = await runScenario({ mode: 'risk', command: 'sleep 1' });
-    // 与 Embedded 一致：允许路径也会发一次 toolPermissionRequested（UI 上架卡片），
+    // 允许路径也会发一次 toolPermissionRequested（UI 上架卡片），
     // 但 permResult 是 allow，不会再有 userChoice 确认框。
     check(
       'risk 模式：sleep 1 只上架卡片、不弹确认框',

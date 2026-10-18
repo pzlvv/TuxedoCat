@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-14
+last_reviewed: 2026-10-18
 ---
 
 # 规格：宿主启动接线与生命周期
@@ -38,15 +38,21 @@ last_reviewed: 2026-10-14
 
 ```ts src=src/host/bootstrapCore.ts
 export interface CoreBootstrapOptions {
-  /** 宿主 locale 原始值（BCP-47）；二值收敛由宿主 i18n（`src/host/i18n.ts`）承担 */
+  /** 宿主 locale 原始值（BCP-47）；「是否中文」的收敛由宿主 i18n（`src/host/i18n.ts`）承担 */
   locale: string;
   /** 日志出口：core Logger / WebViewUI / UserChoiceManager 共用 */
   log: (...args: unknown[]) => void;
   /** core 日志是否同时输出到控制台 */
   logToConsole: boolean;
-  /** 扩展 / 应用根目录；Core 自带资源以自身可执行文件目录为基准，这里只作本机开发期兜底 */
+  /**
+   * 扩展 / 应用根目录：定位 Core 产物目录
+   * （`resources/core/<arch-platform>/`，其中已含 Core 自带的 `ripgrep/`）。
+   */
   extensionPath: string;
-  /** 测试注入：Standalone 下为一个工作区打开 Core 通道（默认经 daemon） */
+  /**
+   * 测试注入：为一个工作区打开 Core 通道。
+   * 默认经 daemon 启动配置中的 Core 可执行文件。
+   */
   openStandaloneChannel?: (ref: WorkspaceRef) => OpenedCoreChannel;
 }
 
@@ -54,12 +60,12 @@ bootstrapCore(host, spinDesign, conversations, options): { bus, client, ui }
 ```
 
 工作区集合来自 `UIHost` 的 `WorkspaceProvider`（`getWorkspaceRef` / `getOpenWorkspaceRefs` /
-`onWorkspaceChanged`）：骨架为每个打开的工作区打开一个 Connection（Embedded 恒一个），
+`onWorkspaceChanged`）：骨架为每个打开的工作区打开一个 Connection，
 全部登记后把**活动 Connection 对齐到宿主当前工作区**（Connection 按打开集合顺序建立，
 「最后建立的」不等于「正显示的活动标签页」；恢复标签页不触发 activated 事件——状态没变。
 不对齐的话，统计 / 清空这类「跟当前连接走」的请求会落到别的连接上），并订阅打开 / 关闭 / 激活事件。没有打开的工作区时用一个空引用打开占位 Connection，
 保证宿主环境与空态视图的只读请求（技能列表 / 对话列表等）仍可应答；
-Standalone 下打开第一个真实工作区时占位 Connection 被销毁。
+打开第一个真实工作区时占位 Connection 被关闭。
 
 每个接线项有唯一归属，归属只有三种：
 
@@ -74,12 +80,11 @@ Standalone 下打开第一个真实工作区时占位 Connection 被销毁。
 | 接线项 | 说明 |
 | --- | --- |
 | locale / UI 语言 / 扩展路径 / 日志出口 | 取值来自宿主参数 |
-| Client 创建与全局总线注册 | Embedded：`createEventBus` → `setGlobalEventBus` → `initializeCoreEvents`；Standalone：`setGlobalEventBus(client)`（Client 是宿主侧路由器） |
+| Client 创建与全局总线注册 | `setGlobalEventBus(client)`（Client 是宿主侧路由器；处理器表由 `WebViewUI.create` 注册到 Client，Connection 建立时挂到自己的总线） |
 | 配置快照订阅 | `SettingsStore.subscribe` → `client.emitToCore(hostEnvironmentProvided)`，一份快照推给所有 Connection |
 | `WebViewUI.create` 与 `UserChoiceManager` 工厂 | 工厂在骨架内构造，日志出口取自 `options.log`；宿主不提供该工厂。处理器注册在 Client 上，Connection 建立时把同一份表注册到自己的总线 |
 | 按工作区打开 Connection | `client.openWorkspace(ref)`；连接建立时推送 `hostEnvironmentProvided`（扩展路径 / 日志出口开关 / 配置目录名 / 配置快照 / MCP 服务器表）。core 侧没有对应的直接注入入口 |
 | 工作区打开 / 关闭 / 激活订阅 | `host.onWorkspaceChanged` → `client.openWorkspace` / `closeWorkspace` / `activateWorkspace` |
-| 配置目录 / MCP 残留清理 | Embedded 的异步收尾，不阻塞启动 |
 
 **宿主参数**：
 
@@ -204,29 +209,32 @@ Electron 的视图句柄：`ElectronUIHost.webviewHandleFor(source)` 把来源 `
 | 工作区来源 | `vscode.workspace.workspaceFolders` | 菜单 / 命令行 `--workspace=` / 上次记录（`setWorkspacePath`） |
 | 空闲回收 | 启用（`startIdleMonitor`） | 不启用 |
 | 托盘 | 无 | `setStatusListener` → 状态点 + 闪烁提醒 |
-| 系统睡眠阻断 | 无（VS Code 扩展没有电源 API）；standalone 下由 Core 子进程自己阻断（[docs/hosts/host-matrix.md 第 6 节](host-matrix.md#6-宿主固有差异有意保留)） | `setStatusListener` → `sleepBlocker.update(states)`（`electron/powerSaveBlocker.ts` 的 `powerSaveBlocker`） |
+| 系统睡眠阻断 | 无（VS Code 扩展没有电源 API）；由 Core 进程自己阻断（[docs/hosts/host-matrix.md 第 6 节](host-matrix.md#6-宿主固有差异有意保留)） | `setStatusListener` → `sleepBlocker.update(states)`（`electron/powerSaveBlocker.ts` 的 `powerSaveBlocker`） |
 | 侧栏 | 无（webview 内下拉） | 原生 `WebContentsView` + 四条流：`sidebar:conversations-updated` / `sidebar:session-states-updated` / `sidebar:session-loaded-changed` / `sidebar:session-completion`（未读完成，见 [docs/hosts/host-matrix.md 第 6 节](host-matrix.md#6-宿主固有差异有意保留)「未读完成呼吸」） |
 | 虚拟文档 | 注册三个 `TextDocumentContentProvider` | 无（用 Monaco 辅助窗口） |
 | 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销全局快捷键、停托盘闪烁并销毁托盘与提醒音播放窗口、释放睡眠阻断、`shutdownCore()` |
 
 ## 2. 启动期状态：写入入口与读取器
 
-core 的启动期状态按来源分两类。
+Core 的启动期状态按来源分两类。
 
 **A. 经总线传入**（宿主环境差异）：core 侧没有直接注入入口，
-唯一写入路径是 `UiEvent`，落地函数由 `initializeCoreEvents` 的订阅调用。
+唯一写入路径是 `UiEvent`，Core 进程的 `dispatch_ui_event` 分派到落地函数。
 
-| 状态 | 来源（`UiEvent`） | 落地函数 | 读取入口 | 未到达时 |
-| --- | --- | --- | --- | --- |
-| 扩展路径 | `hostEnvironmentProvided.extensionPath` | `setExtensionPath` | `getExtensionPath()` | 抛错 |
-| 日志出口开关 | `hostEnvironmentProvided.logToConsole` | `setLogToConsole` | — | 静默丢弃（可接受） |
+| 状态 | 来源（`UiEvent`） | Core 侧落地与读取 | 未到达时 |
+| --- | --- | --- | --- |
+| 扩展路径 | `hostEnvironmentProvided.extensionPath` | `on_host_environment` 落地，`config.rs` 的 `extension_path()` 读取 | 报错 |
+| 日志出口开关 | `hostEnvironmentProvided.logToConsole` | `on_host_environment` 落地 | 静默丢弃（可接受） |
 
 宿主 locale 不在其中：Core 不感知语言，`hostEnvironmentProvided` 没有 locale 字段
 （[docs/architecture/core-ui-separation.md 第 4.8 节](../architecture/core-ui-separation.md#48-文本语言)）。
 
-会话工作目录表（`setSessionWorkspace(sessionId, path)` → `getSessionWorkspace(sessionId)`）是
-core 的对话属性：目录由宿主在会话首次被 core 解析目录之前登记，不经总线；未登记时
-`getProjectRoot(sessionId)` 抛错，`hasProjectRoot(sessionId)` 为假。
+会话工作目录表是 Core 的对话属性：Core 进程内 `config.rs` 的
+`set_session_workspace(sessionId, path)` → `session_workspace(sessionId)`，目录由宿主在
+会话首次被 Core 解析目录之前经 `UiEvent.sessionWorkspaceAssigned` 登记；未登记时
+`project_root(sessionId)` 报错。宿主侧 `src/shared/history/Config.ts` 另存一份索引
+（`getSessionWorkspace` / `setSessionWorkspace`），只用于「发事件前取会话自己的目录」，
+不参与 Core 的目录解析（例外表见 [docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)）。
 
 **B. 进程内注入**（不跨进程，仍由骨架直接接线）：
 
@@ -238,8 +246,8 @@ UI 语言（`uiLanguage`）是**宿主状态**，不在 core 的启动期状态�
 `settings.json` 后收敛到宿主 i18n（`src/host/i18n.ts` 的 `setHostUiLanguage`），
 webview 用自己的翻译表（`src/webview/i18n/`）。收敛入口是 `coreFacts.primeHostLocale(hostLocale)`
 （读 `settings.json` 的 `uiLanguage` + 宿主 locale），由共享骨架 `bootstrapCore` 在
-**启动接线内同步调用**——不依赖 Connection 就绪事件（Standalone 要等 Core 进程握手、
-Embedded 没有该事件），因此宿主原生 UI（Electron 菜单 / 托盘、Spin 设计器）从构建起
+**启动接线内同步调用**——不依赖 Connection 就绪事件（拉起 Core 进程完成握手的耗时不定），
+因此宿主原生 UI（Electron 菜单 / 托盘、Spin 设计器）从构建起
 就用对语言。收敛顺序是「先记录宿主 locale，再按 `uiLanguage` 收敛」：显式 `zh` / `en`
 覆盖宿主 / 系统语言，`auto` 才回落到宿主 locale / 系统语言（顺序写反会把显式 `en` 覆盖
 回中文）。Electron 主进程还会在创建托盘 / 菜单之前提前调用一次同一步：托盘早于
@@ -255,8 +263,9 @@ Embedded 没有该事件），因此宿主原生 UI（Electron 菜单 / 托盘�
   （Electron 原生菜单与托盘右键菜单据此重建）；只在**有效语言**真正变化时触发，
   单个订阅者抛错不影响其它订阅者。
 
-`sessionResources.isSessionIdle` 的「等待用户」来源是 core 自己的 `sessionRuntime`
-（`isSessionWaiting`），没有需要保证注入的读取器（[docs/architecture/contracts.md 第 4 节](../architecture/contracts.md#4-对话相关数据conversationmanager)）。
+`「会话是否空闲」的运行时事实在 Core 进程内（`waiting` 来源见
+[docs/core/session-runtime.md](../core/session-runtime.md)），宿主消费 `sessionRuntimeChanged`
+快照，没有需要保证注入的读取器（[docs/architecture/contracts.md 第 4 节](../architecture/contracts.md#4-对话相关数据conversationmanager)）。
 
 ## 3. 启动自检
 
@@ -264,7 +273,6 @@ Embedded 没有该事件），因此宿主原生 UI（Electron 菜单 / 托盘�
 
 ```ts src=src/host/bootstrapCore.ts
 export interface BootstrapSnapshot {
-  coreKind: 'embedded' | 'standalone';
   locale: string;
   uiLanguage: 'auto' | 'zh' | 'en';
   eventBusRegistered: boolean;
@@ -274,16 +282,17 @@ export interface BootstrapSnapshot {
   connectionCount: number;
 }
 
-/** 当前进程的接线快照（只读；用于启动日志与一致性断言） */
+/** 当前进程的接线快照（只读；用于启动日志） */
 export function bootstrapSnapshot(): BootstrapSnapshot;
 ```
 
 - 快照在 `bootstrapCore` 返回前写入；未执行骨架时调用抛错。
-- 布尔字段由 core 的读取入口实际查询得出（总线 / UI 单例 / 扩展路径 provider /
-  活动连接数）；`logToConsole` 例外，直接取宿主参数的自报值。
+- 布尔字段由宿主侧实际查询得出（总线 / UI 单例 / 活动连接数）；`extensionPathProvided`
+  恒为真（扩展路径是必选宿主参数）；`logToConsole` 直接取宿主参数的自报值。
+  core 侧状态在 Core 进程内，快照只报告宿主自己掌握的接线事实。
 - 两个宿主的 bootstrap 在骨架返回后各输出一行快照日志：
   VS Code 写 `OutputChannel`，Electron 写 `console`。
-- 快照用于双端对照：两端日志的字段差异即漂移点。
+- 快照用于两个宿主的对照：两端日志的字段差异即漂移点。
 
 ## 4. 退出路径
 
@@ -299,11 +308,11 @@ export function shutdownCore(): Promise<void>;
 | VS Code | `deactivate()` | `stopIdleMonitor()`（宿主专属）+ `shutdownCore()` |
 | Electron | `app.on('will-quit')` | 宿主专属清理（快捷键 / 托盘 / 定时器 / 睡眠阻断）+ `shutdownCore()` |
 
-`shutdownCore` 先 `client.closeAll()` 销毁全部 Connection（Standalone 下逐个关闭
-channel / 本地 `stdio` Core 进程），再断开远程 daemon 的控制链路——**不发 `shutdown`**：
+`shutdownCore` 先 `client.closeAll()` 销毁全部 Connection（逐个关闭 channel / 本地
+`stdio` Core 进程），再断开远程 daemon 的控制链路——**不发 `shutdown`**：
 daemon 侧任一连接的 shutdown 是全局停机，SSH 引导的 daemon 自带 idle-exit，最后一条
-链路断开后自行退出；Embedded 下经 `MCPHost.shutdown()`
-结束 MCP 子进程。宿主不直接调用 `McpManager` 的同类方法。
+链路断开后自行退出。Core 进程退出时自行结束 MCP 子进程（`core-rs/src/mcp.rs` 的
+`shutdown`）；宿主不持有 MCP 子进程。
 
 ## 5. 一致性守护
 
@@ -315,14 +324,10 @@ daemon 侧任一连接的 shutdown 是全局停机，SSH 引导的 daemon 自带
 
 **测试期**：`src/test/bootstrapWiring.test.ts`（`npm run test:all -- bootstrap-wiring`）断言：
 
-1. 骨架执行完毕后，`bootstrapSnapshot()` 的各字段如实反映本次装配（`logToConsole`
-   保留宿主传入值——VS Code 恒为 `false`）；
-2. 快照的 `locale` 保留宿主传入的原始值（不做收敛后再上报）；
-3. `hasExtensionPath()` 为真；
-4. `requireEventBus()` 可调用（不抛错）；
-5. 静态扫描 `src/core/**/*.ts` 中导出的 `set*` / `initialize*` 名字，每个名字出现在
-   启动接线（`bootstrapCore.ts` 或 `initializeCoreEvents.ts`）或白名单中。
-   白名单只含会话级运行时 setter（`setSession*`）与测试注入用的 `setCallLlmOverride`。
+1. 骨架执行完毕后，`bootstrapSnapshot()` 的各字段如实反映本次装配（`locale` 保留宿主
+   传入的原始值、`logToConsole` 保留宿主传入值——VS Code 恒为 `false`）；
+2. `requireEventBus()` 可调用（不抛错）；
+3. 连接建立即推送宿主环境与配置快照；配置写盘触发整份快照重推且重推后生效。
 
 测试怎么跑、单元测试与宿主集成测试怎么分工、新测试写在哪，见 `src/test/README.md`。
 
@@ -330,16 +335,15 @@ daemon 侧任一连接的 shutdown 是全局停机，SSH 引导的 daemon 自带
 
 新增一个启动期注入点时，依次完成：
 
-1. 在 core 中定义写入入口；
-2. 在 core 中定义对应的读取入口（未写入抛错，或说明默认值可接受的理由）；
+1. 在 Core 中定义写入入口（`dispatch_ui_event` 的分发分支或 `hostEnvironmentProvided`
+   的新字段）；
+2. 在 Core 中定义对应的读取入口（未写入报错，或说明默认值可接受的理由）；
 3. 判断它属于哪一类（第 2 节）：
-   - **宿主环境 / 工作目录 / 用户选择**：加一条 `UiEvent`，在 `initializeCoreEvents` 的
-     `registerHostEnvironmentUiEvents` / `registerSessionWorkspaceUiEvents` /
-     `registerUserChoiceUiEvents` 里**同步**注册处理器；
-     取值来自宿主时，在 `bootstrapCore` 内发出该事件，并确定它在顺序中的位置；
+   - **宿主环境 / 工作目录 / 用户选择**：加一条 `UiEvent`，在 Core 进程的分发入口
+     处理；取值来自宿主时，在 `bootstrapCore` 内发出该事件，并确定它在顺序中的位置；
    - **进程内**：在 `bootstrapCore` 内加入接线步骤，并确定它在顺序中的位置；
 4. 若取值来自宿主环境，加入 `CoreBootstrapOptions` 的必选成员；
 5. 在 `bootstrapSnapshot` 中暴露其状态（布尔或取值）；
-6. 在 `src/test/bootstrapWiring.test.ts` 的断言或白名单中登记；
+6. 在 `src/test/bootstrapWiring.test.ts` 的断言中登记；
 7. 同步本文档对应章节的表格。
 

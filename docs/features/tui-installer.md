@@ -9,7 +9,7 @@ last_reviewed: 2026-10-11
 捆绑 ripgrep 与 TUI 原生二进制（tui-rs），安装时提取到本机部署布局。TUI 自身不承担
 部署（[docs/hosts/tui.md 第 2.4 节](../hosts/tui.md#24-core-产物定位tui-rssrccore_rootrs)的产物定位是它的消费方）。
 
-交叉引用：Core 产物矩阵与指纹见 [docs/core/standalone-core.md 第 4 节](../core/standalone-core.md#4-standalone-core-形态)；
+交叉引用：Core 产物矩阵与指纹见 [docs/core/standalone-core.md 第 3 节](../core/standalone-core.md#3-core-形态)；
 平台目标（Windows / Linux × x64 / arm64，Linux 一律 musl）沿用 `scripts/build-core.mjs` 的 `TARGETS`。
 
 ## 1. 用户场景与验收标准
@@ -105,7 +105,7 @@ npm run package:tui
   `--host` = 只构建当前宿主平台；`--arch <arch>` = 只构建某架构的全部平台
   （x64 / arm64，同样受宿主可构建性过滤）；`--target <triple>` = 显式指定。
 - **工具链缺口显式跳过**（默认集合）：如 Windows ARM64 的 Core 交叉构建需要
-  zig 充当 clang（ring 的 C 部分，见 [docs/core/standalone-core.md 第 4.3 节](../core/standalone-core.md#43-构建与目标平台)），缺失时跳过该目标并说明补救方式——打包机没装全工具链
+  zig 充当 clang（ring 的 C 部分，见 [docs/core/standalone-core.md 第 3.3 节](../core/standalone-core.md#33-构建与目标平台)），缺失时跳过该目标并说明补救方式——打包机没装全工具链
   也能产出其余目标；显式 `--target` 时严格失败。一个都没产出则整脚本失败。
 - 安装器自身是纯 Rust（无 C 依赖）：Linux musl 交叉只需 rustup 的 rust-lld
   （`rustup target add <triple>`），不需要 zig。

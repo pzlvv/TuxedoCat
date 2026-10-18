@@ -1,4 +1,4 @@
-//! OpenAI Responses API 适配器（对齐 Embedded `src/core/llm/ResponsesApi.ts`）。
+//! OpenAI Responses API 适配器。
 //!
 //! 把内部统一的 Anthropic 风格消息 / 工具格式转成 Responses API 格式并调用：
 //!   `POST {baseURL}/responses`（baseURL 以 `/v1` 结尾时用 `{baseURL}/v1/responses`）
@@ -24,9 +24,8 @@ use crate::util;
 
 /// 单条 assistant 回复文本的最大字符数（字符数，非 token）。
 ///
-/// Embedded 超过此值时把完整文本持久化到磁盘、消息里只留文件路径 + 预览；
-/// Standalone 侧的超长文本兜底统一由 `tools::cap_tool_result` 那一套承担
-/// （助手回复本身尚未接同类兜底，见 `docs/core/core-parity.md` 第 3.15 节）。
+/// 超长文本的兜底统一由 `tools::cap_tool_result` 那一套承担
+/// （助手回复本身尚未接同类兜底）。
 const ASSISTANT_MAX_TEXT_CHARS: usize = 40_000;
 
 /// 供 `ASSISTANT_MAX_TEXT_CHARS` 的说明引用（避免 dead_code 警告）
@@ -557,7 +556,7 @@ pub fn stream_responses(
     let mut text_repetition = RepetitionDetector::new();
     let mut thinking_repetition = RepetitionDetector::new();
 
-    // 内容块累积（与 Embedded 的 `contentBlocks` 对应）
+    // 内容块累积
     let mut text = String::new();
     let mut thinking = String::new();
     let mut thinking_summary = String::new();
@@ -872,7 +871,7 @@ pub fn stream_responses(
     if stop_reason.is_none() {
         // 用户主动取消（abort）：流是本端提前掐断的，服务端不会补终止事件，
         // 因此「无终止事件」不是截断，不重试、也不补 `message_delta` / `stop_reason`。
-        // 对齐 Embedded `checkAborted` 抛 AbortError 的路径，也与 Chat Completions
+        // 与 Chat Completions
         // 适配器的 `!req.cancel` 判定同一口径；引擎据 `cancel` 走「用户中断」收尾。
         if cancel.load(Ordering::Relaxed) {
             return Ok(());
@@ -898,13 +897,12 @@ pub fn stream_responses(
     if let Some(reason) = stop_reason {
         emit(LlmEvent::StopReason(reason));
     }
-    // `local_input_estimate` 只服务诊断日志（Embedded 用它做 usage 可信度判断的
-    // 旁证）；Rust 侧保留计算以便后续接日志，这里显式忽略。
+    // `local_input_estimate` 只服务诊断日志；保留计算以便后续接日志，这里显式忽略。
     let _ = local_input_estimate;
     Ok(())
 }
 
-/// 解析工具入参 JSON 字符串（失败时保留原字符串，对齐 Embedded 的 try/catch）
+/// 解析工具入参 JSON 字符串（失败时保留原字符串）
 fn parse_tool_arguments(args: &str) -> Value {
     match serde_json::from_str::<Value>(args) {
         Ok(parsed) => crate::engine::unwrap_tool_input_for_adapter(parsed),

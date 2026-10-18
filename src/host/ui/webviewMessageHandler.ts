@@ -4,35 +4,34 @@
  */
 import type { UIHost } from '../UIHost.js';
 import { fetch as undiciFetch } from 'undici';
-import { logger } from '../../core/Logger.js';
-import { getProbeDispatcher } from '../../core/llm/httpDispatcher.js';
+import { logger } from '../../shared/Logger.js';
+import { getProbeDispatcher } from '../../shared/llm/httpDispatcher.js';
 import {
   apiTypeRegistry,
   type ApiTypeDefinition,
   type ApiTypeProbeRequest,
   type ProbeVerdict,
-} from '../../core/llm/apiTypes/index.js';
-import { buildEditDiffHunks } from '../../core/utils/editDiff.js';
-import { buildReplayMessageData } from '../../core/utils/replayMessages.js';
-import { buildUserContent, extractUserContent } from '../../core/utils/contentBlocks.js';
-import type { ApiType } from '../../core/utils/modelConfig.js';
-import { getSessionWorkspace, setSessionWorkspace } from '../../core/history/Config.js';
+} from '../../shared/llm/apiTypes/index.js';
+import { buildEditDiffHunks } from '../../shared/utils/editDiff.js';
+import { buildReplayMessageData } from '../../shared/utils/replayMessages.js';
+import { buildUserContent, extractUserContent } from '../../shared/utils/contentBlocks.js';
+import type { ApiType } from '../../shared/utils/modelConfig.js';
+import { getSessionWorkspace, setSessionWorkspace } from '../../shared/history/Config.js';
 import { getSettingsStore } from '../SettingsStore.js';
-import { modelRefOf, sameModelRef, type ModelRef } from '../../core/llm/modelRef.js';
-import { getConversationModelRef } from '../../core/history/Conversation.js';
-import { userChoiceQueue } from '../../core/UserChoiceQueue.js';
+import { modelRefOf, sameModelRef, type ModelRef } from '../../shared/llm/modelRef.js';
+import { getConversationModelRef } from '../../shared/history/Conversation.js';
+import { userChoiceQueue } from '../../shared/UserChoiceQueue.js';
 import type {
   HostToWebviewMessage,
   HostToWebviewMessageWithoutSessionId,
   WebviewMessage,
   WebviewToHostMessage,
 } from '../webviewMessages.js';
-import type { SessionRuntimeState, UiEvent } from '../../core/AssistantEventBus.js';
-import { requireEventBus } from '../../core/AssistantEventBus.js';
+import type { SessionRuntimeState, UiEvent } from '../../shared/AssistantEventBus.js';
+import { requireEventBus } from '../../shared/AssistantEventBus.js';
 import type { UserChoiceManager } from './userChoice.js';
 import type { LLMConfigPanelTrigger, QueuedMessageState } from './ports.js';
 import type { ConversationLoadedExtra } from '../conversationPayload.js';
-import { resolveCoreKind } from '../coreKind.js';
 import {
   loadConversationForHost,
   loadConversationListForHost,
@@ -47,7 +46,7 @@ import {
   requestSmartNaming,
 } from '../coreFacts.js';
 import { applyLlmConfigSave } from '../llmConfigSave.js';
-import { sameMcpEnabledList } from '../../core/utils/mcpList.js';
+import { sameMcpEnabledList } from '../../shared/utils/mcpList.js';
 import {
   readActiveModelRef,
   readDefaultAgentMode,
@@ -414,7 +413,7 @@ export class WebviewMessageHandler {
   async pushMcpServers(sessionId?: string): Promise<void> {
     try {
       // 配置、启用状态与运行时状态都是 core 的事实（`coreFacts.requestMcpServers`）：
-      // Embedded 下同进程直读，Standalone 下经 `UiRequest.mcpServersRequested` 索取。
+      // 经 `UiRequest.mcpServersRequested` 向 Core 索取。
       const servers = await requestMcpServers(sessionId);
       this.host.sendToWebview({
         type: 'setMcpServers',
@@ -470,7 +469,7 @@ export class WebviewMessageHandler {
 
     // 命令消息（`/xxx`）不做乐观回显：内置命令就地执行、不落盘，立刻画气泡会留下
     // 一个刷新后消失的「幽灵」用户消息。交给引擎在消息真正进入上下文时补发
-    // （Skill 命令）或干脆不发（内置命令）——Embedded 走 `QueryEngine.notifyUserMessageToUI`，
+    // （Skill 命令）或干脆不发（内置命令）——Core 负责命令消息的补发，
     // Standalone 走 `engine::emit_user_message_to_ui`，两侧同一契约。
     const isCommandMessage = content.trim().startsWith('/');
 
@@ -742,7 +741,7 @@ export class WebviewMessageHandler {
     const oldSessionId = this.trackedActiveSessionId;
     if (oldSessionId && oldSessionId !== message.sessionId) {
       // 切走前等旧会话的挂起持久化收尾：引擎归 core，宿主只发请求
-      // （Embedded 退化为一次同进程调用，Standalone 由 Core 自己等待落盘）。
+      // （由 Core 自己等待落盘完成）。
       this.log(`[WebviewMessageHandler] Flushing pending persists for old session ${oldSessionId}`);
       await requestFlushSession(oldSessionId);
       if (isStaleLoad()) {
@@ -753,7 +752,7 @@ export class WebviewMessageHandler {
 
     // 先登记该会话的工作目录：core 加载要按它定位 meta.json / jsonl
     this.ensureSessionWorkspace(message.sessionId);
-    // 会话内容与派生事实一次取齐（Embedded 读盘 + 进程内事实；Standalone 经 UiRequest）
+    // 会话内容与派生事实一次取齐（经 UiRequest）
     const loaded = await loadConversationForHost(message.sessionId);
     const conversation = { messages: loaded.messages, metadata: loaded.metadata ?? undefined };
     if (isStaleLoad()) {
@@ -860,7 +859,7 @@ export class WebviewMessageHandler {
       }
     }
 
-    // 该会话**自己的**查询是否在跑（`SessionUiState` 的查询计数，跨 Embedded / Standalone）：
+    // 该会话**自己的**查询是否在跑（`SessionUiState` 的查询计数）：
     // webview 重新加载会话时据此恢复 thinking 动画。
     // 不能用 `sessionRuntime.idle === false`：那是「会话非空闲」口径，包含后台子代理 /
     // 后台 Bash / 压缩；后台子代理在等用户时父会话会 idle=false，重新加载父会话就会
@@ -882,20 +881,8 @@ export class WebviewMessageHandler {
 
     userChoiceQueue.onSessionLoaded(message.sessionId);
 
-    // Standalone 下会话引擎归 Core 进程所有：UI 进程不建引擎（core 已由
+    // 会话引擎归 Core 进程所有：UI 进程不建引擎（core 已由
     // conversationOpened 载入历史），只负责把消息渲染给 webview。
-    if (hasHistory && resolveCoreKind() === 'embedded') {
-      this.log(`[WebviewMessageHandler] Restoring conversation engine with ${conversation.messages.length} history messages`);
-      void import('../../core/Integration.js').then(({ restoreConversationEngine }) =>
-        restoreConversationEngine(
-          message.sessionId,
-          conversation.messages,
-          conversation.metadata?.role,
-        ),
-      ).catch(err => {
-        this.log(`[WebviewMessageHandler] Error restoring engine: ${err}`);
-      });
-    }
   }
 
   private async handleUpdateConversationContext(message: Extract<WebviewToHostMessage, { type: 'updateConversationContext' }>): Promise<void> {
@@ -930,10 +917,9 @@ export class WebviewMessageHandler {
     const registered = getSessionWorkspace(sessionId);
     const workspacePath = registered ?? this.host.getWorkspacePath();
     if (!workspacePath) return;
-    // Embedded：同一进程、同一张表，直接写（幂等）。
+    // 宿主自己的会话→工作目录表（供宿主侧的磁盘读取按会话解析目录），幂等写。
     if (!registered) setSessionWorkspace(sessionId, workspacePath);
-    // Standalone：会话工作目录表在 Core 进程内，只有事件能过去（Embedded 的事件
-    // 处理器转调同一个函数，重复写等价）。
+    // Core 进程内也有一张同构的表：经事件登记（core 按会话解析目录建引擎 / 落盘）。
     requireEventBus().emitToCore({ type: 'sessionWorkspaceAssigned', sessionId, workspacePath });
   }
 
@@ -953,12 +939,8 @@ export class WebviewMessageHandler {
     // 新对话开始时查询余额
     this.fetchBalanceAndSend(newSessionId);
 
-    // MCP：新对话打开即建立引用——由 core 的 createEngine（conversationStarted
-    // 事件消费）→ MCPHost.onSessionOpened 驱动，UI 不再触发 acquire。
-    // Standalone 下 MCP 尚未迁入，且 UI 进程不应触碰 MCPHost，跳过回推。
-    if (resolveCoreKind() === 'embedded') {
-      void this.pushMcpServers(newSessionId);
-    }
+    // MCP：新对话打开即建立引用——由 Core 进程内的事件消费驱动，
+    // UI 进程不触碰 MCPHost。
 
     // 从 settings.json 读取新对话的默认 model、thinking_effort、agentMode 和 webSearch 并发送给 webview 立即应用。
     // 注意：不再写入 meta.json（meta.json 只在发第一条消息时由 appendMessage 创建），
@@ -1436,7 +1418,7 @@ export class WebviewMessageHandler {
 
   private async handleRequestSkills(ctx: WebviewRequestContext): Promise<void> {
     this.log(`[WebviewMessageHandler] Skills requested`);
-    // 命令 / 技能是 core 的事实：Embedded 同进程组装，Standalone 经 UiRequest 取回。
+    // 命令 / 技能是 core 的事实：经 UiRequest 取回。
     // 项目技能基于会话自己的工作目录扫描（会话归属取 `trackedActiveSessionId`——
     // 多视图宿主下由宿主在活动视图变化时同步，否则会扫到别的标签页的技能）；
     // 没有工作目录时（空态视图也会请求技能）只列内置项。
@@ -1708,7 +1690,7 @@ export class WebviewMessageHandler {
               if (storedRef) {
                 this.log(`[WebviewMessageHandler] Current session model (provider="${storedRef.provider}", model="${storedRef.model}") invalid, resolved to (provider="${resolved.provider}", model="${resolved.model}")`);
               }
-              // core 侧落盘 + 同步引擎配置（Embedded 与 Standalone 同一条通路）
+              // core 侧落盘 + 同步引擎配置
               await this.emitUiEvent({ type: 'modelChanged', sessionId: currentSessionId, ref: resolved });
             }
           }
@@ -1848,7 +1830,7 @@ export class WebviewMessageHandler {
     }
     this.inFlightSpacesRequest = (async () => {
       try {
-        // 统计对象在 core 的数据目录内：Embedded 直读，Standalone 经 UiRequest 索取
+        // 统计对象在 core 的数据目录内：经 UiRequest 索取
         const spaces = await requestConversationSpaces();
         this.host.sendToWebview({ type: 'conversationSpacesData', spaces });
       } catch (err: any) {

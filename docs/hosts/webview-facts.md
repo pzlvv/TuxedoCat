@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-18
 ---
 
 # 规格：webview 的事实与等待态
@@ -42,10 +42,10 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
 | 同步注入 | 页面首帧之前写进 `window` 的事实 | host |
 | 面板载荷 | 设置面板打开时随 `showLLMConfig` 一次给齐的配置事实 | host |
 
-**配置默认值的唯一来源是宿主的快照解析**（`src/core/settingsSnapshot.ts`）。该模块是
-`settings.json` 的规范化入口：字段缺失、类型不对或取值非法时按默认值处理。宿主与 core 的
-其它模块需要默认值时，读配置快照（`getSettings()` / `SettingsStore.getSnapshot()`），
-不各自声明常量。
+**配置默认值的唯一来源是宿主的快照解析**（`src/shared/settingsSnapshot.ts`）。该模块是
+`settings.json` 的规范化入口：字段缺失、类型不对或取值非法时按默认值处理。宿主与 Core
+需要默认值时读配置快照（宿主侧 `SettingsStore.getSnapshot()`，Core 侧 `settings.rs` 的
+`settings_snapshot()`），不各自声明常量。
 
 ---
 
@@ -102,7 +102,7 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
 移除则回退默认模型（provider 仍在时用它的默认模型，provider 已移除时用 active provider
 的默认模型），回退结果经 `UiEvent.modelChanged` 让 core 写回 `meta.json`；`meta.json`
 未记录身份时取 active provider 的默认模型、不回写。校验是宿主侧纯计算
-（`resolveModelRef`），落盘与引擎同步归 core（[docs/core/core-parity.md 第 3.9 节](../core/core-parity.md#39-模型身份解析的归属)）。
+（`resolveModelRef`），落盘与引擎同步归 Core（经 `UiEvent.modelChanged` 写回 `meta.json`）。
 
 ---
 
@@ -170,8 +170,8 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
 
 | 事项 | 落点 |
 | --- | --- |
-| 配置默认值（唯一来源） | `src/core/settingsSnapshot.ts` |
-| 跨层服务地址常量 | `src/core/endpoints.ts` |
+| 配置默认值（唯一来源） | `src/shared/settingsSnapshot.ts` |
+| 跨层服务地址常量 | `src/shared/endpoints.ts` |
 | 会话配置状态（`undefined` 起） | `src/webview/App.tsx`、`src/webview/sessionState.ts` |
 | 等待态渲染 | `src/webview/InputArea.tsx` |
 | 面板载荷入参（全必选） | `src/webview/LLMConfigPanel.tsx`、`src/host/WebViewUI.ts` |

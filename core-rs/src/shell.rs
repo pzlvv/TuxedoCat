@@ -128,7 +128,7 @@ fn detect_bash_from_common_paths() -> Option<ShellInfo> {
     None
 }
 
-/// 常见安装路径的展示名（对齐 Embedded `detectBashFromCommonPaths` 的分支：
+/// 常见安装路径的展示名（分支：
 /// 含 git → Git Bash，含 msys → MSYS2，含 cygwin → Cygwin，否则 bash）。
 fn common_path_bash_name(path_text: &str) -> &'static str {
     let lower = path_text.to_lowercase();
@@ -146,7 +146,7 @@ fn common_path_bash_name(path_text: &str) -> &'static str {
 /// PATH 里的 bash
 fn detect_bash_from_path() -> Option<ShellInfo> {
     let bash_path = where_first("bash")?;
-    // 对齐 Embedded `detectBashFromPath`：只看是否含 `git`，其余一律 `bash`
+    // 只看是否含 `git`，其余一律 `bash`
     let name = if bash_path.to_lowercase().contains("git") {
         "bash (Git Bash)"
     } else {

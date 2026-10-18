@@ -45,7 +45,7 @@ fn registry_tracks_creator_and_membership() {
 }
 
 #[test]
-fn generated_ids_use_the_embedded_shape() {
+fn generated_ids_shape() {
     let id = generate_sub_session_id();
     assert!(id.starts_with("sub_"), "{id}");
     assert_ne!(generate_sub_session_id(), generate_sub_session_id());

@@ -193,7 +193,7 @@ fn responses_stream_recovers_content_from_terminal_event_only() {
         .all(|event| !matches!(event, LlmEvent::TextDelta(_))));
 }
 
-/// `response.failed` → 致命错误，文案逐字对齐 Embedded
+/// `response.failed` → 致命错误，文案逐字锁定
 #[test]
 fn responses_stream_reports_failed_response() {
     let body = format!(
@@ -329,7 +329,7 @@ fn responses_request_maps_off_to_none() {
 
 /// 用户主动取消（abort）：流是本端提前掐断的，服务端不会补终止事件——这不是
 /// 「截断」，不得走重试 / 报错路径，也不得补发 `message_delta`
-/// （对齐 Embedded `checkAborted` 抛 AbortError 的路径）。
+/// 。
 #[test]
 fn responses_stream_abort_is_not_a_truncation_error() {
     let cancel = Arc::new(AtomicBool::new(false));

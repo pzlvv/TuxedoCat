@@ -1,14 +1,13 @@
-//! Skill 系统（对齐 Embedded `src/core/skills/*`）。
+//! Skill 系统。
 //!
-//! 模块划分与 Embedded 一致：
-//! - `frontmatterParser.ts` → [`parse_frontmatter`] / [`parse_skill_frontmatter_fields`]
-//! - `variableResolver.ts` → [`substitute_arguments`] / [`substitute_builtin_variables`]
-//! - `loadSkillsDir.ts` → [`get_skill_dir_commands`] / [`get_all_skills`]
-//! - `bundledSkills.ts` → [`register_bundled_skill`] / [`bundled_skills`]
-//! - `bundled/commit.ts` → [`commit_skill_definition`]
+//! 模块划分：
+//! - [`parse_frontmatter`] / [`parse_skill_frontmatter_fields`]（frontmatter 解析）
+//! - [`substitute_arguments`] / [`substitute_builtin_variables`]（变量替换）
+//! - [`get_skill_dir_commands`] / [`get_all_skills`]（技能目录加载）
+//! - [`register_bundled_skill`] / [`bundled_skills`]（内置技能）
+//! - [`commit_skill_definition`]（`/commit`）
 //!
-//! 与 Embedded 的差异只有「用户目录的解析口径」：Embedded 的 skills 走
-//! `process.env.HOME || process.env.USERPROFILE`，而 Standalone 统一走
+//! 用户目录的解析口径：统一走
 //! `config::config_home()`（`USERPROFILE` 优先），保证 skills 目录与
 //! `settings.json` / `conversations/` 落在同一个 `~/.<configDir>` 下。
 
@@ -29,8 +28,8 @@ pub enum SkillSource {
     Bundled,
     Project,
     User,
-    /// 策略管理来源（`<CONFIG_DIR_NAME>/skills/`）。Embedded 的 `loadSkillsDir`
-    /// 目前只扫 user / project 两级，该来源保留在数据契约里。
+    /// 策略管理来源（`<CONFIG_DIR_NAME>/skills/`）。目前只扫 user / project
+    /// 两级，该来源保留在数据契约里。
     #[allow(dead_code)]
     Managed,
 }
@@ -63,7 +62,7 @@ impl LoadedFrom {
     }
 }
 
-/// `getPromptForCommand` 的 Rust 形态（Embedded 里是返回 `Promise<ContentBlock[]>`）
+/// 提示词工厂：按命令名产出 content block 数组
 pub type PromptFactory = Arc<dyn Fn(&str) -> Vec<Value> + Send + Sync>;
 
 /// Skill 命令对象：一个 Skill 在运行时的完整表现形态
@@ -79,7 +78,7 @@ pub struct SkillCommand {
     pub when_to_use: Option<String>,
     /// 模型覆盖（如 `claude-sonnet-4-20250514`）。
     ///
-    /// Embedded 的 `SkillTool` 目前不消费它（`getEffectiveModelConfig` 只看会话配置），
+    /// 目前不消费它（模型解析只看会话配置），
     /// 字段保留在数据契约里。
     #[allow(dead_code)]
     pub model: Option<String>,
@@ -104,7 +103,7 @@ impl SkillCommand {
         (self.get_prompt_for_command)(args)
     }
 
-    /// 名称或别名是否命中（Embedded 的 `s.name === trimmed || s.aliases?.includes(trimmed)`）
+    /// 名称或别名是否命中
     pub fn matches(&self, name: &str) -> bool {
         self.name == name || self.aliases.iter().any(|alias| alias == name)
     }
@@ -394,8 +393,7 @@ fn parse_yaml_value(value: &str) -> Value {
         if value.contains('.') {
             if let Ok(number) = value.parse::<f64>() {
                 // JS 只有 double：`parseFloat("1.0")` 就是 `1`，`JSON.stringify` 写 `1`
-                // （不是 `1.0`）。整数值的浮点必须存成整数，否则与 Embedded 的
-                // 序列化 / 值比较都会不一致。
+                // （不是 `1.0`）。整数值的浮点必须存成整数。
                 if number.is_finite() && number.fract() == 0.0 && number.abs() <= i64::MAX as f64 {
                     return Value::Number((number as i64).into());
                 }
@@ -499,7 +497,7 @@ pub fn parse_argument_names(args: Option<&Value>) -> Vec<String> {
 /// 解析布尔类型的 frontmatter 字段（默认 `true`）。
 ///
 /// 只有布尔字面量与 `'true'` / `'yes'` / `'false'` / `'no'` 参与判定，
-/// **其余一律 `true`**（对齐 Embedded 的 `return true; // 默认为 true`，
+/// **其余一律 `true`**（默认为 true，
 /// 数字 `0` 也是 `true`，不是按真值转换）。
 pub fn parse_boolean_frontmatter(value: Option<&Value>) -> bool {
     match value {
@@ -659,7 +657,7 @@ pub fn substitute_builtin_variables(
     let mut result = content.to_string();
 
     if let Some(dir) = skill_dir {
-        // Windows 上统一成正斜杠（对齐 Embedded 的 `process.platform === 'win32'` 分支）
+        // Windows 上统一成正斜杠
         let normalized = if cfg!(windows) {
             dir.replace('\\', "/")
         } else {

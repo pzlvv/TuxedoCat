@@ -1,4 +1,4 @@
-import { sessionBusyLevel } from '../core/sessionRuntime';
+import { sessionBusyLevel } from '../shared/sessionRuntime';
 import { createChecker, runTests } from './helpers/harness';
 
 /**

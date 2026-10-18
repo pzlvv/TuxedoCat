@@ -263,7 +263,7 @@ async function run(): Promise<void> {
       kind: 'uiEvent',
       event: { type: 'conversationStarted', sessionId },
     });
-    // 对齐 Embedded：`conversationStarted` 只登记工作目录（内存态），不建档、不广播。
+    // `conversationStarted` 只登记工作目录（内存态），不建档、不广播。
     // `meta.json` / `.jsonl` 只在第一条消息持久化时创建。
     // 先等会话运行时状态上报（Core 确实处理了这条事件），再断言「没有 sessionCreated」。
     check(
@@ -531,7 +531,7 @@ async function run(): Promise<void> {
     }
 
     // ===== 事件粒度：queryBegin / queryEnd 是「消费循环级」 =====
-    // Embedded 的 `submitMessage` 在启动 consumer 时发一次 queryBegin，
+    // 消息入队在启动 consumer 时发一次 queryBegin，
     // `finalizeIdle` 在队列彻底排空时发一次 queryEnd；一轮用户消息内部的多个 LLM
     // 轮次（这里是「以冒号结尾 → reminder 追问」）同属一次 consumer，只应有一对。
     {

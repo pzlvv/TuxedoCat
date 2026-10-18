@@ -1,21 +1,14 @@
 #!/usr/bin/env node
-/**
+/***
  * 静态资源落位（`npm run copy-assets`）。
  *
- * 把 `assets/` 与 `resources/` 复制进 `dist/`，再按当前 Core 变体清掉**不属于本变体**的
- * 那份 ripgrep（见 docs/core/standalone-core.md 第 4 节）：
- *   - embedded：只有 `dist/resources/ripgrep/` 有用（TS 侧 Grep / Glob 的 rg，定位见
- *     `src/core/utils/ripgrep.ts`）；`dist/resources/core/` 是 Rust 产物，删。
- *   - standalone：只有 `dist/resources/core/<arch-platform>/ripgrep/` 有用（Core 自带的
- *     rg，定位见 `core-rs/src/tools.rs`）；`dist/resources/ripgrep/` 无人读取，删。
+ * 把 `assets/` 与 `resources/` 复制进 `dist/`，再清掉 `dist/resources/ripgrep/`：
+ * Grep / Glob 用的 rg 由 Core 自带（`resources/core/<arch-platform>/ripgrep/`，
+ * 定位见 `core-rs/src/tools.rs`），`dist/resources/ripgrep/` 无任何读取方，
+ * 不清就白带约 18M。
  *
- * 两份 rg 都读同一批源目录（`resources/ripgrep/<dir>/` 与 Core 自带的
- * `resources/core/<dir>/ripgrep/`），源目录都要留着：embedded 变体要前者，
- * `build-core.mjs::copyBundledRipgrep` 拿后者当 Core 自带 rg 的源。清理只发生在
- * `dist/`，不动源目录。
- *
- * 不清理的后果是 standalone 包（VS Code 扩展与 Electron 默认变体）里同时带上
- * `dist/resources/ripgrep/`（约 18M）与 Core 自带的 rg，前者无任何读取方。
+ * 源目录 `resources/ripgrep/<dir>/` 仍要留着：`build-core.mjs::copyBundledRipgrep`
+ * 拿它当 Core 自带 rg 的源。清理只发生在 `dist/`，不动源目录。
  */
 
 import { cpSync, rmSync } from 'node:fs';
@@ -36,11 +29,7 @@ cpSync(
   { recursive: true },
 );
 
-// 变体互斥：每份 rg 只在自己那侧被读取（docs/core/standalone-core.md 第 4 节）。
-const stale =
-  project.coreKind === 'embedded'
-    ? project.resolve(project.build.dist, 'resources', project.core.resourceDir)
-    : project.resolve(project.build.dist, 'resources', 'ripgrep');
+const stale = project.resolve(project.build.dist, 'resources', 'ripgrep');
 rmSync(stale, { recursive: true, force: true });
 
-console.log(`[copy-assets] ${project.coreKind}：静态资源已落位，已清理 ${stale}`);
+console.log(`[copy-assets] 静态资源已落位，已清理 ${stale}`);

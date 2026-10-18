@@ -20,7 +20,7 @@
  * 单测；焦点 / 激活 / 当前对话等事实由调用方经 `factsOf` 回调注入。
  */
 
-import { sessionBusyLevel } from '../src/core/sessionRuntime.js';
+import { sessionBusyLevel } from '../src/shared/sessionRuntime.js';
 import type { SessionLevel } from './trayAttention.js';
 
 /** 完成时刻的画面事实（由宿主注入；呼吸是否武装完全由它们推导） */

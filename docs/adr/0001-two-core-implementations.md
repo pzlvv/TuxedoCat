@@ -1,8 +1,8 @@
 # ADR-0001：Core 的两套同契约实现（Embedded TS + Standalone Rust）
 
-- 状态：已采纳
+- 状态：被取代（[ADR-0007](0007-single-core-rust-only.md)）
 - 日期：2025（Standalone Core 落地，M0–M8）
-- 规格：`docs/core/standalone-core.md`、`docs/core/core-parity.md`
+- 规格：`docs/core/standalone-core.md`（core-parity 部分已随双实现移除而删除）
 
 ## 背景
 
@@ -19,7 +19,7 @@ Core（引擎 / 工具 / 历史 / MCP / 技能）最初与 UI 同进程，用 Ty
   `CoreEvent` / `CoreRequest` / `UiEvent` / `UiRequest` 词汇表，落盘格式一致；
 - 装配由单一选择变量 `CORE_KIND`（`embedded` / `standalone`）决定，默认 `standalone`；
 - 行为对等由 parity 测试 + `src/test/fixtures/*Parity.json` 对照表锁死；
-- 有意保留的差异逐项登记在 `docs/core/core-parity.md`（原 TS 有 bug 的不复刻、Rust 更健壮的保留）。
+- 有意保留的差异曾逐项登记在 `docs/core/core-parity.md`（该文档已随双实现移除而删除）。
 
 ## 替代方案（被否决）
 

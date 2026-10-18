@@ -9,7 +9,7 @@ import { createRoot } from 'react-dom/client';
 import MessagesView from '../../webview/MessagesView';
 import { getColors } from '../../webview/colors';
 import type { Message } from '../../webview/types';
-import { buildEditDiffHunks } from '../../core/utils/editDiff';
+import { buildEditDiffHunks } from '../../shared/utils/editDiff';
 
 // 测试会话数据由 preprocess.js 生成，构建时被注入为全局 DATA
 declare const __MEMTEST_DATA__: any;

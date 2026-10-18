@@ -8,12 +8,12 @@
  */
 import type { WebviewPoster } from './ports.js';
 import type { LogChannel } from '../UIHost.js';
-import { requireEventBus } from '../../core/AssistantEventBus.js';
+import { requireEventBus } from '../../shared/AssistantEventBus.js';
 import {
   userChoiceQueue,
   type UserChoiceOptions,
   type UserChoiceResult,
-} from '../../core/UserChoiceQueue.js';
+} from '../../shared/UserChoiceQueue.js';
 
 /**
  * 上报「该会话的用户选择是否在 webview 里等待应答」。
@@ -174,7 +174,7 @@ export class UserChoiceManager {
    * `restoreUserChoiceIfPending` → `showUserChoice` 弹出；未 open（如子代理会话不在前台）
    * 时保留 pending，等用户切到该会话由 `onSessionLoaded` 重新投递。
    *
-   * Embedded 下 `Integration.requestUserChoice` 已走同一队列，本方法只服务 Standalone
+   * Core 侧的请求经帧通道到达同一队列
    * 的 `CoreRequest.userChoice`；两侧都不绕过队列，避免把请求投给当前显示的会话后，
    * 切到真正发起请求的会话反而看不到选择框。
    */
@@ -279,7 +279,7 @@ export class UserChoiceManager {
    */
   dropSession(sessionId: string): void {
     // 队列里尚未投递的请求同样要拒绝：会话已释放，等待方不应继续挂起
-    // （Embedded 由 core 的 releaseSessionResources 负责，Standalone 的 Core 进程
+    // （Core 进程
     //   不持有宿主队列，由这里补齐；rejectPending 对不存在的会话是 no-op）。
     userChoiceQueue.rejectPending(
       sessionId,

@@ -131,7 +131,7 @@ fn dispatch_matches_the_shared_command_table() {
     let (context, _events) = make_context(&sandbox.workspace.to_string_lossy());
 
     let fixture: serde_json::Value =
-        serde_json::from_str(include_str!("../../src/test/fixtures/commandDispatchParity.json"))
+        serde_json::from_str(include_str!("../fixtures/commandDispatch.json"))
             .expect("parse commandDispatchParity.json");
     let cases = fixture["cases"].as_array().expect("cases array").clone();
 

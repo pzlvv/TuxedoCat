@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-18
 ---
 
 # 规格：Client 与 Connection
@@ -9,8 +9,9 @@ last_reviewed: 2026-10-11
 宿主与一个 Core 之间的一对一连接，是总线、就绪状态与生命周期的作用域。工作区表示、
 Connection 生命周期、会话路由与就绪门禁都在本规格内确定。
 
-Core 与 UI 的分离形态见 `docs/architecture/core-ui-separation.md`；Standalone 进程形态见
-`docs/core/standalone-core.md`；Core 进程的 daemon 见 `docs/core/core-daemon.md`。
+Core 与 UI 的分离形态见 `docs/architecture/core-ui-separation.md`；Core（Rust 独立进程）
+的进程形态见 `docs/core/standalone-core.md`；Core 进程的 daemon 见
+`docs/core/core-daemon.md`。
 
 参考 [docs/architecture/layering.md 第 2 节](../architecture/layering.md#2-规则清单)（分层与依赖规则）、[第 1 节](../architecture/events.md#1-总线契约)（核心契约：AssistantEventBus）、
 [docs/hosts/host-bootstrap.md 第 1 节](../hosts/host-bootstrap.md#1-宿主接线)（宿主接线）、[docs/architecture/principles.md 第 7 节](../architecture/principles.md#7-一份事实只有一个写入点)（一份事实只有一个写入点）。
@@ -20,14 +21,14 @@ Core 与 UI 的分离形态见 `docs/architecture/core-ui-separation.md`；Stand
 ## 1. 能力
 
 1. **两层**：Client 一个，Connection 每个工作区一个。
-2. **Connection 随工作区创建**：一个工作区对应一个 Connection、一个 Core 进程。
+2. **Connection 随工作区创建**：一个工作区对应一个 Connection、一个 Core 进程；
+   `openWorkspace` 恒开通道。
 3. **同一工作区不可重复打开**：重复打开激活已有视图，不新建 Connection。
 4. **工作区不可切换**：视图打开哪个工作区就属于哪个；换工作区只能关闭再打开。
 5. **数量对上层透明**：调用方经 `connectionForWorkspace()` 取连接，不假设连接数量。
 6. **配置快照是 Client 级的**：一份快照推给所有 Connection。
 7. **就绪门禁在 Client 侧**：Connection 未就绪时不投递任何 `UiEvent`。
 8. **连接身份是内部概念**：`connectionId` 不进入总线契约，不向用户展示。
-9. **装配形态互斥**：`embedded` 与 `standalone` 二选一；`embedded` 恒一个 Connection。
 
 ---
 
@@ -63,27 +64,25 @@ Client 持有：
 Connection 持有：
 
 - 总线（1:1）；
-- Core kind 与进程句柄（standalone），或进程内 Core（embedded）；
+- Core 通道（本机 `stdio` 直起的 Core 进程，或 daemon channel）与进程句柄；
 - 就绪状态；
 - 该工作区的会话集合；
 - 连接身份。
 
 ### 3.1 总线作用域
 
-- 一个 Connection 内，总线是唯一的、单例的；`requireEventBus()` 在该作用域内解析。
-- `standalone` 下 Core 侧的进程级状态天然每进程一份，不需要跨 Connection 共享。
-- `embedded` 下只有一个 Connection，`setGlobalEventBus()` 的进程级单例语义保持现状。
+- 一个 Connection 内，总线是唯一的、单例的；`requireEventBus()` 在宿主进程内解析为
+  Client（按会话 / 工作区路由到对应 Connection 的总线）。
+- Core 侧的进程级状态天然每进程一份，不需要跨 Connection 共享。
 
-### 3.2 装配形态的差异
+### 3.2 装配形态
 
-| | `embedded` | `standalone` |
-| --- | --- | --- |
-| Connection 数量 | 恒 1 | 每个打开的工作区 1 个 |
-| Core | 进程内，`initializeCoreEvents` | 独立进程：本地同机直接以 `stdio` 起；远程经 daemon 起 |
-| 工作区 | 会话的属性（沿用现状） | Connection 的归属 |
-| 配置快照 | 同一份，进程内传递 | 同一份，帧通道传递 |
-
-差异只在进程边界，不在契约：两种形态对 UI 呈现同一份事件词汇表。
+- 每个打开的工作区一个 Connection：本机工作区直接以 `stdio` 动作起一个 Core 进程；
+  远程工作区连该 endpoint 的 daemon、每个工作区一条 channel。
+- 没有打开的工作区时用空引用占位（`emptyWorkspaceRef`）开一个 Connection，保证宿主
+  环境与配置快照在启动期送达、空态视图的只读请求（技能列表 / 对话列表等）仍可应答；
+  打开第一个真实工作区时这个占位 Connection 被关闭。
+- 工作区是 Connection 的归属；配置快照经帧通道传递。
 
 ---
 
@@ -144,17 +143,16 @@ Connection 持有：
 
 | 事件 | 行为 |
 | --- | --- |
-| 打开工作区 | 建立 Connection；`standalone` 本地同机直接以 `stdio` 起一个 Core 进程，远程经 daemon 起；`embedded` 下复用进程内 Core |
+| 打开工作区 | 建立 Connection：本机直接以 `stdio` 起一个 Core 进程，远程经该 endpoint 的 daemon 开 channel |
 | 重复打开同一工作区 | 不新建 Connection；激活已有视图 |
-| 关闭工作区 | 销毁 Connection；`standalone` 下关闭 Core 进程（daemon 计数递减） |
-| 宿主退出 | 销毁全部 Connection；`standalone` 下关闭所有 Core |
+| 关闭工作区 | 销毁 Connection；关闭 Core 进程（daemon 计数递减） |
+| 宿主退出 | 销毁全部 Connection；关闭所有 Core |
 | 工作区切换 | 不允许；只能关闭再打开 |
 
 - `connectionId` 自动生成；`local-` / `remote-` 前缀用于区分来源。取值不进入总线载荷，
   也不向用户展示。
 - 同一工作区在宿主内至多一个 Connection。跨宿主实例（两个 VS Code 窗口 / 两个 Electron
   实例）各自独立，互不感知。
-- `embedded` 下不按工作区建 Connection：恒一个，工作区仍是会话属性。
 
 ---
 
@@ -189,8 +187,9 @@ Connection 持有：
 - 就绪判据由 Core 侧定义：Core 处理完 `hostEnvironmentProvided`（含配置快照）后发出
   `CoreEvent.coreReady`。
 - `coreReady` 幂等：同一 Connection 内重复到达只生效一次。
-- **门禁在 Client 侧**：未就绪期间的 `UiEvent` 一律不发出。Core 侧对应地做硬断言：
-  就绪前收到任何 `UiEvent` 直接抛错，把顺序错误变成启动期错误（[docs/architecture/events.md 第 6 节](../architecture/events.md#6-边界语义)）。
+- **门禁在 Client 侧**：未就绪期间的 `UiEvent` 一律不发出。Core 侧对应地拒绝：
+  就绪前收到任何 `UiEvent` 记 log 丢弃，把顺序错误变成启动日志可见的诊断
+  （[docs/architecture/events.md 第 6 节](../architecture/events.md#6-边界语义)）。
 - 一个 Connection 未就绪不影响其它 Connection。
 - 重连不在本规格范围内（第 10 节）。
 
@@ -255,9 +254,9 @@ Connection 持有：
 ## 11. 验收要点
 
 1. 打开一个工作区建立一个 Connection；重复打开只激活已有视图。
-2. 两个工作区对应两个 Connection、两个 Core 进程（standalone）。
-3. `embedded` 下恒一个 Connection，工作区仍是会话属性。
-4. Client 未收到 `coreReady` 前不发出任何 `UiEvent`；Core 在就绪前收到 `UiEvent` 抛错。
+2. 两个工作区对应两个 Connection、两个 Core 进程。
+3. 没有打开的工作区时以空引用占位；打开第一个真实工作区时占位 Connection 关闭。
+4. Client 未收到 `coreReady` 前不发出任何 `UiEvent`；Core 在就绪前收到 `UiEvent` 记 log 拒绝。
 5. 一份配置快照推给所有 Connection，Connection 之间不共享内存状态。
 6. `connectionId` 不出现在任何总线载荷中。
 7. 关闭工作区后 Connection 销毁；daemon 计数递减，归零后按 `docs/core/core-daemon.md` 退出。

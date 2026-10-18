@@ -3,9 +3,9 @@
  * Message, Colors 等类型在多个组件间重复定义，统一抽离到这里
  */
 
-import type { ModelRef } from '../core/llm/modelRef';
-import type { MessageOrigin } from '../core/types';
-import type { McpServerInfo } from '../core/webviewTypes';
+import type { ModelRef } from '../shared/llm/modelRef';
+import type { MessageOrigin } from '../shared/types';
+import type { McpServerInfo } from '../shared/webviewTypes';
 import type { WebviewToHostMessage } from '../host/webviewMessages';
 import type { UiLanguage } from './i18n';
 import type { UiFontSize } from './fontSize';

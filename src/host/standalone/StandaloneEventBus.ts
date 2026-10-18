@@ -11,7 +11,7 @@
  * 与内存实现（`src/host/EventBus.ts`）的差异，全部来自进程边界：
  * - 就绪前的 `uiEvent` 在 UI 侧排队，握手完成后按序发出；
  * - 「连接态」事件（`hostEnvironmentProvided`）保留最后一次取值，
- *   每次握手后重放；`conversationOpened` 的会话集合同样重放（`docs/core/standalone-core.md` 第 7.1 节）；
+ *   每次握手后重放；`conversationOpened` 的会话集合同样重放（`docs/core/standalone-core.md` 第 6.1 节）；
  * - 处理器尚未注册时到达的 `CoreEvent` 先缓存，注册后按序补投；
  * - 未注册 `CoreRequest` 处理器时回 `ok: false` 的响应，而不是让对端永久挂起。
  *
@@ -36,7 +36,7 @@ import type {
   UiRequestHandlers,
   UiRequestResultMap,
   Unsubscribe,
-} from '../../core/AssistantEventBus.js';
+} from '../../shared/AssistantEventBus.js';
 import {
   CoreProcess,
   type CoreExitInfo,

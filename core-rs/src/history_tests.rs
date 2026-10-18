@@ -122,7 +122,7 @@ fn delete_conversation_removes_all_related_files() {
 
 #[test]
 fn delete_conversation_also_removes_sub_conversations() {
-    // 对齐 Embedded `deleteConversation`：沿 `parentSessionId` 递归删除子孙对话
+    // 沿 `parentSessionId` 递归删除子孙对话
     // （子代理可以再起子代理，链可以任意深）。
     let sandbox = Sandbox::new("history-delete-closure");
     let dir = sandbox.conversation_dir(PROJECT);
@@ -185,7 +185,7 @@ fn append_message_records_uuid_parent_and_timestamp() {
     assert_eq!(records[0]["message"]["uuid"], "u1");
     assert_eq!(records[0]["message"]["message"]["content"], "hi");
 
-    // 读回来的是内部消息本体（与 Embedded 的 loadConversation 一致）
+    // 读回来的是内部消息本体
     let loaded = load_messages("s1", PROJECT);
     assert_eq!(loaded.len(), 2);
     assert_eq!(loaded[0]["uuid"], "u1");
@@ -420,12 +420,12 @@ fn load_messages_keeps_first_position_for_duplicate_uuids() {
     assert_eq!(markers, ["a-new", "b"]);
 }
 
-/// 与 Embedded 共用同一份对照表（`src/test/fixtures/historyChainParity.json`）：
-/// 两侧用同一组 jsonl 行跑链重建，断言消息顺序逐项一致。
+/// 行为对照表数据在 `core-rs/fixtures/historyChain.json`：
+/// 用同一组 jsonl 行跑链重建，断言消息顺序逐项一致。
 /// 运行方式：`npm run test:all -- history-chain-parity`。
 #[test]
-fn load_messages_matches_the_embedded_chain_fixture() {
-    const FIXTURE: &str = include_str!("../../src/test/fixtures/historyChainParity.json");
+fn load_messages_matches_the_chain_fixture() {
+    const FIXTURE: &str = include_str!("../fixtures/historyChain.json");
     let fixture: Value = serde_json::from_str(FIXTURE).expect("parse historyChainParity.json");
     let cases = fixture["cases"].as_array().expect("cases");
     assert!(!cases.is_empty());
@@ -514,7 +514,7 @@ fn tool_use_update_without_id_is_ignored() {
 
 #[test]
 fn ensure_tool_results_backfills_missing_tool_results_in_memory() {
-    // 对齐 Embedded `ensureToolResults`：assistant 已落盘 tool_use，但进程崩溃导致
+    // assistant 已落盘 tool_use，但进程崩溃导致
     // tool_result 缺失时，恢复出的消息必须补一条「会话中断」的取消结果，否则下一轮
     // Anthropic 请求会因 tool_use 没有配对 tool_result 而 400。
     let mut messages = vec![
@@ -579,7 +579,7 @@ fn ensure_tool_results_keeps_completed_tool_uses_untouched() {
 
 #[test]
 fn ensure_tool_results_dedupes_repeated_tool_use_ids() {
-    // 对齐 Embedded 的 `Map<string, ...>`：同一 id 重复出现只补一条 tool_result，
+    // 同一 id 重复出现只补一条 tool_result，
     // name / parentUuid 取最后一次写入，顺序仍按第一次出现的位置。
     let mut messages = vec![
         json!({
@@ -625,7 +625,7 @@ fn touch_metadata_refreshes_timestamp_and_count() {    let _sandbox = Sandbox::n
 
 #[test]
 fn touch_metadata_keeps_updated_at_for_background_messages() {
-    // 对齐 Embedded `updateMetadataForNewMessage`：只有用户主动发送的消息（`_userInitiated`）
+    // 只有用户主动发送的消息（`_userInitiated`）
     // 才刷新 updatedAt，后台自动消息（reminder / 子代理回复）不得把旧会话顶到列表最前。
     let _sandbox = Sandbox::new("history-touch-background");
     create_conversation(
@@ -656,7 +656,7 @@ fn derive_title_uses_the_first_user_text() {
 
 #[test]
 fn derive_title_joins_text_blocks_and_skips_empty_candidates() {
-    // 对齐 Embedded `extractUserContent`：多个 text block 用 `\n` 拼接（不是空格）。
+    // 多个 text block 用 `\n` 拼接（不是空格）。
     let messages = vec![
         json!({ "type": "user", "message": { "content": [] } }),
         json!({ "type": "user", "message": { "content": [{ "type": "image" }] } }),
@@ -673,7 +673,7 @@ fn derive_title_joins_text_blocks_and_skips_empty_candidates() {
 
 #[test]
 fn derive_title_falls_back_to_image_for_image_only_messages() {
-    // 对齐 Embedded `buildConversationTitle`：纯图片（无文本）时兜底 `Image`。
+    // 纯图片（无文本）时兜底 `Image`。
     let messages = vec![json!({ "type": "user", "message": { "content": [
         { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "aGk=" } }
     ] } })];
@@ -688,7 +688,7 @@ fn derive_title_falls_back_to_image_for_image_only_messages() {
 
 #[test]
 fn derive_title_uses_image_size_for_image_only_messages() {
-    // 对齐 Embedded `buildConversationTitle`：仅图片时优先用消息顶层 `imageSizes`
+    // 仅图片时优先用消息顶层 `imageSizes`
     // 里第一张有宽高的图片生成 `Image[<w>*<h>]`。
     let messages = vec![json!({
         "type": "user",
@@ -755,8 +755,7 @@ fn derive_title_truncates_to_fifty_characters() {
 
 #[test]
 fn count_messages_excludes_stream_events_and_tool_use_updates() {
-    // `tool_use_update` 只回放更新、不算消息（对齐 Embedded loadConversation 的
-    // `metadata.messageCount = messages.length` 与 appendMessage 的 +1 口径）。
+    // `tool_use_update` 只回放更新、不算消息。
     let messages = vec![
         json!({ "type": "user" }),
         json!({ "type": "assistant" }),
@@ -812,7 +811,7 @@ fn model_ref_reads_flat_fields_then_context() {
     );
 
     // 只有 model、没有 provider：对齐 `modelRefOf`——整个模型身份视为未登记
-    // （否则会拿旧模型去配当前活动 provider，与 Embedded 的默认模型回退不一致）
+    // （否则会拿旧模型去配当前活动 provider，与默认模型回退口径不一致）
     create_conversation(
         "s3",
         PROJECT,
@@ -893,7 +892,7 @@ fn update_context_creates_the_context_object_when_absent() {
     assert_eq!(load_metadata("s1", PROJECT).unwrap()["context"]["currentFile"], "a.ts");
 }
 
-/// 宿主（Embedded Core）用 JS 的 `String.slice` 截断工具输出预览时可能切开代理对，
+/// 宿主（TS）用 JS 的 `String.slice` 截断工具输出预览时可能切开代理对，
 /// 于是历史行里出现 `"\ude00"`。serde_json 是严格解析器，不清洗会**整行丢弃**——
 /// 表现为 Rust Core 打开会话后少消息 / 元数据读不出来。
 #[test]
@@ -938,7 +937,7 @@ fn load_metadata_reads_files_with_lone_surrogate_escapes() {
 }
 
 /// 会话文件由多进程共写，异常退出可能留下半截多字节序列（无效 UTF-8 字节）。
-/// Embedded 侧 Node `readFile(path, 'utf8')` 宽松解码只损失一个替换字符；
+/// Node 侧 `readFile(path, 'utf8')` 的宽松解码只损失一个替换字符；
 /// Rust 侧 `read_to_string` 严格校验会让**整个会话**被当成空——这里锁住宽松口径。
 #[test]
 fn load_messages_replaces_invalid_utf8_bytes_instead_of_dropping_the_file() {
@@ -985,7 +984,7 @@ fn load_metadata_replaces_invalid_utf8_bytes() {
 
 #[test]
 fn conversation_list_excludes_workspace_manifest() {
-    // 对齐 Embedded loadConversationList：工作区清单（workspace.meta.json）不是会话，
+    // 工作区清单（workspace.meta.json）不是会话，
     // 混进列表会渲染成「(未命名对话) NaN/NaN/NaN」的幽灵条目
     let sandbox = Sandbox::new("history-list-manifest");
     // 调用只为触发 ensure 写入 workspace.meta.json，路径本身用不上
@@ -1003,7 +1002,7 @@ fn conversation_list_excludes_workspace_manifest() {
 
 #[test]
 fn delete_conversation_keeps_workspace_manifest() {
-    // 对齐 Embedded readProjectConversationMetadata：闭包输入不含工作区清单——
+    // 闭包输入不含工作区清单——
     // 它没有 sessionId，混进闭包只会被当成名为 "workspace" 的会话删掉
     let sandbox = Sandbox::new("history-delete-manifest");
     let dir = sandbox.conversation_dir(PROJECT);

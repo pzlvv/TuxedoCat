@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 /**
  * Electron 整应用测试的假 LLM：一个 OpenAI Chat Completions 兼容的 SSE 服务器。
  *
- * embedded core 经真实链路（settings.json → settingsSnapshot → OpenAiApi.ts 流式
+ * Core（Rust）经真实链路（settings.json → settingsSnapshot → llm.rs 流式
  * 适配器）；standalone core 经 Rust 的 `llm::stream_*`。按用户消息内容脚本化决定
  * 轮次行为：
  * - 常规文本 → 流式文本终轮（finish_reason=stop）

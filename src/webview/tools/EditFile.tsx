@@ -8,7 +8,7 @@ import { postMessage, getWindowSessionId } from '../webviewEnv';
 import { t } from '../i18n';
 import { profileLog } from '../debug';
 import { uiFontSizePx } from '../fontSize';
-import { buildEditDiffHunks, type DiffHunk, type DiffLine } from '../../core/utils/editDiff';
+import { buildEditDiffHunks, type DiffHunk, type DiffLine } from '../../shared/utils/editDiff';
 import { usePreviewLimit, PreviewMoreHint, PREVIEW_BOX_HEIGHT, PREVIEW_LINE_HEIGHT } from './previewLimit';
 
 // VS Code 扩展模式下由 vscode 注入 --vscode-diffEditor-* CSS 变量；

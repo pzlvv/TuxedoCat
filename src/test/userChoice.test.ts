@@ -7,11 +7,11 @@
  */
 
 import * as assert from 'assert';
-import { setGlobalEventBus, resetGlobalEventBus } from '../core/AssistantEventBus';
+import { setGlobalEventBus, resetGlobalEventBus } from '../shared/AssistantEventBus';
 import { UserChoiceManager } from '../host/ui/userChoice';
 import { createChecker, runTests } from './helpers/harness';
-import { applySettingsSnapshot } from '../core/settings';
-import { resolveSettingsSnapshot } from '../core/settingsSnapshot';
+import { applySettingsSnapshot } from '../shared/settings';
+import { resolveSettingsSnapshot } from '../shared/settingsSnapshot';
 import { makeTestBus } from './helpers/fixtures';
 
 async function run(): Promise<void> {

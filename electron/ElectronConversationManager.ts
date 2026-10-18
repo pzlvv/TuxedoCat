@@ -10,8 +10,8 @@
  * - idle / waiting 走状态流（dispatchStates）
  */
 
-import type { ConversationMetadata } from '../src/core/history/Conversation.js';
-import type { SessionRuntimeState } from '../src/core/AssistantEventBus.js';
+import type { ConversationMetadata } from '../src/shared/history/Conversation.js';
+import type { SessionRuntimeState } from '../src/shared/AssistantEventBus.js';
 import type { WebviewMessage } from '../src/host/webviewMessages.js';
 import type { UIHost } from '../src/host/UIHost.js';
 import { ConversationManager } from '../src/host/ConversationManager.js';

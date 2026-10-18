@@ -1,9 +1,7 @@
-//! 智能命名：从对话消息生成标题（对齐 Embedded `src/core/history/smartNaming.ts`
-//! 与 `src/core/utils/balance.ts` 同族的「core 侧事实 + LLM 调用」组合）。
+//! 智能命名：从对话消息生成标题（「core 侧事实 + LLM 调用」组合）。
 //!
-//! Embedded 下 `electron/main.ts`（侧栏菜单）与 `webviewMessageHandler`（webview
-//! 按钮）各自走一遍：读会话消息 → 拼命名依据 → 调 LLM → 解析标题 → 改名。
-//! Standalone 下这三步都要在 Core 侧完成（宿主既读不到会话文件，也拿不到 LLM 配置），
+//! 读会话消息 → 拼命名依据 → 调 LLM → 解析标题 → 改名，
+//! 这几步都在 Core 侧完成（宿主既读不到会话文件，也拿不到 LLM 配置），
 //! 宿主经 `UiRequest.smartNamingRequested` 取回标题。
 
 use std::sync::atomic::AtomicBool;
@@ -21,7 +19,7 @@ pub const FALLBACK_TITLE: &str = "智能命名";
 
 /// 智能命名共用的 system prompt（示例 + 输出格式约束）。
 ///
-/// 与 Embedded 逐字一致：**不本地化**——它是给模型的指令，不是界面文案。
+/// **不本地化**——它是给模型的指令，不是界面文案。
 pub const SMART_NAMING_SYSTEM_PROMPT: &str = "你是一个对话标题生成器。\n\n\
 示例1:\n对话内容：[用户]: 帮我写一个Python排序函数\n[助手]: 以下是冒泡排序实现...\n\
 输出：{\"title\": \"Python排序函数\"}\n\n\
@@ -110,7 +108,7 @@ pub fn parse_smart_naming_title(raw_result: &str) -> String {
 
 /// 取字符串里最后一个完整 JSON 对象（须含 string 类型的 `title` 字段）。
 ///
-/// 逐项对齐 Embedded `extractLastJsonObject`：反向找最后一个不在字符串字面量里的
+/// 反向找最后一个不在字符串字面量里的
 /// `{`，从它开始做括号配对；配平后若 JSON 合法**且** `title` 是字符串则返回；
 /// 否则退到该 `{` 之前的部分**递归**再找（模型可能先输出一段含花括号的思考）。
 fn extract_last_json_object(text: &str) -> Option<String> {
@@ -123,7 +121,7 @@ fn extract_last_json_object(text: &str) -> Option<String> {
     while index >= 0 {
         let ch = chars[index as usize];
         if ch == '\\' && in_string {
-            // 连续两个反斜杠时多跳一格（对齐 Embedded 的 `i--; continue;`）
+            // 连续两个反斜杠时多跳一格
             if index > 0 && chars[(index - 1) as usize] == '\\' {
                 index -= 2;
                 continue;
@@ -257,7 +255,7 @@ fn extract_title_pattern(text: &str) -> Option<String> {
 
 /// 调一次 LLM 生成标题；失败时返回 `None`（调用方保留原标题）。
 ///
-/// 与 Embedded 一致：**不带 tools**、**不开思考**（`callLLM` 不传 `thinkingEffort`
+/// **不带 tools**、**不开思考**（`callLLM` 不传 `thinkingEffort`
 /// 时默认关闭），整段 prompt 作为一条 user 消息发出。
 pub fn generate_title(session_id: &str, messages: &[Value]) -> Option<String> {
     let context = collect_smart_naming_context(messages);
@@ -295,8 +293,8 @@ pub fn generate_title(session_id: &str, messages: &[Value]) -> Option<String> {
 /// `UiRequest.smartNamingRequested`：读会话消息 → 生成标题。
 ///
 /// 只负责**生成**标题，不写 `meta.json`、不广播：改名由宿主随后发
-/// `UiEvent.conversationRenamed` 完成——与 Embedded 的 `resolveSmartTitle`
-/// （「只负责生成，后续动作由调用方决定」）分工一致，两种装配下宿主代码相同。
+/// `UiEvent.conversationRenamed` 完成——本函数只负责生成，
+/// 后续动作由调用方决定，两种装配下宿主代码相同。
 pub fn smart_name_session(session_id: &str) -> Result<Value, String> {
     let project = history::project_of_session(session_id)
         .ok_or_else(|| format!("session {session_id} has no project registered"))?;

@@ -16,7 +16,7 @@
  */
 
 import { nativeImage, type NativeImage } from 'electron';
-import { sessionBusyLevel } from '../src/core/sessionRuntime.js';
+import { sessionBusyLevel } from '../src/shared/sessionRuntime.js';
 
 export type TrayStatus = 'idle' | 'running' | 'waiting';
 

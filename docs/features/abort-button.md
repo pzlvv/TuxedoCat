@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-18
 ---
 
 # 规格：abort 按钮
@@ -75,14 +75,14 @@ abort 按钮常驻输入区。它的可用性与颜色由**当前会话**的运�
 
 ### FR-003：事实与表现的边界
 
-- 事实 owner 是 core `sessionRuntime`（[docs/core/session-runtime.md](../core/session-runtime.md)）：按来源分列
+- 事实 owner 是 Core 进程的运行时状态表（[docs/core/session-runtime.md](../core/session-runtime.md)）：按来源分列
   `query` / `waiting` / `compacting` / `background` / `subagent`，变化时推**全量**
   `sessionRuntimeChanged` 快照。
 - 快照只暴露**根事实**：`sessionId` / `idle` / `waiting` / `queryRunning` /
   `compacting` / `backgroundRunning` / `subAgentRunning`。颜色是表现，不进契约。
 - 按钮状态由纯函数 `resolveAbortButtonState`（`src/host/abortButtonState.ts`）从根事实
   推导，只有一份实现，webview 与测试共用它（[principles.md 第 8 节](../architecture/principles.md#8-契约只写现状派生字段从根字段推导)）。
-- 中止范围的判定在 core（`Integration.abortCurrentQuery`），不在 UI：UI 不发送范围
+- 中止范围的判定在 Core（`Core::on_abort`），不在 UI：UI 不发送范围
   字段，避免「按钮颜色」与「实际中止范围」各写一份判据而分叉。
 
 ## 3. 行为规格
@@ -90,23 +90,23 @@ abort 按钮常驻输入区。它的可用性与颜色由**当前会话**的运�
 ### 3.1 数据流
 
 ```
-core sessionRuntime ──sessionRuntimeChanged（全量根事实）──▶ 宿主 ConversationManager
+Core 运行时状态表 ──sessionRuntimeChanged（全量根事实）──▶ 宿主 ConversationManager
         ▲                                                          │
         │ UiEvent.abortRequested                                   │ sessionRuntimeStates
         │                                                          ▼
-   Integration.abortCurrentQuery ◀── abort 消息 ── webview InputArea（三态按钮）
+   Core::on_abort ◀── abort 消息 ── webview InputArea（三态按钮）
 ```
 
 - 上行：`abort` 消息只有 `sessionId`（[events.md 第 2.3 节](../architecture/events.md#23-uieventui--core单向)）。
 - 下行：`sessionRuntimeStates` 携带全量 `SessionRuntimeState` 快照
   （[contracts.md 第 4 节](../architecture/contracts.md#4-对话相关数据conversationmanager)）。
-- core 的中止范围判定读 `sessionRuntime` 的同一份事实；两处判据同源，因此按钮显示
+- core 的中止范围判定读 Core 运行时状态的同一份事实；两处判据同源，因此按钮显示
   「收尾中」时点击必定命中后台任务 / 子代理阶段。
 
 ## 4. 边界与错误路径
 
 - **重复点击**：两阶段判定幂等（FR-002），不会误伤已结束的工作。
-- **会话关闭 / 删除不走两阶段**：清理路径调 `Integration.abortSessionTree`，一次停掉
+- **会话关闭 / 删除不走两阶段**：清理路径调 `Core::abort_session_scope`，一次停掉
   整棵工作树（前台查询 + 后台任务 + 递归子代理），因为目标是不留下任何在跑的工作。
 - **前台自然结束而后台仍在**：`sessionRuntimeChanged` 快照呈现 `idle=false`、
   `queryRunning=false`、`backgroundRunning=true`，按钮转黄（FR-001 判据的组合结果）。
@@ -128,5 +128,5 @@ core sessionRuntime ──sessionRuntimeChanged（全量根事实）──▶ �
 | 需求 | 实现落点 | 测试落点 | 覆盖 |
 | --- | --- | --- | --- |
 | FR-001 | `src/host/abortButtonState.ts` 的 `resolveAbortButtonState` | `src/test/abortButtonState.test.ts`；e2e `e2e/webview/conversation.spec.ts`（三态） | 自动 |
-| FR-002 | `Integration.abortCurrentQuery`（`src/core/Integration.ts`） | `src/test/abortPhaseParity.test.ts`；Rust 对应 `core-rs/src/engine_tests.rs`；整应用 e2e `e2e/electron/assistant.spec.ts`（两阶段中止、网关不回响应头时中止） | 自动 |
-| FR-003 | `UiEvent.abortRequested` 载荷（`src/core/AssistantEventBus.ts`） | `src/test/sessionRuntime.test.ts`（快照根事实） | 自动 |
+| FR-002 | `Core::on_abort`（`core-rs/src/engine.rs`，两阶段判定） | `core-rs/src/engine_tests.rs` 的 `abort_request_stops_foreground_before_background`；整应用 e2e `e2e/electron/assistant.spec.ts`（两阶段中止、网关不回响应头时中止） | 自动 |
+| FR-003 | `UiEvent.abortRequested` 载荷（`src/shared/AssistantEventBus.ts`） | `src/test/sessionBusyLevel.test.ts`（快照根事实的宿主派生） | 自动 |

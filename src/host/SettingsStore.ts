@@ -16,16 +16,16 @@ import { mkdir } from 'fs/promises';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { resolveConfigDir } from '../config/configDir.js';
-import { withFileLock, writeFileAtomic } from '../core/utils/fileLock.js';
-import { logger } from '../core/Logger.js';
+import { withFileLock, writeFileAtomic } from '../shared/utils/fileLock.js';
+import { logger } from '../shared/Logger.js';
 import { HIGHLIGHT_LANGUAGES_FIELD } from './highlightLanguages.js';
-import type { ModelRef } from '../core/llm/modelRef.js';
+import type { ModelRef } from '../shared/llm/modelRef.js';
 import {
   resolveSettingsSnapshot,
   type McpServerDefinition,
   type SettingsSnapshot,
-} from '../core/settingsSnapshot.js';
-import { parseMcpServerDefinitions } from '../core/mcp/parse.js';
+} from '../shared/settingsSnapshot.js';
+import { parseMcpServerDefinitions } from '../shared/mcp/parse.js';
 
 /** settings.json 修改器：同步改 cfg；返回非 undefined 时作为新的完整配置写回 */
 export type SettingsJsonMutator = (cfg: Record<string, any>) => void | Record<string, any>;

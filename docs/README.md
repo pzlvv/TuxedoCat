@@ -38,7 +38,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 
 | 文档 | 范围 |
 | --- | --- |
-| `README.md` | 快速上手：环境要求、构建 / 测试命令、双 Core 装配说明 |
+| `README.md` | 快速上手：环境要求、构建 / 测试命令、Core（Rust）说明 |
 | `AGENTS.md` | AI 协作者约定：文档规则、分层依赖、命名约定、架构铁律、工作流 |
 | `TODO.md` | 未排期想法与跨 spec 缺口（每条带验收判据；进行中的工作在 specs/ 的 `tasks.md`） |
 
@@ -53,8 +53,8 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 
 | 文档 | 范围 |
 | --- | --- |
-| `docs/architecture/overview.md` | 架构总览：core / host / 宿主实现三层与 `AssistantEventBus` 唯一边、模块职责 |
-| `docs/architecture/layering.md` | 分层与依赖规则：依赖方向、九条规则、core import 审计结论 |
+| `docs/architecture/overview.md` | 架构总览：shared / host / 宿主实现三层、Core（Rust 独立进程）与 `AssistantEventBus` 唯一边、模块职责 |
+| `docs/architecture/layering.md` | 分层与依赖规则：依赖方向、规则清单、shared import 审计结论 |
 | `docs/architecture/events.md` | `AssistantEventBus` 契约与四组事件词汇表（载荷 / 触发点 / 处理方 / wire message）、订阅、命名、bootstrap 顺序、边界语义 |
 | `docs/architecture/contracts.md` | 宿主契约：`UIHost` / `SpinDesign` / `MCPHost` / `ConversationManager` 与宿主侧入口的 `UiEvent` 翻译 |
 | `docs/architecture/host-ui-modules.md` | 宿主侧共享子模块与窄端口：`UserChoiceManager` / `ToolHandler` / `WebviewMessageHandler` / `WebViewUiPort` |
@@ -68,13 +68,12 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 
 | 文档 | 范围 |
 | --- | --- |
-| `docs/core/standalone-core.md` | Standalone Core（Rust）：形态、选择变量、平台矩阵、构建指纹、契约、传输与生命周期 |
-| `docs/core/standalone-core-boundaries.md` | Standalone Core 的对等、边界与验收：与 Embedded 的对等、宿主侧事实读取、落点与测试 |
-| `docs/core/core-parity.md` | 两套 Core 的实现差异与 parity 对照表锁定的对等面 |
+| `docs/core/standalone-core.md` | Core（Rust）：形态、平台矩阵、构建指纹、契约、传输与生命周期 |
+| `docs/core/standalone-core-boundaries.md` | Core 的边界与验收：宿主侧事实读取、落点与测试 |
 | `docs/core/core-daemon.md` | Core 进程的 daemon：进程形态、通道模型、生命周期、控制通道协议 |
 | `docs/core/core-remote.md` | Core 远程服务：`start` / `kill`、状态文件、远端目录选择与 SSH 接入 |
 | `docs/core/client-connection.md` | 连接模型：宿主级 `Client` 与每工作区 `Connection` |
-| `docs/core/session-runtime.md` | `sessionRuntime`：会话运行时状态的唯一 owner 与 `sessionRuntimeChanged` 生产者 |
+| `docs/core/session-runtime.md` | 会话运行时状态：Core 为唯一 owner，`sessionRuntimeChanged` 全量推送 |
 
 ### 宿主与 UI（docs/hosts/）
 
@@ -112,6 +111,6 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 
 | 文档 | 范围 |
 | --- | --- |
-| `src/test/README.md` | 测试指南：三条车道（单元 / 场景 / 宿主）的进程模型与运行方式 |
+| `src/test/README.md` | 测试指南：各车道（单元 / 真实 Core 集成 / Rust / 宿主）的进程模型与运行方式 |
 | `src/test/memtest/README.md` | MessagesView 渲染 / 内存 / 性能测试 harness（手动运行，不进正式构建） |
 | `e2e/README.md` | e2e（Playwright）场景测试：四个 project 的分层与运行方式 |

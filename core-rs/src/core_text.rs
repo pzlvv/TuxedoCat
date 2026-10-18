@@ -3,7 +3,7 @@
 //! Core 不感知语言：瞬时状态提示以「键 + 参数」表达，经 `CoreEvent.notice` 交给 UI
 //! 翻译；内置命令的描述同样以键表达。这些键必须在 UI 翻译表里存在，由
 //! `src/test/coreTextParity.test.ts` 与 `core_text_tests.rs` 对照同一份
-//! `src/test/fixtures/coreTextKeys.json` 锁定。
+//! `core-rs/fixtures/coreTextKeys.json` 锁定。
 //!
 //! 落盘文本（进 JSONL / LLM 上下文）不在这里：那部分一律英文常量，不参与键化。
 

@@ -1,5 +1,5 @@
 //! `mcp_config` 单测：`mcp.json` 解析与归一化、启用状态合并、会话覆盖与 meta.json 回写、
-//! 以及 Embedded ↔ Standalone 的配置解析对照表断言。
+//! 以及配置解析对照表断言（数据见 `core-rs/fixtures/mcp.json`）。
 
 use super::*;
 use crate::config;
@@ -295,7 +295,7 @@ fn flush_skips_when_no_override_or_no_meta() {
 
 // ==================== 对照表断言 ====================
 
-const FIXTURE: &str = include_str!("../../src/test/fixtures/mcpParity.json");
+const FIXTURE: &str = include_str!("../fixtures/mcp.json");
 
 mod parity_tests {
     use super::*;

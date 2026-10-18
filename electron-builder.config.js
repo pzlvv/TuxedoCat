@@ -55,7 +55,7 @@ module.exports = {
   appId: project.appId,
   productName: project.productName,
   directories: {
-    // 变体分开落位：standalone → release/，embedded → release/embedded/
+    // 产物落 release/
     output: project.releaseDir,
   },
   // 运行时全部由 esbuild/vite 打包，不需要 node_modules

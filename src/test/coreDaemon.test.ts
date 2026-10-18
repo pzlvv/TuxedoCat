@@ -36,7 +36,7 @@ import {
 import { CONFIG_DIR_NAME, CORE_RESOURCE_DIR } from '../config/project';
 import { createChecker, runTests } from './helpers/harness';
 import { createRecordingCoreEventHandlers, emptySettingsSnapshot } from './helpers/fixtures';
-import type { CoreRequestHandlers } from '../core/AssistantEventBus';
+import type { CoreRequestHandlers } from '../shared/AssistantEventBus';
 
 // ==================== 假 daemon（真实 TCP server）====================
 
@@ -496,7 +496,7 @@ async function run(): Promise<void> {
       corePlatformDir('win32', 'x64')!,
     );
     const binary = path.join(productDir, coreBinaryFileName('win32'));
-    // 构建指纹与可执行文件同级（`build-core.mjs` 落位，docs/core/standalone-core.md 第 4.4 节）：
+    // 构建指纹与可执行文件同级（`build-core.mjs` 落位，docs/core/standalone-core.md 第 3.4 节）：
     // daemon 的状态文件按它命名，这里读真实产物的指纹来断言两侧命名规则一致
     const fingerprintPath = path.join(productDir, CORE_FINGERPRINT_FILE_NAME);
     if (

@@ -1,17 +1,17 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-18
 ---
 
 # 规格：TUI（终端宿主）
 
 本规格界定第三个宿主（继 VS Code webview 宿主、Electron 宿主之后）的终端实现：纯 Rust
-（`tui-rs/`），直连 Standalone Core 的帧通道，不依赖 Node。分发与 Core 部署见
+（`tui-rs/`），直连 Core（Rust 独立进程）的帧通道，不依赖 Node。分发与 Core 部署见
 `docs/features/tui-installer.md`。
 
-本规格界定 TUI 的现状。TUI 与 core-rs 同语言、同阻塞线程模型；core 的两种实现
+本规格界定 TUI 的现状。TUI 与 core-rs 同语言、同阻塞线程模型；core
 （`docs/core/standalone-core.md`）与事件词汇表（[docs/architecture/events.md 第 1 节](../architecture/events.md#1-总线契约)、[第 2 节](../architecture/events.md#2-事件词汇表)）零改动，
-不产生 parity 对照表与两侧测试的同步义务。帧协议见 `docs/core/standalone-core.md`
+不为 TUI 产生对照表与两侧测试的同步义务。帧协议见 `docs/core/standalone-core.md`
 第 6 节；`src/host/` 的宿主层（WebViewUI 及其子模块）继续服务 VS Code 与
 Electron 两个宿主，TUI 侧的等价行为由 `tui-rs/src/host.rs` 移植承载。
 
@@ -85,9 +85,8 @@ JSON Value 透传；`FrameDecoder::read_from` 按行阻塞读，坏行跳过不�
 
 ### 2.2 Core 形态
 
-只有 Standalone：本机 Core 产物由本进程按需 spawn（`stdio` 动作）。TS 宿主的
-`--core embedded|standalone` 开关不存在（Embedded Core 是进程内 TS，Rust 宿主
-没有该形态）；`resolveCoreKind()` 的单一出口对 TUI 不适用。
+本机 Core 产物由本进程按需 spawn（`stdio` 动作）：单进程 Core，stdio 即帧通道，
+不经 daemon。
 
 ### 2.3 事件循环
 
@@ -117,7 +116,7 @@ Core 槽位，`<前缀>/share/<产品名>/ripgrep/` 是全部槽位共享的 rg�
 - 部署布局：`<根>/share/<产品名>/` 下任一「`fingerprint` + Core 二进制都齐」的
   指纹槽位（多版本并存取排序最大的一员，只为确定）；
 - 仓库布局（开发期）：`<根>/resources/core/<arch-platform>/<core.binaryName>[.exe]`
-  （平台矩阵见 [docs/core/standalone-core.md 第 4.1 节](../core/standalone-core.md#41-平台矩阵)）。
+  （平台矩阵见 [docs/core/standalone-core.md 第 3.1 节](../core/standalone-core.md#31-平台矩阵)）。
 
 ## 3. 选型与产物形态
 
@@ -310,7 +309,7 @@ pending 的事实都在 store，覆盖层只持导航类局部状态。
 | 渲染子集 | markdown 块与行内 / diff 着色折叠 / 编辑器状态机 | `markdown_tests.rs` / `diffview_tests.rs` / `composer_tests.rs` |
 | i18n / 产物定位 | notice 键翻译 / 占位符 / 候选顺序 / 失败指引 | `i18n_tests.rs` / `core_root_tests.rs` |
 | 安装程序 e2e | 构建 → 自解压 → 布局 / 指纹 / 幂等 → 内嵌 Core `--version` → 安装目录里的 TUI 启动守卫 | `e2e/tui/installer.spec.ts`（project `tui-installer`） |
-| core / parity | 不涉及——core 零改动；协议契约经真 Core 冒烟验证（握手 / 快照 / 列表 / 加载 / 消息 / 关闭） | — |
+| core | 不涉及——core 零改动；协议契约经真 Core 冒烟验证（握手 / 快照 / 列表 / 加载 / 消息 / 关闭） | — |
 
 ## 10. 扩展点
 

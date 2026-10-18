@@ -8,7 +8,7 @@
  */
 
 import * as assert from 'assert';
-import { userChoiceQueue, type UserChoiceOptions } from '../core/UserChoiceQueue';
+import { userChoiceQueue, type UserChoiceOptions } from '../shared/UserChoiceQueue';
 import { createChecker, runTests } from './helpers/harness';
 
 const options: UserChoiceOptions = {

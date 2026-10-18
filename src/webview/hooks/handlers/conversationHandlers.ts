@@ -1,5 +1,5 @@
 import type { HandlerContext } from './handlerContext';
-import { modelRefOf } from '../../../core/llm/modelRef';
+import { modelRefOf } from '../../../shared/llm/modelRef';
 import { HostToWebviewWire } from '../../../host/webviewMessages';
 import { profileLog } from '../../debug';
 import { resolveTitle } from '../../i18n';

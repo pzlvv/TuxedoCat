@@ -19,9 +19,9 @@ fn separators_respect_quotes() {
     assert_eq!(split_by_separators("ls && pwd").len(), 2);
 }
 
-/// 与 Embedded 的 `splitBySeparators` 一致：**换行不是分隔符**。
+/// **换行不是分隔符**。
 ///
-/// 这条断言是刻意的：`echo a\nrm -rf x` 在 Embedded 里只有一段（首词 `echo`），
+/// 这条断言是刻意的：`echo a\nrm -rf x` 只有一段（首词 `echo`），
 /// risk / manual 模式都会放行。两套实现必须给出同一个决策，因此 Rust 侧不能
 /// 额外把换行当分隔符（否则同一个会话换 Core 实现就会弹出确认框）。
 #[test]
@@ -49,7 +49,7 @@ fn destructive_detection() {
     assert!(is_destructive_command("dd if=/dev/zero of=x"));
     assert!(is_destructive_command("mkfs /dev/sda1"));
     assert!(is_destructive_command("shred -u secret.txt"));
-    // 与 Embedded 一致：只看第一个词，`mkfs.ext4` 不匹配 `mkfs`
+    // 只看第一个词，`mkfs.ext4` 不匹配 `mkfs`
     assert!(!is_destructive_command("mkfs.ext4 /dev/sda1"));
     assert!(!is_destructive_command("rm -rf build"));
 }
@@ -72,7 +72,7 @@ fn risk_mode_intercepts_dangerous_commands() {
 }
 
 /// git 写子命令不在危险名单里：risk 模式与 `rm` 同口径自动放行，
-/// 只有 manual 模式才逐条询问（对齐 Embedded `PermissionPolicy.isOperationRisky`）。
+/// 只有 manual 模式才逐条询问。
 #[test]
 fn risk_mode_allows_git_write_subcommands() {
     for command in [
@@ -111,7 +111,7 @@ fn auto_mode_allows_asks_but_not_denies() {
 }
 
 /// 对齐 `PermissionPolicy.ts` 的 auto 分支：auto 模式下 AskUserQuestion 直接 deny
-/// （不弹提问框，message 与 Embedded 逐字一致）；manual 保持工具自身的 allow
+/// （不弹提问框，message 逐字锁定）；manual 保持工具自身的 allow
 /// （提问本身在 `call()` 里弹框），risk 不受影响（非 Bash，不参与风险拦截）。
 #[test]
 fn ask_user_question_denied_in_auto_mode() {
@@ -121,13 +121,13 @@ fn ask_user_question_denied_in_auto_mode() {
     assert_eq!(decide("AskUserQuestion", &args, "manual", CWD), Decision::Allow);
     // risk：不受影响
     assert_eq!(decide("AskUserQuestion", &args, "risk", CWD), Decision::Allow);
-    // auto：deny，message 与 Embedded 逐字一致
+    // auto：deny，message 逐字锁定
     assert_eq!(
         decide("AskUserQuestion", &args, "auto", CWD),
         Decision::Deny(ASK_USER_QUESTION_AUTO_DENY_MESSAGE.to_string())
     );
 
-    // `resolve_tool_permission`（引擎实际路径）与 Embedded 下发的形状一致：
+    // `resolve_tool_permission`（引擎实际路径）下发的形状一致：
     // permResult 只有 behavior + message，displayArgs 原样透传入参
     let (perm_result, display_args) =
         resolve_tool_permission("AskUserQuestion", &args, "auto", CWD, "session-1");
@@ -154,7 +154,7 @@ fn manual_mode_asks_for_writes() {
     );
 }
 
-/// 与 Embedded 的 `Write.checkPermissions` 对齐：非法入参直接 deny（auto / risk 不加工）。
+/// 非法入参直接 deny（auto / risk 不加工）。
 #[test]
 fn write_input_validation_denies() {
     let invalid_path = Decision::Deny(
@@ -187,7 +187,7 @@ fn write_input_validation_denies() {
     );
 }
 
-/// 与 Embedded 的 `Edit.checkPermissions` 对齐：非法入参 / 目标文件缺失都 deny。
+/// 非法入参 / 目标文件缺失都 deny。
 #[test]
 fn edit_input_validation_denies() {
     assert_eq!(
@@ -252,7 +252,7 @@ fn edit_existing_file_is_ask() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 对齐 Embedded `Edit.checkPermissions`：读文件后先跑 `computeEdit` 的匹配校验，
+/// 读文件后先跑 `computeEdit` 的匹配校验，
 /// `old_string` 找不到 / 多处匹配且未 `replace_all` 时**直接 deny**——不弹确认框，
 /// 因此 `auto` / `risk` 也不会把它放行（旧实现会先 ask 再在执行阶段报错）。
 #[test]
@@ -330,12 +330,12 @@ mod parity_tests {
     use super::*;
     use serde_json::json;
 
-    /// 与 Embedded 共用同一份对照表（`src/test/fixtures/permissionParity.json`）：
-    /// TypeScript 侧跑 `resolveToolPermission`，这里跑 `decide`，任一侧偏离都会失败。
-    const FIXTURE: &str = include_str!("../../src/test/fixtures/permissionParity.json");
+    /// 行为对照表数据在 `core-rs/fixtures/permission.json`：
+    /// 断言 `decide` 的输出与对照表逐项一致。
+    const FIXTURE: &str = include_str!("../fixtures/permission.json");
 
     #[test]
-    fn matches_embedded_permission_table() {
+    fn matches_permission_table() {
         let fixture: Value = serde_json::from_str(FIXTURE).expect("对照表必须是合法 JSON");
         let cases = fixture
             .get("cases")
@@ -376,17 +376,17 @@ mod parity_tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
             failures.is_empty(),
-            "与 Embedded 的权限决策不一致：\n{}",
+            "与对照表的权限决策不一致：\n{}",
             failures.join("\n")
         );
     }
 
-    /// 随机对等对照表（`src/test/fixtures/permissionFuzzParity.json`）：
+    /// 随机对等对照表（`core-rs/fixtures/permissionFuzz.json`）：
     /// 固定种子生成的命令组合，两侧共用同一份期望值。
-    const FUZZ_FIXTURE: &str = include_str!("../../src/test/fixtures/permissionFuzzParity.json");
+    const FUZZ_FIXTURE: &str = include_str!("../fixtures/permissionFuzz.json");
 
     #[test]
-    fn matches_embedded_permission_fuzz_table() {
+    fn matches_permission_fuzz_table() {
         let fixture: Value = serde_json::from_str(FUZZ_FIXTURE).expect("对照表必须是合法 JSON");
         let cases = fixture
             .get("cases")
@@ -415,14 +415,14 @@ mod parity_tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
             failures.is_empty(),
-            "与 Embedded 的随机权限决策不一致：\n{}",
+            "与对照表的随机权限决策不一致：\n{}",
             failures.join("\n")
         );
     }
 }
 
 
-/// 权限加工对照表（`src/test/fixtures/permissionPolicyParity.json`）：
+/// 权限加工对照表（`core-rs/fixtures/permissionPolicy.json`）：
 /// 与 TS 侧 `permissionPolicyParity.test.ts` 共用同一份期望值，逐字段比对
 /// `permResult` 与 `displayArgs`（路径用 `__CWD__` 占位）。
 ///
@@ -430,9 +430,9 @@ mod parity_tests {
 /// webview 会用同一份 beforeContent / afterContent 调 `buildEditDiffHunks`
 /// 得到一致渲染。
 #[test]
-fn permission_policy_matches_the_embedded_fixture() {
+fn permission_policy_matches_the_fixture() {
     let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../src/test/fixtures/permissionPolicyParity.json");
+        .join("fixtures/permissionPolicy.json");
     let raw = std::fs::read_to_string(&fixture_path).expect("读取对照表失败");
     let fixture: Value = serde_json::from_str(&raw).expect("对照表必须是合法 JSON");
     let cases = fixture
@@ -488,7 +488,7 @@ fn permission_policy_matches_the_embedded_fixture() {
                 .unwrap_or(SESSION);
             resolve_tool_permission(tool, &args, mode, &cwd, session_id)
         };
-        // Embedded 只给 Edit 的 displayArgs 下发 diffHunks；Standalone 不预计算该键，
+        // Edit 的 displayArgs 不预计算 diffHunks，
         // 改为额外下发 beforeContent / afterContent（webview 用同一份
         // buildEditDiffHunks 回退计算，渲染一致）。比较前剔除这三处形状差异，
         // 单独断言 Standalone 的额外字段与 permResult 一致。
@@ -549,7 +549,7 @@ fn permission_policy_matches_the_embedded_fixture() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
         failures.is_empty(),
-        "与 Embedded PermissionPolicy 不一致：\n\n{}",
+        "与对照表不一致：\n\n{}",
         failures.join("\n\n")
     );
 }

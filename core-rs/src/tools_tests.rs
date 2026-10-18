@@ -2,8 +2,8 @@
 
 use super::*;
 
-/// `Skill` 工具的位置不变式（对齐 Embedded `tools/index.ts` 的模块加载期校验）：
-/// `DEFAULT_TOOLS` 的最后一项必须是 `Skill`，否则 `generate-prompt.ts` 会把
+/// `Skill` 工具的位置不变式（见 tools.rs 的加载期校验）：
+/// 工具列表的最后一项必须是 `Skill`，否则提示词组装会把
 /// 动态技能内容当成静态提示词打进系统提示。
 #[test]
 fn skill_tool_is_last_in_definitions() {
@@ -99,7 +99,7 @@ fn definitions_cover_every_builtin_tool() {
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"].is_object());
     }
-    // Bash 的 command 是必填项，与 Embedded 的 schema 一致
+    // Bash 的 command 是必填项
     let bash = definitions
         .iter()
         .find(|tool| tool["name"] == "Bash")
@@ -112,7 +112,7 @@ fn execute_reports_unknown_tools() {
     let sandbox = Sandbox::new("tools-unknown");
     let outcome = execute("NoSuchTool", &json!({}), &context(&sandbox));
     assert!(outcome.is_error());
-    // 对齐 Embedded `RunTools.authorizeOne` 的工具不存在分支
+    // 工具不存在分支的错误文案
     assert_eq!(text(&outcome), "Error: Tool \"NoSuchTool\" not found");
 }
 
@@ -144,7 +144,7 @@ fn expand_path_keeps_absolute_and_joins_relative() {
 #[test]
 #[cfg(windows)]
 fn expand_path_preserves_the_drive_letter_case_for_slash_paths() {
-    // 对齐 Embedded `expandPath` 的 `/^\/[a-z]\//i` 分支：盘符**原样保留**
+    // 盘符**原样保留**
     // （`path.normalize('c:\\/Users') === 'c:\\Users'`），只有 WSL 的
     // `/mnt/d/...` 才把盘符大写。
     assert_eq!(
@@ -189,17 +189,16 @@ fn node_is_absolute_treats_a_leading_separator_as_absolute_on_windows() {
     }
 }
 
-// ==================== 路径展开对等（与 Embedded 共用对照表） ====================
+// ==================== 路径展开对照表 ====================
 
 mod path_parity_tests {
     use super::*;
 
-    /// 与 Embedded 共用同一份对照表（`src/test/fixtures/pathParity.json`）。
+    /// 行为对照表（数据见 core-rs/fixtures/）。
     ///
-    /// TS 侧测试断言「本表 == Embedded `expandPath`」；这里断言
-    /// 「Rust 的 `tools::expand_path` == 本表」。对照表里的 `__CWD__` / `__HOME__`
+    /// 断言「Rust 的 `tools::expand_path` == 本表」。对照表里的 `__CWD__` / `__HOME__`
     /// 是占位符，分隔符统一为 `/`。
-    const FIXTURE: &str = include_str!("../../src/test/fixtures/pathParity.json");
+    const FIXTURE: &str = include_str!("../fixtures/path.json");
 
     fn current_platform() -> &'static str {
         if cfg!(windows) {
@@ -255,7 +254,7 @@ mod path_parity_tests {
 
         assert!(
             failures.is_empty(),
-            "路径展开与 Embedded 不一致：\n{}",
+            "路径展开与对照表不一致：\n{}",
             failures.join("\n")
         );
     }
@@ -303,7 +302,7 @@ fn bash_reports_stderr_and_exit_codes() {
     let sandbox = Sandbox::new("tools-bash-stderr");
     let ctx = context(&sandbox);
 
-    // 与 Embedded 的 `bash/Result.ts` 一致：stderr 直接拼接，不额外加标签
+    // stderr 直接拼接，不额外加标签
     let stderr = execute("Bash", &json!({ "command": "echo problem 1>&2" }), &ctx);
     assert_eq!(text(&stderr), "problem");
 
@@ -320,7 +319,7 @@ fn bash_reports_stderr_and_exit_codes() {
 
 #[test]
 fn bash_timeout_moves_the_command_to_the_background() {
-    // 对齐 Embedded `Exec.execForeground`：前台命令**不会**因超时被杀，
+    // 前台命令**不会**因超时被杀，
     // 而是转入后台继续跑（`triggerAutoBackground('timeout')` → `autoBackgroundCommand`）。
     let sandbox = Sandbox::new("tools-bash-timeout");
     let previous = point_tmpdir_at(&sandbox.root.join("tmp"));
@@ -333,7 +332,7 @@ fn bash_timeout_moves_the_command_to_the_background() {
     );
     let body = text(&outcome);
     assert!(!outcome.is_error(), "自动转后台不算工具失败: {body}");
-    // 自动转后台的结果退出码是 0（UI 状态 success），与 Embedded 的 `exitCode: 0` 一致
+    // 自动转后台的结果退出码是 0（UI 状态 success）
     assert!(!outcome.is_status_error(), "got {body}");
     assert_eq!(outcome.exit_code(), 0);
     // 自动转后台的说明只出现一次：taskId / 输出路径 / 完成通知不再重复两遍
@@ -350,7 +349,7 @@ fn bash_timeout_moves_the_command_to_the_background() {
         body.contains("Continue with other tasks in the meantime; if there is nothing else to do, end this turn."),
         "got {body}"
     );
-    // 下次提醒间隔（对齐 Embedded `Result.ts`）
+    // 下次提醒间隔
     assert!(
         body.contains("you will get a progress reminder in 5min."),
         "got {body}"
@@ -380,7 +379,7 @@ fn bash_timeout_moves_the_command_to_the_background() {
 
 #[test]
 fn bash_timeout_reminder_mentions_find_for_find_commands() {
-    // 对齐 Embedded：命令里出现 `find` 时，自动转后台的说明追加一条 reminder
+    // 命令里出现 `find` 时，自动转后台的说明追加一条 reminder
     let sandbox = Sandbox::new("tools-bash-timeout-find");
     let previous = point_tmpdir_at(&sandbox.root.join("tmp"));
     crate::bash_task::reset_for_test();
@@ -403,8 +402,7 @@ fn bash_timeout_reminder_mentions_find_for_find_commands() {
 #[test]
 fn bash_manual_background_converts_and_requests_loop_pause() {
     // 手工转后台（`UiEvent.bashBackgroundRequested`）：前台命令跑起来后由注册表触发，
-    // 与自动转后台同一条路径（对齐 Embedded `ManualBackground` + Exec 的
-    // `triggerAutoBackground('user-requested')`）。区别只有两点：转换成功置
+    // 与自动转后台同一条路径。区别只有两点：转换成功置
     // 循环暂停信号；没有 tool_use_id 的执行不登记（按钮无从触发）。
     let sandbox = Sandbox::new("tools-bash-manual-bg");
     let previous = point_tmpdir_at(&sandbox.root.join("tmp"));
@@ -479,7 +477,7 @@ fn bash_manual_background_converts_and_requests_loop_pause() {
 }
 
 #[test]
-fn concurrency_safety_matches_embedded() {
+fn concurrency_safety_matches_spec() {
     // 对齐各工具的 `isConcurrencySafe`（`Tool.ts` 默认 false）
     assert!(is_concurrency_safe("Read", &json!({ "file_path": "a.txt" })));
     assert!(is_concurrency_safe("Grep", &json!({ "pattern": "x" })));
@@ -503,7 +501,7 @@ fn concurrency_safety_matches_embedded() {
 
 #[test]
 fn find_word_detection_uses_ascii_word_boundaries() {
-    // 对齐 Embedded 的 `/\bfind\b/`
+    // `/\bfind\b/` 词边界判定
     assert!(contains_find_word("find . -name x"));
     assert!(contains_find_word("cd a && find b"));
     assert!(contains_find_word("find"));
@@ -513,8 +511,8 @@ fn find_word_detection_uses_ascii_word_boundaries() {
 }
 
 #[test]
-fn extract_command_name_matches_embedded_sleep_detect() {
-    // 对齐 Embedded `SleepDetect.extractCommandName`：去环境变量前缀 → 取首词 → 去包裹引号
+fn extract_command_name_matches_sleep_detect() {
+    // 去环境变量前缀 → 取首词 → 去包裹引号
     assert_eq!(extract_command_name("sleep 5"), "sleep");
     assert_eq!(extract_command_name("  sleep 5  "), "sleep");
     assert_eq!(extract_command_name("FOO=1 sleep 5"), "sleep");
@@ -535,7 +533,7 @@ fn extract_command_name_matches_embedded_sleep_detect() {
 
 #[test]
 fn contains_sleep_command_splits_on_separators() {
-    // 对齐 Embedded `Bash.call`：`containsSleepCommand(splitBySeparators(command))`
+    // `containsSleepCommand(splitBySeparators(command))`
     assert!(contains_sleep_command("sleep 5"));
     assert!(contains_sleep_command("echo a; sleep 5"));
     assert!(contains_sleep_command("echo a && sleep 5"));
@@ -551,7 +549,7 @@ fn contains_sleep_command_splits_on_separators() {
 
 #[test]
 fn bash_sleep_commands_have_no_foreground_timeout() {
-    // 对齐 Embedded `Bash.call` 的超时策略：命令含 sleep 子命令时不设前台超时
+    // 命令含 sleep 子命令时不设前台超时
     // （`SLEEP_NO_TIMEOUT_MS = 0`），让 sleep 自然完成；进度事件里的 `timeoutMs` 也是 0。
     let sandbox = Sandbox::new("tools-bash-sleep-timeout");
     let collected: std::sync::Arc<std::sync::Mutex<Vec<BashProgress>>> =
@@ -590,7 +588,7 @@ fn bash_sleep_commands_have_no_foreground_timeout() {
 #[test]
 fn bash_abort_kills_a_sleep_command_without_a_timeout() {
     // `sleep` 轮次不设前台超时，abort 必须能立刻杀掉子进程并收尾
-    // （对齐 Embedded 的 abort → `onAbort` → kill → exitCode 130 + `Command was interrupted`）。
+    // 。
     let sandbox = Sandbox::new("tools-bash-abort-sleep");
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let ctx = ToolContext {
@@ -632,7 +630,7 @@ fn bash_timeout_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe
     // 子进程退出不等于管道到达 EOF：`sleep 3 &` 让 bash 立刻退出，但后台 `sleep` 继承了
     // 管道写端，读线程会一直阻塞到它退出（Windows 上部署的 Core 二进制 `start` 拉起的
     // detached daemon 是同一形态，而且永不退出）。
-    // 对齐 Embedded `Exec.ts`：前台超时与子进程是否已退出无关，到点就转后台。
+    // 前台超时与子进程是否已退出无关，到点就转后台。
     let sandbox = Sandbox::new("tools-bash-timeout-grandchild-pipe");
     let previous = point_tmpdir_at(&sandbox.root.join("tmp"));
     crate::bash_task::reset_for_test();
@@ -670,7 +668,7 @@ fn bash_timeout_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe
 #[test]
 fn bash_abort_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe() {
     // 同上：子进程已退出、孙进程仍持有管道时，abort 也必须立刻收尾
-    // （对齐 Embedded 的 abort → `onAbort` → exitCode 130 + `Command was interrupted`）。
+    // 。
     let sandbox = Sandbox::new("tools-bash-abort-grandchild-pipe");
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let ctx = ToolContext {
@@ -709,7 +707,6 @@ fn bash_abort_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe()
 
 #[test]
 fn bash_passes_cwd_through_without_expansion() {
-    // 对齐 Embedded `Bash.call` 的 `const cwd = input.cwd || context.cwd`：
     // cwd 原样交给子进程，相对路径按 **Core 进程** cwd 解析（不是会话工作目录），
     // `~` 不展开。
     let sandbox = Sandbox::new("tools-bash-cwd");
@@ -913,7 +910,7 @@ fn bash_background_coerces_truthy_values_like_zod() {
 
 #[test]
 fn sleep_moves_to_the_background_when_a_background_task_completes() {
-    // 对齐 Embedded `Exec.ts` 的 `watchSleepNotifications`：sleep 命令不设前台超时，
+    // sleep 命令不设前台超时，
     // 但 sleep 期间若收到**本会话**的后台任务完成通知，立刻把 sleep 转入后台，
     // 避免阻塞模型处理通知（不设最短运行时长）。
     let sandbox = Sandbox::new("tools-bash-sleep-notify");
@@ -951,7 +948,7 @@ fn sleep_moves_to_the_background_when_a_background_task_completes() {
 
 #[test]
 fn foreground_command_needs_three_seconds_before_a_completion_notification_backgrounds_it() {
-    // 对齐 Embedded 的 `AUTO_BG_MIN_RUNNING_MS`：普通命令（有前台预算）收到后台任务完成
+    // `AUTO_BG_MIN_RUNNING_MS`：普通命令（有前台预算）收到后台任务完成
     // 通知时，只有已运行 ≥ 3s 才自动转后台。
     let sandbox = Sandbox::new("tools-bash-auto-bg-min");
     let previous = point_tmpdir_at(&sandbox.root.join("tmp"));
@@ -1060,7 +1057,7 @@ fn read_with_huge_limit_does_not_panic() {
         &json!({ "file_path": "a.txt", "limit": u64::MAX }),
         &context(&sandbox),
     );
-    // 与 Embedded 一致：limit 不得超过单次最大行数
+    // limit 不得超过单次最大行数
     assert!(outcome.is_error());
     assert_eq!(
         text(&outcome),
@@ -1083,7 +1080,7 @@ fn edit_with_zero_limit_does_not_panic() {
 
 #[test]
 fn bash_reports_streaming_progress() {
-    // 对齐 Embedded：stdout / stderr 的每个数据块都回调一次进度，
+    // stdout / stderr 的每个数据块都回调一次进度，
     // `output` 是增量、`fullOutput` 是累计输出的 4K 预览。
     let sandbox = Sandbox::new("tools-bash-progress");
     let collected: std::sync::Arc<std::sync::Mutex<Vec<BashProgress>>> =
@@ -1179,7 +1176,7 @@ fn read_requires_a_path_and_reports_missing_files() {
 
 #[test]
 fn read_treats_an_empty_file_path_as_missing_and_falls_back_to_path() {
-    // 对齐 Embedded `Read.call` 的 `input.file_path || input.path`：空串是假值，
+    // 空串是假值，
     // 既算缺参，也会回退到 `path`。
     let sandbox = Sandbox::new("tools-read-empty-path");
     sandbox.write_file("a.txt", "hello\n");
@@ -1199,7 +1196,7 @@ fn read_prefixes_lines_with_one_based_numbers() {
     let sandbox = Sandbox::new("tools-read-lines");
     sandbox.write_file("a.txt", "first\nsecond\nthird\n");
     let outcome = execute("Read", &json!({ "file_path": "a.txt" }), &context(&sandbox));
-    // 与 Embedded 一致：按 `\n` 切分保留末尾空行，因此末尾多一行 `4|`
+    // 按 `\n` 切分保留末尾空行，因此末尾多一行 `4|`
     assert_eq!(text(&outcome), "1|first\n2|second\n3|third\n4|");
 }
 
@@ -1238,7 +1235,7 @@ fn read_reports_empty_files_and_directories() {
 
     let directory = execute("Read", &json!({ "file_path": "." }), &ctx);
     assert!(directory.is_error());
-    // 对齐 Embedded `isbinaryfile` 对非普通文件的报错文案
+    // 非普通文件的报错文案
     assert_eq!(text(&directory), "Path provided was not a file!");
 }
 
@@ -1251,7 +1248,6 @@ fn read_returns_images_as_base64() {
 
     let outcome = execute("Read", &json!({ "file_path": "pic.png" }), &context(&sandbox));
     assert!(!outcome.is_error());
-    // 与 Embedded 的 `Read.mapToolResultToToolResultBlockParam` 一致：
     // 图片以 image content block 返回（不是把 base64 拼成文本）
     assert_eq!(
         outcome.blocks(),
@@ -1321,7 +1317,7 @@ fn read_truncates_overlong_lines_and_huge_files() {
     let rendered = text(&outcome);
     let marker = format!("... (line truncated to {READ_MAX_LINE_CHARS} chars)");
     let truncated = format!("{}{}", "x".repeat(READ_MAX_LINE_CHARS), marker);
-    // 末尾空行按 Embedded 口径也占一行
+    // 末尾空行也占一行
     assert_eq!(rendered, format!("1|{truncated}\n2|"));
 
     // 输出超过 50KB 时提前收尾，并给出 `Output capped.` 续读提示。
@@ -1443,7 +1439,7 @@ fn write_minimal_xlsx(path: &std::path::Path, sheet_name: &str, rows: &[Vec<Xlsx
 }
 
 #[test]
-fn read_xlsx_formats_rows_like_embedded() {
+fn read_xlsx_formats_rows_like_spec() {
     let sandbox = Sandbox::new("tools-read-xlsx");
     write_minimal_xlsx(
         &sandbox.workspace.join("a.xlsx"),
@@ -1524,7 +1520,7 @@ fn read_xlsx_respects_offset_and_limit() {
         &json!({ "file_path": "a.xlsx", "offset": 2, "limit": 1 }),
         &context(&sandbox),
     );
-    // 列宽按**窗口内**的行计算（与 Embedded 一致）
+    // 列宽按**窗口内**的行计算
     assert_eq!(
         text(&outcome),
         "2|Row 2: Alice | 30 | 95.5\n(Showing lines 2-2 of 3. Use offset=3 to continue.)"
@@ -1546,7 +1542,7 @@ fn read_xlsx_renders_booleans_like_javascript() {
 #[test]
 fn read_xlsx_keeps_iso_dates_as_text() {
     // 有意保留的差异：SheetJS 读 `t="d"` 单元格时会带约 43 秒的系统性偏移，
-    // Standalone 原样输出单元格里的 ISO 文本（见 `docs/core/core-parity.md` 第 1.6 节）。
+    // 原样输出单元格里的 ISO 文本。
     let sandbox = Sandbox::new("tools-read-xlsx-iso");
     write_minimal_xlsx(
         &sandbox.workspace.join("a.xlsx"),
@@ -1606,7 +1602,7 @@ fn write_requires_a_path() {
     let sandbox = Sandbox::new("tools-write-missing");
     let outcome = execute("Write", &json!({ "content": "x" }), &context(&sandbox));
     assert_eq!(text(&outcome), "file_path is required and must be a string");
-    // 空串与缺参同义（对齐 Embedded `if (!file_path || ...)`）
+    // 空串与缺参同义
     let empty = execute("Write", &json!({ "file_path": "", "content": "x" }), &context(&sandbox));
     assert_eq!(text(&empty), "file_path is required and must be a string");
 }
@@ -1649,7 +1645,7 @@ fn edit_validates_its_arguments() {
         text(&execute("Edit", &json!({}), &ctx)),
         "file_path is required and must be a string"
     );
-    // 空串与缺参同义（对齐 Embedded `if (!file_path || ...)`）
+    // 空串与缺参同义
     assert_eq!(
         text(&execute("Edit", &json!({ "file_path": "", "old_string": "a", "new_string": "b" }), &ctx)),
         "file_path is required and must be a string"
@@ -1659,7 +1655,7 @@ fn edit_validates_its_arguments() {
         "old_string is required"
     );
 
-    // 文件不存在：对齐 Embedded `fs.readFile` 的 ENOENT 文案
+    // 文件不存在：ENOENT 文案
     let unreadable = execute("Edit", &json!({ "file_path": "nope.txt", "old_string": "a" }), &ctx);
     let expected_path = sandbox.workspace.join("nope.txt");
     assert_eq!(
@@ -1774,7 +1770,7 @@ fn edit_scope_limits_the_search_range() {
 
 #[test]
 fn edit_carries_diff_fields_for_the_tool_result_block() {
-    // 对齐 Embedded：`mapToolResultToToolResultBlockParam` 会把 startLine / endLine /
+    // `mapToolResultToToolResultBlockParam` 会把 startLine / endLine /
     // beforeContent 原样拷进 tool_result block（UI diff 展示 + 历史恢复重算 diff）
     let sandbox = Sandbox::new("tools-edit-diff-fields");
     sandbox.write_file("a.txt", "one\r\ntwo\r\nthree\r\n");
@@ -1837,7 +1833,7 @@ fn grep_requires_a_pattern() {
     let outcome = execute("Grep", &json!({}), &context(&sandbox));
     assert_eq!(text(&outcome), "pattern is required and must be a string");
 
-    // 空串与缺参同义（对齐 Embedded `if (!pattern || ...)`）
+    // 空串与缺参同义
     let empty = execute("Grep", &json!({ "pattern": "" }), &context(&sandbox));
     assert_eq!(text(&empty), "pattern is required and must be a string");
 }
@@ -1981,7 +1977,7 @@ fn glob_requires_a_pattern_and_lists_sorted_files() {
     let ctx = context(&sandbox);
 
     assert_eq!(text(&execute("Glob", &json!({}), &ctx)), "pattern is required and must be a string");
-    // 空串与缺参同义（对齐 Embedded `if (!pattern || ...)`）
+    // 空串与缺参同义
     assert_eq!(
         text(&execute("Glob", &json!({ "pattern": "" }), &ctx)),
         "pattern is required and must be a string"
@@ -2333,14 +2329,13 @@ fn ripgrep_exit_code_one_means_no_matches() {
 
 #[test]
 fn ripgrep_reports_failures() {
-    // 不再传 cwd：与 Embedded 一样继承进程工作目录，非法参数照样报错
+    // 不传 cwd：继承进程工作目录，非法参数照样报错
     let outcome = run_ripgrep(&["--definitely-not-a-flag".to_string()]);
     assert!(outcome.is_err(), "非法参数应当报错");
 }
 
 #[test]
-fn ripgrep_lines_matches_embedded_stdout_trim_and_split() {
-    // 对齐 Embedded `utils/ripgrep.ts` 的
+fn ripgrep_lines_matches_stdout_trim_and_split() {
     // `stdout.trim().split('\n').filter((line) => line.length > 0)`：
     // 1. 整个 stdout 先做 JS 口径 trim（最后一行的尾随空格 / CRLF 会去掉）；
     // 2. 按 `\n` 切分，**中间行**的 `\r`（CRLF 文件里的匹配行）原样保留；
@@ -2367,18 +2362,18 @@ fn ripgrep_lines_matches_embedded_stdout_trim_and_split() {
     );
 }
 
-// ==================== 工具定义对等（与 Embedded 共用对照表） ====================
+// ==================== 工具定义对照表 ====================
 
 mod schema_parity_tests {
     use super::*;
     use std::collections::HashSet;
 
-    /// 与 Embedded 共用同一份对照表（`src/test/fixtures/toolSchemaParity.json`）。
+    /// 行为对照表（数据见 core-rs/fixtures/）。
     ///
     /// TS 侧测试断言「本表 == `toolToLlmFormat` 的真实输出」；
     /// 这里断言「Rust 的 `definitions()` == 本表」，只有 `divergences` 列出的
     /// 已知缺口（尚未迁入的参数、TS zod 转换的既有偏差）豁免。
-    const FIXTURE: &str = include_str!("../../src/test/fixtures/toolSchemaParity.json");
+    const FIXTURE: &str = include_str!("../fixtures/toolSchema.json");
 
     /// 已知缺口集合：`"<Tool>.<property>"`。缺口项不参与类型 / 必填比对，
     /// 且允许 Rust 侧缺失（未迁入的参数）。
@@ -2502,23 +2497,23 @@ mod schema_parity_tests {
 
         assert!(
             failures.is_empty(),
-            "工具定义与 Embedded 不一致：\n{}",
+            "工具定义与对照表不一致：\n{}",
             failures.join("\n")
         );
     }
 }
 
-// ==================== Edit 结果对等（与 Embedded 共用对照表） ====================
+// ==================== Edit 结果对照表 ====================
 
 mod edit_result_parity_tests {
     use super::*;
 
-    /// 与 Embedded 共用同一份对照表（`src/test/fixtures/editResultParity.json`）。
+    /// 行为对照表（数据见 core-rs/fixtures/）。
     ///
     /// TS 侧测试断言「本表 == `EditTool` 的真实输出（`mapToolResultToToolResultBlockParam`）」；
     /// 这里断言「Rust 的 `run_edit` == 本表」。重点是 `(+N, -M)` 必须按 diff 口径计算
-    /// （Embedded 用 jsdiff 的最短编辑脚本），而不是「old/new 行数 × 替换次数」。
-    const FIXTURE: &str = include_str!("../../src/test/fixtures/editResultParity.json");
+    /// （diff 最短编辑脚本口径），而不是「old/new 行数 × 替换次数」。
+    const FIXTURE: &str = include_str!("../fixtures/editResult.json");
 
     #[test]
     fn matches_the_shared_edit_result_table() {
@@ -2556,7 +2551,7 @@ mod edit_result_parity_tests {
                 .unwrap_or("<missing expectation>");
             if actual != expected {
                 failures.push(format!(
-                    "{name}: Rust 输出与 Embedded 不一致\n  期望: {expected:?}\n  实际: {actual:?}"
+                    "{name}: 输出与对照表不一致\n  期望: {expected:?}\n  实际: {actual:?}"
                 ));
                 continue;
             }
@@ -2582,23 +2577,23 @@ mod edit_result_parity_tests {
 
         assert!(
             failures.is_empty(),
-            "Edit 结果与 Embedded 不一致：\n{}",
+            "Edit 结果与对照表不一致：\n{}",
             failures.join("\n")
         );
     }
 }
 
-// ==================== 工具结果对等（与 Embedded 共用对照表） ====================
+// ==================== 工具结果对照表 ====================
 
 mod tool_result_parity_tests {
     use super::*;
 
-    /// 与 Embedded 共用同一份对照表（`src/test/fixtures/toolResultParity.json`）。
+    /// 行为对照表（数据见 core-rs/fixtures/）。
     ///
-    /// TS 侧测试断言「本表 == Embedded 真实工具输出」；这里断言「Rust 的
+    /// 断言「Rust 的
     /// `tools::execute` == 本表」。覆盖入参边界（空串视为缺参、Read 的 `path` 回退）、
     /// Read 的窗口 / 行数 / 字节 / 大小上限，与关键成功路径的 tool_result 文本。
-    const FIXTURE: &str = include_str!("../../src/test/fixtures/toolResultParity.json");
+    const FIXTURE: &str = include_str!("../fixtures/toolResult.json");
 
     /// `files` 的值可以是字符串，也可以是 `{ repeat, count, eol, trailingEol }` 生成器
     /// （与 `scripts/gen-tool-result-parity.mjs` 的 `fileContent` 同一规则）：
@@ -2674,7 +2669,7 @@ mod tool_result_parity_tests {
                 .unwrap_or("<missing expectation>");
             if actual != expected {
                 failures.push(format!(
-                    "{name}: Rust 输出与 Embedded 不一致\n  期望: {expected:?}\n  实际: {actual:?}"
+                    "{name}: 输出与对照表不一致\n  期望: {expected:?}\n  实际: {actual:?}"
                 ));
             }
         }
@@ -2684,7 +2679,7 @@ mod tool_result_parity_tests {
         }
         assert!(
             failures.is_empty(),
-            "工具结果与 Embedded 不一致：\n{}",
+            "工具结果与对照表不一致：\n{}",
             failures.join("\n")
         );
     }
@@ -2703,15 +2698,14 @@ fn cancel_after(millis: u64) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
 
 #[test]
 fn bash_interrupted_with_no_output_keeps_the_empty_marker() {
-    // 对齐 Embedded：`mapToolResultToToolResultBlockParam` 先把空输出变成 `(无输出)`，
-    // 随后 `RunTools` 再追加 `\nCommand was interrupted`。
+    // 先把空输出变成 `(无输出)`，随后再追加 `\nCommand was interrupted`。
     // 真正的「被中断」只有会话中止这一条路（前台超时会转后台，不再杀进程）。
     let sandbox = Sandbox::new("tools-bash-abort-empty");
     let mut ctx = context(&sandbox);
     ctx.cancel = Some(cancel_after(200));
     let outcome = execute("Bash", &json!({ "command": "sleep 5" }), &ctx);
     assert_eq!(text(&outcome), "(无输出)\nCommand was interrupted");
-    // 会话中止：Embedded `Exec.ts` 的 `onAbort` 用退出码 130
+    // 会话中止：退出码 130
     assert_eq!(outcome.exit_code(), 130);
 }
 
@@ -2729,7 +2723,7 @@ fn bash_interrupted_with_output_appends_the_marker() {
 
 #[test]
 fn auto_background_failure_falls_back_to_exit_code_124() {
-    // 打开输出文件失败时杀掉子进程、按「超时失败」收尾（对齐 Embedded 的 catch 分支）：
+    // 打开输出文件失败时杀掉子进程、按「超时失败」收尾：
     // `{stdout}\n{stderr}`，退出码 124。
     let sandbox = Sandbox::new("tools-bash-auto-background-failure");
     // 把 TMPDIR 指向一个普通文件：`<TMPDIR>/<tmpTaskDirName>` 无法创建
@@ -2754,16 +2748,16 @@ fn auto_background_failure_falls_back_to_exit_code_124() {
     restore_tmpdir(previous);
 }
 
-// ==================== Read 二进制判定对等（与 Embedded 共用对照表） ====================
+// ==================== Read 二进制判定对照表 ====================
 
 mod binary_detection_parity_tests {
     use super::*;
 
-    /// 与 Embedded 共用同一份对照表（`src/test/fixtures/binaryDetection.json`）。
+    /// 行为对照表（数据见 core-rs/fixtures/）。
     ///
     /// TS 侧测试断言「本表 == `isbinaryfile` 的真实结果」；这里断言
     /// 「Rust 的 `is_binary_content` == 本表」。
-    const FIXTURE: &str = include_str!("../../src/test/fixtures/binaryDetection.json");
+    const FIXTURE: &str = include_str!("../fixtures/binaryDetection.json");
 
     #[test]
     fn matches_the_shared_binary_detection_table() {
@@ -2789,22 +2783,22 @@ mod binary_detection_parity_tests {
         }
         assert!(
             failures.is_empty(),
-            "二进制判定与 Embedded 不一致：\n{}",
+            "二进制判定与对照表不一致：\n{}",
             failures.join("\n")
         );
     }
 }
 
-// ==================== Read 图片合法性校验对等（与 Embedded 共用对照表） ====================
+// ==================== Read 图片合法性校验对照表 ====================
 
 mod image_validation_parity_tests {
     use super::*;
 
-    /// 与 Embedded 共用同一份对照表（`src/test/fixtures/imageValidation.json`）。
+    /// 行为对照表（数据见 core-rs/fixtures/）。
     ///
     /// TS 侧测试断言「本表 == `validateImageBytes` 的真实结果」；这里断言
     /// 「Rust 的 `image_validation_failure` == 本表」。
-    const FIXTURE: &str = include_str!("../../src/test/fixtures/imageValidation.json");
+    const FIXTURE: &str = include_str!("../fixtures/imageValidation.json");
 
     #[test]
     fn matches_the_shared_image_validation_table() {
@@ -2832,7 +2826,7 @@ mod image_validation_parity_tests {
         }
         assert!(
             failures.is_empty(),
-            "图片合法性校验与 Embedded 不一致：\n{}",
+            "图片合法性校验与对照表不一致：\n{}",
             failures.join("\n")
         );
     }
@@ -2841,11 +2835,11 @@ mod image_validation_parity_tests {
 mod png_text_chunk_strip_parity_tests {
     use super::*;
 
-    /// 与 Embedded 共用同一份对照表（`src/test/fixtures/pngTextChunkStrip.json`）。
+    /// 行为对照表（数据见 core-rs/fixtures/）。
     ///
     /// TS 侧测试断言「本表 == `stripPngTextChunks` 的真实结果」；这里断言
     /// 「Rust 的 `strip_png_text_chunks` == 本表」。
-    const FIXTURE: &str = include_str!("../../src/test/fixtures/pngTextChunkStrip.json");
+    const FIXTURE: &str = include_str!("../fixtures/pngTextChunkStrip.json");
 
     #[test]
     fn matches_the_shared_png_text_chunk_strip_table() {
@@ -2872,7 +2866,7 @@ mod png_text_chunk_strip_parity_tests {
         }
         assert!(
             failures.is_empty(),
-            "PNG 文本块剥离与 Embedded 不一致：\n{}",
+            "PNG 文本块剥离与对照表不一致：\n{}",
             failures.join("\n")
         );
     }
@@ -2909,9 +2903,9 @@ mod png_text_chunk_strip_parity_tests {
 
     #[test]
     fn read_keeps_non_png_payloads_untouched() {
-        // 非 PNG 图片（JPEG / GIF / WebP / BMP）的载荷逐字节原样：样本取自与 Embedded
-        // 共享的 `imageValidation.json`（valid 用例），与校验测试同一份字节来源。
-        const IMAGE_FIXTURE: &str = include_str!("../../src/test/fixtures/imageValidation.json");
+        // 非 PNG 图片（JPEG / GIF / WebP / BMP）的载荷逐字节原样：样本取自
+        // `imageValidation.json`（valid 用例），与校验测试同一份字节来源。
+        const IMAGE_FIXTURE: &str = include_str!("../fixtures/imageValidation.json");
         let sandbox = Sandbox::new("tools-read-non-png-payload");
         let fixture: Value = serde_json::from_str(IMAGE_FIXTURE).expect("对照表必须是合法 JSON");
         let cases = fixture
@@ -2949,7 +2943,7 @@ mod png_text_chunk_strip_parity_tests {
 
 #[test]
 fn read_treats_text_content_with_an_image_extension_as_text() {
-    // 对齐 Embedded：图片分支在 `isbinaryfile` 之内——扩展名像图片但内容是文本时按文本读。
+    // 图片分支在 `isbinaryfile` 之内——扩展名像图片但内容是文本时按文本读。
     let sandbox = Sandbox::new("tools-read-image-ext-text");
     sandbox.write_file("notes.png", "just text\nsecond line\n");
     let outcome = execute("Read", &json!({ "file_path": "notes.png" }), &context(&sandbox));
@@ -3004,7 +2998,7 @@ fn format_file_size_matches_javascript_to_fixed() {
 
 #[test]
 fn validate_input_rejects_empty_and_overlong_bash_commands() {
-    // 对齐 Embedded `tools/bash/Validation.ts`
+    // Bash 入参校验文案
     assert_eq!(
         validate_input("Bash", &json!({ "command": "" }), ".").as_deref(),
         Some("Command cannot be empty")
@@ -3051,13 +3045,13 @@ fn cap_tool_result_uses_utf16_length_threshold() {
 
 // ==================== 入参 schema 校验对等（Zod safeParse） ====================
 
-/// 两侧共用 `src/test/fixtures/toolInputValidation.json`：
+/// 两侧共用 `core-rs/fixtures/toolInputValidation.json`：
 /// TS 侧 `toolInputValidationParity.test.ts` 用真实 Zod schema 产出对照表，
 /// 这里用 `tool_input::parse_input` 断言结果（错误文案 + 规范化数据）逐条一致。
 #[test]
 fn tool_input_validation_parity_tests() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../src/test/fixtures/toolInputValidation.json");
+        .join("fixtures/toolInputValidation.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("读取 {} 失败: {err}", path.display()));
     let fixture: Value = serde_json::from_str(&raw).expect("对照表不是合法 JSON");
@@ -3092,16 +3086,15 @@ fn tool_input_validation_parity_tests() {
     }
 }
 
-// ==================== JS 语义对等（与 Embedded 共用对照表） ====================
+// ==================== JS 语义对照表 ====================
 
 mod js_parity_tests {
     use super::*;
 
-    /// 与 Embedded 共用同一份对照表（`src/test/fixtures/jsParity.json`）：
-    /// TS 侧 `src/test/jsParity.test.ts` 断言「本表 == 真实 JS 输出」，
+    /// 行为对照表数据在 `core-rs/fixtures/js.json`：
     /// 这里断言「Rust 的 `format_file_size` / `clamp_output` / `validate_input`
     /// == 本表」。任一侧偏离都会失败。
-    const FIXTURE: &str = include_str!("../../src/test/fixtures/jsParity.json");
+    const FIXTURE: &str = include_str!("../fixtures/js.json");
 
     #[test]
     fn matches_the_shared_js_semantics_table() {
@@ -3116,7 +3109,7 @@ mod js_parity_tests {
             assert_eq!(
                 format_file_size(bytes),
                 expected,
-                "formatFileSize({bytes}) 与 Embedded 不一致"
+                "formatFileSize({bytes}) 与对照表不一致"
             );
         }
 
@@ -3133,12 +3126,12 @@ mod js_parity_tests {
             assert_eq!(
                 crate::util::clamp_output(text, head, tail),
                 expected,
-                "{name}：前 {head} + 后 {tail} 预览与 Embedded 不一致"
+                "{name}：前 {head} + 后 {tail} 预览与对照表不一致"
             );
             assert_eq!(
                 crate::util::utf16_len(text) > head + tail,
                 expected_has_more,
-                "{name}：hasMore 判定与 Embedded 不一致"
+                "{name}：hasMore 判定与对照表不一致"
             );
         }
 
@@ -3152,7 +3145,7 @@ mod js_parity_tests {
             assert_eq!(
                 validate_input("Bash", &json!({ "command": command }), "."),
                 expected,
-                "{name}：Bash validateInput 与 Embedded 不一致"
+                "{name}：Bash validateInput 与对照表不一致"
             );
         }
     }
@@ -3161,7 +3154,6 @@ mod js_parity_tests {
 
 #[test]
 fn bash_validate_input_uses_js_whitespace() {
-    // 对齐 Embedded `input.command.trim().length === 0`：
     // U+0085 不是 JS 空白 → 命令合法；U+FEFF 是 JS 空白 → 空命令
     assert_eq!(validate_input("Bash", &json!({ "command": "\u{85}" }), "."), None);
     assert_eq!(
@@ -3170,7 +3162,7 @@ fn bash_validate_input_uses_js_whitespace() {
     );
 }
 
-/// ripgrep 失败时的文案必须与 Embedded 的 Node `execFile` 错误一致：
+/// ripgrep 失败时的文案按 Node `execFile` 错误口径：
 /// `Command failed: <rg> <args...>\n<stderr>`（参数顺序、`--`/`--color` 都不能多）。
 #[test]
 fn grep_failure_matches_node_exec_file_message() {

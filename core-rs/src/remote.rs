@@ -6,7 +6,7 @@
 //!   串行化：两台机器的客户端同时首次引导同一台服务器，同指纹也只拉起一个 daemon。
 //! - `start-daemon`（daemon 实体，启动器的内部实现）：绑回环端口、把实际 endpoint
 //!   落盘（`~/<configDir>/run/core-daemon-<指纹>.json`，按构建指纹区分——
-//!   `docs/core/standalone-core.md` 第 4.4 节），然后常驻 accept。
+//!   `docs/core/standalone-core.md` 第 3.4 节），然后常驻 accept。
 //!
 //! daemon 只监听目标机器的回环地址，端口由内核分配：Host 经 SSH 转发接入，端口不出
 //! 机器，也不需要用户手工填任何连接信息。回环地址就是访问边界。
@@ -360,12 +360,12 @@ pub fn bind_listener() -> std::io::Result<TcpListener> {
 ///
 /// 一个指纹一个 daemon、一份落盘文件：多版本 Core 在同一台远端机器上各占一个槽位、
 /// 各跑一个 daemon 时，各自的 `start` / `kill` / 探测只作用于自己指纹的 daemon，
-/// 互不踩踏（`docs/core/standalone-core.md` 第 4.4 节、`docs/core/core-remote.md` 第 2.3 节）。
+/// 互不踩踏（`docs/core/standalone-core.md` 第 3.4 节、`docs/core/core-remote.md` 第 2.3 节）。
 /// 命名规则与 `src/host/standalone/daemonProtocol.ts` 的 `daemonStateFileName` /
 /// `daemonLogFileName` 一致，改动必须同步两侧。
 pub const DAEMON_FILE_STEM: &str = "core-daemon";
 
-/// 本二进制的构建指纹（`docs/core/standalone-core.md` 第 4.4 节）。
+/// 本二进制的构建指纹（`docs/core/standalone-core.md` 第 3.4 节）。
 ///
 /// `scripts/build-core.mjs` 在调用 cargo 时设置 `CORE_FINGERPRINT`，`build.rs` 把它
 /// 烧进编译期环境；指纹只由源码内容与编译器身份决定，daemon 以它区分自己的落盘

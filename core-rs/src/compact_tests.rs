@@ -3,8 +3,8 @@ use serde_json::{json, Value};
 use super::*;
 use crate::test_support::serial;
 
-/// 与 Embedded 共用同一份对照表（`src/test/fixtures/compactParity.json`）。
-const FIXTURE: &str = include_str!("../../src/test/fixtures/compactParity.json");
+/// 行为对照表（数据见 core-rs/fixtures/）。
+const FIXTURE: &str = include_str!("../fixtures/compact.json");
 
 fn fixture() -> Value {
     serde_json::from_str(FIXTURE).expect("compactParity.json 解析失败")
@@ -202,7 +202,7 @@ mod parity_tests {
     }
 }
 
-// ==================== 单测（不依赖 Embedded） ====================
+// ==================== 单测 ====================
 
 mod unit_tests {
     use super::*;

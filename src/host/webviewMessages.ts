@@ -14,8 +14,8 @@
  * 再在 `WebviewMessageHandler` 的分发表与 webview 的 switch 各补一个分支。
  */
 
-import type { MessageData, MessageOrigin } from '../core/types.js';
-import type { McpServerInfo, ProviderModels } from '../core/webviewTypes.js';
+import type { MessageData, MessageOrigin } from '../shared/types.js';
+import type { McpServerInfo, ProviderModels } from '../shared/webviewTypes.js';
 
 /** 用户消息携带的图片（仅用于 UI 展示，LLM 请求使用 content blocks） */
 export interface WebviewImagePayload {
@@ -512,7 +512,7 @@ export type HostToWebviewMessage = {
   needDetect?: string[];
 } | {
   type: 'conversationSpacesData';
-  spaces: import('../core/history/ConversationSpace.js').ConversationSpaceInfo[];
+  spaces: import('../shared/webviewTypes.js').ConversationSpaceInfo[];
 } | {
   type: 'conversationSpacesError';
   error: string;

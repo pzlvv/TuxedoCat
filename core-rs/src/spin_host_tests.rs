@@ -425,7 +425,7 @@ fn spin_run_feeds_replies_to_the_loop_not_the_main_llm() {
     let spin_config = spin::read_spin_json(&workspace).expect("spin.json");
     assert_eq!(spin_config["meta"]["1"]["passed"], json!(true));
 
-    // 子代理被静默中止：无 `*User Interrupted*` 回显（对齐 Embedded silentAbort），
+    // 子代理被静默中止：无 `*User Interrupted*` 回显，
     // Reply 的 tool_result 正常落盘（不标 is_canceled）
     let sub_messages = history::load_messages(&sub_session_id, &project);
     assert!(

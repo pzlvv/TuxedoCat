@@ -1,8 +1,8 @@
 use super::*;
 
-/// 两侧共用 `src/test/fixtures/coreTextKeys.json`：TS 侧 `coreTextParity.test.ts`
+/// 两侧共用 `core-rs/fixtures/coreTextKeys.json`：TS 侧 `coreTextParity.test.ts`
 /// 校验键集合与 webview 词典，Rust 侧在这里校验常量与同一份对照表一致。
-const FIXTURE: &str = include_str!("../../src/test/fixtures/coreTextKeys.json");
+const FIXTURE: &str = include_str!("../fixtures/coreTextKeys.json");
 
 #[test]
 fn core_text_keys_match_the_shared_fixture() {

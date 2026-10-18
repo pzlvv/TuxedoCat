@@ -103,8 +103,7 @@ fn encode_uri_component(input: &str) -> String {
 ///
 /// Windows 下同一目录的分隔符两种写法（`D:\a\b` 与 `D:/a/b`）会各自编码成不同的
 /// 对话空间目录；归一成反斜杠后再编码，且按历史写法编码的目录已存在时沿用
-/// （两种写法解析到同一份对话数据，不再裂成两个空间）。对齐 Embedded
-/// `getProjectConversationDir` 的 `normalizeWorkspacePath` + 回退解析。
+/// （两种写法解析到同一份对话数据，不再裂成两个空间）。
 #[cfg(windows)]
 fn normalize_workspace_path(project_path: &str) -> String {
     project_path.replace('/', "\\")
@@ -148,7 +147,7 @@ pub fn project_conversation_dir(project_path: &str) -> Result<PathBuf, String> {
 /// 确保项目对话目录存在，返回其路径
 ///
 /// 目录首次创建（或首次被 ensure）时写一次目录里的 `workspace.meta.json`（记录完整
-/// workspacePath，对齐 Embedded `ensureProjectConversationDir`）。目录与清单都由 Core
+/// workspacePath）。目录与清单都由 Core
 /// 创建与写入，宿主不参与写盘。
 pub fn ensure_project_conversation_dir(project_path: &str) -> Result<PathBuf, String> {
     let dir = project_conversation_dir(project_path)?;
@@ -160,7 +159,6 @@ pub fn ensure_project_conversation_dir(project_path: &str) -> Result<PathBuf, St
 /// 确保配置目录存在
 ///
 /// 同时为 `conversations/` 下已存在的项目目录补写一次项目清单
-/// （对齐 Embedded `ensureConfigDirs` → `backfillProjectSettings`）。
 pub fn ensure_config_dirs() -> Result<(), String> {
     let root = conversations_root()?;
     std::fs::create_dir_all(&root).map_err(|err| format!("mkdir conversations failed: {err}"))?;
@@ -170,7 +168,7 @@ pub fn ensure_config_dirs() -> Result<(), String> {
 
 static ANNOUNCED_PROJECT_DIRS: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
 
-/// 每个目录只处理一次（对齐 Embedded 的 `ensuredProjectDirs` 缓存）：写目录里的
+/// 每个目录只处理一次：写目录里的
 /// `workspace.meta.json`（记录完整 workspacePath）。
 fn write_project_meta_once(project_path: &str, dir: &std::path::Path) {
     let key = dir.to_string_lossy().to_string();
@@ -270,7 +268,7 @@ pub fn session_workspace(session_id: &str) -> Option<String> {
 }
 
 /// 活动工作目录；宿主未打开工作目录时为 `None`
-/// （对齐 Embedded `hasProjectRoot()` 的语义：`None` = 没有项目对话目录）。
+/// （`None` = 没有项目对话目录）。
 pub fn active_workspace() -> Option<String> {
     ACTIVE_WORKSPACE.lock().unwrap().clone()
 }
@@ -305,7 +303,7 @@ fn read_settings_file(path: &std::path::Path) -> Value {
 /// 写项目对话目录的 `workspace.meta.json`（记录该目录对应的 workspacePath）。
 ///
 /// 目录与清单都由 Core 创建与写入（`docs/architecture/core-ui-separation.md` 第 4.1 节）；
-/// 与 Embedded `writeWorkspaceMeta` 一致：`workspacePath` 未变化时不重写（幂等）。
+/// `workspacePath` 未变化时不重写（幂等）。
 pub fn write_workspace_meta(project_dir: &std::path::Path, workspace_path: &str) -> Result<(), String> {
     let path = project_dir.join("workspace.meta.json");
     let mut settings = read_settings_file(&path);
@@ -321,7 +319,7 @@ pub fn write_workspace_meta(project_dir: &std::path::Path, workspace_path: &str)
 
 /// 读项目清单里记录的 workspacePath。
 ///
-/// 对齐 Embedded `history/ConversationSpace.readWorkspacePath`：清单里的值优先，
+/// 清单里的值优先，
 /// 拿不到时由调用方回退到目录名解码（`decode_project_dir_name`）。
 /// 目前只有单测直接调用：对话空间列表（`getConversationSpaces`）尚未迁入
 /// Standalone，届时经总线接入。
@@ -377,11 +375,11 @@ fn missing_api_key_message() -> String {
 /// `model_override` / `provider_override` 来自会话（meta.json）；缺省时用配置快照的
 /// `llm.activeProvider` 与该 provider 的默认模型。
 ///
-/// 错误口径对齐 Embedded：
+/// 错误口径：
 /// - 会话显式指定了 provider 但它不存在 / 没有 baseURL → `provider "X" 不存在或未配置 baseURL`
 ///   （`getConfigForProvider` 不做回退，必须暴露）；
 /// - 其余「没有可用 provider / 没有 apiKey」→ 与 `getConfig` 一致地抛 API Key 未配置文案
-///   （Embedded 在 activeProvider 缺失或无效时回退到空 apiKey 的兜底配置，最终都落到这条）。
+///   （activeProvider 缺失或无效时按空 apiKey 的兜底配置处理，最终都落到这条）。
 ///
 /// 模型限值取自快照里**已解析**的结果（注册表归 UI），Core 侧不做模型名匹配。
 pub fn resolve_provider(
@@ -444,10 +442,10 @@ pub fn resolve_provider(
         })
         .or_else(|| provider.models.first().cloned())
         .unwrap_or_default();
-    // 注意：模型为空**不**在这里报错。Embedded 的 `getConfig` / `getConfigForProvider`
-    // 允许 `model` 为空串（未配置默认模型时），由服务端返回错误；这里继续往下走，
+    // 注意：模型为空**不**在这里报错：允许 `model` 为空串（未配置默认模型时），
+    // 由服务端返回错误。这里继续往下走，
     // 保证「provider 有 baseURL 但没配模型」时报的是 API Key 文案（`api_key` 为空时）
-    // 或把空模型原样带进请求（`api_key` 已配置时），与 Embedded 一致。
+    // 或把空模型原样带进请求（`api_key` 已配置时）。
 
     let api_key = provider.api_key.clone();
     if api_key.is_empty() {

@@ -1,5 +1,5 @@
 /**
- * Core 平台矩阵一致性（见 docs/core/standalone-core.md 第 4.1 节）。
+ * Core 平台矩阵一致性（见 docs/core/standalone-core.md 第 3.1 节）。
  *
  * 矩阵里的每个组合有三处登记，任何一处漏项都会让某个平台静默不可用：
  * 1. `scripts/build-core.mjs` 的 `TARGETS`（构建目标三元组 + 产物目录）；
@@ -65,7 +65,7 @@ function repoRoot(): string {
 const EXPECTED: ReadonlyArray<{ platform: string; arch: string; triple: string }> = [
   { platform: 'win32', arch: 'x64', triple: 'x86_64-pc-windows-msvc' },
   { platform: 'win32', arch: 'arm64', triple: 'aarch64-pc-windows-msvc' },
-  // Linux 一律 musl（静态，不依赖目标机器的 glibc），见 docs/core/standalone-core.md 第 4.3 节
+  // Linux 一律 musl（静态，不依赖目标机器的 glibc），见 docs/core/standalone-core.md 第 3.3 节
   { platform: 'linux', arch: 'x64', triple: 'x86_64-unknown-linux-musl' },
   { platform: 'linux', arch: 'arm64', triple: 'aarch64-unknown-linux-musl' },
 ];
@@ -180,7 +180,7 @@ async function run(): Promise<void> {
 
   // ---------- 产物落位目录 ----------
   // x64-win32 是开发机一定能构建的那个，必须在；x64-linux 与 arm64-linux 也属于打包
-  // 要携带的平台（`npm run build:core` 默认会一起编，见 docs/core/standalone-core.md 第 4.3 节），
+  // 要携带的平台（`npm run build:core` 默认会一起编，见 docs/core/standalone-core.md 第 3.3 节），
   // 但交叉编译需要 zig，没装时允许为空；arm64-win32 是预留。「允许为空」不等于允许
   // 半成品：目录在就必须有产物。「打包要带的产物齐不齐」由 scripts/verify-core-artifacts.mjs
   // 把关。
@@ -190,7 +190,7 @@ async function run(): Promise<void> {
     const binary = path.join(dir, `${CORE_BINARY_NAME}${entry.ext}`);
     // Core 自带的 ripgrep：与可执行文件同级（`tools.rs::ripgrep_path` 的定位基准）
     const ripgrep = bundledRipgrepPath(binary, entry.platform as NodeJS.Platform);
-    // 构建指纹：与可执行文件同级（`build-core.mjs` 落位，docs/core/standalone-core.md 第 4.4 节）
+    // 构建指纹：与可执行文件同级（`build-core.mjs` 落位，docs/core/standalone-core.md 第 3.4 节）
     const fingerprint = path.join(dir, CORE_FINGERPRINT_FILE_NAME);
     if (alwaysBuilt.has(entry.dir)) {
       check(`${entry.dir} 已产出 ${CORE_BINARY_NAME}${entry.ext}`, fs.existsSync(binary));

@@ -3,7 +3,7 @@
  *
  * 职责：
  * - 维护 `workspaceId → connectionId` 主表与 `sessionId → connectionId` 派生表；
- * - 每个工作区一个 Connection（Embedded 恒一个，工作区仍是会话属性）；
+ * - 每个工作区一个 Connection；
  * - 配置快照是 Client 级的：一份推给所有 Connection；
  * - 就绪门禁与会话路由：UiEvent / requestCore 按会话找到归属 Connection，
  *   查不到归属时报错，不静默丢弃。
@@ -28,9 +28,8 @@ import type {
   UiRequestHandlers,
   UiRequestResultMap,
   Unsubscribe,
-} from '../core/AssistantEventBus.js';
+} from '../shared/AssistantEventBus.js';
 import { Connection } from './Connection.js';
-import type { CoreKind } from './coreKind.js';
 import {
   sameWorkspace,
 } from './workspacePaths.js';
@@ -48,18 +47,14 @@ export interface OpenedCoreChannel {
 }
 
 export interface ClientOptions {
-  coreKind: CoreKind;
   log: (...args: unknown[]) => void;
   /**
-   * Standalone：为一个工作区打开 Core 通道。
-   * Embedded 下不需要（恒一个进程内 Connection）。
+   * 为一个工作区打开 Core 通道（Core 进程 / daemon channel）。
    *
    * 允许同步返回：daemon 通道在内部异步建立（帧在 channel 打开前排队），
    * 因此 Client / bootstrap 不需要等待连接建立。
    */
   openChannel?: (ref: WorkspaceRef) => OpenedCoreChannel | Promise<OpenedCoreChannel>;
-  /** Embedded：进程内总线；所有工作区复用同一个 Connection */
-  embeddedBus?: AssistantEventBus;
   /** 连接建立后推送的宿主环境与配置快照（每次连接建立、每次快照变更） */
   hostEnvironment: () => Extract<UiEvent, { type: 'hostEnvironmentProvided' }>;
   /** Core 非预期退出 / 无法恢复（宿主据此把该连接上的忙会话标记为失败） */
@@ -120,7 +115,7 @@ export class Client implements AssistantEventBus {
    * 按 sessionId 取 Connection。
    *
    * 查不到归属时报错（`docs/core/client-connection.md` 第 6 节：不静默丢弃）。
-   * 只有一个 Connection 时（Embedded / 单工作区宿主）把它作为归属并登记——
+   * 只有一个 Connection 时（单工作区宿主）把它作为归属并登记——
    * 这是「数量对上层透明」的退路，不改变多连接下的严格路由。
    */
   connectionForSession(sessionId: string): Connection {
@@ -154,8 +149,8 @@ export class Client implements AssistantEventBus {
   /**
    * 打开工作区：已存在则激活，不新建 Connection。
    *
-   * 同步路径（Embedded、同步通道工厂）直接返回 Connection；通道异步建立时返回
-   * Promise（daemon 通道自身在打开前排队帧，上层无需等待）。
+   * 同步通道工厂直接返回 Connection；通道异步建立时返回 Promise
+   * （daemon 通道自身在打开前排队帧，上层无需等待）。
    */
   openWorkspace(ref: WorkspaceRef): Connection | Promise<Connection> {
     const key = workspaceRefKey(ref);
@@ -169,22 +164,8 @@ export class Client implements AssistantEventBus {
       this.workspaceToConnection.delete(key);
     }
 
-    // Embedded：恒一个 Connection，工作区是会话属性（`docs/core/client-connection.md` 第 3.2 节）
-    if (this.options.coreKind === 'embedded') {
-      const only = [...this.connections.values()][0];
-      if (only) {
-        this.workspaceToConnection.set(key, only.id);
-        this.currentConnectionId = only.id;
-        return only;
-      }
-      if (!this.options.embeddedBus) {
-        throw new Error('Embedded Client requires an embedded bus.');
-      }
-      return this.createConnection(ref, this.options.embeddedBus, async () => undefined);
-    }
-
     if (!this.options.openChannel) {
-      throw new Error('Standalone Client requires an openChannel implementation.');
+      throw new Error('Client requires an openChannel implementation.');
     }
     // 打开第一个真实工作区：启动期的空引用占位 Connection 完成使命（避免空转的 Core 进程）
     if (!isEmptyWorkspaceRef(ref)) {

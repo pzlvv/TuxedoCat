@@ -185,7 +185,7 @@ fn rollback_inner(
             // beforeContent 为 null 表示文件原本不存在，删除它
             None => match std::fs::remove_file(&full_path) {
                 Ok(()) => restored += 1,
-                // 已经不存在也算恢复完成（对齐 Embedded 的 ENOENT 分支）
+                // 已经不存在也算恢复完成
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => restored += 1,
                 Err(_) => {}
             },

@@ -16,7 +16,7 @@
  * - 文件打开/虚拟文档/Mermaid/Spin 由 UIHost 提供 Electron 实现
  */
 
-import { fileLogger } from '../src/core/Logger.js';
+import { fileLogger } from '../src/shared/Logger.js';
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents, globalShortcut, Tray, nativeImage, screen, clipboard, powerSaveBlocker, type NativeImage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -101,7 +101,7 @@ import {
   type FileOpenBridge,
 } from './fileOpen.js';
 import { sshTargetFor, sshTargetKey } from '../src/host/sshTarget.js';
-import { sessionBusyLevel } from '../src/core/sessionRuntime.js';
+import { sessionBusyLevel } from '../src/shared/sessionRuntime.js';
 import {
   readWorkspaceState,
   writeWorkspaceState,
@@ -118,7 +118,7 @@ import {
   normalizeAccelerator,
 } from './shortcut.js';
 import { tt, onHostLocaleChanged, getHostLocale } from '../src/host/i18n.js';
-import { requireEventBus } from '../src/core/AssistantEventBus.js';
+import { requireEventBus } from '../src/shared/AssistantEventBus.js';
 import { getShortcutDialogHtml } from './shortcutDialogHtml.js';
 import { requestSmartNaming } from '../src/host/coreFacts.js';
 
@@ -1515,7 +1515,7 @@ function completionFactsOf(sessionId: string): CompletionAttentionFacts {
  * 差分出 running → idle 且用户当时看不到的完成，记入未读集合后立即尝试推送。
  */
 function updateCompletionAttentionFromStates(
-  states: ReadonlyArray<import('../src/core/AssistantEventBus.js').SessionRuntimeState>,
+  states: ReadonlyArray<import('../src/shared/AssistantEventBus.js').SessionRuntimeState>,
 ): void {
   const arm = diffCompletionAttention(completionAttentionLevels, states, completionFactsOf);
   completionAttentionLevels = arm.next;
@@ -1603,7 +1603,7 @@ function setupTray(): void {
  * 全量推送差分得出；闪烁颜色取当前聚合状态。
  */
 function updateTrayStatusFromStates(
-  states: ReadonlyArray<import('../src/core/AssistantEventBus.js').SessionRuntimeState>,
+  states: ReadonlyArray<import('../src/shared/AssistantEventBus.js').SessionRuntimeState>,
 ): void {
   const status = deriveTrayStatusFromStates(states);
   const ends = diffSessionEndEvents(traySessionLevels, states);
@@ -3255,7 +3255,7 @@ function openRemoteWorkspaceDialog(): void {
  * 把「会话 → 工作目录」登记到 core 的会话工作目录表（core 按会话解析工作目录）。
  *
  * 唯一写入通路是 `UiEvent.sessionWorkspaceAssigned`（core 侧 initializeCoreEvents
- * 转调 setSessionWorkspace / clearSessionWorkspace）：Embedded 下同进程同表，
+ * 转调 setSessionWorkspace / clearSessionWorkspace）：
  * Standalone 下只有事件能过帧通道——不再绕过事件直写 core 的表。
  * bootstrap 之前调用时总线尚未注册，事件被丢弃——这正是期望语义：core 还没起来时
  * 登记也没有意义，会话打开后宿主会再登记一次。
@@ -4111,7 +4111,7 @@ async function deleteConversationWithViews(sessionId: string): Promise<void> {
   // 必须在下面删除索引条目之前取，否则 root 自身的映射已被移除。
   const deleteWs = sessionWorkspaces.get(sessionId);
   if (deleteWs) void registerCoreSessionWorkspace(sessionId, deleteWs);
-  const { loadConversationList, collectConversationClosure } = await import('../src/core/history/index.js');
+  const { loadConversationList, collectConversationClosure } = await import('../src/shared/history/index.js');
   // 按该会话自己的工作目录读列表：删除的对话可能不在当前活动工作目录
   const affected = collectConversationClosure(
     sessionId,
@@ -4128,7 +4128,7 @@ async function deleteConversationWithViews(sessionId: string): Promise<void> {
     sessionWorkspaces.delete(sid);
   }
   // 删盘（core 消费方：算闭包已由宿主完成，这里只发 root）
-  const { requireEventBus } = await import('../src/core/AssistantEventBus.js');
+  const { requireEventBus } = await import('../src/shared/AssistantEventBus.js');
   requireEventBus().emitToCore({ type: 'conversationDeleted', sessionId });
 }
 
@@ -4558,7 +4558,7 @@ function setupIpc(): void {
       if (renameWs) void registerCoreSessionWorkspace(sessionId, renameWs);
       // UI → core：重命名走总线（core 写 meta.json → CoreEvent.titleChanged /
       // conversationListChanged 广播，多端同步）
-      const { requireEventBus } = await import('../src/core/AssistantEventBus.js');
+      const { requireEventBus } = await import('../src/shared/AssistantEventBus.js');
       requireEventBus().emitToCore({ type: 'conversationRenamed', sessionId, title });
       // 标题回推与列表刷新由 core 广播（titleChanged / conversationListChanged）
       return { ok: true };
@@ -4574,12 +4574,11 @@ function setupIpc(): void {
       syncSessionWorkspaceIndex();
       const smartWs = sessionWorkspaces.get(sessionId);
       if (smartWs) void registerCoreSessionWorkspace(sessionId, smartWs);
-      // 智能命名编排属 core：走受控事实入口（coreFacts），按 CORE_KIND 分派——
-      // Embedded 直读本进程 core；Standalone 经 UiRequest.smartNamingRequested
-      // 交给 daemon（在主进程直调 Embedded 实现会在 Standalone 下因 settings
-      // 快照未注入而抛错）。标题写盘走 UiEvent.conversationRenamed，广播由 core 发
+      // 智能命名编排属 core：走受控事实入口（coreFacts），经
+      // UiRequest.smartNamingRequested 交给 Core 进程（数据 / 配置都在 Core 侧）。
+      // 标题写盘走 UiEvent.conversationRenamed，广播由 core 发
       const title = await requestSmartNaming(sessionId);
-      const { requireEventBus } = await import('../src/core/AssistantEventBus.js');
+      const { requireEventBus } = await import('../src/shared/AssistantEventBus.js');
       requireEventBus().emitToCore({ type: 'conversationRenamed', sessionId, title });
       // 标题回推与列表刷新由 core 广播（titleChanged / conversationListChanged）
       return { ok: true, title };

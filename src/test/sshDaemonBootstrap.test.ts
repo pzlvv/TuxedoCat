@@ -154,7 +154,7 @@ function makeExtensionPath(): { root: string; binary: string; ripgrep: string } 
   );
   fs.mkdirSync(path.dirname(binary), { recursive: true });
   fs.writeFileSync(binary, 'fake-core-binary');
-  // 构建指纹与可执行文件同级（`npm run build:core` 的落位，docs/core/standalone-core.md 第 4.4 节）
+  // 构建指纹与可执行文件同级（`npm run build:core` 的落位，docs/core/standalone-core.md 第 3.4 节）
   fs.writeFileSync(path.join(path.dirname(binary), 'fingerprint'), `${FINGERPRINT}\n`);
   // Core 自带的 ripgrep 与可执行文件同级
   const ripgrep = path.join(path.dirname(binary), 'ripgrep', 'rg');

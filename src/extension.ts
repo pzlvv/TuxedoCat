@@ -9,7 +9,7 @@ import { buildDiffUris } from './VSCodeUIHost/diffUris.js';
 import { getSettingsStore } from './host/SettingsStore.js';
 import { readSystemLocale, readUiLanguage, readUiFontSize } from './host/coreFacts.js';
 import { VSCODE_HOST_INFO } from './host/types.js';
-import { requireEventBus } from './core/AssistantEventBus.js';
+import { requireEventBus } from './shared/AssistantEventBus.js';
 import {
   COMMAND_PREFIX,
   DIFF_AFTER_SCHEME,

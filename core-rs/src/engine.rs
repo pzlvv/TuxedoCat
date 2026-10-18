@@ -36,7 +36,7 @@ const COMPACT_MAX_MESSAGES_TO_KEEP: usize = 30;
 /// 子代理的后台驱动（对齐 `AgentTool.call` 里那个立即执行的后台 async IIFE）。
 ///
 /// 一对 `queryBegin` / `queryEnd` 覆盖**整个**子代理生命周期（含 Reminder 重试），
-/// 与 Embedded 一致：`AgentTool` 手动 emit，`submitMessage` 不再重复发。
+/// `AgentTool` 手动 emit，消费循环不重复发。
 fn run_sub_agent(
     core: Arc<Core>,
     sub_session_id: String,
@@ -82,7 +82,7 @@ fn run_sub_agent(
         }
         retries += 1;
         // Reminder 作为一条普通用户消息入队（可见、会落盘），再跑一轮消费循环。
-        // 这样不需要 Embedded 那个 1.5s 的等待窗口：消费循环返回即代表这一轮
+        // 消费循环返回即代表这一轮
         // （含 Reminder 触发的 LLM 调用与工具执行）已经彻底结束。
         let reminder = sub_agent_reminder(retries, &creator_session_id);
         let mut state = state.lock().unwrap();
@@ -182,10 +182,10 @@ pub struct AgentMessage {
     pub from_session_id: String,
 }
 
-/// 会话工作模式（对齐 Embedded `QueryEngine.workMode`）。
+/// 会话工作模式。
 ///
 /// `spin`：主会话不参与 LLM 消费循环，只由 SpinLoop 循环起子代理
-/// （对齐 Embedded `beginConsumer` 对 spin 的忽略）。由 `spin_host.rs` 在
+/// 。由 `spin_host.rs` 在
 /// `/spin` 执行期间设置，循环结束恢复 `Normal`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkMode {
@@ -197,13 +197,13 @@ pub enum WorkMode {
 pub struct SessionState {
     pub cancel: Arc<AtomicBool>,
     /// 手工转后台（`UiEvent.bashBackgroundRequested`）的循环暂停标记
-    /// （对齐 Embedded `QueryEngine.loopPauseRequested`）。置位方：前台 Bash 手工
+    /// 。置位方：前台 Bash 手工
     /// 转后台成功；消费方：`run_query_loop` 在工具批收尾、下一轮 LLM 请求发起前。
     /// 新用户消息与中止都会清除残留标记（暂停只对「当时那轮查询」有意义）。
     pub pause_loop: crate::tools::LoopPauseSignal,
     pub running: bool,
     pub waiting: bool,
-    /// 静默中止标记（对齐 Embedded `QueryEngine.silentAbortRequested`）：本次中止是
+    /// 静默中止标记：本次中止是
     /// 业务主动结束（spin 子代理首次 Reply 后停止自身），查询循环收尾时**不回显**
     /// `*User Interrupted*`（见 `emit_user_interrupted`）。新的消费循环启动时随
     /// `cancel` 一并复位。
@@ -213,13 +213,13 @@ pub struct SessionState {
     pub work_mode: WorkMode,
     /// 待消费的用户消息（`QueryEngine.pendingUserMessage`）。
     ///
-    /// **单槽位**：Embedded 的 `submitMessage(type='user')` 直接
-    /// `this.pendingUserMessage = promptStr`——新消息**替换**排队中的旧消息，
+    /// **单槽位**：新消息直接
+    /// **替换**排队中的旧消息，
     /// 不是追加（Agent 回复才追加，见 `agent_messages`）。
     pub pending_user_message: Option<Value>,
     /// 内存中的消息（含尚未落盘的）
     pub messages: Vec<Value>,
-    /// `messages` 中前多少条已经落盘（对齐 Embedded 的 `_persisted` 标记）。
+    /// `messages` 中前多少条已经落盘。
     /// 崩溃恢复补出的合成 `tool_result` 只在内存里，下一次持久化时机按序补写。
     pub persisted_count: usize,
     pub last_uuid: Option<String>,
@@ -250,20 +250,18 @@ pub struct SessionState {
     pub compacting: bool,
     /// 自动压缩的连续失败计数与轮次（`AutoCompactTrackingState`）
     pub auto_compact_tracking: Option<crate::compact::AutoCompactTracking>,
-    /// 后台任务的周期性提醒时钟（`taskId -> 时钟`，对齐 Embedded
-    /// `tools/bash/BackgroundReminder` 的调度表）。只在会话空闲时前进；
+    /// 后台任务的周期性提醒时钟（`taskId -> 时钟`）。只在会话空闲时前进；
     /// 任务结束 / 会话关闭后清理。时钟项同时记着「上次访问时刻」，
     /// 查询结束的兜底提醒据此冷却。
     pub reminder_entries: HashMap<String, ReminderEntry>,
     /// 当前这轮消费是否由后台任务的 reminder 拉起（`deliver_background_reminder` 置位，
     /// 消费循环收尾消费后清零）。为真时收尾不再补兜底提醒：否则「提醒 → 查询 → 提醒」
-    /// 会互相接力（对齐 Embedded `QueryEngine.reminderDrivenRun`）。
+    /// 会互相接力。
     pub reminder_driven_run: bool,
     /// 子代理会话的创建者（`AgentTool` 写入；普通会话为 None）。
     pub parent_session_id: Option<String>,
     /// 子代理会话的静态系统提示词（`AgentTool` 的 `staticSystemPrompt`）。
-    /// 非空时**整体替换**按预设组装的提示词（对齐 Embedded
-    /// `fullSystemPrompt = staticSystemPrompt ?? assemble(...)`）。
+    /// 非空时**整体替换**按预设组装的提示词。
     pub static_system_prompt: Option<String>,
     /// system prompt 前缀（`QueryEngine.systemPromptPrefix`）：非空时拼在组装结果开头
     /// （Master 子代理 = 主对话同款提示词 + 开头 `## Communication` 段）。
@@ -283,7 +281,7 @@ pub struct SkillInjection {
     pub skill_args: String,
 }
 
-/// 一个后台任务的提醒调度项（对齐 Embedded `BackgroundReminder` 的登记项）：
+/// 一个后台任务的提醒调度项：
 /// 纯时钟 + 上次推进时刻 + 上次访问时刻 + 已兜底标记。任务描述 / 命令 / 开始时间在
 /// 推进时从注册表读取。
 #[derive(Clone, Debug)]
@@ -294,7 +292,7 @@ pub struct ReminderEntry {
     /// 登记时取任务开始时间（任务刚起不算「已访问」）。
     pub last_accessed_ms: u64,
     /// 是否已经兜底提醒过（含手工转后台时预置的抑制标记）：sleep 豁免据此只生效一次
-    /// （对齐 Embedded `ReminderSchedule.fallbackReminded`）。
+    /// 。
     pub fallback_reminded: bool,
 }
 
@@ -347,7 +345,7 @@ impl SessionState {
 pub struct Core {
     pub bus: SharedBus,
     pub sessions: Mutex<HashMap<String, Arc<Mutex<SessionState>>>>,
-    /// 会话创建顺序（对齐 Embedded `sessionRuntime` 的 `Map` 插入序）：
+    /// 会话创建顺序：
     /// `sessionRuntimeChanged.states` 必须按插入序输出，HashMap 迭代序不保证。
     session_order: Mutex<Vec<String>>,
     /// 上一次已推送的运行时快照；无变化时不重发（对齐 `pushIfChanged` 的 diff）。
@@ -383,8 +381,8 @@ impl Core {
         self.sessions.lock().unwrap().get(session_id).cloned()
     }
 
-    /// 会话当前是否空闲（未登记视为空闲）。对齐 Embedded `loadConversation` 的
-    /// `workingSessions` 守卫：运行中的会话不伪造「会话中断」的取消结果。
+    /// 会话当前是否空闲（未登记视为空闲）。
+    /// 运行中的会话不伪造「会话中断」的取消结果。
     pub fn session_is_idle(&self, session_id: &str) -> bool {
         match self.session_if_exists(session_id) {
             None => true,
@@ -433,10 +431,10 @@ impl Core {
 
     /// 推全量会话运行时状态（根事实 + 派生 `idle`）。
     ///
-    /// 对齐 Embedded `sessionRuntime.pushIfChanged`：状态没变时不发事件；
+    /// 状态没变时不发事件；
     /// 有变化时按会话插入序推全量快照（消费者不维护状态表）。
     ///
-    /// 快照字段与 Embedded `SessionRuntimeState` 一致（``docs/architecture/principles.md` 第 8 节）：暴露
+    /// 快照字段（``docs/architecture/principles.md` 第 8 节）：暴露
     /// `queryRunning` / `waiting` / `compacting` / `backgroundRunning` /
     /// `subAgentRunning` 根事实，`idle` 是它们的合取。流水灯 / 托盘读 `idle`；
     /// abort 按钮按根事实推导三态（`docs/features/abort-button.md`）。
@@ -459,7 +457,7 @@ impl Core {
                     )
                 };
                 // `pending_user_message` 是「已入队、消费循环即将接手」的窗口，与
-                // Embedded 的 `query` 来源等价（Embedded 里入队即 markQueryRunning(true)）。
+                // 入队即 markQueryRunning(true)。
                 let query_running = running || pending;
                 // 对齐 `sessionRuntime.toSnapshot`：递归判定——自身不忙**且**所有已登记
                 // 子代理都空闲，父会话才算空闲。
@@ -491,9 +489,9 @@ impl Core {
         self.emit(json!({ "type": "sessionRuntimeChanged", "states": states }));
     }
 
-    /// 单个会话的运行时快照 JSON（字段与 Embedded `SessionRuntimeState` 一致）。
+    /// 单个会话的运行时快照 JSON。
     ///
-    /// 字段集合由 `src/test/fixtures/runtimeStateParity.json` 双向锁定
+    /// 字段集合由 `core-rs/fixtures/runtimeState.json` 双向锁定
     /// （TS 侧 `runtimeStateParity.test.ts`，Rust 侧 `main_tests`）——增删字段必须
     /// 同步 fixture 与两侧测试，缺一即失败。
     pub(crate) fn runtime_state_json(
@@ -515,7 +513,7 @@ impl Core {
             "backgroundRunning": background,
             "subAgentRunning": sub_agent_running,
             // 父会话 id（子代理会话才有；spawn 时落 `parent_session_id`）。
-            // 与 Embedded 的 `parents` 映射同口径：随会话存续，不随注册表注销消失
+            // 随会话存续，不随注册表注销消失
             "parentSessionId": parent_session_id,
         })
     }
@@ -553,7 +551,7 @@ impl Core {
 
     /// 该会话是否有非 idle 的已登记子代理（递归）。
     ///
-    /// 对齐 Embedded `sessionRuntime.hasBusySubAgent`：对每个已登记子代理单独判定它
+    /// 对每个已登记子代理单独判定它
     /// 自己的子树是否空闲。子代理完成一轮后可能仍留在注册表里等 Reply，此时它空闲，
     /// 父会话的 `subAgentRunning` 为假（`docs/features/abort-button.md` FR-001）。
     fn has_busy_subagent(
@@ -583,8 +581,7 @@ impl Core {
     pub fn on_conversation_opened(&self, session_id: &str) {
         let _ = self.ensure_loaded(session_id);
         // MCP：会话被打开 → 按该会话的启用列表建立引用（幂等，后台串行执行）。
-        // 对齐 Embedded `Integration.createEngine` / `restoreConversationEngine`
-        // → `MCPHost.onSessionOpened`——MCP 的生命周期由 core 的会话生命周期驱动，
+        // MCP 的生命周期由 core 的会话生命周期驱动，
         // 不绑在 UI 的视图生命周期上。
         crate::mcp::on_session_opened(session_id);
         self.emit_runtime();
@@ -593,7 +590,7 @@ impl Core {
     /// `UiEvent.userChoicePendingChanged`：宿主上报「该会话的用户选择框是否在
     /// webview 里等待应答」。
     ///
-    /// 对齐 Embedded `initializeCoreEvents` 的 `markSessionWaiting`：这是宿主侧
+    /// 这是宿主侧
     /// 「已弹出 / 已应答 / 已释放」的事实，与 core 自己发 `CoreRequest` 期间置位的
     /// `waiting` 共同决定 `sessionRuntime.waiting`。core 发请求时先置 true，应答后
     /// 置 false；宿主这条事件在弹出 / 应答 / 视图销毁时补一次，两边最终一致。
@@ -618,7 +615,7 @@ impl Core {
 
     /// `UiEvent.abortRequested`：abort 按钮点击（`docs/features/abort-button.md` FR-002）。
     ///
-    /// 对齐 Embedded `Integration.abortCurrentQuery`：按该会话的运行时事实分两阶段——
+    /// 按该会话的运行时事实分两阶段——
     /// - 前台有工作（`running` / `compacting`）→ 只中止前台查询（置 `cancel`），
     ///   后台 Bash 任务与子代理保持运行，等待用户再次点击；
     /// - 前台空闲但仍有后台 Bash 任务或子代理 → 中止它们（含递归子代理）。
@@ -656,8 +653,7 @@ impl Core {
     }
 
     /// `UiEvent.bashBackgroundRequested`：用户把某台**正在前台运行**的 Bash 命令
-    /// 转入后台（Bash 卡片「转后台」按钮，对齐 Embedded
-    /// `QueryEngine.requestBashBackground`）。
+    /// 转入后台（Bash 卡片「转后台」按钮）。
     ///
     /// 只触发转换（`tools::request_manual_background` 按 tool_use_id 查注册表）；
     /// 暂停标记由 `auto_background_command(manual = true)` 的成功路径回写
@@ -671,7 +667,7 @@ impl Core {
     }
 
     /// `UiEvent.queuedMessageDiscarded`：webview 排队项的「编辑 / 删除」撤回排队消息
-    /// （对齐 Embedded `QueryEngine.discardPendingUserMessage`）。
+    /// 。
     ///
     /// 按 uuid 配对：引擎队列里没有该 uuid 的待消费消息（已被消费、被更新的排队
     /// 消息替换，或本来就不存在）时不动，也不置 `cancel`——撤回排队项不打断正在
@@ -689,15 +685,14 @@ impl Core {
             .unwrap_or(false);
         if matches {
             state.pending_user_message = None;
-            // Skill 命令的待注入信息与排队消息同生共死（对齐 Embedded
-            // `clearPendingUserMessage`）：消息撤回后注入不再发生。
+            // Skill 命令的待注入信息与排队消息同生共死：消息撤回后注入不再发生。
             state.pending_skill_injection = None;
         }
     }
 
     /// 中止会话及其递归子代理的运行中工作（abort 第二阶段 / 会话关闭）。
     ///
-    /// 对齐 Embedded `Integration.abortSessionScope`：前台查询、后台 Bash 任务、
+    /// 前台查询、后台 Bash 任务、
     /// 子代理三条路径都走，幂等。
     fn abort_session_scope(&self, session_id: &str, visited: &mut HashSet<String>) {
         if session_id.is_empty() || !visited.insert(session_id.to_string()) {
@@ -710,15 +705,14 @@ impl Core {
         }
     }
 
-    /// 静默中止一个会话（对齐 Embedded `QueryEngine.requestSilentAbort` = 置
-    /// `silentAbortRequested` + `interrupt()`）：复用 [`Self::abort_session_scope`]
+    /// 静默中止一个会话：复用 [`Self::abort_session_scope`]
     /// 的完整中止逻辑（前台查询、后台 Bash 任务、递归子代理），但先标记
     /// `silent_abort`，让查询循环收尾时不再向 UI 回显 `*User Interrupted*`。
     ///
     /// 使用场景：spin 模式下子代理首次 Reply 后立即停止自身，避免其继续消耗
     /// token、产生多余消息；主循环仍会正常读取该 Reply 并推进后续节点。
     /// 会话已被中止（用户 abort）时不动——回显语义交给原中止路径
-    /// （对齐 Embedded 的 `!selfEngine.isAborted()` 门槛）。
+    /// 。
     fn request_silent_abort(&self, session_id: &str) {
         let Some(state) = self.session_if_exists(session_id) else {
             return;
@@ -777,9 +771,7 @@ impl Core {
         origin: &str,
         from_session_id: &str,
     ) {
-        // 会话已关闭 / 被删除：丢弃消息（对齐 Embedded「找不到引擎」的分支——
-        // Embedded 还有一个「兜底遍历所有引擎」的退化路径，会把消息投给错误的会话，
-        // 这里不复刻该行为）。
+        // 会话已关闭 / 被删除：丢弃消息。
         let Some(state) = self.session_if_exists(session_id) else {
             return;
         };
@@ -826,7 +818,7 @@ impl Core {
         });
     }
 
-    /// 推进一次所有会话的后台任务提醒时钟（对齐 Embedded `tickBackgroundReminders`）。
+    /// 推进一次所有会话的后台任务提醒时钟。
     ///
     /// 时钟只在会话空闲（`running` / `compacting` 均为假，即 abort 按钮为黄）时前进；
     /// 到点则投递一条 reminder（会启动消费循环让 LLM 立即看到）。
@@ -899,8 +891,7 @@ impl Core {
         }
     }
 
-    /// 投递一条后台任务的周期性提醒（对齐 Embedded
-    /// `QueryEngine.deliverBackgroundReminder`）：写进 `pending_reminder` 并唤醒消费循环。
+    /// 投递一条后台任务的周期性提醒：写进 `pending_reminder` 并唤醒消费循环。
     ///
     /// 提醒是 silent 的 user 消息（LLM 可见、UI 不可见）。压缩期间只丢弃：
     /// 调度线程下一轮会再发一次。
@@ -1004,7 +995,7 @@ impl Core {
             state.parent_session_id = Some(creator.clone());
             state.sub_agent_role = Some(request.role.clone());
             // 子代理 system prompt = 主对话同款提示词（按继承的预设组装）+ 开头
-            // `## Communication` 段（对齐 Embedded 的 `systemPromptPrefix`）。
+            // `## Communication` 段。
             state.system_prompt_prefix = Some(prompt::sub_agent_communication_section(&creator));
         }
 
@@ -1020,8 +1011,7 @@ impl Core {
             provider.as_deref(),
         );
         // 同步把继承来的 agent mode 落进子会话 meta.json 的 context：
-        // 重启后重新打开子会话，UI 仍显示继承自主对话的模式（对齐 Embedded 的
-        // `updateConversationContext(subSessionID, { agentMode })`）。
+        // 重启后重新打开子会话，UI 仍显示继承自主对话的模式。
         self.persist_context(&sub_session_id, json!({ "key": "agentMode", "value": agent_mode }));
 
         crate::subagent::register(&sub_session_id, &creator);
@@ -1051,12 +1041,9 @@ impl Core {
         if state.is_none() {
             return Err(format!("目标会话 {target_session_id} 不存在"));
         }
-        // spin 模式的主会话不参与 LLM 消费循环（对齐 Embedded `workMode === 'spin'`
-        // 时 `beginConsumer` 直接忽略）：Reply 只进上下文（silent）并落盘，内容经
+        // spin 模式的主会话不参与 LLM 消费循环：Reply 只进上下文（silent）并落盘，内容经
         // `emit_reply_delivered` 交给 SpinLoop 做验收判定。绝不能入 `agent_messages`——
         // 否则消费循环会在 Spin 结束后把它当普通自动消息喂给主对话 LLM，
-        // 主对话就接管开始正常 agent 循环了（对齐 Embedded `buildAgentReplyMessage`
-        // 的 spin `silent` 分支 + `submitToolUse` 收尾的 `flushAgentQueue`）。
         let spin_state = state
             .filter(|state| state.lock().unwrap().work_mode == WorkMode::Spin);
         match spin_state {
@@ -1069,7 +1056,7 @@ impl Core {
                     from_session_id,
                     content,
                 );
-                // 对齐 Embedded `ReplyTool` 的 spin 优化：子代理首次 Reply 后立即
+                // 子代理首次 Reply 后立即
                 // 静默中止其自身引擎——否则它会拿到 Reply 的 tool_result 后再跑一轮
                 // LLM（多余 token，还可能重复 Reply）。
                 if from_session_id != target_session_id {
@@ -1094,11 +1081,10 @@ impl Core {
         Ok(())
     }
 
-    /// 无 LLM 直连执行一次工具（对齐 Embedded `QueryEngine.submitToolUse`）。
+    /// 无 LLM 直连执行一次工具。
     ///
     /// 构造一条 assistant tool_use 消息并执行工具，把 tool_result 落盘 + 进上下文；
-    /// 供 SpinLoop 起子代理使用（Embedded `spin/Loop.ts` 的
-    /// `submitToolUse({ name: 'Agent', input })`）。不走 LLM、不消费队列。
+    /// 供 SpinLoop 起子代理使用。不走 LLM、不消费队列。
     ///
     /// 事件序列对齐 `inject_skill_tool_use`：
     /// `toolCall`（授权前）→ `toolPermissionRequested` → `toolCall`（执行前）→ `toolResult`。
@@ -1111,7 +1097,7 @@ impl Core {
         input: &Value,
     ) -> Result<(), String> {
         let state = self.session(session_id);
-        // 已请求中止时不再执行（对齐 Embedded `submitToolUse` 的 `isAborted()` 早退）
+        // 已请求中止时不再执行
         if state.lock().unwrap().cancel.load(Ordering::Relaxed) {
             return Ok(());
         }
@@ -1215,8 +1201,7 @@ impl Core {
     }
 
     pub fn on_conversation_deleted(&self, session_id: &str) {
-        // 与 Embedded 一致（`initializeCoreEvents` 的 conversationDeleted →
-        // 对闭包里每个会话 `releaseSessionResources` → `abortSessionTree`）：
+        // conversationDeleted 对闭包里每个会话先中止、释放资源再删盘：
         // **先**中止在跑的查询，再删盘。否则运行中的轮次会在删除后继续
         // `append_message`，把 `<sid>.jsonl` / `<sid>.meta.json` 重新建出来，会话"复活"。
         // 受影响闭包与 `deleteConversation` 相同：会话自身 + 所有层级的子孙对话。
@@ -1239,8 +1224,7 @@ impl Core {
         self.emit(json!({ "type": "conversationListChanged" }));
     }
 
-    /// 只写 `meta.json` 的标题，不发任何事件（对齐 Embedded
-    /// `history.updateConversationMetadataTitle`）。
+    /// 只写 `meta.json` 的标题，不发任何事件。
     ///
     /// `meta.json` 缺失时**建档**：显式改标题（用户重命名 / 智能命名 / spin 改名）
     /// 必须落到磁盘，否则广播出去的 `titleChanged` 与磁盘不一致——重启 / 刷新列表后
@@ -1280,8 +1264,8 @@ impl Core {
     }
 
     /// `/spin` 等「内部改标题」路径：写 `meta.json` 并广播 `titleChanged`
-    /// （对齐 Embedded `bundled/spin.ts` 的标题更新——`titleChanged` 的事件表来源
-    /// 包含 skills/bundled/spin，webview 靠它刷新打开中对话的标题栏）。
+    /// `titleChanged` 的事件表来源包含 skills/bundled/spin，
+    /// webview 靠它刷新打开中对话的标题栏。
     /// 不涉及 `conversationRenamed`——那是 UI 发起重命名的 UiEvent，方向不同。
     /// 列表变化与重命名同口径：标题已落盘，广播 `conversationListChanged` 让宿主
     /// 重读磁盘分发。返回 `false` 表示会话没有工作目录（标题没写成）。
@@ -1295,7 +1279,7 @@ impl Core {
     }
 
     pub fn on_conversation_renamed(&self, session_id: &str, title: &str) {
-        // 对齐 Embedded 的 `updateConversationMetadataTitle`：meta.json 缺失时建档
+        // meta.json 缺失时建档
         // （标题先落盘），再照常广播事件——UI 只消费真实数据变更后的事件。
         if !self.write_conversation_title(session_id, title) {
             return;
@@ -1357,7 +1341,7 @@ impl Core {
             "thinkingEffort" => {
                 let mode = value.as_str().unwrap_or("off").to_string();
                 state.lock().unwrap().thinking_effort = Some(mode.clone());
-                // 落盘字段沿用既有名字 thinkingMode（与 Embedded 对齐）
+                // 落盘字段沿用既有名字 thinkingMode
                 self.persist_context(session_id, json!({ "key": "thinkingMode", "value": mode }));
                 json!({ "key": "thinkingEffort", "value": mode })
             }
@@ -1374,8 +1358,7 @@ impl Core {
                 json!({ "key": "webSearch", "value": enabled })
             }
             "mcpEnabled" => {
-                // `value` 是**该会话启用后的完整 server 名列表**（对齐 Embedded
-                // `mcpEnabledChanged` 的差量同步入口）。写入 meta.json 的会话覆盖，
+                // `value` 是**该会话启用后的完整 server 名列表**。写入 meta.json 的会话覆盖，
                 // 再让 MCPHost 按新列表差量同步连接。
                 let names: Vec<String> = value
                     .as_array()
@@ -1400,7 +1383,7 @@ impl Core {
         }));
     }
 
-    /// 把一条会话级配置写进 `meta.json` 的 context（与 Embedded 的 `updateConversationContext` 对齐）
+    /// 把一条会话级配置写进 `meta.json` 的 context
     fn persist_context(&self, session_id: &str, change: Value) {
         if let Ok(project) = self.project_of(session_id) {
             let _ = history::update_context(session_id, &project, &[change]);
@@ -1434,12 +1417,12 @@ impl Core {
         }
 
         // 先把磁盘上的历史 / 会话配置载入内存，再应用随消息携带的会话覆盖。
-        // 顺序对齐 Embedded：`restoreConversationEngine` 先按 meta.json 恢复引擎，
-        // `submitUserMessage` 之后才把 payload 的 agentMode / thinkingMode / webSearch /
+        // 顺序：先按 meta.json 恢复引擎，
+        // 之后才把 payload 的 agentMode / thinkingMode / webSearch /
         // model 应用到引擎——否则 payload 覆盖会被 meta.json 的旧值反向覆盖。
         let _ = self.ensure_loaded(&session_id);
 
-        // 随消息携带的会话覆盖（与 Embedded 的 submitUserMessage 对齐）：
+        // 随消息携带的会话覆盖：
         // agentMode / thinkingMode / webSearch / model 由宿主按会话解析后带上。
         let mut model_changed: Option<(String, String)> = None;
         {
@@ -1478,10 +1461,10 @@ impl Core {
         let message = build_user_message(payload);
         let should_start = {
             let mut state = state.lock().unwrap();
-            // 对齐 Embedded `submitMessage(type='user')`：**替换**排队中的旧消息
+            // **替换**排队中的旧消息
             state.pending_user_message = Some(message);
             if state.running || state.compacting {
-                // 压缩期间只入队不启动消费循环（对齐 Embedded `submitMessage`：
+                // 压缩期间只入队不启动消费循环：
                 // 压缩会整体替换消息数组，与运行中的查询并发会互相踩踏）
                 false
             } else {
@@ -1489,8 +1472,7 @@ impl Core {
                 state.cancel.store(false, Ordering::Relaxed);
                 state.silent_abort = false;
                 // 手工转后台的暂停标记只对「当时那轮查询」有意义：新用户消息
-                // 开启新一轮，清掉残留标记（对齐 Embedded `submitMessage` 的
-                // `loopPauseRequested = false`）。
+                // 开启新一轮，清掉残留标记。
                 state.pause_loop.clear();
                 true
             }
@@ -1609,8 +1591,7 @@ impl Core {
         }
         if state.messages.is_empty() {
             let mut messages = history::load_messages(session_id, &project);
-            // `last_uuid` 取**落盘**的最后一条消息（对齐 Embedded 的
-            // `restoreConversationEngine` → `setLastPersistedMessageUuid`）：从后往前找
+            // `last_uuid` 取**落盘**的最后一条消息：从后往前找
             // 第一条非 `tool_recovered_*` 的消息，避免后续新消息的 parentUuid 挂到
             // 合成恢复消息上（其自身 parentUuid 指向 tool_use 所属 assistant）。
             state.last_uuid = messages.iter().rev().find_map(|message| {
@@ -1665,7 +1646,7 @@ impl Core {
     /// 工具权限：按 agentMode 加工后决定放行 / 拒绝。
     ///
     /// `ask` **不等于拒绝**：它表示「需要弹确认框」，因此再发一次
-    /// `CoreRequest.userChoice` 拿用户的选择（与 Embedded 的 RunTools 一致）。
+    /// `CoreRequest.userChoice` 拿用户的选择。
     fn resolve_permission(
         &self,
         session_id: &str,
@@ -1675,7 +1656,7 @@ impl Core {
         agent_mode: &str,
         cwd: &str,
     ) -> PermissionOutcome {
-        // 与 Embedded `RunTools.authorizeOne` 一致：无论 allow / deny / ask，都先发一次
+        // 无论 allow / deny / ask，都先发一次
         // `toolPermissionRequested`（UI 借此上架工具卡片、写 Edit / Write 的 `_meta`、
         // 在 manual 模式下打开宿主 diff），再按回传的 behavior 决定执行 / 拒绝 / 弹框。
         let (perm_result, display_args) =
@@ -1699,7 +1680,7 @@ impl Core {
                 updated_input: perm_result.get("updatedInput").cloned(),
             },
             // `checkPermissions` 直接 deny（入参非法 / old_string 找不到或匹配多处）：
-            // Embedded 的 `permission.shouldTerminate` 未设置时只结束本批工具，
+            // 权限层未要求终止时只结束本批工具，
             // 结果仍交回 LLM；AgentTool 的嵌套调用拒绝显式带 `shouldTerminate: true`。
             Some("deny") => PermissionOutcome::Denied {
                 message: perm_result
@@ -1726,7 +1707,7 @@ impl Core {
     ///
     /// 走 `plain_request`：这段往返不算「等用户」（真确认框由随后的 `userChoice` 弹），
     /// 否则每次工具调用都会凭空多出一次 `running → waiting` 迁移——托盘 / 侧栏会闪一下，
-    /// 与 Embedded 不一致（`docs/core/session-runtime.md` 第 1 节）。
+    /// （`docs/core/session-runtime.md` 第 1 节）。
     fn request_tool_permission(
         &self,
         session_id: &str,
@@ -1795,8 +1776,7 @@ impl Core {
                 "options": Value::Object(options),
             }),
         ) else {
-            // 请求失败（无订阅者 / 超时）：与 Embedded 的 `requestUserChoice` 抛错兜底
-            // 同一口径——按「用户不带原因地拒绝」处理（终止本轮）。
+            // 请求失败（无订阅者 / 超时）按「用户不带原因地拒绝」处理（终止本轮）。
             return PermissionOutcome::Denied {
                 message: "用户拒绝操作".to_string(),
                 terminate: true,
@@ -1816,7 +1796,7 @@ impl Core {
                 has_reply = true;
             }
         }
-        // Embedded：`shouldTerminate = !hasReply`——带了拒绝原因说明用户还想继续对话，
+        // `shouldTerminate = !hasReply`——带了拒绝原因说明用户还想继续对话，
         // 否则直接结束本轮（不再把 tool_result 交回 LLM）。
         PermissionOutcome::Denied {
             message,
@@ -1845,7 +1825,7 @@ impl Core {
     /// 给「宿主只是渲染 / 回传」的请求用（`toolPermissionRequested`：上架工具卡片、
     /// 写 Edit / Write 的 `_meta`、manual 下打开宿主 diff）——宿主拿到 `permResult`
     /// 就返回，`ask` 也直接返回（真确认框随后由 `userChoice` 弹），这段往返里并没有
-    /// 在等用户。与 Embedded 的 `emitToolPermissionRequest` 同口径：
+    /// 在等用户：
     /// `docs/core/session-runtime.md` 第 1 节。
     fn plain_request(&self, request: Value) -> Option<Value> {
         let (id, receiver) = self.send_request(request)?;
@@ -1855,8 +1835,7 @@ impl Core {
     /// 发一次 `CoreRequest` 并等待应答；在途期间把会话标记为 `waiting`
     ///
     /// 只给**真的在等用户**的请求用（`userChoice`）：用户选择框的弹出 / 应答由
-    /// `userChoicePendingChanged` 与这里共同决定 `waiting`（与 Embedded 的
-    /// `Integration.requestUserChoice` 同口径）。
+    /// `userChoicePendingChanged` 与这里共同决定 `waiting`。
     fn waiting_request(&self, session_id: &str, request: Value) -> Option<Value> {
         let (id, receiver) = self.send_request(request)?;
         if let Some(state) = self.session_if_exists(session_id) {
@@ -1875,7 +1854,7 @@ impl Core {
 /// 权限决策结果。`updated_input` 只在 UI / 权限层改写了入参时出现，
 /// 缺省表示沿用原始入参。
 ///
-/// `terminate` 对齐 Embedded `RunTools.authorizeOne` 的 `shouldPreventContinuation`：
+/// `terminate` 对应 `shouldPreventContinuation`：
 /// 用户在确认框里**不带原因地拒绝**时，本批工具全部收尾后直接结束本轮查询
 /// （不再把 tool_result 交回 LLM）；`checkPermissions` 直接 deny 则只结束本批工具，
 /// 仍把结果交回 LLM 让它换一种方式重试。
@@ -1892,10 +1871,9 @@ fn run_consumer(core: Arc<Core>, session_id: String) {
 
 /// 消费循环；`emit_ui` 控制是否由本函数发 `queryBegin` / `queryEnd`。
 ///
-/// 子代理由 `AgentTool` 自己管一对（对齐 Embedded：`AgentTool` 手动 emit
-/// `queryBegin` / `queryEnd`，`submitMessage` 不再重复发），因此传 `false`。
+/// 子代理由 `AgentTool` 自己管一对（手动 emit、不重复发），因此传 `false`。
 fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
-    // `queryBegin` / `queryEnd` 是**消费循环**级（对齐 Embedded `submitMessage`：
+    // `queryBegin` / `queryEnd` 是**消费循环**级：
     // queryBegin 在启动 consumer 时发一次，`finalizeIdle` 在队列彻底排空 / 中止时
     // 发一次 queryEnd）。一轮用户消息内部可能包含「reminder 追问」「排队消息并入」
     // 等多个 LLM 轮次，它们同属一次 consumer，只应有一对 queryBegin / queryEnd；
@@ -1928,7 +1906,7 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
             CommandResolution::Skill => {}
             CommandResolution::None => {}
         }
-        // 取消（`abortRequested`）：清空队列并退出消费循环（对齐 Embedded `cancelQueued`）。
+        // 取消（`abortRequested`）：清空队列并退出消费循环。
         {
             let mut guard = state.lock().unwrap();
             if guard.cancel.load(Ordering::Relaxed) {
@@ -1942,7 +1920,7 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
             }
         }
         // 取一批排队消息：优先级与 `flush_queued_messages` 共用同一实现
-        // （对齐 Embedded：消费循环与 `flushQueuedMessagesIntoContext` 都走 `consumeQueuedOnce`）。
+        // （消费循环与 `flushQueuedMessagesIntoContext` 都走 `consumeQueuedOnce`）。
         // 轮次边界消费命令消息（`include_command_user_message = true`）。
         let step = match take_queued_batch(&state, true) {
             Some(batch) => Some(batch),
@@ -1989,8 +1967,7 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
                 content,
                 user_message,
             } => {
-                // Reminder 与普通用户消息一样落盘（对齐 Embedded 的
-                // `flushQueuedMessagesIntoContext` → `persistUnpersistedMessages`）：
+                // Reminder 与普通用户消息一样落盘：
                 // 它是一条 `silent` / `origin=agent` 的 user 消息，UI 不展示，但会写进
                 // `<sid>.jsonl`、计入 `meta.json` 的 `messageCount`，并刷新对话列表。
                 persist_reminder(&core, &session_id, &state, &content);
@@ -2035,21 +2012,21 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
         }
         core.emit_runtime();
     }
-    // 消费循环退出（队列排空 / 中止 / 会话被关闭）：与 Embedded `finalizeIdle`
-    // 一致地发一次 queryEnd。`running` 已在退出判定里置 false，再发 queryEnd。
+    // 消费循环退出（队列排空 / 中止 / 会话被关闭）时发一次 queryEnd。
+    // `running` 已在退出判定里置 false，再发 queryEnd。
     // MCP：查询结束后把会话级启用选择补写进 `meta.json`——设置时它可能还不存在
     // （新会话的第一条消息尚未落盘），此刻一定有了。对齐 `flushSessionMcpToMeta`。
     crate::mcp_config::flush_session_mcp_to_meta(&session_id);
     if emit_ui {
-        // 顺序与 Embedded 一致：先把会话标回空闲并广播状态，再发 queryEnd
-        // （Embedded `finalizeIdle` 里 `sessionRuntime` 的推送在 `queryEnd` 之前）。
+        // 顺序：先把会话标回空闲并广播状态，再发 queryEnd
+        // （`sessionRuntime` 的推送在 `queryEnd` 之前）。
         // 反过来的话 UI 会先收到 queryEnd、后收到「空闲」，托盘/流水灯的收尾晚一拍。
         core.emit_runtime();
         core.emit(json!({ "type": "queryEnd", "sessionId": session_id }));
     }
 }
 
-/// 已批准、等待并行执行的工具（对齐 Embedded `ApprovedToolItem`）
+/// 已批准、等待并行执行的工具
 struct PendingTool {
     tool_use_id: String,
     tool_name: String,
@@ -2102,7 +2079,7 @@ fn cancel_pending_batch(
     }
 }
 
-/// 并行执行一批已批准的并发安全工具（对齐 Embedded `executeParallelBatch`）。
+/// 并行执行一批已批准的并发安全工具。
 ///
 /// 顺序契约：批内所有工具的 `toolCall` 已在授权阶段发完，这里先**并发执行**，
 /// 再**按原顺序**逐条上报 `toolResult`——因此 tool_result 的顺序与内容与串行实现
@@ -2180,7 +2157,7 @@ fn flush_pending_batch(
                     &outcome,
                 ))
             }
-            // 线程 panic：按 Embedded 的 `Promise.allSettled` rejected 分支收尾
+            // 线程 panic：同样按失败分支收尾
             Err(_) => {
                 let message = format!("Error executing {}: tool thread panicked", item.tool_name);
                 core.emit(json!({
@@ -2201,8 +2178,7 @@ fn flush_pending_batch(
             }
         }
     }
-    // 整批执行完成后会话才被中止（对齐 Embedded `drainStartedItems` 的
-    // `hasAborted` 分支）：本批收尾后不再回到 LLM，由调用方的
+    // 整批执行完成后会话才被中止：本批收尾后不再回到 LLM，由调用方的
     // `terminate_after_batch` 分支上报 `*User Interrupted*`。
     // 中止若在整批开始**之前**到达，已由上面的取消分支处理，不会走到这里。
     if state.lock().unwrap().cancel.load(Ordering::Relaxed) {
@@ -2210,7 +2186,7 @@ fn flush_pending_batch(
     }
 }
 
-/// 执行一个已批准的工具（对齐 Embedded `RunTools.executeSingleTool`）。
+/// 执行一个已批准的工具。
 ///
 /// 与调用方解耦成独立函数是为了让「并行工具批」能把多个工具丢进各自的线程：
 /// 这里只碰 `core` / `state`（都是 `Arc`）与入参，不持有外层循环的可变状态。
@@ -2224,8 +2200,7 @@ fn execute_tool(
     effective_input: &Value,
 ) -> ToolOutcome {
     // AskUserQuestion 的问答回调：把已组装的 `UserChoiceOptions` 经
-    // `CoreRequest.userChoice` 发给宿主并阻塞等待应答（对齐 Embedded
-    // `Integration.requestUserChoice` → `UserChoiceQueue`）。
+    // `CoreRequest.userChoice` 发给宿主并阻塞等待应答。
     let user_choice_session = session_id.to_string();
     let user_choice_core = Arc::clone(core);
     let user_choice: tools::UserChoiceFn = Arc::new(move |options: &Value| {
@@ -2250,14 +2225,13 @@ fn execute_tool(
         cwd: project.to_string(),
         // 手工转后台按 tool_use_id 登记（Bash 卡片「转后台」按钮）
         tool_use_id: Some(tool_use_id.to_string()),
-        // 工具流式进度 → `toolProgress` 帧（对齐 Embedded `RunTools` 的 onProgress）
+        // 工具流式进度 → `toolProgress` 帧
         on_progress: Some(tool_progress_emitter(
             Arc::clone(core),
             session_id.to_string(),
             tool_use_id.to_string(),
         )),
         // 会话取消标记：Bash 等待子进程时轮询它，命中即杀子进程
-        // （对齐 Embedded 的 abort → `onAbort` → kill）
         cancel: Some(cancel),
         // 手工转后台的循环暂停信号：前台 Bash 转后台成功后置位
         pause: Some(pause_loop),
@@ -2277,7 +2251,7 @@ fn execute_tool(
 
 /// 工具清单：内置工具 + 该会话启用列表里的 MCP 工具。
 ///
-/// 对齐 Embedded `getAllTools()`：MCP 工具的启用列表按会话解析
+/// MCP 工具的启用列表按会话解析
 /// （会话覆盖 → 全局默认），因此同一个 Core 进程里不同会话看到不同的 MCP 工具。
 pub fn all_tool_definitions(session_id: &str) -> Vec<Value> {
     let mut definitions = tools::definitions();
@@ -2294,7 +2268,7 @@ pub fn is_known_tool(name: &str) -> bool {
 }
 
 /// 工具能否与相邻同类工具并行执行：MCP 工具按服务器给的 `readOnlyHint` 注解判定
-/// （对齐 Embedded `McpTool.isConcurrencySafe` = `annotations.readOnlyHint`）。
+/// 。
 pub fn is_tool_concurrency_safe(name: &str, input: &Value) -> bool {
     if crate::mcp::is_mcp_tool(name) {
         return crate::mcp::is_concurrency_safe(name);
@@ -2304,8 +2278,7 @@ pub fn is_tool_concurrency_safe(name: &str, input: &Value) -> bool {
 
 /// 上报工具结果（`toolResult` 帧）并产出 tool_result block。
 ///
-/// 串行与并行两条路径共用：并行批必须**按原顺序**逐条上报，才能与 Embedded
-/// `executeParallelBatch` 的「先 `Promise.allSettled` 再按序 yield」一致。
+/// 串行与并行两条路径共用：并行批必须**按原顺序**逐条上报。
 fn emit_tool_outcome(
     core: &Arc<Core>,
     session_id: &str,
@@ -2320,17 +2293,16 @@ fn emit_tool_outcome(
         "success"
     };
     // 结构化 block（Read 的图片）：content 原样透传，不走文本裁剪
-    // （对齐 Embedded 对数组 content 的处理）。
+    // 。
     //
-    // UI 的 `toolResult.output` 是 `string`：Embedded 的 `outputForUI =
-    // typeof output === 'string' ? output : '[Image]'`，数组 content 一律
+    // UI 的 `toolResult.output` 是 `string`：数组 content 一律
     // 上报 `'[Image]'`（图片本体只进 tool_result block，不进 UI 事件）。
     let (output, block_content) = match outcome {
         ToolOutcome::SuccessBlocks(blocks) => (json!("[Image]"), blocks.clone()),
         _ => {
             // UI 的 `toolResult.output` 用裸消息；只有 **工具执行本身失败**
             // （`call()` 抛错）的 tool_result 内容才加 `Error executing <Tool>: `
-            // 前缀（对齐 Embedded `RunTools` 的两条错误通道）。
+            // 前缀。
             // 工具不存在（`is_known` 为假）与权限拒绝都不加。
             let raw = outcome.text();
             let tool_result_text = if matches!(outcome, ToolOutcome::Error(_))
@@ -2359,9 +2331,9 @@ fn emit_tool_outcome(
         "output": output,
         "status": status,
     }));
-    // tool_result block 口径对齐 Embedded：始终带 exit_code / is_canceled；
-    // 工具执行失败（含权限拒绝）**不**写 is_error（Embedded 只在模型错误兜底时写）。
-    // is_canceled 仅「排队等待期间被中止」为真（对齐 Embedded mapper 的取消分支）。
+    // tool_result block 口径：始终带 exit_code / is_canceled；
+    // 工具执行失败（含权限拒绝）**不**写 is_error（只有模型错误兜底才写）。
+    // is_canceled 仅「排队等待期间被中止」为真。
     let mut block = json!({
         "type": "tool_result",
         "tool_use_id": tool_use_id,
@@ -2469,11 +2441,11 @@ fn resolve_pending_command(
 
 /// 注入 Skill tool_use（assistant tool_use + tool_result 携带技能正文）。
 ///
-/// 对齐 Embedded `QueryEngine.injectSkillToolUse` → `submitToolUse`：不走 LLM，
+/// 不走 LLM，
 /// 直接构造一条 assistant 消息（单个 tool_use block）并执行 `Skill` 工具，
 /// 把 tool_result 与工具注入的 `newMessages` 落盘 + 进上下文。
 ///
-/// 事件序列对齐 Embedded `submitToolUse` → `runTools`：
+/// 事件序列：
 /// `toolCall`（授权前）→ `toolPermissionRequested`（UI 借此上架 Skill 卡片并拿
 /// `displayArgs`）→ `toolCall`（执行前）→ `toolResult`；每条落盘消息各发一次
 /// `conversationListChanged`（对齐 `Conversation.appendMessage`）。
@@ -2512,10 +2484,10 @@ fn inject_skill_tool_use(
     });
     persist_message(core, session_id, project, state, &assistant_message)?;
     // 每条落盘消息各发一次 `conversationListChanged` 并计入 `meta.json.messageCount`
-    // （对齐 Embedded `Conversation.appendMessage`：`injectSkillToolUse` 落 3 条）。
+    // （Skill 注入一次落 3 条消息）。
     announce_message_appended(core, session_id, project, false);
 
-    // 对齐 Embedded `runTools.authorizeOne`：授权前先发一次 `toolCall`（UI 上架 running
+    // 授权前先发一次 `toolCall`（UI 上架 running
     // 卡片），再发一次 `toolPermissionRequested`——UI 的 ToolHandler 借此上架 Skill
     // 卡片并拿到 `displayArgs`。缺了这一步，Standalone 下 `/<skill>` 在 UI 上没有任何
     // 可见的触发痕迹（`toolResult` / `toolArgsUpdated` 只能更新**已存在**的卡片）。
@@ -2526,7 +2498,7 @@ fn inject_skill_tool_use(
         "toolName": "Skill",
     }));
     // Skill 的 checkPermissions 恒 allow（见 `permission::base_check`），不会弹确认框；
-    // 这里的往返只为让 UI 上架卡片，与 Embedded `emitToolPermissionRequest` 同序。
+    // 这里的往返只为让 UI 上架卡片，与授权路径同序。
     let agent_mode = state.lock().unwrap().agent_mode.clone();
     match core.resolve_permission(session_id, &tool_use_id, "Skill", &input, &agent_mode, project) {
         PermissionOutcome::Allowed { .. } => {
@@ -2539,7 +2511,7 @@ fn inject_skill_tool_use(
             }));
         }
         PermissionOutcome::Denied { message, .. } => {
-            // 对齐 Embedded 的拒绝分支：卡片置 error，补一条 error tool_result，不执行工具
+            // 拒绝分支：卡片置 error，补一条 error tool_result，不执行工具
             core.emit(json!({
                 "type": "toolResult",
                 "sessionId": session_id,
@@ -2633,10 +2605,10 @@ fn run_turn(
 
     // 1.5 Skill 注入：`/skill` 命令的用户消息已进上下文，紧接着注入 Skill tool_use
     // （assistant tool_use + tool_result 携带技能正文），供本轮 LLM 读取。
-    // 位置对齐 Embedded：`consumeQueuedOnce` 之后、query 之前。
+    // 位置：队列消费之后、query 之前。
     if let Some(injection) = skill_injection {
         if let Err(error) = inject_skill_tool_use(core, session_id, &project, state, &injection) {
-            // 对齐 Embedded 的 try/catch：注入失败不中断流程，继续走 LLM query
+            // 注入失败不中断流程，继续走 LLM query
             eprintln!("[core] Skill tool call error: {error}");
         }
     }
@@ -2659,7 +2631,7 @@ fn run_turn(
         update_pending_reminder(state, messages_before_query);
     }
     // `conversationListChanged` 已由每次落盘（`announce_message_appended`）发出，
-    // 与 Embedded 一致；这里不再补发（Embedded 收尾不发该事件）。
+    // 这里不再补发（收尾不发该事件）。
     result
 }
 
@@ -2820,7 +2792,7 @@ fn background_reminder(session_id: &str, state: &mut SessionState) -> Option<Str
 /// - 最后一条 assistant 没有 tool_use 且 `stop_reason === 'end_turn'`，正文以冒号
 ///   （半角 `:` / 全角 `：`）结尾 → 「像是要调用工具却没调用」提醒。
 ///
-/// 用户中断时不注入（对齐 Embedded：abort 后直接 break，收尾判定不执行）。
+/// 用户中断时不注入（abort 后直接 break，收尾判定不执行）。
 fn update_pending_reminder(state: &Arc<Mutex<SessionState>>, messages_before_query: usize) {
     let mut state = state.lock().unwrap();
     if state.cancel.load(Ordering::Relaxed) {
@@ -2872,7 +2844,7 @@ fn update_pending_reminder(state: &Arc<Mutex<SessionState>>, messages_before_que
                 .and_then(|block| block.get("text"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            // 对齐 Embedded `lastText.trimEnd()`：JS trim 去的是 ECMAScript 空白
+            // JS trim 去的是 ECMAScript 空白
             // （含 U+FEFF、不含 U+0085），不能用 Rust `str::trim_end`。
             let trimmed = crate::util::js_trim_end(last_text);
             if trimmed.ends_with(':') || trimmed.ends_with('：') {
@@ -2889,14 +2861,14 @@ fn update_pending_reminder(state: &Arc<Mutex<SessionState>>, messages_before_que
     }
 }
 
-/// 被中断的工具结果文案（对齐 Embedded `Query.ts` 的 `errorMessage`）
+/// 被中断的工具结果文案
 const INTERRUPTED_MESSAGE: &str = "Command was interrupted";
 
-/// 用户中断文案（对齐 Embedded `Query.ts` 的 `*User Interrupted*` 系统消息）
+/// 用户中断文案
 const USER_INTERRUPTED_MESSAGE: &str = "*User Interrupted*";
 
 /// 构造工具流式进度回调：把 `BashProgress` 转成 `toolProgress` 帧
-/// （对齐 Embedded `RunTools.executeSingleTool` 的 `onProgress`）。
+/// 。
 fn tool_progress_emitter(
     core: Arc<Core>,
     session_id: String,
@@ -2914,14 +2886,14 @@ fn tool_progress_emitter(
                 "elapsedTimeSeconds": progress.elapsed_time_seconds,
                 "totalLines": progress.total_lines,
                 "totalBytes": progress.total_bytes,
-                // Embedded 传的是 `taskId: undefined`（序列化时被丢掉），这里同样不写该键
+                // `taskId` 键不写（序列化时它会被丢掉）
                 "timeoutMs": progress.timeout_ms,
             },
         }));
     })
 }
 
-/// LLM 调用失败时给用户看的系统消息（逐字对齐 Embedded `Query.ts` 的模板）
+/// LLM 调用失败时给用户看的系统消息（模板逐字锁定）
 fn llm_error_message(error: &str) -> String {
     // 宿主环境未就绪时的兜底目录名用 `DEFAULT_CONFIG_DIR_NAME`（project.json 的
     // `configDir`，自带前导点）：换成一个不带点的名字，文案里的路径会缺前导点。
@@ -2933,9 +2905,9 @@ fn llm_error_message(error: &str) -> String {
     )
 }
 
-/// 上报并落盘 `*User Interrupted*` 系统消息（对齐 Embedded `Query.ts` 的中断收尾）。
+/// 上报并落盘 `*User Interrupted*` 系统消息。
 ///
-/// Embedded 里这条消息既 `emitToUi`（role=system）又 `yield` 出去（由 QueryEngine 落盘），
+/// 这条消息既发 UI 事件又落盘：
 /// 因此这里两边都做：UI 事件 + `<sid>.jsonl` 追加一条 `type: "system"`。
 fn emit_user_interrupted(
     core: &Arc<Core>,
@@ -2944,8 +2916,7 @@ fn emit_user_interrupted(
     state: &Arc<Mutex<SessionState>>,
 ) -> Result<(), String> {
     // 静默中止（业务主动结束，如 spin 子代理首次 Reply 后停止自身）：
-    // 不向 UI 回显中断消息、不落盘系统消息，直接结束。对齐 Embedded `Query.ts` 的
-    // 两条 `*User Interrupted*` 回显路径开头的 `silentAbort()` 检查——Rust 侧
+    // 不向 UI 回显中断消息、不落盘系统消息，直接结束：
     // 回显收敛在本函数，一处检查覆盖全部收尾点。
     if state.lock().unwrap().silent_abort {
         return Ok(());
@@ -2975,7 +2946,7 @@ fn emit_user_interrupted(
     Ok(())
 }
 
-/// 把内存中尚未落盘的消息按顺序补写（对齐 Embedded `QueryEngine.persistUnpersistedMessages`）。
+/// 把内存中尚未落盘的消息按顺序补写。
 ///
 /// 目前只有崩溃恢复补出的合成 `tool_result` 会走这里：`ensure_tool_results` 把它加进
 /// 内存但不落盘，下一次持久化时机（用户消息 / 排队消息 / reminder / 下一轮请求前）
@@ -3014,7 +2985,7 @@ fn persist_unpersisted_messages(
         state.last_uuid = Some(uuid);
         state.persisted_count += 1;
         drop(state);
-        // 与 Embedded `Conversation.appendMessage` 一致：每落盘一条消息各发一次列表变化，
+        // 每落盘一条消息各发一次列表变化，
         // 并刷新 `meta.json` 的 `messageCount`（补写的是自动消息，不刷 `updatedAt`）。
         announce_message_appended(core, session_id, project, false);
     }
@@ -3023,8 +2994,7 @@ fn persist_unpersisted_messages(
 
 /// 追加一条消息到内存与磁盘（不发事件、不刷 `meta.json`）。
 ///
-/// 写入前先补写内存里尚未落盘的消息，保证磁盘顺序与 Embedded 的
-/// `persistUnpersistedMessages` 一致：恢复消息在前、新消息在后。
+/// 写入前先补写内存里尚未落盘的消息，保证磁盘顺序：恢复消息在前、新消息在后。
 fn persist_message(
     core: &Arc<Core>,
     session_id: &str,
@@ -3044,9 +3014,9 @@ fn persist_message(
     Ok(uuid)
 }
 
-/// 落盘一条消息后的统一收尾（对齐 Embedded `Conversation.appendMessage`）：
+/// 落盘一条消息后的统一收尾：
 /// 更新 `meta.json` 的 `messageCount`（`userInitiated` 时同时刷 `updatedAt`），
-/// 并广播 `conversationListChanged`——Embedded 每追加一条消息就发一次，让侧栏
+/// 并广播 `conversationListChanged`——每追加一条消息就发一次，让侧栏
 /// 消息数在对话进行中实时更新（不是每轮只发一次）。
 fn announce_message_appended(
     core: &Arc<Core>,
@@ -3065,11 +3035,11 @@ fn announce_message_appended(
     core.emit(json!({ "type": "conversationListChanged" }));
 }
 
-/// 落盘一条用户消息（对齐 Embedded `consumePendingUserMessage` 的落盘口径）。
+/// 落盘一条用户消息。
 ///
 /// 命令消息（`/xxx`）宿主不乐观回显，由这里在「真正进入上下文」时补发气泡；
 /// `_needsUINotification` 只服务这次补发，先摘掉再落盘，避免 UI 专用标记写进 JSONL
-/// （对齐 Embedded `notifyUserMessageToUI` 的 `delete`）。
+/// 。
 fn persist_user_message(
     core: &Arc<Core>,
     session_id: &str,
@@ -3099,8 +3069,7 @@ fn persist_user_message(
     Ok(())
 }
 
-/// 落盘一条 Reminder（silent / `origin=agent` 的自动消息，对齐 Embedded
-/// `flushReminder` + `persistUnpersistedMessages` 的口径）。
+/// 落盘一条 Reminder（silent / `origin=agent` 的自动消息）。
 ///
 /// 落盘失败不阻塞本轮：仍然进内存上下文。
 fn persist_reminder(
@@ -3130,7 +3099,7 @@ fn persist_reminder(
 }
 
 /// 落盘一条自动消息（子代理 Reply / 后台 Bash 完成通知）并上报 UI
-/// （对齐 Embedded `notifyAgentReplyToUI`）。
+/// 。
 ///
 /// 落盘失败不阻塞本轮：仍然进内存上下文。
 fn persist_auto_message(
@@ -3175,13 +3144,10 @@ fn persist_auto_message(
     core.emit(json!({ "type": "message", "sessionId": session_id, "data": data }));
 }
 
-/// spin 模式下把子代理 Reply 写进主会话上下文并落盘（对齐 Embedded
-/// `buildAgentReplyMessage` 的 spin `silent` 分支 + `submitToolUse` 收尾的
-/// `flushAgentQueue`）。
+/// spin 模式下把子代理 Reply 写进主会话上下文并落盘。
 ///
 /// 消息带 `silent` 标记：进上下文、写 `<sid>.jsonl`，但**不发** `message` 事件、
-/// 回放时不展示（`replay.rs` 过滤 `silent`）——对齐 Embedded spin 模式下
-/// `consumeAgentMessages(false)` 不通知 UI 的口径。落盘失败不阻塞：仍进内存上下文。
+/// 回放时不展示（`replay.rs` 过滤 `silent`）、不通知 UI。落盘失败不阻塞：仍进内存上下文。
 fn persist_spin_reply(
     core: &Arc<Core>,
     session_id: &str,
@@ -3217,7 +3183,7 @@ fn persist_spin_reply(
     }
 }
 
-/// 一批排队消息（对齐 Embedded `QueryEngine.consumeQueuedOnce` 的四种消费形态）。
+/// 一批排队消息。
 enum QueuedBatch {
     /// Reminder 优先；同时有待处理用户消息时并入同一轮（reminder 在前、用户消息在末尾）。
     Reminder {
@@ -3234,7 +3200,7 @@ enum QueuedBatch {
     Message(Value),
 }
 
-/// 从队列取一批待消费消息（消费优先级对齐 Embedded `QueryEngine.consumeQueuedOnce`）：
+/// 从队列取一批待消费消息（消费优先级）：
 /// Reminder > (Agent + 用户合并) > 纯用户 > 纯 Agent。
 ///
 /// `include_command_user_message = false`（查询中途 flush）时不消费命令消息（`/xxx`）：
@@ -3256,7 +3222,7 @@ fn take_queued_batch(
     if let Some(content) = guard.pending_reminder.take() {
         // 若同时有待处理的用户消息，并入同一轮（reminder 在前、用户消息在末尾）：
         // 只 flush reminder 会让这一轮 LLM 已经带上用户消息并响应一次，随后用户消息
-        // 又被移到末尾单独跑一轮 → 用户消息被重复响应（对齐 Embedded 的同段注释）。
+        // 又被移到末尾单独跑一轮 → 用户消息被重复响应。
         let user_message = if has_user_message {
             guard.pending_user_message.take()
         } else {
@@ -3288,9 +3254,9 @@ fn take_queued_batch(
     None
 }
 
-/// 把排队中的消息并入上下文（对齐 Embedded `QueryEngine.flushQueuedMessagesIntoContext`）。
+/// 把排队中的消息并入上下文。
 ///
-/// Embedded 在**每次 LLM 请求前**（`Query.ts` 阶段 0.5）都会 flush 排队消息：多轮工具
+/// **每次 LLM 请求前**都会 flush 排队消息：多轮工具
 /// 调用期间到达的用户消息 / 子代理回复 / Reminder，会在生成下一个 tool_use 之前进入
 /// `mutableMessages`，而不是等整轮结束再单独起一轮。被 flush 的消息同步落盘
 /// （`persistUnpersistedMessages`），因此这里逐条走与普通消息相同的落盘 / 标题 / 列表刷新路径
@@ -3340,30 +3306,26 @@ fn run_query_loop(
     agent_mode: &str,
 ) -> Result<(), String> {
     // 工具清单 = 内置工具 + 该会话启用列表里的 MCP 服务器工具
-    // （对齐 Embedded `getAllTools` 的拼接口径）。
+    // 。
     let all_tools = all_tool_definitions(session_id);
     // 轮次上限：**普通会话恒为不限**。
     //
-    // Embedded 的 `QueryEngineConfig.maxTurns` 只由 Spin Runner 与 AgentTool 子会话
-    // 传入（都是 `Number.MAX_SAFE_INTEGER`），`Integration.createEngine` 从不设置；
-    // `settings.json` 里虽然声明了 `features.maxTurns`，但 `llm/config.ts` 从不读取它
-    // （只有类型声明，没有任何消费方）。因此这里对齐 Embedded：不读该配置、不设上限。
+    // `settings.json` 里虽然声明了 `features.maxTurns`，但没有任何消费方
+    // （只有类型声明）。因此不读该配置、不设上限。
     // 保留下面的 `max_turns` 判定，供后续迁入 Spin / Agent 时按子会话传入。
     let max_turns: Option<u64> = None;
     let mut turn_count: u64 = 0;
     loop {
-        // 上一轮工具批收尾之后才到达的中止（对齐 Embedded `Query.ts`：此时循环会进入
-        // 下一轮 LLM 请求，而请求因已 abort 立即抛 AbortError，走 `isAborted` 收尾）。
+        // 上一轮工具批收尾之后才到达的中止：
         // 这里在发起请求前拦下，同样上报 `*User Interrupted*`，不再进入下一轮。
         if state.lock().unwrap().cancel.load(Ordering::Relaxed) {
             emit_user_interrupted(core, session_id, project, state)?;
             return Ok(());
         }
-        // 排队消息在**下一次 LLM 请求前**并入上下文（对齐 Embedded `Query.ts` 阶段 0.5
-        // 的 `engine.flushQueuedMessagesIntoContext()`）：多轮工具调用期间到达的用户消息，
+        // 排队消息在**下一次 LLM 请求前**并入上下文：多轮工具调用期间到达的用户消息，
         // 会在生成下一个 tool_use 之前插入上下文，而不是等整轮结束再单独起一轮。
         flush_queued_messages(core, session_id, project, state)?;
-        // 每轮 LLM 往返各发一次 aiBegin / aiEnd（与 Embedded 的 Query.ts 一致）
+        // 每轮 LLM 往返各发一次 aiBegin / aiEnd
         // 提示词预设按轮计算：`mixed` 在首次 assistant 回复前用 minimal，之后切 normal
         // （对齐 `QueryEngine.getActivePromptPresetId`——它在 query 循环每轮重新取状态）。
         let (prompt_mode, has_assistant_reply) = {
@@ -3380,8 +3342,7 @@ fn run_query_loop(
         // minimal / mixed 只把 Bash / Edit 暴露给 LLM（`PromptPreset.toolNames`）
         let tools = prompt::filter_tools_by_preset(all_tools.clone(), preset);
         // `static_system_prompt` 整体替换组装结果；`system_prompt_prefix` 只在组装结果前
-        // 加一段（对齐 Embedded `fullSystemPrompt = (prefix ? prefix + "\n\n" : "") +
-        // (staticSystemPrompt ?? assemble(...))`）：Master 子代理 = 主对话同款提示词 +
+        // 加一段：Master 子代理 = 主对话同款提示词 +
         // 开头 `## Communication` 段。
         let (static_prompt, prompt_prefix) = {
             let state = state.lock().unwrap();
@@ -3399,12 +3360,12 @@ fn run_query_loop(
 
         // Auto compact 检查（含手动触发但被延后的压缩）。
         //
-        // 位置对齐 Embedded `Query.ts`：在**本轮读取消息之前**、`aiBegin` 之前。
+        // 位置：在**本轮读取消息之前**、`aiBegin` 之前。
         // 手动触发压缩时会话若非空闲会登记「待压缩」，这里把它当作「已达到需要压缩
         // 的条件」，与自动压缩走同一条安全路径。
         //
         // 上下文占用口径同样对齐：`max(exactTokenCount ?? 0, estimate(messages, systemPrompt))`
-        // —— 注意**不含** tools（Embedded 这里就没传）。
+        // —— 注意**不含** tools。
         {
             let estimate = util::estimate_request_tokens(
                 Some(&Value::Array(build_llm_messages(state))),
@@ -3444,7 +3405,7 @@ fn run_query_loop(
             }
         }
 
-        // 每轮 LLM 往返各发一次 aiBegin / aiEnd（与 Embedded 的 Query.ts 一致）
+        // 每轮 LLM 往返各发一次 aiBegin / aiEnd
         core.emit(json!({ "type": "aiBegin", "sessionId": session_id }));
         let llm_messages = build_llm_messages(state);
         let cancel = state.lock().unwrap().cancel.clone();
@@ -3452,8 +3413,7 @@ fn run_query_loop(
         // 落盘消息的累积内容（整轮所有块拼接）
         let mut text = String::new();
         let mut thinking = String::new();
-        // UI 流式累积：**每个块重置**，对齐 Embedded `Query.ts` 的
-        // `streamedTextContent` / `streamedThinkingContent`（block_stop / message_delta
+        // UI 流式累积：**每个块重置**（block_stop / message_delta
         // 时用它们作为 `streamEnd.accumulated`，多块时只反映最后一个块）。
         let mut streamed_text = String::new();
         let mut streamed_thinking = String::new();
@@ -3464,9 +3424,9 @@ fn run_query_loop(
         let mut usage = Usage::default();
         let mut stop_reason = String::new();
         // 轮次级 id：纯 tool_use 轮次的 `streamEnd` 与块级 id 缺失时的兜底都用它
-        // （对齐 Embedded 的 `event.messageId`）。
+        // 。
         let stream_id = util::unique_id("msg");
-        // 块级 id（对齐 Embedded `Query.ts` 的 `newBlockStreamId()`：`blk_*`）。
+        // 块级 id（`blk_*`）。
         // 同一个块内的 `streamMessage` / `streamEnd` 共用，跨块互不覆盖。
         let mut current_thinking_stream_id: Option<String> = None;
         let mut current_text_stream_id: Option<String> = None;
@@ -3524,7 +3484,7 @@ fn run_query_loop(
             let stream_id_ref = stream_id.clone();
             let mut emit = |event: LlmEvent| match event {
                 // 块开始：分配块级 streamId，并重置该角色的流式累积
-                // （对齐 Embedded `Query.ts` 的 `block_start` 分支）。
+                // 。
                 LlmEvent::BlockStart(kind) => match kind {
                     llm::BlockKind::Thinking => {
                         streamed_thinking.clear();
@@ -3541,7 +3501,7 @@ fn run_query_loop(
                     }
                 },
                 // 块结束：立刻补一条 `usage` 缺省的 `streamEnd`，把对应流式消息
-                // 标记为完成（对齐 Embedded `Query.ts` 的 `block_stop` 分支）。
+                // 标记为完成。
                 // 只有 thinking / text 块、且块内有内容时才发。
                 LlmEvent::BlockStop => {
                     let finished = match current_block_type {
@@ -3571,8 +3531,7 @@ fn run_query_loop(
                     }
                     current_block_type = None;
                 }
-                // 流接近结束：带 usage 的收尾 `streamEnd`（对齐 Embedded
-                // `Query.ts` 的 `message_delta` 分支）。每个有内容的角色一条；
+                // 流接近结束：带 usage 的收尾 `streamEnd`。每个有内容的角色一条；
                 // 纯 tool_use 轮次补一条 `accumulated` 为空的 assistant 事件，
                 // 把 usage 带给 UI。
                 LlmEvent::MessageDelta => {
@@ -3691,7 +3650,7 @@ fn run_query_loop(
                     }
                 }
                 // 退化重复被检出、即将重试：丢弃本次尝试已产生的全部输出
-                // （对齐 Embedded 重试后收到新的 `block_start` 时重置累积文本）。
+                // 。
                 LlmEvent::Reset => {
                     text.clear();
                     thinking.clear();
@@ -3721,8 +3680,7 @@ fn run_query_loop(
 
         if let Some(error) = error {
             core.emit(json!({ "type": "aiEnd", "sessionId": session_id }));
-            // 用户主动取消（abort）导致的失败不是 LLM 故障：对齐 Embedded `Query.ts`
-            // 捕获 AbortError 的 `isAborted` 分支——上报 `*User Interrupted*` 并正常
+            // 用户主动取消（abort）导致的失败不是 LLM 故障——上报 `*User Interrupted*` 并正常
             // 结束本轮，而不是把错误文案当 API 失败回显给用户。
             if state.lock().unwrap().cancel.load(Ordering::Relaxed) {
                 emit_user_interrupted(core, session_id, project, state)?;
@@ -3732,7 +3690,7 @@ fn run_query_loop(
         }
         let cancelled = state.lock().unwrap().cancel.load(Ordering::Relaxed);
 
-        // 组装 assistant 消息并落盘（带 stop_reason 与 usage，对齐 Embedded）
+        // 组装 assistant 消息并落盘（带 stop_reason 与 usage）
         let assistant = build_assistant_message(
             &text,
             &thinking,
@@ -3745,7 +3703,7 @@ fn run_query_loop(
         emit_highlight_languages(core, &assistant);
         announce_message_appended(core, session_id, project, false);
         // 上下文占用（input + output）写回 meta.json（对齐 QueryEngine 的 totalContextTokens）。
-        // Embedded 只在 `totalContextTokens > 0` 时更新（0 视为「本轮 usage 不可信」）。
+        // 只在 `totalContextTokens > 0` 时更新（0 视为「本轮 usage 不可信」）。
         let total = usage.input_tokens + usage.output_tokens;
         if total > 0 {
             let _ = history::update_context(
@@ -3757,7 +3715,7 @@ fn run_query_loop(
 
         if cancelled || tool_uses.is_empty() {
             if cancelled {
-                // 对齐 Embedded `Query.ts` 的中断收尾：assistant 消息已经带 tool_use 落盘，
+                // assistant 消息已经带 tool_use 落盘，
                 // 必须为每个未执行的 tool_use 补一条 `Command was interrupted` 的 tool_result
                 // （`is_canceled: true` / `exit_code: -1`），否则历史里留下孤儿 tool_use，
                 // 下一轮请求会被 Anthropic 以「tool_use ids were found without tool_result
@@ -3814,9 +3772,9 @@ fn run_query_loop(
         // 在该批 tool_result 消息**之后**按序注入
         let mut new_messages: Vec<Value> = Vec::new();
         // 用户在确认框里**不带原因地**拒绝：本批工具收尾后直接结束本轮
-        // （对齐 Embedded `RunTools.authorizeOne` 的 `shouldPreventContinuation`）。
+        // 。
         let mut terminate_after_batch = false;
-        // 已批准、等待并行执行的并发安全工具（对齐 Embedded `ApprovedToolItem[]` 的 batch）：
+        // 已批准、等待并行执行的并发安全工具：
         // 连续出现的并发安全工具攒成一批，遇到非并发安全工具 / 批末时统一并行执行。
         let mut pending: Vec<PendingTool> = Vec::new();
         let mut index = 0;
@@ -3834,12 +3792,12 @@ fn run_query_loop(
                 .to_string();
             let raw_input = tool_use.get("input").cloned().unwrap_or(json!({}));
 
-            // 工具不存在（对齐 Embedded `RunTools.authorizeOne` 的 `!tool` 分支）：
+            // 工具不存在：
             // 不执行、不弹确认框；仍发一次 `toolPermissionRequested`（`permResult`
             // 默认 `allow`，UI 借此上架失败卡片），随后补 `Error: Tool "X" not found`
             // 并**跳过**该工具（skip 而非 stop：后面的工具继续）。
             if !is_known_tool(&tool_name) {
-                // 工具不存在时 Embedded 传 `tool = null`：checkPermissions 不跑，
+                // 工具不存在时不跑工具自身权限校验，
                 // permResult 恒为 allow，displayArgs 仍按工具名做路径展开。
                 let _ = core.waiting_request(
                     session_id,
@@ -3873,12 +3831,12 @@ fn run_query_loop(
                 continue;
             }
 
-            // 入参 schema 校验（对齐 Embedded `RunTools.authorizeOne` 的顺序）：
+            // 入参 schema 校验：
             // 先按原样 `safeParse`；失败时用 `fixToolInput` 修字段级 double-encode，
             // 再校验一次（仍失败则用修复后的错误文案）。校验通过后使用**规范化**数据
-            // （zod 的 coerce / default 产物），与 Embedded 真正执行时用的入参一致。
+            // （zod 的 coerce / default 产物）。
             let mut input = raw_input.clone();
-            // 实际被采纳的修复入参（对齐 Embedded 的 `usedInput`）：只有它真的不同
+            // 实际被采纳的修复入参：只有它真的不同
             // 才落 `tool_use_update`。
             let mut used_input: Option<Value> = None;
             let mut schema_error: Option<String> = None;
@@ -3898,8 +3856,7 @@ fn run_query_loop(
                     }
                 }
             }
-            // 只有确实用了修复后的入参才落 `tool_use_update`（与 Embedded 一致：
-            // `usedInput !== toolUse.input` 时才 `updateToolUseInput`）。
+            // 只有确实用了修复后的入参才落 `tool_use_update`。
             if let Some(fixed) = &used_input {
                 let _ = history::append_tool_use_update(
                     session_id,
@@ -3909,15 +3866,15 @@ fn run_query_loop(
                 );
             }
 
-            // 语义校验（对齐 Embedded `RunTools.authorizeOne` 的 `validateInput`）：
+            // 语义校验：
             // 失败时先发一次 `toolPermissionRequested`（permResult 取权限层判定，
             // UI 上架卡片），再补 `InputValidationError: ...` 并跳过该工具。
             let validation_message =
                 schema_error.or_else(|| tools::validate_input(&tool_name, &input, project));
             if let Some(validation_message) = validation_message {
                 // 非对象入参（典型：LLM 返回的非法 JSON 参数解析失败后残留的原文
-                // string）在这里收敛成空对象并落一条 `tool_use_update`（对齐 Embedded
-                // `RunTools.authorizeOne`）：否则该字符串随历史在后续每轮请求中原样
+                // string）在这里收敛成空对象并落一条 `tool_use_update`：
+                // 否则该字符串随历史在后续每轮请求中原样
                 // 回传给 Provider，严格校验 arguments 的服务商会一直 400，表现为
                 // 「此后所有输入都失败」。对象型入参即使校验失败也可安全序列化，保持原样。
                 if !raw_input.is_object() {
@@ -3928,7 +3885,7 @@ fn run_query_loop(
                         &json!({ "input": {} }),
                     );
                 }
-                // 与 Embedded 一致：验证失败时同样先发一次 toolPermissionRequested
+                // 验证失败时同样先发一次 toolPermissionRequested
                 // （工具实例在场，checkPermissions 会跑；displayArgs 照常展开）。
                 let (perm_result, display_args) =
                     permission::resolve_tool_permission(
@@ -3992,14 +3949,12 @@ fn run_query_loop(
                 project,
             ) {
                 PermissionOutcome::Allowed { updated_input } => {
-                    // 执行前会话已被中止（对齐 Embedded `executeSingleItem` /
-                    // `executeParallelBatch` 的 `signal?.aborted` 分支）：不执行工具，
+                    // 执行前会话已被中止：不执行工具，
                     // 补一条 `Command was aborted before execution` 的取消结果，
                     // 并结束本批（`shouldPreventContinuation` → 不再回到 LLM）。
                     if state.lock().unwrap().cancel.load(Ordering::Relaxed) {
                         // 已批准的并发安全批先收尾（同样按中止取消），再取消当前工具：
-                        // 这样结果顺序仍是「批内按原顺序 + 当前工具」，与 Embedded
-                        // `executeParallelBatch` 的整批取消口径一致。
+                        // 这样结果顺序仍是「批内按原顺序 + 当前工具」。
                         flush_pending_batch(
                             core,
                             session_id,
@@ -4022,7 +3977,7 @@ fn run_query_loop(
                         index += 1;
                         continue;
                     }
-                    // 对齐 Embedded `RunTools.authorizeOne`：权限层回传 `updatedInput`
+                    // 权限层回传 `updatedInput`
                     // （`buildTool` 默认 checkPermissions 的规范化产物）时，若与当前内存
                     // 入参不同则追加一条 `tool_use_update`（zod coerce / default 的差异）。
                     if let Some(updated) = updated_input.as_ref() {
@@ -4039,9 +3994,8 @@ fn run_query_loop(
                         }
                     }
                     let effective_input = updated_input.unwrap_or_else(|| input.clone());
-                    // 对齐 Embedded `executeSingleItem` / `executeParallelBatch`：
-                    // 执行前追加 `_meta.confirmTimestamp`（宿主 UI 不读，但历史回放与
-                    // 两实现落盘口径要一致），并**再发一次** `toolCall` 表示开始执行。
+                    // 执行前追加 `_meta.confirmTimestamp`（宿主 UI 不读，但历史回放要用），
+                    // 并**再发一次** `toolCall` 表示开始执行。
                     let confirm_now = crate::util::now_millis();
                     let _ = history::append_tool_use_update(
                         session_id,
@@ -4056,7 +4010,7 @@ fn run_query_loop(
                         "toolName": tool_name,
                     }));
                     // 并发安全工具：先攒批（`toolCall` 已在上面的授权阶段发完，
-                    // 与 Embedded「整批发完 toolCall 再执行」的时序一致）。
+                    // 整批发完 toolCall 后再执行）。
                     if is_tool_concurrency_safe(&tool_name, &effective_input) {
                         pending.push(PendingTool {
                             tool_use_id: tool_use_id.clone(),
@@ -4087,10 +4041,8 @@ fn run_query_loop(
                         &effective_input,
                     )
                 }
-                // 权限拒绝：文案原样进 tool_result（对齐 Embedded 的 `denyReason`），
-                // 随后把**剩余**工具一并标记为取消并结束本批——Embedded 的
-                // `RunTools.authorizeOne` 在 deny 时会 `cancelRemainingTools` + `return
-                // { action: 'stop' }`，剩余工具不再执行。
+                // 权限拒绝：文案原样进 tool_result，
+                // 随后把**剩余**工具一并标记为取消并结束本批，剩余工具不再执行。
                 PermissionOutcome::Denied { message, terminate } => {
                     core.emit(json!({
                         "type": "toolResult",
@@ -4118,7 +4070,6 @@ fn run_query_loop(
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string();
-                        // 与 Embedded `cancelRemainingTools` 的文案逐字一致
                         let cancel = format!(
                             "Tool \"{remaining_name}\" was canceled because a previous tool in the batch was denied"
                         );
@@ -4138,8 +4089,8 @@ fn run_query_loop(
                             "is_canceled": true,
                         }));
                     }
-                    // 已批准但尚未执行的并发安全批：补取消结果（对齐 Embedded
-                    // `cancelApprovedItems`；注意顺序在 `cancelRemainingTools` 之后）
+                    // 已批准但尚未执行的并发安全批：补取消结果
+                    // （注意顺序在取消剩余工具之后）
                     cancel_pending_batch(core, session_id, &mut pending, &mut results);
                     terminate_after_batch = terminate;
                     break;
@@ -4154,8 +4105,7 @@ fn run_query_loop(
                 &tool_name,
                 &outcome,
             ));
-            // 工具执行完成后会话才被中止（对齐 Embedded `executeSingleItem` 执行后的
-            // `signal?.aborted` 分支）：本批收尾后不再回到 LLM，由下面的
+            // 工具执行完成后会话才被中止：本批收尾后不再回到 LLM，由下面的
             // `terminate_after_batch` 分支上报 `*User Interrupted*`。
             // 中止若在执行**之前**到达，已由上面的取消分支处理，不会走到这里。
             if state.lock().unwrap().cancel.load(Ordering::Relaxed) {
@@ -4186,7 +4136,7 @@ fn run_query_loop(
         announce_message_appended(core, session_id, project, false);
 
         // 工具额外注入的消息（Skill 的技能正文）：紧随该批 tool_result 之后落盘 +
-        // 进上下文。`isMeta: true` → UI 不展示（对齐 Embedded `RunTools` 的 yield）；
+        // 进上下文。`isMeta: true` → UI 不展示；
         // 每条同样计入 `messageCount` 并各发一次 `conversationListChanged`
         // （对齐 `Conversation.appendMessage`，与 `inject_skill_tool_use` 同一口径）。
         for message in new_messages {
@@ -4200,15 +4150,14 @@ fn run_query_loop(
             return Ok(());
         }
         if terminate_after_batch {
-            // 对齐 Embedded `Query.ts` 的 `shouldPreventContinuation` 分支：
             // 清掉本轮排队中的用户消息 → 上报 `*User Interrupted*` → 不再回 LLM
             // （该分支不补发 `aiEnd`）。
             state.lock().unwrap().pending_user_message = None;
             emit_user_interrupted(core, session_id, project, state)?;
             return Ok(());
         }
-        // 手工转后台（`UiEvent.bashBackgroundRequested`，对齐 Embedded `Query.ts`
-        // 的 `paused` 出口）：本批工具结果照常进上下文，但不再发起下一轮 LLM 请求。
+        // 手工转后台（`UiEvent.bashBackgroundRequested`）：本批工具结果照常进上下文，
+        // 但不再发起下一轮 LLM 请求。
         // 会话由消费循环按队列状态收尾——队列为空 → 结束本轮等用户输入；队列有消息
         // （用户消息 / 后台完成通知 / 提醒）→ 立刻拉起新一轮，性质与用户触发的查询
         // 一致（接续由队列消息触发，与转后台结果无关）。
@@ -4237,7 +4186,7 @@ fn run_query_loop(
         core.emit(json!({ "type": "aiEnd", "sessionId": session_id }));
         turn_count += 1;
         // 自动压缩跟踪（对齐 `Query.ts` 的 `nextTracking`）：只推进轮次计数，
-        // 连续失败计数保持原值（Embedded 也从不递增它，熔断实际靠 `shouldAutoCompact`）。
+        // 连续失败计数保持原值（从不递增，熔断实际靠 `shouldAutoCompact`）。
         {
             let mut state = state.lock().unwrap();
             let previous = state.auto_compact_tracking.clone().unwrap_or_default();
@@ -4250,7 +4199,7 @@ fn run_query_loop(
         }
         if let Some(limit) = max_turns {
             if turn_count > limit {
-                // 对齐 Embedded：超出 `maxTurns` 时静默停止（`max_turns_reached`
+                // 超出 `maxTurns` 时静默停止（`max_turns_reached`
                 // attachment 既不落盘也不上报，`aiEnd` 已在上面发过）。
                 return Ok(());
             }
@@ -4302,8 +4251,7 @@ fn unwrap_tool_input(value: Value) -> Value {
 }
 
 /// 序列化 `tool_use.input` 为「字符串型 arguments」协议（OpenAI Chat Completions /
-/// Responses）要求的 JSON 文本，保证输出一定是合法 JSON（对齐 Embedded
-/// `utils/toolInput.ts` 的 `serializeToolArguments`）。
+/// Responses）要求的 JSON 文本，保证输出一定是合法 JSON。
 ///
 /// LLM 生成的工具参数解析失败时，非法 JSON 原文会残留在 `tool_use.input`（string）；
 /// 原样发给严格校验 arguments 的服务商会 400，且毒化上下文后此后的每一轮请求都
@@ -4323,7 +4271,7 @@ pub(crate) fn serialize_tool_arguments(input: Option<&Value>) -> String {
     }
 }
 
-/// 归一化 `tool_use.input` 为对象（对齐 Embedded `normalizeToolInput`）：
+/// 归一化 `tool_use.input` 为对象：
 /// 字符串（含 double-encode）解出对象时用解出值，其余非对象一律空对象。
 fn normalize_tool_input(value: &Value) -> Value {
     let unwrapped = unwrap_tool_input(value.clone());
@@ -4335,8 +4283,7 @@ fn normalize_tool_input(value: &Value) -> Value {
 }
 
 /// 归一化发给 Anthropic 协议的消息：`tool_use.input` 非对象（典型：非法 JSON 参数
-/// 解析失败后残留的原文 string）时替换为归一化对象（对齐 Embedded `RealApi.ts` 的
-/// `sanitizeAnthropicMessages`）。只复制被改写的块，不动原消息。
+/// 解析失败后残留的原文 string）时替换为归一化对象。只复制被改写的块，不动原消息。
 pub(crate) fn sanitize_anthropic_messages(messages: &[Value]) -> Vec<Value> {
     messages
         .iter()
@@ -4700,7 +4647,7 @@ fn fix_tool_input(input: &Value) -> Option<Value> {
 }
 
 fn tool_use_block(id: &str, name: &str, json_text: &str, initial_input: &Value) -> Value {
-    // 对齐 Embedded `parseToolUsePartialJson`：有 `input_json_delta` 时解析累积 JSON，
+    // 有 `input_json_delta` 时解析累积 JSON，
     // 解析失败或没有增量时保留 `content_block_start` 的初始 input。
     let input = if json_text.is_empty() {
         initial_input.clone()
@@ -4708,7 +4655,7 @@ fn tool_use_block(id: &str, name: &str, json_text: &str, initial_input: &Value) 
         match serde_json::from_str::<Value>(json_text) {
             Ok(parsed) => {
                 // Provider 偶尔把整个入参再 JSON.stringify 一次（double-encode），
-                // Embedded 在 LLM 适配层统一用 `unwrapToolInput` 解包，这里保持一致。
+                // LLM 适配层统一用 `unwrapToolInput` 解包。
                 unwrap_tool_input(parsed)
             }
             Err(_) => initial_input.clone(),
@@ -4736,14 +4683,13 @@ fn build_user_message(payload: &Value) -> Value {
     message.insert("_userInitiated".to_string(), json!(true));
     // 命令消息由宿主延迟回显（`deferEcho`）：真正进入上下文时由
     // `emit_user_message_to_ui` 补发用户气泡；内置命令就地执行、该消息被丢弃，
-    // 因此不会补发（对齐 Embedded `Integration.submitUserMessage` 的
-    // `_needsUINotification`）。标记只服务这一次补发，落盘前必须摘掉。
+    // 因此不会补发。标记只服务这一次补发，落盘前必须摘掉。
     if payload.get("deferEcho").and_then(Value::as_bool) == Some(true) {
         message.insert("_needsUINotification".to_string(), json!(true));
     }
 
-    // 对齐 Embedded 的 `...(payload.filePath && { filePath })` / `...(selectedLines && {...})`：
-    // 都是 JS 真值判定——空串 filePath 不落盘（也不进 `_meta`）。
+    // filePath / selectedLines 都按 JS 真值判定：
+    // 空串 filePath 不落盘（也不进 `_meta`）。
     let file_path_value = payload.get("filePath");
     let file_path = file_path_value
         .and_then(Value::as_str)
@@ -4759,13 +4705,13 @@ fn build_user_message(payload: &Value) -> Value {
             message.insert("fileSelectedLines".to_string(), value.clone());
         }
     }
-    // fileHidden 只在 true 时落盘（与 Embedded 的 `...(payload.fileHidden && {...})` 一致）
+    // fileHidden 只在 true 时落盘
     if payload.get("fileHidden").and_then(Value::as_bool) == Some(true) {
         message.insert("fileHidden".to_string(), json!(true));
     }
 
     // 落盘格式：文件信息同时写入顶层字段与 `_meta`（含展示用的 `param`），
-    // 与 Embedded 的 submitUserMessage 对齐，保证历史加载 / 压缩能还原文件标签。
+    // 保证历史加载 / 压缩能还原文件标签。
     let mut persist_meta = Map::new();
     if let Some(path) = file_path {
         let file_name = path.rsplit(['/', '\\']).next().unwrap_or(path);
@@ -4793,14 +4739,14 @@ fn build_user_message(payload: &Value) -> Value {
         let blocks: Vec<Value> = images
             .iter()
             .filter_map(|image| {
-                // 对齐 Embedded `buildUserContent` 的 `images?.filter((img) => img && img.dataUrl)`：
+                // images 按真值过滤（`img && img.dataUrl`）：
                 // 空串 dataUrl 是假值，直接丢弃（否则会产出一个空的 image block 被 API 拒绝）。
                 let data_url = image
                     .get("dataUrl")
                     .and_then(Value::as_str)
                     .filter(|value| !value.is_empty())?;
                 let (url_media_type, data) = split_data_url(data_url);
-                // 与 Embedded 一致：显式 mediaType 优先于 dataUrl 前缀
+                // 显式 mediaType 优先于 dataUrl 前缀
                 let media_type = image
                     .get("mediaType")
                     .and_then(Value::as_str)
@@ -4813,7 +4759,7 @@ fn build_user_message(payload: &Value) -> Value {
             })
             .collect();
         if !blocks.is_empty() {
-            // 与 Embedded 一致：文本为空时不插入空 text 块
+            // 文本为空时不插入空 text 块
             let mut content_blocks: Vec<Value> = Vec::new();
             if !content.is_empty() {
                 content_blocks.push(json!({ "type": "text", "text": content }));
@@ -4828,21 +4774,20 @@ fn build_user_message(payload: &Value) -> Value {
     Value::Object(message)
 }
 
-/// 命令消息真正进入上下文时补发用户气泡（对齐 Embedded `QueryEngine.notifyUserMessageToUI`）。
+/// 命令消息真正进入上下文时补发用户气泡。
 ///
 /// 宿主对 `/` 开头的命令消息不做乐观回显（`deferEcho`）：内置命令就地执行、该消息被
 /// 丢弃，不会走到这里；Skill 命令进入上下文，由调用方在摘掉 `_needsUINotification`
 /// 后调用本函数补发 `message` 事件让气泡出现。普通消息由宿主立即回显、不带该标记，
 /// 调用方不会调用本函数。
 ///
-/// 落盘 / 进上下文前调用方必须先摘掉 `_needsUINotification`（Embedded 在 notify 时
-/// `delete`），避免该 UI 专用标记写进 JSONL。
+/// 落盘 / 进上下文前调用方必须先摘掉 `_needsUINotification`，避免该 UI 专用标记写进 JSONL。
 fn emit_user_message_to_ui(core: &Arc<Core>, session_id: &str, message: &Value) {
     let Some(object) = message.as_object() else {
         return;
     };
 
-    // 文件信息按 `fileHidden` 决定是否展示（对齐 Embedded `fileHidden ? undefined : ...`）
+    // 文件信息按 `fileHidden` 决定是否展示
     let file_hidden = object.get("fileHidden").and_then(Value::as_bool) == Some(true);
     let file_path = if file_hidden {
         None
@@ -4963,7 +4908,7 @@ fn build_assistant_message(
     let now = util::now_millis();
     for tool_use in tool_uses {
         let mut block = tool_use.clone();
-        // 与 Embedded 一致：tool_use block 顶层记录 AI 发出调用的时间戳
+        // tool_use block 顶层记录 AI 发出调用的时间戳
         if block.get("type").and_then(Value::as_str) == Some("tool_use") {
             let mut meta = block
                 .get("_meta")
@@ -4982,8 +4927,7 @@ fn build_assistant_message(
     if !stop_reason.is_empty() {
         message.insert("stop_reason".to_string(), json!(stop_reason));
     }
-    // Embedded 的适配器保证 usage 恒存在（流结束时有 `{0,0,0,0}` 兜底），
-    // 因此这里也恒写 usage，保证两实现写出的 jsonl 逐字一致。
+    // usage 恒存在（流结束时有 `{0,0,0,0}` 兜底），因此恒写 usage。
     message.insert("usage".to_string(), usage.message_usage());
     json!({
         "type": "assistant",
@@ -5058,7 +5002,7 @@ fn build_raw_api_messages(messages: &[Value]) -> Vec<Value> {
         let formatted = match content {
             Value::String(text) => {
                 let mut text = text.clone();
-                // 对齐 Embedded：`filePath` 为**真值**（非空串）才补前缀
+                // `filePath` 为**真值**（非空串）才补前缀
                 let file_path = message
                     .get("filePath")
                     .and_then(Value::as_str)
@@ -5179,7 +5123,7 @@ fn fence_language_of_line(line: &str) -> Option<String> {
         .chars()
         .take_while(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '+' | '#' | '-'))
         .collect();
-    // 与 Embedded 一致：只接受 1..=32 个字符的语言标识符
+    // 只接受 1..=32 个字符的语言标识符
     if language.is_empty() || language.chars().count() > 32 {
         None
     } else {
@@ -5257,7 +5201,6 @@ fn emit_highlight_languages(core: &Arc<Core>, message: &Value) {
 
 /// 本次请求可用的 max output（对齐 `getAvailableOutputTokens` + `Query.ts` 的 min 口径）。
 ///
-/// Embedded：
 ///   `available = Math.max(1, Math.min(getMaxOutputTokens(model), contextWindow - current))`
 ///   `configured = baseModelConfig.maxTokens > 0 ? baseModelConfig.maxTokens : available`
 ///   `maxTokens  = Math.min(configured, available)`
@@ -5279,7 +5222,7 @@ fn available_output_tokens(
 /// 当前上下文占用的「精确」token 数（对齐 `Query.ts` 的 `exactTokenCount`）。
 ///
 /// 取最近一条带 `usage` 的 assistant 消息的 `input_tokens + output_tokens`
-/// （Embedded 的判定：`usage.input_tokens > 0 && usage.output_tokens !== undefined`，
+/// （判定口径：`usage.input_tokens > 0 && usage.output_tokens !== undefined`，
 /// 从后往前找第一条命中的）；内存里找不到时回退 `meta.json` 的
 /// `context.totalContextTokens`（> 0 才算），两者都没有返回 `None`。
 fn exact_context_tokens(
@@ -5327,10 +5270,9 @@ fn build_llm_messages(state: &Arc<Mutex<SessionState>>) -> Vec<Value> {
 
 /// 首条用户消息落盘后生成标题。
 ///
-/// 会话文件（`meta.json`）也在这里按需创建：对齐 Embedded 的 `appendMessage` →
-/// `updateMetadataForNewMessage`——`meta.json` 只在第一条消息持久化时创建，
+/// 会话文件（`meta.json`）也在这里按需创建：`meta.json` 只在第一条消息持久化时创建，
 /// 未发消息的会话不落盘（`conversationStarted` 不再预先建档）。
-/// 文本取不到时兜底 `New Conversation`（与 Embedded 的 `|| 'New Conversation'` 一致）。
+/// 文本取不到时兜底 `New Conversation`。
 fn update_title_if_needed(core: &Arc<Core>, session_id: &str, project: &str) {
     let metadata = history::load_metadata(session_id, project);
     let meta_missing = metadata.is_none();
@@ -5367,7 +5309,7 @@ fn update_title_if_needed(core: &Arc<Core>, session_id: &str, project: &str) {
             state.provider.clone(),
         )
     };
-    // Embedded 用的是「刚追加的那条 message」；调用点只处理用户消息，等价于首条用户消息。
+    // 取「刚追加的那条 message」；调用点只处理用户消息，等价于首条用户消息。
     let derived = messages
         .iter()
         .find(|message| message.get("type").and_then(Value::as_str) == Some("user"))
@@ -5394,8 +5336,8 @@ fn update_title_if_needed(core: &Arc<Core>, session_id: &str, project: &str) {
             created["provider"] = json!(provider);
         }
         let fallback = created.clone();
-        // 注意：这里**不**广播 `titleChanged`。Embedded 的 `updateMetadataForNewMessage`
-        // 只让 `appendMessage` 发 `conversationListChanged`（宿主据此刷新列表与标题），
+        // 注意：这里**不**广播 `titleChanged`：落盘只发 `conversationListChanged`
+        // （宿主据此刷新列表与标题），
         // `titleChanged` 仅在 `conversationRenamed` 与 Spin 改名时发出。
         let _ = history::update_metadata(
             session_id,

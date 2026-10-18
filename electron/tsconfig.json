@@ -14,7 +14,7 @@
     "./**/*.ts",
     "../src/config/**/*.ts",
     "../src/host/**/*.ts",
-    "../src/core/**/*.ts",
+    "../src/shared/**/*.ts",
     "../src/VSCodeUIHost.ts",
     "../src/VSCodeUIHost/**/*.ts",
     "../src/VSCodeSpinDesign.ts",

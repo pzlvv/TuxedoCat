@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-18
 ---
 
 # 规格：Core 与 UI 分离
@@ -10,8 +10,9 @@ last_reviewed: 2026-10-11
 日志出口、配置快照）都收敛到这条边上；全局配置与 MCP 配置由 UI 持有并推给 Core；
 会话的工作目录是对话的属性，由 UI 在会话首次被 Core 解析目录之前登记。
 
-连接模型（Client / Connection / 工作区引用）见 `docs/core/client-connection.md`；Standalone
-Core 的进程形态见 `docs/core/standalone-core.md`；Core 进程的 daemon 见 `docs/core/core-daemon.md`。
+连接模型（Client / Connection / 工作区引用）见 `docs/core/client-connection.md`；Core
+（Rust 独立进程）的进程形态见 `docs/core/standalone-core.md`；Core 进程的 daemon 见
+`docs/core/core-daemon.md`。
 
 参考 [docs/architecture/layering.md 第 2 节](layering.md#2-规则清单)（分层与依赖规则）、[第 1 节](events.md#1-总线契约)（核心契约：AssistantEventBus）、
 [第 2 节](events.md#2-事件词汇表)（事件列表）、[docs/architecture/contracts.md 第 1 节](contracts.md#1-uihost对话-webview-的宿主能力)（UIHost）、[docs/hosts/host-bootstrap.md 第 1 节](../hosts/host-bootstrap.md#1-宿主接线)（宿主接线）、
@@ -49,7 +50,7 @@ Core 的进程形态见 `docs/core/standalone-core.md`；Core 进程的 daemon �
    得到提示。
 6. **请求不设超时**：本地与远程同一口径，`request()` 不内置计时器。
 7. **Core 有就绪状态**：Core 处理完宿主环境（含配置快照）后才就绪；就绪前收到任何
-   `UiEvent` 直接抛错。
+   `UiEvent` 记 log 拒绝。
 8. **Core 不感知语言**：Core 不输出本地化文案；面向用户的文本以「键 + 参数」表达，
    由 UI 翻译。
 
@@ -107,30 +108,30 @@ Core 就绪前传递一次。
   原生 UI（`src/host/i18n.ts`）。
 - **配置路径不在其中**：Core 不感知 `settings.json` / `mcp.json` 的位置。
 - Core 侧的读取入口在对应事实到达前抛错，与 `requireEventBus()` 同一口径。
-- `standalone` 下这条事件是**连接态事件**：保留最后一次取值，每次握手后重放
-  （[docs/core/standalone-core.md 第 7.2 节](../core/standalone-core.md#72-连接态重放)）。
+- 这条事件是**连接态事件**：保留最后一次取值，每次握手后重放
+  （[docs/core/standalone-core.md 第 6.2 节](../core/standalone-core.md#62-连接态重放)）。
 
 ### 3.3 会话工作目录
 
 - **工作目录不是宿主环境差异，而是对话的属性**：Core 持有会话工作目录表
   （`sessionId` → 路径），由 UI 在会话首次被 Core 解析目录之前登记
-  （`setSessionWorkspace`），不经总线。Core 不感知「当前工作目录是谁」。
+  （`UiEvent.sessionWorkspaceAssigned`）。Core 不感知「当前工作目录是谁」。
 - 登记的是**目标机器上的路径**：远程工作区的 endpoint 与凭证不下发到 Core
   （[docs/core/client-connection.md 第 4 节](../core/client-connection.md#4-工作区引用)）。
-- 会话工作目录登记后，Core 以该路径预热系统动态信息（`SystemEnvironment` 的缓存按
-  工作目录分桶；不同工作目录不互相命中）。
+- 会话工作目录登记后，Core 以该路径缓存需要反复读取的环境事实（如工作目录的 git
+  状态；缓存按工作目录分桶，不同工作目录不互相命中）。
 
 ### 3.4 宿主状态上报
 
 宿主自己知道、Core 需要用来判定的事实，由宿主经 `UiEvent` 上报。Core 不持有宿主的判定
 闭包，也不反向调用宿主。
 
-| 事实 | 上报时机 | Core 侧落地 | Core 侧读取入口 |
-| --- | --- | --- | --- |
-| 该会话的用户选择是否在 webview 里等待应答 | webview 弹出选择 / 用户应答 / 视图释放 | `sessionRuntime.markSessionWaiting` | `sessionRuntime.isSessionWaiting()` |
+| 事实 | 上报时机 | Core 侧落地 |
+| --- | --- | --- |
+| 该会话的用户选择是否在 webview 里等待应答 | webview 弹出选择 / 用户应答 / 视图释放 | Core 的会话运行时状态（`waiting` 来源，[docs/core/session-runtime.md](../core/session-runtime.md)） |
 
-「会话是否空闲」（`sessionResources.isSessionIdle`）读 Core 自己的 `sessionRuntime`，
-不读宿主闭包。
+「会话是否空闲」是 Core 的事实：Core 在 `CoreEvent.sessionRuntimeChanged` 的全量快照里
+给出每个会话的 `idle`，宿主只消费快照，不读宿主闭包。
 
 ### 3.5 日志
 
@@ -157,7 +158,7 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
 | `emitToCore` / `onUiEvent` 对某 type 无订阅者 | 静默丢弃（允许某动作暂无消费方） |
 | `request()` 时无对应处理器 | 立即 reject |
 | `request()` 的响应未到达 | 挂起，由调用点自行兜底 |
-| 就绪前收到 `UiEvent` | Core 抛错（顺序错误在启动期暴露） |
+| 就绪前收到 `UiEvent` | Core 记 log 拒绝（顺序错误在启动日志可见） |
 
 ---
 
@@ -219,11 +220,12 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
 
 ### 4.4 Core 侧的单一入口
 
-- 写入入口唯一：`applySettingsSnapshot(snapshot)`，由 `hostEnvironmentProvided` 的处理器
-  调用一次。
-- 读取入口唯一：`getSettings()`，返回当前快照。
-- Core 侧所有原先「读 settings 文件」的点改为读快照，不再出现文件路径与文件读取。
-- 快照未到达时 `getSettings()` 抛错，与 `getExtensionPath()` 同一口径。
+- 写入入口唯一：`core-rs/src/settings.rs` 的 `apply_settings_snapshot`，由
+  `hostEnvironmentProvided` 的处理器（同文件 `apply_from_host_environment`）调用。
+- 读取入口唯一：同文件 `settings_snapshot()`，返回当前快照。
+- Core 侧不出现配置文件路径与文件读取，全部消费点读快照。
+- 快照未到达时 `settings_snapshot()` 抛错（`has_settings_snapshot()` 为假），
+  与扩展路径的读取同一口径。
 - Core 不提供默认值：缺字段视为协议错误（快照类型全必选）。
 
 ### 4.5 同步点
@@ -259,15 +261,15 @@ UI 推快照的时机只有三处，全部收敛到 `SettingsStore`：
 - 单次写操作失败不影响后续队列；失败记日志（[docs/architecture/principles.md 第 11 节](principles.md#11-共享文件的写安全)）。
 - 后写覆盖：不做冲突检测与合并提示。
 - 写盘完成后重新构造快照并推给所有已就绪的 Connection。
-- 写入口唯一：`SettingsStore.updateSettings`（宿主侧）。Embedded 与 Standalone 走
-  同一条路径，Core 侧没有写入口，也没有「保存配置」这条请求/事件。
+- 写入口唯一：`SettingsStore.updateSettings`（宿主侧）；Core 侧没有写入口，
+  也没有「保存配置」这条请求/事件。
 - 推快照由 `bootstrapCore` 在 `SettingsStore` 上订阅一次完成，不在各个写调用点手工触发。
 
 **共享文件的写安全**（`settings.json` 是「同一台机器上多个宿主进程共写」的文件）：
 
 | 规则 | 理由 |
 | --- | --- |
-| 读-改-写整体在跨进程锁内执行（`src/core/utils/fileLock.ts`） | 无互斥时两个宿主的读-改-写交错，后写者丢掉先写者的改动 |
+| 读-改-写整体在跨进程锁内执行（`src/shared/utils/fileLock.ts`） | 无互斥时两个宿主的读-改-写交错，后写者丢掉先写者的改动 |
 | **读不出来就拒绝写入** | 「文件存在但解析失败」不等于「用户没配置过」。当成空配置继续写，会用 `{}` + 本次改动覆盖掉用户的全部配置 |
 | 写入原子（临时文件 + `rename`） | 直接 `writeFile` 先截断再写入，并发读者会看到空文件或半截内容；`rename` 在同一文件系统内原子。Windows 上 `rename` 覆盖已有文件可能被杀毒软件 / 索引器瞬时占用目标文件（`EPERM` / `EACCES`），做有限次退避重试，重试用尽仍失败才报错 |
 | 内容未变化时不落盘 | 高频调用（如记录高亮语言）不必反复重写磁盘，也缩小竞争窗口 |
@@ -282,7 +284,7 @@ UI 推快照的时机只有三处，全部收敛到 `SettingsStore`：
 
 - `mcp.json` 由 UI 解析、规范化，随快照一次下发（`mcpServers`）。
 - 解析失败或文件缺失时按空表处理并记日志；这是 UI 侧行为，Core 不参与。
-- Core 侧的 MCP 子进程生命周期不变（[docs/core/standalone-core.md 第 8 节](../core/standalone-core.md#8-事实归属)）。
+- Core 侧的 MCP 子进程生命周期不变（[docs/core/standalone-core.md 第 7 节](../core/standalone-core.md#7-事实归属)）。
 
 ### 4.8 文本语言
 
@@ -290,7 +292,7 @@ UI 推快照的时机只有三处，全部收敛到 `SettingsStore`：
 - i18n 归 UI：翻译表、语言选择与渲染都在 UI 侧（`src/host/i18n.ts`）。
 - 宿主语言收敛：宿主读自己的 `settings.json`（`uiLanguage`）与宿主 locale，经
   `coreFacts.primeHostLocale()` 收敛到 `src/host/i18n.ts`；共享启动骨架 `bootstrapCore`
-  在启动接线内**同步**调用（不等 Connection 就绪，Embedded 也没有该事件），Electron 另在
+  在启动接线内**同步**调用（不等 Connection 就绪），Electron 另在
   创建托盘 / 菜单之前提前调用一次。显式 `uiLanguage`（zh / en）覆盖宿主 / 系统语言，
   `auto` 才回落。运行期语言变化由 `onHostLocaleChanged` 通知订阅者（原生菜单 / 托盘菜单
   据此重建）。
@@ -345,7 +347,6 @@ CoreEvent.notice { sessionId, key, params, level }
 - 总线契约不感知连接数量：`connectionId` 是 UI 侧的内部概念，不进入任何载荷。
 - 一个宿主可以有多个 Connection（每个打开的工作区一个）；分层与路由见
   `docs/core/client-connection.md`。
-- `embedded` 与 `standalone` 二选一：`embedded` 恒一个 Connection。
 
 ---
 
@@ -358,12 +359,11 @@ CoreEvent.notice { sessionId, key, params, level }
 
 - Core 处理完 `hostEnvironmentProvided` 后发出 `CoreEvent.coreReady`。
 - **每次应用快照都发一次**：首次握手一次，之后每次重推快照（配置变更）再一次。
-  Core 侧的就绪状态本身是幂等的——快照就是判据（`core/settings.ts` 的
-  `hasSettingsSnapshot()`），不需要额外的状态位。
-- **就绪前只接受 `hostEnvironmentProvided`，其它 `UiEvent` 直接抛错**：挡住的责任在
-  UI 侧（[docs/core/client-connection.md 第 7 节](../core/client-connection.md#7-就绪状态机)），Core 侧把顺序错误变成启动期错误。
-  Embedded 下抛错点在 `host/EventBus.ts`（宿主与 Core 同进程，错误直接冒到调用点）；
-  Standalone 下在 Core 进程内拒绝并记一条 log（帧通道没有反向异常通路）。
+  Core 侧的就绪状态本身是幂等的——快照就是判据（`settings.rs` 的
+  `has_settings_snapshot()`），不需要额外的状态位。
+- **就绪前只接受 `hostEnvironmentProvided`，其它 `UiEvent` 直接拒绝**：挡住的责任在
+  UI 侧（[docs/core/client-connection.md 第 7 节](../core/client-connection.md#7-就绪状态机)）；Core 侧把顺序错误记一条 log
+  并丢弃该事件（帧通道没有反向异常通路），把顺序错误变成启动期可见的诊断。
 - 重连不在本规格范围内（第 9 节）。
 
 ---
@@ -378,7 +378,7 @@ CoreEvent.notice { sessionId, key, params, level }
 
 ## 9. 不覆盖范围
 
-- 事件在连接上的序列化与反序列化格式（见 [docs/core/standalone-core.md 第 6 节](../core/standalone-core.md#6-传输与协议)）。
+- 事件在连接上的序列化与反序列化格式（见 [docs/core/standalone-core.md 第 5 节](../core/standalone-core.md#5-传输与协议)）。
 - 流式事件的节流与合并。
 - 断线后的恢复与重连。Core 崩溃后的进程重启（[docs/core/core-daemon.md 第 6 节](../core/core-daemon.md#6-重启)）是同一
   channel 内的连接重置，不属于跨连接的断线重连。
@@ -399,7 +399,7 @@ CoreEvent.notice { sessionId, key, params, level }
 6. 第二个连接到达时被拒绝并得到提示。
 7. `request()` 在响应到达前保持挂起，不因计时器 reject。
 8. Core 不持有任何宿主提供的判定闭包；「会话是否空闲」只看 Core 自己的事实。
-9. Core 处理完 `hostEnvironmentProvided` 前收到任何 `UiEvent` 都抛错。
+9. Core 处理完 `hostEnvironmentProvided` 前收到任何 `UiEvent` 都记 log 拒绝。
 10. 快照字段全必选；Core 侧只有 `applySettingsSnapshot` / `getSettings` 两个入口。
 11. Core 侧不存在本地化文案：面向用户的文本以键 + 参数表达，落盘文本为英文常量。
 12. 瞬时状态提示经 `CoreEvent.notice` 表达，不进入消息流与历史。
@@ -410,16 +410,16 @@ CoreEvent.notice { sessionId, key, params, level }
 
 | 规格项 | 落点 |
 | --- | --- |
-| 总线契约与词汇表 | `src/core/AssistantEventBus.ts` |
-| 内存实现 | `src/host/EventBus.ts` |
+| 总线契约与词汇表 | `src/shared/AssistantEventBus.ts` |
+| 帧通道总线实现 | `src/host/standalone/StandaloneEventBus.ts`（宿主侧）、`core-rs/src/frame.rs`（Core 侧） |
 | Client / Connection | `src/host/Client.ts`、`src/host/Connection.ts`（见 `docs/core/client-connection.md`） |
 | 配置快照 | `src/host/SettingsStore.ts` |
-| 快照契约与解析（纯函数） | `src/core/settingsSnapshot.ts`（`resolveSettingsSnapshot`） |
-| `mcp.json` 纯解析 | `src/core/mcp/parse.ts`（`parseMcpServerDefinitions`） |
-| Core 侧快照入口 | `src/core/settings.ts`（`applySettingsSnapshot` / `getSettings` / `getMcpServerDefinitions`） |
-| Core 数据目录与项目清单 | `src/core/history/Config.ts` |
-| 会话工作目录登记与预热 | `src/core/history/Config.ts`、`src/core/Integration.ts`、`src/core/prompt/SystemEnvironment.ts` |
-| 用户选择等待状态 | `src/host/ui/userChoice.ts`（上报）、`src/core/sessionRuntime.ts`（落地与读取） |
+| 快照契约与解析（纯函数） | `src/shared/settingsSnapshot.ts`（`resolveSettingsSnapshot`） |
+| `mcp.json` 纯解析 | `src/shared/mcp/parse.ts`（`parseMcpServerDefinitions`） |
+| Core 侧快照入口 | `core-rs/src/settings.rs`（`apply_settings_snapshot` / `settings_snapshot` / `mcp_server_definitions`） |
+| Core 数据目录与项目清单 | `core-rs/src/config.rs`、`core-rs/src/history.rs` |
+| 会话工作目录登记与预热 | `core-rs/src/config.rs`（`set_session_workspace`）与 Core 进程内的环境事实缓存 |
+| 用户选择等待状态 | `src/host/ui/userChoice.ts`（上报）、Core 的会话运行时状态（`core-rs/src/engine.rs`，落地与读取） |
 | i18n | `src/host/i18n.ts` |
 | 瞬时通知渲染 | `src/host/WebViewUI.ts` |
 | 启动接线 | `src/host/bootstrapCore.ts` |

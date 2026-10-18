@@ -51,7 +51,7 @@ last_reviewed: 2026-10-14
 
 ### 2.3 状态文件
 
-- 落盘文件按**构建指纹**区分（[docs/core/standalone-core.md 第 4.4 节](standalone-core.md#44-构建指纹)；都在配置目录的
+- 落盘文件按**构建指纹**区分（[docs/core/standalone-core.md 第 3.4 节](standalone-core.md#34-构建指纹)；都在配置目录的
   子目录里，不与 `settings.json` 混放）：状态文件（运行期事实）与 start 互斥锁在
   `run/` 子目录，诊断日志在 `logs/` 子目录（与宿主侧日志同目录）：
   状态文件 `~/<configDir>/run/core-daemon-<指纹>.json`、诊断日志
@@ -205,7 +205,7 @@ last_reviewed: 2026-10-14
    模块本身不提供「跳过校验」的连接方式）；
 2. 引导远端 daemon（`sshDaemonBootstrap.ts`，见下）；
 3. 在远端开一条 `direct-tcpip` 转发通道到该 daemon（等价于 `ssh -W`），它就是要用的
-   控制通道；控制帧与 [docs/core/standalone-core.md 第 6.2 节](standalone-core.md#62-帧类型)完全一致。
+   控制通道；控制帧与 [docs/core/standalone-core.md 第 5.2 节](standalone-core.md#52-帧类型)完全一致。
 
 引导的分支（按顺序判断）：
 
@@ -215,7 +215,7 @@ last_reviewed: 2026-10-14
 | 已部署未启动 | `~/.local/share/<core.deployPrefix>/<指纹>/` 里有可执行文件、探测不通 | 补齐缺的自带 `ripgrep`（若缺），执行 `<可执行文件> start --idle-exit 30`（幂等），再读状态文件 |
 | 未部署 | `~/.local/share/<core.deployPrefix>/<指纹>/` 里没有可执行文件 | 上传本机携带的对应平台产物（按远端 `uname -sm` 选平台）后 `start --idle-exit 30` |
 
-- 部署槽位由本机携带产物的**构建指纹**决定（[docs/core/standalone-core.md 第 4.4 节](standalone-core.md#44-构建指纹)）：
+- 部署槽位由本机携带产物的**构建指纹**决定（[docs/core/standalone-core.md 第 3.4 节](standalone-core.md#34-构建指纹)）：
   产物落远端部署槽位 `~/.local/share/<core.deployPrefix>/<指纹>/`
   （`coreDeployDirPath`：产品目录取 `core.deployPrefix`，槽位用完整指纹；自带的
   `ripgrep` 提升为产品目录根的共享位 `share/<core.deployPrefix>/ripgrep`，Core 以

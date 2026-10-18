@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
 import { workspaceRefKey } from '../../src/host/workspaceRef';
-import { CONFIG_DIR_NAME, CORE_ENV_VAR, EXTENSION_NAME } from '../../src/config/project';
+import { CONFIG_DIR_NAME, EXTENSION_NAME } from '../../src/config/project';
 import { TRAY_SOUND_DISABLE_ENV } from '../../electron/trayAttentionSound';
 import type { MockLlm } from './mockLlmServer';
 
@@ -28,8 +28,8 @@ import type { MockLlm } from './mockLlmServer';
  * 隔离策略：
  * - `USERPROFILE`/`HOME`/`APPDATA` 指向临时目录：`~/<configDir>/`（settings.json、
  *   会话落盘）与 Electron userData（workspace-state.json）全部进沙箱
- * - `<envPrefix>_<core.envVarSuffix>=embedded`：进程内 TS Core（`src/host/coreKind.ts` 运行期覆盖），
- *   免 Rust 产物依赖；LLM 指向本地 mock SSE 服务器
+ * - Core 为 standalone（产品真实形态，前置 `npm run build:core`）；
+ *   LLM 指向本地 mock SSE 服务器
  * - `--multi-instance=<id>` + `--workspace=<dir>`：跳过单实例锁、启动即打开工作区
  */
 
@@ -140,8 +140,8 @@ async function spawnApp(options: {
    * 只预置字段不开工作区时照常走 `--workspace=` 启动，字段由主进程读盘带上。
    */
   stateOverrides?: Record<string, unknown>;
-  /** Core 实现：默认 standalone（产品真实形态，多 Connection / daemon / SSH 链路） */
-  coreKind?: 'embedded' | 'standalone';
+  /** 权限模式（缺省 manual：工具调用弹确认）；auto 让工具免确认自动执行 */
+  agentMode?: 'manual' | 'risk' | 'auto';
 }): Promise<SpawnedApp> {
   const homeDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tuxedo-e2e-home-'));
   writeSettings(homeDir, options.mockLlm, options.agentMode ?? 'manual');
@@ -178,7 +178,6 @@ async function spawnApp(options: {
     USERPROFILE: homeDir,
     HOME: homeDir,
     APPDATA: roamingDir,
-    [CORE_ENV_VAR]: options.coreKind ?? 'standalone',
     DISABLE_AUTO_COMPACT: '1',
     // 整应用用例在开发机上跑，会话结束会触发托盘提醒音——关掉它，
     // 免得与开发机上真实运行的应用（或用户正在听的其它声音）撞在一起
@@ -252,7 +251,6 @@ export async function launchApp(options: {
   openWorkspaces?: Array<string | SerializedWorkspaceRef>;
   activeWorkspace?: string | SerializedWorkspaceRef;
   stateOverrides?: Record<string, unknown>;
-  coreKind?: 'embedded' | 'standalone';
   /** 权限模式（缺省 manual：工具调用弹确认）；auto 让工具免确认自动执行 */
   agentMode?: 'manual' | 'risk' | 'auto';
 }): Promise<AppHandle> {

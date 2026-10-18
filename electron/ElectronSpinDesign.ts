@@ -61,7 +61,7 @@ export class ElectronSpinDesign implements SpinDesign {
     }
 
     const { getSpinDesignHtml } = await import('../src/host/ui/spinDesignHtml.js');
-    const { getAllSkills } = await import('../src/core/skills/loadSkillsDir.js');
+    const { getAllSkills } = await import('../src/shared/skills/loadSkillsDir.js');
     const { getSettingsStore } = await import('../src/host/SettingsStore.js');
     // 与 VSCodeSpinDesign 一致：主题 / 语言走 UIHost（不直连 electron API）；
     // 无工作区时不做技能扫描（路径为空，扫相对路径会落到宿主进程目录）
@@ -118,7 +118,7 @@ export class ElectronSpinDesign implements SpinDesign {
       }
       // 串行写入 spin.json，避免与 SpinLoop 的 updateNodeMeta 并发
       // "读-改-写"导致清除结果被回写（保存不生效）
-      import('../src/core/spin/Engine.js').then(({ writeSpinJsonQueued }) =>
+      import('../src/shared/spin/Engine.js').then(({ writeSpinJsonQueued }) =>
         writeSpinJsonQueued(workspacePath, fullData)
       ).then(() => {
         win.webContents.send('spin-design-message', { type: 'spinSaveResult', success: true });
@@ -188,7 +188,7 @@ export class ElectronSpinDesign implements SpinDesign {
       return;
     }
 
-    const { getAllSkills } = await import('../src/core/skills/loadSkillsDir.js');
+    const { getAllSkills } = await import('../src/shared/skills/loadSkillsDir.js');
     const availableSkills = (await getAllSkills(workspacePath))
       .filter(s => !s.isHidden && s.userInvocable)
       .map(s => ({ name: s.name, description: s.description }));
@@ -203,7 +203,7 @@ export class ElectronSpinDesign implements SpinDesign {
   private getProjectConversationDir(workspacePath?: string): string | undefined {
     if (!workspacePath) return undefined;
     try {
-      const { getProjectConversationDir } = require('../src/core/history/Config.js');
+      const { getProjectConversationDir } = require('../src/shared/history/Config.js');
       return getProjectConversationDir(workspacePath);
     } catch {
       return undefined;

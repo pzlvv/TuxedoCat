@@ -17,7 +17,7 @@ import { createCoreChannelBus, NOOP_CORE_CHANNEL_HOOKS } from '../host/standalon
 import { remoteWorkspaceRef } from '../host/workspaceRef';
 import { createChecker, runTests } from './helpers/harness';
 import { createRecordingCoreEventHandlers } from './helpers/fixtures';
-import type { CoreRequestHandlers } from '../core/AssistantEventBus';
+import type { CoreRequestHandlers } from '../shared/AssistantEventBus';
 
 // ==================== 假远端 daemon ====================
 

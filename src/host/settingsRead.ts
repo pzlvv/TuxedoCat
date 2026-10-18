@@ -9,15 +9,15 @@
  * 这些函数都是纯函数（快照进、值出），便于单测与复用。
  */
 
-import { logger } from '../core/Logger.js';
-import type { AgentMode } from '../core/types.js';
-import type { PromptPresetId } from '../core/prompt/PromptPreset.js';
-import type { ModelRef } from '../core/llm/modelRef.js';
-import { DEEPSEEK_BASE_URL } from '../core/endpoints.js';
-import type { ApiType } from '../core/utils/modelConfig.js';
-import type { ThinkingEffort, SettingsSnapshot } from '../core/settingsSnapshot.js';
-import type { McpServerDefinition } from '../core/mcp/parse.js';
-import type { McpServerInfo } from '../core/webviewTypes.js';
+import { logger } from '../shared/Logger.js';
+import type { AgentMode } from '../shared/types.js';
+import type { PromptPresetId } from '../shared/settingsSnapshot.js';
+import type { ModelRef } from '../shared/llm/modelRef.js';
+import { DEEPSEEK_BASE_URL } from '../shared/endpoints.js';
+import type { ApiType } from '../shared/utils/modelConfig.js';
+import type { ThinkingEffort, SettingsSnapshot } from '../shared/settingsSnapshot.js';
+import type { McpServerDefinition } from '../shared/mcp/parse.js';
+import type { McpServerInfo } from '../shared/webviewTypes.js';
 
 export { DEEPSEEK_BASE_URL };
 

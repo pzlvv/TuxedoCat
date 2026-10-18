@@ -405,14 +405,14 @@ pub fn ripgrep_available() -> bool {
     bundled_ripgrep().is_some()
 }
 
-/// 与 Embedded 共享的对照表 `src/test/fixtures/imageValidation.json` 里的最小合法
+/// 对照表 `core-rs/fixtures/imageValidation.json` 里的最小合法
 /// PNG（`png-valid`，签名 + IHDR + IDAT + IEND）。
 ///
 /// Read 的图片用例（`tools_tests` / `engine_tests`）共用这一份：hex 只有对照表一处
 /// 来源，不会出现「测试用的假 PNG 与对照表漂移」。
 pub fn minimal_png_bytes() -> Vec<u8> {
     let fixture: Value =
-        serde_json::from_str(include_str!("../../src/test/fixtures/imageValidation.json"))
+        serde_json::from_str(include_str!("../fixtures/imageValidation.json"))
             .expect("imageValidation.json 必须是合法 JSON");
     let hex = fixture["cases"]
         .as_array()

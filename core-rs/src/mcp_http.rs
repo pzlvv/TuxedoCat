@@ -1,4 +1,4 @@
-//! MCP 远程客户端（HTTP 传输，对齐 Embedded `src/core/mcp/HttpClient.ts`）。
+//! MCP 远程客户端（HTTP 传输）。
 //!
 //! 支持两种远程传输，二者共用同一个 JSON-RPC 能力集：
 //!
@@ -15,8 +15,7 @@
 //! 连接时先按 Streamable HTTP 握手，失败后自动回退旧版 SSE —— 用户只需在 `mcp.json`
 //! 里写 `"type": "remote"` + `"url"`，无需关心服务器实现哪一版。
 //!
-//! 与 Embedded 的差异（阻塞式实现的固有限制）：Embedded 用 `AbortController` 可以
-//! 立刻中断旧版 SSE 长连接；`reqwest::blocking` 没有对外暴露中止句柄，`stop()` 只能
+//! 固有限制（阻塞式实现）：`reqwest::blocking` 没有对外暴露中止句柄，`stop()` 只能
 //! 置停止标记，读线程会在服务器关闭连接 / 下一次收到事件时退出。Streamable HTTP
 //! 的每个请求都有独立的 `timeout`，不受影响。
 
@@ -275,7 +274,7 @@ impl McpHttpClient {
             .build()
             .map_err(|err| self.wrap_network_error(&err, timeout_ms))?;
         let headers = self.build_headers(true);
-        // 与 Embedded 的 `JSON.stringify` 逐字对齐（数字走 JS 口径）
+        // 按 JS `JSON.stringify` 逐字序列化（数字走 JS 口径）
         let body = crate::util::js_json_stringify(message);
         let response = send_post_with_retry(self.name(), || {
             client
@@ -917,7 +916,7 @@ fn post_legacy(shared: &Arc<HttpShared>, message: &Value) -> Result<(), String> 
     for (key, value) in &shared.headers {
         insert_header(&mut headers, key, value);
     }
-    // 与 Embedded 的 `JSON.stringify` 逐字对齐（数字走 JS 口径）
+    // 按 JS `JSON.stringify` 逐字序列化（数字走 JS 口径）
     let body = crate::util::js_json_stringify(message);
     let response = send_post_with_retry(&shared.name, || {
         client

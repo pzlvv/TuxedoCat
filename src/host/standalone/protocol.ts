@@ -7,8 +7,8 @@
  * 本模块只做编解码与帧校验，不含进程与业务逻辑，无宿主依赖。
  */
 
-import type { CoreEvent, CoreRequest, UiEvent, UiRequest } from '../../core/AssistantEventBus.js';
-import { stringifyJsonSafe } from '../../core/utils/stringUtils.js';
+import type { CoreEvent, CoreRequest, UiEvent, UiRequest } from '../../shared/AssistantEventBus.js';
+import { stringifyJsonSafe } from '../../shared/utils/stringUtils.js';
 
 /**
  * 协议版本；握手时由 Core 校验。

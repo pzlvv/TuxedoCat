@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
-import type { McpServerInfo, ProviderModels } from '../../core/webviewTypes';
-import type { ModelRef } from '../../core/llm/modelRef';
+import type { McpServerInfo, ProviderModels } from '../../shared/webviewTypes';
+import type { ModelRef } from '../../shared/llm/modelRef';
 import type { HostToWebviewWire } from '../../host/webviewMessages';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, LlmConfigPanelPayload, SessionRuntimeState, ApplyDefaultsPrompt } from '../types';
 import type { SessionStatesStore } from '../sessionState';

@@ -20,7 +20,7 @@ export default tseslint.config(
   },
   // 分层依赖边界（AGENTS.md 第 1 节的可执行形态）：import type 同样是编译期耦合，一并拦截。
   {
-    files: ['src/core/**/*.ts'],
+    files: ['src/shared/**/*.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -28,7 +28,7 @@ export default tseslint.config(
           patterns: [
             {
               group: ['**/host/**', '**/host', 'host/**', 'host'],
-              message: 'core 不得 import host/ 的实现；core 只通过 requireEventBus() 发事件（AGENTS.md 第 1 节）。',
+              message: 'shared/ 是共享叶子层，不得 import host/ 的实现（AGENTS.md 第 1 节）。',
             },
           ],
         },

@@ -3,13 +3,12 @@
  *
  * 覆盖验收要点：
  * 1. 打开一个工作区建立一个 Connection；重复打开只激活已有；
- * 2. 两个工作区对应两个 Connection（Standalone 下两个 Core 进程）；
- * 3. Embedded 恒一个 Connection；
- * 4. Client 未收到 coreReady 前不发出任何 UiEvent（就绪后按序冲刷）；
- * 5. 一份配置快照推给所有 Connection；
- * 6. connectionId 不出现在任何总线载荷中；
- * 7. 关闭工作区后 Connection 销毁；
- * 8. 会话按 sessionId 路由到正确 Connection，查不到归属时报错。
+ * 2. 两个工作区对应两个 Connection（两个 Core 进程）；
+ * 3. Client 未收到 coreReady 前不发出任何 UiEvent（就绪后按序冲刷）；
+ * 4. 一份配置快照推给所有 Connection；
+ * 5. connectionId 不出现在任何总线载荷中；
+ * 6. 关闭工作区后 Connection 销毁；
+ * 7. 会话按 sessionId 路由到正确 Connection，查不到归属时报错。
  *
  * 另覆盖 `bootstrapCore` 的工作区装配与 `shutdownCore` 的关闭路径。
  *
@@ -25,7 +24,7 @@ import { emptyWorkspaceRef, localWorkspaceRef, remoteWorkspaceRef, type Workspac
 import { createStandaloneCoreBus } from '../host/standalone/StandaloneEventBus';
 import { ConversationManager } from '../host/ConversationManager';
 import type { SpinDesign } from '../host/SpinDesign';
-import type { ConversationMetadata } from '../core/history/Conversation';
+import type { ConversationMetadata } from '../shared/history/Conversation';
 import type {
   AssistantEventBus,
   CoreEvent,
@@ -34,9 +33,9 @@ import type {
   SessionRuntimeState,
   UiEvent,
   UiRequest,
-} from '../core/AssistantEventBus';
+} from '../shared/AssistantEventBus';
 import { emptySettingsSnapshot, createTestHost } from './helpers/fixtures';
-import { CONFIG_DIR_NAME, CORE_ENV_VAR } from '../config/project';
+import { CONFIG_DIR_NAME } from '../config/project';
 
 // ==================== 记录型总线（可控就绪） ====================
 
@@ -121,12 +120,10 @@ interface ClientHarness {
   emitToConnection(index: number, event: CoreEvent): void;
 }
 
-function createClientHarness(coreKind: 'standalone' | 'embedded' = 'standalone'): ClientHarness {
+function createClientHarness(): ClientHarness {
   const channels: RecordingBus[] = [];
   let disposed = 0;
-  const sharedEmbedded = createRecordingBus();
   const client = new Client({
-    coreKind,
     log: () => undefined,
     hostEnvironment: () => ({
       type: 'hostEnvironmentProvided',
@@ -146,7 +143,6 @@ function createClientHarness(coreKind: 'standalone' | 'embedded' = 'standalone')
         },
       };
     },
-    embeddedBus: coreKind === 'embedded' ? sharedEmbedded.bus : undefined,
   });
   // 模拟 WebViewUI：先登记 UI 处理器，再打开工作区
   client.onCoreEvents({
@@ -189,13 +185,12 @@ function createClientHarness(coreKind: 'standalone' | 'embedded' = 'standalone')
       return disposed;
     },
     readyAll: () => {
-      for (const channel of coreKind === 'embedded' ? [sharedEmbedded] : channels) {
+      for (const channel of channels) {
         channel.emitCoreReady();
       }
     },
     emitToConnection: (index, event) => {
-      const channel = coreKind === 'embedded' ? sharedEmbedded : channels[index];
-      channel?.emitCoreEvent(event);
+      channels[index]?.emitCoreEvent(event);
     },
   } as ClientHarness;
 }
@@ -254,17 +249,7 @@ async function run(): Promise<void> {
     await harness.client.closeAll();
   }
 
-  // ── 3. Embedded 恒一个 Connection（工作区是会话属性）──
-  {
-    const harness = createClientHarness('embedded');
-    const a = harness.client.openWorkspace(WS_A) as Connection;
-    const b = harness.client.openWorkspace(WS_B) as Connection;
-    check('embedded 两个工作区仍是同一个 Connection', a === b);
-    check('embedded 只有一个 Connection', harness.client.listConnections().length === 1);
-    await harness.client.closeAll();
-  }
-
-  // ── 4. 就绪门禁：coreReady 前不发出 UiEvent，就绪后按序冲刷 ──
+  // ── 3. 就绪门禁：coreReady 前不发出 UiEvent，就绪后按序冲刷 ──
   {
     const harness = createClientHarness();
     const a = harness.client.openWorkspace(WS_A) as Connection;
@@ -433,8 +418,7 @@ async function run(): Promise<void> {
 
   // ── 7. bootstrapCore 按工作区装配 + 工作区打开 / 关闭事件 + shutdownCore ──
   {
-    process.env[CORE_ENV_VAR] = 'standalone';
-    const fakeCoreScript = `
+      const fakeCoreScript = `
       const readline = require('readline');
       const rl = readline.createInterface({ input: process.stdin });
       rl.on('line', (line) => {

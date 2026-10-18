@@ -15,8 +15,8 @@ import { getPlaceholderLogoUri, rotatePlaceholderLogo } from './placeholderLogo'
 import { canCloseConversation, newConversationEntryOf, openConversationModeOf, rendersConversationListInWebview, type HostInfo } from '../host/types';
 import { resolveAbortButtonState, type AbortButtonState } from '../host/abortButtonState';
 import { shouldAutoExpandSubSessions } from '../host/ui/conversationTreeDefaults';
-import type { McpServerInfo, ProviderModels } from '../core/webviewTypes';
-import type { ModelRef } from '../core/llm/modelRef';
+import type { McpServerInfo, ProviderModels } from '../shared/webviewTypes';
+import type { ModelRef } from '../shared/llm/modelRef';
 import { t } from './i18n';
 import { ConversationTreeItem } from './ConversationTreeItem';
 import { DeleteConfirmDialog } from './components/DeleteConfirmDialog';

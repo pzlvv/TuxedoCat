@@ -10,7 +10,7 @@
 
 import type { WorkspaceRef } from '../workspaceRef.js';
 import type { CoreToUiFrame, UiToCoreFrame } from './protocol.js';
-import { stringifyJsonSafe } from '../../core/utils/stringUtils.js';
+import { stringifyJsonSafe } from '../../shared/utils/stringUtils.js';
 
 // ==================== 远端 daemon 状态文件 ====================
 
@@ -19,7 +19,7 @@ import { stringifyJsonSafe } from '../../core/utils/stringUtils.js';
  *
  * 文件名按**构建指纹**区分：`core-daemon-<指纹>.json` 等。一个指纹一个 daemon、
  * 一份落盘文件——多版本 Core 在同一台远端机器上并存时，各自的 `start` / `kill` /
- * 探测只作用于自己指纹的 daemon，互不踩踏（`docs/core/standalone-core.md` 第 4.4 节）。
+ * 探测只作用于自己指纹的 daemon，互不踩踏（`docs/core/standalone-core.md` 第 3.4 节）。
  * 状态文件（+ 同名 `.lock`）在配置目录的 `run/` 子目录（daemon 的运行期事实，
  * `core-rs/src/remote.rs::daemon_state_path` 同口径，改动必须同步两侧），诊断日志
  * 在 `logs/` 子目录；Host 侧读取状态文件来拿到实际监听端口（SSH 接入时 daemon

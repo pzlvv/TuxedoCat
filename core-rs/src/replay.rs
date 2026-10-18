@@ -1,5 +1,4 @@
-//! 历史消息 → UI 显示消息（对齐 Embedded `src/core/utils/replayMessages.ts` +
-//! `utils/contentBlocks.ts` 的 `extractUserContent`）。
+//! 历史消息 → UI 显示消息。
 //!
 //! 这是「历史消息 → 显示消息」的**唯一转换点**：压缩后重建（`messagesReplaced`）
 //! 与宿主展开归档共用它，`_meta` 裁剪与 Edit 的 diff 字段处理都收敛在这里。
@@ -297,7 +296,7 @@ pub fn build_replay_message_data(messages: &[Value]) -> Vec<Value> {
                                 .unwrap_or_default();
                             let block_meta = object.get("_meta").and_then(Value::as_object);
 
-                            // Embedded 的 Edit 只下发 diffHunks；Standalone 不预计算该键，
+                            // Edit 不预计算 diffHunks，
                             // 改为下发 beforeContent / afterContent，让 webview 用同一份
                             // `buildEditDiffHunks` 回退计算（渲染一致，代价是帧体积更大）。
                             if let Some(meta) = block_meta {

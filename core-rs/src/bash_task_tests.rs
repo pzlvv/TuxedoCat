@@ -84,7 +84,7 @@ fn finished(status: TaskStatus, exit_code: i32, duration_ms: u64) -> FinishedTas
 // ==================== 文案 ====================
 
 #[test]
-fn format_duration_matches_embedded() {
+fn format_duration_matches_spec() {
     assert_eq!(format_duration(0), "0ms");
     assert_eq!(format_duration(999), "999ms");
     assert_eq!(format_duration(1000), "1.0s");
@@ -101,7 +101,7 @@ fn format_duration_matches_embedded() {
 }
 
 #[test]
-fn task_id_uses_the_embedded_shape() {
+fn task_id_shape() {
     let task_id = generate_task_id();
     assert!(task_id.starts_with("bg-"), "{task_id}");
     assert_eq!(task_id.matches('-').count(), 2, "{task_id}");
@@ -109,7 +109,7 @@ fn task_id_uses_the_embedded_shape() {
 }
 
 #[test]
-fn completion_notification_matches_embedded_text() {
+fn completion_notification_matches_spec_text() {
     let completed = finished(TaskStatus::Completed, 0, 1500);
     assert_eq!(
         build_completion_notification(&completed, ""),
@@ -146,7 +146,7 @@ fn completion_notification_truncates_output_at_five_hundred_chars() {
     let notification = build_completion_notification(&completed, &long);
     assert!(notification.ends_with(&format!("{}\n...", "x".repeat(500))));
 
-    // 恰好 500 字符：不追加省略号（对齐 Embedded 的 `stdout.length > 500`）
+    // 恰好 500 字符：不追加省略号
     let exact = "y".repeat(500);
     let notification = build_completion_notification(&completed, &exact);
     assert!(notification.ends_with(&exact));
@@ -310,8 +310,7 @@ fn completing_tasks_fire_the_completed_event() {
 /// running）先于 `sync_background`（清 background）**。顺序反了会先推出一份
 /// 「running=false 且 background=false」的瞬时 idle 运行时快照，被宿主差分成
 /// running → idle 而误武装「任务完成」绿灯——完成通知触发的接续查询其实还在继续
-/// （见 `handle_finish` 的顺序注释；对齐 Embedded 侧
-/// `backgroundCompletionOrder.test.ts`）。
+/// （见 `handle_finish` 的顺序注释）。
 #[test]
 fn completion_notifies_the_engine_before_clearing_background() {
     let sandbox = Sandbox::new("bash-task-finish-order");
@@ -350,15 +349,15 @@ fn completion_notifies_the_engine_before_clearing_background() {
     reset_for_test();
 }
 
-/// 后台任务提醒对等测试：与 Embedded 共用 `src/test/fixtures/backgroundReminderParity.json`。
+/// 后台任务提醒对照表测试：数据在 `core-rs/fixtures/backgroundReminder.json`。
 ///
-/// 对齐 `src/test/backgroundReminderParity.test.ts`：间隔档位（5 / 10 / 20 / 30 / 30…）、
+/// 间隔档位（5 / 10 / 20 / 30 / 30…）、
 /// 提醒时钟推进（空闲累加 / 暂停不累加 / 一次跨多档）、提醒文案逐字一致、
 /// 兜底提醒门槛（距上次访问满 3 分钟，或还没兜底过的 sleep 任务）逐条一致。
 #[test]
 fn background_reminder_parity() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../src/test/fixtures/backgroundReminderParity.json"
+        "../fixtures/backgroundReminder.json"
     ))
     .expect("parse backgroundReminderParity.json");
 

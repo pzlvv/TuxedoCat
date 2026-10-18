@@ -125,7 +125,7 @@ test('US-2 首包到达前中止后，下一条消息仍进入本轮上下文并
   // 首包前中止会留下一条「已进上下文、但没有回复」的用户消息：中止标记
   // `*User Interrupted*` 是 system 消息（不进 API 载荷），下一条用户消息因此与它
   // 相邻，按 `mergeConsecutiveSameRole` 归一化成同一个 user turn（Anthropic 要求严格
-  // user / assistant 交替，Embedded 同一口径）。所以断言写成「两条文本都在这一轮里
+  // user / assistant 交替）。所以断言写成「两条文本都在这一轮里
   // 被回答」，而不是断言两条独立消息——前者才是「消息不丢」这条不变量。
   mockLlm.setHandler((req) => {
     const text = lastUserText(req.body.messages);

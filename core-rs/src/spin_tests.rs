@@ -1,7 +1,7 @@
-//! Spin Design 引擎单测（对齐 Embedded `src/core/spin/*`）。
+//! Spin Design 引擎单测。
 //!
 //! 三部分：
-//! - `parity_tests`：与 Embedded 共用同一份对照表（`src/test/fixtures/spinParity.json`）；
+//! - `parity_tests`：行为对照表数据在 `core-rs/fixtures/spin.json`；
 //! - 引擎纯函数 / 文件读写 / 状态检测的单元测试；
 //! - 假 [`SpinHost`] 驱动的 [`SpinLoop`] 端到端测试。
 
@@ -16,8 +16,8 @@ use super::*;
 use crate::config;
 use crate::test_support::{openai_text_sse, FakeLlm, Sandbox};
 
-/// 与 Embedded 共用同一份对照表（`src/test/fixtures/spinParity.json`）。
-const FIXTURE: &str = include_str!("../../src/test/fixtures/spinParity.json");
+/// 行为对照表（数据见 core-rs/fixtures/）。
+const FIXTURE: &str = include_str!("../fixtures/spin.json");
 
 fn fixture() -> Value {
     serde_json::from_str(FIXTURE).expect("spinParity.json 解析失败")

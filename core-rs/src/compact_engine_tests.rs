@@ -434,7 +434,7 @@ fn runtime_snapshot_reports_compacting() {
         .iter()
         .find(|entry| entry["sessionId"] == "s1")
         .expect("应当有 s1");
-    // 快照导出根事实 + 派生 `idle`（对齐 Embedded `toSnapshot`）：
+    // 快照导出根事实 + 派生 `idle`：
     // `compacting` 既是根事实，也通过 `idle` 体现
     assert_eq!(entry["idle"], false, "压缩中不算空闲");
     assert_eq!(entry["compacting"], true, "compacting 进快照");

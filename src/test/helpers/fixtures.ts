@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { CONFIG_DIR_NAME } from '../../config/project';
-import { createEventBus } from '../../host/EventBus';
+import { createTestBus } from './testBus';
 import type { UIHost } from '../../host/UIHost';
 import { localWorkspaceRef } from '../../host/workspaceRef';
 import type { WebviewMessage } from '../../host/webviewMessages';
@@ -21,15 +21,15 @@ import {
   resolveSettingsSnapshot,
   type McpServerDefinition,
   type SettingsSnapshot,
-} from '../../core/settingsSnapshot';
-import { applySettingsSnapshot } from '../../core/settings';
-import { parseMcpServerDefinitions } from '../../core/mcp/parse';
+} from '../../shared/settingsSnapshot';
+import { applySettingsSnapshot } from '../../shared/settings';
+import { parseMcpServerDefinitions } from '../../shared/mcp/parse';
 import type {
   AssistantEventBus,
   CoreEvent,
   CoreEventHandlers,
   CoreRequestHandlers,
-} from '../../core/AssistantEventBus';
+} from '../../shared/AssistantEventBus';
 
 /** 去掉 `readonly` 的处理器表：测试里可以按需替换某个事件的接线 */
 export type MutableCoreEventHandlers = {
@@ -128,7 +128,7 @@ export function createRecordingCoreEventHandlers(): RecordingCoreEventHandlers {
  */
 export function makeTestBus(options: TestBusOptions = {}): TestBus {
   const recording = createRecordingCoreEventHandlers();
-  const bus = createEventBus();
+  const bus = createTestBus();
   const unsubscribeCoreEvents = bus.onCoreEvents(recording.handlers);
   bus.onCoreRequests({
     toolPermissionRequested:

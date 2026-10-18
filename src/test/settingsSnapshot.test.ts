@@ -16,10 +16,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createChecker, runTests } from './helpers/harness';
 import { makeTempDir } from './helpers/fixtures';
-import { resolveSettingsSnapshot } from '../core/settingsSnapshot';
-import { parseMcpServerDefinitions } from '../core/mcp/parse';
+import { resolveSettingsSnapshot } from '../shared/settingsSnapshot';
+import { parseMcpServerDefinitions } from '../shared/mcp/parse';
 import { SettingsStore } from '../host/SettingsStore';
-import { DEFAULT_API_TYPE, FALLBACK_MODEL_PARAMS } from '../core/utils/modelConfig';
+import { DEFAULT_API_TYPE, FALLBACK_MODEL_PARAMS } from '../shared/utils/modelConfig';
 
 runTests('settingsSnapshot', async () => {
   const { check, finish } = createChecker();

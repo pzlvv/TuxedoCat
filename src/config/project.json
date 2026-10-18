@@ -19,7 +19,6 @@
   "core": {
     "binaryName": "tuxedo-cat-core",
     "resourceDir": "core",
-    "envVarSuffix": "CORE",
     "deployPrefix": "tuxedo-cat"
   },
   "schemes": {

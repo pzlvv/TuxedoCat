@@ -52,12 +52,13 @@
 ## 1. 分层与依赖（评审必查）
 
 ```
-core/  ←  host/  ←  宿主实现（src/VSCode* / electron/*）
-         ↑
-   AssistantEventBus 是 core 与 UI 之间唯一的边
+src/shared/（TS 共享叶子层：总线契约 / 类型 / 会话落盘格式 / 纯工具）
+   ←  src/host/  ←  宿主实现（src/VSCode* / electron/*）
+   ←  src/webview/（WebView UI）
+core-rs/（Core，Rust 独立进程）只经 AssistantEventBus 帧通道与 TS 侧通信
 ```
 
-1. `src/core/` 不得 import `host/` 实现；core 只通过 `requireEventBus()` 发事件，不直接调 UI。
+1. `src/shared/` 是共享叶子层：不得 import `host/` 实现与宿主 API（`vscode` / `electron`）；总线契约（`AssistantEventBus`）只在这一层定义，core 与 UI 之间唯一的边。
 2. `src/host/` 不得 import `vscode` / `electron`；宿主差异收在 `UIHost` / `SpinDesign` / `ConversationManager` 上。
 3. `host/ui/*` 不得 import 宿主 API，只经 `UIHost` / `WebViewUiPort` 注入。
 4. 禁止 `host.kind === '...'` 式宿主嗅探；能力差异用字段或独立方法表达。
@@ -65,8 +66,10 @@ core/  ←  host/  ←  宿主实现（src/VSCode* / electron/*）
 6. 不同来源、不同频率的数据走不同的事件流，不用附加标记合并。
 7. `host/` 可 import core 的**只读**函数与类型；改状态的请求一律翻译成 `UiEvent`。
 8. 硬约束：`VSCode*Host.ts` / `VSCodeSpinDesign.ts` / `VSCodeConversationManager.ts` 不放 `src/host/`。
-9. **两套 Core 同步改**：Embedded Core（`src/core/`，TS）与 Standalone Core（`core-rs/`，Rust）是同一份契约的两套实现；改任一侧的 Core 行为（引擎 / 工具 / 技能 / 权限 / 提示词 / 落盘格式 / 事件）都必须同步改另一侧，并同步 parity 对照表与两侧测试（见第 5 节）。只改一侧视为未完成。
-10. **分层边界由 lint 强制**：第 1–3 条由 eslint 的 `no-restricted-imports` 拦截（`import type`
+9. **落盘格式双侧一致**：会话落盘格式（meta.json / 对话 JSONL）由 core-rs 写入、
+   `src/shared/history/` 是同一格式的宿主侧读写库（删除闭包、工具 diff 元数据等宿主
+   直接读写场景）；改格式必须两侧同步，Rust 侧对照表测试锁定。
+10. **分层边界由 lint 强制**：第 1–2 条由 eslint 的 `no-restricted-imports` 拦截（`import type`
     同样算耦合，一并拦截），进 `npm run lint`。
 
 ## 2. 代码风格
@@ -95,10 +98,10 @@ core/  ←  host/  ←  宿主实现（src/VSCode* / electron/*）
 3. **core 描述事实，UI 决定表现**：防抖、节流、刷新哪些视图、未打开时怎么办，都不写进 core。
 4. **一份事实只有一个写入点**：指定唯一 owner，其余是只读投影，禁止从投影反推事实。
 5. **契约只写现状，派生字段从根字段推导**；派生逻辑只有一份纯函数。
-6. **同一字段的默认值只有一处**（配置默认值唯一来源是 `src/core/settingsSnapshot.ts`）。
+6. **同一字段的默认值只有一处**（配置默认值唯一来源是 `src/shared/settingsSnapshot.ts`）。
 7. **webview 不持有事实默认值**：事实未到达用 `undefined` 表示等待态（转圈），不用猜值，也不回传猜值。
 8. **预览只有一份渲染实现**：每种预览只落一个渲染方，另一侧只取内容 / 发消息。
-9. **共享文件写安全**：`settings.json` 等跨进程共写文件必须「跨进程锁 + 读不出拒绝写 + 原子落盘 + 内容未变不落盘」（`src/core/utils/fileLock.ts`）。
+9. **共享文件写安全**：`settings.json` 等跨进程共写文件必须「跨进程锁 + 读不出拒绝写 + 原子落盘 + 内容未变不落盘」（`src/shared/utils/fileLock.ts`）。
 
 ## 5. 工作流
 
@@ -131,21 +134,17 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
   `.zcode/skills`（入库，与 `.tuxedo-cat/skills` 内容一致——本机是指向后者的 junction，git 穿透它提交
   同一份文件；编辑改 `.tuxedo-cat/skills`，提交时以 `.zcode/skills` 路径落库）。
 - 测试在 `src/test/*.test.ts`；Rust 在 `core-rs/src/*_tests.rs`。
-- **两套 Core 必须同步改**：Core 行为有两套实现——Embedded `src/core/`（TS）与 Standalone `core-rs/`（Rust）。
-  改任一侧的 Core 行为都必须**同时**改另一侧；只改一侧视为未完成。对应关系如
-  `CommandDispatcher` ↔ `commands.rs`、`PermissionPolicy` ↔ `permission.rs`、`QueryEngine` ↔ `engine.rs`。
-- 跨语言行为靠 **parity 测试 + `src/test/fixtures/*Parity.json` 对照表**锁死；改任一侧必须同步对照表与两侧实现。fixture 的每个数组**两侧都必须有消费者**（如 `eventTypesParity.json` 由 TS `eventTypeParity.test.ts` 与 Rust `main_tests` 双向锁定：正向查 emit / 分发位点，反向查 Rust 侧新增 `"type"` 字面量已登记）。
 - **文档同步是硬约束**：改 Core 行为 / 契约 / 事件词汇表时，同步受影响的规格
   （`docs/architecture/events.md` 事件表、对应 `docs/<topic>.md`），`npm run test:all -- docs-lint` 必须绿。
   新增 / 移动文档要更新 `docs/README.md` 的地图；守卫进 CI（`.github/workflows/docs.yml`，
   docs-lint 与 tests 两个 job 都不过滤路径——docsLint 还扫描代码注释里的章节引用，
   tests job 跑 check-types / lint / 全部测试 / `test:core`，并先构建 Linux Core 让
-  `coreEventParity` 真实运行而不是 skip）。
+  `standalone*` 系列测试驱动真实二进制而不是 skip）。
 - 提交前至少跑 `npm run check-types && npm run lint`，涉及 core 的改动加 `npm run test:core`
   （CI 会再跑一遍，本地跑只是提前暴露）。
-- **涉及 core 的改动先 `npm run build:core:host` 再跑 `npm run test:all`**：`coreEventParity`
-  等真实双端测试依赖 Core 产物，不构建会**静默 skip**（CI 的 tests job 先 `build:core:linux-x64`
-  所以真实在跑；本地 Windows 不补这一步，事件流顺序类漂移在本地发现不了）。
+- **涉及 core 的改动先 `npm run build:core:host` 再跑 `npm run test:all`**：`standalone*`
+  系列测试直接驱动真实 Core 二进制，不构建会**静默 skip**（CI 的 tests job 先
+  `build:core:linux-x64` 所以真实在跑；本地 Windows 不补这一步，帧协议类漂移在本地发现不了）。
 
 ## 6. 常见改动清单
 

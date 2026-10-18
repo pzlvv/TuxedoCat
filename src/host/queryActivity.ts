@@ -5,7 +5,7 @@
  * 宿主差异（推送通道）通过参数注入。
  */
 import type { HostToWebviewMessageWithoutSessionId } from './webviewMessages.js';
-import type { ToolProgressData } from '../core/tools/Tool.js';
+import type { ToolProgressData } from '../shared/tools/Tool.js';
 
 /** 宿主推送通道（UIHost.sendToWebview） */
 /**

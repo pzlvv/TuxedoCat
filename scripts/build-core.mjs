@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Standalone Core（Rust）构建脚本（见 docs/core/standalone-core.md 第 4.3 节）。
+ * Standalone Core（Rust）构建脚本（见 docs/core/standalone-core.md 第 3.3 节）。
  *
  * 用法：
  *   node scripts/build-core.mjs                        # 打包要携带的全部目标，release
@@ -13,7 +13,7 @@
  * 同一目录下还会落一份自带的 `ripgrep/rg[.exe]`（Grep / Glob 用的 rg）：
  * Core 以**自己的可执行文件目录**为基准定位自带资源，本地与远端都是这一个位置。
  * 同目录还有一份 `fingerprint` 构建指纹（见 computeFingerprint 与
- * docs/core/standalone-core.md 第 4.4 节）：SSH 部署按指纹落位远端部署目录
+ * docs/core/standalone-core.md 第 3.4 节）：SSH 部署按指纹落位远端部署目录
  * `~/.local/share/<core.deployPrefix>/<指纹>/`，多版本 Core 在同一台机器上各占一个槽位互不干扰。
  *
  * 产品名与产物名一律取自 src/config/project.json（`core.binaryName` /
@@ -21,7 +21,7 @@
  * 这里按配置重命名后落位。
  *
  * 默认构建的是**打包要携带的全部目标**（`PACKAGE_DIRS`），不是只建当前平台：
- * 只建当前平台时，打包会静默带上一次构建的旧 Linux 产物（docs/core/standalone-core.md 第 4.3 节）。矩阵里其余一项为预留：目标三元组已登记，装好对应 target 即可构建。
+ * 只建当前平台时，打包会静默带上一次构建的旧 Linux 产物（docs/core/standalone-core.md 第 3.3 节）。矩阵里其余一项为预留：目标三元组已登记，装好对应 target 即可构建。
  */
 
 import { spawnSync } from 'node:child_process';
@@ -60,11 +60,11 @@ export const TARGETS = [
  * 打包要携带的目标（`resources/<core.resourceDir>/` 下必须齐的那几个目录）。
  *
  * 这是**唯一一份**平台列表：`scripts/verify-core-artifacts.mjs` 直接 import 它，
- * 不再各写一遍，免得「构建的」与「校验的」漂移（docs/core/standalone-core.md 第 4.3 节）。
+ * 不再各写一遍，免得「构建的」与「校验的」漂移（docs/core/standalone-core.md 第 3.3 节）。
  */
 export const PACKAGE_DIRS = ['x64-win32', 'x64-linux', 'arm64-linux'];
 
-// ==================== 构建指纹（docs/core/standalone-core.md 第 4.4 节）====================
+// ==================== 构建指纹（docs/core/standalone-core.md 第 3.4 节）====================
 
 /**
  * 指纹算法版本标签：参与哈希输入，输入集或归一规则变化时递增，避免新旧指纹意外同槽。
@@ -211,7 +211,7 @@ function crossToolchainEnv(target) {
   if (probe.error || probe.status !== 0) {
     console.error(
       `[build-core] 构建 ${target.triple} 需要 zig（ring 的 C / 汇编要一个 C 编译器）：` +
-        `找不到 \`${zig}\`。安装方式见 docs/core/standalone-core.md 第 4.3 节；` +
+        `找不到 \`${zig}\`。安装方式见 docs/core/standalone-core.md 第 3.3 节；` +
         '已装在别处时用环境变量 ZIG 指定可执行文件路径。',
     );
     process.exit(1);
@@ -326,7 +326,7 @@ function buildTarget(target, options) {
 
   // 指纹在构建前计算：它只依赖源码与编译器身份，不依赖产物；
   // 同时经 CORE_FINGERPRINT 传给 cargo，由 core-rs 的 build.rs 烧进二进制
-  // （daemon 以它区分自己的状态文件，docs/core/standalone-core.md 第 4.4 节）。
+  // （daemon 以它区分自己的状态文件，docs/core/standalone-core.md 第 3.4 节）。
   const fingerprint = computeFingerprint(target.triple, profile);
 
   const cargoArgs = ['build', '--manifest-path', manifestPath, '--target', target.triple];
@@ -413,7 +413,7 @@ function copyBundledRipgrep(target, outDir) {
   if (!existsSync(source)) {
     console.error(
       `[build-core] 缺少该平台的 ripgrep 产物：${source}\n` +
-        `             Core 自带的 ripgrep 必须与可执行文件一起落位（docs/core/standalone-core.md 第 4 节）。`,
+        `             Core 自带的 ripgrep 必须与可执行文件一起落位（docs/core/standalone-core.md 第 3.1 节：部署单元与共享位）。`,
     );
     process.exit(1);
   }
@@ -424,12 +424,6 @@ function copyBundledRipgrep(target, outDir) {
 }
 
 function main() {
-  // embedded 变体走进程内 TypeScript Core，不需要 Rust Core 产物；打包流程照样调用本脚本。
-  if (project.coreKind === 'embedded') {
-    console.log(`[build-core] ${project.coreKindEnv}=embedded：embedded 变体不需要 Rust Core，跳过。`);
-    return;
-  }
-
   const options = parseArgs(process.argv.slice(2));
   const targets = resolveTargets(options);
 

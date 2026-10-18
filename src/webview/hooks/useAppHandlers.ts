@@ -5,8 +5,8 @@ import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, Se
 import { createSessionState, type SessionStatesStore } from '../sessionState';
 import { ensureImageSize } from '../imageSize';
 import { restoreQueuedMessageToInput } from './restoreQueuedMessage';
-import { buildConversationTitle } from '../../core/utils/contentBlocks';
-import type { ModelRef } from '../../core/llm/modelRef';
+import { buildConversationTitle } from '../../shared/utils/contentBlocks';
+import type { ModelRef } from '../../shared/llm/modelRef';
 import { t } from '../i18n';
 
 const profileTag = '[Profile]';

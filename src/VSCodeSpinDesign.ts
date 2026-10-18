@@ -62,7 +62,7 @@ export class VSCodeSpinDesign implements SpinDesign {
     );
 
     const { getSpinDesignHtml } = await import('./host/ui/spinDesignHtml.js');
-    const { getAllSkills } = await import('./core/skills/loadSkillsDir.js');
+    const { getAllSkills } = await import('./shared/skills/loadSkillsDir.js');
     const isDark = this.host.isDarkTheme();
     // 无工作区时不做技能扫描（workspacePath 为空，扫相对路径会落到宿主进程目录）
     const availableSkills = (hasWorkspace ? await getAllSkills(resolvedWorkspacePath) : [])
@@ -108,7 +108,7 @@ export class VSCodeSpinDesign implements SpinDesign {
       panel?.webview.postMessage({ type: 'spinSaveResult', success: false, error: tt('没有打开的工作目录', 'No workspace folder is open') });
       return;
     }
-    const { getProjectConversationDir } = await import('./core/history/Config.js');
+    const { getProjectConversationDir } = await import('./shared/history/Config.js');
     const projectDir = getProjectConversationDir(workspacePath);
     const saveData = { ...data, meta: data.meta || {} };
     // 确保目录存在
@@ -119,7 +119,7 @@ export class VSCodeSpinDesign implements SpinDesign {
     try {
       // 串行写入 spin.json，避免与 SpinLoop 的 updateNodeMeta 并发
       // "读-改-写"导致清除结果被回写（保存不生效）
-      const { writeSpinJsonQueued } = await import('./core/spin/Engine.js');
+      const { writeSpinJsonQueued } = await import('./shared/spin/Engine.js');
       await writeSpinJsonQueued(workspacePath, saveData);
       panel?.webview.postMessage({ type: 'spinSaveResult', success: true });
     } catch (err) {
@@ -165,7 +165,7 @@ export class VSCodeSpinDesign implements SpinDesign {
       };
     }
 
-    const { getProjectConversationDir } = await import('./core/history/Config.js');
+    const { getProjectConversationDir } = await import('./shared/history/Config.js');
     const path = require('path') as typeof import('path');
     const projectDir = getProjectConversationDir(workspacePath);
     const spinJsonPath = path.join(projectDir, 'spin.json');
@@ -218,7 +218,7 @@ export class VSCodeSpinDesign implements SpinDesign {
       } as any);
       return;
     }
-    const { getAllSkills } = await import('./core/skills/loadSkillsDir.js');
+    const { getAllSkills } = await import('./shared/skills/loadSkillsDir.js');
     const availableSkills = (await getAllSkills(refreshed.workspacePath))
       .filter(s => !s.isHidden && s.userInvocable)
       .map(s => ({ name: s.name, description: s.description }));

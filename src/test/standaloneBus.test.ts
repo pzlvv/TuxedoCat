@@ -29,14 +29,13 @@ import {
   isCoreToUiFrame,
   isUiToCoreFrame,
 } from '../host/standalone/protocol';
-import { CORE_KIND, CORE_KIND_ENV, resolveCoreKind } from '../host/coreKind';
 import {
   coreBinaryCandidates,
   coreBinaryFileName,
   corePlatformDir,
 } from '../host/standalone/coreBinary';
 import { CONFIG_DIR_NAME, CORE_BINARY_NAME, CORE_RESOURCE_DIR } from '../config/project';
-import type { CoreRequestHandlers } from '../core/AssistantEventBus';
+import type { CoreRequestHandlers } from '../shared/AssistantEventBus';
 import { createChecker, runTests } from './helpers/harness';
 import { createRecordingCoreEventHandlers, type RecordingCoreEventHandlers, emptySettingsSnapshot } from './helpers/fixtures';
 
@@ -208,22 +207,6 @@ function throws(fn: () => void): boolean {
 
 async function run(): Promise<void> {
   const { check, finish } = createChecker();
-
-  // ---------- 选择变量 ----------
-  {
-    check('default core kind is standalone', resolveCoreKind({}) === 'standalone');
-    check('CORE_KIND is standalone', CORE_KIND === 'standalone');
-    check('env override embedded', resolveCoreKind({ [CORE_KIND_ENV]: 'embedded' }) === 'embedded');
-    check(
-      'env override standalone',
-      resolveCoreKind({ [CORE_KIND_ENV]: 'standalone' }) === 'standalone',
-    );
-    check(
-      'empty env falls back to the default',
-      resolveCoreKind({ [CORE_KIND_ENV]: '' }) === 'standalone',
-    );
-    check('invalid env throws', throws(() => resolveCoreKind({ [CORE_KIND_ENV]: 'rust' })));
-  }
 
   // ---------- 帧编解码 ----------
   {

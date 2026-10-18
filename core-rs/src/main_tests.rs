@@ -183,7 +183,7 @@ fn workspace_changed_event_updates_the_active_workspace() {
 }
 
 /// `userChoicePendingChanged`：宿主上报选择框弹出 / 应答，core 据此更新
-/// `sessionRuntime.waiting`（对齐 Embedded `initializeCoreEvents` 的 `markSessionWaiting`）。
+/// `sessionRuntime.waiting`。
 #[test]
 fn user_choice_pending_updates_the_waiting_runtime_state() {
     let _sandbox = Sandbox::new("main-user-choice-pending");
@@ -209,7 +209,7 @@ fn user_choice_pending_updates_the_waiting_runtime_state() {
     assert_eq!(latest["states"][0]["idle"], true);
 }
 
-/// 对齐 Embedded：`conversationStarted` 只登记工作目录（内存态），**不建档、不广播**。
+/// `conversationStarted` 只登记工作目录（内存态），**不建档、不广播**。
 /// `meta.json` / `.jsonl` 只在第一条消息持久化时创建，避免空对话出现在列表里。
 #[test]
 fn conversation_started_only_registers_the_workspace() {
@@ -272,7 +272,7 @@ fn conversation_started_without_a_session_id_is_ignored() {
     assert!(harness.sink.events().is_empty());
 }
 
-/// 对齐 Embedded：没有工作目录时 `conversationStarted` 静默返回（不报错、不广播）。
+/// 没有工作目录时 `conversationStarted` 静默返回（不报错、不广播）。
 #[test]
 fn conversation_started_without_a_workspace_is_silent() {
     let _sandbox = Sandbox::new("main-conversation-started-no-workspace");
@@ -460,7 +460,7 @@ fn session_config_events_are_dispatched() {
         assert!(keys.contains(&key.to_string()), "missing {key} in {keys:?}");
     }
 
-    // MCP 单开关（对齐 Embedded `Config.setSessionMcpEnabled`）：把这次勾选合并进
+    // MCP 单开关：把这次勾选合并进
     // 该会话的启用列表并写盘。广播由 MCP 的 `notifyServersChanged` 出口在差量同步
     // 结束后发出，因此这里断言写盘结果而不是 `sessionConfigChanged`。
     dispatch(
@@ -494,7 +494,7 @@ fn session_config_events_are_dispatched() {
         Some(vec!["y".to_string()])
     );
 
-    // 整表覆盖（对齐 Embedded `Config.setSessionMcpEnabledList`）：直接覆盖，不做增量；
+    // 整表覆盖：直接覆盖，不做增量；
     // 宿主保存默认配置前用它在写盘前把当前对话钉住。去重且保留首次出现顺序。
     dispatch(
         &harness,
@@ -655,7 +655,7 @@ fn ui_events_are_counted_on_the_bus() {
 
 #[test]
 fn project_conversation_dir_meta_is_written_by_core() {
-    // 对齐 Embedded `ensureProjectConversationDir`：core 建目录后自己写项目清单
+    // core 建目录后自己写项目清单
     // `workspace.meta.json`，不再上报事件、宿主不参与写盘。
     let sandbox = Sandbox::new("main-dir-ready");
     let harness = EngineHarness::allow_all();
@@ -1026,7 +1026,7 @@ fn conversation_space_cleared_without_mode_defaults_to_clear() {
     let dir = config::conversations_root().unwrap().join(&dir_name);
 
     let harness = EngineHarness::allow_all();
-    // 旧宿主不带 mode：按 clear 处理（跨版本窗口期兜底，与 Embedded 同口径）
+    // 旧宿主不带 mode：按 clear 处理（跨版本窗口期兜底）
     dispatch(&harness, json!({ "type": "conversationSpaceCleared", "sessionId": dir_name }));
 
     assert!(dir.is_dir(), "clear 模式保留空间目录");
@@ -1091,7 +1091,7 @@ fn ui_request_conversation_load_returns_messages_metadata_and_facts() {
 
 /// 崩溃残留的孤儿 tool_use（无配对 tool_result）：空闲会话加载时补「会话中断」
 /// 取消结果（webview 据此渲染失败而非 running），运行中的会话不伪造
-/// （对齐 Embedded `loadConversation` 的 `ensureToolResults` + `workingSessions` 守卫）。
+/// 。
 #[test]
 fn ui_request_conversation_load_recovers_interrupted_tool_use_for_idle_session() {
     let sandbox = Sandbox::new("main-ui-request-load-recover");
@@ -1239,7 +1239,7 @@ fn session_workspace_assigned_registers_and_clears() {
 #[test]
 fn dispatch_ui_event_covers_every_ui_event_type() {
     let fixture: serde_json::Value = serde_json::from_str(
-        include_str!("../../src/test/fixtures/eventTypesParity.json"),
+        include_str!("../fixtures/eventTypes.json"),
     )
     .expect("parse eventTypesParity.json");
 
@@ -1264,7 +1264,7 @@ fn dispatch_ui_event_covers_every_ui_event_type() {
 // 侧没有任何消费者——Rust 侧新增 / 删除事件时 fixture 不会红（「半张表」）。这里补齐：
 //
 // - 正向：coreEvents / coreRequests 的每个名字（除 `coreEventsDivergences` 登记的
-//   有意差异外，见 docs/core/core-parity.md）都必须作为 `"type": "<name>"` 出现在非测试
+//   有意差异外）都必须作为 `"type": "<name>"` 出现在非测试
 //   Rust 源码里（emit 位点）；
 // - 反向：非测试 Rust 源码里所有 camelCase 的 `"type": "…"` 字面量都必须登记进
 //   fixture 的某个数组（或 `rustTypeLiteralExemptions`）——Rust 新增 emit 而忘了登记
@@ -1313,7 +1313,7 @@ fn is_camel_case_type(s: &str) -> bool {
 }
 
 fn event_parity_fixture() -> serde_json::Value {
-    serde_json::from_str(include_str!("../../src/test/fixtures/eventTypesParity.json"))
+    serde_json::from_str(include_str!("../fixtures/eventTypes.json"))
         .expect("parse eventTypesParity.json")
 }
 
@@ -1332,13 +1332,13 @@ fn fixture_core_events_and_requests_exist_in_rust_emit_sites() {
         for name in fixture[group].as_array().expect(group) {
             let t = name.as_str().expect("type string");
             if divergences.contains(t) {
-                continue; // 有意差异（docs/core/core-parity.md）：Standalone 不广播
+                continue; // 有意差异（coreEventsDivergences 登记的例外）：不广播
             }
             let needle = format!("\"type\": \"{t}\"");
             assert!(
                 sources.iter().any(|(_, content)| content.contains(&needle)),
                 "{group} 的 `{t}` 在 Rust 非 test 源码里没有 emit 位点（`\"type\": \"{t}\"`）；\
-                 若为有意差异，登记进 coreEventsDivergences 并在 docs/core/core-parity.md 写明理由"
+                 若为有意差异，登记进 coreEventsDivergences 并写明理由"
             );
         }
     }
@@ -1407,7 +1407,7 @@ fn dispatch_ui_request_covers_every_ui_request_type() {
 #[test]
 fn runtime_state_fields_match_parity_fixture() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../src/test/fixtures/runtimeStateParity.json"
+        "../fixtures/runtimeState.json"
     ))
     .expect("parse runtimeStateParity.json");
     let sample = crate::engine::Core::runtime_state_json("s", false, false, false, false, false, false, None);

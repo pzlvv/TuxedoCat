@@ -7,7 +7,7 @@
  * 由 WebViewUI 实现；子模块只依赖这个窄接口。成员全部必选。
  */
 
-import type { SessionRuntimeState } from '../../core/AssistantEventBus.js';
+import type { SessionRuntimeState } from '../../shared/AssistantEventBus.js';
 
 import type { HostToWebviewMessageWithoutSessionId } from '../webviewMessages.js';
 

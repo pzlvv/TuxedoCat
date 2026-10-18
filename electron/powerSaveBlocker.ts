@@ -12,8 +12,8 @@
  *
  * Electron 依赖经构造参数注入（`PowerSaveBlockerPort`），纯状态机可单测。
  */
-import { sessionBusyLevel } from '../src/core/sessionRuntime.js';
-import type { SessionRuntimeState } from '../src/core/AssistantEventBus.js';
+import { sessionBusyLevel } from '../src/shared/sessionRuntime.js';
+import type { SessionRuntimeState } from '../src/shared/AssistantEventBus.js';
 
 /**
  * 注入的 `powerSaveBlocker` 能力（Electron 模块的子集）。

@@ -3,7 +3,7 @@
  *
  * 目标环境只有 SSH 端口、daemon 端口映射不出来时，Host 经 SSH 完成：
  *
- * 1. **发现**：部署槽位由本机携带产物的**构建指纹**决定（`docs/core/standalone-core.md` 第 4.4 节）——远端部署目录 `~/.local/share/<core.deployPrefix>/<指纹>/`，
+ * 1. **发现**：部署槽位由本机携带产物的**构建指纹**决定（`docs/core/standalone-core.md` 第 3.4 节）——远端部署目录 `~/.local/share/<core.deployPrefix>/<指纹>/`，
  *    状态文件 `~/<configDir>/run/core-daemon-<指纹>.json`。状态文件里的 daemon 探得通就是
  *    本版本（同一指纹）的 daemon 在跑，直接复用：不重启、不覆盖。
  *    多版本 Core 在同一台远端机器上各占一个槽位、各跑一个 daemon——不同版本
@@ -82,7 +82,7 @@ export interface RemoteDaemonEndpoint {
 
 /** 引导参数 */
 export interface RemoteBootstrapOptions {
-  /** 应用 / 扩展根目录：本地 Core 产物的定位基准（`docs/core/standalone-core.md` 第 4.1 节） */
+  /** 应用 / 扩展根目录：本地 Core 产物的定位基准（`docs/core/standalone-core.md` 第 3.1 节） */
   extensionPath: string;
   log: (...args: unknown[]) => void;
 }
@@ -160,7 +160,7 @@ export async function ensureRemoteDaemon(
 /**
  * 确保远端指纹槽位里有可执行文件：缺失才上传，存在即同版本。
  *
- * 指纹只由源码内容与编译器身份决定（`docs/core/standalone-core.md` 第 4.4 节），同一
+ * 指纹只由源码内容与编译器身份决定（`docs/core/standalone-core.md` 第 3.4 节），同一
  * 指纹的两个构建产物行为一致，因此存在就不再上传——不同构建机 / 不同客户端的
  * 同版本产物互不覆盖。上传走「客户端唯一暂存名 + `mv` 原子换名」：目标可能正被
  * 一个在跑的 daemon 执行（它的指纹槽位被清过、状态文件丢失时我们无从得知它在跑），

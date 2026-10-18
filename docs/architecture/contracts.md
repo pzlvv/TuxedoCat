@@ -1,24 +1,24 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-18
 ---
 
 # 规格：宿主契约
 
-本规格界定宿主侧的三个契约与 MCP 生命周期入口：`UIHost`（第 1 节）、`SpinDesign`（第 2 节）、`MCPHost`（第 3 节）、`ConversationManager`（第 4 节），以及宿主侧入口把动作翻译为 `UiEvent` 的规则（第 5 节）。契约成员全部必选、按 UI surface 划分；分层与依赖规则见 [docs/architecture/layering.md 第 2 节](layering.md#2-规则清单)，事件词汇表见[第 1 节](events.md#1-总线契约)、[第 2 节](events.md#2-事件词汇表)。宿主侧共享子模块与窄端口见 `docs/architecture/host-ui-modules.md`；webview 侧的宿主能力声明与消息通道见 `docs/hosts/host-info.md`。
+本规格界定宿主侧的三个契约：`UIHost`（第 1 节）、`SpinDesign`（第 2 节）、`ConversationManager`（第 4 节），Core 进程内的 MCP 生命周期（第 3 节），以及宿主侧入口把动作翻译为 `UiEvent` 的规则（第 5 节）。契约成员全部必选、按 UI surface 划分；分层与依赖规则见 [docs/architecture/layering.md 第 2 节](layering.md#2-规则清单)，事件词汇表见[第 1 节](events.md#1-总线契约)、[第 2 节](events.md#2-事件词汇表)。宿主侧共享子模块与窄端口见 `docs/architecture/host-ui-modules.md`；webview 侧的宿主能力声明与消息通道见 `docs/hosts/host-info.md`。
 
 交叉引用：`docs/hosts/webview-ui.md`（WebViewUI 实现与会话 UI 状态——契约的消费方）、`docs/hosts/host-matrix.md`（两个宿主对三契约的逐成员实现对照）、`docs/hosts/webview-facts.md`（webview 的事实与等待态）、[docs/architecture/principles.md](principles.md)（架构原则）。
 
 ---
 
-宿主差异全部收敛在四个宿主契约上，外加一个 core 侧的 MCP 生命周期入口：
+宿主差异全部收敛在三个宿主契约上；MCP 的生命周期整体在 Core 进程内：
 
 | 名称 | 形态 | 服务的 surface | 实现 |
 | --- | --- | --- | --- |
 | `UIHost` | interface（`extends WorkspaceProvider`） | 对话 webview 的宿主能力 | `VSCodeUIHost` / `ElectronUIHost` |
 | `WorkspaceProvider` | interface | 工作区（进程级环境事实，不是 UI surface） | 同上两个宿主类 |
 | `SpinDesign` | interface | Spin 设计器（独立面板 / 窗口） | `VSCodeSpinDesign` / `ElectronSpinDesign` |
-| `MCPHost` | core 单例 | MCP 的会话级生命周期（**不是宿主契约**） | 唯一实现，无宿主分支 |
+| MCP 生命周期 | Core 进程内的模块（`core-rs/src/mcp.rs`，**不是宿主契约**） | MCP 的会话级生命周期 | 唯一实现，无宿主分支 |
 | `ConversationManager` | abstract class | 对话列表 / 会话运行时状态（空闲会话回收在 VS Code 实现里） | `SingleWebViewConversationManager` / `ElectronConversationManager` |
 
 契约按 **UI surface** 划分（[docs/architecture/layering.md 第 2 节](layering.md#2-规则清单)规则 7）：新增面板、窗口或列表类功能时，先确定其所属
@@ -32,7 +32,7 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | --- | --- |
 | 1. | [UIHost：对话 webview 的宿主能力](#1-uihost对话-webview-的宿主能力) |
 | 2. | [Spin 设计器契约：SpinDesign](#2-spin-设计器契约spindesign) |
-| 3. | [MCP 宿主：MCPHost](#3-mcp-宿主mcphost) |
+| 3. | [MCP 生命周期（Core 进程内）](#3-mcp-生命周期core-进程内) |
 | 4. | [对话相关数据：ConversationManager](#4-对话相关数据conversationmanager) |
 | 5. | [宿主侧入口：动作翻译为 UiEvent](#5-宿主侧入口动作翻译为-uievent) |
 
@@ -101,8 +101,9 @@ before/after 两个虚拟文档组成的 diff 标签，Electron 空实现（diff
 | `~/<CONFIG_DIR_NAME>/settings.json` | 全局配置（llm / mcp / uiLanguage / uiFontSize / highlightLanguages / defaultAgentMode / defaultPromptMode…） | `updateSettingsJson` |
 
 项目对话目录清单 `<conversations>/<project>/workspace.meta.json` **不在这里**：它归 core，
-由 core 在建目录时自己写（Embedded `history/Config.ensureProjectConversationDir`，
-Standalone 的 Rust `config`），宿主不参与写盘。
+由 core 在建目录时自己写（Core 进程 `core-rs/src/config.rs`；宿主侧共享读写库
+`src/shared/history/Config.ts` 的 `ensureProjectConversationDir` 服务同一格式的宿主
+读写），宿主不参与写盘。
 
 `theme` / `shortcut` 不属于这份文件：它们是 Electron 宿主本地偏好，落
 `userData/workspace-state.json`（`electron/workspaceStateStore.ts`，临时文件 + rename 原子落盘、内容未变不落盘），core 不读不写（[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主固有差异有意保留)）。
@@ -179,57 +180,50 @@ core 与它只有一条连接：`CoreEvent.spinDesignDataChanged` → `WebViewUI
 `WebviewMessageHandler` 不直接持有 `SpinDesign`：它走 `WebViewUiPort.openSpinDesign()`
 （`WebViewUI` 转发到 `spinDesign.open()`），维持「子模块只认窄端口」的约定（[docs/architecture/host-ui-modules.md](host-ui-modules.md)）。
 
-## 3. MCP 宿主：MCPHost
+## 3. MCP 生命周期（Core 进程内）
 
-位置：`src/core/mcp/MCPHost.ts`。
+位置：`core-rs/src/mcp.rs`（连接池与会话引用）、`core-rs/src/mcp_config.rs`（会话启用列表）、
+`core-rs/src/mcp_http.rs`（Streamable HTTP / SSE 传输）。
 
-它**不是宿主契约**：没有 VSCode / Electron 两个实现，只有一个 core 侧单例。放在本章，是因为
-它**不挂在 `UIHost` 上**：**MCP 的生命周期由 core 的会话事实决定，不由 UI 的视图生命周期
-决定**，所以「会话打开」不能是宿主能力。
+MCP 的生命周期**不是宿主契约**：没有 VSCode / Electron 两个实现，整体在 Core 进程内。
+放在本章，是因为它**不挂在 `UIHost` 上**：**MCP 的生命周期由 Core 的会话事实决定，
+不由 UI 的视图生命周期决定**，所以「会话打开」不能是宿主能力。
 
-职责：把「会话生命周期 → MCP 引用」的映射收口到一处，驱动信号全部来自 core：
+职责：把「会话生命周期 → MCP 引用」的映射收口到一处，驱动信号全部来自 Core 的
+会话事实：
 
-| 成员 | 触发 | 语义 |
+| 入口 | 触发 | 语义 |
 | --- | --- | --- |
-| `onSessionOpened(sessionId)` | `Integration.createEngine` / `restoreConversationEngine` | 按该会话的启用列表建立引用（幂等；可能耗时，后台执行不阻塞）；连接 / 断开结束后广播 `sessionConfigChanged(mcpEnabled)` |
-| `onSessionClosed(sessionId)` | `sessionResources.releaseSessionResources` / `history.deleteConversation` | 释放该会话的全部引用（归零的 server 进入延迟回收） |
-| `onSessionEnabledChanged(sessionId)` | 启用列表变化 | 差量同步；结束后广播 `sessionConfigChanged(mcpEnabled)` |
-| `prune()` | bootstrap | 清理没有任何会话引用的残留进程 |
-| `shutdown()` | 宿主退出 | 结束全部 MCP 子进程，避免留下孤儿进程 |
+| `host_session_opened(sessionId)` | `start_conversation` / `on_conversation_opened` | 按该会话的启用列表建立引用（幂等；可能耗时，后台执行不阻塞）；连接 / 断开结束后广播 `sessionConfigChanged(mcpEnabled)` |
+| `host_session_closed(sessionId)` | `on_conversation_closed` / `on_conversation_deleted` | 释放该会话的全部引用（归零的 server 进入延迟回收） |
+| `host_session_enabled_changed(sessionId)` | 启用列表变化（`mcpEnabledChanged` / `mcpEnabledListChanged`） | 差量同步；结束后广播 `sessionConfigChanged(mcpEnabled)` |
+| `prune()` | Core 启动收尾 | 清理没有任何会话引用的残留进程 |
+| `shutdown()` | Core 进程退出 | 结束全部 MCP 子进程，避免留下孤儿进程 |
 
-`onSessionOpened` / `onSessionEnabledChanged` 在串行链内 `await` 到 server 进入最终状态
-（running 或 error）后广播 `sessionConfigChanged(mcpEnabled)`：连接是异步的，缺这条事实，
-webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接中」。UI 收到后重新读取运行时
-状态并回推 `setMcpServers`（[docs/architecture/events.md 第 2.1 节](events.md#21-coreeventcore--ui单向)事件 21）。
+`host_session_opened` / `host_session_enabled_changed` 在连接 / 断开进入最终状态
+（running 或 error）后广播 `sessionConfigChanged(mcpEnabled)`（servers-changed 出口，
+sink 注册在 `main.rs`）：连接是异步的，缺这条事实，webview 的 MCP 菜单会一直停在
+乐观更新 / 首次推送时的「连接中」。UI 收到后重新读取运行时状态并回推 `setMcpServers`
+（[docs/architecture/events.md 第 2.1 节](events.md#21-coreeventcore--ui单向)的 `sessionConfigChanged`）。
 
-另提供三个只读转发：`getTools()` / `getServerStatus()` / `readServers(sessionId)`；工具聚合
-与面板读取的实际路径是 `mcp/Manager` 与 `mcp/Config`。
-
-**与 `McpManager` 的分工**：`MCPHost` 管「什么时候」，`McpManager`（`mcp/Manager.ts`）管
-「怎么做」。
-
-| | `MCPHost` | `McpManager` |
-| --- | --- | --- |
-| 知道 | 「会话打开 / 关闭 / 启用列表变化」意味着什么 | 只认 `sessionId` 集合 |
-| 职责 | 会话生命周期 → 引用计数调用；`prune` / `shutdown` 的时机 | 引用计数、子进程启动与延迟回收、配置签名、工具列表重建 |
-| 调用方 | core（`Integration` / `sessionResources` / `history` / `initializeCoreEvents`）、宿主侧 MCP 面板的默认值变更路径、bootstrap | 写路径只有 `MCPHost`；UI 面板的只读状态读取直接调 `mcp/Manager` 的 `getServerStatus()` |
-
-所有操作经内部串行链（`opChain`）排队，避免并发造成进程重复启动或状态错乱。
+另提供只读查询：`get_tools` / `get_tools_for_servers`（按会话启用列表过滤的
+`mcp__*` 工具注入）、`get_server_status`（运行时状态，MCP 面板经
+`UiRequest.mcpServersRequested` 索取）、`call_tool`（工具执行与子进程终止）。
 
 **留在 UI 侧的 MCP 代码**（只读展示，与生命周期无关）：
 
 | 位置 | 内容 |
 | --- | --- |
-| `webviewMessageHandler.handleRequestMcpServers` / `pushMcpServers` | 读 `mcp.json` + 会话启用列表 + 运行时状态，推给面板 |
-| `webviewMessageHandler` 的 `setMcpEnabled` 翻译 | 发 `UiEvent.mcpEnabledChanged`；写盘与差量同步由 core 侧处理 |
+| `webviewMessageHandler.handleRequestMcpServers` / `pushMcpServers` | 经 `UiRequest.mcpServersRequested` 读配置 + 会话启用列表 + 运行时状态，推给面板 |
+| `webviewMessageHandler` 的 `setMcpEnabled` 翻译 | 发 `UiEvent.mcpEnabledChanged`；写盘与差量同步由 Core 侧处理 |
 | `webviewMessageHandler` 的 `setMcpEnabledList` 翻译 | 发 `UiEvent.mcpEnabledListChanged`（整表覆盖，设置面板「应用到当前对话」）；同上一条链路 |
 | `webviewMessageHandler.handleSaveLLMConfig` 的钉住 | 保存全局默认 MCP 列表前，先读该会话生效的启用列表并发 `mcpEnabledListChanged` 把它钉住：全局默认只改新对话默认值，当前对话是否跟随由 webview 的确认框决定。钉住失败不阻断保存，只回 `mcpPinFailed`，由 webview 给出提示 |
 | webview 侧 MCP 面板 | 纯展示 |
 
-**启用状态的两层与「钉住」**：`mcp/Config` 里生效值 = 会话覆盖（`meta.json` 的
-`context.mcpEnabled`，进程内还有一份内存覆盖）优先，其次全局默认（`settings.json` 的
-`mcp.enabled`，经配置快照下发）。输入框菜单的勾选只写会话覆盖；设置面板「默认配置」只写
-全局默认。全局默认变更会让 core 重同步**其它**已注册会话，但当前对话在写盘前已被宿主钉在
+**启用状态的两层与「钉住」**：生效值 = 会话覆盖（`meta.json` 的 `context.mcpEnabled`，
+Core 进程内另有一份内存覆盖）优先，其次全局默认（`settings.json` 的 `mcp.enabled`，
+经配置快照下发）。输入框菜单的勾选只写会话覆盖；设置面板「默认配置」只写全局默认。
+全局默认变更会让 Core 重同步**其它**已注册会话，但当前对话在写盘前已被宿主钉在
 它当前的列表上（`mcpEnabledListChanged`），因此不会静默跟随——是否跟随由设置面板的
 「应用到当前对话」确认框决定（[docs/hosts/webview-facts.md 第 6 节](../hosts/webview-facts.md#6-设置面板)）。
 
@@ -239,10 +233,9 @@ webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接�
 
 | 环节 | 做法 |
 | --- | --- |
-| 组装 prompt | `QueryEngine.ensureFullSystemPrompt` 读取该会话生效的启用列表（`readEnabledMcps(sessionId)`；子代理经 `parentSessionId` 继承父会话），据此过滤工具 |
-| 组装请求 | `QueryEngine.getPromptStateForQuery()` 把启用集合交给 `Query`，`Query` 用 `getAllTools(enabledMcpServers)` 只把本会话启用的 server 的 MCP 工具放进 `tools` |
-| 缓存失效 | 会话启用列表变化时，`McpManager.syncSessionInternal` 调 `invalidateSessionPromptCache(sessionId)` 单独失效该会话的 prompt 缓存，**不依赖**全局工具集合是否变化 |
-| 工具执行 | `RunTools` 仍用全局 `getAllTools()`，保证历史消息里已发出的工具调用仍能按名解析 |
+| 组装请求 | 组装 LLM 请求时按该会话生效的启用列表（`get_tools_for_servers`；子代理经 `parentSessionId` 继承父会话）过滤 `tools` |
+| 缓存失效 | 会话启用列表变化时，差量同步单独失效该会话的提示词缓存，**不依赖**全局工具集合是否变化 |
+| 工具执行 | 执行侧仍用全局 `get_tools()` 解析，保证历史消息里已发出的工具调用仍能按名解析 |
 
 ## 4. 对话相关数据：ConversationManager
 
@@ -253,7 +246,7 @@ webview 的 MCP 菜单会一直停在乐观更新 / 首次推送时的「连接�
 | | 流 1：对话列表 | 流 2：会话运行时状态 |
 | --- | --- | --- |
 | 内容 | 磁盘元数据：`title` / `createdAt` / `updatedAt` / `messageCount` / `parentSessionId` | 运行时根事实与派生 `idle`（`SessionRuntimeState`，[docs/architecture/events.md 第 2 节](events.md#2-事件词汇表) / [docs/core/session-runtime.md](../core/session-runtime.md)） |
-| source of truth | 磁盘（core 的 `loadConversationList()`） | core 的 `sessionRuntime`（[docs/core/session-runtime.md](../core/session-runtime.md)） |
+| source of truth | 磁盘（Core 对 `conversationListRequested` 的应答） | Core 的会话运行时状态（[docs/core/session-runtime.md](../core/session-runtime.md)） |
 | 变化频率 | 低（落盘 / 改名 / 删除 / 新建） | 高（查询开始结束、等用户、用户响应） |
 | 触发 | `CoreEvent.conversationListChanged` | `CoreEvent.sessionRuntimeChanged` |
 | 消费者 | webview 子对话树、Electron 原生侧栏 | VS Code webview 对话树流水灯、Electron 侧栏流水灯、系统托盘状态点、未读完成呼吸（Electron）、系统睡眠阻断（宿主进程与 Core 进程各一份） |
@@ -310,18 +303,18 @@ VS Code 实现里的成员：
 | `updateSessionStates(states)`（覆盖） | 先刷新空闲计时再调 `super`（会话进入工作、或从工作回到空闲时都算一次活动） |
 
 规则：非激活会话在最后一次活动后空闲超过 `SESSION_IDLE_CLOSE_MS`（2 小时）即关闭；「是否
-空闲」由 core 的只读查询 `sessionResources.isSessionIdle` 判定（压缩中 / 等待用户 /
-后台 Bash / 非 idle 子代理（递归）/ 引擎消费中任一为真即非空闲），判定失败时保守视为
-「非空闲」；未注入关闭回调时不关闭任何会话。
-关闭动作走 `idleCloseHandler`（`WebViewUI.closeConversation` = 发 `conversationClosed` +
+空闲」读 Core 推送的 `sessionRuntimeChanged` 快照缓存（`getSessionStatesSnapshot`）：
+该会话 `idle` 为假（压缩中 / 等待用户 / 后台 Bash / 非 idle 子代理（递归）/ 引擎消费中
+任一为真）即非空闲，快照里找不到该会话时保守视为「非空闲」；未注入关闭回调时不关闭任何
+会话。关闭动作走 `idleCloseHandler`（`WebViewUI.closeConversation` = 发 `conversationClosed` +
 宿主销毁视图）。
 
 活动来源：宿主侧上报（打开 / 新建 / 用户发消息，经 `WebViewUiPort.noteSessionActivity`）
 与 `updateSessionStates` 的状态跃迁。
 
-`isSessionIdle` 的「等待用户」事实读 core 自己的 `sessionRuntime`（`isSessionWaiting`）：
-入队时 `Integration.requestUserChoice` 标记，webview 弹出 / 应答时宿主经
-`UiEvent.userChoicePendingChanged` 上报（[docs/architecture/events.md 第 2.3 节](events.md#23-uieventui--core单向)），core 侧由 `markSessionWaiting` 落地。
+`idle` / `waiting` 的运行时事实 owner 是 Core 进程：宿主经 `UiEvent.userChoicePendingChanged`
+上报「用户选择是否在等待应答」（webview 弹出 / 应答时），Core 侧落到该会话的运行时状态
+（[docs/architecture/events.md 第 2.3 节](events.md#23-uieventui--core单向)，[docs/core/session-runtime.md](../core/session-runtime.md)）。
 
 **调用方**：
 
@@ -350,7 +343,7 @@ import core 的只读函数与类型（[docs/architecture/layering.md 第 2 节]
 | 关闭会话 / 空闲回收（仅 VS Code） | `WebViewUI.closeConversation` → `releaseConversation` | `conversationClosed` |
 | 编辑器上下文 | `extension.ts` 的 `persistCurrentFileContext` | `conversationContextUpdated` |
 | Electron 侧栏：关闭 | `sidebar:close-conversation` | `WebViewUI.closeConversation(sid)`（= `conversationClosed` + 关视图） |
-| Electron 侧栏 / webview 顶栏：删除 | `sidebar:delete-conversation` / `deleteConversationWithViews`（webview 的 `deleteConversation` 在多视图宿主由 `electron/main.ts` 接管） | 两条入口共用 `deleteConversationWithViews`：先用 core 的 `collectConversationClosure` 求受影响闭包（自身 + 所有层级子孙，与 `deleteConversation` 同一条规则），对闭包里**已打开**的视图逐个 `closeConversation`（没打开的会话没有可卸资源，也不发 `conversationClosed`——它按会话路由不到归属），再对 root 发 `conversationDeleted`（core 对闭包逐个删盘并释放引擎 / MCP / 运行时状态） |
+| Electron 侧栏 / webview 顶栏：删除 | `sidebar:delete-conversation` / `deleteConversationWithViews`（webview 的 `deleteConversation` 在多视图宿主由 `electron/main.ts` 接管） | 两条入口共用 `deleteConversationWithViews`：先用 `collectConversationClosure`（`src/shared/history/Conversation.ts`）求受影响闭包（自身 + 所有层级子孙，与 Core 的删除规则同一份格式），对闭包里**已打开**的视图逐个 `closeConversation`（没打开的会话没有可卸资源，也不发 `conversationClosed`——它按会话路由不到归属），再对 root 发 `conversationDeleted`（Core 对闭包逐个删盘并释放引擎 / MCP / 运行时状态） |
 | Electron 侧栏：重命名 | `sidebar:rename-conversation` | `conversationRenamed` |
 | Electron 侧栏：智能命名 | `sidebar:smart-name-conversation` | LLM 起名后发 `conversationRenamed` |
 | Electron 菜单：唤醒快捷键 | File - Shortcut... 对话框（`electron/main.ts`） | 写宿主本地状态（`workspace-state.json` 的 `shortcut` 字段），不经总线 |

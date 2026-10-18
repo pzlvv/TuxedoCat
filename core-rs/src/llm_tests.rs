@@ -217,7 +217,7 @@ fn usage_json_always_carries_cache_keys_and_omits_absent_reasoning() {
     .to_json();
     assert_eq!(minimal["input_tokens"], 10);
     assert_eq!(minimal["output_tokens"], 20);
-    // 对齐 Embedded `extractUsageFields` / `applyMessageDelta`：cache 两键恒存在（缺省 0）
+    // cache 两键恒存在（缺省 0）
     assert_eq!(minimal["cache_read_input_tokens"], 0);
     assert_eq!(minimal["cache_creation_input_tokens"], 0);
     assert!(minimal.get("reasoning_tokens").is_none());
@@ -338,8 +338,8 @@ fn chat_messages_convert_tool_use_and_thinking() {
 }
 
 #[test]
-fn chat_messages_match_embedded_empty_and_unknown_entries() {
-    // Embedded `convertMessagesToChatCompletions` 对字符串 content 原样透传（含空串）
+fn chat_messages_match_empty_and_unknown_entries() {
+    // 字符串 content 原样透传（含空串）
     assert_eq!(
         to_chat_messages(&[json!({ "role": "user", "content": "" })]),
         vec![json!({ "role": "user", "content": "" })]
@@ -372,7 +372,7 @@ fn chat_tools_wrap_input_schema_as_parameters() {
     assert!(converted[0]["function"]["description"].as_str().is_some_and(|t| !t.is_empty()));
     assert_eq!(converted[0]["function"]["parameters"]["type"], "object");
 
-    // 对齐 Embedded：缺 name 退化为 "unknown"，缺 / null input_schema 退化为
+    // 缺 name 退化为 "unknown"，缺 / null input_schema 退化为
     // `{ type: "object", properties: {}, required: [] }`，非 function 类型的工具被丢弃
     let partial = to_chat_tools(&[json!({ "description": "无名字" }), json!({ "name": "X" })]);
     assert_eq!(partial.len(), 2);
@@ -428,7 +428,7 @@ fn sse_parsing_uses_js_trim_before_the_data_prefix() {
 
 #[test]
 fn request_bodies_use_js_json_number_format() {
-    // Embedded 用 `JSON.stringify`（`stringifyJsonSafe`）：`temperature: 1.0` 序列化成
+    // `JSON.stringify` 口径：`temperature: 1.0` 序列化成
     // `1`。Rust 必须用 `util::js_json_stringify`，不能落到 serde_json 的 `1.0`。
     for api_type in ["OpenAI", "Anthropic"] {
         let captured: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -475,8 +475,8 @@ fn openai_stream_emits_tool_calls_split_across_chunks() {
 }
 
 #[test]
-fn openai_stream_generates_fallback_tool_ids_like_embedded() {
-    // 对齐 Embedded `OpenAiApi`：`tc.id || \`call_${streamMessageId}_${idx}\``。
+fn openai_stream_generates_fallback_tool_ids() {
+    // `tc.id || \`call_${streamMessageId}_${idx}\``。
     // streamMessageId 的形态是 `msg_${Date.now()}_${random}`，因此兜底 id 必须形如
     // `call_msg_<millis>_<random>_<index>`（而不是旧的 `call_<millis>_<suffix>`）。
     let mut sse = String::new();
@@ -606,7 +606,7 @@ fn openai_stream_merges_interleaved_parallel_tool_calls_by_index() {
 
 #[test]
 fn openai_stream_falls_back_to_reasoning_when_reasoning_content_is_empty() {
-    // 对齐 Embedded：`reasoning_content` 只有非空时才优先，空串回退到 `reasoning`
+    // `reasoning_content` 只有非空时才优先，空串回退到 `reasoning`
     let mut sse = String::new();
     sse.push_str(&format!(
         "data: {}\n\n",
@@ -664,7 +664,7 @@ fn openai_stream_errors_when_the_server_reports_one() {
 #[test]
 fn openai_stream_error_without_message_serializes_the_error_object() {
     // 对齐 `OpenAiApi`：`` `Chat Completions failed: ${err?.message || JSON.stringify(err)}` ``。
-    // 服务商只回错误码（没有 message 字段）时，Embedded 会把整个 error 对象显示给用户，
+    // 服务商只回错误码（没有 message 字段）时，把整个 error 对象显示给用户，
     // 而不是 `unknown error`。
     let llm = FakeLlm::fixed(
         "data: {\"error\":{\"code\":\"rate_limit\",\"type\":\"server_error\"}}\n\n".to_string(),
@@ -696,7 +696,7 @@ fn openai_stream_error_without_message_serializes_the_error_object() {
         "Chat Completions failed: [object Object]"
     );
 
-    // `"error": null`（JS 假值）不算错误帧：对齐 Embedded 的 `if (parsed.error)`，
+    // `"error": null`（JS 假值）不算错误帧，
     // 该帧被忽略，流按「有内容 / 无 finish_reason」正常收尾。
     let llm = FakeLlm::fixed(
         "data: {\"error\":null,\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"
@@ -710,7 +710,7 @@ fn openai_stream_error_without_message_serializes_the_error_object() {
 
 #[test]
 fn openai_stream_keeps_the_fallback_tool_id_when_a_later_chunk_carries_one() {
-    // 对齐 Embedded：id 在 block **创建时**定死（`tc.id || call_${streamMessageId}_${idx}`），
+    // id 在 block **创建时**定死（`tc.id || call_${streamMessageId}_${idx}`），
     // 后续分片补上的 id 不会替换兜底 id（`if (tc.id && !block.id)` 永不成立）。
     let mut sse = String::new();
     sse.push_str(&format!(
@@ -833,7 +833,7 @@ fn anthropic_stream_parses_thinking_text_and_usage() {
         })
         .next()
         .expect("message_start usage");
-    // 对齐 Embedded：input_tokens 把两个 cache 计数加回（5 + 3 + 2）
+    // input_tokens 把两个 cache 计数加回（5 + 3 + 2）
     assert_eq!(usage.input_tokens, 10);
     assert_eq!(usage.cache_read_input_tokens, Some(3));
     assert_eq!(usage.cache_creation_input_tokens, Some(2));
@@ -869,7 +869,7 @@ fn anthropic_stream_parses_thinking_signature() {
 
 #[test]
 fn anthropic_stream_keeps_signature_from_content_block_start() {
-    // 对齐 Embedded `RealApi` 的 `content_block_start` 分支：thinking 块自带非空
+    // thinking 块自带非空
     // signature 时要保留（部分网关只在这一帧给完整签名，不再发 signature_delta）。
     let sse = concat!(
         "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
@@ -894,7 +894,7 @@ fn anthropic_stream_keeps_signature_from_content_block_start() {
 
 #[test]
 fn anthropic_stream_uses_content_block_start_input_when_no_delta() {
-    // 对齐 Embedded `RealApi`：`content_block_start` 自带 input、且没有
+    // `content_block_start` 自带 input、且没有
     // `input_json_delta` 时，input 就是最终入参（部分网关不逐字流式传参）。
     let sse = concat!(
         "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
@@ -928,7 +928,6 @@ fn anthropic_stream_uses_content_block_start_input_when_no_delta() {
 
 #[test]
 fn anthropic_empty_stop_reason_keeps_the_previous_one() {
-    // 对齐 Embedded `RealApi.applyMessageDelta`：
     // `stopReason = msgDelta.stop_reason as string || stopReason`——空串是假值，
     // 不能把已经收到的 `tool_use` 覆盖成空（否则落盘 assistant 丢掉 stop_reason，
     // 引擎按「没有工具调用」收尾，工具结果不会再回 LLM）。
@@ -983,7 +982,7 @@ fn anthropic_stream_parses_tool_use_blocks() {
 #[test]
 fn anthropic_request_body_enables_or_disables_thinking() {
     let llm = FakeLlm::start(|_, body| {
-        // 与 Embedded 一致：思考开启用 chat_template_kwargs + thinking_token_budget
+        // 思考开启用 chat_template_kwargs + thinking_token_budget
         assert_eq!(body["chat_template_kwargs"]["thinking"], true);
         assert_eq!(body["chat_template_kwargs"]["reasoning_effort"], "high");
         assert_eq!(body["thinking_token_budget"], 256);
@@ -1062,8 +1061,8 @@ fn stream_stops_early_when_cancelled() {
 }
 
 #[test]
-fn api_error_message_matches_the_embedded_format() {
-    // 对齐 Embedded `API request failed: ${status} ${statusText}\n${errorText}`（正文不截断）
+fn api_error_message_matches_the_format() {
+    // 模板 `API request failed: ${status} ${statusText}\n${errorText}`（正文不截断）
     assert_eq!(
         api_error_message(reqwest::StatusCode::BAD_REQUEST, "{\"error\":\"bad\"}"),
         "API request failed: 400 Bad Request\n{\"error\":\"bad\"}"
@@ -1074,14 +1073,14 @@ fn api_error_message_matches_the_embedded_format() {
     );
 }
 
-/// 两侧共用 `src/test/fixtures/chatCompletionParity.json`：
+/// 两侧共用 `core-rs/fixtures/chatCompletion.json`：
 /// - `src/test/chatCompletionParity.test.ts` 断言「对照表 == `convertMessagesToChatCompletions` 的真实输出」；
 /// - 这里断言「`to_chat_messages` == 对照表」（含空串透传、纯文本合并、tool_result 压平、
 ///   assistant tool_calls 的 `content: null`、其它 role 透传等 TS 分支）。
 mod chat_completion_parity_tests {
     use super::*;
 
-    const FIXTURE: &str = include_str!("../../src/test/fixtures/chatCompletionParity.json");
+    const FIXTURE: &str = include_str!("../fixtures/chatCompletion.json");
 
     #[test]
     fn matches_the_shared_chat_completion_table() {
@@ -1121,8 +1120,8 @@ fn feed_repetition(chunks: &[String]) -> Option<RepetitionHit> {
 }
 
 #[test]
-fn repetition_detector_matches_embedded_table() {
-    // 期望值与 Embedded `RepetitionDetector` 逐字一致（TS 侧用例 llmStreamParity 同表）
+fn repetition_detector_matches_table() {
+    // 期望值锁定 RepetitionDetector 的既定判定表
     let cases: Vec<(Vec<String>, Option<(usize, usize, usize, &str, usize)>)> = vec![
         (vec!["a".repeat(6000)], Some((1, 6000, 6000, "a", 6000))),
         (
@@ -1166,7 +1165,7 @@ fn repetition_detector_matches_embedded_table() {
 }
 
 #[test]
-fn repetition_error_message_matches_embedded_wording() {
+fn repetition_error_message_matches_wording() {
     let mut detector = RepetitionDetector::new();
     let error = check_repetition(&mut detector, &"a".repeat(6000), "text").unwrap_err();
     assert_eq!(
@@ -1181,7 +1180,7 @@ fn repetition_error_message_matches_embedded_wording() {
 // ==================== 重试（对齐 shared.ts / 两个适配器） ====================
 
 #[test]
-fn retryable_status_codes_match_embedded() {
+fn retryable_status_codes_match_spec() {
     assert!(is_retryable_status(502));
     assert!(is_retryable_status(503));
     assert!(!is_retryable_status(500));
@@ -1207,7 +1206,7 @@ fn stream_retries_on_retryable_status() {
     let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], false);
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(calls.load(Ordering::Relaxed), 2, "503 应当重试一次");
-    // 重试即重建累积（对齐 Embedded `executeRequest` 内的 `contentBlocks`）
+    // 重试即重建累积
     assert!(events.iter().any(|event| matches!(event, LlmEvent::Reset)));
     assert!(events.iter().any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "重试成功")));
 }
@@ -1486,7 +1485,7 @@ fn anthropic_stream_emits_a_tool_use_block() {
 #[test]
 fn openai_stream_synthesizes_block_boundaries() {
     // Chat Completions 没有显式块边界：适配器在角色切换时补 block_stop + block_start，
-    // 流结束时再关掉仍打开的块（对齐 Embedded `OpenAiApi` 的 `emitBlockStop()`）。
+    // 流结束时再关掉仍打开的块。
     let llm = FakeLlm::fixed(openai_thinking_sse("想", "答"));
     let provider = provider(&llm.base_url, "OpenAI");
     let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], false);
@@ -1509,8 +1508,8 @@ fn openai_tool_calls_get_their_own_block() {
     );
 }
 
-/// 用户已取消（abort）的请求不再发起 HTTP 调用（对齐 Embedded `executeRequest`
-/// 开头的 `checkAborted(signal)`）；失败交给引擎按「用户中断」收尾。
+/// 用户已取消（abort）的请求不再发起 HTTP 调用；
+/// 失败交给引擎按「用户中断」收尾。
 #[test]
 fn stream_does_not_send_when_already_cancelled() {
     let hits = Arc::new(AtomicUsize::new(0));
@@ -1743,8 +1742,8 @@ fn abort_while_reading_error_body_returns_promptly() {
 
 #[test]
 fn stream_watchdog_times_out_when_server_never_sends_headers() {
-    // 服务端接受连接后完全不回响应头：首字节超时从请求发出起算（与 Embedded
-    // 看门狗一致），到期按 Timeout 上报并走独立预算重试一次，而不是等满
+    // 服务端接受连接后完全不回响应头：首字节超时从请求发出起算，
+    // 到期按 Timeout 上报并走独立预算重试一次，而不是等满
     // reqwest 客户端的 600s 整体超时。
     let (base_url, hits) = start_stalling_server(|_index, _stream| {
         std::thread::sleep(Duration::from_millis(2_000));

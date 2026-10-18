@@ -21,9 +21,9 @@
  * 用户的窗口），实现在 SingleWebViewConversationManager。
  */
 
-import type { ConversationMetadata } from '../core/history/Conversation.js';
+import type { ConversationMetadata } from '../shared/history/Conversation.js';
 import { loadConversationListForHost } from './coreFacts.js';
-import type { SessionRuntimeState } from '../core/AssistantEventBus.js';
+import type { SessionRuntimeState } from '../shared/AssistantEventBus.js';
 import type { UIHost } from './UIHost.js';
 
 export abstract class ConversationManager {
@@ -35,7 +35,7 @@ export abstract class ConversationManager {
    * 每个工作目录一份列表快照（`list`）+ 是否可能落后于磁盘（`dirty`）。
    *
    * 多工作目录宿主（Electron）切换标签页时直接命中目标目录的快照，不再每次完整
-   * 读盘 / 走 `conversationListRequested` 网络往返（与 Embedded core 自己的
+   * 读盘 / 走 `conversationListRequested` 网络往返（与 Core 自己的
    * `conversationListCaches` 同一策略：缓存只被本进程的落盘事件驱动更新）。
    * `dirty` 见 `onConversationListChanged`。
    */
@@ -83,7 +83,7 @@ export abstract class ConversationManager {
   /**
    * 读对话列表（source of truth，两端一致）。
    *
-   * Embedded 下直接读盘；Standalone 下经 `UiRequest.conversationListRequested`
+   * 经 `UiRequest.conversationListRequested` 向 Core 请求
    * 向 Core 索取——宿主不直接读 core 的磁盘数据（`docs/core/standalone-core-boundaries.md` 第 2 节）。
    */
   protected async load(): Promise<ConversationMetadata[]> {

@@ -19,7 +19,7 @@
 import { SshClient, type DirectoryEntry, type SshTarget } from '../src/host/standalone/sshClient.js';
 import { sshTargetFor, sshTargetKey } from '../src/host/sshTarget.js';
 import type { WorkspaceEndpoint } from '../src/host/workspaceRef.js';
-import { sharedInFlight } from '../src/core/utils/asyncUtils.js';
+import { sharedInFlight } from '../src/shared/utils/asyncUtils.js';
 import { deleteEachPath, resolveWithinRoot, sortSidebarEntries } from './sidebarFiles.js';
 import type { RemoteFileReader } from './fileOpen.js';
 

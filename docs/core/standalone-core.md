@@ -1,15 +1,15 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-18
 ---
 
 # 规格：Standalone Core（Rust）
 
-本规格描述 Core 的第二种实现——Standalone Core。Core 与 UI 的分离形态见
-`docs/architecture/core-ui-separation.md`；本规格在其基础上确定 Standalone Core 的进程形态、选择方式、
-传输协议与事实归属。连接模型（Client / Connection / 工作区引用）见
+本规格描述 Core（Rust 实现的独立进程，历史上称 Standalone Core）。Core 与 UI 的
+分离形态见 `docs/architecture/core-ui-separation.md`；本规格在其基础上确定 Core 的
+进程形态、传输协议与事实归属。连接模型（Client / Connection / 工作区引用）见
 `docs/core/client-connection.md`；Core 进程的 daemon 见 `docs/core/core-daemon.md`；
-对等范围、宿主侧读取边界、不覆盖范围与验收要点见 `docs/core/standalone-core-boundaries.md`。
+宿主侧读取边界、不覆盖范围与验收要点见 `docs/core/standalone-core-boundaries.md`。
 事件词汇表见 [docs/architecture/events.md 第 1 节](../architecture/events.md#1-总线契约)、[第 2 节](../architecture/events.md#2-事件词汇表)。
 
 ---
@@ -20,33 +20,29 @@ last_reviewed: 2026-10-11
 | --- | --- |
 | 1. | [能力](#1-能力) |
 | 2. | [术语与事实来源](#2-术语与事实来源) |
-| 3. | [选择变量](#3-选择变量) |
-| 4. | [Standalone Core 形态](#4-standalone-core-形态) |
-| 5. | [契约](#5-契约) |
-| 6. | [传输与协议](#6-传输与协议) |
-| 7. | [生命周期](#7-生命周期) |
-| 8. | [事实归属](#8-事实归属) |
+| 3. | [Core 形态](#3-core-形态) |
+| 4. | [契约](#4-契约) |
+| 5. | [传输与协议](#5-传输与协议) |
+| 6. | [生命周期](#6-生命周期) |
+| 7. | [事实归属](#7-事实归属) |
 
 ---
 
 ## 1. 能力
 
-1. **两种实现并存**：Embedded Core（`src/core`，TypeScript，与 UI 同进程）与
-   Standalone Core（Rust，独立进程）实现同一份 core 侧契约。
-2. **一个选择变量**：装配哪种 Core 由单一变量 `CORE_KIND` 决定，取值 `embedded` /
-   `standalone`；本规格落地时该变量写死为 `standalone`。
-3. **契约不变**：两种实现对 UI 呈现同一份 `CoreEvent` / `CoreRequest` / `UiEvent` 词汇表，
-   载荷字段逐项一致。
-4. **独立进程**：Standalone Core 是独立的可执行文件，承载 core 侧全部职责
+1. **唯一实现**：Core 只有 Rust 一套实现（`core-rs/`），以独立进程形态与 UI 分离。
+2. **契约稳定**：Core 对 UI 呈现 `CoreEvent` / `CoreRequest` / `UiEvent` 词汇表，
+   载荷字段逐项确定。
+3. **独立进程**：Core 是独立的可执行文件，承载 core 侧全部职责
    （引擎、工具、历史、MCP 子进程、技能）。
 5. **平台范围**：当前产出 Windows x64 与 Linux x64 / arm64；Windows arm64 可构建
    （`--target` / `npm run build:core:win32-arm64` 或 TUI 安装器按需补建），不进默认打包集合。
-6. **一条帧通道**：UI 与 Standalone Core 之间只有一条双向帧通道；UI 为客户端，Core 为服务端。
-7. **一个工作区一个 Core 进程**：每个打开的工作区对应一个 Core 进程；一个 Core 进程只服务
+5. **一条帧通道**：UI 与 Core 之间只有一条双向帧通道；UI 为客户端，Core 为服务端。
+6. **一个工作区一个 Core 进程**：每个打开的工作区对应一个 Core 进程；一个 Core 进程只服务
    它的 Connection（[docs/core/client-connection.md 第 5 节](client-connection.md#5-connection-生命周期)）。
-8. **生命周期归 daemon**：Core 进程由 daemon 启动、终止与重启；daemon 见
+7. **生命周期归 daemon**：Core 进程由 daemon 启动、终止与重启；daemon 见
    `docs/core/core-daemon.md`。
-9. **崩溃可恢复**：Core 进程意外退出后由 daemon 重启并恢复接线；单个 Connection 的 Core
+8. **崩溃可恢复**：Core 进程意外退出后由 daemon 重启并恢复接线；单个 Connection 的 Core
    崩溃不影响其它 Connection。
 
 ### 1.1 Core 侧业务范围
@@ -59,7 +55,8 @@ Core 进程承载的 core 侧业务：
   内置工具（含后台 Bash、子代理与 Skill）、会话落盘、项目清单读写、
   技能加载与斜杠命令解析（`CommandDispatcher` + 内置命令 + 技能命令）、
   对话压缩（自动 / 手动触发、摘要生成、归档与 `messagesReplaced` 重放）、
-  Responses API（`apiType='Responses'`，内置 Web Search 的缺口见[docs/core/standalone-core-boundaries.md 第 1 节](standalone-core-boundaries.md#1-与-embedded-core-的对等)）、
+  Responses API（`apiType='Responses'`；内置 Web Search 未接入，见
+  [docs/core/standalone-core-boundaries.md 第 4 节](standalone-core-boundaries.md#4-不覆盖范围)）、
   MCP（stdio / Streamable HTTP / 旧版 SSE 三种传输、连接池与会话引用、
   `mcp__*` 工具注入与按会话启用列表过滤）、
   Spin 引擎（`spin.json` 读写、拓扑排序、子代理执行、验收判定、`/spin` 命令）、
@@ -71,9 +68,7 @@ Core 进程承载的 core 侧业务：
   一份同口径的实现（[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主固有差异有意保留)）；
 - 全局配置与 MCP 配置的读写**不在** Core 侧：两者由 UI 持有，经
   `hostEnvironmentProvided` 的配置快照下发（[docs/architecture/core-ui-separation.md 第 4 节](../architecture/core-ui-separation.md#4-配置归-ui)）；
-- 尚未迁入的能力见[docs/core/standalone-core-boundaries.md 第 1 节](standalone-core-boundaries.md#1-与-embedded-core-的对等)的「已知缺口」；两套实现有意保留的差异见 `docs/core/core-parity.md`。
-
-尚未迁入的能力在 Core 侧表现为明确的提示消息或缺失，不做静默降级。
+尚未覆盖的能力见 [docs/core/standalone-core-boundaries.md 第 4 节](standalone-core-boundaries.md#4-不覆盖范围)的「不覆盖范围」。
 
 ---
 
@@ -81,21 +76,18 @@ Core 进程承载的 core 侧业务：
 
 | 术语 | 含义 | owner |
 | --- | --- | --- |
-| Core 实现 | core 侧契约的一套实现 | — |
-| Embedded Core | `src/core` 的 TypeScript 实现，与 UI 同进程 | core |
-| Standalone Core | Rust 实现，独立进程 | core |
-| 选择变量 | `CORE_KIND`：装配哪种 Core 实现 | host（bootstrap） |
+| Core | core 侧职责的唯一实现（Rust，`core-rs/`），独立进程 | core |
 | 帧 | 帧通道上的一条 UTF-8 换行分隔 JSON 消息 | 传输层 |
-| 帧通道 | UI 与 Standalone Core 之间的双向字节流 | 传输层 |
+| 帧通道 | UI 与 Core 之间的双向字节流 | 传输层 |
 | 客户端 / 服务端 | 帧通道两端；UI 为客户端，Core 为服务端 | 传输层 |
 | 握手 | 通道建立后的协议版本确认 | 传输层 |
 | 会话 | 一段对话的引擎实例与磁盘数据 | core |
 | 宿主实例 | 一个 UI 进程（VS Code 扩展宿主 / Electron 主进程） | UI |
-| Core 实例 | 一个 Standalone Core 进程，归属一个工作区的 Connection | daemon 启动，Core 自身 |
+| Core 实例 | 一个 Core 进程，归属一个工作区的 Connection | daemon 启动，Core 自身 |
 | 重启 | Core 实例意外退出后由 daemon 重新启动并恢复接线 | daemon（`docs/core/core-daemon.md`） |
 | Core 可执行文件名 | `core.binaryName`（`src/config/project.json`），Windows 加 `.exe` | 工程配置 |
 | Core 产物目录 | `resources/<core.resourceDir>/<arch>-<platform>/` | 工程配置 |
-| Core 部署目录 | `~/.local/share/<core.deployPrefix>/<指纹>/`（`coreDeployDirPath`），部署槽位目录，见第 4.4 节 | 工程配置 |
+| Core 部署目录 | `~/.local/share/<core.deployPrefix>/<指纹>/`（`coreDeployDirPath`），部署槽位目录，见第 3.4 节 | 工程配置 |
 
 产品名、可执行文件名与产物目录名一律取自 `src/config/project.json`；代码与 Rust 包名
 不出现产品名。
@@ -104,30 +96,11 @@ Core 进程承载的 core 侧业务：
 
 ---
 
-## 3. 选择变量
-
-- 名称 `CORE_KIND`；类型 `CoreKind = 'embedded' | 'standalone'`。
-- 位置：`src/host/coreKind.ts`。该模块是选择值的唯一来源。
-- 默认取值：`'standalone'`。
-- 构建期取值：打包（`esbuild.js` / `electron/esbuild.js`）按环境变量
-  `<envPrefix>_<core.envVarSuffix>` 用 esbuild `define` 把取值烧进产物，
-  默认 `'standalone'`；`embedded` 变体落在 `release/embedded/`，不构建 Rust Core。
-- 覆盖入口：环境变量 `<envPrefix>_<core.envVarSuffix>`（`src/config/project.json`）；
-  取值为 `embedded` / `standalone` 时生效，未设置或为空时用默认值。
-  覆盖入口供开发与测试装配 `embedded`。
-- 解析函数：`resolveCoreKind(env?)`；非法取值抛错，不做回退。
-- 读取方：`bootstrapCore` 是唯一读取方；宿主实现不各自判断实现种类。
-- 取值的效果：
-  - `embedded`：装配进程内 Core（`createEventBus` + `initializeCoreEvents`）；
-  - `standalone`：装配帧通道与 Rust Core 进程。
-
----
-
-## 4. Standalone Core 形态
+## 3. Core 形态
 
 - 语言与工具链：Rust（edition 2021），Cargo 构建。
 - 产物：`core.binaryName`（Windows 加 `.exe`）单文件可执行，外加自带的工具目录
-  （`ripgrep/`，部署时提升为产品目录的共享位）；部署按指纹落槽位，见第 4.1 节。
+  （`ripgrep/`，部署时提升为产品目录的共享位）；部署按指纹落槽位，见第 3.1 节。
 - 源码位置：`core-rs/`（Cargo 包，包名与二进制名保持中性；对外文件名由构建脚本按配置落位）。
 - 进程属性：由宿主启动时不显示窗口；标准输入 / 标准输出为帧通道，标准错误为诊断输出。
   远程服务（`start` 动作）让 daemon 把控制通道换成 TCP（[docs/core/core-remote.md 第 2 节](core-remote.md#2-远程服务start--kill)）。
@@ -139,7 +112,7 @@ Core 进程承载的 core 侧业务：
 - 需要反复读取的环境事实（如工作目录的 git 状态）在 Core 进程内缓存，
   不按轮次重复 spawn 子进程。
 - Core 创建的每个子进程都不继承帧通道（标准输入置空），工具不会读到协议帧。
-- Bash 工具按 `src/core/tools/bash/ShellDetector.ts` 的优先级选择 shell：
+- Bash 工具按 `core-rs/src/shell.rs` 的探测优先级选择 shell：
   Windows 上 Git Bash 优先，cmd.exe 只在全部探测失败时兜底。
 - 后台 Bash 任务（`run_in_background` / 前台超时自动转后台）的输出直接由子进程
   写入 `<TMPDIR|TEMP|/tmp>/<tmpTaskDirName>/<taskId>.output`（对齐
@@ -148,17 +121,16 @@ Core 进程承载的 core 侧业务：
   会话关闭 / 中止时终止该会话的全部后台任务。
 - 前台 Bash 的超时与中止判定不依赖子进程是否已退出：子进程退出后还要等管道 EOF
   （孙进程可能继承了管道写端，例如 `start` 拉起的 detached daemon），这段时间里
-  前台超时照常转后台、abort 照常按中断收尾——对齐 `src/core/tools/bash/Exec.ts`
-  的定时器与 abort 监听，二者都与子进程状态无关。
+  前台超时照常转后台、abort 照常按中断收尾——定时器与 abort 监听都与子进程状态无关。
 
-### 4.1 平台矩阵
+### 3.1 平台矩阵
 
 | 平台 | 架构 | 目标三元组 | 产物目录（`<core.resourceDir>` = `core`） | 状态 |
 | --- | --- | --- | --- | --- |
 | Windows | x64 | `x86_64-pc-windows-msvc` | `resources/core/x64-win32/` | 产出 |
-| Windows | arm64 | `aarch64-pc-windows-msvc` | `resources/core/arm64-win32/` | 可构建（不进默认打包集合，见第 4.3 节） |
-| Linux | x64 | `x86_64-unknown-linux-musl` | `resources/core/x64-linux/` | 产出（静态 musl；Windows 上交叉编译，见第 4.3 节） |
-| Linux | arm64 | `aarch64-unknown-linux-musl` | `resources/core/arm64-linux/` | 产出（静态 musl；Windows 上交叉编译，见第 4.3 节） |
+| Windows | arm64 | `aarch64-pc-windows-msvc` | `resources/core/arm64-win32/` | 可构建（不进默认打包集合，见第 3.3 节） |
+| Linux | x64 | `x86_64-unknown-linux-musl` | `resources/core/x64-linux/` | 产出（静态 musl；Windows 上交叉编译，见第 3.3 节） |
+| Linux | arm64 | `aarch64-unknown-linux-musl` | `resources/core/arm64-linux/` | 产出（静态 musl；Windows 上交叉编译，见第 3.3 节） |
 
 产物目录命名与 `resources/ripgrep/` 一致。宿主按运行平台的平台名 / 架构名解析产物目录，
 不写死单一平台。
@@ -192,12 +164,11 @@ Core 定位自带 ripgrep 时**以自己的可执行文件为基准**（`tools.r
 的共享位）。本地起进程、远端上传与 TUI 版安装都在这两条候选内，不依赖宿主提供
 `extensionPath`。
 
-**两份 ripgrep 的归属**：`resources/ripgrep/<dir>/` 归 Embedded Core（TS 侧
-`src/core/utils/ripgrep.ts` 定位），`resources/core/<dir>/ripgrep/` 归 Standalone Core
-自带。`scripts/copy-assets.mjs` 把 `resources/` 复制进 `dist/` 后按当前变体清掉不属于本
-变体的那份（embedded 删 `dist/resources/core/`，standalone 删 `dist/resources/ripgrep/`），
-两种变体的分发包里各只留一份。源目录两份都保留：embedded 变体要前者，
-`build-core.mjs::copyBundledRipgrep` 拿后者当 Core 自带 rg 的源。
+**ripgrep 的归属**：Grep / Glob 用的 rg 只有 Core 自带的一份
+（`resources/core/<dir>/ripgrep/`，Core 以自己的可执行文件为基准定位）。
+`resources/ripgrep/<dir>/` 是构建源目录（`build-core.mjs::copyBundledRipgrep` 拿它
+复制成 Core 自带 rg），不随分发包走：`scripts/copy-assets.mjs` 把 `resources/`
+复制进 `dist/` 后会清掉 `dist/resources/ripgrep/`（无读取方，约 18M）。
 
 **产品身份单源**：部署产品目录名（`core.deployPrefix`）、Core 二进制名
 （`core.binaryName`）、扩展名（`extensionName`）、配置目录名（`configDir`）等产品
@@ -206,13 +177,13 @@ installer-rs）经各自 `build.rs` 构建期烧成 `TC_*` 编译期环境变量
 `env!` 取值，不出现产品字面量；TS 侧经 `src/config/project.ts`。企业版改名只动
 project.json 与各 crate 的包名，不改逻辑代码。
 
-### 4.2 跨平台约束
+### 3.2 跨平台约束
 
 - Core 侧不依赖 Windows 专有 API；平台差异收敛在少量模块：进程管理、路径处理、
   shell 探测、资源定位。
 - 构建脚本按目标三元组参数化；当前产出 Windows x64 与 Linux x64 / arm64（musl 静态），
-  Windows arm64 可按需构建（见第 4.3 节）。
-  Linux 目标在 Windows 上直接交叉编译（rust-lld + zig，见第 4.3 节），不需要 Linux 环境。
+  Windows arm64 可按需构建（见第 3.3 节）。
+  Linux 目标在 Windows 上直接交叉编译（rust-lld + zig，见第 3.3 节），不需要 Linux 环境。
 - 宿主侧的启动、帧通道与契约不随平台变化。
 - 新增平台时只补产物目录与构建目标，不改契约与磁盘格式。
 
@@ -220,7 +191,7 @@ project.json 与各 crate 的包名，不改逻辑代码。
 
 | 关注点 | 落点 | 平台差异的处理 |
 | --- | --- | --- |
-| 进程管理 | `bash_task.rs::kill_tree`、`mcp.rs` 的子进程终止 | `#[cfg(windows)]` 走 `taskkill /T /F`；非 Windows 走 `Child::kill`，与 Embedded（Node `detached: true` + `childProcess.kill()`，同样只杀直接子进程）逐字对齐 |
+| 进程管理 | `bash_task.rs::kill_tree`、`mcp.rs` 的子进程终止 | `#[cfg(windows)]` 走 `taskkill /T /F`；非 Windows 走 `Child::kill`（都只杀直接子进程树） |
 | 路径处理 | `util.rs` 的 `normalize_path` / `expand_path`、`config.rs` 的 `encodeURIComponent` 等价物 | 盘符与 UNC 的换算都在 `cfg!(windows)` 分支内；非 Windows 走 POSIX 分支，多字节路径按字节比较 |
 | shell 探测 | `shell.rs::detect` | 非 Windows 直接用 `$SHELL`（缺省 `/bin/bash`）；Windows 才走 Git Bash → PowerShell → cmd.exe 的优先级 |
 | 资源定位 | `tools.rs::ripgrep_path`、`config.rs::extension_path` | Core 自带产物以**自己的可执行文件目录**为基准（`<exe 目录>/ripgrep/rg[.exe]` 本地打包布局优先，`<exe 目录>/../ripgrep/rg[.exe]` 部署布局的共享位次之——Rust 的 `Path::exists` 看不进 asar），宿主 `extensionPath` 只作本机开发期的兜底、最后回退 PATH；可执行名按 `cfg!(windows)` 加 `.exe`；产物目录按 `<arch>-<platform>` 解析，矩阵外直接拒绝而不是猜一个目录 |
@@ -231,7 +202,7 @@ project.json 与各 crate 的包名，不改逻辑代码。
 矩阵一致性由 `src/test/corePlatformMatrix.test.ts` 锁定：构建脚本的目标登记、
 运行时的目录解析、产物落位三处必须两两一致，矩阵外的平台组合必须被拒绝。
 
-### 4.3 构建与目标平台
+### 3.3 构建与目标平台
 
 Linux 产物一律用 **musl**：静态链接、不依赖目标机器的 glibc 版本。这个 core 要拷到别人的
 远端机器上跑，发行版未知，gnu 目标很容易撞上 glibc 太旧。
@@ -279,16 +250,16 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 
 预编译 ripgrep（`resources/ripgrep/<arch>-<platform>/`）四个平台取自同一版本的 ripgrep
 官方发布物（15.2.0；Linux 两份为 `unknown-linux-musl` 静态链接），入库前按官方 `.sha256`
-逐份校验。这份源同时供 Embedded Core 直接读取，也是 `build-core.mjs::copyBundledRipgrep`
-复制成 Core 自带 rg（`resources/core/<dir>/ripgrep/`）的源。
+逐份校验。`build-core.mjs::copyBundledRipgrep` 把它复制成 Core 自带 rg
+（`resources/core/<dir>/ripgrep/`）。
 
 **Windows arm64**：目标与产物目录已登记（矩阵一致性由
 `src/test/corePlatformMatrix.test.ts` 锁定）且可构建（`npm run build:core:win32-arm64`），
 但不在默认打包集合 `PACKAGE_DIRS` 里——打包仍只携带 Windows x64 与 Linux 两份；需要时
 按目标显式构建，TUI 安装器（`scripts/build-tui-installer.mjs`）对 `arm64-win32` 也是
-按需补建 Core 产物。这与[docs/core/standalone-core-boundaries.md 第 3 节](standalone-core-boundaries.md#3-不覆盖范围)「Windows arm64 的常态打包」不属于覆盖范围一致。
+按需补建 Core 产物。这与[docs/core/standalone-core-boundaries.md 第 4 节](standalone-core-boundaries.md#4-不覆盖范围)「Windows arm64 的常态打包」不属于覆盖范围一致。
 
-### 4.4 构建指纹
+### 3.4 构建指纹
 
 每个产物目录带一份**构建指纹**（`scripts/build-core.mjs` 的 `computeFingerprint`）：
 产物同级落一个 `fingerprint` 文件（一行 64 位小写 hex），同时经 `CORE_FINGERPRINT`
@@ -309,7 +280,7 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
   （`coreDeployDirPath`：产品目录取 `src/config/project.json` 的 `core.deployPrefix` 把
   不同产品的槽位分开，指纹用完整 64 位，与按指纹命名的 daemon 状态 / 日志文件
   （`core-daemon-<指纹>.*`，[docs/core/core-remote.md 第 2.3 节](core-remote.md#23-状态文件)）同口径）；自带的
-  `ripgrep/` 提升为产品目录的共享位（见第 4.1 节）。多版本 Core 在同一台
+  `ripgrep/` 提升为产品目录的共享位（见第 3.1 节）。多版本 Core 在同一台
   机器上各占一个槽位、各跑一个 daemon，互不覆盖、互不换血；部署以「指纹槽位
   存在即同版本」为准，**不做产物哈希比对**——槽位存在就不再上传，缺失才部署
   并拉起。Electron / vsix 打包把 `fingerprint` 文件与产物一起携带，宿主运行时经
@@ -317,18 +288,18 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 
 ---
 
-## 5. 契约
+## 4. 契约
 
-- Standalone Core 实现 core 侧：发 `CoreEvent` 与 `CoreRequest`，收 `UiEvent`，
+- Core 实现 core 侧：发 `CoreEvent` 与 `CoreRequest`，收 `UiEvent`，
   回 `CoreRequestResultMap` 的结果。
 - 用户消息进入 core 的唯一入口是 `UiEvent.userMessageSubmitted`；宿主不直接调用会话引擎。
 - 工具权限按会话的 agentMode 加工：`manual` 保持工具自身判定（只读直接放行、写操作询问）、
   `risk` 危险操作仍询问而普通操作放行、`auto` 把询问放行——但 `AskUserQuestion` 在 `auto`
-  下直接拒绝（提问框不可用，拒绝文案与 Embedded 逐字一致，由权限对照表锁定）。
+  下直接拒绝（提问框不可用，拒绝文案由权限对照表锁定）。
   `ask` 表示「需要弹确认框」，由 Core 再发一次 `CoreRequest.userChoice` 取用户选择；
   权限结果的语义是「保持询问」而不是「拒绝」。
 - 载荷字段名与 TypeScript 类型逐项一致（`camelCase` 原样）。
-- `CoreEvent` 的每个 `type` 在两种实现下语义一致（[docs/architecture/events.md 第 2.1 节](../architecture/events.md#21-coreeventcore--ui单向)）。
+- `CoreEvent` 的每个 `type` 语义唯一确定（[docs/architecture/events.md 第 2.1 节](../architecture/events.md#21-coreeventcore--ui单向)）。
 - `CoreRequest` 的两个请求（`toolPermissionRequested` / `userChoice`）由 Core 发起、UI 应答。
 - `UiRequest` 的九个请求（`conversationListRequested` / `smartNamingRequested` /
   `balanceRequested` / `compactArchiveRequested` / `mcpServersRequested` /
@@ -353,15 +324,15 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 
 ---
 
-## 6. 传输与协议
+## 5. 传输与协议
 
-### 6.1 帧
+### 5.1 帧
 
 - 编码：UTF-8，换行（`\n`）分隔的 JSON，一行一帧。
 - 帧内换行以 JSON 转义表达；帧边界只由 `\n` 决定。
 - 无帧大小上限，按行读取。
 
-### 6.2 帧类型
+### 5.2 帧类型
 
 | 方向 | 帧 | 载荷 |
 | --- | --- | --- |
@@ -379,7 +350,7 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
   在单个连接内唯一；`response` 回带同一个 `id`。
 - 同一方向上的帧按写入顺序处理。
 
-### 6.3 握手
+### 5.3 握手
 
 1. UI 启动 Core 进程后发送 `hello`。
 2. Core 校验 `protocol`：通过则回帧 `ready`；不通过则写诊断并退出。
@@ -391,12 +362,12 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 注意区分帧 `ready`（握手通过）与 `CoreEvent.coreReady`（Core 就绪）：前者是传输层事实，
 后者是 Core 业务状态。
 
-### 6.4 关闭
+### 5.4 关闭
 
 - UI 发 `shutdown`；Core 结束在跑的工作、释放 MCP 子进程、以退出码 0 退出。
 - UI 在等待超时后终止进程。
 
-### 6.5 背压
+### 5.5 背压
 
 - 不丢帧、不合并帧；帧顺序在单方向内保持。
 - 写入方维护有序出站队列，底层流接受数据时按序冲刷：UI 侧在 `write()` 返回 false 时等待
@@ -406,7 +377,7 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 
 ---
 
-## 7. 生命周期
+## 6. 生命周期
 
 | 阶段 | 行为 |
 | --- | --- |
@@ -416,9 +387,9 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 | 运行 | UI 把 `emitToCore` 写为 `uiEvent` 帧；Core 把 `emitToUi` / `request` 写为帧；`request` 的响应回带 `id` |
 | 实例边界 | 一个工作区拥有一个 Core 进程；连接结束即标准输入关闭 |
 | 终止 | 关闭工作区时，Client 发 `shutdown`，等待 Core 退出；超时后由 daemon 强制结束 |
-| 崩溃 | 未决 `request` 全部 reject；daemon 重启 Core 进程并恢复接线（第 7.1 节） |
+| 崩溃 | 未决 `request` 全部 reject；daemon 重启 Core 进程并恢复接线（第 6.1 节） |
 
-### 7.1 崩溃与重启
+### 6.1 崩溃与重启
 
 - **触发**：Core 进程在收到 `shutdown` 之前退出，或帧通道意外关闭。
 - **即时处理**：未决 `request` 全部 reject；Client 把受影响会话的在跑工作标记为失败，并写入
@@ -430,7 +401,7 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 - **上限**：时间窗口内重启次数超过上限时停止重启并报告，不静默重试。
 - **隔离**：一个 Connection 的 Core 崩溃不影响其它 Connection；每个工作区有自己的 Core 进程。
 
-### 7.2 连接态重放
+### 6.2 连接态重放
 
 - 连接态事件（`hostEnvironmentProvided`）保留最后一次取值，每次握手后重放。
 - `hostEnvironmentProvided` 的重放排在最前，其余重放（`conversationOpened` 等）在其后。
@@ -440,7 +411,7 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 
 ---
 
-## 8. 事实归属
+## 7. 事实归属
 
 Standalone Core 下，core 侧事实的归属与 [docs/architecture/core-ui-separation.md 第 4 节](../architecture/core-ui-separation.md#4-配置归-ui)、[第 5 节](../architecture/core-ui-separation.md#5-core-的部署形态)一致。
 
@@ -451,7 +422,7 @@ Standalone Core 下，core 侧事实的归属与 [docs/architecture/core-ui-sepa
 | 配置快照 | UI 提供，Core 消费 | 经 `UiEvent.hostEnvironmentProvided`，一次全量 |
 | 内置模型注册表 | UI | 合并进快照的 `modelLimits`；Core 不持有 |
 | 项目清单 `<conversations>/<project>/workspace.meta.json` | Core | 在 Core 数据目录内，读与写都在 Core |
-| 会话数据（元数据 / 消息 / 归档） | Core | 落盘格式与 Embedded 一致 |
+| 会话数据（元数据 / 消息 / 归档） | Core | 落盘格式（meta.json / JSONL），宿主侧 `src/shared/history/` 是同一格式的 TS 读写库 |
 | 会话工作目录表 | Core | 单目录宿主（VS Code）在会话首次解析目录前经 `UiEvent.sessionWorkspaceAssigned` 登记；多工作目录宿主（Electron）按来源视图登记；加载对话后由 `meta.json` 的 `project` 校正 |
 | 工具执行 | Core | 在 Core 所在机器操作文件系统 |
 | MCP 子进程 | Core | 生命周期由 Core 管理 |

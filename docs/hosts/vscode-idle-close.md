@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-18
 ---
 
 # 规格：VS Code 单视图宿主的空闲对话回收
@@ -32,13 +32,13 @@ last_reviewed: 2026-10-11
 | 术语 | 含义 | owner |
 | --- | --- | --- |
 | 活动会话（active session） | 当前在 webview 中展示的会话 | UI（宿主侧读取器注入） |
-| 空闲（idle） | `sessionResources.isSessionIdle(sessionId)` 的返回值 | core `sessionRuntime` |
+| 空闲（idle） | Core 推送的 `sessionRuntimeChanged` 快照缓存（`isBusy` 读该会话的 `idle`）里该会话的 `idle` | Core 进程的运行时状态 |
 | 临时会话 | 尚未上报正式 `sessionId` 的新建会话（`new-` 前缀） | UI |
 | 空闲阈值 | 2 小时 | 本规格 |
 | 巡检间隔 | 1 分钟 | 本规格 |
 
 `idle === false` 当且仅当该会话自身存在 `query` / `waiting` / `compacting` / `background`
-事实，或存在非空闲子代理（递归）。判定失败时按「非空闲」处理。
+事实，或存在非空闲子代理（递归）。快照里找不到该会话时按「非空闲」处理。
 
 ---
 
@@ -69,7 +69,7 @@ last_reviewed: 2026-10-11
 
 1. 该会话是活动会话 → 不关闭，并把计时置为当前时间；
 2. 距最后一次活动不足 2 小时 → 不关闭；
-3. `isSessionIdle(sessionId)` 为 `false`，或判定失败 → 不关闭，并把计时置为当前时间；
+3. 快照里该会话 `idle === false`（或找不到该会话）→ 不关闭，并把计时置为当前时间；
 4. 通过以上判定 → 关闭该会话。
 
 判定过程中的 `await` 可能让状态变化，因此关闭前对「活动会话」与「空闲状态」各复查一次；
@@ -99,7 +99,7 @@ idleCloseHandler(sessionId)
 | 关注点 | 归属 | 依据 |
 | --- | --- | --- |
 | 计时 / 巡检 / 关闭判定 | 宿主层 `SingleWebViewConversationManager` | [docs/architecture/principles.md 第 4 节](../architecture/principles.md#4-core-的资源跟-core-的事实走)、[docs/architecture/contracts.md 第 4 节](../architecture/contracts.md#4-对话相关数据conversationmanager) |
-| 「是否空闲」事实 | core `sessionResources.isSessionIdle`（只读） | [docs/core/session-runtime.md](../core/session-runtime.md)、[第 4 节](../architecture/principles.md#4-core-的资源跟-core-的事实走) |
+| 「是否空闲」事实 | Core 推送的 `sessionRuntimeChanged` 快照缓存（`ConversationManager.getSessionStatesSnapshot`，只读） | [docs/core/session-runtime.md](../core/session-runtime.md)、[第 4 节](../architecture/principles.md#4-core-的资源跟-core-的事实走) |
 | 「哪个会话在前台」 | UI（`activeSessionProvider`） | [docs/architecture/principles.md 第 7 节](../architecture/principles.md#7-一份事实只有一个写入点) |
 | 关闭动作 | `WebViewUI.closeConversation` → `conversationClosed` | [docs/architecture/contracts.md 第 4 节](../architecture/contracts.md#4-对话相关数据conversationmanager)、[docs/architecture/events.md 第 2.3 节](../architecture/events.md#23-uieventui--core单向) |
 | 启用范围 | 仅 VS Code | [docs/hosts/host-bootstrap.md 第 1 节](host-bootstrap.md#1-宿主接线) |
@@ -107,7 +107,7 @@ idleCloseHandler(sessionId)
 边界规则：
 
 - 宿主不直接修改 core 状态：关闭动作经 `conversationClosed` 事件表达。
-- core 不参与计时：core 只提供 `isSessionIdle` 只读事实。
+- core 不参与计时：Core 只经 `sessionRuntimeChanged` 全量推送运行时事实，宿主缓存快照。
 - 空闲判定失败时保守视为「非空闲」，不关闭。
 - 未注入关闭回调时不关闭任何会话。
 - 「活动会话」不落进 core：前台会话由 UI 持有并注入。
@@ -170,7 +170,7 @@ conversations.startIdleMonitor();
 | 计时重置（加载 / 新建 / 发消息） | `src/host/ui/webviewMessageHandler.ts` 的 `noteSessionActivity` 调用点 |
 | 计时重置（状态跃迁） | `src/VSCodeConversationManager.ts` 的 `updateSessionStates` |
 | 巡检 / 关闭判定 | `src/VSCodeConversationManager.ts` 的 `sweepIdleSessions` |
-| 空闲事实 | `src/core/sessionResources.ts` 的 `isSessionIdle` |
+| 空闲事实 | `src/VSCodeConversationManager.ts` 的 `isBusy`（读 `getSessionStatesSnapshot` 快照缓存） |
 | 前台读取器 | `src/extension.ts` 的 `setActiveSessionProvider` |
 | 关闭动作 | `src/host/WebViewUI.ts` 的 `closeConversation` / `releaseConversation` |
 | 启动 / 停止 | `src/extension.ts` 的 `startIdleMonitor` / `deactivate` |

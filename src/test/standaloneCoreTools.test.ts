@@ -317,7 +317,7 @@ async function run(): Promise<void> {
       '工具调用带 toolArgsUpdated',
       await waitFor(() => events('toolArgsUpdated').length >= 2),
     );
-    // 对齐 Embedded：授权前 / 执行前各发一次 toolCall，因此不能只等 toolCall 计数
+    // 授权前 / 执行前各发一次 toolCall，因此不能只等 toolCall 计数
     // （Bash 一个工具就能凑够 2 条），要等两个工具的 toolResult 都到齐再断言内容。
     check(
       '两个工具都返回结果',
@@ -426,7 +426,7 @@ async function run(): Promise<void> {
       `内置工具含 Agent / Reply / Skill（实际：${toolNames.join(',')}）`,
       toolNames.includes('Agent') && toolNames.includes('Reply') && toolNames.includes('Skill'),
     );
-    // `Skill` 必须末位（对齐 Embedded `DEFAULT_TOOLS` 的运行时不变式）
+    // `Skill` 必须末位（工具清单的运行时不变式）
     check(
       `内置工具末位是 Skill（实际：${toolNames[toolNames.length - 1]}）`,
       toolNames[toolNames.length - 1] === 'Skill',

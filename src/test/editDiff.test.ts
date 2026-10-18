@@ -9,7 +9,7 @@
  * （同一条内容先红后白出现两次）。
  */
 import * as assert from 'assert';
-import { buildEditDiffHunks, type DiffLine } from '../core/utils/editDiff';
+import { buildEditDiffHunks, type DiffLine } from '../shared/utils/editDiff';
 import { runCases } from './helpers/harness';
 
 /** 期望的一行：`[类型, 内容]`。顺序敏感，逐行比对。 */

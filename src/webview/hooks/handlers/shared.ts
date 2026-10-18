@@ -6,12 +6,12 @@
  * （applyLoadedConversationState）、配置面板字段校验（missingPanelFields）、
  * 工具状态条目与 UI 消息映射（toToolStatusEntry / toUiMessage）。
  */
-import { modelRefOf } from '../../../core/llm/modelRef';
-import { MessageData } from '../../../core/types';
-import { extractUserContent } from '../../../core/utils/contentBlocks';
-import { DiffHunk } from '../../../core/utils/editDiff';
-import { getMessageOrigin } from '../../../core/utils/messageOrigin';
-import { normalizeToolInput } from '../../../core/utils/toolInput';
+import { modelRefOf } from '../../../shared/llm/modelRef';
+import { MessageData } from '../../../shared/types';
+import { extractUserContent } from '../../../shared/utils/contentBlocks';
+import { DiffHunk } from '../../../shared/utils/editDiff';
+import { getMessageOrigin } from '../../../shared/utils/messageOrigin';
+import { normalizeToolInput } from '../../../shared/utils/toolInput';
 import { HostToWebviewMessage } from '../../../host/webviewMessages';
 import { AgentMode, LlmConfigPanelPayload, Message, PromptMode, SessionState, ThinkingMode } from '../../types';
 import { UseMessageHandlerProps } from '../useMessageHandler';

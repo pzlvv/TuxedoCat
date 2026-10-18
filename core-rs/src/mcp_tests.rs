@@ -1,5 +1,5 @@
 //! `mcp` 单测：stdio 真实子进程端到端、纯函数、管理器（连接池 / 引用 / 延迟回收）、
-//! 以及 Embedded ↔ Standalone 的纯函数对照表断言。
+//! 以及纯函数对照表断言（数据见 `core-rs/fixtures/mcp.json`）。
 
 use super::*;
 use crate::config;
@@ -435,8 +435,8 @@ fn manager_sync_session_detaches_disabled_server() {
 
 // ==================== 对照表断言 ====================
 
-/// 与 Embedded 共用同一份对照表（`src/test/fixtures/mcpParity.json`）。
-const FIXTURE: &str = include_str!("../../src/test/fixtures/mcpParity.json");
+/// 行为对照表（数据见 core-rs/fixtures/）。
+const FIXTURE: &str = include_str!("../fixtures/mcp.json");
 
 mod parity_tests {
     use super::*;

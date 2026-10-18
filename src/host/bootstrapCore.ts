@@ -5,43 +5,32 @@
  * 宿主只提供自身差异（locale / 日志出口 / 资源根目录 / 工作区事实）。
  * 本模块位于 host/ 层，不 import `vscode` / `electron`。
  *
- * Core 实现的装配由 `CORE_KIND` 决定（见 docs/core/standalone-core.md 第 3 节）：
- * - `embedded`：进程内总线（`createEventBus`），恒一个 Connection；
- * - `standalone`：每个工作区一个 Connection、一个 Core 进程，经 daemon 通道通信。
+ * Core 是独立进程（core-rs，见 docs/core/standalone-core.md）：每个工作区一个
+ * Connection、一个 Core 进程，经 daemon 通道通信。
  *
  * 连接模型见 `docs/core/client-connection.md`：
  * - `Client` 是宿主级唯一实例，维护工作区 / 会话路由与配置快照推送；
  * - `Connection` 是总线、就绪状态与生命周期的作用域。
  *
  * 顺序（不可调换，理由见 docs/architecture/events.md 第 5 节；宿主专属接线见 `docs/hosts/host-bootstrap.md` 第 1 节）：
- *   创建 Client 并注册全局总线 → 注册 core 侧 UiEvent 订阅（仅 embedded）
+ *   创建 Client 并注册全局总线
  *   → 创建 WebViewUI（其构造函数注册 CoreEvent / CoreRequest 处理器）
  *   → 按工作区打开 Connection（连接建立时推送宿主环境与配置快照）
  *   → 对齐活动 Connection 到宿主当前工作区（打开顺序 ≠ 活动项）
  *   → 订阅工作区打开 / 关闭
- *   → 会话队列（仅 embedded）
- *   → 异步收尾：配置目录 / MCP 残留清理（仅 embedded）
  *
  * 顺序错误在启动期暴露：`setGlobalEventBus` 重复注册抛错、
  * `emitToUi` 在 `WebViewUI.create` 之前抛错、未注册处理器时打开 Connection 抛错
  * （docs/architecture/events.md 第 5 / 6 节）。
  */
 
-import type { AssistantEventBus, UiEvent } from '../core/AssistantEventBus.js';
-import { requireEventBus, setGlobalEventBus } from '../core/AssistantEventBus.js';
-import { initializeCoreEvents } from '../core/initializeCoreEvents.js';
-import {
-  ensureConfigDirs,
-  hasExtensionPath,
-} from '../core/history/index.js';
-import { getMCPHost } from '../core/mcp/MCPHost.js';
+import type { AssistantEventBus, UiEvent } from '../shared/AssistantEventBus.js';
+import { requireEventBus, setGlobalEventBus } from '../shared/AssistantEventBus.js';
 import { CONFIG_DIR_NAME } from '../config/project.js';
 import { Client, type OpenedCoreChannel } from './Client.js';
 import type { Connection } from './Connection.js';
-import { createEventBus } from './EventBus.js';
 import { primeHostLocale, readUiLanguage } from './coreFacts.js';
 import { getSettingsStore, type SettingsStore } from './SettingsStore.js';
-import { resolveCoreKind, type CoreKind } from './coreKind.js';
 import { resolveCoreBinary } from './standalone/coreBinary.js';
 import { CoreDaemon, SSH_DAEMON_LINK_TIMEOUT_MS, type CoreDaemonLinkOpener } from './standalone/CoreDaemon.js';
 import { createSshDaemonOpener } from './standalone/sshTransport.js';
@@ -70,31 +59,27 @@ export interface CoreBootstrapOptions {
   /** core 日志是否同时输出到控制台 */
   logToConsole: boolean;
   /**
-   * 扩展 / 应用根目录。
-   *
-   * Standalone 用它定位 Core 产物目录（`resources/core/<arch-platform>/`，其中已含
-   * Core 自带的 `ripgrep/`）；Embedded Core 用它定位随宿主分发的 ripgrep。
+   * 扩展 / 应用根目录：定位 Core 产物目录
+   * （`resources/core/<arch-platform>/`，其中已含 Core 自带的 `ripgrep/`）。
    */
   extensionPath: string;
   /**
-   * 测试注入：Standalone 下为一个工作区打开 Core 通道。
+   * 测试注入：为一个工作区打开 Core 通道。
    * 默认经 daemon 启动配置中的 Core 可执行文件。
    */
   openStandaloneChannel?: (ref: WorkspaceRef) => OpenedCoreChannel;
 }
 
 export interface CoreBootstrapResult {
-  /** 宿主侧总线：Embedded 为进程内总线，Standalone 为 Client 路由器 */
+  /** 宿主侧总线：Client 路由器 */
   bus: AssistantEventBus;
   /** 连接模型入口（路由 / 配置快照 / 关闭） */
   client: Client;
   ui: WebViewUI;
 }
 
-/** 启动接线快照（只读；用于启动日志与双端对照） */
+/** 启动接线快照（只读；用于启动日志） */
 export interface BootstrapSnapshot {
-  /** 本次装配的 Core 实现（`docs/core/standalone-core.md` 第 3 节） */
-  coreKind: CoreKind;
   locale: string;
   uiLanguage: 'auto' | 'zh' | 'en';
   eventBusRegistered: boolean;
@@ -109,7 +94,6 @@ let snapshot: BootstrapSnapshot | null = null;
 
 /** 本次装配的 Client；宿主退出时由 `shutdownCore` 关闭全部 Connection */
 let activeClient: Client | null = null;
-let activeCoreKind: CoreKind | null = null;
 /** 本次装配的启动参数；远程目录选择器在打开工作区之前就要用它连 daemon */
 let activeOptions: CoreBootstrapOptions | null = null;
 
@@ -126,7 +110,6 @@ export function bootstrapCore(
   options: CoreBootstrapOptions,
 ): CoreBootstrapResult {
   const log = options.log;
-  const coreKind = resolveCoreKind();
 
   // ── 0. 配置：读宿主自己的 settings.json / mcp.json（同步，webview 首帧要同步取值）──
   // 配置归 UI（`docs/architecture/core-ui-separation.md` 第 4 节）：两种装配都读宿主自己的文件，
@@ -143,8 +126,8 @@ export function bootstrapCore(
 
   // 宿主语言（界面语言）归宿主：`settings.json` 读进来后立刻收敛进进程内 i18n。
   // 宿主原生 UI（Electron 菜单 / 托盘、Spin 设计器）用的都是这套 `tt()`，必须在这里
-  // 同步定好——不能等 Connection 就绪事件（Standalone 要拉起 Core 进程、Embedded 根本
-  // 没有这个事件），否则 UI 先按默认英文建好、语言设置看起来「没生效」。
+  // 同步定好——不能等 Connection 就绪事件（要拉起 Core 进程），否则 UI 先按默认
+  // 英文建好、语言设置看起来「没生效」。
   // 语言与 Core 装配无关（Core 不感知语言），只读宿主自己的配置。
   try {
     primeHostLocale(options.locale);
@@ -163,19 +146,13 @@ export function bootstrapCore(
     mcpServers: settingsStore.getMcpServers(),
   });
 
-  // ── 1. Client 与总线：注册全局总线 → 注册 core 侧 UiEvent 订阅（仅 embedded）──
-  // initializeCoreEvents 内**同步**注册「宿主环境」与「会话工作目录」两条事件的处理器，
-  // 因此紧接着的 hostEnvironmentProvided 一定能被接住。
-  const embeddedBus = coreKind === 'embedded' ? createEventBus() : null;
+  // ── 1. Client 与总线：注册全局总线 ──
   const client = new Client({
-    coreKind,
     log: (...args: unknown[]) => log(...args),
     hostEnvironment,
-    embeddedBus: embeddedBus ?? undefined,
-    openChannel: coreKind === 'standalone'
-      ? (options.openStandaloneChannel ?? ((ref: WorkspaceRef) => openStandaloneChannel(ref, options)))
-      : undefined,
-    // Core 崩溃 / 无法重启（`docs/core/standalone-core.md` 第 7.1 节）：把该连接上受影响的「忙」会话标记为失败，
+    openChannel:
+      options.openStandaloneChannel ?? ((ref: WorkspaceRef) => openStandaloneChannel(ref, options)),
+    // Core 崩溃 / 无法重启（`docs/core/standalone-core.md` 第 6.1 节）：把该连接上受影响的「忙」会话标记为失败，
     // 补发错误消息与 queryEnd，并把运行时状态复位为 idle —— 不静默挂起。
     // 同时把生命周期转发给宿主订阅者（`onWorkspaceConnectionState`）。
     onConnectionLost: (connection, reason) => {
@@ -186,12 +163,7 @@ export function bootstrapCore(
       notifyWorkspaceConnectionState(log, connection.workspaceRef, 'ready', '');
     },
   });
-  if (embeddedBus) {
-    setGlobalEventBus(embeddedBus);
-    initializeCoreEvents(embeddedBus);
-  } else {
-    setGlobalEventBus(client);
-  }
+  setGlobalEventBus(client);
 
   // ── 2. 配置快照：写盘后重推整份快照给所有 Connection（`SettingsStore` 通知）──
   settingsStore.subscribe(() => client.emitToCore(hostEnvironment()));
@@ -214,10 +186,9 @@ export function bootstrapCore(
   });
 
   // ── 4. 按工作区打开 Connection：连接建立时推送宿主环境与配置快照 ──
-  // Embedded 恒一个 Connection（工作区是会话属性）。没有打开的工作区时用空引用占位，
-  // 保证宿主环境与配置快照在启动期送达、空态视图的只读请求（技能列表 / 对话列表等）
-  // 仍可应答；Standalone 下打开第一个真实工作区时这个空引用 Connection 会被关闭
-  // （Client.openWorkspace）。
+  // 没有打开的工作区时用空引用占位，保证宿主环境与配置快照在启动期送达、空态视图的
+  // 只读请求（技能列表 / 对话列表等）仍可应答；打开第一个真实工作区时这个空引用
+  // Connection 会被关闭（Client.openWorkspace）。
   const currentRef = host.getWorkspaceRef();
   const openRefs = host.getOpenWorkspaceRefs();
   const refs: WorkspaceRef[] = openRefs.length > 0
@@ -265,26 +236,10 @@ export function bootstrapCore(
   });
   workspaceUnsubscribers.add(unsubscribeWorkspace);
 
-  // ── 6. 异步收尾（仅 embedded：core 自己的资源由 Core 进程管理）──
-  if (coreKind === 'embedded') {
-    void ensureConfigDirs().catch((error: Error) => {
-      log(`[bootstrap] Failed to initialize config directories: ${error.message}`);
-    });
-
-    void (async () => {
-      try {
-        await getMCPHost().prune();
-      } catch (error) {
-        log(`[bootstrap] Failed to prune MCP servers: ${error}`);
-      }
-    })();
-  }
-
   activeClient = client;
-  activeCoreKind = coreKind;
   activeOptions = options;
-  snapshot = readSnapshot(coreKind, options, client);
-  return { bus: embeddedBus ?? client, client, ui };
+  snapshot = readSnapshot(options, client);
+  return { bus: client, client, ui };
 }
 
 /** 工作区变化订阅（测试可重置；宿主退出时不需要显式取消） */
@@ -586,8 +541,8 @@ function markConnectionSessionsFailed(
 }
 
 /**
- * 释放 core 侧的进程级资源：关闭全部 Connection（Standalone 为 Core 进程 /
- * daemon channel；Embedded 为 MCP 子进程）。宿主退出钩子调用一次。
+ * 释放 core 侧的进程级资源：关闭全部 Connection（Core 进程 / daemon channel）。
+ * 宿主退出钩子调用一次。
  */
 export function shutdownCore(): Promise<void> {
   const client = activeClient;
@@ -609,14 +564,6 @@ export function shutdownCore(): Promise<void> {
   const daemons = [...standaloneDaemons.values()];
   standaloneDaemons.clear();
   for (const daemon of daemons) tasks.push(daemon.disconnect());
-  if (activeCoreKind === 'embedded') {
-    try {
-      getMCPHost().shutdown();
-    } catch {
-      // 退出阶段的清理失败不应影响退出
-    }
-  }
-  activeCoreKind = null;
   activeOptions = null;
   return Promise.all(tasks).then(() => undefined);
 }
@@ -651,7 +598,6 @@ export function describeSettings(store: SettingsStore): string {
 }
 
 function readSnapshot(
-  coreKind: CoreKind,
   options: CoreBootstrapOptions,
   client: Client,
 ): BootstrapSnapshot {
@@ -670,7 +616,6 @@ function readSnapshot(
   }
 
   const base = {
-    coreKind,
     locale: options.locale,
     uiLanguage: readUiLanguage(),
     eventBusRegistered,
@@ -679,16 +624,9 @@ function readSnapshot(
     connectionCount: client.listConnections().length,
   };
 
-  // Standalone 下 core 侧状态在 Core 进程内：UI 侧只报告自己掌握的接线事实。
-  if (coreKind === 'standalone') {
-    return {
-      ...base,
-      extensionPathProvided: true,
-    };
-  }
-
+  // core 侧状态在 Core 进程内：UI 侧只报告自己掌握的接线事实。
   return {
     ...base,
-    extensionPathProvided: hasExtensionPath(),
+    extensionPathProvided: true,
   };
 }

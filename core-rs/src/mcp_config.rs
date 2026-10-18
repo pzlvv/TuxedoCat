@@ -1,4 +1,4 @@
-//! MCP 服务器配置（对齐 Embedded `src/core/mcp/Config.ts`）。
+//! MCP 服务器配置。
 //!
 //! `mcp.json` 与 `settings.json` 同目录（`~/<CONFIG_DIR_NAME>/mcp.json`），声明可用
 //! 的 MCP 服务器；**声明里不含 enabled** —— 启用状态统一记录在 `settings.json` 的

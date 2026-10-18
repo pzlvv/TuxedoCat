@@ -33,10 +33,9 @@ import { CoreDaemon } from '../host/standalone/CoreDaemon';
 import { tcpDaemonOpener } from './helpers/tcpDaemonLink';
 import { ConversationManager } from '../host/ConversationManager';
 import type { SpinDesign } from '../host/SpinDesign';
-import type { ConversationMetadata } from '../core/history/Conversation';
-import type { SessionRuntimeState } from '../core/AssistantEventBus';
+import type { ConversationMetadata } from '../shared/history/Conversation';
+import type { SessionRuntimeState } from '../shared/AssistantEventBus';
 import { remoteWorkspaceRef, localWorkspaceRef, type WorkspaceEndpoint, type WorkspaceRef } from '../host/workspaceRef';
-import { CORE_ENV_VAR } from '../config/project';
 import { createChecker, runTests } from './helpers/harness';
 import { createTestHost, type TestHost } from './helpers/fixtures';
 
@@ -254,7 +253,6 @@ async function run(): Promise<void> {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tc-space-clear-host-'));
   process.env.USERPROFILE = home;
   process.env.HOME = home;
-  process.env[CORE_ENV_VAR] = 'standalone';
 
   const fake = await startBridgingFakeRemote();
   const remoteEndpoint: WorkspaceEndpoint = {

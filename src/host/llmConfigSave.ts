@@ -12,9 +12,9 @@
  * `SettingsStore.updateSettings` 做串行化的「读-改-写」。
  */
 
-import { mcpDefaultsMutator } from '../core/mcp/Config.js';
-import { normalizeModelTokenLimits, type ModelTokenLimits } from '../core/utils/modelConfig.js';
-import { providerKeyFromBaseURL } from '../core/utils/providerKey.js';
+import { mcpDefaultsMutator } from '../shared/mcp/Config.js';
+import { normalizeModelTokenLimits, type ModelTokenLimits } from '../shared/utils/modelConfig.js';
+import { providerKeyFromBaseURL } from '../shared/utils/providerKey.js';
 
 /** 设置面板保存消息（webview 发来的 `saveLLMConfig` 原始消息，字段都按可选处理） */
 export interface LlmConfigSavePayload {

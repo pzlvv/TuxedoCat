@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-18
 ---
 
 # 规格：架构原则
@@ -15,14 +15,15 @@ last_reviewed: 2026-10-11
 
 | 场景 | 做法 | 落点 |
 | --- | --- | --- |
-| core 取总线 | `requireEventBus()` 未注册直接抛错 | `src/core/AssistantEventBus.ts` |
-| core 发事件时 UI 未注册处理器 | `emitToUi` 抛错（bootstrap 顺序错误，启动期暴露） | `src/host/EventBus.ts` |
-| core 发事件时某 type 暂无 core 订阅者 | 静默丢弃（**合法中间态**） | 同上 |
-| 宿主请求无处理器 | `request()` reject；总线不内置超时，**当前两个请求都不设超时**（[events.md 第 6 节](events.md#6-边界语义)） | `src/host/EventBus.ts`；`RunTools.emitToolPermissionRequest` 请求失败 → deny |
+| 宿主取总线 | `requireEventBus()` 未注册直接抛错 | `src/shared/AssistantEventBus.ts` |
+| `onCoreEvents` / `onCoreRequests` 重复注册 | 抛错（处理器表只注册一次，接线错误启动期暴露） | `src/host/standalone/StandaloneEventBus.ts` |
+| Core 事件在 UI 注册处理器前到达 | 排队，注册后按序补投（**合法启动窗口**） | 同上 |
+| Core 收到无消费方的 `UiEvent` | 记 log 丢弃（**合法中间态**） | `core-rs/src/main.rs` 的 `dispatch_ui_event` |
+| 宿主请求无处理器 | `request()` reject；总线不内置超时，**当前两个请求都不设超时**（[events.md 第 6 节](events.md#6-边界语义)） | Core 侧请求失败 → deny |
 | webview 读宿主能力 | `getHostInfo()` 逐字段校验，缺失或非法直接抛错 | `src/webview/webviewEnv.ts` |
 | 取 UI 单例 | `WebViewUI.getInstance()` 未创建直接抛错（替代静默 `undefined`） | `src/host/WebViewUI.ts` |
 | 取启动快照 | `bootstrapSnapshot()` 未执行骨架时抛错 | `src/host/bootstrapCore.ts` |
-| 取项目根 / 扩展路径 | `getProjectRoot(sessionId)`（未登记会话时抛错；`hasProjectRoot(sessionId)` 供降级守卫）/ `getExtensionPath()` 未注入直接抛错 | `src/core/history/Config.ts` |
+| Core 取项目根 / 扩展路径 | `project_root(sessionId)`（未登记会话时报错）/ 扩展路径未注入直接报错 | `core-rs/src/config.rs` |
 | 宿主契约成员 | 全部必选，禁止 `host.foo?.()` 静默降级（见第 2 节） | `src/host/UIHost.ts` |
 | 共享文件读不出来 | 区分「不存在」与「解析失败」；后者**拒绝写入**并抛错，绝不按空内容覆盖 | `src/host/SettingsStore.ts`（第 11 节） |
 
@@ -54,8 +55,8 @@ last_reviewed: 2026-10-11
 
 ## 3. 高内聚、低耦合
 
-- **core 不认识 UI**：core 只持有总线，不 import 任何 UI / 宿主对象
-  （`src/core/` 里没有 `WebViewUI` / `UIHost` 的 import，只有注释里提到）。
+- **core 不认识 UI**：Core（`core-rs/`）不 import TS 侧任何代码，也不感知 UI / 宿主
+  对象；两侧只经帧通道上的事件词汇表通信。
 - **`src/host/` 不认识宿主**：不 import `vscode` / `electron`。宿主差异全部收在
   `UIHost` 接口上，新增宿主 = 实现这个接口（[contracts.md 第 1 节](contracts.md#1-uihost对话-webview-的宿主能力)、[docs/hosts/host-matrix.md](../hosts/host-matrix.md)）。
 - **只有一份 UI 实现**：`WebViewUI` 同时服务 VS Code 与 Electron，只有一份拷贝。
@@ -74,9 +75,9 @@ last_reviewed: 2026-10-11
 
 | 资源 / 状态 | owner | 触发点 |
 | --- | --- | --- |
-| MCP 引用 | core（`MCPHost` 引用计数） | core：`releaseSessionResources` / `deleteConversation`（[contracts.md 第 3 节](contracts.md#3-mcp-宿主mcphost)） |
-| 引擎 / 消息缓存 | core | 释放动作在 core（`releaseSessionResources`）；**时机**由宿主决定（`isSessionIdle` 只读事实，[contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
-| 会话运行状态 `idle` / `waiting` | core（`sessionRuntime`） | core 的各事实变化点，推 `sessionRuntimeChanged`（[docs/core/session-runtime.md](../core/session-runtime.md)） |
+| MCP 引用 | Core 进程（`core-rs/src/mcp.rs` 引用计数） | Core：`on_conversation_closed` / `on_conversation_deleted`（[contracts.md 第 3 节](contracts.md#3-mcp-生命周期core-进程内)） |
+| 引擎 / 消息缓存 | Core 进程 | 释放在 Core（`on_conversation_closed`）；**时机**由宿主决定（空闲判定只读 Core 推送的运行时快照，[contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
+| 会话运行状态 `idle` / `waiting` | Core 进程（`engine.rs` 的运行时状态表） | Core 的各事实变化点，推 `sessionRuntimeChanged`（[docs/core/session-runtime.md](../core/session-runtime.md)） |
 | 对话列表刷新 | UI（磁盘是 source of truth，「刷新哪些视图、节流多久」是表现策略） | UI：`onConversationListChanged` → `ConversationManager.refresh()`（[contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
 | Spin 设计器内容 | 磁盘 `spin.json` + 面板缓存 | core 发 `spinDesignDataChanged`，UI 决定要不要重读（[contracts.md 第 2 节](contracts.md#2-spin-设计器契约spindesign)） |
 | 空闲回收 | 宿主 | `SingleWebViewConversationManager`（[contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
@@ -125,17 +126,17 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 | 会话运行时事实（`idle` / `waiting` / `queryRunning` / `compacting` / `backgroundRunning` / `subAgentRunning`） | core `sessionRuntime`（[docs/core/session-runtime.md](../core/session-runtime.md)） | 对话树流水灯、侧栏流水灯、托盘状态点、abort 按钮（都读 `sessionRuntimeChanged`） |
 | abort 按钮三态（红 / 黄 / 灰） | 纯函数 `resolveAbortButtonState`（`src/host/abortButtonState.ts`） | `InputArea` 渲染（[docs/features/abort-button.md](../features/abort-button.md)） |
 | webview 渲染阶段（thinking / text / tool） | `SessionUiState`（宿主侧渲染投影，[docs/hosts/webview-ui.md](../hosts/webview-ui.md)） | 渲染与 abort 按钮（不参与 abort 判定） |
-| 对话列表 | 磁盘（`loadConversationList`） | `ConversationManager.refresh()` 分发并留快照，`sidebar:get-conversations` 读快照（[contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
-| 对话树删除闭包 | 纯函数 `collectConversationClosure`（`src/core/history/Conversation.ts`） | core `deleteConversation` 与 Electron 宿主都调它，不各写一份（[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主固有差异有意保留)） |
+| 对话列表 | 磁盘（Core 对 `conversationListRequested` 的应答） | `ConversationManager.refresh()` 分发并留快照，`sidebar:get-conversations` 读快照（[contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
+| 对话树删除闭包 | 纯函数 `collectConversationClosure`（`src/shared/history/Conversation.ts`，宿主侧）与 Core 进程 `core-rs/src/history.rs` 的删除规则——同一份格式两个读写方，格式变更两侧同步（[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主固有差异有意保留)） | Electron 宿主删多视图会话先调 TS 版求闭包；Core 收到 `conversationDeleted` 后按同一规则递归删盘 |
 | 「哪个会话在前台」 | UI（VS Code：`SingleWebViewConversationManager` 的 `activeSessionProvider`；Electron：`ChatViewManager.getActiveSessionId`） | 空闲回收的「前台会话不关」、MCP 面板取数。core **不保存**这份状态（曾经在 `Config` 里缓存过一份） |
 | 「哪些会话 open」 | UI（Electron：`ChatViewManager.getLoadedSessionIds` → `WebViewUI.setOpenSessions`；VS Code：单视图下 open == active） | `UserChoiceQueue` 判断待答请求能否投递到该会话自己的视图（[docs/architecture/host-ui-modules.md 第 1 节](host-ui-modules.md#1-userchoicemanager)）。core **不保存**这份状态 |
 | 视图 ↔ 会话 ID 的绑定 | Electron `ChatViewManager`（`registerSession`） | 由 webview 上报的 `startNewConversation` / `loadConversation` 驱动（这两条消息才表达「这个视图当前属于哪个会话」） |
 | 工作区打开集合 / 活动项 | 宿主（VS Code：工作区文件夹；Electron：`main.ts` 的 `openWorkspaces` / `workspacePath`） | `WorkspaceProvider` 的消费方与 `Client`（按工作区建立 Connection，[docs/hosts/host-bootstrap.md 第 1 节](../hosts/host-bootstrap.md#1-宿主接线)） |
 | `sessionId → Connection` 归属 | `Client`（`assignSession` 登记，`sessionWorkspaceAssigned` 事件驱动） | 总线路由、`Connection` 的会话集合。`connectionId` 是内部概念，不进任何总线载荷 |
-| Core 进程生命周期 | Standalone：daemon（启动 / 重启 / 终止，见 [docs/core/core-daemon.md](../core/core-daemon.md)）；Embedded：宿主进程本身 | `Connection` 只消费 `channelReset` / `workspaceClosed` 与 fatal 事件；`CoreProcess.ts` 是单进程形态的传输层实现 |
-| 家目录 / 全局配置目录 | `src/config/configDir.ts` 的 `resolveHomeDir()` / `resolveConfigDir()`（口径 `USERPROFILE` → `HOME` → `os.homedir()`，与 `core-rs/src/config.rs` 的 `home_dir()` 同序） | `SettingsStore` / `Logger` / skills 目录 / `RealApi` 失败转储 / Electron 旧字段迁移都调它，不各自 `os.homedir()` 或读 `HOME` |
+| Core 进程生命周期 | daemon（启动 / 重启 / 终止，见 [docs/core/core-daemon.md](../core/core-daemon.md)） | `Connection` 只消费 `channelReset` / `workspaceClosed` 与 fatal 事件；`CoreProcess.ts` 是单进程形态的传输层实现 |
+| 家目录 / 全局配置目录 | `src/config/configDir.ts` 的 `resolveHomeDir()` / `resolveConfigDir()`（口径 `USERPROFILE` → `HOME` → `os.homedir()`，与 `core-rs/src/config.rs` 的 `home_dir()` 同序） | `SettingsStore` / `Logger` / skills 目录 / Electron 旧字段迁移都调它，不各自 `os.homedir()` 或读 `HOME` |
 | 全局 `settings.json` 的写入 | `SettingsStore.updateSettings`（宿主侧唯一写入口） | 写前必须拿跨进程锁、拒绝覆盖读不出来的文件、原子落盘（第 11 节） |
-| 跨进程文件锁 | `src/core/utils/fileLock.ts` | `SettingsStore` 用异步入口，`Logger` 的轮转用同步入口；不各自实现一套 |
+| 跨进程文件锁 | `src/shared/utils/fileLock.ts` | `SettingsStore` 用异步入口，`Logger` 的轮转用同步入口；不各自实现一套 |
 
 **禁止从投影反推事实**：`WebViewUI.onSessionRuntimeChanged` 只把 core 的状态转给
 `ConversationManager.updateSessionStates`，不参与计算；`SessionUiState` 不产出
@@ -160,7 +161,7 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 宿主兜底消息三处时，任何一处单独改动都会让「界面显示的默认值」和「Core 实际用的值」
 悄悄分叉。
 
-- **配置字段默认值的唯一来源是宿主快照解析** `src/core/settingsSnapshot.ts`
+- **配置字段默认值的唯一来源是宿主快照解析** `src/shared/settingsSnapshot.ts`
   （webSearch / thinkingEffort / agentMode / promptMode / enableUsageStats）：
   它是 `settings.json` 的规范化入口，缺字段 / 类型不对 / 取值非法都在这里落默认值。
 - **界面语言的默认值归宿主** `src/host/SettingsStore.ts`（`uiLanguage` 只有 UI 消费、
@@ -168,19 +169,19 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 - **界面字号的默认值归宿主** `src/host/SettingsStore.ts`（`uiFontSize` 只有 UI 消费、
   不进快照；缺省 `medium`，webview 折算为 `--ui-font-offset` 后由 CSS 消费）。
 - **模型注册表默认值**（`DEFAULT_API_TYPE` / `FALLBACK_MODEL_PARAMS`）在
-  `src/core/utils/modelConfig.ts`，不重复到别处。
-- **core 侧需要默认值时读快照**（`getSettings()`），不另声明常量：
-  `PermissionPolicy` 的「会话未记录询问模式」、`Integration` 的提示词预设、
-  `compact` 的摘要思考强度都取 `getSettings()` 的对应字段。
-- **跨层服务地址**（`DEEPSEEK_BASE_URL`）在 `src/core/endpoints.ts`：它不是「字段缺省
+  `src/shared/utils/modelConfig.ts`，不重复到别处。
+- **Core 侧需要默认值时读快照**（`settings.rs` 的 `settings_snapshot()`），不另声明常量：
+  权限策略（`permission.rs`）的「会话未记录询问模式」、压缩（`compact.rs`）的
+  摘要思考强度都取快照的对应字段。
+- **跨层服务地址**（`DEEPSEEK_BASE_URL`）在 `src/shared/endpoints.ts`：它不是「字段缺省
   取值」，而是设置面板「新增服务商」的预置地址、余额查询目标与服务商识别的共同基准。
   该模块必须**零依赖**（只导出字符串字面量）——webview 也要 import 它。
 - 「读取失败」与「默认值」是两回事：失败路径不要伪装成默认值（例如读不到快照时
   不该按默认值弹设置面板），否则用户会以为配置丢了。
 
 **已知例外**（跨语言，靠测试锁死，不强行合并）：`DEEPSEEK_BASE_URL` 与
-`MAX_OUTPUT_TOKENS_UPPER_LIMIT` 在 TS 与 Rust 各一份；`modelLimits.ts` 的
-`MAX_OUTPUT_TOKENS_DEFAULT`（模型未知）与 `FALLBACK_MODEL_PARAMS.maxOutputTokens`
+`MAX_OUTPUT_TOKENS_UPPER_LIMIT` 在 TS 与 Rust 各一份；`utils/modelConfig.ts` 里
+模型限值表的默认输出（模型未知）与 `FALLBACK_MODEL_PARAMS.maxOutputTokens`
 （模型未命中注册表）是两条不同的兜底语义，各自有注释说明适用场景。
 
 ## 10. webview 不持有事实的默认值
@@ -219,7 +220,7 @@ webview 渲染所需的每一项事实都由宿主决定。**webview 不持有�
 
 | 规则 | 落点 | 不做会怎样 |
 | --- | --- | --- |
-| 读-改-写整体在跨进程锁内 | `src/core/utils/fileLock.ts` 的 `withFileLock` | 两个宿主的读-改-写交错，后写者丢掉先写者的改动 |
+| 读-改-写整体在跨进程锁内 | `src/shared/utils/fileLock.ts` 的 `withFileLock` | 两个宿主的读-改-写交错，后写者丢掉先写者的改动 |
 | 读不出来就拒绝写入 | `SettingsStore.updateSettings` 抛错 | 并发下的半截文件被解析失败 → 当成空配置 → 用 `{}` 覆盖全部配置 |
 | 写入原子（临时文件 + `rename`） | `writeFileAtomic` | `writeFile` 先截断再写，读者看到空文件/半截内容 |
 | 内容未变化不落盘 | `SettingsStore.updateSettings` | 高频调用反复重写磁盘，放大竞争窗口 |

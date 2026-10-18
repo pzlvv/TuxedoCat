@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-18
 ---
 
 # 规格：用户消息管线
@@ -166,12 +166,13 @@ Skill 的 `tool_use` / `tool_result` 紧跟在用户消息之后。
 
 ### FR-005：系统环境信息按工作目录缓存
 
-系统环境信息（git 信息、技能清单、可用命令）是 system prompt 的输入，按工作目录区分。
+系统环境信息（git 信息、技能清单、可用命令）是 system prompt 的输入，按工作目录区分
+（`core-rs/src/prompt.rs`）。
 
 | 操作 | 语义 |
 | --- | --- |
-| `getSystemDynamicInfo(cwd)` | 命中 `cwd` 的缓存条目则返回；未命中则计算并写入 |
-| `warmupSystemDynamicInfo(cwd)` | 重新计算 `cwd` 的条目并覆盖（刷新语义） |
+| 取系统环境信息（`cwd`） | 命中 `cwd` 的缓存条目则返回；未命中则计算并写入（如 `GIT_CACHE` 按 `cwd` 分桶） |
+| 会话创建 / 恢复时的刷新 | 重新计算该目录的条目并覆盖（刷新语义） |
 
 - 缓存键是工作目录；不同目录的条目互不命中。
 - 条目数量有上限；超出时淘汰最早写入的条目。
@@ -206,14 +207,14 @@ Skill 的 `tool_use` / `tool_result` 紧跟在用户消息之后。
 | 术语 | 含义 | owner |
 | --- | --- | --- |
 | 用户消息 | webview 发出的、代表用户输入的消息 | webview |
-| 会话引擎 | 会话的 `QueryEngine` 单例 | core |
-| 待处理队列 | 引擎持有的待消费消息（用户消息 / reminder / agent 回复） | core |
-| 轮次边界 | 消费循环中「上一轮 query 已结束、下一轮 query 未开始」的时刻 | core |
-| 命令消息 | 去除首尾空白后以 `/` 开头的用户消息 | core `CommandDispatcher` |
-| 内置命令 | 命令注册表中按名称 / 别名匹配的命令（如 `/spin`） | core `builtinCommands` |
-| Skill 命令 | 匹配 Skill 名称 / 别名的命令消息 | core `bundledSkills` / `loadSkillsDir` |
+| 会话引擎 | Core 进程内该会话的消费循环与状态（`engine.rs`） | Core |
+| 待处理队列 | 引擎持有的待消费消息（用户消息 / reminder / agent 回复） | Core |
+| 轮次边界 | 消费循环中「上一轮 query 已结束、下一轮 query 未开始」的时刻 | Core |
+| 命令消息 | 去除首尾空白后以 `/` 开头的用户消息 | Core `commands.rs` 的 `dispatch` |
+| 内置命令 | 命令注册表中按名称 / 别名匹配的命令（如 `/spin`） | Core `commands.rs` |
+| Skill 命令 | 匹配 Skill 名称 / 别名的命令消息 | Core `skills.rs`（宿主侧补全用 `src/shared/skills/` 的加载器读同一份技能目录） |
 | 排队项 | webview 中表示「已提交、尚未进入上下文」的 UI 状态 | webview |
-| 工作目录 | 会话归属的目录，`getProjectRoot(sessionId)` 的返回值 | core `history/Config` |
+| 工作目录 | 会话归属的目录，`project_root(sessionId)` 的返回值 | Core `config.rs` |
 
 命令消息的归属由**引擎**判定；webview 不区分普通消息与命令消息。
 
@@ -265,9 +266,9 @@ US-3（消息排队）/ US-5（输入历史与斜杠命令补全）/ US-27（斜
 
 | 需求 | 实现落点 | 测试落点 | 覆盖 |
 | --- | --- | --- | --- |
-| FR-001 | `src/host/ui/webviewMessageHandler.ts` 的用户消息处理器 | `src/test/userMessageQueue.test.ts` | 自动 |
-| FR-002 | `src/core/QueryEngine.ts` 的 `messageConsumer` / `resolvePendingCommand`；`src/core/CommandDispatcher.ts` 的 `dispatch` | `src/test/userMessageQueue.test.ts`；Rust `core-rs/src/engine_tests.rs` | 自动 |
-| FR-003 | 排队链路：`src/host/ui/webviewMessageHandler.ts` 的 `queuedMessage` 回推、`src/host/WebViewUI.ts` 的 `onCommandSend` / `onQueuedMessage`、`src/webview/hooks/useAppHandlers.ts` 的撤回（共用 `restoreQueuedMessage.ts`）→ `src/core/QueryEngine.ts` 的 `discardPendingUserMessage`（Standalone：`core-rs/src/engine.rs` 的 `on_queued_message_discarded`）；空闲挂起（webview 本地）：`useAppHandlers` 的挂起 / 触发 / 中止回填 | `src/test/queuedMessageDiscard.test.ts` + `src/test/queueFlushParity.test.ts` + `e2e/webview/sendModes.spec.ts`（US-46） | 自动 |
-| FR-004 | `src/core/QueryEngine.ts` 的 `injectSkillToolUse` | `core-rs/src/engine_tests.rs`（Skill 注入顺序用例） | 自动 |
-| FR-005 | `src/core/prompt/SystemEnvironment.ts` 的 `getSystemDynamicInfo` / `warmupSystemDynamicInfo` | `src/test/systemEnvironmentCache.test.ts` | 自动 |
+| FR-001 | `src/host/ui/webviewMessageHandler.ts` 的用户消息处理器（`handleUserMessage`）→ `Core::on_user_message` | `core-rs/src/engine_tests.rs`（用户消息入队与消费） | 自动 |
+| FR-002 | `core-rs/src/engine.rs` 的 `run_consumer`（轮次边界的命令解析）+ `core-rs/src/commands.rs` 的 `dispatch` | `core-rs/src/commands_tests.rs`（`non_slash_text_passes_through` 等解析用例）；`core-rs/src/engine_tests.rs` 的 `slash_builtin_command_is_handled_without_an_llm_round` | 自动 |
+| FR-003 | 排队链路：`src/host/ui/webviewMessageHandler.ts` 的 `queuedMessage` 回推、`src/host/WebViewUI.ts` 的 `onCommandSend` / `onQueuedMessage`、`src/webview/hooks/useAppHandlers.ts` 的撤回（共用 `restoreQueuedMessage.ts`）→ `core-rs/src/engine.rs` 的 `on_queued_message_discarded`；空闲挂起（webview 本地）：`useAppHandlers` 的挂起 / 触发 / 中止回填 | `core-rs/src/engine_tests.rs` 的 `queued_message_is_discarded_by_uuid` / `queued_message_is_flushed_before_the_next_llm_round`；e2e `e2e/webview/sendModes.spec.ts`（US-46） | 自动 |
+| FR-004 | `core-rs/src/engine.rs` 的 `inject_skill_tool_use` | `core-rs/src/engine_tests.rs` 的 `slash_skill_command_injects_the_skill_tool_use` | 自动 |
+| FR-005 | `core-rs/src/prompt.rs` 的系统环境缓存（`GIT_CACHE` 等，按 `cwd` 分桶） | `core-rs/src/prompt_tests.rs`（环境信息组装用例） | 自动 |
 | FR-006 | `src/webview/InputArea.tsx` 的 `handleInputChange` / `commitSlash` | 无自动覆盖 + webview 输入交互，现有测试车道未覆盖，AC-15 / AC-16 由人工场景验证 | 无自动覆盖 + 现有车道未建输入框补全用例 |

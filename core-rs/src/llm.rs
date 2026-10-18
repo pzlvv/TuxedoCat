@@ -1,6 +1,6 @@
 //! LLM 客户端：OpenAI Chat Completions 与 Anthropic Messages 的流式调用。
 //!
-//! 内部消息一律用 Anthropic 风格 content blocks 表示（与 Embedded Core 一致）；
+//! 内部消息一律用 Anthropic 风格 content blocks 表示；
 //! OpenAI 协议在请求前做一次转换。
 //!
 //! 超时与重试：整体请求 600s 由 reqwest 承担；网络错误 / 502、503 与「无内容且无
@@ -66,7 +66,7 @@ impl StreamFailure {
     }
 }
 
-/// 可中断的延迟等待（重试间隔；Embedded 用 `await sleep(RETRY_DELAY_MS)`）。
+/// 可中断的延迟等待（重试间隔）。
 ///
 /// 分片 sleep，每片之间查一次 `cancel`：等待期间置位取消时提前返回 `true`，
 /// 调用方随即走「用户中断」收尾——重试等待不再给 abort 时延整段叠加
@@ -87,7 +87,7 @@ fn sleep_ms_interruptible(delay_ms: u64, cancel: &AtomicBool) -> bool {
 }
 
 /// 取消（abort）时返回给上层的错误文案：引擎按 `cancel` 判定「用户中断」收尾，
-/// 不把这条文案当作 LLM 故障回显（对齐 Embedded `AbortError` 的静默语义）。
+/// 不把这条文案当作 LLM 故障回显。
 const LLM_ABORTED_MESSAGE: &str = "LLM request aborted";
 
 /// 首字节超时文案（send 阶段与 `read_sse` 共用，逐字对齐 `LLMStreamTimeoutError`）。
@@ -101,13 +101,12 @@ fn first_byte_timeout_message(timeout_ms: u64) -> String {
 /// `reqwest::blocking` 的 `send()` 一旦阻塞就无法从外部打断（只能等客户端整体
 /// 超时，默认 600s），与 `read_sse` 同一套做法：`send()` 放独立线程，主线程按
 /// `CANCEL_POLL_SLICE_MS` 切片等待结果——
-/// - 取消置位 → 立刻以「用户中断」返回，不再等响应头（对齐 Embedded 把外部
-///   signal 接进 undici `fetch` 后 abort 立刻以 `AbortError` 拒绝）；
+/// - 取消置位 → 立刻以「用户中断」返回，不再等响应头；
 /// - 首字节 deadline 到期 → 按 `StreamFailure::Timeout` 上报，交给看门狗重试预算
-///   （对齐 Embedded 看门狗从请求发出开始计时，覆盖「连响应头都不回」的网关）。
+///   （看门狗从请求发出开始计时，覆盖「连响应头都不回」的网关）。
 ///
 /// 返回响应头与本次尝试的首字节 deadline：deadline 从「请求发出」起算，继续交给
-/// `read_sse`，使首字节超时覆盖「响应头 + 首个有效事件」整段（与 Embedded 一致）。
+/// `read_sse`，使首字节超时覆盖「响应头 + 首个有效事件」整段。
 pub(crate) fn send_cancellable(
     client: reqwest::blocking::Client,
     request: reqwest::blocking::Request,
@@ -133,8 +132,7 @@ pub(crate) fn send_cancellable(
         match receiver.recv_timeout(Duration::from_millis(CANCEL_POLL_SLICE_MS)) {
             Ok(Ok(response)) => return Ok((response, deadline)),
             Ok(Err(err)) => {
-                // 与请求失败同时到达的取消优先：Embedded 侧 signal 已置位时 fetch
-                // 也以 AbortError 拒绝，不能把用户中断回显成网络错误。
+                // 与请求失败同时到达的取消优先，不能把用户中断回显成网络错误。
                 if cancel.load(Ordering::Relaxed) {
                     return Err(StreamFailure::Fatal(LLM_ABORTED_MESSAGE.to_string()));
                 }
@@ -164,7 +162,7 @@ pub struct Usage {
 impl Usage {
     /// 持久化到 assistant message 的 usage（对齐 `buildAssistantMessageFromBlocks`）。
     ///
-    /// Embedded 的三个适配器都保证 usage 恒存在且**恒带四个键**
+    /// usage 恒存在且**恒带四个键**
     /// （`extractUsageFields` 用 `|| 0` 兜底，流结束时还有 `{0,0,0,0}` 兜底），
     /// 因此缺失的 cache 字段要补 0 而不是省略键。
     pub fn message_usage(&self) -> Value {
@@ -186,9 +184,8 @@ impl Usage {
         let mut map = Map::new();
         map.insert("input_tokens".to_string(), json!(self.input_tokens));
         map.insert("output_tokens".to_string(), json!(self.output_tokens));
-        // Embedded 的三个适配器（`extractUsageFields` / `applyMessageDelta`）产出的 usage
-        // 恒带 cache 两键（缺省 0），`streamEnd` 事件逐字带上；这里同样补 0 而不是省略，
-        // 否则 WebView 的缓存命中率 / 上下文统计拿到的字段集合与 Embedded 不同。
+        // usage 恒带 cache 两键（缺省 0），`streamEnd` 事件逐字带上；这里补 0 而不是省略，
+        // 否则 WebView 的缓存命中率 / 上下文统计拿到的字段集合不完整。
         map.insert(
             "cache_read_input_tokens".to_string(),
             json!(self.cache_read_input_tokens.unwrap_or(0)),
@@ -205,7 +202,7 @@ impl Usage {
     }
 }
 
-/// 内容块类型（对齐 Embedded `StreamEvent` 的 `block_start.block.type`）
+/// 内容块类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockKind {
     Thinking,
@@ -216,19 +213,19 @@ pub enum BlockKind {
 /// 流式增量事件
 #[derive(Debug, Clone)]
 pub enum LlmEvent {
-    /// 内容块开始（对齐 Embedded `StreamEvent` 的 `block_start`）。
+    /// 内容块开始。
     ///
-    /// Embedded `Query.ts` 靠它在每个块开始时分配**块级** `streamId`（`blk_*`），
+    /// 引擎靠它在每个块开始时分配**块级** `streamId`（`blk_*`），
     /// 并重置该角色的流式累积文本，因此同一个块内的 `streamMessage` / `streamEnd`
     /// 共用同一个 `streamId`，不同块（Responses API 的「思考→文字→搜索→…」）
     /// 之间互不覆盖。
     BlockStart(BlockKind),
-    /// 内容块结束（对齐 Embedded `StreamEvent` 的 `block_stop`）。
+    /// 内容块结束。
     ///
     /// 引擎据此立刻补一条 **`usage` 缺省**的 `streamEnd`，把对应流式消息标记为
     /// 完成（`isStreaming=false`），token 统计仍由随后的 `message_delta` 统一更新。
     BlockStop,
-    /// 流接近结束（对齐 Embedded `StreamEvent` 的 `message_delta`）。
+    /// 流接近结束。
     ///
     /// 引擎据此补一条**带 `usage`** 的 `streamEnd`（每个有内容的角色一条；纯
     /// tool_use 轮次补一条 `accumulated` 为空的 assistant 事件，把 usage 带给 UI）。
@@ -236,7 +233,7 @@ pub enum LlmEvent {
     ThinkingDelta(String),
     /// Anthropic 扩展思考在 `content_block_start` 里直接给出的初始签名。
     ///
-    /// Embedded `RealApi` 的 `content_block_start` 分支会读取
+    /// `content_block_start` 分支会读取
     /// `content_block.signature` 并写入 thinking block；部分网关只在这一帧给完整
     /// 签名、不再发 `signature_delta`。这里用「设置」语义（覆盖已有值），
     /// `signature_delta` 仍用追加语义。
@@ -245,8 +242,8 @@ pub enum LlmEvent {
     /// 否则启用思考 + 工具调用时下一轮请求会被 API 拒绝。
     ThinkingSignatureDelta(String),
     TextDelta(String),
-    /// 工具调用开始。`input` 是 `content_block_start` 自带的初始入参（对齐
-    /// Embedded `RealApi` 的 `input: block.input || {}`）；没有后续
+    /// 工具调用开始。`input` 是 `content_block_start` 自带的初始入参
+    /// （`input: block.input || {}`）；没有后续
     /// `input_json_delta` 时它就是最终入参。
     ToolUseStart {
         id: String,
@@ -257,7 +254,7 @@ pub enum LlmEvent {
     Usage(Usage),
     StopReason(String),
     /// 丢弃本次尝试已产生的全部输出（退化重复被检出、即将重试时发出）。
-    /// 对齐 Embedded `Query.ts` 在重试后收到新的 `block_start` 时重置累积文本的行为。
+    /// 重试后收到新的 `block_start` 时重置累积文本。
     Reset,
     /// 服务端在终止事件里给出的**权威**输出块（对齐 `syncContentBlocksFromOutput`）。
     ///
@@ -292,7 +289,7 @@ pub(crate) fn http_client() -> Result<reqwest::blocking::Client, String> {
 /// 按 api_type 选出流式实现（单点分发：新增 provider 只改这里）。
 ///
 /// 统一签名以适配 `stream_openai` 的重试状态参数；不使用这两个参数的实现经
-/// 闭包转发忽略（与 Embedded `RealApi.ts` 的 if/else 分发同一批判据：
+/// 闭包转发忽略（分发批据：
 /// Anthropic Messages / OpenAI Responses / 其余按 Chat Completions 兼容兜底）。
 fn stream_fn(
     api_type: &str,
@@ -307,7 +304,7 @@ fn stream_fn(
 
 /// 发起一次流式请求；每个增量经 `emit` 回调。
 ///
-/// 重试口径逐项对齐 Embedded：
+/// 重试口径：
 /// - 网络错误 / 502、503 / 「无内容且无结束原因」：`retry_count < MAX_RETRIES`，间隔 `RETRY_DELAY_MS`
 /// - 流式看门狗超时：独立预算 `DEFAULT_MAX_TIMEOUT_RETRIES`，重试前发 `Reset` 丢弃本轮输出
 /// - 退化重复：独立预算 `DEFAULT_MAX_REPETITION_RETRIES`，重试前发 `Reset` 丢弃本轮输出
@@ -325,8 +322,7 @@ pub fn stream(req: &LlmRequest, emit: &mut dyn FnMut(LlmEvent)) -> Result<(), St
     loop {
         // 用户已请求取消（abort）：不再发起新的请求 / 重试，直接把失败交给上层。
         // 上层（`engine::run_query_loop`）据 `cancel` 走「用户中断」收尾，不当作
-        // LLM 故障回显（对齐 Embedded `executeRequest` 开头 `checkAborted` 抛
-        // AbortError 的路径）。
+        // LLM 故障回显。
         if req.cancel.load(Ordering::Relaxed) {
             return Err(LLM_ABORTED_MESSAGE.to_string());
         }
@@ -345,7 +341,7 @@ pub fn stream(req: &LlmRequest, emit: &mut dyn FnMut(LlmEvent)) -> Result<(), St
                     eprintln!(
                         "[core] {message}，丢弃本次响应并重试 ({repetition_retries}/{DEFAULT_MAX_REPETITION_RETRIES})，{RETRY_DELAY_MS}ms 后开始..."
                     );
-                    // 丢弃本次尝试已产生的全部输出（对齐 Embedded 重试后重置累积文本）
+                    // 丢弃本次尝试已产生的全部输出
                     emit(LlmEvent::Reset);
                     sleep_ms_interruptible(RETRY_DELAY_MS, req.cancel);
                     continue;
@@ -358,9 +354,8 @@ pub fn stream(req: &LlmRequest, emit: &mut dyn FnMut(LlmEvent)) -> Result<(), St
                     eprintln!(
                         "[core] LLM request retry ({retry_count}/{MAX_RETRIES}) after {RETRY_DELAY_MS}ms: {message}"
                     );
-                    // 每次尝试都从零开始累积（对齐 Embedded：`contentBlocks` /
-                    // `currentText` 都在 `executeRequest` 内声明，重试即重建；
-                    // `Query.ts` 也会在重试后的 `block_start` 重置累积文本）。
+                    // 每次尝试都从零开始累积（重试即重建，
+                    // `block_start` 时重置累积文本）。
                     // 网络错误可能发生在已收到部分增量之后，必须丢弃本轮输出。
                     emit(LlmEvent::Reset);
                     sleep_ms_interruptible(RETRY_DELAY_MS, req.cancel);
@@ -466,7 +461,7 @@ pub(crate) fn read_sse(
     let mut deadline = first_byte_deadline;
     loop {
         // 先查取消、再看超时：两者同时成立按「用户中断」收尾，不上报 Timeout
-        // （对齐 Embedded 重试分支把 `checkAborted` 放在等待之前的口径）。
+        // 。
         if cancel.load(Ordering::Relaxed) {
             stopped.store(true, Ordering::Relaxed);
             return Ok(());
@@ -520,7 +515,7 @@ pub(crate) fn read_sse(
     }
 }
 
-/// 读取错误响应体，用于错误提示（对齐 Embedded：完整正文，不截断）。
+/// 读取错误响应体，用于错误提示（完整正文，不截断）。
 ///
 /// 读取同样按 `CANCEL_POLL_SLICE_MS` 切片查 `cancel`：网关回了错误响应头却挂着
 /// 正文不发时，abort 不能在这里再等满 reqwest 的整体超时。取消时返回「用户中断」
@@ -572,7 +567,7 @@ fn stream_anthropic(
         "messages".to_string(),
         // tool_use 的非法 JSON 入参归一为对象：Anthropic 协议的 input 字段要求对象，
         // 原样字符串会让整轮请求 400 并毒化此后的每一轮（见 engine.rs 的
-        // `sanitize_anthropic_messages`，与 Embedded `RealApi.ts` 对齐）。
+        // `sanitize_anthropic_messages`）。
         Value::Array(crate::engine::sanitize_anthropic_messages(req.messages)),
     );
     if !req.system_prompt.is_empty() {
@@ -581,7 +576,7 @@ fn stream_anthropic(
     if !req.tools.is_empty() {
         body.insert("tools".to_string(), Value::Array(req.tools.to_vec()));
     }
-    // 与 Embedded 的 `RealApi.ts` 一致：思考开启时用 `chat_template_kwargs`
+    // 思考开启时用 `chat_template_kwargs`
     // （reasoning_effort + thinking:true），仅在预算 > 0 时附 `thinking_token_budget`；
     // 关闭时显式 `thinking = { type: 'disabled' }`。
     if req.thinking_enabled {
@@ -603,12 +598,12 @@ fn stream_anthropic(
     let request = client
         .post(messages_url(&provider.base_url))
         .header("Content-Type", "application/json")
-        // 同时携带两种认证方式以兼容不同网关（与 Embedded 一致）
+        // 同时携带两种认证方式以兼容不同网关
         .header("x-api-key", &provider.api_key)
         .header("Authorization", format!("Bearer {}", provider.api_key))
         .header("anthropic-version", "2023-06-01")
         .header("x-session-id", req.session_id)
-        // 用 JS `JSON.stringify` 口径序列化（Embedded 侧是 `stringifyJsonSafe`）：
+        // 用 JS `JSON.stringify` 口径序列化：
         // serde_json 会把 `1.0` 写成 `1.0`，JS 写 `1`，逐字对齐请求体。
         .body(crate::util::js_json_stringify(&Value::Object(body)))
         .build()
@@ -634,7 +629,7 @@ fn stream_anthropic(
     let mut text_repetition = RepetitionDetector::new();
     let mut thinking_repetition = RepetitionDetector::new();
     let mut tool_index: Option<u64> = None;
-    // usage 累计值（对齐 Embedded `RealApi` 的 `accumulatedInputTokens/OutputTokens`）
+    // usage 累计值
     let mut accumulated_input_tokens: u64 = 0;
     let mut accumulated_output_tokens: u64 = 0;
     read_sse(response, cancel, first_byte_deadline, req.first_byte_timeout_ms, req.idle_timeout_ms, &mut |payload| {
@@ -662,7 +657,7 @@ fn stream_anthropic(
                     .get("cache_creation_input_tokens")
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
-                // 对齐 Embedded `RealApi` 的 message_start：DeepSeek 风格网关的
+                // DeepSeek 风格网关的
                 // `input_tokens` 不含缓存命中部分，必须把两个 cache 计数加回，
                 // 否则 `totalContextTokens` 偏小、缓存命中率显示为负增长。
                 accumulated_input_tokens =
@@ -684,11 +679,11 @@ fn stream_anthropic(
                 match block.get("type").and_then(Value::as_str).unwrap_or("") {
                     "tool_use" => {
                         tool_index = event.get("index").and_then(Value::as_u64);
-                        // 对齐 Embedded `RealApi` 的 `content_block_start`：先发
+                        // 先发
                         // `block_start`（引擎据此把当前块切到 tool_use），再发
                         // `tool_use` 起始事件。
                         emit(LlmEvent::BlockStart(BlockKind::ToolUse));
-                        // 对齐 Embedded `input: block.input || {}`：假值（null / 0 /
+                        // 假值（null / 0 /
                         // 空串 / false）都退化成 `{}`，对象 / 数组原样保留。
                         let input = block
                             .get("input")
@@ -709,7 +704,7 @@ fn stream_anthropic(
                             input,
                         });
                     }
-                    // 对齐 Embedded `RealApi` 的 `content_block_start`：thinking 块
+                    // thinking 块
                     // 自带非空 signature 时先记下来（部分网关只在这一帧给完整签名）。
                     "thinking" => {
                         emit(LlmEvent::BlockStart(BlockKind::Thinking));
@@ -725,7 +720,7 @@ fn stream_anthropic(
                     _ => {}
                 }
             }
-            // 对齐 Embedded `RealApi` 的 `content_block_stop`：每个块结束都发
+            // 每个块结束都发
             // `block_stop`（引擎据此立刻给该块补一条 `usage` 缺省的 `streamEnd`）。
             "content_block_stop" => emit(LlmEvent::BlockStop),
             "content_block_delta" => {
@@ -758,7 +753,7 @@ fn stream_anthropic(
                 }
             }
             "message_delta" => {
-                // 对齐 Embedded `applyMessageDelta`：input 沿用 message_start 的累计值
+                // input 沿用 message_start 的累计值
                 // （缺省时保留原值），cache 取本次 delta 的值（缺省 0），
                 // 最终 input = 累计 input + delta 的两个 cache 计数。
                 let usage = event.get("usage").cloned().unwrap_or(Value::Null);
@@ -783,7 +778,6 @@ fn stream_anthropic(
                     cache_creation_input_tokens: Some(cache_creation),
                     reasoning_tokens: None,
                 }));
-                // 对齐 Embedded `RealApi.applyMessageDelta` 的
                 // `stopReason = msgDelta.stop_reason as string || stopReason`：
                 // 空串是假值，**不能**覆盖已经收到的 stop_reason（否则流里
                 // 先回 `tool_use` 再回一帧空 `stop_reason` 时，落盘的 assistant
@@ -796,7 +790,7 @@ fn stream_anthropic(
                 {
                     emit(LlmEvent::StopReason(reason.to_string()));
                 }
-                // 对齐 Embedded：`applyMessageDelta` 一定会给 `usage` 赋对象，
+                // `applyMessageDelta` 一定会给 `usage` 赋对象，
                 // 因此紧随其后的 `message_delta` StreamEvent 上 `event.usage` 恒为真值。
                 emit(LlmEvent::MessageDelta);
             }
@@ -819,8 +813,8 @@ fn stream_anthropic(
 /// 流内 `error` 对象的文案（对齐 `OpenAiApi`：`` `${err?.message || JSON.stringify(err)}` ``）。
 ///
 /// `message` 为**真值**时按 JS 字符串化拼接（对象是 `[object Object]`）；
-/// 缺失 / 空串 / `null` 等假值时序列化整个 error 对象——Embedded 在这种
-/// 「服务商只回了错误码」的情况下会把整段 JSON 显示给用户，而不是 `unknown error`。
+/// 缺失 / 空串 / `null` 等假值时序列化整个 error 对象——「服务商只回了错误码」时
+/// 把整段 JSON 显示给用户，而不是 `unknown error`。
 fn stream_error_message(error: &Value) -> String {
     if let Some(message) = error.get("message") {
         if crate::history::js_truthy(Some(message)) {
@@ -1145,7 +1139,7 @@ fn stream_openai(
         // 让服务商在流末尾补一帧 usage（OpenAI / 多数兼容网关支持）
         body.insert("stream_options".to_string(), json!({ "include_usage": true }));
     }
-    // 与 Embedded 的 `OpenAiApi.ts` 一致：思考开启时用 `reasoning_effort`
+    // 思考开启时用 `reasoning_effort`
     if req.thinking_enabled {
         body.insert(
             "reasoning_effort".to_string(),
@@ -1238,21 +1232,21 @@ fn stream_openai(
     // 是否收到过任何内容 / 结束原因（用于「无 finish_reason」的收尾判定）
     let mut saw_content = false;
     let mut saw_stop_reason = false;
-    // 当前打开的块（对齐 Embedded `OpenAiApi` 的 `openKind`）：Chat Completions
+    // 当前打开的块：Chat Completions
     // 的 SSE 没有显式块边界，适配器按「角色切换」合成 block_start / block_stop。
     let mut open_kind: Option<BlockKind> = None;
-    // 本次流调用的消息 ID（对齐 Embedded `OpenAiApi` 的 `streamMessageId`：
+    // 本次流调用的消息 ID（`streamMessageId`：
     // `msg_${Date.now()}_${random}`）。用于给缺少 `id` 的工具调用生成兜底 id。
     let stream_message_id = crate::util::unique_id("msg");
     // 工具调用按 `index` 归并：并行工具调用的 arguments 可能交错分片，
-    // 必须按 index 累积（对齐 Embedded 的 `toolBlockByIndex`），
+    // 必须按 index 累积，
     // 流结束后再按「首次出现顺序」补发，避免把后一个调用的参数拼进前一个。
     let mut tool_calls_by_index: Vec<(u64, String, String, String)> = Vec::new();
     read_sse(response, cancel, first_byte_deadline, req.first_byte_timeout_ms, req.idle_timeout_ms, &mut |payload| {
         let Ok(event) = serde_json::from_str::<Value>(&sanitize_json_surrogates(payload)) else {
             return Ok(false);
         };
-        // 对齐 Embedded 的 `if (parsed.error)`：`null` / `false` / `0` / 空串 视为没有错误
+        // `if (parsed.error)`：`null` / `false` / `0` / 空串 视为没有错误
         if let Some(error) = event
             .get("error")
             .filter(|value| crate::history::js_truthy(Some(value)))
@@ -1286,7 +1280,7 @@ fn stream_openai(
         };
         for choice in choices {
             let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
-            // 对齐 Embedded：`reasoning_content` 只有非空时才优先，空串回退到 `reasoning`
+            // `reasoning_content` 只有非空时才优先，空串回退到 `reasoning`
             let reasoning = delta
                 .get("reasoning_content")
                 .and_then(Value::as_str)
@@ -1294,7 +1288,7 @@ fn stream_openai(
                 .or_else(|| delta.get("reasoning").and_then(Value::as_str))
                 .unwrap_or("");
             if !reasoning.is_empty() {
-                // 对齐 Embedded `OpenAiApi`：角色切换时先关上一个块、再开新块
+                // 角色切换时先关上一个块、再开新块
                 // （`emitBlockStop()` 只在确实有打开的块时才发 `block_stop`）。
                 if open_kind != Some(BlockKind::Thinking) {
                     if open_kind.is_some() {
@@ -1323,13 +1317,13 @@ fn stream_openai(
             }
             if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for call in tool_calls {
-                    // 对齐 Embedded 的 `if (!tc) continue`：null / false / 0 / 空串
+                    // `if (!tc) continue`：null / false / 0 / 空串
                     // 这类假值直接跳过（否则会产出一个空的 tool_use block）。
                     if !crate::history::js_truthy(Some(call)) {
                         continue;
                     }
                     saw_content = true;
-                    // 缺省 index=0（对齐 Embedded 的 `typeof tc.index === 'number' ? tc.index : 0`）
+                    // 缺省 index=0
                     let index = call.get("index").and_then(Value::as_u64).unwrap_or(0);
                     let position = match tool_calls_by_index
                         .iter()
@@ -1337,7 +1331,7 @@ fn stream_openai(
                     {
                         Some(position) => position,
                         None => {
-                            // 对齐 Embedded `OpenAiApi`：新 index 首次出现时先关掉
+                            // 新 index 首次出现时先关掉
                             // 当前块、再开一个 tool_use 块（多个并行工具调用之间
                             // 同样会成对出现 block_stop / block_start）。
                             if open_kind.is_some() {
@@ -1345,11 +1339,10 @@ fn stream_openai(
                             }
                             emit(LlmEvent::BlockStart(BlockKind::ToolUse));
                             open_kind = Some(BlockKind::ToolUse);
-                            // 对齐 Embedded：id 在 block **创建时**定死
+                            // id 在 block **创建时**定死
                             // （`id: tc.id || \`call_${streamMessageId}_${idx}\``）。
-                            // 后续分片即使补上 id 也不会替换——Embedded 的
-                            // `if (tc.id && !block.id) block.id = tc.id` 永远不成立，
-                            // 因为 block.id 此时已经是兜底 id（真值）。
+                            // 后续分片即使补上 id 也不会替换：
+                            // block.id 此时已经是兜底 id（真值）。
                             let id = call
                                 .get("id")
                                 .and_then(Value::as_str)
@@ -1397,17 +1390,17 @@ fn stream_openai(
         Ok(true)
     })?;
 
-    // 收尾：关闭仍打开的块（对齐 Embedded `OpenAiApi` 的 `emitBlockStop()`）。
+    // 收尾：关闭仍打开的块。
     // 块边界只影响引擎的「当前块类型」与 block_stop 时的 `streamEnd`
     // （tool_use 块不发 streamEnd），与随后补发的工具事件本身无关。
     if open_kind.is_some() {
         emit(LlmEvent::BlockStop);
     }
 
-    // 流结束后按「首次出现顺序」补发工具调用（与 Embedded 的 contentBlocks 顺序一致）
+    // 流结束后按「首次出现顺序」补发工具调用
     for (_index, id, name, arguments) in tool_calls_by_index {
         // id 已在创建 block 时定死（含兜底 id），此处原样使用。
-        // Chat Completions 的 tool_calls 没有「初始 input」概念，对齐 Embedded 的 `input: {}`。
+        // Chat Completions 的 tool_calls 没有「初始 input」概念，初始 input 固定 `input: {}`。
         emit(LlmEvent::ToolUseStart {
             id,
             name,
@@ -1432,7 +1425,7 @@ fn stream_openai(
             emit(LlmEvent::StopReason("end_turn".to_string()));
         }
     }
-    // 对齐 Embedded `OpenAiApi` 的 `emitMessageDelta()`：收尾时恒发一次
+    // 收尾时恒发一次
     // `message_delta`（usage 缺失时补零，见上游的 `if (!usage)` 兜底）。
     emit(LlmEvent::MessageDelta);
     Ok(())

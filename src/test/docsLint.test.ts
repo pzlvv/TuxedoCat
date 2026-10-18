@@ -3,9 +3,9 @@
  *
  * 契约：文档描述现状，聚合数字不手写维护。本用例把这些做成可执行断言：
  *
- * 1. **事件词汇表一致**：`docs/architecture/events.md` 第 2 节的汇总表（数量）与 `src/core/AssistantEventBus.ts`
+ * 1. **事件词汇表一致**：`docs/architecture/events.md` 第 2 节的汇总表（数量）与 `src/shared/AssistantEventBus.ts`
  *    的四组联合类型逐组对照；`CoreEvent` / `CoreRequest` / `UiEvent` 的每个成员名都必须
- *    出现在事件表里（`UiRequest` 的成员按规格落在 `docs/core/standalone-core.md` 第 5 节）。
+ *    出现在事件表里（`UiRequest` 的成员按规格落在 `docs/core/standalone-core.md` 第 4 节）。
  *    新增事件忘了更新文档时直接失败。
  * 2. **文档侧：跨文档引用必须是链接**：全部 markdown 中，内链的文件与 `#anchor` 必须存在
  *    （锚点按 GitHub 的 slug 规则，fixture 见 SLUG_FIXTURES）；「文件名 + 第 N 节」的文字形式
@@ -29,8 +29,8 @@
  * 10. **UiEvent 命名风格**：全小写驼峰、过去式、无 `on` 前缀、无命令式动词开头
  *     （AGENTS.md 第 3 节；`AssistantEventBus.ts` 的联合逐成员检查）。
  * 11. **CoreEvent 触发点列**：`docs/architecture/events.md` 2.1 表的「core 侧触发点」列里反引号模块名
- *     与真实 emit 位点（`src/core` 里 `emitToUi` 的所在文件）逐事件对照——重构挪动了
- *     emit 位点而没改表时失败。 UiEvent（4.3，宿主侧发起）不在此列。
+ *     与真实 emit 位点（`core-rs/src` 各文件里 `"type": "<事件名>"` 字面量的所在文件）逐事件对照——
+ *     重构挪动了 emit 位点而没改表时失败。 UiEvent（4.3，宿主侧发起）不在此列。
  * 12. **契约可选成员冻结**：铁律 4.2 禁止 `?`；`AssistantEventBus.ts` 联合与结果映射里
  *     现存的可选字段冻结于豁免清单，出现清单之外的可选字段即失败（新字段改用
  *     `null` / 判别联合，或评审后显式扩清单）。
@@ -505,45 +505,37 @@ function parseEventRows(section: string): Array<{ type: string; payload: string[
 }
 
 /**
- * 扫 `src/core` 里全部 `emitToUi(` 调用（含多行字面量：事件名取调用点后 300 字符窗口内
- * 的 `type: '...'`），产出 事件名 → 发出文件的模块名（相对 `src/core`、去 `.ts`），
- * 以及全部模块名的集合（触发点列的「模块宇宙」）。
- * 事件名不在调用点的（变量传播）抓不到——当前词汇表没有这种写法，出现时这里会
- * 表现为「文档列了模块而代码抓不到」，按漂移暴露。
+ * 扫 `core-rs/src` 里全部事件 emit 位点（`json!` 宏内的 `"type": "<事件名>"` 字面量），
+ * 产出 事件名 → 发出文件的模块名（文件名去 `.rs`），以及全部模块名的集合
+ * （触发点列的「模块宇宙」）。只收 `CoreEvent` 联合的成员名——消息数据
+ * （`"type": "user"` 这类 role / schema 字面量）与 UiEvent 分发臂（`"conversationStarted" =>`
+ * 不带 `"type":` 前缀）不会误入；测试文件（`*_tests.rs` / `test_support.rs`）不参与。
+ * 事件名不在字面量里的（变量传播）抓不到——出现时这里会表现为「文档列了模块而代码
+ * 抓不到」，按漂移暴露。
  */
-function coreEmitModules(): { emits: Map<string, Set<string>>; universe: Set<string> } {
+function coreEmitModules(coreEventNames: ReadonlySet<string>): { emits: Map<string, Set<string>>; universe: Set<string> } {
   const emits = new Map<string, Set<string>>();
   const universe = new Set<string>();
-  const coreDir = path.join(REPO_ROOT, 'src', 'core');
-  const walk = (dir: string): void => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (SKIP_DIRS.has(entry.name)) continue;
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) { walk(full); continue; }
-      if (!entry.name.endsWith('.ts') || entry.name.includes('.test.') || entry.name === 'AssistantEventBus.ts') continue;
-      universe.add(path.relative(coreDir, full).split(path.sep).join('/').replace(/\.ts$/, ''));
-      const src = fs.readFileSync(full, 'utf-8');
-      let at = 0;
-      for (;;) {
-        const found = src.indexOf('emitToUi(', at);
-        if (found < 0) break;
-        const m = src.slice(found, found + 300).match(/type: '([a-zA-Z]+)'/);
-        if (m && m[1] !== undefined) {
-          const module = path.relative(coreDir, full).split(path.sep).join('/').replace(/\.ts$/, '');
-          const set = emits.get(m[1]) ?? new Set<string>();
-          set.add(module);
-          emits.set(m[1], set);
-        }
-        at = found + 'emitToUi('.length;
-      }
+  const coreDir = path.join(REPO_ROOT, 'core-rs', 'src');
+  for (const entry of fs.readdirSync(coreDir, { withFileTypes: true })) {
+    if (!entry.name.endsWith('.rs')) continue;
+    if (entry.name.includes('_tests') || entry.name === 'test_support.rs') continue;
+    const module = entry.name.replace(/\.rs$/, '');
+    universe.add(module);
+    const src = fs.readFileSync(path.join(coreDir, entry.name), 'utf-8');
+    for (const m of src.matchAll(/"type":\s*"([a-zA-Z]+)"/g)) {
+      const name = m[1];
+      if (name === undefined || !coreEventNames.has(name)) continue;
+      const set = emits.get(name) ?? new Set<string>();
+      set.add(module);
+      emits.set(name, set);
     }
-  };
-  walk(coreDir);
+  }
   return { emits, universe };
 }
 
 /** events.md 体积棘轮（AGENTS.md 第 0 节「控体积」的可执行形态）：只降不升，主动减体积后下调 */
-const EVENTS_LINE_RATCHET = 434;
+const EVENTS_LINE_RATCHET = 418;
 
 /**
  * 文档体积上限（specs/README.md 第 9 节）：单篇规格超过即拆——「不要有巨型规格」的可执行形态。
@@ -602,7 +594,7 @@ function main(): void {
   }
 
   // ---------- 1. 事件词汇表 ----------
-  const busSource = readText('src/core/AssistantEventBus.ts');
+  const busSource = readText('src/shared/AssistantEventBus.ts');
   const eventsDoc = readText('docs/architecture/events.md');
   const standaloneCore = readText('docs/core/standalone-core.md');
 
@@ -764,7 +756,8 @@ function main(): void {
       adrProblems.push(`docs/adr/${f}: 状态取值非法「${status}」（应为 已采纳 / 被取代）`);
     }
     if (status.startsWith('被取代')) {
-      const supersededBy = /(?:Superseded by|被取代[：:])\s*(?:ADR-)?(\d{4})/.exec(content)?.[1];
+      // 兼容两种写法：「被取代：0007」与「被取代（[ADR-0007](…)）」——都要求指向存在的 ADR
+      const supersededBy = /(?:Superseded by|被取代)[^\n]*?\b(?:ADR-)?(\d{4})/.exec(content)?.[1];
       const target = supersededBy === undefined
         ? null
         : adrFiles.find((x) => x.startsWith(supersededBy));
@@ -900,6 +893,8 @@ function main(): void {
   for (const rel of mdFiles) {
     // TODO.md 与 specs/ 描述的是**计划**（如「新增 docs/guide/」），路径尚不存在是常态，不参与本检查；已收敛的 spec 例外（FUTURE_WORK_DOC 分档放行）
     if (FUTURE_WORK_DOC(rel)) continue;
+    // ADR 是冻结的历史决策，引用被取代 / 已删除实现的路径是其本职（同第 13 / 15 项的口径）
+    if (rel.startsWith('docs/adr/')) continue;
     const lines = readText(rel).split(/\r?\n/);
     let inFence = false;
     for (let i = 0; i < lines.length; i++) {
@@ -941,7 +936,7 @@ function main(): void {
   }
 
   // ---------- 11. CoreEvent 触发点列与真实 emit 位点对照 ----------
-  const { emits, universe } = coreEmitModules();
+  const { emits, universe } = coreEmitModules(new Set(unionMemberNames(busSource, 'CoreEvent')));
   const ch41 = eventsDoc.slice(eventsDoc.indexOf('### 2.1'), eventsDoc.indexOf('### 2.2'));
   const triggerProblems: string[] = [];
   let previousDocumented = new Set<string>();
@@ -950,14 +945,15 @@ function main(): void {
     const cols = line.split('|');
     const type = (cols[2] ?? '').trim().replace(/`/g, '');
     const triggerCell = (cols[4] ?? '').trim();
-    // 触发点列的约定：模块名一律反引号包裹、形如 `Query` / `history/Conversation`；
-    // 括号里的散文说明（事件名、设置键、其它文档）不参与对照。判定按三档：
-    // 含 `/` 或大写开头且在模块宇宙里 → 模块；形状像模块但宇宙里没有 → 拼写漂移；
-    // 其余（小写开头的事件名 / 键名）→ 忽略。`同上` 沿用上一行的清单。
+    // 触发点列的约定：模块名一律反引号包裹、形如 `engine.rs` / `main.rs`（Rust 源文件，
+    // 对照时去 `.rs` 后缀）；括号里的散文说明（事件名、设置键、其它文档）不参与对照。
+    // 判定按三档：含 `/` 或大写开头且在模块宇宙里 → 模块；形状像模块但宇宙里没有 →
+    // 拼写漂移；其余（小写开头的事件名 / 键名）→ 忽略。`同上` 沿用上一行的清单。
     const classified = (token: string): 'module' | 'phantom' | 'ignore' => {
-      if (!/^[A-Za-z][A-Za-z0-9]*(\/[A-Za-z0-9]+)*$/.test(token)) return 'ignore';
-      if (token.includes('/') || /^[A-Z]/.test(token)) return universe.has(token) ? 'module' : 'phantom';
-      return universe.has(token) ? 'module' : 'ignore';
+      const name = token.replace(/\.rs$/, '');
+      if (!/^[A-Za-z][A-Za-z0-9_]*(\/[A-Za-z0-9_]+)*$/.test(name)) return 'ignore';
+      if (name.includes('/') || /^[A-Z]/.test(name)) return universe.has(name) ? 'module' : 'phantom';
+      return universe.has(name) ? 'module' : 'ignore';
     };
     let documented: Set<string>;
     let phantoms: string[];
@@ -971,7 +967,7 @@ function main(): void {
         const token = m[1];
         if (token === undefined) continue;
         const kind = classified(token);
-        if (kind === 'module') documented.add(token);
+        if (kind === 'module') documented.add(token.replace(/\.rs$/, ''));
         else if (kind === 'phantom') phantoms.push(token);
       }
     }
@@ -1031,6 +1027,8 @@ function main(): void {
   for (const rel of mdFiles) {
     // TODO.md 与 specs/ 描述的是尚未做的，引用不存在的名字是常态
     if (FUTURE_WORK_DOC(rel)) continue;
+    // ADR 是冻结的历史决策，引用被取代 / 已删除机制的名字（如 CORE_KIND）是其本职
+    if (rel.startsWith('docs/adr/')) continue;
     const lines = readText(rel).split(/\r?\n/);
     let inFence = false;
     for (let i = 0; i < lines.length; i++) {
@@ -1120,6 +1118,7 @@ function main(): void {
     const identProblems: string[] = [];
     for (const rel of mdFiles) {
       if (FUTURE_WORK_DOC(rel)) continue; // TODO 与 specs/ 描述尚未做的
+      if (rel.startsWith('docs/adr/')) continue; // ADR 记录历史决策（含被取代 / 已移除实现的标识符），存活检查不适用
       const lines = readText(rel).split(/\r?\n/);
       let inFence = false;
       for (let i = 0; i < lines.length; i++) {
@@ -1250,7 +1249,7 @@ function main(): void {
       }
     };
     // (a) SettingsSnapshot ↔ core-ui-separation.md 4.3 字段表（嵌套 llm / mcp 展开成点路径）
-    const snapshotSrc = readText('src/core/settingsSnapshot.ts');
+    const snapshotSrc = readText('src/shared/settingsSnapshot.ts');
     const snapIface = balancedBlock(snapshotSrc, snapshotSrc.search(/export interface SettingsSnapshot\b/));
     const snapshotExpected: string[] = [];
     for (const top of depthOneFieldNames(snapIface)) {
@@ -1453,7 +1452,7 @@ function main(): void {
     const DEFECT_SECTIONS = ['现状', '期望', '不变量', '回归测试', '验证记录'];
     const DEFECT_RESULTS = new Set(['红', '绿', 'skipped', 'not-run', '部分验证']);
     const PLAN_SECTIONS = ['技术方案', '受影响模块与契约', '宪章检查', '被否决的替代方案'];
-    const CHARTER_ITEMS = ['分层', '铁律', 'parity', '文档同步'];
+    const CHARTER_ITEMS = ['分层', '铁律', 'Core 行为', '文档同步'];
 
     /**
      * `[待澄清]` 标记检查：行内代码与 fenced 块里的出现是文档（写法说明）不算标记；

@@ -1,5 +1,5 @@
 import type { HandlerContext } from './handlerContext';
-import { modelRefOf, sameModelRef } from '../../../core/llm/modelRef';
+import { modelRefOf, sameModelRef } from '../../../shared/llm/modelRef';
 import { HostToWebviewWire } from '../../../host/webviewMessages';
 import { profileLog } from '../../debug';
 import { UiLanguage, setUiLanguage, t } from '../../i18n';
@@ -7,7 +7,7 @@ import { setUiFontSize, type UiFontSize } from '../../fontSize';
 import { AgentMode, ApplyDefaultsPrompt, LlmConfigPanelPayload, PromptMode, ThinkingMode } from '../../types';
 import type { SessionState } from '../../types';
 import { postMessage } from '../../webviewEnv';
-import { sameMcpEnabledList } from '../../../core/utils/mcpList';
+import { sameMcpEnabledList } from '../../../shared/utils/mcpList';
 import { missingPanelFields } from './shared';
 
 /**

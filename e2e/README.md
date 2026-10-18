@@ -58,9 +58,8 @@ e2e/
   注意 `APPDATA` 必须一并指向沙箱并预建目录，否则 Electron 解析不出 `appData` 路径。
 - settings.json 预写 mock provider（manual 询问模式让写操作弹权限确认），
   LLM 指向本地 mock SSE 服务器，全程无外网请求。
-- `<envPrefix>_<core.envVarSuffix>=standalone`（默认）：Rust Core 独立进程，多 Connection / daemon / SSH 链路与
-  产品一致；前置 `npm run build:core`。远程工作区场景只有 standalone 才真实（embedded 单
-  Connection 无 lost 信号、session 路由有「唯一连接」退路，覆盖不了失败链路）。
+- Core 为 Rust 独立进程（standalone，产品唯一形态），多 Connection / daemon / SSH 链路与
+  产品一致；前置 `npm run build:core`。
 - `--multi-instance=<id>` 跳过单实例锁；实例后缀会被 main.ts 截断到 32 字符，
   预置 workspace-state.json 时必须用同样的短 id 规则。
 - `DISABLE_TRAY_SOUND=1`：关掉「任务结束」的托盘提醒音（`electron/trayAttentionSound.ts`

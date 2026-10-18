@@ -44,7 +44,7 @@ fn tool_use_block_falls_back_to_empty_input_on_broken_json() {
 #[test]
 fn tool_use_block_keeps_content_block_start_input_without_delta() {
     // 没有 input_json_delta 时用 content_block_start 的初始 input；
-    // 解析失败时同样回退到初始 input（对齐 Embedded `parseToolUsePartialJson`）。
+    // 解析失败时同样回退到初始 input。
     let initial = json!({ "command": "echo hi" });
     let block = tool_use_block("call_1", "Bash", "", &initial);
     assert_eq!(block["input"], initial);
@@ -69,7 +69,7 @@ fn build_user_message_carries_uuid_timestamp_and_editor_context() {
     assert_eq!(message["_userInitiated"], true);
     assert_eq!(message["filePath"], "src/a.ts");
     assert_eq!(message["fileSelectedLines"]["start"], 1);
-    // fileHidden 只在 true 时落盘（与 Embedded 一致）
+    // fileHidden 只在 true 时落盘
     assert!(message.get("fileHidden").is_none());
     // 文件信息同时写入 _meta（含展示用 param），保证历史加载能还原文件标签
     assert_eq!(message["_meta"]["filePath"], "src/a.ts");
@@ -125,8 +125,6 @@ fn build_user_message_attaches_images_as_content_blocks() {
 
 #[test]
 fn build_user_message_skips_falsy_file_path_and_data_url() {
-    // 对齐 Embedded `submitUserMessage` 的 `...(payload.filePath && {...})` 与
-    // `buildUserContent` 的 `images?.filter((img) => img && img.dataUrl)`：
     // 空串 filePath / 空串 dataUrl 都是假值，不落盘、也不产出 image block。
     let message = build_user_message(&json!({
         "content": "hi",
@@ -210,7 +208,7 @@ fn build_assistant_message_skips_empty_sections() {
     let message = build_assistant_message("", "", "", &[], "", &llm::Usage::default());
     assert_eq!(message["message"]["content"], json!([]));
     assert!(message["message"].get("stop_reason").is_none());
-    // usage 恒存在且恒带四个键（对齐 Embedded 的 `{0,0,0,0}` 兜底）
+    // usage 恒存在且恒带四个键（`{0,0,0,0}` 兜底）
     assert_eq!(
         message["message"]["usage"],
         json!({
@@ -332,7 +330,7 @@ fn build_raw_api_messages_prefixes_current_file_context() {
     // 已有前缀时不重复添加
     assert_eq!(messages[4]["content"], "[Current File: src/e.ts]\n\n已有前缀");
     assert_eq!(messages[5]["content"], "回答");
-    // filePath 为空串时不加前缀（对齐 Embedded 的 `fileMsg.filePath && ...`）
+    // filePath 为空串时不加前缀
     assert_eq!(messages[6]["content"], "空路径");
 }
 
@@ -394,7 +392,7 @@ fn collect_fence_languages_scans_string_and_block_contents() {
     }));
     assert_eq!(languages, vec!["go", "js", "sh"]);
 
-    // Read 输出的行号前缀（`N|```ts`）不算围栏开头——与 Embedded 的正则一致
+    // Read 输出的行号前缀（`N|```ts`）不算围栏开头
     assert!(collect_fence_languages(&json!({
         "type": "user",
         "message": { "role": "user", "content": [
@@ -553,7 +551,7 @@ fn emit_runtime_reports_idle_and_waiting_flags() {
     assert_eq!(runtime["states"][0]["sessionId"], "s1");
     assert_eq!(runtime["states"][0]["idle"], true);
     assert_eq!(runtime["states"][0]["waiting"], false);
-    // 根事实与派生 idle 一起进快照（对齐 Embedded `SessionRuntimeState`）
+    // 根事实与派生 idle 一起进快照
     assert_eq!(runtime["states"][0]["queryRunning"], false);
     assert_eq!(runtime["states"][0]["compacting"], false);
     assert_eq!(runtime["states"][0]["backgroundRunning"], false);
@@ -606,7 +604,7 @@ fn emit_runtime_reports_root_facts_and_busy_subagents() {
     assert_eq!(parent_entry["subAgentRunning"], true);
     assert_eq!(parent_entry["idle"], false);
     // parentSessionId 根事实：普通会话为 null、子代理会话带父 id
-    // （spawn 时落 `parent_session_id`，对齐 Embedded 的 `markSessionParent`）
+    // （spawn 时落 `parent_session_id`）
     assert_eq!(parent_entry["parentSessionId"], Value::Null);
     let child_entry = states
         .iter()
@@ -630,7 +628,7 @@ fn emit_runtime_reports_root_facts_and_busy_subagents() {
     crate::subagent::reset_for_test();
 }
 
-/// abort 两阶段（对齐 Embedded `Integration.abortCurrentQuery`）：
+/// abort 两阶段：
 /// 前台有工作时只置 `cancel`，后台 Bash 任务保留；前台停下后再次 abort 才中止后台。
 #[test]
 fn abort_request_stops_foreground_before_background() {
@@ -789,7 +787,7 @@ fn deleting_a_conversation_aborts_the_query_and_clears_its_tool_results() {
 
 #[test]
 fn deleting_a_conversation_releases_its_sub_conversations_too() {
-    // 对齐 Embedded：`conversationDeleted` 先对**闭包里每个会话**跑
+    // `conversationDeleted` 先对**闭包里每个会话**跑
     // `releaseSessionResources`（中止 + 卸引擎 + 丢运行时状态），再删盘。
     let sandbox = Sandbox::new("engine-delete-closure");
     let workspace = sandbox.workspace.to_string_lossy().to_string();
@@ -975,15 +973,14 @@ fn run_consumer_stops_when_cancelled() {
     let state = state.lock().unwrap();
     assert!(state.pending_user_message.is_none(), "取消时清空待处理队列");
     assert!(!state.running);
-    // 消费循环一旦启动就发一对 queryBegin / queryEnd（对齐 Embedded `submitMessage`
-    // 启动时发 queryBegin、`finalizeIdle` 退出时发 queryEnd），中止也照发。
+    // 消费循环一旦启动就发一对 queryBegin / queryEnd，中止也照发。
     assert_eq!(harness.sink.events_of("queryBegin").len(), 1);
     assert_eq!(harness.sink.events_of("queryEnd").len(), 1);
 }
 
 // ==================== 排队消息撤回（`queuedMessageDiscarded`）====================
 
-/// 对齐 Embedded `QueryEngine.discardPendingUserMessage`（webview 排队项的
+/// 撤回排队中的用户消息（webview 排队项的
 /// 「编辑 / 删除」，`docs/features/user-message-pipeline.md` FR-003）。
 #[test]
 fn queued_message_is_discarded_by_uuid() {
@@ -1009,7 +1006,7 @@ fn queued_message_is_discarded_by_uuid() {
 
     let state = state.lock().unwrap();
     assert!(state.pending_user_message.is_none(), "uuid 配对时丢弃排队消息");
-    // Skill 待注入与排队消息同生共死（对齐 Embedded `clearPendingUserMessage`）
+    // Skill 待注入与排队消息同生共死
     assert!(state.pending_skill_injection.is_none(), "Skill 待注入一并清除");
     // 不置 cancel：撤回排队项不打断正在运行的查询（区别于 abort 第一阶段）
     assert!(!state.cancel.load(Ordering::Relaxed), "撤回不置 cancel");
@@ -1058,7 +1055,7 @@ fn run_consumer_reports_turn_failures_as_system_messages() {
 
     let message = harness.sink.event_of("message").expect("system message");
     assert_eq!(message["data"]["role"], "system");
-    // 对齐 Embedded `Query.ts` 的 LLM 错误模板
+    // LLM 错误模板逐字锁定
     let content = message["data"]["content"].as_str().unwrap();
     assert!(content.contains("❌ **LLM API Error**"), "got {message}");
     assert!(content.contains("```"), "got {message}");
@@ -1114,11 +1111,11 @@ fn full_turn_with_a_tool_call_emits_events_and_persists_messages() {
 
     // 标题由首条用户消息推导
     assert_eq!(history::load_metadata("s1", &workspace).unwrap()["title"], "跑一下");
-    // Embedded 只在改名（conversationRenamed）时发 titleChanged，新消息推导标题不发
+    // 只在改名（conversationRenamed）时发 titleChanged，新消息推导标题不发
     assert!(harness.sink.event_of("titleChanged").is_none());
     assert_eq!(history::load_metadata("s1", &workspace).unwrap()["messageCount"], 4);
     // `conversationListChanged` 每条消息落盘后各发一次（用户 + assistant + tool_result
-    // + assistant = 4 次），与 Embedded 的 `Conversation.appendMessage` 一致
+    // + assistant = 4 次）
     assert_eq!(
         harness.sink.events_of("conversationListChanged").len(),
         4,
@@ -1126,7 +1123,7 @@ fn full_turn_with_a_tool_call_emits_events_and_persists_messages() {
     );
 }
 
-/// 对齐 Embedded：未预建会话文件时，第一条用户消息负责创建 `meta.json` + `.jsonl`，
+/// 未预建会话文件时，第一条用户消息负责创建 `meta.json` + `.jsonl`，
 /// 并用首条用户消息生成标题（`conversationStarted` 不再预先建档）。
 #[test]
 fn first_user_message_creates_the_conversation_files() {
@@ -1154,12 +1151,11 @@ fn first_user_message_creates_the_conversation_files() {
     assert_eq!(history::load_messages("s1", &workspace).len(), 2);
     // 不再产生 sessionCreated（那是 conversationStarted 旧行为）
     assert!(harness.sink.event_of("sessionCreated").is_none());
-    // 也不产生 titleChanged：Embedded 的 `updateMetadataForNewMessage` 只让
-    // `appendMessage` 发 `conversationListChanged`，`titleChanged` 仅在改名时发。
+    // 也不产生 titleChanged：落盘只发 `conversationListChanged`，`titleChanged` 仅在改名时发。
     assert!(harness.sink.event_of("titleChanged").is_none());
 }
 
-/// 首条消息取不到文本时，标题兜底 `New Conversation`（对齐 Embedded 的 `|| 'New Conversation'`）。
+/// 首条消息取不到文本时，标题兜底 `New Conversation`。
 #[test]
 fn first_user_message_without_text_falls_back_to_new_conversation() {
     let sandbox = Sandbox::new("engine-first-message-empty-title");
@@ -1229,7 +1225,7 @@ fn rename_after_messages_is_preserved_on_later_turns() {
 }
 
 /// Read 图片：tool_result 的 `content` 是 image content block 数组（不是 base64 文本），
-/// 与 Embedded 的 `mapToolResultToToolResultBlockParam` 一致，模型才能直接看到图片。
+/// 模型才能直接看到图片。
 #[test]
 fn image_read_is_returned_as_an_image_content_block() {
     let sandbox = Sandbox::new("engine-image-read");
@@ -1253,8 +1249,8 @@ fn image_read_is_returned_as_an_image_content_block() {
 
     let result = harness.sink.event_of("toolResult").expect("toolResult");
     assert_eq!(result["status"], "success");
-    // UI 事件的 `output` 是 string：Embedded 的 `outputForUI` 对数组 content 上报
-    // `'[Image]'`（图片本体只进 tool_result block）。
+    // UI 事件的 `output` 是 string：数组 content 上报 `'[Image]'`
+    // （图片本体只进 tool_result block）。
     assert_eq!(result["output"], "[Image]", "图片的 UI 输出应为 [Image]: {result}");
 
     // 落盘的 tool_result block 同样是数组（LLM 上下文里就是 image block）
@@ -1266,8 +1262,7 @@ fn image_read_is_returned_as_an_image_content_block() {
 #[test]
 fn orphan_tool_use_is_backfilled_with_a_cancelled_tool_result_on_load() {
     // 崩溃恢复：磁盘上只有 assistant 的 tool_use、没有 tool_result 时，
-    // `ensure_loaded` 必须补一条「会话中断」的取消结果（对齐 Embedded
-    // `ensureToolResults`），否则下一轮 Anthropic 请求会因 tool_use 未配对而 400。
+    // `ensure_loaded` 必须补一条「会话中断」的取消结果，否则下一轮 Anthropic 请求会因 tool_use 未配对而 400。
     let sandbox = Sandbox::new("engine-orphan-tool-use");
     let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured = Arc::clone(&bodies);
@@ -1318,8 +1313,8 @@ fn orphan_tool_use_is_backfilled_with_a_cancelled_tool_result_on_load() {
 
 #[test]
 fn crash_recovered_tool_results_are_persisted_before_the_next_user_message() {
-    // 崩溃恢复补出的合成 tool_result 不能只停在内存：对齐 Embedded
-    // `persistUnpersistedMessages`，下一次持久化时机按序补写，且 parentUuid
+    // 崩溃恢复补出的合成 tool_result 不能只停在内存：
+    // 下一次持久化时机按序补写，且 parentUuid
     // 指向包含 tool_use 的 assistant（不能自引用，否则 BFS 建链时整条链被孤立）。
     let sandbox = Sandbox::new("engine-recovered-persist");
     let llm = FakeLlm::fixed(openai_text_sse(&["好的"]));
@@ -1430,8 +1425,7 @@ fn second_llm_round_sees_the_tool_result() {    let sandbox = Sandbox::new("engi
         .all(|message| message["role"] != "tool"));
 }
 
-/// 手工转后台（`UiEvent.bashBackgroundRequested`，Bash 卡片「转后台」按钮；
-/// 对齐 Embedded `src/test/manualBackground.test.ts` 的同名用例）：
+/// 手工转后台（`UiEvent.bashBackgroundRequested`，Bash 卡片「转后台」按钮）：
 ///
 /// 1. 前台 Bash 跑起来后触发转后台 → toolResult 落盘（success）、消费循环收尾
 ///    （queryEnd，等待用户输入），**没有**第二次 LLM 请求——下一轮 agent 循环暂停；
@@ -1576,8 +1570,7 @@ fn write_settings_with_features_max_turns(sandbox: &Sandbox, base_url: &str, age
 
 #[test]
 fn tool_loop_has_no_default_turn_limit() {
-    // 未配置 `features.maxTurns` 时不能有隐藏上限（对齐 Embedded 的
-    // `if (maxTurns && ...)`）：这里跑满 45 轮工具循环，证明没有硬编码的 40 轮截断。
+    // 未配置 `features.maxTurns` 时不能有隐藏上限：这里跑满 45 轮工具循环，证明没有硬编码的 40 轮截断。
     let sandbox = Sandbox::new("engine-no-turn-limit");
     let calls = Arc::new(Mutex::new(0usize));
     let counter = Arc::clone(&calls);
@@ -1613,10 +1606,9 @@ fn tool_loop_has_no_default_turn_limit() {
 }
 
 #[test]
-fn settings_features_max_turns_is_ignored_like_embedded() {
-    // 对齐 Embedded：`settings.json` 的 `features.maxTurns` **没有任何消费方**
-    // （`llm/config.ts` 只声明类型，`Integration.createEngine` 从不把它传进
-    // `QueryEngineConfig`），普通会话的 `maxTurns` 恒为 undefined、循环不设上限。
+fn settings_features_max_turns_is_ignored() {
+    // `settings.json` 的 `features.maxTurns` **没有任何消费方**（只有类型声明），
+    // 普通会话不设轮次上限。
     // 这里写 `features.maxTurns = 1`，断言它不会截断 2 轮工具循环。
     let sandbox = Sandbox::new("engine-features-max-turns");
     let calls = Arc::new(Mutex::new(0usize));
@@ -1879,7 +1871,7 @@ fn llm_failures_surface_as_system_messages() {
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "你好", "u-1");
     // 失败提示由 run_consumer 在 run_turn 返回之后、queryEnd 之前发出
-    // （对齐 Embedded：错误 message 在 query 内发出，queryEnd 由 finalizeIdle 收尾）。
+    // （错误 message 在 query 内发出，queryEnd 由收尾路径补发）。
     // 这里等系统消息本身，不依赖两个事件的先后竞争。
     assert!(harness.wait_for(
         |sink| sink
@@ -1947,14 +1939,13 @@ fn anthropic_provider_runs_the_same_turn() {
         .expect("assistant streamEnd");
     assert_eq!(stream_end["data"]["accumulated"], "完成");
     // input = message_start 的 input_tokens + 两个 cache 计数（5 + 3 + 2），
-    // 对齐 Embedded `RealApi` 的累计口径
     assert_eq!(stream_end["data"]["usage"]["input_tokens"], 10);
     assert_eq!(stream_end["data"]["usage"]["output_tokens"], 7);
 }
 
 #[test]
 fn anthropic_start_signature_is_persisted_in_thinking_block() {
-    // 对齐 Embedded `RealApi`：`content_block_start` 里的初始 signature 与后续
+    // `content_block_start` 里的初始 signature 与后续
     // `signature_delta` 都要进落盘 assistant 的 thinking block（初始值 + 增量），
     // 否则「思考 + 工具调用」的第二轮请求会因历史 thinking 缺 signature 被拒。
     let sandbox = Sandbox::new("engine-anthropic-start-signature");
@@ -2008,7 +1999,7 @@ fn anthropic_start_signature_is_persisted_in_thinking_block() {
 
 #[test]
 fn anthropic_content_block_start_input_is_persisted_without_delta() {
-    // 对齐 Embedded `RealApi`：`content_block_start` 自带完整 input、且没有
+    // `content_block_start` 自带完整 input、且没有
     // `input_json_delta` 时，tool_use 的 input 就是这一帧给出的对象。
     let sandbox = Sandbox::new("engine-anthropic-start-input");
     let llm = FakeLlm::start(|index, _| {
@@ -2058,7 +2049,7 @@ fn anthropic_content_block_start_input_is_persisted_without_delta() {
 
 #[test]
 fn stream_end_usage_carries_cache_keys_even_without_details() {
-    // 对齐 Embedded `extractUsageFields`：OpenAI 侧 usage 恒带 cache 两键（缺省 0），
+    // OpenAI 侧 usage 恒带 cache 两键（缺省 0），
     // `streamEnd` 事件的 usage 不能省略它们（WebView 读同一份字段集合）。
     let sandbox = Sandbox::new("engine-usage-cache-keys");
     let llm = FakeLlm::fixed(crate::test_support::openai_thinking_sse("想", "答"));
@@ -2148,8 +2139,8 @@ fn assert_block_granular_stream_ends(harness: &EngineHarness, thinking: &str, te
 }
 
 #[test]
-fn anthropic_stream_end_granularity_matches_embedded_blocks() {
-    // 对齐 Embedded `Query.ts`：Anthropic 的 `content_block_stop` 发一条 usage 缺省的
+fn anthropic_stream_end_granularity() {
+    // Anthropic 的 `content_block_stop` 发一条 usage 缺省的
     // `streamEnd`，`message_delta` 再发一条带 usage 的；`streamId` 为块级。
     let sandbox = Sandbox::new("engine-anthropic-block-granularity");
     let llm = FakeLlm::fixed(crate::test_support::anthropic_sse("想一想", "完成", None));
@@ -2164,7 +2155,7 @@ fn anthropic_stream_end_granularity_matches_embedded_blocks() {
 }
 
 #[test]
-fn openai_stream_end_granularity_matches_embedded_blocks() {
+fn openai_stream_end_granularity() {
     // Chat Completions 没有显式块边界，适配器按角色切换合成 block_start / block_stop；
     // 引擎侧的 `streamEnd` 粒度与 Anthropic 路径一致。
     let sandbox = Sandbox::new("engine-openai-block-granularity");
@@ -2181,8 +2172,7 @@ fn openai_stream_end_granularity_matches_embedded_blocks() {
 #[test]
 fn pure_tool_use_turn_emits_one_usage_carrying_stream_end() {
     // 纯 tool_use 轮次：没有 thinking / text，仍要补一条 `accumulated` 为空、
-    // 带 usage 的 assistant `streamEnd`（`streamId` 回退到轮次级 `msg_*`，
-    // 对齐 Embedded 的 `event.messageId`）。
+    // 带 usage 的 assistant `streamEnd`（`streamId` 回退到轮次级 `msg_*`）。
     let sandbox = Sandbox::new("engine-pure-tool-use-stream-end");
     // 第一轮纯 tool_use，第二轮给文本收尾（否则假 LLM 会无限重复工具调用）
     let llm = FakeLlm::start(|index, _| {
@@ -2215,7 +2205,6 @@ fn pure_tool_use_turn_emits_one_usage_carrying_stream_end() {
 #[test]
 fn queued_message_is_flushed_before_the_next_llm_round() {
     // 多轮工具调用期间到达的用户消息，必须在**下一次 LLM 请求前**进入上下文
-    // （对齐 Embedded `Query.ts` 阶段 0.5 的 `engine.flushQueuedMessagesIntoContext()`），
     // 而不是等整轮结束再单独起一轮。这里让假 LLM 在处理第一轮请求时就提交第二条消息。
     let sandbox = Sandbox::new("engine-queue");
     let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -2264,7 +2253,7 @@ fn queued_message_is_flushed_before_the_next_llm_round() {
         .iter()
         .position(|message| message["role"] == "user" && message["content"] == "第二条")
         .unwrap_or_else(|| panic!("第二次请求缺少排队消息: {second:?}"));
-    // 排队消息在 tool_result 之后（下一次请求的末尾），与 Embedded 的插入位置一致
+    // 排队消息在 tool_result 之后（下一次请求的末尾）
     assert!(
         second
             .iter()
@@ -2287,8 +2276,7 @@ fn queued_message_is_flushed_before_the_next_llm_round() {
 #[test]
 fn agent_reply_is_flushed_before_the_next_llm_round() {
     // 子代理 Reply（UI 上的 From 消息）与用户消息同一口径：多轮工具调用期间到达的
-    // 自动消息必须在**下一次 LLM 请求前**进入上下文（对齐 Embedded `Query.ts` 阶段 0.5
-    // 的 `engine.flushQueuedMessagesIntoContext()` → `consumeQueuedOnce`），
+    // 自动消息必须在**下一次 LLM 请求前**进入上下文，
     // 而不是等整轮结束再单独起一轮。
     let sandbox = Sandbox::new("engine-agent-queue");
     let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -2332,7 +2320,7 @@ fn agent_reply_is_flushed_before_the_next_llm_round() {
         .iter()
         .position(|message| message["role"] == "user" && message["content"] == "子代理回复")
         .unwrap_or_else(|| panic!("第二次请求缺少子代理回复: {second:?}"));
-    // 自动消息在 tool_result 之后（下一次请求的末尾），与 Embedded 的插入位置一致
+    // 自动消息在 tool_result 之后（下一次请求的末尾）
     assert!(
         second
             .iter()
@@ -2397,7 +2385,7 @@ fn queued_user_message_merges_with_agent_replies_in_one_round() {
     assert_eq!(requests.len(), 2, "两条排队消息应并入同一轮，而不是各自起一轮");
     let second = requests[1]["messages"].as_array().unwrap();
     // 两条都是 user 角色、且相邻，请求组装时被 `merge_consecutive_same_role` 合并成
-    // 一条 user 消息（与 Embedded 的请求组装口径一致）：自动消息在前、用户消息在末尾。
+    // 一条 user 消息：自动消息在前、用户消息在末尾。
     let merged = second
         .iter()
         .filter_map(|message| message["content"].as_str())
@@ -2566,7 +2554,6 @@ fn abort_with_pending_tool_uses_backfills_tool_results_and_reports_interruption(
 fn abort_during_responses_stream_reports_interruption_not_api_error() {
     // 远程 Core 走 Responses API 时，用户 abort 会让本端提前掐断流，服务端不会补
     // `response.completed`。这属于「用户中断」，不得按 LLM 故障回显
-    // （对齐 Embedded `Query.ts` 捕获 AbortError 的 `isAborted` 分支）。
     let sandbox = Sandbox::new("engine-abort-responses");
     let slot: Arc<Mutex<Option<Arc<Core>>>> = Arc::new(Mutex::new(None));
     let aborter = Arc::clone(&slot);
@@ -2616,7 +2603,6 @@ fn abort_during_responses_stream_reports_interruption_not_api_error() {
 
 #[test]
 fn bash_streams_tool_progress_frames() {
-    // 对齐 Embedded `RunTools.executeSingleTool` 的 onProgress：
     // Bash 的流式输出经 `toolProgress` 帧实时推给 UI（而不是等命令结束）。
     let sandbox = Sandbox::new("engine-tool-progress");
     let llm = FakeLlm::start(|index, _| {
@@ -2639,7 +2625,7 @@ fn bash_streams_tool_progress_frames() {
     assert_eq!(event["toolUseId"], "call_1");
     assert_eq!(event["progress"]["type"], "bash_progress");
     assert_eq!(event["progress"]["timeoutMs"], 60_000);
-    // `taskId` 在 Embedded 里是 undefined（序列化时被丢掉），这里不应出现
+    // `taskId` 不应出现（序列化时会被丢掉）
     assert!(
         event["progress"].get("taskId").is_none(),
         "got {}",
@@ -2656,7 +2642,7 @@ fn bash_streams_tool_progress_frames() {
 
 #[test]
 fn failed_tool_results_get_the_executing_prefix() {
-    // 对齐 Embedded：`call()` 抛错的 tool_result 内容加 `Error executing <Tool>: `，
+    // `call()` 抛错的 tool_result 内容加 `Error executing <Tool>: `，
     // 但 UI 的 `toolResult.output` 用裸消息。
     let sandbox = Sandbox::new("engine-tool-error-prefix");
     let llm = FakeLlm::start(|index, _| {
@@ -2725,8 +2711,7 @@ fn abort_during_the_tool_loop_skips_the_next_llm_round() {
     });
     prepare(&sandbox, &llm.base_url, "manual");
 
-    // 权限确认时顺手取消：工具**不执行**（对齐 Embedded `executeSingleItem` 的
-    // `signal?.aborted` 分支），补 `Command was aborted before execution` 的取消结果，
+    // 权限确认时顺手取消：工具**不执行**，补 `Command was aborted before execution` 的取消结果，
     // 并且不再回到 LLM 要第二轮。
     let slot: Arc<Mutex<Option<Arc<Core>>>> = Arc::new(Mutex::new(None));
     let responder_slot = Arc::clone(&slot);
@@ -2793,8 +2778,6 @@ fn abort_during_the_tool_loop_skips_the_next_llm_round() {
 fn abort_during_tool_execution_reports_interruption() {
     // 工具**已开始执行**后才中止：Bash 子进程被杀 → tool_result 为
     // `Command was interrupted`，且本轮收尾必须上报 `*User Interrupted*`
-    // （对齐 Embedded `executeSingleItem` 执行后的 `signal?.aborted` 分支 →
-    // `shouldPreventContinuation`；`drainStartedItems` 的 `hasAborted` 同理）。
     let sandbox = Sandbox::new("engine-abort-mid-execution");
     // 先建标记文件证明工具已开跑，再长睡等待 abort（cwd 即 workspace）。
     let llm = FakeLlm::start(|index, _| {
@@ -2846,7 +2829,7 @@ fn abort_during_tool_execution_reports_interruption() {
 
 // ==================== 权限请求：允许路径也要上架卡片 ====================
 
-/// 对齐 Embedded `RunTools.authorizeOne`：**允许**的工具也要发一次
+/// **允许**的工具也要发一次
 /// `toolPermissionRequested`（UI 借此上架工具卡片；Edit / Write 还靠它写 `_meta`），
 /// 而不是只在 `ask` 时才发。
 #[test]
@@ -2892,14 +2875,14 @@ fn allowed_tool_still_emits_the_permission_request() {
     let result = harness.sink.event_of("toolResult").expect("toolResult");
     assert_eq!(result["status"], "success");
 
-    // 对齐 Embedded `executeSingleItem`：授权前一次、执行前再一次 toolCall
+    // 授权前一次、执行前再一次 toolCall
     assert_eq!(
         harness.sink.events_of("toolCall").len(),
         2,
         "授权前 / 执行前各发一次 toolCall"
     );
 
-    // 对齐 Embedded：执行前追加 `_meta.confirmTimestamp`，历史回放时与 toolCallTimestamp 合并
+    // 执行前追加 `_meta.confirmTimestamp`，历史回放时与 toolCallTimestamp 合并
     let messages = crate::history::load_messages("s1", &sandbox.workspace.to_string_lossy());
     let block = messages
         .iter()
@@ -3063,7 +3046,7 @@ fn write_permission_request_carries_the_preview_fields() {
     );
 }
 
-/// 对齐 Embedded `RunTools.authorizeOne`：默认 checkPermissions 回传的 `updatedInput`
+/// 默认 checkPermissions 回传的 `updatedInput`
 /// 是 zod 规范化产物；与当前内存入参不同（如 `offset: "2"` 被 coerce 成 `2`）时，
 /// 追加一条 `tool_use_update`，保证历史恢复后拿到规范化入参。
 #[test]
@@ -3137,7 +3120,7 @@ fn openai_multi_tool_sse(calls: &[(&str, &str, &str)]) -> String {
 
 #[test]
 fn permission_deny_cancels_the_remaining_tools_in_the_batch() {
-    // 对齐 Embedded `RunTools.authorizeOne`：一个工具被 deny 时，
+    // 一个工具被 deny 时，
     // 剩余工具不再执行、也不请求权限，而是逐条补发取消结果（is_canceled=true）。
     let sandbox = Sandbox::new("engine-permission-cancel-remaining");
     let llm = FakeLlm::start(|index, _| {
@@ -3211,7 +3194,7 @@ fn permission_deny_cancels_the_remaining_tools_in_the_batch() {
 
 #[test]
 fn permission_refusal_without_a_reason_terminates_the_turn() {
-    // Embedded：`shouldTerminate = !hasReply`——不带原因地拒绝 → 本轮直接结束，
+    // `shouldTerminate = !hasReply`——不带原因地拒绝 → 本轮直接结束，
     // 补发 `*User Interrupted*` 且不再回 LLM。
     let sandbox = Sandbox::new("engine-permission-terminate");
     let llm = FakeLlm::start(|index, _| {
@@ -3285,7 +3268,7 @@ fn permission_refusal_with_a_reason_continues_the_turn() {
 
 #[test]
 fn rename_without_a_metadata_file_creates_it_and_broadcasts_title_changed() {
-    // 对齐 Embedded `initializeCoreEvents` 的 conversationRenamed：显式改标题必须
+    // 显式改标题必须
     // 落盘（meta.json 缺失时建档），再广播事件——UI 只消费真实数据变更后的事件，
     // 否则重启 / 刷新列表后标题回到「未命名」。
     let sandbox = Sandbox::new("engine-rename-no-metadata");
@@ -3434,7 +3417,7 @@ fn field_level_json_string_input_is_unwrapped_and_persisted_as_an_update() {
 
 
 /// 工具不存在：不发 toolCall、不执行，但仍发一次 toolPermissionRequested
-/// （permResult 默认 allow，对齐 Embedded `authorizeOne` 的 `!tool` 分支），
+/// （permResult 默认 allow），
 /// 随后补 `Error: Tool "X" not found` 并跳过该工具。
 #[test]
 fn unknown_tool_is_reported_and_skipped_without_executing() {
@@ -3483,7 +3466,7 @@ fn unknown_tool_is_reported_and_skipped_without_executing() {
     assert_eq!(block["content"], "Error: Tool \"Nope\" not found");
 }
 
-/// Bash 语义校验失败（空白命令 / 超长命令）：对齐 Embedded `validateInput`，
+/// Bash 语义校验失败（空白命令 / 超长命令）：
 /// 产出 `InputValidationError: ...` 并跳过该工具（不执行、不发 toolCall）。
 #[test]
 fn bash_input_validation_failure_is_reported_and_skipped() {
@@ -3529,13 +3512,13 @@ fn bash_input_validation_failure_is_reported_and_skipped() {
 
 // ==================== JS 语义对等（parseDataUrl / String()） ====================
 
-/// 两侧共用 `src/test/fixtures/jsValueParity.json`：TS 侧 `jsValueParity.test.ts`
+/// 两侧共用 `core-rs/fixtures/jsValue.json`：TS 侧 `jsValueParity.test.ts`
 /// 断言 `parseDataUrl` / `String()` 产出该表，这里断言 `split_data_url` / `js_string`
 /// 产出同结果。
 #[test]
 fn js_value_parity_tests() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../src/test/fixtures/jsValueParity.json");
+        .join("fixtures/jsValue.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("读取 {} 失败: {err}", path.display()));
     let fixture: Value = serde_json::from_str(&raw).expect("对照表不是合法 JSON");
@@ -3573,7 +3556,7 @@ fn js_value_parity_tests() {
 // ==================== max output 预留（对齐 getAvailableOutputTokens） ====================
 
 #[test]
-fn available_output_tokens_matches_the_embedded_formula() {
+fn available_output_tokens_matches_the_formula() {
     const WINDOW: u64 = 1_000_000;
     const OUTPUT: u64 = 384 * 1024;
 
@@ -3821,8 +3804,8 @@ fn assistant_reply_ending_with_a_colon_triggers_a_silent_reminder_follow_up() {
             .any(|message| message["role"] == "user" && message["content"] == "看看"),
         "原始用户消息不应被 reminder 顶掉: {second:?}"
     );
-    // reminder 落盘（对齐 Embedded 的 `flushQueuedMessagesIntoContext` →
-    // `persistUnpersistedMessages`）：它是一条 silent / origin=agent 的 user 消息，
+    // reminder 落盘：
+    // 它是一条 silent / origin=agent 的 user 消息，
     // UI 不展示，但会写进 jsonl 并计入 messageCount。
     assert!(
         harness.wait_for(
@@ -3833,7 +3816,7 @@ fn assistant_reply_ending_with_a_colon_triggers_a_silent_reminder_follow_up() {
         harness.sink.event_types()
     );
     // `queryBegin` / `queryEnd` 是消费循环级：reminder 追问与首个用户消息同属一次
-    // consumer（Embedded `messageConsumer` 的 while 循环会继续消费 pendingReminder），
+    // consumer（同一次消费会继续消费 pendingReminder），
     // 只应有一对，不能按 LLM 轮次各发一对。
     assert_eq!(
         harness.sink.events_of("queryBegin").len(),
@@ -3874,7 +3857,6 @@ fn assistant_reply_ending_with_a_colon_triggers_a_silent_reminder_follow_up() {
 
 /// 后台任务提醒投递：同一 tick 多个任务到点时**追加**而不是覆盖。
 ///
-/// 对齐 Embedded `QueryEngine.deliverBackgroundReminder`（`src/test/backgroundReminderDelivery.test.ts`）。
 #[test]
 fn background_reminder_appends_to_pending_reminder() {
     let harness = EngineHarness::allow_all();
@@ -3891,11 +3873,11 @@ fn background_reminder_appends_to_pending_reminder() {
     assert!(state.lock().unwrap().reminder_driven_run);
 }
 
-/// 查询结束兜底提醒的门槛（对齐 Embedded `src/test/backgroundFallbackReminder.test.ts`）：
+/// 查询结束兜底提醒的门槛：
 /// 非 sleep 的刚注册任务不进列表；含 `sleep` 的刚注册即兜底一次，登记
 /// `fallback_reminded` + 刷新 `last_accessed_ms` 后不再命中。
 #[test]
-fn fallback_reminder_gate_matches_embedded() {
+fn fallback_reminder_gate() {
     // 用沙箱取进程级串行锁：本用例直接读全局任务注册表，不能被并行的
     // `reset_for_test()` 清掉。
     let sandbox = Sandbox::new("engine-fallback-reminder-gate");
@@ -3973,7 +3955,7 @@ fn truncated_stop_reason_triggers_a_reminder_follow_up() {
 
 #[test]
 fn first_message_creates_meta_json_with_the_session_model_only_when_chosen() {
-    // 对齐 Embedded `updateMetadataForNewMessage` 的 ENOENT 分支：新会话的 meta.json
+    // 新会话的 meta.json
     // 只在会话运行时已有模型身份（engine.modelRefOverride）时才写 `model` / `provider`，
     // 否则不写该键（也不能写 `null`），让宿主回退到活动 provider 的默认模型。
     let sandbox = Sandbox::new("engine-meta-model");
@@ -4095,7 +4077,7 @@ fn request_max_tokens_keeps_configured_value_within_the_window() {
     assert_eq!(body["max_tokens"], 4096);
 }
 
-// ==================== 提示词预设（对齐 Embedded PromptPreset） ====================
+// ==================== 提示词预设 ====================
 
 /// 启动假 LLM 并捕获每次请求体。
 fn capture_requests(sandbox: &Sandbox) -> (Arc<std::sync::Mutex<Vec<Value>>>, FakeLlm) {
@@ -4278,9 +4260,9 @@ fn message_payload_overrides_win_over_metadata() {
     assert_eq!(state.web_search, Some(true));
 }
 
-// ==================== 事件粒度（对齐 Embedded） ====================
+// ==================== 事件粒度 ====================
 
-/// Embedded `sessionRuntime.pushIfChanged` 内部 diff：状态没变不发事件。
+/// 内部 diff：状态没变不发事件。
 #[test]
 fn emit_runtime_is_silent_when_nothing_changed() {
     let sandbox = Sandbox::new("engine-runtime-diff");
@@ -4306,7 +4288,7 @@ fn emit_runtime_is_silent_when_nothing_changed() {
     assert_eq!(harness.sink.events_of("sessionRuntimeChanged").len(), 2);
 }
 
-/// 对齐 Embedded `sessionRuntime` 的 `Map` 插入序：states 按会话创建顺序输出。
+/// states 按会话创建顺序输出。
 #[test]
 fn session_runtime_states_follow_insertion_order() {
     let sandbox = Sandbox::new("engine-runtime-order");
@@ -4338,7 +4320,7 @@ fn session_runtime_states_follow_insertion_order() {
     assert_eq!(order, vec!["s-b", "s-c"]);
 }
 
-/// Embedded 只在 `conversationRenamed` / Spin 改名时发 `titleChanged`；
+/// 只在 `conversationRenamed` / Spin 改名时发 `titleChanged`；
 /// 新消息推导出的标题只通过 `conversationListChanged` 通知宿主。
 #[test]
 fn title_changed_is_only_emitted_for_renames() {
@@ -4360,7 +4342,7 @@ fn title_changed_is_only_emitted_for_renames() {
 
 // ==================== 工具入参修复对等（fixToolInput） ====================
 
-/// 两侧共用 `src/test/fixtures/toolInputRepairParity.json`：TS 侧
+/// 两侧共用 `core-rs/fixtures/toolInputRepair.json`：TS 侧
 /// `toolInputRepairParity.test.ts` 断言 `RunTools.fixToolInput` 产出该表，这里断言
 /// `fix_tool_input` 产出同结果（`output` 与 `input` 深度相等表示「未修复」）。
 ///
@@ -4368,7 +4350,7 @@ fn title_changed_is_only_emitted_for_renames() {
 /// 的抢救（key 缺引号、单引号、按逗号拆分、嵌套括号、引号内逗号）。
 #[test]
 fn fix_tool_input_parity_tests() {
-    const FIXTURE: &str = include_str!("../../src/test/fixtures/toolInputRepairParity.json");
+    const FIXTURE: &str = include_str!("../fixtures/toolInputRepair.json");
     let fixture: Value = serde_json::from_str(FIXTURE).expect("对照表不是合法 JSON");
     let cases = fixture["cases"].as_array().expect("cases 不是数组");
     assert!(!cases.is_empty(), "cases 为空");
@@ -4387,7 +4369,7 @@ fn fix_tool_input_parity_tests() {
 
 // ==================== 工具入参序列化对等（serializeToolArguments） ====================
 
-/// 两侧共用 `src/test/fixtures/toolArgumentsParity.json`：TS 侧
+/// 两侧共用 `core-rs/fixtures/toolArguments.json`：TS 侧
 /// `toolArgumentsParity.test.ts` 断言 `serializeToolArguments` /
 /// `sanitizeAnthropicMessages` 产出该表，这里断言 Rust 侧同名函数产出同结果。
 ///
@@ -4396,7 +4378,7 @@ fn fix_tool_input_parity_tests() {
 /// 此后的每一轮请求都失败。序列化层必须保证输出永远是合法 JSON / 对象。
 #[test]
 fn tool_arguments_parity_tests() {
-    const FIXTURE: &str = include_str!("../../src/test/fixtures/toolArgumentsParity.json");
+    const FIXTURE: &str = include_str!("../fixtures/toolArguments.json");
     let fixture: Value = serde_json::from_str(FIXTURE).expect("对照表不是合法 JSON");
     let cases = fixture["cases"].as_array().expect("cases 不是数组");
     assert!(!cases.is_empty(), "cases 为空");
@@ -4589,7 +4571,7 @@ fn running_background_tasks_keep_the_session_out_of_idle() {
 
 // ==================== 并行工具批 ====================
 
-/// 连续出现的并发安全工具攒成一批**并行**执行（对齐 Embedded `executeToolBatch`）。
+/// 连续出现的并发安全工具攒成一批**并行**执行。
 ///
 /// 可观测契约：批内所有工具的 `toolCall`（授权一次 + 执行前一次）先发完，再**按原顺序**
 /// 发 `toolResult`。串行实现下 `result(call_1)` 会插在 `call_2` 之前，这里必须不是。
@@ -4969,8 +4951,8 @@ fn agent_tool_caps_concurrent_sub_agents_and_queues_the_rest() {
     assert_eq!(crate::subagent::list_for_creator(creator).len(), 6);
 }
 
-/// 子代理完整继承主对话的 agent mode：manual / risk / auto 一律照搬（对齐 Embedded
-/// `inheritAgentMode`，不能把 manual 降级成 risk 造成越权），并落盘到子会话
+/// 子代理完整继承主对话的 agent mode：manual / risk / auto 一律照搬（不能把
+/// manual 降级成 risk 造成越权），并落盘到子会话
 /// meta.json 的 context，重启后重开子会话仍显示继承来的模式。
 #[test]
 fn sub_agent_inherits_parent_agent_mode() {
@@ -5243,8 +5225,7 @@ fn has_reply_tool_use(message: &Value) -> bool {
         .unwrap_or(false)
 }
 
-/// 用户消息是**单槽位**：查询中途连发两条时，后一条替换前一条（对齐 Embedded
-/// `submitMessage(type='user')` 的 `this.pendingUserMessage = promptStr`），
+/// 用户消息是**单槽位**：查询中途连发两条时，后一条替换前一条，
 /// 只有最后一条进入上下文并落盘。
 #[test]
 fn a_second_user_message_replaces_the_pending_one() {
@@ -5317,7 +5298,7 @@ fn a_second_user_message_replaces_the_pending_one() {
 
 /// `/commit -m 'x'`：命中 Skill → 用户消息照常进上下文 → 注入 Skill tool_use
 /// （assistant tool_use + tool_result 携带技能正文）→ 技能正文作为 `isMeta` 的
-/// user 消息落盘。对齐 Embedded `resolvePendingCommand` → `injectSkillToolUse`。
+/// user 消息落盘。
 #[test]
 fn slash_skill_command_injects_the_skill_tool_use() {
     let sandbox = Sandbox::new("engine-skill-command");
@@ -5348,7 +5329,7 @@ fn slash_skill_command_injects_the_skill_tool_use() {
         "Skill \"commit\" has been loaded. Follow the instructions in the skill content above."
     );
 
-    // UI 上架 Skill 卡片（对齐 Embedded `runTools`）：授权前 / 执行前各发一次 `toolCall`；
+    // UI 上架 Skill 卡片：授权前 / 执行前各发一次 `toolCall`；
     // 缺了它们，`/<skill>` 在 UI 上没有任何可见的触发痕迹（`toolResult` 只能更新已存在的卡片）。
     let skill_calls = harness
         .sink
@@ -5478,7 +5459,6 @@ fn slash_skill_command_injects_the_skill_tool_use() {
 
 /// `/commit` 延迟回显（`deferEcho`）：命令消息真正进入上下文时补发用户 `message`
 /// （宿主不乐观回显），且 `_needsUINotification` 是 UI 专用标记、不落盘。
-/// 对齐 Embedded `Integration.submitUserMessage` → `QueryEngine.notifyUserMessageToUI`。
 #[test]
 fn deferred_skill_command_reemits_the_user_message() {
     let sandbox = Sandbox::new("engine-skill-deferred");
@@ -5530,7 +5510,7 @@ fn deferred_skill_command_reemits_the_user_message() {
 }
 
 /// `/spin`（内置命令）即使延迟回显也**不该**补发用户气泡：消息就地执行、被丢弃，
-/// 补发会留下一个刷新后消失的「幽灵」气泡（与 Embedded 不一致）。
+/// 补发会留下一个刷新后消失的「幽灵」气泡。
 #[test]
 fn deferred_builtin_command_does_not_reemit_the_user_message() {
     let sandbox = Sandbox::new("engine-builtin-deferred");
@@ -5600,7 +5580,7 @@ fn slash_builtin_command_is_handled_without_an_llm_round() {
 
     // 内置命令被就地执行：没有发起任何 LLM 请求。
     // 注意 `queryBegin` / `queryEnd` 仍会成对出现——它们归**消费循环**所有
-    // （对齐 Embedded `submitMessage` → `manageQueryUI`），与是否真的调 LLM 无关。
+    // ，与是否真的调 LLM 无关。
     assert!(bodies.lock().unwrap().is_empty(), "内置命令不应发起 LLM 请求");
     assert_eq!(harness.sink.events_of("queryBegin").len(), 1);
     assert_eq!(harness.sink.events_of("queryEnd").len(), 1);
@@ -5654,9 +5634,8 @@ fn mcp_tools_are_concurrency_safe_per_their_annotations() {
 // 缺陷：`toolPermissionRequested` 的往返（工具卡片上架 / 权限结果回传）曾被
 // `waiting_request` 一并标成 `waiting`，于是**每次工具调用**都凭空多出一次
 // `running → waiting` 迁移——托盘「任务结束提醒」闪一下（毫秒级、看不见）并响一声，
-// 侧栏黄灯同样闪。Embedded 侧 `RunTools.emitToolPermissionRequest` 从不碰
-// `sessionRuntime`，只有 `Integration.requestUserChoice` 才标记。
-// 对等面见 `docs/core/session-runtime.md` 第 1 节与 `docs/core/core-parity.md`。
+// 侧栏黄灯同样闪：权限确认往返不碰 `sessionRuntime`，只有选择框请求才标记。
+// 行为口径见 `docs/core/session-runtime.md` 第 1 节。
 
 /// 统计快照序列里 `waiting` 为真的推送条数（只算目标会话）
 fn waiting_snapshots(harness: &EngineHarness, session_id: &str) -> usize {

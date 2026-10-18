@@ -10,7 +10,7 @@
  * 已启动、帧通道已建立）；这里是**配置层**就绪（Core 已拿到宿主环境与快照）。
  */
 
-import { logger } from '../core/Logger.js';
+import { logger } from '../shared/Logger.js';
 
 let ready = false;
 let readyCount = 0;

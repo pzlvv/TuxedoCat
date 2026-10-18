@@ -11,11 +11,11 @@
  */
 import type { WebviewPoster } from './ports.js';
 import type { UIHost } from '../UIHost.js';
-import { logger } from '../../core/Logger.js';
+import { logger } from '../../shared/Logger.js';
 
-import { updateToolUseMeta } from '../../core/history/index.js';
-import type { AgentMode } from '../../core/types.js';
-import type { PermissionResult } from '../../core/tools/Tool.js';
+import { updateToolUseMeta } from '../../shared/history/index.js';
+import type { AgentMode } from '../../shared/types.js';
+import type { PermissionResult } from '../../shared/tools/Tool.js';
 import type { UserChoiceManager } from './userChoice.js';
 
 /**

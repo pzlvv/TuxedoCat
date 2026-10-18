@@ -17,7 +17,7 @@
  * 运行方式：npm run test:all -- conversationListWorkspace
  */
 
-import type { ConversationMetadata } from '../core/history/Conversation';
+import type { ConversationMetadata } from '../shared/history/Conversation';
 import { ConversationManager } from '../host/ConversationManager';
 import type { UIHost } from '../host/UIHost';
 import { createChecker, runTests } from './helpers/harness';

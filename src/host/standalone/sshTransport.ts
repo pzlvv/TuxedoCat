@@ -15,7 +15,7 @@ import { SSH_DAEMON_LINK_TIMEOUT_MS, type CoreDaemonLink, type CoreDaemonLinkOpe
 import { ensureRemoteDaemon, type RemoteBootstrapOptions, type RemoteDaemonEndpoint, type RemoteSsh } from './sshDaemonBootstrap.js';
 import { SshClient, type SshTarget } from './sshClient.js';
 import { sshTargetKey } from '../sshTarget.js';
-import { sharedInFlight, withTimeout } from '../../core/utils/asyncUtils.js';
+import { sharedInFlight, withTimeout } from '../../shared/utils/asyncUtils.js';
 
 /** SSH 接入参数 */
 export interface SshDaemonTransport {

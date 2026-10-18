@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-11
+last_reviewed: 2026-10-18
 ---
 
 # 规格：WebViewUI 实现与会话 UI 状态
@@ -322,9 +322,9 @@ abort 按钮的三态（红 / 黄 / 灰）与两阶段中止由 core 的 `sessio
 
 好处：前台查询结束后、但后台 Bash 或非 idle 子代理还在时，按钮保留为可点的黄色——
 那是「会话仍在收尾」的真实含义，点下去中止的是这些残留工作，而不是再次中止已经停下的查询。
-点下按钮后 core 侧 `Integration.abortCurrentQuery` 依据同一份事实决定范围：前台有工作只
-中止前台（引擎 `interruptForeground()`），前台空闲则中止后台 Bash 任务并递归子代理
-（`engine.interrupt()` + `abortBackgroundTasksForSession` + 递归 `abortSessionScope`），
+点下按钮后 Core 侧 `Core::on_abort` 依据同一份事实决定范围：前台有工作只
+中止前台（`abort_foreground`），前台空闲则中止后台 Bash 任务并递归子代理
+（`abort_background_tasks` + 递归 `abort_session_scope`），
 两阶段都幂等。
 
 ## 9. 生命周期：dropSession
@@ -364,13 +364,12 @@ dropSession(sessionId: string): void {
 所以用 `diffSnapshotSessionId` 记录最后写入方，`dropSession` 只在归属该会话时清空，
 避免误伤其它会话正在进行的 Edit / Write。
 
-**core 侧配套**：`releaseConversation` 发的 `conversationClosed` 由
-`sessionResources.releaseSessionResources` 处理，其中调 `userChoiceQueue.rejectPending(sessionId)`
-拒绝该会话挂起的用户选择，并调 `dropSessionRuntime(sessionId)` 丢弃 core 侧该会话的
-`idle` / `waiting` 状态（[docs/core/session-runtime.md](../core/session-runtime.md)），避免侧栏黄灯 / 托盘状态点残留——否则等待方
-（`RunTools` / `AskUserQuestion`）会永久挂起，且队列在会话关闭后仍会尝试弹出该会话的选择框。拒绝以异常形式传播：
-`RunTools.authorizeOne` 捕获后按 **deny** 处理（与 `toolPermissionRequested` 的失败兜底同一口径），
-`AskUserQuestion` 由工具执行层（`RunTools.executeSingleItem`）统一捕获转成工具错误。
+**core 侧配套**：`releaseConversation` 发的 `conversationClosed` 由 Core 处理
+（`on_conversation_closed` → `drop_session`）：拒绝该会话挂起的用户选择、丢弃 core 侧
+该会话的 `idle` / `waiting` 状态（[docs/core/session-runtime.md](../core/session-runtime.md)），避免侧栏黄灯 / 托盘状态点残留——否则等待方
+（工具权限确认 / `AskUserQuestion`）会永久挂起，且队列在会话关闭后仍会尝试弹出该会话的选择框。拒绝以异常形式传播：
+权限确认按 **deny** 处理（与 `toolPermissionRequested` 的失败兜底同一口径），
+`AskUserQuestion` 由工具执行层统一捕获转成工具错误。
 
 ## 10. 与 core 的 `SessionRuntimeState` 的边界
 

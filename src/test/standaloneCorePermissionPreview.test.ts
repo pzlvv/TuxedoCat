@@ -1,5 +1,5 @@
 /**
- * Standalone Core 权限预览端到端（对齐 Embedded `PermissionPolicy` + `ToolHandler`）：
+ * Core 权限预览端到端（权限判定 + diff 预览事件）：
  *
  * 假 LLM 先调一次 Read（允许）再调一次 Edit（manual 确认），验证：
  * - **允许**的工具也会发 `toolPermissionRequested`（UI 借此上架工具卡片），

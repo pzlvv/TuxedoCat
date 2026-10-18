@@ -6,7 +6,7 @@
  */
 
 import * as assert from 'assert';
-import { collectConversationClosure } from '../core/history/Conversation';
+import { collectConversationClosure } from '../shared/history/Conversation';
 import { createChecker, runTests } from './helpers/harness';
 
 interface Meta {
