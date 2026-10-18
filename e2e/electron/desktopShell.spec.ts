@@ -259,7 +259,7 @@ test('US-37 最近工作区列表过滤失效目录，关闭后可从最近重�
   const titlebar = await app.titlebarPage();
   await expect(titlebar.locator('.ws-tab', { hasText: 'recent-demo' })).toBeVisible({ timeout: 20_000 });
 
-  // 菜单「添加最近的工作区」：列表只含存在的目录（US-37 验收 1 的过滤分支）。
+  // 菜单「打开最近的工作区」：列表只含存在的目录（US-37 验收 1 的过滤分支）。
   // 二级面板由 hover（mouseenter）展开
   let menu = await openMenuAndGetPage();
   await menu.locator('.item[data-submenu="main.recent"]').hover();

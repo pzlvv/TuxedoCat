@@ -6,7 +6,7 @@
  * 2. 注册 IPC（webview-message）并委托给 WebViewUI（复用同一份 WebviewMessageHandler）
  * 3. 侧栏 IPC：对话列表读写、打开/新建对话、列表变化推送
  * 4. 初始化 core（bootstrapCore：总线 / core 侧订阅 / 宿主环境与工作目录经总线传递）
- * 5. 提供单一图标菜单（添加工作区 / 添加最近的工作区 / 偏好设置 / 开发者工具 / 关于 / 退出）；
+ * 5. 提供单一图标菜单（打开本地工作区 / 打开远程工作区 / 打开最近的工作区 / 偏好设置 / 开发者工具 / 关于 / 退出）；
  *    标题栏「加号」菜单同样带「打开最近的工作区」
  * 6. 多工作目录：打开集合 + 活动项，标题栏标签页，按对话解析工作目录
  *
@@ -2431,7 +2431,7 @@ function buildMenuSections(): MenuSectionDef[] {
   };
   const recentWorkspaceItem: MenuItemDef = {
     id: 'main.recent',
-    label: tt('添加最近的工作区', 'Add Recent Workspace'),
+    label: tt('打开最近的工作区', 'Open Recent Workspace'),
     submenu: buildRecentWorkspacesMenu(),
   };
   // 偏好设置：Electron 专属能力（主题 / 唤醒快捷键 / 提示音都是宿主本地偏好，
@@ -2496,7 +2496,7 @@ function buildMenuSections(): MenuSectionDef[] {
 }
 
 /**
- * 构建「添加最近的工作区」子菜单项。
+ * 构建「打开最近的工作区」子菜单项。
  *
  * 本地项已不存在的目录会被过滤掉；远程项无法本地检查，原样列出（连同凭证一起落盘，
  * 点开即重新连接）。
@@ -4364,7 +4364,7 @@ function setupIpc(): void {
     void openWorkspaceDialog();
   });
 
-  // 加号按钮：弹出「打开本地工作区 / 打开远程工作区」菜单
+  // 加号按钮：弹出「打开本地工作区 / 打开远程工作区 / 打开最近的工作区」菜单
   ipcMain.on('titlebar:workspace-menu', (event) => {
     if (!isTitlebarSender(event.sender)) return;
     // 先收起可能还开着的自绘下拉菜单：两个菜单同时开着会让焦点 / Esc 语义混乱
