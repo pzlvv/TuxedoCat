@@ -850,6 +850,11 @@ export class CoreDaemon {
     for (const request of directoryRequests) request.reject(new Error('Core daemon exited.'));
 
     if (this.shuttingDown || this.stopped) return;
+    // 非主动关闭的链路退出：opener 的底层连接（SSH）不再可信。连接语义是幂等复用
+    // （`SshClient.connect()` 在 `connected` 时直接返回），链路死了不收尾的话，下一次
+    // 建链会在同一条死连接上跑引导与转发——`openWorkspace` 帧发不出去，channel 挂死，
+    // 表现为断连后点「重新连接」仍起不了 Core。dispose 掉，让重开走全新连接。
+    this.options.transport.dispose();
     if (this.silenceFatal) {
       // 沉默判死的 kill：原因已在看门狗处记录，不再以「exited unexpectedly」盖掉
       const fatal = this.silenceFatal;

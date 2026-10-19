@@ -10,7 +10,12 @@
  */
 
 import { createServer, type Server, type Socket } from 'net';
-import { CoreDaemon, DirectoryOperationError } from '../host/standalone/CoreDaemon';
+import {
+  CoreDaemon,
+  DirectoryOperationError,
+  type CoreDaemonLink,
+  type CoreDaemonLinkOpener,
+} from '../host/standalone/CoreDaemon';
 import { tcpDaemonOpener } from './helpers/tcpDaemonLink';
 import { isDaemonToHostFrame } from '../host/standalone/daemonProtocol';
 import { createCoreChannelBus, NOOP_CORE_CHANNEL_HOOKS } from '../host/standalone/StandaloneEventBus';
@@ -390,6 +395,89 @@ async function run(): Promise<void> {
     await sleep(400); // 远超注入的判死上限（死线 + 宽限 = 100ms）
     check('长静默不误杀：请求仍可用', (await daemon.listDirectories(null)).path === '/home/dev');
     check('沉默期间链路未被斩断', fake.closed() === 0);
+    await daemon.shutdown();
+    await fake.close();
+  }
+
+  // ---------- 沉默判死后重连：重开必须走全新连接（specs/defects/remote-reconnect-reuses-dead-ssh-link） ----------
+  {
+    // 模拟 SSH opener 的连接复用语义（sshTransport.ts / sshClient.ts）：底层连接
+    // 只有一条，SshClient.connect() 幂等——链路死了但没人 dispose 时，下一次
+    // open() 仍在「同一条连接」上，返回写得出、永远没有回帧、也不会 close 的
+    // 僵尸链路；dispose 之后 open() 才建新连接。
+    const fake = await startFakeRemote({ pong: true });
+    const tcp = tcpDaemonOpener({ host: '127.0.0.1', port: fake.port });
+    let liveLink = false;
+    let disposed = true;
+    const zombieLink: CoreDaemonLink = {
+      write: () => true,
+      onceDrain: () => undefined,
+      end: () => undefined,
+      kill: () => undefined,
+      onData: () => undefined,
+      onClose: () => undefined,
+    };
+    const sshLikeOpener: CoreDaemonLinkOpener = {
+      open: () => {
+        if (!liveLink) {
+          // 底层连接不存在（首次 / 上次已被 dispose）：建新连接
+          disposed = false;
+          liveLink = true;
+          return tcp.open();
+        }
+        // 底层连接还在（上次链路死了没人 dispose）：复用它——已是僵尸
+        return Promise.resolve(disposed ? tcp.open() : zombieLink);
+      },
+      // TCP 直连没有远端准备步骤（socket 连上即就绪）：no-op 是设计允许的形态
+      prepare: async () => undefined,
+      dispose: () => {
+        if (liveLink) {
+          liveLink = false;
+          disposed = true;
+        }
+      },
+    };
+    const daemon = new CoreDaemon({
+      log: () => undefined,
+      handshakeTimeoutMs: 500,
+      shutdownTimeoutMs: 300,
+      heartbeatIntervalMs: 20,
+      silenceDeadlineMs: 60,
+      silenceRecheckMs: 40,
+      transport: sshLikeOpener,
+    });
+    const ref = remoteWorkspaceRef(
+      { host: '127.0.0.1', port: fake.port, user: 'root', auth: { kind: 'sshPassword', password: 'secret' } },
+      '/home/dev/repo',
+    );
+    const first = daemon.openChannel(ref);
+    const firstFailure: { error: Error | null } = { error: null };
+    first.hooks = {
+      ...NOOP_CORE_CHANNEL_HOOKS,
+      onFatal: (error) => {
+        firstFailure.error = error;
+      },
+    };
+    first.start();
+    check('沉默判死后重连：首次建链就绪', await waitFor(() => first.isReady()));
+    check('沉默判死后重连：心跳 ping 已发出', await waitFor(() => fake.received().some((line) => line.includes('"kind":"ping"'))));
+    await sleep(100);
+    fake.setPong(false);
+    check('沉默判死后重连：沉默判死 fatal', await waitFor(() => firstFailure.error !== null, 2_000));
+    // 网络恢复（pong 恢复），用户点「重新连接」：registry 里同一 CoreDaemon 重开 channel
+    fake.setPong(true);
+    const second = daemon.openChannel(ref);
+    const secondFailure: { error: Error | null } = { error: null };
+    second.hooks = {
+      ...NOOP_CORE_CHANNEL_HOOKS,
+      onFatal: (error) => {
+        secondFailure.error = error;
+      },
+    };
+    second.start();
+    check('沉默判死后重连：重开 channel 重新就绪', await waitFor(() => second.isReady(), 3_000));
+    check('沉默判死后重连：重开未再 fatal', secondFailure.error === null);
+    check('沉默判死后重连：重开是全新连接', fake.connections() === 2);
     await daemon.shutdown();
     await fake.close();
   }
