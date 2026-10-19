@@ -20,6 +20,7 @@ import { makeTempDir } from './helpers/fixtures';
 import { resolveSettingsSnapshot } from '../shared/settingsSnapshot';
 import { SettingsStore } from '../host/SettingsStore';
 import { applyLlmConfigSave } from '../host/llmConfigSave';
+import { getModelConfig } from '../shared/utils/modelConfig';
 import {
   readActiveModelRef,
   readDefaultAgentMode,
@@ -297,6 +298,52 @@ runTests('hostSettings', async () => {
     check('已有 context 不被多模态合并破坏', configs.kept.context === 111);
     check('不在本次模型列表的历史条目保留', configs.legacy.multimodal === false);
     check('映射缺项且无已有值时按默认开启', configs.defaulted.multimodal === true);
+  }
+
+  // 面板弹层的限值覆盖（specs/013）：显式值 > 已有值 > 注册表；null = 清空回落注册表
+  {
+    const cfg: Record<string, any> = {
+      llm: {
+        providers: {
+          'a.example': {
+            baseURL: 'https://a.example',
+            apiKey: 'k',
+            models: ['m', 'untouched'],
+            modelConfigs: {
+              m: { context: 111, output: 222 },
+              untouched: { context: 333, output: 444 },
+            },
+          },
+        },
+      },
+    };
+    applyLlmConfigSave(cfg, {
+      saveProviders: true,
+      providers: [{
+        baseURL: 'https://a.example',
+        apiKey: 'k',
+        models: ['m', 'deepseek-flash', 'untouched', 'bogus'],
+        modelLimits: {
+          m: { context: 200000, output: 8000 },
+          'deepseek-flash': { context: null, output: null },
+          untouched: {},
+          bogus: { context: -5, output: 'abc' },
+        },
+      }],
+    });
+    const configs = cfg.llm.providers['a.example'].modelConfigs;
+    check('弹层显式限值胜过已有值', configs.m.context === 200000 && configs.m.output === 8000);
+    check(
+      '清空回落注册表（与从未设置同态）',
+      configs['deepseek-flash'].context === getModelConfig('deepseek-flash').contextWindow
+        && configs['deepseek-flash'].output === getModelConfig('deepseek-flash').maxOutputTokens,
+    );
+    check('未碰字段保留已有值', configs.untouched.context === 333 && configs.untouched.output === 444);
+    check(
+      '非法限值字段被丢弃（按注册表处理）',
+      configs.bogus.context === getModelConfig('bogus').contextWindow
+        && configs.bogus.output === getModelConfig('bogus').maxOutputTokens,
+    );
   }
 
   // uiLanguage：只有 UI 消费，不进快照

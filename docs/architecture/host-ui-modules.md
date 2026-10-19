@@ -130,7 +130,7 @@ UI 侧提前弹框会造成双重确认。
 | 消息 / 压缩 / 中止 | `sendMessage`（→ `handleUserMessage`：登记排队项 / 乐观回显后发 `UiEvent.userMessageSubmitted`）/ `abort` / `backgroundBashTool`（Bash 卡片「转后台」，→ `UiEvent.bashBackgroundRequested`）/ `discardQueuedMessage` / `requestCompress`（除 `sendMessage` 外均 → `UiEvent`） |
 | 会话生命周期 | `loadConversation` / `startNewConversation` / `deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace`（`deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace` → `UiEvent`；多视图宿主的 `deleteConversation` 由宿主消息入口先接管，见 [docs/architecture/contracts.md 第 5 节](contracts.md#5-宿主侧入口动作翻译为-uievent)「载体 / 视图层动作」） |
 | 会话配置 | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpEnabled` / `setMcpEnabledList`（全部 → `UiEvent`，core 处理后广播 `sessionConfigChanged` 回推多端）。`setModel` 的 wire 载荷是扁平的 `model` + `provider`，在 handler 入口组装成 `ModelRef`（provider 空串非法：记录日志并忽略，不回退到其它 provider） |
-| 其它 | `saveLLMConfig` / `requestSmartNaming` |
+| 其它 | `saveLLMConfig`（provider 条目按字段校验后并入 `settings.json`：`modelApiTypes` / `modelMultimodal` 逐模型上送，`modelLimits` 是「设置」弹层碰过的 context / output——正数为显式值、`null` 为清空（回落注册表）、缺省为未碰；合并与校验在 `llmConfigSave.ts`） / `requestSmartNaming` |
 
 前两个分区留在本模块内（只操作宿主或只读 core）；其余要么发 `UiEvent`，要么是**显示类**动作。
 完整映射见[docs/architecture/events.md 第 2.3 节](events.md#23-uieventui--core单向)的「UI 侧触发点」列。

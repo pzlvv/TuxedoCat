@@ -212,6 +212,9 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
   合并规则在 UI 侧执行，Core 只做「查表，查不到用兜底」，不持有注册表、不做模型名匹配。
   `multimodal` 为 `false` 的模型，Core 发送 LLM 请求前过滤全部图片内容
   （用户消息与工具结果，三种协议一致；过滤只作用于请求副本，落盘记录保留完整图片）。
+  context / output 的合并优先级（specs/013-model-settings-popup）：面板「设置」弹层的
+  显式值 > 已有 `modelConfigs` 值 > 内置注册表 > 兜底；弹层清空该字段即移除显式值，
+  写回注册表数字——与从未设置的模型保存后的落盘内容逐字节同态。
 - 兜底是全局常量、与 provider 无关，因此放在 `llm` 级而不是每个 provider 一份。
 - `provider.baseURL` **允许为空串**：快照原样携带 provider 表，是否可用由消费方各自判定
   （调 LLM 要求非空；余额查询按 provider key / hostname 匹配，允许没有 baseURL）。

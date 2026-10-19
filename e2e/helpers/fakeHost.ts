@@ -291,7 +291,8 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
             apiKey: 'sk-test',
             models: ['mock-model'],
             defaultModel: 'mock-model',
-            modelConfigs: { 'mock-model': { apiType: 'OpenAI' } },
+            // 与真实载荷同口径：settingsRead 回传的是已解析值（context/output 恒有数字）
+            modelConfigs: { 'mock-model': { apiType: 'OpenAI', context: 1024000, output: 128000 } },
           }],
           activeProvider: 'alpha.local',
           thinkingEffort: 'high',

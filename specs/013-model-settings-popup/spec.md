@@ -1,5 +1,5 @@
 ---
-status: 起草
+status: 实施中
 ---
 
 # 改动规格：模型行「设置」弹层（多模态 / context / output）

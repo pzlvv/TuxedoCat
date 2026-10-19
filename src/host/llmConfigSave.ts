@@ -48,6 +48,8 @@ interface PanelProvider {
   modelApiTypes?: unknown;
   /** 模型名 -> 是否多模态（设置面板「多模态」checkbox） */
   modelMultimodal?: unknown;
+  /** 模型名 -> 弹层碰过的限值（specs/013-model-settings-popup） */
+  modelLimits?: unknown;
   defaultModel?: unknown;
 }
 
@@ -107,15 +109,34 @@ export function applyLlmConfigSave(cfg: Record<string, any>, payload: LlmConfigS
           }
         }
       }
+      // 面板弹层传来的「模型 -> 碰过的限值」（specs/013-model-settings-popup）：
+      // 只接受正数或 null，其余丢弃（该字段按未碰处理）；键存在即「碰过」
+      const limitOverrides: Record<string, { context?: number | null; output?: number | null }> = {};
+      if (raw?.modelLimits && typeof raw.modelLimits === 'object' && !Array.isArray(raw.modelLimits)) {
+        for (const [model, limits] of Object.entries(raw.modelLimits as Record<string, unknown>)) {
+          if (!limits || typeof limits !== 'object' || Array.isArray(limits)) continue;
+          const entry: { context?: number | null; output?: number | null } = {};
+          const { context, output } = limits as Record<string, unknown>;
+          if (context === null || (typeof context === 'number' && Number.isFinite(context) && context > 0)) {
+            entry.context = context;
+          }
+          if (output === null || (typeof output === 'number' && Number.isFinite(output) && output > 0)) {
+            entry.output = output;
+          }
+          if (entry.context !== undefined || entry.output !== undefined) {
+            limitOverrides[model] = entry;
+          }
+        }
+      }
       // modelConfigs：保留已有 context/output/apiType/multimodal，缺失的 context/output
       // 从内置注册表匹配补齐；apiType 来自面板（手动选择或自动探测结果），
-      // multimodal 来自面板 checkbox
+      // multimodal 来自面板 checkbox，context/output 的弹层覆盖按三级合并
       const oldProvider = cfg.llm.providers?.[key];
       const oldModelConfigs: Record<string, ModelTokenLimits> = oldProvider?.modelConfigs
         && typeof oldProvider.modelConfigs === 'object'
         ? oldProvider.modelConfigs
         : {};
-      const modelConfigs = normalizeModelTokenLimits(providerModels, oldModelConfigs, apiTypeOverrides, multimodalOverrides);
+      const modelConfigs = normalizeModelTokenLimits(providerModels, oldModelConfigs, apiTypeOverrides, multimodalOverrides, limitOverrides);
       providersMap[key] = {
         baseURL: providerBaseURL,
         apiKey: providerApiKey,

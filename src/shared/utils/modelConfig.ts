@@ -170,6 +170,17 @@ export function getModelConfig(
 }
 
 /**
+ * 设置弹层的单模型限值覆盖（specs/013-model-settings-popup）。
+ *
+ * 键存在 = 用户在弹层里碰过该字段；数值（正数）= 显式值；`null` = 清空（回落注册表）。
+ * 字段缺失 = 未碰过（走既有「已有值 > 注册表」合并）。
+ */
+export interface ModelLimitOverride {
+  context?: number | null;
+  output?: number | null;
+}
+
+/**
  * 规范化 provider 的模型配置（保存设置时使用）。
  *
  * - 已有且合法的 context/output/apiType/multimodal 保留，不做覆盖；
@@ -178,6 +189,9 @@ export function getModelConfig(
  * - apiType 不会被自动填默认值，只来自 apiTypeOverrides（设置面板）或已有值，
  *   保证「未探测过协议」的模型在下次自动获取时仍会被探测；
  * - multimodal 按 multimodalOverrides（设置面板）> 已有值 > 默认开启写入；
+ * - context/output 按 limitOverrides（设置弹层，specs/013）> 已有值 > 注册表写入；
+ *   override 为 `null`（用户清空）时跳过已有值直接取注册表——与「从未设置」的模型
+ *   保存后写入的注册表数字逐字节同态；
  * - existing 中不在本次 models 列表里的历史条目也会保留（避免误删用户自定义限值）。
  */
 export function normalizeModelTokenLimits(
@@ -185,6 +199,7 @@ export function normalizeModelTokenLimits(
   existing?: Record<string, ModelTokenLimits> | null,
   apiTypeOverrides?: Record<string, ApiType> | null,
   multimodalOverrides?: Record<string, boolean> | null,
+  limitOverrides?: Record<string, ModelLimitOverride | null> | null,
 ): Record<string, ModelTokenLimits> {
   const result: Record<string, ModelTokenLimits> = {};
   // 只有正数才视为「已存在」的限值，0/负数/非数字都按缺失处理
@@ -216,9 +231,21 @@ export function normalizeModelTokenLimits(
     if (!model) continue;
     const fallback = getModelConfig(model);
     const current = result[model] || {};
+    // context/output 三级合并（specs/013）：弹层显式值 > 已有值 > 注册表；
+    // 弹层 `null`（清空）跳过已有值直接取注册表。
+    const limitOverride = limitOverrides?.[model];
+    const resolveLimit = (
+      override: number | null | undefined,
+      existingValue: number | undefined,
+      registryValue: number,
+    ): number => {
+      if (override === null) return registryValue;
+      if (isValidLimit(override)) return override;
+      return isValidLimit(existingValue) ? existingValue : registryValue;
+    };
     const entry: ModelTokenLimits = {
-      context: isValidLimit(current.context) ? current.context : fallback.contextWindow,
-      output: isValidLimit(current.output) ? current.output : fallback.maxOutputTokens,
+      context: resolveLimit(limitOverride?.context, current.context, fallback.contextWindow),
+      output: resolveLimit(limitOverride?.output, current.output, fallback.maxOutputTokens),
     };
     const overrideType = apiTypeOverrides?.[model];
     if (overrideType !== undefined) {

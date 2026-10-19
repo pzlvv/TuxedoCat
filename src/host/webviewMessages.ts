@@ -550,6 +550,11 @@ export interface SaveLlmConfigProvider {
   modelApiTypes?: Record<string, string>;
   /** 模型名 -> 是否多模态（设置面板「多模态」checkbox 的勾选态） */
   modelMultimodal?: Record<string, boolean>;
+  /**
+   * 模型名 -> 弹层碰过的限值（specs/013-model-settings-popup）：正数 = 显式值，
+   * `null` = 清空（回落注册表）；字段缺失 = 未碰过。
+   */
+  modelLimits?: Record<string, { context?: number | null; output?: number | null }>;
   defaultModel?: string;
 }
 

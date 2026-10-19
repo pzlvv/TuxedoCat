@@ -11,13 +11,20 @@ import { t } from './i18n';
 import { uiFontSizePx, type UiFontSize } from './fontSize';
 import { Icon } from './Icon';
 
-/** 一个模型的草稿（模型名 + 该模型使用的 API 协议 + 多模态开关） */
+/** 一个模型的草稿（模型名 + 该模型使用的 API 协议 + 多模态开关 + 弹层应用的限值文本） */
 interface ModelDraft {
   name: string;
   /** Responses | OpenAI | Anthropic */
   apiType: string;
-  /** 「多模态」checkbox：非多模态模型的 LLM 请求会过滤全部图片（specs/012-multimodal-model-filter） */
+  /** 「多模态」开关：非多模态模型的 LLM 请求会过滤全部图片（specs/012-multimodal-model-filter）；编辑入口在「设置」弹层 */
   multimodal: boolean;
+  /**
+   * 弹层应用过的 context 文本（specs/013-model-settings-popup）。
+   * `undefined` = 未碰过（保存按「已有值 > 注册表」合并）；空串 = 用户清空（回落注册表）。
+   */
+  contextText?: string;
+  /** 同 `contextText`，output 侧 */
+  outputText?: string;
 }
 
 /** 一个 Provider 草稿（对应设置页里的一个 tab） */
@@ -226,13 +233,13 @@ const mergeFetchedModels = (
   for (const m of p.models) {
     const name = m.name.trim();
     if (!name) continue;
-    byName.set(name, { name, apiType: m.apiType, multimodal: m.multimodal });
+    byName.set(name, { name, apiType: m.apiType, multimodal: m.multimodal, contextText: m.contextText, outputText: m.outputText });
   }
   for (const name of models) {
     const detectedType = detected[name] || '';
     const existing = byName.get(name);
     if (!existing) {
-      // 自动获取的新模型默认勾选「多模态」
+      // 自动获取的新模型默认勾选「多模态」；限值未碰过（宿主按注册表补齐）
       byName.set(name, { name, apiType: detectedType, multimodal: true });
     } else if (!existing.apiType && detectedType) {
       // 已有但尚未配置协议的模型：补上探测结果
@@ -250,7 +257,7 @@ const mergeFetchedModels = (
 /** 由 settings.json 的 models + modelConfigs 还原出模型草稿列表 */
 const buildModelDrafts = (
   models: unknown,
-  modelConfigs?: Record<string, { apiType?: string; multimodal?: boolean }> | null,
+  modelConfigs?: Record<string, { context?: number; output?: number; apiType?: string; multimodal?: boolean }> | null,
 ): ModelDraft[] => {
   if (!Array.isArray(models)) return [];
   const seen = new Set<string>();
@@ -265,6 +272,9 @@ const buildModelDrafts = (
       apiType: normalizeModelApiType(modelConfigs?.[name]?.apiType),
       // 快照里的 multimodal 是已解析值（载荷来自 settingsRead），缺省按开启
       multimodal: modelConfigs?.[name]?.multimodal !== false,
+      // 解析值作为弹层预填与脏检测基线；载荷缺该模型（新名字）时留 undefined = 未碰
+      contextText: modelConfigs?.[name]?.context != null ? String(modelConfigs[name]!.context) : undefined,
+      outputText: modelConfigs?.[name]?.output != null ? String(modelConfigs[name]!.output) : undefined,
     });
   }
   return drafts;
@@ -459,6 +469,22 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   /** 项目目录已不存在的空间：统计后弹「是否清除相关历史」 */
   const [missingSpacesPrompt, setMissingSpacesPrompt] = useState<ConversationSpaceItem[] | null>(null);
   /**
+   * 模型「设置」弹层的本地快照（specs/013-model-settings-popup）。
+   * 打开时从草稿 + 载荷解析值预填；「应用」写回草稿，「取消」/点覆盖层直接丢弃。
+   * 面板级单份 state：同一时刻只开一个弹层。
+   */
+  const [modelSettings, setModelSettings] = useState<{
+    providerId: string;
+    index: number;
+    name: string;
+    multimodal: boolean;
+    contextText: string;
+    outputText: string;
+    /** 预填时的原文：应用时与编辑文本比对，相同则不写回（保持「未碰」语义） */
+    origContextText: string;
+    origOutputText: string;
+  } | null>(null);
+  /**
    * 只在用户主动点「统计」时提示缺失目录；清除回执触发的自动刷新不再重复弹。
    * 用 ref：下行消息监听只注册一次（useEffect []），闭包拿不到最新 state。
    */
@@ -510,7 +536,9 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
         || currentModels.length !== initModels.length
         || currentModels.some((m, idx) => m.name !== initModels[idx].name
           || m.apiType !== initModels[idx].apiType
-          || m.multimodal !== initModels[idx].multimodal)
+          || m.multimodal !== initModels[idx].multimodal
+          || m.contextText !== initModels[idx].contextText
+          || m.outputText !== initModels[idx].outputText)
         || p.defaultModel !== init.defaultModel;
     });
   const isDirty =
@@ -590,16 +618,45 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   };
 
   /**
-   * 修改单个模型的多模态勾选。显式接收 providerId：与 `handleModelApiTypeChange`
-   * 同一写法，保证 onChange 引用稳定并避免误改其它服务商。
+   * 打开模型的「设置」弹层（specs/013-model-settings-popup）。
+   *
+   * 预填顺序：草稿已应用值（用户本次会话里应用过）> 面板载荷解析值 > 空串；
+   * 预填原文记进 `origContextText` / `origOutputText`，应用时与编辑文本比对——
+   * 相同则不写回，保持该字段「未碰」语义（不把解析值钉进 settings.json）。
    */
-  const handleModelMultimodalChange = React.useCallback((providerId: string, index: number, multimodal: boolean) => {
+  const openModelSettings = (providerId: string, index: number) => {
+    const provider = providers.find((p) => p.id === providerId);
+    const model = provider?.models[index];
+    if (!provider || !model) return;
+    setModelSettings({
+      providerId,
+      index,
+      name: model.name,
+      multimodal: model.multimodal,
+      contextText: model.contextText ?? '',
+      outputText: model.outputText ?? '',
+      origContextText: model.contextText ?? '',
+      origOutputText: model.outputText ?? '',
+    });
+  };
+
+  /** 应用弹层：三项写回草稿后关闭；与预填原文相同的字段不写（丢弃等于没碰） */
+  const applyModelSettings = () => {
+    if (!modelSettings) return;
+    const draft = modelSettings;
     setProviders((prev) => prev.map((p) => {
-      if (p.id !== providerId) return p;
-      const models = p.models.map((m, i) => (i === index ? { ...m, multimodal } : m));
+      if (p.id !== draft.providerId) return p;
+      const models = p.models.map((m, i) => {
+        if (i !== draft.index) return m;
+        const next: ModelDraft = { ...m, multimodal: draft.multimodal };
+        if (draft.contextText !== draft.origContextText) next.contextText = draft.contextText;
+        if (draft.outputText !== draft.origOutputText) next.outputText = draft.outputText;
+        return next;
+      });
       return { ...p, models };
     }));
-  }, []);
+    setModelSettings(null);
+  };
 
   const handleSetDefaultModel = (model: string) => {
     if (!activeProvider || !model.trim()) return;
@@ -671,6 +728,20 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     setModelError(null);
   };
 
+  /**
+   * 弹层限值文本的三态解析（specs/013-model-settings-popup）：
+   * `undefined` = 未碰过；空串 = 清空（宿主回落注册表）；正整数 = 显式值；其余 = 非法。
+   */
+  const parseLimitText = (text: string | undefined): { touched: false } | { touched: true; value: number | null | 'invalid' } => {
+    if (text === undefined) return { touched: false };
+    const trimmed = text.trim();
+    if (trimmed === '') return { touched: true, value: null };
+    if (!/^\d+$/.test(trimmed)) return { touched: true, value: 'invalid' };
+    const parsed = Number(trimmed);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) return { touched: true, value: 'invalid' };
+    return { touched: true, value: parsed };
+  };
+
   /** 从当前 provider 草稿生成要保存的 provider 列表（过滤未填写的 tab） */
   const buildProvidersPayload = () => {
     const payload: Array<{
@@ -680,6 +751,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       models: string[];
       modelApiTypes: Record<string, string>;
       modelMultimodal: Record<string, boolean>;
+      modelLimits: Record<string, { context?: number | null; output?: number | null }>;
       defaultModel: string;
     }> = [];
     for (const p of providers) {
@@ -691,6 +763,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       const models: string[] = [];
       const modelApiTypes: Record<string, string> = {};
       const modelMultimodal: Record<string, boolean> = {};
+      const modelLimits: Record<string, { context?: number | null; output?: number | null }> = {};
       for (const m of p.models) {
         const name = m.name.trim();
         if (!name || models.includes(name)) continue;
@@ -699,10 +772,41 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
         if (m.apiType) modelApiTypes[name] = m.apiType;
         // 多模态勾选每个模型都显式上送（默认勾选，取消勾选后保存 false）
         modelMultimodal[name] = m.multimodal;
+        // 弹层碰过的限值才上送（specs/013）：touched 字段收进 modelLimits
+        const context = parseLimitText(m.contextText);
+        const output = parseLimitText(m.outputText);
+        if (context.touched || output.touched) {
+          const entry: { context?: number | null; output?: number | null } = {};
+          if (context.touched && context.value !== 'invalid') entry.context = context.value;
+          if (output.touched && output.value !== 'invalid') entry.output = output.value;
+          if (entry.context !== undefined || entry.output !== undefined) {
+            modelLimits[name] = entry;
+          }
+        }
       }
-      payload.push({ key, baseURL, apiKey, models, modelApiTypes, modelMultimodal, defaultModel: p.defaultModel.trim() });
+      payload.push({ key, baseURL, apiKey, models, modelApiTypes, modelMultimodal, modelLimits, defaultModel: p.defaultModel.trim() });
     }
     return payload;
+  };
+
+  /** 找出草稿里限值非法（非正整数文本）的模型：保存前拦截用（specs/013 FR-004） */
+  const findInvalidLimitModel = (payload: ReturnType<typeof buildProvidersPayload>): { key: string; name: string } | null => {
+    for (const p of providers) {
+      const key = providerKeyOf(p.baseURL.trim());
+      const entry = payload.find((item) => item.key === key);
+      if (!entry) continue;
+      for (const m of p.models) {
+        const name = m.name.trim();
+        if (!name || !entry.models.includes(name)) continue;
+        const context = parseLimitText(m.contextText);
+        const output = parseLimitText(m.outputText);
+        if ((context.touched && context.value === 'invalid')
+          || (output.touched && output.value === 'invalid')) {
+          return { key, name };
+        }
+      }
+    }
+    return null;
   };
 
   /** 发送保存消息（saveProviders 控制是否写 providers/activeProvider） */
@@ -843,6 +947,16 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       const targetDraft = providers.find((p) => providerKeyOf(p.baseURL) === providerWithoutModel.key);
       if (targetDraft) setActiveTabId(targetDraft.id);
       setModelError(t('llmConfig.atLeastOneModel'));
+      setApiKeyError(null);
+      return;
+    }
+    // 弹层应用的限值必须是正整数（specs/013 FR-004）：非法时空串/数字都不合法文本，
+    // 拦下保存不写盘；切到对应 tab 让提示显示在它下面
+    const invalidLimit = findInvalidLimitModel(providerPayload);
+    if (invalidLimit) {
+      const targetDraft = providers.find((p) => providerKeyOf(p.baseURL) === invalidLimit.key);
+      if (targetDraft) setActiveTabId(targetDraft.id);
+      setModelError(t('llmConfig.invalidModelLimits', { name: invalidLimit.name }));
       setApiKeyError(null);
       return;
     }
@@ -1470,7 +1584,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                               {t('llmConfig.defaultModelRadio')}
                             </span>
                           </label>
-                          {/* radio 与多模态 checkbox 之间的竖向分割线 */}
+                          {/* radio 与「设置」按钮之间的竖向分割线 */}
                           <div
                             aria-hidden="true"
                             style={{
@@ -1480,35 +1594,27 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                               backgroundColor: colors.border,
                             }}
                           />
-                          {/* 该模型的多模态开关：关闭后发送 LLM 请求时过滤全部图片 */}
-                          <label
-                            title={t('llmConfig.modelMultimodalTitle')}
+                          {/* 该模型的设置弹层入口：多模态 / context / output 三项收进弹层（specs/013-model-settings-popup） */}
+                          <button
+                            type="button"
+                            onClick={() => openModelSettings(activeProvider.id, index)}
+                            title={t('llmConfig.modelSettings')}
+                            aria-label={t('llmConfig.modelSettings')}
                             style={{
+                              flexShrink: 0,
                               display: 'flex',
                               alignItems: 'center',
-                              gap: 4,
-                              flexShrink: 0,
+                              justifyContent: 'center',
+                              padding: '5px 6px',
+                              borderRadius: '6px',
+                              border: 'none',
+                              backgroundColor: 'transparent',
+                              lineHeight: 1,
                               cursor: 'pointer',
-                              whiteSpace: 'nowrap',
                             }}
                           >
-                            <input
-                              type="checkbox"
-                              checked={model.multimodal}
-                              onChange={(e) => handleModelMultimodalChange(activeProvider.id, index, e.target.checked)}
-                              style={{
-                                flexShrink: 0,
-                                width: 14,
-                                height: 14,
-                                margin: 0,
-                                cursor: 'pointer',
-                                accentColor: colors.harness,
-                              }}
-                            />
-                            <span className="ui-fs-11" style={{ color: colors.textSystem }}>
-                              {t('llmConfig.modelMultimodal')}
-                            </span>
-                          </label>
+                            <Icon name="wrench" size={12} style={{ color: colors.textSystem }} />
+                          </button>
                           {/* 删除：红色叉图标，尺寸与行内 11px 字号匹配 */}
                           <button
                             type="button"
@@ -2047,6 +2153,115 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                 }}
               >
                 {t('llmConfig.discardChanges')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 模型「设置」弹层：多模态 / context / output（specs/013-model-settings-popup）。
+          点覆盖层或「取消」关闭并丢弃草稿；「应用」写回模型行草稿（保存时统一落盘） */}
+      {modelSettings && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 220,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: 'rgba(0, 0, 0, 0.45)',
+          }}
+          onClick={() => setModelSettings(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: colors.bgSecondary,
+              border: `1px solid ${colors.border}`,
+              borderRadius: '8px',
+              padding: '16px',
+              maxWidth: '320px',
+              width: 'calc(100% - 32px)',
+              boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
+            }}
+          >
+            <div
+              className="ui-fs-13 font-semibold mb-3"
+              style={{ color: colors.textPrimary, overflowWrap: 'break-word', wordBreak: 'break-word' }}
+            >
+              {t('llmConfig.modelSettingsTitle', { name: modelSettings.name || t('llmConfig.newModelName') })}
+            </div>
+            {/* 多模态开关：关闭后发送 LLM 请求时过滤全部图片 */}
+            <label
+              className="flex items-center gap-2 mb-3"
+              title={t('llmConfig.modelMultimodalTitle')}
+              style={{ cursor: 'pointer' }}
+            >
+              <input
+                type="checkbox"
+                checked={modelSettings.multimodal}
+                onChange={(e) => setModelSettings((prev) => (prev ? { ...prev, multimodal: e.target.checked } : prev))}
+                style={{
+                  flexShrink: 0,
+                  width: 14,
+                  height: 14,
+                  margin: 0,
+                  cursor: 'pointer',
+                  accentColor: colors.harness,
+                }}
+              />
+              <span className="ui-fs-12" style={{ color: colors.textPrimary }}>
+                {t('llmConfig.modelMultimodal')}
+              </span>
+            </label>
+            {/* context / output：正整数 token 数；清空 = 回落内置注册表解析值 */}
+            <label className="block mb-2">
+              <span className="ui-fs-11 block mb-1" style={{ color: colors.textSystem }}>
+                {t('llmConfig.contextSize')}
+              </span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={modelSettings.contextText}
+                onChange={(e) => setModelSettings((prev) => (prev ? { ...prev, contextText: e.target.value } : prev))}
+                placeholder="1024000"
+                style={{ ...getInputStyle(colors, isDark), padding: '6px 10px' }}
+              />
+            </label>
+            <label className="block mb-4">
+              <span className="ui-fs-11 block mb-1" style={{ color: colors.textSystem }}>
+                {t('llmConfig.outputSize')}
+              </span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={modelSettings.outputText}
+                onChange={(e) => setModelSettings((prev) => (prev ? { ...prev, outputText: e.target.value } : prev))}
+                placeholder="128000"
+                style={{ ...getInputStyle(colors, isDark), padding: '6px 10px' }}
+              />
+            </label>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setModelSettings(null)}
+                className="px-3 py-1.5 rounded ui-fs-12 transition-colors"
+                style={{
+                  backgroundColor: 'transparent',
+                  color: colors.textSystem,
+                  border: `1px solid ${colors.border}`,
+                }}
+              >
+                {t('llmConfig.cancel')}
+              </button>
+              <button
+                onClick={applyModelSettings}
+                className="px-3 py-1.5 rounded ui-fs-12 text-white transition-colors"
+                style={{
+                  backgroundColor: colors.harness,
+                }}
+              >
+                {t('llmConfig.modelSettingsApply')}
               </button>
             </div>
           </div>

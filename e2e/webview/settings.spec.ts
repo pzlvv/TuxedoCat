@@ -89,6 +89,88 @@ test('US-23 API Key 支持明文 / 掩码切换', async () => {
   await expect(apiKey).toHaveAttribute('type', 'password');
 });
 
+/** 打开第一个模型行的「设置」弹层（specs/013-model-settings-popup） */
+async function openModelSettings(page: import('@playwright/test').Page): Promise<void> {
+  // 行内不再有「多模态」checkbox，入口是 wrench 图标按钮（aria-label 模型设置）
+  await expect(page.getByRole('checkbox', { name: '多模态' })).toHaveCount(0);
+  await page.getByRole('button', { name: '模型设置' }).first().click();
+  await expect(modelSettingsPopup(page)).toBeVisible();
+}
+
+/** 模型设置弹层容器：同时含标题与「应用」按钮的最内层 div（面板底部也有「取消」，须按容器收敛） */
+function modelSettingsPopup(page: import('@playwright/test').Page): import('@playwright/test').Locator {
+  return page.locator('div')
+    .filter({ hasText: '模型设置：' })
+    .filter({ has: page.getByRole('button', { name: '应用', exact: true }) })
+    .last();
+}
+
+test('US-23 模型设置弹层：预填解析值，改值保存进 modelLimits', async () => {
+  const { page, host } = handle;
+  await openSettings(page);
+  await openModelSettings(page);
+
+  // 预填 = 面板载荷的解析值（fakeHost 与真实 settingsRead 同口径）
+  const contextInput = page.getByPlaceholder('1024000');
+  const outputInput = page.getByPlaceholder('128000');
+  await expect(contextInput).toHaveValue('1024000');
+  await expect(outputInput).toHaveValue('128000');
+
+  // 改值 + 关闭多模态，应用后弹层关闭
+  await contextInput.fill('200000');
+  await outputInput.fill('8000');
+  await modelSettingsPopup(page).getByRole('checkbox', { name: '多模态' }).uncheck();
+  await modelSettingsPopup(page).getByRole('button', { name: '应用', exact: true }).click();
+  await expect(modelSettingsPopup(page)).toBeHidden();
+
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  const saved = await host.waitForSent('saveLLMConfig', 15_000);
+  const provider = saved.providers[0];
+  expect(provider.modelLimits['mock-model']).toEqual({ context: 200000, output: 8000 });
+  expect(provider.modelMultimodal['mock-model']).toBe(false);
+});
+
+test('US-23 模型设置弹层：清空回落注册表，取消丢弃草稿', async () => {
+  const { page, host } = handle;
+  await openSettings(page);
+
+  // 清空两项并应用：草稿变为空串
+  await openModelSettings(page);
+  await page.getByPlaceholder('1024000').fill('');
+  await page.getByPlaceholder('128000').fill('');
+  await modelSettingsPopup(page).getByRole('button', { name: '应用', exact: true }).click();
+
+  // 取消丢弃：重开弹层填入草稿值后取消，再开仍是空串（草稿未被写入）
+  await openModelSettings(page);
+  await page.getByPlaceholder('1024000').fill('999');
+  await modelSettingsPopup(page).getByRole('button', { name: '取消', exact: true }).click();
+  await expect(modelSettingsPopup(page)).toBeHidden();
+  await openModelSettings(page);
+  await expect(page.getByPlaceholder('1024000')).toHaveValue('');
+  await modelSettingsPopup(page).getByRole('button', { name: '取消', exact: true }).click();
+
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  const saved = await host.waitForSent('saveLLMConfig', 15_000);
+  // 清空上送 null：宿主按注册表回落（与从未设置同态）
+  expect(saved.providers[0].modelLimits['mock-model']).toEqual({ context: null, output: null });
+});
+
+test('US-23 模型设置弹层：非法限值保存被拦下', async () => {
+  const { page, host } = handle;
+  await openSettings(page);
+
+  await openModelSettings(page);
+  await page.getByPlaceholder('1024000').fill('abc');
+  await page.getByRole('button', { name: '应用', exact: true }).click();
+
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  // 错误提示带模型名；saveLLMConfig 不发出（不写盘）
+  await expect(page.getByText('模型 mock-model 的 Context / Output 必须是正整数')).toBeVisible();
+  await expect(page.locator('h1', { hasText: '设置' })).toBeVisible();
+  const saves = (await host.sentAll()).filter((m) => m.type === 'saveLLMConfig');
+  expect(saves).toHaveLength(0);
+});
+
 test('US-24 默认设置与界面语言随保存提交', async () => {
   const { page, host } = handle;
   await openSettings(page);
