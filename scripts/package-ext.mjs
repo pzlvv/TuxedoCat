@@ -7,6 +7,13 @@
  * 静态 npm script 没法在运行时按构建期 Core 变体变量（`<envPrefix>_<core.envVarSuffix>`）
  * 解析目录，所以收进本脚本；
  * 流程与原 `vsce package --out release && python scripts/fix_vsix_permissions.py` 一致。
+ *
+ * 为什么 `package:ext` 只有这一步
+ * ------------------------------
+ * `vsce package` 自己会执行一次 `npm run vscode:prepublish`（`@vscode/vsce` 的
+ * `prepublish()`，没有开关能关掉）。所以构建链与打包前校验都挂在 `vscode:prepublish`
+ * 的末尾（`verify-core-artifacts`），`package:ext` 再显式跑一遍只会把 check-types /
+ * lint / vite / cargo 原样重跑（实测多 115s），这里只负责调 vsce 与修权限。
  */
 import { mkdirSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';

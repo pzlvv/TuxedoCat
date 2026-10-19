@@ -100,7 +100,9 @@ npm run package:tui
        4. 复制到 <releaseDir>/tui-installer/<extensionName>-tui-installer-<pkg>[.exe]
 ```
 
-- `npm run package` 链尾挂 `package:tui`（ext → app → tui）。
+- `npm run package` 链尾挂 `package:tui`（`package:ext` → `package:app:installer` →
+  `package:tui`；Electron 那两段复用 `package:ext` 已构建的 `dist/`，不重跑
+  vite / cargo）。
 - 目标集合：无参 = 宿主可构建的全部四目标（msvc 目标只能在 Windows 宿主构建）；
   `--host` = 只构建当前宿主平台；`--arch <arch>` = 只构建某架构的全部平台
   （x64 / arm64，同样受宿主可构建性过滤）；`--target <triple>` = 显式指定。

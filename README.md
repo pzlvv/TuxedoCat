@@ -137,6 +137,11 @@ npm run package:ext
 npm run package:app
 ```
 
+两个脚本各自可独立跑（各自完整构建所需产物）。`npm run package` 把两者串成一次
+发布：Electron 那一段复用 `package:ext` 已经构建好的 `dist/`，只追加主进程打包与
+NSIS 产出，不重复跑 vite / cargo。构建链与打包前校验都在 `vscode:prepublish` 里
+（`vsce` 打包时会自动执行它，见 `scripts/package-ext.mjs`）。
+
 `npm run package:x64` 产出与 `npm run package` 同一组发布物，但按架构分发的安装器
 只出 x64：Electron 安装包只出 NSIS x64（`package:app:x64`），TUI 安装器只出 x64
 两平台（`package:tui:x64`）。`.vsix` 架构无关，包里携带的 Core 是远端 SSH 部署
