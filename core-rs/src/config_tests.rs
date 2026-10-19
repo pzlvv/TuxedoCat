@@ -241,18 +241,24 @@ fn resolve_provider_honours_overrides_and_falls_back_to_models_list() {
 fn resolve_provider_carries_the_multimodal_flag() {
     // 显式关闭：modelConfigs.multimodal = false 透传到 ProviderConfig
     // （specs/012-multimodal-model-filter）
-    let sandbox = Sandbox::new("config-provider-multimodal-off");
-    let mut settings = provider_settings();
-    settings["llm"]["providers"]["main"]["modelConfigs"]["model-a"]["multimodal"] = json!(false);
-    sandbox.write_settings(settings);
-    let provider = resolve_provider(None, None).unwrap();
-    assert!(!provider.multimodal);
+    // 两个沙箱各自独立作用域：Sandbox 持有串行锁，遮蔽写法会在第二个
+    // Sandbox::new 里对同一把非重入锁二次加锁，同线程死锁。
+    {
+        let sandbox = Sandbox::new("config-provider-multimodal-off");
+        let mut settings = provider_settings();
+        settings["llm"]["providers"]["main"]["modelConfigs"]["model-a"]["multimodal"] = json!(false);
+        sandbox.write_settings(settings);
+        let provider = resolve_provider(None, None).unwrap();
+        assert!(!provider.multimodal);
+    }
 
     // 未配置：默认开启（model-b 无 modelConfigs，走兜底）
-    let sandbox = Sandbox::new("config-provider-multimodal-default");
-    sandbox.write_settings(provider_settings());
-    let provider = resolve_provider(Some("backup"), Some("model-b")).unwrap();
-    assert!(provider.multimodal);
+    {
+        let sandbox = Sandbox::new("config-provider-multimodal-default");
+        sandbox.write_settings(provider_settings());
+        let provider = resolve_provider(Some("backup"), Some("model-b")).unwrap();
+        assert!(provider.multimodal);
+    }
 }
 
 #[test]

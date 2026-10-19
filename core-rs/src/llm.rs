@@ -875,7 +875,7 @@ fn strip_images(messages: &[Value]) -> Vec<Value> {
     let mut out = Vec::with_capacity(messages.len());
     for message in messages {
         let mut message = message.clone();
-        let Some(Value::Array(blocks)) = message.get_mut("content") else {
+        let Some(Value::Array(blocks)) = message.get("content") else {
             out.push(message);
             continue;
         };
