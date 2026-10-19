@@ -16,6 +16,7 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import {
   createStandaloneCoreBus,
@@ -183,6 +184,31 @@ async function waitFor(predicate: () => boolean, timeoutMs = 4_000): Promise<boo
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   return predicate();
+}
+
+/** 等子进程写出的 pid 文件出现 */
+async function waitForPidFile(file: string, timeoutMs: number): Promise<number | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const pid = Number(fs.readFileSync(file, 'utf8').trim());
+      if (Number.isInteger(pid) && pid > 0) return pid;
+    } catch {
+      // 文件尚未落盘
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return null;
+}
+
+/** 进程是否存在（signal 0 只做存活探测） */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function logMessages(recording: RecordingCoreEventHandlers): string[] {
@@ -675,6 +701,46 @@ async function run(): Promise<void> {
     await core.bus.shutdown();
     check('shutdown exits the process with expected=true', expected === true);
     check('shutdown leaves the bus not ready', !core.bus.isReady());
+  }
+
+  // ---------- 宿主退出：结束 Core 子进程（缺陷 orphan-core-processes-after-host-exit） ----------
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'core-host-exit-'));
+    const pidFile = path.join(dir, 'core.pid');
+    // 假 Core 故意不读 stdin 并用定时器保活：宿主退出钩子是唯一能结束它的路径。
+    const fakeCore = `
+      require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+      setInterval(() => {}, 1000);
+    `;
+    const bus = createStandaloneCoreBus({
+      binaryPath: process.execPath,
+      spawnArgs: ['-e', fakeCore],
+      log: () => undefined,
+    });
+    const pid = await waitForPidFile(pidFile, 3_000);
+    // 模拟宿主进程退出：真实退出时 Node 会触发 'exit'，这里手动 emit 触发同一组钩子。
+    (process as unknown as { emit(event: string, code: number): boolean }).emit('exit', 0);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const aliveAfterHostExit = pid !== null && processAlive(pid);
+    await bus.shutdown();
+    if (pid !== null && processAlive(pid)) process.kill(pid, 'SIGKILL');
+    fs.rmSync(dir, { recursive: true, force: true });
+
+    check('宿主进程退出时结束 Core 子进程', pid !== null && !aliveAfterHostExit);
+  }
+
+  // ---------- 默认关闭等待上限：不响应 shutdown 的 Core 不能拖住 deactivate ----------
+  {
+    const started = Date.now();
+    const bus = createStandaloneCoreBus({
+      binaryPath: process.execPath,
+      // 不读 stdin、不退出：模拟卡在退出清理里的 Core
+      spawnArgs: ['-e', 'setInterval(() => {}, 1000)'],
+      log: () => undefined,
+    });
+    await bus.shutdown();
+    const elapsed = Date.now() - started;
+    check('默认关闭等待上限不超过 2 秒', elapsed < 3_000);
   }
 
   finish();

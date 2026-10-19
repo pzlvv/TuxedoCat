@@ -27,6 +27,7 @@ mod llm;
 mod mcp;
 mod mcp_config;
 mod mcp_http;
+mod parent_watchdog;
 mod permission;
 mod power;
 mod prompt;
@@ -88,6 +89,11 @@ fn main() {
 
 /// 单进程 Core 模式：读 `hello` → 回 `ready` → 进入帧循环。
 fn run_core() {
+    // 父进程（宿主）消失后自行退出：扩展升级替换 / 崩溃时 `deactivate` 可能不执行，
+    // 标准输入 EOF 也可能因主线程卡在同步处理而迟到。看门狗只按「父进程不存在」判定，
+    // 不依赖宿主配合（缺陷 specs/defects/orphan-core-processes-after-host-exit.md）。
+    crate::parent_watchdog::spawn(|| std::process::exit(0));
+
     let stdin = std::io::stdin();
     let reader = BufReader::new(stdin.lock());
     let shared_bus: engine::SharedBus = Arc::new(Mutex::new(CoreBus::<FrameWriter>::new(

@@ -364,7 +364,13 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 ### 5.4 关闭
 
 - UI 发 `shutdown`；Core 结束在跑的工作、释放 MCP 子进程、以退出码 0 退出。
-- UI 在等待超时后终止进程。
+- UI 在等待超时后终止进程；本地 stdio 的等待上限是 2 秒（`CoreProcess` 的
+  `DEFAULT_SHUTDOWN_TIMEOUT_MS`），给宿主的 `deactivate` 时限留出余量。
+- 宿主进程退出时同步结束本次启动的 Core 子进程（`process` 的 `exit` 事件，不等
+  `shutdown` 应答）。扩展升级替换 / 崩溃导致 `deactivate` 不执行时，这条是兜底。
+- Core 自己另有父进程看门狗：启动时记录父 PID，每 1 秒探测一次，父进程不存在即退出
+  （Unix `kill(pid, 0)`、Windows `OpenProcess` + `WaitForSingleObject`）。宿主被强杀
+  或标准输入 EOF 迟到时由它结束进程；无权限查询按存活处理，避免误杀。
 
 ### 5.5 背压
 
@@ -380,12 +386,12 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 
 | 阶段 | 行为 |
 | --- | --- |
-| 启动 | 打开工作区时，Client 经 daemon 请求一个 Core 进程；daemon 起进程，完成握手 |
+| 启动 | 本地工作区由宿主直接以 `stdio` 启动 Core；远程工作区经 daemon 启动；随后完成握手 |
 | 就绪前 | UI 侧 `CoreEvent` 处理器已注册；`uiEvent` 帧在 Client 侧排队，不投递 |
 | 就绪 | Core 处理完 `hostEnvironmentProvided` 后发 `CoreEvent.coreReady`；Client 解除门禁 |
 | 运行 | UI 把 `emitToCore` 写为 `uiEvent` 帧；Core 把 `emitToUi` / `request` 写为帧；`request` 的响应回带 `id` |
-| 实例边界 | 一个工作区拥有一个 Core 进程；连接结束即标准输入关闭 |
-| 终止 | 关闭工作区时，Client 发 `shutdown`，等待 Core 退出；超时后由 daemon 强制结束 |
+| 实例边界 | 一个工作区拥有一个 Core 进程；连接结束即标准输入关闭；父进程消失即退出（看门狗） |
+| 终止 | 关闭工作区时，Client 发 `shutdown`，等待 Core 退出；超时后由宿主（本地 `stdio`）或 daemon（远程）强制结束 |
 | 崩溃 | 未决 `request` 全部 reject；daemon 重启 Core 进程并恢复接线（第 6.1 节） |
 
 ### 6.1 崩溃与重启

@@ -287,6 +287,9 @@ Electron 的 `sidebar:get-conversations` 直接读它，切换标签页不再每
 | 系统睡眠阻断 | 无：VS Code 扩展没有电源 API，standalone 下由 Core 子进程自己阻断 | `setStatusListener` → `sleepBlocker.update(states)`（`electron/powerSaveBlocker.ts`） |
 | 退出清理 | `deactivate()`：`stopIdleMonitor` + `shutdownCore()` | `will-quit`：注销快捷键、销毁托盘与提醒音播放窗口、释放睡眠阻断、`shutdownCore()` |
 
+两个宿主共用同一层进程退出兜底（`CoreProcess` 的 `process` exit 钩子），见
+[docs/hosts/host-bootstrap.md 第 4 节](host-bootstrap.md#4-退出路径)。
+
 **托盘状态点与「任务结束」闪烁提醒**属于 `statusListener` 这条流：它吃的是**会话状态流**，
 挂在 `ElectronConversationManager.setStatusListener` 上（`electron/main.ts`）。颜色与闪烁分两步：
 

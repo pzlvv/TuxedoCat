@@ -314,6 +314,11 @@ daemon 侧任一连接的 shutdown 是全局停机，SSH 引导的 daemon 自带
 链路断开后自行退出。Core 进程退出时自行结束 MCP 子进程（`core-rs/src/mcp.rs` 的
 `shutdown`）；宿主不持有 MCP 子进程。
 
+`deactivate()` / `will-quit` 之外还有一层进程退出兜底：`CoreProcess` 在构造时注册
+`process` 的 `exit` 事件，退出时同步 `child.kill()` 当前 Core 子进程，不等 `shutdown`
+应答。它兜住「宿主清理钩子没机会执行」的情况（扩展宿主崩溃 / 被强杀 / 升级替换），
+见 [docs/core/standalone-core.md 第 5.4 节](../core/standalone-core.md#54-关闭)。
+
 ## 5. 一致性守护
 
 **编译期**：

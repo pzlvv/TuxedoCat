@@ -80,6 +80,8 @@ Standalone Core 的进程形态与帧协议见 `docs/core/standalone-core.md`；
   - `start-daemon`：daemon 实体本身，由 `start` 拉起；内部动作，不出现在 `--help` 里。
 - daemon 起 Core 时不再定位第二个可执行文件：以自身路径加 `stdio` 启动。
 - daemon 创建的子进程（Core 进程）不显示控制台窗口，与 Core 侧同一条规则。
+- daemon 拉起的 Core 同样启用父进程看门狗：daemon 被强杀时 Core 在 1 秒内自行退出，
+  不在远端留下孤儿（[docs/core/standalone-core.md 第 5.4 节](standalone-core.md#54-关闭)）。
 - **本地同机工作区不走 daemon**：Host 直接用 `stdio` 起一个 Core 进程，stdio 是帧通道
   （不监听端口）。daemon 只服务远程 endpoint。
 - **远程 daemon 只监听目标机器的回环地址，端口由内核分配**：Host 经 SSH 部署 / 启动

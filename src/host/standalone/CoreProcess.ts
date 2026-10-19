@@ -85,13 +85,37 @@ export interface CoreProcessOptions {
   now?: () => number;
   /** 握手超时（毫秒）；Core 启动后未回 `ready` 视为启动失败 */
   handshakeTimeoutMs?: number;
+  /**
+   * 宿主进程退出钩子注册（测试注入）；返回注销函数。
+   *
+   * 默认挂 `process.on('exit')`：`deactivate()` 没机会执行（崩溃 / 被强杀 / 升级
+   * 替换扩展宿主）时，至少把本次启动的 Core 子进程同步结束
+   * （缺陷 specs/defects/orphan-core-processes-after-host-exit.md）。
+   */
+  registerHostExit?: (listener: () => void) => () => void;
 }
 
 /** 握手超时默认值 */
 export const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 
+/**
+ * 关闭等待上限。
+ *
+ * 必须明显小于 VS Code 对 `deactivate` 的秒级时限，超时后强杀，避免宿主先被
+ * VS Code 结束、Core 留在退出流程里成为孤儿。
+ */
+export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 2_000;
+
 const defaultSpawn: CoreSpawnFunction = (command, args, options) =>
   nodeSpawn(command, [...args], options) as ChildProcessWithoutNullStreams;
+
+/** 默认宿主退出钩子：进程退出时同步回调（Node 的 exit 事件里只能做同步操作） */
+const defaultRegisterHostExit = (listener: () => void): (() => void) => {
+  process.on('exit', listener);
+  return () => {
+    process.removeListener('exit', listener);
+  };
+};
 
 export class CoreProcess {
   private child: ChildProcessWithoutNullStreams | null = null;
@@ -105,6 +129,7 @@ export class CoreProcess {
   private handshakeTimer: NodeJS.Timeout | null = null;
   private outbox: string[] = [];
   private waitingDrain = false;
+  private readonly unregisterHostExit: () => void;
 
   constructor(private readonly options: CoreProcessOptions) {
     this.decoder = new FrameDecoder({
@@ -112,6 +137,9 @@ export class CoreProcess {
       onError: (error) =>
         this.options.hooks.onDiagnostic(`[core] malformed frame: ${error.message}`),
     });
+    // 只注册一次，回调里取当前 child：重启后指向新进程，不会累积监听器
+    const register = options.registerHostExit ?? defaultRegisterHostExit;
+    this.unregisterHostExit = register(() => this.killForHostExit());
   }
 
   isReady(): boolean {
@@ -149,6 +177,7 @@ export class CoreProcess {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.unregisterHostExit();
     if (this.restartTimer) {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
@@ -162,8 +191,26 @@ export class CoreProcess {
     } catch {
       // 子进程已退出：无需再发
     }
-    await this.waitForExit(child, this.options.shutdownTimeoutMs ?? 5_000);
+    await this.waitForExit(
+      child,
+      this.options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
+    );
     this.shuttingDown = false;
+  }
+
+  /**
+   * 宿主进程退出：同步结束当前子进程，不等 `shutdown` 应答。
+   *
+   * 只在 `process` 的 exit 事件里调用，此时不能 await；`child.kill()` 是同步的。
+   */
+  private killForHostExit(): void {
+    const child = this.child;
+    if (!child) return;
+    try {
+      child.kill();
+    } catch {
+      // 已经退出
+    }
   }
 
   // ==================== 内部：进程 ====================
