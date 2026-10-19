@@ -95,6 +95,7 @@ export const enDict: Record<string, string> = {
   'llmConfig.defaultThinkingEffortLabel': 'Default Thinking Effort',
   'llmConfig.defaultThinkingEffortHint': 'Default thinking effort for new conversations; higher effort handles complex problems better. Switch anytime from the input area.',
   'llmConfig.setDefaultModel': 'Set default',
+  'llmConfig.defaultModelRadio': 'Default',
   'llmConfig.modelMultimodal': 'Multimodal',
   'llmConfig.modelMultimodalTitle': 'Checked: this model receives images. Unchecked: all images are filtered from LLM requests (for models without vision).',
   'llmConfig.defaultAskModeLabel': 'Default Ask Mode',

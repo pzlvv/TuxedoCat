@@ -95,6 +95,7 @@ export const zhDict: Record<string, string> = {
   'llmConfig.defaultThinkingEffortLabel': '默认思考强度',
   'llmConfig.defaultThinkingEffortHint': '新对话默认的思考强度，投入越高越擅长处理复杂问题；使用中可随时在输入区切换',
   'llmConfig.setDefaultModel': '设为默认',
+  'llmConfig.defaultModelRadio': '默认',
   'llmConfig.modelMultimodal': '多模态',
   'llmConfig.modelMultimodalTitle': '勾选后该模型可接收图片；取消勾选则发送请求时过滤全部图片（适用于不支持视觉的模型）',
   'llmConfig.defaultAskModeLabel': '默认询问模式',

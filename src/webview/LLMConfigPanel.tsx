@@ -1431,20 +1431,44 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                             />
                           </div>
                           {/* 默认模型 radio：组按 provider 区分，选中即设为默认模型 */}
-                          <input
-                            type="radio"
-                            name={`default-model-${activeProvider.id}`}
-                            checked={isDefault}
-                            onChange={() => handleSetDefaultModel(modelName)}
-                            disabled={!modelName.trim()}
+                          <label
                             title={t('llmConfig.setDefaultModel')}
                             style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 4,
                               flexShrink: 0,
-                              width: 15,
-                              height: 15,
-                              margin: 0,
                               cursor: !modelName.trim() ? 'not-allowed' : 'pointer',
-                              accentColor: colors.harness,
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            <input
+                              type="radio"
+                              name={`default-model-${activeProvider.id}`}
+                              checked={isDefault}
+                              onChange={() => handleSetDefaultModel(modelName)}
+                              disabled={!modelName.trim()}
+                              style={{
+                                flexShrink: 0,
+                                width: 15,
+                                height: 15,
+                                margin: 0,
+                                cursor: !modelName.trim() ? 'not-allowed' : 'pointer',
+                                accentColor: colors.harness,
+                              }}
+                            />
+                            <span className="ui-fs-11" style={{ color: colors.textSystem }}>
+                              {t('llmConfig.defaultModelRadio')}
+                            </span>
+                          </label>
+                          {/* radio 与多模态 checkbox 之间的竖向分割线 */}
+                          <div
+                            aria-hidden="true"
+                            style={{
+                              flexShrink: 0,
+                              width: 1,
+                              height: 16,
+                              backgroundColor: colors.border,
                             }}
                           />
                           {/* 该模型的多模态开关：关闭后发送 LLM 请求时过滤全部图片 */}
