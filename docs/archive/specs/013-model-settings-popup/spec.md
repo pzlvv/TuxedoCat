@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：模型行「设置」弹层（多模态 / context / output）
@@ -111,4 +111,45 @@ context / output 从「只能手改文件」变为面板可编辑，快照字段
 
 ## 收敛记录
 
-收敛时由 /converge 填写。
+收敛时由 /converge 填写，结论只分三类。
+
+- 已满足：
+  - AC-1 / AC-2**（FR-001 / FR-002）：e2e `settings.spec.ts`「模型设置弹层：预填解析值，
+    改值保存进 modelLimits」——行内无「多模态」checkbox、`模型设置` 按钮可见；弹层标题、
+    多模态开关、context / output 输入预填解析值（1024000 / 128000）齐备。
+  - AC-3**（FR-003）：e2e 断言 `saveLLMConfig.providers[0].modelLimits['mock-model']`
+    为 `{context: 200000, output: 8000}`；`hostSettings.test.ts`「弹层显式限值胜过已有值」
+    锁定落盘 200000 / 8000。「重开面板仍显示」由链路分段覆盖：载荷 → `modelConfigs`
+    落盘（同用例）→ 面板载荷经 `readLlmConfigPanelPayload` 重建（既有 settingsRead
+    通路），e2e 假宿主不持久化，无法端到端断言重开显示。
+  - AC-4**（FR-003）：`hostSettings.test.ts`「清空回落注册表（与从未设置同态）」——
+    `deepseek-flash` 清空后写回注册表 context / output；e2e 断言清空上送
+    `{context: null, output: null}`。
+  - AC-5**（FR-003）：e2e 断言 `modelMultimodal['mock-model'] === false`；请求过滤
+    语义归 specs/012 既有 `llm_tests` 用例，本次全量不回归。
+  - AC-6**（FR-004）：e2e「非法限值保存被拦下」遍历 `0` / `-5` / `abc` 三种形态——
+    均提示「模型 mock-model 的 Context / Output 必须是正整数」且 `saveLLMConfig` 零发出。
+  - AC-7**（FR-003）：`hostSettings.test.ts`「未碰字段保留已有值」（333 / 444 原样）
+    与既有「已有 context 不被多模态合并破坏」。
+  - AC-8**（FR-005）：e2e「清空回落注册表，取消丢弃草稿」——应用空串后重开仍空串、
+    填 999 取消后再开仍空串（草稿丢弃、不落盘）；点弹层外区域与「取消」走同一
+    `onClick` handler（覆盖层），未单独断言。
+- 偏差（收敛反向对照发现，已改代码）：
+  - `buildModelDrafts` 初版把解析值初始化进 `contextText`，保存载荷会把**全部模型**
+    当成 touched 逐个上送钉值，违背 FR-003「只收 touched 字段」。修复：草稿限值文本
+    保持 `undefined = 未碰过`，弹层预填由 `openModelSettings` 从载荷解析值现取；
+    应用守卫（与预填原文相同不写回）不变。修复后 e2e settings + messagePresentation
+    25 项、Rust compact / interrupt 39 项复跑全绿。
+- 未做：无。
+
+反向对照（实现 → spec）：自动获取的新模型不带限值文本（`mergeFetchedModels` 保留
+undefined，宿主按注册表补齐）落在 FR-003 与「边界」；重命名模型时已应用的弹层文本
+随行带到新名字（保存按新名字上送显式值）——spec 未单列，属「草稿随模型行」的自然
+语义，观测为该行的行内设置，记已满足；脏检测纳入 `contextText/outputText` 比对是
+FR-003 保存链路的实现细节。追溯矩阵测试落点逐个打开验证存在：`hostSettings.test.ts`
+4 条新断言、e2e settings 3 条用例（25 项全绿）。影响基线三行（US-23、
+core-ui-separation 4.3、host-ui-modules 3）按实际 diff 复核均已落地，无多出未声明的
+契约变更（wire 仅新增 `modelLimits` 可选载字段，`AssistantEventBus` 联合零改动）。
+
+闸门证据：`check-types` / `lint` / `test:all`（57 项，含 docs-lint）全绿；
+e2e webview settings 18 项 + messagePresentation 7 项全绿。

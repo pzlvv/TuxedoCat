@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：once 一次性通知消息（不落盘、末位显示、后继即删）
@@ -117,4 +117,45 @@ status: 实施中
 
 ## 收敛记录
 
-收敛时由 /converge 填写。
+收敛时由 /converge 填写，结论只分三类。
+
+- 已满足：
+  - AC-1**（FR-003）：`engine_tests.rs` 的
+    `run_consumer_reports_turn_failures_as_system_messages` 断言失败回显带
+    `once: true`；该路径本就只 emit 不落盘（代码路径即证据）。
+  - AC-2 / AC-7 / AC-8 / AC-9**（FR-002）：e2e `messagePresentation.spec.ts` 的
+    once 用例四段——工具卡片（既有节点）→ once 通知末位显示（系统消息普通节点
+    样式）→ 同 `toolCallId` 状态推进（就地更新）once 保留（误走追加分支此断言即红）
+    → 用户消息追加 once 消失（至多一条、总在末位由 `stripOnce` 在全部追加分支
+    收口）。
+  - AC-3**（FR-003）：`abort_with_pending_tool_uses_backfills_tool_results_and_reports_interruption`
+    与 `abort_during_tool_execution_reports_interruption` 改断言——UI 事件带
+    `once: true`、`history::load_messages` 无 `*User Interrupted*` 落盘记录；
+    messageCount 不含它由「无 `append_message` 调用」推得（该计数只随落盘追加推进）。
+  - AC-4**（FR-004）：落盘无记录（上两条）+ e2e `messagesReplaced` 整批替换后
+    无 once 残留；存量落盘的历史中断记录照常重放（`restoreMessagesFromConversation`
+    读盘无 `once` 字段即常规显示），不清洗不迁移。
+  - AC-5**（FR-003）：`compact_requested_while_busy_emits_once_notice`——非空闲
+    请求压缩发出 `once: true` 的排队提示、`load_messages` 无记录、待压缩标记登记。
+  - AC-6**（FR-003）：`bootstrapCore.ts` 的 `markConnectionSessionsFailed` 失联
+    提示 `data.once = true`（TS 类型编译期强制）。宿主侧无专用用例：该 emit 与
+    e2e once 用例走同一条 `addMessage → stripOnce` 通路，标记行为同源，记已满足
+    （同路覆盖）。
+- 偏差：无。
+- 未做：无。
+
+反向对照（实现 → spec）：`emit_user_interrupted` 摘除落盘后签名改 `()`，4 个调用点
+（含权限拒绝终止、`terminate_after_batch`）收口同一函数，静默中止豁免不变
+（`spin_host_tests.rs` 静默中止不落盘的既有断言不回归）；被中止工具的
+`Command was interrupted` tool_result 仍落盘（非目标明确保留，`is_canceled: true`
+进上下文）；slash 命令输出（`commands.rs`）与回滚结果（`main.rs`）未加 once
+（非目标）；`stripOnce` 无 once 时原引用返回是性能细节非行为；流式 `streamEnd` /
+`queryEnd` 收尾、工具进度 / 参数更新均为就地更新，未接 `stripOnce`（FR-002
+「既有节点更新不移除」）。追溯矩阵测试落点逐个打开验证存在：engine_tests 4 处
+中断 / 失败 / 排队断言、e2e once 用例 1 条（四段断言）。影响基线四行
+（events.md 2.1 载荷列、US-2、compaction FR-002、[webview-ui 第 2 节](../../docs/hosts/webview-ui.md#2-内部流程约定)）按实际 diff
+复核均已落地；docsLint 事件表载荷列对照绿（联合本体零改动）。
+
+闸门证据：先 `npm run build:core:host` 重建本机二进制——`cargo test`（x86_64-pc-windows-msvc）
+857 用例全绿；`check-types` / `lint` / `test:all`（57 项，含 docs-lint，standalone*
+驱动新二进制）全绿；e2e webview messagePresentation 7 项全绿。
