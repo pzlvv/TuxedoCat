@@ -18,7 +18,7 @@
  * 沉默判定是同一件事的对称面：daemon 回 `pong`，Host 见到首个 pong 武装沉默死线——
  * 这么长时间没有任何入站帧即补发探针 ping 再宽限一次，仍无入站就断开链路并按
  * fatal 上报。daemon 死而 socket 未断（对端断电 / 网络分区）时 socket 层没有任何
- * 信号，这是 Host 在 3s 内感知断连的唯一手段。
+ * 信号，这是 Host 在 10s 内感知断连的唯一手段。
  *
  * 背压：控制通道的出站帧进有序队列，socket 返回 false 时等 `drain`；
  * 越过软水位只记录诊断，不丢帧、不合并帧。
@@ -53,7 +53,7 @@ const OUTBOX_WARN_THRESHOLD = 10_000;
  *
  * daemon 以「最近一次收到控制帧」判定链路死活（60s 空闲回收）：daemon 自己不发帧，
  * Host 不定期发心跳的话，它没有任何手段区分「活着的静默」与「已死而 TCP 未断」。
- * 链路就绪后开始发，未就绪不发。间隔取 1s：Host 侧的沉默判定要求断连在 3s 内
+ * 链路就绪后开始发，未就绪不发。间隔取 1s：Host 侧的沉默判定要求断连在 10s 内
  * 落成 fatal（见 `LINK_SILENCE_DEADLINE_MS`），探针与 pong 都按这个节奏往返。
  */
 const DAEMON_HEARTBEAT_INTERVAL_MS = 1_000;
@@ -65,11 +65,12 @@ const DAEMON_HEARTBEAT_INTERVAL_MS = 1_000;
  * 见过首个 `pong` 才武装：链路刚建立时还没有任何入站帧，武装时机放在首个 pong
  * 之后。到期不直接判死：补发一帧探针 ping，再等
  * `LINK_SILENCE_RECHECK_MS`，期间任何入站帧都算活——本进程卡顿（定时器迟到、
- * 入站帧积压在内核缓冲）不误杀活链路。判死上限 = 死线 + 宽限 ≤ 3s。
+ * 入站帧积压在内核缓冲）与高时延链路的探针往返不误杀活链路。判死上限 = 死线 +
+ * 宽限 ≤ 10s。
  */
-const LINK_SILENCE_DEADLINE_MS = 2_500;
+const LINK_SILENCE_DEADLINE_MS = 9_000;
 /** 沉默探针的宽限：探针 ping 发出后等这么久，仍无入站帧才判死 */
-const LINK_SILENCE_RECHECK_MS = 400;
+const LINK_SILENCE_RECHECK_MS = 900;
 /** 握手超时默认值（Core 进程启动后未回 `ready` 视为失败） */
 export const DEFAULT_DAEMON_HANDSHAKE_TIMEOUT_MS = 10_000;
 /** 控制通道就绪超时默认值（连不上 / daemon 无应答） */

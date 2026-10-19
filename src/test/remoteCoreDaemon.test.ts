@@ -2,7 +2,7 @@
  * 远程 Core daemon 用例（`docs/core/core-remote.md` 第 2 节）：
  * - `listDirectories` 走控制通道，返回远端目录列表（连接后立刻弹选择器的基础）；
  * - 远程 channel 与本地同构：openWorkspace → hello → ready；
- * - 沉默判定：pong 武装、沉默判死（daemon / 链路死亡 3s 内感知的宿主侧机制），
+ * - 沉默判定：pong 武装、沉默判死（daemon / 链路死亡 10s 内感知的宿主侧机制），
  *   不回 pong 的对端不武装、不误杀。
  *
  * 用进程内 `net` 假 daemon 冒充远端，跑真实 socket。
@@ -342,7 +342,7 @@ async function run(): Promise<void> {
     await fake.close();
   }
 
-  // ---------- 默认常数下的判死时限（断连 3s 内感知的端到端锚点） ----------
+  // ---------- 默认常数下的判死时限（断连 10s 内感知的端到端锚点） ----------
   {
     const fake = await startFakeRemote({ pong: true });
     const daemon = new CoreDaemon({
@@ -370,11 +370,11 @@ async function run(): Promise<void> {
     await sleep(1_200);
     const silenceAt = Date.now();
     fake.setPong(false);
-    const fatalArrived = await waitFor(() => failure.error !== null, 4_000);
-    // 判死上限 = 死线 2.5s + 宽限 0.4s，加定时器松弛后必须落在 3s 量级内
+    const fatalArrived = await waitFor(() => failure.error !== null, 11_000);
+    // 判死上限 = 死线 9s + 宽限 0.9s，加定时器松弛后必须落在 10s 量级内
     check('默认常数下沉默判死发生', fatalArrived && failure.error !== null
       && /silent for/.test(failure.error.message));
-    check('默认常数判死 ≤ 3.5s（3s 指标 + 定时器松弛）', Date.now() - silenceAt < 3_500);
+    check('默认常数判死 ≤ 10.5s（10s 指标 + 定时器松弛）', Date.now() - silenceAt < 10_500);
     await daemon.shutdown();
     await fake.close();
   }

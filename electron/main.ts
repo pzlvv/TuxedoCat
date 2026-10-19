@@ -4970,7 +4970,7 @@ function initCore(): void {
   // 「不可用」——endpoint 探测只覆盖「连不上 daemon」，daemon 存活但工作区 channel
   // 建失败（远端 core 起不来）等失败形态只能从这里得知。远程的运行期 lost（daemon /
   // 链路死亡、Core 重启超限）同样在这里落成不可用：重启策略在 daemon 手里，Host 侧
-  // 无法自动恢复，曾就绪过也必须标红（沉默判定最迟 3s 内把 fatal 送到这里）。本地项
+  // 无法自动恢复，曾就绪过也必须标红（沉默判定最迟 10s 内把 fatal 送到这里）。本地项
   // 保持豁免：Core 由 Host 侧重启策略恢复，恢复后 coreReady 会重新 markReady。
   onWorkspaceConnectionState((ref, state, reason) => {
     const key = refKey(ref);
