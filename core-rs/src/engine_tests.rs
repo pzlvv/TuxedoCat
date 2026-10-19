@@ -1109,6 +1109,15 @@ fn compact_requested_while_busy_emits_once_notice() {
     );
     assert_eq!(message["data"]["once"], true);
     assert!(compact::is_pending_compact("s1"));
+    // 一次性通知不落盘（specs/014）
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    assert!(
+        !history::load_messages("s1", &workspace)
+            .iter()
+            .any(|message| message["type"] == "system"
+                && message["content"].as_str().unwrap_or("").contains("压缩已排队")),
+        "压缩排队提示不得落盘"
+    );
     // 待压缩标记是进程级静态状态：清理掉，不泄漏给同二进制的其它用例
     compact::unmark_pending_compact("s1");
 }
