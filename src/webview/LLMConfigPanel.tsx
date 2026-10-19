@@ -1531,7 +1531,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                           key={index}
                           style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}
                         >
-                          {/* 模型名：radio 即默认标识，不再渲染「默认」后缀覆盖层 */}
+                          {/* 模型名：默认模型在输入框内标「(默认)」，右侧按钮负责设为默认 */}
                           <div style={{ position: 'relative', flex: '1 1 150px', minWidth: 0 }}>
                             <input
                               type="text"
@@ -1541,11 +1541,27 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                               title={modelName}
                               style={{
                                 ...inputStyle,
-                                paddingRight: 12,
+                                paddingRight: isDefault ? 52 : 12,
                               }}
                               onFocus={(e) => { e.target.style.borderColor = colors.harness; }}
                               onBlur={(e) => { e.target.style.borderColor = colors.border; }}
                             />
+                            {isDefault && (
+                              <span
+                                className="ui-fs-11"
+                                style={{
+                                  position: 'absolute',
+                                  right: 8,
+                                  top: '50%',
+                                  transform: 'translateY(-50%)',
+                                  color: colors.textSystem,
+                                  pointerEvents: 'none',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {t('llmConfig.defaultModelSuffix')}
+                              </span>
+                            )}
                           </div>
                           {/* 该模型的 API 协议（紧跟模型名） */}
                           <ApiTypeSelect
@@ -1556,47 +1572,27 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                             colors={colors}
                             isDark={isDark}
                           />
-                          {/* 默认模型 radio：组按 provider 区分，选中即设为默认模型 */}
-                          <label
+                          {/* 「设为默认」按钮：当前默认模型由输入框内的「(默认)」标注 */}
+                          <button
+                            type="button"
+                            onClick={() => handleSetDefaultModel(modelName)}
+                            disabled={!modelName.trim()}
                             title={t('llmConfig.setDefaultModel')}
                             style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 4,
                               flexShrink: 0,
+                              padding: '6px 10px',
+                              borderRadius: '6px',
+                              border: `1px solid ${colors.border}`,
+                              backgroundColor: 'transparent',
+                              color: colors.textSystem,
+                              fontSize: uiFontSizePx(11),
                               cursor: !modelName.trim() ? 'not-allowed' : 'pointer',
+                              opacity: !modelName.trim() ? 0.5 : 1,
                               whiteSpace: 'nowrap',
                             }}
                           >
-                            <input
-                              type="radio"
-                              name={`default-model-${activeProvider.id}`}
-                              checked={isDefault}
-                              onChange={() => handleSetDefaultModel(modelName)}
-                              disabled={!modelName.trim()}
-                              style={{
-                                flexShrink: 0,
-                                width: 15,
-                                height: 15,
-                                margin: 0,
-                                cursor: !modelName.trim() ? 'not-allowed' : 'pointer',
-                                accentColor: colors.harness,
-                              }}
-                            />
-                            <span className="ui-fs-11" style={{ color: colors.textSystem }}>
-                              {t('llmConfig.defaultModelRadio')}
-                            </span>
-                          </label>
-                          {/* radio 与「设置」按钮之间的竖向分割线 */}
-                          <div
-                            aria-hidden="true"
-                            style={{
-                              flexShrink: 0,
-                              width: 1,
-                              height: 16,
-                              backgroundColor: colors.border,
-                            }}
-                          />
+                            {t('llmConfig.setDefaultModel')}
+                          </button>
                           {/* 该模型的设置弹层入口：多模态 / context / output 三项收进弹层（specs/013-model-settings-popup） */}
                           <button
                             type="button"
