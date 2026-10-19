@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：模型默认 radio、多模态开关与非多模态图片过滤
@@ -135,6 +135,40 @@ Anthropic / Responses / OpenAI Chat Completions 三协议一致）。过滤只�
 
 收敛时由 /converge 填写，结论只分三类。
 
-- 已满足：<FR / AC → 证据（实现与测试落点）>
-- 偏差：<与 spec 的差异；改代码或改 spec 并留痕>
-- 未做：<回写 tasks.md 的未完成项>
+- 已满足：
+  - **AC-1 / AC-2**（FR-001）：radio 取代按钮、组按 provider、后缀覆盖层与 i18n 键已删
+    （`LLMConfigPanel.tsx`；`hostI18n` 绿）。UI 交互按矩阵豁免口径人工验收；后续两次
+    L0 样式细化（radio「默认」文字标签 + 分割线 `a61be24`、协议下拉移位 + 红叉删除
+    `be54b08`）不改变 FR 语义。
+  - **AC-3 / AC-4**（FR-002）：`hostSettings.test.ts`（勾选写盘 `false`、缺项按已有值、
+    非布尔忽略、历史条目保留、载荷带已解析开关）+ `settingsSnapshot.test.ts`（缺省 /
+    非法值按开启解析）。
+  - **AC-5 / AC-6 / AC-7 / AC-8**（FR-004 / FR-005）：`llm_tests.rs` 的 `strip_images`
+    全分支（图文混合 / 纯图消息 / tool_result 图文与纯图 / 字符串与空 content 原样 /
+    入参不改写）+ `filtered_messages_convert_without_image_parts`（Chat Completions 与
+    Anthropic 转换级断言，无 `image_url` / image 块 / base64 残留）；占位文本
+    `util::IMAGE_PLACEHOLDER` 与 `compact.rs` 收敛为同一常量。Responses 侧的图片形态
+    （`input_image`）唯一来源是内部 image 块，由「过滤后 `has_images` 为假」的不变量
+    覆盖；多模态路径（AC-8）由既有 `chat_messages_convert_images_to_data_urls` 继续覆盖。
+  - **AC-9 / AC-10**（FR-003）：`settings_tests.rs` 缺 `multimodal` 反序列化报协议错误；
+    `config_tests.rs` 的 `resolve_provider_carries_the_multimodal_flag`（显式 `false`
+    透传 / 无配置走兜底 `true`）。TS 侧 `settingsSnapshot.test.ts` 同口径。
+  - **AC-11 / AC-12**（FR-006）：过滤只在 `llm::stream` 入口副本上做（测试断言入参
+    slice 不被改写）；`run_turn` 每轮从当刻快照解析 `ProviderConfig`，落盘 / 回显路径
+    未触碰——换回多模态模型后历史图片恢复携带（多模态路径即不过滤，AC-8 证据同源）。
+- 偏差：无。
+- 未做：无。
+
+反向对照（实现 → spec）：实现枚举的行为分支——`has_images` 零克隆快路径、本来为空的
+content 不占位、重命名默认模型后 radio 全不选、自动获取的新模型默认勾选多模态、宿主
+「全表 modelConfigs 补齐」不带面板 overrides（未编辑 provider 保留原值）、脏检测包含
+多模态勾选——均落在 spec 的 FR / 边界或 plan 技术方案内，无 spec 外行为。追溯矩阵
+全部测试落点逐个打开验证存在且通过。备注：`ProviderConfig` 的 `derive(Default)` 会给
+`multimodal` 取 `false`，但生产代码零调用（唯一构造点 `resolve_provider` 从限值取值），
+仅作备查。
+
+闸门证据：`check-types` / `lint` / `test:all`（57 项，含 docs-lint）全绿；Rust 侧
+`cargo test --target x86_64-pc-windows-msvc` 全量 856 用例绿（与包构建同目标；
+win-arm64 宿主直编受 ring 的 clang 硬性要求限制，见 tasks T008 备注）。
+`settingsConcurrency` 在全量并行中偶发过一次，单跑与复跑全量均绿（既有 flake，与本
+改动无关）。
