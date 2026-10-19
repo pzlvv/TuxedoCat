@@ -209,7 +209,7 @@ test('US-50 WebSearch / WebFetch 工具卡片渲染查询词与 URL', async () =
   await expect(fetchCard).toBeVisible({ timeout: 10_000 });
 });
 
-test('once 通知：末位显示、就地更新保留、新节点先删、重载无残留（specs/014）', async () => {
+test('once 通知：末位显示、就地更新保留、新节点先删、重开从 meta 恢复（specs/014）', async () => {
   const { page, host } = handle;
   const started = await host.waitForSent('startNewConversation');
   const sessionId = started.sessionId as string;
@@ -234,10 +234,27 @@ test('once 通知：末位显示、就地更新保留、新节点先删、重载
   await expect(page.getByText('继续下一轮')).toBeVisible({ timeout: 10_000 });
   await expect(onceNode).toHaveCount(0);
 
-  // 整批替换（会话重载）：落盘无 once 记录，时间线无残留
+  // 整批替换（压缩重放）：时间线不再有末位提示
   await host.send({ type: 'addMessage', sessionId, role: 'system', content: '*User Interrupted*', once: true });
   await expect(onceNode).toBeVisible({ timeout: 10_000 });
   await host.send({ type: 'messagesReplaced', sessionId, messages: [{ role: 'user', content: '历史消息' }] });
   await expect(page.getByText('历史消息')).toBeVisible({ timeout: 10_000 });
   await expect(onceNode).toHaveCount(0);
+
+  // 重开对话：core 记在 meta.json 的 `onceMessage` 恢复到时间线末位
+  // （一个对话至多一条，随 conversationLoaded 的 metadata 下发）
+  await host.setConversations([{
+    sessionId: 'sess-once', title: '带通知的会话',
+    createdAt: Date.now(), updatedAt: Date.now(), messageCount: 1,
+    onceMessage: { role: 'system', content: '*User Interrupted*' },
+    messages: [
+      { type: 'user', uuid: 'u-once', parentUuid: null, timestamp: Date.now(), message: { role: 'user', content: '历史消息' } },
+    ],
+  }]);
+  await page.locator('button[title="对话历史"]').click();
+  const historyDropdown = page.locator('.conversation-dropdown');
+  await expect(historyDropdown.getByText('带通知的会话')).toBeVisible();
+  await historyDropdown.getByText('带通知的会话').click();
+  await expect(onceNode).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText('历史消息')).toBeVisible();
 });

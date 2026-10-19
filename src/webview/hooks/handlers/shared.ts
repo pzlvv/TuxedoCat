@@ -320,6 +320,19 @@ export function restoreMessagesFromConversation(msg: Extract<HostToWebviewMessag
     }
   }
 
+  // 末位一次性通知（`docs/hosts/webview-ui.md` 第 11 节）：core 只记最后一条
+  // （meta.json 的 `onceMessage`），恢复到时间线末位——与实时到达的 once 节点同一条
+  // 通路，后继节点追加时由 `stripOnce` 移除。
+  const onceMessage = msg.conversation.metadata?.onceMessage;
+  if (onceMessage && typeof onceMessage.content === 'string' && onceMessage.content !== '') {
+    restoredMessages.push({
+      role: 'system' as const,
+      content: onceMessage.content,
+      once: true,
+      timestamp: Date.now(),
+    });
+  }
+
   return restoredMessages;
 }
 
@@ -516,7 +529,7 @@ export function toUiMessage(msg: MessageData): Message {
 }
 
 /**
- * 剥除一次性通知节点（specs/014-once-notification-message）。
+ * 剥除一次性通知节点（`docs/hosts/webview-ui.md` 第 11 节）。
  *
  * 「后继即删」的唯一实现：任何**追加新节点**的入口在追加前先过本函数——时间线至多
  * 一条 once 且总在末位；就地更新（工具进度 / 参数 / 状态、流式增量）不经过它，

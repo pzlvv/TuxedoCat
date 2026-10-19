@@ -1078,6 +1078,23 @@ fn ui_request_conversation_load_returns_messages_metadata_and_facts() {
         loaded["agentMode"]
     );
 
+    // 一次性通知槽位随 meta.json 整份下发：webview 加载时恢复到时间线末位
+    // （`docs/hosts/webview-ui.md` 第 11 节）
+    history::save_once_message(
+        "s1",
+        &project,
+        &json!({ "role": "system", "content": "压缩已排队" }),
+    )
+    .unwrap();
+    let with_once = dispatch_ui_request(&test_core(), &json!({
+        "type": "conversationLoadRequested",
+        "sessionId": "s1",
+    }))
+    .unwrap();
+    assert_eq!(with_once["metadata"]["onceMessage"]["content"], "压缩已排队");
+    assert_eq!(with_once["metadata"]["onceMessage"]["role"], "system");
+    assert_eq!(with_once["messages"].as_array().unwrap().len(), 1, "通知不进消息列表");
+
     // 会话不存在：空消息 + null 元数据，不报错
     let missing = dispatch_ui_request(&test_core(), &json!({
         "type": "conversationLoadRequested",

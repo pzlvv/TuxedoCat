@@ -234,8 +234,9 @@ export interface MessageData {
    */
   origin?: MessageOrigin;
   /**
-   * 一次性通知（specs/014-once-notification-message）：`true` 即通知类消息——
-   * 不落盘、只在时间线末位显示、任何新节点追加前先移除；缺省即常规消息。
+   * 一次性通知（`docs/hosts/webview-ui.md` 第 11 节）：`true` 即通知类消息——不进
+   * `<sid>.jsonl` / LLM 上下文，core 只把它记进 `meta.json` 的 `onceMessage`（一个对话
+   * 至多一条）；UI 在时间线末位显示，任何新节点追加前先移除。缺省即常规消息。
    */
   once?: boolean;
   /** 用户消息携带的图片（仅用于 UI 展示，LLM 请求使用 content blocks） */

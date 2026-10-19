@@ -145,6 +145,30 @@ pub fn load_metadata(session_id: &str, project: &str) -> Option<Value> {
     serde_json::from_str(&util::sanitize_json_surrogates(&text)).ok()
 }
 
+/// `meta.json` 里记录「最后一条一次性通知」的字段名（`docs/hosts/webview-ui.md` 第 11 节）。
+///
+/// 一个对话至多一条：once 通知只是时间线末位的提示，后到的覆盖先到的；
+/// 任何新消息落盘（`touch_metadata`）或整批替换（`replace_messages`）即清空。
+pub const ONCE_MESSAGE_KEY: &str = "onceMessage";
+
+/// 把一次性通知记进 `meta.json`（覆盖上一条，恒只有一个槽位）。
+///
+/// 通知本体**不**写进 `<sid>.jsonl`、不进内存消息列表与 LLM 上下文：它只在
+/// 时间线末位显示，重开对话时由 UI 从 meta 追加回末位。
+pub fn save_once_message(session_id: &str, project: &str, message: &Value) -> Result<(), String> {
+    update_metadata(
+        session_id,
+        project,
+        || json!({ "sessionId": session_id, "project": project }),
+        |metadata| {
+            if let Some(object) = metadata.as_object_mut() {
+                object.insert(ONCE_MESSAGE_KEY.to_string(), message.clone());
+            }
+        },
+    )?;
+    Ok(())
+}
+
 /// 读-改-写 `meta.json`；不存在时用 `fallback` 初始化
 pub fn update_metadata(
     session_id: &str,
@@ -550,6 +574,8 @@ pub fn replace_messages(session_id: &str, project: &str, messages: &[Value]) -> 
         |metadata| {
             if let Some(object) = metadata.as_object_mut() {
                 object.insert("messageCount".to_string(), json!(messages.len()));
+                // 整批替换后时间线不再有末位提示：`onceMessage` 一并清掉
+                object.remove(ONCE_MESSAGE_KEY);
                 if let Some(cleared_at) = cleared_at {
                     object.insert("clearedAt".to_string(), json!(cleared_at));
                 }
@@ -950,6 +976,11 @@ pub fn touch_metadata(
         project,
         || json!({ "sessionId": session_id, "project": project }),
         |metadata| {
+            // 新消息落盘即越过末位提示：清掉 `onceMessage`（后继即删，
+            // 与 UI 侧 `stripOnce` 同一语义，`docs/hosts/webview-ui.md` 第 11 节）。
+            if let Some(object) = metadata.as_object_mut() {
+                object.remove(ONCE_MESSAGE_KEY);
+            }
             if user_initiated {
                 metadata["updatedAt"] = json!(crate::util::now_millis());
             }

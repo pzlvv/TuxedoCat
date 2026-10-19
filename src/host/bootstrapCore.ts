@@ -511,7 +511,9 @@ function markConnectionSessionsFailed(
       connection.emitToUi({
         type: 'message',
         sessionId: state.sessionId,
-        // 一次性通知（specs/014-once-notification-message）：不落盘，末位显示，后继即删
+        // 一次性通知（`docs/hosts/webview-ui.md` 第 11 节）：时间线末位显示、后继即删；
+        // 失联提示只当次显示——meta.json 的 `onceMessage` 只由 core 侧通知写入，
+        // 此刻 Core 已不可写，重开对话不重建本提示。
         data: { role: 'system', content: reason, once: true },
       });
       connection.emitToUi({ type: 'queryEnd', sessionId: state.sessionId });

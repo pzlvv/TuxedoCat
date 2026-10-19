@@ -644,6 +644,40 @@ fn touch_metadata_keeps_updated_at_for_background_messages() {
 }
 
 #[test]
+fn save_once_message_keeps_a_single_slot_and_new_message_clears_it() {
+    // 一个对话至多一条一次性通知：后到的覆盖先到的；新消息落盘即清空
+    // （`docs/hosts/webview-ui.md` 第 2 节）。
+    let _sandbox = Sandbox::new("history-once-slot");
+    create_conversation("s1", PROJECT, json!({ "sessionId": "s1", "messageCount": 0 })).unwrap();
+
+    save_once_message("s1", PROJECT, &json!({ "role": "system", "content": "第一条" })).unwrap();
+    save_once_message("s1", PROJECT, &json!({ "role": "system", "content": "第二条" })).unwrap();
+    let metadata = load_metadata("s1", PROJECT).unwrap();
+    assert_eq!(metadata[ONCE_MESSAGE_KEY]["content"], "第二条");
+    assert_eq!(metadata[ONCE_MESSAGE_KEY]["role"], "system");
+
+    append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
+    touch_metadata("s1", PROJECT, true, None).unwrap();
+    assert!(
+        load_metadata("s1", PROJECT).unwrap().get(ONCE_MESSAGE_KEY).is_none(),
+        "新消息落盘后 once 槽位必须清空"
+    );
+}
+
+#[test]
+fn replace_messages_clears_once_message() {
+    // 压缩 / 清空整批替换时间线：末位提示一并消失（`docs/features/compaction.md` FR-002）
+    let _sandbox = Sandbox::new("history-once-replace");
+    create_conversation("s1", PROJECT, json!({ "sessionId": "s1", "messageCount": 0 })).unwrap();
+    save_once_message("s1", PROJECT, &json!({ "role": "system", "content": "压缩已排队" })).unwrap();
+
+    replace_messages("s1", PROJECT, &[user_message("hi", "u1")]).unwrap();
+    let metadata = load_metadata("s1", PROJECT).unwrap();
+    assert_eq!(metadata["messageCount"], 1);
+    assert!(metadata.get(ONCE_MESSAGE_KEY).is_none(), "整批替换后 once 槽位必须清空");
+}
+
+#[test]
 fn derive_title_uses_the_first_user_text() {
     let messages = vec![
         json!({ "type": "assistant", "message": { "content": "ignored" } }),

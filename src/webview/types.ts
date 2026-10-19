@@ -156,8 +156,9 @@ export interface Message {
   /** 消息元信息，如文件引用、agent来源等 */
   meta?: Record<string, unknown>;
   /**
-   * 一次性通知（specs/014-once-notification-message）：不落盘、时间线末位显示、
-   * 任何新节点追加前先移除（`stripOnce`）；缺省即常规消息。
+   * 一次性通知（`docs/hosts/webview-ui.md` 第 11 节）：core 记在 meta.json 的
+   * `onceMessage`（一个对话至多一条），加载时恢复到时间线末位；任何新节点追加前
+   * 先移除（`stripOnce`）；缺省即常规消息。
    */
   once?: boolean;
   /** 用户消息携带的图片（dataUrl，用于渲染缩略图） */

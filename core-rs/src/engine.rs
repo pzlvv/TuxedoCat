@@ -1525,17 +1525,12 @@ impl Core {
         if !self.is_session_idle(session_id) {
             if !compact::is_pending_compact(session_id) {
                 compact::mark_pending_compact(session_id);
-                self.emit(json!({
-                    "type": "message",
-                    "sessionId": session_id,
-                    // 一次性通知（specs/014-once-notification-message）：不落盘，
-                    // 时间线末位显示，下一轮新节点追加前被移除
-                    "data": {
-                        "role": "system",
-                        "content": "当前会话正在处理中，压缩已排队，将在本轮对话结束后执行。",
-                        "once": true,
-                    },
-                }));
+                // 一次性通知：记 meta + 时间线末位显示，下一轮新节点追加前被移除
+                emit_once_notice(
+                    self,
+                    session_id,
+                    "当前会话正在处理中，压缩已排队，将在本轮对话结束后执行。",
+                );
             }
             return;
         }
@@ -2044,13 +2039,8 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
         };
 
         if let Err(error) = result {
-            core.emit(json!({
-                "type": "message",
-                "sessionId": session_id,
-                // 一次性通知（specs/014-once-notification-message）：不落盘，
-                // 时间线末位显示，下一轮新节点追加前被移除
-                "data": { "role": "system", "content": llm_error_message(&error), "once": true },
-            }));
+            // 一次性通知：记 meta + 时间线末位显示，下一轮新节点追加前被移除
+            emit_once_notice(&core, &session_id, &llm_error_message(&error));
         }
         core.emit_runtime();
     }
@@ -2943,11 +2933,32 @@ fn llm_error_message(error: &str) -> String {
     )
 }
 
-/// 上报 `*User Interrupted*` 一次性通知（specs/014-once-notification-message）。
+/// 上报一条一次性通知（`docs/hosts/webview-ui.md` 第 11 节）：先记进 `meta.json`
+/// 的 `onceMessage`（一个对话至多一条，后到的覆盖先到的），再发 `message` 事件。
 ///
-/// 只发 UI 事件（`data.once = true`），不落盘、不进内存消息列表：中断提示是
-/// 「本轮收尾」的瞬时事实，用户看到即可；重开 / 刷新会话不需要重建它，历史里
-/// 也不该出现它（不推进 `last_uuid`，不影响下一轮请求的上下文组装）。
+/// 通知本体不进 `<sid>.jsonl`、内存消息列表与 LLM 上下文——它只是时间线末位的提示，
+/// 重开对话时由 UI 从 meta 追加回末位。meta 写入失败只记日志：提示本身仍要到达 UI，
+/// 落盘是「重开还能看到」的尽力而为，不是事件的前置条件。
+fn emit_once_notice(core: &Arc<Core>, session_id: &str, content: &str) {
+    let message = json!({ "role": "system", "content": content });
+    match core.project_of(session_id) {
+        Ok(project) => {
+            if let Err(error) = history::save_once_message(session_id, &project, &message) {
+                eprintln!("[core] save once message failed: {error}");
+            }
+        }
+        Err(error) => eprintln!("[core] save once message skipped: {error}"),
+    }
+    let mut data = message;
+    data["once"] = json!(true);
+    core.emit(json!({ "type": "message", "sessionId": session_id, "data": data }));
+}
+
+/// 上报 `*User Interrupted*` 一次性通知（`docs/hosts/webview-ui.md` 第 11 节）。
+///
+/// 只记 meta 与 UI 事件，不落 `<sid>.jsonl`、不进内存消息列表：中断提示是
+/// 「本轮收尾」的瞬时事实，用户看到即可；重开 / 刷新会话由 meta 恢复到末位，
+/// 历史里不该出现它（不推进 `last_uuid`，不影响下一轮请求的上下文组装）。
 fn emit_user_interrupted(core: &Arc<Core>, session_id: &str, state: &Arc<Mutex<SessionState>>) {
     // 静默中止（业务主动结束，如 spin 子代理首次 Reply 后停止自身）：
     // 不向 UI 回显中断消息、不落盘系统消息，直接结束：
@@ -2955,15 +2966,7 @@ fn emit_user_interrupted(core: &Arc<Core>, session_id: &str, state: &Arc<Mutex<S
     if state.lock().unwrap().silent_abort {
         return;
     }
-    core.emit(json!({
-        "type": "message",
-        "sessionId": session_id,
-        "data": {
-            "role": "system",
-            "content": USER_INTERRUPTED_MESSAGE,
-            "once": true,
-        },
-    }));
+    emit_once_notice(core, session_id, USER_INTERRUPTED_MESSAGE);
 }
 
 /// 把内存中尚未落盘的消息按顺序补写。

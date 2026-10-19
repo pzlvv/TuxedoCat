@@ -113,8 +113,9 @@ export type HostToWebviewMessage = {
   /** 消息元信息，如文件引用、agent来源等 */
   meta?: Record<string, unknown>;
   /**
-   * 一次性通知（specs/014-once-notification-message）：不落盘、时间线末位显示、
-   * 任何新节点追加前先移除；缺省即常规消息。随 `CoreEvent.message` 的载荷透传。
+   * 一次性通知（`docs/hosts/webview-ui.md` 第 11 节）：不进 jsonl / LLM 上下文，
+   * core 只把它记进 meta.json 的 `onceMessage`（一个对话至多一条）；时间线末位显示、
+   * 任何新节点追加前先移除。缺省即常规消息。随 `CoreEvent.message` 的载荷透传。
    */
   once?: boolean;
   /** 标记为压缩折叠区域的消息（加载时从 boundary 开始） */
@@ -247,6 +248,11 @@ export type HostToWebviewMessage = {
       model?: string;
       provider?: string;
       role?: string;
+      /**
+       * 最后一条一次性通知（`docs/hosts/webview-ui.md` 第 11 节）：core 记在 meta.json，
+       * 一个对话至多一条；webview 加载时追加到时间线末位。
+       */
+      onceMessage?: { role: 'system'; content: string };
     };
     messages?: unknown[];
   };

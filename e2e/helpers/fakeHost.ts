@@ -334,12 +334,16 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
         break;
       }
       case 'loadConversation': {
-        // 单视图加载会话：回放该会话的历史消息（取自 state.conversations 的种子数据）
+        // 单视图加载会话：回放该会话的历史消息（取自 state.conversations 的种子数据）；
+        // metadata 整份来自 core（meta.json），一次性通知的 onceMessage 随之下发
         const conv = state.conversations.find((c) => c.sessionId === msg.sessionId);
         send({
           type: 'conversationLoaded', sessionId: msg.sessionId,
           conversation: {
-            metadata: { sessionId: msg.sessionId, title: conv ? conv.title : '', model: 'mock-model', provider: 'mock-provider' },
+            metadata: {
+              sessionId: msg.sessionId, title: conv ? conv.title : '', model: 'mock-model', provider: 'mock-provider',
+              ...(conv && conv.onceMessage ? { onceMessage: conv.onceMessage } : {}),
+            },
             messages: conv && conv.messages ? conv.messages : [],
           },
           hasCompactArchive: !!(conv && conv.hasCompactArchive),

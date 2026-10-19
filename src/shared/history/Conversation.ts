@@ -270,6 +270,11 @@ export interface ConversationMetadata {
   model?: string;
   /** 当前对话使用的模型所属 provider key（模型 + provider 一起才能完整表征一个模型） */
   provider?: string;
+  /**
+   * 最后一条一次性通知（`docs/hosts/webview-ui.md` 第 11 节）：core 写入 meta.json，
+   * 一个对话至多一条；重开对话时追加到时间线末位，新消息落盘后由 core 清空。
+   */
+  onceMessage?: { role: 'system'; content: string };
 }
 
 /**

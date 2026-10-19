@@ -335,6 +335,20 @@ fn build_raw_api_messages_prefixes_current_file_context() {
 }
 
 #[test]
+fn build_raw_api_messages_skips_once_notices() {
+    // 一次性通知只记 meta.json（`docs/hosts/webview-ui.md` 第 11 节），不进消息列表；
+    // 即使误入列表也不得进 LLM 上下文——组装只收 user / assistant。
+    let messages = build_raw_api_messages(&[
+        json!({ "type": "user", "message": { "role": "user", "content": "问题" } }),
+        json!({ "type": "system", "content": "*User Interrupted*", "once": true }),
+        json!({ "type": "assistant", "message": { "role": "assistant", "content": "回答" } }),
+    ]);
+    assert_eq!(messages.len(), 2, "system 通知不得进上下文：{messages:?}");
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[1]["role"], "assistant");
+}
+
+#[test]
 fn build_llm_messages_merges_consecutive_same_role_messages() {
     // Anthropic 要求严格 user/assistant 交替：连续同角色的多条 tool_result 必须合并
     let state = Arc::new(Mutex::new(SessionState::new("risk".to_string(), None)));
@@ -1060,15 +1074,25 @@ fn run_consumer_reports_turn_failures_as_system_messages() {
     assert!(content.contains("❌ **LLM API Error**"), "got {message}");
     assert!(content.contains("```"), "got {message}");
     assert!(content.contains("settings.json"), "got {message}");
-    // 一次性通知（specs/014）：不落盘，末位显示，后继即删
+    // 一次性通知（`docs/hosts/webview-ui.md` 第 11 节）：记进 meta.json 的
+    // `onceMessage`，`<sid>.jsonl` 无记录
     assert_eq!(message["data"]["once"], true);
+    let metadata = history::load_metadata("s1", "D:/repo").expect("meta");
+    assert_eq!(metadata["onceMessage"]["role"], "system");
+    assert_eq!(metadata["onceMessage"]["content"], content);
+    assert!(
+        !history::load_messages("s1", "D:/repo")
+            .iter()
+            .any(|message| message["type"] == "system"),
+        "LLM 错误提示不得写进 jsonl"
+    );
     assert!(!state.lock().unwrap().running);
 }
 
 #[test]
 fn compact_requested_while_busy_emits_once_notice() {
     // 会话非空闲时请求压缩：登记「待压缩」并上报一次性提示
-    // （specs/014-once-notification-message：once = true，不落盘）
+    // （`docs/hosts/webview-ui.md` 第 11 节：once = true，只记 meta.json 的 `onceMessage`）
     let sandbox = Sandbox::new("engine-compact-queued");
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     config::set_active_workspace(Some(workspace));
@@ -1109,8 +1133,16 @@ fn compact_requested_while_busy_emits_once_notice() {
     );
     assert_eq!(message["data"]["once"], true);
     assert!(compact::is_pending_compact("s1"));
-    // 一次性通知不落盘（specs/014）
+    // 一次性通知只记 meta.json 的 `onceMessage`，不落 jsonl（`docs/hosts/webview-ui.md` 第 11 节）
     let workspace = sandbox.workspace.to_string_lossy().to_string();
+    let metadata = history::load_metadata("s1", &workspace).expect("meta");
+    assert!(
+        metadata["onceMessage"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("压缩已排队"),
+        "got {metadata}"
+    );
     assert!(
         !history::load_messages("s1", &workspace)
             .iter()
@@ -2827,11 +2859,14 @@ fn abort_with_pending_tool_uses_backfills_tool_results_and_reports_interruption(
     assert_eq!(blocks[0]["exit_code"], -1);
     assert_eq!(blocks[0]["is_canceled"], true);
 
-    // `*User Interrupted*`：UI 事件带 once 标记；不落盘（specs/014-once-notification-message）
+    // `*User Interrupted*`：UI 事件带 once 标记；记 meta.json 的 `onceMessage`，
+    // 不落 jsonl（`docs/hosts/webview-ui.md` 第 11 节）
     let message = harness.sink.event_of("message").expect("interrupted message");
     assert_eq!(message["data"]["role"], "system");
     assert_eq!(message["data"]["content"], "*User Interrupted*");
     assert_eq!(message["data"]["once"], true);
+    let metadata = history::load_metadata("s1", &workspace).expect("meta");
+    assert_eq!(metadata["onceMessage"]["content"], "*User Interrupted*");
     assert!(
         !messages
             .iter()
@@ -3063,9 +3098,14 @@ fn abort_during_the_tool_loop_skips_the_next_llm_round() {
         .find(|event| event["data"]["role"] == "system")
         .expect("interrupted system message");
     assert_eq!(system["data"]["content"], "*User Interrupted*");
-    // 一次性通知（specs/014）：UI 事件带 once 标记，不落盘
+    // 一次性通知：UI 事件带 once 标记；记 meta.json 的 `onceMessage`，不落 jsonl
+    // （`docs/hosts/webview-ui.md` 第 11 节）
     assert_eq!(system["data"]["once"], true);
     let workspace = sandbox.workspace.to_string_lossy().to_string();
+    assert_eq!(
+        history::load_metadata("s1", &workspace).expect("meta")["onceMessage"]["content"],
+        "*User Interrupted*"
+    );
     assert!(
         !history::load_messages("s1", &workspace)
             .iter()
@@ -3126,9 +3166,14 @@ fn abort_during_tool_execution_reports_interruption() {
         .find(|event| event["data"]["role"] == "system")
         .expect("interrupted system message");
     assert_eq!(system["data"]["content"], "*User Interrupted*");
-    // 一次性通知（specs/014）：UI 事件带 once 标记，不落盘
+    // 一次性通知：UI 事件带 once 标记；记 meta.json 的 `onceMessage`，不落 jsonl
+    // （`docs/hosts/webview-ui.md` 第 11 节）
     assert_eq!(system["data"]["once"], true);
     let workspace = sandbox.workspace.to_string_lossy().to_string();
+    assert_eq!(
+        history::load_metadata("s1", &workspace).expect("meta")["onceMessage"]["content"],
+        "*User Interrupted*"
+    );
     assert!(
         !history::load_messages("s1", &workspace)
             .iter()
