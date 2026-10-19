@@ -11,8 +11,8 @@
  *
  * 步骤（每个目标）：
  * 1. Core 产物就位检查：`resources/core/<dir>/` 缺失时先跑
- *    `node scripts/build-core.mjs --target <triple>`（arm64-win32 不在默认打包集合
- *    PACKAGE_DIRS 里，这里按需补建）；
+ *    `node scripts/build-core.mjs --target <triple>`（四个目标都在默认打包集合
+ *    PACKAGE_DIRS 里，默认 `npm run build:core` 已建齐；这里按需补建兜住单目标场景）；
  * 2. TUI 二进制：`cargo build --release --target <triple>`（cwd 必须在 tui-rs：
  *    musl 的 rust-lld 配置在 tui-rs/.cargo/config.toml）——增量构建，产物已最新
  *    时近乎免费，不做「产物在就跳过」的检查（旧二进制会被静默嵌入）；
@@ -176,7 +176,7 @@ function run(command, args, cwd, env, strict = true) {
 function buildInstaller(target, strict) {
   const pkgDirName = join('resources', project.core.resourceDir, target.dir);
 
-  // 1. Core 产物（缺则按目标补建；arm64-win32 不在默认打包集合，须显式目标构建）
+  // 1. Core 产物（缺则按目标补建；默认打包集合已含四个目标，这里兜住单目标场景）
   if (!coreArtifactsReady(target)) {
     console.log(`[build-tui-installer] ${pkgDirName} 产物缺失，先构建 Core（${target.triple}）…`);
     const built = run('node', [join(repoRoot, 'scripts', 'build-core.mjs'), '--target', target.triple], repoRoot, undefined, strict);

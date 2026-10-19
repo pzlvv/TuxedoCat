@@ -21,7 +21,7 @@
  * 这里按配置重命名后落位。
  *
  * 默认构建的是**打包要携带的全部目标**（`PACKAGE_DIRS`），不是只建当前平台：
- * 只建当前平台时，打包会静默带上一次构建的旧 Linux 产物（docs/core/standalone-core.md 第 3.3 节）。矩阵里其余一项为预留：目标三元组已登记，装好对应 target 即可构建。
+ * 只建当前平台时，打包会静默带上一次构建的旧产物（docs/core/standalone-core.md 第 3.3 节）。
  */
 
 import { spawnSync } from 'node:child_process';
@@ -61,8 +61,9 @@ export const TARGETS = [
  *
  * 这是**唯一一份**平台列表：`scripts/verify-core-artifacts.mjs` 直接 import 它，
  * 不再各写一遍，免得「构建的」与「校验的」漂移（docs/core/standalone-core.md 第 3.3 节）。
+ * 四个目标都进包：VSIX / 安装包按运行平台选目录，缺任何一份都会让对应平台拿到旧产物。
  */
-export const PACKAGE_DIRS = ['x64-win32', 'x64-linux', 'arm64-linux'];
+export const PACKAGE_DIRS = ['x64-win32', 'arm64-win32', 'x64-linux', 'arm64-linux'];
 
 // ==================== 构建指纹（docs/core/standalone-core.md 第 3.4 节）====================
 

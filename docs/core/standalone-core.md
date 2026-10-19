@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-18
+last_reviewed: 2026-10-20
 ---
 
 # 规格：Standalone Core（Rust）
@@ -35,8 +35,8 @@ last_reviewed: 2026-10-18
    载荷字段逐项确定。
 3. **独立进程**：Core 是独立的可执行文件，承载 core 侧全部职责
    （引擎、工具、历史、MCP 子进程、技能）。
-5. **平台范围**：当前产出 Windows x64 与 Linux x64 / arm64；Windows arm64 可构建
-   （`--target` / `npm run build:core:win32-arm64` 或 TUI 安装器按需补建），不进默认打包集合。
+4. **平台范围**：产出 Windows x64 / arm64 与 Linux x64 / arm64 四个目标，全部属于默认打包
+   集合（`PACKAGE_DIRS`）；单独重建用 `--target` / `npm run build:core:win32-arm64`。
 5. **一条帧通道**：UI 与 Core 之间只有一条双向帧通道；UI 为客户端，Core 为服务端。
 6. **一个工作区一个 Core 进程**：每个打开的工作区对应一个 Core 进程；一个 Core 进程只服务
    它的 Connection（[docs/core/client-connection.md 第 5 节](client-connection.md#5-connection-生命周期)）。
@@ -127,7 +127,7 @@ Core 进程承载的 core 侧业务：
 | 平台 | 架构 | 目标三元组 | 产物目录（`<core.resourceDir>` = `core`） | 状态 |
 | --- | --- | --- | --- | --- |
 | Windows | x64 | `x86_64-pc-windows-msvc` | `resources/core/x64-win32/` | 产出 |
-| Windows | arm64 | `aarch64-pc-windows-msvc` | `resources/core/arm64-win32/` | 可构建（不进默认打包集合，见第 3.3 节） |
+| Windows | arm64 | `aarch64-pc-windows-msvc` | `resources/core/arm64-win32/` | 产出（Windows 宿主交叉编译，见第 3.3 节） |
 | Linux | x64 | `x86_64-unknown-linux-musl` | `resources/core/x64-linux/` | 产出（静态 musl；Windows 上交叉编译，见第 3.3 节） |
 | Linux | arm64 | `aarch64-unknown-linux-musl` | `resources/core/arm64-linux/` | 产出（静态 musl；Windows 上交叉编译，见第 3.3 节） |
 
@@ -214,15 +214,15 @@ Linux 产物一律用 **musl**：静态链接、不依赖目标机器的 glibc �
 | Linux arm64 | `aarch64-unknown-linux-musl` | `resources/core/arm64-linux/` |
 
 ```bash
-npm run build:core            # 打包要携带的全部目标（Windows x64 + Linux x64 / arm64）
+npm run build:core            # 打包要携带的全部目标（Windows x64 / arm64 + Linux x64 / arm64）
 npm run build:core:host       # 只建当前平台 / 架构（本地调试用）
 npm run build:core:linux-x64  # 只建 Linux x64（Windows 上就是交叉编译，不需要 WSL）
-npm run build:core:win32-arm64 # 只建 Windows arm64（不进默认打包集合，见下）
+npm run build:core:win32-arm64 # 只建 Windows arm64（打包集合成员，见下）
 ```
 
-`build-core.mjs` 的目标分三档：不带参数时构建 `PACKAGE_DIRS`（打包要携带的 Windows x64 +
-Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只建当前平台 / 架构；`--target <三元组>`
-只建指定目标。本地调试（`dev:electron`、`watch:app` 的 Rust 重建）走 `--host`，不白编 Linux 那份。
+`build-core.mjs` 的目标分三档：不带参数时构建 `PACKAGE_DIRS`（打包要携带的 Windows x64 /
+arm64 + Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只建当前平台 / 架构；`--target <三元组>`
+只建指定目标。本地调试（`dev:electron`、`watch:app` 的 Rust 重建）走 `--host`，不白编交叉编译那几份。
 
 构建的工具链分两段，**都在本机解决**：
 
@@ -243,9 +243,9 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 （`scripts/verify-core-artifacts.mjs`）：产物缺失、比 `core-rs/src/**` 旧、构建指纹与
 源码不一致、或没同步进 `dist/resources/` 都直接报错。平台列表取自构建脚本的
 `PACKAGE_DIRS`，两处不各写一份。
-`build:core` 默认就构建这三个平台，所以打包链不会再漏掉 Linux 那两份；校验仍然拦住
-「改了 Rust 源码没重编」与「`copy-assets` 没跑」——那两种情况会把上一次的旧产物
-静默打进 vsix / 安装包。
+`build:core` 默认就构建这四个平台，所以打包链不会再漏掉任何一份（Linux 两份与 Windows arm64
+都是交叉编译）；校验仍然拦住「改了 Rust 源码没重编」与「`copy-assets` 没跑」——那两种情况
+会把上一次的旧产物静默打进 vsix / 安装包。
 
 预编译 ripgrep（`resources/ripgrep/<arch>-<platform>/`）四个平台取自同一版本的 ripgrep
 官方发布物（15.2.0；Linux 两份为 `unknown-linux-musl` 静态链接），入库前按官方 `.sha256`
@@ -253,10 +253,10 @@ Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只
 （`resources/core/<dir>/ripgrep/`）。
 
 **Windows arm64**：目标与产物目录已登记（矩阵一致性由
-`src/test/corePlatformMatrix.test.ts` 锁定）且可构建（`npm run build:core:win32-arm64`），
-但不在默认打包集合 `PACKAGE_DIRS` 里——打包仍只携带 Windows x64 与 Linux 两份；需要时
-按目标显式构建，TUI 安装器（`scripts/build-tui-installer.mjs`）对 `arm64-win32` 也是
-按需补建 Core 产物。这与[docs/core/standalone-core-boundaries.md 第 4 节](standalone-core-boundaries.md#4-不覆盖范围)「Windows arm64 的常态打包」不属于覆盖范围一致。
+`src/test/corePlatformMatrix.test.ts` 锁定），属于默认打包集合 `PACKAGE_DIRS`——打包携带
+Windows x64 / arm64 与 Linux x64 / arm64 四份，`npm run package` 一次出齐；单独重建用
+`npm run build:core:win32-arm64`。TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物
+的目标仍按需补建 Core，兜住单目标场景。
 
 ### 3.4 构建指纹
 

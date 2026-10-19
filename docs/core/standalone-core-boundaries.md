@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-18
+last_reviewed: 2026-10-20
 ---
 
 # 规格：Core 的边界与验收
@@ -118,7 +118,6 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 
 - 跨机器部署与网络传输；
 - 网络连接断开后的重连（进程崩溃后的重启见 [docs/core/standalone-core.md 第 6.1 节](standalone-core.md#61-崩溃与重启)）；
-- Windows arm64 的常态打包（产物可按需构建，见 [docs/core/standalone-core.md 第 3.3 节](standalone-core.md#33-构建与目标平台)；不进默认打包集合）；
 - UI 侧的界面表现与 webview 协议；
 - daemon 的进程模型与协议（见 `docs/core/core-daemon.md`）；
 - 远程工作区与 endpoint 传输（见 [docs/core/client-connection.md 第 9 节](client-connection.md#9-落盘与恢复宿主侧)）。
@@ -140,6 +139,6 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 9. Core 进程被杀死后，daemon 重启它并恢复接线；未决请求 reject，不静默挂起。
 10. 两个工作区各自拥有一个 Core 进程；其中一个的 Core 崩溃不影响另一个。
 11. 重启次数超过上限时 daemon 停止重启并报告。
-12. 产物目录按平台 / 架构解析，Windows x64 与 Linux x64 / arm64 有实际产物；Windows arm64
-    可按需构建，不进默认打包集合。
+12. 产物目录按平台 / 架构解析，Windows x64 / arm64 与 Linux x64 / arm64 四份都有实际产物，
+    且都进默认打包集合。
 13. `start` 打印监听端口（daemon 留在后台）。

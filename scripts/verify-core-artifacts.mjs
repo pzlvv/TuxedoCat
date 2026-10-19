@@ -5,11 +5,11 @@
  * 为什么需要
  * ----------
  * `vscode:prepublish` 与 `package:app` 里的 `npm run build:core` 会构建打包要携带的
- * 全部平台（`PACKAGE_DIRS`：Windows x64 + Linux x64），Linux 那份在 Windows 上直接
- * 交叉编译（见 `build-core.mjs` 的 `crossToolchainEnv`）。但只要有人用 `--host` /
- * `--target` 单编过、或改了 Rust 源码没重编，`copy-assets` 就会把 `resources/` 里
- * 上一次的旧产物一起打进 vsix 与安装包：打包一路绿灯，Linux 用户却拿到一个认不出
- * 新动作 / 新协议的 core。
+ * 全部平台（`PACKAGE_DIRS`：Windows x64 / arm64 + Linux x64 / arm64），Linux 那份在
+ * Windows 上直接交叉编译（见 `build-core.mjs` 的 `crossToolchainEnv`）。但只要有人用
+ * `--host` / `--target` 单编过、或改了 Rust 源码没重编，`copy-assets` 就会把 `resources/`
+ * 里上一次的旧产物一起打进 vsix 与安装包：打包一路绿灯，用户却拿到一个认不出新动作 /
+ * 新协议的 core。
  *
  * 本脚本卡四件事：
  *   1. `resources/core/<平台>/` 里有可执行文件与自带的 `ripgrep/`（缺失即报错，附带该

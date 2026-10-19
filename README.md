@@ -65,7 +65,7 @@ Core 只有 Rust 一套实现（`core-rs/`），以独立进程形态运行、�
 
 ```bash
 # 构建 Core（产物落在 resources/<core.resourceDir>/<arch>-<platform>/）
-# 默认构建打包要携带的全部平台（x64-win32 / x64-linux / arm64-linux）；只建当前平台用 npm run build:core:host
+# 默认构建打包要携带的全部平台（x64-win32 / arm64-win32 / x64-linux / arm64-linux）；只建当前平台用 npm run build:core:host
 npm run build:core
 
 # 独立运行（帮助 / 版本 / 远程模式）
@@ -156,15 +156,15 @@ npm run package:app:x64
 npm run package:tui:x64
 ```
 
-Standalone 变体的包里要同时有全部三个平台的 core（`x64-win32` / `x64-linux` /
-`arm64-linux`）。`build:core` 默认就构建全部携带目标（Windows 上直接交叉编译 Linux，
-需要 zig，见 [docs/core/standalone-core.md 第 3.3 节](docs/core/standalone-core.md#33-构建与目标平台)），无需先单独构建：
+Standalone 变体的包里要同时有全部四个平台的 core（`x64-win32` / `arm64-win32` /
+`x64-linux` / `arm64-linux`）。`build:core` 默认就构建全部携带目标（Windows 上直接交叉编译
+Linux 与 Windows arm64，需要 zig，见 [docs/core/standalone-core.md 第 3.3 节](docs/core/standalone-core.md#33-构建与目标平台)），无需先单独构建：
 
 ```bash
 npm run package
 ```
 
-打包前会校验这三个 core 产物（`scripts/verify-core-artifacts.mjs`）：缺失、比 Rust 源码旧、
+打包前会校验这四个 core 产物（`scripts/verify-core-artifacts.mjs`）：缺失、比 Rust 源码旧、
 或没同步进 `dist/` 都直接报错，不会把旧 core 静默打进包。
 
 ## Git LFS

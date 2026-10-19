@@ -6,8 +6,8 @@
  * 2. `src/host/standalone/coreBinary.ts` 的 `corePlatformDir()`（运行时定位）；
  * 3. `resources/<core.resourceDir>/<dir>/`（产物落位）。
  *
- * 本文件断言三处两两一致，并把「预留平台尚未产出产物」显式化为一条**允许为空**
- * 的检查（预留平台不产出不是错误，但目录命名与三元组必须已经对得上）。
+ * 本文件断言三处两两一致，并把「交叉编译目标尚未产出产物」（新克隆的仓库还没构建过）
+ * 显式化为一条**允许为空**的检查（不产出不是错误，但目录命名与三元组必须已经对得上）。
  *
  * 运行方式：npm run test:all -- core-platform-matrix
  */
@@ -94,15 +94,16 @@ async function run(): Promise<void> {
 
   // ---------- 打包要携带的平台必须在矩阵内 ----------
   // 这份列表是构建与校验共用的唯一来源（verify-core-artifacts.mjs 直接 import 它），
-  // 这里只断言它没写到矩阵外、且覆盖实际产出的三个平台。
+  // 这里只断言它没写到矩阵外、且覆盖实际产出的四个平台。
   const packageDirs = parsePackageDirs();
   check(`build-core.mjs 登记了打包要携带的平台（实际 ${packageDirs.length}）`, packageDirs.length > 0);
   for (const dir of packageDirs) {
     check(`打包平台 ${dir} 在平台矩阵内`, targets.some((entry) => entry.dir === dir));
   }
   check(
-    '打包平台含 Windows x64 与 Linux x64 / arm64',
+    '打包平台含 Windows x64 / arm64 与 Linux x64 / arm64',
     packageDirs.includes('x64-win32') &&
+      packageDirs.includes('arm64-win32') &&
       packageDirs.includes('x64-linux') &&
       packageDirs.includes('arm64-linux'),
   );
@@ -179,12 +180,15 @@ async function run(): Promise<void> {
   );
 
   // ---------- 产物落位目录 ----------
-  // x64-win32 是开发机一定能构建的那个，必须在；x64-linux 与 arm64-linux 也属于打包
-  // 要携带的平台（`npm run build:core` 默认会一起编，见 docs/core/standalone-core.md 第 3.3 节），
-  // 但交叉编译需要 zig，没装时允许为空；arm64-win32 是预留。「允许为空」不等于允许
-  // 半成品：目录在就必须有产物。「打包要带的产物齐不齐」由 scripts/verify-core-artifacts.mjs
-  // 把关。
-  const alwaysBuilt = new Set(['x64-win32']);
+  // 宿主平台 / 架构那一份必须在：开发机上没建产物就起不了 Core，standalone 系列会静默
+  // skip。其余三个也属于打包要携带的平台（`npm run build:core` 默认会一起编，见
+  // docs/core/standalone-core.md 第 3.3 节），但交叉编译需要 zig，没装 / 新克隆的仓库 /
+  // CI 只建了自己那份时允许为空。「允许为空」不等于允许半成品：目录在就必须有产物。
+  // 「打包要带的产物齐不齐」由 scripts/verify-core-artifacts.mjs 把关。
+  const hostTarget = targets.find(
+    (entry) => entry.platform === process.platform && entry.arch === process.arch,
+  );
+  const alwaysBuilt = new Set(hostTarget ? [hostTarget.dir] : []);
   for (const entry of targets) {
     const dir = path.join(repoRoot(), 'resources', CORE_RESOURCE_DIR, entry.dir);
     const binary = path.join(dir, `${CORE_BINARY_NAME}${entry.ext}`);
@@ -197,7 +201,8 @@ async function run(): Promise<void> {
       check(`${entry.dir} 已产出自带的 ripgrep`, fs.existsSync(ripgrep));
       check(`${entry.dir} 已产出构建指纹`, fs.existsSync(fingerprint));
     } else {
-      // 预留平台：目录不存在是预期状态，这里只断言「没有半成品」（有目录就必须有产物）
+      // 交叉编译目标：目录不存在是预期状态（还没构建），这里只断言「没有半成品」
+      // （有目录就必须有产物）
       const hasDir = fs.existsSync(dir);
       check(
         `${entry.dir}（按需构建）没有半成品产物`,
