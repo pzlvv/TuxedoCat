@@ -240,6 +240,10 @@ fn build_test_model_limits(configs: Option<&Value>) -> Value {
             .get("apiType")
             .and_then(Value::as_str)
             .unwrap_or("OpenAI");
+        let multimodal = limits
+            .get("multimodal")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
         out.insert(
             model.clone(),
             json!({
@@ -247,6 +251,7 @@ fn build_test_model_limits(configs: Option<&Value>) -> Value {
                 "output": output,
                 "apiType": api_type,
                 "thinkingTokenBudget": fallback["thinkingTokenBudget"],
+                "multimodal": multimodal,
             }),
         );
     }
@@ -265,6 +270,7 @@ fn test_fallback_limits() -> Value {
         "output": 128 * 1024,
         "apiType": "OpenAI",
         "thinkingTokenBudget": 192 * 1024,
+        "multimodal": true,
     })
 }
 

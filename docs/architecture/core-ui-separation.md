@@ -208,8 +208,10 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
 | `defaultPromptMode` | 新会话默认提示词模式 |
 
 - `provider.modelLimits` 是**按 provider 预解析**的模型限值表，条目含 `context` /
-  `output` / `apiType` / `thinkingTokenBudget`。**内置模型注册表归 UI**：合并规则在 UI 侧
-  执行，Core 只做「查表，查不到用兜底」，不持有注册表、不做模型名匹配。
+  `output` / `apiType` / `thinkingTokenBudget` / `multimodal`。**内置模型注册表归 UI**：
+  合并规则在 UI 侧执行，Core 只做「查表，查不到用兜底」，不持有注册表、不做模型名匹配。
+  `multimodal` 为 `false` 的模型，Core 发送 LLM 请求前过滤全部图片内容
+  （用户消息与工具结果，三种协议一致；过滤只作用于请求副本，落盘记录保留完整图片）。
 - 兜底是全局常量、与 provider 无关，因此放在 `llm` 级而不是每个 provider 一份。
 - `provider.baseURL` **允许为空串**：快照原样携带 provider 表，是否可用由消费方各自判定
   （调 LLM 要求非空；余额查询按 provider key / hostname 匹配，允许没有 baseURL）。

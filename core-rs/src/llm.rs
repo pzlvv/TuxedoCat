@@ -309,6 +309,19 @@ fn stream_fn(
 /// - 流式看门狗超时：独立预算 `DEFAULT_MAX_TIMEOUT_RETRIES`，重试前发 `Reset` 丢弃本轮输出
 /// - 退化重复：独立预算 `DEFAULT_MAX_REPETITION_RETRIES`，重试前发 `Reset` 丢弃本轮输出
 pub fn stream(req: &LlmRequest, emit: &mut dyn FnMut(LlmEvent)) -> Result<(), String> {
+    // 非多模态模型：请求出口过滤全部图片（`specs/012-multimodal-model-filter`）。
+    // 预扫描零克隆：历史里没有图片直接透传；有图片才在副本上过滤，入参
+    // `req.messages` 不改写。单点在协议分发之前，三个协议实现拿到的都已无
+    // 图片块；重试循环复用同一份过滤结果，不做每尝试重算。
+    let filtered;
+    let filtered_req;
+    let req: &LlmRequest = if req.provider.multimodal || !has_images(req.messages) {
+        req
+    } else {
+        filtered = strip_images(req.messages);
+        filtered_req = LlmRequest { messages: &filtered, ..*req };
+        &filtered_req
+    };
     // 网络 / 重复重试共用的次数（对齐 `executeRequest(retryCount)`）
     let mut retry_count: u32 = 0;
     // 退化重复重试计数（与网络错误分开计数，对齐 `repetitionRetryCount`）
@@ -823,6 +836,92 @@ fn stream_error_message(error: &Value) -> String {
     }
     // `JSON.stringify(err)`：数字走 JS 口径
     crate::util::js_json_stringify(error)
+}
+
+/// 消息里是否还有图片块（用户消息的 `image` 块 / `tool_result` content 里的
+/// image 部分）。只读遍历、零克隆：非多模态且无图的历史直接透传原请求，
+/// 不付整树克隆的代价（`specs/012-multimodal-model-filter` 的快路径）。
+fn has_images(messages: &[Value]) -> bool {
+    for message in messages {
+        let Some(Value::Array(blocks)) = message.get("content") else {
+            continue;
+        };
+        for block in blocks {
+            match block.get("type").and_then(Value::as_str) {
+                Some("image") => return true,
+                Some("tool_result") => {
+                    if let Some(Value::Array(parts)) = block.get("content") {
+                        if parts
+                            .iter()
+                            .any(|part| part.get("type").and_then(Value::as_str) == Some("image"))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// 非多模态模型的请求出口过滤：克隆后丢弃用户消息里的 `image` 块与
+/// `tool_result` content 里的 image 部分；过滤清空的消息 / 工具结果补一个
+/// `IMAGE_PLACEHOLDER` 文本占位，保证不发送空内容块（Anthropic 对空 content
+/// 会拒绝）。入参不改写——过滤只作用于副本，会话落盘与历史回显保留完整图片
+/// （`specs/012-multimodal-model-filter` FR-006）。
+fn strip_images(messages: &[Value]) -> Vec<Value> {
+    let mut out = Vec::with_capacity(messages.len());
+    for message in messages {
+        let mut message = message.clone();
+        let Some(Value::Array(blocks)) = message.get_mut("content") else {
+            out.push(message);
+            continue;
+        };
+        let mut kept: Vec<Value> = Vec::with_capacity(blocks.len());
+        for block in blocks {
+            let kind = block.get("type").and_then(Value::as_str).unwrap_or("");
+            if kind == "image" {
+                continue;
+            }
+            if kind == "tool_result" {
+                if let Some(Value::Array(parts)) = block.get("content") {
+                    let has_image = parts
+                        .iter()
+                        .any(|part| part.get("type").and_then(Value::as_str) == Some("image"));
+                    if !has_image {
+                        kept.push(block.clone());
+                        continue;
+                    }
+                    let mut block = block.clone();
+                    let remaining: Vec<Value> = parts
+                        .iter()
+                        .filter(|part| part.get("type").and_then(Value::as_str) != Some("image"))
+                        .cloned()
+                        .collect();
+                    if remaining.is_empty() {
+                        block["content"] =
+                            json!([{ "type": "text", "text": crate::util::IMAGE_PLACEHOLDER }]);
+                    } else {
+                        block["content"] = Value::Array(remaining);
+                    }
+                    kept.push(block);
+                    continue;
+                }
+            }
+            kept.push(block.clone());
+        }
+        // 原本非空、过滤后清空才占位；本来就没有内容的不动
+        if kept.is_empty() && !blocks.is_empty() {
+            message["content"] =
+                json!([{ "type": "text", "text": crate::util::IMAGE_PLACEHOLDER }]);
+        } else {
+            message["content"] = Value::Array(kept);
+        }
+        out.push(message);
+    }
+    out
 }
 
 /// `toImagePart`：内部 image block → Chat Completions 的 `image_url` part。

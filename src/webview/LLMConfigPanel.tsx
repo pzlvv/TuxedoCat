@@ -11,11 +11,13 @@ import { t } from './i18n';
 import { uiFontSizePx, type UiFontSize } from './fontSize';
 import { Icon } from './Icon';
 
-/** 一个模型的草稿（模型名 + 该模型使用的 API 协议） */
+/** 一个模型的草稿（模型名 + 该模型使用的 API 协议 + 多模态开关） */
 interface ModelDraft {
   name: string;
   /** Responses | OpenAI | Anthropic */
   apiType: string;
+  /** 「多模态」checkbox：非多模态模型的 LLM 请求会过滤全部图片（specs/012-multimodal-model-filter） */
+  multimodal: boolean;
 }
 
 /** 一个 Provider 草稿（对应设置页里的一个 tab） */
@@ -67,7 +69,7 @@ interface LLMConfigPanelProps {
     apiKey: string;
     models?: string[];
     defaultModel?: string;
-    modelConfigs?: Record<string, { context?: number; output?: number; apiType?: string }>;
+    modelConfigs?: Record<string, { context?: number; output?: number; apiType?: string; multimodal?: boolean }>;
   }>;
   /** settings.json 的 llm.activeProvider；未配置时为空串 */
   initialActiveProvider: string;
@@ -224,13 +226,14 @@ const mergeFetchedModels = (
   for (const m of p.models) {
     const name = m.name.trim();
     if (!name) continue;
-    byName.set(name, { name, apiType: m.apiType });
+    byName.set(name, { name, apiType: m.apiType, multimodal: m.multimodal });
   }
   for (const name of models) {
     const detectedType = detected[name] || '';
     const existing = byName.get(name);
     if (!existing) {
-      byName.set(name, { name, apiType: detectedType });
+      // 自动获取的新模型默认勾选「多模态」
+      byName.set(name, { name, apiType: detectedType, multimodal: true });
     } else if (!existing.apiType && detectedType) {
       // 已有但尚未配置协议的模型：补上探测结果
       byName.set(name, { ...existing, apiType: detectedType });
@@ -247,7 +250,7 @@ const mergeFetchedModels = (
 /** 由 settings.json 的 models + modelConfigs 还原出模型草稿列表 */
 const buildModelDrafts = (
   models: unknown,
-  modelConfigs?: Record<string, { apiType?: string }> | null,
+  modelConfigs?: Record<string, { apiType?: string; multimodal?: boolean }> | null,
 ): ModelDraft[] => {
   if (!Array.isArray(models)) return [];
   const seen = new Set<string>();
@@ -257,7 +260,12 @@ const buildModelDrafts = (
     const name = raw.trim();
     if (!name || seen.has(name)) continue;
     seen.add(name);
-    drafts.push({ name, apiType: normalizeModelApiType(modelConfigs?.[name]?.apiType) });
+    drafts.push({
+      name,
+      apiType: normalizeModelApiType(modelConfigs?.[name]?.apiType),
+      // 快照里的 multimodal 是已解析值（载荷来自 settingsRead），缺省按开启
+      multimodal: modelConfigs?.[name]?.multimodal !== false,
+    });
   }
   return drafts;
 };
@@ -500,7 +508,9 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       return p.baseURL !== init.baseURL
         || p.apiKey !== init.apiKey
         || currentModels.length !== initModels.length
-        || currentModels.some((m, idx) => m.name !== initModels[idx].name || m.apiType !== initModels[idx].apiType)
+        || currentModels.some((m, idx) => m.name !== initModels[idx].name
+          || m.apiType !== initModels[idx].apiType
+          || m.multimodal !== initModels[idx].multimodal)
         || p.defaultModel !== init.defaultModel;
     });
   const isDirty =
@@ -566,7 +576,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   const handleAddModel = () => {
     if (!activeProvider) return;
     updateProvider(activeProvider.id, {
-      models: [...activeProvider.models, { name: '', apiType: UNCONFIGURED_MODEL_API_TYPE }],
+      models: [...activeProvider.models, { name: '', apiType: UNCONFIGURED_MODEL_API_TYPE, multimodal: true }],
     });
     setModelError(null);
   };
@@ -578,6 +588,18 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     });
     setModelError(null);
   };
+
+  /**
+   * 修改单个模型的多模态勾选。显式接收 providerId：与 `handleModelApiTypeChange`
+   * 同一写法，保证 onChange 引用稳定并避免误改其它服务商。
+   */
+  const handleModelMultimodalChange = React.useCallback((providerId: string, index: number, multimodal: boolean) => {
+    setProviders((prev) => prev.map((p) => {
+      if (p.id !== providerId) return p;
+      const models = p.models.map((m, i) => (i === index ? { ...m, multimodal } : m));
+      return { ...p, models };
+    }));
+  }, []);
 
   const handleSetDefaultModel = (model: string) => {
     if (!activeProvider || !model.trim()) return;
@@ -657,6 +679,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       apiKey: string;
       models: string[];
       modelApiTypes: Record<string, string>;
+      modelMultimodal: Record<string, boolean>;
       defaultModel: string;
     }> = [];
     for (const p of providers) {
@@ -667,14 +690,17 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       if (!key) continue;
       const models: string[] = [];
       const modelApiTypes: Record<string, string> = {};
+      const modelMultimodal: Record<string, boolean> = {};
       for (const m of p.models) {
         const name = m.name.trim();
         if (!name || models.includes(name)) continue;
         models.push(name);
         // 只有显式配置/探测出协议的模型才写入；未探测的留空，下次自动获取继续探测
         if (m.apiType) modelApiTypes[name] = m.apiType;
+        // 多模态勾选每个模型都显式上送（默认勾选，取消勾选后保存 false）
+        modelMultimodal[name] = m.multimodal;
       }
-      payload.push({ key, baseURL, apiKey, models, modelApiTypes, defaultModel: p.defaultModel.trim() });
+      payload.push({ key, baseURL, apiKey, models, modelApiTypes, modelMultimodal, defaultModel: p.defaultModel.trim() });
     }
     return payload;
   };
@@ -1388,7 +1414,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                           key={index}
                           style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}
                         >
-                          {/* 模型名：宽度收窄，腾出位置给右侧的协议选择 */}
+                          {/* 模型名：radio 即默认标识，不再渲染「默认」后缀覆盖层 */}
                           <div style={{ position: 'relative', flex: '1 1 150px', minWidth: 0 }}>
                             <input
                               type="text"
@@ -1398,28 +1424,58 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                               title={modelName}
                               style={{
                                 ...inputStyle,
-                                paddingRight: isDefault ? 52 : 12,
+                                paddingRight: 12,
                               }}
                               onFocus={(e) => { e.target.style.borderColor = colors.harness; }}
                               onBlur={(e) => { e.target.style.borderColor = colors.border; }}
                             />
-                            {isDefault && (
-                              <span
-                                className="ui-fs-11"
-                                style={{
-                                  position: 'absolute',
-                                  right: 8,
-                                  top: '50%',
-                                  transform: 'translateY(-50%)',
-                                  color: colors.textSystem,
-                                  pointerEvents: 'none',
-                                  whiteSpace: 'nowrap',
-                                }}
-                              >
-                                {t('llmConfig.defaultModelSuffix')}
-                              </span>
-                            )}
                           </div>
+                          {/* 默认模型 radio：组按 provider 区分，选中即设为默认模型 */}
+                          <input
+                            type="radio"
+                            name={`default-model-${activeProvider.id}`}
+                            checked={isDefault}
+                            onChange={() => handleSetDefaultModel(modelName)}
+                            disabled={!modelName.trim()}
+                            title={t('llmConfig.setDefaultModel')}
+                            style={{
+                              flexShrink: 0,
+                              width: 15,
+                              height: 15,
+                              margin: 0,
+                              cursor: !modelName.trim() ? 'not-allowed' : 'pointer',
+                              accentColor: colors.harness,
+                            }}
+                          />
+                          {/* 该模型的多模态开关：关闭后发送 LLM 请求时过滤全部图片 */}
+                          <label
+                            title={t('llmConfig.modelMultimodalTitle')}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              flexShrink: 0,
+                              cursor: 'pointer',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={model.multimodal}
+                              onChange={(e) => handleModelMultimodalChange(activeProvider.id, index, e.target.checked)}
+                              style={{
+                                flexShrink: 0,
+                                width: 14,
+                                height: 14,
+                                margin: 0,
+                                cursor: 'pointer',
+                                accentColor: colors.harness,
+                              }}
+                            />
+                            <span className="ui-fs-11" style={{ color: colors.textSystem }}>
+                              {t('llmConfig.modelMultimodal')}
+                            </span>
+                          </label>
                           {/* 该模型的 API 协议 */}
                           <ApiTypeSelect
                             value={model.apiType}
@@ -1429,26 +1485,6 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                             colors={colors}
                             isDark={isDark}
                           />
-                          <button
-                            type="button"
-                            onClick={() => handleSetDefaultModel(modelName)}
-                            disabled={!modelName.trim()}
-                            title={t('llmConfig.setDefaultModel')}
-                            style={{
-                              flexShrink: 0,
-                              padding: '6px 10px',
-                              borderRadius: '6px',
-                              border: `1px solid ${colors.border}`,
-                              backgroundColor: 'transparent',
-                              color: colors.textSystem,
-                              fontSize: uiFontSizePx(11),
-                              cursor: !modelName.trim() ? 'not-allowed' : 'pointer',
-                              opacity: !modelName.trim() ? 0.5 : 1,
-                              whiteSpace: 'nowrap',
-                            }}
-                          >
-                            {t('llmConfig.setDefaultModel')}
-                          </button>
                           <button
                             type="button"
                             onClick={() => handleRemoveModel(index)}

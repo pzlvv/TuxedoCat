@@ -30,6 +30,7 @@ export function isPromptPresetId(value: string | undefined): value is PromptPres
 }
 import {
   DEFAULT_API_TYPE,
+  DEFAULT_MODEL_MULTIMODAL,
   FALLBACK_MODEL_PARAMS,
   MODEL_CONFIGS,
   getModelConfig,
@@ -58,6 +59,8 @@ export interface ModelLimits {
   apiType: ApiType;
   /** thinking token 预算 */
   thinkingTokenBudget: number;
+  /** 该模型是否多模态（可携带图片）；false 时 Core 发请求前过滤全部图片 */
+  multimodal: boolean;
 }
 
 /** provider 的规范化配置 */
@@ -139,17 +142,21 @@ const FALLBACK_LIMITS: ModelLimits = {
   output: FALLBACK_MODEL_PARAMS.maxOutputTokens,
   apiType: DEFAULT_API_TYPE,
   thinkingTokenBudget: FALLBACK_MODEL_PARAMS.thinking_token_budget,
+  multimodal: DEFAULT_MODEL_MULTIMODAL,
 };
 
-/** 解析单个模型的限值：注册表匹配 → 用户 context/output 覆盖 → 补 apiType */
+/** 解析单个模型的限值：注册表匹配 → 用户 context/output 覆盖 → 补 apiType 与多模态开关 */
 function resolveModelLimits(model: string, overrides: Record<string, ModelTokenLimits>): ModelLimits {
   const base = getModelConfig(model, overrides);
-  const explicitApiType = model ? overrides[model]?.apiType : undefined;
+  const explicit = model ? overrides[model] : undefined;
+  const explicitApiType = explicit?.apiType;
+  const explicitMultimodal = explicit?.multimodal;
   return {
     context: base.contextWindow,
     output: base.maxOutputTokens,
     apiType: explicitApiType === undefined ? DEFAULT_API_TYPE : normalizeApiType(explicitApiType),
     thinkingTokenBudget: base.thinking_token_budget,
+    multimodal: typeof explicitMultimodal === 'boolean' ? explicitMultimodal : DEFAULT_MODEL_MULTIMODAL,
   };
 }
 
@@ -167,7 +174,7 @@ function normalizeModels(raw: unknown): string[] {
  * 规范化 provider 的 `modelConfigs`（用户覆盖）。
  *
  * 保留口径与 `getModelConfig` 一致：`context` / `output` 只要求是有限数，
- * `apiType` 只要求是字符串；其余字段一律丢弃。
+ * `apiType` 只要求是字符串，`multimodal` 只要求是布尔；其余字段一律丢弃。
  */
 function normalizeModelConfigs(raw: unknown): Record<string, ModelTokenLimits> {
   if (!isPlainObject(raw)) return {};
@@ -184,7 +191,13 @@ function normalizeModelConfigs(raw: unknown): Record<string, ModelTokenLimits> {
     if (typeof limits.apiType === 'string') {
       entry.apiType = normalizeApiType(limits.apiType);
     }
-    if (entry.context !== undefined || entry.output !== undefined || entry.apiType !== undefined) {
+    if (typeof limits.multimodal === 'boolean') {
+      entry.multimodal = limits.multimodal;
+    }
+    if (
+      entry.context !== undefined || entry.output !== undefined
+      || entry.apiType !== undefined || entry.multimodal !== undefined
+    ) {
       out[model] = entry;
     }
   }

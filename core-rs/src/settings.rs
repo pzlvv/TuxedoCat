@@ -38,6 +38,10 @@ pub struct ModelLimits {
     /// thinking token 预算
     #[serde(rename = "thinkingTokenBudget")]
     pub thinking_token_budget: u64,
+    /// 该模型是否多模态（可携带图片）；`false` 时请求出口过滤全部图片
+    /// （`specs/012-multimodal-model-filter`）。缺字段即协议错误，与快照
+    /// 「字段全部必选」同一口径。
+    pub multimodal: bool,
 }
 
 /// provider 的规范化配置

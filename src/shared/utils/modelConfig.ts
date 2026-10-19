@@ -67,14 +67,20 @@ export function normalizeApiType(value: unknown): ApiType {
 
 /**
  * settings.json 中 provider 级 modelConfigs 的单个模型配置。
- * context / output 可覆盖内置注册表；apiType 指定该模型使用的协议。
+ * context / output 可覆盖内置注册表；apiType 指定该模型使用的协议；
+ * multimodal 为 false 时 Core 发送 LLM 请求前过滤全部图片内容。
  */
 export interface ModelTokenLimits {
   context?: number;
   output?: number;
   /** 该模型使用的 API 协议（模型级，替代原先的 provider 级 apiType） */
   apiType?: ApiType;
+  /** 该模型是否多模态（可携带图片）；缺省按开启解析 */
+  multimodal?: boolean;
 }
+
+/** 模型多模态开关的默认值（唯一来源；快照解析与保存链路共用） */
+export const DEFAULT_MODEL_MULTIMODAL = true;
 
 /**
  * 解析某个模型最终生效的 API 协议：
@@ -166,17 +172,19 @@ export function getModelConfig(
 /**
  * 规范化 provider 的模型配置（保存设置时使用）。
  *
- * - 已有且合法的 context/output/apiType 保留，不做覆盖；
+ * - 已有且合法的 context/output/apiType/multimodal 保留，不做覆盖；
  * - 缺失的 context/output 从内置 MODEL_CONFIGS 注册表按模型名匹配补齐，
  *   匹配不到时回退到 FALLBACK_MODEL_PARAMS；
  * - apiType 不会被自动填默认值，只来自 apiTypeOverrides（设置面板）或已有值，
  *   保证「未探测过协议」的模型在下次自动获取时仍会被探测；
+ * - multimodal 按 multimodalOverrides（设置面板）> 已有值 > 默认开启写入；
  * - existing 中不在本次 models 列表里的历史条目也会保留（避免误删用户自定义限值）。
  */
 export function normalizeModelTokenLimits(
   models: string[],
   existing?: Record<string, ModelTokenLimits> | null,
   apiTypeOverrides?: Record<string, ApiType> | null,
+  multimodalOverrides?: Record<string, boolean> | null,
 ): Record<string, ModelTokenLimits> {
   const result: Record<string, ModelTokenLimits> = {};
   // 只有正数才视为「已存在」的限值，0/负数/非数字都按缺失处理
@@ -190,7 +198,11 @@ export function normalizeModelTokenLimits(
     if (isValidLimit(limits.context)) entry.context = limits.context;
     if (isValidLimit(limits.output)) entry.output = limits.output;
     if (limits.apiType !== undefined) entry.apiType = normalizeApiType(limits.apiType);
-    if (entry.context !== undefined || entry.output !== undefined || entry.apiType !== undefined) {
+    if (typeof limits.multimodal === 'boolean') entry.multimodal = limits.multimodal;
+    if (
+      entry.context !== undefined || entry.output !== undefined
+      || entry.apiType !== undefined || entry.multimodal !== undefined
+    ) {
       result[model] = entry;
     }
   }
@@ -198,6 +210,7 @@ export function normalizeModelTokenLimits(
   // 2. 为 models 列表中的每个模型补齐缺失的 context/output
   // apiType 只接受显式来源（面板传值 > 已有值），不会自动填充默认值：
   // 未配置 apiType 的模型需要由「自动获取」探测后写入，否则探测会被跳过。
+  // multimodal 多一级兜底：面板未传且已有值缺失时按默认开启写入。
   for (const rawModel of models) {
     const model = typeof rawModel === 'string' ? rawModel.trim() : '';
     if (!model) continue;
@@ -212,6 +225,14 @@ export function normalizeModelTokenLimits(
       entry.apiType = normalizeApiType(overrideType);
     } else if (current.apiType !== undefined) {
       entry.apiType = current.apiType;
+    }
+    const overrideMultimodal = multimodalOverrides?.[model];
+    if (typeof overrideMultimodal === 'boolean') {
+      entry.multimodal = overrideMultimodal;
+    } else if (typeof current.multimodal === 'boolean') {
+      entry.multimodal = current.multimodal;
+    } else {
+      entry.multimodal = DEFAULT_MODEL_MULTIMODAL;
     }
     result[model] = entry;
   }

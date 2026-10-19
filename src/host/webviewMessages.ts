@@ -484,7 +484,7 @@ export type HostToWebviewMessage = {
     apiKey: string;
     models?: string[];
     defaultModel?: string;
-    modelConfigs?: Record<string, { context?: number; output?: number; apiType?: string }>;
+    modelConfigs?: Record<string, { context?: number; output?: number; apiType?: string; multimodal?: boolean }>;
   }>;
   /** settings.json 的 llm.activeProvider */
   activeProvider?: string;
@@ -548,6 +548,8 @@ export interface SaveLlmConfigProvider {
   models?: string[];
   /** 模型名 -> apiType（Responses | OpenAI | Anthropic） */
   modelApiTypes?: Record<string, string>;
+  /** 模型名 -> 是否多模态（设置面板「多模态」checkbox 的勾选态） */
+  modelMultimodal?: Record<string, boolean>;
   defaultModel?: string;
 }
 

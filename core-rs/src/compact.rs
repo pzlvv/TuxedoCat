@@ -203,7 +203,7 @@ fn format_content_blocks(blocks: &[Value]) -> String {
                                     .and_then(Value::as_str)
                                     .unwrap_or("")
                                     .to_string(),
-                                Some("image") => "[Image]".to_string(),
+                                Some("image") => util::IMAGE_PLACEHOLDER.to_string(),
                                 _ => util::js_string(part),
                             },
                             None => util::js_string(part),
@@ -216,7 +216,7 @@ fn format_content_blocks(blocks: &[Value]) -> String {
                 };
                 format!("[Tool Result]: {result_content}")
             }
-            "image" => "[Image]".to_string(),
+            "image" => util::IMAGE_PLACEHOLDER.to_string(),
             _ => {
                 if let Some(source) = object.get("source").and_then(Value::as_object) {
                     match source.get("file_path").and_then(Value::as_str) {

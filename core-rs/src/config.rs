@@ -351,6 +351,9 @@ pub struct ProviderConfig {
     /// 联网搜索生效值（会话覆盖优先，缺省回 `llm.webSearch`）：
     /// 决定 WebSearch / WebFetch 两个工具是否注入本轮工具清单
     pub web_search: bool,
+    /// 该模型是否多模态；`false` 时 `llm::stream` 在请求出口过滤全部图片
+    /// （`specs/012-multimodal-model-filter`）
+    pub multimodal: bool,
 }
 
 /// 输出上限的绝对上限（对齐 `MAX_OUTPUT_TOKENS_UPPER_LIMIT`）
@@ -475,6 +478,7 @@ pub fn resolve_provider(
         thinking_effort: llm.thinking_effort.clone(),
         context_window: limits.context as u32,
         web_search: llm.web_search,
+        multimodal: limits.multimodal,
     })
 }
 

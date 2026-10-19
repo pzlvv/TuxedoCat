@@ -26,6 +26,7 @@ fn provider() -> ProviderConfig {
         thinking_effort: "high".to_string(),
         context_window: 1024 * 1024,
         web_search: false,
+        multimodal: true,
     }
 }
 

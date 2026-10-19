@@ -80,6 +80,7 @@ fn minimal_snapshot() -> Value {
                 "output": 8,
                 "apiType": "OpenAI",
                 "thinkingTokenBudget": 7,
+                "multimodal": true,
             }
         },
         "mcp": { "enabled": [] },

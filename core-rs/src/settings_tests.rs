@@ -25,6 +25,7 @@ fn sample_snapshot() -> Value {
                             "output": 100,
                             "apiType": "Responses",
                             "thinkingTokenBudget": 50,
+                            "multimodal": true,
                         }
                     }
                 }
@@ -34,6 +35,7 @@ fn sample_snapshot() -> Value {
                 "output": 8,
                 "apiType": "OpenAI",
                 "thinkingTokenBudget": 7,
+                "multimodal": true,
             }
         },
         "mcp": { "enabled": ["s1"] },
@@ -118,6 +120,16 @@ fn missing_or_invalid_fields_are_protocol_errors() {
     let event = host_environment(broken, json!([]));
     let err = apply_from_host_environment(&event).expect_err("missing fallback");
     assert!(err.contains("modelLimitsFallback"), "{err}");
+
+    // 快照内部缺字段（`modelLimits` 条目的 `multimodal`，specs/012-multimodal-model-filter）
+    let mut broken = sample_snapshot();
+    broken["llm"]["providers"]["p"]["modelLimits"]["m1"]
+        .as_object_mut()
+        .unwrap()
+        .remove("multimodal");
+    let event = host_environment(broken, json!([]));
+    let err = apply_from_host_environment(&event).expect_err("missing multimodal");
+    assert!(err.contains("multimodal"), "{err}");
 
     // 失败的写入不留下半份快照
     assert!(!has_settings_snapshot());

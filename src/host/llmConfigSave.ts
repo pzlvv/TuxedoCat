@@ -46,6 +46,8 @@ interface PanelProvider {
   apiKey?: unknown;
   models?: unknown;
   modelApiTypes?: unknown;
+  /** 模型名 -> 是否多模态（设置面板「多模态」checkbox） */
+  modelMultimodal?: unknown;
   defaultModel?: unknown;
 }
 
@@ -95,14 +97,25 @@ export function applyLlmConfigSave(cfg: Record<string, any>, payload: LlmConfigS
           }
         }
       }
-      // modelConfigs：保留已有 context/output/apiType，缺失的 context/output
-      // 从内置注册表匹配补齐；apiType 来自面板（手动选择或自动探测结果）
+      // 面板传来的「模型 -> 多模态」映射（「多模态」checkbox 的勾选态）；
+      // 缺失的模型在 normalizeModelTokenLimits 里按「已有值 > 默认开启」合并
+      const multimodalOverrides: Record<string, boolean> = {};
+      if (raw?.modelMultimodal && typeof raw.modelMultimodal === 'object' && !Array.isArray(raw.modelMultimodal)) {
+        for (const [model, value] of Object.entries(raw.modelMultimodal as Record<string, unknown>)) {
+          if (typeof value === 'boolean') {
+            multimodalOverrides[model] = value;
+          }
+        }
+      }
+      // modelConfigs：保留已有 context/output/apiType/multimodal，缺失的 context/output
+      // 从内置注册表匹配补齐；apiType 来自面板（手动选择或自动探测结果），
+      // multimodal 来自面板 checkbox
       const oldProvider = cfg.llm.providers?.[key];
       const oldModelConfigs: Record<string, ModelTokenLimits> = oldProvider?.modelConfigs
         && typeof oldProvider.modelConfigs === 'object'
         ? oldProvider.modelConfigs
         : {};
-      const modelConfigs = normalizeModelTokenLimits(providerModels, oldModelConfigs, apiTypeOverrides);
+      const modelConfigs = normalizeModelTokenLimits(providerModels, oldModelConfigs, apiTypeOverrides, multimodalOverrides);
       providersMap[key] = {
         baseURL: providerBaseURL,
         apiKey: providerApiKey,

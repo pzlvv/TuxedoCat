@@ -411,6 +411,11 @@ pub fn clamp_output(text: &str, head: usize, tail: usize) -> String {
 /// 及 ResponsesApi 的口径一致）。
 pub const IMAGE_TOKEN_ESTIMATE: u64 = 1_500;
 
+/// 图片被省略时的文本占位：非多模态模型请求过滤清空内容时（`llm.rs` 的
+/// `strip_images`）与历史压缩喂摘要模型时（`compact.rs`）共用同一写法，
+/// 同一语义不发明第二种文本（`specs/012-multimodal-model-filter`）。
+pub const IMAGE_PLACEHOLDER: &str = "[Image]";
+
 /// 判断是否为中日韩 / 全角字符（对齐 `tokenEstimate.ts` 的 `isCjkCode`，
 /// 按 UTF-16 code unit 判断；代理对会被拆成两个非 CJK 单元）。
 fn is_cjk_code(code: u32) -> bool {

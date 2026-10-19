@@ -174,6 +174,30 @@ runTests('settingsSnapshot', async () => {
       && badLimits.llm.providers.p.modelLimits.m.apiType === DEFAULT_API_TYPE,
   );
 
+  // ==================== 多模态开关的解析 ====================
+
+  const multimodal = resolveSettingsSnapshot({
+    llm: {
+      providers: {
+        p: {
+          baseURL: 'https://p',
+          models: ['explicit-off', 'explicit-on', 'default-on', 'bad-value'],
+          modelConfigs: {
+            'explicit-off': { multimodal: false },
+            'explicit-on': { multimodal: true },
+            'bad-value': { multimodal: 'yes' },
+          },
+        },
+      },
+    },
+  });
+  const mp = multimodal.llm.providers.p.modelLimits;
+  check('显式 multimodal: false 生效', mp['explicit-off'].multimodal === false);
+  check('显式 multimodal: true 生效', mp['explicit-on'].multimodal === true);
+  check('未配置的模型按默认开启解析', mp['default-on'].multimodal === true);
+  check('非布尔的 multimodal 按默认开启解析', mp['bad-value'].multimodal === true);
+  check('兜底限值的多模态为默认开启', multimodal.llm.modelLimitsFallback.multimodal === true);
+
   // ==================== mcp.json 解析 ====================
 
   check('mcp.json 根不是对象：空列表', parseMcpServerDefinitions(null).length === 0);

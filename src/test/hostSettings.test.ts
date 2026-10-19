@@ -101,6 +101,10 @@ runTests('hostSettings', async () => {
     (deepseekInfo?.modelConfigs['deepseek-chat']?.context ?? 0) > 0
       && (deepseekInfo?.modelConfigs['deepseek-chat']?.output ?? 0) > 0,
   );
+  check(
+    'modelConfigs 带已解析的多模态开关',
+    typeof deepseekInfo?.modelConfigs['deepseek-chat']?.multimodal === 'boolean',
+  );
 
   // 未配置 activeProvider 时按「未配置」处理
   const unconfigured = resolveSettingsSnapshot({});
@@ -255,6 +259,44 @@ runTests('hostSettings', async () => {
     });
     check('面板的协议映射写进 modelConfigs', cfg.llm.providers['a.example'].modelConfigs.m.apiType === 'Responses');
     check('非法的协议值被忽略', cfg.llm.providers['a.example'].modelConfigs.other === undefined);
+  }
+
+  // 面板传了模型 -> 多模态映射：写进 modelConfigs.multimodal；缺项按已有值/默认合并
+  {
+    const cfg: Record<string, any> = {
+      llm: {
+        providers: {
+          'a.example': {
+            baseURL: 'https://a.example',
+            apiKey: 'k',
+            models: ['kept'],
+            modelConfigs: {
+              kept: { multimodal: false, context: 111 },
+              legacy: { multimodal: false },
+            },
+          },
+        },
+      },
+    };
+    applyLlmConfigSave(cfg, {
+      saveProviders: true,
+      providers: [{
+        baseURL: 'https://a.example',
+        apiKey: 'k',
+        models: ['on', 'off', 'kept', 'defaulted'],
+        modelMultimodal: { on: true, off: false, bogus: 'yes' },
+      }],
+    });
+    const configs = cfg.llm.providers['a.example'].modelConfigs;
+    check(
+      '面板的多模态勾选写进 modelConfigs',
+      configs.on.multimodal === true && configs.off.multimodal === false,
+    );
+    check('非布尔的多模态值被忽略', configs.bogus === undefined);
+    check('未在映射中的模型保留已有 multimodal', configs.kept.multimodal === false);
+    check('已有 context 不被多模态合并破坏', configs.kept.context === 111);
+    check('不在本次模型列表的历史条目保留', configs.legacy.multimodal === false);
+    check('映射缺项且无已有值时按默认开启', configs.defaulted.multimodal === true);
   }
 
   // uiLanguage：只有 UI 消费，不进快照

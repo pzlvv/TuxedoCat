@@ -17,6 +17,7 @@ fn provider(base_url: &str, api_type: &str) -> ProviderConfig {
         thinking_effort: "high".to_string(),
         context_window: 1024 * 1024,
         web_search: false,
+        multimodal: true,
     }
 }
 
@@ -313,6 +314,118 @@ fn chat_messages_split_tool_results_into_tool_role_entries() {
     assert_eq!(out.len(), 2);
     assert_eq!(out[0], json!({ "role": "tool", "tool_call_id": "call_1", "content": "第一行" }));
     assert_eq!(out[1], json!({ "role": "tool", "tool_call_id": "call_2", "content": "第二行" }));
+}
+
+// ==================== 非多模态的请求出口图片过滤（specs/012-multimodal-model-filter） ====================
+
+#[test]
+fn has_images_scans_user_blocks_and_tool_results() {
+    assert!(!has_images(&[]));
+    assert!(!has_images(&[json!({ "role": "user", "content": [{ "type": "text", "text": "x" }] })]));
+    assert!(has_images(&[json!({ "role": "user", "content": [
+        { "type": "image", "source": { "data": "AAAA" } }
+    ] })]));
+    assert!(has_images(&[json!({ "role": "user", "content": [
+        { "type": "tool_result", "tool_use_id": "t1", "content": [
+            { "type": "text", "text": "说明" },
+            { "type": "image", "source": { "data": "AAAA" } }
+        ] }
+    ] })]));
+    // 字符串 content 与空 content 都没有图片
+    assert!(!has_images(&[json!({ "role": "user", "content": "文本" })]));
+    assert!(!has_images(&[json!({ "role": "user", "content": [] })]));
+}
+
+#[test]
+fn strip_images_keeps_text_and_drops_image_blocks() {
+    let messages = vec![
+        json!({ "role": "user", "content": [
+            { "type": "text", "text": "看图" },
+            { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "AAAA" } }
+        ] }),
+        json!({ "role": "assistant", "content": [{ "type": "text", "text": "回复" }] }),
+    ];
+    let original = messages.clone();
+    let stripped = strip_images(&messages);
+    let blocks = stripped[0]["content"].as_array().unwrap();
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0], json!({ "type": "text", "text": "看图" }));
+    assert_eq!(stripped[1], messages[1]);
+    // 入参不被改写（FR-006：过滤只作用于副本）
+    assert_eq!(messages, original);
+    assert!(!has_images(&stripped));
+}
+
+#[test]
+fn strip_images_placeholds_image_only_messages() {
+    let messages = vec![json!({ "role": "user", "content": [
+        { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "AAAA" } }
+    ] })];
+    let stripped = strip_images(&messages);
+    let blocks = stripped[0]["content"].as_array().unwrap();
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0]["type"], "text");
+    assert_eq!(blocks[0]["text"], crate::util::IMAGE_PLACEHOLDER);
+}
+
+#[test]
+fn strip_images_filters_tool_result_parts() {
+    // 图文混合：留文本；纯图：占位
+    let messages = vec![json!({ "role": "user", "content": [
+        { "type": "tool_result", "tool_use_id": "t1", "content": [
+            { "type": "image", "source": { "data": "AAAA" } },
+            { "type": "text", "text": "截图说明" }
+        ] },
+        { "type": "tool_result", "tool_use_id": "t2", "content": [
+            { "type": "image", "source": { "data": "BBBB" } }
+        ] }
+    ] })];
+    let stripped = strip_images(&messages);
+    let mixed = stripped[0]["content"][0]["content"].as_array().unwrap();
+    assert_eq!(mixed.len(), 1);
+    assert_eq!(mixed[0], json!({ "type": "text", "text": "截图说明" }));
+    let only_image = stripped[0]["content"][1]["content"].as_array().unwrap();
+    assert_eq!(only_image.len(), 1);
+    assert_eq!(only_image[0]["type"], "text");
+    assert_eq!(only_image[0]["text"], crate::util::IMAGE_PLACEHOLDER);
+}
+
+#[test]
+fn strip_images_keeps_string_content_and_empty_arrays() {
+    let messages = vec![
+        json!({ "role": "user", "content": "纯文本" }),
+        json!({ "role": "user", "content": [] }),
+    ];
+    let stripped = strip_images(&messages);
+    assert_eq!(stripped[0]["content"], json!("纯文本"));
+    // 本来就空的内容不补占位
+    assert_eq!(stripped[1]["content"], json!([]));
+}
+
+#[test]
+fn filtered_messages_convert_without_image_parts() {
+    // 过滤后的消息经协议转换不再出现图片形态（AC-5）：
+    // Chat Completions 无 image_url、Anthropic 透传格式无 image 块、无 base64 残留
+    let messages = vec![json!({ "role": "user", "content": [
+        { "type": "text", "text": "看图" },
+        { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "AAAA" } },
+        { "type": "tool_result", "tool_use_id": "t1", "content": [
+            { "type": "image", "source": { "data": "BBBB" } }
+        ] }
+    ] })];
+    let stripped = strip_images(&messages);
+
+    let chat = to_chat_messages(&stripped);
+    let serialized = serde_json::to_string(&chat).unwrap();
+    assert!(!serialized.contains("image_url"));
+    assert!(!serialized.contains("AAAA"));
+    assert!(!serialized.contains("BBBB"));
+
+    let anthropic = crate::engine::sanitize_anthropic_messages(&stripped);
+    let serialized = serde_json::to_string(&anthropic).unwrap();
+    assert!(!serialized.contains("\"image\""));
+    assert!(!serialized.contains("AAAA"));
+    assert!(!serialized.contains("BBBB"));
 }
 
 #[test]
