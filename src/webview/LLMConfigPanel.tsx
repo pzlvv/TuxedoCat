@@ -272,9 +272,9 @@ const buildModelDrafts = (
       apiType: normalizeModelApiType(modelConfigs?.[name]?.apiType),
       // 快照里的 multimodal 是已解析值（载荷来自 settingsRead），缺省按开启
       multimodal: modelConfigs?.[name]?.multimodal !== false,
-      // 解析值作为弹层预填与脏检测基线；载荷缺该模型（新名字）时留 undefined = 未碰
-      contextText: modelConfigs?.[name]?.context != null ? String(modelConfigs[name]!.context) : undefined,
-      outputText: modelConfigs?.[name]?.output != null ? String(modelConfigs[name]!.output) : undefined,
+      // 弹层限值文本保持 undefined = 未碰过（specs/013）：只在用户于弹层里应用过
+      // 不同的值时才写入；解析值作为弹层预填由 openModelSettings 从载荷现取，
+      // 不在这里初始化——否则保存载荷会把全部模型当成 touched 逐个钉值。
     });
   }
   return drafts;
@@ -628,15 +628,18 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     const provider = providers.find((p) => p.id === providerId);
     const model = provider?.models[index];
     if (!provider || !model) return;
+    const resolved = initialProviders.find((p) => p.key === providerKeyOf(provider.baseURL))?.modelConfigs?.[model.name.trim()];
+    const resolvedContext = resolved?.context != null ? String(resolved.context) : '';
+    const resolvedOutput = resolved?.output != null ? String(resolved.output) : '';
     setModelSettings({
       providerId,
       index,
       name: model.name,
       multimodal: model.multimodal,
-      contextText: model.contextText ?? '',
-      outputText: model.outputText ?? '',
-      origContextText: model.contextText ?? '',
-      origOutputText: model.outputText ?? '',
+      contextText: model.contextText ?? resolvedContext,
+      outputText: model.outputText ?? resolvedOutput,
+      origContextText: model.contextText ?? resolvedContext,
+      origOutputText: model.outputText ?? resolvedOutput,
     });
   };
 

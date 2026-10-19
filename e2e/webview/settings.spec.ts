@@ -159,14 +159,16 @@ test('US-23 模型设置弹层：非法限值保存被拦下', async () => {
   const { page, host } = handle;
   await openSettings(page);
 
-  await openModelSettings(page);
-  await page.getByPlaceholder('1024000').fill('abc');
-  await page.getByRole('button', { name: '应用', exact: true }).click();
+  // 三种非法形态（0 / 负数 / 非数字）逐一拦下：错误提示带模型名，saveLLMConfig 不发出
+  for (const invalid of ['0', '-5', 'abc']) {
+    await openModelSettings(page);
+    await page.getByPlaceholder('1024000').fill(invalid);
+    await modelSettingsPopup(page).getByRole('button', { name: '应用', exact: true }).click();
 
-  await page.getByRole('button', { name: '保存', exact: true }).click();
-  // 错误提示带模型名；saveLLMConfig 不发出（不写盘）
-  await expect(page.getByText('模型 mock-model 的 Context / Output 必须是正整数')).toBeVisible();
-  await expect(page.locator('h1', { hasText: '设置' })).toBeVisible();
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(page.getByText('模型 mock-model 的 Context / Output 必须是正整数')).toBeVisible();
+    await expect(page.locator('h1', { hasText: '设置' })).toBeVisible();
+  }
   const saves = (await host.sentAll()).filter((m) => m.type === 'saveLLMConfig');
   expect(saves).toHaveLength(0);
 });
