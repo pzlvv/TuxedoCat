@@ -3189,3 +3189,90 @@ fn grep_failure_matches_node_exec_file_message() {
     );
     assert!(actual.contains("regex parse error"), "got {actual}");
 }
+
+/// 中止必须终止**整棵进程树**
+/// （`specs/defects/bash-abort-does-not-kill-process-tree.md`）。
+///
+/// Windows 上 `bash.exe` 可能是启动器：只 `child.kill()` 杀启动器，真正的 shell
+/// 与命令继续跑，`sleep 3 && touch late.marker` 的标记文件在 abort 之后仍会出现。
+#[test]
+fn bash_abort_kills_the_whole_process_tree() {
+    let sandbox = Sandbox::new("tools-bash-abort-kills-tree");
+    let mut ctx = context(&sandbox);
+    // 1.2s 而不是 200ms：取消死线必须留给 Git Bash 启动的余量
+    // （同 bash_interrupted_with_output_appends_the_marker）。
+    ctx.cancel = Some(cancel_after(1200));
+    let outcome = execute("Bash", &json!({ "command": "sleep 3 && touch late.marker" }), &ctx);
+    assert!(
+        text(&outcome).contains("Command was interrupted"),
+        "got {}",
+        text(&outcome)
+    );
+    // 等过命令的自然结束点：中止后命令不得继续执行
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert!(
+        !sandbox.workspace.join("late.marker").exists(),
+        "中止后命令仍在继续执行（孙进程未被终止）"
+    );
+}
+
+/// 中止之后不得再上报该工具的进度
+/// （`specs/defects/bash-abort-does-not-kill-process-tree.md`）。
+///
+/// 工具结果已按「被中断」定稿，迟到的 `toolProgress` 会让 UI 把已结束的卡片
+/// 刷成命令的真实输出。
+#[test]
+fn bash_abort_stops_reporting_progress_after_the_result() {
+    let sandbox = Sandbox::new("tools-bash-abort-late-progress");
+    let mut ctx = context(&sandbox);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = std::sync::Arc::clone(&seen);
+    ctx.on_progress = Some(std::sync::Arc::new(move |progress: BashProgress| {
+        sink.lock().unwrap().push(progress.full_output);
+    }));
+    ctx.cancel = Some(cancel_after(1200));
+    let outcome = execute("Bash", &json!({ "command": "sleep 3 && echo done" }), &ctx);
+    assert!(
+        text(&outcome).contains("Command was interrupted"),
+        "got {}",
+        text(&outcome)
+    );
+    let before = seen.lock().unwrap().len();
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    // 先克隆再断言：assert_eq! 的临时 guard 存活到整条语句结束，
+    // 消息里再 lock 同一把锁会自死锁。
+    let after = seen.lock().unwrap().clone();
+    assert_eq!(after.len(), before, "工具结果之后仍上报了进度：{after:?}");
+}
+
+/// 后台任务中止同样终止整棵进程树
+/// （`specs/defects/bash-abort-does-not-kill-process-tree.md`）。
+///
+/// 与前台中止共用 `bash_task::kill_tree`（顺序为先 `taskkill` 后 `child.kill()`）：
+/// 护栏用例，锁住「中止后台任务不留孤儿命令」这一既有行为。
+#[test]
+fn background_task_abort_kills_the_whole_process_tree() {
+    let sandbox = Sandbox::new("tools-bash-bg-abort-kills-tree");
+    let ctx = context(&sandbox);
+    let outcome = execute(
+        "Bash",
+        &json!({
+            "command": "sleep 3 && touch late.marker",
+            "run_in_background": true,
+            "description": "bg tree kill",
+        }),
+        &ctx,
+    );
+    assert!(
+        text(&outcome).contains("background with ID:"),
+        "后台任务应立刻返回 taskId，got {}",
+        text(&outcome)
+    );
+    assert_eq!(crate::bash_task::abort_tasks_for_session("s-tools"), 1);
+    // 等过命令的自然结束点：中止后命令不得继续执行
+    std::thread::sleep(std::time::Duration::from_millis(3500));
+    assert!(
+        !sandbox.workspace.join("late.marker").exists(),
+        "后台任务中止后命令仍在继续执行（孙进程未被终止）"
+    );
+}

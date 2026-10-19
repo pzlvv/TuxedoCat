@@ -1086,6 +1086,9 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         Ok(child) => child,
         Err(err) => return ToolOutcome::Error(format!("Bash: spawn failed: {err}")),
     };
+    // 进程树终止的根 PID：Windows 上 `bash.exe` 可能是启动器，只杀直接子进程
+    // 会让真正的 shell 与命令继续跑（`specs/defects/bash-abort-does-not-kill-process-tree.md`）。
+    let pid = child.id();
 
     // 必须与子进程并发读取 stdout / stderr：否则输出超过管道缓冲区时子进程阻塞在
     // write，父进程又等它退出，双方互等（大输出命令如 `git log` / `ls -R` 会挂到超时）。
@@ -1164,7 +1167,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         let child_exited = match child.try_wait() {
             Ok(status) => status.is_some(),
             Err(err) => {
-                let _ = child.kill();
+                crate::bash_task::kill_tree(&mut child, pid);
                 crate::bash_task::off_task_completed(bg_subscription);
                 crate::subagent::off_reply_delivered(reply_subscription);
                 unregister_manual_bg(ctx.tool_use_id.as_deref());
@@ -1184,11 +1187,12 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         }
         // 会话被中止（`abortRequested`）：按「被中断」收尾
         // 。
-        // 子进程还活着就杀掉；子进程已退出、只是孙进程仍持有管道时，停掉读线程、
-        // 用已累积输出收尾——两种情形都要能让 abort 立刻生效。
+        // 子进程还活着就连树一起杀掉（Windows 上 `bash.exe` 可能是启动器，只杀直接
+        // 子进程会让真正的 shell 与命令继续跑）；子进程已退出、只是孙进程仍持有管道时，
+        // 停掉读线程、用已累积输出收尾——两种情形都要能让 abort 立刻生效。
         if cancel_requested(&cancel) {
             if !child_exited {
-                let _ = child.kill();
+                crate::bash_task::kill_tree(&mut child, pid);
             }
             stop_readers.store(true, Ordering::Relaxed);
             cancelled = true;
@@ -1340,7 +1344,9 @@ fn auto_background_command(
         Ok(file) => file,
         Err(error) => {
             let mut child = child;
-            let _ = child.kill();
+            // 与中止同口径：连树一起杀，避免启动器模式下命令继续跑
+            let pid = child.id();
+            crate::bash_task::kill_tree(&mut child, pid);
             let stdout = sink.lock().unwrap().full.clone();
             let stderr = format!(
                 "Command timed out after {elapsed}ms, and failed to open output file for \
@@ -1537,6 +1543,13 @@ fn read_pipe(
                     }
                     full.full.clone()
                 };
+                // 中止 / 超时置位时，已在途的 `read` 仍会返回数据：字节照常计入快照
+                // （中断结果用 `fullOutput` 收尾），但**不再上报进度**——工具结果已经
+                // 发出，迟到的 `toolProgress` 会让 UI 把已结束的卡片当成还在执行
+                // （`specs/defects/bash-abort-does-not-kill-process-tree.md`）。
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
                 if let Some(callback) = &progress {
                     callback(BashProgress {
                         output: chunk,

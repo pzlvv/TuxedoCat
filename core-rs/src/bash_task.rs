@@ -602,8 +602,11 @@ fn handle_finish(task_id: &str, exit_code: i32, hooks: &Option<Hooks>) {
 ///
 /// Windows 上 `Child::kill` 只终止直接子进程；`bash -c "sleep 30"` 的 `sleep` 是
 /// 孙进程，必须用 `taskkill /T` 连树一起杀，否则会留下孤儿进程。
-fn kill_tree(child: &mut Child, pid: u32) {
-    let _ = child.kill();
+///
+/// 顺序是「先 `taskkill` 再 `child.kill()`」：`taskkill /T` 按父 PID 枚举子树，
+/// 根进程先被 `child.kill()` 杀掉后进程对象消失，子树枚举可能落空——命令会带着
+/// 孤儿继续跑（`specs/defects/bash-abort-does-not-kill-process-tree.md`）。
+pub(crate) fn kill_tree(child: &mut Child, pid: u32) {
     #[cfg(windows)]
     {
         let mut cmd = Command::new("taskkill");
@@ -617,6 +620,8 @@ fn kill_tree(child: &mut Child, pid: u32) {
     {
         let _ = pid;
     }
+    // `taskkill` 不可用 / 根进程已退出时的兜底；已退出时返回 Err，忽略即可。
+    let _ = child.kill();
 }
 
 #[cfg(test)]
