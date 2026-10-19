@@ -143,7 +143,7 @@ Electron 的侧栏「关闭」/ 聊天视图顶栏关闭经 `electron/main.ts` �
 
 | 方法 | 行为 |
 | --- | --- |
-| `onMessage` | `postToWebview(addMessage)`；`role === 'user'` 时额外调 `onConversationListChanged()`（消息已进入持久化流程，刷新 `messageCount`） |
+| `onMessage` | `postToWebview(addMessage)`；`role === 'user'` 时额外调 `onConversationListChanged()`（消息已进入持久化流程，刷新 `messageCount`）。载荷的 `once` 标记（一次性通知，specs/014）随 addMessage 透传，时间线的「末位显示、新节点先删」在 webview handler 层执行 |
 | `onStreamMessage` | `role === 'assistant'` 且 `accumulated` 全为空白时直接丢弃；否则 `sessionUi.markText` / `markThinking` → 投递 `streamMessage` |
 | `onStreamEnd` | 投递 `streamEnd`（含 `usage` / `streamId`） |
 | `onToolCall` | `sessionUi.markToolPhase` → `toolHandler.onToolCall` |

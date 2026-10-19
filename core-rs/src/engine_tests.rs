@@ -1060,7 +1060,57 @@ fn run_consumer_reports_turn_failures_as_system_messages() {
     assert!(content.contains("❌ **LLM API Error**"), "got {message}");
     assert!(content.contains("```"), "got {message}");
     assert!(content.contains("settings.json"), "got {message}");
+    // 一次性通知（specs/014）：不落盘，末位显示，后继即删
+    assert_eq!(message["data"]["once"], true);
     assert!(!state.lock().unwrap().running);
+}
+
+#[test]
+fn compact_requested_while_busy_emits_once_notice() {
+    // 会话非空闲时请求压缩：登记「待压缩」并上报一次性提示
+    // （specs/014-once-notification-message：once = true，不落盘）
+    let sandbox = Sandbox::new("engine-compact-queued");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(workspace));
+    let harness = EngineHarness::allow_all();
+
+    {
+        let session = harness.core.session("s1");
+        let mut state = session.lock().unwrap();
+        // 可压缩：边界之后的消息数必须超过保留阈值（30）
+        state.messages.push(json!({
+            "type": "user",
+            "message": { "role": "user", "content": "你好" },
+            "uuid": "u-1",
+        }));
+        for index in 0..31 {
+            state.messages.push(json!({
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": format!("m{index}") }],
+                },
+                "uuid": format!("a-{index}"),
+            }));
+        }
+        state.persisted_count = state.messages.len();
+        // 非空闲：命中「登记待压缩」分支
+        state.running = true;
+    }
+    harness.core.request_compact("s1");
+
+    let message = harness.sink.event_of("message").expect("queued notice");
+    assert!(
+        message["data"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("压缩已排队"),
+        "got {message}"
+    );
+    assert_eq!(message["data"]["once"], true);
+    assert!(compact::is_pending_compact("s1"));
+    // 待压缩标记是进程级静态状态：清理掉，不泄漏给同二进制的其它用例
+    compact::unmark_pending_compact("s1");
 }
 
 // ==================== 完整轮次（假 LLM）====================
@@ -2768,16 +2818,17 @@ fn abort_with_pending_tool_uses_backfills_tool_results_and_reports_interruption(
     assert_eq!(blocks[0]["exit_code"], -1);
     assert_eq!(blocks[0]["is_canceled"], true);
 
-    // `*User Interrupted*`：既有 UI 事件，也落盘
+    // `*User Interrupted*`：UI 事件带 once 标记；不落盘（specs/014-once-notification-message）
     let message = harness.sink.event_of("message").expect("interrupted message");
     assert_eq!(message["data"]["role"], "system");
     assert_eq!(message["data"]["content"], "*User Interrupted*");
+    assert_eq!(message["data"]["once"], true);
     assert!(
-        messages
+        !messages
             .iter()
             .any(|message| message["type"] == "system"
                 && message["content"] == "*User Interrupted*"),
-        "got {messages:?}"
+        "中断提示不得落盘：got {messages:?}"
     );
 }
 
@@ -3003,6 +3054,16 @@ fn abort_during_the_tool_loop_skips_the_next_llm_round() {
         .find(|event| event["data"]["role"] == "system")
         .expect("interrupted system message");
     assert_eq!(system["data"]["content"], "*User Interrupted*");
+    // 一次性通知（specs/014）：UI 事件带 once 标记，不落盘
+    assert_eq!(system["data"]["once"], true);
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    assert!(
+        !history::load_messages("s1", &workspace)
+            .iter()
+            .any(|message| message["type"] == "system"
+                && message["content"] == "*User Interrupted*"),
+        "中断提示不得落盘"
+    );
 }
 
 #[test]
@@ -3056,6 +3117,16 @@ fn abort_during_tool_execution_reports_interruption() {
         .find(|event| event["data"]["role"] == "system")
         .expect("interrupted system message");
     assert_eq!(system["data"]["content"], "*User Interrupted*");
+    // 一次性通知（specs/014）：UI 事件带 once 标记，不落盘
+    assert_eq!(system["data"]["once"], true);
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    assert!(
+        !history::load_messages("s1", &workspace)
+            .iter()
+            .any(|message| message["type"] == "system"
+                && message["content"] == "*User Interrupted*"),
+        "中断提示不得落盘"
+    );
 }
 
 // ==================== 权限请求：允许路径也要上架卡片 ====================

@@ -233,6 +233,11 @@ export interface MessageData {
    * 用户消息留空即视为 `user`。UI 依赖它决定渲染方式与是否参与滚动置顶。
    */
   origin?: MessageOrigin;
+  /**
+   * 一次性通知（specs/014-once-notification-message）：`true` 即通知类消息——
+   * 不落盘、只在时间线末位显示、任何新节点追加前先移除；缺省即常规消息。
+   */
+  once?: boolean;
   /** 用户消息携带的图片（仅用于 UI 展示，LLM 请求使用 content blocks） */
   images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
   /** 消息元信息，如文件引用、agent来源等 */

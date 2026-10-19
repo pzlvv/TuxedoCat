@@ -3,6 +3,7 @@ import { HostToWebviewWire } from '../../../host/webviewMessages';
 import { profileLog } from '../../debug';
 import { createSessionState, ensureSessionStateWithUsage } from '../../sessionState';
 import { beginThinkingStream, endStream, endStreamsForSession, hasStreamStats, updateStreamChars } from '../../streamStatsStore';
+import { stripOnce } from './shared';
 import { postMessage } from '../../webviewEnv';
 
 /**
@@ -238,7 +239,8 @@ export function handleStreamStreamMessage(
                     next = next === prev ? next.slice() : next;
                     next[lastIdx] = { ...next[lastIdx], content: acc, isStreaming: true };
                   } else {
-                    next = next.concat({
+                    // 新建流式节点：先剥除 once 通知（specs/014-once-notification-message 后继即删）
+                    next = stripOnce(next === prev ? prev.slice() : next).concat({
                       role: r as any,
                       content: acc,
                       isStreaming: true,

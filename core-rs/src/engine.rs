@@ -1528,9 +1528,12 @@ impl Core {
                 self.emit(json!({
                     "type": "message",
                     "sessionId": session_id,
+                    // 一次性通知（specs/014-once-notification-message）：不落盘，
+                    // 时间线末位显示，下一轮新节点追加前被移除
                     "data": {
                         "role": "system",
                         "content": "当前会话正在处理中，压缩已排队，将在本轮对话结束后执行。",
+                        "once": true,
                     },
                 }));
             }
@@ -2044,7 +2047,9 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
             core.emit(json!({
                 "type": "message",
                 "sessionId": session_id,
-                "data": { "role": "system", "content": llm_error_message(&error) },
+                // 一次性通知（specs/014-once-notification-message）：不落盘，
+                // 时间线末位显示，下一轮新节点追加前被移除
+                "data": { "role": "system", "content": llm_error_message(&error), "once": true },
             }));
         }
         core.emit_runtime();
@@ -2938,45 +2943,27 @@ fn llm_error_message(error: &str) -> String {
     )
 }
 
-/// 上报并落盘 `*User Interrupted*` 系统消息。
+/// 上报 `*User Interrupted*` 一次性通知（specs/014-once-notification-message）。
 ///
-/// 这条消息既发 UI 事件又落盘：
-/// 因此这里两边都做：UI 事件 + `<sid>.jsonl` 追加一条 `type: "system"`。
-fn emit_user_interrupted(
-    core: &Arc<Core>,
-    session_id: &str,
-    project: &str,
-    state: &Arc<Mutex<SessionState>>,
-) -> Result<(), String> {
+/// 只发 UI 事件（`data.once = true`），不落盘、不进内存消息列表：中断提示是
+/// 「本轮收尾」的瞬时事实，用户看到即可；重开 / 刷新会话不需要重建它，历史里
+/// 也不该出现它（不推进 `last_uuid`，不影响下一轮请求的上下文组装）。
+fn emit_user_interrupted(core: &Arc<Core>, session_id: &str, state: &Arc<Mutex<SessionState>>) {
     // 静默中止（业务主动结束，如 spin 子代理首次 Reply 后停止自身）：
     // 不向 UI 回显中断消息、不落盘系统消息，直接结束：
     // 回显收敛在本函数，一处检查覆盖全部收尾点。
     if state.lock().unwrap().silent_abort {
-        return Ok(());
+        return;
     }
     core.emit(json!({
         "type": "message",
         "sessionId": session_id,
-        "data": { "role": "system", "content": USER_INTERRUPTED_MESSAGE },
+        "data": {
+            "role": "system",
+            "content": USER_INTERRUPTED_MESSAGE,
+            "once": true,
+        },
     }));
-    let message = json!({
-        "type": "system",
-        "content": USER_INTERRUPTED_MESSAGE,
-        "uuid": util::unique_id("system"),
-        "timestamp": util::now_millis(),
-    });
-    // 先把内存里尚未落盘的消息（崩溃恢复补出的 tool_result）补写，保证磁盘顺序
-    persist_unpersisted_messages(core, session_id, project, state)?;
-    let parent = state.lock().unwrap().last_uuid.clone();
-    let uuid = history::append_message(session_id, project, &message, parent.as_deref())?;
-    {
-        let mut state = state.lock().unwrap();
-        state.messages.push(message);
-        state.last_uuid = Some(uuid);
-        state.persisted_count = state.messages.len();
-    }
-    announce_message_appended(core, session_id, project, false);
-    Ok(())
 }
 
 /// 把内存中尚未落盘的消息按顺序补写。
@@ -3362,7 +3349,7 @@ fn run_query_loop(
         // 上一轮工具批收尾之后才到达的中止：
         // 这里在发起请求前拦下，同样上报 `*User Interrupted*`，不再进入下一轮。
         if state.lock().unwrap().cancel.load(Ordering::Relaxed) {
-            emit_user_interrupted(core, session_id, project, state)?;
+            emit_user_interrupted(core, session_id, state);
             return Ok(());
         }
         // 排队消息在**下一次 LLM 请求前**并入上下文：多轮工具调用期间到达的用户消息，
@@ -3726,7 +3713,7 @@ fn run_query_loop(
             // 用户主动取消（abort）导致的失败不是 LLM 故障——上报 `*User Interrupted*` 并正常
             // 结束本轮，而不是把错误文案当 API 失败回显给用户。
             if state.lock().unwrap().cancel.load(Ordering::Relaxed) {
-                emit_user_interrupted(core, session_id, project, state)?;
+                emit_user_interrupted(core, session_id, state);
                 return Ok(());
             }
             return Err(error);
@@ -3803,7 +3790,7 @@ fn run_query_loop(
                     let _ = persist_message(core, session_id, project, state, &result_message)?;
                     announce_message_appended(core, session_id, project, false);
                 }
-                emit_user_interrupted(core, session_id, project, state)?;
+                emit_user_interrupted(core, session_id, state);
             }
             core.emit(json!({ "type": "aiEnd", "sessionId": session_id }));
             return Ok(());
@@ -4192,7 +4179,7 @@ fn run_query_loop(
             // 清掉本轮排队中的用户消息 → 上报 `*User Interrupted*` → 不再回 LLM
             // （该分支不补发 `aiEnd`）。
             state.lock().unwrap().pending_user_message = None;
-            emit_user_interrupted(core, session_id, project, state)?;
+            emit_user_interrupted(core, session_id, state);
             return Ok(());
         }
         // 手工转后台（`UiEvent.bashBackgroundRequested`）：本批工具结果照常进上下文，

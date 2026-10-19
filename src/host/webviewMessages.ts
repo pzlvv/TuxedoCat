@@ -112,6 +112,11 @@ export type HostToWebviewMessage = {
   origin?: MessageOrigin;
   /** 消息元信息，如文件引用、agent来源等 */
   meta?: Record<string, unknown>;
+  /**
+   * 一次性通知（specs/014-once-notification-message）：不落盘、时间线末位显示、
+   * 任何新节点追加前先移除；缺省即常规消息。随 `CoreEvent.message` 的载荷透传。
+   */
+  once?: boolean;
   /** 标记为压缩折叠区域的消息（加载时从 boundary 开始） */
   isCompactCollapsed?: boolean;
   /** 用户消息携带的图片（仅用于 UI 展示，LLM 请求使用 content blocks） */

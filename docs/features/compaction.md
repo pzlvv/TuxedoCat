@@ -48,6 +48,8 @@ last_reviewed: 2026-10-18
 
 UI 发 `UiEvent.compactRequested` → Core 的手动压缩入口；
 会话非空闲（`idle === false`）时登记「待压缩」，在当前轮次结束后执行。
+「压缩已排队」的提示是一次性通知（`message` 事件 `once: true`，specs/014）：
+只提示、不落盘，时间线末位显示、下一条消息出现即消失。
 
 ### FR-003：压缩流程与落盘
 

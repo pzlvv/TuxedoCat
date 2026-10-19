@@ -511,7 +511,8 @@ function markConnectionSessionsFailed(
       connection.emitToUi({
         type: 'message',
         sessionId: state.sessionId,
-        data: { role: 'system', content: reason },
+        // 一次性通知（specs/014-once-notification-message）：不落盘，末位显示，后继即删
+        data: { role: 'system', content: reason, once: true },
       });
       connection.emitToUi({ type: 'queryEnd', sessionId: state.sessionId });
     }

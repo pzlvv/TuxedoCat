@@ -505,10 +505,23 @@ export function toUiMessage(msg: MessageData): Message {
     isCompactSummary: msg.isCompactSummary,
     hasBorder: msg.hasBorder,
     origin: msg.origin,
+    // 一次性通知标记（specs/014-once-notification-message）：随载荷透传
+    once: msg.once,
     images: msg.images,
     meta: msg.meta as Record<string, unknown> | undefined,
     timestamp: Date.now(),
     cacheReadInputTokens: msg.cacheReadInputTokens,
     cacheCreationInputTokens: msg.cacheCreationInputTokens,
   };
+}
+
+/**
+ * 剥除一次性通知节点（specs/014-once-notification-message）。
+ *
+ * 「后继即删」的唯一实现：任何**追加新节点**的入口在追加前先过本函数——时间线至多
+ * 一条 once 且总在末位；就地更新（工具进度 / 参数 / 状态、流式增量）不经过它，
+ * once 节点保留。多数调用点没有 once 节点，原引用返回避免无谓复制。
+ */
+export function stripOnce(messages: Message[]): Message[] {
+  return messages.some((m) => m.once) ? messages.filter((m) => !m.once) : messages;
 }

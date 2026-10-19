@@ -3,7 +3,7 @@ import { HostToWebviewWire } from '../../../host/webviewMessages';
 import { profileLog } from '../../debug';
 import { accumulateUsageToState, ensureSessionStateWithUsage } from '../../sessionState';
 import { Message } from '../../types';
-import { TOOL_STATUS_PRIORITY, toToolStatusEntry, toUiMessage } from './shared';
+import { TOOL_STATUS_PRIORITY, stripOnce, toToolStatusEntry, toUiMessage } from './shared';
 
 /**
  * webview 消息处理的 tool 域 handler。
@@ -48,11 +48,12 @@ export function handleToolAddMessage(
           // 工具卡片先渲染出来、再被滚动到视野内。
           scrollToBottomBeforeRender();
 
-          // 用户消息直接追加（无本地占位）
+          // 用户消息直接追加（无本地占位）；追加前剥除 once 通知（specs/014）
           if (msg.role === 'user') {
             props.setMessages((prev) => {
-              profileLog(`[Webview] addMessage USER APPEND | msgs.length ${prev.length}->${prev.length + 1} | contentStart=${(msg.content || '').substring(0, 50)}`);
-              return [...prev, newMessage];
+              const next = [...stripOnce(prev), newMessage];
+              profileLog(`[Webview] addMessage USER APPEND | msgs.length ${prev.length}->${next.length} | contentStart=${(msg.content || '').substring(0, 50)}`);
+              return next;
             });
           } else if (msg.role === 'toolcall' && (msg.toolName || '').toLowerCase().replace(/[-_]/g, '') === 'websearch') {
             // WebSearch 卡片：按时间顺序增量追加到末尾。
@@ -61,7 +62,7 @@ export function handleToolAddMessage(
             // 若每次都插到第一条文本前，所有卡片会堆在一起且顺序错乱。
             // 与 thinking/text 流式消息一致，工具卡片也应增量追加，保持 chronological 顺序。
             props.setMessages((prev) => {
-              const next = [...prev, newMessage];
+              const next = [...stripOnce(prev), newMessage];
               profileLog(`[Webview] addMessage WebSearch APPEND | msgs.length ${prev.length}->${next.length}`);
               return next;
             });
@@ -92,7 +93,8 @@ export function handleToolAddMessage(
                   return next;
                 }
               }
-              const next = [...prev, newMessage];
+              // 追加新节点：先剥除 once 通知（specs/014 后继即删）
+              const next = [...stripOnce(prev), newMessage];
               profileLog(`[Webview] addMessage APPEND: role=${msg.role} origin=${msg.origin || 'user'} | msgs.length ${prev.length}->${next.length} | contentStart=${(msg.content || '').substring(0, 50)}`);
               return next;
             });

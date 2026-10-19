@@ -208,3 +208,36 @@ test('US-50 WebSearch / WebFetch 工具卡片渲染查询词与 URL', async () =
   const fetchCard = page.locator('div', { hasText: 'WebFetch' }).filter({ hasText: 'https://example.com/v4-article' }).first();
   await expect(fetchCard).toBeVisible({ timeout: 10_000 });
 });
+
+test('once 通知：末位显示、就地更新保留、新节点先删、重载无残留（specs/014）', async () => {
+  const { page, host } = handle;
+  const started = await host.waitForSent('startNewConversation');
+  const sessionId = started.sessionId as string;
+
+  // 用户消息先行（时间线分组以首条用户消息为段起点），再落一张运行中的工具卡片（「既有节点」）
+  await host.send({ type: 'addMessage', sessionId, role: 'user', content: '跑一下' });
+  const card = { type: 'addMessage', sessionId, role: 'toolcall', content: '', toolName: 'Bash', toolArgs: { command: 'ls' }, toolCallId: 'bash-once-1', status: 'running' };
+  await host.send(card);
+
+  // once 通知到达：系统消息样式（info 图标 + 斜体文本）节点显示
+  await host.send({ type: 'addMessage', sessionId, role: 'system', content: '*User Interrupted*', once: true });
+  const onceNode = page.getByText('*User Interrupted*', { exact: true });
+  await expect(onceNode).toBeVisible({ timeout: 10_000 });
+
+  // 既有节点就地更新（同 toolCallId 走去重分支，状态推进）：once 保留——
+  // 若误走追加分支，once 会在这里被删掉，本断言即红
+  await host.send({ ...card, status: 'success' });
+  await expect(onceNode).toBeVisible();
+
+  // 新节点（用户消息）追加：once 先删
+  await host.send({ type: 'addMessage', sessionId, role: 'user', content: '继续下一轮' });
+  await expect(page.getByText('继续下一轮')).toBeVisible({ timeout: 10_000 });
+  await expect(onceNode).toHaveCount(0);
+
+  // 整批替换（会话重载）：落盘无 once 记录，时间线无残留
+  await host.send({ type: 'addMessage', sessionId, role: 'system', content: '*User Interrupted*', once: true });
+  await expect(onceNode).toBeVisible({ timeout: 10_000 });
+  await host.send({ type: 'messagesReplaced', sessionId, messages: [{ role: 'user', content: '历史消息' }] });
+  await expect(page.getByText('历史消息')).toBeVisible({ timeout: 10_000 });
+  await expect(onceNode).toHaveCount(0);
+});

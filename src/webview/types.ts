@@ -155,6 +155,11 @@ export interface Message {
   toolStartTimestamp?: number;
   /** 消息元信息，如文件引用、agent来源等 */
   meta?: Record<string, unknown>;
+  /**
+   * 一次性通知（specs/014-once-notification-message）：不落盘、时间线末位显示、
+   * 任何新节点追加前先移除（`stripOnce`）；缺省即常规消息。
+   */
+  once?: boolean;
   /** 用户消息携带的图片（dataUrl，用于渲染缩略图） */
   images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
   /** 缓存读取 token 数 */

@@ -1,5 +1,5 @@
 ---
-status: 起草
+status: 实施中
 ---
 
 # 改动规格：once 一次性通知消息（不落盘、末位显示、后继即删）
@@ -40,9 +40,10 @@ status: 起草
 
 ### FR-001：消息事件的 once 形态
 
-- `CoreEvent.message` 的载荷 `data: MessageData` 增加一次性标记：通知类消息显式
-  带标记，其余消息形态不变；契约成员不使用可选语义（判别联合或必选成员，对齐
-  `docs/architecture/principles.md` 的契约口径）。
+- `CoreEvent.message` 的载荷 `data: MessageData` 增加一次性标记 `once`：通知类消息
+  显式 `once: true`，其余消息不带（缺省即常规消息）。标记沿 `MessageData` 既有的
+  「按角色取值子集」可选成员袋形态表达（与 `toolName` / `status` 等成员同模式；
+  该类型不在 `AssistantEventBus` 联合的可选成员冻结范围，联合本体零改动）。
 - once 消息不进任何持久化与上下文：不写 `<sid>.jsonl`、不追加内存消息列表
   （`SessionState.messages`）、不推进 `last_uuid` / `persisted_count`、不计入
   `meta.json` 的 messageCount、不触发对话列表刷新（`announce_message_appended`）。
