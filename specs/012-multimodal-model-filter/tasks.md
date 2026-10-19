@@ -49,3 +49,6 @@
   `npm run check-types && npm run lint && npm run test:all`（standalone 系列驱动真实
   Core 二进制）；依赖：T007；完成判据：全部命令绿，提交信息带 `Flow: L3` +
   `Spec: 012`。
+  ※ 提交已完成（`Flow: L3` + `Spec: 012`）；check-types / lint / test:all（57 项，
+  含 docs-lint）本地全绿。`build:core:host` 与 `cargo test` 本机受阻（同 T004 / T005：
+  win-arm64 无 clang），待 CI 或常规开发环境跑绿后勾选 T004 / T005 / T008。
