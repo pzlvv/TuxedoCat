@@ -21,3 +21,11 @@
   的豁免项）：需求基线按主题拆成多份，但 `US-xx` 锚点被 e2e 用例与归档 spec 广泛引用，拆分要
   同时处理锚点迁移与引用重指。验收判据：拆分后全仓指向该文件的章节链接零失效（docsLint 链接
   组绿），e2e 的 US 编号映射不变。
+
+- **`CoreRequest` 的 `waiting` 语义没有用例强制登记**（`specs/defects/tool-card-roundtrip-marks-waiting.md`
+  修复时登记的缺口）：载荷类型已把「是否等用户」分开（`HostRenderRequest` / `UserBlockingRequest`，
+  见 [docs/core/session-runtime.md 第 1 节](docs/core/session-runtime.md#1-来源与调用点)），发起点
+  选错入口编译不过；但新增一种 `CoreRequest` 时没有任何用例要求声明它的 `waiting` 语义——该缺陷
+  复发正是因为两条发点没有被任何用例覆盖。方向：表驱动用例，对每种 `CoreRequest` 类型跑一次，
+  断言在途期间是否出现 `waiting=true` 快照与登记表一致。验收判据：新增 `CoreRequest` 类型而漏
+  登记时用例红。

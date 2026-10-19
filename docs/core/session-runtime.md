@@ -34,7 +34,10 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 `userChoicePendingChanged`（webview 弹出 / 应答）。`CoreRequest.toolPermissionRequested`
 的往返（上架工具卡片、回传权限结果）**不算**——宿主拿到 `permResult` 就返回，`ask` 也
 直接返回（真确认框随后由 `userChoice` 弹），那段时间并没有在等用户；该往返由
-`Engine::plain_request` 承担，只有 `waiting_request` 走标记 `waiting` 的路径。
+`Engine::plain_request` 承担，只有 `waiting_request` 走标记 `waiting` 的路径。两个入口的
+载荷类型不同：`plain_request` 只收 `HostRenderRequest`，`waiting_request` 只收
+`UserBlockingRequest`（只能由 `user_choice` 构造），因此渲染往返在类型上就拿不到标记
+`waiting` 的入口——「这次请求算不算在等用户」由载荷类型承载，不靠发起点记不记得换入口。
 
 ## 2. 对外快照
 

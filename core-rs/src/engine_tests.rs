@@ -5954,3 +5954,112 @@ fn manual_tool_permission_marks_waiting_only_while_the_choice_is_pending() {
         "只有真确认框在途期间才算等待用户"
     );
 }
+
+// ==================== 失败卡片的 waiting（specs/defects/tool-card-roundtrip-marks-waiting.md） ====================
+//
+// 缺陷：入参校验失败与未知工具两条分支同样用 `waiting_request` 发 `toolPermissionRequested`，
+// 在途期间把会话标成 waiting → 托盘黄点闪一下、窗口在后台时响一声提醒音，而界面上
+// 只有一张失败卡片、没有任何要用户回答的东西。口径见 `docs/core/session-runtime.md` 第 1 节：
+// 该往返由 `plain_request` 承担，不碰 `sessionRuntime`。
+
+/// RT-1：结构非法（`choices` 项带多余字段）的 AskUserQuestion 只产出 `InputValidationError`，
+/// 全程不标记 waiting、不弹提问框。
+#[test]
+fn invalid_ask_user_question_schema_never_marks_the_session_waiting() {
+    let sandbox = Sandbox::new("engine-ask-user-invalid-schema");
+    let llm = FakeLlm::start(|index, _| {
+        if index == 0 {
+            openai_tool_sse(
+                "call_1",
+                "AskUserQuestion",
+                r#"{"question":"选哪个？","choices":[{"label":"A","color":"red"}]}"#,
+            )
+        } else {
+            openai_text_sse(&["好的"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "manual");
+
+    let harness = EngineHarness::start(|request| match request["type"].as_str().unwrap() {
+        "toolPermissionRequested" => Some(request["permResult"].clone()),
+        _ => Some(json!({})),
+    });
+    submit(&harness, "s1", "问个问题", "u-1");
+    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+
+    let result = harness.sink.event_of("toolResult").unwrap();
+    assert_eq!(result["status"], "error");
+    let output = result["output"].as_str().unwrap();
+    assert!(output.starts_with("InputValidationError:"), "got {output}");
+    // 校验在 `emitToUi(toolCall)` 之前返回：UI 拿不到可渲染的提问卡片
+    assert!(harness.sink.event_of("toolCall").is_none());
+    // 仍上架一张失败卡片，但不弹提问框
+    assert_eq!(harness.sink.requests_of("toolPermissionRequested").len(), 1);
+    assert!(harness.sink.requests_of("userChoice").is_empty());
+    // 关键断言：没有任何要用户回答的东西，就不该出现 waiting 快照
+    assert_eq!(
+        waiting_snapshots(&harness, "s1"),
+        0,
+        "入参校验失败的卡片往返不该把会话标成等待用户"
+    );
+}
+
+/// RT-2：语义非法（`question` 纯空白）同上。
+#[test]
+fn blank_ask_user_question_never_marks_the_session_waiting() {
+    let sandbox = Sandbox::new("engine-ask-user-blank-question");
+    let llm = FakeLlm::start(|index, _| {
+        if index == 0 {
+            openai_tool_sse("call_1", "AskUserQuestion", r#"{"question":"   "}"#)
+        } else {
+            openai_text_sse(&["好的"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "manual");
+
+    let harness = EngineHarness::start(|request| match request["type"].as_str().unwrap() {
+        "toolPermissionRequested" => Some(request["permResult"].clone()),
+        _ => Some(json!({})),
+    });
+    submit(&harness, "s1", "问个问题", "u-1");
+    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+
+    let result = harness.sink.event_of("toolResult").unwrap();
+    assert_eq!(
+        result["output"],
+        "InputValidationError: Question cannot be empty"
+    );
+    assert!(harness.sink.requests_of("userChoice").is_empty());
+    assert_eq!(
+        waiting_snapshots(&harness, "s1"),
+        0,
+        "语义校验失败的卡片往返不该把会话标成等待用户"
+    );
+}
+
+/// RT-3：未知工具（模型幻觉出的名字）同样只上架失败卡片，不标记 waiting。
+#[test]
+fn unknown_tool_never_marks_the_session_waiting() {
+    let sandbox = Sandbox::new("engine-unknown-tool-waiting");
+    let llm = FakeLlm::start(|index, _| {
+        if index == 0 {
+            openai_tool_sse("call_x", "Nope", r#"{"a":1}"#)
+        } else {
+            openai_text_sse(&["好的"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "manual");
+
+    let harness = EngineHarness::allow_all();
+    submit(&harness, "s1", "跑一下", "u-1");
+    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+
+    let result = harness.sink.event_of("toolResult").unwrap();
+    assert_eq!(result["output"], "Error: Tool \"Nope\" not found");
+    assert!(harness.sink.requests_of("userChoice").is_empty());
+    assert_eq!(
+        waiting_snapshots(&harness, "s1"),
+        0,
+        "未知工具的卡片往返不该把会话标成等待用户"
+    );
+}

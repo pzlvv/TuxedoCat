@@ -1723,17 +1723,15 @@ impl Core {
         display_args: &Value,
         agent_mode: &str,
     ) -> Option<Value> {
-        self.plain_request(
-            json!({
-                "type": "toolPermissionRequested",
-                "sessionId": session_id,
-                "toolUseId": tool_use_id,
-                "toolName": tool_name,
-                "permResult": perm_result,
-                "displayArgs": display_args,
-                "agentMode": agent_mode,
-            }),
-        )
+        self.plain_request(HostRenderRequest::new(json!({
+            "type": "toolPermissionRequested",
+            "sessionId": session_id,
+            "toolUseId": tool_use_id,
+            "toolName": tool_name,
+            "permResult": perm_result,
+            "displayArgs": display_args,
+            "agentMode": agent_mode,
+        })))
     }
 
     /// `CoreRequest.userChoice`：弹确认框，index 0 = 允许，其余 = 拒绝
@@ -1774,14 +1772,10 @@ impl Core {
                 }
             }
         }
-        let Some(result) = self.waiting_request(
+        let Some(result) = self.waiting_request(UserBlockingRequest::user_choice(
             session_id,
-            json!({
-                "type": "userChoice",
-                "sessionId": session_id,
-                "options": Value::Object(options),
-            }),
-        ) else {
+            Value::Object(options),
+        )) else {
             // 请求失败（无订阅者 / 超时）按「用户不带原因地拒绝」处理（终止本轮）。
             return PermissionOutcome::Denied {
                 message: "用户拒绝操作".to_string(),
@@ -1828,32 +1822,69 @@ impl Core {
 
     /// 发一次 `CoreRequest` 并等待应答，**不改变**会话的 `waiting`
     ///
-    /// 给「宿主只是渲染 / 回传」的请求用（`toolPermissionRequested`：上架工具卡片、
-    /// 写 Edit / Write 的 `_meta`、manual 下打开宿主 diff）——宿主拿到 `permResult`
-    /// 就返回，`ask` 也直接返回（真确认框随后由 `userChoice` 弹），这段往返里并没有
-    /// 在等用户：
+    /// 只接受 `HostRenderRequest`：给「宿主只是渲染 / 回传」的请求用
+    /// （`toolPermissionRequested`：上架工具卡片、写 Edit / Write 的 `_meta`、manual 下
+    /// 打开宿主 diff）——宿主拿到 `permResult` 就返回，`ask` 也直接返回（真确认框随后由
+    /// `userChoice` 弹），这段往返里并没有在等用户：
     /// `docs/core/session-runtime.md` 第 1 节。
-    fn plain_request(&self, request: Value) -> Option<Value> {
-        let (id, receiver) = self.send_request(request)?;
+    fn plain_request(&self, request: HostRenderRequest) -> Option<Value> {
+        let (id, receiver) = self.send_request(request.0)?;
         self.await_response(id, receiver)
     }
 
     /// 发一次 `CoreRequest` 并等待应答；在途期间把会话标记为 `waiting`
     ///
-    /// 只给**真的在等用户**的请求用（`userChoice`）：用户选择框的弹出 / 应答由
-    /// `userChoicePendingChanged` 与这里共同决定 `waiting`。
-    fn waiting_request(&self, session_id: &str, request: Value) -> Option<Value> {
-        let (id, receiver) = self.send_request(request)?;
-        if let Some(state) = self.session_if_exists(session_id) {
+    /// 只接受 `UserBlockingRequest`：真的在等用户的请求（`userChoice`）。用户选择框的
+    /// 弹出 / 应答由 `userChoicePendingChanged` 与这里共同决定 `waiting`
+    /// （`docs/core/session-runtime.md` 第 1 节）。
+    fn waiting_request(&self, request: UserBlockingRequest) -> Option<Value> {
+        let (id, receiver) = self.send_request(request.payload)?;
+        if let Some(state) = self.session_if_exists(&request.session_id) {
             state.lock().unwrap().waiting = true;
         }
         self.emit_runtime();
         let response = self.await_response(id, receiver);
-        if let Some(state) = self.session_if_exists(session_id) {
+        if let Some(state) = self.session_if_exists(&request.session_id) {
             state.lock().unwrap().waiting = false;
         }
         self.emit_runtime();
         response
+    }
+}
+
+/// 宿主只是渲染 / 回传的请求（`CoreRequest.toolPermissionRequested` 一族）。
+///
+/// 往返期间不改变 `sessionRuntime.waiting`。与 [`UserBlockingRequest`] 分成两个类型，
+/// 是为了让「这次请求算不算在等用户」由载荷类型承载，而不是由发起点记不记得换 helper
+/// 决定——渲染往返在类型上就拿不到标记 `waiting` 的入口
+/// （`docs/core/session-runtime.md` 第 1 节）。
+struct HostRenderRequest(Value);
+
+impl HostRenderRequest {
+    fn new(payload: Value) -> Self {
+        Self(payload)
+    }
+}
+
+/// 真的在等用户的请求（`CoreRequest.userChoice`）：往返期间把会话标记为 `waiting`。
+///
+/// 只能由 `user_choice` 构造：`type` / `sessionId` / `options` 三字段在这一处组装，
+/// 调用方无法把别的请求类型塞进标记 `waiting` 的路径。
+struct UserBlockingRequest {
+    session_id: String,
+    payload: Value,
+}
+
+impl UserBlockingRequest {
+    fn user_choice(session_id: &str, options: Value) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            payload: json!({
+                "type": "userChoice",
+                "sessionId": session_id,
+                "options": options,
+            }),
+        }
     }
 }
 
@@ -2210,14 +2241,10 @@ fn execute_tool(
     let user_choice_session = session_id.to_string();
     let user_choice_core = Arc::clone(core);
     let user_choice: tools::UserChoiceFn = Arc::new(move |options: &Value| {
-        user_choice_core.waiting_request(
+        user_choice_core.waiting_request(UserBlockingRequest::user_choice(
             &user_choice_session,
-            json!({
-                "type": "userChoice",
-                "sessionId": user_choice_session,
-                "options": options,
-            }),
-        )
+            options.clone(),
+        ))
     });
     // 取共享句柄必须在字面量之外：字段表达式产生的临时 guard 存活到整条
     // let 语句结束，两个字段各写一次 state.lock() 会让第二个与第一个尚未
@@ -3815,17 +3842,15 @@ fn run_query_loop(
             if !is_known_tool(&tool_name) {
                 // 工具不存在时不跑工具自身权限校验，
                 // permResult 恒为 allow，displayArgs 仍按工具名做路径展开。
-                let _ = core.waiting_request(
+                // 复用 `request_tool_permission`（内部走 `plain_request`）：这段往返只是让
+                // UI 上架失败卡片，没有在等用户（`docs/core/session-runtime.md` 第 1 节）。
+                let _ = core.request_tool_permission(
                     session_id,
-                    json!({
-                        "type": "toolPermissionRequested",
-                        "sessionId": session_id,
-                        "toolUseId": tool_use_id,
-                        "toolName": tool_name,
-                        "permResult": { "behavior": "allow" },
-                        "displayArgs": permission::display_args_for_unknown(&tool_name, &raw_input, project),
-                        "agentMode": agent_mode,
-                    }),
+                    &tool_use_id,
+                    &tool_name,
+                    &json!({ "behavior": "allow" }),
+                    &permission::display_args_for_unknown(&tool_name, &raw_input, project),
+                    agent_mode,
                 );
                 let message = format!("Error: Tool \"{tool_name}\" not found");
                 core.emit(json!({
@@ -3911,17 +3936,15 @@ fn run_query_loop(
                         project,
                         session_id,
                     );
-                let _ = core.waiting_request(
+                // 同样只是让 UI 上架失败卡片：复用 `request_tool_permission`（内部走
+                // `plain_request`），不标记 `waiting`（`docs/core/session-runtime.md` 第 1 节）。
+                let _ = core.request_tool_permission(
                     session_id,
-                    json!({
-                        "type": "toolPermissionRequested",
-                        "sessionId": session_id,
-                        "toolUseId": tool_use_id,
-                        "toolName": tool_name,
-                        "permResult": perm_result,
-                        "displayArgs": display_args,
-                        "agentMode": agent_mode,
-                    }),
+                    &tool_use_id,
+                    &tool_name,
+                    &perm_result,
+                    &display_args,
+                    agent_mode,
                 );
                 let message = format!("InputValidationError: {validation_message}");
                 core.emit(json!({
