@@ -1430,6 +1430,15 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                               onBlur={(e) => { e.target.style.borderColor = colors.border; }}
                             />
                           </div>
+                          {/* 该模型的 API 协议（紧跟模型名） */}
+                          <ApiTypeSelect
+                            value={model.apiType}
+                            providerId={activeProvider.id}
+                            index={index}
+                            onChange={handleModelApiTypeChange}
+                            colors={colors}
+                            isDark={isDark}
+                          />
                           {/* 默认模型 radio：组按 provider 区分，选中即设为默认模型 */}
                           <label
                             title={t('llmConfig.setDefaultModel')}
@@ -1500,32 +1509,26 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
                               {t('llmConfig.modelMultimodal')}
                             </span>
                           </label>
-                          {/* 该模型的 API 协议 */}
-                          <ApiTypeSelect
-                            value={model.apiType}
-                            providerId={activeProvider.id}
-                            index={index}
-                            onChange={handleModelApiTypeChange}
-                            colors={colors}
-                            isDark={isDark}
-                          />
+                          {/* 删除：红色叉图标，尺寸与行内 11px 字号匹配 */}
                           <button
                             type="button"
                             onClick={() => handleRemoveModel(index)}
                             title={t('llmConfig.removeModel')}
+                            aria-label={t('llmConfig.removeModel')}
                             style={{
                               flexShrink: 0,
-                              padding: '6px 10px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              padding: '5px 6px',
                               borderRadius: '6px',
-                              border: `1px solid ${colors.border}`,
+                              border: 'none',
                               backgroundColor: 'transparent',
-                              color: colors.textSystem,
-                              fontSize: uiFontSizePx(11),
+                              lineHeight: 1,
                               cursor: 'pointer',
-                              whiteSpace: 'nowrap',
                             }}
                           >
-                            {t('llmConfig.removeModel')}
+                            <Icon name="x" size={12} style={{ color: colors.error }} />
                           </button>
                         </div>
                       );
