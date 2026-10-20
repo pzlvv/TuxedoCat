@@ -393,11 +393,17 @@ function renderWorkspaces(
     if (connecting) tab.setAttribute('aria-busy', 'true');
     tab.tabIndex = 0;
 
-    // 流水灯条（绝对定位在标签页左侧；按状态显示蓝 / 黄）
+    // 流水灯条（绝对定位在标签页左侧；按状态显示蓝 / 黄）。
+    // 外面套一层裁切层：灯条贴住标签页左边缘，必须按标签页的上方圆角裁切，
+    // 否则选中标签的实色底会在灯条外露出一条缝；.ws-tab 自身不能加 overflow:
+    // hidden（拖拽放置指示线与未选中标签分隔线都画在标签页外侧，会被一起裁掉）。
+    const activityClip = document.createElement('span');
+    activityClip.className = 'ws-tab-activity-clip';
+    activityClip.setAttribute('aria-hidden', 'true');
     const activityBar = document.createElement('span');
     activityBar.className = 'ws-tab-activity';
-    activityBar.setAttribute('aria-hidden', 'true');
-    tab.appendChild(activityBar);
+    activityClip.appendChild(activityBar);
+    tab.appendChild(activityClip);
 
     // 状态标记（文字前）：不可用 = 红点（目录不存在 / 远程连不上），建链中 = 黄色呼吸点
     if (unavailable || connecting) {

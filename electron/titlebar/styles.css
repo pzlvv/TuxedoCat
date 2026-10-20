@@ -255,8 +255,8 @@ body {
 
 /* ── 标签页运行指示：该目录下非 idle 会话（蓝=运行中 / 黄=等待用户，黄优先） ──
    与侧栏 / webview 对话列表的 running-bar 同一套配色，做成标签页左侧的竖条。
-   竖条撑满标签页整个高度（top/bottom 均为 0）：渐变两端本身是透明的，
-   因此顶到标签页圆角处也不会露出突兀的色块。
+   竖条贴住标签页左边缘并撑满整个高度，上方圆角由裁切层收形，
+   渐变两端本身透明，因此圆角处不会露出突兀的色块。
    两种状态的动效不同（与对话列表保持一致）：
    - 运行中：蓝色「流水灯」——渐变背景上下滚动。
    - 等待用户：黄色「呼吸」——只有明暗脉动，不滚动（对话列表用同一条单一动画）。 */
@@ -268,15 +268,26 @@ body {
   0%, 100% { opacity: 0.5; }
   50% { opacity: 1; }
 }
+/* 灯条的裁切层：与标签页同形（继承上方圆角）并裁掉溢出，
+   让灯条真正贴住标签页左边缘——选中标签有实色底，灯条若内缩会露出一条缝。
+   不直接在 .ws-tab 上 overflow: hidden：拖拽放置指示线与未选中标签之间的
+   分隔线都画在标签页外侧（left / right: -1px），会被一并裁掉。 */
+.ws-tab-activity-clip {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+}
 .ws-tab-activity {
   display: none;
   position: absolute;
-  left: 2px;
+  /* 贴住标签页左边缘，上方圆角由裁切层收形 */
+  left: 0;
   /* 撑满标签页整个高度 */
   top: 0;
   bottom: 0;
   width: 3px;
-  border-radius: 2px;
   background-size: 100% 200%;
   pointer-events: none;
 }
