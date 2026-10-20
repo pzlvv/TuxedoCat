@@ -997,6 +997,11 @@ impl Core {
             // 子代理 system prompt = 主对话同款提示词（按继承的预设组装）+ 开头
             // `## Communication` 段。
             state.system_prompt_prefix = Some(prompt::sub_agent_communication_section(&creator));
+            // 子代理创建即进入 running：登记后立刻由 `run_sub_agent` 消费，没有 idle 阶段。
+            // 必须在下面的 `emit_runtime()` **之前**置位，否则首次出现在快照里是 idle，
+            // 流水灯 / 托盘 / abort 按钮要等第一轮结束才看到「子代理在跑」
+            // （`specs/defects/subagent-start-missing-runtime-emit.md`）。
+            state.running = true;
         }
 
         // 预建 meta.json：parentSessionId / role / model 必须落盘，

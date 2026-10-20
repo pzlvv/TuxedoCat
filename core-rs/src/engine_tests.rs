@@ -642,6 +642,104 @@ fn emit_runtime_reports_root_facts_and_busy_subagents() {
     crate::subagent::reset_for_test();
 }
 
+/// RT-1（`specs/defects/subagent-start-missing-runtime-emit`）：子代理创建即 running，
+/// 首次出现在 `sessionRuntimeChanged` 里就必须是 `queryRunning: true`——对话树流水灯 /
+/// 托盘 / abort 按钮只读这份快照，不允许先推一份 idle 再补 running（否则要等第一轮结束，
+/// spin 下就是整个节点结束，灯才亮）。
+///
+/// 用 gated 假 LLM 把子代理第一轮卡住；之后让它用 `Reply` 收尾，避免后台线程跨用例残留。
+#[test]
+fn sub_agent_start_emits_running_runtime_snapshot() {
+    let sandbox = Sandbox::new("engine-subagent-runtime-entry");
+    // 第一段先写一个文本增量，卡住 3s 再写 `Reply`：测试在这段窗口里查快照。
+    let llm = FakeLlm::start_gated(
+        |_, _| {
+            let first = format!(
+                "data: {}\n\n",
+                json!({ "choices": [{ "delta": { "content": "工作中" } }] })
+            );
+            let second = openai_tool_sse("call_reply", "Reply", r#"{"message":"完成"}"#);
+            (first, second)
+        },
+        || std::thread::sleep(std::time::Duration::from_millis(3000)),
+    );
+    prepare(&sandbox, &llm.base_url, "auto");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let harness = EngineHarness::allow_all();
+    let creator = "s-subagent-runtime-entry";
+    history::create_conversation(creator, &project, json!({ "sessionId": creator })).unwrap();
+    // 父会话按 spin 主会话处理：Reply 只进上下文并落盘，不触发父会话消费循环，
+    // 用例结束时不留下第二轮 LLM 请求。
+    harness.core.session(creator).lock().unwrap().work_mode = WorkMode::Spin;
+
+    // 与 `CoreSpinHost::run_sub_agent` 同一条路径：submit_tool_use("Agent")
+    harness
+        .core
+        .submit_tool_use(
+            creator,
+            "Agent",
+            &json!({ "prompt": "任务", "agentRole": "Master", "description": "节点 1" }),
+        )
+        .expect("Agent 工具应当起子代理");
+    let child = crate::subagent::list_for_creator(creator)
+        .last()
+        .cloned()
+        .expect("子代理应当登记");
+
+    // 取「第一条包含该子会话的运行时快照」——它必须是 running，不允许 idle 中间态。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    let mut first_snapshot = None;
+    while std::time::Instant::now() < deadline {
+        first_snapshot = harness
+            .sink
+            .events_of("sessionRuntimeChanged")
+            .into_iter()
+            .find(|event| {
+                event["states"]
+                    .as_array()
+                    .map(|states| states.iter().any(|state| state["sessionId"] == child.as_str()))
+                    .unwrap_or(false)
+            });
+        if first_snapshot.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let snapshot = first_snapshot.unwrap_or_else(|| {
+        panic!(
+            "子代理创建后 1.5s 内应出现在 sessionRuntimeChanged 快照里；实际事件: {:?}",
+            harness.sink.event_types()
+        )
+    });
+    let states = snapshot["states"].as_array().unwrap();
+    let child_entry = states
+        .iter()
+        .find(|state| state["sessionId"] == child.as_str())
+        .expect("子会话条目");
+    assert_eq!(
+        child_entry["queryRunning"], true,
+        "子代理首次进入快照就应是 running（创建即 running，不允许 idle 中间态）"
+    );
+    let parent_entry = states
+        .iter()
+        .find(|state| state["sessionId"] == creator)
+        .expect("父会话条目");
+    assert_eq!(parent_entry["subAgentRunning"], true, "父会话应看到子代理在跑");
+    assert_eq!(parent_entry["idle"], false, "父会话不应显示空闲");
+
+    // 等子代理收尾（`Reply` → queryEnd），避免后台线程跨用例残留。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline
+        && !harness
+            .sink
+            .events_of("queryEnd")
+            .iter()
+            .any(|event| event["sessionId"] == child.as_str())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// abort 两阶段：
 /// 前台有工作时只置 `cancel`，后台 Bash 任务保留；前台停下后再次 abort 才中止后台。
 #[test]
