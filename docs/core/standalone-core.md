@@ -193,6 +193,7 @@ project.json 与各 crate 的包名，不改逻辑代码。
 | 进程管理 | `bash_task.rs::kill_tree`、`mcp.rs` 的子进程终止 | `#[cfg(windows)]` 走 `taskkill /T /F`；非 Windows 走 `Child::kill`（都只杀直接子进程树） |
 | 路径处理 | `util.rs` 的 `normalize_path` / `expand_path`、`config.rs` 的 `encodeURIComponent` 等价物 | 盘符与 UNC 的换算都在 `cfg!(windows)` 分支内；非 Windows 走 POSIX 分支，多字节路径按字节比较 |
 | shell 探测 | `shell.rs::detect` | 非 Windows 直接用 `$SHELL`（缺省 `/bin/bash`）；Windows 才走 Git Bash → PowerShell → cmd.exe 的优先级 |
+| 工具 shell 的环境 | `shell.rs::shell`、`tools.rs::run_bash` | 工具命令由 `$SHELL -c` 执行，PATH 就是 Core 进程继承来的那份，不读用户的 shell 启动文件 |
 | 资源定位 | `tools.rs::ripgrep_path`、`config.rs::extension_path` | Core 自带产物以**自己的可执行文件目录**为基准（`<exe 目录>/ripgrep/rg[.exe]` 本地打包布局优先，`<exe 目录>/../ripgrep/rg[.exe]` 部署布局的共享位次之——Rust 的 `Path::exists` 看不进 asar），宿主 `extensionPath` 只作本机开发期的兜底、最后回退 PATH；可执行名按 `cfg!(windows)` 加 `.exe`；产物目录按 `<arch>-<platform>` 解析，矩阵外直接拒绝而不是猜一个目录 |
 | 主目录 | `config.rs::home_dir` | `USERPROFILE` 优先、`HOME` 兜底，两者都缺才报错 |
 | 系统语言 | 宿主：`src/host/i18n.ts::getSystemLocale`（不在 Core 侧） | 仅 Windows 查 PowerShell `Get-UICulture`；其余平台读 `LANG` / `LC_ALL` |
@@ -200,6 +201,19 @@ project.json 与各 crate 的包名，不改逻辑代码。
 
 矩阵一致性由 `src/test/corePlatformMatrix.test.ts` 锁定：构建脚本的目标登记、
 运行时的目录解析、产物落位三处必须两两一致，矩阵外的平台组合必须被拒绝。
+
+### 3.2.1 工具命令的环境
+
+工具命令（`Bash` 前台 / 后台、`Grep` 的 `rg` 兜底、MCP stdio server）由 Core 以
+`$SHELL -c` 拉起：stdin 接空设备，stdout / stderr 是管道，不分配 pty。
+
+这些子进程的环境就是 Core 进程的环境——PATH 来自 Core 的父进程，Core 不读用户的
+shell 启动文件（`.zshrc` / `.bashrc`）。宿主从 GUI 启动时父进程是 launchd /
+Explorer，远端 daemon 由 SSH exec 拉起时父进程是 sshd 会话的 shell，两者都不含用户
+终端里的 PATH，工具命令因此找不到只配在 `.zshrc` 里的 `node` / `cargo` / `git`。
+
+需要 tty 的命令（密码提示、全屏编辑器、依赖终端判断才有颜色的工具）不在工具命令的
+范围内：stdin 接空设备，读输入的命令立刻拿到 EOF。
 
 ### 3.3 构建与目标平台
 
