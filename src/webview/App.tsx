@@ -437,7 +437,8 @@ const App = () => {
     if (!currentSessionId) return 'none';
     const state = sessionRuntimeStatesRef.current.get(currentSessionId);
     if (!state) return 'none';
-    // workMode 来自本组件状态（runtime 快照不携带工作模式）：spin 计为可停止
+    // workMode 来自本组件状态（runtime 快照不携带工作模式）：spin 模式没有 query
+    // engine，归入黄色档（只用于中止子代理；spin 单向不退出）
     return resolveAbortButtonState({ ...state, workMode });
     // sessionIdleVersion 是 core 推来新状态时的重渲染信号（ref 本身不触发渲染）
   }, [currentSessionId, sessionIdleVersion, workMode]);

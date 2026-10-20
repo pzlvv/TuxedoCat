@@ -59,15 +59,24 @@ async function run(): Promise<void> {
   );
   check('前台优先于后台', true);
 
-  // spin 模式计为可停止（specs/016 FR-004 / FR-005）：空闲的恢复态 spin 会话靠
-  // 停止按钮退出 spin 模式，因此即使没有任何运行中工作也显示红色停止按钮
-  assert.equal(resolveAbortButtonState(facts({ workMode: 'spin' })), 'query', '空闲 spin → 红色');
+  // spin 模式没有 query engine：父会话的消费循环被 SpinLoop 占用，快照里的
+  // queryRunning 为真，但按钮归入黄色档，只用于中止 spin 的子代理
   assert.equal(
-    resolveAbortButtonState(facts({ workMode: 'spin', backgroundRunning: true })),
-    'query',
-    'spin 优先于后台档',
+    resolveAbortButtonState(facts({ workMode: 'spin' })),
+    'background',
+    '空闲 spin → 黄色',
   );
-  check('spin 模式 → query（红，可退出）', true);
+  assert.equal(
+    resolveAbortButtonState(facts({ workMode: 'spin', queryRunning: true })),
+    'background',
+    '运行中的 spin 仍是黄色（queryRunning 是 SpinLoop，不是 query engine）',
+  );
+  assert.equal(
+    resolveAbortButtonState(facts({ workMode: 'spin', backgroundRunning: true, subAgentRunning: true })),
+    'background',
+    'spin 与后台 / 子代理同档',
+  );
+  check('spin 模式 → background（黄，只中止子代理）', true);
 
   finish();
 }

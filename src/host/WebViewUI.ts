@@ -618,8 +618,9 @@ export class WebViewUI implements WebViewUiPort {
   }
 
   /**
-   * 会话工作模式变化（core 广播，进入 / 退出 spin）→ webview 输入框禁用态
-   * （specs/016 FR-004）。会话切换时的初始态由 `conversationLoaded` 载荷携带。
+   * 会话工作模式变化（core 广播，进入 spin）→ webview 输入框禁用态
+   * （specs/016 FR-004）。spin 单向，不会广播回 normal。会话切换时的初始态由
+   * `conversationLoaded` 载荷携带。
    */
   onWorkModeChanged(sessionId: string, workMode: 'normal' | 'spin'): void {
     this.postToWebview(sessionId, { type: 'setWorkMode', workMode });

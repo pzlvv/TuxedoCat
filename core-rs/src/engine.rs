@@ -185,8 +185,8 @@ pub struct AgentMessage {
 /// 会话工作模式。
 ///
 /// `spin`：主会话不参与 LLM 消费循环，只由 SpinLoop 循环起子代理
-/// 。由 `spin_host.rs` 在
-/// `/spin` 执行期间设置，循环结束恢复 `Normal`。
+/// 。由 `spin_host.rs` 在 `/spin` 进入时设置；**单向**——SpinLoop 结束（完成 /
+/// 中止 / 失败）也不恢复 `Normal`，会话此后一直停留在 spin 态。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkMode {
     Normal,
@@ -227,13 +227,14 @@ pub struct SessionState {
     /// `cancel` 一并复位。
     pub silent_abort: bool,
     /// 工作模式（`QueryEngine.workMode`）：`spin` 期间子代理 Reply 不进消费队列
-    /// （见 `deliver_agent_reply` 的 spin 分支），由 SpinLoop 消费。
+    /// （见 `deliver_agent_reply` 的 spin 分支），由 SpinLoop 消费。单向：进入后
+    /// 不再写回 `Normal`。
     pub work_mode: WorkMode,
     /// 本会话在 spin 运行期间由 SpinLoop 起的子代理（`from_session_id`）。
     ///
     /// 登记后这些子代理的 Reply 始终按 spin 语义处理（只落 silent 上下文、交给
-    /// SpinLoop 判定），即使 Reply 在 Spin 结束、`work_mode` 恢复 `Normal` 之后才到达，
-    /// 也不会被当成普通自动消息喂给父对话的 LLM。
+    /// SpinLoop 判定），即使 Reply 在 SpinLoop 结束之后才到达，也不会被当成普通
+    /// 自动消息喂给父对话的 LLM。
     pub spin_sub_agents: HashSet<String>,
     /// 已经在 spin 语义下消费过首条 Reply 的子代理。
     ///
@@ -646,21 +647,26 @@ impl Core {
 
     /// `UiEvent.abortRequested`：abort 按钮点击（`docs/features/abort-button.md` FR-002）。
     ///
-    /// 按该会话的运行时事实分两阶段——
+    /// 按该会话的运行时事实决定中止范围——
+    /// - spin 模式：父会话没有 query engine，abort 只中止运行中的子代理（递归含其后台
+    ///   任务与下层子代理），并置 `cancel` 让 SpinLoop 在下一个检查点退出；spin 是
+    ///   单向模式，循环停下后会话仍保持 spin（完全空闲时点击为空操作）；
     /// - 前台有工作（`running` / `compacting`）→ 只中止前台查询（置 `cancel`），
     ///   后台 Bash 任务与子代理保持运行，等待用户再次点击；
     /// - 前台空闲但仍有后台 Bash 任务或子代理 → 中止它们（含递归子代理）。
     ///
     /// 阶段判定读与 `sessionRuntimeChanged` 同一批事实，与 UI 按钮三态同源。
     pub fn on_abort(&self, session_id: &str) {
-        // spin 恢复态（meta 停在 spin、SpinLoop 已不在——应用重启后加载恢复）：
-        // abort 即退出 spin 模式（specs/016 FR-005），会话回到可输入状态。
-        // 运行中的 spin 不走这支：其会话非空闲，落回常规两阶段（cancel 标记 →
-        // SpinLoop 停止 → spin_host 退出点恢复 Normal）。
         if let Some(state) = self.session_if_exists(session_id) {
-            let spin_restored = state.lock().unwrap().work_mode == WorkMode::Spin;
-            if spin_restored && self.is_session_idle(session_id) {
-                self.set_work_mode(session_id, WorkMode::Normal);
+            let work_mode = state.lock().unwrap().work_mode;
+            if work_mode == WorkMode::Spin {
+                // spin 单向：无论循环在跑还是已结束都不退出 spin 模式。
+                if !self.is_session_idle(session_id) {
+                    // 运行中的 spin：没有 query engine 可中止，范围只含子代理与后台任务。
+                    // 父会话的 `cancel` 由 `abort_session_scope` 一并置位，SpinLoop 据此
+                    // 在下一个检查点停下；`work_mode` 保持 Spin。
+                    self.abort_session_scope(session_id, &mut HashSet::new());
+                }
                 return;
             }
         }
@@ -1104,7 +1110,7 @@ impl Core {
     /// - 父会话处于 spin，或来源子代理由 SpinLoop 创建时，Reply 只落 silent 上下文并
     ///   经 `emit_reply_delivered` 交给 SpinLoop 做验收判定，绝不进入 `agent_messages`；
     /// - 同一来源子代理只响应一次，重复 / 迟到的 Reply 直接忽略；
-    /// - 迟到 Reply 即使到达时 `work_mode` 已恢复 `Normal`，也按 spin 语义处理，
+    /// - 迟到 Reply 即使到达时 SpinLoop 已结束，也按 spin 语义处理，
     ///   避免父对话被它拉起一轮 LLM。
     pub fn deliver_agent_reply(
         self: &Arc<Self>,
@@ -1366,7 +1372,8 @@ impl Core {
 
     /// 工作模式切换的唯一写入点（specs/016 FR-004 / FR-005）：改
     /// `SessionState.work_mode`、写 `meta.json` 的 `workMode`、广播 `workModeChanged`。
-    /// 调用方：`spin_host.rs` 的进入 / 退出点；`on_abort` 退出恢复出的 spin 态。
+    /// 调用方：`spin_host.rs` 的进入点。spin 单向，生产路径不写回 `Normal`
+    /// （`Normal` 只作为缺省值与存量会话的恢复值）。
     /// 会话已删除（`session_if_exists` 为空）时整体跳过——不复活会话、不落盘、不发事件。
     pub fn set_work_mode(&self, session_id: &str, mode: WorkMode) {
         let Some(state) = self.session_if_exists(session_id) else {
@@ -1768,7 +1775,8 @@ impl Core {
                 );
             }
             // 恢复工作模式（specs/016 FR-005）：应用中断在 spin 执行中时 meta 停在
-            // spin，重启加载后保持 spin 态（UI 禁用输入），由 abort 退出（on_abort）。
+            // spin，重启加载后保持 spin 态（UI 禁用输入）。spin 单向，恢复出的会话
+            // 同样不退出（abort 也不恢复 Normal）。
             if let Some(text) = metadata.get("workMode").and_then(Value::as_str) {
                 state.work_mode = work_mode_from_text(text);
             }

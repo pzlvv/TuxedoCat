@@ -96,7 +96,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 | `docs/features/user-stories.md` | as-built 用户故事（US-xx），e2e 用例的需求基线 |
 | `docs/features/user-message-pipeline.md` | 用户消息从 webview 输入到进入 LLM 上下文的完整管线 |
 | `docs/features/compaction.md` | 对话压缩：触发、摘要、归档、跨压缩的用户输入历史 |
-| `docs/features/abort-button.md` | abort 按钮的状态判定与两阶段中止语义 |
+| `docs/features/abort-button.md` | abort 按钮的状态判定与中止范围（含 spin 模式） |
 | `docs/features/background-bash.md` | Bash 后台任务：手工转后台（暂停 / 接续）与两类任务提醒 |
 | `docs/features/tui-installer.md` | TUI 版分发与 Core 部署安装程序 |
 | `docs/features/web-search.md` | 联网搜索与网页抓取（WebSearch / WebFetch 客户端工具） |

@@ -113,10 +113,10 @@ export type CoreEvent =
     }
   | { type: 'spinDesignDataChanged' }
   /**
-   * 会话工作模式变化（进入 / 退出 spin）。
+   * 会话工作模式变化（进入 spin）。
    *
-   * core 的 `SessionState.work_mode` 是唯一事实：`/spin` 执行进入 spin、结束（完成 /
-   * 中止 / 失败）退出，恢复出的 spin 态经会话停止退出。UI 据此禁用 / 恢复主输入框
+   * core 的 `SessionState.work_mode` 是唯一事实：`/spin` 进入 spin 时写入；spin 单向，
+   * 循环结束（完成 / 中止 / 失败）与恢复出的 spin 态都不再退出。UI 据此禁用主输入框
    * （specs/016 FR-004）。
    */
   | {

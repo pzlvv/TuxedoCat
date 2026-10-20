@@ -380,8 +380,8 @@ fn spin_run_feeds_replies_to_the_loop_not_the_main_llm() {
     {
         let state = harness.core.session("s1");
         let state = state.lock().unwrap();
-        // work_mode 已恢复 normal
-        assert_eq!(state.work_mode, WorkMode::Normal);
+        // spin 单向：SpinLoop 结束后 work_mode 仍保持 spin
+        assert_eq!(state.work_mode, WorkMode::Spin);
         // 消费队列没有残留的子代理 Reply
         assert!(
             state.agent_messages.is_empty(),

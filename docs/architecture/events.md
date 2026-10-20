@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-18
+last_reviewed: 2026-10-20
 ---
 
 # 规格：AssistantEventBus 与事件词汇表
@@ -157,7 +157,7 @@ wire message（若该事件会产生 webview 协议消息）。命名规则见�
 | 15 | `conversationListChanged` | 无 | `engine.rs`（消息落盘 / 子代理创建与结束 / 改名 / 删除）、`main.rs`（空间清空完成后）、`spin_host.rs`（spin 消息落盘） | `onConversationListChanged` → `ConversationManager.refresh()` | `conversationsData`（VS Code）；Electron 另推原生侧栏 |
 | 16 | `sessionRuntimeChanged` | `states: readonly SessionRuntimeState[]` | Core 的会话运行时状态（`engine.rs` 的 `emit_runtime`，[docs/core/session-runtime.md](../core/session-runtime.md)） | `onSessionRuntimeChanged` → `ConversationManager.updateSessionStates()` | VS Code：webview 对话树流水灯（`sessionRuntimeStates`）；Electron：侧栏流水灯 + 托盘状态点 + 未读完成呼吸 + 系统睡眠阻断 |
 | 17 | `spinDesignDataChanged` | 无 | `spin.rs`、`spin_host.rs` | `onSpinDesignDataChanged` | `SpinDesign.refresh()` |
-| 18 | `workModeChanged` | `sessionId`, `workMode`（`'normal'` / `'spin'`） | `engine.rs`（`set_work_mode` 唯一写入点：`spin_host.rs` 进入 / 退出 spin 与恢复态 abort 退出；meta.json 落盘 `workMode`） | `onWorkModeChanged` | `setWorkMode` |
+| 18 | `workModeChanged` | `sessionId`, `workMode`（`'normal'` / `'spin'`） | `engine.rs`（`set_work_mode` 唯一写入点：`spin_host.rs` 进入 spin 时写 `spin`；spin 单向，不写回 `normal`；meta.json 落盘 `workMode`） | `onWorkModeChanged` | `setWorkMode` |
 | 19 | `compactBegin` | `sessionId` | `compact.rs`（压缩流程见 [docs/features/compaction.md](../features/compaction.md)） | `onCompactBegin` | `compressProgress`（`status: 'start'`） |
 | 20 | `compactEnd` | `sessionId`, `result` | `compact.rs`（`complete` 与 `error`） | `onCompactEnd` | `compressProgress`（`status: 'complete'` / `'error'`） |
 | 21 | `commandDispatched` | `sessionId`, `commandName`, `args` | `commands.rs`（命令在引擎消费循环的轮次边界解析时就地执行） | `onCommandSend` | `/spin`：打开设计器；同时清除该会话的排队项（内置命令不进入上下文、不补发用户气泡） |
@@ -204,7 +204,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 
 | # | `type` | 载荷 | UI 侧触发点 | core 侧消费方 |
 | --- | --- | --- | --- | --- |
-| 1 | `abortRequested` | `sessionId` | `abort` 消息（webview 的 abort 按钮由 `sessionRuntimeStates` 的根事实推导，见[docs/hosts/webview-ui.md 第 8 节](../hosts/webview-ui.md#8-abort-按钮读-core-的-sessionruntime不由这里判定)与 [docs/features/abort-button.md](../features/abort-button.md)） | `Core::on_abort`（按该会话运行时事实分两阶段：前台有工作只中止前台；前台空闲则中止后台 Bash + 递归子代理。两阶段都幂等） |
+| 1 | `abortRequested` | `sessionId` | `abort` 消息（webview 的 abort 按钮由 `sessionRuntimeStates` 的根事实推导，见[docs/hosts/webview-ui.md 第 8 节](../hosts/webview-ui.md#8-abort-按钮读-core-的-sessionruntime不由这里判定)与 [docs/features/abort-button.md](../features/abort-button.md)） | `Core::on_abort`（按该会话运行时事实决定中止范围：spin 模式递归中止子代理与后台任务并让 SpinLoop 收尾，spin 单向、恢复态 spin 为空操作；常规会话前台有工作只中止前台，前台空闲则中止后台 Bash + 递归子代理。范围判定幂等） |
 | 2 | `compactRequested` | `sessionId` | `requestCompress` | Core 的手动压缩入口（空闲立即执行；非空闲登记「待压缩」，当前轮次结束后执行） |
 | 3 | `conversationStarted` | `sessionId` | `startNewConversation`（handler 先登记会话工作目录，再发事件） | Core 的 `start_conversation`（预创建引擎 + MCP 引用 + 缓存该会话工作目录的环境事实） |
 | 4 | `conversationOpened` | `sessionId` | `loadConversation` 与 `startNewConversation`（handler 都先登记会话工作目录，再发事件；新会话也登记为「已打开」，供 Core 重启后重放） | Core 的 `on_conversation_opened`（载入历史 + MCP 引用） |

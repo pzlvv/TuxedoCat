@@ -218,9 +218,9 @@ Spin 模式（`WorkMode::Spin`）期间父对话完全由 SpinLoop 程序驱动�
   验收判定，不进入 `agent_messages`。
 - **只响应一次**：同一子代理的首条 Reply 被消费后，后续重复 Reply 直接忽略（不落盘、
   不触发投递事件、不静默中止）。
-- **迟到 Reply**：SpinLoop 起的子代理登记在会话上；其 Reply 即使到达时 Spin 已结束、
-  `work_mode` 已恢复 `Normal`，仍按 spin 语义处理，只落 `silent` 上下文，不拉起父对话
-  的 LLM 轮次。
+- **迟到 Reply**：SpinLoop 起的子代理登记在会话上；其 Reply 即使到达时 SpinLoop 已
+  结束（spin 单向，`work_mode` 保持 `Spin`），仍按 spin 语义处理，只落 `silent` 上下文，
+  不拉起父对话的 LLM 轮次。
 
 ## 3. 行为规格
 
@@ -275,7 +275,7 @@ Spin 模式（`WorkMode::Spin`）期间父对话完全由 SpinLoop 程序驱动�
   不匹配而保持不动（AC-10）。
 - **回投兜底**：入队失败 / 引擎缺失导致的未消费排队项由 `queryEnd` 回投兜底（FR-003）。
 - **spin 期间输入**：Core 直接丢弃用户消息（UI 已禁用输入框），不报错、不入队。
-- **迟到 Reply**：Spin 结束后到达的 spin 子代理 Reply 只落 `silent` 上下文，不拉起 LLM。
+- **迟到 Reply**：SpinLoop 结束后到达的 spin 子代理 Reply 只落 `silent` 上下文，不拉起 LLM。
 - **provider 为空**：模型身份不合法时记录日志并忽略（[events.md 第 2.3 节](../architecture/events.md#23-uieventui--core单向)的 `modelChanged` 口径）。
 
 ## 5. 非目标

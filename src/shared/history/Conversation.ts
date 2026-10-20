@@ -277,7 +277,7 @@ export interface ConversationMetadata {
   onceMessage?: { role: 'system'; content: string };
   /**
    * 会话工作模式（specs/016 FR-005）：`spin` = spin 模式会话（执行中或应用中断后
-   * 恢复）；由 core 在进入 / 退出 spin 时写入，缺失即 normal（存量会话）。
+   * 恢复）；单向，进入后不再退出。由 core 在进入 spin 时写入，缺失即 normal（存量会话）。
    * 加载时随 `conversationLoaded` 载荷下发，webview 据此恢复输入框禁用态。
    */
   workMode?: 'normal' | 'spin';

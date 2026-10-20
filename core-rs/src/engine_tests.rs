@@ -767,7 +767,8 @@ fn spin_reply_is_consumed_once_and_late_replies_are_ignored() {
 
     // 同一子代理的重复 Reply：忽略（不落盘、不入队）
     harness.core.deliver_agent_reply("s1", "第二次反馈", "sub_a").unwrap();
-    // Spin 结束、work_mode 恢复 normal 之后迟到的 Reply：仍按 spin 语义忽略
+    // SpinLoop 结束后迟到的 Reply：仍按 spin 语义忽略。work_mode 单向保持 spin；
+    // 这里显式写回 normal 锁定「已登记 spin 子代理」的兜底分支。
     harness.core.set_work_mode("s1", WorkMode::Normal);
     harness.core.deliver_agent_reply("s1", "迟到反馈", "sub_a").unwrap();
 
@@ -782,8 +783,8 @@ fn spin_reply_is_consumed_once_and_late_replies_are_ignored() {
     assert!(!state.running, "不得拉起父对话消费循环");
 }
 
-/// Spin 结束后才到达的、来自 spin 子代理的首条 Reply 同样只落 silent 上下文，
-/// 不得被当成普通自动消息拉起父对话的 LLM 循环。
+/// 登记过的 spin 子代理，其首条 Reply 即使落在 `work_mode = normal` 的理论路径上，
+/// 也只落 silent 上下文，不得被当成普通自动消息拉起父对话的 LLM 循环。
 #[test]
 fn late_first_reply_from_spin_sub_agent_stays_silent() {
     let sandbox = Sandbox::new("engine-spin-late-reply");
@@ -1216,7 +1217,11 @@ fn set_work_mode_persists_metadata_and_broadcasts() {
 
     harness.core.set_work_mode("s1", WorkMode::Normal);
     let metadata = history::load_metadata("s1", &workspace).expect("meta.json");
-    assert_eq!(metadata["workMode"], json!("normal"), "退出 spin 回写 normal");
+    assert_eq!(
+        metadata["workMode"],
+        json!("normal"),
+        "写入点对两种值都落盘（生产路径只写 spin）"
+    );
     assert_eq!(harness.sink.events_of("workModeChanged").len(), 2);
 }
 
@@ -1233,7 +1238,7 @@ fn set_work_mode_skips_deleted_sessions() {
 }
 
 #[test]
-fn abort_exits_restored_spin_mode_of_idle_session() {
+fn abort_does_not_exit_restored_spin_mode_of_idle_session() {
     let sandbox = Sandbox::new("engine-abort-restored-spin");
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     config::set_active_workspace(Some(workspace.clone()));
@@ -1251,13 +1256,58 @@ fn abort_exits_restored_spin_mode_of_idle_session() {
 
     assert_eq!(
         harness.core.session("s1").lock().unwrap().work_mode,
-        WorkMode::Normal,
-        "abort 退出恢复出的 spin 态"
+        WorkMode::Spin,
+        "spin 单向：空闲的恢复态也不退出"
     );
     let metadata = history::load_metadata("s1", &workspace).expect("meta.json");
-    assert_eq!(metadata["workMode"], json!("normal"), "退出落盘 meta.json");
-    let event = harness.sink.event_of("workModeChanged").expect("广播退出事件");
-    assert_eq!(event["workMode"], json!("normal"));
+    assert_eq!(metadata["workMode"], json!("spin"), "meta.json 保持 spin");
+    assert!(
+        harness.sink.event_of("workModeChanged").is_none(),
+        "不广播退出事件"
+    );
+}
+
+/// 运行中的 spin 没有 query engine：abort 的中止范围是运行中的子代理（递归），
+/// 而不是「只置父 cancel、把子代理留在后台继续跑」。
+#[test]
+fn abort_during_running_spin_aborts_sub_agents() {
+    let sandbox = Sandbox::new("engine-abort-running-spin");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(workspace.clone()));
+    history::create_conversation("s1", &workspace, json!({ "sessionId": "s1" })).unwrap();
+
+    let harness = EngineHarness::allow_all();
+    let parent = harness.core.session("s1");
+    {
+        let mut state = parent.lock().unwrap();
+        state.work_mode = WorkMode::Spin;
+        // SpinLoop 占着消费循环：父会话非空闲，快照里的 queryRunning 为真
+        state.running = true;
+    }
+    crate::subagent::register("sub_a", "s1");
+    let child = harness.core.session("sub_a");
+    child.lock().unwrap().running = true;
+
+    harness.core.on_abort("s1");
+
+    assert!(
+        parent.lock().unwrap().cancel.load(Ordering::Relaxed),
+        "父会话置 cancel，SpinLoop 在下一个检查点停下"
+    );
+    assert!(
+        child.lock().unwrap().cancel.load(Ordering::Relaxed),
+        "子代理被递归中止"
+    );
+    assert_eq!(
+        parent.lock().unwrap().work_mode,
+        WorkMode::Spin,
+        "spin 单向：运行中的中止也不退出"
+    );
+
+    // 收尾：Harness 的 Drop 会等所有会话深度空闲，别让手工置的 running 拖满超时
+    parent.lock().unwrap().running = false;
+    child.lock().unwrap().running = false;
+    crate::subagent::reset_for_test();
 }
 
 // ==================== 消费循环 ====================

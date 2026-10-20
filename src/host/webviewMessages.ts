@@ -148,7 +148,7 @@ export type HostToWebviewMessage = {
 } | {
   /**
    * 会话工作模式变化（core `workModeChanged` 的 webview 投影，specs/016 FR-004）。
-   * spin = 主输入框禁用（placeholder 提示）；normal = 恢复。会话切换的初始态
+   * spin = 主输入框禁用（placeholder 提示）；单向，不会变回 normal。会话切换的初始态
    * 由 `conversationLoaded` 载荷的 `workMode` 携带，本消息只管运行期变化。
    */
   type: 'setWorkMode';
@@ -277,7 +277,7 @@ export type HostToWebviewMessage = {
   agentMode?: 'manual' | 'risk' | 'auto';
   /**
    * 会话工作模式（meta.json `workMode` 恢复，缺省 normal；specs/016 FR-005）：
-   * spin 会话加载后主输入框保持禁用，运行期变化走 `setWorkMode`。
+   * spin 会话加载后主输入框保持禁用（单向，不再退出），运行期变化走 `setWorkMode`。
    */
   workMode: 'normal' | 'spin';
   /** 引擎是否正在消费消息（查询进行中） */

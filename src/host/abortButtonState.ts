@@ -6,7 +6,7 @@
  * 不在组件里另写一遍 `if`。
  */
 
-/** abort 按钮状态：红（前台运行中）/ 黄（只剩后台与子代理）/ 灰（空闲） */
+/** abort 按钮状态：红（前台查询运行中）/ 黄（spin 模式或只剩后台与子代理）/ 灰（空闲） */
 export type AbortButtonState = 'query' | 'background' | 'none';
 
 /** 工作模式（core `SessionState.work_mode` 的事实；spin = `/spin` 执行或恢复出的 spin 态） */
@@ -27,14 +27,16 @@ export interface AbortButtonFacts {
 
 /**
  * 由根事实推导按钮状态：
- * - 前台有工作（查询 / 压缩）或处于 spin 模式 → `query`（红）。spin 会话即使空闲
- *   也显示停止按钮：它是「退出 spin 模式」的出口（应用重启后恢复出的 spin 态没有
- *   运行中的 SpinLoop，abort 使 core 直接退出 spin，specs/016 FR-005）；
+ * - spin 模式 → `background`（黄）。父会话的消费循环被 SpinLoop 占用，快照里的
+ *   `queryRunning` 为真，但跑的**不是** query engine；按钮只用于中止 spin 的子代理，
+ *   不表达「中止查询」。spin 单向：循环停下后会话仍保持 spin（空闲时点击为空操作）；
+ * - 前台有工作（查询 / 压缩）→ `query`（红）；
  * - 前台空闲但仍有后台 Bash 任务或非 idle 子代理 → `background`（黄）；
  * - 都为空 → `none`（灰，不可点）。
  */
 export function resolveAbortButtonState(facts: AbortButtonFacts): AbortButtonState {
-  if (facts.queryRunning || facts.compacting || facts.workMode === 'spin') return 'query';
+  if (facts.workMode === 'spin') return 'background';
+  if (facts.queryRunning || facts.compacting) return 'query';
   if (facts.backgroundRunning || facts.subAgentRunning) return 'background';
   return 'none';
 }

@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-18
+last_reviewed: 2026-10-20
 ---
 
 # 规格：宿主契约
@@ -251,7 +251,7 @@ Core 进程内另有一份内存覆盖）优先，其次全局默认（`settings
 
 | | 流 1：对话列表 | 流 2：会话运行时状态 |
 | --- | --- | --- |
-| 内容 | 磁盘元数据：`title` / `createdAt` / `updatedAt` / `messageCount` / `parentSessionId` / `workMode`（`spin` = spin 会话，加载时恢复输入框禁用态） | 运行时根事实与派生 `idle`（`SessionRuntimeState`，[docs/architecture/events.md 第 2 节](events.md#2-事件词汇表) / [docs/core/session-runtime.md](../core/session-runtime.md)） |
+| 内容 | 磁盘元数据：`title` / `createdAt` / `updatedAt` / `messageCount` / `parentSessionId` / `workMode`（`spin` = spin 会话，单向不退出，加载时恢复输入框禁用态） | 运行时根事实与派生 `idle`（`SessionRuntimeState`，[docs/architecture/events.md 第 2 节](events.md#2-事件词汇表) / [docs/core/session-runtime.md](../core/session-runtime.md)） |
 | source of truth | 磁盘（Core 对 `conversationListRequested` 的应答） | Core 的会话运行时状态（[docs/core/session-runtime.md](../core/session-runtime.md)） |
 | 变化频率 | 低（落盘 / 改名 / 删除 / 新建） | 高（查询开始结束、等用户、用户响应） |
 | 触发 | `CoreEvent.conversationListChanged` | `CoreEvent.sessionRuntimeChanged` |

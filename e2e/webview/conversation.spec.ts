@@ -129,6 +129,30 @@ test('abort 按钮三态：红（前台在跑）→ 黄（只剩后台）→ 灰
   await expect(abortButton).toHaveAttribute('data-abort-state', 'none', { timeout: 10_000 });
   await expect(abortButton).toBeDisabled();
 
+  // 4) spin 模式没有 query engine：快照里的 queryRunning 只是 SpinLoop，按钮仍为黄色可点
+  await host.send({ type: 'setWorkMode', sessionId: sid, workMode: 'spin' });
+  await host.send({
+    type: 'sessionRuntimeStates',
+    states: [{
+      sessionId: sid, idle: false, waiting: false,
+      queryRunning: true, compacting: false, backgroundRunning: false, subAgentRunning: true,
+    }],
+  });
+  await expect(abortButton).toHaveAttribute('data-abort-state', 'background', { timeout: 10_000 });
+  await expect(abortButton).toBeEnabled();
+
+  // 切到 normal（常规会话）后回到空闲 → 灰色不可点
+  await host.send({ type: 'setWorkMode', sessionId: sid, workMode: 'normal' });
+  await host.send({
+    type: 'sessionRuntimeStates',
+    states: [{
+      sessionId: sid, idle: true, waiting: false,
+      queryRunning: false, compacting: false, backgroundRunning: false, subAgentRunning: false,
+    }],
+  });
+  await expect(abortButton).toHaveAttribute('data-abort-state', 'none', { timeout: 10_000 });
+  await expect(abortButton).toBeDisabled();
+
   // 两次点击各发一条 abort（都带当前会话）
   const aborts = (await host.sentAll()).filter((m) => m.type === 'abort');
   expect(aborts).toHaveLength(2);

@@ -64,8 +64,8 @@ interface InputAreaProps {
   totalContextTokens: number;
   maxContextTokens?: number | null;
   /**
-   * abort 按钮三态：`query`（红，前台运行中）/ `background`（黄，只剩后台与子代理）/
-   * `none`（灰，空闲不可点）。由 core 的 sessionRuntime 根事实经
+   * abort 按钮三态：`query`（红，前台查询运行中）/ `background`（黄，spin 模式或
+   * 只剩后台与子代理）/ `none`（灰，空闲不可点）。由 core 的 sessionRuntime 根事实经
    * `resolveAbortButtonState` 推导（docs/features/abort-button.md FR-001）。
    */
   abortButtonState: AbortButtonState;
@@ -133,7 +133,8 @@ interface InputAreaProps {
   isSubAgent?: boolean;
   /**
    * 会话工作模式（core 事实投影，specs/016 FR-004）：spin 时禁用输入与发送，
-   * placeholder 提示「Spin 模式下不响应用户输入」；停止按钮不受影响（退出出口）。
+   * placeholder 提示「Spin 模式下不响应用户输入」；单向不退出，停止按钮只用于
+   * 中止当前 SpinLoop。
    */
   workMode: 'normal' | 'spin';
   /** MCP 服务器列表（含启用状态），在菜单「模型」上方以 checkbox 形式列出 */
@@ -2175,7 +2176,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             data-abort-state={abortButtonState}
             className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${abortButtonState === 'none' ? '' : 'hover:brightness-110'}`}
             style={{
-              // 红 = 前台运行中；黄 = 只剩后台任务 / 子代理（docs/features/abort-button.md FR-001）
+              // 红 = 前台查询运行中；黄 = spin 模式或只剩后台任务 / 子代理（docs/features/abort-button.md FR-001）
               backgroundColor:
                 abortButtonState === 'query'
                   ? '#ef4444'

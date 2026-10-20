@@ -142,7 +142,7 @@ export const enDict: Record<string, string> = {
   /* ── InputArea.tsx ───────────────────────────────────────── */
   'messages.jumpToBottom': 'Jump to bottom',
   'inputArea.placeholder': 'Type your message, Shift+Enter for new line',
-  'inputArea.placeholderSpinMode': 'Not accepting input while Spin mode is running',
+  'inputArea.placeholderSpinMode': 'Not accepting input in Spin mode',
   'inputArea.placeholderNeedConfigPrefix': 'Please configure the model service first, ',
   'inputArea.placeholderNeedConfigClick': 'click Settings',
   'inputArea.placeholderNeedConfigTitle': 'Please configure the model service first, click Settings',

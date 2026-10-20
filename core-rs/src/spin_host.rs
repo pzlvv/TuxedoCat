@@ -246,7 +246,8 @@ pub fn run_spin_command(
     // 走 `deliver_agent_reply` 的 spin 分支——只落 silent 消息进上下文，不进消费队列，
     // 消费循环也就不会在 Spin 结束后拿它跑主对话的 agent 循环。
     // 工作模式经 `set_work_mode` 唯一写入点：内存 + meta.json + `workModeChanged`
-    // 广播（UI 据此禁用 / 恢复主输入框，specs/016 FR-004 / FR-005）。
+    // 广播（UI 据此禁用主输入框，specs/016 FR-004 / FR-005）。spin 单向：进入后
+    // 不再写回 `Normal`，循环结束（完成 / 中止 / 失败）会话仍保持 spin。
     core.set_work_mode(session_id, WorkMode::Spin);
     // 进入 spin 前清掉排队中的自动消息与 Reminder：Spin 期间父对话只由程序驱动，
     // 这些消息若留到 Spin 结束后会被消费循环当成下一轮 LLM 输入
@@ -258,9 +259,8 @@ pub fn run_spin_command(
         state.reminder_driven_run = false;
     }
     let outcome = spin::SpinLoop::with_abort_flag(runner, cwd, session_id, abort).run();
-    // 无论 Completed / Stopped / Aborted / Failed 都要恢复；会话可能已被删除，
-    // `set_work_mode` 内部用 `session_if_exists` 判定（不复活刚删除的会话）
-    core.set_work_mode(session_id, WorkMode::Normal);
+    // 单向模式：不恢复 `Normal`（会话可能已被删除，这里也不需要 `set_work_mode`）。
+    // 循环停下后会话仍是 spin，输入框保持禁用；meta.json 的 `workMode` 停在 spin。
     if let spin::SpinOutcome::Failed(message) = &outcome {
         emit_spin_message(core, session_id, message);
     }

@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-18
+last_reviewed: 2026-10-20
 ---
 
 # 规格：WebViewUI 实现与会话 UI 状态
@@ -307,7 +307,7 @@ export class SessionUiState {
 
 ## 8. abort 按钮：读 core 的 `sessionRuntime`，不由这里判定
 
-abort 按钮的三态（红 / 黄 / 灰）与两阶段中止由 core 的 `sessionRuntime` 根事实决定
+abort 按钮的三态（红 / 黄 / 灰）与中止范围由 core 的 `sessionRuntime` 根事实决定
 （[docs/core/session-runtime.md](../core/session-runtime.md)）——所以它不属于 `SessionUiState`。`queryActiveCounts` 只服务两件事：
 `queryBegin` / `queryEnd` 去重，以及 `isQueryActive`（`conversationLoaded.hasActiveQuery` 的
 来源，见 10.1 / 第 2 节）。完整规格见 `docs/features/abort-button.md`。
@@ -318,14 +318,16 @@ abort 按钮的三态（红 / 黄 / 灰）与两阶段中止由 core 的 `sessio
 | --- | --- |
 | core | `sessionRuntime` 按来源记账 `query` / `waiting` / `compacting` / `background` 并递归子代理 → `sessionRuntimeChanged`（每会话的 `idle` / `waiting` / `queryRunning` / `compacting` / `backgroundRunning` / `subAgentRunning`） |
 | 宿主 | `ConversationManager.dispatchStates` 把状态快照推给 webview（VS Code 推单视图；Electron 广播给所有聊天视图） |
-| webview | `App.tsx` 取当前会话快照 → 纯函数 `resolveAbortButtonState`（`src/host/abortButtonState.ts`）给出 `query` / `background` / `none` → `InputArea` 按状态取红 / 黄 / 灰与可点性 |
+| webview | `App.tsx` 取当前会话快照 + 工作模式 → 纯函数 `resolveAbortButtonState`（`src/host/abortButtonState.ts`）给出 `query` / `background` / `none` → `InputArea` 按状态取红 / 黄 / 灰与可点性 |
 
 好处：前台查询结束后、但后台 Bash 或非 idle 子代理还在时，按钮保留为可点的黄色——
 那是「会话仍在收尾」的真实含义，点下去中止的是这些残留工作，而不是再次中止已经停下的查询。
-点下按钮后 Core 侧 `Core::on_abort` 依据同一份事实决定范围：前台有工作只
-中止前台（`abort_foreground`），前台空闲则中止后台 Bash 任务并递归子代理
-（`abort_background_tasks` + 递归 `abort_session_scope`），
-两阶段都幂等。
+spin 模式同样归入黄色档：父会话的消费循环被 SpinLoop 占用，快照里的 `queryRunning`
+为真，但跑的**不是** query engine，按钮只用于中止 spin 的子代理。spin 是单向模式：
+循环结束与恢复态 spin 都不退出，空闲时点击为空操作。点下按钮后 Core 侧 `Core::on_abort`
+依据同一份事实决定范围：spin 模式递归中止子代理与后台任务并让 SpinLoop 收尾，常规会话
+前台有工作只中止前台（`abort_foreground`），前台空闲则中止后台 Bash 任务并递归子代理
+（`abort_background_tasks` + 递归 `abort_session_scope`），两阶段都幂等。
 
 ## 9. 生命周期：dropSession
 

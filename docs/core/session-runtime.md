@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-18
+last_reviewed: 2026-10-20
 ---
 
 # 规格：会话运行时状态（Core 进程）
@@ -59,6 +59,10 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 
 对外快照里每个会话都递归计算派生值（`is_idle_deep`），因此子代理的 `query` / `waiting` /
 `compacting` / `background` 变化会连带刷新其创建者的 `idle` / `subAgentRunning`。
+
+spin 模式下父会话的消费循环被 SpinLoop 占用：`queryRunning` 为真，但跑的**不是** query
+engine。按钮表现按工作模式归入黄色档（`workMode` 单独注入推导，见
+[docs/features/abort-button.md](../features/abort-button.md) FR-001）。
 
 `backgroundRunning` 来源还驱动后台任务的两类提醒：查询结束时的兜底提醒（`engine.rs`
 消费循环收尾的 `background_reminder`；距上次访问满 3min，或命令含 `sleep` 且还没兜底过
