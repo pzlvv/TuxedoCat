@@ -14,7 +14,7 @@ fn sandbox(name: &str) -> Sandbox {
 fn system_prompt_has_principles_tools_and_environment() {
     let sandbox = sandbox("prompt-structure");
     let cwd = sandbox.workspace.to_string_lossy().to_string();
-    let prompt = build_system_prompt(&cwd, "risk", &json!({}));
+    let prompt = build_system_prompt(&cwd, "risk", &json!({})).expect("PATH 已由 Sandbox 钉死");
 
     assert!(prompt.contains("## Core Principles"));
     assert!(prompt.contains("## Tool Usage"));
@@ -42,7 +42,7 @@ fn system_prompt_carries_tool_details_for_every_builtin_tool() {
     // `## Tool Details`，并按 `getAllTools()` 的顺序逐工具渲染 `### <name>` + 详细用法。
     let sandbox = sandbox("prompt-tool-details");
     let cwd = sandbox.workspace.to_string_lossy().to_string();
-    let prompt = build_system_prompt(&cwd, "risk", &json!({}));
+    let prompt = build_system_prompt(&cwd, "risk", &json!({})).expect("PATH 已由 Sandbox 钉死");
 
     assert!(prompt.contains("\n\n## Tool Details\n### Bash\n"), "got {prompt}");
     let order = [
@@ -79,7 +79,7 @@ fn system_prompt_carries_tool_details_for_every_builtin_tool() {
 fn system_prompt_skips_optional_sections_when_absent() {
     let sandbox = sandbox("prompt-optional");
     let cwd = sandbox.workspace.to_string_lossy().to_string();
-    let prompt = build_system_prompt(&cwd, "auto", &Value::Null);
+    let prompt = build_system_prompt(&cwd, "auto", &Value::Null).expect("PATH 已由 Sandbox 钉死");
     assert!(!prompt.contains("AGENTS.md"));
     assert!(!prompt.contains("## Current File"));
     assert!(!prompt.contains("## Current Selection"));
@@ -90,7 +90,7 @@ fn agents_md_is_inlined_into_the_system_prompt() {
     let sandbox = sandbox("prompt-agents-md");
     sandbox.write_file("AGENTS.md", "  项目约定：只用单引号  \n");
     let cwd = sandbox.workspace.to_string_lossy().to_string();
-    let prompt = build_system_prompt(&cwd, "manual", &json!({}));
+    let prompt = build_system_prompt(&cwd, "manual", &json!({})).expect("PATH 已由 Sandbox 钉死");
     // 原样追加，不加标题
     assert!(prompt.contains("项目约定：只用单引号"));
     assert!(!prompt.contains("## Project Instructions"));
@@ -136,7 +136,8 @@ fn system_prompt_never_renders_file_context_sections() {
             "selectedLines": { "start": 3, "end": 9 },
             "agentMode": "auto"
         } }),
-    );
+    )
+    .expect("PATH 已由 Sandbox 钉死");
     assert!(!prompt.contains("## Current File"), "got {prompt}");
     assert!(!prompt.contains("## Current Selection"), "got {prompt}");
     assert!(!prompt.contains("src/a.ts"), "got {prompt}");
@@ -163,7 +164,8 @@ fn preset_tool_whitelist_and_minimal_prompt() {
     // normal 暴露全部工具，system prompt 含核心原则 + 工具说明 + 环境
     let normal_tools = filter_tools_by_preset(all.clone(), "normal");
     assert_eq!(normal_tools.len(), all.len());
-    let normal = build_system_prompt_with_preset("normal", &cwd, &normal_tools);
+    let normal = build_system_prompt_with_preset("normal", &cwd, &normal_tools)
+        .expect("PATH 已由 Sandbox 钉死");
     assert!(normal.starts_with("You are a helpful software engineer assistant."));
     assert!(normal.contains("## Core Principles"));
     assert!(normal.contains("## Tool Usage"));
@@ -177,7 +179,8 @@ fn preset_tool_whitelist_and_minimal_prompt() {
             .filter_map(|tool| tool.get("name").and_then(Value::as_str))
             .collect();
         assert_eq!(names, vec!["Bash", "Edit"], "preset={preset}");
-        let prompt = build_system_prompt_with_preset(preset, &cwd, &tools);
+        let prompt = build_system_prompt_with_preset(preset, &cwd, &tools)
+            .expect("PATH 已由 Sandbox 钉死");
         assert_eq!(prompt, "You are a helpful software engineer assistant.");
     }
 }
@@ -204,7 +207,11 @@ fn git_description_reports_the_branch_and_is_cached() {
     // 注意：结果按目录缓存，同一目录只能问一次，因此两个分支用不同目录
     let plain = sandbox.workspace.join("plain");
     std::fs::create_dir_all(&plain).unwrap();
-    assert_eq!(git_description(&plain.to_string_lossy()), "No", "空目录不是仓库");
+    assert_eq!(
+        git_description(&plain.to_string_lossy()).expect("PATH 已钉死"),
+        "No",
+        "空目录不是仓库"
+    );
 
     let cwd = sandbox.workspace.to_string_lossy().to_string();
 
@@ -232,17 +239,17 @@ fn git_description_reports_the_branch_and_is_cached() {
         .expect("git commit");
     assert!(commit.success());
 
-    let first = git_description(&cwd);
+    let first = git_description(&cwd).expect("PATH 已钉死");
     assert!(first.starts_with("Yes (branch: "), "got {first}");
     // 第二次命中缓存（不再 spawn git）
-    assert_eq!(git_description(&cwd), first);
+    assert_eq!(git_description(&cwd).expect("PATH 已钉死"), first);
 }
 
 #[test]
 fn git_description_falls_back_when_the_directory_is_gone() {
     let _guard = crate::test_support::serial();
     let missing = format!("D:/definitely-missing-{}", crate::util::unique_id("dir"));
-    assert_eq!(git_description(&missing), "No");
+    assert_eq!(git_description(&missing).expect("PATH 已钉死"), "No");
 }
 
 #[test]

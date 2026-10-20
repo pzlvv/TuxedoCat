@@ -59,6 +59,17 @@ impl Sandbox {
             env_backup.push((key, std::env::var(key).ok()));
             std::env::set_var(key, &home);
         }
+        // 工具命令的 PATH 由 `shell_env` 探测用户 shell 得到；用例不跑真实的启动文件，
+        // 直接钉成「沙箱目录 + 继承来的 PATH」——首位目录是用例断言 PATH 已注入的标记
+        // （`docs/core/standalone-core.md` 第 3.2.1 节）。
+        let mut forced_path = root.join("bin").into_os_string();
+        if let Some(inherited) = std::env::var_os("PATH") {
+            if !inherited.is_empty() {
+                forced_path.push(if cfg!(windows) { ";" } else { ":" });
+                forced_path.push(inherited);
+            }
+        }
+        crate::shell_env::force_path_for_test(forced_path);
 
         let config_dir_name = ".test-core".to_string();
         config::set_host_environment(HostEnvironment {

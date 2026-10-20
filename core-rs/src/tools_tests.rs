@@ -302,6 +302,22 @@ fn bash_returns_stdout_and_hides_trailing_newline() {
 }
 
 #[test]
+fn bash_runs_with_the_resolved_path() {
+    // 子进程的 PATH 来自 `shell_env`（沙箱把它钉成「<root>/bin + 继承 PATH」），
+    // 不是 core 进程继承来的那份（`docs/core/standalone-core.md` 第 3.2.1 节）。
+    let sandbox = Sandbox::new("tools-bash-path");
+    let marker = sandbox
+        .root
+        .file_name()
+        .expect("sandbox root has a name")
+        .to_string_lossy()
+        .to_string();
+    let outcome = execute("Bash", &json!({ "command": "printf %s \"$PATH\"" }), &context(&sandbox));
+    assert!(!outcome.is_error(), "got {}", text(&outcome));
+    assert!(text(&outcome).contains(&marker), "got {}", text(&outcome));
+}
+
+#[test]
 fn bash_reports_stderr_and_exit_codes() {
     let sandbox = Sandbox::new("tools-bash-stderr");
     let ctx = context(&sandbox);

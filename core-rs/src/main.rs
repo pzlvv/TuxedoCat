@@ -37,6 +37,7 @@ mod responses;
 mod rollback;
 mod settings;
 mod shell;
+mod shell_env;
 mod skills;
 mod smart_naming;
 mod web_search;

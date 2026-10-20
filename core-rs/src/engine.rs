@@ -3384,8 +3384,11 @@ fn run_query_loop(
                 state.system_prompt_prefix.clone(),
             )
         };
-        let base_prompt = static_prompt
-            .unwrap_or_else(|| prompt::build_system_prompt_with_preset(preset, project, &tools));
+        let base_prompt = match static_prompt {
+            Some(prompt) => prompt,
+            // PATH 解析失败会在这里成为整轮查询的错误（`docs/core/standalone-core.md` 第 3.2 节）
+            None => prompt::build_system_prompt_with_preset(preset, project, &tools)?,
+        };
         let system_prompt = match prompt_prefix {
             Some(prefix) => format!("{prefix}\n\n{base_prompt}"),
             None => base_prompt,

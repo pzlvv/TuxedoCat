@@ -1049,7 +1049,37 @@ function main(): void {
     console.log(`     ${b}`);
   }
 
-  // ---------- 14. 事件载荷列与联合类型逐字段对照 ----------
+  // ---------- 14. 工具命令的 PATH 口径与代码一致 ----------
+  // docs/core/standalone-core.md 第 3.2.1 节的表是「口径」，每行都能在 shell_env.rs
+  // 里对上；探测参数、上限、注入点任何一处漂了都在这里红。
+  {
+    const shellEnv = readText('core-rs/src/shell_env.rs');
+    const pathSection = standaloneCore.slice(standaloneCore.indexOf('### 3.2.1'));
+    const pathProblems: string[] = [];
+    const must = (ok: boolean, problem: string) => {
+      if (!ok) pathProblems.push(problem);
+    };
+    must(pathSection.length > 0, 'docs/core/standalone-core.md 缺 3.2.1 节');
+    for (const flag of ['"-l"', '"-i"', '"-c"']) {
+      must(shellEnv.includes(flag), `shell_env.rs 缺探测参数 ${flag}`);
+    }
+    must(shellEnv.includes('cygpath -wp'), 'shell_env.rs 缺 Git Bash 的 cygpath -wp');
+    must(shellEnv.includes('$env:PATH'), 'shell_env.rs 缺 PowerShell 的 $env:PATH');
+    must(shellEnv.includes('from_secs(10)'), 'shell_env.rs 的探测上限不是 10s');
+    must(
+      !codeFiles.some((rel) => rel !== 'core-rs/src/shell_env.rs' && /env\(\s*"PATH"/.test(readText(rel))),
+      'PATH 不是只由 shell_env.rs 写入',
+    );
+    for (const token of ['-l -i -c', 'cygpath -wp', '$env:PATH', '10s']) {
+      must(pathSection.includes(token), `3.2.1 节缺 ${token}`);
+    }
+    checker.check(`工具命令的 PATH 口径与代码一致（问题 ${pathProblems.length} 处）`, pathProblems.length === 0);
+    for (const problem of pathProblems) {
+      console.log(`     ${problem}`);
+    }
+  }
+
+  // ---------- 15. 事件载荷列与联合类型逐字段对照 ----------
   {
     const sections: Array<[string, string]> = [
       ['CoreEvent', '### 2.1'],

@@ -1079,6 +1079,11 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // 工具命令看到的是用户终端里的 PATH，而不是 core 进程继承来的那份
+    // （`docs/core/standalone-core.md` 第 3.2 节）。解析失败直接报错，不降级。
+    if let Err(error) = crate::shell_env::apply(&mut cmd) {
+        return ToolOutcome::Error(format!("Bash: {error}"));
+    }
     // 隐藏子进程控制台窗口（否则每次执行命令都会闪一个窗口）
     util::hide_console(&mut cmd);
 
@@ -3385,6 +3390,8 @@ fn run_ripgrep(args: &[String]) -> Result<String, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     util::hide_console(&mut cmd);
+    // `rg` 可能来自 PATH（自带产物缺失时的兜底），与工具命令用同一份 PATH
+    crate::shell_env::apply(&mut cmd)?;
     let mut child = cmd.spawn().map_err(|err| {
         // 对齐 Node `execFile` 的错误文案（`spawn <path> <UV_ERRNO>`）
         let code = match err.kind() {

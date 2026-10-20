@@ -22,7 +22,7 @@ last_reviewed: 2026-10-18
 | SSH 认证 | 仅口令认证；主机密钥按 TOFU 记在 `~/<configDir>/known-hosts.json`，指纹不一致即失败（[docs/core/core-remote.md 第 2.8 节](../core/core-remote.md#28-ssh-接入ssh-scheme)） | SSH 密钥 / agent 认证 |
 | 内置 `web_search` 工具 | Core 的 Responses API 不下发内置 `web_search` 工具（[docs/core/standalone-core-boundaries.md 第 4 节](../core/standalone-core-boundaries.md#4-不覆盖范围)） | 迁入 |
 | 宿主侧直接读取的例外 | 例外表见 [docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取) | 远程工作区落地时把例外迁到 `UiRequest` |
-| 工具命令的环境 | 工具命令一律非交互执行：stdin 接空设备、stdout / stderr 是管道，PATH 来自 Core 进程继承的环境（[docs/core/standalone-core.md 第 3.2.1 节](../core/standalone-core.md#321-工具命令的环境)） | 让工具命令看到与用户终端一致的 PATH；需要 tty 的命令（密码提示、全屏编辑器、靠终端判断决定颜色的工具）的执行形态 |
+| 工具命令的 tty 模式 | 工具命令一律非交互执行：stdin 接空设备、stdout / stderr 是管道，PATH 由一次登录 + 交互 shell 探测得到（[docs/core/standalone-core.md 第 3.2.1 节](../core/standalone-core.md#321-工具命令的-path)） | 需要 tty 的命令（密码提示、全屏编辑器、靠终端判断决定颜色的工具）：长驻会话的形态、完成检测、stdin 与超时语义 |
 
 ## 2. 跨机器部署的传输形态
 

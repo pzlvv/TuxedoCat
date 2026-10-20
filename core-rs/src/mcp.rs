@@ -402,7 +402,7 @@ impl McpClient for McpStdioClient {
             return Err(format!("MCP server \"{}\" 的 command 为空", self.name()));
         }
 
-        let mut command = build_stdio_command(&self.command, &self.environment);
+        let mut command = build_stdio_command(&self.command, &self.environment)?;
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -524,7 +524,10 @@ impl McpClient for McpStdioClient {
 }
 
 /// 构造 stdio 子进程命令（Windows 走 `cmd /d /s /c "..."`，与 Node `shell: true` 同形）
-fn build_stdio_command(command: &[String], environment: &[(String, String)]) -> Command {
+fn build_stdio_command(
+    command: &[String],
+    environment: &[(String, String)],
+) -> Result<Command, String> {
     #[cfg(windows)]
     let mut child = {
         use std::os::windows::process::CommandExt;
@@ -546,13 +549,16 @@ fn build_stdio_command(command: &[String], environment: &[(String, String)]) -> 
         cmd.args(&command[1..]);
         cmd
     };
-    // `spawnEnv = { ...process.env, ...this.environment }`：继承父进程环境再叠加
+    // `spawnEnv = { ...process.env, ...this.environment }`：继承父进程环境再叠加。
+    // PATH 例外：它是用户终端里的那份（`docs/core/standalone-core.md` 第 3.2 节），
+    // 否则 `npx` / `uvx` 这类服务器在 GUI 宿主与远端 daemon 下都找不到。
     for (key, value) in environment {
         child.env(key, value);
     }
+    crate::shell_env::apply(&mut child)?;
     // 与其它子进程一致地隐藏控制台窗口：Windows 下 MCP 服务器每起一次都闪一个黑框。
     crate::util::hide_console(&mut child);
-    child
+    Ok(child)
 }
 
 fn reader_loop(shared: Arc<StdioShared>, stdout: std::process::ChildStdout) {

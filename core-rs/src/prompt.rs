@@ -520,13 +520,17 @@ pub fn tool_usage_section(tools: &[Value]) -> String {
 ///
 /// `minimal` / `mixed` 的 sections 为空数组：只有核心身份提示词，不含工具说明 /
 /// 环境 / AGENTS.md。`normal` 依次渲染三个区块。
-pub fn build_system_prompt_with_preset(preset: &str, cwd: &str, tools: &[Value]) -> String {
+pub fn build_system_prompt_with_preset(
+    preset: &str,
+    cwd: &str,
+    tools: &[Value],
+) -> Result<String, String> {
     let mut parts: Vec<String> = vec![preset_core_prompt(preset).to_string()];
 
     if preset == "normal" {
         parts.push(tool_usage_section(tools));
 
-        parts.push(environment_section(cwd));
+        parts.push(environment_section(cwd)?);
 
         if let Some(agents_md) = read_agents_md(cwd) {
             // 原样追加，不加标题、不截断
@@ -540,7 +544,7 @@ pub fn build_system_prompt_with_preset(preset: &str, cwd: &str, tools: &[Value])
     // 因此这里不再追加 `## Current File` / `## Current Selection`，
     // 否则同一份文件上下文会被投递两次，且 system prompt 随用户切换文件而变
     // （提示词缓存前缀失效）。
-    parts.join("\n\n")
+    Ok(parts.join("\n\n"))
 }
 
 /// 组装完整 system prompt（`normal` 预设的便捷入口）。
@@ -548,20 +552,24 @@ pub fn build_system_prompt_with_preset(preset: &str, cwd: &str, tools: &[Value])
 /// `agent_mode` 保留在签名里（调用方按会话解析），但**不进**系统提示：
 /// 环境段没有这一行（权限模式由 UI 展示）。
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn build_system_prompt(cwd: &str, _agent_mode: &str, _metadata: &Value) -> String {
+pub fn build_system_prompt(cwd: &str, _agent_mode: &str, _metadata: &Value) -> Result<String, String> {
     build_system_prompt_with_preset("normal", cwd, &tools::definitions())
 }
 
 /// 环境段（对齐 `generateSystemDynamicPrompt` 的文本与字段）
-fn environment_section(cwd: &str) -> String {
+///
+/// 段里的 `git` / `which` / `uname` 都用工具命令那份 PATH
+/// （`docs/core/standalone-core.md` 第 3.2 节）：提示词报的可执行文件清单必须与
+/// 工具真能跑起来的东西一致，所以 PATH 解析失败时这里一并报错，不降级。
+fn environment_section(cwd: &str) -> Result<String, String> {
     let shell = shell_description();
     let mut lines = vec![
         "## Environment".to_string(),
         "You are running in the following environment:".to_string(),
-        format!("- **Operating System**: {}", os_description()),
+        format!("- **Operating System**: {}", os_description()?),
         format!("- **Shell**: {shell}"),
         format!("- **Working Directory**: {cwd}"),
-        format!("- **Git Repository**: {}", git_description(cwd)),
+        format!("- **Git Repository**: {}", git_description(cwd)?),
     ];
 
     if shell.to_lowercase().contains("git bash") {
@@ -578,7 +586,7 @@ fn environment_section(cwd: &str) -> String {
         lines.push("- Use `pwd` to show current directory path".to_string());
     }
 
-    let commands = available_commands();
+    let commands = available_commands()?;
     if !commands.is_empty() {
         lines.push(String::new());
         lines.push("**Available Commands**:".to_string());
@@ -595,7 +603,7 @@ fn environment_section(cwd: &str) -> String {
         lines.push(skills_section);
     }
 
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 /// 平台名（`os.platform()`）
@@ -621,10 +629,10 @@ fn os_type() -> &'static str {
 }
 
 /// 系统版本（`os.release()`）：Windows 解析 `cmd /c ver`，其余用 `uname -r`；只探测一次
-fn os_release() -> String {
+fn os_release() -> Result<String, String> {
     static OS_RELEASE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
     if let Some(cached) = OS_RELEASE.lock().unwrap().clone() {
-        return cached;
+        return Ok(cached);
     }
     let release = if cfg!(windows) {
         let mut command = std::process::Command::new("cmd");
@@ -633,6 +641,7 @@ fn os_release() -> String {
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         crate::util::hide_console(&mut command);
+        crate::shell_env::apply(&mut command)?;
         command
             .output()
             .ok()
@@ -650,6 +659,7 @@ fn os_release() -> String {
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         crate::util::hide_console(&mut command);
+        crate::shell_env::apply(&mut command)?;
         command
             .output()
             .ok()
@@ -657,7 +667,7 @@ fn os_release() -> String {
             .unwrap_or_default()
     };
     *OS_RELEASE.lock().unwrap() = Some(release.clone());
-    release
+    Ok(release)
 }
 
 /// 从 `cmd /c ver` 的方括号内容里解析出与 Node `os.release()` 一致的版本号。
@@ -683,16 +693,16 @@ fn parse_windows_release(inner: &str) -> String {
     version.unwrap_or_else(|| inner.trim().to_string())
 }
 
-fn os_description() -> String {
-    let version = format!("{} {}", os_type(), os_release());
-    format!("{} ({})", os_platform(), version.trim())
+fn os_description() -> Result<String, String> {
+    let version = format!("{} {}", os_type(), os_release()?);
+    Ok(format!("{} ({})", os_platform(), version.trim()))
 }
 
 /// 常见命令是否可用（`where` / `which`），只探测一次（对齐 `detectAvailableCommandsSync`）
-fn available_commands() -> Vec<String> {
+fn available_commands() -> Result<Vec<String>, String> {
     static AVAILABLE_COMMANDS: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
     if let Some(cached) = AVAILABLE_COMMANDS.lock().unwrap().clone() {
-        return cached;
+        return Ok(cached);
     }
     // 与 `SystemEnvironment.ts` 的 `detectAvailableCommandsSync` 候选表逐项一致
     const CANDIDATES: [&str; 26] = [
@@ -710,13 +720,14 @@ fn available_commands() -> Vec<String> {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         crate::util::hide_console(&mut command);
+        crate::shell_env::apply(&mut command)?;
         if command.status().map(|status| status.success()).unwrap_or(false) {
             found.push(candidate.to_string());
         }
     }
     found.sort();
     *AVAILABLE_COMMANDS.lock().unwrap() = Some(found.clone());
-    found
+    Ok(found)
 }
 
 fn shell_description() -> String {
@@ -728,11 +739,11 @@ fn shell_description() -> String {
 }
 
 /// 工作目录 → git 分支描述；按目录缓存，避免每轮都 spawn 一次 git
-fn git_description(cwd: &str) -> String {
+fn git_description(cwd: &str) -> Result<String, String> {
     {
         let cache = GIT_CACHE.lock().unwrap();
         if let Some(cached) = cache.as_ref().and_then(|map| map.get(cwd)) {
-            return cached.clone();
+            return Ok(cached.clone());
         }
     }
     let mut command = std::process::Command::new("git");
@@ -740,6 +751,7 @@ fn git_description(cwd: &str) -> String {
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .current_dir(cwd);
     crate::util::hide_console(&mut command);
+    crate::shell_env::apply(&mut command)?;
     let branch = command
         .output()
         .ok()
@@ -754,7 +766,7 @@ fn git_description(cwd: &str) -> String {
         .unwrap()
         .get_or_insert_with(std::collections::HashMap::new)
         .insert(cwd.to_string(), description.clone());
-    description
+    Ok(description)
 }
 
 /// 工作目录 → git 状态描述（进程重启后自然失效）
