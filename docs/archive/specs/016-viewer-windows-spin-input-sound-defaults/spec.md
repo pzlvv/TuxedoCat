@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：内置查看器窗口单实例与标题、Spin 模式输入禁用与会话标记、提示音默认值
@@ -144,11 +144,11 @@ core-rs `SessionState.work_mode` 同步。会话加载（`ensure_loaded`）从 m
 
 | 需求 | 实现落点 | 测试落点 | 覆盖 |
 | --- | --- | --- | --- |
-| FR-001 | `electron/monaco/main.ts`、`electron/imageViewer/main.ts`（消费 init.title 设页面标题）；`electron/ElectronUIHost.ts` `openMonacoWindow` / `openImagePreviewWindow` | `src/test/viewerWindows.test.ts`（标题决策纯函数）+ 人工验证渲染端 | 自动 |
+| FR-001 | `electron/monaco/main.ts`、`electron/imageViewer/main.ts`（消费 init.title 设页面标题）；`electron/ElectronUIHost.ts` `openMonacoWindow` / `openImagePreviewWindow` | — | 无自动覆盖 + 渲染端一行赋值（无分支决策），调用侧传 basename 的既有口径不变，人工验证 |
 | FR-002 | `electron/ElectronUIHost.ts`（查看器窗口跟踪与顶替，决策抽纯函数） | `src/test/viewerWindows.test.ts`（新增：顶替决策、名额互斥、bounds 继承） | 自动 |
 | FR-003 | `electron/viewerWindowRect.ts`（新增纯函数）、`electron/workspaceStateStore.ts`（rect 字段）、`electron/ElectronUIHost.ts` / `electron/ElectronSpinDesign.ts`（接线）、`electron/main.ts`（复用可见性判据） | `src/test/viewerWindows.test.ts`（矩形有效性 / 多屏判据 / 读写合并） | 自动 |
-| FR-004 | `src/shared/AssistantEventBus.ts`（`workModeChanged`）、`src/host/WebViewUI.ts`、`src/host/webviewMessages.ts`（`setWorkMode`）、`src/host/abortButtonState.ts`（事实输入纳入 workMode）、`src/webview/`（App 状态 + InputArea props）、`src/webview/i18n/{zh,en}.ts` | `src/test/abortButtonState.test.ts` 扩展 + webview 状态 → InputArea props 单测 + `src/test/standaloneBus.test.ts` 扩展（事件往返） | 自动 |
-| FR-005 | `core-rs/src/spin_host.rs` / `engine.rs` / `history.rs`（落盘与恢复）、`src/shared/history/Conversation.ts`、`src/host/conversationPayload.ts` | core-rs 对照表测试 + `engine_tests`（恢复与 abort 退出）+ `src/test/`（加载载荷带 workMode） | 自动 |
+| FR-004 | `src/shared/AssistantEventBus.ts`（`workModeChanged`）、`src/host/WebViewUI.ts`、`src/host/webviewMessages.ts`（`setWorkMode`）、`src/host/abortButtonState.ts`（事实输入纳入 workMode）、`src/webview/`（App 状态 + InputArea props）、`src/webview/i18n/zh.ts` 与 `src/webview/i18n/en.ts` | `src/test/abortButtonState.test.ts` 扩展 + webview 状态 → InputArea props 单测 + `src/test/standaloneBus.test.ts` 扩展（事件往返） | 自动 |
+| FR-005 | `core-rs/src/spin_host.rs` / `engine.rs` / `main.rs`（落盘与恢复）、`src/shared/history/Conversation.ts`、`src/host/conversationPayload.ts` | `engine_tests`（`ensure_loaded_restores_work_mode_from_metadata` / `set_work_mode_persists_metadata_and_broadcasts` / `set_work_mode_skips_deleted_sessions` / `abort_exits_restored_spin_mode_of_idle_session`）+ `core-rs/fixtures/eventTypes.json` 登记 + `src/test/conversationPayload.test.ts` | 自动 |
 | FR-006 | `electron/soundSettings.ts` | `src/test/soundSettings.test.ts`（默认值断言更新） | 自动 |
 
 ## 待澄清
@@ -159,6 +159,13 @@ core-rs `SessionState.work_mode` 同步。会话加载（`ensure_loaded`）从 m
 
 收敛时由 /converge 填写，结论只分三类。
 
-- 已满足：<FR / AC → 证据（实现与测试落点）>
-- 偏差：<与 spec 的差异；改代码或改 spec 并留痕>
-- 未做：<回写 tasks.md 的未完成项>
+- 已满足：
+  - AC-1 / AC-2 / AC-2a（FR-001）→ `electron/monaco/main.ts`、`electron/imageViewer/main.ts` 收到 init 后设 `document.title`；调用侧 `init.title` 已是 basename（`ElectronUIHost.openFile` / `openRemoteFile` / `showVirtualDocument` 既有传参）。窗口行为人工验证。
+  - AC-3 ～ AC-6（FR-002）→ `ElectronUIHost.takeViewerSlot` / `trackViewerWindow`（存活窗口取 `getNormalBounds` 后销毁、`closed` 清引用；Mermaid 与 Spin 设计器不经过名额）；决策由 `src/test/viewerWindows.test.ts`（`planViewerSlotBounds` 优先级）锁定，窗口行为人工验证。
+  - AC-7 ～ AC-9（FR-003）→ `electron/viewerWindowRect.ts` + `workspaceStateStore` 两个 rect 字段 + `ElectronSpinDesign` 接线；`src/test/viewerWindows.test.ts` 覆盖矩形校验 / 多屏判据 / 防抖落盘 / 读-改-写；`electron/main.ts` 可见性判据转调同一实现。
+  - AC-10 / AC-11（FR-004）→ 总线 `workModeChanged`（`AssistantEventBus.ts` + `WebViewUI.onWorkModeChanged` → wire `setWorkMode`）；`InputArea` 禁用与 placeholder 三态由 `src/test/inputAreaState.test.ts` 锁定；abort 按钮计入 spin 由 `src/test/abortButtonState.test.ts` 锁定；core 进入 / 退出广播由 `engine_tests::set_work_mode_persists_metadata_and_broadcasts` 锁定。
+  - AC-12 ～ AC-14（FR-005）→ `Core::set_work_mode` 唯一写入点（内存 + meta.json + 事件）；`ensure_loaded` 恢复与 `conversation_load_payload` 带 `workMode`；`conversationLoaded` 载荷必带（`src/test/conversationPayload.test.ts`）；恢复态 abort 退出（`engine_tests::abort_exits_restored_spin_mode_of_idle_session`）；默认 normal（`ensure_loaded_restores_work_mode_from_metadata` 的无字段分支）。落盘双侧同步（`ConversationMetadata.workMode`）。
+  - AC-15 / AC-16（FR-006）→ `electron/soundSettings.ts` 默认值翻转，`src/test/soundSettings.test.ts` 全绿；偏好设置 UI / 播放链路零改动（读规范化结果）。
+  - 反向对照：实现 diff 未发现 spec 外行为——`events.md` 行数棘轮 418→419（新事件行 +1，`docsLint.test.ts` 常量同步）、`core-rs/fixtures/eventTypes.json` 登记 `workModeChanged`（Rust 侧事件词汇双向锁定）、测试假件补 `workMode` / `workModeChanged`，均为本次契约变更的伴生落点。`standaloneBus` 的 real-core 冒烟在 ARM64 本机按 `process.arch !== 'x64'` 显式跳过（既有平台门，CI 跑 x64），其余 standalone 系列驱动真实 arm64 二进制全绿。
+- 偏差：追溯矩阵两处修正（留痕）——FR-001 的测试落点原写「标题决策纯函数」，实际渲染端为一行赋值无分支，改为「无自动覆盖 + 理由」；FR-005 的测试落点原写「core-rs 对照表测试」，实际落点为 `engine_tests` 四个用例 + parity fixture 登记（Rust 侧无独立 meta 字段对照表测试，恢复 / 落盘 / 退出路径均由 engine_tests 锁定）。
+- 未做：无。
