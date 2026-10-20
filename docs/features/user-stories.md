@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-13
+last_reviewed: 2026-10-20
 ---
 
 # <product-name> 用户故事（US）
@@ -589,6 +589,10 @@ last_reviewed: 2026-10-13
 3. `/spin` 执行期间主输入框禁用（placeholder 提示「Spin 模式下不响应用户输入」），停止
    按钮可用；结束（完成 / 中止 / 失败）后恢复。会话 `meta.json` 落盘 `workMode` 标记，
    加载时恢复禁用态；应用中断后恢复出的 spin 会话经停止按钮退出。
+4. `/spin` 执行期间父对话不参与 LLM 循环，完全由 SpinLoop 程序驱动：用户消息在 Core 侧
+   也被丢弃，不入队、不触发 LLM。子代理的 Reply 只用于节点结果更新与验收判定；同一子
+   代理的 Reply 只响应一次，重复或 Spin 结束后迟到的 Reply 一律忽略，不得触发父对话的
+   LLM 轮次。
 
 ## EP-11 通知与国际化
 

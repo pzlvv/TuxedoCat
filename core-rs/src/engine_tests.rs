@@ -740,6 +740,96 @@ fn sub_agent_start_emits_running_runtime_snapshot() {
     }
 }
 
+/// spin 语义：同一子代理的 Reply 只响应一次；重复 / 迟到 Reply 不落盘、不入队，
+/// 也不会拉起父对话的 LLM 循环（docs/features/user-message-pipeline.md 第 3.3 节）。
+#[test]
+fn spin_reply_is_consumed_once_and_late_replies_are_ignored() {
+    let sandbox = Sandbox::new("engine-spin-reply-once");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(project.clone()));
+    let harness = EngineHarness::allow_all();
+    history::create_conversation("s1", &project, json!({ "sessionId": "s1" })).unwrap();
+    harness.core.session("s1").lock().unwrap().work_mode = WorkMode::Spin;
+    harness.core.register_spin_sub_agent("s1", "sub_a");
+
+    harness.core.deliver_agent_reply("s1", "第一次反馈", "sub_a").unwrap();
+    {
+        let state = harness.core.session("s1");
+        let state = state.lock().unwrap();
+        assert_eq!(
+            state.messages.iter().filter(|m| m["silent"] == json!(true)).count(),
+            1,
+            "首条 Reply 落 silent 上下文"
+        );
+        assert!(state.agent_messages.is_empty());
+        assert!(!state.running);
+    }
+
+    // 同一子代理的重复 Reply：忽略（不落盘、不入队）
+    harness.core.deliver_agent_reply("s1", "第二次反馈", "sub_a").unwrap();
+    // Spin 结束、work_mode 恢复 normal 之后迟到的 Reply：仍按 spin 语义忽略
+    harness.core.set_work_mode("s1", WorkMode::Normal);
+    harness.core.deliver_agent_reply("s1", "迟到反馈", "sub_a").unwrap();
+
+    let state = harness.core.session("s1");
+    let state = state.lock().unwrap();
+    assert_eq!(
+        state.messages.iter().filter(|m| m["silent"] == json!(true)).count(),
+        1,
+        "同一子代理只响应一次"
+    );
+    assert!(state.agent_messages.is_empty(), "Reply 不得进入消费队列");
+    assert!(!state.running, "不得拉起父对话消费循环");
+}
+
+/// Spin 结束后才到达的、来自 spin 子代理的首条 Reply 同样只落 silent 上下文，
+/// 不得被当成普通自动消息拉起父对话的 LLM 循环。
+#[test]
+fn late_first_reply_from_spin_sub_agent_stays_silent() {
+    let sandbox = Sandbox::new("engine-spin-late-reply");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(project.clone()));
+    let harness = EngineHarness::allow_all();
+    history::create_conversation("s1", &project, json!({ "sessionId": "s1" })).unwrap();
+    harness.core.session("s1").lock().unwrap().work_mode = WorkMode::Normal;
+    harness.core.register_spin_sub_agent("s1", "sub_late");
+
+    harness.core.deliver_agent_reply("s1", "迟到的反馈", "sub_late").unwrap();
+
+    let state = harness.core.session("s1");
+    let state = state.lock().unwrap();
+    assert_eq!(
+        state.messages.iter().filter(|m| m["silent"] == json!(true)).count(),
+        1
+    );
+    assert!(state.agent_messages.is_empty());
+    assert!(!state.running);
+}
+
+/// spin 期间父对话禁止用户输入：Core 侧兜底丢弃，不入队、不拉起消费循环。
+#[test]
+fn user_message_is_dropped_while_spin_mode() {
+    let sandbox = Sandbox::new("engine-spin-input");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(project.clone()));
+    let harness = EngineHarness::allow_all();
+    history::create_conversation("s1", &project, json!({ "sessionId": "s1" })).unwrap();
+    harness.core.session("s1").lock().unwrap().work_mode = WorkMode::Spin;
+
+    submit(&harness, "s1", "spin 期间输入", "u-spin");
+    // 自动消息（后台 Bash 通知）同样不得入队：Spin 结束后不能被消费循环喂给 LLM
+    harness
+        .core
+        .enqueue_bash_notification("s1", "后台任务完成");
+
+    let state = harness.core.session("s1");
+    let state = state.lock().unwrap();
+    assert!(state.pending_user_message.is_none(), "用户消息不得入队");
+    assert!(state.agent_messages.is_empty(), "自动消息不得入队");
+    assert!(state.messages.is_empty(), "用户消息不得进上下文");
+    assert!(!state.running, "不得拉起消费循环");
+}
+
 /// abort 两阶段：
 /// 前台有工作时只置 `cancel`，后台 Bash 任务保留；前台停下后再次 abort 才中止后台。
 #[test]

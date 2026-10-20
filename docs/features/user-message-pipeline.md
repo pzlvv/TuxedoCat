@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-18
+last_reviewed: 2026-10-20
 ---
 
 # 规格：用户消息管线
@@ -45,6 +45,10 @@ last_reviewed: 2026-10-18
   - **AC-19**（FR-003）：GIVEN 空闲挂起项 WHEN 用户中止该会话 THEN 挂起项回填输入框、不再自动提交；空闲推送与带中止标记的 `queryEnd` 竞态以中止回填收敛
   - **AC-20**（FR-003）：GIVEN 空闲挂起项 WHEN 编辑 / 删除 THEN 本地清除并回填 / 丢弃，无 `discardQueuedMessage` 上行
   - **AC-21**（FR-003）：GIVEN 空闲挂起项 WHEN 非空快照不再包含该会话或 webview 重载 THEN 挂起项清除 / 丢失、不投递
+- 场景 7：Spin 模式
+  - **AC-22**（FR-007）：GIVEN 会话处于 spin 模式 WHEN 收到用户消息 THEN Core 丢弃该消息，不入队、不进上下文、不发起 LLM 轮次
+  - **AC-23**（FR-007）：GIVEN spin 子代理已投递过 Reply WHEN 同一子代理再次投递 Reply THEN 只保留首条 silent 上下文与一次验收判定，后续 Reply 忽略且不发起父对话 LLM 轮次
+  - **AC-24**（FR-007）：GIVEN spin 子代理在 Spin 结束后才投递首条 Reply WHEN 投递 THEN 只落 silent 上下文，不进入消费队列、不发起父对话 LLM 轮次
 
 ## 2. 功能需求
 
@@ -200,6 +204,24 @@ Skill 的 `tool_use` / `tool_result` 紧跟在用户消息之后。
 替换边界由光标定义：「在已有正文前补 `/` 再选补全」的输入保留正文；光标位于命令名中间时，
 区间内光标之后的字符保持不变，由用户继续编辑。
 
+### FR-007：Spin 模式下的用户输入与 Reply 投递
+
+Spin 模式（`WorkMode::Spin`）期间父对话完全由 SpinLoop 程序驱动，不参与 LLM 消费循环。
+
+- **用户输入**：`UiEvent.userMessageSubmitted` 在 Core 侧直接丢弃——不入队、不进上下文、
+  不拉起消费循环。webview 同时禁用输入框（US-39），Core 的丢弃是兜底，不依赖 UI 状态。
+- **进入 spin**：清掉排队中的自动消息与 Reminder，并复位 Reminder 驱动标记；Spin 期间
+  后续到达的自动消息也不入队。这样 Spin 结束后消费循环不会拿到旧消息跑 LLM。
+- **自动消息**：后台 Bash 通知等自动消息不入队，避免 Spin 结束后被消费循环当成下一轮
+  LLM 输入。
+- **子代理 Reply**：只落 `silent` 上下文并经 `emit_reply_delivered` 交给 SpinLoop 做节点
+  验收判定，不进入 `agent_messages`。
+- **只响应一次**：同一子代理的首条 Reply 被消费后，后续重复 Reply 直接忽略（不落盘、
+  不触发投递事件、不静默中止）。
+- **迟到 Reply**：SpinLoop 起的子代理登记在会话上；其 Reply 即使到达时 Spin 已结束、
+  `work_mode` 已恢复 `Normal`，仍按 spin 语义处理，只落 `silent` 上下文，不拉起父对话
+  的 LLM 轮次。
+
 ## 3. 行为规格
 
 ### 3.1 术语与事实来源
@@ -241,6 +263,9 @@ Skill 的 `tool_use` / `tool_result` 紧跟在用户消息之后。
 - 补全只改写 `/` 到光标之间的文本。
 - 运行中与等待用户两种活动指示的动效语义不同。
 - 空闲挂起项是 webview 本地状态：不上送宿主，触发与回收都以 core 推送的快照为准。
+- spin 模式父对话没有 LLM 消费循环：用户消息 / 自动消息不入队，子代理 Reply 只作结果
+  更新与验收判定。
+- 同一 spin 子代理的 Reply 只响应一次；重复 / 迟到 Reply 忽略。
 
 ## 4. 边界与错误路径
 
@@ -249,6 +274,8 @@ Skill 的 `tool_use` / `tool_result` 紧跟在用户消息之后。
 - **撤回竞态**：已被消费 / 被更新的排队消息替换时，`discardQueuedMessage` 按 `uuid`
   不匹配而保持不动（AC-10）。
 - **回投兜底**：入队失败 / 引擎缺失导致的未消费排队项由 `queryEnd` 回投兜底（FR-003）。
+- **spin 期间输入**：Core 直接丢弃用户消息（UI 已禁用输入框），不报错、不入队。
+- **迟到 Reply**：Spin 结束后到达的 spin 子代理 Reply 只落 `silent` 上下文，不拉起 LLM。
 - **provider 为空**：模型身份不合法时记录日志并忽略（[events.md 第 2.3 节](../architecture/events.md#23-uieventui--core单向)的 `modelChanged` 口径）。
 
 ## 5. 非目标
@@ -259,7 +286,8 @@ Skill 的 `tool_use` / `tool_result` 紧跟在用户消息之后。
 ## 6. 对需求基线的影响
 
 关联既有 [user-stories.md](user-stories.md) 的 US-1（发送消息并获得流式回复）/
-US-3（消息排队）/ US-5（输入历史与斜杠命令补全）/ US-27（斜杠命令与技能触发）；
+US-3（消息排队）/ US-5（输入历史与斜杠命令补全）/ US-27（斜杠命令与技能触发）/
+US-39（Spin 设计器：spin 期间禁止用户输入与父对话不跑 LLM）；
 新增 US-46（空闲发送与发送模式，e2e 见 `e2e/webview/sendModes.spec.ts`）。
 
 ## 7. 追溯矩阵
@@ -272,3 +300,4 @@ US-3（消息排队）/ US-5（输入历史与斜杠命令补全）/ US-27（斜
 | FR-004 | `core-rs/src/engine.rs` 的 `inject_skill_tool_use` | `core-rs/src/engine_tests.rs` 的 `slash_skill_command_injects_the_skill_tool_use` | 自动 |
 | FR-005 | `core-rs/src/prompt.rs` 的系统环境缓存（`GIT_CACHE` 等，按 `cwd` 分桶） | `core-rs/src/prompt_tests.rs`（环境信息组装用例） | 自动 |
 | FR-006 | `src/webview/InputArea.tsx` 的 `handleInputChange` / `commitSlash` | 无自动覆盖 + webview 输入交互，现有测试车道未覆盖，AC-15 / AC-16 由人工场景验证 | 无自动覆盖 + 现有车道未建输入框补全用例 |
+| FR-007 | `core-rs/src/engine.rs` 的 `on_user_message`（spin 丢弃）、`enqueue_agent_message`（spin 不入队）、`deliver_agent_reply` + `register_spin_sub_agent`（Reply 只响应一次 / 迟到 Reply 按 spin 语义处理）；`core-rs/src/spin_host.rs` 的 `CoreSpinHost::run_sub_agent` 登记 spin 子代理、`run_spin_command` 进入 spin 时清队列 | `core-rs/src/engine_tests.rs` 的 `user_message_is_dropped_while_spin_mode` / `spin_reply_is_consumed_once_and_late_replies_are_ignored` / `late_first_reply_from_spin_sub_agent_stays_silent`；`core-rs/src/spin_host_tests.rs` 的 `spin_run_feeds_replies_to_the_loop_not_the_main_llm`（含 Spin 结束后的重复 Reply）/ `entering_spin_clears_queued_auto_messages_and_reminders` | 自动 |

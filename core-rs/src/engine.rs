@@ -229,6 +229,17 @@ pub struct SessionState {
     /// 工作模式（`QueryEngine.workMode`）：`spin` 期间子代理 Reply 不进消费队列
     /// （见 `deliver_agent_reply` 的 spin 分支），由 SpinLoop 消费。
     pub work_mode: WorkMode,
+    /// 本会话在 spin 运行期间由 SpinLoop 起的子代理（`from_session_id`）。
+    ///
+    /// 登记后这些子代理的 Reply 始终按 spin 语义处理（只落 silent 上下文、交给
+    /// SpinLoop 判定），即使 Reply 在 Spin 结束、`work_mode` 恢复 `Normal` 之后才到达，
+    /// 也不会被当成普通自动消息喂给父对话的 LLM。
+    pub spin_sub_agents: HashSet<String>,
+    /// 已经在 spin 语义下消费过首条 Reply 的子代理。
+    ///
+    /// 同一子代理只响应一次：重复 / 迟到的 Reply 直接忽略，不再落盘、不再触发
+    /// `emit_reply_delivered`，也不会进入父对话的消费队列。
+    pub spin_replied: HashSet<String>,
     /// 待消费的用户消息（`QueryEngine.pendingUserMessage`）。
     ///
     /// **单槽位**：新消息直接
@@ -323,6 +334,8 @@ impl SessionState {
             waiting: false,
             silent_abort: false,
             work_mode: WorkMode::Normal,
+            spin_sub_agents: HashSet::new(),
+            spin_replied: HashSet::new(),
             pending_user_message: None,
             messages: Vec::new(),
             persisted_count: 0,
@@ -806,6 +819,12 @@ impl Core {
         };
         let should_start = {
             let mut state = state.lock().unwrap();
+            // spin 期间父对话完全由 SpinLoop 程序驱动，不跑 LLM 消费循环：
+            // 后台通知 / 普通自动消息不得入队，否则 Spin 结束后会被消费循环当成
+            // 下一轮 LLM 的输入（docs/features/user-message-pipeline.md 第 3.3 节）。
+            if state.work_mode == WorkMode::Spin {
+                return;
+            }
             state.agent_messages.push(AgentMessage {
                 content: content.to_string(),
                 origin: origin.to_string(),
@@ -1064,53 +1083,86 @@ impl Core {
         Ok(sub_session_id)
     }
 
+    /// 登记一个由 SpinLoop 起的子代理（`from_session_id`）。
+    ///
+    /// 登记后它的 Reply 始终按 spin 语义处理（见 [`Self::deliver_agent_reply`]）：
+    /// 只落 silent 上下文并交给 SpinLoop 判定，Spin 结束后到达的迟到 Reply 也不会
+    /// 进入父对话的消费队列。`spin_host.rs` 在 `run_sub_agent` 拿到子会话 id 后调用。
+    pub fn register_spin_sub_agent(&self, parent_session_id: &str, sub_session_id: &str) {
+        if let Some(state) = self.session_if_exists(parent_session_id) {
+            state
+                .lock()
+                .unwrap()
+                .spin_sub_agents
+                .insert(sub_session_id.to_string());
+        }
+    }
+
     /// 把子代理的回复投递给目标会话（对齐 `ReplyTool.call` 的 `submitMessage` 分支）。
+    ///
+    /// spin 语义（docs/features/user-message-pipeline.md 第 3.3 节）：
+    /// - 父会话处于 spin，或来源子代理由 SpinLoop 创建时，Reply 只落 silent 上下文并
+    ///   经 `emit_reply_delivered` 交给 SpinLoop 做验收判定，绝不进入 `agent_messages`；
+    /// - 同一来源子代理只响应一次，重复 / 迟到的 Reply 直接忽略；
+    /// - 迟到 Reply 即使到达时 `work_mode` 已恢复 `Normal`，也按 spin 语义处理，
+    ///   避免父对话被它拉起一轮 LLM。
     pub fn deliver_agent_reply(
         self: &Arc<Self>,
         target_session_id: &str,
         content: &str,
         from_session_id: &str,
     ) -> Result<(), String> {
-        let state = self.session_if_exists(target_session_id);
-        if state.is_none() {
+        let Some(state) = self.session_if_exists(target_session_id) else {
             return Err(format!("目标会话 {target_session_id} 不存在"));
-        }
-        // spin 模式的主会话不参与 LLM 消费循环：Reply 只进上下文（silent）并落盘，内容经
-        // `emit_reply_delivered` 交给 SpinLoop 做验收判定。绝不能入 `agent_messages`——
-        // 否则消费循环会在 Spin 结束后把它当普通自动消息喂给主对话 LLM，
-        let spin_state = state
-            .filter(|state| state.lock().unwrap().work_mode == WorkMode::Spin);
-        match spin_state {
-            Some(state) => {
-                persist_spin_reply(self, target_session_id, &state, content, from_session_id);
-                // 供前台 `sleep` 命令监听：等待期间收到子代理 Reply 时立刻转入后台。
-                // 必须先于静默中止：监听器（SpinLoop / sleep 检测）要先拿到 Reply。
-                crate::subagent::emit_reply_delivered(
-                    target_session_id,
-                    from_session_id,
-                    content,
-                );
-                // 子代理首次 Reply 后立即
-                // 静默中止其自身引擎——否则它会拿到 Reply 的 tool_result 后再跑一轮
-                // LLM（多余 token，还可能重复 Reply）。
-                if from_session_id != target_session_id {
-                    self.request_silent_abort(from_session_id);
+        };
+
+        // 在同一把锁里判定语义并占位「首条 Reply」：并发的重复 Reply 只有一个能通过。
+        let spin_reply = {
+            let mut guard = state.lock().unwrap();
+            let from_spin = from_session_id != target_session_id
+                && (guard.work_mode == WorkMode::Spin
+                    || guard.spin_sub_agents.contains(from_session_id));
+            if from_spin {
+                if !guard.spin_replied.insert(from_session_id.to_string()) {
+                    return Ok(());
                 }
+                true
+            } else if guard.spin_replied.contains(from_session_id) {
+                // 曾在 spin 语义下消费过该来源：后续 Reply 一律忽略
+                return Ok(());
+            } else {
+                false
             }
-            None => {
-                self.enqueue_agent_message(
-                    target_session_id,
-                    content,
-                    "agent",
-                    from_session_id,
-                );
-                // 供前台 `sleep` 命令监听：等待期间收到子代理 Reply 时立刻转入后台
-                crate::subagent::emit_reply_delivered(
-                    target_session_id,
-                    from_session_id,
-                    content,
-                );
+        };
+
+        if spin_reply {
+            persist_spin_reply(self, target_session_id, &state, content, from_session_id);
+            // 供前台 `sleep` 命令监听：等待期间收到子代理 Reply 时立刻转入后台。
+            // 必须先于静默中止：监听器（SpinLoop / sleep 检测）要先拿到 Reply。
+            crate::subagent::emit_reply_delivered(
+                target_session_id,
+                from_session_id,
+                content,
+            );
+            // 子代理首次 Reply 后立即
+            // 静默中止其自身引擎——否则它会拿到 Reply 的 tool_result 后再跑一轮
+            // LLM（多余 token，还可能重复 Reply）。
+            if from_session_id != target_session_id {
+                self.request_silent_abort(from_session_id);
             }
+        } else {
+            self.enqueue_agent_message(
+                target_session_id,
+                content,
+                "agent",
+                from_session_id,
+            );
+            // 供前台 `sleep` 命令监听：等待期间收到子代理 Reply 时立刻转入后台
+            crate::subagent::emit_reply_delivered(
+                target_session_id,
+                from_session_id,
+                content,
+            );
         }
         Ok(())
     }
@@ -1483,6 +1535,18 @@ impl Core {
         // 之后才把 payload 的 agentMode / thinkingMode / webSearch /
         // model 应用到引擎——否则 payload 覆盖会被 meta.json 的旧值反向覆盖。
         let _ = self.ensure_loaded(&session_id);
+
+        // spin 期间父对话完全由 SpinLoop 程序控制，禁止用户输入：UI 已禁用输入框，
+        // 这里在 Core 侧兜底，丢弃任何到达的 `userMessageSubmitted`——不入队、不拉起
+        // 消费循环，避免 Spin 结束后把这条消息当成下一轮 LLM 输入
+        // （docs/features/user-message-pipeline.md 第 3.3 节）。
+        {
+            let state = self.session(&session_id);
+            if state.lock().unwrap().work_mode == WorkMode::Spin {
+                self.log("userMessageSubmitted while spin; dropped");
+                return;
+            }
+        }
 
         // 随消息携带的会话覆盖：
         // agentMode / thinkingMode / webSearch / model 由宿主按会话解析后带上。

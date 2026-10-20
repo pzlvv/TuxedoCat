@@ -225,6 +225,41 @@ fn ready_design_emits_the_refresh_even_when_the_loop_fails() {
 }
 
 #[test]
+fn entering_spin_clears_queued_auto_messages_and_reminders() {
+    let sandbox = Sandbox::new("spin-host-clears-queue");
+    write_ready_design(&sandbox, "任务");
+    let harness = EngineHarness::allow_all();
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    history::create_conversation(
+        "s1",
+        &project,
+        json!({ "sessionId": "s1", "project": project, "title": "t" }),
+    )
+    .unwrap();
+    {
+        let state = harness.core.session("s1");
+        let mut state = state.lock().unwrap();
+        state.agent_messages.push(crate::engine::AgentMessage {
+            content: "旧通知".to_string(),
+            origin: "bash".to_string(),
+            from_session_id: String::new(),
+        });
+        state.pending_reminder = Some("旧提醒".to_string());
+        state.reminder_driven_run = true;
+    }
+    // 立即中止，避免子代理等待；进入 spin 的清队列发生在循环启动之前
+    harness.core.session("s1").lock().unwrap().cancel.store(true, Ordering::Relaxed);
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    run_spin_command(&harness.core, "s1", &workspace, "auto");
+
+    let state = harness.core.session("s1");
+    let state = state.lock().unwrap();
+    assert!(state.agent_messages.is_empty(), "进入 spin 应清掉排队的自动消息");
+    assert!(state.pending_reminder.is_none(), "进入 spin 应清掉 Reminder");
+    assert!(!state.reminder_driven_run, "Reminder 驱动标记应复位");
+}
+
+#[test]
 fn spin_command_without_a_hook_reports_that_it_is_not_wired() {
     let _guard = crate::test_support::serial();
     let (emit, events) = {
@@ -357,6 +392,29 @@ fn spin_run_feeds_replies_to_the_loop_not_the_main_llm() {
                 .map(|message| &message.content)
                 .collect::<Vec<_>>()
         );
+    }
+
+    // 回归：Spin 结束后的重复 Reply（同一子代理第二次触发 Reply）不得拉起父对话
+    // 的 LLM 循环。这里直接走 Reply 投递入口模拟迟到投递。
+    harness
+        .core
+        .deliver_agent_reply("s1", "重复反馈", &sub_session_id)
+        .expect("重复 Reply 投递");
+    harness
+        .core
+        .deliver_agent_reply("s1", "再次重复反馈", &sub_session_id)
+        .expect("再次重复 Reply 投递");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(
+        bodies.lock().unwrap().len(),
+        1,
+        "重复 Reply 不得触发主对话 LLM 请求"
+    );
+    {
+        let state = harness.core.session("s1");
+        let state = state.lock().unwrap();
+        assert!(state.agent_messages.is_empty(), "重复 Reply 不得进入消费队列");
+        assert!(!state.running, "重复 Reply 不得拉起父对话消费循环");
     }
 
     // 主对话历史：spin 进度消息 + Agent tool_use 卡片 + silent Reply；

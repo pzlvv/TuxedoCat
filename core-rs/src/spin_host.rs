@@ -106,6 +106,11 @@ impl SpinHost for CoreSpinHost {
             }
         };
         *expected.lock().unwrap() = Some(sub_session_id.clone());
+        // 登记为 spin 子代理：它的 Reply 只作节点验收结果，重复 / 迟到的 Reply
+        // 由 `deliver_agent_reply` 的 spin 语义忽略，绝不拉起父对话的 LLM 循环
+        // （docs/features/user-message-pipeline.md 第 3.3 节）。
+        self.core
+            .register_spin_sub_agent(&self.session_id, &sub_session_id);
 
         let result = loop {
             if self.is_aborted() {
@@ -243,6 +248,15 @@ pub fn run_spin_command(
     // 工作模式经 `set_work_mode` 唯一写入点：内存 + meta.json + `workModeChanged`
     // 广播（UI 据此禁用 / 恢复主输入框，specs/016 FR-004 / FR-005）。
     core.set_work_mode(session_id, WorkMode::Spin);
+    // 进入 spin 前清掉排队中的自动消息与 Reminder：Spin 期间父对话只由程序驱动，
+    // 这些消息若留到 Spin 结束后会被消费循环当成下一轮 LLM 输入
+    // （docs/features/user-message-pipeline.md 第 3.3 节）。
+    if let Some(state) = core.session_if_exists(session_id) {
+        let mut state = state.lock().unwrap();
+        state.agent_messages.clear();
+        state.pending_reminder = None;
+        state.reminder_driven_run = false;
+    }
     let outcome = spin::SpinLoop::with_abort_flag(runner, cwd, session_id, abort).run();
     // 无论 Completed / Stopped / Aborted / Failed 都要恢复；会话可能已被删除，
     // `set_work_mode` 内部用 `session_if_exists` 判定（不复活刚删除的会话）
