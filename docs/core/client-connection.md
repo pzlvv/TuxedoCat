@@ -116,6 +116,9 @@ Connection 持有：
 - 会话目录名仍由 `path` 派生（`encodeURIComponent`，超长走哈希），**不引入工作区身份**：
   不同机器上的相同路径落在各自 Core 的数据目录里，不会相撞。
 - `meta.json` 的 `project` 字段仍存 `path`。
+- Spin 设计的 `spin.json` 与 `workspace.meta.json` 一样落在各 Core 实例的会话目录；
+  设计器经 `UiRequest.spinDesignRequested` / `spinDesignSaveRequested` 访问，宿主不按
+  本地路径读写（[docs/core/standalone-core-boundaries.md 第 2 节](standalone-core-boundaries.md#2-宿主侧的-core-事实读取)）。
 
 ### 4.2 远程打开流程（Electron）
 

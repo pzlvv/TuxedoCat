@@ -1,42 +1,12 @@
 /**
- * SpinEngine - Spin Design 核心引擎
+ * SpinEngine - Spin Design 纯逻辑
  *
- * 负责：
- * - 读取/写入 spin.json（流程图格式）
- * - 拓扑排序获取执行顺序
- * - 进度计算
- * - 构建 sub-agent prompt
+ * 只保留设计器共用的纯函数（结构校验 / 拓扑排序 / 变量替换 / prompt 组装）。
+ * `spin.json` 的读写归 Core（`UiRequest.spinDesignRequested` / `spinDesignSaveRequested`），
+ * 宿主侧不再有本地磁盘读写路径。
  */
 
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import { getProjectConversationDir, ensureProjectConversationDir } from '../history/Config.js';
-import { logger } from '../Logger.js';
-import type { SpinDesign, SpinNode, SpinEdge, SpinNodeMeta } from './Types.js';
-
-const SPIN_FILE = 'spin.json';
-
-/**
- * 获取 spin.json 路径
- * 存储在 ~/<CONFIG_DIR_NAME>/conversations/<encoded-workspace>/spin.json
- */
-function getSpinJsonPath(cwd: string): string {
-  const projectDir = getProjectConversationDir(cwd);
-  return path.join(projectDir, SPIN_FILE);
-}
-
-/**
- * 读取 spin.json
- */
-export async function readSpinJson(cwd: string): Promise<SpinDesign | null> {
-  try {
-    const content = await fs.readFile(getSpinJsonPath(cwd), 'utf-8');
-    const config = JSON.parse(content) as SpinDesign;
-    return config;
-  } catch {
-    return null;
-  }
-}
+import type { SpinDesign, SpinNode, SpinEdge } from './Types.js';
 
 /** spin.json 结构问题分类 */
 export type SpinDesignIssue = 'invalid' | 'empty-node' | 'not-dag' | 'variable-no-value';
@@ -161,28 +131,6 @@ export function validateSpinDesign(config: unknown): string | null {
   }
 
   return null;
-}
-
-/**
- * 写入 spin.json
- *
- * 使用“先写临时文件，再原子 rename”的方式，避免读取方在写入过程中
- * 读到空文件或半截 JSON，导致 Spin Design 打开时节点内容被误判为空。
- */
-export async function writeSpinJson(cwd: string, config: SpinDesign): Promise<void> {
-  // 确保项目对话目录存在（目录由 core 建；其中的 settings.json 由宿主写）
-  await ensureProjectConversationDir(cwd);
-  const content = JSON.stringify(config, null, 2);
-  const spinPath = getSpinJsonPath(cwd);
-  const tmpPath = `${spinPath}.${process.pid}.tmp`;
-  try {
-    await fs.writeFile(tmpPath, content, { encoding: 'utf-8', mode: 0o600 });
-    await fs.rename(tmpPath, spinPath);
-  } catch (err) {
-    // 清理可能残留的临时文件，避免下次读取/写入混淆
-    await fs.rm(tmpPath, { force: true }).catch(() => { });
-    throw err;
-  }
 }
 
 /**
@@ -330,88 +278,4 @@ ${previousNoteSection}
 - 完成后用 \`Reply\` 工具发送执行反馈，针对每一条验收标准，描述下完成的程度，若未完成说明下遇到的问题。
 - 如果遇到阻塞或未解决的问题，在反馈中说明原因
 - Reply 消息中只包含反馈内容，不要包含其他文字或 markdown 标记`;
-}
-
-/**
- * spin.json 写操作串行队列
- *
- * SpinLoop 的 updateNodeMeta 与 Spin Design webview 的保存都会对 spin.json
- * 做"读-改-写"。若两者并发，后写者会覆盖先写者的结果：
- * 例如用户点击"清除结果"（meta 写为 {}）后，正在运行的 Loop 回写某个节点的
- * meta，会把已完成状态重新写回，导致"清除结果不生效"。
- * 通过队列将所有写操作串行化，避免并发读-改-写造成的丢失更新。
- */
-let spinWriteChain: Promise<void> = Promise.resolve();
-
-/**
- * 串行化执行对 spin.json 的读-改-写操作
- * 按调用顺序排队执行（Promise 链），单个失败不影响后续队列。
- */
-export function enqueueSpinWrite<T>(task: () => Promise<T>): Promise<T> {
-  const next = spinWriteChain.then(task, task);
-  spinWriteChain = next.then(() => undefined, () => undefined);
-  return next;
-}
-
-/**
- * 串行写入 spin.json（供 SpinLoop 与 webview 保存共用）
- */
-export function writeSpinJsonQueued(cwd: string, config: SpinDesign): Promise<void> {
-  return enqueueSpinWrite(() => writeSpinJson(cwd, config));
-}
-
-/**
- * 更新某个节点的执行状态（串行化，避免并发读-改-写丢失更新）
- */
-export function updateNodeMeta(
-  cwd: string,
-  nodeId: number,
-  passed: boolean,
-  note?: string,
-  extra?: Partial<SpinNodeMeta>,
-): Promise<boolean> {
-  return enqueueSpinWrite(async () => {
-    const config = await readSpinJson(cwd);
-    if (!config) return;
-    if (!config.meta) config.meta = {};
-
-    const key = String(nodeId);
-    const prev = config.meta[key] || {};
-    config.meta[key] = {
-      ...prev,
-      passed,
-      note: note || '',
-      ...extra,
-    };
-
-    await writeSpinJson(cwd, config);
-  })
-    .then(() => true)
-    .catch(() => false);
-}
-
-/**
- * 自动检测项目状态
- * - init: 不存在 spin.json
- * - ready: spin.json 存在且结构可执行
- * - invalid: JSON 非法或节点数据非法
- * - empty-node: 存在空节点（无任务描述）
- * - not-dag: 不是有效的无环有向图（DAG）
- */
-export type SpinProjectState = 'init' | 'ready' | SpinDesignIssue;
-
-export async function detectProjectState(cwd: string): Promise<SpinProjectState> {
-  const spinPath = getSpinJsonPath(cwd);
-  try {
-    const content = await fs.readFile(spinPath, 'utf-8');
-    const config = JSON.parse(content);
-    const issue = getSpinDesignIssue(config);
-    const state: SpinProjectState = issue ? issue : 'ready';
-    logger.info('SpinEngine', `detectProjectState path=${spinPath} state=${state}`);
-    return state;
-  } catch (err) {
-    const state: SpinProjectState = (err as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'init' : 'invalid';
-    logger.info('SpinEngine', `detectProjectState path=${spinPath} state=${state} err=${(err as Error)?.message ?? err}`);
-    return state;
-  }
 }

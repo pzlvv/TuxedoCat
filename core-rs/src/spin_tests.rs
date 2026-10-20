@@ -566,6 +566,30 @@ fn write_spin_json_preserves_unknown_fields() {
 }
 
 #[test]
+fn read_spin_json_state_reports_missing_as_none() {
+    let sandbox = Sandbox::new("spin-state-missing");
+    let cwd = cwd_of(&sandbox);
+    assert_eq!(read_spin_json_state(&cwd), Ok(None));
+}
+
+#[test]
+fn read_spin_json_state_returns_parsed_value() {
+    let sandbox = Sandbox::new("spin-state-ok");
+    let cwd = cwd_of(&sandbox);
+    let config = json!({ "nodes": [ { "id": 1, "task": "A" } ], "edges": [], "meta": {} });
+    write_spin(&sandbox, config.clone());
+    assert_eq!(read_spin_json_state(&cwd), Ok(Some(config)));
+}
+
+#[test]
+fn read_spin_json_state_reports_invalid_json_as_error() {
+    let sandbox = Sandbox::new("spin-state-invalid");
+    let cwd = cwd_of(&sandbox);
+    std::fs::write(spin_path(&sandbox), "{ not json").expect("write invalid spin.json");
+    assert!(read_spin_json_state(&cwd).is_err());
+}
+
+#[test]
 fn substitute_spin_variables_escapes_dollar() {
     let mut variables = Map::new();
     variables.insert("A".to_string(), json!("x"));

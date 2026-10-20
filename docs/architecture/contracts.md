@@ -133,7 +133,8 @@ Connection（[docs/architecture/core-ui-separation.md 第 4.6 节](core-ui-separ
 
 Spin 设计器是**独立于对话 webview 的第二个 UI surface**：VS Code 里是 `WebviewPanel`，
 Electron 里是 `BrowserWindow`。它有自己的生命周期（打开 → 复用 → 刷新）、自己的消息协议、
-自己的数据源（`spin.json` + Skill 列表），与对话 webview 零共享状态。
+自己的数据源（Core 的 `spin.json` + 设计器技能清单，经 `UiRequest.spinDesignRequested`
+取回），与对话 webview 零共享状态。
 
 与 `UIHost` 分开的理由：
 
@@ -145,27 +146,32 @@ Electron 里是 `BrowserWindow`。它有自己的生命周期（打开 → 复�
 
 | 成员 | 语义 |
 | --- | --- |
-| `open(workspacePath?)` | 打开设计器；已打开则复用（**目录不同则切到新目录的数据**）。`workspacePath` 是发起方会话的工作目录——`spin.json` 与技能清单都归属它；不传时回退宿主当前工作目录（兼容旧调用 / 无会话场景） |
-| `refresh()` | 从磁盘重读 `spin.json` + Skill 列表推给已打开的设计器；未打开时 no-op |
+| `open(sessionId)` | 打开设计器；已打开则复用（**会话不同则切到新会话的数据**）。`sessionId` 是发起方会话——`spin.json` 与技能清单都归属它的工作目录（Core 所在机器）；`null` 表示没有会话（空态、保存不可用）。首次读取失败不创建窗口并 reject；已打开窗口切换会话失败时保持原绑定并推 `spinDesignError` |
+| `refresh()` | 从 Core 重读 `spin.json` + Skill 列表推给已打开的设计器；未打开时 no-op；失败时保持画布并推 `spinDesignError` |
 
 `refresh` 的必要性：SpinLoop 执行过程中会直接更新磁盘 meta，若设计器仍持有旧缓存，
 用户后续保存会覆盖执行结果，因此执行完成后必须刷新。
 
-**归属目录必须由调用方传入，不能回查活动目录**：多工作目录宿主（Electron）里设计器是
-单例窗口，从别的标签页再 `/spin` 时活动目录可能已经变了；实现内部把 `open()` 收到的目录
-**绑定**下来，`refresh()` 与保存都用它（保存不回查活动目录，否则会把当前目录的内容写进
-另一个目录的 `spin.json`）。
+**归属会话必须由调用方传入，不能回查活动会话**：多工作目录宿主（Electron）里设计器是
+单例窗口，从别的标签页再 `/spin` 时活动会话可能已经变了；实现内部把 `open()` 收到的
+`sessionId` **绑定**下来，`refresh()` 与保存都用它（保存不回查活动会话，否则会把当前会话
+的内容写进另一个会话的 `spin.json`）。
 
-**构造依赖**：`constructor(host: UIHost)`。实现只用其中 5 个成员——`getWorkspacePath()`
-（未显式传目录时的回退）、`isDarkTheme()` / `getLocale()`（生成 HTML）、`saveTextFile()`
-（导出）、`log()`。**不反向要求 `UIHost` 知道 Spin 的存在。**
+**数据面归 Core**：设计器读取走 `UiRequest.spinDesignRequested`（`data: null` = 没有设计
+文件，`status: 'error'` = 读取 / 解析失败），保存走 `UiRequest.spinDesignSaveRequested`
+（Core 在自己所在机器按会话工作目录落盘，与 SpinLoop 的 meta 更新共用同一把写锁）。
+宿主不直接读 core 的磁盘数据（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)）。
+
+**构造依赖**：`constructor(host: UIHost)`。实现只用其中 4 个成员——`isDarkTheme()` /
+`getLocale()`（生成 HTML）、`saveTextFile()`（导出）、`log()`。**不反向要求 `UIHost`
+知道 Spin 的存在。**
 
 **设计器消息协议**（设计器 ↔ 宿主，不走 `AssistantEventBus`）：
 
 | 方向 | 消息 |
 | --- | --- |
 | 设计器 → 宿主 | `refreshSpinDesign` / `saveSpinDesign` / `exportSpinDesign` |
-| 宿主 → 设计器 | `spinDesignData` / `spinSaveResult` / `spinExportResult` |
+| 宿主 → 设计器 | `spinDesignData` / `spinSaveResult` / `spinExportResult` / `spinDesignError` |
 
 core 与它只有一条连接：`CoreEvent.spinDesignDataChanged` → `WebViewUI.onSpinDesignDataChanged()`
 → `SpinDesign.refresh()`。

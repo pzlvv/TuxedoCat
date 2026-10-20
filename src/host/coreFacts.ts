@@ -12,7 +12,13 @@
  */
 
 import { requireEventBus } from '../shared/AssistantEventBus.js';
-import type { LoadedConversation, SkillListItem } from '../shared/AssistantEventBus.js';
+import type {
+  LoadedConversation,
+  SkillListItem,
+  SpinDesignReadResult,
+  SpinDesignSaveResult,
+} from '../shared/AssistantEventBus.js';
+import type { SpinDesign } from '../shared/spin/Types.js';
 import { getSystemLocale, setHostLocale, setHostUiLanguage } from './i18n.js';
 import type { ConversationMetadata } from '../shared/history/Conversation.js';
 import type { ConversationSpaceInfo } from '../shared/webviewTypes.js';
@@ -142,6 +148,27 @@ export async function loadConversationForHost(sessionId: string): Promise<Loaded
 export async function requestSkills(sessionId: string | undefined): Promise<SkillListItem[]> {
   const { skills } = await requireEventBus().requestCore({ type: 'skillsRequested', sessionId });
   return skills;
+}
+
+/**
+ * Spin 设计器数据（`spin.json` 内容 + 技能清单）。
+ *
+ * `sessionId` 决定 Core 所在机器上的会话工作目录；`data: null` 表示没有设计文件，
+ * 读取 / 解析失败由 `status: 'error'` 表达。设计器不直接读宿主本地磁盘
+ * （`docs/core/standalone-core-boundaries.md` 第 2 节）。
+ */
+export async function requestSpinDesign(sessionId: string): Promise<SpinDesignReadResult> {
+  return requireEventBus().requestCore({ type: 'spinDesignRequested', sessionId });
+}
+
+/**
+ * 保存 Spin 设计：Core 在会话工作目录所在机器落盘，与 SpinLoop 的 meta 更新串行。
+ */
+export async function saveSpinDesign(
+  sessionId: string,
+  data: SpinDesign,
+): Promise<SpinDesignSaveResult> {
+  return requireEventBus().requestCore({ type: 'spinDesignSaveRequested', sessionId, data });
 }
 
 /**

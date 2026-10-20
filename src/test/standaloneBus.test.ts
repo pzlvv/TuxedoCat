@@ -480,6 +480,8 @@ async function run(): Promise<void> {
         agentMode: null,
       }),
       skillsRequested: async () => ({ skills: [] }),
+      spinDesignRequested: async () => ({ status: 'ok' as const, data: null, skills: [] }),
+      spinDesignSaveRequested: async () => ({ status: 'ok' as const }),
     };
     core.bus.onUiRequests(handlers);
     check('onUiRequests rejects a second registration', throws(() => core.bus.onUiRequests(handlers)));

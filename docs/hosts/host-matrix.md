@@ -129,23 +129,24 @@ export class ElectronUIHost implements UIHost {
 
 | `SpinDesign` 成员 | VSCodeSpinDesign（`src/VSCodeSpinDesign.ts`） | ElectronSpinDesign（`electron/ElectronSpinDesign.ts`） |
 | --- | --- | --- |
-| `open(workspacePath?)` | 扫 `vscode.window.tabGroups.all` 找 `viewType === SPIN_DESIGN_PANEL_ID`：已打开则 `panel.reveal()` 复用（目录不同则先按新目录重推数据）；否则 `createWebviewPanel` 并灌入 `getSpinDesignHtml` | 自持 `spinDesignWindow`：已打开则 `restore()`（若最小化）+ `focus()` 复用（目录不同则先按新目录重推数据）；否则 `new BrowserWindow` + `spinPreload.cjs`（注入 `acquireVsCodeApi` shim，让 `spinDesignHtml` 原样复用） |
-| `refresh()` | 找到面板 → 重读 `spin.json` + Skill 列表 → `panel.webview.postMessage({ type: 'spinDesignData' })`；未打开时 no-op | 找到窗口 → 同上 → `win.webContents.send('spin-design-message', { type: 'spinDesignData', ... })` |
-| 归属目录 | `open()` 收到的目录绑定到 `this.workspacePath`；`readSpinDesignData` / `refresh` / 保存都用它，**不回查活动目录** | 同左 |
+| `open(sessionId)` | 扫 `vscode.window.tabGroups.all` 找 `viewType === SPIN_DESIGN_PANEL_ID`：已打开则 `panel.reveal()` 复用（会话不同则先按新会话重推数据）；否则 `createWebviewPanel` 并灌入 `getSpinDesignHtml` | 自持 `spinDesignWindow`：已打开则 `restore()`（若最小化）+ `focus()` 复用（会话不同则先按新会话重推数据）；否则 `new BrowserWindow` + `spinPreload.cjs`（注入 `acquireVsCodeApi` shim，让 `spinDesignHtml` 原样复用） |
+| `refresh()` | 找到面板 → 经 Core 重读 `spin.json` + Skill 列表 → `panel.webview.postMessage({ type: 'spinDesignData' })`；未打开时 no-op | 找到窗口 → 同上 → `win.webContents.send('spin-design-message', { type: 'spinDesignData', ... })` |
+| 归属会话 | `open()` 收到的 `sessionId` 绑定到 `this.sessionId`；`refresh` / 保存都用它，**不回查活动会话** | 同左 |
 
 实现要点：
 
 | | VSCodeSpinDesign | ElectronSpinDesign |
 | --- | --- | --- |
 | 已打开的设计器 | 从 `tabGroups` 反查（VS Code 没有「面板句柄」的持久引用） | 自持字段，窗口 `closed` 时置空 |
-| 读取 `spin.json` | 3 次重试（避免瞬时占用导致回退成空画布） | 单次读取：`open` 失败即用空画布，`refresh` 记日志后放弃 |
-| 保存 | `writeSpinJsonQueued`（core 的串行写队列）→ `spinSaveResult` | 同左 |
+| 读取 `spin.json` | `UiRequest.spinDesignRequested`（Core 侧按会话工作目录读盘，宿主不读本地 `fs`） | 同左 |
+| 保存 | `UiRequest.spinDesignSaveRequested`（Core 侧写锁 + 原子落盘）→ `spinSaveResult` | 同左 |
+| 错误提示 | `spinDesignError` → 设计器 toast；首次打开失败不建窗口，`WebViewUI` 发 `notice.spin.cannotRead` | 同左 |
 | 另存为 | `host.saveTextFile`（`showSaveDialog`） | `host.saveTextFile`（`dialog.showSaveDialog`） |
 | 设计器消息 | `panel.webview.onDidReceiveMessage` | `ipcMain.on('spin-design-message')`（preload 转发） |
 | 主题 / 语言 | `host.isDarkTheme()` / `host.getLocale()`（不直连宿主 API） | 同左 |
-| 初始 HTML 入参 | `existingData` / 主题 / 语言 / `getSystemLocale()` / `SettingsStore.readUiLanguage()` / Skill 列表（打开时扫描，无工作区则跳过） | 同左 |
-| 刷新时的数据 | `getAllSkills` + 重读 `spin.json` → `spinDesignData`（含 `skills`） | 同左 |
-| 构造依赖 | `host: UIHost`（`getWorkspacePath` / `isDarkTheme` / `getLocale` / `saveTextFile` / `log`） | `host: UIHost`（同上） |
+| 初始 HTML 入参 | `data` / 主题 / 语言 / `getSystemLocale()` / `SettingsStore.readUiLanguage()` / Skill 列表 / `saveEnabled` | 同左 |
+| 刷新时的数据 | `spinDesignRequested` → `spinDesignData`（含 `skills`） | 同左 |
+| 构造依赖 | `host: UIHost`（`isDarkTheme` / `getLocale` / `saveTextFile` / `log`） | `host: UIHost`（同上） |
 
 ## 5. ConversationManager 实现对照表
 

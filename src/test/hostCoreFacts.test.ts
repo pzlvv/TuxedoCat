@@ -21,6 +21,8 @@ import {
   requestMcpServers,
   requestSkills,
   requestSmartNaming,
+  requestSpinDesign,
+  saveSpinDesign,
 } from '../host/coreFacts';
 
 async function run(): Promise<void> {
@@ -72,6 +74,14 @@ async function run(): Promise<void> {
       sent.push(req);
       return { skills: [] };
     },
+    spinDesignRequested: async (req) => {
+      sent.push(req);
+      return { status: 'ok', data: null, skills: [] };
+    },
+    spinDesignSaveRequested: async (req) => {
+      sent.push(req);
+      return { status: 'ok' };
+    },
   };
   bus.onUiRequests(handlers);
   setGlobalEventBus(bus);
@@ -106,9 +116,17 @@ async function run(): Promise<void> {
   const skills = await requestSkills('s1');
   check('技能列表走 skillsRequested', skills.length === 0);
 
+  const spin = await requestSpinDesign('s1');
+  check('Spin 读取走 spinDesignRequested', spin.status === 'ok');
+  check('Spin 读取请求带会话', (sent.at(-1) as { sessionId?: string })?.sessionId === 's1');
+
+  const saved = await saveSpinDesign('s1', { nodes: [], edges: [], meta: {} });
+  check('Spin 保存走 spinDesignSaveRequested', saved.status === 'ok');
+  check('Spin 保存请求带会话', (sent.at(-1) as { sessionId?: string })?.sessionId === 's1');
+
   check(
-    '路由契约齐全（9 类请求各到一次）',
-    new Set(sent.map((req) => req.type)).size === 9,
+    '路由契约齐全（11 类请求各到一次）',
+    new Set(sent.map((req) => req.type)).size === 11,
   );
 
   finish();

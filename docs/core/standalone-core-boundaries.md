@@ -45,6 +45,8 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | 压缩归档展开 | `UiRequest.compactArchiveRequested` |
 | 会话内容 / 元数据 / 派生事实 | `UiRequest.conversationLoadRequested` |
 | 斜杠命令与技能列表 | `UiRequest.skillsRequested` |
+| Spin 设计（`spin.json` 内容 + 设计器技能清单） | `UiRequest.spinDesignRequested` |
+| Spin 设计保存 | `UiRequest.spinDesignSaveRequested` |
 | MCP 面板列表（配置 + 启用状态 + 运行时状态） | `UiRequest.mcpServersRequested` |
 | 对话空间统计 | `UiRequest.conversationSpacesRequested` |
 | 对话空间清空（含完成 / 失败回执） | `UiEvent.conversationSpaceCleared` → `CoreEvent.conversationSpaceCleared`（判别联合回执）+ `conversationListChanged` |
@@ -52,7 +54,9 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | 智能命名 / 余额 | `UiRequest.smartNamingRequested` / `balanceRequested` |
 | Core 就绪 | `CoreEvent.coreReady` |
 
-例外（与本机 Core 共用同一份磁盘，远程工作区落地时需要迁到 `UiRequest`）：
+例外（与本机 Core 共用同一份磁盘，远程工作区落地时需要迁到 `UiRequest`）。Spin 设计器
+曾直接读宿主本地磁盘，已迁到 `spinDesignRequested` / `spinDesignSaveRequested`；例外表
+只剩以下两项：
 
 | 事实 | 宿主侧读取 | 说明 |
 | --- | --- | --- |

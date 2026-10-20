@@ -6,6 +6,7 @@ import { launchApp, makeWorkspace } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { Page } from '@playwright/test';
 import type { MockLlm } from '../helpers/mockLlmServer';
+import { CONFIG_DIR_NAME } from '../../src/config/project';
 
 /**
  * US-27 内置命令分发 / US-31 窗口控制 / US-32 主题切换 / US-33 系统托盘与任务提醒 /
@@ -304,6 +305,42 @@ test('US-39+US-27 Spin 设计器：命令与菜单两入口打开；内置命令
     "e.BrowserWindow.getAllWindows().some(w=>w.getTitle()==='Spin 设计')",
     (v) => v === true,
   );
+
+  // 保存经 Core 落到会话所在机器的会话目录（US-39 验收 2）
+  const designPage = await app.waitForPage('data:text/html');
+  await designPage.waitForSelector('#btnSave');
+  await designPage.click('#btnSave');
+  const findSpinJson = async (): Promise<string | null> => {
+    const root = path.join(app.homeDir, CONFIG_DIR_NAME, 'conversations');
+    let entries: string[] = [];
+    try {
+      entries = await fs.promises.readdir(root);
+    } catch {
+      return null;
+    }
+    for (const entry of entries) {
+      const dir = path.join(root, entry);
+      const spin = path.join(dir, 'spin.json');
+      if (!fs.existsSync(spin)) continue;
+      try {
+        const meta = JSON.parse(
+          await fs.promises.readFile(path.join(dir, 'workspace.meta.json'), 'utf-8'),
+        ) as { workspacePath?: string };
+        if (meta.workspacePath && path.resolve(meta.workspacePath) === path.resolve(workspaceDir)) {
+          return spin;
+        }
+      } catch {
+        // 缺项目清单的目录不算目标会话
+      }
+    }
+    return null;
+  };
+  await expect.poll(findSpinJson, { timeout: 10_000 }).not.toBeNull();
+  const spinPath = await findSpinJson();
+  const saved = JSON.parse(await fs.promises.readFile(spinPath as string, 'utf-8')) as {
+    nodes?: unknown;
+  };
+  expect(Array.isArray(saved.nodes)).toBe(true);
 
   // 内置命令全程没有 LLM 请求（不进 LLM 上下文，US-27 验收 2）
   expect(mockLlm.requests.length).toBe(0);

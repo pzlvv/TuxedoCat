@@ -79,7 +79,7 @@ last_reviewed: 2026-10-18
 | 引擎 / 消息缓存 | Core 进程 | 释放在 Core（`on_conversation_closed`）；**时机**由宿主决定（空闲判定只读 Core 推送的运行时快照，[contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
 | 会话运行状态 `idle` / `waiting` | Core 进程（`engine.rs` 的运行时状态表） | Core 的各事实变化点，推 `sessionRuntimeChanged`（[docs/core/session-runtime.md](../core/session-runtime.md)） |
 | 对话列表刷新 | UI（磁盘是 source of truth，「刷新哪些视图、节流多久」是表现策略） | UI：`onConversationListChanged` → `ConversationManager.refresh()`（[contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
-| Spin 设计器内容 | 磁盘 `spin.json` + 面板缓存 | core 发 `spinDesignDataChanged`，UI 决定要不要重读（[contracts.md 第 2 节](contracts.md#2-spin-设计器契约spindesign)） |
+| Spin 设计器内容 | Core 的 `spin.json`（面板缓存只是投影） | core 发 `spinDesignDataChanged`，UI 决定什么时候经 `UiRequest.spinDesignRequested` 重取（[contracts.md 第 2 节](contracts.md#2-spin-设计器契约spindesign)） |
 | 空闲回收 | 宿主 | `SingleWebViewConversationManager`（[contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
 
 MCP 这条踩过坑：acquire 挂在「webview 打开」上时，引用生命周期就被绑到了 UI 视图上，
@@ -127,6 +127,7 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 | abort 按钮三态（红 / 黄 / 灰） | 纯函数 `resolveAbortButtonState`（`src/host/abortButtonState.ts`） | `InputArea` 渲染（[docs/features/abort-button.md](../features/abort-button.md)） |
 | webview 渲染阶段（thinking / text / tool） | `SessionUiState`（宿主侧渲染投影，[docs/hosts/webview-ui.md](../hosts/webview-ui.md)） | 渲染与 abort 按钮（不参与 abort 判定） |
 | 对话列表 | 磁盘（Core 对 `conversationListRequested` 的应答） | `ConversationManager.refresh()` 分发并留快照，`sidebar:get-conversations` 读快照（[contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
+| Spin 设计 `spin.json` | Core（`UiRequest.spinDesignSaveRequested` 与 SpinLoop 的节点 meta 更新共用同一把写锁） | 设计器画布（经 `UiRequest.spinDesignRequested` 读取，[contracts.md 第 2 节](contracts.md#2-spin-设计器契约spindesign)） |
 | 对话树删除闭包 | 纯函数 `collectConversationClosure`（`src/shared/history/Conversation.ts`，宿主侧）与 Core 进程 `core-rs/src/history.rs` 的删除规则——同一份格式两个读写方，格式变更两侧同步（[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主固有差异有意保留)） | Electron 宿主删多视图会话先调 TS 版求闭包；Core 收到 `conversationDeleted` 后按同一规则递归删盘 |
 | 「哪个会话在前台」 | UI（VS Code：`SingleWebViewConversationManager` 的 `activeSessionProvider`；Electron：`ChatViewManager.getActiveSessionId`） | 空闲回收的「前台会话不关」、MCP 面板取数。core **不保存**这份状态（曾经在 `Config` 里缓存过一份） |
 | 「哪些会话 open」 | UI（Electron：`ChatViewManager.getLoadedSessionIds` → `WebViewUI.setOpenSessions`；VS Code：单视图下 open == active） | `UserChoiceQueue` 判断待答请求能否投递到该会话自己的视图（[docs/architecture/host-ui-modules.md 第 1 节](host-ui-modules.md#1-userchoicemanager)）。core **不保存**这份状态 |

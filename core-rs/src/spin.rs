@@ -157,6 +157,21 @@ pub fn read_spin_json(cwd: &str) -> Option<Value> {
     serde_json::from_str(&content).ok()
 }
 
+/// 读取 spin.json，区分「文件不存在」与「读取 / 解析失败」。
+///
+/// 设计器读取请求用它：`Ok(None)` 表示新设计（空画布），`Err` 表示读不出来
+/// （不能当成空画布，否则用户保存会覆盖坏文件）。
+pub fn read_spin_json_state(cwd: &str) -> Result<Option<Value>, String> {
+    let path = spin_json_path(cwd)?;
+    match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str(&content)
+            .map(Some)
+            .map_err(|error| format!("parse {} failed: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("read {} failed: {error}", path.display())),
+    }
+}
+
 /// 节点执行状态（`meta[nodeId]`）
 pub fn node_meta<'a>(config: &'a Value, node_id: i64) -> Option<&'a Value> {
     config.get("meta")?.get(node_id.to_string())
@@ -696,7 +711,6 @@ fn spin_write_lock() -> MutexGuard<'static, ()> {
 }
 
 /// 写入 spin.json（串行化 + 先写临时文件再原子 rename，对齐 `writeSpinJson`）
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn write_spin_json(cwd: &str, config: &Value) -> Result<(), String> {
     let _guard = spin_write_lock();
     write_spin_json_locked(cwd, config)

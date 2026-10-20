@@ -1202,6 +1202,105 @@ fn ui_request_skills_lists_builtins_and_project_skills() {
 }
 
 #[test]
+fn ui_request_spin_design_reads_and_saves_in_core_data_dir() {
+    let sandbox = Sandbox::new("main-ui-request-spin-design");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    config::set_session_workspace("spin-s1", Some(project.clone()));
+
+    let sink = crate::test_support::Capture::new();
+    let core = Core::new(Arc::new(Mutex::new(CoreBus::<FrameWriter>::new(
+        sink.writer(),
+    ))));
+
+    // 无设计文件 → data: null（新设计），技能数组存在
+    let missing = dispatch_ui_request(
+        &core,
+        &json!({ "type": "spinDesignRequested", "sessionId": "spin-s1" }),
+    )
+    .unwrap();
+    assert_eq!(missing["status"], json!("ok"));
+    assert_eq!(missing["data"], Value::Null);
+    assert!(missing["skills"].is_array());
+
+    // 保存 → Core 数据目录出现 spin.json；保存不广播 spinDesignDataChanged
+    let design = json!({ "nodes": [ { "id": 1, "task": "A" } ], "edges": [], "meta": {} });
+    let saved = dispatch_ui_request(
+        &core,
+        &json!({
+            "type": "spinDesignSaveRequested",
+            "sessionId": "spin-s1",
+            "data": design.clone(),
+        }),
+    )
+    .unwrap();
+    assert_eq!(saved["status"], json!("ok"));
+    let path = config::project_conversation_dir(&project)
+        .unwrap()
+        .join(spin::SPIN_FILE);
+    assert!(
+        path.is_file(),
+        "spin.json 应落在 Core 数据目录：{}",
+        path.display()
+    );
+    assert!(
+        sink.event_types().iter().all(|kind| kind != "spinDesignDataChanged"),
+        "保存不广播 spinDesignDataChanged"
+    );
+
+    // 再读 → 内容与保存一致
+    let read = dispatch_ui_request(
+        &core,
+        &json!({ "type": "spinDesignRequested", "sessionId": "spin-s1" }),
+    )
+    .unwrap();
+    assert_eq!(read["data"], design);
+}
+
+#[test]
+fn ui_request_spin_design_reports_missing_session_and_invalid_json() {
+    let sandbox = Sandbox::new("main-ui-request-spin-design-errors");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+
+    // 未登记会话 → status error（不是空画布）
+    let missing = dispatch_ui_request(
+        &test_core(),
+        &json!({ "type": "spinDesignRequested", "sessionId": "unregistered" }),
+    )
+    .unwrap();
+    assert_eq!(missing["status"], json!("error"));
+    assert!(
+        missing["message"]
+            .as_str()
+            .unwrap()
+            .contains("not registered"),
+        "错误消息应指出会话未登记：{missing:?}"
+    );
+
+    // 非法 JSON → status error
+    config::set_session_workspace("spin-bad", Some(project.clone()));
+    let dir = config::ensure_project_conversation_dir(&project).unwrap();
+    std::fs::write(dir.join(spin::SPIN_FILE), "{ not json").unwrap();
+    let invalid = dispatch_ui_request(
+        &test_core(),
+        &json!({ "type": "spinDesignRequested", "sessionId": "spin-bad" }),
+    )
+    .unwrap();
+    assert_eq!(invalid["status"], json!("error"));
+
+    // 保存缺 data / 缺 sessionId → 请求错误
+    assert!(dispatch_ui_request(
+        &test_core(),
+        &json!({ "type": "spinDesignSaveRequested", "sessionId": "spin-bad" }),
+    )
+    .is_err());
+    assert!(dispatch_ui_request(
+        &test_core(),
+        &json!({ "type": "spinDesignSaveRequested", "data": { "nodes": [] } }),
+    )
+    .is_err());
+}
+
+#[test]
 fn ui_request_unknown_type_is_an_error() {
     let _sandbox = Sandbox::new("main-ui-request-unknown");
     assert!(dispatch_ui_request(&test_core(), &json!({ "type": "nope" })).is_err());

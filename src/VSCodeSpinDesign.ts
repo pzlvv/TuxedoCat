@@ -1,56 +1,63 @@
 /**
  * VSCodeSpinDesign - Spin 设计器的 VS Code 实现（WebviewPanel）
  *
- * 从原 VSCodeUI 的 Spin 设计面板部分整体迁入（阶段 3.4）。
- * 构造注入 UIHost：只用 getWorkspacePath / isDarkTheme / getLocale / saveTextFile / log
- * 五个成员，不反向要求 UIHost 知道 Spin 的存在。
+ * 构造注入 UIHost：只用 isDarkTheme / getLocale / saveTextFile / log 四个成员，
+ * 不反向要求 UIHost 知道 Spin 的存在。
+ *
+ * `spin.json` 与技能清单经 Core 的 `UiRequest.spinDesignRequested` 取回：宿主不读
+ * 本地磁盘（远程工作区的设计在 Core 所在机器，见 docs/core/standalone-core-boundaries.md 第 2 节）。
  */
 
 import * as vscode from 'vscode';
 import type { UIHost } from './host/UIHost.js';
 import type { SpinDesign } from './host/SpinDesign.js';
+import type { SpinDesignReadResult } from './shared/AssistantEventBus.js';
+import { requestSpinDesign, saveSpinDesign } from './host/coreFacts.js';
+import { planSpinDesignSessionSwitch } from './host/spinDesignSession.js';
 import { tt, getSystemLocale } from './host/i18n.js';
 import { getSettingsStore } from './host/SettingsStore.js';
 import { SPIN_DESIGN_PANEL_ID } from './config/project.js';
 
 export class VSCodeSpinDesign implements SpinDesign {
-  /** 设计器当前绑定的工作目录（spin.json / 技能归属它）；未绑定时回退活动目录 */
-  private workspacePath: string | undefined;
+  /** 设计器当前绑定的会话；null = 无会话（空态、保存不可用） */
+  private sessionId: string | null = null;
 
   constructor(private readonly host: UIHost) {}
 
-  /** 创建或复用 Spin 设计面板（已打开则 reveal 复用；目录不同则切到新目录的数据） */
-  async open(workspacePath?: string): Promise<void> {
+  /** 创建或复用 Spin 设计面板（已打开则 reveal 复用；会话不同则切到新会话的数据） */
+  async open(sessionId: string | null): Promise<void> {
     const panelId = SPIN_DESIGN_PANEL_ID;
-    const target = workspacePath || this.host.getWorkspacePath();
     const existingPanel = this.findSpinDesignPanel();
 
-    let panel: vscode.WebviewPanel;
     if (existingPanel) {
-      panel = existingPanel;
-      // 目录变了（从别的标签页发起 /spin）：切到新目录的 spin.json + 技能，
-      // 否则面板里显示的还是上一个目录的内容，保存也会写到上一个目录
-      if (target && target !== this.workspacePath) {
-        this.workspacePath = target;
-        await this.sendSpinDesignDataToPanel(panel);
+      const plan = await planSpinDesignSessionSwitch(
+        this.sessionId,
+        sessionId,
+        requestSpinDesign,
+      );
+      if (plan.kind === 'error') {
+        this.postError(existingPanel, plan.message);
+      } else if (plan.kind === 'switch') {
+        this.sessionId = plan.sessionId;
+        this.postData(existingPanel, plan.read);
       }
-      panel.reveal();
-      return;
-    }
-    this.workspacePath = target;
-
-    // 读取已存在的 spin.json（从 ~/<CONFIG_DIR_NAME>/conversations/<encoded-workspace>/）
-    const { existingData, spinJsonExists, spinJsonPath, workspacePath: resolvedWorkspacePath, hasWorkspace } =
-      await this.readSpinDesignData();
-
-    // 文件存在但连续重试仍无法解析时，不能打开空编辑器，
-    // 否则后续保存可能用空数据覆盖真实 spin.json。
-    if (spinJsonExists && !existingData) {
-      vscode.window.showErrorMessage(`Failed to read spin.json: ${spinJsonPath}`);
+      existingPanel.reveal();
       return;
     }
 
-    panel = vscode.window.createWebviewPanel(
+    // 新窗口：首次读取失败不创建窗口（避免空画布覆盖真实 spin.json）
+    let read: SpinDesignReadResult;
+    if (sessionId === null) {
+      read = { status: 'ok', data: null, skills: [] };
+    } else {
+      read = await requestSpinDesign(sessionId);
+      if (read.status === 'error') {
+        throw new Error(read.message);
+      }
+    }
+    this.sessionId = sessionId;
+
+    const panel = vscode.window.createWebviewPanel(
       panelId,
       tt('Spin 设计', 'Spin Design'),
       vscode.ViewColumn.Beside,
@@ -58,23 +65,18 @@ export class VSCodeSpinDesign implements SpinDesign {
         enableScripts: true,
         // 面板切到后台/被遮挡时保持 webview 内容与状态，避免重新加载丢失未保存编辑
         retainContextWhenHidden: true,
-      }
+      },
     );
 
     const { getSpinDesignHtml } = await import('./host/ui/spinDesignHtml.js');
-    const { getAllSkills } = await import('./shared/skills/loadSkillsDir.js');
-    const isDark = this.host.isDarkTheme();
-    // 无工作区时不做技能扫描（workspacePath 为空，扫相对路径会落到宿主进程目录）
-    const availableSkills = (hasWorkspace ? await getAllSkills(resolvedWorkspacePath) : [])
-      .filter(s => !s.isHidden && s.userInvocable)
-      .map(s => ({ name: s.name, description: s.description }));
     panel.webview.html = getSpinDesignHtml(
-      existingData,
-      isDark,
+      read.data,
+      this.host.isDarkTheme(),
       this.host.getLocale(),
       getSystemLocale(),
       getSettingsStore().readUiLanguage(),
-      availableSkills,
+      read.skills,
+      sessionId !== null,
     );
 
     // 监听来自 spin design webview 的消息
@@ -90,7 +92,7 @@ export class VSCodeSpinDesign implements SpinDesign {
   }
 
   /**
-   * 从磁盘重读 spin.json + Skill 列表推给已打开的设计器；未打开时 no-op。
+   * 从 Core 重读 spin.json + Skill 列表推给已打开的设计器；未打开时 no-op。
    */
   async refresh(): Promise<void> {
     const panel = this.findSpinDesignPanel();
@@ -101,27 +103,23 @@ export class VSCodeSpinDesign implements SpinDesign {
   }
 
   private async handleSave(data: any, panel: vscode.WebviewPanel): Promise<void> {
-    // 按设计器**绑定**的目录保存，不回查活动目录：否则从别的标签页打开过设计器后，
-    // 保存会把当前目录的内容写进另一个目录的 spin.json
-    const workspacePath = this.workspacePath || this.host.getWorkspacePath();
-    if (!workspacePath) {
-      panel?.webview.postMessage({ type: 'spinSaveResult', success: false, error: tt('没有打开的工作目录', 'No workspace folder is open') });
+    const sessionId = this.sessionId;
+    if (!sessionId) {
+      panel?.webview.postMessage({
+        type: 'spinSaveResult',
+        success: false,
+        error: tt('没有打开的工作目录', 'No workspace folder is open'),
+      });
       return;
     }
-    const { getProjectConversationDir } = await import('./shared/history/Config.js');
-    const projectDir = getProjectConversationDir(workspacePath);
     const saveData = { ...data, meta: data.meta || {} };
-    // 确保目录存在
-    const fs = require('fs') as typeof import('fs');
-    if (!fs.existsSync(projectDir)) {
-      fs.mkdirSync(projectDir, { recursive: true });
-    }
     try {
-      // 串行写入 spin.json，避免与 SpinLoop 的 updateNodeMeta 并发
-      // "读-改-写"导致清除结果被回写（保存不生效）
-      const { writeSpinJsonQueued } = await import('./shared/spin/Engine.js');
-      await writeSpinJsonQueued(workspacePath, saveData);
-      panel?.webview.postMessage({ type: 'spinSaveResult', success: true });
+      const result = await saveSpinDesign(sessionId, saveData);
+      if (result.status === 'ok') {
+        panel?.webview.postMessage({ type: 'spinSaveResult', success: true });
+      } else {
+        panel?.webview.postMessage({ type: 'spinSaveResult', success: false, error: result.message });
+      }
     } catch (err) {
       this.host.log(`[VSCodeSpinDesign] spin.json save failed: ${err}`);
       panel?.webview.postMessage({ type: 'spinSaveResult', success: false, error: String(err) });
@@ -143,57 +141,6 @@ export class VSCodeSpinDesign implements SpinDesign {
     }
   }
 
-  /** 读取 Spin 设计数据（spin.json + 工作区路径），带重试保护 */
-  private async readSpinDesignData(): Promise<{
-    existingData: any;
-    spinJsonExists: boolean;
-    spinJsonPath: string | null;
-    workspacePath: string;
-    hasWorkspace: boolean;
-  }> {
-    // 归属目录 = 设计器绑定的目录（按发起会话解析），未绑定时回退活动目录
-    const workspacePath = this.workspacePath || this.host.getWorkspacePath() || '';
-    const hasWorkspace = !!workspacePath;
-
-    if (!hasWorkspace || !workspacePath) {
-      return {
-        existingData: null,
-        spinJsonExists: false,
-        spinJsonPath: null,
-        workspacePath: '',
-        hasWorkspace: false,
-      };
-    }
-
-    const { getProjectConversationDir } = await import('./shared/history/Config.js');
-    const path = require('path') as typeof import('path');
-    const projectDir = getProjectConversationDir(workspacePath);
-    const spinJsonPath = path.join(projectDir, 'spin.json');
-    const fs = require('fs') as typeof import('fs');
-    let existingData: any = null;
-    let spinJsonExists = false;
-
-    // 使用重试读取：即使写入方已改为原子写，仍可能在极端情况下遇到文件占用/瞬时不可读，
-    // 避免因一次读取失败就回退到空画布，导致节点内容看起来被清空。
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        if (fs.existsSync(spinJsonPath)) {
-          spinJsonExists = true;
-          const content = fs.readFileSync(spinJsonPath, 'utf-8');
-          existingData = JSON.parse(content);
-        }
-        break;
-      } catch {
-        existingData = null;
-        if (attempt < 2) {
-          await new Promise(resolve => setTimeout(resolve, 100 * (attempt + 1)));
-        }
-      }
-    }
-
-    return { existingData, spinJsonExists, spinJsonPath, workspacePath, hasWorkspace };
-  }
-
   /** 查找当前已打开的 Spin 设计面板 */
   private findSpinDesignPanel(): vscode.WebviewPanel | undefined {
     const existingPanel = vscode.window.tabGroups.all
@@ -205,27 +152,39 @@ export class VSCodeSpinDesign implements SpinDesign {
   }
 
   /**
-   * 读取磁盘上最新的 spin.json 与 Skill 列表，并推送给 Spin 设计器面板。
-   * 供设计器"刷新"按钮和 SpinLoop 执行完成后自动刷新共用。
+   * 从 Core 重读 spin.json 与 Skill 列表，并推送给 Spin 设计器面板。
+   * 供设计器"刷新"按钮和 SpinLoop 执行完成后自动刷新共用；失败时保持画布。
    */
   private async sendSpinDesignDataToPanel(panel: vscode.WebviewPanel): Promise<void> {
-    const refreshed = await this.readSpinDesignData();
-    if (refreshed.spinJsonExists && !refreshed.existingData) {
-      panel.webview.postMessage({
-        type: 'spinSaveResult',
-        success: false,
-        error: `Failed to read spin.json: ${refreshed.spinJsonPath}`,
-      } as any);
+    const sessionId = this.sessionId;
+    if (!sessionId) {
       return;
     }
-    const { getAllSkills } = await import('./shared/skills/loadSkillsDir.js');
-    const availableSkills = (await getAllSkills(refreshed.workspacePath))
-      .filter(s => !s.isHidden && s.userInvocable)
-      .map(s => ({ name: s.name, description: s.description }));
+    try {
+      const read = await requestSpinDesign(sessionId);
+      if (read.status === 'error') {
+        this.postError(panel, read.message);
+        return;
+      }
+      this.postData(panel, read);
+    } catch (err) {
+      this.postError(panel, String(err));
+    }
+  }
+
+  private postData(
+    panel: vscode.WebviewPanel,
+    read: Extract<SpinDesignReadResult, { status: 'ok' }>,
+  ): void {
     panel.webview.postMessage({
       type: 'spinDesignData',
-      data: refreshed.existingData,
-      skills: availableSkills,
+      data: read.data,
+      skills: read.skills,
     } as any);
+  }
+
+  private postError(panel: vscode.WebviewPanel, message: string): void {
+    this.host.log(`[VSCodeSpinDesign] ${message}`);
+    panel.webview.postMessage({ type: 'spinDesignError', error: message } as any);
   }
 }

@@ -329,12 +329,17 @@ Windows x64 / arm64 与 Linux x64 / arm64 四份，`npm run package` 一次出�
 - 载荷字段名与 TypeScript 类型逐项一致（`camelCase` 原样）。
 - `CoreEvent` 的每个 `type` 语义唯一确定（[docs/architecture/events.md 第 2.1 节](../architecture/events.md#21-coreeventcore--ui单向)）。
 - `CoreRequest` 的两个请求（`toolPermissionRequested` / `userChoice`）由 Core 发起、UI 应答。
-- `UiRequest` 的九个请求（`conversationListRequested` / `smartNamingRequested` /
+- `UiRequest` 的十一个请求（`conversationListRequested` / `smartNamingRequested` /
   `balanceRequested` / `compactArchiveRequested` / `mcpServersRequested` /
   `conversationSpacesRequested` / `flushSessionRequested` / `conversationLoadRequested` /
-  `skillsRequested`）由 UI 发起、Core 应答：
+  `skillsRequested` / `spinDesignRequested` / `spinDesignSaveRequested`）由 UI 发起、Core 应答：
   宿主不直接读 core 的磁盘数据（[docs/core/standalone-core-boundaries.md 第 2 节](standalone-core-boundaries.md#2-宿主侧的-core-事实读取)）。未知类型一律回 `ok:false` 的响应，
   不做静默降级。
+  - `spinDesignRequested { sessionId }`：按会话工作目录读 `spin.json` + 设计器技能清单；
+    返回 `{ status: 'ok', data, skills }`（`data: null` = 没有设计文件）或
+    `{ status: 'error', message }`。
+  - `spinDesignSaveRequested { sessionId, data }`：按会话工作目录写 `spin.json`，与 SpinLoop
+    的节点 meta 更新共用同一把写锁；返回 `{ status: 'ok' }` 或 `{ status: 'error', message }`。
 - 配置不走请求：Core 不读 `settings.json` / `mcp.json`，也不请求写配置；配置由 UI 经
   `hostEnvironmentProvided` 的快照下发（[docs/architecture/core-ui-separation.md 第 4 节](../architecture/core-ui-separation.md#4-配置归-ui)）。
   设置面板的整段 mutation（provider 表 + `modelConfigs` 补齐 + 顶层默认值 + MCP
@@ -457,6 +462,7 @@ Standalone Core 下，core 侧事实的归属与 [docs/architecture/core-ui-sepa
 | 内置模型注册表 | UI | 合并进快照的 `modelLimits`；Core 不持有 |
 | 项目清单 `<conversations>/<project>/workspace.meta.json` | Core | 在 Core 数据目录内，读与写都在 Core |
 | 会话数据（元数据 / 消息 / 归档） | Core | 落盘格式（meta.json / JSONL），宿主侧 `src/shared/history/` 是同一格式的 TS 读写库 |
+| Spin 设计 `<conversations>/<project>/spin.json` | Core | 读与写都经 `UiRequest.spinDesignRequested` / `spinDesignSaveRequested`；宿主不直接读盘 |
 | 会话工作目录表 | Core | 单目录宿主（VS Code）在会话首次解析目录前经 `UiEvent.sessionWorkspaceAssigned` 登记；多工作目录宿主（Electron）按来源视图登记；加载对话后由 `meta.json` 的 `project` 校正 |
 | 工具执行 | Core | 在 Core 所在机器操作文件系统 |
 | MCP 子进程 | Core | 生命周期由 Core 管理 |

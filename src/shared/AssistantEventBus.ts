@@ -27,6 +27,7 @@ import type { ConversationSpaceInfo } from './webviewTypes.js';
 import type { McpServerDefinition, SettingsSnapshot } from './settingsSnapshot.js';
 import type { McpServerInfo } from './webviewTypes.js';
 import type { NoticeLevel, NoticeParams } from './coreText.js';
+import type { SpinDesign } from './spin/Types.js';
 
 // ==================== core → UI：单向事件 ====================
 
@@ -459,7 +460,20 @@ export type UiRequest =
    * 斜杠命令与技能列表（内置命令 + 内置技能 + 会话工作目录下的技能）。
    * `sessionId` 决定项目技能扫描的工作目录；缺省时只列内置项。
    */
-  | { type: 'skillsRequested'; sessionId?: string };
+  | { type: 'skillsRequested'; sessionId?: string }
+  /**
+   * Spin 设计器数据：`spin.json` 内容 + 设计器技能清单。
+   *
+   * `sessionId` 决定目标机器上的会话工作目录（Core 自己所在机器的
+   * `~/<CONFIG_DIR_NAME>/conversations/<encoded-project>/spin.json`）。
+   * `data: null` 表示该会话没有设计文件；读取 / 解析失败用 `status: 'error'` 表达。
+   */
+  | { type: 'spinDesignRequested'; sessionId: string }
+  /**
+   * 保存 Spin 设计：Core 按 `sessionId` 的会话工作目录在自己所在机器落盘，
+   * 与 SpinLoop 的节点 meta 更新共用同一把写锁。
+   */
+  | { type: 'spinDesignSaveRequested'; sessionId: string; data: SpinDesign };
 
 /** 会话加载结果（`UiRequest.conversationLoadRequested`） */
 export interface LoadedConversation {
@@ -484,6 +498,22 @@ export interface SkillListItem {
   isBuiltin: boolean;
 }
 
+/** Spin 设计器技能项（`UiRequest.spinDesignRequested`）：只含设计器要展示的字段 */
+export interface SpinDesignSkill {
+  name: string;
+  description: string;
+}
+
+/** Spin 设计器读取结果（`UiRequest.spinDesignRequested`） */
+export type SpinDesignReadResult =
+  | { status: 'ok'; data: SpinDesign | null; skills: SpinDesignSkill[] }
+  | { status: 'error'; message: string };
+
+/** Spin 设计器保存结果（`UiRequest.spinDesignSaveRequested`） */
+export type SpinDesignSaveResult =
+  | { status: 'ok' }
+  | { status: 'error'; message: string };
+
 /** 请求 → 结果的类型映射（判别联合，字段完整） */
 export type UiRequestResultMap = {
   conversationListRequested: ConversationMetadata[];
@@ -500,6 +530,8 @@ export type UiRequestResultMap = {
   flushSessionRequested: null;
   conversationLoadRequested: LoadedConversation;
   skillsRequested: { skills: SkillListItem[] };
+  spinDesignRequested: SpinDesignReadResult;
+  spinDesignSaveRequested: SpinDesignSaveResult;
 };
 
 // ==================== 会话运行时状态 ====================

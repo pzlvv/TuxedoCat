@@ -51,6 +51,8 @@ const spinZhDict: Record<string, string> = {
   'toolbar.saveBuiltinVarConflict': '变量名与内置变量冲突: {names}',
   'toolbar.saveVariableNoValue': '存在未赋值的变量: {names}',
   'toast.saveFailed': '保存失败: ',
+  'toast.loadFailed': '读取失败: ',
+  'toast.loadRequired': '尚未读取到设计，无法保存',
   'toast.exportSuccess': '已导出到 {path}',
   'toast.exportFailed': '导出失败: ',
   'toast.unknownError': '未知错误',
@@ -118,6 +120,8 @@ const spinEnDict: Record<string, string> = {
   'toolbar.saveBuiltinVarConflict': 'Variable name conflicts with built-in variable: {names}',
   'toolbar.saveVariableNoValue': 'Variables without a value: {names}',
   'toast.saveFailed': 'Save failed: ',
+  'toast.loadFailed': 'Load failed: ',
+  'toast.loadRequired': 'Design not loaded yet; cannot save',
   'toast.exportSuccess': 'Exported to {path}',
   'toast.exportFailed': 'Export failed: ',
   'toast.unknownError': 'Unknown error',
@@ -148,6 +152,7 @@ export function getSpinDesignHtml(
   systemLocale?: string,
   uiLanguage?: 'auto' | 'zh' | 'en',
   availableSkills?: Array<{ name: string; description?: string }>,
+  saveEnabled?: boolean,
 ): string {
   // 与主 webview 一致：settings.json 的 uiLanguage 优先；auto 时再按
   // VS Code UI 语言与操作系统系统语言任一为中文即使用中文
@@ -170,6 +175,7 @@ export function getSpinDesignHtml(
   };
   const initialData = existingData ? JSON.stringify(existingData) : 'null';
   const availableSkillsJson = JSON.stringify(availableSkills || []);
+  const initialSaveEnabled = saveEnabled !== false;
 
   // Theme colors
   const c = isDark ? {
@@ -701,6 +707,8 @@ function __spinT(key, params) {
 
   const initialData = ${initialData};
   var __spinAvailableSkills = ${availableSkillsJson};
+  // 是否允许保存：没有会话 / 首次读取失败时为 false；收到 spinDesignData 后置 true。
+  var __spinCanSave = ${initialSaveEnabled};
 
   function variablesFromData(data) {
     if (!data || !data.variables) return [];
@@ -2350,6 +2358,20 @@ function __spinT(key, params) {
       exportBtn.style.cursor = 'default';
       return;
     }
+    // 没有会话 / 首次读取失败：只禁用保存，导出仍可用
+    if (!__spinCanSave) {
+      btn.disabled = true;
+      btn.style.opacity = '0.4';
+      btn.style.cursor = 'default';
+      btn.style.background = '';
+      btn.style.borderColor = '';
+      btn.style.color = '';
+      btn.title = __spinT('toast.loadRequired');
+      exportBtn.disabled = false;
+      exportBtn.style.opacity = '1';
+      exportBtn.style.cursor = 'pointer';
+      return;
+    }
     btn.disabled = false;
     btn.style.opacity = '1';
     btn.style.cursor = 'pointer';
@@ -2531,6 +2553,10 @@ function __spinT(key, params) {
   }
 
   function saveDesign() {
+    if (!__spinCanSave) {
+      showToast(__spinT('toast.loadRequired'), 'error');
+      return;
+    }
     var data = buildDesignData('保存失败');
     if (!data) return;
     vscode.postMessage({ type: 'saveSpinDesign', data: data });
@@ -2554,6 +2580,8 @@ function __spinT(key, params) {
       } else {
         showToast(__spinT('toast.exportFailed') + (msg.error || __spinT('toast.unknownError')), 'error');
       }
+    } else if (msg.type === 'spinDesignError') {
+      showToast(__spinT('toast.loadFailed') + (msg.error || __spinT('toast.unknownError')), 'error');
     } else if (msg.type === 'spinDesignData') {
       if (Array.isArray(msg.skills)) {
         __spinAvailableSkills = msg.skills;
@@ -2564,6 +2592,7 @@ function __spinT(key, params) {
           // 刷新到损坏数据时不覆盖当前画布，直接报错，避免静默变成空列表。
           showToast('刷新数据错误: ' + refreshNodeError, 'error');
         } else {
+          __spinCanSave = true;
           nodes = msg.data.nodes.map(function(n) { return { id: n.id, x: n.x, y: n.y, task: n.task || '', criteria: n.criteria || [], rollout: normalizeRolloutValue(n.rollout), forEach: normalizeForEachValue(n.forEach), role: 'Master', skills: n.skills || [], title: (typeof n.title === 'string' && n.title.trim() !== '') ? n.title : undefined }; });
           edges = msg.data.edges || [];
           meta = msg.data.meta || {};
@@ -2583,6 +2612,7 @@ function __spinT(key, params) {
       } else {
         // 目标工作目录没有 spin.json（data 为 null）：必须清空画布，
         // 否则切换到无 spin.json 的目录后，面板里残留的还是上一个目录的设计。
+        __spinCanSave = true;
         nodes = [];
         edges = [];
         meta = {};

@@ -12,7 +12,7 @@
  * （不拆 WebViewNotifier / WebViewController，见 ``docs/architecture/events.md 第 1 节）。
  */
 
-import type { AssistantEventBus, CoreEvent, CoreEventHandlers, CoreRequestHandlers } from '../shared/AssistantEventBus.js';
+import type { AssistantEventBus, CoreEvent, CoreEventHandlers, CoreRequestHandlers, SpinDesignReadResult } from '../shared/AssistantEventBus.js';
 import { requireEventBus } from '../shared/AssistantEventBus.js';
 import type { AgentMode, MessageData, StreamMessageData, StreamEndData } from '../shared/types.js';
 import type { ModelRef } from '../shared/llm/modelRef.js';
@@ -23,6 +23,7 @@ import type { ConversationManager } from './ConversationManager.js';
 import type { UserChoiceOptions } from '../shared/UserChoiceQueue.js';
 import type { SessionRuntimeState } from '../shared/AssistantEventBus.js';
 import type { NoticeLevel, NoticeParams } from '../shared/coreText.js';
+import { CoreNoticeKeys } from '../shared/coreText.js';
 import { SessionUiState } from './SessionUiState.js';
 import { UserChoiceManager } from './ui/userChoice.js';
 import { ToolHandler } from './ui/toolHandler.js';
@@ -30,7 +31,7 @@ import { WebviewMessageHandler, type WebviewRequestContext } from './ui/webviewM
 
 import { pushToolProgress } from './queryActivity.js';
 import { buildConversationLoadedPayload } from './conversationPayload.js';
-import { readUiLanguage, readUiFontSize, requestBalance } from './coreFacts.js';
+import { readUiLanguage, readUiFontSize, requestBalance, requestSpinDesign } from './coreFacts.js';
 import { markCoreReady } from './coreReadiness.js';
 import { isTemporarySessionId } from '../shared/sessionResources.js';
 import {
@@ -242,19 +243,26 @@ export class WebViewUI implements WebViewUiPort {
     this.webviewMessageHandler.setActiveSessionId(sessionId);
   }
 
-  /** 打开 Spin 设计器（按当前活跃会话解析 spin.json 归属目录，转调 SpinDesign.open） */
+  /** 打开 Spin 设计器（按当前活跃会话路由；数据经 Core 读取） */
   async openSpinDesign(): Promise<void> {
-    const ws = await this.workspaceForSession(this.getActiveSessionId());
-    return this.spinDesign.open(ws);
+    await this.openSpinDesignForSession(this.getActiveSessionId() ?? null);
   }
 
   /**
-   * 按会话解析其工作目录（Spin 设计器归属：spin.json / 技能都跟会话走）。
-   * 会话未登记工作目录时返回 undefined。
+   * 打开设计器并把首次读取失败转成该会话的 notice。
+   *
+   * `spin.json` 与技能清单都归 Core（`docs/core/standalone-core-boundaries.md` 第 2 节），
+   * 宿主不再按工作目录读本地磁盘；`sessionId` 是路由键，`null` 表示没有会话。
    */
-  private async workspaceForSession(sessionId: string | undefined): Promise<string | undefined> {
-    const { getProjectRoot, hasProjectRoot } = await import('../shared/history/Config.js');
-    return hasProjectRoot(sessionId) ? getProjectRoot(sessionId) : undefined;
+  private async openSpinDesignForSession(sessionId: string | null): Promise<void> {
+    try {
+      await this.spinDesign.open(sessionId);
+    } catch (err) {
+      this.log(`Error opening spin design: ${err}`);
+      if (sessionId) {
+        this.onNotice(sessionId, CoreNoticeKeys.spinCannotRead, {}, 'error');
+      }
+    }
   }
 
   /** 重新读取并分发对话列表（转调 ConversationManager.refresh） */
@@ -581,21 +589,29 @@ export class WebViewUI implements WebViewUiPort {
     this.onQueuedMessage(sessionId, null);
     if (commandName === 'spin') {
       const trimmed = args.trim();
-      // spin.json 属于对话自己的工作目录：按会话解析，未登记时回退活动工作目录。
-      // 显式传给设计器，避免设计器回查「活动工作目录」（多工作目录下会串到别的标签页）。
-      const ws = await this.workspaceForSession(sessionId);
+      // spin.json 属于对话自己的工作目录：按会话经 Core 读取（远程工作区在 Core
+      // 所在机器），宿主不再用本地 fs 探测。
       if (trimmed === 'design') {
-        void this.spinDesign.open(ws).catch((err: unknown) => {
-          this.log(`Error opening spin design: ${err}`);
-        });
+        await this.openSpinDesignForSession(sessionId);
         return;
       }
-      // /spin: 无 spin.json 时打开设计器（shouldOpenSpinDesign 是 core 的只读函数）
+      // /spin: 无 spin.json 时打开设计器；存在性判断来自 Core。
+      let read: SpinDesignReadResult;
+      try {
+        read = await requestSpinDesign(sessionId);
+      } catch (err) {
+        this.log(`Error reading spin design: ${err}`);
+        this.onNotice(sessionId, CoreNoticeKeys.spinCannotRead, {}, 'error');
+        return;
+      }
+      if (read.status === 'error') {
+        this.log(`Error reading spin design: ${read.message}`);
+        this.onNotice(sessionId, CoreNoticeKeys.spinCannotRead, {}, 'error');
+        return;
+      }
       const { shouldOpenSpinDesign } = await import('../shared/history/spinCommand.js');
-      if (ws && shouldOpenSpinDesign(ws)) {
-        void this.spinDesign.open(ws).catch((err: unknown) => {
-          this.log(`Error opening spin design: ${err}`);
-        });
+      if (shouldOpenSpinDesign(read)) {
+        await this.openSpinDesignForSession(sessionId);
       }
     }
   }

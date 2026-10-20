@@ -1,29 +1,15 @@
 /**
  * /spin 命令共享逻辑。
  *
- * WebViewUI.onCommandSend 原为重复的：
- * design 子命令分发 + spin.json 存在性检查（不存在则打开设计器）。
- * 宿主差异（如何确定工作目录、日志通道）由调用方处理。
+ * 设计器是否存在由 Core 的 `UiRequest.spinDesignRequested` 结果判定：宿主不再用
+ * 本地 `fs` 探测 `spin.json`（远程工作区的设计在 Core 所在机器）。
  */
-import * as path from 'path';
-import { getProjectConversationDir } from './Config.js';
-
-/** 读取磁盘上最新的 spin.json 内容（重试保护见各宿主原实现） */
-export function spinJsonPathFor(workspacePath: string): string {
-  return path.join(getProjectConversationDir(workspacePath), 'spin.json');
-}
+import type { SpinDesignReadResult } from '../AssistantEventBus.js';
 
 /**
- * /spin 命令的 spin.json 存在性检查：
- * 无 spin.json 时应打开设计器（返回 true）。
- * 目录/文件不可读时按"存在"处理（不打开），与原实现一致。
+ * `/spin` 的 spin.json 存在性判断：无设计文件时应打开设计器（返回 true）。
+ * 读取失败（`status: 'error'`）不当作「没有设计」。
  */
-export function shouldOpenSpinDesign(workspacePath: string | undefined): boolean {
-  if (!workspacePath) return false;
-  const fs = require('fs') as typeof import('fs');
-  try {
-    return !fs.existsSync(spinJsonPathFor(workspacePath));
-  } catch {
-    return false;
-  }
+export function shouldOpenSpinDesign(result: SpinDesignReadResult): boolean {
+  return result.status === 'ok' && result.data === null;
 }

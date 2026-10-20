@@ -1,17 +1,21 @@
 /**
  * ElectronSpinDesign - Spin 设计器的 Electron 实现（BrowserWindow）
  *
- * 从原 ElectronUI 的 Spin 设计窗口部分整体迁入（阶段 3.4）。
- * 构造注入 UIHost（主题 / 语言 / 工作区 / 保存 / 日志都走它）；
- * 注入 acquireVsCodeApi shim 使 spinDesignHtml 原样复用。
+ * 构造注入 UIHost（主题 / 语言 / 保存 / 日志都走它）；注入 acquireVsCodeApi shim
+ * 使 spinDesignHtml 原样复用。
+ *
+ * `spin.json` 与技能清单经 Core 的 `UiRequest.spinDesignRequested` 取回：宿主不读
+ * 本地磁盘（远程工作区的设计在 Core 所在机器，见 docs/core/standalone-core-boundaries.md 第 2 节）。
  */
 
 import type { BrowserWindow } from 'electron';
 import { BrowserWindow as BrowserWindowCtor } from 'electron';
 import * as path from 'path';
-import * as fs from 'fs';
 import type { UIHost } from '../src/host/UIHost.js';
 import type { SpinDesign } from '../src/host/SpinDesign.js';
+import type { SpinDesignReadResult } from '../src/shared/AssistantEventBus.js';
+import { requestSpinDesign, saveSpinDesign } from '../src/host/coreFacts.js';
+import { planSpinDesignSessionSwitch } from '../src/host/spinDesignSession.js';
 import { tt, getSystemLocale } from '../src/host/i18n.js';
 import { guardViewNavigation } from './viewNavigation.js';
 
@@ -21,22 +25,25 @@ const APP_ROOT = path.resolve(__dirname, '..');
 export class ElectronSpinDesign implements SpinDesign {
   /** 当前打开的 Spin 设计窗口（用于 SpinLoop 完成后刷新其数据） */
   private spinDesignWindow: BrowserWindowCtor | undefined;
-  /** 设计器当前绑定的工作目录（spin.json / 技能归属它）；未绑定时回退活动目录 */
-  private workspacePath: string | undefined;
+  /** 设计器当前绑定的会话；null = 无会话（空态、保存不可用） */
+  private sessionId: string | null = null;
 
   constructor(private readonly host: UIHost) {}
 
   /** 打开 Spin 设计窗口（注入 acquireVsCodeApi shim 使 spinDesignHtml 可复用） */
-  async open(workspacePath?: string): Promise<void> {
-    const target = workspacePath || this.host.getWorkspacePath();
-    // 已打开则聚焦复用，不重复创建（与 VSCodeSpinDesign / SpinDesign.open() 契约一致）
+  async open(sessionId: string | null): Promise<void> {
     const opened = this.spinDesignWindow;
     if (opened && !opened.isDestroyed()) {
-      // 目录变了（从别的标签页发起 /spin）：切到新目录的 spin.json + 技能，
-      // 否则窗口里显示的还是上一个目录的内容，保存也会写到上一个目录
-      if (target && target !== this.workspacePath) {
-        this.workspacePath = target;
-        await this.refresh();
+      const plan = await planSpinDesignSessionSwitch(
+        this.sessionId,
+        sessionId,
+        requestSpinDesign,
+      );
+      if (plan.kind === 'error') {
+        this.postError(plan.message);
+      } else if (plan.kind === 'switch') {
+        this.sessionId = plan.sessionId;
+        this.postData(plan.read);
       }
       if (opened.isMinimized()) {
         opened.restore();
@@ -44,37 +51,30 @@ export class ElectronSpinDesign implements SpinDesign {
       opened.focus();
       return;
     }
-    this.workspacePath = target;
 
-    // 读取已存在的 spin.json（按设计器绑定的目录）
-    let existingData: any = null;
-    const projectDir = this.getProjectConversationDir(this.workspacePath);
-    if (projectDir) {
-      const spinJsonPath = path.join(projectDir, 'spin.json');
-      try {
-        if (fs.existsSync(spinJsonPath)) {
-          existingData = JSON.parse(fs.readFileSync(spinJsonPath, 'utf-8'));
-        }
-      } catch {
-        // 忽略
+    // 新窗口：首次读取失败不创建窗口（避免空画布覆盖真实 spin.json）
+    let read: SpinDesignReadResult;
+    if (sessionId === null) {
+      read = { status: 'ok', data: null, skills: [] };
+    } else {
+      read = await requestSpinDesign(sessionId);
+      if (read.status === 'error') {
+        throw new Error(read.message);
       }
     }
+    this.sessionId = sessionId;
 
     const { getSpinDesignHtml } = await import('../src/host/ui/spinDesignHtml.js');
-    const { getAllSkills } = await import('../src/shared/skills/loadSkillsDir.js');
     const { getSettingsStore } = await import('../src/host/SettingsStore.js');
-    // 与 VSCodeSpinDesign 一致：主题 / 语言走 UIHost（不直连 electron API）；
-    // 无工作区时不做技能扫描（路径为空，扫相对路径会落到宿主进程目录）
-    const availableSkills = (this.workspacePath ? await getAllSkills(this.workspacePath) : [])
-      .filter(s => !s.isHidden && s.userInvocable)
-      .map(s => ({ name: s.name, description: s.description }));
+    // 与 VSCodeSpinDesign 一致：主题 / 语言走 UIHost（不直连 electron API）
     const html = getSpinDesignHtml(
-      existingData,
+      read.data,
       this.host.isDarkTheme(),
       this.host.getLocale(),
       getSystemLocale(),
       getSettingsStore().readUiLanguage(),
-      availableSkills,
+      read.skills,
+      sessionId !== null,
     );
 
     const win = new BrowserWindowCtor({
@@ -102,28 +102,34 @@ export class ElectronSpinDesign implements SpinDesign {
       }
     });
 
-    // 保存 spin.json
+    // 保存 spin.json：按设计器**绑定**的会话写回，不回查活动目录
     const saveSpin = (data: any): void => {
-      // 按设计器**绑定**的目录保存，不回查活动目录：否则从别的标签页打开过设计器后，
-      // 保存会把当前目录的内容写进另一个目录的 spin.json
-      const workspacePath = this.workspacePath || this.host.getWorkspacePath();
-      const projectDir = this.getProjectConversationDir(workspacePath);
-      if (!workspacePath || !projectDir) {
-        win.webContents.send('spin-design-message', { type: 'spinSaveResult', success: false, error: tt('没有打开的工作区', 'No workspace is open') });
+      const boundSessionId = this.sessionId;
+      if (!boundSessionId) {
+        win.webContents.send('spin-design-message', {
+          type: 'spinSaveResult',
+          success: false,
+          error: tt('没有打开的工作区', 'No workspace is open'),
+        });
         return;
       }
       const fullData = { ...data, meta: data.meta || {} };
-      if (!fs.existsSync(projectDir)) {
-        fs.mkdirSync(projectDir, { recursive: true });
-      }
-      // 串行写入 spin.json，避免与 SpinLoop 的 updateNodeMeta 并发
-      // "读-改-写"导致清除结果被回写（保存不生效）
-      import('../src/shared/spin/Engine.js').then(({ writeSpinJsonQueued }) =>
-        writeSpinJsonQueued(workspacePath, fullData)
-      ).then(() => {
-        win.webContents.send('spin-design-message', { type: 'spinSaveResult', success: true });
+      saveSpinDesign(boundSessionId, fullData).then((result) => {
+        if (result.status === 'ok') {
+          win.webContents.send('spin-design-message', { type: 'spinSaveResult', success: true });
+        } else {
+          win.webContents.send('spin-design-message', {
+            type: 'spinSaveResult',
+            success: false,
+            error: result.message,
+          });
+        }
       }).catch((err) => {
-        win.webContents.send('spin-design-message', { type: 'spinSaveResult', success: false, error: String(err) });
+        win.webContents.send('spin-design-message', {
+          type: 'spinSaveResult',
+          success: false,
+          error: String(err),
+        });
       });
     };
 
@@ -146,7 +152,7 @@ export class ElectronSpinDesign implements SpinDesign {
           }
         });
       } else if (msg?.type === 'refreshSpinDesign') {
-        // 设计器工具栏"刷新"：重读磁盘上最新的 spin.json 与技能列表回传（与 VSCodeSpinDesign 一致）。
+        // 设计器工具栏"刷新"：从 Core 重读最新 spin.json 与技能列表回传
         // 复用 refresh() 的装配路径（SpinLoop 完成后的自动刷新同路），只读不落盘
         this.refresh().catch((err) => {
           this.host.log(`[ElectronSpinDesign] spin.json refresh failed: ${err}`);
@@ -170,43 +176,40 @@ export class ElectronSpinDesign implements SpinDesign {
     if (!win || win.isDestroyed()) {
       return;
     }
-    // 刷新设计器**绑定**的目录，不回查活动目录（SpinLoop 完成的刷新同理）
-    const workspacePath = this.workspacePath || this.host.getWorkspacePath();
-    const projectDir = this.getProjectConversationDir(workspacePath);
-    if (!projectDir || !workspacePath) {
+    const sessionId = this.sessionId;
+    if (!sessionId) {
       return;
     }
-
-    const spinJsonPath = path.join(projectDir, 'spin.json');
-    let data: any = null;
     try {
-      if (fs.existsSync(spinJsonPath)) {
-        data = JSON.parse(fs.readFileSync(spinJsonPath, 'utf-8'));
+      const read = await requestSpinDesign(sessionId);
+      if (read.status === 'error') {
+        this.postError(read.message);
+        return;
       }
+      this.postData(read);
     } catch (err) {
-      this.host.log(`[ElectronSpinDesign] Failed to read spin.json for refresh: ${err}`);
+      this.postError(String(err));
+    }
+  }
+
+  private postData(read: Extract<SpinDesignReadResult, { status: 'ok' }>): void {
+    const win = this.spinDesignWindow;
+    if (!win || win.isDestroyed()) {
       return;
     }
-
-    const { getAllSkills } = await import('../src/shared/skills/loadSkillsDir.js');
-    const availableSkills = (await getAllSkills(workspacePath))
-      .filter(s => !s.isHidden && s.userInvocable)
-      .map(s => ({ name: s.name, description: s.description }));
-
     win.webContents.send('spin-design-message', {
       type: 'spinDesignData',
-      data,
-      skills: availableSkills,
+      data: read.data,
+      skills: read.skills,
     });
   }
 
-  private getProjectConversationDir(workspacePath?: string): string | undefined {
-    if (!workspacePath) return undefined;
-    try {
-      const { getProjectConversationDir } = require('../src/shared/history/Config.js');
-      return getProjectConversationDir(workspacePath);
-    } catch {
-      return undefined;
+  private postError(message: string): void {
+    this.host.log(`[ElectronSpinDesign] ${message}`);
+    const win = this.spinDesignWindow;
+    if (!win || win.isDestroyed()) {
+      return;
     }
+    win.webContents.send('spin-design-message', { type: 'spinDesignError', error: message });
   }
 }

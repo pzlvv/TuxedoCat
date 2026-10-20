@@ -339,7 +339,7 @@ CoreEvent.notice { sessionId, key, params, level }
 - Core 与 UI 位于各自的进程；两者可以在同一台机器，也可以在不同机器。
 - 工具（Bash、文件读写、ripgrep、MCP stdio server）在 Core 所在机器上执行，操作 Core
   侧的文件系统。
-- 会话状态、历史落盘、项目清单读写都在 Core 侧。
+- 会话状态、历史落盘、项目清单读写、Spin 设计 `spin.json` 读写都在 Core 侧。
 - 配置读写、MCP 配置解析、模型注册表在 UI 侧。
 - UI 侧保留表现与宿主界面能力：diff 预览、Mermaid 预览、打开外部链接、另存为、界面构造。
 

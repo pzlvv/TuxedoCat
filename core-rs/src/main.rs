@@ -299,6 +299,25 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .unwrap_or_default();
             Ok(skills_payload(&cwd))
         }
+        // Spin 设计器数据：Core 在自己所在机器解析会话工作目录并读盘。
+        "spinDesignRequested" => {
+            let session_id = request
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "spinDesignRequested without sessionId".to_string())?;
+            Ok(spin_design_read_payload(session_id))
+        }
+        // Spin 设计器保存：与 SpinLoop 的节点 meta 更新共用同一把写锁。
+        "spinDesignSaveRequested" => {
+            let session_id = request
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "spinDesignSaveRequested without sessionId".to_string())?;
+            let data = request
+                .get("data")
+                .ok_or_else(|| "spinDesignSaveRequested without data".to_string())?;
+            Ok(spin_design_save_payload(session_id, data))
+        }
         other => Err(format!("unknown UI request type: {other}")),
     }
 }
@@ -368,6 +387,51 @@ fn skills_payload(cwd: &str) -> Value {
         }
     }
     json!({ "skills": skills })
+}
+
+/// Spin 设计器技能清单：只要用户可主动触发的技能（与宿主侧旧过滤口径一致）。
+fn spin_design_skills(cwd: &str) -> Value {
+    let skills: Vec<Value> = skills::get_all_skills(cwd)
+        .into_iter()
+        .filter(|skill| !skill.is_hidden && skill.user_invocable)
+        .map(|skill| json!({ "name": skill.name, "description": skill.description }))
+        .collect();
+    Value::Array(skills)
+}
+
+/// Spin 设计器读取：`sessionId` 的会话工作目录在 Core 所在机器。
+///
+/// 严格用 `session_workspace`（不走 `project_root` 的活动工作区回退）：
+/// 多 Connection 下回退会串到别的工作区。
+fn spin_design_read_payload(session_id: &str) -> Value {
+    let Some(cwd) = config::session_workspace(session_id) else {
+        return json!({
+            "status": "error",
+            "message": format!("session workspace is not registered: {session_id}"),
+        });
+    };
+    match spin::read_spin_json_state(&cwd) {
+        Ok(data) => json!({
+            "status": "ok",
+            "data": data,
+            "skills": spin_design_skills(&cwd),
+        }),
+        Err(error) => json!({ "status": "error", "message": error }),
+    }
+}
+
+/// Spin 设计器保存：与 SpinLoop 的节点 meta 更新共用同一把写锁。
+fn spin_design_save_payload(session_id: &str, data: &Value) -> Value {
+    let Some(cwd) = config::session_workspace(session_id) else {
+        return json!({
+            "status": "error",
+            "message": format!("session workspace is not registered: {session_id}"),
+        });
+    };
+    match spin::write_spin_json(&cwd, data) {
+        Ok(()) => json!({ "status": "ok" }),
+        Err(error) => json!({ "status": "error", "message": error }),
+    }
 }
 
 /// 展开压缩归档时要显示的完整消息序列（对齐 `handleExpandCompact` 的合并口径）。
