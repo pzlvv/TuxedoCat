@@ -7,7 +7,7 @@ import type { SessionStatesStore } from '../sessionState';
 import { profileLog } from '../debug';
 import { handleStreamShowThinkingAnimation, handleStreamAiEnd, handleStreamQueryBegin, handleStreamQueryEnd, handleStreamStreamMessage, handleStreamStreamEnd, handleStreamCompressProgress } from './handlers/streamHandlers';
 import { handleToolAddMessage, handleToolUpdateToolArgs, handleToolUpdateToolStatus, handleToolToolProgress, handleToolRequestUserChoice, handleToolToolMetaData } from './handlers/toolHandlers';
-import { handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationSessionCompletionAttention, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
+import { handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationSetWorkMode, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationSessionCompletionAttention, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
 import { handleConfigSetTheme, handleConfigSetModel, handleConfigSetAgentMode, handleConfigSetPromptMode, handleConfigSetThinkingMode, handleConfigSetWebSearch, handleConfigSetMcpServers, handleConfigSetModels, handleConfigSetSkills, handleConfigContextLimitUpdated, handleConfigNotice, handleConfigSettingsDefaults, handleConfigProviderModelsResult, handleConfigSetNewConversationDefaults, handleConfigLlmConfigSaved, handleConfigShowLLMConfig, handleConfigBalanceUpdate, handleConfigFocusInput, handleConfigActivatePrewarmedView } from './handlers/configHandlers';
 import type { HandlerContext } from './handlers/handlerContext';
 import { restoreQueuedMessageToInput } from './restoreQueuedMessage';
@@ -62,6 +62,8 @@ export interface UseMessageHandlerProps {
   setConversationDropdownOpen: (v: boolean) => void;
   setCurrentSessionId: (v: string | null) => void;
   setParentSessionId: (v: string | null) => void;
+  /** 会话工作模式（spin = 输入框禁用；加载载荷与运行期 setWorkMode 都走这里） */
+  setWorkMode: (v: 'normal' | 'spin') => void;
   setAgentMode: (v: AgentMode) => void;
   setPromptMode: (v: PromptMode | undefined) => void;
   setThinkingMode: (v: ThinkingMode | undefined) => void;
@@ -336,6 +338,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           break;
         case 'setTitle':
           handleConversationSetTitle(msg, ctx);
+          break;
+        case 'setWorkMode':
+          handleConversationSetWorkMode(msg, ctx);
           break;
         case 'conversationsData':
           handleConversationConversationsData(msg, ctx);

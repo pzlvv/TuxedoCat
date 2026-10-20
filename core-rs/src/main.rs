@@ -330,7 +330,8 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
 ///   running，永远显示运行中；运行中的会话不伪造；
 /// - `pendingToolUseIds` 恒为空：Standalone 的工具执行状态不落盘，进程重启后不存在
 ///   进程内待执行表（中断的工具经上一条补取消结果渲染为失败）；
-/// - `agentMode` 取 meta.json 的权威值（缺失为 null，由宿主回退默认值）。
+/// - `agentMode` 取 meta.json 的权威值（缺失为 null，由宿主回退默认值）；
+/// - `workMode` 取 meta.json 的 `workMode`（缺失按 normal；specs/016 FR-005）。
 fn conversation_load_payload(core: &Core, session_id: &str) -> Value {
     let Some(project) = history::project_of_session(session_id) else {
         return json!({
@@ -339,6 +340,7 @@ fn conversation_load_payload(core: &Core, session_id: &str) -> Value {
             "pendingToolUseIds": [],
             "hasCompactArchive": false,
             "agentMode": Value::Null,
+            "workMode": "normal",
         });
     };
     let mut messages = history::load_messages(session_id, &project);
@@ -351,12 +353,25 @@ fn conversation_load_payload(core: &Core, session_id: &str) -> Value {
         .as_ref()
         .map(|metadata| json!(prompt::agent_mode_of(metadata)))
         .unwrap_or(Value::Null);
+    let work_mode = metadata
+        .as_ref()
+        .map(|metadata| {
+            json!(crate::engine::work_mode_text(
+                metadata
+                    .get("workMode")
+                    .and_then(Value::as_str)
+                    .map(crate::engine::work_mode_from_text)
+                    .unwrap_or(crate::engine::WorkMode::Normal)
+            ))
+        })
+        .unwrap_or(json!("normal"));
     json!({
         "messages": messages,
         "metadata": metadata,
         "pendingToolUseIds": [],
         "hasCompactArchive": has_compact_archive,
         "agentMode": agent_mode,
+        "workMode": work_mode,
     })
 }
 

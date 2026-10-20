@@ -321,6 +321,7 @@ export class WebViewUI implements WebViewUiPort {
       conversationSpaceCleared: (e) => this.onConversationSpaceCleared(e.dirName, e.result),
       sessionRuntimeChanged: (e) => this.onSessionRuntimeChanged(e.states),
       spinDesignDataChanged: () => this.onSpinDesignDataChanged(),
+      workModeChanged: (e) => this.onWorkModeChanged(e.sessionId, e.workMode),
       highlightLanguagesUsed: (e) => this.onHighlightLanguagesUsed(e.languages),
       compactBegin: (e) => this.onCompactBegin(e.sessionId),
       compactEnd: (e) => this.onCompactEnd(e.sessionId, e.result),
@@ -614,6 +615,14 @@ export class WebViewUI implements WebViewUiPort {
         await this.openSpinDesignForSession(sessionId);
       }
     }
+  }
+
+  /**
+   * 会话工作模式变化（core 广播，进入 / 退出 spin）→ webview 输入框禁用态
+   * （specs/016 FR-004）。会话切换时的初始态由 `conversationLoaded` 载荷携带。
+   */
+  onWorkModeChanged(sessionId: string, workMode: 'normal' | 'spin'): void {
+    this.postToWebview(sessionId, { type: 'setWorkMode', workMode });
   }
 
   /**

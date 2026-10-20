@@ -7,7 +7,7 @@
  */
 
 import type { BrowserWindow, WebContents, WebContentsView } from 'electron';
-import { app, nativeTheme, dialog, BrowserWindow as BrowserWindowCtor } from 'electron';
+import { app, nativeTheme, dialog, screen, BrowserWindow as BrowserWindowCtor } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { ChatViewManager } from './ChatViewManager.js';
@@ -24,9 +24,24 @@ import { writeSettingsJson } from '../src/host/settingsFile.js';
 import { imageMimeFor } from './fileTypes.js';
 import { remoteFileReaderFor } from './sidebarFilesRemote.js';
 import { guardViewNavigation } from './viewNavigation.js';
+import { readWorkspaceState, writeWorkspaceState } from './workspaceStateStore.js';
+import {
+  loadSlotRect,
+  planViewerSlotBounds,
+  saveSlotRect,
+  trackWindowRect,
+  type RectStateStore,
+  type SlotBounds,
+} from './viewerWindowRect.js';
 
 /** 项目根目录（dist-electron 的上一级，与 main.ts 的 APP_ROOT 一致） */
 const APP_ROOT = path.resolve(__dirname, '..');
+
+/** workspace-state 读写口（viewerWindowRect 纯函数模块的注入点） */
+const rectStateStore: RectStateStore = {
+  readState: readWorkspaceState,
+  writeState: writeWorkspaceState,
+};
 
 /** 本地图片 → data URL（图片查看器窗口统一吃 data URL：本地 / 远程同一渲染路径） */
 async function readImageAsDataUrl(filePath: string, log: (line: string) => void): Promise<string> {
@@ -59,6 +74,12 @@ export class ElectronUIHost implements UIHost {
   } | null = null;
   /** 复用的 Mermaid 预览窗口（与 VSCodeUIHost 的单面板语义一致） */
   private mermaidWindow: BrowserWindowCtor | undefined;
+  /**
+   * 查看器窗口名额的当前占用者（Monaco / 图片 / Markdown 共用；specs/016 FR-002）。
+   * 新的打开请求先顶替它（销毁重建，继承其矩形），桌面同时至多一个查看器窗口；
+   * Mermaid 预览与 Spin 设计器不占该名额。
+   */
+  private viewerWindow: BrowserWindowCtor | undefined;
 
   /** 内部日志实现（console 前缀 + 落盘：宿主诊断不进日志文件就查不到问题） */
   private writeLog(...args: unknown[]): void {
@@ -357,6 +378,59 @@ export class ElectronUIHost implements UIHost {
    * 滚轮以光标为锚缩放、放大后可拖动平移（此前是把 file:// URL 直接交给 Chromium，
    * 没有缩放能力）。图片内容只在构造 data URL 时读一次盘。
    */
+  /**
+   * 取得查看器窗口名额并返回新窗口的初始矩形（specs/016 FR-002 / FR-003）。
+   *
+   * 存活占用者被顶替：先补记其矩形（destroy 不触发 close），销毁后由新窗口继承；
+   * 无存活窗口时用状态文件里记忆的矩形（多屏校验失败回退 undefined → 默认尺寸）。
+   */
+  private takeViewerSlot(): SlotBounds | undefined {
+    const alive = this.viewerWindow && !this.viewerWindow.isDestroyed() ? this.viewerWindow : undefined;
+    const workAreas = screen.getAllDisplays().map(({ workArea }) => workArea);
+    const savedRect = loadSlotRect(rectStateStore, 'viewerWindowRect');
+    if (!alive) {
+      return planViewerSlotBounds({ savedRect, workAreas });
+    }
+    // 顶替：被替窗口的矩形先落盘再销毁（destroy 不触发 close，close 补记不会发生）
+    const bounds = alive.getNormalBounds();
+    saveSlotRect(rectStateStore, 'viewerWindowRect', bounds);
+    alive.destroy();
+    this.viewerWindow = undefined;
+    return planViewerSlotBounds({
+      liveBounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
+      savedRect,
+      workAreas,
+    });
+  }
+
+  /** 把名额矩形转成 BrowserWindow 构造参数（位置缺失时交给 OS 默认摆放） */
+  private static slotBoundsToOptions(bounds: SlotBounds | undefined, defaultWidth: number, defaultHeight: number): {
+    width: number;
+    height: number;
+    x?: number;
+    y?: number;
+  } {
+    if (!bounds) return { width: defaultWidth, height: defaultHeight };
+    const base: { width: number; height: number; x?: number; y?: number } = {
+      width: bounds.width,
+      height: bounds.height,
+    };
+    if (bounds.x !== undefined && bounds.y !== undefined) {
+      base.x = bounds.x;
+      base.y = bounds.y;
+    }
+    return base;
+  }
+
+  /** 登记查看器名额占用者：矩形防抖落盘 + 用户关闭补记 + closed 清引用 */
+  private trackViewerWindow(win: BrowserWindowCtor): void {
+    this.viewerWindow = win;
+    trackWindowRect(win, rectStateStore, 'viewerWindowRect');
+    win.on('closed', () => {
+      if (this.viewerWindow === win) this.viewerWindow = undefined;
+    });
+  }
+
   async openImagePreviewWindow(init: { title: string; dataUrl: string }): Promise<void> {
     const indexPath = path.join(APP_ROOT, 'dist', 'imageViewer', 'index.html');
     if (!fs.existsSync(indexPath)) {
@@ -364,8 +438,7 @@ export class ElectronUIHost implements UIHost {
       return;
     }
     const win = new BrowserWindowCtor({
-      width: 900,
-      height: 700,
+      ...ElectronUIHost.slotBoundsToOptions(this.takeViewerSlot(), 900, 700),
       title: init.title || PRODUCT_NAME,
       icon: path.join(APP_ROOT, 'assets', 'logo.png'),
       autoHideMenuBar: true,
@@ -379,6 +452,7 @@ export class ElectronUIHost implements UIHost {
     });
     guardViewNavigation(win.webContents, 'image-viewer');
     await win.loadFile(indexPath);
+    this.trackViewerWindow(win);
     win.webContents.send('imageviewer-init', init);
   }
 
@@ -394,8 +468,7 @@ export class ElectronUIHost implements UIHost {
     const isDark = nativeTheme.shouldUseDarkColors;
     const title = init.title || PRODUCT_NAME;
     const win = new BrowserWindowCtor({
-      width: 1080,
-      height: 720,
+      ...ElectronUIHost.slotBoundsToOptions(this.takeViewerSlot(), 1080, 720),
       title,
       icon: path.join(APP_ROOT, 'assets', 'logo.png'),
       autoHideMenuBar: true,
@@ -411,6 +484,7 @@ export class ElectronUIHost implements UIHost {
     // Chromium 对 data URL 的 ~2MB 上限；base64 只放大 4/3（超大文件仍会被
     // 上限拒之门外，与 Mermaid 预览同一约束）
     await win.loadURL('data:text/html;charset=utf-8;base64,' + Buffer.from(html, 'utf8').toString('base64'));
+    this.trackViewerWindow(win);
   }
 
   /**
@@ -425,9 +499,14 @@ export class ElectronUIHost implements UIHost {
     content?: string;
     title?: string;
   }): Promise<void> {
+    // 页面产物缺失时不占名额（不顶替已有查看器窗口），维持「log + 不开窗」的现状
+    const indexPath = path.join(APP_ROOT, 'dist', 'monaco', 'index.html');
+    if (!fs.existsSync(indexPath)) {
+      this.log(`Monaco page not found: ${indexPath}. Run npm run build:monaco`);
+      return;
+    }
     const win = new BrowserWindowCtor({
-      width: 1080,
-      height: 720,
+      ...ElectronUIHost.slotBoundsToOptions(this.takeViewerSlot(), 1080, 720),
       title: init.title || PRODUCT_NAME,
       icon: path.join(APP_ROOT, 'assets', 'logo.png'),
       autoHideMenuBar: true,
@@ -444,12 +523,8 @@ export class ElectronUIHost implements UIHost {
     // 页面注入 monacoPreload（读盘 / 写文件）：同其他应用自有页面一样拒绝窗口内导航
     guardViewNavigation(win.webContents, 'monaco');
 
-    const indexPath = path.join(APP_ROOT, 'dist', 'monaco', 'index.html');
-    if (!fs.existsSync(indexPath)) {
-      this.log(`Monaco page not found: ${indexPath}. Run npm run build:monaco`);
-      return;
-    }
     await win.loadFile(indexPath);
+    this.trackViewerWindow(win);
 
     // 读取文件内容（view 模式；调用方已给 content 时直接用——远程文件不走本地盘）
     const data: Record<string, unknown> = { ...init };

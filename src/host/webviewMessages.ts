@@ -146,6 +146,15 @@ export type HostToWebviewMessage = {
   sessionId: string;
   title: string;
 } | {
+  /**
+   * 会话工作模式变化（core `workModeChanged` 的 webview 投影，specs/016 FR-004）。
+   * spin = 主输入框禁用（placeholder 提示）；normal = 恢复。会话切换的初始态
+   * 由 `conversationLoaded` 载荷的 `workMode` 携带，本消息只管运行期变化。
+   */
+  type: 'setWorkMode';
+  sessionId: string;
+  workMode: 'normal' | 'spin';
+} | {
   type: 'aiBegin';
   sessionId: string;
 } | {
@@ -266,6 +275,11 @@ export type HostToWebviewMessage = {
   model?: string;
   /** 当前会话的 agent mode（运行时内存值，不持久化到文件） */
   agentMode?: 'manual' | 'risk' | 'auto';
+  /**
+   * 会话工作模式（meta.json `workMode` 恢复，缺省 normal；specs/016 FR-005）：
+   * spin 会话加载后主输入框保持禁用，运行期变化走 `setWorkMode`。
+   */
+  workMode: 'normal' | 'spin';
   /** 引擎是否正在消费消息（查询进行中） */
   hasActiveQuery?: boolean;
   /** 当前会话活动阶段：thinking / text / tool / idle，用于恢复 thinking 动画 */

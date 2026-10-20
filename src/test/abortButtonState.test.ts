@@ -17,6 +17,7 @@ function facts(overrides: Partial<AbortButtonFacts> = {}): AbortButtonFacts {
     compacting: false,
     backgroundRunning: false,
     subAgentRunning: false,
+    workMode: 'normal',
     ...overrides,
   };
 }
@@ -57,6 +58,16 @@ async function run(): Promise<void> {
     '前台在跑优先于后台',
   );
   check('前台优先于后台', true);
+
+  // spin 模式计为可停止（specs/016 FR-004 / FR-005）：空闲的恢复态 spin 会话靠
+  // 停止按钮退出 spin 模式，因此即使没有任何运行中工作也显示红色停止按钮
+  assert.equal(resolveAbortButtonState(facts({ workMode: 'spin' })), 'query', '空闲 spin → 红色');
+  assert.equal(
+    resolveAbortButtonState(facts({ workMode: 'spin', backgroundRunning: true })),
+    'query',
+    'spin 优先于后台档',
+  );
+  check('spin 模式 → query（红，可退出）', true);
 
   finish();
 }

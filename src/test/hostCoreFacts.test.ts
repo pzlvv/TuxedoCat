@@ -44,6 +44,7 @@ async function run(): Promise<void> {
         pendingToolUseIds: [],
         hasCompactArchive: false,
         agentMode: null,
+        workMode: 'normal',
       };
     },
     smartNamingRequested: async (req) => {

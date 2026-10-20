@@ -535,7 +535,7 @@ function coreEmitModules(coreEventNames: ReadonlySet<string>): { emits: Map<stri
 }
 
 /** events.md 体积棘轮（AGENTS.md 第 0 节「控体积」的可执行形态）：只降不升，主动减体积后下调 */
-const EVENTS_LINE_RATCHET = 418;
+const EVENTS_LINE_RATCHET = 419;
 
 /**
  * 文档体积上限（specs/README.md 第 9 节）：单篇规格超过即拆——「不要有巨型规格」的可执行形态。

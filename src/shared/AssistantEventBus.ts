@@ -113,6 +113,18 @@ export type CoreEvent =
     }
   | { type: 'spinDesignDataChanged' }
   /**
+   * 会话工作模式变化（进入 / 退出 spin）。
+   *
+   * core 的 `SessionState.work_mode` 是唯一事实：`/spin` 执行进入 spin、结束（完成 /
+   * 中止 / 失败）退出，恢复出的 spin 态经会话停止退出。UI 据此禁用 / 恢复主输入框
+   * （specs/016 FR-004）。
+   */
+  | {
+      type: 'workModeChanged';
+      sessionId: string;
+      workMode: 'normal' | 'spin';
+    }
+  /**
    * 本条消息里用到了哪些高亮语言（围栏代码块语言）。
    *
    * core 只做「从消息里扫出来」这一件事，**不维护已记录集合**：`highlightLanguages`
@@ -488,6 +500,11 @@ export interface LoadedConversation {
   hasCompactArchive: boolean;
   /** 会话的询问模式（core 的权威取值；无记录为 null） */
   agentMode: AgentMode | null;
+  /**
+   * 会话工作模式（meta.json 的 `workMode`，缺省 normal；specs/016 FR-005）。
+   * spin = spin 模式会话（执行中或执行中断后恢复），UI 据此恢复输入框禁用态。
+   */
+  workMode: 'normal' | 'spin';
 }
 
 /** 技能 / 命令列表项（`UiRequest.skillsRequested`） */

@@ -251,7 +251,7 @@ Core 进程内另有一份内存覆盖）优先，其次全局默认（`settings
 
 | | 流 1：对话列表 | 流 2：会话运行时状态 |
 | --- | --- | --- |
-| 内容 | 磁盘元数据：`title` / `createdAt` / `updatedAt` / `messageCount` / `parentSessionId` | 运行时根事实与派生 `idle`（`SessionRuntimeState`，[docs/architecture/events.md 第 2 节](events.md#2-事件词汇表) / [docs/core/session-runtime.md](../core/session-runtime.md)） |
+| 内容 | 磁盘元数据：`title` / `createdAt` / `updatedAt` / `messageCount` / `parentSessionId` / `workMode`（`spin` = spin 会话，加载时恢复输入框禁用态） | 运行时根事实与派生 `idle`（`SessionRuntimeState`，[docs/architecture/events.md 第 2 节](events.md#2-事件词汇表) / [docs/core/session-runtime.md](../core/session-runtime.md)） |
 | source of truth | 磁盘（Core 对 `conversationListRequested` 的应答） | Core 的会话运行时状态（[docs/core/session-runtime.md](../core/session-runtime.md)） |
 | 变化频率 | 低（落盘 / 改名 / 删除 / 新建） | 高（查询开始结束、等用户、用户响应） |
 | 触发 | `CoreEvent.conversationListChanged` | `CoreEvent.sessionRuntimeChanged` |
@@ -379,6 +379,6 @@ import core 的只读函数与类型（[docs/architecture/layering.md 第 2 节]
 | 按键捕获 | 点快捷键字段开始录制，主进程 `before-input-event` → `electron/shortcut.ts` 的 `acceleratorFromKeyboardEvent`（页面只负责显示） |
 | 保存（快捷键） | 录到合法组合即写宿主本地偏好（`writeWakeShortcut`）；关闭回调按最新偏好重新注册 |
 | 取消录制 / Esc | 录制中 Esc 只退出录制；未录制时 Esc 关闭窗口；关闭后按最新偏好恢复注册 |
-| 提示音开关 | 写宿主本地偏好（`writeSoundEnabled`）；打开时预览播放一次 |
-| 提示音音量 | 拖完滑条（change）写宿主本地偏好（`writeSoundVolume`）并预览播放一次；提醒与预览共用同一播放载体 |
+| 提示音开关 | 写宿主本地偏好（`writeSoundEnabled`）；打开时预览播放一次。默认关闭（`soundEnabled` 缺失 / 非 `true` 一律不播，`electron/soundSettings.ts`） |
+| 提示音音量 | 拖完滑条（change）写宿主本地偏好（`writeSoundVolume`）并预览播放一次；提醒与预览共用同一播放载体。默认 50%（`DEFAULT_SOUND_VOLUME`） |
 | 注册入口 | `registerWakeShortcutValue(shortcut)`：先注销旧值再注册新值，失败静默忽略 |

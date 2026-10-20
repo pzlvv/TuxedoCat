@@ -874,6 +874,7 @@ export class WebviewMessageHandler {
       savedContext: effectiveSavedContext,
       parentSessionId: conversation.metadata?.parentSessionId,
       agentMode: effectiveAgentMode,
+      workMode: loaded.workMode,
       hasActiveQuery,
       hasCompactArchive,
       modelRef,

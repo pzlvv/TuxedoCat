@@ -1057,6 +1057,119 @@ fn ensure_loaded_without_any_workspace_fails() {
     assert!(harness.core.ensure_loaded("s1").is_err());
 }
 
+// ==================== 工作模式（workMode，specs/016 FR-004 / FR-005） ====================
+
+#[test]
+fn ensure_loaded_restores_work_mode_from_metadata() {
+    let sandbox = Sandbox::new("engine-ensure-loaded-work-mode");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(workspace.clone()));
+    history::create_conversation(
+        "spin-s1",
+        &workspace,
+        json!({ "sessionId": "spin-s1", "workMode": "spin" }),
+    )
+    .unwrap();
+    history::create_conversation(
+        "plain-s1",
+        &workspace,
+        json!({ "sessionId": "plain-s1" }),
+    )
+    .unwrap();
+
+    let harness = EngineHarness::allow_all();
+    harness.core.ensure_loaded("spin-s1").unwrap();
+    harness.core.ensure_loaded("plain-s1").unwrap();
+    assert_eq!(
+        harness.core.session("spin-s1").lock().unwrap().work_mode,
+        WorkMode::Spin,
+        "meta.json 的 workMode=spin 在加载时恢复"
+    );
+    assert_eq!(
+        harness.core.session("plain-s1").lock().unwrap().work_mode,
+        WorkMode::Normal,
+        "无 workMode 字段的存量会话按 normal"
+    );
+}
+
+#[test]
+fn set_work_mode_persists_metadata_and_broadcasts() {
+    let sandbox = Sandbox::new("engine-set-work-mode");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(workspace.clone()));
+    history::create_conversation(
+        "s1",
+        &workspace,
+        json!({ "sessionId": "s1" }),
+    )
+    .unwrap();
+
+    let harness = EngineHarness::allow_all();
+    // 先登记会话（set_work_mode 只对已登记会话生效，不复活 / 不隐式建档）
+    let _ = harness.core.session("s1");
+    harness.core.set_work_mode("s1", WorkMode::Spin);
+    {
+        let state = harness.core.session("s1");
+        assert_eq!(state.lock().unwrap().work_mode, WorkMode::Spin);
+    }
+    let metadata = history::load_metadata("s1", &workspace).expect("meta.json");
+    assert_eq!(metadata["workMode"], json!("spin"), "进入 spin 落盘 meta.json");
+    let events = harness.sink.events_of("workModeChanged");
+    assert_eq!(
+        events.len(),
+        1,
+        "进入 spin 广播一次 workModeChanged: {:?}",
+        events
+    );
+    assert_eq!(events[0]["sessionId"], json!("s1"));
+    assert_eq!(events[0]["workMode"], json!("spin"));
+
+    harness.core.set_work_mode("s1", WorkMode::Normal);
+    let metadata = history::load_metadata("s1", &workspace).expect("meta.json");
+    assert_eq!(metadata["workMode"], json!("normal"), "退出 spin 回写 normal");
+    assert_eq!(harness.sink.events_of("workModeChanged").len(), 2);
+}
+
+#[test]
+fn set_work_mode_skips_deleted_sessions() {
+    let _sandbox = Sandbox::new("engine-set-work-mode-deleted");
+    let harness = EngineHarness::allow_all();
+    // 会话未登记（等价于已删除）：不建档、不广播
+    harness.core.set_work_mode("ghost", WorkMode::Spin);
+    assert!(
+        harness.sink.event_of("workModeChanged").is_none(),
+        "不复活已删除的会话"
+    );
+}
+
+#[test]
+fn abort_exits_restored_spin_mode_of_idle_session() {
+    let sandbox = Sandbox::new("engine-abort-restored-spin");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(workspace.clone()));
+    history::create_conversation(
+        "s1",
+        &workspace,
+        json!({ "sessionId": "s1", "workMode": "spin" }),
+    )
+    .unwrap();
+
+    let harness = EngineHarness::allow_all();
+    // 重启后加载：恢复出 spin 态、会话空闲（无运行中的 SpinLoop）
+    harness.core.ensure_loaded("s1").unwrap();
+    harness.core.on_abort("s1");
+
+    assert_eq!(
+        harness.core.session("s1").lock().unwrap().work_mode,
+        WorkMode::Normal,
+        "abort 退出恢复出的 spin 态"
+    );
+    let metadata = history::load_metadata("s1", &workspace).expect("meta.json");
+    assert_eq!(metadata["workMode"], json!("normal"), "退出落盘 meta.json");
+    let event = harness.sink.event_of("workModeChanged").expect("广播退出事件");
+    assert_eq!(event["workMode"], json!("normal"));
+}
+
 // ==================== 消费循环 ====================
 
 #[test]

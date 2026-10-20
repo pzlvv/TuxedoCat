@@ -258,6 +258,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | `activeWorkspaceKey` | 活动工作区的 refKey；无活动项时为 `null`（旧字段 `activeWorkspace` 仅作本地路径兼容保留） |
 | `recentWorkspaces` | 最近工作目录，去重、有序、上限 20 |
 | `windowSize` / `floatingWindowSize` | 完整模式 / 浮窗模式的上次位置与尺寸 |
+| `viewerWindowRect` / `spinDesignWindowRect` | 查看器窗口名额（Monaco / 图片 / Markdown 共用）与 Spin 设计器窗口的上次位置与尺寸，各自独立存储；开窗前做多屏可见性校验，失效回退默认尺寸（`electron/viewerWindowRect.ts`） |
 | `windowMode` / `floatingPinned` | 上次窗口模式与浮窗置顶状态 |
 
 启动时恢复打开集合与活动项；已不存在的本地目录**保留**并标记为不可用（宿主只标记，

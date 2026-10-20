@@ -9,7 +9,7 @@
  */
 
 import type { BrowserWindow } from 'electron';
-import { BrowserWindow as BrowserWindowCtor } from 'electron';
+import { BrowserWindow as BrowserWindowCtor, screen } from 'electron';
 import * as path from 'path';
 import type { UIHost } from '../src/host/UIHost.js';
 import type { SpinDesign } from '../src/host/SpinDesign.js';
@@ -18,9 +18,17 @@ import { requestSpinDesign, saveSpinDesign } from '../src/host/coreFacts.js';
 import { planSpinDesignSessionSwitch } from '../src/host/spinDesignSession.js';
 import { tt, getSystemLocale } from '../src/host/i18n.js';
 import { guardViewNavigation } from './viewNavigation.js';
+import { readWorkspaceState, writeWorkspaceState } from './workspaceStateStore.js';
+import { loadSlotRect, planViewerSlotBounds, trackWindowRect, type RectStateStore } from './viewerWindowRect.js';
 
 /** 项目根目录（dist-electron 的上一级，与 main.ts 的 APP_ROOT 一致） */
 const APP_ROOT = path.resolve(__dirname, '..');
+
+/** workspace-state 读写口（设计器窗口矩形记忆；与查看器名额独立存储） */
+const spinRectStore: RectStateStore = {
+  readState: readWorkspaceState,
+  writeState: writeWorkspaceState,
+};
 
 export class ElectronSpinDesign implements SpinDesign {
   /** 当前打开的 Spin 设计窗口（用于 SpinLoop 完成后刷新其数据） */
@@ -77,9 +85,19 @@ export class ElectronSpinDesign implements SpinDesign {
       sessionId !== null,
     );
 
+    // 上次窗口矩形（多屏校验失败回退默认尺寸；specs/016 FR-003，与查看器名额独立）
+    const bounds = planViewerSlotBounds({
+      savedRect: loadSlotRect(spinRectStore, 'spinDesignWindowRect'),
+      workAreas: screen.getAllDisplays().map(({ workArea }) => workArea),
+    });
     const win = new BrowserWindowCtor({
-      width: 1100,
-      height: 720,
+      ...(bounds
+        ? {
+            width: bounds.width,
+            height: bounds.height,
+            ...(bounds.x !== undefined && bounds.y !== undefined ? { x: bounds.x, y: bounds.y } : {}),
+          }
+        : { width: 1100, height: 720 }),
       title: tt('Spin 设计', 'Spin Design'),
       icon: path.join(APP_ROOT, 'assets', 'logo.png'),
       autoHideMenuBar: true,
@@ -96,6 +114,8 @@ export class ElectronSpinDesign implements SpinDesign {
     this.spinDesignWindow = win;
     // 页面注入 spinPreload（保存 spin.json / 导出）：同其他应用自有页面一样拒绝窗口内导航
     guardViewNavigation(win.webContents, 'spin-design');
+    // 窗口矩形记忆：move / resize 防抖落盘、close 补记（specs/016 FR-003）
+    trackWindowRect(win, spinRectStore, 'spinDesignWindowRect');
     win.on('closed', () => {
       if (this.spinDesignWindow === win) {
         this.spinDesignWindow = undefined;

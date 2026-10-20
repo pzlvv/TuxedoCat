@@ -193,6 +193,24 @@ pub enum WorkMode {
     Spin,
 }
 
+/// `WorkMode` 的落盘 / 事件文本（`meta.json` 的 `workMode` 字段与
+/// `workModeChanged` 载荷共用；specs/016 FR-005）
+pub fn work_mode_text(mode: WorkMode) -> &'static str {
+    match mode {
+        WorkMode::Normal => "normal",
+        WorkMode::Spin => "spin",
+    }
+}
+
+/// 从落盘文本恢复 `WorkMode`；非法 / 缺失值按 `Normal`（存量会话没有该字段）
+pub fn work_mode_from_text(text: &str) -> WorkMode {
+    if text == "spin" {
+        WorkMode::Spin
+    } else {
+        WorkMode::Normal
+    }
+}
+
 /// 单个会话的运行时状态
 pub struct SessionState {
     pub cancel: Arc<AtomicBool>,
@@ -622,6 +640,17 @@ impl Core {
     ///
     /// 阶段判定读与 `sessionRuntimeChanged` 同一批事实，与 UI 按钮三态同源。
     pub fn on_abort(&self, session_id: &str) {
+        // spin 恢复态（meta 停在 spin、SpinLoop 已不在——应用重启后加载恢复）：
+        // abort 即退出 spin 模式（specs/016 FR-005），会话回到可输入状态。
+        // 运行中的 spin 不走这支：其会话非空闲，落回常规两阶段（cancel 标记 →
+        // SpinLoop 停止 → spin_host 退出点恢复 Normal）。
+        if let Some(state) = self.session_if_exists(session_id) {
+            let spin_restored = state.lock().unwrap().work_mode == WorkMode::Spin;
+            if spin_restored && self.is_session_idle(session_id) {
+                self.set_work_mode(session_id, WorkMode::Normal);
+                return;
+            }
+        }
         // 会话已登记且完全空闲：无事可做（按钮此时为灰色，这里只兜住渲染到点击之间的竞态）。
         if self.session_if_exists(session_id).is_some() && self.is_session_idle(session_id) {
             return;
@@ -1283,6 +1312,34 @@ impl Core {
         true
     }
 
+    /// 工作模式切换的唯一写入点（specs/016 FR-004 / FR-005）：改
+    /// `SessionState.work_mode`、写 `meta.json` 的 `workMode`、广播 `workModeChanged`。
+    /// 调用方：`spin_host.rs` 的进入 / 退出点；`on_abort` 退出恢复出的 spin 态。
+    /// 会话已删除（`session_if_exists` 为空）时整体跳过——不复活会话、不落盘、不发事件。
+    pub fn set_work_mode(&self, session_id: &str, mode: WorkMode) {
+        let Some(state) = self.session_if_exists(session_id) else {
+            return;
+        };
+        state.lock().unwrap().work_mode = mode;
+        let Ok(project) = self.project_of(session_id) else {
+            return;
+        };
+        let mode_text = work_mode_text(mode);
+        let _ = history::update_metadata(
+            session_id,
+            &project,
+            || json!({ "sessionId": session_id, "project": project }),
+            |metadata| {
+                metadata["workMode"] = json!(mode_text);
+            },
+        );
+        self.emit(json!({
+            "type": "workModeChanged",
+            "sessionId": session_id,
+            "workMode": mode_text,
+        }));
+    }
+
     pub fn on_conversation_renamed(&self, session_id: &str, title: &str) {
         // meta.json 缺失时建档
         // （标题先落盘），再照常广播事件——UI 只消费真实数据变更后的事件。
@@ -1645,6 +1702,11 @@ impl Core {
                     )
                     .to_string(),
                 );
+            }
+            // 恢复工作模式（specs/016 FR-005）：应用中断在 spin 执行中时 meta 停在
+            // spin，重启加载后保持 spin 态（UI 禁用输入），由 abort 退出（on_abort）。
+            if let Some(text) = metadata.get("workMode").and_then(Value::as_str) {
+                state.work_mode = work_mode_from_text(text);
             }
         }
         Ok(())

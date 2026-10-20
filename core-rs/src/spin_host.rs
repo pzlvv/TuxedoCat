@@ -240,15 +240,13 @@ pub fn run_spin_command(
     // spin 模式：主会话不参与 LLM 消费循环。期间投递到本会话的子代理 Reply
     // 走 `deliver_agent_reply` 的 spin 分支——只落 silent 消息进上下文，不进消费队列，
     // 消费循环也就不会在 Spin 结束后拿它跑主对话的 agent 循环。
-    if let Some(state) = core.session_if_exists(session_id) {
-        state.lock().unwrap().work_mode = WorkMode::Spin;
-    }
+    // 工作模式经 `set_work_mode` 唯一写入点：内存 + meta.json + `workModeChanged`
+    // 广播（UI 据此禁用 / 恢复主输入框，specs/016 FR-004 / FR-005）。
+    core.set_work_mode(session_id, WorkMode::Spin);
     let outcome = spin::SpinLoop::with_abort_flag(runner, cwd, session_id, abort).run();
     // 无论 Completed / Stopped / Aborted / Failed 都要恢复；会话可能已被删除，
-    // `session()` 会让刚删除的会话复活，这里用 `session_if_exists`
-    if let Some(state) = core.session_if_exists(session_id) {
-        state.lock().unwrap().work_mode = WorkMode::Normal;
-    }
+    // `set_work_mode` 内部用 `session_if_exists` 判定（不复活刚删除的会话）
+    core.set_work_mode(session_id, WorkMode::Normal);
     if let spin::SpinOutcome::Failed(message) = &outcome {
         emit_spin_message(core, session_id, message);
     }

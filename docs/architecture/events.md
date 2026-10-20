@@ -92,11 +92,11 @@ export type CoreRequestHandlers = {
 
 ## 2. 事件词汇表
 
-四组词汇表，共 62 个事件：
+四组词汇表，共 63 个事件：
 
 | 词汇表 | 方向 | 语义 | 数量 | 处理方 |
 | --- | --- | --- | --- | --- |
-| `CoreEvent` | core → UI | 单向事实通知 | 26 | `WebViewUI`（`onCoreEvents` 映射表） |
+| `CoreEvent` | core → UI | 单向事实通知 | 27 | `WebViewUI`（`onCoreEvents` 映射表） |
 | `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 2 | `WebViewUI`（`onCoreRequests` 映射表） |
 | `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 23 | Core 进程的 `dispatch_ui_event` 分派 |
 | `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 11 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
@@ -157,16 +157,17 @@ wire message（若该事件会产生 webview 协议消息）。命名规则见�
 | 15 | `conversationListChanged` | 无 | `engine.rs`（消息落盘 / 子代理创建与结束 / 改名 / 删除）、`main.rs`（空间清空完成后）、`spin_host.rs`（spin 消息落盘） | `onConversationListChanged` → `ConversationManager.refresh()` | `conversationsData`（VS Code）；Electron 另推原生侧栏 |
 | 16 | `sessionRuntimeChanged` | `states: readonly SessionRuntimeState[]` | Core 的会话运行时状态（`engine.rs` 的 `emit_runtime`，[docs/core/session-runtime.md](../core/session-runtime.md)） | `onSessionRuntimeChanged` → `ConversationManager.updateSessionStates()` | VS Code：webview 对话树流水灯（`sessionRuntimeStates`）；Electron：侧栏流水灯 + 托盘状态点 + 未读完成呼吸 + 系统睡眠阻断 |
 | 17 | `spinDesignDataChanged` | 无 | `spin.rs`、`spin_host.rs` | `onSpinDesignDataChanged` | `SpinDesign.refresh()` |
-| 18 | `compactBegin` | `sessionId` | `compact.rs`（压缩流程见 [docs/features/compaction.md](../features/compaction.md)） | `onCompactBegin` | `compressProgress`（`status: 'start'`） |
-| 19 | `compactEnd` | `sessionId`, `result` | `compact.rs`（`complete` 与 `error`） | `onCompactEnd` | `compressProgress`（`status: 'complete'` / `'error'`） |
-| 20 | `commandDispatched` | `sessionId`, `commandName`, `args` | `commands.rs`（命令在引擎消费循环的轮次边界解析时就地执行） | `onCommandSend` | `/spin`：打开设计器；同时清除该会话的排队项（内置命令不进入上下文、不补发用户气泡） |
-| 21 | `sessionConfigChanged` | `sessionId`, `change` | `engine.rs`（前五个配置 UiEvent 写完 meta.json 后广播；`change.key` 用 `thinkingEffort`，落盘字段仍是 `thinkingMode`）；`main.rs`（MCP 差量同步完成的 sink 回调，让 UI 拿到最终运行时状态） | `onSessionConfigChanged` | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpServers` |
-| 22 | `highlightLanguagesUsed` | `languages: readonly string[]` | `engine.rs`（消息落盘时扫描**本条消息**用到的围栏代码块语言；core 不去重，同一种语言会重复上报，去重与上限由宿主承担） | `onHighlightLanguagesUsed` | 写 settings.json 的 `highlightLanguages` 字段（经 `UIHost.updateSettingsJson`，见[contracts.md 第 1 节](contracts.md#1-uihost对话-webview-的宿主能力)） |
-| 23 | `log` | `message`（已格式化的整行） | `bus.rs`（每写一行日志）、`main.rs`（就绪前 UiEvent 与快照应用失败的诊断行） | `log` | 写 UI 自己的日志出口（VS Code 是 OutputChannel，Electron 是 console） |
-| 24 | `notice` | `sessionId`, `key`, `params`, `level` | `commands.rs`、`spin.rs`、`spin_host.rs`（瞬时状态提示：键 + 参数） | `onNotice` | `notice`（webview 用翻译表渲染成瞬时提示，不进消息流） |
-| 25 | `conversationSpaceCleared` | `dirName`（对话空间目录名）, `result`（`complete` 带删除统计 / `error` 带原因） | `main.rs`（`conversationSpaceCleared` UiEvent 清空完成 / 失败后的执行回执） | `onConversationSpaceCleared` | `conversationSpaceCleared`（`complete`）/ `conversationSpacesError`（`error`）——设置面板解除「删除中」的唯一信号 |
+| 18 | `workModeChanged` | `sessionId`, `workMode`（`'normal'` / `'spin'`） | `engine.rs`（`set_work_mode` 唯一写入点：`spin_host.rs` 进入 / 退出 spin 与恢复态 abort 退出；meta.json 落盘 `workMode`） | `onWorkModeChanged` | `setWorkMode` |
+| 19 | `compactBegin` | `sessionId` | `compact.rs`（压缩流程见 [docs/features/compaction.md](../features/compaction.md)） | `onCompactBegin` | `compressProgress`（`status: 'start'`） |
+| 20 | `compactEnd` | `sessionId`, `result` | `compact.rs`（`complete` 与 `error`） | `onCompactEnd` | `compressProgress`（`status: 'complete'` / `'error'`） |
+| 21 | `commandDispatched` | `sessionId`, `commandName`, `args` | `commands.rs`（命令在引擎消费循环的轮次边界解析时就地执行） | `onCommandSend` | `/spin`：打开设计器；同时清除该会话的排队项（内置命令不进入上下文、不补发用户气泡） |
+| 22 | `sessionConfigChanged` | `sessionId`, `change` | `engine.rs`（前五个配置 UiEvent 写完 meta.json 后广播；`change.key` 用 `thinkingEffort`，落盘字段仍是 `thinkingMode`）；`main.rs`（MCP 差量同步完成的 sink 回调，让 UI 拿到最终运行时状态） | `onSessionConfigChanged` | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpServers` |
+| 23 | `highlightLanguagesUsed` | `languages: readonly string[]` | `engine.rs`（消息落盘时扫描**本条消息**用到的围栏代码块语言；core 不去重，同一种语言会重复上报，去重与上限由宿主承担） | `onHighlightLanguagesUsed` | 写 settings.json 的 `highlightLanguages` 字段（经 `UIHost.updateSettingsJson`，见[contracts.md 第 1 节](contracts.md#1-uihost对话-webview-的宿主能力)） |
+| 24 | `log` | `message`（已格式化的整行） | `bus.rs`（每写一行日志）、`main.rs`（就绪前 UiEvent 与快照应用失败的诊断行） | `log` | 写 UI 自己的日志出口（VS Code 是 OutputChannel，Electron 是 console） |
+| 25 | `notice` | `sessionId`, `key`, `params`, `level` | `commands.rs`、`spin.rs`、`spin_host.rs`（瞬时状态提示：键 + 参数） | `onNotice` | `notice`（webview 用翻译表渲染成瞬时提示，不进消息流） |
+| 26 | `conversationSpaceCleared` | `dirName`（对话空间目录名）, `result`（`complete` 带删除统计 / `error` 带原因） | `main.rs`（`conversationSpaceCleared` UiEvent 清空完成 / 失败后的执行回执） | `onConversationSpaceCleared` | `conversationSpaceCleared`（`complete`）/ `conversationSpacesError`（`error`）——设置面板解除「删除中」的唯一信号 |
 
-> 第 1–10 项是渲染类 handler，第 11–24 项是控制面与事实通知 handler——这条界线只是 `WebViewUI` 内部的
+> 第 1–10 项是渲染类 handler，第 11–26 项是控制面与事实通知 handler——这条界线只是 `WebViewUI` 内部的
 > 分区，不是事件类型的分组。
 >
 > 各表的 `#` 列是**表内序号**（2.1 自 0 起，2.2 / 2.3 自 1 起）；跨表指名一律用事件名，不用行号。

@@ -92,7 +92,7 @@ export class ElectronUIHost implements UIHost {
   `sidebar:workspaces-changed`（打开集合 + 活动项 + 最近工作目录）由 `main.ts` 的
   `broadcastWorkspaces()` 单独推送。会话的工作目录与它无关：由 `main.ts` 在会话被 core
   解析目录之前按来源视图登记（`registerCoreSessionWorkspace`）。
-- 预览窗口辅助：`sendToRenderer`（按 `sessionId` 定向，未命中回退活动视图）、`openImagePreviewWindow`（内置图片查看器窗口，公开——侧栏文件浏览器双击打开图片复用同一入口）、`openMarkdownPreviewWindow`（公开——侧栏双击 `.md` 文件进内置 Markdown 预览：`src/host/markdownHtml.ts` 纯函数渲染并净化内容，只读 HTML 经 data URL 装进沙箱窗口，与 Mermaid 预览同一模式）、`openMonacoWindow`（公开——侧栏双击打开远程文本时带 `content` 复用同一窗口，`filePath` 只用于语法推断）、`openMermaidWindow`。
+- 预览窗口辅助：`sendToRenderer`（按 `sessionId` 定向，未命中回退活动视图）、`openImagePreviewWindow`（内置图片查看器窗口，公开——侧栏文件浏览器双击打开图片复用同一入口）、`openMarkdownPreviewWindow`（公开——侧栏双击 `.md` 文件进内置 Markdown 预览：`src/host/markdownHtml.ts` 纯函数渲染并净化内容，只读 HTML 经 data URL 装进沙箱窗口，与 Mermaid 预览同一模式）、`openMonacoWindow`（公开——侧栏双击打开远程文本时带 `content` 复用同一窗口，`filePath` 只用于语法推断）、`openMermaidWindow`。Monaco / 图片 / Markdown 三类查看器共用一个窗口名额：新开请求先关掉现存查看器窗口再开新窗（继承其位置尺寸；`electron/viewerWindowRect.ts` 的纯函数决策），Mermaid 与 Spin 设计器不占名额；Monaco / 图片窗口的标题随打开对象变化（渲染端把 init 数据里的短名设为页面标题）。
 
 ## 3. UIHost 实现对照表
 
@@ -147,6 +147,7 @@ export class ElectronUIHost implements UIHost {
 | 初始 HTML 入参 | `data` / 主题 / 语言 / `getSystemLocale()` / `SettingsStore.readUiLanguage()` / Skill 列表 / `saveEnabled` | 同左 |
 | 刷新时的数据 | `spinDesignRequested` → `spinDesignData`（含 `skills`） | 同左 |
 | 构造依赖 | `host: UIHost`（`isDarkTheme` / `getLocale` / `saveTextFile` / `log`） | `host: UIHost`（同上） |
+| 窗口位置尺寸 | 面板归 VS Code 窗口管理 | `workspace-state.json` 的 `spinDesignWindowRect` 记忆：建窗用已存矩形（多屏可见性校验失败回退默认尺寸），move / resize 防抖落盘、关闭补记（与查看器名额独立存储） |
 
 ## 5. ConversationManager 实现对照表
 
@@ -310,7 +311,7 @@ Electron 的 `sidebar:get-conversations` 直接读它，切换标签页不再每
 Chromium 按声明时长立刻判定结束；播放载体改为隐藏窗口里 `decodeAudioData` 解到文件尾、
 经 `GainNode`（按当前音量）与 `AudioBufferSourceNode` 出声（`autoplayPolicy: no-user-gesture-required`，
 播完即销毁窗口，不常驻）。是否出声与音量是宿主本地偏好（`workspace-state.json` 的
-`soundEnabled` / `soundVolume`，默认开启 / 满音量），在偏好设置窗口里改：关掉后连播放载体都不建；
+`soundEnabled` / `soundVolume`，默认关闭 / 50% 音量），在偏好设置窗口里改：关掉后连播放载体都不建；
 音量每次播放前现取，同一个载体既播提醒也播试听（拖完音量滑条预览一次）。播放失败只落
 `tray-sound` 日志，不打断同一快照上的状态点与睡眠阻断。播放窗口
 不常驻：播完自毁，主窗口关闭（`mainWindow.on('closed')`）与应用退出（`will-quit`）时立即
@@ -375,6 +376,7 @@ API），本地任务的睡眠阻断由 Core 进程那一份承担——这是
 | 模式切换的异步状态 | `waitForWindowEvent()` + `windowModeSwitching` | 先还原最大化/退出全屏（等 `unmaximize` / `leave-full-screen` 事件落定，1s 超时兜底）再 `setBounds`，否则会被忽略或只改还原尺寸；切换期间用标志位防重入 |
 | 模式切换条件 | `canToggleWindowMode()` | 打开集合为空时禁用（浮窗隐藏侧栏，切换后无法再选工作目录） |
 | 模式位置与尺寸 | `windowSize` / `floatingWindowSize` | 两种模式各自独立落盘 `{x,y,width,height}`，切换时按各自记录还原（旧坐标失效则退回当前位置）；浮窗默认 480 宽、工作区高度 80% |
+| 查看器与设计器窗口位置 | `viewerWindowRect` / `spinDesignWindowRect` | 查看器名额（Monaco / 图片 / Markdown 共用一个窗口，后来者顶替并继承矩形）与 Spin 设计器窗口各自记忆 `{x,y,width,height}`：move / resize 防抖落盘、关闭补记；开窗用已存矩形并做「至少一块现存显示器工作区上可见」校验（与主窗口同一判据，`electron/viewerWindowRect.ts`），失效回退默认尺寸 |
 | 模式持久化 | `windowMode` + `readLastWindowMode()` | 切换模式时落盘；启动时优先按上次的模式建窗口（尺寸/位置也取该模式的记录）。**上次是浮窗但本次没有工作区时退回完整模式**（浮窗隐藏侧栏，没有工作区就没法再选） |
 | 置顶持久化 | `floatingPinned` + `readLastFloatingPinned()` | 点钉住按钮时落盘（默认 `true`），启动时按它恢复浮窗的「总在最前」；缺失/非法值一律按默认开启处理 |
 | 浮窗标题 | `windowTitleForCurrentState()` + `workspaceDisplayName()` + 标题栏品牌位 | 浮窗模式下**窗口标题**（任务栏 / Alt-Tab）与**自绘标题栏的品牌位**都显示当前工作目录的**目录名（basename）**，其余情况显示产品名。取目录名而非完整路径：浮窗标题栏只有 480px 宽、任务栏标签也从右侧截断，而路径里最有信息量的恰好是尾部目录名。窗口是无边框的，光设 OS 标题在窗口里看不到，所以两处都要跟着变；目录名随 `titlebar:mode-state` / `titlebar:get-state` 的 `workspaceName` 下发，切模式与切工作区时同步 |

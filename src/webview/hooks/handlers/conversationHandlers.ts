@@ -59,9 +59,21 @@ export function handleConversationSetTitle(
   msg: Extract<HostToWebviewWire, { type: 'setTitle' }>,
   ctx: HandlerContext,
 ): void {
-  const { props } = ctx;
+          const { props } = ctx;
           if (msg.sessionId === props.currentSessionIdRef.current) {
             props.setConversationTitle(resolveTitle(msg.title));
+          }
+}
+
+export function handleConversationSetWorkMode(
+  msg: Extract<HostToWebviewWire, { type: 'setWorkMode' }>,
+  ctx: HandlerContext,
+): void {
+          // 会话工作模式变化（core workModeChanged 的投影）：只认当前会话的消息，
+          // 非当前会话的变化由该会话自己的视图接收（多视图宿主逐会话投递）。
+          const { props } = ctx;
+          if (msg.sessionId === props.currentSessionIdRef.current) {
+            props.setWorkMode(msg.workMode);
           }
 }
 
@@ -174,6 +186,8 @@ export function handleConversationConversationLoaded(
             props.setIsCompactExpanded(false);
             // 记录父会话 ID（子对话时有值）
             props.setParentSessionId(wire.parentSessionId || null);
+            // 恢复会话工作模式（spin 会话加载后输入框保持禁用；specs/016 FR-005）
+            props.setWorkMode(wire.workMode);
             // 恢复该会话的 UI 状态（input, userChoiceRequest, userChoiceInput, showThinkingAnimation）
             const savedState = props.sessionStates.get(loadedSessionId);
             if (savedState) {

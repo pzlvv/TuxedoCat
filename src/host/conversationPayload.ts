@@ -25,6 +25,8 @@ export interface ConversationLoadedExtra {
   parentSessionId?: string;
   /** 会话询问模式；宿主无法解析时为 undefined，webview 按「尚未到达」处理 */
   agentMode?: 'manual' | 'risk' | 'auto';
+  /** 会话工作模式（core 加载结果携带；spin 会话加载后输入框保持禁用，specs/016 FR-005） */
+  workMode: 'normal' | 'spin';
   hasActiveQuery: boolean;
   hasCompactArchive?: boolean;
   /** 模型身份（provider + model）；wire 消息保持扁平的 model / provider 字段 */
@@ -114,6 +116,7 @@ export function buildConversationLoadedPayload(
     savedContext: extra.savedContext,
     parentSessionId: extra.parentSessionId,
     agentMode: extra.agentMode,
+    workMode: extra.workMode,
     hasActiveQuery: extra.hasActiveQuery,
     sessionId,
     hasCompactArchive: extra.hasCompactArchive === true,

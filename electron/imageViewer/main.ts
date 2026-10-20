@@ -135,6 +135,11 @@ window.addEventListener('resize', fitToWindow);
 window.addEventListener('message', (event) => {
   const data = event.data as ImageViewerInit;
   if (!data || typeof data.dataUrl !== 'string') return;
+  // 窗口标题随打开的图片变化（specs/016 FR-001）：页面 <title> 会覆盖 BrowserWindow
+  // 的 title 选项，标题在这里设才稳定。
+  if (typeof data.title === 'string' && data.title) {
+    document.title = data.title;
+  }
   image.onload = fitToWindow;
   image.src = data.dataUrl;
 });

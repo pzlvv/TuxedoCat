@@ -486,8 +486,8 @@ last_reviewed: 2026-10-13
    （多个任务在跑时其中一个完成也提醒，此时仍为红点；全部完成绿点、有任务等用户黄点）；
    任意窗口聚焦后停止。
 3. 右键菜单「显示 / 退出」；左键唤出主窗口。
-4. 闪烁提醒的同时播放一次提示音（Electron 宿主；VS Code 宿主不播放）；提示音可在偏好设置
-   窗口里开关并调整音量（调整后预览播放一次）。
+4. 闪烁提醒的同时播放一次提示音（Electron 宿主；VS Code 宿主不播放）；提示音默认关闭、
+   默认音量 50%，可在偏好设置窗口里开启并调整音量（调整后预览播放一次）。
 
 ### US-34 全局唤醒快捷键
 
@@ -571,6 +571,10 @@ last_reviewed: 2026-10-13
 
 1. 文件链接打开 Monaco 窗口并定位行号；`showVirtualDocument` 以只读模式展示内容。
 2. 图片走内置图片预览窗口。
+3. Monaco 与图片查看器窗口的标题为打开文件名（basename）；Markdown 预览标题为传入标题。
+4. 三类查看器（Monaco / 图片 / Markdown）共用一个窗口名额：新开请求顶替现存查看器窗口
+   （继承其位置尺寸），桌面同时至多一个查看器窗口；Spin 设计器与 Mermaid 预览不占名额。
+5. 查看器窗口与 Spin 设计器窗口各自记忆上次位置与尺寸（多屏拔插后矩形失效回退默认尺寸）。
 
 ### US-39 Spin 设计器
 
@@ -582,6 +586,9 @@ last_reviewed: 2026-10-13
 1. 输入区菜单「Spin 设计」或 `/spin design` 打开设计器窗口；已开则聚焦复用。
 2. 保存写回会话所属 Core 所在机器的会话目录（远程工作区即远端；Core 内串行写盘）与导出
    JSON；执行完成后窗口数据自动刷新。
+3. `/spin` 执行期间主输入框禁用（placeholder 提示「Spin 模式下不响应用户输入」），停止
+   按钮可用；结束（完成 / 中止 / 失败）后恢复。会话 `meta.json` 落盘 `workMode` 标记，
+   加载时恢复禁用态；应用中断后恢复出的 spin 会话经停止按钮退出。
 
 ## EP-11 通知与国际化
 
@@ -773,7 +780,12 @@ last_reviewed: 2026-10-13
 | `e2e/electron/backgroundBash.spec.ts` | US-45 | Electron 整应用 |
 | `e2e/electron/subagentConcurrency.spec.ts` | US-49 | Electron 整应用 |
 
-未覆盖 e2e 的 US（US-33 的托盘图标状态点与闪烁提醒——属 OS 集成层；US-38 的图片查看器窗口；
+未覆盖 e2e 的 US（US-33 的托盘图标状态点与闪烁提醒——属 OS 集成层，提示音默认值由
+`src/test/soundSettings.test.ts` 锁定；US-38 的图片查看器窗口，以及查看器单实例顶替与
+窗口位置记忆——Playwright 无法断言多 BrowserWindow 生命周期与屏幕坐标，顶替决策与
+矩形校验由 `src/test/viewerWindows.test.ts` 锁定，窗口行为人工验证；US-39 的 spin 输入
+禁用——需要真实 spin 执行链，禁用 / placeholder 决策由 `src/test/inputAreaState.test.ts` 与
+`src/test/abortButtonState.test.ts` 锁定，落盘与恢复由 core-rs `engine_tests` 锁定；
 US-42 的远程（SSH）工作区文件浏览——需要真实 SSH/SFTP 远端；US-43 的「在文件资源管理器中
 打开」——会弹出真实资源管理器窗口；US-48 的标签页右键菜单——原生 OS 菜单无法被 Playwright
 驱动，「关闭」与「打开命令行」复用既有动作实现，批量关闭的判定（候选＝该工作区已打开的会话

@@ -109,6 +109,7 @@ import {
   type WorkspaceState,
   type WindowRect,
 } from './workspaceStateStore.js';
+import { isRectVisibleOnSomeWorkArea } from './viewerWindowRect.js';
 import { PRODUCT_NAME, EXTENSION_NAME, SETTINGS_FILE_NAME, ENV_PREFIX } from '../src/config/project.js';
 import { resolveConfigDir } from '../src/config/configDir.js';
 import {
@@ -4089,14 +4090,8 @@ function saveWindowRect(mode: WindowMode, rect: { x: number; y: number; width: n
 
 /** 判断矩形是否还有足够部分落在某个显示器工作区内（换屏 / 拔显示器后旧坐标可能失效） */
 function isRectVisibleOnSomeDisplay(rect: { x: number; y: number; width: number; height: number }): boolean {
-  // 至少要露出这么多，否则用户拖不回来
-  const minVisibleX = 120;
-  const minVisibleY = 40;
-  return screen.getAllDisplays().some(({ workArea }) => {
-    const overlapX = Math.min(rect.x + rect.width, workArea.x + workArea.width) - Math.max(rect.x, workArea.x);
-    const overlapY = Math.min(rect.y + rect.height, workArea.y + workArea.height) - Math.max(rect.y, workArea.y);
-    return overlapX >= minVisibleX && overlapY >= minVisibleY;
-  });
+  // 判据收在 viewerWindowRect（与查看器 / 设计器窗口共用同一份实现）
+  return isRectVisibleOnSomeWorkArea(rect, screen.getAllDisplays().map(({ workArea }) => workArea));
 }
 
 /** 浮窗模式的默认尺寸：宽 480，高度取主屏工作区高度的 80%（位置沿用当前窗口） */

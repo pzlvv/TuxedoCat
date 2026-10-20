@@ -24,6 +24,7 @@
     "conversationSpaceCleared",
     "sessionRuntimeChanged",
     "spinDesignDataChanged",
+    "workModeChanged",
     "highlightLanguagesUsed",
     "compactBegin",
     "compactEnd",

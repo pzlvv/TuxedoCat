@@ -147,6 +147,9 @@ const App = () => {
   // 压缩展开状态
   const [hasCompactArchive, setHasCompactArchive] = useState(false);
   const [isCompactExpanded, setIsCompactExpanded] = useState(false);
+  // 会话工作模式（core `workModeChanged` / conversationLoaded 载荷的事实投影）：
+  // spin = 主输入框禁用（specs/016 FR-004）；新对话与加载会话时随载荷重置。
+  const [workMode, setWorkMode] = useState<'normal' | 'spin'>('normal');
   // 排队消息状态
   // queuedMessage 仅用于展示"当前会话"的排队横幅；
   // queuedMessageRef 按 sessionId 存储排队消息，保证排队消息与会话绑定，
@@ -434,9 +437,10 @@ const App = () => {
     if (!currentSessionId) return 'none';
     const state = sessionRuntimeStatesRef.current.get(currentSessionId);
     if (!state) return 'none';
-    return resolveAbortButtonState(state);
+    // workMode 来自本组件状态（runtime 快照不携带工作模式）：spin 计为可停止
+    return resolveAbortButtonState({ ...state, workMode });
     // sessionIdleVersion 是 core 推来新状态时的重渲染信号（ref 本身不触发渲染）
-  }, [currentSessionId, sessionIdleVersion]);
+  }, [currentSessionId, sessionIdleVersion, workMode]);
 
   // 只有对话列表由 webview 渲染（`rendersConversationListInWebview`）时才有内嵌的历史对话按钮。
   // 当「本工作目录的其它会话」正在等待用户输入（ask user / 权限确认）时，用户请求不再
@@ -473,6 +477,7 @@ const App = () => {
     setModelRef, setWebSearch, setContextLength, setQueuedMessage,
     setUserChoiceRequest, setNamingSessions, setStreamingVersion, setForceScrollKey,
     setSessionIdleVersion,
+    setWorkMode,
     setCompletionAttention,
     setExpandedSubSessions, setProviderModels, setBalance, setBalanceCurrency, setIsUnlimited,
     setCurrentSessionIdRef, setLlmConfigPayload,
@@ -640,6 +645,8 @@ const App = () => {
     // Generate new session for new conversation
     setConversationTitle(t('app.untitled'));
     setParentSessionId(null);
+    // 新对话不在 spin 模式
+    setWorkMode('normal');
     const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     setMessages([]);
     // 把上一个"新对话"里没发出去的草稿带过来，避免切换会话后再新建时内容丢失
@@ -1397,6 +1404,7 @@ onClick={handleNewConversation}
               onOpenSettings={handleOpenSettings}
               isProviderConfigured={providerConfigured}
               isSubAgent={!!parentSessionId}
+              workMode={workMode}
             />
           )}
         </div>

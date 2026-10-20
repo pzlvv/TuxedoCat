@@ -100,6 +100,7 @@ export function createRecordingCoreEventHandlers(): RecordingCoreEventHandlers {
     conversationSpaceCleared: (e) => record('conversationSpaceCleared', e),
     sessionRuntimeChanged: (e) => record('sessionRuntimeChanged', e),
     spinDesignDataChanged: (e) => record('spinDesignDataChanged', e),
+    workModeChanged: (e) => record('workModeChanged', e),
     highlightLanguagesUsed: (e) => record('highlightLanguagesUsed', e),
     compactBegin: (e) => record('compactBegin', e),
     compactEnd: (e) => record('compactEnd', e),

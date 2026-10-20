@@ -141,6 +141,12 @@ function initContent(data: MonacoInitData): void {
 }
 
 function onInit(data: MonacoInitData): void {
+  // 窗口标题随打开对象变化：调用方传的 title 已是文件名 / 短名（specs/016 FR-001）。
+  // 构建期 HTML 的 <title> 只是兜底，页面加载完成会覆盖 BrowserWindow 的 title 选项，
+  // 所以标题必须在这里设为 document.title。
+  if (typeof data.title === 'string' && data.title) {
+    document.title = data.title;
+  }
   // 清理旧的编辑器实例
   if (editor) {
     const model = editor.getModel();

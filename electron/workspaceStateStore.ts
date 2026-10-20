@@ -72,6 +72,10 @@ export interface WorkspaceState {
   windowSize?: WindowRect;
   /** 悬浮窗模式窗口位置与大小；与完整模式独立存储 */
   floatingWindowSize?: WindowRect;
+  /** 查看器窗口名额（Monaco / 图片 / Markdown 共用）的上次位置与大小 */
+  viewerWindowRect?: WindowRect;
+  /** Spin 设计器窗口的上次位置与大小；与查看器名额独立存储 */
+  spinDesignWindowRect?: WindowRect;
   /** 上次退出时的窗口模式：启动时优先按它恢复 */
   windowMode?: 'normal' | 'floating';
   /** 浮窗「总在最前」状态：启动时优先按它恢复（默认 true） */
@@ -82,12 +86,12 @@ export interface WorkspaceState {
   shortcut?: string;
   /**
    * 任务结束提醒是否播放提示音（宿主本地偏好，core 不读）。
-   * 缺失按启用处理：提示音默认开着，用户关掉才落 false。
+   * 缺失按关闭处理：提示音默认不播，用户显式开启才落 true（specs/016 FR-006）。
    */
   soundEnabled?: boolean;
   /**
    * 提示音音量（0–1 的线性增益；宿主本地偏好，core 不读）。
-   * 缺失 / 非法时按满音量（1）处理。
+   * 缺失 / 非法时按默认音量（0.5）处理。
    */
   soundVolume?: number;
   /** 侧栏宽度（DIP，拖拽手柄调整）；缺失 / 非法时用默认宽度（`SIDEBAR_DEFAULT_WIDTH`） */

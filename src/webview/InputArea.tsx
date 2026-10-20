@@ -7,6 +7,7 @@ import type { McpServerInfo, ProviderModels } from '../shared/webviewTypes';
 import type { ModelRef } from '../shared/llm/modelRef';
 import { postMessage, getWindowSessionId } from './webviewEnv';
 import type { AbortButtonState } from '../host/abortButtonState';
+import { resolveInputDisabled, resolveInputPlaceholder } from './inputAreaState';
 import { SegmentControl, CheckboxGlyph } from './components/SegmentControl';
 import { dropdownMenuTheme, menuPanelShellStyle } from './components/dropdownMenuTheme';
 import { t } from './i18n';
@@ -130,6 +131,11 @@ interface InputAreaProps {
   isProviderConfigured: boolean | null;
   /** 当前对话是否为 sub-agent（子代理） */
   isSubAgent?: boolean;
+  /**
+   * 会话工作模式（core 事实投影，specs/016 FR-004）：spin 时禁用输入与发送，
+   * placeholder 提示「Spin 模式下不响应用户输入」；停止按钮不受影响（退出出口）。
+   */
+  workMode: 'normal' | 'spin';
   /** MCP 服务器列表（含启用状态），在菜单「模型」上方以 checkbox 形式列出 */
   mcpServers?: McpServerInfo[];
   /** 勾选/取消某个 MCP */
@@ -1568,6 +1574,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   totalInputTokens,
   onOpenSettings,
   isProviderConfigured,
+  workMode,
   isSubAgent,
   mcpServers,
   onMcpToggle,
@@ -1604,7 +1611,14 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     clear: () => { setInput(''); setPastedImages([]); setHistoryIndex(-1); setSavedInput(''); slashActiveRef.current = false; },
   }), [input, pastedImages, historyIndex, savedInput]);
 
-  const isInputDisabled = isProviderConfigured === false;
+  // 两个独立的禁用来源：provider 未配置（引导去设置）与 spin 模式（会话不受理输入）。
+  // 覆盖层只属于 provider 分支；spin 只禁用 + 换 placeholder（specs/016 FR-004）。
+  const disableFacts = { providerConfigured: isProviderConfigured, workMode };
+  const isInputDisabled = resolveInputDisabled(disableFacts);
+  const inputPlaceholder = resolveInputPlaceholder(disableFacts, {
+    default: t('inputArea.placeholder'),
+    spin: t('inputArea.placeholderSpinMode'),
+  });
 
   // Filter skills based on query after "/"
   // 优先按命令名匹配，其次才按描述匹配，保证命令名匹配项排在前面
@@ -1891,7 +1905,6 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   // 已有待处理消息时禁止再次发送：忙碌排队项与空闲挂起项同为「一次只有一条」，
   // 改主意走横幅上的编辑 / 删除（docs/features/user-message-pipeline.md FR-003），不靠继续提交覆盖。
   const sendDisabled = !hasContent || isInputDisabled || busy || !!queuedMessage || !!idleSuspendedMessage;
-
   return (
     <div
       className="max-w-[680px] mx-auto rounded-lg border-2 transition-colors"
@@ -2048,7 +2061,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           onFocus={handleFocus}
           onBlur={handleBlur}
           onMouseUp={handleMouseUp}
-          placeholder={isInputDisabled ? '' : t('inputArea.placeholder')}
+          placeholder={inputPlaceholder}
           // 高度上限只有一处来源：`maxRows`。不要再挂 `max-h-[...]` ——
           // TextareaAutosize 写入的 inline height 会被 CSS max-height 悄悄截短，
           // 库按 maxRows 算出的高度（12 行 ≈ 234px）一旦超过该像素值，内容还没到
@@ -2063,7 +2076,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           maxRows={12}
           disabled={isInputDisabled}
         />
-        {isInputDisabled && (
+        {isProviderConfigured === false && (
           <div
             role="button"
             className="absolute left-3 right-3 top-2 bottom-0.5 flex items-center cursor-pointer select-none"

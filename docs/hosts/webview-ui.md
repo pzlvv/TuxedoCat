@@ -192,7 +192,7 @@ thinking / text / tool 动画）。`ConversationLoadedExtra.hasActiveQuery` 由
 
 | 表 | 数量 | 内容 |
 | --- | --- | --- |
-| `onCoreEvents` | 26 | 10 个渲染（`message` / `streamMessage` / `streamEnd` / `toolCall` / `toolResult` / `toolArgsUpdated` / `toolProgress` / `aiBegin` / `aiEnd` / `messagesReplaced`）+ 16 个控制面与事实通知（`coreReady` / `queryBegin` / `queryEnd` / `titleChanged` / `sessionCreated` / `conversationListChanged` / `conversationSpaceCleared` / `sessionRuntimeChanged` / `spinDesignDataChanged` / `highlightLanguagesUsed` / `compactBegin` / `compactEnd` / `commandDispatched` / `sessionConfigChanged` / `log` / `notice`） |
+| `onCoreEvents` | 27 | 10 个渲染（`message` / `streamMessage` / `streamEnd` / `toolCall` / `toolResult` / `toolArgsUpdated` / `toolProgress` / `aiBegin` / `aiEnd` / `messagesReplaced`）+ 17 个控制面与事实通知（`coreReady` / `queryBegin` / `queryEnd` / `titleChanged` / `sessionCreated` / `conversationListChanged` / `conversationSpaceCleared` / `sessionRuntimeChanged` / `spinDesignDataChanged` / `workModeChanged` / `highlightLanguagesUsed` / `compactBegin` / `compactEnd` / `commandDispatched` / `sessionConfigChanged` / `log` / `notice`） |
 | `onCoreRequests` | 2 | `toolPermissionRequested` → `requestToolPermission`；`userChoice` → `requestUserChoice` |
 
 映射表把 `CoreEvent` 的 `e` 拆成位置参数后转调同名 handler，handler 自身保持
