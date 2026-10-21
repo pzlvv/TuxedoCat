@@ -19,14 +19,21 @@ function resolve(...segments) {
 
 /**
  * 打包产物目录（`release/`）。
+ *
+ * ASAN 变体（`npm run package:asan` 经环境变量 `<envPrefix>_CORE_ASAN=1` 贯穿全链路，
+ * 注入见 `scripts/package-asan.mjs`）落 `release/asan/`：安装包 / vsix 文件名不带变体
+ * 标记，与正式产物同目录会互相覆盖——asan 包（插桩、慢数倍）绝不能冒充 release 包分发。
  */
-const releaseDir = resolve('release');
+const ASAN_ENV_VAR = `${project.envPrefix}_CORE_ASAN`;
+const releaseDir = resolve(process.env[ASAN_ENV_VAR] === '1' ? 'release/asan' : 'release');
 
 module.exports = {
   ...project,
   rootDir,
   resolve,
   releaseDir,
+  /** ASAN 变体开关的环境变量名（`scripts/build-core.mjs` 与打包链共用这一份） */
+  asanEnvVar: ASAN_ENV_VAR,
   distDir: resolve(project.build.dist),
   distElectronDir: resolve(project.build.distElectron),
   extensionOut: resolve(project.build.extensionOut),

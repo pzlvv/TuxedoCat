@@ -23,6 +23,13 @@
  *   4. `dist/resources/core/` 里的副本与 `resources/` 里的**字节一致**（打包真正吃的是
  *      dist 里那份；`copy-assets` 漏跑过，或跑在重建之前就会不一致）。
  *
+ * ASAN 变体（环境变量 `<envPrefix>_CORE_ASAN=1`，`npm run package:asan` 注入）校验
+ * asan 默认构建集合（**本机平台 + Linux x64**，见 `build-core.mjs` 的
+ * `asanDefaultTargets`），指纹按 asan profile 与 asan 三元组重算，且 Windows 产物要求
+ * exe 同级带动态 ASAN 运行库（`clang_rt.asan_dynamic-<arch>.dll`，`build-core.mjs` 的
+ * `copyAsanRuntime` 落位）。其余平台目录不进 asan 包的校验范围（asan 包是诊断用，
+ * 不用于分发；其余目录要么缺失、要么是上次 release 构建的产物，随包携带但不作保证）。
+ *
  * `resources/core/` 在 .gitignore 里：产物不入库，所以修改时间可以放心当判据。
  *
  *
@@ -33,7 +40,17 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { PACKAGE_DIRS, TARGETS, computeFingerprint, FINGERPRINT_FILE_NAME } from './build-core.mjs';
+import {
+  ASAN_PROFILE,
+  PACKAGE_DIRS,
+  TARGETS,
+  asanDefaultTargets,
+  asanEnabled,
+  asanRuntimeFileName,
+  asanTripleFor,
+  computeFingerprint,
+  FINGERPRINT_FILE_NAME,
+} from './build-core.mjs';
 
 const require = createRequire(import.meta.url);
 const project = require('../project.config.cjs');
@@ -43,26 +60,39 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /** Rust 侧源码根；只看 src 与两个清单，不碰 `target/`（构建产物永远更新） */
 const RUST_SOURCES = ['core-rs/src', 'core-rs/Cargo.toml', 'core-rs/Cargo.lock'];
 
+/** asan 变体：只校验 asan 默认构建集合（本机平台 + Linux x64，见 build-core.mjs） */
+const ASAN = asanEnabled();
+
+/** 指纹重算用的 profile：普通打包链只吃 release 构建，asan 变体吃 asan 构建 */
+const VERIFY_PROFILE = ASAN ? ASAN_PROFILE : 'release';
+
 /**
  * 打包必须携带的 Core 产物（`resources/<core.resourceDir>/` 下的目录名）。
  *
- * 平台列表直接取构建脚本的 `PACKAGE_DIRS`（唯一一份），可执行名后缀取目标登记，
- * 这里不另写一份，免得「构建的」与「校验的」漂移。
+ * 平台列表直接取构建脚本的 `PACKAGE_DIRS` / `asanDefaultTargets`（唯一一份），可执行名
+ * 后缀与 asan 三元组取目标登记，这里不另写一份，免得「构建的」与「校验的」漂移。
  */
-const REQUIRED_CORES = PACKAGE_DIRS.map((dir) => {
-  const target = TARGETS.find((entry) => entry.dir === dir);
-  if (!target) {
-    throw new Error(`PACKAGE_DIRS 里的 ${dir} 不在 build-core.mjs 的平台矩阵内。`);
-  }
-  return {
-    dir,
-    triple: target.triple,
-    file: `${project.core.binaryName}${target.ext}`,
-    // 自带 ripgrep：与可执行文件同级（`tools.rs::ripgrep_path` 的定位基准）
-    ripgrep: `ripgrep/${target.platform === 'win32' ? 'rg.exe' : 'rg'}`,
-    rebuild: 'npm run build:core',
-  };
-});
+const REQUIRED_CORES = (ASAN ? asanDefaultTargets().map((target) => target.dir) : PACKAGE_DIRS).map(
+  (dir) => {
+    const target = TARGETS.find((entry) => entry.dir === dir);
+    if (!target) {
+      throw new Error(`PACKAGE_DIRS 里的 ${dir} 不在 build-core.mjs 的平台矩阵内。`);
+    }
+    // asan 变体的实际三元组可能与发布产物不同（Linux x64 是 gnu），指纹按它重算
+    const triple = ASAN ? asanTripleFor(target) : target.triple;
+    return {
+      dir,
+      triple,
+      file: `${project.core.binaryName}${target.ext}`,
+      // 自带 ripgrep：与可执行文件同级（`tools.rs::ripgrep_path` 的定位基准）
+      ripgrep: `ripgrep/${target.platform === 'win32' ? 'rg.exe' : 'rg'}`,
+      // asan 变体的 win32 产物：exe 同级必须带动态 ASAN 运行库（copyAsanRuntime 落位），
+      // 少了它打包出去的 asan Core 一启动就报缺 DLL；release 变体没有这份文件
+      asanRuntime: ASAN ? asanRuntimeFileName(triple) : null,
+      rebuild: ASAN ? 'npm run build:core:asan' : 'npm run build:core',
+    };
+  },
+);
 
 /** 目录（或文件）树里最新的修改时间；不存在的路径返回 0。`include` 过滤文件名 */
 function newestMtime(target, include = () => true) {
@@ -137,14 +167,14 @@ function main() {
       continue;
     }
     // 构建指纹：缺失说明是老脚本产的产物；与重算值不一致说明产物之后源码又改了。
-    // 重算固定按 release：打包链（package:app / package:ext）只吃 release 构建。
+    // 重算 profile 见 VERIFY_PROFILE：普通打包链只吃 release 构建，asan 变体吃 asan 构建。
     const builtFingerprintPath = join(builtDir, FINGERPRINT_FILE_NAME);
     if (!existsSync(builtFingerprintPath)) {
       problems.push(`${show(builtFingerprintPath)} 不存在（构建指纹）；重新构建：${core.rebuild}`);
       continue;
     }
     const builtFingerprint = readFileSync(builtFingerprintPath, 'utf8').trim();
-    if (builtFingerprint !== computeFingerprint(core.triple, 'release')) {
+    if (builtFingerprint !== computeFingerprint(core.triple, VERIFY_PROFILE)) {
       problems.push(
         `${show(builtFingerprintPath)} 与当前 Rust 源码不一致（旧构建或源码已改）；` +
           `重新构建：${core.rebuild}`,
@@ -185,6 +215,25 @@ function main() {
       );
       continue;
     }
+    // asan 变体的 win32 产物：运行库两处都要在且一致（打包吃 dist 里那份）
+    if (core.asanRuntime) {
+      const builtRuntime = join(builtDir, core.asanRuntime);
+      const shippedRuntime = join(shippedDir, core.asanRuntime);
+      if (!existsSync(builtRuntime)) {
+        problems.push(`${show(builtRuntime)} 不存在（asan 运行库）；重新构建：${core.rebuild}`);
+        continue;
+      }
+      if (!existsSync(shippedRuntime)) {
+        problems.push(`${show(shippedRuntime)} 不存在；先跑：npm run copy-assets`);
+        continue;
+      }
+      if (fileDigest(shippedRuntime) !== fileDigest(builtRuntime)) {
+        problems.push(
+          `${show(shippedRuntime)} 与 ${show(builtRuntime)} 内容不一致；先跑：npm run copy-assets`,
+        );
+        continue;
+      }
+    }
     checked.push(core.dir);
   }
 
@@ -194,7 +243,10 @@ function main() {
     process.exit(1);
   }
 
-  console.log(`[verify-core] 产物齐全且比 Rust 源码新：${checked.join(' / ')}`);
+  console.log(
+    `[verify-core] 产物齐全且比 Rust 源码新（profile ${VERIFY_PROFILE}）：${checked.join(' / ')}` +
+      (ASAN ? '；asan 变体校验本机平台 + Linux x64' : ''),
+  );
 }
 
 main();

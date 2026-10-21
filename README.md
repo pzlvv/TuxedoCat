@@ -167,6 +167,12 @@ npm run package
 打包前会校验这四个 core 产物（`scripts/verify-core-artifacts.mjs`）：缺失、比 Rust 源码旧、
 或没同步进 `dist/` 都直接报错，不会把旧 core 静默打进包。
 
+内存诊断用 ASAN 变体：`npm run package:asan` 与 `npm run package` 走同一条链，只有 Core 换成
+nightly + `-Zsanitizer=address` 的 asan 构建（本机平台 + Linux x64；Linux 用 gnu 三元组，
+需要 nightly 工具链与 Visual Studio 的「C++ AddressSanitizer」组件），产物整体落
+`release/asan/`，不覆盖正式发布物（见
+[docs/core/standalone-core.md 第 3.3 节](docs/core/standalone-core.md#33-构建与目标平台)）。
+
 ## Git LFS
 
 `resources/` 目录下的文件使用 Git LFS 管理。提交前请确保已安装并初始化 Git LFS：

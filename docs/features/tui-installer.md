@@ -42,6 +42,7 @@ last_reviewed: 2026-10-11
 
 ```
 <prefix>/share/<core.deployPrefix>/<指纹>/<core.binaryName>[.exe] + fingerprint
+<prefix>/share/<core.deployPrefix>/<指纹>/clang_rt.asan_dynamic-<arch>.dll  # 仅 asan 变体的 Windows 产物
 <prefix>/share/<core.deployPrefix>/ripgrep/rg[.exe]      # 全部指纹槽位共享一份
 <prefix>/share/<core.deployPrefix>/tui[.exe]             # TUI 原生二进制（无需 Node.js）
 ```
@@ -92,7 +93,8 @@ Windows 无此步（符号链接要特权），直接以产品目录路径运行
 npm run package:tui
   └─ npm run build:tui                        # tui-rs 的宿主 release 构建
   └─ node scripts/build-tui-installer.mjs     # 每个目标：
-       1. Core 产物就位检查（缺则 build-core.mjs --target <triple>）
+       1. Core 产物就位检查（缺则 build-core.mjs --target <triple>；
+          asan 变体追加 --asan，保证补建出来的是同变体产物）
        2. cargo build --release --target <triple>（cwd=tui-rs，增量；
           不做「产物在就跳过」——TUI 无新旧标记，旧产物会被静默嵌入）
        3. cargo build --release --target <triple>（cwd=installer-rs，
@@ -106,6 +108,11 @@ npm run package:tui
 - 目标集合：无参 = 宿主可构建的全部四目标（msvc 目标只能在 Windows 宿主构建）；
   `--host` = 只构建当前宿主平台；`--arch <arch>` = 只构建某架构的全部平台
   （x64 / arm64，同样受宿主可构建性过滤）；`--target <triple>` = 显式指定。
+- ASAN 变体（`npm run package:asan` 注入的环境变量 `<envPrefix>_CORE_ASAN=1`）：默认
+  集合收敛为只构建当前宿主平台的安装器（安装器只嵌本机平台的 Core，见
+  [docs/core/standalone-core.md 第 3.3 节](../core/standalone-core.md#33-构建与目标平台)），
+  `--arch` 在该变体下报用法错误。安装器与 TUI 本体仍为 release 构建，只有内嵌的
+  Core 是 asan 产物；产物落变体专属的 `release/asan/tui-installer/`。
 - **工具链缺口显式跳过**（默认集合）：如 Windows ARM64 的 Core 交叉构建需要
   zig 充当 clang（ring 的 C 部分，见 [docs/core/standalone-core.md 第 3.3 节](../core/standalone-core.md#33-构建与目标平台)），缺失时跳过该目标并说明补救方式——打包机没装全工具链
   也能产出其余目标；显式 `--target` 时严格失败。一个都没产出则整脚本失败。

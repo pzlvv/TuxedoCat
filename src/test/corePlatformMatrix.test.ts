@@ -200,6 +200,11 @@ async function run(): Promise<void> {
       check(`${entry.dir} 已产出 ${CORE_BINARY_NAME}${entry.ext}`, fs.existsSync(binary));
       check(`${entry.dir} 已产出自带的 ripgrep`, fs.existsSync(ripgrep));
       check(`${entry.dir} 已产出构建指纹`, fs.existsSync(fingerprint));
+      // pdb 只在 Windows（MSVC）产物有（行号表在 pdb 里）；缺失即部署缺陷
+      // specs/defects/core-pdb-not-deployed.md 的 RT-1，Linux 宿主不检查
+      if (entry.platform === 'win32') {
+        check(`${entry.dir} 已产出调试符号（pdb）`, fs.existsSync(path.join(dir, `${CORE_BINARY_NAME}.pdb`)));
+      }
     } else {
       // 交叉编译目标：目录不存在是预期状态（还没构建），这里只断言「没有半成品」
       // （有目录就必须有产物）

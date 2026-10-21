@@ -2,10 +2,8 @@
 /**
  * 打包 VS Code 扩展（.vsix）。
  *
- * 输出目录随 Core 变体变化（见 `project.config.cjs` 的 `releaseDir`）：
- * 产物落 `release/`。
- * 静态 npm script 没法在运行时按构建期 Core 变体变量（`<envPrefix>_<core.envVarSuffix>`）
- * 解析目录，所以收进本脚本；
+ * 输出目录取 `project.config.cjs` 的 `releaseDir`（普通构建 `release/`，ASAN 变体
+ * `release/asan/`）；静态 npm script 没法在运行时解析目录，所以收进本脚本；
  * 流程与原 `vsce package --out release && python scripts/fix_vsix_permissions.py` 一致。
  *
  * 为什么 `package:ext` 只有这一步

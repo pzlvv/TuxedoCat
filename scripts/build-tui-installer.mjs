@@ -26,6 +26,11 @@
  *   node scripts/build-tui-installer.mjs --host              # 只构建当前宿主平台
  *   node scripts/build-tui-installer.mjs --arch x64          # 只构建某架构的全部平台（x64 / arm64）
  *   node scripts/build-tui-installer.mjs --target <triple>   # 显式指定（不看 buildableOnHost）
+ *
+ * ASAN 变体（环境变量 `<envPrefix>_CORE_ASAN=1`，`npm run package:asan` 注入）：默认只构建
+ * 当前宿主平台的安装器——安装器只嵌本机平台的 Core（`build-core.mjs` 的 asan 默认集合是
+ * 本机 + Linux x64，但 Linux 安装器只能在 Linux 宿主构建）；`--target` 显式指定时不看本
+ * 限制。安装器与 TUI 本体仍为 release 构建，只有内嵌的 Core 是 asan 产物。
  */
 
 import { spawnSync } from 'node:child_process';
@@ -33,7 +38,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import project from '../project.config.cjs';
-import { TARGETS, FINGERPRINT_FILE_NAME } from './build-core.mjs';
+import { TARGETS, FINGERPRINT_FILE_NAME, asanEnabled } from './build-core.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = join(repoRoot, 'installer-rs', 'Cargo.toml');
@@ -98,6 +103,12 @@ function resolveTargets(options) {
     }
     return [found];
   }
+  // asan 变体的安装器只建本机平台（其余平台的 Core 不在 asan 默认集合里，本机也构建不了
+  // 别的平台的安装器），--arch 的「某架构全平台」集合在这里凑不齐，直接报用法错误而不是挑一半
+  if (asanEnabled() && options.arch) {
+    console.error('[build-tui-installer] asan 变体不支持 --arch（安装器只建本机平台）；只构建本机平台，或用 --target 显式指定。');
+    process.exit(2);
+  }
   let targets;
   if (options.arch) {
     // 架构名取矩阵登记（x64 / arm64），不认识的直接报错，不静默产出空集
@@ -114,6 +125,15 @@ function resolveTargets(options) {
       console.error(`[build-tui-installer] 当前宿主 ${hostPlatform}-${hostArch} 不在安装器目标矩阵里。`);
       process.exit(2);
     }
+    targets = [hostTarget];
+  } else if (asanEnabled()) {
+    // asan 变体的默认集合收敛为本机（显式 --target 的分支在前面已返回）
+    const hostTarget = TARGETS.find((t) => t.platform === process.platform && t.arch === process.arch);
+    if (!hostTarget) {
+      console.error(`[build-tui-installer] 当前宿主 ${process.platform}-${process.arch} 不在安装器目标矩阵里。`);
+      process.exit(2);
+    }
+    console.log(`[build-tui-installer] asan 变体：只构建本机 ${hostTarget.dir} 的安装器（安装器只嵌本机平台的 Core）。`);
     targets = [hostTarget];
   } else {
     targets = TARGETS;
@@ -176,10 +196,13 @@ function run(command, args, cwd, env, strict = true) {
 function buildInstaller(target, strict) {
   const pkgDirName = join('resources', project.core.resourceDir, target.dir);
 
-  // 1. Core 产物（缺则按目标补建；默认打包集合已含四个目标，这里兜住单目标场景）
+  // 1. Core 产物（缺则按目标补建；默认打包集合已含四个目标，这里兜住单目标场景）。
+  //    asan 变体补建时带上 --asan：否则补出来的是 release Core，与本链路的校验口径（asan 指纹）对不上
   if (!coreArtifactsReady(target)) {
     console.log(`[build-tui-installer] ${pkgDirName} 产物缺失，先构建 Core（${target.triple}）…`);
-    const built = run('node', [join(repoRoot, 'scripts', 'build-core.mjs'), '--target', target.triple], repoRoot, undefined, strict);
+    const buildCoreArgs = [join(repoRoot, 'scripts', 'build-core.mjs'), '--target', target.triple];
+    if (asanEnabled()) buildCoreArgs.push('--asan');
+    const built = run('node', buildCoreArgs, repoRoot, undefined, strict);
     if (!built || !coreArtifactsReady(target)) {
       if (strict) {
         console.error(`[build-tui-installer] Core 构建后仍缺产物：${pkgDirName}`);

@@ -247,31 +247,53 @@ npm run build:core            # 打包要携带的全部目标（Windows x64 / a
 npm run build:core:host       # 只建当前平台 / 架构（本地调试用）
 npm run build:core:linux-x64  # 只建 Linux x64（Windows 上就是交叉编译，不需要 WSL）
 npm run build:core:win32-arm64 # 只建 Windows arm64（打包集合成员，见下）
+npm run build:core:asan       # 建当前平台 / 架构 + Linux x64 的 ASAN 插桩构建（内存诊断用）
 ```
 
 `build-core.mjs` 的目标分三档：不带参数时构建 `PACKAGE_DIRS`（打包要携带的 Windows x64 /
 arm64 + Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只建当前平台 / 架构；`--target <三元组>`
 只建指定目标。本地调试（`dev:electron`、`watch:app` 的 Rust 重建）走 `--host`，不白编交叉编译那几份。
 
+**ASAN 变体**（`npm run package:asan`，单编走 `npm run build:core:asan`）：Core 用 nightly
+工具链的 `-Zsanitizer=address` 按 `core-rs/Cargo.toml` 的 `[profile.asan]`（继承 release 的
+优化与行号表）构建，产物落 `target/<三元组>/asan/`。默认构建**当前平台 / 架构 + Linux x64**
+（本机没有 asan 变体时只建 Linux x64）——Linux x64 是 vsix / 桌面包跨平台携带的那份，也是
+SSH 远端部署的主目标；其余目标用 `--target` 显式指定。Linux x64 的 ASAN 产物用 **gnu**
+三元组（`x86_64-unknown-linux-gnu`）而不是发布产物的静态 musl（rustc 拒绝 sanitizer 与
+静态 libc 的组合），gnu 产物动态链接 glibc；Windows 仍用 msvc 三元组。产物落位与 release
+相同（同目录同名覆盖本机 / Linux x64 那份），Windows 产物目录额外带 MSVC 的动态 ASAN 运行库
+`clang_rt.asan_dynamic-<arch>.dll`（rustup 工具链不带它，链接期与运行期都用 VS「C++
+AddressSanitizer」组件分发的那份，构建脚本经 vswhere 定位后复制到 exe 同级，缺失直接报错；
+ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 profile 段为 `asan`、三元组取实际
+构建三元组（见[第 3.4 节](#34-构建指纹)），与 release 产物互不混槽：asan 构建后再打 release
+包，`verify-core-artifacts` 会按指纹拦下，重跑 `npm run build:core` 即恢复。变体经环境变量
+`<envPrefix>_CORE_ASAN=1` 而不是命令行参数贯穿打包链（`package:ext` 里 vsce 会强制再执行一遍
+`vscode:prepublish`，其内嵌的 `npm run build:core` 收不到参数，注入见
+`scripts/package-asan.mjs`）；该变体下校验覆盖本机平台 + Linux x64、TUI 安装器只建本机平台、
+打包产物整体落 `release/asan/`（不覆盖正式 release 产物）。
+
 构建的工具链分两段，**都在本机解决**：
 
-1. **Rust 目标与链接器**（`rustup target add <triple>`）：
+1. **Rust 目标与链接器**（`rustup target add <triple>`；asan 变体装在 nightly 上：
+   `rustup target add --toolchain nightly <triple>`，缺工具链时构建脚本直接给出安装命令）：
    - Linux musl：链接器用 rustup 自带的 `rust-lld` + self-contained 的 musl crt / libc
      （配在 `core-rs/.cargo/config.toml`），不需要系统上的交叉链接器；
+   - Linux gnu（ASAN 变体）：没有自包含的 crt / libc，链接交给 zig 的 cc 驱动（见下）；
    - Windows arm64：MSVC 目标的链接器由 rustc 经 Visual Studio 定位，需要装好 VS 的
      「MSVC ARM64 生成工具」组件（MSVC 链接器不跨平台，只在 Windows 宿主构建）。
 2. **C 编译器**：`ring`（`reqwest` 的 `rustls-tls` 依赖）里有 C + 汇编，cc-rs 需要一个能产出
    该目标文件的 C 编译器。用 [zig](https://ziglang.org/)：它自带 clang 与头文件 / libc，
    一个可执行文件就够。装好保证 `zig` 在 PATH 上即可（装在别处用环境变量 `ZIG` 指定）；
    构建脚本会注入 `CC` / `CFLAGS`，缺 zig 时直接报错、不静默降级。两个用场：
-   - Linux musl：交叉编译的 C 编译器，静态库打包用 `zig ar`；
+   - Linux musl / gnu：交叉编译的 C 编译器，静态库打包用 `zig ar`；gnu 的链接也经 `zig cc`
+     （`scripts/zig-cc-linker.mjs` 垫片把 rustc 的 `-Wl,<绝对路径>` 还原成位置参数）；
    - Windows arm64：ring 的 build.rs 对该目标**硬性要求 clang**（MSVC 的 cl.exe 不被
      接受），由 zig cc 充当；静态库打包用 VS 的 lib.exe（cc-rs 自行定位，不注入 AR）。
 
 打包（`npm run package:ext` / `package:app`）会校验要携带的 Core 产物
 （`scripts/verify-core-artifacts.mjs`）：产物缺失、比 `core-rs/src/**` 旧、构建指纹与
 源码不一致、或没同步进 `dist/resources/` 都直接报错。平台列表取自构建脚本的
-`PACKAGE_DIRS`，两处不各写一份。
+`PACKAGE_DIRS`（asan 变体取 `asanDefaultTargets`，即本机 + Linux x64），两处不各写一份。
 `build:core` 默认就构建这四个平台，所以打包链不会再漏掉任何一份（Linux 两份与 Windows arm64
 都是交叉编译）；校验仍然拦住「改了 Rust 源码没重编」与「`copy-assets` 没跑」——那两种情况
 会把上一次的旧产物静默打进 vsix / 安装包。
@@ -301,7 +323,9 @@ Windows x64 / arm64 与 Linux x64 / arm64 四份，`npm run package` 一次出�
   `git ls-files`——未提交的新文件也必须改变指纹；`Cargo.lock` 与 `.cargo/config.toml`
   在目录内自然被覆盖），行尾归一（`\r\n` → `\n`，避免 `autocrlf` 不同的构建机分裂
   指纹）；`rustc -vV` 的 release / commit-hash / commit-date（**不含 host 行**，Windows
-  与 Linux 构建机上是同一个编译器）；目标三元组与 profile（release / debug）。
+  与 Linux 构建机上是同一个编译器；asan profile 由 nightly 编译，编译器身份取
+  `rustc +nightly -vV`）；目标三元组与 profile（release / debug / asan；asan 取实际构建
+  三元组，Linux x64 是 gnu，见第 3.3 节）。
 - **不混入** zig / C 工具链版本：指纹是「版本身份」不是「字节一致」，同源码同 rustc
   下 C 部分的工具链差异不构成版本差异；指纹相同的两个构建产物行为一致。
 - **用途**：部署按指纹落位槽位目录 `~/.local/share/<core.deployPrefix>/<指纹>/`

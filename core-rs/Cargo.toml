@@ -50,3 +50,9 @@ codegen-units = 1
 # 只带行号表不带变量信息，体积增量远小于完整 debug 信息；Windows（MSVC）的
 # 行号表在构建产物旁的 .pdb 里，由 scripts/build-core.mjs 一并部署。
 debug = "line-tables-only"
+
+# ASAN 插桩构建（`npm run build:core:asan` / `npm run package:asan`）：
+# 继承 release 的优化与行号表（asan 报告要符号化），产物落 target/<triple>/asan/，
+# 与 release 产物互不覆写；由构建脚本配 nightly 的 -Zsanitizer=address 编译。
+[profile.asan]
+inherits = "release"

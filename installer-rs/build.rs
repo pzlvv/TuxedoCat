@@ -11,6 +11,7 @@
 //! ```text
 //! <prefix>/share/<产品名>/<指纹>/<core.binaryName>[.exe]   # 按指纹的槽位
 //! <prefix>/share/<产品名>/<指纹>/fingerprint
+//! <prefix>/share/<产品名>/<指纹>/clang_rt.asan_dynamic-<arch>.dll  # 仅 asan 变体的 Windows 产物
 //! <prefix>/share/<产品名>/ripgrep/rg[.exe]                 # 全部槽位共享一份
 //! <prefix>/share/<产品名>/tui[.exe]                        # TUI 二进制
 //! ```
@@ -162,7 +163,7 @@ fn main() {
     // (安装后相对路径, 源文件, 可执行位)
     let core_name = format!("{core_binary_name}{ext}");
     let tui_name = format!("tui{ext}");
-    let entries: Vec<(String, PathBuf, bool)> = vec![
+    let mut entries: Vec<(String, PathBuf, bool)> = vec![
         (format!("{product_dir}/{tui_name}"), tui_binary, true),
         (
             format!("{product_dir}/{fingerprint}/{core_name}"),
@@ -180,6 +181,23 @@ fn main() {
             true,
         ),
     ];
+    // asan 变体的 Windows 产物多一份动态 ASAN 运行库（`build-core.mjs` 的
+    // `copyAsanRuntime` 落位、与 exe 同级；文件名口径与该函数一致，Rust 侧拷贝）：
+    // Core 起进程按 Windows 的 DLL 搜索顺序找自己目录，不带上它，装出去的 asan Core
+    // 一启动就报缺 DLL。只在文件存在时内嵌——它随构建变体出现 / 消失，release 产物
+    // 没有它是正常状态，缺失不是错误。
+    if is_windows {
+        let asan_arch = if triple.starts_with("aarch64") { "aarch64" } else { "x86_64" };
+        let asan_dll = pkg_dir_path.join(format!("clang_rt.asan_dynamic-{asan_arch}.dll"));
+        if asan_dll.is_file() {
+            let asan_dll_name = asan_dll.file_name().unwrap().to_string_lossy().to_string();
+            entries.push((
+                format!("{product_dir}/{fingerprint}/{asan_dll_name}"),
+                asan_dll,
+                false,
+            ));
+        }
+    }
 
     // 载荷文件被 include_bytes! 烧进产物：任一文件变化（重跑 build:core 会换指纹与
     // 二进制）都必须重跑本脚本重嵌，否则安装器会带着过期载荷

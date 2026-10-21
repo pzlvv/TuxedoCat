@@ -7,6 +7,12 @@
  *   node scripts/build-core.mjs --host                 # 只建当前平台 / 架构
  *   node scripts/build-core.mjs --target <triple>      # 只建指定目标三元组
  *   node scripts/build-core.mjs --debug                # debug 构建（保留控制台）
+ *   node scripts/build-core.mjs --asan                 # asan 构建（nightly + -Zsanitizer=address，默认本机 + Linux x64）
+ *
+ * asan 变体（`npm run package:asan`）除了 `--asan` 旗标，还认环境变量
+ * `<envPrefix>_CORE_ASAN=1`：vsce 会强制再跑一遍 `npm run vscode:prepublish`（其内嵌的
+ * `npm run build:core` 不带任何参数），变体只能经环境变量贯穿全链路
+ * （`scripts/package-asan.mjs` 负责注入）。
  *
  * 产物落位：resources/<core.resourceDir>/<arch>-<platform>/<core.binaryName>[.exe]
  * 目录命名与 resources/ripgrep/ 一致；copy-assets 会把它带进 dist/resources。
@@ -25,7 +31,16 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -44,6 +59,23 @@ const RESOURCE_DIR = project.core.resourceDir;
 const BINARY_NAME = project.core.binaryName;
 
 /**
+ * ASAN 变体的开关环境变量（`npm run package:asan` 经 `scripts/package-asan.mjs` 注入，
+ * 嵌套的 npm / vsce / node 子进程原样透传）；只认 `'1'`，避免误开。
+ */
+export const ASAN_ENV_VAR = project.asanEnvVar;
+
+/** 当前进程是否处于 asan 变体 */
+export function asanEnabled() {
+  return process.env[ASAN_ENV_VAR] === '1';
+}
+
+/** asan 构建的 cargo profile 名（`core-rs/Cargo.toml` 的 `[profile.asan]`，继承 release） */
+export const ASAN_PROFILE = 'asan';
+
+/** asan 构建的工具链覆盖：`-Zsanitizer` 是 unstable 旗标，必须 nightly */
+const ASAN_TOOLCHAIN = '+nightly';
+
+/**
  * 平台矩阵：`<platform>-<arch>` → 目标三元组与产物目录。
  *
  * Linux 一律用 **musl**：静态链接，不依赖目标机器的 glibc 版本——这个 core 是要拷到
@@ -55,6 +87,41 @@ export const TARGETS = [
   { platform: 'linux', arch: 'x64', triple: 'x86_64-unknown-linux-musl', dir: 'x64-linux', ext: '' },
   { platform: 'linux', arch: 'arm64', triple: 'aarch64-unknown-linux-musl', dir: 'arm64-linux', ext: '' },
 ];
+
+/**
+ * ASAN 变体实际使用的构建三元组（按产物目录索引）。
+ *
+ * Windows 与 release 同三元组；Linux x64 改用 **gnu**：rustc 明确拒绝 sanitizer 与
+ * 静态 libc 的组合（`sanitizer is incompatible with statically linked libc`），而发布
+ * 产物用的 musl 目标默认静态链接。gnu 产物动态链接 glibc，是 ASAN 在 Linux 上可用的
+ * 形态。没有登记的目标（Linux arm64）没有 ASAN 变体。
+ */
+export const ASAN_TRIPLES = {
+  'x64-win32': 'x86_64-pc-windows-msvc',
+  'arm64-win32': 'aarch64-pc-windows-msvc',
+  'x64-linux': 'x86_64-unknown-linux-gnu',
+};
+
+/** 某目标在 asan 变体下的构建三元组；没有 asan 变体时返回 null */
+export function asanTripleFor(target) {
+  return ASAN_TRIPLES[target.dir] ?? null;
+}
+
+/**
+ * ASAN 变体的默认目标集合：本机平台（有 asan 变体时）+ Linux x64。
+ *
+ * Linux x64 是 vsix / 桌面安装包跨平台携带的那份，也是 SSH 远端部署的主目标——
+ * 内存问题经常只在 Linux 上复现，所以 asan 包必须带它。其余目标（如 Linux arm64）
+ * 用 `--target` 显式指定；本机没有 asan 变体时（如 Linux arm64 宿主）只建 Linux x64。
+ */
+export function asanDefaultTargets() {
+  const host = hostTarget();
+  const linuxX64 = TARGETS.find((entry) => entry.dir === 'x64-linux');
+  const candidates = [host, linuxX64];
+  return candidates.filter(
+    (entry, index) => entry && asanTripleFor(entry) !== null && candidates.indexOf(entry) === index,
+  );
+}
 
 /**
  * 打包要携带的目标（`resources/<core.resourceDir>/` 下必须齐的那几个目录）。
@@ -93,7 +160,8 @@ export const FINGERPRINT_FILE_NAME = 'fingerprint';
  *   `autocrlf` 设置不同的构建机对同一 commit 会检出不同行尾，不归一会分裂指纹。
  * - rustc 身份：`rustc -vV` 的 release / commit-hash / commit-date 三行。
  *   **不含 host 行**：Windows 与 Linux 构建机上是「同一个编译器」，不该分裂指纹。
- * - 目标三元组与 profile（release / debug）：产物语义随它们变化，不同 profile
+ *   asan profile 由 nightly 编译，身份取 `rustc +nightly -vV`。
+ * - 目标三元组与 profile（release / debug / asan）：产物语义随它们变化，不同 profile
  *   不共享远端槽位。
  * - 不混入 zig / C 工具链版本：同源码同 rustc 下 C 部分的工具链差异不构成
  *   版本差异，混入只会让不同构建机分裂槽位（这正是要避免的）。
@@ -119,10 +187,15 @@ function collectCoreSourceFiles() {
 }
 
 /** `rustc -vV` 的编译器身份（release / commit-hash / commit-date 三行，不含 host） */
-function rustcIdentity() {
-  const result = spawnSync('rustc', ['-vV'], { encoding: 'utf8' });
+function rustcIdentity(toolchainArgs = []) {
+  const result = spawnSync('rustc', [...toolchainArgs, '-vV'], { encoding: 'utf8' });
   if (result.error || result.status !== 0) {
-    console.error('[build-core] 无法读取 rustc 版本（rustc -vV 失败）：指纹计算依赖编译器身份。');
+    const toolchain = toolchainArgs.join(' ') || '默认';
+    console.error(
+      `[build-core] 无法读取 rustc 版本（rustc ${toolchainArgs.join(' ')} -vV 失败）：` +
+        '指纹计算依赖编译器身份。' +
+        (toolchainArgs.length > 0 ? '安装：rustup toolchain install nightly' : '请安装 Rust 工具链：https://rustup.rs'),
+    );
     process.exit(1);
   }
   const wanted = new Set(['release', 'commit-hash', 'commit-date']);
@@ -162,7 +235,9 @@ export function computeFingerprint(triple, profile) {
   const hash = createHash('sha256');
   hash.update(FINGERPRINT_ALGO);
   hash.update('\0');
-  hash.update(rustcIdentity());
+  // asan profile 由 nightly 编译，编译器身份也取 nightly 的 rustc：指纹语义是
+  // 「源码 + 编译器」，取默认工具链（可能是 stable）的身份会与实际编译器不符。
+  hash.update(rustcIdentity(profile === ASAN_PROFILE ? [ASAN_TOOLCHAIN] : []));
   hash.update('\0');
   hash.update(triple);
   hash.update('\0');
@@ -194,24 +269,27 @@ function buildableOnHost(target) {
  * cc-rs 需要一个能产出该目标文件的 C 编译器：
  *
  * - Linux musl（本机非 Linux）：系统上没有交叉 gcc，用 zig cc + zig ar；
+ * - Linux gnu（ASAN 变体，本机非 Linux）：同样用 zig cc + zig ar，但链接也必须交给
+ *   zig（没有 glibc 交叉 sysroot），见 `zigLinkerWrapper`；
  * - aarch64-pc-windows-msvc：ring 的 build.rs 对 Windows ARM64 **硬性要求 clang**
  *   （「On Windows AArch64 we currently must use Clang」），MSVC 的 cl.exe 不被
  *   接受，用 zig cc 充当 clang。静态库打包不注入 AR：MSVC 目标吃 `-out:` /
  *   `-nologo` 口径，必须用 VS 的 lib.exe（cc-rs 自己定位，lib.exe 对目标架构
  *   不敏感），`zig ar` 是 GNU ar 口径对不上。
  */
-function crossToolchainEnv(target) {
-  const isLinuxTriple = target.triple.endsWith('-linux-musl');
-  const isWindowsArm64 = target.triple === 'aarch64-pc-windows-msvc';
+function crossToolchainEnv(triple) {
+  const isLinuxTriple = triple.endsWith('-linux-musl') || triple.endsWith('-linux-gnu');
+  const isLinuxGnu = triple.endsWith('-linux-gnu');
+  const isWindowsArm64 = triple === 'aarch64-pc-windows-msvc';
   if (!isLinuxTriple && !isWindowsArm64) return {};
-  // 本机就是 Linux 时不注入：系统自带的 cc 能直接编 musl（装了 musl-tools 的话）。
+  // 本机就是 Linux 时不注入：系统自带的 cc 能直接编 musl / gnu（装了 musl-tools 的话）。
   if (isLinuxTriple && process.platform === 'linux') return {};
 
   const zig = process.env.ZIG || 'zig';
   const probe = spawnSync(zig, ['version'], { stdio: 'ignore', shell: false });
   if (probe.error || probe.status !== 0) {
     console.error(
-      `[build-core] 构建 ${target.triple} 需要 zig（ring 的 C / 汇编要一个 C 编译器）：` +
+      `[build-core] 构建 ${triple} 需要 zig（ring 的 C / 汇编要一个 C 编译器）：` +
         `找不到 \`${zig}\`。安装方式见 docs/core/standalone-core.md 第 3.3 节；` +
         '已装在别处时用环境变量 ZIG 指定可执行文件路径。',
     );
@@ -221,22 +299,54 @@ function crossToolchainEnv(target) {
   // cc-rs 认 `zig cc`，但它会按 **Rust 三元组** 补 `--target=<rust 三元组>`；zig 不认
   // 三元组里的 vendor 段（`unknown` / `pc` 都报 UnknownOperatingSystem），所以要再用
   // CFLAGS 追加一个 zig 认的目标（clang 取最后一个 --target）。
-  const key = target.triple.replace(/-/g, '_');
-  const zigTarget = target.triple.replace(/-(unknown|pc)-/, '-');
+  const key = triple.replace(/-/g, '_');
+  const zigTarget = triple.replace(/-(unknown|pc)-/, '-');
   const env = {
     [`CC_${key}`]: `${zig} cc`,
     [`CFLAGS_${key}`]: `--target=${zigTarget}`,
   };
   if (!isWindowsArm64) env[`AR_${key}`] = `${zig} ar`;
+  // gnu 没有像 musl 那样的自包含 crt / libc（见 core-rs/.cargo/config.toml），链接
+  // 必须由 zig 的 cc 驱动完成；cargo 的 linker 只能是一个可执行文件，故经包装脚本转接
+  if (isLinuxGnu) {
+    env.ZIG_CC_TARGET = `--target=${zigTarget}`;
+    env[`CARGO_TARGET_${key.toUpperCase()}_LINKER`] = zigLinkerWrapper();
+  }
   return env;
 }
 
+/**
+ * 生成 `zig cc` 链接器包装脚本（供 cargo 的 linker 配置调用）。
+ *
+ * cargo 的 linker 只能是一个可执行文件，而 zig 必须以 `zig cc` 子命令启动；包装脚本
+ * 转给 `scripts/zig-cc-linker.mjs`（Node 垫片），由它把 rustc 的 `-Wl,<绝对路径>`
+ * 还原成位置参数后再调用 zig（原因见该文件的说明）。写在 `core-rs/target/` 下：
+ * 不进构建指纹、不入库，每次构建按当前路径重写。
+ */
+function zigLinkerWrapper() {
+  const dir = join(repoRoot, 'core-rs', 'target', 'linkers');
+  mkdirSync(dir, { recursive: true });
+  const shim = join(repoRoot, 'scripts', 'zig-cc-linker.mjs');
+  if (process.platform === 'win32') {
+    const file = join(dir, 'zig-cc.cmd');
+    // cmd.exe 按 CRLF 解析批处理：用 LF 会把下一行拼进命令，链接器直接报「不是内部或外部命令」
+    writeFileSync(file, `@echo off\r\nnode "${shim}" %*\r\n`);
+    return file;
+  }
+  const file = join(dir, 'zig-cc.sh');
+  writeFileSync(file, `#!/bin/sh\nexec node "${shim}" "$@"\n`);
+  chmodSync(file, 0o755);
+  return file;
+}
+
 function parseArgs(argv) {
-  const options = { debug: false, host: false, target: null };
+  const options = { debug: false, host: false, target: null, asan: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--debug') {
       options.debug = true;
+    } else if (arg === '--asan') {
+      options.asan = true;
     } else if (arg === '--host') {
       options.host = true;
     } else if (arg === '--target') {
@@ -252,21 +362,29 @@ function parseArgs(argv) {
   return options;
 }
 
-/** 按三元组取平台矩阵里的一条；不在矩阵内直接报错，不猜目标 */
-function findTarget(triple) {
-  const match = TARGETS.find((entry) => entry.triple === triple);
+/**
+ * 按三元组取平台矩阵里的一条；不在矩阵内直接报错，不猜目标。
+ *
+ * asan 变体下同时接受 ASAN 三元组（如 `x86_64-unknown-linux-gnu`），映射回对应的
+ * 产物目录——用户拿 rustc 实际使用的三元组来指定时不该查不到。
+ */
+function findTarget(triple, asan = false) {
+  const match = TARGETS.find(
+    (entry) => entry.triple === triple || (asan && asanTripleFor(entry) === triple),
+  );
   if (!match) {
-    console.error(
-      `目标三元组 ${triple} 不在平台矩阵内。可用：\n` +
-        TARGETS.map((entry) => `  ${entry.triple}  (${entry.dir})`).join('\n'),
-    );
+    const available = TARGETS.map((entry) => {
+      const asanTriple = asanTripleFor(entry);
+      return `  ${entry.triple}  (${entry.dir})${asan ? `；asan: ${asanTriple ?? '不支持'}` : ''}`;
+    }).join('\n');
+    console.error(`目标三元组 ${triple} 不在平台矩阵内。可用：\n${available}`);
     process.exit(2);
   }
   return match;
 }
 
-/** 当前平台 / 架构对应的那条 */
-function hostTarget() {
+/** 当前平台 / 架构对应的那条（verify-core-artifacts 的 asan 模式复用） */
+export function hostTarget() {
   const match = TARGETS.find(
     (entry) => entry.platform === process.platform && entry.arch === process.arch,
   );
@@ -283,8 +401,11 @@ function hostTarget() {
 /**
  * 解析出本次要构建的目标列表。
  *
- * - `--target`：只建指定的那一个；
+ * - `--target`：只建指定的那一个（asan 变体接受 release 三元组或 asan 三元组）；
  * - `--host`：只建当前平台 / 架构；
+ * - asan 变体（旗标或环境变量）：默认建本机平台 + Linux x64（`asanDefaultTargets`）——
+ *   Linux x64 是 vsix / 桌面包跨平台携带的那份，也是 SSH 远端部署的主目标；
+ *   其余目标用 `--target` 显式表达意图；
  * - 默认：打包要携带的全部目标（`PACKAGE_DIRS`），按本机能否构建过滤。
  */
 function resolveTargets(options) {
@@ -292,8 +413,20 @@ function resolveTargets(options) {
     console.error('--target 与 --host 不能同时使用。');
     process.exit(2);
   }
-  if (options.target) return [findTarget(options.target)];
+  if (options.asan && options.debug) {
+    console.error('--asan 与 --debug 不能同时使用（asan 是独立 profile，已带行号表）。');
+    process.exit(2);
+  }
+  if (options.target) return [findTarget(options.target, options.asan)];
   if (options.host) return [hostTarget()];
+  if (options.asan) {
+    const targets = asanDefaultTargets();
+    console.log(
+      `[build-core] asan 模式默认构建 ${targets.map((entry) => entry.dir).join(' + ')}；` +
+        '其余目标用 --target 显式指定。',
+    );
+    return targets;
+  }
 
   const required = PACKAGE_DIRS.map((dir) => {
     const entry = TARGETS.find((item) => item.dir === dir);
@@ -323,18 +456,31 @@ function resolveTargets(options) {
 
 /** 构建单个目标并把产物落位到 resources/ */
 function buildTarget(target, options) {
-  const profile = options.debug ? 'debug' : 'release';
+  const profile = options.asan ? ASAN_PROFILE : options.debug ? 'debug' : 'release';
+  // asan 变体的实际三元组可能与发布产物不同（Linux x64 是 gnu，见 ASAN_TRIPLES）
+  const triple = options.asan ? asanTripleFor(target) : target.triple;
 
   // 指纹在构建前计算：它只依赖源码与编译器身份，不依赖产物；
   // 同时经 CORE_FINGERPRINT 传给 cargo，由 core-rs 的 build.rs 烧进二进制
   // （daemon 以它区分自己的状态文件，docs/core/standalone-core.md 第 3.4 节）。
-  const fingerprint = computeFingerprint(target.triple, profile);
+  const fingerprint = computeFingerprint(triple, profile);
 
-  const cargoArgs = ['build', '--manifest-path', manifestPath, '--target', target.triple];
-  if (!options.debug) cargoArgs.push('--release');
+  // `+nightly` 是 cargo 的工具链覆盖，必须在子命令之前；asan 用独立 profile
+  // （不叠在 --release 上），产物目录 target/<triple>/asan/ 与 release 互不覆写。
+  const cargoArgs = options.asan ? [ASAN_TOOLCHAIN] : [];
+  cargoArgs.push('build', '--manifest-path', manifestPath, '--target', triple);
+  if (options.asan) {
+    cargoArgs.push('--profile', ASAN_PROFILE);
+  } else if (!options.debug) {
+    cargoArgs.push('--release');
+  }
 
   console.log(`[build-core] cargo ${cargoArgs.join(' ')} (fingerprint ${fingerprint})`);
-  const env = { ...process.env, ...crossToolchainEnv(target), CORE_FINGERPRINT: fingerprint };
+  const env = { ...process.env, ...crossToolchainEnv(triple), CORE_FINGERPRINT: fingerprint };
+  if (options.asan) {
+    // -Zsanitizer=address 插桩 Rust 侧全部 crate；用户已带 RUSTFLAGS 时追加而不是覆盖
+    env.RUSTFLAGS = [process.env.RUSTFLAGS, '-Zsanitizer=address'].filter(Boolean).join(' ');
+  }
   // cwd 必须是 crate 目录：cargo 只从**当前目录**往上找 `.cargo/config.toml`，
   // 而 musl 的链接器（rust-lld）就配在 `core-rs/.cargo/config.toml` 里。
   // target 目录不受影响（由 manifest 所在的 workspace 决定）。
@@ -351,7 +497,7 @@ function buildTarget(target, options) {
   if (result.status !== 0) {
     console.error(
       `[build-core] cargo 构建失败（exit ${result.status}）。` +
-        `若提示目标未安装，执行：rustup target add ${target.triple}`,
+        `若提示目标未安装，执行：${options.asan ? 'rustup target add --toolchain nightly' : 'rustup target add'} ${triple}`,
     );
     process.exit(result.status ?? 1);
   }
@@ -360,7 +506,7 @@ function buildTarget(target, options) {
     repoRoot,
     'core-rs',
     'target',
-    target.triple,
+    triple,
     profile,
     `${CRATE_BIN_NAME}${target.ext}`,
   );
@@ -373,28 +519,94 @@ function buildTarget(target, options) {
   mkdirSync(outDir, { recursive: true });
   const outPath = join(outDir, `${BINARY_NAME}${target.ext}`);
   copyFileSync(built, outPath);
-  console.log(`[build-core] ${target.triple} → ${outPath}`);
+  console.log(`[build-core] ${triple} → ${outPath}`);
 
   copyDebugSymbols(built, outDir, target);
 
   // 指纹文件与可执行文件同级落位：宿主运行时读它确定远端部署槽位
   // 部署槽位 `~/.local/share/<core.deployPrefix>/<指纹>/`；随 copy-assets 进入打包产物（Electron / vsix 携带）。
   const fingerprintPath = join(outDir, FINGERPRINT_FILE_NAME);
-  writeFileSync(fingerprintPath, `${computeFingerprint(target.triple, profile)}\n`);
+  writeFileSync(fingerprintPath, `${computeFingerprint(triple, profile)}\n`);
   console.log(`[build-core] ${target.dir} 指纹 → ${fingerprintPath}`);
 
   copyBundledRipgrep(target, outDir);
+
+  // asan 变体额外带 MSVC 的动态 ASAN 运行库（非 win32 目标内为 no-op）
+  if (options.asan) copyAsanRuntime(outDir, target);
+}
+
+/**
+ * asan 产物必须随 exe 落位的 MSVC 动态 ASAN 运行库文件名（verify-core-artifacts 复用）。
+ *
+ * 非 windows-msvc 目标没有这份文件：ELF 平台的 asan 运行库直接静态链接进二进制。
+ */
+export function asanRuntimeFileName(triple) {
+  if (!triple.endsWith('-pc-windows-msvc')) return null;
+  const arch = triple.startsWith('aarch64-') ? 'aarch64' : 'x86_64';
+  return `clang_rt.asan_dynamic-${arch}.dll`;
+}
+
+/**
+ * 复制 MSVC 的动态 ASAN 运行库到产物目录（与 exe 同级）。
+ *
+ * windows-msvc 的 asan 链接的是**动态**运行库：rustup 工具链不带它，链接期与运行期用的
+ * 都是 VS 分发的那份（随「C++ AddressSanitizer」组件）。exe 起进程按 Windows 的 DLL
+ * 搜索顺序先找自己目录——不带它，部署出去的 asan Core 一启动就报
+ * 「找不到 clang_rt.asan_dynamic-x86_64.dll」。经 vswhere 定位（VS 的标准入口），
+ * 找不到直接报错，不静默降级。
+ */
+function copyAsanRuntime(outDir, target) {
+  const fileName = asanRuntimeFileName(asanTripleFor(target));
+  if (!fileName) return;
+  const vswhere = join(
+    process.env['ProgramFiles(x86)'] ?? '',
+    'Microsoft Visual Studio',
+    'Installer',
+    'vswhere.exe',
+  );
+  const found = spawnSync(vswhere, ['-latest', '-products', '*', '-find', `VC\\Tools\\MSVC\\*\\bin\\**\\${fileName}`], {
+    encoding: 'utf8',
+  });
+  if (found.error || found.status !== 0) {
+    console.error(
+      `[build-core] 无法运行 vswhere 定位 ${fileName}（asan 运行库）：` +
+        `${found.error?.message ?? `exit ${found.status}`}。vswhere 随 Visual Studio Installer 安装。`,
+    );
+    process.exit(1);
+  }
+  const dll = found.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)[0];
+  if (!dll || !existsSync(dll)) {
+    console.error(
+      `[build-core] 没找到 ${fileName}：windows-msvc 的 asan 动态运行库随 VS 的` +
+        '「C++ AddressSanitizer」组件分发，在 Visual Studio Installer 勾选该组件后重试。',
+    );
+    process.exit(1);
+  }
+  const dest = join(outDir, fileName);
+  copyFileSync(dll, dest);
+  console.log(`[build-core] ${target.dir} asan 运行库 → ${dest}`);
 }
 
 /**
  * 部署崩溃诊断符号：Windows（MSVC）的行号表在可执行文件旁的 `.pdb` 里，不随 exe
  * 部署则 panic 钩子输出的调用栈只有地址。debug 构建（profile=debug）本来就不 strip，
  * pdb 同样带上；Linux（musl / ELF）的行号表嵌在二进制内，无需额外产物。
+ *
+ * pdb 的探测名有两个：MSVC 工具链把 crate 名里的连字符换成下划线（实际产出
+ * `standalone_core.pdb`），先按下划线找、再用与 exe 同名的连字符变体兜住工具链命名
+ * 漂移；两个都没有时不阻塞构建（自定义 profile 关掉 debuginfo 时合法）。
  */
 function copyDebugSymbols(built, outDir, target) {
   if (target.platform !== 'win32') return;
-  const pdb = built.replace(/\.exe$/, '.pdb');
-  if (!existsSync(pdb)) return; // 工具链没产出 pdb（如自定义 profile 关掉 debug）时不阻塞构建
+  const pdbCandidates = [
+    join(dirname(built), `${CRATE_BIN_NAME.replace(/-/g, '_')}.pdb`),
+    built.replace(/\.exe$/, '.pdb'),
+  ];
+  const pdb = pdbCandidates.find((candidate) => existsSync(candidate));
+  if (!pdb) return;
   const dest = join(outDir, `${BINARY_NAME}.pdb`);
   copyFileSync(pdb, dest);
   console.log(`[build-core] ${target.dir} 调试符号 → ${dest}`);
@@ -424,9 +636,56 @@ function copyBundledRipgrep(target, outDir) {
   console.log(`[build-core] ${target.dir} 自带 ripgrep → ${join(dest, name)}`);
 }
 
+/**
+ * asan 前置检查：nightly 工具链与本次要构建的目标都必须就绪，报错带安装命令，
+ * 不让人对着 rustc 的原始报错猜。
+ */
+function probeNightly(triples) {
+  const probe = spawnSync('rustc', [ASAN_TOOLCHAIN, '-vV'], { encoding: 'utf8' });
+  if (probe.error || probe.status !== 0) {
+    console.error(
+      `[build-core] asan 构建需要 nightly 工具链（-Zsanitizer=address 是 unstable 旗标）：` +
+        `\`rustc ${ASAN_TOOLCHAIN} -vV\` 失败。安装：rustup toolchain install nightly`,
+    );
+    process.exit(1);
+  }
+  // rustup 管理的工具链顺带确认目标已安装；非 rustup 安装拿不到列表，交给 cargo 报错
+  const list = spawnSync('rustup', ['target', 'list', '--installed', '--toolchain', 'nightly'], {
+    encoding: 'utf8',
+  });
+  if (list.error || list.status !== 0) return;
+  const installed = new Set(
+    list.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean),
+  );
+  const missing = triples.filter((triple) => !installed.has(triple));
+  if (missing.length > 0) {
+    console.error(
+      `[build-core] asan 构建缺少 nightly 目标：${missing.join(' / ')}。安装：` +
+        `rustup target add --toolchain nightly ${missing.join(' ')}`,
+    );
+    process.exit(1);
+  }
+}
+
 function main() {
   const options = parseArgs(process.argv.slice(2));
+  // 环境变量与 --asan 旗标同效：打包链内嵌的裸 `npm run build:core` 靠环境变量进 asan 模式
+  options.asan = options.asan || asanEnabled();
   const targets = resolveTargets(options);
+  if (options.asan) {
+    const unsupported = targets.filter((target) => asanTripleFor(target) === null);
+    if (unsupported.length > 0) {
+      console.error(
+        `[build-core] ${unsupported.map((target) => `${target.dir}（${target.triple}）`).join(' / ')} ` +
+          '没有 asan 变体：ASAN 需要动态 libc，静态 musl 目标不兼容（可用目标见 ASAN_TRIPLES）。',
+      );
+      process.exit(2);
+    }
+    probeNightly(targets.map((target) => asanTripleFor(target)));
+  }
 
   if (!existsSync(manifestPath)) {
     console.error(`找不到 Rust 包：${manifestPath}`);
