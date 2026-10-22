@@ -143,22 +143,46 @@ impl Default for FileWatchRegistry {
     }
 }
 
-/// 校验目标文件落在工作区根内，并返回 canonicalize 后的路径。
+/// 校验监听目标。
+///
+/// 目标**存在**时按解析符号链接后的真实路径校验：落在工作区根内且为普通文件，
+/// 越界（含符号链接指向根外）拒绝。目标**缺失**（断线期间被删后 Connection 重建的
+/// 重注册形态，specs/018 FR-006「文件重新出现后清除标记并刷新」）按「父目录可达且
+/// 在根内」放行：父目录监听已在位，文件重新出现立即上报 `changed`——先要求文件存在
+/// 会让重注册永久失败，Core 侧再无监听、重建永不恢复。
 fn validate_target(workspace_root: &str, path: &str) -> Result<PathBuf, String> {
     let root = fs::canonicalize(workspace_root)
         .map_err(|err| format!("workspace root is not accessible: {workspace_root}: {err}"))?;
-    let target = fs::canonicalize(path)
+    let requested = Path::new(path);
+    let file_name = requested
+        .file_name()
+        .ok_or_else(|| format!("watch target has no file name: {path}"))?;
+    let parent = requested
+        .parent()
+        .ok_or_else(|| format!("watch target has no parent: {path}"))?;
+    let parent = fs::canonicalize(parent)
         .map_err(|err| format!("watch target is not accessible: {path}: {err}"))?;
+    let target = parent.join(file_name);
     if target == root {
         return Err(format!("watch target is the workspace root: {path}"));
     }
     if !target.starts_with(&root) {
         return Err(format!("watch target escapes the workspace root: {path}"));
     }
-    if !target.is_file() {
-        return Err(format!("watch target is not a regular file: {path}"));
+    match fs::canonicalize(&target) {
+        Ok(existing) => {
+            if !existing.starts_with(&root) {
+                return Err(format!("watch target escapes the workspace root: {path}"));
+            }
+            if !existing.is_file() {
+                return Err(format!("watch target is not a regular file: {path}"));
+            }
+            Ok(existing)
+        }
+        // 目标缺失：放行注册，等待重建。
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(target),
+        Err(err) => Err(format!("watch target is not accessible: {path}: {err}")),
     }
-    Ok(target)
 }
 
 /// 文件名比较：Windows 大小写不敏感，其它平台按字节比较。

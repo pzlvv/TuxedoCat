@@ -81,6 +81,64 @@ fn rejects_path_outside_workspace() {
 }
 
 #[test]
+fn watch_missing_target_waits_for_recreate() {
+    // 断线期间目标被删后的重注册形态（specs/018 FR-006）：注册要成功且等待重建，
+    // 否则 Core 侧永远没有监听、文件重建后查看器停在「自动刷新不可用」。
+    let workspace = temp_workspace("missing-target");
+    let target = workspace.join("note.txt");
+
+    let (bus, capture) = capture_bus();
+    let registry = FileWatchRegistry::new();
+    registry
+        .watch(
+            bus,
+            "w1".to_string(),
+            workspace.to_str().unwrap(),
+            target.to_str().unwrap(),
+        )
+        .expect("register watch on missing target");
+
+    fs::write(&target, "created").expect("recreate target");
+    assert!(
+        wait_for(
+            || !changed_events(&capture).is_empty(),
+            Duration::from_secs(5)
+        ),
+        "expected a changed event after recreate"
+    );
+
+    registry.unwatch("w1").expect("unwatch");
+    let _ = fs::remove_dir_all(&workspace);
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_symlink_escaping_workspace() {
+    // 目标存在时的越界口径不变：符号链接指向根外仍然拒绝。
+    let workspace = temp_workspace("symlink-workspace");
+    let outside_dir = temp_workspace("symlink-outside");
+    let outside = outside_dir.join("real.txt");
+    fs::write(&outside, "x").expect("write outside");
+    let link = workspace.join("link.txt");
+    std::os::unix::fs::symlink(&outside, &link).expect("create symlink");
+
+    let (bus, _capture) = capture_bus();
+    let registry = FileWatchRegistry::new();
+    let error = registry
+        .watch(
+            bus,
+            "w1".to_string(),
+            workspace.to_str().unwrap(),
+            link.to_str().unwrap(),
+        )
+        .expect_err("symlink escaping the workspace must be rejected");
+    assert!(error.contains("escapes the workspace root"), "{error}");
+
+    let _ = fs::remove_dir_all(&workspace);
+    let _ = fs::remove_dir_all(&outside_dir);
+}
+
+#[test]
 fn emits_single_changed_after_atomic_save() {
     let workspace = temp_workspace("atomic-save");
     let target = workspace.join("note.txt");
