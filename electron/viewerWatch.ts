@@ -76,6 +76,10 @@ interface ActiveWatch {
   registered: boolean;
   /** 关闭 / 顶替后到达的异步结果全部丢弃 */
   disposed: boolean;
+  /** 刷新串行链：同一 watch 的「读 → 投递」按序执行，读取完成乱序不回填旧内容 */
+  refreshChain: Promise<void>;
+  /** 在途刷新期间的新请求只登记一次补跑（相邻保存合并为一次读） */
+  refreshQueued: boolean;
 }
 
 /**
@@ -112,6 +116,8 @@ export class ViewerWatchController {
       localHandle: null,
       registered: false,
       disposed: false,
+      refreshChain: Promise.resolve(),
+      refreshQueued: false,
     };
     this.active = active;
     this.deps.setTitle(baseTitle);
@@ -123,7 +129,7 @@ export class ViewerWatchController {
       // 与远程同一口径（specs/018 FR-005、AC-19）：初始内容在开窗前读出，watcher 就绪
       // 晚了数百毫秒，期间的外部修改没有任何事件——建完 watcher 补读一次，
       // 内容判重保证文件未变时不投递。
-      void this.refreshFromSource(active);
+      this.requestRefresh(active);
       return;
     }
     void this.registerRemote(active);
@@ -153,7 +159,7 @@ export class ViewerWatchController {
     if (!active || active.disposed || event.watchId !== active.watchId) return;
     switch (event.kind) {
       case 'changed':
-        void this.refreshFromSource(active);
+        this.requestRefresh(active);
         return;
       case 'deleted':
         this.setMarker(active, 'deleted');
@@ -209,14 +215,14 @@ export class ViewerWatchController {
     }
     active.registered = true;
     // 注册成功后立即补读一次：覆盖「打开读盘 → 监听就绪」之间的修改。
-    await this.refreshFromSource(active);
+    this.requestRefresh(active);
   }
 
   private handleLocalEvent(active: ActiveWatch, event: LocalWatchEvent): void {
     if (active.disposed || this.active !== active) return;
     switch (event.kind) {
       case 'changed':
-        void this.refreshFromSource(active);
+        this.requestRefresh(active);
         return;
       case 'deleted':
         this.setMarker(active, 'deleted');
@@ -226,6 +232,27 @@ export class ViewerWatchController {
         this.setMarker(active, 'auto-refresh-unavailable');
         return;
     }
+  }
+
+  /**
+   * 请求一次「读 → 判重 → 投递」。同一 watch 的刷新串行执行、在途请求合并为一次补跑：
+   * 两次相邻保存的读取并发完成乱序时，旧内容不会后投递覆盖新内容
+   * （specs/018 FR-005「刷新以最终落盘内容为准」）。
+   */
+  private requestRefresh(active: ActiveWatch): void {
+    if (active.refreshQueued) return;
+    active.refreshQueued = true;
+    const run = async (): Promise<void> => {
+      while (active.refreshQueued && !active.disposed && this.active === active) {
+        active.refreshQueued = false;
+        try {
+          await this.refreshFromSource(active);
+        } catch (err) {
+          this.deps.log(`[viewer-watch] refresh failed: ${err}`);
+        }
+      }
+    };
+    active.refreshChain = active.refreshChain.then(run, run);
   }
 
   private async refreshFromSource(active: ActiveWatch): Promise<void> {

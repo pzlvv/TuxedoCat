@@ -46,7 +46,8 @@ interface FakeState {
   unwatchCalls: Array<{ watchId: string; workspacePath: string }>;
   delivered: Array<{ kind: ViewerKind; content: ViewerContent }>;
   titles: string[];
-  readQueue: Array<ViewerContent | Error>;
+  /** 每次读取弹出一项；`until` 门控制的条目用于复现读取完成乱序 */
+  readQueue: Array<ViewerContent | Error | { until: Promise<void>; value: ViewerContent | Error }>;
   defaultRead: ViewerContent;
   watchResult: WatchWorkspaceFileResult;
   nextWatchId: number;
@@ -66,6 +67,11 @@ function fakeDeps(state: FakeState): ViewerWatchDeps {
     },
     readContent: async () => {
       const next = state.readQueue.shift();
+      if (next && typeof next === 'object' && 'until' in next) {
+        await next.until;
+        if (next.value instanceof Error) throw next.value;
+        return next.value;
+      }
       if (next instanceof Error) throw next;
       return next ?? state.defaultRead;
     },
@@ -247,6 +253,28 @@ async function run(): Promise<void> {
     await flush();
     check.check('下次成功读取清除标记并刷新', state.titles.at(-1) === 'README.md'
       && (state.delivered.at(-1)?.content as { text: string }).text === 'recovered');
+  }
+
+  // ── 连续两次变更的读取乱序完成：最终投递最新内容，旧内容不回填 ──
+  {
+    const state = initialState();
+    const controller = new ViewerWatchController(fakeDeps(state));
+    controller.open(REMOTE_TARGET, 'markdown', 'README.md', { kind: 'text', text: 'old' });
+    await flush();
+    let releaseFirst = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    state.readQueue.push({ until: gate, value: { kind: 'text', text: 'v1' } });
+    state.readQueue.push({ kind: 'text', text: 'v2' });
+    controller.handleCoreEvent(changed());
+    await flush();
+    controller.handleCoreEvent(changed());
+    // 第一读挂在 gate 上，第二读已请求：无串行化时第二读先完成、旧内容 v1 后投递覆盖
+    releaseFirst();
+    await flush();
+    check.check('乱序完成时最终投递最新内容',
+      (state.delivered.at(-1)?.content as { text: string }).text === 'v2');
   }
 
   // ── 关闭 / 顶替注销 ──

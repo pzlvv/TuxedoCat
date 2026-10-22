@@ -36,13 +36,6 @@
   条件、轮询周期与重复刷新抑制。验收判据：Core 不可用期间的文件变更在恢复后可见（或按明确
   周期刷新），同一内容不重复刷新；`viewerWatch` 单测覆盖切换与恢复。
 
-- **查看器并发刷新乱序可显示旧内容**（specs/018 拉取代码评审发现）：
-  `ViewerWatchController.refreshFromSource` 无串行化，两次相邻保存触发的两次「读 → 投递」
-  并发执行，读取完成乱序时旧内容后投递，查看器停在旧内容且无后续事件纠正，违反
-  [specs/018 归档](docs/archive/specs/018-viewer-file-refresh/spec.md) FR-005「刷新以最终落盘内容为准」。
-  方向：按当前 watch 串行化「读 → 投递」并在途合并新请求。验收判据：受控延迟读取的单测证明
-  两次变更乱序完成后最终投递为最新内容；缺陷规格 `specs/defects/viewer-refresh-races-show-stale-content.md`。
-
 - **Core 重注册拒绝已删除目标，文件重建后永不恢复**（specs/018 拉取代码评审发现）：
   `core-rs/src/file_watch.rs` 的 `validate_target` 对目标整体 canonicalize，断线期间文件被删除后
   Connection ready 重注册必然失败，标记停在「自动刷新不可用」且 Core 侧无监听，文件重建不再
