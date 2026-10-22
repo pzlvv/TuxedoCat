@@ -13,7 +13,7 @@ status: 已修
 （消息组件虽有 memo，但元素树逐帧重建）。长对话下单帧渲染可能超出帧预算，延伸条高度
 更新被推迟数帧，期间以上一帧的旧高度显示——滚动条位置闪现一条与消息可见段不符的
 长条，时隐时现、不连续。对齐基线与原缺陷相同：
-[docs/features/user-stories.md 的 US-16](docs/features/user-stories.md#us-16-长消息折叠与用户消息置顶)
+[docs/features/user-stories.md 的 US-16](docs/features/user-stories/messages.md#us-16-长消息折叠与用户消息置顶)
 验收 2「吸附为整宽条」——延伸条与置顶消息可见段的对齐在滚动进行中的每一帧都得成立。
 
 ## 现状

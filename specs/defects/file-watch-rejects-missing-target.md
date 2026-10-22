@@ -49,5 +49,5 @@ status: 已修
 | RT-1（修复前） | `cargo test --manifest-path core-rs/Cargo.toml file_watch_tests` | 红 | `register watch on missing target: watch target is not accessible ... (os error 2)` |
 | RT-1 / RT-2（修复后） | `cargo test --manifest-path core-rs/Cargo.toml` | 绿 | 906 通过 / 0 失败（RT-2 由 CI Linux 跑，本机 Windows 按 `#[cfg(unix)]` 过滤） |
 | 宿主 Core 重建 | `npm run build:core:host` | 绿 | x64-win32 产物含修复；crates.io 直连被网络重置，依赖经 rsproxy 镜像取回后离线构建 |
-| 全量 TS | `npm run test:all` | 绿* | 63/65；brandLiteral 与 docsLint 的 3 处失败来自并行会话未提交的 `specs/019-*` 草稿（编号重复 / 品牌字面量 / 验证记录缺行），与本缺陷无关，`standalone*` 全部驱动含修复的真实二进制通过 |
+| 全量 TS | `npm run test:all` | 部分验证 | 63/65；brandLiteral 与 docsLint 的 3 处失败来自并行会话未提交的 `specs/019-*` 草稿（编号重复 / 品牌字面量 / 验证记录缺行），与本缺陷无关，`standalone*` 全部驱动含修复的真实二进制通过 |
 | 类型 / lint | `npm run check-types && npm run lint` | 绿 | 无 TS 报错、无 lint 报错 |
