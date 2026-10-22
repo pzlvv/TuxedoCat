@@ -15,6 +15,14 @@ import * as path from 'path';
 /** 去抖窗口（与 Core 侧 `file_watch.rs` 同一口径） */
 const DEBOUNCE_MS = 50;
 
+/** Windows 目录项大小写不敏感（与 Core 侧 `file_watch.rs` 的 `same_name` 同一口径） */
+const CASE_INSENSITIVE_NAMES = process.platform === 'win32';
+
+/** basename 比较：Windows 不区分大小写——换大小写重建（删除后以 `README.MD` 重建）的目录项名与监听目标字面不同，精确比较会漏掉 */
+function sameBasename(left: string, right: string): boolean {
+  return CASE_INSENSITIVE_NAMES ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
 export type LocalWatchEvent =
   | { kind: 'changed' }
   | { kind: 'deleted' }
@@ -84,7 +92,7 @@ export function createLocalFileWatcher(
   try {
     watcher = fs.watch(parent, { persistent: true }, (_eventType, filename) => {
       // 某些平台 / 场景 filename 为 null：无法过滤时按可能命中处理，最终 stat 会收敛。
-      if (filename && path.basename(filename.toString()) !== targetName) return;
+      if (filename && !sameBasename(path.basename(filename.toString()), targetName)) return;
       schedule();
     });
     watcher.on('error', (err) => {

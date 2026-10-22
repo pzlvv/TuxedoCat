@@ -44,13 +44,6 @@
   （含符号链接越界拒绝）。验收判据：core-rs 用例「注册不存在的目标 → 创建文件 → 上报 changed」绿；
   缺陷规格 `specs/defects/file-watch-rejects-missing-target.md`。
 
-- **本地监听 basename 过滤在 Windows 大小写敏感**（specs/018 拉取代码评审发现）：
-  `electron/localFileWatch.ts` 的 basename 过滤按全等比较，Core 侧 `same_name` 在 Windows 按
-  不区分大小写比较；原子保存换大小写重建（`Readme.md` → `README.md`）时本地漏刷新，违反
-  [specs/018 归档](docs/archive/specs/018-viewer-file-refresh/spec.md) 边界「路径匹配按各平台语义（Windows
-  大小写不敏感）」。验收判据：Windows 上换大小写重建触发 changed 的 `localFileWatch` 用例绿；
-  缺陷规格 `specs/defects/local-watch-case-sensitive-on-windows.md`。
-
 - **Markdown 内嵌相对路径图片的加载与刷新**（[specs/018 归档](docs/archive/specs/018-viewer-file-refresh/spec.md) 收敛时登记）：
   Markdown 预览是 data URL 页面，没有 base URL，`![](./a.png)` 这类相对路径图片当前不加载；
   方向：自定义协议 / file base / 预览服务，并让内嵌图片随源文件更新。验收判据：相对路径

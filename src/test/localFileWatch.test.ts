@@ -54,6 +54,33 @@ async function run(): Promise<void> {
     fs.writeFileSync(file, 'after-close');
     await new Promise((resolve) => setTimeout(resolve, 200));
     check('关闭后不再上报', events.length === 0);
+
+    // basename 过滤的大小写口径与平台文件系统语义一致（Windows 目录项不区分大小写，
+    // 与 Core 侧 file_watch.rs 的 same_name 同一口径；大小写敏感平台换大小写是另一个目录项）。
+    if (process.platform === 'win32' || process.platform === 'linux') {
+      const watched = createLocalFileWatcher(file, (event) => events.push(event), () => undefined);
+      try {
+        const recased = path.join(dir, 'NOTE.TXT');
+        fs.writeFileSync(file, 'base');
+        await waitFor(() => events.some((e) => e.kind === 'changed'));
+        // 删除后再以不同大小写重建：重建事件只带新大小写的目录项名，
+        // 精确比较会漏掉——Windows 应上报 changed，大小写敏感平台不应误报。
+        events.length = 0;
+        fs.rmSync(file);
+        await waitFor(() => events.some((e) => e.kind === 'deleted'));
+        events.length = 0;
+        fs.writeFileSync(recased, 'recased');
+        if (process.platform === 'win32') {
+          check('删除后换大小写重建上报 changed（Windows）',
+            await waitFor(() => events.some((e) => e.kind === 'changed')));
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          check('大小写敏感平台换大小写不误报 changed', !events.some((e) => e.kind === 'changed'));
+        }
+      } finally {
+        watched.close();
+      }
+    }
   } finally {
     handle.close();
     fs.rmSync(dir, { recursive: true, force: true });
