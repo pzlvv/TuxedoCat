@@ -4,7 +4,8 @@
 
 # Linux 产物走 musl（静态，见 scripts/build-core.mjs 的平台矩阵）。
 # 链接器用 rustup 自带的 rust-lld + self-contained 的 musl crt / libc：
-# 不依赖系统上的交叉链接器。ring 的 C / 汇编另由构建脚本注入 CC / AR（zig）。
+# 不依赖系统上的交叉链接器。C 依赖（ring 的 C / 汇编、musl 产物的 mimalloc）
+# 另由构建脚本注入 CC / AR（zig）。
 [target.x86_64-unknown-linux-musl]
 linker = "rust-lld"
 

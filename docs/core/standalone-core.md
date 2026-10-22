@@ -235,10 +235,11 @@ Windows 上的探测要求 shell 带 `cygpath`（Git Bash / MSYS2 / Cygwin）：
 Linux 产物一律用 **musl**：静态链接、不依赖目标机器的 glibc 版本。这个 core 要拷到别人的
 远端机器上跑，发行版未知，gnu 目标很容易撞上 glibc 太旧。
 
-Linux 产物的全局分配器是 **jemalloc**（`core-rs/Cargo.toml` 的 musl 依赖 + `core-rs/src/main.rs` 的
+Linux 产物的全局分配器是 **mimalloc**（`core-rs/Cargo.toml` 的 musl 依赖 + `core-rs/src/main.rs` 的
 `#[global_allocator]`），替掉 musl 自带的 mallocng：会话循环分配密集且跨线程，碎片与峰值偏高。开
-`override_allocator_on_supported_platforms` 后 libc 的 malloc / free 也归它（`ring` 等 C 依赖与 Rust
-侧同堆）；Windows 与 ASAN 变体（gnu 三元组）不挂它，ASAN 要自己拦截 malloc / free。
+`override` 后 libc 的 malloc / free 也归它（`ring` 等 C 依赖与 Rust 侧同堆）；Windows 与 ASAN 变体
+（gnu 三元组）不挂它，ASAN 要自己拦截 malloc / free。mimalloc 的 C 源文件由 cc-rs 直接编译，构建链
+不需要 autoconf / make，交叉编译只要 zig。
 
 | 目标 | 三元组 | 产物目录 |
 | --- | --- | --- |
@@ -275,7 +276,7 @@ ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 pro
 该变体下校验覆盖本机平台 + Linux x64、TUI 安装器只建本机平台、打包产物整体落 `release/asan/`
 （不覆盖正式 release 产物）。
 
-构建的工具链分三段，**都在本机解决**：
+构建的工具链分两段，**都在本机解决**：
 
 1. **Rust 目标与链接器**（`rustup target add <triple>`；asan 变体装在 nightly 上：
    `rustup target add --toolchain nightly <triple>`，缺工具链时构建脚本直接给出安装命令）：
@@ -284,18 +285,15 @@ ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 pro
    - Linux gnu（ASAN 变体）：没有自包含的 crt / libc，链接交给 zig 的 cc 驱动（见下）；
    - Windows arm64：MSVC 目标的链接器由 rustc 经 Visual Studio 定位，需要装好 VS 的
      「MSVC ARM64 生成工具」组件（MSVC 链接器不跨平台，只在 Windows 宿主构建）。
-2. **C 编译器**：`ring`（`reqwest` 的 `rustls-tls` 依赖）里有 C + 汇编，cc-rs 需要一个能产出
-   该目标文件的 C 编译器。用 [zig](https://ziglang.org/)：它自带 clang 与头文件 / libc，
-   一个可执行文件就够。装好保证 `zig` 在 PATH 上即可（装在别处用环境变量 `ZIG` 指定）；
-   构建脚本会注入 `CC` / `CFLAGS`，缺 zig 时直接报错、不静默降级。两个用场：
-   - Linux musl / gnu：交叉编译的 C 编译器，静态库打包用 `zig ar`；gnu 的链接也经 `zig cc`
-     （`zig-cc-linker.mjs` 垫片还原 `-Wl,<绝对路径>`）。`CC` 注入转发到 `zig cc` 的垫片
-     （`zigCcWrapper`）：jemalloc-sys 只把编译器路径写进 configure，`zig cc` 到那儿只剩 `zig`；
+2. **C 编译器**：`ring`（`reqwest` 的 `rustls-tls` 依赖）与 mimalloc（Linux musl 产物的分配器）
+   都有 C 源码，cc-rs 需要一个能产出该目标文件的 C 编译器。用 [zig](https://ziglang.org/)：
+   它自带 clang 与头文件 / libc，一个可执行文件就够。装好保证 `zig` 在 PATH 上即可（装在别处
+   用环境变量 `ZIG` 指定）；构建脚本会注入 `CC` / `CFLAGS` / `AR`，缺 zig 时直接报错、不静默
+   降级。两个用场：
+   - Linux musl / gnu：交叉编译的 C 编译器（`zig cc`，cc-rs 按空白切成命令 + 参数），静态库
+     打包用 `zig ar`；gnu 的链接也经 `zig cc`（`zig-cc-linker.mjs` 垫片还原 `-Wl,<绝对路径>`）；
    - Windows arm64：ring 的 build.rs 对该目标**硬性要求 clang**（MSVC 的 cl.exe 不被
      接受），由 zig cc 充当；静态库打包用 VS 的 lib.exe（cc-rs 自行定位，不注入 AR）。
-3. **make**：jemalloc 用自带的 autoconf `configure` + make 构建，make 名按宿主写死（Windows
-   宿主只找 `mingw32-make`，其余找 `make` / `gmake`）；缺了构建脚本在 cargo 之前直接报错，
-   gnu 目标（ASAN 变体）不挂 jemalloc，不需要。
 
 打包（`npm run package:ext` / `package:app`）会校验要携带的 Core 产物（`verify-core-artifacts.mjs`）：
 产物缺失、比 `core-rs/src/**` 旧、构建指纹与源码不一致、或没同步进 `dist/resources/` 都直接报错。

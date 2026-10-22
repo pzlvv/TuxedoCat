@@ -261,7 +261,8 @@ function buildableOnHost(target) {
 }
 
 /**
- * ring 的 C / 汇编需要系统 C 编译器的目标：注入 zig 充当。
+ * 有 C 依赖的目标（ring 的 C / 汇编、Linux musl 的 mimalloc）需要系统 C 编译器：
+ * 注入 zig 充当。
  *
  * Rust 那部分不需要系统工具链（musl 用 rustup 自带的 crt / libc + rust-lld，见
  * `core-rs/.cargo/config.toml`；MSVC 目标的链接由 rustc 经 Visual Studio 定位，
@@ -289,18 +290,16 @@ function crossToolchainEnv(triple) {
   const probe = spawnSync(zig, ['version'], { stdio: 'ignore', shell: false });
   if (probe.error || probe.status !== 0) {
     console.error(
-      `[build-core] 构建 ${triple} 需要 zig（ring 的 C / 汇编要一个 C 编译器）：` +
-        `找不到 \`${zig}\`。安装方式见 docs/core/standalone-core.md 第 3.3 节；` +
+      `[build-core] 构建 ${triple} 需要 zig（ring 的 C / 汇编与 musl 产物的 mimalloc ` +
+        `都要一个 C 编译器）：找不到 \`${zig}\`。` +
+        '安装方式见 docs/core/standalone-core.md 第 3.3 节；' +
         '已装在别处时用环境变量 ZIG 指定可执行文件路径。',
     );
     process.exit(1);
   }
 
-  // cc-rs 认「命令 + 子命令」形式的 `zig cc`，但 jemalloc-sys 只把 CC 的**第一个
-  // token** 写进 autoconf 的 configure（`zig cc` 到那儿成了 `zig`，configure 报
-  // 「C compiler cannot create executables」）。Linux 目标要编 jemalloc
-  // （core-rs/Cargo.toml 的 musl 分配器依赖），C 编译器因此经垫片注入，保证 CC
-  // 是一个可执行文件；Windows arm64 没有 jemalloc，保持 `zig cc` 原样。
+  // cc-rs 认「命令 + 子命令」形式的 `zig cc`（按空白切成可执行文件 + 参数），
+  // Linux 目标的 C 依赖（ring 与 mimalloc-sys）都经它编译，不需要额外的垫片。
   //
   // CFLAGS 追加 zig 认的目标：cc-rs 会按 **Rust 三元组** 补 `--target=<rust 三元组>`，
   // 而 zig 不认三元组里的 vendor 段（`unknown` / `pc` 都报 UnknownOperatingSystem）；
@@ -308,12 +307,10 @@ function crossToolchainEnv(triple) {
   const key = triple.replace(/-/g, '_');
   const zigTarget = triple.replace(/-(unknown|pc)-/, '-');
   const env = {
-    [`CC_${key}`]: isLinuxTriple ? zigCcWrapper(zig) : `${zig} cc`,
+    [`CC_${key}`]: `${zig} cc`,
     [`CFLAGS_${key}`]: `--target=${zigTarget}`,
   };
   if (!isWindowsArm64) env[`AR_${key}`] = `${zig} ar`;
-  // configure 只认裸 `AR`（jemalloc-sys 不传 AR_<target>）：静态库打包同样交给 zig
-  if (isLinuxTriple) env.AR = `${zig} ar`;
   // gnu 没有像 musl 那样的自包含 crt / libc（见 core-rs/.cargo/config.toml），链接
   // 必须由 zig 的 cc 驱动完成；cargo 的 linker 只能是一个可执行文件，故经包装脚本转接
   if (isLinuxGnu) {
@@ -345,59 +342,6 @@ function zigLinkerWrapper() {
   writeFileSync(file, `#!/bin/sh\nexec node "${shim}" "$@"\n`);
   chmodSync(file, 0o755);
   return file;
-}
-
-/**
- * 生成 `zig cc` 的编译器垫片（供 `CC_<target>` 使用）。
- *
- * jemalloc-sys 把 cc-rs 解析出的**编译器路径**（不含参数）写进 configure 的 CC，
- * `zig cc` 到那儿只剩 `zig`。垫片是单个可执行文件、转发到 `zig cc`：Windows 落
- * `.cmd`（cc-rs 与 configure 都经 cmd.exe 起它），其余平台落带 shebang 的脚本。
- * 与 `zigLinkerWrapper` 一样写在 `core-rs/target/` 下：不入库，每次构建重写。
- */
-function zigCcWrapper(zig) {
-  const dir = join(repoRoot, 'core-rs', 'target', 'toolchain');
-  mkdirSync(dir, { recursive: true });
-  if (process.platform === 'win32') {
-    const file = join(dir, 'zig-cc.cmd');
-    // cmd.exe 按 CRLF 解析批处理，理由同 zigLinkerWrapper
-    writeFileSync(file, `@echo off\r\n"${zig}" cc %*\r\n`);
-    // configure 经 `sh` 起这个 CC：反斜杠在 sh 里是转义符，路径一律用正斜杠
-    return file.replace(/\\/g, '/');
-  }
-  const file = join(dir, 'zig-cc.sh');
-  writeFileSync(file, `#!/bin/sh\nexec "${zig}" cc "$@"\n`);
-  chmodSync(file, 0o755);
-  return file;
-}
-
-/**
- * musl 产物的分配器 jemalloc 的构建工具（`core-rs/Cargo.toml` 的 musl 依赖）。
- *
- * jemalloc-sys 用 jemalloc 自带的 autoconf `configure` + make 构建，make 的名字按
- * **宿主**写死（Windows 宿主只找 `mingw32-make`，其余找 `make` / `gmake`）。
- * 缺工具时 cargo 只吐一大段 configure 日志，这里提前拦住并给出安装方式。
- * gnu 目标（ASAN 变体）不挂 jemalloc，不需要这些工具。
- */
-function requireJemallocBuildTools(triple) {
-  if (!triple.endsWith('-linux-musl')) return;
-  const candidates = process.platform === 'win32' ? ['mingw32-make'] : ['make', 'gmake'];
-  const found = candidates.some((name) => {
-    const probe = spawnSync(name, ['--version'], { stdio: 'ignore', shell: false });
-    return !probe.error && probe.status === 0;
-  });
-  if (found) return;
-  const hint =
-    process.platform === 'win32'
-      ? 'Windows 上装 MSYS2 的 mingw-w64 make（提供 mingw32-make.exe），' +
-        '或把 GNU make 复制成 mingw32-make.exe 放进 PATH。'
-      : '装 GNU make（Debian / Ubuntu：apt install make，随 build-essential 一起）。';
-  console.error(
-    `[build-core] 构建 ${triple} 需要 ${candidates.join(' / ')}` +
-      `（musl 产物的分配器 jemalloc 用 autoconf + make 构建）：找不到它。` +
-      `${hint}见 docs/core/standalone-core.md 第 3.3 节。`,
-  );
-  process.exit(1);
 }
 
 function parseArgs(argv) {
@@ -536,8 +480,6 @@ function buildTarget(target, options) {
     cargoArgs.push('--release');
   }
 
-  // musl 产物要编 jemalloc（core-rs/Cargo.toml），先确认宿主有 make
-  requireJemallocBuildTools(triple);
   console.log(`[build-core] cargo ${cargoArgs.join(' ')} (fingerprint ${fingerprint})`);
   const env = { ...process.env, ...crossToolchainEnv(triple), CORE_FINGERPRINT: fingerprint };
   if (options.asan) {

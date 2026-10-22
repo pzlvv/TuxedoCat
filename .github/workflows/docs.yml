@@ -32,8 +32,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
-      # musl 目标的 ring（C / 汇编）需要 musl-gcc（build-core.mjs 的 crossToolchainEnv
-      # 在 Linux 宿主上不注入 zig，直接用系统 cc）
+      # musl 目标的 ring（C / 汇编）与分配器 mimalloc 都需要 C 编译器（build-core.mjs 的
+      # crossToolchainEnv 在 Linux 宿主上不注入 zig，直接用系统 cc）
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       # 先产出 Linux Core 产物：standalone* 系列测试直接驱动真实二进制，
       # 产物缺失会静默 skip——CI 上必须真的跑
