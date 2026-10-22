@@ -5,6 +5,7 @@
     "waiting",
     "queryRunning",
     "compacting",
+    "pendingCompact",
     "backgroundRunning",
     "subAgentRunning",
     "parentSessionId"

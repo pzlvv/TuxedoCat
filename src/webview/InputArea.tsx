@@ -64,6 +64,11 @@ interface InputAreaProps {
   totalContextTokens: number;
   maxContextTokens?: number | null;
   /**
+   * 待压缩：手动压缩已排队、尚未开始。为真时用量文本显示「准备压缩」且不可点击
+   * （docs/features/compaction.md FR-002）。
+   */
+  compactPending: boolean;
+  /**
    * abort 按钮三态：`query`（红，前台查询运行中）/ `background`（黄，spin 模式或
    * 只剩后台与子代理）/ `none`（灰，空闲不可点）。由 core 的 sessionRuntime 根事实经
    * `resolveAbortButtonState` 推导（docs/features/abort-button.md FR-001）。
@@ -179,7 +184,7 @@ function contextGradientColor(ratio: number): string {
   return `rgb(${last.rgb[0]}, ${last.rgb[1]}, ${last.rgb[2]})`;
 }
 
-const ContextProgressBar = React.memo(({ totalContextTokens, maxContextTokens, onClick, colors }: { totalContextTokens: number; maxContextTokens?: number | null; onClick?: () => void; colors: Colors }) => {
+const ContextProgressBar = React.memo(({ totalContextTokens, maxContextTokens, compactPending, onClick, colors }: { totalContextTokens: number; maxContextTokens?: number | null; compactPending: boolean; onClick?: () => void; colors: Colors }) => {
   if (maxContextTokens == null) {
     return null;
   }
@@ -189,7 +194,9 @@ const ContextProgressBar = React.memo(({ totalContextTokens, maxContextTokens, o
   const pct = Math.min(ratio * 100, 100);
   const barColor = contextGradientColor(ratio);
   const contextK = Math.floor(maxContextTokens / 1024);
-  const displayText = `${Math.floor(totalContextTokens / 1024)}/${contextK}`;
+  const displayText = compactPending
+    ? t('inputArea.compactPending')
+    : `${Math.floor(totalContextTokens / 1024)}/${contextK}`;
 
   return (
     <span
@@ -198,15 +205,25 @@ const ContextProgressBar = React.memo(({ totalContextTokens, maxContextTokens, o
       // 这样上方文本过长时不会越过右侧的分割线和命中率信息；
       // 分割线、命中率信息的位置都同时受文本与进度条两者约束。
       style={{ color: colors.textSystem, width: 'max-content', minWidth: '48px', flexShrink: 0 }}
-      title={t('inputArea.clickToCompact')}
+      title={compactPending ? t('inputArea.compactPending') : t('inputArea.clickToCompact')}
     >
-      <button
-        onClick={onClick}
-        className="text-left hover:underline"
-        style={{ color: colors.textSystem, lineHeight: '1.2', letterSpacing: '-0.3px' }}
-      >
-        {displayText} <span style={{ opacity: 0.6 }}>(K)</span>
-      </button>
+      {compactPending ? (
+        // 待压缩期间不可点击：不渲染 button，避免重复触发 requestCompress
+        <span
+          className="text-left"
+          style={{ color: colors.textSystem, lineHeight: '1.2', letterSpacing: '-0.3px' }}
+        >
+          {displayText}
+        </span>
+      ) : (
+        <button
+          onClick={onClick}
+          className="text-left hover:underline"
+          style={{ color: colors.textSystem, lineHeight: '1.2', letterSpacing: '-0.3px' }}
+        >
+          {displayText} <span style={{ opacity: 0.6 }}>(K)</span>
+        </button>
+      )}
       <span
         className="rounded-sm"
         style={{
@@ -1540,6 +1557,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   onToggleFileHidden,
   totalContextTokens,
   maxContextTokens,
+  compactPending,
   abortButtonState,
   agentMode,
   setAgentMode,
@@ -2100,7 +2118,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
       <div className="px-3 py-1.5 flex justify-between items-center gap-2">
         <div className="flex items-center gap-2 min-w-0">
           {/* Context Usage Progress Bar */}
-          <ContextProgressBar totalContextTokens={totalContextTokens} maxContextTokens={maxContextTokens} onClick={onCompress} colors={colors} />
+          <ContextProgressBar totalContextTokens={totalContextTokens} maxContextTokens={maxContextTokens} compactPending={compactPending} onClick={onCompress} colors={colors} />
 
           {/* Balance & Cache Hit (combined) */}
           {(balance !== undefined || isUnlimited || (totalCacheReadInputTokens !== undefined && totalCacheReadInputTokens > 0)) && (

@@ -561,7 +561,8 @@ export type UiRequestResultMap = {
  * 「视图已打开」）由宿主自己维护，不混进来。
  *
  * 契约只放**根事实**（``docs/architecture/principles.md` 第 8 节）：`queryRunning` / `waiting` / `compacting` /
- * `backgroundRunning` / `subAgentRunning` 是各来源的事实，`idle` 是它们的合取。
+ * `pendingCompact` / `backgroundRunning` / `subAgentRunning` 是各来源的事实，`idle` 是其余根事实的合取
+ * （`pendingCompact` 不参与——排队不是正在执行的工作）。
  * 只关心「忙不忙」的消费者（流水灯 / 托盘）读 `idle`；要区分前台与后台的消费者
  * （abort 按钮三态，`docs/features/abort-button.md`）读根事实自己推导表现（``docs/architecture/principles.md` 第 6 节）。
  */
@@ -571,8 +572,9 @@ export interface SessionRuntimeState {
    * 会话是否空闲（true = 无任何在跑的工作）。非 idle 即「会话在忙」。
    *
    * 派生字段：其余根事实（`queryRunning` / `waiting` / `compacting` /
-   * `backgroundRunning` / `subAgentRunning`）全为假时才为真。保留它是为了让
-   * 流水灯 / 托盘这类只关心「忙不忙」的消费者不必自己合取（``docs/architecture/principles.md` 第 8 节）。
+   * `backgroundRunning` / `subAgentRunning`）全为假时才为真；`pendingCompact`
+   * 不参与——排队不是正在执行的工作。保留它是为了让流水灯 / 托盘这类只关心
+   * 「忙不忙」的消费者不必自己合取（``docs/architecture/principles.md` 第 8 节）。
    */
   idle: boolean;
   /** 正在等待用户操作（ask user / 权限确认）——流水灯显示黄色 */
@@ -581,6 +583,11 @@ export interface SessionRuntimeState {
   queryRunning: boolean;
   /** 正在压缩上下文（会整体替换消息数组；与查询同属前台工作） */
   compacting: boolean;
+  /**
+   * 已登记手动压缩、等待下一轮对话开始时执行（`compact.rs` 的 `PENDING_COMPACT`）。
+   * 不参与派生 `idle`：排队不是正在执行的工作。
+   */
+  pendingCompact: boolean;
   /** 有运行中的后台 Bash 任务（abort 按钮黄色态的判据之一） */
   backgroundRunning: boolean;
   /**

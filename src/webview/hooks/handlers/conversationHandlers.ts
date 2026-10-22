@@ -133,6 +133,7 @@ export function handleConversationSessionRuntimeStates(
               waiting: !!s.waiting,
               queryRunning: !!s.queryRunning,
               compacting: !!s.compacting,
+              pendingCompact: !!s.pendingCompact,
               backgroundRunning: !!s.backgroundRunning,
               subAgentRunning: !!s.subAgentRunning,
               parentSessionId: s.parentSessionId ?? null,

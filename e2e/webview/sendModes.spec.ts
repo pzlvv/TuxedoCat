@@ -174,7 +174,7 @@ test('FR-003 会话关闭（非空快照缺席）挂起项清除：不投递、�
     type: 'sessionRuntimeStates',
     states: [{
       sessionId: 'another-session', idle: true, waiting: false,
-      queryRunning: false, compacting: false, backgroundRunning: false, subAgentRunning: false,
+      queryRunning: false, compacting: false, pendingCompact: false, backgroundRunning: false, subAgentRunning: false,
     }],
   });
   await expect(banner).toBeHidden({ timeout: 10_000 });
@@ -204,7 +204,7 @@ test('FR-003 webview 重载丢挂起项：不投递、不恢复', async () => {
     type: 'sessionRuntimeStates',
     states: [{
       sessionId: sid, idle: true, waiting: false,
-      queryRunning: false, compacting: false, backgroundRunning: false, subAgentRunning: false,
+      queryRunning: false, compacting: false, pendingCompact: false, backgroundRunning: false, subAgentRunning: false,
     }],
   });
   await page.waitForTimeout(500);

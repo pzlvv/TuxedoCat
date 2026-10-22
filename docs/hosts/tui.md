@@ -256,9 +256,10 @@ tui-rs/
 ```
 
 - 流水灯读 `sessionRuntimeStates` 全量投影（idle/waiting/queryRunning/compacting/
-  backgroundRunning/subAgentRunning → ○◑●◍），abort 语义同源。
+  pendingCompact/backgroundRunning/subAgentRunning → ○◑●◍），abort 语义同源。
 - 上下文 tokens 读 `addMessage` / `streamEnd` 携带的 input + output（服务端值直接
-  采用，不取 max）。
+  采用，不取 max）。待压缩（`pendingCompact` 为真且未 `compacting`）时该位置显示
+  「准备压缩」（英文 `Preparing`），开始压缩或标记清除后还原。
 
 ### 7.2 编辑器与键位
 

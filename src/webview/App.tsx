@@ -443,6 +443,15 @@ const App = () => {
     // sessionIdleVersion 是 core 推来新状态时的重渲染信号（ref 本身不触发渲染）
   }, [currentSessionId, sessionIdleVersion, workMode]);
 
+  // 待压缩（手动压缩已排队、尚未开始）：用量文本显示「准备压缩」并取消点击入口
+  // （docs/features/compaction.md FR-002）。事实未到达（当前会话没有快照）不显示。
+  const compactPending = useMemo(() => {
+    if (!currentSessionId) return false;
+    const state = sessionRuntimeStatesRef.current.get(currentSessionId);
+    return state ? state.pendingCompact && !state.compacting : false;
+    // sessionIdleVersion 是 core 推来新状态时的重渲染信号（ref 本身不触发渲染）
+  }, [currentSessionId, sessionIdleVersion]);
+
   // 只有对话列表由 webview 渲染（`rendersConversationListInWebview`）时才有内嵌的历史对话按钮。
   // 当「本工作目录的其它会话」正在等待用户输入（ask user / 权限确认）时，用户请求不再
   // 自动切换会话，因此在历史对话按钮上加黄色呼吸效果提醒用户：去那个会话处理待答请求。
@@ -1365,6 +1374,7 @@ onClick={handleNewConversation}
               onToggleFileHidden={handleToggleFileHidden}
               totalContextTokens={contextLength}
               maxContextTokens={maxContextTokens}
+              compactPending={compactPending}
               abortButtonState={abortButtonState}
               agentMode={agentMode}
               setAgentMode={setAgentMode}

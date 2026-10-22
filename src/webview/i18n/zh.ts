@@ -185,6 +185,7 @@ export const zhDict: Record<string, string> = {
   'inputArea.cacheTitle': '缓存读取 {read} tokens, 创建 {create} tokens, 原始输入 {input} tokens',
   'inputArea.cacheHit': '命中 {percent}%',
   'inputArea.clickToCompact': '点击压缩',
+  'inputArea.compactPending': '准备压缩',
   'inputArea.fileHiddenTitle': '点击恢复，文件信息将发给 LLM',
   'inputArea.fileShownTitle': '点击隐藏，文件信息不发给 LLM',
   'inputArea.abort': '终止',

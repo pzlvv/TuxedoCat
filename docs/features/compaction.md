@@ -22,7 +22,7 @@ last_reviewed: 2026-10-18
   - **AC-2**（FR-001）：GIVEN 压缩边界之后的消息数不大于 `maxMessagesToKeep` WHEN 触发压缩 THEN 不做任何处理直接返回
 - 场景 2：手动压缩
   - **AC-3**（FR-002）：GIVEN 会话空闲 WHEN UI 发 `compactRequested` THEN 立即执行压缩
-  - **AC-4**（FR-002）：GIVEN 会话非空闲 WHEN 手动请求压缩 THEN 登记「待压缩」，当前轮次结束后执行
+  - **AC-4**（FR-002）：GIVEN 会话非空闲 WHEN 手动请求压缩 THEN 登记「待压缩」，下一轮对话开始时执行
 - 场景 3：压缩结果
   - **AC-5**（FR-003）：GIVEN 可压缩消息 WHEN 压缩完成 THEN 消息数组整体替换为 `[边界标记, 摘要, ...保留区]`，meta 标记 `isCompacted`，UI 收到 `messagesReplaced`
   - **AC-6**（FR-003）：GIVEN `tool_use` 被留在归档区而其 `tool_result` 落在保留区（或相反） WHEN 按条数截断保留区 THEN 向保留区补一条 `is_canceled` 的合成 `tool_result`
@@ -47,11 +47,13 @@ last_reviewed: 2026-10-18
 ### FR-002：手动压缩与延后执行
 
 UI 发 `UiEvent.compactRequested` → Core 的手动压缩入口；
-会话非空闲（`idle === false`）时登记「待压缩」，在当前轮次结束后执行。
-「压缩已排队」的提示是一次性通知（`message` 事件 `once: true`，渲染规则见
-[webview-ui.md 第 11 节](../hosts/webview-ui.md#11-消息区视图行为跳到底部发送模式与一次性通知)）：
-只提示、不写 `<sid>.jsonl`，core 记进 `meta.json` 的 `onceMessage`（一个对话至多一条）；
-时间线末位显示、下一条消息出现即消失，重开对话时恢复到末位。
+会话非空闲（`idle === false`）时登记「待压缩」，在当前轮次结束后的下一轮开始时执行。
+排队事实经运行时快照的 `pendingCompact` 根事实推给 UI（见
+[docs/core/session-runtime.md 第 2 节](../core/session-runtime.md#2-对外快照)）：
+webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期间把上下文用量
+文本显示为「准备压缩」（英文 `Preparing`），webview 同时取消该文本的点击入口；实际开始
+压缩或标记清除后还原。不再发 `message`（`once: true`）通知，也不写 `meta.json` 的
+`onceMessage`。
 
 ### FR-003：压缩流程与落盘
 

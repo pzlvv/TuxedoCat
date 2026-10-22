@@ -568,6 +568,7 @@ fn emit_runtime_reports_idle_and_waiting_flags() {
     // 根事实与派生 idle 一起进快照
     assert_eq!(runtime["states"][0]["queryRunning"], false);
     assert_eq!(runtime["states"][0]["compacting"], false);
+    assert_eq!(runtime["states"][0]["pendingCompact"], false);
     assert_eq!(runtime["states"][0]["backgroundRunning"], false);
     assert_eq!(runtime["states"][0]["subAgentRunning"], false);
 
@@ -596,6 +597,7 @@ fn emit_runtime_reports_root_facts_and_busy_subagents() {
     let entry = &runtime["states"][0];
     assert_eq!(entry["queryRunning"], true);
     assert_eq!(entry["compacting"], false);
+    assert_eq!(entry["pendingCompact"], false);
     assert_eq!(entry["backgroundRunning"], false);
     assert_eq!(entry["subAgentRunning"], false);
     assert_eq!(entry["idle"], false);
@@ -1441,9 +1443,9 @@ fn run_consumer_reports_turn_failures_as_system_messages() {
 }
 
 #[test]
-fn compact_requested_while_busy_emits_once_notice() {
-    // 会话非空闲时请求压缩：登记「待压缩」并上报一次性提示
-    // （`docs/hosts/webview-ui.md` 第 11 节：once = true，只记 meta.json 的 `onceMessage`）
+fn compact_requested_while_busy_marks_pending_in_runtime_snapshot() {
+    // 会话非空闲时请求压缩：登记「待压缩」并经运行时快照的 `pendingCompact`
+    // 告知 UI（`docs/features/compaction.md` FR-002）；不再发 once 消息
     let sandbox = Sandbox::new("engine-compact-queued");
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     config::set_active_workspace(Some(workspace));
@@ -1474,33 +1476,36 @@ fn compact_requested_while_busy_emits_once_notice() {
     }
     harness.core.request_compact("s1");
 
-    let message = harness.sink.event_of("message").expect("queued notice");
     assert!(
-        message["data"]["content"]
-            .as_str()
-            .unwrap()
-            .contains("压缩已排队"),
-        "got {message}"
+        harness.sink.events_of("message").is_empty(),
+        "排队提示不再走 message 事件: {:?}",
+        harness.sink.events_of("message")
     );
-    assert_eq!(message["data"]["once"], true);
     assert!(compact::is_pending_compact("s1"));
-    // 一次性通知只记 meta.json 的 `onceMessage`，不落 jsonl（`docs/hosts/webview-ui.md` 第 11 节）
-    let workspace = sandbox.workspace.to_string_lossy().to_string();
-    let metadata = history::load_metadata("s1", &workspace).expect("meta");
-    assert!(
-        metadata["onceMessage"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .contains("压缩已排队"),
-        "got {metadata}"
+    let runtime = harness
+        .sink
+        .events_of("sessionRuntimeChanged")
+        .into_iter()
+        .last()
+        .expect("runtime snapshot");
+    let entry = runtime["states"]
+        .as_array()
+        .expect("states")
+        .iter()
+        .find(|state| state["sessionId"] == "s1")
+        .expect("s1 in runtime snapshot");
+    assert_eq!(entry["pendingCompact"], true, "待压缩进运行时快照");
+    assert_eq!(entry["idle"], false, "会话仍非空闲");
+
+    // 重复请求不重复登记、不重复推送
+    let snapshots = harness.sink.events_of("sessionRuntimeChanged").len();
+    harness.core.request_compact("s1");
+    assert_eq!(
+        harness.sink.events_of("sessionRuntimeChanged").len(),
+        snapshots,
+        "重复请求不应再次推送快照"
     );
-    assert!(
-        !history::load_messages("s1", &workspace)
-            .iter()
-            .any(|message| message["type"] == "system"
-                && message["content"].as_str().unwrap_or("").contains("压缩已排队")),
-        "压缩排队提示不得落盘"
-    );
+
     // 待压缩标记是进程级静态状态：清理掉，不泄漏给同二进制的其它用例
     compact::unmark_pending_compact("s1");
 }

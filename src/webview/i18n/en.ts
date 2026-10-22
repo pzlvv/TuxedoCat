@@ -185,6 +185,7 @@ export const enDict: Record<string, string> = {
   'inputArea.cacheTitle': 'Cache read {read} tokens, create {create} tokens, raw input {input} tokens',
   'inputArea.cacheHit': 'Cache Hit {percent}%',
   'inputArea.clickToCompact': 'Click to compact.',
+  'inputArea.compactPending': 'Preparing',
   'inputArea.fileHiddenTitle': 'Click to restore, file info will be sent to LLM',
   'inputArea.fileShownTitle': 'Click to hide, file info will not be sent to LLM',
   'inputArea.abort': 'Abort',

@@ -109,7 +109,7 @@ export type CoreRequestHandlers = {
 
 | | `conversationListChanged` | `sessionRuntimeChanged` |
 | --- | --- | --- |
-| 内容 | 磁盘元数据（title / messageCount / createdAt…） | 运行时根事实（idle / waiting / queryRunning / compacting / backgroundRunning / subAgentRunning） |
+| 内容 | 磁盘元数据（title / messageCount / createdAt…） | 运行时根事实（idle / waiting / queryRunning / compacting / pendingCompact / backgroundRunning / subAgentRunning） |
 | owner | 磁盘（`history`） | core 的 `sessionRuntime`（[docs/core/session-runtime.md](../core/session-runtime.md)） |
 | 变化频率 | 低（落盘 / 改名 / 删除 / 新建） | 高（查询开始结束、等用户、用户响应） |
 | 消费者 | webview 子对话树、Electron 原生侧栏 | VS Code webview 对话树流水灯、Electron 侧栏流水灯、系统托盘状态点、两端的 abort 按钮 |
@@ -125,8 +125,8 @@ export type CoreRequestHandlers = {
 调用点不需要手动收窄。
 
 `SessionRuntimeState` 只放 core 能提供的**根事实**（`sessionId` / `idle` / `waiting` /
-`queryRunning` / `compacting` / `backgroundRunning` / `subAgentRunning` / `parentSessionId`）；`idle` 是由其余
-来源合并出的派生字段，颜色 / 可点性等表现由消费者推导（[principles.md 第 8 节](principles.md#8-契约只写现状派生字段从根字段推导)）。宿主自己的界面
+`queryRunning` / `compacting` / `pendingCompact` / `backgroundRunning` / `subAgentRunning` / `parentSessionId`）；`idle` 是由其余
+来源合并出的派生字段（`pendingCompact` 不参与），颜色 / 可点性等表现由消费者推导（[principles.md 第 8 节](principles.md#8-契约只写现状派生字段从根字段推导)）。宿主自己的界面
 状态（如 Electron 的「视图已打开」）由宿主自己维护，不混进来。
 
 本节以下是逐事件的**完整清单**：每个事件的载荷、触发点、处理方，以及最终转成的

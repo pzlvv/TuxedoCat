@@ -531,6 +531,7 @@ function markConnectionSessionsFailed(
                 waiting: false,
                 queryRunning: false,
                 compacting: false,
+                pendingCompact: false,
                 backgroundRunning: false,
                 subAgentRunning: false,
               }

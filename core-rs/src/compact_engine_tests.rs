@@ -324,26 +324,32 @@ fn manual_compact_is_deferred_while_the_session_is_busy() {
     harness.core.request_compact("s1");
     assert!(crate::compact::is_pending_compact("s1"));
     assert!(harness.sink.events_of("compactBegin").is_empty());
-    let notice = harness
+    assert!(
+        harness.sink.events_of("message").is_empty(),
+        "排队提示不再走 message 事件"
+    );
+    let runtime = harness
         .sink
-        .events_of("message")
+        .events_of("sessionRuntimeChanged")
         .into_iter()
-        .find(|event| event["data"]["role"] == "system")
-        .expect("应当提示已排队");
-    assert!(notice["data"]["content"]
-        .as_str()
-        .unwrap()
-        .contains("压缩已排队"));
+        .last()
+        .expect("runtime snapshot");
+    let entry = runtime["states"]
+        .as_array()
+        .expect("states")
+        .iter()
+        .find(|state| state["sessionId"] == "s1")
+        .expect("s1 in runtime snapshot");
+    assert_eq!(entry["pendingCompact"], true, "待压缩进运行时快照");
 
-    // 重复请求不重复提示
+    // 重复请求不重复登记、不重复推送
+    let snapshots = harness.sink.events_of("sessionRuntimeChanged").len();
     harness.core.request_compact("s1");
-    let notices = harness
-        .sink
-        .events_of("message")
-        .into_iter()
-        .filter(|event| event["data"]["role"] == "system")
-        .count();
-    assert_eq!(notices, 1);
+    assert_eq!(
+        harness.sink.events_of("sessionRuntimeChanged").len(),
+        snapshots,
+        "重复请求不应再次推送快照"
+    );
 
     // 放回空闲 → 下一轮对话开始时执行延后的压缩
     state.lock().unwrap().running = false;
@@ -357,8 +363,75 @@ fn manual_compact_is_deferred_while_the_session_is_busy() {
         harness.sink.event_types()
     );
     assert!(!crate::compact::is_pending_compact("s1"), "标记应当被清掉");
+    let runtime = harness
+        .sink
+        .events_of("sessionRuntimeChanged")
+        .into_iter()
+        .last()
+        .expect("runtime snapshot");
+    let entry = runtime["states"]
+        .as_array()
+        .expect("states")
+        .iter()
+        .find(|state| state["sessionId"] == "s1")
+        .expect("s1 in runtime snapshot");
+    assert_eq!(entry["pendingCompact"], false, "消费后快照应当清除待压缩");
     let messages = crate::history::load_messages("s1", &project);
     assert_eq!(messages[0]["compactMetadata"]["trigger"], "manual");
+
+    crate::compact::reset_for_test();
+}
+
+/// 待压缩被消费但消息不足（不可压缩）：清除标记并推送快照，不进入压缩。
+#[test]
+fn pending_compact_is_cleared_when_there_is_nothing_to_summarize() {
+    let sandbox = Sandbox::new("engine-compact-pending-skip");
+    crate::compact::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["不应被调用"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    seed_messages(&harness, "s1", &project, 5);
+    crate::compact::mark_pending_compact("s1");
+    harness.core.emit_runtime();
+    let snapshots_before = harness.sink.events_of("sessionRuntimeChanged").len();
+
+    submit(&harness, "s1", "继续", "u-100");
+    assert!(
+        harness.wait_for(
+            |sink| !sink.events_of("aiBegin").is_empty(),
+            Duration::from_secs(30),
+        ),
+        "本轮应当正常开始: {:?}",
+        harness.sink.event_types()
+    );
+    assert!(!crate::compact::is_pending_compact("s1"), "标记应当被清掉");
+    assert!(
+        harness.sink.events_of("compactBegin").is_empty(),
+        "不可压缩时不进入压缩"
+    );
+    assert!(
+        harness.sink.events_of("sessionRuntimeChanged").len() > snapshots_before,
+        "清除待压缩应当推送快照: {:?}",
+        harness.sink.event_types()
+    );
+    let runtime = harness
+        .sink
+        .events_of("sessionRuntimeChanged")
+        .into_iter()
+        .last()
+        .expect("runtime snapshot");
+    let entry = runtime["states"]
+        .as_array()
+        .expect("states")
+        .iter()
+        .find(|state| state["sessionId"] == "s1")
+        .expect("s1 in runtime snapshot");
+    assert_eq!(
+        entry["pendingCompact"], false,
+        "跳过压缩后快照应当清除待压缩"
+    );
 
     crate::compact::reset_for_test();
 }

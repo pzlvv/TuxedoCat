@@ -136,7 +136,7 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
   function runningState(sessionId) {
     return {
       sessionId, idle: false, waiting: false,
-      queryRunning: true, compacting: false, backgroundRunning: false, subAgentRunning: false,
+      queryRunning: true, compacting: false, pendingCompact: false, backgroundRunning: false, subAgentRunning: false,
     };
   }
 
@@ -144,7 +144,7 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
   function idleState(sessionId) {
     return {
       sessionId, idle: true, waiting: false,
-      queryRunning: false, compacting: false, backgroundRunning: false, subAgentRunning: false,
+      queryRunning: false, compacting: false, pendingCompact: false, backgroundRunning: false, subAgentRunning: false,
     };
   }
 

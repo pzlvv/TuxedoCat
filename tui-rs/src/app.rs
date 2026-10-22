@@ -1035,13 +1035,19 @@ impl App {
             spans.push(Span::styled(format!(" {runtime_name}"), dim_style()));
         }
         spans.push(Span::styled(" │ ", dim_style()));
-        let context = session.map(|session| session.context_tokens).unwrap_or(0.0);
-        let max = self
-            .state
-            .max_context_tokens
-            .map(|max| format!("/{}", format_tokens(max)))
-            .unwrap_or_default();
-        spans.push(Span::styled(format!("{}{max} tok", format_tokens(context)), dim_style()));
+        if runtime.map(|state| state.pending_compact && !state.compacting).unwrap_or(false) {
+            // 待压缩（手动压缩已排队、尚未开始）：tokens 位置显示「准备压缩」，
+            // 开始压缩或标记清除后还原（docs/features/compaction.md FR-002）。
+            spans.push(Span::styled(tt("准备压缩", "Preparing"), dim_style()));
+        } else {
+            let context = session.map(|session| session.context_tokens).unwrap_or(0.0);
+            let max = self
+                .state
+                .max_context_tokens
+                .map(|max| format!("/{}", format_tokens(max)))
+                .unwrap_or_default();
+            spans.push(Span::styled(format!("{}{max} tok", format_tokens(context)), dim_style()));
+        }
         if let Some((total, _)) = &self.state.balance {
             spans.push(Span::styled(format!(" │ ${total:.2}"), dim_style()));
         }

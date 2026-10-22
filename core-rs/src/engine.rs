@@ -423,6 +423,8 @@ impl Core {
     }
 
     pub fn drop_session(&self, session_id: &str) {
+        // 会话已从快照移除；进程级待压缩注册表也要清理，避免 id 复用时残留
+        compact::unmark_pending_compact(session_id);
         self.sessions.lock().unwrap().remove(session_id);
         self.session_order.lock().unwrap().retain(|id| id != session_id);
     }
@@ -467,11 +469,18 @@ impl Core {
     /// 有变化时按会话插入序推全量快照（消费者不维护状态表）。
     ///
     /// 快照字段（``docs/architecture/principles.md` 第 8 节）：暴露
-    /// `queryRunning` / `waiting` / `compacting` / `backgroundRunning` /
-    /// `subAgentRunning` 根事实，`idle` 是它们的合取。流水灯 / 托盘读 `idle`；
+    /// `queryRunning` / `waiting` / `compacting` / `pendingCompact` /
+    /// `backgroundRunning` / `subAgentRunning` 根事实，`idle` 是其余根事实的合取
+    /// （`pendingCompact` 不参与——排队不是正在执行的工作）。流水灯 / 托盘读 `idle`；
     /// abort 按钮按根事实推导三态（`docs/features/abort-button.md`）。
     pub fn emit_runtime(&self) {
         let order = self.session_order.lock().unwrap().clone();
+        // 先读待压缩注册表再锁 sessions：`drop_session` 的顺序是
+        // 「PENDING_COMPACT → sessions」，这里反序会形成锁序倒置。
+        let pending_compact: HashMap<String, bool> = order
+            .iter()
+            .map(|session_id| (session_id.clone(), compact::is_pending_compact(session_id)))
+            .collect();
         let sessions = self.sessions.lock().unwrap();
         let states: Vec<Value> = order
             .iter()
@@ -488,6 +497,9 @@ impl Core {
                         state.parent_session_id.clone(),
                     )
                 };
+                // 待压缩登记在进程级注册表（`compact.rs` 的 `PENDING_COMPACT`），
+                // 快照只做投影，不在 `SessionState` 里再存一份。
+                let pending_compact = pending_compact.get(session_id).copied().unwrap_or(false);
                 // `pending_user_message` 是「已入队、消费循环即将接手」的窗口，与
                 // 入队即 markQueryRunning(true)。
                 let query_running = running || pending;
@@ -501,6 +513,7 @@ impl Core {
                     waiting,
                     query_running,
                     compacting,
+                    pending_compact,
                     background,
                     sub_agent_running,
                     parent.as_deref(),
@@ -532,6 +545,7 @@ impl Core {
         waiting: bool,
         query_running: bool,
         compacting: bool,
+        pending_compact: bool,
         background: bool,
         sub_agent_running: bool,
         parent_session_id: Option<&str>,
@@ -542,6 +556,9 @@ impl Core {
             "waiting": waiting,
             "queryRunning": query_running,
             "compacting": compacting,
+            // 手动压缩已登记、等待下一轮开始时执行（`compact.rs` 的 `PENDING_COMPACT`）。
+            // 不参与 `idle` 派生：排队不是正在执行的工作。
+            "pendingCompact": pending_compact,
             "backgroundRunning": background,
             "subAgentRunning": sub_agent_running,
             // 父会话 id（子代理会话才有；spawn 时落 `parent_session_id`）。
@@ -1639,7 +1656,8 @@ impl Core {
     ///
     /// - 没有可压缩的消息：什么都不做（不排队、不通知 UI、不替换消息）
     /// - 已在压缩中：忽略重复请求
-    /// - 会话非空闲：登记「待压缩」并提示，交由下一轮对话开始时执行
+    /// - 会话非空闲：登记「待压缩」，经运行时快照的 `pendingCompact` 告知 UI，
+    ///   交由下一轮对话开始时执行
     /// - 否则：立即压缩，收尾时唤醒压缩期间入队的消息
     pub fn request_compact(self: &Arc<Self>, session_id: &str) {
         let Some(state) = self.session_if_exists(session_id) else {
@@ -1658,12 +1676,8 @@ impl Core {
         if !self.is_session_idle(session_id) {
             if !compact::is_pending_compact(session_id) {
                 compact::mark_pending_compact(session_id);
-                // 一次性通知：记 meta + 时间线末位显示，下一轮新节点追加前被移除
-                emit_once_notice(
-                    self,
-                    session_id,
-                    "当前会话正在处理中，压缩已排队，将在本轮对话结束后执行。",
-                );
+                // 排队事实经运行时快照推给 UI（`pendingCompact`），不再发 once 通知
+                self.emit_runtime();
             }
             return;
         }
@@ -1671,11 +1685,15 @@ impl Core {
         // 立即压缩：清掉可能存在的「待压缩」标记，避免本轮压缩完成后下一轮又压一次
         compact::unmark_pending_compact(session_id);
         let Ok(project) = self.project_of(session_id) else {
+            // 标记已清除但没有压缩流程会推送，补一次快照让 UI 还原用量文本
+            self.emit_runtime();
             return;
         };
         let applied =
             compact::compact_and_apply_messages(self, session_id, &project, &state, false, None);
         if !applied {
+            // 无可摘要内容：`compact_conversation` 提前返回、不会推送 compacting 快照
+            self.emit_runtime();
             self.log("compact skipped (no messages to summarize)");
             return;
         }
@@ -3576,6 +3594,10 @@ fn run_query_loop(
                     // 压缩会重建消息数组，`last_uuid` / `persisted_count` 已由
                     // `compact_and_apply_messages` 指向新的末尾消息
                     eprintln!("[core] compact: applied for session {session_id}");
+                } else if pending_compact {
+                    // 待压缩标记已清除但压缩提前返回（无可摘要内容）：补一次快照，
+                    // 让 UI 从「准备压缩」还原为用量文本
+                    core.emit_runtime();
                 }
             }
         }

@@ -279,6 +279,50 @@ test('US-9 上下文用量条显示并可点击触发压缩', async () => {
   await host.waitForSent('requestCompress');
 });
 
+test('US-9 待压缩时用量文本显示准备压缩且不可重复点击', async () => {
+  const { page, host } = handle;
+  const started = await host.waitForSent('startNewConversation', 15_000);
+  const sessionId = started.sessionId as string;
+  // 启动期会补拉一次运行时快照（空快照会把注入的 pending 覆盖掉）：等它先落定
+  await host.waitForSent('requestSessionRuntimeStates', 15_000);
+  // 先等用量条渲染（上下文上限到达），再注入待压缩快照
+  await expect(page.locator('[title="点击压缩"] button')).toBeVisible({ timeout: 10_000 });
+  await page.waitForTimeout(300);
+  const currentSessionId = await page.evaluate(() => (window as any).__currentSessionId);
+  expect(currentSessionId).toBe(sessionId);
+
+  // 非空闲 + 已登记待压缩：文本换成「准备压缩」，不再渲染可点按钮
+  await host.send({
+    type: 'sessionRuntimeStates',
+    states: [{
+      sessionId, idle: false, waiting: false,
+      queryRunning: true, compacting: false, pendingCompact: true,
+      backgroundRunning: false, subAgentRunning: false,
+    }],
+  });
+  const pending = page.locator('[title="准备压缩"] > span').first();
+  await expect(pending).toHaveText('准备压缩', { timeout: 10_000 });
+  await expect(page.locator('[title="点击压缩"] button')).toHaveCount(0);
+
+  // 点击文本不产生重复压缩请求
+  const before = (await host.sentAll()).filter((m) => m.type === 'requestCompress').length;
+  await pending.click();
+  await page.waitForTimeout(200);
+  const after = (await host.sentAll()).filter((m) => m.type === 'requestCompress').length;
+  expect(after).toBe(before);
+
+  // 实际开始压缩：用量文本还原为 used/total (K)
+  await host.send({
+    type: 'sessionRuntimeStates',
+    states: [{
+      sessionId, idle: false, waiting: false,
+      queryRunning: false, compacting: true, pendingCompact: false,
+      backgroundRunning: false, subAgentRunning: false,
+    }],
+  });
+  await expect(page.locator('[title="点击压缩"]')).toContainText('(K)', { timeout: 10_000 });
+});
+
 test('US-29 MCP 分组逐服务器开关，切换上报 setMcpEnabled 并刷新状态', async () => {
   const { page, host } = handle;
   await host.setMcpState({ servers: ['fs-tools', 'git-tools'], sessionEnabled: ['fs-tools'] });

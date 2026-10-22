@@ -200,7 +200,8 @@ pub struct ConversationSummary {
     pub message_count: u64,
 }
 
-/// 会话运行时状态（core `SessionRuntimeState` 的根事实；`idle` 是其余的合取）。
+/// 会话运行时状态（core `SessionRuntimeState` 的根事实；`idle` 是其余根事实的合取，
+/// `pendingCompact` 不参与）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeState {
     pub session_id: String,
@@ -208,6 +209,7 @@ pub struct RuntimeState {
     pub waiting: bool,
     pub query_running: bool,
     pub compacting: bool,
+    pub pending_compact: bool,
     pub background_running: bool,
     pub sub_agent_running: bool,
 }
@@ -222,6 +224,7 @@ impl RuntimeState {
             waiting: flag("waiting"),
             query_running: flag("queryRunning"),
             compacting: flag("compacting"),
+            pending_compact: flag("pendingCompact"),
             background_running: flag("backgroundRunning"),
             sub_agent_running: flag("subAgentRunning"),
         })

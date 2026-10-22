@@ -268,6 +268,7 @@ fn runtime_labels_and_dots() {
         waiting: false,
         query_running: false,
         compacting: false,
+        pending_compact: false,
         background_running: false,
         sub_agent_running: false,
     };
@@ -278,6 +279,21 @@ fn runtime_labels_and_dots() {
     assert_eq!(runtime_dot(Some(&waiting)), "◑");
     let compacting = RuntimeState { compacting: true, idle: false, ..idle };
     assert_eq!(runtime_dot(Some(&compacting)), "◍");
+
+    // 待压缩是排队事实、不是正在执行的工作：label 仍是 idle，但字段进状态
+    let pending = RuntimeState::from_value(&serde_json::json!({
+        "sessionId": "s",
+        "idle": true,
+        "waiting": false,
+        "queryRunning": false,
+        "compacting": false,
+        "pendingCompact": true,
+        "backgroundRunning": false,
+        "subAgentRunning": false,
+    }))
+    .expect("pending runtime state");
+    assert!(pending.pending_compact);
+    assert_eq!(pending.label(), "idle");
 }
 
 #[test]

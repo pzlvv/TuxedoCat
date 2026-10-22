@@ -114,7 +114,7 @@ test('abort 按钮三态：红（前台在跑）→ 黄（只剩后台）→ 灰
   // 2) 第一次点击只中止前台：宿主回推「前台停下、后台任务仍在跑」→ 黄色可点
   await host.setAbortRuntimeStates([{
     sessionId: sid, idle: false, waiting: false,
-    queryRunning: false, compacting: false, backgroundRunning: true, subAgentRunning: false,
+    queryRunning: false, compacting: false, pendingCompact: false, backgroundRunning: true, subAgentRunning: false,
   }]);
   await abortButton.click();
   await expect(abortButton).toHaveAttribute('data-abort-state', 'background', { timeout: 10_000 });
@@ -123,7 +123,7 @@ test('abort 按钮三态：红（前台在跑）→ 黄（只剩后台）→ 灰
   // 3) 第二次点击中止后台：宿主回推空闲 → 灰色不可点
   await host.setAbortRuntimeStates([{
     sessionId: sid, idle: true, waiting: false,
-    queryRunning: false, compacting: false, backgroundRunning: false, subAgentRunning: false,
+    queryRunning: false, compacting: false, pendingCompact: false, backgroundRunning: false, subAgentRunning: false,
   }]);
   await abortButton.click();
   await expect(abortButton).toHaveAttribute('data-abort-state', 'none', { timeout: 10_000 });
@@ -135,7 +135,7 @@ test('abort 按钮三态：红（前台在跑）→ 黄（只剩后台）→ 灰
     type: 'sessionRuntimeStates',
     states: [{
       sessionId: sid, idle: false, waiting: false,
-      queryRunning: true, compacting: false, backgroundRunning: false, subAgentRunning: true,
+      queryRunning: true, compacting: false, pendingCompact: false, backgroundRunning: false, subAgentRunning: true,
     }],
   });
   await expect(abortButton).toHaveAttribute('data-abort-state', 'background', { timeout: 10_000 });
@@ -147,7 +147,7 @@ test('abort 按钮三态：红（前台在跑）→ 黄（只剩后台）→ 灰
     type: 'sessionRuntimeStates',
     states: [{
       sessionId: sid, idle: true, waiting: false,
-      queryRunning: false, compacting: false, backgroundRunning: false, subAgentRunning: false,
+      queryRunning: false, compacting: false, pendingCompact: false, backgroundRunning: false, subAgentRunning: false,
     }],
   });
   await expect(abortButton).toHaveAttribute('data-abort-state', 'none', { timeout: 10_000 });

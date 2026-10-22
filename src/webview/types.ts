@@ -262,6 +262,8 @@ export interface SessionRuntimeState {
   waiting: boolean;
   queryRunning: boolean;
   compacting: boolean;
+  /** 已登记手动压缩、等待下一轮开始；不参与 `idle` */
+  pendingCompact: boolean;
   backgroundRunning: boolean;
   subAgentRunning: boolean;
   /** 父会话 id（子代理会话才有；普通会话为 null） */
