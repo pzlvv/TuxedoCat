@@ -7,7 +7,7 @@ import type { McpServerInfo, ProviderModels } from '../shared/webviewTypes';
 import type { ModelRef } from '../shared/llm/modelRef';
 import { postMessage, getWindowSessionId } from './webviewEnv';
 import type { AbortButtonState } from '../host/abortButtonState';
-import { resolveInputDisabled, resolveInputPlaceholder } from './inputAreaState';
+import { resolveInputDisabled, resolveInputPlaceholder, resolveSessionOptionsLocked } from './inputAreaState';
 import { SegmentControl, CheckboxGlyph } from './components/SegmentControl';
 import { dropdownMenuTheme, menuPanelShellStyle } from './components/dropdownMenuTheme';
 import { t } from './i18n';
@@ -136,6 +136,12 @@ interface InputAreaProps {
   isProviderConfigured: boolean | null;
   /** 当前对话是否为 sub-agent（子代理） */
   isSubAgent?: boolean;
+  /**
+   * 当前会话的子代理角色（`conversationLoaded.metadata.role`，specs/020 FR-005）；
+   * 普通会话 / 旧数据为 null。非 Master 子代理会话锁定选项菜单的提示词模式 /
+   * 联网搜索 / MCP 三项（判定走 `resolveSessionOptionsLocked`）。
+   */
+  subAgentRole?: string | null;
   /**
    * 会话工作模式（core 事实投影，specs/016 FR-004）：spin 时禁用输入与发送，
    * placeholder 提示「Spin 模式下不响应用户输入」；单向不退出，停止按钮只用于
@@ -520,6 +526,7 @@ const ToggleMenu = memo(({
   onOpenSettings,
   mcpServers,
   onMcpToggle,
+  subAgentRole,
   colors,
   isDark,
 }: {
@@ -542,6 +549,8 @@ const ToggleMenu = memo(({
   onOpenSettings: () => void;
   mcpServers?: McpServerInfo[];
   onMcpToggle?: (name: string, enabled: boolean) => void;
+  /** 当前会话的子代理角色（meta.json 的 role 事实）；非 Master 子代理锁定三项选项（specs/020 FR-005） */
+  subAgentRole?: string | null;
   colors: Colors;
   isDark: boolean;
 }) => {
@@ -553,6 +562,10 @@ const ToggleMenu = memo(({
   const [submenuOpenKeys, setSubmenuOpenKeys] = useState<string[]>([]);
   /** 在该时间戳之前到达的「收起/关闭」请求会被忽略，用于让勾选 MCP 后菜单保持展开 */
   const suppressCloseUntilRef = useRef(0);
+
+  // specs/020 FR-005：非 Master 子代理会话锁定三项选项——core 侧已固定 normal 预设 /
+  // 不联网 / 无 MCP，UI 不提供入口。判定在 inputAreaState 纯函数里，与测试共用一份实现。
+  const sessionOptionsLocked = resolveSessionOptionsLocked({ subAgentRole });
 
   /**
    * webview 过窄时（不足以并排放下二级 + 三级弹出菜单）改用「内联展开」：
@@ -897,7 +910,8 @@ const ToggleMenu = memo(({
 
   // 联网搜索开关（会话关联，位于 Spin 设计之后、模型上方；settings.json 中的 llm.webSearch 只是新对话默认值）
   // 极简模式不使用联网搜索：无论会话/设置中的开关如何，菜单项都置灰禁用。
-  const webSearchDisabled = promptMode === 'minimal';
+  // 非 Master 子代理会话同样置灰（specs/020 FR-005：core 固定不联网，UI 不提供入口）。
+  const webSearchDisabled = promptMode === 'minimal' || sessionOptionsLocked;
   // webSearch 未到达时为 undefined：checkbox 按未勾选渲染，且菜单整体处于等待态
   // （agentMode 未到达时只显示等待项，见 menuItems）。
   const webSearchChecked = !!webSearch && !webSearchDisabled;
@@ -918,7 +932,11 @@ const ToggleMenu = memo(({
           opacity: webSearchDisabled ? 0.45 : 1,
           padding: '5px 12px',
         }}
-        title={webSearchDisabled ? t('inputArea.webSearchMinimalHint') : t('inputArea.webSearchHint')}
+        title={webSearchDisabled
+          ? (sessionOptionsLocked
+            ? t('inputArea.subagentOptionsLockedHint')
+            : t('inputArea.webSearchMinimalHint'))
+          : t('inputArea.webSearchHint')}
       >
         <span style={{ width: '14px', flexShrink: 0, textAlign: 'center' }}>
           <CheckboxGlyph checked={webSearchChecked} colors={colors} />
@@ -991,6 +1009,8 @@ const ToggleMenu = memo(({
         onClick={(e) => {
           // 阻止冒泡到 MenuItem，避免菜单因点击该项而关闭（可连续勾选多个）
           e.stopPropagation();
+          // 非 Master 子代理会话锁定（specs/020 FR-005）：点击不产生任何变更、不上报
+          if (sessionOptionsLocked) return;
           // 让紧随其后的「收起二级菜单 / 关闭 Dropdown」请求被忽略
           suppressCloseUntilRef.current = Date.now() + 300;
           onMcpToggle?.(server.name, !server.enabled);
@@ -998,12 +1018,13 @@ const ToggleMenu = memo(({
         style={{
           display: 'flex',
           alignItems: 'center',
-          cursor: 'pointer',
+          cursor: sessionOptionsLocked ? 'default' : 'pointer',
           // 垂直内边距收紧，抵消第二行小字带来的高度
           padding: '3px 0',
           minWidth: 0,
+          opacity: sessionOptionsLocked ? 0.45 : 1,
         }}
-        title={tooltip}
+        title={sessionOptionsLocked ? t('inputArea.subagentOptionsLockedHint') : tooltip}
       >
         <span style={{ width: '14px', flexShrink: 0, textAlign: 'center' }}>
           <CheckboxGlyph checked={server.enabled} colors={colors} />
@@ -1221,7 +1242,15 @@ const ToggleMenu = memo(({
   const mcpGroupItem = {
     key: 'mcpGroup',
     label: (
-      <div style={{ display: 'flex', alignItems: 'center' }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          // 非 Master 子代理会话置灰（specs/020 FR-005）：core 固定无 MCP，子项同样锁定
+          opacity: sessionOptionsLocked ? 0.45 : 1,
+        }}
+        title={sessionOptionsLocked ? t('inputArea.subagentOptionsLockedHint') : undefined}
+      >
         <span style={{ width: '14px', flexShrink: 0 }} />
         <span style={{ fontSize: uiFontSizePx(12), color: colors.textPrimary, userSelect: 'none', marginLeft: '12px' }}>{t('inputArea.mcp')}</span>
       </div>
@@ -1315,7 +1344,17 @@ const ToggleMenu = memo(({
     {
       key: 'promptMode',
       label: (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', padding: '5px 12px' }}>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '6px',
+            padding: '5px 12px',
+            // 非 Master 子代理会话置灰（specs/020 FR-005）：core 固定 normal 预设
+            opacity: sessionOptionsLocked ? 0.45 : 1,
+          }}
+          title={sessionOptionsLocked ? t('inputArea.subagentOptionsLockedHint') : undefined}
+        >
           <div style={{ display: 'flex', alignItems: 'center' }}>
             {/* checkbox 占位符，保持文字对齐 */}
             <span style={{ width: '14px', flexShrink: 0 }} />
@@ -1325,7 +1364,11 @@ const ToggleMenu = memo(({
           </div>
           <PromptModeSegmentControl
             value={promptMode}
-            onChange={onPromptModeChange}
+            onChange={(mode) => {
+              // 锁定时点击不产生任何状态变更、不上报（specs/020 FR-005）
+              if (sessionOptionsLocked) return;
+              onPromptModeChange(mode);
+            }}
             colors={colors}
           />
         </div>
@@ -1595,6 +1638,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   isProviderConfigured,
   workMode,
   isSubAgent,
+  subAgentRole,
   mcpServers,
   onMcpToggle,
   mcpConnecting,
@@ -2185,6 +2229,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             onOpenSettings={onOpenSettings || (() => {})}
             mcpServers={mcpServers}
             onMcpToggle={onMcpToggle}
+            subAgentRole={subAgentRole}
             colors={colors}
             isDark={isDark}
           />

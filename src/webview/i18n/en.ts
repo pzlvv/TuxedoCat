@@ -204,6 +204,7 @@ export const enDict: Record<string, string> = {
   'inputArea.webSearch': 'Web Search',
   'inputArea.webSearchHint': 'Web search (applies to current session; config llm.webSearch is the default for new conversations)',
   'inputArea.webSearchMinimalHint': 'Unavailable in minimal mode',
+  'inputArea.subagentOptionsLockedHint': 'Locked for this sub-agent role',
   'inputArea.subAgentWarning': 'This is a sub-agent conversation, please confirm before sending',
 
   /* ── tools/Bash.tsx ──────────────────────────────────────── */

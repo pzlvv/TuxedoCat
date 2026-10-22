@@ -158,7 +158,9 @@ fn agent_fields() -> Vec<Field<'static>> {
     vec![
         Field { name: "prompt", required: true, kind: Kind::Str(None) },
         Field { name: "description", required: false, kind: Kind::Str(None) },
-        Field { name: "agentRole", required: true, kind: Kind::Enum(&["Master"]) },
+        // 合法名单单一落点在 `tools::SUB_AGENT_ROLES`（specs/020 FR-001）；
+        // 多值后 zod 对齐文案走 `Invalid option: expected one of ...` 分支
+        Field { name: "agentRole", required: true, kind: Kind::Enum(crate::tools::SUB_AGENT_ROLES) },
     ]
 }
 

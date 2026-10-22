@@ -54,6 +54,8 @@ export interface UseAppHandlersProps {
   setConversationTitle: (v: string) => void;
   setCurrentSessionId: (v: string | null) => void;
   setParentSessionId: (v: string | null) => void;
+  /** 当前会话的子代理角色（conversationLoaded.metadata.role，specs/020 FR-005）；普通会话为 null */
+  setSubAgentRole: (v: string | null) => void;
   setHasActiveQuery: (v: boolean) => void;
   setContextLength: (v: number | ((prev: number) => number)) => void;
   setMaxContextTokens: (v: number | null) => void;
@@ -175,6 +177,8 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     }
     props.setConversationTitle(t('app.untitled'));
     props.setParentSessionId(null);
+    // 新建会话无子代理角色（specs/020 FR-005），置灰判定回到普通会话
+    props.setSubAgentRole(null);
     const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     // 启动时生成的这个会话同样是"新建但还没发消息"的对话：
     // 不登记的话，用户在这里输入后切走再点"新建"，草稿会被当成普通会话丢掉。

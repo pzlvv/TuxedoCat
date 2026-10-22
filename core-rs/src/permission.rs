@@ -408,8 +408,12 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
             }
             let role = args.get("agentRole").and_then(Value::as_str).unwrap_or("");
             if role.is_empty() {
+                // 合法名单单一落点在 `tools::SUB_AGENT_ROLES`（specs/020 FR-001）
                 return CheckResult::deny_with_terminate(
-                    "需要指定 agentRole 参数。支持的角色: Master。".to_string(),
+                    format!(
+                        "需要指定 agentRole 参数。支持的角色: {}。",
+                        crate::tools::SUB_AGENT_ROLES.join("、")
+                    ),
                     false,
                 );
             }

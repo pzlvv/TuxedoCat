@@ -102,6 +102,9 @@ const App = () => {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   // 当前对话的父会话 ID（子对话时有效）
   const [parentSessionId, setParentSessionId] = useState<string | null>(null);
+  // 当前会话的子代理角色（conversationLoaded.metadata.role，specs/020 FR-005）：
+  // 非 Master 子代理会话锁定选项菜单的提示词模式 / 联网搜索 / MCP 三项
+  const [subAgentRole, setSubAgentRole] = useState<string | null>(null);
   const [hasActiveQuery, setHasActiveQuery] = useState(false);
   const [contextLength, setContextLength] = useState<number>(0);
   const [maxContextTokens, setMaxContextTokens] = useState<number | null>(null);
@@ -509,11 +512,12 @@ const App = () => {
     // 当前会话实时状态（切换会话保存快照时使用）
     userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode,
     promptMode, setPromptMode, webSearch,
+    setSubAgentRole,
     currentFile, selectedLines,
   }), [modelRef, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, promptMode, webSearch, currentFile, selectedLines, messages]);
   useMessageHandler(handlerProps);
 
-  const appHandlerProps = useMemo(() => ({
+    const appHandlerProps = useMemo(() => ({
     currentFile, selectedLines, fileHidden, conversations, conversationsLoading,
     conversationDropdownOpen, conversationTitle, currentSessionId, parentSessionId,
     hasActiveQuery, contextLength, maxContextTokens, agentMode, thinkingMode,
@@ -523,7 +527,7 @@ const App = () => {
     showThinkingAnimation, animationMode, messages,
     setCurrentFile, setSelectedLines, setFileHidden, setConversations,
     setConversationsLoading, setConversationDropdownOpen, setConversationTitle,
-    setCurrentSessionId, setParentSessionId, setHasActiveQuery, setContextLength,
+    setCurrentSessionId, setParentSessionId, setSubAgentRole, setHasActiveQuery, setContextLength,
     setMaxContextTokens, setAgentMode, setThinkingMode,
     setModelRef, setWebSearch, setHasCompactArchive, setIsCompactExpanded, setQueuedMessage,
     setDeleteConfirm, setMessages, setUserChoiceRequest,
@@ -655,6 +659,8 @@ const App = () => {
     // Generate new session for new conversation
     setConversationTitle(t('app.untitled'));
     setParentSessionId(null);
+    // 新建会话无子代理角色（specs/020 FR-005），置灰判定回到普通会话
+    setSubAgentRole(null);
     // 新对话不在 spin 模式
     setWorkMode('normal');
     const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
@@ -1415,6 +1421,7 @@ onClick={handleNewConversation}
               onOpenSettings={handleOpenSettings}
               isProviderConfigured={providerConfigured}
               isSubAgent={!!parentSessionId}
+              subAgentRole={subAgentRole}
               workMode={workMode}
             />
           )}

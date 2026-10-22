@@ -6544,3 +6544,206 @@ fn unknown_tool_never_marks_the_session_waiting() {
         "未知工具的卡片往返不该把会话标成等待用户"
     );
 }
+
+// ==================== 子代理角色 explorer（specs/020） ====================
+
+/// explorer 子代理完整链路（specs/020 FR-002）：工具清单恰为 Read / Glob / Grep /
+/// Reply（含顺序，即内置定义顺序的过滤投影）；故意调用白名单外的 Bash 被执行侧拒绝
+/// （tool_result 点名角色与可用工具、命令未执行、会话不中止）；随后 Reply 正常收尾，
+/// meta.json 落盘 role="explorer"。
+#[test]
+fn explorer_sub_agent_gets_role_toolset_and_rejects_others() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let sandbox = Sandbox::new("engine-explorer-role");
+    crate::subagent::reset_for_test();
+    let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = Arc::clone(&bodies);
+    let rounds = Arc::new(AtomicUsize::new(0));
+    let llm = FakeLlm::start(move |_index, body| {
+        if is_sub_agent_request(body) {
+            captured.lock().unwrap().push(body.clone());
+            let round = rounds.fetch_add(1, Ordering::SeqCst);
+            if round == 0 {
+                // 首轮故意调用白名单外的 Bash：执行侧应当拒绝而不是执行
+                return openai_multi_tool_sse(&[(
+                    "call_bash",
+                    "Bash",
+                    r#"{"command":"touch explorer-marker.txt","description":"越权尝试"}"#,
+                )]);
+            }
+            // Bash 被拒后的下一轮：正常 Reply 收尾
+            return openai_multi_tool_sse(&[(
+                "call_reply",
+                "Reply",
+                r#"{"message":"explorer 完成"}"#,
+            )]);
+        }
+        if !parent_saw_agent_tool_use(body) {
+            return openai_multi_tool_sse(&[(
+                "call_agent",
+                "Agent",
+                r#"{"prompt":"浏览一下代码","description":"Look around","agentRole":"explorer"}"#,
+            )]);
+        }
+        openai_text_sse(&["好"])
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::allow_all();
+    submit(&harness, "s-explorer", "派个 explorer", "u-explorer");
+
+    // 子代理最终 Reply 投递回父会话（执行侧拒绝没有中止子代理）
+    assert!(
+        harness.wait_for(
+            |sink| sink
+                .events_of("message")
+                .iter()
+                .any(|event| event["data"]["origin"] == "agent"),
+            Duration::from_secs(30),
+        ),
+        "应当收到 explorer 的 Reply: {:?}",
+        harness.sink.event_types()
+    );
+
+    // 子会话登记与 meta.json 落盘
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let sub_ids = crate::subagent::list_for_creator("s-explorer");
+    assert_eq!(sub_ids.len(), 1, "应当登记 1 个 explorer 子代理");
+    let metadata = crate::history::load_metadata(&sub_ids[0], &project).expect("子会话 meta.json");
+    assert_eq!(metadata["role"], "explorer");
+    assert_eq!(metadata["parentSessionId"], "s-explorer");
+
+    // 子代理首轮请求的工具清单恰为四件套（内置定义顺序的过滤投影，且无任何白名单外来源）
+    let bodies = bodies.lock().unwrap();
+    assert!(!bodies.is_empty(), "应当捕获 explorer 的 LLM 请求");
+    let names = tool_names(&bodies[0]);
+    assert_eq!(
+        names,
+        vec!["Read", "Grep", "Glob", "Reply"],
+        "explorer 工具清单应为四件套: {names:?}"
+    );
+    drop(bodies);
+
+    // Bash 的 tool_result：status=error，文案点名角色与可用工具
+    let bash_result = harness
+        .sink
+        .events_of("toolResult")
+        .into_iter()
+        .find(|event| event["toolName"] == "Bash" && event["sessionId"] == sub_ids[0].as_str())
+        .expect("Bash 应当产生 toolResult");
+    assert_eq!(bash_result["status"], "error");
+    let output = bash_result["output"].as_str().unwrap_or("");
+    assert!(
+        output.contains("explorer 子代理只有 Read / Glob / Grep / Reply 工具，Bash 不可用"),
+        "got {output}"
+    );
+    // 命令确实未执行
+    assert!(
+        !sandbox.workspace.join("explorer-marker.txt").exists(),
+        "白名单外的 Bash 不应当被执行"
+    );
+    crate::subagent::reset_for_test();
+}
+
+/// 会话级配置的继承按角色区分（specs/020 FR-003）：创建者 minimal 预设 + 联网开——
+/// explorer 一律固定（prompt_mode=None、web_search=关、请求按 normal 口径组装且工具
+/// 恰为四件套）；Master 同场景维持继承（预设 minimal、联网开、工具只有 Bash / Edit）。
+#[test]
+fn explorer_fixes_session_config_while_master_inherits() {
+    let sandbox = Sandbox::new("engine-explorer-fixed-config");
+    crate::subagent::reset_for_test();
+    let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = Arc::clone(&bodies);
+    let llm = FakeLlm::start(move |_index, body| {
+        captured.lock().unwrap().push(body.clone());
+        if is_sub_agent_request(body) {
+            return openai_multi_tool_sse(&[(
+                "call_reply",
+                "Reply",
+                r#"{"message":"子代理已完成任务"}"#,
+            )]);
+        }
+        openai_text_sse(&["好"])
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let harness = EngineHarness::allow_all();
+    let creator = "s-explorer-config";
+    history::create_conversation(creator, &project, json!({ "sessionId": creator })).unwrap();
+    harness.core.session(creator).lock().unwrap().prompt_mode = Some("minimal".to_string());
+    harness.core.session(creator).lock().unwrap().web_search = Some(true);
+
+    let explorer_id = harness
+        .core
+        .create_sub_agent(tools::SubAgentRequest {
+            creator_session_id: creator.to_string(),
+            prompt: "浏览一下".to_string(),
+            description: "explorer fixed".to_string(),
+            role: "explorer".to_string(),
+        })
+        .expect("create explorer");
+    let master_id = harness
+        .core
+        .create_sub_agent(tools::SubAgentRequest {
+            creator_session_id: creator.to_string(),
+            prompt: "干点活".to_string(),
+            description: "master inherit".to_string(),
+            role: "Master".to_string(),
+        })
+        .expect("create master");
+
+    // 会话状态：explorer 固定，Master 继承
+    {
+        let state = harness.core.session(&explorer_id);
+        let state = state.lock().unwrap();
+        assert_eq!(state.prompt_mode, None, "explorer 固定 normal（不继承 minimal）");
+        assert_eq!(state.web_search, Some(false), "explorer 固定不联网（不继承开启）");
+    }
+    {
+        let state = harness.core.session(&master_id);
+        let state = state.lock().unwrap();
+        assert_eq!(
+            state.prompt_mode.as_deref(),
+            Some("minimal"),
+            "Master 维持继承父会话预设"
+        );
+        assert_eq!(state.web_search, Some(true), "Master 维持继承父会话联网开关");
+    }
+
+    // LLM 请求侧：explorer = normal 口径（含核心身份段）+ 四件套；Master = minimal 口径 + Bash / Edit
+    assert!(
+        harness.wait_for(
+            |_| {
+                let bodies = bodies.lock().unwrap();
+                let explorer_ok = bodies.iter().any(|body| {
+                    is_sub_agent_request(body)
+                        && body["messages"][0]["content"]
+                            .as_str()
+                            .map(|system| system.contains("## Core Principles"))
+                            .unwrap_or(false)
+                        && tool_names(body) == vec!["Read", "Grep", "Glob", "Reply"]
+                });
+                let master_ok = bodies.iter().any(|body| {
+                    is_sub_agent_request(body)
+                        && body["messages"][0]["content"]
+                            .as_str()
+                            .map(|system| !system.contains("## Core Principles"))
+                            .unwrap_or(false)
+                        && tool_names(body) == vec!["Bash", "Edit"]
+                });
+                explorer_ok && master_ok
+            },
+            Duration::from_secs(30),
+        ),
+        "应当观察到 explorer（normal + 四件套）与 Master（minimal + Bash/Edit）两份请求: {:?}",
+        {
+            let bodies = bodies.lock().unwrap();
+            bodies
+                .iter()
+                .map(|body| tool_names(body))
+                .collect::<Vec<_>>()
+        }
+    );
+    crate::subagent::reset_for_test();
+}

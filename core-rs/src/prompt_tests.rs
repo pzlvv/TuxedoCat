@@ -399,3 +399,15 @@ fn tool_usage_details_follow_the_injected_tool_list() {
     assert!(!without.contains("**WebSearch**"), "Tool Usage 清单 bullet 应同步消失");
     assert!(with.contains("**WebSearch**"), "全量清单应有 WebSearch bullet");
 }
+
+/// Agent 角色表列出全部合法角色（specs/020 FR-001）：提示词正文与
+/// `tools::SUB_AGENT_ROLES` 同步——注册表加了角色而提示词漏改时在这里红。
+#[test]
+fn agent_role_table_lists_all_registered_roles() {
+    for role in crate::tools::SUB_AGENT_ROLES {
+        assert!(
+            TOOL_DETAILS.contains(&format!("\"{role}\":").as_str()),
+            "Agent 角色表缺少 {role} 条目"
+        );
+    }
+}

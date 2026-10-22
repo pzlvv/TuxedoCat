@@ -27,3 +27,22 @@ export function resolveInputPlaceholder(
   if (facts.workMode === 'spin') return texts.spin;
   return facts.providerConfigured === false ? '' : texts.default;
 }
+
+export interface SessionOptionsLockFacts {
+  /**
+   * 当前会话的子代理角色（`conversationLoaded.metadata.role`，meta.json 的 role 事实；
+   * 普通会话 / 旧数据为 null）。
+   */
+  subAgentRole?: string | null;
+}
+
+/**
+ * 选项菜单是否锁定（specs/020 FR-005）：非 Master 子代理会话锁定提示词模式 /
+ * 联网搜索 / MCP 服务器三项——core 侧对非 Master 角色固定 normal 预设 / 不联网 /
+ * 无 MCP，UI 不提供入口。判据是「子代理且 role ≠ Master」，将来新增非 Master 角色
+ * 无需改 UI；role 缺失（普通会话 / 旧数据）按普通会话对待、不锁定。
+ */
+export function resolveSessionOptionsLocked(facts: SessionOptionsLockFacts): boolean {
+  const role = facts.subAgentRole;
+  return role !== undefined && role !== null && role !== 'Master';
+}

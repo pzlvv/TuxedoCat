@@ -1045,7 +1045,7 @@ impl Core {
         // 父会话未记录时 `session()` 已按 settings 的 `defaultAgentMode` 兜底）、
         // model / provider、thinking effort、提示词预设（`promptMode`；缺省即 normal，
         // 子代理 system prompt 因此与主对话同款）。
-        let (agent_mode, model, provider, thinking_effort, prompt_mode) = {
+        let (agent_mode, model, provider, thinking_effort, prompt_mode, web_search) = {
             let state = self.session(&creator);
             let state = state.lock().unwrap();
             (
@@ -1054,7 +1054,18 @@ impl Core {
                 state.provider.clone(),
                 state.thinking_effort.clone(),
                 state.prompt_mode.clone(),
+                state.web_search.clone(),
             )
+        };
+        // specs/020 FR-003：会话级配置的继承按角色区分——Master 维持继承创建者；
+        // 非 Master 角色（见 `tools::sub_agent_role_tools`）一律固定：提示词预设恒
+        // normal、联网搜索恒关、MCP 恒空（工具清单在 `run_query_loop` 按白名单过滤）。
+        // 固定值在创建时一次确定，生命周期内不受迟到的会话级覆盖事件影响。
+        let role_tools = crate::tools::sub_agent_role_tools(&request.role);
+        let (prompt_mode, web_search) = if role_tools.is_some() {
+            (None, Some(false))
+        } else {
+            (prompt_mode, web_search)
         };
 
         let sub_state = self.session(&sub_session_id);
@@ -1066,10 +1077,11 @@ impl Core {
             state.provider = provider.clone();
             state.thinking_effort = thinking_effort;
             state.prompt_mode = prompt_mode;
+            state.web_search = web_search;
             state.parent_session_id = Some(creator.clone());
             state.sub_agent_role = Some(request.role.clone());
-            // 子代理 system prompt = 主对话同款提示词（按继承的预设组装）+ 开头
-            // `## Communication` 段。
+            // 子代理 system prompt = 主对话同款提示词（按生效预设组装；非 Master 角色
+            // 固定 normal）+ 开头 `## Communication` 段。
             state.system_prompt_prefix = Some(prompt::sub_agent_communication_section(&creator));
             // 子代理创建即进入 running：登记后立刻由 `run_sub_agent` 消费，没有 idle 阶段。
             // 必须在下面的 `emit_runtime()` **之前**置位，否则首次出现在快照里是 idle，
@@ -2423,6 +2435,25 @@ fn execute_tool(
     tool_name: &str,
     effective_input: &Value,
 ) -> ToolOutcome {
+    // specs/020 FR-002：非 Master 角色的执行侧防线——LLM 工具清单虽已按角色白名单
+    // 过滤，模型仍可能幻觉调用清单外工具（含 `mcp__*`）：这里直接拒绝并点名可用工具，
+    // 不执行、不静默降级、不中止会话。所有工具执行路径（串行 / 并行批 / Skill 注入）
+    // 都经过本入口；压缩不走工具执行，不受影响。Master 与普通会话白名单为 None，直通。
+    let role_allow = {
+        let state = state.lock().unwrap();
+        state
+            .sub_agent_role
+            .clone()
+            .and_then(|role| crate::tools::sub_agent_role_tools(&role).map(|allow| (role, allow)))
+    };
+    if let Some((role, allow)) = role_allow {
+        if !allow.contains(&tool_name) {
+            return ToolOutcome::Error(format!(
+                "{role} 子代理只有 {} 工具，{tool_name} 不可用",
+                allow.join(" / ")
+            ));
+        }
+    }
     // AskUserQuestion 的问答回调：把已组装的 `UserChoiceOptions` 经
     // `CoreRequest.userChoice` 发给宿主并阻塞等待应答。
     let user_choice_session = session_id.to_string();
@@ -3523,16 +3554,39 @@ fn run_query_loop(
     // 工具清单 = 内置工具 + 该会话启用列表里的 MCP 服务器工具。
     // 联网搜索生效值（会话覆盖 → settings 默认，已并入 `provider.web_search`）
     // 决定 WebSearch / WebFetch 是否注入；MCP 工具不受影响。
-    let all_tools: Vec<Value> = all_tool_definitions(session_id)
-        .into_iter()
-        .filter(|tool| {
-            provider.web_search
-                || !matches!(
-                    tool.get("name").and_then(Value::as_str),
-                    Some("WebSearch") | Some("WebFetch")
-                )
-        })
-        .collect();
+    // specs/020 FR-002：非 Master 角色的会话在此之上按角色白名单过滤——
+    // 一处过滤同时落实「无 `mcp__*`、不联网、预设不叠加」（白名单不在 minimal 的
+    // Bash / Edit 里）；Master 与普通会话白名单为 None，清单不变。
+    let role_tools = state
+        .lock()
+        .unwrap()
+        .sub_agent_role
+        .as_deref()
+        .and_then(crate::tools::sub_agent_role_tools);
+    let all_tools: Vec<Value> = {
+        let base: Vec<Value> = all_tool_definitions(session_id)
+            .into_iter()
+            .filter(|tool| {
+                provider.web_search
+                    || !matches!(
+                        tool.get("name").and_then(Value::as_str),
+                        Some("WebSearch") | Some("WebFetch")
+                    )
+            })
+            .collect();
+        match role_tools {
+            Some(allow) => base
+                .into_iter()
+                .filter(|tool| {
+                    tool.get("name")
+                        .and_then(Value::as_str)
+                        .map(|name| allow.contains(&name))
+                        .unwrap_or(false)
+                })
+                .collect(),
+            None => base,
+        }
+    };
     // 轮次上限：**普通会话恒为不限**。
     //
     // `settings.json` 里虽然声明了 `features.maxTurns`，但没有任何消费方
@@ -3563,7 +3617,12 @@ fn run_query_loop(
                     .any(|message| message.get("type").and_then(Value::as_str) == Some("assistant")),
             )
         };
-        let preset = prompt::active_preset(prompt_mode.as_deref(), has_assistant_reply);
+        // specs/020 FR-003：非 Master 角色固定 normal 预设（不随 mixed→minimal 切换，
+        // 也不受迟到的会话级覆盖影响）；工具清单已按角色白名单过滤，预设白名单不叠加。
+        let preset = match role_tools {
+            Some(_) => "normal",
+            None => prompt::active_preset(prompt_mode.as_deref(), has_assistant_reply),
+        };
         // minimal / mixed 只把 Bash / Edit 暴露给 LLM（`PromptPreset.toolNames`）
         let tools = prompt::filter_tools_by_preset(all_tools.clone(), preset);
         // `static_system_prompt` 整体替换组装结果；`system_prompt_prefix` 只在组装结果前

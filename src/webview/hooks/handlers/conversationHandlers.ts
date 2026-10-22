@@ -187,6 +187,9 @@ export function handleConversationConversationLoaded(
             props.setIsCompactExpanded(false);
             // 记录父会话 ID（子对话时有值）
             props.setParentSessionId(wire.parentSessionId || null);
+            // 记录子代理角色（specs/020 FR-005）：meta.json 的 role 事实，普通会话为 null；
+            // 选项菜单置灰判据（非 Master 子代理锁定提示词模式 / 联网搜索 / MCP）
+            props.setSubAgentRole(msg.conversation.metadata.role ?? null);
             // 恢复会话工作模式（spin 会话加载后输入框保持禁用；specs/016 FR-005）
             props.setWorkMode(wire.workMode);
             // 恢复该会话的 UI 状态（input, userChoiceRequest, userChoiceInput, showThinkingAnimation）

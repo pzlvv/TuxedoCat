@@ -501,8 +501,9 @@ pub fn definitions() -> Vec<Value> {
                     "prompt": { "type": "string", "description": "The task for the agent to perform" },
                     "description": { "type": "string", "description": "A short (3-5 word) description of the task" },
                     // enum 不展开：agentRole 只声明为 string，
-                    // 只产出 string（取值由运行期校验，见 permission::base_check）
-                    "agentRole": { "type": "string", "description": "The role of the agent to spawn" }
+                    // 只产出 string（取值由运行期校验，见 permission::base_check）；
+                    // 合法名单见 `SUB_AGENT_ROLES` 与提示词角色表
+                    "agentRole": { "type": "string", "description": "The role of the agent to spawn: Master or explorer" }
                 },
                 "required": ["prompt", "agentRole"]
             }
@@ -1585,6 +1586,26 @@ fn read_pipe(
 /// 排队等待期间被中止的工具结果文案
 const CANCEL_RESULT_MESSAGE: &str = "Tool was canceled due to abort";
 
+// ==================== 子代理角色注册表（specs/020） ====================
+
+/// 合法子代理角色（单一落点，specs/020 FR-001）：Agent 工具的执行侧校验、
+/// 入参枚举（`tool_input::agent_fields`）、权限 deny 文案（`permission::base_check`）、
+/// 系统提示词角色表（`prompt`）都从这里推导，禁止再各自写死名单。
+pub const SUB_AGENT_ROLES: &[&str] = &["Master", "explorer"];
+
+/// 角色的 LLM 工具白名单；`None` = 不限（Master 与普通会话同款全量工具）。
+///
+/// 白名单含 `Reply`：子代理完成判定与 Reminder 都以「调用过 Reply」为基准
+/// （`engine.rs` 的 `sub_agent_has_reply`），Reply 是生命周期设施，不是工作工具。
+/// 非 Master 角色由引擎按白名单过滤工具清单（FR-002），并固定 normal 预设 /
+/// 不联网 / 无 MCP（FR-003）——工具集在会话创建时由角色一次确定，生命周期不变。
+pub fn sub_agent_role_tools(role: &str) -> Option<&'static [&'static str]> {
+    match role {
+        "explorer" => Some(&["Read", "Glob", "Grep", "Reply"]),
+        _ => None,
+    }
+}
+
 /// `Agent` 工具：创建子代理。
 fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let Some(prompt) = input.get("prompt").and_then(Value::as_str) else {
@@ -1594,10 +1615,11 @@ fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         .get("agentRole")
         .and_then(Value::as_str)
         .unwrap_or("");
-    // 对齐 `isValidRole`：目前只有 Master
-    if role != "Master" {
+    // 对齐 `isValidRole`：合法名单见 `SUB_AGENT_ROLES`
+    if !SUB_AGENT_ROLES.contains(&role) {
         return ToolOutcome::Error(format!(
-            "agentRole is required and must be: Master. Got: {role}"
+            "agentRole is required and must be one of: {}. Got: {role}",
+            SUB_AGENT_ROLES.join(", ")
         ));
     }
     let Some(hooks) = ctx.subagent.as_ref() else {
