@@ -6,16 +6,18 @@
 //! `.zshrc` / `.bashrc` 里配的那些目录——都不在这个环境里，工具命令于是找不到
 //! `node` / `cargo` / `git`。
 //!
-//! 这里在首次需要时用一次「登录 + 交互」shell 把用户终端里的 PATH 抓出来，
-//! 缓存后由 [`apply`] / [`apply_native`] 注入子进程：这两个函数是 PATH 的唯一写入点
-//! （`docs/architecture/principles.md` 第 7 节）。
+//! 这里在首次需要时抓一次用户终端里的 PATH（非 Windows 用「登录 + 交互」shell，Windows
+//! 只取进程环境），缓存后由 [`apply`] / [`apply_native`] 注入子进程：这两个函数是 PATH
+//! 的唯一写入点（`docs/architecture/principles.md` 第 7 节）。
 //!
 //! **两种形式，同一份来源**：shell 自己看到的形式（Windows 上的 Git Bash / MSYS2 /
 //! Cygwin 是 POSIX 列表）给 `$SHELL -c` 拉起的工具命令；原生进程（`rg` / `git` /
-//! `where` / `cmd` / MCP server）要 Windows 形式，由同一份列表**逐条**派生。把整串列表
-//! 交给 `cygpath -p` 有两个毛病：一条目录转不动就让整个探测失败；而且 shell 子进程拿到
-//! Windows 形式后要靠 cygwin 在启动时转回 POSIX，这个往返有损
-//! （`specs/defects/windows-bash-path-cygpath-resplit.md`）。
+//! `where` / `cmd` / MCP server）要 Windows 形式，Windows 上直接取进程环境里的 PATH。
+//!
+//! Windows 上探测**不读启动文件**（只用 `-c`）：`-l` 会跑 `/etc/profile`，MSYS2 机器上
+//! 它按 `MSYS2_PATH_TYPE` / `ORIGINAL_PATH` 重建 PATH，把用户环境变量里的目录（`git`
+//! 所在的 Windows 目录等）整套换掉；宿主启动 Core 时已经把用户完整的 Windows PATH
+//! 放进了进程环境（`specs/defects/windows-bash-probe-login-resets-path.md`）。
 //!
 //! 三条刻意的约束：
 //!
@@ -40,16 +42,16 @@ use crate::util;
 /// 留足余量；超时就报错，不无限等，也不退化成继承环境。
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 探测输出的标记：启动文件打印的内容排在前面，按标记认自己那两行。
+/// 探测输出的标记：启动文件打印的内容排在前面，按标记认自己那行。
 const SHELL_FORM_MARKER: &str = "__TC_PATH__";
-const NATIVE_FORM_MARKER: &str = "__TC_NATIVE_PATH__";
 
 /// 用户终端里的 PATH，两种形式同一份来源。
 #[derive(Debug)]
 pub struct ShellPath {
     /// shell 自己的形式：Windows 上的 Git Bash / MSYS2 / Cygwin 是 POSIX 列表
     shell: OsString,
-    /// 交给原生进程的形式：Windows 形式；非 Windows 上与 [`Self::shell`] 相同
+    /// 交给原生进程的形式：Windows 上就是进程环境里的 PATH（Windows 形式）；
+    /// 非 Windows 上与 [`Self::shell`] 相同
     native: OsString,
 }
 
@@ -115,22 +117,39 @@ pub fn force_path_for_test(shell: OsString, native: OsString) {
 /// 一次探测要做的事
 #[derive(Debug)]
 enum Probe {
-    /// 用这些参数跑一次登录 + 交互 shell，取它打印出来的 PATH
-    Run(Vec<String>),
-    /// 该 shell 没有启动文件：终端里的 PATH 就是进程环境里的 PATH
+    /// 用这些参数跑一次 shell，取它打印出来的 shell 形式
+    Run {
+        args: Vec<String>,
+        /// 原生形式取进程环境里的 PATH（Windows 上的 bash：启动文件会把 PATH 重置，
+        /// 进程环境里的 Windows PATH 才是用户终端里的那份）
+        native_from_env: bool,
+    },
+    /// 该 shell 没有启动文件：两种形式都是进程环境里的 PATH
     Inherited,
 }
 
 fn probe(shell: &ShellInfo) -> Result<ShellPath, String> {
     match probe_plan(shell)? {
-        Probe::Inherited => std::env::var_os("PATH")
-            .map(ShellPath::uniform)
-            .ok_or_else(|| "进程环境里没有 PATH".to_string()),
-        Probe::Run(args) => {
+        Probe::Inherited => env_path().map(ShellPath::uniform),
+        Probe::Run {
+            args,
+            native_from_env,
+        } => {
             let output = run_probe(&shell.path, &args, PROBE_TIMEOUT)?;
-            parse_output(&output)
+            let shell = parse_shell_form(&output, native_from_env)?;
+            let native = if native_from_env {
+                env_path()?
+            } else {
+                shell.clone()
+            };
+            Ok(ShellPath { shell, native })
         }
     }
+}
+
+/// 进程环境里的 PATH（Windows 上是用户终端里的那份 Windows 形式）
+fn env_path() -> Result<OsString, String> {
+    std::env::var_os("PATH").ok_or_else(|| "进程环境里没有 PATH".to_string())
 }
 
 /// 各 shell 的探测方式（按可执行文件名分派，不看 `ShellInfo.kind`：
@@ -138,39 +157,37 @@ fn probe(shell: &ShellInfo) -> Result<ShellPath, String> {
 fn probe_plan(shell: &ShellInfo) -> Result<Probe, String> {
     match shell_basename(&shell.path).as_str() {
         "bash" | "sh" | "dash" | "ksh" | "zsh" => {
-            // `-l` 读 login 文件（`.zprofile` / `.zlogin` / `.profile`），`-i` 读
-            // `.zshrc` / `.bashrc`——zsh 的 `.zshrc` 只在交互时读，少了 `-i` 就
-            // 拿不到它里面的 PATH。
-            let script = if cfg!(windows) {
-                // Git Bash / MSYS2 / Cygwin 的 `$PATH` 是 POSIX 列表，shell 子进程直接用
-                // 这份；原生子进程要 Windows 形式，由同一份列表逐条 `cygpath -w` 派生：
-                // 每条单独转换，转不动的保留原文（整串 `cygpath -p` 会因此整体失败），
-                // 空条目按 `.`（`specs/defects/windows-bash-path-cygpath-resplit.md`）。
-                concat!(
-                    r#"printf '__TC_PATH__%s\n' "$PATH"; "#,
-                    r#"IFS=:; set -f; out=; "#,
-                    r#"for entry in $PATH; do [ -n "$entry" ] || entry=.; "#,
-                    r#"converted=$(cygpath -w -- "$entry" 2>/dev/null) || converted=$entry; "#,
-                    r#"out="$out$converted;"; done; "#,
-                    r#"printf '__TC_NATIVE_PATH__%s' "${out%;}""#,
-                )
-            } else {
-                r#"printf '__TC_PATH__%s' "$PATH""#
-            };
-            Ok(Probe::Run(vec![
-                "-l".to_string(),
-                "-i".to_string(),
-                "-c".to_string(),
-                script.to_string(),
-            ]))
+            // 非 Windows 必须 `-l -i`：`-l` 读 login 文件（`.zprofile` / `.zlogin` /
+            // `.profile`），`-i` 读 `.zshrc` / `.bashrc`——zsh 的 `.zshrc` 只在交互时
+            // 读，少了 `-i` 就拿不到它里面的 PATH（launchd 只给最小 PATH）。
+            //
+            // Windows 上只用 `-c`：`-l` 会跑 `/etc/profile`，MSYS2 机器上它按
+            // `MSYS2_PATH_TYPE` / `ORIGINAL_PATH` 重建 PATH，把用户环境变量里的目录
+            // （`git` 所在的 Windows 目录等）整套换掉；而宿主启动 Core 时已经把用户
+            // 完整的 Windows PATH 放进进程环境，不需要启动文件再补
+            // （`specs/defects/windows-bash-probe-login-resets-path.md`）。
+            let mut args: Vec<String> = Vec::new();
+            if !cfg!(windows) {
+                args.push("-l".to_string());
+                args.push("-i".to_string());
+            }
+            args.push("-c".to_string());
+            args.push(format!("printf '{SHELL_FORM_MARKER}%s' \"$PATH\""));
+            Ok(Probe::Run {
+                args,
+                native_from_env: cfg!(windows),
+            })
         }
         // PowerShell 的 profile（`$PROFILE`）默认加载，这里**不加** `-NoProfile`：
         // 用户配在 profile 里的 PATH 才是终端里看到的 PATH。它输出的本来就是 Windows
         // 形式，两种形式相同。
-        "powershell" | "pwsh" => Ok(Probe::Run(vec![
-            "-Command".to_string(),
-            format!("[Console]::Out.Write('{SHELL_FORM_MARKER}' + $env:PATH)"),
-        ])),
+        "powershell" | "pwsh" => Ok(Probe::Run {
+            args: vec![
+                "-Command".to_string(),
+                format!("[Console]::Out.Write('{SHELL_FORM_MARKER}' + $env:PATH)"),
+            ],
+            native_from_env: false,
+        }),
         // cmd.exe 不读任何启动文件：它的 PATH 就是父进程给的，探测没有意义。
         "cmd" => Ok(Probe::Inherited),
         other => Err(format!(
@@ -306,34 +323,23 @@ fn drain(mut stream: impl Read + Send + 'static) -> Drained {
     Drained { buffer, drained }
 }
 
-/// 从 shell 输出里取 PATH：启动文件打印的内容排在前面，按标记行认自己那两行，
+/// 从 shell 输出里取 shell 形式：启动文件打印的内容排在前面，按标记行认自己那行，
 /// 并校验它像一条 PATH——不像就报错，而不是把垃圾注入环境。
 ///
-/// 原生形式那一行只有 Windows 上的 bash 家族会打（逐条 `cygpath -w` 派生）；缺这一行
-/// 就说明两种形式相同（非 Windows、PowerShell、cmd.exe）。两种形式的分隔符不同：Windows
-/// 上的 shell 形式是 POSIX 列表（`:`），原生形式是 Windows 列表（`;`）。
-fn parse_output(output: &str) -> Result<ShellPath, String> {
-    let shell = marked_value(output, SHELL_FORM_MARKER)
+/// Windows 上的 bash 输出的是 POSIX 列表（`:` 分隔，`native_from_env` 为真），其余场合
+/// 就是平台自己的形式（Windows 是 `;`，POSIX 是 `:`）。
+fn parse_shell_form(output: &str, native_from_env: bool) -> Result<OsString, String> {
+    let value = marked_value(output, SHELL_FORM_MARKER)
         .ok_or_else(|| "shell 没有输出 PATH（启动文件可能提前退出）".to_string())?;
-    let native_line = marked_value(output, NATIVE_FORM_MARKER);
-    let shell_separator = if native_line.is_some() {
+    let separator = if native_from_env {
         ':'
     } else {
         platform_separator()
     };
-    let native = native_line.unwrap_or_else(|| shell.clone());
-    for (label, value, separator) in [
-        ("shell 形式", &shell, shell_separator),
-        ("原生形式", &native, platform_separator()),
-    ] {
-        if !looks_like_path(value, separator) {
-            return Err(format!("shell 输出的{label}不像 PATH：{value:?}"));
-        }
+    if !looks_like_path(&value, separator) {
+        return Err(format!("shell 输出的 PATH 不像 PATH：{value:?}"));
     }
-    Ok(ShellPath {
-        shell: OsString::from(shell),
-        native: OsString::from(native),
-    })
+    Ok(OsString::from(value))
 }
 
 /// 取最后一个带标记的行里的值（启动文件可能打印任意内容，标记只由探测脚本自己打）

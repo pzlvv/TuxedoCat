@@ -193,7 +193,7 @@ project.json 与各 crate 的包名，不改逻辑代码。
 | 进程管理 | `bash_task.rs::kill_tree`、`mcp.rs` 的子进程终止 | `#[cfg(windows)]` 走 `taskkill /T /F`；非 Windows 走 `Child::kill`（都只杀直接子进程树） |
 | 路径处理 | `util.rs` 的 `normalize_path` / `expand_path`、`config.rs` 的 `encodeURIComponent` 等价物 | 盘符与 UNC 的换算都在 `cfg!(windows)` 分支内；非 Windows 走 POSIX 分支，多字节路径按字节比较 |
 | shell 探测 | `shell.rs::detect` | 非 Windows 直接用 `$SHELL`（缺省 `/bin/bash`）；Windows 才走 Git Bash → PowerShell → cmd.exe 的优先级 |
-| 工具 shell 的 PATH | `shell_env.rs` | 用 `$SHELL -l -i -c` 抓用户终端里的 PATH：shell 子进程用 shell 自己的形式（Windows 的 Git Bash 是 POSIX 列表），原生子进程用逐条 `cygpath -w` 派生出的 Windows 形式；PowerShell 读 `$env:PATH`，cmd.exe 没有启动文件、沿用进程环境 |
+| 工具 shell 的 PATH | `shell_env.rs` | 抓用户终端里的 PATH：非 Windows 用 `$SHELL -l -i -c`，Windows 上只用 `$SHELL -c`（启动文件会按 `MSYS2_PATH_TYPE` 重建 PATH，把用户环境变量里的目录挤掉）。shell 子进程用 shell 自己的形式（Windows 的 Git Bash 是 POSIX 列表），原生子进程用 Windows 形式（Windows 上就是进程环境里的 PATH）；PowerShell 读 `$env:PATH`，cmd.exe 没有启动文件、沿用进程环境 |
 | 资源定位 | `tools.rs::ripgrep_path`、`config.rs::extension_path` | Core 自带产物以**自己的可执行文件目录**为基准（`<exe 目录>/ripgrep/rg[.exe]` 本地打包布局优先，`<exe 目录>/../ripgrep/rg[.exe]` 部署布局的共享位次之——Rust 的 `Path::exists` 看不进 asar），宿主 `extensionPath` 只作本机开发期的兜底、最后回退 PATH；可执行名按 `cfg!(windows)` 加 `.exe`；产物目录按 `<arch>-<platform>` 解析，矩阵外直接拒绝而不是猜一个目录 |
 | 主目录 | `config.rs::home_dir` | `USERPROFILE` 优先、`HOME` 兜底，两者都缺才报错 |
 | 系统语言 | 宿主：`src/host/i18n.ts::getSystemLocale`（不在 Core 侧） | 仅 Windows 查 PowerShell `Get-UICulture`；其余平台读 `LANG` / `LC_ALL` |
@@ -206,31 +206,31 @@ project.json 与各 crate 的包名，不改逻辑代码。
 
 工具命令（`Bash` 前台 / 后台、`Grep` 的 `rg` 兜底、MCP stdio server）由 Core 以
 `$SHELL -c` 拉起，看到的是子进程环境里的 PATH。Core 进程本身的环境来自它的父进程：
-宿主从 GUI 启动时是 launchd / Explorer 的最小 PATH，远端 daemon 经 SSH exec 拉起时
-是 sshd 会话的环境。这两种环境都不含用户终端里的 PATH（`.zshrc` / `.bashrc` 配的那些
-目录），工具命令因此找不到 `node` / `cargo` / `git`。
+macOS 从 launchd 启动时只有最小 PATH，远端 daemon 经 SSH exec 拉起时是 sshd 会话的环境——
+这两种环境都不含用户终端里的 PATH（`.zshrc` / `.bashrc` 配的那些目录），工具命令因此找不到
+`node` / `cargo` / `git`；Windows 的宿主本来就把用户完整的 Windows PATH 交给了 Core，
+缺的只是 bash 看到的那份 POSIX 形式。
 
-`shell_env.rs` 在首次需要时用一次「登录 + 交互」shell 抓这份 PATH，缓存后按子进程类型
-注入两种形式之一——`shell_env::apply` 给 `$SHELL -c` 拉起的 shell 子进程，`shell_env::apply_native`
-给原生进程。这两个函数是 PATH 的唯一写入点：
+`shell_env.rs` 在首次需要时抓一次这份 PATH（非 Windows 用「登录 + 交互」shell，Windows 上只取
+进程环境，见下表），缓存后按子进程类型注入两种形式之一——`shell_env::apply` 给 `$SHELL -c`
+拉起的 shell 子进程，`shell_env::apply_native` 给原生进程。这两个函数是 PATH 的唯一写入点：
 
 | 项 | 口径 |
 | --- | --- |
-| 探测命令 | bash / zsh / sh / dash / ksh：`-l -i -c`（`-l` 读 `.zprofile` / `.zlogin`，`-i` 读 `.zshrc` / `.bashrc`——zsh 的 `.zshrc` 只在交互时读）；Windows 的 Git Bash 同一命令，脚本输出 shell 自己的形式后，把每条目录单独交给 `cygpath -w` 派生原生形式（整串 `cygpath -p` 会把 PATH 里的驱动器冒号当列表分隔符，见 `specs/defects/windows-bash-path-cygpath-resplit.md`） |
+| 探测命令 | bash / zsh / sh / dash / ksh：非 Windows 用 `-l -i -c`（`-l` 读 `.zprofile` / `.zlogin`，`-i` 读 `.zshrc` / `.bashrc`——zsh 的 `.zshrc` 只在交互时读）；Windows 上只用 `-c`，不读 `/etc/profile` / `.bashrc`：它们按 `MSYS2_PATH_TYPE` / `ORIGINAL_PATH` 重建 PATH，MSYS2 机器上会把用户环境变量里的目录（`git` 所在的 Windows 目录等）整套换掉（`specs/defects/windows-bash-probe-login-resets-path.md`） |
 | PowerShell | `-Command "[Console]::Out.Write($env:PATH)"`，**不加** `-NoProfile`：profile 里的 PATH 才是终端里的 PATH |
 | cmd.exe | 不读启动文件，终端里的 PATH 就是进程环境里的 PATH |
 | 取用范围 | 只取 PATH 一个变量；`.zshrc` 里的 alias、函数、`chpwd` 钩子都不搬进命令执行 |
-| 解析规则 | 按标记行取（shell 形式 `__TC_PATH__`、原生形式 `__TC_NATIVE_PATH__`；启动文件打印的内容排在它前面），两段都必须像一条 PATH（含平台分隔符，或本身是目录），否则按失败处理；没有原生形式那一行时两种形式相同 |
+| 解析规则 | 按标记行 `__TC_PATH__` 取（启动文件打印的内容排在它前面），必须像一条 PATH（含该形式的分隔符、是 POSIX 绝对路径，或本身是目录），否则按失败处理 |
 | 上限与缓存 | 单次探测 10s 上限；结果（含失败）在进程内缓存，不重试 |
 | 失败口径 | 直接报错，不退回继承环境：`Bash` 工具把错误作为工具结果返回，后台任务与 MCP server 启动失败，系统提示的环境段让整轮查询失败 |
 | pty | 不分配：`-c` 不进入交互循环，探测与工具命令都走管道 |
-| 注入目标 | shell 子进程（`Bash` 前台工具、后台任务）用 shell 自己的形式；原生子进程（`rg`、`git`、`where`、`cmd`、MCP stdio server）用原生形式——Windows 上的 `cmd /c` 与原生 exe 不认 POSIX 列表 |
+| 注入目标 | shell 子进程（`Bash` 前台工具、后台任务）用 shell 自己的形式；原生子进程（`rg`、`git`、`where`、`cmd`、MCP stdio server）用原生形式——Windows 上的 `cmd /c` 与原生 exe 不认 POSIX 列表，那份就是进程环境里的 Windows PATH |
 
-需要 tty 的命令（要 sudo 密码提示、vim 这类全屏编辑器、依赖终端判断才有颜色的工具）
-不在本机制范围内：工具命令的 stdin 接空设备，stdout / stderr 是管道。
+需要 tty 的命令（要 sudo 密码提示、vim 这类全屏编辑器、依赖终端判断才有颜色的工具）不在本机制范围内：工具命令的 stdin 接空设备，stdout / stderr 是管道。
 
-Windows 上的探测要求 shell 带 `cygpath`（Git Bash / MSYS2 / Cygwin）：它负责把每条目录
-单独换成 Windows 形式。WSL 的 bash 没有它，会按失败报错并把 stderr 尾巴带进错误文本。
+Windows 上原生形式直接取进程环境里的 PATH，不经过 `cygpath`；只有 shell 形式需要 bash 把
+Windows PATH 换算成 POSIX 列表，所以探测要求 shell 是 Git Bash / MSYS2 / Cygwin 这一类。
 
 ### 3.3 构建与目标平台
 

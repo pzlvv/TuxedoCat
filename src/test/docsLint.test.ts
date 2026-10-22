@@ -1063,11 +1063,12 @@ function main(): void {
     for (const flag of ['"-l"', '"-i"', '"-c"']) {
       must(shellEnv.includes(flag), `shell_env.rs 缺探测参数 ${flag}`);
     }
-    // 整串 `cygpath -wp "$PATH"` 会把 PATH 里的驱动器冒号当列表分隔符，产出
-    // `C;C:\Users\me\bin` 这类垃圾条目（specs/defects/windows-bash-path-cygpath-resplit.md）。
-    // Windows 形式只能逐条派生，且只给原生子进程用。
-    must(!shellEnv.includes('cygpath -wp'), 'shell_env.rs 仍把整串 PATH 交给 cygpath -p');
-    must(shellEnv.includes('cygpath -w'), 'shell_env.rs 缺逐条 cygpath -w 转换');
+    // Windows 上不读启动文件：`-l` 会跑 `/etc/profile`，MSYS2 机器上它按 `MSYS2_PATH_TYPE`
+    // 重建 PATH，把用户环境变量里的目录（`git` 所在目录等）整套换掉；原生形式直接取
+    // 进程环境里的 Windows PATH，不再经 cygpath 往返
+    // （specs/defects/windows-bash-probe-login-resets-path.md）。
+    must(!shellEnv.includes('cygpath'), 'shell_env.rs 仍在用 cygpath（Windows 直接取进程环境的 PATH）');
+    must(shellEnv.includes('!cfg!(windows)'), 'shell_env.rs 的 -l / -i 没有按平台区分');
     must(shellEnv.includes('apply_native'), 'shell_env.rs 缺原生子进程的 PATH 注入入口');
     must(shellEnv.includes('$env:PATH'), 'shell_env.rs 缺 PowerShell 的 $env:PATH');
     must(shellEnv.includes('from_secs(10)'), 'shell_env.rs 的探测上限不是 10s');
@@ -1075,11 +1076,9 @@ function main(): void {
       !codeFiles.some((rel) => rel !== 'core-rs/src/shell_env.rs' && /env\(\s*"PATH"/.test(readText(rel))),
       'PATH 不是只由 shell_env.rs 写入',
     );
-    must(
-      !pathSection.includes('cygpath -wp'),
-      '3.2.1 节仍写着整串 cygpath -wp',
-    );
-    for (const token of ['-l -i -c', 'cygpath -w', '$env:PATH', '10s', '原生形式']) {
+    must(!pathSection.includes('cygpath -w'), '3.2.1 节仍要求逐条 cygpath 派生');
+    must(!pathSection.includes('cygpath -wp'), '3.2.1 节仍要求整串 cygpath -p');
+    for (const token of ['-l -i -c', '$env:PATH', '10s', '原生形式', 'MSYS2_PATH_TYPE']) {
       must(pathSection.includes(token), `3.2.1 节缺 ${token}`);
     }
     checker.check(`工具命令的 PATH 口径与代码一致（问题 ${pathProblems.length} 处）`, pathProblems.length === 0);

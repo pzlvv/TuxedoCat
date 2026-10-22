@@ -54,6 +54,10 @@ bash 里本来就按 `:` 切碎，转成 Windows 形式再转回来会粘成 `C:
    原生子进程），由调用点显式选。
 4. 解析口径仍不降级：取不到 shell 形式、或取到的内容不像 PATH，就报错。
 
+> 第 2 条已被 [windows-bash-probe-login-resets-path.md](windows-bash-probe-login-resets-path.md)
+> 取代：Windows 上不再读启动文件后，原生形式直接取进程环境里的 Windows PATH，不再逐条
+> `cygpath -w` 派生。
+
 ## 不变量
 
 - 非 Windows 平台行为不变：脚本仍取 `$PATH` 原文，两种形式相同。
@@ -67,9 +71,10 @@ bash 里本来就按 `:` 切碎，转成 Windows 形式再转回来会粘成 `C:
 
 ## 回归测试
 
-- **RT-1**：Windows 上 bash 家族的探测脚本逐条转换，脚本里不再出现整串 `-p` 写法
-  （落点：`core-rs/src/shell_env_tests.rs` 的
-  `windows_bash_probe_converts_path_entries_one_by_one`）。
+- **RT-1**：Windows 上 bash 家族的探测脚本不做 POSIX → Windows 转换（落点：
+  `core-rs/src/shell_env_tests.rs` 的 `bash_probe_script_matches_platform`；后续 `-l` / `-i`
+  的口径由 `windows-bash-probe-login-resets-path` 的 `windows_bash_probe_skips_login_startup`
+  接替）。
 - **RT-2**：`$PATH` 里已有 Windows 形式条目时，探测输出的 shell 形式原样保留；干净列表的
   原生形式逐条对应；转不动的条目保留原文、不让探测整体失败
   （落点：`core-rs/src/shell_env_tests.rs` 的
@@ -91,6 +96,6 @@ bash 里本来就按 `:` 切碎，转成 Windows 形式再转回来会粘成 `C:
 | 既有回归（文档口径） | `npm run test:all -- docs-lint` | 绿 | 第 14 组「工具命令的 PATH 口径与代码一致」问题 0 处 |
 | 类型与 lint | `npm run check-types`、`npm run lint` | 绿 | — |
 | 既有回归（TS 全量） | `npm run test:all` | 红 | 61 个测试文件通过，只有 `corePlatformMatrix` 的 `arm64-win32 已产出调试符号（pdb）` 失败：本机产物目录里没有 pdb（旧构建留下的产物，本次改动不碰构建脚本与产物）；重建产物后转绿 |
-| 真实 Core 端到端 | `npm run build:core:host`，再 `npm run test:all -- standaloneCoreTools core-platform-matrix` | 绿 | `standaloneCoreTools` 62 断言（Bash 工具经真实 Core 跑 bash、后台任务、PATH 注入）+ `core-platform-matrix` 22 断言全通过 |
+| 真实 Core 端到端 | `npm run build:core:host`，再 `npm run test:all -- standaloneCoreTools core-platform-matrix` | 绿 | `core-platform-matrix` 62 断言 + `standaloneCoreTools` 22 断言（Bash 工具经真实 Core 跑 bash、后台任务、PATH 注入）全通过 |
 | 缺陷规格结构（docsLint） | `npm run test:all -- docs-lint` | 绿 | 评估段曾因缺「修复后的绿」行而红，补上后随第 14 组一起转绿 |
 | 评估段的偏差（修复段更正） | `bash -c 'PATH=...; cygpath -wp "$PATH"'` 对比逐条转换 | 部分验证 | 评估段把「驱动器冒号被当列表分隔符」写成 `cygpath -p` 独有，实测 bash 自己也按 `:` 切，整串与逐条在这些条目上产出相同；真正的差异是往返转换有损与「一条转不动整体失败」，`现状` / `期望` / RT-2 已按实测收敛 |
