@@ -24,7 +24,7 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 | --- | --- | --- |
 | `queryRunning` | 会话自身有活跃查询 / 引擎在消费 | 消费循环（`run_consumer` / `run_query_loop`）的进入与收尾、子代理轮次 |
 | `compacting` | 正在压缩上下文（会整体替换消息数组） | `compact.rs` 的 `mark_compacting` / `unmark_compacting`（`compact_conversation` 的进出） |
-| `pendingCompact` | 手动压缩已登记、等待下一轮对话开始时执行（排队不是正在执行的工作，不参与 `idle`） | `Core::request_compact` 的 `mark_pending_compact`；`run_query_loop` 消费待压缩、`Core::drop_session` 清理时 `unmark_pending_compact` |
+| `pendingCompact` | 手动压缩已登记、等待当前轮次结束、队列排空时执行（排队不是正在执行的工作，不参与 `idle`） | `Core::request_compact` 的 `mark_pending_compact`；`run_consumer` 队列排空时消费、中止 / `Core::drop_session` 清理时 `unmark_pending_compact` |
 | `backgroundRunning` | 有运行中的后台 Bash 任务 | `bash_task.rs` 的任务注册 / 结束 / 中止（按剩余任务数同步） |
 | `subAgentRunning` | 该会话已注册子代理（idle 递归看子代理当前是否非 idle，本标志只作变更信号） | `subagent.rs` 的 `register` / `unregister` |
 | `waiting` | 正在等待用户操作 | `Core::on_user_choice_pending`（宿主上报）；`waiting_request` 入队时提前标记 |
@@ -49,7 +49,7 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 | `waiting` | `waiting` 来源（正在等待用户操作，流水灯显示黄色） |
 | `queryRunning` | `query` 来源（前台查询 / 引擎在消费） |
 | `compacting` | `compacting` 来源（正在压缩上下文） |
-| `pendingCompact` | `pendingCompact` 来源（手动压缩已登记、等待下一轮开始；不参与 `idle`） |
+| `pendingCompact` | `pendingCompact` 来源（手动压缩已登记、等待当前轮次结束后执行；不参与 `idle`） |
 | `backgroundRunning` | `background` 来源（有运行中的后台 Bash 任务） |
 | `subAgentRunning` | 派生字段：存在非 idle 的已登记子代理（递归到子代理自身的查询 / 压缩 / 后台任务 / 下层子代理） |
 | `parentSessionId` | 父会话 ID（子代理会话才有；普通会话为 `null`）。登记于子代理创建时，随会话存续，不随注册表注销消失——消费者据此区分「子对话完成」与「主对话完成」（如托盘完成提醒只对后者闪烁） |

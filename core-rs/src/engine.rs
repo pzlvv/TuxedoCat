@@ -2108,6 +2108,10 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
                 guard.reminder_driven_run = false;
                 guard.agent_messages.clear();
                 guard.running = false;
+                drop(guard);
+                // 中止同时取消排队中的手动压缩：避免中止后补跑压缩
+                compact::unmark_pending_compact(&session_id);
+                core.emit_runtime();
                 break;
             }
         }
@@ -2117,6 +2121,34 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
         let step = match take_queued_batch(&state, true) {
             Some(batch) => Some(batch),
             None => {
+                // 用户排队的压缩：本轮结束、队列排空时立即执行，不再等下一轮用户消息。
+                // `running` 保持 true——轮次末尾到压缩开始之间的间隙仍属同一段连续任务，
+                // 压缩完成后才允许进入 idle。
+                if compact::is_pending_compact(&session_id) {
+                    compact::unmark_pending_compact(&session_id);
+                    match core.project_of(&session_id) {
+                        Ok(project) => {
+                            let applied = compact::compact_and_apply_messages(
+                                &core,
+                                &session_id,
+                                &project,
+                                &state,
+                                false,
+                                None,
+                            );
+                            if !applied {
+                                // 无可摘要内容：压缩提前返回、不会推送 compacting 快照
+                                core.emit_runtime();
+                            }
+                        }
+                        Err(_) => {
+                            // 项目解析失败：标记已清除，补一次快照让 UI 还原
+                            core.emit_runtime();
+                        }
+                    }
+                    // 压缩期间可能有新消息入队：回到循环顶部重新取
+                    continue;
+                }
                 let mut guard = state.lock().unwrap();
                 // 本轮由 reminder 拉起：收尾不再补兜底提醒，避免「提醒 → 查询 → 提醒」接力
                 // （标记取走即清除，只对刚结束的这一轮有意义）。

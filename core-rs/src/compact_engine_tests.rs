@@ -436,6 +436,146 @@ fn pending_compact_is_cleared_when_there_is_nothing_to_summarize() {
     crate::compact::reset_for_test();
 }
 
+/// 当前轮次最后一次 LLM 往返期间请求压缩：轮次结束后应当自动执行，
+/// 不能等到用户再发一条消息（specs/defects/queued-compact-waits-for-next-round.md RT-1）。
+#[test]
+fn pending_compact_runs_when_the_current_turn_ends() {
+    let sandbox = Sandbox::new("engine-compact-turn-end");
+    crate::compact::reset_for_test();
+    let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let gated = Arc::new(AtomicBool::new(false));
+    let worker_gated = Arc::clone(&gated);
+    let llm = FakeLlm::start(move |_index, body| {
+        let is_compact = body.to_string().contains("请总结以下对话的要点");
+        if !is_compact && !worker_gated.swap(true, Ordering::SeqCst) {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        }
+        openai_text_sse(&["回复"])
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    seed_messages(&harness, "s1", &project, 40);
+
+    submit(&harness, "s1", "最后一条", "u-100");
+    assert!(
+        started_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+        "查询应当发出 LLM 请求"
+    );
+    // 会话正在跑最后一次往返：请求压缩只会登记待压缩
+    harness.core.request_compact("s1");
+    assert!(crate::compact::is_pending_compact("s1"), "应当登记待压缩");
+    release_tx.send(()).expect("release llm");
+
+    assert!(
+        harness.wait_for(
+            |sink| !sink.events_of("queryEnd").is_empty(),
+            Duration::from_secs(30),
+        ),
+        "本轮应当结束: {:?}",
+        harness.sink.event_types()
+    );
+    assert!(
+        harness.wait_for(
+            |sink| !sink.events_of("messagesReplaced").is_empty(),
+            Duration::from_secs(10),
+        ),
+        "轮次结束后应当执行排队的压缩: {:?}",
+        harness.sink.event_types()
+    );
+    assert!(!crate::compact::is_pending_compact("s1"), "标记应当被清掉");
+
+    // 轮次末尾到压缩开始之间不允许出现 idle：间隙仍属同一段连续任务
+    let events = harness.sink.events();
+    let compact_at = events
+        .iter()
+        .position(|event| event["type"] == "compactBegin")
+        .expect("compactBegin");
+    let idle_before_compact = events[..compact_at].iter().any(|event| {
+        event["type"] == "sessionRuntimeChanged"
+            && event["states"]
+                .as_array()
+                .map(|states| {
+                    states
+                        .iter()
+                        .any(|state| state["sessionId"] == "s1" && state["idle"] == true)
+                })
+                .unwrap_or(false)
+    });
+    assert!(
+        !idle_before_compact,
+        "压缩开始前会话不应进入 idle: {:?}",
+        harness.sink.event_types()
+    );
+    let replaced_at = events
+        .iter()
+        .position(|event| event["type"] == "messagesReplaced")
+        .expect("messagesReplaced");
+    let query_end_at = events
+        .iter()
+        .position(|event| event["type"] == "queryEnd")
+        .expect("queryEnd");
+    assert!(replaced_at < query_end_at, "queryEnd 应当在压缩完成之后");
+
+    crate::compact::reset_for_test();
+}
+
+/// 中止时清除待压缩：中止后不补跑压缩（specs/defects/queued-compact-waits-for-next-round.md RT-2）。
+#[test]
+fn abort_clears_pending_compact() {
+    let sandbox = Sandbox::new("engine-compact-abort-pending");
+    crate::compact::reset_for_test();
+    let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let gated = Arc::new(AtomicBool::new(false));
+    let worker_gated = Arc::clone(&gated);
+    let llm = FakeLlm::start(move |_index, body| {
+        let is_compact = body.to_string().contains("请总结以下对话的要点");
+        if !is_compact && !worker_gated.swap(true, Ordering::SeqCst) {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        }
+        openai_text_sse(&["回复"])
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    seed_messages(&harness, "s1", &project, 40);
+
+    submit(&harness, "s1", "最后一条", "u-100");
+    assert!(
+        started_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+        "查询应当发出 LLM 请求"
+    );
+    harness.core.request_compact("s1");
+    assert!(crate::compact::is_pending_compact("s1"), "应当登记待压缩");
+    harness.core.on_abort("s1");
+    release_tx.send(()).expect("release llm");
+
+    assert!(
+        harness.wait_for(
+            |sink| !sink.events_of("queryEnd").is_empty(),
+            Duration::from_secs(30),
+        ),
+        "本轮应当结束: {:?}",
+        harness.sink.event_types()
+    );
+    assert!(
+        !crate::compact::is_pending_compact("s1"),
+        "中止后应当清除待压缩"
+    );
+    assert!(
+        harness.sink.events_of("compactBegin").is_empty(),
+        "中止后不应补跑压缩"
+    );
+
+    crate::compact::reset_for_test();
+}
+
 /// 压缩期间到达的用户消息只入队不启动消费循环；压缩收尾时唤醒。
 #[test]
 fn messages_arriving_during_compact_are_queued_then_resumed() {

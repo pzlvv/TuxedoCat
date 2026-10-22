@@ -22,7 +22,7 @@ last_reviewed: 2026-10-18
   - **AC-2**（FR-001）：GIVEN 压缩边界之后的消息数不大于 `maxMessagesToKeep` WHEN 触发压缩 THEN 不做任何处理直接返回
 - 场景 2：手动压缩
   - **AC-3**（FR-002）：GIVEN 会话空闲 WHEN UI 发 `compactRequested` THEN 立即执行压缩
-  - **AC-4**（FR-002）：GIVEN 会话非空闲 WHEN 手动请求压缩 THEN 登记「待压缩」，下一轮对话开始时执行
+  - **AC-4**（FR-002）：GIVEN 会话非空闲 WHEN 手动请求压缩 THEN 登记「待压缩」，当前轮次结束、队列排空时执行
 - 场景 3：压缩结果
   - **AC-5**（FR-003）：GIVEN 可压缩消息 WHEN 压缩完成 THEN 消息数组整体替换为 `[边界标记, 摘要, ...保留区]`，meta 标记 `isCompacted`，UI 收到 `messagesReplaced`
   - **AC-6**（FR-003）：GIVEN `tool_use` 被留在归档区而其 `tool_result` 落在保留区（或相反） WHEN 按条数截断保留区 THEN 向保留区补一条 `is_canceled` 的合成 `tool_result`
@@ -47,7 +47,8 @@ last_reviewed: 2026-10-18
 ### FR-002：手动压缩与延后执行
 
 UI 发 `UiEvent.compactRequested` → Core 的手动压缩入口；
-会话非空闲（`idle === false`）时登记「待压缩」，在当前轮次结束后的下一轮开始时执行。
+会话非空闲（`idle === false`）时登记「待压缩」，在当前轮次结束、消费队列排空时执行
+（轮次末尾到压缩开始之间 `running` 保持为真，压缩完成后才进入 idle）。
 排队事实经运行时快照的 `pendingCompact` 根事实推给 UI（见
 [docs/core/session-runtime.md 第 2 节](../core/session-runtime.md#2-对外快照)）：
 webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期间把上下文用量
