@@ -116,8 +116,10 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
   // 语言语法按需加载：未加载时先 await ensureLanguage，再生成高亮 HTML
   // （期间保持纯文本渲染，由渲染层 escapeHtml 兜底）。
   // 只高亮 highlightSource（截断后），避免为不可见的上千行白跑 Shiki。
+  // 没有 filePath 时卡片走下方「unknown file」分支（模型漏传 file_path，core 的
+  // displayArgs 仍会补 contentPreview）：既没有语言可判，也不必为不渲染的预览跑高亮。
   useEffect(() => {
-    if (!highlightSource || !isExpanded) return;
+    if (!filePath || !highlightSource || !isExpanded) return;
     const language = getLanguageFromPath(filePath);
     let cancelled = false;
 
@@ -168,8 +170,11 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
     });
   };
 
-  // 从文件路径获取语言类型
-  const getLanguageFromPath = (path: string): string => {
+  // 从文件路径获取语言类型。
+  // 路径可能缺失（模型漏传 file_path，卡片会走 unknown file 分支），缺失时按纯文本处理：
+  // 这里不能假设 path 存在，否则 undefined.split 会抛在 effect 里、把整个 webview 打崩。
+  const getLanguageFromPath = (path: string | undefined): string => {
+    if (!path) return 'plaintext';
     const ext = path.split('.').pop()?.toLowerCase();
     const languageMap: Record<string, string> = {
       'js': 'javascript', 'jsx': 'jsx', 'mjs': 'javascript', 'cjs': 'javascript',

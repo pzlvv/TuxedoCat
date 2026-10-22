@@ -233,37 +233,6 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, status, isDark
     return out;
   }, [diffHunks, visibleDiffLines, totalDiffLines]);
 
-  if (!filePath) {
-    return (
-      <ToolHeader icon="FileText" name="Edit" colors={colors}
-        rightExtra={metaLoaded && (diffHunks.length > 0 || beforeContent) && effectiveToolCallId ? (
-          <button
-            onClick={() => setShowRollbackConfirm(true)}
-            className="cursor-pointer"
-            style={{
-              background: 'none',
-              border: 'none',
-              padding: '2px 4px',
-              borderRadius: '3px',
-              color: colors.harness,
-              font: 'inherit',
-              fontSize: 'inherit',
-              opacity: 0.6,
-              flexShrink: 0,
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = `${colors.harness}20`; }}
-            onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.backgroundColor = 'transparent'; }}
-            title={t('tool.editFile.rollback')}
-          >
-            <Icon name="rotate-ccw" size={12} />
-          </button>
-        ) : undefined}
-      >
-        <span style={{ opacity: 0.5, marginLeft: '8px' }}>{t('tool.editFile.unknownFile')}</span>
-      </ToolHeader>
-    );
-  }
-
   const handleToggleExpand = () => {
     const next = !isExpanded;
     onExpandToggle?.(next);
@@ -283,8 +252,11 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, status, isDark
     });
   };
 
-  // 获取 Monaco 语言类型
-  const getLanguageFromPath = (path: string): string => {
+  // 从文件路径获取 Monaco 语言类型。
+  // 路径可能缺失（模型漏传 file_path，卡片会走下方 unknown file 分支），缺失时按纯文本处理：
+  // 这里不能假设 path 存在，否则 undefined.split 会把整个 webview 打崩。
+  const getLanguageFromPath = (path: string | undefined): string => {
+    if (!path) return 'plaintext';
     const languageMap: Record<string, string> = {
       'js': 'javascript',
       'jsx': 'javascript',
@@ -409,14 +381,15 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, status, isDark
 
   // 语言语法按需加载：当前语言尚未加载时异步加载，完成后 bump highlightVersion
   // 触发 diff 重新高亮（在此之前 diff 以纯文本渲染，不做语法着色）。
+  // 没有 filePath 时卡片走下方 unknown file 分支，不必为不渲染的 diff 加载语法。
   useEffect(() => {
-    if (!highlighter || isLanguageReady(language)) return;
+    if (!filePath || !highlighter || isLanguageReady(language)) return;
     let mounted = true;
     ensureLanguage(language).then(() => {
       if (mounted) setHighlightVersion((v) => v + 1);
     });
     return () => { mounted = false; };
-  }, [highlighter, language]);
+  }, [filePath, highlighter, language]);
 
   // 生成高亮的 HTML。
   // style 非空表示「整行只有一个 token」，它的内联样式可以直接提到行元素上，
@@ -491,7 +464,7 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, status, isDark
   // 白跑一遍）。这里把高亮结果缓存起来，仅当 diff 内容、语言、主题、
   // highlighter 或颜色变化时才重算。
   const diffRender = useMemo(() => {
-    if (!isExpanded || diffHunks.length === 0) return null;
+    if (!filePath || !isExpanded || diffHunks.length === 0) return null;
     const _t0 = performance.now();
     // 扁平化：hunk 之间不再需要包裹层，key 用 "hunkIndex-lineIndex" 保证唯一。
     const rendered: Array<{ key: string; bg: string; html: string; style: React.CSSProperties | null }> = [];
@@ -513,7 +486,43 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, status, isDark
       profileLog(`[Profile] EditFile diff高亮 | 耗时=${elapsed.toFixed(2)}ms | 行数=${lineCount}/${totalDiffLines} | file=${filePath}`);
     }
     return rendered;
-  }, [isExpanded, visibleDiffHunks, totalDiffLines, diffHunks.length, highlighter, highlightVersion, language, theme, colors]);
+  }, [filePath, isExpanded, visibleDiffHunks, totalDiffLines, diffHunks.length, highlighter, highlightVersion, language, theme, colors]);
+
+  // 模型漏传 file_path 时降级成「unknown file」头部。
+  // ⚠️ 这个条件返回必须留在**所有 hooks 之后**：React 按调用顺序匹配 hooks，把它放在
+  // hooks 前面会让同一个卡片实例在 args 补齐 file_path 前后调用数量不同，直接抛
+  // 「Rendered more hooks than during the previous render」——webview 没有 error
+  // boundary，整棵树会卸载。
+  if (!filePath) {
+    return (
+      <ToolHeader icon="FileText" name="Edit" colors={colors}
+        rightExtra={metaLoaded && (diffHunks.length > 0 || beforeContent) && effectiveToolCallId ? (
+          <button
+            onClick={() => setShowRollbackConfirm(true)}
+            className="cursor-pointer"
+            style={{
+              background: 'none',
+              border: 'none',
+              padding: '2px 4px',
+              borderRadius: '3px',
+              color: colors.harness,
+              font: 'inherit',
+              fontSize: 'inherit',
+              opacity: 0.6,
+              flexShrink: 0,
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = `${colors.harness}20`; }}
+            onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.backgroundColor = 'transparent'; }}
+            title={t('tool.editFile.rollback')}
+          >
+            <Icon name="rotate-ccw" size={12} />
+          </button>
+        ) : undefined}
+      >
+        <span style={{ opacity: 0.5, marginLeft: '8px' }}>{t('tool.editFile.unknownFile')}</span>
+      </ToolHeader>
+    );
+  }
 
   return (
     <div className="w-full">

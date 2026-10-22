@@ -58,7 +58,22 @@ const COMPLETION_BREATH_MS = 1600;
 /* ------------------------------------------------------------------ */
 /*  Component                                                         */
 /* ------------------------------------------------------------------ */
-export const ConversationTreeItem = memo(function ConversationTreeItem({
+/**
+ * 递归深度保护外壳：`depth` 超限（环形 parentSessionId）时整行不渲染。
+ *
+ * 这一层**不能有 hooks**：React 按调用顺序匹配 hooks，条件返回若落在 hooks 之前，
+ * 同一个实例在 `depth` 变化前后调用的数量不同就会抛
+ * 「Rendered more hooks than during the previous render」（webview 没有 error
+ * boundary，整棵树会卸载）。实际渲染交给下面的 `ConversationTreeItemBody`。
+ */
+export const ConversationTreeItem = memo(function ConversationTreeItem(props: ConversationTreeItemProps) {
+  if (props.depth > MAX_DEPTH) {
+    return null;
+  }
+  return <ConversationTreeItemBody {...props} />;
+});
+
+const ConversationTreeItemBody = function ConversationTreeItemBody({
   item,
   isActive,
   isRoot,
@@ -84,11 +99,6 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
   onChildDelete,
   namingSessions,
 }: ConversationTreeItemProps) {
-  // Prevent infinite recursion due to circular parentSessionId references
-  if (depth > MAX_DEPTH) {
-    return null;
-  }
-
   // 重命名状态
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState('');
@@ -357,4 +367,4 @@ export const ConversationTreeItem = memo(function ConversationTreeItem({
       )}
     </div>
   );
-});
+};
