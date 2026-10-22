@@ -29,7 +29,8 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 | `subAgentRunning` | 该会话已注册子代理（idle 递归看子代理当前是否非 idle，本标志只作变更信号） | `subagent.rs` 的 `register` / `unregister` |
 | `waiting` | 正在等待用户操作 | `Core::on_user_choice_pending`（宿主上报）；`waiting_request` 入队时提前标记 |
 
-会话关闭 / 删除时 `Core::drop_session` 清理该会话的状态，并清掉进程级待压缩注册表。
+会话关闭 / 删除时 `Core::drop_session` 清理该会话的状态、注销它作为子代理的注册表
+条目（只注销自身、不级联到存活的子孙），并清掉进程级待压缩注册表。
 
 `waiting` 只表示**真的在等用户**：`waiting_request`（`request_user_choice`）的入队与
 `userChoicePendingChanged`（webview 弹出 / 应答）。`CoreRequest.toolPermissionRequested`

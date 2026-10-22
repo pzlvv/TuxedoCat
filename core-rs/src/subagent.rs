@@ -5,9 +5,9 @@
 //! - `sessionRuntime` 的 `idle` 判定递归到子代理（子代理在跑 → 父会话不空闲）；
 //! - 会话中止 / 关闭时递归覆盖子孙会话。
 //!
-//! **只注册不注销**（`unregister` 没有任何生产调用方）。
-//! 子代理跑完后它自己的 `SessionState` 回到空闲，父会话的 `idle` 也随之恢复；
-//! 保留登记是为了让「稍后再中止该会话」仍能覆盖到子代理。
+//! 注销只有一个入口：`Core::drop_session` 在会话终结时注销该会话**自身**的条目
+//! （不级联到存活的子孙）。子代理跑完一轮后条目仍然保留——它可能还在跑后台任务、
+//! 也可能被重新打开继续对话，保留登记让「稍后再中止该会话」仍能覆盖到它。
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,8 +33,7 @@ pub fn register(id: &str, creator_session_id: &str) {
     });
 }
 
-/// 注销（当前没有生产调用方，供测试与将来的清理逻辑用）
-#[cfg_attr(not(test), allow(dead_code))]
+/// 注销一个子代理条目（生产调用方：`Core::drop_session` 在会话终结时注销自身条目）
 pub fn unregister(id: &str) {
     AGENTS.lock().unwrap().retain(|record| record.id != id);
 }

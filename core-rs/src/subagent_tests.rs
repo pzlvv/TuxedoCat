@@ -4,7 +4,7 @@
 //! 互斥，避免并行走底互相踩踏。
 
 use super::*;
-use crate::test_support::serial;
+use crate::test_support::{serial, EngineHarness};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -201,5 +201,37 @@ fn cancelled_queued_call_does_not_block_following_waiter() {
     release_slot(CREATOR);
     assert_eq!(rx2.recv_timeout(Duration::from_secs(2)), Ok(true));
     handle2.join().unwrap();
+    reset_for_test();
+}
+
+// ==================== 会话终结注销（specs/defects/subagent-registry-outlives-dropped-sessions） ====================
+
+#[test]
+fn drop_session_unregisters_the_dropped_sessions_subagent_entry() {
+    let _guard = serial();
+    reset_for_test();
+    let harness = EngineHarness::start(|_| Some(serde_json::json!({})));
+    register("sub_child", "sess_parent");
+    harness.core.drop_session("sub_child");
+    assert_eq!(
+        creator_of("sub_child"),
+        None,
+        "被 drop 会话自身的子代理条目应随会话终结注销"
+    );
+    reset_for_test();
+}
+
+#[test]
+fn drop_session_keeps_surviving_children_registered() {
+    let _guard = serial();
+    reset_for_test();
+    let harness = EngineHarness::start(|_| Some(serde_json::json!({})));
+    register("sub_survivor", "sess_parent");
+    harness.core.drop_session("sess_parent");
+    assert_eq!(
+        creator_of("sub_survivor").as_deref(),
+        Some("sess_parent"),
+        "注销不级联：存活的子代理会话（可重开 / 可能在跑后台任务）仍靠登记保持递归中止可达"
+    );
     reset_for_test();
 }
