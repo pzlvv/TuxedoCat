@@ -555,7 +555,8 @@ fn build_stdio_command(
     for (key, value) in environment {
         child.env(key, value);
     }
-    crate::shell_env::apply(&mut child)?;
+    // 服务器经 `cmd /c` 起（原生进程），PATH 要 Windows 形式
+    crate::shell_env::apply_native(&mut child)?;
     // 与其它子进程一致地隐藏控制台窗口：Windows 下 MCP 服务器每起一次都闪一个黑框。
     crate::util::hide_console(&mut child);
     Ok(child)

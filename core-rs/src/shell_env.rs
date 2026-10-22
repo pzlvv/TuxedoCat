@@ -7,8 +7,15 @@
 //! `node` / `cargo` / `git`。
 //!
 //! 这里在首次需要时用一次「登录 + 交互」shell 把用户终端里的 PATH 抓出来，
-//! 缓存后由 [`apply`] 注入每个工具子进程：`apply` 是 PATH 的唯一写入点
+//! 缓存后由 [`apply`] / [`apply_native`] 注入子进程：这两个函数是 PATH 的唯一写入点
 //! （`docs/architecture/principles.md` 第 7 节）。
+//!
+//! **两种形式，同一份来源**：shell 自己看到的形式（Windows 上的 Git Bash / MSYS2 /
+//! Cygwin 是 POSIX 列表）给 `$SHELL -c` 拉起的工具命令；原生进程（`rg` / `git` /
+//! `where` / `cmd` / MCP server）要 Windows 形式，由同一份列表**逐条**派生。把整串列表
+//! 交给 `cygpath -p` 有两个毛病：一条目录转不动就让整个探测失败；而且 shell 子进程拿到
+//! Windows 形式后要靠 cygwin 在启动时转回 POSIX，这个往返有损
+//! （`specs/defects/windows-bash-path-cygpath-resplit.md`）。
 //!
 //! 三条刻意的约束：
 //!
@@ -33,19 +40,60 @@ use crate::util;
 /// 留足余量；超时就报错，不无限等，也不退化成继承环境。
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-static RESOLVED: OnceLock<Result<OsString, String>> = OnceLock::new();
+/// 探测输出的标记：启动文件打印的内容排在前面，按标记认自己那两行。
+const SHELL_FORM_MARKER: &str = "__TC_PATH__";
+const NATIVE_FORM_MARKER: &str = "__TC_NATIVE_PATH__";
+
+/// 用户终端里的 PATH，两种形式同一份来源。
+#[derive(Debug)]
+pub struct ShellPath {
+    /// shell 自己的形式：Windows 上的 Git Bash / MSYS2 / Cygwin 是 POSIX 列表
+    shell: OsString,
+    /// 交给原生进程的形式：Windows 形式；非 Windows 上与 [`Self::shell`] 相同
+    native: OsString,
+}
+
+impl ShellPath {
+    /// 两种形式相同的场合（非 Windows、PowerShell、cmd.exe）
+    fn uniform(path: OsString) -> ShellPath {
+        ShellPath {
+            shell: path.clone(),
+            native: path,
+        }
+    }
+
+    /// shell 自己的形式（`$SHELL -c` 拉起的工具命令看到的那份）
+    pub fn shell(&self) -> &OsStr {
+        &self.shell
+    }
+
+    /// 交给原生进程的形式（`rg` / `git` / `where` / `cmd` / MCP server）
+    pub fn native(&self) -> &OsStr {
+        &self.native
+    }
+}
+
+static RESOLVED: OnceLock<Result<ShellPath, String>> = OnceLock::new();
 
 /// 用户终端里的 PATH（首次调用时探测并缓存；失败结果同样缓存，不反复重试）
-pub fn path() -> Result<&'static OsString, String> {
+pub fn path() -> Result<&'static ShellPath, String> {
     RESOLVED
         .get_or_init(|| probe(&shell::shell()))
         .as_ref()
         .map_err(|error| error.clone())
 }
 
-/// 把解析出的 PATH 注入子进程命令。工具子进程一律经这里，别处不写 PATH。
+/// 把解析出的 PATH 注入 shell 子进程（`$SHELL -c` 拉起的工具命令 / 后台任务）。
 pub fn apply(command: &mut Command) -> Result<(), String> {
-    apply_value(command, path()?.as_os_str());
+    apply_value(command, path()?.shell());
+    Ok(())
+}
+
+/// 把解析出的 PATH 注入原生子进程（`rg` / `git` / `where` / `cmd` / MCP server）。
+///
+/// 原生进程不认 POSIX 列表：Windows 上用逐条派生出来的 Windows 形式。
+pub fn apply_native(command: &mut Command) -> Result<(), String> {
+    apply_value(command, path()?.native());
     Ok(())
 }
 
@@ -58,8 +106,8 @@ fn apply_value(command: &mut Command, path: &OsStr) {
 /// `test_support::Sandbox::new` 在串行闸门内调用（`RESOLVED` 是进程级静态状态，
 /// 只有第一次生效）；不这么做的话每个跑命令的用例都要先执行用户的启动文件。
 #[cfg(test)]
-pub fn force_path_for_test(path: OsString) {
-    let _ = RESOLVED.set(Ok(path));
+pub fn force_path_for_test(shell: OsString, native: OsString) {
+    let _ = RESOLVED.set(Ok(ShellPath { shell, native }));
 }
 
 // ==================== 探测 ====================
@@ -73,14 +121,14 @@ enum Probe {
     Inherited,
 }
 
-fn probe(shell: &ShellInfo) -> Result<OsString, String> {
+fn probe(shell: &ShellInfo) -> Result<ShellPath, String> {
     match probe_plan(shell)? {
-        Probe::Inherited => {
-            std::env::var_os("PATH").ok_or_else(|| "进程环境里没有 PATH".to_string())
-        }
+        Probe::Inherited => std::env::var_os("PATH")
+            .map(ShellPath::uniform)
+            .ok_or_else(|| "进程环境里没有 PATH".to_string()),
         Probe::Run(args) => {
             let output = run_probe(&shell.path, &args, PROBE_TIMEOUT)?;
-            parse_path(&output)
+            parse_output(&output)
         }
     }
 }
@@ -94,12 +142,20 @@ fn probe_plan(shell: &ShellInfo) -> Result<Probe, String> {
             // `.zshrc` / `.bashrc`——zsh 的 `.zshrc` 只在交互时读，少了 `-i` 就
             // 拿不到它里面的 PATH。
             let script = if cfg!(windows) {
-                // Git Bash / MSYS2 / Cygwin 的 PATH 是 POSIX 形式，而
-                // `Command::env("PATH")` 必须是 Windows 形式（CreateProcess 用它
-                // 找可执行文件），交给 `cygpath -wp` 转换。
-                r#"cygpath -wp "$PATH""#
+                // Git Bash / MSYS2 / Cygwin 的 `$PATH` 是 POSIX 列表，shell 子进程直接用
+                // 这份；原生子进程要 Windows 形式，由同一份列表逐条 `cygpath -w` 派生：
+                // 每条单独转换，转不动的保留原文（整串 `cygpath -p` 会因此整体失败），
+                // 空条目按 `.`（`specs/defects/windows-bash-path-cygpath-resplit.md`）。
+                concat!(
+                    r#"printf '__TC_PATH__%s\n' "$PATH"; "#,
+                    r#"IFS=:; set -f; out=; "#,
+                    r#"for entry in $PATH; do [ -n "$entry" ] || entry=.; "#,
+                    r#"converted=$(cygpath -w -- "$entry" 2>/dev/null) || converted=$entry; "#,
+                    r#"out="$out$converted;"; done; "#,
+                    r#"printf '__TC_NATIVE_PATH__%s' "${out%;}""#,
+                )
             } else {
-                r#"printf %s "$PATH""#
+                r#"printf '__TC_PATH__%s' "$PATH""#
             };
             Ok(Probe::Run(vec![
                 "-l".to_string(),
@@ -109,10 +165,11 @@ fn probe_plan(shell: &ShellInfo) -> Result<Probe, String> {
             ]))
         }
         // PowerShell 的 profile（`$PROFILE`）默认加载，这里**不加** `-NoProfile`：
-        // 用户配在 profile 里的 PATH 才是终端里看到的 PATH。
+        // 用户配在 profile 里的 PATH 才是终端里看到的 PATH。它输出的本来就是 Windows
+        // 形式，两种形式相同。
         "powershell" | "pwsh" => Ok(Probe::Run(vec![
             "-Command".to_string(),
-            "[Console]::Out.Write($env:PATH)".to_string(),
+            format!("[Console]::Out.Write('{SHELL_FORM_MARKER}' + $env:PATH)"),
         ])),
         // cmd.exe 不读任何启动文件：它的 PATH 就是父进程给的，探测没有意义。
         "cmd" => Ok(Probe::Inherited),
@@ -249,25 +306,57 @@ fn drain(mut stream: impl Read + Send + 'static) -> Drained {
     Drained { buffer, drained }
 }
 
-/// 从 shell 输出里取 PATH：取最后一个非空行（启动文件打印的内容排在它前面），
+/// 从 shell 输出里取 PATH：启动文件打印的内容排在前面，按标记行认自己那两行，
 /// 并校验它像一条 PATH——不像就报错，而不是把垃圾注入环境。
-fn parse_path(output: &str) -> Result<OsString, String> {
-    let candidate = output
-        .lines()
-        .rev()
-        .map(|line| line.trim_end_matches('\r'))
-        .find(|line| !line.trim().is_empty())
+///
+/// 原生形式那一行只有 Windows 上的 bash 家族会打（逐条 `cygpath -w` 派生）；缺这一行
+/// 就说明两种形式相同（非 Windows、PowerShell、cmd.exe）。两种形式的分隔符不同：Windows
+/// 上的 shell 形式是 POSIX 列表（`:`），原生形式是 Windows 列表（`;`）。
+fn parse_output(output: &str) -> Result<ShellPath, String> {
+    let shell = marked_value(output, SHELL_FORM_MARKER)
         .ok_or_else(|| "shell 没有输出 PATH（启动文件可能提前退出）".to_string())?;
-    let value = candidate.trim();
-    if !looks_like_path(value) {
-        return Err(format!("shell 输出的最后一行不像 PATH：{value:?}"));
+    let native_line = marked_value(output, NATIVE_FORM_MARKER);
+    let shell_separator = if native_line.is_some() {
+        ':'
+    } else {
+        platform_separator()
+    };
+    let native = native_line.unwrap_or_else(|| shell.clone());
+    for (label, value, separator) in [
+        ("shell 形式", &shell, shell_separator),
+        ("原生形式", &native, platform_separator()),
+    ] {
+        if !looks_like_path(value, separator) {
+            return Err(format!("shell 输出的{label}不像 PATH：{value:?}"));
+        }
     }
-    Ok(OsString::from(value))
+    Ok(ShellPath {
+        shell: OsString::from(shell),
+        native: OsString::from(native),
+    })
 }
 
-fn looks_like_path(value: &str) -> bool {
-    let separator = if cfg!(windows) { ';' } else { ':' };
-    value.contains(separator) || Path::new(value).is_dir()
+/// 取最后一个带标记的行里的值（启动文件可能打印任意内容，标记只由探测脚本自己打）
+fn marked_value(output: &str, marker: &str) -> Option<String> {
+    output
+        .lines()
+        .map(|line| line.trim_end_matches('\r'))
+        .filter_map(|line| line.trim().strip_prefix(marker))
+        .last()
+        .map(|value| value.trim().to_string())
+}
+
+fn platform_separator() -> char {
+    if cfg!(windows) {
+        ';'
+    } else {
+        ':'
+    }
+}
+
+/// 一条 PATH 是否成立：含该形式的分隔符、是 POSIX 绝对路径，或本身是目录
+fn looks_like_path(value: &str, separator: char) -> bool {
+    value.contains(separator) || value.starts_with('/') || Path::new(value).is_dir()
 }
 
 #[cfg(test)]

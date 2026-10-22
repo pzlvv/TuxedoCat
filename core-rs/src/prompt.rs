@@ -641,7 +641,7 @@ fn os_release() -> Result<String, String> {
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         crate::util::hide_console(&mut command);
-        crate::shell_env::apply(&mut command)?;
+        crate::shell_env::apply_native(&mut command)?;
         command
             .output()
             .ok()
@@ -659,7 +659,7 @@ fn os_release() -> Result<String, String> {
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         crate::util::hide_console(&mut command);
-        crate::shell_env::apply(&mut command)?;
+        crate::shell_env::apply_native(&mut command)?;
         command
             .output()
             .ok()
@@ -720,7 +720,7 @@ fn available_commands() -> Result<Vec<String>, String> {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         crate::util::hide_console(&mut command);
-        crate::shell_env::apply(&mut command)?;
+        crate::shell_env::apply_native(&mut command)?;
         if command.status().map(|status| status.success()).unwrap_or(false) {
             found.push(candidate.to_string());
         }
@@ -751,7 +751,7 @@ fn git_description(cwd: &str) -> Result<String, String> {
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .current_dir(cwd);
     crate::util::hide_console(&mut command);
-    crate::shell_env::apply(&mut command)?;
+    crate::shell_env::apply_native(&mut command)?;
     let branch = command
         .output()
         .ok()

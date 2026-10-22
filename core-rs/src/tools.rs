@@ -3390,8 +3390,8 @@ fn run_ripgrep(args: &[String]) -> Result<String, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     util::hide_console(&mut cmd);
-    // `rg` 可能来自 PATH（自带产物缺失时的兜底），与工具命令用同一份 PATH
-    crate::shell_env::apply(&mut cmd)?;
+    // `rg` 是原生进程（自带产物缺失时还可能来自 PATH）：要 Windows 形式的那份
+    crate::shell_env::apply_native(&mut cmd)?;
     let mut child = cmd.spawn().map_err(|err| {
         // 对齐 Node `execFile` 的错误文案（`spawn <path> <UV_ERRNO>`）
         let code = match err.kind() {

@@ -496,7 +496,8 @@ pub fn spawn_background(
         .stdout(stdout)
         .stderr(stderr);
     util::hide_console(&mut cmd);
-    // 后台命令与前台命令看同一份 PATH（`docs/core/standalone-core.md` 第 3.2 节）
+    // 后台命令与前台命令看同一份 PATH：都经 `$SHELL` 起，用 shell 自己的形式
+    // （`docs/core/standalone-core.md` 第 3.2 节）
     crate::shell_env::apply(&mut cmd)?;
 
     let child = cmd.spawn().map_err(|err| err.to_string())?;

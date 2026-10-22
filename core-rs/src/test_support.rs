@@ -61,7 +61,8 @@ impl Sandbox {
         }
         // 工具命令的 PATH 由 `shell_env` 探测用户 shell 得到；用例不跑真实的启动文件，
         // 直接钉成「沙箱目录 + 继承来的 PATH」——首位目录是用例断言 PATH 已注入的标记
-        // （`docs/core/standalone-core.md` 第 3.2.1 节）。
+        // （`docs/core/standalone-core.md` 第 3.2.1 节）。两种形式钉成同一份：用例只看
+        // 沙箱目录出现在子进程 `$PATH` 里，不区分 shell 形式与原生形式。
         let mut forced_path = root.join("bin").into_os_string();
         if let Some(inherited) = std::env::var_os("PATH") {
             if !inherited.is_empty() {
@@ -69,7 +70,7 @@ impl Sandbox {
                 forced_path.push(inherited);
             }
         }
-        crate::shell_env::force_path_for_test(forced_path);
+        crate::shell_env::force_path_for_test(forced_path.clone(), forced_path);
 
         let config_dir_name = ".test-core".to_string();
         config::set_host_environment(HostEnvironment {
