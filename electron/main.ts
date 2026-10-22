@@ -4831,7 +4831,13 @@ function setupIpc(): void {
     if (!uiHost) return { ok: false, error: 'no-host' };
     try {
       if (ref.endpoint) {
-        await openRemoteWorkspaceFile(fileOpenBridge, remoteFileReaderFor(ref.endpoint, fileOpLog), ref.path, p.path);
+        await openRemoteWorkspaceFile(
+          fileOpenBridge,
+          remoteFileReaderFor(ref.endpoint, fileOpLog),
+          ref.endpoint,
+          ref.path,
+          p.path,
+        );
       } else {
         await openLocalWorkspaceFile(fileOpenBridge, ref.path, p.path);
       }
@@ -4974,6 +4980,8 @@ function initCore(): void {
     fileLogger.info('workspace-tab', `connection ${state}: ${refDisplay(ref)} (${reason || 'ready'})`);
     if (state === 'ready') {
       workspaceAvailabilityState.markReady(key);
+      // Core 重启 / Connection 重建后重新注册查看器文件监听（specs/018 FR-003）。
+      uiHost?.onWorkspaceConnectionReady(ref);
     } else if (ref.endpoint) {
       // 运行期致命走 runtime 落定（撤销就绪豁免）；从未就绪的建链失败走默认守卫。
       // 落定时顺带清掉建链中：否则这次标红推送的仍是黄态，黄点要等下一次全量刷新才消失

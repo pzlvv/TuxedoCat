@@ -29,3 +29,14 @@
   复发正是因为两条发点没有被任何用例覆盖。方向：表驱动用例，对每种 `CoreRequest` 类型跑一次，
   断言在途期间是否出现 `waiting=true` 快照与登记表一致。验收判据：新增 `CoreRequest` 类型而漏
   登记时用例红。
+
+- **查看器自动刷新在 Core 不可用时的兜底**（[specs/018 归档](docs/archive/specs/018-viewer-file-refresh/spec.md) 收敛时登记）：
+  远程查看器当前依赖远端 Core 推送；Core 不可用 / 未就绪时只显示「自动刷新不可用」标记，不做
+  刷新。方向：Core 不可用时降级为 SFTP 轮询，或 Core 恢复后补齐断线期间的修改；需定义切换
+  条件、轮询周期与重复刷新抑制。验收判据：Core 不可用期间的文件变更在恢复后可见（或按明确
+  周期刷新），同一内容不重复刷新；`viewerWatch` 单测覆盖切换与恢复。
+
+- **Markdown 内嵌相对路径图片的加载与刷新**（[specs/018 归档](docs/archive/specs/018-viewer-file-refresh/spec.md) 收敛时登记）：
+  Markdown 预览是 data URL 页面，没有 base URL，`![](./a.png)` 这类相对路径图片当前不加载；
+  方向：自定义协议 / file base / 预览服务，并让内嵌图片随源文件更新。验收判据：相对路径
+  图片正常显示，源图片更新后预览自动刷新；有 e2e 或单测锁定。

@@ -328,6 +328,10 @@ export class WebViewUI implements WebViewUiPort {
       commandDispatched: (e) => void this.onCommandSend(e.commandName, e.args, e.sessionId),
       sessionConfigChanged: (e) => this.onSessionConfigChanged(e.sessionId, e.change),
 
+      // ===== 宿主事实（不投递 webview）=====
+      // 远程工作区文件变化由 Core 上报，只有宿主查看器窗口消费（specs/018 FR-002）。
+      workspaceFileChanged: (e) => this.host.onWorkspaceFileChanged(e),
+
       // ===== 瞬时提示 =====
       notice: (e) => this.onNotice(e.sessionId, e.key, e.params, e.level),
 

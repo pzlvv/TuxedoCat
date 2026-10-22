@@ -71,6 +71,7 @@ runTests('fileOpen + markdown 预览', async () => {
   try {
     fs.writeFileSync(path.join(tmp, 'doc.md'), '# 标题\n\n正文 **加粗**\n');
     fs.writeFileSync(path.join(tmp, 'note.txt'), 'plain');
+    fs.writeFileSync(path.join(tmp, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     const localCalls: { method: string; init: unknown }[] = [];
     await openLocalWorkspaceFile(recordingBridge(localCalls), tmp, 'doc.md');
     check('本地 md → Markdown 预览出口', localCalls.length === 1 && localCalls[0].method === 'markdown');
@@ -79,6 +80,22 @@ runTests('fileOpen + markdown 预览', async () => {
       localCalls.length === 1
         && (localCalls[0].init as { title: string; content: string }).title === 'doc.md'
         && (localCalls[0].init as { title: string; content: string }).content.includes('# 标题'),
+    );
+    check(
+      '本地 md 带本地监听目标',
+      localCalls.length === 1
+        && JSON.stringify((localCalls[0].init as { watchTarget: unknown }).watchTarget)
+          === JSON.stringify({ kind: 'local', filePath: path.join(tmp, 'doc.md') }),
+    );
+
+    localCalls.length = 0;
+    await openLocalWorkspaceFile(recordingBridge(localCalls), tmp, 'logo.png');
+    check(
+      '本地图片带本地监听目标',
+      localCalls.length === 1
+        && localCalls[0].method === 'image'
+        && JSON.stringify((localCalls[0].init as { watchTarget: unknown }).watchTarget)
+          === JSON.stringify({ kind: 'local', filePath: path.join(tmp, 'logo.png') }),
     );
 
     localCalls.length = 0;
@@ -101,26 +118,44 @@ runTests('fileOpen + markdown 预览', async () => {
   const remoteFiles = new Map<string, string | Buffer>([
     ['/srv/remote/doc.md', '# 远程\n'],
     ['/srv/remote/note.txt', 'plain'],
+    ['/srv/remote/logo.png', Buffer.from([0x89, 0x50, 0x4e, 0x47])],
     ['/srv/remote/pack.zip', Buffer.from([0x50, 0x4b, 0x03, 0x04])],
   ]);
+  const endpoint = { host: 'h', port: 22, user: 'u', auth: null };
   const remoteCalls: { method: string; init: unknown }[] = [];
   const bridge = recordingBridge(remoteCalls);
   const reader = fakeReader(remoteFiles);
 
-  await openRemoteWorkspaceFile(bridge, reader, '/srv/remote', 'doc.md');
+  await openRemoteWorkspaceFile(bridge, reader, endpoint, '/srv/remote', 'doc.md');
   check('远程 md → Markdown 预览出口', remoteCalls.length === 1 && remoteCalls[0].method === 'markdown');
   check(
     '远程 md 预览内容来自 SFTP 读出',
     remoteCalls.length === 1 && (remoteCalls[0].init as { content: string }).content === '# 远程\n',
   );
+  check(
+    '远程 md 带远端监听目标',
+    remoteCalls.length === 1
+      && JSON.stringify((remoteCalls[0].init as { watchTarget: unknown }).watchTarget)
+        === JSON.stringify({ kind: 'remote', endpoint, workspacePath: '/srv/remote', absPath: '/srv/remote/doc.md' }),
+  );
 
   remoteCalls.length = 0;
-  await openRemoteWorkspaceFile(bridge, reader, '/srv/remote', 'note.txt');
+  await openRemoteWorkspaceFile(bridge, reader, endpoint, '/srv/remote', 'note.txt');
   check('远程 txt 仍走文本查看器出口', remoteCalls.length === 1 && remoteCalls[0].method === 'text');
+
+  remoteCalls.length = 0;
+  await openRemoteWorkspaceFile(bridge, reader, endpoint, '/srv/remote', 'logo.png');
+  check(
+    '远程图片带远端监听目标',
+    remoteCalls.length === 1
+      && remoteCalls[0].method === 'image'
+      && JSON.stringify((remoteCalls[0].init as { watchTarget: unknown }).watchTarget)
+        === JSON.stringify({ kind: 'remote', endpoint, workspacePath: '/srv/remote', absPath: '/srv/remote/logo.png' }),
+  );
 
   let remoteBinaryRejected = false;
   try {
-    await openRemoteWorkspaceFile(bridge, reader, '/srv/remote', 'pack.zip');
+    await openRemoteWorkspaceFile(bridge, reader, endpoint, '/srv/remote', 'pack.zip');
   } catch (err) {
     remoteBinaryRejected = err instanceof Error && err.message === REMOTE_BINARY_UNSUPPORTED;
   }

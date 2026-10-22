@@ -10,19 +10,31 @@ import type { BrowserWindow, WebContents, WebContentsView } from 'electron';
 import { app, nativeTheme, dialog, screen, BrowserWindow as BrowserWindowCtor } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import { randomUUID } from 'crypto';
 import type { ChatViewManager } from './ChatViewManager.js';
 import type { UIHost, WorkspaceChange } from '../src/host/UIHost.js';
+import type { CoreEvent } from '../src/shared/AssistantEventBus.js';
 import { WebviewViewHandle } from '../src/host/UIHost.js';
 import type { WorkspaceRef, WorkspaceEndpoint } from '../src/host/workspaceRef.js';
 import type { WebviewMessage } from '../src/host/webviewMessages.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
-import { getMarkdownPreviewHtml } from '../src/host/markdownHtml.js';
+import { getMarkdownPreviewBodyHtml, getMarkdownPreviewHtml } from '../src/host/markdownHtml.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
 import { isImageFile } from '../src/host/imageFiles.js';
 import { fileLogger } from '../src/shared/Logger.js';
 import { writeSettingsJson } from '../src/host/settingsFile.js';
+import { watchWorkspaceFile, unwatchWorkspaceFile } from '../src/host/coreFacts.js';
+import { tt } from '../src/host/i18n.js';
 import { imageMimeFor } from './fileTypes.js';
 import { remoteFileReaderFor } from './sidebarFilesRemote.js';
+import { createLocalFileWatcher } from './localFileWatch.js';
+import {
+  ViewerWatchController,
+  type ViewerContent,
+  type ViewerKind,
+  type ViewerMarker,
+  type ViewerWatchTarget,
+} from './viewerWatch.js';
 import { guardViewNavigation } from './viewNavigation.js';
 import { readWorkspaceState, writeWorkspaceState } from './workspaceStateStore.js';
 import {
@@ -80,6 +92,8 @@ export class ElectronUIHost implements UIHost {
    * Mermaid 预览与 Spin 设计器不占该名额。
    */
   private viewerWindow: BrowserWindowCtor | undefined;
+  /** 当前查看器窗口的文件监听控制器（specs/018）；与查看器名额同生命周期 */
+  private viewerWatch: ViewerWatchController | undefined;
 
   /** 内部日志实现（console 前缀 + 落盘：宿主诊断不进日志文件就查不到问题） */
   private writeLog(...args: unknown[]): void {
@@ -223,7 +237,7 @@ export class ElectronUIHost implements UIHost {
     // 命中就走 SFTP 读出内容，进与本地同一套内置窗口
     const remote = this.resolveRemoteWorkspaceFile(filePath);
     if (remote) {
-      await this.openRemoteFile(remote.endpoint, remote.abs);
+      await this.openRemoteFile(remote.endpoint, remote.workspacePath, remote.abs);
       return;
     }
     // 图片用内置图片查看器打开，避免 Monaco 按 utf-8 读取显示乱码
@@ -231,6 +245,7 @@ export class ElectronUIHost implements UIHost {
       await this.openImagePreviewWindow({
         title: path.basename(filePath),
         dataUrl: await readImageAsDataUrl(filePath, this.log.bind(this)),
+        watchTarget: { kind: 'local', filePath },
       });
       return;
     }
@@ -240,6 +255,7 @@ export class ElectronUIHost implements UIHost {
       filePath,
       selectedLines: target ?? undefined,
       title: path.basename(filePath),
+      watchTarget: { kind: 'local', filePath },
     });
   }
 
@@ -250,7 +266,11 @@ export class ElectronUIHost implements UIHost {
    * 只有落在某个远程工作区 root 内才按远程处理，否则维持本地语义
    * （本地工作区路径、跨盘的 Windows 路径都不会命中 `/` 前缀匹配）。
    */
-  private resolveRemoteWorkspaceFile(filePath: string): { endpoint: WorkspaceEndpoint; abs: string } | null {
+  private resolveRemoteWorkspaceFile(filePath: string): {
+    endpoint: WorkspaceEndpoint;
+    workspacePath: string;
+    abs: string;
+  } | null {
     if (typeof filePath !== 'string' || !filePath.startsWith('/')) return null;
     // 活动工作区优先：同一文件在多个工作区出现时按用户当前上下文解释
     const active = this.getWorkspaceRef();
@@ -262,29 +282,46 @@ export class ElectronUIHost implements UIHost {
       if (!ref.endpoint) continue;
       const root = ref.path.replace(/\/+$/, '');
       if (filePath === root || filePath.startsWith(`${root}/`)) {
-        return { endpoint: ref.endpoint, abs: filePath };
+        return { endpoint: ref.endpoint, workspacePath: ref.path, abs: filePath };
       }
     }
     return null;
   }
 
   /** 经 SFTP 读远端文件并进内置窗口（文本 → Monaco，图片 → 查看器） */
-  private async openRemoteFile(endpoint: NonNullable<WorkspaceRef['endpoint']>, abs: string): Promise<void> {
+  private async openRemoteFile(
+    endpoint: NonNullable<WorkspaceRef['endpoint']>,
+    workspacePath: string,
+    abs: string,
+  ): Promise<void> {
     const name = path.posix.basename(abs);
     const reader = remoteFileReaderFor(endpoint, (...args) => this.log(...args));
+    const watchTarget: ViewerWatchTarget = {
+      kind: 'remote',
+      endpoint,
+      workspacePath,
+      absPath: abs,
+    };
     try {
       if (isImageFile(name)) {
         const bytes = await reader.readBytes(abs);
         await this.openImagePreviewWindow({
           title: name,
           dataUrl: `data:${imageMimeFor(name)};base64,${bytes.toString('base64')}`,
+          watchTarget,
         });
         return;
       }
       // Read 链接指向 core 读过的文件（图片在上面分支拦下），按 utf8 文本读
       const content = await reader.readText(abs);
       // filePath 只传文件名：Monaco 据此选语法，不读本地盘
-      await this.openMonacoWindow({ mode: 'view', content, title: name, filePath: name });
+      await this.openMonacoWindow({
+        mode: 'view',
+        content,
+        title: name,
+        filePath: name,
+        watchTarget,
+      });
     } catch (err) {
       // 读不到（断链 / 权限 / 已删除）也保持「点击有响应」：与本地 ENOENT 开空窗口
       // 的行为对齐，开 content 窗口显示原因，不让链接点下去毫无反馈
@@ -293,6 +330,7 @@ export class ElectronUIHost implements UIHost {
         mode: 'content',
         title: name,
         content: `// 无法读取远程文件: ${err instanceof Error ? err.message : String(err)}`,
+        watchTarget: null,
       });
     }
   }
@@ -302,6 +340,7 @@ export class ElectronUIHost implements UIHost {
       mode: 'content',
       content,
       title,
+      watchTarget: null,
     });
   }
 
@@ -316,6 +355,14 @@ export class ElectronUIHost implements UIHost {
 
   async openMermaidPreview(code: string): Promise<void> {
     this.openMermaidWindow(code);
+  }
+
+  /**
+   * Core 上报远程工作区文件变化（specs/018 FR-002）。
+   * 查看器监听控制器在 T007 接入；接入前保持可编译的显式出口，不做静默分支。
+   */
+  onWorkspaceFileChanged(event: Extract<CoreEvent, { type: 'workspaceFileChanged' }>): void {
+    this.viewerWatch?.handleCoreEvent(event);
   }
 
   /**
@@ -376,7 +423,7 @@ export class ElectronUIHost implements UIHost {
    *
    * 主进程把文件字节构造成 data URL 发给页面，页面自建 <img>：打开时适配窗口、
    * 滚轮以光标为锚缩放、放大后可拖动平移（此前是把 file:// URL 直接交给 Chromium，
-   * 没有缩放能力）。图片内容只在构造 data URL 时读一次盘。
+   * 没有缩放能力）。图片内容在打开与刷新时读盘（specs/018）。
    */
   /**
    * 取得查看器窗口名额并返回新窗口的初始矩形（specs/016 FR-002 / FR-003）。
@@ -394,6 +441,7 @@ export class ElectronUIHost implements UIHost {
     // 顶替：被替窗口的矩形先落盘再销毁（destroy 不触发 close，close 补记不会发生）
     const bounds = alive.getNormalBounds();
     saveSlotRect(rectStateStore, 'viewerWindowRect', bounds);
+    this.viewerWatch?.close();
     alive.destroy();
     this.viewerWindow = undefined;
     return planViewerSlotBounds({
@@ -427,19 +475,130 @@ export class ElectronUIHost implements UIHost {
     this.viewerWindow = win;
     trackWindowRect(win, rectStateStore, 'viewerWindowRect');
     win.on('closed', () => {
-      if (this.viewerWindow === win) this.viewerWindow = undefined;
+      // 顶替时旧窗口的 closed 可能晚于新窗口登记：只有当前名额占用者才停监听，
+      // 否则会把新查看器的监听一起关掉。
+      if (this.viewerWindow !== win) return;
+      this.viewerWindow = undefined;
+      this.viewerWatch?.close();
     });
   }
 
-  async openImagePreviewWindow(init: { title: string; dataUrl: string }): Promise<void> {
+  // ── 查看器文件监听（specs/018）────────────────────────────────────────────
+
+  private getViewerWatchController(): ViewerWatchController {
+    this.viewerWatch ??= new ViewerWatchController({
+      watchRemote: (request) => watchWorkspaceFile(request),
+      unwatchRemote: (request) => unwatchWorkspaceFile(request),
+      readContent: (target, kind) => this.readViewerContent(target, kind),
+      deliver: (target, kind, content) => this.deliverViewerContent(target, kind, content),
+      setTitle: (title) => this.setViewerTitle(title),
+      markerText: (marker) => ElectronUIHost.markerText(marker),
+      createLocalWatcher: (filePath, onEvent) =>
+        createLocalFileWatcher(filePath, onEvent, (...args) => this.writeLog(...args)),
+      makeWatchId: () => randomUUID(),
+      log: (...args) => this.writeLog(...args),
+    });
+    return this.viewerWatch;
+  }
+
+  /** 开窗完成后启动监听；`watchTarget: null`（虚拟文档 / diff）不监听。 */
+  private startViewerWatch(
+    target: ViewerWatchTarget | null,
+    kind: ViewerKind,
+    baseTitle: string,
+    initialContent: ViewerContent,
+  ): void {
+    if (!target) {
+      this.viewerWatch?.close();
+      return;
+    }
+    this.getViewerWatchController().open(target, kind, baseTitle, initialContent);
+  }
+
+  private static markerText(marker: ViewerMarker): string {
+    switch (marker) {
+      case 'deleted':
+        return tt('（文件已删除）', ' (file deleted)');
+      case 'read-failed':
+        return tt('（读取失败）', ' (read failed)');
+      case 'auto-refresh-unavailable':
+        return tt('（自动刷新不可用）', ' (auto-refresh unavailable)');
+    }
+  }
+
+  private setViewerTitle(title: string): void {
+    const win = this.viewerWindow;
+    if (!win || win.isDestroyed()) return;
+    win.setTitle(title);
+    win.webContents.send('viewer-title', { title });
+  }
+
+  private async readViewerContent(
+    target: ViewerWatchTarget,
+    kind: ViewerKind,
+  ): Promise<ViewerContent> {
+    if (target.kind === 'local') {
+      if (kind === 'image') {
+        const bytes = await fs.promises.readFile(target.filePath);
+        return {
+          kind: 'image',
+          dataUrl: `data:${imageMimeFor(target.filePath)};base64,${bytes.toString('base64')}`,
+        };
+      }
+      return { kind: 'text', text: await fs.promises.readFile(target.filePath, 'utf-8') };
+    }
+    const reader = remoteFileReaderFor(target.endpoint, (...args) => this.writeLog(...args));
+    if (kind === 'image') {
+      const bytes = await reader.readBytes(target.absPath);
+      return {
+        kind: 'image',
+        dataUrl: `data:${imageMimeFor(target.absPath)};base64,${bytes.toString('base64')}`,
+      };
+    }
+    return { kind: 'text', text: await reader.readText(target.absPath) };
+  }
+
+  private async deliverViewerContent(
+    _target: ViewerWatchTarget,
+    kind: ViewerKind,
+    content: ViewerContent,
+  ): Promise<void> {
+    const win = this.viewerWindow;
+    if (!win || win.isDestroyed()) return;
+    if (kind === 'image' && content.kind === 'image') {
+      win.webContents.send('imageviewer-refresh', { dataUrl: content.dataUrl });
+      return;
+    }
+    if (kind === 'markdown' && content.kind === 'text') {
+      const bodyHtml = await getMarkdownPreviewBodyHtml(content.text);
+      if (win.isDestroyed()) return;
+      win.webContents.send('markdown-refresh', { bodyHtml });
+      return;
+    }
+    if (kind === 'text' && content.kind === 'text') {
+      win.webContents.send('monaco-refresh', { content: content.text });
+    }
+  }
+
+  /** Connection 就绪（含 Core 重启 / 快照重推）：重注册当前远程查看器监听 */
+  onWorkspaceConnectionReady(ref: WorkspaceRef): void {
+    this.viewerWatch?.handleConnectionReady(ref);
+  }
+
+  async openImagePreviewWindow(init: {
+    title: string;
+    dataUrl: string;
+    watchTarget: ViewerWatchTarget | null;
+  }): Promise<void> {
     const indexPath = path.join(APP_ROOT, 'dist', 'imageViewer', 'index.html');
     if (!fs.existsSync(indexPath)) {
       this.log(`Image viewer page not found: ${indexPath}. Run npm run build:webview`);
       return;
     }
+    const title = init.title || PRODUCT_NAME;
     const win = new BrowserWindowCtor({
       ...ElectronUIHost.slotBoundsToOptions(this.takeViewerSlot(), 900, 700),
-      title: init.title || PRODUCT_NAME,
+      title,
       icon: path.join(APP_ROOT, 'assets', 'logo.png'),
       autoHideMenuBar: true,
       backgroundColor: nativeTheme.shouldUseDarkColors ? '#1e1e1e' : '#ffffff',
@@ -453,18 +612,26 @@ export class ElectronUIHost implements UIHost {
     guardViewNavigation(win.webContents, 'image-viewer');
     await win.loadFile(indexPath);
     this.trackViewerWindow(win);
-    win.webContents.send('imageviewer-init', init);
+    win.webContents.send('imageviewer-init', { title, dataUrl: init.dataUrl });
+    this.startViewerWatch(init.watchTarget, 'image', title, {
+      kind: 'image',
+      dataUrl: init.dataUrl,
+    });
   }
 
   /**
    * 打开内置 Markdown 预览窗口：侧栏双击 `.md` 文件进渲染视图而非源码文本。
    *
    * 与 Mermaid 预览同一模式——主进程纯函数（`src/host/markdownHtml.ts`）生成
-   * 只读 HTML，经 data URL 装进沙箱窗口，页面无 preload、无脚本。内容在生成侧
-   * 就净化（原生 HTML 片段转义、危险协议链接降级为纯文本），渲染器对文件内容
-   * 零信任。
+   * 只读 HTML，经 data URL 装进沙箱窗口；页面没有内联脚本，只带一个负责刷新
+   * `.markdown-body` 的 preload。内容在生成侧就净化（原生 HTML 片段转义、危险协议
+   * 链接降级为纯文本），渲染器对文件内容零信任。
    */
-  async openMarkdownPreviewWindow(init: { title: string; content: string }): Promise<void> {
+  async openMarkdownPreviewWindow(init: {
+    title: string;
+    content: string;
+    watchTarget: ViewerWatchTarget | null;
+  }): Promise<void> {
     const isDark = nativeTheme.shouldUseDarkColors;
     const title = init.title || PRODUCT_NAME;
     const win = new BrowserWindowCtor({
@@ -474,7 +641,10 @@ export class ElectronUIHost implements UIHost {
       autoHideMenuBar: true,
       // 与 markdownHtml 的暗色底色一致：页面加载完成前不闪另一主题的色块
       backgroundColor: isDark ? '#1e1e1e' : '#ffffff',
-      webPreferences: { sandbox: true },
+      webPreferences: {
+        sandbox: true,
+        preload: path.join(__dirname, 'markdownPreload.cjs'),
+      },
     });
     // 预览页里的 http(s) / mailto 链接是 target=_blank：不拦的话 Electron 会新开一个
     // 应用内窗口装外部页面（默认 setWindowOpenHandler 行为），这里统一交给系统浏览器
@@ -485,6 +655,10 @@ export class ElectronUIHost implements UIHost {
     // 上限拒之门外，与 Mermaid 预览同一约束）
     await win.loadURL('data:text/html;charset=utf-8;base64,' + Buffer.from(html, 'utf8').toString('base64'));
     this.trackViewerWindow(win);
+    this.startViewerWatch(init.watchTarget, 'markdown', title, {
+      kind: 'text',
+      text: init.content,
+    });
   }
 
   /**
@@ -498,6 +672,7 @@ export class ElectronUIHost implements UIHost {
     selectedLines?: { start: number; end: number };
     content?: string;
     title?: string;
+    watchTarget: ViewerWatchTarget | null;
   }): Promise<void> {
     // 页面产物缺失时不占名额（不顶替已有查看器窗口），维持「log + 不开窗」的现状
     const indexPath = path.join(APP_ROOT, 'dist', 'monaco', 'index.html');
@@ -505,9 +680,10 @@ export class ElectronUIHost implements UIHost {
       this.log(`Monaco page not found: ${indexPath}. Run npm run build:monaco`);
       return;
     }
+    const title = init.title || PRODUCT_NAME;
     const win = new BrowserWindowCtor({
       ...ElectronUIHost.slotBoundsToOptions(this.takeViewerSlot(), 1080, 720),
-      title: init.title || PRODUCT_NAME,
+      title,
       icon: path.join(APP_ROOT, 'assets', 'logo.png'),
       autoHideMenuBar: true,
       // 兜底底色与 Monaco 的 vs / vs-dark 编辑器底色一致（见 electron/monaco/main.ts），
@@ -527,7 +703,8 @@ export class ElectronUIHost implements UIHost {
     this.trackViewerWindow(win);
 
     // 读取文件内容（view 模式；调用方已给 content 时直接用——远程文件不走本地盘）
-    const data: Record<string, unknown> = { ...init };
+    const { watchTarget, ...monacoInit } = init;
+    const data: Record<string, unknown> = { ...monacoInit };
     if (init.mode === 'view' && init.filePath && init.content === undefined) {
       try {
         data.content = await fs.promises.readFile(init.filePath, 'utf-8');
@@ -546,6 +723,14 @@ export class ElectronUIHost implements UIHost {
     // 因此这里刻意不发送 setCurrentFile —— 工具结果里点文件链接、查看 diff 等
     // 任务操作都不应改变发消息时附带的文件信息。
     win.webContents.send('monaco-init', data);
+    if (init.mode === 'view' && watchTarget) {
+      this.startViewerWatch(watchTarget, 'text', title, {
+        kind: 'text',
+        text: typeof data.content === 'string' ? data.content : '',
+      });
+    } else {
+      this.viewerWatch?.close();
+    }
   }
 
   /**

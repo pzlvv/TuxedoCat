@@ -483,6 +483,8 @@ async function run(): Promise<void> {
       skillsRequested: async () => ({ skills: [] }),
       spinDesignRequested: async () => ({ status: 'ok' as const, data: null, skills: [] }),
       spinDesignSaveRequested: async () => ({ status: 'ok' as const }),
+      watchWorkspaceFileRequested: async () => ({ ok: true as const }),
+      unwatchWorkspaceFileRequested: async () => null,
     };
     core.bus.onUiRequests(handlers);
     check('onUiRequests rejects a second registration', throws(() => core.bus.onUiRequests(handlers)));

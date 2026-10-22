@@ -85,13 +85,18 @@ function palette(isDark: boolean): PreviewPalette {
       };
 }
 
+/** Markdown → 只读预览正文 HTML（刷新时只替换 `.markdown-body` 的内容，保留滚动） */
+export async function getMarkdownPreviewBodyHtml(markdown: string): Promise<string> {
+  const marked = await loadRenderer();
+  return String(marked.parse(markdown ?? ''));
+}
+
 /** Markdown → 只读预览 HTML（GFM：表格 / 任务列表 / 删除线；语法高亮不在 v1 范围） */
 export async function getMarkdownPreviewHtml(
   markdown: string,
   opts: { title: string; isDark: boolean },
 ): Promise<string> {
-  const marked = await loadRenderer();
-  const body = String(marked.parse(markdown ?? ''));
+  const body = await getMarkdownPreviewBodyHtml(markdown);
   const c = palette(opts.isDark);
   const title = escapeHtml(opts.title);
   return `<!DOCTYPE html>

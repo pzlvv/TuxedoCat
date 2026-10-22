@@ -14,6 +14,7 @@
 | [0005](0005-docs-tree-and-feature-specs.md) | 文档体系重组（拆解 DEVELOPMENT.md、docs/ 分域目录与特性规格层） | 已采纳 |
 | [0006](0006-tiered-change-workflow.md) | 改动分级流程（L0 直改 / L1 缺陷修复 / L2 需求变更 / L3 新特性） | 已采纳 |
 | [0007](0007-single-core-rust-only.md) | 移除 Embedded Core，只保留 Rust 实现 | 已采纳 |
+| [0008](0008-viewer-file-watch-core-push.md) | 查看器文件自动刷新用 Core 主动推送而非宿主轮询 | 已采纳 |
 
 新决策取下一个递增编号；`src/test/docsLint.test.ts` 校验编号连续且唯一、状态取值合法、
 被取代指向的文件存在。

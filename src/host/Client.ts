@@ -504,6 +504,13 @@ export class Client implements AssistantEventBus {
         return this.connectionForWorkspacePath(workspacePath) ?? null;
       }
     }
+    // 远程文件监听按工作区路由（specs/018 FR-003）：watch / unwatch 都带 workspacePath。
+    if (
+      request.type === 'watchWorkspaceFileRequested'
+      || request.type === 'unwatchWorkspaceFileRequested'
+    ) {
+      return this.connectionForWorkspacePath(request.workspacePath) ?? null;
+    }
     return this.currentConnection();
   }
 

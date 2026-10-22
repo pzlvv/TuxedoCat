@@ -92,14 +92,14 @@ export type CoreRequestHandlers = {
 
 ## 2. 事件词汇表
 
-四组词汇表，共 63 个事件：
+四组词汇表，共 66 个事件：
 
 | 词汇表 | 方向 | 语义 | 数量 | 处理方 |
 | --- | --- | --- | --- | --- |
-| `CoreEvent` | core → UI | 单向事实通知 | 27 | `WebViewUI`（`onCoreEvents` 映射表） |
+| `CoreEvent` | core → UI | 单向事实通知 | 28 | `WebViewUI`（`onCoreEvents` 映射表） |
 | `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 2 | `WebViewUI`（`onCoreRequests` 映射表） |
 | `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 23 | Core 进程的 `dispatch_ui_event` 分派 |
-| `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 11 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
+| `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 13 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
 
 `UiRequest` 的成员、两侧应答与宿主侧统一入口（`coreFacts`）见
 [docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)。
@@ -166,9 +166,9 @@ wire message（若该事件会产生 webview 协议消息）。命名规则见�
 | 24 | `log` | `message`（已格式化的整行） | `bus.rs`（每写一行日志）、`main.rs`（就绪前 UiEvent 与快照应用失败的诊断行） | `log` | 写 UI 自己的日志出口（VS Code 是 OutputChannel，Electron 是 console） |
 | 25 | `notice` | `sessionId`, `key`, `params`, `level` | `commands.rs`、`spin.rs`、`spin_host.rs`（瞬时状态提示：键 + 参数） | `onNotice` | `notice`（webview 用翻译表渲染成瞬时提示，不进消息流） |
 | 26 | `conversationSpaceCleared` | `dirName`（对话空间目录名）, `result`（`complete` 带删除统计 / `error` 带原因） | `main.rs`（`conversationSpaceCleared` UiEvent 清空完成 / 失败后的执行回执） | `onConversationSpaceCleared` | `conversationSpaceCleared`（`complete`）/ `conversationSpacesError`（`error`）——设置面板解除「删除中」的唯一信号 |
+| 27 | `workspaceFileChanged` | `watchId`, `path`, `kind`（`changed` / `deleted` / `error`）, `mtimeMs`, `size`, `error`（无错误为 `null`） | `file_watch.rs`（notify 监听父目录 + 50ms 去抖；按目标文件最终状态判定 changed / deleted，watcher 错误报 error） | `onWorkspaceFileChanged`（转交宿主，不投递 webview） | 无（不投递到 webview） |
 
-> 第 1–10 项是渲染类 handler，第 11–26 项是控制面与事实通知 handler——这条界线只是 `WebViewUI` 内部的
-> 分区，不是事件类型的分组。
+> 第 1–10 项是渲染类 handler，第 11–27 项是控制面与事实通知 handler——这条界线只是 `WebViewUI` 内部的分区，不是事件类型的分组。
 >
 > 各表的 `#` 列是**表内序号**（2.1 自 0 起，2.2 / 2.3 自 1 起）；跨表指名一律用事件名，不用行号。
 > 父子会话的展示事实读 `conversationsData` / `sessionRuntimeStates` 的 `parentSessionId`（[docs/core/session-runtime.md](../core/session-runtime.md)）。

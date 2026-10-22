@@ -72,6 +72,8 @@ interface MonacoInitData {
 }
 
 let editor: monaco.editor.IStandaloneCodeEditor | monaco.editor.IStandaloneDiffEditor | null = null;
+/** 当前页面模式：刷新只对 view 模式生效（specs/018 FR-004） */
+let currentMode: MonacoInitData['mode'] = 'view';
 const container = document.getElementById('container')!;
 
 function applyTheme(): void {
@@ -149,6 +151,7 @@ function initContent(data: MonacoInitData): void {
 }
 
 function onInit(data: MonacoInitData): void {
+  currentMode = data.mode;
   // 窗口标题随打开对象变化：调用方传的 title 已是文件名 / 短名（specs/016 FR-001）。
   // 构建期 HTML 的 <title> 只是兜底，页面加载完成会覆盖 BrowserWindow 的 title 选项，
   // 所以标题必须在这里设为 document.title。
@@ -179,10 +182,33 @@ function onInit(data: MonacoInitData): void {
 applyTheme();
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
 
-// 接收 main 进程初始化数据（经 preload 桥接为 window message）
+/** 刷新 view 模式的内容：保留滚动位置与光标（specs/018 FR-004）。 */
+function onRefresh(content: string): void {
+  if (currentMode !== 'view' || !editor) return;
+  const codeEditor = editor as monaco.editor.IStandaloneCodeEditor;
+  const model = codeEditor.getModel();
+  if (!model) return;
+  const viewState = codeEditor.saveViewState();
+  model.setValue(content);
+  if (viewState) codeEditor.restoreViewState(viewState);
+}
+
+// 接收 main 进程初始化 / 刷新 / 标题消息（经 preload 桥接为 window message）
 window.addEventListener('message', (event) => {
-  const data = event.data as MonacoInitData;
-  if (data && typeof data.mode === 'string') {
+  const data = event.data as
+    | (MonacoInitData & { type: 'init' })
+    | { type: 'refresh'; content: string }
+    | { type: 'title'; title: string };
+  if (!data || typeof data !== 'object') return;
+  if (data.type === 'title') {
+    if (typeof data.title === 'string' && data.title) document.title = data.title;
+    return;
+  }
+  if (data.type === 'refresh') {
+    if (typeof data.content === 'string') onRefresh(data.content);
+    return;
+  }
+  if (data.type === 'init' && typeof data.mode === 'string') {
     onInit(data);
   }
 });

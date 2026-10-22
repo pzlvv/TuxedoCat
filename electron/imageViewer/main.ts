@@ -9,10 +9,10 @@
  * - 放大超过窗口后可按住拖动平移；双击恢复适配。
  */
 
-interface ImageViewerInit {
-  title?: string;
-  dataUrl: string;
-}
+type ImageViewerMessage =
+  | { type: 'init'; title?: string; dataUrl: string }
+  | { type: 'refresh'; dataUrl: string }
+  | { type: 'title'; title: string };
 
 const stage = document.getElementById('stage')!;
 const image = document.getElementById('image') as HTMLImageElement;
@@ -131,15 +131,50 @@ stage.addEventListener('dblclick', () => {
 
 window.addEventListener('resize', fitToWindow);
 
-// 接收 main 进程初始化数据（经 preload 桥接为 window message）
+// 接收 main 进程的初始化 / 刷新 / 标题消息（经 preload 桥接为 window message）
 window.addEventListener('message', (event) => {
-  const data = event.data as ImageViewerInit;
-  if (!data || typeof data.dataUrl !== 'string') return;
-  // 窗口标题随打开的图片变化（specs/016 FR-001）：页面 <title> 会覆盖 BrowserWindow
-  // 的 title 选项，标题在这里设才稳定。
-  if (typeof data.title === 'string' && data.title) {
-    document.title = data.title;
+  const data = event.data as ImageViewerMessage;
+  if (!data || typeof data !== 'object') return;
+
+  if (data.type === 'title') {
+    if (typeof data.title === 'string' && data.title) document.title = data.title;
+    return;
   }
-  image.onload = fitToWindow;
-  image.src = data.dataUrl;
+
+  if (data.type === 'refresh') {
+    // 刷新保留当前缩放 / 平移（specs/018 FR-004）：只重算 fitScale，再把倍率夹到
+    // 新图允许范围；缩回窗口内时清掉平移余量，避免图飘在一角回不来。
+    if (typeof data.dataUrl !== 'string') return;
+    const previousScale = scale;
+    const previousOffsetX = offsetX;
+    const previousOffsetY = offsetY;
+    image.onload = () => {
+      const natural = image.naturalWidth || 1;
+      const naturalH = image.naturalHeight || 1;
+      const fit = Math.min(1, (stage.clientWidth - 24) / natural, (stage.clientHeight - 24) / naturalH);
+      fitScale = clampScale(fit);
+      scale = clampScale(previousScale);
+      offsetX = previousOffsetX;
+      offsetY = previousOffsetY;
+      if (scale <= fitScale) {
+        offsetX = 0;
+        offsetY = 0;
+      }
+      render();
+      showBadge();
+    };
+    image.src = data.dataUrl;
+    return;
+  }
+
+  if (data.type === 'init') {
+    if (typeof data.dataUrl !== 'string') return;
+    // 窗口标题随打开的图片变化（specs/016 FR-001）：页面 <title> 会覆盖 BrowserWindow
+    // 的 title 选项，标题在这里设才稳定。
+    if (typeof data.title === 'string' && data.title) {
+      document.title = data.title;
+    }
+    image.onload = fitToWindow;
+    image.src = data.dataUrl;
+  }
 });

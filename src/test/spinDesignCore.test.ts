@@ -62,6 +62,8 @@ async function run(): Promise<void> {
       sent.push(req);
       return saveResult;
     },
+    watchWorkspaceFileRequested: async () => ({ ok: true }),
+    unwatchWorkspaceFileRequested: async () => null,
   };
   bus.onUiRequests(handlers);
   setGlobalEventBus(bus);

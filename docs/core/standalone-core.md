@@ -60,13 +60,12 @@ Core 进程承载的 core 侧业务：
   `mcp__*` 工具注入与按会话启用列表过滤）、
   Spin 引擎（`spin.json` 读写、拓扑排序、子代理执行、验收判定、`/spin` 命令）、
   智能命名 / 压缩归档展开 / DeepSeek 余额推送（都要读 core 的磁盘数据，因此整体在 Core 侧）；
-- 系统睡眠阻断（`core-rs/src/power.rs`）：任一会话非 idle（含等待用户确认）时阻断 **Core 进程
-  所在机器**的睡眠 / 休眠——Windows `SetThreadExecutionState(ES_SYSTEM_REQUIRED)`、Linux
+- 远程工作区文件监听（`core-rs/src/file_watch.rs`）：按宿主注册的 `watchId` 监听目标文件父目录，50ms 去抖后经 `CoreEvent.workspaceFileChanged` 上报 `changed` / `deleted` / `error`；事件只带路径与元数据（specs/018 FR-002）；
+- 系统睡眠阻断（`core-rs/src/power.rs`）：任一会话非 idle（含等待用户确认）时阻断 **Core 进程所在机器**的睡眠 / 休眠——Windows `SetThreadExecutionState(ES_SYSTEM_REQUIRED)`、Linux
   `systemd-inhibit --what=idle:sleep`，都只要求系统不挂起、允许屏幕熄灭。远程工作区的长任务
   在远端执行，宿主那台机器睡不睡与它无关，因此这一份必须在 Core 进程里；Electron 宿主另有
   一份同口径的实现（[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主固有差异有意保留)）；
-- 全局配置与 MCP 配置的读写**不在** Core 侧：两者由 UI 持有，经
-  `hostEnvironmentProvided` 的配置快照下发（[docs/architecture/core-ui-separation.md 第 4 节](../architecture/core-ui-separation.md#4-配置归-ui)）；
+- 全局配置与 MCP 配置的读写**不在** Core 侧：两者由 UI 持有，经 `hostEnvironmentProvided` 的配置快照下发（[docs/architecture/core-ui-separation.md 第 4 节](../architecture/core-ui-separation.md#4-配置归-ui)）；
 尚未覆盖的能力见 [docs/core/standalone-core-boundaries.md 第 4 节](standalone-core-boundaries.md#4-不覆盖范围)的「不覆盖范围」。
 
 ---
@@ -354,10 +353,11 @@ TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按�
 - 载荷字段名与 TypeScript 类型逐项一致（`camelCase` 原样）。
 - `CoreEvent` 的每个 `type` 语义唯一确定（[docs/architecture/events.md 第 2.1 节](../architecture/events.md#21-coreeventcore--ui单向)）。
 - `CoreRequest` 的两个请求（`toolPermissionRequested` / `userChoice`）由 Core 发起、UI 应答。
-- `UiRequest` 的十一个请求（`conversationListRequested` / `smartNamingRequested` /
+- `UiRequest` 的十三个请求（`conversationListRequested` / `smartNamingRequested` /
   `balanceRequested` / `compactArchiveRequested` / `mcpServersRequested` /
   `conversationSpacesRequested` / `flushSessionRequested` / `conversationLoadRequested` /
-  `skillsRequested` / `spinDesignRequested` / `spinDesignSaveRequested`）由 UI 发起、Core 应答：
+  `skillsRequested` / `spinDesignRequested` / `spinDesignSaveRequested` /
+  `watchWorkspaceFileRequested` / `unwatchWorkspaceFileRequested`）由 UI 发起、Core 应答：
   宿主不直接读 core 的磁盘数据（[docs/core/standalone-core-boundaries.md 第 2 节](standalone-core-boundaries.md#2-宿主侧的-core-事实读取)）。未知类型一律回 `ok:false` 的响应，
   不做静默降级。
   - `spinDesignRequested { sessionId }`：按会话工作目录读 `spin.json` + 设计器技能清单；

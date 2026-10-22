@@ -45,6 +45,7 @@
     "electronSpinPreloadOut": "dist-electron/spinPreload.cjs",
     "electronMonacoPreloadOut": "dist-electron/monacoPreload.cjs",
     "electronImageViewerPreloadOut": "dist-electron/imageViewerPreload.cjs",
+    "electronMarkdownPreloadOut": "dist-electron/markdownPreload.cjs",
     "electronSidebarPreloadOut": "dist-electron/sidebarPreload.cjs",
     "electronPreferencePreloadOut": "dist-electron/preferencePreload.cjs",
     "electronTitlebarPreloadOut": "dist-electron/titlebarPreload.cjs",

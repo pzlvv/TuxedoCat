@@ -111,6 +111,25 @@ export type CoreEvent =
       type: 'sessionRuntimeChanged';
       states: readonly SessionRuntimeState[];
     }
+  /**
+   * 远程工作区中被监听文件发生变化（specs/018 FR-002）。
+   *
+   * core 是远端文件监听的唯一 owner：宿主注册 / 注销监听，core 只上报事实。
+   * 事件只带路径与元数据，**不带文件内容**——宿主收到 `changed` 后自行读取内容，
+   * 大文件不占用帧通道。`watchId` 由宿主生成，用于把事件路由回唯一查看器窗口；
+   * 已注销的迟到事件由宿主按 `watchId` 丢弃。
+   *
+   * `kind: 'error'` 时 `error` 非空，其余情况为 `null`（契约不使用可选字段）。
+   */
+  | {
+      type: 'workspaceFileChanged';
+      watchId: string;
+      path: string;
+      kind: 'changed' | 'deleted' | 'error';
+      mtimeMs: number;
+      size: number;
+      error: string | null;
+    }
   | { type: 'spinDesignDataChanged' }
   /**
    * 会话工作模式变化（进入 spin）。
@@ -485,7 +504,27 @@ export type UiRequest =
    * 保存 Spin 设计：Core 按 `sessionId` 的会话工作目录在自己所在机器落盘，
    * 与 SpinLoop 的节点 meta 更新共用同一把写锁。
    */
-  | { type: 'spinDesignSaveRequested'; sessionId: string; data: SpinDesign };
+  | { type: 'spinDesignSaveRequested'; sessionId: string; data: SpinDesign }
+  /**
+   * 注册远程工作区文件监听（specs/018 FR-002 / FR-003）。
+   *
+   * `watchId` 由宿主生成并贯穿注册与事件；`workspacePath` 用于宿主侧按工作区路由到
+   * 对应 Connection；`path` 是目标机器上的绝对路径，必须落在 `workspacePath` 内。
+   * 注册失败（越界 / 权限 / 监听上限）用 `{ ok: false, error }` 如实回报。
+   */
+  | {
+      type: 'watchWorkspaceFileRequested';
+      watchId: string;
+      workspacePath: string;
+      path: string;
+    }
+  /** 注销远程工作区文件监听；`workspacePath` 用于宿主按工作区路由到对应 Connection，未知 `watchId` 按已注销处理（幂等） */
+  | { type: 'unwatchWorkspaceFileRequested'; watchId: string; workspacePath: string };
+
+/** 远程文件监听注册结果（`UiRequest.watchWorkspaceFileRequested`） */
+export type WatchWorkspaceFileResult =
+  | { ok: true }
+  | { ok: false; error: string };
 
 /** 会话加载结果（`UiRequest.conversationLoadRequested`） */
 export interface LoadedConversation {
@@ -549,6 +588,8 @@ export type UiRequestResultMap = {
   skillsRequested: { skills: SkillListItem[] };
   spinDesignRequested: SpinDesignReadResult;
   spinDesignSaveRequested: SpinDesignSaveResult;
+  watchWorkspaceFileRequested: WatchWorkspaceFileResult;
+  unwatchWorkspaceFileRequested: null;
 };
 
 // ==================== 会话运行时状态 ====================

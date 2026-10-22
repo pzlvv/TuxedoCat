@@ -18,6 +18,7 @@
  * core 经订阅获得当前工作区与变化，启动期不主动读取。
  */
 
+import type { CoreEvent } from '../shared/AssistantEventBus.js';
 import type { HostToWebviewMessage } from './webviewMessages.js';
 import type { WorkspaceRef } from './workspaceRef.js';
 
@@ -183,6 +184,15 @@ export interface UIHost extends WorkspaceProvider {
 
   /** 打开 Mermaid 预览 */
   openMermaidPreview(code: string): Promise<void>;
+
+  /**
+   * Core 上报远程工作区文件变化（specs/018 FR-002）。
+   *
+   * 事件由 `WebViewUI` 的 `workspaceFileChanged` handler 转交；宿主据此刷新对应
+   * 查看器窗口。VS Code 的编辑器自身随文件更新，实现为 no-op；Electron 按
+   * `watchId` 路由到当前查看器。
+   */
+  onWorkspaceFileChanged(event: Extract<CoreEvent, { type: 'workspaceFileChanged' }>): void;
 
   /**
    * 关闭当前预览（diff / 虚拟文档 / 预览窗口）。

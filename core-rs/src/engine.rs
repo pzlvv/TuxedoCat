@@ -377,6 +377,8 @@ impl SessionState {
 pub struct Core {
     pub bus: SharedBus,
     pub sessions: Mutex<HashMap<String, Arc<Mutex<SessionState>>>>,
+    /// 远程工作区文件监听注册表（specs/018 FR-002）：按 watchId 持有 watcher。
+    pub file_watch: crate::file_watch::FileWatchRegistry,
     /// 会话创建顺序：
     /// `sessionRuntimeChanged.states` 必须按插入序输出，HashMap 迭代序不保证。
     session_order: Mutex<Vec<String>>,
@@ -389,6 +391,7 @@ impl Core {
         Self {
             bus,
             sessions: Mutex::new(HashMap::new()),
+            file_watch: crate::file_watch::FileWatchRegistry::new(),
             session_order: Mutex::new(Vec::new()),
             last_runtime: Mutex::new(Vec::new()),
         }

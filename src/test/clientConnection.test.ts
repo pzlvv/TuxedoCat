@@ -164,6 +164,7 @@ function createClientHarness(): ClientHarness {
     conversationListChanged: () => undefined,
     conversationSpaceCleared: () => undefined,
     sessionRuntimeChanged: () => undefined,
+    workspaceFileChanged: () => undefined,
     spinDesignDataChanged: () => undefined,
     workModeChanged: () => undefined,
     highlightLanguagesUsed: () => undefined,
@@ -484,6 +485,39 @@ async function run(): Promise<void> {
 
     await shutdownCore();
     check('shutdownCore 关闭全部 Connection', result.client.listConnections().length === 0);
+  }
+
+  // ── watch / unwatch 按 workspacePath 路由（specs/018 FR-003）──
+  {
+    const harness = createClientHarness();
+    harness.client.openWorkspace(WS_A);
+    harness.client.openWorkspace(WS_B);
+    harness.readyAll();
+    await harness.client.requestCore({
+      type: 'watchWorkspaceFileRequested',
+      watchId: 'w1',
+      workspacePath: WS_B.path,
+      path: '/repo/b/README.md',
+    });
+    check(
+      'watch 请求路由到工作区 B 的 Connection',
+      harness.channels[1].requests.some(
+        (request) => request.type === 'watchWorkspaceFileRequested' && request.watchId === 'w1',
+      ),
+    );
+    check('watch 请求没有发到工作区 A', harness.channels[0].requests.length === 0);
+    await harness.client.requestCore({
+      type: 'unwatchWorkspaceFileRequested',
+      watchId: 'w1',
+      workspacePath: WS_B.path,
+    });
+    check(
+      'unwatch 请求路由到工作区 B 的 Connection',
+      harness.channels[1].requests.some(
+        (request) => request.type === 'unwatchWorkspaceFileRequested' && request.watchId === 'w1',
+      ),
+    );
+    await harness.client.closeAll();
   }
 
   finish();

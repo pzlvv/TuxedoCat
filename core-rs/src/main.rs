@@ -29,6 +29,7 @@ mod core_text;
 mod daemon;
 mod daemon_protocol;
 mod engine;
+mod file_watch;
 mod frame;
 mod history;
 mod llm;
@@ -58,6 +59,8 @@ mod util;
 
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod file_watch_tests;
 
 use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex};
@@ -325,6 +328,37 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .get("data")
                 .ok_or_else(|| "spinDesignSaveRequested without data".to_string())?;
             Ok(spin_design_save_payload(session_id, data))
+        }
+        // 远程工作区文件监听（specs/018 FR-002 / FR-003）：注册 / 注销由宿主驱动，
+        // Core 只维护监听表并通过 `workspaceFileChanged` 上报事实。
+        "watchWorkspaceFileRequested" => {
+            let watch_id = request
+                .get("watchId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "watchWorkspaceFileRequested without watchId".to_string())?;
+            let workspace_path = request
+                .get("workspacePath")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "watchWorkspaceFileRequested without workspacePath".to_string())?;
+            let path = request
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "watchWorkspaceFileRequested without path".to_string())?;
+            core.file_watch.watch(
+                core.bus.clone(),
+                watch_id.to_string(),
+                workspace_path,
+                path,
+            )?;
+            Ok(json!({ "ok": true }))
+        }
+        "unwatchWorkspaceFileRequested" => {
+            let watch_id = request
+                .get("watchId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "unwatchWorkspaceFileRequested without watchId".to_string())?;
+            core.file_watch.unwatch(watch_id)?;
+            Ok(Value::Null)
         }
         other => Err(format!("unknown UI request type: {other}")),
     }

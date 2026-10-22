@@ -13,6 +13,7 @@
 
 import * as vscode from 'vscode';
 import type { UIHost, WebviewViewHandle, WorkspaceChange } from './host/UIHost.js';
+import type { CoreEvent } from './shared/AssistantEventBus.js';
 import type { WebviewMessage } from './host/webviewMessages.js';
 import { sameWorkspaceRef, type WorkspaceRef } from './host/workspaceRef.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from './host/mermaidHtml.js';
@@ -200,6 +201,14 @@ export class VSCodeUIHost implements UIHost {
 
   async openMermaidPreview(code: string): Promise<void> {
     this.openMermaidPreviewPanel(code);
+  }
+
+  /**
+   * VS Code 的编辑器 / 预览标签自身随文件更新，不需要宿主侧刷新通道。
+   * 该成员存在是为了让 `WebViewUI` 的 CoreEvent 处理器有统一出口（specs/018）。
+   */
+  onWorkspaceFileChanged(_event: Extract<CoreEvent, { type: 'workspaceFileChanged' }>): void {
+    // 有意 no-op：VS Code 宿主没有独立查看器窗口。
   }
 
   closePreview(): void {

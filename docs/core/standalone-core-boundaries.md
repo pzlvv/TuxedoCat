@@ -53,6 +53,9 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | 会话挂起持久化收尾 | `UiRequest.flushSessionRequested` |
 | 智能命名 / 余额 | `UiRequest.smartNamingRequested` / `balanceRequested` |
 | Core 就绪 | `CoreEvent.coreReady` |
+| 远程工作区文件监听注册 | `UiRequest.watchWorkspaceFileRequested`（`watchId` + `workspacePath` + `path`；失败回 `{ ok: false, error }`） |
+| 远程工作区文件监听注销 | `UiRequest.unwatchWorkspaceFileRequested`（`watchId` + `workspacePath`；未知 id 幂等） |
+| 远程工作区文件变化 | `CoreEvent.workspaceFileChanged`（只带 `watchId` / `path` / `kind` / `mtimeMs` / `size` / `error`，不带文件内容；宿主经 SFTP 读内容） |
 
 例外（与本机 Core 共用同一份磁盘，远程工作区落地时需要迁到 `UiRequest`）。Spin 设计器
 曾直接读宿主本地磁盘，已迁到 `spinDesignRequested` / `spinDesignSaveRequested`；例外表

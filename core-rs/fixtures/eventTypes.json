@@ -31,7 +31,8 @@
     "commandDispatched",
     "sessionConfigChanged",
     "log",
-    "notice"
+    "notice",
+    "workspaceFileChanged"
   ],
   "coreRequests": [
     "toolPermissionRequested",
@@ -71,6 +72,10 @@
     "conversationSpacesRequested",
     "flushSessionRequested",
     "conversationLoadRequested",
-    "skillsRequested"
+    "skillsRequested",
+    "spinDesignRequested",
+    "spinDesignSaveRequested",
+    "watchWorkspaceFileRequested",
+    "unwatchWorkspaceFileRequested"
   ]
 }

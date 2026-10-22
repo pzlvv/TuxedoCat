@@ -35,6 +35,7 @@ ryu-js = "1"
 # 控制连接的 TCP keepalive 参数（`docs/core-remote.md` 第 2.5 节）：std 的
 # keepalive 参数配置尚未稳定（`tcp_keepalive` feature），用 socket2 设置。
 socket2 = "0.6"
+notify = "8.2.0"
 
 # Linux 发布产物（musl 静态）的全局分配器换成 mimalloc，替掉 musl 自带的 mallocng
 # （docs/core/standalone-core.md 第 3.3 节）。只在 musl 目标上挂：ASAN 变体走 gnu

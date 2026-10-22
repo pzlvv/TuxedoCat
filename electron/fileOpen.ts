@@ -20,6 +20,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { resolveWithinRoot } from './sidebarFiles.js';
 import { classifyFileForOpen, imageMimeFor, REMOTE_BINARY_UNSUPPORTED } from './fileTypes.js';
+import type { ViewerWatchTarget } from './viewerWatch.js';
+import type { WorkspaceEndpoint } from '../src/host/workspaceRef.js';
 
 export { classifyFileForOpen, imageMimeFor, REMOTE_BINARY_UNSUPPORTED } from './fileTypes.js';
 export type { FileOpenKind } from './fileTypes.js';
@@ -40,11 +42,24 @@ export async function bytesLookBinary(bytes: Buffer): Promise<boolean> {
 /** 宿主能力注入口：窗口打开与系统调用都由 main.ts 提供（本模块不 import electron） */
 export interface FileOpenBridge {
   /** 内置 Markdown 预览窗口（渲染后的只读 HTML，`src/host/markdownHtml.ts` 生成） */
-  openMarkdownViewer(init: { title: string; content: string }): void | Promise<void>;
+  openMarkdownViewer(init: {
+    title: string;
+    content: string;
+    watchTarget: ViewerWatchTarget | null;
+  }): void | Promise<void>;
   /** 内置图片查看器（滚轮缩放；US-38 图片预览窗口） */
-  openImageViewer(init: { title: string; dataUrl: string }): void | Promise<void>;
+  openImageViewer(init: {
+    title: string;
+    dataUrl: string;
+    watchTarget: ViewerWatchTarget | null;
+  }): void | Promise<void>;
   /** 内置文本查看器（Monaco view 模式；filePath 只用于语言推断，不读盘） */
-  openTextViewer(init: { title: string; content: string; filePath?: string }): void | Promise<void>;
+  openTextViewer(init: {
+    title: string;
+    content: string;
+    filePath?: string;
+    watchTarget: ViewerWatchTarget | null;
+  }): void | Promise<void>;
   /** 本地文件走既有 openFile 路径（Monaco 主进程读盘，与「Edit 预览」完全同一入口） */
   openLocalFile(filePath: string): void | Promise<void>;
   /** 调系统默认应用打开本地文件；失败时 reject（错误消息来自 shell.openPath 回串） */
@@ -73,6 +88,7 @@ export async function openLocalWorkspaceFile(
     await bridge.openImageViewer({
       title: path.posix.basename(rel),
       dataUrl: `data:${imageMimeFor(rel)};base64,${bytes.toString('base64')}`,
+      watchTarget: { kind: 'local', filePath: abs },
     });
     return;
   }
@@ -80,6 +96,7 @@ export async function openLocalWorkspaceFile(
     await bridge.openMarkdownViewer({
       title: path.posix.basename(rel),
       content: await fs.promises.readFile(abs, 'utf-8'),
+      watchTarget: { kind: 'local', filePath: abs },
     });
     return;
   }
@@ -100,6 +117,7 @@ export async function openLocalWorkspaceFile(
 export async function openRemoteWorkspaceFile(
   bridge: FileOpenBridge,
   reader: RemoteFileReader,
+  endpoint: WorkspaceEndpoint,
   root: string,
   rel: string,
 ): Promise<void> {
@@ -107,6 +125,12 @@ export async function openRemoteWorkspaceFile(
   if (!abs) throw new Error(`path escapes the workspace root: ${rel}`);
   const name = path.posix.basename(rel);
   const kind = classifyFileForOpen(name);
+  const watchTarget: ViewerWatchTarget = {
+    kind: 'remote',
+    endpoint,
+    workspacePath: root,
+    absPath: abs,
+  };
   if (kind === 'binary') {
     throw new Error(REMOTE_BINARY_UNSUPPORTED);
   }
@@ -115,15 +139,25 @@ export async function openRemoteWorkspaceFile(
     await bridge.openImageViewer({
       title: name,
       dataUrl: `data:${imageMimeFor(rel)};base64,${bytes.toString('base64')}`,
+      watchTarget,
     });
     return;
   }
   if (kind === 'markdown') {
-    await bridge.openMarkdownViewer({ title: name, content: await reader.readText(abs) });
+    await bridge.openMarkdownViewer({
+      title: name,
+      content: await reader.readText(abs),
+      watchTarget,
+    });
     return;
   }
   if (kind === 'text') {
-    await bridge.openTextViewer({ title: name, content: await reader.readText(abs), filePath: name });
+    await bridge.openTextViewer({
+      title: name,
+      content: await reader.readText(abs),
+      filePath: name,
+      watchTarget,
+    });
     return;
   }
   // 未知扩展名：嗅探前 8KB 判二进制；远程二进制不支持打开（本地才调系统应用）
@@ -131,7 +165,12 @@ export async function openRemoteWorkspaceFile(
   if (await bytesLookBinary(head)) {
     throw new Error(REMOTE_BINARY_UNSUPPORTED);
   }
-  await bridge.openTextViewer({ title: name, content: await reader.readText(abs), filePath: name });
+  await bridge.openTextViewer({
+    title: name,
+    content: await reader.readText(abs),
+    filePath: name,
+    watchTarget,
+  });
 }
 
 /** 读本地文件前 maxBytes 字节（不足读全量） */

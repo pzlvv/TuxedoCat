@@ -1544,3 +1544,45 @@ fn runtime_state_fields_match_parity_fixture() {
     expected.sort();
     assert_eq!(actual, expected, "runtime_state_json 字段集与 runtimeStateParity.json 不一致");
 }
+
+// ==================== 远程文件监听请求（specs/018 FR-003） ====================
+
+#[test]
+fn watch_workspace_file_request_requires_fields() {
+    let core = test_core();
+    assert!(dispatch_ui_request(
+        &core,
+        &json!({ "type": "watchWorkspaceFileRequested" })
+    )
+    .is_err());
+    assert!(dispatch_ui_request(
+        &core,
+        &json!({ "type": "watchWorkspaceFileRequested", "watchId": "w1" })
+    )
+    .is_err());
+    assert!(dispatch_ui_request(
+        &core,
+        &json!({ "type": "watchWorkspaceFileRequested", "watchId": "w1", "workspacePath": "/w" })
+    )
+    .is_err());
+}
+
+#[test]
+fn unwatch_workspace_file_request_is_idempotent() {
+    let core = test_core();
+    let result = dispatch_ui_request(
+        &core,
+        &json!({
+            "type": "unwatchWorkspaceFileRequested",
+            "watchId": "missing",
+            "workspacePath": "/w",
+        }),
+    )
+    .expect("unwatch missing id is ok");
+    assert_eq!(result, Value::Null);
+    assert!(dispatch_ui_request(
+        &core,
+        &json!({ "type": "unwatchWorkspaceFileRequested" })
+    )
+    .is_err());
+}

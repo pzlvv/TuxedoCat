@@ -17,6 +17,7 @@ import type {
   SkillListItem,
   SpinDesignReadResult,
   SpinDesignSaveResult,
+  WatchWorkspaceFileResult,
 } from '../shared/AssistantEventBus.js';
 import type { SpinDesign } from '../shared/spin/Types.js';
 import { getSystemLocale, setHostLocale, setHostUiLanguage } from './i18n.js';
@@ -169,6 +170,33 @@ export async function saveSpinDesign(
   data: SpinDesign,
 ): Promise<SpinDesignSaveResult> {
   return requireEventBus().requestCore({ type: 'spinDesignSaveRequested', sessionId, data });
+}
+
+/**
+ * 注册远程工作区文件监听（specs/018 FR-002 / FR-003）。
+ *
+ * 失败（路径越界 / 权限 / 监听上限 / Core 不可用）转成 `{ ok: false, error }`：
+ * 宿主据此在查看器标题上显示「自动刷新不可用」，不静默当作已监听。
+ */
+export async function watchWorkspaceFile(request: {
+  watchId: string;
+  workspacePath: string;
+  path: string;
+}): Promise<WatchWorkspaceFileResult> {
+  try {
+    await requireEventBus().requestCore({ type: 'watchWorkspaceFileRequested', ...request });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** 注销远程工作区文件监听；`workspacePath` 只用于按工作区路由（Core 侧幂等）。 */
+export async function unwatchWorkspaceFile(request: {
+  watchId: string;
+  workspacePath: string;
+}): Promise<void> {
+  await requireEventBus().requestCore({ type: 'unwatchWorkspaceFileRequested', ...request });
 }
 
 /**
