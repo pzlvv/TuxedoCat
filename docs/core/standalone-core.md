@@ -182,7 +182,7 @@ project.json 与各 crate 的包名，不改逻辑代码。
   shell 探测、资源定位。
 - 构建脚本按目标三元组参数化；当前产出 Windows x64 与 Linux x64 / arm64（musl 静态），
   Windows arm64 可按需构建（见第 3.3 节）。
-  Linux 目标在 Windows 上直接交叉编译（rust-lld + zig，见第 3.3 节），不需要 Linux 环境。
+  Linux 目标在 Windows 上交叉编译（rust-lld + zig + make，见第 3.3 节），不需要 Linux 环境。
 - 宿主侧的启动、帧通道与契约不随平台变化。
 - 新增平台时只补产物目录与构建目标，不改契约与磁盘格式。
 
@@ -235,6 +235,11 @@ Windows 上的探测要求 shell 带 `cygpath`（Git Bash / MSYS2 / Cygwin）：
 Linux 产物一律用 **musl**：静态链接、不依赖目标机器的 glibc 版本。这个 core 要拷到别人的
 远端机器上跑，发行版未知，gnu 目标很容易撞上 glibc 太旧。
 
+Linux 产物的全局分配器是 **jemalloc**（`core-rs/Cargo.toml` 的 musl 依赖 + `core-rs/src/main.rs` 的
+`#[global_allocator]`），替掉 musl 自带的 mallocng：会话循环分配密集且跨线程，碎片与峰值偏高。开
+`override_allocator_on_supported_platforms` 后 libc 的 malloc / free 也归它（`ring` 等 C 依赖与 Rust
+侧同堆）；Windows 与 ASAN 变体（gnu 三元组）不挂它，ASAN 要自己拦截 malloc / free。
+
 | 目标 | 三元组 | 产物目录 |
 | --- | --- | --- |
 | Windows x64 | `x86_64-pc-windows-msvc` | `resources/core/x64-win32/` |
@@ -250,29 +255,27 @@ npm run build:core:win32-arm64 # 只建 Windows arm64（打包集合成员，见
 npm run build:core:asan       # 建当前平台 / 架构 + Linux x64 的 ASAN 插桩构建（内存诊断用）
 ```
 
-`build-core.mjs` 的目标分三档：不带参数时构建 `PACKAGE_DIRS`（打包要携带的 Windows x64 /
-arm64 + Linux x64 / arm64，本机构建不了的组合跳过并说明）；`--host` 只建当前平台 / 架构；`--target <三元组>`
-只建指定目标。本地调试（`dev:electron`、`watch:app` 的 Rust 重建）走 `--host`，不白编交叉编译那几份。
+`build-core.mjs` 的目标分三档：不带参数时构建 `PACKAGE_DIRS`（本机构建不了的组合跳过并说明）；
+`--host` 只建当前平台 / 架构（`dev:electron`、`watch:app` 的 Rust 重建走这条）；`--target` 只建指定目标。
 
-**ASAN 变体**（`npm run package:asan`，单编走 `npm run build:core:asan`）：Core 用 nightly
-工具链的 `-Zsanitizer=address` 按 `core-rs/Cargo.toml` 的 `[profile.asan]`（继承 release 的
-优化与行号表）构建，产物落 `target/<三元组>/asan/`。默认构建**当前平台 / 架构 + Linux x64**
-（本机没有 asan 变体时只建 Linux x64）——Linux x64 是 vsix / 桌面包跨平台携带的那份，也是
-SSH 远端部署的主目标；其余目标用 `--target` 显式指定。Linux x64 的 ASAN 产物用 **gnu**
-三元组（`x86_64-unknown-linux-gnu`）而不是发布产物的静态 musl（rustc 拒绝 sanitizer 与
-静态 libc 的组合），gnu 产物动态链接 glibc；Windows 仍用 msvc 三元组。产物落位与 release
-相同（同目录同名覆盖本机 / Linux x64 那份），Windows 产物目录额外带 MSVC 的动态 ASAN 运行库
-`clang_rt.asan_dynamic-<arch>.dll`（rustup 工具链不带它，链接期与运行期都用 VS「C++
-AddressSanitizer」组件分发的那份，构建脚本经 vswhere 定位后复制到 exe 同级，缺失直接报错；
-ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 profile 段为 `asan`、三元组取实际
-构建三元组（见[第 3.4 节](#34-构建指纹)），与 release 产物互不混槽：asan 构建后再打 release
-包，`verify-core-artifacts` 会按指纹拦下，重跑 `npm run build:core` 即恢复。变体经环境变量
+**ASAN 变体**（`npm run package:asan`，单编走 `npm run build:core:asan`）：Core 用 nightly 工具链的
+`-Zsanitizer=address` 按 `core-rs/Cargo.toml` 的 `[profile.asan]`（继承 release 的优化与行号表）构建，
+产物落 `target/<三元组>/asan/`；默认构建**当前平台 / 架构 + Linux x64**（本机没有 asan 变体时只建
+Linux x64，它是 vsix / 桌面包跨平台携带的那份，也是 SSH 远端部署的主目标），其余目标用 `--target`
+显式指定。Linux x64 的 ASAN 产物用 **gnu** 三元组（`x86_64-unknown-linux-gnu`）而不是发布产物的
+静态 musl（rustc 拒绝 sanitizer 与静态 libc 的组合），gnu 产物动态链接 glibc；Windows 仍用 msvc。
+产物落位与 release 相同（同目录同名覆盖本机 / Linux x64 那份），Windows 产物目录额外带 MSVC 的
+动态 ASAN 运行库 `clang_rt.asan_dynamic-<arch>.dll`（rustup 工具链不带它，链接期与运行期都用 VS
+「C++ AddressSanitizer」组件分发的那份，构建脚本经 vswhere 定位后复制到 exe 同级，缺失直接报错；
+ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 profile 段为 `asan`、三元组取实际构建三元组
+（见[第 3.4 节](#34-构建指纹)），与 release 产物互不混槽：asan 构建后再打 release 包，
+`verify-core-artifacts` 会按指纹拦下，重跑 `npm run build:core` 即恢复。变体经环境变量
 `<envPrefix>_CORE_ASAN=1` 而不是命令行参数贯穿打包链（`package:ext` 里 vsce 会强制再执行一遍
-`vscode:prepublish`，其内嵌的 `npm run build:core` 收不到参数，注入见
-`scripts/package-asan.mjs`）；该变体下校验覆盖本机平台 + Linux x64、TUI 安装器只建本机平台、
-打包产物整体落 `release/asan/`（不覆盖正式 release 产物）。
+`vscode:prepublish`，其内嵌的 `npm run build:core` 收不到参数，注入见 `scripts/package-asan.mjs`）；
+该变体下校验覆盖本机平台 + Linux x64、TUI 安装器只建本机平台、打包产物整体落 `release/asan/`
+（不覆盖正式 release 产物）。
 
-构建的工具链分两段，**都在本机解决**：
+构建的工具链分三段，**都在本机解决**：
 
 1. **Rust 目标与链接器**（`rustup target add <triple>`；asan 变体装在 nightly 上：
    `rustup target add --toolchain nightly <triple>`，缺工具链时构建脚本直接给出安装命令）：
@@ -286,28 +289,26 @@ ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 pro
    一个可执行文件就够。装好保证 `zig` 在 PATH 上即可（装在别处用环境变量 `ZIG` 指定）；
    构建脚本会注入 `CC` / `CFLAGS`，缺 zig 时直接报错、不静默降级。两个用场：
    - Linux musl / gnu：交叉编译的 C 编译器，静态库打包用 `zig ar`；gnu 的链接也经 `zig cc`
-     （`scripts/zig-cc-linker.mjs` 垫片把 rustc 的 `-Wl,<绝对路径>` 还原成位置参数）；
+     （`zig-cc-linker.mjs` 垫片还原 `-Wl,<绝对路径>`）。`CC` 注入转发到 `zig cc` 的垫片
+     （`zigCcWrapper`）：jemalloc-sys 只把编译器路径写进 configure，`zig cc` 到那儿只剩 `zig`；
    - Windows arm64：ring 的 build.rs 对该目标**硬性要求 clang**（MSVC 的 cl.exe 不被
      接受），由 zig cc 充当；静态库打包用 VS 的 lib.exe（cc-rs 自行定位，不注入 AR）。
+3. **make**：jemalloc 用自带的 autoconf `configure` + make 构建，make 名按宿主写死（Windows
+   宿主只找 `mingw32-make`，其余找 `make` / `gmake`）；缺了构建脚本在 cargo 之前直接报错，
+   gnu 目标（ASAN 变体）不挂 jemalloc，不需要。
 
-打包（`npm run package:ext` / `package:app`）会校验要携带的 Core 产物
-（`scripts/verify-core-artifacts.mjs`）：产物缺失、比 `core-rs/src/**` 旧、构建指纹与
-源码不一致、或没同步进 `dist/resources/` 都直接报错。平台列表取自构建脚本的
-`PACKAGE_DIRS`（asan 变体取 `asanDefaultTargets`，即本机 + Linux x64），两处不各写一份。
-`build:core` 默认就构建这四个平台，所以打包链不会再漏掉任何一份（Linux 两份与 Windows arm64
-都是交叉编译）；校验仍然拦住「改了 Rust 源码没重编」与「`copy-assets` 没跑」——那两种情况
-会把上一次的旧产物静默打进 vsix / 安装包。
+打包（`npm run package:ext` / `package:app`）会校验要携带的 Core 产物（`verify-core-artifacts.mjs`）：
+产物缺失、比 `core-rs/src/**` 旧、构建指纹与源码不一致、或没同步进 `dist/resources/` 都直接报错。
+平台列表取自 `PACKAGE_DIRS`（asan 变体取 `asanDefaultTargets`，即本机 + Linux x64），两处不各写一份；
+`build:core` 默认构建这四个平台（Linux 两份与 Windows arm64 都是交叉编译）；校验拦住「改了 Rust 源码没重编」与「`copy-assets` 没跑」——旧产物会静默打进 vsix / 安装包。
 
-预编译 ripgrep（`resources/ripgrep/<arch>-<platform>/`）四个平台取自同一版本的 ripgrep
-官方发布物（15.2.0；Linux 两份为 `unknown-linux-musl` 静态链接），入库前按官方 `.sha256`
-逐份校验。`build-core.mjs::copyBundledRipgrep` 把它复制成 Core 自带 rg
-（`resources/core/<dir>/ripgrep/`）。
+预编译 ripgrep（`resources/ripgrep/<arch>-<platform>/`）四个平台取自同一版本的 ripgrep 官方发布物
+（15.2.0；Linux 两份为 `unknown-linux-musl` 静态链接），入库前按官方 `.sha256` 逐份校验。
+`build-core.mjs::copyBundledRipgrep` 把它复制成 Core 自带 rg（`resources/core/<dir>/ripgrep/`）。
 
-**Windows arm64**：目标与产物目录已登记（矩阵一致性由
-`src/test/corePlatformMatrix.test.ts` 锁定），属于默认打包集合 `PACKAGE_DIRS`——打包携带
-Windows x64 / arm64 与 Linux x64 / arm64 四份，`npm run package` 一次出齐；单独重建用
-`npm run build:core:win32-arm64`。TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物
-的目标仍按需补建 Core，兜住单目标场景。
+**Windows arm64**：目标与产物目录已登记（矩阵一致性由 `src/test/corePlatformMatrix.test.ts`
+锁定），属于默认打包集合 `PACKAGE_DIRS`，单独重建用 `npm run build:core:win32-arm64`。
+TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按需补建 Core，兜住单目标场景。
 
 ### 3.4 构建指纹
 

@@ -6,6 +6,15 @@
 //! 启动顺序：读 `hello` 帧 → 校验协议版本 → 回 `ready` → 进入帧循环。
 //! 退出：收到 `shutdown` 帧或标准输入 EOF（宿主退出）。
 
+// Linux 发布产物（musl 静态）的全局分配器是 jemalloc，替掉 musl 自带的 mallocng
+// （docs/core/standalone-core.md 第 3.3 节）。开启
+// `override_allocator_on_supported_platforms` 后 jemalloc 连 libc 的 malloc / free
+// 符号一起接管，ring 这类 C 依赖的分配与 Rust 侧落在同一个堆上。
+// Windows 与 ASAN 变体（gnu 三元组）不挂这个分配器：ASAN 要自己拦截 malloc / free。
+#[cfg(all(target_os = "linux", target_env = "musl"))]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 // 保留控制台子系统：这样部署后的 Core 二进制在终端里跑 `--help` / `start` 时输出
 // 可见（独立运行的前提）。宿主与 daemon 起本进程时分别用 `windowsHide` /
 // `CREATE_NO_WINDOW` 隐藏控制台窗口（`src/host/standalone/CoreDaemon.ts`、

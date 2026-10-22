@@ -36,6 +36,16 @@ ryu-js = "1"
 # keepalive 参数配置尚未稳定（`tcp_keepalive` feature），用 socket2 设置。
 socket2 = "0.6"
 
+# Linux 发布产物（musl 静态）的全局分配器换成 jemalloc，替掉 musl 自带的 mallocng
+# （docs/core/standalone-core.md 第 3.3 节）。只在 musl 目标上挂：ASAN 变体走 gnu
+# 三元组，必须把 malloc / free 留给 ASAN 拦截，不能换成 jemalloc。
+# `override_allocator_on_supported_platforms`：连 libc 的 malloc / free 符号一起
+# 交给 jemalloc，C 依赖（ring）的分配与 Rust 侧同堆。
+[target.'cfg(all(target_os = "linux", target_env = "musl"))'.dependencies]
+tikv-jemallocator = { version = "0.7", features = [
+    "override_allocator_on_supported_platforms",
+] }
+
 [dev-dependencies]
 # 单测里现造最小 xlsx（zip + inline string）作为 Read xlsx 路径的夹具
 zip = "8"
