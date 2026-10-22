@@ -1257,7 +1257,7 @@
       "name": "Agent-97",
       "tool": "Agent",
       "input": {},
-      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"prompt\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  },\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"Master\",\n      \"explorer\"\n    ],\n    \"path\": [\n      \"agentRole\"\n    ],\n    \"message\": \"Invalid option: expected one of \\\"Master\\\"|\\\"explorer\\\"\"\n  }\n]",
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"prompt\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  },\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"Master\",\n      \"Explorer\"\n    ],\n    \"path\": [\n      \"agentRole\"\n    ],\n    \"message\": \"Invalid option: expected one of \\\"Master\\\"|\\\"Explorer\\\"\"\n  }\n]",
       "parsed": null
     },
     {
@@ -1266,7 +1266,7 @@
       "input": {
         "prompt": "do it"
       },
-      "error": "[\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"Master\",\n      \"explorer\"\n    ],\n    \"path\": [\n      \"agentRole\"\n    ],\n    \"message\": \"Invalid option: expected one of \\\"Master\\\"|\\\"explorer\\\"\"\n  }\n]",
+      "error": "[\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"Master\",\n      \"Explorer\"\n    ],\n    \"path\": [\n      \"agentRole\"\n    ],\n    \"message\": \"Invalid option: expected one of \\\"Master\\\"|\\\"Explorer\\\"\"\n  }\n]",
       "parsed": null
     },
     {
@@ -1321,7 +1321,7 @@
         "prompt": "do it",
         "agentRole": 5
       },
-      "error": "[\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"Master\",\n      \"explorer\"\n    ],\n    \"path\": [\n      \"agentRole\"\n    ],\n    \"message\": \"Invalid option: expected one of \\\"Master\\\"|\\\"explorer\\\"\"\n  }\n]",
+      "error": "[\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"Master\",\n      \"Explorer\"\n    ],\n    \"path\": [\n      \"agentRole\"\n    ],\n    \"message\": \"Invalid option: expected one of \\\"Master\\\"|\\\"Explorer\\\"\"\n  }\n]",
       "parsed": null
     },
     {

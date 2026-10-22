@@ -218,7 +218,7 @@
         },
         "agentRole": {
           "type": "string",
-          "description": "The role of the agent to spawn: Master or explorer"
+          "description": "The role of the agent to spawn: Master or Explorer"
         }
       }
     },

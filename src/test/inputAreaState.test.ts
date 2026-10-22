@@ -31,7 +31,7 @@ runTests('inputAreaState', () => {
   check('spin 提示优先于 provider 空串', resolveInputPlaceholder({ providerConfigured: false, workMode: 'spin' }, texts) === texts.spin);
 
   // ── 选项菜单锁定（specs/020 FR-005）──
-  check('explorer 子代理锁定', resolveSessionOptionsLocked({ subAgentRole: 'explorer' }) === true);
+  check('explorer 子代理锁定', resolveSessionOptionsLocked({ subAgentRole: 'Explorer' }) === true);
   check('Master 子代理不锁定', resolveSessionOptionsLocked({ subAgentRole: 'Master' }) === false);
   check('普通会话（无 role）不锁定', resolveSessionOptionsLocked({ subAgentRole: null }) === false);
   check('role 未到达（undefined）不锁定', resolveSessionOptionsLocked({}) === false);

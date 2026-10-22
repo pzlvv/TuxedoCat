@@ -109,9 +109,9 @@ test('US-51 explorer：只读四件套、白名单外被拒、选项菜单置灰
     const last = req.body.messages[req.body.messages.length - 1];
     const text = lastUserText(req.body.messages);
     if (text === TASK_PROMPT) {
-      // explorer 子代理：首轮故意调 Bash（应被执行侧拒绝），被拒后的下一轮 Reply 收尾
+      // Explorer 子代理：首轮故意调 Bash（应被执行侧拒绝），被拒后的下一轮 Reply 收尾
       if (last?.role === 'tool') {
-        return { kind: 'tool', name: 'Reply', args: { message: 'explorer 完成浏览' } };
+        return { kind: 'tool', name: 'Reply', args: { message: 'Explorer 完成浏览' } };
       }
       return {
         kind: 'tool',
@@ -122,12 +122,12 @@ test('US-51 explorer：只读四件套、白名单外被拒、选项菜单置灰
     if (text === PARENT_PROMPT) {
       // 父会话：第一轮派 explorer；拿到 Agent 工具结果后收尾
       if (JSON.stringify(req.body.messages).includes('Sub-agent created with ID')) {
-        return { kind: 'text', text: 'explorer 干完了。' };
+        return { kind: 'text', text: 'Explorer 干完了。' };
       }
       return {
         kind: 'tool',
         name: 'Agent',
-        args: { prompt: TASK_PROMPT, agentRole: 'explorer', description: '浏览文件' },
+        args: { prompt: TASK_PROMPT, agentRole: 'Explorer', description: '浏览文件' },
       };
     }
     return { kind: 'text', text: `收到：${text.slice(0, 40)}` };
@@ -148,7 +148,7 @@ test('US-51 explorer：只读四件套、白名单外被拒、选项菜单置灰
   // 白名单外的 Bash 被执行侧拒绝：tool_result 点名角色与可用工具，且命令未执行
   await expect
     .poll(
-      () => findToolResultText('explorer 子代理只有 Read / Glob / Grep / Reply 工具，Bash 不可用'),
+      () => findToolResultText('Explorer 子代理只有 Read / Glob / Grep / Reply 工具，Bash 不可用'),
       { timeout: 30_000 },
     )
     .toBe(true);

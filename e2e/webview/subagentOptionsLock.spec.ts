@@ -63,7 +63,7 @@ async function openMenu(): Promise<import('@playwright/test').Locator> {
 
 test('US-51 explorer 视图：三项置灰且点击不上报', async () => {
   const { host } = handle;
-  await loadSession('explorer');
+  await loadSession('Explorer');
 
   const menu = await openMenu();
   expect(await rowOpacity(menu, '联网搜索')).toBe('0.45');

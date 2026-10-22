@@ -503,7 +503,7 @@ pub fn definitions() -> Vec<Value> {
                     // enum 不展开：agentRole 只声明为 string，
                     // 只产出 string（取值由运行期校验，见 permission::base_check）；
                     // 合法名单见 `SUB_AGENT_ROLES` 与提示词角色表
-                    "agentRole": { "type": "string", "description": "The role of the agent to spawn: Master or explorer" }
+                    "agentRole": { "type": "string", "description": "The role of the agent to spawn: Master or Explorer" }
                 },
                 "required": ["prompt", "agentRole"]
             }
@@ -1591,7 +1591,7 @@ const CANCEL_RESULT_MESSAGE: &str = "Tool was canceled due to abort";
 /// 合法子代理角色（单一落点，specs/020 FR-001）：Agent 工具的执行侧校验、
 /// 入参枚举（`tool_input::agent_fields`）、权限 deny 文案（`permission::base_check`）、
 /// 系统提示词角色表（`prompt`）都从这里推导，禁止再各自写死名单。
-pub const SUB_AGENT_ROLES: &[&str] = &["Master", "explorer"];
+pub const SUB_AGENT_ROLES: &[&str] = &["Master", "Explorer"];
 
 /// 角色的 LLM 工具白名单；`None` = 不限（Master 与普通会话同款全量工具）。
 ///
@@ -1601,7 +1601,7 @@ pub const SUB_AGENT_ROLES: &[&str] = &["Master", "explorer"];
 /// 不联网 / 无 MCP（FR-003）——工具集在会话创建时由角色一次确定，生命周期不变。
 pub fn sub_agent_role_tools(role: &str) -> Option<&'static [&'static str]> {
     match role {
-        "explorer" => Some(&["Read", "Glob", "Grep", "Reply"]),
+        "Explorer" => Some(&["Read", "Glob", "Grep", "Reply"]),
         _ => None,
     }
 }

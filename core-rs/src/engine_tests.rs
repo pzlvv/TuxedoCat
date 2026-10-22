@@ -6545,12 +6545,12 @@ fn unknown_tool_never_marks_the_session_waiting() {
     );
 }
 
-// ==================== 子代理角色 explorer（specs/020） ====================
+// ==================== 子代理角色 Explorer（specs/020） ====================
 
-/// explorer 子代理完整链路（specs/020 FR-002）：工具清单恰为 Read / Glob / Grep /
+/// Explorer 子代理完整链路（specs/020 FR-002）：工具清单恰为 Read / Glob / Grep /
 /// Reply（含顺序，即内置定义顺序的过滤投影）；故意调用白名单外的 Bash 被执行侧拒绝
 /// （tool_result 点名角色与可用工具、命令未执行、会话不中止）；随后 Reply 正常收尾，
-/// meta.json 落盘 role="explorer"。
+/// meta.json 落盘 role="Explorer"。
 #[test]
 fn explorer_sub_agent_gets_role_toolset_and_rejects_others() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -6576,14 +6576,14 @@ fn explorer_sub_agent_gets_role_toolset_and_rejects_others() {
             return openai_multi_tool_sse(&[(
                 "call_reply",
                 "Reply",
-                r#"{"message":"explorer 完成"}"#,
+                r#"{"message":"Explorer 完成"}"#,
             )]);
         }
         if !parent_saw_agent_tool_use(body) {
             return openai_multi_tool_sse(&[(
                 "call_agent",
                 "Agent",
-                r#"{"prompt":"浏览一下代码","description":"Look around","agentRole":"explorer"}"#,
+                r#"{"prompt":"浏览一下代码","description":"Look around","agentRole":"Explorer"}"#,
             )]);
         }
         openai_text_sse(&["好"])
@@ -6602,26 +6602,26 @@ fn explorer_sub_agent_gets_role_toolset_and_rejects_others() {
                 .any(|event| event["data"]["origin"] == "agent"),
             Duration::from_secs(30),
         ),
-        "应当收到 explorer 的 Reply: {:?}",
+        "应当收到 Explorer 的 Reply: {:?}",
         harness.sink.event_types()
     );
 
     // 子会话登记与 meta.json 落盘
     let project = sandbox.workspace.to_string_lossy().to_string();
     let sub_ids = crate::subagent::list_for_creator("s-explorer");
-    assert_eq!(sub_ids.len(), 1, "应当登记 1 个 explorer 子代理");
+    assert_eq!(sub_ids.len(), 1, "应当登记 1 个 Explorer 子代理");
     let metadata = crate::history::load_metadata(&sub_ids[0], &project).expect("子会话 meta.json");
-    assert_eq!(metadata["role"], "explorer");
+    assert_eq!(metadata["role"], "Explorer");
     assert_eq!(metadata["parentSessionId"], "s-explorer");
 
     // 子代理首轮请求的工具清单恰为四件套（内置定义顺序的过滤投影，且无任何白名单外来源）
     let bodies = bodies.lock().unwrap();
-    assert!(!bodies.is_empty(), "应当捕获 explorer 的 LLM 请求");
+    assert!(!bodies.is_empty(), "应当捕获 Explorer 的 LLM 请求");
     let names = tool_names(&bodies[0]);
     assert_eq!(
         names,
         vec!["Read", "Grep", "Glob", "Reply"],
-        "explorer 工具清单应为四件套: {names:?}"
+        "Explorer 工具清单应为四件套: {names:?}"
     );
     drop(bodies);
 
@@ -6635,7 +6635,7 @@ fn explorer_sub_agent_gets_role_toolset_and_rejects_others() {
     assert_eq!(bash_result["status"], "error");
     let output = bash_result["output"].as_str().unwrap_or("");
     assert!(
-        output.contains("explorer 子代理只有 Read / Glob / Grep / Reply 工具，Bash 不可用"),
+        output.contains("Explorer 子代理只有 Read / Glob / Grep / Reply 工具，Bash 不可用"),
         "got {output}"
     );
     // 命令确实未执行
@@ -6647,7 +6647,7 @@ fn explorer_sub_agent_gets_role_toolset_and_rejects_others() {
 }
 
 /// 会话级配置的继承按角色区分（specs/020 FR-003）：创建者 minimal 预设 + 联网开——
-/// explorer 一律固定（prompt_mode=None、web_search=关、请求按 normal 口径组装且工具
+/// Explorer 一律固定（prompt_mode=None、web_search=关、请求按 normal 口径组装且工具
 /// 恰为四件套）；Master 同场景维持继承（预设 minimal、联网开、工具只有 Bash / Edit）。
 #[test]
 fn explorer_fixes_session_config_while_master_inherits() {
@@ -6679,8 +6679,8 @@ fn explorer_fixes_session_config_while_master_inherits() {
         .create_sub_agent(tools::SubAgentRequest {
             creator_session_id: creator.to_string(),
             prompt: "浏览一下".to_string(),
-            description: "explorer fixed".to_string(),
-            role: "explorer".to_string(),
+            description: "Explorer fixed".to_string(),
+            role: "Explorer".to_string(),
         })
         .expect("create explorer");
     let master_id = harness
@@ -6697,8 +6697,8 @@ fn explorer_fixes_session_config_while_master_inherits() {
     {
         let state = harness.core.session(&explorer_id);
         let state = state.lock().unwrap();
-        assert_eq!(state.prompt_mode, None, "explorer 固定 normal（不继承 minimal）");
-        assert_eq!(state.web_search, Some(false), "explorer 固定不联网（不继承开启）");
+        assert_eq!(state.prompt_mode, None, "Explorer 固定 normal（不继承 minimal）");
+        assert_eq!(state.web_search, Some(false), "Explorer 固定不联网（不继承开启）");
     }
     {
         let state = harness.core.session(&master_id);
@@ -6736,7 +6736,7 @@ fn explorer_fixes_session_config_while_master_inherits() {
             },
             Duration::from_secs(30),
         ),
-        "应当观察到 explorer（normal + 四件套）与 Master（minimal + Bash/Edit）两份请求: {:?}",
+        "应当观察到 Explorer（normal + 四件套）与 Master（minimal + Bash/Edit）两份请求: {:?}",
         {
             let bodies = bodies.lock().unwrap();
             bodies

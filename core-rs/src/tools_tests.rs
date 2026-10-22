@@ -3295,22 +3295,22 @@ fn background_task_abort_kills_the_whole_process_tree() {
 
 // ==================== 子代理角色注册表（specs/020） ====================
 
-/// 合法角色单一落点：Master 无白名单（不限工具，与主对话同款），explorer 白名单
+/// 合法角色单一落点：Master 无白名单（不限工具，与主对话同款），Explorer 白名单
 /// 恰为四件套（Reply 是生命周期设施，见 `sub_agent_role_tools` 的文档注释）。
 #[test]
 fn sub_agent_role_registry_lists_roles_and_allowlists() {
-    assert_eq!(SUB_AGENT_ROLES, &["Master", "explorer"]);
+    assert_eq!(SUB_AGENT_ROLES, &["Master", "Explorer"]);
     assert_eq!(sub_agent_role_tools("Master"), None);
     assert_eq!(
-        sub_agent_role_tools("explorer"),
+        sub_agent_role_tools("Explorer"),
         Some(["Read", "Glob", "Grep", "Reply"].as_slice())
     );
     // 未知角色没有白名单；角色名精确匹配，大小写变体不合法
-    assert_eq!(sub_agent_role_tools("Explorer"), None);
+    assert_eq!(sub_agent_role_tools("explorer"), None);
     assert_eq!(sub_agent_role_tools(""), None);
 }
 
-/// Agent 工具的执行侧校验走注册表：explorer 合法（继续走到运行时检查），
+/// Agent 工具的执行侧校验走注册表：Explorer 合法（继续走到运行时检查），
 /// 非法角色（含大小写变体）报注册表全量名单。
 #[test]
 fn agent_tool_validates_role_against_registry() {
@@ -3318,18 +3318,18 @@ fn agent_tool_validates_role_against_registry() {
     let ctx = context(&sandbox);
     let outcome = execute("Agent", &json!({ "prompt": "x", "agentRole": "Dev" }), &ctx);
     assert!(
-        text(&outcome).contains("must be one of: Master, explorer"),
+        text(&outcome).contains("must be one of: Master, Explorer"),
         "got {}",
         text(&outcome)
     );
-    let outcome = execute("Agent", &json!({ "prompt": "x", "agentRole": "Explorer" }), &ctx);
-    assert!(
-        text(&outcome).contains("must be one of: Master, explorer"),
-        "got {}",
-        text(&outcome)
-    );
-    // explorer 合法：本测试的 ctx 没挂 subagent 钩子，应走到「无运行时」而非角色报错
     let outcome = execute("Agent", &json!({ "prompt": "x", "agentRole": "explorer" }), &ctx);
+    assert!(
+        text(&outcome).contains("must be one of: Master, Explorer"),
+        "got {}",
+        text(&outcome)
+    );
+    // Explorer 合法：本测试的 ctx 没挂 subagent 钩子，应走到「无运行时」而非角色报错
+    let outcome = execute("Agent", &json!({ "prompt": "x", "agentRole": "Explorer" }), &ctx);
     assert_eq!(text(&outcome), "Agent: no sub-agent runtime available");
 }
 
@@ -3348,16 +3348,16 @@ fn agent_role_input_validation_reports_multi_value_enum() {
         issues,
         json!([{
             "code": "invalid_value",
-            "values": ["Master", "explorer"],
+            "values": ["Master", "Explorer"],
             "path": ["agentRole"],
-            "message": "Invalid option: expected one of \"Master\"|\"explorer\"",
+            "message": "Invalid option: expected one of \"Master\"|\"Explorer\"",
         }])
     );
-    // explorer 合法且规范化通过
+    // Explorer 合法且规范化通过
     let parsed = crate::tool_input::parse_input(
         "Agent",
-        &json!({ "prompt": "x", "agentRole": "explorer" }),
+        &json!({ "prompt": "x", "agentRole": "Explorer" }),
     )
     .expect("explorer 应当合法");
-    assert_eq!(parsed["agentRole"], "explorer");
+    assert_eq!(parsed["agentRole"], "Explorer");
 }

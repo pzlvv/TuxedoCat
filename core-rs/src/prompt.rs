@@ -274,7 +274,7 @@ Launches a specialized sub-agent to handle complex, multi-step tasks autonomousl
 
 Available agent roles (required):
 - "Master": Same capabilities as the main Agent (excluding the role capabilities listed above), used for handling tasks in an independent context.
-- "explorer": A file-browsing specialist restricted to read-only tools (Read, Glob, Grep), used for locating and inspecting files without modifying anything.
+- "Explorer": A file-browsing specialist restricted to read-only tools (Read, Glob, Grep), used for locating and inspecting files without modifying anything.
 
 **Usage:**
 - Use when a task requires multiple steps that can be delegated
