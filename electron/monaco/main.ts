@@ -32,16 +32,24 @@ import 'monaco-editor/min/vs/editor/editor.main.css';
 };
 
 // ── 语言推断 ──
+// 值必须是 monaco-editor 注册的 language id（`esm/vs/basic-languages/<x>/<x>.contribution.js`
+// 里的 `id`，别名也能用但 id 更稳）。表里没有的扩展名落到 plaintext：文件仍能打开，
+// 只是没有着色，所以新增扩展名时先确认 monaco 有对应 id 再加。
 const LANG_BY_EXT: Record<string, string> = {
   '.ts': 'typescript', '.tsx': 'typescript', '.mts': 'typescript', '.cts': 'typescript',
   '.js': 'javascript', '.jsx': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript',
   '.json': 'json', '.jsonc': 'json',
   '.py': 'python', '.md': 'markdown', '.html': 'html', '.htm': 'html',
-  '.css': 'css', '.scss': 'scss', '.less': 'less', '.xml': 'xml',
-  '.yaml': 'yaml', '.yml': 'yaml', '.sh': 'shell', '.bash': 'shell',
+  '.css': 'css', '.scss': 'scss', '.sass': 'scss', '.less': 'less', '.xml': 'xml',
+  '.yaml': 'yaml', '.yml': 'yaml', '.sh': 'shell', '.bash': 'shell', '.zsh': 'shell',
+  '.bat': 'bat', '.cmd': 'bat', '.ps1': 'powershell',
   '.sql': 'sql', '.java': 'java', '.c': 'c', '.cpp': 'cpp', '.h': 'cpp',
+  '.hpp': 'cpp', '.cc': 'cpp',
   '.go': 'go', '.rs': 'rust', '.rb': 'ruby', '.php': 'php', '.swift': 'swift',
-  '.kt': 'kotlin', '.cs': 'csharp',
+  '.kt': 'kotlin', '.kts': 'kotlin', '.cs': 'csharp',
+  '.lua': 'lua', '.dart': 'dart', '.scala': 'scala', '.clj': 'clojure', '.cljs': 'clojure',
+  '.r': 'r', '.pl': 'perl', '.pm': 'perl', '.proto': 'proto', '.graphql': 'graphql',
+  '.ex': 'elixir', '.exs': 'elixir',
 };
 
 function detectLanguage(filePath?: string, content?: string): string {
