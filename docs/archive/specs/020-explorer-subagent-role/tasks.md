@@ -15,4 +15,4 @@
 - [x] **T007**（FR-005）：`InputArea.tsx` 三个选项接锁定判定（联网搜索复用既有置灰渲染、提示词模式 onChange 早退 + 降透明、MCP 行 onMcpToggle 早退 + 降透明）+ i18n 置灰提示键（zh / en）；依赖：T006；完成判据：`npm run check-types && npm run lint` 绿
 - [x] **T008**（FR-002、FR-004、FR-005）：新增 `e2e/electron/subagentExplorer.spec.ts`——断言子代理首请求 tools 恰为四件套、Bash 被拒文案、explorer 视图选项菜单三项置灰；依赖：T003、T007；完成判据：`npx playwright test e2e/electron/subagentExplorer.spec.ts` 绿（需先 `npm run build:core:host` 与构建产物）
 - [x] **T009**（FR-001～FR-005）：全量闸门——`npm run build:core:host` 后跑 `npm run test:all`（含 docs-lint）、`npm run test:core`；依赖：T004、T007、T008；完成判据：全部绿
-- [ ] **T010**（FR-001～FR-005）：/converge——US-51 并入需求基线（分册 + 附录 e2e 映射行）、填 `spec.md` 收敛记录、status 改「已收敛」、spec 整目录归档 `docs/archive/specs/020-explorer-subagent-role/`、提交（`Flow: L3` + `Spec: 020`）；依赖：T009；完成判据：归档后 `npm run test:all -- docs-lint` 绿，提交过 `scripts/githooks/commit-msg` 闸门
+- [x] **T010**（FR-001～FR-005）：/converge——US-51 并入需求基线（分册 + 附录 e2e 映射行）、填 `spec.md` 收敛记录、status 改「已收敛」、spec 整目录归档 `docs/archive/specs/020-explorer-subagent-role/`、提交（`Flow: L3` + `Spec: 020`）；依赖：T009；完成判据：归档后 `npm run test:all -- docs-lint` 绿，提交过 `scripts/githooks/commit-msg` 闸门

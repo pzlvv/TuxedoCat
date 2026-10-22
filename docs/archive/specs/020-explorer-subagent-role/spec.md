@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：子代理角色 explorer（文件浏览专用，只读工具集）
@@ -155,6 +155,57 @@ Spin 编排起的子代理仍固定 `Master`，不受本改动影响。
 
 收敛时由 /converge 填写，结论只分三类。
 
-- 已满足：<FR / AC → 证据（实现与测试落点）>
-- 偏差：<与 spec 的差异；改代码或改 spec 并留痕>
-- 未做：<回写 tasks.md 的未完成项>
+### 已满足
+
+- **FR-001**（角色注册表与单一清单）：`core-rs/src/tools.rs` 的 `SUB_AGENT_ROLES` +
+  `sub_agent_role_tools` 为唯一落点；四处消费全接注册表——`run_agent` 校验
+  （tools_tests::agent_tool_validates_role_against_registry）、入参枚举
+  （tools_tests::agent_role_input_validation_reports_multi_value_enum +
+  fixtures/toolInputValidation.json 三处枚举用例同步）、permission 空 role 文案（常量
+  拼接）、prompt.rs 角色表（prompt_tests::agent_role_table_lists_all_registered_roles，
+  与注册表双向锁定）。AC-5 / AC-6 / AC-7 覆盖。
+- **FR-002**（explorer 工具集与执行侧防线）：engine_tests::
+  explorer_sub_agent_gets_role_toolset_and_rejects_others——首请求工具恰为
+  Read / Grep / Glob / Reply（内置定义顺序投影，含「无 `mcp__*`」的结构性保证）、
+  Bash 被拒文案点名角色与工具、命令未执行、会话不中止 Reply 收尾、meta.json 落
+  `role="explorer"`。e2e subagentExplorer.spec.ts 同链路复证。AC-1 / AC-2 / AC-3 /
+  AC-4 覆盖（AC-4 的 explorer 侧由「恰为四件套」的集合相等断言承载：任何白名单外
+  来源——含 MCP——都不可能出现）。
+- **FR-003**（按角色区分的配置继承）：engine_tests::
+  explorer_fixes_session_config_while_master_inherits——创建者 minimal + 联网开时
+  explorer 固定（prompt_mode=None / web_search 关 / 请求含核心身份段 + 四件套），
+  Master 维持继承（minimal + Bash / Edit）。AC-8 / AC-9 / AC-10 / AC-11 覆盖。
+- **FR-004**（生命周期一致）：specs/005 存量用例全量回归（cargo test 912 全绿）+
+  e2e Master 用例（创建 / 收尾 / 菜单可操作）。AC-12 / AC-13 / AC-14 覆盖。
+- **FR-005**（视图选项置灰）：inputAreaState.test.ts 5 断言（explorer 锁定、Master /
+  无 role / 未到达不锁定、非 Master 泛化）；e2e subagentOptionsLock.spec.ts
+  （webview 层：置灰样式 + 点击不上报 setPromptMode / setWebSearch + Master 与普通
+  会话不置灰）；e2e subagentExplorer.spec.ts（electron 全链路：role 事实经
+  conversationLoaded 到达后置灰生效）。AC-15 / AC-16 覆盖。
+
+### 偏差
+
+1. **spec 编号 019 → 020**：起草期编号取 019（当时 specs/ 已用最大 018），收敛时发现
+   并行会话的在途规格 `specs/019-abort-hover-background-tasks/` 同占 019；按「编号
+   不复用」本 spec 改号 020，实现内引用同步改写。
+2. **影响基线落地形态**：US-51 实际落在 `docs/features/user-stories/dialog-core.md`
+   （分册，US-49 之后）+ `user-stories.md` 索引行与附录两行——收敛期仓库正被并行会话
+   从单文件重构为「索引 + 分册」，基线文档结构变化所致；delta 内容与 spec 承诺一致
+   （US-51 + 两行 e2e 登记）。
+
+### 未做
+
+- **user-stories 分册合并的随提**：US-51 的 delta 已写入工作区（dialog-core.md 分册 +
+  索引 + 附录），但 user-stories 相关文件正被并行会话整体重构且未提交，为避免把他人在
+  途工作混入本提交，该 delta 留在工作区、随并行会话的收敛提交落地。本 spec 相关的
+  docsLint 检查（US ↔ e2e 双向映射、020 文件引用有效性）已绿；全仓 docs-lint 剩余
+  失败（章节引用 17 处 + 失效常量 1 处）全部位于并行会话的进行中文件
+  （`specs/019-abort-hover-background-tasks/*`、
+  `specs/defects/subagent-registry-outlives-dropped-sessions.md`），不在本 spec 范围。
+
+### 反向对照
+
+从实现 diff 反向枚举行为分支逐条对 spec：固定值生命周期稳定与迟到覆盖事件不破坏
+固定值（FR-003 正文 + AC-9）、role 缺失按普通会话不置灰与恢复后置灰一致（边界节）、
+嵌套 Agent 禁令不变（边界节）、并发槽位共用不分池（边界节）——均有对应条目；
+追溯矩阵五个测试落点全部真实存在且绿。实现中未发现 spec 未接的额外行为分支。
