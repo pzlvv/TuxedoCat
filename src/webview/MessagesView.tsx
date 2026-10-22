@@ -2032,6 +2032,12 @@ const MessagesView = memo(({
    * （否则会把已经停在底部的内容再"拉"一次，表现为页面又滚了一下）。
    */
   const lastScrollHeightRef = useRef(0);
+  /**
+   * 末位消息对象本身也是滚动依赖：once 通知被新节点覆盖时，`stripOnce` 删一条、
+   * 追加一条，`messages.length` 不变——只看长度会漏掉这次结构变化，新节点比
+   * 被删的 once 通知更高时视口停在中间（`docs/hosts/webview-ui.md` 第 11 节）。
+   */
+  const lastMessage = messages[messages.length - 1];
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -2041,7 +2047,7 @@ const MessagesView = memo(({
     }
 
     const prevCount = prevMsgCountRef.current;
-    const lastMsg = messages[messages.length - 1];
+    const lastMsg = lastMessage;
     profileLog(`[AutoScroll] layoutEffect len=${messages.length} prevCount=${prevCount} lastRole=${lastMsg?.role} prevRole=${lastMsgRoleRef.current} showThinking=${showThinkingAnimation} animationMode=${animationMode} streamingVer=${streamingVersion} forceKey=${forceScrollKey} prevForceKey=${prevForceScrollKeyRef.current} hasRunningTools=${hasRunningTools} userScrolledAway=${userScrolledAwayRef.current}`);
     if (prevCount === 0 && messages.length > 0) {
       profileLog(`[AutoScroll] FIRST_MESSAGE role=${lastMsg?.role} container=${container.scrollHeight}/${container.clientHeight} scrollTop=${container.scrollTop}`);
@@ -2116,7 +2122,7 @@ const MessagesView = memo(({
     lastScrollHeightRef.current = scrollHeight;
     profileLog(`[AutoScroll] layoutEffect branch=fallback-scroll hasNew=${hasNewMessage} lastRole=${lastMsg?.role} scrollHeight=${scrollHeight}`);
     scrollToBottom();
-  }, [messages.length, forceScrollKey, streamingVersion, hasRunningTools, scrollToBottom, userScrolledAwayRef]);
+  }, [messages.length, lastMessage, forceScrollKey, streamingVersion, hasRunningTools, scrollToBottom, userScrolledAwayRef]);
 
   // Persistent segments cache
   const segmentsCacheRef = useRef<Array<{ userMsg?: Message; nonUserMsgs: Message[] }>>([]);

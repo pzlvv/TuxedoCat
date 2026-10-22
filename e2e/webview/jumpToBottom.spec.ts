@@ -41,6 +41,20 @@ async function expectAwayFromBottom(page: import('@playwright/test').Page, minDi
   expect(away).toBe(true);
 }
 
+/** 读取消息列表距底部的距离；容器不存在时返回 null */
+async function distanceFromBottom(page: import('@playwright/test').Page): Promise<number | null> {
+  return page.evaluate(() => {
+    const el = document.querySelector('.messages-container');
+    if (!el) return null;
+    return el.scrollHeight - el.scrollTop - el.clientHeight;
+  });
+}
+
+/** 断言消息列表已贴底（与 isAtBottom 同口径的 2px 判定带） */
+async function expectAtBottom(page: import('@playwright/test').Page): Promise<void> {
+  await expect.poll(() => distanceFromBottom(page), { timeout: 10_000 }).toBeLessThanOrEqual(2);
+}
+
 test('US-47 底部不显示；向上滚不触发；向下达标手势显示；点击回底并隐藏', async () => {
   const { page } = handle;
   await setupTallConversation(page);
@@ -238,4 +252,36 @@ test('US-47 向上滚动任意幅度立即隐藏；重新显示需新的达标�
     await expectAwayFromBottom(page, 800);
     await expect(jump).not.toHaveAttribute('data-hidden');
   }).toPass({ timeout: 20_000 });
+});
+
+test('once 通知被更高新消息替换后仍贴底', async () => {
+  const { page, host } = handle;
+  const started = await host.waitForSent('startNewConversation');
+  const sessionId = started.sessionId as string;
+  await page.setViewportSize({ width: 1280, height: 500 });
+
+  // 撑高时间线并停在底部：用户消息 + 长助手回复
+  await host.send({ type: 'addMessage', sessionId, role: 'user', content: '第一轮' });
+  await host.send({
+    type: 'addMessage', sessionId, role: 'assistant',
+    content: '段落内容，用于撑高消息列表。'.repeat(200),
+  });
+  await expect(page.getByText('第一轮')).toBeVisible({ timeout: 10_000 });
+  await expectAtBottom(page);
+
+  // once 通知到达并停在末位：长度 +1，layoutEffect 强制回底
+  await host.send({ type: 'addMessage', sessionId, role: 'system', content: '*User Interrupted*', once: true });
+  const onceNode = page.getByText('*User Interrupted*', { exact: true });
+  await expect(onceNode).toBeVisible({ timeout: 10_000 });
+  await expectAtBottom(page);
+
+  // 新消息覆盖 once：stripOnce 删一条 + 追加一条，messages.length 不变。
+  // 新节点比 once 通知高——若自动滚动只按长度判定「没有新内容」，视口会停在中段。
+  await host.send({
+    type: 'addMessage', sessionId, role: 'assistant',
+    content: `新回复开头标记\n\n${'这是新回复正文，用来撑高时间线。'.repeat(30)}`,
+  });
+  await expect(page.getByText('新回复开头标记')).toBeVisible({ timeout: 10_000 });
+  await expect(onceNode).toHaveCount(0);
+  await expectAtBottom(page);
 });
