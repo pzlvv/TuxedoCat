@@ -146,8 +146,8 @@ last_reviewed: 2026-10-17
   外**直接追加**写同一份日志文件，手动从终端拉起（stderr 不是文件）时崩溃照样留痕。
   daemon 的启动 / 停止、控制连接接入 / 关闭、Core 子进程启动（含 pid）与信号终止
   （Unix）各落一行锚点。release 构建不 strip 并保留行号表（`core-rs/Cargo.toml` 的
-  `[profile.release]`；Windows 的行号表在 `.pdb` 里，由 `scripts/build-core.mjs` 随
-  可执行文件一并部署），栈帧才能符号化出函数名与行号。
+  `[profile.release]`；Windows 的行号表在 `.pdb` 里，由 `scripts/build-core.mjs` 落在
+  可执行文件旁，只供本地诊断、不随分发包走），栈帧才能符号化出函数名与行号。
 
 ### 2.6 远端目录选择
 

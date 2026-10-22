@@ -135,12 +135,12 @@ Core 进程承载的 core 侧业务：
 不写死单一平台。
 
 Electron 打包后产物落在 `app.asar` 内的 `dist/resources/`，但可执行文件必须从磁盘启动：
-`electron-builder.config.js` 的 `asarUnpack: ['dist/resources/**']` 把整份产物解包到
-`app.asar.unpacked/`，宿主定位候选路径时把 `app.asar` 改写为 `app.asar.unpacked` 并优先取用
+`electron-builder.config.js` 的 `asarUnpack: ['dist/resources/**']` 把整份产物解包到 `app.asar.unpacked/`，宿主定位候选路径时把 `app.asar` 改写为 `app.asar.unpacked` 并优先取用
 （`child_process.spawn` 不做 Electron 的 asar 重定向，直接 spawn asar 内路径必 ENOENT）。
 
-**部署单元与共享位**：仓库里的产物目录是自包含的——可执行文件与自带工具目录
-（当前只有 `ripgrep/rg[.exe]`）同级：
+**调试符号不随分发包走**：Windows（MSVC）的行号表在 `<core.binaryName>.pdb` 里，`build-core.mjs::copyDebugSymbols` 把它落在 `resources/core/<dir>/`，`copy-assets` 照常带进 `dist/resources/` 供本地崩溃诊断，但 vsix 白名单与 electron-builder 的默认规则（`includePdb` 未打开时排除 `**/*.pdb`）都把它挡在分发物之外（[docs/core/core-remote.md 第 2.5 节](core-remote.md#25-连接与生命周期)）。
+
+**部署单元与共享位**：仓库里的产物目录是自包含的——可执行文件与自带工具目录（当前只有 `ripgrep/rg[.exe]`）同级：
 
 ```
 resources/core/x64-win32/<core.binaryName>.exe
