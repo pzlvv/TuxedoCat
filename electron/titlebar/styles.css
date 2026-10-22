@@ -227,7 +227,7 @@ body {
 /* ── 未选中标签之间的竖线分隔（Chrome 风格） ──
    两种主题下未选中标签都与标题栏同色（深色 = 透明露底 / 浅色 = 透明露底），
    不画一根竖线就分不清标签边界。只在相邻两张都未选中时出现：
-   紧邻活动标签、或任一侧 hover（此时有 hover 底色）时都隐藏。
+   紧邻活动标签、右侧标签亮着灯条、或任一侧 hover（此时有 hover 底色）时都隐藏。
    选择器用 :where() 把权重压到与 `.ws-tab.drop-before::before` 相同，
    拖拽放置指示线（源文件更靠后）才能覆盖掉这条竖线。 */
 .ws-tab:where(:not(.active)) + .ws-tab:where(:not(.active))::before,
@@ -245,6 +245,13 @@ body {
   background: #4a4a55;
   pointer-events: none;
 }
+/* 灯条（流水 / 等待 / 完成呼吸）贴在本标签页左边缘，与这条竖线落在同一条边上：
+   1px 灰线紧挨着 3px 灯条会并成一道加粗的双线，故灯条亮着时不再画同侧竖线。
+   选择器权重与竖线规则相同、位置在其后，能覆盖掉它；
+   拖拽放置指示线权重更高（见下方 .drop-before），仍能压过这里的隐藏。 */
+.ws-tab.activity-running::before,
+.ws-tab.activity-waiting::before,
+.ws-tab.activity-completed::before,
 .ws-tab:hover::before,
 .ws-tab:hover + .ws-tab::before,
 .ws-tab:hover + .ws-add::before {
