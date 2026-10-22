@@ -36,6 +36,35 @@
   条件、轮询周期与重复刷新抑制。验收判据：Core 不可用期间的文件变更在恢复后可见（或按明确
   周期刷新），同一内容不重复刷新；`viewerWatch` 单测覆盖切换与恢复。
 
+- **本地查看器打开期间的修改丢失**（specs/018 拉取代码评审发现）：远程查看器注册成功后补读
+  一次内容，本地查看器建 watcher 后不补读——「读盘 → fs.watch 就绪」之间（开窗加载数百毫秒）
+  的外部修改没有任何事件，违反 [specs/018 归档](docs/archive/specs/018-viewer-file-refresh/spec.md)
+  FR-005「本地与远程两种后端遵循同一组行为」与 AC-19。方向：`ViewerWatchController.open`
+  本地分支建 watcher 后补读一次，内容判重保证未变不投递。验收判据：`viewerWatch` 单测的
+  本地打开补读用例绿（不靠任何 watcher 事件）；缺陷规格 `specs/defects/local-viewer-open-race-misses-change.md`。
+
+- **查看器并发刷新乱序可显示旧内容**（specs/018 拉取代码评审发现）：
+  `ViewerWatchController.refreshFromSource` 无串行化，两次相邻保存触发的两次「读 → 投递」
+  并发执行，读取完成乱序时旧内容后投递，查看器停在旧内容且无后续事件纠正，违反
+  [specs/018 归档](docs/archive/specs/018-viewer-file-refresh/spec.md) FR-005「刷新以最终落盘内容为准」。
+  方向：按当前 watch 串行化「读 → 投递」并在途合并新请求。验收判据：受控延迟读取的单测证明
+  两次变更乱序完成后最终投递为最新内容；缺陷规格 `specs/defects/viewer-refresh-races-show-stale-content.md`。
+
+- **Core 重注册拒绝已删除目标，文件重建后永不恢复**（specs/018 拉取代码评审发现）：
+  `core-rs/src/file_watch.rs` 的 `validate_target` 对目标整体 canonicalize，断线期间文件被删除后
+  Connection ready 重注册必然失败，标记停在「自动刷新不可用」且 Core 侧无监听，文件重建不再
+  触发刷新——违反 [specs/018 归档](docs/archive/specs/018-viewer-file-refresh/spec.md) FR-006「文件重新出现后
+  清除标记并刷新」。方向：目标缺失时按「父目录可达且在根内」放行注册；目标存在时校验不变
+  （含符号链接越界拒绝）。验收判据：core-rs 用例「注册不存在的目标 → 创建文件 → 上报 changed」绿；
+  缺陷规格 `specs/defects/file-watch-rejects-missing-target.md`。
+
+- **本地监听 basename 过滤在 Windows 大小写敏感**（specs/018 拉取代码评审发现）：
+  `electron/localFileWatch.ts` 的 basename 过滤按全等比较，Core 侧 `same_name` 在 Windows 按
+  不区分大小写比较；原子保存换大小写重建（`Readme.md` → `README.md`）时本地漏刷新，违反
+  [specs/018 归档](docs/archive/specs/018-viewer-file-refresh/spec.md) 边界「路径匹配按各平台语义（Windows
+  大小写不敏感）」。验收判据：Windows 上换大小写重建触发 changed 的 `localFileWatch` 用例绿；
+  缺陷规格 `specs/defects/local-watch-case-sensitive-on-windows.md`。
+
 - **Markdown 内嵌相对路径图片的加载与刷新**（[specs/018 归档](docs/archive/specs/018-viewer-file-refresh/spec.md) 收敛时登记）：
   Markdown 预览是 data URL 页面，没有 base URL，`![](./a.png)` 这类相对路径图片当前不加载；
   方向：自定义协议 / file base / 预览服务，并让内嵌图片随源文件更新。验收判据：相对路径
