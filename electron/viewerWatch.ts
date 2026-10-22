@@ -120,6 +120,10 @@ export class ViewerWatchController {
       active.localHandle = this.deps.createLocalWatcher(target.filePath, (event) => {
         this.handleLocalEvent(active, event);
       });
+      // 与远程同一口径（specs/018 FR-005、AC-19）：初始内容在开窗前读出，watcher 就绪
+      // 晚了数百毫秒，期间的外部修改没有任何事件——建完 watcher 补读一次，
+      // 内容判重保证文件未变时不投递。
+      void this.refreshFromSource(active);
       return;
     }
     void this.registerRemote(active);

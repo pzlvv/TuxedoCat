@@ -176,6 +176,17 @@ async function run(): Promise<void> {
       (state.delivered.at(-1)?.content as { text: string }).text === 'changed-during-open');
   }
 
+  // ── 本地打开后补读：覆盖读盘 → watcher 就绪之间的修改（不靠任何 watcher 事件）──
+  {
+    const state = initialState();
+    state.defaultRead = { kind: 'text', text: 'changed-during-open' };
+    const controller = new ViewerWatchController(fakeDeps(state));
+    controller.open(LOCAL_TARGET, 'markdown', 'README.md', { kind: 'text', text: 'old' });
+    await flush();
+    check.check('本地打开后补读覆盖打开期间的修改',
+      (state.delivered.at(-1)?.content as { text: string }).text === 'changed-during-open');
+  }
+
   // ── 内容未变不刷新 ──
   {
     const state = initialState();
@@ -252,8 +263,20 @@ async function run(): Promise<void> {
     await flush();
     controller.open(LOCAL_TARGET, 'text', 'README.md', { kind: 'text', text: 'old' });
     await flush();
-    check.check('顶替时注销旧远程监听', state.unwatchCalls.length === 2);
-    check.check('顶替时关闭旧本地 watcher', state.localClosed === 0);
+    check.check('远程被本地顶替后旧监听注销且新 watcher 存活',
+      state.unwatchCalls.length === 2 && state.localClosed === 0);
+  }
+
+  // ── 本地被本地顶替：旧 watcher 关闭 ──
+  {
+    const state = initialState();
+    const controller = new ViewerWatchController(fakeDeps(state));
+    controller.open(LOCAL_TARGET, 'image', 'a.png', { kind: 'image', dataUrl: 'data:a' });
+    controller.open({ kind: 'local', filePath: 'C:/workspace/B.md' }, 'text', 'B.md', {
+      kind: 'text',
+      text: 'b',
+    });
+    check.check('本地顶替关闭旧 watcher', state.localClosed === 1);
   }
 
   // ── Core 重启重注册（同一工作区）──

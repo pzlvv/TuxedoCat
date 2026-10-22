@@ -36,13 +36,6 @@
   条件、轮询周期与重复刷新抑制。验收判据：Core 不可用期间的文件变更在恢复后可见（或按明确
   周期刷新），同一内容不重复刷新；`viewerWatch` 单测覆盖切换与恢复。
 
-- **本地查看器打开期间的修改丢失**（specs/018 拉取代码评审发现）：远程查看器注册成功后补读
-  一次内容，本地查看器建 watcher 后不补读——「读盘 → fs.watch 就绪」之间（开窗加载数百毫秒）
-  的外部修改没有任何事件，违反 [specs/018 归档](docs/archive/specs/018-viewer-file-refresh/spec.md)
-  FR-005「本地与远程两种后端遵循同一组行为」与 AC-19。方向：`ViewerWatchController.open`
-  本地分支建 watcher 后补读一次，内容判重保证未变不投递。验收判据：`viewerWatch` 单测的
-  本地打开补读用例绿（不靠任何 watcher 事件）；缺陷规格 `specs/defects/local-viewer-open-race-misses-change.md`。
-
 - **查看器并发刷新乱序可显示旧内容**（specs/018 拉取代码评审发现）：
   `ViewerWatchController.refreshFromSource` 无串行化，两次相邻保存触发的两次「读 → 投递」
   并发执行，读取完成乱序时旧内容后投递，查看器停在旧内容且无后续事件纠正，违反
