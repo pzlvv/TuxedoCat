@@ -15,6 +15,7 @@ import { getPlaceholderLogoUri, rotatePlaceholderLogo } from './placeholderLogo'
 import { DecorativeLogo } from './DecorativeLogo';
 import { canCloseConversation, newConversationEntryOf, openConversationModeOf, rendersConversationListInWebview, type HostInfo } from '../host/types';
 import { resolveAbortButtonState, type AbortButtonState } from '../host/abortButtonState';
+import { collectRunningSubAgents, type RunningSubAgentBrief } from '../shared/sessionRuntime';
 import { shouldAutoExpandSubSessions } from '../host/ui/conversationTreeDefaults';
 import type { McpServerInfo, ProviderModels } from '../shared/webviewTypes';
 import type { ModelRef } from '../shared/llm/modelRef';
@@ -445,6 +446,23 @@ const App = () => {
     return resolveAbortButtonState({ ...state, workMode });
     // sessionIdleVersion 是 core 推来新状态时的重渲染信号（ref 本身不触发渲染）
   }, [currentSessionId, sessionIdleVersion, workMode]);
+
+  // abort 悬停明细（specs/019 FR-002）：黄色态悬停 1s 显示的后台任务 / 子代理清单。
+  // tasks 读当前会话快照的 backgroundTasks；子代理由唯一纯函数 collectRunningSubAgents
+  // 按 parentSessionId 从全量快照聚合。`?? []` 是 specs/019「边界与错误路径」明文的缺
+  // 字段口径（旧宿主 / 假宿主未带新字段），与上方布尔位的缺字段处理同一口径。
+  const abortHoverDetail: { tasks: { taskId: string; description: string; command: string }[]; subAgents: RunningSubAgentBrief[] } = useMemo(() => {
+    if (!currentSessionId) return { tasks: [], subAgents: [] };
+    const state = sessionRuntimeStatesRef.current.get(currentSessionId);
+    const tasks = state?.backgroundTasks ?? [];
+    // webview 镜像不带 sessionId（快照里它退化为 Map 键），聚合前按 entry 还原
+    const subAgents = collectRunningSubAgents(
+      Array.from(sessionRuntimeStatesRef.current, ([sessionId, s]) => ({ ...s, sessionId })),
+      currentSessionId,
+    );
+    return { tasks, subAgents };
+    // sessionIdleVersion 是 core 推来新状态时的重渲染信号（ref 本身不触发渲染）
+  }, [currentSessionId, sessionIdleVersion]);
 
   // 待压缩（手动压缩已排队、尚未开始）：用量文本显示「准备压缩」并取消点击入口
   // （docs/features/compaction.md FR-002）。事实未到达（当前会话没有快照）不显示。
@@ -1382,6 +1400,8 @@ onClick={handleNewConversation}
               maxContextTokens={maxContextTokens}
               compactPending={compactPending}
               abortButtonState={abortButtonState}
+              sessionId={currentSessionId}
+              abortHoverDetail={abortHoverDetail}
               agentMode={agentMode}
               setAgentMode={setAgentMode}
               promptMode={promptMode}

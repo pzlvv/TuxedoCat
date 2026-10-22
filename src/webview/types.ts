@@ -265,7 +265,19 @@ export interface SessionRuntimeState {
   /** 已登记手动压缩、等待下一轮开始；不参与 `idle` */
   pendingCompact: boolean;
   backgroundRunning: boolean;
+  /**
+   * 运行中后台 Bash 任务清单（specs/019 FR-001），注册序；空集为 `[]`。
+   * 镜像 shared `BackgroundTaskBrief`（ taskId / description / command）——webview
+   * 不 import shared 的 AssistantEventBus（其类型链含 node 依赖，会破坏 webview
+   * 构建图），与 `SessionRuntimeState` 整体镜像同一口径。
+   */
+  backgroundTasks: { taskId: string; description: string; command: string }[];
   subAgentRunning: boolean;
+  /**
+   * 子代理会话为创建时 Agent 工具调用的 description；普通会话与恢复路径
+   * 取不到时为 `null`（UI 显示回退文案）
+   */
+  subAgentDescription: string | null;
   /** 父会话 id（子代理会话才有；普通会话为 null） */
   parentSessionId: string | null;
 }

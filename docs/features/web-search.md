@@ -9,7 +9,7 @@ last_reviewed: 2026-10-18
 Search API），`WebFetch` 抓取单个网页返回 Markdown 正文（DeepSeek Fetch API）。工具
 是否注入由会话的联网搜索开关决定，对所有 API 协议（Completion / Anthropic /
 Responses）生效；实现位于 `core-rs/src/web_search.rs`，卡片复用既有工具卡基础设施。
-需求基线见 [US-50](user-stories.md#us-50-联网搜索与网页抓取客户端工具)。
+需求基线见 [US-50](user-stories/tools.md#us-50-联网搜索与网页抓取客户端工具)。
 
 ## 1. 用户场景与验收标准
 

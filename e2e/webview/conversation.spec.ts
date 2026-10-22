@@ -274,3 +274,131 @@ test('US-1 输入法合成期间的 Enter 不发送（模拟 composition）', as
   const sends = (await host.sentAll()).filter((m) => m.type === 'sendMessage');
   expect(sends).toHaveLength(0);
 });
+
+test('US-52 specs/019 abort 黄色态悬停 1s 显示运行明细浮层：任务 / 子代理清单，只读，移出即隐', async () => {
+  const { page, host } = handle;
+  // 建会话：黄色态判定读当前会话的快照条目（与三态用例同一驱动方式）
+  await host.setTurn({ text: 'ok' });
+  await page.fill('textarea.input-textarea', '起个会话');
+  await page.press('textarea.input-textarea', 'Enter');
+  const sent = await host.waitForSent('sendMessage');
+  const sid = sent.sessionId as string;
+  const abortButton = page.locator('button[data-abort-state]');
+  const abortTip = page.locator('[data-abort-tip]');
+
+  // 等轮次彻底结束（按钮回灰）：假宿主在轮末推 idle 快照，会覆盖此前注入的
+  // 任意中间态——必须在其后注入黄色态，否则悬停守卫看到的是灰色
+  await expect(abortButton).toHaveAttribute('data-abort-state', 'none', { timeout: 10_000 });
+
+  // 黄色态 + 明细：2 个后台任务（其一 command == description）+ 一对子代理（一跑一完）
+  await host.send({
+    type: 'sessionRuntimeStates',
+    states: [
+      {
+        sessionId: sid, idle: false, waiting: false, queryRunning: false, compacting: false,
+        pendingCompact: false, backgroundRunning: true, subAgentRunning: true,
+        backgroundTasks: [
+          { taskId: 'bg-1', description: '打包日志', command: 'tar -czf log.tgz logs' },
+          { taskId: 'bg-2', description: '压测脚本', command: '压测脚本' },
+        ],
+        subAgentDescription: null, parentSessionId: null,
+      },
+      {
+        sessionId: `${sid}-sub1`, idle: false, waiting: false, queryRunning: true, compacting: false,
+        pendingCompact: false, backgroundRunning: false, subAgentRunning: false, backgroundTasks: [],
+        subAgentDescription: '浏览文件找规格', parentSessionId: sid,
+      },
+      {
+        sessionId: `${sid}-sub2`, idle: true, waiting: false, queryRunning: false, compacting: false,
+        pendingCompact: false, backgroundRunning: false, subAgentRunning: false, backgroundTasks: [],
+        subAgentDescription: '已完成的子代理', parentSessionId: sid,
+      },
+    ],
+  });
+  await expect(abortButton).toHaveAttribute('data-abort-state', 'background', { timeout: 10_000 });
+
+  // AC-3：悬停未满 1s 不出现
+  await abortButton.hover();
+  await expect(abortTip).toBeHidden();
+
+  // AC-1 / AC-2：满 1s 浮层出现——任务描述 + 与描述不同的命令；运行中子代理列出、
+  // 已完成子代理跳过（AC-2 的 idle 口径）
+  await expect(abortTip).toBeVisible({ timeout: 3_000 });
+  await expect(abortTip).toContainText('后台任务');
+  await expect(abortTip).toContainText('打包日志');
+  await expect(abortTip).toContainText('tar -czf log.tgz logs');
+  await expect(abortTip).toContainText('压测脚本');
+  await expect(abortTip).toContainText('子代理');
+  await expect(abortTip).toContainText('浏览文件找规格');
+  await expect(abortTip).not.toContainText('已完成的子代理');
+
+  // AC-10（FR-003）：浮层只读——点击浮层区域不产生 abort 上行（pointer-events 穿透）
+  const box = await abortTip.boundingBox();
+  await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  const aborts = (await host.sentAll()).filter((m) => m.type === 'abort');
+  expect(aborts).toHaveLength(0);
+
+  // AC-4：移出立即隐藏
+  await page.mouse.move(10, 10);
+  await expect(abortTip).toBeHidden();
+
+  // AC-11：显示期间快照刷新跟随（任务 2→1），两组皆空浮层关闭
+  await abortButton.hover();
+  await expect(abortTip).toBeVisible({ timeout: 3_000 });
+  await host.send({
+    type: 'sessionRuntimeStates',
+    states: [
+      {
+        sessionId: sid, idle: false, waiting: false, queryRunning: false, compacting: false,
+        pendingCompact: false, backgroundRunning: true, subAgentRunning: false,
+        backgroundTasks: [{ taskId: 'bg-1', description: '打包日志', command: 'tar -czf log.tgz logs' }],
+        subAgentDescription: null, parentSessionId: null,
+      },
+    ],
+  });
+  await expect(abortTip).toContainText('打包日志');
+  await expect(abortTip).not.toContainText('压测脚本');
+  await host.send({
+    type: 'sessionRuntimeStates',
+    states: [
+      {
+        sessionId: sid, idle: true, waiting: false, queryRunning: false, compacting: false,
+        pendingCompact: false, backgroundRunning: false, subAgentRunning: false,
+        backgroundTasks: [], subAgentDescription: null, parentSessionId: null,
+      },
+    ],
+  });
+  await expect(abortTip).toBeHidden();
+
+  // AC-5：红色态（前台查询在跑）悬停超过 1s 无浮层
+  await host.send({
+    type: 'sessionRuntimeStates',
+    states: [
+      {
+        sessionId: sid, idle: false, waiting: false, queryRunning: true, compacting: false,
+        pendingCompact: false, backgroundRunning: false, subAgentRunning: false,
+        backgroundTasks: [], subAgentDescription: null, parentSessionId: null,
+      },
+    ],
+  });
+  await expect(abortButton).toHaveAttribute('data-abort-state', 'query', { timeout: 10_000 });
+  await abortButton.hover();
+  await page.waitForTimeout(1500);
+  await expect(abortTip).toHaveCount(0);
+
+  // AC-5（续）：灰色态（空闲）同样无浮层——同一守卫，补全另一分支
+  await host.send({
+    type: 'sessionRuntimeStates',
+    states: [
+      {
+        sessionId: sid, idle: true, waiting: false, queryRunning: false, compacting: false,
+        pendingCompact: false, backgroundRunning: false, subAgentRunning: false,
+        backgroundTasks: [], subAgentDescription: null, parentSessionId: null,
+      },
+    ],
+  });
+  await expect(abortButton).toHaveAttribute('data-abort-state', 'none', { timeout: 10_000 });
+  await abortButton.hover();
+  await page.waitForTimeout(1500);
+  await expect(abortTip).toHaveCount(0);
+});

@@ -80,9 +80,12 @@
  * 26. **specs/defects/ 缺陷规格**：`specs/defects/<slug>.md` 的文件名 slug 格式、H1 前缀、
  *     status 取值（待修 / 已修 / 已放弃）、五节齐全、RT 编号唯一、验证记录四列表与结果
  *     取值合法且含修复前的红与修复后的绿（口径见 `specs/README.md` 第 8 节）。
- * 27. **文档体积上限**：`docs/` 下的规格不超过 500 行——`docs/features/user-stories.md`
- *     （需求基线）与各级 `README.md`（地图 / 导读）豁免，`docs/archive/` 是冻结档案、
- *     本就不参与校验；超限即拆（`specs/README.md` 第 9 节）。
+ * 27. **文档体积上限**：`docs/` 下的规格不超过 500 行——各级 `README.md`（地图 / 导读）
+ *     豁免，`docs/archive/` 是冻结档案、本就不参与校验；超限即拆（`specs/README.md`
+ *     第 9 节）。需求基线 user-stories 按此拆为 `user-stories/` 主题分册后同口径受检。
+ * 28. **e2e 测试名 ↔ FR 编号双向对照**：e2e 测试名（test / test.describe 标题）里引用的
+ *     `FR-nnn` 必须能解析到活动 spec 或 `docs/features/` 的 FR 条目；每个活动 FR 至少被
+ *     测试名或追溯矩阵行引用——防「spec 重排编号后既有测试名引用悬空」。
  *
  * `tmp_*` 临时文件、`docs/archive/` 冻结档案与 `specs/_templates/` 模板不参与校验；
  * 代码块（fenced / 行内反引号）不参与
@@ -539,7 +542,8 @@ const EVENTS_LINE_RATCHET = 419;
 
 /**
  * 文档体积上限（specs/README.md 第 9 节）：单篇规格超过即拆——「不要有巨型规格」的可执行形态。
- * 豁免 `docs/features/user-stories.md`（需求基线，拆分已登记 TODO.md）与各级 `README.md`。
+ * 豁免各级 `README.md`（地图 / 导读）。需求基线 user-stories 已按主题拆分册
+ * （`docs/features/user-stories/`），各篇与普通规格同口径受检。
  */
 const DOC_LINE_LIMIT = 500;
 
@@ -802,7 +806,6 @@ function main(): void {
     const volumeProblems: string[] = [];
     for (const rel of mdFiles) {
       if (!rel.startsWith('docs/')) continue; // 只约束 docs/（AGENTS.md / TODO.md 不在内）
-      if (rel === 'docs/features/user-stories.md') continue; // 需求基线，已登记 TODO.md 拆分
       if (path.basename(rel) === 'README.md') continue; // 地图 / 导读，篇幅随文档数增长
       const lines = readText(rel).split(/\r?\n/).length;
       if (lines > DOC_LINE_LIMIT) volumeProblems.push(`${rel}: ${lines} 行 > ${DOC_LINE_LIMIT}（按 surface / 状态机拆）`);
@@ -1399,7 +1402,13 @@ function main(): void {
       }
     }
     const exemptUs = new Set([...exemptText.matchAll(/US-(\d+)/g)].map((m) => m[1] ?? ''));
-    const headingUs = [...userStories.matchAll(/^### US-(\d+) /gm)].map((m) => m[1] ?? '');
+    // US 小节正文在主题分册（`docs/features/user-stories/` 目录）；附录映射与豁免段留在索引
+    const partsDir = path.join(REPO_ROOT, 'docs', 'features', 'user-stories');
+    const partTexts = fs.existsSync(partsDir)
+      ? fs.readdirSync(partsDir).filter((f) => f.endsWith('.md')).sort()
+        .map((f) => readText(`docs/features/user-stories/${f}`))
+      : [];
+    const headingUs = [...partTexts.concat(userStories).join('\n').matchAll(/^### US-(\d+) /gm)].map((m) => m[1] ?? '');
     const loose = headingUs.filter((id) => !mappedUs.has(id) && !exemptUs.has(id));
     checker.check(`US 与映射 / 豁免段闭合（漏网 ${loose.length} 处）`, loose.length === 0);
     for (const id of loose) console.log(`     US-${id} 既不在附录映射表也不在「未覆盖 e2e 的 US」豁免段`);
@@ -1741,9 +1750,10 @@ function main(): void {
       '用户场景与验收标准', '功能需求', '行为规格', '边界与错误路径', '非目标',
       '对需求基线的影响', '追溯矩阵',
     ];
-    // 需求基线不是特性规格；其余 docs/features/*.md 全部按 spec 形态校验
+    // 需求基线（索引 + user-stories/ 分册）不是特性规格；其余 docs/features/*.md 全部按 spec 形态校验
     const featureDocs = files.filter(
-      (rel) => rel.startsWith('docs/features/') && rel.endsWith('.md') && rel !== 'docs/features/user-stories.md',
+      (rel) => rel.startsWith('docs/features/') && rel.endsWith('.md')
+        && rel !== 'docs/features/user-stories.md' && !rel.startsWith('docs/features/user-stories/'),
     );
     for (const rel of featureDocs) {
       const text = readText(rel);
@@ -1797,6 +1807,59 @@ function main(): void {
     }
     checker.check(`特性规格 spec 形态结构（问题 ${featureProblems.length} 处）`, featureProblems.length === 0);
     for (const p of featureProblems.slice(0, 20)) console.log(`     ${p}`);
+  }
+
+  // ---------- 28. e2e 测试名 ↔ FR 编号双向对照 ----------
+  {
+    // 活动 FR 定义宇宙：specs/<NNN>-<slug>/spec.md 与 docs/features/ 的 `### FR-nnn：` 条目
+    //（需求基线 user-stories 的索引与分册不含 FR，不参与定义也不参与解析）。
+    const frDefFiles = new Map<string, Set<string>>();
+    const matrixFrs = new Set<string>();
+    for (const rel of mdFiles) {
+      const isSpec = /^specs\/\d+-[a-z0-9-]+\/spec\.md$/.test(rel);
+      const isFeature = rel.startsWith('docs/features/') && rel.endsWith('.md')
+        && rel !== 'docs/features/user-stories.md' && !rel.startsWith('docs/features/user-stories/');
+      if (!isSpec && !isFeature) continue;
+      const text = readText(rel);
+      for (const m of text.matchAll(/^### (FR-\d{3})：/gm)) {
+        const id = m[1] ?? '';
+        const origins = frDefFiles.get(id) ?? new Set<string>();
+        origins.add(rel);
+        frDefFiles.set(id, origins);
+      }
+      for (const m of sectionBody(text, '追溯矩阵').matchAll(/^\| (FR-\d{3}) \|/gm)) {
+        matrixFrs.add(m[1] ?? '');
+      }
+    }
+    // 方向一：e2e 测试名（test / test.describe 的标题字面量）里引用的 FR-nnn 必须能解析——
+    // spec 重排 FR 编号后既有测试名引用悬空即红（specs/003 收敛评审发现 FR-007 与
+    // FR-002/003 两套编号分叉是实例）。
+    const dangling: string[] = [];
+    const titleFrRefs = new Set<string>();
+    for (const rel of files) {
+      if (!rel.startsWith('e2e/') || !rel.endsWith('.spec.ts')) continue;
+      const lines = readText(rel).split(/\r?\n/);
+      for (let i = 0; i < lines.length; i++) {
+        for (const m of lines[i].matchAll(/\btest(?:\.(?:describe|only|skip|fixme|serial))?\(\s*(?:'([^']*)'|"([^"]*)")/g)) {
+          const title = (m[1] ?? m[2] ?? '').trim();
+          for (const f of title.matchAll(/FR-\d{3}/g)) {
+            const id = f[0];
+            titleFrRefs.add(id);
+            if (!frDefFiles.has(id)) {
+              dangling.push(`${rel}:${i + 1} 测试名「${title}」引用的 ${id} 解析不到活动 spec 或 docs/features/ 的 FR 条目`);
+            }
+          }
+        }
+      }
+    }
+    // 方向二：每个活动 FR 至少被一个 e2e 测试名或追溯矩阵行引用（防 FR 定义后无任何落点）。
+    const orphans = [...frDefFiles.keys()].filter((id) => !titleFrRefs.has(id) && !matrixFrs.has(id));
+    checker.check(`e2e 测试名引用的 FR 全部可解析（悬空 ${dangling.length} 处）`, dangling.length === 0);
+    for (const d of dangling.slice(0, 20)) console.log(`     ${d}`);
+    checker.check(`每个 FR 至少被测试名或追溯矩阵行引用（缺 ${orphans.length} 个）`, orphans.length === 0);
+    for (const id of orphans) {
+      console.log(`     ${id}（${[...(frDefFiles.get(id) ?? [])].join(' / ')}）`);
+    }
   }
 
   checker.finish();

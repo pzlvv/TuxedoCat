@@ -75,7 +75,13 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
   // 正在流式中的会话（sendMessage 触发，queryEnd/abort 清除）
   const active = new Set();
 
-  const send = (msg) => window.postMessage(msg, '*');
+  const send = (msg) => {
+    // specs/019：测试直推的 sessionRuntimeStates 记入 state.runtimeStates——
+    // 对齐生产 ConversationManager.getSessionStatesSnapshot（拉取回包是最近一次
+    // 推送的快照，不是空表），否则 App 主动拉取会把直推状态清掉
+    if (msg && msg.type === 'sessionRuntimeStates') state.runtimeStates = msg.states;
+    window.postMessage(msg, '*');
+  };
 
   /** 按启用列表把服务器定义组装成 McpServerInfo（与宿主读 mcp.json 同形状） */
   function mcpInfo(enabledNames) {

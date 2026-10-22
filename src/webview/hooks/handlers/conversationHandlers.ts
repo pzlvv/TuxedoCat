@@ -135,7 +135,10 @@ export function handleConversationSessionRuntimeStates(
               compacting: !!s.compacting,
               pendingCompact: !!s.pendingCompact,
               backgroundRunning: !!s.backgroundRunning,
+              // specs/019 FR-001：缺字段按空清单 / null 判定（旧宿主 / 假宿主未带新字段）
+              backgroundTasks: Array.isArray(s.backgroundTasks) ? s.backgroundTasks : [],
               subAgentRunning: !!s.subAgentRunning,
+              subAgentDescription: s.subAgentDescription ?? null,
               parentSessionId: s.parentSessionId ?? null,
             });
           }

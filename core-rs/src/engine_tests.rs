@@ -6747,3 +6747,139 @@ fn explorer_fixes_session_config_while_master_inherits() {
     );
     crate::subagent::reset_for_test();
 }
+
+// ==================== 运行时快照明细（specs/019） ====================
+
+/// 快照携带运行中后台任务清单：按注册序逐项含 `taskId` / `description` / `command`
+/// （specs/019 FR-001 AC-7），会话中止后清单收敛为空。
+#[test]
+fn runtime_snapshot_lists_background_tasks_in_registration_order() {
+    let sandbox = Sandbox::new("engine-runtime-bg-tasks");
+    config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
+    crate::bash_task::reset_for_test();
+    let harness = EngineHarness::allow_all();
+
+    let _state = harness.core.session("s1");
+    // register_running 只插注册表记录，不起进程；`background` 布尔位经引擎真 hooks
+    // 维护（与生产 `spawn_background` 的注入一致），注册首个任务即触发一次推送
+    let hooks = harness.core.background_hooks();
+    crate::bash_task::register_running("t1", "任务一", "echo 1", "s1", 100, Some(hooks.clone()));
+    crate::bash_task::register_running("t2", "任务二", "echo 2", "s1", 200, Some(hooks));
+    harness.sink.clear();
+    // t2 注册时布尔位 true→true 不变，sync 早退；这里的显式 emit 靠清单 diff 推全量
+    harness.core.emit_runtime();
+    let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
+    let entry = runtime["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| state["sessionId"] == "s1")
+        .expect("session entry")
+        .clone();
+    let tasks = entry["backgroundTasks"].as_array().expect("backgroundTasks");
+    assert_eq!(tasks.len(), 2);
+    assert_eq!(tasks[0]["taskId"], "t1");
+    assert_eq!(tasks[0]["description"], "任务一");
+    assert_eq!(tasks[0]["command"], "echo 1");
+    assert_eq!(tasks[1]["taskId"], "t2");
+    assert_eq!(tasks[1]["description"], "任务二");
+    assert_eq!(tasks[1]["command"], "echo 2");
+    assert_eq!(entry["backgroundRunning"], true);
+
+    // 中止即移除注册表记录；随后按生产路径重算布尔位（变更触发推送）。
+    // 先清缓冲：`event_of` 取缓冲内第一条匹配，不清会拿到 abort 前的旧推送
+    crate::bash_task::abort_tasks_for_session("s1");
+    harness.sink.clear();
+    harness.core.sync_session_background("s1");
+    let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
+    let entry = runtime["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| state["sessionId"] == "s1")
+        .expect("session entry");
+    assert_eq!(entry["backgroundTasks"].as_array().unwrap().len(), 0);
+    assert_eq!(entry["backgroundRunning"], false);
+    crate::bash_task::reset_for_test();
+}
+
+/// 子代理条目携带创建时的 Agent 工具 description，普通会话为 `null`
+/// （specs/019 FR-001 AC-8）；恢复路径取不到时同为 `null`，UI 显示回退文案。
+#[test]
+fn runtime_snapshot_carries_sub_agent_description() {
+    let sandbox = Sandbox::new("engine-runtime-subagent-desc");
+    config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
+    crate::subagent::reset_for_test();
+    let harness = EngineHarness::allow_all();
+
+    let _parent = harness.core.session("p1");
+    let child = harness.core.session("c1");
+    {
+        let mut child = child.lock().unwrap();
+        child.running = true;
+        child.parent_session_id = Some("p1".to_string());
+        child.sub_agent_description = Some("浏览文件找规格".to_string());
+    }
+    crate::subagent::register("c1", "p1");
+    harness.core.emit_runtime();
+    let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
+    let states = runtime["states"].as_array().unwrap();
+    let child_entry = states
+        .iter()
+        .find(|state| state["sessionId"] == "c1")
+        .expect("child entry");
+    assert_eq!(child_entry["subAgentDescription"], "浏览文件找规格");
+    let parent_entry = states
+        .iter()
+        .find(|state| state["sessionId"] == "p1")
+        .expect("parent entry");
+    assert_eq!(parent_entry["subAgentDescription"], Value::Null);
+    crate::subagent::reset_for_test();
+}
+
+/// 明细变化必须触发推送：注册第二个任务时 `backgroundRunning` 保持为真，
+/// 快照 diff 只靠清单变化也应发出新事件，不因布尔位不变而吞掉（specs/019 FR-001 AC-9）。
+#[test]
+fn runtime_snapshot_republishes_when_task_mix_changes() {
+    let sandbox = Sandbox::new("engine-runtime-task-mix");
+    config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
+    crate::bash_task::reset_for_test();
+    let harness = EngineHarness::allow_all();
+
+    let _state = harness.core.session("s1");
+    let hooks = harness.core.background_hooks();
+    // 注册首个任务：布尔位 false→true 经 hooks 触发首次推送
+    crate::bash_task::register_running("t1", "任务一", "echo 1", "s1", 100, Some(hooks.clone()));
+    let first = harness.sink.event_of("sessionRuntimeChanged").expect("first push");
+    let entry = first["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| state["sessionId"] == "s1")
+        .expect("session entry")
+        .clone();
+    assert_eq!(entry["backgroundTasks"].as_array().unwrap().len(), 1);
+    assert_eq!(entry["backgroundRunning"], true);
+
+    // 注册第二个任务：布尔位 true→true 不变（sync 早退不推送），清单 1 → 2
+    // 必须靠 diff 触发新推送
+    crate::bash_task::register_running("t2", "任务二", "echo 2", "s1", 200, Some(hooks));
+    harness.sink.clear();
+    harness.core.emit_runtime();
+    let second = harness
+        .sink
+        .event_of("sessionRuntimeChanged")
+        .expect("diff 必须感知清单变化并推送");
+    let entry = second["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| state["sessionId"] == "s1")
+        .expect("session entry");
+    let tasks = entry["backgroundTasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 2);
+    assert_eq!(tasks[0]["taskId"], "t1");
+    assert_eq!(tasks[1]["taskId"], "t2");
+    assert_eq!(entry["backgroundRunning"], true);
+    crate::bash_task::reset_for_test();
+}

@@ -75,5 +75,5 @@ US-47 验收标准 1 声明「用户向上滚动（任意幅度）」。当前�
 | 既有回归 | `npm run test:e2e:webview -- --reporter=line` | 绿 | 整轮跑 3 次：第 1、2 次 93 passed / 1 failed（第 1 次为 `messagePresentation.spec.ts`「US-13 mermaid 代码块带「预览图表」按钮」并发下 15s 超时；该文件单独跑 3 次均 7 passed，修复前源码上单独跑也 7 passed，用例不经过滚动路径），第 3 次 94 passed 全绿 |
 | `check-types` | `npx tsc --noEmit` / `npx tsc --noEmit -p tsconfig.webview.json` | 绿 | 根工程与 webview 两份配置均 0 错 |
 | 静态检查 | `npm run lint` | 绿 | — |
-| docs-lint | `npm run test:all -- docs-lint` | 部分验证 | 43 通过 / 3 失败，3 项全部来自工作区既有文件：`specs/019-abort-hover-background-tasks/` 的裸章节引用与 019 编号重复、`specs/defects/file-watch-rejects-missing-target.md` 的「绿*」取值非法。缺陷规格组只报后一个文件 1 处问题，本文件无告警 |
+| docs-lint | `npm run test:all -- docs-lint` | 部分验证 | 43 通过 / 3 失败，3 项全部来自工作区既有文件：`docs/archive/specs/019-abort-hover-background-tasks/`（验证时在 `specs/` 下，后归档）的裸章节引用与 019 编号重复、`specs/defects/file-watch-rejects-missing-target.md` 的「绿*」取值非法。缺陷规格组只报后一个文件 1 处问题，本文件无告警 |
 

@@ -54,6 +54,9 @@ function currencySymbol(currency?: string): string {
   return '';
 }
 
+/** abort 悬停明细浮层的显示延迟（specs/019 FR-002）：native title 延迟不可控，必须自计时 */
+const ABORT_TIP_DELAY_MS = 1000;
+
 interface InputAreaProps {
   inputFocused: boolean;
   setInputFocused: (focused: boolean) => void;
@@ -74,6 +77,17 @@ interface InputAreaProps {
    * `resolveAbortButtonState` 推导（docs/features/abort-button.md FR-001）。
    */
   abortButtonState: AbortButtonState;
+  /** 当前会话 id（specs/019 FR-003；null = 无当前会话）：切换会话时复位悬停明细浮层 */
+  sessionId: string | null;
+  /**
+   * abort 悬停明细（specs/019 FR-001 / FR-002）：当前会话运行中的后台任务与子代理
+   * 清单，App 从 sessionRuntime 快照推导；两组皆空时黄色态悬停不弹浮层
+   * （恢复态 spin）。浮层只读：点击无任何上行，中止范围仍由 abort 点击整体判定。
+   */
+  abortHoverDetail: {
+    tasks: { taskId: string; description: string; command: string }[];
+    subAgents: { sessionId: string; description: string | null }[];
+  };
   /**
    * 会话关联的询问模式。
    * `undefined` = 尚未从宿主获取到：菜单只显示等待项，不显示具体选项。
@@ -1602,6 +1616,8 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   maxContextTokens,
   compactPending,
   abortButtonState,
+  sessionId,
+  abortHoverDetail,
   agentMode,
   setAgentMode,
   promptMode,
@@ -1648,6 +1664,31 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   // 发送模式菜单的主题 token 用到字号档位（与主配置菜单同一来源，随设置缩放）
   const fontOffset = useUiFontOffset();
+
+  // ==================== abort 悬停明细浮层（specs/019 FR-002） ====================
+
+  // 仅黄色态（background）起 1s 计时；移出取消 / 立即隐藏；内容随快照刷新，
+  // 两组皆空时不渲染（恢复态 spin）。浮层 pointer-events-none：只读投影，
+  // 指针事件穿透（点击不产生任何上行），也避免移入浮层误触按钮 mouseleave。
+  const [abortTipVisible, setAbortTipVisible] = useState(false);
+  const abortTipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeAbortTip = useCallback(() => {
+    if (abortTipTimerRef.current !== null) {
+      clearTimeout(abortTipTimerRef.current);
+      abortTipTimerRef.current = null;
+    }
+    setAbortTipVisible(false);
+  }, []);
+  useEffect(() => {
+    // 离开黄色态（转红 / 转灰）或切换会话：取消计时并立即隐藏（specs/019 FR-003）
+    if (abortButtonState !== 'background') closeAbortTip();
+  }, [abortButtonState, closeAbortTip]);
+  useEffect(() => {
+    closeAbortTip();
+  }, [sessionId, closeAbortTip]);
+  useEffect(() => () => {
+    if (abortTipTimerRef.current !== null) clearTimeout(abortTipTimerRef.current);
+  }, []);
 
   // Command history navigation state
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -2233,25 +2274,70 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             colors={colors}
             isDark={isDark}
           />
-          <button
-            onClick={onAbort}
-            disabled={abortButtonState === 'none'}
-            data-abort-state={abortButtonState}
-            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${abortButtonState === 'none' ? '' : 'hover:brightness-110'}`}
-            style={{
-              // 红 = 前台查询运行中；黄 = spin 模式或只剩后台任务 / 子代理（docs/features/abort-button.md FR-001）
-              backgroundColor:
-                abortButtonState === 'query'
-                  ? '#ef4444'
-                  : abortButtonState === 'background'
-                    ? '#f59e0b'
-                    : colors.border,
-              opacity: abortButtonState === 'none' ? 0.5 : 1,
-            }}
-            title={abortButtonState === 'background' ? t('inputArea.abortBackground') : t('inputArea.abort')}
-          >
-            <Icon name="square" size={12} className="text-white" />
-          </button>
+          {/* abort 按钮 + 悬停明细浮层（specs/019 FR-002 / FR-003）：relative 容器
+              供浮层 absolute 定位；浮层只读、pointer-events 穿透 */}
+          <div className="relative flex-shrink-0">
+            <button
+              onClick={onAbort}
+              disabled={abortButtonState === 'none'}
+              data-abort-state={abortButtonState}
+              className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${abortButtonState === 'none' ? '' : 'hover:brightness-110'}`}
+              style={{
+                // 红 = 前台查询运行中；黄 = spin 模式或只剩后台任务 / 子代理（docs/features/abort-button.md FR-001）
+                backgroundColor:
+                  abortButtonState === 'query'
+                    ? '#ef4444'
+                    : abortButtonState === 'background'
+                      ? '#f59e0b'
+                      : colors.border,
+                opacity: abortButtonState === 'none' ? 0.5 : 1,
+              }}
+              onMouseEnter={() => {
+                // 仅黄色态起 1s 计时；红色 / 灰色态无浮层（specs/019 FR-002）
+                if (abortButtonState !== 'background') return;
+                abortTipTimerRef.current = setTimeout(() => setAbortTipVisible(true), ABORT_TIP_DELAY_MS);
+              }}
+              onMouseLeave={closeAbortTip}
+              title={abortButtonState === 'background' ? undefined : t('inputArea.abort')}
+            >
+              <Icon name="square" size={12} className="text-white" />
+            </button>
+            {abortTipVisible && (abortHoverDetail.tasks.length > 0 || abortHoverDetail.subAgents.length > 0) && (
+              <div
+                data-abort-tip
+                className="absolute bottom-full right-0 mb-2 rounded-lg border shadow-lg px-3 py-2 pointer-events-none z-50"
+                style={{ backgroundColor: colors.bgSecondary, borderColor: colors.border, maxWidth: 320 }}
+              >
+                {abortHoverDetail.tasks.length > 0 && (
+                  <div className={abortHoverDetail.subAgents.length > 0 ? 'mb-2' : ''}>
+                    <div className="ui-fs-10 font-semibold mb-1" style={{ color: colors.textSecondary }}>
+                      {t('inputArea.abortHoverTasks')}
+                    </div>
+                    {abortHoverDetail.tasks.map((task) => (
+                      <div key={task.taskId} className="ui-fs-11 mb-1" style={{ color: colors.textSystem }}>
+                        <div className="truncate">{task.description}</div>
+                        {task.command !== task.description && (
+                          <div className="ui-fs-10 opacity-70 break-all font-mono">{task.command}</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {abortHoverDetail.subAgents.length > 0 && (
+                  <div>
+                    <div className="ui-fs-10 font-semibold mb-1" style={{ color: colors.textSecondary }}>
+                      {t('inputArea.abortHoverSubAgents')}
+                    </div>
+                    {abortHoverDetail.subAgents.map((agent) => (
+                      <div key={agent.sessionId} className="ui-fs-11 truncate mb-0.5" style={{ color: colors.textSystem }}>
+                        {agent.description ?? t('inputArea.abortHoverSubAgentFallback')}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           {/* 发送 split button：主按钮恒为立即发送（US-46）；小三角下拉是
               当次动作（立即发送 / 空闲发送），不记住选择、不改变主按钮语义。
               小三角贴按钮底部（不垂直居中）；下拉菜单与主配置菜单共用同一套主题

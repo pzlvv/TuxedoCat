@@ -8,8 +8,9 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 上限）。主题规格带
 `owner` / `last_reviewed` frontmatter（docsLint 校验字段齐全，`docs/` 递归全部规格，
 各级 README.md 地图除外）；引用源码的新鲜度对比出报告：`npm run docs:freshness`
-（只出报告，不进 CI 门禁）。单篇超过 500 行即按 surface / 状态机拆（`docs/features/user-stories.md`
-是需求基线、各级 `README.md` 是地图 / 导读，两者豁免）。
+（只出报告，不进 CI 门禁）。单篇超过 500 行即按 surface / 状态机拆（需求基线
+`docs/features/user-stories.md` 已按此拆为 `user-stories/` 下的主题分册；各级 `README.md`
+是地图 / 导读，两者豁免）。
 
 章节编号与代码注释中的「`docs/<path>.md 第 N 节`」引用一一对应；调整章节标题 / 编号时
 必须同步修改引用（`src/test/docsLint.test.ts` 的章节引用组校验）。
@@ -23,7 +24,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 | 架构规格 | `docs/architecture/<topic>.md` | 跨模块的架构事实（总览、分层、契约、事件词汇表、原则、待定事项）；长期 |
 | 主题规格 | `docs/core/<topic>.md`、`docs/hosts/<topic>.md` | 领域规格（Core 与进程、宿主与 UI）；长期 |
 | 特性规格 | `docs/features/<feature>.md`（spec 形态：场景 / FR / AC / 追溯矩阵） | 独立成篇判据：跨多个 surface 或有独立状态机；否则作主题规格的一节 |
-| 需求基线 | `docs/features/user-stories.md` | as-built 用户故事，e2e 用例以 `US-xx` 编号引用；随 e2e 演进 |
+| 需求基线 | `docs/features/user-stories.md`（索引）+ `docs/features/user-stories/<主题>.md`（分册） | as-built 用户故事，e2e 用例以 `US-xx` 编号引用；随 e2e 演进 |
 | 改动规格 | `specs/<NNN>-<slug>/`（spec / plan / tasks 三件套） | 尚未落地的意图与验收，是「只写现状」的例外之一；生命周期见 `specs/README.md`；收敛后 delta 并入 `docs/`、整目录归档 `docs/archive/specs/` |
 | 缺陷规格 | `specs/defects/<slug>.md`（扁平单文件，文件名即 slug） | 缺陷的现状与期望，也是「只写现状」的例外；两段流程（评估+红 → 修复+绿）、不编号、不归档，是回归证据的索引（口径见 `specs/README.md`） |
 | 待办清单 | `TODO.md`（根目录） | 只列**未排期**的想法与跨 spec 缺口，每条带验收判据；完成即删；进行中的工作在 specs/ 的 `tasks.md` 勾选跟踪、缺陷规格以 status 跟踪 |
@@ -93,7 +94,12 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 
 | 文档 | 范围 |
 | --- | --- |
-| `docs/features/user-stories.md` | as-built 用户故事（US-xx），e2e 用例的需求基线 |
+| `docs/features/user-stories.md` | as-built 用户故事（US-xx）的需求基线索引：附录 US ↔ e2e 映射与「未覆盖 e2e 的 US」豁免段 |
+| `docs/features/user-stories/dialog-core.md` | 分册：EP-1 对话核心、EP-2 输入区与会话配置、EP-13 会话交互增强 |
+| `docs/features/user-stories/messages.md` | 分册：EP-3 消息呈现、EP-4 权限与用户确认、EP-11 通知与国际化 |
+| `docs/features/user-stories/sessions-and-llm.md` | 分册：EP-5 会话管理、EP-6 LLM 配置 |
+| `docs/features/user-stories/tools.md` | 分册：EP-7 工具与技能、US-50 联网搜索 |
+| `docs/features/user-stories/desktop.md` | 分册：EP-8 桌面端窗口与标题栏、EP-9 多工作区、EP-10 预览与 Spin、EP-12 侧栏文件浏览器 |
 | `docs/features/user-message-pipeline.md` | 用户消息从 webview 输入到进入 LLM 上下文的完整管线 |
 | `docs/features/compaction.md` | 对话压缩：触发、摘要、归档、跨压缩的用户输入历史 |
 | `docs/features/abort-button.md` | abort 按钮的状态判定与中止范围（含 spin 模式） |

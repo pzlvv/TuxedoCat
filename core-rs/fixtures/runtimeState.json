@@ -8,7 +8,9 @@
     "pendingCompact",
     "backgroundRunning",
     "subAgentRunning",
-    "parentSessionId"
+    "parentSessionId",
+    "backgroundTasks",
+    "subAgentDescription"
   ],
   "webviewOmitted": ["sessionId"]
 }

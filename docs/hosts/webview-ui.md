@@ -316,9 +316,9 @@ abort 按钮的三态（红 / 黄 / 灰）与中止范围由 core 的 `sessionRu
 
 | 环节 | 行为 |
 | --- | --- |
-| core | `sessionRuntime` 按来源记账 `query` / `waiting` / `compacting` / `background` 并递归子代理 → `sessionRuntimeChanged`（每会话的 `idle` / `waiting` / `queryRunning` / `compacting` / `backgroundRunning` / `subAgentRunning`） |
+| core | `sessionRuntime` 按来源记账 `query` / `waiting` / `compacting` / `background` 并递归子代理 → `sessionRuntimeChanged`（每会话的 `idle` / `waiting` / `queryRunning` / `compacting` / `backgroundRunning` / `subAgentRunning`，以及悬停明细 `backgroundTasks` / `subAgentDescription`） |
 | 宿主 | `ConversationManager.dispatchStates` 把状态快照推给 webview（VS Code 推单视图；Electron 广播给所有聊天视图） |
-| webview | `App.tsx` 取当前会话快照 + 工作模式 → 纯函数 `resolveAbortButtonState`（`src/host/abortButtonState.ts`）给出 `query` / `background` / `none` → `InputArea` 按状态取红 / 黄 / 灰与可点性 |
+| webview | `App.tsx` 取当前会话快照 + 工作模式 → 纯函数 `resolveAbortButtonState`（`src/host/abortButtonState.ts`）给出 `query` / `background` / `none` → `InputArea` 按状态取红 / 黄 / 灰与可点性；黄色态悬停满 1 秒显示只读明细浮层——任务清单读快照 `backgroundTasks`，子代理由唯一纯函数 `collectRunningSubAgents`（`src/shared/sessionRuntime.ts`）按 `parentSessionId` 聚合（specs/019 FR-002 / FR-003，点击穿透不产生上行） |
 
 好处：前台查询结束后、但后台 Bash 或非 idle 子代理还在时，按钮保留为可点的黄色——
 那是「会话仍在收尾」的真实含义，点下去中止的是这些残留工作，而不是再次中止已经停下的查询。

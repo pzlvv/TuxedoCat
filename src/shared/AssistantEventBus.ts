@@ -595,6 +595,16 @@ export type UiRequestResultMap = {
 // ==================== 会话运行时状态 ====================
 
 /**
+ * 运行中的后台 Bash 任务快照（specs/019 FR-001）：`SessionRuntimeState.backgroundTasks`
+ * 的元素。abort 按钮悬停明细据此展示任务身份；pid / 启动时刻等调度细节不进契约。
+ */
+export interface BackgroundTaskBrief {
+  taskId: string;
+  description: string;
+  command: string;
+}
+
+/**
  * 单个会话的运行时状态。消费者：Electron 侧栏流水灯、系统托盘状态点、
  * webview 对话树的运行标记、两端的 abort 按钮。
  *
@@ -629,13 +639,27 @@ export interface SessionRuntimeState {
    * 不参与派生 `idle`：排队不是正在执行的工作。
    */
   pendingCompact: boolean;
-  /** 有运行中的后台 Bash 任务（abort 按钮黄色态的判据之一） */
+  /**
+   * 有运行中的后台 Bash 任务（abort 按钮黄色态的判据之一）
+   */
   backgroundRunning: boolean;
+  /**
+   * 该会话运行中的后台 Bash 任务清单（specs/019 FR-001），按注册序；空集为 `[]`。
+   * 与 `backgroundRunning` 同源（同一注册表、同一次 `emit_runtime` 产出），
+   * abort 按钮黄色态的悬停明细据此列出任务（`docs/features/abort-button.md`）。
+   */
+  backgroundTasks: readonly BackgroundTaskBrief[];
   /**
    * 存在非 idle 的已登记子代理（递归到子代理自身的查询 / 压缩 / 后台任务 /
    * 下层子代理）。abort 按钮黄色态的判据之一。
    */
   subAgentRunning: boolean;
+  /**
+   * 子代理会话为创建时 Agent 工具调用的 description（specs/019 FR-001）；
+   * 普通会话与恢复路径取不到时为 `null`，UI 对 `null` 显示回退文案。
+   * abort 按钮黄色态的悬停明细据此列出子代理。
+   */
+  subAgentDescription: string | null;
   /**
    * 父会话 id（子代理会话才有；普通会话为 null）。登记于子代理创建时，
    * 随会话存续——不随 SubAgentRegistry 的注销消失（子代理完成一轮后仍留在

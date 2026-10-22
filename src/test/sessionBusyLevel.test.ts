@@ -1,4 +1,4 @@
-import { sessionBusyLevel } from '../shared/sessionRuntime';
+import { collectRunningSubAgents, sessionBusyLevel } from '../shared/sessionRuntime';
 import { createChecker, runTests } from './helpers/harness';
 
 /**
@@ -8,8 +8,23 @@ import { createChecker, runTests } from './helpers/harness';
  * 「等用户输入但空闲」的会话必须算忙，否则关对话不问、关工作区却问
  * （US-19 验收 7 明确把「等待用户确认」列进需要二次确认的非 idle 集合）。
  *
+ * `collectRunningSubAgents`（specs/019 FR-001）：abort 悬停明细的子代理清单聚合，
+ * 锁定深先序 / 只经非空闲节点下钻 / description 缺省保留 null 的口径。
+ *
  * 运行方式：npm run test:all -- sessionBusyLevel
  */
+
+const state = (over: {
+  sessionId: string;
+  idle?: boolean;
+  parentSessionId?: string | null;
+  subAgentDescription?: string | null;
+}) => ({
+  idle: false,
+  parentSessionId: null,
+  subAgentDescription: null,
+  ...over,
+});
 
 runTests('sessionBusyLevel', () => {
   const { check, finish } = createChecker();
@@ -23,6 +38,28 @@ runTests('sessionBusyLevel', () => {
 
   check('idle 且不在等用户 = idle',
     sessionBusyLevel({ idle: true, waiting: false }) === 'idle');
+
+  const states = [
+    state({ sessionId: 'p' }),
+    // 直接子代理：一个在跑（Master）、一个已完成（idle 跳过）
+    state({ sessionId: 'c1', parentSessionId: 'p', subAgentDescription: '浏览文件找规格' }),
+    state({ sessionId: 'c2', parentSessionId: 'p', idle: true, subAgentDescription: '已完成' }),
+    // 下层子代理挂在 c1 下：随 c1 一起列出（深先序：c1 在前、孙在后）
+    state({ sessionId: 'g1', parentSessionId: 'c1', subAgentDescription: null }),
+    // 别的会话的子代理，与 p 无关
+    state({ sessionId: 'x1', parentSessionId: 'other', subAgentDescription: '别的会话' }),
+  ];
+
+  check('子代理清单：非 idle 直接子代理 + 下层，深先序，idle 跳过',
+    JSON.stringify(collectRunningSubAgents(states, 'p')) === JSON.stringify([
+      { sessionId: 'c1', description: '浏览文件找规格' },
+      { sessionId: 'g1', description: null },
+    ]));
+
+  check('无子代理 / 未知会话返回空数组',
+    collectRunningSubAgents(states, 'nosuch').length === 0
+    && collectRunningSubAgents([states[0]], 'p').length === 0
+    && collectRunningSubAgents(states, 'c2').length === 0);
 
   finish();
 });

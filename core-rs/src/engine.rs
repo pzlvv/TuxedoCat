@@ -298,6 +298,10 @@ pub struct SessionState {
     pub system_prompt_prefix: Option<String>,
     /// 子代理角色（`Master`），落进 `meta.json` 的 `role`。
     pub sub_agent_role: Option<String>,
+    /// 子代理创建时 Agent 工具调用的 description（specs/019 FR-001）：随
+    /// `sessionRuntimeChanged` 快照暴露给宿主，abort 按钮悬停明细据此显示。
+    /// 普通会话与恢复路径取不到时为 `None`（快照为 `null`，UI 显示回退文案）。
+    pub sub_agent_description: Option<String>,
     /// 待注入的 Skill（`QueryEngine.pendingSkillInjection`）：出队时解析出的
     /// `/skill` 命令。用户消息照常进上下文，随后注入一条 Skill tool_use +
     /// tool_result（技能正文），供本轮 LLM 读取。
@@ -359,6 +363,7 @@ impl SessionState {
             static_system_prompt: None,
             system_prompt_prefix: None,
             sub_agent_role: None,
+            sub_agent_description: None,
             pending_skill_injection: None,
         }
     }
@@ -428,6 +433,10 @@ impl Core {
     pub fn drop_session(&self, session_id: &str) {
         // 会话已从快照移除；进程级待压缩注册表也要清理，避免 id 复用时残留
         compact::unmark_pending_compact(session_id);
+        // 该会话作为子代理的登记条目随会话终结注销（只注销自身、不级联：
+        // 存活的子孙会话仍靠登记保持递归中止可达，见
+        // specs/defects/subagent-registry-outlives-dropped-sessions 的不变量）
+        crate::subagent::unregister(session_id);
         self.sessions.lock().unwrap().remove(session_id);
         self.session_order.lock().unwrap().retain(|id| id != session_id);
     }
@@ -489,7 +498,7 @@ impl Core {
             .iter()
             .filter_map(|session_id| sessions.get(session_id).map(|state| (session_id, state)))
             .map(|(session_id, state)| {
-                let (running, pending, waiting, compacting, background, parent) = {
+                let (running, pending, waiting, compacting, background, parent, sub_agent_desc) = {
                     let state = state.lock().unwrap();
                     (
                         state.running,
@@ -498,8 +507,13 @@ impl Core {
                         state.compacting,
                         state.background,
                         state.parent_session_id.clone(),
+                        state.sub_agent_description.clone(),
                     )
                 };
+                // 运行中后台任务清单（specs/019 FR-001）：`TASKS` 锁在此处短暂获取，
+                // 锁序单向 `sessions → TASKS`——bash_task 的引擎回调都在释放 `TASKS`
+                // 锁之后才发生，无反向路径。
+                let background_tasks = crate::bash_task::running_tasks_for_session(session_id);
                 // 待压缩登记在进程级注册表（`compact.rs` 的 `PENDING_COMPACT`），
                 // 快照只做投影，不在 `SessionState` 里再存一份。
                 let pending_compact = pending_compact.get(session_id).copied().unwrap_or(false);
@@ -520,6 +534,8 @@ impl Core {
                     background,
                     sub_agent_running,
                     parent.as_deref(),
+                    &background_tasks,
+                    sub_agent_desc.as_deref(),
                 )
             })
             .collect();
@@ -539,9 +555,10 @@ impl Core {
 
     /// 单个会话的运行时快照 JSON。
     ///
-    /// 字段集合由 `core-rs/fixtures/runtimeState.json` 双向锁定
-    /// （TS 侧 `runtimeStateParity.test.ts`，Rust 侧 `main_tests`）——增删字段必须
-    /// 同步 fixture 与两侧测试，缺一即失败。
+    /// 字段集合由 `core-rs/fixtures/runtimeState.json` 锁定（Rust 侧
+    /// `main_tests` 的 `runtime_state_fields_match_parity_fixture`；TS 侧无自动锁定，
+    /// 镜像类型在 `src/shared/AssistantEventBus.ts` 与 `src/webview/types.ts`）——
+    /// 增删字段必须同步 fixture 与两侧类型。
     pub(crate) fn runtime_state_json(
         session_id: &str,
         idle: bool,
@@ -552,6 +569,8 @@ impl Core {
         background: bool,
         sub_agent_running: bool,
         parent_session_id: Option<&str>,
+        background_tasks: &[crate::bash_task::RunningTask],
+        sub_agent_description: Option<&str>,
     ) -> Value {
         json!({
             "sessionId": session_id,
@@ -567,6 +586,21 @@ impl Core {
             // 父会话 id（子代理会话才有；spawn 时落 `parent_session_id`）。
             // 随会话存续，不随注册表注销消失
             "parentSessionId": parent_session_id,
+            // 运行中后台 Bash 任务清单（specs/019 FR-001，注册序；空集为 `[]`）。
+            // pid / start_time 不进契约——abort 悬停明细只展示身份（描述 + 命令）。
+            "backgroundTasks": background_tasks
+                .iter()
+                .map(|task| {
+                    json!({
+                        "taskId": task.task_id,
+                        "description": task.description,
+                        "command": task.command,
+                    })
+                })
+                .collect::<Vec<Value>>(),
+            // 子代理创建时的 Agent 工具 description（specs/019 FR-001）；
+            // 普通会话与恢复路径为 `null`，UI 显示回退文案。
+            "subAgentDescription": sub_agent_description,
         })
     }
 
@@ -1080,6 +1114,7 @@ impl Core {
             state.web_search = web_search;
             state.parent_session_id = Some(creator.clone());
             state.sub_agent_role = Some(request.role.clone());
+            state.sub_agent_description = Some(request.description.clone());
             // 子代理 system prompt = 主对话同款提示词（按生效预设组装；非 Master 角色
             // 固定 normal）+ 开头 `## Communication` 段。
             state.system_prompt_prefix = Some(prompt::sub_agent_communication_section(&creator));

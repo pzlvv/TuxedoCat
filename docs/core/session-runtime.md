@@ -51,7 +51,9 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 | `compacting` | `compacting` 来源（正在压缩上下文） |
 | `pendingCompact` | `pendingCompact` 来源（手动压缩已登记、等待当前轮次结束后执行；不参与 `idle`） |
 | `backgroundRunning` | `background` 来源（有运行中的后台 Bash 任务） |
+| `backgroundTasks` | 运行中的后台 Bash 任务清单（specs/019），按注册序逐项 `taskId` / `description` / `command`；空集为 `[]`。与 `backgroundRunning` 同源（同一注册表、同一次 `emit_runtime` 产出），abort 按钮黄色态的悬停明细据此列出任务（[docs/features/abort-button.md](../features/abort-button.md)） |
 | `subAgentRunning` | 派生字段：存在非 idle 的已登记子代理（递归到子代理自身的查询 / 压缩 / 后台任务 / 下层子代理） |
+| `subAgentDescription` | 子代理会话为创建时 Agent 工具调用的 description（specs/019）；普通会话与恢复路径取不到时为 `null`，UI 显示回退文案。悬停明细据此列出子代理 |
 | `parentSessionId` | 父会话 ID（子代理会话才有；普通会话为 `null`）。登记于子代理创建时，随会话存续，不随注册表注销消失——消费者据此区分「子对话完成」与「主对话完成」（如托盘完成提醒只对后者闪烁） |
 
 `idle === false`（会话非空闲）当且仅当 `queryRunning` / `waiting` / `compacting` /
@@ -59,6 +61,10 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 按需读根字段自行推导表现（abort 按钮三态见 [docs/features/abort-button.md](../features/abort-button.md)，
 推导原则见 [principles.md 第 8 节](../architecture/principles.md#8-契约只写现状派生字段从根字段推导)）。
 `pendingCompact` 不在这个合取里：排队不是正在执行的工作，会话空闲时它也可以为真。
+
+明细成员（`backgroundTasks` / `subAgentDescription`）与布尔位同源同发，并参与快照
+diff：清单增减、子代理 description 出现即使布尔位不变也触发推送——abort 悬停明细
+（specs/019）据此保持与注册表一致。
 
 对外快照里每个会话都递归计算派生值（`is_idle_deep`），因此子代理的 `query` / `waiting` /
 `compacting` / `background` 变化会连带刷新其创建者的 `idle` / `subAgentRunning`。
