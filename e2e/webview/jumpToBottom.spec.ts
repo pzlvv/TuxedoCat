@@ -50,6 +50,17 @@ async function distanceFromBottom(page: import('@playwright/test').Page): Promis
   });
 }
 
+/**
+ * 等 scrollTop 的改动走完浏览器的 scroll 事件派发（scroll 事件在渲染步骤里先于 rAF）。
+ * 断言「距底距离」读的是同步生效的 scrollTop，早于 scroll 监听更新滚离标志——不等这一步，
+ * 后续注入的新消息会在标志置位之前抢跑预滚，测到的是竞态而不是滚离语义。
+ */
+async function waitForScrollDispatch(page: import('@playwright/test').Page): Promise<void> {
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+}
+
 /** 断言消息列表已贴底（与 isAtBottom 同口径的 2px 判定带） */
 async function expectAtBottom(page: import('@playwright/test').Page): Promise<void> {
   await expect.poll(() => distanceFromBottom(page), { timeout: 10_000 }).toBeLessThanOrEqual(2);
@@ -284,4 +295,76 @@ test('once 通知被更高新消息替换后仍贴底', async () => {
   await expect(page.getByText('新回复开头标记')).toBeVisible({ timeout: 10_000 });
   await expect(onceNode).toHaveCount(0);
   await expectAtBottom(page);
+});
+
+/**
+ * 自动滚动抑制（specs/defects/tiny-up-scroll-yanked-back-to-bottom.md）：
+ * 用户从底部向上滚出 1px（仍在 2px 判定带内）也必须停住自动跟随——任何新内容到达
+ * 都不得把视口拉回底部。两条 RT 分别覆盖滚轮输入（wheel 先置位、随后的 scroll 事件
+ * 被 ≤2px 复位分支清掉）与非滚轮输入（逐像素步进永远达不到旧的单次 >2px 阈值）。
+ */
+test('US-47 底部上滚 1px 后新消息到达不把视口拉回底部', async () => {
+  const { page, host } = handle;
+  const started = await host.waitForSent('startNewConversation');
+  const sessionId = started.sessionId as string;
+  await setupTallConversation(page);
+  await expectAtBottom(page);
+  // 等渲染收尾：长回复的 markdown / 高亮仍在提交时，1px 微动会被同一帧的自动滚动
+  // 覆盖，测到的就不是「上滚后不被拉回」而是「上滚与自动滚动竞态」
+  await page.waitForTimeout(300);
+
+  // 真实滚轮向上 1px：仍在 2px 判定带内，但用户确实离开了底部
+  await page.mouse.move(640, 200);
+  await page.mouse.wheel(0, -1);
+  await waitForScrollDispatch(page);
+  await expect.poll(() => distanceFromBottom(page), { timeout: 5_000 }).toBeGreaterThan(0);
+  const nudged = await distanceFromBottom(page);
+  expect(nudged).not.toBeNull();
+  expect(nudged!).toBeLessThanOrEqual(2);
+
+  // 新助手消息到达：用户刚上滚的位置不得被自动滚动拉回底部
+  await host.send({
+    type: 'addMessage', sessionId, role: 'assistant',
+    content: `滚轮上滚后到达的回复\n\n${'这是新回复正文，用来撑高时间线。'.repeat(30)}`,
+  });
+  await expect(page.getByText('滚轮上滚后到达的回复')).toBeVisible({ timeout: 10_000 });
+  await page.waitForTimeout(200);
+  const after = await distanceFromBottom(page);
+  expect(after).not.toBeNull();
+  expect(after!).toBeGreaterThan(0);
+});
+
+test('US-47 慢速拖动上滚 1px 后新消息到达不把视口拉回底部', async () => {
+  const { page, host } = handle;
+  const started = await host.waitForSent('startNewConversation');
+  const sessionId = started.sessionId as string;
+  await setupTallConversation(page);
+  await expectAtBottom(page);
+  // 同 RT-1：等渲染收尾，避免 1px 微动与同一帧的自动滚动竞态
+  await page.waitForTimeout(300);
+
+  // 模拟慢速拖动滚动条：拖动期间浏览器持续派发 pointermove（buttons=1）刷新输入时刻，
+  // 位移由 scroll 事件体现且每帧只走 1px——与真实滚动条拖动同构（无滚轮事件），
+  // 但步进量可控，能稳定复现「逐像素离开底部」。
+  await page.evaluate(() => {
+    const el = document.querySelector('.messages-container');
+    if (!el) throw new Error('messages-container missing');
+    window.dispatchEvent(new PointerEvent('pointermove', { buttons: 1 }));
+    el.scrollTop -= 1;
+  });
+  await waitForScrollDispatch(page);
+  await expect.poll(() => distanceFromBottom(page), { timeout: 5_000 }).toBeGreaterThan(0);
+  const nudged = await distanceFromBottom(page);
+  expect(nudged).not.toBeNull();
+  expect(nudged!).toBeLessThanOrEqual(2);
+
+  await host.send({
+    type: 'addMessage', sessionId, role: 'assistant',
+    content: `拖动上滚后到达的回复\n\n${'这是新回复正文，用来撑高时间线。'.repeat(30)}`,
+  });
+  await expect(page.getByText('拖动上滚后到达的回复')).toBeVisible({ timeout: 10_000 });
+  await page.waitForTimeout(200);
+  const after = await distanceFromBottom(page);
+  expect(after).not.toBeNull();
+  expect(after!).toBeGreaterThan(0);
 });

@@ -926,6 +926,14 @@ const MESSAGES_CONTAINER_PADDING_TOP = 16;
  * 新手势——「一次滚动超过可视高度 1/3 才显示跳到底部按钮」以单次手势为判定单元。 */
 const WHEEL_GESTURE_GAP_MS = 150;
 
+/**
+ * 滚动位移抖动带（px）：小于该值的 scrollTop 变化按布局 / 亚像素取整抖动处理，不算用户
+ * 滚动。用来把「用户真的向上滚了」与「内容收缩后浏览器把 scrollTop 夹回底部」分开——
+ * 后者落点距离为 0，前者至少留下 1px 量级的可见位移
+ * （specs/defects/tiny-up-scroll-yanked-back-to-bottom.md）。
+ */
+const SCROLL_JITTER_PX = 0.5;
+
 /** 用户消息折叠后的最大高度：原 180px 的 40% */
 const USER_MESSAGE_COLLAPSED_HEIGHT = 72;
 /** 折叠渐隐遮罩高度：随折叠高度同比缩小（原 50px 的 40%） */
@@ -1192,25 +1200,29 @@ function useAutoScroll(
       const atBottom = distanceFromBottom <= 2;
       isAtBottomRef.current = atBottom;
 
-      if (distanceFromBottom <= 2) {
-        // At the very bottom — resume auto-scroll
+      /** 本次 scroll 是否由用户向上滚动产生（抖动带以下的位移不算） */
+      const movedUp = scrollTop < lastScrollTop - SCROLL_JITTER_PX;
+      const userRecentlyScrolled = performance.now() - lastUserScrollInputRef.current < 1000;
+
+      if (!programmaticScrollPendingRef.current && movedUp && distanceFromBottom > SCROLL_JITTER_PX && userRecentlyScrolled) {
+        // 离开底部即置位，不设「单次位移 > 2px」与「离开超过 2px」门槛：慢速拖动
+        // 滚动条 / 触摸每帧只走 1px 时永远达不到逐事件阈值，从底部上滚 1px 也落在
+        // 2px 判定带内——两种情形都会让标志置不住，随后的新内容把视口拉回底部
+        // （specs/defects/tiny-up-scroll-yanked-back-to-bottom.md）。
+        // 四个守卫把伪滚动排除在外：programmaticScrollPending（强制滚动的等待窗
+        // 口）、movedUp（确实在向上，overflow-anchor 在内容下方增长时 scrollTop
+        // 只增不减）、distanceFromBottom > SCROLL_JITTER_PX（内容收缩把 scrollTop
+        // 夹回底部时落点距离为 0）、1s 内有真实输入（wheel/touch/keyboard/pointer
+        // 都会刷新）——布局调整产生的 scrollTop 回退没有对应输入，不会误置位。
+        userScrolledAwayRef.current = true;
+        profileLog(`[AutoScroll] scroll MARK userScrolledAway=true distance=${distanceFromBottom.toFixed(1)} scrollTop=${scrollTop} lastInputAge=${(performance.now() - lastUserScrollInputRef.current).toFixed(0)}ms`);
+      } else if (distanceFromBottom <= 2 && !movedUp) {
+        // 回底才恢复自动跟随，且该位置必须不是向上滚出来的：用户刚上滚出的 1–2px
+        // 同样满足 distance ≤ 2，无条件复位会把微小上滚立刻拉回底部
+        // （specs/defects/tiny-up-scroll-yanked-back-to-bottom.md）。
         userScrolledAwayRef.current = false;
         // 回底即结束当前手势：下一次从底部出发的向下滚动重新累计（docs/hosts/webview-ui.md 第 11 节）
         wheelGestureAccumRef.current = 0;
-      } else if (!programmaticScrollPendingRef.current && distanceFromBottom > 2 && scrollTop < lastScrollTop - 2) {
-        // 只要附近存在真实用户滚动输入且确实在向上滚，离开底部超过 2px（判定带
-        // 之外）就算用户主动滚离——用户操作即使微小也不该被自动滚动拉回。
-        // 三个守卫把伪滚动排除在外：programmaticScrollPending（强制滚动的等待窗
-        // 口）、scrollTop < lastScrollTop - 2（确实在向上，overflow-anchor 在内容
-        // 下方增长时 scrollTop 只增不减）、1s 内有真实输入（wheel/touch/keyboard/
-        // pointer 都会刷新）——布局调整产生的 scrollTop 回退没有对应输入，不会
-        // 误置位，否则后续非强制滚动（流式增量、toolMetaData 异步 diff 展开等）
-        // 会被自身抑制。
-        const userRecentlyScrolled = performance.now() - lastUserScrollInputRef.current < 1000;
-        if (userRecentlyScrolled) {
-          userScrolledAwayRef.current = true;
-          profileLog(`[AutoScroll] scroll MARK userScrolledAway=true distance=${distanceFromBottom.toFixed(1)} scrollTop=${scrollTop} lastInputAge=${(performance.now() - lastUserScrollInputRef.current).toFixed(0)}ms`);
-        }
       }
       // 向上滚动即隐藏（docs/hosts/webview-ui.md 第 11 节）：任意幅度的向上位移都结束当前
       // 显示——手势累计清零并通知消费方；以 1s 内有真实用户滚动输入为前提（与滚离置位
@@ -1277,9 +1289,12 @@ function useAutoScroll(
       profileLog(`[AutoScroll] ResizeObserver fired initialSettled=${initialSettled} userScrolledAway=${userScrolledAwayRef.current} rafPending=${rafId !== null}`);
       if (!initialSettled) return;
       const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-      // 内容收缩/展开后若已经处于底部，则恢复自动滚动（与滚动事件逻辑保持一致）。
+      // 内容收缩后浏览器会把 scrollTop 夹回底部，此时恢复自动滚动。这里只认「真的贴底」
+      // （抖动带以内）——观察器拿不到滚动方向，用 2px 判定带会把用户刚上滚出的 1–2px
+      // 一起复位，内容一增长就把视口拉回底部
+      // （specs/defects/tiny-up-scroll-yanked-back-to-bottom.md）。
       if (userScrolledAwayRef.current) {
-        if (distanceFromBottom <= 2) {
+        if (distanceFromBottom <= SCROLL_JITTER_PX) {
           userScrolledAwayRef.current = false;
         } else {
           return;
@@ -1325,10 +1340,12 @@ function useAutoScroll(
       if (stopped || !container) return;
       const sh = container.scrollHeight;
       // 展开 thinking 时可能还没有产生可滚动区域，此时用户仍处于“底部”，
-      // 不能因为 thinking 展开就把 userScrolledAway 一直锁死。每次轮询都检查
-      // 实际距离，到底部就恢复自动滚动，避免首次内容撑满视口后仍然无法跟随。
+      // 不能因为 thinking 展开就把 userScrolledAway 一直锁死。轮询只认「真的贴底」
+      // （抖动带以内）——轮询同样拿不到滚动方向，用 2px 判定带会把用户刚上滚出的
+      // 1–2px 复位，随后这一帧的内容增长就把视口拉回底部
+      // （specs/defects/tiny-up-scroll-yanked-back-to-bottom.md）。
       const distanceFromBottom = sh - container.scrollTop - container.clientHeight;
-      if (distanceFromBottom <= 2) {
+      if (distanceFromBottom <= SCROLL_JITTER_PX) {
         userScrolledAwayRef.current = false;
       }
       if (sh !== prevScrollHeight && !userScrolledAwayRef.current) {
@@ -1981,12 +1998,14 @@ const MessagesView = memo(({
     if (isOpen) {
       userScrolledAwayRef.current = true;
       // 如果展开后仍然在底部（例如内容很小、还没有产生可滚动区域），
-      // 则恢复自动滚动，避免后续消息无法继续跟随。
+      // 则恢复自动滚动，避免后续消息无法继续跟随。只认「真的贴底」——用户上滚 1px
+      // 后展开内容时 2px 判定带同样成立，复位会让展开后的内容把视口拉回底部
+      // （specs/defects/tiny-up-scroll-yanked-back-to-bottom.md）。
       requestAnimationFrame(() => {
         const c = containerRef.current;
         if (!c) return;
         const d = c.scrollHeight - c.scrollTop - c.clientHeight;
-        if (d <= 2) {
+        if (d <= SCROLL_JITTER_PX) {
           userScrolledAwayRef.current = false;
         }
       });
@@ -1994,7 +2013,7 @@ const MessagesView = memo(({
     }
 
     // 收起时：若当前不在底部则保持暂停；若本身就在底部则继续自动滚动。
-    if (distanceFromBottom > 2) {
+    if (distanceFromBottom > SCROLL_JITTER_PX) {
       userScrolledAwayRef.current = true;
     } else {
       userScrolledAwayRef.current = false;
@@ -2004,7 +2023,7 @@ const MessagesView = memo(({
       const c = containerRef.current;
       if (!c) return;
       const d = c.scrollHeight - c.scrollTop - c.clientHeight;
-      if (d <= 2) {
+      if (d <= SCROLL_JITTER_PX) {
         userScrolledAwayRef.current = false;
       }
     });
