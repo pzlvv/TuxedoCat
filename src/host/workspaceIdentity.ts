@@ -1,5 +1,5 @@
 /**
- * 工作区代理身份（specs/022 FR-001）。
+ * 工作区代理身份（specs/023 FR-001）。
  *
  * 身份 = `机器名 + 工作区路径`，逐字用于 `@` 候选、`Agent` 的 `target` 与 reminder：
  * - 本地工作区：机器名取运行宿主的机器名（Windows `COMPUTERNAME` / Linux `HOSTNAME`，
@@ -67,7 +67,7 @@ export type WorkspaceIdentityResolution =
  * 按身份解析打开集合中的工作区。
  *
  * 不同引用可能派生出相同身份（同 host + 同路径、不同 SSH 用户或端口）：
- * 命中多项返回 `ambiguous`，不取第一项（specs/022 FR-001）。
+ * 命中多项返回 `ambiguous`，不取第一项（specs/023 FR-001）。
  */
 export function resolveWorkspaceByIdentity(
   refs: readonly WorkspaceRef[],
@@ -88,7 +88,7 @@ export interface WorkspaceMentionCandidate {
 }
 
 /**
- * `@` 工作区补全候选（specs/022 FR-007）：已打开工作区里排除**来源视图所属工作区**。
+ * `@` 工作区补全候选（specs/023 FR-007）：已打开工作区里排除**来源视图所属工作区**。
  *
  * 过滤按工作区引用判等（不是身份字符串）：同一身份的另一工作区仍可出现。
  * `current` 为空（解析不出来源工作区）时返回空候选——不猜、不用活动标签页顶替。

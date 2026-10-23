@@ -183,7 +183,7 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
         });
         break;
       case 'requestWorkspaces':
-        // `@` 工作区补全（specs/022 FR-007）：宿主已排除来源视图自己的工作区
+        // @ 工作区补全（specs/023 FR-007）：宿主已排除来源视图自己的工作区（模板字符串内不写反引号）
         send({
           type: 'setWorkspaces',
           workspaces: [

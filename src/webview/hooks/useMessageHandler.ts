@@ -55,7 +55,7 @@ export interface UseMessageHandlerProps {
   setConversationTitle: (v: string) => void;
   setMaxContextTokens: (v: number | null) => void;
   setSkills: (v: Array<{ name: string; description: string; isBuiltin?: boolean }>) => void;
-  /** `@` 工作区候选（宿主已排除本工作区；specs/022 FR-007） */
+  /** `@` 工作区候选（宿主已排除本工作区；specs/023 FR-007） */
   setWorkspaces: (v: Array<{ id: string; path: string; displayName: string }>) => void;
   /** 呈现一条 core 产出的瞬时提示（键 + 参数，`docs/architecture/core-ui-separation.md` 第 4.9 节） */
   pushNotice: (key: string, params: Record<string, string | number>, level: 'info' | 'warn' | 'error') => void;
@@ -64,7 +64,7 @@ export interface UseMessageHandlerProps {
   setConversationDropdownOpen: (v: boolean) => void;
   setCurrentSessionId: (v: string | null) => void;
   setParentSessionId: (v: string | null) => void;
-  /** 跨工作区子代理的来源（specs/022）：返回父对话时跳到发起方工作区 */
+  /** 跨工作区子代理的来源（specs/023）：返回父对话时跳到发起方工作区 */
   setCrossWorkspaceOrigin: (v: { workspaceId: string; sessionId: string; title: string } | null) => void;
   /** 当前会话的子代理角色（conversationLoaded.metadata.role，specs/020 FR-005）；普通会话为 null */
   setSubAgentRole: (v: string | null) => void;

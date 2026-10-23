@@ -586,7 +586,7 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                     .and_then(Value::as_str)
                     .unwrap_or(config::DEFAULT_CONFIG_DIR_NAME)
                     .to_string(),
-                // specs/022 FR-009：宿主能力位；缺字段按不支持处理（旧宿主 / TUI）。
+                // specs/023 FR-009：宿主能力位；缺字段按不支持处理（旧宿主 / TUI）。
                 cross_workspace_agent: event
                     .get("crossWorkspaceAgent")
                     .and_then(Value::as_bool)
@@ -619,7 +619,7 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                 .filter(|path| !path.is_empty());
             config::set_session_workspace(&session_id, workspace.map(str::to_string));
         }
-        // ===== 跨工作区子代理（specs/022）=====
+        // ===== 跨工作区子代理（specs/023）=====
         "remoteSubAgentStarted" => {
             if let Err(error) = core.start_remote_sub_agent(&event) {
                 emit(

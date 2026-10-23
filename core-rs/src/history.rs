@@ -113,7 +113,7 @@ pub fn load_conversation_list(workspace_path: Option<&str>) -> Vec<Value> {
         conversations.push(metadata);
     }
 
-    // specs/022 FR-004：跨工作区子代理的占位父对话由子代理 meta 派生，不落独立文件。
+    // specs/023 FR-004：跨工作区子代理的占位父对话由子代理 meta 派生，不落独立文件。
     // 子对话的 `parentSessionId` 是 `ph_<originSessionId>`；列表里没有对应 meta 时补一条，
     // 使对话树能把子代理挂在「发起方对话」的占位节点下。子对话删除后派生条目自然消失。
     let present: std::collections::HashSet<String> = conversations
@@ -298,7 +298,7 @@ pub fn create_sub_agent_metadata(
     create_conversation(session_id, project, Value::Object(metadata))
 }
 
-/// 预建跨工作区子代理会话的 `meta.json`（specs/022 FR-003）。
+/// 预建跨工作区子代理会话的 `meta.json`（specs/023 FR-003）。
 ///
 /// 与 [`create_sub_agent_metadata`] 同形，额外写 `crossWorkspaceOrigin`：发起方工作区
 /// 身份 / 会话 id / 标题。宿主侧列表读取据此派生占位父对话（`parentSessionId` 是

@@ -64,7 +64,7 @@ export interface CoreBootstrapOptions {
    */
   extensionPath: string;
   /**
-   * 宿主是否支持跨工作区代理（specs/022 FR-009）：随 `hostEnvironmentProvided` 下发给
+   * 宿主是否支持跨工作区代理（specs/023 FR-009）：随 `hostEnvironmentProvided` 下发给
    * Core，决定 `@` reminder 与 `Agent.target` 是否生效。Electron true，VS Code false。
    */
   crossWorkspaceAgent: boolean;
@@ -164,7 +164,7 @@ export function bootstrapCore(
     onConnectionLost: (connection, reason) => {
       markConnectionSessionsFailed(connection, conversations, reason, log);
       notifyWorkspaceConnectionState(log, connection.workspaceRef, 'lost', reason);
-      // 该工作区上的跨工作区子代理按结束收敛（specs/022 FR-010）
+      // 该工作区上的跨工作区子代理按结束收敛（specs/023 FR-010）
       ui?.onWorkspaceUnavailable(connection.workspaceRef);
     },
     onConnectionReady: (connection) => {

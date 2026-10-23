@@ -190,7 +190,7 @@ export function handleConversationConversationLoaded(
             props.setIsCompactExpanded(false);
             // 记录父会话 ID（子对话时有值）
             props.setParentSessionId(wire.parentSessionId || null);
-            // 跨工作区子代理的来源（specs/022）：返回父对话时跳到发起方工作区
+            // 跨工作区子代理的来源（specs/023）：返回父对话时跳到发起方工作区
             props.setCrossWorkspaceOrigin(wire.crossWorkspaceOrigin ?? null);
             // 记录子代理角色（specs/020 FR-005）：meta.json 的 role 事实，普通会话为 null；
             // 选项菜单置灰判据（非 Master 子代理锁定提示词模式 / 联网搜索 / MCP）

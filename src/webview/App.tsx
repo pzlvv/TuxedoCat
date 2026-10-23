@@ -103,7 +103,7 @@ const App = () => {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   // 当前对话的父会话 ID（子对话时有效）
   const [parentSessionId, setParentSessionId] = useState<string | null>(null);
-  /** 跨工作区子代理的来源（specs/022）：返回父对话时跳到发起方工作区 */
+  /** 跨工作区子代理的来源（specs/023）：返回父对话时跳到发起方工作区 */
   const [crossWorkspaceOrigin, setCrossWorkspaceOrigin] = useState<{ workspaceId: string; sessionId: string; title: string } | null>(null);
   // 当前会话的子代理角色（conversationLoaded.metadata.role，specs/020 FR-005）：
   // 非 Master 子代理会话锁定选项菜单的提示词模式 / 联网搜索 / MCP 三项
@@ -186,7 +186,7 @@ const App = () => {
 
   // Skills for slash-command autocomplete
   const [skills, setSkills] = useState<Array<{ name: string; description: string; isBuiltin?: boolean }>>([]);
-  /** `@` 工作区候选（宿主已排除本工作区；specs/022 FR-007） */
+  /** `@` 工作区候选（宿主已排除本工作区；specs/023 FR-007） */
   const [workspaces, setWorkspaces] = useState<Array<{ id: string; path: string; displayName: string }>>([]);
 
   // MCP 服务器列表（来自 mcp.json + settings.json 启用状态），供菜单勾选。
@@ -1160,7 +1160,7 @@ const App = () => {
             {parentSessionId && (
               <button
                 onClick={() => {
-                  // 跨工作区子代理（specs/022）：返回父对话时跳到发起方工作区
+                  // 跨工作区子代理（specs/023）：返回父对话时跳到发起方工作区
                   if (crossWorkspaceOrigin) {
                     navigateToSession(crossWorkspaceOrigin.sessionId, crossWorkspaceOrigin.workspaceId);
                   } else {

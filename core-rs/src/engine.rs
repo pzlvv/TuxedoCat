@@ -101,7 +101,7 @@ fn run_sub_agent(
     // 刷新对话列表：此时子代理消息已持久化，新子会话能正确出现在对话树里
     core.emit(json!({ "type": "conversationListChanged" }));
     core.emit_runtime();
-    // specs/022 FR-010：跨工作区子代理的运行时在目标工作区，结束要通知发起方 Core
+    // specs/023 FR-010：跨工作区子代理的运行时在目标工作区，结束要通知发起方 Core
     // 注销远程登记并释放槽位；本进程从未取过槽位，不释放。
     // 用进程级登记判断而不是会话状态：会话可能已被用户关闭（状态已释放）。
     if let Some(origin_session_id) = crate::subagent::remote_origin_of(&sub_session_id) {
@@ -317,15 +317,15 @@ pub struct SessionState {
     /// `/skill` 命令。用户消息照常进上下文，随后注入一条 Skill tool_use +
     /// tool_result（技能正文），供本轮 LLM 读取。
     pub pending_skill_injection: Option<SkillInjection>,
-    /// 待注入的 `@` 工作区提醒（specs/022 FR-008）：轮次边界解析出 `@<身份>` 后置位，
+    /// 待注入的 `@` 工作区提醒（specs/023 FR-008）：轮次边界解析出 `@<身份>` 后置位，
     /// `run_turn` 在用户消息之后落一条 silent reminder。
     pub pending_mention_reminder: Option<String>,
-    /// 跨工作区子代理的来源（specs/022 FR-003）：目标工作区 Core 用它把 `Reply`
+    /// 跨工作区子代理的来源（specs/023 FR-003）：目标工作区 Core 用它把 `Reply`
     /// 回投到发起方会话。普通会话为 `None`。
     pub cross_workspace_origin: Option<CrossWorkspaceOrigin>,
 }
 
-/// 跨工作区子代理的来源（specs/022）：发起方工作区身份 / 会话 id / 标题。
+/// 跨工作区子代理的来源（specs/023）：发起方工作区身份 / 会话 id / 标题。
 ///
 /// Core 侧只用 `session_id` 做回复回投与结束通知；`workspace_id` / `title` 是同一份
 /// 来源事实的其余字段，落进 `meta.json` 的 `crossWorkspaceOrigin` 供宿主派生占位条目。
@@ -659,7 +659,7 @@ impl Core {
             }
         }
         for child in crate::subagent::list_for_creator(session_id) {
-            // specs/022 FR-006：跨工作区子代理没有本地会话状态，`is_idle_deep` 会把它
+            // specs/023 FR-006：跨工作区子代理没有本地会话状态，`is_idle_deep` 会把它
             // 当空闲；结束事件到达前一律按「运行中」计入。
             if crate::subagent::is_remote(&child) {
                 return false;
@@ -681,7 +681,7 @@ impl Core {
         session_id: &str,
     ) -> bool {
         for child in crate::subagent::list_for_creator(session_id) {
-            // specs/022 FR-006：远程子代理在结束事件到达前一直算忙
+            // specs/023 FR-006：远程子代理在结束事件到达前一直算忙
             if crate::subagent::is_remote(&child) {
                 return true;
             }
@@ -843,7 +843,7 @@ impl Core {
         self.abort_foreground(session_id);
         self.abort_background_tasks(session_id);
         for child in crate::subagent::list_for_creator(session_id) {
-            // specs/022 FR-006：跨工作区子代理的运行时在目标工作区，本地没有它的会话
+            // specs/023 FR-006：跨工作区子代理的运行时在目标工作区，本地没有它的会话
             // 状态；发中止事件由宿主转发，不递归本地（递归只会 no-op）。
             if crate::subagent::is_remote(&child) {
                 self.emit(json!({
@@ -1114,7 +1114,7 @@ impl Core {
         }
     }
 
-    /// 跨工作区派发子代理（specs/022 FR-002）：经宿主在目标工作区建会话。
+    /// 跨工作区派发子代理（specs/023 FR-002）：经宿主在目标工作区建会话。
     ///
     /// 阻塞等宿主应答：失败（目标未打开 / 歧义 / 目标 Core 不可达）直接返回工具错误，
     /// 不创建任何会话。成功后把子会话登记进本地注册表，使 `subAgentRunning`、
@@ -1150,7 +1150,7 @@ impl Core {
             return Err("cross-workspace agent request failed: host did not respond".to_string());
         };
         if result.get("local").and_then(Value::as_bool) == Some(true) {
-            // target 就是当前工作区：按缺省策略建本机子代理（specs/022 FR-002）
+            // target 就是当前工作区：按缺省策略建本机子代理（specs/023 FR-002）
             return self.create_sub_agent(request);
         }
         if let Some(error) = result.get("error").and_then(Value::as_str) {
@@ -1260,7 +1260,7 @@ impl Core {
         Ok(sub_session_id)
     }
 
-    /// 在目标工作区创建跨工作区子代理会话并立即开始执行（specs/022 FR-003）。
+    /// 在目标工作区创建跨工作区子代理会话并立即开始执行（specs/023 FR-003）。
     ///
     /// 由宿主经 `UiEvent.remoteSubAgentStarted` 下发到目标工作区 Core。会话级配置取
     /// **目标工作区**的默认值（模型 / agentMode / 提示词预设 / 联网 / MCP），不继承发起方；
@@ -1348,7 +1348,7 @@ impl Core {
             .and_then(|state| state.lock().unwrap().cross_workspace_origin.clone())
     }
 
-    /// 跨工作区子代理的 Reply 到达发起方会话（specs/022 FR-003）：按普通 agent 消息入队。
+    /// 跨工作区子代理的 Reply 到达发起方会话（specs/023 FR-003）：按普通 agent 消息入队。
     pub fn on_agent_reply_received(
         self: &Arc<Self>,
         session_id: &str,
@@ -1362,7 +1362,7 @@ impl Core {
         }
     }
 
-    /// 跨工作区子代理结束（specs/022 FR-010）：注销远程登记、释放并发槽位、刷新运行时。
+    /// 跨工作区子代理结束（specs/023 FR-010）：注销远程登记、释放并发槽位、刷新运行时。
     pub fn on_cross_workspace_agent_completed(
         self: &Arc<Self>,
         origin_session_id: &str,
@@ -1404,7 +1404,7 @@ impl Core {
         from_session_id: &str,
     ) -> Result<(), String> {
         let Some(state) = self.session_if_exists(target_session_id) else {
-            // specs/022 FR-003：跨工作区子代理的 Reply 目标是发起方会话——它在另一个
+            // specs/023 FR-003：跨工作区子代理的 Reply 目标是发起方会话——它在另一个
             // Core 里。目标等于本会话的跨工作区来源时交给宿主回投，不当作「会话不存在」。
             if let Some(origin) = self.cross_workspace_origin_of(from_session_id) {
                 if origin.session_id == target_session_id {
@@ -2379,7 +2379,7 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
             CommandResolution::Skill => {}
             CommandResolution::None => {}
         }
-        // specs/022 FR-008：`@` 工作区命令与 `/` 命令同口径在轮次边界解析；
+        // specs/023 FR-008：`@` 工作区命令与 `/` 命令同口径在轮次边界解析；
         // reminder 在 `run_turn` 里紧跟用户消息落盘。
         resolve_pending_mention(&state);
         // 取消（`abortRequested`）：清空队列并退出消费循环。
@@ -2470,7 +2470,7 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
         // 出队时解析出的 Skill 注入（若有）：随本轮一起消费，注入发生在
         // 用户消息进上下文之后、query 之前（见 `run_turn` 的 1.5 步）。
         let skill_injection = state.lock().unwrap().pending_skill_injection.take();
-        // specs/022 FR-008：`@` 命令的 reminder 与 Skill 注入同一位置消费。
+        // specs/023 FR-008：`@` 命令的 reminder 与 Skill 注入同一位置消费。
         let mention_reminder = state.lock().unwrap().pending_mention_reminder.take();
 
         let result = match step {
@@ -2903,7 +2903,7 @@ fn is_pending_user_command(state: &Arc<Mutex<SessionState>>) -> bool {
         .unwrap_or(false)
 }
 
-/// 解析 `@` 工作区命令的身份（specs/022 FR-008）。
+/// 解析 `@` 工作区命令的身份（specs/023 FR-008）。
 ///
 /// 语法：去首尾空白后以 `@` 开头。身份两种形态——
 /// - 引号形态 `@"..."`：到下一个 `"` 止（支持含空格的路径）；
@@ -2927,7 +2927,7 @@ fn parse_mention_identity(text: &str) -> Option<String> {
     }
 }
 
-/// `@` 命令的 reminder 文案（specs/022 FR-008）：点名目标身份与 `Agent.target`。
+/// `@` 命令的 reminder 文案（specs/023 FR-008）：点名目标身份与 `Agent.target`。
 fn build_mention_reminder(identity: &str) -> String {
     format!(
         "<Reminder>\n\
@@ -3197,7 +3197,7 @@ fn run_turn(
         }
     }
 
-    // 1.6 `@` 工作区 reminder（specs/022 FR-008）：用户消息之后紧跟一条 silent 消息，
+    // 1.6 `@` 工作区 reminder（specs/023 FR-008）：用户消息之后紧跟一条 silent 消息，
     // 点名目标身份与 `Agent.target`，让模型把事项代理给目标工作区。
     if let Some(reminder) = mention_reminder {
         persist_reminder(core, session_id, state, &reminder);
@@ -3255,7 +3255,7 @@ fn build_auto_message(item: &AgentMessage) -> Value {
         if item.origin != "bash" {
             // 子代理回复额外带 agentId 与 From 头（UI 显示 host:agent:<id>）
             object.insert("agentId".to_string(), json!(item.from_session_id));
-            // specs/022：跨工作区子代理的 From 头用目标工作区身份（本进程不知道那台机器），
+            // specs/023：跨工作区子代理的 From 头用目标工作区身份（本进程不知道那台机器），
             // 并带上 `workspaceId` 供 UI 跨工作区跳转。
             let remote_workspace = crate::subagent::remote_workspace_of(&item.from_session_id);
             let source = match &remote_workspace {

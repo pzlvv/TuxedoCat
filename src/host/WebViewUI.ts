@@ -71,7 +71,7 @@ export class WebViewUI implements WebViewUiPort {
   private readonly post: WebviewPoster;
   /** 总线（UiEvent 按会话路由回 core） */
   private readonly bus: AssistantEventBus;
-  /** 跨工作区路由（specs/022） */
+  /** 跨工作区路由（specs/023） */
   private readonly router: CrossWorkspaceRouter;
   /** 跨工作区子代理 → 目标工作区引用与发起方会话（中止路由 / 目标消失时收敛） */
   private readonly crossWorkspaceLinks = new Map<
@@ -354,7 +354,7 @@ export class WebViewUI implements WebViewUiPort {
       // ===== 瞬时提示 =====
       notice: (e) => this.onNotice(e.sessionId, e.key, e.params, e.level),
 
-      // ===== 跨工作区子代理（specs/022）=====
+      // ===== 跨工作区子代理（specs/023）=====
       // 目标工作区 Core 的 Reply 到达：按发起方会话路由回投（sessionId 已由宿主登记）。
       crossWorkspaceAgentReplyRequested: (e) =>
         this.onCrossWorkspaceAgentReplyRequested(e.sessionId, e.fromSessionId, e.content),
@@ -379,7 +379,7 @@ export class WebViewUI implements WebViewUiPort {
     };
   }
 
-  /** 目标工作区 Core 的 Reply 到达：按发起方会话路由回投（specs/022 FR-003） */
+  /** 目标工作区 Core 的 Reply 到达：按发起方会话路由回投（specs/023 FR-003） */
   private onCrossWorkspaceAgentReplyRequested(
     originSessionId: string,
     fromSessionId: string,
@@ -393,7 +393,7 @@ export class WebViewUI implements WebViewUiPort {
     });
   }
 
-  /** 发起方中止：按 link 表找到目标 Connection 下发 abort（specs/022 FR-006） */
+  /** 发起方中止：按 link 表找到目标 Connection 下发 abort（specs/023 FR-006） */
   private onCrossWorkspaceAgentAbortRequested(subSessionId: string): void {
     const link = this.crossWorkspaceLinks.get(subSessionId);
     if (!link) {
@@ -410,7 +410,7 @@ export class WebViewUI implements WebViewUiPort {
     target.emitToCore({ type: 'abortRequested', sessionId: subSessionId });
   }
 
-  /** 目标工作区 Core 结束：通知发起方 Core 注销远程登记并释放槽位（specs/022 FR-010） */
+  /** 目标工作区 Core 结束：通知发起方 Core 注销远程登记并释放槽位（specs/023 FR-010） */
   private onCrossWorkspaceAgentEnded(originSessionId: string, subSessionId: string): void {
     this.completeCrossWorkspaceAgent(originSessionId, subSessionId);
   }
@@ -425,7 +425,7 @@ export class WebViewUI implements WebViewUiPort {
   }
 
   /**
-   * 目标工作区关闭 / 连接丢失：该工作区上的跨工作区子代理按结束收敛（specs/022 FR-010）。
+   * 目标工作区关闭 / 连接丢失：该工作区上的跨工作区子代理按结束收敛（specs/023 FR-010）。
    *
    * 由 bootstrap 在工作区关闭与连接丢失两处调用；只处理 link 表里指向该工作区的项。
    */
@@ -438,7 +438,7 @@ export class WebViewUI implements WebViewUiPort {
   }
 
   /**
-   * 跨工作区派发（specs/022 FR-002）：解析目标工作区身份 → 在目标 Connection 建子代理会话。
+   * 跨工作区派发（specs/023 FR-002）：解析目标工作区身份 → 在目标 Connection 建子代理会话。
    *
    * 失败一律返回 `{ error }`（Core 侧转成工具错误）：目标未打开 / 身份歧义 / 目标
    * Core 未就绪都不创建任何会话。target 等于来源工作区时返回 `{ local: true }`，

@@ -3817,7 +3817,7 @@ function isWorkspaceUsableForConversation(workspace: string | undefined): boolea
 }
 
 /**
- * 占位父对话 id 前缀（specs/022 FR-004）：`ph_<发起方会话 id>`。
+ * 占位父对话 id 前缀（specs/023 FR-004）：`ph_<发起方会话 id>`。
  * 占位对话不是真实会话——没有 meta / jsonl，不建立运行时，打开只显示跳转页。
  */
 const PLACEHOLDER_SESSION_PREFIX = 'ph_';
@@ -3826,7 +3826,7 @@ const PLACEHOLDER_SESSION_PREFIX = 'ph_';
 let crossWorkspacePlaceholderJump: { workspaceId: string; sessionId: string } | null = null;
 
 /**
- * 打开跨工作区占位页（specs/022 FR-004/FR-005）。
+ * 打开跨工作区占位页（specs/023 FR-004/FR-005）。
  *
  * 跳转目标从占位 id 反查：`ph_<originSessionId>` → 宿主会话工作目录索引 → 打开集合。
  * 发起方工作区已关闭时链接不可用（页面展示原因，不给按钮），不自动打开工作区。
@@ -4463,7 +4463,7 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: W
       crossWorkspacePlaceholderJump = null;
       let workspace: string | undefined;
       if (message.targetWorkspaceId) {
-        // 跨工作区跳转（specs/022 FR-005）：按代理身份解析打开集合，未打开 / 歧义都忽略
+        // 跨工作区跳转（specs/023 FR-005）：按代理身份解析打开集合，未打开 / 歧义都忽略
         const machineName = resolveMachineName(process.platform, process.env, hostname());
         const resolved = resolveWorkspaceByIdentity(
           openWorkspaces,
@@ -4739,7 +4739,7 @@ function setupIpc(): void {
     if (!chatViews?.isChatPlaceholderWebContents(event.sender)) return;
     if (workspacePath) void reconnectWorkspace(refKey(workspacePath));
   });
-  // 跨工作区占位页的「跳转到发起方对话」（specs/022 FR-005）
+  // 跨工作区占位页的「跳转到发起方对话」（specs/023 FR-005）
   ipcMain.on('chat:jump-to-origin', (event) => {
     if (!chatViews?.isChatPlaceholderWebContents(event.sender)) return;
     const jump = crossWorkspacePlaceholderJump;
@@ -4817,7 +4817,7 @@ function setupIpc(): void {
     placeholder?: { workspaceId: string; sessionId: string; title: string },
   ) => {
     if (typeof sessionId === 'string' && sessionId) {
-      // 跨工作区占位父对话（specs/022 FR-004）：不加载会话，只显示跳转页
+      // 跨工作区占位父对话（specs/023 FR-004）：不加载会话，只显示跳转页
       if (sessionId.startsWith(PLACEHOLDER_SESSION_PREFIX)) {
         showCrossWorkspacePlaceholder(
           sessionId,
@@ -5258,7 +5258,7 @@ function initCore(): void {
     },
     logToConsole: true,
     extensionPath: APP_ROOT,
-    // Electron 多工作区宿主：支持跨工作区代理（specs/022 FR-009）
+    // Electron 多工作区宿主：支持跨工作区代理（specs/023 FR-009）
     crossWorkspaceAgent: true,
   });
 

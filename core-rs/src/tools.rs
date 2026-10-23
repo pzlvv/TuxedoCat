@@ -216,7 +216,7 @@ pub struct SubAgentRequest {
     /// `input.description || 'Agent: <role>'`（子会话标题）
     pub description: String,
     pub role: String,
-    /// 目标工作区代理身份（specs/022）：`None` = 当前策略（本机子代理）；
+    /// 目标工作区代理身份（specs/023）：`None` = 当前策略（本机子代理）；
     /// `Some` = 在目标工作区建子代理会话。
     pub target: Option<String>,
 }
@@ -227,7 +227,7 @@ pub struct SubAgentRequest {
 pub struct SubAgentHooks {
     /// 建本机子会话 + 起后台查询，返回子会话 id
     pub spawn: std::sync::Arc<dyn Fn(SubAgentRequest) -> Result<String, String> + Send + Sync>,
-    /// 建跨工作区子会话（specs/022）：请求宿主在目标工作区创建并返回子会话 id
+    /// 建跨工作区子会话（specs/023）：请求宿主在目标工作区创建并返回子会话 id
     pub spawn_remote:
         std::sync::Arc<dyn Fn(SubAgentRequest) -> Result<String, String> + Send + Sync>,
     /// 把回复投递给目标会话：`(target, content, from)`
@@ -510,7 +510,7 @@ pub fn definitions() -> Vec<Value> {
                     // 只产出 string（取值由运行期校验，见 permission::base_check）；
                     // 合法名单见 `SUB_AGENT_ROLES` 与提示词角色表
                     "agentRole": { "type": "string", "description": "The role of the agent to spawn: Master or Explorer" },
-                    // specs/022：缺省 = 当前策略（本机子代理）；传入 = 在目标工作区建子代理会话。
+                    // specs/023：缺省 = 当前策略（本机子代理）；传入 = 在目标工作区建子代理会话。
                     // 取值是工作区代理身份 `<hostname>:<path>`，由宿主解析。
                     "target": { "type": "string", "description": "Target workspace agent ID (`hostname:path`). Omit to spawn the sub-agent in the current workspace." }
                 },
@@ -1634,7 +1634,7 @@ fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let Some(hooks) = ctx.subagent.as_ref() else {
         return ToolOutcome::Error("Agent: no sub-agent runtime available".to_string());
     };
-    // `target`（specs/022）：缺省沿用当前策略；空串是入参错误，不静默当缺省。
+    // `target`（specs/023）：缺省沿用当前策略；空串是入参错误，不静默当缺省。
     let target = match input.get("target") {
         None | Some(Value::Null) => None,
         Some(Value::String(value)) if value.is_empty() => {

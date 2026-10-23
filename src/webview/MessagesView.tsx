@@ -272,7 +272,7 @@ const UserMessage = memo(function UserMessage({
   const isFileMessage = !!metaFilePath;
   // agent 消息细分：通过 meta.type 区分
   const metaType = meta?.type as string | undefined;
-  /** 跨工作区子代理的来源工作区身份（specs/022）：From 头点击跳到目标工作区 */
+  /** 跨工作区子代理的来源工作区身份（specs/023）：From 头点击跳到目标工作区 */
   const metaWorkspaceId = typeof meta?.workspaceId === 'string' ? meta.workspaceId : null;
   const isToMessage = isAgentMessage && metaType === 'to';
   const isFromMessage = isAgentMessage && metaType === 'from';

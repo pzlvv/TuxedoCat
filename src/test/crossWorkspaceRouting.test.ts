@@ -1,5 +1,5 @@
 /**
- * 跨工作区派发目标解析用例（specs/022 FR-002）：
+ * 跨工作区派发目标解析用例（specs/023 FR-002）：
  * 等于来源工作区 → 本机；未命中 / 歧义 → 错误；唯一命中 → 目标工作区。
  *
  * 运行方式：npm run test:all -- cross-workspace-routing

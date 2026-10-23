@@ -7,7 +7,7 @@ import { uiFontSizePx } from '../fontSize';
 export const Agent: React.FC<ToolCallProps> = ({ args, colors, output, onNavigate }) => {
   const prompt = args?.prompt || '';
   const role = args?.agentRole;
-  // 跨工作区子代理（specs/022）：工具入参里的 target 就是跳转的目标工作区身份
+  // 跨工作区子代理（specs/023）：工具入参里的 target 就是跳转的目标工作区身份
   const target = typeof args?.target === 'string' && args.target ? args.target : null;
 
   // 从 output 中提取 subAgentId

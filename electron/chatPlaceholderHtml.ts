@@ -19,7 +19,7 @@ export type ChatPlaceholderKind =
   | 'connecting'
   | 'dirMissing'
   | 'remoteUnreachable'
-  /** 跨工作区子代理的占位父对话（specs/022 FR-004）：不可作为普通对话打开 */
+  /** 跨工作区子代理的占位父对话（specs/023 FR-004）：不可作为普通对话打开 */
   | 'crossWorkspaceAgent';
 
 /** 不可用原因（判别联合）：指纹变更有专属引导文案，其余原因展示原始错误详情 */
@@ -34,7 +34,7 @@ export interface ChatPlaceholderPayload {
   /** 不可用原因；建链中 / 目录缺失 / 原因未知时为 null */
   reason: ChatPlaceholderReason | null;
   /**
-   * 跨工作区占位页的跳转目标（specs/022 FR-005）；其它 kind 为 null。
+   * 跨工作区占位页的跳转目标（specs/023 FR-005）；其它 kind 为 null。
    * `null` 表示发起方工作区已关闭、链接不可用（页面展示原因，不给按钮）。
    */
   jump: { workspaceId: string; sessionId: string; title: string } | null;

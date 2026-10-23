@@ -3362,7 +3362,7 @@ fn agent_role_input_validation_reports_multi_value_enum() {
     assert_eq!(parsed["agentRole"], "Explorer");
 }
 
-// ==================== 跨工作区 target（specs/022 FR-002） ====================
+// ==================== 跨工作区 target（specs/023 FR-002） ====================
 
 /// 单测进程的宿主环境快照是全局状态：跨工作区能力位显式设置并持 `serial` 锁。
 fn set_cross_workspace_capability(enabled: bool) {

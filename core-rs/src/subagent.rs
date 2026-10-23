@@ -210,7 +210,7 @@ pub fn release_slot(creator_session_id: &str) {
 
 /// 幂等释放：没有槽位状态 / 没有在握槽位时返回 false，不 panic。
 ///
-/// 跨工作区子代理的结束事件可能迟到或重复（specs/022 FR-010）：发起方 Core 用它
+/// 跨工作区子代理的结束事件可能迟到或重复（specs/023 FR-010）：发起方 Core 用它
 /// 收敛槽位，避免把「事件重复」放大成进程级 panic。
 pub fn release_slot_if_held(creator_session_id: &str) -> bool {
     let mut slots = slots();
@@ -277,7 +277,7 @@ pub fn generate_sub_session_id() -> String {
     format!("sub_{}_{}", crate::util::now_millis(), crate::util::random_suffix())
 }
 
-// ==================== 跨工作区子代理（specs/022） ====================
+// ==================== 跨工作区子代理（specs/023） ====================
 
 /// 跨工作区子代理的远程登记：发起方 Core 只持有「子会话 id → 创建者会话」，
 /// 子代理的运行时在目标工作区的 Core 里。
@@ -286,11 +286,11 @@ pub fn generate_sub_session_id() -> String {
 /// 远程子代理没有本地会话状态，必须由本表单独判定「仍在运行」。
 struct RemoteRecord {
     id: String,
-    /// 发起方会话 id（specs/022）：保留完整登记以便排查与后续按创建者聚合；
+    /// 发起方会话 id（specs/023）：保留完整登记以便排查与后续按创建者聚合；
     /// 当前的路由由宿主按 link 表完成。
     #[allow(dead_code)]
     creator_session_id: String,
-    /// 目标工作区代理身份（specs/022）：Reply 的 From 头带上它，UI 才能跨工作区跳转。
+    /// 目标工作区代理身份（specs/023）：Reply 的 From 头带上它，UI 才能跨工作区跳转。
     target_workspace_id: String,
 }
 
@@ -327,7 +327,7 @@ pub fn is_remote(id: &str) -> bool {
     REMOTE_AGENTS.lock().unwrap().iter().any(|record| record.id == id)
 }
 
-/// 本进程创建的跨工作区子代理 → 发起方会话 id（specs/022）。
+/// 本进程创建的跨工作区子代理 → 发起方会话 id（specs/023）。
 ///
 /// 与 `REMOTE_AGENTS` 相反：这里登记的是「运行时在本进程、父会话在别的 Core」的子代理。
 /// `run_sub_agent` 收尾时据此判断「本进程从未取过并发槽位」，不能按会话状态判断——

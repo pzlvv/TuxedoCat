@@ -6889,7 +6889,7 @@ fn runtime_snapshot_republishes_when_task_mix_changes() {
     crate::bash_task::reset_for_test();
 }
 
-// ==================== 跨工作区代理（specs/022） ====================
+// ==================== 跨工作区代理（specs/023） ====================
 
 /// `@` 命令身份解析：引号 / 非引号 / 首字符 / 空身份。
 #[test]

@@ -137,7 +137,7 @@ interface InputAreaProps {
   isDark: boolean;
   queuedMessage: QueuedMessagePayload | null;
   skills: SkillItem[];
-  /** `@` 工作区候选（宿主下发，已排除本工作区；specs/022 FR-007） */
+  /** `@` 工作区候选（宿主下发，已排除本工作区；specs/023 FR-007） */
   workspaces: WorkspaceMentionItem[];
   commandHistory: string[];
   /** 账户余额 */
@@ -1614,7 +1614,7 @@ const SlashPopup = memo(({
 });
 
 
-// ─── Workspace Mention Popup（specs/022 FR-007）─────────────────────────────
+// ─── Workspace Mention Popup（specs/023 FR-007）─────────────────────────────
 
 const WorkspacePopup = memo(({
   filtered,
@@ -1783,7 +1783,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   // 标记当前是否已处于 "/" 输入状态，避免每次按键都重复刷新 Skill
   const slashActiveRef = useRef(false);
 
-  // @ 工作区补全状态（specs/022 FR-007）
+  // @ 工作区补全状态（specs/023 FR-007）
   const [showMention, setShowMention] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -1882,7 +1882,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
       setSavedInput('');
     }
 
-    // Detect workspace mention mode（specs/022 FR-007）：与 "/" 同口径只看首字符
+    // Detect workspace mention mode（specs/023 FR-007）：与 "/" 同口径只看首字符
     if (value.startsWith('@')) {
       if (!mentionActiveRef.current) {
         mentionActiveRef.current = true;
@@ -1933,7 +1933,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   }, []);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    // @ 工作区补全与 "/" 同口径的键盘操作（specs/022 FR-007）
+    // @ 工作区补全与 "/" 同口径的键盘操作（specs/023 FR-007）
     if (showMention && filteredWorkspaces.length > 0) {
       if (e.key === 'ArrowDown' || (e.ctrlKey && (e.key === 'n' || e.key === 'N'))) {
         e.preventDefault();

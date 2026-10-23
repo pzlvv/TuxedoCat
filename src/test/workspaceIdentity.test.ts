@@ -1,5 +1,5 @@
 /**
- * 工作区代理身份用例（specs/022 FR-001）：
+ * 工作区代理身份用例（specs/023 FR-001）：
  * 机器名取法（Windows / Linux / 回退）、本地与远程身份、候选展示名、按身份解析的歧义。
  *
  * 运行方式：npm run test:all -- workspace-identity
@@ -71,7 +71,7 @@ async function run(): Promise<void> {
   const ambiguous = resolveWorkspaceByIdentity([remote, duplicate], '192.168.1.10:/srv/app', 'DEV-PC');
   check('同一身份对应多项返回 ambiguous（不取第一项）', ambiguous.kind === 'ambiguous');
 
-  // ===== @ 候选（specs/022 FR-007：排除本工作区） =====
+  // ===== @ 候选（specs/023 FR-007：排除本工作区） =====
   const candidates = workspaceMentionCandidates([local, remote], local, 'DEV-PC');
   check(
     '@ 候选排除来源视图自己的工作区',

@@ -217,7 +217,7 @@ export class ElectronUIHost implements UIHost {
   }
 
   /**
-   * 视图所属工作区引用（specs/022 FR-007）：按聊天视图登记的归属解析，
+   * 视图所属工作区引用（specs/023 FR-007）：按聊天视图登记的归属解析，
    * 解析不出时退回活动工作区。
    */
   getWorkspaceRefForView(view: WebviewViewHandle | null): WorkspaceRef | undefined {

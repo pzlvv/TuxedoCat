@@ -161,7 +161,7 @@ fn agent_fields() -> Vec<Field<'static>> {
         // 合法名单单一落点在 `tools::SUB_AGENT_ROLES`（specs/020 FR-001）；
         // 多值后 zod 对齐文案走 `Invalid option: expected one of ...` 分支
         Field { name: "agentRole", required: true, kind: Kind::Enum(crate::tools::SUB_AGENT_ROLES) },
-        // specs/022：目标工作区代理身份；缺省 = 当前策略。空串在 run_agent 里拒绝。
+        // specs/023：目标工作区代理身份；缺省 = 当前策略。空串在 run_agent 里拒绝。
         Field { name: "target", required: false, kind: Kind::Str(None) },
     ]
 }

@@ -12,7 +12,7 @@ export interface ToolCallProps {
   toolCallId?: string;
   /** 是否正在流式输出（Bash 等工具运行中实时刷新输出） */
   isStreaming?: boolean;
-  /** 跳转到指定会话（用于子代理导航）；`workspaceId` 非空表示跨工作区（specs/022） */
+  /** 跳转到指定会话（用于子代理导航）；`workspaceId` 非空表示跨工作区（specs/023） */
   onNavigate?: (sessionId: string, workspaceId?: string | null) => void;
   /** 当前子代理的父会话 ID */
   currentParentSessionId?: string;

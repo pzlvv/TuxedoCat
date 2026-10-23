@@ -61,7 +61,7 @@ async function run(): Promise<void> {
   assert.ok(escaped.includes('&lt;script&gt;'), '错误详情被转义');
   check('错误详情 HTML 转义', true);
 
-  // 跨工作区占位页（specs/022 FR-004）：有来源时给跳转按钮，无来源时只给不可用提示
+  // 跨工作区占位页（specs/023 FR-004）：有来源时给跳转按钮，无来源时只给不可用提示
   const crossJump = getChatPlaceholderHtml({
     kind: 'crossWorkspaceAgent',
     path: 'DEV-PC:C:\\work\\a',
