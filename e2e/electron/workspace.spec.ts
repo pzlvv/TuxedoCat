@@ -11,7 +11,7 @@ import { CONFIG_DIR_NAME } from '../../src/config/project';
 
 /**
  * US-30 完整模式与悬浮窗切换 / US-35 多工作区标签页（打开集合恢复 / 切换 / 关闭）
- * / US-36 远程工作区启动探测失败自动标红
+ * / US-36 远程工作区启动探测失败自动标红 / US-53 标签页快捷键（相邻切换 / 环绕 / 单标签不动作）
  */
 
 let mockLlm: MockLlm;
@@ -368,4 +368,106 @@ test('US-35 标签页文本降部完整可见（line-height 不裁 g/p/y）', as
   });
   expect(probe.bottom).toBeLessThanOrEqual(0.5);
   expect(probe.top).toBeLessThanOrEqual(0.5);
+});
+
+/** 等待助手：注入的组合键走 invokeMenuAction 的 250ms 窗口去重，连按之间必须隔开 */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 向指定 URL 特征的 webContents 注入组合键（CDP 键盘不经过主进程 before-input-event，
+ *  沿偏好设置录制用例的既有口径用 sendInputEvent 走同一输入管线；specs/021 的标签快捷键经菜单 accelerator
+ *  兜底路径触发，挂接在标题栏 / 侧栏 / 聊天视图三处） */
+function pressKeysOn(appHandle: AppHandle, urlPart: string, keyCode: string, modifiers: string[]): void {
+  void appHandle.evaluateInMain(
+    `(function(){try{const e=process.mainModule.require('electron');`
+    + `e.webContents.getAllWebContents().forEach(wc=>{`
+    + `if((wc.getURL()||'').includes('${urlPart}'))`
+    + `wc.sendInputEvent({type:'keyDown',modifiers:${JSON.stringify(modifiers)},keyCode:'${keyCode}'});});`
+    + `return true;}catch(err){return 'ERR '+err.message;}})()`,
+  );
+}
+
+test('US-53 标签页快捷键：下一/上一按标签页顺序切换并环绕，重启用自定义组合', async () => {
+  const repoRoot = process.cwd().replace(/[\/]e2e$/, '');
+  const aDir = await makeWorkspace({}, 'e2e-ws-key-a');
+  const bDir = await makeWorkspace({}, 'e2e-ws-key-b');
+  const cDir = await makeWorkspace({}, 'e2e-ws-key-c');
+  app = await launchApp({
+    repoRoot, mockLlm, workspaceDir: aDir,
+    openWorkspaces: [aDir, bDir, cDir],
+    activeWorkspace: aDir,
+  });
+
+  const tabs = (await app.titlebarPage()).locator('#workspaceTabs [role="tab"]');
+  await expect(tabs).toHaveCount(3, { timeout: 20_000 });
+  await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
+
+  // 默认组合启动（状态文件无标签快捷键字段，AC-6）：Ctrl+Tab 经标题栏视图兜底
+  // 连按三次 A→B→C→A（末项环绕回首项，AC-1）
+  pressKeysOn(app, 'dist/titlebar', 'Tab', ['ctrl']);
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 });
+  await sleep(300);
+  pressKeysOn(app, 'dist/titlebar', 'Tab', ['ctrl']);
+  await expect(tabs.nth(2)).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 });
+  await sleep(300);
+  pressKeysOn(app, 'dist/titlebar', 'Tab', ['ctrl']);
+  await expect(tabs.first()).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 });
+
+  // Ctrl+Shift+Tab 经侧栏视图兜底：首项向前环绕到末项（AC-2，AC-5 焦点换视图同效）
+  await sleep(300);
+  pressKeysOn(app, 'dist/sidebar', 'Tab', ['ctrl', 'shift']);
+  await expect(tabs.nth(2)).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 });
+
+  // 切换走既有激活链：聊天区切到目标工作区的视图（AC-4）
+  const betaChat = await app.chatPage({ workspaceIncludes: 'e2e-ws-key-b' });
+  await sleep(300);
+  pressKeysOn(app, 'dist/titlebar', 'Tab', ['ctrl', 'shift']);
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 });
+  await expect(betaChat.locator('textarea.input-textarea')).toBeEnabled({ timeout: 30_000 });
+
+  await app.close();
+  app = null;
+  await fs.promises.rm(aDir, { recursive: true, force: true }).catch(() => undefined);
+  await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);
+  await fs.promises.rm(cDir, { recursive: true, force: true }).catch(() => undefined);
+  // 重新启动（AC-8 的读回半边）：状态文件里的自定义组合生效、旧组合失效
+  const a2 = await makeWorkspace({}, 'e2e-ws-key-a');
+  const b2 = await makeWorkspace({}, 'e2e-ws-key-b');
+  const c2 = await makeWorkspace({}, 'e2e-ws-key-c');
+  app = await launchApp({
+    repoRoot, mockLlm, workspaceDir: a2,
+    openWorkspaces: [a2, b2, c2],
+    activeWorkspace: a2,
+    stateOverrides: { nextTabShortcut: 'Ctrl+J' },
+  });
+  const tabs2 = (await app.titlebarPage()).locator('#workspaceTabs [role="tab"]');
+  await expect(tabs2).toHaveCount(3, { timeout: 20_000 });
+
+  pressKeysOn(app, 'dist/titlebar', 'J', ['ctrl']);
+  await expect(tabs2.nth(1)).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 });
+  // 旧默认组合不再触发：连按 Ctrl+Tab 活动项仍在 B
+  await sleep(300);
+  pressKeysOn(app, 'dist/titlebar', 'Tab', ['ctrl']);
+  await (await app.titlebarPage()).waitForTimeout(600);
+  await expect(tabs2.nth(1)).toHaveAttribute('aria-selected', 'true');
+
+  await fs.promises.rm(a2, { recursive: true, force: true }).catch(() => undefined);
+  await fs.promises.rm(b2, { recursive: true, force: true }).catch(() => undefined);
+  await fs.promises.rm(c2, { recursive: true, force: true }).catch(() => undefined);
+});
+
+test('US-53 标签页快捷键：单标签时无相邻项，组合键不动作', async () => {
+  app = await launchApp({ repoRoot: process.cwd().replace(/[\/]e2e$/, ''), mockLlm, workspaceDir });
+  const tabs = (await app.titlebarPage()).locator('#workspaceTabs [role="tab"]');
+  await expect(tabs).toHaveCount(1, { timeout: 20_000 });
+  await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
+
+  pressKeysOn(app, 'dist/titlebar', 'Tab', ['ctrl']);
+  await sleep(300);
+  pressKeysOn(app, 'dist/titlebar', 'Tab', ['ctrl', 'shift']);
+  await sleep(600);
+  await expect(tabs).toHaveCount(1);
+  await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
+  await expect((await app.chatPage()).locator('textarea.input-textarea')).toBeEnabled({ timeout: 30_000 });
 });

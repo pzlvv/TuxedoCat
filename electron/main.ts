@@ -114,10 +114,17 @@ import { PRODUCT_NAME, EXTENSION_NAME, SETTINGS_FILE_NAME, ENV_PREFIX } from '..
 import { resolveConfigDir } from '../src/config/configDir.js';
 import {
   DEFAULT_WAKE_SHORTCUT,
+  DEFAULT_NEXT_TAB_SHORTCUT,
+  DEFAULT_PREV_TAB_SHORTCUT,
   acceleratorFromKeyboardEvent,
+  findShortcutConflict,
   formatAcceleratorForDisplay,
   normalizeAccelerator,
+  type RegisteredShortcuts,
+  type ShortcutConflictKind,
+  type ShortcutRow,
 } from './shortcut.js';
+import { selectAdjacentWorkspace, type TabSwitchDirection } from './tabSwitching.js';
 import { tt, onHostLocaleChanged, getHostLocale } from '../src/host/i18n.js';
 import { requireEventBus } from '../src/shared/AssistantEventBus.js';
 import { getPreferenceDialogHtml, type PreferenceDialogState } from './preferenceDialogHtml.js';
@@ -1700,8 +1707,10 @@ function resumeWakeShortcutInternal(): void {
  *   切换后窗口自己跟着变，不需要关掉重开
  * - 提示音：开关与音量落盘；打开提示音 / 拖完音量滑条时预览播放一次
  *   （与任务结束提醒共用同一个播放载体，见 attentionSound）
- * - 唤醒快捷键：打开期间注销全局快捷键（suspendWakeShortcut），点快捷键字段后录制，
- *   按键捕获在主进程的 before-input-event 里做（复用 electron/shortcut.ts）
+ * - 快捷键：唤醒 / 下一标签 / 上一标签三行逐行录制（specs/021），点行内字段后录制，
+ *   按键捕获在主进程的 before-input-event 里做（复用 electron/shortcut.ts）；标签行
+ *   录制先过冲突判定，保存后 setupMenu() 即时换绑。打开期间注销全局快捷键
+ *   （suspendWakeShortcut）
  *
  * 与自绘消息框（`electron/styledMessageBox.ts`）同构：主进程把 HTML 作为 data URL
  * 载入 BrowserWindow，页面通过 preload 的 preferenceAPI 通信。
@@ -1712,8 +1721,8 @@ function openPreferenceDialog(): void {
     return;
   }
 
-  /** 是否正在录制新快捷键：只有录制中才拦截按键，平时不影响窗口自身的键盘交互 */
-  let capturing = false;
+  /** 正在录制改键的行（specs/021：唤醒 / 下一标签 / 上一标签逐行录制；null = 未在录制） */
+  let capturing: ShortcutRow | null = null;
   let shortcutError: string | undefined;
 
   // 主窗口可见时才挂为子窗口：窗口最小化到托盘时挂隐藏的父窗口会让对话框也显示不出来
@@ -1745,8 +1754,10 @@ function openPreferenceDialog(): void {
     const sound = readSoundSettingsSync();
     return {
       theme: currentThemeMode,
-      shortcutDisplay: formatAcceleratorForDisplay(readWakeShortcutSync()),
-      shortcutCapturing: capturing,
+      wakeShortcutDisplay: formatAcceleratorForDisplay(readWakeShortcutSync()),
+      nextTabShortcutDisplay: formatAcceleratorForDisplay(readTabShortcutSync('nextTab')),
+      prevTabShortcutDisplay: formatAcceleratorForDisplay(readTabShortcutSync('prevTab')),
+      capturing,
       ...(shortcutError ? { shortcutError } : {}),
       soundEnabled: sound.enabled,
       soundVolume: sound.volume,
@@ -1787,8 +1798,10 @@ function openPreferenceDialog(): void {
     attentionSound.preview();
     pushState();
   };
-  const onCaptureShortcut = (): void => {
-    capturing = true;
+  const onCaptureShortcut = (_event: Electron.IpcMainEvent, row: unknown): void => {
+    // 行标识由页面随点击带上；不在三行之列的请求直接忽略（不过度 fallback）
+    if (row !== 'wake' && row !== 'nextTab' && row !== 'prevTab') return;
+    capturing = row;
     shortcutError = undefined;
     pushState();
   };
@@ -1809,7 +1822,7 @@ function openPreferenceDialog(): void {
     if (input.key === 'Escape') {
       event.preventDefault();
       if (capturing) {
-        capturing = false;
+        capturing = null;
         shortcutError = undefined;
         pushState();
       } else {
@@ -1828,6 +1841,35 @@ function openPreferenceDialog(): void {
       shiftKey: input.shift,
     });
     if (!accelerator) return; // 只按了修饰键，继续等待
+    // 标签快捷键先过冲突判定（specs/021 FR-003）：与任一既有绑定相同即拒绝，
+    // 行内报错、原值保持、录制态保留（用户可直接再按别的组合）
+    if (capturing !== 'wake') {
+      const row = capturing;
+      const registered: RegisteredShortcuts = {
+        wake: readWakeShortcutSync(),
+        nextTab: readTabShortcutSync('nextTab'),
+        prevTab: readTabShortcutSync('prevTab'),
+        menuAccelerators: collectFixedMenuAccelerators(),
+      };
+      const conflict = findShortcutConflict(row, accelerator, registered);
+      if (conflict) {
+        shortcutError = conflictMessage(conflict);
+        pushState();
+        return;
+      }
+      try {
+        writeTabShortcut(row, accelerator);
+      } catch (err) {
+        console.error('[main] save tab shortcut failed:', err);
+        shortcutError = tt('保存失败', 'Failed to save');
+        pushState();
+        return;
+      }
+      capturing = null;
+      shortcutError = undefined;
+      pushState();
+      return;
+    }
     try {
       writeWakeShortcut(accelerator);
     } catch (err) {
@@ -1836,7 +1878,7 @@ function openPreferenceDialog(): void {
       pushState();
       return;
     }
-    capturing = false;
+    capturing = null;
     shortcutError = undefined;
     pushState();
   });
@@ -2435,6 +2477,21 @@ function buildMenuSections(): MenuSectionDef[] {
     label: tt('打开最近的工作区', 'Open Recent Workspace'),
     submenu: buildRecentWorkspacesMenu(),
   };
+  // 标签页切换快捷键（specs/021）：accelerator 取宿主本地偏好的当前值（默认
+  // Ctrl+Tab / Ctrl+Shift+Tab），改键保存后 writeTabShortcut 重建动作表即时换绑；
+  // 菜单条目与组合键同源（原生菜单、自绘菜单、before-input-event 兜底三处共用）
+  const nextTabItem: MenuItemDef = {
+    id: 'main.nextWorkspaceTab',
+    label: tt('下一标签', 'Next Workspace Tab'),
+    accelerator: readTabShortcutSync('nextTab'),
+    run: () => { switchToAdjacentWorkspace('next'); },
+  };
+  const prevTabItem: MenuItemDef = {
+    id: 'main.prevWorkspaceTab',
+    label: tt('上一标签', 'Previous Workspace Tab'),
+    accelerator: readTabShortcutSync('prevTab'),
+    run: () => { switchToAdjacentWorkspace('prev'); },
+  };
   // 偏好设置：Electron 专属能力（主题 / 唤醒快捷键 / 提示音都是宿主本地偏好，
   // webview 里改不了），统一收进一个自绘设置窗口（见 openPreferenceDialog）
   const preferenceItem: MenuItemDef = {
@@ -2463,6 +2520,8 @@ function buildMenuSections(): MenuSectionDef[] {
         addWorkspaceItem,
         addRemoteWorkspaceItem,
         recentWorkspaceItem,
+        nextTabItem,
+        prevTabItem,
         { type: 'separator' },
         preferenceItem,
         { type: 'separator' },
@@ -2482,6 +2541,8 @@ function buildMenuSections(): MenuSectionDef[] {
       addWorkspaceItem,
       addRemoteWorkspaceItem,
       recentWorkspaceItem,
+      nextTabItem,
+      prevTabItem,
       { type: 'separator' },
       preferenceItem,
       { type: 'separator' },
@@ -2588,6 +2649,38 @@ function collectMenuAccelerators(defs: MenuItemDef[], index: Map<string, string>
     if (!def.id || !def.run || !def.accelerator) continue;
     const normalized = normalizeAccelerator(def.accelerator);
     if (normalized) index.set(normalized, def.id);
+  }
+}
+
+/**
+ * 菜单既有 accelerator（标签快捷键录制冲突判定的输入，specs/021）。
+ * 标签两行的现行值不在此列——它们的冲突由 RegisteredShortcuts 的 nextTab / prevTab
+ * 字段表达，避免同一绑定被数两次。
+ */
+function collectFixedMenuAccelerators(): string[] {
+  const index = new Map<string, string>();
+  for (const section of buildMenuSections()) {
+    collectMenuAccelerators(section.items, index);
+  }
+  const accelerators: string[] = [];
+  for (const [accelerator, id] of index) {
+    if (id === 'main.nextWorkspaceTab' || id === 'main.prevWorkspaceTab') continue;
+    accelerators.push(accelerator);
+  }
+  return accelerators;
+}
+
+/** 录制冲突的行内提示文案（specs/021；文案映射留在主进程，冲突判定纯函数不持 i18n） */
+function conflictMessage(kind: ShortcutConflictKind): string {
+  switch (kind) {
+    case 'wake':
+      return tt('与唤醒快捷键相同', 'Same as the wake shortcut');
+    case 'nextTab':
+      return tt('与「下一标签」快捷键相同', 'Same as Next Workspace Tab');
+    case 'prevTab':
+      return tt('与「上一标签」快捷键相同', 'Same as Previous Workspace Tab');
+    case 'menu':
+      return tt('与菜单既有快捷键相同', 'Same as an existing menu shortcut');
   }
 }
 
@@ -3384,6 +3477,22 @@ function reorderWorkspaces(ids: readonly string[]): void {
 }
 
 /**
+ * 切到相邻标签页（快捷键「下一标签 / 上一标签」，specs/021）：按当前打开集合顺序
+ * 取相邻项后走同一份激活链（activateWorkspace），侧栏 / 聊天区 / 标题栏联动与持久化
+ * 全部沿用既有语义。集合不足 2 项 / 无活动项时没有相邻项可去，静默不动（设计允许的
+ * 瞬时状态，不报错）；目标项在执行前被并发关闭时 activateWorkspace 按 id 重新定位、
+ * 定位不到同样落空。
+ */
+function switchToAdjacentWorkspace(direction: TabSwitchDirection): void {
+  const target = selectAdjacentWorkspace(
+    openWorkspaces.map((ref) => refKey(ref)),
+    workspacePath ? refKey(workspacePath) : null,
+    direction,
+  );
+  if (target !== null) activateWorkspace(target);
+}
+
+/**
  * 切换活动工作区：更新宿主 / 聊天视图 / 侧栏 / 标题栏，并记住打开集合与活动项。
  *
  * 入参可以是引用本身，也可以是标签页 / 侧栏传回的 id。
@@ -3803,6 +3912,25 @@ function readWakeShortcutSync(): string {
 /** 持久化唤醒快捷键（调用方已规范化） */
 function writeWakeShortcut(shortcut: string): void {
   writeWorkspaceState({ ...readWorkspaceState(), shortcut });
+}
+
+/** 标签快捷键的行标识 → 状态文件字段与默认值（specs/021） */
+const TAB_SHORTCUT_ROWS = {
+  nextTab: { field: 'nextTabShortcut', fallback: DEFAULT_NEXT_TAB_SHORTCUT },
+  prevTab: { field: 'prevTabShortcut', fallback: DEFAULT_PREV_TAB_SHORTCUT },
+} as const;
+
+/** 读取标签快捷键（缺失 / 非法时回退默认值；与唤醒快捷键同口径，不写回） */
+function readTabShortcutSync(row: keyof typeof TAB_SHORTCUT_ROWS): string {
+  const { field, fallback } = TAB_SHORTCUT_ROWS[row];
+  return normalizeAccelerator(readWorkspaceState()[field]) || fallback;
+}
+
+/** 持久化标签快捷键（调用方已规范化），重建菜单动作表让组合即时换绑 */
+function writeTabShortcut(row: keyof typeof TAB_SHORTCUT_ROWS, accelerator: string): void {
+  const { field } = TAB_SHORTCUT_ROWS[row];
+  writeWorkspaceState({ ...readWorkspaceState(), [field]: accelerator });
+  setupMenu();
 }
 
 /**

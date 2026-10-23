@@ -49,10 +49,10 @@ last_reviewed: 2026-10-20
 | `e2e/electron/assistant.spec.ts` | US-1、US-2、US-14、US-15、US-18、US-28 | Electron 整应用 |
 | `e2e/electron/smartNaming.spec.ts` | US-21 | Electron 整应用 |
 | `e2e/electron/sessions.spec.ts` | US-19、US-20、US-21、US-22 | Electron 整应用 |
-| `e2e/electron/workspace.spec.ts` | US-30、US-35、US-36 | Electron 整应用 |
+| `e2e/electron/workspace.spec.ts` | US-30、US-35、US-36、US-53（标签页快捷键切换与环绕） | Electron 整应用 |
 | `e2e/electron/remoteWorkspace.spec.ts` | US-36（SSH 连接表单与历史） | Electron 整应用 |
 | `e2e/electron/fileExplorer.spec.ts` | US-42、US-43、US-44 | Electron 整应用 |
-| `e2e/electron/desktopShell.spec.ts` | US-27、US-31、US-32、US-33、US-34、US-37、US-39 | Electron 整应用 |
+| `e2e/electron/desktopShell.spec.ts` | US-27、US-31、US-32、US-33、US-34、US-37、US-39、US-53（录制改键与菜单展示） | Electron 整应用 |
 | `e2e/electron/preview.spec.ts` | US-14、US-38（文件 Monaco 预览） | Electron 整应用 |
 | `e2e/electron/backgroundBash.spec.ts` | US-45 | Electron 整应用 |
 | `e2e/electron/subagentConcurrency.spec.ts` | US-49 | Electron 整应用 |

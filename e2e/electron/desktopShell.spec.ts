@@ -10,7 +10,8 @@ import { CONFIG_DIR_NAME } from '../../src/config/project';
 
 /**
  * US-27 内置命令分发 / US-31 窗口控制 / US-32 主题切换 / US-33 系统托盘与任务提醒 /
- * US-34 全局唤醒快捷键 / US-37 最近工作区 / US-39 Spin 设计器
+ * US-34 全局唤醒快捷键 / US-37 最近工作区 / US-39 Spin 设计器 /
+ * US-53 标签页快捷键（录制改键 / 冲突拒绝 / 菜单同源展示）
  *
  * Electron 整应用链路（standalone core + mock LLM）：标题栏 / 自绘菜单 / 全局快捷键
  * 都只能在整应用层验证。标题栏下拉菜单是主进程生成的 data: URL WebContentsView，
@@ -164,19 +165,19 @@ test('US-34 全局唤醒快捷键：按配置注册、改键后立即换绑', as
   );
   const dialogPage = await findPreferencePage();
 
-  // 打开时显示当前配置的组合
-  await expect(dialogPage.locator('#shortcut')).toHaveText('Ctrl+Alt+8', { timeout: 5_000 });
+  // 打开时显示当前配置的组合（唤醒行，specs/021 起快捷键区为三行、唤醒是第一行）
+  await expect(dialogPage.locator('#shortcut-wake')).toHaveText('Ctrl+Alt+8', { timeout: 5_000 });
 
   // 点快捷键字段开始录制（等页面切到录制文案，确认主进程已进入录制态），再注入新组合：
   // CDP 键盘事件不经过主进程 before-input-event（只接 OS 级输入），
   // 改用 Electron 的 sendInputEvent 从主进程注入同一输入管线
-  await dialogPage.locator('#shortcut').click();
-  await expect(dialogPage.locator('#shortcut')).toHaveText('请按下新的组合键…', { timeout: 5_000 });
+  await dialogPage.locator('#shortcut-wake').click();
+  await expect(dialogPage.locator('#shortcut-wake')).toHaveText('请按下新的组合键…', { timeout: 5_000 });
   await mainExpr(
     "e.BrowserWindow.getAllWindows().forEach(w=>{if(w.getTitle()==='偏好设置')"
     + "w.webContents.sendInputEvent({type:'keyDown',modifiers:['ctrl','alt'],keyCode:'Y'})})",
   );
-  await expect(dialogPage.locator('#shortcut')).toHaveText('Ctrl+Alt+Y', { timeout: 5_000 });
+  await expect(dialogPage.locator('#shortcut-wake')).toHaveText('Ctrl+Alt+Y', { timeout: 5_000 });
 
   // 关闭窗口后按最新偏好重新注册：新组合注册、旧组合注销（US-34 验收 2）
   await dialogPage.locator('#close').click();
@@ -188,6 +189,64 @@ test('US-34 全局唤醒快捷键：按配置注册、改键后立即换绑', as
     "e.globalShortcut.isRegistered('Ctrl+Alt+8')",
     (v) => v === false,
   );
+});
+
+test('US-53 标签页快捷键：录制改键生效、冲突拒绝、菜单同源展示', async () => {
+  // 菜单「偏好设置...」打开设置窗口（specs/021：快捷键区为三行）
+  const menu = await openMenuAndGetPage();
+  await menu.locator('.item[data-id="main.preference"]').click();
+  await pollMain<boolean>(
+    "e.BrowserWindow.getAllWindows().some(w=>w.getTitle()==='偏好设置')",
+    (v) => v === true,
+  );
+  const dialogPage = await findPreferencePage();
+
+  // 默认组合：下一 Ctrl+Tab、上一 Ctrl+Shift+Tab（specs/021 AC-6）
+  await expect(dialogPage.locator('#shortcut-next')).toHaveText('Ctrl+Tab', { timeout: 5_000 });
+  await expect(dialogPage.locator('#shortcut-prev')).toHaveText('Ctrl+Shift+Tab');
+
+  // 录制下一标签 = Ctrl+J：sendInputEvent 走主进程同一输入管线（同 US-34 口径）
+  await dialogPage.locator('#shortcut-next').click();
+  await expect(dialogPage.locator('#shortcut-next')).toHaveText('请按下新的组合键…', { timeout: 5_000 });
+  await mainExpr(
+    "e.BrowserWindow.getAllWindows().forEach(w=>{if(w.getTitle()==='偏好设置')"
+    + "w.webContents.sendInputEvent({type:'keyDown',modifiers:['ctrl'],keyCode:'J'})})",
+  );
+  await expect(dialogPage.locator('#shortcut-next')).toHaveText('Ctrl+J', { timeout: 5_000 });
+
+  // 冲突拒绝（AC-10）：把上一标签录成 Ctrl+J（与下一标签相同）→ 行内报错；
+  // 拒绝后录制态保留（可直接再按别的组合），按钮不回写、原值未动
+  await dialogPage.locator('#shortcut-prev').click();
+  await expect(dialogPage.locator('#shortcut-prev')).toHaveText('请按下新的组合键…', { timeout: 5_000 });
+  await mainExpr(
+    "e.BrowserWindow.getAllWindows().forEach(w=>{if(w.getTitle()==='偏好设置')"
+    + "w.webContents.sendInputEvent({type:'keyDown',modifiers:['ctrl'],keyCode:'J'})})",
+  );
+  await expect(dialogPage.locator('#shortcut-error')).toContainText('下一标签', { timeout: 5_000 });
+  await expect(dialogPage.locator('#shortcut-prev')).toHaveClass(/capturing/);
+
+  // Esc 取消录制（AC-9）：退出录制态，原值保持
+  await mainExpr(
+    "e.BrowserWindow.getAllWindows().forEach(w=>{if(w.getTitle()==='偏好设置')"
+    + "w.webContents.sendInputEvent({type:'keyDown',modifiers:[],keyCode:'Escape'})})",
+  );
+  await expect(dialogPage.locator('#shortcut-prev')).toHaveText('Ctrl+Shift+Tab', { timeout: 5_000 });
+  await expect(dialogPage.locator('#shortcut-error')).toHaveText('', { timeout: 5_000 });
+
+  // 持久化（AC-8 的落盘半边）：状态文件里 nextTabShortcut = Ctrl+J；
+  // 重启读回自定义组合在 e2e/electron/workspace.spec.ts 的换键用例里驱动
+  await pollMain<string>(
+    "(()=>{const fs=process.mainModule.require('fs');"
+    + "const e=process.mainModule.require('electron');"
+    + "return JSON.parse(fs.readFileSync(e.app.getPath('userData')+'/workspace-state.json','utf-8')).nextTabShortcut;})()",
+    (v) => v === 'Ctrl+J',
+  );
+
+  // 关窗后菜单同源（AC-13）：下一标签条目展示新组合
+  await dialogPage.locator('#close').click();
+  const menuAfter = await openMenuAndGetPage();
+  await expect(menuAfter.locator('.item[data-id="main.nextWorkspaceTab"]')).toContainText('Ctrl+J', { timeout: 5_000 });
+  await expect(menuAfter.locator('.item[data-id="main.prevWorkspaceTab"]')).toContainText('Ctrl+Shift+Tab');
 });
 
 test('US-32 偏好设置切换主题，聊天视图底色立即跟随', async () => {

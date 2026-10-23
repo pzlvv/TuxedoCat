@@ -16,6 +16,15 @@
 /** 默认唤醒快捷键（Electron accelerator 形式） */
 export const DEFAULT_WAKE_SHORTCUT = 'Ctrl+Alt+X';
 
+/** 默认「下一标签」快捷键（工作区标签页切换，specs/021） */
+export const DEFAULT_NEXT_TAB_SHORTCUT = 'Ctrl+Tab';
+
+/** 默认「上一标签」快捷键（工作区标签页切换，specs/021） */
+export const DEFAULT_PREV_TAB_SHORTCUT = 'Ctrl+Shift+Tab';
+
+/** 可在偏好设置窗口录制改键的快捷键行（specs/021） */
+export type ShortcutRow = 'wake' | 'nextTab' | 'prevTab';
+
 /** 修饰键别名 -> Electron accelerator 名称 */
 const MODIFIER_ALIASES: Record<string, string> = {
   ctrl: 'Ctrl',
@@ -216,4 +225,42 @@ export function acceleratorFromKeyboardEvent(event: ShortcutKeyboardEvent): stri
   parts.push(key);
 
   return normalizeAccelerator(parts.join('+'));
+}
+
+/** 已注册的既有绑定（录制冲突判定的输入，specs/021） */
+export interface RegisteredShortcuts {
+  /** 当前唤醒快捷键 */
+  wake: string;
+  /** 当前「下一标签」快捷键 */
+  nextTab: string;
+  /** 当前「上一标签」快捷键 */
+  prevTab: string;
+  /** 菜单既有组合（规范化前的 accelerator，如 Ctrl+O；标签两行的现行值不在此列） */
+  menuAccelerators: readonly string[];
+}
+
+/** 冲突类别（文案由调用方按宿主语言生成，本模块不持 i18n） */
+export type ShortcutConflictKind = 'wake' | 'nextTab' | 'prevTab' | 'menu';
+
+/**
+ * 录制冲突判定：候选组合与任一既有绑定相同时返回冲突类别，无冲突返回 null。
+ * 全部按 normalizeAccelerator 规范化后比较——别名（Control / CommandOrControl 等）
+ * 指同一组合时不误报、不漏报；与被录制行自身的现行值相同不算冲突（等价重存）。
+ */
+export function findShortcutConflict(
+  target: 'nextTab' | 'prevTab',
+  candidate: unknown,
+  registered: RegisteredShortcuts,
+): ShortcutConflictKind | null {
+  const candidateKey = normalizeAccelerator(candidate);
+  if (!candidateKey) return null;
+  const others: Array<[ShortcutConflictKind, unknown]> = [
+    ['wake', registered.wake],
+    [target === 'nextTab' ? 'prevTab' : 'nextTab', target === 'nextTab' ? registered.prevTab : registered.nextTab],
+    ...registered.menuAccelerators.map((accelerator): [ShortcutConflictKind, unknown] => ['menu', accelerator]),
+  ];
+  for (const [kind, value] of others) {
+    if (normalizeAccelerator(value) === candidateKey) return kind;
+  }
+  return null;
 }

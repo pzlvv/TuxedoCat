@@ -18,8 +18,8 @@ contextBridge.exposeInMainWorld('preferenceAPI', {
   setSoundVolume: (volume: number): void => {
     ipcRenderer.send('preference-dialog:set-sound-volume', volume);
   },
-  captureShortcut: (): void => {
-    ipcRenderer.send('preference-dialog:capture-shortcut');
+  captureShortcut: (row: string): void => {
+    ipcRenderer.send('preference-dialog:capture-shortcut', row);
   },
   close: (): void => {
     ipcRenderer.send('preference-dialog:close');
