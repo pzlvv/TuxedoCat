@@ -5,19 +5,22 @@ status: 起草
 # 改动规格：跨工作区容器对话的状态灯与提示音策略
 
 跨工作区子代理的占位父对话（容器，`ph_` 前缀）目前在侧栏是纯静态节点：不显示消息内容、
-打开只显示跳转页（[specs/023 FR-004](../../docs/archive/specs/023-cross-workspace-agent/spec.md#fr-004占位父对话)），
-子代理运行期间容器行没有任何状态表达——用户在目标工作区看不出「派出去的活还在跑 /
-正在等我」。本规格给容器行补上按其子代理运行时**派生**的状态灯（容器自身仍无运行时
-事实），并把提示音策略定死：子代理完成静默、转入等待用户照常提醒。消息内容的隔离
-（不显示内容、不建立运行时）保持不变。
+打开只显示跳转页（[specs/023 FR-004](../../docs/archive/specs/023-cross-workspace-agent/spec.md#fr-004占位父对话)）。
+本规格做两件事。其一，容器行补上按其子代理运行时**派生**的状态灯（容器自身仍无运行时
+事实），提示音策略定死：子代理完成静默、转入等待用户照常提醒——容器的提醒口径与
+本地子代理一致（完成不提醒）。其二，确立容器的**会话级设置继承链**：容器承载发起方
+对话的会话级设置快照（agent mode / thinking effort / 提示词模式 / 模型等），其下
+子对话从容器继承——废止现行「远程子代理取目标工作区默认值」的口径，向本地子代理的
+继承规则（specs/020 FR-003）对齐。消息内容的隔离（不显示内容、不建立运行时）保持不变。
 
 ## 影响基线
 
 | 基线文档 | 章节 | 变更 | 说明 |
 | --- | --- | --- | --- |
+| [docs/features/cross-workspace-agent.md 第 2 节 FR-003](../../docs/features/cross-workspace-agent.md#fr-003跨工作区子代理会话) | FR-003 跨工作区子代理会话 | 修改 | 会话级配置口径由「取目标工作区自身默认值，不继承发起方」改为「经容器继承发起方」（对齐本地子代理 specs/020 FR-003 的按角色继承规则） |
 | [docs/hosts/electron-multi-workspace.md 第 9 节](../../docs/hosts/electron-multi-workspace.md#9-侧栏) | 侧栏 | 修改 | 容器行条目增加「状态灯按子代理运行时派生」的表述（点击行为与内容隔离不变） |
 | [docs/hosts/host-matrix.md 第 6 节](../../docs/hosts/host-matrix.md#6-宿主固有差异有意保留) | 未读完成呼吸 / ConversationManager 实现对照表 | 修改 | 「灯条只挂顶层对话行」口径扩展到容器行（按子代理派生）；写明跨工作区子代理的任务结束提醒适用「子对话完成不提醒、转等待照常提醒」 |
-| [docs/features/user-stories/desktop.md US-56](../../docs/features/user-stories/desktop.md#us-56-跨工作区代理) | US-56 验收标准 | 修改 | 第 2 条占位节点处增补容器状态灯验收点 |
+| [docs/features/user-stories/desktop.md US-56](../../docs/features/user-stories/desktop.md#us-56-跨工作区代理) | US-56 验收标准 | 修改 | 第 2 条占位节点处增补容器状态灯；第 1 条增补子代理配置经容器继承发起方 |
 | [docs/features/user-stories/desktop.md US-33](../../docs/features/user-stories/desktop.md#us-33-系统托盘与任务提醒) | US-33 验收标准 | 修改 | 写明「子代理（含跨工作区）完成不提醒、转等待照常」在本 US 语义内的适用性 |
 
 ## 用户场景与验收标准
@@ -31,6 +34,11 @@ status: 起草
   - **AC-5**（FR-002）：GIVEN 主窗口在后台、容器的子代理会话从运行转入等待用户 WHEN 状态推送差分 THEN 触发一次任务结束提醒（托盘闪烁 + 播放一次提示音）。
 - 场景 3：跳转页与内容隔离不变
   - **AC-6**（FR-003）：GIVEN 容器行点亮运行流水灯 WHEN 用户点击容器 THEN 仍显示跨工作区占位页（跳转页），不加载消息、不建立会话运行时。
+- 场景 4：设置经容器继承
+  - **AC-7**（FR-004）：GIVEN 发起方对话的会话级设置为模型 M / provider P / agent mode auto / thinking max / 提示词模式 mixed / 联网开 WHEN 以 Master 角色派发到目标工作区 THEN 子代理会话以上述设置运行，而不是目标工作区的默认值。
+  - **AC-8**（FR-004）：GIVEN 非 Master 角色（如 Explore）从配置了非默认设置的发起方派发 WHEN 子代理创建 THEN 提示词预设固定 normal、联网恒关（角色口径），agent mode / 模型 / provider / thinking 继承发起方。
+  - **AC-9**（FR-004）：GIVEN 同一发起方对话先后两次派发且期间修改了模型 WHEN 第二次派发 THEN 容器设置随最近一次派发同步，新子对话继承修改后的值，已创建的子对话不受影响。
+  - **AC-10**（FR-004）：GIVEN 目标工作区启用了与发起方不同的 MCP 服务器 WHEN 子代理运行 THEN MCP 按目标工作区的会话启用口径，不跨工作区继承。
 
 ## 功能需求
 
@@ -54,6 +62,8 @@ core 索取**——容器自身没有运行时事实，灯是子代理运行时�
 
 ### FR-002：容器的子代理完成静默、等待用户照常提醒
 
+容器本质是子代理容器，提醒口径与本地子代理对齐：
+
 - 容器的子代理会话（`parentSessionId` 指向 `ph_` 容器）从运行转入空闲**不触发任务
   结束提醒**（托盘不闪烁、不播放提示音）——沿用「子对话完成不提醒」既有判定，
   跨工作区子代理的 `parentSessionId` 非空同样命中。
@@ -68,6 +78,24 @@ core 索取**——容器自身没有运行时事实，灯是子代理运行时�
 
 容器行亮灯不改变既有行为：点击仍显示跨工作区占位页（跳转页），不加载消息、不建立
 会话运行时。「不显示内容」仅指消息内容——状态灯是对话列表行的属性，不属于内容。
+
+### FR-004：容器的会话级设置继承链（发起方 → 容器 → 子对话）
+
+- 派发时容器从发起方对话取得**会话级设置快照**：agent mode（工作模式）、thinking
+  effort（思考强度）、提示词模式（prompt preset）、模型（model / provider）、联网搜索
+  （web search）——以发起方会话当时的生效值为准，由发起方 Core 随派发请求携带。
+- 容器下新建的子代理会话**继承容器的这份设置**，继承规则与本地子代理一致
+  （[specs/020 FR-003](../../docs/archive/specs/020-explorer-subagent-role/spec.md#fr-003按角色区分的会话级配置继承)）：
+  Master 角色全量继承；非 Master 角色维持角色固定（提示词预设恒 normal、联网搜索恒关、
+  MCP 恒空），agent mode / 模型 / provider / thinking effort 仍继承。
+- 同一容器的多次派发：容器设置随每次派发同步为发起方当时的生效值；已创建的子对话
+  不受后续派发影响（固定值在创建时一次确定，与本地子代理口径一致）。
+- MCP 不跨工作区继承：子代理的 MCP 按目标工作区的会话启用口径。
+- 本 FR **废止**「会话级配置取目标工作区自身默认值，不继承发起方」的现行口径
+  （[docs/features/cross-workspace-agent.md FR-003](../../docs/features/cross-workspace-agent.md#fr-003跨工作区子代理会话)）。
+- 契约面：`CoreRequest.crossWorkspaceAgentRequested` 与 `UiEvent.remoteSubAgentStarted`
+  载荷新增上述设置字段（发起方 Core 侧填充、宿主透传、目标 Core 应用；成员必选，
+  [架构原则第 2 节](../../docs/architecture/principles.md#2-不让接口--参数可选)）。
 
 ## 边界与错误路径
 
@@ -84,21 +112,26 @@ core 索取**——容器自身没有运行时事实，灯是子代理运行时�
 
 ## 非目标
 
-- **不给容器行新增未读完成呼吸（绿色灯条）**：用户明示「完成时不需要提示音」，完成
-  在列表里同样保持静默（子代理行本就不挂呼吸条——「子会话的完成属于对话整体」，
-  容器行亦不挂）；标题栏标签页的未读绿点等既有视觉不变。
+- **不给容器行新增未读完成呼吸（绿色灯条）**：容器行为对齐子代理，完成在列表里保持
+  静默（子代理行本就不挂呼吸条——「子会话的完成属于对话整体」，容器行亦不挂）；
+  标题栏标签页的未读绿点等既有视觉不变。
 - **webview 内嵌对话列表（浮窗模式）不同步本派生**：浮窗下列表由 webview 渲染，容器
   状态灯留待浮窗模式实际需要时另立 spec（去向：`TODO.md`）。
 - 不改变完成提醒在发起方对话上的语义、不改变提示音的播放载体 / 音量策略（US-33）。
-- 不新增事件 / 契约成员 / wire 消息：容器灯是渲染层本地派生，不触契约面。
+- 容器的状态灯派生（FR-001）不触契约面；契约面变更仅限 FR-004 的两条既有载荷新增
+  设置字段——不新增事件类型、不改既有字段语义。
+- 不在容器占位页上新增设置展示或修改入口（容器不可交互，设置只作为继承载体；
+  子对话的设置 UI 照常展示继承值）。
 
 ## 对需求基线的影响
 
 无新增 US：本规格是 [US-56](../../docs/features/user-stories/desktop.md#us-56-跨工作区代理)
 （跨工作区代理）与 [US-33](../../docs/features/user-stories/desktop.md#us-33-系统托盘与任务提醒)
-（任务结束提醒）既有场景的细化——容器状态灯补进 US-56 验收标准第 2 条，提示音策略
-在 US-33 语义内（「子对话完成不提醒、转等待照常」是 trayAttention 的既有判定）。
-e2e：`e2e/electron/crossWorkspaceAgent.spec.ts` 扩展容器行状态灯断言（AC-1 / AC-3）；
+（任务结束提醒）既有场景的细化——容器状态灯与配置继承补进 US-56 验收标准（第 1 条
+继承口径、第 2 条状态灯），提示音策略在 US-33 语义内（「子对话完成不提醒、转等待照常」
+是 trayAttention 的既有判定）。
+e2e：`e2e/electron/crossWorkspaceAgent.spec.ts` 扩展容器行状态灯断言（AC-1 / AC-3）与
+继承断言（AC-7 的 Master 全量继承，经假 LLM 的请求体断言子代理会话的模型与预设）；
 提示音（AC-4 / AC-5）为 OS 音频链路，按 US-33 既有口径登记真机核验豁免。
 
 ## 追溯矩阵
@@ -108,6 +141,7 @@ e2e：`e2e/electron/crossWorkspaceAgent.spec.ts` 扩展容器行状态灯断言�
 | FR-001 | `src/shared/sessionRuntime.ts` 的容器级别纯函数（按子代理状态集派生 waiting/running/idle）；`electron/sidebar/main.ts` 对话树渲染对容器行套用 | 纯函数单测（waiting 优先 / 全 idle 无灯 / 空集）；`e2e/electron/crossWorkspaceAgent.spec.ts` 容器行状态灯断言 | 自动 |
 | FR-002 | 既有 `electron/trayAttention.ts` 的 `diffSessionEndEvents`（无代码改动） | 既有托盘差分单测扩展跨工作区形态（`parentSessionId: "ph_…"` 的完成抑制与转等待提醒） | 自动 |
 | FR-003 | 既有 `electron/main.ts` 的 `showCrossWorkspacePlaceholder`（无代码改动） | 既有 `src/test/chatPlaceholderReason.test.ts` + e2e 占位页断言 | 自动 |
+| FR-004 | `CoreRequest.crossWorkspaceAgentRequested` / `UiEvent.remoteSubAgentStarted` 载荷字段；`src/host/WebViewUI.ts` 透传；`core-rs/src/engine.rs` 的 `start_remote_sub_agent` 继承应用（替换目标默认值口径） | `core-rs/src/engine_tests.rs`（Master 全量继承 / 非 Master 角色固定 / 容器多次派发同步）；宿主透传单测；e2e 继承断言 | 自动 |
 
 ## 待澄清
 
