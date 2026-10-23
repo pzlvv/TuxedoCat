@@ -94,6 +94,9 @@ const FAKE_API_INIT = `
       tab.failure = null;
       emitTabs();
     },
+    emitOutput(tabId, text) {
+      emitOutput(tabId, text);
+    },
     emitTheme(isDark) {
       state.listeners.theme.forEach((fn) => fn(isDark));
     },
@@ -116,6 +119,7 @@ interface TerminalTestWindow {
   __terminalCtl: {
     disconnect(tabId: number, reason: string): void;
     connect(tabId: number): void;
+    emitOutput(tabId: number, text: string): void;
     emitTheme(isDark: boolean): void;
     emitSwitchTab(direction: 'next' | 'prev'): void;
   };
@@ -226,6 +230,22 @@ test('连接中：覆盖层是 logo 加载动画，红色警示不出现', async
   await page.evaluate(() => (window as unknown as TerminalTestWindow).__terminalCtl.disconnect(1, 'read ETIMEDOUT'));
   await expect(overlay.locator('.warn')).toBeVisible();
   await expect(overlay.locator('.loading')).toBeHidden();
+});
+
+test('全屏程序的模式查询（DECRQM）后渲染仍存活（specs/defects/terminal-vim-freeze RT-1）', async () => {
+  const { page } = handle;
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+
+  // vim / htop 启动即发的模式请求（CSI ? 2026 $ p，同步输出查询）：
+  // 压缩产物里 xterm 的 requestMode 被破坏时会当场抛 ReferenceError 并杀死渲染续写链
+  await page.evaluate(() => (window as unknown as TerminalTestWindow).__terminalCtl.emitOutput(1, '\x1b[?2026$p'));
+  await page.evaluate(() => (window as unknown as TerminalTestWindow).__terminalCtl.emitOutput(1, 'after-decrqm\r\n'));
+
+  // 渲染链活着：查询之后的文本必须照常渲染
+  await expect.poll(() => page.locator('#pane-1 .xterm-rows').textContent()).toContain('after-decrqm');
+  // DECRQM 处理不允许抛任何页面错误
+  expect(errors).toEqual([]);
 });
 
 test('主题推送跟随：body 深浅切换', async () => {

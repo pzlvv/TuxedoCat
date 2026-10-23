@@ -25,6 +25,12 @@ export default defineConfig({
   build: {
     outDir: project.terminalOut,
     emptyOutDir: true,
+    // 目标必须 ≥ es2021（specs/defects/terminal-vim-freeze）：esbuild 对 xterm 已压缩
+    // 产物做二次压缩时，≤ es2020 会降级 `||=` 并触发压缩器缺陷（evanw/esbuild#4508，
+    // xtermjs/xterm.js#5800）——requestMode（DECRQM 应答）被压坏，vim 等启动即发模式
+    // 查询的全屏程序把渲染链当场打死。本页只跑在 Electron 的 Chromium（≥ es2022）里，
+    // 提目标没有兼容面。
+    target: 'es2022',
     chunkSizeWarningLimit: 600,
     rollupOptions: {
       input: project.resolve('electron/terminal', 'index.html'),
