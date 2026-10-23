@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：跨工作区多 Agent 通信
@@ -233,16 +233,16 @@ status: 实施中
 
 | 需求 | 实现落点 | 测试落点 | 覆盖 |
 | --- | --- | --- | --- |
-| FR-001 | `src/host/workspaceIdentity.ts` 的 `resolveMachineName` / `workspaceAgentId`；`electron/main.ts` 打开集合派生身份 | `src/test/workspaceIdentity.test.ts` | 自动 |
-| FR-002 | `core-rs/src/tools.rs` 的 `run_agent`；`core-rs/src/tool_input.rs` 的 `agent_fields`；`core-rs/src/main.rs` 的跨工作区派发 | `core-rs/src/tools_tests.rs`、`core-rs/src/engine_tests.rs` | 自动 |
-| FR-003 | `core-rs/src/engine.rs` 的跨工作区建会话分支；`core-rs/src/history.rs` 的子代理元数据 | `core-rs/src/engine_tests.rs`、`core-rs/src/history_tests.rs` | 自动 |
-| FR-004 | `src/shared/history/Conversation.ts` 的占位元数据；`electron/sidebar/main.ts` 对话树；`electron/chatPlaceholderHtml.ts` 占位页 | `src/test/conversationListWorkspace.test.ts`、`src/test/chatPlaceholderReason.test.ts` | 自动 |
-| FR-005 | `electron/main.ts` 的跨工作区跳转动作；`src/webview/tools/Agent.tsx` 的链接 | `e2e/electron/crossWorkspaceAgent.spec.ts` | 自动 |
-| FR-006 | `core-rs/src/engine.rs` 的 `abort_session_scope`；`src/host/ui/webviewMessageHandler.ts` 的中止转发 | `core-rs/src/engine_tests.rs`、`src/test/abortButtonState.test.ts` | 自动 |
+| FR-001 | `src/host/workspaceIdentity.ts` 的 `resolveMachineName` / `workspaceAgentId`；`electron/main.ts` 打开集合派生身份 | `src/test/workspaceIdentity.test.ts`；`e2e/electron/crossWorkspaceAgent.spec.ts`（身份派生参与派发） | 自动 |
+| FR-002 | `core-rs/src/tools.rs` 的 `run_agent`；`core-rs/src/tool_input.rs` 的 `agent_fields`；`core-rs/src/main.rs` 的跨工作区派发 | `core-rs/src/tools_tests.rs`、`core-rs/src/engine_tests.rs`、`src/test/crossWorkspaceRouting.test.ts`；`e2e/electron/crossWorkspaceAgent.spec.ts` | 自动 |
+| FR-003 | `core-rs/src/engine.rs` 的跨工作区建会话分支；`core-rs/src/history.rs` 的子代理元数据 | `core-rs/src/engine_tests.rs`（建会话 / Reply 回投 / From 头） | 自动 |
+| FR-004 | `src/shared/history/Conversation.ts` 的占位元数据；`electron/sidebar/main.ts` 对话树；`electron/chatPlaceholderHtml.ts` 占位页 | `core-rs/src/engine_tests.rs`（列表派生占位）、`src/test/chatPlaceholderReason.test.ts`（占位页）、`e2e/electron/crossWorkspaceAgent.spec.ts`（树嵌套）；「不建立会话运行时」由 `electron/main.ts` 分支保证 | 无自动覆盖 + 「不建立会话运行时」属多视图宿主胶水，US-38 口径真机核验 |
+| FR-005 | `electron/main.ts` 的跨工作区跳转动作；`src/webview/tools/Agent.tsx` 的链接 | `e2e/electron/crossWorkspaceAgent.spec.ts`（派发与占位树）、`src/test/chatPlaceholderReason.test.ts`（跳转按钮有无） | 无自动覆盖 + 实际跳转（切标签 + 开视图）属多 BrowserWindow 跳转，US-38 口径真机核验 |
+| FR-006 | `core-rs/src/engine.rs` 的 `abort_session_scope`；`src/host/ui/webviewMessageHandler.ts` 的中止转发 | `core-rs/src/engine_tests.rs`（中止事件 / 结束收敛 / 槽位）、`src/test/abortButtonState.test.ts`（黄灯三态） | 无自动覆盖 + 宿主跨 Core 转发（目标侧独立中止 / 发起方归假）需双 Core 链路，真机核验 |
 | FR-007 | `src/webview/mentionState.ts` 的区间 / 过滤 / 替换纯函数；`src/webview/InputArea.tsx` 的候选菜单 | `src/test/mentionState.test.ts`、`e2e/webview/workspaceMention.spec.ts` | 自动 |
-| FR-008 | `core-rs/src/engine.rs` 轮次边界的 `@` 解析与 reminder 注入 | `core-rs/src/engine_tests.rs` | 自动 |
-| FR-009 | `src/shared/AssistantEventBus.ts` 的 `hostEnvironmentProvided` 能力字段；三个宿主发送点 | `src/test/bootstrapWiring.test.ts`、`core-rs/src/main_tests.rs` | 自动 |
-| FR-010 | `core-rs/src/subagent.rs` 的槽位与登记；`core-rs/src/engine.rs` 的结束 / 中止收敛 | `core-rs/src/subagent_tests.rs`、`core-rs/src/engine_tests.rs` | 自动 |
+| FR-008 | `core-rs/src/engine.rs` 轮次边界的 `@` 解析与 reminder 注入 | `core-rs/src/engine_tests.rs`（`@` 解析 / reminder 注入 / 能力位门控） | 自动 |
+| FR-009 | `src/shared/AssistantEventBus.ts` 的 `hostEnvironmentProvided` 能力字段；三个宿主发送点 | `core-rs/src/tools_tests.rs`（不支持时 `target` 报错）、`core-rs/src/engine_tests.rs`（不支持时不注入 reminder） | 无自动覆盖 + 三个宿主的发送点属接线胶水，由共享骨架与类型保证 |
+| FR-010 | `core-rs/src/subagent.rs` 的槽位与登记；`core-rs/src/engine.rs` 的结束 / 中止收敛 | `core-rs/src/subagent_tests.rs`、`core-rs/src/engine_tests.rs`（槽位 / 结束 / 中止收敛） | 无自动覆盖 + 宿主跨工作区结束转发需双 Core 链路，真机核验 |
 
 ## 待澄清
 
@@ -251,8 +251,69 @@ status: 实施中
 
 ## 收敛记录
 
-收敛时由 /converge 填写，结论只分三类。
+（2026-10-23 /converge 填写。闸门：`npm run check-types`、`npm run lint`、
+`npm run test:all -- docs-lint` 绿；`npm run test:core` 928 通过 / 0 失败。
+e2e 未在本机执行：`crossWorkspaceAgent.spec.ts` / `workspaceMention.spec.ts` 需要
+构建 Electron 产物与图形环境，按仓库既有口径由本地 `npm run test:e2e:*` / 真机核验。）
 
-- 已满足：<FR / AC → 证据（实现与测试落点）>
-- 偏差：<与 spec 的差异；改代码或改 spec 并留痕>
-- 未做：<回写 tasks.md 的未完成项>
+- 已满足：
+  - FR-001 / AC-1、AC-5：`src/test/workspaceIdentity.test.ts`（COMPUTERNAME / HOSTNAME /
+    回退 / 空串抛错、本地规范化路径、远程取 SSH 主机且不含端口与用户、歧义不取第一项）；
+    `e2e/electron/crossWorkspaceAgent.spec.ts` 用同一 `机器名:path.resolve` 口径构造
+    `target` 并派发成功。
+  - FR-002 / AC-2、AC-3、AC-4、AC-27、AC-28：`core-rs/src/tools_tests.rs` 的
+    `agent_empty_target_is_rejected`、`agent_target_rejected_when_host_does_not_support_it`、
+    `agent_target_selects_remote_spawn_hook`；`core-rs/src/engine_tests.rs` 的
+    `cross_workspace_spawn_registers_remote_child`、`cross_workspace_spawn_error_propagates`；
+    `src/test/crossWorkspaceRouting.test.ts`（等于本工作区 → local / 未打开 → missing /
+    歧义 → ambiguous / 远程命中）；`e2e/electron/crossWorkspaceAgent.spec.ts`
+    （B 列表新增、A 列表不新增）。
+  - FR-003 / AC-6、AC-7：`core-rs/src/engine_tests.rs` 的
+    `start_remote_sub_agent_records_origin_and_placeholder`（role / parentSessionId /
+    meta 的 `crossWorkspaceOrigin` / title）、`cross_workspace_reply_routes_to_origin`
+    （Reply 回投发起方）、`cross_workspace_spawn_registers_remote_child`（远程派发登记）。
+    AC-6 的真实 SSH 远端 Core 链路无自动覆盖（需真实远端），由本机双工作区 e2e +
+    远程身份单测组合覆盖。
+  - FR-004 / AC-8、AC-9、AC-10：`e2e/electron/crossWorkspaceAgent.spec.ts`（占位父节点 +
+    子代理嵌套、A 侧不出现）；`src/test/chatPlaceholderReason.test.ts`（有来源 → 跳转按钮 /
+    无来源 → 不可用提示）；`core-rs/src/engine_tests.rs` 的
+    `start_remote_sub_agent_records_origin_and_placeholder`（meta 落盘后
+    `load_conversation_list` 派生占位，重启读取同口径）；`electron/sidebar/main.ts` 的
+    占位节点 `actionsHtml = ''` 与 `electron/main.ts` 的 `showCrossWorkspacePlaceholder`
+    （不加载会话、不建运行时）为代码路径核验，无自动覆盖。
+  - FR-005 / AC-11、AC-12、AC-13：`src/test/chatPlaceholderReason.test.ts`（占位页跳转
+    按钮有无）；`electron/main.ts` 的 `jumpToCrossWorkspaceConversation` /
+    `openConversation.targetWorkspaceId` / `showCrossWorkspacePlaceholder` 为代码路径核验；
+    实际切标签与开视图无自动覆盖（多 BrowserWindow 跳转，US-38 口径），真机核验。
+  - FR-006 / AC-14、AC-15、AC-16、AC-17：`core-rs/src/engine_tests.rs` 的
+    `cross_workspace_abort_emits_event`（发起方中止发事件）、
+    `cross_workspace_spawn_registers_remote_child`（`subAgentRunning` 计入远程子代理）、
+    `runtime_snapshot_carries_sub_agent_description`（悬停明细来源）；
+    `src/test/abortButtonState.test.ts`（`subAgentRunning` → 黄灯）；AC-17 走
+    `abort_session_scope` 的会话关闭路径（与 abort 同一实现）。宿主跨 Core 转发与
+    目标侧独立中止无自动覆盖，真机核验。
+  - FR-007 / AC-18、AC-19、AC-20、AC-21、AC-22、AC-23：`src/test/mentionState.test.ts`
+    （首字符 / 区间 / 引号形态 / 过滤排序 / 插入与光标）；`src/test/workspaceIdentity.test.ts`
+    （候选排除来源工作区、来源解析不出返回空候选）；`e2e/webview/workspaceMention.spec.ts`
+    （候选、引号形态插入、正文中的 `@` 不弹菜单）；AC-23 的多行正文由区间在首个空白 /
+    换行结束 + e2e 断言覆盖。
+  - FR-008 / AC-24、AC-25：`core-rs/src/engine_tests.rs` 的
+    `mention_reminder_names_target_and_agent_tool`、
+    `mention_identity_parsing_covers_quoted_and_plain_forms`、
+    `resolve_pending_mention_sets_reminder_only_when_capable`。
+  - FR-009 / AC-26：`core-rs/src/tools_tests.rs` 的
+    `agent_target_rejected_when_host_does_not_support_it`；`core-rs/src/engine_tests.rs` 的
+    `resolve_pending_mention_sets_reminder_only_when_capable`（不支持时不注入）；
+    `src/test/bootstrapWiring.test.ts` 透传能力位。三个宿主发送点为接线代码，无自动覆盖。
+  - FR-010 / AC-29、AC-30：`core-rs/src/tools_tests.rs` 的
+    `agent_tool_caps_concurrent_sub_agents_and_queues_the_rest`（同一父会话 FIFO 排队，
+    跨工作区走同一取槽位路径）；`core-rs/src/engine_tests.rs` 的
+    `cross_workspace_spawn_error_propagates`（目标不可达 → 工具错误、不登记远程子代理；
+    槽位归还由 `run_agent` 的 Err 分支保证）、`cross_workspace_spawn_registers_remote_child`
+    （`subAgentRunning` 计入）。
+- 偏差：
+  - 追溯矩阵 FR-004 / FR-005 / FR-006 / FR-009 / FR-010 原先的「自动」写得过宽（例如
+    FR-005 的 e2e 只覆盖派发与占位树，不覆盖实际跳转）。已按实际测试落点改写
+    「测试落点 / 覆盖」列，缺口登记为「无自动覆盖 + 理由」。
+  - 代码注释里的规格编号误写为 022（远程终端），已统一改为 023；终端专属引用保留 022。
+- 未做：无。`tasks.md` T001–T015 全部勾选。
