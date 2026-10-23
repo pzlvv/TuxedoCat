@@ -54,6 +54,7 @@ export class ElectronConversationManager extends ConversationManager {
         updatedAt: c.updatedAt,
         messageCount: c.messageCount,
         parentSessionId: c.parentSessionId,
+        ...(c.placeholder ? { placeholder: c.placeholder } : {}),
       })),
     });
     this.host.log(`Conversation list refreshed (${list.length} conversations)`);

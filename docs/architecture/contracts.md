@@ -51,7 +51,7 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | 入参显式 | 可选语义用 `null`，而不是省略参数 |
 | 返回值统一 `Promise<void>` | 不用 `void \| Promise<void>` 联合 |
 
-成员清单（全部必选，共 21 个：`UIHost` 自身 17 个 + 继承 `WorkspaceProvider` 的 4 个）：
+成员清单（全部必选，共 22 个：`UIHost` 自身 17 个 + 继承 `WorkspaceProvider` 的 5 个）：
 
 | 分组 | 成员 | 语义 |
 | --- | --- | --- |
@@ -66,6 +66,7 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | | `getWorkspaceRef(): WorkspaceRef \| undefined` | 当前工作区引用（`scheme` / `path` / `endpoint`）；未打开返回 `undefined` |
 | | `getOpenWorkspaceRefs(): readonly WorkspaceRef[]` | 当前打开的工作区集合（按打开顺序）；Client 据此建立 Connection |
 | | `onWorkspaceChanged(listener): () => void` | 订阅工作区打开 / 关闭 / 激活；返回取消订阅 |
+| | `getWorkspaceRefForView(view: WebviewViewHandle \| null): WorkspaceRef \| undefined` | 视图所属工作区引用（多视图宿主按视图解析，单视图宿主返回当前工作区）；`@` 候选按它排除本工作区 |
 | 面板 / 窗口 | `openFile(filePath: string, target: LineSelection \| null): Promise<void>` | 打开文件并定位到行；不需要定位时传 `null` |
 | | `showVirtualDocument(content: string, title: string): Promise<void>` | 显示虚拟文档（内容预览） |
 | | `showDiff(options: ShowDiffOptions): Promise<void>` | 显示一次改动的 before / after（仅 manual 模式，见下） |

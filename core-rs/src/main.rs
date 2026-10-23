@@ -586,6 +586,11 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                     .and_then(Value::as_str)
                     .unwrap_or(config::DEFAULT_CONFIG_DIR_NAME)
                     .to_string(),
+                // specs/022 FR-009：宿主能力位；缺字段按不支持处理（旧宿主 / TUI）。
+                cross_workspace_agent: event
+                    .get("crossWorkspaceAgent")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             });
             // 配置快照：与宿主环境同一条事件一次给齐。缺字段是协议错误，
             // 记一条 log 事件暴露，不静默回落（`docs/architecture/core-ui-separation.md` 第 4.4 节）。
@@ -613,6 +618,33 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                 .and_then(Value::as_str)
                 .filter(|path| !path.is_empty());
             config::set_session_workspace(&session_id, workspace.map(str::to_string));
+        }
+        // ===== 跨工作区子代理（specs/022）=====
+        "remoteSubAgentStarted" => {
+            if let Err(error) = core.start_remote_sub_agent(&event) {
+                emit(
+                    core,
+                    json!({
+                        "type": "log",
+                        "message": format!("remoteSubAgentStarted failed: {error}"),
+                    }),
+                );
+            }
+        }
+        "agentReplyReceived" => {
+            let from = event
+                .get("fromSessionId")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let content = event.get("content").and_then(Value::as_str).unwrap_or("");
+            core.on_agent_reply_received(&session_id, from, content);
+        }
+        "crossWorkspaceAgentCompleted" => {
+            let sub_session_id = event
+                .get("subSessionId")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            core.on_cross_workspace_agent_completed(&session_id, sub_session_id);
         }
         // 旧多工作目录模型的活动工作目录入口：`UiEvent` 词汇表已无此事件
         // （工作目录按会话登记，见 `sessionWorkspaceAssigned`）。保留为测试 /

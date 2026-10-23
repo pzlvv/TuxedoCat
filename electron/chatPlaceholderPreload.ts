@@ -12,4 +12,8 @@ contextBridge.exposeInMainWorld('chatPlaceholderAPI', {
   reconnectWorkspace: (): void => {
     ipcRenderer.send('chat:reconnect-workspace');
   },
+  /** 跨工作区占位页：跳到发起方对话（specs/022 FR-005） */
+  jumpToOrigin: (): void => {
+    ipcRenderer.send('chat:jump-to-origin');
+  },
 });

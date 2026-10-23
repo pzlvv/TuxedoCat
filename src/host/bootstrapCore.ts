@@ -64,6 +64,11 @@ export interface CoreBootstrapOptions {
    */
   extensionPath: string;
   /**
+   * 宿主是否支持跨工作区代理（specs/022 FR-009）：随 `hostEnvironmentProvided` 下发给
+   * Core，决定 `@` reminder 与 `Agent.target` 是否生效。Electron true，VS Code false。
+   */
+  crossWorkspaceAgent: boolean;
+  /**
    * 测试注入：为一个工作区打开 Core 通道。
    * 默认经 daemon 启动配置中的 Core 可执行文件。
    */
@@ -144,6 +149,7 @@ export function bootstrapCore(
     configDirName: CONFIG_DIR_NAME,
     settings: settingsStore.getSnapshot(),
     mcpServers: settingsStore.getMcpServers(),
+    crossWorkspaceAgent: options.crossWorkspaceAgent,
   });
 
   // ── 1. Client 与总线：注册全局总线 ──
@@ -158,6 +164,8 @@ export function bootstrapCore(
     onConnectionLost: (connection, reason) => {
       markConnectionSessionsFailed(connection, conversations, reason, log);
       notifyWorkspaceConnectionState(log, connection.workspaceRef, 'lost', reason);
+      // 该工作区上的跨工作区子代理按结束收敛（specs/022 FR-010）
+      ui?.onWorkspaceUnavailable(connection.workspaceRef);
     },
     onConnectionReady: (connection) => {
       notifyWorkspaceConnectionState(log, connection.workspaceRef, 'ready', '');
@@ -226,6 +234,7 @@ export function bootstrapCore(
       if (change.type === 'opened') {
         openWorkspace(change.ref);
       } else if (change.type === 'closed') {
+        ui.onWorkspaceUnavailable(change.ref);
         void client.closeWorkspace(change.ref);
       } else {
         client.activateWorkspace(change.ref);

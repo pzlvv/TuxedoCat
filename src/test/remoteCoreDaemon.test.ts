@@ -179,6 +179,7 @@ function sleep(ms: number): Promise<void> {
 const requestHandlers: CoreRequestHandlers = {
   toolPermissionRequested: async () => ({ behavior: 'allow' }),
   userChoice: async () => ({ index: 0 }),
+  crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }),
 };
 
 // ==================== 用例 ====================

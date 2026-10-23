@@ -208,6 +208,22 @@ pub fn release_slot(creator_session_id: &str) {
     hand_off_reservation(state);
 }
 
+/// 幂等释放：没有槽位状态 / 没有在握槽位时返回 false，不 panic。
+///
+/// 跨工作区子代理的结束事件可能迟到或重复（specs/022 FR-010）：发起方 Core 用它
+/// 收敛槽位，避免把「事件重复」放大成进程级 panic。
+pub fn release_slot_if_held(creator_session_id: &str) -> bool {
+    let mut slots = slots();
+    let Some(state) = slots.get_mut(creator_session_id) else {
+        return false;
+    };
+    if state.active == 0 {
+        return false;
+    }
+    hand_off_reservation(state);
+    true
+}
+
 /// 槽位状态快照（测试断言用）：(持有数, 排队数)
 #[cfg(test)]
 pub fn slot_stats_for_test(creator_session_id: &str) -> (usize, usize) {
@@ -261,10 +277,87 @@ pub fn generate_sub_session_id() -> String {
     format!("sub_{}_{}", crate::util::now_millis(), crate::util::random_suffix())
 }
 
+// ==================== 跨工作区子代理（specs/022） ====================
+
+/// 跨工作区子代理的远程登记：发起方 Core 只持有「子会话 id → 创建者会话」，
+/// 子代理的运行时在目标工作区的 Core 里。
+///
+/// 与 `AGENTS` 分开存放：`AGENTS` 里的条目参与 `is_idle_deep` 的本地递归，
+/// 远程子代理没有本地会话状态，必须由本表单独判定「仍在运行」。
+struct RemoteRecord {
+    id: String,
+    /// 发起方会话 id（specs/022）：保留完整登记以便排查与后续按创建者聚合；
+    /// 当前的路由由宿主按 link 表完成。
+    #[allow(dead_code)]
+    creator_session_id: String,
+    /// 目标工作区代理身份（specs/022）：Reply 的 From 头带上它，UI 才能跨工作区跳转。
+    target_workspace_id: String,
+}
+
+static REMOTE_AGENTS: Mutex<Vec<RemoteRecord>> = Mutex::new(Vec::new());
+
+/// 登记一个跨工作区子代理（发起方 Core 侧）
+pub fn register_remote(id: &str, creator_session_id: &str, target_workspace_id: &str) {
+    let mut records = REMOTE_AGENTS.lock().unwrap();
+    records.retain(|record| record.id != id);
+    records.push(RemoteRecord {
+        id: id.to_string(),
+        creator_session_id: creator_session_id.to_string(),
+        target_workspace_id: target_workspace_id.to_string(),
+    });
+}
+
+/// 跨工作区子代理的目标工作区身份（发起方 Core 侧；非远程子代理返回 None）
+pub fn remote_workspace_of(id: &str) -> Option<String> {
+    REMOTE_AGENTS
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|record| record.id == id)
+        .map(|record| record.target_workspace_id.clone())
+}
+
+/// 注销一个跨工作区子代理（结束事件到达时）
+pub fn unregister_remote(id: &str) {
+    REMOTE_AGENTS.lock().unwrap().retain(|record| record.id != id);
+}
+
+/// 该会话 id 是否是跨工作区子代理（发起方 Core 侧）
+pub fn is_remote(id: &str) -> bool {
+    REMOTE_AGENTS.lock().unwrap().iter().any(|record| record.id == id)
+}
+
+/// 本进程创建的跨工作区子代理 → 发起方会话 id（specs/022）。
+///
+/// 与 `REMOTE_AGENTS` 相反：这里登记的是「运行时在本进程、父会话在别的 Core」的子代理。
+/// `run_sub_agent` 收尾时据此判断「本进程从未取过并发槽位」，不能按会话状态判断——
+/// 会话被用户关闭后状态已释放，按状态判断会误走本地释放路径。
+static REMOTE_ORIGINS: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 登记「跨工作区子代理 → 发起方会话」
+pub fn mark_remote_origin(sub_session_id: &str, origin_session_id: &str) {
+    REMOTE_ORIGINS
+        .lock()
+        .unwrap()
+        .insert(sub_session_id.to_string(), origin_session_id.to_string());
+}
+
+/// 该子代理是否是跨工作区子代理（运行时在本进程、父会话在别的 Core）
+pub fn remote_origin_of(sub_session_id: &str) -> Option<String> {
+    REMOTE_ORIGINS
+        .lock()
+        .unwrap()
+        .get(sub_session_id)
+        .cloned()
+}
+
 /// 清空注册表与并发槽位（单测隔离用）
 #[cfg(test)]
 pub fn reset_for_test() {
     AGENTS.lock().unwrap().clear();
+    REMOTE_AGENTS.lock().unwrap().clear();
+    REMOTE_ORIGINS.lock().unwrap().clear();
     slots().clear();
 }
 

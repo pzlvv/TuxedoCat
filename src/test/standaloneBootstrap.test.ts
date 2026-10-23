@@ -78,6 +78,7 @@ async function run(): Promise<void> {
       logs.push(args.map((arg) => String(arg)).join(' '));
     },
     logToConsole: false,
+    crossWorkspaceAgent: false,
     extensionPath: REPO_ROOT,
   });
 

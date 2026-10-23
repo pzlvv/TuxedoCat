@@ -97,6 +97,10 @@ webview 的用户消息经宿主 `WebviewMessageHandler` 的一个处理器进�
 
 - 命令名与参数的分割口径：第一个空白之前是命令名，其余（含换行）是参数。
 - 命令消息只解析一次：解析结果就地消费该消息（内置命令）或标记待注入（Skill）。
+- **`@` 工作区命令**（[cross-workspace-agent.md](cross-workspace-agent.md) FR-008）同一位置解析：
+  去首尾空白后以 `@` 开头的消息，身份取引号形态 `@"..."` 的引号内文本、或到第一个空白为止；
+  用户消息照常进上下文，随后注入一条 silent reminder（点名 `Agent.target`）。
+  仅在宿主声明 `crossWorkspaceAgent` 时生效。
 
 ### FR-003：排队状态与消息归属一致
 
@@ -194,6 +198,14 @@ Skill 的 `tool_use` / `tool_result` 紧跟在用户消息之后。
 只看「输入里有没有空白」不足以判断用户是否在输入命令名：输入框已有正文时，正文里的空白属于
 正文。
 
+**`@` 工作区补全**（[cross-workspace-agent.md](cross-workspace-agent.md) FR-007）。同一套区间与替换规则，
+差异：
+
+- 触发字符是 `@`，候选是宿主下发的「除来源视图所属工作区之外的已打开工作区」；
+- 身份两种形态：引号 `@"..."` 到下一个 `"` 止（支持含空格的路径），否则到第一个空白止；
+- 插入 `@<身份> `；身份含空白时插入 `@"<身份>" `；引号形态的替换范围到闭合引号；
+- 键盘操作、首字符限定与多行正文与 `/` 一致。
+
 **选中替换**。选中补全项时：
 
 - 替换范围 = `/` 到光标之间的文本；
@@ -233,6 +245,7 @@ Spin 模式（`WorkMode::Spin`）期间父对话完全由 SpinLoop 程序驱动�
 | 待处理队列 | 引擎持有的待消费消息（用户消息 / reminder / agent 回复） | Core |
 | 轮次边界 | 消费循环中「上一轮 query 已结束、下一轮 query 未开始」的时刻 | Core |
 | 命令消息 | 去除首尾空白后以 `/` 开头的用户消息 | Core `commands.rs` 的 `dispatch` |
+| `@` 命令 | 去除首尾空白后以 `@` 开头的用户消息 | Core `engine.rs` 的 `resolve_pending_mention` |
 | 内置命令 | 命令注册表中按名称 / 别名匹配的命令（如 `/spin`） | Core `commands.rs` |
 | Skill 命令 | 匹配 Skill 名称 / 别名的命令消息 | Core `skills.rs`（宿主侧补全用 `src/shared/skills/` 的加载器读同一份技能目录） |
 | 排队项 | webview 中表示「已提交、尚未进入上下文」的 UI 状态 | webview |

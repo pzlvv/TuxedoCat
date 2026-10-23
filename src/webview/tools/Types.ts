@@ -12,8 +12,8 @@ export interface ToolCallProps {
   toolCallId?: string;
   /** 是否正在流式输出（Bash 等工具运行中实时刷新输出） */
   isStreaming?: boolean;
-  /** 跳转到指定会话（用于子代理导航） */
-  onNavigate?: (sessionId: string) => void;
+  /** 跳转到指定会话（用于子代理导航）；`workspaceId` 非空表示跨工作区（specs/022） */
+  onNavigate?: (sessionId: string, workspaceId?: string | null) => void;
   /** 当前子代理的父会话 ID */
   currentParentSessionId?: string;
   /** 用户手动展开/折叠内容（Edit diff、Write 预览等）时通知外层，用于控制自动滚动 */

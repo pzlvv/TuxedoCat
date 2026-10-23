@@ -83,6 +83,8 @@ interface Scenario {
   permHoldMs: number;
   /** userChoice 到达后压住应答的时长；0 = 该场景不等到 userChoice */
   choiceHoldMs: number;
+  /** 首轮工具调用：缺省 Bash；`Agent` 用于驱动 crossWorkspaceAgentRequested（specs/022） */
+  tool?: 'Bash' | 'Agent';
 }
 
 /**
@@ -96,7 +98,7 @@ async function runRoundtrip(scenario: Scenario): Promise<RoundtripObservation> {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'core-waiting-'));
   const workspace = path.join(homeDir, 'workspace');
   fs.mkdirSync(workspace, { recursive: true });
-  const llm = await startFakeLlm(scenario.command);
+  const llm = await startFakeLlm(scenario.command, scenario.tool ?? 'Bash');
   const configDir = path.join(homeDir, CONFIG_DIR_NAME);
   fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(
@@ -136,6 +138,8 @@ async function runRoundtrip(scenario: Scenario): Promise<RoundtripObservation> {
   let permReleasedAt = -1;
   let choiceArrivedAt = -1;
   let choiceReleasedAt = -1;
+  let agentArrivedAt = -1;
+  let agentReleasedAt = -1;
 
   let buffer = '';
   child.stdout.setEncoding('utf8');
@@ -165,6 +169,19 @@ async function runRoundtrip(scenario: Scenario): Promise<RoundtripObservation> {
               void sleep(scenario.choiceHoldMs).then(() => {
                 choiceReleasedAt = frames.length;
                 send({ kind: 'response', id, ok: true, result: { index: 0 } });
+              });
+            } else if (frame.request?.type === 'crossWorkspaceAgentRequested') {
+              // specs/022：跨工作区派发是渲染往返（plain_request），不标 waiting
+              agentArrivedAt = frames.length - 1;
+              const id = frame.id;
+              void sleep(scenario.permHoldMs).then(() => {
+                agentReleasedAt = frames.length;
+                send({
+                  kind: 'response',
+                  id,
+                  ok: true,
+                  result: { error: 'target workspace is not open: HOST:/b' },
+                });
               });
             }
           }
@@ -201,6 +218,7 @@ async function runRoundtrip(scenario: Scenario): Promise<RoundtripObservation> {
         configDirName: CONFIG_DIR_NAME,
         settings: settingsSnapshotFromHome(homeDir),
         mcpServers: [],
+        crossWorkspaceAgent: true,
       },
     });
     send({ kind: 'uiEvent', event: { type: 'sessionWorkspaceAssigned', sessionId: SESSION_ID, workspacePath: workspace } });
@@ -248,6 +266,24 @@ async function runRoundtrip(scenario: Scenario): Promise<RoundtripObservation> {
     problems.push(`toolPermissionRequested 恰一次，实际 ${permissionRequests.length}`);
   }
 
+  if (scenario.tool === 'Agent') {
+    const agentRequests = frames.filter(
+      (frame) => frame.kind === 'request' && frame.request?.type === 'crossWorkspaceAgentRequested',
+    );
+    if (agentRequests.length !== 1) {
+      problems.push(`crossWorkspaceAgentRequested 恰一次，实际 ${agentRequests.length}`);
+    }
+    if (agentArrivedAt < 0 || agentReleasedAt < 0) {
+      problems.push('crossWorkspaceAgentRequested 未完成往返');
+      return { waitingTrueDuringInflight: -1, settled: false, preconditionFailures: problems };
+    }
+    return {
+      waitingTrueDuringInflight: countWaitingTrue(agentArrivedAt, agentReleasedAt),
+      settled: waitingFlags.filter((snapshot) => snapshot.waiting).length === 0,
+      preconditionFailures: problems,
+    };
+  }
+
   if (scenario.choiceHoldMs === 0) {
     // 渲染往返场景：全程不该有 userChoice，也不该有任何 waiting=true
     if (userChoices.length !== 0) problems.push(`不该有 userChoice，实际 ${userChoices.length}`);
@@ -278,7 +314,10 @@ async function runRoundtrip(scenario: Scenario): Promise<RoundtripObservation> {
 }
 
 /** 假 LLM：先回一次 Bash 工具调用，再回最终文本（对齐 standaloneCorePermission 的驱动方式） */
-function startFakeLlm(command: string): Promise<{ url: string; close: () => Promise<void> }> {
+function startFakeLlm(
+  command: string,
+  tool: 'Bash' | 'Agent',
+): Promise<{ url: string; close: () => Promise<void> }> {
   let hits = 0;
   const server = http.createServer((request, response) => {
     request.on('data', () => undefined);
@@ -296,7 +335,14 @@ function startFakeLlm(command: string): Promise<{ url: string; close: () => Prom
                     {
                       index: 0,
                       id: 'call_waiting',
-                      function: { name: 'Bash', arguments: JSON.stringify({ command }) },
+                      function: {
+                        name: tool,
+                        arguments: JSON.stringify(
+                          tool === 'Agent'
+                            ? { prompt: '代理任务', agentRole: 'Master', target: 'HOST:/b' }
+                            : { command },
+                        ),
+                      },
                     },
                   ],
                 },
@@ -334,6 +380,11 @@ const WAITING_REGISTRY: Record<string, { waiting: boolean; run: () => Promise<Ro
   toolPermissionRequested: {
     waiting: false,
     run: () => runRoundtrip({ mode: 'risk', command: 'sleep 1', permHoldMs: 400, choiceHoldMs: 0 }),
+  },
+  // 渲染往返（`plain_request`）：跨工作区派发在途期间不算等用户（specs/022）
+  crossWorkspaceAgentRequested: {
+    waiting: false,
+    run: () => runRoundtrip({ mode: 'risk', command: '', permHoldMs: 400, choiceHoldMs: 0, tool: 'Agent' }),
   },
   // 用户阻塞（`waiting_request`）：真确认框在途期间必须标 waiting
   userChoice: {

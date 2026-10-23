@@ -219,6 +219,10 @@
         "agentRole": {
           "type": "string",
           "description": "The role of the agent to spawn: Master or Explorer"
+        },
+        "target": {
+          "type": "string",
+          "description": "Target workspace agent ID (`hostname:path`). Omit to spawn the sub-agent in the current workspace."
         }
       }
     },

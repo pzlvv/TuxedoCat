@@ -26,7 +26,7 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 | `compacting` | 正在压缩上下文（会整体替换消息数组） | `compact.rs` 的 `mark_compacting` / `unmark_compacting`（`compact_conversation` 的进出） |
 | `pendingCompact` | 手动压缩已登记、等待当前轮次结束、队列排空时执行（排队不是正在执行的工作，不参与 `idle`） | `Core::request_compact` 的 `mark_pending_compact`；`run_consumer` 队列排空时消费、中止 / `Core::drop_session` 清理时 `unmark_pending_compact` |
 | `backgroundRunning` | 有运行中的后台 Bash 任务 | `bash_task.rs` 的任务注册 / 结束 / 中止（按剩余任务数同步） |
-| `subAgentRunning` | 该会话已注册子代理（idle 递归看子代理当前是否非 idle，本标志只作变更信号） | `subagent.rs` 的 `register` / `unregister` |
+| `subAgentRunning` | 该会话已注册子代理（idle 递归看子代理当前是否非 idle，本标志只作变更信号；跨工作区子代理在 `crossWorkspaceAgentCompleted` 前恒算非 idle） | `subagent.rs` 的 `register` / `unregister` / `register_remote` / `unregister_remote` |
 | `waiting` | 正在等待用户操作 | `Core::on_user_choice_pending`（宿主上报）；`waiting_request` 入队时提前标记 |
 
 会话关闭 / 删除时 `Core::drop_session` 清理该会话的状态、注销它作为子代理的注册表
@@ -53,7 +53,7 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 | `pendingCompact` | `pendingCompact` 来源（手动压缩已登记、等待当前轮次结束后执行；不参与 `idle`） |
 | `backgroundRunning` | `background` 来源（有运行中的后台 Bash 任务） |
 | `backgroundTasks` | 运行中的后台 Bash 任务清单（specs/019），按注册序逐项 `taskId` / `description` / `command`；空集为 `[]`。与 `backgroundRunning` 同源（同一注册表、同一次 `emit_runtime` 产出），abort 按钮黄色态的悬停明细据此列出任务（[docs/features/abort-button.md](../features/abort-button.md)） |
-| `subAgentRunning` | 派生字段：存在非 idle 的已登记子代理（递归到子代理自身的查询 / 压缩 / 后台任务 / 下层子代理） |
+| `subAgentRunning` | 派生字段：存在非 idle 的已登记子代理（递归到子代理自身的查询 / 压缩 / 后台任务 / 下层子代理）；跨工作区子代理没有本地会话状态，登记期间恒算非 idle，结束事件到达后注销 |
 | `subAgentDescription` | 子代理会话为创建时 Agent 工具调用的 description（specs/019）；普通会话与恢复路径取不到时为 `null`，UI 显示回退文案。悬停明细据此列出子代理 |
 | `parentSessionId` | 父会话 ID（子代理会话才有；普通会话为 `null`）。登记于子代理创建时，随会话存续，不随注册表注销消失——消费者据此区分「子对话完成」与「主对话完成」（如托盘完成提醒只对后者闪烁） |
 

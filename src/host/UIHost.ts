@@ -104,6 +104,13 @@ export interface WorkspaceProvider {
   getWorkspaceRef(): WorkspaceRef | undefined;
   /** 当前打开的工作区集合（按打开顺序）；未打开返回空数组 */
   getOpenWorkspaceRefs(): readonly WorkspaceRef[];
+  /**
+   * 视图所属工作区引用（多视图宿主按视图解析；单视图宿主返回当前工作区）。
+   *
+   * 用于按来源视图过滤 `@` 工作区候选（specs/022 FR-007）：补全列表要排除**该视图**
+   * 所属的工作区，而不是活动标签页。`null` 表示没有来源视图（宿主主动推送）。
+   */
+  getWorkspaceRefForView(view: WebviewViewHandle | null): WorkspaceRef | undefined;
   /** 订阅工作区打开 / 关闭 / 激活；返回取消订阅 */
   onWorkspaceChanged(listener: (change: WorkspaceChange) => void): () => void;
 }

@@ -182,6 +182,16 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
           ],
         });
         break;
+      case 'requestWorkspaces':
+        // `@` 工作区补全（specs/022 FR-007）：宿主已排除来源视图自己的工作区
+        send({
+          type: 'setWorkspaces',
+          workspaces: [
+            { id: 'DEV-PC:C:\\work\\alpha', path: 'C:\\work\\alpha', displayName: 'alpha' },
+            { id: 'DEV-PC:C:\\Program Files\\gamma', path: 'C:\\Program Files\\gamma', displayName: 'gamma' },
+          ],
+        });
+        break;
       case 'requestMcpServers':
         send({ type: 'setMcpServers', sessionId: msg.sessionId, servers: mcpInfo(state.mcpSessionEnabled) });
         break;

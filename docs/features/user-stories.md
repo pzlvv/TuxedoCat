@@ -23,7 +23,7 @@ last_reviewed: 2026-10-20
 | [消息呈现与确认](user-stories/messages.md) | EP-3 消息呈现、EP-4 权限与用户确认、EP-11 通知与国际化 | US-12～18、US-40～41 |
 | [会话管理与 LLM 配置](user-stories/sessions-and-llm.md) | EP-5 会话管理、EP-6 LLM 配置 | US-19～26 |
 | [工具与技能](user-stories/tools.md) | EP-7 工具与技能、US-50 联网搜索（客户端工具） | US-27～29、US-45、US-50 |
-| [桌面端](user-stories/desktop.md) | EP-8 桌面端窗口与标题栏、EP-9 多工作区、EP-10 预览与 Spin、EP-12 侧栏文件浏览器、EP-14 远程终端（桌面端） | US-30～39、US-42～44、US-54～55 |
+| [桌面端](user-stories/desktop.md) | EP-8 桌面端窗口与标题栏、EP-9 多工作区、EP-10 预览与 Spin、EP-12 侧栏文件浏览器、EP-14 远程终端（桌面端） | US-30～39、US-42～44、US-53～57 |
 | 附录：US | [与 e2e 场景用例映射](#附录us-与-e2e-场景用例映射) | — |
 
 ---
@@ -57,6 +57,8 @@ last_reviewed: 2026-10-20
 | `e2e/electron/backgroundBash.spec.ts` | US-45 | Electron 整应用 |
 | `e2e/electron/subagentConcurrency.spec.ts` | US-49 | Electron 整应用 |
 | `e2e/electron/subagentExplorer.spec.ts` | US-51（工具四件套 / 执行侧拒绝 / 视图置灰） | Electron 整应用 |
+| `e2e/electron/crossWorkspaceAgent.spec.ts` | US-56（跨工作区派发 / 占位对话 / 跳转 / 中止） | Electron 整应用 |
+| `e2e/webview/workspaceMention.spec.ts` | US-57（`@` 候选 / 插入 / 排除本工作区） | webview UI |
 | `e2e/webview/subagentOptionsLock.spec.ts` | US-51（role 事实到达后的选项置灰） | webview UI |
 | `e2e/terminal/terminalUi.spec.ts` | US-54（首标签自动建立的页面侧）、US-55（标签新建 / 切换 / 关闭、断开态覆盖层与重连、主题跟随、复制粘贴） | terminal 页面 |
 

@@ -181,7 +181,7 @@ const ToolCallMessage = memo(function ToolCallMessage({
   message: Message;
   colors: Colors;
   isDark: boolean;
-  onNavigate?: (sessionId: string) => void;
+  onNavigate?: (sessionId: string, workspaceId?: string | null) => void;
   onExpandToggle?: (isOpen: boolean) => void;
   onBeforePreviewRender?: () => void;
 }) {
@@ -254,7 +254,7 @@ const UserMessage = memo(function UserMessage({
   /** 滚动置顶（sticky 吸附）时，背景/边框由外层置顶容器绘制 */
   pinned?: boolean;
   /** 统一的会话跳转入口（App 的 navigateToSession）；子代理 From 消息点击时使用 */
-  onNavigate?: (sessionId: string) => void;
+  onNavigate?: (sessionId: string, workspaceId?: string | null) => void;
   onExpandToggle?: (isOpen: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -272,6 +272,8 @@ const UserMessage = memo(function UserMessage({
   const isFileMessage = !!metaFilePath;
   // agent 消息细分：通过 meta.type 区分
   const metaType = meta?.type as string | undefined;
+  /** 跨工作区子代理的来源工作区身份（specs/022）：From 头点击跳到目标工作区 */
+  const metaWorkspaceId = typeof meta?.workspaceId === 'string' ? meta.workspaceId : null;
   const isToMessage = isAgentMessage && metaType === 'to';
   const isFromMessage = isAgentMessage && metaType === 'from';
 
@@ -283,9 +285,9 @@ const UserMessage = memo(function UserMessage({
     if (agentSessionId) {
       // 统一走 navigateToSession（由 App 注入）：VS Code 在当前视图原地加载并进入 loading，
       // Electron 新起 webview。不再直连 navigateToConversation，避免绕过 loading 的第二条入口。
-      onNavigate?.(agentSessionId);
+      onNavigate?.(agentSessionId, metaWorkspaceId);
     }
-  }, [agentSessionId, onNavigate]);
+  }, [agentSessionId, metaWorkspaceId, onNavigate]);
 
   // 文件消息处理
   const handleFileClick = useCallback(() => {
@@ -455,13 +457,15 @@ const UserMessage = memo(function UserMessage({
             >
               <span style={{ color: colors.textSystem }}>From: </span>
               <span style={{ color: colors.harness, textDecoration: 'underline', textDecorationStyle: 'dotted' }}>
-                {metaParam!.startsWith('#')
-                  ? `#${agentSessionId?.slice(-8)}...`
-                  : (() => {
-                    // 格式: host:workspace (username):agentId, 展示为 host:workspace (username)
-                    const withoutAgentId = metaParam!.split(':').slice(0, 2).join(':');
-                    return agentUserName ? `${withoutAgentId} (${agentUserName})` : metaParam!;
-                  })()}
+                {metaWorkspaceId
+                  ? `${metaWorkspaceId} · ${agentSessionId?.slice(-8)}...`
+                  : metaParam!.startsWith('#')
+                    ? `#${agentSessionId?.slice(-8)}...`
+                    : (() => {
+                      // 格式: host:workspace (username):agentId, 展示为 host:workspace (username)
+                      const withoutAgentId = metaParam!.split(':').slice(0, 2).join(':');
+                      return agentUserName ? `${withoutAgentId} (${agentUserName})` : metaParam!;
+                    })()}
               </span>
             </div>
           ) : isToMessage ? (
@@ -866,7 +870,7 @@ const MessageItem = memo(function MessageItem({
   isDark: boolean;
   /** 用户消息是否正处于滚动置顶（sticky 吸附）状态 */
   pinned?: boolean;
-  onNavigate?: (sessionId: string) => void;
+  onNavigate?: (sessionId: string, workspaceId?: string | null) => void;
   onThinkingToggle?: (isOpen: boolean) => void;
   onExpandToggle?: (isOpen: boolean) => void;
   onBeforePreviewRender?: () => void;
@@ -1441,7 +1445,7 @@ interface MessagesViewProps {
   isCompactExpanded?: boolean;
   /** 展开压缩回调 */
   onExpandCompact?: () => void;
-  onNavigate?: (sessionId: string) => void;
+  onNavigate?: (sessionId: string, workspaceId?: string | null) => void;
 }
 
 /**
@@ -1469,7 +1473,7 @@ const SegmentTimeline = memo(function SegmentTimeline({
   animationMode: 'thinking' | 'compacting';
   colors: Colors;
   isDark: boolean;
-  onNavigate?: (sessionId: string) => void;
+  onNavigate?: (sessionId: string, workspaceId?: string | null) => void;
   onThinkingToggle?: (isOpen: boolean) => void;
   onExpandToggle?: (isOpen: boolean) => void;
   onBeforePreviewRender?: () => void;

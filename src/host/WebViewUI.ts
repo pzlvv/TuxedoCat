@@ -18,6 +18,14 @@ import type { AgentMode, MessageData, StreamMessageData, StreamEndData } from '.
 import type { ModelRef } from '../shared/llm/modelRef.js';
 import type { ToolProgressData, PermissionResult } from '../shared/tools/Tool.js';
 import type { UIHost, WebviewViewHandle } from './UIHost.js';
+import { sameWorkspaceRef, type WorkspaceRef } from './workspaceRef.js';
+import { resolveMachineName, workspaceAgentId } from './workspaceIdentity.js';
+import {
+  resolveCrossWorkspaceTarget,
+  type CrossWorkspaceRoute,
+  type CrossWorkspaceRouter,
+} from './crossWorkspaceRouting.js';
+import { hostname as osHostname } from 'os';
 import type { SpinDesign } from './SpinDesign.js';
 import type { ConversationManager } from './ConversationManager.js';
 import type { UserChoiceOptions } from '../shared/UserChoiceQueue.js';
@@ -61,6 +69,15 @@ export class WebViewUI implements WebViewUiPort {
   private readonly webviewMessageHandler: WebviewMessageHandler;
   /** 投递器（WebviewPoster） */
   private readonly post: WebviewPoster;
+  /** 总线（UiEvent 按会话路由回 core） */
+  private readonly bus: AssistantEventBus;
+  /** 跨工作区路由（specs/022） */
+  private readonly router: CrossWorkspaceRouter;
+  /** 跨工作区子代理 → 目标工作区引用与发起方会话（中止路由 / 目标消失时收敛） */
+  private readonly crossWorkspaceLinks = new Map<
+    string,
+    { targetRef: WorkspaceRef; originSessionId: string }
+  >();
 
   /** 三个契约（构造注入） */
   private readonly spinDesign: SpinDesign;
@@ -72,7 +89,7 @@ export class WebViewUI implements WebViewUiPort {
    */
   static create(
     host: UIHost,
-    bus: AssistantEventBus,
+    bus: AssistantEventBus & CrossWorkspaceRouter,
     spinDesign: SpinDesign,
     conversations: ConversationManager,
     deps: {
@@ -99,7 +116,7 @@ export class WebViewUI implements WebViewUiPort {
 
   private constructor(
     public readonly host: UIHost,
-    bus: AssistantEventBus,
+    bus: AssistantEventBus & CrossWorkspaceRouter,
     spinDesign: SpinDesign,
     conversations: ConversationManager,
     deps: {
@@ -110,6 +127,8 @@ export class WebViewUI implements WebViewUiPort {
     this.spinDesign = spinDesign;
     this.conversations = conversations;
     this.log = deps.log;
+    this.bus = bus;
+    this.router = bus;
 
     this.post = (sessionId, message) => {
       this.postToWebview(sessionId, message);
@@ -335,6 +354,17 @@ export class WebViewUI implements WebViewUiPort {
       // ===== 瞬时提示 =====
       notice: (e) => this.onNotice(e.sessionId, e.key, e.params, e.level),
 
+      // ===== 跨工作区子代理（specs/022）=====
+      // 目标工作区 Core 的 Reply 到达：按发起方会话路由回投（sessionId 已由宿主登记）。
+      crossWorkspaceAgentReplyRequested: (e) =>
+        this.onCrossWorkspaceAgentReplyRequested(e.sessionId, e.fromSessionId, e.content),
+      // 发起方 Core 中止：按 link 表找到目标 Connection 下发 abort。
+      crossWorkspaceAgentAbortRequested: (e) =>
+        this.onCrossWorkspaceAgentAbortRequested(e.sessionId),
+      // 目标工作区 Core 结束：通知发起方 Core 注销远程登记并释放槽位。
+      crossWorkspaceAgentEnded: (e) =>
+        this.onCrossWorkspaceAgentEnded(e.sessionId, e.subSessionId),
+
       // ===== 日志 =====
       log: (e) => this.log(e.message),
     };
@@ -345,7 +375,129 @@ export class WebViewUI implements WebViewUiPort {
       toolPermissionRequested: (r) =>
         this.requestToolPermission(r.sessionId, r.toolUseId, r.toolName, r.permResult, r.displayArgs, r.agentMode),
       userChoice: (r) => this.requestUserChoice(r.sessionId, r.options),
+      crossWorkspaceAgentRequested: (r) => Promise.resolve(this.requestCrossWorkspaceAgent(r)),
     };
+  }
+
+  /** 目标工作区 Core 的 Reply 到达：按发起方会话路由回投（specs/022 FR-003） */
+  private onCrossWorkspaceAgentReplyRequested(
+    originSessionId: string,
+    fromSessionId: string,
+    content: string,
+  ): void {
+    this.bus.emitToCore({
+      type: 'agentReplyReceived',
+      sessionId: originSessionId,
+      fromSessionId,
+      content,
+    });
+  }
+
+  /** 发起方中止：按 link 表找到目标 Connection 下发 abort（specs/022 FR-006） */
+  private onCrossWorkspaceAgentAbortRequested(subSessionId: string): void {
+    const link = this.crossWorkspaceLinks.get(subSessionId);
+    if (!link) {
+      this.log(`[cross-workspace] abort requested for unknown sub-agent ${subSessionId}`);
+      return;
+    }
+    const target = this.router.connectionForWorkspace(link.targetRef);
+    if (!target) {
+      // 目标不可达：按已结束收敛，不让发起方永久停在黄色态
+      this.log(`[cross-workspace] abort target workspace is not open for ${subSessionId}`);
+      this.completeCrossWorkspaceAgent(link.originSessionId, subSessionId);
+      return;
+    }
+    target.emitToCore({ type: 'abortRequested', sessionId: subSessionId });
+  }
+
+  /** 目标工作区 Core 结束：通知发起方 Core 注销远程登记并释放槽位（specs/022 FR-010） */
+  private onCrossWorkspaceAgentEnded(originSessionId: string, subSessionId: string): void {
+    this.completeCrossWorkspaceAgent(originSessionId, subSessionId);
+  }
+
+  private completeCrossWorkspaceAgent(originSessionId: string, subSessionId: string): void {
+    this.crossWorkspaceLinks.delete(subSessionId);
+    this.bus.emitToCore({
+      type: 'crossWorkspaceAgentCompleted',
+      sessionId: originSessionId,
+      subSessionId,
+    });
+  }
+
+  /**
+   * 目标工作区关闭 / 连接丢失：该工作区上的跨工作区子代理按结束收敛（specs/022 FR-010）。
+   *
+   * 由 bootstrap 在工作区关闭与连接丢失两处调用；只处理 link 表里指向该工作区的项。
+   */
+  onWorkspaceUnavailable(ref: WorkspaceRef): void {
+    for (const [subSessionId, link] of [...this.crossWorkspaceLinks]) {
+      if (sameWorkspaceRef(link.targetRef, ref)) {
+        this.completeCrossWorkspaceAgent(link.originSessionId, subSessionId);
+      }
+    }
+  }
+
+  /**
+   * 跨工作区派发（specs/022 FR-002）：解析目标工作区身份 → 在目标 Connection 建子代理会话。
+   *
+   * 失败一律返回 `{ error }`（Core 侧转成工具错误）：目标未打开 / 身份歧义 / 目标
+   * Core 未就绪都不创建任何会话。target 等于来源工作区时返回 `{ local: true }`，
+   * 由 Core 按缺省策略建本机子代理。
+   */
+  private requestCrossWorkspaceAgent(
+    request: Extract<import('../shared/AssistantEventBus.js').CoreRequest, { type: 'crossWorkspaceAgentRequested' }>,
+  ): { sessionId: string } | { local: true } | { error: string } {
+    let origin: CrossWorkspaceRoute;
+    try {
+      origin = this.router.connectionForSession(request.sessionId);
+    } catch (error) {
+      return { error: `cannot resolve origin session ${request.sessionId}: ${String(error)}` };
+    }
+    const machineName = resolveMachineName(process.platform, process.env, osHostname());
+    const resolved = resolveCrossWorkspaceTarget(
+      this.host.getOpenWorkspaceRefs(),
+      origin.workspaceRef,
+      request.targetWorkspaceId,
+      machineName,
+    );
+    if (resolved.kind === 'local') {
+      return { local: true };
+    }
+    if (resolved.kind === 'missing') {
+      return { error: `target workspace is not open: ${request.targetWorkspaceId}` };
+    }
+    if (resolved.kind === 'ambiguous') {
+      return { error: `target workspace identity is ambiguous: ${request.targetWorkspaceId}` };
+    }
+    const target = this.router.connectionForWorkspace(resolved.ref);
+    if (!target) {
+      return { error: `target workspace is not connected: ${request.targetWorkspaceId}` };
+    }
+    if (!target.isReady()) {
+      return { error: `target workspace is not ready: ${request.targetWorkspaceId}` };
+    }
+    const subSessionId = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const placeholderId = `ph_${request.sessionId}`;
+    // 新会话在目标 Connection 里尚不存在：先登记归属，后续 UiEvent（abort / close）才路由得到
+    this.router.assignSession(subSessionId, resolved.ref);
+    const originWorkspaceId = workspaceAgentId(origin.workspaceRef, machineName);
+    this.crossWorkspaceLinks.set(subSessionId, {
+      targetRef: resolved.ref,
+      originSessionId: request.sessionId,
+    });
+    target.emitToCore({
+      type: 'remoteSubAgentStarted',
+      sessionId: subSessionId,
+      workspacePath: resolved.ref.path,
+      role: request.role,
+      prompt: request.prompt,
+      description: request.description,
+      parentSessionId: placeholderId,
+      originWorkspaceId,
+      originSessionId: request.sessionId,
+      originTitle: request.originTitle,
+    });
+    return { sessionId: subSessionId };
   }
 
   // --- 渲染 handler ---

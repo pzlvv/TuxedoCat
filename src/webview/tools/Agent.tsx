@@ -7,6 +7,8 @@ import { uiFontSizePx } from '../fontSize';
 export const Agent: React.FC<ToolCallProps> = ({ args, colors, output, onNavigate }) => {
   const prompt = args?.prompt || '';
   const role = args?.agentRole;
+  // 跨工作区子代理（specs/022）：工具入参里的 target 就是跳转的目标工作区身份
+  const target = typeof args?.target === 'string' && args.target ? args.target : null;
 
   // 从 output 中提取 subAgentId
   let subAgentId: string | undefined;
@@ -19,7 +21,8 @@ export const Agent: React.FC<ToolCallProps> = ({ args, colors, output, onNavigat
 
   const handleClick = () => {
     if (subAgentId && onNavigate) {
-      onNavigate(subAgentId);
+      // 同工作区跳转传 null（宿主按当前视图解析）；跨工作区传目标身份对应的稳定 id
+      onNavigate(subAgentId, target);
     }
   };
 
@@ -49,6 +52,19 @@ export const Agent: React.FC<ToolCallProps> = ({ args, colors, output, onNavigat
           title={t('tool.agent.navigateTitle')}
         >
           #{subAgentId.slice(-8)}...
+        </span>
+      )}
+      {target && (
+        <span
+          style={{
+            marginRight: '6px',
+            color: colors.textSystem,
+            fontSize: uiFontSizePx(11),
+            whiteSpace: 'nowrap',
+          }}
+          title={target}
+        >
+          → {target}
         </span>
       )}
       <span style={{ color: colors.textPrimary }}>

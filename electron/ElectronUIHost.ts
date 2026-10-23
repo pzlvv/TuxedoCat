@@ -216,6 +216,18 @@ export class ElectronUIHost implements UIHost {
     return this.workspaceSource?.getOpenWorkspaceRefs() ?? [];
   }
 
+  /**
+   * 视图所属工作区引用（specs/022 FR-007）：按聊天视图登记的归属解析，
+   * 解析不出时退回活动工作区。
+   */
+  getWorkspaceRefForView(view: WebviewViewHandle | null): WorkspaceRef | undefined {
+    if (!view) return this.getWorkspaceRef();
+    const webContents = view.view as WebContents;
+    const path = this.chatViews?.getWorkspaceForWebContents(webContents);
+    if (!path) return this.getWorkspaceRef();
+    return this.getOpenWorkspaceRefs().find((ref) => ref.path === path) ?? this.getWorkspaceRef();
+  }
+
   /** 订阅工作区打开 / 关闭 / 激活（main 进程经 setWorkspaceSource 注入） */
   onWorkspaceChanged(listener: (change: WorkspaceChange) => void): () => void {
     return this.workspaceSource?.subscribe(listener) ?? (() => undefined);

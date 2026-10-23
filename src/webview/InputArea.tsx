@@ -12,6 +12,12 @@ import { SegmentControl, CheckboxGlyph } from './components/SegmentControl';
 import { dropdownMenuTheme, menuPanelShellStyle } from './components/dropdownMenuTheme';
 import { t } from './i18n';
 import { useUiFontOffset, uiFontSizePx } from './fontSize';
+import {
+  filterWorkspaces,
+  insertMention,
+  resolveMentionRange,
+  type WorkspaceMentionItem,
+} from './mentionState';
 
 export interface PastedImage {
   dataUrl: string;
@@ -131,6 +137,8 @@ interface InputAreaProps {
   isDark: boolean;
   queuedMessage: QueuedMessagePayload | null;
   skills: SkillItem[];
+  /** `@` 工作区候选（宿主下发，已排除本工作区；specs/022 FR-007） */
+  workspaces: WorkspaceMentionItem[];
   commandHistory: string[];
   /** 账户余额 */
   balance?: number;
@@ -1605,6 +1613,73 @@ const SlashPopup = memo(({
   );
 });
 
+
+// ─── Workspace Mention Popup（specs/022 FR-007）─────────────────────────────
+
+const WorkspacePopup = memo(({
+  filtered,
+  selectedIndex,
+  onSelect,
+  colors,
+  isDark,
+}: {
+  filtered: WorkspaceMentionItem[];
+  selectedIndex: number;
+  onSelect: (index: number) => void;
+  colors: Colors;
+  isDark: boolean;
+}) => {
+  const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  useEffect(() => {
+    if (selectedIndex >= 0 && selectedIndex < itemRefs.current.length) {
+      itemRefs.current[selectedIndex]?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [selectedIndex]);
+
+  if (filtered.length === 0) return null;
+
+  return (
+    <div
+      className="absolute bottom-full left-0 right-0 mb-1 rounded-lg border overflow-hidden shadow-lg"
+      style={{
+        backgroundColor: colors.bgSecondary,
+        borderColor: colors.border,
+        zIndex: 100,
+        maxHeight: '240px',
+        overflowY: 'auto',
+      }}
+    >
+      {filtered.map((workspace, i) => (
+        <div
+          key={`${workspace.id}-${i}`}
+          ref={(el) => { itemRefs.current[i] = el; }}
+          className="flex items-center gap-2 px-3 py-2 cursor-pointer ui-fs-13 transition-colors"
+          style={{
+            backgroundColor: i === selectedIndex ? (isDark ? 'rgba(99,102,241,0.15)' : 'rgba(99,102,241,0.08)') : 'transparent',
+            color: colors.textPrimary,
+          }}
+          onMouseDown={(e) => { e.preventDefault(); onSelect(i); }}
+        >
+          <span style={{ fontWeight: 600, flexShrink: 0 }}>{workspace.displayName}</span>
+          <span
+            style={{
+              color: colors.textSystem,
+              fontSize: uiFontSizePx(12),
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+            title={workspace.id}
+          >
+            {workspace.id}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+});
+
 const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   inputFocused,
   setInputFocused,
@@ -1643,6 +1718,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   isDark,
   queuedMessage,
   skills,
+  workspaces,
   commandHistory,
   balance,
   balanceCurrency,
@@ -1707,6 +1783,13 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   // 标记当前是否已处于 "/" 输入状态，避免每次按键都重复刷新 Skill
   const slashActiveRef = useRef(false);
 
+  // @ 工作区补全状态（specs/022 FR-007）
+  const [showMention, setShowMention] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionTokenEnd, setMentionTokenEnd] = useState(0);
+  const mentionActiveRef = useRef(false);
+
   useImperativeHandle(ref, () => ({
     getValue: () => input,
     setValue: (value: string) => setInput(value),
@@ -1747,6 +1830,28 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     setSlashIndex(0);
   }, [filteredSkills.length]);
 
+  const filteredWorkspaces = useMemo(() => {
+    if (!showMention) return [];
+    return filterWorkspaces(workspaces, mentionQuery);
+  }, [workspaces, mentionQuery, showMention]);
+
+  useEffect(() => {
+    setMentionIndex(0);
+  }, [filteredWorkspaces.length]);
+
+  const commitMention = useCallback((item: WorkspaceMentionItem) => {
+    const caret = mainInputRef.current?.selectionStart ?? input.length;
+    const inserted = insertMention(input, caret, item, mentionTokenEnd);
+    setInput(inserted.next);
+    setShowMention(false);
+    setMentionQuery('');
+    mentionActiveRef.current = false;
+    setTimeout(() => {
+      mainInputRef.current?.focus();
+      mainInputRef.current?.setSelectionRange(inserted.caret, inserted.caret);
+    }, 0);
+  }, [input, mentionTokenEnd, mainInputRef]);
+
   const commitSlash = useCallback((skillName: string) => {
     const inserted = `/${skillName} `;
     // 只替换用户实际敲出来的 "/<query>" 前缀，保留输入框里原有的其余内容：
@@ -1775,6 +1880,24 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
       historyIndexRef.current = -1;
       setHistoryIndex(-1);
       setSavedInput('');
+    }
+
+    // Detect workspace mention mode（specs/022 FR-007）：与 "/" 同口径只看首字符
+    if (value.startsWith('@')) {
+      if (!mentionActiveRef.current) {
+        mentionActiveRef.current = true;
+        postMessage({ type: 'requestWorkspaces' });
+      }
+      const caret = e.target.selectionStart ?? value.length;
+      const range = resolveMentionRange(value, caret);
+      setShowMention(range.active);
+      setMentionQuery(range.query);
+      setMentionTokenEnd(range.tokenEnd);
+      if (range.active) return;
+    } else {
+      mentionActiveRef.current = false;
+      setShowMention(false);
+      setMentionQuery('');
     }
 
     // Detect slash-command mode
@@ -1810,6 +1933,31 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   }, []);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    // @ 工作区补全与 "/" 同口径的键盘操作（specs/022 FR-007）
+    if (showMention && filteredWorkspaces.length > 0) {
+      if (e.key === 'ArrowDown' || (e.ctrlKey && (e.key === 'n' || e.key === 'N'))) {
+        e.preventDefault();
+        setMentionIndex(i => (i + 1) % filteredWorkspaces.length);
+        return;
+      }
+      if (e.key === 'ArrowUp' || (e.ctrlKey && (e.key === 'p' || e.key === 'P'))) {
+        e.preventDefault();
+        setMentionIndex(i => (i - 1 + filteredWorkspaces.length) % filteredWorkspaces.length);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        commitMention(filteredWorkspaces[mentionIndex]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowMention(false);
+        setMentionQuery('');
+        mentionActiveRef.current = false;
+        return;
+      }
+    }
     if (showSlash && filteredSkills.length > 0) {
       // Navigate popup
       if (e.key === 'ArrowDown' || (e.ctrlKey && (e.key === 'n' || e.key === 'N'))) {
@@ -2146,6 +2294,15 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
               </div>
             ))}
           </div>
+        )}
+        {showMention && (
+          <WorkspacePopup
+            filtered={filteredWorkspaces}
+            selectedIndex={mentionIndex}
+            onSelect={(i) => commitMention(filteredWorkspaces[i])}
+            colors={colors}
+            isDark={isDark}
+          />
         )}
         {showSlash && (
           <SlashPopup

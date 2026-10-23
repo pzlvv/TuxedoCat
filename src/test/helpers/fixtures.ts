@@ -54,6 +54,8 @@ export interface TestBusOptions {
   toolPermissionRequested?: CoreRequestHandlers['toolPermissionRequested'];
   /** 用户选择的答复，默认选第 0 项 */
   userChoice?: CoreRequestHandlers['userChoice'];
+  /** 跨工作区派发的答复，默认「宿主不支持」 */
+  crossWorkspaceAgentRequested?: CoreRequestHandlers['crossWorkspaceAgentRequested'];
 }
 
 export interface RecordingCoreEventHandlers {
@@ -109,6 +111,9 @@ export function createRecordingCoreEventHandlers(): RecordingCoreEventHandlers {
     sessionConfigChanged: (e) => record('sessionConfigChanged', e),
     notice: (e) => record('notice', e),
     log: (e) => record('log', e),
+    crossWorkspaceAgentReplyRequested: (e) => record('crossWorkspaceAgentReplyRequested', e),
+    crossWorkspaceAgentAbortRequested: (e) => record('crossWorkspaceAgentAbortRequested', e),
+    crossWorkspaceAgentEnded: (e) => record('crossWorkspaceAgentEnded', e),
   };
 
   const list = <T extends CoreEvent['type']>(type: T): Array<Extract<CoreEvent, { type: T }>> =>
@@ -136,6 +141,9 @@ export function makeTestBus(options: TestBusOptions = {}): TestBus {
     toolPermissionRequested:
       options.toolPermissionRequested ?? (async () => ({ behavior: 'allow' })),
     userChoice: options.userChoice ?? (async () => ({ index: 0 })),
+    crossWorkspaceAgentRequested:
+      options.crossWorkspaceAgentRequested
+      ?? (async () => ({ error: 'not supported' })),
   });
 
   return {
@@ -181,6 +189,7 @@ export function createTestHost(overrides: Partial<UIHost> = {}): TestHost {
     // 环境
     log: () => undefined,
     getWorkspacePath: () => undefined,
+    getWorkspaceRefForView: () => undefined,
     getWorkspaceRef: () => undefined,
     getOpenWorkspaceRefs: () => [],
     onWorkspaceChanged: () => () => undefined,
@@ -293,5 +302,6 @@ export function provideHostEnvironment(
     configDirName: overrides.configDirName ?? CONFIG_DIR_NAME,
     settings: overrides.settings ?? resolveSettingsSnapshot({}),
     mcpServers: overrides.mcpServers ?? [],
+    crossWorkspaceAgent: false,
   });
 }

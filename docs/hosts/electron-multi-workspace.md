@@ -40,6 +40,9 @@ Electron 宿主在任一时刻持有一个**打开集合**——若干个已打�
 | 会话工作目录表 | 进程内 `sessionId → 工作目录` 映射 | core |
 | 宿主会话工作目录索引 | 进程内 `sessionId → 工作目录` 映射 | Electron 主进程 |
 | 最近工作目录 | 历史打开过的目录，去重、有序、有上限 | Electron 主进程 |
+| 工作区代理身份 | `<机器名>:<工作区路径>`，跨工作区代理的寻址键（本地取机器名，远程取 SSH 目标主机） | Electron 主进程（`src/host/workspaceIdentity.ts`） |
+| 跨工作区子代理 | 运行时在目标工作区 Core、创建者在发起方 Core 的子代理会话 | 目标工作区 Core（会话事实）+ 发起方 Core（登记与槽位） |
+| 占位父对话 | 目标工作区列表里代表发起方会话的容器节点，由子代理 meta 的 `crossWorkspaceOrigin` 派生 | 列表读取方 |
 
 「工作目录」与现有代码里的「工作区（workspace）」指同一事物；路径按规范化绝对路径参与去重。
 
@@ -63,7 +66,8 @@ Electron 宿主在任一时刻持有一个**打开集合**——若干个已打�
 
 - 对话创建时归属当时的活动工作目录，该归属写入对话元数据（`ConversationMetadata.project`）。
 - 对话的工作目录是对话的固有属性，在对话生命周期内保持不变。
-- 子对话（子代理）归属其父对话的工作目录。
+- 子对话（子代理）归属其父对话的工作目录；**例外**：跨工作区子代理（`Agent.target`）
+  归属目标工作区，发起方只保留「远程子代理」登记与并发槽位。
 - 打开历史对话时，以该对话自己的工作目录为上下文，与当前活动标签页无关。
 
 ### 4.2 会话工作目录表（core）
@@ -230,6 +234,8 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 - 头部：搜索框 + 新对话按钮。
 - 搜索框按对话标题过滤当前活动工作目录的对话列表；输入即时过滤；清空恢复全部。
 - 对话列表展示当前活动工作目录的对话（含子对话树）。
+- 跨工作区子代理的占位父对话在列表里以容器节点呈现（标题后带「跨工作区容器」标记），
+  不提供重命名 / 智能命名 / 删除入口；点击打开只显示跳转页。
 - 子对话树的默认展开：当前活动会话的祖先链展开（保证选中项可见）；活动会话自身的
   直接子会话数达到 5 时不默认展开（阈值与 webview 对话列表共用
   `src/host/ui/conversationTreeDefaults.ts`），用户点击折叠按钮显式设置后不再被默认
@@ -292,7 +298,10 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 
 - 打开集合内工作目录按规范化绝对路径唯一。
 - 集合非空时活动项唯一存在。
-- 对话的工作目录在对话生命周期内不变。
+- 对话的工作目录在对话生命周期内不变（跨工作区子代理除外：它归属目标工作区）。
+- 工作区代理身份由唯一纯函数计算；同一身份对应多个打开项时 `Agent.target` 报错，不取第一项。
+- 占位父对话没有消息文件与会话运行时，只能由带 `crossWorkspaceOrigin` 的子代理 meta 派生。
+- 跨工作区跳转只认打开集合；目标未打开时链接不可用，不自动打开工作区。
 - 对话的历史读写、工具执行、MCP 配置一律以对话自己的工作目录为准，不读进程级全局值。
 - 浮窗模式只呈现活动对话，且其工作目录等于活动工作目录。
 - VS Code 宿主不参与本能力。
@@ -317,6 +326,10 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
     偏好设置窗口录制改键后新组合生效、菜单展示同步。
 14. 标签页右键「打开终端」仅远程工作区可用（本地工作区同位置为「打开命令行」）；打开后
     首标签自动连上远端 shell，关闭工作区时其终端窗口一并关闭。
+15. 每个工作区的代理身份为「机器名:路径」；`@` 候选排除来源视图自己的工作区。
+16. `Agent.target` 指向另一工作区时，子代理对话出现在目标工作区；目标工作区列表里
+    占位父对话把子代理挂在发起方会话下，点击占位页可跳回发起方对话。
+17. 发起方 abort 能中止目标工作区的跨工作区子代理；目标不可达时按结束收敛。
 
 ---
 
@@ -430,6 +443,11 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | 项目根解析 | 宿主侧索引 `src/shared/history/Config.ts` 的 `getSessionWorkspace` / `setSessionWorkspace`（权威表在 Core 进程内：目录是对话的属性） |
 | 宿主工作目录传递 | `src/host/ui/webviewMessageHandler.ts` 的 `ensureSessionWorkspace`：新建 / 加载对话时按来源视图登记会话工作目录；`src/host/UIHost.ts` 的 `WorkspaceProvider.getWorkspacePath` 提供宿主当前目录（对话列表、Spin 设计器消费） |
 | 聊天视图工作目录 | `electron/ChatViewManager.ts` 的 `createView`（`--workspace=` 参数） |
+| 工作区代理身份 | `src/host/workspaceIdentity.ts` 的 `resolveMachineName` / `workspaceAgentId`；`src/host/ui/webviewMessageHandler.ts` 的 `handleRequestWorkspaces` |
+| 跨工作区派发 | `src/host/WebViewUI.ts` 的 `requestCrossWorkspaceAgent`（`CoreRequest.crossWorkspaceAgentRequested`）；`src/host/crossWorkspaceRouting.ts` 的 `resolveCrossWorkspaceTarget` |
+| 跨工作区子代理会话 | `core-rs/src/engine.rs` 的 `start_remote_sub_agent` / `spawn_remote_agent`；`core-rs/src/history.rs` 的 `create_remote_sub_agent_metadata` |
+| 占位父对话 | `core-rs/src/history.rs` 与 `src/shared/history/Conversation.ts` 的列表派生；`electron/sidebar/main.ts` 的占位行渲染 |
+| 跨工作区跳转 | `electron/main.ts` 的 `showCrossWorkspacePlaceholder` / `jumpToCrossWorkspaceConversation`；`electron/chatPlaceholderHtml.ts` 的 `crossWorkspaceAgent` |
 | 工具工作目录 | `src/shared/tools/Tool.ts` 的 `ToolUseContext.cwd`（Core 侧工具执行以它为基准展开相对路径） |
 | 引擎 cwd | Core 进程内的会话引擎（`core-rs/src/engine.rs`，随会话工作目录派生） |
 | 浮窗模式 | `electron/main.ts` 的 `applyWindowMode` / `canToggleWindowMode` / `workspaceDisplayName` |

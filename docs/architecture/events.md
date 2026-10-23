@@ -25,9 +25,7 @@ last_reviewed: 2026-10-20
 
 ## 1. 总线契约
 
-位置：类型在 `src/shared/AssistantEventBus.ts`（TS 侧唯一来源）；Core 侧的对应实现
-在 Core 进程（`core-rs/`），宿主侧实现是 `Client` 之下的帧通道总线
-（`src/host/standalone/StandaloneEventBus.ts`）。
+位置：类型在 `src/shared/AssistantEventBus.ts`（TS 侧唯一来源）；Core 侧的对应实现在 Core 进程（`core-rs/`），宿主侧实现是 `Client` 之下的帧通道总线（`src/host/standalone/StandaloneEventBus.ts`）。
 
 core 与 UI **不互相引用**，只通过总线上的事件耦合。事件类型是两边唯一的公共词汇表。
 
@@ -48,9 +46,7 @@ flowchart LR
   SUB -->|"回调 core 侧订阅者"| CORE
 ```
 
-**总线是 core 与 UI 之间唯一的边**：两边共享的只有**数据**（事件类型），不共享**行为**
-（方法签名 + 调用时序）。core 不 import UI 的契约类型，也不需要知道「谁在处理」；
-UI 可以被替换，也可以只订阅自己关心的事件。
+**总线是 core 与 UI 之间唯一的边**：两边共享的只有**数据**（事件类型），不共享**行为**（方法签名 + 调用时序）。core 不 import UI 的契约类型，也不需要知道「谁在处理」；UI 可以被替换，也可以只订阅自己关心的事件。
 
 `CoreEvent` 是一个判别联合，**不按「渲染 / 控制」分组**——事件是纯数据，分组只会多一层
 没有语义的包装；「谁来处理」由订阅方（`WebViewUI`）在 `onCoreEvents` 里决定，
@@ -92,13 +88,13 @@ export type CoreRequestHandlers = {
 
 ## 2. 事件词汇表
 
-四组词汇表，共 66 个事件：
+四组词汇表，共 73 个事件：
 
 | 词汇表 | 方向 | 语义 | 数量 | 处理方 |
 | --- | --- | --- | --- | --- |
-| `CoreEvent` | core → UI | 单向事实通知 | 28 | `WebViewUI`（`onCoreEvents` 映射表） |
-| `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 2 | `WebViewUI`（`onCoreRequests` 映射表） |
-| `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 23 | Core 进程的 `dispatch_ui_event` 分派 |
+| `CoreEvent` | core → UI | 单向事实通知 | 31 | `WebViewUI`（`onCoreEvents` 映射表） |
+| `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 3 | `WebViewUI`（`onCoreRequests` 映射表） |
+| `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 26 | Core 进程的 `dispatch_ui_event` 分派 |
 | `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 13 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
 
 `UiRequest` 的成员、两侧应答与宿主侧统一入口（`coreFacts`）见
@@ -114,14 +110,13 @@ export type CoreRequestHandlers = {
 | 变化频率 | 低（落盘 / 改名 / 删除 / 新建） | 高（查询开始结束、等用户、用户响应） |
 | 消费者 | webview 子对话树、Electron 原生侧栏 | VS Code webview 对话树流水灯、Electron 侧栏流水灯、系统托盘状态点、两端的 abort 按钮 |
 
-两者**不合并为一条流**：把 `idle` / `waiting` 贴到磁盘列表上一起推送，会让列表接口失真
-（磁盘元数据里混着运行时状态），且每次状态变化都要重读一遍盘。各自只在自己变化时推。
+两者**不合并为一条流**：把 `idle` / `waiting` 贴到磁盘列表上一起推送，会让列表接口失真（磁盘元数据里混着运行时状态），且每次状态变化都要重读一遍盘。各自只在自己变化时推。
 
 `sessionRuntimeChanged` 推**全量**（所有已知会话的状态）而不是增量：会话数量是几十的量级，
 全量让消费者不必自己维护状态表，也不会因为丢一条增量而永久错位。
 
 `CoreRequest` 的结果类型由 `CoreRequestResultMap` 约束（`toolPermissionRequested → PermissionResult`、
-`userChoice → { index; reply? }`）；`request<T>()` 的泛型签名据此把请求类型与结果类型一一对应，
+`userChoice → { index; reply? }`、`crossWorkspaceAgentRequested → { sessionId } / { local: true } / { error }`）；`request<T>()` 的泛型签名据此把请求类型与结果类型一一对应，
 调用点不需要手动收窄。
 
 `SessionRuntimeState` 只放 core 能提供的**根事实**（`sessionId` / `idle` / `waiting` /
@@ -129,8 +124,7 @@ export type CoreRequestHandlers = {
 来源合并出的派生字段（`pendingCompact` 不参与），颜色 / 可点性等表现由消费者推导（[principles.md 第 8 节](principles.md#8-契约只写现状派生字段从根字段推导)）。宿主自己的界面
 状态（如 Electron 的「视图已打开」）由宿主自己维护，不混进来。
 
-本节以下是逐事件的**完整清单**：每个事件的载荷、触发点、处理方，以及最终转成的
-wire message（若该事件会产生 webview 协议消息）。命名规则见第 4 节。
+本节以下是逐事件的**完整清单**：每个事件的载荷、触发点、处理方，以及最终转成的wire message（若该事件会产生 webview 协议消息）。命名规则见第 4 节。
 
 ### 2.1 CoreEvent（core → UI，单向）
 
@@ -167,6 +161,9 @@ wire message（若该事件会产生 webview 协议消息）。命名规则见�
 | 25 | `notice` | `sessionId`, `key`, `params`, `level` | `commands.rs`、`spin.rs`、`spin_host.rs`（瞬时状态提示：键 + 参数） | `onNotice` | `notice`（webview 用翻译表渲染成瞬时提示，不进消息流） |
 | 26 | `conversationSpaceCleared` | `dirName`（对话空间目录名）, `result`（`complete` 带删除统计 / `error` 带原因） | `main.rs`（`conversationSpaceCleared` UiEvent 清空完成 / 失败后的执行回执） | `onConversationSpaceCleared` | `conversationSpaceCleared`（`complete`）/ `conversationSpacesError`（`error`）——设置面板解除「删除中」的唯一信号 |
 | 27 | `workspaceFileChanged` | `watchId`, `path`, `kind`（`changed` / `deleted` / `error`）, `mtimeMs`, `size`, `error`（无错误为 `null`） | `file_watch.rs`（notify 监听父目录 + 50ms 去抖；按目标文件最终状态判定 changed / deleted，watcher 错误报 error） | `onWorkspaceFileChanged`（转交宿主，不投递 webview） | 无（不投递到 webview） |
+| 28 | `crossWorkspaceAgentReplyRequested` | `sessionId`（发起方会话）, `fromSessionId`, `content` | `engine.rs`（目标工作区 Core 的 `deliver_agent_reply`：跨工作区子代理调用 Reply 工具，目标会话不在本进程） | `onCrossWorkspaceAgentReplyRequested`（转成 `UiEvent.agentReplyReceived`，按会话路由回发起方 Connection） | 无（跨 Core 转发，不投递 webview） |
+| 29 | `crossWorkspaceAgentAbortRequested` | `sessionId`（远程子代理会话 id） | `engine.rs`（`abort_session_scope`：对登记为远程的子代理发中止请求） | `onCrossWorkspaceAgentAbortRequested`（按 link 表找到目标 Connection 下发 `UiEvent.abortRequested`） | 无（跨 Core 转发） |
+| 30 | `crossWorkspaceAgentEnded` | `sessionId`（发起方会话）, `subSessionId` | `engine.rs`（`run_sub_agent` 收尾：跨工作区子代理结束 / 中止 / 失败） | `onCrossWorkspaceAgentEnded`（转成 `UiEvent.crossWorkspaceAgentCompleted`） | 无（跨 Core 转发） |
 
 > 第 1–10 项是渲染类 handler，第 11–27 项是控制面与事实通知 handler——这条界线只是 `WebViewUI` 内部的分区，不是事件类型的分组。
 >
@@ -182,6 +179,7 @@ wire message（若该事件会产生 webview 协议消息）。命名规则见�
 | --- | --- | --- | --- | --- | --- |
 | 1 | `toolPermissionRequested` | `sessionId`, `toolUseId`, `toolName`, `permResult`, `displayArgs`, `agentMode` | `engine.rs`（工具执行前，权限规则已按 agentMode 加工完） | `requestToolPermission` | `PermissionResult`（Edit / Write 的 `beforeContent` / `afterContent` 等展示字段在 auto / risk 自动放行后仍保留；`agentMode` 供 UI 判断是否打开宿主侧 diff，见[docs/architecture/host-ui-modules.md 第 2 节](host-ui-modules.md#2-toolhandler)） |
 | 2 | `userChoice` | `sessionId`, `options: UserChoiceOptions` | `engine.rs` 的 `waiting_request`（权限确认需要用户选择时） | `requestUserChoice` | `{ index: number; reply?: string }` |
+| 3 | `crossWorkspaceAgentRequested` | `sessionId`（发起方会话）, `targetWorkspaceId`, `role`, `prompt`, `description`, `originTitle` | `engine.rs` 的 `spawn_remote_agent`（`Agent` 带 `target` 时阻塞等宿主应答） | `requestCrossWorkspaceAgent`（解析目标工作区身份 → 目标 Connection 下发 `UiEvent.remoteSubAgentStarted`） | `{ sessionId }` / `{ local: true }` / `{ error }` |
 
 结果类型的映射写在 `CoreRequestResultMap`（第 2 节），保证 handler 返回类型与请求一一对应。
 超时口径见第 6 节。
@@ -199,8 +197,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 
 ### 2.3 UiEvent（UI → core，单向）
 
-「UI 侧触发点」列是发起该事件的位置：多数是 webview 协议消息名（由 `WebviewMessageHandler`
-解析后翻译成事件），少数由宿主代码直接发起（`WebViewUI` / `extension.ts` / `electron/main.ts`）。
+「UI 侧触发点」列是发起该事件的位置：多数是 webview 协议消息名（由 `WebviewMessageHandler`解析后翻译成事件），少数由宿主代码直接发起（`WebViewUI` / `extension.ts` / `electron/main.ts`）。
 
 | # | `type` | 载荷 | UI 侧触发点 | core 侧消费方 |
 | --- | --- | --- | --- | --- |
@@ -221,12 +218,15 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 15 | `mcpEnabledChanged` | `sessionId`, `name`, `enabled` | `setMcpEnabled` | `mcp_config::set_session_mcp_enabled` + `mcp::on_session_enabled_changed` → `sessionConfigChanged`（差量同步完成后） |
 | 16 | `mcpEnabledListChanged` | `sessionId`, `names`（**完整启用列表**，去重、保留顺序） | `setMcpEnabledList`（设置面板「应用到当前对话」）；宿主保存默认配置时直接发（写盘前先把当前对话钉在它当前的列表上） | `mcp_config::write_session_enabled` + `mcp::on_session_enabled_changed` → `sessionConfigChanged`（差量同步完成后）；与 `mcpEnabledChanged` 是同一条事实的两个粒度 |
 | 17 | `editRolledBack` | `sessionId`, `toolUseId`, `direction`, `filePath?` | `rollbackEdit` | `rollback.rs` 的 `rollback_edit`（`filePath` 作为 `input.file_path` 缺失时的兜底路径） |
-| 18 | `hostEnvironmentProvided` | `extensionPath`, `logToConsole`, `configDirName`, `settings`, `mcpServers` | `bootstrapCore`（每个 Connection 建立时推送一次；此后每次配置写盘由 `SettingsStore` 订阅重推整份快照给所有 Connection） | `main.rs` 的 `on_host_environment` → `settings.rs` 的 `apply_from_host_environment` → `CoreEvent.coreReady` |
+| 18 | `hostEnvironmentProvided` | `extensionPath`, `logToConsole`, `configDirName`, `settings`, `mcpServers`, `crossWorkspaceAgent`（宿主是否支持跨工作区代理） | `bootstrapCore`（每个 Connection 建立时推送一次；此后每次配置写盘由 `SettingsStore` 订阅重推整份快照给所有 Connection） | `main.rs` 的 `on_host_environment` → `settings.rs` 的 `apply_from_host_environment` → `CoreEvent.coreReady` |
 | 19 | `userMessageSubmitted` | `sessionId`, `content`, `uuid`, `images?`, `filePath?`, `fileSelectedLines?`, `fileHidden?`, `agentMode?`, `thinkingMode?`, `model?`, `webSearch?`, `workspacePath?`, `deferEcho?` | `sendMessage`（handler 组装载荷：wire 的 `selectedLines` 翻译成 `fileSelectedLines`；`uuid` 由宿主生成并回带；`workspacePath` 兜底 Core 重启恢复，完整链路见 [docs/features/user-message-pipeline.md](../features/user-message-pipeline.md)） | `Core::on_user_message` → 入队 / 落盘 / 命令解析 / 轮次消费 |
 | 20 | `userChoicePendingChanged` | `sessionId`, `pending: boolean` | `UserChoiceManager`（webview 弹出选择、用户应答、`dropSession` 释放视图时） | `Core::on_user_choice_pending` → 会话运行时状态的 `waiting` 来源（[docs/core/session-runtime.md](../core/session-runtime.md)） |
 | 21 | `sessionWorkspaceAssigned` | `sessionId`, `workspacePath: string \| null` | `WebviewMessageHandler.ensureSessionWorkspace`（会话首次被 core 解析目录之前）、`electron/main.ts` 的 `registerCoreSessionWorkspace`（多工作目录宿主按来源视图登记） | `config.rs` 的 `set_session_workspace`（`null` / 空串清除登记） |
 | 22 | `queuedMessageDiscarded` | `sessionId`, `uuid` | `discardQueuedMessage`（webview 排队项的「编辑 / 删除」，[docs/features/user-message-pipeline.md FR-003](../features/user-message-pipeline.md#fr-003排队状态与消息归属一致)） | `Core::on_queued_message_discarded`——按 `uuid` 丢弃引擎里尚未消费的同一消息，不置 abort 标记（不打断正在运行的查询） |
 | 23 | `bashBackgroundRequested` | `sessionId`, `toolUseId` | `backgroundBashTool`（Bash 卡片「转后台」按钮，[docs/features/background-bash.md](../features/background-bash.md)） | `Core::on_bash_background_requested`——按 `toolUseId` 触发该次前台执行转入后台，结果照常进上下文但暂停下一轮 LLM 请求；没有匹配的前台执行时幂等忽略 |
+| 24 | `remoteSubAgentStarted` | `sessionId`, `workspacePath`, `role`, `prompt`, `description`, `parentSessionId`, `originWorkspaceId`, `originSessionId`, `originTitle` | `WebViewUI.requestCrossWorkspaceAgent`（宿主直接下发到目标 Connection，不按会话路由——该会话在目标 Core 里尚不存在） | `Core::start_remote_sub_agent`（建子代理会话 + 写 `crossWorkspaceOrigin` meta + 起后台消费循环） |
+| 25 | `agentReplyReceived` | `sessionId`（发起方会话）, `fromSessionId`, `content` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentReplyRequested` 翻译成本事件） | `Core::on_agent_reply_received` → 普通 agent 消息入队（与本地子代理 Reply 同口径） |
+| 26 | `crossWorkspaceAgentCompleted` | `sessionId`（发起方会话）, `subSessionId` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentEnded` 翻译成本事件） | `Core::on_cross_workspace_agent_completed`（注销远程登记 + 释放并发槽位 + 刷新运行时快照） |
 
 **`changes` 数组而不是可选字段**：`history.updateConversationContext` 是**部分合并**语义
 （未列出的字段保持原值），用数组而不是一组可选字段，是为了同时满足「一次可带多个字段」
@@ -251,7 +251,7 @@ MCP 引用；两条事件都在发出前先登记会话工作目录（新会话�
 | 类别 | 消息 | 为什么不是 UiEvent |
 | --- | --- | --- |
 | 纯宿主操作 | `openFile` / `openMermaidPreview` / `openSpinDesign` / `openUrl` / `showVirtualDocument` / `requestToolMeta` / `debugLog` | 只操作宿主，不涉及 core 业务 |
-| 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestMcpServers` / `requestSkills` / `requestConversationSpaces` / `requestSessionRuntimeStates` / `requestSmartNaming` | 只读，不改变 core 状态；core 事实经 `coreFacts` 走同名 `UiRequest` 索取，配置类事实读宿主自己的 `SettingsStore`。其中 `requestMcpServers` / `requestSkills` 是**按会话**解析的（project skills / MCP 启用列表跟会话的工作目录走）：会话归属取 `trackedActiveSessionId`——多视图宿主必须由宿主在活动视图变化时同步（见 [docs/architecture/host-ui-modules.md 第 3 节](host-ui-modules.md#3-webviewmessagehandler)的 `setActiveSessionId`），否则会取到别的标签页的工作目录；`requestSkills` / `requestSessionRuntimeStates` 的回包按 `ctx.sender` 定向投递 |
+| 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestMcpServers` / `requestSkills` / `requestWorkspaces` / `requestConversationSpaces` / `requestSessionRuntimeStates` / `requestSmartNaming` | 只读，不改变 core 状态；core 事实经 `coreFacts` 走同名 `UiRequest` 索取，配置类事实读宿主自己的 `SettingsStore`。其中 `requestMcpServers` / `requestSkills` 是**按会话**解析的（project skills / MCP 启用列表跟会话的工作目录走）：会话归属取 `trackedActiveSessionId`——多视图宿主必须由宿主在活动视图变化时同步（见 [docs/architecture/host-ui-modules.md 第 3 节](host-ui-modules.md#3-webviewmessagehandler)的 `setActiveSessionId`），否则会取到别的标签页的工作目录；`requestSkills` / `requestSessionRuntimeStates` 的回包按 `ctx.sender` 定向投递 |
 | 环境查询 | `requestTheme` / `requestContextLimit` | 只读宿主环境并回包，不涉及 core 状态；按 `ctx.sender` 定向投递（`sender` 为 `null` 走默认路由，见[docs/architecture/host-ui-modules.md 第 3 节](host-ui-modules.md#3-webviewmessagehandler)） |
 | 列表查询 | `getConversations` | 走 `WebViewUiPort.refreshConversations()` → `ConversationManager.refresh()`（唯一产出 `conversationsData` 的地方，见[contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
 | 请求响应 | `respondUserChoice` | 走 `CoreRequest.userChoice` 的 Promise 回传 |

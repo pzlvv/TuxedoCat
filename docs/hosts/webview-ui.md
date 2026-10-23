@@ -192,7 +192,7 @@ thinking / text / tool 动画）。`ConversationLoadedExtra.hasActiveQuery` 由
 
 | 表 | 数量 | 内容 |
 | --- | --- | --- |
-| `onCoreEvents` | 28 | 10 个渲染（`message` / `streamMessage` / `streamEnd` / `toolCall` / `toolResult` / `toolArgsUpdated` / `toolProgress` / `aiBegin` / `aiEnd` / `messagesReplaced`）+ 18 个控制面与事实通知（`coreReady` / `queryBegin` / `queryEnd` / `titleChanged` / `sessionCreated` / `conversationListChanged` / `conversationSpaceCleared` / `sessionRuntimeChanged` / `workspaceFileChanged` / `spinDesignDataChanged` / `workModeChanged` / `highlightLanguagesUsed` / `compactBegin` / `compactEnd` / `commandDispatched` / `sessionConfigChanged` / `log` / `notice`） |
+| `onCoreEvents` | 31 | 10 个渲染（`message` / `streamMessage` / `streamEnd` / `toolCall` / `toolResult` / `toolArgsUpdated` / `toolProgress` / `aiBegin` / `aiEnd` / `messagesReplaced`）+ 21 个控制面与事实通知（`coreReady` / `queryBegin` / `queryEnd` / `titleChanged` / `sessionCreated` / `conversationListChanged` / `conversationSpaceCleared` / `sessionRuntimeChanged` / `workspaceFileChanged` / `spinDesignDataChanged` / `workModeChanged` / `highlightLanguagesUsed` / `compactBegin` / `compactEnd` / `commandDispatched` / `sessionConfigChanged` / `log` / `notice` / `crossWorkspaceAgentReplyRequested` / `crossWorkspaceAgentAbortRequested` / `crossWorkspaceAgentEnded`） |
 | `onCoreRequests` | 2 | `toolPermissionRequested` → `requestToolPermission`；`userChoice` → `requestUserChoice` |
 
 映射表把 `CoreEvent` 的 `e` 拆成位置参数后转调同名 handler，handler 自身保持

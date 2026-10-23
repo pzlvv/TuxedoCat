@@ -145,6 +145,14 @@ export function handleConfigSetModels(
   }
 }
 
+export function handleConfigSetWorkspaces(
+  msg: Extract<HostToWebviewWire, { type: 'setWorkspaces' }>,
+  ctx: HandlerContext,
+): void {
+  const { props } = ctx;
+  props.setWorkspaces(msg.workspaces);
+}
+
 export function handleConfigSetSkills(
   msg: Extract<HostToWebviewWire, { type: 'setSkills' }>,
   ctx: HandlerContext,

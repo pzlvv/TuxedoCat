@@ -57,6 +57,8 @@ import {
   type WorkspaceRef,
 } from '../src/host/workspaceRef.js';
 import { getChatPlaceholderHtml, type ChatPlaceholderReason } from './chatPlaceholderHtml.js';
+import { resolveMachineName, resolveWorkspaceByIdentity } from '../src/host/workspaceIdentity.js';
+import { hostname } from 'os';
 import { recordKnownHostFingerprint, SshHostKeyError } from '../src/host/standalone/sshClient.js';
 import { WorkspaceAvailabilityState } from './workspaceAvailability.js';
 import {
@@ -3815,6 +3817,67 @@ function isWorkspaceUsableForConversation(workspace: string | undefined): boolea
 }
 
 /**
+ * 占位父对话 id 前缀（specs/022 FR-004）：`ph_<发起方会话 id>`。
+ * 占位对话不是真实会话——没有 meta / jsonl，不建立运行时，打开只显示跳转页。
+ */
+const PLACEHOLDER_SESSION_PREFIX = 'ph_';
+
+/** 当前聊天区显示的跨工作区占位页的跳转目标；null = 不是占位页 */
+let crossWorkspacePlaceholderJump: { workspaceId: string; sessionId: string } | null = null;
+
+/**
+ * 打开跨工作区占位页（specs/022 FR-004/FR-005）。
+ *
+ * 跳转目标从占位 id 反查：`ph_<originSessionId>` → 宿主会话工作目录索引 → 打开集合。
+ * 发起方工作区已关闭时链接不可用（页面展示原因，不给按钮），不自动打开工作区。
+ */
+function showCrossWorkspacePlaceholder(
+  sessionId: string,
+  origin?: { workspaceId: string; sessionId: string; title: string },
+): void {
+  const originSessionId = sessionId.startsWith(PLACEHOLDER_SESSION_PREFIX)
+    ? sessionId.slice(PLACEHOLDER_SESSION_PREFIX.length)
+    : '';
+  // 侧栏行携带的来源（列表派生自子代理 meta，重启后仍可用）；缺省按会话索引反查
+  let originRef = origin
+    ? openWorkspaces.find((candidate) => refKey(candidate) === origin.workspaceId)
+    : undefined;
+  if (!origin && originSessionId) {
+    syncSessionWorkspaceIndex();
+    const originPath = sessionWorkspaces.get(originSessionId);
+    originRef = originPath
+      ? openWorkspaces.find((candidate) => workspacePathMatches(candidate, originPath))
+      : undefined;
+  }
+  const jumpSessionId = origin?.sessionId ?? originSessionId;
+  crossWorkspacePlaceholderJump = originRef && jumpSessionId
+    ? { workspaceId: refKey(originRef), sessionId: jumpSessionId }
+    : null;
+  chatViews?.showChatPlaceholder(getChatPlaceholderHtml({
+    kind: 'crossWorkspaceAgent',
+    path: originRef ? refDisplay(originRef) : sessionId,
+    reason: null,
+    jump: crossWorkspacePlaceholderJump
+      ? { ...crossWorkspacePlaceholderJump, title: origin?.title ?? '' }
+      : null,
+  }));
+}
+
+/** 跳到另一个工作区的会话（切活动标签 + 开对话视图；目标工作区未打开时忽略） */
+function jumpToCrossWorkspaceConversation(workspaceId: string, sessionId: string): void {
+  const ref = openWorkspaces.find((candidate) => refKey(candidate) === workspaceId);
+  if (!ref) {
+    console.warn('[main] jump target workspace is not open:', workspaceId);
+    return;
+  }
+  crossWorkspacePlaceholderJump = null;
+  activateWorkspace(ref);
+  sessionWorkspaces.set(sessionId, ref.path);
+  void registerCoreSessionWorkspace(sessionId, ref.path);
+  chatViews?.openConversation(sessionId, refKey(ref), ref.path);
+}
+
+/**
  * 把聊天区对齐当前活动工作区（活动项变化 / 可用性变化时调用）：
  * - 可用 → 正常显示该目录的对话视图；
  * - 建链中 / 不可用 → **不显示对话列表与 webview**，改显占位页
@@ -3852,6 +3915,7 @@ function syncChatAreaForActiveWorkspace(): void {
       reason: availability === 'unavailable'
         ? (unavailableReasons.get(refKey(workspacePath)) ?? null)
         : null,
+      jump: null,
     }),
   );
 }
@@ -4396,8 +4460,30 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: W
   // webview 内点击子代理/回复/From 链接等跳转到指定会话：新起一个 webview 加载该对话
   if (message.type === 'openConversation') {
     if (sessionId) {
-      syncSessionWorkspaceIndex();
-      const workspace = sessionWorkspaces.get(sessionId);
+      crossWorkspacePlaceholderJump = null;
+      let workspace: string | undefined;
+      if (message.targetWorkspaceId) {
+        // 跨工作区跳转（specs/022 FR-005）：按代理身份解析打开集合，未打开 / 歧义都忽略
+        const machineName = resolveMachineName(process.platform, process.env, hostname());
+        const resolved = resolveWorkspaceByIdentity(
+          openWorkspaces,
+          message.targetWorkspaceId,
+          machineName,
+        );
+        if (resolved.kind !== 'match') {
+          console.warn(
+            '[main] ignore cross-workspace jump:',
+            message.targetWorkspaceId,
+            resolved.kind,
+          );
+          return;
+        }
+        workspace = resolved.ref.path;
+        sessionWorkspaces.set(sessionId, workspace);
+      } else {
+        syncSessionWorkspaceIndex();
+        workspace = sessionWorkspaces.get(sessionId);
+      }
       // 会话所属目录建链中 / 不可用：不开对话视图（聊天区由占位页占据）
       if (!isWorkspaceUsableForConversation(workspace)) {
         console.warn('[main] ignore open-conversation for non-available workspace:', workspace);
@@ -4653,6 +4739,12 @@ function setupIpc(): void {
     if (!chatViews?.isChatPlaceholderWebContents(event.sender)) return;
     if (workspacePath) void reconnectWorkspace(refKey(workspacePath));
   });
+  // 跨工作区占位页的「跳转到发起方对话」（specs/022 FR-005）
+  ipcMain.on('chat:jump-to-origin', (event) => {
+    if (!chatViews?.isChatPlaceholderWebContents(event.sender)) return;
+    const jump = crossWorkspacePlaceholderJump;
+    if (jump) jumpToCrossWorkspaceConversation(jump.workspaceId, jump.sessionId);
+  });
 
   // 视图流：已打开会话集合（owner 是 ChatViewManager）
   ipcMain.handle('sidebar:get-loaded-sessions', () => {
@@ -4718,8 +4810,22 @@ function setupIpc(): void {
     if (typeof p === 'string' && p) void closeWorkspace(p);
   });
 
-  ipcMain.on('sidebar:open-conversation', (_event, sessionId: string, project?: string) => {
+  ipcMain.on('sidebar:open-conversation', (
+    _event,
+    sessionId: string,
+    project?: string,
+    placeholder?: { workspaceId: string; sessionId: string; title: string },
+  ) => {
     if (typeof sessionId === 'string' && sessionId) {
+      // 跨工作区占位父对话（specs/022 FR-004）：不加载会话，只显示跳转页
+      if (sessionId.startsWith(PLACEHOLDER_SESSION_PREFIX)) {
+        showCrossWorkspacePlaceholder(
+          sessionId,
+          placeholder && typeof placeholder === 'object' ? placeholder : undefined,
+        );
+        return;
+      }
+      crossWorkspacePlaceholderJump = null;
       if (typeof project === 'string' && project) {
         // 只接受仍处于打开集合中的目录：陈旧列表项（工作目录已关闭）不得把
         // 会话重新登记到已关闭目录，否则会打开一张没有对应标签页的视图
@@ -5152,6 +5258,8 @@ function initCore(): void {
     },
     logToConsole: true,
     extensionPath: APP_ROOT,
+    // Electron 多工作区宿主：支持跨工作区代理（specs/022 FR-009）
+    crossWorkspaceAgent: true,
   });
 
   // 订阅 Connection 生命周期：启动恢复 / 手动重连的建连失败（从未就绪）在此落成

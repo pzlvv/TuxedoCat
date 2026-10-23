@@ -27,6 +27,8 @@ pub struct HostEnvironment {
     pub log_to_console: bool,
     /// 配置目录名（`~/<configDirName>`）
     pub config_dir_name: String,
+    /// 宿主是否支持跨工作区代理（specs/022 FR-009）：Electron true，VS Code / TUI false。
+    pub cross_workspace_agent: bool,
 }
 
 static HOST_ENV: Mutex<Option<HostEnvironment>> = Mutex::new(None);
@@ -39,6 +41,16 @@ pub fn set_host_environment(env: HostEnvironment) {
 
 pub fn host_environment() -> Option<HostEnvironment> {
     HOST_ENV.lock().unwrap().clone()
+}
+
+/// 宿主是否支持跨工作区代理（specs/022 FR-009）；快照未到达时按不支持处理。
+pub fn cross_workspace_agent() -> bool {
+    HOST_ENV
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|env| env.cross_workspace_agent)
+        .unwrap_or(false)
 }
 
 pub fn extension_path() -> Result<String, String> {

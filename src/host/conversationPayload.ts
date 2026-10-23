@@ -23,6 +23,8 @@ export interface ConversationLoadedExtra {
   pendingToolUseIds: string[];
   savedContext?: any;
   parentSessionId?: string;
+  /** 跨工作区子代理的来源（specs/022）：webview 的「返回父对话」按它跨工作区跳转 */
+  crossWorkspaceOrigin?: { workspaceId: string; sessionId: string; title: string };
   /** 会话询问模式；宿主无法解析时为 undefined，webview 按「尚未到达」处理 */
   agentMode?: 'manual' | 'risk' | 'auto';
   /** 会话工作模式（core 加载结果携带；spin 会话加载后输入框保持禁用，specs/016 FR-005） */
@@ -115,6 +117,7 @@ export function buildConversationLoadedPayload(
     pendingToolUseIds: extra.pendingToolUseIds,
     savedContext: extra.savedContext,
     parentSessionId: extra.parentSessionId,
+    crossWorkspaceOrigin: extra.crossWorkspaceOrigin,
     agentMode: extra.agentMode,
     workMode: extra.workMode,
     hasActiveQuery: extra.hasActiveQuery,

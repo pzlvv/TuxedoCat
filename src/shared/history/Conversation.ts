@@ -266,6 +266,16 @@ export interface ConversationMetadata {
   role?: string;
   /** 是否涉及远程通信（跨节点消息发送/接收） */
   isRemote?: boolean;
+  /**
+   * 跨工作区子代理的来源（specs/022 FR-003）：目标工作区 Core 写入，
+   * 列表读取据此派生占位父对话。
+   */
+  crossWorkspaceOrigin?: { workspaceId: string; sessionId: string; title: string };
+  /**
+   * 占位父对话（specs/022 FR-004）：由带 `crossWorkspaceOrigin` 的子代理在列表读取时
+   * 派生，不落独立 meta 文件；不加载消息、不建立运行时。
+   */
+  placeholder?: { workspaceId: string; sessionId: string; title: string };
   /** 当前对话使用的模型名称 */
   model?: string;
   /** 当前对话使用的模型所属 provider key（模型 + provider 一起才能完整表征一个模型） */
@@ -853,6 +863,27 @@ export async function loadConversationList(workspacePath: string | undefined): P
         console.error(`[Conversation] Failed to load conversation from ${file}:`, error);
       }
     }
+
+    // specs/022 FR-004：跨工作区子代理的占位父对话由子代理 meta 派生（与 core-rs 的
+    // `load_conversation_list` 同口径），不落独立文件；子对话删除后派生条目自然消失。
+    const present = new Set(conversations.map((item) => item.sessionId));
+    const placeholders: ConversationMetadata[] = [];
+    for (const child of conversations) {
+      const origin = child.crossWorkspaceOrigin;
+      const parent = child.parentSessionId;
+      if (!origin || !parent || present.has(parent)) continue;
+      if (placeholders.some((item) => item.sessionId === parent)) continue;
+      placeholders.push({
+        sessionId: parent,
+        project: currentProject,
+        title: origin.title,
+        createdAt: child.createdAt,
+        updatedAt: child.createdAt,
+        messageCount: 0,
+        placeholder: origin,
+      });
+    }
+    conversations.push(...placeholders);
 
     // 按修改时间（最后一条用户消息）倒序排序；缺失时回退到创建时间
     conversations.sort(

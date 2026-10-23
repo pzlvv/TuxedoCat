@@ -132,6 +132,7 @@ function createClientHarness(): ClientHarness {
       configDirName: CONFIG_DIR_NAME,
       settings: emptySettingsSnapshot(),
       mcpServers: [],
+      crossWorkspaceAgent: false,
     }),
     openChannel: () => {
       const channel = createRecordingBus();
@@ -174,10 +175,14 @@ function createClientHarness(): ClientHarness {
     sessionConfigChanged: () => undefined,
     notice: () => undefined,
     log: () => undefined,
+    crossWorkspaceAgentReplyRequested: () => undefined,
+    crossWorkspaceAgentAbortRequested: () => undefined,
+    crossWorkspaceAgentEnded: () => undefined,
   });
   client.onCoreRequests({
     toolPermissionRequested: async () => ({ behavior: 'allow' }),
     userChoice: async () => ({ index: 0 }),
+    crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }),
   });
 
   return {
@@ -237,6 +242,7 @@ async function run(): Promise<void> {
       configDirName: CONFIG_DIR_NAME,
       settings: emptySettingsSnapshot(),
       mcpServers: [],
+      crossWorkspaceAgent: false,
     });
     check(
       '配置快照推给每个 Connection',
@@ -456,6 +462,7 @@ async function run(): Promise<void> {
       log: () => undefined,
       logToConsole: false,
       extensionPath: '/tmp/ext',
+      crossWorkspaceAgent: false,
       openStandaloneChannel: () => {
         const bus = createStandaloneCoreBus({
           binaryPath: process.execPath,

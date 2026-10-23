@@ -74,6 +74,11 @@ interface ConversationMeta {
   role?: string;
   /** 该对话所属的工作目录（绝对路径）：打开对话时回传主进程，按对话解析工作目录 */
   project?: string;
+  /**
+   * 跨工作区子代理的占位父对话（specs/022 FR-004）：由 core 列表派生，不提供
+   * 重命名 / 智能命名 / 删除入口；点击由主进程显示跳转页。
+   */
+  placeholder?: { workspaceId: string; sessionId: string; title: string };
 }
 
 /** 工作区项（主进程取好目录名下发；id 是稳定身份，path 是展示路径） */
@@ -125,7 +130,11 @@ interface SidebarAPI {
   openWorkspace: (id: string) => void;
   activateWorkspace: (path: string) => void;
   closeWorkspace: (path: string) => void;
-  openConversation: (sessionId: string, project?: string) => void;
+  openConversation: (
+    sessionId: string,
+    project?: string,
+    placeholder?: { workspaceId: string; sessionId: string; title: string },
+  ) => void;
   newConversation: () => void;
   deleteConversation: (sessionId: string) => Promise<{ ok: boolean; error?: string }>;
   closeConversation: (sessionId: string) => void;
@@ -555,7 +564,9 @@ function render(): void {
 }
 
 function itemHtml(c: ConversationMeta, depth: number, childCount: number, isExpanded: boolean): string {
-  const title = c.title && c.title.trim() ? c.title : '(未命名对话)';
+  const rawTitle = c.title && c.title.trim() ? c.title : '(未命名对话)';
+  // 占位父对话：标注它是跨工作区子代理的容器（specs/022 FR-004）
+  const title = c.placeholder ? `${rawTitle} · 跨工作区容器` : rawTitle;
   const roleTag = c.role && c.role !== 'Master' ? ` · ${escapeHtml(c.role)}` : '';
   // 已打开（视图层状态）与运行状态（core 运行时状态）来自各自的流，不挂在列表项上
   const dot = loadedSessions.has(c.sessionId) ? '<span class="loaded-dot" title="已打开"></span>' : '';
@@ -598,7 +609,9 @@ function itemHtml(c: ConversationMeta, depth: number, childCount: number, isExpa
   //   不提供重命名 / 智能命名 / 删除——子代理历史由父会话管理，避免误删。
   //   其余 3 格用不可见占位符占住，保证关闭按钮仍在第 2 列第 2 行，
   //   与根对话的关闭按钮位置完全一致（只是其余 3 个按钮不显示）。
-  const actionsHtml = isRenaming || isConfirming
+  const actionsHtml = c.placeholder
+    ? ''
+    : isRenaming || isConfirming
     ? ''
     : depth === 0
       ? `<div class="item-actions">
@@ -791,8 +804,10 @@ function bindListEvents(): void {
     const sessionId = item?.dataset.sessionId;
     if (!item || !sessionId) return;
     // 回传该对话自己的工作目录：主进程据此给聊天视图注入正确的 --workspace=
-    const project = conversations?.find((c) => c.sessionId === sessionId)?.project;
-    window.sidebarAPI?.openConversation(sessionId, project);
+    const entry = conversations?.find((c) => c.sessionId === sessionId);
+    const project = entry?.project;
+    // 占位父对话（specs/022 FR-004）：把来源工作区一并回传，主进程据此显示跳转页
+    window.sidebarAPI?.openConversation(sessionId, project, entry?.placeholder);
     setActive(sessionId);
   });
 

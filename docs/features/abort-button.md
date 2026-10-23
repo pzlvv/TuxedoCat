@@ -81,7 +81,10 @@ abort 按钮常驻输入区。它的可用性与颜色由**当前会话**的运�
    - 该会话的后台 Bash 任务与子代理**保持运行**。
 3. **前台无工作，但仍有后台 Bash 任务或子代理** → 中止它们：
    - 该会话的后台 Bash 任务全部终止，被中止任务的结果不再通知 LLM；
-   - 已登记子代理递归中止：每个子代理的前台查询、后台任务与下层子代理一并停止。
+   - 已登记子代理递归中止：每个子代理的前台查询、后台任务与下层子代理一并停止；
+   - **跨工作区子代理**（[cross-workspace-agent.md](cross-workspace-agent.md) FR-006）不在本进程：
+     发 `CoreEvent.crossWorkspaceAgentAbortRequested` 由宿主转发到目标工作区 Core；
+     目标不可达时按已结束收敛，不永久停在黄色态。
 4. **都为空** → 不做任何事（幂等）。
 
 常规会话的两阶段都幂等：重复点击不会误伤已经结束的工作。前台工作自然结束（LLM 返回或用户
@@ -100,7 +103,8 @@ abort 按钮常驻输入区。它的可用性与颜色由**当前会话**的运�
   `query` / `waiting` / `compacting` / `background` / `subagent`，变化时推**全量**
   `sessionRuntimeChanged` 快照。
 - 快照暴露**根事实**：`sessionId` / `idle` / `waiting` / `queryRunning` /
-  `compacting` / `backgroundRunning` / `subAgentRunning`，以及悬停明细成员
+  `compacting` / `backgroundRunning` / `subAgentRunning`（含跨工作区子代理：结束事件到达前
+  一律算运行中），以及悬停明细成员
   `backgroundTasks`（运行中后台任务清单）与 `subAgentDescription`（子代理创建时描述，
   specs/019——语义见 [session-runtime.md 第 2 节](../core/session-runtime.md#2-对外快照)）。
   颜色是表现，不进契约。

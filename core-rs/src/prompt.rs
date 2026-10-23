@@ -271,6 +271,7 @@ Launches a specialized sub-agent to handle complex, multi-step tasks autonomousl
 - `prompt` (string, required): The task for the agent to perform
 - `description` (string, optional): A short (3-5 word) description summarizing what the agent will do
 - `agentRole` (string, required): The role of the agent to spawn
+- `target` (string, optional): Target workspace agent ID (`hostname:path`). Omit to spawn the sub-agent in the current workspace; pass the identity of another open workspace to delegate there.
 
 Available agent roles (required):
 - "Master": Same capabilities as the main Agent (excluding the role capabilities listed above), used for handling tasks in an independent context.
@@ -280,6 +281,7 @@ Available agent roles (required):
 - Use when a task requires multiple steps that can be delegated
 - Use for research tasks that need independent investigation
 - Use for parallelizable work that benefits from isolation
+- When the user addresses another workspace with `@`, call this tool with `target` set to that workspace ID instead of doing the task in the current workspace
 - The sub-agent has its own isolated context and tool access
 
 **Important:**

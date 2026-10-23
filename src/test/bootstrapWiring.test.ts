@@ -61,6 +61,7 @@ async function run(): Promise<void> {
     locale: 'zh-CN',
     log: () => undefined,
     logToConsole: false,
+    crossWorkspaceAgent: false,
     extensionPath: '/tmp/ext',
     openStandaloneChannel: () => openChannel(),
   });

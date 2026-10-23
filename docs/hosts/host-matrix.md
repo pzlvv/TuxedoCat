@@ -157,7 +157,7 @@ export class ElectronUIHost implements UIHost {
 | | SingleWebViewConversationManager（`src/VSCodeConversationManager.ts`） | ElectronConversationManager（`electron/ElectronConversationManager.ts`） |
 | --- | --- | --- |
 | 构造依赖 | `host: UIHost` | `host: UIHost` + `sendToSidebar(channel, payload)`（侧栏出口，由 `main.ts` 注入）+ `activeWorkspaceKey: () => string`（活动工作区稳定 id，列表快照按它分份；缺省回退宿主工作路径）。广播给聊天视图走 `host.broadcastToWebviews`，不是独立依赖 |
-| `dispatchList` | `host.sendToWebview({ type: 'conversationsData', conversations })` | ① `sendToSidebar('sidebar:conversations-updated', list)` ② `host.sendToWebview({ type: 'conversationsData', ... })` |
+| `dispatchList` | `host.sendToWebview({ type: 'conversationsData', conversations })` | ① `sendToSidebar('sidebar:conversations-updated', list)` ② `host.sendToWebview({ type: 'conversationsData', ... })`；列表条目带 `placeholder`（跨工作区占位父对话，仅 Electron 会产生） |
 | `dispatchStates` | `host.sendToWebview({ type: 'sessionRuntimeStates', states })`（对话树流水灯 + abort 按钮） | ① `sendToSidebar('sidebar:session-states-updated', states)` ② `statusListener(states)`（托盘）③ 广播给所有聊天视图（abort 按钮） |
 | `setStatusListener` | 不注册 | `main.ts` 注入 `updateTrayStatusFromStates`：托盘状态点 + 「任务结束」闪烁；`updateCompletionAttentionFromStates`：「任务完成」未读呼吸；另驱动系统睡眠阻断（`sleepBlocker.update`） |
 | 空闲会话回收 | **承担**（计时 / 巡检 / 关闭动作分发，见[docs/architecture/contracts.md 第 4 节](../architecture/contracts.md#4-对话相关数据conversationmanager)） | 不承担 |

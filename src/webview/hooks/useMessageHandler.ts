@@ -8,7 +8,7 @@ import { profileLog } from '../debug';
 import { handleStreamShowThinkingAnimation, handleStreamAiEnd, handleStreamQueryBegin, handleStreamQueryEnd, handleStreamStreamMessage, handleStreamStreamEnd, handleStreamCompressProgress } from './handlers/streamHandlers';
 import { handleToolAddMessage, handleToolUpdateToolArgs, handleToolUpdateToolStatus, handleToolToolProgress, handleToolRequestUserChoice, handleToolToolMetaData } from './handlers/toolHandlers';
 import { handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationSetWorkMode, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationSessionCompletionAttention, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
-import { handleConfigSetTheme, handleConfigSetModel, handleConfigSetAgentMode, handleConfigSetPromptMode, handleConfigSetThinkingMode, handleConfigSetWebSearch, handleConfigSetMcpServers, handleConfigSetModels, handleConfigSetSkills, handleConfigContextLimitUpdated, handleConfigNotice, handleConfigSettingsDefaults, handleConfigProviderModelsResult, handleConfigSetNewConversationDefaults, handleConfigLlmConfigSaved, handleConfigShowLLMConfig, handleConfigBalanceUpdate, handleConfigFocusInput, handleConfigActivatePrewarmedView } from './handlers/configHandlers';
+import { handleConfigSetTheme, handleConfigSetModel, handleConfigSetAgentMode, handleConfigSetPromptMode, handleConfigSetThinkingMode, handleConfigSetWebSearch, handleConfigSetMcpServers, handleConfigSetModels, handleConfigSetSkills, handleConfigSetWorkspaces, handleConfigContextLimitUpdated, handleConfigNotice, handleConfigSettingsDefaults, handleConfigProviderModelsResult, handleConfigSetNewConversationDefaults, handleConfigLlmConfigSaved, handleConfigShowLLMConfig, handleConfigBalanceUpdate, handleConfigFocusInput, handleConfigActivatePrewarmedView } from './handlers/configHandlers';
 import type { HandlerContext } from './handlers/handlerContext';
 import { restoreQueuedMessageToInput } from './restoreQueuedMessage';
 
@@ -55,6 +55,8 @@ export interface UseMessageHandlerProps {
   setConversationTitle: (v: string) => void;
   setMaxContextTokens: (v: number | null) => void;
   setSkills: (v: Array<{ name: string; description: string; isBuiltin?: boolean }>) => void;
+  /** `@` 工作区候选（宿主已排除本工作区；specs/022 FR-007） */
+  setWorkspaces: (v: Array<{ id: string; path: string; displayName: string }>) => void;
   /** 呈现一条 core 产出的瞬时提示（键 + 参数，`docs/architecture/core-ui-separation.md` 第 4.9 节） */
   pushNotice: (key: string, params: Record<string, string | number>, level: 'info' | 'warn' | 'error') => void;
   /** MCP 服务器列表（含启用状态），由 extension 读取 mcp.json + settings.json 后下发 */
@@ -62,6 +64,8 @@ export interface UseMessageHandlerProps {
   setConversationDropdownOpen: (v: boolean) => void;
   setCurrentSessionId: (v: string | null) => void;
   setParentSessionId: (v: string | null) => void;
+  /** 跨工作区子代理的来源（specs/022）：返回父对话时跳到发起方工作区 */
+  setCrossWorkspaceOrigin: (v: { workspaceId: string; sessionId: string; title: string } | null) => void;
   /** 当前会话的子代理角色（conversationLoaded.metadata.role，specs/020 FR-005）；普通会话为 null */
   setSubAgentRole: (v: string | null) => void;
   /** 会话工作模式（spin = 输入框禁用；加载载荷与运行期 setWorkMode 都走这里） */
@@ -397,6 +401,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           break;
         case 'setSkills':
           handleConfigSetSkills(msg, ctx);
+          break;
+        case 'setWorkspaces':
+          handleConfigSetWorkspaces(msg, ctx);
           break;
         case 'contextLimitUpdated':
           handleConfigContextLimitUpdated(msg, ctx);

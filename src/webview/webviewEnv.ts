@@ -241,9 +241,13 @@ export function postMessage(msg: WebviewToHostMessage): boolean {
  * 子代理链接 / From 链接 / 返回父会话等任何入口都不得直接调用本函数——否则会绕过
  * loading，出现「有的跳转显示加载、有的不显示」的双路径不一致。
  */
-export function navigateToConversation(sessionId: string): boolean {
-  return postMessage({
-    type: openConversationModeOf(getEffectiveHostInfo()),
-    sessionId,
-  });
+export function navigateToConversation(
+  sessionId: string,
+  targetWorkspaceId: string | null = null,
+): boolean {
+  // 跨工作区跳转（specs/022 FR-005）只对多视图宿主成立：单视图宿主只有一个工作区。
+  if (openConversationModeOf(getEffectiveHostInfo()) === 'openConversation') {
+    return postMessage({ type: 'openConversation', sessionId, targetWorkspaceId });
+  }
+  return postMessage({ type: 'loadConversation', sessionId });
 }

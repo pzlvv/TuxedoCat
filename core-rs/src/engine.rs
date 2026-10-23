@@ -101,6 +101,17 @@ fn run_sub_agent(
     // 刷新对话列表：此时子代理消息已持久化，新子会话能正确出现在对话树里
     core.emit(json!({ "type": "conversationListChanged" }));
     core.emit_runtime();
+    // specs/022 FR-010：跨工作区子代理的运行时在目标工作区，结束要通知发起方 Core
+    // 注销远程登记并释放槽位；本进程从未取过槽位，不释放。
+    // 用进程级登记判断而不是会话状态：会话可能已被用户关闭（状态已释放）。
+    if let Some(origin_session_id) = crate::subagent::remote_origin_of(&sub_session_id) {
+        core.emit(json!({
+            "type": "crossWorkspaceAgentEnded",
+            "sessionId": origin_session_id,
+            "subSessionId": sub_session_id,
+        }));
+        return;
+    }
     // specs/005：子代理后台任务的唯一退出点——循环内各 break（完成 / 中止 /
     // Reminder 耗尽 / 会话消失）都落到这里，并发槽位在此释放并唤醒最早排队者
     crate::subagent::release_slot(&creator_session_id);
@@ -306,6 +317,24 @@ pub struct SessionState {
     /// `/skill` 命令。用户消息照常进上下文，随后注入一条 Skill tool_use +
     /// tool_result（技能正文），供本轮 LLM 读取。
     pub pending_skill_injection: Option<SkillInjection>,
+    /// 待注入的 `@` 工作区提醒（specs/022 FR-008）：轮次边界解析出 `@<身份>` 后置位，
+    /// `run_turn` 在用户消息之后落一条 silent reminder。
+    pub pending_mention_reminder: Option<String>,
+    /// 跨工作区子代理的来源（specs/022 FR-003）：目标工作区 Core 用它把 `Reply`
+    /// 回投到发起方会话。普通会话为 `None`。
+    pub cross_workspace_origin: Option<CrossWorkspaceOrigin>,
+}
+
+/// 跨工作区子代理的来源（specs/022）：发起方工作区身份 / 会话 id / 标题。
+///
+/// Core 侧只用 `session_id` 做回复回投与结束通知；`workspace_id` / `title` 是同一份
+/// 来源事实的其余字段，落进 `meta.json` 的 `crossWorkspaceOrigin` 供宿主派生占位条目。
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub struct CrossWorkspaceOrigin {
+    pub workspace_id: String,
+    pub session_id: String,
+    pub title: String,
 }
 
 /// 出队时解析出的 Skill 命令（对齐 `SkillDispatchInfo`）
@@ -365,6 +394,8 @@ impl SessionState {
             sub_agent_role: None,
             sub_agent_description: None,
             pending_skill_injection: None,
+            pending_mention_reminder: None,
+            cross_workspace_origin: None,
         }
     }
 
@@ -628,6 +659,11 @@ impl Core {
             }
         }
         for child in crate::subagent::list_for_creator(session_id) {
+            // specs/022 FR-006：跨工作区子代理没有本地会话状态，`is_idle_deep` 会把它
+            // 当空闲；结束事件到达前一律按「运行中」计入。
+            if crate::subagent::is_remote(&child) {
+                return false;
+            }
             if !Self::is_idle_deep(sessions, &child, visiting) {
                 return false;
             }
@@ -645,6 +681,10 @@ impl Core {
         session_id: &str,
     ) -> bool {
         for child in crate::subagent::list_for_creator(session_id) {
+            // specs/022 FR-006：远程子代理在结束事件到达前一直算忙
+            if crate::subagent::is_remote(&child) {
+                return true;
+            }
             if !Self::is_idle_deep(sessions, &child, &mut HashSet::new()) {
                 return true;
             }
@@ -803,6 +843,15 @@ impl Core {
         self.abort_foreground(session_id);
         self.abort_background_tasks(session_id);
         for child in crate::subagent::list_for_creator(session_id) {
+            // specs/022 FR-006：跨工作区子代理的运行时在目标工作区，本地没有它的会话
+            // 状态；发中止事件由宿主转发，不递归本地（递归只会 no-op）。
+            if crate::subagent::is_remote(&child) {
+                self.emit(json!({
+                    "type": "crossWorkspaceAgentAbortRequested",
+                    "sessionId": child,
+                }));
+                continue;
+            }
             self.abort_session_scope(&child, visited);
         }
     }
@@ -1048,10 +1097,14 @@ impl Core {
     /// `ReplyTool.call` 的 `targetEngine.submitMessage(message, 'agent', subAgentId)`。
     pub fn subagent_hooks(self: &Arc<Self>) -> tools::SubAgentHooks {
         let spawn_core = Arc::clone(self);
+        let spawn_remote_core = Arc::clone(self);
         let deliver_core = Arc::clone(self);
         tools::SubAgentHooks {
             spawn: Arc::new(move |request: tools::SubAgentRequest| {
                 spawn_core.create_sub_agent(request)
+            }),
+            spawn_remote: Arc::new(move |request: tools::SubAgentRequest| {
+                spawn_remote_core.spawn_remote_agent(request)
             }),
             deliver: Arc::new(
                 move |target: &str, content: &str, from: &str| -> Result<(), String> {
@@ -1059,6 +1112,57 @@ impl Core {
                 },
             ),
         }
+    }
+
+    /// 跨工作区派发子代理（specs/022 FR-002）：经宿主在目标工作区建会话。
+    ///
+    /// 阻塞等宿主应答：失败（目标未打开 / 歧义 / 目标 Core 不可达）直接返回工具错误，
+    /// 不创建任何会话。成功后把子会话登记进本地注册表，使 `subAgentRunning`、
+    /// `abort_session_scope` 与槽位释放覆盖它。
+    pub fn spawn_remote_agent(
+        self: &Arc<Self>,
+        request: tools::SubAgentRequest,
+    ) -> Result<String, String> {
+        let Some(target) = request.target.clone() else {
+            return Err("target is required for a cross-workspace agent".to_string());
+        };
+        let origin_title = self
+            .project_of(&request.creator_session_id)
+            .ok()
+            .and_then(|project| history::load_metadata(&request.creator_session_id, &project))
+            .and_then(|metadata| {
+                metadata
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        let payload = json!({
+            "type": "crossWorkspaceAgentRequested",
+            "sessionId": request.creator_session_id.clone(),
+            "targetWorkspaceId": target,
+            "role": request.role.clone(),
+            "prompt": request.prompt.clone(),
+            "description": request.description.clone(),
+            "originTitle": origin_title,
+        });
+        let Some(result) = self.plain_request(HostRenderRequest::new(payload)) else {
+            return Err("cross-workspace agent request failed: host did not respond".to_string());
+        };
+        if result.get("local").and_then(Value::as_bool) == Some(true) {
+            // target 就是当前工作区：按缺省策略建本机子代理（specs/022 FR-002）
+            return self.create_sub_agent(request);
+        }
+        if let Some(error) = result.get("error").and_then(Value::as_str) {
+            return Err(error.to_string());
+        }
+        let Some(sub_session_id) = result.get("sessionId").and_then(Value::as_str) else {
+            return Err("cross-workspace agent response is missing sessionId".to_string());
+        };
+        crate::subagent::register(sub_session_id, &request.creator_session_id);
+        crate::subagent::register_remote(sub_session_id, &request.creator_session_id, &target);
+        self.emit_runtime();
+        Ok(sub_session_id.to_string())
     }
 
     /// 创建子代理会话并启动它的消费循环（对齐 `AgentTool.call` 的 1–4 步）。
@@ -1156,6 +1260,120 @@ impl Core {
         Ok(sub_session_id)
     }
 
+    /// 在目标工作区创建跨工作区子代理会话并立即开始执行（specs/022 FR-003）。
+    ///
+    /// 由宿主经 `UiEvent.remoteSubAgentStarted` 下发到目标工作区 Core。会话级配置取
+    /// **目标工作区**的默认值（模型 / agentMode / 提示词预设 / 联网 / MCP），不继承发起方；
+    /// 非 Master 角色仍按既有规则固定 normal 预设、不联网、无 MCP。
+    pub fn start_remote_sub_agent(self: &Arc<Self>, event: &Value) -> Result<(), String> {
+        let field = |key: &str| -> String {
+            event
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        let session_id = field("sessionId");
+        let workspace_path = field("workspacePath");
+        let role = field("role");
+        let prompt = field("prompt");
+        let description = field("description");
+        let parent_session_id = field("parentSessionId");
+        let origin_workspace_id = field("originWorkspaceId");
+        let origin_session_id = field("originSessionId");
+        let origin_title = field("originTitle");
+        if session_id.is_empty() || workspace_path.is_empty() || origin_session_id.is_empty() {
+            return Err("remoteSubAgentStarted is missing required fields".to_string());
+        }
+        if !tools::SUB_AGENT_ROLES.contains(&role.as_str()) {
+            return Err(format!("remoteSubAgentStarted has an unknown role: {role}"));
+        }
+        config::set_session_workspace(&session_id, Some(workspace_path.clone()));
+
+        let state = self.session(&session_id);
+        let (model, provider) = {
+            let mut state = state.lock().unwrap();
+            state.project = Some(workspace_path.clone());
+            // 非 Master 角色：与本地子代理同口径（固定 normal / 不联网 / 无 MCP）。
+            if role != "Master" {
+                state.prompt_mode = Some("normal".to_string());
+                state.web_search = Some(false);
+            }
+            state.parent_session_id = Some(origin_session_id.clone());
+            state.sub_agent_role = Some(role.clone());
+            state.sub_agent_description = Some(description.clone());
+            state.system_prompt_prefix =
+                Some(prompt::sub_agent_communication_section(&origin_session_id));
+            state.cross_workspace_origin = Some(CrossWorkspaceOrigin {
+                workspace_id: origin_workspace_id.clone(),
+                session_id: origin_session_id.clone(),
+                title: origin_title.clone(),
+            });
+            state.running = true;
+            (state.model.clone(), state.provider.clone())
+        };
+
+        history::create_remote_sub_agent_metadata(
+            &session_id,
+            &workspace_path,
+            &description,
+            &parent_session_id,
+            &role,
+            &origin_workspace_id,
+            &origin_session_id,
+            &origin_title,
+            model.as_deref(),
+            provider.as_deref(),
+        )?;
+        let agent_mode = state.lock().unwrap().agent_mode.clone();
+        self.persist_context(&session_id, json!({ "key": "agentMode", "value": agent_mode }));
+
+        crate::subagent::register(&session_id, &origin_session_id);
+        crate::subagent::mark_remote_origin(&session_id, &origin_session_id);
+        self.emit_runtime();
+        self.emit(json!({ "type": "conversationListChanged" }));
+
+        let core = Arc::clone(self);
+        let worker_session = session_id.clone();
+        let worker_origin = origin_session_id.clone();
+        std::thread::spawn(move || {
+            run_sub_agent(core, worker_session, worker_origin, prompt);
+        });
+        Ok(())
+    }
+
+    /// 该会话的跨工作区来源（普通会话为 `None`）
+    fn cross_workspace_origin_of(&self, session_id: &str) -> Option<CrossWorkspaceOrigin> {
+        self.session_if_exists(session_id)
+            .and_then(|state| state.lock().unwrap().cross_workspace_origin.clone())
+    }
+
+    /// 跨工作区子代理的 Reply 到达发起方会话（specs/022 FR-003）：按普通 agent 消息入队。
+    pub fn on_agent_reply_received(
+        self: &Arc<Self>,
+        session_id: &str,
+        from_session_id: &str,
+        content: &str,
+    ) {
+        if let Err(error) = self.deliver_agent_reply(session_id, content, from_session_id) {
+            self.log(&format!(
+                "cross-workspace reply delivery failed ({session_id}): {error}"
+            ));
+        }
+    }
+
+    /// 跨工作区子代理结束（specs/022 FR-010）：注销远程登记、释放并发槽位、刷新运行时。
+    pub fn on_cross_workspace_agent_completed(
+        self: &Arc<Self>,
+        origin_session_id: &str,
+        sub_session_id: &str,
+    ) {
+        crate::subagent::unregister_remote(sub_session_id);
+        crate::subagent::unregister(sub_session_id);
+        crate::subagent::release_slot_if_held(origin_session_id);
+        self.emit_runtime();
+    }
+
     /// 登记一个由 SpinLoop 起的子代理（`from_session_id`）。
     ///
     /// 登记后它的 Reply 始终按 spin 语义处理（见 [`Self::deliver_agent_reply`]）：
@@ -1186,6 +1404,19 @@ impl Core {
         from_session_id: &str,
     ) -> Result<(), String> {
         let Some(state) = self.session_if_exists(target_session_id) else {
+            // specs/022 FR-003：跨工作区子代理的 Reply 目标是发起方会话——它在另一个
+            // Core 里。目标等于本会话的跨工作区来源时交给宿主回投，不当作「会话不存在」。
+            if let Some(origin) = self.cross_workspace_origin_of(from_session_id) {
+                if origin.session_id == target_session_id {
+                    self.emit(json!({
+                        "type": "crossWorkspaceAgentReplyRequested",
+                        "sessionId": target_session_id,
+                        "fromSessionId": from_session_id,
+                        "content": content,
+                    }));
+                    return Ok(());
+                }
+            }
             return Err(format!("目标会话 {target_session_id} 不存在"));
         };
 
@@ -2148,12 +2379,16 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
             CommandResolution::Skill => {}
             CommandResolution::None => {}
         }
+        // specs/022 FR-008：`@` 工作区命令与 `/` 命令同口径在轮次边界解析；
+        // reminder 在 `run_turn` 里紧跟用户消息落盘。
+        resolve_pending_mention(&state);
         // 取消（`abortRequested`）：清空队列并退出消费循环。
         {
             let mut guard = state.lock().unwrap();
             if guard.cancel.load(Ordering::Relaxed) {
                 guard.pending_user_message = None;
                 guard.pending_reminder = None;
+                guard.pending_mention_reminder = None;
                 // reminder 已被丢弃：标记一并清掉，否则会顺延抑制下一轮的兜底提醒。
                 guard.reminder_driven_run = false;
                 guard.agent_messages.clear();
@@ -2235,6 +2470,8 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
         // 出队时解析出的 Skill 注入（若有）：随本轮一起消费，注入发生在
         // 用户消息进上下文之后、query 之前（见 `run_turn` 的 1.5 步）。
         let skill_injection = state.lock().unwrap().pending_skill_injection.take();
+        // specs/022 FR-008：`@` 命令的 reminder 与 Skill 注入同一位置消费。
+        let mention_reminder = state.lock().unwrap().pending_mention_reminder.take();
 
         let result = match step {
             QueuedBatch::Reminder {
@@ -2251,6 +2488,7 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
                     &state,
                     user_message.as_ref(),
                     skill_injection,
+                    mention_reminder,
                 )
             }
             QueuedBatch::Message(message) => run_turn(
@@ -2259,6 +2497,7 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
                 &state,
                 Some(&message),
                 skill_injection,
+                mention_reminder,
             ),
             QueuedBatch::AutoMessages {
                 messages,
@@ -2273,6 +2512,7 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
                     &state,
                     user_message.as_ref(),
                     skill_injection,
+                    mention_reminder,
                 )
             }
         };
@@ -2663,6 +2903,63 @@ fn is_pending_user_command(state: &Arc<Mutex<SessionState>>) -> bool {
         .unwrap_or(false)
 }
 
+/// 解析 `@` 工作区命令的身份（specs/022 FR-008）。
+///
+/// 语法：去首尾空白后以 `@` 开头。身份两种形态——
+/// - 引号形态 `@"..."`：到下一个 `"` 止（支持含空格的路径）；
+/// - 非引号形态：到第一个空白（空格 / 制表 / 换行）止。
+///
+/// 身份之后的内容（可多行）是任务正文。
+fn parse_mention_identity(text: &str) -> Option<String> {
+    let trimmed = util::js_trim(text);
+    let rest = trimmed.strip_prefix('@')?;
+    let identity = if let Some(inner) = rest.strip_prefix('"') {
+        let end = inner.find('"')?;
+        &inner[..end]
+    } else {
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        &rest[..end]
+    };
+    if identity.is_empty() {
+        None
+    } else {
+        Some(identity.to_string())
+    }
+}
+
+/// `@` 命令的 reminder 文案（specs/022 FR-008）：点名目标身份与 `Agent.target`。
+fn build_mention_reminder(identity: &str) -> String {
+    format!(
+        "<Reminder>\n\
+         The user addressed workspace \"{identity}\" with @. Delegate this task to that workspace: \
+         call the Agent tool with target=\"{identity}\", prompt set to the user's task text, and an \
+         agentRole that fits the task. Do not execute the task in the current workspace.\n\
+         </Reminder>"
+    )
+}
+
+/// 轮次边界：待处理用户消息是 `@` 命令时，把 reminder 文案挂到会话状态上
+/// （`run_turn` 在用户消息之后落一条 silent reminder）。
+///
+/// 只在宿主声明支持跨工作区代理时生效（FR-009）；身份是否存在不在这里校验——
+/// 不存在时由 `Agent.target` 执行时报错（FR-008）。
+fn resolve_pending_mention(state: &Arc<Mutex<SessionState>>) {
+    if !crate::config::cross_workspace_agent() {
+        return;
+    }
+    let mut guard = state.lock().unwrap();
+    if guard.pending_mention_reminder.is_some() {
+        return;
+    }
+    let Some(message) = guard.pending_user_message.as_ref() else {
+        return;
+    };
+    let Some(identity) = parse_mention_identity(&message_text(message)) else {
+        return;
+    };
+    guard.pending_mention_reminder = Some(build_mention_reminder(&identity));
+}
+
 /// 解析队首的命令消息（`"/<skill|command> args"`）。
 ///
 /// 命令在**出队时**才解析，而不是消息一发出就生效：这样即使当前正在跑一轮多步
@@ -2862,6 +3159,7 @@ fn run_turn(
     state: &Arc<Mutex<SessionState>>,
     user_message: Option<&Value>,
     skill_injection: Option<SkillInjection>,
+    mention_reminder: Option<String>,
 ) -> Result<(), String> {
     let project = core.project_of(session_id)?;
     let (agent_mode, model, provider) = {
@@ -2897,6 +3195,12 @@ fn run_turn(
             // 注入失败不中断流程，继续走 LLM query
             eprintln!("[core] Skill tool call error: {error}");
         }
+    }
+
+    // 1.6 `@` 工作区 reminder（specs/022 FR-008）：用户消息之后紧跟一条 silent 消息，
+    // 点名目标身份与 `Agent.target`，让模型把事项代理给目标工作区。
+    if let Some(reminder) = mention_reminder {
+        persist_reminder(core, session_id, state, &reminder);
     }
 
     // 2. 轮次循环（`aiBegin` / `aiEnd` 每轮各一次，见 run_query_loop）。
@@ -2951,10 +3255,18 @@ fn build_auto_message(item: &AgentMessage) -> Value {
         if item.origin != "bash" {
             // 子代理回复额外带 agentId 与 From 头（UI 显示 host:agent:<id>）
             object.insert("agentId".to_string(), json!(item.from_session_id));
-            object.insert(
-                "_meta".to_string(),
-                json!({ "param": agent_source_info(&item.from_session_id), "type": "from" }),
-            );
+            // specs/022：跨工作区子代理的 From 头用目标工作区身份（本进程不知道那台机器），
+            // 并带上 `workspaceId` 供 UI 跨工作区跳转。
+            let remote_workspace = crate::subagent::remote_workspace_of(&item.from_session_id);
+            let source = match &remote_workspace {
+                Some(workspace) => format!("{workspace}:agent:{}", item.from_session_id),
+                None => agent_source_info(&item.from_session_id),
+            };
+            let mut meta = json!({ "param": source, "type": "from" });
+            if let Some(workspace) = remote_workspace {
+                meta["workspaceId"] = json!(workspace);
+            }
+            object.insert("_meta".to_string(), meta);
         }
     }
     message

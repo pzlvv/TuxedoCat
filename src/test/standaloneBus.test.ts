@@ -139,6 +139,7 @@ function createFakeCore(
   requestHandlers: CoreRequestHandlers | null = {
     toolPermissionRequested: async () => ({ behavior: 'allow' }),
     userChoice: async () => ({ index: 1 }),
+    crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }),
   },
 ): FakeCore {
   const recording = createRecordingCoreEventHandlers();
@@ -356,6 +357,7 @@ async function run(): Promise<void> {
       configDirName: CONFIG_DIR_NAME,
       settings: emptySettingsSnapshot(),
       mcpServers: [],
+      crossWorkspaceAgent: false,
     });
     await core.bus.whenReady();
     check(
@@ -538,6 +540,7 @@ async function run(): Promise<void> {
       configDirName: CONFIG_DIR_NAME,
       settings: emptySettingsSnapshot(),
       mcpServers: [],
+      crossWorkspaceAgent: false,
     });
     core.bus.emitToCore({ type: 'conversationOpened', sessionId: 's1' });
     await core.bus.whenReady();
@@ -635,6 +638,7 @@ async function run(): Promise<void> {
       bus.onCoreRequests({
         toolPermissionRequested: async () => ({ behavior: 'allow' }),
         userChoice: async () => ({ index: 0 }),
+        crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }),
       });
       bus.emitToCore({
         type: 'hostEnvironmentProvided',
@@ -643,6 +647,7 @@ async function run(): Promise<void> {
         configDirName: CONFIG_DIR_NAME,
         settings: emptySettingsSnapshot(),
         mcpServers: [],
+        crossWorkspaceAgent: false,
       });
       await bus.whenReady();
       check('real core handshake reaches ready', bus.isReady());

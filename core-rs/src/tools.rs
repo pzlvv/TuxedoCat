@@ -216,14 +216,20 @@ pub struct SubAgentRequest {
     /// `input.description || 'Agent: <role>'`（子会话标题）
     pub description: String,
     pub role: String,
+    /// 目标工作区代理身份（specs/022）：`None` = 当前策略（本机子代理）；
+    /// `Some` = 在目标工作区建子代理会话。
+    pub target: Option<String>,
 }
 
 /// 子代理工具（`Agent` / `Reply`）的引擎钩子。
 ///
 /// 单测不注入时这两个工具报错（「找不到引擎」）。
 pub struct SubAgentHooks {
-    /// 建子会话 + 起后台查询，返回子会话 id
+    /// 建本机子会话 + 起后台查询，返回子会话 id
     pub spawn: std::sync::Arc<dyn Fn(SubAgentRequest) -> Result<String, String> + Send + Sync>,
+    /// 建跨工作区子会话（specs/022）：请求宿主在目标工作区创建并返回子会话 id
+    pub spawn_remote:
+        std::sync::Arc<dyn Fn(SubAgentRequest) -> Result<String, String> + Send + Sync>,
     /// 把回复投递给目标会话：`(target, content, from)`
     pub deliver:
         std::sync::Arc<dyn Fn(&str, &str, &str) -> Result<(), String> + Send + Sync>,
@@ -503,7 +509,10 @@ pub fn definitions() -> Vec<Value> {
                     // enum 不展开：agentRole 只声明为 string，
                     // 只产出 string（取值由运行期校验，见 permission::base_check）；
                     // 合法名单见 `SUB_AGENT_ROLES` 与提示词角色表
-                    "agentRole": { "type": "string", "description": "The role of the agent to spawn: Master or Explorer" }
+                    "agentRole": { "type": "string", "description": "The role of the agent to spawn: Master or Explorer" },
+                    // specs/022：缺省 = 当前策略（本机子代理）；传入 = 在目标工作区建子代理会话。
+                    // 取值是工作区代理身份 `<hostname>:<path>`，由宿主解析。
+                    "target": { "type": "string", "description": "Target workspace agent ID (`hostname:path`). Omit to spawn the sub-agent in the current workspace." }
                 },
                 "required": ["prompt", "agentRole"]
             }
@@ -1625,6 +1634,20 @@ fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let Some(hooks) = ctx.subagent.as_ref() else {
         return ToolOutcome::Error("Agent: no sub-agent runtime available".to_string());
     };
+    // `target`（specs/022）：缺省沿用当前策略；空串是入参错误，不静默当缺省。
+    let target = match input.get("target") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) if value.is_empty() => {
+            return ToolOutcome::Error("target must not be empty".to_string())
+        }
+        Some(Value::String(value)) => Some(value.clone()),
+        Some(_) => return ToolOutcome::Error("target must be a string".to_string()),
+    };
+    if target.is_some() && !crate::config::cross_workspace_agent() {
+        return ToolOutcome::Error(
+            "current host does not support cross-workspace agents".to_string(),
+        );
+    }
     // 对齐 `input.description || (agentRole ? \`Agent: ${agentRole}\` : 'Sub-agent task')`
     let description = input
         .get("description")
@@ -1642,18 +1665,31 @@ fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     if !crate::subagent::acquire_slot(&ctx.session_id, cancel) {
         return ToolOutcome::Canceled(CANCEL_RESULT_MESSAGE.to_string());
     }
-    match (hooks.spawn)(SubAgentRequest {
+    let request = SubAgentRequest {
         creator_session_id: ctx.session_id.clone(),
         prompt: prompt.to_string(),
         description: description.clone(),
         role: role.to_string(),
-    }) {
-        Ok(sub_session_id) => ToolOutcome::Success(format!(
-            "✓ Agent [{role}] created\n\n\
-             Sub-agent created with ID: {sub_session_id}. Task: {description}\n\n\
-             **Sub-agent ID**: `{sub_session_id}`\n\
-             The sub-agent will reply directly when done."
-        )),
+        target: target.clone(),
+    };
+    let spawned = match &target {
+        Some(_) => (hooks.spawn_remote)(request),
+        None => (hooks.spawn)(request),
+    };
+    match spawned {
+        Ok(sub_session_id) => {
+            let workspace_line = match &target {
+                Some(target) => format!("**Workspace**: `{target}`\n"),
+                None => String::new(),
+            };
+            ToolOutcome::Success(format!(
+                "✓ Agent [{role}] created\n\n\
+                 Sub-agent created with ID: {sub_session_id}. Task: {description}\n\n\
+                 **Sub-agent ID**: `{sub_session_id}`\n\
+                 {workspace_line}\
+                 The sub-agent will reply directly when done."
+            ))
+        }
         // `call()` 抛错：由引擎补 `Error executing Agent: ` 前缀（对齐 `executeSingleTool`）。
         // spawn 失败时后台任务不会启动，槽位必须在此归还
         Err(error) => {

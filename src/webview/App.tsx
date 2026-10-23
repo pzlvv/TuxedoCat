@@ -103,6 +103,8 @@ const App = () => {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   // 当前对话的父会话 ID（子对话时有效）
   const [parentSessionId, setParentSessionId] = useState<string | null>(null);
+  /** 跨工作区子代理的来源（specs/022）：返回父对话时跳到发起方工作区 */
+  const [crossWorkspaceOrigin, setCrossWorkspaceOrigin] = useState<{ workspaceId: string; sessionId: string; title: string } | null>(null);
   // 当前会话的子代理角色（conversationLoaded.metadata.role，specs/020 FR-005）：
   // 非 Master 子代理会话锁定选项菜单的提示词模式 / 联网搜索 / MCP 三项
   const [subAgentRole, setSubAgentRole] = useState<string | null>(null);
@@ -184,6 +186,8 @@ const App = () => {
 
   // Skills for slash-command autocomplete
   const [skills, setSkills] = useState<Array<{ name: string; description: string; isBuiltin?: boolean }>>([]);
+  /** `@` 工作区候选（宿主已排除本工作区；specs/022 FR-007） */
+  const [workspaces, setWorkspaces] = useState<Array<{ id: string; path: string; displayName: string }>>([]);
 
   // MCP 服务器列表（来自 mcp.json + settings.json 启用状态），供菜单勾选。
   // 仅展示「当前会话」的列表；mcpServersBySessionRef 按会话缓存，避免异步回推串台。
@@ -503,8 +507,8 @@ const App = () => {
     setHasCompactArchive, setIsCompactExpanded, setConversations, setConversationsLoading,
     setVisibleConversationCount, finishConversationLoad, resetConversationLoad,
     setTheme, setThemeInitialized, setCurrentFile, setSelectedLines,
-    setConversationTitle, setMaxContextTokens, setSkills, setMcpServers, setConversationDropdownOpen,
-    setCurrentSessionId, setParentSessionId, setAgentMode, setThinkingMode,
+    setConversationTitle, setMaxContextTokens, setSkills, setWorkspaces, setMcpServers, setConversationDropdownOpen,
+    setCurrentSessionId, setParentSessionId, setCrossWorkspaceOrigin, setAgentMode, setThinkingMode,
     setModelRef, setWebSearch, setContextLength, setQueuedMessage,
     setUserChoiceRequest, setNamingSessions, setStreamingVersion, setForceScrollKey,
     setSessionIdleVersion,
@@ -545,7 +549,7 @@ const App = () => {
     showThinkingAnimation, animationMode, messages,
     setCurrentFile, setSelectedLines, setFileHidden, setConversations,
     setConversationsLoading, setConversationDropdownOpen, setConversationTitle,
-    setCurrentSessionId, setParentSessionId, setSubAgentRole, setHasActiveQuery, setContextLength,
+    setCurrentSessionId, setParentSessionId, setCrossWorkspaceOrigin, setSubAgentRole, setHasActiveQuery, setContextLength,
     setMaxContextTokens, setAgentMode, setThinkingMode,
     setModelRef, setWebSearch, setHasCompactArchive, setIsCompactExpanded, setQueuedMessage,
     setDeleteConfirm, setMessages, setUserChoiceRequest,
@@ -628,14 +632,14 @@ const App = () => {
    * 3. 清空当前展示的排队横幅，避免上一会话的 queue 串到新会话；
    * 4. 发送导航消息（VS Code 插件 / Electron 都走 postMessage，由宿主决定打开方式）。
    */
-  const navigateToSession = useCallback((sessionId: string) => {
+  const navigateToSession = useCallback((sessionId: string, targetWorkspaceId: string | null = null) => {
     // 当前若是"新建但还没发消息"的对话，先把草稿暂存，供下次"新建"恢复
     stashNewChatDraft();
     // 多视图：由宿主另开一个会话视图来加载目标会话，本视图不参与加载。
     // 这里只做委托，不改动本视图的会话状态（消息 / loading），
     // 否则切回本视图会看到空消息或永远转圈的 loading（没有人为它通知完成）。
     if (openConversationModeOf(hostInfo) === 'openConversation') {
-      navigateToConversation(sessionId);
+      navigateToConversation(sessionId, targetWorkspaceId);
       return;
     }
     // 单视图：在当前视图内原地加载。loading 由对话自身持有，
@@ -643,7 +647,7 @@ const App = () => {
     beginConversationLoad(sessionId);
     setMessages([]);
     setQueuedMessage(null);
-    navigateToConversation(sessionId);
+    navigateToConversation(sessionId, targetWorkspaceId);
   }, [stashNewChatDraft, hostInfo.conversationView, beginConversationLoad]);
 
   /**
@@ -677,6 +681,7 @@ const App = () => {
     // Generate new session for new conversation
     setConversationTitle(t('app.untitled'));
     setParentSessionId(null);
+    setCrossWorkspaceOrigin(null);
     // 新建会话无子代理角色（specs/020 FR-005），置灰判定回到普通会话
     setSubAgentRole(null);
     // 新对话不在 spin 模式
@@ -1155,7 +1160,12 @@ const App = () => {
             {parentSessionId && (
               <button
                 onClick={() => {
-                  navigateToSession(parentSessionId);
+                  // 跨工作区子代理（specs/022）：返回父对话时跳到发起方工作区
+                  if (crossWorkspaceOrigin) {
+                    navigateToSession(crossWorkspaceOrigin.sessionId, crossWorkspaceOrigin.workspaceId);
+                  } else {
+                    navigateToSession(parentSessionId);
+                  }
                 }}
                 className="w-6 h-6 rounded flex items-center justify-center transition-colors shrink-0 hover:bg-white/10"
                 style={{ color: colors.textSystem }}
@@ -1427,6 +1437,7 @@ onClick={handleNewConversation}
               isDark={isDark}
               queuedMessage={activeQueuedMessage}
               skills={skills}
+              workspaces={workspaces}
               mcpServers={mcpServers}
               onMcpToggle={handleMcpToggle}
               mcpConnecting={mcpConnecting}

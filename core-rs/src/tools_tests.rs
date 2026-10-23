@@ -3361,3 +3361,138 @@ fn agent_role_input_validation_reports_multi_value_enum() {
     .expect("explorer 应当合法");
     assert_eq!(parsed["agentRole"], "Explorer");
 }
+
+// ==================== 跨工作区 target（specs/022 FR-002） ====================
+
+/// 单测进程的宿主环境快照是全局状态：跨工作区能力位显式设置并持 `serial` 锁。
+fn set_cross_workspace_capability(enabled: bool) {
+    crate::config::set_host_environment(crate::config::HostEnvironment {
+        extension_path: "D:/ext".to_string(),
+        log_to_console: false,
+        config_dir_name: ".test-core".to_string(),
+        cross_workspace_agent: enabled,
+    });
+}
+
+/// `Agent` 带 `target` 走 `spawn_remote`，不带走 `spawn`；空串是入参错误。
+#[test]
+fn agent_target_selects_remote_spawn_hook() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let _serial = crate::test_support::serial();
+    set_cross_workspace_capability(true);
+
+    let local_called = Arc::new(AtomicBool::new(false));
+    let remote_called = Arc::new(AtomicBool::new(false));
+    let remote_target = Arc::new(std::sync::Mutex::new(String::new()));
+
+    let local_flag = Arc::clone(&local_called);
+    let remote_flag = Arc::clone(&remote_called);
+    let remote_target_slot = Arc::clone(&remote_target);
+    let hooks = SubAgentHooks {
+        spawn: Arc::new(move |_request| {
+            local_flag.store(true, Ordering::Relaxed);
+            Ok("sub_local".to_string())
+        }),
+        spawn_remote: Arc::new(move |request| {
+            remote_flag.store(true, Ordering::Relaxed);
+            *remote_target_slot.lock().unwrap() = request.target.clone().unwrap_or_default();
+            Ok("sub_remote".to_string())
+        }),
+        deliver: Arc::new(|_, _, _| Ok(())),
+    };
+    let ctx = ToolContext {
+        session_id: "s1".to_string(),
+        cwd: ".".to_string(),
+        tool_use_id: None,
+        on_progress: None,
+        cancel: None,
+        pause: None,
+        user_choice: None,
+        background: None,
+        subagent: Some(hooks),
+    };
+
+    // 不带 target：本机钩子
+    let outcome = execute("Agent", &json!({ "prompt": "x", "agentRole": "Master" }), &ctx);
+    assert!(matches!(outcome, ToolOutcome::Success(ref text) if text.contains("sub_local")));
+    assert!(local_called.load(Ordering::Relaxed));
+    assert!(!remote_called.load(Ordering::Relaxed));
+
+    // 带 target：远程钩子，结果里带目标工作区
+    let outcome = execute(
+        "Agent",
+        &json!({ "prompt": "x", "agentRole": "Master", "target": "HOST:/b" }),
+        &ctx,
+    );
+    assert!(matches!(
+        outcome,
+        ToolOutcome::Success(ref text)
+            if text.contains("sub_remote") && text.contains("**Workspace**: `HOST:/b`")
+    ));
+    assert!(remote_called.load(Ordering::Relaxed));
+    assert_eq!(*remote_target.lock().unwrap(), "HOST:/b");
+    crate::subagent::release_slot("s1");
+    crate::subagent::release_slot("s1");
+}
+
+/// `target` 空串在入参层通过（string），在 run_agent 里被拒绝——不静默当缺省。
+#[test]
+fn agent_empty_target_is_rejected() {
+    let hooks = SubAgentHooks {
+        spawn: std::sync::Arc::new(|_| Ok("sub_local".to_string())),
+        spawn_remote: std::sync::Arc::new(|_| Ok("sub_remote".to_string())),
+        deliver: std::sync::Arc::new(|_, _, _| Ok(())),
+    };
+    let ctx = ToolContext {
+        session_id: "s-empty-target".to_string(),
+        cwd: ".".to_string(),
+        tool_use_id: None,
+        on_progress: None,
+        cancel: None,
+        pause: None,
+        user_choice: None,
+        background: None,
+        subagent: Some(hooks),
+    };
+    let outcome = execute(
+        "Agent",
+        &json!({ "prompt": "x", "agentRole": "Master", "target": "" }),
+        &ctx,
+    );
+    assert!(matches!(outcome, ToolOutcome::Error(ref text) if text.contains("target must not be empty")));
+}
+
+/// 宿主不支持跨工作区代理时，带 target 直接报错（FR-009）。
+#[test]
+fn agent_target_rejected_when_host_does_not_support_it() {
+    let _serial = crate::test_support::serial();
+    set_cross_workspace_capability(false);
+    let hooks = SubAgentHooks {
+        spawn: std::sync::Arc::new(|_| Ok("sub_local".to_string())),
+        spawn_remote: std::sync::Arc::new(|_| Ok("sub_remote".to_string())),
+        deliver: std::sync::Arc::new(|_, _, _| Ok(())),
+    };
+    let ctx = ToolContext {
+        session_id: "s-no-cap".to_string(),
+        cwd: ".".to_string(),
+        tool_use_id: None,
+        on_progress: None,
+        cancel: None,
+        pause: None,
+        user_choice: None,
+        background: None,
+        subagent: Some(hooks),
+    };
+    // 单测进程没有宿主环境快照 → cross_workspace_agent() 为 false
+    let outcome = execute(
+        "Agent",
+        &json!({ "prompt": "x", "agentRole": "Master", "target": "HOST:/b" }),
+        &ctx,
+    );
+    assert!(matches!(
+        outcome,
+        ToolOutcome::Error(ref text) if text.contains("does not support cross-workspace agents")
+    ));
+}

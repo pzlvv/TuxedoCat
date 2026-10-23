@@ -538,6 +538,7 @@ fn workspace_and_host_environment_updates_are_recorded() {
         extension_path: "D:/ext".to_string(),
         log_to_console: true,
         config_dir_name: sandbox.config_dir_name.clone(),
+        cross_workspace_agent: true,
     });
     assert_eq!(config::host_environment().unwrap().extension_path, "D:/ext");
     // 会创建 conversations 目录并记一条日志
@@ -5702,6 +5703,7 @@ fn sub_agent_inherits_parent_agent_mode() {
                 prompt: format!("任务 {mode}"),
                 description: format!("inherit {mode}"),
                 role: "Master".to_string(),
+                target: None,
             })
             .expect("create sub agent");
 
@@ -5752,6 +5754,7 @@ fn sub_agent_inherits_parent_prompt_mode() {
                 prompt: format!("任务 {mode}"),
                 description: format!("inherit prompt {mode}"),
                 role: "Master".to_string(),
+                target: None,
             })
             .expect("create sub agent");
 
@@ -6681,6 +6684,7 @@ fn explorer_fixes_session_config_while_master_inherits() {
             prompt: "浏览一下".to_string(),
             description: "Explorer fixed".to_string(),
             role: "Explorer".to_string(),
+            target: None,
         })
         .expect("create explorer");
     let master_id = harness
@@ -6690,6 +6694,7 @@ fn explorer_fixes_session_config_while_master_inherits() {
             prompt: "干点活".to_string(),
             description: "master inherit".to_string(),
             role: "Master".to_string(),
+            target: None,
         })
         .expect("create master");
 
@@ -6882,4 +6887,246 @@ fn runtime_snapshot_republishes_when_task_mix_changes() {
     assert_eq!(tasks[1]["taskId"], "t2");
     assert_eq!(entry["backgroundRunning"], true);
     crate::bash_task::reset_for_test();
+}
+
+// ==================== 跨工作区代理（specs/022） ====================
+
+/// `@` 命令身份解析：引号 / 非引号 / 首字符 / 空身份。
+#[test]
+fn mention_identity_parsing_covers_quoted_and_plain_forms() {
+    assert_eq!(
+        parse_mention_identity("@DEV-PC:C:\\work\\a 帮个忙"),
+        Some("DEV-PC:C:\\work\\a".to_string())
+    );
+    assert_eq!(
+        parse_mention_identity("@\"DEV-PC:C:\\Program Files\\b\" 帮个忙"),
+        Some("DEV-PC:C:\\Program Files\\b".to_string())
+    );
+    assert_eq!(parse_mention_identity("  @HOST:/b\n多行正文"), Some("HOST:/b".to_string()));
+    assert_eq!(parse_mention_identity("@"), None);
+    assert_eq!(parse_mention_identity("@\"\""), None);
+    assert_eq!(parse_mention_identity("看 @HOST:/b"), None);
+}
+
+/// 轮次边界：`@` 命令把 reminder 挂到会话状态；宿主能力位为假时不挂。
+#[test]
+fn resolve_pending_mention_sets_reminder_only_when_capable() {
+    // Sandbox 自己持有全局 serial 锁
+    let sandbox = Sandbox::new("engine-mention");
+    let harness = EngineHarness::allow_all();
+    let state = harness.core.session("s-mention");
+    state.lock().unwrap().pending_user_message = Some(json!({
+        "type": "user",
+        "message": { "role": "user", "content": "@HOST:/b
+把这件事做了" },
+        "uuid": "u-mention",
+    }));
+    resolve_pending_mention(&state);
+    let reminder = state
+        .lock()
+        .unwrap()
+        .pending_mention_reminder
+        .clone()
+        .expect("reminder");
+    assert!(reminder.contains("target=\"HOST:/b\""));
+    assert!(reminder.contains("Agent tool"));
+
+    // 宿主不支持：能力位为假时不注入
+    config::set_host_environment(config::HostEnvironment {
+        extension_path: sandbox.root.to_string_lossy().to_string(),
+        log_to_console: false,
+        config_dir_name: sandbox.config_dir_name.clone(),
+        cross_workspace_agent: false,
+    });
+    state.lock().unwrap().pending_mention_reminder = None;
+    resolve_pending_mention(&state);
+    assert!(state.lock().unwrap().pending_mention_reminder.is_none());
+}
+
+/// reminder 文案点名目标身份与 `Agent.target`。
+#[test]
+fn mention_reminder_names_target_and_agent_tool() {
+    let text = build_mention_reminder("HOST:/b");
+    assert!(text.starts_with("<Reminder>"));
+    assert!(text.contains("target=\"HOST:/b\""));
+    assert!(text.contains("Agent tool"));
+    assert!(text.trim_end().ends_with("</Reminder>"));
+}
+
+/// 跨工作区派发：宿主应答成功后登记远程子代理，`subAgentRunning` 计入它。
+#[test]
+fn cross_workspace_spawn_registers_remote_child() {
+    let _serial = crate::test_support::serial();
+    crate::subagent::reset_for_test();
+    let harness = EngineHarness::start(|request| match request.get("type").and_then(Value::as_str) {
+        Some("crossWorkspaceAgentRequested") => Some(json!({ "sessionId": "sub_remote_1" })),
+        Some("toolPermissionRequested") => Some(json!({ "behavior": "ask" })),
+        Some("userChoice") => Some(json!({ "index": 0 })),
+        _ => Some(json!({})),
+    });
+    let creator = harness.core.session("s-cross-1");
+    creator.lock().unwrap().project = Some("D:/repo/a".to_string());
+
+    let spawned = harness.core.spawn_remote_agent(tools::SubAgentRequest {
+        creator_session_id: "s-cross-1".to_string(),
+        prompt: "任务".to_string(),
+        description: "remote task".to_string(),
+        role: "Master".to_string(),
+        target: Some("HOST:/b".to_string()),
+    });
+    assert_eq!(spawned.expect("remote spawn"), "sub_remote_1");
+    assert!(crate::subagent::is_remote("sub_remote_1"));
+    assert_eq!(
+        crate::subagent::remote_workspace_of("sub_remote_1").as_deref(),
+        Some("HOST:/b")
+    );
+    let runtime = harness
+        .sink
+        .events()
+        .into_iter()
+        .rev()
+        .find(|event| event["type"] == "sessionRuntimeChanged")
+        .expect("runtime event");
+    let state = runtime["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| state["sessionId"] == "s-cross-1")
+        .expect("creator runtime state");
+    assert_eq!(state["subAgentRunning"], json!(true));
+    crate::subagent::reset_for_test();
+}
+
+/// 宿主返回错误时工具拿到错误、不登记远程子代理。
+#[test]
+fn cross_workspace_spawn_error_propagates() {
+    let _serial = crate::test_support::serial();
+    crate::subagent::reset_for_test();
+    let harness = EngineHarness::start(|request| match request.get("type").and_then(Value::as_str) {
+        Some("crossWorkspaceAgentRequested") => {
+            Some(json!({ "error": "target workspace is not open: HOST:/b" }))
+        }
+        _ => Some(json!({})),
+    });
+    let error = harness
+        .core
+        .spawn_remote_agent(tools::SubAgentRequest {
+            creator_session_id: "s-cross-2".to_string(),
+            prompt: "任务".to_string(),
+            description: "remote task".to_string(),
+            role: "Master".to_string(),
+            target: Some("HOST:/b".to_string()),
+        })
+        .expect_err("host error must propagate");
+    assert!(error.contains("target workspace is not open"));
+    assert!(!crate::subagent::is_remote("sub_remote_1"));
+}
+
+/// 跨工作区子代理的 Reply 目标在另一个 Core：发事件交给宿主回投。
+#[test]
+fn cross_workspace_reply_routes_to_origin() {
+    let _serial = crate::test_support::serial();
+    crate::subagent::reset_for_test();
+    let harness = EngineHarness::allow_all();
+    let sub = harness.core.session("sub_cross_reply");
+    sub.lock().unwrap().cross_workspace_origin = Some(CrossWorkspaceOrigin {
+        workspace_id: "HOST:/a".to_string(),
+        session_id: "origin-1".to_string(),
+        title: "发起方".to_string(),
+    });
+    harness
+        .core
+        .deliver_agent_reply("origin-1", "做完了", "sub_cross_reply")
+        .expect("remote reply");
+    let event = harness
+        .sink
+        .events()
+        .into_iter()
+        .rev()
+        .find(|event| event["type"] == "crossWorkspaceAgentReplyRequested")
+        .expect("reply requested event");
+    assert_eq!(event["sessionId"], "origin-1");
+    assert_eq!(event["fromSessionId"], "sub_cross_reply");
+    assert_eq!(event["content"], "做完了");
+}
+
+/// 发起方中止：远程子代理发中止事件，不在本地递归。
+#[test]
+fn cross_workspace_abort_emits_event() {
+    let _serial = crate::test_support::serial();
+    crate::subagent::reset_for_test();
+    let harness = EngineHarness::allow_all();
+    let state = harness.core.session("s-cross-abort");
+    state.lock().unwrap().project = Some("D:/repo/a".to_string());
+    crate::subagent::register("sub_abort_1", "s-cross-abort");
+    crate::subagent::register_remote("sub_abort_1", "s-cross-abort", "HOST:/b");
+
+    harness.core.on_abort("s-cross-abort");
+    let event = harness
+        .sink
+        .events()
+        .into_iter()
+        .rev()
+        .find(|event| event["type"] == "crossWorkspaceAgentAbortRequested")
+        .expect("abort requested event");
+    assert_eq!(event["sessionId"], "sub_abort_1");
+    crate::subagent::reset_for_test();
+}
+
+/// 目标工作区 Core 建跨工作区子代理：写 meta、记来源、列表派生占位父对话。
+#[test]
+fn start_remote_sub_agent_records_origin_and_placeholder() {
+    // Sandbox 自己持有全局 serial 锁，这里不能再取（std Mutex 不可重入）
+    let sandbox = Sandbox::new("engine-cross-workspace-start");
+    crate::subagent::reset_for_test();
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let harness = EngineHarness::allow_all();
+
+    harness
+        .core
+        .start_remote_sub_agent(&json!({
+            "sessionId": "sub_remote_start",
+            "workspacePath": project,
+            "role": "Master",
+            "prompt": "任务正文",
+            "description": "remote start",
+            "parentSessionId": "ph_origin-1",
+            "originWorkspaceId": "HOST:/a",
+            "originSessionId": "origin-1",
+            "originTitle": "发起方对话",
+        }))
+        .expect("start remote sub agent");
+
+    let state = harness.core.session_if_exists("sub_remote_start").expect("state");
+    let state = state.lock().unwrap();
+    assert_eq!(state.sub_agent_role.as_deref(), Some("Master"));
+    assert_eq!(state.parent_session_id.as_deref(), Some("origin-1"));
+    let origin = state.cross_workspace_origin.as_ref().expect("origin");
+    assert_eq!(origin.workspace_id, "HOST:/a");
+    assert_eq!(origin.session_id, "origin-1");
+    drop(state);
+
+    let metadata = history::load_metadata("sub_remote_start", &project).expect("meta");
+    assert_eq!(metadata["parentSessionId"], "ph_origin-1");
+    assert_eq!(metadata["crossWorkspaceOrigin"]["workspaceId"], "HOST:/a");
+    assert_eq!(metadata["crossWorkspaceOrigin"]["title"], "发起方对话");
+
+    // 列表只收录「发过消息」的对话（messageCount > 0）：跨工作区子代理的第一条消息
+    // 落盘后才会出现，占位父对话随之派生。
+    history::update_metadata("sub_remote_start", &project, || json!({}), |metadata| {
+        metadata["messageCount"] = json!(1);
+    })
+    .expect("mark child as non-empty");
+
+    let list = history::load_conversation_list(Some(&project));
+    let placeholder = list
+        .iter()
+        .find(|item| item["sessionId"] == "ph_origin-1")
+        .expect("derived placeholder");
+    assert_eq!(placeholder["placeholder"]["sessionId"], "origin-1");
+    assert_eq!(placeholder["placeholder"]["workspaceId"], "HOST:/a");
+
+    // 收尾：停掉后台子代理线程（没有 LLM 配置，循环会自行退出）
+    harness.core.drop_session("sub_remote_start");
+    crate::subagent::reset_for_test();
 }

@@ -47,6 +47,8 @@ import {
 } from '../coreFacts.js';
 import { applyLlmConfigSave } from '../llmConfigSave.js';
 import { sameMcpEnabledList } from '../../shared/utils/mcpList.js';
+import { resolveMachineName, workspaceMentionCandidates } from '../workspaceIdentity.js';
+import { hostname as osHostname } from 'os';
 import {
   readActiveModelRef,
   readDefaultAgentMode,
@@ -289,6 +291,7 @@ export class WebviewMessageHandler {
       entry('requestLLMConfig', (msg) => this.handleRequestLLMConfig(msg)),
       entry('requestSettingsDefaults', () => this.handleRequestSettingsDefaults()),
       entry('requestSkills', (_msg, ctx) => this.handleRequestSkills(ctx)),
+      entry('requestWorkspaces', (_msg, ctx) => this.handleRequestWorkspaces(ctx)),
       entry('requestConversationSpaces', () => this.handleRequestConversationSpaces()),
       entry('requestMcpServers', (msg) => this.handleRequestMcpServers(msg)),
       entry('getConversations', () => this.handleGetConversations()),
@@ -873,6 +876,7 @@ export class WebviewMessageHandler {
       pendingToolUseIds: loaded.pendingToolUseIds,
       savedContext: effectiveSavedContext,
       parentSessionId: conversation.metadata?.parentSessionId,
+      crossWorkspaceOrigin: conversation.metadata?.crossWorkspaceOrigin,
       agentMode: effectiveAgentMode,
       workMode: loaded.workMode,
       hasActiveQuery,
@@ -1429,6 +1433,28 @@ export class WebviewMessageHandler {
       skills,
     };
     // 按来源视图回包（多视图宿主下请求方不一定是活动视图）
+    if (ctx.sender) {
+      this.host.sendToWebviewView(ctx.sender, message);
+    } else {
+      this.host.sendToWebview(message);
+    }
+  }
+
+  /**
+   * `@` 工作区补全候选（specs/022 FR-007）：已打开工作区里**排除来源视图所属工作区**。
+   *
+   * 过滤按工作区引用判等（不是身份字符串）：同一身份的另一工作区仍可出现。
+   * 来源工作区解析不出时返回空候选——不猜、不用活动标签页顶替。
+   */
+  private handleRequestWorkspaces(ctx: WebviewRequestContext): void {
+    const current = this.host.getWorkspaceRefForView(ctx.sender);
+    const machineName = resolveMachineName(process.platform, process.env, osHostname());
+    const workspaces = workspaceMentionCandidates(
+      this.host.getOpenWorkspaceRefs(),
+      current,
+      machineName,
+    );
+    const message: WebviewMessage = { type: 'setWorkspaces', workspaces };
     if (ctx.sender) {
       this.host.sendToWebviewView(ctx.sender, message);
     } else {

@@ -213,7 +213,19 @@ export type HostToWebviewMessage = {
   taskId?: string;
 } | {
   type: 'conversationsData';
-  conversations: Array<{ sessionId: string; title: string; createdAt: number; updatedAt: number; messageCount: number; parentSessionId?: string }>;
+  /**
+   * `placeholder` 非空表示这是跨工作区子代理的占位父对话（specs/022 FR-004）：
+   * 不加载消息、不建立运行时，点击后由宿主显示跳转页。
+   */
+  conversations: Array<{
+    sessionId: string;
+    title: string;
+    createdAt: number;
+    updatedAt: number;
+    messageCount: number;
+    parentSessionId?: string;
+    placeholder?: { workspaceId: string; sessionId: string; title: string };
+  }>;
 } | {
   /**
    * 会话运行时状态全量推送（core `sessionRuntimeChanged` → 宿主 → webview）。
@@ -266,6 +278,8 @@ export type HostToWebviewMessage = {
       model?: string;
       provider?: string;
       role?: string;
+      /** 跨工作区子代理的来源（specs/022）：发起方工作区身份 / 会话 id / 标题 */
+      crossWorkspaceOrigin?: { workspaceId: string; sessionId: string; title: string };
       /**
        * 最后一条一次性通知（`docs/hosts/webview-ui.md` 第 11 节）：core 记在 meta.json，
        * 一个对话至多一条；webview 加载时追加到时间线末位。
@@ -278,6 +292,8 @@ export type HostToWebviewMessage = {
   /** 从 meta.json 恢复的上下文，webview 加载后直接应用 */
   savedContext?: { currentFile?: string; selectedLines?: WebviewSelectedLines; agentMode?: 'manual' | 'risk' | 'auto'; thinkingMode?: 'off' | 'low' | 'high' | 'max'; promptMode?: 'normal' | 'minimal' | 'mixed'; webSearch?: boolean; totalContextTokens?: number; isCompacted?: boolean; isExpanded?: boolean; provider?: string };
   parentSessionId?: string;
+  /** 跨工作区子代理的来源（specs/022）：返回父对话时跳到发起方工作区 */
+  crossWorkspaceOrigin?: { workspaceId: string; sessionId: string; title: string };
   /** 当前会话模型所属 provider（已按 provider 模型列表校验/回退） */
   provider?: string;
   /** 当前会话模型（已按 provider 模型列表校验/回退） */
@@ -380,6 +396,12 @@ export type HostToWebviewMessage = {
   type: 'setSkills';
   /** Skill 列表 */
   skills: Array<{ name: string; description: string; isBuiltin?: boolean }>;
+} | {
+  /**
+   * `@` 工作区补全的候选（specs/022 FR-007）：宿主按发起视图所属工作区过滤掉本工作区后下发。
+   */
+  type: 'setWorkspaces';
+  workspaces: Array<{ id: string; path: string; displayName: string }>;
 } | {
   type: 'contextLimitUpdated';
   /** 系统当前的最大 context window */
@@ -616,6 +638,11 @@ export type WebviewToHostMessage = {
   /** 多视图宿主：新开一个 webview 加载指定会话（webview 按能力声明选择本消息或 loadConversation） */
   type: 'openConversation';
   sessionId: string;
+  /**
+   * 目标会话所属工作区的**代理身份**（`<机器名>:<路径>`）；`null` = 当前视图自己的工作区。
+   * 跨工作区跳转（specs/022 FR-005）由宿主按身份解析打开集合、先切标签页再开视图。
+   */
+  targetWorkspaceId: string | null;
 } | {
   /** 多视图宿主：顶栏「+」新开一个「新建对话」视图 */
   type: 'openNewConversation';
@@ -698,6 +725,9 @@ export type WebviewToHostMessage = {
   type: 'requestModels';
 } | {
   type: 'requestSkills';
+} | {
+  /** `@` 工作区补全：请求宿主下发「除本工作区之外的已打开工作区」 */
+  type: 'requestWorkspaces';
 } | {
   type: 'requestSessionRuntimeStates';
 } | {

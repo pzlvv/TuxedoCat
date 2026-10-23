@@ -15,7 +15,12 @@
 
 import { tt } from '../src/host/i18n.js';
 
-export type ChatPlaceholderKind = 'connecting' | 'dirMissing' | 'remoteUnreachable';
+export type ChatPlaceholderKind =
+  | 'connecting'
+  | 'dirMissing'
+  | 'remoteUnreachable'
+  /** 跨工作区子代理的占位父对话（specs/022 FR-004）：不可作为普通对话打开 */
+  | 'crossWorkspaceAgent';
 
 /** 不可用原因（判别联合）：指纹变更有专属引导文案，其余原因展示原始错误详情 */
 export type ChatPlaceholderReason =
@@ -28,6 +33,11 @@ export interface ChatPlaceholderPayload {
   path: string;
   /** 不可用原因；建链中 / 目录缺失 / 原因未知时为 null */
   reason: ChatPlaceholderReason | null;
+  /**
+   * 跨工作区占位页的跳转目标（specs/022 FR-005）；其它 kind 为 null。
+   * `null` 表示发起方工作区已关闭、链接不可用（页面展示原因，不给按钮）。
+   */
+  jump: { workspaceId: string; sessionId: string; title: string } | null;
 }
 
 function escapeHtml(value: string): string {
@@ -47,7 +57,9 @@ export function getChatPlaceholderHtml(payload: ChatPlaceholderPayload): string 
       ? tt('正在连接', 'Connecting')
       : payload.kind === 'dirMissing'
         ? tt('目录不存在', 'Folder not found')
-        : tt('无法连接远程主机', 'Cannot reach remote host');
+        : payload.kind === 'crossWorkspaceAgent'
+          ? tt('跨工作区子代理容器', 'Cross-workspace agent container')
+          : tt('无法连接远程主机', 'Cannot reach remote host');
   const icon =
     payload.kind === 'dirMissing'
       ? ICON_FOLDER_MISSING
@@ -74,6 +86,14 @@ export function getChatPlaceholderHtml(payload: ChatPlaceholderPayload): string 
     payload.kind === 'remoteUnreachable'
       ? `<button type="button" id="reconnectBtn" class="btn">${escapeHtml(tt('重新连接', 'Reconnect'))}</button>`
       : '';
+  const jump =
+    payload.kind === 'crossWorkspaceAgent' && payload.jump
+      ? `<button type="button" id="jumpBtn" class="btn">${escapeHtml(tt('跳转到发起方对话', 'Open the initiating conversation'))}</button>`
+      : '';
+  const jumpHint =
+    payload.kind === 'crossWorkspaceAgent' && !payload.jump
+      ? `<div class="reason-hint">${escapeHtml(tt('发起方工作区未打开，跳转链接不可用', 'The initiating workspace is closed; the link is unavailable'))}</div>`
+      : '';
   const connectingDot =
     payload.kind === 'connecting'
       ? '<div class="connecting-dot" aria-hidden="true"></div>'
@@ -85,7 +105,13 @@ export function getChatPlaceholderHtml(payload: ChatPlaceholderPayload): string 
             window.chatPlaceholderAPI && window.chatPlaceholderAPI.reconnectWorkspace();
           });
         </script>`
-      : '';
+      : payload.kind === 'crossWorkspaceAgent' && payload.jump
+        ? `<script>
+            document.getElementById('jumpBtn').addEventListener('click', function () {
+              window.chatPlaceholderAPI && window.chatPlaceholderAPI.jumpToOrigin();
+            });
+          </script>`
+        : '';
 
   return `<!doctype html>
 <html>
@@ -184,7 +210,9 @@ export function getChatPlaceholderHtml(payload: ChatPlaceholderPayload): string 
     <div class="title">${escapeHtml(title)}</div>
     ${pathLine}
     ${reasonHtml}
+    ${jumpHint}
     ${reconnect}
+    ${jump}
   </div>
   ${script}
 </body>

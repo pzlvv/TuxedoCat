@@ -26,8 +26,12 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
   closeWorkspace: (path: string): void => {
     ipcRenderer.send('sidebar:close-workspace', path);
   },
-  openConversation: (sessionId: string, project?: string): void => {
-    ipcRenderer.send('sidebar:open-conversation', sessionId, project);
+  openConversation: (
+    sessionId: string,
+    project?: string,
+    placeholder?: { workspaceId: string; sessionId: string; title: string },
+  ): void => {
+    ipcRenderer.send('sidebar:open-conversation', sessionId, project, placeholder);
   },
   newConversation: (): void => {
     ipcRenderer.send('sidebar:new-conversation');

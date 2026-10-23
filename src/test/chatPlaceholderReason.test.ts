@@ -19,6 +19,7 @@ async function run(): Promise<void> {
     kind: 'remoteUnreachable',
     path: 'ssh://pz@192.168.31.91/home/pz/workspace',
     reason: null,
+    jump: null,
   });
   assert.ok(plain.includes('reconnectBtn'), '无原因也要有重连按钮');
   assert.ok(!plain.includes('class="reason"'), '无原因不渲染指纹引导区');
@@ -33,6 +34,7 @@ async function run(): Promise<void> {
       expectedFingerprint: 'aaa61116',
       observedFingerprint: 'bbb72227',
     },
+    jump: null,
   });
   assert.ok(hostKey.includes('aaa61116') && hostKey.includes('bbb72227'), '两份指纹都要展示');
   assert.ok(hostKey.includes('reconnectBtn'), '指纹变更仍保留重连按钮');
@@ -43,6 +45,7 @@ async function run(): Promise<void> {
     kind: 'remoteUnreachable',
     path: 'ssh://pz@172.20.56.28/home/pz/git/demo',
     reason: { kind: 'generic', detail: 'SSH connection timed out after 20000ms' },
+      jump: null,
   });
   assert.ok(generic.includes('SSH connection timed out after 20000ms'), '一般原因展示原始错误');
   check('generic → 展示原始错误', true);
@@ -52,10 +55,38 @@ async function run(): Promise<void> {
     kind: 'remoteUnreachable',
     path: 'ssh://x',
     reason: { kind: 'generic', detail: '<script>alert(1)</script>' },
+      jump: null,
   });
   assert.ok(!escaped.includes('<script>alert(1)</script>'), '原始 script 标签不得出现在页面');
   assert.ok(escaped.includes('&lt;script&gt;'), '错误详情被转义');
   check('错误详情 HTML 转义', true);
+
+  // 跨工作区占位页（specs/022 FR-004）：有来源时给跳转按钮，无来源时只给不可用提示
+  const crossJump = getChatPlaceholderHtml({
+    kind: 'crossWorkspaceAgent',
+    path: 'DEV-PC:C:\\work\\a',
+    reason: null,
+    jump: { workspaceId: 'DEV-PC:C:\\work\\a', sessionId: 'session_1', title: '发起方' },
+  });
+  assert.ok(crossJump.includes('jumpBtn'), '有来源时渲染跳转按钮');
+  assert.ok(
+    crossJump.includes('跳转到发起方对话') || crossJump.includes('Open the initiating conversation'),
+    '按钮文案',
+  );
+  check('crossWorkspaceAgent 有来源 → 跳转按钮', true);
+
+  const crossNoJump = getChatPlaceholderHtml({
+    kind: 'crossWorkspaceAgent',
+    path: 'DEV-PC:C:\\work\\a',
+    reason: null,
+    jump: null,
+  });
+  assert.ok(!crossNoJump.includes('jumpBtn'), '无来源时不渲染跳转按钮');
+  assert.ok(
+    crossNoJump.includes('跳转链接不可用') || crossNoJump.includes('link is unavailable'),
+    '无来源时展示原因',
+  );
+  check('crossWorkspaceAgent 无来源 → 不可用提示', true);
 
   finish();
 }

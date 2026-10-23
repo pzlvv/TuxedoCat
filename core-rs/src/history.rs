@@ -113,6 +113,50 @@ pub fn load_conversation_list(workspace_path: Option<&str>) -> Vec<Value> {
         conversations.push(metadata);
     }
 
+    // specs/022 FR-004：跨工作区子代理的占位父对话由子代理 meta 派生，不落独立文件。
+    // 子对话的 `parentSessionId` 是 `ph_<originSessionId>`；列表里没有对应 meta 时补一条，
+    // 使对话树能把子代理挂在「发起方对话」的占位节点下。子对话删除后派生条目自然消失。
+    let present: std::collections::HashSet<String> = conversations
+        .iter()
+        .filter_map(|value| {
+            value
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    let mut placeholders: Vec<Value> = Vec::new();
+    for child in &conversations {
+        let Some(origin) = child
+            .get("crossWorkspaceOrigin")
+            .filter(|value| value.is_object())
+        else {
+            continue;
+        };
+        let Some(parent) = child.get("parentSessionId").and_then(Value::as_str) else {
+            continue;
+        };
+        if parent.is_empty()
+            || present.contains(parent)
+            || placeholders
+                .iter()
+                .any(|value| value.get("sessionId").and_then(Value::as_str) == Some(parent))
+        {
+            continue;
+        }
+        let created_at = child.get("createdAt").cloned().unwrap_or(json!(0));
+        placeholders.push(json!({
+            "sessionId": parent,
+            "project": project,
+            "title": origin.get("title").and_then(Value::as_str).unwrap_or(""),
+            "createdAt": created_at.clone(),
+            "updatedAt": created_at,
+            "messageCount": 0,
+            "placeholder": origin,
+        }));
+    }
+    conversations.extend(placeholders);
+
     let sort_key = |value: &Value| -> i64 {
         value
             .get("updatedAt")
@@ -245,6 +289,51 @@ pub fn create_sub_agent_metadata(
     metadata.insert("parentSessionId".to_string(), json!(parent_session_id));
     metadata.insert("role".to_string(), json!(role));
     // 空值不写该键
+    if let Some(model) = model.filter(|value| !value.is_empty()) {
+        metadata.insert("model".to_string(), json!(model));
+    }
+    if let Some(provider) = provider.filter(|value| !value.is_empty()) {
+        metadata.insert("provider".to_string(), json!(provider));
+    }
+    create_conversation(session_id, project, Value::Object(metadata))
+}
+
+/// 预建跨工作区子代理会话的 `meta.json`（specs/022 FR-003）。
+///
+/// 与 [`create_sub_agent_metadata`] 同形，额外写 `crossWorkspaceOrigin`：发起方工作区
+/// 身份 / 会话 id / 标题。宿主侧列表读取据此派生占位父对话（`parentSessionId` 是
+/// `ph_<originSessionId>`，本进程没有对应 meta）。
+#[allow(clippy::too_many_arguments)]
+pub fn create_remote_sub_agent_metadata(
+    session_id: &str,
+    project: &str,
+    title: &str,
+    parent_session_id: &str,
+    role: &str,
+    origin_workspace_id: &str,
+    origin_session_id: &str,
+    origin_title: &str,
+    model: Option<&str>,
+    provider: Option<&str>,
+) -> Result<(), String> {
+    let now = util::now_millis();
+    let mut metadata = Map::new();
+    metadata.insert("sessionId".to_string(), json!(session_id));
+    metadata.insert("project".to_string(), json!(project));
+    metadata.insert("title".to_string(), json!(title));
+    metadata.insert("createdAt".to_string(), json!(now));
+    metadata.insert("updatedAt".to_string(), json!(now));
+    metadata.insert("messageCount".to_string(), json!(0));
+    metadata.insert("parentSessionId".to_string(), json!(parent_session_id));
+    metadata.insert("role".to_string(), json!(role));
+    metadata.insert(
+        "crossWorkspaceOrigin".to_string(),
+        json!({
+            "workspaceId": origin_workspace_id,
+            "sessionId": origin_session_id,
+            "title": origin_title,
+        }),
+    );
     if let Some(model) = model.filter(|value| !value.is_empty()) {
         metadata.insert("model".to_string(), json!(model));
     }

@@ -124,6 +124,11 @@ export class VSCodeUIHost implements UIHost {
     return ref ? [ref] : [];
   }
 
+  /** 单视图宿主：任何视图都属于当前工作区（specs/022 FR-007 的过滤口径） */
+  getWorkspaceRefForView(_view: WebviewViewHandle | null): WorkspaceRef | undefined {
+    return this.getWorkspaceRef();
+  }
+
   /** 工作区文件夹变化：第一个文件夹的换入 / 换出映射为 opened / closed */
   onWorkspaceChanged(listener: (change: WorkspaceChange) => void): () => void {
     let current = this.getWorkspaceRef();

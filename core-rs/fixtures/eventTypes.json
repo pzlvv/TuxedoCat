@@ -32,11 +32,15 @@
     "sessionConfigChanged",
     "log",
     "notice",
-    "workspaceFileChanged"
+    "workspaceFileChanged",
+    "crossWorkspaceAgentReplyRequested",
+    "crossWorkspaceAgentAbortRequested",
+    "crossWorkspaceAgentEnded"
   ],
   "coreRequests": [
     "toolPermissionRequested",
-    "userChoice"
+    "userChoice",
+    "crossWorkspaceAgentRequested"
   ],
   "uiEvents": [
     "userMessageSubmitted",
@@ -61,7 +65,10 @@
     "editRolledBack",
     "hostEnvironmentProvided",
     "userChoicePendingChanged",
-    "sessionWorkspaceAssigned"
+    "sessionWorkspaceAssigned",
+    "remoteSubAgentStarted",
+    "agentReplyReceived",
+    "crossWorkspaceAgentCompleted"
   ],
   "uiRequests": [
     "conversationListRequested",

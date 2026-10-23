@@ -187,6 +187,33 @@ export type CoreEvent =
    */
   | { type: 'log'; message: string }
   /**
+   * 跨工作区子代理的回复投递请求（specs/022 FR-003）。
+   *
+   * 由目标工作区 Core 发出：跨工作区子代理调用 `Reply` 时，目标会话不在本进程内。
+   * `sessionId` 是发起方会话 id，宿主按它路由到发起方 Connection，再以
+   * `UiEvent.agentReplyReceived` 回投；`fromSessionId` 是子代理自己的会话 id。
+   */
+  | {
+      type: 'crossWorkspaceAgentReplyRequested';
+      sessionId: string;
+      fromSessionId: string;
+      content: string;
+    }
+  /**
+   * 跨工作区子代理的中止请求（specs/022 FR-006）。
+   *
+   * 发起方 Core 的 `abort_session_scope` 对远程子代理发本事件（`sessionId` 是远程子代理
+   * 的会话 id）；宿主按 link 表找到目标 Connection 后下发 `UiEvent.abortRequested`。
+   */
+  | { type: 'crossWorkspaceAgentAbortRequested'; sessionId: string }
+  /**
+   * 跨工作区子代理结束（完成 / 中止 / 失败）（specs/022 FR-010）。
+   *
+   * `sessionId` 是发起方会话 id（宿主据此路由），`subSessionId` 是目标工作区里的子代理
+   * 会话 id；发起方 Core 收到后注销远程登记、释放并发槽位并刷新运行时快照。
+   */
+  | { type: 'crossWorkspaceAgentEnded'; sessionId: string; subSessionId: string }
+  /**
    * 瞬时状态提示（`docs/architecture/core-ui-separation.md` 第 4.9 节）。
    *
    * core 不拼文案：只给「键 + 参数」，翻译与呈现由 UI 承担（键在 `coreText.ts` 登记）。
@@ -226,12 +253,33 @@ export type CoreRequest =
        */
       agentMode: AgentMode;
     }
-  | { type: 'userChoice'; sessionId: string; options: UserChoiceOptions };
+  | { type: 'userChoice'; sessionId: string; options: UserChoiceOptions }
+  /**
+   * 跨工作区派发子代理（specs/022 FR-002）。
+   *
+   * 发起方 Core 在 `Agent` 带 `target` 时发出并阻塞等待；宿主按身份找到目标工作区
+   * Connection、在目标 Core 建子代理会话后返回新会话 id。`sessionId` 是发起方会话。
+   */
+  | {
+      type: 'crossWorkspaceAgentRequested';
+      sessionId: string;
+      targetWorkspaceId: string;
+      role: string;
+      prompt: string;
+      description: string;
+      /** 发起方会话标题（占位父对话的展示标题） */
+      originTitle: string;
+    };
 
 /** 请求 → 结果的类型映射（判别联合，字段完整） */
 export type CoreRequestResultMap = {
   toolPermissionRequested: PermissionResult;
   userChoice: { index: number; reply?: string };
+  /**
+   * 成功带目标工作区里的子代理会话 id；`local` 表示 target 就是当前工作区，
+   * 由 Core 按缺省策略建本机子代理；失败带原因（不创建任何会话）。
+   */
+  crossWorkspaceAgentRequested: { sessionId: string } | { local: true } | { error: string };
 };
 
 /**
@@ -416,6 +464,13 @@ export type UiEvent =
       settings: SettingsSnapshot;
       /** MCP 服务器定义（`mcp.json` 规范化后的结果） */
       mcpServers: readonly McpServerDefinition[];
+      /**
+       * 宿主是否支持跨工作区代理（specs/022 FR-009）。
+       *
+       * Electron 为 true；VS Code / TUI 为 false。Core 据此决定是否解析 `@` 命令、
+       * 注入 reminder，以及是否接受 `Agent.target`——不做宿主类型嗅探。
+       */
+      crossWorkspaceAgent: boolean;
     }
   // ===== 用户选择 =====
   /**
@@ -438,7 +493,40 @@ export type UiEvent =
       sessionId: string;
       /** `null` 表示清除该会话的登记（回退到活动工作目录） */
       workspacePath: string | null;
-    };
+    }
+  // ===== 跨工作区子代理（specs/022）=====
+  /**
+   * 在目标工作区创建一个跨工作区子代理会话并立即开始执行（specs/022 FR-003）。
+   *
+   * 由宿主在 `CoreRequest.crossWorkspaceAgentRequested` 的处理里直接下发到目标
+   * Connection（不按 sessionId 路由——该会话在目标 Core 里尚不存在）。
+   * `parentSessionId` 是占位父对话 id；`origin*` 记录发起方工作区身份与会话，供
+   * 回复回投、结束通知与列表里的占位条目派生使用。
+   */
+  | {
+      type: 'remoteSubAgentStarted';
+      sessionId: string;
+      /** 目标工作区路径（目标 Core 据此登记会话工作目录） */
+      workspacePath: string;
+      role: string;
+      prompt: string;
+      description: string;
+      parentSessionId: string;
+      originWorkspaceId: string;
+      originSessionId: string;
+      originTitle: string;
+    }
+  /**
+   * 跨工作区子代理的回复到达发起方会话（specs/022 FR-003）。
+   *
+   * 宿主把目标 Core 的 `CoreEvent.crossWorkspaceAgentReplyRequested` 翻译成本事件，
+   * 按 `sessionId`（发起方会话）路由；`fromSessionId` 是远程子代理会话 id。
+   */
+  | { type: 'agentReplyReceived'; sessionId: string; fromSessionId: string; content: string }
+  /**
+   * 跨工作区子代理结束（specs/022 FR-010）：发起方 Core 注销远程登记、释放并发槽位。
+   */
+  | { type: 'crossWorkspaceAgentCompleted'; sessionId: string; subSessionId: string };
 
 // ==================== UI → core：请求-响应 ====================
 
