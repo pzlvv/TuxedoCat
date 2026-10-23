@@ -497,3 +497,38 @@ test('US-53 标签页快捷键：单标签时无相邻项，组合键不动作',
   await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
   await expect((await app.chatPage()).locator('textarea.input-textarea')).toBeEnabled({ timeout: 30_000 });
 });
+
+test('US-53 标签页快捷键：浮窗模式不动作，切回完整模式活动项不变', async () => {
+  const repoRoot = process.cwd().replace(/[\/]e2e$/, '');
+  const aDir = await makeWorkspace({}, 'e2e-ws-float-a');
+  const bDir = await makeWorkspace({}, 'e2e-ws-float-b');
+  app = await launchApp({
+    repoRoot, mockLlm, workspaceDir: aDir,
+    openWorkspaces: [aDir, bDir],
+    activeWorkspace: aDir,
+  });
+  const titlebar = await app.titlebarPage();
+  const tabs = titlebar.locator('#workspaceTabs [role="tab"]');
+  await expect(tabs).toHaveCount(2, { timeout: 20_000 });
+
+  // 完整模式下先切到 B 作为可观察起点
+  pressKeysOn(app, 'dist/titlebar', 'Tab', ['ctrl']);
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 });
+
+  // 切到浮窗（侧栏移除、webview 顶栏接管对话列表，US-30 同款信号）：标签页区隐藏，
+  // 此时 Ctrl+Tab 不动作（US-53 验收 1 的浮窗口径，docs/hosts/electron-multi-workspace.md 第 5 节）
+  await titlebar.locator('#btnMode').click();
+  const chatPage = await app.chatPage();
+  await expect(chatPage.locator('button[title="对话历史"]')).toBeVisible({ timeout: 15_000 });
+  await sleep(300);
+  pressKeysOn(app, 'dist/webview', 'Tab', ['ctrl']);
+  await sleep(600);
+
+  // 切回完整模式：活动项仍是 B（浮窗期间的按键没有切换）
+  await titlebar.locator('#btnMode').click();
+  await expect(tabs).toHaveCount(2, { timeout: 20_000 });
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 });
+
+  await fs.promises.rm(aDir, { recursive: true, force: true }).catch(() => undefined);
+  await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);
+});

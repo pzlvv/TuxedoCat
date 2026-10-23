@@ -3485,6 +3485,9 @@ function reorderWorkspaces(ids: readonly string[]): void {
  * 定位不到同样落空。
  */
 function switchToAdjacentWorkspace(direction: TabSwitchDirection): void {
+  // 浮窗模式不切换（docs/hosts/electron-multi-workspace.md 第 5 节）：浮窗只呈现活动
+  // 工作目录的对话、不呈现标签页区，组合键 / 菜单条目在该模式下不动作
+  if (windowMode === 'floating') return;
   const target = selectAdjacentWorkspace(
     openWorkspaces.map((ref) => refKey(ref)),
     workspacePath ? refKey(workspacePath) : null,
