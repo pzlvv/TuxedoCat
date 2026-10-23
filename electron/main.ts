@@ -3124,8 +3124,8 @@ function collectWorkspaceSessionFacts(ref: WorkspaceRef): WorkspaceSessionFacts[
  * Playwright 驱动，交互按 US-48 豁免人工验证）：关闭 / 关闭所有空闲会话（范围＝右键
  * 工作区里已打开的对话视图，含子代理对话，当前选中的对话空闲也包含在内）/ 关闭其它
  * 所有工作区（任一他区忙碌先弹一次汇总确认）/ 打开命令行（仅本地，目录已不存在置灰）
- * 或打开终端（远程工作区，见 docs/hosts/electron-multi-workspace.md 第 14 节）。
- * 置灰是终态，不在点击后再报错。
+ * 或打开终端（远程工作区，见 docs/hosts/electron-multi-workspace.md 第 14 节），
+ * 条目尾随显示「打开终端」快捷键的当前值。置灰是终态，不在点击后再报错。
  */
 function popupTabContextMenu(ref: WorkspaceRef): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -3168,17 +3168,21 @@ function popupTabContextMenu(ref: WorkspaceRef): void {
     },
     { type: 'separator' },
     // 终端入口按端点分叉（docs/hosts/electron-multi-workspace.md 第 14.1 节）：本地是
-    // 系统命令行，远程是该工作区的 SSH 终端窗口；两者互斥，一张标签只出现其一
+    // 系统命令行，远程是该工作区的 SSH 终端窗口；两者互斥，一张标签只出现其一。
+    // 条目尾随显示 openTerminal 行的当前快捷键（specs/021），与主菜单「打开终端」条目
+    // 同源取宿主本地偏好值；组合键本身作用于活动工作区，本条目作用于右键的那张标签
     ref.endpoint === null
       ? {
           label: tt('打开命令行', 'Open Terminal'),
           // 目录已不存在无从打开
           enabled: fs.existsSync(ref.path),
+          accelerator: readShortcutValueSync('openTerminal'),
           click: () => { spawnTerminalAt(ref.path); },
         }
       : {
           label: tt('打开终端', 'Open Terminal'),
           enabled: canOpenRemoteTerminal(ref),
+          accelerator: readShortcutValueSync('openTerminal'),
           click: () => { openRemoteTerminalFor(ref); },
         },
   ]);
