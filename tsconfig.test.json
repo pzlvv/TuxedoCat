@@ -16,7 +16,8 @@
     "electron/sidebarFiles.ts",
     "electron/chatPlaceholderHtml.ts",
     "electron/workspaceBatchClose.ts",
-    "electron/terminalShells.ts"
+    "electron/terminalShells.ts",
+    "electron/terminal/xtermThemes.ts"
   ],
   "exclude": [
     "node_modules",

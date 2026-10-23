@@ -14,7 +14,11 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { XTERM_THEMES } from './xtermThemes.js';
+import {
+  XTERM_THEMES,
+  TERMINAL_MINIMUM_CONTRAST_RATIO,
+  type TerminalTheme,
+} from './xtermThemes.js';
 import { getTerminalLabels, type TerminalLabels } from './labels.js';
 import type { TerminalAPI, TerminalTab } from './types.js';
 
@@ -58,10 +62,16 @@ const panesEl = document.getElementById('panes') as HTMLElement;
 
 // ---------- 主题 ----------
 
+/** 当前主题的配色；建页时直接取它，避免新建标签先闪一帧深色 */
+let currentTheme: TerminalTheme = XTERM_THEMES.dark;
+
 function applyTheme(isDark: boolean): void {
+  currentTheme = XTERM_THEMES[isDark ? 'dark' : 'light'];
   document.body.classList.toggle('light', !isDark);
+  // 页边露出的底色与 xterm 底色同源（配色表是唯一来源），否则两种底色之间会有一道缝
+  document.body.style.setProperty('--term-bg', currentTheme.background);
   for (const pane of panes.values()) {
-    pane.term.options.theme = XTERM_THEMES[isDark ? 'dark' : 'light'];
+    pane.term.options.theme = currentTheme;
   }
 }
 
@@ -78,7 +88,9 @@ function createPane(tab: TerminalTab): PaneView {
     cursorBlink: true,
     // 回看缓冲下限（docs/hosts/electron-multi-workspace.md 第 14.4 节：不少于 1000 行）
     scrollback: 1000,
-    theme: XTERM_THEMES.dark,
+    // 彩色前后景组合（`ls` 的 777 目录是蓝字绿底）靠它兜底可读性
+    minimumContrastRatio: TERMINAL_MINIMUM_CONTRAST_RATIO,
+    theme: currentTheme,
   });
   const fit = new FitAddon();
   term.loadAddon(fit);

@@ -1,62 +1,77 @@
 /**
- * 远程终端的 xterm 配色（docs/hosts/electron-multi-workspace.md 第 14.8 节样式基线，
- * 视觉基准 specs/022-remote-ssh-terminal/demo.html）。
+ * 远程终端的 xterm 配色（docs/hosts/electron-multi-workspace.md 第 14.8 节样式基线）。
  *
- * 深色终端底色 = 主窗口外壳 #16161b，浅色 = #ffffff；光标 / 选中用应用 accent
- * （#6366f1）；红 / 绿 / 黄语义色与应用 colors.ts 的 success / running / error 对齐。
+ * 深色取 MobaXterm 默认配色原值（`MobaXterm.ini` 的 `[Colors]`：底色 30,30,30、前景
+ * 236,236,236、光标 180,180,192 与十六色）；浅色是同色相在白底上的加深版——MobaXterm 没有
+ * 白底默认方案，原值（如 green 14,177,108）在白底上对比度不足。两套里的 white / brightWhite
+ * 都保持浅灰：它们是底色 / 反显用的，当正文时由下面的对比度兜底救回来。
+ *
+ * 十六色只决定「用哪个颜色」，不保证任意前后景组合都看得清：`ls` 对 777 目录发的是蓝字绿底
+ * （dircolors 的 `ow=34;42`），而蓝绿亮度接近，光换配色表救不回来。这类组合交给 xterm 的
+ * `minimumContrastRatio`（`TERMINAL_MINIMUM_CONTRAST_RATIO`）在渲染时把前景色向黑 / 白收敛到
+ * 可读，因此配色表不为了对比度牺牲 MobaXterm 的原色。
  */
 
 import type { ITheme } from '@xterm/xterm';
 
-export const TERMINAL_DARK_BACKGROUND = '#16161b';
+export const TERMINAL_DARK_BACKGROUND = '#1e1e1e';
 export const TERMINAL_LIGHT_BACKGROUND = '#ffffff';
 
-/** 深浅两套 ANSI 十六色（demo 定稿） */
-export const XTERM_THEMES: Record<'dark' | 'light', ITheme> = {
+/**
+ * 前景色与所在单元格底色的最小对比度（WCAG AA 正文 4.5:1）。
+ * 彩色前后景组合（`ls` 的 777 目录、粘滞位目录等）靠它在渲染时兜底可读性。
+ */
+export const TERMINAL_MINIMUM_CONTRAST_RATIO = 4.5;
+
+/** 终端配色：底色必填（页面用它与 xterm 保持同一底色，不留缝） */
+export type TerminalTheme = ITheme & { background: string };
+
+/** 深浅两套 ANSI 十六色 */
+export const XTERM_THEMES: Record<'dark' | 'light', TerminalTheme> = {
   dark: {
     background: TERMINAL_DARK_BACKGROUND,
-    foreground: '#c1c1c6',
-    cursor: '#6366f1',
+    foreground: '#ececec',
+    cursor: '#b4b4c0',
     cursorAccent: TERMINAL_DARK_BACKGROUND,
-    selectionBackground: 'rgba(99, 102, 241, 0.32)',
-    black: '#3f3f46',
-    red: '#ef4444',
-    green: '#22c55e',
-    yellow: '#eab308',
-    blue: '#60a5fa',
-    magenta: '#c084fc',
-    cyan: '#22d3ee',
-    white: '#c1c1c6',
-    brightBlack: '#71717a',
-    brightRed: '#f87171',
-    brightGreen: '#4ade80',
-    brightYellow: '#facc15',
-    brightBlue: '#93c5fd',
-    brightMagenta: '#d8b4fe',
-    brightCyan: '#67e8f9',
-    brightWhite: '#fafafa',
+    selectionBackground: 'rgba(180, 180, 192, 0.3)',
+    black: '#1e1e1e',
+    red: '#ff6060',
+    green: '#0eb16c',
+    yellow: '#bebe12',
+    blue: '#1296be',
+    magenta: '#ff4dff',
+    cyan: '#54ccef',
+    white: '#cccccc',
+    brightBlack: '#808080',
+    brightRed: '#ff8080',
+    brightGreen: '#18ed93',
+    brightYellow: '#dedc12',
+    brightBlue: '#1bbae9',
+    brightMagenta: '#ff7dff',
+    brightCyan: '#8eddf4',
+    brightWhite: '#cccccc',
   },
   light: {
     background: TERMINAL_LIGHT_BACKGROUND,
-    foreground: '#27272a',
-    cursor: '#6366f1',
+    foreground: '#1e1e1e',
+    cursor: '#1e1e1e',
     cursorAccent: TERMINAL_LIGHT_BACKGROUND,
-    selectionBackground: 'rgba(99, 102, 241, 0.25)',
-    black: '#3f3f46',
-    red: '#dc2626',
-    green: '#16a34a',
-    yellow: '#d97706',
-    blue: '#2563eb',
-    magenta: '#9333ea',
-    cyan: '#0891b2',
-    white: '#e4e4e7',
-    brightBlack: '#71717a',
-    brightRed: '#ef4444',
-    brightGreen: '#22c55e',
-    brightYellow: '#eab308',
-    brightBlue: '#3b82f6',
-    brightMagenta: '#a855f7',
-    brightCyan: '#06b6d4',
-    brightWhite: '#fafafa',
+    selectionBackground: 'rgba(30, 30, 30, 0.18)',
+    black: '#1e1e1e',
+    red: '#c0392b',
+    green: '#0a8550',
+    yellow: '#7a6c00',
+    blue: '#0b5c8a',
+    magenta: '#a3249b',
+    cyan: '#0b7285',
+    white: '#cccccc',
+    brightBlack: '#6b6b6b',
+    brightRed: '#d13b3b',
+    brightGreen: '#078048',
+    brightYellow: '#857100',
+    brightBlue: '#1273a8',
+    brightMagenta: '#b52fae',
+    brightCyan: '#0d7a8f',
+    brightWhite: '#f5f5f7',
   },
 };

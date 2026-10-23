@@ -1,4 +1,4 @@
-/* 远程终端页面（specs/022）：样式基线对齐 demo.html；深浅两套跟随主进程推送的主题 */
+/* 远程终端页面（docs/hosts/electron-multi-workspace.md 第 14.8 节）：样式基线对齐 demo.html；深浅两套跟随主进程推送的主题 */
 
 :root {
   --shell: #16161b;        /* 主窗口外壳（深） */
@@ -10,7 +10,7 @@
   --success: #22c55e;
   --error: #ef4444;
   --border: #3f3f46;
-  --term-bg: #16161b;
+  --term-bg: #1e1e1e;      /* 首帧兜底；真值由 applyTheme 从 xtermThemes.ts 注入 */
 }
 body.light {
   --shell: #fafafa;

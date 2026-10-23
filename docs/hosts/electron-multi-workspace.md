@@ -417,6 +417,13 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 - 主题即时跟随应用主题（`nativeTheme` 推送，深浅两套 ANSI 配色）；界面语言与字号档位在
   窗口创建时经 query 注入、运行期变更不热切到已开的终端窗口（字号档位映射见
   `terminalFontSizePx`）。
+- 配色基线是 MobaXterm 的默认方案（`electron/terminal/xtermThemes.ts`）：深色取
+  `MobaXterm.ini` 的 `[Colors]` 原值（底色 `#1e1e1e`、前景 `#ececec`、光标 `#b4b4c0`
+  与十六色），浅色是同色相的白底加深版（底色 `#ffffff`）。配色表只决定「用哪个颜色」，
+  彩色前后景组合（`ls` 的 777 目录是蓝字绿底）由 xterm 的 `minimumContrastRatio`
+  在渲染时把前景色向黑 / 白收敛到 4.5:1（WCAG AA）——不为了对比度改动 MobaXterm 的原色。
+- 页面底色与 xterm 底色同源：`--term-bg` 由 `applyTheme` 从配色表注入，样式表里的值只用于
+  JS 接管前的首帧。
 
 ---
 
