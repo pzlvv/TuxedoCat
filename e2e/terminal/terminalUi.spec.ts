@@ -157,8 +157,15 @@ test('「+」新建标签、点击切换、✕ 关闭', async () => {
   await expect(page.locator('.tab').nth(0)).toHaveClass(/active/);
 });
 
-test('键入路由到 input、输出回显进 xterm', async () => {
+test('关闭最后一个标签时向主进程请求关窗口（specs/022 FR-003）', async () => {
   const { page } = handle;
+  const active = page.locator('.tab').nth(0);
+  await active.hover();
+  await active.locator('.x').click();
+  await expect.poll(async () => (await state(page)).closeWindowCalled).toBe(true);
+});
+
+test('键入路由到 input、输出回显进 xterm', async () => {  const { page } = handle;
   await page.locator('#pane-1').click();
   await page.keyboard.type('ls -la');
   await expect.poll(async () => (await state(page)).inputs.map((i) => i.data).join('')).toContain('ls -la');

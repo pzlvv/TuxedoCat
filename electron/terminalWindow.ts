@@ -104,7 +104,7 @@ export function openTerminalWindow(options: TerminalWindowOptions): void {
   win.once('ready-to-show', () => win.show());
 
   const group = new TerminalSessionGroup({
-    openChannel: (size) => openShellWithHostKeyRetry(endpoint, size, options),
+    openChannel: (size) => openShellWithHostKeyRetry(endpoint, ref.path, size, options),
     onTabsChanged: (tabs) => send(win, 'terminal:tabs', tabs),
     onOutput: (tabId, data) => send(win, 'terminal:output', { tabId, data }),
     log: options.log,
@@ -164,12 +164,14 @@ export function closeAllTerminalWindows(): void {
  */
 async function openShellWithHostKeyRetry(
   endpoint: WorkspaceEndpoint,
+  cwd: string,
   size: TerminalSize,
   options: TerminalWindowOptions,
 ): Promise<TerminalChannel> {
   const open = async (): Promise<ClientChannel> => {
     const client = await sharedClientFor(endpoint, options.log);
-    return client.openShell(size);
+    // 起始工作目录 = 工作区路径（specs/022 FR-003；cd 在远端外层 sh 执行，不进历史）
+    return client.openShell({ ...size, cwd });
   };
   try {
     return adaptChannel(await open());

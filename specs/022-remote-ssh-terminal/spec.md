@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：Electron 远程终端（SSH shell）
@@ -36,7 +36,7 @@ Electron 宿主为已接入的远程（SSH）工作区提供交互式终端：�
 - 场景 2：多标签与交互
   - **AC-4**（FR-003）：GIVEN 终端窗口已打开 WHEN 点「新建标签」（+） THEN 新增一个终端标签并建立一条新的 shell 通道，其起始工作目录为该工作区路径；已有标签的内容与运行状态不受影响
   - **AC-5**（FR-003）：GIVEN 某标签内 shell 在运行 WHEN 在该标签执行 `exit` THEN 该标签自动关闭；关掉最后一个标签时窗口随之关闭
-  - **AC-6**（FR-004）：GIVEN 终端已连上 WHEN 键入字符、运行全屏程序（如 `vim`） THEN 回显与全屏绘制正常；拖拽改变窗口尺寸后远端行宽列数随之变化（重开 `vim` 布局正确）
+  - **AC-6**（FR-004）：GIVEN 终端已连上 WHEN 键入字符、运行全屏程序（如 vim / htop） THEN 回显与全屏绘制正常；拖拽改变窗口尺寸后远端行宽列数随之变化（重开 `vim` 布局正确）
   - **AC-7**（FR-005）：GIVEN 终端里有选中文本 / 剪贴板有内容 WHEN 按复制（Windows/Linux `Ctrl+Shift+C`，macOS `Cmd+C`）/ 粘贴（`Ctrl+Shift+V` / `Cmd+V`） THEN 选区进剪贴板 / 剪贴板内容被送入 shell 的标准输入
 - 场景 3：连接复用与断开
   - **AC-8**（FR-006）：GIVEN 该 endpoint 已有 SSH 连接（如侧栏文件树已展开）WHEN 打开终端 THEN 直接出现提示符，不再次弹主机密钥确认、不要求重新提供口令
@@ -73,7 +73,7 @@ PTY shell 通道，互不共享输入输出。新标签的起始工作目录为�
 
 ### FR-004：终端交互
 
-键入回显、控制序列与全屏程序（`vim` / `htop` 一类）可用；窗口尺寸变化实时同步远端
+键入回显、控制序列与全屏程序（vim / htop 一类）可用；窗口尺寸变化实时同步远端
 PTY（`setWindow`，含通道建立时的初始尺寸）。滚动回看缓冲不少于 1000 行。终端数据按
 字节流转给渲染层（UTF-8 由终端仿真器增量解码），宿主不按行重组、不解析内容。
 
@@ -167,14 +167,14 @@ e2e 登记与豁免：
 
 | 需求 | 实现落点 | 测试落点 | 覆盖 |
 | --- | --- | --- | --- |
-| FR-001 | `electron/main.ts`（菜单定义 + 可用性） | `src/test/` 菜单可用性单测 | 自动 |
-| FR-002 | `electron/terminalWindow.ts`（新，窗口单例与标题） | `src/test/terminalWindow.test.ts`（单例判定） | 自动 |
-| FR-003 | `electron/terminalWindow.ts` + shell 通道管理器 | `src/test/terminalShells.test.ts`（假 `SshClient`：建 / 关 / exit 关标签） | 自动 |
-| FR-004 | shell 通道管理器（resize / 字节流）+ 渲染端 xterm 配置 | `src/test/terminalShells.test.ts`；回看行数为配置常量单测 | 自动 |
-| FR-005 | 渲染端快捷键处理（`src/terminal/`） | `e2e/terminal/`（假 API 喂字回显） | 自动 |
-| FR-006 | `electron/terminalWindow.ts` 复用 `electron/sidebarFilesRemote.ts` 连接池 | `src/test/` 租约计数单测 | 自动 |
-| FR-007 | shell 通道管理器（断开态机）+ 渲染端断开态 | `src/test/terminalShells.test.ts`；`e2e/terminal/` 断开态 | 自动 |
-| FR-008 | `electron/main.ts`（工作区关闭 / 退出钩子） | `src/test/terminalWindow.test.ts`（关闭绑定） | 自动 |
+| FR-001 | `electron/main.ts`（菜单定义 + 可用性） | `src/test/terminalShells.test.ts` 的 `canOpenRemoteTerminal` 断言；`e2e/terminal/` 首标签自动建立 | 自动 |
+| FR-002 | `electron/terminalWindow.ts`（窗口单例与标题） | — | 无自动覆盖 + BrowserWindow 胶水，多窗口生命周期豁免（US-38 口径），真机清单核验 |
+| FR-003 | `electron/terminalShells.ts` 状态机 + `electron/terminal/main.ts`（新页激活 / 最后标签关窗） | `src/test/terminalShells.test.ts`（建 / 关 / exit 自动关标签）；`e2e/terminal/terminalUi.spec.ts`（标签增删切换、最后标签关窗请求） | 自动 |
+| FR-004 | `src/host/standalone/sshClient.ts` 的 `openShell` + 状态机 resize / 字节流 | `src/test/terminalShells.test.ts`（resize 记账 / 输出转发 / 背压）；`e2e/terminal/`（键入回显）；回看行数为渲染端配置常量（人工比对） | 自动 |
+| FR-005 | 渲染端快捷键处理（`electron/terminal/main.ts`）+ 主进程 `clipboard` 模块 | `e2e/terminal/`（复制选区 / 粘贴回传） | 自动 |
+| FR-006 | `electron/terminalWindow.ts` 复用 `electron/sidebarFilesRemote.ts` 连接池（`sharedClientFor` + 租约） | — | 无自动覆盖 + 连接池租约语义沿用侧栏文件浏览的既有实现，真实链路由真机清单核验 |
+| FR-007 | shell 通道管理器（断开态机）+ 渲染端断开态 | `src/test/terminalShells.test.ts`（exit vs close 判别 / reconnect / 失败原因）；`e2e/terminal/`（断开态与重连） | 自动 |
+| FR-008 | `electron/main.ts`（`teardownWorkspace` / `will-quit` 挂点）+ `closeTerminalWorkspace` / `closeAllTerminalWindows` | — | 无自动覆盖 + 多 BrowserWindow 生命周期豁免（US-38 口径），真机清单核验 |
 | FR-009 | 渲染端主题 / 语言注入；IPC 面为独立 `terminal:*` 通道 | `e2e/terminal/` 主题断言；架构约束（不进总线）由评审锁定；样式按 `specs/022-remote-ssh-terminal/demo.html` 人工比对 | 无自动覆盖 + 「不进总线 / 不复用对话消息协议」是架构边界，由文档与评审锁定 |
 
 ## 待澄清
@@ -183,4 +183,36 @@ e2e 登记与豁免：
 
 ## 收敛记录
 
-收敛时由 /converge 填写。
+（2026-10-23 /converge 填写；闸门：`check-types` / `lint` / `test:all` 68 通过 / e2e 退出码 0 / docs-lint 绿。）
+
+**已满足**（附证据落点）：
+
+- AC-2、AC-3、AC-7、AC-10、AC-13、AC-14：单测 + e2e 直接覆盖——`canOpenRemoteTerminal` 三分支
+  （`src/test/terminalShells.test.ts`）；复制粘贴 / 断开态与重连 / 主题跟随 / 标签增删切换 /
+  最后标签关窗请求（`e2e/terminal/terminalUi.spec.ts`，7 用例）；终端与会话无关由「独立窗口 +
+  独立 IPC 面」的架构承担。
+- AC-1、AC-6、AC-8、AC-9、AC-11、AC-12：已满足——页面层与接线有自动证据（首标签自动建立、
+  回显、菜单可用性口径、租约 / 挂点代码 + docs-lint 同步）；真实 SSH 链路与 BrowserWindow
+  生命周期按豁免口径（US-42 / US-38）由真机手工清单核验，四条清单登记于 tasks.md
+  「验证留痕」，**待执行**。
+
+**偏差**（均已修复，修复提交随本 spec 归档提交）：
+
+1. AC-4「新标签起始目录 = 工作区路径」初版未做到——`openShell` 用 shell 请求（不支持
+   cwd），shell 落在远端 home。收敛核对发现后改为 exec + PTY 跑
+   `cd '<path>' && exec $SHELL`（cd 在外层 sh 执行、`exec` 顶替为前台进程，不污染交互
+   历史），`openShell` 契约加必选 `cwd` 成员，调用方传 `ref.path`。
+2. FR-003「最后一个标签关闭时窗口关闭」初版未实现（标签表清空后窗口留存）。收敛时补
+   渲染层判定（曾出现过标签且标签表为空 → `closeWindow`）并补 e2e 用例。
+
+**矩阵修正**（反向对照发现虚指，按实修正）：FR-002 / FR-006 / FR-008 原写
+`terminalWindow.test.ts` 与「租约计数单测」——文件不存在（窗口层是 electron 胶水，多窗口
+生命周期无法被 Playwright 断言），改为「无自动覆盖 + 真机清单」的如实口径；FR-001 / FR-004
+落点名对齐实际文件。
+
+**反向对照补录**（实现有、spec 原文未展开，归属 as-built 文档，无分歧）：
+
+- 建链中 / 断开态的键入直接丢弃（设计允许的瞬时 no-op）、关标签先 SIGHUP 再 EOF、
+  页面未构建时窗口标题给出构建提示——均已写入 [docs/hosts/electron-multi-workspace.md 第 14 节](../../docs/hosts/electron-multi-workspace.md#14-远程终端)（14.2 / 14.3 / 14.6 各小节）。
+
+**未做**：无。

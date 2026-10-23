@@ -50,6 +50,8 @@ let target = '';
  * 标签表里认出新增项并激活（首标签自动开同样按新页处理）。
  */
 let activateNextNewTab = false;
+/** 窗口是否出现过至少一个标签（「最后标签关闭 → 关窗口」的判定前提） */
+let hadTabs = false;
 
 const tabsEl = document.getElementById('tabs') as HTMLElement;
 const panesEl = document.getElementById('panes') as HTMLElement;
@@ -197,6 +199,13 @@ function renderTabs(next: readonly TerminalTab[]): void {
     if (visible) fitActivePane();
     renderOverlay(tab, pane);
   }
+
+  // 最后一个标签关闭 → 关窗口（specs/022 FR-003）：曾经出现过标签才算——
+  // 开窗瞬间首标签还没建好的空表不是「用户关完了」
+  if (hadTabs && tabs.length === 0) {
+    api.closeWindow();
+  }
+  hadTabs = hadTabs || tabs.length > 0;
 }
 
 function activateTab(tabId: number): void {

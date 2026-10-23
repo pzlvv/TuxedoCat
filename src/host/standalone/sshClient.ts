@@ -428,8 +428,11 @@ export class SshClient {
   }
 
   /**
-   * 在远端打开一条带 PTY 的交互式 shell 通道（docs/hosts/electron-multi-workspace.md 第 14 节）。
+   * 在远端打开一条带 PTY 的交互式 shell 通道（docs/hosts/electron-multi-workspace.md 第 14 节），起始工作目录为 `cwd`。
    *
+   * 不用 shell 请求而用 exec + PTY 跑 `cd '<cwd>' && exec $SHELL`：shell 请求不支持
+   * 起始目录，连接后补发 `cd` 会污染命令历史；cd 在外层 sh 执行，`exec` 让登录 shell
+   * 顶替它成为 PTY 前台进程——历史里不留痕。`$SHELL` 未设时退到 `/bin/sh`。
    * `cols` / `rows` 是 PTY 初值（发起时刻的窗口尺寸），后续尺寸变化由调用方经
    * `ClientChannel.setWindow` 跟进。通道保持字节流：不设 encoding，UTF-8 由
    * 渲染端终端仿真器增量解码，宿主不按行重组。
@@ -437,11 +440,13 @@ export class SshClient {
    * （远端 shell 进程退出 → 标签自动关闭）与不带 `exit` 先行的 `close`
    * （连接层断开 → 标签转断开态）。
    */
-  async openShell(options: { cols: number; rows: number }): Promise<ClientChannel> {
+  async openShell(options: { cols: number; rows: number; cwd: string }): Promise<ClientChannel> {
     const client = this.requireClient();
+    const command = `cd '${options.cwd.replace(/'/g, `'\\''`)}' && exec "\${SHELL:-/bin/sh}" -l`;
     return new Promise<ClientChannel>((resolve, reject) => {
-      client.shell(
-        { term: 'xterm-256color', cols: options.cols, rows: options.rows },
+      client.exec(
+        command,
+        { pty: { term: 'xterm-256color', cols: options.cols, rows: options.rows } },
         (error: Error | undefined, channel: ClientChannel) => {
           // ssh2 的通道打开失败只有一句「Failure」：带上目标才定位得了
           if (error) reject(new Error(`SSH shell request failed (${this.target.host}): ${error.message}`));
