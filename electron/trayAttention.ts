@@ -11,6 +11,13 @@
  * 落回 idle 也不是——那是子对话一轮的结束，不是主对话完成。「转等待用户」
  * （running → waiting，ask user / 权限确认）不受此抑制，照常提醒。
  *
+ * 「完成」还要过一道**确认窗口**才算数：空闲挂起项（`docs/features/user-message-pipeline.md`
+ * FR-003，webview 本地事实）与排队压缩等队列续跑都发生在 idle 推送**之后**——
+ * 差分看到 running → idle 时队列里可能还有活，立即提醒就是误报。完成先记入
+ * `completedSessions` 由调用方挂确认窗口，窗口结束时会话仍空闲 / 等用户
+ * （`shouldFireCompletion`）才提醒；期间又跑起来（挂起项提交、队列续跑）则取消，
+ * 真正的完成由续跑任务自己的 running → idle 再触发。
+ *
  * core 只推全量 `sessionRuntimeChanged` 快照（docs/core/session-runtime.md），没有单会话结束事件；
  * 这里对相邻两次全量推送按 sessionId 差分出事件，不引入新的事件流。
  */
@@ -44,10 +51,22 @@ export interface SessionBusyRecord {
 }
 
 export interface SessionEndEvents {
-  /** 本次推送里至少一个会话从 running 变为 idle（完成提醒；不含子对话完成） */
-  anyCompleted: boolean;
-  /** 本次推送里至少一个会话从 running 变为 waiting（等待提醒） */
+  /**
+   * 本次推送里从 running 变为 idle 的会话（完成提醒的候选，不含子对话完成）。
+   * 调用方对每个会话挂确认窗口：窗口结束时仍空闲 / 等用户（`shouldFireCompletion`）
+   * 才提醒，期间又跑起来（空闲挂起项提交、排队压缩等队列续跑）则不提醒。
+   */
+  completedSessions: string[];
+  /** 本次推送里至少一个会话从 running 变为 waiting（等待提醒，立即提醒不设窗口） */
   anyNowWaiting: boolean;
+}
+
+/**
+ * 完成提醒确认窗口结束时的放行判定：会话仍空闲 / 等用户才算完成；又跑起来
+ * （level === 'running'，队列续跑）或已从快照消失（undefined，会话被关闭）都不提醒。
+ */
+export function shouldFireCompletion(level: SessionLevel | undefined): boolean {
+  return level === 'idle' || level === 'waiting';
 }
 
 /**
@@ -67,7 +86,7 @@ export function diffSessionEndEvents(
   states: ReadonlyArray<SessionRuntimeSummary>,
 ): { next: Map<string, SessionBusyRecord> } & SessionEndEvents {
   const next = new Map<string, SessionBusyRecord>();
-  let anyCompleted = false;
+  const completedSessions: string[] = [];
   let anyNowWaiting = false;
 
   for (const item of states) {
@@ -75,7 +94,7 @@ export function diffSessionEndEvents(
     const before = prev.get(item.sessionId);
     const isSubagent = !!item.parentSessionId;
     if (before && before.level === 'running' && level === 'idle' && !isSubagent && !before.subagentOnlyBusy) {
-      anyCompleted = true;
+      completedSessions.push(item.sessionId);
     }
     // 转等待用户不受「子对话」抑制：子代理ask user / 权限确认同样要提醒
     if (before && before.level === 'running' && level === 'waiting') {
@@ -92,5 +111,5 @@ export function diffSessionEndEvents(
     });
   }
 
-  return { next, anyCompleted, anyNowWaiting };
+  return { next, completedSessions, anyNowWaiting };
 }

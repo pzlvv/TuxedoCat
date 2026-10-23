@@ -306,6 +306,12 @@ Electron 的 `sidebar:get-conversations` 直接读它，切换标签页不再每
   提醒（聚合仍是 running，红点闪）；颜色取当前聚合状态。不算事件的迁移：waiting → running
   （用户已应答继续跑）、idle → waiting、running → running；新出现（启动 / 切换工作区恢复）与
   消失（关闭对话 / 切换工作区）的会话只更新级别表不产生事件。
+  **完成提醒过一道确认窗口**（`COMPLETION_ATTENTION_GRACE_MS`，1s）：空闲挂起项
+  （[docs/features/user-message-pipeline.md](../features/user-message-pipeline.md) FR-003，webview
+  本地事实）与排队压缩等队列续跑都发生在 idle 推送**之后**，差分看到 running → idle 时队列里
+  可能还有活——完成先记入 `completedSessions` 挂确认窗口，窗口结束时该会话仍空闲 / 等用户
+  （`shouldFireCompletion`）才提醒；期间又跑起来（挂起项提交、队列续跑）则取消，真正的完成由
+  续跑任务自己的 running → idle 再触发。转等待立即提醒不设窗口。
 
 **提醒音**挂在同一处判定上（`electron/trayAttentionSound.ts` 的编排 + `electron/traySoundWindow.ts`
 的播放载体）：`startAttention` 启动闪烁的同时播一次 `electron/assets/meow.aac`——窗口在前台不提醒也
@@ -332,7 +338,7 @@ e2e 的整应用用例经启动开关关掉它（见 [e2e/README.md](../../e2e/R
 
 | 状态迁移 | 原因 | 聚合颜色 | 闪烁（单会话差分） |
 | --- | --- | --- | --- |
-| `idle=false → idle=true` | 查询结束 | 随其余会话聚合，可能仍是红点 | 闪（完成提醒） |
+| `idle=false → idle=true` | 查询结束 | 随其余会话聚合，可能仍是红点 | 闪（完成提醒；确认窗口内又跑起来——空闲挂起项提交 / 队列续跑——则不闪） |
 | `idle=false → waiting=true` | 查询没结束，但要用户确认（ask user / 权限确认） | 黄点（waiting 优先级最高） | 闪（等待提醒） |
 | `idle=false → idle=false` | 主查询结束了，但后台 Bash / 非 idle 子代理还在跑 | 红点 | 不闪（任务没结束） |
 

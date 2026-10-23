@@ -70,7 +70,7 @@ import {
 } from '../src/host/workspaceState.js';
 
 import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } from './trayStatusIcon.js';
-import { diffSessionEndEvents, type SessionBusyRecord, type SessionLevel } from './trayAttention.js';
+import { diffSessionEndEvents, shouldFireCompletion, type SessionBusyRecord, type SessionLevel } from './trayAttention.js';
 import { createAttentionSound, traySoundEnabled } from './trayAttentionSound.js';
 import { createTraySoundPlayer } from './traySoundWindow.js';
 import { diffCompletionAttention, pickReadCompletions, type CompletionAttentionFacts } from './completionAttention.js';
@@ -1618,6 +1618,19 @@ function setupTray(): void {
 }
 
 /**
+ * 完成提醒的确认窗口（毫秒）：空闲挂起项自动提交 / 排队压缩续跑都发生在 idle 推送
+ * **之后**（挂起项是 webview 本地事实，宿主无从预知，docs/features/user-message-pipeline.md
+ * FR-003），差分看到 running → idle 时队列里可能还有活。窗口结束时会话仍空闲 / 等用户
+ * 才提醒；期间又跑起来则取消，真正的完成由续跑任务自己的 running → idle 再触发
+ * （docs/hosts/host-matrix.md 托盘段落）。本地提交链路（webview → 宿主 → core）
+ * 一个往返即可让会话回到 running，1s 足以覆盖，也把真完成的提醒最多推迟这一窗口。
+ */
+const COMPLETION_ATTENTION_GRACE_MS = 1000;
+
+/** 每会话的完成提醒定时器（确认窗口；确认通过 / 取消 / 会话消失时移除） */
+const pendingCompletionTimers = new Map<string, NodeJS.Timeout>();
+
+/**
  * 托盘状态点：running / waiting 由 core 的 sessionRuntimeChanged 全量推送，
  * 经 ElectronConversationManager.setStatusListener 到达这里；不再从对话列表推导。
  *
@@ -1627,7 +1640,9 @@ function setupTray(): void {
  * 另外负责「任务结束提醒」：任一会话从运行中结束（完成 → idle、转等待 → waiting）
  * 且窗口处于后台时就闪烁，**不看聚合状态是否变化**——两个对话在跑时其中一个完成，
  * 聚合仍是 running，同样要提醒（红点闪）。事件由 `diffSessionEndEvents` 对相邻两次
- * 全量推送差分得出；闪烁颜色取当前聚合状态。
+ * 全量推送差分得出；闪烁颜色取当前聚合状态。完成提醒进确认窗口
+ * （`COMPLETION_ATTENTION_GRACE_MS`）：空闲挂起项提交 / 队列续跑造成的
+ * idle → running 闪现不算完成，不提醒；转等待立即提醒不设窗口。
  */
 function updateTrayStatusFromStates(
   states: ReadonlyArray<import('../src/shared/AssistantEventBus.js').SessionRuntimeState>,
@@ -1635,6 +1650,27 @@ function updateTrayStatusFromStates(
   const status = deriveTrayStatusFromStates(states);
   const ends = diffSessionEndEvents(traySessionLevels, states);
   traySessionLevels = ends.next;
+
+  // 确认窗口内又跑起来的会话不是完成：取消其提醒定时器（含从快照消失的会话）
+  for (const [sessionId, timer] of [...pendingCompletionTimers]) {
+    const level = ends.next.get(sessionId)?.level;
+    if (level === 'running' || level === undefined) {
+      clearTimeout(timer);
+      pendingCompletionTimers.delete(sessionId);
+    }
+  }
+  // 完成进确认窗口：窗口结束时仍空闲 / 等用户才提醒（空闲挂起项提交、排队压缩等
+  // 队列续跑造成的 idle → running 闪现不算完成）；trayStatus 为 null = 托盘未建，
+  // 闪烁无从谈起，跳过
+  for (const sessionId of ends.completedSessions) {
+    const timer = setTimeout(() => {
+      pendingCompletionTimers.delete(sessionId);
+      if (trayStatus && shouldFireCompletion(traySessionLevels.get(sessionId)?.level)) {
+        startAttention(trayStatus);
+      }
+    }, COMPLETION_ATTENTION_GRACE_MS);
+    pendingCompletionTimers.set(sessionId, timer);
+  }
 
   if (status !== trayStatus) {
     trayStatus = status;
@@ -1650,7 +1686,7 @@ function updateTrayStatusFromStates(
     }
   }
 
-  if (ends.anyCompleted || ends.anyNowWaiting) {
+  if (ends.anyNowWaiting) {
     startAttention(status);
   }
 }
