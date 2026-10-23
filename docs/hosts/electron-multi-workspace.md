@@ -410,6 +410,9 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 - 通道结束按两个事件判别：`exit` 先行（远端 shell 正常退出）→ 标签自动关闭（14.3）；
   无 `exit` 先行的 `close`（SSH 连接断开 / 通道层错误）→ 标签转「已断开」态，标签页内
   以覆盖层呈现原因（通道 error 优先，缺省给固定文案）与「重新连接」按钮。
+- 建链中（connecting，含新标签与重连）的覆盖层以对话加载同款的 logo 动画呈现
+  （波纹 + logo + 弹跳圆点，形态对齐聊天侧 `ConversationLoading`）——连接中不是错误，
+  红色警示图标只属于断开态。
 - 重连只作用于单个标签、以当下窗口尺寸重建一条 shell，不自动重连、不批量复活其它标签。
   断开态与建链中（connecting）的键入直接丢弃（界面上该标签不在可输入态，设计允许的
   瞬时 no-op）；连接失败（认证失败 / 不可达）同样进断开态，不清除已存凭证、不新增
@@ -440,7 +443,8 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   彩色前后景组合（`ls` 的 777 目录是蓝字绿底）由 xterm 的 `minimumContrastRatio`
   在渲染时把前景色向黑 / 白收敛到 4.5:1（WCAG AA）——不为了对比度改动 MobaXterm 的原色。
 - 页面底色与 xterm 底色同源：`--term-bg` 由 `applyTheme` 从配色表注入，样式表里的值只用于
-  JS 接管前的首帧。
+  JS 接管前的首帧；xterm viewport 的默认黑底（画布整行取整余量处会露出）也换用同一变量，
+  不在窗口底部留黑边。
 - 终端滚动条是 xterm 的 DOM 滑块（VS Code 式，`::-webkit-scrollbar` 管不到）：宽度 / 圆角
   与 Electron 原生页面的统一滚动条（`electron/ui/scrollbar.css`）一致，宽度由页面样式压过
   xterm 写进内联样式的默认值；滑块配色取该文件同一组值，在 `electron/terminal/xtermThemes.ts`

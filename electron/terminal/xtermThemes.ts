@@ -26,6 +26,14 @@ export const TERMINAL_MINIMUM_CONTRAST_RATIO = 4.5;
 /** 终端配色：底色必填（页面用它与 xterm 保持同一底色，不留缝） */
 export type TerminalTheme = ITheme & { background: string };
 
+/**
+ * 滚动条滑块配色：取 electron/ui/scrollbar.css 统一滚动条的同一组值（该文件管原生
+ * 滚动条；xterm 6 的 DOM 滑块不认 CSS 变量，只能在这份配色表里同步维护，改这里时
+ * 那边一并改）。xterm 主题没有独立的 active 态与 hover 分开取值，点击态沿用 hover 色。
+ */
+const SCROLLBAR_SLIDER_DARK = { background: '#3a3a44', hover: '#4a4a55' };
+const SCROLLBAR_SLIDER_LIGHT = { background: '#c9c9d1', hover: '#aeaeb9' };
+
 /** 深浅两套 ANSI 十六色 */
 export const XTERM_THEMES: Record<'dark' | 'light', TerminalTheme> = {
   dark: {
@@ -34,6 +42,9 @@ export const XTERM_THEMES: Record<'dark' | 'light', TerminalTheme> = {
     cursor: '#b4b4c0',
     cursorAccent: TERMINAL_DARK_BACKGROUND,
     selectionBackground: 'rgba(180, 180, 192, 0.3)',
+    scrollbarSliderBackground: SCROLLBAR_SLIDER_DARK.background,
+    scrollbarSliderHoverBackground: SCROLLBAR_SLIDER_DARK.hover,
+    scrollbarSliderActiveBackground: SCROLLBAR_SLIDER_DARK.hover,
     black: '#1e1e1e',
     red: '#ff6060',
     green: '#0eb16c',
@@ -57,6 +68,9 @@ export const XTERM_THEMES: Record<'dark' | 'light', TerminalTheme> = {
     cursor: '#1e1e1e',
     cursorAccent: TERMINAL_LIGHT_BACKGROUND,
     selectionBackground: 'rgba(30, 30, 30, 0.18)',
+    scrollbarSliderBackground: SCROLLBAR_SLIDER_LIGHT.background,
+    scrollbarSliderHoverBackground: SCROLLBAR_SLIDER_LIGHT.hover,
+    scrollbarSliderActiveBackground: SCROLLBAR_SLIDER_LIGHT.hover,
     black: '#1e1e1e',
     red: '#c0392b',
     green: '#0a8550',

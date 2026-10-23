@@ -6,7 +6,9 @@
  * 宽度 / 圆角 / 悬停态只有这一份定义。
  *
  * 聊天 webview（`src/webview/`）不引用这里：它的滚动条跟随聊天主题的 harness 色，
- * 与系统深浅色无关（见 `src/webview/styles/index.css`）。
+ * 与系统深浅色无关（见 `src/webview/styles/index.css`）。远程终端窗口的 xterm DOM
+ * 滑块不认 CSS（`::-webkit-scrollbar` 管不到它）：同一组滑块色在
+ * `electron/terminal/xtermThemes.ts` 的配色表里同步维护，宽度由页面样式覆盖。
  */
 
 :root {

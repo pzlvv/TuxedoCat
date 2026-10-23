@@ -260,6 +260,8 @@ function renderOverlay(tab: TerminalTab, pane: PaneView): void {
     overlay = buildOverlay(pane);
     host.appendChild(overlay);
   }
+  // 连接中不是错误：红色警示只给断开态，连接中换成对话加载同款的 logo 动画
+  overlay.classList.toggle('connecting', tab.status === 'connecting');
   const title = overlay.querySelector<HTMLElement>('.title');
   const reason = overlay.querySelector<HTMLElement>('.reason');
   const button = overlay.querySelector<HTMLButtonElement>('button');
@@ -280,6 +282,29 @@ function buildOverlay(pane: PaneView): HTMLElement {
   const warn = document.createElement('div');
   warn.className = 'warn';
   warn.textContent = '⚠';
+  // 连接中的加载动画：对话加载同款（logo + 扩散波纹 + 弹跳圆点，形态对齐
+  // src/webview 的 ConversationLoading；logo 走 publicDir 拷进产物根目录）
+  const loading = document.createElement('div');
+  loading.className = 'loading';
+  const ripple = document.createElement('div');
+  ripple.className = 'loading-ripple';
+  const ring1 = document.createElement('span');
+  ring1.className = 'loading-ring';
+  const ring2 = document.createElement('span');
+  ring2.className = 'loading-ring';
+  const logo = document.createElement('img');
+  logo.className = 'loading-logo';
+  logo.src = './logo.png';
+  logo.alt = '';
+  logo.draggable = false;
+  ripple.append(ring1, ring2, logo);
+  const dots = document.createElement('div');
+  dots.className = 'loading-dots';
+  for (let i = 0; i < 3; i += 1) {
+    const dot = document.createElement('span');
+    dots.appendChild(dot);
+  }
+  loading.append(ripple, dots);
   const title = document.createElement('div');
   title.className = 'title';
   const reason = document.createElement('div');
@@ -290,7 +315,7 @@ function buildOverlay(pane: PaneView): HTMLElement {
     // 以当下窗口尺寸重建 shell（docs/hosts/electron-multi-workspace.md 第 14.6 节）
     void api.reconnect({ tabId: pane.id, cols: pane.term.cols, rows: pane.term.rows });
   });
-  overlay.append(warn, title, reason, button);
+  overlay.append(warn, loading, title, reason, button);
   return overlay;
 }
 

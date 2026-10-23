@@ -11,7 +11,8 @@ import { openStaticPage } from '../helpers/webviewHarness';
  * 页面层验收（US-54 只覆盖首标签自动建立的页面侧）：
  * - 首标签随窗口自动建立（AC-1 的页面侧）；「+」新建 / ✕ 关闭与切换（FR-003）；
  * - 键入路由到 input、输出回显进 xterm（FR-004 数据面）；
- * - 断开态覆盖层（原因 + 重连按钮）与重连动作（FR-007）；
+ * - 断开态覆盖层（原因 + 重连按钮）与重连动作（FR-007）；连接中的 logo 加载动画
+ *   （红色警示只属于断开态）；
  * - 主题推送跟随（FR-009）；复制 / 粘贴快捷键（FR-005）；
  * - 标签切换快捷键推方向（`terminal:switch-tab`，US-55 验收 6 的页面侧；
  *   主进程 before-input-event 拦截属真实 SSH 链路，按未覆盖段豁免）。
@@ -86,6 +87,13 @@ const FAKE_API_INIT = `
       tab.failure = reason;
       emitTabs();
     },
+    connect(tabId) {
+      const tab = state.tabs.find((t) => t.id === tabId);
+      if (!tab) return;
+      tab.status = 'connecting';
+      tab.failure = null;
+      emitTabs();
+    },
     emitTheme(isDark) {
       state.listeners.theme.forEach((fn) => fn(isDark));
     },
@@ -107,6 +115,7 @@ interface TerminalTestWindow {
   };
   __terminalCtl: {
     disconnect(tabId: number, reason: string): void;
+    connect(tabId: number): void;
     emitTheme(isDark: boolean): void;
     emitSwitchTab(direction: 'next' | 'prev'): void;
   };
@@ -198,6 +207,25 @@ test('断开态：覆盖层带原因与重连按钮，重连以当下尺寸发�
   // 重连回 ready：覆盖层收起，新 shell 的回显进终端
   await expect(page.locator('#pane-1 .overlay')).toHaveCount(0);
   await expect.poll(() => page.locator('#pane-1 .xterm-rows').textContent()).toContain('reconnected');
+});
+
+test('连接中：覆盖层是 logo 加载动画，红色警示不出现', async () => {
+  const { page } = handle;
+  await page.evaluate(() => (window as unknown as TerminalTestWindow).__terminalCtl.connect(1));
+
+  const overlay = page.locator('#pane-1 .overlay');
+  await expect(overlay).toHaveClass(/connecting/);
+  // 连接中展示对话加载同款动画（波纹 + logo + 圆点），没有红色警示
+  await expect(overlay.locator('.loading')).toBeVisible();
+  await expect(overlay.locator('.loading-logo')).toBeVisible();
+  await expect(overlay.locator('.warn')).toBeHidden();
+  // connecting 态没有重连按钮
+  await expect(overlay.locator('button')).toBeHidden();
+
+  // 回到断开态：警示与重连按钮回归，动画收起
+  await page.evaluate(() => (window as unknown as TerminalTestWindow).__terminalCtl.disconnect(1, 'read ETIMEDOUT'));
+  await expect(overlay.locator('.warn')).toBeVisible();
+  await expect(overlay.locator('.loading')).toBeHidden();
 });
 
 test('主题推送跟随：body 深浅切换', async () => {

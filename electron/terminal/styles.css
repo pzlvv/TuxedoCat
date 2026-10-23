@@ -1,24 +1,42 @@
-/* 远程终端页面（docs/hosts/electron-multi-workspace.md 第 14.8 节）：样式基线对齐 demo.html；深浅两套跟随主进程推送的主题 */
+/* 远程终端页面（docs/hosts/electron-multi-workspace.md 第 14.8 节）：标签条形态对齐主窗口
+   标题栏的工作区标签（electron/titlebar/styles.css 的 .ws-tab），滚动条对齐 electron/ui/scrollbar.css
+   的统一滚动条；深浅两套跟随主进程推送的主题 */
+
+@import '../ui/scrollbar.css';
 
 :root {
   --shell: #16161b;        /* 主窗口外壳（深） */
-  --frame: #2a2a30;        /* primaryFrame */
   --bg2: #1e1e24;          /* bgSecondary */
   --text: #c1c1c6;
   --text-dim: #9f9fa9;
-  --accent: #6366f1;
   --success: #22c55e;
   --error: #ef4444;
   --border: #3f3f46;
+  /* 标签条配色（取自主窗口标题栏 .ws-tab 的同一组值） */
+  --tabstrip-bg: #16161b;  /* 标签条底色 = 主窗口标题栏 */
+  --tab-text: #c1c1c6;     /* 未选中标签文字 */
+  --tab-hover: #26262c;    /* 未选中标签 hover 底色 */
+  --tab-active: #2f2f37;   /* 活动标签实色底，也是标签条底边线色 */
+  --tab-active-text: #ffffff;
+  --tab-sep: #4a4a55;      /* 未选中标签之间的竖线分隔 */
+  --tab-x-hover: rgba(255, 255, 255, 0.15);  /* 关闭按钮 hover 底色 */
+  --loading-accent: rgba(167, 139, 250, 0.9);  /* 连接中加载动画的波纹 / 圆点（对话加载深色同值） */
   --term-bg: #1e1e1e;      /* 首帧兜底；真值由 applyTheme 从 xtermThemes.ts 注入 */
 }
 body.light {
   --shell: #fafafa;
-  --frame: #e4e4e7;
   --bg2: #ececef;
   --text: #18181b;
   --text-dim: #71717a;
   --border: #d4d4d8;
+  --tabstrip-bg: #e4e4e7;
+  --tab-text: #3f3f46;
+  --tab-hover: #f4f4f5;
+  --tab-active: #ffffff;
+  --tab-active-text: #18181b;
+  --tab-sep: #a8a8b0;
+  --tab-x-hover: rgba(0, 0, 0, 0.06);
+  --loading-accent: rgba(99, 102, 241, 0.8);
   --term-bg: #ffffff;
 }
 
@@ -33,49 +51,61 @@ body {
   flex-direction: column;
 }
 
-/* —— 标签条 —— */
+/* —— 标签条（38px 含 4px 底边线，与主窗口标题栏同高同形：electron/titlebar/styles.css） —— */
 #tabstrip {
-  flex: 0 0 36px;
+  flex: 0 0 38px;
   display: flex;
-  align-items: flex-end;
-  gap: 4px;
+  align-items: center;
   padding: 0 8px;
-  border-bottom: 1px solid var(--border);
+  background: var(--tabstrip-bg);
+  /* 底边线取「活动标签」同色并拉满整个宽度：活动标签与线融为一体的浏览器标签形态 */
+  border-bottom: 4px solid var(--tab-active);
   -webkit-user-select: none;
   user-select: none;
 }
-#tabs { display: flex; align-items: flex-end; gap: 4px; min-width: 0; overflow: hidden; }
+#tabs { display: flex; align-items: stretch; height: 100%; min-width: 0; overflow: hidden; }
 .tab {
-  height: 29px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 8px 0 14px;
-  font-size: 12px;
-  color: var(--text-dim);
+  gap: 4px;
+  /* 撑满标签条高度，只有上方圆角，底边与标签条底边线齐平 */
+  align-self: stretch;
+  padding: 0 4px 0 10px;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1;
+  color: var(--tab-text);
   background: transparent;
-  border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: 7px 7px 0 0;
+  border-radius: 8px 8px 0 0;
   cursor: default;
   white-space: nowrap;
-}
-.tab:hover { color: var(--text); background: var(--bg2); }
-.tab.active {
-  color: var(--text);
-  background: var(--bg2);
-  border-color: var(--border);
+  /* 竖线分隔用 ::before 绝对定位画，不参与布局 */
   position: relative;
 }
-/* 活动标签的 accent 提示条（FR-009 样式基线） */
-.tab.active::after {
-  content: "";
+.tab:hover { background: var(--tab-hover); }
+.tab.active { background: var(--tab-active); color: var(--tab-active-text); z-index: 1; }
+
+/* 未选中标签之间的竖线分隔（Chrome 风格，与主窗口一致）：只在相邻两张都未选中时出现，
+   紧邻活动标签或任一侧 hover（此时有 hover 底色）时都隐藏。末尾标签与「+」之间同一条线，
+   「+」自身的 hover 不隐藏它（与主窗口加号同规则）。 */
+.tab:where(:not(.active)) + .tab:where(:not(.active))::before,
+.tab:where(:not(.active)) + .newtab::before {
+  content: '';
   position: absolute;
-  left: 0; right: 0; bottom: -1px;
-  height: 2px;
-  background: var(--accent);
-  border-radius: 2px;
+  left: -1px;
+  top: 50%;
+  width: 1px;
+  height: 18px;
+  transform: translateY(-50%);
+  background: var(--tab-sep);
+  pointer-events: none;
 }
+.tab:hover::before,
+.tab:hover + .tab::before,
+.tab:hover + .newtab::before {
+  opacity: 0;
+}
+
 /* 标签运行状态点：绿 = shell 在跑，红 = 断开（FR-009） */
 .tab .dot {
   flex: 0 0 6px;
@@ -84,28 +114,32 @@ body {
   background: var(--success);
 }
 .tab.dead .dot { background: var(--error); }
-.tab .label { overflow: hidden; text-overflow: ellipsis; }
+.tab .label { overflow: hidden; text-overflow: ellipsis; /* 放开 line-height:1：降部不能被裁（同主窗口 .ws-tab-label） */ line-height: normal; }
 .tab .x {
   flex: 0 0 16px;
   width: 16px; height: 16px;
   display: flex; align-items: center; justify-content: center;
-  font-size: 11px;
-  border-radius: 4px;
+  border-radius: 3px;
+  cursor: pointer;
   visibility: hidden;
 }
 .tab:hover .x, .tab.active .x { visibility: visible; }
-.tab .x:hover { background: var(--error); color: #fff; }
+.tab .x:hover { background: var(--tab-x-hover); }
 .newtab {
-  width: 28px; height: 28px;
-  margin-bottom: 3px;
+  appearance: none;
+  width: 22px; height: 22px;
   border: none;
-  border-radius: 6px;
+  border-radius: 5px;
   background: transparent;
-  color: var(--text-dim);
-  font-size: 15px;
-  line-height: 1;
+  color: var(--tab-text);
+  display: flex; align-items: center; justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  /* 左侧与末尾标签之间的竖线分隔画在这里（::before），锚点要相对它定位 */
+  position: relative;
 }
-.newtab:hover { background: var(--bg2); color: var(--text); }
+.newtab:hover { background: var(--tab-hover); }
 
 /* —— 标签页区 —— */
 #panes { position: relative; flex: 1; min-height: 0; background: var(--term-bg); }
@@ -133,6 +167,10 @@ body {
 }
 .overlay.hidden { display: none; }
 .overlay .warn { font-size: 26px; color: var(--error); }
+/* 连接中不是错误：红色警示只留给断开态，连接中展示对话加载同款的 logo 动画 */
+.overlay.connecting .warn { display: none; }
+.overlay .loading { display: none; flex-direction: column; align-items: center; gap: 12px; }
+.overlay.connecting .loading { display: flex; }
 .overlay .reason { opacity: 0.7; }
 .overlay button {
   margin-top: 4px;
@@ -145,3 +183,76 @@ body {
   cursor: pointer;
 }
 .overlay button:hover { background: var(--bg2); }
+
+/* —— 连接中的加载动画：形态与对话加载（src/webview 的 ConversationLoading）一致——
+   96px 波纹容器内 44px 扩散圆环 ×2（错相 1s）+ 居中 56px logo + 三颗弹跳圆点；
+   动画参数 / 配色取聊天侧同值（波纹 accent 深浅两套见 --loading-accent）。 —— */
+.loading-ripple {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  max-width: 100%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.loading-ring {
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1.5px solid var(--loading-accent);
+  animation: terminalLoadingRipple 2s ease-out infinite;
+}
+.loading-ring:nth-child(2) { animation-delay: 1s; }
+.loading-logo {
+  width: 56px;
+  border-radius: 10px;
+  opacity: 0.9;
+  -webkit-user-drag: none;
+}
+body.light .loading-logo { opacity: 0.8; }
+.loading-dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.loading-dots span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--loading-accent);
+  animation: terminalLoadingBounce 1.2s ease-in-out infinite;
+}
+.loading-dots span:nth-child(2) { animation-delay: 0.15s; }
+.loading-dots span:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes terminalLoadingRipple {
+  0% { transform: scale(1); opacity: 0.9; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+@keyframes terminalLoadingBounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-6px); opacity: 1; }
+}
+
+/* —— 滚动条：xterm 6 用的是 VS Code 式 DOM 滚动条（.xterm-scrollable-element），不认
+   electron/ui/scrollbar.css 的 ::-webkit-scrollbar 规则——宽度由内部选项写进内联样式
+   （默认 14px），公开 API 只暴露滑块颜色。与统一滚动条同宽只能用 !important 压过内联
+   样式；滑块配色取同一组值，在 xtermThemes.ts 的配色表里同步维护。 —— */
+.xterm .xterm-scrollable-element > .scrollbar.vertical,
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  width: 6px !important;
+}
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  border-radius: 3px;
+}
+
+/* xterm 画布按整行取整，面板底部会留出不足一行的余量；露出的 viewport 默认黑底
+   （xterm.css 的 .xterm .xterm-viewport）就是窗口底部那条黑边。换用 --term-bg
+   （applyTheme 从配色表注入，与页面 / xterm 底色同一来源），深浅主题跟随推送。
+   用 id 提高特异性压过 xterm.css 的同名规则，不依赖打包后的源顺序。 */
+#panes .xterm .xterm-viewport {
+  background-color: var(--term-bg);
+}

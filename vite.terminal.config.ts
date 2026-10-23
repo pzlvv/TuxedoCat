@@ -9,6 +9,8 @@ import project from './project.config.cjs';
 export default defineConfig({
   root: project.resolve('electron/terminal'),
   base: './',
+  // 品牌 logo（连接中的加载动画用）：与 titlebar / sidebar 同一管线，拷进产物根目录
+  publicDir: project.resolve('assets'),
   plugins: [
     {
       name: 'html-title',

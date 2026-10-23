@@ -6,10 +6,12 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <!-- 终端标签条：状态点 + 标签名 + ✕，尾部「+」新建（specs/022 FR-003） -->
+    <!-- 终端标签条：状态点 + 标签名 + ✕，尾部「+」新建（specs/022 FR-003）；加号图标与主窗口标签条同款 -->
     <header id="tabstrip">
       <div id="tabs"></div>
-      <button id="newtab" type="button" class="newtab">+</button>
+      <button id="newtab" type="button" class="newtab">
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5v9M1.5 6h9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
+      </button>
     </header>
     <!-- 标签页区：每个标签一个 xterm 宿主；连接中 / 断开态以覆盖层呈现 -->
     <main id="panes"></main>
