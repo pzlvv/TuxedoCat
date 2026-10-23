@@ -1780,9 +1780,12 @@ function openPreferenceDialog(): void {
 
   // 主窗口可见时才挂为子窗口：窗口最小化到托盘时挂隐藏的父窗口会让对话框也显示不出来
   const parent = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() ? mainWindow : undefined;
+  // useContentSize 按内容区定尺寸：四行快捷键 + 音量条全展开 + 校验错误行的内容高度
+  // 约 530（CSS px，与 DPI 无关），560 留出余量——内容装得下，页面不出现滚动条
   const win = new BrowserWindow({
     width: 460,
-    height: 460,
+    height: 560,
+    useContentSize: true,
     ...(parent ? { parent } : {}),
     resizable: false,
     minimizable: false,
