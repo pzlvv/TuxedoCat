@@ -143,8 +143,9 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
 - 提交前至少跑 `npm run check-types && npm run lint`，涉及 core 的改动加 `npm run test:core`
   （CI 会再跑一遍，本地跑只是提前暴露）。
 - **涉及 core 的改动先 `npm run build:core:host` 再跑 `npm run test:all`**：`standalone*`
-  系列测试直接驱动真实 Core 二进制，不构建会**静默 skip**（CI 的 tests job 先
-  `build:core:linux-x64` 所以真实在跑；本地 Windows 不补这一步，帧协议类漂移在本地发现不了）。
+  系列测试直接驱动真实 Core 二进制，产物缺失时走 `markSkipped()`——runner 单列「跳过」并
+  打印原因，不再算通过（CI 的 tests job 先 `build:core:linux-x64` 所以真实在跑；本地 Windows
+  不补这一步，帧协议类漂移在本地发现不了）。
 
 ## 6. 常见改动清单
 

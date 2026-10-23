@@ -194,8 +194,9 @@ impl Sandbox {
     }
 
     /// 把宿主扩展目录指到仓库根：`ripgrep_path()` 因此能解析到
-    /// `dist/resources/ripgrep/<arch>-<platform>/rg.exe`（用例进程的可执行文件在
-    /// `core-rs/target/` 下，旁边没有 Core 自带的 `ripgrep/`）
+    /// `resources/ripgrep/<arch>-<platform>/rg.exe`（用例进程的可执行文件在
+    /// `core-rs/target/` 下，旁边没有 Core 自带的 `ripgrep/`；候选顺序见
+    /// `tools.rs::ripgrep_candidates`）
     pub fn point_extension_at_repo(&self) {
         let current = config::host_environment().expect("host env");
         config::set_host_environment(HostEnvironment {
@@ -407,16 +408,53 @@ pub fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// 随应用分发的 ripgrep 产物；未构建 `dist` 时返回 None
+/// 随应用分发的 ripgrep 产物；缺失时返回 None（调用方跳过并打印原因）。
+///
+/// 候选与产线解析（`tools.rs::ripgrep_candidates` 对 extension_path=仓库根）同口径：
+/// `resources/ripgrep/<arch>-<platform>/` 是源目录（LFS 入库，克隆即有）；
+/// `dist/resources/ripgrep/` 由 `copy-assets` 清理，通常不存在。Core 自带位
+/// （`dist/resources/core/<dir>/ripgrep/`）只对产物进程生效，测试二进制在
+/// `core-rs/target/` 下用不到。此前只查 `dist/resources/ripgrep/`——那条路径
+/// 永远不存在，Grep / Glob 用例在包括 CI 在内的所有环境里都静默跳过。
+///
+/// LFS 指针桩（checkout 未拉 LFS 时留下的文本文件）不是可执行的 rg：按桩识别并
+/// 视为缺失，避免「is_file 为真 → spawn 桩 → Exec format error」的困惑失败。
 pub fn bundled_ripgrep() -> Option<PathBuf> {
     let platform = if cfg!(windows) { "win32" } else { "linux" };
     let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
     let exe = if cfg!(windows) { "rg.exe" } else { "rg" };
-    let candidate = repo_root()
-        .join("dist/resources/ripgrep")
-        .join(format!("{arch}-{platform}"))
-        .join(exe);
-    candidate.is_file().then_some(candidate)
+    let dir = format!("{arch}-{platform}");
+    let candidates = [
+        repo_root().join("resources/ripgrep").join(&dir).join(exe),
+        repo_root().join("dist/resources/ripgrep").join(&dir).join(exe),
+    ];
+    for candidate in &candidates {
+        if !candidate.is_file() {
+            continue;
+        }
+        // LFS 桩以 `version https://git-lfs` 开头且只有几百字节
+        let head = std::fs::read(candidate)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes[..bytes.len().min(64)].to_vec()).ok())
+            .unwrap_or_default();
+        if head.starts_with("version https://git-lfs") {
+            eprintln!(
+                "skip: {} 是 LFS 指针桩（checkout 未拉 LFS 内容），先 git lfs pull",
+                candidate.display()
+            );
+            return None;
+        }
+        return Some(candidate.clone());
+    }
+    eprintln!(
+        "skip: 缺少 ripgrep 产物（候选均不存在）：{}",
+        candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    None
 }
 
 /// Grep / Glob 用例是否具备运行条件（需要 rg 产物）

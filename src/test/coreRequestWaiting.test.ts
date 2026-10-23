@@ -83,7 +83,7 @@ interface Scenario {
   permHoldMs: number;
   /** userChoice 到达后压住应答的时长；0 = 该场景不等到 userChoice */
   choiceHoldMs: number;
-  /** 首轮工具调用：缺省 Bash；`Agent` 用于驱动 crossWorkspaceAgentRequested（specs/022） */
+  /** 首轮工具调用：缺省 Bash；`Agent` 用于驱动 crossWorkspaceAgentRequested（specs/023） */
   tool?: 'Bash' | 'Agent';
 }
 
@@ -171,7 +171,7 @@ async function runRoundtrip(scenario: Scenario): Promise<RoundtripObservation> {
                 send({ kind: 'response', id, ok: true, result: { index: 0 } });
               });
             } else if (frame.request?.type === 'crossWorkspaceAgentRequested') {
-              // specs/022：跨工作区派发是渲染往返（plain_request），不标 waiting
+              // specs/023：跨工作区派发是渲染往返（plain_request），不标 waiting
               agentArrivedAt = frames.length - 1;
               const id = frame.id;
               void sleep(scenario.permHoldMs).then(() => {
@@ -195,7 +195,9 @@ async function runRoundtrip(scenario: Scenario): Promise<RoundtripObservation> {
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', () => undefined);
 
-  const waitFor = async (predicate: () => boolean, timeoutMs = 20_000): Promise<boolean> => {
+  // 60s 余量：前置等待（ready / queryEnd）度量的不是行为，负载高时给足；
+  // 曾在四路并行负载下以 20s 出现过前置超时的偶发红
+  const waitFor = async (predicate: () => boolean, timeoutMs = 60_000): Promise<boolean> => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (predicate()) return true;
@@ -381,20 +383,23 @@ const WAITING_REGISTRY: Record<string, { waiting: boolean; run: () => Promise<Ro
     waiting: false,
     run: () => runRoundtrip({ mode: 'risk', command: 'sleep 1', permHoldMs: 400, choiceHoldMs: 0 }),
   },
-  // 渲染往返（`plain_request`）：跨工作区派发在途期间不算等用户（specs/022）
+  // 渲染往返（`plain_request`）：跨工作区派发在途期间不算等用户（specs/023）
   crossWorkspaceAgentRequested: {
     waiting: false,
     run: () => runRoundtrip({ mode: 'risk', command: '', permHoldMs: 400, choiceHoldMs: 0, tool: 'Agent' }),
   },
-  // 用户阻塞（`waiting_request`）：真确认框在途期间必须标 waiting
+  // 用户阻塞（`waiting_request`）：真确认框在途期间必须标 waiting。
+  // choiceHoldMs 给到 1200：waiting=true 快照须在压答窗口内入账（帧序号 ≤ choiceReleasedAt），
+  // 测试进程事件循环被并行负载饿住超过 400ms 时快照会挤出窗口造成假红——窗口是观察
+  // 余量不是断言强度，放宽不弱化验证
   userChoice: {
     waiting: true,
-    run: () => runRoundtrip({ mode: 'manual', command: 'dd if=/dev/zero of=x count=0', permHoldMs: 300, choiceHoldMs: 400 }),
+    run: () => runRoundtrip({ mode: 'manual', command: 'dd if=/dev/zero of=x count=0', permHoldMs: 300, choiceHoldMs: 1200 }),
   },
 };
 
 async function run(): Promise<void> {
-  const { check, finish } = createChecker();
+  const { check, finish, markSkipped } = createChecker();
 
   // ---- 登记表完备性（不依赖二进制，始终执行：新增 CoreRequest 类型漏登记即红） ----
   const unionTypes = coreRequestTypes();
@@ -409,8 +414,8 @@ async function run(): Promise<void> {
   check(`WAITING_REGISTRY 没有联合之外的条目（多余 ${stale.length} 个）`, stale.length === 0);
   for (const type of stale) console.log(`     ${type} 不在 CoreRequest 联合里`);
 
-  if (process.platform !== 'win32' || !fs.existsSync(CORE_BINARY)) {
-    console.log(`skip: ${path.relative(REPO_ROOT, CORE_BINARY)} missing (run npm run build:core:host)`);
+  if (!fs.existsSync(CORE_BINARY)) {
+    markSkipped(`真实 Core 往返：${path.relative(REPO_ROOT, CORE_BINARY)} 缺失（npm run build:core:host）`);
     finish();
     return;
   }

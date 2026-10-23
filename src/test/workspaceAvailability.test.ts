@@ -11,7 +11,6 @@
  * 运行方式：npm run test:all -- workspace-availability
  */
 
-import * as assert from 'assert';
 import { createChecker, runTests } from './helpers/harness';
 import { WorkspaceAvailabilityState } from '../../electron/workspaceAvailability';
 
@@ -94,7 +93,6 @@ async function run(): Promise<void> {
   connectable.markUnavailable(KEY);
   check('不可用的项不建 Connection', connectable.isAvailable(KEY) === false);
 
-  assert.ok(true);
   finish();
 }
 

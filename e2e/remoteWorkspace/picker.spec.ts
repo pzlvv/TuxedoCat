@@ -90,7 +90,7 @@ function rowTexts(page: Page): Promise<string[]> {
   return page.locator('#entries .row').allTextContents();
 }
 
-test('路径框里删字母：删掉最后一段后列表回到该目录全部内容', async () => {
+test('US-36 路径框里删字母：删掉最后一段后列表回到该目录全部内容', async () => {
   const { page } = handle;
   await page.fill('#pathInput', '/abc/def');
   await expect.poll(() => rowTexts(page)).toEqual(['..', 'def', 'def2']);
@@ -104,7 +104,7 @@ test('路径框里删字母：删掉最后一段后列表回到该目录全部�
   await expect.poll(() => rowTexts(page)).toEqual(['..', 'def', 'def2', 'other']);
 });
 
-test('选中项恒在且默认第一项（`..` 除外），上下方向键 / Ctrl+N / Ctrl+P 移动', async () => {
+test('US-36 选中项恒在且默认第一项（`..` 除外），上下方向键 / Ctrl+N / Ctrl+P 移动', async () => {
   const { page } = handle;
   await page.fill('#pathInput', '/abc/');
   await expect.poll(() => rowTexts(page)).toEqual(['..', 'def', 'def2', 'other']);
@@ -125,7 +125,7 @@ test('选中项恒在且默认第一项（`..` 除外），上下方向键 / Ctr
   await expect(selected).toHaveText('..');
 });
 
-test('Tab 补全带尾分隔符并展开，回车直接进入选中目录', async () => {
+test('US-36 Tab 补全带尾分隔符并展开，回车直接进入选中目录', async () => {
   const { page } = handle;
   const input = page.locator('#pathInput');
 
@@ -144,7 +144,7 @@ test('Tab 补全带尾分隔符并展开，回车直接进入选中目录', asyn
   await expect.poll(() => rowTexts(page)).toEqual(['..', 'x', 'y']);
 });
 
-test('删除目录后列表回到该目录全部内容（确认中也不停在过滤结果上）', async () => {
+test('US-36 删除目录后列表回到该目录全部内容（确认中也不停在过滤结果上）', async () => {
   const { page } = handle;
   await page.fill('#pathInput', '/abc/def');
   await expect.poll(() => rowTexts(page)).toEqual(['..', 'def', 'def2']);
@@ -160,7 +160,7 @@ test('删除目录后列表回到该目录全部内容（确认中也不停在�
   await expect.poll(() => rowTexts(page)).toEqual(['..', 'def2', 'other']);
 });
 
-test('路径框常驻焦点：点标题、错误行、面板空白都不丢', async () => {
+test('US-36 路径框常驻焦点：点标题、错误行、面板空白都不丢', async () => {
   const { page } = handle;
   const input = page.locator('#pathInput');
   await expect(input).toBeFocused();
@@ -172,7 +172,7 @@ test('路径框常驻焦点：点标题、错误行、面板空白都不丢', as
   await expect(input).toBeFocused();
 });
 
-test('「打开此目录」在路径框停在候选前缀上时作用于选中项', async () => {
+test('US-36 「打开此目录」在路径框停在候选前缀上时作用于选中项', async () => {
   const { page } = handle;
   await page.fill('#pathInput', '/abc/ot');
   await expect(page.locator('#entries .row.selected')).toHaveText('other');

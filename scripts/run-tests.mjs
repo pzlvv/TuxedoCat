@@ -95,7 +95,7 @@ function runOne(name) {
   const jsPath = join(outDir, `${name}${COMPILED_SUFFIX}`);
   if (!existsSync(jsPath)) {
     console.error(`FAIL ${name}：缺少编译产物 ${relative(repoRoot, jsPath)}（先跑 npm run compile-tests）`);
-    return Promise.resolve({ name, ok: false, ms: 0 });
+    return Promise.resolve({ name, outcome: 'fail', ms: 0 });
   }
 
   const startedAt = Date.now();
@@ -108,14 +108,17 @@ function runOne(name) {
     });
     child.on('error', (err) => {
       console.error(`FAIL ${name}：无法启动子进程 ${err.message}`);
-      settle({ name, ok: false, ms: Date.now() - startedAt });
+      settle({ name, outcome: 'fail', ms: Date.now() - startedAt });
     });
     child.on('close', (code, signal) => {
-      const ok = code === 0;
-      if (!ok && signal) {
+      // 0=通过，3=有段落被 markSkipped（环境前置不满足，harness.ts 的退出码约定），
+      // 其余=失败。跳过单列计数、不算失败：本地不构建 Core 产物时保住可用性，
+      // 但「真实 Core 集成实际没跑」必须在汇总里可见，不能混进「通过」
+      const outcome = code === 0 ? 'pass' : code === 3 ? 'skip' : 'fail';
+      if (outcome === 'fail' && signal) {
         console.error(`FAIL ${name}：被信号 ${signal} 终止`);
       }
-      settle({ name, ok, ms: Date.now() - startedAt });
+      settle({ name, outcome, ms: Date.now() - startedAt });
     });
   });
 }
@@ -127,28 +130,40 @@ const startedAt = Date.now();
 for (const name of selected) {
   console.log(`── ${name} ${'─'.repeat(Math.max(0, 60 - name.length))}`);
   const result = await runOne(name);
-  console.log(result.ok ? `=> ${name} 通过（${result.ms}ms）\n` : `=> ${name} 失败（${result.ms}ms）\n`);
+  const verdict =
+    result.outcome === 'pass' ? '通过' : result.outcome === 'skip' ? '跳过（部分用例的环境前置不满足）' : '失败';
+  console.log(`=> ${name} ${verdict}（${result.ms}ms）\n`);
   results.push(result);
-  if (!result.ok && flags.has('--bail')) {
+  if (result.outcome === 'fail' && flags.has('--bail')) {
     console.log('--bail：遇到失败，提前结束。\n');
     break;
   }
 }
 
-const failed = results.filter((r) => !r.ok);
-const skipped = selected.length - results.length;
+const failed = results.filter((r) => r.outcome === 'fail');
+const skippedFiles = results.filter((r) => r.outcome === 'skip');
+const notRun = selected.length - results.length;
 const nameWidth = Math.max(...results.map((r) => r.name.length));
+const outcomeTag = { pass: 'ok  ', skip: 'skip', fail: 'FAIL' };
 
 console.log('='.repeat(64));
 for (const result of results) {
-  console.log(`${result.ok ? 'ok  ' : 'FAIL'} ${result.name.padEnd(nameWidth)}  ${String(result.ms).padStart(6)}ms`);
+  console.log(
+    `${outcomeTag[result.outcome]} ${result.name.padEnd(nameWidth)}  ${String(result.ms).padStart(6)}ms`,
+  );
 }
 console.log('='.repeat(64));
 console.log(
-  `${results.length - failed.length} 通过 / ${failed.length} 失败` +
-    (skipped > 0 ? ` / ${skipped} 未运行` : '') +
+  `${results.length - failed.length - skippedFiles.length} 通过 / ${failed.length} 失败` +
+    (skippedFiles.length > 0 ? ` / ${skippedFiles.length} 跳过` : '') +
+    (notRun > 0 ? ` / ${notRun} 未运行` : '') +
     `，总耗时 ${((Date.now() - startedAt) / 1000).toFixed(1)}s`,
 );
+if (skippedFiles.length > 0) {
+  console.log(
+    `\n跳过（环境前置不满足，跑的是 skip 分支，原因见上方各文件的 skip 行）：${skippedFiles.map((r) => r.name).join('、')}`,
+  );
+}
 
 if (failed.length > 0) {
   console.log(`\n失败：${failed.map((r) => r.name).join('、')}`);

@@ -103,7 +103,7 @@ rl.on('line', (line) => {
     return;
   }
   if (frame.kind === 'request') {
-    record('uiRequest:' + frame.request.type);
+    record('uiRequest:' + frame.request.type + ':' + frame.id);
     ${options.exitOnUiRequest ? 'process.exit(11);' : ''}
     ${options.dropUiRequest ? 'return;' : ''}
     if (${options.failUiRequest ? 'true' : 'false'}) {
@@ -233,7 +233,7 @@ function throws(fn: () => void): boolean {
 // ==================== 用例 ====================
 
 async function run(): Promise<void> {
-  const { check, finish } = createChecker();
+  const { check, finish, markSkipped } = createChecker();
 
   // ---------- 帧编解码 ----------
   {
@@ -411,11 +411,19 @@ async function run(): Promise<void> {
     check('requestCore returns the conversation list', list.length === 1 && list[0].sessionId === 'a');
     check(
       'the request reaches the core as a frame',
-      logMessages(core.recording).includes('uiRequest:conversationListRequested'),
+      // logMessages 返回数组，Array.includes 是全等匹配；消息尾部带请求 id，用前缀匹配
+      logMessages(core.recording).some((message) => message.startsWith('uiRequest:conversationListRequested:')),
     );
+    // 同一条总线上连发两个请求，从 fake core 记录的帧里取 id：递增才能保证
+    // 应答按 id 配对，错乱会把 A 的结果回给 B
+    await core.bus.requestCore({ type: 'conversationListRequested', workspacePath: '/w' });
+    const ids = logMessages(core.recording)
+      .filter((message) => message.startsWith('uiRequest:conversationListRequested:'))
+      .map((message) => Number(message.split(':')[2]))
+      .filter((id) => Number.isFinite(id));
     check(
       'ui request ids increase per request',
-      core.bus.isReady(),
+      ids.length === 2 && ids[1] > ids[0],
     );
     await core.bus.shutdown();
   }
@@ -616,16 +624,12 @@ async function run(): Promise<void> {
 
   // ---------- 真实 Rust 产物冒烟（产物缺失时跳过）----------
   {
-    const coreDir = corePlatformDir('win32', 'x64')!;
-    const binaryPath = path.resolve(
-      repoRoot(),
-      'resources',
-      CORE_RESOURCE_DIR,
-      coreDir,
-      coreBinaryFileName('win32'),
-    );
-    if (process.platform !== 'win32' || process.arch !== 'x64' || !fs.existsSync(binaryPath)) {
-      console.log(`skip real-core smoke test: ${path.relative(repoRoot(), binaryPath)} missing`);
+    const coreDir = corePlatformDir(process.platform, process.arch);
+    const binaryPath = coreDir
+      ? path.resolve(repoRoot(), 'resources', CORE_RESOURCE_DIR, coreDir, coreBinaryFileName(process.platform))
+      : null;
+    if (!binaryPath || !fs.existsSync(binaryPath)) {
+      markSkipped('real-core smoke：宿主平台 Core 产物缺失（npm run build:core:host）');
     } else {
       const recording = createRecordingCoreEventHandlers();
       const bus = createStandaloneCoreBus({

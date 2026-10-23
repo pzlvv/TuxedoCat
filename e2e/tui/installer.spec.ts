@@ -57,9 +57,15 @@ let slotDir = '';
 
 test.beforeAll(async () => {
   prefix = mkdtempSync(path.join(os.tmpdir(), 'tui-installer-e2e-'));
-  // 宿主平台 Core 产物（darwin 等无产物平台整文件跳过）
+  // darwin 没有 Core 产物，安装链路无从谈起 → 跳过；受支持平台缺产物则直接失败——
+  // 与 playwright.config.ts 的 assertArtifact 同口径，不能静默 skip 让 `test:e2e` 全绿
+  if (hostPlatform === 'darwin') {
+    test.skip(true, 'darwin 不在 Core 平台矩阵内，tui-installer 链路不适用');
+  }
   const core = path.join(repoRoot, 'resources', 'core', pkgDir, `${CORE_BINARY_NAME}${ext}`);
-  test.skip(!existsSync(core), `宿主平台 Core 产物缺失（${core}）：先 npm run build:core`);
+  if (!existsSync(core)) {
+    throw new Error(`宿主平台 Core 产物缺失（${core}）：先 npm run build:core`);
+  }
   fingerprint = readFileSync(path.join(repoRoot, 'resources', 'core', pkgDir, 'fingerprint'), 'utf8').trim();
   slotDir = path.join(prefix, 'share', PRODUCT, fingerprint);
 

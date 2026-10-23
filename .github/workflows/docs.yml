@@ -23,7 +23,12 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     steps:
+      # resources/** 走 LFS（ripgrep 产物等）。不开 lfs: true 时 checkout 留下的
+      # 是指针桩：build:core 复制到 Core 自带位的 rg 不是可执行文件，Grep / Glob
+      # 用例（test_support.rs::bundled_ripgrep 有桩检测）会显式跳过
       - uses: actions/checkout@v4
+        with:
+          lfs: true
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -35,8 +40,8 @@ jobs:
       # musl 目标的 ring（C / 汇编）与分配器 mimalloc 都需要 C 编译器（build-core.mjs 的
       # crossToolchainEnv 在 Linux 宿主上不注入 zig，直接用系统 cc）
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
-      # 先产出 Linux Core 产物：standalone* 系列测试直接驱动真实二进制，
-      # 产物缺失会静默 skip——CI 上必须真的跑
+      # 先产出 Linux Core 产物：standalone* 系列测试按宿主平台解析并驱动真实二进制，
+      # 产物缺失会显式跳过（runner 汇总单列「跳过」）——CI 上必须真的跑
       - run: npm run build:core:linux-x64
       - run: npm run check-types
       - run: npm run lint

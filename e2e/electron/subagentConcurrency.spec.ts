@@ -189,14 +189,13 @@ test('US-49 前台中止：排队中的 2 个调用取消、不创建子代理�
   const abortButton = chatPage.locator('button[title="终止"]');
   await abortButton.click();
 
-  // 子会话数维持 5（4 子 + 1 父）：排队 2 个从未创建会话
-  await expect
-    .poll(() => sb.locator(SIDEBAR_ITEM).count(), { timeout: 15_000 })
-    .toBe(5);
   // 按钮仍可点（收尾中：4 个子代理还在跑）
   await expect(abortButton).toBeEnabled({ timeout: 15_000 });
 
-  // 等待窗口内排队者不得补位启动：子代理首请求数恒为 4
+  // 等待窗口内排队者不得补位启动：子代理首请求数恒为 4；
+  // 会话总数维持 5（4 子 + 1 父，排队 2 个从未创建会话）——放在等待窗口之后，
+  // 立即轮询时数值尚未经历「可能补位」的窗口，断言是空的
   await chatPage.waitForTimeout(3_000);
   expect(subFirstRequests([1, 2, 3, 4, 5, 6])).toHaveLength(4);
+  await expect(sb.locator(SIDEBAR_ITEM)).toHaveCount(5);
 });

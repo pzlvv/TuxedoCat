@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { startMockLlm, lastUserText } from '../helpers/mockLlmServer';
 import { launchApp, makeWorkspace } from '../helpers/electronApp';
+import { CONFIG_DIR_NAME } from '../../src/config/project';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm, RecordedRequest, ScriptDecision } from '../helpers/mockLlmServer';
 
@@ -186,9 +187,13 @@ test('US-51 explorer：只读四件套、白名单外被拒、选项菜单置灰
   expect(await selected('普通')).toBe(true);
   expect(await selected('极简')).toBe(false);
 
-  // 联网搜索行同样锁定：点击后不发送变更（行为上无副作用；置灰样式已断言）
-  await menu.getByText('联网搜索', { exact: true }).click({ force: true }).catch(() => undefined);
-  expect(await rowOpacity(menu, '联网搜索')).toBe('0.45');
+  // 联网搜索行同样锁定：点击后不上报任何变更——落盘侧 settings.json 原样
+  // （webSearch 仍为 false；置灰行 onChange 早退，宿主收不到 setWebSearch）
+  const settingsFile = path.join(app.homeDir, CONFIG_DIR_NAME, 'settings.json');
+  const settingsBefore = fs.readFileSync(settingsFile, 'utf8');
+  await menu.getByText('联网搜索', { exact: true }).click({ force: true });
+  await subPage.waitForTimeout(500);
+  expect(fs.readFileSync(settingsFile, 'utf8')).toBe(settingsBefore);
 });
 
 test('US-51 Master 子代理与普通会话：选项菜单照常可操作（不回归）', async () => {

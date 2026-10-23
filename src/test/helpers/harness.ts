@@ -32,8 +32,16 @@ export interface Checker {
   /** 记一条布尔断言，ok / FAIL 各打一行 */
   check(name: string, cond: boolean): void;
   /**
+   * 标记本文件有（整文件或某一段）用例因环境前置不满足而未执行（如 Core 产物未构建）。
+   *
+   * 跳过不算失败，但不再是「静默的通过」：`finish()` 会把原因打进汇总，独立运行时
+   * 退出码置 3，由 `scripts/run-tests.mjs` 单列成「跳过」计数——此前「打一行 skip →
+   * 0 check → exit 0 → runner 记通过」是一条完整的假通过链（CI 未构建产物时全绿）。
+   */
+  markSkipped(reason: string): void;
+  /**
    * 打印汇总。**有失败则抛错**：mocha 下即用例失败；独立运行时由 `runTests`
-   * 接住并转成退出码 1。
+   * 接住并转成退出码 1。有跳过标记时独立运行退出码置 3（失败仍优先为 1）。
    */
   finish(): void;
 }
@@ -41,6 +49,7 @@ export interface Checker {
 export function createChecker(): Checker {
   let passed = 0;
   let failed = 0;
+  const skipReasons: string[] = [];
   return {
     check(name: string, cond: boolean): void {
       if (cond) {
@@ -51,10 +60,25 @@ export function createChecker(): Checker {
         console.log(`FAIL ${name}`);
       }
     },
+    markSkipped(reason: string): void {
+      skipReasons.push(reason);
+    },
     finish(): void {
-      console.log(`\n${failed === 0 ? '全部通过' : '存在失败'}（${passed} 通过 / ${failed} 失败）`);
+      for (const reason of skipReasons) {
+        console.log(`skip ${reason}`);
+      }
+      console.log(
+        `\n${failed === 0 ? '全部通过' : '存在失败'}（${passed} 通过 / ${failed} 失败` +
+          (skipReasons.length > 0 ? ` / ${skipReasons.length} 段跳过` : '') +
+          '）',
+      );
       if (failed > 0) {
         throw new Error(`${failed} 项断言失败（${passed} 通过 / ${failed} 失败）`);
+      }
+      // 跳过信号只在独立运行时用退出码传递；mocha 车道（vscodeHost/）没有这些
+      // 产物门控分支，走到这里只打印即可
+      if (skipReasons.length > 0 && !mochaGlobals()) {
+        process.exitCode = process.exitCode === 1 ? 1 : 3;
       }
     },
   };

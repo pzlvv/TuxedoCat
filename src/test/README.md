@@ -20,8 +20,9 @@
 `npm test` 因此只覆盖 `vscodeHost/`，这是有意的，不是配置漏了。
 
 **真实 Core 集成的前置**：`standalone*` 系列测试直接驱动真实 Core 二进制，本地先跑
-`npm run build:core:host`（或 `build:core:debug`）构建当前平台产物，不构建会**静默 skip**
-（CI 的 tests job 先构建 Linux Core，所以真实在跑）。Rust 侧的引擎 / 工具 / 权限行为
+`npm run build:core:host`（或 `build:core:debug`）构建当前平台产物。产物缺失时用例走
+`markSkipped()`：runner 把该文件单列成「跳过」并打印原因，不再算作通过（独立运行退出码 3）。
+CI 的 tests job 先构建 Linux Core，所以真实在跑。Rust 侧的引擎 / 工具 / 权限行为
 在 `core-rs/src/*_tests.rs` 就地覆盖（`test_support::Sandbox` / `FakeLlm` /
 `EngineHarness`，约定见 [docs/core/standalone-core-boundaries.md 第 3 节](../../docs/core/standalone-core-boundaries.md#3-测试与覆盖率)）。
 

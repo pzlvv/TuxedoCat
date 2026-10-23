@@ -23,12 +23,16 @@ import { createChecker, runTests } from './helpers/harness';
 import { settingsSnapshotFromHome } from './helpers/fixtures';
 
 const REPO_ROOT = path.resolve(__dirname, '../../..');
+// 宿主平台的 Core 产物（`npm run build:core:host` 的输出）。写死 win32/x64 时
+// Linux CI（先构建 build:core:linux-x64）永远走 skip 分支，真实集成一次都不会执行；
+// 平台不在矩阵内时指向不存在的路径，由下方 existsSync 走显式跳过。
+const HOST_CORE_DIR = corePlatformDir(process.platform, process.arch);
 const CORE_BINARY = path.join(
   REPO_ROOT,
   'resources',
   CORE_RESOURCE_DIR,
-  corePlatformDir('win32', 'x64')!,
-  coreBinaryFileName('win32'),
+  HOST_CORE_DIR ?? '__unsupported__',
+  HOST_CORE_DIR ? coreBinaryFileName(process.platform) : 'missing',
 );
 
 interface LlmTurn {
@@ -147,10 +151,10 @@ function writeSettings(homeDir: string, baseUrl: string): void {
 }
 
 async function run(): Promise<void> {
-  const { check, finish } = createChecker();
+  const { check, finish, markSkipped } = createChecker();
 
-  if (process.platform !== 'win32' || !fs.existsSync(CORE_BINARY)) {
-    console.log(`skip: ${path.relative(REPO_ROOT, CORE_BINARY)} missing (run npm run build:core)`);
+  if (!fs.existsSync(CORE_BINARY)) {
+    markSkipped(`真实 Core 集成：${path.relative(REPO_ROOT, CORE_BINARY)} 缺失（npm run build:core:host）`);
     finish();
     return;
   }

@@ -23,18 +23,21 @@ import { createChecker, runTests } from './helpers/harness';
  */
 
 runTests('sidebarFiles', async () => {
-  const { check, finish } = createChecker();
+  const { check, finish, markSkipped } = createChecker();
   const root = fs.mkdtempSync(join(os.tmpdir(), 'sidebar-files-test-'));
   try {
     fs.mkdirSync(join(root, 'src'));
     fs.mkdirSync(join(root, 'dirB'));
     fs.writeFileSync(join(root, 'readme.md'), 'x');
     fs.writeFileSync(join(root, 'src', 'a.ts'), 'x');
-    // 断链样本：Windows 无符号链接权限时建不了（EPERM），跳过——断链分支在该平台退化
+    // 断链样本：Windows 无符号链接权限时建不了（EPERM）——样本建不了时
+    // 「断链跳过」分支无法验证，显式登记为跳过而不是让断言空转
+    let brokenLinkCreated = false;
     try {
       fs.symlinkSync(join(root, 'gone-target'), join(root, 'broken-link'));
+      brokenLinkCreated = true;
     } catch {
-      // 权限不足：不建样本
+      markSkipped('断链样本（无符号链接权限）：listDirectory 的断链跳过分支未验证');
     }
 
     check('相对路径解析到 root 内', resolveWithinRoot(root, 'src/a.ts') === join(root, 'src', 'a.ts'));
@@ -64,8 +67,8 @@ runTests('sidebarFiles', async () => {
     const dirListing = await (async (): Promise<boolean> => {
       const entries = await listDirectory(root);
       const names = entries.map((e) => e.name);
-      // 断链不进树；目录（dirB、src）排在文件（readme.md）之前
-      return !names.includes('broken-link')
+      // 断链不进树（样本建不了时该分支未验证，上方已登记跳过）；目录（dirB、src）排在文件（readme.md）之前
+      return (!brokenLinkCreated || !names.includes('broken-link'))
         && names.indexOf('dirB') < names.indexOf('readme.md')
         && names.indexOf('src') < names.indexOf('readme.md')
         && entries.every((e) => e.kind === 'file' || e.kind === 'directory');

@@ -301,7 +301,7 @@ function readReadyEndpoint(
 // ==================== 用例 ====================
 
 async function run(): Promise<void> {
-  const { check, finish } = createChecker();
+  const { check, finish, markSkipped } = createChecker();
 
   // ---------- 协议编解码 ----------
   {
@@ -490,23 +490,14 @@ async function run(): Promise<void> {
   // ---------- 真实 Core 产物 smoke（存在时）----------
   {
     const repoRoot = path.resolve(__dirname, '../../..');
-    const productDir = path.join(
-      repoRoot,
-      'resources',
-      CORE_RESOURCE_DIR,
-      corePlatformDir('win32', 'x64')!,
-    );
-    const binary = path.join(productDir, coreBinaryFileName('win32'));
+    const coreDir = corePlatformDir(process.platform, process.arch);
+    const productDir = coreDir ? path.join(repoRoot, 'resources', CORE_RESOURCE_DIR, coreDir) : null;
+    const binary = productDir ? path.join(productDir, coreBinaryFileName(process.platform)) : '';
     // 构建指纹与可执行文件同级（`build-core.mjs` 落位，docs/core/standalone-core.md 第 3.4 节）：
     // daemon 的状态文件按它命名，这里读真实产物的指纹来断言两侧命名规则一致
-    const fingerprintPath = path.join(productDir, CORE_FINGERPRINT_FILE_NAME);
-    if (
-      process.platform !== 'win32'
-      || process.arch !== 'x64'
-      || !fs.existsSync(binary)
-      || !fs.existsSync(fingerprintPath)
-    ) {
-      console.log(`skip real daemon smoke: ${path.relative(repoRoot, binary)} or fingerprint missing`);
+    const fingerprintPath = productDir ? path.join(productDir, CORE_FINGERPRINT_FILE_NAME) : '';
+    if (!productDir || !fs.existsSync(binary) || !fs.existsSync(fingerprintPath)) {
+      markSkipped('real daemon smoke：宿主平台 Core 产物或构建指纹缺失（npm run build:core:host）');
     } else {
       // 真实 daemon（`start-daemon`）：状态文件写到临时 HOME，别碰用户自己的 daemon
       const home = fs.mkdtempSync(path.join(os.tmpdir(), 'core-daemon-'));
