@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：工作区标签页快捷键切换与改键
@@ -79,6 +79,10 @@ Ctrl+Shift+I）、当前唤醒快捷键；拒绝时行内显示冲突原因，�
 - **打开集合为空 / 仅一项**：两个动作均 no-op，不报错、不落日志噪音。
 - **快捷键连按 / 切换执行中集合变化**：每次按键按当下的打开集合重新计算相邻项，不排队；
   目标项在执行前被关闭时该次动作落空（切换入口按标签 id 重新定位，定位不到即返回）。
+  同一组合在 250ms 窗口内的重复触发按既有菜单动作去重折叠为一次（防原生菜单
+  accelerator 与无边框兜底对同一次按键双触发），并非每按必切。
+- **偏好写盘失败**：录制保存落盘抛错时行内显示「保存失败」、原值保持、录制态保留，
+  不静默丢弃。
 - **环绕**：末项的下一项是首项、首项的上一项是末项（浏览器惯例），不做边界停驻。
 - **持久化值非法**：读取按缺失处理回默认值，不写回、不抛错。
 - **录制冲突**：拒绝保存并在行内报错（FR-003），不覆盖原值。
@@ -108,16 +112,32 @@ EP-9；e2e 用例登记两处——标签切换驱动 `e2e/electron/workspace.sp
 | 需求 | 实现落点 | 测试落点 | 覆盖 |
 | --- | --- | --- | --- |
 | FR-001 | `electron/tabSwitching.ts`（相邻项纯函数）+ `electron/main.ts` 动作接线 | `src/test/tabSwitching.test.ts` + `e2e/electron/workspace.spec.ts`（US-53 键盘切换） | 自动 |
-| FR-002 | `electron/shortcut.ts`（默认值常量）+ `electron/workspaceStateStore.ts`（状态字段） | `src/test/tabSwitching.test.ts`（默认值 / 非法回退） | 自动 |
-| FR-003 | `electron/preferenceDialogHtml.ts` + `electron/main.ts`（录制与冲突判定） | `src/test/preferenceDialog.test.ts` + `e2e/electron/desktopShell.spec.ts`（US-53 录制改键） | 自动 |
-| FR-004 | `electron/main.ts` 的 `buildMenuSections` | `e2e/electron/desktopShell.spec.ts`（菜单条目展示与点击） | 自动 |
+| FR-002 | `electron/shortcut.ts`（默认值常量 + `resolveShortcut` 读取收敛）+ `electron/workspaceStateStore.ts`（状态字段） | `src/test/tabSwitching.test.ts`（默认值 / 缺失与非法回退 / 冲突判定） | 自动 |
+| FR-003 | `electron/preferenceDialogHtml.ts` + `electron/main.ts`（录制与冲突判定） | `src/test/preferenceDialog.test.ts` + `src/test/tabSwitching.test.ts`（冲突判定）+ `e2e/electron/desktopShell.spec.ts`（US-53 录制改键） | 自动 |
+| FR-004 | `electron/main.ts` 的 `buildMenuSections` | `e2e/electron/workspace.spec.ts`（菜单条目点击切换）+ `e2e/electron/desktopShell.spec.ts`（菜单条目展示） | 自动 |
 
 ## 待澄清
 
 ## 收敛记录
 
-收敛时由 /converge 填写，结论只分三类。
+收敛核对（/converge）：AC-1~13 逐条对照实现与测试证据，反向对照实现 diff 枚举行为分支。
 
-- 已满足：<FR / AC → 证据（实现与测试落点）>
-- 偏差：<与 spec 的差异；改代码或改 spec 并留痕>
-- 未做：<回写 tasks.md 的未完成项>
+- 已满足：
+  - FR-001 / AC-1~5：`src/test/tabSwitching.test.ts`（相邻 / 环绕 / 空集 / 活动项缺席 /
+    重排后按新顺序，23 断言）+ `e2e/electron/workspace.spec.ts` US-53（Ctrl+Tab 三连按
+    A→B→C→A 环绕、侧栏视图兜底、单标签不动作、聊天区联动）。
+  - FR-002 / AC-6~8：默认常量与 `resolveShortcut` 读取收敛单测（缺失 / 非法 / 无修饰键
+    非功能键回默认、合法值规范化）；e2e 默认组合启动即生效、重启段读回自定义 Ctrl+J
+    生效且旧组合失效、desktopShell US-53 断言落盘字段 `nextTabShortcut`。
+  - FR-003 / AC-9~11：`findShortcutConflict` 单测（标签行互撞 / 唤醒 / 菜单既有 / 别名
+    规范化 / 自身豁免）；e2e desktopShell US-53（Ctrl+J 录制即时生效、Esc 取消原值保持、
+    互撞拒绝行内报错且录制态保留）。AC-11 的菜单既有组合与唤醒冲突路径由单测覆盖
+    （判定函数与 e2e 已证路径共用同一实现），e2e 未单独驱动该两分支。
+  - FR-004 / AC-12~13：e2e 断言菜单条目展示当前生效组合（改键后 Ctrl+J）、
+    点「下一标签」条目执行同一切换（workspace.spec）。
+- 偏差：无代码级偏差。反向对照出两条实现已有行为，已补进「边界与错误路径」留痕：
+  ①同一组合 250ms 窗口去重（既有 `invokeMenuAction` 机制）；②偏好写盘失败行内报
+  「保存失败」、原值保持。
+- 未做：无（T001~T007 全勾）。覆盖强度说明（非偏差）：浮窗模式组合键生效按实现无
+  模式分支、与完整模式同一路径推断，未单独 e2e；macOS 原生菜单 accelerator 未被
+  Playwright 驱动（同 US-48 口径）。
