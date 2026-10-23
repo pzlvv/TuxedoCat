@@ -2505,15 +2505,6 @@ function buildMenuSections(): MenuSectionDef[] {
     accelerator: readTabShortcutSync('prevTab'),
     run: () => { switchToAdjacentWorkspace('prev'); },
   };
-  // 远程终端（docs/hosts/electron-multi-workspace.md 第 14 节）：仅活动工作区为远程且带凭证时可用；窗口按工作区单例。
-  // 菜单在工作区增删 / 切换时重建（setupMenu 的既有调用点），可用性随重建刷新
-  const openRemoteTerminalItem: MenuItemDef = {
-    id: 'main.openRemoteTerminal',
-    label: tt('打开远程终端', 'Open Remote Terminal'),
-    accelerator: 'CmdOrCtrl+Alt+T',
-    enabled: canOpenRemoteTerminal(workspacePath),
-    run: () => { openRemoteTerminalForActiveWorkspace(); },
-  };
   // 偏好设置：Electron 专属能力（主题 / 唤醒快捷键 / 提示音都是宿主本地偏好，
   // webview 里改不了），统一收进一个自绘设置窗口（见 openPreferenceDialog）
   const preferenceItem: MenuItemDef = {
@@ -2541,7 +2532,6 @@ function buildMenuSections(): MenuSectionDef[] {
       items: [
         addWorkspaceItem,
         addRemoteWorkspaceItem,
-        openRemoteTerminalItem,
         recentWorkspaceItem,
         nextTabItem,
         prevTabItem,
@@ -2563,7 +2553,6 @@ function buildMenuSections(): MenuSectionDef[] {
     items: [
       addWorkspaceItem,
       addRemoteWorkspaceItem,
-      openRemoteTerminalItem,
       recentWorkspaceItem,
       nextTabItem,
       prevTabItem,
@@ -3084,7 +3073,8 @@ function collectWorkspaceSessionFacts(ref: WorkspaceRef): WorkspaceSessionFacts[
  * 标签页右键菜单（原生 OS 菜单，与加号的 popupWorkspaceMenu 同形态；原生菜单无法被
  * Playwright 驱动，交互按 US-48 豁免人工验证）：关闭 / 关闭所有空闲会话（范围＝右键
  * 工作区里已打开的对话视图，含子代理对话，当前选中的对话空闲也包含在内）/ 关闭其它
- * 所有工作区（任一他区忙碌先弹一次汇总确认）/ 打开命令行（仅本地，目录已不存在置灰）。
+ * 所有工作区（任一他区忙碌先弹一次汇总确认）/ 打开命令行（仅本地，目录已不存在置灰）
+ * 或打开终端（远程工作区，见 docs/hosts/electron-multi-workspace.md 第 14 节）。
  * 置灰是终态，不在点击后再报错。
  */
 function popupTabContextMenu(ref: WorkspaceRef): void {
@@ -3127,12 +3117,20 @@ function popupTabContextMenu(ref: WorkspaceRef): void {
       },
     },
     { type: 'separator' },
-    {
-      label: tt('打开命令行', 'Open Terminal'),
-      // 仅本地工作区（远程不做 SSH 远端终端）；目录已不存在无从打开
-      enabled: ref.endpoint === null && fs.existsSync(ref.path),
-      click: () => { spawnTerminalAt(ref.path); },
-    },
+    // 终端入口按端点分叉（docs/hosts/electron-multi-workspace.md 第 14.1 节）：本地是
+    // 系统命令行，远程是该工作区的 SSH 终端窗口；两者互斥，一张标签只出现其一
+    ref.endpoint === null
+      ? {
+          label: tt('打开命令行', 'Open Terminal'),
+          // 目录已不存在无从打开
+          enabled: fs.existsSync(ref.path),
+          click: () => { spawnTerminalAt(ref.path); },
+        }
+      : {
+          label: tt('打开终端', 'Open Terminal'),
+          enabled: canOpenRemoteTerminal(ref),
+          click: () => { openRemoteTerminalFor(ref); },
+        },
   ]);
   menu.popup({ window: mainWindow });
 }
@@ -3753,15 +3751,16 @@ async function openRemoteWorkspaceAfterProbe(ref: WorkspaceRef): Promise<void> {
 }
 
 /**
- * 打开活动工作区的远程终端窗口（docs/hosts/electron-multi-workspace.md 第 14.1 / 14.2 节）。
+ * 打开指定工作区的远程终端窗口（docs/hosts/electron-multi-workspace.md 第 14.1 / 14.2 节）。
  *
- * 菜单条目的可用性由 `canOpenRemoteTerminal` 在菜单重建时判定；run 里再判一次
- * 防御时序（菜单构建与点击之间活动工作区可能已切换）。
+ * 入口是标签页右键「打开终端」，作用于右键的那张标签（不必是活动项）。条目可用性由
+ * `canOpenRemoteTerminal` 在菜单弹出时判定；点击里再判一次防御时序（弹出与点击之间
+ * 凭证可能已变化）。
  */
-function openRemoteTerminalForActiveWorkspace(): void {
-  if (!workspacePath || !canOpenRemoteTerminal(workspacePath)) return;
+function openRemoteTerminalFor(ref: WorkspaceRef): void {
+  if (!canOpenRemoteTerminal(ref)) return;
   openTerminalWindow({
-    ref: workspacePath,
+    ref,
     appRoot: APP_ROOT,
     locale: getHostLocale(),
     fontSizePx: terminalFontSizePx(readTerminalFontPreference()),

@@ -256,7 +256,7 @@ export class TerminalSessionGroup {
   }
 }
 
-/** 菜单可用性口径（docs/hosts/electron-multi-workspace.md 第 14.1 节）：活动工作区为远程且带可用凭证 */
+/** 标签页右键「打开终端」的可用性口径（docs/hosts/electron-multi-workspace.md 第 14.1 节）：该工作区为远程且带可用凭证 */
 export function canOpenRemoteTerminal(ref: WorkspaceRef | null | undefined): boolean {
   const endpoint = ref?.endpoint;
   return endpoint != null && endpoint.auth != null && endpoint.auth.kind === 'sshPassword';

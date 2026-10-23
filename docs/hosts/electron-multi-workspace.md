@@ -130,8 +130,9 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 - 每张标签页提供关闭入口。
 - 右键标签页弹出原生上下文菜单（渲染层只上报标签 id，`titlebar:tab-context-menu`；
   主进程 `Menu.popup` 在光标处弹出，与「添加工作区」加号菜单同形态）：关闭 / 关闭所有
-  空闲会话 / 关闭其它所有工作区 / 打开命令行，置灰规则见 8.2 节。原生菜单无法被
-  Playwright 驱动，交互按 US-48 豁免人工验证。
+  空闲会话 / 关闭其它所有工作区 / 打开命令行（本地工作区）或打开终端（远程工作区，
+  见第 14 节），置灰规则见 8.2 节。原生菜单无法被 Playwright 驱动，交互按 US-48
+  豁免人工验证。
 - 标签页支持拖拽调整顺序：拖到目标标签页前半 / 后半即插到其前 / 后，顺序写入打开集合并持久化。
 - 快捷键切换相邻标签页：「下一标签」（默认 Ctrl+Tab）/「上一标签」（默认 Ctrl+Shift+Tab）
   按打开集合顺序把活动项移向相邻一项，末项向后环绕回首项、首项向前环绕到末项；
@@ -165,7 +166,6 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | --- | --- |
 | 打开本地工作区...（Ctrl+O） | 打开系统目录选择框，选中目录加入打开集合 |
 | 打开远程工作区...（Ctrl+Shift+O） | 打开远程工作区对话框（SSH 接入，连远端 Core 后弹远端目录选择） |
-| 打开远程终端（Ctrl+Alt+T） | 为活动工作区打开远程终端窗口；仅远程工作区可用（本地 / 无工作区 / 无凭证时置灰），见第 14 节 |
 | 打开最近的工作区 ▸ | 子菜单列出最近工作目录，点击即添加 |
 | 下一标签（默认 Ctrl+Tab） | 活动项切到打开集合顺序的下一张标签页，环绕规则见第 5 节 |
 | 上一标签（默认 Ctrl+Shift+Tab） | 活动项切到打开集合顺序的上一张标签页，环绕规则见第 5 节 |
@@ -219,8 +219,9 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   - 「关闭其它所有工作区」在任一其它工作区有忙碌会话时先弹**一次**汇总确认（取消则
     全部不动），确认后逐个工作区走同一份清理链（不经逐区确认，否则一次确认被放大成
     每区一次）。只有一张标签时置灰。
-  - 「打开命令行」在该工作区根目录拉起系统终端，与侧栏「在此处打开命令行」共用同一
-    实现（detached、不随应用退出）；远程（SSH）工作区或目录已不存在时置灰。
+  - 「打开命令行」（本地工作区）在该工作区根目录拉起系统终端，与侧栏「在此处打开命令行」
+    共用同一实现（detached、不随应用退出）；目录已不存在时置灰。远程（SSH）工作区同位置
+    为「打开终端」，打开该工作区的远程终端窗口（可用性口径与行为见第 14.1 节）。
 
 ---
 
@@ -314,25 +315,26 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 12. 同一目录重复添加不产生第二张标签页。
 13. 按 Ctrl+Tab / Ctrl+Shift+Tab 沿标签页顺序切换活动项并环绕；单标签时按键不动作；
     偏好设置窗口录制改键后新组合生效、菜单展示同步。
-14. 菜单「打开远程终端」仅远程工作区可用；打开后首标签自动连上远端 shell，关闭工作区
-    时其终端窗口一并关闭。
+14. 标签页右键「打开终端」仅远程工作区可用（本地工作区同位置为「打开命令行」）；打开后
+    首标签自动连上远端 shell，关闭工作区时其终端窗口一并关闭。
 
 ---
 
 ## 14. 远程终端
 
-远程终端是**远程工作区的配套能力**（VS Code 宿主没有）：为活动工作区是远程（`ssh` scheme）
-的标签页提供一个独立终端窗口，内含多个终端标签，每个标签是远端机器上的一条 PTY shell
+远程终端是**远程工作区的配套能力**（VS Code 宿主没有）：为远程（`ssh` scheme）工作区的
+标签页提供一个独立终端窗口，内含多个终端标签，每个标签是远端机器上的一条 PTY shell
 通道。终端不经过 daemon、不经过 Core，直接用 SSH shell 通道；渲染引入 `@xterm/xterm`
 做终端仿真（应用内首个使用场景即本节，SSH 侧不引新库）。
 
 ### 14.1 入口与可用性
 
-- 菜单条目「打开远程终端」（`main.openRemoteTerminal`，Ctrl+Alt+T），仅当**活动工作区**
-  为远程且带可用凭证时可点（`canOpenRemoteTerminal`）；本地工作区、无工作区、凭证缺失时
-  置灰。自绘标题栏菜单与原生菜单同一份定义，两端同时具备。
-- 不设侧栏入口与其它快捷键。菜单在工作区增删 / 切换时重建（`setupMenu` 既有调用点），
-  可用性随重建刷新；条目 `run` 内对活动工作区再判一次（防菜单构建与点击之间的时序）。
+- 入口是标签页右键菜单：远程（SSH）工作区的标签页显示「打开终端」，作用于右键的那张
+  标签（不必是活动项）；本地工作区同位置为「打开命令行」（见 8.2 节），两者按端点互斥，
+  一张标签只出现其一。
+- 「打开终端」仅当该工作区带可用凭证时可点（`canOpenRemoteTerminal`），无凭证置灰；
+  右键菜单每次弹出时构建，可用性即时判定，条目 `run` 内再判一次（防弹出与点击之间的
+  时序）。不设菜单条目、侧栏入口与快捷键。
 
 ### 14.2 窗口
 
@@ -418,7 +420,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | 标题栏品牌 / 模式状态 | `electron/titlebar/main.ts` 的 `applyModeState`、`electron/main.ts` 的 `pushTitlebarModeState` |
 | 侧栏头部 | `electron/sidebar/index.html` 的静态 `.header`；数据刷新走 `electron/sidebar/main.ts` 的 `render()` |
 | 侧栏对话列表 | `electron/sidebar/main.ts` 的 `render`、`sidebar:conversations-updated` 流 |
-| 远程终端窗口 | `electron/terminalWindow.ts` 的 `openTerminalWindow` / `closeTerminalWorkspace` / `closeAllTerminalWindows`；挂点 `electron/main.ts` 的 `buildMenuSections`（条目）/ `teardownWorkspace` / `will-quit` |
+| 远程终端窗口 | `electron/terminalWindow.ts` 的 `openTerminalWindow` / `closeTerminalWorkspace` / `closeAllTerminalWindows`；挂点 `electron/main.ts` 的 `popupTabContextMenu`（条目）/ `teardownWorkspace` / `will-quit` |
 | 终端标签 / 通道状态机 | `electron/terminalShells.ts` 的 `TerminalSessionGroup`；单测 `src/test/terminalShells.test.ts` |
 | 终端 SSH shell 通道 | `src/host/standalone/sshClient.ts` 的 `openShell`；连接复用 `electron/sidebarFilesRemote.ts` 的 `sharedClientFor` |
 | 终端页面 | `electron/terminal/`（vite 入口 `vite.terminal.config.ts` → `dist/terminal`）；preload `electron/terminalPreload.ts` |
