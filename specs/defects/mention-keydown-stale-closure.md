@@ -63,4 +63,4 @@ status: 已修
 | fakeHost 语法修复（修复前） | `npx tsc -p e2e/tsconfig.json --noEmit` | 红 | `fakeHost.ts(186,13): error TS1005`（模板字符串内的裸反引号）并级联报错，webview e2e 车道无法加载 |
 | fakeHost 语法修复（修复后） | `npx tsc -p e2e/tsconfig.json --noEmit` | 绿 | 0 错误，webview e2e 车道恢复可加载 |
 | 回归用例（修复后） | `npm run build:webview && npx playwright test -c e2e/playwright.config.ts --project=webview-ui workspaceMention` | 绿 | 2 passed（RT-1 含引号形态插入、RT-3）；同一车道全量 110 passed |
-| 既有回归（webview 车道全量） | `npx playwright test -c e2e/playwright.config.ts --project=webview-ui` | 绿 | InputArea 改动只增依赖项（回调更勤重建），slash 补全 / 输入历史 / 发送链路用例全过 |
+| 既有回归（webview 车道全量） | `npx playwright test -c e2e/playwright.config.ts --project=webview-ui` | 部分验证 | 97 passed / 2 failed；两条失败均为 afterEach `browserContext.close()` 的 ENOENT trace 抖动（permission US-18 / settings US-24），单跑均复绿，与 InputArea 改动无关 |
