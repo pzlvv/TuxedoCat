@@ -283,8 +283,15 @@ test('US-33 偏好设置：提示音开关与音量落盘，音量条随开关�
   const readState = async (): Promise<Record<string, unknown>> =>
     JSON.parse(await fs.promises.readFile(app.stateFile, 'utf-8')) as Record<string, unknown>;
 
-  // 提示音默认开启：音量条可见（US-33 验收 4）
+  // 提示音默认关闭（US-33 验收 4；specs/016 FR-006「缺失按关闭——默认不打扰」）：
+  // 新装实例开关未勾选、音量条隐藏
+  await expect(dialogPage.locator('#sound-enabled')).not.toBeChecked();
+  await expect(dialogPage.locator('#volume-row')).toBeHidden();
+
+  // 打开提示音：音量条可见，开关落盘
+  await dialogPage.locator('#sound-enabled').check();
   await expect(dialogPage.locator('#volume-row')).toBeVisible();
+  await expect.poll(async () => (await readState()).soundEnabled).toBe(true);
 
   // 关掉提示音：音量条隐藏，开关落盘
   await dialogPage.locator('#sound-enabled').uncheck();
