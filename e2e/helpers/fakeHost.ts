@@ -183,12 +183,15 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
         });
         break;
       case 'requestWorkspaces':
-        // @ 工作区补全（specs/023 FR-007）：宿主已排除来源视图自己的工作区（模板字符串内不写反引号）
+        // @ 工作区补全（specs/023 FR-007）：宿主已排除来源视图自己的工作区（模板字符串内不写反引号）。
+        // 路径要四反斜杠：本块在外层模板字符串里，源码 \\\\ 经模板求值得 \\，
+        // 再经生成脚本的字符串转义落成运行期的单个 \（写 \\ 会变成 \w 这类
+        // 未知转义而丢反斜杠，workspaceMention 用例曾因此恒红）
         send({
           type: 'setWorkspaces',
           workspaces: [
-            { id: 'DEV-PC:C:\\work\\alpha', path: 'C:\\work\\alpha', displayName: 'alpha' },
-            { id: 'DEV-PC:C:\\Program Files\\gamma', path: 'C:\\Program Files\\gamma', displayName: 'gamma' },
+            { id: 'DEV-PC:C:\\\\work\\\\alpha', path: 'C:\\\\work\\\\alpha', displayName: 'alpha' },
+            { id: 'DEV-PC:C:\\\\Program Files\\\\gamma', path: 'C:\\\\Program Files\\\\gamma', displayName: 'gamma' },
           ],
         });
         break;

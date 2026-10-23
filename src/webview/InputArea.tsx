@@ -2041,7 +2041,10 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
       if (mcpConnecting) return;
       onSend();
     }
-  }, [showSlash, filteredSkills, slashIndex, commitSlash, onSend, commandHistory, input, savedInput, mcpConnecting]);
+    // 依赖必须含 mention 四件套：漏掉 mentionIndex 时闭包停留在旧值，
+    // ArrowDown 后 Enter 仍按第 0 项插入（specs/023 FR-007 的键盘导航，
+    // 由 e2e/webview/workspaceMention.spec.ts 锁定）
+  }, [showMention, filteredWorkspaces, mentionIndex, commitMention, showSlash, filteredSkills, slashIndex, commitSlash, onSend, commandHistory, input, savedInput, mcpConnecting]);
 
   // 记录主输入框当前是否聚焦 + 最后一次获得焦点的时间戳，
   // 用于在 blur 的延迟回调中判断是否存在更晚的 focus 事件
