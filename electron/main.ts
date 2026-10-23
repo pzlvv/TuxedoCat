@@ -120,6 +120,7 @@ import {
   findShortcutConflict,
   formatAcceleratorForDisplay,
   normalizeAccelerator,
+  resolveShortcut,
   type RegisteredShortcuts,
   type ShortcutConflictKind,
   type ShortcutRow,
@@ -3906,7 +3907,7 @@ function writeThemeMode(mode: ThemeMode): void {
 
 /** 读取持久化的唤醒快捷键（缺失 / 非法时回退默认值） */
 function readWakeShortcutSync(): string {
-  return normalizeAccelerator(readWorkspaceState().shortcut) || DEFAULT_WAKE_SHORTCUT;
+  return resolveShortcut(readWorkspaceState().shortcut, DEFAULT_WAKE_SHORTCUT);
 }
 
 /** 持久化唤醒快捷键（调用方已规范化） */
@@ -3923,7 +3924,7 @@ const TAB_SHORTCUT_ROWS = {
 /** 读取标签快捷键（缺失 / 非法时回退默认值；与唤醒快捷键同口径，不写回） */
 function readTabShortcutSync(row: keyof typeof TAB_SHORTCUT_ROWS): string {
   const { field, fallback } = TAB_SHORTCUT_ROWS[row];
-  return normalizeAccelerator(readWorkspaceState()[field]) || fallback;
+  return resolveShortcut(readWorkspaceState()[field], fallback);
 }
 
 /** 持久化标签快捷键（调用方已规范化），重建菜单动作表让组合即时换绑 */

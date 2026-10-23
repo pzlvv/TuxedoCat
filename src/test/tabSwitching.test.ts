@@ -17,6 +17,7 @@ import {
   DEFAULT_NEXT_TAB_SHORTCUT,
   DEFAULT_PREV_TAB_SHORTCUT,
   findShortcutConflict,
+  resolveShortcut,
 } from '../../electron/shortcut';
 import { createChecker, runTests } from './helpers/harness';
 
@@ -51,6 +52,12 @@ runTests('tabSwitching', () => {
   // ---------- 默认组合（FR-002） ----------
   check('下一标签默认 Ctrl+Tab', DEFAULT_NEXT_TAB_SHORTCUT === 'Ctrl+Tab');
   check('上一标签默认 Ctrl+Shift+Tab', DEFAULT_PREV_TAB_SHORTCUT === 'Ctrl+Shift+Tab');
+
+  // ---------- 读取收敛（FR-002）：缺失 / 非法回默认，读侧不写回 ----------
+  check('缺失回默认', resolveShortcut(undefined, DEFAULT_NEXT_TAB_SHORTCUT) === 'Ctrl+Tab');
+  check('非法值回默认', resolveShortcut('not a shortcut', DEFAULT_PREV_TAB_SHORTCUT) === 'Ctrl+Shift+Tab');
+  check('无修饰键非功能键视为非法回默认', resolveShortcut('J', DEFAULT_NEXT_TAB_SHORTCUT) === 'Ctrl+Tab');
+  check('合法值规范化后返回', resolveShortcut('Control+J', DEFAULT_NEXT_TAB_SHORTCUT) === 'Ctrl+J');
 
   // ---------- findShortcutConflict：规范化比较与冲突类别 ----------
   const registered = {

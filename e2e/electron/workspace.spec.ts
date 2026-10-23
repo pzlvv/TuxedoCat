@@ -5,6 +5,7 @@ import path from 'node:path';
 import { startMockLlm } from '../helpers/mockLlmServer';
 import { launchApp, makeWorkspace, waitForMessageBox, clickMessageBoxButton, messageBoxText } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
+import type { Page } from '@playwright/test';
 import type { MockLlm } from '../helpers/mockLlmServer';
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
 import { CONFIG_DIR_NAME } from '../../src/config/project';
@@ -415,11 +416,36 @@ test('US-53 标签页快捷键：下一/上一按标签页顺序切换并环绕�
   await expect(tabs.first()).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 });
 
   // Ctrl+Shift+Tab 经侧栏视图兜底：首项向前环绕到末项（AC-2，AC-5 焦点换视图同效）
+  // 菜单条目与快捷键同源（AC-12 的点击半边）：展开单一菜单点「下一标签」执行同一动作
+  await sleep(300);
+  await (await app.titlebarPage()).locator('#menubar .menu-btn').first().click();
+  const menuPage = await (async (): Promise<Page> => {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      for (const p of app!.context.pages()) {
+        if (!p.url().startsWith('data:')) continue;
+        try {
+          if (await p.evaluate(() => document.querySelector('.item[data-id="main.nextWorkspaceTab"]') !== null)) return p;
+        } catch { /* 页面正在初始化 */ }
+      }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    throw new Error('自绘菜单视图未出现');
+  })();
+  await menuPage.locator('.item[data-id="main.nextWorkspaceTab"]').click();
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 });
+
+  // Ctrl+Shift+Tab 经侧栏视图兜底（AC-5 焦点换视图同效）：B→A
   await sleep(300);
   pressKeysOn(app, 'dist/sidebar', 'Tab', ['ctrl', 'shift']);
+  await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 });
+
+  // 首项向前环绕到末项（AC-2）：A→C
+  await sleep(300);
+  pressKeysOn(app, 'dist/titlebar', 'Tab', ['ctrl', 'shift']);
   await expect(tabs.nth(2)).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 });
 
-  // 切换走既有激活链：聊天区切到目标工作区的视图（AC-4）
+  // 切换走既有激活链（AC-4）：再按上一标签 C→B，聊天区切到 B 的视图
   const betaChat = await app.chatPage({ workspaceIncludes: 'e2e-ws-key-b' });
   await sleep(300);
   pressKeysOn(app, 'dist/titlebar', 'Tab', ['ctrl', 'shift']);

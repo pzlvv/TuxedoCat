@@ -242,6 +242,11 @@ export interface RegisteredShortcuts {
 /** 冲突类别（文案由调用方按宿主语言生成，本模块不持 i18n） */
 export type ShortcutConflictKind = 'wake' | 'nextTab' | 'prevTab' | 'menu';
 
+/** 读取收敛：缺失 / 非法回默认值（读侧不写回；唤醒与两条标签快捷键共用此口径） */
+export function resolveShortcut(value: unknown, fallback: string): string {
+  return normalizeAccelerator(value) || fallback;
+}
+
 /**
  * 录制冲突判定：候选组合与任一既有绑定相同时返回冲突类别，无冲突返回 null。
  * 全部按 normalizeAccelerator 规范化后比较——别名（Control / CommandOrControl 等）
