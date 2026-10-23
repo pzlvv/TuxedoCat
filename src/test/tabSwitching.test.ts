@@ -15,6 +15,7 @@ import { selectAdjacentId } from '../../electron/tabSwitching';
 import type { TabSwitchDirection } from '../../electron/tabSwitching';
 import {
   DEFAULT_NEXT_TAB_SHORTCUT,
+  DEFAULT_OPEN_TERMINAL_SHORTCUT,
   DEFAULT_PREV_TAB_SHORTCUT,
   findShortcutConflict,
   resolveShortcut,
@@ -58,6 +59,7 @@ runTests('tabSwitching', () => {
   // ---------- 默认组合（FR-002） ----------
   check('下一标签默认 Ctrl+Tab', DEFAULT_NEXT_TAB_SHORTCUT === 'Ctrl+Tab');
   check('上一标签默认 Ctrl+Shift+Tab', DEFAULT_PREV_TAB_SHORTCUT === 'Ctrl+Shift+Tab');
+  check('打开终端默认 Ctrl+Alt+T', DEFAULT_OPEN_TERMINAL_SHORTCUT === 'Ctrl+Alt+T');
 
   // ---------- 读取收敛（FR-002）：缺失 / 非法回默认，读侧不写回 ----------
   check('缺失回默认', resolveShortcut(undefined, DEFAULT_NEXT_TAB_SHORTCUT) === 'Ctrl+Tab');
@@ -70,6 +72,7 @@ runTests('tabSwitching', () => {
     wake: 'Ctrl+Alt+X',
     nextTab: 'Ctrl+Tab',
     prevTab: 'Ctrl+Shift+Tab',
+    openTerminal: 'Ctrl+Alt+T',
     menuAccelerators: ['CmdOrCtrl+O', 'CmdOrCtrl+Shift+O', 'CmdOrCtrl+Shift+I'],
   };
   check('与另一标签行相同报 prevTab', findShortcutConflict('nextTab', 'Ctrl+Shift+Tab', registered) === 'prevTab');
@@ -80,6 +83,9 @@ runTests('tabSwitching', () => {
   check('与自身现行值相同不算冲突', findShortcutConflict('nextTab', 'Ctrl+Tab', registered) === null);
   check('无冲突返回 null', findShortcutConflict('nextTab', 'Ctrl+J', registered) === null);
   check('非法组合直接视为无冲突（合法性由录制管线另行判定）', findShortcutConflict('nextTab', 'J', registered) === null);
+  check('打开终端行与标签行互查：录成 Ctrl+Alt+T 报 openTerminal', findShortcutConflict('nextTab', 'Ctrl+Alt+T', registered) === 'openTerminal');
+  check('打开终端行与标签行互查：录成 Ctrl+Tab 报 nextTab', findShortcutConflict('openTerminal', 'Ctrl+Tab', registered) === 'nextTab');
+  check('打开终端行与自身现行值相同不算冲突', findShortcutConflict('openTerminal', 'Ctrl+Alt+T', registered) === null);
 
   finish();
 });

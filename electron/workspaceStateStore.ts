@@ -26,6 +26,7 @@
  *   "shortcut": "Ctrl+Alt+X",
  *   "nextTabShortcut": "Ctrl+Tab",
  *   "prevTabShortcut": "Ctrl+Shift+Tab",
+ *   "openTerminalShortcut": "Ctrl+Alt+T",
  *   "soundEnabled": true,
  *   "soundVolume": 0.8,
  *   "sidebarWidth": 340
@@ -96,6 +97,12 @@ export interface WorkspaceState {
    * 缺失 / 非法时按默认值处理（`DEFAULT_PREV_TAB_SHORTCUT`），读取路径不写回（specs/021）。
    */
   prevTabShortcut?: string;
+  /**
+   * 「打开终端」快捷键（Electron accelerator 形式；宿主本地偏好，core 不读）。
+   * 缺失 / 非法时按默认值处理（`DEFAULT_OPEN_TERMINAL_SHORTCUT`），读取路径不写回；
+   * 仅应用内生效（菜单动作表 + before-input-event 兜底），不做全局注册。
+   */
+  openTerminalShortcut?: string;
   /**
    * 任务结束提醒是否播放提示音（宿主本地偏好，core 不读）。
    * 缺失按关闭处理：提示音默认不播，用户显式开启才落 true（specs/016 FR-006）。

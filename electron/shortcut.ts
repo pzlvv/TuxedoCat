@@ -22,8 +22,11 @@ export const DEFAULT_NEXT_TAB_SHORTCUT = 'Ctrl+Tab';
 /** 默认「上一标签」快捷键（工作区标签页切换，specs/021） */
 export const DEFAULT_PREV_TAB_SHORTCUT = 'Ctrl+Shift+Tab';
 
-/** 可在偏好设置窗口录制改键的快捷键行（specs/021） */
-export type ShortcutRow = 'wake' | 'nextTab' | 'prevTab';
+/** 默认「打开终端」快捷键（活动工作区的命令行 / SSH 终端，仅应用内生效） */
+export const DEFAULT_OPEN_TERMINAL_SHORTCUT = 'Ctrl+Alt+T';
+
+/** 可在偏好设置窗口录制改键的快捷键行（specs/021；openTerminal 为活动工作区的终端入口） */
+export type ShortcutRow = 'wake' | 'nextTab' | 'prevTab' | 'openTerminal';
 
 /** 修饰键别名 -> Electron accelerator 名称 */
 const MODIFIER_ALIASES: Record<string, string> = {
@@ -235,17 +238,22 @@ export interface RegisteredShortcuts {
   nextTab: string;
   /** 当前「上一标签」快捷键 */
   prevTab: string;
-  /** 菜单既有组合（规范化前的 accelerator，如 Ctrl+O；标签两行的现行值不在此列） */
+  /** 当前「打开终端」快捷键 */
+  openTerminal: string;
+  /** 菜单既有组合（规范化前的 accelerator，如 Ctrl+O；可录制行的现行值不在此列） */
   menuAccelerators: readonly string[];
 }
 
 /** 冲突类别（文案由调用方按宿主语言生成，本模块不持 i18n） */
-export type ShortcutConflictKind = 'wake' | 'nextTab' | 'prevTab' | 'menu';
+export type ShortcutConflictKind = 'wake' | Exclude<ShortcutRow, 'wake'> | 'menu';
 
 /** 读取收敛：缺失 / 非法回默认值（读侧不写回；唤醒与两条标签快捷键共用此口径） */
 export function resolveShortcut(value: unknown, fallback: string): string {
   return normalizeAccelerator(value) || fallback;
 }
+
+/** 参与录制冲突互查的可录制行（wake 之外的全部行；新增行登记进来即入冲突网） */
+const RECORDABLE_ROWS: readonly Exclude<ShortcutRow, 'wake'>[] = ['nextTab', 'prevTab', 'openTerminal'];
 
 /**
  * 录制冲突判定：候选组合与任一既有绑定相同时返回冲突类别，无冲突返回 null。
@@ -253,7 +261,7 @@ export function resolveShortcut(value: unknown, fallback: string): string {
  * 指同一组合时不误报、不漏报；与被录制行自身的现行值相同不算冲突（等价重存）。
  */
 export function findShortcutConflict(
-  target: 'nextTab' | 'prevTab',
+  target: Exclude<ShortcutRow, 'wake'>,
   candidate: unknown,
   registered: RegisteredShortcuts,
 ): ShortcutConflictKind | null {
@@ -261,7 +269,9 @@ export function findShortcutConflict(
   if (!candidateKey) return null;
   const others: Array<[ShortcutConflictKind, unknown]> = [
     ['wake', registered.wake],
-    [target === 'nextTab' ? 'prevTab' : 'nextTab', target === 'nextTab' ? registered.prevTab : registered.nextTab],
+    ...RECORDABLE_ROWS
+      .filter((row) => row !== target)
+      .map((row) => [row, registered[row]] as [ShortcutConflictKind, unknown]),
     ...registered.menuAccelerators.map((accelerator): [ShortcutConflictKind, unknown] => ['menu', accelerator]),
   ];
   for (const [kind, value] of others) {

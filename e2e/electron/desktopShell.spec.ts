@@ -192,7 +192,7 @@ test('US-34 全局唤醒快捷键：按配置注册、改键后立即换绑', as
 });
 
 test('US-53 标签页快捷键：录制改键生效、冲突拒绝、菜单同源展示', async () => {
-  // 菜单「偏好设置...」打开设置窗口（specs/021：快捷键区为三行）
+  // 菜单「偏好设置...」打开设置窗口（specs/021：快捷键区为四行）
   const menu = await openMenuAndGetPage();
   await menu.locator('.item[data-id="main.preference"]').click();
   await pollMain<boolean>(
@@ -201,9 +201,10 @@ test('US-53 标签页快捷键：录制改键生效、冲突拒绝、菜单同�
   );
   const dialogPage = await findPreferencePage();
 
-  // 默认组合：下一 Ctrl+Tab、上一 Ctrl+Shift+Tab（specs/021 AC-6）
+  // 默认组合：下一 Ctrl+Tab、上一 Ctrl+Shift+Tab、打开终端 Ctrl+Alt+T（specs/021 AC-6）
   await expect(dialogPage.locator('#shortcut-next')).toHaveText('Ctrl+Tab', { timeout: 5_000 });
   await expect(dialogPage.locator('#shortcut-prev')).toHaveText('Ctrl+Shift+Tab');
+  await expect(dialogPage.locator('#shortcut-terminal')).toHaveText('Ctrl+Alt+T');
 
   // 录制下一标签 = Ctrl+J：sendInputEvent 走主进程同一输入管线（同 US-34 口径）
   await dialogPage.locator('#shortcut-next').click();
@@ -223,6 +224,14 @@ test('US-53 标签页快捷键：录制改键生效、冲突拒绝、菜单同�
     + "w.webContents.sendInputEvent({type:'keyDown',modifiers:['ctrl'],keyCode:'J'})})",
   );
   await expect(dialogPage.locator('#shortcut-error')).toContainText('下一标签', { timeout: 5_000 });
+  await expect(dialogPage.locator('#shortcut-prev')).toHaveClass(/capturing/);
+
+  // 再按 Ctrl+Alt+T（打开终端行的现行值）→ 行内报「打开终端」冲突（可录制行互查）
+  await mainExpr(
+    "e.BrowserWindow.getAllWindows().forEach(w=>{if(w.getTitle()==='偏好设置')"
+    + "w.webContents.sendInputEvent({type:'keyDown',modifiers:['ctrl','alt'],keyCode:'T'})})",
+  );
+  await expect(dialogPage.locator('#shortcut-error')).toContainText('打开终端', { timeout: 5_000 });
   await expect(dialogPage.locator('#shortcut-prev')).toHaveClass(/capturing/);
 
   // Esc 取消录制（AC-9）：退出录制态，原值保持

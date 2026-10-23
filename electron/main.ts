@@ -128,6 +128,7 @@ import {
   DEFAULT_WAKE_SHORTCUT,
   DEFAULT_NEXT_TAB_SHORTCUT,
   DEFAULT_PREV_TAB_SHORTCUT,
+  DEFAULT_OPEN_TERMINAL_SHORTCUT,
   acceleratorFromKeyboardEvent,
   findShortcutConflict,
   formatAcceleratorForDisplay,
@@ -1807,8 +1808,9 @@ function openPreferenceDialog(): void {
     return {
       theme: currentThemeMode,
       wakeShortcutDisplay: formatAcceleratorForDisplay(readWakeShortcutSync()),
-      nextTabShortcutDisplay: formatAcceleratorForDisplay(readTabShortcutSync('nextTab')),
-      prevTabShortcutDisplay: formatAcceleratorForDisplay(readTabShortcutSync('prevTab')),
+      nextTabShortcutDisplay: formatAcceleratorForDisplay(readShortcutValueSync('nextTab')),
+      prevTabShortcutDisplay: formatAcceleratorForDisplay(readShortcutValueSync('prevTab')),
+      openTerminalShortcutDisplay: formatAcceleratorForDisplay(readShortcutValueSync('openTerminal')),
       capturing,
       ...(shortcutError ? { shortcutError } : {}),
       soundEnabled: sound.enabled,
@@ -1851,8 +1853,8 @@ function openPreferenceDialog(): void {
     pushState();
   };
   const onCaptureShortcut = (_event: Electron.IpcMainEvent, row: unknown): void => {
-    // 行标识由页面随点击带上；不在三行之列的请求直接忽略（不过度 fallback）
-    if (row !== 'wake' && row !== 'nextTab' && row !== 'prevTab') return;
+    // 行标识由页面随点击带上；不在可录制行之列的请求直接忽略（不过度 fallback）
+    if (row !== 'wake' && row !== 'nextTab' && row !== 'prevTab' && row !== 'openTerminal') return;
     capturing = row;
     shortcutError = undefined;
     pushState();
@@ -1899,8 +1901,9 @@ function openPreferenceDialog(): void {
       const row = capturing;
       const registered: RegisteredShortcuts = {
         wake: readWakeShortcutSync(),
-        nextTab: readTabShortcutSync('nextTab'),
-        prevTab: readTabShortcutSync('prevTab'),
+        nextTab: readShortcutValueSync('nextTab'),
+        prevTab: readShortcutValueSync('prevTab'),
+        openTerminal: readShortcutValueSync('openTerminal'),
         menuAccelerators: collectFixedMenuAccelerators(),
       };
       const conflict = findShortcutConflict(row, accelerator, registered);
@@ -1910,9 +1913,9 @@ function openPreferenceDialog(): void {
         return;
       }
       try {
-        writeTabShortcut(row, accelerator);
+        writeShortcutValue(row, accelerator);
       } catch (err) {
-        console.error('[main] save tab shortcut failed:', err);
+        console.error('[main] save shortcut failed:', err);
         shortcutError = tt('保存失败', 'Failed to save');
         pushState();
         return;
@@ -2530,19 +2533,31 @@ function buildMenuSections(): MenuSectionDef[] {
     submenu: buildRecentWorkspacesMenu(),
   };
   // 标签页切换快捷键（specs/021）：accelerator 取宿主本地偏好的当前值（默认
-  // Ctrl+Tab / Ctrl+Shift+Tab），改键保存后 writeTabShortcut 重建动作表即时换绑；
+  // Ctrl+Tab / Ctrl+Shift+Tab），改键保存后 writeShortcutValue 重建动作表即时换绑；
   // 菜单条目与组合键同源（原生菜单、自绘菜单、before-input-event 兜底三处共用）
   const nextTabItem: MenuItemDef = {
     id: 'main.nextWorkspaceTab',
     label: tt('下一标签', 'Next Workspace Tab'),
-    accelerator: readTabShortcutSync('nextTab'),
+    accelerator: readShortcutValueSync('nextTab'),
     run: () => { switchToAdjacentWorkspace('next'); },
   };
   const prevTabItem: MenuItemDef = {
     id: 'main.prevWorkspaceTab',
     label: tt('上一标签', 'Previous Workspace Tab'),
-    accelerator: readTabShortcutSync('prevTab'),
+    accelerator: readShortcutValueSync('prevTab'),
     run: () => { switchToAdjacentWorkspace('prev'); },
+  };
+  // 打开命令行 / 终端（specs/021 同款宿主本地快捷键，默认 Ctrl+Alt+T，仅应用内生效）：
+  // 作用于活动工作区，按端点分叉（本地系统命令行 / 远程 SSH 终端窗口，与标签页右键
+  // 同一套入口语义与置灰规则）；accelerator 取宿主本地偏好的当前值，改键保存后
+  // writeShortcutValue 重建动作表即时换绑。菜单条目与组合键同源（原生菜单、自绘菜单、
+  // before-input-event 兜底三处共用）
+  const openTerminalItem: MenuItemDef = {
+    id: 'main.openTerminal',
+    label: openTerminalMenuLabel(),
+    accelerator: readShortcutValueSync('openTerminal'),
+    enabled: canOpenTerminalForActiveWorkspace(),
+    run: () => { openTerminalForActiveWorkspace(); },
   };
   // 偏好设置：Electron 专属能力（主题 / 唤醒快捷键 / 提示音都是宿主本地偏好，
   // webview 里改不了），统一收进一个自绘设置窗口（见 openPreferenceDialog）
@@ -2574,6 +2589,7 @@ function buildMenuSections(): MenuSectionDef[] {
         recentWorkspaceItem,
         nextTabItem,
         prevTabItem,
+        openTerminalItem,
         { type: 'separator' },
         preferenceItem,
         { type: 'separator' },
@@ -2595,6 +2611,7 @@ function buildMenuSections(): MenuSectionDef[] {
       recentWorkspaceItem,
       nextTabItem,
       prevTabItem,
+      openTerminalItem,
       { type: 'separator' },
       preferenceItem,
       { type: 'separator' },
@@ -2705,9 +2722,9 @@ function collectMenuAccelerators(defs: MenuItemDef[], index: Map<string, string>
 }
 
 /**
- * 菜单既有 accelerator（标签快捷键录制冲突判定的输入，specs/021）。
- * 标签两行的现行值不在此列——它们的冲突由 RegisteredShortcuts 的 nextTab / prevTab
- * 字段表达，避免同一绑定被数两次。
+ * 菜单既有 accelerator（快捷键录制冲突判定的输入，specs/021）。
+ * 可录制行的现行值不在此列——它们的冲突由 RegisteredShortcuts 的 nextTab / prevTab /
+ * openTerminal 字段表达，避免同一绑定被数两次。
  */
 function collectFixedMenuAccelerators(): string[] {
   const index = new Map<string, string>();
@@ -2716,7 +2733,7 @@ function collectFixedMenuAccelerators(): string[] {
   }
   const accelerators: string[] = [];
   for (const [accelerator, id] of index) {
-    if (id === 'main.nextWorkspaceTab' || id === 'main.prevWorkspaceTab') continue;
+    if (id === 'main.nextWorkspaceTab' || id === 'main.prevWorkspaceTab' || id === 'main.openTerminal') continue;
     accelerators.push(accelerator);
   }
   return accelerators;
@@ -2731,6 +2748,8 @@ function conflictMessage(kind: ShortcutConflictKind): string {
       return tt('与「下一标签」快捷键相同', 'Same as Next Workspace Tab');
     case 'prevTab':
       return tt('与「上一标签」快捷键相同', 'Same as Previous Workspace Tab');
+    case 'openTerminal':
+      return tt('与「打开终端」快捷键相同', 'Same as the Open Terminal shortcut');
     case 'menu':
       return tt('与菜单既有快捷键相同', 'Same as an existing menu shortcut');
   }
@@ -3537,6 +3556,34 @@ function reorderWorkspaces(ids: readonly string[]): void {
   syncTitlebarWorkspaces();
 }
 
+/** 菜单条目文案随活动工作区端点分叉：本地「打开命令行」、远程「打开终端」（与标签页右键同口径） */
+function openTerminalMenuLabel(): string {
+  if (workspacePath && workspacePath.endpoint === null) return tt('打开命令行', 'Open Terminal');
+  return tt('打开终端', 'Open Terminal');
+}
+
+/** 活动工作区的终端入口可用性（与标签页右键同口径：本地目录须存在、远程须有可用凭证） */
+function canOpenTerminalForActiveWorkspace(): boolean {
+  const ref = workspacePath;
+  if (!ref) return false;
+  if (ref.endpoint === null) return fs.existsSync(ref.path);
+  return canOpenRemoteTerminal(ref);
+}
+
+/**
+ * 快捷键打开活动工作区的命令行 / 终端（默认 Ctrl+Alt+T，仅应用内生效）：
+ * 本地拉起系统命令行（`spawnTerminalAt`）、远程打开该工作区的 SSH 终端窗口，
+ * 与标签页右键两条入口共用同一套语义。无活动工作区 / 入口不可用时静默不动
+ * （菜单条目置灰兜底，快捷键路径再判一次防置灰判定与按键之间的时序）。
+ */
+function openTerminalForActiveWorkspace(): void {
+  if (!canOpenTerminalForActiveWorkspace()) return;
+  const ref = workspacePath;
+  if (!ref) return;
+  if (ref.endpoint === null) spawnTerminalAt(ref.path);
+  else openRemoteTerminalFor(ref);
+}
+
 /**
  * 切到相邻标签页（快捷键「下一标签 / 上一标签」，specs/021）：按当前打开集合顺序
  * 取相邻项后走同一份激活链（activateWorkspace），侧栏 / 聊天区 / 标题栏联动与持久化
@@ -3804,10 +3851,10 @@ function openRemoteTerminalFor(ref: WorkspaceRef): void {
     locale: getHostLocale(),
     fontSizePx: terminalFontSizePx(readTerminalFontPreference()),
     // 终端窗口的标签切换组合与工作区标签页同源（specs/021）；开窗取现值，
-    // 改键保存后经 writeTabShortcut 的 applyTerminalShortcuts 同步
+    // 改键保存后经 writeShortcutValue 的 applyTerminalShortcuts 同步
     readTabShortcuts: () => ({
-      nextTab: readTabShortcutSync('nextTab'),
-      prevTab: readTabShortcutSync('prevTab'),
+      nextTab: readShortcutValueSync('nextTab'),
+      prevTab: readShortcutValueSync('prevTab'),
     }),
     log: (...args: unknown[]): void => {
       fileLogger.info('terminal', args.map((a) => String(a)).join(' '));
@@ -4080,25 +4127,26 @@ function writeWakeShortcut(shortcut: string): void {
   writeWorkspaceState({ ...readWorkspaceState(), shortcut });
 }
 
-/** 标签快捷键的行标识 → 状态文件字段与默认值（specs/021） */
-const TAB_SHORTCUT_ROWS = {
+/** 可录制快捷键的行标识 → 状态文件字段与默认值（specs/021；openTerminal 为终端入口行） */
+const SHORTCUT_ROWS = {
   nextTab: { field: 'nextTabShortcut', fallback: DEFAULT_NEXT_TAB_SHORTCUT },
   prevTab: { field: 'prevTabShortcut', fallback: DEFAULT_PREV_TAB_SHORTCUT },
+  openTerminal: { field: 'openTerminalShortcut', fallback: DEFAULT_OPEN_TERMINAL_SHORTCUT },
 } as const;
 
-/** 读取标签快捷键（缺失 / 非法时回退默认值；与唤醒快捷键同口径，不写回） */
-function readTabShortcutSync(row: keyof typeof TAB_SHORTCUT_ROWS): string {
-  const { field, fallback } = TAB_SHORTCUT_ROWS[row];
+/** 读取可录制快捷键（缺失 / 非法时回退默认值；与唤醒快捷键同口径，不写回） */
+function readShortcutValueSync(row: keyof typeof SHORTCUT_ROWS): string {
+  const { field, fallback } = SHORTCUT_ROWS[row];
   return resolveShortcut(readWorkspaceState()[field], fallback);
 }
 
-/** 持久化标签快捷键（调用方已规范化），重建菜单动作表让组合即时换绑；
+/** 持久化可录制快捷键（调用方已规范化），重建菜单动作表让组合即时换绑；
  * 终端窗口的标签快切吃同一份偏好，经 applyTerminalShortcuts 同步到已开的窗口 */
-function writeTabShortcut(row: keyof typeof TAB_SHORTCUT_ROWS, accelerator: string): void {
-  const { field } = TAB_SHORTCUT_ROWS[row];
+function writeShortcutValue(row: keyof typeof SHORTCUT_ROWS, accelerator: string): void {
+  const { field } = SHORTCUT_ROWS[row];
   writeWorkspaceState({ ...readWorkspaceState(), [field]: accelerator });
   setupMenu();
-  applyTerminalShortcuts(readTabShortcutSync('nextTab'), readTabShortcutSync('prevTab'));
+  applyTerminalShortcuts(readShortcutValueSync('nextTab'), readShortcutValueSync('prevTab'));
 }
 
 /**

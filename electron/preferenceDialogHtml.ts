@@ -5,18 +5,18 @@
  * 作为 data URL 载入 BrowserWindow，页面只负责显示。这里承载三块宿主本地偏好：
  * - 主题：跟随系统 / 浅色 / 深色（单选，立即生效）
  * - 提示音：是否播放 + 音量（勾选后才显示音量条；拖完预览播放一次）
- * - 快捷键：唤醒 / 下一标签 / 上一标签三行逐行录制（specs/021；捕获在主进程的
+ * - 快捷键：唤醒 / 下一标签 / 上一标签 / 打开终端四行逐行录制（specs/021；捕获在主进程的
  *   before-input-event 里做，复用 electron/shortcut.ts，页面里不重复实现一遍快捷键解析）
  *
  * 配色走 `prefers-color-scheme`（`nativeTheme.themeSource` 驱动），不把深浅色烘进
  * 内联样式——用户在窗口里切换主题时，窗口自己跟着变，不需要关掉重开。
  *
  * 页面通过 preload 暴露的 window.preferenceAPI 与主进程通信：
- *   getState()           取当前状态（主题 / 三行快捷键显示值 / 提示音开关与音量）
+ *   getState()           取当前状态（主题 / 四行快捷键显示值 / 提示音开关与音量）
  *   setTheme(mode)       切换主题（立即生效）
  *   setSoundEnabled(on)  开关提示音（打开时预览播放一次）
  *   setSoundVolume(v)    保存音量（0–1）并预览播放一次
- *   captureShortcut(row) 开始录制指定行（wake / nextTab / prevTab）的快捷键
+ *   captureShortcut(row) 开始录制指定行（wake / nextTab / prevTab / openTerminal）的快捷键
  *   close()              关闭窗口
  *   onState(cb)          订阅主进程推来的状态
  */
@@ -30,8 +30,10 @@ export interface PreferenceDialogState {
   nextTabShortcutDisplay: string;
   /** 当前「上一标签」快捷键的显示形式（如 Ctrl+Shift+Tab，specs/021） */
   prevTabShortcutDisplay: string;
+  /** 当前「打开终端」快捷键的显示形式（如 Ctrl+Alt+T） */
+  openTerminalShortcutDisplay: string;
   /** 正在录制改键的行；null 表示未在录制 */
-  capturing: 'wake' | 'nextTab' | 'prevTab' | null;
+  capturing: 'wake' | 'nextTab' | 'prevTab' | 'openTerminal' | null;
   /** 录制校验失败的原因（无错误时缺省） */
   shortcutError?: string;
   /** 是否播放任务结束提醒音 */
@@ -55,6 +57,7 @@ export function getPreferenceDialogHtml(options: PreferenceDialogHtmlOptions): s
   const wakeLabel = zh ? '唤醒' : 'Wake';
   const nextTabLabel = zh ? '下一标签' : 'Next Workspace Tab';
   const prevTabLabel = zh ? '上一标签' : 'Previous Workspace Tab';
+  const openTerminalLabel = zh ? '打开终端' : 'Open Terminal';
   const shortcutHint = zh
     ? '点击后按下新的组合键。录制中按 Esc 取消。'
     : 'Click, then press the new key combination. Press Esc to cancel.';
@@ -185,6 +188,7 @@ export function getPreferenceDialogHtml(options: PreferenceDialogHtmlOptions): s
     <div class="shortcut-row"><span>${wakeLabel}</span><button class="shortcut" id="shortcut-wake" data-row="wake" type="button">-</button></div>
     <div class="shortcut-row"><span>${nextTabLabel}</span><button class="shortcut" id="shortcut-next" data-row="nextTab" type="button">-</button></div>
     <div class="shortcut-row"><span>${prevTabLabel}</span><button class="shortcut" id="shortcut-prev" data-row="prevTab" type="button">-</button></div>
+    <div class="shortcut-row"><span>${openTerminalLabel}</span><button class="shortcut" id="shortcut-terminal" data-row="openTerminal" type="button">-</button></div>
     <div class="hint">${shortcutHint}</div>
     <div class="error" id="shortcut-error"></div>
   </div>

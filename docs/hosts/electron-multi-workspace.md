@@ -174,18 +174,22 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | 打开最近的工作区 ▸ | 子菜单列出最近工作目录，点击即添加 |
 | 下一标签（默认 Ctrl+Tab） | 活动项切到打开集合顺序的下一张标签页，环绕规则见第 5 节 |
 | 上一标签（默认 Ctrl+Shift+Tab） | 活动项切到打开集合顺序的上一张标签页，环绕规则见第 5 节 |
-| 偏好设置... | 打开偏好设置窗口：主题单选、快捷键录制（唤醒 / 下一标签 / 上一标签三行逐行录制）、提示音开关与音量（见 [docs/architecture/contracts.md 第 5 节](../architecture/contracts.md#5-宿主侧入口动作翻译为-uievent)） |
+| 打开命令行 / 打开终端（默认 Ctrl+Alt+T） | 打开活动工作区的命令行（本地）或 SSH 终端窗口（远程），按端点分叉、与标签页右键同一套入口语义与置灰规则（见 14.1 节）；无活动工作区或入口不可用时条目置灰、组合键不动作 |
+| 偏好设置... | 打开偏好设置窗口：主题单选、快捷键录制（唤醒 / 下一标签 / 上一标签 / 打开终端四行逐行录制）、提示音开关与音量（见 [docs/architecture/contracts.md 第 5 节](../architecture/contracts.md#5-宿主侧入口动作翻译为-uievent)） |
 | 开发者工具 | 在独立窗口打开 / 关闭开发者工具 |
 | 关于 | 显示关于对话框（自绘消息框 `electron/styledMessageBox.ts`，与应用深浅主题一致，含版本号） |
 | 退出 | 退出应用 |
 
 - 「打开最近的工作区」子菜单在无可用最近目录时显示不可用占位项。
 - 菜单动作与快捷键绑定沿用同一份动作表（原生菜单与自绘菜单同源）。
-- 两条标签快捷键可录制改键，默认下一标签 Ctrl+Tab、上一标签 Ctrl+Shift+Tab；组合键
-  持久化在宿主本地状态文件（见第 11 节），缺失 / 非法按默认值生效。录制中按 Esc 取消、
-  原值保持；录制组合与任一既有绑定冲突（两条标签快捷键互撞、菜单既有组合 Ctrl+O /
+- 三条可录制快捷键（下一标签 / 上一标签 / 打开终端）可录制改键，默认下一标签
+  Ctrl+Tab、上一标签 Ctrl+Shift+Tab、打开终端 Ctrl+Alt+T；组合键持久化在宿主本地
+  状态文件（见第 11 节），缺失 / 非法按默认值生效。录制中按 Esc 取消、原值保持；
+  录制组合与任一既有绑定冲突（三条可录制快捷键互撞、菜单既有组合 Ctrl+O /
   Ctrl+Shift+O / Ctrl+Shift+I、当前唤醒快捷键）时拒绝保存，行内显示冲突原因；
   保存后重建菜单动作表即时换绑。唤醒快捷键的录入路径不做冲突检测（既有口径不变）。
+  快捷键全部只应用内生效（原生菜单 accelerator 与无边框窗口的 before-input-event
+  兜底），不做全局注册——`globalShortcut` 仍只用于唤醒快捷键。
 
 ---
 
@@ -280,7 +284,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | `activeWorkspaceKey` | 活动工作区的 refKey；无活动项时为 `null`（旧字段 `activeWorkspace` 仅作本地路径兼容保留） |
 | `recentWorkspaces` | 最近工作目录，去重、有序、上限 20 |
 | `windowSize` / `floatingWindowSize` | 完整模式 / 浮窗模式的上次位置与尺寸 |
-| `nextTabShortcut` / `prevTabShortcut` | 「下一标签 / 上一标签」快捷键（Electron accelerator 形式）；缺失 / 非法按默认值（Ctrl+Tab / Ctrl+Shift+Tab）生效，读取路径不写回 |
+| `nextTabShortcut` / `prevTabShortcut` / `openTerminalShortcut` | 「下一标签 / 上一标签 / 打开终端」快捷键（Electron accelerator 形式）；缺失 / 非法按默认值（Ctrl+Tab / Ctrl+Shift+Tab / Ctrl+Alt+T）生效，读取路径不写回 |
 | `viewerWindowRect` / `spinDesignWindowRect` | 查看器窗口名额（Monaco / 图片 / Markdown 共用）与 Spin 设计器窗口的上次位置与尺寸，各自独立存储；开窗前做多屏可见性校验，失效回退默认尺寸（`electron/viewerWindowRect.ts`） |
 | `windowMode` / `floatingPinned` | 上次窗口模式与浮窗置顶状态 |
 
@@ -348,7 +352,11 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   一张标签只出现其一。
 - 「打开终端」仅当该工作区带可用凭证时可点（`canOpenRemoteTerminal`），无凭证置灰；
   右键菜单每次弹出时构建，可用性即时判定，条目 `run` 内再判一次（防弹出与点击之间的
-  时序）。不设菜单条目、侧栏入口与快捷键。
+  时序）。
+- 同一入口有键盘路径：单一菜单条目「打开命令行 / 打开终端」（随活动工作区端点分叉
+  文案与可用性，见第 7 节）与快捷键（默认 Ctrl+Alt+T，可改键）都作用于**活动工作区**，
+  与右键菜单共用 `spawnTerminalAt` / `openRemoteTerminalFor` 同一套入口语义；无活动
+  工作区或入口不可用时快捷键不动作。侧栏不设入口。
 
 ### 14.2 窗口
 
@@ -448,7 +456,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | 最近工作目录 / 状态文件 | `electron/workspaceStateStore.ts` 的 `readWorkspaceState` / `writeWorkspaceState` / `saveOpenWorkspaces` |
 | 菜单定义与动作表 | `electron/main.ts` 的 `buildMenuSections` / `setupMenu` / `invokeMenuAction` |
 | 标签页相邻切换 | `electron/tabSwitching.ts` 的 `selectAdjacentId`（工作区与终端标签共用）；动作接线 `electron/main.ts` 的 `switchToAdjacentWorkspace` 与 `electron/terminal/main.ts` 的 `switchTabByShortcut` |
-| 标签快捷键偏好 | `electron/shortcut.ts` 的 `DEFAULT_NEXT_TAB_SHORTCUT` / `DEFAULT_PREV_TAB_SHORTCUT` / `findShortcutConflict`；持久化字段 `electron/workspaceStateStore.ts` 的 `nextTabShortcut` / `prevTabShortcut` |
+| 标签快捷键偏好 | `electron/shortcut.ts` 的 `DEFAULT_NEXT_TAB_SHORTCUT` / `DEFAULT_PREV_TAB_SHORTCUT` / `DEFAULT_OPEN_TERMINAL_SHORTCUT` / `findShortcutConflict`；持久化字段 `electron/workspaceStateStore.ts` 的 `nextTabShortcut` / `prevTabShortcut` / `openTerminalShortcut` |
 | 自绘菜单渲染 | `electron/titlebar/main.ts` 的 `renderMenubar`、`electron/titlebarMenuHtml.ts` |
 | 标题栏品牌 / 模式状态 | `electron/titlebar/main.ts` 的 `applyModeState`、`electron/main.ts` 的 `pushTitlebarModeState` |
 | 侧栏头部 | `electron/sidebar/index.html` 的静态 `.header`；数据刷新走 `electron/sidebar/main.ts` 的 `render()` |
