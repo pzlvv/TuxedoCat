@@ -38,8 +38,13 @@ const connecting = new Map<string, Promise<void>>();
 /** 正在使用该 endpoint 连接的打开工作区数：归零才释放底层连接 */
 const leases = new Map<string, number>();
 
-/** 取（或建立）该 endpoint 的 SSH 客户端并确保已连接 */
-async function clientFor(endpoint: WorkspaceEndpoint, log: (...args: unknown[]) => void): Promise<SshClient> {
+/**
+ * 取（或建立）该 endpoint 的 SSH 客户端并确保已连接。
+ *
+ * 除侧栏文件操作外，远程终端窗口（docs/hosts/electron-multi-workspace.md 第 14 节）共用这一个池：同一连接目标只建一条
+ * SSH 连接，口令鉴权与主机密钥 TOFU 只发生一次（docs/hosts/electron-multi-workspace.md 第 14.5 节）。
+ */
+export async function sharedClientFor(endpoint: WorkspaceEndpoint, log: (...args: unknown[]) => void): Promise<SshClient> {
   const key = sshTargetKey(sshTargetFor(endpoint));
   let client = clients.get(key);
   if (!client) {
@@ -51,7 +56,7 @@ async function clientFor(endpoint: WorkspaceEndpoint, log: (...args: unknown[]) 
     await inFlight;
     // 等待期间连接可能已被释放（最后一个工作区关闭）并被新调用重建：
     // 旧实例已 dispose，递归取当前实例（connect 幂等，新实例未连上会补连）
-    if (clients.get(key) !== client) return clientFor(endpoint, log);
+    if (clients.get(key) !== client) return sharedClientFor(endpoint, log);
     return client;
   }
   const connect = sharedInFlight(connecting, key, () => client!.connect());
@@ -107,7 +112,7 @@ export function releaseRemoteFilesClient(endpoint: WorkspaceEndpoint | null): vo
     client.dispose();
   }
   // 连接进行中被释放（最后一个工作区在首次列目录完成前关闭）：
-  // 一并清掉 in-flight，等待者经 clientFor 的实例身份检查走重建路径
+  // 一并清掉 in-flight，等待者经 sharedClientFor 的实例身份检查走重建路径
   connecting.delete(key);
 }
 
@@ -133,7 +138,7 @@ export async function listRemoteDirectory(
 ): Promise<DirectoryEntry[]> {
   const abs = resolveWithinRoot(root, rel, { allowRoot: true, posix: true });
   if (!abs) throw new Error(`remote path escapes the workspace root: ${rel}`);
-  const client = await clientFor(endpoint, log);
+  const client = await sharedClientFor(endpoint, log);
   return sortSidebarEntries(await client.listDirectory(abs));
 }
 
@@ -149,7 +154,7 @@ export async function deleteRemotePaths(
   rels: readonly string[],
   log: (...args: unknown[]) => void,
 ): Promise<void> {
-  const client = await clientFor(endpoint, log);
+  const client = await sharedClientFor(endpoint, log);
   const failures: string[] = [];
   for (const rel of rels) {
     const abs = resolveWithinRoot(root, rel, { posix: true });
@@ -172,9 +177,9 @@ export function remoteFileReaderFor(
   log: (...args: unknown[]) => void,
 ): RemoteFileReader {
   return {
-    readHead: (absPath, maxBytes) => clientFor(endpoint, log).then((c) => c.readFileHead(absPath, maxBytes)),
-    readBytes: (absPath) => clientFor(endpoint, log).then((c) => c.readFileBuffer(absPath)),
-    readText: (absPath) => clientFor(endpoint, log).then((c) => c.readText(absPath)),
+    readHead: (absPath, maxBytes) => sharedClientFor(endpoint, log).then((c) => c.readFileHead(absPath, maxBytes)),
+    readBytes: (absPath) => sharedClientFor(endpoint, log).then((c) => c.readFileBuffer(absPath)),
+    readText: (absPath) => sharedClientFor(endpoint, log).then((c) => c.readText(absPath)),
   };
 }
 

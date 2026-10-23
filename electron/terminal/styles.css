@@ -1,0 +1,147 @@
+/* 远程终端页面（specs/022）：样式基线对齐 demo.html；深浅两套跟随主进程推送的主题 */
+
+:root {
+  --shell: #16161b;        /* 主窗口外壳（深） */
+  --frame: #2a2a30;        /* primaryFrame */
+  --bg2: #1e1e24;          /* bgSecondary */
+  --text: #c1c1c6;
+  --text-dim: #9f9fa9;
+  --accent: #6366f1;
+  --success: #22c55e;
+  --error: #ef4444;
+  --border: #3f3f46;
+  --term-bg: #16161b;
+}
+body.light {
+  --shell: #fafafa;
+  --frame: #e4e4e7;
+  --bg2: #ececef;
+  --text: #18181b;
+  --text-dim: #71717a;
+  --border: #d4d4d8;
+  --term-bg: #ffffff;
+}
+
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--shell);
+  color: var(--text);
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* —— 标签条 —— */
+#tabstrip {
+  flex: 0 0 36px;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  -webkit-user-select: none;
+  user-select: none;
+}
+#tabs { display: flex; align-items: flex-end; gap: 4px; min-width: 0; overflow: hidden; }
+.tab {
+  height: 29px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 14px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 7px 7px 0 0;
+  cursor: default;
+  white-space: nowrap;
+}
+.tab:hover { color: var(--text); background: var(--bg2); }
+.tab.active {
+  color: var(--text);
+  background: var(--bg2);
+  border-color: var(--border);
+  position: relative;
+}
+/* 活动标签的 accent 提示条（FR-009 样式基线） */
+.tab.active::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+/* 标签运行状态点：绿 = shell 在跑，红 = 断开（FR-009） */
+.tab .dot {
+  flex: 0 0 6px;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+.tab.dead .dot { background: var(--error); }
+.tab .label { overflow: hidden; text-overflow: ellipsis; }
+.tab .x {
+  flex: 0 0 16px;
+  width: 16px; height: 16px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px;
+  border-radius: 4px;
+  visibility: hidden;
+}
+.tab:hover .x, .tab.active .x { visibility: visible; }
+.tab .x:hover { background: var(--error); color: #fff; }
+.newtab {
+  width: 28px; height: 28px;
+  margin-bottom: 3px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+}
+.newtab:hover { background: var(--bg2); color: var(--text); }
+
+/* —— 标签页区 —— */
+#panes { position: relative; flex: 1; min-height: 0; background: var(--term-bg); }
+.pane {
+  position: absolute;
+  inset: 6px 4px 4px 10px;
+  display: none;
+}
+.pane.visible { display: block; }
+.pane .xterm { height: 100%; }
+
+/* 连接中 / 断开态覆盖层（FR-007：断开呈现原因 + 手动重连） */
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+  padding: 0 24px;
+}
+.overlay.hidden { display: none; }
+.overlay .warn { font-size: 26px; color: var(--error); }
+.overlay .reason { opacity: 0.7; }
+.overlay button {
+  margin-top: 4px;
+  padding: 6px 18px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--shell);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.overlay button:hover { background: var(--bg2); }

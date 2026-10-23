@@ -95,6 +95,15 @@ import {
   disposeAllRemoteFilesClients,
 } from './sidebarFilesRemote.js';
 import {
+  closeAllTerminalWindows,
+  closeTerminalWorkspace,
+  openTerminalWindow,
+} from './terminalWindow.js';
+import {
+  canOpenRemoteTerminal,
+  terminalFontSizePx,
+} from './terminalShells.js';
+import {
   openLocalWorkspaceFile,
   openRemoteWorkspaceFile,
   REMOTE_BINARY_UNSUPPORTED,
@@ -709,6 +718,9 @@ async function main(): Promise<void> {
     attentionSound.dispose();
     // 释放电源阻断：进程退出前不再占着系统的电源请求
     sleepBlocker.dispose();
+    // 远程终端窗口随退出关闭：同步销毁 shell 通道并释放租约（docs/hosts/electron-multi-workspace.md 第 14.7 节），
+    // 必须先于下面的 SSH 连接池统一释放
+    closeAllTerminalWindows();
     // 侧栏文件浏览器的 SSH 连接（远程工作区的 SFTP 会话）一并释放
     disposeAllRemoteFilesClients();
     // core 侧的进程级资源（MCP 子进程 / Standalone Core 进程）统一由共享骨架释放；
@@ -2493,6 +2505,15 @@ function buildMenuSections(): MenuSectionDef[] {
     accelerator: readTabShortcutSync('prevTab'),
     run: () => { switchToAdjacentWorkspace('prev'); },
   };
+  // 远程终端（docs/hosts/electron-multi-workspace.md 第 14 节）：仅活动工作区为远程且带凭证时可用；窗口按工作区单例。
+  // 菜单在工作区增删 / 切换时重建（setupMenu 的既有调用点），可用性随重建刷新
+  const openRemoteTerminalItem: MenuItemDef = {
+    id: 'main.openRemoteTerminal',
+    label: tt('打开远程终端', 'Open Remote Terminal'),
+    accelerator: 'CmdOrCtrl+Alt+T',
+    enabled: canOpenRemoteTerminal(workspacePath),
+    run: () => { openRemoteTerminalForActiveWorkspace(); },
+  };
   // 偏好设置：Electron 专属能力（主题 / 唤醒快捷键 / 提示音都是宿主本地偏好，
   // webview 里改不了），统一收进一个自绘设置窗口（见 openPreferenceDialog）
   const preferenceItem: MenuItemDef = {
@@ -2520,6 +2541,7 @@ function buildMenuSections(): MenuSectionDef[] {
       items: [
         addWorkspaceItem,
         addRemoteWorkspaceItem,
+        openRemoteTerminalItem,
         recentWorkspaceItem,
         nextTabItem,
         prevTabItem,
@@ -2541,6 +2563,7 @@ function buildMenuSections(): MenuSectionDef[] {
     items: [
       addWorkspaceItem,
       addRemoteWorkspaceItem,
+      openRemoteTerminalItem,
       recentWorkspaceItem,
       nextTabItem,
       prevTabItem,
@@ -3578,6 +3601,9 @@ function teardownWorkspace(ref: WorkspaceRef): void {
   // 文件浏览器的 SSH 连接随工作区释放一次共享：同一 endpoint 还有其它工作区
   // 在用时连接保留（引用计数归零才真正断开），重开按新连接处理
   releaseRemoteFilesClient(ref.endpoint);
+  // 远程终端窗口随工作区关闭（docs/hosts/electron-multi-workspace.md 第 14.7 节）：shell 通道随窗口收尾，
+  // 终端自己的连接租约在窗口 closed 时释放
+  closeTerminalWorkspace(refKey(ref));
   // 视图归属按稳定 id（refKey）：同路径不同主机的远程工作区互不误伤
   chatViews?.closeWorkspace(refKey(ref));
   // 该目录的列表快照一并丢弃：关闭期间盘上内容可能变化（另一实例 / daemon 侧），
@@ -3724,6 +3750,36 @@ async function openRemoteWorkspaceAfterProbe(ref: WorkspaceRef): Promise<void> {
   unavailableReasons.delete(refKey(ref));
   emitWorkspaceChange('opened', ref);
   activateWorkspace(ref);
+}
+
+/**
+ * 打开活动工作区的远程终端窗口（docs/hosts/electron-multi-workspace.md 第 14.1 / 14.2 节）。
+ *
+ * 菜单条目的可用性由 `canOpenRemoteTerminal` 在菜单重建时判定；run 里再判一次
+ * 防御时序（菜单构建与点击之间活动工作区可能已切换）。
+ */
+function openRemoteTerminalForActiveWorkspace(): void {
+  if (!workspacePath || !canOpenRemoteTerminal(workspacePath)) return;
+  openTerminalWindow({
+    ref: workspacePath,
+    appRoot: APP_ROOT,
+    locale: getHostLocale(),
+    fontSizePx: terminalFontSizePx(readTerminalFontPreference()),
+    log: (...args: unknown[]): void => {
+      fileLogger.info('terminal', args.map((a) => String(a)).join(' '));
+    },
+    confirmHostKeyChange,
+  });
+}
+
+/** 界面字号档位的实时读取（与聊天视图的 readUiPreferences 同一来源；未就绪回缺省档） */
+function readTerminalFontPreference(): 'medium' | 'large' | 'xlarge' | undefined {
+  try {
+    const { getSettingsStore } = require('../src/host/SettingsStore.js') as typeof import('../src/host/SettingsStore.js');
+    return getSettingsStore().readUiFontSize();
+  } catch {
+    return undefined;
+  }
 }
 
 /**

@@ -43,6 +43,7 @@ module.exports = {
   sidebarOut: resolve(project.build.sidebarOut),
   titlebarOut: resolve(project.build.titlebarOut),
   remoteWorkspaceOut: resolve(project.build.remoteWorkspaceOut),
+  terminalOut: resolve(project.build.terminalOut),
   electronMainOut: resolve(project.build.electronMainOut),
   electronPreloadOut: resolve(project.build.electronPreloadOut),
   electronSpinPreloadOut: resolve(project.build.electronSpinPreloadOut),
@@ -54,5 +55,6 @@ module.exports = {
   electronTitlebarPreloadOut: resolve(project.build.electronTitlebarPreloadOut),
   electronTitlebarMenuPreloadOut: resolve(project.build.electronTitlebarMenuPreloadOut),
   electronRemoteWorkspacePreloadOut: resolve(project.build.electronRemoteWorkspacePreloadOut),
+  electronTerminalPreloadOut: resolve(project.build.electronTerminalPreloadOut),
   electronChatPlaceholderPreloadOut: resolve(project.build.electronChatPlaceholderPreloadOut),
 };

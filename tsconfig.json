@@ -21,6 +21,7 @@
 		"vite.sidebar.config.ts",
 		"vite.titlebar.config.ts",
 		"vite.remoteWorkspace.config.ts",
+		"vite.terminal.config.ts",
 		"src/webview/**/*",
 		"src/test/**/*",
 		"test/**/*",

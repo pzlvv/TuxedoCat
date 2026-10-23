@@ -39,6 +39,7 @@ const entries = [
   { entryPoints: [project.resolve('electron', 'titlebarPreload.ts')], outfile: project.electronTitlebarPreloadOut },
   { entryPoints: [project.resolve('electron', 'titlebarMenuPreload.ts')], outfile: project.electronTitlebarMenuPreloadOut },
   { entryPoints: [project.resolve('electron', 'remoteWorkspacePreload.ts')], outfile: project.electronRemoteWorkspacePreloadOut },
+  { entryPoints: [project.resolve('electron', 'terminalPreload.ts')], outfile: project.electronTerminalPreloadOut },
   { entryPoints: [project.resolve('electron', 'chatPlaceholderPreload.ts')], outfile: project.electronChatPlaceholderPreloadOut },
 ];
 

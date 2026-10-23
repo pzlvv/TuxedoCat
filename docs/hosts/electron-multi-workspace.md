@@ -23,7 +23,8 @@ Electron 宿主在任一时刻持有一个**打开集合**——若干个已打�
 4. 对话归属于工作目录，运行时按对话解析工作目录；
 5. 菜单收编为单一图标入口；
 6. 无工作目录时的空态引导；
-7. 浮窗模式沿用活动工作目录为窗口上下文。
+7. 浮窗模式沿用活动工作目录为窗口上下文；
+8. 远程终端：为打开的远程（SSH）工作区提供独立终端窗口（见第 14 节）。
 
 ---
 
@@ -164,6 +165,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | --- | --- |
 | 打开本地工作区...（Ctrl+O） | 打开系统目录选择框，选中目录加入打开集合 |
 | 打开远程工作区...（Ctrl+Shift+O） | 打开远程工作区对话框（SSH 接入，连远端 Core 后弹远端目录选择） |
+| 打开远程终端（Ctrl+Alt+T） | 为活动工作区打开远程终端窗口；仅远程工作区可用（本地 / 无工作区 / 无凭证时置灰），见第 14 节 |
 | 打开最近的工作区 ▸ | 子菜单列出最近工作目录，点击即添加 |
 | 下一标签（默认 Ctrl+Tab） | 活动项切到打开集合顺序的下一张标签页，环绕规则见第 5 节 |
 | 上一标签（默认 Ctrl+Shift+Tab） | 活动项切到打开集合顺序的上一张标签页，环绕规则见第 5 节 |
@@ -312,10 +314,96 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 12. 同一目录重复添加不产生第二张标签页。
 13. 按 Ctrl+Tab / Ctrl+Shift+Tab 沿标签页顺序切换活动项并环绕；单标签时按键不动作；
     偏好设置窗口录制改键后新组合生效、菜单展示同步。
+14. 菜单「打开远程终端」仅远程工作区可用；打开后首标签自动连上远端 shell，关闭工作区
+    时其终端窗口一并关闭。
 
 ---
 
-## 14. 落点对照
+## 14. 远程终端
+
+远程终端是**远程工作区的配套能力**（VS Code 宿主没有）：为活动工作区是远程（`ssh` scheme）
+的标签页提供一个独立终端窗口，内含多个终端标签，每个标签是远端机器上的一条 PTY shell
+通道。终端不经过 daemon、不经过 Core，直接用 SSH shell 通道；渲染引入 `@xterm/xterm`
+做终端仿真（应用内首个使用场景即本节，SSH 侧不引新库）。
+
+### 14.1 入口与可用性
+
+- 菜单条目「打开远程终端」（`main.openRemoteTerminal`，Ctrl+Alt+T），仅当**活动工作区**
+  为远程且带可用凭证时可点（`canOpenRemoteTerminal`）；本地工作区、无工作区、凭证缺失时
+  置灰。自绘标题栏菜单与原生菜单同一份定义，两端同时具备。
+- 不设侧栏入口与其它快捷键。菜单在工作区增删 / 切换时重建（`setupMenu` 既有调用点），
+  可用性随重建刷新；条目 `run` 内对活动工作区再判一次（防菜单构建与点击之间的时序）。
+
+### 14.2 窗口
+
+- 每个工作区一个终端窗口（按 `workspaceRefKey` 单例）：独立 `BrowserWindow`，标题含
+  `ssh://<user>@<host>` 与工作区路径，标准标题栏；同一工作区重复触发入口时聚焦既有窗口，
+  不叠开。不同工作区（含同一 endpoint 的不同目录）可同时各开一个窗口。
+- 窗口位置尺寸用默认值，不做记忆。终端属于工作区而不属于会话：会话视图的打开 / 关闭 /
+  LRU 淘汰、工作区标签切换都不影响终端窗口。
+
+### 14.3 标签
+
+- 窗口内可开多个终端标签（标签条「+」新建、悬停 / 活动标签显示 ✕ 关闭），窗口打开即
+  自动建首个标签；每个标签对应远端一条独立的 PTY shell 通道，互不共享输入输出。
+- 新标签的起始工作目录为该工作区路径；标签名 `bash N`（窗口内自增）。新建标签后自动
+  切到新页。
+- shell 因用户退出（`exit` / `logout`，ssh2 的 `exit` 事件）而结束时该标签自动关闭；
+  最后一个标签关闭时窗口关闭。标签带运行状态点（绿 = 在跑，红 = 断开），活动标签以
+  accent 色下划线标识。
+
+### 14.4 交互
+
+- 终端数据按字节流直达渲染端（UTF-8 由 xterm 增量解码），宿主不按行重组、不解析内容；
+  键入经主进程写通道 stdin，写满时等 drain 再写后续（不丢键入）。
+- 窗口尺寸变化实时同步远端 PTY（`setWindow`）：通道建立以发起时刻的窗口尺寸为 PTY 初值，
+  就绪前的 resize 先记账、就绪后补齐。滚动回看缓冲不少于 1000 行。
+- 剪贴板：Windows / Linux `Ctrl+Shift+C` / `Ctrl+Shift+V`，macOS 沿 `Cmd+C` / `Cmd+V`
+  （有选区才拦复制）；读写走主进程 `clipboard` 模块（渲染端剪贴板权限不可依赖）。
+
+### 14.5 连接复用与鉴权
+
+- shell 通道开在与侧栏文件浏览器同一 endpoint 连接池上（`sharedClientFor`，按
+  `sshTargetKey` 缓存）：同一条 SSH 连接多路复用，口令鉴权与主机密钥 TOFU 不重复发生。
+- 终端窗口打开期间对该连接登记一份租约（`retainRemoteFilesClient`），与工作区租约独立
+  计数，全部归零才真正断开。
+- 终端是该 endpoint 首个使用者且主机密钥与 known-hosts 记录不一致时，走与远程接入同一套
+  的告警确认（`confirmHostKeyChange`）；确认后 `recordKnownHostFingerprint` 重建信任并
+  重试一次，拒绝则失败原样呈现。
+
+### 14.6 断开语义
+
+- 通道结束按两个事件判别：`exit` 先行（远端 shell 正常退出）→ 标签自动关闭（14.3）；
+  无 `exit` 先行的 `close`（SSH 连接断开 / 通道层错误）→ 标签转「已断开」态，标签页内
+  以覆盖层呈现原因（通道 error 优先，缺省给固定文案）与「重新连接」按钮。
+- 重连只作用于单个标签、以当下窗口尺寸重建一条 shell，不自动重连、不批量复活其它标签。
+  断开态与建链中（connecting）的键入直接丢弃（界面上该标签不在可输入态，设计允许的
+  瞬时 no-op）；连接失败（认证失败 / 不可达）同样进断开态，不清除已存凭证、不新增
+  口令输入框（重新走「打开远程工作区」接入即可更新凭证）。
+
+### 14.7 生命周期
+
+- 关闭工作区（`teardownWorkspace`）时其终端窗口一并关闭；应用退出（`will-quit`）时全部
+  终端窗口关闭并同步销毁通道，先于 SSH 连接池的统一释放。
+- 远端不留孤儿进程：shell 生命周期就是 SSH 通道生命周期，连接断开后 PTY 内进程由 sshd
+  回收，宿主不做额外的进程清理协议。关标签先尽力发 SIGHUP（远端 Windows sshd 不支持
+  信号则忽略）再发 EOF。
+
+### 14.8 数据面与外观
+
+- 终端的输入输出走独立的 `terminal:*` IPC 面（`electron/terminalPreload.ts` 暴露
+  `window.terminalAPI`），不进入对话 webview 的消息协议、不进入 `AssistantEventBus`；
+  终端大量输出只进自己的渲染器，主窗口（对话）不经手。
+- 标签表（id、名称、状态、失败原因）的 owner 在主进程（`electron/terminalShells.ts` 的
+  `TerminalSessionGroup`），每次变化整表推送；渲染端（`electron/terminal/`）是纯投影，
+  只回传动作。
+- 主题即时跟随应用主题（`nativeTheme` 推送，深浅两套 ANSI 配色）；界面语言与字号档位在
+  窗口创建时经 query 注入、运行期变更不热切到已开的终端窗口（字号档位映射见
+  `terminalFontSizePx`）。
+
+---
+
+## 15. 落点对照
 
 | 规格项 | 现有落点 |
 | --- | --- |
@@ -328,6 +416,11 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | 标题栏品牌 / 模式状态 | `electron/titlebar/main.ts` 的 `applyModeState`、`electron/main.ts` 的 `pushTitlebarModeState` |
 | 侧栏头部 | `electron/sidebar/index.html` 的静态 `.header`；数据刷新走 `electron/sidebar/main.ts` 的 `render()` |
 | 侧栏对话列表 | `electron/sidebar/main.ts` 的 `render`、`sidebar:conversations-updated` 流 |
+| 远程终端窗口 | `electron/terminalWindow.ts` 的 `openTerminalWindow` / `closeTerminalWorkspace` / `closeAllTerminalWindows`；挂点 `electron/main.ts` 的 `buildMenuSections`（条目）/ `teardownWorkspace` / `will-quit` |
+| 终端标签 / 通道状态机 | `electron/terminalShells.ts` 的 `TerminalSessionGroup`；单测 `src/test/terminalShells.test.ts` |
+| 终端 SSH shell 通道 | `src/host/standalone/sshClient.ts` 的 `openShell`；连接复用 `electron/sidebarFilesRemote.ts` 的 `sharedClientFor` |
+| 终端页面 | `electron/terminal/`（vite 入口 `vite.terminal.config.ts` → `dist/terminal`）；preload `electron/terminalPreload.ts` |
+| 终端 e2e | `e2e/terminal/terminalUi.spec.ts`（假通道驱动真实页面，project `terminal-ui`） |
 | 对话列表加载 | `src/host/coreFacts.ts` 的 `loadConversationListForHost`（`UiRequest.conversationListRequested`；落盘读取库 `src/shared/history/Conversation.ts` 服务宿主侧例外） |
 | 对话元数据 | `src/shared/history/Conversation.ts` 的 `ConversationMetadata.project` |
 | 项目根解析 | 宿主侧索引 `src/shared/history/Config.ts` 的 `getSessionWorkspace` / `setSessionWorkspace`（权威表在 Core 进程内：目录是对话的属性） |

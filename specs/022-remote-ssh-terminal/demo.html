@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>specs/022 远程终端 — 样式 demo</title>
+<link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css">
+<style>
+  /* 应用主题色（src/webview/colors.ts）+ 主窗口外壳色（#16161b） */
+  :root {
+    --shell: #16161b;          /* 主窗口外壳 / 深色兜底 */
+    --frame: #2a2a30;          /* primaryFrame */
+    --bg2: #1e1e24;            /* bgSecondary */
+    --text: #c1c1c6;
+    --text-dim: #9f9fa9;
+    --accent: #6366f1;
+    --success: #22c55e;
+    --error: #ef4444;
+    --border: #3f3f46;
+    --term-bg: #16161b;
+  }
+  body.light {
+    --shell: #fafafa;
+    --frame: #e4e4e7;
+    --bg2: #ececef;
+    --text: #18181b;
+    --text-dim: #71717a;
+    --border: #d4d4d8;
+    --term-bg: #ffffff;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: radial-gradient(1200px 700px at 30% 20%, #23232b 0%, #101014 60%);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; padding: 24px;
+  }
+  body.light { background: radial-gradient(1200px 700px at 30% 20%, #e8e8ee 0%, #c9c9d2 60%); }
+
+  /* —— 模拟终端窗口（独立 BrowserWindow 的形态） —— */
+  .win {
+    width: min(1020px, 94vw); height: min(660px, 84vh);
+    background: var(--shell);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 24px 70px rgba(0,0,0,.55);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  body.light .win { box-shadow: 0 24px 70px rgba(20,20,30,.28); }
+
+  /* 标题栏 */
+  .titlebar {
+    height: 34px; flex: 0 0 34px;
+    display: flex; align-items: center;
+    padding: 0 0 0 12px;
+    background: var(--shell);
+    border-bottom: 1px solid var(--border);
+    -webkit-user-select: none; user-select: none;
+  }
+  .titlebar .logo {
+    width: 16px; height: 16px; border-radius: 4px; margin-right: 9px;
+    background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  }
+  .titlebar .title {
+    flex: 1; font-size: 12px; color: var(--text-dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .titlebar .title b { color: var(--text); font-weight: 600; }
+  .wincontrols { display: flex; height: 100%; }
+  .wincontrols span {
+    width: 44px; display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim); font-size: 11px; cursor: default;
+  }
+  .wincontrols span:hover { background: var(--bg2); }
+  .wincontrols span.close:hover { background: var(--error); color: #fff; }
+
+  /* 终端标签条 */
+  .tabstrip {
+    height: 36px; flex: 0 0 36px;
+    display: flex; align-items: flex-end;
+    background: var(--shell);
+    padding: 0 8px; gap: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab {
+    height: 29px; padding: 0 10px 0 14px;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--text-dim);
+    background: transparent;
+    border: 1px solid transparent; border-bottom: none;
+    border-radius: 7px 7px 0 0;
+    cursor: default; -webkit-user-select: none; user-select: none;
+  }
+  .tab:hover { color: var(--text); background: color-mix(in srgb, var(--bg2) 55%, transparent); }
+  .tab.active {
+    color: var(--text); background: var(--bg2);
+    border-color: var(--border);
+    position: relative;
+  }
+  .tab.active::after {   /* 活动标签的 accent 提示条 */
+    content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+    background: var(--accent); border-radius: 2px;
+  }
+  .tab .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+  .tab.dead .dot { background: var(--error); }
+  .tab .x {
+    width: 16px; height: 16px; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; visibility: hidden;
+  }
+  .tab:hover .x, .tab.active .x { visibility: visible; }
+  .tab .x:hover { background: color-mix(in srgb, var(--error) 75%, transparent); color: #fff; }
+  .newtab {
+    width: 28px; height: 28px; margin-bottom: 3px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim); font-size: 15px; border-radius: 6px;
+  }
+  .newtab:hover { background: var(--bg2); color: var(--text); }
+
+  /* 终端区 */
+  .termwrap { flex: 1; position: relative; background: var(--term-bg); }
+  .termwrap .xterm-screen-host { position: absolute; inset: 8px 4px 6px 10px; }
+  .pane { position: absolute; inset: 8px 4px 6px 10px; display: none; }
+  .pane.visible { display: block; }
+
+  /* 页面辅助 */
+  .toolbar { display: flex; gap: 10px; align-items: center; }
+  .toggle {
+    padding: 6px 16px; border-radius: 999px; border: 1px solid var(--border);
+    background: var(--shell); color: var(--text); font-size: 13px; cursor: pointer;
+  }
+  .caption { color: #8f8f9a; font-size: 12.5px; text-align: center; line-height: 1.7; }
+  body.light .caption { color: #55555f; }
+  .caption code { color: var(--accent); font-family: Consolas, monospace; }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <button class="toggle" id="themeToggle">切换到浅色</button>
+</div>
+
+<div class="win">
+  <div class="titlebar">
+    <div class="logo"></div>
+    <div class="title"><b>远程终端</b>&nbsp;—&nbsp;ssh://deploy@10.0.0.1&nbsp;—&nbsp;/srv/demo</div>
+    <div class="wincontrols"><span>&#x2500;</span><span>&#x25A1;</span><span class="close">&#x2715;</span></div>
+  </div>
+  <div class="tabstrip">
+    <div class="tab active" data-pane="p1"><span class="dot"></span><span class="label">bash 1</span><span class="x">&#x2715;</span></div>
+    <div class="tab" data-pane="p2"><span class="dot"></span><span class="label">bash 2</span><span class="x">&#x2715;</span></div>
+    <div class="tab dead" data-pane="p3"><span class="dot"></span><span class="label">已断开</span><span class="x">&#x2715;</span></div>
+    <div class="newtab" title="新建终端标签">+</div>
+  </div>
+  <div class="termwrap">
+    <div class="pane visible" id="p1"></div>
+    <div class="pane" id="p2"></div>
+    <div class="pane" id="p3">
+      <!-- 断开态示意：非 xterm，占位样式 -->
+      <div style="display:flex;height:100%;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--text-dim);font-size:13px;">
+        <div style="font-size:26px;color:var(--error);">&#x26A0;</div>
+        <div>与 ssh://deploy@10.0.0.1 的连接已断开</div>
+        <div style="opacity:.7">SSH 连接中断（read ETIMEDOUT）</div>
+        <button class="toggle" style="margin-top:4px">&#x21BB;&nbsp; 重新连接</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="caption">
+  specs/022 样式 demo · 「bash 1」可交互（试试 <code>ls</code> / <code>git status</code> / <code>htop</code> / <code>help</code>）·
+  「bash 2」演示持续输出 · 第三个标签是断开态示意 · 右上角切主题
+</div>
+
+<script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
+<script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+<script>
+"use strict";
+
+/* ANSI 配色：对齐应用深浅主题（深色壳 #16161b / 浅色 #ffffff） */
+const THEMES = {
+  dark: {
+    background: "#16161b", foreground: "#c1c1c6", cursor: "#6366f1",
+    cursorAccent: "#16161b", selectionBackground: "rgba(99,102,241,0.32)",
+    black: "#3f3f46", red: "#ef4444", green: "#22c55e", yellow: "#eab308",
+    blue: "#60a5fa", magenta: "#c084fc", cyan: "#22d3ee", white: "#c1c1c6",
+    brightBlack: "#71717a", brightRed: "#f87171", brightGreen: "#4ade80",
+    brightYellow: "#facc15", brightBlue: "#93c5fd", brightMagenta: "#d8b4fe",
+    brightCyan: "#67e8f9", brightWhite: "#fafafa",
+  },
+  light: {
+    background: "#ffffff", foreground: "#27272a", cursor: "#6366f1",
+    cursorAccent: "#ffffff", selectionBackground: "rgba(99,102,241,0.25)",
+    black: "#3f3f46", red: "#dc2626", green: "#16a34a", yellow: "#d97706",
+    blue: "#2563eb", magenta: "#9333ea", cyan: "#0891b2", white: "#e4e4e7",
+    brightBlack: "#71717a", brightRed: "#ef4444", brightGreen: "#22c55e",
+    brightYellow: "#eab308", brightBlue: "#3b82f6", brightMagenta: "#a855f7",
+    brightCyan: "#06b6d4", brightWhite: "#fafafa",
+  },
+};
+
+const FONT = 'Consolas, "Cascadia Mono", "Courier New", monospace';
+
+function makeTerminal(hostId) {
+  const term = new Terminal({
+    fontSize: 14,
+    fontFamily: FONT,
+    cursorBlink: true,
+    scrollback: 1000,          // specs/022 FR-004：回看缓冲下限
+    theme: THEMES.dark,
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(document.getElementById(hostId));
+  fit.fit();
+  return { term, fit };
+}
+
+const p1 = makeTerminal("p1");
+const p2 = makeTerminal("p2");
+
+/* —— bash 1：可交互的假远端 shell —— */
+const shell = p1.term;
+const PROMPT = "\r\n\x1b[1;32mdeploy@demo\x1b[0m:\x1b[1;34m~/workspace\x1b[0m$ ";
+const CANNED = {
+  "ls": [
+    "\x1b[1;34mdocs\x1b[0m  \x1b[1;34me2e\x1b[0m  \x1b[1;34msrc\x1b[0m  \x1b[1;34mcore-rs\x1b[0m",
+    "\x1b[1;34melectron\x1b[0m  \x1b[1;34mspecs\x1b[0m  package.json  README.md",
+  ],
+  "git status": [
+    "On branch \x1b[1;32mmain\x1b[0m",
+    "Your branch is up to date with 'origin/main'.",
+    "",
+    "Changes not staged for commit:",
+    "  \x1b[31mmodified:   electron/main.ts\x1b[0m",
+    "  \x1b[31mmodified:   package.json\x1b[0m",
+    "",
+    "Untracked files:",
+    "  \x1b[32mspecs/022-remote-ssh-terminal/\x1b[0m",
+  ],
+  "pwd": ["/home/deploy/workspace"],
+  "whoami": ["deploy"],
+  "uname -a": ["Linux demo 6.8.0 x86_64 GNU/Linux"],
+  "htop": null,
+  "help": [
+    "可用命令：ls、git status、pwd、whoami、uname -a、htop、clear、help",
+  ],
+};
+
+let line = "";
+let busy = false;
+let inHtop = false;
+
+function prompt() {
+  shell.write(PROMPT);
+  line = "";
+}
+
+function run(cmd) {
+  busy = true;
+  if (cmd === "clear") {
+    shell.clear();
+  } else if (cmd === "htop") {
+    // 备用屏模拟全屏程序；q 退出（onData 顶部拦截按键，不经行编辑）
+    inHtop = true;
+    busy = false;
+    shell.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l");
+    shell.write("\x1b[1;7m  htop 模拟 —— 按 q 退出（specs/022 FR-004：全屏程序可用）  \x1b[0m\r\n\r\n");
+    shell.write("  1  [||||||||||||||||||||  42%]  Tasks: 83\r\n");
+    shell.write("  2  [|||||||||            19%]  Load avg: 0.42\r\n");
+    shell.write("  Mem[|||||||||||||||    2.1G/8G]\r\n");
+    return;
+  } else {
+    const rows = CANNED[cmd];
+    if (rows) rows.forEach((r) => shell.write("\r\n" + r));
+    else if (cmd) shell.write(`\r\nbash: ${cmd}: command not found`);
+  }
+  busy = false;
+  prompt();
+}
+
+shell.onData((data) => {
+  if (busy) return;
+  if (inHtop) {
+    if (data === "q") {
+      inHtop = false;
+      shell.write("\x1b[?1049l\x1b[?25h");
+      prompt();
+    }
+    return;
+  }
+  if (data === "\r") {                      // Enter
+    shell.write("\r\n");
+    const cmd = line.trim();
+    line = "";
+    run(cmd);
+    return;
+  }
+  if (data === "\x7f") {                    // Backspace
+    if (line.length > 0) { line = line.slice(0, -1); shell.write("\b \b"); }
+    return;
+  }
+  if (data >= " " && data <= "~") {
+    line += data;
+    shell.write(data);
+  }
+});
+
+shell.writeln("\x1b[90m— specs/022 demo：远端 shell 已连上（ssh://deploy@10.0.0.1）—\x1b[0m");
+prompt();
+
+/* —— bash 2：持续输出（tail -f 演示流式写入） —— */
+const logs = p2.term;
+logs.writeln("\x1b[90m$ tail -f /srv/demo/app.log\x1b[0m");
+const LEVELS = [
+  ["INFO", "\x1b[32mINFO \x1b[0m"],
+  ["WARN", "\x1b[33mWARN \x1b[0m"],
+  ["ERROR", "\x1b[31mERROR\x1b[0m"],
+];
+let seq = 1000;
+setInterval(() => {
+  seq += 1 + Math.floor(Math.random() * 3);
+  const roll = Math.random();
+  const [name, tag] = roll > 0.92 ? LEVELS[2] : roll > 0.72 ? LEVELS[1] : LEVELS[0];
+  const msgs = [
+    "request completed path=/api/session status=200 dur=42ms",
+    "cache hit key=conversation:list workspace=/srv/demo",
+    "ssh keepalive ok rtt=23ms",
+    "stream chunk seq=" + seq + " bytes=512",
+    "compaction check: no action needed",
+  ];
+  const msg = msgs[Math.floor(Math.random() * msgs.length)];
+  logs.write(`\x1b[90m2026-10-23T10:${String(8 + (seq % 50)).padStart(2, "0")}:12.480Z\x1b[0m ${tag} ${msg}\r\n`);
+}, 1100);
+
+/* —— 标签切换 —— */
+const tabs = document.querySelectorAll(".tab");
+tabs.forEach((tab) => {
+  tab.addEventListener("click", (e) => {
+    if (e.target.classList.contains("x")) return;   // ✕ 不切标签
+    tabs.forEach((t) => t.classList.remove("active"));
+    tab.classList.add("active");
+    document.querySelectorAll(".pane").forEach((p) => p.classList.remove("visible"));
+    document.getElementById(tab.dataset.pane).classList.add("visible");
+    if (tab.dataset.pane === "p1") p1.fit.fit();
+    if (tab.dataset.pane === "p2") p2.fit.fit();
+  });
+});
+document.querySelector(".newtab").addEventListener("click", () => {
+  alert("demo：这里新建一条 shell 通道（specs/022 FR-003）");
+});
+
+/* —— 主题切换 —— */
+const toggle = document.getElementById("themeToggle");
+let dark = true;
+toggle.addEventListener("click", () => {
+  dark = !dark;
+  document.body.classList.toggle("light", !dark);
+  toggle.textContent = dark ? "切换到浅色" : "切换到深色";
+  p1.term.options.theme = THEMES[dark ? "dark" : "light"];
+  p2.term.options.theme = THEMES[dark ? "dark" : "light"];
+});
+
+/* —— 尺寸变化 → fit（真实实现里随后 setWindow 同步远端 PTY） —— */
+new ResizeObserver(() => { p1.fit.fit(); p2.fit.fit(); }).observe(document.querySelector(".termwrap"));
+</script>
+</body>
+</html>

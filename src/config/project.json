@@ -40,6 +40,7 @@
     "sidebarOut": "dist/sidebar",
     "titlebarOut": "dist/titlebar",
     "remoteWorkspaceOut": "dist/remoteWorkspace",
+    "terminalOut": "dist/terminal",
     "electronMainOut": "dist-electron/main.cjs",
     "electronPreloadOut": "dist-electron/preload.cjs",
     "electronSpinPreloadOut": "dist-electron/spinPreload.cjs",
@@ -51,6 +52,7 @@
     "electronTitlebarPreloadOut": "dist-electron/titlebarPreload.cjs",
     "electronTitlebarMenuPreloadOut": "dist-electron/titlebarMenuPreload.cjs",
     "electronRemoteWorkspacePreloadOut": "dist-electron/remoteWorkspacePreload.cjs",
+    "electronTerminalPreloadOut": "dist-electron/terminalPreload.cjs",
     "electronChatPlaceholderPreloadOut": "dist-electron/chatPlaceholderPreload.cjs"
   }
 }

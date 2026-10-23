@@ -23,7 +23,7 @@ last_reviewed: 2026-10-20
 | [消息呈现与确认](user-stories/messages.md) | EP-3 消息呈现、EP-4 权限与用户确认、EP-11 通知与国际化 | US-12～18、US-40～41 |
 | [会话管理与 LLM 配置](user-stories/sessions-and-llm.md) | EP-5 会话管理、EP-6 LLM 配置 | US-19～26 |
 | [工具与技能](user-stories/tools.md) | EP-7 工具与技能、US-50 联网搜索（客户端工具） | US-27～29、US-45、US-50 |
-| [桌面端](user-stories/desktop.md) | EP-8 桌面端窗口与标题栏、EP-9 多工作区、EP-10 预览与 Spin、EP-12 侧栏文件浏览器（桌面端） | US-30～39、US-42～44 |
+| [桌面端](user-stories/desktop.md) | EP-8 桌面端窗口与标题栏、EP-9 多工作区、EP-10 预览与 Spin、EP-12 侧栏文件浏览器、EP-14 远程终端（桌面端） | US-30～39、US-42～44、US-54～55 |
 | 附录：US | [与 e2e 场景用例映射](#附录us-与-e2e-场景用例映射) | — |
 
 ---
@@ -58,6 +58,7 @@ last_reviewed: 2026-10-20
 | `e2e/electron/subagentConcurrency.spec.ts` | US-49 | Electron 整应用 |
 | `e2e/electron/subagentExplorer.spec.ts` | US-51（工具四件套 / 执行侧拒绝 / 视图置灰） | Electron 整应用 |
 | `e2e/webview/subagentOptionsLock.spec.ts` | US-51（role 事实到达后的选项置灰） | webview UI |
+| `e2e/terminal/terminalUi.spec.ts` | US-54（首标签自动建立的页面侧）、US-55（标签新建 / 切换 / 关闭、断开态覆盖层与重连、主题跟随、复制粘贴） | terminal 页面 |
 
 未覆盖 e2e 的 US（US-33 的托盘图标状态点与闪烁提醒——属 OS 集成层，提示音默认值由
 `src/test/soundSettings.test.ts` 锁定；US-38 的图片查看器窗口，以及查看器单实例顶替与
@@ -70,6 +71,10 @@ US-42 的远程（SSH）工作区文件浏览——需要真实 SSH/SFTP 远端�
 驱动，「关闭」与「打开命令行」复用既有动作实现，批量关闭的判定（候选＝该工作区已打开的会话
 视图含子代理对话 / 空闲可关含当前选中的对话 / 忙碌不动 / 汇总确认）由
 `src/test/workspaceBatchClose.test.ts` 锁定，菜单弹出与置灰人工验证）
+US-54 的真实 SSH 通路（连接复用 / 主机密钥变更告警 / 断开与重连）——需要真实 SSH 服务器
+（US-42 同口径），断开语义的状态机由 `src/test/terminalShells.test.ts`（假通道）锁定；
+US-54 的终端窗口 BrowserWindow 生命周期（工作区关闭联动关窗、退出全关）——Playwright 无法
+断言多 BrowserWindow 生命周期（US-38 同口径），真机手工验证。
 US-50 的 Core 侧整链（真实 Search / Fetch 调用）——依赖外网与 DeepSeek 账户，
 由 `core-rs` 单测（参数校验 / 请求构造 / 结果拼装 / 错误映射 / 本地一_shot 假服务器）
 与 `engine_tests` 的工具注入用例覆盖。

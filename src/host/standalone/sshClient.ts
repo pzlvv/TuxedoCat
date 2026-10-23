@@ -428,6 +428,30 @@ export class SshClient {
   }
 
   /**
+   * 在远端打开一条带 PTY 的交互式 shell 通道（docs/hosts/electron-multi-workspace.md 第 14 节）。
+   *
+   * `cols` / `rows` 是 PTY 初值（发起时刻的窗口尺寸），后续尺寸变化由调用方经
+   * `ClientChannel.setWindow` 跟进。通道保持字节流：不设 encoding，UTF-8 由
+   * 渲染端终端仿真器增量解码，宿主不按行重组。
+   * 调用方按 ssh2 的事件区分两种结束（docs/hosts/electron-multi-workspace.md 第 14.3 / 14.6 节）：`exit`
+   * （远端 shell 进程退出 → 标签自动关闭）与不带 `exit` 先行的 `close`
+   * （连接层断开 → 标签转断开态）。
+   */
+  async openShell(options: { cols: number; rows: number }): Promise<ClientChannel> {
+    const client = this.requireClient();
+    return new Promise<ClientChannel>((resolve, reject) => {
+      client.shell(
+        { term: 'xterm-256color', cols: options.cols, rows: options.rows },
+        (error: Error | undefined, channel: ClientChannel) => {
+          // ssh2 的通道打开失败只有一句「Failure」：带上目标才定位得了
+          if (error) reject(new Error(`SSH shell request failed (${this.target.host}): ${error.message}`));
+          else resolve(channel);
+        },
+      );
+    });
+  }
+
+  /**
    * 打开一条 `direct-tcpip` 通道（等价于 `ssh -W host:port`）。
    *
    * 目标地址由**远端 sshd** 解析：传回环地址即「远端本机上的端口」。目标端口没人

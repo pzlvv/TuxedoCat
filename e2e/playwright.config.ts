@@ -29,6 +29,7 @@ function assertArtifact(rel: string): void {
 assertArtifact(path.join('dist', 'webview', 'index.html'));
 assertArtifact(path.join('dist-electron', 'main.cjs'));
 assertArtifact(path.join('dist', 'remoteWorkspace', 'index.html'));
+assertArtifact(path.join('dist', 'terminal', 'index.html'));
 
 export default defineConfig({
   testDir: '.',
@@ -47,6 +48,8 @@ export default defineConfig({
     { name: 'webview-ui', testMatch: /webview[\\/].+\.spec\.ts/ },
     { name: 'electron-app', testMatch: /electron[\\/].+\.spec\.ts/ },
     { name: 'remote-workspace-ui', testMatch: /remoteWorkspace[\\/].+\.spec\.ts/ },
+    // 远程终端页面（specs/022，同 remote-workspace-ui 的手法）：构建产物 + 假 SSH 通道
+    { name: 'terminal-ui', testMatch: /terminal[\\/].+\.spec\.ts/ },
     // TUI 安装程序（无浏览器：构建 → 自解压 → 载荷可执行 → TUI 启动守卫）
     { name: 'tui-installer', testMatch: /tui[\\/].+\.spec\.ts/ },
   ],

@@ -15,7 +15,8 @@
     "electron/fileTypes.ts",
     "electron/sidebarFiles.ts",
     "electron/chatPlaceholderHtml.ts",
-    "electron/workspaceBatchClose.ts"
+    "electron/workspaceBatchClose.ts",
+    "electron/terminalShells.ts"
   ],
   "exclude": [
     "node_modules",
