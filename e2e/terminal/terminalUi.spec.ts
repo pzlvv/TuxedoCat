@@ -12,10 +12,12 @@ import { openStaticPage } from '../helpers/webviewHarness';
  * - 首标签随窗口自动建立（AC-1 的页面侧）；「+」新建 / ✕ 关闭与切换（FR-003）；
  * - 键入路由到 input、输出回显进 xterm（FR-004 数据面）；
  * - 断开态覆盖层（原因 + 重连按钮）与重连动作（FR-007）；
- * - 主题推送跟随（FR-009）；复制 / 粘贴快捷键（FR-005）。
+ * - 主题推送跟随（FR-009）；复制 / 粘贴快捷键（FR-005）；
+ * - 标签切换快捷键推方向（`terminal:switch-tab`，US-55 验收 6 的页面侧；
+ *   主进程 before-input-event 拦截属真实 SSH 链路，按未覆盖段豁免）。
  *
  * 渲染端是纯投影：测试侧经 `window.__terminalCtl` 以主进程的口吻推事件
- * （tabs / output / theme），断言经 `window.__terminalState` 读渲染端回传的动作。
+ * （tabs / output / theme / switch-tab），断言经 `window.__terminalState` 读渲染端回传的动作。
  */
 
 const REPO_ROOT = process.cwd().replace(/[\\/]e2e$/, '');
@@ -26,7 +28,7 @@ const FAKE_API_INIT = `
   const state = {
     nextId: 1,
     tabs: [],
-    listeners: { tabs: [], output: [], theme: [] },
+    listeners: { tabs: [], output: [], theme: [], switch: [] },
     inputs: [],
     reconnects: [],
     newTabCalls: 0,
@@ -72,6 +74,7 @@ const FAKE_API_INIT = `
     onTabs: (fn) => state.listeners.tabs.push(fn),
     onOutput: (fn) => state.listeners.output.push(fn),
     onTheme: (fn) => state.listeners.theme.push(fn),
+    onSwitchTab: (fn) => state.listeners.switch.push(fn),
   };
 
   // 测试控制钩子：以主进程的口吻推下行事件
@@ -85,6 +88,9 @@ const FAKE_API_INIT = `
     },
     emitTheme(isDark) {
       state.listeners.theme.forEach((fn) => fn(isDark));
+    },
+    emitSwitchTab(direction) {
+      state.listeners.switch.forEach((fn) => fn(direction));
     },
   };
   window.__terminalState = state;
@@ -102,6 +108,7 @@ interface TerminalTestWindow {
   __terminalCtl: {
     disconnect(tabId: number, reason: string): void;
     emitTheme(isDark: boolean): void;
+    emitSwitchTab(direction: 'next' | 'prev'): void;
   };
 }
 
@@ -224,4 +231,19 @@ test('复制选区与粘贴快捷键', async () => {
   // Ctrl+Shift+V 把剪贴板内容原样送进 stdin
   await page.keyboard.press('Control+Shift+v');
   await expect.poll(async () => (await state(page)).inputs.map((i) => i.data).join('')).toContain(copied);
+});
+
+test('标签切换快捷键推方向：切相邻终端标签并环绕（US-55 验收 6 的页面侧）', async () => {
+  // 主进程 before-input-event 拦截与真实组合键需要 SSH 环境（豁免口径登记在
+  // docs/features/user-stories.md 未覆盖段）；这里以主进程的口吻推
+  // `terminal:switch-tab`，锁定渲染端的相邻计算与环绕
+  const { page } = handle;
+  await page.click('#newtab');
+  await expect(page.locator('.tab')).toHaveCount(2);
+  // 新标签（bash 2）是活动页：下一标签环绕回首标签
+  await page.evaluate(() => (window as unknown as TerminalTestWindow).__terminalCtl.emitSwitchTab('next'));
+  await expect(page.locator('.tab').nth(0)).toHaveClass(/active/);
+  // 首标签的上一标签环绕回末标签
+  await page.evaluate(() => (window as unknown as TerminalTestWindow).__terminalCtl.emitSwitchTab('prev'));
+  await expect(page.locator('.tab').nth(1)).toHaveClass(/active/);
 });

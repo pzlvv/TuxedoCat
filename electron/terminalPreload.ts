@@ -1,9 +1,10 @@
 /**
  * Electron preload - 远程终端窗口专用（docs/hosts/electron-multi-workspace.md 第 14 节）。
  *
- * 暴露 terminalAPI：建 / 关标签、键入、resize、重连与三条下行事件（tabs / output /
- * theme）。页面（`electron/terminal/`）只负责渲染（xterm）与收集输入，通道与标签
- * 状态都在主进程；数据面独立于对话 webview 的消息协议（docs/hosts/electron-multi-workspace.md 第 14.8 节）。
+ * 暴露 terminalAPI：建 / 关标签、键入、resize、重连与四条下行事件（tabs / output /
+ * theme / switch-tab）。页面（`electron/terminal/`）只负责渲染（xterm）与收集输入，
+ * 通道与标签状态都在主进程；数据面独立于对话 webview 的消息协议
+ * （docs/hosts/electron-multi-workspace.md 第 14.8 节）。
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
@@ -35,6 +36,9 @@ const api: TerminalAPI = {
   },
   onTheme: (listener: (isDark: boolean) => void) => {
     ipcRenderer.on('terminal:theme', (_event, payload: { isDark: boolean }) => listener(payload.isDark));
+  },
+  onSwitchTab: (listener: (direction: 'next' | 'prev') => void) => {
+    ipcRenderer.on('terminal:switch-tab', (_event, direction: 'next' | 'prev') => listener(direction));
   },
 };
 

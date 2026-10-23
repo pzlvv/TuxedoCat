@@ -147,6 +147,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   切换标签页时直接呈现已加载的视图，不出现空白闪烁。
 - 标签页总宽超过可用宽度时逐张收窄，收窄到下限后横向滚动。
 - 打开集合为空时不渲染标签页区域。
+- 同一对组合键在终端窗口内切相邻终端标签（终端窗口自己的标签，见 14.4 节）。
 
 ---
 
@@ -367,7 +368,9 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   切到新页。
 - shell 因用户退出（`exit` / `logout`，ssh2 的 `exit` 事件）而结束时该标签自动关闭；
   最后一个标签关闭时窗口关闭（窗口出现过标签后才生效——开窗瞬间的空表不触发）。标签带
-  运行状态点（绿 = 在跑，红 = 断开），活动标签以 accent 色下划线标识。
+  运行状态点（绿 = 在跑，红 = 断开）；标签条形态对齐主窗口标题栏的工作区标签
+  （[第 6 节](docs/hosts/electron-multi-workspace.md#6-标题栏)）：全高上圆角标签、活动标签实色底
+  并与标签条 4px 底边线同色、未选中标签之间竖线分隔。
 
 ### 14.4 交互
 
@@ -377,6 +380,12 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   就绪前的 resize 先记账、就绪后补齐。滚动回看缓冲不少于 1000 行。
 - 剪贴板：Windows / Linux `Ctrl+Shift+C` / `Ctrl+Shift+V`，macOS 沿 `Cmd+C` / `Cmd+V`
   （有选区才拦复制）；读写走主进程 `clipboard` 模块（渲染端剪贴板权限不可依赖）。
+- 标签切换快捷键：「下一标签 / 上一标签」（与工作区标签页同一组合与改键偏好，见第 5 节）
+  在终端窗口内切相邻终端标签，环绕规则同一份纯函数（`selectAdjacentId`）；不足 2 个标签
+  或活动标签不在表里时不动作。终端窗口是独立窗口、无菜单栏，组合键由主进程
+  `before-input-event` 拦截（无原生 accelerator 通道）后把方向推给渲染端
+  （`terminal:switch-tab`），目标计算与点击激活同一条渲染端管线；改键保存即时换绑
+  （`writeTabShortcut` 经 `applyTerminalShortcuts` 同步到已开的终端窗口）。
 
 ### 14.5 连接复用与鉴权
 
@@ -424,6 +433,10 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   在渲染时把前景色向黑 / 白收敛到 4.5:1（WCAG AA）——不为了对比度改动 MobaXterm 的原色。
 - 页面底色与 xterm 底色同源：`--term-bg` 由 `applyTheme` 从配色表注入，样式表里的值只用于
   JS 接管前的首帧。
+- 终端滚动条是 xterm 的 DOM 滑块（VS Code 式，`::-webkit-scrollbar` 管不到）：宽度 / 圆角
+  与 Electron 原生页面的统一滚动条（`electron/ui/scrollbar.css`）一致，宽度由页面样式压过
+  xterm 写进内联样式的默认值；滑块配色取该文件同一组值，在 `electron/terminal/xtermThemes.ts`
+  的配色表里同步维护（xterm 公开 API 只暴露滑块颜色）。
 
 ---
 
@@ -434,7 +447,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | 工作目录单值 | `electron/main.ts` 的 `workspacePath` |
 | 最近工作目录 / 状态文件 | `electron/workspaceStateStore.ts` 的 `readWorkspaceState` / `writeWorkspaceState` / `saveOpenWorkspaces` |
 | 菜单定义与动作表 | `electron/main.ts` 的 `buildMenuSections` / `setupMenu` / `invokeMenuAction` |
-| 标签页相邻切换 | `electron/tabSwitching.ts` 的 `selectAdjacentWorkspace`；动作接线 `electron/main.ts` 的 `switchToAdjacentWorkspace` |
+| 标签页相邻切换 | `electron/tabSwitching.ts` 的 `selectAdjacentId`（工作区与终端标签共用）；动作接线 `electron/main.ts` 的 `switchToAdjacentWorkspace` 与 `electron/terminal/main.ts` 的 `switchTabByShortcut` |
 | 标签快捷键偏好 | `electron/shortcut.ts` 的 `DEFAULT_NEXT_TAB_SHORTCUT` / `DEFAULT_PREV_TAB_SHORTCUT` / `findShortcutConflict`；持久化字段 `electron/workspaceStateStore.ts` 的 `nextTabShortcut` / `prevTabShortcut` |
 | 自绘菜单渲染 | `electron/titlebar/main.ts` 的 `renderMenubar`、`electron/titlebarMenuHtml.ts` |
 | 标题栏品牌 / 模式状态 | `electron/titlebar/main.ts` 的 `applyModeState`、`electron/main.ts` 的 `pushTitlebarModeState` |

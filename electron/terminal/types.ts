@@ -6,9 +6,11 @@
  * 数据面独立于对话 webview 的消息协议、不进 `AssistantEventBus`（docs/hosts/electron-multi-workspace.md 第 14.8 节）。
  */
 
+import type { TabSwitchDirection } from '../tabSwitching.js';
 import type { TerminalSize, TerminalTab } from '../terminalShells.js';
 
 export type { TerminalSize, TerminalTab };
+export type { TabSwitchDirection };
 
 /** `terminal:init` 的应答（页面加载完成后主动拉一次） */
 export interface TerminalInitInfo {
@@ -43,4 +45,6 @@ export interface TerminalAPI {
   onTabs(listener: (tabs: readonly TerminalTab[]) => void): void;
   onOutput(listener: (tabId: number, data: Uint8Array) => void): void;
   onTheme(listener: (isDark: boolean) => void): void;
+  /** 标签切换快捷键命中（主进程 before-input-event 拦截后转发方向，docs/hosts/electron-multi-workspace.md 第 14.4 节） */
+  onSwitchTab(listener: (direction: TabSwitchDirection) => void): void;
 }

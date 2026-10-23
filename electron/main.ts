@@ -97,6 +97,7 @@ import {
   disposeAllRemoteFilesClients,
 } from './sidebarFilesRemote.js';
 import {
+  applyTerminalShortcuts,
   closeAllTerminalWindows,
   closeTerminalWorkspace,
   openTerminalWindow,
@@ -136,7 +137,7 @@ import {
   type ShortcutConflictKind,
   type ShortcutRow,
 } from './shortcut.js';
-import { selectAdjacentWorkspace, type TabSwitchDirection } from './tabSwitching.js';
+import { selectAdjacentId, type TabSwitchDirection } from './tabSwitching.js';
 import { tt, onHostLocaleChanged, getHostLocale } from '../src/host/i18n.js';
 import { requireEventBus } from '../src/shared/AssistantEventBus.js';
 import { getPreferenceDialogHtml, type PreferenceDialogState } from './preferenceDialogHtml.js';
@@ -3547,7 +3548,7 @@ function switchToAdjacentWorkspace(direction: TabSwitchDirection): void {
   // 浮窗模式不切换（docs/hosts/electron-multi-workspace.md 第 5 节）：浮窗只呈现活动
   // 工作目录的对话、不呈现标签页区，组合键 / 菜单条目在该模式下不动作
   if (windowMode === 'floating') return;
-  const target = selectAdjacentWorkspace(
+  const target = selectAdjacentId(
     openWorkspaces.map((ref) => refKey(ref)),
     workspacePath ? refKey(workspacePath) : null,
     direction,
@@ -3802,6 +3803,12 @@ function openRemoteTerminalFor(ref: WorkspaceRef): void {
     appRoot: APP_ROOT,
     locale: getHostLocale(),
     fontSizePx: terminalFontSizePx(readTerminalFontPreference()),
+    // 终端窗口的标签切换组合与工作区标签页同源（specs/021）；开窗取现值，
+    // 改键保存后经 writeTabShortcut 的 applyTerminalShortcuts 同步
+    readTabShortcuts: () => ({
+      nextTab: readTabShortcutSync('nextTab'),
+      prevTab: readTabShortcutSync('prevTab'),
+    }),
     log: (...args: unknown[]): void => {
       fileLogger.info('terminal', args.map((a) => String(a)).join(' '));
     },
@@ -4085,11 +4092,13 @@ function readTabShortcutSync(row: keyof typeof TAB_SHORTCUT_ROWS): string {
   return resolveShortcut(readWorkspaceState()[field], fallback);
 }
 
-/** 持久化标签快捷键（调用方已规范化），重建菜单动作表让组合即时换绑 */
+/** 持久化标签快捷键（调用方已规范化），重建菜单动作表让组合即时换绑；
+ * 终端窗口的标签快切吃同一份偏好，经 applyTerminalShortcuts 同步到已开的窗口 */
 function writeTabShortcut(row: keyof typeof TAB_SHORTCUT_ROWS, accelerator: string): void {
   const { field } = TAB_SHORTCUT_ROWS[row];
   writeWorkspaceState({ ...readWorkspaceState(), [field]: accelerator });
   setupMenu();
+  applyTerminalShortcuts(readTabShortcutSync('nextTab'), readTabShortcutSync('prevTab'));
 }
 
 /**

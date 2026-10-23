@@ -11,7 +11,7 @@
  * 运行方式：npm run test:all -- tabSwitching
  */
 
-import { selectAdjacentWorkspace } from '../../electron/tabSwitching';
+import { selectAdjacentId } from '../../electron/tabSwitching';
 import type { TabSwitchDirection } from '../../electron/tabSwitching';
 import {
   DEFAULT_NEXT_TAB_SHORTCUT,
@@ -22,17 +22,17 @@ import {
 import { createChecker, runTests } from './helpers/harness';
 
 function next(ids: string[], activeId: string | null): string | null {
-  return selectAdjacentWorkspace(ids, activeId, 'next' as TabSwitchDirection);
+  return selectAdjacentId(ids, activeId, 'next' as TabSwitchDirection);
 }
 
 function prev(ids: string[], activeId: string | null): string | null {
-  return selectAdjacentWorkspace(ids, activeId, 'prev' as TabSwitchDirection);
+  return selectAdjacentId(ids, activeId, 'prev' as TabSwitchDirection);
 }
 
 runTests('tabSwitching', () => {
   const { check, finish } = createChecker();
 
-  // ---------- selectAdjacentWorkspace：相邻与环绕 ----------
+  // ---------- selectAdjacentId：相邻与环绕 ----------
   const ids = ['a', 'b', 'c'];
   check('中间项的下一项是右邻', next(ids, 'b') === 'c');
   check('中间项的上一项是左邻', prev(ids, 'b') === 'a');
@@ -48,6 +48,12 @@ runTests('tabSwitching', () => {
   // 拖拽重排后的新顺序即刻生效（顺序由调用方传入，纯函数只看给定顺序）
   const reordered = ['c', 'a', 'b'];
   check('重排后按新顺序取相邻', next(reordered, 'c') === 'a' && prev(reordered, 'c') === 'b');
+
+  // 终端标签的 id 是数字（终端窗口快切复用同一份环绕语义）
+  const numeric = [7, 3, 9];
+  check('数字 id 同样取相邻并环绕', selectAdjacentId(numeric, 9, 'next' as TabSwitchDirection) === 7
+    && selectAdjacentId(numeric, 7, 'prev' as TabSwitchDirection) === 9
+    && selectAdjacentId(numeric, 3, 'next' as TabSwitchDirection) === 9);
 
   // ---------- 默认组合（FR-002） ----------
   check('下一标签默认 Ctrl+Tab', DEFAULT_NEXT_TAB_SHORTCUT === 'Ctrl+Tab');

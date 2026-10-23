@@ -21,6 +21,8 @@ import type { ClientChannel } from 'ssh2';
 import { recordKnownHostFingerprint, SshHostKeyError } from '../src/host/standalone/sshClient.js';
 import { workspaceRefKey, type WorkspaceEndpoint, type WorkspaceRef } from '../src/host/workspaceRef.js';
 import { guardViewNavigation } from './viewNavigation.js';
+import { acceleratorFromKeyboardEvent } from './shortcut.js';
+import type { TabSwitchDirection } from './tabSwitching.js';
 import {
   TerminalSessionGroup,
   parseTabId,
@@ -42,6 +44,8 @@ export interface TerminalWindowOptions {
   locale: string;
   /** 终端字号 px（`terminalFontSizePx` 的结果，开窗时取值、运行期不热切） */
   fontSizePx: number;
+  /** 当前「下一标签 / 上一标签」组合（宿主本地偏好，与工作区标签页同一份，specs/021） */
+  readTabShortcuts(): { nextTab: string; prevTab: string };
   log: (...args: unknown[]) => void;
   /** 主机密钥变更确认（沿用远程接入的告警流程）；返回 false 视为拒绝 */
   confirmHostKeyChange(err: SshHostKeyError): Promise<boolean>;
@@ -58,6 +62,18 @@ const windows = new Map<string, TerminalWindowState>();
 
 /** 终端窗口是常驻 surface：IPC 处理器随首个窗口注册一次，按 sender 路由 */
 let ipcRegistered = false;
+
+/**
+ * 终端窗口响应的标签切换组合（与工作区标签页同一偏好，specs/021）。缓存读取避免
+ * before-input-event 逐键读状态文件；开窗时经 `readTabShortcuts` 取值，偏好里改键
+ * 保存时由 `writeTabShortcut` 经 `applyTerminalShortcuts` 同步到已开的终端窗口。
+ */
+let tabShortcutCache: { nextTab: string; prevTab: string } | null = null;
+
+/** 同步终端窗口的标签切换组合（改键保存时调用；未开过终端窗口时只登记待用） */
+export function applyTerminalShortcuts(nextTab: string, prevTab: string): void {
+  tabShortcutCache = { nextTab, prevTab };
+}
 
 /**
  * 打开（或聚焦）该工作区的终端窗口。
@@ -102,6 +118,32 @@ export function openTerminalWindow(options: TerminalWindowOptions): void {
   // 终端页面不开放导航（对齐其它应用自有页面的守卫口径；外部链接交系统浏览器）
   guardViewNavigation(win.webContents, 'terminal');
   win.once('ready-to-show', () => win.show());
+
+  // 标签切换快捷键（与工作区标签页同一组合，docs/hosts/electron-multi-workspace.md 第 14.4 节）：
+  // 终端窗口是独立 BrowserWindow，主窗口的菜单兜底覆盖不到这里——before-input-event
+  // 在主进程拦截，命中即把方向推给渲染端切相邻终端标签（环绕目标由渲染端按同一份
+  // 纯函数 selectAdjacentId 计算）。无菜单栏的平台（setMenu(null)）没有原生 accelerator
+  // 通道，这条拦截是该窗口唯一的组合键入口。
+  tabShortcutCache = options.readTabShortcuts();
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.isAutoRepeat || !tabShortcutCache) return;
+    const accelerator = acceleratorFromKeyboardEvent({
+      code: input.code,
+      key: input.key,
+      ctrlKey: input.control,
+      altKey: input.alt,
+      metaKey: input.meta,
+      shiftKey: input.shift,
+    });
+    if (!accelerator) return;
+    const direction: TabSwitchDirection | null
+      = accelerator === tabShortcutCache.nextTab ? 'next'
+      : accelerator === tabShortcutCache.prevTab ? 'prev'
+      : null;
+    if (!direction) return;
+    event.preventDefault();
+    send(win, 'terminal:switch-tab', direction);
+  });
 
   const group = new TerminalSessionGroup({
     openChannel: (size) => openShellWithHostKeyRetry(endpoint, ref.path, size, options),

@@ -20,6 +20,7 @@ import {
   type TerminalTheme,
 } from './xtermThemes.js';
 import { getTerminalLabels, type TerminalLabels } from './labels.js';
+import { selectAdjacentId, type TabSwitchDirection } from '../tabSwitching.js';
 import type { TerminalAPI, TerminalTab } from './types.js';
 
 declare global {
@@ -32,6 +33,10 @@ const injectedApi = window.terminalAPI;
 if (!injectedApi) throw new Error('terminalAPI is not injected');
 // 提升的函数声明不继承 narrowing：这里收敛成非可选绑定供全部函数使用
 const api: TerminalAPI = injectedApi;
+
+/** 关闭按钮图标：主窗口标题栏标签关闭的同款（electron/titlebar/main.ts 的 ICON_TAB_CLOSE） */
+const TAB_CLOSE_ICON =
+  '<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" /></svg>';
 
 /** loadFile query：locale（文案语言）与 fontSize（终端字号 px，开窗时定值） */
 const query = new URLSearchParams(window.location.search);
@@ -190,7 +195,7 @@ function renderTabs(next: readonly TerminalTab[]): void {
     label.textContent = tab.label;
     const close = document.createElement('span');
     close.className = 'x';
-    close.textContent = '✕';
+    close.innerHTML = TAB_CLOSE_ICON;
     close.title = labels.closeTab;
     close.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -225,6 +230,21 @@ function activateTab(tabId: number): void {
   activeTabId = tabId;
   renderTabs(tabs);
   panes.get(tabId)?.term.focus();
+}
+
+/**
+ * 快捷键切相邻终端标签（docs/hosts/electron-multi-workspace.md 第 14.4 节）：与工作区
+ * 标签页同一组合、同一环绕语义（`selectAdjacentId` 单一实现）；不足 2 个标签 / 活动
+ * 标签不在表里时无相邻项可去，静默不动。方向由主进程 before-input-event 拦截转发，
+ * 页面只算目标并复用点击激活的同一管线（焦点随激活交给该页 xterm）。
+ */
+function switchTabByShortcut(direction: TabSwitchDirection): void {
+  const target = selectAdjacentId(
+    tabs.map((tab) => tab.id),
+    activeTabId,
+    direction,
+  );
+  if (target !== null) activateTab(target);
 }
 
 // ---------- 覆盖层（连接中 / 断开态，docs/hosts/electron-multi-workspace.md 第 14.6 节） ----------
@@ -285,6 +305,7 @@ void api.init().then((info) => {
   api.onOutput((tabId, data) => {
     panes.get(tabId)?.term.write(data);
   });
+  api.onSwitchTab(switchTabByShortcut);
   renderTabs(info.tabs);
 
   // 首个标签随窗口自动开（docs/hosts/electron-multi-workspace.md 第 14.2 节）：PTY 初值先给缺省，页面装好后
@@ -294,12 +315,18 @@ void api.init().then((info) => {
     void api.newTab({ cols: 80, rows: 24 });
   }
 
-  document.getElementById('newtab')?.addEventListener('click', () => {
-    const pane = activeTabId !== null ? panes.get(activeTabId) : undefined;
-    // 新标签以当前活动页的窗口尺寸发起（PTY 初值，docs/hosts/electron-multi-workspace.md 第 14.4 节），并切到新页
-    activateNextNewTab = true;
-    void api.newTab({ cols: pane?.term.cols ?? 80, rows: pane?.term.rows ?? 24 });
-  });
+  const newTabBtn = document.getElementById('newtab');
+  if (newTabBtn) {
+    // 加号的悬浮提示 / 无障碍名与主窗口加号同一套（labels.newTab）
+    newTabBtn.title = labels.newTab;
+    newTabBtn.setAttribute('aria-label', labels.newTab);
+    newTabBtn.addEventListener('click', () => {
+      const pane = activeTabId !== null ? panes.get(activeTabId) : undefined;
+      // 新标签以当前活动页的窗口尺寸发起（PTY 初值，docs/hosts/electron-multi-workspace.md 第 14.4 节），并切到新页
+      activateNextNewTab = true;
+      void api.newTab({ cols: pane?.term.cols ?? 80, rows: pane?.term.rows ?? 24 });
+    });
+  }
 
   // 窗口尺寸变化 → fit → 同步远端 PTY（docs/hosts/electron-multi-workspace.md 第 14.4 节）
   new ResizeObserver(() => fitActivePane()).observe(panesEl);
