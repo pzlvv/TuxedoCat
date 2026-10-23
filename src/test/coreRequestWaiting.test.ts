@@ -29,12 +29,16 @@ import { settingsSnapshotFromHome } from './helpers/fixtures';
 /** 仓库根：编译产物在 `out/src/test/`，往上三层 */
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const BUS_SOURCE = path.join(REPO_ROOT, 'src', 'shared', 'AssistantEventBus.ts');
+// 宿主平台的 Core 产物（`npm run build:core:host` 的输出）；写死 x64 会在 arm64 宿主上
+// 跑到旧二进制，新增契约字段的用例就看不到效果。平台不在支持矩阵内时指向不存在的路径，
+// 由下方 existsSync 走 skip。
+const HOST_CORE_DIR = corePlatformDir(process.platform, process.arch);
 const CORE_BINARY = path.join(
   REPO_ROOT,
   'resources',
   CORE_RESOURCE_DIR,
-  corePlatformDir('win32', 'x64')!,
-  coreBinaryFileName('win32'),
+  HOST_CORE_DIR ?? '__unsupported__',
+  HOST_CORE_DIR ? coreBinaryFileName(process.platform) : 'missing',
 );
 
 const SESSION_ID = 'sess-waiting';
