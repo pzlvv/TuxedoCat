@@ -24,7 +24,7 @@ import type { PermissionResult, ToolProgressData } from './tools/Tool.js';
 import type { UserChoiceOptions } from './UserChoiceQueue.js';
 import type { ConversationMetadata } from './history/Conversation.js';
 import type { ConversationSpaceInfo } from './webviewTypes.js';
-import type { McpServerDefinition, SettingsSnapshot } from './settingsSnapshot.js';
+import type { McpServerDefinition, PromptPresetId, SettingsSnapshot, ThinkingEffort } from './settingsSnapshot.js';
 import type { McpServerInfo } from './webviewTypes.js';
 import type { NoticeLevel, NoticeParams } from './coreText.js';
 import type { SpinDesign } from './spin/Types.js';
@@ -255,10 +255,12 @@ export type CoreRequest =
     }
   | { type: 'userChoice'; sessionId: string; options: UserChoiceOptions }
   /**
-   * 跨工作区派发子代理（specs/023 FR-002）。
+   * 跨工作区派发子代理（specs/023 FR-002；specs/024 FR-004）。
    *
    * 发起方 Core 在 `Agent` 带 `target` 时发出并阻塞等待；宿主按身份找到目标工作区
    * Connection、在目标 Core 建子代理会话后返回新会话 id。`sessionId` 是发起方会话。
+   * `agentMode` 起六项是发起方会话**当前的生效值**（发起方 Core 解析，目标侧不再回落
+   * 默认值——specs/024 FR-004 的继承链）。
    */
   | {
       type: 'crossWorkspaceAgentRequested';
@@ -269,6 +271,19 @@ export type CoreRequest =
       description: string;
       /** 发起方会话标题（占位父对话的展示标题） */
       originTitle: string;
+      /** 发起方会话生效的 agent mode（specs/024 FR-004） */
+      agentMode: AgentMode;
+      /** 发起方会话生效的思考强度 */
+      thinkingEffort: ThinkingEffort;
+      /** 发起方会话生效的提示词预设 */
+      promptMode: PromptPresetId;
+      /** 发起方会话生效的模型（经 `config::resolve_provider` 解析为具体值） */
+      model: string;
+      provider: string;
+      /** 发起方会话生效的联网搜索开关 */
+      webSearch: boolean;
+      /** 发起方会话生效的 MCP 启用名单（server 名单；空名单合法） */
+      mcpServers: string[];
     };
 
 /** 请求 → 结果的类型映射（判别联合，字段完整） */
@@ -501,7 +516,8 @@ export type UiEvent =
    * 由宿主在 `CoreRequest.crossWorkspaceAgentRequested` 的处理里直接下发到目标
    * Connection（不按 sessionId 路由——该会话在目标 Core 里尚不存在）。
    * `parentSessionId` 是占位父对话 id；`origin*` 记录发起方工作区身份与会话，供
-   * 回复回投、结束通知与列表里的占位条目派生使用。
+   * 回复回投、结束通知与列表里的占位条目派生使用。`agentMode` 起六项是发起方会话
+   * 的生效设置，目标 Core 按角色继承规则应用（specs/024 FR-004）。
    */
   | {
       type: 'remoteSubAgentStarted';
@@ -515,6 +531,19 @@ export type UiEvent =
       originWorkspaceId: string;
       originSessionId: string;
       originTitle: string;
+      /** 发起方会话生效的 agent mode（specs/024 FR-004） */
+      agentMode: AgentMode;
+      /** 发起方会话生效的思考强度 */
+      thinkingEffort: ThinkingEffort;
+      /** 发起方会话生效的提示词预设 */
+      promptMode: PromptPresetId;
+      /** 发起方会话生效的模型 */
+      model: string;
+      provider: string;
+      /** 发起方会话生效的联网搜索开关 */
+      webSearch: boolean;
+      /** 发起方会话生效的 MCP 启用名单（server 名单；空名单合法） */
+      mcpServers: string[];
     }
   /**
    * 跨工作区子代理的回复到达发起方会话（specs/023 FR-003）。

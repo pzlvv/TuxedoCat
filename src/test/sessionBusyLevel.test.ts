@@ -1,4 +1,4 @@
-import { collectRunningSubAgents, sessionBusyLevel } from '../shared/sessionRuntime';
+import { collectRunningSubAgents, deriveContainerBusyLevel, sessionBusyLevel } from '../shared/sessionRuntime';
 import { createChecker, runTests } from './helpers/harness';
 
 /**
@@ -11,16 +11,21 @@ import { createChecker, runTests } from './helpers/harness';
  * `collectRunningSubAgents`（specs/019 FR-001）：abort 悬停明细的子代理清单聚合，
  * 锁定深先序 / 只经非空闲节点下钻 / description 缺省保留 null 的口径。
  *
+ * `deriveContainerBusyLevel`（specs/024 FR-001）：跨工作区容器行的状态灯派生，
+ * 按直接子代理聚合，waiting > running > idle，子代理缺态视为空闲（不猜值）。
+ *
  * 运行方式：npm run test:all -- sessionBusyLevel
  */
 
 const state = (over: {
   sessionId: string;
   idle?: boolean;
+  waiting?: boolean;
   parentSessionId?: string | null;
   subAgentDescription?: string | null;
 }) => ({
   idle: false,
+  waiting: false,
   parentSessionId: null,
   subAgentDescription: null,
   ...over,
@@ -60,6 +65,20 @@ runTests('sessionBusyLevel', () => {
     collectRunningSubAgents(states, 'nosuch').length === 0
     && collectRunningSubAgents([states[0]], 'p').length === 0
     && collectRunningSubAgents(states, 'c2').length === 0);
+
+  // specs/024 FR-001：容器行状态灯按直接子代理聚合（子代理集合由调用方按列表父子树选出）
+  const child = (over: { idle?: boolean; waiting?: boolean }) => ({
+    idle: over.idle ?? false,
+    waiting: over.waiting ?? false,
+  });
+
+  check('容器：任一子代理等待（含 waiting-but-idle）→ waiting',
+    deriveContainerBusyLevel([child({}), child({ idle: true, waiting: true })]) === 'waiting'
+    && deriveContainerBusyLevel([child({})]) === 'running');
+
+  check('容器：全部子代理 idle / 无子代理 → idle',
+    deriveContainerBusyLevel([child({ idle: true })]) === 'idle'
+    && deriveContainerBusyLevel([]) === 'idle');
 
   finish();
 });

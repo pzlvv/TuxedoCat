@@ -496,6 +496,15 @@ export class WebViewUI implements WebViewUiPort {
       originWorkspaceId,
       originSessionId: request.sessionId,
       originTitle: request.originTitle,
+      // 发起方会话的生效设置原样透传（specs/024 FR-004）：宿主不是设置事实的写入点，
+      // 目标 Core 按角色继承规则应用
+      agentMode: request.agentMode,
+      thinkingEffort: request.thinkingEffort,
+      promptMode: request.promptMode,
+      model: request.model,
+      provider: request.provider,
+      webSearch: request.webSearch,
+      mcpServers: request.mcpServers,
     });
     return { sessionId: subSessionId };
   }

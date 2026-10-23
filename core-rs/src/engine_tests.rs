@@ -6956,7 +6956,10 @@ fn mention_reminder_names_target_and_agent_tool() {
 /// 跨工作区派发：宿主应答成功后登记远程子代理，`subAgentRunning` 计入它。
 #[test]
 fn cross_workspace_spawn_registers_remote_child() {
-    let _serial = crate::test_support::serial();
+    // Sandbox 自己持有全局 serial 锁；spawn 现在要解析发起方生效配置（specs/024 FR-004），
+    // 需要一份指向假 LLM 的 settings
+    let sandbox = Sandbox::new("engine-cross-workspace-spawn");
+    sandbox.write_llm_settings("http://127.0.0.1:9/fake", "risk");
     crate::subagent::reset_for_test();
     let harness = EngineHarness::start(|request| match request.get("type").and_then(Value::as_str) {
         Some("crossWorkspaceAgentRequested") => Some(json!({ "sessionId": "sub_remote_1" })),
@@ -6997,10 +7000,96 @@ fn cross_workspace_spawn_registers_remote_child() {
     crate::subagent::reset_for_test();
 }
 
+/// specs/024 FR-004：派发载荷携带发起方会话的生效设置（解析为具体值，会话覆盖优先）。
+#[test]
+fn cross_workspace_spawn_payload_carries_origin_settings() {
+    let sandbox = Sandbox::new("engine-cross-workspace-payload");
+    sandbox.write_llm_settings("http://127.0.0.1:9/fake", "risk");
+    crate::subagent::reset_for_test();
+    let harness = EngineHarness::start(|request| match request.get("type").and_then(Value::as_str) {
+        Some("crossWorkspaceAgentRequested") => Some(json!({ "sessionId": "sub_remote_1" })),
+        _ => Some(json!({})),
+    });
+    let creator = harness.core.session("s-cross-payload");
+    {
+        let mut state = creator.lock().unwrap();
+        state.project = Some("D:/repo/a".to_string());
+        state.agent_mode = "auto".to_string();
+        state.model = Some("m-override".to_string());
+        state.provider = Some("fake".to_string());
+        state.thinking_effort = Some("low".to_string());
+        state.prompt_mode = Some("mixed".to_string());
+        state.web_search = Some(false);
+    }
+    // 会话级 MCP 覆盖：名单随载荷携带（specs/024 FR-004）
+    crate::mcp_config::write_session_enabled("s-cross-payload", &["srv-x".to_string()]);
+    harness
+        .core
+        .spawn_remote_agent(tools::SubAgentRequest {
+            creator_session_id: "s-cross-payload".to_string(),
+            prompt: "任务".to_string(),
+            description: "remote task".to_string(),
+            role: "Master".to_string(),
+            target: Some("HOST:/b".to_string()),
+        })
+        .expect("remote spawn");
+    let request = harness
+        .sink
+        .requests_of("crossWorkspaceAgentRequested")
+        .pop()
+        .expect("dispatch request");
+    assert_eq!(request["agentMode"], json!("auto"));
+    assert_eq!(request["model"], json!("m-override"));
+    assert_eq!(request["provider"], json!("fake"));
+    assert_eq!(request["thinkingEffort"], json!("low"));
+    assert_eq!(request["promptMode"], json!("mixed"));
+    assert_eq!(request["webSearch"], json!(false));
+    assert_eq!(request["mcpServers"], json!(["srv-x"]));
+    crate::subagent::reset_for_test();
+}
+
+/// specs/024 FR-004：会话无覆盖时载荷回落全局默认（defaultModel / thinking / normal 预设）。
+#[test]
+fn cross_workspace_spawn_payload_falls_back_to_global_defaults() {
+    let sandbox = Sandbox::new("engine-cross-workspace-defaults");
+    sandbox.write_llm_settings("http://127.0.0.1:9/fake", "risk");
+    crate::subagent::reset_for_test();
+    let harness = EngineHarness::start(|request| match request.get("type").and_then(Value::as_str) {
+        Some("crossWorkspaceAgentRequested") => Some(json!({ "sessionId": "sub_remote_1" })),
+        _ => Some(json!({})),
+    });
+    let creator = harness.core.session("s-cross-defaults");
+    creator.lock().unwrap().project = Some("D:/repo/a".to_string());
+    harness
+        .core
+        .spawn_remote_agent(tools::SubAgentRequest {
+            creator_session_id: "s-cross-defaults".to_string(),
+            prompt: "任务".to_string(),
+            description: "remote task".to_string(),
+            role: "Master".to_string(),
+            target: Some("HOST:/b".to_string()),
+        })
+        .expect("remote spawn");
+    let request = harness
+        .sink
+        .requests_of("crossWorkspaceAgentRequested")
+        .pop()
+        .expect("dispatch request");
+    assert_eq!(request["agentMode"], json!("risk"));
+    assert_eq!(request["model"], json!("fake-model"));
+    assert_eq!(request["provider"], json!("fake"));
+    assert_eq!(request["thinkingEffort"], json!("high"));
+    assert_eq!(request["promptMode"], json!("normal"));
+    assert_eq!(request["webSearch"], json!(true));
+    assert_eq!(request["mcpServers"], json!([]));
+    crate::subagent::reset_for_test();
+}
+
 /// 宿主返回错误时工具拿到错误、不登记远程子代理。
 #[test]
 fn cross_workspace_spawn_error_propagates() {
-    let _serial = crate::test_support::serial();
+    let sandbox = Sandbox::new("engine-cross-workspace-spawn-error");
+    sandbox.write_llm_settings("http://127.0.0.1:9/fake", "risk");
     crate::subagent::reset_for_test();
     let harness = EngineHarness::start(|request| match request.get("type").and_then(Value::as_str) {
         Some("crossWorkspaceAgentRequested") => {
@@ -7094,6 +7183,13 @@ fn start_remote_sub_agent_records_origin_and_placeholder() {
             "originWorkspaceId": "HOST:/a",
             "originSessionId": "origin-1",
             "originTitle": "发起方对话",
+            "agentMode": "auto",
+            "thinkingEffort": "max",
+            "promptMode": "mixed",
+            "model": "m-origin",
+            "provider": "prov-origin",
+            "webSearch": true,
+            "mcpServers": ["srv-a", "srv-b"],
         }))
         .expect("start remote sub agent");
 
@@ -7101,6 +7197,13 @@ fn start_remote_sub_agent_records_origin_and_placeholder() {
     let state = state.lock().unwrap();
     assert_eq!(state.sub_agent_role.as_deref(), Some("Master"));
     assert_eq!(state.parent_session_id.as_deref(), Some("origin-1"));
+    // specs/024 FR-004：Master 全量继承发起方（经容器）的生效设置
+    assert_eq!(state.agent_mode, "auto");
+    assert_eq!(state.model.as_deref(), Some("m-origin"));
+    assert_eq!(state.provider.as_deref(), Some("prov-origin"));
+    assert_eq!(state.thinking_effort.as_deref(), Some("max"));
+    assert_eq!(state.prompt_mode.as_deref(), Some("mixed"));
+    assert_eq!(state.web_search, Some(true));
     let origin = state.cross_workspace_origin.as_ref().expect("origin");
     assert_eq!(origin.workspace_id, "HOST:/a");
     assert_eq!(origin.session_id, "origin-1");
@@ -7110,6 +7213,14 @@ fn start_remote_sub_agent_records_origin_and_placeholder() {
     assert_eq!(metadata["parentSessionId"], "ph_origin-1");
     assert_eq!(metadata["crossWorkspaceOrigin"]["workspaceId"], "HOST:/a");
     assert_eq!(metadata["crossWorkspaceOrigin"]["title"], "发起方对话");
+    // 继承设置落进 context：重启后重新打开子会话 UI 仍显示继承值
+    assert_eq!(metadata["context"]["agentMode"], "auto");
+    assert_eq!(metadata["context"]["thinkingMode"], "max");
+    assert_eq!(metadata["context"]["promptMode"], "mixed");
+    assert_eq!(metadata["context"]["webSearch"], true);
+    assert_eq!(metadata["context"]["mcpEnabled"], json!(["srv-a", "srv-b"]));
+    assert_eq!(metadata["model"], "m-origin");
+    assert_eq!(metadata["provider"], "prov-origin");
 
     // 列表只收录「发过消息」的对话（messageCount > 0）：跨工作区子代理的第一条消息
     // 落盘后才会出现，占位父对话随之派生。
@@ -7128,5 +7239,90 @@ fn start_remote_sub_agent_records_origin_and_placeholder() {
 
     // 收尾：停掉后台子代理线程（没有 LLM 配置，循环会自行退出）
     harness.core.drop_session("sub_remote_start");
+    crate::subagent::reset_for_test();
+}
+
+/// specs/024 FR-004：非 Master 角色（Explorer）固定 normal 预设 / 不联网，
+/// agentMode / 模型 / provider / thinking 仍继承（与本地子代理 specs/020 FR-003 同口径）。
+#[test]
+fn start_remote_sub_agent_non_master_fixes_preset() {
+    let sandbox = Sandbox::new("engine-cross-workspace-explorer");
+    crate::subagent::reset_for_test();
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let harness = EngineHarness::allow_all();
+
+    harness
+        .core
+        .start_remote_sub_agent(&json!({
+            "sessionId": "sub_remote_explorer",
+            "workspacePath": project,
+            "role": "Explorer",
+            "prompt": "任务正文",
+            "description": "remote explorer",
+            "parentSessionId": "ph_origin-2",
+            "originWorkspaceId": "HOST:/a",
+            "originSessionId": "origin-2",
+            "originTitle": "发起方对话",
+            "agentMode": "auto",
+            "thinkingEffort": "low",
+            "promptMode": "mixed",
+            "model": "m-origin",
+            "provider": "prov-origin",
+            "webSearch": true,
+            "mcpServers": ["srv-a"],
+        }))
+        .expect("start remote sub agent");
+
+    let state = harness.core.session_if_exists("sub_remote_explorer").expect("state");
+    let state = state.lock().unwrap();
+    assert_eq!(state.agent_mode, "auto");
+    assert_eq!(state.model.as_deref(), Some("m-origin"));
+    assert_eq!(state.provider.as_deref(), Some("prov-origin"));
+    assert_eq!(state.thinking_effort.as_deref(), Some("low"));
+    assert_eq!(state.prompt_mode.as_deref(), Some("normal"));
+    assert_eq!(state.web_search, Some(false));
+    drop(state);
+
+    // MCP 恒空的角色口径：写成空名单覆盖（不受发起方名单影响），落进 meta
+    let metadata = history::load_metadata("sub_remote_explorer", &project).expect("meta");
+    assert_eq!(metadata["context"]["mcpEnabled"], json!([]));
+
+    harness.core.drop_session("sub_remote_explorer");
+    crate::subagent::reset_for_test();
+}
+
+/// specs/024 FR-004：继承字段缺失按接线错误拒绝（契约成员必选），不建任何会话。
+#[test]
+fn start_remote_sub_agent_rejects_missing_settings() {
+    let sandbox = Sandbox::new("engine-cross-workspace-missing");
+    crate::subagent::reset_for_test();
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let harness = EngineHarness::allow_all();
+
+    let mut event = json!({
+        "sessionId": "sub_remote_missing",
+        "workspacePath": project,
+        "role": "Master",
+        "prompt": "任务正文",
+        "description": "remote missing",
+        "parentSessionId": "ph_origin-3",
+        "originWorkspaceId": "HOST:/a",
+        "originSessionId": "origin-3",
+        "originTitle": "发起方对话",
+        "agentMode": "auto",
+        "thinkingEffort": "high",
+        "promptMode": "normal",
+        "model": "m-origin",
+        "provider": "prov-origin",
+        "webSearch": false,
+        "mcpServers": [],
+    });
+    event.as_object_mut().unwrap().remove("webSearch");
+    let error = harness
+        .core
+        .start_remote_sub_agent(&event)
+        .expect_err("missing settings must be rejected");
+    assert!(error.contains("missing required fields"));
+    assert!(harness.core.session_if_exists("sub_remote_missing").is_none());
     crate::subagent::reset_for_test();
 }

@@ -1,5 +1,5 @@
 ---
-status: 待评审
+status: 实施中
 ---
 
 # 改动规格：跨工作区容器对话的状态灯与提示音策略
@@ -8,16 +8,17 @@ status: 待评审
 打开只显示跳转页（[specs/023 FR-004](../../docs/archive/specs/023-cross-workspace-agent/spec.md#fr-004占位父对话)）。
 本规格做两件事。其一，容器行补上按其子代理运行时**派生**的状态灯（容器自身仍无运行时
 事实），提示音策略定死：子代理完成静默、转入等待用户照常提醒——容器的提醒口径与
-本地子代理一致（完成不提醒）。其二，确立容器的**会话级设置继承链**：容器承载发起方
-对话的会话级设置快照（agent mode / thinking effort / 提示词模式 / 模型等），其下
-子对话从容器继承——废止现行「远程子代理取目标工作区默认值」的口径，向本地子代理的
-继承规则（specs/020 FR-003）对齐。消息内容的隔离（不显示内容、不建立运行时）保持不变。
+本地子代理一致（完成不提醒）。其二，容器的**会话级设置继承链**：容器承载发起方对话
+的会话级设置快照（agent mode / thinking effort / 提示词模式 / 模型 provider 成对 /
+联网搜索 / MCP 启用名单），其下子对话从容器继承，继承规则与本地子代理
+（[specs/020 FR-003](../../docs/archive/specs/020-explorer-subagent-role/spec.md#fr-003按角色区分的会话级配置继承)）
+一致。消息内容的隔离（不显示内容、不建立运行时）保持不变。
 
 ## 影响基线
 
 | 基线文档 | 章节 | 变更 | 说明 |
 | --- | --- | --- | --- |
-| [docs/features/cross-workspace-agent.md 第 2 节 FR-003](../../docs/features/cross-workspace-agent.md#fr-003跨工作区子代理会话) | FR-003 跨工作区子代理会话 | 修改 | 会话级配置口径由「取目标工作区自身默认值，不继承发起方」改为「经容器继承发起方」（对齐本地子代理 specs/020 FR-003 的按角色继承规则） |
+| [docs/features/cross-workspace-agent.md 第 2 节 FR-003](../../docs/features/cross-workspace-agent.md#fr-003跨工作区子代理会话) | FR-003 跨工作区子代理会话 | 修改 | 会话级配置（agent mode / thinking / 提示词 / 模型 provider 成对 / 联网 / MCP 启用名单）经容器继承发起方，按 specs/020 FR-003 的角色继承规则应用（specs/024 FR-004） |
 | [docs/hosts/electron-multi-workspace.md 第 9 节](../../docs/hosts/electron-multi-workspace.md#9-侧栏) | 侧栏 | 修改 | 容器行条目增加「状态灯按子代理运行时派生」的表述（点击行为与内容隔离不变） |
 | [docs/hosts/host-matrix.md 第 6 节](../../docs/hosts/host-matrix.md#6-宿主固有差异有意保留) | 未读完成呼吸 / ConversationManager 实现对照表 | 修改 | 「灯条只挂顶层对话行」口径扩展到容器行（按子代理派生）；写明跨工作区子代理的任务结束提醒适用「子对话完成不提醒、转等待照常提醒」 |
 | [docs/features/user-stories/desktop.md US-56](../../docs/features/user-stories/desktop.md#us-56-跨工作区代理) | US-56 验收标准 | 修改 | 第 2 条占位节点处增补容器状态灯；第 1 条增补子代理配置经容器继承发起方 |
@@ -35,10 +36,10 @@ status: 待评审
 - 场景 3：跳转页与内容隔离不变
   - **AC-6**（FR-003）：GIVEN 容器行点亮运行流水灯 WHEN 用户点击容器 THEN 仍显示跨工作区占位页（跳转页），不加载消息、不建立会话运行时。
 - 场景 4：设置经容器继承
-  - **AC-7**（FR-004）：GIVEN 发起方对话的会话级设置为模型 M / provider P / agent mode auto / thinking max / 提示词模式 mixed / 联网开 WHEN 以 Master 角色派发到目标工作区 THEN 子代理会话以上述设置运行，而不是目标工作区的默认值。
-  - **AC-8**（FR-004）：GIVEN 非 Master 角色（如 Explore）从配置了非默认设置的发起方派发 WHEN 子代理创建 THEN 提示词预设固定 normal、联网恒关（角色口径），agent mode / 模型 / provider / thinking 继承发起方。
+  - **AC-7**（FR-004）：GIVEN 发起方对话的会话级设置为模型 M / provider P / agent mode auto / thinking max / 提示词模式 mixed / 联网开 / MCP 启用名单 N WHEN 以 Master 角色派发到目标工作区 THEN 子代理会话以上述设置与名单运行，而不是目标工作区的默认值。
+  - **AC-8**（FR-004）：GIVEN 非 Master 角色（如 Explore）从配置了非默认设置的发起方派发 WHEN 子代理创建 THEN 提示词预设固定 normal、联网恒关、MCP 恒空（角色口径），agent mode / 模型 provider 成对 / thinking 继承发起方。
   - **AC-9**（FR-004）：GIVEN 同一发起方对话先后两次派发且期间修改了模型 WHEN 第二次派发 THEN 容器设置随最近一次派发同步，新子对话继承修改后的值，已创建的子对话不受影响。
-  - **AC-10**（FR-004）：GIVEN 目标工作区启用了与发起方不同的 MCP 服务器 WHEN 子代理运行 THEN MCP 按目标工作区的会话启用口径，不跨工作区继承。
+  - **AC-10**（FR-004）：GIVEN 发起方会话启用了 MCP 服务器名单 WHEN 以 Master 角色派发 THEN 子代理会话启用同一名单并落进其 meta 的 `context.mcpEnabled`；目标 Core 的定义集合里没有同名项的 server 不建立连接。
 
 ## 功能需求
 
@@ -82,17 +83,18 @@ core 索取**——容器自身没有运行时事实，灯是子代理运行时�
 ### FR-004：容器的会话级设置继承链（发起方 → 容器 → 子对话）
 
 - 派发时容器从发起方对话取得**会话级设置快照**：agent mode（工作模式）、thinking
-  effort（思考强度）、提示词模式（prompt preset）、模型（model / provider）、联网搜索
-  （web search）——以发起方会话当时的生效值为准，由发起方 Core 随派发请求携带。
+  effort（思考强度）、提示词模式（prompt preset）、模型（model 与 provider 成对）、
+  联网搜索（web search）、MCP 启用名单（server 名单）——以发起方会话当时的生效值为准
+  （会话级覆盖优先、缺省回落全局默认），由发起方 Core 随派发请求携带。
 - 容器下新建的子代理会话**继承容器的这份设置**，继承规则与本地子代理一致
   （[specs/020 FR-003](../../docs/archive/specs/020-explorer-subagent-role/spec.md#fr-003按角色区分的会话级配置继承)）：
   Master 角色全量继承；非 Master 角色维持角色固定（提示词预设恒 normal、联网搜索恒关、
-  MCP 恒空），agent mode / 模型 / provider / thinking effort 仍继承。
+  MCP 恒空），agent mode / 模型（model 与 provider 成对）/ thinking effort 仍继承。
+- MCP 启用名单按**名单**继承：名单随子代理 meta 的 `context.mcpEnabled` 落盘；名单里
+  的 server 在目标 Core 的定义集合中没有同名项时不建立连接（MCP 定义是机器本地资源，
+  不跨机器拷贝）。
 - 同一容器的多次派发：容器设置随每次派发同步为发起方当时的生效值；已创建的子对话
   不受后续派发影响（固定值在创建时一次确定，与本地子代理口径一致）。
-- MCP 不跨工作区继承：子代理的 MCP 按目标工作区的会话启用口径。
-- 本 FR **废止**「会话级配置取目标工作区自身默认值，不继承发起方」的现行口径
-  （[docs/features/cross-workspace-agent.md FR-003](../../docs/features/cross-workspace-agent.md#fr-003跨工作区子代理会话)）。
 - 契约面：`CoreRequest.crossWorkspaceAgentRequested` 与 `UiEvent.remoteSubAgentStarted`
   载荷新增上述设置字段（发起方 Core 侧填充、宿主透传、目标 Core 应用；成员必选，
   [架构原则第 2 节](../../docs/architecture/principles.md#2-不让接口--参数可选)）。
@@ -141,7 +143,7 @@ e2e：`e2e/electron/crossWorkspaceAgent.spec.ts` 扩展容器行状态灯断言�
 | FR-001 | `src/shared/sessionRuntime.ts` 的容器级别纯函数（按子代理状态集派生 waiting/running/idle）；`electron/sidebar/main.ts` 对话树渲染对容器行套用 | 纯函数单测（waiting 优先 / 全 idle 无灯 / 空集）；`e2e/electron/crossWorkspaceAgent.spec.ts` 容器行状态灯断言 | 自动 |
 | FR-002 | 既有 `electron/trayAttention.ts` 的 `diffSessionEndEvents`（无代码改动） | 既有托盘差分单测扩展跨工作区形态（`parentSessionId: "ph_…"` 的完成抑制与转等待提醒） | 自动 |
 | FR-003 | 既有 `electron/main.ts` 的 `showCrossWorkspacePlaceholder`（无代码改动） | 既有 `src/test/chatPlaceholderReason.test.ts` + e2e 占位页断言 | 自动 |
-| FR-004 | `CoreRequest.crossWorkspaceAgentRequested` / `UiEvent.remoteSubAgentStarted` 载荷字段；`src/host/WebViewUI.ts` 透传；`core-rs/src/engine.rs` 的 `start_remote_sub_agent` 继承应用（替换目标默认值口径） | `core-rs/src/engine_tests.rs`（Master 全量继承 / 非 Master 角色固定 / 容器多次派发同步）；宿主透传单测；e2e 继承断言 | 自动 |
+| FR-004 | `CoreRequest.crossWorkspaceAgentRequested` / `UiEvent.remoteSubAgentStarted` 载荷字段；`src/host/WebViewUI.ts` 透传；`core-rs/src/engine.rs` 的 `start_remote_sub_agent` 继承应用；`core-rs/src/mcp_config.rs` 的 `read_enabled_mcps` / `write_session_enabled`（MCP 名单） | `core-rs/src/engine_tests.rs`（Master 全量继承 / 非 Master 角色固定 / MCP 名单 / 载荷缺字段报错）；宿主透传单测；e2e 继承断言 | 自动 |
 
 ## 待澄清
 

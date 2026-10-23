@@ -27,6 +27,28 @@ export function sessionBusyLevel(
   return state.idle ? 'idle' : 'running';
 }
 
+/**
+ * 容器（跨工作区占位父对话）行的忙闲级别（specs/024 FR-001）：聚合**直接子代理**的
+ * 运行级别，`waiting` > `running` > `idle`（与 `sessionBusyLevel` 同一优先级语义）。
+ *
+ * 子代理集合由调用方按列表父子树选出——容器的父子关系在 meta 的 `parentSessionId`
+ * （指向 `ph_` 容器），而运行时快照里的 `parentSessionId` 指向真实发起方会话
+ * （子代理注册表链路，跨工作区场景下不在本进程快照里），两条链不能混用。
+ * 子代理不在状态快照里视为空闲——状态缺失是等待态，不猜值。容器自身没有运行时事实，
+ * 这是子代理运行时的只读投影；侧栏 / 测试共用。
+ */
+export function deriveContainerBusyLevel(
+  childrenStates: readonly { idle: boolean; waiting: boolean }[],
+): 'idle' | 'waiting' | 'running' {
+  let running = false;
+  for (const state of childrenStates) {
+    const level = sessionBusyLevel(state);
+    if (level === 'waiting') return 'waiting';
+    if (level === 'running') running = true;
+  }
+  return running ? 'running' : 'idle';
+}
+
 /** 运行中子代理条目（specs/019 FR-002）：abort 按钮悬停明细的「子代理」组逐项展示 */
 export interface RunningSubAgentBrief {
   sessionId: string;

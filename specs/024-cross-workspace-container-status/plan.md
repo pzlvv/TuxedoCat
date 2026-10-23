@@ -8,12 +8,13 @@
    派生），Electron 侧栏渲染容器行时合成 state 注入现有流水灯逻辑。提示音策略是既有
    `trayAttention.ts` 判定在 `parentSessionId: "ph_…"` 形态下的锁定，无代码改动、只补测试。
 2. **设置继承链（FR-004）——发起方 Core 解析生效值随派发请求携带**。发起方 Core 在
-   `spawn_remote_agent` 按查询路径同一口径解析本会话的生效设置（model / provider 经
-   `config::resolve_provider`，thinking / prompt / webSearch 取会话覆盖、缺省回落全局
-   默认），进 `CoreRequest.crossWorkspaceAgentRequested` 载荷；宿主 `WebViewUI` 原样透传
-   进 `UiEvent.remoteSubAgentStarted`；目标 Core 的 `start_remote_sub_agent` 应用继承
-   （替换现行「取目标工作区默认值」口径），继承规则与本地子代理的 specs/020 FR-003
-   完全一致。
+   `spawn_remote_agent` 按查询路径同一口径解析本会话的生效设置（model / provider 成对，
+   经 `config::resolve_provider`；thinking / prompt / webSearch 取会话覆盖、缺省回落全局
+   默认；MCP 启用名单取 `read_enabled_mcps` 的会话生效名单），进
+   `CoreRequest.crossWorkspaceAgentRequested` 载荷；宿主 `WebViewUI` 原样透传进
+   `UiEvent.remoteSubAgentStarted`；目标 Core 的 `start_remote_sub_agent` 应用继承
+   （角色规则与本地子代理 specs/020 FR-003 一致），MCP 名单经
+   `mcp_config::write_session_enabled` 写入子会话。
 
 ## 技术方案
 
@@ -41,33 +42,39 @@ waiting 产出 `anyNowWaiting`（等待提醒）。
 数据流（既有通道加字段，无新事件类型）：
 
 ```
-发起方 Core spawn_remote_agent        →  解析生效值，写入 crossWorkspaceAgentRequested
+发起方 Core spawn_remote_agent        →  解析生效值（含 MCP 启用名单），写入 crossWorkspaceAgentRequested
 宿主 WebViewUI.requestCrossWorkspaceAgent →  原样透传
-目标 Core start_remote_sub_agent      →  应用继承（替换目标默认值口径）+ 落盘
+目标 Core start_remote_sub_agent      →  按角色规则应用继承 + 落盘（MCP 名单写子会话）
 ```
 
 - **契约**（`src/shared/AssistantEventBus.ts`）：`crossWorkspaceAgentRequested` 与
-  `remoteSubAgentStarted` 各新增 6 个必选成员：`agentMode` / `thinkingEffort` /
-  `promptMode` / `model` / `provider` / `webSearch`。发起方一律解析为**生效值**
-  （不用 null / `?`，铁律 2；避免目标侧再回落默认值造成双源，铁律 6）。
+  `remoteSubAgentStarted` 各新增 7 个必选成员：`agentMode` / `thinkingEffort` /
+  `promptMode` / `model` 与 `provider`（成对）/ `webSearch` / `mcpServers`（string 数组，
+  空名单合法）。发起方一律解析为**生效值**（不用 null / `?`，铁律 2；避免目标侧再回落
+  默认值造成双源，铁律 6）。
 - **发起方 Core**（`core-rs/src/engine.rs` 的 `spawn_remote_agent`）：从
   `self.session(&request.creator_session_id)` 读会话状态；model / provider 经
   `config::resolve_provider` 解析为具体值（查询路径同一函数）；thinking effort /
-  prompt mode / web search 取会话级覆盖、缺省回落全局配置默认——即发起方对话此刻
-  真正生效的配置。`local: true` 分支（target 等于来源工作区）不受影响：仍走
-  `create_sub_agent` 的既有本机继承。
+  prompt mode / web search 取会话级覆盖、缺省回落全局配置默认；MCP 启用名单取
+  `mcp_config::read_enabled_mcps(Some(发起方会话))`（会话覆盖优先、缺省回落全局默认）
+  ——即发起方对话此刻真正生效的配置。`local: true` 分支（target 等于来源工作区）
+  不受影响：仍走 `create_sub_agent` 的既有本机继承。
 - **宿主透传**（`src/host/WebViewUI.ts` 的 `requestCrossWorkspaceAgent`）：
   `request` 上的新字段原样进 `remoteSubAgentStarted` 载荷，不做任何加工（宿主不是
   设置事实的写入点）。
 - **目标 Core**（`core-rs/src/engine.rs` 的 `start_remote_sub_agent`）：
-  - 读入载荷新字段（缺失即 `Err`，纳入既有 missing-fields 校验）；
-  - Master 角色：六项全部写入会话状态（替换现行「state 默认值」取值）；
+  - 读入载荷新字段（缺失即 `Err`，纳入既有 missing-fields 校验；`model` 允许空串、
+    `mcpServers` 允许空数组）；
+  - Master 角色：全部写入会话状态，MCP 名单经 `mcp_config::write_session_enabled`
+    写成子会话的启用覆盖（会话覆盖优先于全局默认，`tools_for_session` 按它取工具）；
   - 非 Master 角色：与 `create_sub_agent` 的角色固定口径一致——`prompt_mode` 恒
-    normal、`web_search` 恒关、MCP 恒空（工具白名单过滤已在 `run_query_loop`），
-    `agent_mode` / `model` / `provider` / `thinking_effort` 仍继承；
-  - 落盘：`create_remote_sub_agent_metadata` 已带 model / provider（现在写入继承值）；
+    normal、`web_search` 恒关、MCP 恒空（写空名单 + 工具白名单过滤已在
+    `run_query_loop`），`agent_mode` / 模型 provider 成对 / `thinking_effort` 仍继承；
+  - 落盘：`create_remote_sub_agent_metadata` 已带 model / provider（写入继承值）；
     `persist_context` 扩展为 agentMode（既有）+ thinkingMode / promptMode / webSearch
-    （均为既有键，重启重开后 UI 显示继承值，与 agentMode 的持久化动机相同）。
+    （均为既有键），MCP 名单由 `write_session_enabled` 落进 `context.mcpEnabled`
+    （均为既有键）——重启重开后 UI 显示继承值，与 agentMode 的持久化动机相同。
+    名单里目标 Core 无同名定义的 server 不建立连接（定义是机器本地资源）。
 - **文档同步**（随实现同一提交）：`docs/architecture/events.md` 两个事件的载荷列；
   `docs/features/cross-workspace-agent.md` FR-003 配置口径改写 + 3.2 契约成员表；
   [docs/hosts/electron-multi-workspace.md 第 9 节](../../docs/hosts/electron-multi-workspace.md#9-侧栏)
@@ -80,9 +87,10 @@ waiting 产出 `anyNowWaiting`（等待提醒）。
 `e2e/electron/crossWorkspaceAgent.spec.ts` 扩展：
 
 - 状态灯（AC-1 / AC-3）：派发后容器行出现 `.running-bar`；无子代理运行的容器行无灯。
-- 继承（AC-7）：派发落定后读目标工作区子代理 `meta.json`，断言 `context.agentMode` /
-  `thinkingMode` / `promptMode` / `webSearch` 与顶层 `model` / `provider` 等于发起方
-  会话的设置（不依赖 UI 自动化，读盘断言确定性最高）。
+- 继承（AC-7 / AC-10）：派发落定后读目标工作区子代理 `meta.json`，断言
+  `context.agentMode` / `thinkingMode` / `promptMode` / `webSearch` / `context.mcpEnabled`
+  与顶层 `model` / `provider` 等于发起方会话的设置与名单（不依赖 UI 自动化，读盘断言
+  确定性最高）。
 
 ## 受影响模块与契约
 
@@ -90,12 +98,12 @@ waiting 产出 `anyNowWaiting`（等待提醒）。
 | --- | --- | --- |
 | `src/shared/sessionRuntime.ts` | 新增 `deriveContainerBusyLevel` 纯函数 | 无 |
 | `electron/sidebar/main.ts` | 渲染循环为容器行合成 state | 无 |
-| `src/shared/AssistantEventBus.ts` | 两条载荷各加 6 个必选成员 | `crossWorkspaceAgentRequested` / `remoteSubAgentStarted` 新增 `agentMode` `thinkingEffort` `promptMode` `model` `provider` `webSearch` |
+| `src/shared/AssistantEventBus.ts` | 两条载荷各加 7 个必选成员 | `crossWorkspaceAgentRequested` / `remoteSubAgentStarted` 新增 `agentMode` `thinkingEffort` `promptMode` `model` `provider` `webSearch` `mcpServers` |
 | `src/host/WebViewUI.ts` | `requestCrossWorkspaceAgent` 透传新字段 | 同上（转发面） |
-| `core-rs/src/engine.rs` | `spawn_remote_agent` 解析生效值入载荷；`start_remote_sub_agent` 应用继承 + 扩展 `persist_context` | 同上（消费面）；落盘用既有 context 键，无格式变化 |
+| `core-rs/src/engine.rs` | `spawn_remote_agent` 解析生效值与 MCP 名单入载荷；`start_remote_sub_agent` 应用继承 + 扩展 `persist_context` + `write_session_enabled` | 同上（消费面）；落盘用既有 context 键，无格式变化 |
 | `src/test/sessionBusyLevel.test.ts`（或新增同名主题文件） | 容器派生纯函数用例 | 无 |
 | `src/test/trayAttention.test.ts` | 跨工作区形态的完成静默 / 等待提醒用例 | 无 |
-| `core-rs/src/engine_tests.rs` | `start_remote_sub_agent` 继承用例（Master 全量 / 非 Master 角色固定 / 载荷缺字段报错） | 无 |
+| `core-rs/src/engine_tests.rs` | `start_remote_sub_agent` 继承用例（Master 全量 / 非 Master 角色固定 / MCP 名单 / 载荷缺字段报错） | 无 |
 | `e2e/electron/crossWorkspaceAgent.spec.ts` | 状态灯 + 继承断言 | 无 |
 | `docs/`（events / cross-workspace-agent / electron-multi-workspace / host-matrix / user-stories） | 同步口径与载荷列 | docsLint 校验 |
 
@@ -133,3 +141,6 @@ waiting 产出 `anyNowWaiting`（等待提醒）。
   当成真实会话）。派生收在渲染层，输入是它已经拿到的两份流。
 - **提示音对跨工作区子代理加新的抑制分支**：无需——「子对话完成不提醒 / 转等待照常」
   的既有判定按 `parentSessionId` 判定，跨工作区子代理天然命中；加分支反而制造两套口径。
+- **MCP 继承把 server 定义带去目标机**：否决——MCP 定义（进程 / 凭证 / 路径）是机器
+  本地资源，跨机器拷贝配置等于新造一条配置分发通道；继承的是**启用名单**（server 名），
+  名单里目标机没有定义的 server 不建立连接。

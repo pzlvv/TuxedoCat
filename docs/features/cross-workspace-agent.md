@@ -83,8 +83,13 @@ last_reviewed: 2026-10-23
   `Reply` 与 Reminder 重试沿用既有子代理语义。
 - `Reply` 经 `CoreEvent.crossWorkspaceAgentReplyRequested` → 宿主 → `UiEvent.agentReplyReceived`
   回投发起方会话，作为 agent 消息出现；From 头展示目标工作区身份。
-- 会话级配置取目标工作区自身默认值，不继承发起方；非 Master 角色按既有规则固定
-  normal 预设、不联网、无 MCP。
+- 会话级配置**经容器继承发起方**（specs/024 FR-004）：发起方 Core 把本会话的生效值
+  （agent mode / thinking effort / 提示词预设 / 模型 provider 成对 / 联网搜索 / MCP
+  启用名单）随 `crossWorkspaceAgentRequested` 携带，目标 Core 按角色继承规则应用——
+  Master 全量继承，非 Master 角色固定 normal 预设 / 不联网 / MCP 恒空、其余仍继承
+  （与本地子代理 specs/020 FR-003 同口径）；继承值落进子代理 meta 的 context（重启重开
+  UI 仍显示）。MCP 按**名单**继承：名单里的 server 在目标 Core 的定义集合中没有同名项
+  时不建立连接（MCP 定义是机器本地资源，不跨机器拷贝）。
 - 沿用「子代理内禁止再调 `Agent`」的既有规则：跨工作区子代理不能继续派生。
 
 ### FR-004：占位父对话
@@ -163,10 +168,12 @@ last_reviewed: 2026-10-23
 
 ### 3.2 契约成员
 
-- `CoreRequest.crossWorkspaceAgentRequested` → `{ sessionId } / { local: true } / { error }`；
+- `CoreRequest.crossWorkspaceAgentRequested`（含发起方会话生效设置七字段，specs/024 FR-004）
+  → `{ sessionId } / { local: true } / { error }`；
 - `CoreEvent.crossWorkspaceAgentReplyRequested` / `crossWorkspaceAgentAbortRequested` /
   `crossWorkspaceAgentEnded`；
-- `UiEvent.remoteSubAgentStarted` / `agentReplyReceived` / `crossWorkspaceAgentCompleted`；
+- `UiEvent.remoteSubAgentStarted`（含同七字段，目标 Core 按角色继承应用）/
+  `agentReplyReceived` / `crossWorkspaceAgentCompleted`；
 - `UiEvent.hostEnvironmentProvided.crossWorkspaceAgent`；
 - webview wire：`requestWorkspaces` / `setWorkspaces`、`openConversation.targetWorkspaceId`。
 

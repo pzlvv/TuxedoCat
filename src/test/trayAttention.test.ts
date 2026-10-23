@@ -153,6 +153,29 @@ runTests('trayAttention', async () => {
     return second.anyNowWaiting && second.completedSessions.length === 0;
   })());
 
+  // specs/024 FR-002：跨工作区子代理的 parentSessionId 指向 ph_ 容器，同一套判定命中
+  check('跨工作区子代理（容器容器 id）完成静默；发起方仅因子代理忙时落回 idle 同样静默', (() => {
+    const first = diffSessionEndEvents(new Map(), [
+      st('origin', 'running', { subAgentRunning: true }),
+      st('sub_remote', 'running', { parentSessionId: 'ph_origin' }),
+    ]);
+    const second = diffSessionEndEvents(first.next, [
+      st('origin', 'idle'),
+      st('sub_remote', 'idle', { parentSessionId: 'ph_origin' }),
+    ]);
+    return second.completedSessions.length === 0 && !second.anyNowWaiting;
+  })());
+
+  check('跨工作区子代理转等待用户照常提醒（specs/024 FR-002）', (() => {
+    const first = diffSessionEndEvents(new Map(), [
+      st('sub_remote', 'running', { parentSessionId: 'ph_origin' }),
+    ]);
+    const second = diffSessionEndEvents(first.next, [
+      st('sub_remote', 'waiting', { parentSessionId: 'ph_origin', waiting: true }),
+    ]);
+    return second.anyNowWaiting && second.completedSessions.length === 0;
+  })());
+
   check('确认窗口放行判定：仍空闲 / 等用户为真，又跑起来或已消失为假', (() => {
     return shouldFireCompletion('idle') && shouldFireCompletion('waiting')
       && !shouldFireCompletion('running') && !shouldFireCompletion(undefined);

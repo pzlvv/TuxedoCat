@@ -1137,6 +1137,38 @@ impl Core {
                     .map(str::to_string)
             })
             .unwrap_or_default();
+        // specs/024 FR-004：发起方会话的**生效设置**随派发请求携带——子对话经容器继承
+        // 发起方，不再取目标工作区默认值。生效值与查询路径同一口径：model / provider 经
+        // `config::resolve_provider` 解析为具体值，thinking / prompt / webSearch 取会话级
+        // 覆盖、缺省回落全局默认，MCP 启用名单取 `read_enabled_mcps` 的会话生效名单
+        // （契约成员必选，目标侧不再回落默认值）。
+        let origin_session = self.session(&request.creator_session_id);
+        let (agent_mode, model, provider, thinking_effort, prompt_mode, web_search, mcp_servers) = {
+            let state = origin_session.lock().unwrap();
+            let provider_config =
+                config::resolve_provider(state.provider.as_deref(), state.model.as_deref())?;
+            let provider_key = state
+                .provider
+                .clone()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| {
+                    crate::settings::settings_snapshot()
+                        .map(|snapshot| snapshot.llm.active_provider)
+                        .unwrap_or_default()
+                });
+            (
+                state.agent_mode.clone(),
+                provider_config.model,
+                provider_key,
+                state
+                    .thinking_effort
+                    .clone()
+                    .unwrap_or_else(config::default_thinking_effort),
+                prompt::normalize_prompt_mode(state.prompt_mode.as_deref()).to_string(),
+                state.web_search.unwrap_or_else(config::default_web_search),
+                crate::mcp_config::read_enabled_mcps(Some(&request.creator_session_id)),
+            )
+        };
         let payload = json!({
             "type": "crossWorkspaceAgentRequested",
             "sessionId": request.creator_session_id.clone(),
@@ -1145,6 +1177,13 @@ impl Core {
             "prompt": request.prompt.clone(),
             "description": request.description.clone(),
             "originTitle": origin_title,
+            "agentMode": agent_mode,
+            "thinkingEffort": thinking_effort,
+            "promptMode": prompt_mode,
+            "model": model,
+            "provider": provider,
+            "webSearch": web_search,
+            "mcpServers": mcp_servers,
         });
         let Some(result) = self.plain_request(HostRenderRequest::new(payload)) else {
             return Err("cross-workspace agent request failed: host did not respond".to_string());
@@ -1282,6 +1321,34 @@ impl Core {
         let origin_workspace_id = field("originWorkspaceId");
         let origin_session_id = field("originSessionId");
         let origin_title = field("originTitle");
+        // specs/024 FR-004：继承的会话级设置（发起方 Core 解析出的生效值）。契约成员
+        // 必选，缺失按接线错误拒绝；`model` 允许空串（provider 未配置默认模型时合法，
+        // 见 `config::resolve_provider`），`mcpServers` 允许空名单。
+        for key in ["agentMode", "thinkingEffort", "promptMode", "model", "provider"] {
+            if event.get(key).and_then(Value::as_str).is_none() {
+                return Err("remoteSubAgentStarted is missing required fields".to_string());
+            }
+        }
+        let Some(mcp_servers) = event
+            .get("mcpServers")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect::<Vec<String>>()
+            })
+        else {
+            return Err("remoteSubAgentStarted is missing required fields".to_string());
+        };
+        let Some(web_search) = event.get("webSearch").and_then(Value::as_bool) else {
+            return Err("remoteSubAgentStarted is missing required fields".to_string());
+        };
+        let agent_mode = field("agentMode");
+        let thinking_effort = field("thinkingEffort");
+        let prompt_mode = field("promptMode");
+        let model = field("model");
+        let provider = field("provider");
         if session_id.is_empty() || workspace_path.is_empty() || origin_session_id.is_empty() {
             return Err("remoteSubAgentStarted is missing required fields".to_string());
         }
@@ -1291,13 +1358,23 @@ impl Core {
         config::set_session_workspace(&session_id, Some(workspace_path.clone()));
 
         let state = self.session(&session_id);
-        let (model, provider) = {
+        {
             let mut state = state.lock().unwrap();
             state.project = Some(workspace_path.clone());
-            // 非 Master 角色：与本地子代理同口径（固定 normal / 不联网 / 无 MCP）。
+            // 会话级配置经容器继承发起方（specs/024 FR-004），不再取目标工作区默认值。
+            // 角色口径与本地子代理一致（specs/020 FR-003）：Master 全量继承；非 Master
+            // 角色固定 normal 预设 / 不联网 / MCP 恒空（工具白名单在 `run_query_loop`
+            // 过滤），agentMode / 模型 / provider / thinking 仍继承。
+            state.agent_mode = agent_mode.clone();
+            state.model = Some(model.clone());
+            state.provider = Some(provider.clone());
+            state.thinking_effort = Some(thinking_effort.clone());
             if role != "Master" {
                 state.prompt_mode = Some("normal".to_string());
                 state.web_search = Some(false);
+            } else {
+                state.prompt_mode = Some(prompt_mode.clone());
+                state.web_search = Some(web_search);
             }
             state.parent_session_id = Some(origin_session_id.clone());
             state.sub_agent_role = Some(role.clone());
@@ -1310,8 +1387,7 @@ impl Core {
                 title: origin_title.clone(),
             });
             state.running = true;
-            (state.model.clone(), state.provider.clone())
-        };
+        }
 
         history::create_remote_sub_agent_metadata(
             &session_id,
@@ -1322,11 +1398,25 @@ impl Core {
             &origin_workspace_id,
             &origin_session_id,
             &origin_title,
-            model.as_deref(),
-            provider.as_deref(),
+            Some(&model),
+            Some(&provider),
         )?;
-        let agent_mode = state.lock().unwrap().agent_mode.clone();
+        // 继承的会话级设置落进 meta.json 的 context（与 agentMode 的持久化动机相同）：
+        // 重启后重新打开子会话，UI 仍显示继承自容器的配置
         self.persist_context(&session_id, json!({ "key": "agentMode", "value": agent_mode }));
+        self.persist_context(
+            &session_id,
+            json!({ "key": "thinkingMode", "value": thinking_effort }),
+        );
+        self.persist_context(&session_id, json!({ "key": "promptMode", "value": prompt_mode }));
+        self.persist_context(&session_id, json!({ "key": "webSearch", "value": web_search }));
+        // MCP 启用名单按角色继承（specs/024 FR-004）：Master 继承发起方名单（经容器），
+        // 非 Master 角色恒空（specs/020 FR-003 的角色口径）。写成子会话的启用覆盖，
+        // 名单里目标 Core 无同名定义的 server 不建立连接（定义是机器本地资源）。
+        crate::mcp_config::write_session_enabled(
+            &session_id,
+            &if role == "Master" { mcp_servers } else { Vec::new() },
+        );
 
         crate::subagent::register(&session_id, &origin_session_id);
         crate::subagent::mark_remote_origin(&session_id, &origin_session_id);
