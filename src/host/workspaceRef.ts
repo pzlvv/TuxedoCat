@@ -118,6 +118,23 @@ export function sameWorkspaceRef(a: WorkspaceRef, b: WorkspaceRef): boolean {
     : a.path === b.path;
 }
 
+/**
+ * 远程路径判等：目标机器上的字符串逐字比较，只抹平末尾分隔符差异。
+ *
+ * 远程路径不能跑本地规范化（Windows 上 `path.resolve('/home/pz/a')` 会变成
+ * `D:\home\pz\a`）；但工作区引用与对话元数据可能一个带尾斜杠、一个不带，
+ * 逐字比较会把同一个目录判成两个。
+ */
+export function sameRemotePath(a: string, b: string): boolean {
+  const strip = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, '') : p);
+  return strip(a) === strip(b);
+}
+
+/** 工作目录路径是否属于该引用（本地按宿主口径判等，远程逐字比较、忽略末尾分隔符差异） */
+export function workspacePathMatches(ref: WorkspaceRef, target: string): boolean {
+  return ref.endpoint ? sameRemotePath(ref.path, target) : sameWorkspace(ref.path, target);
+}
+
 /** 展示用路径：远程带上 `scheme://[user@]host` 前缀，本地就是路径本身 */
 export function workspaceRefDisplayPath(ref: WorkspaceRef): string {
   if (!ref.endpoint) return ref.path;

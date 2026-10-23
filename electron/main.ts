@@ -50,14 +50,20 @@ import { DirectoryOperationError } from '../src/host/standalone/CoreDaemon.js';
 import {
   localWorkspaceRef,
   remoteWorkspaceRef,
+  sameRemotePath,
   sameWorkspaceRef,
+  workspacePathMatches,
   workspaceRefDisplayPath,
   workspaceRefKey,
   type WorkspaceEndpoint,
   type WorkspaceRef,
 } from '../src/host/workspaceRef.js';
 import { getChatPlaceholderHtml, type ChatPlaceholderReason } from './chatPlaceholderHtml.js';
-import { resolveMachineName, resolveWorkspaceByIdentity } from '../src/host/workspaceIdentity.js';
+import {
+  resolveCrossWorkspaceJumpOrigin,
+  resolveMachineName,
+  resolveWorkspaceByIdentity,
+} from '../src/host/workspaceIdentity.js';
 import { hostname } from 'os';
 import { recordKnownHostFingerprint, SshHostKeyError } from '../src/host/standalone/sshClient.js';
 import { WorkspaceAvailabilityState } from './workspaceAvailability.js';
@@ -364,23 +370,6 @@ function findWorkspace(ref: WorkspaceRef): WorkspaceRef | undefined {
 function canonicalWorkspacePath(target: string): string {
   const remote = openWorkspaces.find((ref) => ref.endpoint !== null && sameRemotePath(ref.path, target));
   return remote ? remote.path : normalizeWorkspacePath(target);
-}
-
-/** 工作目录路径是否属于该引用（本地按宿主口径判等，远程逐字比较、忽略末尾分隔符差异） */
-function workspacePathMatches(ref: WorkspaceRef, target: string): boolean {
-  return ref.endpoint ? sameRemotePath(ref.path, target) : sameWorkspace(ref.path, target);
-}
-
-/**
- * 远程路径判等：目标机器上的字符串逐字比较，只抹平末尾分隔符差异。
- *
- * 远程路径不能跑本地规范化（Windows 上 `path.resolve('/home/pz/a')` 会变成
- * `D:\home\pz\a`）；但工作区引用与对话元数据可能一个带尾斜杠、一个不带，
- * 逐字比较会把同一个目录判成两个。
- */
-function sameRemotePath(a: string, b: string): boolean {
-  const strip = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, '') : p);
-  return strip(a) === strip(b);
 }
 
 /**
@@ -3921,8 +3910,11 @@ let crossWorkspacePlaceholderJump: { workspaceId: string; sessionId: string } | 
 /**
  * 打开跨工作区占位页（specs/023 FR-004/FR-005）。
  *
- * 跳转目标从占位 id 反查：`ph_<originSessionId>` → 宿主会话工作目录索引 → 打开集合。
- * 发起方工作区已关闭时链接不可用（页面展示原因，不给按钮），不自动打开工作区。
+ * 跳转目标按代理身份解析（`resolveCrossWorkspaceJumpOrigin`，specs/023 FR-001）：
+ * `ph_<originSessionId>` 拆出发起方会话 id；侧栏行携带的来源 `workspaceId` 是
+ * `workspaceAgentId` 口径——此前这里拿它跟 `refKey`（`workspaceRefKey` 口径）判等，
+ * 两种口径永不相等，跳转链接恒不可用。发起方工作区已关闭时链接不可用（页面展示
+ * 原因，不给按钮），不自动打开工作区。
  */
 function showCrossWorkspacePlaceholder(
   sessionId: string,
@@ -3931,17 +3923,19 @@ function showCrossWorkspacePlaceholder(
   const originSessionId = sessionId.startsWith(PLACEHOLDER_SESSION_PREFIX)
     ? sessionId.slice(PLACEHOLDER_SESSION_PREFIX.length)
     : '';
-  // 侧栏行携带的来源（列表派生自子代理 meta，重启后仍可用）；缺省按会话索引反查
-  let originRef = origin
-    ? openWorkspaces.find((candidate) => refKey(candidate) === origin.workspaceId)
-    : undefined;
+  // 来源缺省时按会话索引反查工作目录回退（syncSessionWorkspaceIndex 是主进程副作用，留在本地）
+  let originPathFallback: string | undefined;
   if (!origin && originSessionId) {
     syncSessionWorkspaceIndex();
-    const originPath = sessionWorkspaces.get(originSessionId);
-    originRef = originPath
-      ? openWorkspaces.find((candidate) => workspacePathMatches(candidate, originPath))
-      : undefined;
+    originPathFallback = sessionWorkspaces.get(originSessionId);
   }
+  const originRef = resolveCrossWorkspaceJumpOrigin(
+    openWorkspaces,
+    resolveMachineName(process.platform, process.env, hostname()),
+    origin,
+    originSessionId,
+    originPathFallback,
+  );
   const jumpSessionId = origin?.sessionId ?? originSessionId;
   crossWorkspacePlaceholderJump = originRef && jumpSessionId
     ? { workspaceId: refKey(originRef), sessionId: jumpSessionId }

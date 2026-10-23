@@ -12,7 +12,7 @@
  */
 
 import { normalizeWorkspacePath } from './workspacePaths.js';
-import { sameWorkspaceRef, type WorkspaceRef } from './workspaceRef.js';
+import { sameWorkspaceRef, workspacePathMatches, type WorkspaceRef } from './workspaceRef.js';
 
 /** 取机器名的平台分支（Node `process.platform` 的取值） */
 export type MachinePlatform = 'win32' | 'linux' | 'darwin' | string;
@@ -106,4 +106,31 @@ export function workspaceMentionCandidates(
       path: ref.path,
       displayName: workspaceAgentDisplayName(ref),
     }));
+}
+
+/**
+ * 跨工作区占位页的发起方解析（specs/023 FR-005，
+ * `docs/hosts/electron-multi-workspace.md` 第 9 节）。
+ *
+ * 侧栏行携带的占位来源 `workspaceId` 是发起方工作区的**代理身份**
+ * （`workspaceAgentId` 口径，`docs/hosts/electron-multi-workspace.md` 第 2 节；
+ * core-rs 落进子代理 meta 的 `crossWorkspaceOrigin.workspaceId`），
+ * 按 `resolveWorkspaceByIdentity` 在打开集合里唯一命中——与 `openConversation` 跳转、
+ * `Agent` 派发同一口径；未命中 / 歧义返回 `null`（占位页显示「链接不可用」，不给按钮，
+ * 不自动打开工作区）。来源缺省时按发起方会话的工作目录回退（本地按宿主口径判等，
+ * 远程逐字比较、忽略末尾分隔符差异）。
+ */
+export function resolveCrossWorkspaceJumpOrigin(
+  openRefs: readonly WorkspaceRef[],
+  machineName: string,
+  origin: { workspaceId: string; sessionId: string } | undefined,
+  originSessionId: string,
+  originPathFallback: string | undefined,
+): WorkspaceRef | null {
+  if (origin) {
+    const resolved = resolveWorkspaceByIdentity(openRefs, origin.workspaceId, machineName);
+    return resolved.kind === 'match' ? resolved.ref : null;
+  }
+  if (!originSessionId || !originPathFallback) return null;
+  return openRefs.find((ref) => workspacePathMatches(ref, originPathFallback)) ?? null;
 }

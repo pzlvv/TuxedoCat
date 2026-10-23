@@ -114,3 +114,63 @@ test('US-56 跨工作区派发：子代理落在目标工作区，目标侧出�
     sidebarA.locator(SIDEBAR_ITEM).filter({ hasText: '跨工作区任务' }),
   ).toHaveCount(0);
 });
+
+test('US-56 占位页跳转：发起方工作区已打开时显示跳转链接（specs/023 FR-005 / AC-11）', async () => {
+  const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
+  app = await launchApp({
+    repoRoot,
+    mockLlm,
+    workspaceDir: workspaceA,
+    openWorkspaces: [workspaceA, workspaceB],
+    activeWorkspace: workspaceA,
+    agentMode: 'auto',
+  });
+
+  mockLlm.setHandler((req): ScriptDecision => {
+    const text = lastUserText(req.body.messages);
+    if (text === '在 B 里做点事') {
+      if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
+        return { kind: 'text', text: 'B 里做完了。' };
+      }
+      return { kind: 'tool', name: 'Reply', args: { message: 'B 里做完了。' } };
+    }
+    if (JSON.stringify(req.body.messages).includes('派给另一个工作区')) {
+      if (JSON.stringify(req.body.messages).includes('Sub-agent created with ID')) {
+        return { kind: 'text', text: '已经派给 B。' };
+      }
+      return {
+        kind: 'tool',
+        name: 'Agent',
+        args: {
+          prompt: '在 B 里做点事',
+          agentRole: 'Master',
+          description: '跨工作区任务',
+          target: agentId(workspaceB),
+        },
+      };
+    }
+    return { kind: 'text', text: `收到：${text.slice(0, 40)}` };
+  });
+
+  const titlebar = await app.titlebarPage();
+  const tabs = titlebar.locator('#workspaceTabs [role="tab"]');
+  await expect(tabs).toHaveCount(2, { timeout: 20_000 });
+
+  const chatA = await app.chatPage();
+  await chatA.fill('textarea.input-textarea', '派给另一个工作区');
+  await chatA.press('textarea.input-textarea', 'Enter');
+
+  // 切到工作区 B：点击占位父对话（发起方工作区 A 仍打开，跳转链接必须可用）
+  await tabs.nth(1).click();
+  const sidebarB = await app.sidebarPage();
+  const placeholder = sidebarB.locator(SIDEBAR_ITEM).filter({ hasText: '跨工作区容器' });
+  await expect(placeholder).toHaveCount(1, { timeout: 30_000 });
+  await placeholder.click();
+
+  const jumpPage = await app.waitForPage('data:text/html');
+  await expect(jumpPage.getByText('跨工作区子代理容器')).toBeVisible();
+  await expect(jumpPage.locator('#jumpBtn')).toBeVisible();
+  await expect(jumpPage.getByText('跳转链接不可用')).toHaveCount(0);
+  // 路径行显示发起方工作区展示路径，而不是退化为 ph_ 占位会话 id
+  await expect(jumpPage.getByText(path.basename(workspaceA))).toBeVisible();
+});
