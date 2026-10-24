@@ -34,6 +34,9 @@ const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, 
   const [index, setIndex] = useState(0);
   const [skipped, setSkipped] = useState<ReadonlySet<string>>(() => new Set());
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // 程序聚焦（点选项后把焦点送进输入框）不应被当成用户主动聚焦，否则会立刻把
+  // 刚选的普通选项改成「其他」（docs/features/ask-user-question.md FR-004）。
+  const programmaticFocusRef = useRef(false);
 
   const current = questions[index];
   const draft = drafts[current.id];
@@ -68,6 +71,13 @@ const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, 
     }));
   }, [drafts, onSubmit, questions]);
 
+  const focusInput = useCallback(() => {
+    const el = inputRef.current;
+    if (!el || document.activeElement === el) return;
+    programmaticFocusRef.current = true;
+    el.focus();
+  }, []);
+
   const handleOptionClick = useCallback((label: string, isOther: boolean) => {
     const question = current;
     const value = drafts[question.id];
@@ -97,12 +107,27 @@ const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, 
 
     if (!question.multi_select && !isOther && !isLast) {
       goTo(index + 1, willAnswer);
+      setTimeout(focusInput, 0);
       return;
     }
-    if (isOther) {
-      setTimeout(() => inputRef.current?.focus(), 0);
+    setTimeout(focusInput, 0);
+  }, [current, drafts, focusInput, goTo, index, isLast, updateDraft]);
+
+  // 用户主动聚焦输入框即视为选择「其他」：单选清空普通选项，多选保留。
+  const handleCustomFocus = useCallback(() => {
+    if (programmaticFocusRef.current) {
+      programmaticFocusRef.current = false;
+      return;
     }
-  }, [current, drafts, goTo, index, isLast, updateDraft]);
+    const question = current;
+    const value = drafts[question.id];
+    if (value.otherSelected) return;
+    updateDraft(question.id, {
+      ...value,
+      otherSelected: true,
+      selected: question.multi_select ? value.selected : [],
+    });
+  }, [current, drafts, updateDraft]);
 
   const handleCustomChange = useCallback((value: string) => {
     const question = current;
@@ -227,6 +252,7 @@ const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, 
             ref={inputRef}
             value={draft.custom}
             onChange={(e) => handleCustomChange(e.target.value)}
+            onFocus={handleCustomFocus}
             onKeyDown={handleCustomKeyDown}
             placeholder={isLast
               ? t('userChoice.questionPlaceholderLast')
@@ -247,8 +273,7 @@ const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, 
       </div>
 
       <div className="px-3 pb-2 pt-2" style={{ borderTop: `1px solid ${colors.border}` }}>
-        <div className="flex items-center justify-between gap-2 mb-1">
-          <span style={{ color: colors.textSystem, fontSize: 12, fontWeight: 600 }}>AskUserQuestion</span>
+        <div className="flex items-center justify-end gap-2 mb-1">
           <span style={{ color: colors.textSystem, fontSize: 12 }}>{index + 1} / {questions.length}</span>
         </div>
 
