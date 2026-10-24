@@ -204,6 +204,21 @@ export interface StreamEndData {
   streamId?: string;
 }
 
+/**
+ * 会话 Todo 条目（`TodoWrite` 的元素，`docs/features/todo-list.md` FR-001）。
+ *
+ * 与 core-rs 的 `tools::TodoEntry` 逐字段对应；三个字段全必选——事实未到达用「清单为空」
+ * 表达，不用可选字段猜值。
+ */
+export interface TodoEntry {
+  /** 命令式任务描述（如「跑测试」） */
+  content: string;
+  /** 状态；`in_progress` 同时只有一条是提示词纪律，运行期不做强制 */
+  status: 'pending' | 'in_progress' | 'completed';
+  /** 进行中时的现在进行时描述（如「跑测试中」），非进行中条目也必填 */
+  activeForm: string;
+}
+
 export interface MessageData {
   role: 'user' | 'assistant' | 'thinking' | 'toolcall' | 'system';
   content: string;

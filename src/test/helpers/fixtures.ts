@@ -101,6 +101,7 @@ export function createRecordingCoreEventHandlers(): RecordingCoreEventHandlers {
     conversationListChanged: (e) => record('conversationListChanged', e),
     conversationSpaceCleared: (e) => record('conversationSpaceCleared', e),
     sessionRuntimeChanged: (e) => record('sessionRuntimeChanged', e),
+    todosChanged: (e) => record('todosChanged', e),
     workspaceFileChanged: (e) => record('workspaceFileChanged', e),
     spinDesignDataChanged: (e) => record('spinDesignDataChanged', e),
     workModeChanged: (e) => record('workModeChanged', e),

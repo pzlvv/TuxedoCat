@@ -492,6 +492,7 @@ async function run(): Promise<void> {
       }),
       skillsRequested: async () => ({ skills: [] }),
       spinDesignRequested: async () => ({ status: 'ok' as const, data: null, skills: [] }),
+      sessionTodosRequested: async () => [],
       spinDesignSaveRequested: async () => ({ status: 'ok' as const }),
       watchWorkspaceFileRequested: async () => ({ ok: true as const }),
       unwatchWorkspaceFileRequested: async () => null,

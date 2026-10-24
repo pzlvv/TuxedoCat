@@ -402,6 +402,27 @@ fn tool_usage_details_follow_the_injected_tool_list() {
 
 /// Agent 角色表列出全部合法角色（specs/020 FR-001）：提示词正文与
 /// `tools::SUB_AGENT_ROLES` 同步——注册表加了角色而提示词漏改时在这里红。
+/// Explorer 的角色说明点名的工具必须与白名单一致（`docs/features/todo-list.md` FR-005）：
+/// 白名单加了工具而说明漏改时，模型会以为自己没有那个工具。
+/// `Reply` 是生命周期设施（回投），不在角色说明里点名。
+#[test]
+fn explorer_role_description_matches_allowlist() {
+    let allow = crate::tools::sub_agent_role_tools("Explorer").expect("Explorer 应有白名单");
+    let line = TOOL_DETAILS
+        .lines()
+        .find(|line| line.starts_with("- \"Explorer\":"))
+        .expect("角色表缺少 Explorer 条目");
+    for tool in allow {
+        if *tool == "Reply" {
+            continue;
+        }
+        assert!(
+            line.contains(tool),
+            "Explorer 角色说明缺少 {tool}: {line}"
+        );
+    }
+}
+
 #[test]
 fn agent_role_table_lists_all_registered_roles() {
     for role in crate::tools::SUB_AGENT_ROLES {

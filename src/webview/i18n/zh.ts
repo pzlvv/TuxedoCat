@@ -189,6 +189,7 @@ export const zhDict: Record<string, string> = {
   'inputArea.compactPending': '准备压缩',
   'inputArea.fileHiddenTitle': '点击恢复，文件信息将发给 LLM',
   'inputArea.fileShownTitle': '点击隐藏，文件信息不发给 LLM',
+  'inputArea.todoProgress': '任务进度: {done}/{total}',
   'inputArea.abort': '终止',
   'inputArea.abortHoverTasks': '后台任务',
   'inputArea.abortHoverSubAgents': '子代理',

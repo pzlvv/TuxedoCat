@@ -45,6 +45,7 @@ async function run(): Promise<void> {
     mcpServersRequested: async () => [],
     conversationSpacesRequested: async () => [],
     flushSessionRequested: async () => null,
+    sessionTodosRequested: async () => [],
     conversationLoadRequested: async () => ({
       messages: [],
       metadata: null,

@@ -1599,3 +1599,82 @@ fn unwatch_workspace_file_request_is_idempotent() {
     )
     .is_err());
 }
+
+/// `sessionTodosRequested`（`docs/features/todo-list.md` FR-002）：表里没有该会话时按
+/// 会话文件重建，重建结果同时写表；文件里最后一条成功调用为准。
+#[test]
+fn ui_request_answers_session_todos() {
+    let sandbox = Sandbox::new("main-ui-request-todos");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    history::create_conversation(
+        "s1",
+        &project,
+        json!({ "sessionId": "s1", "project": project }),
+    )
+    .unwrap();
+    history::replace_messages(
+        "s1",
+        &project,
+        &[
+            json!({
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "TodoWrite",
+                        "input": { "todos": [
+                            { "content": "改代码", "activeForm": "改代码中", "status": "completed" },
+                            { "content": "跑测试", "activeForm": "跑测试中", "status": "in_progress" }
+                        ] },
+                    }],
+                },
+                "uuid": "a-t1",
+                "timestamp": 1,
+            }),
+            json!({
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": "ok",
+                        "exit_code": 0,
+                    }],
+                },
+                "uuid": "r-t1",
+                "timestamp": 2,
+            }),
+        ],
+    )
+    .unwrap();
+
+    let answered = dispatch_ui_request(
+        &test_core(),
+        &json!({ "type": "sessionTodosRequested", "sessionId": "s1" }),
+    )
+    .unwrap();
+    assert_eq!(
+        answered,
+        json!([
+            { "content": "改代码", "status": "completed", "activeForm": "改代码中" },
+            { "content": "跑测试", "status": "in_progress", "activeForm": "跑测试中" }
+        ])
+    );
+    // 重建结果写表：第二次索取不再读盘
+    assert_eq!(crate::tools::session_todos("s1"), Some(answered));
+
+    // 没有会话文件的会话：空清单而不是报错
+    assert_eq!(
+        dispatch_ui_request(
+            &test_core(),
+            &json!({ "type": "sessionTodosRequested", "sessionId": "no-such-session" }),
+        )
+        .unwrap(),
+        json!([])
+    );
+
+    crate::tools::clear_session_todos("s1");
+}

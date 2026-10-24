@@ -5,7 +5,7 @@ import { Dropdown } from 'antd';
 import InputArea, { InputAreaRef } from './InputArea';
 import MessagesView from './MessagesView';
 import 'antd/dist/reset.css';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, SessionRuntimeState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload, ApplyDefaultsPrompt, IdleSuspendedMessage } from './types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, SessionRuntimeState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload, ApplyDefaultsPrompt, IdleSuspendedMessage, TodoEntry } from './types';
 import { createSessionState, SessionStatesStore } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
@@ -15,6 +15,7 @@ import { getPlaceholderLogoUri, rotatePlaceholderLogo } from './placeholderLogo'
 import { DecorativeLogo } from './DecorativeLogo';
 import { canCloseConversation, newConversationEntryOf, openConversationModeOf, rendersConversationListInWebview, type HostInfo } from '../host/types';
 import { resolveAbortButtonState, type AbortButtonState } from '../host/abortButtonState';
+import { countTodoProgress, type TodoProgress } from '../host/todoProgress';
 import { collectRunningSubAgents, type RunningSubAgentBrief } from '../shared/sessionRuntime';
 import { shouldAutoExpandSubSessions } from '../host/ui/conversationTreeDefaults';
 import type { McpServerInfo, ProviderModels } from '../shared/webviewTypes';
@@ -68,6 +69,13 @@ const App = () => {
     }
   }), []);
   const [messages, setMessages] = useState<Array<Message>>([]);
+  /**
+   * 按会话的 Todo 清单（`docs/features/todo-list.md` FR-002）。
+   *
+   * 事实由 core 持有：会话加载后经 `requestSessionTodos` 取一次，之后靠
+   * `CoreEvent.todosChanged` 推送更新。压缩（messagesReplaced）不影响它。
+   */
+  const [sessionTodos, setSessionTodos] = useState<Map<string, TodoEntry[]>>(new Map());
   const inputAreaRef = useRef<InputAreaRef>(null);
   const [inputFocused, setInputFocused] = useState(false);
   const [currentFile, setCurrentFile] = useState<string>('');
@@ -452,6 +460,14 @@ const App = () => {
     // sessionIdleVersion 是 core 推来新状态时的重渲染信号（ref 本身不触发渲染）
   }, [currentSessionId, sessionIdleVersion, workMode]);
 
+  // 任务进度按钮的计数（docs/features/todo-list.md FR-002）：清单由 core 持有，
+  // 这里只把当前会话的清单折成 done / total（唯一实现在 src/host/todoProgress.ts）。
+  // 没有清单（事实未到达 / 该会话没有 Todo）→ null，按钮不渲染。
+  const todoProgress: TodoProgress | null = useMemo(
+    () => countTodoProgress(currentSessionId ? sessionTodos.get(currentSessionId) : null),
+    [sessionTodos, currentSessionId],
+  );
+
   // abort 悬停明细（specs/019 FR-002）：黄色态悬停 1s 显示的后台任务 / 子代理清单。
   // tasks 读当前会话快照的 backgroundTasks；子代理由唯一纯函数 collectRunningSubAgents
   // 按 parentSessionId 从全量快照聚合。`?? []` 是 specs/019「边界与错误路径」明文的缺
@@ -513,6 +529,7 @@ const App = () => {
     setModelRef, setWebSearch, setContextLength, setQueuedMessage,
     setUserChoiceRequest, setNamingSessions, setStreamingVersion, setForceScrollKey,
     setSessionIdleVersion,
+    setSessionTodos,
     setWorkMode,
     setCompletionAttention,
     setExpandedSubSessions, setProviderModels, setBalance, setBalanceCurrency, setIsUnlimited,
@@ -1411,6 +1428,7 @@ onClick={handleNewConversation}
               maxContextTokens={maxContextTokens}
               compactPending={compactPending}
               abortButtonState={abortButtonState}
+              todoProgress={todoProgress}
               sessionId={currentSessionId}
               abortHoverDetail={abortHoverDetail}
               agentMode={agentMode}

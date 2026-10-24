@@ -42,6 +42,7 @@ import {
   requestConversationSpaces,
   requestFlushSession,
   requestMcpServers,
+  requestSessionTodos,
   requestSkills,
   requestSmartNaming,
 } from '../coreFacts.js';
@@ -293,6 +294,8 @@ export class WebviewMessageHandler {
       entry('requestSkills', (_msg, ctx) => this.handleRequestSkills(ctx)),
       entry('requestWorkspaces', (_msg, ctx) => this.handleRequestWorkspaces(ctx)),
       entry('requestConversationSpaces', () => this.handleRequestConversationSpaces()),
+      // 会话 Todo 清单：core 持有事实，视图切换 / 重挂载时拉一次（按来源回包）
+      entry('requestSessionTodos', (msg, ctx) => this.handleRequestSessionTodos(msg, ctx)),
       entry('requestMcpServers', (msg) => this.handleRequestMcpServers(msg)),
       entry('getConversations', () => this.handleGetConversations()),
       // 会话运行时状态全量快照：状态流只在「变化」时推，视图创建 / 激活不会补发，
@@ -1419,6 +1422,25 @@ export class WebviewMessageHandler {
       return Math.min(Math.max(date - Date.now(), 0), API_TYPE_PROBE_MAX_RETRY_DELAY_MS);
     }
     return undefined;
+  }
+
+  /**
+   * 会话 Todo 清单（`docs/features/todo-list.md` FR-002）。
+   *
+   * core 是唯一持有者：这里只做「按来源视图回包」，不缓存、不推导。
+   * `sessionId` 由 webview 显式带上——多视图宿主下请求方不一定是活动视图。
+   */
+  private async handleRequestSessionTodos(
+    msg: Extract<WebviewMessage, { type: 'requestSessionTodos' }>,
+    ctx: WebviewRequestContext,
+  ): Promise<void> {
+    const todos = await requestSessionTodos(msg.sessionId);
+    const message: WebviewMessage = { type: 'sessionTodos', sessionId: msg.sessionId, todos };
+    if (ctx.sender) {
+      this.host.sendToWebviewView(ctx.sender, message);
+    } else {
+      this.host.sendToWebview(message);
+    }
   }
 
   private async handleRequestSkills(ctx: WebviewRequestContext): Promise<void> {

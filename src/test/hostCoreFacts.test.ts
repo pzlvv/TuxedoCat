@@ -36,6 +36,10 @@ async function run(): Promise<void> {
       sent.push(req);
       return [{ sessionId: 'c1', title: 't' } as never];
     },
+    sessionTodosRequested: async (req) => {
+      sent.push(req);
+      return [{ content: '跑测试', status: 'in_progress', activeForm: '跑测试中' }];
+    },
     conversationLoadRequested: async (req) => {
       sent.push(req);
       return {

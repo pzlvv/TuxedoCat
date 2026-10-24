@@ -6694,14 +6694,14 @@ fn explorer_sub_agent_gets_role_toolset_and_rejects_others() {
     assert_eq!(metadata["role"], "Explorer");
     assert_eq!(metadata["parentSessionId"], "s-explorer");
 
-    // 子代理首轮请求的工具清单恰为四件套（内置定义顺序的过滤投影，且无任何白名单外来源）
+    // 子代理首轮请求的工具清单恰为白名单五件套（内置定义顺序的过滤投影，且无任何白名单外来源）
     let bodies = bodies.lock().unwrap();
     assert!(!bodies.is_empty(), "应当捕获 Explorer 的 LLM 请求");
     let names = tool_names(&bodies[0]);
     assert_eq!(
         names,
-        vec!["Read", "Grep", "Glob", "Reply"],
-        "Explorer 工具清单应为四件套: {names:?}"
+        vec!["Read", "Grep", "Glob", "TodoWrite", "Reply"],
+        "Explorer 工具清单应为五件套: {names:?}"
     );
     drop(bodies);
 
@@ -6715,7 +6715,7 @@ fn explorer_sub_agent_gets_role_toolset_and_rejects_others() {
     assert_eq!(bash_result["status"], "error");
     let output = bash_result["output"].as_str().unwrap_or("");
     assert!(
-        output.contains("Explorer 子代理只有 Read / Glob / Grep / Reply 工具，Bash 不可用"),
+        output.contains("Explorer 子代理只有 Read / Glob / Grep / Reply / TodoWrite 工具，Bash 不可用"),
         "got {output}"
     );
     // 命令确实未执行
@@ -6728,7 +6728,7 @@ fn explorer_sub_agent_gets_role_toolset_and_rejects_others() {
 
 /// 会话级配置的继承按角色区分（specs/020 FR-003）：创建者 minimal 预设 + 联网开——
 /// Explorer 一律固定（prompt_mode=None、web_search=关、请求按 normal 口径组装且工具
-/// 恰为四件套）；Master 同场景维持继承（预设 minimal、联网开、工具只有 Bash / Edit）。
+/// 恰为五件套）；Master 同场景维持继承（预设 minimal、联网开、工具只有 Bash / Edit）。
 #[test]
 fn explorer_fixes_session_config_while_master_inherits() {
     let sandbox = Sandbox::new("engine-explorer-fixed-config");
@@ -6793,7 +6793,7 @@ fn explorer_fixes_session_config_while_master_inherits() {
         assert_eq!(state.web_search, Some(true), "Master 维持继承父会话联网开关");
     }
 
-    // LLM 请求侧：explorer = normal 口径（含核心身份段）+ 四件套；Master = minimal 口径 + Bash / Edit
+    // LLM 请求侧：explorer = normal 口径（含核心身份段）+ 五件套；Master = minimal 口径 + Bash / Edit
     assert!(
         harness.wait_for(
             |_| {
@@ -6804,7 +6804,7 @@ fn explorer_fixes_session_config_while_master_inherits() {
                             .as_str()
                             .map(|system| system.contains("## Core Principles"))
                             .unwrap_or(false)
-                        && tool_names(body) == vec!["Read", "Grep", "Glob", "Reply"]
+                        && tool_names(body) == vec!["Read", "Grep", "Glob", "TodoWrite", "Reply"]
                 });
                 let master_ok = bodies.iter().any(|body| {
                     is_sub_agent_request(body)
@@ -6818,7 +6818,7 @@ fn explorer_fixes_session_config_while_master_inherits() {
             },
             Duration::from_secs(30),
         ),
-        "应当观察到 Explorer（normal + 四件套）与 Master（minimal + Bash/Edit）两份请求: {:?}",
+        "应当观察到 Explorer（normal + 五件套）与 Master（minimal + Bash/Edit）两份请求: {:?}",
         {
             let bodies = bodies.lock().unwrap();
             bodies
@@ -7410,4 +7410,51 @@ fn start_remote_sub_agent_rejects_missing_settings() {
     assert!(error.contains("missing required fields"));
     assert!(harness.core.session_if_exists("sub_remote_missing").is_none());
     crate::subagent::reset_for_test();
+}
+
+/// `TodoWrite` 成功后推送 `todosChanged`（`docs/features/todo-list.md` FR-002）：
+/// 载荷是全量清单，随工具结果之后发出，webview 不需要重新加载对话。
+#[test]
+fn todo_write_emits_todos_changed() {
+    let sandbox = Sandbox::new("engine-todos-changed");
+    let llm = FakeLlm::start(|index, _| {
+        if index == 0 {
+            let args = serde_json::to_string(&json!({ "todos": [
+                { "content": "改代码", "activeForm": "改代码中", "status": "completed" },
+                { "content": "跑测试", "activeForm": "跑测试中", "status": "in_progress" }
+            ] }))
+            .unwrap();
+            openai_tool_sse("call_1", "TodoWrite", &args)
+        } else {
+            openai_text_sse(&["完成"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::allow_all();
+    submit(&harness, "s1", "建个清单", "u-1");
+    assert!(harness.wait_query_end());
+
+    let pushed = harness
+        .sink
+        .event_of("todosChanged")
+        .expect("应当推送 todosChanged");
+    assert_eq!(pushed["sessionId"], json!("s1"));
+    assert_eq!(
+        pushed["todos"],
+        json!([
+            { "content": "改代码", "status": "completed", "activeForm": "改代码中" },
+            { "content": "跑测试", "status": "in_progress", "activeForm": "跑测试中" }
+        ])
+    );
+    // 表与推送一致（同一份事实）
+    assert_eq!(crate::tools::session_todos("s1"), Some(pushed["todos"].clone()));
+
+    // 推送发生在 toolResult 之后：事件顺序 = toolResult → todosChanged
+    let types = harness.sink.event_types();
+    let result_at = types.iter().position(|t| t == "toolResult").unwrap();
+    let changed_at = types.iter().position(|t| t == "todosChanged").unwrap();
+    assert!(result_at < changed_at, "got {types:?}");
+
+    crate::tools::clear_session_todos("s1");
 }

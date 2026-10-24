@@ -88,17 +88,16 @@ export type CoreRequestHandlers = {
 
 ## 2. 事件词汇表
 
-四组词汇表，共 73 个事件：
+四组词汇表，共 75 个事件：
 
 | 词汇表 | 方向 | 语义 | 数量 | 处理方 |
 | --- | --- | --- | --- | --- |
-| `CoreEvent` | core → UI | 单向事实通知 | 31 | `WebViewUI`（`onCoreEvents` 映射表） |
+| `CoreEvent` | core → UI | 单向事实通知 | 32 | `WebViewUI`（`onCoreEvents` 映射表） |
 | `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 3 | `WebViewUI`（`onCoreRequests` 映射表） |
 | `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 26 | Core 进程的 `dispatch_ui_event` 分派 |
-| `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 13 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
+| `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 14 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
 
-`UiRequest` 的成员、两侧应答与宿主侧统一入口（`coreFacts`）见
-[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)。
+`UiRequest` 的成员与宿主侧统一入口（`coreFacts`）见 [docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)。
 汇总数量由 `src/test/docsLint.test.ts` 对照类型联合校验，不手写维护。
 
 **两条独立的流**（[layering.md](layering.md) 规则 8）：
@@ -164,8 +163,9 @@ export type CoreRequestHandlers = {
 | 28 | `crossWorkspaceAgentReplyRequested` | `sessionId`（发起方会话）, `fromSessionId`, `content` | `engine.rs`（目标工作区 Core 的 `deliver_agent_reply`：跨工作区子代理调用 Reply 工具，目标会话不在本进程） | `onCrossWorkspaceAgentReplyRequested`（转成 `UiEvent.agentReplyReceived`，按会话路由回发起方 Connection） | 无（跨 Core 转发，不投递 webview） |
 | 29 | `crossWorkspaceAgentAbortRequested` | `sessionId`（远程子代理会话 id） | `engine.rs`（`abort_session_scope`：对登记为远程的子代理发中止请求） | `onCrossWorkspaceAgentAbortRequested`（按 link 表找到目标 Connection 下发 `UiEvent.abortRequested`） | 无（跨 Core 转发） |
 | 30 | `crossWorkspaceAgentEnded` | `sessionId`（发起方会话）, `subSessionId` | `engine.rs`（`run_sub_agent` 收尾：跨工作区子代理结束 / 中止 / 失败） | `onCrossWorkspaceAgentEnded`（转成 `UiEvent.crossWorkspaceAgentCompleted`） | 无（跨 Core 转发） |
+| 31 | `todosChanged` | `sessionId`, `todos: readonly TodoEntry[]` | `engine.rs`（`emit_tool_outcome`：TodoWrite 成功后推送全量清单） | `onTodosChanged` | `sessionTodos`（空数组即该会话没有 Todo，按钮不渲染） |
 
-> 第 1–10 项是渲染类 handler，第 11–27 项是控制面与事实通知 handler——这条界线只是 `WebViewUI` 内部的分区，不是事件类型的分组。
+> 第 1–10 项是渲染类 handler，第 11–31 项是控制面与事实通知 handler——这条界线只是 `WebViewUI` 内部的分区，不是事件类型的分组。
 >
 > 各表的 `#` 列是**表内序号**（2.1 自 0 起，2.2 / 2.3 自 1 起）；跨表指名一律用事件名，不用行号。
 > 父子会话的展示事实读 `conversationsData` / `sessionRuntimeStates` 的 `parentSessionId`（[docs/core/session-runtime.md](../core/session-runtime.md)）。

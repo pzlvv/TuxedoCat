@@ -24,7 +24,7 @@ import { getSystemLocale, setHostLocale, setHostUiLanguage } from './i18n.js';
 import type { ConversationMetadata } from '../shared/history/Conversation.js';
 import type { ConversationSpaceInfo } from '../shared/webviewTypes.js';
 import type { McpServerInfo } from '../shared/webviewTypes.js';
-import type { Message } from '../shared/types.js';
+import type { Message, TodoEntry } from '../shared/types.js';
 import { getSettingsStore, type UiLanguage, type UiFontSize } from './SettingsStore.js';
 
 export type { UiLanguage, UiFontSize };
@@ -139,6 +139,16 @@ export async function requestFlushSession(sessionId: string): Promise<void> {
  */
 export async function loadConversationForHost(sessionId: string): Promise<LoadedConversation> {
   return requireEventBus().requestCore({ type: 'conversationLoadRequested', sessionId });
+}
+
+/**
+ * 会话当前的 Todo 清单（`docs/features/todo-list.md` FR-002）。
+ *
+ * 事实由 Core 持有：表里有就直接给，没有就按会话文件里最后一条成功的 `TodoWrite`
+ * 重建。变更时另有 `CoreEvent.todosChanged` 推送——webview 两条路径落到同一个状态。
+ */
+export async function requestSessionTodos(sessionId: string): Promise<TodoEntry[]> {
+  return requireEventBus().requestCore({ type: 'sessionTodosRequested', sessionId });
 }
 
 /**

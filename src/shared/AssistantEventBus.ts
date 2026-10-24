@@ -17,7 +17,7 @@
  *   当前两个请求都不设超时，调用点自行决定兜底
  */
 
-import type { Message, MessageData, StreamMessageData, StreamEndData } from './types.js';
+import type { Message, MessageData, StreamMessageData, StreamEndData, TodoEntry } from './types.js';
 import type { AgentMode } from './types.js';
 import type { ModelRef } from './llm/modelRef.js';
 import type { PermissionResult, ToolProgressData } from './tools/Tool.js';
@@ -111,6 +111,18 @@ export type CoreEvent =
   | {
       type: 'sessionRuntimeChanged';
       states: readonly SessionRuntimeState[];
+    }
+  /**
+   * 某会话的 Todo 清单变了（`docs/features/todo-list.md` FR-002）。
+   *
+   * 推**全量清单**而不是增量：清单是几十条的量级，全量让消费者不必自己维护状态表；
+   * 空数组即「该会话没有 Todo」。事实由 core 持有（`TodoWrite` 成功即写表），
+   * 按需索取走 `UiRequest.sessionTodosRequested`——两条路径落到 webview 的同一个状态。
+   */
+  | {
+      type: 'todosChanged';
+      sessionId: string;
+      todos: readonly TodoEntry[];
     }
   /**
    * 远程工作区中被监听文件发生变化（specs/018 FR-002）。
@@ -599,6 +611,14 @@ export type UiRequest =
    */
   | { type: 'conversationLoadRequested'; sessionId: string }
   /**
+   * 某会话当前的 Todo 清单（`docs/features/todo-list.md` FR-002）。
+   *
+   * 事实由 core 持有：表里有就直接给，没有就按会话文件里最后一条成功的 `TodoWrite`
+   * 重建后写表再给。会话文件不存在时返回空数组（「没有 Todo」与「读不到」同口径）。
+   * 变更时另有 `CoreEvent.todosChanged` 推送——两条路径落到同一个 webview 状态。
+   */
+  | { type: 'sessionTodosRequested'; sessionId: string }
+  /**
    * 斜杠命令与技能列表（内置命令 + 内置技能 + 会话工作目录下的技能）。
    * `sessionId` 决定项目技能扫描的工作目录；缺省时只列内置项。
    */
@@ -696,6 +716,7 @@ export type UiRequestResultMap = {
   conversationSpacesRequested: ConversationSpaceInfo[];
   flushSessionRequested: null;
   conversationLoadRequested: LoadedConversation;
+  sessionTodosRequested: TodoEntry[];
   skillsRequested: { skills: SkillListItem[] };
   spinDesignRequested: SpinDesignReadResult;
   spinDesignSaveRequested: SpinDesignSaveResult;

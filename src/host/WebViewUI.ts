@@ -14,7 +14,7 @@
 
 import type { AssistantEventBus, CoreEvent, CoreEventHandlers, CoreRequestHandlers, SpinDesignReadResult } from '../shared/AssistantEventBus.js';
 import { requireEventBus } from '../shared/AssistantEventBus.js';
-import type { AgentMode, MessageData, StreamMessageData, StreamEndData } from '../shared/types.js';
+import type { AgentMode, MessageData, StreamMessageData, StreamEndData, TodoEntry } from '../shared/types.js';
 import type { ModelRef } from '../shared/llm/modelRef.js';
 import type { ToolProgressData, PermissionResult } from '../shared/tools/Tool.js';
 import type { UIHost, WebviewViewHandle } from './UIHost.js';
@@ -339,6 +339,7 @@ export class WebViewUI implements WebViewUiPort {
       conversationListChanged: () => this.onConversationListChanged(),
       conversationSpaceCleared: (e) => this.onConversationSpaceCleared(e.dirName, e.result),
       sessionRuntimeChanged: (e) => this.onSessionRuntimeChanged(e.states),
+      todosChanged: (e) => this.onTodosChanged(e.sessionId, e.todos),
       spinDesignDataChanged: () => this.onSpinDesignDataChanged(),
       workModeChanged: (e) => this.onWorkModeChanged(e.sessionId, e.workMode),
       highlightLanguagesUsed: (e) => this.onHighlightLanguagesUsed(e.languages),
@@ -692,6 +693,15 @@ export class WebViewUI implements WebViewUiPort {
    */
   onSessionRuntimeChanged(states: readonly SessionRuntimeState[]): void {
     this.conversations.updateSessionStates(states);
+  }
+
+  /**
+   * 会话 Todo 清单变更 → 直接转发给 webview（`docs/features/todo-list.md` FR-002）。
+   *
+   * 宿主不留副本：core 是唯一持有者，webview 收到即更新自己的渲染状态。
+   */
+  onTodosChanged(sessionId: string, todos: readonly TodoEntry[]): void {
+    this.postToWebview(sessionId, { type: 'sessionTodos', todos: [...todos] });
   }
 
   /** Spin 设计器数据变化 → spinDesign.refresh()（设计器不在 UIHost 上） */

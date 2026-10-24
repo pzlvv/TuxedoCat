@@ -7,6 +7,7 @@ import type { McpServerInfo, ProviderModels } from '../shared/webviewTypes';
 import type { ModelRef } from '../shared/llm/modelRef';
 import { postMessage, getWindowSessionId } from './webviewEnv';
 import type { AbortButtonState } from '../host/abortButtonState';
+import type { TodoProgress } from '../host/todoProgress';
 import { resolveInputDisabledReason, resolveInputPlaceholderText, resolvePromptModeLocked, resolveSessionOptionsLocked } from './inputAreaState';
 import { isAgentCreator, type SessionCreator } from '../shared/sessionCreator';
 import { SegmentControl, CheckboxGlyph } from './components/SegmentControl';
@@ -64,6 +65,9 @@ function currencySymbol(currency?: string): string {
 /** abort 悬停明细浮层的显示延迟（specs/019 FR-002）：native title 延迟不可控，必须自计时 */
 const ABORT_TIP_DELAY_MS = 1000;
 
+/** 任务进度浮层的悬停显示延迟（docs/features/todo-list.md FR-003） */
+const TODO_TIP_DELAY_MS = 100;
+
 interface InputAreaProps {
   inputFocused: boolean;
   setInputFocused: (focused: boolean) => void;
@@ -84,6 +88,11 @@ interface InputAreaProps {
    * `resolveAbortButtonState` 推导（docs/features/abort-button.md FR-001）。
    */
   abortButtonState: AbortButtonState;
+  /**
+   * 当前会话的任务进度（`docs/features/todo-list.md` FR-002）：清单由 core 持有，
+   * App 用 `countTodoProgress` 折成 done / total。`null` = 没有 Todo → 不渲染按钮。
+   */
+  todoProgress: TodoProgress | null;
   /** 当前会话 id（specs/019 FR-003；null = 无当前会话）：切换会话时复位悬停明细浮层 */
   sessionId: string | null;
   /**
@@ -1707,6 +1716,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   maxContextTokens,
   compactPending,
   abortButtonState,
+  todoProgress,
   sessionId,
   abortHoverDetail,
   agentMode,
@@ -1780,6 +1790,34 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   }, [sessionId, closeAbortTip]);
   useEffect(() => () => {
     if (abortTipTimerRef.current !== null) clearTimeout(abortTipTimerRef.current);
+  }, []);
+
+  // ==================== 任务进度按钮与浮层（docs/features/todo-list.md FR-003） ====================
+
+  // 悬停 100ms 出浮层；点击固定（指针移出不隐藏）、再点恢复悬停规则；切换会话复位。
+  // 浮层 pointer-events-none：只读投影，点击不产生任何上行，也不改变固定状态。
+  const [todoTipVisible, setTodoTipVisible] = useState(false);
+  const [todoTipPinned, setTodoTipPinned] = useState(false);
+  const todoHoveredRef = useRef(false);
+  const todoTipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearTodoTipTimer = useCallback(() => {
+    if (todoTipTimerRef.current !== null) {
+      clearTimeout(todoTipTimerRef.current);
+      todoTipTimerRef.current = null;
+    }
+  }, []);
+  const hideTodoTip = useCallback(() => {
+    clearTodoTipTimer();
+    setTodoTipVisible(false);
+  }, [clearTodoTipTimer]);
+  // 切换会话：取消计时、复位固定态与可见态（新对话按悬停规则）
+  useEffect(() => {
+    todoHoveredRef.current = false;
+    setTodoTipPinned(false);
+    hideTodoTip();
+  }, [sessionId, hideTodoTip]);
+  useEffect(() => () => {
+    if (todoTipTimerRef.current !== null) clearTimeout(todoTipTimerRef.current);
   }, []);
 
   // Command history navigation state
@@ -2421,6 +2459,94 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
+          {/* 任务进度按钮（docs/features/todo-list.md FR-002 / FR-003）：紧挨菜单按钮左侧。
+              没有 Todo 时整个节点不渲染（不出现 0/0，也不留占位热区）。 */}
+          {todoProgress && (
+            <div className="relative flex-shrink-0">
+              <button
+                data-todo-progress={`${todoProgress.done}/${todoProgress.total}`}
+                data-todo-progress-pinned={todoTipPinned ? 'true' : 'false'}
+                className="px-1.5 h-7 rounded-lg ui-fs-11 whitespace-nowrap transition-all"
+                style={{
+                  color: todoTipPinned ? colors.textPrimary : colors.textSystem,
+                  backgroundColor: todoTipPinned ? colors.bgSecondary : 'transparent',
+                }}
+                onMouseEnter={() => {
+                  todoHoveredRef.current = true;
+                  clearTodoTipTimer();
+                  todoTipTimerRef.current = setTimeout(() => setTodoTipVisible(true), TODO_TIP_DELAY_MS);
+                }}
+                onMouseLeave={() => {
+                  todoHoveredRef.current = false;
+                  clearTodoTipTimer();
+                  // 未固定：移出立即隐藏（固定的浮层要留着让人读完）
+                  if (!todoTipPinned) setTodoTipVisible(false);
+                }}
+                onClick={() => {
+                  const next = !todoTipPinned;
+                  setTodoTipPinned(next);
+                  if (next) setTodoTipVisible(true);
+                  else if (!todoHoveredRef.current) setTodoTipVisible(false);
+                }}
+              >
+                {t('inputArea.todoProgress', { done: todoProgress.done, total: todoProgress.total })}
+              </button>
+              {todoTipVisible && (
+                <div
+                  data-todo-progress-tip="true"
+                  className="absolute bottom-full right-0 mb-2 rounded-lg border shadow-lg px-3 py-2 pointer-events-none z-50"
+                  style={{
+                    backgroundColor: colors.bgSecondary,
+                    borderColor: colors.border,
+                    maxWidth: 320,
+                  }}
+                >
+                  <div className="flex flex-col gap-1" style={{ maxHeight: 240, overflowY: 'auto' }}>
+                    {todoProgress.items.map((todo, index) => (
+                      <div key={index} className="flex items-start gap-2 ui-fs-11">
+                        <span
+                          className="flex-shrink-0 mt-0.5"
+                          style={{
+                            color: todo.status === 'in_progress'
+                              ? colors.harness
+                              : todo.status === 'completed'
+                                ? colors.timelineStatusSuccess
+                                : colors.textSystem,
+                          }}
+                        >
+                          <Icon
+                            name={todo.status === 'completed'
+                              ? 'check-square'
+                              : todo.status === 'in_progress'
+                                ? 'circle-dot'
+                                : 'square'}
+                            size={12}
+                          />
+                        </span>
+                        <span
+                          style={{
+                            color: todo.status === 'completed' ? colors.textSystem : colors.textPrimary,
+                            textDecoration: todo.status === 'completed' ? 'line-through' : 'none',
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {todo.content}
+                          {todo.status === 'in_progress' && todo.activeForm && (
+                            <span
+                              className="block ui-fs-11 italic mt-0.5"
+                              style={{ color: colors.harness }}
+                            >
+                              {todo.activeForm}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           <ToggleMenu
             agentMode={agentMode}
             onAgentModeChange={handleModeChange}

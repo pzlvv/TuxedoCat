@@ -5,7 +5,7 @@ import { profileLog } from '../../debug';
 import { resolveTitle } from '../../i18n';
 import { createSessionState } from '../../sessionState';
 import { AgentMode, QueuedMessagePayload, SessionRuntimeState } from '../../types';
-import { setConversationListOwner } from '../../webviewEnv';
+import { postMessage, setConversationListOwner } from '../../webviewEnv';
 import { applyLoadedConversationState, replayBufferedToolStatusIntoMessages, restoreMessagesFromConversation, toUiMessage } from './shared';
 
 /**
@@ -149,6 +149,20 @@ export function handleConversationSessionRuntimeStates(
           return;
 }
 
+export function handleConversationSessionTodos(
+  msg: Extract<HostToWebviewWire, { type: 'sessionTodos' }>,
+  ctx: HandlerContext,
+): void {
+  const { props } = ctx;
+  // core 是 Todo 的唯一持有者：这里只按 sessionId 落进渲染状态，不推导、不缓存第二份
+  // （docs/features/todo-list.md FR-002）。空数组即「该会话没有 Todo」。
+  props.setSessionTodos(prev => {
+    const next = new Map(prev);
+    next.set(msg.sessionId, msg.todos ?? []);
+    return next;
+  });
+}
+
 export function handleConversationSessionCompletionAttention(
   msg: Extract<HostToWebviewWire, { type: 'sessionCompletionAttention' }>,
   ctx: HandlerContext,
@@ -184,6 +198,9 @@ export function handleConversationConversationLoaded(
             const loadedSessionId = msg.conversation.metadata.sessionId;
             props.setCurrentSessionIdRef(loadedSessionId);
             props.setCurrentSessionId(loadedSessionId);
+            // Todo 清单由 core 持有（docs/features/todo-list.md FR-002）：会话加载后索取一次，
+            // 之后靠 core 的 todosChanged 推送更新。压缩（messagesReplaced）不重新索取。
+            postMessage({ type: 'requestSessionTodos', sessionId: loadedSessionId });
             // 恢复该会话的排队消息横幅（若有）
             props.setQueuedMessage(props.queuedMessageRef.current.get(loadedSessionId) ?? null);
             // 设置压缩状态

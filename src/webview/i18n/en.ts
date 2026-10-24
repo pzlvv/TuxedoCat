@@ -189,6 +189,7 @@ export const enDict: Record<string, string> = {
   'inputArea.compactPending': 'Preparing',
   'inputArea.fileHiddenTitle': 'Click to restore, file info will be sent to LLM',
   'inputArea.fileShownTitle': 'Click to hide, file info will not be sent to LLM',
+  'inputArea.todoProgress': 'Progress: {done}/{total}',
   'inputArea.abort': 'Abort',
   'inputArea.abortHoverTasks': 'Background tasks',
   'inputArea.abortHoverSubAgents': 'Sub-agents',

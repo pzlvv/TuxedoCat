@@ -106,6 +106,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 | `docs/features/background-bash.md` | Bash 后台任务：手工转后台（暂停 / 接续）与两类任务提醒 |
 | `docs/features/tui-installer.md` | TUI 版分发与 Core 部署安装程序 |
 | `docs/features/web-search.md` | 联网搜索与网页抓取（WebSearch / WebFetch 客户端工具） |
+| `docs/features/todo-list.md` | 会话 Todo 清单：Core 持有与重建、索取与推送、输入区任务进度按钮 |
 | `docs/features/cross-workspace-agent.md` | 跨工作区多 Agent 通信：工作区代理身份、`Agent.target`、占位父对话、跳转、中止与 `@` 补全 |
 
 ### 基础

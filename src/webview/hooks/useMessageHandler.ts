@@ -3,12 +3,12 @@ import type { McpServerInfo, ProviderModels } from '../../shared/webviewTypes';
 import type { SessionCreator } from '../../shared/sessionCreator';
 import type { ModelRef } from '../../shared/llm/modelRef';
 import type { HostToWebviewWire } from '../../host/webviewMessages';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, LlmConfigPanelPayload, SessionRuntimeState, ApplyDefaultsPrompt } from '../types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, LlmConfigPanelPayload, SessionRuntimeState, ApplyDefaultsPrompt, TodoEntry } from '../types';
 import type { SessionStatesStore } from '../sessionState';
 import { profileLog } from '../debug';
 import { handleStreamShowThinkingAnimation, handleStreamAiEnd, handleStreamQueryBegin, handleStreamQueryEnd, handleStreamStreamMessage, handleStreamStreamEnd, handleStreamCompressProgress } from './handlers/streamHandlers';
 import { handleToolAddMessage, handleToolUpdateToolArgs, handleToolUpdateToolStatus, handleToolToolProgress, handleToolRequestUserChoice, handleToolToolMetaData } from './handlers/toolHandlers';
-import { handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationSetWorkMode, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationSessionCompletionAttention, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
+import { handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationSetWorkMode, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationSessionTodos, handleConversationSessionCompletionAttention, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
 import { handleConfigSetTheme, handleConfigSetModel, handleConfigSetAgentMode, handleConfigSetPromptMode, handleConfigSetThinkingMode, handleConfigSetWebSearch, handleConfigSetMcpServers, handleConfigSetModels, handleConfigSetSkills, handleConfigSetWorkspaces, handleConfigContextLimitUpdated, handleConfigNotice, handleConfigSettingsDefaults, handleConfigProviderModelsResult, handleConfigSetNewConversationDefaults, handleConfigLlmConfigSaved, handleConfigShowLLMConfig, handleConfigBalanceUpdate, handleConfigFocusInput, handleConfigActivatePrewarmedView } from './handlers/configHandlers';
 import type { HandlerContext } from './handlers/handlerContext';
 import { restoreQueuedMessageToInput } from './restoreQueuedMessage';
@@ -86,6 +86,8 @@ export interface UseMessageHandlerProps {
   setForceScrollKey: (v: number | ((prev: number) => number)) => void;
   /** core 推来会话运行时状态时递增，强制对话列表重渲染以刷新流水灯与 abort 按钮 */
   setSessionIdleVersion: (v: number | ((prev: number) => number)) => void;
+  /** 按会话的 Todo 清单（core 是唯一持有者，docs/features/todo-list.md FR-002） */
+  setSessionTodos: React.Dispatch<React.SetStateAction<Map<string, TodoEntry[]>>>;
   /** 未读完成的会话集合（「任务完成」绿色呼吸，Electron 宿主推送；sessionId → 到达时刻） */
   setCompletionAttention: React.Dispatch<React.SetStateAction<Map<string, number>>>;
   setExpandedSubSessions: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
@@ -354,6 +356,9 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           break;
         case 'sessionRuntimeStates':
           handleConversationSessionRuntimeStates(msg, ctx);
+          break;
+        case 'sessionTodos':
+          handleConversationSessionTodos(msg, ctx);
           break;
         case 'sessionCompletionAttention':
           handleConversationSessionCompletionAttention(msg, ctx);

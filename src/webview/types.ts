@@ -4,7 +4,7 @@
  */
 
 import type { ModelRef } from '../shared/llm/modelRef';
-import type { MessageOrigin } from '../shared/types';
+import type { MessageOrigin, TodoEntry } from '../shared/types';
 import type { McpServerInfo } from '../shared/webviewTypes';
 import type { SessionCreator } from '../shared/sessionCreator';
 import type { WebviewToHostMessage } from '../host/webviewMessages';
@@ -13,6 +13,9 @@ import type { UiFontSize } from './fontSize';
 
 /** `sendMessage` 的 wire 载荷形态（宿主契约 `src/host/webviewMessages.ts`，webview 只消费不另定义） */
 export type SendMessageWire = Extract<WebviewToHostMessage, { type: 'sendMessage' }>;
+
+/** 会话 Todo 条目（`docs/features/todo-list.md` FR-001）：事实来自 core，webview 只渲染 */
+export type { TodoEntry };
 
 export type Theme = 'dark' | 'light';
 export type AgentMode = 'manual' | 'risk' | 'auto';

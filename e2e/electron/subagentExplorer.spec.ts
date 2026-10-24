@@ -13,7 +13,7 @@ import type { MockLlm, RecordedRequest, ScriptDecision } from '../helpers/mockLl
  *
  * Electron 整应用链路：真实 standalone core（Rust）+ 本地 mock LLM。
  * 1. 父会话发起 `Agent(agentRole="explorer")`：子代理首请求的 tools 恰为
- *    Read / Glob / Grep / Reply（无 Bash / WebSearch，无 `mcp__*`）。
+ *    Read / Glob / Grep / Reply / TodoWrite（无 Bash / WebSearch，无 `mcp__*`）。
  * 2. 子代理首轮故意调用 Bash（白名单外）：tool_result 为错误文案（点名角色与
  *    可用工具），命令未执行，会话不中止、随后 Reply 正常收尾。
  * 3. 打开 explorer 子会话视图：选项菜单的提示词模式 / 联网搜索 / MCP 三项置灰，
@@ -105,7 +105,7 @@ test.afterEach(async () => {
   await fs.promises.rm(workspaceDir, { recursive: true, force: true }).catch(() => undefined);
 });
 
-test('US-51 explorer：只读四件套、白名单外被拒、选项菜单置灰', async () => {
+test('US-51 explorer：只读五件套、白名单外被拒、选项菜单置灰', async () => {
   mockLlm.setHandler((req): ScriptDecision => {
     const last = req.body.messages[req.body.messages.length - 1];
     const text = lastUserText(req.body.messages);
@@ -139,17 +139,17 @@ test('US-51 explorer：只读四件套、白名单外被拒、选项菜单置灰
   await chatPage.fill('textarea.input-textarea', PARENT_PROMPT);
   await chatPage.press('textarea.input-textarea', 'Enter');
 
-  // 子代理首请求到达：工具清单恰为四件套（内置定义顺序的过滤投影；
-  // 无 Bash / WebSearch / TodoWrite / Agent，无 mcp__*）
+  // 子代理首请求到达：工具清单恰为五件套（内置定义顺序的过滤投影；
+  // 无 Bash / WebSearch / Agent，无 mcp__*）
   await expect
     .poll(() => subFirstRequests().length, { timeout: 60_000 })
     .toBe(1);
-  expect(toolNames(subFirstRequests()[0])).toEqual(['Read', 'Grep', 'Glob', 'Reply']);
+  expect(toolNames(subFirstRequests()[0])).toEqual(['Read', 'Grep', 'Glob', 'TodoWrite', 'Reply']);
 
   // 白名单外的 Bash 被执行侧拒绝：tool_result 点名角色与可用工具，且命令未执行
   await expect
     .poll(
-      () => findToolResultText('Explorer 子代理只有 Read / Glob / Grep / Reply 工具，Bash 不可用'),
+      () => findToolResultText('Explorer 子代理只有 Read / Glob / Grep / Reply / TodoWrite 工具，Bash 不可用'),
       { timeout: 30_000 },
     )
     .toBe(true);

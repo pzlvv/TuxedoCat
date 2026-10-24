@@ -669,3 +669,308 @@ fn runtime_snapshot_reports_compacting() {
 
     crate::compact::reset_for_test();
 }
+
+// ==================== Todo 表 × 压缩（specs/027） ====================
+//
+// Todo 表由 Core 持有（`docs/features/todo-list.md` FR-001）：压缩重写的是消息数组与
+// 会话文件，与表无关。这组用例锁住三件事——① 压缩（含多次压缩）不动表；② 压缩把
+// `TodoWrite` 调用从文件里摘要掉之后，表仍然是唯一事实；③ 进程重启（表清空）后重建
+// 只能重建到「还在保留区里的最后一条成功调用」。
+
+/// 造一个只带 `session_id` 的工具上下文（TodoWrite 不读 cwd，但字段必填）
+fn todo_ctx(sandbox: &Sandbox, session_id: &str) -> crate::tools::ToolContext {
+    crate::tools::ToolContext {
+        session_id: session_id.to_string(),
+        tool_use_id: None,
+        pause: None,
+        cwd: sandbox.workspace.to_string_lossy().to_string(),
+        on_progress: None,
+        cancel: None,
+        user_choice: None,
+        background: None,
+        subagent: None,
+    }
+}
+
+/// 走真实的 `TodoWrite` 执行路径（写表 + 返回 `SuccessWithTodos`）
+fn write_todos(sandbox: &Sandbox, session_id: &str, todos: Value) -> crate::tools::ToolOutcome {
+    let outcome = crate::tools::execute(
+        "TodoWrite",
+        &json!({ "todos": todos }),
+        &todo_ctx(sandbox, session_id),
+    );
+    assert!(!outcome.is_error(), "TodoWrite 应当成功: {}", outcome.text());
+    outcome
+}
+
+/// 往会话末尾追加「assistant TodoWrite tool_use + user tool_result」一对消息
+/// （同步内存与落盘，`exit_code` 0 = 成功、非 0 = 失败）
+fn append_todo_call(
+    harness: &EngineHarness,
+    session_id: &str,
+    project: &str,
+    id: &str,
+    todos: Value,
+    exit_code: i64,
+) {
+    let state = harness.core.session(session_id);
+    let messages = {
+        let mut state = state.lock().unwrap();
+        state.messages.push(json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": id,
+                    "name": "TodoWrite",
+                    "input": { "todos": todos },
+                }],
+            },
+            "uuid": format!("a-{id}"),
+            "timestamp": 10_000,
+        }));
+        state.messages.push(json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": id,
+                    "content": "Todos have been modified successfully",
+                    "exit_code": exit_code,
+                }],
+            },
+            "uuid": format!("r-{id}"),
+            "timestamp": 10_001,
+        }));
+        state.persisted_count = state.messages.len();
+        state.last_uuid = Some(format!("r-{id}"));
+        state.messages.clone()
+    };
+    crate::history::replace_messages(session_id, project, &messages).unwrap();
+}
+
+/// 会话文件里是否还留着某次 `TodoWrite` 调用
+fn file_has_todo_call(project: &str, session_id: &str, id: &str) -> bool {
+    crate::history::load_messages(session_id, project)
+        .iter()
+        .filter_map(|message| message["message"]["content"].as_array())
+        .flatten()
+        .any(|block| block["type"] == json!("tool_use") && block["id"] == json!(id))
+}
+
+/// 准备「早期写过 Todo、之后又堆了很多消息」的会话：TodoWrite 落在保留区之外
+fn seed_with_early_todo(harness: &EngineHarness, sandbox: &Sandbox) -> (String, Value) {
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let todos = json!([
+        { "content": "改代码", "activeForm": "改代码中", "status": "completed" },
+        { "content": "跑测试", "activeForm": "跑测试中", "status": "in_progress" },
+        { "content": "写文档", "activeForm": "写文档中", "status": "pending" },
+        { "content": "收敛", "activeForm": "收敛中", "status": "pending" }
+    ]);
+    seed_messages(harness, "s1", &project, 5);
+    append_todo_call(harness, "s1", &project, "tu-early", todos.clone(), 0);
+    // 再堆 40 条：压缩只保留末尾 30 条，早期这对消息会被摘要掉
+    append_messages(harness, "s1", &project, 5, 40);
+    (project, todos)
+}
+
+#[test]
+fn todo_table_survives_manual_compact() {
+    let sandbox = Sandbox::new("engine-compact-todo-manual");
+    crate::compact::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+
+    let (project, todos) = seed_with_early_todo(&harness, &sandbox);
+    // 真实写入路径：表里有这份清单
+    write_todos(&sandbox, "s1", todos);
+    let before = crate::tools::session_todos("s1").expect("表里应有该会话");
+
+    harness.core.request_compact("s1");
+
+    // ① 表不变
+    assert_eq!(crate::tools::session_todos("s1"), Some(before));
+    // ② 文件里那条调用已被摘要掉——证明状态不是从文件推出来的
+    assert!(
+        !file_has_todo_call(&project, "s1", "tu-early"),
+        "早期 TodoWrite 应当已被摘要替换"
+    );
+    // ③ 压缩确实发生了
+    let messages = crate::history::load_messages("s1", &project);
+    assert_eq!(messages[0]["subtype"], json!("compact_boundary"));
+
+    crate::tools::clear_session_todos("s1");
+    crate::compact::reset_for_test();
+}
+
+#[test]
+fn todo_table_survives_repeated_compaction() {
+    let sandbox = Sandbox::new("engine-compact-todo-repeat");
+    crate::compact::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+
+    let (project, todos) = seed_with_early_todo(&harness, &sandbox);
+    write_todos(&sandbox, "s1", todos);
+    let before = crate::tools::session_todos("s1").expect("表里应有该会话");
+
+    harness.core.request_compact("s1");
+    assert_eq!(crate::tools::session_todos("s1"), Some(before.clone()));
+
+    // 追加消息让会话再次超阈值，压第二次
+    append_messages(&harness, "s1", &project, 45, 40);
+    harness.core.request_compact("s1");
+
+    assert_eq!(
+        crate::tools::session_todos("s1"),
+        Some(before),
+        "多次压缩后表仍是最初写入的那份清单"
+    );
+    assert_eq!(
+        crate::history::load_messages("s1", &project)[0]["subtype"],
+        json!("compact_boundary")
+    );
+
+    crate::tools::clear_session_todos("s1");
+    crate::compact::reset_for_test();
+}
+
+#[test]
+fn todo_table_survives_compaction_after_new_write() {
+    let sandbox = Sandbox::new("engine-compact-todo-rewrite");
+    crate::compact::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+
+    let (project, todos) = seed_with_early_todo(&harness, &sandbox);
+    write_todos(&sandbox, "s1", todos);
+    harness.core.request_compact("s1");
+
+    // 压缩之后再写一次（真实写入路径）
+    let second = json!([
+        { "content": "只剩一件", "activeForm": "做这一件", "status": "in_progress" }
+    ]);
+    write_todos(&sandbox, "s1", second);
+    // 再压一次：第二次的清单不受影响
+    append_messages(&harness, "s1", &project, 85, 40);
+    harness.core.request_compact("s1");
+
+    assert_eq!(
+        crate::tools::session_todos("s1"),
+        Some(json!([
+            { "content": "只剩一件", "status": "in_progress", "activeForm": "做这一件" }
+        ]))
+    );
+
+    crate::tools::clear_session_todos("s1");
+    crate::compact::reset_for_test();
+}
+
+#[test]
+fn todo_rebuild_after_compaction_and_restart_returns_empty() {
+    let sandbox = Sandbox::new("engine-compact-todo-restart-empty");
+    crate::compact::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+
+    let (_project, todos) = seed_with_early_todo(&harness, &sandbox);
+    write_todos(&sandbox, "s1", todos);
+    harness.core.request_compact("s1");
+
+    // 模拟进程重启：表清空
+    crate::tools::clear_session_todos("s1");
+    assert_eq!(crate::tools::session_todos("s1"), None);
+
+    // 重建：最后一条成功调用已被摘要替换 → 视为没有 Todo
+    assert_eq!(crate::tools::ensure_session_todos("s1"), json!([]));
+
+    crate::tools::clear_session_todos("s1");
+    crate::compact::reset_for_test();
+}
+
+#[test]
+fn todo_rebuild_after_compaction_and_restart_uses_surviving_write() {
+    let sandbox = Sandbox::new("engine-compact-todo-restart-survive");
+    crate::compact::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+
+    let (project, todos) = seed_with_early_todo(&harness, &sandbox);
+    write_todos(&sandbox, "s1", todos);
+    harness.core.request_compact("s1");
+
+    // 压缩后再写一次：这次落在保留区里
+    let survivor = json!([
+        { "content": "压缩后写的", "activeForm": "压缩后写", "status": "pending" }
+    ]);
+    write_todos(&sandbox, "s1", survivor.clone());
+    append_todo_call(&harness, "s1", &project, "tu-survivor", survivor, 0);
+
+    // 模拟进程重启：表清空后重建
+    crate::tools::clear_session_todos("s1");
+    assert_eq!(
+        crate::tools::ensure_session_todos("s1"),
+        json!([
+            { "content": "压缩后写的", "status": "pending", "activeForm": "压缩后写" }
+        ]),
+        "保留区里的最后一条成功调用可以被重建出来"
+    );
+
+    crate::tools::clear_session_todos("s1");
+    crate::compact::reset_for_test();
+}
+
+#[test]
+fn todo_table_survives_auto_compact() {
+    let sandbox = Sandbox::new("engine-compact-todo-auto");
+    crate::compact::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    // 上下文窗口压到 2000、输出上限压到 1000 → 阈值 1700，随便几条消息就会超
+    sandbox.write_llm_settings(&llm.base_url, "auto");
+    let mut settings = sandbox.read_settings();
+    settings["llm"]["maxTokens"] = json!(1000);
+    settings["llm"]["providers"]["fake"]["modelConfigs"]["fake-model"]["context"] = json!(2000);
+    settings["llm"]["providers"]["fake"]["modelConfigs"]["fake-model"]["output"] = json!(1000);
+    sandbox.write_settings(settings);
+    config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
+    let harness = EngineHarness::allow_all();
+
+    let (_project, todos) = seed_with_early_todo(&harness, &sandbox);
+    write_todos(&sandbox, "s1", todos);
+    let before = crate::tools::session_todos("s1").expect("表里应有该会话");
+
+    // 自动压缩由本轮请求前的阈值判定触发
+    submit(&harness, "s1", "继续", "u-100");
+    assert!(
+        harness.wait_for(
+            |sink| !sink.events_of("messagesReplaced").is_empty(),
+            Duration::from_secs(30),
+        ),
+        "应当触发自动压缩: {:?}",
+        harness.sink.event_types()
+    );
+    assert!(
+        harness.wait_for(
+            |sink| !sink.events_of("queryEnd").is_empty(),
+            Duration::from_secs(30),
+        ),
+        "本轮应当收尾: {:?}",
+        harness.sink.event_types()
+    );
+
+    assert_eq!(
+        crate::tools::session_todos("s1"),
+        Some(before),
+        "自动压缩路径同样不动表"
+    );
+
+    crate::tools::clear_session_todos("s1");
+    crate::compact::reset_for_test();
+}

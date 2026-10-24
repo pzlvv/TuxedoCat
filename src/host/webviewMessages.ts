@@ -14,7 +14,7 @@
  * 再在 `WebviewMessageHandler` 的分发表与 webview 的 switch 各补一个分支。
  */
 
-import type { MessageData, MessageOrigin } from '../shared/types.js';
+import type { MessageData, MessageOrigin, TodoEntry } from '../shared/types.js';
 import type { McpServerInfo, ProviderModels } from '../shared/webviewTypes.js';
 
 /** 用户消息携带的图片（仅用于 UI 展示，LLM 请求使用 content blocks） */
@@ -273,6 +273,16 @@ export type HostToWebviewMessage = {
    */
   type: 'sessionCompletionAttention';
   sessionIds: string[];
+} | {
+  /**
+   * 某会话的 Todo 清单（`docs/features/todo-list.md` FR-002）。
+   *
+   * 两条来源合流：webview 的 `requestSessionTodos` 应答，以及 core 的
+   * `CoreEvent.todosChanged` 推送。空数组即「该会话没有 Todo」（按钮不渲染）。
+   */
+  type: 'sessionTodos';
+  sessionId: string;
+  todos: TodoEntry[];
 } | {
   type: 'conversationLoaded';
   sessionId: string;
@@ -638,6 +648,10 @@ export type WebviewToHostMessage = {
   /** 本次发送携带的模型身份（model + provider 一起表征；缺省沿用会话已选模型） */
   model?: string;
   provider?: string;
+} | {
+  /** 索取某会话当前的 Todo 清单（应答是下行 `sessionTodos`） */
+  type: 'requestSessionTodos';
+  sessionId: string;
 } | {
   type: 'loadConversation';
   sessionId: string;

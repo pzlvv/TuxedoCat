@@ -117,7 +117,7 @@ UI 侧提前弹框会造成双重确认。
 | `setActiveSessionId(sessionId)` | 宿主切换前台会话时同步「当前活跃会话」。多视图宿主（Electron）切到**已打开**的视图不会再走 `loadConversation` / `startNewConversation`，必须由宿主在活动视图变化时显式同步（`ChatViewManager.show` → `onActiveSessionChanged` → `WebViewUI.setActiveSessionId`）；否则 `trackedActiveSessionId` 停在旧视图，按会话解析的数据（project skills / MCP 启用列表）会取到别的标签页的工作目录 |
 | `dropTrackedSession(sessionId)` | 会话关闭 / 删除时清掉 `trackedActiveSessionId`（若指向该会话） |
 | `emitUiEvent(event)` | `requireEventBus().emitToCore(event)`——**改 core 状态的唯一出口** |
-| `buildMessageHandlers()` | 43 个消息类型 → 处理器（见下）；其中 `sendMessage` 是用户消息的唯一入口（`handleUserMessage`），wire 类型不区分「新消息 / 排队消息」：是否登记排队项由宿主按 core 的会话运行时快照决定（第 4 节 `onQueuedMessage`） |
+| `buildMessageHandlers()` | 44 个消息类型 → 处理器（见下）；其中 `sendMessage` 是用户消息的唯一入口（`handleUserMessage`），wire 类型不区分「新消息 / 排队消息」：是否登记排队项由宿主按 core 的会话运行时快照决定（第 4 节 `onQueuedMessage`） |
 
 **消息分发表**（`buildMessageHandlers`，按代码注释分区）：
 

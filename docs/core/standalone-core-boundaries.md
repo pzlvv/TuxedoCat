@@ -44,6 +44,7 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | 会话运行时状态 | `sessionRuntimeChanged` 的全量推送（宿主缓存快照，`ConversationManager.getSessionStatesSnapshot`） |
 | 压缩归档展开 | `UiRequest.compactArchiveRequested` |
 | 会话内容 / 元数据 / 派生事实 | `UiRequest.conversationLoadRequested` |
+| 会话 Todo 清单 | `UiRequest.sessionTodosRequested`（表里有就直接给，没有就按会话文件里最后一条成功的 `TodoWrite` 重建）；变更时另有 `CoreEvent.todosChanged` 推送 |
 | 斜杠命令与技能列表 | `UiRequest.skillsRequested` |
 | Spin 设计（`spin.json` 内容 + 设计器技能清单） | `UiRequest.spinDesignRequested` |
 | Spin 设计保存 | `UiRequest.spinDesignSaveRequested` |

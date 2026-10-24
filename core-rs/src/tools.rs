@@ -301,6 +301,11 @@ pub enum ToolOutcome {
         text: String,
         new_messages: Vec<Value>,
     },
+    /// 成功，且改动了会话 Todo 表（当前只有 `TodoWrite`）。
+    ///
+    /// engine 在 `emit_tool_outcome` 里据此推送 `todosChanged`——「哪个工具改 Todo」只在
+    /// 本模块决定，engine 只负责把它翻译成事件（`docs/features/todo-list.md` FR-002）。
+    SuccessWithTodos { text: String, todos: Value },
 }
 
 impl ToolOutcome {
@@ -326,6 +331,7 @@ impl ToolOutcome {
             ToolOutcome::Success(_)
             | ToolOutcome::SuccessWithMeta { .. }
             | ToolOutcome::SuccessBlocks(_)
+            | ToolOutcome::SuccessWithTodos { .. }
             | ToolOutcome::SuccessWithMessages { .. } => 0,
             ToolOutcome::Error(_) | ToolOutcome::Canceled(_) => -1,
             ToolOutcome::CommandFailed { exit_code, .. } => *exit_code,
@@ -340,6 +346,7 @@ impl ToolOutcome {
             | ToolOutcome::CommandFailed { text, .. } => text,
             ToolOutcome::SuccessWithMeta { text, .. } => text,
             ToolOutcome::SuccessWithMessages { text, .. } => text,
+            ToolOutcome::SuccessWithTodos { text, .. } => text,
             // 结构化 block 没有文本形态；调用方必须先判 SuccessBlocks（见 engine.rs）
             ToolOutcome::SuccessBlocks(_) => "",
         }
@@ -358,6 +365,14 @@ impl ToolOutcome {
         match self {
             ToolOutcome::SuccessWithMessages { new_messages, .. } => new_messages.clone(),
             _ => Vec::new(),
+        }
+    }
+
+    /// 本次调用写进会话 Todo 表的新清单（`docs/features/todo-list.md` FR-002）；无则 None
+    pub fn todos(&self) -> Option<&Value> {
+        match self {
+            ToolOutcome::SuccessWithTodos { todos, .. } => Some(todos),
+            _ => None,
         }
     }
 
@@ -1610,7 +1625,9 @@ pub const SUB_AGENT_ROLES: &[&str] = &["Master", "Explorer"];
 /// 不联网 / 无 MCP（FR-003）——工具集在会话创建时由角色一次确定，生命周期不变。
 pub fn sub_agent_role_tools(role: &str) -> Option<&'static [&'static str]> {
     match role {
-        "Explorer" => Some(&["Read", "Glob", "Grep", "Reply"]),
+        // TodoWrite 也放行：Explorer 的找文件 / 读代码链路长，清单让它能自报进度
+        // （`docs/features/todo-list.md` FR-005）。
+        "Explorer" => Some(&["Read", "Glob", "Grep", "Reply", "TodoWrite"]),
         _ => None,
     }
 }
@@ -3882,15 +3899,183 @@ fn run_glob(input: &Value, ctx: &ToolContext) -> ToolOutcome {
 
 // ==================== TodoWrite ====================
 
-static TODOS: std::sync::Mutex<Option<HashMap<String, Value>>> = std::sync::Mutex::new(None);
+/// 会话 Todo 条目（`TodoWrite` 的元素，`docs/features/todo-list.md` FR-001）。
+///
+/// 字段名与 `src/shared/types.ts` 的 `TodoEntry` 逐字对应（`activeForm` 是 JSON 侧写法）；
+/// 三个字段全必选，缺省值由 `run_todo_write` 的校验与 `rebuild_todos_from_history`
+/// 的规范化各自补齐。
+#[derive(Clone, serde::Serialize)]
+pub struct TodoEntry {
+    pub content: String,
+    pub status: String,
+    #[serde(rename = "activeForm")]
+    pub active_form: String,
+}
+
+/// 会话 Todo 表：`sessionId → 清单`。
+///
+/// 它是 Todo 状态的**唯一持有者**（`docs/features/todo-list.md` FR-001）：`TodoWrite` 成功
+/// 即写表，宿主经 `sessionTodosRequested` 索取，变更时由 `todosChanged` 推送。进程重启后
+/// 表为空，首次被索取 / 写入前由 `rebuild_todos_from_history` 从会话文件重建。
+static TODOS: std::sync::Mutex<Option<HashMap<String, Vec<TodoEntry>>>> =
+    std::sync::Mutex::new(None);
+
+/// 取表锁；锁中毒（持锁线程 panic）时沿用内部数据继续，不让后续每次调用都 panic。
+fn lock_todos() -> std::sync::MutexGuard<'static, Option<HashMap<String, Vec<TodoEntry>>>> {
+    TODOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// 会话关闭 / 删除时清掉该会话的 Todo 表，避免全局表无界增长。
 pub fn clear_session_todos(session_id: &str) {
-    if let Ok(mut guard) = TODOS.lock() {
-        if let Some(table) = guard.as_mut() {
-            table.remove(session_id);
+    if let Some(table) = lock_todos().as_mut() {
+        table.remove(session_id);
+    }
+}
+
+/// 清单 → 契约载荷（`TodoEntry[]`）。空清单也是合法载荷（表示「没有 Todo」）。
+fn todos_to_value(entries: &[TodoEntry]) -> Value {
+    Value::Array(
+        entries
+            .iter()
+            .map(|entry| serde_json::to_value(entry).unwrap_or(Value::Null))
+            .collect(),
+    )
+}
+
+/// 写表并返回清单载荷；`TodoWrite` 成功与重建共用这一个写入点。
+fn store_session_todos(session_id: &str, entries: Vec<TodoEntry>) -> Value {
+    let value = todos_to_value(&entries);
+    let mut guard = lock_todos();
+    guard
+        .get_or_insert_with(HashMap::new)
+        .insert(session_id.to_string(), entries);
+    value
+}
+
+/// 会话当前清单；表中没有该会话时返回 `None`（调用方决定是否重建）。
+pub fn session_todos(session_id: &str) -> Option<Value> {
+    lock_todos()
+        .as_ref()
+        .and_then(|table| table.get(session_id))
+        .map(|entries| todos_to_value(entries))
+}
+
+/// 索取会话清单：表里有就直接给，没有就按会话文件重建后写表再给
+/// （`docs/features/todo-list.md` FR-002；`sessionTodosRequested` 的应答实现）。
+pub fn ensure_session_todos(session_id: &str) -> Value {
+    if let Some(value) = session_todos(session_id) {
+        return value;
+    }
+    // 读盘不持锁：重建期间可能有 TodoWrite 并发写表，以写表者为准（后者覆盖前者，
+    // 因为 TodoWrite 的入参比文件里的旧快照新）。
+    let rebuilt = rebuild_todos_from_history(session_id);
+    store_session_todos(session_id, rebuilt)
+}
+
+/// 把 `todos` 入参规范化成清单条目；非数组 / 非对象条目按「无效」处理。
+///
+/// 校验失败的入参不写表（`run_todo_write` 先校验再调本函数），所以这里的宽松口径只服务
+/// 重建路径——会话文件里存的是模型原始入参，可能缺 `status` / `activeForm`。
+fn normalize_todos(value: &Value) -> Option<Vec<TodoEntry>> {
+    let items = value.as_array()?;
+    let mut entries = Vec::with_capacity(items.len());
+    for item in items {
+        let object = item.as_object()?;
+        let content = object.get("content").and_then(Value::as_str)?;
+        let status = object
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending");
+        let active_form = object
+            .get("activeForm")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        entries.push(TodoEntry {
+            content: content.to_string(),
+            status: status.to_string(),
+            active_form: active_form.to_string(),
+        });
+    }
+    Some(entries)
+}
+
+/// 从会话文件重建清单：取**最后一条成功**的 `TodoWrite` 调用的 `todos` 入参。
+///
+/// 「成功」以该次调用的 `tool_result.exit_code == 0` 为准（缺 `exit_code` 视为成功，与
+/// `replayMessages` 的判定同口径）；失败调用与找不到结果的调用都不参与。
+/// 文件不存在 / 解析失败 / 没有成功调用时返回空清单，不报错——「该对话没有 Todo」
+/// 与「文件读不到」在这一层是同一个可观察结果（`docs/features/todo-list.md` 边界）。
+fn rebuild_todos_from_history(session_id: &str) -> Vec<TodoEntry> {
+    let Some(project) = crate::history::project_of_session(session_id) else {
+        return Vec::new();
+    };
+    let messages = crate::history::load_messages(session_id, &project);
+
+    // 第一遍：tool_use_id → 是否成功（缺 exit_code 视为成功）
+    let mut succeeded: HashMap<String, bool> = HashMap::new();
+    for message in &messages {
+        let Some(blocks) = message
+            .get("message")
+            .and_then(|inner| inner.get("content"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for block in blocks {
+            if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                continue;
+            }
+            let Some(tool_use_id) = block.get("tool_use_id").and_then(Value::as_str) else {
+                continue;
+            };
+            let exit_code = block.get("exit_code").and_then(Value::as_i64).unwrap_or(0);
+            succeeded.insert(tool_use_id.to_string(), exit_code == 0);
         }
     }
+
+    // 第二遍：按文件顺序记最后一条成功的 TodoWrite
+    let mut last: Option<Vec<TodoEntry>> = None;
+    for message in &messages {
+        let Some(blocks) = message
+            .get("message")
+            .and_then(|inner| inner.get("content"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for block in blocks {
+            if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            if block.get("name").and_then(Value::as_str) != Some("TodoWrite") {
+                continue;
+            }
+            let tool_use_id = block.get("id").and_then(Value::as_str).unwrap_or("");
+            if succeeded.get(tool_use_id) != Some(&true) {
+                continue;
+            }
+            let Some(mut input) = block.get("input").cloned() else {
+                continue;
+            };
+            // 字段级 double-encode：模型把 todos 序列化成字符串时按 JSON 解析
+            if let Some(text) = input.get("todos").and_then(Value::as_str) {
+                let Ok(parsed) = serde_json::from_str::<Value>(text) else {
+                    continue;
+                };
+                if let Some(object) = input.as_object_mut() {
+                    object.insert("todos".to_string(), parsed);
+                }
+            }
+            let Some(todos) = input.get("todos") else {
+                continue;
+            };
+            let Some(entries) = normalize_todos(todos) else {
+                continue;
+            };
+            last = Some(entries);
+        }
+    }
+    last.unwrap_or_default()
 }
 
 fn run_todo_write(input: &Value, session_id: &str) -> ToolOutcome {
@@ -3945,17 +4130,13 @@ fn run_todo_write(input: &Value, session_id: &str) -> ToolOutcome {
         }
     }
 
-    // 全部完成时清空存储（`newTodos = allDone ? [] : todos`）
-    let all_done = !items.is_empty()
-        && items
-            .iter()
-            .all(|item| item.get("status").and_then(Value::as_str) == Some("completed"));
-    let stored = if all_done { json!([]) } else { todos.clone() };
-    {
-        let mut guard = TODOS.lock().unwrap();
-        let table = guard.get_or_insert_with(HashMap::new);
-        table.insert(session_id.to_string(), stored);
-    }
+    // 校验通过 → 写表（唯一写入点，`docs/features/todo-list.md` FR-001）。
+    // 清空清单用 `todos: []` 表达；不再有「全部完成即清空」的特殊分支——
+    // 已完成项要留在表里，进度按钮才显示得出 `4/4`。
+    let Some(entries) = normalize_todos(&todos) else {
+        return ToolOutcome::Error("todos is required and must be an array".to_string());
+    };
+    let stored = store_session_todos(session_id, entries);
 
     fn status_of(item: &Value) -> &str {
         item.get("status").and_then(Value::as_str).unwrap_or("pending")
@@ -3984,7 +4165,8 @@ fn run_todo_write(input: &Value, session_id: &str) -> ToolOutcome {
             text.push_str(&format!("\n{}. {icon} {content}", index + 1));
         }
     }
-    ToolOutcome::Success(text)
+    // 带上新清单：engine 据此推送 `todosChanged`（`docs/features/todo-list.md` FR-002）
+    ToolOutcome::SuccessWithTodos { text, todos: stored }
 }
 
 // ==================== AskUserQuestion ====================

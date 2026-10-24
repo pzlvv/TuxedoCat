@@ -302,6 +302,15 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .ok_or_else(|| "conversationLoadRequested without sessionId".to_string())?;
             Ok(conversation_load_payload(core, session_id))
         }
+        // 会话当前的 Todo 清单（`docs/features/todo-list.md` FR-002）：表里有就直接给，
+        // 没有就按会话文件里最后一条成功的 TodoWrite 重建后写表再给。
+        "sessionTodosRequested" => {
+            let session_id = request
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "sessionTodosRequested without sessionId".to_string())?;
+            Ok(crate::tools::ensure_session_todos(session_id))
+        }
         // 斜杠命令与技能列表（内置命令 + 内置技能 + 会话工作目录下的技能）。
         "skillsRequested" => {
             let session_id = request.get("sessionId").and_then(Value::as_str);

@@ -165,6 +165,7 @@ function createClientHarness(): ClientHarness {
     conversationListChanged: () => undefined,
     conversationSpaceCleared: () => undefined,
     sessionRuntimeChanged: () => undefined,
+    todosChanged: () => undefined,
     workspaceFileChanged: () => undefined,
     spinDesignDataChanged: () => undefined,
     workModeChanged: () => undefined,

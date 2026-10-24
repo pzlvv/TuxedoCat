@@ -68,6 +68,8 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
     mcpSessionEnabled: [],
     // 模拟宿主「钉住当前对话」失败（读 core 事实失败）：保存照常成功，只回失败标志
     mcpPinFailed: false,
+    // 按会话的 Todo 清单（requestSessionTodos 的应答；core 侧事实的假实现）
+    sessionTodos: {},
   };
 
   // webview → 宿主 的全部上行消息（追加写，测试轮询断言）
@@ -352,6 +354,14 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
         }
         break;
       }
+      case 'requestSessionTodos': {
+        // 任务进度（docs/features/todo-list.md FR-002）：core 持有清单，这里回该会话的假数据
+        send({
+          type: 'sessionTodos', sessionId: msg.sessionId,
+          todos: state.sessionTodos[msg.sessionId] || [],
+        });
+        break;
+      }
       case 'loadConversation': {
         // 单视图加载会话：回放该会话的历史消息（取自 state.conversations 的种子数据）；
         // metadata 整份来自 core（meta.json），一次性通知的 onceMessage 随之下发
@@ -463,6 +473,16 @@ export class FakeHostDriver {
     await this.page.evaluate(
       (t) => { Object.assign((window as any).__fakeHost.state.turn, t); },
       turn,
+    );
+  }
+
+  /** 改写某会话的 Todo 清单（`requestSessionTodos` 的应答数据） */
+  async setSessionTodos(sessionId: string, todos: Array<Record<string, unknown>>): Promise<void> {
+    await this.page.evaluate(
+      (args: { sid: string; list: Array<Record<string, unknown>> }) => {
+        (window as any).__fakeHost.state.sessionTodos[args.sid] = args.list;
+      },
+      { sid: sessionId, list: todos },
     );
   }
 

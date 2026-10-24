@@ -353,11 +353,10 @@ TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按�
 - 载荷字段名与 TypeScript 类型逐项一致（`camelCase` 原样）。
 - `CoreEvent` 的每个 `type` 语义唯一确定（[docs/architecture/events.md 第 2.1 节](../architecture/events.md#21-coreeventcore--ui单向)）。
 - `CoreRequest` 的两个请求（`toolPermissionRequested` / `userChoice`）由 Core 发起、UI 应答。
-- `UiRequest` 的十三个请求（`conversationListRequested` / `smartNamingRequested` /
-  `balanceRequested` / `compactArchiveRequested` / `mcpServersRequested` /
-  `conversationSpacesRequested` / `flushSessionRequested` / `conversationLoadRequested` /
-  `skillsRequested` / `spinDesignRequested` / `spinDesignSaveRequested` /
-  `watchWorkspaceFileRequested` / `unwatchWorkspaceFileRequested`）由 UI 发起、Core 应答：
+- `UiRequest` 的十四个请求（`conversationListRequested` / `smartNamingRequested` / `balanceRequested` /
+  `compactArchiveRequested` / `mcpServersRequested` / `conversationSpacesRequested` / `flushSessionRequested` /
+  `conversationLoadRequested` / `sessionTodosRequested` / `skillsRequested` / `spinDesignRequested` /
+  `spinDesignSaveRequested` / `watchWorkspaceFileRequested` / `unwatchWorkspaceFileRequested`）由 UI 发起、Core 应答：
   宿主不直接读 core 的磁盘数据（[docs/core/standalone-core-boundaries.md 第 2 节](standalone-core-boundaries.md#2-宿主侧的-core-事实读取)）。未知类型一律回 `ok:false` 的响应，
   不做静默降级。
   - `spinDesignRequested { sessionId }`：按会话工作目录读 `spin.json` + 设计器技能清单；

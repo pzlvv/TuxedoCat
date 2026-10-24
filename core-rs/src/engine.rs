@@ -2944,6 +2944,16 @@ fn emit_tool_outcome(
         "output": output,
         "status": status,
     }));
+    // Todo 表变更 → 推全量清单（`docs/features/todo-list.md` FR-002）。
+    // 串行与并行两条执行路径共用本函数，所以推送只接这一处；webview 收到即更新，
+    // 不需要重新加载对话。
+    if let Some(todos) = outcome.todos() {
+        core.emit(json!({
+            "type": "todosChanged",
+            "sessionId": session_id,
+            "todos": todos,
+        }));
+    }
     // tool_result block 口径：始终带 exit_code / is_canceled；
     // 工具执行失败（含权限拒绝）**不**写 is_error（只有模型错误兜底才写）。
     // is_canceled 仅「排队等待期间被中止」为真。

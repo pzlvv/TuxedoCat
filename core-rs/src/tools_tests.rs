@@ -2101,10 +2101,10 @@ fn todo_write_clears_on_empty_or_non_array_input() {
 }
 
 #[test]
-fn todo_write_clears_storage_when_all_completed() {
-    let sandbox = Sandbox::new("tools-todo-alldone");
+fn todo_write_updates_the_session_table() {
+    let sandbox = Sandbox::new("tools-todo-table");
     let ctx = ToolContext {
-        session_id: "session-alldone".to_string(),
+        session_id: "session-table".to_string(),
         tool_use_id: None,
         pause: None,
         cwd: sandbox.workspace.to_string_lossy().to_string(),
@@ -2114,21 +2114,34 @@ fn todo_write_clears_storage_when_all_completed() {
         background: None,
         subagent: None,
     };
-    execute(
+    let outcome = execute(
         "TodoWrite",
-        &json!({ "todos": [{ "content": "a", "activeForm": "b", "status": "completed" }] }),
+        &json!({ "todos": [
+            { "content": "已完成", "activeForm": "完成中", "status": "completed" },
+            { "content": "进行中", "activeForm": "进行中", "status": "in_progress" }
+        ] }),
         &ctx,
     );
-    let stored = TODOS.lock().unwrap();
-    let table = stored.as_ref().expect("todo table");
-    assert_eq!(table["session-alldone"], json!([]));
+    assert!(!outcome.is_error(), "got {}", text(&outcome));
+    // 表是唯一持有者：写进去的就是这次调用的清单（顺序 / 状态都保留）
+    let stored = crate::tools::session_todos("session-table").expect("表里应有该会话");
+    assert_eq!(
+        stored,
+        json!([
+            { "content": "已完成", "status": "completed", "activeForm": "完成中" },
+            { "content": "进行中", "status": "in_progress", "activeForm": "进行中" }
+        ])
+    );
+    // 同一份清单随工具结果带回给 engine（推送 `todosChanged` 用）
+    assert_eq!(outcome.todos(), Some(&stored));
+    crate::tools::clear_session_todos("session-table");
 }
 
 #[test]
-fn todo_write_keeps_state_per_session() {
-    let sandbox = Sandbox::new("tools-todo-session");
-    let first = ToolContext {
-        session_id: "session-a".to_string(),
+fn todo_write_empty_list_clears_the_table() {
+    let sandbox = Sandbox::new("tools-todo-empty");
+    let ctx = ToolContext {
+        session_id: "session-empty".to_string(),
         tool_use_id: None,
         pause: None,
         cwd: sandbox.workspace.to_string_lossy().to_string(),
@@ -2141,12 +2154,184 @@ fn todo_write_keeps_state_per_session() {
     execute(
         "TodoWrite",
         &json!({ "todos": [{ "content": "a", "activeForm": "b", "status": "pending" }] }),
-        &first,
+        &ctx,
     );
-    let stored = TODOS.lock().unwrap();
-    let table = stored.as_ref().expect("todo table");
-    assert_eq!(table["session-a"][0]["content"], "a");
-    assert!(table.get("session-b").is_none());
+    execute("TodoWrite", &json!({ "todos": [] }), &ctx);
+    assert_eq!(
+        crate::tools::session_todos("session-empty"),
+        Some(json!([])),
+        "空清单是合法状态（清空），不是「表里没有」"
+    );
+    crate::tools::clear_session_todos("session-empty");
+}
+
+#[test]
+fn todo_write_failure_keeps_the_previous_table() {
+    let sandbox = Sandbox::new("tools-todo-fail");
+    let ctx = ToolContext {
+        session_id: "session-fail".to_string(),
+        tool_use_id: None,
+        pause: None,
+        cwd: sandbox.workspace.to_string_lossy().to_string(),
+        on_progress: None,
+        cancel: None,
+        user_choice: None,
+        background: None,
+        subagent: None,
+    };
+    execute(
+        "TodoWrite",
+        &json!({ "todos": [{ "content": "保留", "activeForm": "保留中", "status": "pending" }] }),
+        &ctx,
+    );
+    let failed = execute(
+        "TodoWrite",
+        &json!({ "todos": [{ "content": "", "activeForm": "x" }] }),
+        &ctx,
+    );
+    assert!(failed.is_error());
+    // 失败不写表：清单仍是上一次成功调用的内容，也不推送 todos
+    assert_eq!(
+        crate::tools::session_todos("session-fail"),
+        Some(json!([{ "content": "保留", "status": "pending", "activeForm": "保留中" }]))
+    );
+    assert!(failed.todos().is_none());
+    crate::tools::clear_session_todos("session-fail");
+}
+
+// ==================== TodoWrite 重建（会话文件） ====================
+
+/// 造一条 assistant 的 `TodoWrite` tool_use
+fn todo_tool_use(id: &str, todos: Value) -> Value {
+    json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": id,
+                "name": "TodoWrite",
+                "input": { "todos": todos },
+            }],
+        },
+        "uuid": format!("a-{id}"),
+        "timestamp": 1,
+    })
+}
+
+/// 造对应的 tool_result（`exit_code` 0 = 成功，非 0 = 失败）
+fn todo_tool_result(id: &str, exit_code: i64) -> Value {
+    json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": id,
+                "content": "Todos have been modified successfully",
+                "exit_code": exit_code,
+            }],
+        },
+        "uuid": format!("r-{id}"),
+        "timestamp": 2,
+    })
+}
+
+/// 把一组消息写成一个对话（含 meta.json，`project_of_session` 才找得到）
+fn seed_conversation(sandbox: &Sandbox, session_id: &str, messages: Vec<Value>) {
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    crate::history::create_conversation(
+        session_id,
+        &project,
+        json!({ "sessionId": session_id, "project": project }),
+    )
+    .unwrap();
+    crate::history::replace_messages(session_id, &project, &messages).unwrap();
+}
+
+#[test]
+fn todo_rebuild_picks_last_successful_write() {
+    let sandbox = Sandbox::new("tools-todo-rebuild-last");
+    seed_conversation(
+        &sandbox,
+        "rb-last",
+        vec![
+            todo_tool_use("t1", json!([{ "content": "旧清单", "activeForm": "旧", "status": "pending" }])),
+            todo_tool_result("t1", 0),
+            todo_tool_use(
+                "t2",
+                json!([
+                    { "content": "新清单 A", "activeForm": "做 A", "status": "completed" },
+                    { "content": "新清单 B", "activeForm": "做 B", "status": "in_progress" }
+                ]),
+            ),
+            todo_tool_result("t2", 0),
+        ],
+    );
+    let rebuilt = crate::tools::ensure_session_todos("rb-last");
+    assert_eq!(
+        rebuilt,
+        json!([
+            { "content": "新清单 A", "status": "completed", "activeForm": "做 A" },
+            { "content": "新清单 B", "status": "in_progress", "activeForm": "做 B" }
+        ])
+    );
+    crate::tools::clear_session_todos("rb-last");
+}
+
+#[test]
+fn todo_rebuild_skips_failed_call_and_keeps_earlier_success() {
+    let sandbox = Sandbox::new("tools-todo-rebuild-fail");
+    seed_conversation(
+        &sandbox,
+        "rb-fail",
+        vec![
+            todo_tool_use("t1", json!([{ "content": "成功的那次", "activeForm": "做", "status": "pending" }])),
+            todo_tool_result("t1", 0),
+            todo_tool_use("t2", json!([{ "content": "失败的那次", "activeForm": "做", "status": "pending" }])),
+            todo_tool_result("t2", -1),
+        ],
+    );
+    assert_eq!(
+        crate::tools::ensure_session_todos("rb-fail"),
+        json!([{ "content": "成功的那次", "status": "pending", "activeForm": "做" }])
+    );
+    crate::tools::clear_session_todos("rb-fail");
+}
+
+#[test]
+fn todo_rebuild_parses_double_encoded_todos() {
+    let sandbox = Sandbox::new("tools-todo-rebuild-encoded");
+    // 字段级 double-encode：todos 是 JSON 字符串（与工具侧容错同口径）
+    let encoded = serde_json::to_string(&json!([
+        { "content": "编码过的", "activeForm": "做", "status": "completed" }
+    ]))
+    .unwrap();
+    seed_conversation(
+        &sandbox,
+        "rb-encoded",
+        vec![
+            todo_tool_use("t1", Value::String(encoded)),
+            todo_tool_result("t1", 0),
+        ],
+    );
+    assert_eq!(
+        crate::tools::ensure_session_todos("rb-encoded"),
+        json!([{ "content": "编码过的", "status": "completed", "activeForm": "做" }])
+    );
+    crate::tools::clear_session_todos("rb-encoded");
+}
+
+#[test]
+fn todo_rebuild_returns_empty_when_file_missing() {
+    let _sandbox = Sandbox::new("tools-todo-rebuild-missing");
+    assert_eq!(crate::tools::ensure_session_todos("rb-missing"), json!([]));
+    // 空清单也会写表：后续索取不再重复读盘
+    assert_eq!(
+        crate::tools::session_todos("rb-missing"),
+        Some(json!([]))
+    );
+    crate::tools::clear_session_todos("rb-missing");
 }
 
 // ==================== AskUserQuestion ====================
@@ -3296,14 +3481,15 @@ fn background_task_abort_kills_the_whole_process_tree() {
 // ==================== 子代理角色注册表（specs/020） ====================
 
 /// 合法角色单一落点：Master 无白名单（不限工具，与主对话同款），Explorer 白名单
-/// 恰为四件套（Reply 是生命周期设施，见 `sub_agent_role_tools` 的文档注释）。
+/// 恰为五件套（Reply 是生命周期设施、TodoWrite 用于自报进度，见 `sub_agent_role_tools`
+/// 的文档注释与 `docs/features/todo-list.md` FR-005）。
 #[test]
 fn sub_agent_role_registry_lists_roles_and_allowlists() {
     assert_eq!(SUB_AGENT_ROLES, &["Master", "Explorer"]);
     assert_eq!(sub_agent_role_tools("Master"), None);
     assert_eq!(
         sub_agent_role_tools("Explorer"),
-        Some(["Read", "Glob", "Grep", "Reply"].as_slice())
+        Some(["Read", "Glob", "Grep", "Reply", "TodoWrite"].as_slice())
     );
     // 未知角色没有白名单；角色名精确匹配，大小写变体不合法
     assert_eq!(sub_agent_role_tools("explorer"), None);
