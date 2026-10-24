@@ -59,6 +59,13 @@ let target = '';
  * 标签表里认出新增项并激活（首标签自动开同样按新页处理）。
  */
 let activateNextNewTab = false;
+/**
+ * 上一帧渲染完成时的活动页：焦点跟随的比较基准（焦点跟随规格见
+ * docs/hosts/electron-multi-workspace.md 第 14.4 节）。不用调用方进入 renderTabs 前的值
+ * ——activateTab 在进入前已改写 activeTabId，帧内推进（新建自动切页、活动页关闭回退）
+ * 也只有这里能统一捕获。
+ */
+let renderedActiveId: number | null = null;
 /** 窗口是否出现过至少一个标签（「最后标签关闭 → 关窗口」的判定前提） */
 let hadTabs = false;
 
@@ -127,6 +134,18 @@ function fitActivePane(): void {
     pane.fit.fit();
     void api.resize({ tabId: pane.id, cols: pane.term.cols, rows: pane.term.rows });
   });
+}
+
+/**
+ * 键盘焦点归活动页 xterm（docs/hosts/electron-multi-workspace.md 第 14.4 节）：
+ * 窗口内没有第二可输入面，落不到 xterm 的键入就是丢失。断开 / 连接中的标签不在
+ * 可输入态（键入被状态机丢弃），焦点不落到覆盖层底下。
+ */
+function focusActivePaneTerm(): void {
+  if (activeTabId === null) return;
+  const pane = panes.get(activeTabId);
+  if (!pane || tabs.find((tab) => tab.id === activeTabId)?.status !== 'ready') return;
+  pane.term.focus();
 }
 
 /**
@@ -214,8 +233,17 @@ function renderTabs(next: readonly TerminalTab[]): void {
     const visible = tab.id === activeTabId;
     pane.host.classList.toggle('visible', visible);
     if (visible) fitActivePane();
+    // 上一帧还在覆盖层、这一帧 ready = 刚建链成功（首连或重连完成）
+    const hadOverlay = pane.host.querySelector('.overlay') !== null;
     renderOverlay(tab, pane);
+    if (visible && hadOverlay && tab.status === 'ready') focusActivePaneTerm();
   }
+
+  // 活动页变化（开窗自动建首标签 /「+」新建自动切页 / 点击与快捷键切换 / 活动页关闭
+  // 回退）→ 焦点跟随（docs/hosts/electron-multi-workspace.md 第 14.4 节）；后台标签的
+  // 状态变化不改变活动页、不动焦点，键入中的焦点不被标签表推送抢走
+  if (activeTabId !== renderedActiveId) focusActivePaneTerm();
+  renderedActiveId = activeTabId;
 
   // 最后一个标签关闭 → 关窗口（specs/022 FR-003）：曾经出现过标签才算——
   // 开窗瞬间首标签还没建好的空表不是「用户关完了」
@@ -226,10 +254,14 @@ function renderTabs(next: readonly TerminalTab[]): void {
 }
 
 function activateTab(tabId: number): void {
-  if (activeTabId === tabId) return;
+  if (activeTabId === tabId) {
+    // 同页点击仍是「我要输入」的意图：活动页变化检测覆盖不到（id 没变），这里直接回焦
+    focusActivePaneTerm();
+    return;
+  }
   activeTabId = tabId;
+  // 焦点由 renderTabs 的活动页变化检测统一交给新活动页
   renderTabs(tabs);
-  panes.get(tabId)?.term.focus();
 }
 
 /**
@@ -331,6 +363,9 @@ void api.init().then((info) => {
     panes.get(tabId)?.term.write(data);
   });
   api.onSwitchTab(switchTabByShortcut);
+  // 窗口获得焦点（首次显示、terminalWindow.ts 重复触发入口聚焦既有窗口、切回应用）
+  // → 回焦活动页：终端窗口的键盘中心是 xterm
+  window.addEventListener('focus', focusActivePaneTerm);
   renderTabs(info.tabs);
 
   // 首个标签随窗口自动开（docs/hosts/electron-multi-workspace.md 第 14.2 节）：PTY 初值先给缺省，页面装好后

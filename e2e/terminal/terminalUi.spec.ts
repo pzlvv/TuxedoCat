@@ -10,7 +10,8 @@ import { openStaticPage } from '../helpers/webviewHarness';
  * 以假 `window.terminalAPI`（内存标签表 + 回显 shell）驱动真实页面，锁定 US-55 的
  * 页面层验收（US-54 只覆盖首标签自动建立的页面侧）：
  * - 首标签随窗口自动建立（AC-1 的页面侧）；「+」新建 / ✕ 关闭与切换（FR-003）；
- * - 键入路由到 input、输出回显进 xterm（FR-004 数据面）；
+ * - 键入路由到 input、输出回显进 xterm（FR-004 数据面）；焦点跟随活动页
+ *   （开窗 / 新建 / 切换 / 重连就绪，docs/hosts/electron-multi-workspace.md 第 14.4 节）；
  * - 断开态覆盖层（原因 + 重连按钮）与重连动作（FR-007）；连接中的 logo 加载动画
  *   （红色警示只属于断开态）；
  * - 主题推送跟随（FR-009）；复制 / 粘贴快捷键（FR-005）；
@@ -146,6 +147,15 @@ function state(page: Page) {
   return page.evaluate(() => (window as unknown as TerminalTestWindow).__terminalState);
 }
 
+/** 当前持有键盘焦点的面板 id（xterm 的输入面是 pane 内隐藏的 helper textarea） */
+function focusedPaneId(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const el = document.activeElement;
+    const pane = el instanceof HTMLTextAreaElement ? el.closest('.pane') : null;
+    return pane?.id ?? '';
+  });
+}
+
 test('首标签随窗口自动建立：标签条一行、xterm 已渲染、无覆盖层', async () => {
   const { page } = handle;
   await expect(page.locator('.tab')).toHaveText(/bash 1/);
@@ -190,6 +200,43 @@ test('键入路由到 input、输出回显进 xterm', async () => {  const { pag
   await page.keyboard.type('ls -la');
   await expect.poll(async () => (await state(page)).inputs.map((i) => i.data).join('')).toContain('ls -la');
   await expect.poll(() => page.locator('#pane-1 .xterm-rows').textContent()).toContain('ls -la');
+});
+
+test('焦点跟随：首标签就绪后键盘焦点自动落在 xterm，无需点击', async () => {
+  const { page } = handle;
+  // xterm 的输入面是隐藏的 helper textarea：activeElement 命中它即焦点就位
+  await expect.poll(() => focusedPaneId(page)).toBe('pane-1');
+  // 不点击直接键入即可进 input（docs/hosts/electron-multi-workspace.md 第 14.4 节）
+  await page.keyboard.type('echo hi');
+  await expect.poll(async () => (await state(page)).inputs.map((i) => i.data).join('')).toContain('echo hi');
+});
+
+test('焦点跟随：「+」新建切到新页、点击活动页回收焦点、切换跟着走', async () => {
+  const { page } = handle;
+  await expect.poll(() => focusedPaneId(page)).toBe('pane-1');
+  await page.click('#newtab');
+  await expect(page.locator('.tab')).toHaveCount(2);
+  await expect.poll(() => focusedPaneId(page)).toBe('pane-2');
+
+  // 点击已是活动页的标签：不换页，焦点仍收回该页输入面（点标签本身会把焦点落走）
+  await page.locator('.tab').nth(1).click();
+  await expect.poll(() => focusedPaneId(page)).toBe('pane-2');
+
+  // 切回首标签：焦点跟着走
+  await page.locator('.tab').nth(0).click();
+  await expect.poll(() => focusedPaneId(page)).toBe('pane-1');
+});
+
+test('焦点跟随：重连就绪后焦点回到该页输入面', async () => {
+  const { page } = handle;
+  await page.evaluate(() => (window as unknown as TerminalTestWindow).__terminalCtl.disconnect(1, 'read ETIMEDOUT'));
+  const overlay = page.locator('#pane-1 .overlay');
+  await expect(overlay).toBeVisible();
+
+  // 断开 / 连接中不在可输入态，重连按钮点击后建链就绪：焦点自动回到该页（点完即可键入）
+  await overlay.locator('button').click();
+  await expect(page.locator('#pane-1 .overlay')).toHaveCount(0);
+  await expect.poll(() => focusedPaneId(page)).toBe('pane-1');
 });
 
 test('断开态：覆盖层带原因与重连按钮，重连以当下尺寸发起', async () => {
