@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：跨工作区容器对话的状态灯与提示音策略
@@ -18,7 +18,7 @@ status: 实施中
 
 | 基线文档 | 章节 | 变更 | 说明 |
 | --- | --- | --- | --- |
-| [docs/features/cross-workspace-agent.md 第 2 节 FR-003](../../docs/features/cross-workspace-agent.md#fr-003跨工作区子代理会话) | FR-003 跨工作区子代理会话 | 修改 | 会话级配置（agent mode / thinking / 提示词 / 模型 provider 成对 / 联网 / MCP 启用名单）经容器继承发起方，按 specs/020 FR-003 的角色继承规则应用（specs/024 FR-004） |
+| [docs/features/cross-workspace-agent.md 第 2 节 FR-003](../../docs/features/cross-workspace-agent.md#fr-003跨工作区子代理会话顶层普通对话) | FR-003 跨工作区子代理会话 | 修改 | 会话级配置（agent mode / thinking / 提示词 / 模型 provider 成对 / 联网 / MCP 启用名单）经容器继承发起方，按 specs/020 FR-003 的角色继承规则应用（specs/024 FR-004；后被 specs/025 改为全量继承、容器删除） |
 | [docs/hosts/electron-multi-workspace.md 第 9 节](../../docs/hosts/electron-multi-workspace.md#9-侧栏) | 侧栏 | 修改 | 容器行条目增加「状态灯按子代理运行时派生」的表述（点击行为与内容隔离不变） |
 | [docs/hosts/host-matrix.md 第 6 节](../../docs/hosts/host-matrix.md#6-宿主固有差异有意保留) | 未读完成呼吸 / ConversationManager 实现对照表 | 修改 | 「灯条只挂顶层对话行」口径扩展到容器行（按子代理派生）；写明跨工作区子代理的任务结束提醒适用「子对话完成不提醒、转等待照常提醒」 |
 | [docs/features/user-stories/desktop.md US-56](../../docs/features/user-stories/desktop.md#us-56-跨工作区代理) | US-56 验收标准 | 修改 | 第 2 条占位节点处增补容器状态灯；第 1 条增补子代理配置经容器继承发起方 |
@@ -142,7 +142,7 @@ e2e：`e2e/electron/crossWorkspaceAgent.spec.ts` 扩展容器行状态灯断言�
 | --- | --- | --- | --- |
 | FR-001 | `src/shared/sessionRuntime.ts` 的容器级别纯函数（按子代理状态集派生 waiting/running/idle）；`electron/sidebar/main.ts` 对话树渲染对容器行套用 | 纯函数单测（waiting 优先 / 全 idle 无灯 / 空集）；`e2e/electron/crossWorkspaceAgent.spec.ts` 容器行状态灯断言 | 自动 |
 | FR-002 | 既有 `electron/trayAttention.ts` 的 `diffSessionEndEvents`（无代码改动） | 既有托盘差分单测扩展跨工作区形态（`parentSessionId: "ph_…"` 的完成抑制与转等待提醒） | 自动 |
-| FR-003 | 既有 `electron/main.ts` 的 `showCrossWorkspacePlaceholder`（无代码改动） | 既有 `src/test/chatPlaceholderReason.test.ts` + e2e 占位页断言 | 自动 |
+| FR-003 | 既有 `electron/main.ts` 的 showCrossWorkspacePlaceholder（无代码改动） | 既有 `src/test/chatPlaceholderReason.test.ts` + e2e 占位页断言 | 自动 |
 | FR-004 | `CoreRequest.crossWorkspaceAgentRequested` / `UiEvent.remoteSubAgentStarted` 载荷字段；`src/host/WebViewUI.ts` 透传；`core-rs/src/engine.rs` 的 `start_remote_sub_agent` 继承应用；`core-rs/src/mcp_config.rs` 的 `read_enabled_mcps` / `write_session_enabled`（MCP 名单） | `core-rs/src/engine_tests.rs`（Master 全量继承 / 非 Master 角色固定 / MCP 名单 / 载荷缺字段报错）；宿主透传单测；e2e 继承断言 | 自动 |
 
 ## 待澄清
@@ -152,8 +152,14 @@ e2e：`e2e/electron/crossWorkspaceAgent.spec.ts` 扩展容器行状态灯断言�
 
 ## 收敛记录
 
-收敛时由 /converge 填写，结论只分三类。
-
-- 已满足：<FR / AC → 证据（实现与测试落点）>
-- 偏差：<与 spec 的差异；改代码或改 spec 并留痕>
-- 未做：<回写 tasks.md 的未完成项>
+- 已满足：本 spec 的四个 FR 在实施时点（提交 3869e90）全部落地并有对应证据——FR-001
+  容器状态灯（deriveContainerBusyLevel + 侧栏接入 + e2e 断言）、FR-002 完成静默 /
+  等待提醒（trayAttention 用例）、FR-003 占位页行为不变（既有用例）、FR-004 经容器继承
+  （契约七字段 + 发起方解析 + 目标应用 + e2e 读盘断言）；tasks.md 十项全勾。
+- 偏差：无（相对本 spec 自身）。随后 specs/025 按用户裁决**删除容器承载**：本 spec 的
+  FR-001（容器状态灯）、FR-002 / FR-003（容器行的静默与占位页）随容器整体回退，
+  FR-004 的继承链由 025 FR-005 以「直建普通对话 + creator 归属 + 全量继承」形态延续
+  （不再经容器、不再按角色裁剪）。本文件保留审计轨迹，现状以
+  [docs/features/cross-workspace-agent.md](../../docs/features/cross-workspace-agent.md)
+  为准。
+- 未做：无。
